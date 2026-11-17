@@ -461,6 +461,8 @@ The unattended runs' settings ([Run / diagnose](../dev/development.md#run--diagn
 | `ctr_auto_stub_ipc` | `1` | `1` answers success to a command of a 3DS service the runtime doesn't know, and has a stand-in answer each command of a service it doesn't have, each logged the first time, as `auto_stub_ipc` does for a Switch game. `0` stops the run at the first, saying which, but for the services `--ipc-stubs` names |
 | `ctr_script` | empty | The game's scripted input (`--script=` too): `when:buttons`, a comma between two, when in ms from the start and buttons in hex as `hid:USER`'s pad has them (1 A, 2 B, 4 Select, 8 Start, 10 Right, 20 Left, 40 Up, 80 Down, 100 R, 200 L, 400 X, 800 Y, 4000 ZL, 8000 ZR), each held for `press_len` ms |
 | `ctr_separate_windows` | `0` | `1` gives the top and bottom screens a window each, each screen filling its own, instead of the top screen above the bottom one in one window |
+| `ctr_screen_layout` | `0` | The window's layout: `0` stacked, `1` one screen, `2` large screen, `3` side by side |
+| `ctr_screen_swap` | `0` | `1` swaps the screens' places, and shows the bottom one alone in the single-screen layout |
 | `ctr_top_resolution` | `1` | The scale of the top screen's 3D rendering, 1 to 16: `1` is the console's 400x240, `2` 800x480; the screen is scaled to its window |
 | `ctr_bottom_resolution` | `1` | The same for the bottom screen: `1` is the console's 320x240, `2` 640x480 |
 

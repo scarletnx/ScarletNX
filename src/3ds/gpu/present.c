@@ -2,8 +2,8 @@
    Copyright 2026 the ScarletNX contributors
    The shown framebuffers, on the 3DS's Vulkan device (vk/device.c): a compute shader (vk/shaders/present.comp)
    reads each one where the guest has it in RAM, decodes it and turns it to the console's landscape screen in an
-   image, and the window's swapchain shows both screens, the top one above the bottom one as on the console, each
-   keeping its shape (frame_layout). With separate screens each one has its own window and fills it. Nothing of the
+   image, and the window's swapchain shows both screens as ctr_screen_layout arranges them, each keeping its shape
+   (snx_ctr_layout_rects). With separate screens each one has its own window and fills it. Nothing of the
    frame passes through the CPU. The frame dumps (the first eight, then each screen's latest about once a second, in
    frame_dir), the tests' hashes and --shot read a frame back: the shader writes those frames' RGBA pixels to a
    host-visible buffer as well, and a latest dump is written once the GPU is done, without a wait for it. --shot copies
@@ -36,6 +36,11 @@
 #include <string.h>
 
 #define MAX_SIDE 1024u /* the largest framebuffer side presented */
+/* The large layout's small screen is its size over 2.25 = 9/4: Azahar's Android large_screen_proportion, the one
+   proportion on every platform (FloatSetting.kt at 11eceda5). The steps run in integers, so each rectangle is exact
+   and the same on every host. The small screen's sides take Azahar's floors (320 / 2.25 = 142, 240 / 2.25 = 106) */
+#define LARGE_SCREEN_NUM 4u
+#define LARGE_SCREEN_DEN 9u
 
 static volatile sig_atomic_t g_quit; /* a headless run's Ctrl+C or SIGTERM */
 static void quit_signal(int signal_number) {
@@ -356,10 +361,98 @@ static void write_pending(bool wait) {
     g_present.pending.active = false;
     write_ppm(g_present.pending.screen, g_present.pending.width, g_present.pending.height, g_present.readback_view);
 }
-/* The rectangle a screen is drawn in, in swapchain pixels: in one window the pair scaled to fit and centred, each
-   screen centred across the layout; in its own window the screen scaled to fit and centred. The layout takes each
-   screen at the console's size (its frame's size over its render scale), so screens at different scales keep the
-   console's proportions. False before a layout and a swapchain exist. */
+/* a screen's rectangle in the window's pixels, each edge truncated: the right and bottom edges from the position plus
+   the size, so the size is their difference from the left and top edges */
+static void set_rect(SnxCtrRect* r, double x, double y, double width, double height) {
+    r->x = (int32_t)x;
+    r->y = (int32_t)y;
+    r->width = (int32_t)(x + width) - r->x;
+    r->height = (int32_t)(y + height) - r->y;
+}
+/* no rectangle for a screen that has not presented (present.h's contract) */
+static void shown_rects(SnxCtrRects* rects, const bool shown[2]) {
+    if (!shown[0]) rects->top = (SnxCtrRect){0};
+    if (!shown[1]) rects->bottom = (SnxCtrRect){0};
+}
+bool snx_ctr_layout_rects(SnxCtrLayout layout, bool swap, uint32_t window_width, uint32_t window_height,
+                          SnxCtrScreens screens, SnxCtrRects* rects) {
+    if (!window_width || !window_height) return false;
+    const SnxCtrScreens given = screens;
+    rects->top = rects->bottom = (SnxCtrRect){0};
+    /* A screen with no frame has no size. In the one-screen layout the missing screen gets no rectangle, so that
+       window shows black until it has a frame; the console's size only keeps the arithmetic defined there. In the
+       large and side layouts the other screen keeps its place, the console's size standing in for the missing one
+       in the box. In the stacked layout the missing screen adds no width and no height instead, so the other one fills
+       the box alone */
+    const SnxCtrScreens console = {400, 240, 320, 240};
+    bool shown[2] = {screens.top_width && screens.top_height, screens.bottom_width && screens.bottom_height};
+    if (!shown[0]) screens.top_width = console.top_width;
+    if (!shown[0]) screens.top_height = console.top_height;
+    if (!shown[1]) screens.bottom_width = console.bottom_width;
+    if (!shown[1]) screens.bottom_height = console.bottom_height;
+    /* the settings' range keeps to the four (ini_read clamps); another caller's value is shown stacked */
+    if ((unsigned)layout >= SNX_CTR_LAYOUT_COUNT) layout = SNX_CTR_LAYOUT_STACKED;
+    if (layout == SNX_CTR_LAYOUT_SINGLE) {
+        /* the one screen, the top or with the swap the bottom, scaled to fit and centred */
+        uint32_t width = swap ? screens.bottom_width : screens.top_width;
+        uint32_t height = swap ? screens.bottom_height : screens.top_height;
+        double scale = (double)window_width / width < (double)window_height / height ? (double)window_width / width
+                                                                                     : (double)window_height / height;
+        set_rect(swap ? &rects->bottom : &rects->top, (window_width - width * scale) / 2,
+                 (window_height - height * scale) / 2, width * scale, height * scale);
+        shown_rects(rects, shown);
+        return true;
+    }
+    if (layout == SNX_CTR_LAYOUT_STACKED) {
+        /* one above the other in a box the wider screen's width by both heights, the box scaled to fit and centred,
+           each screen centred across it */
+        uint32_t width = snx_max_u32(given.top_width, given.bottom_width);
+        uint32_t height = given.top_height + given.bottom_height;
+        /* no frame in either screen, nothing to place: the scale below would divide by zero */
+        if (!width || !height) return true;
+        double scale = (double)window_width / width < (double)window_height / height ? (double)window_width / width
+                                                                                     : (double)window_height / height;
+        double x = (window_width - width * scale) / 2, y = (window_height - height * scale) / 2;
+        set_rect(&rects->top, x + (width - given.top_width) * scale / 2, swap ? y + given.bottom_height * scale : y,
+                 given.top_width * scale, given.top_height * scale);
+        set_rect(&rects->bottom, x + (width - given.bottom_width) * scale / 2, swap ? y : y + given.top_height * scale,
+                 given.bottom_width * scale, given.bottom_height * scale);
+        shown_rects(rects, shown);
+        return true;
+    }
+    /* Azahar's LargeFrameLayout at 11eceda5 (src/core/frontend/framebuffer_layout.cpp, GPL-3.0-or-later), step by step:
+       the large screen at the console's size and the small one at its own size over 2.25 (Azahar's Android default),
+       centred vertically at the large one's right (Azahar's MiddleRight), make one box, scaled to fit the window and
+       centred, the large one at the box's left. Side by side gives the small one its whole size. A narrow or a tall
+       window still leaves a rectangle for each, but a window of a few pixels, too small for the box, leaves none */
+    const uint64_t num = layout == SNX_CTR_LAYOUT_LARGE ? LARGE_SCREEN_NUM : 1;
+    const uint64_t den = layout == SNX_CTR_LAYOUT_LARGE ? LARGE_SCREEN_DEN : 1;
+    const uint32_t large_w = swap ? screens.bottom_width : screens.top_width;
+    const uint32_t large_h = swap ? screens.bottom_height : screens.top_height;
+    const uint32_t small_w = swap ? screens.top_width : screens.bottom_width;
+    const uint32_t small_h = swap ? screens.top_height : screens.bottom_height;
+    const uint64_t sw = small_w * num / den, sh = small_h * num / den;
+    const uint64_t box_w = large_w + sw, box_h = sh > large_h ? sh : large_h;
+    uint64_t fit_w = window_width, fit_h = window_height;
+    if (window_width * box_h <= window_height * box_w)
+        fit_h = window_width * box_h / box_w;
+    else
+        fit_w = window_height * box_w / box_h;
+    const uint64_t x = (window_width - fit_w) / 2, y = (window_height - fit_h) / 2;
+    const uint64_t large_pw = large_w * fit_h / box_h, large_ph = large_h * fit_h / box_h;
+    const uint64_t small_pw = sw * fit_h / box_h, small_ph = sh * fit_h / box_h;
+    const SnxCtrRect large = {(int32_t)x, (int32_t)y, (int32_t)large_pw, (int32_t)large_ph};
+    const int64_t small_y = (int64_t)y + ((int64_t)large_ph - (int64_t)small_ph) / 2;
+    const SnxCtrRect small = {(int32_t)(x + large_pw), (int32_t)small_y, (int32_t)small_pw, (int32_t)small_ph};
+    rects->top = swap ? small : large;
+    rects->bottom = swap ? large : small;
+    shown_rects(rects, shown);
+    return true;
+}
+/* The blit rectangle of a screen in swapchain pixels: in one window the layout's (snx_ctr_layout_rects), in its own
+   window the screen scaled to fit and centred. The layout takes each screen at the console's size, its frame's size
+   over its render scale. False before a layout and a swapchain exist, and for a screen the layout leaves no rectangle:
+   the hidden one, or one with no frame yet */
 static bool screen_rect(unsigned screen, VkOffset2D rect[2]) {
     const Frame* frames = g_present.frames;
     uint32_t width[2], height[2];
@@ -379,15 +472,15 @@ static bool screen_rect(unsigned screen, VkOffset2D rect[2]) {
         rect[1] = (VkOffset2D){(int32_t)(x + width[screen] * scale), (int32_t)(y + height[screen] * scale)};
         return true;
     }
-    uint32_t layout_w = snx_max_u32(width[0], width[1]);
-    uint32_t layout_h = height[0] + height[1];
-    if (!layout_w || !layout_h || !e.width || !e.height) return false;
-    double scale = (double)e.width / layout_w < (double)e.height / layout_h ? (double)e.width / layout_w
-                                                                            : (double)e.height / layout_h;
-    double x = (e.width - layout_w * scale) / 2 + (layout_w - width[screen]) * scale / 2;
-    double y = (e.height - layout_h * scale) / 2 + (screen ? height[0] * scale : 0);
-    rect[0] = (VkOffset2D){(int32_t)x, (int32_t)y};
-    rect[1] = (VkOffset2D){(int32_t)(x + width[screen] * scale), (int32_t)(y + height[screen] * scale)};
+    SnxCtrScreens screens = {width[0], height[0], width[1], height[1]};
+    SnxCtrRects rects = {0};
+    if (!snx_ctr_layout_rects((SnxCtrLayout)g_settings.ctr_screen_layout, g_settings.ctr_screen_swap != 0, e.width,
+                              e.height, screens, &rects))
+        return false;
+    const SnxCtrRect* r = screen ? &rects.bottom : &rects.top;
+    if (r->width <= 0 || r->height <= 0) return false;
+    rect[0] = (VkOffset2D){r->x, r->y};
+    rect[1] = (VkOffset2D){r->x + r->width, r->y + r->height};
     return true;
 }
 /* The touch screen's pixel under a pointer at x and y, in the window's points as SDL reports them. The draw's own scale
@@ -538,11 +631,10 @@ static void image_barrier(VkCommandBuffer cb, VkImage image, VkImageLayout old, 
                          NULL, 1, &b);
 }
 static void notice_log(const char* text) { fprintf(stderr, "3ds gpu: %s\n", text); }
-/* The window's picture: in one window the top screen above the bottom one, which is centred under it (400 and 320
-   pixels wide, 240 high), the pair scaled as one to fit the swapchain's image and centred in it, the rest black; in
-   separate windows this screen alone, scaled to fit and centred. Each screen drawn into the window's rendering by its
-   effects (slot: the recording's), the upscaler's and the anti-aliasing's last pass or, with both off, the screen in
-   sharp pixels. Over it the notice while one shows in that window, its band in slot's buffer */
+/* The window's picture: in one window both screens where the layout puts them (snx_ctr_layout_rects), the rest
+   black; in separate windows this screen alone, scaled to fit and centred. Each screen drawn into the window's
+   rendering by its effects (slot: the recording's), the upscaler's and the anti-aliasing's last pass or, with both
+   off, the screen in sharp pixels. Over it the notice while one shows in that window, its band in slot's buffer */
 static void show_screens(VkCommandBuffer cb, unsigned window, uint32_t index, unsigned screen, unsigned slot) {
     const SnxVkSwapchain* sc = &g_present.swap[window];
     const SnxFxConfig* c = &g_present.fx_config;

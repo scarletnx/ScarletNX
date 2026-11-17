@@ -5,6 +5,36 @@
 #include "3ds/memory/ctr_memory.h"
 #include <stdbool.h>
 #include <stdint.h>
+/* The one window's arrangements (ctr_screen_layout), numbered as Azahar's LayoutOption (src/common/settings.h at
+   11eceda5): the top screen above the bottom one, one screen alone, the large screen with the other at its own size
+   over 2.25 (Azahar's Android default), centred vertically at the large one's right, or side by side. ctr_screen_swap
+   trades the screens' places, and picks the bottom screen in the one-screen layout */
+typedef enum {
+    SNX_CTR_LAYOUT_STACKED, /* LayoutOption::Default */
+    SNX_CTR_LAYOUT_SINGLE,  /* LayoutOption::SingleScreen */
+    SNX_CTR_LAYOUT_LARGE,   /* LayoutOption::LargeScreen */
+    SNX_CTR_LAYOUT_SIDE,    /* LayoutOption::SideScreen */
+    SNX_CTR_LAYOUT_COUNT
+} SnxCtrLayout;
+/* The two screens at the console's sizes, in pixels: a frame's size over its render scale */
+typedef struct {
+    uint32_t top_width, top_height, bottom_width, bottom_height;
+} SnxCtrScreens;
+/* A screen's rectangle in the window's pixels: its top left corner and its size, both zero for a hidden screen */
+typedef struct {
+    int32_t x, y, width, height;
+} SnxCtrRect;
+/* The two screens' rectangles as the layout puts them */
+typedef struct {
+    SnxCtrRect top, bottom;
+} SnxCtrRects;
+/* The one window's rectangles for a layout, into rects, at the screens' console sizes and the window's; false for a
+   zero window size. A screen of size 0 has no frame yet and gets no rectangle, both zero. The stacked layout gives
+   the other screen the whole box. In the one-screen layout the missing screen gets no rectangle, so that window shows
+   black until it has a frame; the console's size only keeps the arithmetic defined there. In the large and side
+   layouts the other screen keeps its place, the console's size standing in for the missing one in the box */
+bool snx_ctr_layout_rects(SnxCtrLayout layout, bool swap, uint32_t window_width, uint32_t window_height,
+                          SnxCtrScreens screens, SnxCtrRects* rects);
 /* The shown framebuffers, on the GPU (present.c). init brings up the 3DS's Vulkan device on memory (vk/vk.h) with a
    window when it can make one; headless starts no SDL video and makes no window or surface, whatever display the host
    has. Without a Vulkan device that can, it fails and nothing is shown. The 3DS display's Separate screens setting
@@ -32,9 +62,9 @@ bool snx_ctr_present_frame(unsigned screen, uint32_t pa, unsigned width, unsigne
                            unsigned pitch, uint64_t* hash);
 /* The console's frames decoded so far: each top screen frame, or each bottom screen frame until the first top screen frame */
 uint64_t snx_ctr_present_frames(void);
-/* The last frame of both screens into exactly path as one PPM, the top above the bottom as the window shows them, on
-   black. A screen that never decoded is absent. The GPU is waited for; false when the file cannot be written or no
-   frame was decoded */
+/* The last frame of both screens into exactly path as one PPM, always the top above the bottom whatever the window's
+   layout or swap, on black. A screen that never decoded is absent. The GPU is waited for; false when the file cannot be
+   written or no frame was decoded */
 bool snx_ctr_present_shot(const char* path);
 /* A line for the run's summary on the standard output: each screen's frames decoded, and what the GPU's work took of
    the RAM (vk_render.h's snx_ctr_vk_traffic). Nothing before init */
