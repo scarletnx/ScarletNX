@@ -134,6 +134,7 @@ void svc_register(const char* name, SvcCtor ctor) {
 /* kernel objects, counted; a handle takes a reference and names its object */
 void kobj_ref(KObj* o) { o->refs++; }
 void kobj_unref(KObj* o) {
+    if (!o) return;
     CHECK(o->refs > 0);
     if (--o->refs) return;
     free(o);

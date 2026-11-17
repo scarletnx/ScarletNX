@@ -135,6 +135,7 @@ void svc_register(const char* name, SvcCtor ctor) { (void)name, (void)ctor; }
 /* kernel objects: a handle takes a reference, and the test counts what is alive */
 void kobj_ref(KObj* o) { o->refs++; }
 void kobj_unref(KObj* o) {
+    if (!o) return;
     CHECK(o->refs > 0);
     if (--o->refs) return;
     free(o);

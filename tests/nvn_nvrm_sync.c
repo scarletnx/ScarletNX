@@ -183,7 +183,8 @@ void nvn_draw_device(u32 origin, u32 depth_mode) {
 }
 int nvn_fmt_bpb(int format, int* bw, int* bh) {
     (void)format;
-    *bw = *bh = 1;
+    if (bw) *bw = 1;
+    if (bh) *bh = 1;
     return 0;
 }
 void nvn_read_texels(u64 t, u64 v, u64 region, u64 dst, i64 row, i64 image) {

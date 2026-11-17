@@ -100,6 +100,7 @@ void logf_(int level, const char* format, ...) {
 }
 void kobj_ref(KObj* o) { o->refs++; }
 void kobj_unref(KObj* o) {
+    if (!o) return;
     CHECK(o->refs > 0);
     if (--o->refs) return;
     o->type = 0; /* gone: kev no longer finds it */

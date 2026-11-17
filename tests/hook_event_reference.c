@@ -38,6 +38,7 @@ KEvent* kevent_new(const char* name) {
 void kevent_signal(KEvent* e) { (void)e; }
 void kobj_ref(KObj* o) { o->refs++; }
 void kobj_unref(KObj* o) {
+    if (!o) return;
     CHECK(o->refs > 0); /* a reference nobody held */
     if (!--o->refs) destroyed++;
 }
