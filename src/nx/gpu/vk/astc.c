@@ -568,13 +568,13 @@ static int stage_cached(VkCommandBuffer cb, const u64 key[2], u64 size, VkImage 
             img && vk_gpuprof_profiled(cb) &&
             vk_gpuprof_op_begin(cb, VK_OP_TO_IMAGE,
                                 (u64)((const u8*)__builtin_return_address(0) - (const u8*)vk_gpuprof_base()), 0);
-        const int r =
-            vk_bc7_cache_read_later(cb, key, size, p, mem, off, buf, img, &copy, owner, owner ? owner->gva : 0);
+        const int r = vk_bc7_cache_read_later(cb, key, size, p, mem, off, buf, img, VK_LAYOUT(TRANSFER_DST_OPTIMAL),
+                                              &copy, owner, owner ? owner->gva : 0);
         if (timed) vk_gpuprof_op_end(cb);
         if (r >= 0) return r ? CACHED_QUEUED : CACHED_NONE;
     }
     if (!vk_bc7_cache_read(key, p, size)) return CACHED_NONE;
-    if (img) rec_CmdCopyBufferToImage(cb, buf, img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+    if (img) rec_CmdCopyBufferToImage(cb, buf, img, VK_LAYOUT(TRANSFER_DST_OPTIMAL), 1, &copy);
     return CACHED_DONE;
 }
 
@@ -620,13 +620,13 @@ static int bc7_from_cache(VkCommandBuffer cb, Surf* t, VkImage img, const u64 ke
     const int own = img == t->img && !t->sparse && !t->bricks;
     const Bc7Live* l = own ? live_level(key, size, t) : NULL;
     if (l) {
-        vk_surf_use(cb, l->surf, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+        vk_surf_use(cb, l->surf, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), VK_PIPELINE_STAGE_2_COPY_BIT,
                     VK_ACCESS_2_TRANSFER_READ_BIT);
         const VkImageCopy r = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, l->level, l->layer, layered ? depth : 1},
                                .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, layer, layered ? depth : 1},
                                .extent = {w, h, layered ? 1 : depth}};
-        rec_CmdCopyImage(cb, l->surf->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, img,
-                         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &r);
+        rec_CmdCopyImage(cb, l->surf->img, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), img, VK_LAYOUT(TRANSFER_DST_OPTIMAL), 1,
+                         &r);
         g_astc.bc7_copies++;
         live_put(key, t, level, layer, 0);
         return 1;
@@ -1438,7 +1438,7 @@ static void bg_load(void) {
             /* into the texture while it holds what j's upload wrote (bg_to_image) */
             const int into = t && !t->took_drawn;
             if (into)
-                vk_surf_use(cb, t, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
+                vk_surf_use(cb, t, VK_LAYOUT(TRANSFER_DST_OPTIMAL), VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
                             VK_ACCESS_2_TRANSFER_WRITE_BIT);
             const int r = stage_cached(cb, q.key, q.bytes, into ? t->img : VK_NULL_HANDLE,
                                        piece_copy(&j->p, &q, 0, j->w, j->h, j->level, j->layer, j->as_layers), NULL);
