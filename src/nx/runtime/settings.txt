@@ -1614,6 +1614,14 @@ setting Descriptor buffers
     help barriers are skipped, which the tracking of targets and buffers orders. 0 = descriptor sets for graphics
     help too, where a fragment barrier ends the render pass only after storage writes or reads that are still
     help pending, or after guest memory used in place
+setting Indirect copies
+    key vk_copy_indirect
+    int 0 1
+    default 1
+    startup
+    words Off|On
+    help 1 = where the device has VK_KHR_copy_memory_indirect and device addresses, the copies of GPU-owned results
+    help into one buffer are made by one command, from a list the GPU reads; 0 = one copy command each
 setting Vulkan recording thread
     key vk_record
     int 0 1
@@ -2057,6 +2065,7 @@ setting @VK_EXT_vertex_input_dynamic_state
 setting @VK_GOOGLE_display_timing
 setting @VK_KHR_calibrated_timestamps
 setting @VK_KHR_cooperative_matrix
+setting @VK_KHR_copy_memory_indirect
 setting @VK_KHR_dynamic_rendering
 setting @VK_KHR_dynamic_rendering_local_read
 setting @VK_KHR_extended_flags
