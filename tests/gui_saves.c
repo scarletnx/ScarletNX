@@ -438,6 +438,9 @@ int main(void) {
             assert(!strcmp(error, path));
             free(path);
             assert(holds_text(out, "the file there before"));
+            path = snx_format("%s.part", out); /* the zip begun for it, gone */
+            assert(!snx_path_exists(path));
+            free(path);
             gui_cleaned_free(&done);
             free(none);
         }
