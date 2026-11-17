@@ -1299,6 +1299,49 @@ static void check_block_linear_changes(void) {
     CHECK(bytes == t.size && partial == 0);
     memset(&g_gpu_writes, 0, sizeof g_gpu_writes);
 }
+/* A block linear depth texture with no stencil takes a write a block at a time, as a color one does (tex_patchable):
+   D16 512x512 in blocks 16 GOBs high (8 KiB). Its region copies the depth aspect from an offset of 16 bytes, as a copy
+   into a depth aspect needs (a multiple of 4). So does a texture that render targets' pixels were copied into
+   (took_drawn), depth or color: tex_take_drawn copies the targets again over the blocks loaded. With stencil, a depth
+   texture still loads whole */
+static void check_depth_changes(void) {
+    Surf t = tex(512, 512, 1, 1, 2, 4, 0, 1);
+    u64 bytes, partial;
+    t.f.vk = VK_FORMAT_D16_UNORM;
+    t.f.depth = 1;
+    t.size = t.layer_size = bl_level_size(512, 512, 1, &t.f, 4, 0, 0, 0, NULL, NULL);
+    loaded(&t);
+    /* 8 bytes of texel (100, 300): GOB column 3, the third row of blocks */
+    const u64 a = bl_offset(200, 300, 0, 1024, 512, 4, 0);
+    cpu_write(a, 8);
+    check_after(&t, &bytes, &partial);
+    CHECK(bytes == 8192 && partial == 1 && nregs == 1 && region_has(0, 0, 100, 300, 1, 1));
+    CHECK(regs[0].imageSubresource.aspectMask == VK_IMAGE_ASPECT_DEPTH_BIT && regs[0].bufferOffset % 16 == 0);
+    check_quiet(&t);
+    /* targets' pixels copied in: still the block alone */
+    t.took_drawn = 1;
+    cpu_write(a, 8);
+    check_after(&t, &bytes, &partial);
+    CHECK(bytes == 8192 && partial == 1 && nregs == 1 && region_has(0, 0, 100, 300, 1, 1));
+    check_quiet(&t);
+    /* a color texture the same */
+    Surf c = tex(256, 256, 1, 1, 4, 4, 0, 1);
+    c.size = c.layer_size = bl_level_size(256, 256, 1, &c.f, 4, 0, 0, 0, NULL, NULL);
+    loaded(&c);
+    c.took_drawn = 1;
+    cpu_write(bl_offset(400, 200, 0, 1024, 256, 4, 0), 16);
+    check_after(&c, &bytes, &partial);
+    CHECK(bytes == 8192 && partial == 1 && nregs == 1 && region_has(0, 0, 100, 200, 1, 1));
+    check_quiet(&c);
+    /* with stencil: no pieces, loaded whole */
+    t.f.stencil = 1;
+    t.took_drawn = 0;
+    loaded(&t);
+    cpu_write(a, 8);
+    check_after(&t, &bytes, &partial);
+    CHECK(bytes == t.size && partial == 0);
+    memset(&g_tracking, 0, sizeof g_tracking);
+}
 /* A texture loaded whole in two runs of host memory and no holes, for which write tracking can't tell: one walk of its
    runs finds that (tex_check_pieces), and its contents are checked, without a second walk to ask again */
 static void check_untracked_runs(void) {
@@ -2102,6 +2145,7 @@ int main(void) {
         memset(&g_tracking, 0, sizeof g_tracking);
     }
     check_block_linear_changes();
+    check_depth_changes();
     check_untracked_runs();
     check_pitch_linear_changes();
     check_astc_changes();
