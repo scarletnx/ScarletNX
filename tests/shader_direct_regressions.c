@@ -1263,6 +1263,26 @@ static void virtual_sample_declares_push(void) {
         check(count_variables(code, words, 9) == 1, "a virtual sample declares the push constants it reads");
         check(!chains_of_nothing, "no access chain of a virtual sample goes through id 0");
         check(info.tex_vt_mask & 1, "the slot of a virtual sample may hold a virtual texture");
+        check(count_opcode(code, words, 16, 9) == 1,
+              "a program whose marks are its only writes asks for the tests first");
+    }
+    free(code);
+    /* the same sample in a program that stores to global memory (MOV R2, c[0][0x510]; STG.E [R2], R8): its tests
+       run after it already, so it takes the virtual sample and asks for nothing; without the key's bit too */
+    const u64 stores[] = {ops[0], ops[1], ops[2], 0x4C98078014470002ull, 0xEEDC200000070208ull};
+    program = guest_program(stores, 5, NULL, &slots);
+    memset(&info, 0, sizeof info);
+    g_shader_vt_address = 0x10000;
+    code = program ? spirv_of(program, slots * sizeof *program, ST_FS, &info, &words, 1, 1, 1, 1) : NULL;
+    g_shader_vt_address = 0;
+    free(program);
+    check_translated(code, &info, "a virtual sample in a fragment program that stores to memory translates");
+    if (code) {
+        check(info.gbuf_wmask & 1, "the program stores to a global buffer");
+        check(count_opcode(code, words, 305, 0xffffffffu) + count_opcode(code, words, 306, 0xffffffffu) >= 1,
+              "a program that writes memory takes the virtual sample");
+        check(!count_opcode(code, words, 16, 9), "and asks for no tests before it");
+        check(info.tex_vt_mask & 1, "its slot may hold a virtual texture");
     }
     free(code);
 }

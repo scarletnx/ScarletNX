@@ -115,6 +115,7 @@ typedef struct {
     ShVtIds vt;
     u64 vt_left, vt_reads[10]; /* vt_reads: ShaderInfo.tex_vt_reads */
     int vt_ok;                 /* the program takes virtual samples (ShaderInfo.vt_early) */
+    int vt_first;              /* and asks for the depth and stencil tests before it runs */
     int vt_why;                /* and when not, the entry of vt_reads that says why: 6, 8 or 9 */
 } DirectCtx;
 #define SH_SMALL_U32 64u

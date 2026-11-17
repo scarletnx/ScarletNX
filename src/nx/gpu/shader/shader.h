@@ -281,7 +281,8 @@ typedef struct {
        memory for the fragments the depth test then drops (RADV tests depth after it: a racing game's scene took
        4.9 ms of the GPU a frame where it takes 2.6), unless the program asks for the tests first. So only a program
        that may ask takes virtual samples, and asks: one with this key that keeps its pixels, its depth and its sample
-       mask and writes no memory of its own. Another's samples are plain, and its textures held whole */
+       mask and writes no memory of its own. One that writes memory of its own takes them too and asks nothing: its
+       tests run after it already. Another's samples are plain, and its textures held whole */
     u32 vt_early;
     ShXfb xfb;           /* key: transform feedback's capture of this program's outputs */
     int writes_viewport; /* the last vertex stage selects one of the 16 viewport/scissor pairs */

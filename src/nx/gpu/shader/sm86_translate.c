@@ -74,6 +74,7 @@ typedef struct {
     ShVtIds vt;
     u64 vt_left, vt_reads[10]; /* vt_reads: ShaderInfo.tex_vt_reads */
     int vt_ok;                 /* the program takes virtual samples (ShaderInfo.vt_early) */
+    int vt_first;              /* and asks for the depth and stencil tests before it runs */
     int vt_why;                /* and when not, the entry of vt_reads that says why: 6, 8 or 9 */
     u32 zero, true_v, false_v, glsl;
     /* the program's state: Function variables, made at the start */
@@ -7307,19 +7308,26 @@ u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, Sha
         if (r > top) top = r;
     }
     /* vt_sparse: a fragment program takes virtual samples where it may test depth before it runs
-       (ShaderInfo.vt_early): none that discards, writes depth or a sample mask (SPH word 19) or memory, or has a
-       storage image (the renderer's own rule for tests that run first counts every one, read or written) */
-    c->vt_ok = g_shader_vt_address && stage == ST_FS && si->vt_early && !(c->sph[19] & 3u);
-    for (u32 i = 0; i < n && c->vt_ok; i++) {
+       (ShaderInfo.vt_early), and then asks for the tests first (vt_first): none that discards, writes depth or a
+       sample mask (SPH word 19) or reads a storage image (the renderer's own rule for tests that run first counts
+       every one). One that writes memory or a storage image itself takes them too, with nothing asked: its tests
+       run after it already */
+    int vt_kill = 0, vt_writes = 0, vt_reads_image = 0;
+    for (u32 i = 0; i < n; i++) {
         const int op = insn[i].op;
-        c->vt_ok = (op != SM86_KILL || (g_shader_vt_parts & 32)) && op != SM86_STG && op != SM86_STG_NOU &&
-                   op != SM86_RED && op != SM86_ATOMG && op != SM86_ATOMG_NOU && op != SM86_ATOMG_CAS &&
-                   op != SM86_SUST_P && op != SM86_SUST_D && op != SM86_SUST_P_B && op != SM86_SUST_D_B &&
-                   op != SM86_SURED && op != SM86_SURED_B && op != SM86_SUATOM && op != SM86_SUATOM_B &&
-                   op != SM86_SULD_P && op != SM86_SULD_P_B && op != SM86_SULD_D && op != SM86_SULD_D_B;
-        if (!c->vt_ok) c->vt_why = op == SM86_KILL ? 8 : 9;
+        vt_kill |= op == SM86_KILL;
+        vt_writes |= op == SM86_STG || op == SM86_STG_NOU || op == SM86_RED || op == SM86_ATOMG ||
+                     op == SM86_ATOMG_NOU || op == SM86_ATOMG_CAS || op == SM86_SUST_P || op == SM86_SUST_D ||
+                     op == SM86_SUST_P_B || op == SM86_SUST_D_B || op == SM86_SURED || op == SM86_SURED_B ||
+                     op == SM86_SUATOM || op == SM86_SUATOM_B;
+        vt_reads_image |= op == SM86_SULD_P || op == SM86_SULD_P_B || op == SM86_SULD_D || op == SM86_SULD_D_B;
     }
-    if (!c->vt_why) c->vt_why = !si->vt_early ? 6 : 9;
+    const int vt_state = si->vt_early && !(c->sph[19] & 3u);
+    c->vt_first = vt_state && !vt_kill && !vt_writes && !vt_reads_image;
+    c->vt_ok = g_shader_vt_address && stage == ST_FS &&
+               (c->vt_first || vt_writes || (vt_state && vt_kill && !vt_reads_image && (g_shader_vt_parts & 32)));
+    c->vt_first = c->vt_first && c->vt_ok;
+    c->vt_why = !si->vt_early ? 6 : vt_kill ? 8 : 9;
     /* FTZ as spirv_translate.c decides it: per instruction without the execution mode, or with it where some FADD,
        FMUL or FFMA keeps subnormals (the mode is the whole module's); never on a device that flushes by itself */
     int ftz_flush = 0, ftz_keep = 0;
@@ -7566,9 +7574,10 @@ u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, Sha
                 spv_emit_execution_mode(e, fn, SPV_MODE_OUTPUT_TRIANGLES_EXT, 0, 0);
             }
         }
-        /* vt_ok names every instruction that keeps the tests from running first: one it missed is said, not drawn wrong */
-        if (c->vt.pair && ((si->has_discard && !(g_shader_vt_parts & 32)) || si->gbuf_wmask || si->nimg))
-            fail(c, "virtual samples in a fragment program that discards, writes memory or has a storage image");
+        /* vt_first names every instruction that keeps the tests from running first: one it missed is said, not drawn
+           wrong */
+        if (c->vt.pair && c->vt_first && (si->has_discard || si->gbuf_wmask || si->nimg))
+            fail(c, "the tests first in a fragment program that discards, writes memory or has a storage image");
         if (!c->failed) {
             SpvShaderStage model = stage == ST_TS   ? SPV_STAGE_TASK
                                    : stage == ST_MS ? SPV_STAGE_MESH
@@ -7604,7 +7613,7 @@ u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, Sha
             spv_emit_float_controls(e, fn, ftz_mode, 1, 0);
             si->tex_vt_mask = g_shader_vt_address && c->stage == ST_FS ? ~c->vt_left : 0;
             /* the tests before the program, which its marks need (ShaderInfo.vt_early) */
-            if (c->vt.pair && !si->has_discard) spv_emit_execution_mode(e, fn, SPV_MODE_EARLY_FRAGMENT_TESTS, 0, 0);
+            if (c->vt.pair && c->vt_first) spv_emit_execution_mode(e, fn, SPV_MODE_EARLY_FRAGMENT_TESTS, 0, 0);
             memcpy(si->tex_vt_reads, c->vt_reads, sizeof si->tex_vt_reads);
             out = spv_emit_finish(e, word_count);
         }
