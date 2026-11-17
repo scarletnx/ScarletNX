@@ -359,12 +359,14 @@ typedef struct {
     uint64_t buffer_native_calls; /* API invocations; buffer_driver_calls remains encoded-element count. */
     /* The lasting part: descriptors found there, made there, forgotten with their object, given back once no
        frame's table can name them, taken back from an object that still lives, not made for want of a slot, made again
-       and compared (draw_state_check=1) and found different */
+       and compared (draw_state_check=1) and found different. The walks over the slots waiting to be freed, those
+       skipped while no slot could be, and the slots the walks looked at */
     uint64_t lasting_hits, lasting_made, lasting_forgotten, lasting_freed, lasting_evicted, lasting_full;
     uint64_t lasting_checked, lasting_differs, lasting_bytes;
     /* The words a table took from the stage's last table with no lookup, and those that
        draw_state_check=1 found again and compared, and found different */
     uint64_t memo_kept, memo_checked, memo_differs;
+    uint64_t lasting_reaps, lasting_reaps_skipped, lasting_reap_looked;
 } VkDescriptorHeapStats;
 /* Counters are monotonic. Requests/payload include every logical element. On successful runs, requests equal
    lookups+replicas; sampler hits may overlap driver calls when byte interning follows native encoding.
