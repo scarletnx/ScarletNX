@@ -5,15 +5,17 @@
 #include "3ds/memory/ctr_memory.h"
 #include <stdbool.h>
 #include <stdint.h>
-/* The one window's arrangements (ctr_screen_layout), numbered as Azahar's LayoutOption (src/common/settings.h at
+/* The window's arrangements (ctr_screen_layout), numbered as Azahar's LayoutOption (src/common/settings.h at
    11eceda5): the top screen above the bottom one, one screen alone, the large screen with the other at its own size
-   over 2.25 (Azahar's Android default), centred vertically at the large one's right, or side by side. ctr_screen_swap
+   over 2.25 (Azahar's Android default), centred vertically at the large one's right, side by side, or separate windows
+   (each screen in a window of its own, the one window stacked where the host cannot make the second). ctr_screen_swap
    trades the screens' places, and picks the bottom screen in the one-screen layout */
 typedef enum {
-    SNX_CTR_LAYOUT_STACKED, /* LayoutOption::Default */
-    SNX_CTR_LAYOUT_SINGLE,  /* LayoutOption::SingleScreen */
-    SNX_CTR_LAYOUT_LARGE,   /* LayoutOption::LargeScreen */
-    SNX_CTR_LAYOUT_SIDE,    /* LayoutOption::SideScreen */
+    SNX_CTR_LAYOUT_STACKED,  /* LayoutOption::Default */
+    SNX_CTR_LAYOUT_SINGLE,   /* LayoutOption::SingleScreen */
+    SNX_CTR_LAYOUT_LARGE,    /* LayoutOption::LargeScreen */
+    SNX_CTR_LAYOUT_SIDE,     /* LayoutOption::SideScreen */
+    SNX_CTR_LAYOUT_SEPARATE, /* LayoutOption::SeparateWindows */
     SNX_CTR_LAYOUT_COUNT
 } SnxCtrLayout;
 /* The two screens at the console's sizes, in pixels: a frame's size over its render scale */
@@ -37,21 +39,21 @@ bool snx_ctr_layout_rects(SnxCtrLayout layout, bool swap, uint32_t window_width,
                           SnxCtrScreens screens, SnxCtrRects* rects);
 /* The shown framebuffers, on the GPU (present.c). init brings up the 3DS's Vulkan device on memory (vk/vk.h) with a
    window when it can make one; headless starts no SDL video and makes no window or surface, whatever display the host
-   has. Without a Vulkan device that can, it fails and nothing is shown. The 3DS display's Separate screens setting
-   gives each screen its own window. frame_dir receives bounded PPM dumps (the 3DS framebuffer is 240x400/320 portrait,
+   has. Without a Vulkan device that can, it fails and nothing is shown. Screen layout 4 gives each screen its own
+   window. frame_dir receives bounded PPM dumps (the 3DS framebuffer is 240x400/320 portrait,
    shown rotated 90 degrees clockwise, like the console's landscape screens). */
 bool snx_ctr_present_init(SnxCtrMemory* memory, const char* frame_dir, bool headless);
 /* The window's title, as a Switch game's: the game's name, what it is played with in parentheses when anything (an
    update, DLC), then the build ("ScarletNX <branch> <commit> (<compiler>, <OS> <arch>)"); and the program's icon */
 void snx_ctr_present_title(const char* name, const char* addons);
 bool snx_ctr_present_ready(void);
-/* The screens' window (the top screen's, with Separate screens) fullscreen, as the Switch's fullscreen=1 starts one.
+/* The screens' window (the top screen's, with screen layout 4) fullscreen, as the Switch's fullscreen=1 starts one.
    F11 or Alt+Enter switches the window it is pressed in, while the game runs */
 void snx_ctr_present_fullscreen(void);
 /* Live window output is active (SDL3 Vulkan window + swapchain). When false, frames still render but only the dumps
    record them. */
 bool snx_ctr_present_windowed(void);
-/* Separate screens is on and both windows present: each screen has its own window and swapchain */
+/* Screen layout 4 is on and both windows present: each screen has its own window and swapchain */
 bool snx_ctr_present_separate(void);
 /* The framebuffer at physical address pa, as the guest has it: width pixels a row (240), height rows, pitch bytes a
    row, in GSP's framebuffer formats: 0 = RGBA8 (A,B,G,R bytes, libctru RGBA8_OES), 1 = RGB8 (B,G,R bytes,

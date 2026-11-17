@@ -1898,26 +1898,18 @@ setting State checks
 # ---- the 3DS driver's display ----
 
 table g_ctr_display_ini
-setting CTR separate screens
-    key ctr_separate_windows
-    label Separate screens
-    int 0 1
-    default 0
-    startup
-    words Off|On
-    help 1 = the top and bottom screens each have a window of their own, each taking its whole window, instead of the
-    help top screen above the bottom one in one window
 setting CTR screen layout
     key ctr_screen_layout
     label Screen layout
-    int 0 3
+    int 0 4
     default 0
     startup
-    words Stacked|Single screen|Large screen|Side by side
-    help The one window's arrangement: 0 = the top screen above the bottom one, 1 = one screen only (the top, or the
+    words Stacked|Single screen|Large screen|Side by side|Separate windows
+    help The window's arrangement: 0 = the top screen above the bottom one, 1 = one screen only (the top, or the
     help bottom one with the swap), 2 = the large screen (the top, or the bottom one with the swap) on the left, with
     help the other screen at its own size over 2.25, centred vertically at the large one's
-    help right, 3 = side by side. ctr_separate_windows=1 gives each screen its own window instead
+    help right, 3 = side by side, 4 = each screen gets a window of its own, filling it, where the host can make the
+    help second window, and the one window stacked where it cannot.
 setting CTR screen swap
     key ctr_screen_swap
     label Screen swap
