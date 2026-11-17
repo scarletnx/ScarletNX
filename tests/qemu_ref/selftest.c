@@ -295,7 +295,13 @@ static void ported_advance(Ported* p, SnxQrefBatch* b, const char* cpu) {
                 p->done = 1;
                 break;
             }
-            for (k = 0; k < p->count && k < 64; ++k) words[k] = (uint32_t)snx_a64p_script[p->first + k].a;
+            if (p->count > 64) {
+                snprintf(what, sizeof(what), "%zu words, over the 64 a ported run takes: %s", p->count, name);
+                check(0, cpu, what);
+                p->done = 1;
+                break;
+            }
+            for (k = 0; k < p->count; ++k) words[k] = (uint32_t)snx_a64p_script[p->first + k].a;
             snx_qref_case_init(&c);
             c.window = p->base;
             c.window_size = PORTED_WINDOW;
@@ -311,7 +317,7 @@ static void ported_advance(Ported* p, SnxQrefBatch* b, const char* cpu) {
             patch.bytes = p->window;
             patch.size = PORTED_WINDOW;
             p->batch_index = snx_qref_add(b, &c, words, (uint32_t)p->count, &patch, 1);
-            check(p->batch_index >= 0 && p->count <= 64, cpu, "add a ported case");
+            check(p->batch_index >= 0, cpu, "add a ported case");
             ++p->op;
             return;
         }
