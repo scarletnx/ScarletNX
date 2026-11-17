@@ -878,6 +878,8 @@ static bool choose_device(SnxVkChoice* c, void* user) {
     /* VK_EXT_shader_atomic_float: RED.ADD.F32 in one instruction (g_spirv_translate.float_atomic_add) */
     int has_atomic_float = 0;
     int has_fault = 0; /* VK_EXT_device_fault: what the GPU reports of a fault, at a lost device */
+    /* VK_KHR_pipeline_executable_properties: the drivers' statistics of each pipeline, for pipeline_stats only */
+    int has_exec = 0;
     /* VK_NV_shading_rate_image and VK_KHR_fragment_shading_rate: an Ounce's shading rate image (shading_rate.c) */
     int has_nv_rate = 0, has_khr_rate = 0;
     const char* index8_ext = NULL; /* VK_KHR_index_type_uint8, or the EXT it was promoted from */
@@ -922,6 +924,10 @@ static bool choose_device(SnxVkChoice* c, void* user) {
         g_vk.has_nv_checkpoints =
             g_settings.gpu_checkpoints && snx_vk_choice_has(c, VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME);
         has_fault = snx_vk_choice_has(c, VK_EXT_DEVICE_FAULT_EXTENSION_NAME);
+        has_exec = g_settings.pipeline_stats[0] &&
+                   snx_vk_choice_has(c, VK_KHR_PIPELINE_EXECUTABLE_PROPERTIES_EXTENSION_NAME);
+        if (g_settings.pipeline_stats[0] && !has_exec)
+            WARN("vulkan: pipeline_stats: the driver has no VK_KHR_pipeline_executable_properties: no statistics\n");
         g_vk.has_coverage_to_color = snx_vk_choice_has(c, VK_NV_FRAGMENT_COVERAGE_TO_COLOR_EXTENSION_NAME);
         g_vk.has_post_depth_coverage = snx_vk_choice_has(c, VK_EXT_POST_DEPTH_COVERAGE_EXTENSION_NAME);
         g_vk.sample_locations.available = snx_vk_choice_has(c, VK_EXT_SAMPLE_LOCATIONS_EXTENSION_NAME);
@@ -1116,6 +1122,8 @@ static bool choose_device(SnxVkChoice* c, void* user) {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_2_FEATURES_EXT};
     VkPhysicalDeviceFeatures2 f2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
     VkPhysicalDeviceFaultFeaturesEXT qfault = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT};
+    VkPhysicalDevicePipelineExecutablePropertiesFeaturesKHR qexec = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_EXECUTABLE_PROPERTIES_FEATURES_KHR};
     VkPhysicalDeviceDescriptorBufferFeaturesEXT qdesc = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_FEATURES_EXT};
     VkPhysicalDeviceDescriptorHeapFeaturesEXT qheap = {
@@ -1228,6 +1236,7 @@ static bool choose_device(SnxVkChoice* c, void* user) {
                            has_coop ? &qcoop : NULL,
                            has_atomic_float ? &qatomic_float : NULL,
                            has_fault ? &qfault : NULL,
+                           has_exec ? &qexec : NULL,
                            has_nv_rate ? &qnv_rate : NULL,
                            has_khr_rate ? &qkhr_rate : NULL};
     snx_vk_chain(query, sizeof query / sizeof *query);
@@ -1314,6 +1323,7 @@ static bool choose_device(SnxVkChoice* c, void* user) {
     g_vk.has_vertex_robustness2 = qpipeline.pipelineRobustness && qrobust.robustBufferAccess2 && !g_vk.robust_buffer2;
     g_vk.has_cond_render = has_cond && qcond.conditionalRendering;
     g_vk.has_fault = has_fault && qfault.deviceFault;
+    g_vk.has_exec_stats = has_exec && qexec.pipelineExecutableInfo;
     g_vk.has_provoking_last = has_provoking && qprov.provokingVertexLast;
     g_vk.has_list_restart = has_list_restart && qlist_restart.primitiveTopologyListRestart;
     g_vk.has_patch_list_restart = g_vk.has_list_restart && qlist_restart.primitiveTopologyPatchListRestart;
@@ -1858,6 +1868,14 @@ static bool choose_device(SnxVkChoice* c, void* user) {
     if (g_vk.has_fault) {
         chain = &ffault;
         snx_vk_choice_enable(c, VK_EXT_DEVICE_FAULT_EXTENSION_NAME);
+    }
+    VkPhysicalDevicePipelineExecutablePropertiesFeaturesKHR fexec = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_EXECUTABLE_PROPERTIES_FEATURES_KHR,
+        .pNext = chain,
+        .pipelineExecutableInfo = VK_TRUE};
+    if (g_vk.has_exec_stats) {
+        chain = &fexec;
+        snx_vk_choice_enable(c, VK_KHR_PIPELINE_EXECUTABLE_PROPERTIES_EXTENSION_NAME);
     }
     PortabilityFeatures fport = qport;
     fport.pNext = chain;

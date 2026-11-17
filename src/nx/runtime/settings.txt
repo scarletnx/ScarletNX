@@ -1400,6 +1400,16 @@ setting Shader corpus
     startup
     help A folder that keeps each translated shader for snx-shaderc (gpu/shader/corpus.c). With it every shader is
     help translated, and none is kept for the next run. Empty: none, or captures/shaders with Shader captures
+setting Pipeline stats
+    key pipeline_stats
+    text 1024
+    default ""
+    startup
+    help A CSV file that gets the driver's statistics of each whole and optimized graphics pipeline
+    help (VK_KHR_pipeline_executable_properties): for each shader stage, the instructions, registers, spills and the
+    help others that the driver reports, by the program hashes of the log's lines (a shader corpus file of the program
+    help starts with the same first 8 hex digits). On some drivers, pipelines made
+    help with it are not the ones in the pipeline cache of runs without it. Empty: none
 setting ASTC dump
     key astc_dump
     text 1024
@@ -2007,6 +2017,7 @@ setting @VK_KHR_maintenance4
 setting @VK_KHR_maintenance5
 setting @VK_KHR_maintenance8
 setting @VK_KHR_map_memory2
+setting @VK_KHR_pipeline_executable_properties
 setting @VK_KHR_pipeline_library
 setting @VK_KHR_portability_subset
 setting @VK_KHR_present_id

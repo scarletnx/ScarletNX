@@ -26,6 +26,7 @@
 #include "nx/gpu/vk/pipeline_file.h"
 #include "nx/gpu/vk/pipeline_parts.h"
 #include "nx/gpu/vk/shading_rate.h"
+#include "nx/gpu/vk/pipeline_stats.h"
 #include "nx/gpu/vk/cb_fold.h"
 #include "nx/gpu/vk/internal_spv.h"
 #include "nx/gpu/vk/tess_passthrough.h"
@@ -1676,7 +1677,8 @@ static void pipe_info(const PipeKey* k, VkShaderModule fs, PipeInfo* o) {
                          .clamp_range = g_vk.has_depth_clamp_range,
                          .rate_palette = g_vk.vrs == VK_VRS_NV};
     o->flags = (g_vk.has_descriptor_buffers ? VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT : 0) |
-               (k->feedback ? VK_PIPELINE_CREATE_COLOR_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT : 0) | vk_vrs_pipeline_flags();
+               (k->feedback ? VK_PIPELINE_CREATE_COLOR_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT : 0) | vk_vrs_pipeline_flags() |
+               vk_pipeline_stats_flags();
     /* each draw pipeline reads the shading rate image, which shades each pixel where none is bound */
     vk_vrs_pipeline(&o->vrs, &o->vp, &o->fi);
 }
@@ -1729,7 +1731,7 @@ static VkPipeline pipe_create(const Pipe* e, int* hit) {
         .pNext = gi.pNext,
         .flags = VK_PIPELINE_CREATE_2_DESCRIPTOR_HEAP_BIT_EXT |
                  (e->k.feedback ? VK_PIPELINE_CREATE_2_COLOR_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT : 0) |
-                 (VkPipelineCreateFlags2)vk_vrs_pipeline_flags()};
+                 (VkPipelineCreateFlags2)vk_vrs_pipeline_flags() | (VkPipelineCreateFlags2)vk_pipeline_stats_flags()};
     if (e->k.heaps) {
         gi.pNext = &flags2;
         gi.flags = 0;
@@ -1857,6 +1859,17 @@ static void slow_say(const char* what, const VkShaderModule modules[5], u64 ns, 
     LOG_LIMIT(64, "vulkan: %s took %llu ms to make (%s the pipeline cache)%s\n", what,
               (unsigned long long)(ns / 1000000), hit ? "from" : "not in", stages);
 }
+/* e's driver statistics (pipeline_stats), p being its whole or optimized pipeline, by its stages' program hashes */
+static void pipe_stats(VkPipeline p, const Pipe* e, const char* what) {
+    if (!g_vk.has_exec_stats || !p) return;
+    const VkShaderModule modules[5] = {e->k.vs, e->k.tcs, e->k.tes, e->k.gs, e->fs};
+    u64 programs[5] = {0};
+    for (int s = 0; s < 5; s++) {
+        ModInfo mi;
+        if (modules[s] && modinfo_get(modules[s], &mi)) programs[s] = mi.hash;
+    }
+    vk_pipeline_stats_write(p, what, programs);
+}
 static void pipe_slow_say(const Pipe* e, u64 ns, int hit) {
     const VkShaderModule modules[5] = {e->k.vs, e->k.tcs, e->k.tes, e->k.gs, e->fs};
     slow_say(e->lib[0] ? "a pipeline, linked from libraries," : "a pipeline", modules, ns, hit);
@@ -1881,7 +1894,7 @@ static VkPipeline lib_create(const PipeLib* l, int* hit) {
                                        .flags = VK_PIPELINE_CREATE_LIBRARY_BIT_KHR |
                                                 VK_PIPELINE_CREATE_RETAIN_LINK_TIME_OPTIMIZATION_INFO_BIT_EXT |
                                                 (o.flags & VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT) |
-                                                vk_vrs_pipeline_flags(),
+                                                vk_vrs_pipeline_flags() | vk_pipeline_stats_flags(),
                                        .pDynamicState = &dy};
     VkPipelineCache cache = VK_NULL_HANDLE; /* the interfaces cost microseconds: nothing worth a cache entry */
     switch (l->part) {
@@ -2004,7 +2017,7 @@ static VkPipeline gpl_link(const Pipe* e, int mode, int* hit) {
                  (e->k.feedback ? VK_PIPELINE_CREATE_COLOR_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT : 0) |
                  (lto ? VK_PIPELINE_CREATE_LINK_TIME_OPTIMIZATION_BIT_EXT : 0) |
                  (mode == GPL_CACHED ? VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT : 0) |
-                 vk_vrs_pipeline_flags(),
+                 vk_vrs_pipeline_flags() | vk_pipeline_stats_flags(),
         .layout = e->layout};
     VkPipeline p = VK_NULL_HANDLE;
     const VkShaderModule modules[5] = {e->k.vs, e->k.tcs, e->k.tes, e->k.gs, e->fs};
@@ -2077,6 +2090,7 @@ static void pipe_optimize(Pipe* e) {
                   stages);
         return;
     }
+    pipe_stats(o, e, "optimized");
     __atomic_store_n(&e->p, o, __ATOMIC_RELEASE);
     __atomic_store_n(&e->opt, 1, __ATOMIC_RELEASE);
 }
@@ -2124,6 +2138,7 @@ static VkPipeline pipe_make(const Pipe* e, int record, int* opt) {
     *opt = 0;
     VkPipeline p = e->lib[0] ? gpl_fast(e, &hit, opt) : pipe_create(e, &hit);
     SNX_ZONE_END(z);
+    if (!e->lib[0] || *opt) pipe_stats(p, e, *opt ? "optimized" : "whole"); /* a fast link runs unoptimized code */
     pipe_slow_say(e, plat_ns() - t0, hit);
     pcache_note();
     if (e->prewarm)
