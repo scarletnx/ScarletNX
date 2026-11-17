@@ -1474,16 +1474,20 @@ static int tex_defrag_move(VkCommandBuffer cb, Surf* t, u64* bytes) {
     if (vk_devmem_emptying()) vk_defer_moved(was_bytes); /* released into a block closed to requests */
     return 1;
 }
-/* A sparse texture's block or mip tail, or a page of a texture in bricks, moved out of the block of device memory
-   being emptied (memory.c, "blocks that move"): its regions' texels copied out to scratch in the defrag's submission,
-   the memory bound in the batch after it, and copied back in the next submission. Each region has a slot of 64 KiB,
+/* A sparse texture's block or mip tail, a page of a texture in bricks, or a granule of the buffer cache's pages,
+   moved out of the block of device memory being emptied (memory.c, "blocks that move"; pagespace.c): its regions'
+   texels, or its bytes, copied out to scratch in the defrag's submission, the memory bound in the batch after it,
+   and copied back in the next submission. Each region has a slot of 64 KiB,
    which holds a sparse block's texels or a tail level's whatever the image's format: an ASTC texture held as RGBA8 or
    BC7 has 16 or 4 times the bytes its guest blocks say (t->f), so the bytes are not counted from t->f. The scratch is
    the blocklinear one (vk_bl_scratch), which stays from one defrag to the next */
 #define DEFRAG_SPARSE_SLOT  (64u << 10)
 #define DEFRAG_SPARSE_SLOTS 64u /* a defrag's slots: 4 MiB, the least the blocklinear scratch holds */
 typedef struct {
-    Surf* t;
+    Surf* t;     /* a texture's, NULL for a granule of pages */
+    void* owner; /* a granule's (VK_MOVE_PAGE) */
+    VkBuffer buf;
+    u64 offset; /* a granule's sparse buffer and its range there */
     DevMem from, to;
     u64 bytes;                                      /* the new allocation's */
     VkBufferImageCopy copy[VK_SPARSE_MOVE_REGIONS]; /* its regions, a slot each */
@@ -1510,12 +1514,12 @@ static VkBuffer sparse_scratch(VkCommandBuffer cb) {
     u64 cap;
     const VkBuffer scratch = vk_bl_scratch((u64)DEFRAG_SPARSE_SLOTS * DEFRAG_SPARSE_SLOT, &cap);
     if (!scratch) return VK_NULL_HANDLE;
+    /* after all the work recorded before that used the scratch, or wrote a granule of pages the copies read */
     const VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
-                                 .srcStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                                 .srcAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT |
-                                                  VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                                 .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                                 .srcAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
                                  .dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
-                                 .dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT};
+                                 .dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT};
     const VkDependencyInfo dep = {
         .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &mb};
     rec_CmdPipelineBarrier2(cb, &dep);
@@ -1538,8 +1542,11 @@ static void sparse_copy_out(VkCommandBuffer cb, SparseMove* m, const SparseMove*
 /* after the copies out went to the queue: the memory bound again in the batch after them, and the copies back in, in
    the next submission, after the batch, for the moves that took place; each texture copied back in its layout */
 static void sparse_moves_end(SparseMove* sp, u32 nsp, VkBuffer scratch) {
+    vk_sparse_batch_flush(); /* the binds waiting in the batch go first: a batch binds a range once */
+    int pages = 0;
     for (u32 i = 0; i < nsp; i++) {
-        sp[i].moved = vk_image_sparse_move_end(sp[i].t->img, sp[i].from, sp[i].to);
+        sp[i].moved = sp[i].t ? vk_image_sparse_move_end(sp[i].t->img, sp[i].from, sp[i].to)
+                              : vk_pages_move_end(sp[i].owner, sp[i].from, sp[i].to);
         if (!sp[i].moved) continue; /* to is freed: its allocation was gone meanwhile */
         vk_devmem_moved(sp[i].bytes);
         if (vk_devmem_emptying()) vk_defer_moved(sp[i].bytes); /* released into a block closed to requests */
@@ -1555,15 +1562,33 @@ static void sparse_moves_end(SparseMove* sp, u32 nsp, VkBuffer scratch) {
     rec_CmdPipelineBarrier2(cb, &dep);
     for (u32 i = 0; i < nsp; i++) {
         if (!sp[i].copied || !sp[i].moved) continue;
+        if (!sp[i].t) {
+            const VkBufferCopy c = {.srcOffset = sp[i].copy[0].bufferOffset, .dstOffset = sp[i].offset,
+                                    .size = sp[i].bytes};
+            rec_CmdCopyBuffer(cb, scratch, sp[i].buf, 1, &c);
+            pages = 1;
+            continue;
+        }
         vk_surf_use(cb, sp[i].t, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
                     VK_ACCESS_2_TRANSFER_WRITE_BIT);
         rec_CmdCopyBufferToImage(cb, scratch, sp[i].t->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, sp[i].ncopy,
                                  sp[i].copy);
     }
     for (u32 i = 0; i < nsp; i++) { /* back in its layout once, where the defrag's first copy of it changed it */
+        if (!sp[i].t) continue;
         u32 first = 0;
         while (sp[first].t != sp[i].t) first++;
         if (first == i && sp[i].copied) vk_surf_use(cb, sp[i].t, sp[i].was, sp[i].stage, sp[i].access);
+    }
+    if (pages) { /* the pages' bytes back before the work that reads or writes them */
+        const VkMemoryBarrier2 back = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+                                       .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+                                       .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                                       .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                                       .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT};
+        const VkDependencyInfo d = {
+            .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &back};
+        rec_CmdPipelineBarrier2(cb, &d);
     }
     vk_submit_recorded();
 }
@@ -1585,6 +1610,36 @@ void vk_tex_defrag_frame(void) {
         if (!cb) {
             vk_render_end(); /* copies happen outside rendering passes */
             cb = vk_cmd();
+        }
+        if (VK_MOVE_IS_PAGE(owners[i])) {
+            SparseMove* m = &sp[nsp];
+            *m = (SparseMove){.owner = owners[i], .from = mems[i]};
+            if (!scratch && !(scratch = sparse_scratch(cb))) {
+                vk_devmem_moving_stop(); /* no room for the scratch: the block stays as it is */
+                break;
+            }
+            const int r = vk_pages_move_begin(m->owner, m->from, &m->to, &m->buf, &m->offset);
+            if (r < 0) continue;
+            if (!r) {
+                vk_devmem_moving_stop();
+                break;
+            }
+            DevMemInfo info;
+            vk_devmem_info(m->to, &info);
+            m->bytes = info.size;
+            if (slots == DEFRAG_SPARSE_SLOTS || m->bytes > DEFRAG_SPARSE_SLOT) { /* the rest at the next present */
+                vk_devmem_free(m->to);
+                break;
+            }
+            m->copy[0].bufferOffset = (u64)slots * DEFRAG_SPARSE_SLOT;
+            m->ncopy = 1;
+            const VkBufferCopy c = {.srcOffset = m->offset, .dstOffset = m->copy[0].bufferOffset, .size = m->bytes};
+            rec_CmdCopyBuffer(cb, m->buf, scratch, 1, &c);
+            m->copied = 1;
+            slots++;
+            moved += m->bytes;
+            nsp++;
+            continue;
         }
         if (VK_MOVE_IS_SPARSE(owners[i])) {
             SparseMove* m = &sp[nsp];
