@@ -874,6 +874,13 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
                         (unsigned long long)made[0], (unsigned long long)made[3],
                         (unsigned long long)(make_ms[0] + make_ms[3]), (unsigned long long)links,
                         (unsigned long long)link_ms, (unsigned long long)opts, (unsigned long long)opt_ms);
+                    u64 cached_tries, cached, cached_ms;
+                    vk_pipeline_lib_cached_stats(&cached_tries, &cached, &cached_ms);
+                    if (cached_tries)
+                        LOG("vulkan: %llu of %llu new pipelines were optimized ones from the pipeline cache, with no "
+                            "link (%llu ms asking it)\n",
+                            (unsigned long long)cached, (unsigned long long)cached_tries,
+                            (unsigned long long)cached_ms);
                     u64 warm_made, warm_hit, warm_ms;
                     vk_pipeline_lib_warm_stats(&warm_made, &warm_hit, &warm_ms);
                     if (warm_made)

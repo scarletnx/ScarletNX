@@ -1670,6 +1670,7 @@ static bool choose_device(SnxVkChoice* c, void* user) {
                                             .maintenance4 = q13.maintenance4,
                                             /* KIL demotes the lane; S2R queries its helper status */
                                             .shaderDemoteToHelperInvocation = VK_TRUE,
+                                            .pipelineCreationCacheControl = q13.pipelineCreationCacheControl,
                                             /* the task and mesh stages' subgroups of 32, whole (mesh_choose), and
                                                those of the compute programs that use other lanes' values */
                                             .subgroupSizeControl = g_vk.has_mesh || g_vk.has_cs_warp32,
@@ -1684,6 +1685,8 @@ static bool choose_device(SnxVkChoice* c, void* user) {
         g_vk.bc7_dot = dp13.integerDotProduct4x8BitPackedUnsignedAccelerated != 0;
     }
     f13.shaderIntegerDotProduct = g_vk.bc7_dot ? VK_TRUE : VK_FALSE;
+    /* a 1.2 device's chain leaves f13 out, and q13 was not queried: no cache-only pipelines there */
+    g_vk.has_cache_control = core13 && q13.pipelineCreationCacheControl;
     void* chain = &f13;
     /* a 1.2 device: those features as its extensions' (vk12_extensions), the 1.3 struct left out */
     VkPhysicalDeviceSynchronization2Features fsync2 = {.sType =
