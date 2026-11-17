@@ -22,11 +22,24 @@ PendPages g_pend_any;
 PendPages g_pend_blk = {.also = &g_pend_any};
 #define LEAF_PAGES  4096u
 #define TABLE_PAGES ((u64)LEAF_PAGES << 16) /* the pages a table's leaves cover: 2^40 bytes, all of the GPU's */
+/* A result that covers a whole group of 64 pages is counted once for the group (whole), not at each of its pages. A
+   page's count is its own plus its group's. One game binds 16 MiB windows of storage, 4096 pages each, about 800 a
+   present, each added to four tables and taken away again. Counted page by page that was a quarter of its GPU thread */
 struct PendLeaf {
-    u32 count[LEAF_PAGES];      /* the results covering each page */
-    u64 group[LEAF_PAGES / 64]; /* one bit for each page with a count */
+    u32 count[LEAF_PAGES];      /* the results covering each page, less those its group counts whole */
+    u64 group[LEAF_PAGES / 64]; /* one bit for each page with a count, its own or its group's */
+    u64 own[LEAF_PAGES / 64];   /* one bit for each page with a count of its own */
+    u32 whole[LEAF_PAGES / 64]; /* the results covering all 64 pages of each group */
     u32 pages;                  /* the leaf's pages with a count */
 };
+/* a group's whole count handed down to each of its pages, so that one of them can change alone */
+static void group_down(PendLeaf* l, u32 g) {
+    const u32 w = l->whole[g];
+    if (!w) return;
+    for (u32 k = 0; k < 64; k++) l->count[g * 64 + k] += w;
+    l->whole[g] = 0;
+    l->own[g] = ~0ull;
+}
 /* the tables that count guest pages, each listed when it first gains one, for pend_remap to redo their GPU pages; and
    gpu_page_check, which has pend_hit answer the old way too, translating the GPU range, and warn when only that way
    finds a result (-1 until read) */
@@ -40,7 +53,7 @@ static struct {
 /* page p's count, 0 when no leaf holds it */
 static u32 leaf_count(PendLeaf* const* leaf, u64 p) {
     const PendLeaf* l = leaf[p / LEAF_PAGES];
-    return l ? l->count[p % LEAF_PAGES] : 0;
+    return l ? l->count[p % LEAF_PAGES] + l->whole[p % LEAF_PAGES / 64] : 0;
 }
 /* page p's count becomes v, and the leaf's counts of pages with one follow */
 static void leaf_set(PendLeaf** leaf, u64 p, u32 v) {
@@ -50,19 +63,23 @@ static void leaf_set(PendLeaf** leaf, u64 p, u32 v) {
         if (!v) return;
         if (!(l = leaf[p / LEAF_PAGES] = calloc(1, sizeof *l))) fatal("vulkan: out of memory for pending result pages");
     }
+    group_down(l, i / 64);
     before = l->count[i];
     l->count[i] = v;
     if (!before != !v) {
         u64 bit = 1ull << (i & 63u);
         if (v)
-            l->group[i / 64] |= bit;
+            l->own[i / 64] |= bit;
         else
-            l->group[i / 64] &= ~bit;
+            l->own[i / 64] &= ~bit;
+        l->group[i / 64] = l->own[i / 64];
         l->pages = (u32)((i64)l->pages + (v ? 1 : -1));
     }
 }
-/* pages [first, last], below TABLE_PAGES, gain delta each: a leaf at a time, its counts and their bits in one pass
-   (leaf_set's, a page at a time, looked its leaf up twice a page: a tenth of the GPU thread in one game) */
+/* pages [first, last], below TABLE_PAGES, gain delta each: a leaf at a time. A whole group of 64 pages changes its
+   whole count alone, and its bits follow from that count and the pages' own. A group that loses more than its whole
+   count holds (a result added page by page, or through a mapping since changed) takes the rest from its pages. The
+   pages at the range's ends change one by one */
 static void leaves_add(PendLeaf** leaf, u64 first, u64 last, int delta) {
     if (!delta) return;
     for (u64 p = first; p <= last;) {
@@ -71,34 +88,42 @@ static void leaves_add(PendLeaf** leaf, u64 first, u64 last, int delta) {
         if (!l && !(l = leaf[li] = calloc(1, sizeof *l))) fatal("vulkan: out of memory for pending result pages");
         i64 pages = 0;
         for (u32 i = (u32)(p % LEAF_PAGES), e = (u32)(stop % LEAF_PAGES); i <= e;) {
+            const u32 g = i / 64;
             if (!(i & 63u) && i + 63u <= e) {
-                /* a whole group of 64 pages: the counts in one pass the compiler vectorizes, the group's bits (a page
-                   with a count) from the counts after it, and the pages that gained or lost one from the bits. Page
-                   by page, one game's 16 MiB windows of storage written in place (4096 pages each, about 500 a
-                   present, in four tables, added and taken away) made this half of its GPU thread */
-                u32* c = &l->count[i];
-                const u64 was = l->group[i / 64];
+                const u64 was = l->group[g];
                 u64 now = ~0ull;
+                int d = 0; /* what the pages themselves lose */
                 if (delta > 0)
-                    for (u32 k = 0; k < 64; k++) c[k] += (u32)delta;
+                    l->whole[g] += (u32)delta;
+                else if (l->whole[g] >= (u32)-delta)
+                    l->whole[g] -= (u32)-delta;
                 else {
+                    d = delta + (int)l->whole[g];
+                    l->whole[g] = 0;
+                }
+                if (d) {
+                    u32* c = &l->count[i];
                     u64 zero = 0;
                     for (u32 k = 0; k < 64; k++) {
-                        c[k] += (u32)delta;
+                        c[k] += (u32)d;
                         zero |= (u64)(c[k] == 0) << k;
                     }
-                    now = ~zero;
+                    l->own[g] = ~zero;
                 }
-                l->group[i / 64] = now;
+                if (!l->whole[g]) now = l->own[g];
+                l->group[g] = now;
                 pages += (i64)snx_popcount64(now) - (i64)snx_popcount64(was);
                 i += 64;
                 continue;
             }
-            const u32 before = l->count[i], v = (u32)((i64)before + delta);
+            /* a page that loses more than it has of its own takes its group's whole count first */
+            if (delta < 0 && l->whole[g] && l->count[i] < (u32)-delta) group_down(l, g);
+            const u32 w = l->whole[g], before = l->count[i], v = (u32)((i64)before + delta);
             l->count[i] = v;
-            if (!before != !v) {
-                l->group[i / 64] ^= 1ull << (i & 63u);
-                pages += v ? 1 : -1;
+            if (!before != !v) l->own[g] ^= 1ull << (i & 63u);
+            if (!(before + w) != !(v + w)) {
+                l->group[g] ^= 1ull << (i & 63u);
+                pages += v + w ? 1 : -1;
             }
             i++;
         }
