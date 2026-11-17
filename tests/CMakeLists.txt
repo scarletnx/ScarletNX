@@ -1291,6 +1291,19 @@ set_tests_properties(sailgen_refused_register PROPERTIES PASS_REGULAR_EXPRESSION
     "refused_register.sail:6: error: the register FPCR: the back end llvm.h defines no sg_FPCR_read")
 set_tests_properties(sailgen_refused_field PROPERTIES PASS_REGULAR_EXPRESSION
     "refused_field.sail:12: error: PSTATE.D: the back end llvm.h defines no SG_PSTATE_D")
+# the same two through a back end that only mentions those names (a comment, a string, a declaration, a call, an
+# initializer): a name counts where it is defined
+foreach(case IN ITEMS register field)
+    add_test(NAME sailgen_refused_mention_${case}
+             COMMAND snx-sailgen --generate "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/refused_${case}.roots"
+                     --backend "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/mention_backend.h"
+                     -o "${CMAKE_CURRENT_BINARY_DIR}/sailgen/refused_mention_${case}.inc"
+                     "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/refused_${case}.sail")
+endforeach()
+set_tests_properties(sailgen_refused_mention_register PROPERTIES PASS_REGULAR_EXPRESSION
+    "refused_register.sail:6: error: the register FPCR: the back end mention_backend.h defines no sg_FPCR_read")
+set_tests_properties(sailgen_refused_mention_field PROPERTIES PASS_REGULAR_EXPRESSION
+    "refused_field.sail:12: error: PSTATE.D: the back end mention_backend.h defines no SG_PSTATE_D")
 # and the A64 subsets of src/common/cpu/aarch64/sail/ generate whole, with the NX's fixups
 add_test(NAME sailgen_a64
          COMMAND snx-sailgen --generate "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/sail/a64.roots"

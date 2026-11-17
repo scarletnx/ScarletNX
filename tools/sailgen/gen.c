@@ -82,7 +82,7 @@ static struct {
     unsigned call_depth;
     unsigned roots[1024];
     Clause clauses[1024];
-    const char* backend;      /* the back end's text (--backend), copied at the output's top */
+    char* backend_code;       /* the back end's text (--backend) with its comments and strings blanked */
     const char* backend_name; /* its file's name, for the errors */
 } g_gen;
 
@@ -834,15 +834,100 @@ static unsigned register_def(unsigned n) {
 static const char* reg_name(unsigned reg) { return sg_str(g_parse.defs[reg].name); }
 static int reg_kind(unsigned reg) { return g_parse.defs[reg].params ? (int)N(g_parse.defs[reg].params).value : K_NONE; }
 
-/* the back end's text holds word as a whole name */
-static int backend_has(const char* word) {
-    size_t n = strlen(word);
-    const char* s = g_gen.backend;
-    while ((s = strstr(s, word)) != NULL) {
-        int before = s > g_gen.backend && (isalnum((unsigned char)s[-1]) || s[-1] == '_');
-        int after = isalnum((unsigned char)s[n]) || s[n] == '_';
-        if (!before && !after) return 1;
+/* the back end's text with its comments and string and character literals blanked, lines kept: a name in them
+   defines nothing */
+static char* backend_code(const char* text, size_t size) {
+    char* c = (char*)malloc(size + 1);
+    size_t i = 0;
+    if (!c) sg_fail(0, "out of memory for the back end");
+    memcpy(c, text, size);
+    c[size] = 0;
+    while (i < size) {
+        if (c[i] == '/' && c[i + 1] == '*') {
+            for (; i < size && !(c[i] == '*' && c[i + 1] == '/'); ++i)
+                if (c[i] != '\n') c[i] = ' ';
+            if (i < size) {
+                c[i] = c[i + 1] = ' ';
+                i += 2;
+            }
+        } else if (c[i] == '/' && c[i + 1] == '/') {
+            for (; i < size && c[i] != '\n'; ++i) c[i] = ' ';
+        } else if (c[i] == '"' || c[i] == '\'') {
+            char quote = c[i++];
+            for (; i < size && c[i] != quote && c[i] != '\n'; ++i) {
+                if (c[i] == '\\' && i + 1 < size) c[i++] = ' ';
+                c[i] = ' ';
+            }
+            ++i;
+        } else
+            ++i;
+    }
+    return c;
+}
+static int ident_char(char c) { return isalnum((unsigned char)c) || c == '_'; }
+static const char* skip_blank(const char* s) {
+    while (*s && isspace((unsigned char)*s)) ++s;
+    return s;
+}
+/* where the back end's code holds name as a whole word from, after from (NULL to start); NULL when nowhere else */
+static const char* backend_word(const char* name, const char* from) {
+    const char *code = g_gen.backend_code, *s = from ? from + strlen(name) : code;
+    size_t n = strlen(name);
+    while ((s = strstr(s, name)) != NULL) {
+        if ((s == code || !ident_char(s[-1])) && !ident_char(s[n])) return s;
         s += n;
+    }
+    return NULL;
+}
+/* the start of the line s is on, its indentation skipped */
+static const char* line_start(const char* s) {
+    while (s > g_gen.backend_code && s[-1] != '\n') --s;
+    return skip_blank(s);
+}
+/* the back end defines name as a function: a line that starts with static and names it, its parameters, then its
+   body's brace */
+static int backend_defines_function(const char* name) {
+    const char* s = NULL;
+    while ((s = backend_word(name, s)) != NULL) {
+        const char* p = skip_blank(s + strlen(name));
+        int depth = 0;
+        if (strncmp(line_start(s), "static", 6) || *p != '(') continue;
+        for (; *p; ++p)
+            if (*p == '(')
+                ++depth;
+            else if (*p == ')' && --depth == 0)
+                break;
+        if (*p && *skip_blank(p + 1) == '{') return 1;
+    }
+    return 0;
+}
+/* the word that ends right before s, blanks skipped: where it starts, and its length in *n (0: none, at the start
+   or after other than a name) */
+static const char* word_before(const char* s, size_t* n) {
+    const char* e = s;
+    while (e > g_gen.backend_code && isspace((unsigned char)e[-1])) --e;
+    s = e;
+    while (s > g_gen.backend_code && ident_char(s[-1])) --s;
+    *n = (size_t)(e - s);
+    return s;
+}
+/* the back end defines name as a constant: a #define of it, or a member of an enum's list ("enum {" or
+   "enum TAG {", then names, each first or after a comma, and before a comma, a "}" or an "=") */
+static int backend_defines_constant(const char* name) {
+    const char* s = NULL;
+    while ((s = backend_word(name, s)) != NULL) {
+        const char *line = line_start(s), *open = s, *after = skip_blank(s + strlen(name)), *w;
+        size_t n;
+        if (!strncmp(line, "#define", 7) && skip_blank(line + 7) == s) return 1;
+        if (*after != ',' && *after != '}' && *after != '=') continue;
+        while (open > g_gen.backend_code && !strchr("{};", open[-1])) --open;
+        if (open == g_gen.backend_code || open[-1] != '{') continue;
+        w = s;
+        while (w > open && isspace((unsigned char)w[-1])) --w;
+        if (w != open && w[-1] != ',') continue;
+        w = word_before(open - 1, &n);
+        if (n == 4 && !strncmp(w, "enum", 4)) return 1;
+        if (n && (w = word_before(w, &n)) != NULL && n == 4 && !strncmp(w, "enum", 4)) return 1;
     }
     return 0;
 }
@@ -850,7 +935,7 @@ static int backend_has(const char* word) {
 static const char* reg_access(unsigned n, unsigned reg, const char* what) {
     static char name[160];
     snprintf(name, sizeof name, "sg_%s_%s", reg_name(reg), what);
-    if (!backend_has(name))
+    if (!backend_defines_function(name))
         sg_fail(n, "the register %s: the back end %s defines no %s", reg_name(reg), g_gen.backend_name, name);
     return name;
 }
@@ -858,7 +943,7 @@ static const char* reg_access(unsigned n, unsigned reg, const char* what) {
 static const char* reg_field(unsigned n, unsigned reg, const char* field) {
     static char name[160];
     snprintf(name, sizeof name, "SG_%s_%s", reg_name(reg), field);
-    if (!backend_has(name))
+    if (!backend_defines_constant(name))
         sg_fail(n, "%s.%s: the back end %s defines no %s", reg_name(reg), field, g_gen.backend_name, name);
     return name;
 }
@@ -1758,7 +1843,7 @@ int sg_generate(const char* roots_path, const char* backend_path, const char* ou
     size_t backend_size;
     char* backend = sg_read(backend_path, &backend_size);
     const char* base = strrchr(backend_path, '/');
-    g_gen.backend = backend;
+    g_gen.backend_code = backend_code(backend, backend_size);
     g_gen.backend_name = base ? base + 1 : backend_path;
     for (d = 1; d < g_parse.def_count; ++d) { /* each root's clause: the one that calls it */
         const SgDef* def = &g_parse.defs[d];
@@ -1790,7 +1875,8 @@ int sg_generate(const char* roots_path, const char* backend_path, const char* ou
     sg_out(": do not edit */\n\n");
     sg_out("%.*s\n", (int)backend_size, backend);
     free(backend);
-    g_gen.backend = NULL;
+    free(g_gen.backend_code);
+    g_gen.backend_code = NULL;
     sg_out("/* ---- helpers: functions of what the recompiler knows ---- */\n\n");
     if (g_gen.helpers.length) sg_out("%s", g_gen.helpers.text);
     sg_out("/* ---- the decode functions ---- */\n\n");
