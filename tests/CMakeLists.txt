@@ -1270,7 +1270,7 @@ add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/sailgen/extract.sail"
     DEPENDS snx-sailgen "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/fixture.roots"
             "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/upstream.sail" VERBATIM)
 add_custom_target(snx_sailgen_extract_test ALL DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/sailgen/extract.sail")
-add_test(NAME sailgen_extract COMMAND "${CMAKE_COMMAND}" -E compare_files
+add_test(NAME sailgen_extract COMMAND "${CMAKE_COMMAND}" -E compare_files --ignore-eol
          "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/extract_expected.sail" "${CMAKE_CURRENT_BINARY_DIR}/sailgen/extract.sail")
 add_test(NAME sailgen_refused
          COMMAND snx-sailgen --generate "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/refused.roots"

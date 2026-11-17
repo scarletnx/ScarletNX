@@ -202,6 +202,7 @@ int sg_extract(const char* roots_path, const char* out_path, const char* const* 
             if (!w || (strcmp(word, "root") && strcmp(word, "stop"))) {
                 fprintf(stderr, "%s:%u: error: expected \"root NAME\" or \"stop NAME\", found \"%.*s\"\n", roots_path,
                         line_no, (int)(e - i + w), roots + i - w);
+                free(roots);
                 return 1;
             }
             if (word[0] == 'r')
@@ -211,6 +212,7 @@ int sg_extract(const char* roots_path, const char* out_path, const char* const* 
         }
         i = e + 1;
     }
+    free(roots); /* its names are interned */
     for (k = 0; k < g_extract.root_count; ++k) {
         const char* root = sg_str(g_extract.roots[k]);
         size_t length = strlen(root);
