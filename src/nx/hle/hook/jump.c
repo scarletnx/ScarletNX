@@ -5,6 +5,7 @@
    against GNU objdump's, as clang has no IA-64 target yet */
 #include "nx/hle/hook/jump.h"
 #include "common/utilities/common.h"
+#include "common/utilities/bits.h"
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -111,7 +112,7 @@ size_t snx_hook_jump_riscv64(u8 out[SNX_HOOK_JUMP_MAX], u64 at, u64 to) {
     i64 off = (i64)(to - at);
     u64 q, i;
     if (off >= -((i64)1 << 31) - 0x800 && off < ((i64)1 << 31) - 0x800) {
-        i64 hi = (off + 0x800) >> 12, lo = off - hi * 4096;
+        i64 hi = snx_asr_s64(off + 0x800, 12), lo = off - hi * 4096;
         put32le(out, 0x00000317u | ((u32)hi & 0xFFFFFu) << 12);   /* auipc t1, hi */
         put32le(out + 4, 0x00030067u | ((u32)lo & 0xFFFu) << 20); /* jalr zero, lo(t1) */
         return 8;

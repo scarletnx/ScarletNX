@@ -12,6 +12,7 @@
    buffers swap at the vertical blank, and so does this, in a queue. */
 #include "nds/gpu/gpu3d.h"
 #include "nds/gpu/gpu3d_state.h"
+#include "common/utilities/bits.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -368,13 +369,11 @@ static void submit_polygon(NdsGpu3D* g)
     normalZ = ((int64_t)(v0->position[0]-v1->position[0]) * (v2->position[1]-v1->position[1]))
         - ((int64_t)(v0->position[1]-v1->position[1]) * (v2->position[0]-v1->position[0]));
 
-    while ((((normalX>>31) ^ (normalX>>63)) != 0) ||
-           (((normalY>>31) ^ (normalY>>63)) != 0) ||
-           (((normalZ>>31) ^ (normalZ>>63)) != 0))
-    {
-        normalX >>= 4;
-        normalY >>= 4;
-        normalZ >>= 4;
+    while (normalX < INT32_MIN || normalX > INT32_MAX || normalY < INT32_MIN || normalY > INT32_MAX ||
+           normalZ < INT32_MIN || normalZ > INT32_MAX) {
+        normalX = snx_asr_s64(normalX, 4);
+        normalY = snx_asr_s64(normalY, 4);
+        normalZ = snx_asr_s64(normalZ, 4);
     }
 
     dot = ((int64_t)v1->position[0] * normalX) + ((int64_t)v1->position[1] * normalY) + ((int64_t)v1->position[3] * normalZ);

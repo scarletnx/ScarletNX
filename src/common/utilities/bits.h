@@ -29,6 +29,22 @@ static inline int64_t snx_sext64(uint64_t v, unsigned bits) {
     v &= sign - 1 + sign;
     return v & sign ? -(int64_t)(~v & (sign - 1)) - 1 : (int64_t)v;
 }
+/* v shifted right by n (below 32, or 64) with its top bit copied in, as a CPU's arithmetic shift. >> of a negative
+   signed number is implementation-defined in C, so the shift is made on the unsigned bits: m is all ones when v is
+   negative, and v ^ m is then ~v, whose logical shift complemented back is the arithmetic one */
+static inline uint32_t snx_asr32(uint32_t v, unsigned n) {
+    const uint32_t m = 0u - (v >> 31);
+    return ((v ^ m) >> n) ^ m;
+}
+static inline uint64_t snx_asr64(uint64_t v, unsigned n) {
+    const uint64_t m = 0u - (v >> 63);
+    return ((v ^ m) >> n) ^ m;
+}
+/* x / 2^n rounded down, n below 64, with no signed shift: -1 - x is not negative when x is, and never overflows, and a
+   value that is not negative shifts as its unsigned bits, which convert back in range */
+static inline int64_t snx_asr_s64(int64_t x, unsigned n) {
+    return x < 0 ? -1 - (int64_t)((uint64_t)(-1 - x) >> n) : (int64_t)((uint64_t)x >> n);
+}
 /* whether length bytes from offset lie inside a range of total bytes, without the sum overflowing */
 static inline int snx_in_range(uint64_t offset, uint64_t length, uint64_t total) {
     return offset <= total && length <= total - offset;
