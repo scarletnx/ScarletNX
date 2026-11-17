@@ -679,6 +679,21 @@ int gpu_mem_watch(u64 gva, u64 size) {
 }
 u64 gpu_mem_watched_generation(void) { return g_gpu_writes.gen; }
 int gpu_mem_newest_kind(u64 a, u64 sz) { return gpu_mem_dirty_since(0, a, sz) ? GPU_WRITE_ENGINE : 0; }
+/* an engine's write, of no surface */
+int gpu_mem_newest_write(u64 a, u64 sz, u32* format, u64* surface) {
+    *format = 0;
+    *surface = 0;
+    return gpu_mem_newest_kind(a, sz);
+}
+/* every range staged, as before the reads in place */
+int vk_guest_in_place(u64 gva, u64 size, u64 align, VkBuffer* buf, u64* off) {
+    (void)gva;
+    (void)size;
+    (void)align;
+    (void)buf;
+    (void)off;
+    return 0;
+}
 void vk_all_barrier(VkCommandBuffer cb) {
     (void)cb;
     all_bars++;
