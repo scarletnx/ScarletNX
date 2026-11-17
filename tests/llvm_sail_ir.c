@@ -22,7 +22,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 
 /* the ops ir_int.c's generated() sends to the Sail */
 static const char* const generated_ops[] = {
@@ -428,15 +427,13 @@ static int run_compare(const u32* words, size_t count, unsigned states) {
 }
 
 /* --time ROUNDS: what each emitter costs the recompile, the corpus's steps emitted and optimized (O2) ROUNDS times
-   with each, alternating, on this host; the best round of each, not a gate */
-static double now_seconds(void) {
-    struct timespec t;
-    timespec_get(&t, TIME_UTC);
-    return (double)t.tv_sec + (double)t.tv_nsec / 1e9;
-}
+   with each, alternating, on this host, in processor time; the best round of each, not a gate */
+/* the processor time this process has used, in s (the emitting and optimizing run on this one thread) */
+static double now_seconds(void) { return (double)snx_process_cpu_ns() / 1e9; }
 static int time_emitters(const u32* words, size_t count, unsigned rounds) {
     double best[2] = {1e30, 1e30}, emit_best[2] = {1e30, 1e30};
     char error[1024];
+    if (!snx_process_cpu_ns()) return snx_error("--time: this system gives no processor time (snx_process_cpu_ns)");
     for (unsigned r = 0; r < rounds; ++r)
         for (int k = 0; k < 2; ++k) {
             double start = now_seconds(), emitted;
