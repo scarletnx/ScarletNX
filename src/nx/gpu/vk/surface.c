@@ -989,7 +989,9 @@ static int flush_copy(VkCommandBuffer cb, Surf* s, VkBuffer buf, u64 at, u32 pit
     if (s->msaa) { /* the part's samples drawn into the guest's layout of them a layer at a time, copied from there */
         for (u32 layer = part->layer; layer < part->layer + part->layers; layer++) {
             VkImage grid = vk_ms_unpack(cb, s, layer, part->y, part->rows);
-            if (!grid) continue;
+            /* the flush fails: a publish reads only the bytes around the image (publish_gaps), and the layer's would
+               be left as the new buffer had them */
+            if (!grid) return 0;
             VkBufferImageCopy c = {
                 .bufferOffset = at + (u64)(layer - part->layer) * slice,
                 .bufferRowLength = pitch / s->f.bpp,
