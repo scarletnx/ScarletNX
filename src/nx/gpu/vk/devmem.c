@@ -109,6 +109,9 @@ static struct {
     /* allocations given memory of their own since the last report, by DM_OWN_*: each is a call to the driver on the
        thread that asked */
     u64 own_why[4];
+    /* the allocations the driver would rather have alone that went into blocks for their size, and their bytes, since
+       the last report */
+    u64 rather_in_block, rather_in_block_bytes;
     /* requests that found no memory since the last report: all of them, those no larger than the free space inside
        the capped heap's blocks then (no one run held them), and the largest */
     u64 failed, failed_room, failed_max;
@@ -701,18 +704,27 @@ static VkResult alloc(const VkMemoryRequirements* req, const DevMemWant* want, i
         return *mem ? VK_SUCCESS : VK_ERROR_OUT_OF_DEVICE_MEMORY;
     }
     for (int type; !*mem && (type = type_pick(bits, want)) >= 0; bits &= ~(1u << type)) {
-        int own = want->own || alone == 2 ? DM_OWN_MUST : 0;
+        int own = want->own || alone == 2 ? DM_OWN_MUST : 0, small = 0;
         if (alone == 1 && !own) {
-            /* the driver's preference holds while the heap has room and the device has allocations left: past
-               that, each resource with memory of its own would use up both */
+            /* the driver's preference holds for a request of more than a block's share, while the heap has room and
+               the device has allocations left: past that, each resource with memory of its own would use up both. A
+               smaller one goes into a block. Memory of its own is a call to the driver on the thread that asks, and
+               its own again when it goes: under a budget of 2 GB, one game's race made 1,000 to 2,300 of them in 2
+               minutes, for 0.85 to 1.2 s of the renderer's thread in the driver's allocate and calls of 50 to 164
+               ms. In a block, the defrag can move it too */
             u32 heap = g_devmem.mp.memoryTypes[type].heapIndex, n = 0;
             u64 budget = heap_budget(heap);
             for (u32 h = 0; h < g_devmem.mp.memoryHeapCount; h++) n += g_devmem.blocks[h];
-            if (g_devmem.block_bytes[heap] + req->size <= budget / 5 * 4 &&
+            small = req->size <= block_cap((u32)type) / DM_OWN_SHARE;
+            if (!small && g_devmem.block_bytes[heap] + req->size <= budget / 5 * 4 &&
                 n < g_vk.props.limits.maxMemoryAllocationCount / 4 * 3)
                 own = DM_OWN_RATHER;
         }
         *mem = alloc_in((u32)type, req, want, own, buf, img, &res);
+        if (*mem && small) {
+            g_devmem.rather_in_block++;
+            g_devmem.rather_in_block_bytes += req->size;
+        }
         /* a preference is not a need: when the driver has no memory for the resource alone, a block may have */
         if (!*mem && own == DM_OWN_RATHER) *mem = alloc_in((u32)type, req, want, 0, buf, img, &res);
     }
@@ -1152,6 +1164,8 @@ void vk_devmem_log(void) {
     u64 made = g_devmem.ahead.made, asked = g_devmem.ahead.asked, priorities = g_devmem.priorities;
     g_devmem.priorities = 0;
     u64 why[4] = {g_devmem.own_why[0], g_devmem.own_why[1], g_devmem.own_why[2], g_devmem.own_why[3]};
+    const u64 rather = g_devmem.rather_in_block, rather_bytes = g_devmem.rather_in_block_bytes;
+    g_devmem.rather_in_block = g_devmem.rather_in_block_bytes = 0;
     g_devmem.ahead.made = g_devmem.ahead.asked = 0;
     for (u32 i = 0; i < 4; i++) g_devmem.own_why[i] = 0;
     pm_unlock(&g_devmem.lk);
@@ -1161,6 +1175,10 @@ void vk_devmem_log(void) {
             "block\n",
             (unsigned long long)why[DM_OWN_SIZE], (unsigned long long)why[DM_OWN_MUST],
             (unsigned long long)why[DM_OWN_RATHER], (unsigned long long)why[DM_OWN_LAST]);
+    if (rather)
+        LOG("vulkan: allocations the driver would rather have alone, put in blocks for their size since the last "
+            "report: %llu, %.1f MB\n",
+            (unsigned long long)rather, (double)rather_bytes / 1048576.0);
     if (failed)
         LOG("vulkan: %llu requests for device memory found none since the last report, %llu of them no larger than "
             "the free space inside the GPU heap's blocks; the largest was %.1f MB\n",
