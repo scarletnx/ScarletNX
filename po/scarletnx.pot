@@ -4954,6 +4954,11 @@ msgstr ""
 
 #: src/gui/main.c
 #, c-format
+msgid "%s: %s could not be copied to %s: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
 msgid "%s: the zip could not be copied to %s: %s"
 msgstr ""
 
@@ -5008,12 +5013,17 @@ msgstr ""
 
 #: src/gui/main.c
 #, c-format
+msgid "%s: none of the %zu saves in %s has a game of that title ID in the library, where save_layout=game keeps a save"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
 msgid "%s: %s could not be read: %s"
 msgstr ""
 
 #: src/gui/main.c
 #, c-format
-msgid "%s: none of the %zu saves in %s has a game of that title ID in the library, where save_layout=game keeps a save"
+msgid "%s: %s holds none of the consoles' folders of an export of every save: %s, %s, %s"
 msgstr ""
 
 #: src/gui/main.c
@@ -5023,7 +5033,7 @@ msgstr ""
 
 #: src/gui/main.c
 #, c-format
-msgid "%s: %zu of the %zu saves in %s are there already for %s. Each goes to the trash, %s, and the zip's takes its place."
+msgid "%s: %zu of the saves in %s are there already for %s, of %zu games it can go to. Each goes to the trash, %s, and the zip's takes its place."
 msgstr ""
 
 #: src/gui/main.c
@@ -5044,6 +5054,11 @@ msgstr ""
 #: src/gui/main.c
 #, c-format
 msgid "%s: %s has no save of %s: %s is not there"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: %s has no save of any console"
 msgstr ""
 
 #: src/gui/main.c
@@ -6208,6 +6223,55 @@ msgstr ""
 #: src/gui/saves.c
 #, c-format
 msgid "Exported %zu files (%llu bytes) from %zu of %zu saves"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "Imported %zu bytes from %s; the save there before is in %s"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "Imported %zu bytes from %s; there was no save before"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "%s is empty: a save holds the save memory's bytes"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "%s is no zip of saves: %s"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "%s holds %s, which is no .sav at its top as each game's save goes"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "Not imported: no game of the library is named %s"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "%s in %s is empty: a save holds the save memory's bytes"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "%s holds no .sav%s%s"
+msgstr ""
+
+#: src/gui/saves.c
+msgid " in its folder "
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "none of the %zu saves in %s is of a game of the library, named as its .sav"
 msgstr ""
 
 #: src/gui/settings.c
