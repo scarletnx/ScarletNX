@@ -726,6 +726,7 @@ extern u32 g_vk_present;
    record into that command buffer from the ring, or into any other one at once */
 void vk_rec_init(void);
 int vk_rec_threaded(void); /* the frame's commands go through the recording thread */
+int vk_rec_ring(VkCommandBuffer cb); /* cb's commands go through that thread's ring (vk_lock) */
 u64 vk_rec_behind(void);   /* bytes of commands handed to the recording thread and not recorded yet (any thread) */
 u64 vk_rec_gfx_queued(void); /* the graphics timeline value of the last submission on the queue (any thread) */
 void vk_rec_begin(VkCommandBuffer cb); /* begins cb, the frame's command buffer from now on */
@@ -1653,6 +1654,22 @@ void vk_bc7_cache_close(void);
 u64 vk_bc7_cache_find(const u64 key[2]); /* the bytes of key's blocks, 0 when they aren't there */
 /* key's blocks, size bytes of them, into dst: 0 when they aren't there or don't check out (then dropped) */
 int vk_bc7_cache_read(const u64 key[2], u8* dst, u64 size);
+/* key's blocks, size bytes of them, read into dst on the recording thread, and copied from buf (dst is at off in mem
+   and buf) into img, in layout, by copy there when they check out (none when img is VK_NULL_HANDLE): before the
+   commands that cb
+   gets after this, and before its submission. cb must go through that thread (vk_rec_ring). 1 when it is queued, 0
+   when they aren't there, -1 when there is no such thread or it can't open the file (read them with
+   vk_bc7_cache_read). A record that doesn't check out is dropped, its copy left out, and the read goes to
+   vk_bc7_cache_take_failed with owner and gva */
+int vk_bc7_cache_read_later(VkCommandBuffer cb, const u64 key[2], u64 size, u8* dst, DevMem mem, u64 off, VkBuffer buf,
+                            VkImage img, VkImageLayout layout, const VkBufferImageCopy* copy, void* owner, u64 gva);
+/* fn of each read on the recording thread that failed since the last call, with its owner and gva (GPU thread) */
+void vk_bc7_cache_take_failed(void (*fn)(void* owner, u64 gva, const u64 key[2]));
+/* 1 while a read on the recording thread failed and vk_bc7_cache_take_failed has not given it to its owner yet */
+int vk_bc7_cache_failed_pending(void);
+/* how long a read of bytes takes, at the rate of the reads so far: 0 for none, and more than any budget before a read
+   was timed */
+u64 vk_bc7_cache_read_ns(u64 bytes);
 void vk_bc7_cache_put(const u64 key[2], const u8* p, u64 size);
 /* hits, records stored, times it started over at its bound, and the file's bytes */
 void vk_bc7_cache_stats(u64* hits, u64* stored, u64* restarts, u64* bytes);
@@ -1660,6 +1677,7 @@ u64 vk_bc7_strip_blocks(void); /* the BC7 blocks vk_bc7_encode_kept makes at onc
 /* the image levels (or regions of them) uploaded as BC7 so far, the levels the BC7 cache gave (here or between frames),
    their bytes, and the bytes they would have taken as RGBA8 */
 void vk_astc_stats(u64* levels, u64* hits, u64* bytes, u64* rgba8_bytes);
+u64 vk_astc_bc7_copies(void); /* BC7 levels copied from another texture's image in place of a BC7 cache read */
 /* An ASTC texture whose blocks hold no more than BC1, BC4 or BC5 do (gpu/texture/astc_kind.h; texture.c picks it under
    astc_mode's Auto) is held in that format, uploaded straight to it by vk_astc_upload (astc_bcn.comp), no RGBA8 image
    before it: its encoders are a pass each, near the decoder's cost. vk_astc_bcn: 1, 4 or 5 for such a texture's image
@@ -1697,8 +1715,9 @@ void vk_astc_kind_say(void);
    depth slices or layers goes through it (the cache open, its blocks VK_BC7_CAPTURE_BYTES or less).
    vk_bc7_level_key: the key of a level of that shape, footprint bw x bh, sRGB decode mode and encoder build (from
    content, its guest bytes' part). vk_astc_frame_done: the submission sub is done, and the blocks encodes in it read
-   back go into the cache (cmd.c's landing). vk_bc7_cache_level: level `level` of img (TRANSFER_DST_OPTIMAL), w x h
-   texels and slices layers or 3D slices, copied from the cache: 0 when its blocks aren't there.
+   back go into the cache (cmd.c's landing). vk_bc7_cache_level: level `level` of t's BC7 image
+   (TRANSFER_DST_OPTIMAL), w x h texels and slices layers or 3D slices, copied from the cache: 0 when its blocks aren't
+   there.
    vk_bc7_capture_level: that level's blocks, which the encoder wrote whole (texture.c, between frames), read back for
    the cache: 0 when there is no room for them now. VK_BC7_CAPTURE_BYTES bounds the blocks read back at once, which
    bounds the readback ring's growth and is the most a level's blocks are to be cached */
@@ -1710,8 +1729,7 @@ int vk_astc_cached(u32 w, u32 h, u32 depth);
 void vk_bc7_level_key(const u64 content[2], u32 w, u32 h, u32 depth, u32 layers, u32 bw, u32 bh, int srgb, u32 build,
                       u64 key[2]);
 void vk_astc_frame_done(u64 sub);
-int vk_bc7_cache_level(VkCommandBuffer cb, VkImage img, const u64 key[2], u32 level, u32 w, u32 h, u32 slices,
-                       int is3d);
+int vk_bc7_cache_level(VkCommandBuffer cb, Surf* t, const u64 key[2], u32 level, u32 w, u32 h, u32 slices, int is3d);
 int vk_bc7_capture_level(VkCommandBuffer cb, VkImage img, const u64 key[2], u32 level, u32 w, u32 h, u32 slices,
                          int is3d);
 u64 vk_astc_dispatches(void); /* the BC7 encoder's dispatches so far */
