@@ -754,7 +754,7 @@ if(WIN32)
     target_link_libraries(snx_test_common PUBLIC advapi32)
 endif()
 
-# Run edenprobe's card and report (gui/probe.c)
+# Run Amberlith's card and report (gui/probe.c)
 add_executable(snx-test-gui-probe gui_probe.c "${PROJECT_SOURCE_DIR}/src/gui/probe.c")
 snx_test_target(snx-test-gui-probe 99)
 target_link_libraries(snx-test-gui-probe PRIVATE snx_test_common snx_yyjson)
@@ -2986,9 +2986,9 @@ snx_test_target(snx-test-runtime-module-abi 99)
 target_link_libraries(snx-test-runtime-module-abi PRIVATE snx_test_common)
 add_test(NAME runtime_module_abi COMMAND snx-test-runtime-module-abi $<TARGET_FILE:scarletnx>
     $<TARGET_FILE:snx-test-module-abi> $<TARGET_FILE:snx-test-module-abi-arm>)
-# edenprobe (docs/dev/edenprobe.md) as CI runs it, against its baseline, once with guest buffers copied and once read in
-# place (vk_memory=2: the path a GPU that shares memory takes, lavapipe's in CI). -DSNX_TEST_EDENPROBE=/path/to/
-# edenprobe.nro, the release that .github/workflows/build.yml pins
+# Amberlith (edenprobe before 1.0.0; docs/dev/edenprobe.md) as CI runs it, against its baseline, once with guest
+# buffers copied and once read in place (vk_memory=2: the path a GPU that shares memory takes, lavapipe's in CI).
+# -DSNX_TEST_EDENPROBE=/path/to/the.nro, of the release that .github/workflows/build.yml pins
 if(SNX_TEST_EDENPROBE AND Python3_Interpreter_FOUND AND NOT CMAKE_CROSSCOMPILING AND CMAKE_SYSTEM_NAME STREQUAL "Linux"
    AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
     get_filename_component(snx_edenprobe_nro "${SNX_TEST_EDENPROBE}" ABSOLUTE)
