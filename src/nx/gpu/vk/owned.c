@@ -1449,11 +1449,18 @@ void vk_guest_peek(u64 gva, void* dst, u64 size) {
 /* the one GPU-owned range that holds all of guest bytes [gva, gva + size), one run of the GPU's page table, in *r: 0
    when there is none */
 static int owned_one(u64 gva, u64 size, OwnRange* r) {
-    OwnRange o[2];
-    u64 cpu = 0;
-    if (gmmu_run(gva, size, &cpu) != size || own_lookup(cpu, size, o, 2) != 1 || o[0].addr != cpu || o[0].size != size)
-        return 0;
+    OwnRange o[16]; /* an owner is an entry for each run of the pool's pages under it (own_begin): its pieces are one */
+    u64 cpu = 0, at;
+    u32 n;
+    if (gmmu_run(gva, size, &cpu) != size || !(n = own_lookup(cpu, size, o, 16)) || n > 16) return 0;
+    at = cpu;
+    for (u32 i = 0; i < n; i++) {
+        if (o[i].addr != at || o[i].res != o[0].res || o[i].res_off != o[0].res_off + (at - cpu)) return 0;
+        at += o[i].size;
+    }
+    if (at != cpu + size) return 0;
     *r = o[0];
+    r->size = size;
     return 1;
 }
 int vk_guest_owned_whole(u64 gva, u64 size, u64* tag) {
