@@ -1488,6 +1488,7 @@ static Frame* dead_slot(void) {
 }
 void vk_defer_image(VkImage img, DevMem a, VkImageView v1, VkImageView v2) {
     vk_devmem_owner(a, NULL); /* not moved once it is let go (devmem.h) */
+    if (!a && img) vk_image_sparse_mover(img, NULL); /* nor are a sparse image's blocks */
     dead_push(dead_slot(), (Dead){.img = img, .mem = a, .v1 = v1, .v2 = v2});
 }
 void vk_defer_buffer(VkBuffer b, DevMem a) {

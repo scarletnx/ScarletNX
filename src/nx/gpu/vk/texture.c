@@ -1474,6 +1474,103 @@ static int tex_defrag_move(VkCommandBuffer cb, Surf* t, u64* bytes) {
     if (vk_devmem_emptying()) vk_defer_moved(was_bytes); /* released into a block closed to requests */
     return 1;
 }
+/* A sparse texture's block or mip tail moved out of the block of device memory being emptied (memory.c, "blocks that
+   move"): its regions' texels copied out to scratch in the defrag's submission, the memory bound in the batch after it,
+   and copied back in the next submission. The scratch holds 64 KiB for each, a sparse block's texels or a tail's */
+#define DEFRAG_SPARSE_SLOT    (64u << 10)
+#define DEFRAG_SPARSE_REGIONS 16u /* the regions of one move at most: a tail's levels */
+typedef struct {
+    Surf* t;
+    DevMem from, to;
+    VkBufferImageCopy copy[DEFRAG_SPARSE_REGIONS]; /* its regions, packed in its slot of the scratch */
+    u32 ncopy;
+    int copied;        /* the texels were copied out: the image held some */
+    VkImageLayout was; /* the texture's layout, stage and access before the defrag's first copy of it */
+    VkPipelineStageFlags2 stage;
+    VkAccessFlags2 access;
+} SparseMove;
+/* the bytes of a region's texels, packed */
+static u64 sparse_region_bytes(const Surf* t, const VkExtent3D* e) {
+    const VkFmt* f = &t->f;
+    return (u64)((e->width + f->bw - 1) / f->bw) * ((e->height + f->bh - 1) / f->bh) * e->depth * f->bpp;
+}
+/* m's copies of regions r[0..n) in scratch slot `slot`, each at an offset of 16 bytes and whole texel blocks: 0 when
+   they do not fit in it */
+static int sparse_copies(SparseMove* m, const VkSparseImageMemoryBind* r, u32 n, u32 slot) {
+    const u64 align = m->t->f.bpp % 16 ? (u64)m->t->f.bpp * 16 : m->t->f.bpp; /* a multiple of 16 and of a block */
+    u64 at = 0;
+    for (u32 i = 0; i < n; i++) {
+        at = (at + align - 1) / align * align;
+        const u64 bytes = sparse_region_bytes(m->t, &r[i].extent);
+        if (at + bytes > DEFRAG_SPARSE_SLOT) return 0;
+        m->copy[i] = (VkBufferImageCopy){
+            .bufferOffset = (u64)slot * DEFRAG_SPARSE_SLOT + at,
+            .imageSubresource = {r[i].subresource.aspectMask, r[i].subresource.mipLevel, r[i].subresource.arrayLayer, 1},
+            .imageOffset = r[i].offset,
+            .imageExtent = r[i].extent};
+        at += bytes;
+    }
+    m->ncopy = n;
+    return 1;
+}
+/* the scratch for the sparse moves of a defrag: 0 when there is no room for it */
+static int sparse_scratch(VkBuffer* buf, DevMem* mem) {
+    const VkBufferCreateInfo bci = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                                    .size = (u64)DEFRAG_MAX * DEFRAG_SPARSE_SLOT,
+                                    .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                    .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
+    const DevMemWant want = {.at = DM_DEVICE};
+    if (vk_devmem_buffer(&bci, &want, buf, mem, NULL) != VK_SUCCESS) return 0;
+    vk_mem_track(*mem, VK_OWN_CONVERT);
+    return 1;
+}
+/* m's texels out to scratch slot `slot` on cb, with the layout as it was before the defrag's first copy of its
+   texture (the moves before it, sp[0..slot)) */
+static void sparse_copy_out(VkCommandBuffer cb, SparseMove* m, const SparseMove* sp, u32 slot, VkBuffer scratch) {
+    u32 first = 0;
+    while (first < slot && sp[first].t != m->t) first++;
+    m->was = first < slot ? sp[first].was : m->t->layout;
+    m->stage = first < slot ? sp[first].stage : m->t->stage;
+    m->access = first < slot ? sp[first].access : m->t->access;
+    m->copied = m->was != VK_IMAGE_LAYOUT_UNDEFINED; /* an image in UNDEFINED holds nothing to copy */
+    if (!m->copied) return;
+    vk_surf_use(cb, m->t, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+                VK_ACCESS_2_TRANSFER_READ_BIT);
+    rec_CmdCopyImageToBuffer(cb, m->t->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, scratch, m->ncopy, m->copy);
+}
+/* after the copies out went to the queue: the blocks bound to their new memory in the batch after them, and the copies
+   back in, in the next submission, after the batch; each texture back in its layout */
+static void sparse_moves_end(SparseMove* sp, u32 nsp, VkBuffer scratch) {
+    for (u32 i = 0; i < nsp; i++) {
+        vk_image_sparse_move_end(sp[i].t->img, sp[i].from, sp[i].to);
+        DevMemInfo info;
+        vk_devmem_info(sp[i].to, &info);
+        vk_devmem_moved(info.size);
+    }
+    VkCommandBuffer cb = vk_cmd();
+    const VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+                                 .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+                                 .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                                 .dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+                                 .dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT};
+    const VkDependencyInfo dep = {
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &mb};
+    rec_CmdPipelineBarrier2(cb, &dep);
+    for (u32 i = 0; i < nsp; i++) {
+        if (!sp[i].copied) continue;
+        vk_surf_use(cb, sp[i].t, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+                    VK_ACCESS_2_TRANSFER_WRITE_BIT);
+        rec_CmdCopyBufferToImage(cb, scratch, sp[i].t->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, sp[i].ncopy,
+                                 sp[i].copy);
+    }
+    for (u32 i = 0; i < nsp; i++) {
+        u32 first = 0;
+        while (sp[first].t != sp[i].t) first++;
+        if (first == i && sp[i].copied && sp[i].was != VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL)
+            vk_surf_use(cb, sp[i].t, sp[i].was, sp[i].stage, sp[i].access);
+    }
+    vk_submit_recorded();
+}
 void vk_tex_defrag_frame(void) {
     if (!vk_cmd_ready()) return;
     DevMem mems[DEFRAG_MAX];
@@ -1485,15 +1582,43 @@ void vk_tex_defrag_frame(void) {
     SNX_ZONE(z, "vk defrag");
     VkCommandBuffer cb = VK_NULL_HANDLE;
     u64 moved = 0;
+    SparseMove sp[DEFRAG_MAX];
+    u32 nsp = 0;
+    VkBuffer scratch = VK_NULL_HANDLE;
+    DevMem scratch_mem = 0;
     for (u32 i = 0; i < n && moved < DEFRAG_BYTES; i++) {
-        /* an owner is the texture or buffer entry while it holds that memory: tex_image_swap, vk_defer_image and
-           vk_defer_buffer take it off first */
-        Surf* t = VK_MOVE_IS_BUF(owners[i]) ? NULL : owners[i];
-        if (t && (t->mem != mems[i] || (!t->is_rt && t->bc7.img))) continue;
         if (!cb) {
             vk_render_end(); /* copies happen outside rendering passes */
             cb = vk_cmd();
         }
+        if (VK_MOVE_IS_SPARSE(owners[i])) {
+            SparseMove* m = &sp[nsp];
+            *m = (SparseMove){.t = VK_MOVE_SPARSE_SURF(owners[i]), .from = mems[i]};
+            if (!m->t->sparse || !m->t->img) continue;
+            if (!scratch && !sparse_scratch(&scratch, &scratch_mem)) {
+                scratch = VK_NULL_HANDLE;
+                vk_devmem_moving_stop(); /* no room for the scratch: the block stays as it is */
+                break;
+            }
+            VkSparseImageMemoryBind regions[DEFRAG_SPARSE_REGIONS];
+            u32 nregion = 0;
+            const int r =
+                vk_image_sparse_move_begin(m->t->img, m->from, &m->to, regions, DEFRAG_SPARSE_REGIONS, &nregion);
+            if (r < 0) continue;
+            if (!r || !sparse_copies(m, regions, nregion, nsp)) { /* never for a standard block or tail */
+                vk_devmem_free(m->to); /* 0 when no run held it */
+                vk_devmem_moving_stop();
+                break;
+            }
+            sparse_copy_out(cb, m, sp, nsp, scratch);
+            moved += DEFRAG_SPARSE_SLOT;
+            nsp++;
+            continue;
+        }
+        /* an owner is the texture or buffer entry while it holds that memory: tex_image_swap, vk_defer_image and
+           vk_defer_buffer take it off first */
+        Surf* t = VK_MOVE_IS_BUF(owners[i]) ? NULL : owners[i];
+        if (t && (t->mem != mems[i] || (!t->is_rt && t->bc7.img))) continue;
         u64 bytes = 0;
         int r = !t           ? vk_buf_move(cb, VK_MOVE_BUF_INDEX(owners[i]), mems[i], &bytes)
                 : t->is_rt ? vk_rt_move(cb, t, &bytes)
@@ -1507,6 +1632,8 @@ void vk_tex_defrag_frame(void) {
         moved += bytes;
     }
     if (cb) vk_submit_recorded(); /* its own submission, as the BC7 encoder's */
+    if (nsp) sparse_moves_end(sp, nsp, scratch);
+    if (scratch) vk_defer_buffer(scratch, scratch_mem);
 }
 
 /* ------------------------------------------------------------ ASTC held by what its blocks hold */
@@ -2166,6 +2293,9 @@ static Surf* tex_create(u64 gva, u32 w, u32 h, u32 layers, u32 d3, u32 levels, V
     if (sparse && (shed ? vk_image_create_sparse_min(&ii, &t->img, TEX_SHED_MIN) : vk_image_create_sparse(&ii, &t->img))) {
         t->sparse = 1;
         t->shed = (u8)shed;
+        /* its blocks move out of a block of device memory that is emptied (vk_tex_defrag_frame), but for an image the
+           GPU writes, whose writes may come from another queue */
+        if (!written) vk_image_sparse_mover(t->img, VK_MOVE_SPARSE(t));
         if (shed) {
             VkMemoryRequirements req;
             vkGetImageMemoryRequirements(g_vk.dev, t->img, &req);
