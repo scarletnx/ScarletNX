@@ -3,8 +3,9 @@
 /* Block linear surfaces deswizzled and swizzled on the GPU (gpu/texture/blocklinear.comp). Guest bytes go to the GPU
    as they are, a copy of whole ranges into staging, and come back the same way: the 16 byte pieces of a GOB are
    moved by the shader, between the staged bytes and linear rows in a device-local scratch buffer that copies to
-   and from images take. One pipeline serves both directions; it is made on first use and kept for the device's
-   lifetime, like the other internal pipelines. Uses are on g_vk.gfx, under vk_lock() */
+   and from images take. One pipeline serves both directions, and a second build of the shader (BL_RUNS) reads the
+   runs that GPU results hold in place. Each is made on first use and kept for the device's lifetime, like the other
+   internal pipelines. Uses are on g_vk.gfx, under vk_lock() */
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/ledger.h"
 #include "nx/gpu/vk/descriptors.h"
