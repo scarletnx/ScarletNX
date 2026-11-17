@@ -867,6 +867,19 @@ static uint32_t fios_overlay_resolve(VitaProcess* p, VitaThread* t) {
     if (shown < 8) printf("vita: overlay resolve(\"%s\") -> itself\n", path), ++shown;
     return 0;
 }
+/* _sceFiosKernelOverlayResolveWithRangeSync(pid, flags, in, opt), libfios3's form of the call above: the output buffer
+   and its capacity are the first two words of opt, and a path resolves to itself the same */
+static uint32_t fios_kernel_overlay_resolve(VitaProcess* p, VitaThread* t) {
+    uint32_t opt = vita_arg(p, t, 3), out, capacity;
+    char path[1024];
+    if (!opt || !vita_mapped(p, opt, 8) || !vita_string(p, vita_arg(p, t, 2), path, sizeof path))
+        return SCE_KERNEL_ERROR_ERROR;
+    out = vita_read32(p, opt), capacity = vita_read32(p, opt + 4);
+    size_t size = strlen(path) + 1;
+    if (size > capacity || !vita_mapped(p, out, (uint32_t)size)) return SCE_KERNEL_ERROR_ERROR;
+    memcpy(vita_ptr(p, out), path, size);
+    return 0;
+}
 /* sceFiosKernelOverlayGetList(pid, min_order, max_order, ids, capacity, count*): the count is 0 */
 static uint32_t fios_overlay_get_list(VitaProcess* p, VitaThread* t) {
     uint32_t count = vita_arg(p, t, 5);
@@ -890,6 +903,7 @@ const VitaHle vita_hle_io[] = {
     {0x1dd808d1u, "sceFiosOverlayGetList02", fios_overlay_get_list},
     {0xf5c1f928u, "sceFiosOverlayGetRecommendedScheduler02", fios_overlay_scheduler},
     {0x70321220u, "sceFiosOverlayThreadSetDisabled02", fios_ok},
+    {0x8cca471au, "_sceFiosKernelOverlayResolveWithRangeSync", fios_kernel_overlay_resolve},
     {0x774c2c05u, "sceFiosInitialize", fios_ok},
     {0xd55b8555u, "sceFiosIOFilterAdd", fios_ok},
     {0x2904b539u, "sceFiosTerminate", fios_ok},

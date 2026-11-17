@@ -198,36 +198,40 @@ static int play(const char* folder, bool recompile, double seconds, const char* 
     }
     /* Load the game's bundled system modules before compiling. Their code shares the guest address space and
        their exports are dispatched as guest functions by NID, not replaced with fake success returns. */
-    static const char* const libraries[] = {"libc.suprx", "libfios2.suprx", "libsmart.suprx", "libult.suprx"};
+    static const struct {
+        const char* file;
+        bool deferred; /* started by the game's own sceKernelLoadStartModule, when it makes one */
+    } libraries[] = {{"libc.suprx", false},   {"libfios2.suprx", false}, {"libsmart.suprx", false},
+                     {"libult.suprx", false}, {"libfios3.suprx", false}, {"steroid.suprx", true}};
     for (unsigned i = 0; i < sizeof libraries / sizeof *libraries; ++i) {
         char path[SNX_PATH_SIZE];
-        int n = snprintf(path, sizeof path, "%s/patch/sce_module/%s", folder, libraries[i]);
+        int n = snprintf(path, sizeof path, "%s/patch/sce_module/%s", folder, libraries[i].file);
         if (n < 0 || (size_t)n >= sizeof path) continue;
         if (!snx_is_file(path)) {
-            n = snprintf(path, sizeof path, "%s/app/sce_module/%s", folder, libraries[i]);
+            n = snprintf(path, sizeof path, "%s/app/sce_module/%s", folder, libraries[i].file);
             if (n < 0 || (size_t)n >= sizeof path) continue;
         }
         if (!snx_is_file(path)) {
-            n = snprintf(path, sizeof path, "%s/sce_module/%s", folder, libraries[i]);
+            n = snprintf(path, sizeof path, "%s/sce_module/%s", folder, libraries[i].file);
             if (n < 0 || (size_t)n >= sizeof path || !snx_is_file(path)) continue;
         }
         VitaImage library;
         uint32_t variable_base = image.variable_count;
         uint32_t base = 0x71000000u + i * 0x01000000u;
         if (!vita_image_load_at(path, &library, base, variable_base, error, sizeof error)) {
-            fprintf(stderr, "scarletnx-vita: cannot load %s: %s\n", libraries[i], error);
+            fprintf(stderr, "scarletnx-vita: cannot load %s: %s\n", libraries[i].file, error);
             vita_image_free(&image);
             free(module);
             return 1;
         }
-        if (!vita_image_merge(&image, &library, error, sizeof error)) {
-            fprintf(stderr, "scarletnx-vita: cannot link %s: %s\n", libraries[i], error);
+        if (!vita_image_merge(&image, &library, libraries[i].deferred, error, sizeof error)) {
+            fprintf(stderr, "scarletnx-vita: cannot link %s: %s\n", libraries[i].file, error);
             vita_image_free(&library);
             vita_image_free(&image);
             free(module);
             return 1;
         }
-        printf("Loaded %s: %u exports, %u imports at 0x%08x\n", libraries[i], library.export_count,
+        printf("Loaded %s: %u exports, %u imports at 0x%08x\n", libraries[i].file, library.export_count,
                library.import_count, base);
         vita_image_free(&library);
     }

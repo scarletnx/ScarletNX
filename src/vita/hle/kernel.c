@@ -3,7 +3,9 @@
 /* SceLibKernel, SceThreadmgr, SceSysmem and SceProcessmgr: threads, their synchronization, memory blocks and time, as
    the vitasdk headers (MIT) declare them */
 #include "vita/hle/hle.h"
+#include "common/utilities/ascii.h"
 #include "common/utilities/common.h"
+#include "common/utilities/endian.h"
 #include "snx_settings.h"
 #include <inttypes.h>
 #include <stdio.h>
@@ -743,7 +745,97 @@ static uint32_t power_tick(VitaProcess* p, VitaThread* t) {
     return 0;
 }
 
+/* ---- modules: the game's own, the libraries merged into it, and the ones the game loads by path ---- */
+#define MODULE_UID_BASE        0x40020000u
+#define MODULE_INFO_SIZE       0x1b8u
+#define SCE_ERROR_ERRNO_ENOENT 0x80010002u
+#define SCE_KERNEL_ERROR_MODULEMGR_NO_MOD 0x8002d082u
+
+static VitaLoadedModule* module_of(VitaProcess* p, uint32_t uid) {
+    return uid >= MODULE_UID_BASE && uid - MODULE_UID_BASE < p->image.module_count
+               ? &p->image.modules[uid - MODULE_UID_BASE]
+               : NULL;
+}
+static bool same_name(const char* a, const char* b) {
+    for (; *a && *b; ++a, ++b)
+        if (snx_to_upper((unsigned char)*a) != snx_to_upper((unsigned char)*b)) return false;
+    return *a == *b;
+}
+/* the module's start has run: its result is the load's unless it failed */
+static uint32_t module_started(VitaProcess* p, VitaThread* t, void* context) {
+    uint32_t uid = MODULE_UID_BASE + (uint32_t)(uintptr_t)context;
+    (void)p;
+    return (int32_t)t->cpu.r[0] < 0 ? t->cpu.r[0] : uid;
+}
+/* sceKernelLoadStartModule(path, args, argp, flags, option, *result): a module the game ships, found by its file's
+   name among those loaded with it (nothing is loaded at run time: the code was compiled with the game's), started
+   once; any other file is not there */
+static uint32_t load_start_module(VitaProcess* p, VitaThread* t) {
+    char path[256];
+    const char* leaf = path;
+    uint32_t args = arg(p, t, 1), argp = arg(p, t, 2), result = arg(p, t, 5);
+    if (!vita_string(p, arg(p, t, 0), path, sizeof path)) return SCE_ERROR_ERRNO_ENOENT;
+    for (const char* c = path; *c; ++c)
+        if (*c == '/' || *c == ':' || *c == '\\') leaf = c + 1;
+    for (unsigned i = 1; i < p->image.module_count; ++i) {
+        VitaLoadedModule* m = &p->image.modules[i];
+        if (!same_name(m->leaf, leaf)) continue;
+        printf("vita: sceKernelLoadStartModule(\"%s\") -> module %u%s\n", path, i, p->module_started[i] ? "" : ", started");
+        if (p->module_started[i]) return MODULE_UID_BASE + i;
+        uint32_t start_args[2] = {args, argp};
+        p->module_started[i] = true;
+        if (result) snx_st_le32(vita_ptr(p, result), 0);
+        vita_hle_guest_call(p, t, m->start, start_args, 2, module_started, (void*)(uintptr_t)i);
+        return 0;
+    }
+    printf("vita: sceKernelLoadStartModule(\"%s\") -> no such file\n", path);
+    return SCE_ERROR_ERRNO_ENOENT;
+}
+/* sceKernelGetModuleList(flags, *ids, *count): the started modules, the game's last */
+static uint32_t get_module_list(VitaProcess* p, VitaThread* t) {
+    uint32_t ids = arg(p, t, 1), count = arg(p, t, 2), room, n = 0;
+    if (!ids || !count) return SCE_KERNEL_ERROR_MODULEMGR_NO_MOD;
+    room = snx_ld_le32(vita_ptr(p, count));
+    for (unsigned i = 1; i <= p->image.module_count && n < room; ++i) {
+        unsigned module = i % p->image.module_count; /* 1, 2, ... then 0 */
+        if (!p->module_started[module]) continue;
+        snx_st_le32(vita_ptr(p, ids + 4 * n++), MODULE_UID_BASE + module);
+    }
+    snx_st_le32(vita_ptr(p, count), n);
+    return 0;
+}
+/* sceKernelGetModuleInfo(uid, *info): SceKernelModuleInfo, 0x1b8 bytes, with its segments' places */
+static uint32_t get_module_info(VitaProcess* p, VitaThread* t) {
+    VitaLoadedModule* m = module_of(p, arg(p, t, 0));
+    uint32_t at = arg(p, t, 1);
+    unsigned char* info;
+    if (!m || !at) return SCE_KERNEL_ERROR_MODULEMGR_NO_MOD;
+    info = vita_ptr(p, at);
+    memset(info, 0, MODULE_INFO_SIZE);
+    snx_st_le32(info, MODULE_INFO_SIZE);
+    snx_st_le32(info + 4, arg(p, t, 0));
+    snprintf((char*)info + 0xc, 28, "%s", m->name);
+    snx_st_le32(info + 0x2c, m->start);
+    if (arg(p, t, 0) == MODULE_UID_BASE)
+        snprintf((char*)info + 0x54, 256, "app0:eboot.bin");
+    else
+        snprintf((char*)info + 0x54, 256, "app0:sce_module/%s", m->leaf);
+    for (unsigned k = 0; k < 4 && k < m->segment_count; ++k) {
+        const VitaSegment* s = &p->image.segment[m->first_segment + k];
+        unsigned char* out = info + 0x154 + 0x18 * k;
+        snx_st_le32(out, 0x18);
+        snx_st_le32(out + 4, s->flags);
+        snx_st_le32(out + 8, s->address);
+        snx_st_le32(out + 12, s->size);
+        snx_st_le32(out + 16, s->size);
+    }
+    return 0;
+}
+
 const VitaHle vita_hle_kernel[] = {
+    {0x2dcc4afau, "sceKernelLoadStartModule", load_start_module},
+    {0x2ef2581fu, "sceKernelGetModuleList", get_module_list},
+    {0x36585dafu, "sceKernelGetModuleInfo", get_module_info},
     {0xc5c11ee7u, "sceKernelCreateThread", create_thread},
     {0xf08de149u, "sceKernelStartThread", start_thread},
     {0x0c8a38e1u, "sceKernelExitThread", exit_thread},
