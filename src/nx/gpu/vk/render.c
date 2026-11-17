@@ -275,6 +275,7 @@ static int render_begin(Surf** rt, Surf* zt, u32 n, int zt_ro, int srgb_write, u
     u32 loops = 0;
     VkRenderingAttachmentInfo ca[8];
     VkExtent2D ext = {~0u, ~0u};
+    vk_surf_batch_begin(); /* the targets' barriers in one call */
     for (u32 i = 0; i < n; i++) {
         ca[i] = (VkRenderingAttachmentInfo){.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
                                             .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
@@ -295,7 +296,10 @@ static int render_begin(Surf** rt, Surf* zt, u32 n, int zt_ro, int srgb_write, u
                     VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT |
                         (loop ? VK_ACCESS_2_SHADER_SAMPLED_READ_BIT : 0));
         ca[i].imageView = vk_rt_attachment(rt[i], srgb_write);
-        if (!ca[i].imageView) return 0;
+        if (!ca[i].imageView) {
+            vk_surf_batch_end();
+            return 0;
+        }
         ca[i].imageLayout = layout;
         ca[i].loadOp = load_op(rt[i], undefined);
         if (loop) loops |= 1u << i;
@@ -327,6 +331,7 @@ static int render_begin(Surf** rt, Surf* zt, u32 n, int zt_ro, int srgb_write, u
         if (zt->sw < ext.width) ext.width = zt->sw;
         if (zt->sh < ext.height) ext.height = zt->sh;
     }
+    vk_surf_batch_end();
     if (ext.width == ~0u) ext = area; /* nothing bound with a surface: the bound targets' size */
     if (ext.width > area.width) ext.width = area.width;
     if (ext.height > area.height) ext.height = area.height;

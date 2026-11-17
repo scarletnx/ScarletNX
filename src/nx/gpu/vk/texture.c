@@ -4513,10 +4513,12 @@ static void take_say(Surf* t, Surf* const* d, int n, const char* why) {
 static VkCommandBuffer copy_begin(Surf* s, Surf* t) {
     vk_render_end();
     VkCommandBuffer cb = vk_cmd();
+    vk_surf_batch_begin(); /* the two barriers in one call */
     vk_surf_use(cb, s, VK_LAYOUT(TRANSFER_SRC_OPTIMAL),
                 VK_PIPELINE_STAGE_2_COPY_BIT | VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
     vk_surf_use(cb, t, VK_LAYOUT(TRANSFER_DST_OPTIMAL),
                 VK_PIPELINE_STAGE_2_COPY_BIT | VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+    vk_surf_batch_end();
     return cb;
 }
 /* the first count layers of s into t's level l at layer or Z slice dst, w x h: copied, or blitted from s's scaled

@@ -1335,6 +1335,10 @@ int vk_rt_pages_hit(u64 gva, u64 size);
 VkImage vk_unscaled_image(const Surf* s, u32 layers, DevMem* mem);
 /* moves a surface into a layout for a use, with the barrier that needs (which ends an open rendering pass) */
 void vk_surf_use(VkCommandBuffer cb, Surf* s, VkImageLayout layout, VkPipelineStageFlags2 stage, VkAccessFlags2 access);
+/* vk_surf_use's barriers between these two in one barrier call, at the end: for uses of different surfaces that
+   nothing is recorded between (a pass's targets, a copy's two surfaces) */
+void vk_surf_batch_begin(void);
+void vk_surf_batch_end(void);
 /* the stages a texture moved to SHADER_READ_ONLY_OPTIMAL is made visible to: all that sample, since a later read in
    the same layout gets no barrier of its own */
 #define VK_SAMPLED_STAGES (VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
