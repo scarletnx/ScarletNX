@@ -137,6 +137,10 @@ static void check_errors(void) {
         {HEAD "VK_EXT_x | off | radv | * | any | * | b | - | headless: | never | -\n",
          "source: where it is known from is empty"},
         {HEAD "VK_EXT_x | off | radv | * | any | * | b | s | edenprobe: | never | -\n", "retest \"edenprobe:\" is not"},
+        {HEAD "VK_EXT_x | off | radv | * | any | * | b | s | amberlith: | never | -\n",
+         "retest \"amberlith:\" is not headless:ARGS, amberlith:SUITE, new:headless:WHAT or new:amberlith:WHAT"},
+        {HEAD "VK_EXT_x | off | radv | * | any | * | b | s | new:amberlith: | never | -\n",
+         "retest \"new:amberlith:\""},
         {HEAD "VK_EXT_x | off | radv | * | any | * | b | s | new:headless: | never | -\n", "retest \"new:headless:\""},
         {HEAD "VK_EXT_x | off | radv | * | any | * | b | s | rerun it | never | -\n", "retest \"rerun it\" is not"},
         {HEAD "VK_EXT_x | off | radv | * | any | * | b | s | headless: | yesterday | -\n",
@@ -238,10 +242,10 @@ static const char g_table[] =
     "VK_EXT_a | off | nvidia | < 580.119.02 | any | * | breaks a | src a | headless: | never | -\n"
     "VK_EXT_b | off | radv | >= 25.0.3 < 26.1 | linux | * | breaks b | src b | headless:--x=1 | never | -\n"
     "VK_EXT_c | warn | radv | * | any | * | breaks c | src c | new:headless:a case | never | -\n"
-    "featureD | off | radv | <= 26.0.99 | any | 0x73bf,0x1636 | breaks d | src d | new:edenprobe:d | 2026-11-07 broken "
+    "featureD | off | radv | <= 26.0.99 | any | 0x73bf,0x1636 | breaks d | src d | new:amberlith:d | 2026-11-07 broken "
     "on 26.0.4 | -\n"
     "VK_EXT_e | off | radv | > 20.0.0 | android, linux | * | breaks e | src e | edenprobe:coherence | never | e=on\n"
-    "featureF | warn | radv | * | any | * | breaks f | src f | headless: | never | -\n"
+    "featureF | warn | radv | * | any | * | breaks f | src f | amberlith:coherence: a case | never | -\n"
     "featureG | off | radv | * | windows | * | breaks g | src g | headless: | never | -\n"
     "VK_EXT_b | off | radv | * | any | * | breaks b again | src b2 | headless: | never | -\n"
     "VK_EXT_h | off | moltenvk | < 1.2.11 | any | * | breaks h | src h | headless: | never | -\n"

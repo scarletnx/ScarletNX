@@ -850,13 +850,30 @@ void main() {
             }
             dst[out_bias + e] = r;
         } else if (mode == TC_INDEX_QUADS) {
-            uint o = out_bias + 6u * e, v0 = tc_index(4u * e), v2 = tc_index(4u * e + 2u);
-            dst[o] = v0;
-            dst[o + 1u] = tc_index(4u * e + 1u);
-            dst[o + 2u] = v2;
-            dst[o + 3u] = v0;
-            dst[o + 4u] = v2;
-            dst[o + 5u] = tc_index(4u * e + 3u);
+            /* quad e as vk/quad_indices.h's snx_quad_triangles makes it: const_a bit 0 the last vertex provoking,
+               bit 1 a quad strip (quad e from index 2e, around its edge 2e, 2e + 1, 2e + 3, 2e + 2) */
+            uint o = out_bias + 6u * e, at = (const_a & 2u) != 0u ? 2u * e : 4u * e, w[4];
+            uint a = tc_index(at), b = tc_index(at + 1u), c = tc_index(at + 2u), d = tc_index(at + 3u);
+            bool last = (const_a & 1u) != 0u;
+            if ((const_a & 2u) != 0u) {
+                uint t = c;
+                c = d;
+                d = t;
+            }
+            /* around the edge from the provoking vertex: the first, or the last (a quad's fourth, a strip's third) */
+            if (!last) {
+                w[0] = a, w[1] = b, w[2] = c, w[3] = d;
+            } else if ((const_a & 2u) != 0u) {
+                w[0] = c, w[1] = d, w[2] = a, w[3] = b;
+            } else {
+                w[0] = d, w[1] = a, w[2] = b, w[3] = c;
+            }
+            dst[o] = last ? w[1] : w[0];
+            dst[o + 1u] = last ? w[2] : w[1];
+            dst[o + 2u] = last ? w[0] : w[2];
+            dst[o + 3u] = last ? w[2] : w[0];
+            dst[o + 4u] = last ? w[3] : w[2];
+            dst[o + 5u] = last ? w[0] : w[3];
         } else if (mode == TC_INDEX_RESTART32) {
             uint v = src[w + e];
             dst[out_bias + e] = v == const_a ? 0xFFFFFFFFu : v;

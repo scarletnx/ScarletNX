@@ -1,6 +1,6 @@
 <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
 <!-- Copyright 2026 the ScarletNX contributors -->
-# edenprobe
+# Amberlith (edenprobe)
 
 ## Index
 
@@ -12,8 +12,8 @@
 * [On the Android layer](#on-the-android-layer)
 * [A case from a game report](#a-case-from-a-game-report)
 
-[edenprobe](https://github.com/scarletnx/edenprobe) is a homebrew program of hardware probes: suites of cases, each
-asking the machine one question and judging the answer against the console's. A run leaves `report.jsonl`, a line per
+[Amberlith](https://github.com/scarletnx/amberlith), edenprobe before its 1.0.0, is a homebrew program of hardware
+probes: suites of cases, each asking the machine one question and judging the answer against the console's. A run leaves `report.jsonl`, a line per
 case (`pass`, `fail` or `skip`, with a detail) and a summary. `scripts/edenprobe.py` recompiles it, runs it headless and
 holds the report against a baseline, how each case ended before: a case of the baseline that no longer ends that way
 fails.
@@ -23,22 +23,24 @@ fails.
 ## Running it
 
 ```sh
-python3 scripts/edenprobe.py run --runtime build/scarletnx --nro edenprobe.nro --out /tmp/edenprobe \
+python3 scripts/edenprobe.py run --runtime build/scarletnx --nro amberlith-1.0.0.nro --out /tmp/edenprobe \
     --mode "quick notime cpu fs video display kernel audio hooks" \
     [--baseline tests/edenprobe/linux-x86_64.txt]
 ```
 
 `--out`, empty or an earlier run's, is emptied, then gets the recompiled game and its XDG folders (`work/`, so
 nothing of yours is read or written), `report.jsonl`, the failures' pictures (`images/`), the recompile's and each
-launch's log, `summary.md` and `baseline.txt`: this run's passing cases, those edenprobe's ban list skipped as
+launch's log, `summary.md` and `baseline.txt`: this run's passing cases, those the probe's ban list skipped as
 `banned`, and those the baseline expects to end another way that did. A launch that ends before the summary, crashed
 or killed after `--timeout` seconds (600) without a new line in the report, is followed by another, which goes on after
 the case it ended inside, reported as `crashed`. The baseline is lavapipe's: a GPU passes other cases, so on one the
 run says what differs rather than what regressed.
 
-An edenprobe that knows the word (its NRO carries `machine=`) gets `machine=scarletnx@<the runtime's commit>` beside
-the words, the commit from the build line the runtime carries, unless they name a machine: edenprobe's ban list then
-skips as `banned` the cases that end ScarletNX every time, and the word `unban` runs them.
+The words go to the mode file of the probe's card folder, `sdmc:/amberlith/`; a build from before 1.0.0, whose NRO
+does not carry `sdmc:/amberlith`, reads `sdmc:/edenprobe/` alone and gets them there. A probe that knows the word (its
+NRO carries `machine=`) gets `machine=scarletnx@<the runtime's commit>` beside the words, the commit from the build
+line the runtime carries, unless they name a machine: the probe's ban list then skips as `banned` the cases that end
+ScarletNX every time, and the word `unban` runs them.
 
 `--setting KEY=VALUE` gives each launch that runtime setting as `--KEY=VALUE`, for example `vk_memory=2` to read guest
 buffers in place, the default on an integrated GPU, where a driver can still refuse the imports and copy. Lavapipe,
@@ -50,20 +52,23 @@ With `-DSNX_TEST_EDENPROBE=/path/to/edenprobe.nro`, ctest runs it as `edenprobe_
 
 ## From the launcher
 
-Settings > App > GPU Drivers' **Run edenprobe** plays it as a game on a player's machine, any platform, with the GPU
+Settings > App > GPU Drivers' **Run Amberlith** plays it as a game on a player's machine, any platform, with the GPU
 driver picked there, in a data folder of its own, launched again after a crash as `scripts/edenprobe.py` does, and
-says the counts at the end ([GUI](../user/gui.md)). Its modes, Quick and Full, never ask for `net`, `service`, `pad`,
-`listen`, `fatal`, `hang`, `stress` or `game`, nor for times, and both ask for `hooks` as CI does: an edenprobe
-older than 0.13.0 opens fsp-srv and time:u itself and stops in sm. It writes the machine beside them as
-`scripts/edenprobe.py` does, `machine=scarletnx@<its commit>`. Nor for `quick`, a script's run, which opens no screen
-and leaves the window black to its end: a player watches this one, so it is edenprobe's detailed run, its start screen
-(begun by itself after ten seconds), its running screen and its results (left by themselves after ten seconds with
-nothing pressed).
+says the counts at the end ([GUI](../user/gui.md)). It plays `amberlith.nro` of its folder, a release's
+`amberlith-<version>.nro` saved under that name, else `edenprobe.nro`, the name it took before 1.0.0. The card it reads
+is the one the probe runs from, as Amberlith chooses it: `sdmc:/amberlith/`, but `sdmc:/edenprobe/` while only that
+one holds a mode file or runs, so a run an edenprobe build left there is read and goes on (Continue) where it is; a
+new run goes to the NRO's own folder. Its modes, Quick and Full, never ask for `net`, `service`, `pad`, `listen`,
+`fatal`, `hang`, `stress` or `game`, nor for times, and both ask for `hooks` as CI does: an edenprobe older than
+0.13.0 opens fsp-srv and time:u itself and stops in sm. It writes the machine beside them as `scripts/edenprobe.py`
+does, `machine=scarletnx@<its commit>`. Nor for `quick`, a script's run, which opens no screen and leaves the window
+black to its end: a player watches this one, so it is the probe's detailed run, its start screen (begun by itself
+after ten seconds), its running screen and its results (left by themselves after ten seconds with nothing pressed).
 
 ## The mode words
 
-Those of the example, which CI runs; edenprobe's
-[mode file](https://github.com/scarletnx/edenprobe/blob/main/docs/ModeFile.md) has them all. The judge's suites
+Those of the example, which CI runs; Amberlith's
+[mode file](https://github.com/scarletnx/amberlith/blob/main/docs/ModeFile.md) has them all. The judge's suites
 (selfcheck, support, reference) run whatever is named:
 
 | word | what it adds |
@@ -86,25 +91,35 @@ their submissions drew nothing and each case waited for memory that the GPU woul
 
 ## In CI
 
-The `edenprobe` job of `.github/workflows/build.yml` takes the Linux x86-64 install (on a pull request, the x86-64
-AppImage build's) and runs the release `EDENPROBE_VERSION` of edenprobe, pinned by `EDENPROBE_SHA256`, on lavapipe with
-the words of `EDENPROBE_MODE`, against `tests/edenprobe/linux-x86_64.txt`. The result goes in the run's summary and in the pull request's comment of builds;
-the artifact `edenprobe-<commit>-<attempt>` holds the report, pictures, logs and `baseline.txt`.
+Each run is a job of `.github/workflows/build.yml` of its own, beside the others, so the Build waits for the slowest
+alone. The `edenprobe` job takes the Linux x86-64 install (on a pull request, the x86-64 AppImage build's) and runs the
+NRO `EDENPROBE_NRO` of Amberlith's release `EDENPROBE_VERSION`, pinned by `EDENPROBE_SHA256` (the workflow's `env`), on
+lavapipe with the words of `EDENPROBE_MODE`, against `tests/edenprobe/linux-x86_64.txt`. The result goes in the run's
+summary and in the pull request's comment of builds; the artifact `edenprobe-<commit>-<attempt>` holds the report,
+pictures, logs and `baseline.txt`.
 
 A regression there fails the Build run, and a run that failed publishes nothing: neither the nightly nor a version.
 
-Then the job runs edenprobe's main, its `nightly` release (checked by its `.sha256`), with
-`scripts/edenprobe.py run --advisory edenprobe/report.jsonl`: beside the pinned release's report it never fails. A case
-the release has not got that does not pass, a case the release passes that does not pass here, a run that ends early, or
-a nightly that cannot be fetched is a warning on the run, and the summary has a section of its own. A case new in main
-becomes binding when a release that has it is pinned and the baseline written again.
+A push, a tag, the nightly's schedule and a run by hand run every job. A pull request runs each only when it changes
+what that run loads (the `amberlith-changes` job, `git diff --name-only` of its merge commit through
+`scripts/edenprobe.py runs`): the NRO for `src/nx/`, `src/common/` and its baseline; the APK for `src/android/`,
+`src/gnuabi/`, `src/glslc/`, `src/common/gpu/` and its baseline; both for `src/multicall/`, `scripts/edenprobe.py`, this
+workflow, `CMakeLists.txt`, `CMakePresets.json`, `cpmfile.json` and `cmake/`. A job skipped there counts as passing, and
+the comment's line says skipped only when both were.
+
+The `edenprobe-main` job, on every run but a pull request's, runs Amberlith's main, the NRO of its `nightly` release
+(checked by its `.sha256`), with `scripts/edenprobe.py run --advisory-baseline tests/edenprobe/linux-x86_64.txt`:
+beside the pinned release's baseline it never fails. A case the release has not got that does not pass, a case the
+release passes that does not pass here, a run that ends early, or a nightly that cannot be fetched is a warning on the
+run, and the summary has a section of its own. A case new in main becomes binding when a release that has it is pinned
+and the baseline written again.
 
 ## The baseline
 
-`tests/edenprobe/<platform>.txt` names the edenprobe build and the mode words it was written with, then one case a line:
+`tests/edenprobe/<platform>.txt` names the probe's build and the mode words it was written with, then one case a line:
 `suite: name` for a case that passes, `[RESULT] suite: name` for one that ends as RESULT, the result as the summary
 lists it (`skip (crashed)`, `fail: DETAIL`; no `]` in it). That second form is for a case that ends the program on the
-console too, as an instruction the console refuses, and for one edenprobe's ban list skips on ScarletNX
+console too, as an instruction the console refuses, and for one the probe's ban list skips on ScarletNX
 (`skip (banned)`, which a run's `baseline.txt` keeps by itself): the line keeps the case held to that end, and any
 other, a pass included, fails the job. Another build or other words fail the job until it is written again; a case that
 starts to pass is listed, to be added. Write it from CI's own runs, never a desktop GPU's: download the artifact of two
@@ -118,34 +133,37 @@ python3 scripts/edenprobe.py baseline run1/baseline.txt run2/baseline.txt -o tes
 
 ## On the Android layer
 
-Each release also carries `edenprobe.apk`, edenprobe's Android build: the judge's suites and the libc family in
+Each release also carries the probe's Android build, `amberlith-<version>.apk` (`edenprobe.apk` before 1.0.0): the
+judge's suites and the libc family in
 Android's C library, with cases of its own for bionic, GLES, the network, JNI, the framework and resources, each passing
 on Android 16. `--apk` runs it on `scarletnx-android` ([Android apps](../platforms/android-apps/README.md)) with
 nothing recompiled:
 
 ```sh
-python3 scripts/edenprobe.py run --runtime build/scarletnx --apk edenprobe.apk --mode quick --out /tmp/edenprobe-apk \
+python3 scripts/edenprobe.py run --runtime build/scarletnx --apk amberlith-1.0.0.apk --mode quick --out /tmp/edenprobe-apk \
     [--java-home DIR] [--baseline tests/edenprobe/android-x86_64.txt]
 ```
 
 The runtime runs it as `scarletnx-android --headless`, on the JDK the build found or `--java-home`'s, with the
 framework's jar and `android-fonts/` beside the program, where the build and an install put them. The words go to the
-mode file in the app's files under `work/`, `scarletnx/android/data/org.scarletnx.edenprobe/external/files/edenprobe/`
-of its `XDG_DATA_HOME`, with `machine=scarletnx-android@<the runtime's commit>` beside them; `quick` runs every family
-the APK has. edenprobe takes a folder of 160 characters at most, so an `--out` that makes it longer is refused. The
+mode file in the app's files under `work/`, `scarletnx/android/data/org.scarletnx.amberlith/external/files/amberlith/`
+of its `XDG_DATA_HOME`, and `org.scarletnx.edenprobe/external/files/edenprobe/`, the app before 1.0.0, each reading
+its own, with `machine=scarletnx-android@<the runtime's commit>` beside them; `quick` runs every family the APK has.
+The probe takes a folder of 160 characters at most, so an `--out` that makes it longer is refused. The
 launches, the report and the baseline are the NRO's.
 
-In CI the `edenprobe` job runs it after the NRO, on the same install with the JRE of the build's JDK, as
-`EDENPROBE_APK_VERSION` pinned by `EDENPROBE_APK_SHA256` with the words of `EDENPROBE_APK_MODE`, against
-`tests/edenprobe/android-x86_64.txt`, written as the NRO's is. Its notice follows the NRO's on edenprobe's line of the
-pull request's comment, and its files are under `edenprobe-android/` in the job's artifact.
+In CI the `edenprobe-android` job runs it beside the NRO's, on the same install with the JRE of the build's JDK, as
+`EDENPROBE_APK` of the release `EDENPROBE_APK_VERSION`, pinned by `EDENPROBE_APK_SHA256`, with the words of
+`EDENPROBE_APK_MODE`, against `tests/edenprobe/android-x86_64.txt`, written as the NRO's is. Its notice follows the
+NRO's on the probe's line of the pull request's comment, and its files are in its own artifact,
+`edenprobe-android-<commit>-<attempt>`.
 
 ## A case from a game report
 
 A game report whose failure a maintainer understands gets the label `status: confirmed`, and the Game reports
 workflow comments on it once: it is ready for an edenprobe case, one that asks the console the question the failure
 comes down to, so every build is held to the answer. `scarletnx --mcp` has the tools an agent writes it with, in a
-clone of [edenprobe](https://github.com/scarletnx/edenprobe):
+clone of [Amberlith](https://github.com/scarletnx/amberlith):
 
 - `edenprobe_scaffold` (service cases): writes the parts edenprobe's layout fixes into the clone, every file or none.
   Those are the case's enum entry and `CASES[]` row, its judge and the judge's reference check in
@@ -164,5 +182,5 @@ clone of [edenprobe](https://github.com/scarletnx/edenprobe):
   characters at most), the issue, what each machine answered and the rules a case keeps. Nothing of a game goes in
   it: no code, no disassembly, no assets, no value only that game uses.
 
-The commit and the pull request to scarletnx/edenprobe stay with the agent and the person, under edenprobe's
+The commit and the pull request to scarletnx/amberlith stay with the agent and the person, under Amberlith's
 `hooks/commit-msg`.

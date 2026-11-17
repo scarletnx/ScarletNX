@@ -51,6 +51,20 @@ env:
   # the jobs that may fail without failing the run (continue-on-error), whose failure cancels nothing
   # (scripts/fail-fast.py; tests/fail_fast_test.py holds the two to each other)
   SNX_OPTIONAL_JOBS: '^(macOS and iOS \(arm64\)|Linux AppImage \((ppc64le|ppc64|riscv64|loongarch64)\)(, as installed)?)$'
+  # Amberlith's runs (the edenprobe jobs below): the release's tag and its NRO's name, which carries the version
+  EDENPROBE_VERSION: v1.0.0
+  EDENPROBE_NRO: amberlith-1.0.0.nro
+  EDENPROBE_SHA256: a5eb634b346ef3f357716b3690e2f21dbc53a14ae1ed08d08ad81b1f91bea018
+  # every family that needs no person or network: headless, the audio family's sound is never played. Not graphics:
+  # its suites write their own GPU command buffers, left out while the runtime had no Maxwell front end, and not
+  # added back since it returned (docs/dev/edenprobe.md). hooks: the runtime answers nn::fs, time, pl, ngc and nsd
+  # in the SDK's own functions and serves none of their services, so the probe asks through the functions it exports
+  EDENPROBE_MODE: quick notime cpu fs video display kernel audio hooks
+  # the APK (the probe's Android build) of a release of its own: its words run every family it has
+  EDENPROBE_APK_VERSION: v1.0.0
+  EDENPROBE_APK: amberlith-1.0.0.apk
+  EDENPROBE_APK_SHA256: 192cc7750bac972d0f4d850eea7bbada7a84b3c5b6b24d25d4d8ba7f7b6933d8
+  EDENPROBE_APK_MODE: quick
 
 # Linux jobs run in Arch Linux, which has the same Clang 23 and clang-format 23 as development, and its LLVM 23 for the
 # recompiler's code generator (required, cmake/llvm.cmake). Windows uses MSYS2 CLANG64 so Clang, the MinGW/UCRT runtime
@@ -1952,35 +1966,49 @@ jobs:
       - *fail-fast-file
       - *fail-fast-mark
 
-  # edenprobe's probes (docs/dev/edenprobe.md), a release of scarletnx/edenprobe pinned by its sha256, recompiled by the
-  # Linux x86-64 install and run on lavapipe: a case of tests/edenprobe/linux-x86_64.txt, the ones that passed before,
-  # that no longer passes fails the job. Another release or other mode words want that file written again. The install
-  # is the linux job's, or on a pull request the appimage job's, which builds a pull request's x86-64 alone. Its
-  # scarletnx-android then runs edenprobe's APK, pinned apart, against tests/edenprobe/android-x86_64.txt the same way
+  # Amberlith's probes (edenprobe before 1.0.0; docs/dev/edenprobe.md), each run a job of its own beside the others, so
+  # the Build waits for the slowest alone. The NRO of a release of scarletnx/amberlith, pinned by its sha256, recompiled
+  # by the Linux x86-64 install and run on lavapipe: a case of tests/edenprobe/linux-x86_64.txt, the ones that passed
+  # before, that no longer passes fails the job. The install's scarletnx-android runs the probe's APK, pinned apart,
+  # against tests/edenprobe/android-x86_64.txt the same way. Another release or other mode words want its file written
+  # again. A push, a tag, the nightly's schedule and a run by hand run both, and Amberlith's main beside the release;
+  # a pull request runs each only when it changes what that run loads (amberlith-changes), and never the main's
+  # warnings. The install is the linux job's, or on a pull request the appimage job's, which builds a pull request's
+  # x86-64 alone
+  amberlith-changes:
+    name: Amberlith changes
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    outputs:
+      nro: ${{ steps.changed.outputs.nro }}
+      apk: ${{ steps.changed.outputs.apk }}
+    steps:
+      # the pull request's merge commit and the base it is diffed against
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
+      # the paths each run loads are scripts/edenprobe.py's (runs), which edenprobe_script tests; it says why on the log
+      - name: Look for what each run loads
+        id: changed
+        run: git diff --name-only HEAD^1 HEAD | python3 scripts/edenprobe.py runs >> "$GITHUB_OUTPUT"
+      - *fail-fast-file
+      - *fail-fast-mark
+
   edenprobe:
-    name: edenprobe (Linux x86_64, lavapipe)
-    needs: [linux, appimage]
+    name: Amberlith (Linux x86_64, lavapipe)
+    needs: [linux, appimage, amberlith-changes]
     if: >-
-      ${{ !cancelled() && (github.event_name == 'pull_request' && needs.appimage.result == 'success' ||
-      github.event_name != 'pull_request' && needs.linux.result == 'success') }}
+      ${{ !cancelled() && (github.event_name == 'pull_request' && needs.appimage.result == 'success' &&
+      needs.amberlith-changes.outputs.nro == 'true' || github.event_name != 'pull_request' && needs.linux.result ==
+      'success') }}
     runs-on: ubuntu-26.04
     timeout-minutes: 30
     container: archlinux:latest
-    env:
-      EDENPROBE_VERSION: v0.16.1
-      EDENPROBE_SHA256: b975506b1bce5feb9b36cf0e06446a02224c1395e9c3deb179bb98bdc0343234
-      # every family that needs no person or network: headless, the audio family's sound is never played. Not graphics:
-      # its suites write their own GPU command buffers, left out while the runtime had no Maxwell front end, and not
-      # added back since it returned (docs/dev/edenprobe.md). hooks: the runtime answers nn::fs, time, pl, ngc and nsd
-      # in the SDK's own functions and serves none of their services, so the probe asks through the functions it exports
-      EDENPROBE_MODE: quick notime cpu fs video display kernel audio hooks
-      # the APK (edenprobe's Android build) of a release of its own: its words run every family it has
-      EDENPROBE_APK_VERSION: v0.16.1
-      EDENPROBE_APK_SHA256: 1270bf1f91fa164331951ec839c3fd8da7d2a0d8c0fd46481987504af7318d16
-      EDENPROBE_APK_MODE: quick
     steps:
       # Artifacts carry the commit they came from: the branch's head in a pull request, else the commit pushed
-      - name: Name the commit
+      - &amberlith-commit
+        name: Name the commit
         id: commit
         shell: bash
         env:
@@ -1988,7 +2016,8 @@ jobs:
         run: echo "short=${SHA::7}" >> "$GITHUB_OUTPUT"
       # The libraries the install links, lavapipe, and the JVM of the build's JDK, which scarletnx-android loads; each
       # pacman install tried 3 times, as in the Linux job
-      - name: Install the runtime's libraries and lavapipe
+      - &amberlith-libraries
+        name: Install the runtime's libraries and lavapipe
         run: |
           for try in 1 2 3; do
             pacman -Syu --noconfirm --needed python llvm-libs sdl3 vulkan-icd-loader vulkan-swrast \
@@ -1996,86 +2025,38 @@ jobs:
             [ "$try" = 3 ] && exit 1
             sleep 5
           done
-      - uses: actions/checkout@v7
-      - uses: actions/download-artifact@v8
+      - &amberlith-checkout
+        uses: actions/checkout@v7
+      - &amberlith-install
+        uses: actions/download-artifact@v8
         with:
           name: ScarletNX-linux-x86_64-${{ steps.commit.outputs.short }}-install
           path: stage
       # gh fetches through the REST API: the releases/download link answered 504 for hours on 2026-11-08. 3 tries
-      - name: Fetch edenprobe
+      - name: Fetch Amberlith
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           if [ -z "$EDENPROBE_SHA256" ]; then
-            echo "EDENPROBE_SHA256 is empty: pin the sha256 of edenprobe $EDENPROBE_VERSION" >&2
+            echo "EDENPROBE_SHA256 is empty: pin the sha256 of $EDENPROBE_NRO of $EDENPROBE_VERSION" >&2
             exit 1
           fi
           for try in 1 2 3; do
-            gh release download "$EDENPROBE_VERSION" -R scarletnx/edenprobe -p edenprobe.nro --clobber && break
+            gh release download "$EDENPROBE_VERSION" -R scarletnx/amberlith -p "$EDENPROBE_NRO" --clobber && break
             [ "$try" = 3 ] && exit 1
             sleep 30
           done
-          echo "$EDENPROBE_SHA256  edenprobe.nro" | sha256sum -c -
+          echo "$EDENPROBE_SHA256  $EDENPROBE_NRO" | sha256sum -c -
       # Artifacts drop the executable bit. The summary's title is the line of the pull request's comment, as a notice
       # of this job that scripts/pr-builds.sh reads back once the run ends; on one line, % is all a notice escapes
-      - name: Run edenprobe
+      - name: Run Amberlith
         run: |
           chmod +x stage/bin/*
           status=0
-          python3 scripts/edenprobe.py run --runtime stage/bin/scarletnx --nro edenprobe.nro --mode "$EDENPROBE_MODE" \
+          python3 scripts/edenprobe.py run --runtime stage/bin/scarletnx --nro "$EDENPROBE_NRO" --mode "$EDENPROBE_MODE" \
             --out edenprobe --baseline tests/edenprobe/linux-x86_64.txt --summary "$GITHUB_STEP_SUMMARY" || status=$?
           if [ -f edenprobe/summary.md ]; then
             result=$(head -n 1 edenprobe/summary.md | cut -c5-)
-            echo "::notice title=edenprobe::${result//%/%25}"
-          fi
-          exit "$status"
-      # edenprobe's main, cases the release has not got yet: beside the release's report it only warns, and a nightly
-      # that cannot be fetched is a warning too (docs/dev/edenprobe.md)
-      - name: Fetch edenprobe's main
-        id: main
-        if: ${{ !cancelled() }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          mkdir -p edenprobe-nightly
-          if gh release download nightly -R scarletnx/edenprobe -D edenprobe-nightly -p edenprobe.nro -p edenprobe.nro.sha256 &&
-            mv edenprobe-nightly/edenprobe.nro edenprobe-main.nro && mv edenprobe-nightly/edenprobe.nro.sha256 edenprobe-main.nro.sha256 &&
-            echo "$(cut -d ' ' -f 1 edenprobe-main.nro.sha256)  edenprobe-main.nro" | sha256sum -c -; then
-            echo "nro=edenprobe-main.nro" >> "$GITHUB_OUTPUT"
-          else
-            echo "::warning title=edenprobe main::edenprobe's nightly could not be fetched or checked"
-          fi
-      - name: Run edenprobe's main, warnings only
-        if: ${{ !cancelled() && steps.main.outputs.nro }}
-        run: |
-          chmod +x stage/bin/*
-          python3 scripts/edenprobe.py run --runtime stage/bin/scarletnx --nro edenprobe-main.nro \
-            --mode "$EDENPROBE_MODE" --out edenprobe-main --advisory edenprobe/report.jsonl \
-            --summary "$GITHUB_STEP_SUMMARY"
-      # The APK on the install's scarletnx-android, whatever the NRO's runs ended as: its notice goes on the same line
-      # of the pull request's comment
-      - name: Fetch edenprobe's APK
-        id: apk
-        if: ${{ !cancelled() }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          for try in 1 2 3; do
-            gh release download "$EDENPROBE_APK_VERSION" -R scarletnx/edenprobe -p edenprobe.apk --clobber && break
-            [ "$try" = 3 ] && exit 1
-            sleep 30
-          done
-          echo "$EDENPROBE_APK_SHA256  edenprobe.apk" | sha256sum -c -
-      - name: Run edenprobe's APK on the Android layer
-        if: ${{ !cancelled() && steps.apk.outcome == 'success' }}
-        run: |
-          chmod +x stage/bin/*
-          status=0
-          python3 scripts/edenprobe.py run --runtime stage/bin/scarletnx --apk edenprobe.apk \
-            --mode "$EDENPROBE_APK_MODE" --out edenprobe-android --baseline tests/edenprobe/android-x86_64.txt \
-            --summary "$GITHUB_STEP_SUMMARY" || status=$?
-          if [ -f edenprobe-android/summary.md ]; then
-            result=$(head -n 1 edenprobe-android/summary.md | cut -c5-)
             echo "::notice title=edenprobe::${result//%/%25}"
           fi
           exit "$status"
@@ -2088,8 +2069,99 @@ jobs:
           path: |
             edenprobe
             !edenprobe/work
+      - *fail-fast-file
+      - *fail-fast-mark
+
+  # Amberlith's main, the NRO of its nightly (checked by its .sha256), cases the release has not got yet: held beside
+  # the release's baseline it only warns, and a nightly that cannot be fetched is a warning too. Not on a pull request
+  edenprobe-main:
+    name: Amberlith's main (Linux x86_64, lavapipe)
+    needs: [linux]
+    if: ${{ !cancelled() && github.event_name != 'pull_request' && needs.linux.result == 'success' }}
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    container: archlinux:latest
+    steps:
+      - *amberlith-commit
+      - *amberlith-libraries
+      - *amberlith-checkout
+      - *amberlith-install
+      # The nightly's NRO is named for its version and commit, amberlith-<version>-<commit>.nro
+      - name: Fetch Amberlith's main
+        id: main
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p edenprobe-nightly
+          if gh release download nightly -R scarletnx/amberlith -D edenprobe-nightly -p 'amberlith-*.nro' \
+              -p 'amberlith-*.nro.sha256' &&
+            mv edenprobe-nightly/amberlith-*.nro edenprobe-main.nro &&
+            mv edenprobe-nightly/amberlith-*.nro.sha256 edenprobe-main.nro.sha256 &&
+            echo "$(cut -d ' ' -f 1 edenprobe-main.nro.sha256)  edenprobe-main.nro" | sha256sum -c -; then
+            echo "nro=edenprobe-main.nro" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning title=Amberlith main::Amberlith's nightly could not be fetched or checked"
+          fi
+      - name: Run Amberlith's main, warnings only
+        if: ${{ steps.main.outputs.nro }}
+        run: |
+          chmod +x stage/bin/*
+          python3 scripts/edenprobe.py run --runtime stage/bin/scarletnx --nro edenprobe-main.nro \
+            --mode "$EDENPROBE_MODE" --out edenprobe-main --advisory-baseline tests/edenprobe/linux-x86_64.txt \
+            --summary "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        if: ${{ !cancelled() }}
+        with:
+          name: edenprobe-main-${{ steps.commit.outputs.short }}-${{ github.run_attempt }}
+          path: |
             edenprobe-main
             !edenprobe-main/work
+      - *fail-fast-file
+      - *fail-fast-mark
+
+  # The APK on the install's scarletnx-android: its notice goes on the NRO's line of the pull request's comment
+  edenprobe-android:
+    name: Amberlith's APK (Linux x86_64, Android layer)
+    needs: [linux, appimage, amberlith-changes]
+    if: >-
+      ${{ !cancelled() && (github.event_name == 'pull_request' && needs.appimage.result == 'success' &&
+      needs.amberlith-changes.outputs.apk == 'true' || github.event_name != 'pull_request' && needs.linux.result ==
+      'success') }}
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    container: archlinux:latest
+    steps:
+      - *amberlith-commit
+      - *amberlith-libraries
+      - *amberlith-checkout
+      - *amberlith-install
+      - name: Fetch Amberlith's APK
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for try in 1 2 3; do
+            gh release download "$EDENPROBE_APK_VERSION" -R scarletnx/amberlith -p "$EDENPROBE_APK" --clobber && break
+            [ "$try" = 3 ] && exit 1
+            sleep 30
+          done
+          echo "$EDENPROBE_APK_SHA256  $EDENPROBE_APK" | sha256sum -c -
+      - name: Run Amberlith's APK on the Android layer
+        run: |
+          chmod +x stage/bin/*
+          status=0
+          python3 scripts/edenprobe.py run --runtime stage/bin/scarletnx --apk "$EDENPROBE_APK" \
+            --mode "$EDENPROBE_APK_MODE" --out edenprobe-android --baseline tests/edenprobe/android-x86_64.txt \
+            --summary "$GITHUB_STEP_SUMMARY" || status=$?
+          if [ -f edenprobe-android/summary.md ]; then
+            result=$(head -n 1 edenprobe-android/summary.md | cut -c5-)
+            echo "::notice title=edenprobe::${result//%/%25}"
+          fi
+          exit "$status"
+      - uses: actions/upload-artifact@v7
+        if: ${{ !cancelled() }}
+        with:
+          name: edenprobe-android-${{ steps.commit.outputs.short }}-${{ github.run_attempt }}
+          path: |
             edenprobe-android
             !edenprobe-android/work
       - *fail-fast-file

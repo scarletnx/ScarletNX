@@ -4,8 +4,9 @@
 """scripts/edenprobe.py against a fake runtime that recompiles into a fake game, whose launches write report lines as
 each test asks: a clean run, a regression, a case not run, a new pass, a crash and a hang each followed by another
 launch, a baseline line that expects a crash, a case the ban list skips, launches that add nothing, no report, an exit
-after the summary, words edenprobe ignored, a baseline of another build or mode or none, broken lines; the APK, run by
-the same runtime as scarletnx-android with nothing recompiled; then the baseline of several runs. Offline, no GPU."""
+after the summary, words the probe ignored, a baseline of another build or mode or none, broken lines; the APK, run by
+the same runtime as scarletnx-android with nothing recompiled; Amberlith's NRO and APK, from 1.0.0, beside edenprobe's
+before them: each in its own card; then the baseline of several runs. Offline, no GPU."""
 
 import json
 import os
@@ -29,10 +30,11 @@ def check(what, ok, detail=''):
 
 
 # The runtime: "-r NRO NAME --outdir DIR --jobs N" copies itself to DIR/NAME/NAME, the game; the game, run with -H,
-# plays the next launch of $FAKE_SCENARIO: appends its lines to the report under sdmc:/edenprobe/runs/<build>, then
-# exits with its status, kills itself with its signal, or hangs. "scarletnx-android ... APK" plays it the same, the
-# APK's sdmc:/edenprobe in the app's files under XDG_DATA_HOME, as the Android layer keeps them. Each call is logged to
-# $FAKE_SCENARIO.log
+# plays the next launch of $FAKE_SCENARIO: appends its lines to the report under its card's runs/<build>, then exits
+# with its status, kills itself with its signal, or hangs. Its card is sdmc:/amberlith when that one holds a mode file,
+# as Amberlith's own (from 1.0.0), else sdmc:/edenprobe, edenprobe's. "scarletnx-android ... APK" plays it the same,
+# its card in the app's files under XDG_DATA_HOME, as the Android layer keeps them: Amberlith's app when the APK holds
+# "amberlith", else edenprobe's. Each call is logged to $FAKE_SCENARIO.log
 FAKE = """
 # the build line a runtime carries: ScarletNX main 1a2b3c4, committed 2026-11-08 (clang 22.1.8, Linux x86_64)
 import json, os, shutil, signal, sys, time
@@ -49,10 +51,12 @@ if sys.argv[1] == '-r':
         shutil.copy(sys.argv[0], folder / sys.argv[3])
     sys.exit(plan.get('recompile', 0))
 if sys.argv[1] == 'scarletnx-android':
-    files = ('scarletnx', 'android', 'data', 'org.scarletnx.edenprobe', 'external', 'files')
-    edenprobe = Path(os.environ['XDG_DATA_HOME'], *files, 'edenprobe')
+    name = 'amberlith' if b'amberlith' in Path(sys.argv[-1]).read_bytes() else 'edenprobe'
+    files = ('scarletnx', 'android', 'data', f'org.scarletnx.{name}', 'external', 'files')
+    edenprobe = Path(os.environ['XDG_DATA_HOME'], *files, name)
 else:
-    edenprobe = Path(os.getcwd()) / f'{Path(sys.argv[0]).name}_data' / 'sdmc' / 'edenprobe'
+    sdmc = Path(os.getcwd()) / f'{Path(sys.argv[0]).name}_data' / 'sdmc'
+    edenprobe = sdmc / ('amberlith' if (sdmc / 'amberlith' / 'mode').exists() else 'edenprobe')
 count = edenprobe / 'launches'
 number = int(count.read_text()) if count.exists() else 0
 count.write_text(str(number + 1))
@@ -107,7 +111,7 @@ MISSING = 'missing'
 # on how long a loaded runner takes to start the fake or to end a crashed one (its core dump); ctest's timeout bounds a
 # hang. The two cases about the clock itself pass their own --timeout
 QUIET = '300'
-# the APK's runs go in a folder of /tmp: edenprobe takes a folder of 160 characters at most for its own, and the APK's
+# the APK's runs go in a folder of /tmp: the probe takes a folder of 160 characters at most for its own, and the APK's
 # is deep under --out, past that limit in macOS's temporary folder
 SHORT = '/tmp' if os.name != 'nt' and os.path.isdir('/tmp') else None
 
@@ -187,7 +191,7 @@ with tempfile.TemporaryDirectory() as temporary, tempfile.TemporaryDirectory(dir
         'Passing and not in' in text and '- `cpu: multiplies`' in text and status == 0,
     )
 
-    # edenprobe's ban list: a probe that knows machine= gets the runtime's commit beside the words; words that name a
+    # the probe's ban list: a probe that knows machine= gets the runtime's commit beside the words; words that name a
     # machine keep theirs; the probe above, which predates the word, got none
     old_nro = nro.read_bytes()
     nro.write_bytes(b'NRO0 a mode parser with machine=%s')
@@ -266,7 +270,7 @@ with tempfile.TemporaryDirectory() as temporary, tempfile.TemporaryDirectory(dir
         text,
     )
 
-    # a case edenprobe's ban list skips on this machine is banned in every run of one build: the run's baseline.txt keeps
+    # a case the probe's ban list skips on this machine is banned in every run of one build: the run's baseline.txt keeps
     # it, without the detail, which names the runtime's commit, and a baseline that holds it holds the run to it
     banned = case('cpu', 'reads the counter', 'skip', tier='none', reason='banned', detail='on scarletnx@1a2b3c4')
     with_ban = START + CASES[:3] + [banned, summary(2, 1, 1)]
@@ -332,7 +336,7 @@ with tempfile.TemporaryDirectory() as temporary, tempfile.TemporaryDirectory(dir
     took = re.search(r'launch 1: exit 0, (\d+) s', text)
     check('a slow launch that keeps adding lines is not killed', status == 0 and took and int(took[1]) >= 2, text)
 
-    # --advisory: edenprobe's main beside the pinned release's report, warnings only, never a failure
+    # --advisory: the probe's main beside the pinned release's report, warnings only, never a failure
     known = root / 'release.jsonl'
     known.write_text(
         '\n'.join(
@@ -356,30 +360,48 @@ with tempfile.TemporaryDirectory() as temporary, tempfile.TemporaryDirectory(dir
         summary(2, 3, 1),
     ]
     status, text, out, calls = run([main], baseline=None, extra=['--advisory', str(known)])
-    warned = [line for line in text.splitlines() if line.startswith('::warning title=edenprobe main::')]
+    warned = [line for line in text.splitlines() if line.startswith('::warning title=Amberlith main::')]
     check('a run beside the release never fails', status == 0, text)
     check(
         'a case the release lacks that fails is a warning, on one line',
-        '::warning title=edenprobe main::not in v0.4.0: cpu: shifts: fail: got 0%25%0Awanted 1' in warned,
+        '::warning title=Amberlith main::not in v0.4.0: cpu: shifts: fail: got 0%25%0Awanted 1' in warned,
         text,
     )
     check(
         'a case the release passes that fails here is a warning',
-        '::warning title=edenprobe main::passing in v0.4.0: cpu: multiplies: fail: got 5' in warned,
+        '::warning title=Amberlith main::passing in v0.4.0: cpu: multiplies: fail: got 5' in warned,
         text,
     )
     check('a case the release fails too, one passing or skipped, warns nothing', len(warned) == 2, warned)
     check(
         'the summary counts the cases the release lacks, and says it only warns',
-        "(edenprobe's main: warnings only)" in text and '3 cases not in v0.4.0, 2 of them passing or skipped.' in text,
+        "(Amberlith's main: warnings only)" in text and '3 cases not in v0.4.0, 2 of them passing or skipped.' in text,
         text,
     )
     status, text, out, calls = run([START + CASES[:1]], baseline=None, extra=['--advisory', str(known)])
     check(
         'beside the release, a run with no summary is a warning too',
-        status == 0 and '::warning title=edenprobe main::launch 2 (exit 3) added no case' in text,
+        status == 0 and '::warning title=Amberlith main::launch 2 (exit 3) added no case' in text,
         text,
     )
+    # --advisory-baseline: the same, beside the release's baseline, so the main's run needs not the release's own
+    held = root / 'release-baseline.txt'
+    held.write_text(
+        '# build: v0.4.0\n# mode: quick notime cpu\ncpu: adds\ncpu: multiplies\n[skip (may crash)] cpu: reads the counter\n'
+    )
+    status, text, out, calls = run([main], baseline=None, extra=['--advisory-baseline', str(held)])
+    warned = [line for line in text.splitlines() if line.startswith('::warning title=Amberlith main::')]
+    check(
+        'beside the baseline, a case it passes that fails here and one it lacks that fails are warnings, nothing fails',
+        status == 0
+        and '::warning title=Amberlith main::passing in v0.4.0: cpu: multiplies: fail: got 5' in warned
+        and '::warning title=Amberlith main::not in v0.4.0: cpu: shifts: fail: got 0%25%0Awanted 1' in warned
+        and "(Amberlith's main: warnings only)" in text,
+        text,
+    )
+    status, text, out, calls = run([WHOLE], extra=['--advisory-baseline', str(held)])
+    check('--baseline and --advisory-baseline are one or the other', status == 2, text)
+
     status, text, out, calls = run([WHOLE], baseline=None, extra=['--advisory', str(root / MISSING)])
     check('no release report to compare with is a warning', status == 0 and '::warning title=' in text, text)
     status, text, out, calls = run([WHOLE], extra=['--advisory', str(known)])
@@ -417,7 +439,7 @@ with tempfile.TemporaryDirectory() as temporary, tempfile.TemporaryDirectory(dir
 
     ignored = [note('mode: quick, from the mode file; 1 unknown word ignored: grpahics')]
     status, text, out, calls = run([START[:2] + ignored + CASES + [summary(2, 1, 1)]])
-    check('words edenprobe ignored fail the run', status == 1 and 'ignored words of the mode: 1 unknown' in text, text)
+    check('words the probe ignored fail the run', status == 1 and 'ignored words of the mode: 1 unknown' in text, text)
 
     status, text, out, calls = run([WHOLE], baseline=BASELINE.replace('abc1234', 'fed4321'))
     check('a baseline of another build', status == 1 and 'write it again' in text and 'fed4321' in text, text)
@@ -436,7 +458,7 @@ with tempfile.TemporaryDirectory() as temporary, tempfile.TemporaryDirectory(dir
     status, text, out, calls = run([START + ['{"type":"case",'] + CASES + [summary(2, 1, 1)]])
     check('a line that is no JSON', status == 1 and 'no case, note or summary: [4]' in text, text)
     status, text, out, calls = run([WHOLE + [note('edenprobe 0.4.0 (fed4321) starting')]])
-    check('a report two builds wrote', status == 1 and 'two builds of edenprobe' in text, text)
+    check('a report two builds wrote', status == 1 and 'two builds of the probe' in text, text)
     for twice in ([CASES[0], case('cpu', 'adds', 'fail')], [case('cpu', 'adds', 'fail'), CASES[0]]):
         status, text, out, calls = run([START + twice + CASES[1:] + [summary(2, 2, 1)]])
         check('a case listed twice passes only if both pass', status == 1 and '- `cpu: adds: fail`' in text, text)
@@ -522,16 +544,109 @@ with tempfile.TemporaryDirectory() as temporary, tempfile.TemporaryDirectory(dir
     check('an APK named and missing', status == 1 and 'no APK at' in text and not calls, text)
     deep = root / ('x' * 80)
     status, text, out, calls = run([WHOLE], probe=android, extra=['--out', str(deep)])
-    files = deep / 'work' / 'xdg' / 'data' / 'scarletnx/android/data/org.scarletnx.edenprobe/external/files/edenprobe'
+    files = deep / 'work' / 'xdg' / 'data' / 'scarletnx/android/data/org.scarletnx.amberlith/external/files/amberlith'
     check(
-        "an --out that makes the app's folder longer than edenprobe takes, refused with its length",
-        status == 1 and f'{len(str(files))} characters, and edenprobe takes 160' in text and not calls,
+        "an --out that makes the app's folder longer than the probe takes, refused with its length",
+        status == 1 and f'{files}, {len(str(files))} characters, and the probe takes 160' in text and not calls,
         text,
     )
     status, text, out, calls = run([WHOLE], extra=['--java-home', str(jdk)])
     check('--java-home without --apk refused', status == 1 and 'it goes with --apk' in text and not calls, text)
     status, text, out, calls = run([WHOLE], probe=('--nro', str(nro), '--apk', str(apk)))
     check('--nro and --apk are one or the other', status == 2 and not calls, text)
+
+    # Amberlith, from 1.0.0: its NRO carries sdmc:/amberlith and runs from there, its first note says its name; its APK
+    # is the app org.scarletnx.amberlith, with a card of its own
+    amber = [
+        note('Amberlith 1.0.0 (v1.0.0) starting'),
+        note('folder: sdmc:/amberlith/runs/abc1234'),
+        note('mode: quick'),
+    ]
+    amber_nro = root / 'amberlith-1.0.0.nro'
+    amber_nro.write_bytes(b'NRO0 sdmc:/edenprobe/mode sdmc:/amberlith/mode machine=')
+    status, text, out, calls = run(
+        [amber + CASES + [summary(2, 1, 1)]],
+        probe=('--nro', str(amber_nro)),
+        baseline='# build: v1.0.0\n# mode: quick notime cpu\ncpu: adds\n',
+    )
+    sdmc = out / 'work' / 'games' / 'edenprobe' / 'edenprobe_data' / 'sdmc'
+    check("Amberlith's NRO: a clean run passes", status == 0, text)
+    check(
+        'its words in sdmc:/amberlith/mode alone, no sdmc:/edenprobe made',
+        (sdmc / 'amberlith' / 'mode').is_file()
+        and (sdmc / 'amberlith' / 'mode').read_text() == 'quick notime cpu machine=scarletnx@1a2b3c4\n'
+        and not (sdmc / 'edenprobe').exists(),
+        text,
+    )
+    check(
+        "its summary under Amberlith's name",
+        (out / 'summary.md').read_text().startswith('### Amberlith v1.0.0: 2 passed, 1 failed, 1 skipped, 0 crashed'),
+        text,
+    )
+    check('its baseline.txt names its build', '# build: v1.0.0\n' in (out / 'baseline.txt').read_text())
+    amber_apk = root / 'amberlith-1.0.0.apk'
+    amber_apk.write_bytes(b'PK\x03\x04 org.scarletnx.amberlith')
+    status, text, out, calls = run([amber + CASES + [summary(2, 1, 1)]], probe=('--apk', str(amber_apk)), baseline=None)
+    data = out / 'work' / 'xdg' / 'data' / 'scarletnx' / 'android' / 'data'
+    check(
+        "Amberlith's APK: a clean run, its report read in its own app's card",
+        status == 0 and (data / 'org.scarletnx.amberlith/external/files/amberlith/runs/abc1234/report.jsonl').is_file(),
+        text,
+    )
+    check(
+        'the words in the mode file of both apps it may be, each reading its own',
+        all(
+            (data / f'org.scarletnx.{app}/external/files/{app}/mode').is_file()
+            and (data / f'org.scarletnx.{app}/external/files/{app}/mode').read_text()
+            == 'quick notime cpu machine=scarletnx-android@1a2b3c4\n'
+            for app in ('amberlith', 'edenprobe')
+        ),
+        text,
+    )
+    check(
+        "the APK's summary under Amberlith's name",
+        (out / 'summary.md').read_text().startswith("### Amberlith v1.0.0's APK: 2 passed, 1 failed, 1 skipped"),
+        text,
+    )
+
+    # runs: which probe runs a pull request's changed files call for, what each loads
+    def decide(*paths):
+        done = subprocess.run(
+            [sys.executable, str(SCRIPT), 'runs'],
+            input=''.join(f'{p}\n' for p in paths),
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+        return done.returncode, done.stdout, done.stderr
+
+    for paths, nro_runs, apk_runs, why in (
+        (('src/gui/main.c', 'docs/user/gui.md'), False, False, 'the menu and a page load neither'),
+        (('src/nx/hle/services/vi.c',), True, False, 'the Switch runtime: the NRO'),
+        (('src/common/cpu/a64.c',), True, False, 'the code the runtime shares: the NRO'),
+        (('src/android/bridge/linker.c',), False, True, 'the Android layer: the APK'),
+        (('src/gnuabi/kernel/futex.c', 'src/glslc/emit.c'), False, True, 'its native code and its GLES: the APK'),
+        (('src/common/gpu/vk/render.c',), True, True, 'the GPU code both share: both'),
+        (('tests/edenprobe/android-x86_64.txt',), False, True, "the APK's baseline: the APK"),
+        (('tests/edenprobe/linux-x86_64.txt',), True, False, "the NRO's baseline: the NRO"),
+        (('.github/workflows/build.yml',), True, True, 'the job: both'),
+        (('scripts/edenprobe.py', 'cmake/llvm.cmake'), True, True, 'the script and the build: both'),
+        ((), False, False, 'no file: neither'),
+    ):
+        status, said, why_said = decide(*paths)
+        check(
+            f'runs: {why}',
+            status == 0 and said == f'nro={str(nro_runs).lower()}\napk={str(apk_runs).lower()}\n',
+            (said, why_said),
+        )
+    status, said, why_said = decide('src/nx/gpu/vk/cmd.c', 'docs/a.md')
+    check(
+        'runs says which files call for a run, and that the other is not called for',
+        'the NRO runs, for 1 of the 2 files changed: src/nx/gpu/vk/cmd.c' in why_said
+        and 'the APK does not run: none of the 2 files changed is one it loads' in why_said,
+        why_said,
+    )
 
     # the baseline of several runs: what each passed
     first, second, other = root / 'one.txt', root / 'two.txt', root / 'other.txt'

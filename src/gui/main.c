@@ -286,7 +286,7 @@ typedef struct {
 } GuiAppForm;
 /* GPU Drivers' values: each row's mark, (*) on the pick; on a greyed row, what this device lacks for it */
 #define GUI_DRIVERS_SHOWN 64 /* the packages the page lists; its note says how many more there are */
-/* Global, System driver, the packages, Download Driver, Add Driver, then edenprobe's Mode, Run, Continue, Clear */
+/* Global, System driver, the packages, Download Driver, Add Driver, then Amberlith's Mode, Run, Continue, Clear */
 #define GUI_DRIVER_ROWS   (GUI_DRIVERS_SHOWN + 8)
 typedef struct {
     char value[GUI_DRIVER_ROWS][96];
@@ -728,12 +728,12 @@ typedef struct App {
     char drivers_label[GUI_DRIVER_ROWS][300];
     char drivers_about[GUI_DRIVER_ROWS][700];
     int drivers_base;     /* the first package's row */
-    int drivers_tail;     /* Download Driver's row: Add Driver's next, then the launcher's edenprobe Mode and Run */
+    int drivers_tail;     /* Download Driver's row: Add Driver's next, then the launcher's Amberlith Mode and Run */
     int drivers_continue, drivers_clear; /* Continue's and Clear Crash List's rows, -1 when not shown */
     int driver_off;       /* the package GUI_ASK_DRIVER asks about, its index in drivers */
     Uint32 driver_picked; /* Add Driver's picker's answer */
     SDL_DialogFileFilter driver_filter;
-    /* Run edenprobe (gui/probe.h): edenprobe Mode Full (app.ini's probe_mode), the probe's folder, the launch
+    /* Run Amberlith (gui/probe.h): Amberlith Mode Full (app.ini's probe_mode), the probe's folder, the launch
        that plays now (0: none) and the cases the one before ended with */
     bool probe_full;
     char* probe_folder;
@@ -935,13 +935,13 @@ typedef struct App {
     bool setup_moved; /* the data folder a portable copy's: what older versions left is looked for again */
     /* Last Run (gui/last_run.h): the run going as the record beside the run log keeps it (written: the record is
        there); and the run a start found the menu had not seen end, its page among the setup's while due, Continue
-       going on with Run edenprobe once the setup is done */
+       going on with Run Amberlith once the setup is done */
     GuiLastRun run_kept, stopped;
     bool run_kept_written;
     RunEnd stopped_end;
-    int stopped_cases; /* Run edenprobe's report's cases so far */
+    int stopped_cases; /* Run Amberlith's report's cases so far */
     bool stopped_due, stopped_go_on;
-    /* the setup's pages after Last Run, held while its Continue goes on with Run edenprobe (setup_resume) */
+    /* the setup's pages after Last Run, held while its Continue goes on with Run Amberlith (setup_resume) */
     bool setup_held;
     bool mark_unended;       /* the launcher's last start did not end with an exit (mark_start) */
     const char* system_said; /* the tests': the system's answer to every end asked (exitFields' lines); NULL asks it */
@@ -10306,10 +10306,11 @@ static GuiThemeKey page_row(const char* label, size_t at, size_t size, const cha
 static bool probe_unfinished(const char* folder, char* about, size_t size) {
     GuiProbeReport r;
     if (!gui_probe_read(folder, &r) || r.summary) return false;
-    snprintf(about, size,
-             snx_tr("Goes on with the run of edenprobe %s that ended before its summary, from its journal: cases so "
-                    "far %d, on its crash list %d"),
-             r.build[0] ? r.build : "?", r.cases, gui_probe_crashes(folder));
+    snprintf(
+        about, size,
+        snx_tr("Goes on with the run of %s %s that ended before its summary, from its journal: cases so far %d, on "
+               "its crash list %d"),
+        r.name[0] ? r.name : "Amberlith", r.build[0] ? r.build : "?", r.cases, gui_probe_crashes(folder));
     return true;
 }
 /* GPU Drivers' rows: for a game Global first, then System driver, a package each and Add Driver; the pick marked
@@ -10322,7 +10323,7 @@ static int drivers_fill(App* app) {
     int r = 0;
     memset(f, 0, sizeof *f);
     /* the launcher's page shows them; a game's page has none, and a row a game's page shares a number with is no
-       edenprobe row (an App starts zeroed: Global would be Continue and Clear Crash List) */
+       Amberlith row (an App starts zeroed: Global would be Continue and Clear Crash List) */
     app->drivers_continue = app->drivers_clear = -1;
     if (ini) {
         own = snx_ini_has(ini, "gpu_driver") ? snx_ini_value(ini, "gpu_driver") : NULL;
@@ -10386,21 +10387,21 @@ static int drivers_fill(App* app) {
     snprintf(f->value[r], sizeof f->value[r], "%s", lack ? lack : "");
     app->drivers_keys[r] = page_row(app->drivers_label[r], offsetof(GuiDriversForm, value) + r * sizeof f->value[0],
                                     sizeof f->value[0], app->drivers_about[r]);
-    /* the launcher's page: edenprobe Mode and Run edenprobe (gui/probe.h) */
+    /* the launcher's page: Amberlith Mode and Run Amberlith (gui/probe.h) */
     if (!app->drivers_game) {
         ++r;
-        snprintf(app->drivers_label[r], sizeof app->drivers_label[r], "%s", snx_tr("edenprobe Mode"));
+        snprintf(app->drivers_label[r], sizeof app->drivers_label[r], "%s", snx_tr("Amberlith Mode"));
         snprintf(app->drivers_about[r], sizeof app->drivers_about[r], "%s",
-                 snx_tr("What Run edenprobe runs. Quick: processor and graphics. Full: also fs (64 MiB written once), "
+                 snx_tr("What Run Amberlith runs. Quick: processor and graphics. Full: also fs (64 MiB written once), "
                         "video, audio, kernel and display"));
         snprintf(f->value[r], sizeof f->value[r], "%s", app->probe_full ? snx_tr("Full") : snx_tr("Quick"));
         app->drivers_keys[r] = page_row(app->drivers_label[r], offsetof(GuiDriversForm, value) + r * sizeof f->value[0],
                                         sizeof f->value[0], app->drivers_about[r]);
         ++r;
         char* folder = app->state_dir ? snx_path_join(app->state_dir, "probe") : NULL;
-        snprintf(app->drivers_label[r], sizeof app->drivers_label[r], "%s", snx_tr("Run edenprobe"));
+        snprintf(app->drivers_label[r], sizeof app->drivers_label[r], "%s", snx_tr("Run Amberlith"));
         snprintf(app->drivers_about[r], sizeof app->drivers_about[r],
-                 snx_tr("edenprobe's hardware probes played as a game with this GPU driver, in a data folder of their "
+                 snx_tr("Amberlith's hardware probes played as a game with this GPU driver, in a data folder of their "
                         "own with the default settings, %s; then their counts"),
                  folder ? folder : "?");
         app->drivers_keys[r] = page_row(app->drivers_label[r], 0, 0, app->drivers_about[r]);
@@ -10652,10 +10653,10 @@ static void driver_select(App* app, int r) {
         driver_pick(app);
     else if (r == app->drivers_tail)
         open_fetch(app);
-    else if (r == app->drivers_tail + 2) { /* edenprobe Mode: Quick and Full in turn */
+    else if (r == app->drivers_tail + 2) { /* Amberlith Mode: Quick and Full in turn */
         app->probe_full = !app->probe_full;
         if (!app_save(app))
-            snprintf(app->editor.note, sizeof app->editor.note, snx_tr("edenprobe Mode: %s"),
+            snprintf(app->editor.note, sizeof app->editor.note, snx_tr("Amberlith Mode: %s"),
                      app->probe_full ? snx_tr("Full") : snx_tr("Quick"));
         drivers_show(app, r);
     } else if (r == app->drivers_tail + 3)
@@ -13529,7 +13530,7 @@ static char* run_named_log(const char* run_log, bool* ran);
 #endif
 static void probe_start(App* app, bool continuing);
 /* the run that starts kept: program the game's it plays where the menu starts that itself (a phone; NULL where the
-   run's output names its log), name what the menu calls it; Run edenprobe's folder, cases and launch with it. Written
+   run's output names its log), name what the menu calls it; Run Amberlith's folder, cases and launch with it. Written
    beside the run log; a failure said in the launcher log, as a start after this one cannot say how the run ended */
 static void run_keep(App* app, const char* program, const char* name) {
     char *path = gui_last_run_path(app->run_log), why[1200];
@@ -13753,7 +13754,7 @@ static void run_when(long long started, char* out, size_t size) {
         snprintf(out, size, "?");
 }
 /* the start's look at the run the menu started last and did not see end: said in the launcher log; a game that did not
-   end with an exit, or Run edenprobe left without its summary, the Last Run page (setup_start); Run edenprobe that
+   end with an exit, or Run Amberlith left without its summary, the Last Run page (setup_start); Run Amberlith that
    reached its summary, its counts in a box, as its end would have shown them */
 static void last_run_look(App* app) {
     char *path = gui_last_run_path(app->run_log), why[1200], words[1100], when[32] = "?", launch[96] = "";
@@ -13973,7 +13974,7 @@ typedef enum {
 } SetupDoes;
 static SetupDoes setup_does(const App* app, int i) {
     int page = setup_page_of(app), list[SNX_NOTICES], backs = app->setup_top > 0;
-    if (page == SETUP_STOPPED) /* Run edenprobe's Continue and Not Now, a game's OK */
+    if (page == SETUP_STOPPED) /* Run Amberlith's Continue and Not Now, a game's OK */
         return app->stopped.probe ? (i == 0 ? SETUP_DOES_CONTINUE : SETUP_DOES_NOT_NOW) : SETUP_DOES_OK;
     if (page != SETUP_NOTICE && page != SETUP_LEFT) return SETUP_DOES_OTHER;
     if (setup_skips(app) && i == app->setup_choice.count) return SETUP_DOES_SKIP;
@@ -14130,7 +14131,7 @@ static void setup_enter(App* app) {
             app->setup_choice.count = 2; /* Keep, Overwrite */
             if (!app->setup_written) setup_type(app);
             break;
-        case SETUP_STOPPED: /* Continue, in focus, and Not Now for Run edenprobe; OK for a game */
+        case SETUP_STOPPED: /* Continue, in focus, and Not Now for Run Amberlith; OK for a game */
             app->setup_choice.count = app->stopped.probe ? 2 : 1;
             break;
         case SETUP_LEFT: /* what an older version left, a folder a page, looked for now */
@@ -14186,7 +14187,7 @@ static void setup_start(App* app) {
     if (app->setup_on) setup_enter(app);
     scale_keep(app);
 }
-/* the Last Run's Continue: Run edenprobe going on from its journal at once; what stops it said over the menu, where
+/* the Last Run's Continue: Run Amberlith going on from its journal at once; what stops it said over the menu, where
    GPU Drivers' note is not */
 static void stopped_continue(App* app) {
     app->editor.note[0] = 0;
@@ -14196,13 +14197,13 @@ static void stopped_continue(App* app) {
         if (app->editor.note[0])
             snprintf(said, sizeof said, "%s", app->editor.note);
         else
-            snprintf(said, sizeof said, snx_tr("Continue: %s holds no run of edenprobe left before its summary"),
+            snprintf(said, sizeof said, snx_tr("Continue: %s holds no run of Amberlith left before its summary"),
                      app->stopped.probe ? app->stopped.probe : "?");
         say_failure(app, said);
     }
 }
 static void setup_next(App* app);
-/* the setup's pages held by the Last Run's Continue, back on the page after it once Run edenprobe's run is over: its
+/* the setup's pages held by the Last Run's Continue, back on the page after it once Run Amberlith's run is over: its
    screen left and the box of its counts, or of why it did not start, closed */
 static void setup_resume(App* app) {
     if (!app->setup_held || app->probe_launch || app->menu.running || app->finished || app->confirm.shown ||
@@ -14416,11 +14417,11 @@ static void setup_take(App* app) {
             notice_choices(app, back);
             return;
         }
-        case SETUP_STOPPED: /* Continue goes on with Run edenprobe at once, the pages after it held until its run is over
+        case SETUP_STOPPED: /* Continue goes on with Run Amberlith at once, the pages after it held until its run is over
                                (setup_resume); Not Now leaves it to GPU Drivers' Continue */
             app->stopped_go_on = setup_does(app, choice) == SETUP_DOES_CONTINUE;
             if (app->stopped.probe)
-                gui_log("last run: %s", app->stopped_go_on ? "Continue: edenprobe goes on from its journal"
+                gui_log("last run: %s", app->stopped_go_on ? "Continue: Amberlith goes on from its journal"
                                                            : "Not Now: Settings > App > GPU Drivers' Continue goes on "
                                                              "with it later");
             if (app->stopped_go_on && app->setup_page + 1 < app->setup_count) {
@@ -14951,7 +14952,7 @@ static void setup_notices_box(App* app, GuiRect r) {
         setup_box(app, r, head, lines, k);
 }
 /* the Last Run page's box: the run, when it started, how it ended and the memory its process held as the system says
-   them, its game's log; for Run edenprobe the cases so far, which Continue goes on after */
+   them, its game's log; for Run Amberlith the cases so far, which Continue goes on after */
 static void setup_stopped_box(App* app, GuiRect r) {
     static const char* const said[] = {SNX_TR_NOOP("started"), SNX_TR_NOOP("end"), SNX_TR_NOOP("memory"),
                                        SNX_TR_NOOP("log")};
@@ -18741,7 +18742,7 @@ static bool run_start(App* app, const char* const* argv, char* file, bool native
     app->run_started_ms = SDL_max(now_ms(app), 1);
     if (debug_log(app)) run_said(app, "run", started ? "starts" : app->message, 0);
     if (started) { /* its record, and the kernel's OOM kills so far */
-        run_keep(app, NULL, app->probe_launch ? "edenprobe" : file ? snx_path_leaf(file) : "");
+        run_keep(app, NULL, app->probe_launch ? "Amberlith" : file ? snx_path_leaf(file) : "");
         app->oom_before = gui_oom_kills(app->oom_events, app->oom_file, sizeof app->oom_file);
     }
     if (started && app->run_log) {
@@ -19073,7 +19074,7 @@ static void launch(App* app, char* absolute, bool prepared) {
     app->dest_out = NULL;
     free(driver);
 }
-/* ---- Settings > App > GPU Drivers' Run edenprobe (gui/probe.h): edenprobe played as a game, launched again while
+/* ---- Settings > App > GPU Drivers' Run Amberlith (gui/probe.h): Amberlith played as a game, launched again while
    a launch that ended before the summary added cases, then its counts in a box ---- */
 /* the driver on the probe's NRO, in its data folder, with the launcher's GPU driver: a run's screen, as a game's */
 static void probe_launch(App* app) {
@@ -19117,7 +19118,7 @@ static void probe_launch(App* app) {
     free(data);
     free(driver);
 }
-/* Run edenprobe pressed, a new run, or Continue, the last one's going on: the first launch started, said in the log;
+/* Run Amberlith pressed, a new run, or Continue, the last one's going on: the first launch started, said in the log;
    why not, in the page's note */
 static void probe_start(App* app, bool continuing) {
     char why[700], words[160], *nro;
@@ -19125,20 +19126,22 @@ static void probe_start(App* app, bool continuing) {
     free(app->probe_folder);
     app->probe_folder = app->state_dir ? snx_path_join(app->state_dir, "probe") : NULL;
     if (!app->probe_folder) {
-        snprintf(app->editor.note, sizeof app->editor.note, "%s", snx_tr("Run edenprobe: no state folder to run in"));
+        snprintf(app->editor.note, sizeof app->editor.note, "%s", snx_tr("Run Amberlith: no state folder to run in"));
         return;
     }
 #ifdef SDL_PLATFORM_IOS /* the one driver thread */
     if (jobs_live(app)) {
         snprintf(app->editor.note, sizeof app->editor.note, "%s",
-                 snx_tr("Run edenprobe: a compile goes; the probes run once the queue ends"));
+                 snx_tr("Run Amberlith: a compile goes; the probes run once the queue ends"));
         return;
     }
 #endif
     nro = gui_probe_nro(app->probe_folder);
     if (!snx_is_file(nro)) {
         snprintf(app->editor.note, sizeof app->editor.note,
-                 snx_tr("Run edenprobe needs %s: edenprobe.nro from github.com/scarletnx/edenprobe/releases"), nro);
+                 snx_tr("Run Amberlith needs %s: a release's amberlith-<version>.nro from "
+                        "github.com/scarletnx/amberlith/releases, saved under that name"),
+                 nro);
         free(nro);
         return;
     }
@@ -19146,16 +19149,17 @@ static void probe_start(App* app, bool continuing) {
     if (continuing) {
         GuiProbeReport r;
         if (!gui_probe_read(app->probe_folder, &r) || r.summary) return; /* the row shows only for one */
-        gui_log("edenprobe: Continue goes on with the run of edenprobe %s in %s, cases so far %d, on its crash list %d",
-                r.build[0] ? r.build : "?", app->probe_folder, r.cases, gui_probe_crashes(app->probe_folder));
+        gui_log("amberlith: Continue goes on with the run of %s %s in %s, cases so far %d, on its crash list %d",
+                r.name[0] ? r.name : "Amberlith", r.build[0] ? r.build : "?", app->probe_folder, r.cases,
+                gui_probe_crashes(app->probe_folder));
         app->probe_cases = r.cases;
     } else if (gui_probe_words(app->probe_folder, app->probe_full, snx_build_commit(), words, sizeof words, why,
                                sizeof why) ||
                gui_probe_start(app->probe_folder, words, &cleared, why, sizeof why)) {
-        snprintf(app->editor.note, sizeof app->editor.note, snx_tr("Run edenprobe: %s"), why);
+        snprintf(app->editor.note, sizeof app->editor.note, snx_tr("Run Amberlith: %s"), why);
         return;
     } else {
-        gui_log("edenprobe: Run edenprobe starts a new run in %s, mode %s; cases on the crash list cleared: %d",
+        gui_log("amberlith: Run Amberlith starts a new run in %s, mode %s; cases on the crash list cleared: %d",
                 app->probe_folder, words, cleared);
         app->probe_cases = -1;
     }
@@ -19179,21 +19183,21 @@ static void probe_clear(App* app) {
         snprintf(app->editor.note, sizeof app->editor.note, snx_tr("Clear Crash List: %s"), why);
     else {
         snprintf(app->editor.note, sizeof app->editor.note, snx_tr("Crash list cleared, cases: %d"), cleared);
-        gui_log("edenprobe: Clear Crash List cleared %s's crash list, cases: %d", folder, cleared);
+        gui_log("amberlith: Clear Crash List cleared %s's crash list, cases: %d", folder, cleared);
     }
     free(folder);
     drivers_show(app, app->editor.row);
 }
 /* a launch of the probe ended (its game's process, or on Android its game's activity, end saying how where the menu
    looked: NULL elsewhere): launched again while it adds cases and has no summary, GUI_PROBE_RELAUNCHES times at most,
-   as edenprobe's journal goes on after the case it ended inside; else its counts in a box, over the menu */
+   as the probe's journal goes on after the case it ended inside; else its counts in a box, over the menu */
 static void probe_after(App* app, const RunEnd* end) {
     GuiProbeReport r;
     char said[700], *report, words[1100] = "";
     if (!gui_probe_read(app->probe_folder, &r)) { /* the run's lines say why, on its screen or in the log */
         app->probe_launch = 0;
         app->probe_row = -1; /* its screen stays, the menu after it */
-        snprintf(app->message, sizeof app->message, snx_tr("edenprobe left no report in %s"), app->probe_folder);
+        snprintf(app->message, sizeof app->message, snx_tr("Amberlith left no report in %s"), app->probe_folder);
         say_failure(app, app->message);
         return;
     }
@@ -19204,7 +19208,7 @@ static void probe_after(App* app, const RunEnd* end) {
         snprintf(words + strlen(words), sizeof words - strlen(words), ")");
     }
     if (!r.summary && r.cases > app->probe_cases && app->probe_launch <= GUI_PROBE_RELAUNCHES) {
-        gui_log("edenprobe: launch %d ended before the summary%s, cases so far %d; launching again", app->probe_launch,
+        gui_log("amberlith: launch %d ended before the summary%s, cases so far %d; launching again", app->probe_launch,
                 words, r.cases);
         app->probe_cases = r.cases;
         app->probe_launch++;

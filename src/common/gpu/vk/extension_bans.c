@@ -368,15 +368,17 @@ static int parse_key(Ban* b, char* why, size_t n) {
 }
 
 static int parse_retest(const Ban* b, char* why, size_t n) {
-    static const char* const kinds[] = {"headless:", "edenprobe:", "new:headless:", "new:edenprobe:"};
+    /* edenprobe: is Amberlith's name before 1.0.0, still read */
+    static const char* const kinds[] = {
+        "headless:", "amberlith:", "edenprobe:", "new:headless:", "new:amberlith:", "new:edenprobe:"};
     const char* text = g_extension_bans.text + b->at[VK_BAN_RETEST];
     uint32_t size = b->size[VK_BAN_RETEST];
-    for (int k = 0; k < 4; k++) {
+    for (size_t k = 0; k < sizeof kinds / sizeof kinds[0]; k++) {
         size_t kind = strlen(kinds[k]);
-        /* vulkan_headless with no arguments is a case; an edenprobe suite and a case to write need their words */
+        /* vulkan_headless with no arguments is a case; an Amberlith suite and a case to write need their words */
         if (size >= kind && !memcmp(text, kinds[k], kind) && (k == 0 || size > kind)) return 1;
     }
-    snprintf(why, n, "retest \"%.*s\" is not headless:ARGS, edenprobe:SUITE, new:headless:WHAT or new:edenprobe:WHAT",
+    snprintf(why, n, "retest \"%.*s\" is not headless:ARGS, amberlith:SUITE, new:headless:WHAT or new:amberlith:WHAT",
              (int)size, text);
     return 0;
 }

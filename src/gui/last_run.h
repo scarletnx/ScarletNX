@@ -12,7 +12,7 @@
 typedef struct {
     char* program;     /* the game's program it plays, NULL where the run's output names its log (a computer's) */
     char* name;        /* what the menu calls it: the program's leaf, or the file opened */
-    char* probe;       /* Run edenprobe's folder (gui/probe.h), NULL for a game */
+    char* probe;       /* Run Amberlith's folder (gui/probe.h), NULL for a game */
     long long started; /* seconds since 1970 */
     int cases, launch; /* the probe's: its cases before this launch (-1 none yet), and the launch's number from 1 */
 } GuiLastRun;

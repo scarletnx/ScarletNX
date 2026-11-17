@@ -41,7 +41,7 @@ keeps audits and measurements as they were taken.
 - [Profiling](dev/profiling.md): a walkthrough of the CPU and GPU profilers for a recompiled game, and how to read them
 - [Architecture](dev/architecture.md): AArch64 to a native module, the runtimes' boundaries and what each owns
 - [The recompiler as a library](dev/library.md): building, using and the limits of `libscarletnx-recompiler`
-- [edenprobe](dev/edenprobe.md): the hardware probes CI runs against a baseline
+- [Amberlith](dev/edenprobe.md) (edenprobe): the hardware probes CI runs against a baseline
 - [Coverage](dev/coverage.md): which of the runtime's code edenprobe, the tests and a game run, and the paths none of them reach
 - [Status and roadmap](dev/roadmap.md): what is next
 - [The CPU cost of a draw](dev/draw-cost.md): the plan to cut the GPU thread's work for each draw
