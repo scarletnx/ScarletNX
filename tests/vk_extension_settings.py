@@ -3,9 +3,8 @@
 # Copyright 2026 the ScarletNX contributors
 """Every Vulkan device extension a renderer can make its device with has a setting, vk_ext_<name>: its
 `setting @NAME` line in src/nx/runtime/settings.txt, which the extension bans and the player's on and off go through.
-A renderer is each source of src/ that makes a device (snx_vk_device_create or vkCreateDevice); what it can turn on is
-each device extension its code names, a VK_*_EXTENSION_NAME or a string that is the extension's name, in it or in a
-header of the repo it includes, comments left out. The registry (vk.xml) says which names are device extensions and
+A renderer is each source of src/ that makes a device (snx_vk_device_make, or vkCreateDevice); what it can turn on is each device extension its code names, a VK_*_EXTENSION_NAME or a string that is the extension's
+name, in it or in a header of the repo it includes, comments left out. The registry (vk.xml) says which names are device extensions and
 the name each macro stands for. The extensions without a line are listed with the files that name them, and the run
 fails.
 
@@ -17,7 +16,9 @@ import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-MAKERS = re.compile(r'\b(snx_vk_device_create|vkCreateDevice)\s*\(')
+MAKERS = re.compile(r'\b(snx_vk_device_make|vkCreateDevice)\s*\(')
+# the sources that define them: common/gpu/vk/device.c makes every renderer's device, and names no extension of its own
+DEFINES = ('bool snx_vk_device_make(',)
 INCLUDE = re.compile(r'^\s*#\s*include\s+"([^"]+)"', re.M)
 MACRO = re.compile(r'\b(VK_\w+_EXTENSION_NAME)\b')
 LITERAL = re.compile(r'"(VK_[A-Za-z0-9_]+)"')
@@ -61,10 +62,10 @@ def registry(path):
 
 
 def renderers(src):
-    """each source of src/ that makes a device, but the one that defines snx_vk_device_create"""
+    """each source of src/ that makes a device, but those that define the makers"""
     for path in sorted(src.rglob('*.c')):
         text = code(path.read_text(encoding='utf-8', errors='replace'))
-        if MAKERS.search(text) and 'VkResult snx_vk_device_create(' not in text:
+        if MAKERS.search(text) and not any(d in text for d in DEFINES):
             yield path
 
 

@@ -3,7 +3,7 @@
 #
 # FFmpeg and OpenSSL, which build with their own configure and make (cmake/ffmpeg.cmake, cmake/openssl.cmake), built
 # once for every build tree that would build them the same way. With SNX_DEPS_CACHE naming a folder, each build of
-# them lives there in a folder named after a hash of all that goes into it: the source's SHA-256, the configure line,
+# them lives there in a folder named after a hash of all that goes into it: the source's hash, the configure line,
 # the compiler and its version, the text of the system's C headers as the compiler reads them, and the cmake file
 # that builds it. A tree whose hash finds a finished folder uses it and builds neither; one that finds none builds as
 # without the cache and then publishes what it installed. A change to any of those inputs is another folder, so a
@@ -88,6 +88,43 @@ function(snx_deps_cached name out)
         message(STATUS "${name}: the build in ${dir}")
         set(${out}_FOUND TRUE PARENT_SCOPE)
     endif()
+endfunction()
+
+# snx_deps_binary_dir(<binary dir> <source dir>): the build folder of a dependency built from <source dir>, emptied
+# when a build from another source left it there, as a version's own folder in the package cache gives the source a new
+# path: CMake's configure refuses a folder another source configured, and Configure scripts build over it. The source
+# is the one the folder's snx-source.txt names, or for CMake the one its CMakeCache.txt names, which a branch from
+# before this function also writes
+function(snx_deps_binary_dir dir source)
+    cmake_path(SET source NORMALIZE "${source}")
+    set(marker "${dir}/snx-source.txt")
+    set(had "")
+    if(EXISTS "${marker}")
+        file(READ "${marker}" had)
+    endif()
+    if(EXISTS "${dir}/CMakeCache.txt")
+        file(STRINGS "${dir}/CMakeCache.txt" home REGEX "^CMAKE_HOME_DIRECTORY:INTERNAL=")
+        string(REGEX REPLACE "^CMAKE_HOME_DIRECTORY:INTERNAL=" "" home "${home}")
+        if(home)
+            cmake_path(SET home NORMALIZE "${home}")
+        endif()
+        if(home AND NOT home STREQUAL source)
+            set(had "${home}")
+        endif()
+    endif()
+    if(had STREQUAL source)
+        return()
+    endif()
+    if(EXISTS "${dir}")
+        if(had)
+            set(had "the source ${had}")
+        else()
+            set(had "a source it does not name")
+        endif()
+        message(STATUS "${dir} holds a build from ${had}, not ${source}: emptied, to be built again")
+        file(REMOVE_RECURSE "${dir}")
+    endif()
+    file(WRITE "${marker}" "${source}")
 endfunction()
 
 # snx_deps_publish(<ExternalProject> <name> <installed prefix> <dir>): after the install step, a copy of the prefix

@@ -5,6 +5,7 @@
    with no uploads submits as before; and the slots' uploads are begun afresh after each submission, past a turn of
    the ring. Each with the slots' fences, then with the ring's timeline semaphore where the device has one (Vulkan
    1.2). On whatever Vulkan device there is; none is a skip. */
+#include "common/gpu/vk/device.h"
 #include "common/gpu/vk/ring.h"
 #include "common/gpu/vk/window.h"
 #include <stdio.h>
@@ -17,19 +18,15 @@ typedef struct {
     uint32_t family;
     bool timeline; /* timelineSemaphore turned on */
 } Made;
-static bool make(VkPhysicalDevice phys, uint32_t family, void* user) {
+/* the device, with timeline semaphores where it has them (common/gpu/vk/device.h) */
+static bool choose(SnxVkChoice* c, void* user) {
     Made* m = user;
-    VkPhysicalDeviceProperties p;
-    vkGetPhysicalDeviceProperties(phys, &p);
     VkPhysicalDeviceTimelineSemaphoreFeatures timeline = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES};
-    VkPhysicalDeviceFeatures2 features = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
-                                          .pNext = p.apiVersion >= VK_API_VERSION_1_2 ? &timeline : NULL};
-    vkGetPhysicalDeviceFeatures2(phys, &features);
+    VkPhysicalDeviceFeatures2 features = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &timeline};
+    vkGetPhysicalDeviceFeatures2(c->phys, &features);
     features.features = (VkPhysicalDeviceFeatures){0};
-    if (snx_vk_device_create(phys, family, &features, NULL, 0, &m->device) != VK_SUCCESS) return false;
-    m->phys = phys;
-    m->family = family;
+    if (!snx_vk_choice_create(c, &features, NULL, NULL, 0)) return false;
     m->timeline = timeline.timelineSemaphore;
     return true;
 }
@@ -82,12 +79,22 @@ int main(void) {
         return 77;
     }
     Made m = {0};
-    if (!snx_vk_first_device(w.instance.instance, VK_API_VERSION_1_1, VK_QUEUE_COMPUTE_BIT, VK_NULL_HANDLE, make, &m)) {
-        printf("no Vulkan device: the ring's uploads skipped\n");
+    SnxVkDeviceRequest request = {.who = "vk_ring_uploads",
+                                  .none = "no Vulkan 1.2 device with a compute queue",
+                                  .instance = w.instance.instance,
+                                  .api = VK_API_VERSION_1_2,
+                                  .queues = VK_QUEUE_COMPUTE_BIT,
+                                  .choose = choose,
+                                  .user = &m};
+    SnxVkDevice made;
+    if (!snx_vk_device_make(&request, &made, why, sizeof why)) {
+        printf("%s: the ring's uploads %s\n", why, made.passed_over ? "skipped" : "failed");
         snx_vk_window_close(&w);
-        return 77;
+        return made.passed_over ? 77 : 1;
     }
-    volkLoadDevice(m.device);
+    m.device = made.device;
+    m.phys = made.phys;
+    m.family = made.family;
     VkQueue queue;
     vkGetDeviceQueue(m.device, m.family, 0, &queue);
     /* a buffer the host maps: the source word at 0, the copy's at 256 */

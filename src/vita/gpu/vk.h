@@ -21,9 +21,6 @@ typedef struct {
     SnxVkWindow host; /* the window (none headless), the instance and the surface */
     VkPhysicalDevice phys;
     VkDevice device;
-    /* the extensions the device is made with, whose commands are checked once it is (snx_vk_device_commands) */
-    const char* extensions[4];
-    uint32_t extension_count;
     VkQueue queue;
     uint32_t family;
     VkPhysicalDeviceProperties properties;

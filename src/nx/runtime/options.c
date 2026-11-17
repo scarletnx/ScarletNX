@@ -316,6 +316,11 @@ static void store_put(const char* key, const char* value) {
     }
     memcpy(e->value, value, n + 1);
 }
+/* a line the file's reading leaves, said with its number and its text */
+static void line_left(void* ctx, int line, const char* text, const char* does) {
+    (void)ctx;
+    WARN("settings: line %d of the file, \"%.60s\", %s\n", line, text, does);
+}
 /* a key the file gives twice takes its last line's value (sections only group the keys), and the file is written back
    with that one line */
 static void store_parse(char* text) {
@@ -323,6 +328,7 @@ static void store_parse(char* text) {
     char *key, *value;
     g_nstore = 0;
     snx_ini_start(&ini, text);
+    ini.left = line_left;
     while (snx_ini_next(&ini, &key, &value)) {
         const Entry* e = store_find(key);
         if (e && strcmp(e->value, value))

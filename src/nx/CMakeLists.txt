@@ -163,6 +163,8 @@ include("${PROJECT_SOURCE_DIR}/cmake/glsl.cmake")
 # vk_hash (gpu/vk/cmd.c); the device setup the 3DS and the Vita share (src/common/gpu/vk); the shader file's units
 # (gpu/vk/pipeline_file.c)
 target_link_libraries(snx_vk PUBLIC snx_xxhash snx_vk_common snx_fsr2 PRIVATE snx_zstd)
+# the vk_ext_* table (g_vk_extension_settings) its device takes (gpu/vk/device.c, common/gpu/vk/device_settings.h)
+target_link_libraries(snx_vk PUBLIC snx_settings_runtime)
 # AMD FidelityFX Super Resolution 2.2.1 (cmake/dependencies.cmake): AMD's library and Vulkan backend as they are
 # (C++, third-party flags, gpu/vk/fsr2/fsr2_compat.h before them for the MSVC names they use), with our shader blobs
 # (gpu/vk/fsr2/fsr2_blobs.c over the passes cmake/fsr2_shaders.cmake compiles) and C interface (gpu/vk/fsr2/fsr2.cpp)

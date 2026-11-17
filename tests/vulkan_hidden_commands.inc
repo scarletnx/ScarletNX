@@ -4,8 +4,9 @@
    device is made (gpu/vk/device.c) takes the hidden ones as missing, as from a driver that lists an extension without
    one of them, and the renderer runs on a device made again without that extension. log is what the renderer's start
    wrote. Each hidden command this knows is of an extension the first device would have had on where the driver lists
-   it, its feature is there and its setting's first line says on; one that would not is said and left out, and with
-   none left the run skips (77). Every other check then runs on the device made again */
+   it, its feature is there and its setting's line (said once the device stands) says on, or off for that command; one
+   that would not is said and left out, and with none left the run skips (77). Every other check then runs on the
+   device made again */
 static const struct {
     const char* command;
     const char* extension;
@@ -45,9 +46,12 @@ static int check_hidden_commands(const char* log) {
         int feature = !strcmp(extension, VK_EXT_DEPTH_CLAMP_CONTROL_EXTENSION_NAME) ? clamp.depthClampControl != 0
                                                                                     : cond.conditionalRendering != 0;
         snprintf(line, sizeof line, "vulkan: %s: ", extension);
-        const char* setting = strstr(log, line); /* the first device's line */
-        if (!snx_vk_extensions_has(&listed, extension) || !feature || !setting ||
-            strncmp(setting + strlen(line), "on (", 4)) {
+        const char* setting = strstr(log, line);
+        char lacked[192];
+        snprintf(lacked, sizeof lacked, "off (its driver lists it without %s", command);
+        int would = setting && (!strncmp(setting + strlen(line), "on (", 4) ||
+                                !strncmp(setting + strlen(line), lacked, strlen(lacked)));
+        if (!snx_vk_extensions_has(&listed, extension) || !feature || !would) {
             printf("hidden %s: %s would not be on (listed %d, feature %d, setting line \"%.60s\"): left out\n", command,
                    extension, snx_vk_extensions_has(&listed, extension), feature, setting ? setting : "none");
             continue;
