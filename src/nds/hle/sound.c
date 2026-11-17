@@ -442,7 +442,7 @@ static void stop_channel(int id, bool hold)
     uint32_t addr = 0x04000400 + (id*16);
 
     uint32_t cnt = spu_read(4, addr);
-    cnt &= ~(1<<31);
+    cnt &= ~(1u<<31);
     if (hold) cnt |= (1<<15);
     spu_write(4, addr, cnt);
 }
