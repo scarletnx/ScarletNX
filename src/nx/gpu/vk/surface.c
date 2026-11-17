@@ -1662,6 +1662,71 @@ static int publish_bands(Surf* s, u64 size, u32 mem_wgen, u64 gw0) {
     rt_publish_newer(s, size, 1);
     return 1;
 }
+/* the parts of a publish's span [0, size) that its flush leaves as guest memory has them, as ranges of the span in
+   r[n][2], sorted and apart: 0 when they are more than max, and the caller reads the span whole. A block linear target
+   of one 2D layer writes every GOB whose 64 bytes and 8 rows its image holds whole: the GOBs left are those at the
+   image's right and bottom edges, which hold padding, and the span past the layout's size. The CPU's newer runs are
+   read too, as the caller copies them out of the read (cpu_newer). Reading the span whole read every result over it,
+   about 35 copies a publish in a Switch 2 game's race, and the flush wrote over nearly all of them */
+static u32 publish_gaps(const Surf* s, u64 size, const CpuRuns* newer, u64 (*r)[2], u32 max) {
+    u32 n = 0;
+    u64 row = (u64)guest_w(s) * s->f.bpp, h = guest_h(s), base = 0;
+    u32 gx = (u32)((row + 63) / 64), gy = (u32)((h + 7) / 8), full_x = (u32)(row / 64), full_y = (u32)(h / 8);
+    u32 bh = bl_height((u32)h, s->bh), block = 1u << bh;
+    u32 blocks_y = (gy + block - 1) >> bh;
+    u64 gob = 512, bsize = gob << bh, layout = (u64)gx * blocks_y * bsize;
+#define GAP(lo_, hi_)                                                                                                  \
+    do {                                                                                                               \
+        u64 lo = (lo_), hi = (hi_) < size ? (hi_) : size;                                                              \
+        if (lo >= hi) break;                                                                                           \
+        if (n && r[n - 1][1] >= lo) {                                                                                  \
+            if (hi > r[n - 1][1]) r[n - 1][1] = hi;                                                                    \
+        } else {                                                                                                       \
+            if (n == max) return 0;                                                                                    \
+            r[n][0] = lo;                                                                                              \
+            r[n++][1] = hi;                                                                                            \
+        }                                                                                                              \
+    } while (0)
+    /* each layer, layer_size apart: blocks in layout order, where a block of a column the image spans whole is
+       left only below its rows, and a column it spans in part, or not at all, is left whole; then the bytes up to the
+       next layer */
+    for (u32 l = 0; l < s->layers; l++, base += s->layer_size) {
+        for (u32 by = 0; by < blocks_y; by++)
+            for (u32 bx = 0; bx < gx; bx++) {
+                u64 at = base + ((u64)by * gx + bx) * bsize;
+                u32 first = by << bh; /* the block's first GOB row */
+                if (bx >= full_x)
+                    GAP(at, at + bsize);
+                else if (first + block > full_y)
+                    GAP(at + (u64)(full_y > first ? full_y - first : 0) * gob, at + bsize);
+            }
+        GAP(base + layout, l + 1 < s->layers ? base + s->layer_size : size);
+    }
+#undef GAP
+    /* the CPU's runs, merged in order */
+    for (u32 i = 0; i < newer->n; i++) {
+        u64 lo = newer->run[i][0], hi = newer->run[i][1];
+        u32 k = 0;
+        while (k < n && r[k][1] < lo) k++;
+        if (k < n && r[k][0] <= hi) { /* overlaps or touches r[k] */
+            if (lo < r[k][0]) r[k][0] = lo;
+            if (hi > r[k][1]) r[k][1] = hi;
+            while (k + 1 < n && r[k + 1][0] <= r[k][1]) { /* and the ones after it it reaches */
+                if (r[k + 1][1] > r[k][1]) r[k][1] = r[k + 1][1];
+                for (u32 j = k + 1; j + 1 < n; j++) r[j][0] = r[j + 1][0], r[j][1] = r[j + 1][1];
+                n--;
+            }
+        } else {
+            if (n == max) return 0;
+            for (u32 j = n; j > k; j--) r[j][0] = r[j - 1][0], r[j][1] = r[j - 1][1];
+            r[k][0] = lo;
+            r[k][1] = hi;
+            n++;
+        }
+    }
+    return n ? n : (u32)-1; /* -1: nothing to read, the flush writes it all */
+}
+u64 g_vk_publish_reads_cut, g_vk_publish_bytes_skipped; /* publishes that read only their gaps, and the bytes left */
 int vk_surf_publish(Surf* s) {
     SNX_ZONE(z_publish, "surface publish");
     u64 size = flush_bytes(s);
@@ -1695,7 +1760,23 @@ int vk_surf_publish(Surf* s) {
     u64 row = (u64)guest_w(s) * s->f.bpp;
     int covers_all = s->bl && s->layers == 1 && !surf_volume(s) && kept == 0 &&
                      bl_size((u32)row, guest_h(s), s->bh) == row * guest_h(s);
-    if (!covers_all && !vk_guest_read_device(s->gva, size, r->buf, 0)) {
+    static u64 gaps[4096][2]; /* the renderer's thread alone publishes (vk_lock) */
+    u32 ngaps = !covers_all && s->bl && !surf_volume(s) && !depth_packs(s) &&
+                        (s->layers == 1 || s->layer_size >= rt_layer_bytes(s))
+                    ? publish_gaps(s, size, &newer, gaps, sizeof gaps / sizeof *gaps)
+                    : 0;
+    if (ngaps) { /* the parts the flush leaves alone */
+        u64 read = 0;
+        if (ngaps != (u32)-1) {
+            if (!vk_guest_read_owned_runs(s->gva, (const u64(*)[2])gaps, ngaps, r)) {
+                vk_own_res_unref(r);
+                return 0;
+            }
+            for (u32 i = 0; i < ngaps; i++) read += gaps[i][1] - gaps[i][0];
+        }
+        g_vk_publish_reads_cut++;
+        g_vk_publish_bytes_skipped += size - read;
+    } else if (!covers_all && !vk_guest_read_owned(s->gva, size, r, 0)) {
         vk_own_res_unref(r);
         return 0;
     }

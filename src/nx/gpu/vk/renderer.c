@@ -1070,6 +1070,21 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
             vk_finishes_log();
             vk_ww_stats(600);
             vk_descriptors_stats();
+            {
+                static u64 p0, b0;
+                LOG("vulkan: %llu publishes read only the bytes their flush leaves, %.1f MB not read%s",
+                    (unsigned long long)(g_vk_publish_reads_cut - p0),
+                    (double)(g_vk_publish_bytes_skipped - b0) / 1048576.0, "\n");
+                p0 = g_vk_publish_reads_cut;
+                b0 = g_vk_publish_bytes_skipped;
+            }
+            if (g_vk.has_copy_indirect) {
+                static u64 c0, n0;
+                LOG("vulkan: %llu indirect copies took %llu copies of kept results\n",
+                    (unsigned long long)(g_vk_copy_indirect_cmds - c0), (unsigned long long)(g_vk_copy_indirect_copies - n0));
+                c0 = g_vk_copy_indirect_cmds;
+                n0 = g_vk_copy_indirect_copies;
+            }
             /* what the GPU engines keep on the GPU (docs/layers/gpu/ownership.md), and what the CPU had to wait for */
             u64 by[OWN_BY_N];
             own_landings_by(by);

@@ -845,6 +845,31 @@ void rec_CmdBeginConditionalRenderingEXT(VkCommandBuffer cb, VkBuffer buf, VkDev
     rec_commit();
 }
 
+/* many copies from a list the GPU reads (VK_KHR_copy_memory_indirect) */
+typedef struct {
+    VkCommandBuffer cb;
+    VkAddressCopyFlagsKHR src, dst;
+    u32 count;
+    VkStridedDeviceAddressRangeKHR range;
+} CopyIndirectArgs;
+static void copy_indirect_call(const CopyIndirectArgs* x) {
+    VkCopyMemoryIndirectInfoKHR i = {.sType = VK_STRUCTURE_TYPE_COPY_MEMORY_INDIRECT_INFO_KHR,
+                                     .srcCopyFlags = x->src,
+                                     .dstCopyFlags = x->dst,
+                                     .copyCount = x->count,
+                                     .copyAddressRange = x->range};
+    vkCmdCopyMemoryIndirectKHR(x->cb, &i);
+}
+static void copy_indirect_run(const void* p) { copy_indirect_call(p); }
+void rec_CmdCopyMemoryIndirectKHR(VkCommandBuffer cb, const VkCopyMemoryIndirectInfoKHR* info) {
+    CopyIndirectArgs a = {cb, info->srcCopyFlags, info->dstCopyFlags, info->copyCount, info->copyAddressRange};
+    if (!rec_on(cb)) {
+        copy_indirect_call(&a);
+        return;
+    }
+    *(CopyIndirectArgs*)rec_push(copy_indirect_run, sizeof a) = a;
+    rec_commit();
+}
 /* ------------------------------------------------------------ commands with arrays, copied after their arguments */
 /* the packet's arrays follow its arguments, each at a multiple of 16 */
 #define REC_AL(n) (((n) + 15) & ~(u64)15)

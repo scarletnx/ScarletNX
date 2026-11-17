@@ -70,6 +70,9 @@ typedef struct {
     char driver_name[256]; /* its own name for itself (VkPhysicalDeviceDriverProperties) */
     u64 shader_generation; /* shader instruction invalidations, separate from memory epochs */
     int has_descriptor_buffers;
+    /* VK_KHR_copy_memory_indirect with device addresses: many buffer copies in one command, from a list the GPU reads
+       (owned.c's reads of GPU-owned results) */
+    int has_copy_indirect;
     int has_descriptor_heaps;
     int has_descriptor_heap_support; /* enabled device feature, retained during a draw's buffer fallback */
     VkPhysicalDeviceDescriptorBufferPropertiesEXT descriptor_props;
@@ -847,6 +850,8 @@ void vk_rec_queue(VkQueue q); /* before submitting to or presenting on q outside
 /* fn with a copy of size bytes of arg (a quarter of the ring at most), on the recording thread in order with the
    commands, submissions and presents queued around it (vk_lock); at once without that thread */
 void vk_rec_call(void (*fn)(const void* arg), const void* arg, u64 size);
+/* vkCmdCopyMemoryIndirectKHR: count copies listed at the device address range (g_vk.has_copy_indirect) */
+void rec_CmdCopyMemoryIndirectKHR(VkCommandBuffer cb, const VkCopyMemoryIndirectInfoKHR* info);
 /* Around every call on the graphics or the compute queue: a submit, a sparse bind, a present, a device wait. Vulkan
    requires a queue's calls to be externally synchronized, and they come from more than one thread: the recording
    thread submits and presents the frames and binds sparse memory (record.c, memory.c) without vk_lock, which the GPU
@@ -1557,6 +1562,7 @@ typedef struct VkOwnRes {
     u8 by;       /* VK_OWN_BY_*: what made it, for the statistics */
     u8 host;     /* buf is in system memory, for want of the device's: not pooled when it is let go */
     struct VkOwnRes* later; /* owned.c's list of those released while another thread held vk_lock */
+    VkDeviceAddress addr; /* buf's device address, 0 until an indirect copy asks for it (g_vk.has_copy_indirect) */
 } VkOwnRes;
 /* owned.c: the resources released while another thread held vk_lock, freed by the next outermost vk_unlock */
 int vk_own_later_any(void);
@@ -1645,6 +1651,13 @@ void vk_guest_read_counts(u64 counts[2][VK_GREAD_N]);
 int vk_guest_in_place(u64 gva, u64 size, u64 align, VkBuffer* buf, u64* off);
 /* the same into device memory (buf, which the CPU doesn't map): 0 when staging has no room */
 int vk_guest_read_device(u64 gva, u64 size, VkBuffer buf, u64 at);
+/* as vk_guest_read_device into a kept result's buffer: its copies from other results go in one indirect copy where
+   the device has them (g_vk.has_copy_indirect) */
+int vk_guest_read_owned(u64 gva, u64 size, VkOwnRes* dst, u64 at);
+/* the runs [runs[i][0], runs[i][1]) of guest [gva, ...) into dst at the same offsets, with one barrier after them */
+int vk_guest_read_owned_runs(u64 gva, const u64 (*runs)[2], u32 n, VkOwnRes* dst);
+extern u64 g_vk_publish_reads_cut, g_vk_publish_bytes_skipped; /* surface.c: publishes that read their gaps alone */
+extern u64 g_vk_copy_indirect_cmds, g_vk_copy_indirect_copies; /* owned.c: indirect copies, and the copies in them */
 /* the same in the submission's upload command buffer (vk_cmd_upload), ahead of its rendering passes, when every byte
    was written before this submission; 0 with nothing recorded otherwise, or when staging has no room */
 int vk_guest_read_ahead(u64 gva, u64 size, VkBuffer buf, u64 at);
