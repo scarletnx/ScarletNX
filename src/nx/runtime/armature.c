@@ -231,6 +231,23 @@ static u8 on_trap(void* h, void* e, u64 a) {
     return 1;
 }
 
+/* IC IVAU: a mod's write through a copy of the code (a view without the alias pool) goes into the code here, as
+   rt_code_changed does for the AOT code. Armature drops what it compiled from the line, and from the line of the
+   code that a view's address shows */
+static u64 on_cache_line(void* h, u64 a) {
+    u64 code = a;
+    (void)h;
+    if (!svc_code_line(a, &code)) return code;
+    /* the code changed: as jit_code_invalidate does for the AOT code, the slots of the line go, and the hooks come
+       back where the game left their first word (hook_restore), else their hooks are invalidated, the mod's code runs
+       and its trampoline's jump finds the body adapter */
+    for (u64 at = code & ~(u64)3; at < code + 64; at += 4)
+        if (at >= g_code_lo && at < g_code_hi && g_disp)
+            __atomic_store_n(&g_disp[(at - g_code_lo) >> 2], NULL, __ATOMIC_RELEASE);
+    hook_restore(code, 64);
+    return code;
+}
+
 /* ---- runs ---- */
 
 static void* thread_context(void) {
@@ -335,7 +352,7 @@ void armature_init(void) {
     ArmMemory m = {NULL,          39,           3,           g_mem,        m_read_u8,    m_read_u16,
                    m_read_u32,    m_read_u64,   m_read_v128, m_write_u8,   m_write_u16,  m_write_u32,
                    m_write_u64,   m_write_v128, m_is_mapped, m_signal};
-    ArmTraps traps = {NULL, is_trapped, on_trap, NULL};
+    ArmTraps traps = {NULL, is_trapped, on_trap, on_cache_line};
     if (!g_settings.armature_jit[0]) return;
     if (g_arm_mod) fatal("armature: the game is a 32-bit program, and Armature runs A64 only");
     g_armature.lib = plat_dl_open(g_settings.armature_jit);
