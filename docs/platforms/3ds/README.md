@@ -641,9 +641,13 @@ board FCRAM past the application pool.
 
 Presentation is **Vulkan only** (volk, with no linked Vulkan library):
 the device converts the guest framebuffers to RGBA8 and shows the landscape-
-rotated screens live in an SDL3 Vulkan window through a real swapchain, the top
-screen above the bottom one as on the console, the bottom one centred under it.
-The pair keeps its shape in a window of any size. The 3DS display's Separate
+rotated screens live in an SDL3 Vulkan window through a real swapchain, in the
+arrangement the 3DS display's Screen layout setting picks: the top screen above
+the bottom one as on the console, one screen alone, the large screen at the left
+with the other at its own size over 2.25 (Azahar's Android default), centred
+vertically at the large one's right, or side by side, each screen keeping its
+shape in a window large enough for it. Screen swap trades the screens' places,
+and picks the bottom screen in the one-screen layout. The 3DS display's Separate
 screens setting gives each screen a window of its own instead, which fills with
 that screen. Top screen resolution and Bottom screen resolution scale the 3D
 rendering of that screen, 1 to 16 times the console's 400x240 and 320x240, and
@@ -679,6 +683,10 @@ screen takes its own setting's scale and no other's, both screens present, and t
 dumps stay the framebuffer's own size whatever the scale. With Separate screens on, that
 test skips unless the device presents to both windows, and it skips where the host makes no
 window (CI).
+The one window's layouts are checked as a pure function by `3ds_layouts`: the stacked and one-screen layouts at
+480x400, the large and side layouts at several windows (some swapped), a narrow window and a wide one where both
+screens still get a rectangle of their console's shape inside the window and over no part of the other, a screen
+with no frame yet, and a value past the four shown as stacked.
 A window minimized and restored gets its swapchain back, checked by `3ds_windows_minimized`
 (it skips where the host keeps the swapchain or does not minimize). On Windows a minimized
 window's surface is 0x0 and no swapchain can be made at that size, so the first frame after

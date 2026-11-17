@@ -1077,6 +1077,36 @@ static void scaled_layout(SnxCtrMemory* m) {
     printf("%-24s the top at %ux; a press on the bottom screen's pixel (160, 220) %s, the touch (%u, %u): %s\n",
            s->name, scaled.scale, in.touch ? "touched it" : "missed it", in.touch_x, in.touch_y, pass ? "ok" : "FAIL");
     if (!pass) ++failures;
+    /* a press on the bottom screen's pixel (160, 220) under each layout that shows the bottom screen, with and without
+       the swap (the one-screen layout only with the swap). The press is the centre of that pixel in the rectangle
+       snx_ctr_layout_rects gives this window, so the presenter's screen_rect and touch mapping must use the same
+       layout and swap to land on it */
+    static const struct {
+        int layout;
+        bool swap;
+    } views[] = {{0, false}, {0, true}, {1, true}, {2, false}, {2, true}, {3, false}, {3, true}};
+    const SnxCtrScreens sizes = {400, 240, 320, 240};
+    const int layout_was = g_settings.ctr_screen_layout, swap_was = g_settings.ctr_screen_swap;
+    for (size_t i = 0; i < sizeof views / sizeof views[0]; ++i) {
+        g_settings.ctr_screen_layout = views[i].layout;
+        g_settings.ctr_screen_swap = views[i].swap;
+        SnxCtrRects rects = {0};
+        bool laid =
+            snx_ctr_layout_rects((SnxCtrLayout)views[i].layout, views[i].swap, (uint32_t)w, (uint32_t)h, sizes, &rects);
+        float px = (float)rects.bottom.x + 160.5f * (float)rects.bottom.width / 320.0f;
+        float py = (float)rects.bottom.y + 220.5f * (float)rects.bottom.height / 240.0f;
+        event_mouse(SDL_EVENT_MOUSE_BUTTON_DOWN, id, px, py);
+        snx_ctr_input_read(&in);
+        event_mouse(SDL_EVENT_MOUSE_BUTTON_UP, id, px, py);
+        bool hit = laid && in.touch && in.touch_x == 160 && in.touch_y == 220;
+        printf("%-24s layout %d, swap %s: a press on the bottom screen's pixel (160, 220) %s, "
+               "the touch (%u, %u): %s\n",
+               s->name, views[i].layout, views[i].swap ? "on" : "off", hit ? "touched it" : "missed it", in.touch_x,
+               in.touch_y, hit ? "ok" : "FAIL");
+        if (!hit) ++failures;
+    }
+    g_settings.ctr_screen_layout = layout_was;
+    g_settings.ctr_screen_swap = swap_was;
     free(s);
     g_settings.ctr_top_resolution = top;
 }
