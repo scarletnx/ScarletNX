@@ -1122,15 +1122,20 @@ static void test_stress(void) {
         g_resolve_lo = g_sa;
         g_resolve_size = 0x20000;
         u64 mid_at = 0; /* TEMP: the first piece watched after a resolve came, 0 for none */
+        pthread_t late;
+        /* the watches go on under the producer's lock, as own_watch's callers hold it (the renderer watches each run
+           of a target under vk_lock). Without it, such a late fault's landing came between two of the calls: it
+           resolved the watches made so far, landed the round's owner whole, and the calls after it watched the rest
+           again, for a second resolve */
+        producer_lock();
         for (i = 0; i < 0x20000; i += 0x1800) {
             if (!mid_at && i && __atomic_load_n(&g_resolves, __ATOMIC_ACQUIRE) != resolves) mid_at = i;
-            if (g_late && i == 2 * 0x1800) { /* TEMP: a late fault's landing, on the first page, comes here */
-                pthread_t late;
+            if (g_late && i == 2 * 0x1800) /* TEMP: a late fault's landing, on the first page, comes here */
                 pthread_create(&late, NULL, late_lander, NULL);
-                pthread_join(late, NULL);
-            }
             CHECK(own_watch(g_sa + i, 0x20000 - i < 0x1800 ? 0x20000 - i : 0x1800) == 0);
         }
+        producer_unlock();
+        if (g_late) pthread_join(late, NULL); /* TEMP */
         int before_readers = __atomic_load_n(&g_resolves, __ATOMIC_ACQUIRE) - resolves; /* TEMP */
         for (i = 0; i < THREADS; i++) pthread_create(&t[i], NULL, reader, (void*)(uintptr_t)(i + 1));
         for (i = 0; i < THREADS; i++) pthread_join(t[i], NULL);
