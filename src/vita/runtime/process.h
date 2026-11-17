@@ -155,7 +155,7 @@ typedef struct {
         uint32_t thread; /* the index in threads */
         struct {
             int32_t count, max;
-            uint32_t attr;
+            uint32_t attr, cancelled; /* cancelled: how many times sceKernelCancelSema ran, which a waiter notices */
         } sema;
         struct {
             uint32_t owner; /* the owning thread's UID, 0 for none */
