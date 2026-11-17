@@ -1,8 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "vita/gpu/vk.h"
-#include "common/gpu/vk/extension_bans.h"
-#include "common/gpu/vk/extension_commands.h"
+#include "common/gpu/vk/device_settings.h"
 #include "common/gpu/vk/notice.h"
 #include "common/utilities/window_icon.h"
 #include "snx_settings.h"
@@ -37,55 +36,18 @@ static uint32_t extension_needs(bool windowed, VkExtensionNeed* need) {
     if (windowed) need[needs++] = (VkExtensionNeed){VK_KHR_SWAPCHAIN_EXTENSION_NAME, "the window is drawn with it"};
     return needs;
 }
-/* the device as the extension bans read it (extension_bans.h) */
-static void ban_device(VkPhysicalDevice phys) {
-    VkPhysicalDeviceVulkan12Properties driver = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_PROPERTIES};
-    VkPhysicalDeviceProperties2 props = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &driver};
-    vkGetPhysicalDeviceProperties2(phys, &props);
-    VkBanDevice bd = {
-        props.properties.deviceName,    driver.driverName,         driver.driverInfo, (uint32_t)driver.driverID,
-        props.properties.driverVersion, props.properties.deviceID, vk_ban_system()};
-    vk_bans_device(&bd);
-}
-/* A device of this physical device and queue family, if it has what the Vita needs (snx_vk_first_device's make) */
-static bool make_device(VkPhysicalDevice phys, uint32_t family, void* user) {
+/* The Vita's device on a physical device and queue family (common/gpu/vk/device.h) */
+static bool choose(SnxVkChoice* c, void* user) {
     VitaVk* v = user;
-    SnxVkExtensions list;
-    if (!snx_vk_device_extensions(phys, &list)) return false;
-    /* the extension settings (vk_ext_*) first, as on a Switch game's device: an off one leaves the list, an on one goes
-       over its bans; then the extensions a driver is banned from leave it, and those a device made before found
-       without a command (vk_bans_lacking), before anything reads it */
-    ban_device(phys);
-    VkExtensionSetting settings[160];
-    uint32_t count = 0;
-    for (int i = 0; i < g_vk_extension_settings_count && count < sizeof settings / sizeof *settings; i++)
-        settings[count++] = (VkExtensionSetting){g_vk_extension_settings[i].name, g_vk_extension_settings[i].value,
-                                                 g_vk_extension_settings[i].core};
-    VkExtensionNeed need[2];
-    char err[512];
-    if (!vk_extension_settings(&list, settings, count, need, extension_needs(v->host.surface != VK_NULL_HANDLE, need),
-                               err, sizeof err)) {
-        fprintf(stderr, "scarletnx-vita: settings: %s\n", err);
-        snx_vk_extensions_free(&list);
-        return false;
-    }
-    vk_bans_filter(&list, ban_say);
-    const char* extensions[4];
-    uint32_t n = 0;
-    bool ok = snx_vk_extensions_has(&list, VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME);
-    extensions[n++] = VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME;
-    if (v->host.surface) {
-        ok = ok && snx_vk_extensions_has(&list, VK_KHR_SWAPCHAIN_EXTENSION_NAME);
-        extensions[n++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
-    }
+    VkPhysicalDevice phys = c->phys;
+    if (!snx_vk_choice_enable(c, VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME))
+        return snx_vk_choice_refuse(c, "has no VK_EXT_external_memory_host to import the guest's memory");
+    if (v->host.surface && !snx_vk_choice_enable(c, VK_KHR_SWAPCHAIN_EXTENSION_NAME))
+        return snx_vk_choice_refuse(c, "has no VK_KHR_swapchain to draw the window with");
     /* fragment programs that read their pixel's color (the program flag FRAGCOLOR_USED): the color attachment read
        as an input attachment while it is rendered to, in the order its primitives are drawn when the device keeps it */
-    bool local_read = snx_vk_extensions_has(&list, VK_KHR_DYNAMIC_RENDERING_LOCAL_READ_EXTENSION_NAME);
-    bool raster_order = snx_vk_extensions_has(&list, VK_EXT_RASTERIZATION_ORDER_ATTACHMENT_ACCESS_EXTENSION_NAME);
-    if (local_read) extensions[n++] = VK_KHR_DYNAMIC_RENDERING_LOCAL_READ_EXTENSION_NAME;
-    if (raster_order) extensions[n++] = VK_EXT_RASTERIZATION_ORDER_ATTACHMENT_ACCESS_EXTENSION_NAME;
-    snx_vk_extensions_free(&list);
-    if (!ok) return false;
+    bool local_read = snx_vk_choice_enable(c, VK_KHR_DYNAMIC_RENDERING_LOCAL_READ_EXTENSION_NAME);
+    bool raster_order = snx_vk_choice_enable(c, VK_EXT_RASTERIZATION_ORDER_ATTACHMENT_ACCESS_EXTENSION_NAME);
     VkPhysicalDeviceDynamicRenderingLocalReadFeaturesKHR lr = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_LOCAL_READ_FEATURES_KHR};
     VkPhysicalDeviceRasterizationOrderAttachmentAccessFeaturesEXT ro = {
@@ -96,7 +58,8 @@ static bool make_device(VkPhysicalDevice phys, uint32_t family, void* user) {
     void* const query[] = {&features, &v12, &v13, &ro, &lr};
     snx_vk_chain(query, sizeof query / sizeof *query);
     vkGetPhysicalDeviceFeatures2(phys, &features);
-    if (!v13.dynamicRendering || !v13.synchronization2) return false;
+    if (!v13.dynamicRendering || !v13.synchronization2)
+        return snx_vk_choice_refuse(c, "has no dynamicRendering or no synchronization2");
     /* without timeline semaphores the ring waits for the fence of each slot (the table turns them off on Android) */
     if (vk_ban("timelineSemaphore", v12.timelineSemaphore, ban_say)) v12.timelineSemaphore = VK_FALSE;
     v->local_read = local_read && lr.dynamicRenderingLocalRead;
@@ -121,11 +84,7 @@ static bool make_device(VkPhysicalDevice phys, uint32_t family, void* user) {
     void* const enable[] = {&want, &want12, &want13, v->raster_order ? &want_ro : NULL,
                             v->local_read ? &want_lr : NULL};
     snx_vk_chain(enable, sizeof enable / sizeof *enable);
-    if (snx_vk_device_create(phys, family, &want, extensions, n, &v->device) != VK_SUCCESS) return false;
-    v->phys = phys;
-    v->family = family;
-    memcpy(v->extensions, extensions, n * sizeof *extensions);
-    v->extension_count = n;
+    if (!snx_vk_choice_create(c, &want, NULL, NULL, 0)) return false;
     VkPhysicalDeviceExternalMemoryHostPropertiesEXT host = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_MEMORY_HOST_PROPERTIES_EXT};
     VkPhysicalDeviceVulkan12Properties p12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_PROPERTIES,
@@ -168,41 +127,27 @@ bool vita_vk_init(const char* title, char* error, size_t error_size) {
     if (!snx_vk_window_open("scarletnx-vita", title ? title : "ScarletNX Vita", 960, 544, &v->host, error, error_size))
         return false;
     if (v->host.window) snx_window_icon(v->host.window);
-    /* the drivers known to break an extension or feature, read before a device is made (make_device), as the 3DS
-       does: a table the build carries that does not read is the build's fault, a key of vulkan_ban_ignore the table
-       has not is the player's */
-    if (!vk_bans_load(snx_vk_extension_bans_text, error, error_size) ||
-        !vk_bans_ignore(g_settings.vulkan_ban_ignore, error, error_size) ||
-        !snx_vk_hide_check(g_settings.vulkan_hidden_commands, error, error_size)) {
+    VkExtensionNeed need[2];
+    VkExtensionSetting settings[VK_EXTENSION_SETTINGS];
+    SnxVkDeviceRequest request = {.who = "scarletnx-vita",
+                                  .none = "no Vulkan 1.3 device with dynamic rendering and VK_EXT_external_memory_host",
+                                  .instance = v->host.instance.instance,
+                                  .api = VK_API_VERSION_1_3,
+                                  .queues = VK_QUEUE_GRAPHICS_BIT,
+                                  .surface = v->host.surface,
+                                  .choose = choose,
+                                  .user = v,
+                                  .need = need,
+                                  .needs = extension_needs(v->host.surface != VK_NULL_HANDLE, need)};
+    snx_vk_device_settings(&request, settings);
+    SnxVkDevice device;
+    if (!snx_vk_device_make(&request, &device, error, error_size)) {
         vita_vk_free();
         return false;
     }
-    /* each command of each extension the device is made with, as on a Switch game's device: one its driver gives no
-       pointer for takes the extension out of the device made again, once (snx_vk_device_commands) */
-    for (int again = 0;; again = 1) {
-        if (!snx_vk_first_device(v->host.instance.instance, VK_API_VERSION_1_3, VK_QUEUE_GRAPHICS_BIT, v->host.surface,
-                                 make_device, v)) {
-            snprintf(error, error_size, "no Vulkan 1.3 device with dynamic rendering and VK_EXT_external_memory_host");
-            vita_vk_free();
-            return false;
-        }
-        volkLoadDevice(v->device);
-        VkPhysicalDeviceProperties made_on;
-        vkGetPhysicalDeviceProperties(v->phys, &made_on);
-        VkExtensionNeed need[2];
-        uint32_t needs = extension_needs(v->host.surface != VK_NULL_HANDLE, need);
-        int lacks =
-            snx_vk_device_commands(v->device, made_on.deviceName, VK_API_VERSION_1_3, v->extensions, v->extension_count,
-                                   need, needs, g_settings.vulkan_hidden_commands, again, ban_say, error, error_size);
-        if (!lacks) break;
-        vkDestroyDevice(v->device, NULL);
-        v->device = VK_NULL_HANDLE;
-        if (lacks < 0) {
-            fprintf(stderr, "scarletnx-vita: %s\n", error);
-            vita_vk_free();
-            return false;
-        }
-    }
+    v->phys = device.phys;
+    v->device = device.device;
+    v->family = device.family;
     vkGetDeviceQueue(v->device, v->family, 0, &v->queue);
     vkGetPhysicalDeviceProperties(v->phys, &v->properties);
     vkGetPhysicalDeviceMemoryProperties(v->phys, &v->memory_properties);

@@ -33,7 +33,36 @@ static void read_all(const char* text, size_t size, char* out, size_t room) {
         }                                                                                                              \
     } while (0)
 
+/* the lines the reading leaves, as the caller is told them: line: text: what that does */
+static char g_left[512];
+static void left(void* ctx, int line, const char* text, const char* does) {
+    size_t used = strlen(g_left);
+    assert(ctx == g_left);
+    snprintf(g_left + used, sizeof g_left - used, "%d: %s: %s\n", line, text, does);
+}
+static int check_left(void) {
+    static char text[] =
+        "a=1\n\nnothing here\n[open\nb=2\n[0123456789abcdef0123456789abcdef]\nc=3\n; note\n[ok]\nd=4\n";
+    static const char expect[] =
+        "3: nothing here: has no = and sets nothing\n"
+        "4: [open: opens a section with no ]: the keys after it are read as of no section\n"
+        "6: [0123456789abcdef0123456789abcdef]: names a section longer than 31 bytes: the keys after it are read as "
+        "of no section\n";
+    SnxIni ini;
+    char *key, *value;
+    snx_ini_start(&ini, text);
+    ini.left = left;
+    ini.ctx = g_left;
+    while (snx_ini_next(&ini, &key, &value)) {}
+    if (strcmp(g_left, expect)) {
+        printf("the lines left, told as\n%s--- not ---\n%s", g_left, expect);
+        return 1;
+    }
+    return 0;
+}
+
 int main(void) {
+    if (check_left()) return 1;
     /* keys before a section, sections, comments, blank lines, a line without = */
     CHECK("a = 1\n[one]\n; note\n# note\n\nnothing here\nb=2\n[two]\nc= 3 ", "/a=1\none/b=2\ntwo/c=3\n");
     /* spaces, tabs and a last CR around a key and its value; = inside a value; quotes are the caller's */

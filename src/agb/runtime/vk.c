@@ -5,6 +5,7 @@
    renderer shows it (host.c) */
 #include "agb/runtime/vk.h"
 #include "agb/ppu/ppu.h"
+#include "common/gpu/vk/device_settings.h"
 #include "common/gpu/vk/notice.h"
 #include "common/gpu/vk/ring.h"
 #include "common/gpu/vk/swapchain.h"
@@ -39,24 +40,16 @@ struct AgbVk {
     SnxVkNotice* notice;
 };
 
-static bool make_device(VkPhysicalDevice phys, uint32_t family, void* user) {
-    AgbVk* v = user;
-    SnxVkExtensions list;
-    const char* extensions[2];
-    uint32_t n = 0;
-    if (!snx_vk_device_extensions(phys, &list)) return false;
-    bool ok = snx_vk_extensions_has(&list, VK_KHR_SWAPCHAIN_EXTENSION_NAME);
-    extensions[n++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
-    if (snx_vk_extensions_has(&list, "VK_KHR_portability_subset")) extensions[n++] = "VK_KHR_portability_subset";
-    snx_vk_extensions_free(&list);
-    if (!ok) return false;
+/* the GBA's device on a physical device and queue family (common/gpu/vk/device.h) */
+static bool choose(SnxVkChoice* c, void* user) {
+    (void)user;
+    if (!snx_vk_choice_enable(c, VK_KHR_SWAPCHAIN_EXTENSION_NAME))
+        return snx_vk_choice_refuse(c, "has no VK_KHR_swapchain to draw the window with");
+    snx_vk_choice_enable(c, "VK_KHR_portability_subset");
     VkPhysicalDeviceVulkan13Features want13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
                                                .synchronization2 = VK_TRUE}; /* every 1.3 device has it */
     VkPhysicalDeviceFeatures2 want = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &want13};
-    if (snx_vk_device_create(phys, family, &want, extensions, n, &v->device) != VK_SUCCESS) return false;
-    v->phys = phys;
-    v->family = family;
-    return true;
+    return snx_vk_choice_create(c, &want, NULL, NULL, 0);
 }
 
 /* the window's swapchain, made anew for its size, its images at the display's refresh as SDL's renderer has them */
@@ -156,13 +149,29 @@ AgbVk* agb_vk_open(const char* title, int width, int height, bool fullscreen, ch
     if (fullscreen && !SDL_SetWindowFullscreen(v->host.window, true))
         fprintf(stderr, "scarletnx-agb: the window cannot go fullscreen: %s\n", SDL_GetError());
     snx_window_icon(v->host.window);
-    if (!snx_vk_first_device(v->host.instance.instance, VK_API_VERSION_1_3, VK_QUEUE_GRAPHICS_BIT, v->host.surface,
-                             make_device, v)) {
-        snprintf(error, error_size, "no Vulkan 1.3 device that presents to the window");
+    /* what the GBA can't go without: the window's swapchain, and a portability driver's subset */
+    const VkExtensionNeed need[2] = {
+        {VK_KHR_SWAPCHAIN_EXTENSION_NAME, "the window is drawn with it"},
+        {"VK_KHR_portability_subset", "Vulkan has a portability driver's subset on wherever the driver lists it"}};
+    VkExtensionSetting settings[VK_EXTENSION_SETTINGS];
+    SnxVkDeviceRequest request = {.who = "scarletnx-agb",
+                                  .none = "no Vulkan 1.3 device that presents to the window",
+                                  .instance = v->host.instance.instance,
+                                  .api = VK_API_VERSION_1_3,
+                                  .queues = VK_QUEUE_GRAPHICS_BIT,
+                                  .surface = v->host.surface,
+                                  .choose = choose,
+                                  .need = need,
+                                  .needs = 2};
+    snx_vk_device_settings(&request, settings);
+    SnxVkDevice device;
+    if (!snx_vk_device_make(&request, &device, error, error_size)) {
         agb_vk_close(v);
         return NULL;
     }
-    volkLoadDevice(v->device);
+    v->phys = device.phys;
+    v->device = device.device;
+    v->family = device.family;
     vkGetDeviceQueue(v->device, v->family, 0, &v->queue);
     VkPhysicalDeviceProperties properties;
     vkGetPhysicalDeviceProperties(v->phys, &properties);

@@ -24,14 +24,14 @@ typedef struct {
     uint32_t low_at, low_size, high_at, high_size; /* the bounds' versions as the table writes them */
     unsigned char off, low_bound, high_bound, extension, claimed;
     unsigned char ignored, forced; /* gone over: by vulkan_ban_ignore, by the extension's setting set on */
+    unsigned char held;            /* the last vk_bans_filter took its extension out of the list, or warned of it */
 } Ban;
 
-#define EXTENSION_SETTINGS 160
-/* the extension settings as vk_extension_settings found them, for vk_extension_settings_say */
+/* the extension settings as vk_extension_settings found them, for vk_extension_setting_say */
 enum { SETTING_AUTO, SETTING_ON, SETTING_OFF };
 static struct {
-    const char* name[EXTENSION_SETTINGS];
-    unsigned char value[EXTENSION_SETTINGS], had[EXTENSION_SETTINGS], core[EXTENSION_SETTINGS];
+    const char* name[VK_EXTENSION_SETTINGS];
+    unsigned char value[VK_EXTENSION_SETTINGS], had[VK_EXTENSION_SETTINGS], core[VK_EXTENSION_SETTINGS];
     uint32_t count;
 } g_extension_settings;
 
@@ -45,7 +45,7 @@ static struct {
     /* the extensions whose driver gave no pointer for a command they require, with that command (vk_bans_lacking) */
     struct {
         char extension[VK_MAX_EXTENSION_NAME_SIZE], command[VK_MAX_EXTENSION_NAME_SIZE];
-        int hidden;
+        int hidden, taken; /* taken: the last vk_bans_filter took the extension out of the list */
     } lacking[VK_BANS_LACKING];
     uint32_t nlacking;
 } g_extension_bans;
@@ -773,16 +773,28 @@ static void lacking_text(const char* extension, char* out, size_t n) {
                  hidden ? " (vk_debug_hide_commands hides from the check what the driver has)" : "");
 }
 
+/* the line of an extension a device made before found its driver without a command of */
+static void say_lacking(const char* extension, VkBanSay say) {
+    char line[2048], device[900], without[1024];
+    lacking_text(extension, without, sizeof without);
+    device_text(device, sizeof device);
+    snprintf(line, sizeof line, "vulkan: %s is off on %s: its driver lists it %s", extension, device, without);
+    say(line, 0);
+}
+
 uint32_t vk_bans_filter(SnxVkExtensions* e, VkBanSay say) {
     uint32_t removed = 0;
+    for (uint32_t i = 0; i < g_extension_bans.count; i++) g_extension_bans.bans[i].held = 0;
+    for (uint32_t i = 0; i < g_extension_bans.nlacking; i++) g_extension_bans.lacking[i].taken = 0;
     for (uint32_t i = 0; i < g_extension_bans.count; i++) {
         Ban* b = &g_extension_bans.bans[i];
         if (!holds(b)) continue;
         if (!b->extension) { /* a feature: its warning now, an off line when the renderer asks */
-            if (!b->off) say_ban(b, SAY_WARN, say), b->claimed = 1;
+            if (!b->off && say) say_ban(b, SAY_WARN, say);
+            if (!b->off) b->claimed = 1;
             continue;
         }
-        if (b->off && (b->ignored || b->forced)) { /* gone over: vk_bans_ignored or vk_extension_settings_say says so */
+        if (b->off && (b->ignored || b->forced)) { /* gone over: vk_bans_ignored or vk_extension_setting_say says so */
             b->claimed = 1;
             continue;
         }
@@ -791,32 +803,52 @@ uint32_t vk_bans_filter(SnxVkExtensions* e, VkBanSay say) {
         int has = at < e->count, owned = !field_is(b, VK_BAN_OVERRIDE, "-");
         b->claimed = !(has && owned); /* the setting's own code reads an overridable one: vk_ban_find */
         if (!has || owned) continue;
+        b->held = 1;
         if (!b->off) {
-            say_ban(b, SAY_WARN, say);
+            if (say) say_ban(b, SAY_WARN, say);
             continue;
         }
         memmove(&e->list[at], &e->list[at + 1], (e->count - at - 1) * sizeof *e->list);
         e->count--;
         removed++;
-        say_ban(b, SAY_OFF, say);
+        if (say) say_ban(b, SAY_OFF, say);
     }
     /* what a device made before found missing: off whatever goes over a ban, as nothing gives the driver the command */
     for (uint32_t at = 0; at < e->count;) {
-        char line[2048], device[900], without[1024];
+        char without[1024];
         lacking_text(e->list[at].extensionName, without, sizeof without);
         if (!without[0]) {
             at++;
             continue;
         }
-        device_text(device, sizeof device);
-        snprintf(line, sizeof line, "vulkan: %s is off on %s: its driver lists it %s", e->list[at].extensionName,
-                 device, without);
+        for (uint32_t i = 0; i < g_extension_bans.nlacking; i++)
+            if (!strcmp(g_extension_bans.lacking[i].extension, e->list[at].extensionName))
+                g_extension_bans.lacking[i].taken = 1;
+        if (say) say_lacking(e->list[at].extensionName, say);
         memmove(&e->list[at], &e->list[at + 1], (e->count - at - 1) * sizeof *e->list);
         e->count--;
         removed++;
-        say(line, 0);
     }
     return removed;
+}
+
+void vk_bans_features_say(VkBanSay say) {
+    for (uint32_t i = 0; i < g_extension_bans.count; i++) {
+        const Ban* b = &g_extension_bans.bans[i];
+        if (!b->extension && !b->off && holds(b)) say_ban(b, SAY_WARN, say);
+    }
+}
+
+void vk_bans_say(const char* key, VkBanSay say) {
+    for (uint32_t i = 0; i < g_extension_bans.count; i++) {
+        const Ban* b = &g_extension_bans.bans[i];
+        if (b->held && key_is(b, key)) say_ban(b, b->off ? SAY_OFF : SAY_WARN, say);
+    }
+    for (uint32_t i = 0; i < g_extension_bans.nlacking; i++)
+        if (g_extension_bans.lacking[i].taken && !strcmp(g_extension_bans.lacking[i].extension, key)) {
+            say_lacking(key, say);
+            break;
+        }
 }
 
 void vk_bans_unclaimed(VkBanSay say) {
@@ -854,8 +886,8 @@ int vk_extension_settings(SnxVkExtensions* e, const VkExtensionSetting* s, uint3
     char key[160];
     g_extension_settings.count = 0;
     for (uint32_t i = 0; i < g_extension_bans.count; i++) g_extension_bans.bans[i].forced = 0;
-    if (count > EXTENSION_SETTINGS) {
-        snprintf(err, n, "%u extension settings, past the %u the renderer keeps", count, EXTENSION_SETTINGS);
+    if (count > VK_EXTENSION_SETTINGS) {
+        snprintf(err, n, "%u extension settings, past the %u the renderer keeps", count, VK_EXTENSION_SETTINGS);
         return 0;
     }
     for (uint32_t k = 0; k < count; k++) {
@@ -900,9 +932,10 @@ static const Ban* held_off(const char* key) {
     return NULL;
 }
 
-void vk_extension_settings_say(const SnxVkExtensions* e, uint32_t api, VkBanSay say) {
+void vk_extension_setting_say(const SnxVkExtensions* e, uint32_t api, const char* extension, VkBanSay say) {
     for (uint32_t k = 0; k < g_extension_settings.count; k++) {
         const char* name = g_extension_settings.name[k];
+        if (strcmp(extension, name)) continue;
         int value = g_extension_settings.value[k], had = g_extension_settings.had[k], in = list_has(e, name);
         int core = g_extension_settings.core[k], warn = 0;
         const Ban* ban = held_off(name);

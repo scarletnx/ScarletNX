@@ -6,7 +6,7 @@
 # - -fwrapv (and -fno-strict-overflow, which implies it): signed arithmetic doesn't overflow. Arithmetic that wraps is
 #   done in unsigned types and converted back, a product that can overflow gets a wider intermediate.
 # The configure stops on either anywhere it reaches that code: the global flags, and every target, source file and
-# directory defined from this project's source tree. Third-party packages (CPM's, under .cache/cpm or the build tree)
+# directory defined from this project's source tree. Third-party packages (CPMUtil's, under .cache/cpm or the build tree)
 # keep their own flags. The LLVM backend's runtime library, which is compiled by a custom command, checks its own flags
 # (src/common/cpu/recompiler/llvm/).
 #

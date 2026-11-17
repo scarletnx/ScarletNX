@@ -179,7 +179,7 @@ Font substitution can change text weight and spacing.
 
 The console's fonts are the firmware's and cannot be shipped. `cmake/shared_fonts.cmake` takes yuzu's controller
 button glyphs from Eden's source, and `cmake/dependencies.cmake` fetches the four subsets below, pinned by their
-SHA-256, only in a build with the Switch runtime (`SNX_BUILD_NX` without `SNX_TOOLS_ONLY`).
+SHA-512 in `cpmfile.json`, only in a build with the Switch runtime (`SNX_BUILD_NX` without `SNX_TOOLS_ONLY`).
 `cmake/shared_fonts.cmake` compiles them into the runtime.
 
 | File | Slot | Covers |

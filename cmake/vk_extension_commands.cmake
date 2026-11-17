@@ -2,7 +2,7 @@
 # Copyright 2026 the ScarletNX contributors
 # The device commands each Vulkan device extension requires (generated/vk_extension_commands.c, which
 # src/common/gpu/vk/extension_commands.h declares), written by tools/vkcmdgen from the Khronos registry of the
-# Vulkan-Headers the build has: the pinned ones' vk.xml, or the system's (CPM_USE_LOCAL_PACKAGES). It runs during the
+# Vulkan-Headers the build has: the pinned ones' vk.xml, or the system's (Vulkan-Headers_FORCE_SYSTEM). It runs during the
 # build, so a cross build also builds it for the machine doing the build (SNX_HOST_CC), as settings.cmake does for
 # settingsgen
 include_guard(GLOBAL)
