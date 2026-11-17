@@ -139,6 +139,8 @@ int plat_alias_read(u64 off, void* dst, u64 size) {
     (void)off, (void)dst, (void)size;
     return -1;
 }
+void plat_ww_open(u8* p, u64 size) { (void)p, (void)size; }
+void plat_ww_close(u8* p, u64 size) { (void)p, (void)size; }
 void plat_alias_free(u64 off, u64 size) { (void)off, (void)size; }
 u8* plat_alias_host(u64 off, u64 size) {
     (void)off, (void)size;
