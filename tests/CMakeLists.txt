@@ -2613,6 +2613,12 @@ if(NOT SNX_TOOLS_ONLY)
     snx_test_target(snx-test-vk-buffer-owned 23)
     target_link_libraries(snx-test-vk-buffer-owned PRIVATE snx_nx_flags)
     add_test(NAME vk_buffer_owned COMMAND snx-test-vk-buffer-owned)
+    # the GPU pages of a range as the buffer cache reads them (gpu/vk/buffer.c), over a model of the GMMU: the walks
+    # one run at a time give the pages, run flags and byte spans of a walk one page at a time
+    add_executable(snx-test-vk-buffer-pages vk_buffer_pages.c tracy_stubs.c)
+    snx_test_target(snx-test-vk-buffer-pages 23)
+    target_link_libraries(snx-test-vk-buffer-pages PRIVATE snx_nx_flags)
+    add_test(NAME vk_buffer_pages COMMAND snx-test-vk-buffer-pages)
     # the file of shaders and pipelines kept across runs (gpu/vk/pipeline_file.c): records back as written, pipelines
     # by their shaders' records (a shipped shader's reference among them), a cut or changed record ending the reading,
     # another key starting over, a full file; its records packed into zstd units and unpacked in their place, a unit
