@@ -1693,7 +1693,7 @@ static int kind_image(VkCommandBuffer cb, Surf* t, VkFormat to) {
         return 0;
     }
     vk_barrier(cb, img, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_NONE, 0, VK_IMAGE_LAYOUT_UNDEFINED,
-               VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+               VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_LAYOUT(TRANSFER_DST_OPTIMAL));
     if (!vk_astc_bcn_kept(cb, t, img, vk_astc_bcn(to))) {
         vk_defer_image(img, mem, VK_NULL_HANDLE, VK_NULL_HANDLE);
         vk_defer_bytes(bytes);
