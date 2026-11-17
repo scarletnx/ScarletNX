@@ -251,6 +251,11 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
     add_test(NAME vulkan_rt_watch COMMAND snx-test-vulkan -H --vk-memory=1)
     set_tests_properties(vulkan_rt_watch PROPERTIES TIMEOUT 60 ENVIRONMENT "SNX_TEST_RT_WATCH_ONLY=1"
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR;watch: needs traps")
+    # a write log in host memory comes back from its pool clear (tests/vulkan_wlog_clear.inc): the unref clears the
+    # windows its readers found, and reads the flags past them
+    add_test(NAME vulkan_wlog_clear COMMAND snx-test-vulkan -H)
+    set_tests_properties(vulkan_wlog_clear PROPERTIES TIMEOUT 60
+        ENVIRONMENT "SNX_TEST_NVN_CASE=wlog_clear" FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
     # the budget's trim alone (tests/vulkan_trim.inc): a trim that wants more than everything held would take what the
     # other checks hold
     add_test(NAME vulkan_trim COMMAND snx-test-vulkan -H)
