@@ -60,7 +60,7 @@ static CsOut g_out[256];
 static int g_nout;
 /* the guest pages every pending result covers, the current batch's and those put aside: a read or write of memory no
    result covers (most of them) is answered without checking each result, through the GMMU page by page */
-static PendPages g_pages = {.also = &g_pend_any};
+static PendPages g_pages = {.also = &g_pend_blk};
 static void outs_pages(const CsOut* out, int n, int delta) {
     for (int i = 0; i < n; i++) pend_add(&g_pages, out[i].addr, out[i].size, delta);
 }

@@ -467,7 +467,19 @@ void vk_uma_frame_done(u64 frame);                       /* that submit is done:
 void vk_uma_host_barrier(VkCommandBuffer cb, u64 frame); /* at that submit's end: its writes visible to the host */
 int vk_uma_pending(u64 gva, u64 len);                    /* an in-place write is pending over GPU range [gva, +len) */
 int vk_uma_pending_cpu(u64 cpu, u64 len);                /* the same by guest address */
-u64 vk_uma_out_adds(void);                               /* in-place writes added so far, as vk_buf_adds counts */
+/* GPU range [gva, gva + len) read where it is in a region, at an offset that is a multiple of align, with no
+   other check: no page of it has newer bytes elsewhere (blk), and the barrier and the stamps of a read in place are
+   recorded. 1 with the region's buffer and offset; 0 for buffer.c's chain (vk_lock held) */
+int vk_uma_read(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off);
+void vk_uma_fast_counts(u64* hits, u64* blk); /* the fast path's reads bound, and those a blk page sent to the chain */
+/* draw_state_check=1, for a read the fast path bound at buf, off: uma.c's own reason the old chain would not have,
+   NULL for none; a difference found (counted, and said in the log), and their count */
+const char* vk_uma_read_differs(u64 gva, u64 len, VkBuffer buf, u64 off);
+void vk_uma_check_diff(const char* what, u64 gva, u64 len);
+u64 vk_uma_check_diffs(void);
+/* the writes in place added so far, which the page model leaves out of vk_buf_adds and g_pend_any.adds (but not out
+   of g_pend_any's pages): a cache that adds it looks again for a result over its bytes */
+u64 vk_uma_writes(void);
 /* the waits for a submit with an in-place write since the last statistics line (every 600 presents): a test tells by a
    change in it that a read waited, where a write the GPU finished meanwhile is no longer pending either */
 u64 vk_uma_out_waits(void);
@@ -2026,6 +2038,7 @@ u32 vk_buf_own_got(u64* id);
 /* whether entry i still has the buffer of its own numbered id: then the entry is used in this present, as a lookup
    would use it (the own buffers least used go first, vk_buf_reclaim) */
 int vk_buf_own_holds(u32 i, u64 id);
+u32 vk_buf_map_gen(void); /* moves at each change of the GPU's or guest memory's mappings (vk_buf_mapping_changed) */
 /* a dispatch's read-only storage buffer: no delayed content checks, and in place where it can be, as a constant buffer */
 int vk_buf_get_strict(u64 gva, u64 len, VkBuffer* buf, u64* off);
 /* a copy engine's source (DMA, 2D): as strict, and on pool pages compared by contents rather than trusted to the

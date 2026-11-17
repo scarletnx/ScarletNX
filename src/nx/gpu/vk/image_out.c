@@ -56,7 +56,7 @@ static _Thread_local int g_img_landing;
 _Atomic int g_gfx_img_any;
 /* the storage images' pages in g_pend_any, as the other pending results count theirs: a guest read over a page a
    storage image covers answers pending, one elsewhere does not (before, any image answered yes for every page) */
-static PendPages g_img_pages = {.also = &g_pend_any};
+static PendPages g_img_pages = {.also = &g_pend_blk};
 
 static int mem_run_cmp(const void* a, const void* b) {
     u64 x = ((const MemRun*)a)->cpu, y = ((const MemRun*)b)->cpu;

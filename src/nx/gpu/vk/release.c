@@ -61,7 +61,7 @@ static int g_rthread;
 /* the guest pages queued payloads cover, so a read or write that meets none (almost all) skips the queue: added when a
    payload is queued, removed when it is written, both under vk_lock, and a mapping change drains the queue before any
    translation changes (vkr_mapping_begin), so a payload loses the pages it gained */
-static PendPages g_rpages = {.also = &g_pend_any};
+static PendPages g_rpages = {.also = &g_pend_blk};
 u64 g_vk_release_forwards;
 
 /* The queued payloads by the guest words they write: for each 4-byte word, the latest release queued over it and how

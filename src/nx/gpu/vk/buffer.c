@@ -156,6 +156,7 @@ static struct {
     u32 n;
     u64 bytes;
     u64 copy_src_read; /* vk_buf_copy_src_read */
+    int chain_only;    /* buf_get_ takes no fast path: fast_check asks the chain itself */
     u64 ahead; /* fills recorded ahead of the submission's rendering passes (vk_cmd_upload) */
     /* Pending buffer writes, and the work covered by the last consumer barrier. Read-only draws do not
        advance writes. A writable reuse still needs ordering against intervening readers. */
@@ -400,7 +401,7 @@ static struct {
    them: each adds its own translated pages when it is committed and removes them when it lands. A range that meets a
    result only at the same GPU address through an unmapped page skips it too: nothing is read or written there. A GMMU
    change (WB_MAP) still checks every result, so one over a page about to be mapped lands first */
-static PendPages g_out_pages = {.also = &g_pend_any};
+static PendPages g_out_pages = {.also = &g_pend_blk};
 static void out_pages(const GfxOut* o, int delta) {
     for (u32 i = 0, j; i < o->npages && o->pages[i] != ~0ull; i = j) { /* in runs of consecutive pages, sorted */
         for (j = i + 1; j < o->npages && o->pages[j] == o->pages[j - 1] + 1; j++) continue;
@@ -1184,7 +1185,7 @@ static void mem_need_reason(u64 gva, u64 len, int reason) {
 }
 void vk_buf_mem_need(u64 gva, u64 len) { mem_need_reason(gva, len, WB_READ); }
 int vk_buf_pending_any(void) { return g_gfx_any; }
-u64 vk_buf_adds(void) { return g_out_pages.adds + vk_uma_out_adds(); } /* a write in place is one too */
+u64 vk_buf_adds(void) { return g_out_pages.adds; }
 int vk_buf_pending_unsubmitted(void) {
     for (GfxOut* o = g_out; o; o = o->next)
         if (o->frame == vk_submit_number()) return 1;
@@ -3562,6 +3563,7 @@ static u32 g_vb_map_gen = 1;
 void vk_buf_mapping_changed(void) {
     if (!++g_vb_map_gen) g_vb_map_gen = 1;
 }
+u32 vk_buf_map_gen(void) { return g_vb_map_gen; }
 /* the host bytes of an entry's range, for the write tracking's question about them: kept with the generation of the GPU
    mappings, which a change of either kind moves (vk_buf_mapping_changed). An own buffer asked it each time it was
    checked, translating the range, 1.6% of one game's GPU thread. The question needs no more than the address: the
@@ -3735,11 +3737,43 @@ static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 al
         g_buffer.got = 0;
     return got;
 }
+/* draw_state_check=1, for a range the fast path bound in place at buf, off (uma.c's vk_uma_read): every check of the
+   chain below that would have kept it off guest memory in place, asked again, and the chain itself, which must bind
+   the same. The fast path asks a page's blk bit for all of them */
+static int buf_get_(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 align, int inplace);
+static void fast_check(u64 gva, u64 len, VkBuffer buf, u64 off, int strict, u64 align, int inplace) {
+    const char* why = vk_mirror_pending(gva, len) || vk_mirror_holds(gva, len) ? "the mirror's writes"
+                      : vk_buf_pending(gva, len)                               ? "a pending graphics result"
+                      : vk_compute_pending(gva, len)                           ? "a pending compute result"
+                      : g_gfx_img_any && vk_gfx_image_pending(gva, len)        ? "a storage image not published"
+                      : vk_release_pending(gva, len)                           ? "a queued release's payload"
+                      : range_owned(gva, len) ? "bytes the GPU owns"
+                                              : vk_uma_read_differs(gva, len, buf, off);
+    VkBuffer cb = VK_NULL_HANDLE;
+    u64 co = 0;
+    const u32 kind = g_buf_kind;
+    g_buffer.chain_only = 1;
+    const int got = buf_get_(gva, len, &cb, &co, strict, align, inplace);
+    g_buffer.chain_only = 0;
+    g_buf_kind = kind;
+    if (!why && (!got || cb != buf || co != off)) why = "another binding of the chain's";
+    if (why) vk_uma_check_diff(why, gva, len);
+}
 static int buf_get_(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 align, int inplace) {
     int pending;
     u32 i = 0, epoch = vk_ww_epoch(); /* before anything is checked or read */
     Vb* e = NULL;
     if (!len || len > 0xFFFFFFFFull) return 0; /* no buffer the GPU reads is 4 GB */
+    /* With unified memory's page model, a range in one region with no page whose newer bytes are elsewhere (a pending
+       result of any kind, a storage image, a queued release, the mirror's writes, a page the runtime wrote: its blk
+       bit) is guest memory itself: bound in place with none of the checks below (uma.c's vk_uma_read). A
+       blk page, or a range in no region, takes them */
+    if ((inplace & 3) && vk_uma() && !g_buffer.chain_only && !((inplace & IN_DEAR) && vk_uma_imports_dear()) &&
+        vk_uma_read(gva, len, align, buf, off)) {
+        g_buf_kind = 16;
+        if (g_settings.draw_state_check) fast_check(gva, len, *buf, *off, strict, align, inplace);
+        return 1;
+    }
     if (g_gfx_img_any) vk_gfx_image_read_need(gva, len); /* a kept storage image's owner holds older bytes */
     /* over writes of the GPU mirror's programs that haven't landed: read in the mirror, which has them, after them. At
        an offset the use can't bind (a draw's constants or vertices, a few bytes at any address, where a uniform
@@ -3810,10 +3844,12 @@ static int buf_get_(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 a
         }
     }
     /* no GPU result is pending over it: guest memory holds its bytes, which the GPU reads where they are on a device
-       that shares memory with the CPU. Not GPU-owned bytes, which only the GPU holds */
+       that shares memory with the CPU. Not GPU-owned bytes, which only the GPU holds, nor a queued release's payload
+       or a storage image not published, which the copy below reads after they land, as vk_buf_get_strict has it: a
+       constant buffer read in place over a payload queued before its draw drew the old bytes */
     if ((inplace & 3) && vk_uma() && !range_owned(gva, len) &&
-        !((inplace & IN_DEAR) && vk_uma_imports_dear() && !vk_uma_pending(gva, len)) &&
-        vk_uma_get(gva, len, align, buf, off)) {
+        !((inplace & IN_DEAR) && vk_uma_imports_dear() && !vk_uma_pending(gva, len)) && !vk_release_pending(gva, len) &&
+        !(g_gfx_img_any && vk_gfx_image_pending(gva, len)) && vk_uma_get(gva, len, align, buf, off)) {
         g_buf_kind = 16;
         return 1;
     }
