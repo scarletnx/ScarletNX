@@ -402,13 +402,16 @@ static KThread* core_suggested_nl(const KThread* t, int k, int* from) {
     }
     return best;
 }
-/* svcSleepThread's yields. With waiters for its core, the core goes to the best of them, whatever its priority, and t
-   lines up behind the waiters of its own priority. A waiter of worse priority that took the core gives it back at its
-   next poll: a yield doesn't hand a better thread's time to a worse one. migrate (2, for -1 and -2) also lets it run
-   on an idle core of its mask meanwhile. With none, a migrating yield takes a thread waiting for another core onto
-   this one and lines up behind it, as the console does: a thread that polls with svcSleepThread(-1) lends its core to
-   threads its core could run, which otherwise wait for a busy core of their own. Without that either, t goes on at
-   once */
+/* svcSleepThread's yields. A yield without migration (0) hands the core only to a waiter of t's priority or better,
+   and t lines up behind the waiters of its own priority. The console's (Mesosphère's
+   KScheduler::YieldWithoutCoreMigration) only moves t to the back of its own priority on its core, so a waiter of
+   worse priority does not run. When the core went to such a waiter and came back, that waiter lined up again, and
+   with an idle core in t's mask t was flagged and moved there on its way out of the SVC: svcSleepThread(0) changed
+   t's core. A migrating yield (2, for -1 and -2) gives the core to the best waiter, whatever its priority, and lets t
+   run on an idle core of its mask meanwhile. A waiter of worse priority that took the core gives it back at its next
+   poll. With no waiter, a migrating yield takes a thread waiting for another core onto this one and lines up behind
+   it, as the console does: a thread that polls with svcSleepThread(-1) lends its core to threads its core could run,
+   which otherwise wait for a busy core of their own. Without that either, t goes on at once */
 void core_yield(KThread* t, int migrate) {
     int k, j, got = 1;
     KThread* w;
@@ -423,7 +426,7 @@ void core_yield(KThread* t, int migrate) {
     if (k == NCORES) return;
     pm_lock(&g_host.thread.core_lk);
     k = t->on_core;
-    if (k >= 0 && g_hle.thread.core_wait[k]) {
+    if (k >= 0 && g_hle.thread.core_wait[k] && (migrate || g_hle.thread.core_best[k] <= t->prio)) {
         core_release_nl(t);
         if (migrate && (j = core_idle_nl(t)) >= 0)
             core_give_nl(j, t);

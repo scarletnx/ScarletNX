@@ -92,6 +92,10 @@ typedef struct Renderer {
     /* A temporal upscale (a Switch 2 game's DLSS evaluation, GpuUpscale): 1 when the renderer wrote the output, 0
        for the front end's stand-in (a filtered copy). NULL in a renderer without one */
     int (*upscale)(const GpuUpscale* u);
+    /* An Ounce's shading rate image (GpuShadingRate) for the draws after it: the id they give in DrawCall.shading_rate,
+       0 when they shade each pixel (a renderer or device without it, an image it can't take). A later call can give
+       the image other texels, and the draws of an earlier id then shade each pixel. NULL in a renderer without it */
+    u32 (*shading_rate)(const GpuShadingRate* r);
     /* NVN copies choose their filter explicitly; source steps can be negative to mirror an axis. */
     int (*blit_filter)(const Surf2D* s, const Surf2D* d, int dx, int dy, int dw, int dh, double sx, double sy,
                        double sdx, double sdy, int linear);

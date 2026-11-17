@@ -2251,14 +2251,33 @@ static void bench_etc2(int runs, const char* file) {
        slice decoded, repeated over the level and made BC7 by the CPU's encoder (its fast build) */
     u8* pic = NULL;
     if (file) {
-        BenchSource src = {file, 0, 0};
-        u8* astc = bench_blocks(&src, w, h);
         u8* texels = malloc((size_t)w * h * 4);
         pic = malloc((size_t)bw * bh * 16);
-        astc_decode_image(astc, w, h, src.bw, src.bh, texels, 0);
+        const size_t len = strlen(file);
+        if (len > 5 && !strcmp(file + len - 5, ".rgba")) {
+            /* FILE.rgba: a square picture of RGBA8 texels, its side from its size, repeated over the level */
+            FILE* f = fopen(file, "rb");
+            if (!f) fatal("cannot open %s\n", file);
+            fseek(f, 0, SEEK_END);
+            const long size = ftell(f);
+            fseek(f, 0, SEEK_SET);
+            u32 side = 1;
+            while ((u64)(side + 1) * (side + 1) * 4 <= (u64)size) side++;
+            u8* raw = malloc((size_t)side * side * 4);
+            if (!raw || fread(raw, 4, (size_t)side * side, f) != (size_t)side * side) fatal("cannot read %s\n", file);
+            fclose(f);
+            for (u32 y = 0; y < h; y++)
+                for (u32 x = 0; x < w; x++)
+                    memcpy(texels + ((size_t)y * w + x) * 4, raw + ((size_t)(y % side) * side + x % side) * 4, 4);
+            free(raw);
+        } else {
+            BenchSource src = {file, 0, 0};
+            u8* astc = bench_blocks(&src, w, h);
+            astc_decode_image(astc, w, h, src.bw, src.bh, texels, 0);
+            free(astc);
+        }
         bc7_encode_cpu_fast(texels, w, h, 1, pic);
         free(texels);
-        free(astc);
     }
     for (int ki = file ? 4 : 0; ki < 5; ki++) {
         int kind = kinds[ki];

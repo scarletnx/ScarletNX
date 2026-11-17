@@ -723,9 +723,7 @@ static void stats_frames(u32 n, VkBuffer from, VkBuffer to, u64 size) {
    timed before; and a command buffer begun while off isn't closed onto another's begin, so the wait between them
    isn't counted either. The device-local heap's use and budget are the driver's where it has VK_EXT_memory_budget */
 static int check_stats_gpu_time(void) {
-    /* a copy long enough that empty frames stay far below it where the queue's time is the CPU's (lavapipe), which a
-       loaded machine stretches alike for both: there two empty frames take about half of a 32 MiB copy */
-    const u64 size = 128ull << 20;
+    const u64 size = 32ull << 20;
     VkBufferCreateInfo bci = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
                               .size = size,
                               .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
@@ -734,7 +732,7 @@ static int check_stats_gpu_time(void) {
     DevMemInfo info;
     VkBuffer buf[2];
     DevMem mem[2];
-    u64 stamps, busy, copied, t0, wall, vram, budget, empty[5];
+    u64 stamps, busy, copied, t0, wall, vram, budget, read;
     int ours;
     int was = g_settings.stats;
     for (int i = 0; i < 2; i++) CHECK(vk_buffer_create(&bci, &aci, &buf[i], &mem[i], &info) == VK_SUCCESS);
@@ -763,26 +761,26 @@ static int check_stats_gpu_time(void) {
            (unsigned long long)(size >> 20), (double)copied / 1e6, (double)wall / 1e6,
            (unsigned long long)(g_vk_timestamps - stamps));
     CHECK(g_vk_timestamps > stamps && copied > 0 && copied < wall);
-    /* a frame's copy timed, then stats off before its slot is used again, and on: the empty frames after it count
-       none of the copy. Five times, their median: a moment of load stretches one of them */
-    for (int trial = 0; trial < 5; trial++) {
-        rec_CmdCopyBuffer(vk_cmd(), buf[0], buf[1], 1, &(VkBufferCopy){0, 0, size});
-        vk_frame_next();
-        g_settings.stats = 0;
-        stats_frames(0, buf[0], buf[1], 0); /* both slots used again, untimed */
-        g_settings.stats = 1;
-        busy = vk_gpuprof_busy_ns();
-        stats_frames(2, buf[0], buf[1], 0);
-        u64 took = vk_gpuprof_busy_ns() - busy;
-        int at = trial;
-        for (; at > 0 && empty[at - 1] > took; at--) empty[at] = empty[at - 1];
-        empty[at] = took;
-    }
-    busy = empty[2];
-    printf("stats on again: 2 empty frames busy %.3f ms (the median of 5, %.3f to %.3f), against %.3f ms a frame "
-           "copying\n",
-           (double)busy / 1e6, (double)empty[0] / 1e6, (double)empty[4] / 1e6, (double)copied / 8e6);
-    CHECK(busy * 4 < copied / 8);
+    /* a frame's copy timed, then stats off before its slot is used again, and on: the slots' reads after it take the
+       two empty frames' timestamps, a begin and an end each, and none of the copy's. A count and not a time: on
+       lavapipe an empty command buffer's span is not short next to a copy's. llvmpipe puts each timestamp into every
+       bin of a scene, over the framebuffer it bound last (lp_setup_end_query), and the result is the clock of the last
+       rasterizer thread to run it. So the span is how long those threads take to run two scenes over all the tiles of
+       an earlier check's target: 0.04 to 4 ms on a CI runner that runs the other Vulkan tests at the same time, and
+       2.3 ms in each of five trials of one run */
+    rec_CmdCopyBuffer(vk_cmd(), buf[0], buf[1], 1, &(VkBufferCopy){0, 0, size});
+    vk_frame_next();
+    g_settings.stats = 0;
+    stats_frames(0, buf[0], buf[1], 0); /* both slots used again, untimed */
+    g_settings.stats = 1;
+    busy = vk_gpuprof_busy_ns();
+    read = g_vk_timestamps_read;
+    stats_frames(2, buf[0], buf[1], 0);
+    busy = vk_gpuprof_busy_ns() - busy;
+    read = g_vk_timestamps_read - read;
+    printf("stats on again: 2 empty frames read %llu timestamps, busy %.3f ms, against %.3f ms a frame copying\n",
+           (unsigned long long)read, (double)busy / 1e6, (double)copied / 8e6);
+    CHECK(read == 4);
     /* within one frame: a command buffer begun and timed, stats off at its end, the next begun while off, a wait,
        stats on at its end */
     busy = vk_gpuprof_busy_ns();
