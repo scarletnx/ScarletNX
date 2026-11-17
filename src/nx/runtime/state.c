@@ -1150,6 +1150,7 @@ static void install_hle(Hle* ld, const ShmPlan* plan) {
     ld->ssl.bio = g_hle.ssl.bio;
     ld->nvdrv.alias = g_hle.nvdrv.alias;
     ld->nvdrv.alias.stale = 1;     /* built again from the state's runs */
+    ld->nvdrv.alias.edges_ok = 0;  /* and their edges sorted again */
     ld->hid.pad1 = g_hle.hid.pad1; /* the players' input as the host reads it now */
     memcpy(ld->hid.pad_extra, g_hle.hid.pad_extra, sizeof ld->hid.pad_extra);
     ld->hid.touch = g_hle.hid.touch;
