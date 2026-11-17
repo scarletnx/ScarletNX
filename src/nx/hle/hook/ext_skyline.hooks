@@ -12,5 +12,10 @@ family ext_skyline
 # the game's RomFS: skyline's loader mounts the SD card and loads its plugins before the original runs, Cobalt (an
 # exlaunch subsdk9) mounts the card
 hook _ZN2nn2fs8MountRomEPKcPvm(const char* name, addr cache, u64 cache_size) -> u32 = nnfs_mount_rom
+# the RomFS by its name alone, the SD card and a file of it, which one game's optimizer mod detours at boot: their
+# trampolines start with sub sp or a pre-indexed stp, and the SDK's code after them opens fsp-srv, which stopped the game
+hook _ZN2nn2fs8MountRomEPKc(const char* name) -> u32 = nnfs_mount_rom_name
+hook _ZN2nn2fs11MountSdCardEPKc(const char* name) -> u32 = nnfs_mount_sd_card
+hook _ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci(addr handle, const char* path, i32 mode) -> u32 = nnfs_open_file
 # skyline's loader runs the original once, so a plugin's later call does nothing
 hook _ZN2nn2ro10InitializeEv() = nnro_initialize

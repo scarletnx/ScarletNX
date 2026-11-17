@@ -583,14 +583,15 @@ GuestFn hook_trampoline(u64 pc) {
     for (i = 0; i < h->count && !fn; i++) {
         if (!h->ext[i] || (h->tramp[i] && h->tramp[i] != pc)) continue;
         if (!trampoline_of(i, pc, block.addr + block.size)) { /* no longer the trampoline: the mod rewrote it */
-            h->tramp[i] = 0;
+            __atomic_store_n(&h->tramp[i], 0, __ATOMIC_RELEASE);
             continue;
         }
         if (!h->tramp[i])
             LOG("hooks: the mod's trampoline of %s at %llx ran: its call of the original runs %s natively "
                 "(ext_skyline.hooks)\n",
                 hook_symbol[h->hook[i]], (unsigned long long)pc, h->ext_handler[i]);
-        h->tramp[i] = pc;
+        /* atomic: own_entry reads it without the lock, on every thread that calls the function's original */
+        __atomic_store_n(&h->tramp[i], pc, __ATOMIC_RELEASE);
         fn = h->ext[i];
     }
     pm_unlock(&g_invalidate_lock);
@@ -606,7 +607,9 @@ GuestFn hook_function(u64 addr) {
 /* where the own code of site i is entered: the mod's trampoline once one took its ext_skyline hook, else the
    function's address */
 static u64 own_entry(int i) {
-    u64 t = __atomic_load_n(&g_host.hook.invalid[i], __ATOMIC_ACQUIRE) ? g_host.hook.tramp[i] : 0;
+    u64 t = __atomic_load_n(&g_host.hook.invalid[i], __ATOMIC_ACQUIRE)
+                ? __atomic_load_n(&g_host.hook.tramp[i], __ATOMIC_ACQUIRE)
+                : 0;
     return t ? t : g_host.hook.addr[i];
 }
 
