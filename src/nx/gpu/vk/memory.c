@@ -354,7 +354,10 @@ static u64 bind_put(BindOne key, const void* bind, DevMem gone, u64 size, int re
     g_bind.used += each;
     if (gone) {
         bind_gone()[g_bind.ngone++] = gone;
-        g_bind.gone_bytes += size;
+        /* what comes back to the caches' heap after the batch: not memory a granule or a block took in system memory
+           (pagespace.c's and mirror.c's fallbacks, vk_image_sparse_place), which vk_mem_trim would take for room on
+           its way. size is the caller's count of it, which a part of the allocation may be */
+        if (vk_devmem_heap_bytes(&gone, 1, (u32)vk_mem_heap())) g_bind.gone_bytes += size;
     }
     g_bind.readers |= readers;
     return g_bind.issued + 1;
@@ -873,10 +876,11 @@ u64 vk_image_sparse_level_bytes(VkImage img, u32 levels) {
     return n * s->sh.layers * s->block;
 }
 /* s's memory in the heap the caches budget (vk_mem_heap): each allocation once, with the mip tails. Not its blocks in
-   system memory (vk_image_sparse_place), which hold none of it. s->bytes counts both. 0 with no memory for the list */
+   system memory (vk_image_sparse_place), which hold none of it. s->bytes counts both, and stands in for it with no
+   memory for the list */
 static u64 sparse_heap_bytes(const Sparse* s) {
     DevMem* m = malloc(((size_t)s->nmem + s->tails) * sizeof *m);
-    if (!m) return 0;
+    if (!m) return s->bytes; /* counted too high rather than not at all */
     u32 n = 0;
     for (u32 i = 0; i < s->nmem; i++)
         if (s->mem[i].refs) m[n++] = s->mem[i].a;
