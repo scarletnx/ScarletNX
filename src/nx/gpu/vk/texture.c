@@ -2733,6 +2733,19 @@ static int tex_can_piece(const Surf* t) {
     return !t->msaa && !t->sparse && f->conv == VKC_NONE && !vk_tc_converts(f) && !f->depth && f->bpp &&
            (t->bl ? 64 % f->bpp == 0 : 16 % f->bpp == 0);
 }
+/* loaded again a piece at a time where its pages change (tex_check_pieces): what tex_can_piece takes, and a block
+   linear depth texture its guest bytes hold as they are, with no stencil. Its pieces go through the scratch buffer
+   (up_move), at offsets of 16 bytes, which a copy into a depth aspect needs (a multiple of 4). It is loaded whole when
+   it is made, and is never piecewise or resident, which clear and bind color aspects alone (tex_zero, the bricks).
+   One game's 3072x3072 D16 shadow array of 3 layers (54 MB) shares its first pages with a 128 KB storage image that a
+   compute program writes every frame: each publish of that image loaded all 54 MB again, hashed on the CPU and staged,
+   8 to 9 ms each time, 14 times a second */
+static int tex_patchable(const Surf* t) {
+    const VkFmt* f = &t->f;
+    if (!f->depth) return tex_can_piece(t);
+    return t->bl && !t->msaa && !t->sparse && !t->bricks && f->conv == VKC_NONE && !vk_tc_converts(f) && !f->stencil &&
+           f->bpp && 64 % f->bpp == 0;
+}
 
 /* the blocks of one level of one layer (lsz bytes at gva) that its bytes [a, b) lie in, loaded a run of blocks of one
    row of blocks at a time */
@@ -2930,8 +2943,10 @@ static int later_pieces_whole(const Surf* t, u64 sum) {
            (t->bc7_hot || later_soon(t) || sum / 16 * t->f.bw * t->f.bh / 16 > VK_BC7_LATER_BLOCKS);
 }
 /* the pieces p of t loaded again into its image; all of it when they are more than half of it (a whole upload reads
-   at most twice their bytes, in fewer moves), when render targets' pixels were copied into it (tex_take_drawn),
-   which a whole upload takes again, or when they are too many BC7 blocks to encode at once (later_pieces_whole). A
+   at most twice their bytes, in fewer moves), or when they are too many BC7 blocks to encode at once
+   (later_pieces_whole). Render targets' pixels copied into it (tex_take_drawn) stay where no piece goes: the new
+   wgen below makes tex_take_drawn copy the targets drawn fresh again over the pieces, as after a whole upload, and
+   memory has no newer bytes for the rest (no write the records name). A
    texture loaded whole whose hash is still its image's (no blocks loaded alone since) is hashed for that, as a change
    found by its hash is: its pages written with the bytes they had load nothing. 1 when the image has them */
 static int tex_patch(Surf* t, const TexPieces* p) {
@@ -2939,7 +2954,7 @@ static int tex_patch(Surf* t, const TexPieces* p) {
     for (u32 i = 0; i < p->count; i++) sum += p->piece[i].n;
     /* a texture held as BC1, BC4 or BC5 for what its blocks held loads whole, which reads them again
        (kind_again): pieces of other blocks would show in a format that does not hold them */
-    if (p->all || t->took_drawn || sum > t->size / 2 || later_pieces_whole(t, sum) ||
+    if (p->all || sum > t->size / 2 || later_pieces_whole(t, sum) ||
         (t->f.conv == VKC_ASTC && vk_astc_bcn(t->f.vk))) {
         g_tex_checks.whole++;
         if (t->piecewise || !t->hash) return tex_upload(t);
@@ -3278,7 +3293,7 @@ static Surf* tex_check_memory(Surf* t, u64 gva) {
         if (!t->upload_valid) return NULL;
     }
     int untracked = 0; /* tex_check_pieces asked write tracking, which can't tell: not asked again below */
-    if (t->piecewise || tex_can_piece(t)) {
+    if (t->piecewise || tex_patchable(t)) {
         if (tex_check_pieces(t, gva)) return t->upload_valid ? t : NULL;
         untracked = 1;
     }
@@ -4329,7 +4344,7 @@ static void take_cover(Surf* t, TexPieces* p) {
     if (p->all || !p->count || t->is_rt || (t->f.conv && !t->f.depth) || t->msaa || t->type == VK_IMAGE_VIEW_TYPE_3D)
         return;
     /* the bytes of each layer past its levels hold no texel: a page that a level's publish stamped can end in them, and
-       a piece left there made a texture that took a target load whole (tex_patch's took_drawn) */
+       a piece left there loaded bytes that no texel reads, and gave the texture a new wgen (tex_patch) */
     if (t->bl && t->layers > 1) {
         u64 end = 0;
         for (u32 l = 0; l < t->levels; l++)
