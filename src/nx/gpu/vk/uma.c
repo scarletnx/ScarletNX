@@ -303,12 +303,10 @@ typedef struct {
        that write guest memory for the GPU read them */
     u64 hz_page[1u << HZ_BITS], hz_sub[1u << HZ_BITS];
 } Uma;
-/* C99 has no static assert: an array of negative size if two groups would share a line */
-typedef char uma_apart[offsetof(Uma, lk) - offsetof(Uma, apart0) >= UMA_LINE &&
-                               offsetof(Uma, hazards) - offsetof(Uma, apart1) >= UMA_LINE &&
-                               offsetof(Uma, hz_page) - offsetof(Uma, apart2) >= UMA_LINE
-                           ? 1
-                           : -1];
+static_assert(offsetof(Uma, lk) - offsetof(Uma, apart0) >= UMA_LINE &&
+                  offsetof(Uma, hazards) - offsetof(Uma, apart1) >= UMA_LINE &&
+                  offsetof(Uma, hz_page) - offsetof(Uma, apart2) >= UMA_LINE,
+              "two groups of Uma share a cache line");
 static Uma g_uma = {.lk = PMUTEX_INIT, .align = 4096, .out_pages = {.also = &g_pend_any}};
 /* this thread's: vk_uma_gpu_reads, the caller copies the in-place writes pending on the GPU */
 static _Thread_local struct {
