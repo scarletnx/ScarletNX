@@ -7311,11 +7311,11 @@ u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, Sha
     c->vt_ok = g_shader_vt_address && stage == ST_FS && si->vt_early && !(c->sph[19] & 3u);
     for (u32 i = 0; i < n && c->vt_ok; i++) {
         const int op = insn[i].op;
-        c->vt_ok = op != SM86_KILL && op != SM86_STG && op != SM86_STG_NOU && op != SM86_RED && op != SM86_ATOMG &&
-                   op != SM86_ATOMG_NOU && op != SM86_ATOMG_CAS && op != SM86_SUST_P && op != SM86_SUST_D &&
-                   op != SM86_SUST_P_B && op != SM86_SUST_D_B && op != SM86_SURED && op != SM86_SURED_B &&
-                   op != SM86_SUATOM && op != SM86_SUATOM_B && op != SM86_SULD_P && op != SM86_SULD_P_B &&
-                   op != SM86_SULD_D && op != SM86_SULD_D_B;
+        c->vt_ok = (op != SM86_KILL || (g_shader_vt_parts & 32)) && op != SM86_STG && op != SM86_STG_NOU &&
+                   op != SM86_RED && op != SM86_ATOMG && op != SM86_ATOMG_NOU && op != SM86_ATOMG_CAS &&
+                   op != SM86_SUST_P && op != SM86_SUST_D && op != SM86_SUST_P_B && op != SM86_SUST_D_B &&
+                   op != SM86_SURED && op != SM86_SURED_B && op != SM86_SUATOM && op != SM86_SUATOM_B &&
+                   op != SM86_SULD_P && op != SM86_SULD_P_B && op != SM86_SULD_D && op != SM86_SULD_D_B;
     }
     /* FTZ as spirv_translate.c decides it: per instruction without the execution mode, or with it where some FADD,
        FMUL or FFMA keeps subnormals (the mode is the whole module's); never on a device that flushes by itself */
@@ -7564,7 +7564,7 @@ u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, Sha
             }
         }
         /* vt_ok names every instruction that keeps the tests from running first: one it missed is said, not drawn wrong */
-        if (c->vt.pair && (si->has_discard || si->gbuf_wmask || si->nimg))
+        if (c->vt.pair && ((si->has_discard && !(g_shader_vt_parts & 32)) || si->gbuf_wmask || si->nimg))
             fail(c, "virtual samples in a fragment program that discards, writes memory or has a storage image");
         if (!c->failed) {
             SpvShaderStage model = stage == ST_TS   ? SPV_STAGE_TASK
@@ -7601,7 +7601,7 @@ u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, Sha
             spv_emit_float_controls(e, fn, ftz_mode, 1, 0);
             si->tex_vt_mask = g_shader_vt_address && c->stage == ST_FS ? ~c->vt_left : 0;
             /* the tests before the program, which its marks need (ShaderInfo.vt_early) */
-            if (c->vt.pair) spv_emit_execution_mode(e, fn, SPV_MODE_EARLY_FRAGMENT_TESTS, 0, 0);
+            if (c->vt.pair && !si->has_discard) spv_emit_execution_mode(e, fn, SPV_MODE_EARLY_FRAGMENT_TESTS, 0, 0);
             memcpy(si->tex_vt_reads, c->vt_reads, sizeof si->tex_vt_reads);
             out = spv_emit_finish(e, word_count);
         }

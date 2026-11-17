@@ -2187,9 +2187,9 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
     /* vt_sparse: a fragment program takes virtual samples where it may test depth before it runs
        (ShaderInfo.vt_early), and then asks for the tests first: none that discards or has a helper's side effect to
        keep out, writes depth, a sample mask or memory, has a storage image, or takes its target's pixels itself */
-    c->vt_ok = g_shader_vt_address && stage == ST_FS && si->vt_early && vt_needs && !needs_demote && !gbuf_wmask &&
-               !image_info.nimg && !(sph[19] & 3u) && !advanced_blend && !si->late_depth && !predraw &&
-               !si->coverage_to_color && !si->capture_outputs;
+    c->vt_ok = g_shader_vt_address && stage == ST_FS && si->vt_early && vt_needs &&
+               (!needs_demote || (g_shader_vt_parts & 32)) && !gbuf_wmask && !image_info.nimg && !(sph[19] & 3u) &&
+               !advanced_blend && !si->late_depth && !predraw && !si->coverage_to_color && !si->capture_outputs;
     c->ftz_float = can_preserve;
     c->soft_ftz_on = soft_ftz_on;
     spv_emit_init(&c->emit, (size_t)n * 20 + 128);
@@ -2919,8 +2919,8 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
     if (advanced_blend || si->late_depth || predraw)
         spv_emit_execution_mode(&c->emit, fn, SPV_MODE_PIXEL_INTERLOCK_ORDERED_EXT, 0, 0);
     if (post_depth_coverage) spv_emit_execution_mode(&c->emit, fn, SPV_MODE_POST_DEPTH_COVERAGE, 0, 0);
-    if (stage == ST_FS && (si->early_fragment_tests || si->coverage_early_tests || c->vt_ok ||
-                          (si->advanced_blend_mask & SH_BLEND_EARLY_TESTS)))
+    if (stage == ST_FS && (si->early_fragment_tests || si->coverage_early_tests || (c->vt_ok && !needs_demote) ||
+                           (si->advanced_blend_mask & SH_BLEND_EARLY_TESTS)))
         spv_emit_execution_mode(&c->emit, fn, SPV_MODE_EARLY_FRAGMENT_TESTS, 0, 0);
     if (depth_output) spv_emit_fragment_depth_replacing(&c->emit, fn);
     spv_emit_float_controls(&c->emit, fn, fp32_flush && !fp32_preserve && can_flush == SH_FTZ_MODE, can_preserve,
