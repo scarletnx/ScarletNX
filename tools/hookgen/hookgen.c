@@ -1670,7 +1670,7 @@ static void write_table(const char* path) {
             out("%s{%d, %d, %d, %lu, %lu}", n++ ? ", " : "", a->reg, a->mode,
                 a->len_arg < 0 ? 0xFF : h->args[a->len_arg].reg, a->len_arg < 0 ? 0ul : a->len_mul, a->len_add);
         }
-        out("%s}},\n", n ? "" : "{0, 0, 0, 0, 0}"); /* C99 has no empty initializer */
+        out("}},\n");
     }
     out("    {0, 0, 0, {{0, 0, 0, 0, 0}}}};\n");
     out("static const char* const %s_family_name[%s_FAMILIES + 1] = {\n", prefix, upper);
