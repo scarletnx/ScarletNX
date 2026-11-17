@@ -77,6 +77,8 @@ typedef struct {
     u8 moves;                   /* its owner will say it can move it (vk_devmem_owner): it shares blocks only with
                                    others that move, where blocks are emptied. One that never gets an owner keeps its
                                    block from being emptied, and one that gets an owner without this stays where it is */
+    u8 brief;                   /* without moves: it comes and goes by the hundred MB with the game's work (the
+                                   mirror's granules, kept results), in blocks apart from what stays (DM_KIND_BRIEF) */
 } DevMemWant;
 typedef struct {
     VkDeviceMemory memory;

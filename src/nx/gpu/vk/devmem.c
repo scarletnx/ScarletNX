@@ -29,14 +29,19 @@
 #define DM_MARGIN    (256ull << 20)
 /* A block's kind besides its memory type, which a request takes only from blocks of its own: bits of these. IMAGE:
    for images only, where they cannot share a block with buffers (g_devmem.apart). FIXED: allocations that no owner
-   moves, in the capped heap where blocks are emptied (DevMemWant.moves) */
+   moves, in the capped heap where blocks are emptied (DevMemWant.moves). BRIEF, with FIXED only: those of them that
+   come and go by the hundred MB (DevMemWant.brief). In one game's race under a budget of 2 GB, the mirror's granules
+   went from 196 to 38 MB and the kept results from 182 to 18 MB, and the blocks that do not move held 680 MB with
+   155 MB handed out: rings, encoders, write logs and written textures, which stay, were in each of the 12 blocks, so
+   none was emptied and given back */
 /* Memory of its own that the driver only preferred (DM_OWN_RATHER) is kept when let go, for a later request it fits:
    DM_KEEP_BYTES of it at most, each DM_KEEP_PRESENTS presents at most (own_keep, own_take) */
 #define DM_KEEP_BYTES    (256ull << 20)
 #define DM_KEEP_PRESENTS 120u
 #define DM_KIND_IMAGE 1
 #define DM_KIND_FIXED 2
-#define DM_KINDS      4
+#define DM_KIND_BRIEF 4
+#define DM_KINDS      8
 /* why an allocation has memory of its own (alloc_in's alone, but for the first) */
 enum {
     DM_OWN_SIZE,   /* more than a block's share, and no block had a run for it */
@@ -728,7 +733,7 @@ static DevMem alloc_in(u32 type, const VkMemoryRequirements* req, const DevMemWa
     /* where blocks are emptied, what no owner moves goes in blocks of its own: one such allocation keeps a block from
        being emptied (drain_can). A move goes to the blocks of what moves */
     if (g_devmem.drain.on && heap_capped(g_devmem.mp.memoryTypes[type].heapIndex) && !want->moves && !want->existing)
-        image |= DM_KIND_FIXED;
+        image |= DM_KIND_FIXED | (want->brief ? DM_KIND_BRIEF : 0);
     /* a request that a block holds takes a free run of one, whatever its size: one of more than a block's share went
        to the driver each time, on the thread that asked, and failed at the heap's cap while the blocks had room. Only
        a request of a block's share or less opens a new block */
@@ -768,11 +773,17 @@ static DevMem alloc_in(u32 type, const VkMemoryRequirements* req, const DevMemWa
            order what the driver moves, and must not make a request fail that would have found room */
         if (!slot && !(want->existing && g_vk.has_pageable))
             slot = block_find(type, image, -1, units, (u32)align_units, &at);
-        /* then a block of the other side of DM_KIND_FIXED, for the same reason. What no owner moves keeps the block
+        /* then a block of the other kinds of the same side of DM_KIND_IMAGE, for the same reason: the other side of
+           DM_KIND_BRIEF first, then what moves, or for what moves, what does not. What no owner moves keeps the block
            it goes into from being emptied, but the request does not fail where it found room before the kinds. A
            move goes only to the blocks of what moves */
-        if (!slot && !want->existing && g_devmem.drain.on && heap_capped(heap))
-            slot = block_find(type, image ^ DM_KIND_FIXED, -1, units, (u32)align_units, &at);
+        if (!slot && !want->existing && g_devmem.drain.on && heap_capped(heap)) {
+            const int side = image & DM_KIND_IMAGE;
+            const int other[3] = {image & DM_KIND_FIXED ? image ^ DM_KIND_BRIEF : side | DM_KIND_FIXED,
+                                  image & DM_KIND_FIXED ? side : side | DM_KIND_FIXED | DM_KIND_BRIEF, -1};
+            for (u32 o = 0; !slot && other[o] >= 0; o++)
+                slot = block_find(type, other[o], -1, units, (u32)align_units, &at);
+        }
     }
     if (!slot && !shared && !want->existing) { /* memory of its own: by its size, or by the request */
         units = 0;
@@ -1374,7 +1385,9 @@ void vk_devmem_log(void) {
                 f & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT ? ", mapped" : "",
                 f & VK_MEMORY_PROPERTY_HOST_CACHED_BIT ? ", cached" : "",
                 !g_devmem.apart ? "buffers and images" : image & DM_KIND_IMAGE ? "images" : "buffers",
-                image & DM_KIND_FIXED ? " that do not move" : "",
+                image & DM_KIND_BRIEF ? " that do not move and come and go"
+                : image & DM_KIND_FIXED ? " that do not move"
+                                        : "",
                 k[t][image].blocks, (double)k[t][image].bytes / 1048576.0, (double)k[t][image].used / 1048576.0,
                 k[t][image].empty, (double)k[t][image].largest / 1048576.0, k[t][image].own,
                 (double)k[t][image].own_bytes / 1048576.0);
