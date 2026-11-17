@@ -8047,6 +8047,7 @@ static int run_headless(int argc, char** argv) {
         if (!strcmp(name, "texture_region") && ++ran) CHECK(!check_uma_texture_region());
         if (!strcmp(name, "dma_region") && ++ran) CHECK(!check_uma_dma_region());
         if (!strcmp(name, "storage_region") && ++ran) CHECK(!check_uma_storage_region());
+        if (!strcmp(name, "storage_order") && ++ran) CHECK(!check_uma_storage_order());
         if (!strcmp(name, "alias_in_place") && ++ran) CHECK(!check_uma_alias_in_place());
         if (!strcmp(name, "alias_fallback") && ++ran) CHECK(!check_uma_alias_fallback());
         if (!strcmp(name, "alias_merge") && ++ran) CHECK(!check_uma_alias_merge());
@@ -8060,8 +8061,8 @@ static int run_headless(int argc, char** argv) {
                     "texture_pending, dispatch_constants, "
                     "dispatch_table, header_words, placed, placed_view, logged_back, trapped_window, copies, "
                     "pages_producers, pages_counts, pages_partial, texture_region, dma_region, storage_region, "
-                    "alias_in_place, alias_fallback, alias_merge, "
-                    "alias_cpu_read, alias_shader or alias_order\n",
+                    "storage_order, alias_in_place, alias_fallback, alias_merge, alias_cpu_read, alias_shader or "
+                    "alias_order\n",
                     name);
             return 2;
         }
@@ -8109,6 +8110,7 @@ static int run_headless(int argc, char** argv) {
         CHECK(!check_alias_shader());
         CHECK(!check_uma_alias_order());
         CHECK(!check_uma_storage_region());
+        CHECK(!check_uma_storage_order());
         vk_pipeline_quiesce();
         printf("PASS headless Vulkan in place only: %u validation messages\n", g_vk_validation_messages);
         return 0;
@@ -8359,6 +8361,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_alias_shader());
     CHECK(!check_uma_alias_order());
     CHECK(!check_uma_storage_region());
+    CHECK(!check_uma_storage_order());
     CHECK(!check_write_tracking());
     CHECK(!check_descriptor_room());
     CHECK(!check_sparse_texture());
