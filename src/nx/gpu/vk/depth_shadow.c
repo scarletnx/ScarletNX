@@ -121,7 +121,7 @@ static void shadow_initialize(Surf* surface, int stencil) {
     if (!undefined) return;
     /* These contents are unspecified as a whole. Give native copies real initialized bits without changing
        any defined pixel of an existing surface. A merely predicated/partly undefined image is not cleared. */
-    vk_surf_use(vk_cmd(), surface, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+    vk_surf_use(vk_cmd(), surface, VK_LAYOUT(TRANSFER_DST_OPTIMAL),
         VK_PIPELINE_STAGE_2_CLEAR_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
     VkClearDepthStencilValue value = {1.0f, 0};
     VkImageSubresourceRange range = {VK_IMAGE_ASPECT_DEPTH_BIT | (stencil ? VK_IMAGE_ASPECT_STENCIL_BIT : 0),
@@ -185,7 +185,7 @@ int vk_depth_shadow_prepare(Surf* surface, const DsDynamic* dynamic, const DrawC
             VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
     }
     shadow_initialize(surface, stencil_offset != 0);
-    vk_surf_use(vk_cmd(), surface, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+    vk_surf_use(vk_cmd(), surface, VK_LAYOUT(TRANSFER_SRC_OPTIMAL),
         VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
     VkBufferImageCopy aspects[2] = {aspect_copy(surface, VK_IMAGE_ASPECT_DEPTH_BIT, depth_offset)};
     u32 count = 1;
@@ -213,7 +213,7 @@ int vk_depth_shadow_finish(Surf* surface) {
         shadow_barrier(VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COPY_BIT | VK_PIPELINE_STAGE_2_CLEAR_BIT,
             VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT,
             VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
-        vk_surf_use(vk_cmd(), surface, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        vk_surf_use(vk_cmd(), surface, VK_LAYOUT(TRANSFER_DST_OPTIMAL),
             VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
         VkBufferImageCopy aspects[2];
         u32 count = 0;

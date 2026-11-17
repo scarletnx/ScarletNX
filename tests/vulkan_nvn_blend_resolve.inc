@@ -58,7 +58,7 @@ static int blend_resolve_upload(BlendResolveImage* image, const void* bytes, u32
     u8* mapped = vk_stage(size, 4, &buffer, &offset);
     if (!mapped) return 0;
     memcpy(mapped, bytes, size);
-    blend_resolve_use(image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+    blend_resolve_use(image, VK_LAYOUT(TRANSFER_DST_OPTIMAL), VK_PIPELINE_STAGE_2_COPY_BIT,
                        VK_ACCESS_2_TRANSFER_WRITE_BIT);
     VkBufferImageCopy copy = {.bufferOffset = offset,
                                .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, image->layers},
@@ -173,7 +173,7 @@ static int check_nvn_blend_resolve(void) {
                     VkBuffer readback;
                     u8* actual = vk_readback_buffer(pixels * 16, &readback);
                     CHECK(actual);
-                    blend_resolve_use(&images[2], VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+                    blend_resolve_use(&images[2], VK_LAYOUT(TRANSFER_SRC_OPTIMAL), VK_PIPELINE_STAGE_2_COPY_BIT,
                                        VK_ACCESS_2_TRANSFER_READ_BIT);
                     VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, layers},
                                                .imageExtent = {5, 3, 1}};

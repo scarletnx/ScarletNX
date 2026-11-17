@@ -2026,13 +2026,13 @@ rebind:
                           "%ux%u surface of VkFormat %d, which has no depth: the compare's result is the driver's\n",
                           (unsigned long long)p->key, i, tic[0] & 0x7F, t->w, t->h, (int)t->f.vk);
             VkImageLayout sampled_layout =
-                p->si.nimg ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                p->si.nimg ? VK_IMAGE_LAYOUT_GENERAL : VK_LAYOUT(SHADER_READ_ONLY_OPTIMAL);
             const Surf* sampled = v ? t : NULL; /* the texture whose own view is bound, for the sampler */
             if (v)
                 vk_surf_use(vk_cmd(), t, sampled_layout, VK_SAMPLED_STAGES, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
             else {
                 v = vk_null_view(want, st->shadow ? 3 : num, ms); /* a compare's: the farthest depth, as a draw's */
-                sampled_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                sampled_layout = VK_LAYOUT(SHADER_READ_ONLY_OPTIMAL);
             }
             VkSampler smp =
                 vk_tex_bind_sampler(tsc, tic, st, num, sampled, want, (int)(p->si.tex_minmax_mask >> i & 1));
