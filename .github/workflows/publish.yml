@@ -60,7 +60,7 @@ jobs:
         id: plan
         run: python3 scripts/publish-builds.py plan --repo "$GITHUB_REPOSITORY" --to "$NIGHTLY_REPO"
       # Each by its name, as the release job takes them, into a folder of its own. A pull request's job that failed made
-      # none: its notes say so. A pull request builds no PowerPC64 LE, RISC-V or LoongArch AppImage (build.yml)
+      # none: its notes say so. A pull request makes no cross AppImage (build.yml's appimage-cross)
       - name: Download the x86-64 AppImage
         if: steps.plan.outputs.run
         continue-on-error: ${{ steps.plan.outputs.kind == 'pr' }}
@@ -89,7 +89,7 @@ jobs:
           run-id: ${{ steps.plan.outputs.run }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Download the PowerPC64 BE AppImage
-        if: steps.plan.outputs.run
+        if: steps.plan.outputs.run && steps.plan.outputs.kind != 'pr'
         continue-on-error: true # its job may fail without failing the run: the notes say not built
         uses: actions/download-artifact@v8
         with:
