@@ -1651,6 +1651,7 @@ foreach(bad IN ITEMS
         exchange_buffer 5 "exchange \\(W\\) buffers"
         fixed_size_array 4 "it is not FixedSize"
         keyword_argument 4 "a C keyword"
+        keyword_c23_argument 4 "constexpr: a C keyword"
         long_service_name 3 "service name abcdefghi has more than 8 characters"
         move_handle_in 5 "a client can't send a move handle"
         output_too_big 5 "the reply takes 260 bytes"
