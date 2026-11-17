@@ -532,6 +532,13 @@ static struct {
 
 void vk_mirror_wrote(u64 cpu, u64 len) {
     if (!len) return;
+    const MirRange r = {cpu >> 12, (cpu + len + 4095) >> 12};
+    /* a range the submission's ranges hold already adds nothing: its pages are pending until that range's batch is
+       done, and the harvest takes no page more. Counted all the same, every page of it gained a count here and lost it
+       again when vk_mirror_harvest joined the ranges: one game's programs write the same windows of up to 16 MiB
+       dispatch after dispatch, and half its ranges, half a billion page counts in a run, were such */
+    for (u32 i = g_mir_nnow; i-- > 0;)
+        if (g_mir_now[i].first <= r.first && r.end <= g_mir_now[i].end) return;
     if (g_mir_nnow == g_mir_capnow) {
         u32 cap = g_mir_capnow ? g_mir_capnow * 2 : 32;
         MirRange* grown = realloc(g_mir_now, (size_t)cap * sizeof *grown);
@@ -539,7 +546,6 @@ void vk_mirror_wrote(u64 cpu, u64 len) {
         g_mir_now = grown;
         g_mir_capnow = cap;
     }
-    MirRange r = {cpu >> 12, (cpu + len + 4095) >> 12};
     g_mir_now[g_mir_nnow++] = r;
     mir_pend_pages(r.first, r.end - 1, 1);
 }
