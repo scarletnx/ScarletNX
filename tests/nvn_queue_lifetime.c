@@ -10,6 +10,7 @@
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/renderer.h"
 #include "nx/hle/services/nvdrv.h"
+#include "nx/memory/own.h"
 #include "nx/runtime/options.h"
 #include "nx/runtime/clock.h"
 #include "nx/runtime/platform/plat.h"
@@ -177,6 +178,25 @@ static const Renderer renderer = {.stream_incr = stream_incr,
                                   .release_value = release_value,
                                   .present_buffer = present_buffer};
 const Renderer* g_renderer = &renderer;
+/* the same renderer with a method barrier (the wait for idle): a wait for the queue's own fence becomes one */
+static u32 barriers, barrier_kind;
+static void method_barrier(int kind) {
+    assert(fixture.in_gpu);
+    barriers++;
+    barrier_kind = (u32)kind;
+}
+/* and one whose increments in the stream don't reach a fence's value yet: the work is not in the stream */
+static u32 release_value_done(u32 id) { return fixture.current[id]; }
+static const Renderer short_renderer = {.stream_incr = stream_incr,
+                                        .stream_end = stream_end,
+                                        .release_value = release_value_done,
+                                        .present_buffer = present_buffer,
+                                        .method_barrier = method_barrier};
+static const Renderer barrier_renderer = {.stream_incr = stream_incr,
+                                          .stream_end = stream_end,
+                                          .release_value = release_value,
+                                          .present_buffer = present_buffer,
+                                          .method_barrier = method_barrier};
 void nvn_draw_init(NvnDraw* d, u32 owner) {
     d->ds.owner = owner;
     fixture.allocated++;
@@ -215,7 +235,11 @@ int nvn_draw_samples(NvnDraw* d, u64 at, u64 ticks) {
     (void)ticks;
     return 0;
 }
-int nvn_cmd_unfinished(u64 p) { return p == fixture.unfinished; }
+static u32 unfinished_asked; /* each jump of a walk asks once */
+int nvn_cmd_unfinished(u64 p) {
+    unfinished_asked++;
+    return p == fixture.unfinished;
+}
 void nvn_cmd_describe(u64 p, char* out, size_t n) {
     (void)p;
     if (n) out[0] = 0;
@@ -480,6 +504,111 @@ static void retained_texture_snapshot(void) {
     nvn_replay_queue_free(a);
     nvn_replay_queue_free(b);
 }
+/* A submission after one of its queue's that waited is walked once, for its promises and its copy together: its jump
+   asks nvn_cmd_unfinished once, not once for each walk. The copy holds what it replays after the game's memory
+   changed. Then one with no wait keeps no copy and replays from the game's memory */
+static void waited_walk_once(void) {
+    u32 a = nvn_replay_queue(), shown = 0, draws = fixture.draws;
+    u64 ready = 0;
+    gw32(0x800, 0);
+    *(NvnRecHdr*)(void*)GP(0x600) = (NvnRecHdr){OP_WAIT_EVENT | NVN_REC_LAST, 24};
+    *(NvnPWaitEvent*)(void*)GP(0x608) = (NvnPWaitEvent){0x800, NVN_EVENT_WAIT_MODE_EQUAL, 1};
+    gw64(0x108, 0x600);
+    nvn_replay_submit(a, 1, 0x108, &ready, &shown);
+    *(NvnRecHdr*)(void*)GP(0x640) = (NvnRecHdr){OP_JUMP, 16};
+    gw64(0x648, 0x700);
+    *(NvnRecHdr*)(void*)GP(0x700) = (NvnRecHdr){OP_WAIT_EVENT, 24};
+    *(NvnPWaitEvent*)(void*)GP(0x708) = (NvnPWaitEvent){0x800, NVN_EVENT_WAIT_MODE_EQUAL, 1};
+    *(NvnRecHdr*)(void*)GP(0x718) = (NvnRecHdr){OP_DRAW | NVN_REC_LAST, 8};
+    gw64(0x108, 0x640);
+    u32 asked = unfinished_asked;
+    nvn_replay_submit(a, 1, 0x108, &ready, &shown);
+    assert(unfinished_asked == asked + 1);
+    assert(!pump() && fixture.draws == draws);
+    memset(GP(0x640), 0, 0x10); /* the game's memory changes: the copy replays */
+    memset(GP(0x700), 0, 0x20);
+    gw32(0x800, 1);
+    drain();
+    assert(fixture.draws == draws + 1);
+    /* no wait after one that waited: no copy, the game's memory replays */
+    *(NvnRecHdr*)(void*)GP(0x640) = (NvnRecHdr){OP_DRAW, 8};
+    *(NvnRecHdr*)(void*)GP(0x648) = (NvnRecHdr){OP_DRAW | NVN_REC_LAST, 8};
+    nvn_replay_submit(a, 1, 0x108, &ready, &shown);
+    *(NvnRecHdr*)(void*)GP(0x648) = (NvnRecHdr){OP_END, 8};
+    drain();
+    assert(fixture.draws == draws + 2);
+    nvn_replay_queue_free(a);
+}
+/* A wait for the queue's own fence, whose increment the stream already holds, is a barrier of the work before it: the
+   replay goes on past it at once, and the stream does not end there. A wait for another queue's fence still stops */
+static void own_fence_barrier(void) {
+    u32 a = nvn_replay_queue(), b = nvn_replay_queue(), shown = 0, draws = fixture.draws;
+    u64 ready = 0;
+    fixture.hold = 1; /* the renderer keeps the increments until its GPU is done */
+    /* the fence's value not in the stream: the wait stops until the GPU is done */
+    g_renderer = &short_renderer;
+    *(NvnRecHdr*)(void*)GP(0x600) = (NvnRecHdr){OP_FENCE_SYNC, 16};
+    gw64(0x608, 0x900);
+    *(NvnRecHdr*)(void*)GP(0x610) = (NvnRecHdr){OP_WAIT_SYNC, 16};
+    gw64(0x618, 0x900);
+    *(NvnRecHdr*)(void*)GP(0x620) = (NvnRecHdr){OP_DRAW | NVN_REC_LAST, 8};
+    gw64(0x108, 0x600);
+    u32 first = barriers;
+    nvn_replay_submit(a, 1, 0x108, &ready, &shown);
+    assert(!pump() && fixture.draws == draws && barriers == first);
+    assert(gpu_done());
+    drain();
+    assert(fixture.draws == draws + 1 && barriers == first);
+    draws = fixture.draws;
+    g_renderer = &barrier_renderer;
+    *(NvnRecHdr*)(void*)GP(0x600) = (NvnRecHdr){OP_FENCE_SYNC, 16};
+    gw64(0x608, 0x900);
+    *(NvnRecHdr*)(void*)GP(0x610) = (NvnRecHdr){OP_WAIT_SYNC, 16};
+    gw64(0x618, 0x900);
+    *(NvnRecHdr*)(void*)GP(0x620) = (NvnRecHdr){OP_DRAW | NVN_REC_LAST, 8};
+    gw64(0x108, 0x600);
+    nvn_replay_submit(a, 1, 0x108, &ready, &shown);
+    u32 before = barriers;
+    assert(pump());
+    assert(fixture.draws == draws + 1 && barriers == before + 1 && barrier_kind == 4);
+    /* another queue's wait for that fence stops until the GPU is done */
+    NvnSync sync = *NVN_OBJ(NvnSync, 0x900);
+    *(NvnRecHdr*)(void*)GP(0x640) = (NvnRecHdr){OP_WAIT_SYNC, 16};
+    gw64(0x648, 0x900);
+    *(NvnRecHdr*)(void*)GP(0x650) = (NvnRecHdr){OP_DRAW | NVN_REC_LAST, 8};
+    gw64(0x108, 0x640);
+    nvn_replay_submit(b, 1, 0x108, &ready, &shown);
+    assert(!pump() && fixture.draws == draws + 1 && barriers == before + 1);
+    fixture.hold = 0;
+    assert(gpu_done());
+    drain();
+    assert(fixture.draws == draws + 2 && fixture.current[nvn_replay_syncpt(a)] == sync.value);
+    g_renderer = &renderer;
+    nvn_replay_queue_free(a);
+    nvn_replay_queue_free(b);
+}
+/* What the GPU holds of a page lands at the first record header that a pass reads there: the walk at the submission
+   and the replay each ask own_acquire once for each page, not for each header (tests/own_stub.c counts the calls) */
+extern u64 g_own_stub_acquires;
+static void own_headers(void) {
+    u32 a = nvn_replay_queue(), shown = 0, draws = fixture.draws;
+    u64 ready = 0;
+    for (u64 at = 0x2fe0; at < 0x3000; at += 8) *(NvnRecHdr*)(void*)GP(at) = (NvnRecHdr){OP_DRAW, 8};
+    *(NvnRecHdr*)(void*)GP(0x3000) = (NvnRecHdr){OP_DRAW | NVN_REC_LAST, 8};
+    gw64(0x108, 0x2fe0);
+    g_own.nown = 1;
+    u64 before = g_own_stub_acquires;
+    nvn_replay_submit(a, 1, 0x108, &ready, &shown);
+    u64 walked = g_own_stub_acquires - before;
+    drain();
+    u64 replayed = g_own_stub_acquires - before - walked;
+    g_own.nown = 0;
+    if (walked != 2 || replayed != 2)
+        fprintf(stderr, "own_acquire: %llu calls in the walk and %llu in the replay, 2 each expected\n",
+                (unsigned long long)walked, (unsigned long long)replayed);
+    assert(walked == 2 && replayed == 2 && fixture.draws == draws + 5);
+    nvn_replay_queue_free(a);
+}
 /* Every live queue's submitted work is done when nvn_replay_finish_all returns, with a freed queue's slot between
    them, and with no queue it queues nothing. */
 static void finish_all(void) {
@@ -633,6 +762,9 @@ int main(int argc, char** argv) {
     cross_queue_fences();
     present_order();
     retained_texture_snapshot();
+    waited_walk_once();
+    own_fence_barrier();
+    own_headers();
     finish_all();
     finish_all_waits();
     if (argc == 2 && !strcmp(argv[1], "--bench-replay")) bench_replay();

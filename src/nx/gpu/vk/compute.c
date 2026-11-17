@@ -937,7 +937,13 @@ static CsPipe* cs_pipe(const u8* code, u32 flow_base, u32 lx, u32 ly, u32 lz, u3
     CsPipe* p = g_csp[key & 255];
     while (p && (p->key != key || !vk_cb_reads_hold(&p->cbr, cs_cb_read))) p = p->next;
     if (p) return p;
+    /* Made with vk_lock let go: the translation and the driver's compile need nothing it guards (the pipeline file's
+       thread makes these with no hold, vk_cs_pipe_load). One took 235 ms in Mario Kart World, and every thread that
+       landed GPU results waited for it. The table, g_cb and the code window are the dispatching thread's alone. Not
+       while a constant buffer is still to be read (g_cb_later): a read of it can land results */
+    int paused = !g_cb_later && vk_lock_pause();
     p = cs_make(code, blen, key, flow_base, lx, ly, lz, shm, k, cs_cb_read);
+    vk_lock_resume(paused);
     if (!p) return &g_cs_alloc_failed;
     p->next = g_csp[key & 255];
     g_csp[key & 255] = p;
@@ -2020,13 +2026,13 @@ rebind:
                           "%ux%u surface of VkFormat %d, which has no depth: the compare's result is the driver's\n",
                           (unsigned long long)p->key, i, tic[0] & 0x7F, t->w, t->h, (int)t->f.vk);
             VkImageLayout sampled_layout =
-                p->si.nimg ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                p->si.nimg ? VK_IMAGE_LAYOUT_GENERAL : VK_LAYOUT(SHADER_READ_ONLY_OPTIMAL);
             const Surf* sampled = v ? t : NULL; /* the texture whose own view is bound, for the sampler */
             if (v)
                 vk_surf_use(vk_cmd(), t, sampled_layout, VK_SAMPLED_STAGES, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
             else {
                 v = vk_null_view(want, st->shadow ? 3 : num, ms); /* a compare's: the farthest depth, as a draw's */
-                sampled_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                sampled_layout = VK_LAYOUT(SHADER_READ_ONLY_OPTIMAL);
             }
             VkSampler smp =
                 vk_tex_bind_sampler(tsc, tic, st, num, sampled, want, (int)(p->si.tex_minmax_mask >> i & 1));

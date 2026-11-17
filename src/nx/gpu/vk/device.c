@@ -37,21 +37,43 @@ VkState g_vk;
 static PMutex g_vklock;
 static _Thread_local int t_vkdepth;
 static u32 g_vk_owner; /* the thread holding it (plat_tid), 0 when none: a trap's fault on it can't be answered */
+/* The lock hands off fairly. A Windows SRW lock (and a pthread mutex) lets the thread that let go take it straight back
+   before the waiter it woke runs: a thread whose draws ran back to back kept it, and the threads landing GPU results and
+   signalling fences waited milliseconds for each hold of a few microseconds. A thread letting go with
+   others waiting in pm_lock sets the baton; until one of them (or any thread) takes the lock, a thread coming to it
+   waits for the baton, not the lock, and only those already waiting compete */
+static u32 g_vk_waiting; /* threads blocked in pm_lock on g_vklock */
+static u32 g_vk_baton;   /* 1: let go to a waiter, which hasn't taken it yet */
+static void vk_took(void) {
+    __atomic_store_n(&g_vk_owner, plat_tid(), __ATOMIC_RELAXED);
+    if (__atomic_load_n(&g_vk_baton, __ATOMIC_RELAXED)) {
+        __atomic_store_n(&g_vk_baton, 0, __ATOMIC_RELEASE);
+        plat_wake_word(&g_vk_baton);
+    }
+}
 void vk_lock(void) {
     if (!t_vkdepth++) {
-        if (!pm_trylock(&g_vklock)) { /* held: the GPU thread says so for the stall report */
+        int got = !__atomic_load_n(&g_vk_baton, __ATOMIC_ACQUIRE) && pm_trylock(&g_vklock);
+        if (!got) { /* held: the GPU thread says so for the stall report */
             /* Only a contended acquisition gets a zone. */
             SNX_ZONE(z_wait, "vk lock wait");
             gpu_wait_note("vk_lock, which another thread holds", 0);
-            pm_lock(&g_vklock);
+            /* the timeout only guards against a wake lost to the store's race: the baton is cleared at each take */
+            while (__atomic_load_n(&g_vk_baton, __ATOMIC_ACQUIRE)) plat_wait_word(&g_vk_baton, 1, 1000000);
+            if (!pm_trylock(&g_vklock)) {
+                __atomic_add_fetch(&g_vk_waiting, 1, __ATOMIC_SEQ_CST);
+                pm_lock(&g_vklock);
+                __atomic_sub_fetch(&g_vk_waiting, 1, __ATOMIC_SEQ_CST);
+            }
             gpu_wait_note(NULL, 0);
         }
-        __atomic_store_n(&g_vk_owner, plat_tid(), __ATOMIC_RELAXED);
+        vk_took();
     }
 }
 /* lets go of this thread's last hold, then signals the event slots its releases under it reached */
 static void vk_let_go(void) {
     __atomic_store_n(&g_vk_owner, 0, __ATOMIC_RELAXED);
+    if (__atomic_load_n(&g_vk_waiting, __ATOMIC_SEQ_CST)) __atomic_store_n(&g_vk_baton, 1, __ATOMIC_RELEASE);
     pm_unlock(&g_vklock);
     vk_release_events();
 }
@@ -59,15 +81,24 @@ void vk_unlock(void) {
     /* watched bytes that this hold read with no publish (own.c owes them): the targets over them are watched again
        before the lock goes, and the next CPU access publishes them */
     if (t_vkdepth == 1 && own_owed_any()) vk_rt_watch_owed();
+    if (t_vkdepth == 1 && vk_own_later_any()) vk_own_release_later();
     if (!--t_vkdepth) vk_let_go();
 }
 int vk_trylock(void) {
     if (!t_vkdepth && !pm_trylock(&g_vklock)) return 0;
-    if (!t_vkdepth++) __atomic_store_n(&g_vk_owner, plat_tid(), __ATOMIC_RELAXED);
+    if (!t_vkdepth++) vk_took();
     return 1;
 }
 u32 vk_lock_owner(void) { return __atomic_load_n(&g_vk_owner, __ATOMIC_RELAXED); }
 int vk_lock_held(void) { return t_vkdepth > 0; }
+int vk_lock_pause(void) {
+    if (t_vkdepth != 1) return 0;
+    vk_unlock();
+    return 1;
+}
+void vk_lock_resume(int paused) {
+    if (paused) vk_lock();
+}
 
 /* What held the memory at an out-of-memory, at the first ones: each heap as devmem.c counts it, and the descriptor
    pools, which MoltenVK backs with Metal memory that its blocks do not hold (cmd.c). The heap's use less its blocks
@@ -908,6 +939,7 @@ static bool choose_device(SnxVkChoice* c, void* user) {
         g_vk.has_feedback = snx_vk_choice_has(c, VK_EXT_ATTACHMENT_FEEDBACK_LOOP_LAYOUT_EXTENSION_NAME);
         has_feedback_dynamic = snx_vk_choice_has(c, VK_EXT_ATTACHMENT_FEEDBACK_LOOP_DYNAMIC_STATE_EXTENSION_NAME);
         g_vk.has_local_read = snx_vk_choice_has(c, VK_KHR_DYNAMIC_RENDERING_LOCAL_READ_EXTENSION_NAME);
+        g_vk.has_unified_layouts = snx_vk_choice_has(c, VK_KHR_UNIFIED_IMAGE_LAYOUTS_EXTENSION_NAME);
         has_cond = snx_vk_choice_has(c, VK_EXT_CONDITIONAL_RENDERING_EXTENSION_NAME);
         has_provoking = snx_vk_choice_has(c, VK_EXT_PROVOKING_VERTEX_EXTENSION_NAME);
         has_mesh = snx_vk_choice_has(c, VK_EXT_MESH_SHADER_EXTENSION_NAME);
@@ -1100,6 +1132,8 @@ static bool choose_device(SnxVkChoice* c, void* user) {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ATTACHMENT_FEEDBACK_LOOP_DYNAMIC_STATE_FEATURES_EXT};
     VkPhysicalDeviceDynamicRenderingLocalReadFeaturesKHR qlocal = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_LOCAL_READ_FEATURES_KHR};
+    VkPhysicalDeviceUnifiedImageLayoutsFeaturesKHR qunified = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_UNIFIED_IMAGE_LAYOUTS_FEATURES_KHR};
     VkPhysicalDeviceConditionalRenderingFeaturesEXT qcond = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CONDITIONAL_RENDERING_FEATURES_EXT};
     VkPhysicalDeviceProvokingVertexFeaturesEXT qprov = {
@@ -1168,6 +1202,7 @@ static bool choose_device(SnxVkChoice* c, void* user) {
                            g_vk.has_feedback ? &qloop : NULL,
                            has_feedback_dynamic ? &qloop_dyn : NULL,
                            g_vk.has_local_read ? &qlocal : NULL,
+                           g_vk.has_unified_layouts ? &qunified : NULL,
                            has_cond ? &qcond : NULL,
                            has_provoking ? &qprov : NULL,
                            has_list_restart ? &qlist_restart : NULL,
@@ -1353,6 +1388,9 @@ static bool choose_device(SnxVkChoice* c, void* user) {
     g_vk.has_feedback_dynamic =
         g_vk.has_feedback && has_feedback_dynamic && qloop_dyn.attachmentFeedbackLoopDynamicState;
     g_vk.has_local_read = g_vk.has_feedback && g_vk.has_local_read && qlocal.dynamicRenderingLocalRead;
+    /* the extension alone allows GENERAL where the specification asks for it. The feature says that GENERAL costs
+       nothing against each use's own layout, which is why the renderer then keeps its images there */
+    g_vk.has_unified_layouts = g_vk.has_unified_layouts && qunified.unifiedImageLayouts;
     g_spirv_translate.maximal_reconvergence = has_reconvergence && qreconv.shaderMaximalReconvergence;
     g_spirv_translate.clock_scopes =
         has_shader_clock ? (qclock.shaderSubgroupClock ? 1 : 0) | (qclock.shaderDeviceClock ? 2 : 0) : 0;
@@ -1845,6 +1883,14 @@ static bool choose_device(SnxVkChoice* c, void* user) {
     if (g_vk.has_local_read) {
         chain = &flocal;
         snx_vk_choice_enable(c, VK_KHR_DYNAMIC_RENDERING_LOCAL_READ_EXTENSION_NAME);
+    }
+    VkPhysicalDeviceUnifiedImageLayoutsFeaturesKHR funified = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_UNIFIED_IMAGE_LAYOUTS_FEATURES_KHR,
+        .pNext = chain,
+        .unifiedImageLayouts = VK_TRUE};
+    if (g_vk.has_unified_layouts) {
+        chain = &funified;
+        snx_vk_choice_enable(c, VK_KHR_UNIFIED_IMAGE_LAYOUTS_EXTENSION_NAME);
     }
     VkPhysicalDeviceBlendOperationAdvancedFeaturesEXT fadvanced = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BLEND_OPERATION_ADVANCED_FEATURES_EXT,
