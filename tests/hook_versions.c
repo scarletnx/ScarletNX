@@ -98,7 +98,7 @@ static int pick(const char* symbol, u32 sdk, u32 nvn) {
         c.x[0] = 0;
         c.x[30] = 0x81000000;
         hook_fn[k](&c, 0);
-        assert(c.pc == 0x81000000 && !strcmp(seen_handler, hook_handler[k]));
+        assert(c.pc == 0x81000000 && seen_handler && !strcmp(seen_handler, hook_handler[k]));
     }
     return k;
 }

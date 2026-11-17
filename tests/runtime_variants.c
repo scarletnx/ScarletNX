@@ -297,6 +297,7 @@ static void nro_modules(const char* path) {
     u32 entries = 9;
     int k;
     CHECK(root != NULL);
+    if (!root) return;
     memset(id, 0x42, sizeof id);
     memset(other, 0x24, sizeof other);
     memset(slots, 0, sizeof slots);
