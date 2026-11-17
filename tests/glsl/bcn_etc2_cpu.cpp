@@ -87,7 +87,7 @@ extern "C" uint32_t etc2_candidate_cpu(const uint32_t texels[16], int punch, uin
         see = see || (punch && t.et_clear((uint32_t)i));
     }
     t.et_cluster(see);
-    t.et_build(c, punch != 0, see);
+    t.et_build(c, punch != 0, see, 0xFFFFFFFFu);
     store(t.tx_hi, t.tx_lo, out);
     return t.et_err;
 }

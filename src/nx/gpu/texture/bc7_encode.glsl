@@ -300,7 +300,14 @@ uint StoredBits() {
    v >> 8 = 0, and v < 2^n keeps the result under 256, so neither a branch nor a mask is needed (ucas: exhaustive equiv
    over n = 5 to 8, every v < 2^n) */
 uint Widen(uint v, uint n) {
+#if SNX_ASTC_ENC
+    /* an ASTC end is kept as the 8 bits it decodes to (AsShape's sh_cb is 8, its sh_pk 0), so n is 8 and v is under
+       256: the compiler folds n but can't know v's range, and ucas's simplify on the third pass's SPIR-V proves each
+       v >> 8 left there 0 (60 of them). The shift by n - 8 is by 0, which folds away; it keeps n used */
+    return v >> (n - 8u);
+#else
     return (v << (8u - n)) | (v >> (2u * n - 8u));
+#endif
 }
 
 /* the stored ends as the decoder reads them, an RGBA8 word, alpha 255 where the shape stores none */
@@ -773,7 +780,14 @@ uint SpreadOf(int n, int q, int r, int g, int b, int a) {
 }
 /* how far partition part's subsets spread around their means: each subset's sum of squared distances, from its
    sums (n Q - S^2 for each channel, over n), alpha included when alpha says so. One pass over the texels sums
-   subsets 1 and 2; subset 0's are the block's (BlockSums) less theirs */
+   subsets 1 and 2; subset 0's are the block's (BlockSums) less theirs.
+
+   The partition whose subsets spread least is the one Lee and Nah's QuickBC7 ranks first ("QuickBC7: Fast BC7
+   Texture Compression Heuristics", Computers & Graphics, 2026, doi:10.1016/j.cag.2026.104631), which scores
+   partitions by the Calinski-Harabasz index (Calinski and Harabasz, "A dendrite method for cluster analysis",
+   Communications in Statistics 3, 1, 1974) in place of fitting each: for two subsets of the block's 16 texels the
+   spread between them and the spread within them add up to the block's own, so the largest index is the least
+   spread within */
 uint Spread(uint ns, uint part, uint alpha) {
     SetShape(ns, part);
     int n1 = 0, q1 = 0, r1 = 0, g1 = 0, b1 = 0, a1 = 0;
