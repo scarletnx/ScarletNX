@@ -10,12 +10,15 @@
 #ifndef SNX_GUI_SAVES_H
 #define SNX_GUI_SAVES_H
 #include "common/utilities/common.h"
+#include "common/utilities/game_ini.h" /* SnxSystem */
 #include "gui/clean.h"
 #include <stdbool.h>
 #include <stddef.h>
 
-/* the folder of the Switch's saves in a zip of every console's */
+/* the folders of each console's saves in a zip of every console's */
 #define GUI_SAVES_SWITCH "switch/"
+#define GUI_SAVES_GBA    "gba/"
+#define GUI_SAVES_NDS    "nds/"
 
 /* The save put together in staged (a folder or a file) into the place of save. The one there before goes first to the
    folder trash (made when it is not there, on save's disk) as <name>.<UTC time>, a number after it rather than over
@@ -106,4 +109,41 @@ typedef struct {
    in error */
 int gui_saves_eden_import(GuiCleaned* done, const char* path, const char* shown, const char* prefix,
                           const GuiSaveNx* saves, size_t count, GuiSavesDone* result, char* error, size_t size);
+/* A save kept as one file, the GBA's and the DS's: <game folder>/<name>.sav, the save memory's bytes as mGBA, melonDS
+   and the flash carts keep them; the game's name, which its file takes in a zip (<name>.sav), and the trash a save
+   there before goes to */
+typedef struct {
+    const char* file;
+    const char* trash;
+    const char* name;
+} GuiSaveRaw;
+typedef struct {
+    GuiSaveRaw* at;
+    size_t count;
+} GuiSavesRaw;
+void gui_saves_raw_free(GuiSavesRaw* list);
+/* the save of the game named name in its folder game, its strings owned (gui_saves_raw_free's): 1, 0 out of memory */
+int gui_saves_raw_place(const char* game, const char* name, const char* trash, GuiSaveRaw* out);
+/* the games in the count folders whose .ini says system (snx_game_system), each with its save; with there, only those
+   whose .sav is there */
+void gui_saves_raw_list(const char* trash, const char* const* folders, size_t count, SnxSystem system, bool there,
+                        GuiSavesRaw* list);
+/* the file at path, a .sav (shown how messages name it), in place of save's by gui_saves_put; an empty one refused.
+   What was done added to *result. 0, else nonzero with why in error */
+int gui_saves_raw_import(GuiCleaned* done, const char* path, const char* shown, const GuiSaveRaw* save,
+                         GuiSavesDone* result, char* error, size_t size);
+/* each of the count saves there into zip as <prefix><name>.sav, how many into *kept; one not there an entry. 0, else
+   nonzero with why in error */
+int gui_saves_raw_add(GuiSavesZip* zip, const char* prefix, const GuiSaveRaw* saves, size_t count, size_t* kept,
+                      char* error, size_t size);
+/* each .sav of the zip at path under prefix (at its top, "" for a zip of one console's) in place of the save of the
+   game of its name among the count saves; one of no game there an entry. A member that is no .sav at prefix's top, an
+   empty one, or a zip with none of the games' refused. 0, else nonzero with why in error */
+int gui_saves_raw_import_zip(GuiCleaned* done, const char* path, const char* shown, const char* prefix,
+                             const GuiSaveRaw* saves, size_t count, GuiSavesDone* result, char* error, size_t size);
+/* 1 when the zip at path has a member under prefix (a console's folder in a zip of every console's), else 0 */
+int gui_saves_zip_has(const char* path, const char* prefix);
+/* how many of the count saves the zip at path holds a .sav of (under prefix) while their own is there: those its
+   import would put in the trash */
+size_t gui_saves_raw_there(const char* path, const char* prefix, const GuiSaveRaw* saves, size_t count);
 #endif

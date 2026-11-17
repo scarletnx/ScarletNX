@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 #include "gui/saves.h"
 #include "common/platform/file.h"
+#include "common/utilities/game_ini.h"
 #include "common/utilities/zip.h"
 #include "gui/i18n.h"
 #include <libdeflate.h>
@@ -733,4 +734,218 @@ int gui_saves_eden_export(GuiCleaned* done, const char* path, const GuiSaveNx* s
              (unsigned long long)bytes, kept, count);
     gui_cleaned_add(done, true, path, what);
     return 0;
+}
+
+/* ---- the GBA's and the DS's: the raw .sav */
+
+void gui_saves_raw_free(GuiSavesRaw* list) {
+    for (size_t i = 0; i < list->count; ++i) {
+        free((void*)list->at[i].file);
+        free((void*)list->at[i].trash);
+        free((void*)list->at[i].name);
+    }
+    free(list->at);
+    list->at = NULL;
+    list->count = 0;
+}
+int gui_saves_raw_place(const char* game, const char* name, const char* trash, GuiSaveRaw* out) {
+    char* file = snx_format("%s/%s.sav", game, name);
+    if (!file) return 0;
+    snx_path_native(file);
+    out->file = file;
+    out->trash = snx_strdup(trash);
+    out->name = snx_strdup(name);
+    return 1;
+}
+void gui_saves_raw_list(const char* trash, const char* const* folders, size_t count, SnxSystem system, bool there,
+                        GuiSavesRaw* list) {
+    list->at = NULL;
+    list->count = 0;
+    for (size_t f = 0; f < count; ++f) {
+        char** names = NULL;
+        size_t n = 0;
+        if (snx_list_dir(folders[f], &names, &n)) continue;
+        for (size_t i = 0; i < n; ++i) {
+            char* game = snx_path_join(folders[f], names[i]);
+            GuiSaveRaw save;
+            if (game && snx_is_dir(game) && snx_game_system(game, names[i]) == system &&
+                gui_saves_raw_place(game, names[i], trash, &save)) {
+                if (!there || snx_is_file(save.file)) {
+                    list->at = (GuiSaveRaw*)snx_realloc(list->at, (list->count + 1) * sizeof *list->at);
+                    list->at[list->count++] = save;
+                } else { /* no save of it: not listed */
+                    free((void*)save.file);
+                    free((void*)save.trash);
+                    free((void*)save.name);
+                }
+            }
+            free(game);
+        }
+        snx_free_strings(names, n);
+    }
+}
+/* the n bytes of a save put in place of save's file: written beside it as .<name>.sav.importing, then
+   gui_saves_put's. 0, else nonzero with why */
+static int raw_put(GuiCleaned* done, const unsigned char* bytes, size_t n, const char* from, const GuiSaveRaw* save,
+                   GuiSavesDone* result, char* error, size_t size) {
+    char *folder = snx_dirname(save->file), *hidden = snx_format(".%s.importing", snx_path_leaf(save->file));
+    char *staged = folder && hidden ? snx_path_join(folder, hidden) : NULL, backup[SNX_PATH_SIZE], what[4400];
+    char why[256];
+    int rc = 1;
+    error[0] = 0;
+    if (!staged)
+        snprintf(error, size, "%s", snx_tr("out of memory"));
+    else if (snx_mkdirs(folder) || snx_write_file(staged, bytes, n))
+        snprintf(error, size, snx_tr("%s could not be written: %s"), staged, snx_os_error(why, sizeof why));
+    else if (!gui_saves_put(done, staged, save->file, save->trash, snx_path_leaf(save->file), backup, sizeof backup,
+                            error, size)) {
+        ++result->saves;
+        ++result->files;
+        result->bytes += n;
+        if (backup[0] && !result->backups++) snprintf(result->backup, sizeof result->backup, "%s", backup);
+        if (backup[0])
+            snprintf(what, sizeof what, snx_tr("Imported %zu bytes from %s; the save there before is in %s"), n, from,
+                     backup);
+        else
+            snprintf(what, sizeof what, snx_tr("Imported %zu bytes from %s; there was no save before"), n, from);
+        gui_cleaned_add(done, true, save->file, what);
+        rc = 0;
+    }
+    if (rc && staged && snx_path_exists(staged)) snx_remove_tree(staged);
+    if (rc) {
+        snprintf(what, sizeof what, snx_tr("Not imported: %s"), error);
+        gui_cleaned_add(done, false, save->file, what);
+    }
+    free(staged);
+    free(hidden);
+    free(folder);
+    return rc;
+}
+int gui_saves_raw_import(GuiCleaned* done, const char* path, const char* shown, const GuiSaveRaw* save,
+                         GuiSavesDone* result, char* error, size_t size) {
+    size_t n = 0;
+    unsigned char* bytes = snx_read_file(path, &n);
+    char why[256];
+    int rc;
+    if (!bytes) {
+        snprintf(error, size, snx_tr("%s could not be read: %s"), shown, snx_os_error(why, sizeof why));
+        return 1;
+    }
+    if (!n) { /* a save memory is never empty: an empty file is no save */
+        snprintf(error, size, snx_tr("%s is empty: a save holds the save memory's bytes"), shown);
+        free(bytes);
+        return 1;
+    }
+    rc = raw_put(done, bytes, n, shown, save, result, error, size);
+    free(bytes);
+    return rc;
+}
+int gui_saves_raw_add(GuiSavesZip* zip, const char* prefix, const GuiSaveRaw* saves, size_t count, size_t* kept,
+                      char* error, size_t size) {
+    *kept = 0;
+    for (size_t i = 0; i < count; ++i) {
+        char* name;
+        int rc;
+        if (!snx_is_file(saves[i].file)) {
+            gui_cleaned_add(zip->done, false, saves[i].file, snx_tr("Not exported: no save there"));
+            continue;
+        }
+        name = snx_format("%s%s.sav", prefix, saves[i].name);
+        rc = zip_file(zip, saves[i].file, name, error, size);
+        free(name);
+        if (rc) return 1;
+        ++*kept;
+    }
+    return 0;
+}
+/* the zip's member name under prefix, a .sav at its top: the game's name before .sav, into out; 0 for another */
+static bool raw_member(const char* name, const char* prefix, char* out, size_t size) {
+    size_t skip = strlen(prefix), n = strlen(name);
+    if (strncmp(name, prefix, skip) || n <= skip + 4 || strchr(name + skip, '/') || name[n - 4] != '.' ||
+        (name[n - 3] | 0x20) != 's' || (name[n - 2] | 0x20) != 'a' || (name[n - 1] | 0x20) != 'v')
+        return false;
+    snprintf(out, size, "%.*s", (int)(n - skip - 4), name + skip);
+    return true;
+}
+int gui_saves_raw_import_zip(GuiCleaned* done, const char* path, const char* shown, const char* prefix,
+                             const GuiSaveRaw* saves, size_t count, GuiSavesDone* result, char* error, size_t size) {
+    char why[1024], game[SNX_PATH_SIZE], what[SNX_PATH_SIZE + 256];
+    SnxZip* zip = snx_zip_open(path, why, sizeof why);
+    uint32_t n, i;
+    size_t members = 0, left = 0;
+    int rc = 0;
+    error[0] = 0;
+    if (!zip) {
+        snprintf(error, size, snx_tr("%s is no zip of saves: %s"), shown, why);
+        return 1;
+    }
+    n = snx_zip_count(zip);
+    for (i = 0; i < n && !rc; ++i) { /* the whole zip checked before anything is written */
+        const char* name = snx_zip_name(zip, i);
+        if (strncmp(name, prefix, strlen(prefix)) || !strcmp(name, prefix)) continue; /* another console's */
+        if (!raw_member(name, prefix, game, sizeof game)) {
+            snprintf(error, size, snx_tr("%s holds %s, which is no .sav at its top as each game's save goes"), shown,
+                     name);
+            rc = 1;
+        }
+    }
+    for (i = 0; i < n && !rc; ++i) {
+        const char* name = snx_zip_name(zip, i);
+        size_t j, bytes_n = 0;
+        unsigned char* bytes;
+        if (!raw_member(name, prefix, game, sizeof game)) continue;
+        ++members;
+        for (j = 0; j < count && strcmp(saves[j].name, game); ++j) {}
+        if (j == count) {
+            snprintf(what, sizeof what, snx_tr("Not imported: no game of the library is named %s"), game);
+            gui_cleaned_add(done, false, name, what);
+            ++left;
+            continue;
+        }
+        bytes = snx_zip_read(zip, i, &bytes_n, why, sizeof why);
+        if (!bytes) {
+            snprintf(error, size, snx_tr("%s could not be taken out of %s: %s"), name, shown, why);
+            rc = 1;
+        } else if (!bytes_n) {
+            snprintf(error, size, snx_tr("%s in %s is empty: a save holds the save memory's bytes"), name, shown);
+            rc = 1;
+        } else {
+            char from[SNX_PATH_SIZE + 64];
+            snprintf(from, sizeof from, "%s in %s", name, shown);
+            rc = raw_put(done, bytes, bytes_n, from, &saves[j], result, error, size);
+        }
+        free(bytes);
+    }
+    if (!rc && !members) {
+        snprintf(error, size, snx_tr("%s holds no .sav%s%s"), shown, prefix[0] ? snx_tr(" in its folder ") : "",
+                 prefix);
+        rc = 1;
+    }
+    if (!rc && left == members) {
+        snprintf(error, size, snx_tr("none of the %zu saves in %s is of a game of the library, named as its .sav"),
+                 members, shown);
+        rc = 1;
+    }
+    snx_zip_close(zip);
+    return rc;
+}
+int gui_saves_zip_has(const char* path, const char* prefix) {
+    char why[1024];
+    SnxZip* zip = snx_zip_open(path, why, sizeof why);
+    uint32_t n = zip ? snx_zip_count(zip) : 0, i;
+    int has = 0;
+    for (i = 0; i < n && !has; ++i) has = !strncmp(snx_zip_name(zip, i), prefix, strlen(prefix));
+    snx_zip_close(zip);
+    return has;
+}
+size_t gui_saves_raw_there(const char* path, const char* prefix, const GuiSaveRaw* saves, size_t count) {
+    char why[1024], game[SNX_PATH_SIZE];
+    SnxZip* zip = snx_zip_open(path, why, sizeof why);
+    uint32_t n = zip ? snx_zip_count(zip) : 0, i;
+    size_t there = 0, j;
+    for (i = 0; i < n; ++i)
+        if (raw_member(snx_zip_name(zip, i), prefix, game, sizeof game))
+            for (j = 0; j < count; ++j) there += !strcmp(saves[j].name, game) && snx_is_file(saves[j].file);
+    snx_zip_close(zip);
+    return there;
 }

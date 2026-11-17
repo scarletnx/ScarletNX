@@ -298,7 +298,7 @@ int main(void) {
         mark = at(own, "snx-journaled", NULL);
         put_text(mark, "");
         put_text(note, "program=0100ABCD12340000\n");
-        memset(&result, 0, sizeof result);
+        result = (GuiSavesDone){0};
         assert(!gui_saves_eden_import(&done, zip, zip, "", &save, 1, &result, error, sizeof error));
         path = at(own, "0", "b.bin");
         assert(holds_text(path, b));
@@ -691,6 +691,125 @@ int main(void) {
         free(b);
         free(a);
         free(every);
+    }
+
+    /* the GBA's and the DS's: each game's <name>.sav, as mGBA and melonDS keep one; the games of a console found by
+       their .ini; one in place of another's by gui_saves_put; a zip of them, a .sav each, read back by the games'
+       names; an empty .sav and a member that is none refused */
+    {
+        char *raw = at(root, "raw", NULL), *lib = at(raw, "recompiled", NULL), *raw_trash = at(raw, "trash", NULL);
+        char *a = at(lib, "A Game", NULL), *b = at(lib, "B Game", NULL), *c = at(lib, "C Game", NULL);
+        char *d = at(lib, "0100DDDD00000000", NULL), *zipped = at(raw, "gba.zip", NULL),
+             *picked = at(raw, "in.sav", NULL);
+        const char* folders[1] = {lib};
+        static const unsigned char sram[8] = {1, 2, 3, 4, 5, 6, 7, 8}, other[4] = {9, 9, 9, 9};
+        GuiSavesRaw list;
+        GuiSavesZip* writing;
+        size_t kept = 0, files = 0;
+        SnxU64 took = 0;
+        path = at(a, "A Game.ini", NULL);
+        put_text(path, "[Game]\nsystem=gba\n");
+        free(path);
+        path = at(a, "A Game.sav", NULL);
+        put(path, sram, sizeof sram);
+        free(path);
+        path = at(b, "B Game.ini", NULL);
+        put_text(path, "[Game]\nsystem=gba\n");
+        free(path);
+        path = at(c, "C Game.ini", NULL);
+        put_text(path, "[Game]\nsystem=nds\n");
+        free(path);
+        path = at(c, "C Game.sav", NULL);
+        put(path, other, sizeof other);
+        free(path);
+        assert(!snx_mkdirs(d));
+        gui_saves_raw_list(raw_trash, folders, 1, SNX_SYSTEM_GBA, false, &list);
+        assert(list.count == 2 && !strcmp(list.at[0].name, "A Game") && !strcmp(list.at[1].name, "B Game"));
+        path = at(a, "A Game.sav", NULL);
+        assert(!strcmp(list.at[0].file, path) && !strcmp(list.at[0].trash, raw_trash));
+        free(path);
+        gui_saves_raw_free(&list);
+        gui_saves_raw_list(raw_trash, folders, 1, SNX_SYSTEM_GBA, true, &list);
+        assert(list.count == 1 && !strcmp(list.at[0].name, "A Game"));
+        gui_saves_raw_free(&list);
+        gui_saves_raw_list(raw_trash, folders, 1, SNX_SYSTEM_NDS, false, &list);
+        assert(list.count == 1 && !strcmp(list.at[0].name, "C Game"));
+        gui_saves_raw_free(&list);
+
+        /* a .sav picked in place of A Game's: the one there to the trash */
+        gui_saves_raw_list(raw_trash, folders, 1, SNX_SYSTEM_GBA, false, &list);
+        put(picked, other, sizeof other);
+        result = (GuiSavesDone){0};
+        assert(!gui_saves_raw_import(&done, picked, picked, &list.at[0], &result, error, sizeof error));
+        assert(holds(list.at[0].file, other, sizeof other) && result.saves == 1 && result.bytes == 4 &&
+               result.backups == 1 && holds(result.backup, sram, sizeof sram));
+        path = snx_format("%s.importing", list.at[0].file);
+        assert(!snx_path_exists(path));
+        free(path);
+        gui_cleaned_free(&done);
+        put(picked, "", 0);
+        assert(gui_saves_raw_import(&done, picked, "the picked.sav", &list.at[0], &result, error, sizeof error));
+        assert(!strcmp(error, "the picked.sav is empty: a save holds the save memory's bytes") &&
+               holds(list.at[0].file, other, sizeof other));
+        gui_cleaned_free(&done);
+
+        /* GBA's games into a zip of every console's under gba/, B Game with no save said; back into a library with
+           none, by name, a .sav of no game of it said and left */
+        put(list.at[0].file, sram, sizeof sram);
+        writing = gui_saves_zip_begin(zipped, &done, error, sizeof error);
+        assert(writing && !gui_saves_raw_add(writing, GUI_SAVES_GBA, list.at, list.count, &kept, error, sizeof error) &&
+               kept == 1 && strstr(done.text, "Not exported: no save there"));
+        assert(!gui_saves_zip_end(writing, true, &files, &took, error, sizeof error) && files == 1 && took == 8);
+        assert(has_member(zipped, "gba/A Game.sav") && gui_saves_zip_has(zipped, GUI_SAVES_GBA) &&
+               !gui_saves_zip_has(zipped, GUI_SAVES_NDS));
+        assert(gui_saves_raw_there(zipped, GUI_SAVES_GBA, list.at, list.count) == 1);
+        gui_cleaned_free(&done);
+        path = at(a, "A Game.sav", NULL);
+        assert(!snx_remove_tree(path));
+        free(path);
+        assert(!gui_saves_raw_there(zipped, GUI_SAVES_GBA, list.at, list.count));
+        result = (GuiSavesDone){0};
+        assert(!gui_saves_raw_import_zip(&done, zipped, zipped, GUI_SAVES_GBA, list.at, list.count, &result, error,
+                                         sizeof error));
+        assert(holds(list.at[0].file, sram, sizeof sram) && result.saves == 1 && !result.backups);
+        gui_cleaned_free(&done);
+        {
+            Member m[] = {{"Z Game.sav", sram, 8, 0, 0, false}, {"A Game.sav", other, 4, 8, 6, false}};
+            zip_make(zipped, m, 2);
+            assert(!gui_saves_raw_import_zip(&done, zipped, zipped, "", list.at, list.count, &result, error,
+                                             sizeof error));
+            assert(holds(list.at[0].file, other, sizeof other) &&
+                   strstr(done.text, "Not imported: no game of the library is named Z Game"));
+            gui_cleaned_free(&done);
+        }
+        {
+            Member m[] = {{"A Game.sav", sram, 8, 0, 0, false}, {"notes/readme.txt", "x", 1, 0, 0, false}};
+            zip_make(zipped, m, 2);
+            assert(gui_saves_raw_import_zip(&done, zipped, "the picked.zip", "", list.at, list.count, &result, error,
+                                            sizeof error));
+            assert(!strcmp(error, "the picked.zip holds notes/readme.txt, which is no .sav at its top as each game's "
+                                  "save goes"));
+            assert(holds(list.at[0].file, other, sizeof other)); /* nothing written: the whole zip checked first */
+            gui_cleaned_free(&done);
+        }
+        {
+            Member m[] = {{"switch/0100ABCD12340000/x", "x", 1, 0, 0, false}};
+            zip_make(zipped, m, 1);
+            assert(gui_saves_raw_import_zip(&done, zipped, "the picked.zip", GUI_SAVES_GBA, list.at, list.count,
+                                            &result, error, sizeof error));
+            assert(!strcmp(error, "the picked.zip holds no .sav in its folder gba/"));
+            gui_cleaned_free(&done);
+        }
+        gui_saves_raw_free(&list);
+        free(picked);
+        free(zipped);
+        free(d);
+        free(c);
+        free(b);
+        free(a);
+        free(raw_trash);
+        free(lib);
+        free(raw);
     }
 
 #ifndef _WIN32 /* a link Windows makes only with developer mode or an administrator */

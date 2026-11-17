@@ -105,10 +105,12 @@ int main(void) {
 
     /* the menu's Saves: Export All Saves and Import All Saves, then the Switch's two, the user named over them */
     saves_open(&app);
-    assert(app.picks_shown && app.picks_of == GUI_PICKS_SAVES && app.picks.count == 4);
+    assert(app.picks_shown && app.picks_of == GUI_PICKS_SAVES && app.picks.count == 8);
     assert(!strcmp(pick_label(&app, 0), "Export All Saves") && !strcmp(pick_label(&app, 1), "Import All Saves") &&
            !strcmp(pick_label(&app, 2), "Switch: Export Saves") &&
-           !strcmp(pick_label(&app, 3), "Switch: Import Saves") && !pick_label(&app, 4));
+           !strcmp(pick_label(&app, 3), "Switch: Import Saves") && !strcmp(pick_label(&app, 4), "GBA: Export Saves") &&
+           !strcmp(pick_label(&app, 5), "GBA: Import Saves") && !strcmp(pick_label(&app, 6), "NDS: Export Saves") &&
+           !strcmp(pick_label(&app, 7), "NDS: Import Saves") && !pick_label(&app, 8));
     assert(pick_icon(&app, 0) == GUI_ICON_SHARE_2 && pick_icon(&app, 1) == GUI_ICON_FOLDER_INPUT);
     {
         char question[GUI_PICKS_QUESTION];
@@ -246,7 +248,9 @@ int main(void) {
         saves_start(&app, GUI_SAVES_ROW(GUI_SAVES_EVERY, true), NULL, NULL);
         own_answer_dropped(&app);
         saves_picked_answer(&app, out, NULL, false);
-        path = snx_format("Import All Saves: %s holds no saves of the Switch: it has no switch/ folder", out);
+        path = snx_format("Import All Saves: %s holds none of the consoles' folders of an export of every save: "
+                          "switch/, gba/, nds/",
+                          out);
         assert(!strcmp(app.message, path));
         free(path);
         app.confirm.shown = false;
@@ -255,6 +259,62 @@ int main(void) {
         free(moved);
         free(other);
         free(every);
+    }
+
+    /* a GBA game's .sav out as it is and back in over the one there; the GBA's every save in a zip, a .sav each, and
+       in Export All Saves under gba/ beside the Switch's */
+    {
+        char *rom = snx_path_join(games, "A Rom"), *rom_program = snx_path_join(rom, "A Rom");
+        char *sav = snx_path_join(rom, "A Rom.sav"), *ini = snx_path_join(rom, "A Rom.ini");
+        char *out_sav = snx_path_join(root, "A Rom.sav"), *gba = snx_path_join(root, "gba.zip");
+        char* every = snx_path_join(root, "every2.zip");
+        put_text(rom_program, "a recompiled GBA game");
+        put_text(ini, "[Game]\nsystem=gba\n");
+        put_text(sav, "sram 1");
+        saves_start(&app, GUI_SAVES_ROW(GUI_GBA, false), rom_program, "A Rom");
+        assert(app.saves_raw[0].count == 1 && !strcmp(app.saves_filter.pattern, "sav"));
+        own_answer_dropped(&app);
+        saves_picked_answer(&app, out_sav, NULL, false);
+        assert(holds_text(out_sav, "sram 1"));
+        path = snx_format("Export Saves: 1 files (1 KB) of A Rom in %s", out_sav);
+        assert(!strcmp(app.message, path));
+        free(path);
+        put_text(out_sav, "sram 2");
+        saves_start(&app, GUI_SAVES_ROW(GUI_GBA, true), rom_program, "A Rom");
+        own_answer_dropped(&app);
+        saves_picked_answer(&app, out_sav, NULL, false);
+        assert(app.confirm.shown && app.confirm.ask == GUI_ASK_SAVES && strstr(app.ask_line, sav));
+        ask_key(&app, GUI_RIGHT);
+        ask_key(&app, GUI_SELECT);
+        assert(holds_text(sav, "sram 2") &&
+               strstr(app.message, "Import Saves: 1 files (1 KB) of A Rom for Player; the save there before is in "));
+        saves_start(&app, GUI_SAVES_ROW(GUI_GBA, false), NULL, NULL);
+        own_answer_dropped(&app);
+        saves_picked_answer(&app, gba, NULL, false);
+        assert(has_member(gba, "A Rom.sav") && !has_member(gba, GAME_ID "/"));
+        saves_start(&app, GUI_SAVES_ROW(GUI_SAVES_EVERY, false), NULL, NULL);
+        own_answer_dropped(&app);
+        saves_picked_answer(&app, every, NULL, false);
+        assert(has_member(every, "gba/A Rom.sav") && has_member(every, "switch/" GAME_ID "/progress.bin"));
+        path = snx_format("Export All Saves: 2 files (1 KB) of 2 saves of Player in %s", every);
+        assert(!strcmp(app.message, path));
+        free(path);
+        /* the GBA's zip back in: A Rom's save over the one there, asked first */
+        put_text(sav, "sram 3");
+        saves_start(&app, GUI_SAVES_ROW(GUI_GBA, true), NULL, NULL);
+        own_answer_dropped(&app);
+        saves_picked_answer(&app, gba, NULL, false);
+        assert(app.confirm.shown && strstr(app.ask_line, "GBA: Import Saves: 1 of the saves in "));
+        ask_key(&app, GUI_RIGHT);
+        ask_key(&app, GUI_SELECT);
+        assert(holds_text(sav, "sram 2"));
+        free(every);
+        free(gba);
+        free(out_sav);
+        free(ini);
+        free(sav);
+        free(rom_program);
+        free(rom);
     }
 
     /* the Switch's export with no save of the user: said before any picker opens */
