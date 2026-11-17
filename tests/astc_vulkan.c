@@ -39,6 +39,7 @@
 
 VkState g_vk;
 VkSemaphore g_vk_csem;
+u64 vk_compute_submitted(void) { return 0; } /* no compute queue here: a move's binds wait for none */
 u64 g_vk_cs_wait_value;
 static unsigned errors;
 /* uma.c isn't here: no guest memory read in place for cmd.c's draws to settle */
