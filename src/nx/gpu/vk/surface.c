@@ -1549,6 +1549,36 @@ static u32 rt_own_runs(const Surf* s, u64 size, u64 run[][2], u32 max);
    written all the same, and all that is built from them was loaded again. One game writes each level of its reflection
    cubes through a view of that level, whose layers are a whole mip chain apart, so each view's span holds the other
    views' levels: every view and every cube loaded all its memory again each frame, 30 uploads and 12 MB */
+/* The record of GPU-side writes is by 4 KiB page, and a mip tail's levels share a page: the publish of one level's
+   storage surface stamped the page, and every target or stored surface of another level in it read as written after
+   its draw (vk_rt_drawn_fresh), though no byte of it changed. One game's cubes kept four levels of each face so, and
+   loaded them from memory in each present. The drawn surfaces over [lo, hi)'s pages that are fresh
+   before the publish and share no byte with s's span keep their baseline past its stamp (keep_fresh_after) */
+#define KEEP_FRESH 64
+static u64 g_drawn_max; /* defined with the drawn list below */
+typedef struct {
+    Surf* s[KEEP_FRESH];
+    int n;
+} KeepFresh;
+static void keep_fresh_before(const Surf* s, u64 lo, u64 hi, KeepFresh* k) {
+    Surf* d[KEEP_FRESH];
+    k->n = 0;
+    if (hi <= lo) return;
+    const u64 plo = lo & ~0xFFFull, phi = (hi + 0xFFF) & ~0xFFFull;
+    int n = vk_rt_drawn_in(plo > g_drawn_max ? plo - g_drawn_max : 0, phi, d, KEEP_FRESH);
+    if (n > KEEP_FRESH) n = KEEP_FRESH;
+    for (int i = 0; i < n; i++) {
+        Surf* o = d[i];
+        const u64 olo = o->gva, ohi = o->gva + rt_bytes(o);
+        if (o == s || ohi <= plo || olo >= phi || (olo < hi && lo < ohi) || !o->draw_wseen ||
+            gpu_mem_dirty_since(o->draw_gw, olo, ohi - olo))
+            continue;
+        k->s[k->n++] = o;
+    }
+}
+static void keep_fresh_after(const KeepFresh* k) {
+    for (int i = 0; i < k->n; i++) k->s[i]->draw_gw = gpu_mem_generation();
+}
 static void publish_own(const Surf* s, VkOwnRes* r, u64 size) {
     const u64 own = rt_layer_bytes(s);
     const u32 layers = surf_volume(s) || s->layers < 2 || own >= s->layer_size ? 1 : s->layers;
@@ -1712,7 +1742,10 @@ int vk_surf_publish(Surf* s) {
     const Surf* publishing = g_rt_publishing;
     g_rt_publishing = s;
     const u32 retired = rt_retire_over(s->gva, size, s, r, 0);
+    KeepFresh keep;
+    keep_fresh_before(s, s->gva, s->gva + size, &keep);
     publish_own(s, r, size);
+    keep_fresh_after(&keep);
     g_rt_publishing = publishing;
     s->pub_serial = __atomic_load_n(&r->serial, __ATOMIC_ACQUIRE);
     vk_own_res_unref(r);

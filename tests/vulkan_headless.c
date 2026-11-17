@@ -7833,6 +7833,8 @@ static int run_headless(int argc, char** argv) {
             result = check_nvn_default_tessellation();
         else if (!strcmp(name, "cube_take"))
             result = check_cube_take();
+        else if (!strcmp(name, "cube_take_frames"))
+            result = check_cube_take_frames();
         else if (!strcmp(name, "texture_quiet"))
             result = check_texture_quiet();
         else if (!strcmp(name, "draw_texture"))

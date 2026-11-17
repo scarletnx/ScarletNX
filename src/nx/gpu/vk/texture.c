@@ -4293,9 +4293,25 @@ static void pieces_cut(TexPieces* p, u64 a, u64 b) {
 static void take_cover(Surf* t, TexPieces* p) {
     if (p->all || !p->count || t->is_rt || (t->f.conv && !t->f.depth) || t->msaa || t->type == VK_IMAGE_VIEW_TYPE_3D)
         return;
-    Surf* d[32];
-    int n = vk_rt_drawn_in(t->gva, t->gva + t->size, d, 32);
-    if (n > 32) n = 32; /* the ones past those load from memory, as before */
+    /* the bytes of each layer past its levels hold no texel: a page that a level's publish stamped can end in them, and
+       a piece left there made a texture that took a target load whole (tex_patch's took_drawn) */
+    if (t->bl && t->layers > 1) {
+        u64 end = 0;
+        for (u32 l = 0; l < t->levels; l++)
+            end += bl_level_size(t->w, t->h, 1, &t->f, t->bh, t->bd, t->tile_w, l, NULL, NULL);
+        for (u32 k = 0; k < t->layers && end < t->layer_size; k++)
+            pieces_cut(p, (u64)k * t->layer_size + end, (u64)(k + 1) * t->layer_size);
+    }
+    Surf* small[64];
+    Surf** d = small;
+    int n = vk_rt_drawn_in(t->gva, t->gva + t->size, d, 64);
+    if (n > 64) { /* a cube's levels as storage surfaces: 6 faces and 36 levels in one game's */
+        d = malloc((size_t)n * sizeof *d);
+        if (d)
+            n = vk_rt_drawn_in(t->gva, t->gva + t->size, d, n);
+        else
+            d = small, n = 64; /* the ones past those load from memory, as before */
+    }
     for (int i = 0; i < n; i++) {
         Surf* s = d[i];
         if (s == t || s->img == t->img) continue; /* its own image, written in place */
@@ -4313,6 +4329,7 @@ static void take_cover(Surf* t, TexPieces* p) {
         g_takes.cut++;
         g_takes.cut_bytes += before - after;
     }
+    if (d != small) free(d);
 }
 void vk_tex_take_counts(u64 out[8]) {
     const TakeCounts* c = &g_takes;
