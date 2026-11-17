@@ -5023,7 +5023,12 @@ msgstr ""
 
 #: src/gui/main.c
 #, c-format
-msgid "%s: %s holds none of the consoles' folders of an export of every save: %s, %s, %s"
+msgid "%s: %s holds none of the consoles' folders of an export of every save: %s, %s, %s, %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: none of the backups in %s is of a 3DS game of the library, by its unique ID"
 msgstr ""
 
 #: src/gui/main.c
@@ -6272,6 +6277,55 @@ msgstr ""
 #: src/gui/saves.c
 #, c-format
 msgid "none of the %zu saves in %s is of a game of the library, named as its .sav"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "Imported %zu files (%llu bytes) of backup %s from %s%s%s"
+msgstr ""
+
+#: src/gui/saves.c
+msgid "; what was there before is in "
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "%s is no export of saves as Checkpoint lays them out: %s"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "%s is no export of saves as Checkpoint lays them out: %s is not in saves/ or extdata/, in a title's folder 0x<its unique ID> and one of its backups"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "%s holds no backup of Checkpoint's: saves/0x<unique ID> <title>/<backup>/"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "%s holds the backups of %s, not of %s's, 0x%05X"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "%s has not run yet: its first run makes its save (%s), which an import goes into, else the game formats it over what came in. Play it once, then import"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "%s has %zu folders of extra data in its SD card, and the backup's goes in one: move the others out, then import"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "%s has no extra data yet (%zu folders): its first run makes it. Play it once, then import"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "Not imported: it holds the backups of %zu other games too"
 msgstr ""
 
 #: src/gui/settings.c

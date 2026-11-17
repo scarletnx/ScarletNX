@@ -812,6 +812,144 @@ int main(void) {
         free(raw);
     }
 
+    /* the 3DS's, as Checkpoint lays its backups out: saves/0x<unique ID> <title>/<backup>/ and extdata/ the same; the
+       newest backup taken; only into a game that has run (savedata.format), the one ExtSaveData of its SD card */
+    {
+        char *ctr = at(root, "ctr", NULL), *lib = at(ctr, "a", NULL), *lib2 = at(ctr, "b", NULL);
+        char *ctr_trash = at(ctr, "trash", NULL), *game = at(lib, "0004000000123400", NULL);
+        char *game2 = at(lib2, "0004000000123400", NULL), *zipped = at(ctr, "checkpoint.zip", NULL);
+        char* ext =
+            at(game, "sdmc/Nintendo 3DS/00000000000000000000000000000000/00000000000000000000000000000000/extdata",
+               "00000000/00001234/user");
+        char* ext2 = at(game2,
+                        "sdmc/Nintendo 3DS/00000000000000000000000000000000/00000000000000000000000000000000/"
+                        "extdata",
+                        "00000000/00001234/user");
+        const char* folders[1] = {lib};
+        GuiSaveCtr one, other;
+        GuiSavesCtr list;
+        GuiSavesZip* writing;
+        size_t kept = 0, files = 0;
+        SnxU64 took = 0;
+        path = at(game, "0004000000123400.ini", NULL);
+        put_text(path, "[Game]\nsystem=3ds\n");
+        free(path);
+        path = at(game, "savedata", "game.bin");
+        put_text(path, "3ds save");
+        free(path);
+        path = at(game, "savedata.format", NULL);
+        put(path, pattern, 20);
+        free(path);
+        path = at(ext, "x.bin", NULL);
+        put_text(path, "extra");
+        free(path);
+        assert(gui_saves_ctr_place(game, "0004000000123400", "A: Game.", ctr_trash, &one) && one.unique == 0x1234 &&
+               one.extdata_count == 1 && !strcmp(one.extdata, ext));
+        gui_saves_ctr_list(ctr_trash, folders, 1, true, &list);
+        assert(list.count == 1 && !strcmp(list.at[0].name, "0004000000123400"));
+        gui_saves_ctr_free(&list);
+
+        /* out: a backup each, its folder named as Checkpoint names it ("A: Game." its .: as spaces, trailing ones off) */
+        writing = gui_saves_zip_begin(zipped, &done, error, sizeof error);
+        assert(writing &&
+               !gui_saves_ctr_add(writing, GUI_SAVES_3DS, &one, 1, "20261117-120000", &kept, error, sizeof error) &&
+               kept == 1);
+        assert(!gui_saves_zip_end(writing, true, &files, &took, error, sizeof error) && files == 2);
+        assert(has_member(zipped, "3ds/saves/0x01234 A  Game/20261117-120000/game.bin") &&
+               has_member(zipped, "3ds/extdata/0x01234 A  Game/20261117-120000/x.bin"));
+        gui_cleaned_free(&done);
+
+        /* in, to the same game in another library that has run: both in place, what was there to the trash */
+        path = at(game2, "savedata", "old.bin");
+        put_text(path, "old save");
+        free(path);
+        path = at(ext2, "old.bin", NULL);
+        put_text(path, "old extra");
+        free(path);
+        path = at(game2, "savedata.format", NULL);
+        put(path, pattern, 20);
+        free(path);
+        assert(gui_saves_ctr_place(game2, "0004000000123400", "A Game", ctr_trash, &other));
+        result = (GuiSavesDone){0};
+        assert(!gui_saves_ctr_import(&done, zipped, zipped, GUI_SAVES_3DS, &other, 1, &result, error, sizeof error));
+        path = at(game2, "savedata", "game.bin");
+        assert(holds_text(path, "3ds save"));
+        free(path);
+        path = at(ext2, "x.bin", NULL);
+        assert(holds_text(path, "extra"));
+        free(path);
+        path = at(game2, "savedata", "old.bin");
+        assert(!snx_path_exists(path) && result.saves == 1 && result.files == 2 && result.backups == 2);
+        free(path);
+        gui_cleaned_free(&done);
+
+        /* two backups: the newest; one with a file out of the layout, or of another game only: refused, nothing written */
+        {
+            Member m[] = {{"saves/0x01234 A Game/20250101-000000/game.bin", "older", 5, 0, 0, false},
+                          {"saves/0x01234 A Game/20261117-130000/game.bin", "newest", 6, 8, 6, false}};
+            zip_make(zipped, m, 2);
+            assert(!gui_saves_ctr_import(&done, zipped, zipped, "", &other, 1, &result, error, sizeof error));
+            path = at(game2, "savedata", "game.bin");
+            assert(holds_text(path, "newest"));
+            free(path);
+            gui_cleaned_free(&done);
+        }
+        {
+            Member m[] = {{"saves/0x01234 A Game/20261117-140000/game.bin", "x", 1, 0, 0, false},
+                          {"readme.txt", "x", 1, 0, 0, false}};
+            zip_make(zipped, m, 2);
+            assert(gui_saves_ctr_import(&done, zipped, "the picked.zip", "", &other, 1, &result, error, sizeof error));
+            assert(!strcmp(error, "the picked.zip is no export of saves as Checkpoint lays them out: readme.txt is not "
+                                  "in saves/ or extdata/, in a title's folder 0x<its unique ID> and one of its "
+                                  "backups"));
+            path = at(game2, "savedata", "game.bin");
+            assert(holds_text(path, "newest"));
+            free(path);
+        }
+        {
+            Member m[] = {{"saves/0x0AAAA Other/20261117-140000/game.bin", "x", 1, 0, 0, false}};
+            zip_make(zipped, m, 1);
+            assert(gui_saves_ctr_import(&done, zipped, "the picked.zip", "", &other, 1, &result, error, sizeof error));
+            assert(!strcmp(error, "the picked.zip holds the backups of 0x0AAAA, not of A Game's, 0x01234"));
+        }
+        /* a game that has not run: its save is made by its first run, which the import says to do first */
+        path = at(game2, "savedata.format", NULL);
+        assert(!snx_remove_tree(path));
+        {
+            Member m[] = {{"saves/0x01234 A Game/20261117-140000/game.bin", "x", 1, 0, 0, false}};
+            zip_make(zipped, m, 1);
+            assert(gui_saves_ctr_import(&done, zipped, "the picked.zip", "", &other, 1, &result, error, sizeof error));
+            path2 = snx_format("A Game has not run yet: its first run makes its save (%s), which an import goes into, "
+                               "else the game formats it over what came in. Play it once, then import",
+                               path);
+            assert(!strcmp(error, path2));
+            free(path2);
+        }
+        free(path);
+        gui_cleaned_free(&done);
+        {
+            GuiSavesCtr two = {&one, 1}, three = {&other, 1};
+            GuiSaveCtr* a = (GuiSaveCtr*)malloc(sizeof one);
+            GuiSaveCtr* b = (GuiSaveCtr*)malloc(sizeof other);
+            assert(a && b);
+            *a = one;
+            *b = other;
+            two.at = a;
+            three.at = b;
+            gui_saves_ctr_free(&two);
+            gui_saves_ctr_free(&three);
+        }
+        free(ext2);
+        free(ext);
+        free(zipped);
+        free(game2);
+        free(game);
+        free(ctr_trash);
+        free(lib2);
+        free(lib);
+        free(ctr);
+    }
+
 #ifndef _WIN32 /* a link Windows makes only with developer mode or an administrator */
     /* a save folder that is a link: refused, naming what it links to, the link and that folder as they were */
     {
