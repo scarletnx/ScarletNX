@@ -2424,12 +2424,19 @@ void vk_rt_drawn_full(Surf* s) {
     vk_rt_drawn(s);
     mem_baseline(s);
 }
-int vk_rt_drawn_fresh(Surf* s) {
-    u64 size = rt_bytes(s);
-    if (!s->draw_wseen || s->layout == VK_IMAGE_LAYOUT_UNDEFINED || gpu_mem_dirty_since(s->draw_gw, s->gva, size))
+int vk_rt_drawn_fresh(Surf* s) { return vk_rt_drawn_fresh_in(s, 0, rt_bytes(s)); }
+void vk_surf_stored(Surf* s) {
+    if (s->gva >> 63) return;
+    vk_rt_drawn_full(s); /* the publish wrote every byte: the baseline is from now, after its stamp */
+}
+int vk_rt_drawn_fresh_in(Surf* s, u64 at, u64 size) {
+    const u64 all = rt_bytes(s);
+    if (at >= all) return 0;
+    if (size > all - at) size = all - at;
+    if (!s->draw_wseen || s->layout == VK_IMAGE_LAYOUT_UNDEFINED || gpu_mem_dirty_since(s->draw_gw, s->gva + at, size))
         return 0;
     if (s->draw_has_hash) return rt_mem_hash(s) == s->draw_hash;
-    int written = vk_written_since(gmem_host(s->gva, size), size, s->draw_wseen);
+    int written = vk_written_since(gmem_host(s->gva + at, size), size, s->draw_wseen);
     if (written < 0) {
         /* no write tracking, and no baseline yet: the target's pixels are taken this once, as the GPU's writes to its
            memory are known and the game's own seldom land in a target it draws to. Its next baselines are hashed */
