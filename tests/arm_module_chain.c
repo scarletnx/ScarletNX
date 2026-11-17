@@ -162,6 +162,7 @@ static void check_module(const char* output, const char* what) {
     m = get();
     CHECK(m->abi == SNX_ARM_MODULE_ABI && m->poll_offset, "%s: abi %x, poll_offset %p", what, (unsigned)m->abi,
           (void*)m->poll_offset);
+    if (m->abi != SNX_ARM_MODULE_ABI || !m->poll_offset) return;
     *m->poll_offset = (i64)offsetof(Thread, poll) - (i64)offsetof(Thread, arm); /* as arm_module writes it */
     CHECK(block(m, LOOP) && block(m, AFTER) && block(m, CALL) && block(m, BACK) && block(m, THUMB | 1) &&
               block(m, (THUMB + 4) | 1) && block(m, SVC) && block(m, SVC + 4) && block(m, STATE | 1) &&
