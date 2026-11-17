@@ -4696,8 +4696,9 @@ static int quad_indices(u32 nq, u32 flags, VkBuffer* buf, u64* off) {
 /* An indexed draw's count indices drawn as quads (flags QUADS_) made into triangles here, into the staging ring, where
    the CPU has the indices: the draw's inline ones, or the guest's in one run of guest memory with no pending result
    over it and no part the GPU holds (reading those would wait for the GPU). The GPU's conversion is a dispatch, outside
-   the rendering pass, so each such draw ended its pass: 235 a frame in one game's scene. The quads made, or -1 when
-   the CPU hasn't the indices, or they're past QUAD_CPU_BYTES: the GPU makes them then */
+   the rendering pass, so each such draw ended its pass: 235 a frame in one game's scene. Here alone a restart index
+   (restart on, ri) ends a quad as the 3D engine does: the GPU's quads stay where they were. The quads made, or -1
+   when the CPU hasn't the indices, or they're past QUAD_CPU_BYTES: the GPU makes them then */
 #define QUAD_CPU_BYTES 16384
 static int quad_cpu_reads(int inline_indices, u64 ia, u32 isz, u32 first, u32 count) {
     u64 len = (u64)count * (inline_indices ? 4 : isz), gva = ia + (u64)first * isz, cpu = 0; /* inline: host words */
@@ -4707,7 +4708,7 @@ static int quad_cpu_reads(int inline_indices, u64 ia, u32 isz, u32 first, u32 co
                                gmmu_run(gva, len, &cpu) < len || own_lookup(cpu, len, &held, 1));
 }
 static i64 quad_indices_cpu(const DrawCall* dc, int inline_indices, u64 ia, u32 isz, u32 first, u32 count, u32 flags,
-                            VkBuffer* buf, u64* off) {
+                            int restart, u32 ri, VkBuffer* buf, u64* off) {
     u32 esz = inline_indices ? 4 : isz, nq = snx_quads_of(count, (flags & QUADS_STRIP) != 0);
     u8 in[QUAD_CPU_BYTES];
     if (!nq) return 0;
@@ -4718,7 +4719,7 @@ static i64 quad_indices_cpu(const DrawCall* dc, int inline_indices, u64 ia, u32 
         gmem_read_raw(ia + (u64)first * isz, in, (u64)count * esz);
     u8* out = vk_stage((u64)nq * 24, vk_stage_align(), buf, off);
     if (!out) return -1;
-    return snx_quad_indices(in, esz, count, (flags & QUADS_STRIP) != 0, flags & QUADS_LAST, out);
+    return snx_quad_indices(in, esz, count, (flags & QUADS_STRIP) != 0, flags & QUADS_LAST, restart, ri, out);
 }
 /* Whether a draw goes as a list of lines or points made of its primitives (polygon_edges.h, edge_indices) instead of
    as Vulkan draws its topology: a line loop, which Vulkan has none of; polygons in the polygon mode Line or Point
@@ -5953,15 +5954,21 @@ retry:
             g_vk_skipped++;
             return;
         }
-    } else if (topology == 7 || (topology == 8 && !(indexed && ds->index.restart))) {
+    } else if (topology == 7 || (topology == 8 && !(indexed && ds->index.restart &&
+                                                    !quad_cpu_reads(indexed == 3, ia, isz, first, count)))) {
         /* quads, and quad strips, -> two triangles each that carry the quad's provoking vertex (quad_indices.h). A
-           strip with a restart index stays the triangle strip it covers the same pixels as, which restarts there, its
-           quads' second halves taking the colour of the vertex before their provoking one */
+           strip whose restart index only the GPU has stays the triangle strip it covers the same pixels as, which
+           restarts there, its quads' second halves taking the colour of the vertex before their provoking one */
         u32 flags = (ds->rkey.provoking_last ? QUADS_LAST : 0) | (topology == 8 ? QUADS_STRIP : 0);
         u32 nq = snx_quads_of(count, topology == 8);
+        u32 ones = isz == 1 ? 0xFFu : isz == 2 ? 0xFFFFu : 0xFFFFFFFFu;
         i64 made = -1;
         if (indexed) {
-            made = quad_indices_cpu(dc, indexed == 3, ia, isz, first, count, flags, &ibuf, &ioff);
+            made = quad_indices_cpu(dc, indexed == 3, ia, isz, first, count, flags, ds->index.restart != 0,
+                                    ds->index.restart_index & ones, &ibuf, &ioff);
+            if (made < 0 && ds->index.restart)
+                LOG_LIMIT(1, "vulkan: quads of %u indices the CPU can't read take restart index %#x for a vertex\n",
+                          count, ds->index.restart_index & ones);
             if (made < 0 && index_convert(dc, indexed == 3, ia, isz, first, count, TC_INDEX_QUADS, isz, flags, nq,
                                           (u64)nq * 24, &ibuf, &ioff))
                 made = nq;
@@ -5976,6 +5983,8 @@ retry:
         icount = (u32)made * 6;
         indexed = 2; /* drawn indexed, as triangles */
         topo = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+        /* a strip's made indices hold no restart index, and a list restarts on few devices */
+        if (topology == 8) restart = 0;
     } else if (indexed) {
         u32 ones = isz == 1 ? 0xFFu : isz == 2 ? 0xFFFFu : 0xFFFFFFFFu, ri = ds->index.restart_index & ones;
         u64 bytes = (u64)count * isz;

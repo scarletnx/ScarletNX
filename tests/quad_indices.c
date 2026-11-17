@@ -3,7 +3,7 @@
 /* Quads and quad strips made into triangles on the CPU (vk/quad_indices.h) as texconv's TC_INDEX_QUADS makes them on
    the GPU, in 32-bit little-endian indices from little-endian indices of 1, 2 or 4 bytes. Both triangles of a quad
    carry its provoking vertex where the convention reads it: the last of each with the last vertex provoking (a quad's
-   fourth, 2i + 3 of a strip's quad i), the first of each with the first */
+   fourth, 2i + 3 of a strip's quad i), the first of each with the first. A restart index ends the quad under way */
 #include "nx/gpu/vk/quad_indices.h"
 #include <stdio.h>
 
@@ -11,12 +11,12 @@ static int failures;
 
 /* the indices idx (n of them) stored little-endian in isz bytes each, made into triangles and held to want (the
    positions in idx of the six indices of each quad, made quads of them) */
-static void check(const char* what, uint32_t isz, const uint32_t* idx, uint32_t n, int strip, int last,
-                  const int* want, uint32_t quads) {
+static void check(const char* what, uint32_t isz, const uint32_t* idx, uint32_t n, int strip, int last, int restart,
+                  uint32_t ri, const int* want, uint32_t quads) {
     uint8_t in[64], out[24 * 16];
     for (uint32_t j = 0; j < n; j++)
         for (uint32_t b = 0; b < isz; b++) in[isz * j + b] = (uint8_t)(idx[j] >> (8 * b));
-    uint32_t made = snx_quad_indices(in, isz, n, strip, last, out);
+    uint32_t made = snx_quad_indices(in, isz, n, strip, last, restart, ri, out);
     if (made != quads) {
         fprintf(stderr, "FAIL: %s, %u-byte indices: %u quads made, expected %u\n", what, isz, made, quads);
         failures++;
@@ -45,13 +45,25 @@ int main(void) {
     const uint32_t* sets[3] = {small, wide, large};
     for (uint32_t isz = 1, s = 0; isz <= 4; isz *= 2, s++) {
         const uint32_t* idx = sets[s];
-        check("quads, the last vertex provoking", isz, idx, 8, 0, 1, quads_last, 2);
-        check("quads, the first vertex provoking", isz, idx, 8, 0, 0, quads_first, 2);
-        check("a quad strip, the last vertex provoking", isz, idx, 8, 1, 1, strip_last, 3);
-        check("a quad strip, the first vertex provoking", isz, idx, 8, 1, 0, strip_first, 3);
-        check("quads of 7 indices", isz, idx, 7, 0, 1, quads_last, 1);
-        check("a quad strip of 3 indices", isz, idx, 3, 1, 1, strip_last, 0);
+        check("quads, the last vertex provoking", isz, idx, 8, 0, 1, 0, 0, quads_last, 2);
+        check("quads, the first vertex provoking", isz, idx, 8, 0, 0, 0, 0, quads_first, 2);
+        check("a quad strip, the last vertex provoking", isz, idx, 8, 1, 1, 0, 0, strip_last, 3);
+        check("a quad strip, the first vertex provoking", isz, idx, 8, 1, 0, 0, 0, strip_first, 3);
+        check("quads of 7 indices", isz, idx, 7, 0, 1, 0, 0, quads_last, 1);
+        check("a quad strip of 3 indices", isz, idx, 3, 1, 1, 0, 0, strip_last, 0);
     }
+    /* restart index 8 between two quads, and before an end that leaves a quad short: two quads, as the 3D engine
+       draws them, where taking 8 for a vertex made (8 4 5 6) the second */
+    static const uint32_t cut[11] = {0, 1, 2, 3, 8, 4, 5, 6, 7, 8, 9};
+    static const int cut_last[12] = {0, 1, 3, 1, 2, 3, 5, 6, 8, 6, 7, 8};
+    for (uint32_t isz = 1; isz <= 4; isz *= 2) check("quads restarting at 8", isz, cut, 11, 0, 1, 1, 8, cut_last, 2);
+    /* the same indices with restart off: 8 is a vertex like any other */
+    static const int whole[12] = {0, 1, 3, 1, 2, 3, 4, 5, 7, 5, 6, 7};
+    check("quads with restart off", 2, cut, 11, 0, 1, 0, 8, whole, 2);
+    /* a strip restarting at 0xff: two strips of one quad each */
+    static const uint32_t strips[9] = {0, 1, 2, 3, 0xff, 4, 5, 6, 7};
+    static const int strips_last[12] = {2, 0, 3, 0, 1, 3, 7, 5, 8, 5, 6, 8};
+    check("a quad strip restarting at 0xff", 1, strips, 9, 1, 1, 1, 0xff, strips_last, 2);
     if (failures) {
         fprintf(stderr, "%d failure(s)\n", failures);
         return 1;
