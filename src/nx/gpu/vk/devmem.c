@@ -621,6 +621,11 @@ static DevMem alloc_in(u32 type, const VkMemoryRequirements* req, const DevMemWa
            order what the driver moves, and must not make a request fail that would have found room */
         if (!slot && !(want->existing && g_vk.has_pageable))
             slot = block_find(type, image, -1, units, (u32)align_units, &at);
+        /* then a block of the other side of DM_KIND_FIXED, for the same reason. What no owner moves keeps the block
+           it goes into from being emptied, but the request does not fail where it found room before the kinds. A
+           move goes only to the blocks of what moves */
+        if (!slot && !want->existing && g_devmem.drain.on && heap_capped(heap))
+            slot = block_find(type, image ^ DM_KIND_FIXED, -1, units, (u32)align_units, &at);
     }
     if (!slot && !shared && !want->existing) { /* memory of its own: by its size, or by the request */
         units = 0;

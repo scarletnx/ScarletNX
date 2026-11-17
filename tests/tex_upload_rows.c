@@ -797,7 +797,7 @@ int vk_image_sparse_move_begin(VkImage img, DevMem a, DevMem* to, VkSparseImageM
     (void)img, (void)a, (void)to, (void)regions, (void)max, (void)n;
     abort();
 }
-void vk_image_sparse_move_end(VkImage img, DevMem a, DevMem to) {
+int vk_image_sparse_move_end(VkImage img, DevMem a, DevMem to) {
     (void)img, (void)a, (void)to;
     abort();
 }
