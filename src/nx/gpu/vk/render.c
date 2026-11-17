@@ -4802,6 +4802,8 @@ static void draw_indices_prefetch(const DsIndex* ix, int indexed, u32 first, u32
    memory, or under results the GPU hasn't landed. A stream's limit is often the end of a ring the game streams
    vertices through, so its range from the draw's start to the limit was megabytes for a few hundred vertices: one
    game copied 100 to 360 MB a frame that way */
+/* the bytes up to which a vertex stream binds whole, with no last vertex (render_draw) */
+#define VB_WHOLE (1u << 20)
 static u64 draw_last_vertex(const u32* inline_indices, const DsIndex* ix, int indexed, u32 first, u32 count,
                             u32 base_vertex) {
     u64 top = 0;
@@ -5930,10 +5932,12 @@ retry:
         u32 b, base;
     } vq[33];
     u32 nvq = 0;
-    /* each stream up to the last vertex or instance the draw reads, rather than to its limit */
-    u64 last_vertex = pl->vi.nbind && !dc->indirect
-                          ? draw_last_vertex(dc->inline_indices, &ds->index, indexed, first, count, base_vertex)
-                          : ~0ull;
+    /* each stream up to the last vertex or instance the draw reads, rather than to its limit, where the limit is far:
+       a ring the game streams vertices through. A stream of VB_WHOLE bytes or less binds whole: a miss copies no more
+       than the rounding below can, and an indexed draw then needs no scan of its indices for the last vertex, which
+       was a quarter of one game's vertex buffer setup. The scan runs once, for the first stream that is larger */
+    u64 last_vertex = ~0ull;
+    int last_known = !pl->vi.nbind || dc->indirect;
     u64 last_instance = dc->indirect ? ~0ull : (u64)base_instance + instances - 1;
     for (u32 v = 0; v < pl->vi.nbind; v++) {
         if (pl->key[v] == ~0u || pl->key[v] == ~1u) {
@@ -5951,8 +5955,12 @@ retry:
         /* up to a power of two of the bytes it reads: the cache keeps a range by its length, and draws of a mesh's parts
            that end at different vertices then share a few ranges, not one each */
         u64 limit = stream_len(&ds->vbuf, sbuf), len = limit;
-        u64 last = pl->vi.bind[v].divisor ? last_instance : last_vertex;
         u64 gstride = pl->guest_stride[v] ? pl->guest_stride[v] : pl->stride[v];
+        if (!last_known && !pl->vi.bind[v].divisor && limit > VB_WHOLE) {
+            last_vertex = draw_last_vertex(dc->inline_indices, &ds->index, indexed, first, count, base_vertex);
+            last_known = 1;
+        }
+        u64 last = pl->vi.bind[v].divisor ? last_instance : limit > VB_WHOLE ? last_vertex : ~0ull;
         if (gstride && last < len / gstride) {
             u64 need = (last + 1) * gstride, up = 4096;
             while (up < need) up <<= 1;
