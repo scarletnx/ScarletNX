@@ -1713,6 +1713,7 @@ static void heap_find(void) {
             g_heap = (int)h;
     if (g_settings.vulkan_memory_budget) {
         g_budget_cap = (u64)g_settings.vulkan_memory_budget << 20;
+        vk_devmem_cache_budget(g_budget_cap);
         LOG("vulkan: the caches keep within %llu MB of heap %d (vk_budget_mb)\n",
             (unsigned long long)(g_budget_cap >> 20), g_heap);
     }
@@ -1745,6 +1746,7 @@ u64 vk_mem_budget_cap(u64 bytes) {
     if (g_heap < 0) heap_find(); /* which reads vk_budget_mb once */
     had = g_budget_cap;
     g_budget_cap = bytes;
+    vk_devmem_cache_budget(bytes);
     __atomic_add_fetch(&g_budget_moves, 1, __ATOMIC_RELAXED);
     return had;
 }

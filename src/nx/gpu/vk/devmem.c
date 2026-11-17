@@ -36,9 +36,8 @@
    155 MB handed out: rings, encoders, write logs and written textures, which stay, were in each of the 12 blocks, so
    none was emptied and given back */
 /* Memory of its own that the driver only preferred (DM_OWN_RATHER) is kept when let go, for a later request it fits:
-   in a heap, DM_KEEP_BYTES at most, or in the GPU's own heap a DM_KEEP_SHARE of its budget where that is more
-   (keep_cap), each
-   DM_KEEP_PRESENTS presents at most (own_keep, own_take) */
+   DM_KEEP_BYTES at most in the other heaps together, and in the GPU's own heap a DM_KEEP_SHARE of its budget where
+   that is more (keep_cap), each DM_KEEP_PRESENTS presents at most (own_keep, own_take) */
 #define DM_KEEP_BYTES    (256ull << 20)
 #define DM_KEEP_SHARE    16u
 #define DM_KEEP_PRESENTS 120u
@@ -105,6 +104,7 @@ static struct {
     u64 full_frame[VK_MAX_MEMORY_TYPES], full_gave[VK_MAX_MEMORY_TYPES];
     u64 gave[VK_MAX_MEMORY_HEAPS];
     int main_heap; /* the largest heap of the GPU's own memory: the one DM_MARGIN is kept free of */
+    u64 cache_cap; /* the caches' budget in the main heap where it is less than the driver's (vk_budget_mb), 0 none */
     int use_reserve; /* requests may take the reserve's memory now (vk_devmem_reserve_use) */
     /* The thread that makes the next block ahead of its first request, and gives memory back to the driver. A call
        to the driver for a block took 1 to 48 ms in one game's race and up to 600 ms while it loaded, on the thread
@@ -173,6 +173,18 @@ static u64 heap_budget(u32 h) {
     u64 budget = g_vk.has_budget ? g_devmem.drv_budget[h] : g_devmem.mp.memoryHeaps[h].size / 5 * 4;
     if (heap_capped(h)) budget = budget > 2 * DM_MARGIN ? budget - DM_MARGIN : budget / 2;
     return budget;
+}
+/* the budget that kept memory keeps within: the heap's, or in the main heap the caches' where that is less. Kept memory
+   counts as handed out for the caches (vk_devmem_budgets), so a cap from the driver's budget alone let it reach 1.3 GB
+   under a caches' budget of 2,000 MB (lock held) */
+static u64 keep_budget(u32 h) {
+    const u64 b = heap_budget(h);
+    return heap_capped(h) && g_devmem.cache_cap && g_devmem.cache_cap < b ? g_devmem.cache_cap : b;
+}
+void vk_devmem_cache_budget(u64 bytes) {
+    pm_lock(&g_devmem.lk);
+    g_devmem.cache_cap = bytes;
+    pm_unlock(&g_devmem.lk);
 }
 /* a heap's use by every process: the driver's count then, and what this process took and gave back since (lock
    held) */
@@ -657,11 +669,18 @@ static u32 block_adopt(u32 type, int image, int low, u32 units, u32 align_units,
    image may take that memory after the image it was made for is gone */
 /* past this, a heap keeps no memory: the driver's preference for memory of its own no longer holds there (alloc),
    so no request would take it */
-static int own_full(u32 heap) { return g_devmem.block_bytes[heap] > heap_budget(heap) / 5 * 4; }
+static int own_full(u32 heap) { return g_devmem.block_bytes[heap] > keep_budget(heap) / 5 * 4; }
+/* the cap of the kept memory that heap's counts with: the GPU's own heap alone, or the other heaps together */
 static u64 keep_cap(u32 heap) {
     if (!heap_capped(heap)) return DM_KEEP_BYTES;
-    const u64 share = heap_budget(heap) / DM_KEEP_SHARE;
+    const u64 share = keep_budget(heap) / DM_KEEP_SHARE;
     return share > DM_KEEP_BYTES ? share : DM_KEEP_BYTES;
+}
+static u64 kept_with(u32 heap) {
+    u64 n = 0;
+    for (u32 h = 0; h < g_devmem.mp.memoryHeapCount; h++)
+        if (heap_capped(h) == heap_capped(heap)) n += g_devmem.kept_heap[h];
+    return n;
 }
 static void own_give(Block* k) {
     g_devmem.kept_bytes -= k->size;
@@ -688,11 +707,12 @@ static void own_keep(Block* k) {
         block_gone(k);
         return;
     }
-    while (g_devmem.kept_heap[heap] + k->size > cap) { /* room for it: the oldest kept of its heap goes */
+    while (kept_with(heap) + k->size > cap) { /* room for it: the oldest kept that counts with it goes */
         Block* old = NULL;
         for (u32 i = 0; i < g_devmem.nblock; i++) {
             Block* o = &g_devmem.block[i];
-            if (o->mem && o->idle && g_devmem.mp.memoryTypes[o->type].heapIndex == heap && (!old || o->idle < old->idle))
+            if (o->mem && o->idle && heap_capped(g_devmem.mp.memoryTypes[o->type].heapIndex) == heap_capped(heap) &&
+                (!old || o->idle < old->idle))
                 old = o;
         }
         own_give(old);
@@ -795,14 +815,16 @@ static DevMem alloc_in(u32 type, const VkMemoryRequirements* req, const DevMemWa
            order what the driver moves, and must not make a request fail that would have found room */
         if (!slot && !(want->existing && g_vk.has_pageable))
             slot = block_find(type, image, -1, units, (u32)align_units, &at);
-        /* then a block of the other kinds of the same side of DM_KIND_IMAGE, for the same reason: the other side of
-           DM_KIND_BRIEF first, then what moves, or for what moves, what does not. What no owner moves keeps the block
-           it goes into from being emptied, but the request does not fail where it found room before the kinds. A
-           move goes only to the blocks of what moves */
+        /* then a block of the other kinds of the same side of DM_KIND_IMAGE, for the same reason. What no owner
+           moves keeps the block it goes into from being emptied, but the request does not fail where it found room
+           before the kinds. What stays goes to the blocks of what moves before the brief ones, which it would keep
+           from being emptied when what comes and goes leaves them. What comes and goes takes the blocks of what stays
+           first, and what moves those of what does not, the brief ones last. A move goes only to the blocks of what
+           moves */
         if (!slot && !want->existing && g_devmem.drain.on && heap_capped(heap)) {
-            const int side = image & DM_KIND_IMAGE;
-            const int other[3] = {image & DM_KIND_FIXED ? image ^ DM_KIND_BRIEF : side | DM_KIND_FIXED,
-                                  image & DM_KIND_FIXED ? side : side | DM_KIND_FIXED | DM_KIND_BRIEF, -1};
+            const int side = image & DM_KIND_IMAGE, fixed = side | DM_KIND_FIXED, brief = fixed | DM_KIND_BRIEF;
+            const int other[3] = {image == brief ? fixed : image == fixed ? side : fixed,
+                                  image == brief ? side : brief, -1};
             for (u32 o = 0; !slot && other[o] >= 0; o++)
                 slot = block_find(type, other[o], -1, units, (u32)align_units, &at);
         }

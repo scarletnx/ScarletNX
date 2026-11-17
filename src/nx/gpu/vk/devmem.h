@@ -101,6 +101,9 @@ int vk_devmem_init(int bda);
 void vk_devmem_reserve(u64 size, u32 type_bits);
 void vk_devmem_reserve_use(int on);
 const VkPhysicalDeviceMemoryProperties* vk_devmem_props(void);
+/* the caches' budget in the main heap where it is less than the driver's (vk_budget_mb, memory.c), 0 for none: kept
+   memory keeps within it there */
+void vk_devmem_cache_budget(u64 bytes);
 
 /* memory for req. *info, when not NULL, says where it is */
 VkResult vk_devmem_alloc(const VkMemoryRequirements* req, const DevMemWant* want, DevMem* mem, DevMemInfo* info);

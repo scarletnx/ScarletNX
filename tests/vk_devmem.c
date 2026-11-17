@@ -765,6 +765,41 @@ static void check_kinds(void) {
     check_counts(0);
 }
 
+/* With no room for a new block, a request takes a block of another kind of its side: what stays takes the blocks of
+   what moves before the brief ones, which it would keep from being emptied, and what comes and goes takes the blocks of
+   what stays first */
+static void check_kind_fallback(void) {
+    const DevMemWant moves = {.at = DM_DEVICE, .moves = 1}, fixed = {.at = DM_DEVICE},
+                     brief = {.at = DM_DEVICE, .brief = 1};
+    Held a, b, f;
+    device(0, 1024, 64, 0);
+    CHECK(make(0, MIB, 256, ~0u, 0, moves, &a) == VK_SUCCESS);
+    vk_devmem_owner(a.mem, (void*)(uintptr_t)1);
+    CHECK(make(0, MIB, 256, ~0u, 0, brief, &b) == VK_SUCCESS && block_of(&b) != block_of(&a));
+    u64 room = g_drv.room[0];
+    g_drv.room[0] = g_drv.used[0];
+    CHECK(make(0, MIB, 256, ~0u, 0, fixed, &f) == VK_SUCCESS && block_of(&f) == block_of(&a));
+    g_drv.room[0] = room;
+    unmake(&f);
+    unmake(&b);
+    vk_devmem_owner(a.mem, NULL);
+    unmake(&a);
+    check_counts(0);
+    device(0, 1024, 64, 0);
+    CHECK(make(0, MIB, 256, ~0u, 0, moves, &a) == VK_SUCCESS);
+    vk_devmem_owner(a.mem, (void*)(uintptr_t)1);
+    CHECK(make(0, MIB, 256, ~0u, 0, fixed, &f) == VK_SUCCESS && block_of(&f) != block_of(&a));
+    room = g_drv.room[0];
+    g_drv.room[0] = g_drv.used[0];
+    CHECK(make(0, MIB, 256, ~0u, 0, brief, &b) == VK_SUCCESS && block_of(&b) == block_of(&f));
+    g_drv.room[0] = room;
+    unmake(&b);
+    unmake(&f);
+    vk_devmem_owner(a.mem, NULL);
+    unmake(&a);
+    check_counts(0);
+}
+
 /* Memory of its own that the driver only preferred is kept when let go, for the next request it fits, with no call to
    the driver (own_keep, own_take). It names no resource, and fits a request of its size up to an eighth less. Kept
    memory goes after DM_KEEP_PRESENTS presents, and the oldest of its heap goes first past keep_cap */
@@ -811,6 +846,17 @@ static void check_keep(void) {
     CHECK(heap_capped(0));
     for (u32 h = 0; h < g_devmem.mp.memoryHeapCount; h++)
         if (!heap_capped(h)) CHECK(keep_cap(h) == DM_KEEP_BYTES);
+    /* the other heaps count together against that cap, the GPU's own heap alone */
+    CHECK(!heap_capped(1) && !heap_capped(2));
+    const u64 k0 = g_devmem.kept_heap[0], k1 = g_devmem.kept_heap[1], k2 = g_devmem.kept_heap[2];
+    g_devmem.kept_heap[1] = 10, g_devmem.kept_heap[2] = 20, g_devmem.kept_heap[0] = 40;
+    CHECK(kept_with(1) == 30 && kept_with(2) == 30 && kept_with(0) == 40);
+    g_devmem.kept_heap[0] = k0, g_devmem.kept_heap[1] = k1, g_devmem.kept_heap[2] = k2;
+    /* under a caches' budget less than the driver's (vk_budget_mb), the share and the full mark are of that one */
+    vk_devmem_cache_budget(2ull << 30);
+    CHECK(keep_budget(0) == 2ull << 30 && keep_cap(0) == DM_KEEP_BYTES);
+    vk_devmem_cache_budget(0);
+    CHECK(keep_budget(0) == heap_budget(0));
     g_devmem.drv_budget[0] = drv;
     g_vk.has_budget = had;
     /* and all of it after DM_KEEP_PRESENTS presents */
@@ -1436,6 +1482,7 @@ int main(void) {
     check_drain_alone();
     check_drain_room();
     check_kinds();
+    check_kind_fallback();
     check_keep();
     check_cap();
     check_atoms(64);
