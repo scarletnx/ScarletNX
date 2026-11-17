@@ -324,6 +324,8 @@ typedef struct {
    Unmapped pages read as zero and take no writes; the int calls return -1 when any page was unmapped */
 int gmem_read(u64 gva, void* dst, u64 size);
 int gmem_write(u64 gva, const void* src, u64 size);
+/* gmem_write, the write recorded as gpu_mem_written_by's of that writer */
+int gmem_write_by(u64 gva, const void* src, u64 size, int kind, u32 format, u64 surface);
 /* a constant buffer upload (LOAD_CONSTANT_BUFFER): gmem_write, stamped with gpu_mem_written_cb */
 int gmem_write_cb(u64 gva, const void* src, u64 size);
 /* gmem_read and gmem_write in halves, for a copy made of many small runs (a block linear row's 16 byte runs): the
@@ -416,6 +418,39 @@ void gpu_mem_written_cpu(u64 cpu, u64 size);
 /* fn(cpu, n) for each run of guest memory that a GPU-side write above changes (gpu/vk/uma.c's hazard count) */
 void gpu_set_write_watch(void (*fn)(u64 cpu, u64 n));
 u64 gpu_mem_generation(void);   /* the last generation fully published */
+/* [gva, gva + size) watched from now: a GPU-side write on a page of its 2 MiB granules moves
+   gpu_mem_granules_generation. 0 where it can't be (gpu_page_check=1, or past the GPU's addresses) */
+int gpu_mem_watch(u64 gva, u64 size);
+/* the newest generation that wrote a page of the watched granules of [gva, gva + size), published after
+   gpu_mem_generation reached it; ~0 where one of them is not watched */
+u64 gpu_mem_granules_generation(u64 gva, u64 size);
+/* what made a GPU-side write: gpu_mem_written_cb, gpu_mem_written, gpu_mem_written_shader, gpu_mem_remapped,
+   gpu_mem_written_cpu, gpu_mem_written_all; then each writer that gpu_mem_written_by names */
+enum {
+    GPU_WRITE_CB = 1,
+    GPU_WRITE_ENGINE,
+    GPU_WRITE_SHADER,
+    GPU_WRITE_REMAP,
+    GPU_WRITE_RESULT,
+    GPU_WRITE_ALL,
+    GPU_WRITE_RUNTIME, /* gmem_write: the runtime's own write */
+    GPU_WRITE_INLINE,  /* the inline engine's data */
+    GPU_WRITE_CLEAR,   /* the 3D engine's clear of memory before the renderer runs */
+    GPU_WRITE_2D,      /* a blit of the 2D engine */
+    GPU_WRITE_DMA,     /* a copy of the copy engine */
+    GPU_WRITE_COMPUTE, /* a dispatch's storage */
+    GPU_WRITE_TARGET,  /* a render target's write-back */
+    GPU_WRITE_IMAGE,   /* a storage image's publish */
+    GPU_WRITE_RELEASE, /* a semaphore or report release */
+    GPU_WRITE_KINDS
+};
+/* gpu_mem_written of a writer of kind GPU_WRITE_RUNTIME or after, for the log's counts; for a surface's write (a target's
+   write-back, a storage image's publish), its format (VkFormat) and address, else 0 and 0 */
+void gpu_mem_written_by(u64 gva, u64 size, int kind, u32 format, u64 surface);
+/* the kind of the newest GPU-side write on a page of [a, a + sz), 0 where none or too long ago to tell */
+int gpu_mem_newest_kind(u64 a, u64 sz);
+/* the same, with the format and address of the surface that wrote it (gpu_mem_written_by), 0 and 0 for another writer */
+int gpu_mem_newest_write(u64 a, u64 sz, u32* format, u64* surface);
 void gpu_mem_written_all(void); /* a save state's load: every page written, after anything asked before */
 int gpu_mem_dirty_since(u64 since, u64 a, u64 sz); /* a GPU-side write after since touched [a, a + sz) */
 /* fn(ctx, at, n) for each run of [a, a + sz) on the GPU pages a GPU-side write after since touched, in order: what
@@ -455,6 +490,9 @@ void gpu_park(GpuChannel* ch, u32 kind, u64 addr, u32 val, int geq);
 /* something a parked channel may wait for changed (a syncpoint increment, on the GPU thread or off it): look again.
    Any thread */
 void gpu_kick(void);
+/* the GPU thread's wall time outside its wait for work so far, in ns: replay, setup and recording, the waits inside
+   them (locks, fences) included */
+u64 gpu_thread_busy_ns(void);
 /* the CPU signals what a GPU stream may wait for (an NVN event, a syncpoint increment through nvhost-ctrl): what it
    wrote before is for the work after the wait to see (renderer.h mem_may_have_changed). Before the signal, any thread */
 void gpu_cpu_signal(void);

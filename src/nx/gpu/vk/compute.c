@@ -60,7 +60,7 @@ static CsOut g_out[256];
 static int g_nout;
 /* the guest pages every pending result covers, the current batch's and those put aside: a read or write of memory no
    result covers (most of them) is answered without checking each result, through the GMMU page by page */
-static PendPages g_pages = {.also = &g_pend_any};
+static PendPages g_pages = {.also = &g_pend_blk};
 static void outs_pages(const CsOut* out, int n, int delta) {
     for (int i = 0; i < n; i++) pend_add(&g_pages, out[i].addr, out[i].size, delta);
 }
@@ -1191,16 +1191,24 @@ int vk_buffer_image(const u32* tic, int kind, VkBufImg* out) {
 
 /* whether [pa, pa + len) of code is as it was when the write-tracking clock read wseen and the GPU's writes were at
    generation gw, page by page: a window's pages need not follow each other in host memory. 0 when it can't tell */
-static int cs_code_unchanged(u64 pa, u32 len, u64 gw, u32 wseen) {
+static int cs_code_unchanged(u64 pa, u32 len, u64 gw, u32 wseen, u64 own_hash) {
+    static u8 bytes[CS_CODE];
+    int compare = 0;
     gmem_need(pa, len); /* pending results over the code land first, as the write tracking then sees them */
     if (gpu_mem_dirty_since(gw, pa, len)) return 0;
     for (u64 a = pa, end = pa + len; a < end;) {
         u64 n = 0x1000 - (a & 0xFFF);
         if (n > end - a) n = end - a;
-        if (vk_written_since(gmem_host(a, n), n, wseen) != 0) return 0;
+        int w = vk_written_since(gmem_host(a, n), n, wseen);
+        if (w > 0) return 0;
+        compare |= w < 0;
         a += n;
     }
-    return 1;
+    if (!compare) return 1;
+    /* a page write tracking can't tell of (one an import holds with unified memory, uma.c, or none tracked): the
+       program's own bytes against their hash when it was read. Taken as changed, one battle's dispatches read, hashed
+       and walked a program's window again at one in six, nearly all of them the same code */
+    return gmem_read_code_cpu(pa, bytes, len) == len && vk_hash(bytes, len) == own_hash;
 }
 /* Both the initial translation and format specialization use the same bounded program, in the window dst (CS_WINDOW
    bytes). bytes: the program's code bytes as its front end knows them (DispatchState.code_bytes), 0 when it doesn't.
@@ -1411,6 +1419,7 @@ void vk_dispatch(const DispatchState* d) {
         u64 gw;        /* gpu_mem_generation() when the window was read */
         u32 epoch, lx, ly, lz, shm;
         u32 wseen, code_len; /* vk_ww_now() then, and the bytes of the window */
+        u64 own_hash;        /* of the code_len bytes at addr, for a check write tracking can't make */
         CsPipe* p;
     };
     /* by the program's address (lookup_ways.h). An Ounce game dispatches a few hundred programs a frame: in 64 entries
@@ -1433,7 +1442,7 @@ void vk_dispatch(const DispatchState* d) {
     int same = p && fe->addr == pa && fe->lx == lx && fe->ly == ly && fe->lz == lz && fe->shm == shm &&
                vk_cb_reads_hold(&p->cbr, cs_cb_read);
     if (same && (fe->shader_generation != g_vk.shader_generation || fe->epoch != epoch)) {
-        if (cs_code_unchanged(pa, fe->code_len, fe->gw, fe->wseen)) {
+        if (cs_code_unchanged(pa, fe->code_len, fe->gw, fe->wseen, fe->own_hash)) {
             fe->shader_generation = g_vk.shader_generation;
             fe->epoch = epoch;
             fe->wseen = vk_ww_now();
@@ -1463,6 +1472,7 @@ void vk_dispatch(const DispatchState* d) {
         fe->wseen = wseen;
         fe->gw = gw;
         fe->code_len = code_len;
+        fe->own_hash = vk_hash(code_buf + 80, code_len);
         fe->lx = lx;
         fe->ly = ly;
         fe->lz = lz;
@@ -2358,7 +2368,8 @@ rebind:
                 res_publish(sa[i], ss[i], made[i]);
             else
                 res_wrote(sa[i], ss[i]);
-            gpu_mem_written(sa[i], ss[i]); /* what is built from these bytes (buffers, textures) takes the new ones */
+            /* what is built from these bytes (buffers, textures) takes the new ones */
+            gpu_mem_written_by(sa[i], ss[i], GPU_WRITE_COMPUTE, 0, 0);
         }
         res_unref_all(made, ng);
         g_vk_dispatches++;
@@ -2380,7 +2391,10 @@ rebind:
             for (int k = 0; k < i && !seen; k++) seen = images[k] == images[i];
             if (!images[i] || seen) continue;
             vk_surf_wrote(images[i]);
-            if (!vk_surf_publish(images[i])) vk_surf_flush(images[i], NULL);
+            if (!vk_surf_publish(images[i]))
+                vk_surf_flush(images[i], NULL);
+            else
+                vk_surf_stored(images[i]); /* a texture over its memory takes its texels on the GPU */
         }
         g_vk_dispatches++;
         /* Not one in the GPU mirror: its results land only where the CPU first touches them, and that read submits
@@ -2391,8 +2405,10 @@ rebind:
            the end of the game's GPU submission (vk_release_submit) or whatever submits first, as the console's GPU
            runs what a flush handed it. Submitted each, one game's battle map made 350 to 390 submissions a present
            by the GPU profiler, and 22 to 24 so. A program a CPU reader waited for while its writes were still
-           unsubmitted (vk_uma_read_soon) is submitted at once, as above */
-        if (vk_uma() && !vk_buf_pending_unsubmitted() && !vk_uma_read_soon(p->key)) {
+           unsubmitted (vk_uma_read_soon) is submitted at once, as above. A draw's result pending in that submission
+           is no reason to submit: what reads one on the GPU copies it there (owned.c's pending_gpu_read). Submitted
+           for them, another game's battle made about 70 submissions a present, with the GPU idle between them */
+        if (vk_uma() && !vk_uma_read_soon(p->key)) {
             g_vk_cs_open = vk_submit_number();
             g_vk_cs_left++;
             return;

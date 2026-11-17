@@ -26,6 +26,7 @@
 #include "nx/runtime/platform/prepare_screen.h"
 #include "nx/runtime/guest_stats.h"
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/vk/shader_objects.h"
 #include "nx/gpu/vk/ledger.h"
 #include "nx/gpu/vk/shading_rate.h"
 #include "nx/gpu/vk/descriptors.h"
@@ -585,6 +586,17 @@ static void flip_src(VkImageBlit* b, u32 transform) {
 #define FRAME_IMAGE_W 320
 #define FRAME_IMAGE_H 180
 static void frame_image(void); /* after surf_read, whose readback it asks for */
+/* One name for each resource category, for the slow-frame log. The plots below name the same categories in their
+   own table, since a plot's name is the full text the profiler shows. */
+static const char* const g_resource_name[VK_RESOURCE_N] = {
+    [VK_RESOURCE_IMAGE_QUERY] = "image requirements",
+    [VK_RESOURCE_IMAGE_CREATE] = "image allocation",
+    [VK_RESOURCE_IMAGE_DESTROY] = "image destruction",
+    [VK_RESOURCE_SURFACE_CREATE] = "target setup",
+    [VK_RESOURCE_RT_RELOAD] = "target reload",
+    [VK_RESOURCE_SURFACE_RECLAIM] = "surface reclaim",
+    [VK_RESOURCE_BUFFER_MAINTENANCE] = "buffer maintenance",
+    [VK_RESOURCE_BUFFER_CACHE_BUILD] = "buffer cache build"};
 #if defined(SNX_TRACY)
 /* The heap the caches manage, as vk_mem_use reads it for their own trimming, in bytes (the plot is a Memory one). */
 static void gpu_memory_plots(void) {
@@ -603,6 +615,23 @@ static void host_memory_plots(void) {
     SNX_PLOT("host heap", snx_heap_used());
     SNX_PLOT("host rss", snx_footprint());
     if (snx_memory_available(&free)) SNX_PLOT("host free", free);
+}
+/* The CPU time the renderer spends in each resource category, per frame. The slow-frame log showed only the
+   categories over 1 ms; a plot keeps the small ones too, and a rank uses the same names as the log. */
+static const char* const g_resource_plot[VK_RESOURCE_N] = {
+    [VK_RESOURCE_IMAGE_QUERY] = "vk resource: image requirements ms",
+    [VK_RESOURCE_IMAGE_CREATE] = "vk resource: image allocation ms",
+    [VK_RESOURCE_IMAGE_DESTROY] = "vk resource: image destruction ms",
+    [VK_RESOURCE_SURFACE_CREATE] = "vk resource: target setup ms",
+    [VK_RESOURCE_RT_RELOAD] = "vk resource: target reload ms",
+    [VK_RESOURCE_SURFACE_RECLAIM] = "vk resource: surface reclaim ms",
+    [VK_RESOURCE_BUFFER_MAINTENANCE] = "vk resource: buffer maintenance ms",
+    [VK_RESOURCE_BUFFER_CACHE_BUILD] = "vk resource: buffer cache build ms"};
+static const char* const g_wait_plot[VK_WAIT_N] = {"gpu wait: finish ms", "gpu wait: recycle ms",
+                                                   "gpu wait: submit ms"};
+static void resource_plots(const VkResourceStats* is, const VkResourceStats* was) {
+    for (u32 k = 0; k < VK_RESOURCE_N; k++)
+        SNX_PLOT(g_resource_plot[k], (double)(is->ns[k] - was->ns[k]) / 1e6);
 }
 #endif
 
@@ -718,6 +747,7 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
 #if defined(SNX_TRACY)
             gpu_memory_plots();
             host_memory_plots();
+            resource_plots(&resource_is, &resource_was);
             frame_image();
             /* what the CPU has put in the queues and the GPU hasn't got through: the CPU running ahead of the GPU
                (a submit backlog), and the compute batches waiting to land */
@@ -741,6 +771,18 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
             SNX_PLOT("pipeline make ms", (double)(is[2] - was[2]));
             SNX_PLOT("pipeline wait ms", (double)(is[3] - was[3]));
             SNX_PLOT("texture uploads", is[7] - was[7]);
+            /* The slow-frame log's other counters, kept as plots so a hitch's neighbours show without waiting for a
+               slow frame to log them. is[5] is already ms; is[11] and the waits are ns. */
+            SNX_PLOT("shader translate ms", (double)(is[5] - was[5]));
+            SNX_PLOT("texture upload count", (double)(is[6] - was[6]));
+            SNX_PLOT("render targets made", (double)(is[8] - was[8]));
+            SNX_PLOT("vk finish ms", (double)(is[9] - was[9]));
+            SNX_PLOT("texture pipeline count", (double)(is[10] - was[10]));
+            SNX_PLOT("texture pipeline ms", (double)(is[11] - was[11]) / 1e6);
+#if defined(SNX_TRACY)
+            for (u32 k = 0; k < VK_WAIT_N; k++)
+                SNX_PLOT(g_wait_plot[k], (double)(is[12 + k] - was[12 + k]) / 1e6);
+#endif
             was_drawn = g_vk_drawn;
             if (d > 50000000) {
                 slow_frames++;
@@ -761,18 +803,9 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
                 /* These CPU categories exclude nested resource categories. Pipeline and wait counters above can
                    overlap them, so the two groups must not be added as independent parts of a frame. */
                 for (u32 k = 0; k < VK_RESOURCE_N; k++) {
-                    static const char* const names[VK_RESOURCE_N] = {
-                        [VK_RESOURCE_IMAGE_QUERY] = "image requirements",
-                        [VK_RESOURCE_IMAGE_CREATE] = "image allocation",
-                        [VK_RESOURCE_IMAGE_DESTROY] = "image destruction",
-                        [VK_RESOURCE_SURFACE_CREATE] = "target setup",
-                        [VK_RESOURCE_RT_RELOAD] = "target reload",
-                        [VK_RESOURCE_SURFACE_RECLAIM] = "surface reclaim",
-                        [VK_RESOURCE_BUFFER_MAINTENANCE] = "buffer maintenance",
-                        [VK_RESOURCE_BUFFER_CACHE_BUILD] = "buffer cache build"};
                     u64 ns = resource_is.ns[k] - resource_was.ns[k];
                     if (ns >= 1000000)
-                        LOG_LIMIT(400, "vulkan: frame resource CPU: %s %llu ms (%llu calls)\n", names[k],
+                        LOG_LIMIT(400, "vulkan: frame resource CPU: %s %llu ms (%llu calls)\n", g_resource_name[k],
                                   (unsigned long long)(ns / 1000000),
                                   (unsigned long long)(resource_is.calls[k] - resource_was.calls[k]));
                 }
@@ -813,7 +846,7 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
                 "%llu finishes (%llu ms); %llu reads past queued releases (%llu samples counts written on the GPU); "
                 "%llu descriptor sets written, %llu reused (%u descriptor pools, %llu sets with texture arrays taken "
                 "from them); "
-                "%llu draws kept the last one's shaders and pipeline (%llu checked), %llu its targets\n",
+                "%llu draws kept an earlier one's shaders and pipeline (%llu checked), %llu the last one's targets\n",
                 (unsigned long long)g_vk_drawn, (unsigned long long)g_vk_skipped, (unsigned long long)g_vk_mesh_draws,
                 (unsigned long long)(g_vk_mesh_draws - g_vk_mesh_drawn), (unsigned long long)g_vk_dispatches,
                 (unsigned long long)g_vk_cs_batches,
@@ -825,6 +858,23 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
                 (unsigned long long)g_vk_dset_new, (unsigned long long)g_vk_dset_reused, vk_desc_pools(),
                 (unsigned long long)vk_desc_array_sets(), (unsigned long long)g_vk_draw_kept,
                 (unsigned long long)g_vk_draw_checked, (unsigned long long)g_vk_targets_kept);
+            {
+                /* the GPU thread's cost of the work it replays, a measure that doesn't hang on how fast the scene
+                   runs: its busy time a present, and that time over the draws and dispatches it set up */
+                static u64 busy_was, drawn_was, disp_was;
+                const u64 busy = gpu_thread_busy_ns() - busy_was, drawn = g_vk_drawn - drawn_was,
+                          disp = g_vk_dispatches - disp_was;
+                if (drawn + disp)
+                    LOG("vulkan: the GPU thread over the last 600 presents: busy %.2f ms a present, %.2f us a draw "
+                        "or dispatch (%.1f draws and %.1f dispatches a present)\n",
+                        (double)busy / 1e6 / 600, (double)busy / 1e3 / (double)(drawn + disp), (double)drawn / 600,
+                        (double)disp / 600);
+                busy_was += busy;
+                drawn_was = g_vk_drawn;
+                disp_was = g_vk_dispatches;
+            }
+            vk_render_stats_log();
+            gmmu_alias_log();
             if (g_vk_depth_apart_draws) {
                 static u64 apart_was, moved_was;
                 LOG("vulkan: %llu draws of the last 600 frames clip and clamp depth, as the console's clamp off does, "
@@ -858,6 +908,8 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
                     (unsigned long long)(upload_bytes >> 20), (unsigned long long)partial,
                     (unsigned long long)(partial_bytes >> 20), (unsigned long long)slow_frames,
                     (unsigned long long)(slowest_ns / 1000000));
+                vk_tex_check_log();
+                vk_tex_take_log();
                 if (vk_shader_folds())
                     LOG("vulkan: %llu of those shaders translated again, to hold more of their draws' constant buffer "
                         "words as constants\n",
@@ -874,6 +926,21 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
                         (unsigned long long)made[0], (unsigned long long)made[3],
                         (unsigned long long)(make_ms[0] + make_ms[3]), (unsigned long long)links,
                         (unsigned long long)link_ms, (unsigned long long)opts, (unsigned long long)opt_ms);
+                    if (g_vk.has_shader_objects) {
+                        u64 so_made, so_binary, so_ms, so_mb;
+                        vk_so_stats(&so_made, &so_binary, &so_ms, &so_mb);
+                        LOG("vulkan: shader objects: %llu made (%llu from the binaries of earlier runs, %llu ms), "
+                            "%llu MB of SPIR-V kept for them\n",
+                            (unsigned long long)so_made, (unsigned long long)so_binary, (unsigned long long)so_ms,
+                            (unsigned long long)so_mb);
+                    }
+                    u64 cached_tries, cached, cached_ms;
+                    vk_pipeline_lib_cached_stats(&cached_tries, &cached, &cached_ms);
+                    if (cached_tries)
+                        LOG("vulkan: %llu of %llu new pipelines were optimized ones from the pipeline cache, with no "
+                            "link (%llu ms asking it)\n",
+                            (unsigned long long)cached, (unsigned long long)cached_tries,
+                            (unsigned long long)cached_ms);
                     u64 warm_made, warm_hit, warm_ms;
                     vk_pipeline_lib_warm_stats(&warm_made, &warm_hit, &warm_ms);
                     if (warm_made)
@@ -1037,7 +1104,9 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
             VK_OK(r);
     } else /* not presented: displayed never, once the presents before it are done with */
         vk_display_presented(VK_NULL_HANDLE, 0, game, released_ns, shown_syncpt);
-    /* the BC7 encoder's share of the frame after its present, which it never holds back */
+    /* the ASTC textures whose blocks' kind came back, to BC1, BC4 or BC5 where it says so, then the BC7 encoder's share
+       of the frame after its present, which they never hold back */
+    vk_tex_kind_frame();
     vk_tex_later_frame();
     if (recreate && !g_lost && !g_vk.sc_lost) { /* not when this frame's create found the surface lost */
         vk_finish();
@@ -1383,6 +1452,7 @@ static void vkr_reset(void) {
     vk_lock();
     vk_render_end();
     vk_render_forget_state();
+    vk_render_draws_forget();
     vk_zt_forget();
     vk_surf_forget_all();
     vk_buf_forget_all();

@@ -19,6 +19,7 @@ void pend_unlock(void) {
 }
 
 PendPages g_pend_any;
+PendPages g_pend_blk = {.also = &g_pend_any};
 #define LEAF_PAGES  4096u
 #define TABLE_PAGES ((u64)LEAF_PAGES << 16) /* the pages a table's leaves cover: 2^40 bytes, all of the GPU's */
 struct PendLeaf {
@@ -30,10 +31,11 @@ struct PendLeaf {
    gpu_page_check, which has pend_hit answer the old way too, translating the GPU range, and warn when only that way
    finds a result (-1 until read) */
 static struct {
-    PendPages* table[8];
+    PendPages* table[12]; /* uma.c's cross-check (draw_state_check=1) counts in one more */
     u32 n;
     int check;
-} g_pending_pages = {{0}, 0, -1};
+    void (*any_watch)(u64 first, u64 last); /* pend_set_any_watch's */
+} g_pending_pages = {{0}, 0, -1, NULL};
 
 /* page p's count, 0 when no leaf holds it */
 static u32 leaf_count(PendLeaf* const* leaf, u64 p) {
@@ -147,8 +149,10 @@ static void alias_add(void* ctx, u64 gva, u64 n) {
    found here, once for a result, so that pend_hit, asked far more often, needs no translation */
 static int add_pages(void* table, u64 first, u64 last, int delta) {
     AliasAdd a;
+    int any = 0;
     for (PendPages* t = table; t; t = t->also) {
         count_pages(t, first, last, delta);
+        any |= t == &g_pend_blk;
         if (!t->listed) {
             if (g_pending_pages.n == sizeof g_pending_pages.table / sizeof *g_pending_pages.table)
                 fatal("vulkan: more tables of pending result pages than pend_remap has room for");
@@ -156,6 +160,7 @@ static int add_pages(void* table, u64 first, u64 last, int delta) {
             t->listed = 1;
         }
     }
+    if (any && delta && g_pending_pages.any_watch) g_pending_pages.any_watch(first, last);
     if (first >= TABLE_PAGES) return 0; /* the overflow answers for them */
     if (last >= TABLE_PAGES) last = TABLE_PAGES - 1;
     a.t = table;
@@ -178,12 +183,15 @@ static int each_run(u64 gva, u64 size, int (*fn)(void* t, u64 first, u64 last, i
     }
     return 0;
 }
-/* a result added counts in the table it is added to and in the one counting it as well: g_pend_any.adds unchanged is
-   then no result of any kind added (tex_resolve and stage_set in render.c keep what they read while it is) */
+/* a result added counts in the table it is added to and in those counting it as well, up to one whose adds count its
+   own alone (adds_alone): g_pend_any.adds unchanged is then no result of any kind added (tex_resolve and stage_set in
+   render.c keep what they read while it is), but a write in place (uma.c) */
 static void count_add(PendPages* t, int delta) {
     if (delta <= 0) return;
-    t->adds++;
-    if (t->also) t->also->adds++;
+    for (PendPages* u = t; u; u = u->also) {
+        u->adds++;
+        if (u->adds_alone) return;
+    }
 }
 void pend_add(PendPages* t, u64 gva, u64 size, int delta) {
     pend_lock();
@@ -303,6 +311,14 @@ int pend_hit_va(const PendPages* t, u64 gva, u64 size) {
     return size && first < TABLE_PAGES && leaves_hit(t->leaf, first, last < TABLE_PAGES ? last : TABLE_PAGES - 1);
 }
 int pend_empty(const PendPages* t) { return !t->total; }
+u64 pend_guest_group(const PendPages* t, u64 g) {
+    if (!t->total) return 0;
+    if (t->overflow) return ~0ull;
+    if (g >= TABLE_PAGES / 64) return 0;
+    const PendLeaf* l = t->leaf[g / (LEAF_PAGES / 64)];
+    return l && l->pages ? l->group[g % (LEAF_PAGES / 64)] : 0;
+}
+void pend_set_any_watch(void (*fn)(u64 first, u64 last)) { g_pending_pages.any_watch = fn; }
 int pend_hit_pages(const PendPages* t, u64 first, u64 last) {
     if (!t->total) return 0;
     if (t->overflow) return 1;

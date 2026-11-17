@@ -1804,6 +1804,10 @@ msgstr "Não"
 msgid "Overwrite"
 msgstr "Sobrescrever"
 
+#: src/gui/main.c
+msgid "Import"
+msgstr ""
+
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
@@ -1892,7 +1896,7 @@ msgstr "Pasta aberta: %s"
 msgid "Could not open %s: %s"
 msgstr "Não foi possível abrir %s: %s"
 
-#: src/gui/main.c
+#: src/gui/main.c src/gui/saves.c
 msgid "out of memory"
 msgstr "sem memória"
 
@@ -1904,7 +1908,7 @@ msgstr "Dump"
 msgid "Game"
 msgstr "Jogo"
 
-#: src/gui/main.c src/common/utilities/setup.c
+#: src/gui/main.c src/gui/ui.txt src/common/utilities/setup.c
 msgid "Saves"
 msgstr "Saves"
 
@@ -2002,6 +2006,14 @@ msgstr "Abrir pasta de cheats"
 #: src/gui/main.c
 msgid "Open Folder"
 msgstr "Abrir pasta"
+
+#: src/gui/main.c
+msgid "Export Saves"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Import Saves"
+msgstr ""
 
 #: src/gui/main.c
 msgid "Clean Cache"
@@ -4844,6 +4856,11 @@ msgid "More"
 msgstr ""
 
 #: src/gui/main.c
+#, c-format
+msgid "The saves of %s, the user playing: every console's in one zip, or a console's as its emulators keep them (the Switch's as Eden's zip). An import moves a save there to the trash first."
+msgstr ""
+
+#: src/gui/main.c
 msgid "The rest of this screen's keys"
 msgstr ""
 
@@ -4903,6 +4920,177 @@ msgstr ""
 #: src/gui/main.c
 #, c-format
 msgid "%s is off Games: %s is not found. Its folder %s stays, and Games lists it again once that file is back."
+msgstr ""
+
+#: src/gui/main.c
+msgid "Export All Saves"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Import All Saves"
+msgstr ""
+
+#: src/gui/main.c src/gui/saves.c
+#, c-format
+msgid "%s could not be written: %s"
+msgstr ""
+
+#: src/gui/main.c src/gui/saves.c
+#, c-format
+msgid "%s could not be read: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "the save in %s holds no file"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "none of the %zu saves found holds a file"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: %s could not be made: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: %s could not be copied to %s: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: the zip could not be copied to %s: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: %zu files (%s) of %s in %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: %zu files (%s) of %zu saves of %s in %s"
+msgstr ""
+
+#: src/gui/main.c
+msgid "; the share sheet did not open"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: %zu saves imported, then: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: %zu files (%s) of %s for %s; the save there before is in %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: %zu files (%s) of %s for %s; there was no save before"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: %zu saves for %s, %zu files (%s); %zu saves there before are in the trash, the first in %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: %zu saves for %s, %zu files (%s); none was there before"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "; %zu more in the zip have no game of their title ID in the library, where save_layout=game keeps a save: the log names them"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: cancelled, nothing imported from %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: none of the %zu saves in %s has a game of that title ID in the library, where save_layout=game keeps a save"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: %s could not be read: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: %s holds none of the consoles' folders of an export of every save: %s, %s, %s, %s, %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: none of the backups in %s is of a 3DS game of the library, by its unique ID"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: %s has a save of %s, in %s. It goes to the trash, %s, and the one in %s takes its place."
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: %zu of the saves in %s are there already for %s, of %zu games it can go to. Each goes to the trash, %s, and the zip's takes its place."
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: there is no data folder to work in"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: a game runs, which could write over its saves: close it, then import"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: %s has no title ID of its own, which Eden's zip names a game's saves by"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: %s has no save of %s: %s is not there"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: %s has no save of any console"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: %s has no save of the %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: the file picker could not open: %s"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Zip"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s save data"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: no file was picked."
 msgstr ""
 
 #: src/gui/main.c
@@ -5791,6 +5979,10 @@ msgid "The game's .ini settings, the launcher's for the next runs, and its theme
 msgstr "Os ajustes do .ini do jogo, os do launcher para as próximas execuções, e o tema dele"
 
 #: src/gui/model.c
+msgid "The saves of the user playing out to a file another emulator reads, and back in: every console's, a console's, or a game's from its box"
+msgstr ""
+
+#: src/gui/model.c
 msgid "Saves the logs as one zip or as scarletnx.log in a folder it opens to share from, or opens their folder"
 msgstr "Salva os logs num zip ou como scarletnx.log numa pasta que ele abre para compartilhar, ou abre a pasta deles"
 
@@ -5853,6 +6045,326 @@ msgstr "%dº"
 #: src/gui/queue.c
 msgid "next"
 msgstr "próximo"
+
+#: src/gui/saves.c
+#, c-format
+msgid "%s is a link to %s: put the save's files there by hand"
+msgstr ""
+
+#: src/gui/saves.c
+msgid "Removed: an empty folder, no save"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "the trash, %s, could not be made: %s"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "the trash, %s, is on another disk than %s, which would be copied there"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "the trash, %s, has a hundred backups of %s from this second"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "%s could not be moved to the trash, %s: %s"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "%s could not take the place of %s: %s"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "Moved to the trash, %s, before the new save took its place"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "Moved to the trash, %s, with the save it notes"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "; its note stays in the trash, %s"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "; the save there before stays in the trash, %s"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "%s could not be made: %s"
+msgstr ""
+
+#: src/gui/saves.c
+msgid "no memory for libdeflate's compressor"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "%s could not go into the zip: %s"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "Exported as %s"
+msgstr ""
+
+#: src/gui/saves.c
+msgid "Left out: a name that starts with a dot beside a save's files is a sync tool's or the system's"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "%s is no export of saves as Eden makes one: %s"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "%s is no export of saves as Eden makes one: its member %s is no path inside a folder"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "%s is no export of saves as Eden makes one: %s is not in a folder named by a game's title ID, 16 hex digits"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "%s is an empty zip: Eden's export of saves holds a folder for each game"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "%s holds no saves of the Switch: it has no %s folder"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid " and %zu more"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "%s, left by an import cut short, could not be removed: %s"
+msgstr ""
+
+#: src/gui/saves.c
+msgid "Removed: an import of this save cut short left it"
+msgstr ""
+
+#: src/gui/saves.c
+msgid "Left out: Eden's record of the save's size, which the game never sees, of which this version keeps no file"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "%s could not be taken out of %s: %s"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "Imported from %s in %s"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "Imported %zu files (%llu bytes) of %016llX from %s; the save there before is in %s"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "Imported %zu files (%llu bytes) of %016llX from %s; there was no save before"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "Not imported: %s"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "%s holds the saves of %s, not of %016llX"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "Not imported: it holds the saves of %zu other games too, %s"
+msgstr ""
+
+#: src/gui/saves.c
+msgid "Not exported: no save there"
+msgstr ""
+
+#: src/gui/saves.c
+msgid "Exported from its working copy (1): it has no last commit (0), a commit cut short that the game's next start finishes from that copy"
+msgstr ""
+
+#: src/gui/saves.c
+msgid "Not exported: it holds neither a last commit (0) nor a working copy (1)"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "Not exported: %s holds no file"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "%016llX has no save in %s"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "None of the %zu games has a save to export"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "Exported %zu files (%llu bytes) from %zu of %zu saves"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "Imported %zu bytes from %s; the save there before is in %s"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "Imported %zu bytes from %s; there was no save before"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "%s is empty: a save holds the save memory's bytes"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "%s is no zip of saves: %s"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "%s holds %s, which is no .sav at its top as each game's save goes"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "Not imported: no game of the library is named %s"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "%s in %s is empty: a save holds the save memory's bytes"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "%s holds no .sav%s%s"
+msgstr ""
+
+#: src/gui/saves.c
+msgid " in its folder "
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "none of the %zu saves in %s is of a game of the library, named as its .sav"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "Imported %zu files (%llu bytes) of backup %s from %s%s%s"
+msgstr ""
+
+#: src/gui/saves.c
+msgid "; what was there before is in "
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "%s is no export of saves as Checkpoint lays them out: %s"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "%s is no export of saves as Checkpoint lays them out: %s is not in saves/ or extdata/, in a title's folder 0x<its unique ID> and one of its backups"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "%s holds no backup of Checkpoint's: saves/0x<unique ID> <title>/<backup>/"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "%s holds the backups of %s, not of %s's, 0x%05X"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "%s has not run yet: its first run makes its save (%s), which an import goes into, else the game formats it over what came in. Play it once, then import"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "%s has %zu folders of extra data in its SD card, and the backup's goes in one: move the others out, then import"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "%s has no extra data yet (%zu folders): its first run makes it. Play it once, then import"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "Not imported: it holds the backups of %zu other games too"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "%s is no export of Vita saves: %s"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "%s is no export of Vita saves: %s is not in a folder named by its save's ID, as ux0:user/00/savedata/<ID> is"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "%s holds %s's save as the console keeps it, encrypted (%s): only a decrypted one goes in, as Vita3K keeps one"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "%s holds no save of the Vita: <ID>/ and its files"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "%s holds the saves of %s, not of %s"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "Not imported: %s holds no save of %s"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "none of the saves in %s, %s, is of a Vita game of the library"
+msgstr ""
 
 #: src/gui/settings.c
 msgid "Global"

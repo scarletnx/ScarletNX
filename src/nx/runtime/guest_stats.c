@@ -185,8 +185,17 @@ static double seconds(u64 ns) { return (double)ns / 1e9; }
 
 /* the window's counts as plots: what the log lines above give, on the timeline. The window is the renderer's 600-present
    cadence, which is the cadence the log has; the sums are the same */
+#if defined(SNX_TRACY)
+#define GSTAT_TOP_PLOTS 5
+/* Fixed names for the ranked breakdowns. The SVC and family names go to the message pane with each rank, as the
+   top thread's name already does for its one plot. */
+static const char* const g_svc_plot[GSTAT_TOP_SVCS] = {"top svc 0/s", "top svc 1/s", "top svc 2/s",
+                                                       "top svc 3/s", "top svc 4/s", "top svc 5/s"};
+static const char* const g_hook_plot[GSTAT_TOP_PLOTS] = {"top hook 0/s", "top hook 1/s", "top hook 2/s",
+                                                         "top hook 3/s", "top hook 4/s"};
+#endif
 static void guest_stats_plot(const GstatWindow* w) {
-    [[maybe_unused]] u32 top[1];
+    [[maybe_unused]] u32 top[GSTAT_FAMILIES];
     [[maybe_unused]] double secs;
     if (!w->ns) return; /* never 0 for the log's (guest_stats_window), and no seconds to divide by */
     secs = seconds(w->ns);
@@ -201,6 +210,28 @@ static void guest_stats_plot(const GstatWindow* w) {
     /* one aggregate of the busiest thread: a plot per slot would grow the client's name table without a use */
     SNX_PLOT("guest top thread ms",
              largest(w->thread_ns, GSTAT_SLOTS, top, 1) ? (double)w->thread_ns[top[0]] / 1e6 : 0.0);
+#if defined(SNX_TRACY)
+    {
+        char name[128];
+        unsigned n = largest(w->svc, GSTAT_SVCS, top, GSTAT_TOP_SVCS);
+        for (unsigned i = 0; i < n; i++) {
+            SNX_PLOT(g_svc_plot[i], (double)w->svc[top[i]] / secs);
+            const char* svc = top[i] < SNX_SVC_COUNT ? svc_name(top[i]) : NULL;
+            int len = snprintf(name, sizeof name, "0x%02x%s%s", (unsigned)top[i], svc ? " " : "", svc ? svc : "");
+            if (len > 0) SNX_MSG(name, (size_t)(len < (int)sizeof name ? len : (int)sizeof name - 1));
+        }
+        n = largest(w->hook, w->families, top, GSTAT_TOP_PLOTS);
+        for (unsigned i = 0; i < n; i++) {
+            SNX_PLOT(g_hook_plot[i], (double)w->hook[top[i]] / secs);
+            int len = snprintf(name, sizeof name, "%s", guest_stats_family_name(top[i]));
+            if (len > 0) SNX_MSG(name, (size_t)(len < (int)sizeof name ? len : (int)sizeof name - 1));
+        }
+    }
+    SNX_PLOT("nce svc/s", (double)w->count[GSTAT_NCE_SVC] / secs);
+    SNX_PLOT("nce trap/s", (double)w->count[GSTAT_NCE_TRAP] / secs);
+    SNX_PLOT("nce ticks/s", (double)w->count[GSTAT_NCE_TICKS] / secs);
+    SNX_PLOT("nce run/s", (double)w->count[GSTAT_NCE_RUN] / secs);
+#endif
 }
 
 void guest_stats_log(u64 now_ns, u64 presents) {

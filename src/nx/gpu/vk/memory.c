@@ -1439,6 +1439,8 @@ int vk_image_resident(VkImage img, u8* want, const u64* keys, u32 n, u64* bytes)
    device local too, holds the staging rings, which keep within its budget themselves (cmd.c ring_misplaced) */
 static int g_heap = -1;
 static u64 g_budget_cap; /* vk_budget_mb, 0 when unset */
+static u32 g_budget_moves; /* the times the budget moved but for the driver's (vk_mem_budget_gen): the cap set, and on
+                              Android the system's budget measured */
 #if defined(__ANDROID__)
 /* where the GPU shares the system's memory, the budget vk_uma_budget gives, measured once a second and held between
    measures: an eviction leaves a hole in a block of device memory or waits for a frame in flight before the system
@@ -1494,8 +1496,10 @@ u64 vk_mem_budget_cap(u64 bytes) {
     if (g_heap < 0) heap_find(); /* which reads vk_budget_mb once */
     had = g_budget_cap;
     g_budget_cap = bytes;
+    __atomic_add_fetch(&g_budget_moves, 1, __ATOMIC_RELAXED);
     return had;
 }
+u32 vk_mem_budget_gen(void) { return vk_devmem_fetches() + __atomic_load_n(&g_budget_moves, __ATOMIC_RELAXED); }
 
 /* The driver's use of the device-local heap and its budget for it, through VK_EXT_memory_budget. Without the extension
    devmem.c's budget is its guess (80% of the heap), so what is known goes instead, *ours set: the memory this process
@@ -1536,10 +1540,12 @@ void vk_mem_use(u64* usage, u64* budget) {
                      "MB, the driver's budget or vk_budget_mb\n",
                      (unsigned long long)(*budget >> 20));
                 g_uma_budget.reserve = 0;
+                __atomic_add_fetch(&g_budget_moves, 1, __ATOMIC_RELAXED);
                 return;
             }
             g_uma_budget.ns = now;
             g_uma_budget.budget = vk_uma_budget(b[g_heap].budget, *usage, available, g_uma_budget.reserve);
+            __atomic_add_fetch(&g_budget_moves, 1, __ATOMIC_RELAXED);
         }
         if (g_uma_budget.budget < *budget) *budget = g_uma_budget.budget;
     }

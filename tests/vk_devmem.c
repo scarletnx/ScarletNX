@@ -34,6 +34,7 @@ static int thread_or_none(PThreadFn fn, void* arg, size_t stack) {
 #define GIB (1024 * MIB)
 
 VkState g_vk;
+void vk_descriptor_heaps_forget_buffer(VkBuffer buffer) { (void)buffer; } /* no descriptor heaps here */
 PFN_vkGetPhysicalDeviceMemoryProperties vkGetPhysicalDeviceMemoryProperties;
 PFN_vkGetPhysicalDeviceMemoryProperties2 vkGetPhysicalDeviceMemoryProperties2;
 PFN_vkMapMemory vkMapMemory;

@@ -150,6 +150,8 @@ VkPipeline vk_pipeline_now(VkPipeline h, int* pending) {
     *pending = 0;
     return h;
 }
+/* and binds them, pipelines alone here: no draw of this test has shader objects */
+void vk_pipeline_bind(VkCommandBuffer cb, VkPipelineBindPoint bp, VkPipeline h) { vkCmdBindPipeline(cb, bp, h); }
 /* cmd.c reads the frame's GPU timestamps for gpuprof.c, which isn't here */
 void vk_gpuprof_frame_done(u32 slot) { (void)slot; }
 void vk_gpuprof_cb_begin(VkCommandBuffer cb) { (void)cb; }
@@ -894,6 +896,86 @@ static void bench(u32 w, u32 h, int runs, BenchSource src) {
         }
         vk_image_destroy(t.img, t.mem);
     }
+    free(b);
+}
+
+/* --bench-kind: what the GPU's read of a level's blocks' kind costs (astc.c's vk_astc_kind_read), beside the upload
+   straight to BC7 that keeps the blocks it reads and the BC1 image made from them (vk_astc_bcn_kept): each the GPU's
+   time between two timestamps around it, the least of runs. On random blocks, most of which are the error colour,
+   and on blocks of RGBA direct mode (12, eight colour values of 8 bits, as tests/vulkan_astc_kind.inc's normal maps),
+   which the read goes all the way through */
+static u64 bench_ts(VkQueryPool pool) {
+    u64 ts[2];
+    vk_finish();
+    if (vkGetQueryPoolResults(g_vk.dev, pool, 0, 2, sizeof ts, ts, 8, VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT))
+        fatal("no timestamps\n");
+    const u64 mask = g_vk.gfx_timestamp_bits >= 64 ? ~0ull : (1ull << g_vk.gfx_timestamp_bits) - 1;
+    return (u64)((double)((ts[1] - ts[0]) & mask) * g_vk.props.limits.timestampPeriod);
+}
+static void bench_kind(u32 w, u32 h, u32 bw, u32 bh, int runs, int direct) {
+    const u32 nx = (w + bw - 1) / bw, ny = (h + bh - 1) / bh;
+    u8* b = blocks_new(w, h, 1, bw, bh);
+    for (u32 i = 0; direct && i < nx * ny; i++) { /* mode 12, a 4x4 grid of 2 bit weights, values and weights random */
+        u8* k = b + (size_t)i * 16;
+        const u32 head = (((u32)k[0] | (u32)k[1] << 8 | (u32)k[2] << 16) & ~0x1FFFFu) | 0x42u | 12u << 13;
+        k[0] = (u8)head, k[1] = (u8)(head >> 8), k[2] = (u8)(head >> 16);
+    }
+    Surf t = {.w = w,
+              .h = h,
+              .layers = 1,
+              .levels = 1,
+              .depth3d = 1,
+              .f = {.vk = VK_FORMAT_BC7_UNORM_BLOCK, .bw = bw, .bh = bh}};
+    VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                            .imageType = VK_IMAGE_TYPE_2D,
+                            .format = VK_FORMAT_BC7_UNORM_BLOCK,
+                            .extent = {w, h, 1},
+                            .mipLevels = 1,
+                            .arrayLayers = 1,
+                            .samples = VK_SAMPLE_COUNT_1_BIT,
+                            .tiling = VK_IMAGE_TILING_OPTIMAL,
+                            .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT};
+    VkImage bc1;
+    DevMem bc1_mem;
+    if (!vk_image_create(&ii, &t.img, &t.mem)) fatal("cannot create a %ux%u bench image\n", w, h);
+    ii.format = VK_FORMAT_BC1_RGBA_UNORM_BLOCK;
+    if (!vk_image_create(&ii, &bc1, &bc1_mem)) fatal("cannot create a %ux%u bench image\n", w, h);
+    if (!vk_astc_keep(&t)) fatal("no memory to keep a %ux%u level's blocks\n", w, h);
+    VkQueryPoolCreateInfo qi = {
+        .sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO, .queryType = VK_QUERY_TYPE_TIMESTAMP, .queryCount = 2};
+    VkQueryPool pool;
+    if (!VK_OK(vkCreateQueryPool(g_vk.dev, &qi, NULL, &pool))) fatal("no query pool\n");
+    barrier(t.img, VK_PIPELINE_STAGE_2_NONE, 0, VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_COPY_BIT,
+            VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    barrier(bc1, VK_PIPELINE_STAGE_2_NONE, 0, VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_COPY_BIT,
+            VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    vk_finish();
+    u64 best[3] = {~0ull, ~0ull, ~0ull};
+    for (int r = 0; r < runs; r++)
+        for (int k = 0; k < 3; k++) {
+            Level lv = {b, nx, ny, NULL, 2, 0};
+            VkCommandBuffer cb = vk_cmd();
+            rec_CmdResetQueryPool(cb, pool, 0, 2);
+            rec_CmdWriteTimestamp2(cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, pool, 0);
+            u32 slot = 0;
+            if (k == 0 && !vk_astc_upload(cb, &t, 0, 0, w, h, 1, 0, 0, level_rows, &lv, NULL)) fatal("upload failed\n");
+            if (k == 1 && !(slot = vk_astc_kind_read(cb, &t))) fatal("no kind read\n");
+            if (k == 2 && !vk_astc_bcn_kept(cb, &t, bc1, 1)) fatal("no BC1 from the kept blocks\n");
+            rec_CmdWriteTimestamp2(vk_cmd(), VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, pool, 1);
+            const u64 ns = bench_ts(pool);
+            vk_astc_kind_release(slot);
+            if (ns < best[k]) best[k] = ns;
+        }
+    printf("BENCH kind %ux%u of %ux%u %s blocks: BC7 upload %.3f ms, the kind read %.3f ms (%.1f%% of it), BC1 from "
+           "the kept blocks %.3f ms\n",
+           w, h, bw, bh, direct ? "RGBA direct" : "random", (double)best[0] / 1e6, (double)best[1] / 1e6,
+           100.0 * (double)best[1] / (double)best[0], (double)best[2] / 1e6);
+    fflush(stdout);
+    vkDestroyQueryPool(g_vk.dev, pool, NULL);
+    vk_astc_unkeep(&t);
+    vk_finish();
+    vk_image_destroy(bc1, bc1_mem);
+    vk_image_destroy(t.img, t.mem);
     free(b);
 }
 
@@ -2339,7 +2421,9 @@ int main(int argc, char** argv) {
         } else if (!strcmp(argv[i], "--bench-etc2")) {
             large = 3;
             if (i + 1 < argc && argv[i + 1][0] != '-') bench_src.name = argv[++i];
-        } else if (!strcmp(argv[i], "--astc-encode"))
+        } else if (!strcmp(argv[i], "--bench-kind"))
+            large = 5;
+        else if (!strcmp(argv[i], "--astc-encode"))
             large = 4; /* the BCn to ASTC transcoder alone (ctest's astc_vulkan_encode_dot) */
     init();
     /* every level as before (the fast build, the cache's whole levels): background_cases turns the quick encode on */
@@ -2348,6 +2432,12 @@ int main(int argc, char** argv) {
     if (upload_wait) return upload_wait_case(upload_wait == 2);
     if (large == 3) {
         bench_etc2(3, bench_src.name);
+        return 0;
+    }
+    if (large == 5) {
+        static const u32 fp[3] = {4, 6, 8};
+        for (int direct = 0; direct < 2; direct++)
+            for (u32 f = 0; f < 3; f++) bench_kind(2048, 2048, fp[f], fp[f], 5, direct);
         return 0;
     }
     if (large == 4) {

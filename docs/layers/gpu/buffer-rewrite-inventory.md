@@ -673,6 +673,11 @@ place.**
   storage was a twentieth of the GPU thread in one game.
 - Comment: `buffer.c`, above `vk_buf_draw_prepare` and above `draw_may_alias`.
 - Check: `check_draw_storage_stages` in `tests/vulkan_draw_storage_stages.inc`.
+- With unified memory (unless `uma_copies=2`), the group binds in place instead: each binding at its
+  own offset in the one region that holds them all, with no map and no output (`alias_in_place`). The shader declares
+  its global buffers `Aliased` when it has two or more. A group that one binding keeps out of place goes to the atlas,
+  and the writes in place it bound are undone. Nothing in that branch waits. Checks: `check_uma_alias_*` in
+  `tests/vulkan_uma_imports.inc`, `check_alias_shader` and `check_uma_alias_order` in `tests/vulkan_nvn_storage.inc`.
 
 **R32. A range that one owner holds whole binds where the owner is.**
 
@@ -848,13 +853,20 @@ it.**
 - Comment: `mirror.c`, the file header, and `compute.c`, above `mirror_plan`.
 - Check: `check_mirror` in `tests/vulkan_mirror.inc`.
 
-**R55. Before the mirror publishes pages as its own, it takes in the CPU changes, and a byte that both wrote keeps
-the program's value.**
+**R55. When the mirror's pages land or are published as its own, a byte that both the program and the CPU wrote keeps
+the CPU's value, where the page's shadow holds every byte from before the submit.**
 
-- Without the rule: the first CPU touch lands a page whole. That is exact only when the page holds the CPU bytes
-  that the program did not log.
-- Comment: `mirror.c`, above `vk_mirror_publish`.
-- Check: `check_mirror` in `tests/vulkan_mirror.inc`, the case of a byte that the CPU wrote beside the program's.
+- Without the rule: the shadow holds every CPU write from before the submit, so a byte that differs from it was
+  written by the CPU after the submit. Landed over it, the program's older byte replaced it in guest memory and in the
+  shadow, and no later check could find it. One game's characters showed squares of wrong lighting. The shadow lacks
+  bytes in three cases, and the program's byte lands there as before: the page landed since it was given its bytes, a
+  render target was written back over it just before, or it had other owners when it was given its bytes. Before the
+  mirror publishes pages, it also takes in the CPU changes the program did not log: the first CPU touch lands a page
+  whole, which is exact only when the page holds them.
+- Comment: `mirror.c`, above `land_entry`, above `vk_mirror_publish` and at `owned_at_fill`.
+- Check: `check_mirror` in `tests/vulkan_mirror.inc`, the cases of a byte that the CPU wrote beside the program's, of
+  a byte that both wrote (landed and published), and of a logged byte over another owner's bytes (the shadow's valid
+  bit read after the owner lands).
 
 **R56. The write log of a dispatch in the mirror is in GPU memory, and a host log is cleared only where it was
 written.**

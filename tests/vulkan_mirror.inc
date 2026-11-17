@@ -677,26 +677,81 @@ static int check_mirror(void) {
 
     /* touched lately (the landing above): a program's write to the page comes back with the submit's harvest and lands
        in guest memory once it is done, the bytes it logged and no others, with no owner left over the page and no
-       landing of a trap when the CPU reads it */
+       landing of a trap when the CPU reads it. A logged byte the CPU wrote after the binding keeps the CPU's (0x302),
+       and the next binding takes it into the mirror. Landed over, it was lost to guest memory and the mirror both */
     {
-        static u8 before[0x1000];
+        static u8 before[0x1000], m[0x1000];
         memcpy(before, GP(cpu), sizeof before);
         CHECK(!mirror_write(cpu + 0x300, 8, 0x3c, 1));
         CHECK(!mirror_write(cpu + 0x308, 8, 0xc3, 0)); /* not logged: guest memory keeps its bytes */
         vk_mirror_wrote(cpu, 0x1000);
+        GP(cpu)[0x302] = 0xa7;
+        before[0x302] = 0xa7;
         u64 lands = own_landings();
         vk_finish();
         vk_mirror_publish();
         OwnRange o[2];
         CHECK(!vk_mirror_pending(gva, 0x1000) && !own_lookup(cpu, 0x1000, o, 2) && own_landings() == lands);
         for (u32 i = 0; i < 0x1000; i++) {
-            u8 want = i >= 0x300 && i < 0x308 ? 0x3c : before[i];
+            u8 want = i >= 0x300 && i < 0x308 && i != 0x302 ? 0x3c : before[i];
             if (GP(cpu)[i] != want) {
                 fprintf(stderr, "vulkan_headless: mirror: hot byte %#x is %#x, not %#x\n", i, GP(cpu)[i], want);
                 CHECK(0);
             }
         }
         CHECK(own_landings() == lands);
+        vk_ww_new_epoch();
+        CHECK(vk_mirror_slice(gva, 0x1000, &buf, &off));
+        CHECK(!mirror_read(cpu, 0x1000, m));
+        CHECK(!mirror_expect(m, GP(cpu), 0x1000, 0, 0, 0)); /* nothing pending: the page whole, as it changed */
+    }
+    /* not touched lately, with a shadow: the page is published as the mirror's, and a logged byte the CPU wrote after
+       the binding goes into the mirror first, so the CPU's touch lands the CPU's byte (0x344) */
+    if (own_traps()) {
+        u32 present = g_vk_present;
+        g_vk_present += 1300; /* past the presents a page the CPU touched keeps its writes off the GPU */
+        CHECK(!mirror_write(cpu + 0x340, 8, 0x5a, 1));
+        vk_mirror_wrote(cpu + 0x340, 8);
+        GP(cpu)[0x344] = 0xb4;
+        vk_finish();
+        vk_mirror_publish();
+        OwnRange o[2];
+        CHECK(own_lookup(cpu, 0x1000, o, 2) == 1 && ((const VkOwnRes*)o[0].res)->buf == vk_mirror_buffer());
+        g_vk_present = present; /* before the touch: noted at the present it is, the page is touched lately again */
+        own_acquire(cpu, 0x1000); /* the CPU's touch: it lands */
+        CHECK(vk_mirror_slice(gva, len, &buf, &off)); /* bound again, for the checks after: the landing let go of the
+                                                         page's shadow */
+        for (u32 i = 0x340; i < 0x348; i++) {
+            u8 want = i == 0x344 ? 0xb4 : 0x5a;
+            if (GP(cpu)[i] != want) {
+                fprintf(stderr, "vulkan_headless: mirror: published byte %#x is %#x, not %#x\n", i, GP(cpu)[i], want);
+                CHECK(0);
+            }
+        }
+        /* Touched lately, another owner's bytes over part of a page when a binding gives it its bytes (0x100 bytes of
+           0x22 at 0x2100): the shadow doesn't hold them. A program's logged write over them (0x2140) lands the owner
+           first, and then the program's bytes, which a compare with the shadow took for the CPU's and dropped */
+        VkOwnRes* owner = vk_own_res_new(0x100, VK_OWN_BY_DRAW);
+        CHECK(owner && !owned_test_fill(owner->buf, 0, 0x100, 0x22));
+        vk_mirror_landed(cpu + 0x2000, 0x1000); /* given its bytes again by the next binding, with the owner there */
+        vk_own_publish_owned(cpu + 0x2100, 0x100, owner, 0);
+        vk_ww_new_epoch();
+        CHECK(vk_mirror_slice(gva, len, &buf, &off));
+        CHECK(!mirror_write(cpu + 0x2140, 8, 0x6e, 1));
+        vk_mirror_wrote(cpu + 0x2140, 8);
+        vk_finish();
+        vk_mirror_publish();
+        CHECK(!vk_mirror_pending(gva + 0x2000, 0x1000) && !own_lookup(cpu + 0x2000, 0x1000, o, 2));
+        for (u32 i = 0x2100; i < 0x2200; i++) {
+            u8 want = i >= 0x2140 && i < 0x2148 ? 0x6e : 0x22;
+            if (GP(cpu)[i] != want) {
+                fprintf(stderr, "vulkan_headless: mirror: byte %#x over an owner is %#x, not %#x\n", i, GP(cpu)[i],
+                        want);
+                CHECK(0);
+            }
+        }
+        vk_own_res_unref(owner);
+        CHECK(vk_mirror_slice(gva, len, &buf, &off)); /* bound again, for the checks after */
     }
 
     /* more pages written than the harvest's room (64 at first): those past it land by a pass of their own */
@@ -838,6 +893,7 @@ static int check_mirror(void) {
     CHECK(g_vk_validation_messages == validation);
     vk_unlock();
     puts("The GPU mirror takes the bytes the CPU changed and keeps those the GPU wrote; the bytes its programs logged "
-         "land, and no others; a draw reads pending bytes at any address without a wait");
+         "land, and no others, but where the CPU wrote them after; a draw reads pending bytes at any address without a "
+         "wait");
     return 0;
 }

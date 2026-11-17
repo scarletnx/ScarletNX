@@ -24,6 +24,7 @@ programs that a game ships (step 8) is not.
 * [Across runs](#across-runs)
 * [The programs a game ships](#the-programs-a-game-ships)
 * [Interactions](#interactions)
+* [Shader objects](#shader-objects)
 * [Without the extension](#without-the-extension)
 * [Measurement](#measurement)
   * [Results](#results)
@@ -302,10 +303,10 @@ there, which is the time of a part compile and a link. The wait never includes t
 The swap:
 
 - `vk_pipeline_get_deferred` gives the stand-in while `opt` is not ready, and the `opt` handle after. `render.c`
-  keeps the handle in `g_draw.pipe` and binds again when it changes (`g_dyn.pipe`). Thus a draw after the swap binds
-  `opt`. A draw that kept the stand-in resolves to `opt` at its next bind, and `g_dyn` starts again with each command
-  buffer.
-- The `g_draw.check` path in `render.c` compares `vk_pipeline_ready` of two handles of the same `Pipe` at one time.
+  keeps the handle in its kept draw states (the `pipe` of each entry of `g_draw`) and binds again when it changes
+  (`g_dyn.pipe`). Thus a draw after the swap binds `opt`. A draw that kept the stand-in resolves to `opt` at its next
+  bind, and `g_dyn` starts again with each command buffer.
+- The `draw_state_check` path in `render.c` compares `vk_pipeline_ready` of two handles of the same `Pipe` at one time.
   Both give the same result, so the swap does not make it report a difference.
 - The `fast` pipeline goes through `vk_defer_call` on the GPU thread when the GPU thread first sees `opt` ready. The
   frame slot that it goes to recycles after its last submission. All binds of `fast` are in that frame or before it,
@@ -398,6 +399,11 @@ after it.
 - **Mesh and task stages** (branch `feat/sm86-gaps`, later): they are PR stages. A mesh pipeline has no VI part
   (vkd3d-proton leaves out `VERTEX_INPUT_INTERFACE` for mesh). Their sets need slots in the layout table, which the
   mesh work adds. The split function then gives a VI key of none.
+- **Descriptor heaps**: `heaps` (the `PipeKey` bit) is in all four keys, so a part of heaps never links with a part
+  of layouts. Each part and the link have `VK_PIPELINE_CREATE_2_DESCRIPTOR_HEAP_BIT_EXT` in
+  `VkPipelineCreateFlags2CreateInfo` and no layout. The PR and FS parts have the stage mappings of their stages, as a
+  whole pipeline has them. A device that takes heaps (an integrated GPU, `vk_descriptors_auto`) made each heap pipeline
+  whole before. Then the new effects of one game's battles waited 100 to 560 ms a frame for a full compile.
 - **Geometry passthrough**: the passthrough mask is in the geometry program's module key, so it is in the PR key.
 - **Interpolation**: a separate PR part and FS part need the interpolation decorations on both sides, or
   `graphicsPipelineLibraryIndependentInterpolationDecoration`. vkd3d-proton turns GPL off without it. This design
@@ -409,6 +415,29 @@ after it.
 - **The pipeline cache save**: `vk_pipeline_save` writes `g_pipeline.pcache` after `PCACHE_QUIET_NS` with no new pipeline.
   Part makes and optimized pipelines must also update `g_pipeline.pcache_used` (`pcache_note`), so a save does not hold the
   cache's lock while a draw's part compiles.
+
+## Shader objects
+
+Where the device has `VK_EXT_shader_object` (setting `vk_ext_shader_object`, issue #1454), a draw makes no pipeline
+and no parts. `src/nx/gpu/vk/shader_objects.c` gives each key a set of shader objects: one for each stage's program,
+made once on the pipeline workers and shared by every key that runs the program with the same set layouts and
+fragment specialization. The recording thread binds the set (`vk_pipeline_bind`) and sets, as dynamic state, what a
+pipeline held (`vk_so_bind`). `render.c` sets the rest as for a pipeline, `pr_dynamic` too, so the path needs the
+dynamic pre-rasterization state of this design and the vertex layout as dynamic state.
+
+- A key's handle is always a stand-in, and its sets are bound with a layout of no independent sets: a shader
+  object's set layouts are not compatible with a layout of `INDEPENDENT_SETS`.
+- An object is made from the program's SPIR-V, which the module keeps (`vk_so_keep_spirv`). A key whose modules
+  have no SPIR-V kept (the runtime's clears), or with state that is no dynamic state here (per-sample shading, mesh
+  stages, descriptor heaps, mixed samples, coverage to color, sample locations), is made as a pipeline. So is a key
+  whose objects the device refuses.
+- The driver's binaries of the objects are kept between runs in `vk_shaders.<driver>.bin`, beside the pipeline
+  cache. Their key holds what the set layouts are made of (`g_vk_dslayout_hash`), the specialization and the flags.
+- The states that the device's extensions make a draw set are taken when the renderer starts. The tests turn native
+  paths off in `g_vk` later, and the device keeps the extensions and their rules.
+
+`vulkan_headless_shader_objects` runs every check with them under the validation layer. The pipeline tests above
+pass `--vk-ext-shader-object=off`.
 
 ## Without the extension
 

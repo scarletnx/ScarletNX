@@ -155,7 +155,7 @@ static int blit(const GpuBlit* b, u32 y, u32 n, const BlitNeeds* need) {
                 vk_own_publish(cpu, k, d, off);
             off += k;
         }
-        gpu_mem_written(at, dlen);
+        gpu_mem_written_by(at, dlen, GPU_WRITE_2D, 0, 0);
     } else
         blit_fail(b, y, n, "takes moves past the device's limits (said above) over", dlen);
     vk_own_res_unref(d);

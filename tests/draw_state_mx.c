@@ -369,9 +369,9 @@ static void raster_key(void) {
     for (u32 i = 0; i < 4; i++) r[0x3EF + i] = 0;
     mx_draw_raster_key(r, &k);
     CHECK(k.sample_mask == 0);
-    r[0x3ED] = 1; /* raster samples of their own, which the mask is over: it stays all */
+    r[0x3ED] = 1; /* raster samples of their own, which the mask is over as the draw's raster samples are */
     mx_draw_raster_key(r, &k);
-    CHECK(k.sample_mask == ~0u);
+    CHECK(k.sample_mask == 0);
     r[0x3ED] = 0;
     for (u32 i = 0; i < 4; i++) r[0x3EF + i] = 0xFFFF;
     /* 0x54F: alpha to coverage in bit 0, alpha to one in bit 4 */
@@ -609,6 +609,64 @@ static void fixed_state(void) {
     CHECK(dc.depth_bounds[0] == 0.25f && dc.depth_bounds[1] == 0.75f);
 }
 
+/* the multisample state a draw carries (mx_draw_multisample): raster samples (0x3ED on, 0x3EE their layout) and
+   their modulation (0x3F5 the components, 0x3F6 the table at 0x40C), coverage to color (0x47E), alpha to coverage's
+   dither (0x4B8), and the sample locations (0x478-0x47B) where they are not the standard ones of the draw's samples */
+static void multisample_state(void) {
+    u32 r[REGS] = {0};
+    DrawCall dc = {0};
+    mx_draw_multisample(r, &dc);
+    CHECK(!dc.raster_samples && !dc.multisample_flags); /* a channel as it starts */
+    /* deko3d's dkMultisampleStateDefaults: one sample at each pixel's centre, the dither on */
+    for (u32 i = 0; i < 4; i++) r[0x478 + i] = 0x88888888;
+    r[0x4B8] = 1;
+    mx_draw_multisample(r, &dc);
+    CHECK(!dc.raster_samples && dc.multisample_flags == DS_MS_A2C_DITHER);
+    /* a modulation's components and table count only with raster samples on */
+    r[0x3EE] = DS_MSAA_2X2;
+    r[0x3F5] = 3;
+    r[0x3F6] = 1;
+    for (u32 i = 0; i < 16; i++) r[0x40C + i / 4] |= (i * 8) << (i % 4 * 8); /* coefficient i: i sixteenths */
+    dc = (DrawCall){0};
+    mx_draw_multisample(r, &dc);
+    CHECK(!dc.raster_samples && !dc.coverage_mode && !dc.coverage_table_enable);
+    /* four raster samples at their standard places, rgba modulated by the table, coverage to color into target 3 */
+    r[0x3ED] = 1;
+    for (u32 i = 0; i < 4; i++) r[0x478 + i] = 0xEAA26E26;
+    r[0x47E] = 1 | 3u << 4;
+    dc = (DrawCall){0};
+    mx_draw_multisample(r, &dc);
+    CHECK(dc.raster_samples == 4 && dc.coverage_mode == 3 && dc.coverage_table_enable == 1);
+    CHECK(dc.coverage_table[0] == 0 && dc.coverage_table[5] == 5 && dc.coverage_table[15] == 15);
+    CHECK(dc.multisample_flags == (DS_MS_A2C_DITHER | DS_MS_COVERAGE_TO_COLOR) && dc.coverage_to_color_output == 3);
+    /* every sample at the centre, as deko3d writes a list of one: the 2x2 grid of locations, a byte a sample */
+    for (u32 i = 0; i < 4; i++) r[0x478 + i] = 0x88888888;
+    r[0x479] = 0x6E26EAA2; /* the second pixel's four in another order */
+    r[0x47E] = 0;
+    r[0x4B8] = 0;
+    dc = (DrawCall){0};
+    mx_draw_multisample(r, &dc);
+    CHECK(dc.multisample_flags == (DS_MS_SAMPLE_LOCATIONS | DS_MS_SAMPLE_GRID));
+    CHECK(dc.sample_locations[0] == 0x88 && dc.sample_locations[4] == 0xA2 && dc.sample_locations[7] == 0x6E &&
+          dc.sample_locations[15] == 0x88);
+    /* raster samples off: the targets' samples (0x574) are the count, 0x88 is one sample's standard place */
+    r[0x3ED] = 0;
+    r[0x479] = 0x88888888;
+    dc = (DrawCall){0};
+    mx_draw_multisample(r, &dc);
+    CHECK(!dc.raster_samples && !dc.multisample_flags);
+    /* eight samples at their standard places, deko3d's words for them */
+    r[0x574] = DS_MSAA_4X2_D3D;
+    r[0x478] = r[0x47A] = 0x359DB759;
+    r[0x479] = r[0x47B] = 0x1FFB71D3;
+    dc = (DrawCall){0};
+    mx_draw_multisample(r, &dc);
+    CHECK(!dc.multisample_flags);
+    r[0x47B] = 0x1FFB71D4; /* one sample of the last pixel a sixteenth off */
+    mx_draw_multisample(r, &dc);
+    CHECK(dc.multisample_flags == (DS_MS_SAMPLE_LOCATIONS | DS_MS_SAMPLE_GRID) && dc.sample_locations[12] == 0xD4);
+}
+
 int main(void) {
     stencil();
     origin();
@@ -628,6 +686,7 @@ int main(void) {
     inline_blocks();
     dispatch_state();
     fixed_state();
+    multisample_state();
     if (failures) {
         fprintf(stderr, "%d checks failed\n", failures);
         return 1;

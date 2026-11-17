@@ -18,7 +18,7 @@
 #include <vector>
 #include "astc_bc7_cpu.h"
 #include "astc_bcn_cpu.h"
-#include "nx/gpu/texture/astc_kind.h"
+#include "support/astc_kind_ref.h"
 extern "C" {
 void astc_decode_image(const uint8_t* src, uint32_t w, uint32_t h, uint32_t bw, uint32_t bh, uint8_t* dst, int srgb);
 void bcn_decode_image_spec(const uint8_t* src, uint32_t w, uint32_t h, int kind, uint8_t* dst);

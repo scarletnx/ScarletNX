@@ -109,6 +109,7 @@ typedef struct {
     int refs;
 } Res;
 static int g_lands, g_landed_bytes;
+static u64 g_land_by[OWN_BY_N]; /* atomic: the landings the producer's hook saw, by what asked for them */
 static u32 g_busy_tid;
 /* test_republish_after_landing's order: the thread that lands g_hold_res (once) waits in producer_unlock, after it lets
    go of the producer's lock, until g_republished. Its own unlock alone: the thread's unlock of a landing begun before,
@@ -116,7 +117,9 @@ static u32 g_busy_tid;
 static void* g_hold_res;  /* atomic */
 static u32 g_hold_tid;    /* atomic: the thread that landed it, until that unlock */
 static int g_republished; /* atomic */
-static void land(const OwnRange* r, u8* const* dst, u32 n) {
+static void land(const OwnRange* r, u8* const* dst, u32 n, int by) {
+    CHECK(by >= 0 && by < OWN_BY_N);
+    __atomic_add_fetch(&g_land_by[by], 1, __ATOMIC_RELAXED);
     u32 i;
     for (i = 0; i < n; i++) {
         const Res* res = (const Res*)r[i].res;
@@ -248,6 +251,28 @@ static void test_read_write(void) {
     CHECK(GP(a)[0x8000] == 0xA0);
     CHECK(GP(a)[0x9000] == (u8)(0xA0 + 0x1000));
     CHECK(GP(a)[0xA7FF] == (u8)(0xA0 + 0x27FF));
+    CHECK(mem_unmap(a, 0x10000) == 0);
+    res_free(r);
+}
+
+/* each landing says what asked for it: a guest read or write, which the producer takes as the CPU using those bytes,
+   or the runtime's own access, which says nothing about the CPU */
+static void test_land_by(void) {
+    u64 a = region(R0 + 0x180000, 0x10000);
+    Res* r = res_new(0x1000, 0x30);
+    u64 read = __atomic_load_n(&g_land_by[OWN_BY_READ], __ATOMIC_RELAXED);
+    u64 write = __atomic_load_n(&g_land_by[OWN_BY_WRITE], __ATOMIC_RELAXED);
+    u64 runtime = __atomic_load_n(&g_land_by[OWN_BY_RUNTIME], __ATOMIC_RELAXED);
+    CHECK(own_begin(a + 0x1000, 0x1000, r, 0) == 0);
+    CHECK(GP(a)[0x1010] == (u8)(0x30 + 0x10));
+    CHECK(__atomic_load_n(&g_land_by[OWN_BY_READ], __ATOMIC_RELAXED) == read + 1);
+    CHECK(own_begin(a + 0x2000, 0x1000, r, 0) == 0);
+    GP(a)[0x2010] = 0x77;
+    CHECK(__atomic_load_n(&g_land_by[OWN_BY_WRITE], __ATOMIC_RELAXED) == write + 1);
+    CHECK(own_begin(a + 0x3000, 0x1000, r, 0) == 0);
+    own_acquire(a + 0x3000, 0x1000);
+    CHECK(__atomic_load_n(&g_land_by[OWN_BY_RUNTIME], __ATOMIC_RELAXED) == runtime + 1);
+    CHECK(GP(a)[0x3010] == (u8)(0x30 + 0x10));
     CHECK(mem_unmap(a, 0x10000) == 0);
     res_free(r);
 }
@@ -698,10 +723,12 @@ typedef struct {
     OwnRange r[8];
     u8* dst[8];
     u32 n;
+    int by;
 } TwoCopy;
-static void* two_start(const OwnRange* r, u8* const* dst, u32 n) {
+static void* two_start(const OwnRange* r, u8* const* dst, u32 n, int by) {
     TwoCopy* c = (TwoCopy*)calloc(1, sizeof *c);
     CHECK(c && n <= 8);
+    c->by = by;
     for (u32 i = 0; i < n; i++) {
         c->r[i] = r[i];
         c->dst[i] = dst[i];
@@ -716,7 +743,7 @@ static void two_end(void* handle) {
         if (waited_ms == 10000) test_fail("the test let the two-step copy end within 10 s", __LINE__);
         plat_sleep_ns(1000000);
     }
-    land(c->r, c->dst, c->n);
+    land(c->r, c->dst, c->n, c->by);
     free(c);
 }
 static int g_two_read; /* the reader's byte */
@@ -1201,6 +1228,7 @@ int main(int argc, char** argv) {
     if (argc > 1 && !strcmp(argv[1], "--busy-write")) return busy_child(1, 0);
     if (argc > 1 && !strcmp(argv[1], "--busy-private")) return busy_child(0, 1);
     test_read_write();
+    test_land_by();
     test_freeze();
     test_syscall();
     test_drop();

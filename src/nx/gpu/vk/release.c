@@ -61,7 +61,7 @@ static int g_rthread;
 /* the guest pages queued payloads cover, so a read or write that meets none (almost all) skips the queue: added when a
    payload is queued, removed when it is written, both under vk_lock, and a mapping change drains the queue before any
    translation changes (vkr_mapping_begin), so a payload loses the pages it gained */
-static PendPages g_rpages = {.also = &g_pend_any};
+static PendPages g_rpages = {.also = &g_pend_blk};
 u64 g_vk_release_forwards;
 
 /* The queued payloads by the guest words they write: for each 4-byte word, the latest release queued over it and how
@@ -148,7 +148,7 @@ static void perform(Release* r) {
     }
     vk_result_begin();
     if (r->gva)
-        gmem_write(r->gva, r->data, r->len);
+        gmem_write_by(r->gva, r->data, r->len, GPU_WRITE_RELEASE, 0, 0);
     else
         syncpt_add_quiet(r->id, 1); /* under vk_lock: the events it reaches are signaled as it is let go */
     vk_result_end();

@@ -36,6 +36,9 @@
 		[button]"Settings" {
 			icon = settings
 		}
+		[button]"Saves" {
+			icon = save
+		}
 		[button]"Share Log" {
 			icon = share-2
 		}

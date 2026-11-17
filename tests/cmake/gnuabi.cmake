@@ -33,6 +33,10 @@ if(BUILD_TESTING)
     if(Python3_Interpreter_FOUND)
         add_test(NAME gnuabi_elf32 COMMAND "${Python3_EXECUTABLE}"
             "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/gnuabi_elf32.py" "${SNX_GNUABI_PROGRAM}")
+        # the litmus driver's own decisions, on histograms known by hand: no compiler, no runtime, no skip, so it runs
+        # on every host and a change to the checker is caught even where the guest half cannot run
+        add_test(NAME gnuabi_litmus_self COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/gnuabi_litmus.py" --self-test)
         if (NOT WIN32)
             add_test(NAME gnuabi_process COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/gnuabi_process.py"
                 "${SNX_GNUABI_PROGRAM}")
@@ -41,6 +45,24 @@ if(BUILD_TESTING)
             add_test(NAME gnuabi_threads COMMAND "${Python3_EXECUTABLE}"
                 "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/gnuabi_threads.py" "${SNX_GNUABI_PROGRAM}")
             set_tests_properties(gnuabi_threads PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77)
+            # the Arm memory model, in guest threads: every outcome a litmus test reports must be one the model allows
+            # (tests/litmus/ has the same tests for herd7). Without a compiler that emits AArch64 (the build's C
+            # compiler, else clang) and a linker that builds the image (mold or LLD, probed by linking), it skips.
+            # It is registered with the other guest fixtures, so Windows runs no litmus test today: its job has Clang
+            # and ld.lld, so lifting it out of this block is all a Windows x86-64 or ARM64 host needs.
+            add_test(NAME gnuabi_litmus COMMAND "${Python3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/gnuabi_litmus.py" "${SNX_GNUABI_PROGRAM}"
+                --cc "${CMAKE_C_COMPILER}")
+            # six tests in one run, each with the script's own 300 s answer budget: the timeout sits above their
+            # sum, so a hang is reported by the script (which names the test) rather than by CTest (which kills it)
+            set_tests_properties(gnuabi_litmus PROPERTIES TIMEOUT 2000 SKIP_RETURN_CODE 77)
+            # the same, linked by LLD, which the driver prefers mold over: with both installed the two tests cover
+            # both linkers, and on a host with one of them the second test skips or repeats the first. Fewer attempts,
+            # since this one checks the linker and the first one checks the model
+            add_test(NAME gnuabi_litmus_lld COMMAND "${Python3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/gnuabi_litmus.py" "${SNX_GNUABI_PROGRAM}"
+                --cc "${CMAKE_C_COMPILER}" --linker lld --iterations 50000)
+            set_tests_properties(gnuabi_litmus_lld PROPERTIES TIMEOUT 2000 SKIP_RETURN_CODE 77)
         endif()
     endif()
 endif()

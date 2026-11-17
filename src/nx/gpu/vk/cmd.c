@@ -126,6 +126,9 @@ static struct {
     u32 stream_cur;
     u64 stream_used;
     u64 stream_since; /* the bytes it handed out since the last submit (frame_check) */
+    /* frame_ring_cap's last answer (0: none), and the ring bytes, the caps and vk_mem_budget_gen it was made at */
+    u64 cap, cap_rings, cap_caps;
+    u32 cap_gen;
     u64 submits[VK_SUB_N]; /* submissions since the start, by why (statistics, tests) */
     u32 stage_told; /* the staging ring's memory type is in the log */
 } g_cmd;
@@ -1295,6 +1298,49 @@ void vk_frame_next(void) {
 }
 /* the GPU thread's recording time a submission holds at most */
 #define SUBMIT_EVERY_NS 1000000
+/* The last graphics submission the GPU has done, as a thread that waits on the timeline publishes it (atomic): the
+   submit below asks it at the start of each draw, where vkGetSemaphoreCounterValue is a call into the kernel each time.
+   The thread waits for the next value whether or not it is submitted yet (a timeline's wait before its signal), in
+   slices of a second, and stops on a lost device, which the other waits report */
+static u64 g_gdone;
+static int g_gwatch;     /* the thread started: the GPU thread's */
+static u32 g_gwatch_tid; /* its thread: vk_timeline_tid */
+static void gdone_watch(void* arg) {
+    u64 done = 0;
+    (void)arg;
+    SNX_THREAD_NAME("Vulkan timeline");
+    __atomic_store_n(&g_gwatch_tid, plat_tid(), __ATOMIC_RELEASE);
+    for (;;) {
+        u64 want = done + 1;
+        VkSemaphoreWaitInfo wi = {
+            .sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO, .semaphoreCount = 1, .pSemaphores = &g_gsem, .pValues = &want};
+        VkResult r = vkWaitSemaphores(g_vk.dev, &wi, 1000000000ull);
+        if (r == VK_TIMEOUT) continue;
+        if (r != VK_SUCCESS || vkGetSemaphoreCounterValue(g_vk.dev, g_gsem, &done) != VK_SUCCESS) return;
+        __atomic_store_n(&g_gdone, done, __ATOMIC_RELEASE);
+    }
+}
+/* Whether the GPU is on the last submission it has, or has none: what is recorded then goes to it, so it has the next
+   work queued before it runs out. While it has more than that, a submission made now only waits behind them, and costs
+   its own call into the kernel, on the recording thread. On a Steam Deck each took about 150 us and some 12 us more
+   for each MB of guest memory imported, which amdgpu takes again at each submission. One game's race holds about
+   180 MB of imports: it made 56 submissions a present, 41 of them for the millisecond alone, the recording thread
+   spent 87% of its time in the kernel, and the GPU stood idle 100 ms of each 180 ms present waiting for them. Without
+   the thread, every millisecond is a submission, as before */
+u32 vk_timeline_tid(void) { return __atomic_load_n(&g_gwatch_tid, __ATOMIC_ACQUIRE); }
+static int gpu_short_of_work(void) {
+    if (!g_gwatch) {
+        g_gwatch = 1;
+        if (plat_thread(gdone_watch, NULL, (size_t)256 << 10)) {
+            char why[256];
+            WARN("vulkan: could not start the thread that follows the GPU's timeline (%s): a submission each "
+                 "millisecond of recording\n",
+                 snx_os_error(why, sizeof why));
+            g_gwatch = -1;
+        }
+    }
+    return g_gwatch < 0 || __atomic_load_n(&g_gdone, __ATOMIC_ACQUIRE) + 1 >= g_gval;
+}
 /* A frame that goes long without a present (a loading screen) still has to hand its pools and rings back: one with
    many submissions, descriptor pools or descriptor tables ends here, at the start of a draw or dispatch, before
    anything is set up (a draw's setup must not submit). Otherwise what was recorded goes to the GPU once it holds a
@@ -1320,12 +1366,23 @@ static u64 frame_rings(const Frame* f) {
 }
 /* the bytes a frame writes to its rings before it ends, as it has written rings already: VK_FRAME_RING_CAPS
    allocations, and on a GPU that shares the system's memory, where the rings are memory the caches budget, an eighth
-   of the budget, but no less than two chunks (uma_budget.h). The budget is asked only past those two */
+   of the budget, but no less than two chunks (uma_budget.h). The budget is asked only past those two, and then again
+   only once the rings grew by a chunk since the last answer, or the budget can have moved (vk_mem_budget_gen): each
+   draw asked it, which takes devmem.c's lock and reads every heap. A frame then ends a chunk later at most */
 static u64 frame_ring_cap(u64 rings) {
     u64 caps = VK_FRAME_RING_CAPS * g_vk.alloc_cap, floor = 2 * chunk_size(), usage, budget;
     if (g_vk.mem_model != VK_MEM_UMA || rings < floor) return caps;
+    u32 gen = vk_mem_budget_gen();
+    if (rings < g_cmd.cap_rings) g_cmd.cap_rings = rings; /* a submit took the stream's bytes, or a new frame began */
+    if (g_cmd.cap && g_cmd.cap_caps == caps && g_cmd.cap_gen == gen && rings - g_cmd.cap_rings < chunk_size())
+        return g_cmd.cap;
     vk_mem_use(&usage, &budget);
-    return vk_uma_ring_cap(caps, budget, floor);
+    g_cmd.cap = vk_uma_ring_cap(caps, budget, floor);
+    g_cmd.cap_caps = caps;
+    g_cmd.cap_rings = rings;
+    /* the generation before the ask: a budget the ask or another thread fetched after it is asked for again next */
+    g_cmd.cap_gen = gen;
+    return g_cmd.cap;
 }
 static void frame_check(void) {
     const Frame* f = &g_fr[g_cur];
@@ -1352,7 +1409,7 @@ static void frame_check(void) {
         submit(NULL, NULL, 1, VK_SUB_PERIODIC);
         if (stream_busy(&oldest) >= 2 * cap && oldest) vk_wait_submit(oldest);
     }
-    else if (f->recording && plat_ns() - g_sub_ns >= SUBMIT_EVERY_NS)
+    else if (f->recording && plat_ns() - g_sub_ns >= SUBMIT_EVERY_NS && gpu_short_of_work())
         submit(NULL, NULL, 1, VK_SUB_PERIODIC);
 }
 void vk_frame_check(void) {

@@ -229,6 +229,20 @@ u32 vk_bc7_kept_unit(const Surf* t) {
     (void)t;
     abort();
 }
+/* the GPU's read of what the kept blocks hold (astc.c): none recorded, so a case's textures stay as Auto made them */
+u32 vk_astc_kind_read(VkCommandBuffer cb, const Surf* t) {
+    (void)cb, (void)t;
+    return 0;
+}
+const u32* vk_astc_kind_words(u32 slot) {
+    (void)slot;
+    return NULL;
+}
+void vk_astc_kind_release(u32 slot) { (void)slot; }
+int vk_astc_bcn_kept(VkCommandBuffer cb, Surf* t, VkImage dst, u32 kind) {
+    (void)cb, (void)t, (void)dst, (void)kind;
+    abort();
+}
 /* the BC7 cache (astc.c, bc7_cache.c): it takes a level while g_astc_key.takes says so. The content is the bytes and
    layout words mixed in by FNV-1a, and the key that with the level's shape, which is all texture.c needs of them */
 int vk_astc_cached(u32 w, u32 h, u32 depth) {
@@ -475,6 +489,9 @@ void vk_uma_gpu_reads(int on) { (void)on; }
 int vk_uma_copy_pending(u64 cpu, u64 len, VkBuffer* buf, u64* off) {
     return (void)cpu, (void)len, (void)buf, (void)off, 0;
 }
+/* no draw's result is pending (buffer.c): none is copied from where it is either */
+int vk_buf_pending(u64 gva, u64 len) { return (void)gva, (void)len, 0; }
+int vk_buf_copy(u64 gva, u64 len, VkBuffer* buf, u64* off) { return (void)gva, (void)len, (void)buf, (void)off, 0; }
 void vk_defer_image(VkImage img, DevMem a, VkImageView v1, VkImageView v2) {
     (void)img, (void)a, (void)v1, (void)v2;
 }
@@ -496,6 +513,18 @@ u64 vk_rt_take_gen(void) { return g_take_gen_now; }
 int vk_rt_drawn_fresh(Surf* s) {
     (void)s;
     return g_drawn_fresh;
+}
+/* no answer without a scan: the full check asks */
+int vk_written_quick(const u8* host, u64 len, u32 since) {
+    (void)host;
+    (void)len;
+    (void)since;
+    return -1;
+}
+int vk_rt_drawn_fresh_in(Surf* s, u64 at, u64 size) {
+    (void)at;
+    (void)size;
+    return vk_rt_drawn_fresh(s);
 }
 int vk_rt_drawn_in(u64 lo, u64 hi, Surf** out, int max) {
     (void)lo, (void)hi;
@@ -654,6 +683,33 @@ void gpu_mem_dirty_runs(u64 since, u64 a, u64 sz, void (*fn)(void* ctx, u64 at, 
     fn(ctx, lo, hi - lo);
 }
 u64 gpu_mem_generation(void) { return g_gpu_writes.gen; }
+/* every range watched, and every write on one (texture.c's quiet check asks again after each) */
+int gpu_mem_watch(u64 gva, u64 size) {
+    (void)gva;
+    (void)size;
+    return 1;
+}
+u64 gpu_mem_granules_generation(u64 gva, u64 size) {
+    (void)gva;
+    (void)size;
+    return g_gpu_writes.gen;
+}
+int gpu_mem_newest_kind(u64 a, u64 sz) { return gpu_mem_dirty_since(0, a, sz) ? GPU_WRITE_ENGINE : 0; }
+/* an engine's write, of no surface */
+int gpu_mem_newest_write(u64 a, u64 sz, u32* format, u64* surface) {
+    *format = 0;
+    *surface = 0;
+    return gpu_mem_newest_kind(a, sz);
+}
+/* every range staged, as before the reads in place */
+int vk_guest_in_place(u64 gva, u64 size, u64 align, VkBuffer* buf, u64* off) {
+    (void)gva;
+    (void)size;
+    (void)align;
+    (void)buf;
+    (void)off;
+    return 0;
+}
 void vk_all_barrier(VkCommandBuffer cb) {
     (void)cb;
     all_bars++;

@@ -1,16 +1,18 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* astc_mode's Auto by what an ASTC texture's blocks hold (texture.c's astc_by_kind, gpu/texture/astc_kind.h): a texture
-   whose blocks are luminance alone is made BC4, luminance and alpha BC5, opaque colour on one line a 4x4 block BC1 (sRGB
-   luminance too, as BC4 has no sRGB), and one of RGBA direct blocks whose ends are grey (a normal map's) BC5, straight
-   as it loads, its RGBA8 never made, where the same blocks with ends apart stay RGBA8; its texels, the image decoded as the
-   view gives them back (BC4 as R, R, R, 1, BC5 as R, R, R, G, whatever the header's swizzle picks of them), are its
-   Exact twin's within what the encoder loses on such blocks (tests/glsl/astc_bcn_glsl.cpp's floors). Loaded again with
-   blocks that hold more, it takes their format; a single block written loads it whole and reads it again; blocks of
-   every kind take it to what Auto holds the rest as, RGBA8 with room, its twin's texels exactly. Needs vulkan_astc_later.inc
+   goes up as Auto holds one of unknown kind (RGBA8 with room), its blocks kept, and once the GPU's read of them is back
+   (vk_tex_kind_frame) one whose blocks are luminance alone is made BC4, luminance and alpha BC5, opaque colour on one
+   line a 4x4 block BC1 (sRGB luminance too, as BC4 has no sRGB), and one of RGBA direct blocks whose ends are grey (a
+   normal map's) BC5, from its kept blocks, where the same blocks with ends apart stay RGBA8, their blocks let go; its
+   texels, the image decoded as the view gives them back (BC4 as R, R, R, 1, BC5 as R, R, R, G, whatever the header's
+   swizzle picks of them), are its Exact twin's within what the encoder loses on such blocks
+   (tests/glsl/astc_bcn_glsl.cpp's floors). Loaded again, it is RGBA8 again while the GPU reads its blocks' kind, and
+   blocks that hold more take it to their format; a single block written loads it whole and reads it again; blocks of
+   every kind leave it as Auto holds the rest, RGBA8 with room, its twin's texels exactly. Needs vulkan_astc_later.inc
    (al_*) */
 #include "astc_bcn_cpu.h"
-#include "nx/gpu/texture/astc_kind.h"
+#include "support/astc_kind_ref.h"
 #include "support/bcn.h"
 
 /* the memory of x's texture: blocks of kind `want` alone (snx_astc_block_kind at its footprint), from random ones, one in
@@ -158,10 +160,17 @@ static int ak_case(const AkCase* k, u32 index) {
     vk_lock();
     Surf* t = vk_tex_from_tic(x.tic);
     vk_unlock();
-    int failed = !t || t->f.vk != k->held || t->bc7_later || !t->upload_valid;
+    /* made RGBA8, its blocks kept and their kind on its way; once back, in its format, its blocks let go */
+    const int unknown =
+        t && t->f.vk == (k->srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM) && t->kind_want && t->bc7.kept;
+    kind_land();
+    int failed = !unknown || t->f.vk != k->held || t->bc7_later || !t->upload_valid || t->kind_want || t->bc7.kept;
     if (failed)
-        fprintf(stderr, "ASTC by its blocks' kind, %s: format %d, held as BC7 later %d, loaded %d, not format %d\n",
-                k->name, t ? (int)t->f.vk : -1, t ? t->bc7_later : -1, t ? t->upload_valid : -1, (int)k->held);
+        fprintf(stderr,
+                "ASTC by its blocks' kind, %s: made RGBA8 with its kind to come %d; then format %d, held as BC7 later "
+                "%d, loaded %d, its kind to come %d, its blocks kept %d, not format %d\n",
+                k->name, unknown, t ? (int)t->f.vk : -1, t ? t->bc7_later : -1, t ? t->upload_valid : -1,
+                t ? t->kind_want : -1, t ? t->bc7.kept != VK_NULL_HANDLE : -1, (int)k->held);
     if (!failed && (ak_against_exact(&x, t, most) || most[0] > k->most[0] || most[1] > k->most[1] ||
                     most[2] > k->most[2] || most[3] > k->most[3])) {
         fprintf(
@@ -197,18 +206,21 @@ static int ak_rgba_colour(u32 index) {
     vk_lock();
     Surf* t = vk_tex_from_tic(x.tic);
     vk_unlock();
+    kind_land(); /* its kind back: RGBA8 still, its blocks let go */
     g_settings.astc_mode = 1;
     Surf* twin = al_frame(x.twin);
     g_settings.astc_mode = 0;
     u8* got = t && t->f.vk == VK_FORMAT_R8G8B8A8_UNORM ? al_image(&x, t, &size) : NULL;
     u8* exact = twin ? al_image(&x, twin, &exact_size) : NULL;
-    const int same = got && exact && size == exact_size && !memcmp(got, exact, (size_t)size);
+    const int same =
+        got && exact && size == exact_size && !memcmp(got, exact, (size_t)size) && !t->kind_want && !t->bc7.kept;
     free(got);
     free(exact);
     al_free(&x);
     if (!same) {
-        fprintf(stderr, "ASTC by its blocks' kind, %s: format %d, not RGBA8 with its Exact twin's texels\n", c.name,
-                t ? (int)t->f.vk : -1);
+        fprintf(stderr,
+                "ASTC by its blocks' kind, %s: format %d, not RGBA8 with its Exact twin's texels, its kind read\n",
+                c.name, t ? (int)t->f.vk : -1);
         return 1;
     }
     printf("ASTC by its blocks' kind, %s: RGBA8, its Exact twin's texels\n", c.name);
@@ -228,10 +240,14 @@ static int ak_again(u32 index) {
     vk_lock();
     Surf* t = vk_tex_from_tic(x.tic);
     vk_unlock();
+    kind_land();
     CHECK(t && t->f.vk == VK_FORMAT_BC4_UNORM_BLOCK);
     al_idle(x.tic, 13);
     ak_fill(&x, SNX_ASTC_ALPHA, 0, 8, 8);
-    const int to_bc5 = al_frame(x.tic) == t && t->f.vk == VK_FORMAT_BC5_UNORM_BLOCK && t->upload_valid &&
+    /* loaded again: RGBA8 while the GPU reads its blocks' kind again, BC5 once it is back */
+    const int again = al_frame(x.tic) == t && t->f.vk == VK_FORMAT_R8G8B8A8_UNORM && t->kind_want && t->bc7.kept;
+    kind_land();
+    const int to_bc5 = again && t->f.vk == VK_FORMAT_BC5_UNORM_BLOCK && t->upload_valid && !t->bc7.kept &&
                        !ak_against_exact(&x, t, most) && most[0] <= 17 && most[3] <= 19;
     al_idle(x.tic, 13);
     vk_lock();
@@ -253,8 +269,10 @@ static int ak_again(u32 index) {
     } while (snx_astc_block_kind(b, 8, 8, 0) != (SNX_ASTC_CHROMA | SNX_ASTC_ALPHA));
     guest_done(x.cpu, 16);
     memcpy(GP(x.cpu), b, 16);
-    const int to_rgba8 =
-        al_frame(x.tic) == t && t->f.vk == VK_FORMAT_R8G8B8A8_UNORM && !t->bc7_later && t->upload_valid;
+    const int loaded_again = al_frame(x.tic) == t;
+    kind_land();
+    const int to_rgba8 = loaded_again && t->f.vk == VK_FORMAT_R8G8B8A8_UNORM && !t->bc7_later && t->upload_valid &&
+                         !t->kind_want && !t->bc7.kept;
     g_settings.astc_mode = 1;
     Surf* twin = al_frame(x.twin);
     g_settings.astc_mode = 0;

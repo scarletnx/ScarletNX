@@ -48,6 +48,7 @@
 #include "nx/gpu/texture/astc_spv.h" /* compiled from astc.comp by the build (cmake/glsl.cmake) */
 #include "nx/gpu/texture/astc_bc7_spv.h" /* compiled from astc_bc7.comp, in each of the encoder's builds */
 #include "nx/gpu/texture/astc_bcn_spv.h" /* compiled from astc_bcn.comp: BC1, BC4 and BC5 */
+#include "nx/gpu/texture/astc_kind_spv.h" /* compiled from astc_kind.comp: what the blocks hold */
 #include "nx/gpu/texture/blocklinear_spv.h"
 #include "nx/gpu/texture/astc_bc.h"
 #include "nx/runtime/options.h"
@@ -76,6 +77,17 @@ typedef struct {
 /* slots, a power of two: one a key, the newest kept. 4 MB. A quarter of it lost 2.5 times the copies to keys in the
    same slot */
 #define BC7_LIVE (1u << 16)
+/* a read of what a texture's blocks hold (vk_astc_kind_read): n words, four a level of each layer, in the readback ring
+   of the frame it was recorded in until its submission is done (vk_astc_frame_done), then in words. words NULL: a free
+   slot */
+typedef struct {
+    u8* back;
+    DevMem mem;
+    u64 off;
+    u64 sub; /* the submission that copies them: 0 once they are in words */
+    u32* words;
+    u32 n;
+} KindRead;
 /* Kept for the device lifetime, like the other internal pipelines. All uses are on g_vk.gfx, under vk_lock(), even
    when uploads originate in compute */
 typedef struct {
@@ -114,6 +126,13 @@ typedef struct {
     VkShaderModule bcn_modules[3];
     VkPipeline bcn_pipes[3];
     u64 bcn_levels[3], bcn_bytes[3], bcn_rgba8_bytes[3];
+    /* astc_kind.comp, made on its first use, and its reads (vk_astc_kind_read), a slot each */
+    VkDescriptorSetLayout kind_ds;
+    VkPipelineLayout kind_layout;
+    VkShaderModule kind_module;
+    VkPipeline kind_pipe;
+    KindRead* kinds;
+    u32 nkinds;
     /* the textures whose blocks Auto read as they were made, by outcome (VK_ASTC_KIND_*), and the CPU's time for it;
        those read again as they loaded again, and of them those that took another format (vk_astc_kind_seen) */
     u64 kind_made[VK_ASTC_KIND_N], kind_made_ns, kind_again, kind_again_ns, kind_changed;
@@ -544,6 +563,14 @@ void vk_astc_frame_done(u64 sub) {
         g_astc.captured -= c->size;
         c->sub = 0;
     }
+    /* the kind reads in it: their words out of the ring, which the frame's next use of it overwrites */
+    for (u32 i = 0; i < g_astc.nkinds; i++) {
+        KindRead* k = &g_astc.kinds[i];
+        if (!k->words || !k->sub || k->sub > sub) continue;
+        vk_devmem_invalidate(k->mem, k->off, (u64)k->n * 4);
+        memcpy(k->words, k->back, (size_t)k->n * 4);
+        k->sub = 0;
+    }
 }
 
 /* the blocks of key's record in the cache, size bytes of them, staged and copied into img by copy (its bufferOffset
@@ -754,15 +781,16 @@ void vk_astc_kind_seen(int outcome, u64 ns, int again) {
     g_astc.kind_changed += again == 2;
 }
 const char* vk_astc_kind_name(int outcome) {
-    static const char* const names[VK_ASTC_KIND_N] = {"luminance alone",
-                                                      "luminance and alpha",
-                                                      "opaque colour on one line a 4x4 block",
-                                                      "luminance alone in sRGB, which BC4 has not",
-                                                      "colour and alpha",
-                                                      "colour on more than one line a 4x4 block",
-                                                      "luminance and alpha in sRGB, which BC5 has not",
-                                                      "the error colour or HDR",
-                                                      "memory the CPU can't read as one run"};
+    static const char* const names[VK_ASTC_KIND_N] = {
+        "luminance alone",
+        "luminance and alpha",
+        "opaque colour on one line a 4x4 block",
+        "luminance alone in sRGB, which BC4 has not",
+        "colour and alpha",
+        "colour on more than one line a 4x4 block",
+        "luminance and alpha in sRGB, which BC5 has not",
+        "the error colour or HDR",
+        "blocks not read (a sparse texture, no room to keep them, or no read came back)"};
     return outcome >= 0 && outcome < VK_ASTC_KIND_N ? names[outcome] : "?";
 }
 void vk_astc_kind_say(void) {
@@ -979,10 +1007,11 @@ static void bc7_transcode(VkCommandBuffer cb, VkDescriptorSet set, u32 build, u3
 }
 
 /* A strip's ASTC blocks straight into BC1, BC4 or BC5 blocks (kind 1, 4 or 5) by astc_bcn.comp, an invocation a 4x4
-   block (an ASTC block, for a footprint of whole 4x4 blocks), as bc7_transcode lays them out, into the BC7 encoder's scratch buffer from its start: one pass, as the
-   encoders have no search to split */
+   block (an ASTC block, for a footprint of whole 4x4 blocks), as bc7_transcode lays them out, from block in_base of
+   set's input into the BC7 encoder's scratch buffer from its start: one pass, as the encoders have no search to
+   split */
 static void bcn_transcode(VkCommandBuffer cb, VkDescriptorSet set, u32 kind, u32 w, u32 height, u32 nx, u32 n, u32 nz,
-                          u32 bw, u32 bh, u32 srgb) {
+                          u32 bw, u32 bh, u32 srgb, u32 in_base) {
     const u32 cx = (w + 3) / 4, cy = (height + 3) / 4;
     const AstcBc7Params p = {w,
                              height,
@@ -995,7 +1024,7 @@ static void bcn_transcode(VkCommandBuffer cb, VkDescriptorSet set, u32 kind, u32
                              (262144u + bh - 1) / bh,
                              (1024u + bw / 2) / (bw - 1),
                              (1024u + bh / 2) / (bh - 1),
-                             0};
+                             in_base};
     scratch_barrier(cb, g_astc.bc7_scratch, USE_COPY, 0, USE_WRITE);
     rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, bcn_pipe(kind));
     rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_astc.bc7_layout, 0, 1, &set, 0, NULL);
@@ -1644,6 +1673,9 @@ static int astc_upload(VkCommandBuffer cb, Surf* t, u32 x, u32 y0, u32 w, u32 h,
     u64 key[2] = {0, 0};
     int whole = 0; /* key is the whole level's, its blocks the encoder's full or fast build (live_put) */
     Bc7Job* job = NULL;
+    /* the level from the cache, and its blocks still staged, but only to be kept: what the GPU reads their kind from
+       (texture.c's kind_frame) */
+    int keep_only = 0;
     const u64 blocks = (u64)cx * ((h + 3) / 4) * depth * 16;
     if (bc7) {
         /* the encoder's build, by the level's size and not the region's (vk_bc7_build): the fast one from
@@ -1675,9 +1707,9 @@ static int astc_upload(VkCommandBuffer cb, Surf* t, u32 x, u32 y0, u32 w, u32 h,
                 if (quick)
                     LOG_LIMIT(16, "vulkan: a %ux%ux%u ASTC level's fast build came from the BC7 cache, in pieces\n", w,
                               h, depth);
-                return 1;
-            }
-            if (!quick)
+                if (!t->bc7.kept) return 1;
+                keep_only = 1;
+            } else if (!quick)
                 capture = bc7_capture(key, blocks, &back);
             else
                 job = bg_job_new(key, w, h, depth, bw, bh, (u32)srgb, t, level, layer, layered);
@@ -1696,14 +1728,15 @@ static int astc_upload(VkCommandBuffer cb, Surf* t, u32 x, u32 y0, u32 w, u32 h,
             u32 height = h - y * bh < n * bh ? h - y * bh : n * bh;
             u64 size = row_in * n * nz, offset, texels = (u64)w * height * nz * 4;
             if (sh && !vk_image_sparse_bound(t->img, layer, level, y * bh, y * bh + height, z, z + nz, 0)) continue;
-            if (split_before((u64)w * height * nz)) cb = vk_cmd();
+            if (!keep_only && split_before((u64)w * height * nz)) cb = vk_cmd();
             VkBuffer input;
             const u32 cy = (height + 3) / 4;
             VkDescriptorSet set = VK_NULL_HANDLE;
-            if (rows(ctx, &cb, z, nz, y, n, &input, &offset))
+            const int staged = rows(ctx, &cb, z, nz, y, n, &input, &offset);
+            if (staged && !keep_only)
                 set = blocks4 ? bc7_buffers(input, offset, size, (u64)cx * cy * nz * (bc7 ? 16u : bcn_bytes))
                               : two_buffers(input, offset, size, g_astc.scratch, texels);
-            if (!set) {
+            if (!staged || (!keep_only && !set)) {
                 LOG_LIMIT(1, "vulkan: out of staging memory for a %ux%u ASTC texture (left out)\n", w, h);
                 if (job) bg_job_free(job);
                 return 0;
@@ -1714,13 +1747,15 @@ static int astc_upload(VkCommandBuffer cb, Surf* t, u32 x, u32 y0, u32 w, u32 h,
                 const VkBufferCopy snap = {offset, ((u64)z * ny + y) * row_in, size};
                 rec_CmdCopyBuffer(cb, input, job->snap, 1, &snap);
             }
-            /* and into the blocks the texture keeps for its BC7 image, made between frames */
-            if (!blocks4 && t->bc7.kept)
+            /* and into the blocks the texture keeps for its BC7 image, made between frames, or for the GPU's read of
+               their kind (texture.c's kind_frame) */
+            if (t->bc7.kept)
                 keep_strip(cb, t, level, x / bw, y0 / bh + y,
                            layered ? layer + z
                            : is3d  ? z
                                    : layer,
                            input, offset, nx, n, nz);
+            if (keep_only) continue;
             VkBuffer from = g_astc.scratch;
             u32 row_texels = 0, image_rows = 0;
             if (bc7) {
@@ -1738,7 +1773,7 @@ static int astc_upload(VkCommandBuffer cb, Surf* t, u32 x, u32 y0, u32 w, u32 h,
                 g_astc.bc7_bytes += (u64)cx * cy * nz * 16;
                 g_astc.bc7_rgba8_bytes += texels;
             } else if (bcn) {
-                bcn_transcode(cb, set, bcn, w, height, nx, n, nz, bw, bh, (u32)srgb);
+                bcn_transcode(cb, set, bcn, w, height, nx, n, nz, bw, bh, (u32)srgb, 0);
                 from = g_astc.bc7_scratch;
                 row_texels = cx * 4;
                 image_rows = cy * 4;
@@ -1947,5 +1982,217 @@ int vk_bc7_encode_kept(VkCommandBuffer cb, Surf* t, VkImage dst, u32 level, u32 
     vk_ck(cb, VK_CK_COPY, lw, height, nz, level);
     rec_CmdCopyBufferToImage(cb, g_astc.bc7_scratch, dst, VK_LAYOUT(TRANSFER_DST_OPTIMAL), 1, &out);
     vk_ck(cb, VK_CK_STRIP_DONE, lw, height, nz, level);
+    return 1;
+}
+
+/* ---- What a texture's blocks hold, read on the GPU (texture.c's kind_frame)
+
+   Under astc_mode's Auto a new ASTC texture goes up as a texture of unknown kind does, and keeps its blocks
+   (vk_astc_keep): astc_kind.comp reads them on the GPU, a dispatch a level of every layer, and leaves for each level of
+   each layer the first block in the CPU walk's order (gpu/texture/astc_kind.h) with each kind bit. Those words come
+   back through the frame's readback ring, as the BC7 cache's blocks do, and the CPU makes the walk's kind of them
+   (snx_astc_level_kind_firsts) with no block read. Reading each block on the CPU as the texture was made took 58 to 78%
+   of the GPU thread in the bursts of new textures of one game's race. Where the kind takes BC1, BC4 or BC5, the image
+   in that format is made from the same blocks (vk_astc_bcn_kept) */
+typedef struct {
+    u32 blocks_x, blocks_y, bw, bh, srgb, in_base, walk_bl, out_base, out_layer;
+} AstcKindParams;
+static void kind_init(void) {
+    if (g_astc.kind_pipe) return;
+    if (!VK_OK(snx_vk_compute_layouts(g_vk.dev, 2, 0, sizeof(AstcKindParams), &g_astc.kind_ds, &g_astc.kind_layout)))
+        fatal("vulkan: cannot create the ASTC kind reader's descriptor and pipeline layouts");
+    if (!VK_OK(snx_vk_shader_module(g_vk.dev, astc_kind_spv, astc_kind_spv_size, &g_astc.kind_module)))
+        fatal("vulkan: cannot load the ASTC kind reader");
+    u64 started = plat_ns();
+    if (!VK_OK(snx_vk_module_pipeline(g_vk.dev, vk_pipeline_cache(), g_astc.kind_layout, g_astc.kind_module, NULL,
+                                      &g_astc.kind_pipe)))
+        fatal("vulkan: cannot create the ASTC kind reader's pipeline");
+    vk_texture_pipeline_made(plat_ns() - started);
+}
+/* a storage buffer range's offset: a multiple of the device's alignment, 16 at least (a block) */
+static u64 storage_align(void) {
+    const u64 a = g_vk.props.limits.minStorageBufferOffsetAlignment;
+    return a < 16 ? 16 : a;
+}
+/* a free slot for a kind read of n words, its words allocated: -1 when there is no memory for them */
+static int kind_slot(u32 n) {
+    u32 i = 0;
+    while (i < g_astc.nkinds && g_astc.kinds[i].words) i++;
+    if (i == g_astc.nkinds) {
+        const u32 cap = g_astc.nkinds ? g_astc.nkinds * 2 : 64;
+        KindRead* grown = realloc(g_astc.kinds, (size_t)cap * sizeof *grown);
+        if (!grown) return -1;
+        for (u32 k = g_astc.nkinds; k < cap; k++) grown[k] = (KindRead){0};
+        g_astc.kinds = grown;
+        g_astc.nkinds = cap;
+    }
+    KindRead* k = &g_astc.kinds[i];
+    k->words = malloc((size_t)n * 4);
+    if (!k->words) return -1;
+    k->n = n;
+    return (int)i;
+}
+u32 vk_astc_kind_read(VkCommandBuffer cb, const Surf* t) {
+    const VkPhysicalDeviceLimits* lim = &g_vk.props.limits;
+    const u64 align = storage_align();
+    if (!t->bc7.kept || t->type == VK_IMAGE_VIEW_TYPE_3D || !t->levels || !t->layers) return 0;
+    const u64 words = (u64)t->layers * t->levels * 4;
+    if (words * 4 > lim->maxStorageBufferRange) return 0;
+    for (u32 l = 0; l < t->levels; l++) { /* each level a dispatch the device takes */
+        u32 nx, ny, slices;
+        keep_level(t, l, &nx, &ny, &slices);
+        const u64 at = keep_offset(t, l);
+        if (at % align + (u64)nx * ny * slices * 16 > lim->maxStorageBufferRange ||
+            (nx + 63) / 64 > lim->maxComputeWorkGroupCount[0] || ny > lim->maxComputeWorkGroupCount[1] ||
+            slices > lim->maxComputeWorkGroupCount[2])
+            return 0;
+    }
+    kind_init();
+    const int slot = kind_slot((u32)words);
+    if (slot < 0) return 0;
+    KindRead* k = &g_astc.kinds[slot];
+    VkBuffer dev, back;
+    u64 dev_off;
+    k->back = vk_stage_back(words * 4, &back, &k->off, &k->mem);
+    if (!k->back || !vk_stage_device(words * 4, align, &dev, &dev_off)) {
+        free(k->words);
+        *k = (KindRead){0};
+        return 0;
+    }
+    /* the words ~0u (no block), then the dispatches' least into them, after the copies into what t keeps */
+    rec_CmdFillBuffer(cb, dev, dev_off, words * 4, ~0u);
+    VkBufferMemoryBarrier2 b = {.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+                                .srcStageMask = VK_PIPELINE_STAGE_2_CLEAR_BIT,
+                                .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                                .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                                .dstAccessMask =
+                                    VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                .buffer = dev,
+                                .offset = dev_off,
+                                .size = words * 4};
+    VkDependencyInfo d = {
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .bufferMemoryBarrierCount = 1, .pBufferMemoryBarriers = &b};
+    rec_CmdPipelineBarrier2(cb, &d);
+    keep_barrier(cb, t, 0);
+    rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_astc.kind_pipe);
+    for (u32 l = 0; l < t->levels; l++) {
+        u32 nx, ny, slices;
+        keep_level(t, l, &nx, &ny, &slices);
+        const u64 at = keep_offset(t, l), start = at - at % align;
+        VkDescriptorSet set = vk_desc_alloc(g_astc.kind_ds);
+        if (!set) { /* no descriptor set left: what was recorded writes only the frame's own memory */
+            free(k->words);
+            *k = (KindRead){0};
+            return 0;
+        }
+        VkDescriptorBufferInfo buffers[2] = {{t->bc7.kept, start, at - start + (u64)nx * ny * slices * 16},
+                                             {dev, dev_off, words * 4}};
+        snx_vk_storage_buffers(g_vk.dev, set, buffers, 2);
+        const AstcKindParams p = {.blocks_x = nx,
+                                  .blocks_y = ny,
+                                  .bw = t->f.bw,
+                                  .bh = t->f.bh,
+                                  .srgb = (u32)(t->fkey >> 31),
+                                  .in_base = (u32)((at - start) / 16),
+                                  .walk_bl = t->bl ? 1u : 0u,
+                                  .out_base = l * 4,
+                                  .out_layer = t->levels * 4};
+        rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_astc.kind_layout, 0, 1, &set, 0, NULL);
+        rec_CmdPushConstants(cb, g_astc.kind_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof p, &p);
+        vk_gpuprof_tag(VK_PROF_ASTC_KIND);
+        rec_CmdDispatch(cb, (nx + 63) / 64, ny, slices);
+    }
+    /* the words into the readback ring, the host's to read once the submission recording now is done */
+    b.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+    b.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+    b.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+    b.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
+    rec_CmdPipelineBarrier2(cb, &d);
+    const VkBufferCopy r = {dev_off, k->off, words * 4};
+    rec_CmdCopyBuffer(cb, dev, back, 1, &r);
+    b = (VkBufferMemoryBarrier2){.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+                                 .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+                                 .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                                 .dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT,
+                                 .dstAccessMask = VK_ACCESS_2_HOST_READ_BIT,
+                                 .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                 .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                 .buffer = back,
+                                 .offset = k->off,
+                                 .size = words * 4};
+    rec_CmdPipelineBarrier2(cb, &d);
+    k->sub = vk_submit_number();
+    return (u32)slot + 1;
+}
+const u32* vk_astc_kind_words(u32 slot) {
+    const KindRead* k = slot && slot <= g_astc.nkinds ? &g_astc.kinds[slot - 1] : NULL;
+    return k && k->words && !k->sub ? k->words : NULL;
+}
+void vk_astc_kind_release(u32 slot) {
+    if (!slot || slot > g_astc.nkinds) return;
+    KindRead* k = &g_astc.kinds[slot - 1];
+    free(k->words);
+    *k = (KindRead){0};
+}
+
+int vk_astc_bcn_kept(VkCommandBuffer cb, Surf* t, VkImage dst, u32 kind) {
+    astc_init();
+    bc7_init();
+    const VkPhysicalDeviceLimits* lim = &g_vk.props.limits;
+    const u64 align = storage_align();
+    const u32 bw = t->f.bw, bh = t->f.bh, unit = vk_bc7_kept_unit(t), bytes = kind == 5 ? 16u : 8u;
+    const u32 srgb = (u32)(t->fkey >> 31);
+    if (!t->bc7.kept || t->type == VK_IMAGE_VIEW_TYPE_3D) return 0;
+    keep_barrier(cb, t, 0);
+    for (u32 l = 0; l < t->levels; l++) {
+        const u32 lw = t->w >> l ? t->w >> l : 1, lh = t->h >> l ? t->h >> l : 1, cx = (lw + 3) / 4;
+        u32 nx, ny, slices;
+        keep_level(t, l, &nx, &ny, &slices);
+        /* whole slices where their blocks fit the scratch and a storage range, else rows of ASTC blocks that start
+           on rows of 4x4 blocks (a multiple of unit) */
+        const u64 slice_out = (u64)cx * ((lh + 3) / 4) * bytes, slice_in = (u64)nx * ny * 16;
+        u32 nz = 1, n = ny;
+        if (slice_out <= g_astc.cap && align + slice_in <= lim->maxStorageBufferRange) {
+            u64 k = g_astc.cap / slice_out, by_in = (lim->maxStorageBufferRange - align) / slice_in;
+            if (k > by_in) k = by_in;
+            if (k > lim->maxComputeWorkGroupCount[2]) k = lim->maxComputeWorkGroupCount[2];
+            nz = k < slices ? (u32)k : slices;
+        } else {
+            u64 k = g_astc.cap / ((u64)cx * bytes) * 4 / bh,
+                by_in = (lim->maxStorageBufferRange - align) / ((u64)nx * 16);
+            if (k > by_in) k = by_in;
+            k = k / unit * unit;
+            if (!k) return 0;
+            n = k < ny ? (u32)k : ny;
+        }
+        if (lw > 16384 || lh > 16384 || (u64)n * bh / 4 + 1 > lim->maxComputeWorkGroupCount[1] ||
+            (nx + 63) / 64 > lim->maxComputeWorkGroupCount[0] || (cx + 63) / 64 > lim->maxComputeWorkGroupCount[0])
+            return 0;
+        g_astc.bcn_levels[bcn_slot(kind)]++;
+        for (u32 z = 0; z < slices; z += nz) {
+            const u32 dz = slices - z < nz ? slices - z : nz;
+            for (u32 y = 0; y < ny; y += n) {
+                const u32 rows = ny - y < n ? ny - y : n, height = lh - y * bh < rows * bh ? lh - y * bh : rows * bh;
+                const u32 cy = (height + 3) / 4;
+                const u64 at = keep_offset(t, l) + ((u64)z * ny + y) * nx * 16, start = at - at % align;
+                VkDescriptorSet set =
+                    bc7_buffers(t->bc7.kept, start, at - start + (u64)nx * rows * dz * 16, (u64)cx * cy * dz * bytes);
+                if (!set) return 0;
+                bcn_transcode(cb, set, kind, lw, height, nx, rows, dz, bw, bh, srgb, (u32)((at - start) / 16));
+                const VkBufferImageCopy out = {.bufferRowLength = cx * 4,
+                                               .bufferImageHeight = cy * 4,
+                                               .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, l, z, dz},
+                                               .imageOffset = {0, (i32)(y * bh), 0},
+                                               .imageExtent = {lw, height, 1}};
+                vk_ck(cb, VK_CK_COPY, lw, height, dz, l);
+                rec_CmdCopyBufferToImage(cb, g_astc.bc7_scratch, dst, VK_LAYOUT(TRANSFER_DST_OPTIMAL), 1, &out);
+                vk_ck(cb, VK_CK_STRIP_DONE, lw, height, dz, l);
+                g_astc.bcn_bytes[bcn_slot(kind)] += (u64)cx * cy * dz * bytes;
+                g_astc.bcn_rgba8_bytes[bcn_slot(kind)] += (u64)lw * height * dz * 4;
+            }
+        }
+    }
     return 1;
 }

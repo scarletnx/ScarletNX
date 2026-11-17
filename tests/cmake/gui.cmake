@@ -92,6 +92,9 @@ if(BUILD_TESTING)
     add_executable(snx-test-gui-logzip "${PROJECT_SOURCE_DIR}/tests/gui_logzip.c")
     target_link_libraries(snx-test-gui-logzip PRIVATE snx_gui_support scarletnx-common)
     add_test(NAME gui_logzip COMMAND snx-test-gui-logzip)
+    add_executable(snx-test-gui-saves "${PROJECT_SOURCE_DIR}/tests/gui_saves.c")
+    target_link_libraries(snx-test-gui-saves PRIVATE snx_gui_support scarletnx-common snx_libdeflate)
+    add_test(NAME gui_saves COMMAND snx-test-gui-saves)
     # cmake/gui_icons.cmake compiles icons.hex, and refuses a glyph missing, blank or out of its place by its icon
     add_test(NAME gui_icons COMMAND "${CMAKE_COMMAND}" "-DSOURCE=${PROJECT_SOURCE_DIR}"
              "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/gui-icons-test" -P "${PROJECT_SOURCE_DIR}/tests/gui_icons.cmake")
@@ -141,6 +144,22 @@ if(BUILD_TESTING)
         # sanitizers in CI, where 30 stopped it (#1638), and more on a busy runner; the timeout is a hang guard, not a
         # pace
         set_tests_properties(gui_sdl_events PROPERTIES TIMEOUT 120 ENVIRONMENT "${gui_screen_env}")
+    endif()
+    # Saves (gui_saves_screen.c): its boxes and the picker's answers as gui_sdl's, with no picker of the desktop's
+    add_executable(snx-test-gui-saves-screen "${PROJECT_SOURCE_DIR}/tests/gui_saves_screen.c")
+    target_link_libraries(snx-test-gui-saves-screen PRIVATE snx_gui_support snx_gui_ui scarletnx-common SDL3::SDL3
+                          snx_window_icon snx_build_info snx_pad_sdl snx_gui_pad snx_splash snx_gui_languages_test snx_demangle)
+    if(APPLE)
+        target_sources(snx-test-gui-saves-screen PRIVATE apple.m)
+        target_link_libraries(snx-test-gui-saves-screen PRIVATE snx_apple_frontend "-framework Foundation")
+        if(IOS)
+            target_link_libraries(snx-test-gui-saves-screen PRIVATE "-framework UIKit")
+        endif()
+        set_target_properties(snx-test-gui-saves-screen PROPERTIES LINKER_LANGUAGE CXX)
+    endif()
+    if(NOT IOS)
+        add_test(NAME gui_saves_screen COMMAND snx-test-gui-saves-screen)
+        set_tests_properties(gui_saves_screen PROPERTIES TIMEOUT 30 ENVIRONMENT "${gui_screen_env}")
     endif()
     # the setup's pages (gui_setup.c), as gui_sdl's: the real renderer, a language of the tests' own, no picker
     add_executable(snx-test-gui-setup "${PROJECT_SOURCE_DIR}/tests/gui_setup.c")

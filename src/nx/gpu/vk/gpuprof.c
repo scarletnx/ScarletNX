@@ -743,6 +743,16 @@ static int key_cmp(const void* a, const void* b) {
     u64 x = ((const GpKey*)a)->ns, y = ((const GpKey*)b)->ns;
     return x < y ? 1 : x > y ? -1 : 0;
 }
+/* The log's other breakdowns as plots too: why the CPU waited, what the busy time held, and why submissions went
+   out. Each is the window's sum divided by the same presents or frames as the log. */
+static const char* const g_round_plot[VK_WAIT_N] = {"gpu round: finish ms", "gpu round: recycle ms",
+                                                    "gpu round: submit ms"};
+static const char* const g_hold_plot[HOLD_N] = {"gpu hold: passes ms", "gpu hold: dispatches ms",
+                                                "gpu hold: copies ms", "gpu hold: nothing ms"};
+static const char* const g_sub_plot[VK_SUB_N] = {"gpu submit: other",    "gpu submit: present",
+                                                 "gpu submit: finish",   "gpu submit: 1 ms",
+                                                 "gpu submit: readback", "gpu submit: frame end",
+                                                 "gpu submit: split",    "gpu submit: background"};
 /* the window's gaps and idle time as plots: the log's sums, so a --tracy run whose setting is off still shows where
    the GPU's time went. The gaps are per frame, the idle time per present, and the busy share of the window's wall */
 static void gp_plots(void) {
@@ -753,6 +763,12 @@ static void gp_plots(void) {
         SNX_PLOT(g_idle_plot[c], presents ? (double)g_idle_ns[c] / 1e6 / (double)presents : 0.0);
     if (g_t0 && wall) SNX_PLOT("gpu busy", 100.0 * (double)g_busy_ns / (double)wall);
     SNX_PLOT("gpu submissions/frame", (double)g_subs / f);
+    /* a Memory plot takes bytes and adds the unit itself, so send bytes per frame and let the GUI print MB */
+    double p = presents ? (double)presents : 1.0;
+    SNX_PLOT("copy MB", (double)(g_mix_bytes[0] + g_mix_bytes[1] + g_mix_bytes[2]) / f);
+    for (int k = 0; k < VK_WAIT_N; k++) SNX_PLOT(g_round_plot[k], (double)g_round_ns[k] / 1e6 / p);
+    for (int k = 0; k < HOLD_N; k++) SNX_PLOT(g_hold_plot[k], (double)g_hold_ns[k] / 1e6 / p);
+    for (int k = 0; k < VK_SUB_N; k++) SNX_PLOT(g_sub_plot[k], (double)g_sub_why[k] / p);
 }
 /* the pass bookkeeping is file-global: vk_lock serializes recording (record.c) */
 /* the targets that took the most GPU time, then a fresh sum */
@@ -819,7 +835,8 @@ static void gp_report(void) {
                                                    [VK_PROF_QUERY_PREDICATE] = "the queries' predicates",
                                                    [VK_PROF_QUERY_COMPARE] = "a query compare",
                                                    [VK_PROF_QUERY_COUNT] = "the queries' counts",
-                                                   [VK_PROF_SHADING_RATE] = "shading rate images"};
+                                                   [VK_PROF_SHADING_RATE] = "shading rate images",
+                                                   [VK_PROF_ASTC_KIND] = "ASTC blocks' kinds"};
         static GpDKey ds[GP_DKEYS];
         memcpy(ds, g_dkey, sizeof ds);
         qsort(ds, GP_DKEYS, sizeof *ds, dkey_cmp);

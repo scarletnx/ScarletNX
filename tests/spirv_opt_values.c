@@ -66,6 +66,7 @@ enum {
     PUSH_CONSTANT = 9,
     STORAGE_BUFFER = 12,
     BUFFER_BLOCK = 3,
+    NON_WRITABLE = 24,
     NO_CONTRACTION = 42,
     /* ids: the declarations', then the functions' */
     T = 1,     /* a type */
@@ -641,6 +642,26 @@ int main(void) {
                   find(&o, left, STORE, 1)[2] == A,
               "a second load of an Input, UniformConstant, Uniform or PushConstant variable goes, across a store and "
               "a block, the pointer the variable or an equal chain or copy of it");
+    }
+    /* a StorageBuffer variable that is NonWritable is read-only too, such as the page table of the atlas of
+       global buffers (sm86_translate.c's smap_slot) */
+    for (size_t chain = 0; chain < 2; chain++) {
+        begin(&m);
+        put(&m, DECORATE, 2, (uint32_t)SSBO, (uint32_t)NON_WRITABLE);
+        function(&m);
+        if (chain) put(&m, ACCESS_CHAIN, 4, (uint32_t)T, (uint32_t)C, (uint32_t)SSBO, (uint32_t)X);
+        put(&m, LOAD, 3, (uint32_t)T, (uint32_t)A, chain ? (uint32_t)C : (uint32_t)SSBO);
+        put(&m, STORE, 2, (uint32_t)OUT, (uint32_t)X);
+        put(&m, BRANCH, 1, (uint32_t)L1);
+        put(&m, LABEL, 1, (uint32_t)L1);
+        if (chain) put(&m, ACCESS_CHAIN, 4, (uint32_t)T, (uint32_t)D, (uint32_t)SSBO, (uint32_t)X);
+        put(&m, LOAD, 3, (uint32_t)T, (uint32_t)B, chain ? (uint32_t)D : (uint32_t)SSBO);
+        put(&m, STORE, 2, (uint32_t)OUT, (uint32_t)B);
+        end(&m);
+        left = run(&m, &o);
+        check(left == m.count - 4 - (chain ? 5 : 0) && count(&o, left, LOAD, 0) == 1 &&
+                  find(&o, left, STORE, 1)[2] == A,
+              "a second load of a NonWritable StorageBuffer variable goes, across a store and a block");
     }
     /* a pointer made any other way (a select of two variables) is not known to be constant */
     begin(&m);

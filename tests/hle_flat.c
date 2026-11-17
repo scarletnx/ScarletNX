@@ -170,6 +170,7 @@ static const char* const KNOWN[] = {
     "nvdrv.alias.first",
     "nvdrv.alias.cover",
     "nvdrv.alias.seen",
+    "nvdrv.alias.edge",
     "nvdrv.vafree",
     "bsd.room",
     "bsd.client",

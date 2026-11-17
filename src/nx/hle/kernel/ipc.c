@@ -74,7 +74,7 @@ static void ring_set(u32 seq, u32 kind, const char* name, u32 type, u32 cmd, con
 
 /* ============================================================ log=2's counters */
 /* a served request of the service object name's command cmd took ns: its pair's count and time, under the pools'
-   lock. Only log=2 comes here */
+   lock. A verbose log or an attached profiler comes here */
 static void stat_add(const char* name, u32 cmd, u64 ns) {
     IpcStat* s;
     u32 i;
@@ -97,13 +97,20 @@ static void stat_add(const char* name, u32 cmd, u64 ns) {
     s->ns += ns;
     pm_unlock(&g_host.ipc.lk);
 }
+#if defined(SNX_TRACY)
+/* One plot for each rank of the window's most costly commands. The command's own name goes to the message pane, so
+   a rank can be read without one plot name per service command. */
+static const char* const g_ipc_top_plot[IPC_STAT_TOP] = {"ipc top 0 ms", "ipc top 1 ms", "ipc top 2 ms",
+                                                         "ipc top 3 ms", "ipc top 4 ms", "ipc top 5 ms",
+                                                         "ipc top 6 ms", "ipc top 7 ms"};
+#endif
 void ipc_stats_log(u64 now_ns) {
     IpcStat top[IPC_STAT_TOP], rest;
     char list[IPC_STAT_TOP * 96], more[128] = "";
     u64 since, n = 0, ns = 0;
     unsigned k = 0, pairs = 0;
     size_t at = 0;
-    int on = g_settings.log_level >= 2;
+    int on = g_settings.log_level >= 2 || snx_tracy_attached();
     double s;
     pm_lock(&g_host.ipc.lk);
     since = g_host.ipc.stat_since;
@@ -125,6 +132,21 @@ void ipc_stats_log(u64 now_ns) {
     pm_unlock(&g_host.ipc.lk);
     if (!on || !since || now_ns <= since) return;
     s = (double)(now_ns - since) / 1e9;
+    SNX_PLOT("ipc req/s", (double)(n + rest.n) / s);
+    SNX_PLOT("ipc handler ms", (double)(ns + rest.ns) / 1e6);
+    SNX_PLOT("ipc commands", (double)pairs);
+    SNX_PLOT("ipc other req/s", (double)rest.n / s);
+#if defined(SNX_TRACY)
+    {
+        char name[128];
+        for (unsigned i = 0; i < k; i++) {
+            SNX_PLOT(g_ipc_top_plot[i], (double)top[i].ns / 1e6);
+            int len = snprintf(name, sizeof name, "%s cmd %u", top[i].name, top[i].cmd);
+            if (len > 0) SNX_MSG(name, (size_t)(len < (int)sizeof name ? len : (int)sizeof name - 1));
+        }
+    }
+#endif
+    if (g_settings.log_level < 2) return; /* the rest is only the verbose log's text */
     for (unsigned i = 0; i < k && at < sizeof list; i++)
         at += (size_t)snprintf(list + at, sizeof list - at, "%s %s cmd %u %llu in %.3f ms", i ? "," : "", top[i].name,
                                top[i].cmd, (unsigned long long)top[i].n, (double)top[i].ns / 1e6);
@@ -542,7 +564,8 @@ static void respond(IpcCtx* c) {
 /* the request goes to o's dispatcher, and its result into the reply */
 static void serve(IpcCtx* c, SvcObj* o, u32 seq) {
     u32 in[2];
-    int timed = g_settings.log_level >= 2; /* all that a run without the counters pays for them */
+    /* A trace attached wants the same per-command counters as a verbose log. Without either, nothing pays for them. */
+    int timed = g_settings.log_level >= 2 || snx_tracy_attached();
     u64 t0 = timed ? plat_ns() : 0;
     SNX_ZONE_TV(z_ipc, "ipc", c->cmd, "%s cmd %u", o->name, c->cmd);
     ipc_in(c, 0, &in[0], 4);

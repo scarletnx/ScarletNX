@@ -38,6 +38,7 @@
 #include "gui/latin.h"
 #include "gui/log.h"
 #include "gui/logzip.h"
+#include "gui/saves.h"
 #include "gui/wide.h"
 #include "gui/model.h"
 #include "gui/place.h"
@@ -147,8 +148,17 @@ typedef enum {
     GUI_PICKS_THEME,
     GUI_PICKS_GAME,
     GUI_PICKS_MISSING,
-    GUI_PICKS_MORE /* the foot's More: the screen's own keys past its first (more_open) */
+    GUI_PICKS_MORE, /* the foot's More: the screen's own keys past its first (more_open) */
+    GUI_PICKS_SAVES /* the menu's Saves (saves_open) */
 } GuiPicksOf;
+/* What a row of Saves, or a game's box's Export Saves and Import Saves, does: a console's saves (its menu item,
+   GUI_SWITCH...) out, or in with import, or every console's (GUI_SAVES_EVERY) in one zip */
+#define GUI_SAVES_EVERY            (-1)
+#define GUI_SAVES_ROW(console, in) (((console) + 1) * 2 + ((in) ? 1 : 0))
+#define GUI_SAVES_CONSOLE(row)     ((row) / 2 - 1)
+#define GUI_SAVES_IMPORT(row)      ((row) % 2 != 0)
+#define GUI_SAVES_ROWS             12 /* Every console's two, and two of each console's that has saves */
+
 /* a finger held this long on a game of Games without moving opens its box (game_box_open), as a right click does */
 #define GUI_HOLD_MS     500
 #define GUI_THEME_PICKS 64 /* the themes the box of themes lists at most, built-ins first */
@@ -627,6 +637,22 @@ typedef struct App {
     int addon_adding;    /* the row it was opened for, ROW_ADD_MOD or ROW_ADD_CHEATS; 0 while none waits */
     char* adding_game;   /* and the game whose box it was, which the answer goes to only while that box shows */
     SDL_DialogFileFilter cheats_filter; /* Add Cheats' .txt, which the file picker reads until it answers */
+    /* Saves (saves_open): the menu's box of them, each row a GUI_SAVES_ROW (saves_rows); what the system's picker is
+       open for, a row's or a game's box's (saves_game, saves_title, owned; NULL for the menu's); the file an import
+       read into the data folder and the saves it goes to while its question is asked (GUI_ASK_SAVES) */
+    const char* saves_picks[GUI_SAVES_ROWS + 1];
+    int saves_rows[GUI_SAVES_ROWS];
+    char saves_text[GUI_SAVES_ROWS][64];
+    Uint32 saves_picked;
+    int saves_doing; /* a row's GUI_SAVES_ROW */
+    char *saves_game, *saves_title, *saves_local;
+    char saves_picked_name[SNX_PATH_SIZE]; /* the file the import picked, as its messages name it */
+    GuiSavesNx saves_targets;
+    GuiSavesRaw saves_raw[2]; /* the GBA's and the NDS's (saves_raw_of), as saves_targets is the Switch's */
+    GuiSavesCtr saves_ctr;    /* the 3DS's */
+    GuiSavesPsv saves_psv;    /* the Vita's */
+    size_t saves_left;        /* the zip's saves with no place, save_layout=game's without their game */
+    SDL_DialogFileFilter saves_filter;
     /* the box of a game's save states (states_open), the newest first, and the focused one's picture as a texture */
     bool states_shown;
     int states_focus, states_texture_of; /* the state the texture is of, -1 for none */
@@ -851,7 +877,7 @@ typedef struct App {
     int pick_row; /* the Folders row the box is of */
     /* the box of themes (themes_open): each theme's name in app->themes' order, and the one shown as it opened */
     const char* theme_picks[GUI_THEME_PICKS + 1];
-    const char* game_picks[8]; /* the box of the game in focus on Games (game_box_open): its actions */
+    const char* game_picks[10]; /* the box of the game in focus on Games (game_box_open): its actions */
     /* the foot's More (more_open): the keys it holds, their rows' texts as picks_list gives them, NULL after the
        last */
     GuiMore more;
@@ -954,6 +980,7 @@ typedef char gui_entries_in_order[GUI_ENTRY(GUI_LINUX) == UI_MENU_ENTRIES_LOAD_L
                                           GUI_ENTRY(GUI_ANDROID) == UI_MENU_ENTRIES_LOAD_ANDROID_APK_XAPK &&
                                           GUI_ENTRY(GUI_KEYS) == UI_MENU_ENTRIES_INSTALL_KEYS &&
                                           GUI_ENTRY(GUI_SETTINGS) == UI_MENU_ENTRIES_SETTINGS &&
+                                          GUI_ENTRY(GUI_SAVES) == UI_MENU_ENTRIES_SAVES &&
                                           GUI_ENTRY(GUI_LOG) == UI_MENU_ENTRIES_SHARE_LOG &&
                                           GUI_ENTRY(GUI_FOLDERS) == UI_MENU_ENTRIES_FOLDERS &&
                                           GUI_ENTRY(GUI_EXIT) == UI_MENU_ENTRIES_EXIT &&
@@ -2801,6 +2828,7 @@ static const char* ask_question(App* app) {
         case GUI_ASK_DRIVER:
         case GUI_ASK_CRASH:
         case GUI_ASK_ADDONS:
+        case GUI_ASK_SAVES:
         case GUI_ASK_DELETE_OLD: return app->ask_line;
         case GUI_ASK_OVERWRITE: return snx_tr("Overwrite users.ini? It is kept as users.ini.old");
         case GUI_ASK_ERROR: return app->error_line;
@@ -3243,6 +3271,7 @@ static const char* const ask_choices[][2] = {{SNX_TR_NOOP("Continue"), SNX_TR_NO
                                              {SNX_TR_NOOP("Yes"), SNX_TR_NOOP("No")},
                                              {SNX_TR_NOOP("Cancel"), SNX_TR_NOOP("Delete")},
                                              {SNX_TR_NOOP("Cancel"), SNX_TR_NOOP("Overwrite")},
+                                             {SNX_TR_NOOP("Cancel"), SNX_TR_NOOP("Import")},
                                              {SNX_TR_NOOP("OK"), NULL}};
 /* a question added to GuiAsk takes its choices here, in its place */
 typedef char snx_gui_ask_choices[SDL_arraysize(ask_choices) == GUI_ASK_ERROR + 1 ? 1 : -1];
@@ -3270,6 +3299,7 @@ static const unsigned ask_tones[] = {UI_ATTR_CAUTION, /* Abort: the run ends */
                                      0,               /* No */
                                      UI_ATTR_DANGER,  /* Delete: what an older version left */
                                      UI_ATTR_CAUTION, /* Overwrite: users.ini, kept as users.ini.old */
+                                     UI_ATTR_CAUTION, /* Import: the saves there to the trash */
                                      0};
 typedef char snx_gui_ask_tones[SDL_arraysize(ask_tones) == GUI_ASK_ERROR + 1 ? 1 : -1];
 /* the question shown, over the whole screen in the middle or at its foot, a choice asked twice saying so once pressed:
@@ -5318,14 +5348,18 @@ enum {
     ROW_STATES = -10,
     ROW_GPU_DRIVER = -11,
     ROW_FREEDRENO = -12,
-    ROW_SETTINGS = -13
+    ROW_SETTINGS = -13,
+    ROW_EXPORT_SAVES = -14,
+    ROW_IMPORT_SAVES = -15
 };
 /* the rows after the cheats: Add Mod and Add Cheats, each with its folder's Open after it, Open Folder (the game's other
-   folders), Save States (S's box, the way a finger has to it), Clean Cache, its own GPU Driver, Freedreno Settings and
-   Settings (their pages), Save and Play; on every system, a phone's Files app showing the folders */
-static const int addons_tail[] = {ROW_ADD_MOD,     ROW_MODS_FOLDER, ROW_ADD_CHEATS,  ROW_CHEATS_FOLDER,
-                                  ROW_OPEN_FOLDER, ROW_STATES,      ROW_CLEAN_CACHE, ROW_GPU_DRIVER,
-                                  ROW_FREEDRENO,   ROW_SETTINGS,    ROW_SAVE,        ROW_PLAY};
+   folders), Export Saves and Import Saves (its saves out as Eden's zip and back in, saves_start), Save States (S's box,
+   the way a finger has to it), Clean Cache, its own GPU Driver, Freedreno Settings and Settings (their pages), Save and
+   Play; on every system, a phone's Files app showing the folders */
+static const int addons_tail[] = {ROW_ADD_MOD,     ROW_MODS_FOLDER,  ROW_ADD_CHEATS,   ROW_CHEATS_FOLDER,
+                                  ROW_OPEN_FOLDER, ROW_EXPORT_SAVES, ROW_IMPORT_SAVES, ROW_STATES,
+                                  ROW_CLEAN_CACHE, ROW_GPU_DRIVER,   ROW_FREEDRENO,    ROW_SETTINGS,
+                                  ROW_SAVE,        ROW_PLAY};
 #define ADDONS_TAIL ((int)SDL_arraysize(addons_tail))
 /* the box's rows; on Open Folder's page, a folder of the game's each */
 static int addons_rows(const App* app) {
@@ -5597,6 +5631,8 @@ static unsigned addons_icon(const App* app, int row) {
            : item == ROW_GPU_DRIVER                                                          ? GUI_ICON_CPU
            : item == ROW_FREEDRENO                                                           ? GUI_ICON_SETTINGS
            : item == ROW_ADD_CHEATS                                                          ? GUI_ICON_FILE_PLUS
+           : item == ROW_IMPORT_SAVES                                                        ? GUI_ICON_FOLDER_INPUT
+           : item == ROW_EXPORT_SAVES                                                        ? GUI_ICON_SHARE_2
            : item == ROW_SAVE || item == ROW_STATES                                          ? GUI_ICON_SAVE
            : item == ROW_PLAY && app->addons_recompile                                       ? GUI_ICON_HAMMER
            : item == ROW_PLAY || addons_program_row(app, item) >= 0                          ? GUI_ICON_PLAY
@@ -5641,6 +5677,10 @@ static void addons_label(const App* app, int row, char* label, size_t size) {
         snprintf(label, size, "%s%s", app->theme.marker, snx_tr("Open Cheats Folder"));
     else if (item == ROW_OPEN_FOLDER)
         snprintf(label, size, "%s%s", app->theme.marker, snx_tr("Open Folder"));
+    else if (item == ROW_EXPORT_SAVES)
+        snprintf(label, size, "%s%s", app->theme.marker, snx_tr("Export Saves"));
+    else if (item == ROW_IMPORT_SAVES)
+        snprintf(label, size, "%s%s", app->theme.marker, snx_tr("Import Saves"));
     else if (item == ROW_CLEAN_CACHE)
         snprintf(label, size, "%s%s", app->theme.marker, snx_tr("Clean Cache"));
     else if (item == ROW_STATES)
@@ -6106,9 +6146,10 @@ static void addons_play(App* app, char* program) {
 /* row pressed: an update picked (the others not: one runs at a time), No update, a DLC's, a mod's or a cheat's box
    checked or not; Add Mod or Add Cheats, the picker, whose folder or file goes into the mods or cheats folder (mod_add,
    cheats_add); Open Mods Folder or Open Cheats Folder, the folder opened; Open Folder, its page of the game's other
-   folders, one opened as it is pressed there; Clean Cache, the caches' deletion asked; Save, the picks kept and the box
-   closed; Play, the picks kept and the game played (addons_play); or a collection's Play Program N, the same with that
-   program played */
+   folders, one opened as it is pressed there; Export Saves or Import Saves, the box closed and the picker opened
+   (saves_start); Clean Cache, the caches' deletion asked; Save, the picks kept and the box closed; Play, the picks kept
+   and the game played (addons_play); or a collection's Play Program N, the same with that program played */
+static void saves_start(App* app, int doing, const char* game, const char* title);
 static void addons_press(App* app, int row) {
     int item;
     size_t i;
@@ -6124,6 +6165,15 @@ static void addons_press(App* app, int row) {
     }
     if (item == ROW_CLEAN_CACHE) {
         caches_ask(app);
+        return;
+    }
+    if (item == ROW_EXPORT_SAVES || item == ROW_IMPORT_SAVES) { /* the box goes: the picker's answer, a question and
+                                                                     the message come over Games */
+        char *game = snx_strdup(app->addons_game), *title = snx_strdup(app->addons_title);
+        addons_close(app);
+        saves_start(app, GUI_SAVES_ROW(GUI_SWITCH, item == ROW_IMPORT_SAVES), game, title);
+        free(game);
+        free(title);
         return;
     }
     if (item == ROW_GPU_DRIVER && app->addons_driver_off) { /* greyed: why, the box staying */
@@ -17096,6 +17146,7 @@ static const char* const* picks_list(const App* app) {
     if (app->picks_of == GUI_PICKS_THEME) return app->theme_picks;
     if (app->picks_of == GUI_PICKS_GAME) return app->game_picks;
     if (app->picks_of == GUI_PICKS_MORE) return app->more_picks;
+    if (app->picks_of == GUI_PICKS_SAVES) return app->saves_picks;
     kind = folder_row(app, app->pick_row, &at, &group);
     if (kind == GUI_ROW_DUMPS) return app->dumps_off ? main_off_picks : dumps_picks;
     if (kind == GUI_ROW_PLACE && at == GUI_PLACE_GAMES) return app->recompiled_off ? main_off_picks : recompiled_picks;
@@ -17107,8 +17158,9 @@ static const char* pick_label(App* app, int i) {
     int n = 0, at, group;
     while (picks[n]) ++n;
     if (i < 0 || i >= n) return NULL;
-    if (app->picks_of == GUI_PICKS_ASSET || app->picks_of == GUI_PICKS_THEME || app->picks_of == GUI_PICKS_MORE)
-        return picks[i]; /* names, and the foot's sentences, as they are */
+    if (app->picks_of == GUI_PICKS_ASSET || app->picks_of == GUI_PICKS_THEME || app->picks_of == GUI_PICKS_MORE ||
+        app->picks_of == GUI_PICKS_SAVES)
+        return picks[i]; /* names, the foot's sentences and Saves' rows (translated as made), as they are */
     if (strcmp(picks[i], SAY_SUBFOLDERS)) return snx_tr(picks[i]);
     snprintf(
         app->pick_text, sizeof app->pick_text, "%s %s",
@@ -17125,7 +17177,7 @@ static unsigned pick_tone(const App* app, int i) {
     int n = 0;
     while (picks[n]) ++n;
     if (i < 0 || i >= n || app->picks_of == GUI_PICKS_ASSET || app->picks_of == GUI_PICKS_THEME ||
-        app->picks_of == GUI_PICKS_GAME || app->picks_of == GUI_PICKS_MORE)
+        app->picks_of == GUI_PICKS_GAME || app->picks_of == GUI_PICKS_MORE || app->picks_of == GUI_PICKS_SAVES)
         return 0;
     if (app->picks_of == GUI_PICKS_DRIVER) return !strcmp(picks[i], "Remove") ? UI_ATTR_DANGER : 0;
     if (app->picks_of == GUI_PICKS_MISSING) return !strcmp(picks[i], SAY_MISSING_REMOVE) ? UI_ATTR_CAUTION : 0;
@@ -17135,6 +17187,8 @@ static unsigned pick_tone(const App* app, int i) {
    the foot and F1's box draw them); none in the other boxes */
 static unsigned pick_icon(const App* app, int i) {
     if (app->picks_of == GUI_PICKS_MORE) return i >= 0 && i < app->more.n ? app->more.icon[i] : GUI_ICON_NONE;
+    if (app->picks_of == GUI_PICKS_SAVES && i >= 0 && i < GUI_SAVES_ROWS && app->saves_picks[i])
+        return GUI_SAVES_IMPORT(app->saves_rows[i]) ? GUI_ICON_FOLDER_INPUT : GUI_ICON_SHARE_2;
     return app->picks_of == GUI_PICKS_MISSING && i >= 0 && i < (int)SDL_arraysize(missing_icons) ? missing_icons[i]
                                                                                                  : GUI_ICON_NONE;
 }
@@ -17200,9 +17254,18 @@ static void picks_question(App* app, char* out, size_t size, const char** tab) {
            : app->picks_of == GUI_PICKS_THEME  ? (app->theme.dialog == GUI_DIALOG_YORHA ? snx_tr("Theme") : "")
            : app->picks_of == GUI_PICKS_GAME || app->picks_of == GUI_PICKS_MISSING ? snx_tr("Game")
            : app->picks_of == GUI_PICKS_MORE                                       ? snx_tr("More")
+           : app->picks_of == GUI_PICKS_SAVES                                      ? snx_tr("Saves")
                                                                                    : snx_tr("Folders");
     if (app->picks_of == GUI_PICKS_GAME) { /* the game's name, as its row shows it */
         snprintf(out, size, "%s", app->pick_text);
+        return;
+    }
+    if (app->picks_of == GUI_PICKS_SAVES) { /* whose, and what each row takes */
+        snprintf(out, size,
+                 snx_tr("The saves of %s, the user playing: every console's in one zip, or a console's as its "
+                        "emulators keep them (the Switch's as Eden's zip). An import moves a save there to the trash "
+                        "first."),
+                 snx_users_selected()->nickname);
         return;
     }
     if (app->picks_of == GUI_PICKS_MORE) { /* what the foot left out, each key pressed from here as there */
@@ -17326,6 +17389,10 @@ static void subfolders_switch(App* app, int kind, int at) {
 #define SAY_GAME_STATES    SNX_TR_NOOP("Save States")
 #define SAY_GAME_SETTINGS  SNX_TR_NOOP("Settings")
 #define SAY_GAME_AOT       SNX_TR_NOOP("AOT Pack")
+/* a made 3DS, Vita, GBA or NDS game's, which has no box of its own (the Switch's are in theirs, addons_tail): its saves
+   out as Checkpoint or Vita3K keep them, a .sav as the emulators keep one, and back in (saves_start) */
+#define SAY_GAME_EXPORT_SAVES SNX_TR_NOOP("Export Saves")
+#define SAY_GAME_IMPORT_SAVES SNX_TR_NOOP("Import Saves")
 static void play_focus(App* app);
 static void queue_show(App* app, int i);
 static void recompile_focus(App* app);
@@ -17350,6 +17417,23 @@ static int game_box_game(App* app, int* queued, char* name, size_t size) {
     *queued = path ? gui_queue_find(&app->queue, path) : -1;
     return 1;
 }
+/* the focused row's game a made 3DS, Vita, GBA or NDS game: its program into *path (the row's, not owned) and its
+   console into *driver; 0 for any other row */
+static int game_box_raw(const App* app, const char** path, int* driver) {
+    size_t row = app->browser.selected, head = app->browser.head;
+    size_t index = app->browser.page * app->browser.page_size + row - head;
+    if (!games_play_focus(app)) return 0;
+    if (row < head) {
+        const GuiRecentGame* r = &app->recent.game[recent_index(app, (int)row)];
+        *path = r->path;
+        *driver = r->driver;
+    } else {
+        *path = app->games.paths[index];
+        *driver = app->games_drivers[index];
+    }
+    return *path && (*driver == GUI_3DS || *driver == GUI_VITA || *driver == GUI_GBA || *driver == GUI_NDS) &&
+           gui_game_program(*path);
+}
 /* the box of the game in focus on Games, which a held finger or a right click opens: its actions (SAY_GAME_*), as
    its keys have them; none for a row that is no game */
 static void game_box_open(App* app) {
@@ -17363,7 +17447,15 @@ static void game_box_open(App* app) {
         app->game_picks[n++] = SAY_GAME_STATES;
         app->game_picks[n++] = SAY_GAME_SETTINGS;
     }
-    if (aot_said(app)) app->game_picks[n++] = SAY_GAME_AOT; /* as B builds it, where it can */
+    {
+        const char* path;
+        int driver;
+        if (game_box_raw(app, &path, &driver)) {
+            app->game_picks[n++] = SAY_GAME_EXPORT_SAVES;
+            app->game_picks[n++] = SAY_GAME_IMPORT_SAVES;
+        }
+    }
+    if (aot_said(app)) app->game_picks[n++] = SAY_GAME_AOT; /* as B builds it, where it can, last */
     app->game_picks[n] = NULL;
     picks_open(app, GUI_PICKS_GAME);
 }
@@ -17386,6 +17478,15 @@ static void game_box_take(App* app, const char* pick) {
         settings_focus(app);
     else if (!strcmp(pick, SAY_GAME_AOT))
         aot_focus(app);
+    else if (!strcmp(pick, SAY_GAME_EXPORT_SAVES) || !strcmp(pick, SAY_GAME_IMPORT_SAVES)) {
+        const char* path;
+        int driver;
+        char* program;
+        if (!game_box_raw(app, &path, &driver) || !game_box_game(app, &queued, name, sizeof name)) return;
+        program = snx_strdup(path);
+        saves_start(app, GUI_SAVES_ROW(driver, !strcmp(pick, SAY_GAME_IMPORT_SAVES)), program, name);
+        free(program);
+    }
 }
 /* ---- a made game whose file to play from is not there (gui_game_source_missing): its row says so, and opening it, to
    play or to recompile, asks first in a box of its own (GUI_PICKS_MISSING). Keep, in focus, leaves it as it is;
@@ -17613,6 +17714,709 @@ static void missing_remove(App* app) {
     free(file);
     free(program);
 }
+/* ---- Saves (gui/saves.h): the saves of the user playing out to the file another emulator reads, and back in. The
+   menu's Saves box: Export All Saves and Import All Saves, every console's in one zip, a folder each; then each
+   console's Export Saves and Import Saves in its format, the Switch's as Eden's zip; a game's box's two, the game's
+   alone. An export's zip is written in the data folder first and then copied where the system's picker says (on iOS
+   it stays there and the share sheet takes it); an import's file is read into the data folder first, and the saves it
+   holds that are there already are asked about (GUI_ASK_SAVES) before they go to the trash. While a run goes an
+   import is refused: its game could write over what came in ---- */
+#define SAY_SAVES_EXPORT_ALL SNX_TR_NOOP("Export All Saves")
+#define SAY_SAVES_IMPORT_ALL SNX_TR_NOOP("Import All Saves")
+#define SAY_SAVES_EXPORT     SNX_TR_NOOP("Export Saves")
+#define SAY_SAVES_IMPORT     SNX_TR_NOOP("Import Saves")
+#define GUI_SAVES_EXPORTING  ".saves-export.zip" /* in the data folder, a name the launcher lists nowhere */
+#define GUI_SAVES_IMPORTING  ".saves-import.zip"
+/* the consoles whose saves Saves takes out and in, in the menu's order */
+static const int saves_consoles[] = {GUI_SWITCH, GUI_3DS, GUI_VITA, GUI_GBA, GUI_NDS};
+/* a console's name in Saves' rows and files */
+static const char* saves_console_name(int console) {
+    return console == GUI_SWITCH ? "Switch"
+           : console == GUI_3DS  ? "3DS"
+           : console == GUI_VITA ? "Vita"
+           : console == GUI_GBA  ? "GBA"
+           : console == GUI_NDS  ? "NDS"
+                                 : "?";
+}
+/* the saves of the GBA or the NDS a row's import or export takes, NULL for another console */
+static GuiSavesRaw* saves_raw_of(App* app, int console) {
+    return console == GUI_GBA ? &app->saves_raw[0] : console == GUI_NDS ? &app->saves_raw[1] : NULL;
+}
+/* a console's folder in a zip of every console's (GUI_SAVES_SWITCH...), "" in its own */
+static const char* saves_prefix(int console, bool every) {
+    if (!every) return "";
+    return console == GUI_GBA    ? GUI_SAVES_GBA
+           : console == GUI_NDS  ? GUI_SAVES_NDS
+           : console == GUI_3DS  ? GUI_SAVES_3DS
+           : console == GUI_VITA ? GUI_SAVES_VITA
+                                 : GUI_SAVES_SWITCH;
+}
+/* what doing is called, a row's label and its messages' start: Export All Saves, Switch: Import Saves; a game's box's
+   own, Export Saves or Import Saves, with game */
+static void saves_label(int doing, bool game, char* out, size_t size) {
+    int console = GUI_SAVES_CONSOLE(doing);
+    bool in = GUI_SAVES_IMPORT(doing);
+    if (game)
+        snprintf(out, size, "%s", snx_tr(in ? SAY_SAVES_IMPORT : SAY_SAVES_EXPORT));
+    else if (console == GUI_SAVES_EVERY)
+        snprintf(out, size, "%s", snx_tr(in ? SAY_SAVES_IMPORT_ALL : SAY_SAVES_EXPORT_ALL));
+    else
+        snprintf(out, size, "%s: %s", saves_console_name(console), snx_tr(in ? SAY_SAVES_IMPORT : SAY_SAVES_EXPORT));
+}
+/* the menu's Saves: its box, a row each (saves_label) */
+static void saves_open(App* app) {
+    int n = 0;
+    size_t i;
+    app->saves_rows[n++] = GUI_SAVES_ROW(GUI_SAVES_EVERY, false);
+    app->saves_rows[n++] = GUI_SAVES_ROW(GUI_SAVES_EVERY, true);
+    for (i = 0; i < SDL_arraysize(saves_consoles); ++i) {
+        app->saves_rows[n++] = GUI_SAVES_ROW(saves_consoles[i], false);
+        app->saves_rows[n++] = GUI_SAVES_ROW(saves_consoles[i], true);
+    }
+    for (int r = 0; r < n; ++r) {
+        saves_label(app->saves_rows[r], false, app->saves_text[r], sizeof app->saves_text[r]);
+        app->saves_picks[r] = app->saves_text[r];
+    }
+    app->saves_picks[n] = NULL;
+    picks_open(app, GUI_PICKS_SAVES);
+}
+/* the user playing, its uid as 32 hex digits into uid */
+static const SnxUser* saves_user(char uid[33]) {
+    const SnxUser* user = snx_users_selected();
+    snx_users_uid_text(user->uid, uid);
+    return user;
+}
+/* the game folders of the library, recompiled/ and the Extras, into folders: how many */
+static size_t saves_folders(const App* app, const char** folders) {
+    size_t n = 0;
+    if (app->games_dir) folders[n++] = app->games_dir;
+    for (int i = 0; i < app->folder_count; ++i) folders[n++] = app->folders[i];
+    return n;
+}
+/* the Switch saves the user playing has: the game's (its program, game) where fs.c plays it, or every one of them */
+static void saves_nx(const App* app, const char* game, GuiSavesNx* list) {
+    char uid[33];
+    saves_user(uid);
+    list->at = NULL;
+    list->count = 0;
+    if (game) {
+        char *folder, *name, *root;
+        GuiSaveNx one;
+        game_where(game, &folder, &name);
+        root = snx_menu_dir(folder, SNX_USER_DATA);
+        if (root && gui_saves_nx_place(folder, name, root, uid, saves_global(app), &one)) {
+            list->at = (GuiSaveNx*)snx_alloc(sizeof *list->at);
+            list->at[0] = one;
+            list->count = 1;
+        }
+        free(root);
+        free(name);
+        free(folder);
+    } else {
+        const char* folders[GUI_FOLDERS_MAX + 1];
+        gui_saves_nx_list(app->data_dir, folders, saves_folders(app, folders), uid, saves_global(app), list);
+    }
+}
+/* the GBA's or the NDS's saves (console): the game's (its program, game), else every game of that console in the
+   library, with there only those whose .sav is there; their trash the data folder's */
+static void saves_raws(App* app, int console, const char* game, bool there) {
+    GuiSavesRaw* list = saves_raw_of(app, console);
+    char* trash = snx_path_join(app->data_dir, "trash");
+    gui_saves_raw_free(list);
+    if (game) {
+        char *folder, *name;
+        GuiSaveRaw one;
+        game_where(game, &folder, &name);
+        if (gui_saves_raw_place(folder, name, trash, &one)) {
+            list->at = (GuiSaveRaw*)snx_alloc(sizeof *list->at);
+            list->at[0] = one;
+            list->count = 1;
+        }
+        free(name);
+        free(folder);
+    } else {
+        const char* folders[GUI_FOLDERS_MAX + 1];
+        gui_saves_raw_list(trash, folders, saves_folders(app, folders),
+                           console == GUI_GBA ? SNX_SYSTEM_GBA : SNX_SYSTEM_NDS, there, list);
+    }
+    free(trash);
+}
+/* the 3DS's saves: the game's (its program, game, called title in Checkpoint's folder), else every 3DS game of the
+   library, with there only those with a file in their save or ExtSaveData; their trash the data folder's */
+static void saves_ctrs(App* app, const char* game, const char* title, bool there) {
+    char* trash = snx_path_join(app->data_dir, "trash");
+    gui_saves_ctr_free(&app->saves_ctr);
+    if (game) {
+        char *folder, *name;
+        GuiSaveCtr one;
+        game_where(game, &folder, &name);
+        if (gui_saves_ctr_place(folder, name, title, trash, &one)) {
+            app->saves_ctr.at = (GuiSaveCtr*)snx_alloc(sizeof *app->saves_ctr.at);
+            app->saves_ctr.at[0] = one;
+            app->saves_ctr.count = 1;
+        }
+        free(name);
+        free(folder);
+    } else {
+        const char* folders[GUI_FOLDERS_MAX + 1];
+        gui_saves_ctr_list(trash, folders, saves_folders(app, folders), there, &app->saves_ctr);
+    }
+    free(trash);
+}
+/* the Vita's saves: the game's (its program, game), else every Vita game of the library, with there only those whose
+   save holds a file; their trash the data folder's */
+static void saves_psvs(App* app, const char* game, bool there) {
+    char* trash = snx_path_join(app->data_dir, "trash");
+    gui_saves_psv_free(&app->saves_psv);
+    if (game) {
+        char *folder, *name;
+        GuiSavePsv one;
+        game_where(game, &folder, &name);
+        if (gui_saves_psv_place(folder, name, trash, &one)) {
+            app->saves_psv.at = (GuiSavePsv*)snx_alloc(sizeof *app->saves_psv.at);
+            app->saves_psv.at[0] = one;
+            app->saves_psv.count = 1;
+        }
+        free(name);
+        free(folder);
+    } else {
+        const char* folders[GUI_FOLDERS_MAX + 1];
+        gui_saves_psv_list(trash, folders, saves_folders(app, folders), there, &app->saves_psv);
+    }
+    free(trash);
+}
+/* the folder at path holds something */
+static bool saves_full(const char* path) {
+    char** names = NULL;
+    size_t count = 0;
+    bool full = !snx_list_dir(path, &names, &count) && count;
+    snx_free_strings(names, count);
+    return full;
+}
+/* how many saves doing's export found: the Switch's and every other console's it takes */
+static size_t saves_found(const App* app) {
+    return app->saves_targets.count + app->saves_raw[0].count + app->saves_raw[1].count + app->saves_ctr.count +
+           app->saves_psv.count;
+}
+/* each entry of done in the launcher's log, under label: the files an export or an import took, or why not */
+static void saves_log(const char* label, const GuiCleaned* done) {
+    char file[SNX_PATH_SIZE], what[SNX_PATH_SIZE + 512];
+    const char* at = done->text;
+    bool ok;
+    while (at) {
+        at = gui_cleaned_entry(at, &ok, file, what, sizeof file);
+        gui_log("%s: %s %s: %s", label, ok ? "done" : "not done", file, what);
+    }
+}
+/* what the picker was open for gone: the game, the import's copy and its saves */
+static void saves_forget(App* app) {
+    if (app->saves_local && snx_path_exists(app->saves_local)) snx_remove_tree(app->saves_local);
+    free(app->saves_local);
+    free(app->saves_game);
+    free(app->saves_title);
+    app->saves_local = app->saves_game = app->saves_title = NULL;
+    app->saves_left = 0;
+    gui_saves_nx_free(&app->saves_targets);
+    gui_saves_raw_free(&app->saves_raw[0]);
+    gui_saves_raw_free(&app->saves_raw[1]);
+    gui_saves_ctr_free(&app->saves_ctr);
+    gui_saves_psv_free(&app->saves_psv);
+}
+/* the bytes of the file from into the file to, each a path or, on Android, a document's URI, which SDL opens through
+   its app; 0, else nonzero with why */
+static int saves_copy(const char* from, const char* to, char* why, size_t size) {
+    SDL_IOStream *in = SDL_IOFromFile(from, "rb"), *out = in ? SDL_IOFromFile(to, "wb") : NULL;
+    char* buffer = (char*)malloc(1 << 16);
+    bool failed = !in || !out || !buffer;
+    size_t n;
+    if (failed) snprintf(why, size, "%s", buffer ? SDL_GetError() : snx_tr("out of memory"));
+    while (!failed && (n = SDL_ReadIO(in, buffer, 1 << 16)) > 0)
+        if (SDL_WriteIO(out, buffer, n) != n) {
+            snprintf(why, size, snx_tr("%s could not be written: %s"), to, SDL_GetError());
+            failed = true;
+        }
+    if (!failed && SDL_GetIOStatus(in) == SDL_IO_STATUS_ERROR) {
+        snprintf(why, size, snx_tr("%s could not be read: %s"), from, SDL_GetError());
+        failed = true;
+    }
+    if (out && !SDL_CloseIO(out) && !failed) {
+        snprintf(why, size, snx_tr("%s could not be written: %s"), to, SDL_GetError());
+        failed = true;
+    }
+    if (in) SDL_CloseIO(in);
+    free(buffer);
+    return failed;
+}
+/* the zip of what app->saves_doing exports (app->saves_targets) written at path: Eden's for the Switch's or a game's,
+   every console's folders for Export All Saves. 0 with its files, bytes and saves, else nonzero with why */
+static int saves_write(App* app, const char* path, GuiCleaned* done, size_t* files, SnxU64* bytes, size_t* saves,
+                       char* error, size_t size) {
+    int console = GUI_SAVES_CONSOLE(app->saves_doing);
+    bool every = console == GUI_SAVES_EVERY, failed;
+    GuiSavesZip* zip = gui_saves_zip_begin(path, done, error, size);
+    size_t kept = 0;
+    *saves = 0;
+    if (!zip) return 1;
+    failed = gui_saves_eden_add(zip, saves_prefix(GUI_SWITCH, every), app->saves_targets.at, app->saves_targets.count,
+                                saves, error, size) != 0;
+    for (int r = 0; r < 2 && !failed; ++r) {
+        failed = gui_saves_raw_add(zip, saves_prefix(r ? GUI_NDS : GUI_GBA, every), app->saves_raw[r].at,
+                                   app->saves_raw[r].count, &kept, error, size) != 0;
+        *saves += kept;
+    }
+    if (!failed && app->saves_ctr.count) { /* a backup named by the date, as Checkpoint suggests one */
+        char backup[32];
+        time_t now = time(NULL);
+        const struct tm* local = localtime(&now);
+        if (!local || !strftime(backup, sizeof backup, "%Y%m%d-%H%M%S", local))
+            snprintf(backup, sizeof backup, "%lld", (long long)now);
+        failed = gui_saves_ctr_add(zip, saves_prefix(GUI_3DS, every), app->saves_ctr.at, app->saves_ctr.count, backup,
+                                   &kept, error, size) != 0;
+        *saves += kept;
+    }
+    if (!failed && app->saves_psv.count) {
+        failed = gui_saves_psv_add(zip, saves_prefix(GUI_VITA, every), app->saves_psv.at, app->saves_psv.count, &kept,
+                                   error, size) != 0;
+        *saves += kept;
+    }
+    if (!failed && !*saves) {
+        if (app->saves_targets.count == 1)
+            snprintf(error, size, snx_tr("the save in %s holds no file"), app->saves_targets.at[0].folder);
+        else
+            snprintf(error, size, snx_tr("none of the %zu saves found holds a file"), saves_found(app));
+        failed = true;
+    }
+    return gui_saves_zip_end(zip, !failed, files, bytes, error, size);
+}
+/* the export written where the picker said (to, a path or a document's URI): through a zip of the data folder's, or
+   with share on iOS, which has no picker that saves, in the data folder and given to the share sheet; a GBA or NDS
+   game's .sav copied as it is */
+static void saves_export(App* app, const char* to, bool share) {
+    char label[96], error[SNX_PATH_SIZE + 512], why[512], amount[32];
+    int console = GUI_SAVES_CONSOLE(app->saves_doing);
+    GuiSavesRaw* raw = saves_raw_of(app, console);
+    bool one_file = app->saves_game && raw; /* a GBA or NDS game's: its .sav itself */
+    char* local =
+        one_file ? snx_strdup(raw->at[0].file) : snx_path_join(app->data_dir, share ? to : GUI_SAVES_EXPORTING);
+    GuiCleaned done = {0};
+    size_t files = 0, saves = 0;
+    SnxU64 bytes = 0;
+    saves_label(app->saves_doing, app->saves_game != NULL, label, sizeof label);
+    error[0] = 0;
+    if (one_file) {
+        files = saves = 1;
+        bytes = snx_file_size(local);
+    }
+    if (!one_file && snx_mkdirs(app->data_dir)) {
+        snprintf(app->message, sizeof app->message, snx_tr("%s: %s could not be made: %s"), label, app->data_dir,
+                 snx_os_error(why, sizeof why));
+        say_failure(app, app->message);
+    } else if (!one_file && saves_write(app, local, &done, &files, &bytes, &saves, error, sizeof error)) {
+        snprintf(app->message, sizeof app->message, "%s: %s", label, error);
+        say_failure(app, app->message);
+    } else if (!share && saves_copy(local, to, why, sizeof why)) {
+        if (one_file)
+            snprintf(app->message, sizeof app->message, snx_tr("%s: %s could not be copied to %s: %s"), label, local,
+                     to, why);
+        else
+            snprintf(app->message, sizeof app->message, snx_tr("%s: the zip could not be copied to %s: %s"), label, to,
+                     why);
+        say_failure(app, app->message);
+    } else {
+        gui_size_text(amount, sizeof amount, bytes);
+        if (app->saves_game)
+            snprintf(app->message, sizeof app->message, snx_tr("%s: %zu files (%s) of %s in %s"), label, files, amount,
+                     app->saves_title, share ? local : to);
+        else
+            snprintf(app->message, sizeof app->message, snx_tr("%s: %zu files (%s) of %zu saves of %s in %s"), label,
+                     files, amount, saves, snx_users_selected()->nickname, share ? local : to);
+#ifdef SDL_PLATFORM_IOS
+        if (share && !gui_apple_share(app->window, local)) {
+            size_t n = strlen(app->message);
+            snprintf(app->message + n, sizeof app->message - n, "%s", snx_tr("; the share sheet did not open"));
+        }
+#endif
+        gui_log("%s", app->message);
+    }
+    saves_log(label, &done);
+    if (!one_file && !share && snx_path_exists(local)) snx_remove_tree(local);
+    gui_cleaned_free(&done);
+    free(local);
+    saves_forget(app);
+}
+/* the import's saves put in place, the question answered with Import or not asked, and what came of it said: the
+   Switch's, the GBA's and the NDS's each as their zip or file holds them */
+static void saves_import_run(App* app) {
+    char label[96], error[SNX_PATH_SIZE + 512], amount[32], one[SNX_PATH_SIZE];
+    int console = GUI_SAVES_CONSOLE(app->saves_doing);
+    bool every = console == GUI_SAVES_EVERY, failed = false;
+    const char* user = snx_users_selected()->nickname;
+    GuiCleaned done = {0};
+    GuiSavesDone result = {0};
+    saves_label(app->saves_doing, app->saves_game != NULL, label, sizeof label);
+    error[0] = one[0] = 0;
+    if (app->saves_targets.count)
+        failed =
+            gui_saves_eden_import(&done, app->saves_local, app->saves_picked_name, saves_prefix(GUI_SWITCH, every),
+                                  app->saves_targets.at, app->saves_targets.count, &result, error, sizeof error) != 0;
+    for (int r = 0; r < 2 && !failed; ++r) {
+        const GuiSavesRaw* raw = &app->saves_raw[r];
+        int raw_console = r ? GUI_NDS : GUI_GBA;
+        /* a game's, or the console's zip, or its folder in a zip of every console's: one with no game of the library
+           named as its saves is refused, saying so */
+        if (app->saves_game ? !raw->count
+            : every         ? !gui_saves_zip_has(app->saves_local, saves_prefix(raw_console, true))
+                            : console != raw_console)
+            continue;
+        if (app->saves_game)
+            failed = gui_saves_raw_import(&done, app->saves_local, app->saves_picked_name, &raw->at[0], &result, error,
+                                          sizeof error) != 0;
+        else
+            failed = gui_saves_raw_import_zip(&done, app->saves_local, app->saves_picked_name,
+                                              saves_prefix(r ? GUI_NDS : GUI_GBA, every), raw->at, raw->count, &result,
+                                              error, sizeof error) != 0;
+    }
+    if (!failed && app->saves_ctr.count)
+        failed = gui_saves_ctr_import(&done, app->saves_local, app->saves_picked_name, saves_prefix(GUI_3DS, every),
+                                      app->saves_ctr.at, app->saves_ctr.count, &result, error, sizeof error) != 0;
+    if (!failed && app->saves_psv.count)
+        failed = gui_saves_psv_import(&done, app->saves_local, app->saves_picked_name, saves_prefix(GUI_VITA, every),
+                                      app->saves_psv.at, app->saves_psv.count, !app->saves_game, &result, error,
+                                      sizeof error) != 0;
+    if (failed) {
+        snprintf(app->message, sizeof app->message, snx_tr("%s: %zu saves imported, then: %s"), label, result.saves,
+                 error);
+        say_failure(app, app->message);
+    } else {
+        gui_size_text(amount, sizeof amount, result.bytes);
+        if (app->saves_game)
+            snprintf(one, sizeof one, "%s", app->saves_title);
+        else if (app->saves_targets.count)
+            snprintf(one, sizeof one, "%016llX", (unsigned long long)app->saves_targets.at[0].title);
+        if (result.saves == 1 && one[0] && result.backups)
+            snprintf(app->message, sizeof app->message,
+                     snx_tr("%s: %zu files (%s) of %s for %s; the save there before is in %s"), label, result.files,
+                     amount, one, user, result.backup);
+        else if (result.saves == 1 && one[0])
+            snprintf(app->message, sizeof app->message,
+                     snx_tr("%s: %zu files (%s) of %s for %s; there was no save before"), label, result.files, amount,
+                     one, user);
+        else if (result.backups)
+            snprintf(app->message, sizeof app->message,
+                     snx_tr("%s: %zu saves for %s, %zu files (%s); %zu saves there before are in the trash, the first "
+                            "in %s"),
+                     label, result.saves, user, result.files, amount, result.backups, result.backup);
+        else
+            snprintf(app->message, sizeof app->message,
+                     snx_tr("%s: %zu saves for %s, %zu files (%s); none was there before"), label, result.saves, user,
+                     result.files, amount);
+        if (app->saves_left) {
+            size_t n = strlen(app->message);
+            snprintf(app->message + n, sizeof app->message - n,
+                     snx_tr("; %zu more in the zip have no game of their title ID in the library, where "
+                            "save_layout=game keeps a save: the log names them"),
+                     app->saves_left);
+        }
+        gui_log("%s", app->message);
+    }
+    saves_log(label, &done);
+    gui_cleaned_free(&done);
+    saves_forget(app);
+}
+/* Import Saves' question answered: Import puts the saves in place, Cancel leaves every one as it is */
+static void saves_answer(App* app, bool taken) {
+    char label[96];
+    if (taken) {
+        saves_import_run(app);
+        return;
+    }
+    saves_label(app->saves_doing, app->saves_game != NULL, label, sizeof label);
+    snprintf(app->message, sizeof app->message, snx_tr("%s: cancelled, nothing imported from %s"), label,
+             app->saves_picked_name);
+    saves_forget(app);
+}
+/* the Switch saves of the zip read in: each where its game plays it (gui_saves_nx_find), those with no place counted
+   in app->saves_left and named in the log. 0, else nonzero with app->message saying why */
+static int saves_nx_targets(App* app, const char* picked, const char* prefix, const char* label) {
+    const char* folders[GUI_FOLDERS_MAX + 1];
+    size_t n = saves_folders(app, folders), count = 0, i;
+    SnxU64* titles = NULL;
+    char error[SNX_PATH_SIZE + 512], uid[33];
+    saves_user(uid);
+    gui_saves_nx_free(&app->saves_targets);
+    if (gui_saves_eden_titles(app->saves_local, picked, prefix, &titles, &count, error, sizeof error)) {
+        snprintf(app->message, sizeof app->message, "%s: %s", label, error);
+        return 1;
+    }
+    app->saves_targets.at = (GuiSaveNx*)snx_alloc((count ? count : 1) * sizeof *app->saves_targets.at);
+    for (i = 0; i < count; ++i)
+        if (gui_saves_nx_find(app->data_dir, folders, n, uid, saves_global(app), titles[i],
+                              &app->saves_targets.at[app->saves_targets.count]))
+            ++app->saves_targets.count;
+        else {
+            gui_log("%s: %016llX not imported: save_layout=game keeps a save in its game's folder, and no game of "
+                    "the library has that title ID",
+                    label, (unsigned long long)titles[i]);
+            ++app->saves_left;
+        }
+    free(titles);
+    if (app->saves_targets.count) return 0;
+    snprintf(app->message, sizeof app->message,
+             snx_tr("%s: none of the %zu saves in %s has a game of that title ID in the library, where "
+                    "save_layout=game keeps a save"),
+             label, count, picked);
+    return 1;
+}
+/* the import's file, picked (a path or a document's URI): read into the data folder, the saves it holds placed for
+   the user playing, and asked about when some are there already (GUI_ASK_SAVES), else put in place at once */
+static void saves_import(App* app, const char* picked) {
+    char label[96], why[512], uid[33];
+    int console = GUI_SAVES_CONSOLE(app->saves_doing);
+    bool every = console == GUI_SAVES_EVERY;
+    size_t i, there = 0, found;
+    const SnxUser* user = saves_user(uid);
+    saves_label(app->saves_doing, app->saves_game != NULL, label, sizeof label);
+    snprintf(app->saves_picked_name, sizeof app->saves_picked_name, "%s", picked);
+    app->saves_local = snx_path_join(app->data_dir, GUI_SAVES_IMPORTING);
+    if (snx_mkdirs(app->data_dir)) {
+        snprintf(app->message, sizeof app->message, snx_tr("%s: %s could not be made: %s"), label, app->data_dir,
+                 snx_os_error(why, sizeof why));
+        say_failure(app, app->message);
+        saves_forget(app);
+        return;
+    }
+    if (saves_copy(picked, app->saves_local, why, sizeof why)) {
+        snprintf(app->message, sizeof app->message, snx_tr("%s: %s could not be read: %s"), label, picked, why);
+        say_failure(app, app->message);
+        saves_forget(app);
+        return;
+    }
+    if (!app->saves_game) { /* every save the zip holds, each where its game plays it, a console's folder each */
+        bool nx = every ? gui_saves_zip_has(app->saves_local, GUI_SAVES_SWITCH) != 0 : console == GUI_SWITCH;
+        if (every && !nx && !gui_saves_zip_has(app->saves_local, GUI_SAVES_GBA) &&
+            !gui_saves_zip_has(app->saves_local, GUI_SAVES_NDS) &&
+            !gui_saves_zip_has(app->saves_local, GUI_SAVES_3DS) &&
+            !gui_saves_zip_has(app->saves_local, GUI_SAVES_VITA)) {
+            snprintf(
+                app->message, sizeof app->message,
+                snx_tr("%s: %s holds none of the consoles' folders of an export of every save: %s, %s, %s, %s, %s"),
+                label, picked, GUI_SAVES_SWITCH, GUI_SAVES_3DS, GUI_SAVES_VITA, GUI_SAVES_GBA, GUI_SAVES_NDS);
+            say_failure(app, app->message);
+            saves_forget(app);
+            return;
+        }
+        if (nx && saves_nx_targets(app, picked, saves_prefix(GUI_SWITCH, every), label)) {
+            say_failure(app, app->message);
+            saves_forget(app);
+            return;
+        }
+        if (every ? gui_saves_zip_has(app->saves_local, GUI_SAVES_3DS) != 0 : console == GUI_3DS) {
+            size_t ctr_there = 0;
+            saves_ctrs(app, NULL, NULL, false);
+            if (!gui_saves_ctr_keep(app->saves_local, saves_prefix(GUI_3DS, every), &app->saves_ctr, &ctr_there)) {
+                snprintf(app->message, sizeof app->message,
+                         snx_tr("%s: none of the backups in %s is of a 3DS game of the library, by its unique ID"),
+                         label, picked);
+                say_failure(app, app->message);
+                saves_forget(app);
+                return;
+            }
+            there += ctr_there;
+        }
+        if (every ? gui_saves_zip_has(app->saves_local, GUI_SAVES_VITA) != 0 : console == GUI_VITA) {
+            saves_psvs(app, NULL, false);
+            for (i = 0; i < app->saves_psv.count; ++i) {
+                char* in_zip = snx_format("%s%s/", saves_prefix(GUI_VITA, every), app->saves_psv.at[i].name);
+                there +=
+                    in_zip && gui_saves_zip_has(app->saves_local, in_zip) && saves_full(app->saves_psv.at[i].folder);
+                free(in_zip);
+            }
+        }
+        for (int r = 0; r < 2; ++r) {
+            int raw_console = r ? GUI_NDS : GUI_GBA;
+            if (every ? gui_saves_zip_has(app->saves_local, saves_prefix(raw_console, true)) : console == raw_console) {
+                saves_raws(app, raw_console, NULL, false);
+                there += gui_saves_raw_there(app->saves_local, saves_prefix(raw_console, every), app->saves_raw[r].at,
+                                             app->saves_raw[r].count);
+            }
+        }
+    } else if (saves_raw_of(app, console))
+        there = snx_is_file(saves_raw_of(app, console)->at[0].file);
+    else if (console == GUI_VITA && app->saves_psv.count)
+        there = saves_full(app->saves_psv.at[0].folder);
+    else if (console == GUI_3DS && app->saves_ctr.count) {
+        size_t ctr_there = 0;
+        gui_saves_ctr_keep(app->saves_local, "", &app->saves_ctr, &ctr_there);
+        if (!app->saves_ctr.count) { /* the zip has none of the game's: the import names what it has */
+            saves_ctrs(app, app->saves_game, app->saves_title, false);
+            saves_import_run(app);
+            return;
+        }
+        there = ctr_there;
+    }
+    for (i = 0; i < app->saves_targets.count; ++i) {
+        char* note = snx_format("%s" SNX_SAVE_NOTE, app->saves_targets.at[i].folder);
+        there += snx_path_exists(app->saves_targets.at[i].folder) || snx_is_file(note);
+        free(note);
+    }
+    if (!there) {
+        saves_import_run(app);
+        return;
+    }
+    found = saves_found(app);
+    if (app->saves_game)
+        snprintf(app->ask_line, sizeof app->ask_line,
+                 snx_tr("%s: %s has a save of %s, in %s. It goes to the trash, %s, and the one in %s takes its place."),
+                 label, app->saves_title, user->nickname,
+                 app->saves_targets.count ? app->saves_targets.at[0].folder
+                 : app->saves_ctr.count   ? app->saves_ctr.at[0].save
+                 : app->saves_psv.count   ? app->saves_psv.at[0].folder
+                                          : saves_raw_of(app, console)->at[0].file,
+                 app->saves_targets.count ? app->saves_targets.at[0].trash
+                 : app->saves_ctr.count   ? app->saves_ctr.at[0].trash
+                 : app->saves_psv.count   ? app->saves_psv.at[0].trash
+                                          : saves_raw_of(app, console)->at[0].trash,
+                 picked);
+    else
+        snprintf(app->ask_line, sizeof app->ask_line,
+                 snx_tr("%s: %zu of the saves in %s are there already for %s, of %zu games it can go to. Each goes to "
+                        "the trash, %s, and the zip's takes its place."),
+                 label, there, picked, user->nickname, found,
+                 app->saves_targets.count  ? app->saves_targets.at[0].trash
+                 : app->saves_ctr.count    ? app->saves_ctr.at[0].trash
+                 : app->saves_psv.count    ? app->saves_psv.at[0].trash
+                 : app->saves_raw[0].count ? app->saves_raw[0].at[0].trash
+                                           : app->saves_raw[1].at[0].trash);
+    gui_confirm_open(&app->confirm, GUI_ASK_SAVES, false);
+}
+/* doing started (GUI_SAVES_ROW), for game (a program, shown as title) or, NULL, from the menu's box: an export's saves
+   found and the picker opened to save where the player says, an import's picker to pick the file. Why not, said */
+static void saves_start(App* app, int doing, const char* game, const char* title) {
+    char label[96], why[512] = "", what[512], name[640];
+    bool in = GUI_SAVES_IMPORT(doing), opened = true;
+    int console = GUI_SAVES_CONSOLE(doing);
+    bool every = console == GUI_SAVES_EVERY, raw = saves_raw_of(app, console) != NULL, one_file = raw && game;
+    const SnxUser* user;
+    char uid[33];
+    saves_forget(app);
+    user = saves_user(uid);
+    saves_label(doing, game != NULL, label, sizeof label);
+    app->saves_doing = doing;
+    if (!app->data_dir) {
+        snprintf(app->message, sizeof app->message, snx_tr("%s: there is no data folder to work in"), label);
+        say_failure(app, app->message);
+        return;
+    }
+    if (in && app->menu.running) {
+        snprintf(app->message, sizeof app->message,
+                 snx_tr("%s: a game runs, which could write over its saves: close it, then import"), label);
+        return;
+    }
+    app->saves_game = game ? snx_strdup(game) : NULL;
+    app->saves_title = title ? snx_strdup(title) : NULL;
+    /* a console's import's come from its zip; a game's are its own, an export's every one there */
+    if ((every || console == GUI_SWITCH) && (game || !in)) saves_nx(app, game, &app->saves_targets);
+    for (int r = 0; r < 2; ++r)
+        if ((every && !in) || (raw && console == (r ? GUI_NDS : GUI_GBA) && (game || !in)))
+            saves_raws(app, r ? GUI_NDS : GUI_GBA, game, !game);
+    if ((every && !in) || (console == GUI_3DS && (game || !in))) saves_ctrs(app, game, title, !game);
+    if ((every && !in) || (console == GUI_VITA && (game || !in))) saves_psvs(app, game, !game);
+    if (game && !saves_found(app)) {
+        snprintf(app->message, sizeof app->message,
+                 snx_tr("%s: %s has no title ID of its own, which Eden's zip names a game's saves by"), label, title);
+        saves_forget(app);
+        return;
+    }
+    if (!in && game &&
+        !(one_file               ? snx_is_file(app->saves_raw[console == GUI_NDS].at[0].file)
+          : app->saves_ctr.count ? snx_is_dir(app->saves_ctr.at[0].save) || app->saves_ctr.at[0].extdata
+          : app->saves_psv.count ? saves_full(app->saves_psv.at[0].folder)
+                                 : snx_is_dir(app->saves_targets.at[0].folder))) {
+        snprintf(app->message, sizeof app->message, snx_tr("%s: %s has no save of %s: %s is not there"), label, title,
+                 user->nickname,
+                 one_file               ? app->saves_raw[console == GUI_NDS].at[0].file
+                 : app->saves_ctr.count ? app->saves_ctr.at[0].save
+                 : app->saves_psv.count ? app->saves_psv.at[0].folder
+                                        : app->saves_targets.at[0].folder);
+        saves_forget(app);
+        return;
+    }
+    if (!in && !game && !saves_found(app)) {
+        if (every)
+            snprintf(app->message, sizeof app->message, snx_tr("%s: %s has no save of any console"), label,
+                     user->nickname);
+        else
+            snprintf(app->message, sizeof app->message, snx_tr("%s: %s has no save of the %s"), label, user->nickname,
+                     saves_console_name(console));
+        saves_forget(app);
+        return;
+    }
+    if (!app->saves_picked) app->saves_picked = SDL_RegisterEvents(1);
+    if (!app->saves_picked) {
+        snprintf(app->message, sizeof app->message, snx_tr("%s: the file picker could not open: %s"), label,
+                 SDL_GetError());
+        say_failure(app, app->message);
+        saves_forget(app);
+        return;
+    }
+    app->saves_filter.name = one_file ? snx_tr("Save") : snx_tr("Zip");
+    app->saves_filter.pattern = one_file ? "sav" : "zip";
+    if (!in) { /* the file's name: a .sav as the emulators name one after the ROM, else as Eden's export names one */
+        if (one_file)
+            snprintf(name, sizeof name, "%s.sav", snx_path_leaf(app->saves_raw[console == GUI_NDS].at[0].name));
+        else {
+            if (game)
+                snprintf(what, sizeof what, snx_tr("%s save data"), title);
+            else
+                snprintf(what, sizeof what, "%s saves %s", every ? "ScarletNX" : saves_console_name(console),
+                         user->nickname);
+            gui_saves_file_name(name, sizeof name, what, (SnxU64)time(NULL), "zip");
+        }
+#ifdef SDL_PLATFORM_IOS /* no picker saves a file there: the data folder keeps it, and the share sheet takes it */
+        saves_export(app, name, true);
+        return;
+#else
+        {
+            const char* home = SDL_GetUserFolder(SDL_FOLDER_DOCUMENTS);
+            char* location;
+            if (!home) home = SDL_GetUserFolder(SDL_FOLDER_HOME);
+            location = home ? snx_path_join(home, name) : NULL;
+            /* its answer comes as an event even when it cannot open, which says why */
+            SDL_ShowSaveFileDialog(folder_picked, &app->saves_picked, app->window, &app->saves_filter, 1, location);
+            free(location);
+        }
+        return;
+#endif
+    }
+#ifdef SDL_PLATFORM_IOS /* the document picker, which takes no filter */
+    opened = gui_apple_pick(app->window, 0, folder_picked, &app->saves_picked, debug_log(app), why, sizeof why) != 0;
+#else
+    /* its answer comes as an event even when it cannot open, which says why */
+    SDL_ShowOpenFileDialog(folder_picked, &app->saves_picked, app->window, &app->saves_filter, 1, NULL, false);
+#endif
+    if (opened) return;
+    snprintf(app->message, sizeof app->message, snx_tr("%s: the file picker could not open: %s"), label, why);
+    say_failure(app, app->message);
+    saves_forget(app);
+}
+/* the picker's answer: picked (NULL for none), or error when it could not open; the export written there, or the
+   file picked imported */
+static void saves_picked_answer(App* app, const char* picked, const char* error, bool failed) {
+    char label[96];
+    saves_label(app->saves_doing, app->saves_game != NULL, label, sizeof label);
+    if (failed) {
+        snprintf(app->message, sizeof app->message, snx_tr("%s: the file picker could not open: %s"), label,
+                 error ? error : snx_tr("no reason given"));
+        say_failure(app, app->message);
+        saves_forget(app);
+    } else if (!picked) {
+        snprintf(app->message, sizeof app->message, snx_tr("%s: no file was picked."), label);
+        saves_forget(app);
+    } else if (GUI_SAVES_IMPORT(app->saves_doing))
+        saves_import(app, picked);
+    else
+        saves_export(app, picked, false);
+}
 /* choice i taken, or none (-1: Back): the logs as one zip, as the one log of before, or their folder opened; a Folders
    row's folder opened, another picked, its default asked for or its Extra taken off */
 static bool hint_press(App* app, const char* key, int col);
@@ -17640,6 +18444,10 @@ static void pick_take(App* app, int i) {
         return;
     }
     if (i < 0) return;
+    if (app->picks_of == GUI_PICKS_SAVES) { /* the picker for that row's saves */
+        saves_start(app, app->saves_rows[i], NULL, NULL);
+        return;
+    }
     if (app->picks_of == GUI_PICKS_GAME) { /* as its key on Games does */
         game_box_take(app, app->game_picks[i]);
         return;
@@ -20427,6 +21235,7 @@ static void menu_key(App* app, GuiKey key) {
     }
     switch (gui_menu_key(&app->menu, key)) {
         case GUI_MENU_SETTINGS: open_settings(app); break;
+        case GUI_MENU_SAVES: saves_open(app); break;
         case GUI_MENU_LOG: picks_open(app, GUI_PICKS_SHARE); break;
         case GUI_MENU_STAY:
             if (app->menu.quit) { /* Exit, asked first; the queue's recompiles would go with the menu */
@@ -20481,6 +21290,8 @@ static void ask_key(App* app, GuiKey key) {
     if (app->confirm.shown) return;
     if (ask == GUI_ASK_DEEP)
         folder_answer(app, key == GUI_SELECT, second);
+    else if (ask == GUI_ASK_SAVES)
+        saves_answer(app, second);
     else if (ask == GUI_ASK_OUTSIDE)
         outside_answer(app, second);
     else if (ask == GUI_ASK_ROOM)
@@ -20687,6 +21498,7 @@ void ui_menu_entries_load_nds_rom_action_cb(App* app, uint32_t hit) { menu_entry
 void ui_menu_entries_load_android_apk_xapk_action_cb(App* app, uint32_t hit) { menu_entry(app, GUI_ANDROID, hit); }
 void ui_menu_entries_install_keys_action_cb(App* app, uint32_t hit) { menu_entry(app, GUI_KEYS, hit); }
 void ui_menu_entries_settings_action_cb(App* app, uint32_t hit) { menu_entry(app, GUI_SETTINGS, hit); }
+void ui_menu_entries_saves_action_cb(App* app, uint32_t hit) { menu_entry(app, GUI_SAVES, hit); }
 void ui_menu_entries_share_log_action_cb(App* app, uint32_t hit) { menu_entry(app, GUI_LOG, hit); }
 void ui_menu_entries_folders_action_cb(App* app, uint32_t hit) { menu_entry(app, GUI_FOLDERS, hit); }
 void ui_menu_entries_exit_action_cb(App* app, uint32_t hit) { menu_entry(app, GUI_EXIT, hit); }
@@ -21773,11 +22585,12 @@ static void event_take(App* app, const SDL_Event* e) {
         return; /* SDL3 owns the event's data, unlike SDL2. */
     }
 #ifdef SDL_PLATFORM_APPLE
-    /* a picker's answer, any of the five, in the launcher log (debug_log): what came back, or SDL's error */
+    /* a picker's answer, any of the six, in the launcher log (debug_log): what came back, or SDL's error */
     if (e->type >= SDL_EVENT_USER &&
         ((app->addon_picked && e->type == app->addon_picked) || (app->driver_picked && e->type == app->driver_picked) ||
          (app->picked_folder && e->type == app->picked_folder) || (app->picked && e->type == app->picked) ||
-         (app->missing_picked && e->type == app->missing_picked)) &&
+         (app->missing_picked && e->type == app->missing_picked) ||
+         (app->saves_picked && e->type == app->saves_picked)) &&
         debug_log(app)) {
         char shown[SNX_PATH_SIZE];
         snx_home_short(e->user.data1 ? (const char*)e->user.data1 : "none", shown, sizeof shown);
@@ -21788,6 +22601,14 @@ static void event_take(App* app, const SDL_Event* e) {
     /* Add Mod's or Add Cheats' picker's answer: a folder or a file, none, or why it could not open */
     if (app->addon_picked && e->type == app->addon_picked) {
         addons_picked(app, (const char*)e->user.data1, (const char*)e->user.data2, e->user.code != 0);
+        SDL_free(e->user.data1);
+        SDL_free(e->user.data2);
+        return;
+    }
+    /* Export Saves' or Import Saves' picker's answer: where the zip goes or which file comes in, none, or why it could
+       not open */
+    if (app->saves_picked && e->type == app->saves_picked) {
+        saves_picked_answer(app, (const char*)e->user.data1, (const char*)e->user.data2, e->user.code != 0);
         SDL_free(e->user.data1);
         SDL_free(e->user.data2);
         return;
@@ -22226,6 +23047,7 @@ static void forget(App* app) {
     for (int i = 0; i < app->folder_count; ++i) free(app->folders[i]);
     free(app->folder_asked);
     free(app->adding_game);
+    saves_forget(app);
     free(app->own_dir);
     free(app->menu_old);
     free(app->outside_path);

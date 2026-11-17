@@ -190,14 +190,16 @@ void kthread_resume(KThread* t);
 /* pc_wait for a guest thread blocked in a service on the service's own lock m: it counts as stopped for a game pause,
    and a wake during one waits for the pause to end, m let go of meanwhile (returning 0, as a spurious wake). A save
    state taken then makes the request again on load, which is only right while the service has changed nothing for
-   it. Once it has (kthread_commit), the wait is a plain one: a pause waits for the request to finish instead. Another
-   thread just waits */
+   it. Once it has (kthread_commit), the wait is a plain one: a pause waits for the request to finish instead. So is a
+   wait outside an SVC (an NVN call's syncpoint wait), which no svc instruction makes again. Another thread just
+   waits */
 int kthread_wait(PCond* c, PMutex* m, i64 timeout_ns);
 /* the request the calling thread serves has changed what a service holds (vi's QueueBuffer queued its slot): it can't
    be made again, so it finishes before a game pause stops the thread. Until the thread's SVC leaves */
 void kthread_commit(void);
 /* around a guest thread's wait for the host off its core (a JIT compile): stopped as far as a game pause goes, and its
-   end a hold point */
+   end a hold point. A save state restarts the thread at the pc its CPU holds (PARK_RUN), which the caller sets first:
+   only a wait at a point the game's code goes on from can use it */
 void kthread_block(KThread* t);
 void kthread_unblock(KThread* t);
 void kernel_run_main(u64 entry, const u64* args, u64 stack_size, int prio, int core);
@@ -234,6 +236,8 @@ void kernel_dump_threads(void);
 /* the guest thread of slot ix (kt_ix): its id, and its name into out as the dump gives it (the SDK's, else the
    kernel's, "" for none); 0 for a slot with no thread. Read without the locks, as the dump reads them */
 u64 kernel_thread_name(u32 ix, char* out, int n);
+/* The wait reason of a thread, as the dump gives it, for a Tracy fiber's name. Read without the locks */
+const char* kernel_thread_state(const KThread* t, char* out, size_t n);
 /* how long threads waited for their cores and how busy each core was, logged at exit */
 void kernel_core_report(void);
 /* host thread tid (plat_tid's) waits in a fault on memory the GPU holds: its guest thread lets go of its emulated

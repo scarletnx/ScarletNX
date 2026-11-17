@@ -67,6 +67,8 @@ void gmmu_later_post(u32 seq);
    index's lock: it takes no lock and doesn't call back into nvdrv. The index compares addresses only, as the page
    table holds them: guest memory freed under a mapping still counts here, where gmmu_translate reads it as unmapped */
 void gmmu_aliases(u64 cpu, u64 size, void (*fn)(void* ctx, u64 gva, u64 n), void* ctx);
+/* the log line of the index's builds since the last call, whose counts start over (the renderer's 600 presents) */
+void gmmu_alias_log(void);
 /* The other way: each run of the page table over [gva, gva + size), a range below 2^40, in GPU order and clipped to it:
    fn(ctx, gva, cpu, n) for n bytes at gva showing guest memory from cpu on, whole pages. Addresses only, and under the
    same lock, as gmmu_aliases */
@@ -163,6 +165,12 @@ typedef struct {
    cover[first[i]] to cover[first[i + 1]] are the runs over all of it, so a query walks the intervals its range
    meets. seen[r] is the query that last reported run r, so a run over several intervals is reported once. One block
    from bound, cap bytes */
+/* where run `run` starts (bit 0 of key set) or ends in guest memory, by guest page (key >> 1): ends sort first at a
+   page */
+typedef struct {
+    u64 key;
+    u32 run;
+} GEdge;
 typedef struct {
     u64* bound;
     u32* first; /* nbound + 1 entries */
@@ -171,6 +179,14 @@ typedef struct {
     size_t cap;
     u32 nbound, query;
     int stale; /* the runs changed since the index was built */
+    /* the runs' 2 * ngruns edges, sorted by key, kept so at every change of the runs (nvdrv.c
+       edge_insert, edge_remove), so the build is one pass. edges_ok: they match the runs (0 after a state's load,
+       which sorts them again once) */
+    GEdge* edge;
+    u32 nedge, capedge;
+    int edges_ok;
+    u32 builds;   /* the index's builds since the last log (gmmu_alias_log) */
+    u64 build_ns; /* and their time */
 } GAlias;
 /* a change of the page table queued for the GPU thread (gmmu_later), with its sequence number */
 typedef struct {

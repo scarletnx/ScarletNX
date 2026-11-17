@@ -19,5 +19,7 @@ int write_pages_since(const WritePages* t, u64 since, u64 a, u64 size);
 /* fn(ctx, at, n) for each run of [a,a+size) on pages stamped after since, in order, clipped to the range: pages that
    touch make one run. The whole range at once where the overflow stands for every page */
 void write_pages_runs(const WritePages* t, u64 since, u64 a, u64 size, void (*fn)(void* ctx, u64 at, u64 n), void* ctx);
+/* the newest generation stamped on a page of [a,a+size), the overflow's where it is newer; 0 for none */
+u64 write_pages_newest(const WritePages* t, u64 a, u64 size);
 
 #endif

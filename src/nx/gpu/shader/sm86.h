@@ -213,6 +213,10 @@ enum {
 #define SM86_ENUM(name, kind, display) SM86_##name,
     SM86_OPS(SM86_ENUM)
 #undef SM86_ENUM
+    SM86__DECODED, /* the ops the decoder gives, each with an encoding of sm86.decode */
+    /* SM86_LDSM_HMMA: the pair of an LDSM and the HMMA that reads its fragments (fuse.c), which the fusion pass
+       makes of the two before any pass rewrites the array. The decoder gives it no encoding */
+    SM86_LDSM_HMMA,
     SM86__COUNT
 };
 typedef struct {
@@ -261,6 +265,19 @@ static inline u32 sm86_field(const Sm86Insn* in, unsigned lo, unsigned n) {
         v = (in->lo >> lo) | (in->hi << (64 - lo));
     return (u32)(v & ((1ull << n) - 1));
 }
+
+/* SM86_LDSM_HMMA is the pair an LDSM and the HMMA that reads its fragments make, one instruction from two, which
+   fuse.c makes of them before any pass rewrites the array. Its fields are the HMMA's (the second half, whose lowering
+   the passes and the emitter follow), and the LDSM's are packed into the bits an HMMA does not use: its immediate
+   where an LDSM puts it, at 40, and its destination, address register, matrix count and transpose at 91 */
+#define SM86_FUSE_LDSM_DST 91u
+#define SM86_FUSE_LDSM_A   99u
+#define SM86_FUSE_LDSM_CNT 107u
+#define SM86_FUSE_LDSM_TR  109u
+static inline u32 sm86_fuse_ldsm_dst(const Sm86Insn* in) { return sm86_field(in, SM86_FUSE_LDSM_DST, 8); }
+static inline u32 sm86_fuse_ldsm_a(const Sm86Insn* in) { return sm86_field(in, SM86_FUSE_LDSM_A, 8); }
+static inline u32 sm86_fuse_ldsm_count(const Sm86Insn* in) { return sm86_field(in, SM86_FUSE_LDSM_CNT, 2); }
+static inline int sm86_fuse_ldsm_trans(const Sm86Insn* in) { return (int)sm86_field(in, SM86_FUSE_LDSM_TR, 1); }
 
 /* A BRA's or an EXIT's predicate operand, bits 87-89 with 90 its negation (PT when it has none), which the assembler
    writes after the mnemonic: @P0 EXIT P1, @!P1 BRA !P2, target. The instruction takes effect only where its guard and

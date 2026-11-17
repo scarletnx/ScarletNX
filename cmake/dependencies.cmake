@@ -305,8 +305,10 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
         # end, text and value, doubled per zone and only while a server is attached, which is the price of a run
         # that says when this runtime's zone pairs are unbalanced. The code the zones are in and the pictures of the
         # presented frame are on too: both cost nothing until a GUI asks for them.
+        # Fibers are on: the guest's waits get a lane each, named by what the thread blocked on. Tracy's set_option
+        # makes TRACY_FIBERS a PUBLIC define, so the runtime that emits them sees it too.
         set(snx_tracy_options "TRACY_ENABLE ON" "TRACY_ON_DEMAND ON" "TRACY_NO_CRASH_HANDLER ON" "TRACY_STATIC ON"
-                              "TRACY_MANUAL_LIFETIME ON" "TRACY_NO_WAIT_STACKS ON")
+                              "TRACY_MANUAL_LIFETIME ON" "TRACY_NO_WAIT_STACKS ON" "TRACY_FIBERS ON")
         if(NOT ANDROID)
             list(APPEND snx_tracy_options "TRACY_ONLY_LOCALHOST ON" "TRACY_NO_BROADCAST ON")
         endif()

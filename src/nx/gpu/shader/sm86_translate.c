@@ -14,6 +14,7 @@
 #include "nx/gpu/shader/sm86.h"
 #include "nx/gpu/shader/translator.h"
 #include "nx/gpu/shader/write_log.h"
+#include "nx/gpu/shader/fuse.h"
 #include "nx/gpu/shader/minmax_spirv.h"
 #include "common/utilities/spirv_emit.h"
 #include "common/utilities/bits.h"
@@ -80,6 +81,7 @@ typedef struct {
     u32 nfrags, nacc;
     u32 coop_gen[256];               /* the writes each register took, which the matrices are held against */
     u32 stage_slots;                 /* hmma's A and B staged a warp each (g_spirv_translate.hmma_stage, Workgroup) */
+    u32 warp_base;                   /* warp_read's index high bits, made once: every read of a module's is the same */
     u32 push, push_ptr; /* a vertex program's push constant vec4: the base instance, the depth fix (vk/render.c) */
     u32 centroid_mask;  /* the inputs decorated Centroid */
     u32 legacy_fs;      /* a fragment program's legacy varying groups (shader_legacy_group), read as generics 17-31 */
@@ -1798,12 +1800,23 @@ static u32 smap_slot(Ctx* c, u32 buffer) {
         c->smap = spv_emit_storage_buffer(
             &c->e, spv_emit_type_struct_one(&c->e, spv_emit_type_runtime_array(&c->e, c->t_u32, 4)),
             (u32)shader_vk_set(c->stage), SNX_VKB_SMAP);
+        /* NonWritable: no instruction writes the table (the write log, SNX_VKB_WPAGES on the same binding, is a
+           compute program's, which has no table), so the shared optimizer (spv_opt_values) reads each word of it
+           once where it dominates. Before, each word of global memory loaded it again: a third of the module */
+        spv_emit_decorate(&c->e, c->smap, 24, NULL, 0);
         add_interface(c, c->smap);
     }
     return slot;
 }
-static u32 gbuf_word_index(Ctx* c, u32 buffer, u32 word) {
-    if (c->stage == ST_CS) return word;
+/* The n words from word on (n 1, 2 or 4) in index[]. The table's offset is the buffer's place in its first page of
+   guest memory, so at counts the words from the start of a page; the hardware aligns an access of 8 or 16 bytes to
+   its size, so its words are in one page, and one lookup of the page gives them all. Each word has its own check of
+   the buffer's end */
+static void gbuf_word_indices(Ctx* c, u32 buffer, u32 word, u32 n, u32 index[4]) {
+    if (c->stage == ST_CS) {
+        for (u32 k = 0; k < n; k++) index[k] = k ? spv_emit_iadd_u32(&c->e, c->t_u32, word, cu(c, k)) : word;
+        return;
+    }
     u32 slot = smap_slot(c, buffer);
     u32 first = smap_word(c, cu(c, slot)), offset = smap_word(c, cu(c, 16 + slot)),
         count = smap_word(c, cu(c, 32 + slot));
@@ -1817,9 +1830,18 @@ static u32 gbuf_word_index(Ctx* c, u32 buffer, u32 word) {
         spv_emit_binary(&c->e, SPV_OP_BITWISE_OR, c->t_u32,
                         spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, smap_word(c, entry), cu(c, 10)),
                         spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, at, cu(c, 1023)));
-    mapped = spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32,
-                              spv_emit_binary(&c->e, SPV_OP_U_LESS_THAN, c->t_bool, word, count), mapped, cu(c, ~0u));
-    return spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32, none, word, mapped);
+    for (u32 k = 0; k < n; k++) {
+        u32 w = k ? spv_emit_iadd_u32(&c->e, c->t_u32, word, cu(c, k)) : word;
+        u32 m = k ? spv_emit_iadd_u32(&c->e, c->t_u32, mapped, cu(c, k)) : mapped;
+        m = spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32,
+                             spv_emit_binary(&c->e, SPV_OP_U_LESS_THAN, c->t_bool, w, count), m, cu(c, ~0u));
+        index[k] = spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32, none, w, m);
+    }
+}
+static u32 gbuf_word_index(Ctx* c, u32 buffer, u32 word) {
+    u32 index[4];
+    gbuf_word_indices(c, buffer, word, 1, index);
+    return index[0];
 }
 /* A global buffer's bytes as the program sees them: the array's length where it is bound whole, and in an atlas of
    pages its own words that SNX_VKB_SMAP gives, as gbuf_word_index takes them */
@@ -1835,8 +1857,8 @@ static u32 gbuf_bytes(Ctx* c, u32 buffer) {
 /* a word of global (buffer), shared (buffer 0) or local (MEM_LOCAL) memory at the byte address. An address past
    the local memory wraps in it, as spirv_translate.c keeps Maxwell's LDL and STL in theirs */
 static u32 mem_ptr(Ctx* c, u32 buffer, u32 address, u32 word) {
-    u32 index = spv_emit_iadd_u32(
-        &c->e, c->t_u32, spv_emit_binary(&c->e, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, address, cu(c, 2)), cu(c, word));
+    u32 index = spv_emit_binary(&c->e, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, address, cu(c, 2));
+    if (word) index = spv_emit_iadd_u32(&c->e, c->t_u32, index, cu(c, word));
     if (buffer == MEM_LOCAL)
         return spv_emit_function_element_pointer(
             &c->e, c->local_ptr, c->local,
@@ -1844,8 +1866,8 @@ static u32 mem_ptr(Ctx* c, u32 buffer, u32 address, u32 word) {
     if (buffer)
         return spv_emit_storage_access_u32(&c->e, c->gbuf_ptr, buffer, c->zero, gbuf_word_index(c, buffer, index));
     u32 shared = shared_var(c), last = cu(c, c->shared_words - 1);
-    index = spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32,
-                             spv_emit_binary(&c->e, SPV_OP_U_LESS_THAN, c->t_bool, last, index), last, index);
+    /* the clamp is one UMin, not a compare and a select: ucas proved the two equal over the whole u32 domain */
+    index = SPV_EXT(&c->e, c->t_u32, SPV_GLSL_U_MIN, last, index);
     if (c->si->shared_spill)
         return spv_emit_storage_access_u32(&c->e, c->shared_ptr, shared, c->zero,
                                            spv_emit_iadd_u32(&c->e, c->t_u32, shared_block_base(c), index));
@@ -1886,11 +1908,25 @@ static void mem_word_store(Ctx* c, u32 buffer, u32 ptr, u32 value) {
     else
         spv_emit_store_nonprivate(&c->e, ptr, value);
 }
+/* the n words (1, 2 or 4) of one access at the byte address: a global buffer's through one lookup of their page
+   (gbuf_word_indices) */
+static void mem_ptrs(Ctx* c, u32 buffer, u32 address, u32 n, u32 ptrs[4]) {
+    if (!buffer || buffer == MEM_LOCAL) {
+        for (u32 k = 0; k < n; k++) ptrs[k] = mem_ptr(c, buffer, address, k);
+        return;
+    }
+    u32 index[4];
+    gbuf_word_indices(c, buffer, spv_emit_binary(&c->e, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, address, cu(c, 2)), n,
+                      index);
+    for (u32 k = 0; k < n; k++)
+        ptrs[k] = spv_emit_storage_access_u32(&c->e, c->gbuf_ptr, buffer, c->zero, index[k]);
+}
 /* a load of mem_type (NAK's MemType) into registers dst on */
 static void mem_load(Ctx* c, u32 buffer, u32 address, u32 type, u32 dst, int uniform_dst) {
-    u32 words = type == 5 ? 2 : type == 6 ? 4 : 1;
+    u32 words = type == 5 ? 2 : type == 6 ? 4 : 1, ptrs[4];
+    mem_ptrs(c, buffer, address, dst >= SM86_RZ ? 1 : words, ptrs);
     for (u32 k = 0; k < words; k++) {
-        u32 v = mem_word_load(c, buffer, mem_ptr(c, buffer, address, k));
+        u32 v = mem_word_load(c, buffer, ptrs[k]);
         if (type < 4) {
             /* a byte or a halfword of the word, sign or zero extended */
             u32 shift = spv_emit_binary(
@@ -1939,9 +1975,9 @@ static void mem_store(Ctx* c, u32 buffer, u32 address, u32 type, u32 data) {
         }
         return;
     }
-    u32 words = type == 5 ? 2 : type == 6 ? 4 : 1;
-    for (u32 k = 0; k < words; k++)
-        mem_word_store(c, buffer, mem_ptr(c, buffer, address, k), rd(c, data >= SM86_RZ ? data : data + k));
+    u32 words = type == 5 ? 2 : type == 6 ? 4 : 1, ptrs[4];
+    mem_ptrs(c, buffer, address, words, ptrs);
+    for (u32 k = 0; k < words; k++) mem_word_store(c, buffer, ptrs[k], rd(c, data >= SM86_RZ ? data : data + k));
 }
 
 /* RED.ADD.F32 and ATOMG.ADD.F32 (NAK's AtomType F32, .FTZ.RN): a float atomic add to the word of a global buffer at
@@ -2039,9 +2075,8 @@ static u32 isbe_ptr(Ctx* c, u32 var, u32 storage, u32 index) {
 static u32 isbe_load(Ctx* c, u32 var, u32 storage, u32 words, u32 index) {
     u32 last = cu(c, words - 1);
     u32 inside = spv_emit_binary(&c->e, SPV_OP_U_LESS_THAN, c->t_bool, index, cu(c, words));
-    u32 v =
-        spv_emit_load(&c->e, c->t_u32,
-                      isbe_ptr(c, var, storage, spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32, inside, index, last)));
+    u32 at = SPV_EXT(&c->e, c->t_u32, SPV_GLSL_U_MIN, last, index); /* a clamp of the index, not a compare */
+    u32 v = spv_emit_load(&c->e, c->t_u32, isbe_ptr(c, var, storage, at));
     return spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32, inside, v, c->zero);
 }
 /* value into word index of an ISBE array of words: a store past its end goes nowhere */
@@ -2298,6 +2333,10 @@ static int may_write(const Sm86Insn* in, u32 r) {
         case SM86_SUATOM_CAS_B:
         case SM86_HMMA:
         case SM86_LDSM: return in->dst < SM86_RZ && r >= in->dst && r < in->dst + 4u;
+        case SM86_LDSM_HMMA: /* the pair's two halves: the HMMA's D and the LDSM's fragments */
+            return (in->dst < SM86_RZ && r >= in->dst && r < in->dst + 4u) ||
+                   (sm86_fuse_ldsm_dst(in) < SM86_RZ && r >= sm86_fuse_ldsm_dst(in) &&
+                    r < sm86_fuse_ldsm_dst(in) + 4u);
         default: return in->dst < SM86_RZ && r >= in->dst && r < in->dst + 2u;
     }
 }
@@ -2521,8 +2560,7 @@ static u32 uniform_word(Ctx* c, u32 pointer, u32 buffer, u32 index) {
    shader_direct_swap_element does. Returns the array's element */
 static u32 indexed_element(Ctx* c, int slot, u32 var) {
     u32 limit = cu(c, SNX_TEX_ARRAY - 1), index = spv_emit_load(&c->e, c->t_u32, var);
-    index = spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32,
-                             spv_emit_binary(&c->e, SPV_OP_U_LESS_THAN, c->t_bool, limit, index), limit, index);
+    index = SPV_EXT(&c->e, c->t_u32, SPV_GLSL_U_MIN, limit, index); /* a clamp, not a compare and a select */
     index = spv_emit_iadd_u32(&c->e, c->t_u32, index, cu(c, indexed_table(c->si, slot) * SNX_TEX_ARRAY));
     u32 element = uniform_word(c, c->tex_map_ptr, c->tex_map, index);
     c->tex[slot] = spv_emit_sampler_array_element(&c->e, c->tex_sampled[slot], c->tex_array[slot], element);
@@ -3058,29 +3096,41 @@ static u32 system_value(Ctx* c, u32 sr);
 static u32 warp_lane(Ctx* c) {
     return spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, system_value(c, 0), cu(c, 31));
 }
-/* value as lane j (0-31) of the invocation's own 32 holds it */
+/* value as lane j (0-31) of the invocation's own 32 holds it. The index's high bits are the address of the lanes'
+   own 32 in the subgroup's, which every read of a module takes as one value (warp_base) */
 static u32 warp_read(Ctx* c, u32 value, u32 j) {
-    u32 own = spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, system_value(c, 0), cu(c, ~31u));
+    if (!c->warp_base)
+        c->warp_base = spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, system_value(c, 0), cu(c, ~31u));
     spv_emit_capability(&c->e, SPV_CAPABILITY_GROUP_NON_UNIFORM_SHUFFLE);
     return SPV(&c->e, SPV_OP_GROUP_NON_UNIFORM_SHUFFLE, c->t_u32, cu(c, SPV_SCOPE_SUBGROUP), value,
-               spv_emit_binary(&c->e, SPV_OP_BITWISE_OR, c->t_u32, own, j));
+               spv_emit_binary(&c->e, SPV_OP_BITWISE_OR, c->t_u32, c->warp_base, j));
 }
 /* value as lane l ^ mask of the invocation's own 32 holds it, for lane l (mask below 32) */
 static u32 warp_xor(Ctx* c, u32 value, u32 mask) {
     spv_emit_capability(&c->e, SPV_CAPABILITY_GROUP_NON_UNIFORM_SHUFFLE);
     return SPV(&c->e, SPV_OP_GROUP_NON_UNIFORM_SHUFFLE_XOR, c->t_u32, cu(c, SPV_SCOPE_SUBGROUP), value, cu(c, mask));
 }
-/* value as lane 4g + p of the invocation's own 32 holds it, g4 = 4g for the reader's own g: a quad broadcast where the
-   stage has quad operations, which AMD makes a DPP move where a shuffle goes through LDS. Vulkan's quad is four
-   invocations of adjacent subgroup ids, the first a multiple of 4, in every stage that has them; so in a subgroup of
-   64 too the reader's quad is lanes 4g to 4g + 3 of its own 32, and quad lane p is lane 4g + p */
-static u32 quad_read(Ctx* c, u32 value, u32 g4, u32 p) {
+/* the lane of the invocation's own 32 that a read takes: base with k, one of the 16 B words or a quad lane, which is
+   base itself for lane 0 */
+static u32 warp_index(Ctx* c, u32 base, u32 k) {
+    return k ? spv_emit_binary(&c->e, SPV_OP_BITWISE_OR, c->t_u32, base, cu(c, k)) : base;
+}
+/* 4g, the first lane of the reader's own quad: made once, where a read or staged A needs it */
+static u32 quad_base(Ctx* c, u32 lane, u32* g4) {
+    if (!*g4) *g4 = spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, lane, cu(c, 28));
+    return *g4;
+}
+/* value as lane 4g + p of the invocation's own 32 holds it: a quad broadcast where the stage has quad operations,
+   which AMD makes a DPP move where a shuffle goes through LDS. Vulkan's quad is four invocations of adjacent subgroup
+   ids, the first a multiple of 4, in every stage that has them; so in a subgroup of 64 too the reader's quad is lanes
+   4g to 4g + 3 of its own 32, and quad lane p is lane 4g + p */
+static u32 quad_read(Ctx* c, u32 value, u32 lane, u32* g4, u32 p) {
     if (c->stage == ST_CS ? g_spirv_translate.quad_compute : c->stage == ST_FS && g_spirv_translate.quad) {
         spv_emit_capability(&c->e, SPV_CAPABILITY_GROUP_NON_UNIFORM);
         spv_emit_subgroup_quad_capability(&c->e);
         return spv_emit_subgroup_quad_u32(&c->e, c->t_u32, value, 0, cu(c, p));
     }
-    return warp_read(c, value, spv_emit_binary(&c->e, SPV_OP_BITWISE_OR, c->t_u32, g4, cu(c, p)));
+    return warp_read(c, value, warp_index(c, quad_base(c, lane, g4), p));
 }
 static u32 half_pair(Ctx* c, u32 bits) { return SPV_EXT(&c->e, c->t_v2f, SPV_GLSL_UNPACK_HALF2X16, bits); }
 void shader_hmma_choose(int subgroups, int radv_warp32, int shuffle_loops, int shared_max) {
@@ -3221,19 +3271,20 @@ static u32 coop_base(Ctx* c) {
     return spv_emit_binary(&c->e, SPV_OP_I_MUL, c->t_u32,
                            builtin_u32(c, &c->subgroup_id, SPV_BUILT_IN_SUBGROUP_ID), cu(c, COOP_WORDS));
 }
-/* a lane's words (g = l / 4, t = l % 4): g8 = 8g and t */
-static void coop_lane(Ctx* c, u32* g8, u32* t) {
+/* a lane's words (g = l / 4, t = l % 4): 8g, or 16g where the shape's D rows are 16 words (wide), and t. ucas
+   proved the mask form of 8g equal to the two shifts over every lane, and the model prices it one less; the wide
+   row's one shift more is the same mask's, so it is made at the same time */
+static void coop_lane(Ctx* c, u32* g8, u32* t, int wide) {
     u32 lane = warp_lane(c);
     *g8 = spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32,
-                          spv_emit_binary(&c->e, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, lane, cu(c, 2)), cu(c, 3));
+                          spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, lane, cu(c, 28)), cu(c, wide ? 2 : 1));
     *t = spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, lane, cu(c, 3));
 }
 /* the lane's first D word in its slot: row g of a 16 wide shape's 16 words a row at 2g8, and of an 8 wide one's 8 at
    g8, then its two columns. Its four words are that one, the next, and both a row of 8 lanes further on */
 static u32 coop_d_at(Ctx* c, u32 shape) {
-    u32 cols = coop_dim[shape][1], drow, g8, t;
-    coop_lane(c, &g8, &t);
-    drow = cols == 16 ? spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, g8, cu(c, 1)) : g8;
+    u32 cols = coop_dim[shape][1], drow, t;
+    coop_lane(c, &drow, &t, cols == 16);
     return spv_emit_iadd_u32(
         &c->e, c->t_u32, coop_base(c),
         spv_emit_iadd_u32(&c->e, c->t_u32, drow,
@@ -3340,7 +3391,7 @@ static void coop_flow(Ctx* c) {
     }
     c->nfrags = 0;
 }
-static void hmma_coop(Ctx* c, const Sm86Insn* in, int k16, int f32, u32 ra, u32 rb, u32 rc) {
+static void hmma_coop(Ctx* c, const Sm86Insn* in, int k16, int f32, u32 ra, u32 rb, u32 rc, const u32* ldsm_a) {
     u32 na = k16 ? 4 : 2, nb = k16 ? 2 : 1, ncd = f32 ? 4 : 2, a[4], b[2], cc[4], k;
     spv_emit_capability(&c->e, SPV_CAPABILITY_FLOAT16);
     spv_emit_capability(&c->e, SPV_CAPABILITY_GROUP_NON_UNIFORM);
@@ -3395,10 +3446,10 @@ static void hmma_coop(Ctx* c, const Sm86Insn* in, int k16, int f32, u32 ra, u32 
     u32 base = words || fa < 0 || fb < 0 ? coop_base(c) : 0, g8 = 0, t = 0, at_a = 0, at_b = 0;
     if (words) {
         if (ra < SM86_RZ && fa < 0)
-            for (k = 0; k < na; k++) a[k] = rd(c, ra + k);
+            for (k = 0; k < na; k++) a[k] = ldsm_a ? ldsm_a[k] : rd(c, ra + k);
         if (rb < SM86_RZ && fb < 0)
             for (k = 0; k < nb; k++) b[k] = rd(c, rb + k);
-        coop_lane(c, &g8, &t);
+        coop_lane(c, &g8, &t, 0);
         at_a = spv_emit_iadd_u32(&c->e, c->t_u32, base, spv_emit_iadd_u32(&c->e, c->t_u32, g8, t));
         at_b = coop_add(c, at_a, COOP_B);
         coop_barrier(c);
@@ -3621,7 +3672,9 @@ static void hmma_astat(Ctx* c, const Sm86Insn* in, int k16, int f32, u32 ra, u32
    its pair's, the other two, with a xor of 4, which RADV makes a DPP move where a shuffle at any index is a permute
    through LDS. Its A pairs follow the same quad lanes, in the same order: quad broadcasts of lanes u and 2 + u, the
    one G0 picks. Only the order of the sums changes, lanes of G0 1 adding quad lanes 2 and 3's pairs first */
-static void hmma(Ctx* c, const Sm86Insn* in) {
+/* an HMMA and its two fragments: the words a fused pair's LDSM read are given (a and b, NULL where they come from
+   the registers), so that the fused block writes them into the slot without a read of the registers */
+static void hmma(Ctx* c, const Sm86Insn* in, const u32* ldsm_a, const u32* ldsm_b) {
     u32 v = sm86_field(in, 72, 19);
     if (v & ~0x18u) {
         fail(c, "HMMA variant %#x", v);
@@ -3630,7 +3683,7 @@ static void hmma(Ctx* c, const Sm86Insn* in) {
     int k16 = (int)(v >> 3 & 1), f32 = (int)(v >> 4 & 1);
     u32 ra = sm86_field(in, 24, 8), rb = sm86_field(in, 32, 8), rc = sm86_field(in, 64, 8);
     if (c->coop) {
-        hmma_coop(c, in, k16, f32, ra, rb, rc);
+        hmma_coop(c, in, k16, f32, ra, rb, rc, ldsm_a);
         return;
     }
     if (g_spirv_translate.hmma_astat && !g_spirv_translate.hmma_f16) {
@@ -3638,17 +3691,16 @@ static void hmma(Ctx* c, const Sm86Insn* in) {
         return;
     }
     u32 na = k16 ? 4 : 2, nb = k16 ? 2 : 1, ncd = f32 ? 4 : 2, a[4], b[2], cc[4], k;
-    for (k = 0; k < na; k++) a[k] = ra >= SM86_RZ ? c->zero : rd(c, ra + k);
+    for (k = 0; k < na; k++) a[k] = ldsm_a ? ldsm_a[k] : (ra >= SM86_RZ ? c->zero : rd(c, ra + k));
     u32 zero = rb >= SM86_RZ ? 0 : hmma_zero(c);
     for (k = 0; k < nb; k++) {
-        b[k] = rb >= SM86_RZ ? c->zero : rd(c, rb + k);
+        b[k] = ldsm_b ? ldsm_b[k] : (rb >= SM86_RZ ? c->zero : rd(c, rb + k));
         if (zero) b[k] = spv_emit_binary(&c->e, SPV_OP_BITWISE_OR, c->t_u32, b[k], zero);
     }
     for (k = 0; k < ncd; k++) cc[k] = rc >= SM86_RZ ? c->zero : rd(c, rc + k);
     u32 lane = warp_lane(c);
-    u32 g4 = spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, lane, cu(c, 28));
-    u32 t8 = spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32,
-                             spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, lane, cu(c, 3)), cu(c, 3));
+    u32 g4 = 0; /* 4g, which quad_read and a staged A make where they need it */
+    u32 t8 = 0; /* (lane % 4) * 8, which the paths that read B by a shuffle or as a pair take: staged B's row is 16t */
     /* the pairs as two f16 for OpFDot2MixAcc32VALVE (a bitcast: no instruction), or unpacked to two f32 */
     int mixed = g_spirv_translate.mixed_dot && g_spirv_translate.float16;
     /* The products and their sum in half floats, two products to an OpFma where the f32 sum takes two instructions
@@ -3714,13 +3766,22 @@ static void hmma(Ctx* c, const Sm86Insn* in) {
         for (k = 0; k < nb; k++) spv_emit_store_nonprivate(&c->e, stage_ptr(c, coop_add(c, own_b, k)), b[k]);
         coop_barrier(c);
         a_at = spv_emit_iadd_u32(&c->e, c->t_u32, slot,
-                                 spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, g4, cu(c, 2)));
+                                 spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32,
+                                                 quad_base(c, lane, &g4), cu(c, 2)));
+        /* B's row t at 16t: ucas found the two shifts by constants (8t, then one more) one */
         b_at = spv_emit_iadd_u32(
             &c->e, c->t_u32, slot,
             spv_emit_iadd_u32(&c->e, c->t_u32,
-                              spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, t8, cu(c, 1)), cu(c, 128)));
+                              spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32,
+                                              spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, lane, cu(c, 3)),
+                                              cu(c, 4)),
+                              cu(c, 128)));
     }
     u32 g0 = 0, t8h = 0, mine[2][2][2]; /* pairs: [column 2t + j][B's register h][quad lane 2 G0 + u]'s word */
+    if (!stage) {
+        t8 = spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32,
+                             spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, lane, cu(c, 3)), cu(c, 3));
+    }
     if (pairs) {
         u32 half = spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32,
                                    spv_emit_binary(&c->e, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, lane, cu(c, 1)),
@@ -3735,10 +3796,10 @@ static void hmma(Ctx* c, const Sm86Insn* in) {
             if (stage)
                 bits = spv_emit_load_nonprivate(&c->e, c->t_u32, stage_ptr(c, coop_add(c, a_at, 4 * p + k)));
             else if (pairs) {
-                u32 x = quad_read(c, a[k], g4, p & 1), y = quad_read(c, a[k], g4, 2 + (p & 1));
+                u32 x = quad_read(c, a[k], lane, &g4, p & 1), y = quad_read(c, a[k], lane, &g4, 2 + (p & 1));
                 bits = spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32, g0, p < 2 ? y : x, p < 2 ? x : y);
             } else
-                bits = quad_read(c, a[k], g4, p);
+                bits = quad_read(c, a[k], lane, &g4, p);
             av[k] = mixed || packed ? spv_emit_unary(&c->e, SPV_OP_BITCAST, t_v2h, bits) : half_pair(c, bits);
         }
         for (u32 j = 0; j < 2; j++)
@@ -3749,10 +3810,10 @@ static void hmma(Ctx* c, const Sm86Insn* in) {
                         spv_emit_load_nonprivate(&c->e, c->t_u32, stage_ptr(c, coop_add(c, b_at, 8 * j + 2 * p + k)));
                 else if (!pairs)
                     bits =
-                        warp_read(c, b[k], spv_emit_binary(&c->e, SPV_OP_BITWISE_OR, c->t_u32, t8, cu(c, 4 * j + p)));
+                        warp_read(c, b[k], warp_index(c, t8, 4 * j + p));
                 else if (p < 2)
                     bits = mine[j][k][p] =
-                        warp_read(c, b[k], spv_emit_binary(&c->e, SPV_OP_BITWISE_OR, c->t_u32, t8h, cu(c, 4 * j + p)));
+                        warp_read(c, b[k], warp_index(c, t8h, 4 * j + p));
                 else
                     bits = warp_xor(c, mine[j][k][p - 2], 4);
                 bv[j][k] = mixed || packed ? spv_emit_unary(&c->e, SPV_OP_BITCAST, t_v2h, bits) : half_pair(c, bits);
@@ -3805,28 +3866,24 @@ static u32 shared_u16(Ctx* c, u32 address) {
    rows 0 to 7 (the register at 24 plus the signed offset at 40-63; bit 91, a uniform register at 32, is not taken),
    and lane l receives row l / 4's elements at columns 2(l % 4) and 2(l % 4) + 1, or transposed (MT88, bit 78) column
    l / 4's at rows 2(l % 4) and 2(l % 4) + 1 */
-static void ldsm(Ctx* c, const Sm86Insn* in) {
-    u32 count = sm86_field(in, 72, 2), trans = sm86_field(in, 78, 1);
-    if (count > 2 || sm86_field(in, 74, 4) || sm86_field(in, 79, 12) || sm86_field(in, 91, 1)) {
-        fail(c, "LDSM variant %#x", sm86_field(in, 72, 20));
-        return;
-    }
+/* an LDSM's reads: the fragments it fills, one word a matrix. The fields are given, which a fused pair of an LDSM
+   and an HMMA (fuse.c) packs into its own (sm86_fuse_ldsm_*) */
+static void ldsm_words(Ctx* c, u32 reg, u32 imm, u32 count, int trans, u32* out) {
     shared_var(c); /* before mem_ptr, which bounds the index by its size: as LDS does, for a program whose LDSM comes
                       before any other access to shared memory */
-    u32 imm = sm86_field(in, 40, 24), bias = imm & 0x800000u ? imm | 0xff000000u : imm;
-    u32 addr = spv_emit_iadd_u32(&c->e, c->t_u32, rd(c, sm86_field(in, 24, 8)), cu(c, bias));
+    u32 addr = spv_emit_iadd_u32(&c->e, c->t_u32, rd(c, reg), cu(c, imm));
     u32 lane = warp_lane(c), g = spv_emit_binary(&c->e, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, lane, cu(c, 2));
-    u32 t = spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, lane, cu(c, 3)), out[4];
+    u32 t = spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, lane, cu(c, 3));
     for (u32 m = 0; m < (1u << count); m++) {
+        u32 m8 = 8 * m;
         if (!trans) {
-            u32 row = warp_read(c, addr, spv_emit_iadd_u32(&c->e, c->t_u32, g, cu(c, 8 * m)));
+            u32 row = warp_read(c, addr, m8 ? spv_emit_iadd_u32(&c->e, c->t_u32, g, cu(c, m8)) : g);
             u32 at = spv_emit_iadd_u32(&c->e, c->t_u32, row,
                                        spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, t, cu(c, 2)));
             out[m] = spv_emit_load_nonprivate(&c->e, c->t_u32, mem_ptr(c, 0, at, 0));
         } else {
-            u32 r0 = spv_emit_iadd_u32(&c->e, c->t_u32,
-                                       spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, t, cu(c, 1)),
-                                       cu(c, 8 * m));
+            u32 t2 = spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, t, cu(c, 1));
+            u32 r0 = m8 ? spv_emit_iadd_u32(&c->e, c->t_u32, t2, cu(c, m8)) : t2;
             u32 col = spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, g, cu(c, 1));
             u32 lo = shared_u16(c, spv_emit_iadd_u32(&c->e, c->t_u32, warp_read(c, addr, r0), col));
             u32 hi = shared_u16(
@@ -3836,8 +3893,56 @@ static void ldsm(Ctx* c, const Sm86Insn* in) {
                                      spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, hi, cu(c, 16)));
         }
     }
+}
+/* the LDSM's reads into out, and the destination registers' words, which the two halves of a fused pair give
+   twice: once each with its own emitter, whose block the fuse deletes, and once with the fuse's words given to the
+   HMMA (out kept for the second of them) */
+static void ldsm_do(Ctx* c, u32 dst, u32 reg, u32 imm, u32 count, int trans, u32* out) {
+    u32 out4[4];
+    if (!out) out = out4;
+    ldsm_words(c, reg, imm, count, trans, out);
     for (u32 m = 0; m < (1u << count); m++)
-        if (in->dst < SM86_RZ) wr(c, in->dst + m, out[m]);
+        wr(c, dst + m, out[m]);
+}
+static void ldsm(Ctx* c, const Sm86Insn* in) {
+    u32 count = sm86_field(in, 72, 2), trans = sm86_field(in, 78, 1);
+    if (count > 2 || sm86_field(in, 74, 4) || sm86_field(in, 79, 12) || sm86_field(in, 91, 1)) {
+        fail(c, "LDSM variant %#x", sm86_field(in, 72, 20));
+        return;
+    }
+    u32 imm = sm86_field(in, 40, 24), bias = imm & 0x800000u ? imm | 0xff000000u : imm;
+    ldsm_do(c, in->dst, sm86_field(in, 24, 8), bias, count, (int)trans, NULL);
+}
+/* the fused pair of an LDSM and the HMMA that reads its fragments (fuse.c's SM86_LDSM_HMMA). The two halves are
+   written first, each with its own emitter, whose SPIR-V the fuse then deletes and writes over from scratch: the
+   properties the two halves make (the capabilities, the shared variable, the cooperative slot, the registers) are
+   the module's, in sections the delete does not touch, and the caches the deleted block made go with it. The fused
+   one reads the tiles once, writes the destination registers with the words and gives them to the HMMA, which puts
+   A's words into the slot without a read of the registers */
+static void fused_ldsm_hmma(Ctx* c, const Sm86Insn* in) {
+    SpvMark mark = spv_emit_mark(&c->e);
+    u32 nfrags = c->nfrags, nacc = c->nacc, warp_base = c->warp_base;
+    u32 out4[4];
+    ldsm_words(c, sm86_fuse_ldsm_a(in), sm86_field(in, 40, 24), sm86_fuse_ldsm_count(in), sm86_fuse_ldsm_trans(in),
+               out4);
+    hmma(c, in, NULL, NULL);
+    spv_emit_rewind(&c->e, mark);
+    c->nfrags = nfrags, c->nacc = nacc; /* and the caches, and any value the module made in the deleted block: the
+        ids it made are of the words that are gone, so the fused block makes them again */
+    c->warp_base = warp_base;
+    /* coop_gen[] and hmma_count also advanced in the deleted block: the generation marks only compare equal within
+       a block, and hmma_zero only needs a value that is never zero in a lane that runs, so both still hold. */
+    u32 count = sm86_fuse_ldsm_count(in), trans = sm86_fuse_ldsm_trans(in);
+    u32 imm = sm86_field(in, 40, 24), bias = imm & 0x800000u ? imm | 0xff000000u : imm;
+    int k16 = (int)(sm86_field(in, 72, 19) >> 3 & 1);
+    u32 na = k16 ? 4 : 2, a[4], out[4];
+    ldsm_do(c, sm86_fuse_ldsm_dst(in), sm86_fuse_ldsm_a(in), bias, count, trans, out);
+    if (c->failed) return;
+    if (sm86_fuse_ldsm_dst(in) != sm86_field(in, 24, 8)) return;
+    if (1u << count < 4u)
+        for (u32 k = 1u << count; k < 4; k++) out[k] = c->zero; /* fewer fragments: the rest is zero */
+    for (u32 k = 0; k < na; k++) a[k] = out[k];
+    hmma(c, in, a, NULL);
 }
 /* MOVM.16.MT88 (0x23a): the 8x8 matrix of 16-bit elements in the warp's register at 24, transposed into the
    destination, as PTX's movmatrix.sync.aligned.m8n8.trans.b16. Lane l holds row l / 4 at columns 2(l % 4) and
@@ -5629,8 +5734,9 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
         case SM86_SUST_P:
         case SM86_SURED:
         case SM86_SUATOM: surface(c, in); return;
-        case SM86_HMMA: hmma(c, in); return;
+        case SM86_HMMA: hmma(c, in, NULL, NULL); return;
         case SM86_LDSM: ldsm(c, in); return;
+        case SM86_LDSM_HMMA: fused_ldsm_hmma(c, in); return;
         case SM86_MOVM: movm(c, in); return;
         case SM86_KILL:
             c->si->has_discard = 1; /* the renderer tests depth before the program only for one that keeps its pixels */
@@ -6939,6 +7045,17 @@ u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, Sha
             }
             break;
         }
+    /* after the CALLs are inlined and before the passes that move instructions: the pairs of instructions that one
+       operation takes the place of (fuse.c), whose spans the array moves invalidate */
+    {
+        u32 nfuse = 0;
+        FuseSpan* fuse = sm86_fuse_find(insn, n, &nfuse);
+        if (fuse) { /* the array this function allocates, which the translation reads through c->in */
+            sm86_fuse_make(insn, &n, fuse, nfuse);
+            c->in = insn;
+            c->n = n;
+        }
+    }
     if (!c->failed && !track_globals(c)) fail(c, "out of memory");
     ShStructure* st = c->failed ? NULL : build_structure(c);
     u32* out = NULL;

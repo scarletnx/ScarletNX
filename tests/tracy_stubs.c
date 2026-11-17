@@ -20,4 +20,9 @@ TracyCZoneCtx snx_tracy_zone_begin(const struct ___tracy_source_location_data* s
     return ctx;
 }
 void snx_tracy_zone_end(TracyCZoneCtx ctx) { (void)ctx; }
+void snx_tracy_fiber_enter(uint32_t slot, uint32_t kind, const char* name) {
+    (void)slot, (void)kind, (void)name;
+}
+void snx_tracy_fiber_leave(void) {}
+void snx_tracy_fiber_leave_all(void) {}
 #endif

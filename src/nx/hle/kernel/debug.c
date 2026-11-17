@@ -387,6 +387,7 @@ static const char* thread_state(const KThread* t, char* s, size_t n) {
     }
     return s;
 }
+const char* kernel_thread_state(const KThread* t, char* s, size_t n) { return thread_state(t, s, n); }
 /* A thread that called svcSleepThread 100 times or more since the last dump polls something: its registers at its last
    sleep, what they point at, and the code around the sleep's return address and its three callers'. Counted per
    thread slot (g_hle.debug.sleeps), from 0 again when a new thread takes the slot */

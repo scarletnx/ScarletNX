@@ -15,6 +15,7 @@
 #include "common/utilities/spirv_opt.h"
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/pagespace.h"
+#include "nx/gpu/vk/pending_pages.h"
 #include "nx/gpu/vk/descriptors.h"
 #include "common/gpu/vk/extension_bans.h"
 #include "common/gpu/vk/extension_commands.h"
@@ -66,8 +67,19 @@
 static void guest_done(u64 cpu, u64 len) {
     if (vk_uma()) vk_uma_mem_need_cpu(cpu, len);
 }
+/* the GPU's reads of what new ASTC textures' blocks hold done and taken (vk_tex_kind_frame): their submissions waited
+   for, then the work of a frame after its present, which takes each to BC1, BC4 or BC5 where its kind says so */
+static void kind_land(void) {
+    vk_lock();
+    vk_finish();
+    vk_tex_kind_frame();
+    vk_finish();
+    vk_unlock();
+}
 /* the BC7 encoder's frames (vk_tex_later_frame) until every ASTC texture held as BC7 is, or until a frame does nothing
-   (a texture whose load failed waits for it): the images a check compares are BC7 then. The frames it took */
+   (a texture whose load failed waits for it): the images a check compares are BC7 then. No wait for the GPU: a check
+   that holds a submission at a gate drains too. A texture whose kind is still on its way waits for it (kind_land). The
+   frames it took */
 static u32 later_drain(void) {
     VkLaterStats a, b;
     u32 frames = 0;
@@ -3856,6 +3868,7 @@ static VKAPI_ATTR VkResult VKAPI_CALL sc_submit(VkQueue q, u32 n, const VkSubmit
 }
 static void sc_waited(u64 t0, u64 timeout) {
     if (!timeout) return; /* a look, no wait */
+    if (plat_tid() == vk_timeline_tid()) return; /* the thread that follows the timeline waits on it by design */
     __atomic_add_fetch(&g_sc.n.waits, 1, __ATOMIC_RELAXED);
     __atomic_add_fetch(&g_sc.n.wait_ns, plat_ns() - t0, __ATOMIC_RELAXED);
 }
@@ -7075,6 +7088,7 @@ static void results_copied(u64 cpu, u64 len) { vk_own_cpu_touched(cpu, len); }
 #include "vulkan_owned_readback.inc"
 #include "vulkan_own_trim.inc"
 #include "vulkan_wlog_again.inc"
+#include "vulkan_wlog_clear.inc"
 #include "vulkan_lock_waits.inc"
 #include "vulkan_release_slot.inc"
 #include "vulkan_guest_staging.inc"
@@ -7085,6 +7099,7 @@ static void results_copied(u64 cpu, u64 len) { vk_own_cpu_touched(cpu, len); }
 #include "vulkan_unmapped_tail.inc"
 #include "vulkan_draw_storage_stages.inc"
 #include "vulkan_mesh_inputs.inc"
+#include "vulkan_draw_memo.inc"
 #include "vulkan_shader_stage_images.inc"
 #include "vulkan_cross_stage_blend.inc"
 #include "vulkan_texture_gradients.inc"
@@ -7098,6 +7113,7 @@ static void results_copied(u64 cpu, u64 len) { vk_own_cpu_touched(cpu, len); }
 #include "vulkan_draw_texture.inc"
 #include "vulkan_lone_lane.inc"
 #include "vulkan_descriptor_heaps.inc"
+#include "vulkan_descriptor_memo.inc"
 #include "vulkan_sample_raster.inc"
 #include "vulkan_mixed_coverage.inc"
 #include "vulkan_alpha_coverage.inc"
@@ -7107,8 +7123,14 @@ static void results_copied(u64 cpu, u64 len) { vk_own_cpu_touched(cpu, len); }
 #include "vulkan_targetless_stores.inc"
 #include "vulkan_storage_image_keep.inc"
 #include "vulkan_uma_imports.inc"
+#include "vulkan_uma_pages.inc"
+#include "vulkan_uma_region_reads.inc"
 #include "vulkan_write_tracking.inc"
 #include "vulkan_tex_partial.inc"
+#include "vulkan_texture_quiet.inc"
+#include "vulkan_cube_take.inc"
+#include "vulkan_texture_quiet_other.inc"
+#include "vulkan_memo_over_target.inc"
 #include "vulkan_astc_later.inc"
 #include "vulkan_astc_kind.inc"
 
@@ -7155,6 +7177,7 @@ static int check_hmma_file_key(void) {
 #include "vulkan_pipeline_probe.inc"
 #include "vulkan_indexed_map_bench.inc"
 #include "vulkan_nvn_storage.inc"
+#include "vulkan_uma_storage_reads.inc"
 #include "vulkan_nvn_compat.inc"
 #include "vulkan_nvn_copy_flags.inc"
 #include "vulkan_nvn_copy_conversions.inc"
@@ -7792,6 +7815,8 @@ static int run_headless(int argc, char** argv) {
             result = check_fragment_flow_lod();
         else if (!strcmp(name, "fragment_quad"))
             result = check_fragment_quad();
+        else if (!strcmp(name, "draw_memo"))
+            result = check_draw_memo();
         else if (!strcmp(name, "owned_page_reads"))
             result = check_owned_page_reads();
         else if (!strcmp(name, "cross_stage_blend"))
@@ -7808,8 +7833,22 @@ static int run_headless(int argc, char** argv) {
             result = check_shader_stage_images();
         else if (!strcmp(name, "tessellation"))
             result = check_nvn_default_tessellation();
+        else if (!strcmp(name, "memo_over_target"))
+            result = check_memo_over_target();
+        else if (!strcmp(name, "texture_quiet_other"))
+            result = check_texture_quiet_other();
+        else if (!strcmp(name, "cube_take"))
+            result = check_cube_take();
+        else if (!strcmp(name, "cube_take_frames"))
+            result = check_cube_take_frames();
+        else if (!strcmp(name, "texture_quiet"))
+            result = check_texture_quiet();
         else if (!strcmp(name, "draw_texture"))
             result = check_draw_texture();
+        else if (!strcmp(name, "descriptor_memo"))
+            result = check_descriptor_memo();
+        else if (!strcmp(name, "wlog_clear"))
+            result = check_wlog_clear();
         else if (!strcmp(name, "descriptor_heaps"))
             result = check_descriptor_heaps();
         else if (!strcmp(name, "indirect_dispatch"))
@@ -7988,11 +8027,13 @@ static int run_headless(int argc, char** argv) {
         int ran = 0;
         if (!strcmp(name, "runtime_write") && ++ran) CHECK(!check_uma_runtime_write());
         if (!strcmp(name, "constants") && ++ran) CHECK(!check_uma_constants());
+        if (!strcmp(name, "constants_copied") && ++ran) CHECK(!check_uma_constants_copied());
         if (!strcmp(name, "migrate") && ++ran) CHECK(!check_uma_migrate());
         if (!strcmp(name, "way") && ++ran) CHECK(!check_uma_way());
         if (!strcmp(name, "region_writes") && ++ran) CHECK(!check_uma_region_writes());
         if (!strcmp(name, "region_merge") && ++ran) CHECK(!check_uma_region_merge());
         if (!strcmp(name, "writes") && ++ran) CHECK(!check_uma_writes());
+        if (!strcmp(name, "atlas_pending") && ++ran) CHECK(!check_uma_atlas_pending());
         if (!strcmp(name, "feedback") && ++ran) CHECK(!check_uma_feedback());
         if (!strcmp(name, "publish") && ++ran) CHECK(!check_uma_publish());
         if (!strcmp(name, "dispatch") && ++ran) CHECK(!check_uma_dispatch());
@@ -8006,13 +8047,29 @@ static int run_headless(int argc, char** argv) {
         if (!strcmp(name, "logged_back") && ++ran) CHECK(!check_uma_logged_back());
         if (!strcmp(name, "trapped_window") && ++ran) CHECK(!check_uma_trapped_window());
         if (!strcmp(name, "copies") && ++ran) CHECK(!check_uma_copies());
+        if (!strcmp(name, "pages_producers") && ++ran) CHECK(!check_uma_pages_producers());
+        if (!strcmp(name, "pages_counts") && ++ran) CHECK(!check_uma_pages_counts());
+        if (!strcmp(name, "pages_partial") && ++ran) CHECK(!check_uma_pages_partial());
+        if (!strcmp(name, "texture_region") && ++ran) CHECK(!check_uma_texture_region());
+        if (!strcmp(name, "dma_region") && ++ran) CHECK(!check_uma_dma_region());
+        if (!strcmp(name, "storage_region") && ++ran) CHECK(!check_uma_storage_region());
+        if (!strcmp(name, "storage_order") && ++ran) CHECK(!check_uma_storage_order());
+        if (!strcmp(name, "alias_in_place") && ++ran) CHECK(!check_uma_alias_in_place());
+        if (!strcmp(name, "alias_fallback") && ++ran) CHECK(!check_uma_alias_fallback());
+        if (!strcmp(name, "alias_merge") && ++ran) CHECK(!check_uma_alias_merge());
+        if (!strcmp(name, "alias_cpu_read") && ++ran) CHECK(!check_uma_alias_cpu_read());
+        if (!strcmp(name, "alias_shader") && ++ran) CHECK(!check_alias_shader());
+        if (!strcmp(name, "alias_order") && ++ran) CHECK(!check_uma_alias_order());
         if (!ran) {
-            fprintf(
-                stderr,
-                "SNX_TEST_UMA_ONLY=%s names no check: 1, runtime_write, constants, migrate, way, region_writes, "
-                "region_merge, writes, feedback, publish, dispatch, dispatch_open, texture_pending, dispatch_constants, "
-                "dispatch_table, header_words, placed, placed_view, logged_back, trapped_window or copies\n",
-                name);
+            fprintf(stderr,
+                    "SNX_TEST_UMA_ONLY=%s names no check: 1, runtime_write, constants, constants_copied, migrate, way, "
+                    "region_writes, region_merge, writes, atlas_pending, feedback, publish, dispatch, dispatch_open, "
+                    "texture_pending, dispatch_constants, "
+                    "dispatch_table, header_words, placed, placed_view, logged_back, trapped_window, copies, "
+                    "pages_producers, pages_counts, pages_partial, texture_region, dma_region, storage_region, "
+                    "storage_order, alias_in_place, alias_fallback, alias_merge, alias_cpu_read, alias_shader or "
+                    "alias_order\n",
+                    name);
             return 2;
         }
         vk_pipeline_quiesce();
@@ -8026,7 +8083,9 @@ static int run_headless(int argc, char** argv) {
         CHECK(!check_uma_lookup_then_submit());
         CHECK(!check_uma_runtime_write());
         CHECK(!check_uma_constants());
+        CHECK(!check_uma_constants_copied());
         CHECK(!check_uma_writes());
+        CHECK(!check_uma_atlas_pending());
         CHECK(!check_uma_feedback());
         CHECK(!check_uma_publish());
         CHECK(!check_uma_dispatch());
@@ -8045,6 +8104,19 @@ static int run_headless(int argc, char** argv) {
         CHECK(!check_uma_migrate());
         CHECK(!check_uma_region_writes());
         CHECK(!check_uma_region_merge());
+        CHECK(!check_uma_pages_counts());
+        CHECK(!check_uma_pages_producers());
+        CHECK(!check_uma_pages_partial());
+        CHECK(!check_uma_texture_region());
+        CHECK(!check_uma_dma_region());
+        CHECK(!check_uma_alias_in_place());
+        CHECK(!check_uma_alias_fallback());
+        CHECK(!check_uma_alias_merge());
+        CHECK(!check_uma_alias_cpu_read());
+        CHECK(!check_alias_shader());
+        CHECK(!check_uma_alias_order());
+        CHECK(!check_uma_storage_region());
+        CHECK(!check_uma_storage_order());
         vk_pipeline_quiesce();
         printf("PASS headless Vulkan in place only: %u validation messages\n", g_vk_validation_messages);
         return 0;
@@ -8093,6 +8165,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_owned_writable());
     CHECK(!check_own_trim());
     CHECK(!check_wlog_again());
+    CHECK(!check_wlog_clear());
     CHECK(!check_owned_in_place_write());
     CHECK(!check_owned_read_device());
     CHECK(!check_owned_peek_identity());
@@ -8150,7 +8223,12 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_shader_integer_half_rounding());
     CHECK(!check_shader_integer_float());
     CHECK(!check_draw_texture());
+    CHECK(!check_texture_quiet());
+    CHECK(!check_cube_take());
+    CHECK(!check_texture_quiet_other());
+    CHECK(!check_memo_over_target());
     CHECK(!check_descriptor_heaps());
+    CHECK(!check_descriptor_memo());
     CHECK(!check_fragment_barrier_backend());
     CHECK(!check_capture_cap());
     CHECK(!check_shader_float_rounding());
@@ -8206,6 +8284,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_saturate());
     CHECK(!check_sampler_reduction());
     CHECK(!check_shader_invalidation());
+    CHECK(!check_draw_memo());
     CHECK(!check_indirect_dispatch_once());
     CHECK(!check_shared_clamp());
     CHECK(!check_shared_spill());
@@ -8254,7 +8333,9 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_uma_lookup_then_submit());
     CHECK(!check_uma_runtime_write());
     CHECK(!check_uma_constants());
+    CHECK(!check_uma_constants_copied());
     CHECK(!check_uma_writes());
+    CHECK(!check_uma_atlas_pending());
     CHECK(!check_uma_feedback());
     CHECK(!check_uma_publish());
     CHECK(!check_uma_dispatch());
@@ -8276,6 +8357,19 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_uma_migrate());
     CHECK(!check_uma_region_writes());
     CHECK(!check_uma_region_merge());
+    CHECK(!check_uma_pages_counts());
+    CHECK(!check_uma_pages_producers());
+    CHECK(!check_uma_pages_partial());
+    CHECK(!check_uma_texture_region());
+    CHECK(!check_uma_dma_region());
+    CHECK(!check_uma_alias_in_place());
+    CHECK(!check_uma_alias_fallback());
+    CHECK(!check_uma_alias_merge());
+    CHECK(!check_uma_alias_cpu_read());
+    CHECK(!check_alias_shader());
+    CHECK(!check_uma_alias_order());
+    CHECK(!check_uma_storage_region());
+    CHECK(!check_uma_storage_order());
     CHECK(!check_write_tracking());
     CHECK(!check_descriptor_room());
     CHECK(!check_sparse_texture());

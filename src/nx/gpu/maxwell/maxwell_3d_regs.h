@@ -58,16 +58,26 @@ enum {
     MAXWELL3D_DEPTH_BOUNDS = 0x3E7,
     MAXWELL3D_COLOR_TARGET_MRT_ENABLE = 0x3EB,
     MAXWELL3D_RASTER_SAMPLES_ENABLE = 0x3ED, /* SET_MULTISAMPLE_RASTER_ENABLE: raster samples apart from the target's */
+    MAXWELL3D_ANTI_ALIAS_RASTER = 0x3EE,     /* SET_MULTISAMPLE_RASTER_SAMPLES: their layout, a DS_MSAA_ mode */
     MAXWELL3D_SAMPLE_MASK = 0x3EF, /* SET_MULTISAMPLE_SAMPLE_MASK: 4 words, a pixel of a 2x2 quad's 16 samples each */
+    /* tir_modulation: the components the share of raster samples scales (bit 0 RGB, bit 1 alpha), then the
+       function, bit 0 the table (tir_modulation_coeff, a byte each) */
+    MAXWELL3D_TIR_MODULATION = 0x3F5,
+    MAXWELL3D_TIR_MODULATION_FUNCTION = 0x3F6,
+    MAXWELL3D_TIR_MODULATION_COEFF = 0x40C,
     /* draw_texture (12 words, Eden's Regs::DrawTexture): its last, src_y0, starts it */
     MAXWELL3D_DRAW_TEXTURE = 0x420,
     MAXWELL3D_DRAW_TEXTURE_SRC_Y0 = 0x42B,
     MAXWELL3D_VERTEX_ATTRIB_FORMAT = 0x458, /* 32 words */
+    /* multisample_sample_locations: 16 bytes, x in the low nibble and y in the high one, in sixteenths */
+    MAXWELL3D_SAMPLE_LOCATIONS = 0x478,
+    MAXWELL3D_COVERAGE_TO_COLOR = 0x47E, /* bit 0 on, bits 4-6 the color target */
     MAXWELL3D_VERTEX_ARRAY_INSTANCE_FIRST = 0x485,
     MAXWELL3D_VERTEX_ARRAY_INSTANCE_SUBSEQUENT = 0x486,
     MAXWELL3D_RT_CONTROL = 0x487,
     MAXWELL3D_POST_VTG_SHADER_ATTRIB_SKIP_MASK = 0x490, /* 8 words */
     MAXWELL3D_INVALIDATE_TEXTURE_DATA_CACHE_NO_WFI = 0x4A2,
+    MAXWELL3D_ALPHA_TO_COVERAGE_DITHER = 0x4B8,
     MAXWELL3D_BLEND_PER_TARGET_ENABLED = 0x4B9,
     MAXWELL3D_INLINE_INDEX_4X8 = 0x4C0, /* count and start, then the word of four 8-bit indices */
     MAXWELL3D_INLINE_INDEX_4X8_INDEX0 = 0x4C1,

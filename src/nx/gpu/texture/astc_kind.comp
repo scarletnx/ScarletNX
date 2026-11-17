@@ -1,0 +1,36 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+/* SPDX-License-Identifier: GPL-3.0-or-later
+   Copyright 2026 the ScarletNX contributors */
+/* What the blocks of an ASTC level hold (gpu/texture/astc_kind.h), read on the GPU from the blocks a texture keeps
+   (vk/astc.c's vk_astc_kind_read): an invocation a block, a dispatch a level of every layer, a workgroup's z its layer.
+   The body is astc_kind.glsl, which the tests also run on the CPU (tests/glsl/glsl.hpp); this file only declares what
+   it reads and writes. */
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+layout(push_constant) uniform PushConstants {
+    uint blocks_x;  /* the level's blocks in a row */
+    uint blocks_y;  /* and its rows of blocks a layer */
+    uint block_w;   /* the footprint */
+    uint block_h;
+    uint srgb;      /* nonzero: the specification's sRGB decode mode for void extents' R, G and B */
+    uint in_base;   /* the level's first block in the input */
+    uint walk_bl;   /* nonzero: the guest lays the level out block linear, which the walk's order follows */
+    uint out_base;  /* the level's first word of the output, of layer 0 */
+    uint out_layer; /* the words from a layer's to the next's */
+};
+
+layout(binding = 0, std430) readonly restrict buffer InputBlocks {
+    uvec4 astc_data[];
+};
+
+/* four words a level of each layer, ~0u before: the first block in the walk's order with each of the kind's bits */
+layout(binding = 1, std430) restrict buffer FirstWords {
+    uint first_words[];
+};
+
+shared uint kind_first[4];
+#define KIND_FIRST(i) kind_first[i]
+
+#include "astc_kind.glsl"

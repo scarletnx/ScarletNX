@@ -4,6 +4,7 @@
    makes by the rules of Mesa's NAK encoder (sm70_encode.rs: set_opcode, encode_alu_base, set_pred, set_instr_deps,
    set_rel_offset) and its SPH (sph.rs), the search for programs in shader memory, and the translation of small
    programs, which spirv-val checks when the test gets its path. No word here comes from a game. */
+#include "nx/gpu/shader/fuse.h"
 #include "nx/gpu/shader/sm86.h"
 #include "common/utilities/endian.h"
 #include "common/utilities/spirv_emit.h"
@@ -204,7 +205,7 @@ static void test_table(void) {
         }
         low9[in.op] = code & 0x1ff;
     }
-    for (int op = 1; op < SM86__COUNT; op++) {
+    for (int op = 1; op < SM86__DECODED; op++) { /* SM86_LDSM_HMMA is the fuse's, with no encoding */
         int ok = sm86_ops[op].kind == SM86_K_FIX ? codes[op] == 1 : codes[op] >= 1 && codes[op] <= 7;
         if (!ok) fprintf(stderr, "%s has %u codes\n", sm86_ops[op].name, codes[op]);
         CHECK(ok);
@@ -5422,6 +5423,151 @@ static void test_complementary_pair(const char* dir) {
     (void)dir;
 }
 
+/* the fuse of an LDSM and the HMMA that reads its fragments (fuse.c): one instruction where the two were, with the
+   HMMA's fields kept and the LDSM's packed beside them */
+static void test_fuse_pairs(void) {
+    Word x = fix(0x83b); /* an LDSM: R24, the address in R7, 0x40 on, four matrices, not transposed */
+    set(&x, 16, 8, 24);
+    set(&x, 24, 8, 7);
+    set(&x, 40, 24, 0x40);
+    set(&x, 72, 2, 2);
+    Word y = fix(0x23c); /* an HMMA: R40, A at R24, B at R12, C RZ, .16816.F32 */
+    set(&y, 16, 8, 40);
+    set(&y, 24, 8, 24);
+    set(&y, 32, 8, 12);
+    set(&y, 64, 8, 255);
+    set(&y, 72, 19, 0x18);
+    Sm86Insn pair[2] = {dec(x), dec(y)};
+    u32 n = 2, count = 0;
+    FuseSpan* spans = sm86_fuse_find(pair, n, &count);
+    CHECK(spans && count == 1 && spans[0].pos == 0 && spans[0].len == 2 && spans[0].tag == SM86_FUSE_LDSM_HMMA);
+    sm86_fuse_make(pair, &n, spans, count);
+    CHECK(n == 1 && pair[0].op == SM86_LDSM_HMMA);
+    /* the LDSM's fields, packed into the bits the HMMA does not use */
+    CHECK(sm86_fuse_ldsm_dst(&pair[0]) == 24 && sm86_fuse_ldsm_a(&pair[0]) == 7 &&
+          sm86_fuse_ldsm_count(&pair[0]) == 2 && sm86_fuse_ldsm_trans(&pair[0]) == 0 &&
+          sm86_field(&pair[0], 40, 24) == 0x40);
+    /* the HMMA's fields, kept as they were */
+    CHECK(pair[0].dst == 40 && sm86_field(&pair[0], 24, 8) == 24 && sm86_field(&pair[0], 32, 8) == 12 &&
+          sm86_field(&pair[0], 72, 19) == 0x18);
+    /* a pair the HMMA's A is not the LDSM's destination, and a program of one instruction, are no pair */
+    Sm86Insn two[2] = {pair[0], dec(y)};
+    CHECK(!sm86_fuse_find(two, 2, &count) && count == 0);
+    CHECK(!sm86_fuse_find(pair, 1, &count) && count == 0);
+}
+
+/* a program's LDSM and HMMAs on the same fragments, in two shapes: the LDSM beside the first HMMA (a pair), and the
+   same with an instruction between them (none). The pair's module takes four instructions less than the other's,
+   which are A's words read from the registers the LDSM wrote */
+/* a branch that spans a fused pair keeps its absolute target: the pass shortens its encoded offset, as the CALL
+   inliner does when it removes instructions. */
+static void test_fuse_branch(void) {
+    Word words[5] = {0};
+    u32 n = 0;
+    words[n++] = bra(0, 4, 7, 0); /* over the pair */
+    Word x = fix(0x83b); /* LDSM.16.M88.4 R40, [R7 + 0x40] */
+    set(&x, 16, 8, 40);
+    set(&x, 24, 8, 7);
+    set(&x, 40, 24, 0x40);
+    set(&x, 72, 2, 2);
+    words[n++] = x;
+    x = fix(0x23c); /* HMMA.16816.F32 R16, R40, R12, RZ */
+    set(&x, 16, 8, 16);
+    set(&x, 24, 8, 40);
+    set(&x, 32, 8, 12);
+    set(&x, 64, 8, 255);
+    set(&x, 72, 19, 0x18);
+    words[n++] = x;
+    words[n++] = alu(0x002, 5, 60, 255); /* MOV R60, RZ */
+    words[n++] = bra(4, 0, 7, 0); /* back over the pair */
+    Sm86Insn in[5];
+    for (u32 i = 0; i < n; i++) CHECK(sm86_decode(words[i].w[0], words[i].w[1], &in[i]));
+    u32 count = 0;
+    FuseSpan* span = sm86_fuse_find(in, n, &count);
+    CHECK(span && count == 1);
+    if (span) {
+        sm86_fuse_make(in, &n, span, count);
+        CHECK(n == 4);
+        CHECK(in[0].op == SM86_BRA && sm86_branch_target(&in[0], 0) == 3); /* was 4 */
+        CHECK(in[3].op == SM86_BRA && sm86_branch_target(&in[3], 3) == 0); /* backward, unchanged */
+    }
+}
+
+static void test_fuse_ldsm_hmma(const char* dir) {
+    static const u32 hmma[4][3] = {{16, 14, 0x08}, {20, 24, 0x18}, {28, 255, 0x00}, {32, 36, 0x10}};
+    static u32 words_of[4];
+    for (int pair = 0; pair < 2; pair++) {
+        u8 code[16 * 20] = {0};
+        u32 n = 0;
+        Word x = fix(0x919); /* S2R R0, TID.X */
+        set(&x, 72, 8, 0x21);
+        put(code, n++, x);
+        put(code, n++, uldc64(0x20));
+        x = fix(0x981); /* LDG.E R8, [R0.U32 + UR4] */
+        set(&x, 16, 8, 8);
+        set(&x, 24, 8, 0);
+        set(&x, 32, 6, 4);
+        set(&x, 72, 1, 1);
+        set(&x, 73, 3, 4);
+        set(&x, 81, 3, 7);
+        set(&x, 91, 1, 1);
+        put(code, n++, x);
+        x = fix(0x388); /* STS [R0 + 0x40], R8: the tile the LDSM reads */
+        set(&x, 24, 8, 0);
+        set(&x, 32, 8, 8);
+        set(&x, 40, 24, 0x40);
+        set(&x, 73, 3, 4);
+        put(code, n++, x);
+        put(code, n++, fix(0xb1d)); /* BAR.SYNC 0 */
+        x = fix(0x83b);             /* LDSM.16.M88.4 R40, [R7 + 0x40] */
+        set(&x, 16, 8, 40);
+        set(&x, 24, 8, 7);
+        set(&x, 40, 24, 0x40);
+        set(&x, 72, 2, 2);
+        put(code, n++, x);
+        if (!pair) put(code, n++, alu(0x002, 5, 60, 255)); /* MOV R60, RZ: the two halves apart */
+        for (u32 k = 0; k < 4; k++) {                   /* HMMA dst, R40, R12, C */
+            x = fix(0x23c);
+            set(&x, 16, 8, hmma[k][0]);
+            set(&x, 24, 8, 40);
+            set(&x, 32, 8, 12);
+            set(&x, 64, 8, hmma[k][1]);
+            set(&x, 72, 19, hmma[k][2]);
+            put(code, n++, x);
+        }
+        put(code, n++, exit_insn());
+        put(code, n, bra(n, n, 7, 0));
+        n++;
+        ShaderInfo si = {0};
+        si.cs_local[0] = 32, si.cs_local[1] = 2, si.cs_local[2] = 1;
+        si.shared_size = 49152;
+        int coop_was = g_spirv_translate.hmma_coop;
+        u32 shapes_was = g_spirv_translate.hmma_coop_shapes;
+        for (int coop = 0; coop < 2; coop++) {
+            g_spirv_translate.hmma_coop = coop ? 65536 : 0;
+            g_spirv_translate.hmma_coop_shapes = coop ? SH_COOP_16x16x16 : 0;
+            size_t count = 0;
+            u32* spv = sm86_to_spirv(code, n * 16, ST_CS, NULL, &si, &count);
+            CHECK(spv != NULL);
+            if (!spv) {
+                fprintf(stderr, "ldsm + hmma, coop %d, pair %d: %s\n", coop, pair, si.first_unsupported);
+                continue;
+            }
+            words_of[pair * 2 + coop] = spv_count(spv, count, 61 /* OpLoad */);
+            char name[48];
+            snprintf(name, sizeof name, "fuse_ldsm_hmma_%d%d", pair, coop);
+            CHECK(spv && keep_module(dir, name, spv, count));
+            free(spv);
+        }
+        g_spirv_translate.hmma_coop = coop_was;
+        g_spirv_translate.hmma_coop_shapes = shapes_was;
+    }
+    /* the pair's module is five Loads fewer than the two halves', which are A's four words, read from the loader's
+       tile in the fused block instead of reads of the registers the LDSM wrote, and one more with them */
+    for (int coop = 0; coop < 2; coop++)
+        CHECK(words_of[coop] == words_of[2 + coop] + 5);
+}
+
 int main(int argc, char** argv) {
     const char* dir = argc > 1 ? argv[1] : ".";
     test_alu_forms();
@@ -5503,6 +5649,9 @@ int main(int argc, char** argv) {
     test_warp_matrix_coop(dir);
     test_ftz_modes(dir);
     test_complementary_pair(dir);
+    test_fuse_pairs();
+    test_fuse_branch();
+    test_fuse_ldsm_hmma(dir);
     if (failures) {
         fprintf(stderr, "%d checks failed\n", failures);
         return 1;

@@ -251,6 +251,11 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
     add_test(NAME vulkan_rt_watch COMMAND snx-test-vulkan -H --vk-memory=1)
     set_tests_properties(vulkan_rt_watch PROPERTIES TIMEOUT 60 ENVIRONMENT "SNX_TEST_RT_WATCH_ONLY=1"
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR;watch: needs traps")
+    # a write log in host memory comes back from its pool clear (tests/vulkan_wlog_clear.inc): the unref clears the
+    # windows its readers found, and reads the flags past them
+    add_test(NAME vulkan_wlog_clear COMMAND snx-test-vulkan -H)
+    set_tests_properties(vulkan_wlog_clear PROPERTIES TIMEOUT 60
+        ENVIRONMENT "SNX_TEST_NVN_CASE=wlog_clear" FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
     # the budget's trim alone (tests/vulkan_trim.inc): a trim that wants more than everything held would take what the
     # other checks hold
     add_test(NAME vulkan_trim COMMAND snx-test-vulkan -H)
@@ -273,6 +278,12 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
     add_test(NAME vulkan_headless_descriptor_heaps COMMAND snx-test-vulkan -H --vk-descriptors-mode=2)
     set_tests_properties(vulkan_headless_descriptor_heaps PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+    # the same with draw_state_check=1: each word a stage's table keeps from its last table (memo_get) is found
+    # again the full way, and one that differs fails the test
+    add_test(NAME vulkan_headless_descriptor_heaps_check COMMAND snx-test-vulkan -H --vk-descriptors-mode=2
+        --draw-state-check=1)
+    set_tests_properties(vulkan_headless_descriptor_heaps_check PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77
+        FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR;a descriptor kept from the stage's last table")
     # every check again the Vulkan 1.2 way on a newer device, as a game's .ini with vk_api=1.2 asks (gpu/vk/device.c
     # vk12_extensions): the 1.3 commands by their extensions' names, shaders in SPIR-V 1.5, under the validation layer
     # when it is installed, which takes the instance's 1.2 as the version and flags any 1.3 use left
@@ -306,8 +317,10 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
     add_test(NAME vulkan_headless_vertex_input_off COMMAND snx-test-vulkan -H --vertex-input-dynamic-state=off)
     # every check again under the validation layer with graphics pipeline libraries (pipeline_libraries=1, where the
     # device has them) and without them: the parts, their layouts and their dynamic state checked by the layer
-    add_test(NAME vulkan_headless_libraries COMMAND snx-test-vulkan -H --pipeline-libraries=1 --vk-validation=1)
-    add_test(NAME vulkan_headless_libraries_off COMMAND snx-test-vulkan -H --pipeline-libraries=0 --vk-validation=1)
+    add_test(NAME vulkan_headless_libraries COMMAND snx-test-vulkan -H --pipeline-libraries=1 --vk-validation=1
+                                                    --vk-ext-shader-object=off)
+    add_test(NAME vulkan_headless_libraries_off COMMAND snx-test-vulkan -H --pipeline-libraries=0 --vk-validation=1
+                                                        --vk-ext-shader-object=off)
     set_tests_properties(vulkan_headless_libraries vulkan_headless_libraries_off PROPERTIES TIMEOUT 120
         ENVIRONMENT "VK_KHRONOS_VALIDATION_REPORT_FLAGS=error" FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
     set_tests_properties(vulkan_headless_vertex_input_off PROPERTIES TIMEOUT 120
@@ -315,13 +328,22 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
     # every check again with each draw binding the pipeline linked from its parts, never the one made whole, under the
     # validation layer when it is installed (gpu/vk/pipeline.c, VK_EXT_graphics_pipeline_library; a device that
     # doesn't link them skips, 77); and with each pipeline made whole, with the dynamic state the libraries gave
-    add_test(NAME vulkan_headless_pipeline_library_linked COMMAND snx-test-vulkan -H --vk-validation=1)
-    add_test(NAME vulkan_headless_pipeline_library_whole COMMAND snx-test-vulkan -H)
+    add_test(NAME vulkan_headless_pipeline_library_linked COMMAND snx-test-vulkan -H --vk-validation=1
+                                                                  --vk-ext-shader-object=off)
+    add_test(NAME vulkan_headless_pipeline_library_whole COMMAND snx-test-vulkan -H --vk-ext-shader-object=off)
     set_tests_properties(vulkan_headless_pipeline_library_linked PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77
         ENVIRONMENT "SNX_TEST_GPL=linked;VK_KHRONOS_VALIDATION_REPORT_FLAGS=error"
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
     set_tests_properties(vulkan_headless_pipeline_library_whole PROPERTIES TIMEOUT 120 ENVIRONMENT "SNX_TEST_GPL=whole"
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+    # every check again under the validation layer with each draw's shader objects (gpu/vk/shader_objects.c,
+    # VK_EXT_shader_object): their dynamic state and the layout their sets are bound with checked by the layer. A device
+    # that draws through pipelines, for any reason its log line gives, skips. The pipeline tests above turn them off, so that they still test pipelines
+    add_test(NAME vulkan_headless_shader_objects COMMAND snx-test-vulkan -H --vk-validation=1)
+    set_tests_properties(vulkan_headless_shader_objects PROPERTIES TIMEOUT 120
+        ENVIRONMENT "VK_KHRONOS_VALIDATION_REPORT_FLAGS=error"
+        SKIP_REGULAR_EXPRESSION "draws go through pipelines:"
+        FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR;refused a shader object")
     # the on-screen layer's pass (gpu/vk/ui.c, tests/vulkan_ui.inc) under the validation layer when it is installed:
     # quads as instances, sampled in texels, and the device's buffer given only the quads that changed
     # a vk_gpu_profile pool smaller than asked for, which a driver gave (check_gpuprof_small_pool)
@@ -461,7 +483,7 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
         "${PROJECT_BINARY_DIR}/generated/spirv/astc_bc7_mode6_dot_spv.c"
         "${PROJECT_BINARY_DIR}/generated/spirv/astc_bc7_quick_dot_spv.c"
         "${PROJECT_BINARY_DIR}/generated/spirv/astc_bc1_spv.c" "${PROJECT_BINARY_DIR}/generated/spirv/astc_bc4_spv.c"
-        "${PROJECT_BINARY_DIR}/generated/spirv/astc_bc5_spv.c"
+        "${PROJECT_BINARY_DIR}/generated/spirv/astc_bc5_spv.c" "${PROJECT_BINARY_DIR}/generated/spirv/astc_kind_spv.c"
         "${PROJECT_SOURCE_DIR}/tests/glsl/bc7_cpu.cpp" "${PROJECT_SOURCE_DIR}/tests/glsl/astc_bc7_cpu.cpp"
         "${PROJECT_SOURCE_DIR}/tests/glsl/astc_bcn_cpu.cpp"
         "${PROJECT_SOURCE_DIR}/tests/glsl/bcn_etc2_cpu.cpp" "${PROJECT_SOURCE_DIR}/tests/glsl/bcn_astc_cpu.cpp"

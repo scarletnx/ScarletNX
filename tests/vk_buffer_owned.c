@@ -62,7 +62,6 @@ void vk_all_barrier(VkCommandBuffer cb) {
     note('b');
 }
 u64 vk_compute_adds(void) { return 0; }
-u64 vk_uma_out_adds(void) { return 0; }
 u64 gpu_mem_generation(void) { return 0; }
 u64 vk_pages_written(void) { return 0; }
 

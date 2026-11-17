@@ -111,3 +111,17 @@ void write_pages_runs(const WritePages* t, u64 since, u64 a, u64 size, void (*fn
     }
     if (in) run_out(a, size, first, p, fn, ctx);
 }
+u64 write_pages_newest(const WritePages* t, u64 a, u64 size) {
+    u64 newest = __atomic_load_n(&t->overflow, __ATOMIC_ACQUIRE);
+    if (!size || a + size - 1 < a) return newest;
+    for (u64 p = a >> 12, e = (a + size - 1) >> 12; p <= e && !(p >> 28); p++) {
+        const WritePageLeaf* l = __atomic_load_n(&t->leaf[p >> 12], __ATOMIC_ACQUIRE);
+        if (!l || __atomic_load_n(&l->max, __ATOMIC_ACQUIRE) <= newest) {
+            p |= LEAF_PAGES - 1; /* nothing newer in this leaf: the next one */
+            continue;
+        }
+        u64 g = __atomic_load_n(&l->gen[p & (LEAF_PAGES - 1)], __ATOMIC_RELAXED);
+        if (g > newest) newest = g;
+    }
+    return newest;
+}

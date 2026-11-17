@@ -855,6 +855,17 @@ can show what plain accesses do there.
   LLVM can split, duplicate or reorder a plain guest access in a way an Arm thread could observe, and use unordered
   atomics for those accesses if it can.
 - **Where.** `ir_ldst.c`, `ir_int.c`, `ir_state.c`, new tests.
+- **Now.** `tests/gnuabi_litmus.py` runs store buffering, message passing, message passing with `STLR` and `LDAR`,
+  message passing with the split barrier `DMB ISHST` and `DMB ISHLD`, weak read coherence on three threads, and a plain
+  load in a spin loop, on the GNU ABI runtime, and `tests/litmus/` has five of them in the herd7 format that derives
+  their expectations. Three tests carry it. `gnuabi_litmus` probes the build's C compiler and then `clang` for one
+  that emits an AArch64 object, and mold and then LLD by linking, rather than looking a name up on `PATH`, and uses
+  the first pair that builds the image. `gnuabi_litmus_lld` forces LLD, so both linkers are
+  covered where both are installed. `gnuabi_litmus_self` checks the driver's own decisions and needs no toolchain, so
+  it runs on every host, Windows and macOS included. The AArch64 Linux job installs Clang, LLD and mold, so both
+  linker paths run there. The x86-64 job installs LLD alone, so its two runs use LLD. The guest fixtures are registered under `if (NOT WIN32)`, so Windows x86-64 or ARM64 runs the guest
+  half only once that registration leaves the block. Load buffering, IRIW, message passing with an address dependency,
+  and the `dmb ishst` and `STLR` fixes are not there yet.
 - **ABI.** None.
 - **Proof.** The litmus tests show only outcomes the Arm model allows.
 - **Size and priority.** M, P2. P1 on PowerPC64, whose model is known to be weaker than Arm's, and on LoongArch until

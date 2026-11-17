@@ -248,8 +248,8 @@ void mx_draw_blend(const u32* r, DsBlend* b) {
    bit 4. SET_MULTISAMPLE_SAMPLE_MASK (0x3EF-0x3F2): the samples each pixel of a 2x2 quad may write, 16 bits each.
    Vulkan's mask is one for every pixel: the four as one when they agree (deko3d writes one to all four), else the
    samples any of them leaves (r3d_draw says so). All 16 is ~0, a mask of every sample. Under raster samples of its
-   own (SET_MULTISAMPLE_RASTER_ENABLE, 0x3ED) the mask is over those, which the renderer doesn't draw (#1895): it stays
-   all, so such a draw still covers its pixels */
+   own (SET_MULTISAMPLE_RASTER_ENABLE, 0x3ED) the mask is over those, as the draw's raster samples are
+   (mx_draw_fixed) */
 void mx_draw_raster_key(const u32* r, DsRasterKey* k) {
     u32 clip = (r[0x64F] >> 11) & 7;
     memset(k, 0, sizeof *k);
@@ -271,7 +271,7 @@ void mx_draw_raster_key(const u32* r, DsRasterKey* k) {
     k->patch_vertices = r[0x373];
     u32 mask = 0;
     for (u32 i = 0; i < 4; i++) mask |= r[MAXWELL3D_SAMPLE_MASK + i] & 0xFFFF;
-    k->sample_mask = mask == 0xFFFF || (r[MAXWELL3D_RASTER_SAMPLES_ENABLE] & 1) ? ~0u : mask;
+    k->sample_mask = mask == 0xFFFF ? ~0u : mask;
     /* CONSERVATIVE_RASTER (0x452). Its dilation goes to a GPC register through a macro of NVN's (0x418800), which no
        3D register shows: taken as none */
     k->conservative = r[MAXWELL3D_CONSERVATIVE_RASTER] & 1;
@@ -358,6 +358,52 @@ void mx_draw_fixed(const u32* r, DrawCall* dc) {
     if (r[MAXWELL3D_DEPTH_BOUNDS_ENABLE] & 1) {
         dc->state_flags |= DS_DRAW_DEPTH_BOUNDS;
         memcpy(dc->depth_bounds, &r[MAXWELL3D_DEPTH_BOUNDS], sizeof dc->depth_bounds);
+    }
+    mx_draw_multisample(r, dc);
+}
+
+/* The multisample state the NVN path takes from NVN's objects (nvn_draw.c draw_fixed_state), from the registers its
+   driver and deko3d write: raster samples apart from the targets' (0x3ED on, 0x3EE their DS_MSAA_ layout), whose
+   share covered scales the components 0x3F5 names (bit 0 RGB, bit 1 alpha), by the table at 0x40C when 0x3F6 bit 0
+   is set (a byte a coefficient, sixteenths times 8, as deko3d's dkCmdBufSetCoverageModulationTable encodes them);
+   coverage to color (0x47E: bit 0, the target in bits 4-6); alpha to coverage's dither (0x4B8); and the sample
+   locations (0x478-0x47B, a byte a sample, x in the low nibble and y in the high, for each pixel of a 2x2 quad in
+   turn: the hardware's grid, which DS_MS_SAMPLE_GRID asks for), taken where they are not the standard ones of the
+   draw's sample count in every pixel (Vulkan's too, deko3d's dkMultisampleStateSetLocations without a list). Four
+   words of nought, as a channel starts, are taken as those too: a driver that sets the locations writes all four, and
+   none puts every sample of every pixel on its corner */
+void mx_draw_multisample(const u32* r, DrawCall* dc) {
+    static const u8 standard[5][16] = {
+        {0x88},
+        {0xCC, 0x44},
+        {0x26, 0x6E, 0xA2, 0xEA},
+        {0x59, 0xB7, 0x9D, 0x35, 0xD3, 0x71, 0xFB, 0x1F},
+        {0x99, 0x57, 0xA5, 0x7C, 0x63, 0xDA, 0xBD, 0x3B, 0xE6, 0x18, 0x24, 0xC2, 0x80, 0x4F, 0xFE, 0x01}};
+    u32 samples = ds_msaa_samples(r[0x574]);
+    if (r[MAXWELL3D_RASTER_SAMPLES_ENABLE] & 1) {
+        samples = ds_msaa_samples(r[MAXWELL3D_ANTI_ALIAS_RASTER]);
+        dc->raster_samples = samples;
+        dc->coverage_mode = r[MAXWELL3D_TIR_MODULATION] & 3;
+        dc->coverage_table_enable = r[MAXWELL3D_TIR_MODULATION_FUNCTION] & 1;
+        if (dc->coverage_table_enable)
+            for (u32 i = 0; i < 16; i++)
+                dc->coverage_table[i] = (u8)((r[MAXWELL3D_TIR_MODULATION_COEFF + i / 4] >> (i % 4 * 8) & 0xFF) >> 3);
+    }
+    if (r[MAXWELL3D_COVERAGE_TO_COLOR] & 1) {
+        dc->multisample_flags |= DS_MS_COVERAGE_TO_COLOR;
+        dc->coverage_to_color_output = (r[MAXWELL3D_COVERAGE_TO_COLOR] >> 4) & 7;
+    }
+    if (r[MAXWELL3D_ALPHA_TO_COVERAGE_DITHER] & 1) dc->multisample_flags |= DS_MS_A2C_DITHER;
+    u8 locations[16];
+    for (u32 i = 0; i < 16; i++) locations[i] = (u8)(r[MAXWELL3D_SAMPLE_LOCATIONS + i / 4] >> (i % 4 * 8));
+    u32 log2 = 0;
+    while ((1u << log2) < samples) log2++;
+    int same = 1, written = 0;
+    for (u32 i = 0; i < 4; i++) written |= r[MAXWELL3D_SAMPLE_LOCATIONS + i] != 0;
+    for (u32 i = 0; same && written && i < 16; i++) same = locations[i] == standard[log2][i % samples];
+    if (!same) {
+        dc->multisample_flags |= DS_MS_SAMPLE_LOCATIONS | DS_MS_SAMPLE_GRID;
+        memcpy(dc->sample_locations, locations, sizeof dc->sample_locations);
     }
 }
 

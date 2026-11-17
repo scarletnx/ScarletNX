@@ -340,11 +340,11 @@ used (the working set, which the next frames load again). Auto makes them BC7 it
 
 ### By what the blocks hold
 
-Auto also reads what each ASTC texture's blocks can hold, as it is made, and holds it in the smallest BCn format that
-holds that, whatever the room: luminance alone as BC4 (8 bytes a 4x4 block, an eighth of RGBA8), luminance and alpha as
-BC5 (16, as BC7), opaque colour on one line a 4x4 block as BC1 (8, half of BC7). The rest is held as above, Exact or
-BC7 by the room. Exact (`astc_mode=1`), BC7 (`2`) and BC7 at load (`3`) are as they were, and so are 3D textures and
-textures with holes in their mapping.
+Auto also reads what each ASTC texture's blocks can hold, on the GPU after it is made, and holds it in the smallest BCn
+format that holds that, whatever the room: luminance alone as BC4 (8 bytes a 4x4 block, an eighth of RGBA8), luminance
+and alpha as BC5 (16, as BC7), opaque colour on one line a 4x4 block as BC1 (8, half of BC7). The rest is held as above,
+Exact or BC7 by the room. Exact (`astc_mode=1`), BC7 (`2`) and BC7 at load (`3`) are as they were, and so are 3D
+textures and textures with holes in their mapping.
 
 **The kind** (`gpu/texture/astc_kind.h`) comes from each block's header, its colour endpoint modes and, for the RGB and
 RGBA modes, its endpoints' values, not from its texels: luminance modes (0, 1) decode R = G = B with alpha 255,
@@ -361,11 +361,53 @@ off decode as the error colour, which takes the texture to the usual format. Eve
 `astc_decode.glsl`) make a block the error colour by is made here in the same order. BC1's one line a block also needs
 each 4x4 block inside one ASTC block: at 5x5, 6x6 or 10x8 a 4x4 block takes the texels of two to four ASTC blocks, each
 a line of its own, and on random blocks BC1 erred by up to 141 levels there against 39 at 4x4, 8x8 and 12x12, so
-colour goes to BC1 only at those three footprints. `texture.c`'s `astc_kind_of` reads every level of every layer from guest memory through
-its block linear layout (or pitch rows), the layout's padding left out, and stops at the first block that leaves no
-BCn format; memory mapped in more than one run, with bytes the GPU holds or a write of the GPU's pending over it, is
-not read, and the texture is held as usual. One of the tests' 128x96 textures of 8 levels took 15 to 22 us (a -O0
-build).
+colour goes to BC1 only at those three footprints.
+
+**The walk.** The kind is that of a walk over every level of every layer as guest memory has them, through the block
+linear layout (or pitch rows), the layout's padding left out, which stops at the first block that leaves no BCn format
+(`snx_astc_level_kind` in `tests/support/astc_kind_ref.h`, then the same over the levels). The CPU made that walk as
+each texture was made, and in one game's race, which loads new parts of the track as it goes, it took 58 to 78% of the
+GPU thread in the bursts of new textures, 21% of it over 15 s. Now a new texture goes up at once as Auto holds one of
+unknown kind (BC7 at load for an Ounce game, else Exact or BC7 between frames by the room), and its upload keeps its
+ASTC blocks on the GPU beside its image (`vk_astc_keep`, also for a level the BC7 cache gives, whose blocks are staged
+only to be kept). `astc_kind.comp` (its body `astc_kind.glsl`, `snx_astc_block_read` in the part of GLSL that is also
+C++) reads them, a dispatch a level of every layer, an invocation a block, and leaves four words a level of each layer:
+for each kind bit the first block in the walk's order that has it, its number in the layout (`y * nx + x` in pitch rows;
+in block linear the GOB's number times 32, then the block's row and column in its GOB), a workgroup's least in shared
+memory and then one atomic a word. Those words come back through the frame's readback ring, as the BC7 cache's blocks
+do, and the present after the submission is done (`vk_tex_kind_frame`) makes the walk's kind of them with no block read:
+`snx_astc_level_kind_firsts` takes the bits in that order, a block's together, until they leave no BCn format, and OTHER
+alone where the layout ends first (`snx_astc_level_stop`), as the walk returns it there; then the levels in the walk's
+order until that too. So the kind is the walk's, its early stop included, not merely the or of every block. Where it
+takes BC1, BC4 or BC5, an image of that format is made from the kept blocks (`vk_astc_bcn_kept`, the strips an upload
+straight to it makes) and takes the image's place, after the BC7 encoder's and the background's work on the texture is
+dropped; the kept blocks go either way, unless the BC7 encoder still makes the texture's BC7 image from them. A texture
+written before its read is back is read again from the blocks its new upload kept (four reads at most). The kinds of
+bytes read before stay in a memo by the hash of the bytes and their layout, which the change checks take anyway: a
+texture evicted and made again goes up straight to its format, as all did when the CPU read them. A sparse texture's
+blocks are not read, nor those of one with no room to keep them: it stays as Auto holds the rest.
+
+**The kind's arithmetic.** `astc_kind.glsl` was written as `snx_astc_block_read` is, then made cheaper by forms that
+`ucas` proved equal to it, a function at a time with its inputs as parameters (a prelude of plain globals makes it
+report values as constant that are not), each `equiv` exhaustive or by SAT over the inputs the callers give, and the
+GLSL test held to the CPU's read after each:
+- A sequence's bits are read up to its end at once (`KindSeqRead`), where the decoders read them a bit at a time:
+  equal for every 16 bit window of the block, `k` 0 to 8 and the end before or after the window (SAT).
+- The colour values' range (`KindColourRange`) comes from `p = color_bits / n`: the first range is plain 8 bits from
+  `p = 8` on, else the trit range of `p - 1` bits, the quint one of `p - 2` or plain `p`, where the search tried up to
+  20 ranges: equal for every `n` 2 to 18 and `color_bits` 0 to 128 (exhaustive).
+- A sequence's bits are `(n * ((nb << 7) + F) + C) >> 7` (`KindSeqBits`), with `F, C` 205, 102 for trits and 299,
+  85 for quints, which `ucas find` gave for `(8n + 4) / 5` and `(7n + 2) / 3` with `n <= 64`, and `nb * n` folded
+  into the multiply: equal for every range and `n` 0 to 64 (exhaustive).
+- The weights' range is a 5 bit field of a word for each half of the table (`0x6980901`, `0xAB91151`: bits a value
+  and trits or quints), where the shader looked up the largest weight and counted its bits in a loop: equal to
+  `snx_astc_ise_bits` of the range's largest weight for every range and count (exhaustive).
+- A plain colour value's bits repeated to 8 are `m * ((1 << nb) + 1) >> (2nb - 8)` from 4 bits on and a table in a
+  word below (`0x4955FF00`), where the decoders repeat them in a loop: equal for every `nb` and `m` (exhaustive).
+- The block mode's layout is a nibble table on the bits that tell the layouts apart (`0x42103210`, `0x87996655`):
+  equal to the specification's tests for every mode (exhaustive). The sets of endpoint modes that the endpoints'
+  spread tests are bits of words (`0x700`, `0x2200`, `0x440`, `0x1100`) and its largest a `max` (exhaustive, SAT).
+`ucas spirv_simplify` over each function after these found only single instructions to save.
 
 **sRGB.** BC4 and BC5 have no sRGB formats, and their UNORM image would give the shader the sRGB codes unconverted.
 So an sRGB texture of luminance goes to BC1's sRGB format, the grey line in 565 (a level or two of tint where R and B
@@ -376,19 +418,21 @@ blocks decode (`render.c`'s `tex_map`): the header's R, G and B read the image's
 (BC5), and its constants stay. BC1 is opaque: its blocks are four colours, the first end the greater, or both ends one
 with every index 0, so no texel decodes transparent.
 
-**Encoding.** The encoders are a pass each, a fraction of the decoder's cost, so such a texture goes up straight to its
-format as it loads (`astc_bcn.comp`, its body `astc_bcn.glsl` over `bcn_encode.glsl`, in the strips BC7's upload makes),
-with no RGBA8 image before it and nothing between frames, the cache or the background. BC4: the least and greatest
+**Encoding.** The encoders are a pass each, a fraction of the decoder's cost, so such a texture is made in its format in
+one frame (`astc_bcn.comp`, its body `astc_bcn.glsl` over `bcn_encode.glsl`, in the strips BC7's upload makes), from its
+kept blocks after its kind is back, or straight as it loads when the memo knows its bytes. BC4: the least and greatest
 value as the ends, eight values, then the same pulled in by a sixteenth and a least squares fit to the steps the texels
 took; BC5 is two of them. BC1: the bounding box's line, each channel turned to run with the widest (the sign of their
 covariance), as it is and pulled in by a sixteenth, then a least squares fit to the colours chosen; a block of one
 colour takes, a channel at a time, the 565 ends whose colour a third of the way between comes nearest it. Integer
 arithmetic in the part of GLSL that is also C++, so the tests run the same file on the CPU and get the GPU's bytes.
 
-**Written again.** A texture held so and loaded whole again reads its blocks again (`astc_kind_again`): blocks that
-take another format now (luminance and alpha over a BC4 texture, colour over either) put an image of that format in its
-place, or of the usual one, RGBA8 or BC7 between frames as Auto holds the rest then. Pieces load it whole, which reads
-them: a piece of other blocks would show in a format that does not hold them. A texture held as usual is not read again.
+**Written again.** A texture held so and loaded whole again may hold more now, which its format would not show, and the
+CPU reads none of its blocks (`kind_again`): an image of the format Auto holds one of unknown kind in takes its place,
+which the load fills, its blocks are kept, and the GPU reads their kind as for a new texture, which takes it to BC1, BC4
+or BC5 again where the kind says so. Pieces load it whole, which reads them: a piece of other blocks would show in a
+format that does not hold them. A texture held as usual is not read again. Such a texture is never sparse for its
+levels alone (`texture_shed`, `texture_half_res`): the image that takes its place is a whole one.
 
 **The log** says the format and what the blocks hold for each texture held so (the first 32), each texture that turns
 when loaded again (16), and with the stats of every 600 presents the textures read by outcome, the CPU's time, the
@@ -876,6 +920,13 @@ package, and `-DSNX_GLSLANG=path` picks any. spirv-opt and spirv-val are the SPI
   depths, padding columns, slices) and pitch rows, the padding blocks of the error colour left out, a coloured block
   found wherever it is, a layout a byte short refused; the ISE's bit counts and the colour values' encoding against the
   specification's search; and the format each of the 16 kinds takes in each decode mode.
+- `astc_kind_glsl` (ctest, no GPU) runs `astc_kind.comp`'s body on the CPU. Each block's kind is
+  `snx_astc_block_kind`'s at every footprint in both decode modes, on random blocks (one in two of one LDR endpoint
+  mode), every block mode with void extents valid and not, runs of one colour, void extents of random colours, RGBA
+  direct blocks whose ends lie up to 3 levels apart and base and offset blocks whose ends the decoders clamp at white.
+  Then levels of mostly one kind with blocks of others among them, pitch and block linear, a few layers a dispatch,
+  their memory cut short of their blocks one time in four: the workgroups' first blocks give `snx_astc_level_kind`'s
+  kind, its early stop too.
 - `astc_bcn_glsl` (ctest, no GPU) runs `astc_bcn.comp`'s body on the CPU over levels of random blocks of each kind at
   every footprint, decodes its blocks (`tests/support/bcn.c`) as the view gives them back and holds the loss against
   the CPU decoder's texels to the floors measured (the table above), BC1's blocks to four colours; a block of one value
@@ -884,8 +935,9 @@ package, and `-DSNX_GLSLANG=path` picks any. spirv-opt and spirv-val are the SPI
   too), the strips BC7's take, with mips, layers and many strips, and hold the GPU's blocks to the CPU's, byte for
   byte; `--bench` times them beside RGBA8 and BC7. `vulkan_headless`'s `check_astc_kind` (`SNX_TEST_ASTC_KIND_ONLY=1`
   runs it alone) makes 128x96 ASTC 8x8 textures of luminance, of luminance and alpha, of colour on one line, of sRGB
-  luminance and of RGBA direct blocks with grey ends under Auto, checks each is held as BC4, BC5, BC1, sRGB BC1 or BC5
-  straight as it loads (the same RGBA blocks with ends apart stay RGBA8, their Exact twin's texels), its image as the
+  luminance and of RGBA direct blocks with grey ends under Auto, checks each is made RGBA8 (Exact with room) with its
+  blocks kept and its kind to come, then held as BC4, BC5, BC1, sRGB BC1 or BC5 once its kind is back, its blocks let
+  go (the same RGBA blocks with ends apart stay RGBA8, their Exact twin's texels), its image as the
   view gives it back within the floors of its Exact twin, and the view's components for two of the header's
   swizzles; then loads one BC4 texture again with blocks of luminance and alpha (BC5), and writes one block of colour
   and alpha over it (loaded whole, RGBA8, its Exact twin's texels exactly).

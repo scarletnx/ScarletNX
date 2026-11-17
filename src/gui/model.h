@@ -7,8 +7,8 @@
 #include <stdint.h>
 #include "common/utilities/font.h" /* gui_glyph */
 
-/* the menu's items, in order: the loads, the keys, Settings and Share Log, on Android the data folder, Exit. The games
-   are the Games tab's */
+/* the menu's items, in order: the loads, the keys, Settings, Saves and Share Log, on Android the data folder, Exit.
+   The games are the Games tab's */
 enum {
     GUI_SWITCH,
     GUI_LINUX,
@@ -19,6 +19,7 @@ enum {
     GUI_ANDROID, /* an app's .apk, .xapk or .apks, run as it is by scarletnx-android */
     GUI_KEYS,
     GUI_SETTINGS, /* the game's .ini settings, the launcher's own for the runs and its App: settings.h */
+    GUI_SAVES,    /* the saves of the user playing out to another emulator's file and back in (gui/saves.h) */
     GUI_LOG,      /* the logs in one file, for a bug report: a phone has no terminal to copy them from */
     GUI_FOLDERS,  /* Settings > App > Folders, where each folder opens */
     GUI_EXIT,
@@ -38,7 +39,7 @@ typedef struct {
     int text_size;
 } GuiMenu;
 /* what a key on the menu asks of the GUI: nothing more, the Settings or the logs shared */
-typedef enum { GUI_MENU_STAY, GUI_MENU_SETTINGS, GUI_MENU_LOG, GUI_MENU_FOLDERS } GuiMenuDo;
+typedef enum { GUI_MENU_STAY, GUI_MENU_SETTINGS, GUI_MENU_SAVES, GUI_MENU_LOG, GUI_MENU_FOLDERS } GuiMenuDo;
 GuiMenuDo gui_menu_key(GuiMenu* menu, GuiKey key);
 /* How the menu runs a load's driver (main.c's find_driver and the argv of launch), by where a platform keeps them */
 typedef enum {
@@ -92,6 +93,7 @@ typedef enum {
     /* the setup's Old Files: Delete All, how many go and how many stay, pressed twice */
     GUI_ASK_DELETE_OLD,
     GUI_ASK_OVERWRITE, /* the setup's user page: Overwrite users.ini, which is kept as users.ini.old */
+    GUI_ASK_SAVES,     /* an import of saves over saves there, which go to the trash first (Import Saves) */
     GUI_ASK_ERROR      /* a failure of the system's, or Run edenprobe's counts, said whole: OK alone, which closes it */
 } GuiAsk;
 typedef struct {

@@ -12,6 +12,7 @@
   * [What still copies, and why](#what-still-copies-and-why)
   * [What keeps it correct](#what-keeps-it-correct)
   * [Android: guest memory moved into AHardwareBuffers](#android-guest-memory-moved-into-ahardwarebuffers)
+  * [Linux: guest memory moved into dma-bufs of memfds](#linux-guest-memory-moved-into-dma-bufs-of-memfds)
   * [Placed maps](#placed-maps)
   * [Measurements on a discrete GPU (RTX 2080, 246 MiB BAR)](#measurements-on-a-discrete-gpu-rtx-2080-246-mib-bar)
   * [Testing on a Steam Deck (or any integrated GPU)](#testing-on-a-steam-deck-or-any-integrated-gpu)
@@ -295,9 +296,10 @@ Without either the log warns and the path is the copy. Auto with the second alon
 `(vk_memory=auto: AHardwareBuffers only with vk_memory=2 or uma_memory=2)`. On a discrete GPU, 2 works but the GPU
 reads guest memory across the bus: it is for testing correctness there, not for speed.
 
-On a device with both extensions, the `[Debug]` setting `uma_memory` compares the two ways where guest memory is in
-place: 0 auto (imported, and moved only without the first extension and with `vk_memory=2`), 1 imported only (copied
-without the first), 2 moved into AHardwareBuffers only, under auto as well (copied without the second).
+On a device with both ways, the `[Debug]` setting `uma_memory` compares them where guest memory is in place: 0 auto
+(on Linux moved into dma-bufs where the driver's imports are dear, else imported, and moved only without the first
+extension and with `vk_memory=2`), 1 imported only (copied without the first), 2 moved only, into AHardwareBuffers on
+Android and dma-bufs on Linux, under auto as well (copied where neither can be).
 
 In place, the startup setting `uma_copies` says whether vertices, indices and constant buffers are read there too:
 0 auto, 1 in place, 2 copied. Auto copies them on amdgpu's drivers (RADV, AMDVLK, AMD's on Linux), which look up the
@@ -306,6 +308,11 @@ submission (`vk_uma_imports_dear`). One game's battle map held about 260 MB of i
 indices and constant buffers, and made about 380 submissions a present: its recording thread spent 70% of a core in
 the kernel. A range a write in place is pending over stays in place, as do a dispatch's storage ranges and what the
 GPU writes. The headless Vulkan checks of the in-place path take `uma_copies=1`.
+
+Where `uma_copies` copies, a constant buffer is copied straight from guest memory into the frame's staging, as on a
+discrete GPU (`cb_get` in `render.c`), when no write in place is pending over it. The buffer cache's checks and hash
+cost each constant buffer more than its copy. `check_uma_constants_copied` checks it, and a constant buffer under a
+write in place of the same submission.
 
 In place, a compute dispatch with nothing staged for the host to read is not submitted on its own: it waits in the
 submission being recorded for the end of the game's GPU submission (`vk_release_submit`, at the end of each NVN job)
@@ -468,6 +475,44 @@ leaves an import's: that phone's kernel (6.6) has no `PAGEMAP_SCAN`, and userfau
 Off Android `plat_gpu_buffer` makes a memfd, which the driver imports as host memory: `vulkan_headless`'s
 `check_uma_migrate` runs the migrate way where the driver takes a memfd's pages (lavapipe) and skips where it doesn't
 (amdgpu's user pointers take anonymous memory only), and `memory_alias` moves guest memory into memfds and back.
+
+### Linux: guest memory moved into dma-bufs of memfds
+
+amdgpu takes every user-pointer BO's pages again at each command submission, so the cost of a submission grows with
+the guest memory imported. On a Steam Deck OLED (RADV) a standalone probe (buffer device address on, as the runtime)
+measured a submission at 17.2 us with nothing imported, 20.4 us with 192 MiB held as three dma-bufs of 64 MiB, and
+345.7 us with the same 192 MiB as 48 host-pointer imports of 4 MiB. One game's race held about 180 MB of imports: the
+recording thread spent 87% of its time in the kernel and set the frame rate.
+
+Where `/dev/udmabuf` opens, the device has `VK_KHR_external_memory_fd` and `VK_EXT_external_memory_dma_buf`, a buffer
+of `guest_usage()` imports as a dma-buf (`vkGetPhysicalDeviceExternalBufferProperties`, not dedicated only), and the
+driver's imports are dear (`vk_uma_imports_dear`), auto takes the migrate way with dma-bufs (`VK_UMA_WITH_DMABUF`).
+A region's buffer is `plat_gpu_buffer`'s memfd, sealed against shrinking, and `plat_gpu_buffer_dmabuf` makes a
+udmabuf of all of it, which Vulkan imports (`imp_make_dmabuf`, a host-visible, coherent and cached type where the
+driver offers one). The guest's pages then move into the memfd with `mem_migrate`, so the CPU keeps an ordinary shared
+mapping of them. A region is at most what one udmabuf holds: the module parameter `size_limit_mb`
+(`/sys/module/udmabuf/parameters/size_limit_mb`, 64 on SteamOS, which only root sets), and a list udmabuf has the same
+total limit. A range larger than that is copied.
+
+udmabuf pins the memfd's pages when it is made. Nothing may punch the memfd while the dma-buf lives: the CPU would get
+new pages there and the GPU keep the old ones, with no error. `plat_gpu_buffer_free` only closes and unmaps. Pages of a
+region that the guest unmaps or decommits get other pages as in the Android way, and the region goes; its pinned pages
+stay held until the region's memory is freed. The pinned pages count as Shmem and as GTT.
+
+On the Deck the same race went from the recording thread at 95% of a core (87% in the kernel) to 24% (12%), and the
+GPU's wait for submitted work from about 1.8 ms to 0.31 ms a submission. `check_uma_migrate`, `check_uma_region_writes`
+and `check_uma_region_merge` run on dma-buf regions where the driver takes no memfd as host memory and udmabuf works
+(`vk_uma_migrate(2)`, `vk_uma_can_dmabuf`); before, they skipped on amdgpu.
+
+Write tracking watches a dma-buf region's pages as the rest of guest memory (`Imp.tracked`, which `vk_uma_import_in`
+passes over), where it leaves an import's alone: the driver pinned the pages once, when the udmabuf was made, and
+leaves the CPU's page table alone at each submission. A probe on kernel 7.2.7 found userfaultfd's write-protect with
+`PAGEMAP_SCAN` reporting exactly the pages written on a memfd mapping whose pages a udmabuf holds, and minor faults
+registering there too. `mem_migrate`'s new mapping is registered again (`ww_remapped`), and its first scan reports
+every page written. The GPU's writes in place there reach the caches when their submit is done
+(`gpu_mem_written_cpu`), as for imports. `check_uma_migrate` checks that a region's pages answer `vk_written_since`
+and that a CPU write there is found. In the race above, the caches stopped comparing the regions' bytes: about 12.0 and
+12.5 fps over its last 40 s against 10.7 and 11.2 with the regions untracked.
 
 ### Placed maps
 

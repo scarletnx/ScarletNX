@@ -1009,9 +1009,30 @@ static void alias_query(u64 cpu, u64 size) {
         CHECK(alias_seen.count[i] == 1 && alias_seen.lo[i] == a && alias_seen.hi[i] == b);
     }
 }
+/* the edges kept at each change: sorted, two for each run, its start's and its end's */
+static void alias_check_edges(void) {
+    const GAlias* x = &g_hle.nvdrv.alias;
+    const GRun* r = g_hle.nvdrv.gruns;
+    if (!x->edges_ok) return;
+    CHECK(x->nedge == 2 * g_hle.nvdrv.ngruns);
+    u8* had = calloc(g_hle.nvdrv.ngruns + 1, 1);
+    CHECK(had);
+    for (u32 i = 0; i < x->nedge; i++) {
+        const GEdge* e = &x->edge[i];
+        CHECK(!i || x->edge[i - 1].key <= e->key);
+        CHECK(e->run < g_hle.nvdrv.ngruns);
+        if (e->key & 1)
+            CHECK(e->key == (r[e->run].cpage << 1 | 1) && !(had[e->run] & 1));
+        else
+            CHECK(e->key == (r[e->run].cpage + r[e->run].pages) << 1 && !(had[e->run] & 2));
+        had[e->run] |= e->key & 1 ? 1 : 2;
+    }
+    free(had);
+}
 /* the runs are sorted, disjoint, and show what the table does over the test's range */
 static void alias_check_runs(void) {
     const GRun* r = g_hle.nvdrv.gruns;
+    alias_check_edges();
     for (u32 k = 0; k + 1 < g_hle.nvdrv.ngruns; k++) CHECK(r[k].pages && r[k].gpage + r[k].pages <= r[k + 1].gpage);
     for (u32 i = 0; i < ALIAS_PAGES; i++) {
         u64 g = (ALIAS_G >> 12) + i, c = gmmu_translate(g << 12);

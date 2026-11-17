@@ -11,8 +11,10 @@
 static struct {
     int failures;
     int startups, shutdowns, connected, zones, zone_ends, captures, logs, frames;
+    int fibers, fiber_leaves;
     int gpu_begins, gpu_ends, gpu_times, gpu_syncs, gpu_calibrates, configs, srclocs;
-    int msgs;
+    int msgs, samplings;
+    int8_t severity;
     size_t msg_size;
     char msg[32];
     uint64_t conn;
@@ -47,12 +49,16 @@ void ___tracy_emit_plot_config(const char* name, int32_t type, int32_t step, int
     (void)name, (void)type, (void)step, (void)fill, (void)color;
     g_test.configs++;
 }
-int ___tracy_begin_sampling_profiling(void) { return 0; }
+int ___tracy_begin_sampling_profiling(void) {
+    g_test.samplings++;
+    return 0;
+}
 void ___tracy_end_sampling_profiling(void) {}
 void ___tracy_emit_frame_mark_start(const char* name) { (void)name; }
 void ___tracy_emit_frame_mark_end(const char* name) { (void)name; }
 void ___tracy_emit_logString(int8_t severity, int32_t color, int32_t callstack_depth, size_t size, const char* txt) {
-    (void)severity, (void)color, (void)callstack_depth;
+    (void)color, (void)callstack_depth;
+    g_test.severity = severity;
     g_test.msgs++;
     g_test.msg_size = size;
     snprintf(g_test.msg, sizeof g_test.msg, "%.*s", (int)(size < sizeof g_test.msg - 1 ? size : sizeof g_test.msg - 1),
@@ -93,6 +99,11 @@ void ___tracy_emit_gpu_calibration_serial(const struct ___tracy_gpu_calibration_
     (void)d;
     g_test.gpu_calibrates++;
 }
+void ___tracy_fiber_enter(const char* fiber) {
+    (void)fiber;
+    g_test.fibers++;
+}
+void ___tracy_fiber_leave(void) { g_test.fiber_leaves++; }
 void ___tracy_emit_frame_image(const void* image, uint16_t w, uint16_t h, uint8_t offset, int32_t flip) {
     (void)image, (void)w, (void)h, (void)offset, (void)flip;
     g_test.frames++;
@@ -139,6 +150,59 @@ bool SDL_WaitProcess(SDL_Process* process, bool block, int* exitcode) {
 void SDL_DestroyProcess(SDL_Process* process) { (void)process; }
 const char* SDL_GetError(void) { return "no process in this test"; }
 
+/* A seeded run over the wrapper. The ops mix zones, fibers, plots, messages and a GUI that comes and goes. After
+   each one the counts must still agree: an open zone holds one pending count, and a fiber stack cannot overflow. */
+static uint32_t fuzz_next(uint32_t* s) {
+    uint32_t x = *s;
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    *s = x;
+    return x;
+}
+static void fuzz(uint32_t seed) {
+    static const struct ___tracy_source_location_data where = {NULL, "fuzz", __FILE__, __LINE__, 0};
+    TracyCZoneCtx zones[SNX_TRACY_ZONE_MAX];
+    uint32_t s = seed ? seed : 1;
+    int depth = 0;
+    for (int i = 0; i < 2000; i++) {
+        uint32_t op = fuzz_next(&s) % 12;
+        if (op < 2) {
+            TracyCZoneCtx c = snx_tracy_zone_begin(&where);
+            if (c.active) zones[depth++] = c;
+        } else if (op < 4 && depth) {
+            int k = (int)(fuzz_next(&s) % (uint32_t)depth);
+            TracyCZoneCtx c = zones[k];
+            memmove(&zones[k], &zones[k + 1], sizeof zones[0] * (size_t)(depth - k - 1));
+            depth--;
+            snx_tracy_zone_end(c);
+        } else if (op < 6) {
+            char name[32];
+            snprintf(name, sizeof name, "wait %u", fuzz_next(&s) % 8);
+            SNX_FIBER_ENTER(fuzz_next(&s) % SNX_FIBER_SLOTS, fuzz_next(&s) % SNX_FIBER_KINDS, name);
+        } else if (op == 6)
+            SNX_FIBER_LEAVE();
+        else if (op == 7)
+            SNX_FIBER_LEAVE_ALL();
+        else if (op == 8)
+            g_test.connected = !g_test.connected;
+        else if (op == 9)
+            g_test.conn = fuzz_next(&s) % 4 + 1;
+        else if (op == 10)
+            SNX_PLOT("fuzz plot", (double)(fuzz_next(&s) % 100));
+        else
+            SNX_MSG("fuzz msg", 8);
+        CHECK(depth >= 0 && depth <= SNX_TRACY_ZONE_MAX);
+        CHECK(t_tracy.fiber_depth >= 0 && t_tracy.fiber_depth <= SNX_TRACY_FIBER_MAX);
+        CHECK(g_tracy_pending == depth); /* every other emission balances its count inside the call */
+    }
+    SNX_FIBER_LEAVE_ALL();
+    CHECK(t_tracy.fiber_depth == 0);
+    while (depth) snx_tracy_zone_end(zones[--depth]);
+    CHECK(g_tracy_pending == 0);
+    g_test.connected = 1;
+}
+
 int main(void) {
     static const struct ___tracy_source_location_data where = {NULL, "zone", __FILE__, __LINE__, 0};
     TracyCZoneCtx ctx;
@@ -156,8 +220,9 @@ int main(void) {
     snx_tracy_leave();
     CHECK(!snx_tracy_zone_begin(&where).active); /* nobody attached */
     g_test.connected = 1;
+    g_settings.tracy_context_switches = 1; /* the sampler starts at the connect when this setting asks for it */
     ctx = snx_tracy_zone_begin(&where);
-    CHECK(ctx.active && g_test.zones == 1);
+    CHECK(ctx.active && g_test.zones == 1 && g_test.samplings == 1);
     snx_tracy_zone_end(ctx);
     CHECK(g_test.zone_ends == 1 && g_tracy_pending == 0);
     snx_tracy_capture_now(); /* the GUI is attached: no capture, and the client is not started again */
@@ -220,6 +285,29 @@ int main(void) {
     g_test.msgs = 0;
     SNX_MSG("a syncpoint wait", 16);
     CHECK(g_test.msgs == 1 && g_test.msg_size == 16 && !strncmp(g_test.msg, "a syncpoint wait", 16));
+    snx_tracy_fatal("a fatal end");
+    CHECK(g_test.msgs == 2 && !strncmp(g_test.msg, "a fatal end", 11));
+    CHECK(g_test.severity == TracyMessageSeverityFatal); /* the message pane marks it as fatal */
+    /* the guest's waits: a fiber's name goes out once per enter, and an unpaired leave is dropped */
+    g_test.fibers = g_test.fiber_leaves = 0;
+    SNX_FIBER_LEAVE();
+    CHECK(g_test.fiber_leaves == 0);
+    SNX_FIBER_ENTER(0, 1, "waiting on an event");
+    CHECK(g_test.fibers == 1 && t_tracy.fiber_depth == 1);
+    SNX_FIBER_ENTER(0, 2, "the game is paused"); /* a nested wait, which the stack must pair in reverse */
+    CHECK(g_test.fibers == 2 && t_tracy.fiber_depth == 2);
+    SNX_FIBER_LEAVE_ALL();
+    CHECK(g_test.fiber_leaves == 2 && t_tracy.fiber_depth == 0);
+    /* a name lives at one address for the server, which reads it when a GUI asks; the table keeps it */
+    CHECK(!strcmp(g_fiber_names[0][1], "waiting on an event"));
+    /* a GUI that disconnects mid-wait must not leave a depth that leave_all cannot clear */
+    g_test.connected = 1;
+    SNX_FIBER_ENTER(0, 1, "waiting on an event");
+    SNX_FIBER_ENTER(0, 2, "the game is paused");
+    g_test.connected = 0;
+    SNX_FIBER_LEAVE_ALL();
+    CHECK(t_tracy.fiber_depth == 0);
+    g_test.connected = 1;
     /* a zone deeper than the limit is dropped rather than leaked: its begin sends nothing, and the count says how
        many went that way */
     {
@@ -240,6 +328,13 @@ int main(void) {
         snx_tracy_zone_end(deep[1]);
         CHECK(g_test.zone_ends == (int)SNX_TRACY_ZONE_MAX + 2 && g_tracy_pending == 0);
     }
+    /* stress the wrapper with seeded runs, then restore the counts the shutdown checks below read */
+    {
+        int zone_ends = g_test.zone_ends, msgs = g_test.msgs;
+        for (uint32_t seed = 1; seed <= 32; seed++) fuzz(seed);
+        g_test.zone_ends = zone_ends;
+        g_test.msgs = msgs;
+    }
     /* shut down with a zone open: the zone ended once, the gate shut, the client shut down once */
     ctx = snx_tracy_zone_begin(&where);
     CHECK(ctx.active && g_tracy_pending == 1);
@@ -248,7 +343,7 @@ int main(void) {
     snx_tracy_zone_end(ctx);
     CHECK(g_test.zone_ends == 67);
     SNX_MSG("after the stop", 14);
-    CHECK(g_test.msgs == 1); /* the gate is shut: the client's data cannot be read */
+    CHECK(g_test.msgs == 2); /* the gate is shut: the client's data cannot be read */
     CHECK(!snx_tracy_gate_open() && !snx_tracy_enter() && !snx_tracy_zone_begin(&where).active);
     /* stopped for good: a second shutdown and a capture asked for start and stop nothing, and say nothing either
        (a running client's capture would say the GUI is attached) */

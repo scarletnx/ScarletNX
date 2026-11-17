@@ -55,8 +55,9 @@ What it numbers:
 - within one block only, an instruction that takes the fragment's implicit derivatives (the implicit-LOD samples,
   `OpImageQueryLod`, the derivatives), since a block under a branch does not have the derivatives of the block that
   dominates it, and an `OpSampledImage`, which only its own block may use;
-- a load that is not volatile: of an Input, UniformConstant, PushConstant or Uniform variable (or a chain of one)
-  from any block that dominates, since no instruction writes those; of any other memory within one block, up to the
+- a load that is not volatile: of an Input, UniformConstant, PushConstant or Uniform variable, or a StorageBuffer
+  variable decorated NonWritable (or a chain of one), from any block that dominates, since no instruction writes
+  those; of any other memory within one block, up to the
   next store, call, atomic, image write or instruction it does not know. A module that declares a `BufferBlock` may
   write under Uniform, so its Uniform loads follow the second rule.
 

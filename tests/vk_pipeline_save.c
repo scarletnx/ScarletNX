@@ -32,6 +32,8 @@ static struct {
         u32 nidx, ship_used, ship_said;
     } pf;
 } g_pipeline = {.psave = PMUTEX_INIT, .pj_lock = PMUTEX_INIT};
+/* the shader objects' binaries, which the saver writes beside the cache (shader_objects.c): none in this fixture */
+static void vk_so_save(void) {}
 #include "nx/gpu/vk/pipeline_cache_save.inc"
 #undef pm_lock
 #undef pm_unlock

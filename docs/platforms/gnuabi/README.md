@@ -334,6 +334,12 @@ The `threads` suite (`threads.c`, `signals.c`, `restart.c`, `sigsuspend.c`, `wak
 `close.c`, with `thread_start.S`) covers threads, futexes, signal frames, `rt_sigreturn`,
 `SA_RESTART`, `rt_sigsuspend`, a network wait after a signal and a descriptor closed during
 a call on it; CTest runs it as `gnuabi_threads` (skipped without Clang and LLD).
+The `litmus` suite (`litmus.c`) runs the Arm memory model's orderings in guest threads, one image per test: store
+buffering, message passing with `DMB ISH`, with `STLR` and `LDAR`, and with the split barrier `DMB ISHST` and
+`DMB ISHLD`, weak read coherence on three threads, and a plain load in a spin loop. Every outcome it reports must be
+one the model allows, and `tests/litmus/` states the same tests for herd7. CTest runs it as `gnuabi_litmus` and
+`gnuabi_litmus_lld`, skipped without a compiler that emits AArch64 and a linker that builds the image, and
+`gnuabi_litmus_self` checks the driver's own decisions on every host.
 The standalone `self_modify.S` fixture must exit 42 after replacing a compiled
 instruction, as must `rewrite.S`, which rewrites code that already ran;
 `fetch_fault.S` must fault after removing the executing page's execute permission. These intentional faults should be checked directly rather

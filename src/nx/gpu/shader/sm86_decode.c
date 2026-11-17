@@ -18,6 +18,7 @@ const Sm86OpInfo sm86_ops[SM86__COUNT] = {
 #define SM86_ROW(name, kind, display) {SM86_K_##kind, display},
     SM86_OPS(SM86_ROW)
 #undef SM86_ROW
+    {SM86_K_FIX, "LDSM + HMMA"}, /* SM86_LDSM_HMMA, which the decoder never gives */
 };
 
 /* the decoder's context: the opcode the trans_ function of the matching pattern names */

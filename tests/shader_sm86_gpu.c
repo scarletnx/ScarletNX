@@ -1433,6 +1433,7 @@ static int run_tensor_with(Gpu* g, u32 local, int warp32, int quad, int mixed, u
    (g_spirv_translate.hmma_stage); and with its cooperative matrices where it has
    them, in workgroups of one warp and of two in subgroups of 32. 1 when every run matches, 0 when one does not, -1
    with no such device */
+static int fuse_value(Gpu* g);
 static int run_tensor(void) {
     Gpu g = {0};
     if (!gpu_open(&g, 1)) {
@@ -1457,8 +1458,130 @@ static int run_tensor(void) {
             for (u32 run = 0; run < 2; run++)
                 for (int exact = 1; exact >= 0; exact--)
                     ok &= run_tensor_with(&g, run ? 64 : 32, 1, g.quad, g.mixed_dot, 1u << shape, 0, 0, exact);
+    ok &= fuse_value(&g);
     vkDestroyDevice(g.device, NULL);
     vkDestroyInstance(g.instance, NULL);
+    return ok;
+}
+
+/* an LDSM filling the A fragment of the next HMMA, once with the pair and once with a MOV between them: the fused
+   emitter must give the same D as the two separate ones, word for word */
+static int fuse_value(Gpu* g) {
+    static u32 in[32 * 3], got[2][2][32 * 4]; /* coop, pair */
+    u32 cb0[64] = {0};
+    cb0[0x20 / 4] = (u32)VA_IN;
+    cb0[0x24 / 4] = (u32)(VA_IN >> 32);
+    cb0[0x28 / 4] = (u32)VA_OUT;
+    cb0[0x2c / 4] = (u32)(VA_OUT >> 32);
+    for (u32 k = 0; k < 32; k++) { /* A's half pairs, two B words: none of the sums rounds in f16 */
+        in[k] = 0x3c003c00u;       /* 1, 1 */
+        in[32 + k] = 0x40004000u;  /* 2, 2 */
+        in[64 + k] = 0x3f803f80u;  /* 1, 1 */
+    }
+    int quad_was = g_spirv_translate.quad_compute, mixed_was = g_spirv_translate.mixed_dot, f16_was = g_spirv_translate.float16,
+        coop_was = g_spirv_translate.hmma_coop;
+    u32 shapes_was = g_spirv_translate.hmma_coop_shapes;
+    for (int coop = 0; coop < 2; coop++)
+        for (int pair = 0; pair < 2; pair++)
+            for (u32 i = 0; i < 32 * 4; i++) got[coop][pair][i] = FILL; /* a skipped variant is not a result */
+    int ok = 1;
+    for (int coop = 1; coop >= 0 && ok; coop--) {
+        if (coop && !g->coop) continue;
+        for (int pair = 1; pair >= 0 && ok; pair--) {
+        Prog p = {0};
+        p.outputs = 4;
+        Sm86Word w = sm86_fix(0x919); /* S2R R0, TID.X */
+        f(&w, 72, 8, 0x21);
+        emit(&p, w);
+        w = sm86_fix(0x919); /* S2R R1, CTAID.X */
+        f(&w, 16, 8, 1);
+        f(&w, 72, 8, 0x25);
+        emit(&p, w);
+        emit(&p, ri(0x024, 2, 1, 32, 0)); /* IMAD R2, R1, 32, R0 */
+        for (u32 k = 0; k < 2; k++) { /* UR4: the input, UR6: the output */
+            w = sm86_fix(0xab9);
+            f(&w, 16, 6, 4 + 2 * k);
+            sm86_cbuf(&w, 0, 0x20 + 8 * k);
+            f(&w, 73, 3, 5);
+            emit(&p, w);
+        }
+        for (u32 k = 0; k < 3; k++) { /* R8, R12, R13: A's tile word and B's two words */
+            w = sm86_fix(0x981); /* LDG.E [R2.U32 + UR4 + 128k] */
+            f(&w, 16, 8, k ? 12 + k - 1 : 8);
+            f(&w, 24, 8, 2);
+            f(&w, 32, 6, 4);
+            f(&w, 40, 24, 128 * k);
+            f(&w, 72, 1, 1);
+            f(&w, 73, 3, 4);
+            f(&w, 81, 3, 7);
+            f(&w, 91, 1, 1);
+            emit(&p, w);
+        }
+        w = sm86_fix(0x388); /* STS [R0 + 0x40], R8 */
+        f(&w, 24, 8, 0);
+        f(&w, 32, 8, 8);
+        f(&w, 40, 24, 0x40);
+        f(&w, 73, 3, 4);
+        emit(&p, w);
+        emit(&p, sm86_fix(0xb1d)); /* BAR.SYNC */
+        w = sm86_fix(0x83b);       /* LDSM.16.M88.4 R24, [R7 + 0x40] */
+        f(&w, 16, 8, 24);
+        f(&w, 24, 8, 7);
+        f(&w, 40, 24, 0x40);
+        f(&w, 72, 2, 2);
+        emit(&p, w);
+        if (!pair) emit(&p, alu(0x002, 5, 60, 255)); /* MOV R60, RZ: the two halves apart */
+        w = sm86_fix(0x23c);                          /* HMMA.16816.F32 R16, R24, R12, RZ */
+        f(&w, 16, 8, 16);
+        f(&w, 24, 8, 24);
+        f(&w, 32, 8, 12);
+        f(&w, 64, 8, 255);
+        f(&w, 72, 19, 0x18);
+        emit(&p, w);
+        emit(&p, ri(0x024, 6, 2, 16, 255)); /* IMAD R6, R2, 16, RZ: the lane's four output words */
+        for (u32 k = 0; k < 4; k++) store(&p, k, 16 + k);
+        epilogue(&p);
+        ShaderInfo si = {0};
+        si.cs_local[0] = 32, si.cs_local[1] = si.cs_local[2] = 1;
+        si.shared_size = coop ? 49152 : 4096;
+        g_spirv_translate.quad_compute = g->quad, g_spirv_translate.mixed_dot = g->mixed_dot,
+        g_spirv_translate.float16 = g->float16;
+        g_spirv_translate.hmma_coop = coop ? g->coop : 0;
+        g_spirv_translate.hmma_coop_shapes = coop ? g->coop_shapes : 0;
+        size_t words = 0;
+        u32* spv = sm86_to_spirv(p.code, p.n * 16, ST_CS, NULL, &si, &words);
+        if (!spv) {
+            fprintf(stderr, "fuse value, coop %d, pair %d: %s\n", coop, pair, si.first_unsupported);
+            ok = 0;
+            break;
+        }
+        u32* out = got[coop][pair];
+        for (u32 i = 0; i < 32 * 4; i++) out[i] = FILL;
+        g_groups = 1, g_warp32 = g->warp32;
+        int ran = si.ngbuf == 2 && gpu_run(g, spv, words, &si, cb0, sizeof cb0, 0x28, in, sizeof in, out, sizeof got[0][0]);
+        g_groups = GROUPS, g_warp32 = 0;
+        free(spv);
+        if (!ran) {
+            fprintf(stderr, "fuse value, coop %d, pair %d: Vulkan failed\n", coop, pair);
+            ok = 0;
+        }
+    }
+    }
+    g_spirv_translate.quad_compute = quad_was, g_spirv_translate.mixed_dot = mixed_was,
+    g_spirv_translate.float16 = f16_was;
+    g_spirv_translate.hmma_coop = coop_was, g_spirv_translate.hmma_coop_shapes = shapes_was;
+    if (ok) {
+        u32 bad = 0;
+        for (u32 i = 0; i < 32 * 4; i++) {
+            u32 want = got[0][1][i];
+            bad += want == FILL;
+            for (int coop = 0; coop < 2; coop++)
+                for (int pair = 1; pair >= 0; pair--)
+                    if (got[coop][pair][i] != FILL) bad += got[coop][pair][i] != want;
+        }
+        printf("fuse value: %u of %u D words differ across pair, halves and cooperative paths\n", bad, 32 * 4);
+        ok = bad == 0;
+    }
     return ok;
 }
 

@@ -1100,8 +1100,9 @@ setting Vulkan pipeline cache
     default 1
     startup
     words Off|On
-    help 1 = the GPU driver's compiled pipelines are kept between runs (shader_cache/vk_pipelines.bin). 0 = they are
-    help neither read nor written: every pipeline is compiled again, as in a first run, to measure that
+    help 1 = the GPU driver's compiled pipelines are kept between runs (shader_cache/vk_pipelines.bin), and so are its
+    help shader objects' binaries (vk_shaders.bin). 0 = they are neither read nor written: every pipeline and shader
+    help object is compiled again, as in a first run, to measure that
 setting GPU mirror past limit
     key vk_mirror_past_limit
     int 0 1
@@ -1336,9 +1337,12 @@ setting Draw state check
     default 0
     startup
     words Off|On
-    help 1 = a draw that keeps the last draw's shaders and pipeline makes them again to compare, and the log names
-    help each difference (a register missing from a group, an input that is not compared). Slow: for checking what
-    help a draw keeps
+    help 1 = a draw that keeps an earlier draw's shaders and pipeline makes them again to compare, and the log names
+    help each difference (a register missing from a group, an input that is not compared, a kept key that is not the
+    help state's bytes). A kept constant buffer's bytes are hashed again (where the CPU wrote nothing since), a kept
+    help texture view or sampler is made again, and a descriptor kept from an earlier frame is encoded again, and
+    help compared too. A texture the quick check finds unchanged is checked the full way too, and the log counts where
+    help the full check found a change. Slow: for checking what a draw keeps
 setting Profiler
     key profile
     only windows
@@ -1400,6 +1404,16 @@ setting Shader corpus
     startup
     help A folder that keeps each translated shader for snx-shaderc (gpu/shader/corpus.c). With it every shader is
     help translated, and none is kept for the next run. Empty: none, or captures/shaders with Shader captures
+setting Pipeline stats
+    key pipeline_stats
+    text 1024
+    default ""
+    startup
+    help A CSV file that gets the driver's statistics of each whole and optimized graphics pipeline
+    help (VK_KHR_pipeline_executable_properties): for each shader stage, the instructions, registers, spills and the
+    help others that the driver reports, by the program hashes of the log's lines (a shader corpus file of the program
+    help starts with the same first 8 hex digits). On some drivers, pipelines made
+    help with it are not the ones in the pipeline cache of runs without it. Empty: none
 setting ASTC dump
     key astc_dump
     text 1024
@@ -1468,13 +1482,14 @@ setting Guest memory in place
     int 0 2
     default 0
     startup
-    only android
+    only linux
     words Auto|Import|Move
     help Where vk_memory has the GPU read guest memory in place, how it reaches it, to compare the two ways on one
-    help device. 0 = imported where it is (VK_EXT_external_memory_host), and without that moved into AHardwareBuffers
-    help when vk_memory=2. 1 = imported only: without VK_EXT_external_memory_host guest memory is copied. 2 = moved
-    help into AHardwareBuffers only, on a driver that imports too and with vk_memory=0 as well; elsewhere than
-    help Android there are none, and guest memory is copied
+    help device. 0 = moved into memfds the GPU imports as dma-bufs (Linux's /dev/udmabuf) on a driver whose imports
+    help cost each submission (amdgpu), else imported where it is (VK_EXT_external_memory_host), and without that
+    help moved into AHardwareBuffers when vk_memory=2. 1 = imported only: without VK_EXT_external_memory_host guest
+    help memory is copied. 2 = moved only, into AHardwareBuffers on Android and dma-bufs on Linux, also on a driver
+    help that imports and with vk_memory=0; where there are neither, guest memory is copied
 setting Guest buffers copied
     key uma_copies
     int 0 2
@@ -1653,6 +1668,15 @@ setting Tracy sampling
     words Off|On
     help 1 = starts the sampler at the first connection, for the trace's flame graphs. With JIT'd guest code and the
     help drivers' own threads, the sample stacks read as [unknown] over the instrumented zones
+setting Tracy context switches
+    key tracy_context_switches
+    int 0 1
+    default 0
+    startup
+    words Off|On
+    help 1 = puts the OS's context switches on the threads' timelines, so a thread's wait and preemption show against
+    help the game's zones. On Linux this needs permission to read perf events and tracefs; without it Tracy writes a
+    help debug line and leaves the feature off. Tracy starts its sampler with it, so the sample stacks come too
 setting Tracy frame images
     key tracy_frame_images
     int 0 60
@@ -2007,6 +2031,7 @@ setting @VK_KHR_maintenance4
 setting @VK_KHR_maintenance5
 setting @VK_KHR_maintenance8
 setting @VK_KHR_map_memory2
+setting @VK_KHR_pipeline_executable_properties
 setting @VK_KHR_pipeline_library
 setting @VK_KHR_portability_subset
 setting @VK_KHR_present_id
