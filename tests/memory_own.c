@@ -1128,8 +1128,7 @@ static void test_stress(void) {
         if (mid_at || refs(r) != 0 || g_resolves != resolves + 1 || own_trapped(g_sa, 0x20000)) /* TEMP */
             fprintf(stderr,
                     "OWN_DIAG round %d: resolve before piece %llx, %d before the readers, refs %d, resolves +%d, "
-                    "trapped %d
-",
+                    "trapped %d\n",
                     g_round, (unsigned long long)mid_at, before_readers, refs(r), g_resolves - resolves,
                     own_trapped(g_sa, 0x20000));
         CHECK(refs(r) == 0 && g_resolves == resolves + 1 && !own_trapped(g_sa, 0x20000));
