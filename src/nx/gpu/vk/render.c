@@ -1563,7 +1563,9 @@ static int tex_memo_image_pending(TexMemo* m) {
     m->img_adds = adds;
     return 0;
 }
-static void tex_resolve(const DsState* ds, u32 handle, TexRes* x) {
+/* tex_resolve through the memo: what x is of it, 2 a way found, 1 a way kept for the next lookup, -1 none but its
+   headers as memory has them, 0 none, or a texture over a target (its own checks run at each lookup) */
+static int tex_resolve_memo(const DsState* ds, u32 handle, TexRes* x) {
     const DsBindings* b = &ds->bind;
     if (b->smp_mode) {
         /* samplers are taken by the handle's sampler index. Ryujinx reads this register as the sampler index mode,
@@ -1607,7 +1609,7 @@ static void tex_resolve(const DsState* ds, u32 handle, TexRes* x) {
         LOG_LIMIT(1, "vulkan: a texture handle %08x names headers past the pools' limits (%x, %x): no texture there\n",
                   handle, b->tex_max, b->smp_max);
         g_stats.n.tex[VK_TEX_PAST]++;
-        return;
+        return 0;
     }
     /* a pending storage image over this texture's own memory invalidates it; one elsewhere does not. The global flag
        alone dropped every memo once any fragment program's storage image was pending, so a race that draws its
@@ -1657,7 +1659,7 @@ static void tex_resolve(const DsState* ds, u32 handle, TexRes* x) {
             x->memo = 0;
         }
         g_stats.n.tex[VK_TEX_KEPT]++;
-        return;
+        return 0;
     }
     if (miss < 0) {
         m->gw = gw;
@@ -1670,7 +1672,7 @@ static void tex_resolve(const DsState* ds, u32 handle, TexRes* x) {
             if (m->t->layout != VK_IMAGE_LAYOUT_UNDEFINED) {
                 x->t = m->t;
                 g_stats.n.tex[VK_TEX_KEPT]++;
-                return;
+                return 2;
             }
             m->t = NULL; /* undefined: memory has its texels, resolved below */
             x->memo = 0;
@@ -1682,7 +1684,7 @@ static void tex_resolve(const DsState* ds, u32 handle, TexRes* x) {
                 x->memo = 0;
             }
             g_stats.n.tex[VK_TEX_KEPT]++;
-            return;
+            return x->t ? 2 : 0;
         }
     }
     g_stats.n.tex[VK_TEX_RESOLVED]++;
@@ -1724,7 +1726,85 @@ static void tex_resolve(const DsState* ds, u32 handle, TexRes* x) {
         m->over_gw = gw; /* read before the headers and the texture */
         m->copy = over && vk_tex_is_copy_of(x->t, over);
         x->memo = set_at * TEX_MEMO_WAYS + (u32)(m - set) + 1;
+        return over ? 0 : 1;
     }
+    return -1;
+}
+/* The memo's last answers by handle, with what every check of a memo hit reads, taken before the lookup: while none
+   of those moved, the same way is found again and each of its checks says the same (the surface table's epoch moves
+   with any bucket's, the stream's with any write epoch, and the counts of pending results, storage images and GPU
+   writes with any of theirs), so the lookup comes to what a hit does last. Most draws move none of them since the one
+   before (the GPU front end writes no memory between them), and resolve the same handles again: one game's draws
+   resolved about 7.6 textures each, 6.1 of them memo hits of about 65 ns, much of it spent in the ways of a memo too
+   big for the cache. A draw-level form of the fast draws of Cemu's command processor, which skip the checks of each
+   draw while only uniforms and vertex buffers change (cemu-project/Cemu #706, the idea only). A resolve the memo doesn't
+   keep keeps its headers here, which the same checks prove unwritten: only the texture is found again from them, as
+   the memo's lookup would. A texture the memo keeps over a target (TexMemo.over) isn't kept here: the target's draws
+   move none of these stamps, so its own checks run at each lookup. With draw_state_check=1 each lookup goes to the
+   memo. A frame's draws use some hundreds of handles: 1024 entries of about 150 bytes, which the cache holds */
+#define TEX_RECENT_BITS 10
+enum { TEX_RECENT_NONE, TEX_RECENT_TARGET, TEX_RECENT_TEXTURE, TEX_RECENT_HEADERS };
+typedef struct {
+    TexRes x;
+    const DsState* ds;
+    u64 tic_base, tsc_base, gw, adds, img_adds;
+    u32 surf_epoch, ww_epoch;
+    u32 tex_max, smp_max;
+    int kind; /* TEX_RECENT_*: x.t the render target itself read whole, a texture the memo keeps, or headers only */
+} TexRecent;
+static TexRecent g_tex_recent[1u << TEX_RECENT_BITS];
+static void tex_resolve(const DsState* ds, u32 handle, TexRes* x) {
+    const DsBindings* b = &ds->bind;
+    TexRecent* r = &g_tex_recent[((u64)handle * VK_FIB_MULT) >> (64 - TEX_RECENT_BITS)];
+    /* the results added count the writes in place too, as the memo's do */
+    const u64 gw = gpu_mem_generation(),
+              adds = atomic_load_explicit(&g_pend_any.adds, memory_order_relaxed) + vk_uma_writes(),
+              img_adds = vk_gfx_image_adds();
+    const u32 surf_epoch = atomic_load_explicit(&g_vk_surf_epoch, memory_order_relaxed), ww_epoch = vk_ww_epoch();
+    if (r->kind && r->x.handle == handle && r->ds == ds && r->tic_base == b->tex_pool && r->tsc_base == b->smp_pool &&
+        r->tex_max == b->tex_max && r->smp_max == b->smp_max && r->gw == gw && r->adds == adds &&
+        r->img_adds == img_adds && r->surf_epoch == surf_epoch && r->ww_epoch == ww_epoch && !b->smp_mode &&
+        !g_settings.draw_state_check) {
+        Surf* t = r->x.t;
+        if (r->kind == TEX_RECENT_HEADERS) {
+            *x = r->x;
+            x->t = vk_tex_from_tic(x->tic);
+            g_stats.n.tex[VK_TEX_RESOLVED]++;
+            return;
+        }
+        if (r->kind == TEX_RECENT_TARGET) {
+            if (t->layout != VK_IMAGE_LAYOUT_UNDEFINED) vk_rt_note_read(t);
+            if (t->layout != VK_IMAGE_LAYOUT_UNDEFINED) {
+                *x = r->x;
+                g_stats.n.tex[VK_TEX_KEPT]++;
+                return;
+            }
+        } else if ((t = vk_tex_recheck(t))) {
+            *x = r->x;
+            x->t = t;
+            g_stats.n.tex[VK_TEX_KEPT]++;
+            return;
+        }
+        /* undefined now, or its check failed: the memo's lookup, as before */
+    }
+    r->kind = TEX_RECENT_NONE;
+    /* a way just kept is asked about the storage images pending over its texture at its next lookup only */
+    const int memo = tex_resolve_memo(ds, handle, x);
+    if (!memo || (memo == 1 && g_gfx_img_any)) return;
+    *r = (TexRecent){.x = *x,
+                     .ds = ds,
+                     .tic_base = b->tex_pool,
+                     .tsc_base = b->smp_pool,
+                     .gw = gw,
+                     .adds = adds,
+                     .img_adds = img_adds,
+                     .surf_epoch = surf_epoch,
+                     .ww_epoch = ww_epoch,
+                     .tex_max = b->tex_max,
+                     .smp_max = b->smp_max,
+                     .kind = memo < 0      ? TEX_RECENT_HEADERS
+                             : x->t->is_rt ? TEX_RECENT_TARGET
+                                           : TEX_RECENT_TEXTURE};
 }
 
 int vk_tic_unnormalized(const u32* tic) {
