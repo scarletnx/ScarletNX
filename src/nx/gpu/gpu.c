@@ -1038,6 +1038,7 @@ static int run_pass(i64* wake) {
     }
     return 0;
 }
+int gpu_on_thread(void) { return t_gpu; }
 int gpu_wait_note(const char* what, u64 value) {
     if (!t_gpu) return 0;
     if (what) {

@@ -328,13 +328,20 @@ static void* svc_body(void* p) {
 }
 typedef struct {
     KThread* t;
-    int migrate;
+    int migrate, done;
 } SnxKctYield;
 static void* yield_body(void* p) {
     SnxKctYield* y = (SnxKctYield*)p;
     snx_kct_who = (int)(y->t - snx_kct_thread);
     core_yield(y->t, y->migrate);
+    __atomic_store_n(&y->done, 1, __ATOMIC_SEQ_CST);
     return NULL;
+}
+/* until the yield returns, for up to 2 s: 1 if it did */
+static int yield_done(SnxKctYield* y) {
+    struct timespec pause = {0, 1000000};
+    for (int i = 0; i < 2000 && !__atomic_load_n(&y->done, __ATOMIC_SEQ_CST); i++) nanosleep(&pause, NULL);
+    return __atomic_load_n(&y->done, __ATOMIC_SEQ_CST);
 }
 
 void kobj_ref(KObj* o) {
@@ -471,17 +478,41 @@ int main(void) {
     CHECK(b->on_core == 0, "45 got core %d", b->on_core);
     core_leave(b);
 
-    /* svcSleepThread(0) hands the core over and waits for it again, other cores idle or not */
+    /* svcSleepThread(0) with only a waiter of worse priority keeps the core, and nothing flags the holder: on the
+       console it moves the thread to the back of its own priority only (Mesosphère's YieldWithoutCoreMigration).
+       Cores 1 and 2 are busy, so the holder is not flagged for an idle core */
     reset();
-    a = thread(0, 44, 0, 7), w = thread(3, 50, 0, 1);
+    a = thread(0, 44, 0, 7), b = thread(1, 44, 1, 2), c = thread(2, 44, 2, 4), w = thread(3, 50, 0, 1);
     core_enter(a);
+    core_enter(b);
+    core_enter(c);
     pthread_create(&h, NULL, enter_body, w);
     CHECK(settle(w, -2) == -2, "50 with mask 1 waits: on core %d", w->on_core);
-    SnxKctYield y = {a, 0};
+    SnxKctYield y = {a, 0, 0};
+    pthread_create(&h2, NULL, yield_body, &y);
+    CHECK(yield_done(&y) && on_core(a) == 0 && on_core(w) == -2 && !__atomic_load_n(&a->cpu.poll, __ATOMIC_RELAXED),
+          "yield 0 behind 50: returned %d, 44 on %d, 50 on %d, poll %u", y.done, on_core(a), on_core(w), a->cpu.poll);
+    if (!y.done) core_leave(w); /* 50 took the core: it gives it back, so the yield returns */
+    pthread_join(h2, NULL);
+    core_leave(a);
+    pthread_join(h, NULL);
+    CHECK(w->on_core == 0, "50 got core %d", w->on_core);
+    core_leave(w);
+    core_leave(b);
+    core_leave(c);
+
+    /* with a waiter of its own priority, svcSleepThread(0) hands the core over and waits for it again, other cores
+       idle or not */
+    reset();
+    a = thread(0, 44, 0, 7), w = thread(3, 44, 0, 1);
+    core_enter(a);
+    pthread_create(&h, NULL, enter_body, w);
+    CHECK(settle(w, -2) == -2, "44 with mask 1 waits: on core %d", w->on_core);
+    y.t = a, y.migrate = 0, y.done = 0;
     pthread_create(&h2, NULL, yield_body, &y);
     pthread_join(h, NULL);
-    CHECK(w->on_core == 0 && settle(a, -2) == -2 && a->core == 0, "yield 0: 50 on %d, 44 on %d for %d", w->on_core,
-          on_core(a), a->core);
+    CHECK(w->on_core == 0 && settle(a, -2) == -2 && a->core == 0, "yield 0: 44 of mask 1 on %d, 44 on %d for %d",
+          w->on_core, on_core(a), a->core);
     core_leave(w);
     pthread_join(h2, NULL);
     CHECK(a->on_core == 0, "yield 0: back on core %d", a->on_core);

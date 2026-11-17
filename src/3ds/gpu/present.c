@@ -59,7 +59,9 @@ static struct {
     unsigned char* readback_view;
     SnxVkSwapchain swap[2]; /* the combined window's, or each screen's own */
     /* each submission slot's: a slot is free again only once its submission is done, and so are they */
-    VkSemaphore acquire[2][SNX_CTR_VK_SLOTS], presented[2][SNX_CTR_VK_SLOTS];
+    VkSemaphore acquire[2][SNX_CTR_VK_SLOTS];
+    /* each swapchain image's: free again only once that image is acquired again (a present's wait has no fence) */
+    VkSemaphore presented[2][SNX_VK_SWAP_IMAGES];
     /* a line over the game for a few seconds, as a Switch game shows one: Esc's first press. In the window it was
        asked in, each window's band copied by its own (common/gpu/vk/notice.h) */
     SnxNotice notice;
@@ -164,11 +166,12 @@ static void frame_free(Frame* f) {
 }
 
 static bool semaphores(const SnxCtrVk* v, const VkSemaphoreCreateInfo* si) {
-    for (unsigned screen = 0; screen < 2; ++screen)
+    for (unsigned screen = 0; screen < 2; ++screen) {
         for (unsigned i = 0; i < SNX_CTR_VK_SLOTS; ++i)
-            if (vkCreateSemaphore(v->device, si, NULL, &g_present.acquire[screen][i]) != VK_SUCCESS ||
-                vkCreateSemaphore(v->device, si, NULL, &g_present.presented[screen][i]) != VK_SUCCESS)
-                return false;
+            if (vkCreateSemaphore(v->device, si, NULL, &g_present.acquire[screen][i]) != VK_SUCCESS) return false;
+        for (unsigned i = 0; i < SNX_VK_SWAP_IMAGES; ++i)
+            if (vkCreateSemaphore(v->device, si, NULL, &g_present.presented[screen][i]) != VK_SUCCESS) return false;
+    }
     return true;
 }
 bool snx_ctr_present_init(SnxCtrMemory* memory, const char* frame_dir, bool headless) {
@@ -570,7 +573,7 @@ bool snx_ctr_present_frame(unsigned screen, uint32_t pa, unsigned width, unsigne
     if (!from_target || scaled.kept) /* the draws over it stored, and its stale pages in the copy */
         snx_ctr_vk_sync(pa, pitch * (height - 1) + width * bytes, false);
     VkCommandBuffer cb = snx_ctr_vk_commands();
-    unsigned slot = snx_ctr_vk_slot(); /* the open recording's, whose semaphores it takes */
+    unsigned slot = snx_ctr_vk_slot(); /* the open recording's, whose acquire semaphore it takes */
     uint64_t recording = snx_ctr_vk_serial();
     snx_ctr_vk_compute_barrier(cb);    /* after what the GPU wrote to the framebuffer */
     image_barrier(cb, f->image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL); /* the shader writes all of it */
@@ -668,14 +671,14 @@ bool snx_ctr_present_frame(unsigned screen, uint32_t pa, unsigned width, unsigne
     bool ok = true;
     if (show) {
         uint64_t serial =
-            snx_ctr_vk_submit_with(g_present.acquire[window_index][slot], g_present.presented[window_index][slot]);
+            snx_ctr_vk_submit_with(g_present.acquire[window_index][slot], g_present.presented[window_index][index]);
         ok = !waited || snx_ctr_vk_wait(serial, UINT64_MAX);
     } else if (waited)
         ok = snx_ctr_vk_finish();
     if (show && ok) {
         VkPresentInfoKHR present = {.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
                                     .waitSemaphoreCount = 1,
-                                    .pWaitSemaphores = &g_present.presented[window_index][slot],
+                                    .pWaitSemaphores = &g_present.presented[window_index][index],
                                     .swapchainCount = 1,
                                     .pSwapchains = &g_present.swap[window_index].swapchain,
                                     .pImageIndices = &index};
@@ -856,11 +859,12 @@ void snx_ctr_present_free(void) {
     for (unsigned i = 0; i < 2; ++i) frame_free(&g_present.frames[i]);
     frame_free(&g_present.source_dummy);
     for (unsigned screen = 0; screen < 2; ++screen) snx_vk_notice_destroy(g_present.notice_vk[screen]);
-    for (unsigned screen = 0; screen < 2; ++screen)
-        for (unsigned i = 0; i < SNX_CTR_VK_SLOTS; ++i) {
+    for (unsigned screen = 0; screen < 2; ++screen) {
+        for (unsigned i = 0; i < SNX_CTR_VK_SLOTS; ++i)
             if (g_present.acquire[screen][i]) vkDestroySemaphore(v->device, g_present.acquire[screen][i], NULL);
+        for (unsigned i = 0; i < SNX_VK_SWAP_IMAGES; ++i)
             if (g_present.presented[screen][i]) vkDestroySemaphore(v->device, g_present.presented[screen][i], NULL);
-        }
+    }
     if (g_present.readback_view) vkUnmapMemory(v->device, g_present.readback_memory);
     if (g_present.readback) vkDestroyBuffer(v->device, g_present.readback, NULL);
     if (g_present.readback_memory) vkFreeMemory(v->device, g_present.readback_memory, NULL);

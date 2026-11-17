@@ -512,6 +512,13 @@ bool vita_image_load_at(const char* path, VitaImage* image, uint32_t origin, uin
     }
     if (ok && type == ET_SCE_EXEC) seed_pointers(&l);
     if (ok) {
+        const char *leaf = path, *slash;
+        VitaLoadedModule* m = &image->modules[image->module_count++];
+        while ((slash = strpbrk(leaf, "/\\"))) leaf = slash + 1;
+        snprintf(m->name, sizeof m->name, "%s", image->name);
+        snprintf(m->leaf, sizeof m->leaf, "%s", leaf);
+        m->start = image->module_start;
+        m->segment_count = image->segment_count;
         seed(&l, image->module_start);
         if (image->module_stop) seed(&l, image->module_stop);
         ok = identity(image) || fail(&l, "cannot hash the image", 0, 0);
@@ -524,10 +531,20 @@ bool vita_image_load_at(const char* path, VitaImage* image, uint32_t origin, uin
 bool vita_image_load(const char* path, VitaImage* image, char* error, size_t error_size) {
     return vita_image_load_at(path, image, VITA_LOAD_BASE, 0, error, error_size);
 }
-bool vita_image_merge(VitaImage* image, VitaImage* library, char* error, size_t error_size) {
+bool vita_image_merge(VitaImage* image, VitaImage* library, bool deferred, char* error, size_t error_size) {
     if (image->segment_count + library->segment_count > VITA_SEGMENTS) {
         snprintf(error, error_size, "too many loaded Vita segments");
         return false;
+    }
+    if (image->module_count + library->module_count > VITA_MODULES) {
+        snprintf(error, error_size, "too many loaded Vita modules");
+        return false;
+    }
+    for (unsigned i = 0; i < library->module_count; ++i) {
+        VitaLoadedModule* m = &image->modules[image->module_count++];
+        *m = library->modules[i];
+        m->first_segment = image->segment_count + m->first_segment;
+        m->deferred = deferred;
     }
     for (unsigned i = 0; i < library->segment_count; ++i) {
         for (unsigned j = 0; j < image->segment_count; ++j) {
@@ -561,7 +578,7 @@ bool vita_image_merge(VitaImage* image, VitaImage* library, char* error, size_t 
     image->seeds = seeds;
     memcpy(image->seeds + image->seed_count, library->seeds, library->seed_count * sizeof *seeds);
     image->seed_count += library->seed_count;
-    if (library->module_start && image->library_start_count < 16)
+    if (library->module_start && !deferred && image->library_start_count < 16)
         image->library_starts[image->library_start_count++] = library->module_start;
     /* Include every loaded segment in the identity used by the AOT cache. */
     EVP_MD_CTX* hash = EVP_MD_CTX_new();

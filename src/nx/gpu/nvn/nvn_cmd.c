@@ -908,27 +908,6 @@ void nvn_CommandBufferSetComputeOverlapMode(CPU* c, u64 cb, i32 mode) {
     (void)cb;
     (void)mode;
 }
-/* the Ounce's shading rate image, which lowers the fragment rate where it says. The runtime shades each pixel,
-   which gives the image of the full rate. A null texture unbinds it (the game's driver skips its methods) */
-void nvn_CommandBufferBindShadingRateImage(CPU* c, u64 cb, u64 t, u64 v) {
-    (void)c;
-    (void)cb;
-    (void)v;
-    if (t) LOG_LIMIT(1, "nvn: a shading rate image is shaded at the full rate\n");
-}
-/* the shading rates of a viewport's palette, and how the palette is read: the runtime shades at the full rate */
-void nvn_CommandBufferShadingRateImagePalette(CPU* c, u64 cb, i32 viewport, i32 n, u64 rates) {
-    (void)c;
-    (void)cb;
-    (void)viewport;
-    (void)n;
-    (void)rates;
-}
-void nvn_CommandBufferSetShadingRatePaletteMode(CPU* c, u64 cb, i32 mode) {
-    (void)c;
-    (void)cb;
-    (void)mode;
-}
 /* the Ounce's geometry processing mode, which the game's driver writes to method 0xe26 of the 3D engine (and 0 to
    0xe3e). The game sets mode 2 before its mesh draws, which take the mesh pipeline whatever the mode says
    (DrawMeshTasks*) */
@@ -1175,6 +1154,32 @@ static u64 tex_snap(u64 payload, size_t off, int k, u64 t) {
 static void copy_view(NvnView* dst, u8* has, u64 v) {
     *has = v != 0;
     if (v) memcpy(dst, GP(v), sizeof *dst);
+}
+/* The Ounce's shading rate image, which lowers the fragment rate where it says (OP_RATE_IMAGE, the renderer's
+   shading_rate.c). The game's driver writes 8 words from method 0x4aa (the address, size and layout) and 0 to method
+   0x9f, or 6 zero words from 0x4aa for a null texture, which unbinds it. It reads the view only for the layout */
+void nvn_CommandBufferBindShadingRateImage(CPU* c, u64 cb, u64 t, u64 v) {
+    u64 payload = rec(c, cb, OP_RATE_IMAGE, SNAP_OFF(NvnPRateImage) + (t ? NVN_TEX_SNAP : 0), t ? 40 : 28);
+    NvnPRateImage* r = (NvnPRateImage*)(void*)GP(payload);
+    r->tex = tex_snap(payload, SNAP_OFF(NvnPRateImage), 0, t);
+    copy_view(&r->view, &r->has_view, t ? v : 0);
+}
+/* a viewport's palette: its first n entries from rates, the others 5 (one invocation for each pixel), and every one 5
+   with no rates. The driver writes the viewport and the 16 entries to methods 0xed0 to 0xed2, with no table between
+   the game's numbers and the hardware's. It has no check of n against 16 */
+void nvn_CommandBufferShadingRateImagePalette(CPU* c, u64 cb, i32 viewport, i32 n, u64 rates) {
+    NvnPRatePalette* r = REC(c, cb, OP_RATE_PALETTE, NvnPRatePalette, 16);
+    u32 game[16] = {0};
+    if (n > 16) LOG_LIMIT(1, "nvn: a shading rate palette of %d entries: the first 16 are taken\n", n);
+    for (i32 i = 0; rates && i < n && i < 16; i++) game[i] = gr32(rates + 4 * (u64)i);
+    r->viewport = viewport & 15;
+    r->rates = nvn_rate_palette(rates ? game : NULL, n);
+}
+/* the driver writes method 0xb3, 0 for mode 1 and 1 for the others. The game sets mode 1 only, and what the bit
+   changes is not known: the renderer reads each viewport's own palette */
+void nvn_CommandBufferSetShadingRatePaletteMode(CPU* c, u64 cb, i32 mode) {
+    *REC(c, cb, OP_RATE_MODE, i32, 4) = mode;
+    if (mode != 1) LOG_LIMIT(1, "nvn: shading rate palette mode %d, read as mode 1\n", mode);
 }
 void nvn_CommandBufferSetRenderTargets(CPU* c, u64 cb, i32 n, u64 colors, u64 views, u64 depth, u64 depth_view) {
     u64 payload;

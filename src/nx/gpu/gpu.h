@@ -203,6 +203,22 @@ typedef struct {
     u32 flags;
 } GpuUpscale;
 
+/* An Ounce's shading rate image, for the draws after its bind (NVN's BindShadingRateImage): its texture header (tic,
+   a TIC entry's words as host numbers, which the renderer looks up as a draw's texture) and its GPU address (addr, 0
+   with none bound). Each texel covers texel by texel pixels, and holds an index into the palette of the viewport
+   that a primitive goes to. A palette has
+   16 entries, entry i in bits 4i to 4i+3: a rate as the hardware numbers it, the numbers of
+   VkShadingRatePaletteEntryNV (0 no invocations, 1 to 4 16 to 2 invocations for each pixel, 5 one for each pixel,
+   6 one for 2x1 pixels, 7 1x2, 8 2x2, 9 4x2, 10 2x4, 11 4x4). new_image: the texels may have changed since the last
+   call, which only changed a palette */
+typedef struct {
+    u32 tic[8];
+    u64 addr;
+    u32 texel;
+    int new_image;
+    u64 palette[16];
+} GpuShadingRate;
+
 /* the VIC composition (gpu/video/vic.c): a surface plane as VIC addresses it (pitch linear rows or block linear
    GOBs), a slot's resolved rectangles and color matrix, and a job's planes and slots. The renderer's vic_compose
    runs the composition as a compute shader (gpu/vk/vic.c); when it returns 0 the caller composes in guest memory */
@@ -451,6 +467,7 @@ extern volatile u64 g_gpu_submits;
 /* the blocking wait the GPU thread is in, for the stall report: what it waits for (a string that lives on) and a number
    that names it, before the wait, and NULL after. Ignored on other threads: 1 on the GPU thread */
 int gpu_wait_note(const char* what, u64 value);
+int gpu_on_thread(void); /* 1 on the GPU thread */
 /* the stall watchdog's report of what the GPU thread and each channel with queued jobs are doing. Any thread */
 void gpu_report_stall(void);
 /* guest memory [cpu_addr, cpu_addr + len) changed without a write the host's write tracking sees: decommitted pages,
