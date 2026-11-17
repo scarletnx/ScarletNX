@@ -435,6 +435,9 @@ void vk_image_sparse_mover(VkImage img, void* mover);
 int vk_image_sparse_move_begin(VkImage img, DevMem a, DevMem* to, VkSparseImageMemoryBind* regions, u32 max,
                                u32* n);
 int vk_image_sparse_move_end(VkImage img, DevMem a, DevMem to);
+/* the sparse binds waiting in the batch go to the queue now: a batch binds a range once, and a move's binds go after
+   them */
+void vk_sparse_batch_flush(void);
 u64 vk_image_sparse_level_bytes(VkImage img, u32 levels);
 void vk_sparse_stats(u64* binds, u64* bind_ns); /* statistics: sparse binds, and the host's wait for them */
 /* statistics: the blocks and mip tails with memory now of an image of either kind above, 0 for another image */
@@ -2120,15 +2123,26 @@ void vk_tex_kind_frame(void);
 /* After that, its own submission too: the textures in the block of device memory that is being emptied move to other
    blocks, DEFRAG_BYTES at most (texture.c). Nothing on a GPU that shares the system's memory (devmem.c) */
 void vk_tex_defrag_frame(void);
-/* An owner that can move its allocation (vk_devmem_owner) is a texture (Surf*, whose low two bits are clear), an own
-   buffer of the buffer cache, its entry's index tagged in the low bit, or a block, brick or mip tail of a texture
-   with memory where it is bound (its Surf*, tagged in the next bit: vk_image_sparse_mover) */
-#define VK_MOVE_BUF(i)          ((void*)(((uintptr_t)(i) << 1) | 1u))
-#define VK_MOVE_IS_BUF(o)       (((uintptr_t)(o) & 1u) != 0)
-#define VK_MOVE_BUF_INDEX(o)    ((u32)((uintptr_t)(o) >> 1))
+/* An owner that can move its allocation (vk_devmem_owner) is one of these, by its low two bits: a texture (Surf*,
+   00), an own buffer of the buffer cache (its entry's index, 01), a block, brick or mip tail of a texture with memory
+   where it is bound (its Surf*, 10: vk_image_sparse_mover), or a granule of the buffer cache's pages (pagespace.c's,
+   11: vk_pages_move_begin). The pointers are of malloc, whose low two bits are clear */
+#define VK_MOVE_BUF(i)          ((void*)(((uintptr_t)(i) << 2) | 1u))
+#define VK_MOVE_IS_BUF(o)       (((uintptr_t)(o) & 3u) == 1u)
+#define VK_MOVE_BUF_INDEX(o)    ((u32)((uintptr_t)(o) >> 2))
 #define VK_MOVE_SPARSE(t)       ((void*)((uintptr_t)(t) | 2u))
 #define VK_MOVE_IS_SPARSE(o)    (((uintptr_t)(o) & 3u) == 2u)
 #define VK_MOVE_SPARSE_SURF(o)  ((Surf*)(void*)((uintptr_t)(o) & ~(uintptr_t)3u))
+#define VK_MOVE_PAGE(q)         ((void*)((uintptr_t)(q) | 3u))
+#define VK_MOVE_IS_PAGE(o)      (((uintptr_t)(o) & 3u) == 3u)
+/* pagespace.c: a granule of the buffer cache's pages (owner VK_MOVE_PAGE) moved out of a block that is emptied, as a
+   sparse texture's block is (vk_tex_defrag_frame). vk_pages_move_begin: the sparse buffer and the offset of the
+   granule whose memory is a, and new memory in a block that is there: 1 with *to, 0 when no run holds it, -1 when the
+   granule has gone or a draw wrote it. vk_pages_move_end binds it to `to` in the batch, which waits for the work
+   submitted before it, and frees a after the batch: 0 when the granule has gone meanwhile (`to` is freed). Its bytes
+   are copied as the texels of a texture's block are, out before and back after */
+int vk_pages_move_begin(void* owner, DevMem a, DevMem* to, VkBuffer* buf, u64* offset);
+int vk_pages_move_end(void* owner, DevMem a, DevMem to);
 /* buffer.c: own buffer i, whose memory is from, made again in a run of another block (DevMemWant.existing) and copied
    there on cb, the old one freed when the frames in flight are done. 1 with *bytes, 0 when no run held it, -1 when
    the entry no longer has that memory */

@@ -162,6 +162,14 @@ VkResult vk_devmem_alloc(const VkMemoryRequirements* req, const DevMemWant* want
     return VK_SUCCESS;
 }
 void vk_devmem_free(DevMem mem) { (void)mem; }
+/* the defrag's: no block is emptied here, so a granule is never moved. Its owner is the granule, tagged */
+void vk_devmem_owner(DevMem mem, void* owner) {
+    (void)mem;
+    CHECK(!owner || VK_MOVE_IS_PAGE(owner));
+}
+void vk_devmem_info(DevMem mem, DevMemInfo* info) {
+    *info = (DevMemInfo){.memory = (VkDeviceMemory)(uintptr_t)mem, .size = 65536};
+}
 /* the slabs' calls: the model's device has sparse buffers, so the cache makes no slab here */
 VkResult vk_buffer_create(const VkBufferCreateInfo* info, const DevMemWant* allocation, VkBuffer* buffer, DevMem* memory,
                           DevMemInfo* allocation_info) {
