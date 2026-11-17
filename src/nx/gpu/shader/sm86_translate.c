@@ -72,8 +72,9 @@ typedef struct {
     /* vt_sparse: shader_vt_sample's ids, and the slots with a read of texels it didn't take: the others may hold a
        virtual texture (ShaderInfo.tex_vt_mask) */
     ShVtIds vt;
-    u64 vt_left, vt_reads[8]; /* vt_reads: ShaderInfo.tex_vt_reads */
-    int vt_ok;                /* the program takes virtual samples (ShaderInfo.vt_early) */
+    u64 vt_left, vt_reads[10]; /* vt_reads: ShaderInfo.tex_vt_reads */
+    int vt_ok;                 /* the program takes virtual samples (ShaderInfo.vt_early) */
+    int vt_why;                /* and when not, the entry of vt_reads that says why: 6, 8 or 9 */
     u32 zero, true_v, false_v, glsl;
     /* the program's state: Function variables, made at the start */
     u32 reg[256], ureg[64], pred[8], upred[8];
@@ -2859,7 +2860,7 @@ static void texture(Ctx* c, const Sm86Insn* in) {
                               : spv_emit_sample_image(&c->e, rtype, c->tex_sampled[slot], c->tex[slot], coord, dref,
                                                       mode, level, const_offset, 0);
             c->vt_left |= 1ull << slot;
-            c->vt_reads[reduce ? 3 : shadow ? 4 : type != 1 ? 5 : 6] |= 1ull << slot;
+            c->vt_reads[reduce ? 3 : shadow ? 4 : type != 1 ? 5 : c->vt_why] |= 1ull << slot;
         }
         if (shadow) {
             u32 v[4] = {result, cf(c, 0.0f), cf(c, 0.0f), cf(c, 1.0f)};
@@ -2950,7 +2951,7 @@ static void texture_grad(Ctx* c, const Sm86Insn* in) {
         tex_results(c, in, shader_vt_sample(&c->e, &c->vt, &sample), c->t_f32);
         return;
     }
-    c->vt_left |= 1ull << slot, c->vt_reads[type == 1 && !reduce ? 6 : 2] |= 1ull << slot;
+    c->vt_left |= 1ull << slot, c->vt_reads[type == 1 && !reduce ? c->vt_why : 2] |= 1ull << slot;
     tex_results(c, in,
                 reduce ? minmax_sample(c, slot, coord, (int)array, 0, reduce)
                        : spv_emit_sample_grad(&c->e, c->t_v4f, c->tex_sampled[slot], c->tex[slot], coord, gx, gy, 0),
@@ -7316,7 +7317,9 @@ u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, Sha
                    op != SM86_SUST_P && op != SM86_SUST_D && op != SM86_SUST_P_B && op != SM86_SUST_D_B &&
                    op != SM86_SURED && op != SM86_SURED_B && op != SM86_SUATOM && op != SM86_SUATOM_B &&
                    op != SM86_SULD_P && op != SM86_SULD_P_B && op != SM86_SULD_D && op != SM86_SULD_D_B;
+        if (!c->vt_ok) c->vt_why = op == SM86_KILL ? 8 : 9;
     }
+    if (!c->vt_why) c->vt_why = !si->vt_early ? 6 : 9;
     /* FTZ as spirv_translate.c decides it: per instruction without the execution mode, or with it where some FADD,
        FMUL or FFMA keeps subnormals (the mode is the whole module's); never on a device that flushes by itself */
     int ftz_flush = 0, ftz_keep = 0;

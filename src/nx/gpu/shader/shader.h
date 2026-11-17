@@ -212,9 +212,12 @@ typedef struct {
     u64 tex_vt_mask;
     /* and for the log, the slots a fragment program reads with a fetch, a gather, a sample with gradients, a
        reduction (the least or greatest of its texels), a depth compare, as no 2D texture of floats in a slot the
-       marks name, in a program that takes no virtual sample (vt_early), or (a Maxwell program) with a sample of a
-       form that takes no mark: a minimum level, an offset from a register, an indexed table, one of two handles */
-    u64 tex_vt_reads[8];
+       marks name, in a program that takes no virtual sample because of its draw's state (vt_early: alpha to coverage
+       or an alpha test), or (a Maxwell program) with a sample of a form that takes no mark: a minimum level, an
+       offset from a register, an indexed table, one of two handles; then in a program that takes none because it
+       discards, and one that takes none for what else it does (it writes depth, a sample mask or memory, has a
+       storage image, or blends or captures in the program) */
+    u64 tex_vt_reads[10];
     /* FS: texture slots every read of which is a texel fetch at the fragment's own pixel (TLD or TLDS of a 2D texture
        at gl_FragCoord's integer x and y, level 0, no offset): the only ones a draw may sample in place while it
        renders to them (vk/render.c), each fragment reading what earlier draws left at its pixel */

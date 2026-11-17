@@ -2190,6 +2190,7 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
     c->vt_ok = g_shader_vt_address && stage == ST_FS && si->vt_early && vt_needs &&
                (!needs_demote || (g_shader_vt_parts & 32)) && !gbuf_wmask && !image_info.nimg && !(sph[19] & 3u) &&
                !advanced_blend && !si->late_depth && !predraw && !si->coverage_to_color && !si->capture_outputs;
+    c->vt_why = !si->vt_early ? 6 : needs_demote && !(g_shader_vt_parts & 32) ? 8 : 9;
     c->ftz_float = can_preserve;
     c->soft_ftz_on = soft_ftz_on;
     spv_emit_init(&c->emit, (size_t)n * 20 + 128);

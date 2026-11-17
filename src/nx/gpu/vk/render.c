@@ -2748,9 +2748,13 @@ static int indexed_uniform(DescWrites* writes, VkDescriptorSet set, int stage, u
    the table that names it: a handle that two kinds name has an element for each. */
 /* vt_sparse: why slot i of a fragment program, outside ShaderInfo.tex_vt_mask, holds a virtual texture whole */
 static const char* vt_unmarked(const ShaderInfo* si, int i) {
-    return si->tex_vt_reads[6] >> i & 1   ? "a fragment program that cannot test depth before it runs samples it (it "
-                                            "discards, writes depth, a sample mask or memory, or its draw has alpha "
-                                            "to coverage or an alpha test), and takes no sample that marks"
+    return si->tex_vt_reads[6] >> i & 1   ? "a fragment program drawn with alpha to coverage or an alpha test samples "
+                                            "it, which cannot test depth before it runs and takes no sample that marks"
+           : si->tex_vt_reads[8] >> i & 1 ? "a fragment program that discards samples it, which cannot test depth "
+                                            "before it runs and takes no sample that marks"
+           : si->tex_vt_reads[9] >> i & 1 ? "a fragment program that writes depth, a sample mask or memory, has a "
+                                            "storage image, or blends or captures in the program samples it, which "
+                                            "cannot test depth before it runs and takes no sample that marks"
            : si->tex_vt_reads[0] >> i & 1 ? "a fragment program fetches its texels (TLD), which marks nothing"
            : si->tex_vt_reads[1] >> i & 1 ? "a fragment program gathers its texels (TLD4), which marks nothing"
            : si->tex_vt_reads[2] >> i & 1 ? "a fragment program samples it with gradients (TXD), which marks nothing"

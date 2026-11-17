@@ -773,7 +773,7 @@ void emit_texture(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
                                array ? shader_array_layer(c, a) : 0, explicit_lod ? 1 : 0, lod, 0);
         else {
             c->vt_left |= 1ull << slot;
-            c->vt_reads[!c->vt_ok ? 6 : reduce ? 3 : shadow ? 4 : 5] |= 1ull << slot;
+            c->vt_reads[!c->vt_ok ? c->vt_why : reduce ? 3 : shadow ? 4 : 5] |= 1ull << slot;
             sample = reduce ? shader_minmax_direct(c, texture_vec4[slot], c->sampled_type[slot], c->sampler[slot], uv,
                                                    array, 0, 0, reduce)
                             : shader_sample_dref(c, si, slot, texture_vec4[slot], uv, dref, explicit_lod, lod);
@@ -916,7 +916,7 @@ void emit_texture(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
                 sample = vt_sample(c, push, t->fragcoord, vec4, vec2, i32_type, slot, coords, x, y,
                                    array ? shader_array_layer(c, a) : 0, sample_mode, level, offset);
             else {
-                const int kind = !c->vt_ok                                                  ? 6
+                const int kind = !c->vt_ok                                                  ? c->vt_why
                                  : sampling.reduce                                          ? 3
                                  : shadow || dc_func >= 0                                   ? 4
                                  : !vt_takes(c, stage, type, 0, slot, texture_scalar[slot]) ? 5
