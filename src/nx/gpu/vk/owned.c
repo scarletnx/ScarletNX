@@ -1208,13 +1208,24 @@ static void copy_batch_flush(CopyBatch* b, VkCommandBuffer cb, VkBuffer buf) {
         for (u32 k = 0; k < b->n; k++) rec_CmdCopyBuffer(cb, b->src[k], buf, 1, &b->copy[k]);
     b->n = 0;
 }
-static int guest_read(u64 gva, u64 size, VkBuffer buf, u64 at, int ahead, VkDeviceAddress dst_addr, int last) {
+/* A read of several runs into one buffer (vk_guest_read_owned_runs): one barrier before the first copy and one after
+   the last, and the copies from results gathered across the runs. Each run's own barriers and indirect copy, a
+   publish's hundreds of gaps took as many barriers as runs */
+typedef struct {
     CopyBatch batch;
-    batch.dst = dst_addr;
-    batch.n = 0;
+    int any; /* the barrier before the copies is recorded */
+} RunsRead;
+static int guest_read(u64 gva, u64 size, VkBuffer buf, u64 at, int ahead, VkDeviceAddress dst_addr, int last,
+                      RunsRead* runs) {
+    CopyBatch own;
+    CopyBatch* bp = runs ? &runs->batch : &own;
+    if (!runs) {
+        own.dst = dst_addr;
+        own.n = 0;
+    }
     DevRead d = {.buf = buf, .at = at, .size = size, .ahead = ahead};
     u64 o = 0;
-    int any = ahead; /* the upload command buffer waits for earlier submissions' writes itself */
+    int any = ahead || (runs && runs->any); /* the upload command buffer waits for earlier submissions' writes itself */
     if (!size) return 1;
     if (ahead && !read_settled(gva, size)) return 0;
     if (!ahead && pending_gpu_read(gva, size, buf, at)) {
@@ -1283,12 +1294,12 @@ static int guest_read(u64 gva, u64 size, VkBuffer buf, u64 at, int ahead, VkDevi
                     if (!any) read_barrier(vk_cmd(), 1);
                     any = 1;
                     VkOwnRes* res = (VkOwnRes*)r[i].res;
-                    if (batch.dst && !res->borrowed && !res->host) { /* a buffer of our own: by its address */
-                        if (batch.n == COPY_BATCH) copy_batch_flush(&batch, dev_cmd(ahead), buf);
-                        batch.cmd[batch.n] = (VkCopyMemoryIndirectCommandKHR){
-                            res_addr(res) + cp.srcOffset, batch.dst + cp.dstOffset, cp.size};
-                        batch.src[batch.n] = res->buf;
-                        batch.copy[batch.n++] = cp;
+                    if (bp->dst && !res->borrowed && !res->host) { /* a buffer of our own: by its address */
+                        if (bp->n == COPY_BATCH) copy_batch_flush(bp, dev_cmd(ahead), buf);
+                        bp->cmd[bp->n] = (VkCopyMemoryIndirectCommandKHR){
+                            res_addr(res) + cp.srcOffset, bp->dst + cp.dstOffset, cp.size};
+                        bp->src[bp->n] = res->buf;
+                        bp->copy[bp->n++] = cp;
                     } else
                         rec_CmdCopyBuffer(dev_cmd(ahead), res->buf, buf, 1, &cp);
                     res->used = g_vk_present;
@@ -1297,7 +1308,8 @@ static int guest_read(u64 gva, u64 size, VkBuffer buf, u64 at, int ahead, VkDevi
             }
         o += n;
     }
-    if (batch.n) copy_batch_flush(&batch, dev_cmd(ahead), buf);
+    if (runs) runs->any = any;
+    if (bp->n && last) copy_batch_flush(bp, dev_cmd(ahead), buf);
     dev_flush(&d);
     if (ahead || !last) return 1; /* the submission's work waits for the upload command buffer's copies (cmd.c
                                      submit); a run before a read's last has its barrier after that one */
@@ -1313,17 +1325,29 @@ static int guest_read(u64 gva, u64 size, VkBuffer buf, u64 at, int ahead, VkDevi
     return 1;
 }
 int vk_guest_read_device(u64 gva, u64 size, VkBuffer buf, u64 at) {
-    return guest_read(gva, size, buf, at, 0, 0, 1);
+    return guest_read(gva, size, buf, at, 0, 0, 1, NULL);
 }
-int vk_guest_read_ahead(u64 gva, u64 size, VkBuffer buf, u64 at) { return guest_read(gva, size, buf, at, 1, 0, 1); }
+int vk_guest_read_ahead(u64 gva, u64 size, VkBuffer buf, u64 at) {
+    return guest_read(gva, size, buf, at, 1, 0, 1, NULL);
+}
 int vk_guest_read_owned(u64 gva, u64 size, VkOwnRes* dst, u64 at) {
     VkDeviceAddress a = g_vk.has_copy_indirect && !dst->borrowed && !dst->host ? res_addr(dst) : 0;
-    return guest_read(gva, size, dst->buf, at, 0, a, 1);
+    return guest_read(gva, size, dst->buf, at, 0, a, 1, NULL);
 }
 int vk_guest_read_owned_runs(u64 gva, const u64 (*runs)[2], u32 n, VkOwnRes* dst) {
-    VkDeviceAddress a = g_vk.has_copy_indirect && !dst->borrowed && !dst->host ? res_addr(dst) : 0;
+    RunsRead rr;
+    rr.batch.dst = g_vk.has_copy_indirect && !dst->borrowed && !dst->host ? res_addr(dst) : 0;
+    rr.batch.n = 0;
+    rr.any = 0;
+    /* what the renderer has pending over the runs lands first, all of it: a landing records commands, which the one
+       barrier before the copies has to follow */
+    vk_render_end();
+    vk_uma_gpu_reads(1);
+    for (u32 i = 0; i < n; i++) gmem_need(gva + runs[i][0], runs[i][1] - runs[i][0]);
+    vk_uma_gpu_reads(0);
     for (u32 i = 0; i < n; i++)
-        if (!guest_read(gva + runs[i][0], runs[i][1] - runs[i][0], dst->buf, runs[i][0], 0, a, i + 1 == n)) return 0;
+        if (!guest_read(gva + runs[i][0], runs[i][1] - runs[i][0], dst->buf, runs[i][0], 0, 0, i + 1 == n, &rr))
+            return 0;
     return 1;
 }
 int vk_guest_read_seen(u64 gva, u64 size, VkBuffer buf, u64 at) {
