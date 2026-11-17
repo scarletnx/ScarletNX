@@ -717,6 +717,19 @@ static void check_kinds(void) {
     for (u32 i = 0; i < N; i++)
         for (u32 j = 0; j < F; j++) CHECK(block_of(&m[i]) != block_of(&f[j]));
     for (u32 j = 0; j < F; j++) CHECK(g_devmem.block[block_of(&f[j])].image & DM_KIND_FIXED);
+    /* what does not move and comes and goes (DevMemWant.brief) has blocks apart from what stays, and from what moves:
+       a block of brief allocations empties when they go, though rings and encoders stay */
+    Held b[2];
+    const DevMemWant brief = {.at = DM_DEVICE, .brief = 1};
+    CHECK(make(0, MIB, 256, ~0u, 0, brief, &b[0]) == VK_SUCCESS && make(0, MIB, 256, ~0u, 0, brief, &b[1]) == VK_SUCCESS);
+    CHECK(block_of(&b[0]) == block_of(&b[1]));
+    CHECK(g_devmem.block[block_of(&b[0])].image == (DM_KIND_FIXED | DM_KIND_BRIEF));
+    for (u32 j = 0; j < F; j++) CHECK(block_of(&b[0]) != block_of(&f[j]));
+    for (u32 i = 0; i < N; i++) CHECK(block_of(&b[0]) != block_of(&m[i]));
+    const u32 bb = block_of(&b[0]);
+    unmake(&b[0]);
+    unmake(&b[1]);
+    CHECK(!g_devmem.block[bb].allocs);
     /* the first block of what moves keeps one allocation and the last another, with room for the first's block: the
        first is emptied, past the budget, though the blocks of what does not move hold allocations still */
     const u32 first = block_of(&m[0]), last = block_of(&m[N - 1]);
