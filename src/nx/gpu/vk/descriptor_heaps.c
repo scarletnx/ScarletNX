@@ -78,11 +78,21 @@ typedef struct {
     u64 handle[LASTING_QUEUE];
     char pad1[64];
 } LastingQueue;
+/* A table word's last descriptor: what the write named, the heap offset it found, and the memo's
+   generation when it was kept. A buffer is its handle, offset and range; an image its view and layout (in offset);
+   a sampler its handle, of type MEMO_SAMPLER */
+typedef struct {
+    u64 object, offset, range;
+    u64 gen;
+    u32 type, word;
+} DescMemo;
+#define MEMO_SAMPLER 0xffffffffu
 typedef struct {
     VkDescriptorSetLayout layout;
     u32 offset[SNX_VKB_END], sampler_offset[SNX_VKB_END], count[SNX_VKB_END], words;
     VkDeviceSize full_size;
     VkDescriptorType type[SNX_VKB_END];
+    DescMemo* memo; /* one for each word of the table: the stage's last table */
 } HeapLayout;
 typedef struct {
     Heap resource, sampler;
@@ -110,8 +120,36 @@ typedef struct {
     LastingState lasting;
     int lasting_ready; /* read by the forgets of every thread */
     LastingQueue queue;
+    u64 memo_gen; /* the generation of the DescMemo entries that hold: a new one empties them all */
 } HeapState;
 static HeapState g_heaps;
+/* Every word of every stage's last table forgotten: at a new frame (the frame's offsets go with its arena), when an
+   object is forgotten (its handle can come back for another object), when a slot of the lasting part goes, and when
+   the heap has no more space. It starts at 1: an entry of generation 0 holds nothing */
+static void memo_clear(void) { g_heaps.memo_gen++; }
+static int memo_on(void) { return g_heaps.memo_gen != 0; }
+/* word's descriptor as the stage's last table had it, into *word: 1 when that write named the same */
+static int memo_get(const HeapLayout* l, u32 at, u64 object, u64 offset, u64 range, u32 type, u32* word) {
+    const DescMemo* m = &l->memo[at];
+    if (m->gen != g_heaps.memo_gen || m->object != object || m->offset != offset || m->range != range ||
+        m->type != type)
+        return 0;
+    *word = m->word;
+    return 1;
+}
+static void memo_put(const HeapLayout* l, u32 at, u64 object, u64 offset, u64 range, u32 type, u32 word) {
+    l->memo[at] = (DescMemo){object, offset, range, g_heaps.memo_gen, type, word};
+}
+/* draw_state_check=1: a word the memo had (kept) against the one the lookups found again (found) */
+static void memo_compare(u32 kept, u32 found, u64 object) {
+    g_heaps.stats.memo_checked++;
+    if (kept == found) return;
+    g_heaps.stats.memo_differs++;
+    WARN_LIMIT(32,
+               "vulkan: draw_state_check=1: a descriptor kept from the stage's last table (object 0x%llx, heap offset "
+               "%u) differs from the one found again (%u)\n",
+               (unsigned long long)object, kept, found);
+}
 
 static u64 handle_key(VkBuffer buffer) {
 #if VK_USE_64_BIT_PTR_DEFINES
@@ -416,6 +454,7 @@ static void lasting_forget_now(u64 object) {
         g_heaps.stats.lasting_forgotten++;
     }
     lasting_unname(object);
+    memo_clear(); /* a new object can have the handle now */
     if (g_heaps.cache_frame.valid && g_heaps.cache_frame.frame == vk_frame_id())
         for (u32 i = 0; i < HEAP_RESOURCE_CACHE; i++)
             if (g_heaps.cache.resources[i].object == object) g_heaps.cache.resources[i] = (ResourceEntry){0};
@@ -431,6 +470,7 @@ static void lasting_forget_all(void) {
     if (L->buffers) memset(L->buffers, 0, sizeof *L->buffers * L->buffer_cap);
     L->buffer_used = 0;
     vk_descriptor_heap_cache_reset(&g_heaps.cache_frame);
+    memo_clear();
 }
 static void queue_lock(void) {
     while (__atomic_test_and_set(&g_heaps.queue.lock, __ATOMIC_ACQUIRE)) {
@@ -515,6 +555,7 @@ static void lasting_differs(u32 s, int k) {
                "from the one made again; it is made again\n",
                (unsigned long long)g_heaps.lasting.slot[s].key.object, k);
     lasting_drop(s);
+    memo_clear(); /* a word may name its slot */
 }
 /* draw_state_check=1: slot s's bytes against those just made into scratch */
 static int lasting_same(u32 s, int k) {
@@ -664,6 +705,7 @@ int vk_descriptor_heaps_init(const VkPhysicalDeviceDescriptorHeapPropertiesEXT* 
         return 0;
     }
     g_heaps.ready = 1;
+    g_heaps.memo_gen = 1;
     lasting_init();
     LOG("vulkan: descriptor heaps: %llu resource bytes + %llu reserved + %llu lasting, %llu sampler bytes + %llu "
         "reserved\n",
@@ -701,6 +743,8 @@ void vk_descriptor_heaps_layout(VkDescriptorSetLayout layout, const VkDescriptor
     }
     if (l->words > UINT32_MAX / 4) fatal("vulkan: descriptor heap table is too large");
     l->full_size += 4ull * l->words;
+    l->memo = calloc(l->words ? l->words : 1, sizeof *l->memo);
+    if (!l->memo) fatal("vulkan: no memory for a descriptor heap layout's last table");
 }
 uint32_t vk_descriptor_heaps_mapping(VkDescriptorSetLayout layout, u32 set,
                                       VkDescriptorSetAndBindingMappingEXT* maps, u32 capacity) {
@@ -725,6 +769,7 @@ static int allocate(Heap* heap, u32 slot, VkDeviceSize size, VkDeviceSize alignm
         return 1;
     }
     g_heaps.exhausted[slot] = 1;
+    memo_clear();
     return 0;
 }
 static ResourceEntry* resource_entry(const ResourceEntry* key, int* hit) {
@@ -893,6 +938,65 @@ static int sampler_descriptor(u32 slot, VkSampler sampler, u32* offset) {
     g_heaps.stats.sampler_bytes += g_heaps.sizes[HEAP_SAMPLER];
     return 1;
 }
+/* resource_descriptor for word `at` of the table: the word the stage's last table had where the write names the
+   same buffer range, or the same view in the same layout, with no hash and no lookup. A texel
+   buffer goes the full way. draw_state_check=1 finds a kept word again and compares */
+static int memo_resource(u32 slot, const HeapLayout* l, const VkWriteDescriptorSet* w, u32 j, u32 at,
+                         VkBuffer* previous_buffer, VkDeviceAddress* previous_address, u32* offset) {
+    u64 object = 0, start = 0, range = 0;
+    int memo = memo_on();
+    if (memo &&
+        (w->descriptorType == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER ||
+         w->descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) &&
+        w->pBufferInfo) {
+        object = handle_key(w->pBufferInfo[j].buffer);
+        start = w->pBufferInfo[j].offset;
+        range = w->pBufferInfo[j].range;
+    } else if (memo && kind(w->descriptorType) >= HEAP_IMAGE && kind(w->descriptorType) <= HEAP_STORAGE_IMAGE &&
+               w->pImageInfo) {
+#if VK_USE_64_BIT_PTR_DEFINES
+        object = (u64)(uintptr_t)w->pImageInfo[j].imageView;
+#else
+        object = (u64)w->pImageInfo[j].imageView;
+#endif
+        start = (u64)w->pImageInfo[j].imageLayout;
+    }
+    u32 kept;
+    int had = object && memo_get(l, at, object, start, range, (u32)w->descriptorType, &kept);
+    if (had && !g_settings.draw_state_check) {
+        if (range)
+            g_heaps.stats.buffer_requests++;
+        else
+            g_heaps.stats.image_requests++;
+        g_heaps.stats.memo_kept++;
+        *offset = kept;
+        return 1;
+    }
+    if (!resource_descriptor(slot, w, j, previous_buffer, previous_address, offset)) return 0;
+    if (had) memo_compare(kept, *offset, object);
+    if (object) memo_put(l, at, object, start, range, (u32)w->descriptorType, *offset);
+    return 1;
+}
+/* sampler_descriptor for word `at` of the table, as memo_resource */
+static int memo_sampler(u32 slot, const HeapLayout* l, VkSampler sampler, u32 at, u32* offset) {
+#if VK_USE_64_BIT_PTR_DEFINES
+    u64 object = (u64)(uintptr_t)sampler;
+#else
+    u64 object = (u64)sampler;
+#endif
+    u32 kept;
+    int had = object && memo_on() && memo_get(l, at, object, 0, 0, MEMO_SAMPLER, &kept);
+    if (had && !g_settings.draw_state_check) {
+        g_heaps.stats.sampler_requests++;
+        g_heaps.stats.memo_kept++;
+        *offset = kept;
+        return 1;
+    }
+    if (!sampler_descriptor(slot, sampler, offset)) return 0;
+    if (had) memo_compare(kept, *offset, object);
+    if (object && memo_on()) memo_put(l, at, object, 0, 0, MEMO_SAMPLER, *offset);
+    return 1;
+}
 /* Keep repeated-array scanning/filling out of the scalar buffer writer's register and inlining budget. */
 __attribute__((noinline)) static int write_image_array(u32 slot, const HeapLayout* layout, u32 table,
                                                       const VkWriteDescriptorSet* write) {
@@ -986,6 +1090,9 @@ __attribute__((noinline)) static int write_buffer_batch(u32 slot, const HeapLayo
     VkHostAddressRangeEXT destinations[VK_DESCRIPTOR_HEAP_BUFFER_BATCH];
     size_t stride = (size_t)(g_heaps.sizes[HEAP_UBO] > g_heaps.sizes[HEAP_SSBO]
         ? g_heaps.sizes[HEAP_UBO] : g_heaps.sizes[HEAP_SSBO]);
+    const int memo = memo_on();
+    u32 kept[VK_DESCRIPTOR_HEAP_BUFFER_BATCH]; /* draw_state_check=1: the memo's word, compared below */
+    int had[VK_DESCRIPTOR_HEAP_BUFFER_BATCH] = {0};
     for (u32 i = 0; i < count; i++) {
         const VkWriteDescriptorSet* write = &writes[i];
         int k = write->descriptorType == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER ? HEAP_UBO : HEAP_SSBO;
@@ -996,11 +1103,24 @@ __attribute__((noinline)) static int write_buffer_batch(u32 slot, const HeapLayo
         if (!buffer->buffer || !buffer->range || buffer->range == VK_WHOLE_SIZE) return 0;
         ResourceEntry key = {.object = handle_key(buffer->buffer), .offset = buffer->offset, .range = buffer->range,
             .tag = (u32)k};
+        /* the binding as the stage's last table had it: its word, with no hash and no lookup */
+        if (memo && memo_get(layout, layout->offset[write->dstBinding] + write->dstArrayElement, key.object, key.offset,
+                             key.range, (u32)write->descriptorType, &kept[i])) {
+            had[i] = 1;
+            if (!g_settings.draw_state_check) {
+                batch.offsets[batch.count++] = kept[i];
+                g_heaps.stats.memo_kept++;
+                continue;
+            }
+        }
         u32 before = batch.misses;
         if (!vk_descriptor_heap_buffer_plan(&batch, g_heaps.cache.resources, HEAP_RESOURCE_CACHE,
                 &g_heaps.resource.plan, slot, &key, vk_hash(&key, VK_DESCRIPTOR_HEAP_RESOURCE_KEY_BYTES),
                 (u32)g_heaps.sizes[k], g_heaps.alignment[k])) {
-            if (batch.exhausted) g_heaps.exhausted[slot] = 1;
+            if (batch.exhausted) {
+                g_heaps.exhausted[slot] = 1;
+                memo_clear();
+            }
             return 0;
         }
         if (batch.misses == before) continue;
@@ -1033,6 +1153,11 @@ __attribute__((noinline)) static int write_buffer_batch(u32 slot, const HeapLayo
     for (u32 i = 0; i < count; i++) {
         u32 word = layout->offset[writes[i].dstBinding] + writes[i].dstArrayElement;
         snx_st_le32(g_heaps.resource.mapped + table + 4ull * word, batch.offsets[i]);
+        if (!memo) continue;
+        const VkDescriptorBufferInfo* buffer = writes[i].pBufferInfo;
+        if (had[i] && g_settings.draw_state_check) memo_compare(kept[i], batch.offsets[i], handle_key(buffer->buffer));
+        memo_put(layout, word, handle_key(buffer->buffer), buffer->offset, buffer->range, (u32)writes[i].descriptorType,
+                 batch.offsets[i]);
     }
     return 1;
 }
@@ -1065,13 +1190,13 @@ __attribute__((noinline)) static int write_batched_table(u32 slot, const HeapLay
         }
         for (u32 j = 0; j < w->descriptorCount; j++) {
             u32 resource, sampler;
-            if (!resource_descriptor(slot, w, j, &previous_buffer, &previous_address, &resource)) return 0;
             u32 word = layout->offset[w->dstBinding] + w->dstArrayElement + j;
+            if (!memo_resource(slot, layout, w, j, word, &previous_buffer, &previous_address, &resource)) return 0;
             snx_st_le32(g_heaps.resource.mapped + table + 4ull * word, resource);
             if (w->descriptorType == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER) {
-                if (!sampler_descriptor(slot, w->pImageInfo[j].sampler, &sampler)) return 0;
-                snx_st_le32(g_heaps.resource.mapped + table +
-                    4ull * (layout->sampler_offset[w->dstBinding] + w->dstArrayElement + j), sampler);
+                word = layout->sampler_offset[w->dstBinding] + w->dstArrayElement + j;
+                if (!memo_sampler(slot, layout, w->pImageInfo[j].sampler, word, &sampler)) return 0;
+                snx_st_le32(g_heaps.resource.mapped + table + 4ull * word, sampler);
             }
         }
     }
@@ -1102,8 +1227,10 @@ VkDescriptorSet vk_descriptor_heaps_write(VkDescriptorSetLayout layout, u32 coun
     u32 slot = vk_frame_slot(), table;
     /* Recording workers and the GPU retain copied addresses and immutable heap bytes, never this CPU metadata.
        Clear before any lookup, including writes that later fail and fall back to another descriptor backend. */
-    if (vk_descriptor_heap_cache_frame(&g_heaps.cache_frame, vk_frame_id()))
+    if (vk_descriptor_heap_cache_frame(&g_heaps.cache_frame, vk_frame_id())) {
         memset(&g_heaps.cache, 0, sizeof g_heaps.cache);
+        memo_clear(); /* a new frame, or the cache let go: the words name what the frame's arena held */
+    }
     lasting_begin();
     if (g_heaps.exhausted[slot]) return VK_NULL_HANDLE;
     if (!allocate(&g_heaps.resource, slot, words * 4, 8, &table)) return VK_NULL_HANDLE;
@@ -1157,6 +1284,7 @@ void vk_descriptor_heaps_reset(u32 slot) {
     g_heaps.resource.used[slot] = g_heaps.sampler.used[slot] = 0;
     g_heaps.exhausted[slot] = 0;
     if (slot == vk_frame_slot()) vk_descriptor_heap_cache_reset(&g_heaps.cache_frame);
+    memo_clear(); /* the slot's offsets are free again */
 }
 int vk_descriptor_heaps_room(u32 slot) {
     if (!g_heaps.ready || slot >= VK_FRAMES) return 1;
@@ -1198,6 +1326,15 @@ void vk_descriptor_heaps_stats(void) {
             (unsigned long long)(s->lasting_full - p->lasting_full),
             (unsigned long long)(s->lasting_checked - p->lasting_checked),
             (unsigned long long)(s->lasting_differs - p->lasting_differs));
+    LOG("vulkan: descriptor heaps: %llu descriptors kept from the stage's last table with no lookup, of %llu buffer, "
+        "image and sampler requests\n",
+        (unsigned long long)(s->memo_kept - p->memo_kept),
+        (unsigned long long)(s->buffer_requests + s->image_requests + s->sampler_requests - p->buffer_requests -
+                             p->image_requests - p->sampler_requests));
+    if (s->memo_checked != p->memo_checked)
+        LOG("vulkan: draw_state_check=1: %llu descriptors the stage's last table had found again, %llu different\n",
+            (unsigned long long)(s->memo_checked - p->memo_checked),
+            (unsigned long long)(s->memo_differs - p->memo_differs));
     g_heaps.reported = *s;
 }
 void vk_descriptor_heaps_invalidate(void) { g_heaps.epoch++; g_heaps.active = 0; }
@@ -1208,6 +1345,7 @@ void vk_descriptor_heaps_destroy(void) {
     heap_discard(&g_heaps.resource);
     heap_discard(&g_heaps.sampler);
     free(g_heaps.scratch);
+    for (u32 i = 0; i < g_heaps.nlayouts; i++) free(g_heaps.layouts[i].memo);
     g_heaps = (HeapState){.epoch = g_heaps.epoch + 1};
 }
 uint64_t vk_descriptor_heaps_epoch(void) { return g_heaps.epoch; }

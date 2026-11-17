@@ -7112,6 +7112,7 @@ static void results_copied(u64 cpu, u64 len) { vk_own_cpu_touched(cpu, len); }
 #include "vulkan_draw_texture.inc"
 #include "vulkan_lone_lane.inc"
 #include "vulkan_descriptor_heaps.inc"
+#include "vulkan_descriptor_memo.inc"
 #include "vulkan_sample_raster.inc"
 #include "vulkan_mixed_coverage.inc"
 #include "vulkan_alpha_coverage.inc"
@@ -7830,6 +7831,8 @@ static int run_headless(int argc, char** argv) {
             result = check_texture_quiet();
         else if (!strcmp(name, "draw_texture"))
             result = check_draw_texture();
+        else if (!strcmp(name, "descriptor_memo"))
+            result = check_descriptor_memo();
         else if (!strcmp(name, "descriptor_heaps"))
             result = check_descriptor_heaps();
         else if (!strcmp(name, "indirect_dispatch"))
@@ -8196,6 +8199,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_draw_texture());
     CHECK(!check_texture_quiet());
     CHECK(!check_descriptor_heaps());
+    CHECK(!check_descriptor_memo());
     CHECK(!check_fragment_barrier_backend());
     CHECK(!check_capture_cap());
     CHECK(!check_shader_float_rounding());
