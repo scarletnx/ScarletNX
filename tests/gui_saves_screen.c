@@ -122,12 +122,13 @@ int main(void) {
 
     /* the menu's Saves: Export All Saves and Import All Saves, then the Switch's two, the user named over them */
     saves_open(&app);
-    assert(app.picks_shown && app.picks_of == GUI_PICKS_SAVES && app.picks.count == 8);
+    assert(app.picks_shown && app.picks_of == GUI_PICKS_SAVES && app.picks.count == 10);
     assert(!strcmp(pick_label(&app, 0), "Export All Saves") && !strcmp(pick_label(&app, 1), "Import All Saves") &&
            !strcmp(pick_label(&app, 2), "Switch: Export Saves") &&
-           !strcmp(pick_label(&app, 3), "Switch: Import Saves") && !strcmp(pick_label(&app, 4), "GBA: Export Saves") &&
-           !strcmp(pick_label(&app, 5), "GBA: Import Saves") && !strcmp(pick_label(&app, 6), "NDS: Export Saves") &&
-           !strcmp(pick_label(&app, 7), "NDS: Import Saves") && !pick_label(&app, 8));
+           !strcmp(pick_label(&app, 3), "Switch: Import Saves") && !strcmp(pick_label(&app, 4), "3DS: Export Saves") &&
+           !strcmp(pick_label(&app, 5), "3DS: Import Saves") && !strcmp(pick_label(&app, 6), "GBA: Export Saves") &&
+           !strcmp(pick_label(&app, 7), "GBA: Import Saves") && !strcmp(pick_label(&app, 8), "NDS: Export Saves") &&
+           !strcmp(pick_label(&app, 9), "NDS: Import Saves") && !pick_label(&app, 10));
     assert(pick_icon(&app, 0) == GUI_ICON_SHARE_2 && pick_icon(&app, 1) == GUI_ICON_FOLDER_INPUT);
     {
         char question[GUI_PICKS_QUESTION];
@@ -266,7 +267,7 @@ int main(void) {
         own_answer_dropped(&app);
         saves_picked_answer(&app, out, NULL, false);
         path = snx_format("Import All Saves: %s holds none of the consoles' folders of an export of every save: "
-                          "switch/, gba/, nds/",
+                          "switch/, 3ds/, gba/, nds/",
                           out);
         assert(!strcmp(app.message, path));
         free(path);
@@ -332,6 +333,61 @@ int main(void) {
         free(sav);
         free(rom_program);
         free(rom);
+    }
+
+    /* a 3DS game's save out as Checkpoint lays a backup out and back in over the one there, after the question; one
+       that has not run yet refused, saying what to do first */
+    {
+        char *ctr = snx_path_join(games, "0004000000123400"), *ctr_program = snx_path_join(ctr, "0004000000123400");
+        char *ctr_ini = snx_path_join(ctr, "0004000000123400.ini"), *data = snx_path_join(ctr, "savedata/game.bin");
+        char *format = snx_path_join(ctr, "savedata.format"), *ctr_zip = snx_path_join(root, "3ds.zip");
+        SnxZip* zip;
+        char why[256];
+        uint32_t i;
+        bool found = false;
+        put_text(ctr_program, "a recompiled 3DS game");
+        put_text(ctr_ini, "[Game]\nsystem=3ds\n");
+        put_text(data, "3ds 1");
+        put_text(format, "0123456789abcdef0123");
+        saves_start(&app, GUI_SAVES_ROW(GUI_3DS, false), ctr_program, "A Game");
+        assert(app.saves_ctr.count == 1 && !strcmp(app.saves_filter.pattern, "zip"));
+        own_answer_dropped(&app);
+        saves_picked_answer(&app, ctr_zip, NULL, false);
+        zip = snx_zip_open(ctr_zip, why, sizeof why);
+        for (i = 0; zip && i < snx_zip_count(zip); ++i)
+            found = found || (!strncmp(snx_zip_name(zip, i), "saves/0x01234 A Game/", 21) &&
+                              strstr(snx_zip_name(zip, i), "/game.bin"));
+        snx_zip_close(zip);
+        assert(found);
+        put_text(data, "3ds 2");
+        saves_start(&app, GUI_SAVES_ROW(GUI_3DS, true), ctr_program, "A Game");
+        own_answer_dropped(&app);
+        saves_picked_answer(&app, ctr_zip, NULL, false);
+        assert(app.confirm.shown && app.confirm.ask == GUI_ASK_SAVES);
+        ask_key(&app, GUI_RIGHT);
+        ask_key(&app, GUI_SELECT);
+        assert(holds_text(data, "3ds 1") && strstr(app.message, "Import Saves: 1 files (1 KB) of A Game for Player"));
+        assert(!snx_remove_tree(format));
+        saves_start(&app, GUI_SAVES_ROW(GUI_3DS, true), ctr_program, "A Game");
+        own_answer_dropped(&app);
+        saves_picked_answer(&app, ctr_zip, NULL, false);
+        if (app.confirm.shown && app.confirm.ask == GUI_ASK_SAVES) { /* a save there: asked, then refused */
+            ask_key(&app, GUI_RIGHT);
+            ask_key(&app, GUI_SELECT);
+        }
+        path = snx_format("Import Saves: 0 saves imported, then: A Game has not run yet: its first run makes its save "
+                          "(%s), which an import goes into, else the game formats it over what came in. Play it once, "
+                          "then import",
+                          format);
+        assert(!strcmp(app.message, path) && holds_text(data, "3ds 1"));
+        free(path);
+        app.confirm.shown = false;
+        free(ctr_zip);
+        free(format);
+        free(data);
+        free(ctr_ini);
+        free(ctr_program);
+        free(ctr);
     }
 
     /* the Switch's export with no save of the user: said before any picker opens */

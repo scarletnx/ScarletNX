@@ -14,11 +14,13 @@
 #include "gui/clean.h"
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 /* the folders of each console's saves in a zip of every console's */
 #define GUI_SAVES_SWITCH "switch/"
 #define GUI_SAVES_GBA    "gba/"
 #define GUI_SAVES_NDS    "nds/"
+#define GUI_SAVES_3DS    "3ds/"
 
 /* The save put together in staged (a folder or a file) into the place of save. The one there before goes first to the
    folder trash (made when it is not there, on save's disk) as <name>.<UTC time>, a number after it rather than over
@@ -146,4 +148,40 @@ int gui_saves_zip_has(const char* path, const char* prefix);
 /* how many of the count saves the zip at path holds a .sav of (under prefix) while their own is there: those its
    import would put in the trash */
 size_t gui_saves_raw_there(const char* path, const char* prefix, const GuiSaveRaw* saves, size_t count);
+
+/* A 3DS game's save as ScarletNX keeps it, in the game's folder named by its title ID: its save data (savedata/, with
+   savedata.format beside it, which its first run makes) and its ExtSaveData, the one archive of its SD card
+   (sdmc/Nintendo 3DS/<id0>/<id1>/extdata/<high>/<low>/user/; NULL with none or several, how many in extdata_count).
+   Checkpoint keeps a title's backups by its unique ID (the title ID's low word past its last byte) and its name:
+   saves/0x<unique, 5 hex digits> <title>/<backup>/ and extdata/ the same, the files of the archive's root in each */
+typedef struct {
+    uint32_t unique;
+    const char *save, *format, *extdata;
+    size_t extdata_count;
+    const char *trash, *name, *title;
+} GuiSaveCtr;
+typedef struct {
+    GuiSaveCtr* at;
+    size_t count;
+} GuiSavesCtr;
+void gui_saves_ctr_free(GuiSavesCtr* list);
+/* the save of the game named name (its title ID) in its folder game, called title (NULL: its name) in a Checkpoint
+   folder's name: 1 with it in out (owned), 0 for a name that is no title ID */
+int gui_saves_ctr_place(const char* game, const char* name, const char* title, const char* trash, GuiSaveCtr* out);
+/* the 3DS games of the count folders (snx_game_system), with there only those whose save or ExtSaveData has a file */
+void gui_saves_ctr_list(const char* trash, const char* const* folders, size_t count, bool there, GuiSavesCtr* list);
+/* each save there into zip under prefix as Checkpoint lays them out, its backup named backup (Checkpoint's suggestion
+   is the date, YYYYMMDD-HHMMSS); how many into *kept, one with nothing an entry. 0, else nonzero with why */
+int gui_saves_ctr_add(GuiSavesZip* zip, const char* prefix, const GuiSaveCtr* saves, size_t count, const char* backup,
+                      size_t* kept, char* error, size_t size);
+/* each of the count saves out of the zip at path (under prefix, as Checkpoint lays them out): of its title's backups by
+   its unique ID, the newest (the highest name), save data and ExtSaveData each in place by gui_saves_put. The whole zip
+   is checked first: a member out of that layout, a game the zip has nothing of (naming the IDs it has), a game that has
+   not run yet (no savedata.format: its run would format the save) and an ExtSaveData with no single place are refused,
+   nothing written. What was done added to *result. 0, else nonzero with why in error */
+int gui_saves_ctr_import(GuiCleaned* done, const char* path, const char* shown, const char* prefix,
+                         const GuiSaveCtr* saves, size_t count, GuiSavesDone* result, char* error, size_t size);
+/* list kept to the saves the zip at path has a backup of (under prefix), the others freed: how many, and how many of
+   them have a file there already (those an import puts in the trash) into *there */
+size_t gui_saves_ctr_keep(const char* path, const char* prefix, GuiSavesCtr* list, size_t* there);
 #endif

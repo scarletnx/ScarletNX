@@ -949,3 +949,346 @@ size_t gui_saves_raw_there(const char* path, const char* prefix, const GuiSaveRa
     snx_zip_close(zip);
     return there;
 }
+
+/* ---- the 3DS's: Checkpoint's backups */
+
+#define CTR_SD "sdmc/Nintendo 3DS/00000000000000000000000000000000/00000000000000000000000000000000/extdata"
+
+/* save's strings */
+static void ctr_free_one(GuiSaveCtr* save) {
+    free((void*)save->save);
+    free((void*)save->format);
+    free((void*)save->extdata);
+    free((void*)save->trash);
+    free((void*)save->name);
+    free((void*)save->title);
+}
+void gui_saves_ctr_free(GuiSavesCtr* list) {
+    for (size_t i = 0; i < list->count; ++i) ctr_free_one(&list->at[i]);
+    free(list->at);
+    list->at = NULL;
+    list->count = 0;
+}
+/* the ExtSaveData folders of the game's SD card (CTR_SD/<high>/<low>, the archive its user/ folder): how many, the
+   first's user/ owned into *first */
+static size_t ctr_extdata(const char* game, char** first) {
+    char *root = snx_format("%s/" CTR_SD, game), **highs = NULL, **lows = NULL;
+    size_t nh = 0, nl = 0, i, j, count = 0;
+    *first = NULL;
+    if (root && !snx_list_dir(root, &highs, &nh))
+        for (i = 0; i < nh; ++i) {
+            char* high = snx_path_join(root, highs[i]);
+            if (high && !snx_list_dir(high, &lows, &nl))
+                for (j = 0; j < nl; ++j) {
+                    char* user = snx_format("%s/%s/user", high, lows[j]);
+                    if (user) snx_path_native(user);
+                    if (user && snx_is_dir(user) && !count++)
+                        *first = user;
+                    else
+                        free(user);
+                }
+            snx_free_strings(lows, nl);
+            lows = NULL;
+            nl = 0;
+            free(high);
+        }
+    snx_free_strings(highs, nh);
+    free(root);
+    return count;
+}
+int gui_saves_ctr_place(const char* game, const char* name, const char* title, const char* trash, GuiSaveCtr* out) {
+    SnxU64 id;
+    if (!snx_title_parse(name, &id)) return 0;
+    out->unique = (uint32_t)id >> 8;
+    out->save = snx_path_join(game, "savedata");
+    out->format = snx_path_join(game, "savedata.format");
+    out->extdata_count = ctr_extdata(game, (char**)&out->extdata);
+    out->trash = snx_strdup(trash);
+    out->name = snx_strdup(name);
+    out->title = snx_strdup(title ? title : name);
+    return 1;
+}
+/* the save holds a file of the game's: its save data, or its ExtSaveData's */
+static bool ctr_there(const GuiSaveCtr* save) {
+    return files_in(save->save, false) || (save->extdata && files_in(save->extdata, false));
+}
+void gui_saves_ctr_list(const char* trash, const char* const* folders, size_t count, bool there, GuiSavesCtr* list) {
+    list->at = NULL;
+    list->count = 0;
+    for (size_t f = 0; f < count; ++f) {
+        char** names = NULL;
+        size_t n = 0;
+        if (snx_list_dir(folders[f], &names, &n)) continue;
+        for (size_t i = 0; i < n; ++i) {
+            char* game = snx_path_join(folders[f], names[i]);
+            GuiSaveCtr save;
+            if (game && snx_is_dir(game) && snx_game_system(game, names[i]) == SNX_SYSTEM_3DS &&
+                gui_saves_ctr_place(game, names[i], NULL, trash, &save)) {
+                if (!there || ctr_there(&save)) {
+                    list->at = (GuiSaveCtr*)snx_realloc(list->at, (list->count + 1) * sizeof *list->at);
+                    list->at[list->count++] = save;
+                } else
+                    ctr_free_one(&save);
+            }
+            free(game);
+        }
+        snx_free_strings(names, n);
+    }
+}
+/* title as Checkpoint names a title's folder by it (StringUtils::removeForbiddenCharacters): .,!\/:?*"<>| as spaces,
+   the spaces at its end gone; "0x<unique> <that>" into out */
+static void ctr_folder(const GuiSaveCtr* save, char* out, size_t size) {
+    char title[256];
+    size_t n;
+    snprintf(title, sizeof title, "%s", save->title);
+    for (n = 0; title[n]; ++n)
+        if (strchr(".,!\\/:?*\"<>|", title[n])) title[n] = ' ';
+    while (n && title[n - 1] == ' ') title[--n] = 0;
+    snprintf(out, size, "0x%05X %s", (unsigned)save->unique, title);
+}
+int gui_saves_ctr_add(GuiSavesZip* zip, const char* prefix, const GuiSaveCtr* saves, size_t count, const char* backup,
+                      size_t* kept, char* error, size_t size) {
+    *kept = 0;
+    for (size_t i = 0; i < count; ++i) {
+        char folder[320], *name;
+        int rc = 0;
+        bool data = files_in(saves[i].save, false) != 0,
+             extdata = saves[i].extdata && files_in(saves[i].extdata, false);
+        if (!data && !extdata) {
+            gui_cleaned_add(zip->done, false, saves[i].save, snx_tr("Not exported: no save there"));
+            continue;
+        }
+        ctr_folder(&saves[i], folder, sizeof folder);
+        if (data) {
+            name = snx_format("%ssaves/%s/%s/", prefix, folder, backup);
+            rc = zip_tree(zip, saves[i].save, name, false, error, size);
+            free(name);
+        }
+        if (!rc && extdata) {
+            name = snx_format("%sextdata/%s/%s/", prefix, folder, backup);
+            rc = zip_tree(zip, saves[i].extdata, name, false, error, size);
+            free(name);
+        }
+        if (rc) return 1;
+        ++*kept;
+    }
+    return 0;
+}
+/* member name under prefix, Checkpoint's: saves/ or extdata/ (*kind 0 or 1), a title's folder 0x<5 hex digits>[ its
+   name] (*unique), a backup's folder (its name into backup), what is in it after (*rest, "" for the folder itself).
+   1 for such a member, 2 for a folder above a backup's (saves/, a title's), 0 for another */
+static int ctr_member(const char* name, const char* prefix, int* kind, uint32_t* unique, char* backup, size_t size,
+                      const char** rest) {
+    const char *at = name + strlen(prefix), *title, *end;
+    unsigned v = 0;
+    int i;
+    if (strncmp(name, prefix, strlen(prefix))) return 0;
+    if (!strncmp(at, "saves/", 6))
+        *kind = 0, at += 6;
+    else if (!strncmp(at, "extdata/", 8))
+        *kind = 1, at += 8;
+    else
+        return 0;
+    if (!*at) return 2;
+    title = at;
+    if (title[0] != '0' || (title[1] | 0x20) != 'x') return 0;
+    for (i = 2; i < 7; ++i) {
+        int c = title[i] | 0x20, d = title[i] >= '0' && title[i] <= '9' ? title[i] - '0'
+                                     : c >= 'a' && c <= 'f'             ? c - 'a' + 10
+                                                                        : -1;
+        if (d < 0) return 0;
+        v = v << 4 | (unsigned)d;
+    }
+    if (title[7] != ' ' && title[7] != '/') return 0;
+    *unique = v;
+    end = strchr(title, '/');
+    if (!end || !end[1]) return 2;
+    at = end + 1;
+    end = strchr(at, '/');
+    if (!end) return 0; /* a file beside the backups, in no backup */
+    snprintf(backup, size, "%.*s", (int)(end - at), at);
+    *rest = end + 1;
+    return 1;
+}
+/* the newest backup (the name highest, as Checkpoint's dates order) of kind of unique in the zip, into backup; 0 for
+   none */
+static int ctr_backup(SnxZip* zip, const char* prefix, int kind, uint32_t unique, char* backup, size_t size) {
+    char name[SNX_PATH_SIZE];
+    const char* rest;
+    int k, found = 0;
+    uint32_t u, i, n = snx_zip_count(zip);
+    backup[0] = 0;
+    for (i = 0; i < n; ++i)
+        if (ctr_member(snx_zip_name(zip, i), prefix, &k, &u, name, sizeof name, &rest) == 1 && k == kind &&
+            u == unique && (!found || strcmp(name, backup) > 0)) {
+            snprintf(backup, size, "%s", name);
+            found = 1;
+        }
+    return found;
+}
+/* kind's backup of save out of the zip into a folder beside to (its save data or its ExtSaveData's user/), then in
+   its place by gui_saves_put */
+static int ctr_put(GuiCleaned* done, SnxZip* zip, const char* shown, const char* prefix, const GuiSaveCtr* save,
+                   int kind, const char* backup, const char* to, GuiSavesDone* result, char* error, size_t size) {
+    char *parent = snx_dirname(to), *hidden = snx_format(".%s.importing", snx_path_leaf(to));
+    char *staged = parent && hidden ? snx_path_join(parent, hidden) : NULL, name[SNX_PATH_SIZE], why[1024];
+    char what[SNX_PATH_SIZE + 256], kept[SNX_PATH_SIZE],
+        *label = snx_format("%s.%s", save->name, kind ? "extdata" : "savedata");
+    const char* rest;
+    uint32_t i, n = snx_zip_count(zip), unique;
+    size_t files = 0;
+    SnxU64 bytes = 0;
+    int k, rc = 1;
+    error[0] = 0;
+    if (!staged || !label) {
+        snprintf(error, size, "%s", snx_tr("out of memory"));
+        goto out;
+    }
+    if (snx_path_exists(staged) && snx_remove_tree(staged)) {
+        snprintf(error, size, snx_tr("%s, left by an import cut short, could not be removed: %s"), staged,
+                 snx_os_error(why, sizeof why));
+        goto out;
+    }
+    if (snx_mkdirs(staged)) {
+        snprintf(error, size, snx_tr("%s could not be made: %s"), staged, snx_os_error(why, sizeof why));
+        goto out;
+    }
+    for (i = 0; i < n && !error[0]; ++i) {
+        const char* member = snx_zip_name(zip, i);
+        char *into, *folder;
+        size_t length;
+        if (ctr_member(member, prefix, &k, &unique, name, sizeof name, &rest) != 1 || k != kind ||
+            unique != save->unique || strcmp(name, backup) || !*rest)
+            continue;
+        length = strlen(rest);
+        into = snx_format("%s/%.*s", staged, (int)(length - (rest[length - 1] == '/')), rest);
+        if (into) snx_path_native(into);
+        folder = into && rest[length - 1] != '/' ? snx_dirname(into) : NULL;
+        if (!into)
+            snprintf(error, size, "%s", snx_tr("out of memory"));
+        else if (rest[length - 1] == '/' ? snx_mkdirs(into) != 0 : !folder || snx_mkdirs(folder) != 0)
+            snprintf(error, size, snx_tr("%s could not be made: %s"), into, snx_os_error(why, sizeof why));
+        else if (rest[length - 1] != '/' && !snx_zip_extract(zip, i, into, why, sizeof why))
+            snprintf(error, size, snx_tr("%s could not be taken out of %s: %s"), member, shown, why);
+        else if (rest[length - 1] != '/') {
+            ++files;
+            bytes += snx_zip_size(zip, i);
+            snprintf(what, sizeof what, snx_tr("Imported from %s in %s"), member, shown);
+            gui_cleaned_add(done, true, into, what);
+        }
+        free(folder);
+        free(into);
+    }
+    if (error[0] || gui_saves_put(done, staged, to, save->trash, label, kept, sizeof kept, error, size)) {
+        if (snx_path_exists(staged)) snx_remove_tree(staged);
+        goto out;
+    }
+    result->files += files;
+    result->bytes += bytes;
+    if (kept[0] && !result->backups++) snprintf(result->backup, sizeof result->backup, "%s", kept);
+    snprintf(what, sizeof what, snx_tr("Imported %zu files (%llu bytes) of backup %s from %s%s%s"), files,
+             (unsigned long long)bytes, backup, shown, kept[0] ? snx_tr("; what was there before is in ") : "", kept);
+    gui_cleaned_add(done, true, to, what);
+    rc = 0;
+out:
+    if (rc) {
+        snprintf(what, sizeof what, snx_tr("Not imported: %s"), error);
+        gui_cleaned_add(done, false, to, what);
+    }
+    free(label);
+    free(staged);
+    free(hidden);
+    free(parent);
+    return rc;
+}
+int gui_saves_ctr_import(GuiCleaned* done, const char* path, const char* shown, const char* prefix,
+                         const GuiSaveCtr* saves, size_t count, GuiSavesDone* result, char* error, size_t size) {
+    char why[1024], name[SNX_PATH_SIZE], data[SNX_PATH_SIZE], extdata[SNX_PATH_SIZE], listed[256];
+    SnxZip* zip = snx_zip_open(path, why, sizeof why);
+    uint32_t i, n, unique, uniques[64];
+    size_t found = 0, j, l = 0;
+    const char* rest;
+    int kind, rc = 1;
+    error[0] = 0;
+    if (!zip) {
+        snprintf(error, size, snx_tr("%s is no export of saves as Checkpoint lays them out: %s"), shown, why);
+        return 1;
+    }
+    n = snx_zip_count(zip);
+    for (i = 0; i < n && !error[0]; ++i) { /* the whole zip checked before anything is written */
+        const char* member = snx_zip_name(zip, i);
+        int what;
+        if (strncmp(member, prefix, strlen(prefix)) || !strcmp(member, prefix)) continue; /* another console's */
+        what = snx_zip_safe_name(member) ? ctr_member(member, prefix, &kind, &unique, name, sizeof name, &rest) : 0;
+        if (!what)
+            snprintf(error, size,
+                     snx_tr("%s is no export of saves as Checkpoint lays them out: %s is not in saves/ or extdata/, in "
+                            "a title's folder 0x<its unique ID> and one of its backups"),
+                     shown, member);
+        else if (what == 1) {
+            for (j = 0; j < found && uniques[j] != unique; ++j) {}
+            if (j == found && found < sizeof uniques / sizeof uniques[0]) uniques[found++] = unique;
+        }
+    }
+    if (!error[0] && !found)
+        snprintf(error, size, snx_tr("%s holds no backup of Checkpoint's: saves/0x<unique ID> <title>/<backup>/"),
+                 shown);
+    for (j = 0; j < count && !error[0]; ++j) { /* each game the zip has and that can take it: refused before writing */
+        bool has_data = ctr_backup(zip, prefix, 0, saves[j].unique, data, sizeof data) != 0;
+        bool has_extdata = ctr_backup(zip, prefix, 1, saves[j].unique, extdata, sizeof extdata) != 0;
+        if (!has_data && !has_extdata) {
+            size_t k, m = 0;
+            for (k = 0; k < found && m < sizeof listed - 16; ++k)
+                m += (size_t)snprintf(listed + m, sizeof listed - m, "%s0x%05X", k ? ", " : "", (unsigned)uniques[k]);
+            snprintf(error, size, snx_tr("%s holds the backups of %s, not of %s's, 0x%05X"), shown,
+                     found ? listed : "?", saves[j].title, (unsigned)saves[j].unique);
+        } else if (has_data && !snx_is_file(saves[j].format))
+            snprintf(
+                error, size,
+                snx_tr("%s has not run yet: its first run makes its save (%s), which an import goes into, else the "
+                       "game formats it over what came in. Play it once, then import"),
+                saves[j].title, saves[j].format);
+        else if (has_extdata && saves[j].extdata_count != 1)
+            snprintf(error, size,
+                     saves[j].extdata_count
+                         ? snx_tr("%s has %zu folders of extra data in its SD card, and the backup's goes in one: move "
+                                  "the others out, then import")
+                         : snx_tr("%s has no extra data yet (%zu folders): its first run makes it. Play it once, then "
+                                  "import"),
+                     saves[j].title, saves[j].extdata_count);
+    }
+    for (j = 0; j < count && !error[0]; ++j) {
+        bool has_data = ctr_backup(zip, prefix, 0, saves[j].unique, data, sizeof data) != 0;
+        bool has_extdata = ctr_backup(zip, prefix, 1, saves[j].unique, extdata, sizeof extdata) != 0;
+        if (has_data && ctr_put(done, zip, shown, prefix, &saves[j], 0, data, saves[j].save, result, error, size))
+            break;
+        if (has_extdata &&
+            ctr_put(done, zip, shown, prefix, &saves[j], 1, extdata, saves[j].extdata, result, error, size))
+            break;
+        ++result->saves;
+        ++l;
+    }
+    if (!error[0] && found > l) {
+        snprintf(name, sizeof name, snx_tr("Not imported: it holds the backups of %zu other games too"), found - l);
+        gui_cleaned_add(done, false, shown, name);
+    }
+    rc = error[0] != 0;
+    snx_zip_close(zip);
+    return rc;
+}
+size_t gui_saves_ctr_keep(const char* path, const char* prefix, GuiSavesCtr* list, size_t* there) {
+    char why[1024], backup[SNX_PATH_SIZE];
+    SnxZip* zip = snx_zip_open(path, why, sizeof why);
+    size_t i, kept = 0;
+    *there = 0;
+    for (i = 0; i < list->count; ++i)
+        if (zip && (ctr_backup(zip, prefix, 0, list->at[i].unique, backup, sizeof backup) ||
+                    ctr_backup(zip, prefix, 1, list->at[i].unique, backup, sizeof backup))) {
+            *there += ctr_there(&list->at[i]);
+            list->at[kept++] = list->at[i];
+        } else
+            ctr_free_one(&list->at[i]);
+    list->count = kept;
+    snx_zip_close(zip);
+    return kept;
+}
