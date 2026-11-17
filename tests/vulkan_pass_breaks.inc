@@ -183,7 +183,7 @@ static int pb_owners_case(GpuChannel* ch, u64 target, u64 red, u64 staged, u64 c
     if (owned && how == PB_FRAME_CHECK && !before)
         fprintf(stderr,
                 "two owners: the copies' submission %llu was still recording at the first draw, after a wait "
-                "of %u us (cmd.c frame_check submits after 1000)\n",
+                "of %d us (cmd.c frame_check submits after 1000)\n",
                 (unsigned long long)copied, PB_WAIT_NS / 1000);
     CHECK(!owned || how == PB_WITH_DRAWS || before);
     u64 want = owned && !before ? 2 : 1;

@@ -68,7 +68,7 @@ static int check_pending_index(void) {
     u64 unmapped = vk_buf_pending_inspected() - seen;
     CHECK(!vk_buf_pending_any());
     printf("pending storage results compared: %llu for one result's range, %llu beside it, %llu by page, %llu through "
-           "another address, %llu over %u results' pages, %llu over an unmapped page, of %u pending\n",
+           "another address, %llu over %d results' pages, %llu over an unmapped page, of %d pending\n",
            (unsigned long long)one, (unsigned long long)beside, (unsigned long long)page, (unsigned long long)other,
            (unsigned long long)many, MANY, (unsigned long long)unmapped, RESULTS + 1);
     CHECK(one == 1 && beside == (vk_pages_on() ? 1u : 2u) && page == 1 && other == 2 && many == 2 * MANY &&

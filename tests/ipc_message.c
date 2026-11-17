@@ -1007,7 +1007,7 @@ static void counters(u32 h) {
         snprintf(want, sizeof want,
                  "ipc: %u requests served in 1.00 s (%u a second) took %.3f ms, to %u commands; "
                  "the most time: test:p cmd 9 2 in 0.500 ms, stat:fill cmd ",
-                 IPC_STAT_PAIRS + 103, IPC_STAT_PAIRS + 103, (double)(IPC_STAT_PAIRS + 100) / 1e3 + 0.505,
+                 IPC_STAT_PAIRS + 103u, IPC_STAT_PAIRS + 103u, (double)(IPC_STAT_PAIRS + 100) / 1e3 + 0.505,
                  IPC_STAT_PAIRS - used + 1);
         CHECK(!strncmp(test_line, want, strlen(want)));
         snprintf(want, sizeof want, "; %u more in %.3f ms to commands past the first %d\n", 101 + used,
