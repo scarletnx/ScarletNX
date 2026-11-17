@@ -5,14 +5,18 @@
 
 #define LEAF_PAGES 4096u
 #define GROUP_PAGES 64u
+/* A range that covers a whole group of pages stamps the group once (group_all), not each of its pages: a page's stamp
+   is the newer of its own and its group's. One game's programs bind 16 MiB windows hundreds of times a present, and a
+   store a page for each made the stamps a seventh of its GPU thread */
 struct WritePageLeaf {
     u64 max;
     u64 group_max[LEAF_PAGES / GROUP_PAGES];
+    u64 group_all[LEAF_PAGES / GROUP_PAGES]; /* the newest stamp given to all of the group's pages at once */
     u64 gen[LEAF_PAGES];
 };
 /* Stamps are taken by one writer at a time (the caller's lock) and read without one: a leaf is published with a
-   release store once made, and a page's stamp is stored before its group's and the leaf's newest, so a reader that
-   finds the leaf's or the group's newest after since finds the page's too */
+   release store once made, and a page's stamp, or the one its whole group takes for it, is stored before the group's
+   and the leaf's newest, so a reader that finds the leaf's or the group's newest after since finds the page's too */
 void write_pages_stamp(WritePages* t, u64 a, u64 size, u64 gen) {
     u64 p, e;
     if (!size) return;
@@ -41,8 +45,12 @@ void write_pages_stamp(WritePages* t, u64 a, u64 size, u64 gen) {
         while (p <= end) {
             u64 group_end = (p | (GROUP_PAGES - 1)) < end ? p | (GROUP_PAGES - 1) : end;
             u64 group = (p & (LEAF_PAGES - 1)) / GROUP_PAGES;
-            for (; p <= group_end; p++)
-                __atomic_store_n(&l->gen[p & (LEAF_PAGES - 1)], gen, __ATOMIC_RELAXED);
+            if (!(p & (GROUP_PAGES - 1)) && group_end - p == GROUP_PAGES - 1) { /* the whole group: one stamp */
+                __atomic_store_n(&l->group_all[group], gen, __ATOMIC_RELAXED);
+                p = group_end + 1;
+            } else
+                for (; p <= group_end; p++)
+                    __atomic_store_n(&l->gen[p & (LEAF_PAGES - 1)], gen, __ATOMIC_RELAXED);
             __atomic_store_n(&l->group_max[group], gen, __ATOMIC_RELEASE);
         }
         __atomic_store_n(&l->max, gen, __ATOMIC_RELEASE);
@@ -59,9 +67,12 @@ int write_pages_since(const WritePages* t, u64 since, u64 a, u64 size) {
         if (l && __atomic_load_n(&l->max, __ATOMIC_ACQUIRE) > since)
             for (u64 group = p; group <= end;) {
                 u64 group_end = (group | (GROUP_PAGES - 1)) < end ? group | (GROUP_PAGES - 1) : end;
-                if (__atomic_load_n(&l->group_max[(group & (LEAF_PAGES - 1)) / GROUP_PAGES], __ATOMIC_ACQUIRE) > since)
+                const u64 g = (group & (LEAF_PAGES - 1)) / GROUP_PAGES;
+                if (__atomic_load_n(&l->group_max[g], __ATOMIC_ACQUIRE) > since) {
+                    if (__atomic_load_n(&l->group_all[g], __ATOMIC_RELAXED) > since) return 1;
                     for (u64 q = group; q <= group_end; q++)
                         if (__atomic_load_n(&l->gen[q & (LEAF_PAGES - 1)], __ATOMIC_RELAXED) > since) return 1;
+                }
                 group = group_end + 1;
             }
         p = end + 1;
@@ -98,13 +109,16 @@ void write_pages_runs(const WritePages* t, u64 since, u64 a, u64 size, void (*fn
             if (__atomic_load_n(&l->group_max[(group & (LEAF_PAGES - 1)) / GROUP_PAGES], __ATOMIC_ACQUIRE) <= since) {
                 if (in) run_out(a, size, first, group, fn, ctx);
                 in = 0;
-            } else
+            } else {
+                const int all =
+                    __atomic_load_n(&l->group_all[(group & (LEAF_PAGES - 1)) / GROUP_PAGES], __ATOMIC_RELAXED) > since;
                 for (u64 q = group; q <= group_end; q++) {
-                    int w = __atomic_load_n(&l->gen[q & (LEAF_PAGES - 1)], __ATOMIC_RELAXED) > since;
+                    int w = all || __atomic_load_n(&l->gen[q & (LEAF_PAGES - 1)], __ATOMIC_RELAXED) > since;
                     if (w && !in) first = q;
                     if (!w && in) run_out(a, size, first, q, fn, ctx);
                     in = w;
                 }
+            }
             group = group_end + 1;
         }
         p = end + 1;
