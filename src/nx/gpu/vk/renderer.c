@@ -67,21 +67,23 @@ static int before_write_needed(u64 gva, u64 size) {
     pend_unlock();
     return hit;
 }
-static void vkr_before_write(u64 gva, u64 size) {
+static void vkr_before_write(u64 gva, u64 size, int whole) {
     if (!before_write_needed(gva, size)) return;
     vk_lock();
-    if (size) vk_release_need(gva, size);
-    vk_buf_before_write(gva, size);
-    if (size) vk_uma_before_write(gva, size); /* what reads it in place runs first */
+    const char* was = g_vk_finish_who;
     if (size) {
-        const char* was = g_vk_finish_who;
-        g_vk_finish_who = "a guest write to a target's memory";
+        vk_release_need(gva, size);
+        vk_buf_before_write(gva, size);
+        vk_uma_before_write(gva, size); /* what reads it in place runs first */
+        g_vk_finish_who = "a guest write over a storage image's bytes";
         vk_gfx_image_mem_need(gva, size);
-        g_vk_finish_who = was;
     } else
         vk_gfx_image_land();
+    g_vk_finish_who = "a guest write over a compute result's bytes";
     vk_compute_before_write(gva, size);
-    vk_rt_before_write(gva, size);
+    g_vk_finish_who = "a guest write over a render target's bytes";
+    vk_rt_before_write(gva, size, whole);
+    g_vk_finish_who = was;
     vk_unlock();
 }
 /* pending compute and graphics results, storage images and queued releases all count their pages in g_pend_any
@@ -111,7 +113,7 @@ static void vkr_gfx_mem_need(u64 gva, u64 size) {
     vk_buf_mem_need(gva, size);
     vk_uma_mem_need(gva, size); /* the in-place writes there done */
     const char* was = g_vk_finish_who;
-    g_vk_finish_who = "a read of guest memory a target covers";
+    g_vk_finish_who = "a read of guest memory a storage image covers";
     vk_gfx_image_mem_need(gva, size);
     g_vk_finish_who = was;
 }
@@ -200,8 +202,9 @@ static void vkr_mapping_begin(u64 gva, u64 size, int kind) {
         vk_mirror_mem_need(gva, size);
         vk_gfx_image_mem_need(gva, size);
         vk_compute_mem_need_map(gva, size);
-        /* Images still describe the old backing until the page table changes. */
-        vk_rt_before_write(gva, size);
+        /* Images still describe the old backing until the page table changes: the targets there go to memory, and
+           none is dropped, as nothing says every byte of them is written */
+        vk_rt_before_write(gva, size, 0);
     }
     pend_lock();
 }

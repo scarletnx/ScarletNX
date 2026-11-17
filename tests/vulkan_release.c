@@ -41,7 +41,7 @@ u64 vk_submit_number(void);
 extern u64 g_vk_cs_open; /* compute.c's: the submission a dispatch was left in for the stream's end */
 int vk_uma(void);
 u64 vk_uma_bound(void);
-void vk_rt_before_write(u64, u64);
+void vk_rt_before_write(u64, u64, int);
 u64 vk_query_value(u32, u64, u64);
 u64 vk_query_peek(u32, u64, u64);
 u64 vk_stamp_report(int top);
@@ -200,9 +200,10 @@ void gpu_mem_written_shader(u64 address, u64 size) {
     (void)size;
     shader_writes++;
 }
-void vk_rt_before_write(u64 address, u64 size) {
+void vk_rt_before_write(u64 address, u64 size, int whole) {
     (void)address;
     (void)size;
+    (void)whole;
 }
 void vk_compute_land_through(u64 gate) {
     assert(lock_depth && vk_result_landing());

@@ -36,6 +36,8 @@ int main(void) {
           "a write short at the guest's top is a part", 0, 0);
     check(!vk_rt_write_covers(0x7FFFFFFFFFFF0000ull, 0x20000, 0x7FFFFFFFFFFF8000ull, 0x18000),
           "a write that ends at the guest's top is a part", 0, 0);
+    /* a target of no bytes has none to drop */
+    check(!vk_rt_write_covers(0x80000000ull, 0, 0x80000000ull, 0x1000), "a target of no bytes is not a target", 0, 0);
     /* a target whose address is not the guest's is never dropped */
     check(!vk_rt_write_covers(0x8000000000000000ull, 0x1000, 0, 0xFFFFFFFFFFFFFFFFull), "a host address is not a target",
           0, 0);
