@@ -370,6 +370,7 @@ static int replay_records(NvnJob* j, NvnReplayQueue* q) {
                 if (!over && !j->waiting && g_renderer->stream_end) g_renderer->stream_end();
                 if (!over) {
                     j->waiting = 1;
+                    gpu_poll_why(op == OP_WAIT_EVENT ? GPU_POLL_EVENT : GPU_POLL_SYNC);
                     return 0;
                 }
                 __atomic_thread_fence(__ATOMIC_ACQUIRE);
@@ -467,12 +468,16 @@ static int run(void* arg) {
             if (!sync_over(&j->wait)) {
                 if (!j->waiting && g_renderer->stream_end) g_renderer->stream_end();
                 j->waiting = 1;
+                gpu_poll_why(GPU_POLL_SYNC);
                 return 0;
             }
             break;
         case JOB_FENCE: stream_incr(q->syncpt); break;
         case JOB_SETTLE:
-            if (!settled()) return 0;
+            if (!settled()) {
+                gpu_poll_why(GPU_POLL_SETTLE);
+                return 0;
+            }
             stream_incr(g_nvn.replay.settled);
             break;
         case JOB_DESTROY:
@@ -480,7 +485,10 @@ static int run(void* arg) {
             stream_incr(q->syncpt);
             break;
         case JOB_PRESENT: {
-            if (j->present_order != g_nvn.replay.present_walked + 1) return 0;
+            if (j->present_order != g_nvn.replay.present_walked + 1) {
+                gpu_poll_why(GPU_POLL_PRESENT);
+                return 0;
+            }
             const NvnReplayPresent* p = &j->present;
             u64 cpu = p->gva ? gmmu_translate(p->gva) : 0;
             if (g_renderer_up && cpu) {

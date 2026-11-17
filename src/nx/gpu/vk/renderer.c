@@ -1070,6 +1070,18 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
             vk_vrs_log();
             vk_finishes_log();
             vk_ww_stats(600);
+            {
+                GpuPollStats ps;
+                gpu_poll_stats(&ps);
+                LOG("gpu: the GPU thread slept %llu times after a kick (%.1f ms), %llu after new work (%.1f ms), %llu to "
+                    "the timeout (%.1f ms); polls not done: %llu at an event, %llu at a sync wait, %llu settling, %llu "
+                    "for a present's turn, %llu other\n",
+                    (unsigned long long)ps.sleeps[0], (double)ps.sleep_ns[0] / 1e6, (unsigned long long)ps.sleeps[1],
+                    (double)ps.sleep_ns[1] / 1e6, (unsigned long long)ps.sleeps[2], (double)ps.sleep_ns[2] / 1e6,
+                    (unsigned long long)ps.misses[GPU_POLL_EVENT], (unsigned long long)ps.misses[GPU_POLL_SYNC],
+                    (unsigned long long)ps.misses[GPU_POLL_SETTLE], (unsigned long long)ps.misses[GPU_POLL_PRESENT],
+                    (unsigned long long)ps.misses[GPU_POLL_OTHER]);
+            }
             vk_descriptors_stats();
             /* what the GPU engines keep on the GPU (docs/layers/gpu/ownership.md), and what the CPU had to wait for */
             u64 by[OWN_BY_N];

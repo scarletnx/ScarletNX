@@ -7253,6 +7253,7 @@ static void results_copied(u64 cpu, u64 len) { vk_own_cpu_touched(cpu, len); }
 #include "vulkan_uma_pages.inc"
 #include "vulkan_uma_region_reads.inc"
 #include "vulkan_write_tracking.inc"
+#include "vulkan_poll_kick.inc"
 #include "vulkan_tex_partial.inc"
 #include "vulkan_texture_quiet.inc"
 #include "vulkan_cube_take.inc"
@@ -7976,6 +7977,8 @@ static int run_headless(int argc, char** argv) {
             result = check_descriptor_memo();
         else if (!strcmp(name, "wlog_clear"))
             result = check_wlog_clear();
+        else if (!strcmp(name, "poll_kick"))
+            result = check_poll_kick();
         else if (!strcmp(name, "descriptor_heaps"))
             result = check_descriptor_heaps();
         else if (!strcmp(name, "indirect_dispatch"))
@@ -8299,6 +8302,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_own_trim());
     CHECK(!check_wlog_again());
     CHECK(!check_wlog_clear());
+    CHECK(!check_poll_kick());
     CHECK(!check_owned_in_place_write());
     CHECK(!check_owned_read_device());
     CHECK(!check_owned_peek_identity());
