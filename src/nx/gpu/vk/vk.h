@@ -1275,6 +1275,9 @@ void vk_rt_note_read(Surf* s);
 void vk_rt_before_write(u64 gva, u64 size);
 void vk_rt_before_publish_cpu(u64 cpu, u64 size);
 void vk_rt_before_write_cpu(u64 cpu, u64 size);
+/* whether a pending render target covers any of guest memory [cpu, cpu + size), through any GPU address that maps it:
+   where none does, vk_rt_before_write_cpu over a part of it does nothing */
+int vk_rt_pending_cpu(u64 cpu, u64 size);
 /* whether a render target not parked covers a GPU page of the range: pend_lock (or vk_lock) held */
 int vk_rt_pages_hit(u64 gva, u64 size);
 /* an image of a scaled target's format at the guest's size with that many layers, a transfer's source and

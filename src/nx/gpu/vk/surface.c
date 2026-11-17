@@ -1970,6 +1970,18 @@ static void rt_before_cpu(u64 cpu, u64 size, int publish) {
 /* Before a writer of guest memory on the CPU (the mirror's land_entry): written back, as its write follows at once and
    a publish would trap the pages again between its own_acquire and its write */
 void vk_rt_before_write_cpu(u64 cpu, u64 size) { rt_before_cpu(cpu, size, 0); }
+static void rt_pending_any(void* ctx, u64 gva, u64 size) {
+    int* any = ctx;
+    if (!*any && pend_hit_va(&g_rt_pages, gva, size)) *any = 1;
+}
+int vk_rt_pending_cpu(u64 cpu, u64 size) {
+    int any = 0;
+    if (!size) return 0;
+    vk_lock();
+    gmmu_aliases(cpu, size, rt_pending_any, &any);
+    vk_unlock();
+    return any;
+}
 /* Before a producer's owner goes over [cpu, cpu + size) (own_publish): the older targets there are published, as a
    release's are (rt_publish_now), their spans copied into owners on the GPU that the producer's owner then replaces
    where they meet, with no wait. Written back, each was a readback, a wait for the GPU and the landing of the owners
