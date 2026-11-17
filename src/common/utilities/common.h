@@ -438,6 +438,12 @@ void snx_set_stage_runner(int (*run)(int argc, char** argv));
 /* As above, but intentional debugger stops do not abort the game. */
 int snx_run_debug_stage(const char* const* argv, const char* cwd, const char* stage);
 FILE* snx_fopen(const char* path, const char* mode);
+#ifdef _WIN32
+/* a UTF-8 text as the UTF-16 Windows' W calls take, NULL when it is no valid UTF-8; snx_utf8 the other way, NULL when
+   Windows cannot convert it. The caller's to free */
+wchar_t* snx_wide(const char* s);
+char* snx_utf8(const wchar_t* s);
+#endif
 /* The launcher's logs, in its state folder (docs/user/usage.md#folders): what it says, a file a day named after this one
    (gui/log.h's gui_log_console_name; this name the versions before wrote, kept), and a fatal error of it or of a game
    in the other one too */
