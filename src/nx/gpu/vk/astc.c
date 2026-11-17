@@ -73,7 +73,9 @@ typedef struct {
     u32 wgen, level, layer;
     u64 sub; /* the submission after the cache read that fills it: 0, filled in stream order already */
 } Bc7Live;
-#define BC7_LIVE (1u << 16) /* slots, a power of two: one a key, the newest kept. 4 MB. A quarter of it lost 2.5 times the copies to keys in the same slot */
+/* slots, a power of two: one a key, the newest kept. 4 MB. A quarter of it lost 2.5 times the copies to keys in the
+   same slot */
+#define BC7_LIVE (1u << 16)
 /* Kept for the device lifetime, like the other internal pipelines. All uses are on g_vk.gfx, under vk_lock(), even
    when uploads originate in compute */
 typedef struct {
@@ -562,12 +564,12 @@ static int stage_cached(VkCommandBuffer cb, const u64 key[2], u64 size, VkImage 
     copy.bufferOffset = off;
     if (vk_rec_ring(cb)) {
         /* timed for vk_gpu_profile as rec_CmdCopyBufferToImage times the copy it records */
-        const int timed = img && vk_gpuprof_profiled(cb) &&
-                          vk_gpuprof_op_begin(cb, VK_OP_TO_IMAGE,
-                                              (u64)((const u8*)__builtin_return_address(0) -
-                                                    (const u8*)vk_gpuprof_base()),
-                                              0);
-        const int r = vk_bc7_cache_read_later(cb, key, size, p, mem, off, buf, img, &copy, owner, owner ? owner->gva : 0);
+        const int timed =
+            img && vk_gpuprof_profiled(cb) &&
+            vk_gpuprof_op_begin(cb, VK_OP_TO_IMAGE,
+                                (u64)((const u8*)__builtin_return_address(0) - (const u8*)vk_gpuprof_base()), 0);
+        const int r =
+            vk_bc7_cache_read_later(cb, key, size, p, mem, off, buf, img, &copy, owner, owner ? owner->gva : 0);
         if (timed) vk_gpuprof_op_end(cb);
         if (r >= 0) return r ? CACHED_QUEUED : CACHED_NONE;
     }
@@ -585,8 +587,9 @@ static int stage_cached(VkCommandBuffer cb, const u64 key[2], u64 size, VkImage 
    copied (live_put). The level is the key's, so its shape, format and blocks are the same. The record holds while the
    texture is still at its address with the same image and write generation (every upload, load of pieces, draw into
    it or new image changes wgen, vk_surf_gen), its upload is whole and no render target was copied in (took_drawn). A
-   level whose cache read is still on the recording thread holds once that read's submission is done and its record is
-   still in the index: a read that failed drops it (bc7_cache.c), so its blocks are not copied on */
+   level whose cache read is still on the recording thread holds once that read's submission is done, its record is
+   still in the index and no failed read waits for its owner: a read that failed drops its record (bc7_cache.c), but
+   the same key can be kept again at another place before cache_failed takes the texture's upload_valid away */
 static void live_put(const u64 key[2], const Surf* t, u32 level, u32 layer, u64 sub) {
     g_astc.live[key[0] & (BC7_LIVE - 1)] =
         (Bc7Live){{key[0], key[1]}, (Surf*)t, t->gva, t->img, t->wgen, level, layer, sub};
@@ -595,12 +598,13 @@ static void live_put(const u64 key[2], const Surf* t, u32 level, u32 layer, u64 
    none */
 static const Bc7Live* live_level(const u64 key[2], u64 size, const Surf* t) {
     const Bc7Live* l = &g_astc.live[key[0] & (BC7_LIVE - 1)];
-    if (!l->surf || l->surf == t || l->key[0] != key[0] || l->key[1] != key[1]) return NULL;
-    if (l->sub && (g_bg_landed < l->sub || vk_bc7_cache_find(key) != size)) return NULL;
+    if (!l->surf || l->surf == t || l->img == t->img || l->key[0] != key[0] || l->key[1] != key[1]) return NULL;
+    if (l->sub && (g_bg_landed < l->sub || vk_bc7_cache_failed_pending() || vk_bc7_cache_find(key) != size))
+        return NULL;
     for (const Surf* s = vk_surf_first(l->gva); s; s = vk_surf_next(s))
         if (s == l->surf)
-            return s->wgen == l->wgen && s->img == l->img && s->f.vk == t->f.vk && s->upload_valid &&
-                           !s->took_drawn && !s->sparse && !s->bricks
+            return s->wgen == l->wgen && s->img == l->img && s->f.vk == t->f.vk && s->upload_valid && !s->took_drawn &&
+                           !s->sparse && !s->bricks
                        ? l
                        : NULL;
     return NULL;
@@ -611,8 +615,8 @@ static const Bc7Live* live_level(const u64 key[2], u64 size, const Surf* t) {
    there, staging has no room, or they don't check out (then dropped). Into t's own image, a level that another
    texture holds is copied from that one's image instead (live_level). Read on the recording thread, blocks that don't
    check out are not copied, and t is loaded again at its next use (cache_failed) */
-static int bc7_from_cache(VkCommandBuffer cb, Surf* t, VkImage img, const u64 key[2], u64 size, u32 w, u32 h,
-                          u32 depth, u32 level, u32 layer, int layered) {
+static int bc7_from_cache(VkCommandBuffer cb, Surf* t, VkImage img, const u64 key[2], u64 size, u32 w, u32 h, u32 depth,
+                          u32 level, u32 layer, int layered) {
     const int own = img == t->img && !t->sparse && !t->bricks;
     const Bc7Live* l = own ? live_level(key, size, t) : NULL;
     if (l) {
@@ -687,8 +691,7 @@ static void bc7_capture_done(VkCommandBuffer cb, int slot, VkBuffer buf, const u
     g_astc.captured += size;
 }
 
-int vk_bc7_cache_level(VkCommandBuffer cb, Surf* t, const u64 key[2], u32 level, u32 w, u32 h, u32 slices,
-                       int is3d) {
+int vk_bc7_cache_level(VkCommandBuffer cb, Surf* t, const u64 key[2], u32 level, u32 w, u32 h, u32 slices, int is3d) {
     return bc7_from_cache(cb, t, t->bc7.img, key, level_blocks(w, h, slices), w, h, slices, level, 0, !is3d);
 }
 
@@ -1134,8 +1137,8 @@ typedef struct {
     u32 left;  /* pieces not BG_DONE */
     u64 ready_sub;
     int ready;
-    u32 reading;   /* pieces BG_READ */
-    u64 read_sub;  /* the submission after their reads */
+    u32 reading;  /* pieces BG_READ */
+    u64 read_sub; /* the submission after their reads */
     VkBuffer snap;
     DevMem snap_mem;
     u64 snap_bytes;
@@ -1438,8 +1441,7 @@ static void bg_load(void) {
                 vk_surf_use(cb, t, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
                             VK_ACCESS_2_TRANSFER_WRITE_BIT);
             const int r = stage_cached(cb, q.key, q.bytes, into ? t->img : VK_NULL_HANDLE,
-                                       piece_copy(&j->p, &q, 0, j->w, j->h, j->level, j->layer, j->as_layers),
-                                       NULL);
+                                       piece_copy(&j->p, &q, 0, j->w, j->h, j->level, j->layer, j->as_layers), NULL);
             if (r == CACHED_NO_ROOM) return; /* staging ran out this frame */
             g_bg.loaded_now++;
             if (r == CACHED_QUEUED) {
@@ -1537,8 +1539,7 @@ static int pieces_from_cache(VkCommandBuffer cb, Surf* t, const u64 key[2], u32 
                       w, h, depth);
             return 0;
         }
-        const int r =
-            stage_cached(cb, q.key, q.bytes, t->img, piece_copy(&p, &q, 0, w, h, level, layer, as_layers), t);
+        const int r = stage_cached(cb, q.key, q.bytes, t->img, piece_copy(&p, &q, 0, w, h, level, layer, as_layers), t);
         if (r <= CACHED_NONE) return 0;
         if (r == CACHED_QUEUED) queued += q.bytes;
     }
