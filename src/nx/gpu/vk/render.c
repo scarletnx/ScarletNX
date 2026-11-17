@@ -3090,7 +3090,7 @@ static struct {
         size_t n;
         VkDescriptorSet set;
         u64 key[512];
-    } last[DS_GFX_STAGES];
+    } last[2 * DS_GFX_STAGES]; /* with split sets, each stage's texture set past them (stage_set_) */
 } g_dset;
 static VkDescriptorSet desc_set_cached(VkDescriptorSetLayout layout, DescWrites* d, int stage) {
     /* Two ways share one cache line on 64-bit hosts. A collision need not discard a live descriptor set.
@@ -3106,7 +3106,7 @@ static VkDescriptorSet desc_set_cached(VkDescriptorSetLayout layout, DescWrites*
     const u64 mode = g_vk.has_descriptor_heaps ? 2 : g_vk.has_descriptor_buffers ? 1 : 0;
     u64 frame = (((vk_frame_id() + 1) << 2) | mode) ^ vk_descriptor_heaps_forgets() * VK_FIB_MULT;
     u64 heaps = g_vk.has_descriptor_heaps ? vk_descriptor_heaps_epoch() : 0; /* it moves at each draw without heaps */
-    int keep = (u32)stage < DS_GFX_STAGES && words <= sizeof g_dset.last[0].key / sizeof *key;
+    int keep = (u32)stage < 2 * DS_GFX_STAGES && words <= sizeof g_dset.last[0].key / sizeof *key;
     if (keep && g_dset.last[stage].frame == frame && g_dset.last[stage].heaps == heaps &&
         g_dset.last[stage].n == words && !memcmp(g_dset.last[stage].key, key, words * sizeof *key)) {
         g_vk_dset_reused++;
@@ -3218,6 +3218,8 @@ static VkDescriptorSet stage_set(const DsState* ds, int stage, VkSh* s, Surf** r
     SNX_ZONE_END(z);
     return set;
 }
+/* with split sets (ShCaps.split_sets): the texture set stage_set_ made last for each stage's buffer set number (0 to 4) */
+static VkDescriptorSet g_stage_tex_set[5];
 /* an indirect mesh draw's first group, which mesh_indirect copied for the draw: the uniform buffer stage_set binds */
 static VkBuffer g_mesh_first;
 static u64 g_mesh_first_off;
@@ -3626,6 +3628,24 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
                                             .pImageInfo = &d.ii[binding]};
     }
     SNX_ZONE(zset, "stage set descriptors");
+    if (!g_spirv_translate.split_sets) return desc_set_cached(layout, &d, stage);
+    /* the textures' writes into a set of their own (shader_vk_tex_set), which a draw that changes only its constant
+       buffers finds again in the set cache: one set for both was new at each of those draws */
+    static DescWrites tex; /* the writes alone: their infos stay in d, which outlives both lookups */
+    u32 kept = 0;
+    tex.n = 0;
+    for (u32 k = 0; k < d.n; k++)
+        if (vk_binding_is_texture(d.w[k].dstBinding))
+            tex.w[tex.n++] = d.w[k];
+        else
+            d.w[kept++] = d.w[k];
+    d.n = kept;
+    const int stage_set_no = shader_vk_set(s->stage);
+    /* each set kept as its stage's last apart (desc_set_cached): the textures' past the buffers' */
+    VkDescriptorSet textures =
+        desc_set_cached(g_vk_dslayout[s->indexed][stage_set_no + 5], &tex, stage + DS_GFX_STAGES);
+    if (!textures) return VK_NULL_HANDLE;
+    g_stage_tex_set[stage_set_no] = textures;
     return desc_set_cached(layout, &d, stage);
 }
 
@@ -3645,7 +3665,7 @@ static struct {
     int heaps;
     VkPipeline pipe;
     VkPipelineLayout layout; /* the one sets were bound through: another may disturb them */
-    VkDescriptorSet sets[5];
+    VkDescriptorSet sets[10]; /* 5 to 9: the stages' texture sets with split sets */
     u64 set_binds; /* vk_rec_set_binds when sets were: a set bound the old way since unbinds descriptor buffers */
     u32 fb, cull, front, topo, restart, discard, bias_on, dt, dw, dcmp, dbounds, st;
     u32 polygon, clamp, clip, provoking, conservative, patch; /* g_vk.dyn_pr's, as PipeKey holds them */
@@ -6374,6 +6394,14 @@ retry:
             g_dyn.sets[2 + b] = bset[b];
             vk_descriptors_bind(cb, layout, (u32)b + 2, 1, &bset[b]);
         }
+    /* split sets: each present stage's texture set, five after its buffers' (shader_vk_tex_set) */
+    for (u32 t = 0; t < 5 && g_spirv_translate.split_sets; t++) {
+        const int present = t == 0 || (t == 1 ? fs != NULL : bset[t - 2] != VK_NULL_HANDLE);
+        if (present && (fresh || g_dyn.sets[5 + t] != g_stage_tex_set[t])) {
+            g_dyn.sets[5 + t] = g_stage_tex_set[t];
+            vk_descriptors_bind(cb, layout, 5 + t, 1, &g_stage_tex_set[t]);
+        }
+    }
     if (g_vk.vertex_input_dynamic && !mesh) vertex_input_set(cb, pl, fresh);
     /* the strides: the layout's with dynamic vertex input, else dynamic state of their own where the device has it */
     if (pl->vi.nbind)

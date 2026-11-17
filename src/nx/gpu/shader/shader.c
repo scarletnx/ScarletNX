@@ -44,6 +44,12 @@ int shader_vk_set(int stage) {
         default: return 0;
     }
 }
+/* the set of a stage's textures, samplers and their indexed arrays: its own set, or with split_sets the set five after
+   it. A compute program keeps one set */
+int shader_vk_tex_set(int stage) {
+    const int set = shader_vk_set(stage);
+    return g_spirv_translate.split_sets && stage != ST_CS ? set + 5 : set;
+}
 
 /* the code word after i */
 static u32 next_code(u32 i) {

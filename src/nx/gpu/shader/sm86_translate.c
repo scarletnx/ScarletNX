@@ -2492,7 +2492,7 @@ static int tex_slot(Ctx* c, u32 bank, u32 off, u32 type, u32 array, u32 shadow, 
     t.flags = ms ? 2 : 0;
     si->tex[i] = t;
     /* a 1D texture is bound as a 2D one (shader.h) */
-    c->tex[i] = spv_emit_sampler_image(&c->e, c->t_f32, (u32)shader_vk_set(c->stage), SNX_VKB_TEX + (u32)i,
+    c->tex[i] = spv_emit_sampler_image(&c->e, c->t_f32, (u32)shader_vk_tex_set(c->stage), SNX_VKB_TEX + (u32)i,
                                        type == 0 ? 1 : type, (int)array, (int)shadow, ms ? 1 : 0, &c->tex_sampled[i]);
     add_interface(c, c->tex[i]);
     return i;
@@ -2524,7 +2524,7 @@ static int tex_slot_indexed(Ctx* c, u32 bank, u32 off, u32 type, u32 array, u32 
     t.stride = (u16)stride;
     t.count = (u16)count;
     si->tex[i] = t;
-    u32 set = (u32)shader_vk_set(c->stage), dim = type == 0 ? 1 : type;
+    u32 set = (u32)shader_vk_tex_set(c->stage), dim = type == 0 ? 1 : type;
     int same = 0;
     while (same < i && !((si->tex[same].flags & SNX_TEX_INDEXED) &&
                          shader_same_indexed_kind(si->tex, si->tex_int_mask, si->tex_sint_mask, same, i)))
@@ -6855,7 +6855,7 @@ static int tex_slot_memory(Ctx* c, u32 tex_probe, int smp, u32 smp_probe, u32 ty
     t.bl2_off = smp ? smp_probe : 0;
     t.flags = (u8)(SNX_TEX_MEMORY | (ms ? 2 : 0));
     si->tex[i] = t;
-    c->tex[i] = spv_emit_sampler_image(&c->e, c->t_f32, (u32)shader_vk_set(c->stage), SNX_VKB_TEX + (u32)i,
+    c->tex[i] = spv_emit_sampler_image(&c->e, c->t_f32, (u32)shader_vk_tex_set(c->stage), SNX_VKB_TEX + (u32)i,
                                        type == 0 ? 1 : type, (int)array, (int)shadow, ms ? 1 : 0, &c->tex_sampled[i]);
     add_interface(c, c->tex[i]);
     return i;

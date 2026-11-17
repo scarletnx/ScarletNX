@@ -824,6 +824,7 @@ void vk_desc_pools_keep(VkDescriptorPool* pools, int* npool, int* peak, u32* use
 void vk_desc_taken(VkDescriptorSetLayout layout, u32 n); /* n sets of layout taken from a frame's pools */
 u64 vk_desc_array_sets(void);                            /* the sets of the arrays layouts taken so far */
 int vk_dslayout_arrays(VkDescriptorSetLayout layout);    /* one of the stage layouts with the texture arrays */
+int vk_binding_is_texture(u32 binding); /* a binding of the textures' own set with split sets */
 u32 vk_texture_array_elements(void); /* each texture array's elements, 0 where the device takes none (pipeline.c) */
 /* each heap's use and budget and the descriptor pools, as text for a line: any thread, also one that never calls
    Vulkan */
@@ -2648,7 +2649,7 @@ extern VkShaderStageFlags g_vk_subgroup_stages;
 /* by set, shader_vk_set(stage): [0] without the indexed texture arrays, [1] with them. A set holding 512 array
    descriptors cost the driver twice the time to bind (one game's 6,700 draws a frame), so only an indexed shader's has
    them */
-extern VkDescriptorSetLayout g_vk_dslayout[2][5];
+extern VkDescriptorSetLayout g_vk_dslayout[2][10];
 /* a hash of what the layouts of g_vk_dslayout are made of (pipeline.c), in the key of a shader object's binary */
 extern u64 g_vk_dslayout_hash;
 extern u32 g_vk_stage_sets; /* sets in the pipeline layout: 5, or 2 without the tessellation and geometry stages */
