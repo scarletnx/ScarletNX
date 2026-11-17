@@ -961,28 +961,30 @@ static inline void sg_add_with_carry(SgCtx* g, SgD a, SgD b, SgD cin, SgD* resul
 }
 /* AddWithCarry's four flags, as values (the formulas of ir_state.c's ir_flags_adds and ir_flags_subs) */
 static inline void sg_awc_flags(SgCtx* g, const SgD* f, LLVMValueRef out[4]) {
-    LLVMValueRef a = f->awc_a, b = f->awc_b, r = f->awc_r, cf;
+    LLVMValueRef a = f->awc_a, b = f->awc_b, r = f->awc_r, cf, overflow;
     LLVMTypeRef type = LLVMTypeOf(r);
     LLVMValueRef sign = LLVMConstInt(type, LLVMGetIntTypeWidth(type) - 1, 0);
-    out[0] = LLVMBuildLShr(SG_B, r, sign, "");
-    out[1] = ir_bool32(g->ir, LLVMBuildICmp(SG_B, LLVMIntEQ, r, LLVMConstNull(type), ""));
+    /* in the order ir_flags_subs and ir_flags_adds build them, so the same compare is the same IR */
     if (f->awc == SG_AWC_SUB) {
+        overflow = LLVMBuildAnd(SG_B, LLVMBuildXor(SG_B, a, b, ""), LLVMBuildXor(SG_B, a, r, ""), "");
+        out[0] = LLVMBuildLShr(SG_B, r, sign, "");
+        out[1] = ir_bool32(g->ir, LLVMBuildICmp(SG_B, LLVMIntEQ, r, LLVMConstNull(type), ""));
         out[2] = ir_bool32(g->ir, LLVMBuildICmp(SG_B, LLVMIntUGE, a, b, ""));
-        out[3] = LLVMBuildLShr(SG_B, LLVMBuildAnd(SG_B, LLVMBuildXor(SG_B, a, b, ""), LLVMBuildXor(SG_B, a, r, ""), ""),
-                               sign, "");
+        out[3] = LLVMBuildLShr(SG_B, overflow, sign, "");
         return;
     }
-    if (f->awc == SG_AWC_CARRY)
-        cf =
-            LLVMBuildSelect(SG_B, LLVMBuildICmp(SG_B, LLVMIntNE, f->awc_cin, LLVMConstNull(LLVMTypeOf(f->awc_cin)), ""),
-                            LLVMBuildICmp(SG_B, LLVMIntULE, r, a, ""), LLVMBuildICmp(SG_B, LLVMIntULT, r, a, ""), "");
-    else
+    out[0] = LLVMBuildLShr(SG_B, r, sign, "");
+    out[1] = ir_bool32(g->ir, LLVMBuildICmp(SG_B, LLVMIntEQ, r, LLVMConstNull(type), ""));
+    if (f->awc == SG_AWC_CARRY) {
+        LLVMValueRef has = LLVMBuildICmp(SG_B, LLVMIntNE, f->awc_cin, LLVMConstNull(LLVMTypeOf(f->awc_cin)), "");
+        LLVMValueRef ule = LLVMBuildICmp(SG_B, LLVMIntULE, r, a, "");
+        cf = LLVMBuildSelect(SG_B, has, ule, LLVMBuildICmp(SG_B, LLVMIntULT, r, a, ""), "");
+    } else
         cf = LLVMBuildICmp(SG_B, LLVMIntULT, r, a, "");
+    overflow =
+        LLVMBuildAnd(SG_B, LLVMBuildNot(SG_B, LLVMBuildXor(SG_B, a, b, ""), ""), LLVMBuildXor(SG_B, a, r, ""), "");
     out[2] = ir_bool32(g->ir, cf);
-    out[3] = LLVMBuildLShr(
-        SG_B,
-        LLVMBuildAnd(SG_B, LLVMBuildNot(SG_B, LLVMBuildXor(SG_B, a, b, ""), ""), LLVMBuildXor(SG_B, a, r, ""), ""),
-        sign, "");
+    out[3] = LLVMBuildLShr(SG_B, overflow, sign, "");
 }
 /* NZCV read other than by the flags: its four bits as a map */
 static inline void sg_d_realize(SgCtx* g, SgD* x) {
