@@ -495,6 +495,8 @@ static int image_create_r(const VkImageCreateInfo* ii, VkImage* img, DevMem* mem
     *res = VK_ERROR_UNKNOWN;
     *img = VK_NULL_HANDLE;
     *mem = 0;
+    const int moves = (owner & VK_OWN_MOVES) != 0;
+    owner &= ~VK_OWN_MOVES; /* an image in pieces does not move */
     VkDeviceImageMemoryRequirements q = {.sType = VK_STRUCTURE_TYPE_DEVICE_IMAGE_MEMORY_REQUIREMENTS,
                                          .pCreateInfo = ii};
     VkMemoryRequirements2 req = {.sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2};
@@ -508,7 +510,7 @@ static int image_create_r(const VkImageCreateInfo* ii, VkImage* img, DevMem* mem
                   (unsigned long long)(req.memoryRequirements.size >> 20), (unsigned long long)(g_vk.alloc_cap >> 20));
     }
     /* an owner of the low class takes the blocks of that class (devmem.h) */
-    DevMemWant aci = {.at = DM_DEVICE, .low = vk_mem_owner_prio(owner) == DM_PRIO_LOW};
+    const DevMemWant aci = {.at = DM_DEVICE, .low = vk_mem_owner_prio(owner) == DM_PRIO_LOW, .moves = moves};
     *res = vk_devmem_image(ii, &aci, img, mem);
     if (VK_OK(*res)) vk_mem_track(*mem, owner);
     return VK_OK(*res);
