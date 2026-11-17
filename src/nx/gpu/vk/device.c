@@ -10,6 +10,8 @@
 #include "nx/runtime/platform/plat.h"
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/vk/shading_rate.h"
+#include "nx/runtime/main.h"
 #include "nx/gpu/vk/ledger.h"
 #include "nx/memory/own.h"
 #include "nx/gpu/vk/vertex_input.h"
@@ -876,6 +878,8 @@ static bool choose_device(SnxVkChoice* c, void* user) {
     /* VK_EXT_shader_atomic_float: RED.ADD.F32 in one instruction (g_spirv_translate.float_atomic_add) */
     int has_atomic_float = 0;
     int has_fault = 0; /* VK_EXT_device_fault: what the GPU reports of a fault, at a lost device */
+    /* VK_NV_shading_rate_image and VK_KHR_fragment_shading_rate: an Ounce's shading rate image (shading_rate.c) */
+    int has_nv_rate = 0, has_khr_rate = 0;
     const char* index8_ext = NULL; /* VK_KHR_index_type_uint8, or the EXT it was promoted from */
     const char* store_none_ext = NULL; /* a 1.2 device's store op NONE (vk12_store_none) */
     if (!g_opt_headless && !snx_vk_choice_enable(c, VK_KHR_SWAPCHAIN_EXTENSION_NAME))
@@ -935,6 +939,7 @@ static bool choose_device(SnxVkChoice* c, void* user) {
         g_vk.has_feedback = snx_vk_choice_has(c, VK_EXT_ATTACHMENT_FEEDBACK_LOOP_LAYOUT_EXTENSION_NAME);
         has_feedback_dynamic = snx_vk_choice_has(c, VK_EXT_ATTACHMENT_FEEDBACK_LOOP_DYNAMIC_STATE_EXTENSION_NAME);
         g_vk.has_local_read = snx_vk_choice_has(c, VK_KHR_DYNAMIC_RENDERING_LOCAL_READ_EXTENSION_NAME);
+        g_vk.has_unified_layouts = snx_vk_choice_has(c, VK_KHR_UNIFIED_IMAGE_LAYOUTS_EXTENSION_NAME);
         has_cond = snx_vk_choice_has(c, VK_EXT_CONDITIONAL_RENDERING_EXTENSION_NAME);
         has_provoking = snx_vk_choice_has(c, VK_EXT_PROVOKING_VERTEX_EXTENSION_NAME);
         has_mesh = snx_vk_choice_has(c, VK_EXT_MESH_SHADER_EXTENSION_NAME);
@@ -945,6 +950,8 @@ static bool choose_device(SnxVkChoice* c, void* user) {
         has_atomic_float = snx_vk_choice_has(c, VK_EXT_SHADER_ATOMIC_FLOAT_EXTENSION_NAME);
         has_barycentric = snx_vk_choice_has(c, VK_KHR_FRAGMENT_SHADER_BARYCENTRIC_EXTENSION_NAME);
         g_vk.has_conservative = snx_vk_choice_has(c, VK_EXT_CONSERVATIVE_RASTERIZATION_EXTENSION_NAME);
+        has_nv_rate = snx_vk_choice_has(c, VK_NV_SHADING_RATE_IMAGE_EXTENSION_NAME);
+        has_khr_rate = snx_vk_choice_has(c, VK_KHR_FRAGMENT_SHADING_RATE_EXTENSION_NAME);
         g_vk.has_depth_range_unrestricted = snx_vk_choice_has(c, VK_EXT_DEPTH_RANGE_UNRESTRICTED_EXTENSION_NAME);
         has_pipeline_robustness = snx_vk_choice_has(c, VK_EXT_PIPELINE_ROBUSTNESS_EXTENSION_NAME);
         has_robustness2 = snx_vk_choice_has(c, VK_EXT_ROBUSTNESS_2_EXTENSION_NAME);
@@ -1125,6 +1132,8 @@ static bool choose_device(SnxVkChoice* c, void* user) {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ATTACHMENT_FEEDBACK_LOOP_DYNAMIC_STATE_FEATURES_EXT};
     VkPhysicalDeviceDynamicRenderingLocalReadFeaturesKHR qlocal = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_LOCAL_READ_FEATURES_KHR};
+    VkPhysicalDeviceUnifiedImageLayoutsFeaturesKHR qunified = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_UNIFIED_IMAGE_LAYOUTS_FEATURES_KHR};
     VkPhysicalDeviceConditionalRenderingFeaturesEXT qcond = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CONDITIONAL_RENDERING_FEATURES_EXT};
     VkPhysicalDeviceProvokingVertexFeaturesEXT qprov = {
@@ -1148,6 +1157,10 @@ static bool choose_device(SnxVkChoice* c, void* user) {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_CLIP_ENABLE_FEATURES_EXT};
     VkPhysicalDeviceDepthClampControlFeaturesEXT qclamp_control = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_CLAMP_CONTROL_FEATURES_EXT};
+    VkPhysicalDeviceShadingRateImageFeaturesNV qnv_rate = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADING_RATE_IMAGE_FEATURES_NV};
+    VkPhysicalDeviceFragmentShadingRateFeaturesKHR qkhr_rate = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADING_RATE_FEATURES_KHR};
     /* with the subset enabled, each of its features is off until the device asks for it: a view's swizzle, for one */
     PortabilityFeatures qport = {.sType = PORTABILITY_FEATURES_STYPE};
     VkPhysicalDevicePresentIdFeaturesKHR qpid = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR};
@@ -1189,6 +1202,7 @@ static bool choose_device(SnxVkChoice* c, void* user) {
                            g_vk.has_feedback ? &qloop : NULL,
                            has_feedback_dynamic ? &qloop_dyn : NULL,
                            g_vk.has_local_read ? &qlocal : NULL,
+                           g_vk.has_unified_layouts ? &qunified : NULL,
                            has_cond ? &qcond : NULL,
                            has_provoking ? &qprov : NULL,
                            has_list_restart ? &qlist_restart : NULL,
@@ -1213,7 +1227,9 @@ static bool choose_device(SnxVkChoice* c, void* user) {
                            has_mixed_dot ? &qmixdot : NULL,
                            has_coop ? &qcoop : NULL,
                            has_atomic_float ? &qatomic_float : NULL,
-                           has_fault ? &qfault : NULL};
+                           has_fault ? &qfault : NULL,
+                           has_nv_rate ? &qnv_rate : NULL,
+                           has_khr_rate ? &qkhr_rate : NULL};
     snx_vk_chain(query, sizeof query / sizeof *query);
     vkGetPhysicalDeviceFeatures2(g_vk.phys, &f2);
     /* Each order between submissions, queues and the CPU is a timeline value: the graphics and compute timelines
@@ -1372,10 +1388,40 @@ static bool choose_device(SnxVkChoice* c, void* user) {
     g_vk.has_feedback_dynamic =
         g_vk.has_feedback && has_feedback_dynamic && qloop_dyn.attachmentFeedbackLoopDynamicState;
     g_vk.has_local_read = g_vk.has_feedback && g_vk.has_local_read && qlocal.dynamicRenderingLocalRead;
+    /* the extension alone allows GENERAL where the specification asks for it. The feature says that GENERAL costs
+       nothing against each use's own layout, which is why the renderer then keeps its images there */
+    g_vk.has_unified_layouts = g_vk.has_unified_layouts && qunified.unifiedImageLayouts;
     g_spirv_translate.maximal_reconvergence = has_reconvergence && qreconv.shaderMaximalReconvergence;
     g_spirv_translate.clock_scopes =
         has_shader_clock ? (qclock.shaderSubgroupClock ? 1 : 0) | (qclock.shaderDeviceClock ? 2 : 0) : 0;
     g_vk.has_divisor = g_vk.has_divisor && fdiv.vertexAttributeInstanceRateDivisor;
+    {
+        /* an Ounce's shading rate image: NVIDIA's extension where it is, as it has the console's palettes, else the
+           attachment of the KHR one. Each palette entry of the device's image is a rate (shading_rate.c), 13 of them */
+        VkPhysicalDeviceShadingRateImagePropertiesNV pnv = {
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADING_RATE_IMAGE_PROPERTIES_NV};
+        VkPhysicalDeviceFragmentShadingRatePropertiesKHR pkhr = {
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADING_RATE_PROPERTIES_KHR};
+        VkPhysicalDeviceProperties2 p2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
+        if (has_nv_rate) p2.pNext = &pnv;
+        else if (has_khr_rate) p2.pNext = &pkhr;
+        if (p2.pNext) vkGetPhysicalDeviceProperties2(g_vk.phys, &p2);
+        VkVrsDevice vd = {.ounce = g_ounce,
+                          .nv = has_nv_rate && qnv_rate.shadingRateImage,
+                          .nv_texel = pnv.shadingRateTexelSize,
+                          .nv_palette = pnv.shadingRatePaletteSize,
+                          .khr = has_khr_rate && qkhr_rate.attachmentFragmentShadingRate &&
+                                 qkhr_rate.pipelineFragmentShadingRate,
+                          .khr_min = pkhr.minFragmentShadingRateAttachmentTexelSize,
+                          .khr_max = pkhr.maxFragmentShadingRateAttachmentTexelSize,
+                          .khr_aspect = pkhr.maxFragmentShadingRateAttachmentTexelSizeAspectRatio};
+        char line[300];
+        g_vk.vrs = vk_vrs_choose(&vd, &g_vk.vrs_texel, line, sizeof line);
+        g_spirv_translate.shading_rate = g_vk.vrs == VK_VRS_NV    ? SH_RATE_NV
+                                         : g_vk.vrs == VK_VRS_KHR ? SH_RATE_KHR
+                                                                  : SH_RATE_NONE;
+        LOG("%s\n", line);
+    }
     {
         /* pipelines from libraries (pipeline_parts.h), and the pre-rasterization state they take as dynamic state */
         VkPhysicalDeviceGraphicsPipelineLibraryPropertiesEXT gp = {
@@ -1838,6 +1884,14 @@ static bool choose_device(SnxVkChoice* c, void* user) {
         chain = &flocal;
         snx_vk_choice_enable(c, VK_KHR_DYNAMIC_RENDERING_LOCAL_READ_EXTENSION_NAME);
     }
+    VkPhysicalDeviceUnifiedImageLayoutsFeaturesKHR funified = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_UNIFIED_IMAGE_LAYOUTS_FEATURES_KHR,
+        .pNext = chain,
+        .unifiedImageLayouts = VK_TRUE};
+    if (g_vk.has_unified_layouts) {
+        chain = &funified;
+        snx_vk_choice_enable(c, VK_KHR_UNIFIED_IMAGE_LAYOUTS_EXTENSION_NAME);
+    }
     VkPhysicalDeviceBlendOperationAdvancedFeaturesEXT fadvanced = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BLEND_OPERATION_ADVANCED_FEATURES_EXT,
         .pNext = chain,
@@ -1898,6 +1952,22 @@ static bool choose_device(SnxVkChoice* c, void* user) {
         vkGetPhysicalDeviceProperties2(g_vk.phys, &p2);
         g_vk.conservative_extra = cons.maxExtraPrimitiveOverestimationSize;
         snx_vk_choice_enable(c, VK_EXT_CONSERVATIVE_RASTERIZATION_EXTENSION_NAME);
+    }
+    /* an Ounce's shading rate image (shading_rate.c): the one extension that g_vk.vrs chose. The two cannot be on
+       together (VUID-VkDeviceCreateInfo-shadingRateImage-04478) */
+    VkPhysicalDeviceShadingRateImageFeaturesNV fnv_rate = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADING_RATE_IMAGE_FEATURES_NV,
+        .pNext = chain,
+        .shadingRateImage = VK_TRUE};
+    VkPhysicalDeviceFragmentShadingRateFeaturesKHR fkhr_rate = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADING_RATE_FEATURES_KHR,
+        .pNext = chain,
+        .pipelineFragmentShadingRate = VK_TRUE,
+        .attachmentFragmentShadingRate = VK_TRUE};
+    if (g_vk.vrs != VK_VRS_NONE) {
+        chain = g_vk.vrs == VK_VRS_NV ? (void*)&fnv_rate : (void*)&fkhr_rate;
+        snx_vk_choice_enable(c, g_vk.vrs == VK_VRS_NV ? VK_NV_SHADING_RATE_IMAGE_EXTENSION_NAME
+                                                      : VK_KHR_FRAGMENT_SHADING_RATE_EXTENSION_NAME);
     }
     /* the 3D engine's 8-bit indices, read as they are (render.c); without it they are widened on the GPU */
     VkPhysicalDeviceVertexInputDynamicStateFeaturesEXT fvertex_input = {

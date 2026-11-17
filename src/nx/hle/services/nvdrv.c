@@ -87,15 +87,87 @@ static u32 gmmu_l2_index(u64 page) { return (u32)(page & (GMMU_L2_ENTRIES - 1));
 #define GHINT_MAX           ((1u << (GMMU_PAGE_BITS - GMMU_PTE_HINT_SHIFT)) - 1)
 #define GHINT_MASK          ((u64)GHINT_MAX << GMMU_PTE_HINT_SHIFT)
 static u64 gmmu_pte_hint(u64 e) { return (e & GHINT_MASK) >> GMMU_PTE_HINT_SHIFT; }
+/* ---- changes of the page table that the GPU thread makes later (gmmu_later), in the ring g_host.nvdrv.later */
+/* a queued map's pages, as gmmu_space_map rounds them */
+static u64 later_size(u64 size) { return (size + GMMU_PAGE_MASK) & ~(u64)GMMU_PAGE_MASK; }
+/* whether sequence number a comes after b, across the wrap */
+static int later_after(u32 a, u32 b) { return a != b && (u32)(a - b) < 0x80000000u; }
+/* the bytes from gva on, at most max, that the newest map queued for the GPU thread over gva shows, and in *cpu the
+   guest address of gva: 0 when none is, and always on the GPU thread. Asked only where the table has no entry, so the
+   common translation doesn't take the lock. Queued unmaps aren't answered for: their pages show what they showed until
+   the GPU thread unmaps them, and the results pending over them land first, as with any unmap */
+static u64 later_run(u64 gva, u64 max, u64* cpu) {
+    const HostNvdrv* h = &g_host.nvdrv;
+    u64 n = 0;
+    if (!__atomic_load_n(&h->nlater, __ATOMIC_ACQUIRE) || gpu_on_thread()) return 0;
+    pm_lock(&g_host.nvdrv.later_lock);
+    for (u32 i = h->nlater; i-- > 0;) {
+        const GLater* l = &h->later[(h->later_head + i) & (h->caplater - 1)];
+        if (l->kind != GMMU_LATER_MAP || gva - l->gva >= later_size(l->size)) continue;
+        *cpu = l->cpu + (gva - l->gva);
+        n = later_size(l->size) - (gva - l->gva);
+        break;
+    }
+    pm_unlock(&g_host.nvdrv.later_lock);
+    return n ? mem_mapped_run(*cpu, n < max ? n : max) : 0;
+}
+u32 gmmu_later(GmmuLaterKind kind, u64 gva, u64 cpu, u64 size, u32 nvmap) {
+    HostNvdrv* h = &g_host.nvdrv;
+    pm_lock(&h->later_lock);
+    if (h->nlater == h->caplater) { /* a ring twice as big, the oldest first again */
+        u32 cap = h->caplater ? h->caplater * 2 : 64;
+        GLater* l = malloc((size_t)cap * sizeof *l);
+        if (!l) fatal("nvdrv: out of memory for %u queued changes of the GPU page table\n", cap);
+        for (u32 i = 0; i < h->nlater; i++) l[i] = h->later[(h->later_head + i) & (h->caplater - 1)];
+        free(h->later);
+        h->later = l;
+        h->later_head = 0;
+        h->caplater = cap;
+    }
+    u32 seq = ++h->later_seq ? h->later_seq : ++h->later_seq; /* 0 is none to the caller */
+    h->later[(h->later_head + h->nlater) & (h->caplater - 1)] = (GLater){gva, cpu, size, seq, nvmap, kind};
+    __atomic_store_n(&h->nlater, h->nlater + 1, __ATOMIC_RELEASE);
+    pm_unlock(&h->later_lock);
+    return seq;
+}
+/* On the GPU thread: the queued changes up to the sequence number in arg, the oldest first, each left in the ring until
+   it is made, so that other threads see a map until the table shows it. Another thread's change older than that goes
+   too, and its own call then finds it gone: it was queued before this call, and so was the work queued before it. Only
+   this thread takes changes out, so the ring's head is still the change it made */
+static void later_apply(void* arg) {
+    HostNvdrv* h = &g_host.nvdrv;
+    u32 upto = (u32)(uintptr_t)arg;
+    for (;;) {
+        pm_lock(&h->later_lock);
+        if (!h->nlater || later_after(h->later[h->later_head].seq, upto)) {
+            pm_unlock(&h->later_lock);
+            return;
+        }
+        GLater c = h->later[h->later_head];
+        pm_unlock(&h->later_lock);
+        if (c.kind == GMMU_LATER_MAP)
+            gmmu_space_map(c.gva, c.cpu, c.size);
+        else if (c.kind == GMMU_LATER_UNMAP)
+            gmmu_space_unmap(c.gva, c.size);
+        else { /* the handle goes once its pages show nothing */
+            gmmu_space_free(c.gva, c.size);
+            nvmap_handle_drop(c.nvmap);
+        }
+        pm_lock(&h->later_lock);
+        h->later_head = (h->later_head + 1) & (h->caplater - 1);
+        __atomic_store_n(&h->nlater, h->nlater - 1, __ATOMIC_RELEASE);
+        pm_unlock(&h->later_lock);
+    }
+}
+void gmmu_later_post(u32 seq) { gpu_call(later_apply, (void*)(uintptr_t)seq, NULL, 0); }
 /* the guest address of a GPU address, 0 when its page isn't mapped. On the GPU thread, while ioctl_as maps and unmaps
    on others */
 u64 gmmu_translate(u64 gva) {
     u64 page = gva >> GMMU_PAGE_BITS;
     u64* t = __atomic_load_n(&g_hle.nvdrv.gmmu[gmmu_l1_index(page)], __ATOMIC_ACQUIRE);
     u64 e;
-    if (!t) return 0;
-    e = __atomic_load_n(&t[gmmu_l2_index(page)], __ATOMIC_RELAXED);
-    if (!(e & GMMU_PTE_VALID)) return 0;
+    if (!t || !((e = __atomic_load_n(&t[gmmu_l2_index(page)], __ATOMIC_RELAXED)) & GMMU_PTE_VALID))
+        return later_run(gva, 1, &e) ? e : 0;
     e = (e & GMMU_PTE_ADDR_MASK) | (gva & GMMU_PAGE_MASK);
     return mem_mapped_run(e, 1) ? e : 0; /* a page the guest freed after mapping it here: as unmapped */
 }
@@ -104,9 +176,10 @@ u64 gmmu_translate(u64 gva) {
 u64 gmmu_run(u64 gva, u64 max, u64* cpu) {
     u64 page = gva >> GMMU_PAGE_BITS, n, e, want;
     u64* t = __atomic_load_n(&g_hle.nvdrv.gmmu[gmmu_l1_index(page)], __ATOMIC_ACQUIRE);
-    if (!max || !t) return 0;
-    e = __atomic_load_n(&t[gmmu_l2_index(page)], __ATOMIC_RELAXED);
-    if (!(e & GMMU_PTE_VALID)) return 0;
+    if (!max) return 0;
+    /* a page with no entry: a queued map's run, which keeps its guest memory contiguous */
+    if (!t || !((e = __atomic_load_n(&t[gmmu_l2_index(page)], __ATOMIC_RELAXED)) & GMMU_PTE_VALID))
+        return later_run(gva, max, cpu);
     *cpu = (e & GMMU_PTE_ADDR_MASK) | (gva & GMMU_PAGE_MASK);
     n = GMMU_PAGE_SIZE - (gva & GMMU_PAGE_MASK);
     want = (e & GMMU_PTE_ADDR_MASK) + GMMU_PAGE_SIZE;
@@ -1968,6 +2041,7 @@ void nv_init(void) {
     pm_init(&g_host.nvdrv.lock);
     pm_init(&g_host.nvdrv.aslock);
     pm_init(&g_host.nvdrv.alias_lock);
+    pm_init(&g_host.nvdrv.later_lock);
     pm_init(&g_host.nvdrv.nvev_lk);
     pm_init(&g_host.nvdrv.sync_lk);
     pm_init(&g_host.nvdrv.submit_lk);

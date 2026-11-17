@@ -46,6 +46,7 @@
 #include "nx/gpu/vk/internal_spv.h"
 #include "nx/runtime/platform/tracy.h"
 #include "nx/gpu/vk/predraw.h"
+#include "nx/gpu/vk/shading_rate.h"
 
 static struct {
     Surf* rt[8];
@@ -66,7 +67,12 @@ static struct {
     int clears; /* a load op clears: the pass is begun even with nothing drawn */
     VkRenderingAttachmentInfo ca[8], za, zs;
     u32 layers;
-} g_rp;
+    /* the shading rate attachment (shading_rate.c, VK_VRS_KHR), VK_NULL_HANDLE for none. rate_want: what the next
+       render_begin gives the pass, a draw's id (DrawCall.shading_rate), or RATE_KEEP for the open pass's own */
+    VkImageView rate;
+    u32 rate_want;
+} g_rp = {.rate_want = ~0u};
+#define RATE_KEEP ~0u
 u64 g_vk_fb_draws, g_vk_fb_barriers, g_vk_fb_restarts, g_vk_rt_copies;
 u64 g_vk_passes, g_vk_clear_cmds, g_vk_clear_loads, g_vk_dontcare_loads;
 
@@ -81,6 +87,12 @@ static void rp_record(void) {
                           .pColorAttachments = g_rp.ca,
                           .pDepthAttachment = g_rp.zt ? &g_rp.za : NULL,
                           .pStencilAttachment = g_rp.zt && g_rp.zt->f.stencil ? &g_rp.zs : NULL};
+    VkRenderingFragmentShadingRateAttachmentInfoKHR rate = {
+        .sType = VK_STRUCTURE_TYPE_RENDERING_FRAGMENT_SHADING_RATE_ATTACHMENT_INFO_KHR,
+        .imageView = g_rp.rate,
+        .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
+        .shadingRateAttachmentTexelSize = g_vk.vrs_texel};
+    if (g_rp.rate) ri.pNext = &rate;
     vk_predraw_pass_begin(cb);
     vk_gpuprof_pass_begin(cb, g_rp.n ? g_rp.rt[0] : NULL, g_rp.zt);
     rec_CmdBeginRendering(cb, &ri);
@@ -248,6 +260,11 @@ static int render_begin(Surf** rt, Surf* zt, u32 n, int zt_ro, int srgb_write, u
     if (!zt) zt_ro = 0;
     int same = g_rp.open && g_rp.n == n && g_rp.zt == zt && g_rp.zt_ro == zt_ro && g_rp.srgb_write == srgb_write &&
                !memcmp(g_rp.rt, rt, sizeof g_rp.rt);
+    /* a draw's shading rate attachment: one the pass doesn't have begins another. It must cover the open pass's size
+       (the same targets), or else the area, which the new pass's size is no larger than */
+    VkImageView rate = g_rp.rate_want == RATE_KEEP ? (same ? g_rp.rate : VK_NULL_HANDLE)
+                       : vk_vrs_attachment(g_rp.rate_want, same ? g_rp.ext : area);
+    if (same && rate != g_rp.rate) same = 0;
     if (same && !(fb & ~g_rp.fb)) return 1;
     if (same) g_vk_fb_restarts++; /* only a target's layout changes */
     vk_render_end();
@@ -266,7 +283,7 @@ static int render_begin(Surf** rt, Surf* zt, u32 n, int zt_ro, int srgb_write, u
         int loop = g_vk.has_feedback &&
                    ((fb >> i & 1) || rt[i]->layout == VK_IMAGE_LAYOUT_ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT);
         VkImageLayout layout =
-            loop ? VK_IMAGE_LAYOUT_ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            loop ? VK_IMAGE_LAYOUT_ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT : VK_LAYOUT(COLOR_ATTACHMENT_OPTIMAL);
         /* the fragment shader's reads are in the barrier's second scope, so the pass begins with every earlier write
            visible to them */
         vk_surf_use(cb, rt[i], layout,
@@ -286,7 +303,7 @@ static int render_begin(Surf** rt, Surf* zt, u32 n, int zt_ro, int srgb_write, u
                                     .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
                                     .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
     VkImageLayout zl =
-        zt_ro ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        zt_ro ? VK_LAYOUT(DEPTH_STENCIL_READ_ONLY_OPTIMAL) : VK_LAYOUT(DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
     /* a read-only depth target keeps its contents: a store would write it at the end of the pass, which the read
        access vk_surf_use records doesn't cover, and the next barrier wouldn't wait for it */
     if (zt_ro) za.storeOp = VK_ATTACHMENT_STORE_OP_NONE;
@@ -318,6 +335,7 @@ static int render_begin(Surf** rt, Surf* zt, u32 n, int zt_ro, int srgb_write, u
     memcpy(g_rp.ca, ca, n * sizeof *ca);
     g_rp.za = g_rp.zs = za; /* depth and stencil: one view, a load op each */
     g_rp.layers = layers;
+    g_rp.rate = rate;
     g_rp.begun = g_rp.clears = 0;
     memcpy(g_rp.rt, rt, sizeof g_rp.rt);
     g_rp.zt = zt;
@@ -362,6 +380,7 @@ static int render_begin_empty_area(VkExtent2D ext, u32 layers) {
     g_rp.clears = 0;
     g_vk_passes++;
     memset(g_rp.rt, 0, sizeof g_rp.rt);
+    g_rp.rate = VK_NULL_HANDLE;
     g_rp.zt = NULL;
     g_rp.n = 0;
     g_rp.layers = layers;
@@ -682,6 +701,7 @@ static int clear_masked(u32 slot, u32 mask, const float* cc, VkRect2D rect, u32 
     if (!p) return 0;
     VkCommandBuffer cb = vk_cmd();
     rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, p);
+    vk_vrs_keep(cb);
     plain_state(cb, rect);
     u32 pc[8] = {0};
     pc[0] = layer;
@@ -715,6 +735,7 @@ static int clear_stencil_masked(u32 mask, u32 value, VkRect2D rect, u32 layer, u
     if (!pipeline) return 0;
     VkCommandBuffer cb = vk_cmd();
     rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+    vk_vrs_keep(cb);
     plain_state(cb, rect);
     rec_CmdSetStencilTestEnable(cb, VK_TRUE);
     rec_CmdSetStencilOp(cb, VK_STENCIL_FACE_FRONT_AND_BACK, VK_STENCIL_OP_KEEP, VK_STENCIL_OP_REPLACE,
@@ -2261,13 +2282,13 @@ static int tex_kind_init(TexKind* tk, const ShaderInfo* si, int slot) {
     if (!tk->none) return 0;
     VkSampler null_sampler = vk_tex_bind_sampler(null_tsc, NULL, &plain, tk->num, NULL, tk->want, 0);
     if (!null_sampler) return 0;
-    tk->info = (VkDescriptorImageInfo){null_sampler, tk->none, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    tk->info = (VkDescriptorImageInfo){null_sampler, tk->none, VK_LAYOUT(SHADER_READ_ONLY_OPTIMAL)};
     if (!kind->shadow) return 1;
     VkImageView farthest = vk_null_view(tk->want, 3, 0); /* not far: windef.h defines it away */
     VkSampler null_compare =
         farthest ? vk_tex_bind_sampler(null_tsc, NULL, kind, 0, NULL, tk->want, 0) : VK_NULL_HANDLE;
     if (!null_compare) return 0;
-    tk->depth = (VkDescriptorImageInfo){null_compare, farthest, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    tk->depth = (VkDescriptorImageInfo){null_compare, farthest, VK_LAYOUT(SHADER_READ_ONLY_OPTIMAL)};
     return 1;
 }
 
@@ -2428,7 +2449,7 @@ static int tex_tables_set(const DsState* ds, int stage, const VkSh* s, const int
                                                     tk->want, 0);
                 if (!smp) return 0;
                 d->table[id] = (VkDescriptorImageInfo){
-                    smp, color_view, color_view == tk->none ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : layout};
+                    smp, color_view, color_view == tk->none ? VK_LAYOUT(SHADER_READ_ONLY_OPTIMAL) : layout};
                 if (kind->shadow) {
                     VkImageView depth_view = depth && view != tk->none ? view : tk->depth.imageView;
                     if (depth_view != tk->depth.imageView && !g_settings.shadows) shadow_map_sampled(x.t);
@@ -2437,7 +2458,7 @@ static int tex_tables_set(const DsState* ds, int stage, const VkSh* s, const int
                     if (!compare) return 0;
                     d->depth_table[id] = (VkDescriptorImageInfo){
                         compare, depth_view,
-                        depth_view == tk->depth.imageView ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : layout};
+                        depth_view == tk->depth.imageView ? VK_LAYOUT(SHADER_READ_ONLY_OPTIMAL) : layout};
                 } else if (depth_fill)
                     d->depth_table[id] = depth_fill->depth;
             }
@@ -2813,7 +2834,7 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
     }
     if (table_count &&
         !tex_tables_set(ds, stage, s, table_first, table_count, rt, zt, n,
-                        images->sampled_general ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, &d, set))
+                        images->sampled_general ? VK_IMAGE_LAYOUT_GENERAL : VK_LAYOUT(SHADER_READ_ONLY_OPTIMAL), &d, set))
         return VK_NULL_HANDLE;
     /* a stage fs_key didn't key: its handles in one read (tex_handles) */
     u32 handles[SH_MAXTEX];
@@ -2881,7 +2902,7 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
                   : ((s->si.tex_sint_mask >> i) & 1)               ? 2
                                                                    : 1;
         VkImageView view = VK_NULL_HANDLE;
-        VkImageLayout layout = images->sampled_general ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        VkImageLayout layout = images->sampled_general ? VK_IMAGE_LAYOUT_GENERAL : VK_LAYOUT(SHADER_READ_ONLY_OPTIMAL);
         /* sampling the depth target needs it read-only: no depth writes, and no stencil writes on either face */
         int sten_w = zt && zt->f.stencil && ds->dyn.stencil_test &&
                      ((ds->dyn.face[0].wmask & 0xFF) || (ds->dyn.face[1].wmask & 0xFF));
@@ -2945,7 +2966,7 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
         }
         if (view && depth_ro) {
             *zt_ro = 1; /* render_begin moves it to the read-only layout */
-            layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+            layout = VK_LAYOUT(DEPTH_STENCIL_READ_ONLY_OPTIMAL);
         } else if (view && slots)
             layout = VK_IMAGE_LAYOUT_ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT; /* render_begin moves it there */
         else if (view)
@@ -2969,7 +2990,7 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
                                    : "float",
                           t->f.is_int ? (t->f.sint ? "signed" : "unsigned") : "float");
             view = vk_null_view(want, st->shadow ? 3 : num, ms);
-            layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            layout = VK_LAYOUT(SHADER_READ_ONLY_OPTIMAL);
         }
         if (!view) return VK_NULL_HANDLE;
         VkSampler smp =
@@ -4498,7 +4519,17 @@ void vk_render_draw(const DsState* ds, const DrawCall* dc, DrawOwner* o) {
     g_vk.has_descriptor_heaps = heaps;
     SNX_ZONE_END(z);
 }
+/* in a draw's setup, from its start (retry) to its check of the submission number (setup_frame), where it starts again
+   when that changed: an upload's wait for the GPU there may let go of vk_lock (vk_submit_upload_wait). 0 past it, and
+   once a draw inside a draw (a save draw, a captured primitive) ended, for the rest of the outer one's setup */
+static int g_setup_restarts;
+int vk_render_setup_restarts(void) { return g_setup_restarts; }
+static void render_draw_main(const DsState* ds, const DrawCall* dc, DrawOwner* o, const DrawTexture* texture);
 static void render_draw(const DsState* ds, const DrawCall* dc, DrawOwner* o, const DrawTexture* texture) {
+    render_draw_main(ds, dc, o, texture);
+    g_setup_restarts = 0;
+}
+static void render_draw_main(const DsState* ds, const DrawCall* dc, DrawOwner* o, const DrawTexture* texture) {
     DrawCall normalized;
     if (dc->xfb_control) {
         normalized = *dc;
@@ -4546,6 +4577,7 @@ retry:
     first = initial_first;
     count = initial_count;
     u64 setup_frame = vk_submit_number();
+    g_setup_restarts = 1;
     u32 epoch = vk_ww_epoch();
     /* kept: the state the last draw made holds for this one, as far as each check below tells. Each part is made
        here when it doesn't (and when draw_state_check compares) */
@@ -5439,6 +5471,7 @@ retry:
     }
     /* A guest read while preparing descriptors can submit and land an older graphics output into memory these
        descriptors and staged inputs were read from. Rebuild them before recording the draw. */
+    g_setup_restarts = 0;
     if (setup_frame != vk_submit_number()) {
         draw_images_discard(&images);
         if (late_depth) vk_depth_shadow_cancel();
@@ -5548,10 +5581,14 @@ retry:
        would begin the pass again at each such draw */
     int strict_feedback = g_predraw.phase == 1 || (!g_predraw.phase && fb && g_vk.feedback_mode == VK_FEEDBACK_PREDRAW &&
                                                    g_vk.has_local_read);
-    if (programmable_blend ? !programmable_pass
-        : !n && !zt ? !render_begin_empty()
-                    : !render_begin(rt, zt, n, zt_ro, ds->tgt.srgb_write, fb | predraw_pass_slots(rt, n), bound) ||
-                          !feedback_order(fb, writes, strict_feedback)) {
+    g_rp.rate_want = dc->shading_rate;
+    int begun = programmable_blend ? programmable_pass
+                : !n && !zt        ? render_begin_empty()
+                                   : render_begin(rt, zt, n, zt_ro, ds->tgt.srgb_write, fb | predraw_pass_slots(rt, n),
+                                                  bound) &&
+                                  feedback_order(fb, writes, strict_feedback);
+    g_rp.rate_want = RATE_KEEP;
+    if (!begun) {
         draw_images_discard(&images);
         if (late_depth) vk_depth_shadow_cancel();
         return;
@@ -5586,6 +5623,7 @@ retry:
         }
     }
     if (g_vk.dyn_pr) pr_dynamic(cb, k, !ds->dyn.depth_mode, fresh);
+    vk_vrs_draw(cb, dc->shading_rate);
     vk_descriptor_heaps_pipeline_state(g_vk.has_descriptor_heaps);
     if (g_vk.has_feedback_dynamic)
         DYN(fb, fb ? VK_IMAGE_ASPECT_COLOR_BIT : VK_IMAGE_ASPECT_NONE,

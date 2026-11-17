@@ -199,6 +199,9 @@ typedef struct {
        pipeline flag, and ordered within the pass by a barrier there (dynamicRenderingLocalRead) or else by beginning
        the pass again */
     int has_feedback, has_feedback_dynamic, has_local_read;
+    /* VK_KHR_unified_image_layouts: GENERAL serves each use as well as its own layout, so the renderer keeps its images
+       in GENERAL (VK_LAYOUT), and a read after a read of another kind takes no layout change */
+    int has_unified_layouts;
     int feedback_mode; /* VK_FEEDBACK_*: how a draw reads a color target it writes, at its own pixel (device.c) */
     /* VK_EXT_conditional_rendering: a render enable comparing a samples-passed count not known yet with zero
        predicates its draws on the GPU (gpu/vk/query.c) instead of waiting for the count */
@@ -229,6 +232,11 @@ typedef struct {
     int has_conservative;
     int has_depth_range_unrestricted; /* raw D32F copies retain every imported bit */
     float conservative_extra;
+    /* how an Ounce's shading rate image lowers the rate of its draws (shading_rate.c): VK_VRS_NV with
+       VK_NV_shading_rate_image, VK_VRS_KHR with the attachment of VK_KHR_fragment_shading_rate, VK_VRS_NONE (each
+       pixel shaded) without either. vrs_texel: the pixels that one texel of the device's rate image covers */
+    int vrs;
+    VkExtent2D vrs_texel;
     /* VK_EXT_graphics_pipeline_library with fast linking (pipeline_parts.h's vk_gpl_choose): a new pipeline links
        parts of its shaders that compile once, and an optimized one is made after it (pipeline.c) */
     int has_gpl;
@@ -266,7 +274,13 @@ typedef struct {
 } VkState;
 enum { VK_MEM_SMALL_BAR, VK_MEM_REBAR, VK_MEM_UMA };
 enum { VK_MEM_PATH_COPY, VK_MEM_PATH_UMA };
+enum { VK_VRS_NONE, VK_VRS_NV, VK_VRS_KHR }; /* VkState.vrs */
 extern VkState g_vk;
+/* The layout of an image for a use, VK_IMAGE_LAYOUT_<name>: GENERAL with unified image layouts. Each layout the
+   renderer names for its own images goes through this, so an image's barriers, attachments and descriptors agree.
+   Images that other code writes descriptors or barriers for keep their own layouts: FFmpeg's decoded frames (nvdec.c)
+   and FSR 2's inputs (upscale.c). Feedback loops keep ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT, and present PRESENT_SRC */
+#define VK_LAYOUT(name) (g_vk.has_unified_layouts ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_##name)
 
 /* the swapchain's display clock (sc_clock): none; present ids and waits; their second versions, which a swapchain made
    for VK_EXT_present_timing takes; VK_GOOGLE_display_timing's past presentation timings */
@@ -542,7 +556,10 @@ void vk_submit_for_readback(void);
 /* the commands recorded since the last submission submitted, when a command buffer is begun: what a change of an
    image's sparse binding has to follow (memory.c) */
 void vk_submit_recorded(void);
-void vk_submit_upload_wait(void); /* the same, and waits for the GPU, landing nothing: an upload's own pace */
+/* the same, and waits for the GPU, landing nothing: an upload's own pace. let_go: with vk_lock let go meanwhile where
+   it can be (then 1), for an upload that holds nothing of the frame's slot across it, in a setup that starts again */
+int vk_submit_upload_wait(int let_go);
+int vk_upload_letting_go(void); /* vk_submit_upload_wait has let go of vk_lock (read under vk_lock) */
 /* vk_cmd() returns without waiting: the frame slot is recording, or the GPU is done with its last use */
 int vk_cmd_ready(void);
 /* vk_checkpoints=1: what the GPU reached when the device was lost (checkpoints.c) */
@@ -715,6 +732,7 @@ extern u32 g_vk_present;
    record into that command buffer from the ring, or into any other one at once */
 void vk_rec_init(void);
 int vk_rec_threaded(void); /* the frame's commands go through the recording thread */
+int vk_rec_ring(VkCommandBuffer cb); /* cb's commands go through that thread's ring (vk_lock) */
 u64 vk_rec_behind(void);   /* bytes of commands handed to the recording thread and not recorded yet (any thread) */
 u64 vk_rec_gfx_queued(void); /* the graphics timeline value of the last submission on the queue (any thread) */
 void vk_rec_begin(VkCommandBuffer cb); /* begins cb, the frame's command buffer from now on */
@@ -1642,6 +1660,22 @@ void vk_bc7_cache_close(void);
 u64 vk_bc7_cache_find(const u64 key[2]); /* the bytes of key's blocks, 0 when they aren't there */
 /* key's blocks, size bytes of them, into dst: 0 when they aren't there or don't check out (then dropped) */
 int vk_bc7_cache_read(const u64 key[2], u8* dst, u64 size);
+/* key's blocks, size bytes of them, read into dst on the recording thread, and copied from buf (dst is at off in mem
+   and buf) into img, in layout, by copy there when they check out (none when img is VK_NULL_HANDLE): before the
+   commands that cb
+   gets after this, and before its submission. cb must go through that thread (vk_rec_ring). 1 when it is queued, 0
+   when they aren't there, -1 when there is no such thread or it can't open the file (read them with
+   vk_bc7_cache_read). A record that doesn't check out is dropped, its copy left out, and the read goes to
+   vk_bc7_cache_take_failed with owner and gva */
+int vk_bc7_cache_read_later(VkCommandBuffer cb, const u64 key[2], u64 size, u8* dst, DevMem mem, u64 off, VkBuffer buf,
+                            VkImage img, VkImageLayout layout, const VkBufferImageCopy* copy, void* owner, u64 gva);
+/* fn of each read on the recording thread that failed since the last call, with its owner and gva (GPU thread) */
+void vk_bc7_cache_take_failed(void (*fn)(void* owner, u64 gva, const u64 key[2]));
+/* 1 while a read on the recording thread failed and vk_bc7_cache_take_failed has not given it to its owner yet */
+int vk_bc7_cache_failed_pending(void);
+/* how long a read of bytes takes, at the rate of the reads so far: 0 for none, and more than any budget before a read
+   was timed */
+u64 vk_bc7_cache_read_ns(u64 bytes);
 void vk_bc7_cache_put(const u64 key[2], const u8* p, u64 size);
 /* hits, records stored, times it started over at its bound, and the file's bytes */
 void vk_bc7_cache_stats(u64* hits, u64* stored, u64* restarts, u64* bytes);
@@ -1649,6 +1683,7 @@ u64 vk_bc7_strip_blocks(void); /* the BC7 blocks vk_bc7_encode_kept makes at onc
 /* the image levels (or regions of them) uploaded as BC7 so far, the levels the BC7 cache gave (here or between frames),
    their bytes, and the bytes they would have taken as RGBA8 */
 void vk_astc_stats(u64* levels, u64* hits, u64* bytes, u64* rgba8_bytes);
+u64 vk_astc_bc7_copies(void); /* BC7 levels copied from another texture's image in place of a BC7 cache read */
 /* An ASTC texture whose blocks hold no more than BC1, BC4 or BC5 do (gpu/texture/astc_kind.h; texture.c picks it under
    astc_mode's Auto) is held in that format, uploaded straight to it by vk_astc_upload (astc_bcn.comp), no RGBA8 image
    before it: its encoders are a pass each, near the decoder's cost. vk_astc_bcn: 1, 4 or 5 for such a texture's image
@@ -1686,8 +1721,9 @@ void vk_astc_kind_say(void);
    depth slices or layers goes through it (the cache open, its blocks VK_BC7_CAPTURE_BYTES or less).
    vk_bc7_level_key: the key of a level of that shape, footprint bw x bh, sRGB decode mode and encoder build (from
    content, its guest bytes' part). vk_astc_frame_done: the submission sub is done, and the blocks encodes in it read
-   back go into the cache (cmd.c's landing). vk_bc7_cache_level: level `level` of img (TRANSFER_DST_OPTIMAL), w x h
-   texels and slices layers or 3D slices, copied from the cache: 0 when its blocks aren't there.
+   back go into the cache (cmd.c's landing). vk_bc7_cache_level: level `level` of t's BC7 image
+   (TRANSFER_DST_OPTIMAL), w x h texels and slices layers or 3D slices, copied from the cache: 0 when its blocks aren't
+   there.
    vk_bc7_capture_level: that level's blocks, which the encoder wrote whole (texture.c, between frames), read back for
    the cache: 0 when there is no room for them now. VK_BC7_CAPTURE_BYTES bounds the blocks read back at once, which
    bounds the readback ring's growth and is the most a level's blocks are to be cached */
@@ -1699,8 +1735,7 @@ int vk_astc_cached(u32 w, u32 h, u32 depth);
 void vk_bc7_level_key(const u64 content[2], u32 w, u32 h, u32 depth, u32 layers, u32 bw, u32 bh, int srgb, u32 build,
                       u64 key[2]);
 void vk_astc_frame_done(u64 sub);
-int vk_bc7_cache_level(VkCommandBuffer cb, VkImage img, const u64 key[2], u32 level, u32 w, u32 h, u32 slices,
-                       int is3d);
+int vk_bc7_cache_level(VkCommandBuffer cb, Surf* t, const u64 key[2], u32 level, u32 w, u32 h, u32 slices, int is3d);
 int vk_bc7_capture_level(VkCommandBuffer cb, VkImage img, const u64 key[2], u32 level, u32 w, u32 h, u32 slices,
                          int is3d);
 u64 vk_astc_dispatches(void); /* the BC7 encoder's dispatches so far */
@@ -2560,6 +2595,8 @@ VkFrontFace vk_render_front_face(const DsDynamic* d);
 void vk_render_draw_texture(const DsState* ds, const DrawTexture* t);
 void vk_render_discard(const DsState* ds, u32 targets);
 void vk_render_draw(const DsState* ds, const DrawCall* dc, DrawOwner* o);
+/* in a draw's setup that starts again when the submission number changes (render.c) */
+int vk_render_setup_restarts(void);
 int vk_render_xfb_control(u32 owner, u64 control, u32 what, u32 stride, DrawOwner* o);
 int vk_xfb_control_buffer(VkBuffer counters, u64 counter_offset, u64 control, u32 what, u32 stride);
 int vk_xfb_indirect(u64 control, VkBuffer* arguments, u64* offset);
@@ -2733,6 +2770,7 @@ enum {
     VK_PROF_QUERY_PREDICATE, /* the queries' predicates (query_predicate.comp) */
     VK_PROF_QUERY_COMPARE,   /* a query compare (query_compare.comp) */
     VK_PROF_QUERY_COUNT,     /* the queries' counts (query_count.comp) */
+    VK_PROF_SHADING_RATE,    /* an Ounce's shading rate image made the device's (shading_rate.comp) */
     VK_PROF_N
 };
 void vk_gpuprof_cb_begin(VkCommandBuffer cb);
@@ -2743,10 +2781,10 @@ void vk_gpuprof_frame_done(u32 slot);
    timestamp at its begin and its end, and no pass does unless the profile asks. vk_gpuprof_timed: whether the graphics
    queue can be timed. vk_gpuprof_busy_ns: the time it was busy with the frames timed, summed, read when each frame
    slot is reused (its work is done then: no wait). g_vk_timestamps: the timestamps written, none while stats and the
-   profile are off */
+   profile are off. g_vk_timestamps_read: those read back at the slots' reuse, which a use not timed leaves out */
 int vk_gpuprof_timed(void);
 u64 vk_gpuprof_busy_ns(void);
-extern u64 g_vk_timestamps;
+extern u64 g_vk_timestamps, g_vk_timestamps_read;
 /* the device's timestamps next to the client's clock (VK_EXT_calibrated_timestamps with a host time domain) */
 int vk_gpuprof_calibrated(void);
 /* a fresh pair of the GPU's clock and the client's, for the track's calibration (0 without the extension) */

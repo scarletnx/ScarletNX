@@ -15,9 +15,9 @@ static int nvn_copy_check_pixels(const NvnTexture* texture, const u32* expected,
     CHECK(actual);
     VkBufferImageCopy region = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
                                 .imageExtent = {width, height, depth}};
-    vk_surf_use(vk_cmd(), image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+    vk_surf_use(vk_cmd(), image, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), VK_PIPELINE_STAGE_2_COPY_BIT,
                 VK_ACCESS_2_TRANSFER_READ_BIT);
-    rec_CmdCopyImageToBuffer(vk_cmd(), image->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &region);
+    rec_CmdCopyImageToBuffer(vk_cmd(), image->img, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), buffer, 1, &region);
     vk_finish();
     vk_readback_ready();
     CHECK(!memcmp(actual, expected, (size_t)bytes));

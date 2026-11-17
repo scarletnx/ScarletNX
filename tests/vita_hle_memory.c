@@ -328,6 +328,98 @@ static void ngs_sparse_input_clear(VitaProcess* p, VitaThread* t, uint32_t mem) 
     assert(CALL(n, "sceNgsSystemRelease", system) == 0);
 }
 
+/* sceNgsVoiceDefGetSimpleAtrac9Voice, GetCompressorBuss, GetSasEmuVoice: a definition for each (never zero, the bug
+   this guards: a game that trusted a zero "success" return from an unimplemented getter as a handle, and crashed
+   dereferencing it), an Atrac9 voice patched through a compressor buss and a SAS emulation buss to a master buss, and
+   a System Update that does not crash with no decoder behind the Atrac9 voice: it is silent (no samples out) rather
+   than played, and the two busses pass through what little (nothing, here) reaches them */
+static void ngs_atrac9_and_extra_busses(VitaProcess* p, VitaThread* t, uint32_t mem) {
+    const VitaHle* n = vita_hle_ngs;
+    uint32_t system = mem + 0x2000, params = mem + 0x2100, description = mem + 0x2200;
+    uint32_t buffer_info = mem + 0x2300, rack_out = mem + 0x2310, voice_out = mem + 0x2320;
+    uint32_t patch_info = mem + 0x2400, patch_out = mem + 0x2420, matrix = mem + 0x2440;
+    uint32_t at9_rack = mem + 0x3000, comp_rack = mem + 0x3500, sas_rack = mem + 0x3a00, master_rack = mem + 0x4000;
+    uint32_t rack_size = 0x40 + 0x400;
+    uint32_t at9_voice = at9_rack + 0x40, comp_voice = comp_rack + 0x40, sas_voice = sas_rack + 0x40;
+    uint32_t master_voice = master_rack + 0x40, output = mem + 0x6000;
+
+    uint32_t at9 = CALL(n, "sceNgsVoiceDefGetSimpleAtrac9Voice");
+    uint32_t compressor = CALL(n, "sceNgsVoiceDefGetCompressorBuss");
+    uint32_t sas = CALL(n, "sceNgsVoiceDefGetSasEmuVoice");
+    assert(at9 && compressor && sas); /* not the zero an unimplemented call's generic "success" would leave */
+    assert(at9 != compressor && compressor != sas && at9 != sas);
+
+    vita_write32(p, params + 8, 256);
+    vita_write32(p, params + 12, 48000);
+    assert(CALL(n, "sceNgsSystemInit", system, 0x1000, params, mem + 0x2210) == 0);
+
+    vita_write32(p, description, at9);
+    vita_write32(p, description + 4, 1);
+    vita_write32(p, description + 8, 2);
+    vita_write32(p, buffer_info, at9_rack);
+    vita_write32(p, buffer_info + 4, rack_size);
+    assert(CALL(n, "sceNgsRackInit", system, buffer_info, description, rack_out) == 0);
+    assert(CALL(n, "sceNgsRackGetVoiceHandle", at9_rack, 0, voice_out) == 0);
+    assert(vita_read32(p, voice_out) == at9_voice);
+    /* a Simple Atrac9 voice has the simple voice's six modules: Need For Speed Most Wanted bypasses modules 1-5 and
+       locks module 3's params (a game that got an error there read the SceNgsBufferInfo it never got and crashed), and
+       a seventh is out of range */
+    for (uint32_t module = 0; module < 6; ++module) {
+        vita_write32(p, buffer_info, 0);
+        assert(CALL(n, "sceNgsVoiceLockParams", at9_voice, module, 0x1015ce5u, buffer_info) == 0);
+        assert(vita_read32(p, buffer_info) && vita_read32(p, buffer_info + 4) == 0x60);
+        assert(vita_read32(p, vita_read32(p, buffer_info)) == 0x1015ce5u);
+    }
+    assert(CALL(n, "sceNgsVoiceLockParams", at9_voice, 6, 0x1015ce5u, buffer_info) == 0x804a0002u);
+    vita_write32(p, buffer_info, at9_rack);
+    vita_write32(p, buffer_info + 4, rack_size);
+
+    vita_write32(p, description, compressor);
+    vita_write32(p, buffer_info, comp_rack);
+    assert(CALL(n, "sceNgsRackInit", system, buffer_info, description, rack_out) == 0);
+    assert(CALL(n, "sceNgsRackGetVoiceHandle", comp_rack, 0, voice_out) == 0);
+    assert(vita_read32(p, voice_out) == comp_voice);
+
+    vita_write32(p, description, sas);
+    vita_write32(p, buffer_info, sas_rack);
+    assert(CALL(n, "sceNgsRackInit", system, buffer_info, description, rack_out) == 0);
+    assert(CALL(n, "sceNgsRackGetVoiceHandle", sas_rack, 0, voice_out) == 0);
+    assert(vita_read32(p, voice_out) == sas_voice);
+
+    vita_write32(p, description, CALL(n, "sceNgsVoiceDefGetMasterBuss"));
+    vita_write32(p, buffer_info, master_rack);
+    assert(CALL(n, "sceNgsRackInit", system, buffer_info, description, rack_out) == 0);
+    assert(CALL(n, "sceNgsRackGetVoiceHandle", master_rack, 0, voice_out) == 0);
+    assert(vita_read32(p, voice_out) == master_voice);
+
+    /* at9_voice -> comp_voice -> sas_voice -> master_voice, each output 0 to the other's input 0 */
+    uint32_t chain[3][2] = {{at9_voice, comp_voice}, {comp_voice, sas_voice}, {sas_voice, master_voice}};
+    vita_write32(p, matrix, 0x3f800000u);
+    vita_write32(p, matrix + 4, 0);
+    vita_write32(p, matrix + 8, 0);
+    vita_write32(p, matrix + 12, 0x3f800000u);
+    for (unsigned i = 0; i < 3; ++i) {
+        vita_write32(p, patch_info, chain[i][0]);
+        vita_write32(p, patch_info + 4, 0);
+        vita_write32(p, patch_info + 8, UINT32_MAX);
+        vita_write32(p, patch_info + 12, chain[i][1]);
+        vita_write32(p, patch_info + 16, UINT32_MAX);
+        assert(CALL(n, "sceNgsPatchCreateRouting", patch_info, patch_out) == 0);
+        assert(CALL(n, "sceNgsVoicePatchSetVolumesMatrix", vita_read32(p, patch_out), matrix) == 0);
+    }
+
+    assert(CALL(n, "sceNgsVoicePlay", at9_voice) == 0);
+    assert(CALL(n, "sceNgsVoicePlay", comp_voice) == 0);
+    assert(CALL(n, "sceNgsVoicePlay", sas_voice) == 0);
+    assert(CALL(n, "sceNgsVoicePlay", master_voice) == 0);
+    /* the crash this guards: a data abort reading through a definition that was left zero */
+    assert(CALL(n, "sceNgsSystemUpdate", system) == 0 && !t->call.redirected);
+    assert(CALL(n, "sceNgsVoiceGetStateData", master_voice, 1, output, 256 * 4) == 0);
+    for (unsigned i = 0; i < 256; ++i) assert(vita_read16(p, output + i * 4) == 0); /* silent: no Atrac9 decoder */
+
+    assert(CALL(n, "sceNgsSystemRelease", system) == 0);
+}
+
 static void gxm_program_metadata(VitaProcess* p, VitaThread* t, uint32_t mem) {
     const VitaHle* gxm = vita_hle_gxm;
     uint32_t parameter = mem + 0x8000, patcher_out = mem + 0x8020, program = mem + 0x8040,
@@ -384,6 +476,7 @@ int main(void) {
     net(p, t, mem, end);
     ngs_template1(p, t, mem);
     ngs_sparse_input_clear(p, t, mem);
+    ngs_atrac9_and_extra_busses(p, t, mem);
     gxm_program_metadata(p, t, mem);
     gxm_texture_transfers(p, t, mem);
     vita_process_free(p);

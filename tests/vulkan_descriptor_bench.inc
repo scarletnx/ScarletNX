@@ -45,7 +45,7 @@ static int bench_descriptor_pattern(u32 sets, u32 count, u32 images, u32 indexed
     }
     if (sampler_count) {
         image = (VkDescriptorImageInfo){samplers[0], vk_null_view(VK_IMAGE_VIEW_TYPE_2D, 0, 0),
-                                         VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+                                         VK_LAYOUT(SHADER_READ_ONLY_OPTIMAL)};
         CHECK(image.imageView);
     }
     if (indexed)

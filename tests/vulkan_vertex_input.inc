@@ -399,13 +399,13 @@ static int check_vertex_input_layouts(void) {
     for (u32 i = 0; i < drawn; i++) {
         Surf* surface = vk_rt_find(targets + 0x1000 * i);
         CHECK(surface);
-        vk_surf_use(vk_cmd(), surface, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+        vk_surf_use(vk_cmd(), surface, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), VK_PIPELINE_STAGE_2_COPY_BIT,
                     VK_ACCESS_2_TRANSFER_READ_BIT);
         VkBufferImageCopy copy = {.bufferOffset = 4 * i,
                                   .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
                                   .imageOffset = {1, 1, 0},
                                   .imageExtent = {1, 1, 1}};
-        rec_CmdCopyImageToBuffer(vk_cmd(), surface->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &copy);
+        rec_CmdCopyImageToBuffer(vk_cmd(), surface->img, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), buffer, 1, &copy);
     }
     vk_finish(); /* the ring drained: every draw went through the watch */
     vk_readback_ready();

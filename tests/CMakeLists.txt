@@ -571,8 +571,8 @@ if(TARGET snx_ctr_board)
     endif()
     set_tests_properties(${snx_tests} PROPERTIES SKIP_RETURN_CODE 77)
     # the two windows and the per-screen render scales: one window always, Separate screens, a minimized window, a
-    # window whose images the display holds, and a headless run; the dumps stay the framebuffer's own size whatever
-    # the scale
+    # window whose images the display holds, presents between other submissions, and a headless run; the dumps stay the
+    # framebuffer's own size whatever the scale
     add_executable(snx-test-3ds-windows 3ds_windows.c)
     snx_test_target(snx-test-3ds-windows 11)
     target_link_libraries(snx-test-3ds-windows PRIVATE snx_ctr_gpu)
@@ -583,11 +583,23 @@ if(TARGET snx_ctr_board)
              COMMAND snx-test-3ds-windows "${CMAKE_CURRENT_BINARY_DIR}/window-frames-minimized" --minimize)
     add_test(NAME 3ds_windows_no_image
              COMMAND snx-test-3ds-windows "${CMAKE_CURRENT_BINARY_DIR}/window-frames-no-image" --no-image)
+    # a smoke test: the validation run below, registered off Windows, is what fails without each image's own semaphore
+    add_test(NAME 3ds_windows_submissions
+             COMMAND snx-test-3ds-windows "${CMAKE_CURRENT_BINARY_DIR}/window-frames-submissions" --submissions)
     add_test(NAME 3ds_windows_headless
              COMMAND snx-test-3ds-windows "${CMAKE_CURRENT_BINARY_DIR}/window-frames-headless" --headless)
     set_tests_properties(3ds_windows 3ds_windows_separate PROPERTIES SKIP_RETURN_CODE 77)
-    set_tests_properties(3ds_windows_minimized 3ds_windows_no_image 3ds_windows_headless
+    set_tests_properties(3ds_windows_minimized 3ds_windows_no_image 3ds_windows_submissions 3ds_windows_headless
                          PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60)
+    if(NOT WIN32 AND Python3_Interpreter_FOUND)
+        # under Khronos validation, with SDL's offscreen window: a swapchain with no display, as on CI
+        add_test(NAME 3ds_windows_submissions_validation
+                 COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/3ds_vk_validation.py"
+                     $<TARGET_FILE:snx-test-3ds-windows>
+                     "${CMAKE_CURRENT_BINARY_DIR}/window-frames-submissions-validation" --submissions)
+        set_tests_properties(3ds_windows_submissions_validation PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120
+                             ENVIRONMENT "SDL_VIDEO_DRIVER=offscreen")
+    endif()
     # the transfer engine alone: fills, display transfers, texture copies against hand-written goldens
     add_executable(snx-test-3ds-transfer 3ds_transfer.c)
     snx_test_target(snx-test-3ds-transfer 11)
@@ -2601,6 +2613,18 @@ if(NOT SNX_TOOLS_ONLY)
     snx_test_target(snx-test-vk-pagespace 23)
     target_link_libraries(snx-test-vk-pagespace PRIVATE snx_nx_flags)
     add_test(NAME vk_pagespace COMMAND snx-test-vk-pagespace)
+    # the barriers of an image's uses (gpu/vk/surface.c vk_surf_use) in the layouts that VK_LAYOUT names: with unified
+    # image layouts, GENERAL and no barrier between reads of another kind; without them, each use's own layout
+    add_executable(snx-test-vk-surf-layouts vk_surf_layouts.c tracy_stubs.c)
+    snx_test_target(snx-test-vk-surf-layouts 23)
+    target_link_libraries(snx-test-vk-surf-layouts PRIVATE snx_nx_flags)
+    add_test(NAME vk_surf_layouts COMMAND snx-test-vk-surf-layouts)
+    # a draw that binds an owner where it is (gpu/vk/buffer.c buf_get_owned): one that a draw or the page cache wrote
+    # in this submission takes a pass end and a barrier first, any other none
+    add_executable(snx-test-vk-buffer-owned vk_buffer_owned.c tracy_stubs.c)
+    snx_test_target(snx-test-vk-buffer-owned 23)
+    target_link_libraries(snx-test-vk-buffer-owned PRIVATE snx_nx_flags)
+    add_test(NAME vk_buffer_owned COMMAND snx-test-vk-buffer-owned)
     # the GPU pages of a range as the buffer cache reads them (gpu/vk/buffer.c), over a model of the GMMU: the walks
     # one run at a time give the pages, run flags and byte spans of a walk one page at a time
     add_executable(snx-test-vk-buffer-pages vk_buffer_pages.c tracy_stubs.c)
@@ -2645,7 +2669,7 @@ if(NOT SNX_TOOLS_ONLY)
     # record starts the file over or drops the record, a record cut short is cut off, and the bound starts it over
     add_executable(snx-test-bc7-cache bc7_cache.c tracy_stubs.c)
     snx_test_target(snx-test-bc7-cache 23)
-    target_link_libraries(snx-test-bc7-cache PRIVATE snx_nx_flags snx_xxhash scarletnx-common)
+    target_link_libraries(snx-test-bc7-cache PRIVATE snx_nx_flags snx_xxhash scarletnx-common scarletnx-platform)
     add_test(NAME bc7_cache COMMAND snx-test-bc7-cache)
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         # The real cache saver with a fake driver: compilation defers periodic snapshots without losing dirty work.
@@ -2708,6 +2732,15 @@ if(NOT SNX_TOOLS_ONLY)
     snx_test_target(snx-test-vk-pipeline-parts 23)
     target_link_libraries(snx-test-vk-pipeline-parts PRIVATE snx_nx_flags)
     add_test(NAME vk_pipeline_parts COMMAND snx-test-vk-pipeline-parts)
+    # an Ounce's shading rate image (gpu/vk/shading_rate_table.c, shading_rate.glsl): the extension each stand-in
+    # device takes, each palette entry's value, the NVN palette, and the conversion's body run on the CPU
+    # (tests/glsl/glsl.hpp) against a reference made by pixels: no GPU needed
+    add_executable(snx-test-vk-shading-rate vk_shading_rate.c glsl/shading_rate_glsl.cpp support/shading_rate_ref.c
+                   "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/shading_rate_table.c")
+    snx_test_target(snx-test-vk-shading-rate 23)
+    target_include_directories(snx-test-vk-shading-rate PRIVATE glsl ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(snx-test-vk-shading-rate PRIVATE snx_nx_flags)
+    add_test(NAME vk_shading_rate COMMAND snx-test-vk-shading-rate)
     # constant buffer words folded into a translation (gpu/vk/cb_fold.c): which words fold, what a translation records
     # of its loads, when it holds for a draw's buffers, and how many of a program's translations fold by value
     add_executable(snx-test-vk-cb-fold vk_cb_fold.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/cb_fold.c")
@@ -3586,6 +3619,10 @@ target_link_libraries(snx-test-shipped-pass PRIVATE snx_zstd) # an Ounce game's 
 include("${PROJECT_SOURCE_DIR}/cmake/ship_walk.cmake")
 snx_ship_walk("${PROJECT_SOURCE_DIR}/src/nx/gpu/shipped_pass.c")
 add_test(NAME shipped_pass COMMAND snx-test-shipped-pass)
+# the walk's version, which keys the .vkscan file: the same in every folder, and with CRLF line ends
+add_test(NAME ship_walk_version COMMAND "${CMAKE_COMMAND}" "-DSRC=${PROJECT_SOURCE_DIR}"
+         "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/ship-walk-test" "-DGENERATOR=${CMAKE_GENERATOR}"
+         "-DMAKE=${CMAKE_MAKE_PROGRAM}" -P "${CMAKE_CURRENT_SOURCE_DIR}/ship_walk_test.cmake")
 # ZBIC, the other compression of an Ounce game's NSO segments (common/utilities/zbic.c), on a frame of synthetic text
 if(TARGET snx_zbic)
     add_executable(snx-test-zbic zbic.c)

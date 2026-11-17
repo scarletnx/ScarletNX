@@ -511,6 +511,13 @@ typedef struct {
        (sm86_translate.c's hmma_coop), on the shapes hmma_coop_shapes gives it, where they fit in that size. 0 offline
        */
     int hmma_coop;
+    /* how a fragment program reads its fragment's size (an SM86 S2R of system register 0x84), as the device reads an
+       Ounce's shading rate image (vk/shading_rate.c): SH_RATE_NV, FragmentSizeNV of SPV_NV_shading_rate;
+       SH_RATE_KHR, ShadingRateKHR of SPV_KHR_fragment_shading_rate; SH_RATE_NONE, 1x1, as each pixel is shaded */
+    int shading_rate;
+#define SH_RATE_NONE 0
+#define SH_RATE_NV   1
+#define SH_RATE_KHR  2
     /* The cooperative matrix shapes a device offers, the bits of hmma_coop_shapes: an SM86 HMMA's exact 16x8x16
        (.16816) and 16x8x8 (.1688), a 16x16x16 whose spare 8 columns a .16816 drops or whose spare 8 rows a .1688 pads
        with zeros, and Metal's simdgroup_matrix 8x8x8, which takes four products a .16816 and two a .1688. An empty

@@ -202,11 +202,11 @@ static int check_mixed_coverage_mrt(void) {
                     u8* data = vk_readback_buffer(bytes, &buffer);
                     CHECK(data);
                     vk_render_end();
-                    vk_surf_use(vk_cmd(), targets[i], VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                    vk_surf_use(vk_cmd(), targets[i], VK_LAYOUT(TRANSFER_SRC_OPTIMAL),
                                 VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
                     VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
                                              .imageExtent = {4, 4, 1}};
-                    rec_CmdCopyImageToBuffer(vk_cmd(), targets[i]->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &copy);
+                    rec_CmdCopyImageToBuffer(vk_cmd(), targets[i]->img, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), buffer, 1, &copy);
                     vk_finish(); vk_readback_ready();
                     for (u32 pixel = 0; pixel < 16; pixel++)
                         for (u32 component = 0; component < 4; component++) {

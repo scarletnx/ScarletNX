@@ -372,7 +372,7 @@ static int check_buffer_texture_rows(void) {
     VkBuffer buffer;
     u8* result = vk_readback_buffer(sizeof samples, &buffer);
     CHECK(result);
-    vk_surf_use(vk_cmd(), texture, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+    vk_surf_use(vk_cmd(), texture, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), VK_PIPELINE_STAGE_2_COPY_BIT,
                 VK_ACCESS_2_TRANSFER_READ_BIT);
     VkBufferImageCopy copies[3] = {{0}};
     for (u32 i = 0; i < 3; i++) {
@@ -381,7 +381,7 @@ static int check_buffer_texture_rows(void) {
         copies[i].imageOffset = (VkOffset3D){(i32)(samples[i] % row), (i32)(samples[i] / row), 0};
         copies[i].imageExtent = (VkExtent3D){1, 1, 1};
     }
-    rec_CmdCopyImageToBuffer(vk_cmd(), texture->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 3, copies);
+    rec_CmdCopyImageToBuffer(vk_cmd(), texture->img, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), buffer, 3, copies);
     vk_finish();
     vk_readback_ready();
     for (u32 i = 0; i < 3; i++) CHECK(snx_ld_le32(result + i * 4) == (0xff000000u | samples[i]));
@@ -723,9 +723,7 @@ static void stats_frames(u32 n, VkBuffer from, VkBuffer to, u64 size) {
    timed before; and a command buffer begun while off isn't closed onto another's begin, so the wait between them
    isn't counted either. The device-local heap's use and budget are the driver's where it has VK_EXT_memory_budget */
 static int check_stats_gpu_time(void) {
-    /* a copy long enough that empty frames stay far below it where the queue's time is the CPU's (lavapipe), which a
-       loaded machine stretches alike for both: there two empty frames take about half of a 32 MiB copy */
-    const u64 size = 128ull << 20;
+    const u64 size = 32ull << 20;
     VkBufferCreateInfo bci = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
                               .size = size,
                               .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
@@ -734,7 +732,7 @@ static int check_stats_gpu_time(void) {
     DevMemInfo info;
     VkBuffer buf[2];
     DevMem mem[2];
-    u64 stamps, busy, copied, t0, wall, vram, budget, empty[5];
+    u64 stamps, busy, copied, t0, wall, vram, budget, read;
     int ours;
     int was = g_settings.stats;
     for (int i = 0; i < 2; i++) CHECK(vk_buffer_create(&bci, &aci, &buf[i], &mem[i], &info) == VK_SUCCESS);
@@ -763,26 +761,26 @@ static int check_stats_gpu_time(void) {
            (unsigned long long)(size >> 20), (double)copied / 1e6, (double)wall / 1e6,
            (unsigned long long)(g_vk_timestamps - stamps));
     CHECK(g_vk_timestamps > stamps && copied > 0 && copied < wall);
-    /* a frame's copy timed, then stats off before its slot is used again, and on: the empty frames after it count
-       none of the copy. Five times, their median: a moment of load stretches one of them */
-    for (int trial = 0; trial < 5; trial++) {
-        rec_CmdCopyBuffer(vk_cmd(), buf[0], buf[1], 1, &(VkBufferCopy){0, 0, size});
-        vk_frame_next();
-        g_settings.stats = 0;
-        stats_frames(0, buf[0], buf[1], 0); /* both slots used again, untimed */
-        g_settings.stats = 1;
-        busy = vk_gpuprof_busy_ns();
-        stats_frames(2, buf[0], buf[1], 0);
-        u64 took = vk_gpuprof_busy_ns() - busy;
-        int at = trial;
-        for (; at > 0 && empty[at - 1] > took; at--) empty[at] = empty[at - 1];
-        empty[at] = took;
-    }
-    busy = empty[2];
-    printf("stats on again: 2 empty frames busy %.3f ms (the median of 5, %.3f to %.3f), against %.3f ms a frame "
-           "copying\n",
-           (double)busy / 1e6, (double)empty[0] / 1e6, (double)empty[4] / 1e6, (double)copied / 8e6);
-    CHECK(busy * 4 < copied / 8);
+    /* a frame's copy timed, then stats off before its slot is used again, and on: the slots' reads after it take the
+       two empty frames' timestamps, a begin and an end each, and none of the copy's. A count and not a time: on
+       lavapipe an empty command buffer's span is not short next to a copy's. llvmpipe puts each timestamp into every
+       bin of a scene, over the framebuffer it bound last (lp_setup_end_query), and the result is the clock of the last
+       rasterizer thread to run it. So the span is how long those threads take to run two scenes over all the tiles of
+       an earlier check's target: 0.04 to 4 ms on a CI runner that runs the other Vulkan tests at the same time, and
+       2.3 ms in each of five trials of one run */
+    rec_CmdCopyBuffer(vk_cmd(), buf[0], buf[1], 1, &(VkBufferCopy){0, 0, size});
+    vk_frame_next();
+    g_settings.stats = 0;
+    stats_frames(0, buf[0], buf[1], 0); /* both slots used again, untimed */
+    g_settings.stats = 1;
+    busy = vk_gpuprof_busy_ns();
+    read = g_vk_timestamps_read;
+    stats_frames(2, buf[0], buf[1], 0);
+    busy = vk_gpuprof_busy_ns() - busy;
+    read = g_vk_timestamps_read - read;
+    printf("stats on again: 2 empty frames read %llu timestamps, busy %.3f ms, against %.3f ms a frame copying\n",
+           (unsigned long long)read, (double)busy / 1e6, (double)copied / 8e6);
+    CHECK(read == 4);
     /* within one frame: a command buffer begun and timed, stats off at its end, the next begun while off, a wait,
        stats on at its end */
     busy = vk_gpuprof_busy_ns();
@@ -1579,9 +1577,9 @@ static int check_big_volume(void) {
     u8* result = t ? vk_readback_buffer(sizeof got, &buffer) : NULL;
     if (result) {
         VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {4, 4, 1}};
-        vk_surf_use(vk_cmd(), t, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+        vk_surf_use(vk_cmd(), t, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), VK_PIPELINE_STAGE_2_COPY_BIT,
                     VK_ACCESS_2_TRANSFER_READ_BIT);
-        rec_CmdCopyImageToBuffer(vk_cmd(), t->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &copy);
+        rec_CmdCopyImageToBuffer(vk_cmd(), t->img, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), buffer, 1, &copy);
         vk_finish();
         vk_readback_ready();
         memcpy(got, result, sizeof got);
@@ -1624,7 +1622,7 @@ static int check_depth_array(void) {
     u8* data = vk_readback_buffer(12, &buffer);
     CHECK(data);
     VkCommandBuffer cb = vk_cmd();
-    vk_surf_use(cb, target, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+    vk_surf_use(cb, target, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), VK_PIPELINE_STAGE_2_COPY_BIT,
                 VK_ACCESS_2_TRANSFER_READ_BIT);
     VkBufferImageCopy copies[3] = {0};
     for (u32 layer = 0; layer < 3; layer++) {
@@ -1632,7 +1630,7 @@ static int check_depth_array(void) {
         copies[layer].imageSubresource = (VkImageSubresourceLayers){VK_IMAGE_ASPECT_DEPTH_BIT, 0, layer, 1};
         copies[layer].imageExtent = (VkExtent3D){1, 1, 1};
     }
-    rec_CmdCopyImageToBuffer(cb, target->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 3, copies);
+    rec_CmdCopyImageToBuffer(cb, target->img, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), buffer, 3, copies);
     vk_finish();
     vk_readback_ready();
     for (u32 layer = 0; layer < 3; layer++) {
@@ -1692,7 +1690,7 @@ static int check_srgb_write(void) {
     u8* data = vk_readback_buffer(8, &buffer);
     CHECK(data);
     VkCommandBuffer cb = vk_cmd();
-    vk_surf_use(cb, target, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+    vk_surf_use(cb, target, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), VK_PIPELINE_STAGE_2_COPY_BIT,
                 VK_ACCESS_2_TRANSFER_READ_BIT);
     VkBufferImageCopy copies[2] = {0};
     for (u32 i = 0; i < 2; i++) {
@@ -1700,7 +1698,7 @@ static int check_srgb_write(void) {
         copies[i].imageSubresource = (VkImageSubresourceLayers){VK_IMAGE_ASPECT_COLOR_BIT, 0, i, 1};
         copies[i].imageExtent = (VkExtent3D){1, 1, 1};
     }
-    rec_CmdCopyImageToBuffer(cb, target->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 2, copies);
+    rec_CmdCopyImageToBuffer(cb, target->img, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), buffer, 2, copies);
     vk_finish();
     vk_readback_ready();
     const u8 expected[8] = {128, 137, 137, 255, 188, 64, 64, 255};
@@ -1715,12 +1713,12 @@ static int read_pixel_at(Surf* target, u32 x, u32 y, u8 out[4]) {
     u8* data = vk_readback_buffer(4, &buffer);
     CHECK(data);
     VkCommandBuffer cb = vk_cmd();
-    vk_surf_use(cb, target, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+    vk_surf_use(cb, target, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), VK_PIPELINE_STAGE_2_COPY_BIT,
                 VK_ACCESS_2_TRANSFER_READ_BIT);
     VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
                               .imageOffset = {(i32)x, (i32)y, 0},
                               .imageExtent = {1, 1, 1}};
-    rec_CmdCopyImageToBuffer(cb, target->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &copy);
+    rec_CmdCopyImageToBuffer(cb, target->img, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), buffer, 1, &copy);
     vk_finish();
     vk_readback_ready();
     memcpy(out, data, 4);
@@ -1766,13 +1764,13 @@ static int check_srgb_blit(void) {
     vk_lock();
     CHECK(vk_image_create(&ii, &dst, &mem));
     VkCommandBuffer cb = vk_cmd();
-    vk_surf_use(cb, target, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_BLIT_BIT,
+    vk_surf_use(cb, target, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), VK_PIPELINE_STAGE_2_BLIT_BIT,
                 VK_ACCESS_2_TRANSFER_READ_BIT);
     VkImageMemoryBarrier2 to_dst = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
                                     .dstStageMask = VK_PIPELINE_STAGE_2_BLIT_BIT,
                                     .dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
                                     .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-                                    .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                    .newLayout = VK_LAYOUT(TRANSFER_DST_OPTIMAL),
                                     .image = dst,
                                     .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
     VkDependencyInfo di = {
@@ -1782,7 +1780,7 @@ static int check_srgb_blit(void) {
                         .srcOffsets = {{0, 0, 0}, {16, 16, 1}},
                         .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
                         .dstOffsets = {{0, 0, 0}, {16, 16, 1}}};
-    rec_CmdBlitImage(cb, target->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+    rec_CmdBlitImage(cb, target->img, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), dst, VK_LAYOUT(TRANSFER_DST_OPTIMAL),
                      1, &blit, VK_FILTER_NEAREST);
     VkBuffer buffer;
     u8* data = vk_readback_buffer(4, &buffer);
@@ -1791,11 +1789,11 @@ static int check_srgb_blit(void) {
     to_dst.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
     to_dst.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
     to_dst.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
-    to_dst.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    to_dst.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    to_dst.oldLayout = VK_LAYOUT(TRANSFER_DST_OPTIMAL);
+    to_dst.newLayout = VK_LAYOUT(TRANSFER_SRC_OPTIMAL);
     rec_CmdPipelineBarrier2(cb, &di);
     VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {1, 1, 1}};
-    rec_CmdCopyImageToBuffer(cb, dst, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &copy);
+    rec_CmdCopyImageToBuffer(cb, dst, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), buffer, 1, &copy);
     vk_unlock();
     vk_finish();
     vk_readback_ready();
@@ -1935,12 +1933,12 @@ static int sparse_texel(Surf* t, u32 level, u32 x, u32 y, u32* texel) {
     VkBuffer buffer;
     u8* result = vk_readback_buffer(4, &buffer);
     CHECK(result);
-    vk_surf_use(vk_cmd(), t, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+    vk_surf_use(vk_cmd(), t, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), VK_PIPELINE_STAGE_2_COPY_BIT,
                 VK_ACCESS_2_TRANSFER_READ_BIT);
     VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, 0, 1},
                               .imageOffset = {(i32)x, (i32)y, 0},
                               .imageExtent = {1, 1, 1}};
-    rec_CmdCopyImageToBuffer(vk_cmd(), t->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &copy);
+    rec_CmdCopyImageToBuffer(vk_cmd(), t->img, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), buffer, 1, &copy);
     vk_finish();
     vk_readback_ready();
     *texel = snx_ld_le32(result);
@@ -2275,7 +2273,7 @@ static int run_compute(const u32* code, size_t words, u32* data, u32 count, VkIm
     VkDescriptorSet set;
     CHECK(vkAllocateDescriptorSets(g_vk.dev, &dsi, &set) == VK_SUCCESS);
     VkDescriptorBufferInfo dbi = {buffer, 0, (VkDeviceSize)count * sizeof(u32)};
-    VkDescriptorImageInfo dii = {sampler, view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkDescriptorImageInfo dii = {sampler, view, VK_LAYOUT(SHADER_READ_ONLY_OPTIMAL)};
     VkWriteDescriptorSet writes[2] = {{.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
                                        .dstSet = set,
                                        .dstBinding = 0,
@@ -2388,7 +2386,7 @@ static int check_sampler_reduction(void) {
                                      .dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
                                      .dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
                                      .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-                                     .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                     .newLayout = VK_LAYOUT(TRANSFER_DST_OPTIMAL),
                                      .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                                      .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                                      .image = image,
@@ -2398,13 +2396,13 @@ static int check_sampler_reduction(void) {
     to_read.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
     to_read.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
     to_read.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
-    to_read.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    to_read.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    to_read.oldLayout = VK_LAYOUT(TRANSFER_DST_OPTIMAL);
+    to_read.newLayout = VK_LAYOUT(SHADER_READ_ONLY_OPTIMAL);
     VkDependencyInfo dep = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .imageMemoryBarrierCount = 1};
     dep.pImageMemoryBarriers = &to_copy;
     rec_CmdPipelineBarrier2(cb, &dep);
     VkBufferImageCopy region = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {2, 1, 1}};
-    rec_CmdCopyBufferToImage(cb, staging, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+    rec_CmdCopyBufferToImage(cb, staging, image, VK_LAYOUT(TRANSFER_DST_OPTIMAL), 1, &region);
     dep.pImageMemoryBarriers = &to_read;
     rec_CmdPipelineBarrier2(cb, &dep);
     vk_finish();
@@ -2888,9 +2886,9 @@ static u32 dma_texel(Surf* t, u32 x, u32 y) {
     VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
                               .imageOffset = {(i32)x, (i32)y, 0},
                               .imageExtent = {1, 1, 1}};
-    vk_surf_use(vk_cmd(), t, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+    vk_surf_use(vk_cmd(), t, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), VK_PIPELINE_STAGE_2_COPY_BIT,
                 VK_ACCESS_2_TRANSFER_READ_BIT);
-    rec_CmdCopyImageToBuffer(vk_cmd(), t->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &copy);
+    rec_CmdCopyImageToBuffer(vk_cmd(), t->img, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), buffer, 1, &copy);
     vk_finish();
     vk_readback_ready();
     return snx_ld_le32(result);
@@ -2962,9 +2960,9 @@ static int sv_differ(const SvCase* c, Surf* t, u32 first[3], u64* image_has, u64
     vk_lock();
     u8* image = vk_readback_buffer(SV_BYTES, &buffer);
     if (image) {
-        vk_surf_use(vk_cmd(), t, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+        vk_surf_use(vk_cmd(), t, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), VK_PIPELINE_STAGE_2_COPY_BIT,
                     VK_ACCESS_2_TRANSFER_READ_BIT);
-        rec_CmdCopyImageToBuffer(vk_cmd(), t->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &copy);
+        rec_CmdCopyImageToBuffer(vk_cmd(), t->img, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), buffer, 1, &copy);
         vk_finish();
         vk_readback_ready();
     }
@@ -3146,9 +3144,9 @@ static int sparse_tiles(const StCase* c) {
                               .imageExtent = {tex.d.width, tex.d.height, tex.d.depth}};
     u8* image = t ? vk_readback_buffer(lay.size, &buffer) : NULL;
     if (image) {
-        vk_surf_use(vk_cmd(), t, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+        vk_surf_use(vk_cmd(), t, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), VK_PIPELINE_STAGE_2_COPY_BIT,
                     VK_ACCESS_2_TRANSFER_READ_BIT);
-        rec_CmdCopyImageToBuffer(vk_cmd(), t->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &copy);
+        rec_CmdCopyImageToBuffer(vk_cmd(), t->img, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), buffer, 1, &copy);
         vk_finish();
         vk_readback_ready();
     }
@@ -3189,9 +3187,9 @@ static int sparse_tiles(const StCase* c) {
                                    .imageExtent = {w1, h1, 1}};
         image = t1 ? vk_readback_buffer((u64)across1 * down1 * c->eb, &buffer) : NULL;
         if (image) {
-            vk_surf_use(vk_cmd(), t1, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+            vk_surf_use(vk_cmd(), t1, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), VK_PIPELINE_STAGE_2_COPY_BIT,
                         VK_ACCESS_2_TRANSFER_READ_BIT);
-            rec_CmdCopyImageToBuffer(vk_cmd(), t1->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &copy1);
+            rec_CmdCopyImageToBuffer(vk_cmd(), t1->img, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), buffer, 1, &copy1);
             vk_finish();
             vk_readback_ready();
         }
@@ -3270,9 +3268,9 @@ static int check_sparse_view(void) {
          .imageExtent = {lv[1].w, lv[1].h, 1}}};
     u8* image = t && t->levels == 2 ? vk_readback_buffer((lv[0].w * lv[0].h + lv[1].w * lv[1].h) * 8, &buffer) : NULL;
     if (image) {
-        vk_surf_use(vk_cmd(), t, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+        vk_surf_use(vk_cmd(), t, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), VK_PIPELINE_STAGE_2_COPY_BIT,
                     VK_ACCESS_2_TRANSFER_READ_BIT);
-        rec_CmdCopyImageToBuffer(vk_cmd(), t->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 2, copy);
+        rec_CmdCopyImageToBuffer(vk_cmd(), t->img, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), buffer, 2, copy);
         vk_finish();
         vk_readback_ready();
     }
@@ -3330,7 +3328,7 @@ static int alias_fill_at(VkImage img, VkExtent3D g, u32 bx, u32 b, u32 value) {
                            .imageOffset = {(i32)(b % bx * w), (i32)(b / bx * h), 0},
                            .imageExtent = {w, h, d}};
     vk_render_end();
-    rec_CmdCopyBufferToImage(vk_cmd(), src, img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &c);
+    rec_CmdCopyBufferToImage(vk_cmd(), src, img, VK_LAYOUT(TRANSFER_DST_OPTIMAL), 1, &c);
     return 0;
 }
 static int alias_fill(VkImage img, const VkSparseShape* sh, u32 b, u32 value) {
@@ -3344,9 +3342,9 @@ static int alias_read_at(VkImage img, VkExtent3D g, u32 bx, u32 b, u32* texel) {
                            .imageOffset = {(i32)(b % bx * g.width + 3), (i32)(b / bx * g.height + 5), 0},
                            .imageExtent = {1, 1, 1}};
     vk_render_end();
-    alias_layout(img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
-    rec_CmdCopyImageToBuffer(vk_cmd(), img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &c);
-    alias_layout(img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    alias_layout(img, VK_LAYOUT(TRANSFER_DST_OPTIMAL), VK_LAYOUT(TRANSFER_SRC_OPTIMAL));
+    rec_CmdCopyImageToBuffer(vk_cmd(), img, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), buffer, 1, &c);
+    alias_layout(img, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), VK_LAYOUT(TRANSFER_DST_OPTIMAL));
     vk_finish();
     vk_readback_ready();
     *texel = snx_ld_le32(result);
@@ -3396,7 +3394,7 @@ static int alias_bricks(void) {
     CHECK(aliased == alias_expected(&ii)); /* where the device shares, the pages of a key do */
     block = bytes / (aliased ? 3 : 4);
     CHECK(want[0] == 2 && want[2] == 2 && want[3] == 2 && bytes == block * (aliased ? 3 : 4));
-    alias_layout(img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    alias_layout(img, VK_IMAGE_LAYOUT_UNDEFINED, VK_LAYOUT(TRANSFER_DST_OPTIMAL));
     CHECK(!alias_fill_at(img, g, 4, 0, 0x11223344) && !alias_fill_at(img, g, 4, 2, 0x55667788) &&
           !alias_fill_at(img, g, 4, 3, 0x99aabbcc));
     if (!aliased) CHECK(!alias_fill_at(img, g, 4, 1, 0x11223344)); /* its own memory: loaded as page 0 */
@@ -3473,7 +3471,7 @@ static int check_sparse_alias(void) {
     block = bytes / mems;
     CHECK(!vk_image_sparse_need(img, bits, keys) && vk_image_sparse_bind(img, bits, keys, &bytes) == 0);
     u32 texel = 0;
-    alias_layout(img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    alias_layout(img, VK_IMAGE_LAYOUT_UNDEFINED, VK_LAYOUT(TRANSFER_DST_OPTIMAL));
     for (u32 i = 0; i < 4; i++) CHECK(!alias_fill(img, sh, a[i], 0x11223344)); /* what a load does: each block */
     for (u32 i = 0; i < 2; i++) CHECK(!alias_fill(img, sh, b[i], 0x55667788));
     CHECK(!alias_fill(img, sh, 2, 0x99aabbcc));
@@ -3601,9 +3599,9 @@ static int check_sparse_copy(void) {
     VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {320, 256, 1}};
     u8* image = t ? vk_readback_buffer(320 * 256 * 4, &buffer) : NULL;
     if (image) {
-        vk_surf_use(vk_cmd(), t, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+        vk_surf_use(vk_cmd(), t, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), VK_PIPELINE_STAGE_2_COPY_BIT,
                     VK_ACCESS_2_TRANSFER_READ_BIT);
-        rec_CmdCopyImageToBuffer(vk_cmd(), t->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &copy);
+        rec_CmdCopyImageToBuffer(vk_cmd(), t->img, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), buffer, 1, &copy);
         vk_finish();
         vk_readback_ready();
     }
@@ -3678,9 +3676,9 @@ static int rv_check(const char* when, Surf* t, const u32* tiles, const int* from
                                        .imageOffset = {(i32)x * 128, (i32)y * 64, (i32)z * 16},
                                        .imageExtent = {128, 64, 16}};
         }
-        vk_surf_use(vk_cmd(), t, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+        vk_surf_use(vk_cmd(), t, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), VK_PIPELINE_STAGE_2_COPY_BIT,
                     VK_ACCESS_2_TRANSFER_READ_BIT);
-        rec_CmdCopyImageToBuffer(vk_cmd(), t->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, n, r);
+        rec_CmdCopyImageToBuffer(vk_cmd(), t->img, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), buffer, n, r);
         vk_finish();
         vk_readback_ready();
     }
@@ -3930,11 +3928,11 @@ static void sparse_clear(VkImage img, VkImageLayout from, const float rgba[4]) {
     memcpy(c.float32, rgba, sizeof c.float32);
     vk_barrier(cb, img, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
                from, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
-               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-    rec_CmdClearColorImage(cb, img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &c, 1, &range);
+               VK_LAYOUT(TRANSFER_DST_OPTIMAL));
+    rec_CmdClearColorImage(cb, img, VK_LAYOUT(TRANSFER_DST_OPTIMAL), &c, 1, &range);
     vk_barrier(cb, img, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
-               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
-               VK_ACCESS_2_TRANSFER_READ_BIT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+               VK_LAYOUT(TRANSFER_DST_OPTIMAL), VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
+               VK_ACCESS_2_TRANSFER_READ_BIT, VK_LAYOUT(TRANSFER_SRC_OPTIMAL));
 }
 /* a copy of the texel at (x, 0, 0) of img into buf at at */
 static void sparse_copy(VkBuffer buf, u64 at, VkImage img, u32 x) {
@@ -3942,7 +3940,7 @@ static void sparse_copy(VkBuffer buf, u64 at, VkImage img, u32 x) {
                            .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
                            .imageOffset = {(i32)x, 0, 0},
                            .imageExtent = {1, 1, 1}};
-    rec_CmdCopyImageToBuffer(vk_cmd(), img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buf, 1, &r);
+    rec_CmdCopyImageToBuffer(vk_cmd(), img, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), buf, 1, &r);
 }
 /* a 3D RGBA8 image two blocks wide with memory only where it is bound, none bound: 0 when the device can't */
 static int sparse_resident_image(VkImage* img, VkExtent3D* g) {
@@ -4052,7 +4050,7 @@ static int check_sparse_unbind_in_flight(void) {
     ok = vk_image_resident(img, both, NULL, 2, &bytes);
     t1 = plat_ns();
     c1 = sc_now();
-    sparse_clear(img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, SPARSE_GREEN);
+    sparse_clear(img, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), SPARSE_GREEN);
     sparse_copy(rb, 64, img, 0);
     sparse_copy(rb, 80, img, g.width);
     vk_submit(VK_NULL_HANDLE, 0, VK_NULL_HANDLE);
@@ -4114,7 +4112,7 @@ static int check_sparse_resident_batched(void) {
        these are two batches, the second after the first, and the read after them sees the second */
     ScCount c3 = sc_now();
     CHECK(vk_image_resident(a, second, NULL, 2, &bytes) && vk_image_resident(a, both, NULL, 2, &bytes));
-    sparse_clear(a, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, SPARSE_GREEN);
+    sparse_clear(a, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), SPARSE_GREEN);
     sparse_copy(rb, 32, a, 0);
     vk_finish();
     ScCount c4 = sc_now();
@@ -4164,7 +4162,7 @@ static int check_sparse_pieces_batched(void) {
         VkBufferImageCopy r = {.bufferOffset = i * size,
                                .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
                                .imageExtent = {256, 256, 1}};
-        rec_CmdCopyImageToBuffer(vk_cmd(), pieces[i], VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, rb, 1, &r);
+        rec_CmdCopyImageToBuffer(vk_cmd(), pieces[i], VK_LAYOUT(TRANSFER_SRC_OPTIMAL), rb, 1, &r);
     }
     g_vk.alloc_cap = saved_cap;
     ScCount c1 = sc_now();
@@ -4311,9 +4309,9 @@ static u8* rs_image(Surf* t, const RsTex* r) {
     u8* back = vk_readback_buffer(at, &buffer);
     u8* out = back ? malloc((size_t)at) : NULL;
     if (out) {
-        vk_surf_use(vk_cmd(), t, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+        vk_surf_use(vk_cmd(), t, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), VK_PIPELINE_STAGE_2_COPY_BIT,
                     VK_ACCESS_2_TRANSFER_READ_BIT);
-        rec_CmdCopyImageToBuffer(vk_cmd(), t->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, n, c);
+        rec_CmdCopyImageToBuffer(vk_cmd(), t->img, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), buffer, n, c);
         vk_finish();
         vk_readback_ready();
         memcpy(out, back, (size_t)at);
@@ -4638,9 +4636,9 @@ static u8* rs_region(Surf* t, u32 l, u32 x, u32 y, u32 w, u32 h) {
     u8* back = vk_readback_buffer(n, &buffer);
     u8* out = back ? malloc((size_t)n) : NULL;
     if (out) {
-        vk_surf_use(vk_cmd(), t, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+        vk_surf_use(vk_cmd(), t, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), VK_PIPELINE_STAGE_2_COPY_BIT,
                     VK_ACCESS_2_TRANSFER_READ_BIT);
-        rec_CmdCopyImageToBuffer(vk_cmd(), t->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &c);
+        rec_CmdCopyImageToBuffer(vk_cmd(), t->img, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), buffer, 1, &c);
         vk_finish();
         vk_readback_ready();
         memcpy(out, back, (size_t)n);
@@ -4932,7 +4930,7 @@ static void rs_copy(VkBuffer buf, u64 at, Surf* t, u32 x) {
                            .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
                            .imageOffset = {(i32)x, 0, 0},
                            .imageExtent = {bw, bw, 1}};
-    rec_CmdCopyImageToBuffer(vk_cmd(), t->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buf, 1, &r);
+    rec_CmdCopyImageToBuffer(vk_cmd(), t->img, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), buf, 1, &r);
 }
 /* what that block of the texture holds: memory's texel, or an ASTC one's block of the same texture made whole */
 static int rs_want(const RsTex* r, Surf* whole, u32 x, u8* out) {
@@ -4993,7 +4991,7 @@ static int resident_in_flight(const RsFmt* as, u64 gva, u64 ref_gva, u64 cpu) {
     vk_lock();
     u8* back = vk_readback_buffer(256, &rb);
     CHECK(back);
-    vk_surf_use(vk_cmd(), t, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+    vk_surf_use(vk_cmd(), t, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), VK_PIPELINE_STAGE_2_COPY_BIT,
                 VK_ACCESS_2_TRANSFER_READ_BIT);
     rs_copy(rb, 0, t, xa);
     rs_copy(rb, 16, t, xb);
@@ -5012,7 +5010,7 @@ static int resident_in_flight(const RsFmt* as, u64 gva, u64 ref_gva, u64 cpu) {
     const u64 reader = vk_last_submit(); /* the copies' */
     vk_submit_progress(&sub, &done);
     const int reading = done < reader;
-    vk_surf_use(vk_cmd(), t, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+    vk_surf_use(vk_cmd(), t, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), VK_PIPELINE_STAGE_2_COPY_BIT,
                 VK_ACCESS_2_TRANSFER_READ_BIT);
     rs_copy(rb, 32, t, xa);
     rs_copy(rb, 48, t, xb);
@@ -5063,7 +5061,7 @@ static int resident_in_flight(const RsFmt* as, u64 gva, u64 ref_gva, u64 cpu) {
     t1 = plat_ns();
     c1 = sc_now();
     vk_lock();
-    vk_surf_use(vk_cmd(), t, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+    vk_surf_use(vk_cmd(), t, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), VK_PIPELINE_STAGE_2_COPY_BIT,
                 VK_ACCESS_2_TRANSFER_READ_BIT);
     rs_copy(rb, 64, t, xa);
     vk_submit(VK_NULL_HANDLE, 0, VK_NULL_HANDLE);

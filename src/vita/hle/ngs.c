@@ -20,6 +20,7 @@
 
 #define SCE_NGS_ERROR               0x804a0001u
 #define SCE_NGS_ERROR_INVALID_PARAM 0x804a0002u
+#define SCE_NGS_ERROR_PATCH_NOT_AVAIL 0x804a000eu
 #define SCE_NGS_ERROR_PAUSED        0x804a0010u
 #define RACK_HEADER   0x40u  /* the rack's voice count, then its voices */
 #define VOICE_SIZE    0x400u /* a voice's handle word, its modules' parameters, its patches' handles */
@@ -45,8 +46,24 @@ enum { PLAYER_END_OF_DATA, PLAYER_SWAPPED_BUFFER, PLAYER_LOOPED_BUFFER };
 
 /* SceNgsVoiceState's flags */
 enum { AVAILABLE = 0, ACTIVE = 1 };
-/* the voice definitions sceNgsVoiceDefGet* return, at the runtime's page a word apart: the game only hands them back */
-enum { DEF_MASTER, DEF_SIMPLE, DEF_REVERB, DEF_TEMPLATE1, DEFS };
+/* the voice definitions sceNgsVoiceDefGet* return, at the runtime's page a word apart: the game only hands them back.
+   The compressor, SAS emulation, mixer, equalizer and distortion busses are effects like the reverb buss (system_update_continue's else: their
+   output is their input, unchanged); Simple Atrac9 is a player like the simple voice, but its params are a different
+   struct (SceNgsAT9Params, not SceNgsPlayerParams) this doesn't decode, so its voices play silent rather than read
+   those params as the PCM/HE-ADPCM ones (Vita3K's ngs/include/ngs/modules/atrac9.h has that struct) */
+enum {
+    DEF_MASTER,
+    DEF_SIMPLE,
+    DEF_REVERB,
+    DEF_TEMPLATE1,
+    DEF_COMPRESSOR,
+    DEF_SAS_EMULATION,
+    DEF_SIMPLE_ATRAC9,
+    DEF_MIXER,
+    DEF_EQ,
+    DEF_DISTORTION,
+    DEFS
+};
 #define DEFINITIONS (VITA_RUNTIME_PAGE + 0x800u)
 
 typedef struct {
@@ -182,7 +199,13 @@ static PatchRef patch_ref_of(VitaProcess* p, uint32_t handle) {
 }
 static unsigned modules_of(const struct VitaNgs* n, const Voice* v) {
     uint32_t kind = n->racks[v->rack].kind;
-    if (kind == DEF_SIMPLE) return MODULES;
+    /* Simple Atrac9 has the simple voice's six modules (Vita3K's BUSS_SIMPLE_ATRAC9: Atrac9, equalizer, envelope,
+       pauser, two filters; its SceNgsAT9Params fill a module's 0x60 bytes exactly). Need For Speed Most Wanted bypasses
+       modules 1-5 and locks module 3's params, so fewer made sceNgsVoiceLockParams fail and left the game to read the
+       SceNgsBufferInfo it never got */
+    if (kind == DEF_SIMPLE || kind == DEF_SIMPLE_ATRAC9) return MODULES;
+    /* Template1's; the rest (the master buss and the single-effect busses: reverb, compressor, SAS emulation) take
+       the player's output module and one effect module */
     return kind == DEF_TEMPLATE1 ? TEMPLATE1_MODULES : 2;
 }
 
@@ -293,6 +316,30 @@ static uint32_t reverb_buss(VitaProcess* p, VitaThread* t) {
 static uint32_t template1(VitaProcess* p, VitaThread* t) {
     (void)p, (void)t;
     return DEFINITIONS + DEF_TEMPLATE1 * 4;
+}
+static uint32_t compressor_buss(VitaProcess* p, VitaThread* t) {
+    (void)p, (void)t;
+    return DEFINITIONS + DEF_COMPRESSOR * 4;
+}
+static uint32_t sas_emu_voice(VitaProcess* p, VitaThread* t) {
+    (void)p, (void)t;
+    return DEFINITIONS + DEF_SAS_EMULATION * 4;
+}
+static uint32_t mixer_buss(VitaProcess* p, VitaThread* t) {
+    (void)p, (void)t;
+    return DEFINITIONS + DEF_MIXER * 4;
+}
+static uint32_t eq_buss(VitaProcess* p, VitaThread* t) {
+    (void)p, (void)t;
+    return DEFINITIONS + DEF_EQ * 4;
+}
+static uint32_t distortion_buss(VitaProcess* p, VitaThread* t) {
+    (void)p, (void)t;
+    return DEFINITIONS + DEF_DISTORTION * 4;
+}
+static uint32_t simple_atrac9_voice(VitaProcess* p, VitaThread* t) {
+    (void)p, (void)t;
+    return DEFINITIONS + DEF_SIMPLE_ATRAC9 * 4;
 }
 
 /* ---- parameters ---- */
@@ -428,6 +475,22 @@ static uint32_t patch_create_routing(VitaProcess* p, VitaThread* t) {
     v->patches[output][index] = (Patch){.used = true, .destination = destination,
                                         .destination_input = (int32_t)vita_read32(p, info + 16)};
     vita_write32(p, out, source + patch_offset(p->ngs->racks[v->rack].kind) + (output * PATCHES + index) * 4);
+    return 0;
+}
+/* sceNgsVoiceGetOutputPatch(voice, output, index, patch*): the handle of the patch the voice has at its output's index
+   (the one sceNgsPatchCreateRouting wrote), or zero and PATCH_NOT_AVAIL for an index with none. The game's audio job
+   thread asks this of each voice again and again until it has its patch */
+static uint32_t voice_get_output_patch(VitaProcess* p, VitaThread* t) {
+    uint32_t voice = arg(p, t, 0), output = arg(p, t, 1), index = arg(p, t, 2), out = arg(p, t, 3);
+    Voice* v = voice_of(p, voice);
+    if (!v || !out || !vita_mapped(p, out, 4)) return SCE_NGS_ERROR_INVALID_PARAM;
+    uint32_t kind = p->ngs->racks[v->rack].kind;
+    if (output >= outputs_of_kind(kind) || index >= PATCHES) return SCE_NGS_ERROR_INVALID_PARAM;
+    if (!v->patches[output][index].used) {
+        vita_write32(p, out, 0);
+        return SCE_NGS_ERROR_PATCH_NOT_AVAIL;
+    }
+    vita_write32(p, out, voice + patch_offset(kind) + (output * PATCHES + index) * 4);
     return 0;
 }
 /* sceNgsPatchGetInfo(patch, audio properties*, delivery info*): both outputs are optional */
@@ -688,7 +751,9 @@ static uint32_t player_callback(VitaProcess* p, VitaThread* t, struct VitaNgs* n
 }
 static uint32_t system_update_continue(VitaProcess* p, VitaThread* t) {
     struct VitaNgs* n = p->ngs;
-    static const uint32_t order[DEFS] = {DEF_SIMPLE, DEF_TEMPLATE1, DEF_REVERB, DEF_MASTER};
+    static const uint32_t order[DEFS] = {DEF_SIMPLE,     DEF_SIMPLE_ATRAC9, DEF_TEMPLATE1,     DEF_REVERB,
+                                         DEF_MIXER,      DEF_EQ,            DEF_DISTORTION,    DEF_COMPRESSOR,
+                                         DEF_SAS_EMULATION, DEF_MASTER};
     if (!n || !n->updating) return SCE_NGS_ERROR_INVALID_PARAM;
     while (n->update_order < DEFS) {
         if (n->update_rack == RACKS) {
@@ -723,7 +788,17 @@ static uint32_t system_update_continue(VitaProcess* p, VitaThread* t) {
             continue;
         }
         bool playing = true;
-        if (rack->kind == DEF_SIMPLE || rack->kind == DEF_TEMPLATE1) {
+        if (rack->kind == DEF_SIMPLE_ATRAC9) {
+            /* no decoder for SceNgsAT9Params here: a silent voice, done after its first granule rather than read as
+            the PCM/HE-ADPCM player's struct */
+            static bool warned;
+            if (!warned) {
+                warned = true;
+                printf("ngs: rack %u is an Atrac9 voice, which has no decoder and plays silent\n",
+                       n->update_rack);
+            }
+            playing = false;
+        } else if (rack->kind == DEF_SIMPLE || rack->kind == DEF_TEMPLATE1) {
             PlayerEvent event = {0};
             unsigned result = simple_run(p, n, v, &event);
             if (result == PLAYER_RUN_CALLBACK) return player_callback(p, t, n, v, &event);
@@ -774,6 +849,12 @@ const VitaHle vita_hle_ngs[] = {
     {0x79a121d1u, "sceNgsVoiceDefGetMasterBuss", master_buss},
     {0x9dcf50f5u, "sceNgsVoiceDefGetReverbBuss", reverb_buss},
     {0xe9b572b7u, "sceNgsVoiceDefGetTemplate1", template1},
+    {0x0e0acb68u, "sceNgsVoiceDefGetCompressorBuss", compressor_buss},
+    {0x1f51c2bau, "sceNgsVoiceDefGetSasEmuVoice", sas_emu_voice},
+    {0xe0ac8776u, "sceNgsVoiceDefGetMixerBuss", mixer_buss},
+    {0xf964120eu, "sceNgsVoiceDefGetEqBuss", eq_buss},
+    {0xaad90debu, "sceNgsVoiceDefGetDistortionBuss", distortion_buss},
+    {0x45cf2a73u, "sceNgsVoiceDefGetSimpleAtrac9Voice", simple_atrac9_voice},
     {0xab6bef8fu, "sceNgsVoiceLockParams", voice_lock_params},
     {0x24e909a8u, "sceNgsVoiceSetModuleCallback", voice_set_module_callback},
     {0x3d46d8a7u, "sceNgsVoiceUnlockParams", ok},
@@ -787,6 +868,7 @@ const VitaHle vita_hle_ngs[] = {
     {0x9ab87e71u, "sceNgsVoiceBypassModule", ok},
     {0xd668b49cu, "sceNgsPatchCreateRouting", patch_create_routing},
     {0x98703dbcu, "sceNgsPatchGetInfo", patch_get_info},
+    {0x01a52e3au, "sceNgsVoiceGetOutputPatch", voice_get_output_patch},
     {0xd0c9ae5au, "sceNgsPatchRemoveRouting", patch_remove_routing},
     {0xa0f5402du, "sceNgsVoicePatchSetVolumesMatrix", patch_set_volumes_matrix},
     {0, NULL, NULL},
