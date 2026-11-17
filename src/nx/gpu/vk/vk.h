@@ -647,6 +647,7 @@ VkCommandBuffer vk_cmd_upload_recording(void); /* that command buffer while it i
 /* size bytes of the current frame's mapped staging memory (flushed when the frame is submitted), valid until
    that frame's work is done. NULL past g_vk.alloc_cap: a big upload stages in parts */
 u8* vk_stage(u64 size, u64 align, VkBuffer* buf, u64* off);
+u64 vk_stage_buffer_size(VkBuffer b); /* a ring chunk's size, 0 for another buffer */
 /* the most a request to a frame ring takes out of a pooled chunk: a bigger one gets a pooled big buffer of its size
    class */
 u64 vk_stage_chunk(void);

@@ -303,6 +303,8 @@ typedef struct {
        "<instruction> at <byte offset>: <what>" where the CRS stack's static walk stops (shader_resolve_crs) */
     char flow_why[96];
     u32 spec;          /* the specialization constants the module declares: bit SH_SPEC_ of each */
+    /* the program adds each bank's window offset from push constants to its constant buffer reads (cb_windows) */
+    u32 cb_window;
 } ShaderInfo;
 /* A fragment module's specialization constants, by SpecId: state a draw has before its program runs, which the
    pipeline gives the module (vk/pipeline.c, PipeKey.fs_spec) so that the driver compiles the program for it. As a
@@ -452,6 +454,12 @@ static inline void shader_query_hint_unpack(const u32 words[SH_QUERY_WORDS], u8 
 #define SH_ROOT_TABLE    256
 #define SH_ROOT_BYTES    (SH_ROOT_TABLES * SH_ROOT_TABLE)
 #define SNX_TEX_INDEXED  4
+/* With cb_windows: the push constant bytes of the constant buffers' window offsets, three uvec4 a stage (the vertex
+   stage's, then the fragment stage's): bank b's offset in 16-byte units is the 16 bits at (b & 1) * 16 of word b / 2.
+   Past the 128 bytes of the push block that every pipeline layout had, which the device has 256 of where they're on */
+#define SH_PUSH_CB_WINDOW    128
+#define SH_PUSH_CB_WINDOW_FS 176
+#define SH_PUSH_BYTES_WINDOWS 224
 /* Device capabilities the renderer sets before translating, and the values offline translation takes. A 1-bit
    field holds 0 or 1: a mask goes in through a test (!= 0), or its bit is lost */
 typedef struct {
@@ -466,6 +474,10 @@ typedef struct {
     /* each graphics stage's textures in a set of their own, five after its buffers' (shader_vk_tex_set): a draw that
        binds the same textures keeps that set while its constant buffers change (vk/render.c stage_set_) */
     unsigned split_sets : 1;
+    /* a vertex or fragment program reads its uniform constant buffers through windows of the renderer's staging ring:
+       each bank's offset into its window comes from push constants (SH_PUSH_CB_WINDOW), so a draw that writes new
+       constants keeps its buffer set (vk/render.c stage_set_) */
+    unsigned cb_windows : 1;
     /* tessellation and geometry programs may write the point size (shaderTessellationAndGeometryPointSize) */
     unsigned stage_point_size : 1;
     /* vertex and tessellation programs may write the layer (shaderOutputLayer, the ShaderLayer capability); without it

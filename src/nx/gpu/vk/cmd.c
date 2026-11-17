@@ -194,6 +194,13 @@ u64 vk_sample_hash(u64 gva, u64 len) {
     return vk_hash(tmp, n);
 }
 
+/* the size of the ring chunk whose buffer b is, 0 when b is no chunk's: how far a window of the chunk may reach (the
+   constant buffers' windows, vk/render.c) */
+u64 vk_stage_buffer_size(VkBuffer b) {
+    for (u32 i = 0; b && i < g_cmd.nchunk; i++)
+        if (g_cmd.chunk[i].buf == b) return g_cmd.chunk[i].size;
+    return 0;
+}
 u64 vk_stage_align(void) {
     static u64 al;
     if (!al) {

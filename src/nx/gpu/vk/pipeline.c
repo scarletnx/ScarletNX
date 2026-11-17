@@ -662,7 +662,7 @@ static VkPipelineLayout playout(u32 arrays, int independent) {
         for (u32 s = 0; s < nsets; s++) sets[s] = g_vk_dslayout[(arrays >> (s % 5)) & 1][s];
         /* push constants: viewport/depth pc[0..3], fragment alpha test pc[4..6], sprite T flip pc[7], scaled textures
            pc[8..9], and of those the ones of the draw's size pc[24..25] */
-        VkPushConstantRange pc = {VK_PUSH_STAGES, 0, 128};
+        VkPushConstantRange pc = {VK_PUSH_STAGES, 0, g_spirv_translate.cb_windows ? SH_PUSH_BYTES_WINDOWS : 128};
         /* with pipeline libraries, a link of parts whose layouts have only their own sets (part_layout) */
         VkPipelineLayoutCreateInfo pl = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
                                          .flags = independent ? VK_PIPELINE_LAYOUT_CREATE_INDEPENDENT_SETS_BIT_EXT : 0,
@@ -709,6 +709,15 @@ void vk_pipeline_init(void) {
                                    !g_vk.has_descriptor_buffers && !g_vk.has_descriptor_heap_support;
     LOG("vulkan: %s\n", g_spirv_translate.split_sets ? "each stage's textures are in a descriptor set of their own"
                                                        : "one descriptor set a stage, its textures with its buffers");
+    /* the vertex and fragment programs' constant buffers through windows of the staging ring, their offsets in push
+       constants past the 128 bytes every layout had: where the device takes those bytes and a whole bank's window.
+       Not with descriptor heaps, whose set addresses are pushed from byte 128 (VK_DESCRIPTOR_HEAP_PUSH_OFFSET) */
+    g_spirv_translate.cb_windows = g_vk.props.limits.maxPushConstantsSize >= SH_PUSH_BYTES_WINDOWS &&
+                                   g_vk.props.limits.maxUniformBufferRange >= 65536 &&
+                                   g_spirv_translate.uniform_cbufs > 0 && !g_vk.has_descriptor_heap_support;
+    LOG("vulkan: %s\n", g_spirv_translate.cb_windows
+                                ? "constant buffers bound as windows of the staging ring, their offsets pushed"
+                                : "constant buffers bound one by one");
     for (int s = 0; s < 5; s++) {
         VkDescriptorSetLayoutBinding b[SNX_VKB_END];
         u32 count = 0;
@@ -1859,7 +1868,8 @@ static VkPipelineLayout part_layout(u32 part, u32 arrays) {
         u32 n = g_spirv_translate.split_sets ? (fs ? 7 : 10) : fs ? 2 : g_vk_stage_sets;
         for (u32 s = 0; s < n; s++)
             if ((s % 5 == 1) == fs) sets[s] = g_vk_dslayout[(arrays >> (s % 5)) & 1][s];
-        VkPushConstantRange pc = {VK_PUSH_STAGES, 0, 128}; /* vk_playout's: a link's parts take its push constants */
+        /* vk_playout's: a link's parts take its push constants */
+        VkPushConstantRange pc = {VK_PUSH_STAGES, 0, g_spirv_translate.cb_windows ? SH_PUSH_BYTES_WINDOWS : 128};
         VkPipelineLayoutCreateInfo pl = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
                                          .flags = VK_PIPELINE_LAYOUT_CREATE_INDEPENDENT_SETS_BIT_EXT,
                                          .setLayoutCount = n,
@@ -2999,6 +3009,7 @@ static void pf_key(char* out, size_t n, size_t* guest) {
                   (u32)g_vk.has_fragment_interlock,
                   arrays,
                   (u32)g_spirv_translate.split_sets,
+                  (u32)g_spirv_translate.cb_windows,
                   (u32)g_spirv_translate.stage_point_size,
                   (u32)g_spirv_translate.output_layer,
                   (u32)g_spirv_translate.geometry,
