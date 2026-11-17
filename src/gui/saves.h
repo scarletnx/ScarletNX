@@ -21,6 +21,7 @@
 #define GUI_SAVES_GBA    "gba/"
 #define GUI_SAVES_NDS    "nds/"
 #define GUI_SAVES_3DS    "3ds/"
+#define GUI_SAVES_VITA   "vita/"
 
 /* The save put together in staged (a folder or a file) into the place of save. The one there before goes first to the
    folder trash (made when it is not there, on save's disk) as <name>.<UTC time>, a number after it rather than over
@@ -184,4 +185,29 @@ int gui_saves_ctr_import(GuiCleaned* done, const char* path, const char* shown, 
 /* list kept to the saves the zip at path has a backup of (under prefix), the others freed: how many, and how many of
    them have a file there already (those an import puts in the trash) into *there */
 size_t gui_saves_ctr_keep(const char* path, const char* prefix, GuiSavesCtr* list, size_t* there);
+
+/* A Vita game's save, decrypted, as Vita3K keeps one and ScarletNX too: <game folder>/ux0/user/00/savedata/<its ID>
+   (the game's title ID); in a zip, <ID>/ and its files */
+typedef struct {
+    const char *folder, *trash, *name;
+} GuiSavePsv;
+typedef struct {
+    GuiSavePsv* at;
+    size_t count;
+} GuiSavesPsv;
+void gui_saves_psv_free(GuiSavesPsv* list);
+/* the save of the game named name (its title ID) in its folder game: 1 with it in out (owned), 0 out of memory */
+int gui_saves_psv_place(const char* game, const char* name, const char* trash, GuiSavePsv* out);
+/* the Vita games of the count folders (snx_game_system), with there only those whose save holds a file */
+void gui_saves_psv_list(const char* trash, const char* const* folders, size_t count, bool there, GuiSavesPsv* list);
+/* each save with a file into zip as <prefix><ID>/; how many into *kept, one with none an entry. 0, else nonzero */
+int gui_saves_psv_add(GuiSavesZip* zip, const char* prefix, const GuiSavePsv* saves, size_t count, size_t* kept,
+                      char* error, size_t size);
+/* each of the count saves out of the zip at path (<prefix><ID>/), in place by gui_saves_put. Checked whole first: a
+   member out of an ID's folder, or a save copied from the console still encrypted (sce_pfs/), refused. Without all,
+   each save must be in the zip (refused naming the IDs it holds); with all (a console's import, every game of the
+   library), one the zip lacks is an entry, and a zip with none of them refused. 0, else nonzero with why in error */
+int gui_saves_psv_import(GuiCleaned* done, const char* path, const char* shown, const char* prefix,
+                         const GuiSavePsv* saves, size_t count, bool all, GuiSavesDone* result, char* error,
+                         size_t size);
 #endif
