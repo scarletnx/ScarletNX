@@ -430,6 +430,9 @@ int vk_image_sparse_move_end(VkImage img, DevMem a, DevMem to);
    them */
 void vk_sparse_batch_flush(void);
 u64 vk_image_sparse_level_bytes(VkImage img, u32 levels);
+/* the memory bound to img that is in the heap the caches budget (vk_mem_heap): not its blocks in system memory
+   (vk_image_sparse_place) */
+u64 vk_image_sparse_heap_bytes(VkImage img);
 void vk_sparse_stats(u64* binds, u64* bind_ns); /* statistics: sparse binds, and the host's wait for them */
 /* statistics: the blocks and mip tails with memory now of an image of either kind above, 0 for another image */
 u32 vk_image_bound_blocks(VkImage img);

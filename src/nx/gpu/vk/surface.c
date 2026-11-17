@@ -2590,6 +2590,10 @@ static int lossless(const Surf* s) {
 static u64 surf_evict(Surf* s);
 static u64 tex_give_way(Surf* s, u64 want) {
     if (s->demoted) return want == ~0ull ? surf_evict(s) : 0;
+    /* a texture sparse for its levels with every level it can move in system memory (vk_tex_coarser) holds only its
+       coarsest levels of the GPU's: it stays, as a demoted one does. Evicted, it gave the trim almost nothing and was
+       loaded again whole at its next use */
+    if (want != ~0ull && s->shed && s->sys_levels && !vk_tex_can_coarsen(s)) return 0;
     const u64 moved = want != ~0ull ? vk_tex_demote(s) : 0;
     return moved ? moved : surf_evict(s);
 }
