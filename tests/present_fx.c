@@ -6,7 +6,7 @@
    commands each records. --showcase=DIR writes the frames as PPM panels. */
 #include "common/gpu/vk/present_fx.h"
 #include "common/gpu/vk/ring.h"
-#include "common/gpu/vk/vk_common.h"
+#include "common/gpu/vk/device.h"
 #include "support/fxaa_ref.h"
 #include <math.h>
 #include <stdio.h>
@@ -78,15 +78,17 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL val_cb(VkDebugUtilsMessageSeverityFlagBits
     return VK_FALSE;
 }
 
-static bool make_device(VkPhysicalDevice phys, uint32_t family, void* user) {
-    Test* t = user;
+/* the device, with dynamic rendering and synchronization2 (common/gpu/vk/device.h) */
+static bool choose(SnxVkChoice* c, void* user) {
+    (void)user;
     VkPhysicalDeviceVulkan13Features v13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
     VkPhysicalDeviceVulkan12Features v12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
     VkPhysicalDeviceFeatures2 features = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
     void* const query[] = {&features, &v12, &v13};
     snx_vk_chain(query, sizeof query / sizeof *query);
-    vkGetPhysicalDeviceFeatures2(phys, &features);
-    if (!v13.dynamicRendering || !v13.synchronization2) return 0;
+    vkGetPhysicalDeviceFeatures2(c->phys, &features);
+    if (!v13.dynamicRendering || !v13.synchronization2)
+        return snx_vk_choice_refuse(c, "has no dynamicRendering or synchronization2");
     VkPhysicalDeviceVulkan13Features want13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
                                                .dynamicRendering = VK_TRUE,
                                                .synchronization2 = VK_TRUE};
@@ -96,10 +98,7 @@ static bool make_device(VkPhysicalDevice phys, uint32_t family, void* user) {
     want.features.samplerAnisotropy = features.features.samplerAnisotropy;
     void* const enable[] = {&want, &want12, &want13};
     snx_vk_chain(enable, sizeof enable / sizeof *enable);
-    if (!succeed(snx_vk_device_create(phys, family, &want, NULL, 0, &t->dev))) return 0;
-    t->phys = phys;
-    t->family = family;
-    return 1;
+    return snx_vk_choice_create(c, &want, NULL, NULL, 0);
 }
 
 static int image_make(Test* t, Image* im, uint32_t w, uint32_t h, VkFormat fmt, VkImageUsageFlags usage) {
@@ -470,8 +469,9 @@ static unsigned char* window_blit(Test* t, SnxFx* fx, Image* frame, Image* win, 
             VK_PIPELINE_STAGE_2_CLEAR_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_BLIT_BIT,
             VK_ACCESS_2_TRANSFER_WRITE_BIT);
     before = g_test.count;
-    effects = snx_fx_render(fx, cb, 0, frame->view, frame->width, frame->height, 0, 0, frame->width, frame->height, 0,
-                            to.extent.width, to.extent.height, filter, aa, &out);
+    effects =
+        snx_fx_render(fx, cb, 0, frame->view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, frame->width, frame->height, 0,
+                      0, frame->width, frame->height, 0, to.extent.width, to.extent.height, filter, aa, &out);
     counted(n, &before);
     if (!effects)
         barrier(cb, frame->image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
@@ -506,8 +506,8 @@ static unsigned char* window_draw(Test* t, SnxFx* fx, Image* frame, Image* win, 
                                   int filter, int aa, Counts* n) {
     VkCommandBuffer cb = snx_vk_ring_commands(&t->ring);
     Counts before = g_test.count;
-    int ready = snx_fx_prepare(fx, cb, 0, frame->view, frame->width, frame->height, 0, 0, frame->width, frame->height,
-                               0, to, format, filter, aa);
+    int ready = snx_fx_prepare(fx, cb, 0, frame->view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, frame->width,
+                               frame->height, 0, 0, frame->width, frame->height, 0, to, format, filter, aa);
     counted(n, &before);
     barrier(cb, win->image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
             VK_PIPELINE_STAGE_2_NONE, 0, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
@@ -572,8 +572,8 @@ static int bench(Test* t, SnxFx* fx, const char* frame, const char* showcase) {
                 VkCommandBuffer cb = snx_vk_ring_commands(&t->ring);
                 vkCmdResetQueryPool(cb, pool, 0, 2);
                 vkCmdWriteTimestamp2(cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, pool, 0);
-                CHECK(snx_fx_render(fx, cb, (uint32_t)r, src.view, w, h, 0, 0, w, h, 0, ow, oh, runs[r].filter,
-                                    runs[r].aa, &out));
+                CHECK(snx_fx_render(fx, cb, (uint32_t)r, src.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, w, h, 0, 0,
+                                    w, h, 0, ow, oh, runs[r].filter, runs[r].aa, &out));
                 vkCmdWriteTimestamp2(cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, pool, 1);
                 serial = snx_vk_ring_submit(&t->ring, VK_NULL_HANDLE, VK_NULL_HANDLE);
                 CHECK(snx_vk_ring_wait(&t->ring, serial, UINT64_MAX));
@@ -630,12 +630,24 @@ int main(int argc, char** argv) {
             return 77;
         }
     }
-    if (!snx_vk_first_device(t.instance.instance, VK_API_VERSION_1_3, VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT,
-                             VK_NULL_HANDLE, make_device, &t)) {
-        fprintf(stderr, "present_fx: no Vulkan device\n");
-        return 77;
+    {
+        SnxVkDeviceRequest request = {.who = "present_fx",
+                                      .none = "no Vulkan 1.3 device with graphics and compute, dynamic rendering and "
+                                              "synchronization2",
+                                      .instance = t.instance.instance,
+                                      .api = VK_API_VERSION_1_3,
+                                      .queues = VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT,
+                                      .choose = choose};
+        SnxVkDevice made;
+        char why[1024];
+        if (!snx_vk_device_make(&request, &made, why, sizeof why)) {
+            fprintf(stderr, "present_fx: %s: %s\n", why, made.passed_over ? "skipped" : "failed");
+            return made.passed_over ? 77 : 1;
+        }
+        t.phys = made.phys;
+        t.dev = made.device;
+        t.family = made.family;
     }
-    volkLoadDevice(t.dev);
     counting();
     vkGetDeviceQueue(t.dev, t.family, 0, &t.queue);
     {
@@ -710,8 +722,8 @@ int main(int argc, char** argv) {
         uint64_t serial;
         unsigned char* got;
         int step;
-        CHECK(snx_fx_render(fx, cb, 0, src.view, 320, 240, 0, 0, 320, 240, 0, 640, 480, SNX_FX_UPSCALE_FSR1,
-                            SNX_FX_AA_OFF, &out));
+        CHECK(snx_fx_render(fx, cb, 0, src.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 320, 240, 0, 0, 320, 240, 0,
+                            640, 480, SNX_FX_UPSCALE_FSR1, SNX_FX_AA_OFF, &out));
         serial = snx_vk_ring_submit(&t.ring, VK_NULL_HANDLE, VK_NULL_HANDLE);
         CHECK(snx_vk_ring_wait(&t.ring, serial, UINT64_MAX));
         CHECK(out.width == 640 && out.height == 480);
@@ -721,6 +733,30 @@ int main(int argc, char** argv) {
         write_ppm(showcase, "fx-fsr1", got, 640, 480);
         free(got);
     }
+    /* a frame kept in GENERAL, as the Switch keeps its images where the device has unified image layouts: each pass
+       that samples it (a crop's copy, FSR 1, NIS, SGSR, Off's copy before FXAA) names that layout, which the run
+       under the validation layer checks */
+    {
+        const int filters[4] = {SNX_FX_UPSCALE_FSR1, SNX_FX_UPSCALE_NIS, SNX_FX_UPSCALE_SGSR, SNX_FX_UPSCALE_OFF};
+        for (int i = 0; i < 4; ++i) {
+            SnxFxImage out = {0};
+            VkCommandBuffer cb = snx_vk_ring_commands(&t.ring);
+            uint64_t serial;
+            uint32_t crop = i == 1 ? 8 : 0;
+            barrier(cb, src.image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL,
+                    VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, 0, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                    VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+            CHECK(snx_fx_render(fx, cb, 0, src.view, VK_IMAGE_LAYOUT_GENERAL, 320, 240, crop, crop, 320 - 2 * crop,
+                                240 - 2 * crop, 0, 640, 480, filters[i], i == 3 ? SNX_FX_AA_FXAA : SNX_FX_AA_OFF,
+                                &out));
+            barrier(cb, src.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                    VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, 0, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                    VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+            serial = snx_vk_ring_submit(&t.ring, VK_NULL_HANDLE, VK_NULL_HANDLE);
+            CHECK(snx_vk_ring_wait(&t.ring, serial, UINT64_MAX));
+            CHECK(out.width == 640 && out.height == 480);
+        }
+    }
     /* NIS and SGSR grow the frame half as large again */
     {
         int filters[2] = {SNX_FX_UPSCALE_NIS, SNX_FX_UPSCALE_SGSR};
@@ -728,8 +764,8 @@ int main(int argc, char** argv) {
             SnxFxImage out = {0};
             VkCommandBuffer cb = snx_vk_ring_commands(&t.ring);
             uint64_t serial;
-            CHECK(snx_fx_render(fx, cb, 0, step.view, 320, 240, 0, 0, 320, 240, 0, 480, 360, filters[i], SNX_FX_AA_OFF,
-                                &out));
+            CHECK(snx_fx_render(fx, cb, 0, step.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 320, 240, 0, 0, 320,
+                                240, 0, 480, 360, filters[i], SNX_FX_AA_OFF, &out));
             serial = snx_vk_ring_submit(&t.ring, VK_NULL_HANDLE, VK_NULL_HANDLE);
             CHECK(snx_vk_ring_wait(&t.ring, serial, UINT64_MAX));
             CHECK(out.width == 480 && out.height == 360);
@@ -742,12 +778,12 @@ int main(int argc, char** argv) {
         SnxFxImage out = {0};
         VkCommandBuffer cb = snx_vk_ring_commands(&t.ring);
         uint64_t serial;
-        CHECK(!snx_fx_render(fx, cb, 0, step.view, 320, 240, 0, 0, 320, 240, 0, 320, 240, SNX_FX_UPSCALE_FSR1,
-                             SNX_FX_AA_OFF, &out));
+        CHECK(!snx_fx_render(fx, cb, 0, step.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 320, 240, 0, 0, 320, 240,
+                             0, 320, 240, SNX_FX_UPSCALE_FSR1, SNX_FX_AA_OFF, &out));
         CHECK(!strcmp(g_test.said, "upscaler Bilinear and anti-aliasing Off, 320x240 to 320x240 (AMD FSR 1 grows a "
                                    "frame, and this one is not shown larger)"));
-        CHECK(snx_fx_render(fx, cb, 0, step.view, 320, 240, 0, 0, 320, 240, 0, 960, 720, SNX_FX_UPSCALE_NIS,
-                            SNX_FX_AA_AUTO, &out));
+        CHECK(snx_fx_render(fx, cb, 0, step.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 320, 240, 0, 0, 320, 240, 0,
+                            960, 720, SNX_FX_UPSCALE_NIS, SNX_FX_AA_AUTO, &out));
         CHECK(!strcmp(g_test.said, "upscaler AMD FSR 1 and anti-aliasing FXAA, 320x240 to 960x720 (NVIDIA NIS grows "
                                    "a frame twice at most)"));
         serial = snx_vk_ring_submit(&t.ring, VK_NULL_HANDLE, VK_NULL_HANDLE);
@@ -762,8 +798,8 @@ int main(int argc, char** argv) {
             uint64_t serial;
             unsigned char* got;
             snx_fx_set_sharpness(fx, i ? 100 : 0);
-            CHECK(snx_fx_render(fx, cb, 0, src.view, 320, 240, 0, 0, 320, 240, 0, 640, 480, SNX_FX_UPSCALE_FSR1,
-                                SNX_FX_AA_OFF, &out));
+            CHECK(snx_fx_render(fx, cb, 0, src.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 320, 240, 0, 0, 320, 240,
+                                0, 640, 480, SNX_FX_UPSCALE_FSR1, SNX_FX_AA_OFF, &out));
             serial = snx_vk_ring_submit(&t.ring, VK_NULL_HANDLE, VK_NULL_HANDLE);
             CHECK(snx_vk_ring_wait(&t.ring, serial, UINT64_MAX));
             got = read_image_f16(&t, out.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, 640, 480);
@@ -799,8 +835,9 @@ int main(int argc, char** argv) {
         }
         cb = snx_vk_ring_commands(&t.ring);
         for (uint32_t i = 0; i < 2; ++i)
-            CHECK(snx_fx_render(fx, cb, i, flat[i].view, side[i], side[i], 0, 0, side[i], side[i], 0, out_side[i],
-                                out_side[i], SNX_FX_UPSCALE_NIS, SNX_FX_AA_OFF, &out[i]));
+            CHECK(snx_fx_render(fx, cb, i, flat[i].view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, side[i], side[i], 0,
+                                0, side[i], side[i], 0, out_side[i], out_side[i], SNX_FX_UPSCALE_NIS, SNX_FX_AA_OFF,
+                                &out[i]));
         serial = snx_vk_ring_submit(&t.ring, VK_NULL_HANDLE, VK_NULL_HANDLE);
         CHECK(snx_vk_ring_wait(&t.ring, serial, UINT64_MAX));
         for (int i = 0; i < 2; ++i) {
@@ -861,8 +898,8 @@ int main(int argc, char** argv) {
                          VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT));
         CHECK(upload(&t, &picture, pic));
         cb = snx_vk_ring_commands(&t.ring);
-        CHECK(snx_fx_render(fx, cb, 0, picture.view, PW, PH, 0, 0, PW, PH, 0, PW, PH, SNX_FX_UPSCALE_OFF,
-                            SNX_FX_AA_FXAA, &out));
+        CHECK(snx_fx_render(fx, cb, 0, picture.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, PW, PH, 0, 0, PW, PH, 0,
+                            PW, PH, SNX_FX_UPSCALE_OFF, SNX_FX_AA_FXAA, &out));
         serial = snx_vk_ring_submit(&t.ring, VK_NULL_HANDLE, VK_NULL_HANDLE);
         CHECK(snx_vk_ring_wait(&t.ring, serial, UINT64_MAX));
         CHECK(out.width == PW && out.height == PH);
@@ -928,8 +965,8 @@ int main(int argc, char** argv) {
         CHECK(upload(&t, &font, glyph));
         snx_fx_set_off_sharp(fx, 1);
         cb = snx_vk_ring_commands(&t.ring);
-        CHECK(snx_fx_render(fx, cb, 0, font.view, GW, GH, 0, 0, GW, GH, 0, GW * GS, GH * GS, SNX_FX_UPSCALE_OFF,
-                            SNX_FX_AA_FXAA, &out));
+        CHECK(snx_fx_render(fx, cb, 0, font.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, GW, GH, 0, 0, GW, GH, 0,
+                            GW * GS, GH * GS, SNX_FX_UPSCALE_OFF, SNX_FX_AA_FXAA, &out));
         serial = snx_vk_ring_submit(&t.ring, VK_NULL_HANDLE, VK_NULL_HANDLE);
         CHECK(snx_vk_ring_wait(&t.ring, serial, UINT64_MAX));
         snx_fx_set_off_sharp(fx, 0);
@@ -981,8 +1018,9 @@ int main(int argc, char** argv) {
             uint64_t serial;
             unsigned char* got;
             uint32_t between = 0;
-            CHECK(snx_fx_render(fx, cb, 0, stairs.view, side, side, 0, 0, side, side, 0, side, side, SNX_FX_UPSCALE_OFF,
-                                k ? SNX_FX_AA_SMAA : SNX_FX_AA_FXAA, &out));
+            CHECK(snx_fx_render(fx, cb, 0, stairs.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, side, side, 0, 0,
+                                side, side, 0, side, side, SNX_FX_UPSCALE_OFF, k ? SNX_FX_AA_SMAA : SNX_FX_AA_FXAA,
+                                &out));
             serial = snx_vk_ring_submit(&t.ring, VK_NULL_HANDLE, VK_NULL_HANDLE);
             CHECK(snx_vk_ring_wait(&t.ring, serial, UINT64_MAX));
             got = read_image_f16(&t, out.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, side, side);
@@ -1007,8 +1045,8 @@ int main(int argc, char** argv) {
         max_step(step_pixels, 320, 240, &plain_step);
         plain_avg = avg_step(step_pixels, 320, 240);
         cb = snx_vk_ring_commands(&t.ring);
-        CHECK(snx_fx_render(fx, cb, 0, step.view, 320, 240, 0, 0, 320, 240, 0, 320, 240, SNX_FX_UPSCALE_BILINEAR,
-                            SNX_FX_AA_FXAA, &out));
+        CHECK(snx_fx_render(fx, cb, 0, step.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 320, 240, 0, 0, 320, 240, 0,
+                            320, 240, SNX_FX_UPSCALE_BILINEAR, SNX_FX_AA_FXAA, &out));
         serial = snx_vk_ring_submit(&t.ring, VK_NULL_HANDLE, VK_NULL_HANDLE);
         CHECK(snx_vk_ring_wait(&t.ring, serial, UINT64_MAX));
         got = read_image_f16(&t, out.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, 320, 240);
@@ -1018,8 +1056,8 @@ int main(int argc, char** argv) {
         write_ppm(showcase, "fx-fxaa", got, 320, 240);
         free(got);
         cb = snx_vk_ring_commands(&t.ring);
-        CHECK(snx_fx_render(fx, cb, 0, step.view, 320, 240, 0, 0, 320, 240, 0, 320, 240, SNX_FX_UPSCALE_BILINEAR,
-                            SNX_FX_AA_SMAA, &out));
+        CHECK(snx_fx_render(fx, cb, 0, step.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 320, 240, 0, 0, 320, 240, 0,
+                            320, 240, SNX_FX_UPSCALE_BILINEAR, SNX_FX_AA_SMAA, &out));
         serial = snx_vk_ring_submit(&t.ring, VK_NULL_HANDLE, VK_NULL_HANDLE);
         CHECK(snx_vk_ring_wait(&t.ring, serial, UINT64_MAX));
         got = read_image_f16(&t, out.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, 320, 240);
@@ -1039,8 +1077,8 @@ int main(int argc, char** argv) {
         SnxFxImage out = {0};
         VkCommandBuffer cb = snx_vk_ring_commands(&t.ring);
         uint64_t serial;
-        CHECK(snx_fx_render(fx, cb, 0, src.view, 320, 240, 0, 0, 320, 240, 0, 320, 240, SNX_FX_UPSCALE_OFF,
-                            SNX_FX_AA_SSAA2, &out));
+        CHECK(snx_fx_render(fx, cb, 0, src.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 320, 240, 0, 0, 320, 240, 0,
+                            320, 240, SNX_FX_UPSCALE_OFF, SNX_FX_AA_SSAA2, &out));
         serial = snx_vk_ring_submit(&t.ring, VK_NULL_HANDLE, VK_NULL_HANDLE);
         CHECK(snx_vk_ring_wait(&t.ring, serial, UINT64_MAX));
         CHECK(out.width == 320 && out.height == 240);
@@ -1065,8 +1103,8 @@ int main(int argc, char** argv) {
         }
         CHECK(upload(&t, &flat, flat_pixels));
         cb = snx_vk_ring_commands(&t.ring);
-        CHECK(snx_fx_render(fx, cb, 0, flat.view, 320, 240, 0, 0, 320, 240, 0, 320, 240, SNX_FX_UPSCALE_OFF,
-                            SNX_FX_AA_SSAA4, &out));
+        CHECK(snx_fx_render(fx, cb, 0, flat.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 320, 240, 0, 0, 320, 240, 0,
+                            320, 240, SNX_FX_UPSCALE_OFF, SNX_FX_AA_SSAA4, &out));
         serial = snx_vk_ring_submit(&t.ring, VK_NULL_HANDLE, VK_NULL_HANDLE);
         CHECK(snx_vk_ring_wait(&t.ring, serial, UINT64_MAX));
         CHECK(out.width == 320 && out.height == 240);
@@ -1121,8 +1159,8 @@ int main(int argc, char** argv) {
             unsigned char* got;
             uint32_t bad = 0, first = 0;
             uint32_t gw = ow, gh = oh;
-            CHECK(snx_fx_render(fx, cb, 0, framed.view, iw, ih, cx, cy, cw, ch, 0, ow, oh, runs[r].filter, runs[r].aa,
-                                &out));
+            CHECK(snx_fx_render(fx, cb, 0, framed.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, iw, ih, cx, cy, cw,
+                                ch, 0, ow, oh, runs[r].filter, runs[r].aa, &out));
             serial = snx_vk_ring_submit(&t.ring, VK_NULL_HANDLE, VK_NULL_HANDLE);
             CHECK(snx_vk_ring_wait(&t.ring, serial, UINT64_MAX));
             CHECK(out.width == gw && out.height == gh);

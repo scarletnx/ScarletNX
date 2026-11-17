@@ -557,8 +557,8 @@ static void show_screens(VkCommandBuffer cb, unsigned window, uint32_t index, un
         VkRect2D to = {rect[0], {(uint32_t)(rect[1].x - rect[0].x), (uint32_t)(rect[1].y - rect[0].y)}};
         image_barrier(cb, f->image, f->layout, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
         f->layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        drawn[i] = snx_fx_prepare(g_present.fx[i], cb, slot, f->view, f->width, f->height, 0, 0, f->width, f->height, 0,
-                                  to, sc->format.format, c->upscaler, c->aa);
+        drawn[i] = snx_fx_prepare(g_present.fx[i], cb, slot, f->view, f->layout, f->width, f->height, 0, 0, f->width,
+                                  f->height, 0, to, sc->format.format, c->upscaler, c->aa);
     }
     snx_vk_swapchain_begin(cb, sc, index);
     for (unsigned i = 0; i < 2; ++i)

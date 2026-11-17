@@ -336,7 +336,7 @@ bool vita_vk_present(VkBuffer buffer, VkDeviceSize offset, uint32_t pitch, uint3
     /* the upscaler's and the anti-aliasing's passes but their last, which draws in the window's rendering, as the
        frame sampled smooth does with both off */
     bool drawn = sw && sh &&
-                 snx_fx_prepare(g.fx, cb, slot, g.frame_view, width, height, 0, 0, width, height, 0, to,
+                 snx_fx_prepare(g.fx, cb, slot, g.frame_view, g.frame_layout, width, height, 0, 0, width, height, 0, to,
                                 v->swap.format.format, g.fx_config.upscaler, g.fx_config.aa);
     snx_vk_swapchain_begin(cb, &v->swap, index);
     if (drawn) snx_fx_draw(g.fx, cb, slot);
