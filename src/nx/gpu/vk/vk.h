@@ -481,10 +481,17 @@ int vk_uma_pending_cpu(u64 cpu, u64 len);                /* the same by guest ad
    other check: no page of it has newer bytes elsewhere (blk), and the barrier and the stamps of a read in place are
    recorded. 1 with the region's buffer and offset; 0 for buffer.c's chain (vk_lock held) */
 int vk_uma_read(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off);
+/* the same by guest CPU address, for a range that a load or a copy reads once (owned.c): no memo, and the fast path's
+   counts left alone. ordered 0 for a read recorded ahead of the submission's work (vk_cmd_upload), where no write in
+   place is pending over the range: no barrier then */
+int vk_uma_read_cpu(u64 cpu, u64 len, u64 align, int ordered, VkBuffer* buf, u64* off);
 void vk_uma_fast_counts(u64* hits, u64* blk); /* the fast path's reads bound, and those a blk page sent to the chain */
 /* draw_state_check=1, for a read the fast path bound at buf, off: uma.c's own reason the old chain would not have,
    NULL for none; a difference found (counted, and said in the log), and their count */
 const char* vk_uma_read_differs(u64 gva, u64 len, VkBuffer buf, u64 off);
+/* the same, with the buffer cache's own reasons first (a pending result, the mirror's writes, a storage image, a queued
+   release, bytes the GPU owns): what draw_state_check=1 asks of a read in place that no draw makes (buffer.c) */
+const char* vk_buf_fast_why(u64 gva, u64 len, VkBuffer buf, u64 off);
 void vk_uma_check_diff(const char* what, u64 gva, u64 len);
 u64 vk_uma_check_diffs(void);
 /* the writes in place added so far, which the page model leaves out of vk_buf_adds and g_pend_any.adds (but not out
@@ -1602,6 +1609,11 @@ enum {
     VK_GREAD_N
 };
 void vk_guest_read_counts(u64 counts[2][VK_GREAD_N]);
+/* guest bytes [gva, gva + size) for the GPU to read where they are, in place of vk_guest_read's staging: one run of
+   guest memory in a region with no page whose newer bytes are elsewhere (uma.c's vk_uma_read_cpu, whose barrier puts
+   the read after the writes in place before it), at an offset that is a multiple of align. 1 with the region's buffer
+   and the offset; 0 where they are to be staged. Under vk_lock */
+int vk_guest_in_place(u64 gva, u64 size, u64 align, VkBuffer* buf, u64* off);
 /* the same into device memory (buf, which the CPU doesn't map): 0 when staging has no room */
 int vk_guest_read_device(u64 gva, u64 size, VkBuffer buf, u64 at);
 /* the same in the submission's upload command buffer (vk_cmd_upload), ahead of its rendering passes, when every byte

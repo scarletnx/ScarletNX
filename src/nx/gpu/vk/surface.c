@@ -840,9 +840,11 @@ static int load_bands(Surf* s, u32 pitch) {
             m.rows = h - y < rows ? h - y : rows;
             vk_bl_range(&m, &lo, &hi);
             u64 from = s->gva + (u64)l * s->layer_size + lo;
-            u8* p = vk_stage_guest_input(from, hi - lo, hi - lo, &staged, &off);
-            if (!p) return load_fail(s, l, y, "staging", hi - lo);
-            vk_guest_read(from, hi - lo, p, staged, off);
+            if (!vk_guest_in_place(from, hi - lo, 16, &staged, &off)) { /* else read in a region */
+                u8* p = vk_stage_guest_input(from, hi - lo, hi - lo, &staged, &off);
+                if (!p) return load_fail(s, l, y, "staging", hi - lo);
+                vk_guest_read(from, hi - lo, p, staged, off);
+            }
             /* after the read, which may land GPU results and submit: the command buffer, and the scratch buffer if
                they grew it, are the ones from then */
             VkCommandBuffer cb = vk_cmd();
@@ -855,10 +857,10 @@ static int load_bands(Surf* s, u32 pitch) {
         }
     return 1;
 }
-/* a block linear target loaded: its guest bytes staged as they are, from where they are, and deswizzled on the GPU.
-   One whose rows need more than VK_PART_SHARE of the cap goes in bands (load_bands); a multisampled one goes whole,
-   its layers drawn from the guest's layout of them (vk_ms_pack), and so do a scaled one, blitted from an unscaled
-   image, and a volume, its slices one move */
+/* a block linear target loaded: its guest bytes staged as they are, from where they are, and deswizzled on the GPU,
+   or read in the region that holds them (vk_guest_in_place). One whose rows need more than VK_PART_SHARE of the cap goes
+   in bands (load_bands); a multisampled one goes whole, its layers drawn from the guest's layout of them (vk_ms_pack),
+   and so do a scaled one, blitted from an unscaled image, and a volume, its slices one move */
 static int surf_load_bl(Surf* s) {
     u64 sz = rt_bytes(s);
     u32 pitch = (guest_w(s) * s->f.bpp + 15) & ~15u, moves = s->volume ? 1 : s->layers, h = guest_h(s);
@@ -869,10 +871,11 @@ static int surf_load_bl(Surf* s) {
     vk_render_end();
     if (lin > g_vk.alloc_cap / VK_PART_SHARE && !s->msaa && s->sw == s->w && s->sh == s->h && !surf_volume(s))
         return load_bands(s, pitch);
-    u8* p = vk_stage_guest_input(s->gva, sz, sz, &staged, &off);
-    if (!p) return load_fail(s, 0, 0, "staging", sz);
+    const int in_place = vk_guest_in_place(s->gva, sz, 16, &staged, &off);
+    u8* p = in_place ? NULL : vk_stage_guest_input(s->gva, sz, sz, &staged, &off);
+    if (!in_place && !p) return load_fail(s, 0, 0, "staging", sz);
     if (!(scratch = vk_bl_scratch(lin, &cap))) return load_fail(s, 0, 0, "scratch buffer", lin);
-    vk_guest_read(s->gva, sz, p, staged, off); /* what the GPU holds of it copied on the GPU */
+    if (!in_place) vk_guest_read(s->gva, sz, p, staged, off); /* what the GPU holds of it copied on the GPU */
     VkCommandBuffer cb = vk_cmd();
     vk_bl_barrier(cb, 1);
     for (u32 i = 0; i < moves; i++)
@@ -881,14 +884,18 @@ static int surf_load_bl(Surf* s) {
     return rt_load_copy(cb, s, scratch, 0, pitch, (u64)pitch * h);
 }
 /* a pitch linear one: its guest bytes staged as they lie, the copy taking the pitch, when it is whole texels (else a
-   row at a time into tight rows); what the GPU holds of them copied on the GPU */
+   row at a time into tight rows); what the GPU holds of them copied on the GPU. Whole texels that a region holds are
+   read there (vk_guest_in_place), at a multiple of 4 and of a texel's bytes */
 static int surf_load_pitch(Surf* s) {
     u32 gh = guest_h(s);
-    u64 sz = rt_bytes(s), row = (u64)guest_w(s) * s->f.bpp;
+    u64 sz = rt_bytes(s), row = (u64)guest_w(s) * s->f.bpp, align = 4;
     int as_is = s->pitch % s->f.bpp == 0;
     VkBuffer buf;
     u64 off;
     vk_render_end();
+    while (s->f.bpp && align % s->f.bpp) align += 4;
+    if (as_is && vk_guest_in_place(s->gva, sz, align, &buf, &off))
+        return rt_load_copy(vk_cmd(), s, buf, off, s->pitch, s->layer_size);
     u8* p = vk_stage_guest_input(s->gva, sz, as_is ? sz : row * gh * s->layers, &buf, &off);
     if (!p) return 0;
     if (as_is)

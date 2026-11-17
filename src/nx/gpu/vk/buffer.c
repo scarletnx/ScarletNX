@@ -3902,14 +3902,17 @@ static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 al
    chain below that would have kept it off guest memory in place, asked again, and the chain itself, which must bind
    the same. The fast path asks a page's blk bit for all of them */
 static int buf_get_(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 align, int inplace);
+const char* vk_buf_fast_why(u64 gva, u64 len, VkBuffer buf, u64 off) {
+    return vk_mirror_pending(gva, len) || vk_mirror_holds(gva, len) ? "the mirror's writes"
+           : vk_buf_pending(gva, len)                               ? "a pending graphics result"
+           : vk_compute_pending(gva, len)                           ? "a pending compute result"
+           : g_gfx_img_any && vk_gfx_image_pending(gva, len)        ? "a storage image not published"
+           : vk_release_pending(gva, len)                           ? "a queued release's payload"
+           : range_owned(gva, len)                                  ? "bytes the GPU owns"
+                                                                    : vk_uma_read_differs(gva, len, buf, off);
+}
 static void fast_check(u64 gva, u64 len, VkBuffer buf, u64 off, int strict, u64 align, int inplace) {
-    const char* why = vk_mirror_pending(gva, len) || vk_mirror_holds(gva, len) ? "the mirror's writes"
-                      : vk_buf_pending(gva, len)                               ? "a pending graphics result"
-                      : vk_compute_pending(gva, len)                           ? "a pending compute result"
-                      : g_gfx_img_any && vk_gfx_image_pending(gva, len)        ? "a storage image not published"
-                      : vk_release_pending(gva, len)                           ? "a queued release's payload"
-                      : range_owned(gva, len) ? "bytes the GPU owns"
-                                              : vk_uma_read_differs(gva, len, buf, off);
+    const char* why = vk_buf_fast_why(gva, len, buf, off);
     VkBuffer cb = VK_NULL_HANDLE;
     u64 co = 0;
     const u32 kind = g_buf_kind;

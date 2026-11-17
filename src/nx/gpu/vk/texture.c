@@ -280,11 +280,13 @@ static int tex_bind(Surf* t) { return tex_bind_at(t, !t->shed); }
 
 /* the guest bytes a move of a level reads (lsz bytes at gva) staged as they are (what the GPU holds of them copied on
    the GPU, vk_guest_read), zero past the level's end: buf and off hold the layout's first byte the move reads
-   (vk_bl_range) */
+   (vk_bl_range). Bytes a region holds that reach no further than the level's end are read there (vk_guest_in_place):
+   the move takes 16-byte runs */
 static int stage_bl(const VkBlMove* m, u64 gva, u64 lsz, VkBuffer* buf, u64* off) {
     u64 lo, hi;
     vk_bl_range(m, &lo, &hi);
     u64 n = lo >= lsz ? 0 : hi <= lsz ? hi - lo : lsz - lo;
+    if (n == hi - lo && vk_guest_in_place(gva + lo, n, 16, buf, off)) return 1;
     u8* p = vk_stage_guest_input(gva + lo, n, hi - lo, buf, off);
     if (!p) return 0;
     vk_guest_read(gva + lo, n, p, *buf, *off);
@@ -628,8 +630,18 @@ static int level_upload_bl(Upload* u, const UpLevel* lv, u64 gva, u64 lsz, u32 l
     return 1;
 }
 
+/* where a load's rows of format f, as they are in guest memory, can be read in a region (vk_guest_in_place): a copy
+   into the image takes a multiple of 4 and of a texel's (or block's) bytes, the conversion's storage buffer one of 16
+   (texconv.c aligns the binding down and takes the rest as a bias) */
+static u64 rows_align(const VkFmt* f, int conv) {
+    const u64 step = conv ? 16 : 4;
+    u64 a = step;
+    while (f->bpp && a % f->bpp) a += step;
+    return a;
+}
 /* a pitch linear level: its rows staged as they are, whole slices or strips of rows of a slice, when the guest's
-   pitch suits the copies and the conversion; else each row into rows of lv->pitch */
+   pitch suits the copies and the conversion; else each row into rows of lv->pitch. Rows as they are that a region
+   holds whole are read there (vk_guest_in_place) */
 static int level_upload_pitch(Upload* u, const UpLevel* lv, u64 gva, u64 lsz, u64 band) {
     const Surf* t = u->t;
     u32 th = lv->th, ld = lv->ld, gp = t->pitch;
@@ -646,13 +658,15 @@ static int level_upload_pitch(Upload* u, const UpLevel* lv, u64 gva, u64 lsz, u6
             u64 at, first = ((u64)z * th + y) * gp, size = (u64)rows * slices * pitch;
             u64 end = ((u64)(z + slices - 1) * th + y + rows - 1) * gp + lv->rowb;
             u64 source_bytes = as_is ? first >= lsz ? 0 : first + size <= lsz ? size : lsz - first : end - first;
-            u8* p = vk_stage_guest_input(gva + first, source_bytes, size, &staged, &at);
-            if (!p) return 0;
-            if (as_is) { /* the rows, slices after another, are one range of guest memory */
+            const int in_place = as_is && source_bytes == size &&
+                                 vk_guest_in_place(gva + first, size, rows_align(&t->f, lv->conv != 0), &staged, &at);
+            u8* p = in_place ? NULL : vk_stage_guest_input(gva + first, source_bytes, size, &staged, &at);
+            if (!in_place && !p) return 0;
+            if (p && as_is) { /* the rows, slices after another, are one range of guest memory */
                 u64 have = first >= lsz ? 0 : first + size <= lsz ? size : lsz - first;
                 vk_guest_read(gva + first, have, p, staged, at);
                 memset(p + have, 0, size - have);
-            } else
+            } else if (p)
                 for (u32 k = 0; k < slices; k++)
                     for (u32 r = 0; r < rows; r++) {
                         u64 o = ((u64)(z + k) * th + y + r) * gp;
@@ -2794,13 +2808,18 @@ static int pitch_patch(Upload* u, const PitchRect* r) {
         if (n * in_pitch > band) n = band / in_pitch ? band / in_pitch : 1;
         VkBuffer staged;
         u64 at;
-        u8* p = vk_stage_guest_input(gva + first, (n - 1) * gp + (as_is ? gp : w), n * in_pitch, &staged, &at);
-        if (!p) return 0;
-        if (as_is) { /* the rows are one range of guest memory */
-            u64 size = n * in_pitch, have = first + size <= lsz ? size : lsz - first;
+        const u64 size = n * in_pitch, have = first + size <= lsz ? size : lsz - first;
+        /* the rows are one range of guest memory: read in a region where one holds them */
+        const int in_place =
+            as_is && have == size && vk_guest_in_place(gva + first, size, rows_align(f, 0), &staged, &at);
+        u8* p = in_place
+                    ? NULL
+                    : vk_stage_guest_input(gva + first, (n - 1) * gp + (as_is ? gp : w), n * in_pitch, &staged, &at);
+        if (!in_place && !p) return 0;
+        if (p && as_is) {
             vk_guest_read(gva + first, have, p, staged, at);
             memset(p + have, 0, size - have);
-        } else
+        } else if (p)
             for (u64 k = 0; k < n; k++) vk_guest_read(gva + first + k * gp, w, p + k * w, staged, at + k * w);
         if (!up_reserve(u, 0) || !up_rows(u, &lv, staged, at, in_pitch, z, 1, y, (u32)n)) return 0;
         __atomic_add_fetch(&g_tex_upload_bytes, n * w, __ATOMIC_RELAXED);
