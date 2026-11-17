@@ -230,7 +230,6 @@ The settings, each with its extension and, where one took it in, the Vulkan vers
 | `vk_khr_video_decode_h264` | `auto` | `VK_KHR_video_decode_h264` |
 | `vk_khr_video_decode_queue` | `auto` | `VK_KHR_video_decode_queue` |
 | `vk_khr_video_queue` | `auto` | `VK_KHR_video_queue` |
-| `vk_nv_dedicated_allocation_image_aliasing` | `auto` | `VK_NV_dedicated_allocation_image_aliasing` |
 | `vk_nv_device_diagnostic_checkpoints` | `auto` | `VK_NV_device_diagnostic_checkpoints` |
 | `vk_nv_fragment_coverage_to_color` | `auto` | `VK_NV_fragment_coverage_to_color` |
 | `vk_nv_framebuffer_mixed_samples` | `auto` | `VK_NV_framebuffer_mixed_samples` |
