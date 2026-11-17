@@ -3527,6 +3527,41 @@ typedef struct {
     int whole; /* no room for the runs: from the first to the end of the last, in one copy (the first run's) */
 } Patch;
 static VkBufferCopy* patch_runs(void) { return g_buffer.patch.more ? g_buffer.patch.more : g_buffer.patch.r0; }
+/* The own buffers' patches since the last statistics line (every 600 presents, buf_frame), and the bytes the buffer
+   cache stages for a draw (buf_get_): what a read in place of a region could take instead. The patches' pages by what
+   found them (the CPU's writes, a GPU-side write's stamp), their bytes in a region, and the patches with bytes in
+   none by why (vk_uma_none_why); the staged bytes, of them those of vertices, indices, windows and constant buffers
+   (IN_DEAR), and those in a region. Under vk_lock */
+typedef struct {
+    u64 patches, bytes, cpu_pages, gpu_pages, region_bytes, none[VK_UMA_NONE_N];
+    u64 staged, staged_dear, staged_region;
+} GCopy;
+static GCopy g_gcopy;
+static void gcopy_log(void) {
+    static const char* const why[VK_UMA_NONE_N] = {"no unified memory", "in a region",     "placed memory",
+                                                   "a trapped page",    "unmovable",       "over the cap",
+                                                   "a refused span",    "no read made one"};
+    char line[320];
+    size_t at = 0;
+    line[0] = 0;
+    for (int k = 0; k < VK_UMA_NONE_N; k++) {
+        if (!g_gcopy.none[k] || at >= sizeof line - 1) continue;
+        int w = snprintf(line + at, sizeof line - at, "%s %llu %s", at ? "," : "", (unsigned long long)g_gcopy.none[k],
+                         why[k]);
+        if (w > 0) at += (size_t)w < sizeof line - at ? (size_t)w : sizeof line - at - 1;
+    }
+    LOG("vulkan: own buffer patches over the last 600 presents: %llu, %.1f MB (%llu pages the CPU wrote, %llu a "
+        "GPU-side write stamped), %.1f MB of them in a region; patches with bytes in no region, by why:%s\n",
+        (unsigned long long)g_gcopy.patches, (double)g_gcopy.bytes / 1048576.0, (unsigned long long)g_gcopy.cpu_pages,
+        (unsigned long long)g_gcopy.gpu_pages, (double)g_gcopy.region_bytes / 1048576.0, at ? line : " none");
+    LOG("vulkan: buffer cache staging over the last 600 presents: %.1f MB, %.1f MB of it vertices, indices, windows and "
+        "constant buffers, %.1f MB in a region\n",
+        (double)g_gcopy.staged / 1048576.0, (double)g_gcopy.staged_dear / 1048576.0,
+        (double)g_gcopy.staged_region / 1048576.0);
+    g_gcopy = (GCopy){0};
+}
+/* len bytes at gva staged for a draw: counted (g_gcopy) */
+static void gcopy_staged(u64 gva, u64 len, int inplace);
 static void patch_note(void* user, u64 at, u64 n) {
     Patch* p = user;
     VkBufferCopy* r = patch_runs();
@@ -3558,6 +3593,8 @@ static int patch_own(u32 i, const u8* host, u32 since) {
     Vb* e = &g_vb[i];
     Patch pt = {.src = host};
     vk_written_runs(host, e->len, since, patch_note, &pt);
+    const VkBufferCopy* r = patch_runs();
+    for (u32 k = 0; k < pt.n; k++) g_gcopy.cpu_pages += (r[k].size + 0xFFF) >> 12; /* the CPU's writes alone */
     return patch_apply(e, &pt);
 }
 /* pt's runs of the entry's bytes (pt->src) copied over its own buffer: staged, then copied on the GPU */
@@ -3568,6 +3605,13 @@ static int patch_apply(const Vb* e, Patch* pt) {
     u8* p;
     if (!pt->n) return 1;
     for (u32 k = 0; k < pt->n; k++) bytes += r[k].size; /* a whole one's span is more than its runs */
+    const u64 cpu = (u64)(pt->src - g_mem);
+    u64 held = 0;
+    for (u32 k = 0; k < pt->n && vk_uma(); k++) held += vk_uma_held(cpu + r[k].dstOffset, r[k].size) ? r[k].size : 0;
+    g_gcopy.patches++;
+    g_gcopy.bytes += bytes;
+    g_gcopy.region_bytes += held;
+    if (held < bytes) g_gcopy.none[vk_uma_none_why(cpu, e->len)]++;
     if (!(p = vk_stream_upload(bytes, vk_stage_align(), &sb, &so))) return 0; /* read by the copy below alone */
     for (u32 k = 0; k < pt->n; k++) {
         memcpy(p + at, pt->src + r[k].dstOffset, r[k].size);
@@ -3599,7 +3643,14 @@ static int patch_dirty(u32 i, u64 gva, const u8* host, u64 gw, u32 ws) {
         int d = 0;
         if (pg <= last) {
             u64 a = pg == first ? 0 : (pg << 12) - o, b = pg == last ? e->len : ((pg + 1) << 12) - o;
-            d = page_written(pg, ws) || gpu_mem_dirty_since(gw, gva + a, b - a);
+            const int by_cpu = page_written(pg, ws);
+            d = by_cpu || gpu_mem_dirty_since(gw, gva + a, b - a);
+            if (d) {
+                if (by_cpu)
+                    g_gcopy.cpu_pages++;
+                else
+                    g_gcopy.gpu_pages++;
+            }
         }
         if (d && !in) run = pg;
         if (!d && in) {
@@ -3827,6 +3878,12 @@ u32 vk_buf_sources(void) {
     u32 s = g_buf_sources;
     g_buf_sources = 0;
     return s;
+}
+static void gcopy_staged(u64 gva, u64 len, int inplace) {
+    u64 cpu = 0;
+    g_gcopy.staged += len;
+    if (inplace & IN_DEAR) g_gcopy.staged_dear += len;
+    if (vk_uma() && gmmu_run(gva, len, &cpu) == len && vk_uma_held(cpu, len)) g_gcopy.staged_region += len;
 }
 static int buf_get_(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 align, int inplace);
 static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 align, int inplace) {
@@ -4106,6 +4163,7 @@ static int buf_get_(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 a
         if (e) e->buf = VK_NULL_HANDLE; /* a failed allocation must not leave the old snapshot reusable */
         if (!(staged = vk_stream_upload(len, vk_stage_align(), &sb, &so))) return 0;
         h = vk_hash_copy(staged, src, len);
+        gcopy_staged(gva, len, inplace);
     } else
         h = vk_hash(src, len);
     g_checks.hashes++;
@@ -4142,6 +4200,7 @@ static int buf_get_(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 a
         if (!staged) { /* its own buffer was dropped above: the bytes changed */
             if (!(staged = vk_stream_upload(len, vk_stage_align(), &sb, &so))) return 0;
             memcpy(staged, src, len);
+            gcopy_staged(gva, len, inplace);
         }
         /* a big range takes its own buffer at once when writes are tracked: changes then patch it (patch_own). Not a
            copy engine's source past a sixty-fourth of the memory budget: a texture's upload reads its source once,
@@ -4512,6 +4571,7 @@ static void buf_frame(void) {
     if (g_vk_present % 4) return;
     vk_wlog_trim();
     vk_mirror_trim();
+    if (g_vk_present % 600 == 0) gcopy_log();
     if (copy_stats_on() && g_vk_present % 600 == 0) {
         LOG("vulkan: buffer bytes over 600 presents: uncached=%llu zero=%llu calls=%llu peak=%llu staged=%llu owned=%llu bound=%llu owner_bound=%llu writeback=%llu/%llu waits=%llu/%llums reused=%llu\n",
             (unsigned long long)g_copy_uncached, (unsigned long long)g_copy_zero, (unsigned long long)g_copy_calls,

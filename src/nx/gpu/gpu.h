@@ -324,6 +324,8 @@ typedef struct {
    Unmapped pages read as zero and take no writes; the int calls return -1 when any page was unmapped */
 int gmem_read(u64 gva, void* dst, u64 size);
 int gmem_write(u64 gva, const void* src, u64 size);
+/* gmem_write, the write recorded as gpu_mem_written_by's of that writer */
+int gmem_write_by(u64 gva, const void* src, u64 size, int kind, u32 format, u64 surface);
 /* a constant buffer upload (LOAD_CONSTANT_BUFFER): gmem_write, stamped with gpu_mem_written_cb */
 int gmem_write_cb(u64 gva, const void* src, u64 size);
 /* gmem_read and gmem_write in halves, for a copy made of many small runs (a block linear row's 16 byte runs): the
@@ -422,10 +424,32 @@ int gpu_mem_watch(u64 gva, u64 size);
 /* the newest generation that wrote a watched granule, published after gpu_mem_generation reached it */
 u64 gpu_mem_watched_generation(void);
 /* what made a GPU-side write: gpu_mem_written_cb, gpu_mem_written, gpu_mem_written_shader, gpu_mem_remapped,
-   gpu_mem_written_cpu, gpu_mem_written_all */
-enum { GPU_WRITE_CB = 1, GPU_WRITE_ENGINE, GPU_WRITE_SHADER, GPU_WRITE_REMAP, GPU_WRITE_RESULT, GPU_WRITE_ALL };
+   gpu_mem_written_cpu, gpu_mem_written_all; then each writer that gpu_mem_written_by names */
+enum {
+    GPU_WRITE_CB = 1,
+    GPU_WRITE_ENGINE,
+    GPU_WRITE_SHADER,
+    GPU_WRITE_REMAP,
+    GPU_WRITE_RESULT,
+    GPU_WRITE_ALL,
+    GPU_WRITE_RUNTIME, /* gmem_write: the runtime's own write */
+    GPU_WRITE_INLINE,  /* the inline engine's data */
+    GPU_WRITE_CLEAR,   /* the 3D engine's clear of memory before the renderer runs */
+    GPU_WRITE_2D,      /* a blit of the 2D engine */
+    GPU_WRITE_DMA,     /* a copy of the copy engine */
+    GPU_WRITE_COMPUTE, /* a dispatch's storage */
+    GPU_WRITE_TARGET,  /* a render target's write-back */
+    GPU_WRITE_IMAGE,   /* a storage image's publish */
+    GPU_WRITE_RELEASE, /* a semaphore or report release */
+    GPU_WRITE_KINDS
+};
+/* gpu_mem_written of a writer of kind GPU_WRITE_RUNTIME or after, for the log's counts; for a surface's write (a target's
+   write-back, a storage image's publish), its format (VkFormat) and address, else 0 and 0 */
+void gpu_mem_written_by(u64 gva, u64 size, int kind, u32 format, u64 surface);
 /* the kind of the newest GPU-side write on a page of [a, a + sz), 0 where none or too long ago to tell */
 int gpu_mem_newest_kind(u64 a, u64 sz);
+/* the same, with the format and address of the surface that wrote it (gpu_mem_written_by), 0 and 0 for another writer */
+int gpu_mem_newest_write(u64 a, u64 sz, u32* format, u64* surface);
 void gpu_mem_written_all(void); /* a save state's load: every page written, after anything asked before */
 int gpu_mem_dirty_since(u64 since, u64 a, u64 sz); /* a GPU-side write after since touched [a, a + sz) */
 /* fn(ctx, at, n) for each run of [a, a + sz) on the GPU pages a GPU-side write after since touched, in order: what

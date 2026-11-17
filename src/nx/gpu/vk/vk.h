@@ -506,6 +506,22 @@ int vk_uma_copy_pending(u64 cpu, u64 len, VkBuffer* buf, u64* off);
    (vk_own_publish). 0 elsewhere: then it is published GPU-owned, as without UMA. vk_lock held */
 int vk_uma_publish(u64 cpu, u64 len, VkBuffer src, u64 off);
 int vk_uma_held(u64 cpu, u64 len); /* one import holds guest memory [cpu, cpu + len) now (vk_lock held) */
+/* why no region holds guest memory [cpu, cpu + len), for the log's counts: unified memory is off, or a region holds it,
+   or the windows it touches meet placed memory, have a trapped page, have pages not mapped or that can't move, are
+   over the cap of a region, or are a span the driver refused; else nothing stops a region there, which no read in
+   place has made yet (vk_lock held) */
+enum {
+    VK_UMA_NONE_OFF,
+    VK_UMA_NONE_HELD,
+    VK_UMA_NONE_PLACED,
+    VK_UMA_NONE_TRAPPED,
+    VK_UMA_NONE_UNMOVABLE,
+    VK_UMA_NONE_CAP,
+    VK_UMA_NONE_FAILED,
+    VK_UMA_NONE_UNASKED,
+    VK_UMA_NONE_N
+};
+int vk_uma_none_why(u64 cpu, u64 len);
 /* the first part of guest memory [cpu, cpu + len): up to where the import holding cpu ends (*held 1), or up to where
    the next import begins when none holds cpu (*held 0). 0 where it can't tell (no unified memory, placed memory).
    vk_lock held */
@@ -1134,6 +1150,7 @@ typedef struct Surf {
        nothing it could take: it searches again only once either moved */
     u64 take_gen;
     u32 take_wgen;
+    u8 take_said; /* textures: the log said once what that search found (texture.c take_say) */
     /* textures whose image has memory only where they are mapped (vk_image_create_resident): in each layer, bricks of
        grain texels, each brick_bytes of the guest's layout in one range, level by level up to tail_first, x first,
        then y, then z; bricks of them a layer, 0 for every other image. The levels from tail_first on are in mip tails,
@@ -1568,6 +1585,23 @@ void vk_own_publish_owned(u64 cpu, u64 size, VkOwnRes* r, u64 off);
    vk_lock */
 void vk_guest_read(u64 gva, u64 size, u8* host, VkBuffer buf, u64 at);
 void vk_cpu_read(u64 cpu, u64 size, u8* host, VkBuffer buf, u64 at);
+/* the guest bytes those reads and vk_guest_read_device took since the last statistics line (vk_own_log), by where they
+   came from: copied by the CPU into staging (and of them, those a region of unified memory holds), copied on the GPU
+   from their owners (memory/own.c), from regions, from the import of a write in place pending, or from the results
+   the renderer has pending (buffer.c), bound where they are, and unmapped (zero). [0] the host staging's, [1] device
+   memory's. Under vk_lock */
+enum {
+    VK_GREAD_CPU,
+    VK_GREAD_CPU_REGION,
+    VK_GREAD_OWNERS,
+    VK_GREAD_REGIONS,
+    VK_GREAD_PENDING,
+    VK_GREAD_RESULTS,
+    VK_GREAD_BOUND,
+    VK_GREAD_ZERO,
+    VK_GREAD_N
+};
+void vk_guest_read_counts(u64 counts[2][VK_GREAD_N]);
 /* the same into device memory (buf, which the CPU doesn't map): 0 when staging has no room */
 int vk_guest_read_device(u64 gva, u64 size, VkBuffer buf, u64 at);
 /* the same in the submission's upload command buffer (vk_cmd_upload), ahead of its rendering passes, when every byte

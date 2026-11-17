@@ -324,7 +324,7 @@ static int dma(const GpuDmaOp* o, const DmaNeeds* need, u64 snap_skip) {
                     vk_own_publish(cpu, n, d, r * need->drun + off);
                 off += n;
             }
-            gpu_mem_written(at, need->drun);
+            gpu_mem_written_by(at, need->drun, GPU_WRITE_DMA, 0, 0);
         }
         vk_tex_dma_seen(hit, hits);
         g_dma.moved += (o->src.bl ? need->stiles : sspan) + dlen;

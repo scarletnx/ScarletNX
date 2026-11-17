@@ -2368,7 +2368,8 @@ rebind:
                 res_publish(sa[i], ss[i], made[i]);
             else
                 res_wrote(sa[i], ss[i]);
-            gpu_mem_written(sa[i], ss[i]); /* what is built from these bytes (buffers, textures) takes the new ones */
+            /* what is built from these bytes (buffers, textures) takes the new ones */
+            gpu_mem_written_by(sa[i], ss[i], GPU_WRITE_COMPUTE, 0, 0);
         }
         res_unref_all(made, ng);
         g_vk_dispatches++;

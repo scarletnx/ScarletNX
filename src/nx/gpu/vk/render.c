@@ -1339,6 +1339,8 @@ static struct {
     u32 ww_epoch;
     u64 heap_buffer_calls, heap_buffer_hits, heap_image_calls, heap_image_hits;
 } g_stats;
+/* the bytes of the constant buffers that cb_get copied from the CPU (VK_CB_COPIED) since the last statistics line */
+static u64 g_cb_copied_bytes;
 void vk_draw_counts(VkDrawCounts* c) {
     *c = g_stats.n;
     VkDescriptorHeapStats heaps; /* the kept descriptors of the heaps' lasting part that draw_state_check=1 found wrong */
@@ -1403,6 +1405,9 @@ void vk_render_stats_log(void) {
         g_stats.heap_image_calls = h.image_driver_calls;
         g_stats.heap_image_hits = h.image_hits;
     }
+    LOG("vulkan: constant buffers copied from the CPU in the last %llu presents: %.1f KB a present\n",
+        (unsigned long long)presents, (double)g_cb_copied_bytes / 1024.0 / (double)presents);
+    g_cb_copied_bytes = 0;
     g_stats.was = g_stats.n;
     g_stats.present = g_vk_present;
     g_stats.drawn = g_vk_drawn;
@@ -2359,6 +2364,7 @@ static int cb_get(const DsState* ds, int stage, int i, u32 sz, VkBuffer* buf, u6
             life = CB_OWN;
         }
         g_stats.n.cb[VK_CB_COPIED]++;
+        g_cb_copied_bytes += sz;
     } else if (!(a ? vk_buf_get_uniform(a, sz, buf, off) : vk_buf_copy(a, sz, buf, off)))
         return 0;
     else

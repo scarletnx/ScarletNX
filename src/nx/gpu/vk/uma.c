@@ -88,6 +88,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "common/utilities/bits.h"
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/maxwell/write_pages.h"
 #include "nx/gpu/vk/vk.h"
@@ -1283,6 +1284,16 @@ static int imp_bind(Imp* m, u64 cpu, u64 size, VkExternalMemoryHandleTypeFlagBit
         m->mem = VK_NULL_HANDLE;
         return 0;
     }
+    /* the memory type the driver gave a region (once for each handle type): whether the GPU snoops the CPU's caches
+       on it (coherent and cached), and whether the CPU's writes need a flush, which no code here does */
+    const VkMemoryPropertyFlags pf = mp->memoryTypes[t].propertyFlags;
+    LOG_LIMIT(2,
+              "vulkan: a region imported as %s in memory type %u of the %u it could take (%x): host visible %d, "
+              "coherent %d, cached %d, device local %d\n",
+              type == VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT ? "a dma-buf" : "host memory", t,
+              snx_popcount64(bits), (unsigned)bits, (pf & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0,
+              (pf & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) != 0, (pf & VK_MEMORY_PROPERTY_HOST_CACHED_BIT) != 0,
+              (pf & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) != 0);
     return 1;
 }
 /* guest memory [cpu, cpu + size), at host, imported as a buffer: 0 when the driver refused it. host is the guest's own
@@ -1924,6 +1935,18 @@ int vk_uma_held(u64 cpu, u64 len) {
     drop_dead();
     u32 i = imp_find(cpu);
     return i < g_uma.nimp && g_uma.imp[i].cpu <= cpu && cpu + len <= g_uma.imp[i].cpu + g_uma.imp[i].size;
+}
+int vk_uma_none_why(u64 cpu, u64 len) {
+    if (!vk_uma() || !len) return VK_UMA_NONE_OFF;
+    if (vk_uma_held(cpu, len)) return VK_UMA_NONE_HELD;
+    /* imp_get's tests, in its order, of the windows the range touches */
+    const u64 lo = cpu & ~(UMA_WINDOW - 1), hi = (cpu + len + UMA_WINDOW - 1) & ~(UMA_WINDOW - 1);
+    const u64 cap = g_uma.migrate && g_vk.alloc_cap > g_uma.region_max ? g_uma.region_max : g_vk.alloc_cap;
+    if ((g_uma.nchunk && chunk_meets(lo, hi)) || (g_uma.nview && view_meets(lo, hi))) return VK_UMA_NONE_PLACED;
+    if (own_trapped(lo, hi - lo)) return VK_UMA_NONE_TRAPPED;
+    if (!imp_can(lo, hi)) return VK_UMA_NONE_UNMOVABLE;
+    if (hi - lo > cap) return VK_UMA_NONE_CAP;
+    return failed(lo, hi) ? VK_UMA_NONE_FAILED : VK_UMA_NONE_UNASKED;
 }
 int vk_uma_publish(u64 cpu, u64 len, VkBuffer src, u64 off) {
     VkBuffer ib;

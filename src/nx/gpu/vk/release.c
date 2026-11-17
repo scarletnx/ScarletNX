@@ -148,7 +148,7 @@ static void perform(Release* r) {
     }
     vk_result_begin();
     if (r->gva)
-        gmem_write(r->gva, r->data, r->len);
+        gmem_write_by(r->gva, r->data, r->len, GPU_WRITE_RELEASE, 0, 0);
     else
         syncpt_add_quiet(r->id, 1); /* under vk_lock: the events it reaches are signaled as it is let go */
     vk_result_end();
