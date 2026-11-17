@@ -680,6 +680,93 @@ static void test_republish_after_landing(void) {
     res_free(r3);
 }
 
+/* A landing in two steps (OwnHooks' land_start): the producer's lock is let go while the copy is under way, which
+   land_end holds until g_two_go. Meanwhile another thread takes the lock, the landing's owner is still there for a
+   lookup, and an owner that comes on one of its pages waits for it to end. Then the reader has the landed bytes, and
+   the new owner's page is still trapped */
+static int g_two_in, g_two_go; /* atomic: the copy is under way; it may end */
+typedef struct {
+    OwnRange r[8];
+    u8* dst[8];
+    u32 n;
+} TwoCopy;
+static void* two_start(const OwnRange* r, u8* const* dst, u32 n) {
+    TwoCopy* c = (TwoCopy*)calloc(1, sizeof *c);
+    CHECK(c && n <= 8);
+    for (u32 i = 0; i < n; i++) {
+        c->r[i] = r[i];
+        c->dst[i] = dst[i];
+    }
+    c->n = n;
+    __atomic_store_n(&g_two_in, 1, __ATOMIC_RELEASE);
+    return c;
+}
+static void two_end(void* handle) {
+    TwoCopy* c = (TwoCopy*)handle;
+    for (int waited_ms = 0; !__atomic_load_n(&g_two_go, __ATOMIC_ACQUIRE); waited_ms++) {
+        if (waited_ms == 10000) test_fail("the test let the two-step copy end within 10 s", __LINE__);
+        plat_sleep_ns(1000000);
+    }
+    land(c->r, c->dst, c->n);
+    free(c);
+}
+static int g_two_read; /* the reader's byte */
+static void* two_reader(void* a) {
+    __atomic_store_n(&g_two_read, GP((u64)(uintptr_t)a)[0x200], __ATOMIC_RELEASE);
+    return NULL;
+}
+static Res* g_two_r2;
+static u64 g_two_at;
+static int g_two_begun; /* atomic: the second owner's own_begin returned */
+static void* two_owner(void* unused) {
+    (void)unused;
+    producer_lock(); /* as the renderer's callers of own_begin do */
+    CHECK(own_begin(g_two_at, 0x100, g_two_r2, 0) == 0);
+    producer_unlock();
+    __atomic_store_n(&g_two_begun, 1, __ATOMIC_RELEASE);
+    return NULL;
+}
+static void test_two_step(void) {
+    u64 a = region(R0 + 0x1100000, 0x8000);
+    Res *r = res_new(0x2000, 0xA0), *r2 = res_new(0x100, 0x30);
+    OwnRange o;
+    pthread_t reader, owner;
+    int lands = g_lands;
+    g_own.hooks.land_start = two_start;
+    g_own.hooks.land_end = two_end;
+    __atomic_store_n(&g_two_in, 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&g_two_go, 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&g_two_begun, 0, __ATOMIC_RELEASE);
+    CHECK(own_begin(a + 0x1100, 0x2000, r, 0) == 0); /* on the pages a + 0x1000 to a + 0x4000 */
+    pthread_create(&reader, NULL, two_reader, (void*)(uintptr_t)(a + 0x1100));
+    for (int waited_ms = 0; !__atomic_load_n(&g_two_in, __ATOMIC_ACQUIRE); waited_ms++) {
+        if (waited_ms == 10000) test_fail("the read started a two-step landing within 10 s", __LINE__);
+        plat_sleep_ns(1000000);
+    }
+    /* the landing let go of the producer's lock: this thread takes it at once */
+    CHECK(pthread_mutex_trylock(&g_producer) == 0);
+    CHECK(own_lookup(a + 0x1100, 0x2000, &o, 1) == 1 && o.res == r); /* not cut until the copy is in */
+    pthread_mutex_unlock(&g_producer);
+    /* an owner on the landing's last page, beside its bytes: it waits for the landing */
+    g_two_r2 = r2;
+    g_two_at = a + 0x3800;
+    pthread_create(&owner, NULL, two_owner, NULL);
+    plat_sleep_ns(50000000);
+    CHECK(!__atomic_load_n(&g_two_begun, __ATOMIC_ACQUIRE));
+    __atomic_store_n(&g_two_go, 1, __ATOMIC_RELEASE);
+    pthread_join(reader, NULL);
+    pthread_join(owner, NULL);
+    CHECK(__atomic_load_n(&g_two_read, __ATOMIC_ACQUIRE) == (u8)(0xA0 + 0x200) && g_lands == lands + 1);
+    CHECK(__atomic_load_n(&g_two_begun, __ATOMIC_ACQUIRE) && refs(r) == 0);
+    CHECK(own_trapped(a + 0x3800, 0x100)); /* the new owner's page stays trapped */
+    g_own.hooks.land_start = NULL;
+    g_own.hooks.land_end = NULL;
+    CHECK(GP(a + 0x3800)[1] == (u8)(0x30 + 1) && refs(r2) == 0);
+    CHECK(mem_unmap(a, 0x8000) == 0);
+    res_free(r);
+    res_free(r2);
+}
+
 /* the producer's lock holder faulting on a page that is armed with no entry on it (a landing's, cut and not let go
    yet) goes on: nothing has to land there */
 static void test_busy_unowned(void) {
@@ -1125,6 +1212,7 @@ int main(int argc, char** argv) {
 #endif
     test_release_order();
     test_republish_after_landing();
+    test_two_step();
     test_busy_unowned();
     test_scan_owned();
     test_let_go_watched();

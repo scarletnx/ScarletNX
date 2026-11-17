@@ -316,6 +316,11 @@ void vk_unlock(void);
 int vk_trylock(void);    /* vk_lock unless another thread holds it: 1 when taken */
 u32 vk_lock_owner(void); /* the thread (plat_tid) holding vk_lock, 0 when none */
 int vk_lock_held(void);  /* this thread holds vk_lock */
+/* Lets go of vk_lock for work that needs nothing it guards, when this thread holds it once (an outer hold can't be let
+   go of here): 1 when it let go. vk_lock_resume(that) takes it again. What the hold saw before can have changed when
+   the work ends */
+int vk_lock_pause(void);
+void vk_lock_resume(int paused);
 
 /* memory.c. vk_mem_init once the device exists, before the allocator (devmem.c keeps its blocks within the cap):
    sparse_queue is whether the graphics queue's family can bind sparse memory */
@@ -1455,7 +1460,11 @@ typedef struct VkOwnRes {
     u8 borrowed; /* buf is another's (the GPU mirror's): letting go of the last reference frees only this record */
     u8 by;       /* VK_OWN_BY_*: what made it, for the statistics */
     u8 host;     /* buf is in system memory, for want of the device's: not pooled when it is let go */
+    struct VkOwnRes* later; /* owned.c's list of those released while another thread held vk_lock */
 } VkOwnRes;
+/* owned.c: the resources released while another thread held vk_lock, freed by the next outermost vk_unlock */
+int vk_own_later_any(void);
+void vk_own_release_later(void); /* under vk_lock */
 /* what makes a kept result: a dispatch, a draw that writes guest memory, a copy engine, the video engines, a render
    target written back */
 enum { VK_OWN_BY_COMPUTE, VK_OWN_BY_DRAW, VK_OWN_BY_COPY, VK_OWN_BY_VIDEO, VK_OWN_BY_TARGET, VK_OWN_BY_N };
