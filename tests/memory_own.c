@@ -711,7 +711,7 @@ static void test_republish_after_landing(void) {
    land_end holds until g_two_go. Meanwhile another thread takes the lock, the landing's owner is still there for a
    lookup, and an owner that comes on one of its pages waits for it to end. Then the reader has the landed bytes, and
    the new owner's page is still trapped */
-static int g_two_in, g_two_go; /* atomic: the copy is under way; it may end */
+static int g_two_in, g_two_go; /* atomic: the copy is under way, with the lock let go; it may end */
 typedef struct {
     OwnRange r[8];
     u8* dst[8];
@@ -727,11 +727,13 @@ static void* two_start(const OwnRange* r, u8* const* dst, u32 n, int by) {
         c->dst[i] = dst[i];
     }
     c->n = n;
-    __atomic_store_n(&g_two_in, 1, __ATOMIC_RELEASE);
     return c;
 }
 static void two_end(void* handle) {
     TwoCopy* c = (TwoCopy*)handle;
+    /* here, not in two_start: own.c lets go of the producer's lock after land_start returns and before land_end, and
+       the test takes that lock once it sees g_two_in */
+    __atomic_store_n(&g_two_in, 1, __ATOMIC_RELEASE);
     for (int waited_ms = 0; !__atomic_load_n(&g_two_go, __ATOMIC_ACQUIRE); waited_ms++) {
         if (waited_ms == 10000) test_fail("the test let the two-step copy end within 10 s", __LINE__);
         plat_sleep_ns(1000000);
