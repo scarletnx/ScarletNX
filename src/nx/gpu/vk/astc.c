@@ -2187,7 +2187,7 @@ int vk_astc_bcn_kept(VkCommandBuffer cb, Surf* t, VkImage dst, u32 kind) {
                                                .imageOffset = {0, (i32)(y * bh), 0},
                                                .imageExtent = {lw, height, 1}};
                 vk_ck(cb, VK_CK_COPY, lw, height, dz, l);
-                rec_CmdCopyBufferToImage(cb, g_astc.bc7_scratch, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &out);
+                rec_CmdCopyBufferToImage(cb, g_astc.bc7_scratch, dst, VK_LAYOUT(TRANSFER_DST_OPTIMAL), 1, &out);
                 vk_ck(cb, VK_CK_STRIP_DONE, lw, height, dz, l);
                 g_astc.bcn_bytes[bcn_slot(kind)] += (u64)cx * cy * dz * bytes;
                 g_astc.bcn_rgba8_bytes[bcn_slot(kind)] += (u64)lw * height * dz * 4;
