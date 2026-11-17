@@ -59,11 +59,18 @@ target_link_libraries(my_emulator PRIVATE ScarletNX::recompiler)
 as ScarletNX does, and finds LLVM the same way (`llvm-config` on the PATH,
 `SNX_LLVM_CONFIG` or `LLVM_DIR`, `cmake/llvm.cmake`).
 
-The archive carries the function discovery, the LLVM emitters, the linker and
-the prebuilt runtime library every module gets. Its link line adds LLVM, which the
-package records. The backend generates code for the machine it runs on, as the `scarletnx`
-command does: build the library on the machine that will use it, or one with the
-same instruction set extensions.
+The archive holds the recompiler's core and nothing else of this tree: the LLVM
+backend (its emitters, the linker and the prebuilt runtime library every module gets),
+the AArch32 block compiler with its decoders and helpers, and what they take from
+`src/common` (`snx_recompiler_base`): the A64 decoder, the function discovery, and the
+host calls under them (allocation, the error line, files and folders, the clocks, the
+address space). Its one other library is LLVM, linked as the rest of the build links it
+(`cmake/llvm.cmake`), with the system libraries LLVM and the core need: threads, `dl` and
+`m` (`advapi32` on Windows). The package records them. The test `recompiler_symbols`
+links every object of the archive with those alone, so a call into another library of
+this tree, or a new external library, fails it. The backend generates code for the machine it runs on, as
+the `scarletnx` command does: build the library on the machine that will use it, or one
+with the same instruction set extensions.
 
 `-DSNX_RECOMPILER_SHARED=ON` also builds `libscarletnx-recompiler.so` (a DLL on
 Windows), which exports only the header's functions and is linked with
