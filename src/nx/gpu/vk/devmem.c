@@ -36,8 +36,11 @@
    155 MB handed out: rings, encoders, write logs and written textures, which stay, were in each of the 12 blocks, so
    none was emptied and given back */
 /* Memory of its own that the driver only preferred (DM_OWN_RATHER) is kept when let go, for a later request it fits:
-   DM_KEEP_BYTES of it at most, each DM_KEEP_PRESENTS presents at most (own_keep, own_take) */
+   in a heap, DM_KEEP_BYTES at most, or in the GPU's own heap a DM_KEEP_SHARE of its budget where that is more
+   (keep_cap), each
+   DM_KEEP_PRESENTS presents at most (own_keep, own_take) */
 #define DM_KEEP_BYTES    (256ull << 20)
+#define DM_KEEP_SHARE    16u
 #define DM_KEEP_PRESENTS 120u
 #define DM_KIND_IMAGE 1
 #define DM_KIND_FIXED 2
@@ -637,8 +640,16 @@ static u32 block_adopt(u32 type, int image, int low, u32 units, u32 align_units,
    was a call to the driver's allocate on the thread that asked, and its free on the thread ahead: under a budget of 2
    GB one game's race made 621 in 191 s, the most costly of the calls left. Such memory is made with no resource named,
    which the driver preferred but did not require, and when let go it is kept, unused, for a later request of its size
-   (up to an eighth less), with no call. Kept memory goes after DM_KEEP_PRESENTS presents, the oldest first past
-   DM_KEEP_BYTES, and all of it past own_full's limit (lock held).
+   (up to an eighth less), with no call. Kept memory goes after DM_KEEP_PRESENTS presents, the oldest of its heap first
+   past keep_cap, and all of it past own_full's limit (lock held).
+
+   A cap of 256 MiB for every heap was too small. In that race at 2 GB on a GPU of 24 GB, the requests that found no
+   kept memory were 16 to 24 MB (65) and 32 to 48 MB (150), the cap gave kept memory back 189 times and age 15
+   times, and 162 of 234 requests found kept memory of no size that fit them. In the GPU's own heap the cap now grows
+   with the heap's budget. A small heap is held to own_full's limit, as before. The other heaps keep DM_KEEP_BYTES:
+   with the share there too (950 MB of a host heap of 15 GB), two of five runs of that race failed, a lost GPU and
+   a crash where the mirror read a page number of no page from its output in host memory, and three runs with the
+   share in the GPU's heap alone had neither
 
    Memory made for an image alone, kept for another image (VK_NV_dedicated_allocation_image_aliasing, which allows
    that for the same create info and an extent and layers no greater), lost the GPU on an RTX 4090 (driver 621.01): a
@@ -647,6 +658,11 @@ static u32 block_adopt(u32 type, int image, int low, u32 units, u32 align_units,
 /* past this, a heap keeps no memory: the driver's preference for memory of its own no longer holds there (alloc),
    so no request would take it */
 static int own_full(u32 heap) { return g_devmem.block_bytes[heap] > heap_budget(heap) / 5 * 4; }
+static u64 keep_cap(u32 heap) {
+    if (!heap_capped(heap)) return DM_KEEP_BYTES;
+    const u64 share = heap_budget(heap) / DM_KEEP_SHARE;
+    return share > DM_KEEP_BYTES ? share : DM_KEEP_BYTES;
+}
 static void own_give(Block* k) {
     g_devmem.kept_bytes -= k->size;
     g_devmem.kept_heap[g_devmem.mp.memoryTypes[k->type].heapIndex] -= k->size;
@@ -667,15 +683,17 @@ static int own_give_all(void) {
    the GPU's memory first where that is short */
 static void own_keep(Block* k) {
     u32 heap = g_devmem.mp.memoryTypes[k->type].heapIndex;
-    if (!k->reuse || k->size > DM_KEEP_BYTES || own_full(heap)) {
+    const u64 cap = keep_cap(heap);
+    if (!k->reuse || k->size > cap || own_full(heap)) {
         block_gone(k);
         return;
     }
-    while (g_devmem.kept_bytes + k->size > DM_KEEP_BYTES) { /* room for it: the oldest kept goes */
+    while (g_devmem.kept_heap[heap] + k->size > cap) { /* room for it: the oldest kept of its heap goes */
         Block* old = NULL;
         for (u32 i = 0; i < g_devmem.nblock; i++) {
             Block* o = &g_devmem.block[i];
-            if (o->mem && o->idle && (!old || o->idle < old->idle)) old = o;
+            if (o->mem && o->idle && g_devmem.mp.memoryTypes[o->type].heapIndex == heap && (!old || o->idle < old->idle))
+                old = o;
         }
         own_give(old);
     }
