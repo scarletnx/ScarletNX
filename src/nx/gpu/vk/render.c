@@ -1986,6 +1986,50 @@ static void rt_int_targets(const DsTargets* tg, u32* rm, u32* rs) {
         }
     }
 }
+/* the last draw's fs_key: its inputs, and what it resolved and keyed. The same inputs resolve the same textures and
+   make the same key. The inputs are the program, the texture bindings (not the generation of all bindings, which
+   moves with the constant buffers that most draws bind again), the handle words, the targets' integer outputs, and
+   what each slot's resolve checks. Those checks are the stamps of the texture front table (tex_resolve), the
+   targets' take generation (tex_take_drawn), and the present (vk_tex_recheck's checks once a frame). About a third
+   of one game's draws read other handle words than the draw before, and a sixth run another program. The key
+   holds for most of the rest. Only where each slot's texture is one the memo keeps, not over a target (whose target's
+   draws move none of these stamps), and each texture is quiet in this present and epoch, as vk_tex_recheck's quiet
+   check asks (a texture that isn't takes a full check at each lookup). Not while compute results are pending
+   (vk_tex_recheck orders the texture after them) nor with draw_state_check=1 */
+typedef struct {
+    const DsState* ds;
+    const VkSh* s0;
+    u64 tex_pool, smp_pool, gw, adds, img_adds, take;
+    u32 tex_max, smp_max, smp_mode, tex_bank, surf_epoch, ww_epoch, present, last_out, rt_int, rt_sint;
+    int nt, valid;
+    u32 handles[SH_MAXTEX];
+    TexRes res[SH_MAXTEX];
+    FsKey fk;
+} FsLast;
+static FsLast g_fs_last;
+/* whether the slots' textures res, which the last draw resolved, hold as they are (FsLast): a target still defined, a
+   texture still quiet */
+static int fs_last_holds(const TexRes* res, int nt, u32 ww_epoch) {
+    for (int i = 0; i < nt; i++) {
+        const Surf* t = res[i].t;
+        if (!t) continue;
+        if (t->is_rt ? t->layout == VK_IMAGE_LAYOUT_UNDEFINED
+                     : !t->quiet || !t->upload_valid || t->bc7_reread || t->q_present != g_vk_present ||
+                           t->q_epoch != ww_epoch)
+            return 0;
+    }
+    return 1;
+}
+/* whether each slot's texture of res is one the memo keeps, not over a target (TexMemo.over) */
+static int fs_last_keepable(const TexRes* res, int nt) {
+    for (int i = 0; i < nt; i++) {
+        if (!res[i].t) continue;
+        if (!res[i].memo) return 0;
+        const TexMemo* m = &g_tex_memo.set[(res[i].memo - 1) / TEX_MEMO_WAYS][(res[i].memo - 1) % TEX_MEMO_WAYS];
+        if (m->t != res[i].t || m->over) return 0;
+    }
+    return 1;
+}
 /* resolves the textures of s0, the fragment program, into res (SH_MAXTEX entries, for stage_set), and fills fk with
    the variant they and the targets (rt_int, rt_sint) key. last_out: the generic outputs the stage before rasterization
    writes */
@@ -1995,6 +2039,34 @@ static void fs_key(const DsState* ds, const VkSh* s0, TexRes* res, u32 last_out,
     int nt = s0->si.ntex > SH_MAXTEX ? SH_MAXTEX : s0->si.ntex;
     u32 handles[SH_MAXTEX];
     tex_handles(ds, 4, ds->bind.tex_bank, &s0->si, nt, handles);
+    const DsBindings* b = &ds->bind;
+    /* the results added count the writes in place too, as the memo's do */
+    const u64 gw = gpu_mem_generation(),
+              adds = atomic_load_explicit(&g_pend_any.adds, memory_order_relaxed) + vk_uma_writes(),
+              img_adds = vk_gfx_image_adds(), take = vk_rt_take_gen();
+    const u32 surf_epoch = atomic_load_explicit(&g_vk_surf_epoch, memory_order_relaxed), ww_epoch = vk_ww_epoch();
+    if (g_fs_last.valid && !g_cs_any && !g_settings.draw_state_check && g_fs_last.ds == ds && g_fs_last.s0 == s0 &&
+        g_fs_last.nt == nt && g_fs_last.last_out == last_out && g_fs_last.rt_int == rt_int &&
+        g_fs_last.rt_sint == rt_sint && g_fs_last.tex_pool == b->tex_pool && g_fs_last.smp_pool == b->smp_pool &&
+        g_fs_last.tex_max == b->tex_max && g_fs_last.smp_max == b->smp_max && g_fs_last.smp_mode == b->smp_mode &&
+        g_fs_last.tex_bank == b->tex_bank && g_fs_last.gw == gw && g_fs_last.adds == adds &&
+        g_fs_last.img_adds == img_adds && g_fs_last.take == take && g_fs_last.surf_epoch == surf_epoch &&
+        g_fs_last.ww_epoch == ww_epoch && g_fs_last.present == g_vk_present &&
+        !memcmp(g_fs_last.handles, handles, (size_t)nt * sizeof *handles) &&
+        fs_last_holds(g_fs_last.res, nt, ww_epoch)) {
+        for (int i = 0; i < nt; i++) {
+            res[i] = g_fs_last.res[i];
+            /* a target read whole is noted read on each draw, as tex_resolve's hit does. Not a crop of one (a copy
+               in no row of the surface table, rt_crop): its generation never moves, so it would reload the target
+               at its address on each draw */
+            const Surf* t = res[i].t;
+            if (t && t->is_rt && t->row && !(t->gva >> 63) && t->layout != VK_IMAGE_LAYOUT_UNDEFINED)
+                vk_rt_note_read(res[i].t);
+        }
+        g_stats.n.tex[VK_TEX_KEPT] += (u64)nt;
+        *fk = g_fs_last.fk;
+        return;
+    }
     for (int i = 0; i < nt; i++) {
         const ShTex* st = &s0->si.tex[i];
         tex_resolve(ds, handles[i], &res[i]);
@@ -2048,6 +2120,34 @@ static void fs_key(const DsState* ds, const VkSh* s0, TexRes* res, u32 last_out,
     u32 signed_images;
     fk->rm |= image_variant(ds, 4, s0, &signed_images) << 8;
     fk->rs |= signed_images << 8;
+    g_fs_last = (FsLast){0};
+    /* image_variant reads the image bindings, which the key doesn't hold: a program with images is keyed each draw */
+    if (s0->si.nimg || !fs_last_keepable(res, nt)) return;
+    g_fs_last.ds = ds;
+    g_fs_last.s0 = s0;
+    g_fs_last.nt = nt;
+    g_fs_last.last_out = last_out;
+    g_fs_last.rt_int = rt_int;
+    g_fs_last.rt_sint = rt_sint;
+    g_fs_last.tex_pool = b->tex_pool;
+    g_fs_last.smp_pool = b->smp_pool;
+    g_fs_last.tex_max = b->tex_max;
+    g_fs_last.smp_max = b->smp_max;
+    g_fs_last.smp_mode = b->smp_mode;
+    g_fs_last.tex_bank = b->tex_bank;
+    g_fs_last.gw = gw;
+    g_fs_last.adds = adds;
+    g_fs_last.img_adds = img_adds;
+    g_fs_last.take = take;
+    g_fs_last.surf_epoch = surf_epoch;
+    g_fs_last.ww_epoch = ww_epoch;
+    g_fs_last.present = g_vk_present;
+    for (int i = 0; i < nt; i++) {
+        g_fs_last.handles[i] = handles[i];
+        g_fs_last.res[i] = res[i];
+    }
+    g_fs_last.fk = *fk;
+    g_fs_last.valid = 1;
 }
 /* the fragment shader at addr in the variant fk names, s0 when it names none */
 static VkSh* fs_variant(const DsState* ds, u64 addr, VkSh* s0, const FsKey* fk) {
