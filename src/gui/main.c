@@ -20503,10 +20503,10 @@ static char* log_summary(const char* path) {
     SnxLogScan scan;
     char *markdown, *out;
     FILE* f = snx_fopen(path, "rb");
-    int failed = !f || snx_logscan_file(&scan, f);
-    if (f) fclose(f);
+    int opened = f != NULL, failed = !opened || snx_logscan_file(&scan, f);
+    if (opened) fclose(f);
     if (failed) {
-        if (f) snx_logscan_free(&scan);
+        if (opened) snx_logscan_free(&scan); /* not f: a pointer's value is gone with the file it pointed to */
         return snx_strdup("");
     }
     scan.written = (long long)snx_file_time(path); /* the run's own time, for how much older its build is */
