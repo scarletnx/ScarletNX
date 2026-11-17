@@ -4,13 +4,13 @@
    (32-bit ones), and the compiler runtime's they need. Needs cpu.h's u8, u64 and RESTRICT */
 /* LLVM turns large or variable copies into these calls, and Clang does inside cpu_helpers.c. no_builtin keeps the
    loops from being turned back into calls to themselves */
-__attribute__((no_builtin)) void* memcpy(void* RESTRICT d, const void* RESTRICT s, size_t n) {
+[[clang::no_builtin]] void* memcpy(void* RESTRICT d, const void* RESTRICT s, size_t n) {
     u8* p = (u8*)d;
     const u8* q = (const u8*)s;
     while (n--) *p++ = *q++;
     return d;
 }
-__attribute__((no_builtin)) void* memmove(void* d, const void* s, size_t n) {
+[[clang::no_builtin]] void* memmove(void* d, const void* s, size_t n) {
     u8* p = (u8*)d;
     const u8* q = (const u8*)s;
     if (p < q)
@@ -19,12 +19,12 @@ __attribute__((no_builtin)) void* memmove(void* d, const void* s, size_t n) {
         while (n--) p[n] = q[n];
     return d;
 }
-__attribute__((no_builtin)) void* memset(void* d, int v, size_t n) {
+[[clang::no_builtin]] void* memset(void* d, int v, size_t n) {
     u8* p = (u8*)d;
     while (n--) *p++ = (u8)v;
     return d;
 }
-__attribute__((no_builtin)) int memcmp(const void* a, const void* b, size_t n) {
+[[clang::no_builtin]] int memcmp(const void* a, const void* b, size_t n) {
     const u8 *p = (const u8*)a, *q = (const u8*)b;
     for (; n; --n, ++p, ++q)
         if (*p != *q) return *p < *q ? -1 : 1;
@@ -33,11 +33,11 @@ __attribute__((no_builtin)) int memcmp(const void* a, const void* b, size_t n) {
 #ifdef __APPLE__
 /* and these on Darwin, by its operating system whatever the object format (ir.c's host_triple): bzero for a large or
    variable memset of zero, memset_pattern16 for a loop storing a repeated value (the loop idiom pass) */
-__attribute__((no_builtin)) void bzero(void* d, size_t n) {
+[[clang::no_builtin]] void bzero(void* d, size_t n) {
     u8* p = (u8*)d;
     while (n--) *p++ = 0;
 }
-__attribute__((no_builtin)) void memset_pattern16(void* d, const void* pattern, size_t n) {
+[[clang::no_builtin]] void memset_pattern16(void* d, const void* pattern, size_t n) {
     u8* p = (u8*)d;
     const u8* q = (const u8*)pattern;
     size_t i;

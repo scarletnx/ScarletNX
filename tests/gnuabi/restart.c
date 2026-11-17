@@ -5,7 +5,7 @@
    rules have them. Exits 0 */
 #include "threading.h"
 
-static u8 stack[65536] __attribute__((aligned(16)));
+alignas(16) static u8 stack[65536];
 static volatile u32 handled, reader_tid, phase, ctid;
 static volatile s64 results[2];
 static s32 fds[2];

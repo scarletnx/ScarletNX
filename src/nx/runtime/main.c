@@ -101,7 +101,7 @@ const SnxNros* g_nros;
 GuestFn* g_disp;
 
 /* A build that links a game's code into the runtime defines it; none does yet (src/nx/CMakeLists.txt) */
-const SnxModule* snx_module_static(void) __attribute__((weak));
+[[gnu::weak]] const SnxModule* snx_module_static(void);
 
 typedef const SnxModule* (*ModuleFn)(void);
 typedef const SnxArmModule* (*ArmModuleFn)(void);

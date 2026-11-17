@@ -185,7 +185,7 @@ static void heap_discard(Heap* heap) {
 }
 /* Heaps refused at setup: what failed, and the graphics backend the device keeps instead (device.c chose buffers
    or sets before it tried heaps) */
-static int refused(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
+[[gnu::format(printf, 1, 2)]] static int refused(const char* fmt, ...);
 static int refused(const char* fmt, ...) {
     char why[256];
     va_list ap;
@@ -803,7 +803,7 @@ static ResourceEntry* resource_entry(const ResourceEntry* key, int* hit) {
 /* A buffer range's or a view's descriptor: its heap offset into *offset. The lasting part first, for a view or a named
    buffer; then the frame's cache; else it is made, into a lasting slot where one is free, else into the
    frame's space */
-__attribute__((always_inline)) static inline int resource_descriptor(u32 slot, const VkWriteDescriptorSet* write, u32 element,
+[[gnu::always_inline]] static inline int resource_descriptor(u32 slot, const VkWriteDescriptorSet* write, u32 element,
                                 VkBuffer* previous_buffer, VkDeviceAddress* previous_address, u32* offset) {
     int k = kind(write->descriptorType);
     if (k < 0 || k == HEAP_SAMPLER) return 0;
@@ -1013,7 +1013,7 @@ static int memo_sampler(u32 slot, const HeapLayout* l, VkSampler sampler, u32 at
     return 1;
 }
 /* Keep repeated-array scanning/filling out of the scalar buffer writer's register and inlining budget. */
-__attribute__((noinline)) static int write_image_array(u32 slot, const HeapLayout* layout, u32 table,
+[[gnu::noinline]] static int write_image_array(u32 slot, const HeapLayout* layout, u32 table,
                                                       const VkWriteDescriptorSet* write) {
     VkBuffer previous_buffer = VK_NULL_HANDLE;
     VkDeviceAddress previous_address = 0;
@@ -1046,7 +1046,7 @@ __attribute__((noinline)) static int write_image_array(u32 slot, const HeapLayou
 }
 /* Keep the original scalar loop in its own compiler frame. Image-array run handling must not change
    its stack/register budget or the buffer-address reuse between writes in the same table. */
-__attribute__((noinline)) static int write_scalar_table(u32 slot, const HeapLayout* layout, u32 table, u32 count,
+[[gnu::noinline]] static int write_scalar_table(u32 slot, const HeapLayout* layout, u32 table, u32 count,
                                                        const VkWriteDescriptorSet* writes) {
     VkBuffer previous_buffer = VK_NULL_HANDLE;
     VkDeviceAddress previous_address = 0;
@@ -1065,7 +1065,7 @@ __attribute__((noinline)) static int write_scalar_table(u32 slot, const HeapLayo
     }
     return 1;
 }
-__attribute__((noinline)) static int write_array_table(u32 slot, const HeapLayout* layout, u32 table, u32 count,
+[[gnu::noinline]] static int write_array_table(u32 slot, const HeapLayout* layout, u32 table, u32 count,
                                                       const VkWriteDescriptorSet* writes) {
     VkBuffer previous_buffer = VK_NULL_HANDLE;
     VkDeviceAddress previous_address = 0;
@@ -1093,7 +1093,7 @@ __attribute__((noinline)) static int write_array_table(u32 slot, const HeapLayou
 }
 /* Only unformatted scalar buffers enter this helper. Keeping its planning arrays out of the original writer
    preserves the singleton/image paths' compiler frame. Each chunk is a transaction; earlier chunks stay live. */
-__attribute__((noinline)) static int write_buffer_batch(u32 slot, const HeapLayout* layout, u32 table, u32 count,
+[[gnu::noinline]] static int write_buffer_batch(u32 slot, const HeapLayout* layout, u32 table, u32 count,
                                                        const VkWriteDescriptorSet* writes, VkBuffer* previous_buffer,
                                                        VkDeviceAddress* previous_address) {
     VkDescriptorHeapBufferBatch batch;
@@ -1182,7 +1182,7 @@ static int batchable_buffer(const VkWriteDescriptorSet* write) {
         (write->descriptorType == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER || write->descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) &&
         (!lasting_on() || !write->pBufferInfo || !lasting_named(handle_key(write->pBufferInfo->buffer)));
 }
-__attribute__((noinline)) static int write_batched_table(u32 slot, const HeapLayout* layout, u32 table, u32 count,
+[[gnu::noinline]] static int write_batched_table(u32 slot, const HeapLayout* layout, u32 table, u32 count,
                                                         const VkWriteDescriptorSet* writes) {
     VkBuffer previous_buffer = VK_NULL_HANDLE;
     VkDeviceAddress previous_address = 0;

@@ -10,8 +10,8 @@ static volatile u32 count, last_sig, last_code, last_pid, order, unblocked_at, o
 extern volatile u32 restorer_used; /* own_restorer's mark (thread_start.S) */
 static volatile u64 last_value;
 static volatile u32 thread_got, thread_tid, ctid, ready;
-static u8 alt[65536] __attribute__((aligned(16)));
-static u8 stack[65536] __attribute__((aligned(16)));
+alignas(16) static u8 alt[65536];
+alignas(16) static u8 stack[65536];
 
 static void handler(int sig, u8* info, u8* uc) {
     (void)uc;

@@ -123,7 +123,7 @@ uint32_t plat_tid(void);
    pipeline: the crash report of a runtime thread prints it, as the place it gives for such a crash is only the
    library's. A line, cut at PLAT_THREAD_NOTE_SIZE - 1 bytes, kept until plat_thread_note_clear. Per thread */
 #define PLAT_THREAD_NOTE_SIZE 512
-void plat_thread_note(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
+[[gnu::format(printf, 1, 2)]] void plat_thread_note(const char* fmt, ...);
 void plat_thread_note_clear(void);
 /* the calling thread's note, "" without one */
 const char* plat_thread_note_get(void);

@@ -6,7 +6,7 @@
    descriptor was closed, reports the socket's byte. Exits 0 */
 #include "threading.h"
 
-static u8 stack[65536] __attribute__((aligned(16)));
+alignas(16) static u8 stack[65536];
 static volatile u32 ready, ctid;
 static volatile s64 result;
 static s32 sv[2], epoll;

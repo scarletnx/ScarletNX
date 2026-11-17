@@ -44,8 +44,8 @@ void snx_gdb_jit_remove(const void* owner) { (void)owner; }
    descriptor's stores before it */
 void __jit_debug_register_code(void);
 extern struct jit_descriptor __jit_debug_descriptor;
-__attribute__((weak, noinline)) void __jit_debug_register_code(void) { __asm__ __volatile__("" ::: "memory"); }
-__attribute__((weak)) struct jit_descriptor __jit_debug_descriptor = {1, JIT_NOACTION, NULL, NULL};
+[[gnu::weak, gnu::noinline]] void __jit_debug_register_code(void) { __asm__ __volatile__("" ::: "memory"); }
+[[gnu::weak]] struct jit_descriptor __jit_debug_descriptor = {1, JIT_NOACTION, NULL, NULL};
 
 /* An entry and its object, one allocation: GDB reads the jit_code_entry at its start */
 typedef struct Entry {

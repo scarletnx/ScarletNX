@@ -43,13 +43,6 @@
 #define MAX_SVCS   16
 #define MAX_MSG    0x100 /* the IPC message buffer, a request's and the reply's (ipc.c's parse and respond) */
 
-#ifdef __GNUC__
-#define PRINTF_LIKE(f, a) __attribute__((format(printf, f, a)))
-#define NO_RETURN         __attribute__((noreturn))
-#else
-#define PRINTF_LIKE(f, a)
-#define NO_RETURN
-#endif
 
 enum {
     TK_INT,
@@ -139,9 +132,9 @@ static void ctr_check_cmd(Cmd* c);
 /* ============================================================ errors */
 static const char* cur_path = "";
 static int cur_line;
-static void vfail(int line, const char* fmt, va_list ap) NO_RETURN;
-static void fail(const char* fmt, ...) PRINTF_LIKE(1, 2) NO_RETURN;
-static void fail_at(int line, const char* fmt, ...) PRINTF_LIKE(2, 3) NO_RETURN;
+[[noreturn]] static void vfail(int line, const char* fmt, va_list ap);
+[[noreturn, gnu::format(printf, 1, 2)]] static void fail(const char* fmt, ...);
+[[noreturn, gnu::format(printf, 2, 3)]] static void fail_at(int line, const char* fmt, ...);
 static void vfail(int line, const char* fmt, va_list ap) {
     fprintf(stderr, "%s:%d: error: ", cur_path, line);
     vfprintf(stderr, fmt, ap);
@@ -780,7 +773,7 @@ static void parse_file(void) {
 /* ============================================================ output */
 static char* obuf;
 static size_t olen, ocap;
-static void emit(const char* fmt, ...) PRINTF_LIKE(1, 2);
+[[gnu::format(printf, 1, 2)]] static void emit(const char* fmt, ...);
 static void emit(const char* fmt, ...) {
     char line[4096];
     va_list ap;

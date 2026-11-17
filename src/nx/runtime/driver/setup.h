@@ -11,5 +11,5 @@
 int snx_setup_terminal(FILE* in, FILE* out, const char* program_dir, int all);
 /* the launcher's languages (gui/main.c), for the first step: the code of the i-th and its name, NULL past the last.
    Weak: a build of the driver alone has no launcher, and no language to ask */
-const char* snx_menu_language(int i, const char** name) __attribute__((weak));
+[[gnu::weak]] const char* snx_menu_language(int i, const char** name);
 #endif

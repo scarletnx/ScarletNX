@@ -35,15 +35,9 @@ static inline int plat_cpu_count(void) {
 /* the host for the log's header, so a report needn't describe it: "<OS and version>, <CPU>, <n> threads, <n> GB RAM",
    the CPU left out where the host doesn't name it. Nothing that names the machine or its user */
 void plat_system_info(char* out, size_t cap);
-/* C11's _Noreturn, which C99 code (it includes this) has not */
-#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
-#define SNX_NORETURN _Noreturn
-#else
-#define SNX_NORETURN
-#endif
 /* Ends the process with code at once: stdio is flushed, but atexit handlers don't run and other threads are left
    where they are */
-SNX_NORETURN void plat_exit_now(int code);
+[[noreturn]] void plat_exit_now(int code);
 
 /* ---- power */
 /* Whether the host runs from its charger: 1 plugged in, 0 on its battery, -1 when that cannot be read. Call it on the

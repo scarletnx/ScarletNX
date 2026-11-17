@@ -17,7 +17,7 @@
 /* the runtime's side, which none of the calls below reaches: each stops the test if it is */
 Hle g_hle;
 int g_lock_futex;
-static _Noreturn void unreached(const char* what) {
+[[noreturn]] static void unreached(const char* what) {
     fprintf(stderr, "os_light_event: %s was called\n", what);
     abort();
 }

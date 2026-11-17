@@ -33,11 +33,11 @@ int snx_tr_language(void);
 /* english in the language in use, english itself when the language has no translation of it. A format's arguments
    are checked against english, which the translation keeps (scripts/build-languages.py) */
 #if defined(__GNUC__) || defined(__clang__)
-#define SNX_TR_FORMAT __attribute__((format_arg(1)))
+#define SNX_TR_FORMAT [[gnu::format_arg(1)]]
 #else
 #define SNX_TR_FORMAT
 #endif
-const char* snx_tr(const char* english) SNX_TR_FORMAT;
+SNX_TR_FORMAT const char* snx_tr(const char* english);
 /* the language code names: its tag, or the tag in another form (pt_BR, zh-CN for zh-Hans-CN). -1 for none */
 int snx_tr_find(const char* code);
 /* the language of the first of the user's locales (pt_BR.UTF-8, pt, zh-Hant_TW, the most wanted first) one of the

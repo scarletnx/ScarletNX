@@ -28,7 +28,7 @@ static void sdl_thread_end(void) { SDL_CleanupTLS(); }
 static void profile_thread(HANDLE h) {
     if (g_settings.profiler) plat_prof_add_thread(h);
 }
-__attribute__((constructor)) static void plat_win32_threads(void) {
+[[gnu::constructor]] static void plat_win32_threads(void) {
     static const PThreadHooks hooks = {NULL, sdl_thread_end, profile_thread};
     plat_thread_hooks(&hooks);
 }

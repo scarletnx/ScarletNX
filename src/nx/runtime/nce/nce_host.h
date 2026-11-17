@@ -29,14 +29,6 @@
 #else
 #define SNX_NCE_MOVE_FROM 0
 #endif
-/* C11's _Noreturn, which the C99 recompile (it reads SNX_NCE_HOST here) has not: plat.h's SNX_NORETURN */
-#ifndef SNX_NORETURN
-#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
-#define SNX_NORETURN _Noreturn
-#else
-#define SNX_NORETURN
-#endif
-#endif
 
 /* What the runtime gives the machine layer. Each function runs on the host's stack of the thread's innermost
    nce_host_run, with the guest's state in c (its registers, sp, pc, NZCV, the vector registers, FPCR and FPSR).
@@ -78,9 +70,9 @@ void nce_host_kick(int tid);
    handler that calls the guest's own function): the runs nest */
 void nce_host_run(CPU* c);
 /* from dispatch: the innermost nce_host_run returns, with the guest's state in its CPU */
-SNX_NORETURN void nce_host_leave(void);
+[[noreturn]] void nce_host_leave(void);
 /* from dispatch, preempted or trapped: the guest goes on at once from the whole of c */
-SNX_NORETURN void nce_host_resume(CPU* c);
+[[noreturn]] void nce_host_resume(CPU* c);
 /* the guest's state in a signal's context (a ucontext_t) into c, when the signal stopped this thread's guest code: 1;
    2 when the guest's code branched to fault, outside the guest's memory (a fetch from it, after a call from the
    guest's code: a branch through an empty pointer); else 0. For a crash report, which then shows the guest's

@@ -18,7 +18,7 @@ static const char* jemalloc_zone_name(const malloc_zone_t* zone) {
     return zone->zone_name ? zone->zone_name : "(unnamed)";
 }
 
-__attribute__((destructor)) static void jemalloc_zone_print(void) {
+[[gnu::destructor]] static void jemalloc_zone_print(void) {
     vm_address_t* zones = NULL;
     unsigned count = 0;
     const char* owner = "(none)";

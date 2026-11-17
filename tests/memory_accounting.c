@@ -1013,7 +1013,7 @@ static void test_alias_layouts(void) {
 /* a word GP reaches from a guest address, checked as the runtime checks an object it is handed: the address can be 0,
    so a null host pointer stands for none. Not inlined, so the compiler sees only GP's own arithmetic */
 #if defined(__linux__) && !defined(__SANITIZE_ADDRESS__) /* test_moved's hosts, the one caller */
-static __attribute__((noinline)) int gp_holds(u64 a, u32 want) {
+[[gnu::noinline]] static int gp_holds(u64 a, u32 want) {
     const u32* p = a ? (const u32*)(void*)GP(a) : NULL;
     return p && *p == want;
 }

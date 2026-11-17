@@ -17,7 +17,7 @@
 #if !defined(__SIZEOF_INT128__)
 #error "STXP's 16-byte compare-and-swap needs the compiler's 128-bit integer, which this compiler has not"
 #endif
-__extension__ typedef unsigned __int128 __attribute__((may_alias, aligned(16))) snx_cas_u128;
+__extension__ typedef unsigned __int128 snx_cas_u128 [[gnu::may_alias, gnu::aligned(16)]];
 
 /* The host's instruction: amocas.q on RISC-V, LL.D and SC.Q on LoongArch, cmpxchg16b (this file is built with -mcx16,
    src/common/CMakeLists.txt: the attribute alone was inlined into a libatomic call), LDAXP/STLXP and lqarx/stqcx.
@@ -27,7 +27,7 @@ __extension__ typedef unsigned __int128 __attribute__((may_alias, aligned(16))) 
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Watomic-alignment"
 #if defined(__loongarch__)
-__attribute__((target("scq")))
+[[gnu::target("scq")]]
 #endif
 static uint32_t cas_native(uint64_t* p, uint64_t o0, uint64_t o1, uint64_t n0, uint64_t n1) {
 #if defined(__riscv)

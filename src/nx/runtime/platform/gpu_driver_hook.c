@@ -5,7 +5,7 @@
 #include <android/dlext.h>
 #include <stddef.h>
 
-#define SNX_EXPORT __attribute__((visibility("default")))
+#define SNX_EXPORT [[gnu::visibility("default")]]
 
 static struct {
     SnxGpuDriverHookOpen* open;

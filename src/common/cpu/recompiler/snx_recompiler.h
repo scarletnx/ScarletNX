@@ -36,7 +36,7 @@
 #if defined(SNX_RECOMPILER_EXPORTS) && defined(_WIN32)
 #define SNX_RECOMPILER_API __declspec(dllexport)
 #elif defined(SNX_RECOMPILER_EXPORTS)
-#define SNX_RECOMPILER_API __attribute__((visibility("default")))
+#define SNX_RECOMPILER_API [[gnu::visibility("default")]]
 #else
 #define SNX_RECOMPILER_API
 #endif

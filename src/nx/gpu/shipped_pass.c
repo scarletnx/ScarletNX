@@ -124,7 +124,7 @@ static void say(Walk* w, int shown, const char* fmt, va_list ap) {
     w->sink->note(w->sink->ctx, line, shown);
 }
 /* a line for the log and the screen */
-static void note(Walk* w, const char* fmt, ...) __attribute__((format(printf, 2, 3)));
+[[gnu::format(printf, 2, 3)]] static void note(Walk* w, const char* fmt, ...);
 static void note(Walk* w, const char* fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
@@ -132,7 +132,7 @@ static void note(Walk* w, const char* fmt, ...) {
     va_end(ap);
 }
 /* a line for the log alone */
-static void detail(Walk* w, const char* fmt, ...) __attribute__((format(printf, 2, 3)));
+[[gnu::format(printf, 2, 3)]] static void detail(Walk* w, const char* fmt, ...);
 static void detail(Walk* w, const char* fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
