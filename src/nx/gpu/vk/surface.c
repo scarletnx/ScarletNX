@@ -1767,10 +1767,21 @@ int vk_surf_publish(Surf* s) {
    hasn't touched lately: one it reads or writes every frame would trap and wait for the GPU each time, which the
    write-back's copies never do */
 #define KEEP_CPU_PRESENTS 1200 /* as long as compute.c's storage buffers stay off the GPU once the CPU read them */
-/* the one owner of all of [cpu, cpu + size), the span at *off of it, or NULL (vk_lock) */
+/* the one owner of all of [cpu, cpu + size), the span at *off of it, or NULL (vk_lock). own.c holds an owner as one
+   entry for each run of the pool's pages under it (own_begin), so one owner can come back in pieces: they are one
+   owner when they are the same resource, touch, and go on in it where the one before ended. Counted as no owner, a
+   storage image published over two runs was taken as landed, read back through the CPU, and written back at every
+   draw from then on: one game ran a fifth slower in the runs where the pool gave its image two runs */
 static VkOwnRes* span_owner(u64 cpu, u64 size, u64* off) {
-    OwnRange r[2];
-    if (own_lookup(cpu, size, r, 2) != 1 || r[0].addr != cpu || r[0].size != size) return NULL;
+    OwnRange r[16]; /* own_begin's most */
+    u32 n = own_lookup(cpu, size, r, 16);
+    u64 at = cpu;
+    if (!n || n > 16) return NULL;
+    for (u32 i = 0; i < n; i++) {
+        if (r[i].addr != at || r[i].res != r[0].res || r[i].res_off != r[0].res_off + (at - cpu)) return NULL;
+        at += r[i].size;
+    }
+    if (at != cpu + size) return NULL;
     *off = r[0].res_off;
     return (VkOwnRes*)r[0].res;
 }
