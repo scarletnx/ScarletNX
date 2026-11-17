@@ -692,6 +692,13 @@ void vk_tex_partial_stats(u64* loads, u64* bytes) {
     *loads = g_tex_loads.partial;
     *bytes = g_tex_loads.partial_bytes;
 }
+/* for vk_tex_check_log, over the last 600 presents: the checks of a texture against its memory (tex_check), and
+   what the checks of textures loaded a piece at a time found (tex_check_pieces, tex_patch) */
+typedef struct {
+    u64 checks, rechecks, quiet, changed, quiet_wrong;
+    u64 patches, patch_bytes, by_cpu, by_gpu, by_kind[GPU_WRITE_ALL + 1], again, whole, bricks, bricks_empty;
+} TexChecks;
+static TexChecks g_tex_checks;
 /* A texture whose image has memory only where it is mapped (resident_image): its pages, as vk_image_resident takes
    them, are the bricks of each layer, then its mip tails */
 static u32 resident_pages(const Surf* t) { return t->layers * t->bricks + t->tails; }
@@ -2906,6 +2913,7 @@ static int tex_patch(Surf* t, const TexPieces* p) {
        (kind_again): pieces of other blocks would show in a format that does not hold them */
     if (p->all || t->took_drawn || sum > t->size / 2 || later_pieces_whole(t, sum) ||
         (t->f.conv == VKC_ASTC && vk_astc_bcn(t->f.vk))) {
+        g_tex_checks.whole++;
         if (t->piecewise || !t->hash) return tex_upload(t);
         tex_rehash(t);
         return t->upload_valid;
@@ -2942,7 +2950,11 @@ static int tex_patch(Surf* t, const TexPieces* p) {
         p = &bound;
         sum = 0;
         for (u32 i = 0; i < p->count; i++) sum += p->piece[i].n;
-        if (!sum) return 1;
+        g_tex_checks.bricks++;
+        if (!sum) {
+            g_tex_checks.bricks_empty++;
+            return 1;
+        }
     }
     SNX_ZONE_V(z, "texture pieces", sum);
     g_tex_loads.uploads++;
@@ -3061,6 +3073,38 @@ static void pieces_published(const Surf* t, u64 gva, TexPieces* p) {
         if (!vk_guest_owned_by(gva + p->piece[i].at, p->piece[i].n, t->pub_serial)) p->piece[n++] = p->piece[i];
     p->count = n;
 }
+/* what wrote a texture's pages, by gpu_mem_newest_kind (0: a GPU-side write too long ago to tell) */
+static const char* const g_write_kinds[GPU_WRITE_ALL + 1] = {
+    "an older GPU-side write", "constant buffer uploads", "engines (DMA, 2D, inline, compute)",
+    "shader results landed",   "mapping changes",         "published results",
+    "a save state's load"};
+/* a load of pieces p of t that a check found (tex_check_pieces): written by the CPU (by_cpu) and on the GPU's side
+   (kind, -1 for not), counted for vk_tex_check_log. A texture that loads pieces in 8 presents in a row is named once
+   (16 at most): what writes it every frame */
+static void tex_patch_count(Surf* t, const TexPieces* p, int by_cpu, int kind) {
+    u64 sum = p->all ? t->size : 0;
+    for (u32 i = 0; i < p->count && !p->all; i++) sum += p->piece[i].n;
+    g_tex_checks.patches++;
+    g_tex_checks.patch_bytes += sum;
+    g_tex_checks.by_cpu += by_cpu != 0;
+    if (kind >= 0) {
+        g_tex_checks.by_gpu++;
+        g_tex_checks.by_kind[kind <= GPU_WRITE_ALL ? kind : 0]++;
+    }
+    if (t->patched && t->patched >= g_vk_present) g_tex_checks.again++; /* loaded in this present or the last too */
+    if (t->patched == g_vk_present + 1) return;                         /* its run counted for this present */
+    t->patch_run = t->patched && t->patched == g_vk_present ? t->patch_run + 1 : 1;
+    t->patched = g_vk_present + 1;
+    if (t->patch_run == 8) {
+        LOG_LIMIT(16,
+                  "vulkan: a %ux%ux%u texture (format %d, %llu KB at %llx%s) loaded pieces in 8 presents in a row: "
+                  "%llu KB now, written by %s%s%s\n",
+                  t->w, t->h, t->layers * t->depth3d, (int)t->f.vk, (unsigned long long)(t->size >> 10),
+                  (unsigned long long)t->gva, t->bricks ? ", with bricks" : "", (unsigned long long)(sum >> 10),
+                  by_cpu ? "the CPU" : "", by_cpu && kind >= 0 ? " and " : "",
+                  kind >= 0 ? g_write_kinds[kind <= GPU_WRITE_ALL ? kind : 0] : "");
+    }
+}
 /* the checks of a texture loaded a piece at a time (tex_can_piece; with holes, or loaded whole): the pages the GPU's
    records and write tracking name since the last ones, loaded once both were asked, so the image holds what either
    found. 0 when write tracking can't tell: checked by contents (an engine's write after that check in the same epoch
@@ -3078,7 +3122,10 @@ static int tex_check_pieces(Surf* t, u64 gva) {
         t->checked = g_vk_present;
         if (wr) t->wseen = vk_ww_now(); /* as tex_check's: the clock after the scans it took in */
     }
+    const int by_cpu = p.count || p.all;
+    int kind = -1; /* the newest GPU-side write's kind (gpu_mem_newest_kind), -1 for none */
     if (gpu_mem_dirty_since(t->gw, gva, t->size)) {
+        kind = gpu_mem_newest_kind(gva, t->size);
         gpu_mem_dirty_runs(t->gw, gva, t->size, tex_dirty_piece, &r);
         if (!r.mapped) p.all = 1; /* found through the guest's addresses alone (SNX_ALIAS_CHECK) */
     }
@@ -3087,6 +3134,7 @@ static int tex_check_pieces(Surf* t, u64 gva) {
     pieces_published(t, gva, &p);
     if (p.count || p.all) {
         t->stable = 0;
+        tex_patch_count(t, &p, by_cpu, kind);
         tex_patch(t, &p);
     }
     return 1;
@@ -3253,9 +3301,101 @@ static Surf* tex_check_memory(Surf* t, u64 gva) {
     return t->upload_valid ? t : NULL;
 }
 /* tex_check_memory, then the read again that Auto's turn to BC7 asked for (later_reread) */
-static Surf* tex_check(Surf* t, u64 gva) {
+static Surf* tex_check_full(Surf* t, u64 gva) {
     Surf* r = tex_check_memory(t, gva);
     return r ? later_reread(r) : NULL;
+}
+/* The quiet round: it moves when anything a full check of a texture asks about can have changed since the last one:
+   a present (the schedule of the checks by contents, the LRU's touch, Auto's turn to BC7), a write tracking epoch
+   (the CPU's writes, which a check takes in once in each) or a GPU-side write on a watched granule
+   (gpu_mem_watched_generation: the engines, results, mapping changes and constant buffer uploads, by GPU page). A
+   texture whose last full check, in this round, left it whole (Surf.quiet) gives the same answer to another: a draw's
+   check of it is one compare. Every draw of a frame checked each of its textures in full: the memory's records
+   (gpu_mem_dirty_since), the LRU's touch, and the CPU's writes in each epoch, about 3% of the GPU thread in one game's
+   race of 1800 draws a present. Under vk_lock, as the checks are */
+static struct {
+    u64 round; /* from 1: a texture's 0 is in none */
+    u64 watched;
+    u32 present, epoch;
+} g_quiet = {1, 0, 0, 0};
+static u64 quiet_round(void) {
+    const u32 epoch = vk_ww_epoch();
+    const u64 watched = gpu_mem_watched_generation();
+    if (g_quiet.present != g_vk_present || g_quiet.epoch != epoch || g_quiet.watched != watched) {
+        g_quiet.present = g_vk_present;
+        g_quiet.epoch = epoch;
+        g_quiet.watched = watched;
+        g_quiet.round++;
+    }
+    return g_quiet.round;
+}
+/* t's full check, counted: the round it is quiet in from now, where the check left it whole and its memory is
+   watched (gpu_mem_watch, before the round is read: a write after that moves it) */
+static Surf* tex_check_counted(Surf* t, u64 gva) {
+    const int watched = gva == t->gva && gpu_mem_watch(gva, t->size);
+    const u64 round = watched ? quiet_round() : 0;
+    const u32 wgen = t->wgen;
+    Surf* r = tex_check_full(t, gva);
+    if (!r || r->wgen != wgen) g_tex_checks.changed++;
+    if (r) r->quiet = r == t && round && r->upload_valid && !r->bc7_reread ? round : 0;
+    return r;
+}
+/* draw_state_check=1: a texture the quick check found quiet checked in full as well. A full check that loads it
+   again, or finds it gone, is a write the round missed */
+static Surf* tex_quiet_cross(Surf* t, u64 gva) {
+    const u32 wgen = t->wgen;
+    Surf* r = tex_check_full(t, gva);
+    if (r != t || t->wgen != wgen) {
+        g_tex_checks.quiet_wrong++;
+        LOG_LIMIT(16,
+                  "vulkan: draw_state_check=1: a %ux%ux%u texture at %llx (%llu KB) that the quiet check took as it "
+                  "was changed in the full check%s\n",
+                  t->w, t->h, t->layers * t->depth3d, (unsigned long long)gva, (unsigned long long)(t->size >> 10),
+                  r ? "" : ", which found it gone");
+    }
+    if (r) r->quiet = 0; /* the full check took a new baseline: the next asks again */
+    return r;
+}
+/* a texture found for a header checked against its memory: whole without a full check where it is quiet in this
+   round */
+static Surf* tex_check(Surf* t, u64 gva) {
+    g_tex_checks.checks++;
+    /* the round, and what can change t outside a check (a failed load, a level given up, Auto's read again) */
+    if (t->quiet && t->quiet == quiet_round() && gva == t->gva && t->upload_valid && !t->bc7_reread) {
+        g_tex_checks.quiet++;
+        return g_settings.draw_state_check ? tex_quiet_cross(t, gva) : t;
+    }
+    return tex_check_counted(t, gva);
+}
+void vk_tex_check_counts(u64* checks, u64* quiet, u64* quiet_wrong) {
+    *checks = g_tex_checks.checks;
+    *quiet = g_tex_checks.quiet;
+    *quiet_wrong = g_tex_checks.quiet_wrong;
+}
+void vk_tex_check_log(void) {
+    const double n = 600;
+    LOG("vulkan: texture checks over the last 600 presents: %.1f a present (%.1f of a draw's kept textures), %.1f "
+        "quiet (one compare), %.1f found a change; %.2f loads of pieces a present, %.1f KB a present (%.2f by the "
+        "CPU's writes, %.2f by GPU-side writes), %.2f of a texture loaded in this or the last present too, %.2f loaded "
+        "whole, %.2f with bricks bound (%.2f of them loading nothing)\n",
+        (double)g_tex_checks.checks / n, (double)g_tex_checks.rechecks / n, (double)g_tex_checks.quiet / n,
+        (double)g_tex_checks.changed / n, (double)g_tex_checks.patches / n, (double)g_tex_checks.patch_bytes / 1024 / n,
+        (double)g_tex_checks.by_cpu / n, (double)g_tex_checks.by_gpu / n, (double)g_tex_checks.again / n,
+        (double)g_tex_checks.whole / n, (double)g_tex_checks.bricks / n, (double)g_tex_checks.bricks_empty / n);
+    if (g_tex_checks.by_gpu) {
+        char kinds[512];
+        int at = 0;
+        for (int k = 0; k <= GPU_WRITE_ALL && at < (int)sizeof kinds; k++)
+            if (g_tex_checks.by_kind[k])
+                at += snprintf(kinds + at, sizeof kinds - (size_t)at, "%s%llu by %s", at ? ", " : "",
+                               (unsigned long long)g_tex_checks.by_kind[k], g_write_kinds[k]);
+        LOG("vulkan: the GPU-side writes of those loads of pieces, by the newest write on their pages: %s\n", kinds);
+    }
+    if (g_settings.draw_state_check)
+        LOG("vulkan: draw_state_check=1: %llu quiet texture checks of the last 600 presents found a change in the full "
+            "check\n",
+            (unsigned long long)g_tex_checks.quiet_wrong);
+    g_tex_checks = (TexChecks){0};
 }
 /* the dimension of the texture a header describes, as ShaderInfo.tex_query_hint keys a TXQ's texture on it: 1 + its
    ShTex type (0 1D, 1 2D, 2 3D, 3 cube), + 4 for an array (a 2D header of several slices is one, as tic_view_type
@@ -4224,6 +4364,7 @@ Surf* vk_tex_from_tic_guest(const u32* tic, int raw) {
     return t;
 }
 Surf* vk_tex_recheck(Surf* t) {
+    g_tex_checks.rechecks++;
     if (g_cs_any) vk_compute_mem_need(t->gva, t->layer_size * t->layers);
     t = tex_check(t, t->gva);
     tex_take_drawn(t);

@@ -416,6 +416,16 @@ void gpu_mem_written_cpu(u64 cpu, u64 size);
 /* fn(cpu, n) for each run of guest memory that a GPU-side write above changes (gpu/vk/uma.c's hazard count) */
 void gpu_set_write_watch(void (*fn)(u64 cpu, u64 n));
 u64 gpu_mem_generation(void);   /* the last generation fully published */
+/* [gva, gva + size) watched from now: a GPU-side write on a page of its 2 MiB granules moves
+   gpu_mem_watched_generation. 0 where it can't be (gpu_page_check=1, or past the GPU's addresses) */
+int gpu_mem_watch(u64 gva, u64 size);
+/* the newest generation that wrote a watched granule, published after gpu_mem_generation reached it */
+u64 gpu_mem_watched_generation(void);
+/* what made a GPU-side write: gpu_mem_written_cb, gpu_mem_written, gpu_mem_written_shader, gpu_mem_remapped,
+   gpu_mem_written_cpu, gpu_mem_written_all */
+enum { GPU_WRITE_CB = 1, GPU_WRITE_ENGINE, GPU_WRITE_SHADER, GPU_WRITE_REMAP, GPU_WRITE_RESULT, GPU_WRITE_ALL };
+/* the kind of the newest GPU-side write on a page of [a, a + sz), 0 where none or too long ago to tell */
+int gpu_mem_newest_kind(u64 a, u64 sz);
 void gpu_mem_written_all(void); /* a save state's load: every page written, after anything asked before */
 int gpu_mem_dirty_since(u64 since, u64 a, u64 sz); /* a GPU-side write after since touched [a, a + sz) */
 /* fn(ctx, at, n) for each run of [a, a + sz) on the GPU pages a GPU-side write after since touched, in order: what
