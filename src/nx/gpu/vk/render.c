@@ -1347,6 +1347,35 @@ void vk_draw_counts(VkDrawCounts* c) {
     vk_descriptor_heaps_get_stats(&heaps);
     c->differs += heaps.lasting_differs;
 }
+/* Why tex_resolve resolved a handle again (the memo missed), for vk_render_stats_log: no way holds the handle, a way
+   holds it for another draw state or other pools, the surface table moved at the texture's address, its headers were
+   written, a storage image is pending over it, a result is pending over what it read, a GPU-side write on the
+   headers' pages, or the target it kept is undefined. MEMO_UNKEPT counts the textures resolved that are not kept: over
+   a render target that is not the texture itself, their next draw misses again */
+enum {
+    MEMO_WAY,
+    MEMO_STATE,
+    MEMO_SURFACE,
+    MEMO_HEADERS,
+    MEMO_IMAGE,
+    MEMO_PENDING,
+    MEMO_GPU,
+    MEMO_UNDEFINED,
+    MEMO_UNKEPT,
+    MEMO_CAUSES
+};
+static u64 g_memo_miss[MEMO_CAUSES];
+static void memo_miss_log(u64 presents) {
+    static u64 was[MEMO_CAUSES];
+    u64 d[MEMO_CAUSES];
+    for (int i = 0; i < MEMO_CAUSES; i++) d[i] = g_memo_miss[i] - was[i], was[i] = g_memo_miss[i];
+    const double p = (double)presents;
+    LOG("vulkan: texture memo misses a present: %.1f no way, %.1f other state, %.1f surface epoch, %.1f headers, %.1f "
+        "image, %.1f pending, %.1f GPU write, %.1f undefined target; %.1f not kept (over a target)\n",
+        (double)d[MEMO_WAY] / p, (double)d[MEMO_STATE] / p, (double)d[MEMO_SURFACE] / p, (double)d[MEMO_HEADERS] / p,
+        (double)d[MEMO_IMAGE] / p, (double)d[MEMO_PENDING] / p, (double)d[MEMO_GPU] / p, (double)d[MEMO_UNDEFINED] / p,
+        (double)d[MEMO_UNKEPT] / p);
+}
 void vk_render_stats_log(void) {
     const VkDrawCounts* n = &g_stats.n;
     const VkDrawCounts* w = &g_stats.was;
@@ -1358,6 +1387,7 @@ void vk_render_stats_log(void) {
     }
     u32 epoch = vk_ww_epoch();
     if (!presents) presents = 1;
+    memo_miss_log(presents);
     LOG("vulkan: draw states in the last %llu presents: %llu draws, %llu kept an earlier draw's (%llu the last "
         "draw's, %llu one from the table), %llu found one that a later check made again; %llu kept in the table "
         "(%llu putting another out), %llu groups hashed. A present: %.1f submissions (%.1f periodic), %.1f write "
@@ -1529,10 +1559,13 @@ static void tex_resolve(const DsState* ds, u32 handle, TexRes* x) {
     u32 set_at = (u32)(((u64)handle * VK_FIB_MULT) >> (64 - TEX_MEMO_SET_BITS));
     TexMemo* set = g_tex_memo.set[set_at];
     TexMemo* m = NULL;
-    for (u32 w = 0; w < TEX_MEMO_WAYS && !m; w++)
+    int same_handle = 0; /* a way holds the handle for another draw state or other pools */
+    for (u32 w = 0; w < TEX_MEMO_WAYS && !m; w++) {
         if (set[w].t && set[w].handle == handle && set[w].ds == ds && set[w].tic_base == tic_base &&
             set[w].tsc_base == tsc_base)
             m = &set[w];
+        same_handle |= set[w].t && set[w].handle == handle;
+    }
     u64 gw = gpu_mem_generation();
     u32 epoch = vk_ww_epoch(), now = vk_ww_now(); /* before the headers are read */
     /* a write in place is no result added: its own count moves (vk_uma_writes) */
@@ -1565,10 +1598,16 @@ static void tex_resolve(const DsState* ds, u32 handle, TexRes* x) {
        targets and writes storage images in the same frame re-resolved every texture of every draw. Nor does the
        texture's own surface written as a storage image: it samples those writes where they are. A released one stays
        pending across the frame (vk_gfx_image_put_aside), and one game's draws resolved it again 57 times a frame */
-    if (m && m->surf_epoch == vk_surf_epoch_at(m->t_gva) && tex_memo_unwritten(m, tic_at, tsc_at, epoch, now) &&
-        !(g_gfx_img_any && tex_memo_image_pending(m)) &&
-        tex_memo_unpended(m, tic_at, tsc_at, adds) &&
-        (m->gw == gw || (!gpu_mem_dirty_since(m->gw, tic_at, 32) && !gpu_mem_dirty_since(m->gw, tsc_at, 32)))) {
+    /* the first condition that fails, in the order they are asked (the log's counts of misses by cause) */
+    int miss = !m                                                   ? (same_handle ? MEMO_STATE : MEMO_WAY)
+               : m->surf_epoch != vk_surf_epoch_at(m->t_gva)        ? MEMO_SURFACE
+               : !tex_memo_unwritten(m, tic_at, tsc_at, epoch, now) ? MEMO_HEADERS
+               : g_gfx_img_any && tex_memo_image_pending(m)         ? MEMO_IMAGE
+               : !tex_memo_unpended(m, tic_at, tsc_at, adds)        ? MEMO_PENDING
+               : m->gw != gw && (gpu_mem_dirty_since(m->gw, tic_at, 32) || gpu_mem_dirty_since(m->gw, tsc_at, 32))
+                   ? MEMO_GPU
+                   : -1;
+    if (miss < 0) {
         m->gw = gw;
         m->used = ++g_tex_memo.use;
         memcpy(x->tic, m->tic, sizeof x->tic);
@@ -1583,6 +1622,7 @@ static void tex_resolve(const DsState* ds, u32 handle, TexRes* x) {
             }
             m->t = NULL; /* undefined: memory has its texels, resolved below */
             x->memo = 0;
+            miss = MEMO_UNDEFINED;
         } else {
             x->t = vk_tex_recheck(m->t);
             if (!x->t) {
@@ -1594,11 +1634,13 @@ static void tex_resolve(const DsState* ds, u32 handle, TexRes* x) {
         }
     }
     g_stats.n.tex[VK_TEX_RESOLVED]++;
+    g_memo_miss[miss >= 0 ? miss : MEMO_WAY]++;
     vk_gmem_words(tic_at, x->tic, 8);
     vk_gmem_words(tsc_at, x->tsc, 8);
     x->t = vk_tex_from_tic(x->tic);
     if (m) m->t = NULL; /* what it held is gone: kept again below if it can be */
     Surf* at = x->t ? vk_rt_find(x->t->gva) : NULL;
+    if (x->t && !(x->t->is_rt ? x->t == at : !at)) g_memo_miss[MEMO_UNKEPT]++; /* over a target, not it */
     if (x->t && (x->t->is_rt ? x->t == at : !at)) {
         if (!m) { /* an empty way, else the one used longest ago */
             m = &set[0];
