@@ -1111,6 +1111,10 @@ typedef struct Surf {
     u32 checked, next_check, stable, tfull;
     u32 wseen;    /* write-tracking clock when it last matched memory */
     u32 ww_epoch; /* the write epoch (vk_ww_epoch) of its last check for CPU writes */
+    /* textures: the quiet round (texture.c quiet_round) of its last full check that left it whole, 0 for none; the
+       present of its last load of pieces plus one, and how many presents in a row had one (the log's counts) */
+    u64 quiet;
+    u32 patched, patch_run;
     /* copies of regions of this render target for texture headers or feedback draws, one per size, linked through next
        (gpu/vk/texture.c rt_crop) */
     struct Surf* crop;
@@ -2593,6 +2597,10 @@ VkPipelineCache vk_pipeline_cache(void);     /* for pipelines made elsewhere (co
 /* of vk_tex_stats' uploads, the ones of some blocks alone (texture.c tex_patch): the blocks of the pages that changed
    since the last check, or that a texture with holes in its mapping has mapped */
 void vk_tex_partial_stats(u64* loads, u64* bytes);
+/* the log lines of the texture checks over the last 600 presents (texture.c tex_check), whose counts start over */
+void vk_tex_check_log(void);
+/* since the last log: the texture checks, those quiet (one compare), and those draw_state_check=1 found changed */
+void vk_tex_check_counts(u64* checks, u64* quiet, u64* quiet_wrong);
 void vk_pipeline_save(int at_exit);
 VkShaderModule vk_module_spv(const u32* words, size_t count);
 VkShaderModule vk_module_spv_location(const u32* words, size_t count, u32 location);
