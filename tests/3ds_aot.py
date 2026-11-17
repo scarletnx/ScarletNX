@@ -434,7 +434,7 @@ def main():
         # a service the runtime does not know: a stand-in answering success, the default, else a wait forever as
         # the console's for a service never registered
         run(ipc_program(wait=True), message=('the runtime has no service MISSING: its commands answer success',))
-        run(ipc_program(wait=True), 3, 'wait_service=MISSING', extra=('--ctr_auto_stub_ipc=0',))
+        run(ipc_program(wait=True), 3, 'wait_service=MISSING', extra=('--ctr-auto-stub-ipc=0',))
         run(application([0xEE300A01, 0xE3A0002A, 0xEF000003]), message='Guest ExitProcess: r0=42')  # VFPv2 VADD.F32
         run(application([0xE3010234]), 1, FAULT)  # MOVW is not ARM11
         run(application([0xE3A01000, 0xE5910000]), 1, FAULT)  # unmapped data

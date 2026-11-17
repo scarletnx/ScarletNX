@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
-"""The GBA runner's scripted presses (--script=ms:hex, --press_len=ms) reach the game as KEYINPUT reads them.
+"""The GBA runner's scripted presses (--script=ms:hex, --press-len=ms) reach the game as KEYINPUT reads them.
 
 A ROM made here reads KEYINPUT into r0 in a loop: the registers the runner prints at the end hold what the game read
 in its last frame, a key held reading as its bit clear. The script goes by the console's frames (about 16.74 ms each),
@@ -61,8 +61,13 @@ def main():
         cases = [
             ((), 0x3FF, None),  # nothing held
             (('--script=0:9',), 0x3F6, None),  # A and Start from the start, held 300 ms
-            (('--script=0:9', '--press_len=50'), 0x3FF, None),  # let go after 50 ms, before frame 5
-            (('--script=0:9', '--press-len=50'), 0x3FF, None),  # the same setting with a - for its _
+            (('--script=0:9', '--press-len=50'), 0x3FF, None),  # let go after 50 ms, before frame 5
+            # the key as written, the older spelling: still read, and said once with the name now
+            (
+                ('--script=0:9', '--press_len=50', '--press_len=50'),
+                0x3FF,
+                'settings: --press_len is the old spelling of --press-len: it is read as that; write --press-len',
+            ),
             (('--script=40:200',), 0x1FF, None),  # L from 40 ms
             (('--script=0:1,soon:8',), 0x3FE, 'the script stops after 1 presses, at "soon:8"'),
             (('--script=0:400',), 0x3FF, 'the script stops after 0 presses, at "0:400"'),  # past KEYINPUT's ten keys
@@ -81,29 +86,29 @@ def main():
                     )
                 )
         bad = subprocess.run(
-            [args.runner, '--press_len=soon', str(work / 'keys.gba')], capture_output=True, text=True, timeout=60
+            [args.runner, '--press-len=soon', str(work / 'keys.gba')], capture_output=True, text=True, timeout=60
         )
-        if bad.returncode != 2 or '--press_len=soon is not a whole number of ms' not in bad.stderr:
-            sys.exit('agb_keys: --press_len=soon was taken (%d)\n%s' % (bad.returncode, bad.stderr))
-        # --aot_threads=, which the launcher's queue gives every driver: taken, and the recompile says what it does
+        if bad.returncode != 2 or '--press-len=soon is not a whole number of ms' not in bad.stderr:
+            sys.exit('agb_keys: --press-len=soon was taken (%d)\n%s' % (bad.returncode, bad.stderr))
+        # --aot-threads=, which the launcher's queue gives every driver: taken, and the recompile says what it does
         # with it; a value it does not take stops the run with the value
         made = subprocess.run(
-            [args.runner, '-r', '--aot_threads=4', '--outdir', str(work), str(work / 'keys.gba')],
+            [args.runner, '-r', '--aot-threads=4', '--outdir', str(work), str(work / 'keys.gba')],
             capture_output=True,
             text=True,
             timeout=600,
         )
         if made.returncode or "aot_threads=4: a ROM's code is one module, compiled on 1 thread\n" not in made.stdout:
-            sys.exit('agb_keys: -r --aot_threads=4 (%d)\n%s%s' % (made.returncode, made.stdout, made.stderr))
+            sys.exit('agb_keys: -r --aot-threads=4 (%d)\n%s%s' % (made.returncode, made.stdout, made.stderr))
         bad = subprocess.run(
-            [args.runner, '-r', '--aot_threads=many', str(work / 'keys.gba')],
+            [args.runner, '-r', '--aot-threads=many', str(work / 'keys.gba')],
             capture_output=True,
             text=True,
             timeout=60,
         )
         if bad.returncode != 2 or 'aot_threads=many is not a whole number from 0 to 1024' not in bad.stderr:
-            sys.exit('agb_keys: --aot_threads=many was taken (%d)\n%s' % (bad.returncode, bad.stderr))
-        # and with a - for each _ of its key, said by its key; some _ left is no setting
+            sys.exit('agb_keys: --aot-threads=many was taken (%d)\n%s' % (bad.returncode, bad.stderr))
+        # said by its key; some _ left is no setting
         for option, said in (
             ('--aot-threads=many', 'aot_threads=many is not a whole number from 0 to 1024'),
             ('--aot-threads_most=1', 'unexpected argument: --aot-threads_most=1'),
@@ -113,7 +118,7 @@ def main():
             )
             if bad.returncode != 2 or said not in bad.stderr:
                 sys.exit('agb_keys: %s was taken (%d)\n%s' % (option, bad.returncode, bad.stderr))
-        # --gba_color=, the launcher's GBA colors: the screen in forced blank is white, raw 255 255 255 and gba as the
+        # --gba-color=, the launcher's GBA colors: the screen in forced blank is white, raw 255 255 255 and gba as the
         # original GBA's screen shows white, 252 238 242; a value it does not take stops the run with the value
         for value, white in (('raw', b'\xff\xff\xff'), ('gba', b'\xfc\xee\xf2')):
             shot = work / ('%s.ppm' % value)
@@ -121,7 +126,7 @@ def main():
                 [
                     args.runner,
                     '--frames=2',
-                    '--gba_color=%s' % value,
+                    '--gba-color=%s' % value,
                     '--shot=%s' % shot,
                     '--outdir',
                     str(work),
@@ -134,14 +139,14 @@ def main():
             pixel = shot.read_bytes().split(b'\n', 3)[3][:3] if shot.is_file() else b''
             if run.returncode or pixel != white:
                 sys.exit(
-                    'agb_keys: --gba_color=%s (%d) showed white as %s, not %s\n%s%s'
+                    'agb_keys: --gba-color=%s (%d) showed white as %s, not %s\n%s%s'
                     % (value, run.returncode, pixel.hex(), white.hex(), run.stdout, run.stderr)
                 )
         bad = subprocess.run(
-            [args.runner, '--gba_color=sepia', str(work / 'keys.gba')], capture_output=True, text=True, timeout=60
+            [args.runner, '--gba-color=sepia', str(work / 'keys.gba')], capture_output=True, text=True, timeout=60
         )
-        if bad.returncode != 2 or '--gba_color=sepia is not raw or gba' not in bad.stderr:
-            sys.exit('agb_keys: --gba_color=sepia was taken (%d)\n%s' % (bad.returncode, bad.stderr))
+        if bad.returncode != 2 or '--gba-color=sepia is not raw or gba' not in bad.stderr:
+            sys.exit('agb_keys: --gba-color=sepia was taken (%d)\n%s' % (bad.returncode, bad.stderr))
     print('agb_keys: passed')
 
 

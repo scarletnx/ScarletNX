@@ -51,8 +51,8 @@ echo "building $short and the working tree"
 build "$work/src" "$basedir"
 build "$root" "$headdir"
 
-# the project's objects: everything under the build tree but the packages CPM fetched (in _deps, or compiled from the
-# CPM cache, whose path differs between the two source trees)
+# the project's objects: everything under the build tree but the packages CPMUtil fetched (in _deps, or compiled from
+# the package cache, .cache/cpm, whose path differs between the two source trees)
 objects() { (cd "$1" && find . -name '*.o' -not -path './_deps/*' -not -path '*/cpm/*' | sort); }
 code() { llvm-objdump -d --no-show-raw-insn --no-leading-addr "$1" 2>/dev/null | tail -n +3; }
 differ=0

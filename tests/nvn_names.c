@@ -120,7 +120,8 @@ void kthread_unblock(KThread* t) { (void)t; }
 void core_enter(KThread* t) { (void)t; }
 void core_leave(KThread* t) { (void)t; }
 u64 guest_ticks(void) { return 0; }
-u64 guest_gpu_ticks(void) { return 0; }
+static u64 g_gpu_ticks; /* guest_gpu_ticks's answer */
+u64 guest_gpu_ticks(void) { return g_gpu_ticks; }
 u64 plat_ns(void) { return 1; }
 static i64 g_slept; /* what the runtime asked to sleep, in all */
 void plat_sleep_ns(i64 ns) { g_slept += ns; }
@@ -849,6 +850,13 @@ static void test_device(void) {
     check(nvn_DeviceRegisterFastClearColori(NULL, DEVICE, SCRATCH, NVN_FORMAT_RGBA8I) &&
               nvn_DeviceRegisterFastClearColorui(NULL, DEVICE, SCRATCH, NVN_FORMAT_RGBA8UI),
           "integer fast clear colors register");
+    /* a counter's timestamp and the clock now are the graphics unit's ticks, 384 every 625 ns */
+    NVN_OBJ(NVNcounterData, SCRATCH2)->timestamp = 9839022594ull;
+    check(nvn_DeviceGetTimestampInNanoseconds(NULL, DEVICE, SCRATCH2) == 16014034169ull,
+          "a counter's 9839022594 ticks are 16014034169 ns");
+    g_gpu_ticks = 384000000;
+    check(nvn_DeviceGetCurrentTimestampInNanoseconds(NULL, DEVICE) == 625000000, "384000000 ticks now are 625 ms");
+    g_gpu_ticks = 0;
 }
 
 /* ---- textures and their views */

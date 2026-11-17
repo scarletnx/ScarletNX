@@ -23,8 +23,9 @@
 #                         llvm_<option> (the ID in snake_case: key KEY where that reads wrong, FastISel's
 #                         llvm_fast_i_sel), LLVM's own value (SETTINGS_UNSET) until it is set
 #     key KEY             its key in the .ini (<N> in a repeat, <ID> in an each), letters, digits and _. A command line
-#                         gives it as --KEY=value, and as KEY with a - for each _ (--aot-threads=4 is aot_threads=4),
-#                         names settingsgen lists for the drivers (settings_arg). An LLVM setting's is LLVM's ID's
+#                         gives it with a - for each _ (aot_threads: --aot-threads=4), the names settingsgen lists for
+#                         the drivers (settings_arg); --KEY=value, the older spelling, is still read and said once a
+#                         run. An LLVM setting's is LLVM's ID's
 #     int LO HI           an int, clamped to LO..HI (C expressions)
 #     float LO HI         a float, clamped
 #     text SIZE           text, up to SIZE - 1 bytes
@@ -1438,6 +1439,16 @@ setting GPU checkpoints
     help 1 = records what the GPU is doing as it goes (VK_NV_device_diagnostic_checkpoints), and when the device is
     help lost logs the work each queue reached. Where the driver has no such extension it is only a warning. Off, the
     help device is made without it, so a RenderDoc capture also replays on a driver that lacks it
+setting Vulkan hidden commands
+    label Hide Vulkan commands
+    key vk_debug_hide_commands
+    text 512
+    default ""
+    startup
+    help Vulkan device commands, separated by commas, that the check of each extension's commands takes as missing
+    help from the driver, to test that path: an extension that requires one goes off, and the device is made again
+    help without it, as with a driver that lists the extension without the command. The log says each. Empty: none.
+    help A name that is no device command of a Vulkan extension stops the game, naming the nearest ones
 setting Guest memory
     key vk_memory
     int 0 2
@@ -1904,7 +1915,7 @@ setting Vita press length
     key vita_press_len
     int 0 INT_MAX
     default 300
-    help How long each press of the Vita game's script is held, in ms (--press_len= too)
+    help How long each press of the Vita game's script is held, in ms (--press-len= too)
 setting Vita screenshot interval
     key vita_shot_every
     int 0 INT_MAX
@@ -1956,6 +1967,8 @@ setting @VK_EXT_external_memory_dma_buf
 setting @VK_EXT_external_memory_host
 setting @VK_EXT_fragment_shader_interlock
 setting @VK_EXT_graphics_pipeline_library
+setting @VK_EXT_hdr_metadata
+setting @VK_EXT_image_view_min_lod
 setting @VK_EXT_index_type_uint8
 setting @VK_EXT_load_store_op_none
 setting @VK_EXT_map_memory_placed
@@ -1967,6 +1980,7 @@ setting @VK_EXT_post_depth_coverage
 setting @VK_EXT_present_timing
 setting @VK_EXT_primitive_topology_list_restart
 setting @VK_EXT_provoking_vertex
+setting @VK_EXT_rasterization_order_attachment_access
 setting @VK_EXT_robustness2
 setting @VK_EXT_sample_locations
 setting @VK_EXT_shader_atomic_float
@@ -1983,7 +1997,9 @@ setting @VK_KHR_dynamic_rendering
 setting @VK_KHR_dynamic_rendering_local_read
 setting @VK_KHR_extended_flags
 setting @VK_KHR_external_memory_fd
+setting @VK_KHR_external_memory_win32
 setting @VK_KHR_format_feature_flags2
+setting @VK_KHR_fragment_shader_barycentric
 setting @VK_KHR_index_type_uint8
 setting @VK_KHR_load_store_op_none
 setting @VK_KHR_maintenance4

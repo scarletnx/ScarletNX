@@ -59,7 +59,7 @@ Test guest semantics + malformed IPC with synthetic cases.
 ## Run / diagnose
 
 ```sh
-(cd "$games/<id>" && ./<id> --seconds=60 --script=15000:400,16000:1 --press_len=300 --shot=out)
+(cd "$games/<id>" && ./<id> --seconds=60 --script=15000:400,16000:1 --press-len=300 --shot=out)
 python3 tools/run_game.py <id> --runs 5 --seconds 60 --dump "$work/Game" --script ""
 python3 tools/symbols.py "$work/Game" cf34380
 python3 tools/disasm.py "$work/Game" NvRmStreamFlushSync
@@ -102,13 +102,13 @@ build/scarletnx --scan-log ~/.local/state/scarletnx/recompiled/<id>/<id>.log [--
 
 - Runtime: `--seconds=N` / `--frames=N`, counted from the game's start, after the shader loading screen
   (`prepare_shaders=2`, which the first run after a rebuild spends translating the game's shaders again);
-  `--shot=out` → CWD `out.ppm`; `--shot_every=N` → every N frames.
-  `--script=ms:hexbuttons,...` (or `Nf:hexbuttons` to press at present N), `--press_len=ms` (default 300).
-  `--input_record=N` records player 1's input as the game takes it (the controls', the script's and the on-screen
+  `--shot=out` → CWD `out.ppm`; `--shot-every=N` → every N frames.
+  `--script=ms:hexbuttons,...` (or `Nf:hexbuttons` to press at present N), `--press-len=ms` (default 300).
+  `--input-record=N` records player 1's input as the game takes it (the controls', the script's and the on-screen
   controls' together) to the game's slot N, 1 to 9: `<game folder>/tas/<id>.<N>.snxtas`, as save states are
   `states/<id>.<slot>.snxstate`. What the slot held is replaced, and the log says how many frames that was. The file
   has a line `frame:buttons:lx,ly,rx,ry` each present the input changed, at most one a present: `frame` the presents
-  since the game's start, `buttons` hex as the script's masks, each stick axis -32767 to 32767. `--input_replay=N`
+  since the game's start, `buttons` hex as the script's masks, each stick axis -32767 to 32767. `--input-replay=N`
   plays slot N's recording as player 1's input: each present takes the last line at or before its frame, neutral
   before the first, and the controls come back at the present after the last line's. `#` lines and empty ones are
   left for notes; a line not in that form, an axis out of range or a frame not past the one before ends the run with
@@ -116,17 +116,17 @@ build/scarletnx --scan-log ~/.local/state/scarletnx/recompiled/<id>/<id>.log [--
   on, on two slots, record what the replay gave. A paused game takes no input, so neither writes nor plays there;
   touch and motion are not recorded. The run still ends at `--seconds` or `--frames`. The replay goes by presents:
   where one build takes more presents than another to load a scene, the route slides from there on.
-  `--swkbd_text=TEXT`: the software keyboard answers TEXT instead of showing its box over the game.
+  `--swkbd-text=TEXT`: the software keyboard answers TEXT instead of showing its box over the game.
   `--pause=at:length,...` pauses the whole game at `at` ms of the script's clock for `length` ms, and logs whether
   guest memory and guest time stayed unchanged while it held (`pause:` lines).
-  `--state_save=at:slot,...` and `--state_load=at:slot,...` save the game to a save state slot and load one at those
+  `--state-save=at:slot,...` and `--state-load=at:slot,...` save the game to a save state slot and load one at those
   times (`state:` lines); the files are `<game folder>/states/<id>.<slot>.snxstate`.
   Masks: A/B/X/Y `1/2/4/8`, L/R `40/80`, ZL/ZR `100/200`, Plus/Minus `400/800`,
   left/up/right/down `1000/2000/4000/8000`.
 - `run_game.py`: by default, the input sequence that starts a new game in the game it was written for.
   **`--script ""` disables it**.
   `--out DIR` → `runN.log` + PNG (PPM without Pillow); default fresh temp dir.
-  Summary: exit, PC/symbol (`--dump`), frames/FPS. Unknown args pass through, e.g. `--fps_limit=0`.
+  Summary: exit, PC/symbol (`--dump`), frames/FPS. Unknown args pass through, e.g. `--fps-limit=0`.
 - Guest VAs: hex; disasm function queries: substrings. Disasm requires `llvm-objcopy` + `llvm-objdump`.
   `symbols.py` and `disasm.py` read the modules with the recompiler's loader, through
   `build/scarletnx --dump-modules PROGRAM DIR` (`SNX_SCARLETNX` names another binary), cached per game folder in
@@ -139,7 +139,7 @@ picture while it runs (`Debug on: log=2, gdbstub`, a text setting by its key alo
 (`debug: log=2 (default 1), gdbstub`), and in the launcher, as `(Debug on)` on the game's row and its Play and the list
 beside it:
 
-- `--log_max=MiB` (1 to 1024, default 16): the game log's size. Past it the log keeps the run's start (its first
+- `--log-max=MiB` (1 to 1024, default 16): the game log's size. Past it the log keeps the run's start (its first
   64 KiB) and its last lines, half of `log_max` in all, with a line saying how much went between them
   (`log: reached log_max=16 MiB: 7.4 MiB of lines between the run's start and here cut`), and the first time the
   game's picture says so for 3 s. `--log=2` with a long run is what fills it.
@@ -160,7 +160,7 @@ beside it:
   0.2 s of 2 s; a kernel from 6.5 with PSI, else a line says why there is none) and Windows' low memory
   notification. FreeBSD tells a process none. A Vulkan out-of-memory logs each heap and the descriptor pools, at
   the first 3.
-- `--gpu_trace_target=0x5acf62e00[:bytes]`: logs (`gpu-trace-target:`, at most 64 lines of each kind) the clears
+- `--gpu-trace-target=0x5acf62e00[:bytes]`: logs (`gpu-trace-target:`, at most 64 lines of each kind) the clears
   and draws that write a render target starting in that GPU address range, with its size, vertex or index count and
   shader addresses. A color clear lists every bound target in the range. Write the address with `0x`; without a size
   the range is one byte. It finds what produced a wrong intermediate target.
@@ -373,7 +373,7 @@ run gives the statistics more to work with. `TRACY_SAMPLING_HZ` in the environme
 ## Shaders
 
 ```sh
-"$games/Game/Game" --shader_corpus="$PWD/corpus"
+"$games/Game/Game" --shader-corpus="$PWD/corpus"
 build/snx-shaderc corpus --validate --out translated
 ```
 
@@ -405,7 +405,7 @@ color components, which reads no vertices) leave the next draw to set it again. 
 (`<id>.<driver>.vkshaders`) are made again when the choice changes: the file's key holds it.
 
 ```sh
-"$games/Game/Game" --vertex_input_dynamic_state=off   # a pipeline per layout, to compare
+"$games/Game/Game" --vertex-input-dynamic-state=off   # a pipeline per layout, to compare
 ctest --test-dir build -R 'vk_vertex_input|vulkan_headless'
 ```
 
@@ -435,7 +435,7 @@ A ban joins the table with its source; one that holds for something the renderer
 itself: `scripts/check-docs.py --bans` writes those rows from the table after a change to it, and `docs_check` fails
 while they differ.
 `vulkan_ban_ignore` ([Settings](../user/settings.md#graphics)) goes over the bans of the keys it lists for one run, to test a
-driver again: `--vulkan_ban_ignore=VK_KHR_present_id2` on the command line, `--setting vulkan_ban_ignore=...` to
+driver again: `--vulkan-ban-ignore=VK_KHR_present_id2` on the command line, `--setting vulkan_ban_ignore=...` to
 `scripts/edenprobe.py`, the row in a phone's `.ini`. Each key is said, as a warning with the ban it goes over where
 one holds; a key the table has not stops the game with the nearest ones it has. A case that passes with the ban gone
 over, held against the console's or Eden's, is what lifts it. To see which lines hold for this machine's drivers, or
@@ -451,8 +451,8 @@ ctest --test-dir build -R 'vk_extension_bans|vk_vertex_input'
 Each extension the renderer can use also has a setting, `vk_ext_<name>`
 ([Settings](../user/settings.md#vulkan-extensions)), `auto` by default: `auto` leaves the extension to this table, `on` goes over every line on it, `off` takes it out of
 the device's list (`vk_extension_settings`, beside the table in `extension_bans.c`). The list is the `table
-g_vk_extensions_ini vulkan` of `src/nx/runtime/settings.txt`, a `setting @VK_...` line per extension `device.c`
-names: `tools/settingsgen` checks each against the Khronos registry (the build's Vulkan-Headers' `registry/vk.xml`)
+g_vk_extensions_ini vulkan` of `src/nx/runtime/settings.txt`, a `setting @VK_...` line per extension a renderer
+turns on: `tools/settingsgen` checks each against the Khronos registry (the build's Vulkan-Headers' `registry/vk.xml`)
 and makes its key and help. A new extension the renderer reads is a line there. The log says each one's value in
 effect and why after the bans:
 
@@ -463,6 +463,56 @@ vulkan: VK_EXT_vertex_input_dynamic_state: on (vk_ext_vertex_input_dynamic_state
 `vk_extension_bans` checks the table's errors, each driver's numbering at every bound's edge, the filter and the
 features asked for against stand-in devices, the table the build carries, `vulkan_ban_ignore` read from a `.ini`
 with a key the table has and with one it has not, and the extension settings' values and log lines.
+
+An extension stays on only with its commands. Once the device is made, each command each of its extensions requires
+is asked of the driver (`vkGetDeviceProcAddr`, `snx_vk_commands_lacking` in `src/common/gpu/vk/extension_commands.c`).
+The table of them is generated from the same registry by `tools/vkcmdgen`: every device extension, with the commands
+of its `<require>` blocks that a device answers for, each block's `depends` kept and checked against the device (a
+version up to the one the renderer runs it at, an extension it is made with; any other name, an instance
+extension's, does not hold). A driver that lists an extension without one of them (NVIDIA's
+`VK_EXT_depth_clamp_control` without `vkCmdSetDepthClampRangeEXT`) would have the renderer call a null pointer: the
+extension goes off as an `off` line takes one out, its features and their structures with it, and the device is made
+again without it, once. Every renderer's device takes that check, in the one way they make it (below). One the device
+can't go without
+(a window's swapchain, what 1.3 took in on a 1.2 device) fails the start, saying so, and so does a device made again
+that still lacks a command. The log says each, with the driver and its version (here a command
+`vk_debug_hide_commands` hid, on lavapipe):
+
+```
+vulkan: llvmpipe (LLVM 22.1.8, 256 bits)'s driver lists VK_EXT_conditional_rendering without vkCmdBeginConditionalRenderingEXT, which it requires (vk_debug_hide_commands hides it from the check): the device is made again without it
+vulkan: VK_EXT_conditional_rendering is off on llvmpipe (LLVM 22.1.8, 256 bits) (llvmpipe, Mesa 26.2.6 (LLVM 22.1.8), driver version 26.2.6): its driver lists it without vkCmdBeginConditionalRenderingEXT, which it requires (vk_debug_hide_commands hides from the check what the driver has)
+```
+
+`vk_debug_hide_commands` ([Settings](../user/settings.md#debug)) has the check take the commands it lists as missing, to
+test that path on any driver; a 3DS or Vita game takes it too. `vulkan_headless_hidden_commands` hides
+`vkCmdSetDepthClampRangeEXT` and `vkCmdBeginConditionalRenderingEXT` and runs every check of `vulkan_headless` on the
+device made again without the extensions of the two that the driver has on; `3ds_vk_hidden_commands` makes the 3DS's
+device again without `VK_EXT_shader_object`, and `vita_vk_device` the Vita's without
+`VK_KHR_dynamic_rendering_local_read`, by the check and by its setting; `vk_extension_commands` checks the table, the
+`depends`, a stand-in device's check and the hide list; `vkcmdgen` the generator on registries of its own and on the
+build's; and `vk_extension_settings` that every device extension a renderer can turn on has its `setting @VK_...` line.
+
+```sh
+ctest --test-dir build -R 'vk_extension_commands|vk_extension_settings|vkcmdgen|vk_extension_bans'
+VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json ctest --test-dir build -R 'hidden_commands'
+```
+
+Every renderer makes its device one way, `snx_vk_device_make` (`src/common/gpu/vk/device.h`): the Switch's, the
+3DS's, the Vita's, the NDS's, the GBA's and the Android apps'. It reads the table, `vulkan_ban_ignore` and
+`vk_debug_hide_commands`; on each physical device it applies the `vk_ext_*` settings, then the bans, to the device's
+list, and gives what is left to the renderer's `choose`. That turns an extension on only through
+`snx_vk_choice_enable`, which refuses, naming it, one no `setting @VK_...` line names (the Android apps' program reads
+no settings, so takes the bans and the check alone), and makes the device through `snx_vk_choice_create`; the check of
+the commands and the device made again follow. The log says the bans and the setting of each extension the renderer
+asked about, each device passed over and why, and the device made:
+
+```
+nds gpu: the device is AMD Radeon RX 6700 XT (RADV NAVI22), driver radv Mesa 26.2.6, Vulkan 1.3, queue family 0, made with no extension
+```
+
+`runtime_architecture` fails a source of `src/` but `common/gpu/vk/device.c` that calls `vkCreateDevice` or
+`volkLoadDevice`, and `vk_device_make` checks the way with stand-in drivers: the settings before the bans, an extension
+no setting names refused, one whose driver lacks a command left out of the device made again, the devices passed over.
 
 ## SVCs
 

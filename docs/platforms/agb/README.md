@@ -47,7 +47,7 @@ to the Switch, Linux and 3DS loaders.
 `scarletnx-agb` takes the [common options](../../user/usage.md#common-options) that fit it: `-r`, `--game`, `--data`,
 `--outdir`, `--output`, `--frames`, `--shot`, `--script`, `-f`, `-h` and the recompile's (`-O`, `--jobs`, `--chunk`,
 `--jit-cache`, `--jit-only`, `--keep-ir`, `-q`), each value as `--option VALUE` or `--option=VALUE`. A ROM's code is
-one module compiled on one thread as one unit, so `--jobs`, `--chunk` and `--aot_threads_most` change nothing, which
+one module compiled on one thread as one unit, so `--jobs`, `--chunk` and `--aot-threads-most` change nothing, which
 the recompile says; `--jit-cache` names another game folder's `<name>_code.map`, and `--jit-only` plays with no
 module.
 
@@ -60,16 +60,18 @@ memory.
 screen, scaled by whole steps when it is resized, with the console's sound and
 its 59.73 frames a second. `-f` (or `--fullscreen=1`) starts it fullscreen, and F11
 switches. Esc twice within 3 seconds closes it, a first press warning on the
-terminal. The keyboard is the Switch runtime's: the arrows are the D-pad, X or
+terminal and in a line over the game, as a Switch game's notices show. The screen goes through Vulkan, as the
+other consoles' windows, where the host has a Vulkan 1.3 device that presents to the window; without one, through
+SDL's renderer, which the start says, the same pixels either way. The keyboard is the Switch runtime's: the arrows are the D-pad, X or
 Space A, Z B, Q L, E R, Enter Start and Backspace Select. A gamepad's buttons are
 where the console has them (A east, B south), its shoulders and triggers L and
 R, its left stick the D-pad. `--script ms:hex,...` presses keys unattended, as the
 3DS and Vita drivers take it: each press at its time in ms from the start of the
 run, by the console's frames (the same with a window or without), its keys in
 KEYINPUT's bits (1 A, 2 B, 4 Select, 8 Start, 10 Right, 20 Left, 40 Up, 80 Down,
-100 R, 200 L), held for `--press_len=` ms (300). `--gba_color=gba` (the default)
+100 R, 200 L), held for `--press-len=` ms (300). `--gba-color=gba` (the default)
 shows the colours as the original GBA's unlit screen did, near's color emulation
-formula; `--gba_color=raw` as the game writes them, as mGBA without a shader
+formula; `--gba-color=raw` as the game writes them, as mGBA without a shader
 (Settings > GBA > Colors).
 
 The game's folder is `recompiled/<name>/` of the data folder (`--data`, else the
@@ -227,7 +229,7 @@ image. A ROM the console would reject is refused with the failing byte named.
 ## Tests
 
 The board's unit tests are `tests/agb_*.c`. A test build also downloads
-[jsmolka's gba-tests](https://github.com/jsmolka/gba-tests) (`cmake/dependencies.cmake`)
+[jsmolka's gba-tests](https://github.com/jsmolka/gba-tests) (pinned in `cpmfile.json`)
 and runs each ROM as a test of its own, `agb_gba_<rom>` (`tests/agb_gba_tests.py`).
 The ROMs check the ARM and Thumb instruction sets, the BIOS's open bus, the
 memory map, the save memory and the display. A self-checking ROM leaves the

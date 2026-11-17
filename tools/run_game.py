@@ -6,7 +6,7 @@
     tools/run_game.py 0100DA801624E000                        # one 60 s run of the New Game script
     tools/run_game.py 0100DA801624E000 --runs 5 --seconds 45  # five runs, for an intermittent bug
     tools/run_game.py ~/.local/share/scarletnx/recompiled/0100DA801624E000 --script 15000:400 --out /tmp/x
-    tools/run_game.py Game --fps_limit=0                      # options it doesn't know go to the runtime
+    tools/run_game.py Game --fps-limit=0                      # options it doesn't know go to the runtime
 
 The game is its folder in the user's data folder's recompiled/ (where the driver puts it when no --data names
 another), named by its title ID or by the name -r was given, a path to that folder, or the program the recompile's
@@ -119,14 +119,14 @@ def main():
     )
     ap.add_argument('--out', help='folder for logs and screenshots')
     ap.add_argument('--dump', help='extracted game folder, to name crash sites (e.g. ~/.cache/scarletnx/work/Game)')
-    ap.add_argument('args', nargs='*', help='more runtime options, e.g. --fps_limit=0 (with or without -- before them)')
+    ap.add_argument('args', nargs='*', help='more runtime options, e.g. --fps-limit=0 (with or without -- before them)')
     a, unknown = ap.parse_known_args()
     a.args += unknown
     # the runtime keeps an empty script in place of one past the size of its setting (settings.txt, "text 4096"),
     # with one line in the log: the run then has no input at all
     if a.script and len(a.script.encode()) > SCRIPT_MAX:
         ap.error(
-            'the script is %d bytes, and the runtime keeps none past %d: hold each press longer with --press_len=MS '
+            'the script is %d bytes, and the runtime keeps none past %d: hold each press longer with --press-len=MS '
             'in place of many short presses' % (len(a.script.encode()), SCRIPT_MAX)
         )
 

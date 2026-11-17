@@ -6,7 +6,9 @@
    where the device has them; the "off" lines nothing asked for, said; the log lines naming the key, the device, its
    driver and version, and the line; and the table the build carries, read whole, against the drivers its lines are
    about; and vulkan_ban_ignore read from a game's .ini, a key the table has going over its ban, said with the ban, and
-   one it has not refused with the nearest keys it has.
+   one it has not refused with the nearest keys it has; and the extensions a device found without a command they
+   require, taken out by the filter over their settings and said; and the filter saying nothing, each line then said
+   on asking, an extension's and the features' warnings.
    Its other uses, for retesting a ban (the workspace's tools/vk-ban-retest.py reads their lines):
      --devices [--table FILE]                     this machine's Vulkan devices, and the lines that hold for each
      --match DRIVER VERSION [SYSTEM [DEVICEID]] [--table FILE]   the lines that hold for a driver given by hand
@@ -410,10 +412,9 @@ static void check_settings(void) {
     for (int i = 0; i < 6; i++) snprintf(list[i].extensionName, sizeof list[i].extensionName, "%s", names[i]);
     CHECK(vk_bans_load(g_table, err, sizeof err), err);
     device(VK_DRIVER_ID_MESA_RADV, MESA(26u, 0u, 4u), 0x73bf, SNX_VK_BAN_LINUX);
-    const VkExtensionSetting settings[] = {{"VK_KHR_swapchain", "auto", 0}, {"VK_EXT_b", "on", 0},
-                                           {"VK_EXT_c", "auto", 13},        {"VK_EXT_e", "auto", 0},
-                                           {"VK_EXT_j", "auto", 0},         {"VK_EXT_k", "off", 0},
-                                           {"VK_EXT_z", "on", 0},           {"VK_EXT_y", "off", 0}};
+    const VkExtensionSetting settings[] = {
+        {"VK_KHR_swapchain", "auto", 0}, {"VK_EXT_b", "on", 0},  {"VK_EXT_c", "auto", 13}, {"VK_EXT_e", "auto", 0},
+        {"VK_EXT_j", "auto", 0},         {"VK_EXT_k", "off", 0}, {"VK_EXT_z", "on", 0},    {"VK_EXT_y", "off", 0}};
     const VkExtensionNeed need[] = {{"VK_KHR_swapchain", "the window is drawn with it"}, {"VK_EXT_y", "y is needed"}};
     const VkExtensionSetting maybe[] = {{"VK_EXT_c", "maybe", 0}};
     CHECK(!vk_extension_settings(&e, maybe, 1, NULL, 0, err, sizeof err) &&
@@ -431,8 +432,9 @@ static void check_settings(void) {
     CHECK(vk_bans_filter(&e, say) == 1 && e.count == 4, "the bans take out VK_EXT_j alone: on goes over VK_EXT_b's");
     CHECK(vk_ban_find("VK_EXT_b") == 0, "and vk_ban_find finds no ban on it either");
     g_test.nsaid = 0;
-    vk_extension_settings_say(&e, VK_API_VERSION_1_3, say);
-    CHECK(g_test.nsaid == 8, "a line for each setting");
+    for (int k = 0; k < 8; k++) vk_extension_setting_say(&e, VK_API_VERSION_1_3, settings[k].name, say);
+    vk_extension_setting_say(&e, VK_API_VERSION_1_3, "VK_EXT_named_by_none", say);
+    CHECK(g_test.nsaid == 8, "a line for each setting, none for an extension no setting names");
     CHECK(said_with("vulkan: VK_KHR_swapchain: on (auto: the driver has it, and no ban holds)", NULL, NULL) >= 0,
           "auto with no ban: on");
     int over = said_with("vulkan: VK_EXT_b: on (vk_ext_b=on goes over the ban: RADV from 25.0.3 to before 26.1 on "
@@ -454,6 +456,111 @@ static void check_settings(void) {
     if (g_test.nsaid != 8) show_said();
 }
 
+/* the filter with no say (common/gpu/vk/device.c): it takes out what it does with one and says nothing; the lines it
+   held are said on asking, an extension's (vk_bans_say) and the features' warnings (vk_bans_features_say) */
+static void check_quiet(void) {
+    static const char* const names[] = {"VK_KHR_swapchain", "VK_EXT_b", "VK_EXT_c", "VK_EXT_j"};
+    VkExtensionProperties list[4];
+    SnxVkExtensions e = {list, 4};
+    char err[512] = "";
+    for (int i = 0; i < 4; i++) snprintf(list[i].extensionName, sizeof list[i].extensionName, "%s", names[i]);
+    CHECK(vk_bans_load(g_table, err, sizeof err), err);
+    device(VK_DRIVER_ID_MESA_RADV, MESA(26u, 0u, 4u), 0x73bf, SNX_VK_BAN_LINUX);
+    g_test.nsaid = 0;
+    CHECK(vk_bans_filter(&e, NULL) == 2 && e.count == 2 && !strcmp(list[1].extensionName, "VK_EXT_c") &&
+              g_test.nsaid == 0,
+          "with no say it takes out VK_EXT_b and VK_EXT_j, saying nothing");
+    vk_bans_say("VK_EXT_b", say);
+    int b = said_with("vulkan: VK_EXT_b is off on AMD Radeon", "breaks b (src b; extension_bans.txt:4)", NULL);
+    CHECK(b >= 0 && !g_test.warned[b] && g_test.nsaid == 1, "an extension's line, the one that took it out");
+    vk_bans_say("VK_EXT_c", say);
+    int c = said_with("vulkan: a known problem the extension bans do not turn off: VK_EXT_c on AMD Radeon", "breaks c",
+                      NULL);
+    CHECK(c >= 0 && g_test.warned[c] && g_test.nsaid == 2, "a warn line on an extension the device has");
+    vk_bans_say("VK_KHR_swapchain", say);
+    CHECK(g_test.nsaid == 2, "none on one no line holds for");
+    vk_bans_features_say(say);
+    int f = said_with("vulkan: a known problem the extension bans do not turn off: featureF on AMD Radeon", "breaks f",
+                      NULL);
+    CHECK(f >= 0 && g_test.warned[f] && g_test.nsaid == 3, "the features' warn lines, featureF's alone");
+    if (g_test.nsaid != 3) show_said();
+}
+
+/* an extension a device made before found without a command it requires (vk_bans_lacking): the filter takes it out
+   over its setting's on, saying the device, the extension and each such command, and the hide list where that named
+   one; its setting's line says why it is off; a new load lets them go; past VK_BANS_LACKING, or a name longer than any
+   Vulkan has, is refused */
+static void check_lacking(void) {
+    static const char* const names[] = {"VK_KHR_swapchain", "VK_EXT_b", "VK_EXT_depth_clamp_control", "VK_EXT_m"};
+    VkExtensionProperties list[4];
+    SnxVkExtensions e = {list, 4};
+    char err[512] = "", long_name[400];
+    for (int i = 0; i < 4; i++) snprintf(list[i].extensionName, sizeof list[i].extensionName, "%s", names[i]);
+    CHECK(vk_bans_load(g_table, err, sizeof err), err);
+    device(VK_DRIVER_ID_MESA_RADV, MESA(26u, 0u, 4u), 0x73bf, SNX_VK_BAN_LINUX);
+    CHECK(vk_bans_lacking("VK_EXT_depth_clamp_control", "vkCmdSetDepthClampRangeEXT", 0) &&
+              vk_bans_lacking("VK_EXT_m", "vkCmdM1", 1) && vk_bans_lacking("VK_EXT_m", "vkCmdM2", 0),
+          "three commands lacking are kept");
+    const VkExtensionSetting on[] = {{"VK_EXT_depth_clamp_control", "on", 0}, {"VK_EXT_b", "on", 0}};
+    CHECK(vk_extension_settings(&e, on, 2, NULL, 0, err, sizeof err), err);
+    g_test.nsaid = 0;
+    CHECK(vk_bans_filter(&e, say) == 2 && e.count == 2 && !strcmp(list[0].extensionName, "VK_KHR_swapchain") &&
+              !strcmp(list[1].extensionName, "VK_EXT_b"),
+          "the filter takes out both extensions a command lacks, over on, as VK_EXT_b's on goes over its ban");
+    int clamp = said_with("vulkan: VK_EXT_depth_clamp_control is off on AMD Radeon RX 6800 (RADV NAVI21) (radv, Mesa "
+                          "26.0.4, driver version 26.0.4): its driver lists it without vkCmdSetDepthClampRangeEXT, "
+                          "which it requires",
+                          NULL, NULL);
+    CHECK(clamp >= 0 && !g_test.warned[clamp], "the line names the extension, the device, its driver and version");
+    CHECK(said_with("vulkan: VK_EXT_m is off on AMD Radeon",
+                    "its driver lists it without vkCmdM1, vkCmdM2, which it requires (vk_debug_hide_commands hides "
+                    "from the check what the driver has)",
+                    NULL) >= 0,
+          "one line for an extension with each command it lacks, and the hide list where it named one");
+    CHECK(g_test.nsaid == 3, "the filter says those two and featureF's warning");
+    if (g_test.nsaid != 3) show_said();
+    g_test.nsaid = 0;
+    for (int k = 0; k < 2; k++) vk_extension_setting_say(&e, VK_API_VERSION_1_3, on[k].name, say);
+    CHECK(said_with("vulkan: VK_EXT_depth_clamp_control: off (its driver lists it without vkCmdSetDepthClampRangeEXT, "
+                    "which it requires, which vk_ext_depth_clamp_control=on can't change)",
+                    NULL, NULL) >= 0,
+          "on: the setting's line says it is off, and why on can't change that");
+    if (g_test.nsaid != 2) show_said();
+    /* auto, the default: the same, without on */
+    for (int i = 0; i < 4; i++) snprintf(list[i].extensionName, sizeof list[i].extensionName, "%s", names[i]);
+    e.count = 4;
+    CHECK(vk_bans_load(g_table, err, sizeof err), err);
+    device(VK_DRIVER_ID_MESA_RADV, MESA(26u, 0u, 4u), 0x73bf, SNX_VK_BAN_LINUX);
+    CHECK(vk_bans_lacking("VK_EXT_depth_clamp_control", "vkCmdSetDepthClampRangeEXT", 0), "kept again");
+    const VkExtensionSetting automatic[] = {{"VK_EXT_depth_clamp_control", "auto", 0}};
+    CHECK(vk_extension_settings(&e, automatic, 1, NULL, 0, err, sizeof err), err);
+    vk_bans_filter(&e, say);
+    g_test.nsaid = 0;
+    vk_extension_setting_say(&e, VK_API_VERSION_1_3, automatic[0].name, say);
+    CHECK(said_with("vulkan: VK_EXT_depth_clamp_control: off (its driver lists it without vkCmdSetDepthClampRangeEXT, "
+                    "which it requires)",
+                    NULL, NULL) >= 0 &&
+              g_test.nsaid == 1,
+          "auto: off, and why");
+    /* a new load lets them go: the extension stays */
+    for (int i = 0; i < 4; i++) snprintf(list[i].extensionName, sizeof list[i].extensionName, "%s", names[i]);
+    e.count = 4;
+    CHECK(vk_bans_load(g_table, err, sizeof err), err);
+    device(VK_DRIVER_ID_MESA_RADV, MESA(26u, 0u, 4u), 0x73bf, SNX_VK_BAN_LINUX);
+    g_test.nsaid = 0;
+    CHECK(vk_bans_filter(&e, say) == 1 && e.count == 3 && !strcmp(list[2].extensionName, "VK_EXT_m"),
+          "after a new load only the table's ban on VK_EXT_b takes an extension out");
+    /* the room: VK_BANS_LACKING, and names no longer than Vulkan's */
+    int taken = 1;
+    for (int i = 0; i < VK_BANS_LACKING; i++) taken &= vk_bans_lacking("VK_EXT_x", "vkCmdX", 0);
+    CHECK(taken && !vk_bans_lacking("VK_EXT_x", "vkCmdY", 0), "past VK_BANS_LACKING is refused");
+    CHECK(vk_bans_load(g_table, err, sizeof err), err);
+    memset(long_name, 'a', sizeof long_name - 1);
+    long_name[sizeof long_name - 1] = 0;
+    CHECK(!vk_bans_lacking(long_name, "vkCmdX", 0) && !vk_bans_lacking("VK_EXT_x", long_name, 0),
+          "a name past VK_MAX_EXTENSION_NAME_SIZE is refused");
+}
+
 /* the table the build carries, read whole, against the drivers its lines are about */
 static void check_shipped(void) {
     char err[512] = "", text[1200];
@@ -470,8 +577,9 @@ static void check_shipped(void) {
          0, NULL},
         {VK_DRIVER_ID_INTEL_PROPRIETARY_WINDOWS, INTEL_WIN(99u, 16383u), 0, SNX_VK_BAN_WINDOWS,
          "VK_EXT_vertex_input_dynamic_state", 1, "Intel's Windows driver before 27.20.100.0"},
+        /* from 27.20.100.0 on, ANGLE's ban is off too: nobody here runs Intel's Windows driver to prove it wrong */
         {VK_DRIVER_ID_INTEL_PROPRIETARY_WINDOWS, INTEL_WIN(101u, 4502u), 0, SNX_VK_BAN_WINDOWS,
-         "VK_EXT_vertex_input_dynamic_state", 0, NULL},
+         "VK_EXT_vertex_input_dynamic_state", 1, "Intel's Windows driver from 27.20.100.0 on"},
         {VK_DRIVER_ID_QUALCOMM_PROPRIETARY, MESA(512u, 800u, 48u), 0, SNX_VK_BAN_ANDROID,
          "VK_EXT_vertex_input_dynamic_state", 1, "Qualcomm's driver on Android"},
         {VK_DRIVER_ID_QUALCOMM_PROPRIETARY, MESA(512u, 800u, 48u), 0, SNX_VK_BAN_WINDOWS,
@@ -519,7 +627,28 @@ static void check_shipped(void) {
         {VK_DRIVER_ID_QUALCOMM_PROPRIETARY, MESA(512u, 800u, 48u), 0x44050a01, SNX_VK_BAN_ANDROID,
          "OpGroupNonUniformShuffle", 0, NULL},
         {VK_DRIVER_ID_MESA_RADV, MESA(26u, 2u, 6u), 0x73df, SNX_VK_BAN_LINUX, "OpGroupNonUniformShuffle", 0, NULL},
-        /* the depth clamp's own range: wrong depth values on AMD's drivers, not on RADV */
+        /* another project's ban is off on the drivers nobody here runs (NVIDIA's, AMD's and Intel's own), warn on the
+           ones that run here */
+        {VK_DRIVER_ID_NVIDIA_PROPRIETARY, NV(580u, 119u, 2u), 0x2503, SNX_VK_BAN_WINDOWS, "shaderFloat16", 1,
+         "NVIDIA's driver"},
+        {VK_DRIVER_ID_AMD_PROPRIETARY, MESA(2u, 0u, 302u), 0x744c, SNX_VK_BAN_WINDOWS, "shaderFloat16", 1,
+         "AMD's proprietary driver"},
+        {VK_DRIVER_ID_MESA_RADV, MESA(26u, 2u, 6u), 0x73df, SNX_VK_BAN_LINUX, "shaderFloat16", 0, NULL},
+        {VK_DRIVER_ID_NVIDIA_PROPRIETARY, NV(580u, 119u, 2u), 0x2503, SNX_VK_BAN_LINUX, "shaderDenormPreserveFloat16",
+         1, "NVIDIA's driver"},
+        {VK_DRIVER_ID_NVIDIA_PROPRIETARY, NV(590u, 48u, 1u), 0x2503, SNX_VK_BAN_LINUX, "VK_EXT_descriptor_heap", 1,
+         "NVIDIA's driver before 595.84.0"},
+        {VK_DRIVER_ID_NVIDIA_PROPRIETARY, NV(595u, 84u, 0u), 0x2503, SNX_VK_BAN_LINUX, "VK_EXT_descriptor_heap", 0,
+         NULL},
+        /* lifted by Eden, or with no way around: still warn on AMD's drivers */
+        {VK_DRIVER_ID_AMD_PROPRIETARY, MESA(2u, 0u, 302u), 0x744c, SNX_VK_BAN_WINDOWS, "primitiveRestartEnable", 0,
+         NULL},
+        {VK_DRIVER_ID_NVIDIA_PROPRIETARY, NV(580u, 119u, 2u), 0x2503, SNX_VK_BAN_WINDOWS, "vkCmdClearAttachments", 0,
+         NULL},
+        /* the depth clamp's own range: wrong depth values on AMD's drivers, not on RADV; NVIDIA's lists it with no
+           vkCmdSetDepthClampRangeEXT */
+        {VK_DRIVER_ID_NVIDIA_PROPRIETARY, NV(621u, 1u, 0u), 0x2684, SNX_VK_BAN_WINDOWS, "VK_EXT_depth_clamp_control", 1,
+         "NVIDIA's driver"},
         {VK_DRIVER_ID_AMD_PROPRIETARY, MESA(2u, 0u, 302u), 0x744c, SNX_VK_BAN_WINDOWS, "VK_EXT_depth_clamp_control", 1,
          "AMD's proprietary driver"},
         {VK_DRIVER_ID_AMD_OPEN_SOURCE, MESA(2u, 0u, 302u), 0x744c, SNX_VK_BAN_LINUX, "VK_EXT_depth_clamp_control", 1,
@@ -989,6 +1118,8 @@ int main(int argc, char** argv) {
     check_matching();
     check_filter();
     check_settings();
+    check_lacking();
+    check_quiet();
     check_shipped();
     ini_set_say(say_ini);
     check_ignore();

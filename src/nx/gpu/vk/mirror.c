@@ -448,7 +448,8 @@ int vk_mirror_slice(u64 gva, u64 len, VkBuffer* buf, u64* off) {
                 u8* dst = up_bytes(&u, a, 4096);
                 if (own_stage(a, 4096, dst, o, 16)) owners = 1;
                 memcpy(r->shadow + p * 4096, dst, 4096);
-                r->valid[w] |= 1ull << (p % 64);
+                /* atomic: a landing clears bits of this word without vk_lock (vk_mirror_landed) */
+                __atomic_or_fetch(&r->valid[w], 1ull << (p % 64), __ATOMIC_RELAXED);
             }
         if (whole && r->ck_epoch == epoch && lo <= r->ck_hi && r->ck_lo <= hi) { /* touching this epoch's: one */
             /* its generation the older's, unless this binding checked all of it again */
@@ -942,15 +943,24 @@ void vk_mirror_publish(void) {
 }
 /* guest memory [cpu, cpu + size) landed from an owner, the mirror or another: its pages' shadow is let go of, and the
    next binding brings them up to date from guest memory whole, which holds what landed */
+/* A landing calls it without vk_lock while the GPU copies (own.c's land_start): g_mir_land_lk keeps a granule from going
+   meanwhile (gran_release, which holds vk_lock and takes it after). A binding under vk_lock that sets a page's bit
+   again just after this clears it keeps the shadow it read before the landing. That costs one compare too few, never
+   wrong bytes: the mirror holds the owner's bytes, which are the landed ones, and a later CPU write differs from the
+   old shadow, so the next binding copies it */
+static PMutex g_mir_land_lk = PMUTEX_INIT;
 void vk_mirror_landed(u64 cpu, u64 size) {
     if (g_mir.on <= 0 || !size) return;
+    pm_lock(&g_mir_land_lk);
     for (u64 pg = cpu >> 12, e = (cpu + size - 1) >> 12; pg <= e; pg++) {
         u64 g = (pg << 12) / MIR_G, p = ((pg << 12) % MIR_G) >> 12;
-        Gran* r = g < g_mir.granules ? g_mir.gran[g] : NULL;
+        Gran* r = g < g_mir.granules ? __atomic_load_n(&g_mir.gran[g], __ATOMIC_ACQUIRE) : NULL;
         if (!r) continue;
-        r->valid[p / 64] &= ~(1ull << (p % 64));
-        r->ck_lo = r->ck_hi = 0;
+        __atomic_and_fetch(&r->valid[p / 64], ~(1ull << (p % 64)), __ATOMIC_RELAXED);
+        __atomic_store_n(&r->ck_lo, 0, __ATOMIC_RELAXED);
+        __atomic_store_n(&r->ck_hi, 0, __ATOMIC_RELAXED);
     }
+    pm_unlock(&g_mir_land_lk);
 }
 /* the pages an output couldn't take, copied by a pass of their own on a command buffer of the mirror's, waited for,
    and landed: the work that wrote them is done, and so is all that was submitted before */
@@ -1103,9 +1113,11 @@ static int gran_release(u64 g) {
     if (!vk_buffer_sparse_bind(g_mir.buf, &b[0], r->mem, MIR_G, 1)) return 0; /* no batch to put it in: it stays */
     if (!vk_buffer_sparse_bind(g_mir.mask, &b[1], r->mask, MIR_MASK_G, 1))
         fatal("vulkan: could not unbind a granule of the GPU mirror's mask");
+    pm_lock(&g_mir_land_lk); /* a landing without vk_lock may be in vk_mirror_landed */
+    __atomic_store_n(&g_mir.gran[g], NULL, __ATOMIC_RELEASE);
+    pm_unlock(&g_mir_land_lk);
     free(r->shadow);
     free(r);
-    g_mir.gran[g] = NULL;
     g_mir.bound--;
     g_mir.released++;
     vk_ledger_heap(VK_OWN_MIRROR, -(i64)MIR_G); /* its shadow */

@@ -34,6 +34,12 @@ if(BUILD_TESTING)
     set_target_properties(snx-test-nds-vk PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON LINKER_LANGUAGE CXX)
     add_test(NAME nds_vk COMMAND snx-test-nds-vk)
     set_tests_properties(nds_vk PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
+    # the driver's command line: the recompile's threads as the launcher's Gentle queue gives every driver
+    find_package(Python3 COMPONENTS Interpreter)
+    if(Python3_Interpreter_FOUND)
+        add_test(NAME nds_driver COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/nds_driver.py"
+            "${SNX_NDS_PROGRAM}")
+    endif()
 endif()
 
 if(COMMAND snx_sanitizer_path) # tests/CMakeLists.txt: this folder's tests

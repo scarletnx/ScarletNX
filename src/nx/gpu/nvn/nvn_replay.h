@@ -68,6 +68,7 @@ typedef struct {
     NvnDraw d;
     i64 stride[2]; /* the copies' row and image strides (gpu/nvn/nvn_copy.c) */
     u32 syncpt;
+    int waited; /* its last submission had a wait: the next one's walk takes its snapshot too (nvn_replay_submit) */
 } NvnReplayQueue;
 /* a submission's effect on what the CPU sees (nvn_replay.c's FX_*), at gva */
 typedef struct {

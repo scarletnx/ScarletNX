@@ -25,6 +25,9 @@ add_library(snx_nds_gpu STATIC gpu/vk/device.c gpu/vk/frame.c gpu/vk/render3d.c 
             "${volk_SOURCE_DIR}/volk.c")
 target_include_directories(snx_nds_gpu PUBLIC "${volk_SOURCE_DIR}")
 target_link_libraries(snx_nds_gpu PUBLIC scarletnx-common Vulkan::Headers SDL3::SDL3 snx_vk_common ${CMAKE_DL_LIBS})
+# snx_settings_runtime: the vk_ext_* table (g_vk_extension_settings), vulkan_ban_ignore and vk_debug_hide_commands the
+# device takes (gpu/vk/device.c)
+target_link_libraries(snx_nds_gpu PUBLIC snx_settings_runtime)
 set_source_files_properties("${volk_SOURCE_DIR}/volk.c" PROPERTIES COMPILE_OPTIONS "${snx_third_party_flags}")
 set_target_properties(snx_nds_gpu PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
 target_compile_options(snx_nds_gpu PRIVATE -Wall -Wextra -Werror=missing-prototypes)

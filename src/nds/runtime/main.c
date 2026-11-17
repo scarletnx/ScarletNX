@@ -46,17 +46,19 @@ static void usage(FILE* out) {
           out);
     snx_cli_help(out, nds_cli);
     fputs("NDS options:\n"
-          "  --press_len=MS         How long each scripted press is held (default 300)\n"
-          "  --aot_threads=N        The threads a recompile may take (0: the system's choice)\n"
-          "  --shot_every=N         With --shot PATH, also write PATH.<frame>.ppm every N frames\n"
+          "  --press-len=MS         How long each scripted press is held (default 300)\n"
+          "  --aot-threads=N        The threads a recompile may take (0: the system's choice)\n"
+          "  --aot-threads-most=N   The most threads --aot-threads=0 takes (0: the computer's cores, a quarter left\n"
+          "                         free); beside --aot-threads=N it changes nothing, which the recompile says\n"
+          "  --shot-every=N         With --shot PATH, also write PATH.<frame>.ppm every N frames\n"
           "  --aot=0                Do not compile the game first when it has no module: every block compiles as the\n"
           "                         run reaches it (a quick look at a game; -r compiles it later, from the hints)\n"
           "  --wav=PATH             Write the run's sound to PATH, 16 bits stereo\n"
           "  --dump_ram=PATH        Write 0x01FF8000 to 0x02FFFFFF to PATH when the run ends\n"
           "  --trace                Say each register access and ARM7 request the board does not know\n"
           "\n"
-          "--press_len, --aot_threads and --shot_every are settings, taken with a - for each _ too, as every\n"
-          "driver's are: --press-len=MS is --press_len=MS.\n"
+          "--press-len, --aot-threads, --aot-threads-most and --shot-every are settings: each with an _ for each -\n"
+          "(--press_len=MS), the older spelling, is still read, and said once.\n"
           "\n"
           "--frames runs that many of the console's frames and --seconds that much of its time, then ends. --headless\n"
           "opens no window. --shot writes the last frame, both screens, as a PPM image. --script=MS:KEYS,... presses\n"
@@ -165,7 +167,7 @@ int snx_nds_main(int argc, char** argv) {
     setvbuf(stderr, NULL, _IONBF, 0);
     const char* path = NULL;
     long press_len = 300;
-    int threads = 0, trace = 0, aot = 1;
+    int threads = 0, most = 0, trace = 0, aot = 1; /* most: aot_threads_most, which the launcher's Gentle queue gives */
     long shot_every = 0;
     const char* wav = NULL; /* the run's sound written there, 16 bits stereo */
     const char* dump_ram = NULL; /* main memory written there when the run ends, for a look at what the game holds */
@@ -190,22 +192,22 @@ int snx_nds_main(int argc, char** argv) {
         if (value && !strcmp(key, "press_len")) {
             press_len = strtol(value, &end, 10);
             if (end == value || *end || press_len < 0 || press_len > 0x7FFFFFFF) {
-                fprintf(stderr, "scarletnx-nds: --press_len=%s is not a whole number of ms\n", value);
+                fprintf(stderr, "scarletnx-nds: --press-len=%s is not a whole number of ms\n", value);
                 snx_cli_free(&cli);
                 return 2;
             }
-        } else if (value && !strcmp(key, "aot_threads")) {
+        } else if (value && (!strcmp(key, "aot_threads") || !strcmp(key, "aot_threads_most"))) {
             long n = strtol(value, &end, 10);
             if (end == value || *end || n < 0 || n > 1024) {
-                fprintf(stderr, "scarletnx-nds: aot_threads=%s is not a whole number from 0 to 1024\n", value);
+                fprintf(stderr, "scarletnx-nds: %s=%s is not a whole number from 0 to 1024\n", key, value);
                 snx_cli_free(&cli);
                 return 2;
             }
-            threads = (int)n;
+            *(strcmp(key, "aot_threads") ? &most : &threads) = (int)n;
         } else if (value && !strcmp(key, "shot_every")) {
             shot_every = strtol(value, &end, 10);
             if (end == value || *end || shot_every < 0) {
-                fprintf(stderr, "scarletnx-nds: --shot_every=%s is not a whole number of frames\n", value);
+                fprintf(stderr, "scarletnx-nds: --shot-every=%s is not a whole number of frames\n", value);
                 snx_cli_free(&cli);
                 return 2;
             }
@@ -287,7 +289,7 @@ int snx_nds_main(int argc, char** argv) {
     if (!module || !hints || !save) goto done;
     if (recompile || (aot && !nds_module_current(module, &rom))) {
         printf("Recompiling %s (offline static AOT)\n", rom.title[0] ? rom.title : name);
-        if (nds_aot_compile(&rom, module, hints, threads, error, sizeof error)) {
+        if (nds_aot_compile(&rom, module, hints, threads, most, error, sizeof error)) {
             fprintf(stderr, "scarletnx-nds: %s\n", error);
             goto done;
         }

@@ -1,7 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "vita/gpu/vk.h"
-#include "common/gpu/vk/extension_bans.h"
+#include "common/gpu/vk/device_settings.h"
+#include "common/gpu/vk/notice.h"
 #include "common/utilities/window_icon.h"
 #include "snx_settings.h"
 #include <stdio.h>
@@ -15,6 +16,9 @@ static struct {
     VkDeviceMemory frame_memory;
     uint32_t frame_width, frame_height;
     VkImageLayout frame_layout;
+    /* a line over the game for a few seconds, as a Switch game shows one (common/gpu/vk/notice.h) */
+    SnxNotice notice;
+    SnxVkNotice* notice_vk;
 } g;
 
 VitaVk* vita_vk(void) { return g.up ? &g.vk : NULL; }
@@ -24,27 +28,26 @@ uint32_t vita_vk_memory_type(uint32_t bits, VkMemoryPropertyFlags properties) {
 }
 /* a line of the extension bans (extension_bans.h) for the log */
 static void ban_say(const char* line, int warn) { fprintf(stderr, "%s%s\n", warn ? "warning: " : "", line); }
-/* A device of this physical device and queue family, if it has what the Vita needs (snx_vk_first_device's make) */
-static bool make_device(VkPhysicalDevice phys, uint32_t family, void* user) {
+/* what the device can't go without, into need: how many */
+static uint32_t extension_needs(bool windowed, VkExtensionNeed* need) {
+    uint32_t needs = 0;
+    need[needs++] =
+        (VkExtensionNeed){VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME, "the guest's memory the GPU uses is imported"};
+    if (windowed) need[needs++] = (VkExtensionNeed){VK_KHR_SWAPCHAIN_EXTENSION_NAME, "the window is drawn with it"};
+    return needs;
+}
+/* The Vita's device on a physical device and queue family (common/gpu/vk/device.h) */
+static bool choose(SnxVkChoice* c, void* user) {
     VitaVk* v = user;
-    SnxVkExtensions list;
-    if (!snx_vk_device_extensions(phys, &list)) return false;
-    const char* extensions[4];
-    uint32_t n = 0;
-    bool ok = snx_vk_extensions_has(&list, VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME);
-    extensions[n++] = VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME;
-    if (v->host.surface) {
-        ok = ok && snx_vk_extensions_has(&list, VK_KHR_SWAPCHAIN_EXTENSION_NAME);
-        extensions[n++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
-    }
+    VkPhysicalDevice phys = c->phys;
+    if (!snx_vk_choice_enable(c, VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME))
+        return snx_vk_choice_refuse(c, "has no VK_EXT_external_memory_host to import the guest's memory");
+    if (v->host.surface && !snx_vk_choice_enable(c, VK_KHR_SWAPCHAIN_EXTENSION_NAME))
+        return snx_vk_choice_refuse(c, "has no VK_KHR_swapchain to draw the window with");
     /* fragment programs that read their pixel's color (the program flag FRAGCOLOR_USED): the color attachment read
        as an input attachment while it is rendered to, in the order its primitives are drawn when the device keeps it */
-    bool local_read = snx_vk_extensions_has(&list, VK_KHR_DYNAMIC_RENDERING_LOCAL_READ_EXTENSION_NAME);
-    bool raster_order = snx_vk_extensions_has(&list, VK_EXT_RASTERIZATION_ORDER_ATTACHMENT_ACCESS_EXTENSION_NAME);
-    if (local_read) extensions[n++] = VK_KHR_DYNAMIC_RENDERING_LOCAL_READ_EXTENSION_NAME;
-    if (raster_order) extensions[n++] = VK_EXT_RASTERIZATION_ORDER_ATTACHMENT_ACCESS_EXTENSION_NAME;
-    snx_vk_extensions_free(&list);
-    if (!ok) return false;
+    bool local_read = snx_vk_choice_enable(c, VK_KHR_DYNAMIC_RENDERING_LOCAL_READ_EXTENSION_NAME);
+    bool raster_order = snx_vk_choice_enable(c, VK_EXT_RASTERIZATION_ORDER_ATTACHMENT_ACCESS_EXTENSION_NAME);
     VkPhysicalDeviceDynamicRenderingLocalReadFeaturesKHR lr = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_LOCAL_READ_FEATURES_KHR};
     VkPhysicalDeviceRasterizationOrderAttachmentAccessFeaturesEXT ro = {
@@ -55,16 +58,9 @@ static bool make_device(VkPhysicalDevice phys, uint32_t family, void* user) {
     void* const query[] = {&features, &v12, &v13, &ro, &lr};
     snx_vk_chain(query, sizeof query / sizeof *query);
     vkGetPhysicalDeviceFeatures2(phys, &features);
-    if (!v13.dynamicRendering || !v13.synchronization2) return false;
-    /* the drivers' bans (extension_bans.txt) on this device: without timeline semaphores the ring waits for the fence
-       of each slot (the table turns them off on Android) */
-    VkPhysicalDeviceVulkan12Properties driver = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_PROPERTIES};
-    VkPhysicalDeviceProperties2 props = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &driver};
-    vkGetPhysicalDeviceProperties2(phys, &props);
-    VkBanDevice bd = {
-        props.properties.deviceName,    driver.driverName,         driver.driverInfo, (uint32_t)driver.driverID,
-        props.properties.driverVersion, props.properties.deviceID, vk_ban_system()};
-    vk_bans_device(&bd);
+    if (!v13.dynamicRendering || !v13.synchronization2)
+        return snx_vk_choice_refuse(c, "has no dynamicRendering or no synchronization2");
+    /* without timeline semaphores the ring waits for the fence of each slot (the table turns them off on Android) */
     if (vk_ban("timelineSemaphore", v12.timelineSemaphore, ban_say)) v12.timelineSemaphore = VK_FALSE;
     v->local_read = local_read && lr.dynamicRenderingLocalRead;
     v->raster_order = raster_order && ro.rasterizationOrderColorAttachmentAccess;
@@ -88,9 +84,7 @@ static bool make_device(VkPhysicalDevice phys, uint32_t family, void* user) {
     void* const enable[] = {&want, &want12, &want13, v->raster_order ? &want_ro : NULL,
                             v->local_read ? &want_lr : NULL};
     snx_vk_chain(enable, sizeof enable / sizeof *enable);
-    if (snx_vk_device_create(phys, family, &want, extensions, n, &v->device) != VK_SUCCESS) return false;
-    v->phys = phys;
-    v->family = family;
+    if (!snx_vk_choice_create(c, &want, NULL, NULL, 0)) return false;
     VkPhysicalDeviceExternalMemoryHostPropertiesEXT host = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_MEMORY_HOST_PROPERTIES_EXT};
     VkPhysicalDeviceVulkan12Properties p12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_PROPERTIES,
@@ -133,21 +127,27 @@ bool vita_vk_init(const char* title, char* error, size_t error_size) {
     if (!snx_vk_window_open("scarletnx-vita", title ? title : "ScarletNX Vita", 960, 544, &v->host, error, error_size))
         return false;
     if (v->host.window) snx_window_icon(v->host.window);
-    /* the drivers known to break an extension or feature, read before a device is made (make_device), as the 3DS
-       does: a table the build carries that does not read is the build's fault, a key of vulkan_ban_ignore the table
-       has not is the player's */
-    if (!vk_bans_load(snx_vk_extension_bans_text, error, error_size) ||
-        !vk_bans_ignore(g_settings.vulkan_ban_ignore, error, error_size)) {
+    VkExtensionNeed need[2];
+    VkExtensionSetting settings[VK_EXTENSION_SETTINGS];
+    SnxVkDeviceRequest request = {.who = "scarletnx-vita",
+                                  .none = "no Vulkan 1.3 device with dynamic rendering and VK_EXT_external_memory_host",
+                                  .instance = v->host.instance.instance,
+                                  .api = VK_API_VERSION_1_3,
+                                  .queues = VK_QUEUE_GRAPHICS_BIT,
+                                  .surface = v->host.surface,
+                                  .choose = choose,
+                                  .user = v,
+                                  .need = need,
+                                  .needs = extension_needs(v->host.surface != VK_NULL_HANDLE, need)};
+    snx_vk_device_settings(&request, settings);
+    SnxVkDevice device;
+    if (!snx_vk_device_make(&request, &device, error, error_size)) {
         vita_vk_free();
         return false;
     }
-    if (!snx_vk_first_device(v->host.instance.instance, VK_API_VERSION_1_3, VK_QUEUE_GRAPHICS_BIT, v->host.surface,
-                             make_device, v)) {
-        snprintf(error, error_size, "no Vulkan 1.3 device with dynamic rendering and VK_EXT_external_memory_host");
-        vita_vk_free();
-        return false;
-    }
-    volkLoadDevice(v->device);
+    v->phys = device.phys;
+    v->device = device.device;
+    v->family = device.family;
     vkGetDeviceQueue(v->device, v->family, 0, &v->queue);
     vkGetPhysicalDeviceProperties(v->phys, &v->properties);
     vkGetPhysicalDeviceMemoryProperties(v->phys, &v->memory_properties);
@@ -170,6 +170,11 @@ bool vita_vk_init(const char* title, char* error, size_t error_size) {
         vita_vk_free();
         return false;
     }
+    if (!(g.notice_vk = snx_vk_notice_create(v->phys, v->device, VITA_VK_SLOTS))) {
+        snprintf(error, error_size, "out of memory for the window's notices");
+        vita_vk_free();
+        return false;
+    }
     g.up = true;
     if (v->host.surface && !swapchain_make(v)) fprintf(stderr, "scarletnx-vita: no swapchain for the window yet\n");
     return true;
@@ -179,6 +184,7 @@ void vita_vk_free(void) {
     if (v->device) {
         vkDeviceWaitIdle(v->device);
         snx_vk_swapchain_free(v->device, &v->swap);
+        snx_vk_notice_destroy(g.notice_vk);
         if (g.frame) vkDestroyImage(v->device, g.frame, NULL);
         if (g.frame_memory) vkFreeMemory(v->device, g.frame_memory, NULL);
         for (unsigned i = 0; i < VITA_VK_SLOTS; ++i)
@@ -191,8 +197,12 @@ void vita_vk_free(void) {
     snx_vk_window_close(&v->host);
     memset(v, 0, sizeof *v);
     g.frame = VK_NULL_HANDLE, g.frame_memory = VK_NULL_HANDLE, g.frame_width = g.frame_height = 0;
+    g.notice_vk = NULL;
     g.up = false;
 }
+static void notice_log(const char* text) { fprintf(stderr, "scarletnx-vita: %s\n", text); }
+void vita_vk_notice(const char* text) { snx_notice_show(&g.notice, text, SDL_GetTicksNS()); }
+const char* vita_vk_notice_text(void) { return snx_notice_shown(&g.notice, SDL_GetTicksNS()) ? g.notice.text : ""; }
 uint64_t vita_vk_poll(void) { return g.up ? snx_vk_ring_poll(&g.vk.ring) : 0; }
 bool vita_vk_wait(uint64_t serial) { return !g.up || snx_vk_ring_wait(&g.vk.ring, serial, UINT64_MAX); }
 VkCommandBuffer vita_vk_commands(void) { return snx_vk_ring_commands(&g.vk.ring); }
@@ -299,6 +309,9 @@ bool vita_vk_present(VkBuffer buffer, VkDeviceSize offset, uint32_t pitch, uint3
                         .dstOffsets = {{x, y, 0}, {x + (int32_t)sw, y + (int32_t)sh, 1}}};
     vkCmdBlitImage(cb, g.frame, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
                    &blit, VK_FILTER_LINEAR);
+    (void)snx_vk_notice_record(g.notice_vk, cb, slot, target, v->swap.format.format, w, h,
+                               snx_display_percent(v->host.window ? SDL_GetWindowDisplayScale(v->host.window) : 0.0f),
+                               &g.notice, SDL_GetTicksNS(), notice_log);
     image_barrier(cb, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
                   VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_NONE, 0);
     submit_with(v->acquired[slot], v->rendered[index]);

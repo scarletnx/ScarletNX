@@ -44,13 +44,15 @@ bool vita_present_vblank(VitaProcess* p) {
     SDL_Event event;
     while (SDL_WasInit(SDL_INIT_EVENTS) && SDL_PollEvent(&event)) {
         if (event.type == SDL_EVENT_QUIT || event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) return false;
-        /* Esc twice ends the game, a first one warning on the terminal; not with Ctrl, Alt or the system key */
+        /* Esc twice ends the game, a first one warning on the terminal and over the game; not with Ctrl, Alt or the
+           system key */
         if (event.type == SDL_EVENT_KEY_DOWN && event.key.key == SDLK_ESCAPE && !event.key.repeat &&
             !(event.key.mod & (SDL_KMOD_CTRL | SDL_KMOD_ALT | SDL_KMOD_GUI))) {
             char warning[64];
             if (snx_quit_press(&g_present.quit_by, SDL_GetTicksNS())) return false;
             snx_quit_warning(warning, sizeof warning, "Esc");
             printf("%s\n", warning);
+            vita_vk_notice(warning);
             continue;
         }
         vita_input_event(&event);

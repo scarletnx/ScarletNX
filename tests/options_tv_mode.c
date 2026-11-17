@@ -292,7 +292,7 @@ static void test_cycle(void) {
    both values, as the runtime writes the file back with that one line. uma_memory, a startup setting of [Debug] as it
    is, takes the file's 2 on this first open, from its default 0 */
 static void test_key_twice(void) {
-    static const char text[] = "vk_memory=2\n[Debug]\nvk_memory=0\numa_memory=2\n";
+    static const char text[] = "vk_memory=2\n[Debug]\nvk_memory=0\numa_memory=2\nno equals here\n";
     char *dir = snx_temp_dir(NULL), *path;
     CHECK(dir);
     path = snx_path_join(dir, "game.ini");
@@ -303,6 +303,8 @@ static void test_key_twice(void) {
     CHECK(g_settings.guest_memory == 0 && g_settings.guest_memory_in_place == 2);
     CHECK(strstr(g_test.said, "settings: vk_memory is in the file twice, vk_memory=2 and then vk_memory=0: it takes 0, "
                               "the last, and the file keeps that line only\n"));
+    /* a line the file's reading leaves is said, with its number and its text */
+    CHECK(strstr(g_test.said, "settings: line 5 of the file, \"no equals here\", has no = and sets nothing\n"));
     CHECK(!snx_remove_tree(dir));
     free(path);
     free(dir);
@@ -512,7 +514,7 @@ static void test_vk_descriptors_old(void) {
     CHECK(!strstr(g_test.said, "is not a setting") && ini_overridden("vk_descriptors_mode") &&
           !strcmp(ini_overridden("vk_descriptors_mode"), "0"));
     CHECK(strstr(g_test.said,
-                 "settings: --vk_descriptors=0 is deprecated: this run reads it as --vk_descriptors_mode=0 "
+                 "settings: --vk_descriptors=0 is deprecated: this run reads it as --vk-descriptors-mode=0 "
                  "(Sets) (docs/user/deprecations.md)\n"));
     CHECK(text && strstr(text, "\nvk_descriptors_mode=3\n"));
     free(text);
@@ -528,7 +530,7 @@ static void test_vk_descriptors_old(void) {
     text = open_ini("[Debug]\nvk_descriptors_mode=3\n");
     CHECK(!strcmp(ini_overridden("vk_descriptors_mode"), "2"));
     CHECK(strstr(g_test.said, "settings: --vk_descriptors=1 is deprecated, and the command line gives "
-                              "--vk_descriptors_mode=2 too: vk_descriptors_mode=2 this run (docs/user/deprecations.md)\n"));
+                              "--vk-descriptors-mode=2 too: vk_descriptors_mode=2 this run (docs/user/deprecations.md)\n"));
     free(text);
     ini_override("vk_descriptors", NULL);
     ini_override("vk_descriptors_mode", NULL);

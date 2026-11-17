@@ -60,7 +60,7 @@ loader and SDL took the bundle's library.
 [KosmicKrisp](https://docs.mesa3d.org/drivers/kosmickrisp.html) is Mesa's Vulkan driver on Metal, and a game runs on
 it where the Mac has it. `vulkan_driver = auto`, the default, takes KosmicKrisp where the Mac has it and runs it, else
 the MoltenVK the app carries, else the system's Vulkan loader. `vulkan_driver = moltenvk` in the game's `.ini`, or
-`--vulkan_driver=moltenvk`, keeps MoltenVK, and `kosmickrisp` asks for KosmicKrisp alone. The option is in Graphics in
+`--vulkan-driver=moltenvk`, keeps MoltenVK, and `kosmickrisp` asks for KosmicKrisp alone. The option is in Graphics in
 the launcher's Settings and in the game's menu. The first `vulkan:` line of the log names the driver that runs and why.
 
 The support is experimental: a game may draw wrong or stop on KosmicKrisp. Nor is one driver the faster everywhere. On

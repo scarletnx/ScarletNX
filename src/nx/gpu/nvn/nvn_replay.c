@@ -53,15 +53,26 @@ u32 nvn_replay_shown_syncpt(void) { return g_nvn.replay.shown; }
 typedef void (*RecordFn)(void* ctx, u32 op, u64 payload, u32 size);
 /* each record of the recording at p, in order: a JUMP continues in another segment, a CALL runs another recording,
    the recording's last record (or the empty recording's END) returns */
+/* own_acquire for a record header at p, once for each 4 KiB page a pass reads (*page, ~0 at its start): what the GPU
+   holds of a page lands at the first header the pass reads there, and the headers after it on the same page took
+   own.c's locks again for nothing, while other threads took the same locks to stage guest memory (own_stage) */
+static void acquire_header(u64 p, u64* page) {
+    if (!own_any()) return;
+    u64 at = p & ~(u64)4095;
+    if (at == *page && ((p + sizeof(NvnRecHdr) - 1) & ~(u64)4095) == at) return;
+    own_acquire(p, sizeof(NvnRecHdr));
+    *page = ((p + sizeof(NvnRecHdr) - 1) & ~(u64)4095) == at ? at : ~(u64)0;
+}
 static void walk(u64 p, RecordFn fn, void* ctx, int depth, int sync_only) {
     if (depth > 8) fatal("nvn: recordings call each other more than 8 deep (at %llx)", (unsigned long long)p);
     u32 prev = OP_BEGIN;
     u64 start = p, piece = p; /* piece: where the records walked now start, its handle or the last JUMP's target */
+    u64 page = ~(u64)0;
     for (;;) {
         NvnRecHdr h;
         u32 op;
         /* the submitting game thread, without the renderer's lock: what the GPU holds of the record lands first */
-        if (own_any()) own_acquire(p, sizeof h);
+        acquire_header(p, &page);
         memcpy(&h, GP(p), sizeof h);
         __atomic_thread_fence(__ATOMIC_ACQUIRE); /* a JUMP's target is written before its header (nvn_cmd.c) */
         op = NVN_REC_OP(h.op);
@@ -197,6 +208,19 @@ static void snapshot(void* ctx, u32 op, u64 payload, u32 size) {
     s->size = end;
 }
 
+/* a record's promise, then its copy: one walk for both, the waits captured before the copy takes them */
+typedef struct {
+    Promise* p;
+    Snapshot* s;
+} PromiseSnapshot;
+static void promise_snapshot(void* ctx, u32 op, u64 payload, u32 size) {
+    PromiseSnapshot* b = ctx;
+    if (op == OP_WAIT_SYNC || op == OP_WAIT_EVENT || op == OP_FENCE_SYNC) promise(b->p, op, payload, size);
+    b->s->waits = b->p->waits;
+    b->s->nwaits = b->p->nwaits;
+    snapshot(b->s, op, payload, size);
+}
+
 /* a syncpoint increment once the renderer's work before it is done (gpu.c's stream_incr) */
 static void stream_incr(u32 id) {
     if (g_renderer->stream_incr)
@@ -307,6 +331,7 @@ static int wait_over(const NvnJob* j, u32 op, u64 pc, u32 size, NvnReplayWait* s
    direct submissions keep CALL cursors so nested recordings do not repeat earlier draws. */
 static int replay_records(NvnJob* j, NvnReplayQueue* q) {
     Replay replay_context = {.q = q};
+    u64 page = ~(u64)0; /* acquire_header's page for this pass */
     while (j->handle < j->n) {
         if (!j->depth) {
             j->cursor[0].pc = j->cursor[0].piece = j->handles[j->handle];
@@ -321,7 +346,7 @@ static int replay_records(NvnJob* j, NvnReplayQueue* q) {
                 continue;
             }
             NvnRecHdr h;
-            if (own_any()) own_acquire(pc, sizeof h);
+            acquire_header(pc, &page);
             memcpy(&h, GP(pc), sizeof h);
             __atomic_thread_fence(__ATOMIC_ACQUIRE);
             u32 op = NVN_REC_OP(h.op);
@@ -330,9 +355,20 @@ static int replay_records(NvnJob* j, NvnReplayQueue* q) {
                       j->cursor[level].previous);
             if (op == OP_WAIT_EVENT || op == OP_WAIT_SYNC) {
                 effects(q);
-                if (!j->waiting && g_renderer->stream_end) g_renderer->stream_end();
                 NvnReplayWait sync;
-                if (!wait_over(j, op, pc, h.size, &sync)) {
+                int over = wait_over(j, op, pc, h.size, &sync);
+                /* A wait for this queue's own fence, whose increment is already in the stream: the GPU runs the
+                   stream in its order, so a barrier of all the work before it is the wait, and the replay goes on.
+                   Stopped here, the replay waited for the GPU to finish the work and the release to come back, once
+                   a frame and about 2.7 ms each in one game */
+                if (!over && !j->waiting && op == OP_WAIT_SYNC && sync.syncpt && sync.syncpt == q->syncpt &&
+                    g_renderer->release_value && g_renderer->method_barrier &&
+                    (i32)(g_renderer->release_value(sync.syncpt) - sync.value) >= 0) {
+                    g_renderer->method_barrier(4);
+                    over = 1;
+                }
+                if (!over && !j->waiting && g_renderer->stream_end) g_renderer->stream_end();
+                if (!over) {
                     j->waiting = 1;
                     return 0;
                 }
@@ -511,11 +547,30 @@ void nvn_replay_submit(u32 queue, u32 n, u64 handles, u64* ready, u32* shown) {
     if (g_renderer->mem_may_have_changed) g_renderer->mem_may_have_changed();
     pm_lock(&g_nvn.replay.lock);
     /* Every header and nested call is still read: the guest can rewrite command memory between submissions.
-       Only waits and fences affect promises, so ordinary records need no callback in this pass. */
-    for (i = 0; i < n; i++) walk(j->handles[i], promise, &p, 0, 1);
+       Only waits and fences affect promises, so ordinary records need no callback in the first pass, and a
+       submission with a wait is walked again for its copy. When the queue's last submission waited, one walk takes
+       both, and the copy is dropped if this one has no wait: two walks were most of the submitting thread's time in
+       one game, about 2.4 ms a frame before the GPU thread could start the submission */
+    NvnReplayQueue* rq = &g_nvn.replay.q[queue - 1];
+    Snapshot s = {0};
+    if (rq->waited) {
+        PromiseSnapshot b = {&p, &s};
+        for (i = 0; i < n; i++) walk(j->handles[i], promise_snapshot, &b, 0, 0);
+        if (!p.has_wait) {
+            free(s.data);
+            s = (Snapshot){0};
+        }
+    } else {
+        for (i = 0; i < n; i++) walk(j->handles[i], promise, &p, 0, 1);
+        if (p.has_wait) {
+            s = (Snapshot){.waits = p.waits, .nwaits = p.nwaits};
+            for (i = 0; i < n; i++) walk(j->handles[i], snapshot, &s, 0, 0);
+        }
+    }
+    rq->waited = p.has_wait;
     if (p.has_wait) {
-        Snapshot s = {.waits = p.waits, .nwaits = p.nwaits};
-        for (i = 0; i < n; i++) walk(j->handles[i], snapshot, &s, 0, 0);
+        s.waits = p.waits;
+        s.nwaits = p.nwaits;
         snapshot(&s, OP_END, 0, 0);
         if (s.wait != p.nwaits) fatal("nvn: command memory changed its sync waits during submission");
         j->snapshot = s.data;

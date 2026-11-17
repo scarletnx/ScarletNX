@@ -64,27 +64,27 @@ static void usage(FILE* out) {
         "  --out DIR              Where --icon writes it\n"
         "  --max-blocks N         Stop after N native blocks (default: run until the game exits or its window\n"
         "                         closes)\n"
-        "  --ipc-stubs L          With --ctr_auto_stub_ipc=0, still answer a service command the runtime lacks with\n"
+        "  --ipc-stubs L          With --ctr-auto-stub-ipc=0, still answer a service command the runtime lacks with\n"
         "                         success for the services in L: all, or a comma list of srv, fs, apt, ptm, hid, gsp,\n"
         "                         cfg, dsp, system, am, y2r, ldr, ir, irrst, mic, cam, csnd. Given more than once, the\n"
         "                         lists add up\n"
         "  --KEY=VALUE            A setting of the 3DS display or debug table (g_ctr_display_ini, g_ctr_debug_ini\n"
-        "                         in src/nx/runtime/settings.txt): --ctr_separate_windows=1 puts each screen in a\n"
-        "                         window of its own, --ctr_top_resolution=2 and --ctr_bottom_resolution=2 render\n"
-        "                         them at twice the console's, --ctr_ipc_trace=1 logs each service request,\n"
-        "                         --ctr_jit_trace=1 each block compiled while the game runs, --ctr_auto_stub_ipc=0\n"
-        "                         stops at a service command the runtime lacks. And the Switch's --vk_memory=N, as\n"
+        "                         in src/nx/runtime/settings.txt): --ctr-separate-windows=1 puts each screen in a\n"
+        "                         window of its own, --ctr-top-resolution=2 and --ctr-bottom-resolution=2 render\n"
+        "                         them at twice the console's, --ctr-ipc-trace=1 logs each service request,\n"
+        "                         --ctr-jit-trace=1 each block compiled while the game runs, --ctr-auto-stub-ipc=0\n"
+        "                         stops at a service command the runtime lacks. And the Switch's --vk-memory=N, as\n"
         "                         it means there: 0 has the GPU work on a copy of the RAM in its own memory unless\n"
-        "                         it shares the system's, 1 on the copy, 2 on the RAM in place. --async_pipelines=1\n"
-        "                         skips what a new pipeline draws while it is made, on --pipeline_threads=N threads\n"
-        "                         (0: all the computer's but two, two to twelve). --vk_pipeline_cache=0 neither\n"
+        "                         it shares the system's, 1 on the copy, 2 on the RAM in place. --async-pipelines=1\n"
+        "                         skips what a new pipeline draws while it is made, on --pipeline-threads=N threads\n"
+        "                         (0: all the computer's but two, two to twelve). --vk-pipeline-cache=0 neither\n"
         "                         reads nor writes the pipelines or shaders kept between runs (shader_cache of the\n"
-        "                         game's folder). --vk_ext_shader_object=off draws through pipelines where the\n"
-        "                         device has shader objects, as each --vk_ext_*=off takes an extension away; a\n"
-        "                         driver known to break one has it taken away too, unless --vulkan_ban_ignore=KEY\n"
-        "                         names it. --gamepad_swap_ab=1 swaps a\n"
-        "                         gamepad's A and B, --gamepad_deadzone=N is its sticks' dead zone in percent of\n"
-        "                         their travel (default 20), --gamepad_map=MAP the buttons its controls send\n"
+        "                         game's folder). --vk-ext-shader-object=off draws through pipelines where the\n"
+        "                         device has shader objects, as each --vk-ext-*=off takes an extension away; a\n"
+        "                         driver known to break one has it taken away too, unless --vulkan-ban-ignore=KEY\n"
+        "                         names it. --gamepad-swap-ab=1 swaps a\n"
+        "                         gamepad's A and B, --gamepad-deadzone=N is its sticks' dead zone in percent of\n"
+        "                         their travel (default 20), --gamepad-map=MAP the buttons its controls send\n"
         "                         (south:B east:A ..., the Switch's names: Plus is Start, Minus Select). --touch=N\n"
         "                         is what reaches the touch screen: 2 a finger or the mouse's left button (the\n"
         "                         default), 1 a finger, 0 nothing. --vsync=0 shows the newest image at the\n"
@@ -92,14 +92,14 @@ static void usage(FILE* out) {
         "                         default 1). --fullscreen=1 starts the window fullscreen, but for --seconds, --frames\n"
         "                         and --max-blocks runs (F11 or Alt+Enter switches it while the game runs).\n"
         "                         --anisotropy=N (2 to 16) filters a mipmapped texture the game filters linearly\n"
-        "                         anisotropically (default 0: as the game asks). --fps_limit=N runs the game at\n"
+        "                         anisotropically (default 0: as the game asks). --fps-limit=N runs the game at\n"
         "                         N/60 of the console's pace (the 3DS shows 60 frames a second), 0 as fast as it\n"
         "                         goes, game the console's (the default), and F4 turns it off and on. --volume=N\n"
         "                         plays the game's sound at N percent (0 to 100, the default 100; 0 mutes it)\n"
-        "                         --aot_threads=N compiles the game's code on N threads (0 to 1024; the default 0:\n"
-        "                         the computer's cores with a quarter left free, or --aot_threads_most=N), as the\n"
-        "                         Switch's, the same as --jobs N. KEY with a - for each _ is the same setting\n"
-        "                         (--ctr-top-resolution=2)\n"
+        "                         --aot-threads=N compiles the game's code on N threads (0 to 1024; the default 0:\n"
+        "                         the computer's cores with a quarter left free, or --aot-threads-most=N), as the\n"
+        "                         Switch's, the same as --jobs N. KEY is the key with a - for each _; the key as\n"
+        "                         written, the older spelling, is still read, and said once\n"
         "\n"
         "On the 3DS, -O is the level of the static blocks' code and of the helpers they call. --chunk N puts N\n"
         "instructions in a chunk, whole blocks (default: 512 blocks a chunk). --jit-cache FILE is the list of the\n"
@@ -789,7 +789,7 @@ int snx_ctr_main(int argc, char** argv) {
     snx_tool_console();
     setvbuf(stdout, NULL, _IOLBF, 0);
     /* SNX_3DS_UDS_PACKET_TRACE, which an older version read (docs/user/deprecations.md): "1" is still ctr_uds_trace=1 for
-       this version, under the command line's --ctr_uds_trace. Removed with tests/architecture.py's ENV_DEPRECATED
+       this version, under the command line's --ctr-uds-trace. Removed with tests/architecture.py's ENV_DEPRECATED
        row */
     const char* old_trace = getenv("SNX_3DS_UDS_PACKET_TRACE");
     if (old_trace && !strcmp(old_trace, "1")) g_settings.ctr_uds_trace = 1;
@@ -813,7 +813,7 @@ int snx_ctr_main(int argc, char** argv) {
             ini_read(ini_find(g_ctr_debug_ini, "ctr_script"), cli.value[SNX_CLI_SCRIPT]);
         else if (common == SNX_CLI_FULLSCREEN)
             ini_read(ini_find(g_display_ini, "fullscreen"), cli.fullscreen ? "1" : "0");
-        else if (common == SNX_CLI_OPT) /* the Switch's settings, as --aot_threads= is: the last given counts */
+        else if (common == SNX_CLI_OPT) /* the Switch's settings, as --aot-threads= is: the last given counts */
             ini_read(ini_find(g_recompile_ini, "opt"), cli.value[SNX_CLI_OPT]);
         else if (common == SNX_CLI_JOBS)
             g_settings.aot_threads = cli.jobs;
@@ -964,7 +964,7 @@ int snx_ctr_main(int argc, char** argv) {
     if (old_trace)
         snx_error("SNX_3DS_UDS_PACKET_TRACE=%s is deprecated, %s: ctr_uds_trace=%d (docs/user/deprecations.md)", old_trace,
                   strcmp(old_trace, "1")     ? "and only 1 did anything"
-                  : g_settings.ctr_uds_trace ? "and this run reads it as --ctr_uds_trace=1"
+                  : g_settings.ctr_uds_trace ? "and this run reads it as --ctr-uds-trace=1"
                                              : "and the command line gives ctr_uds_trace first",
                   g_settings.ctr_uds_trace);
     /* the game's own copy of the runtime plays it, or --game= names it */

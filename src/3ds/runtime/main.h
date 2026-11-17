@@ -21,7 +21,7 @@ static inline bool snx_ctr_shared_setting(const char* key) {
            !strcmp(key, "gamepad_swap_ab") || !strcmp(key, "gamepad_deadzone") || !strcmp(key, "gamepad_map") ||
            !strcmp(key, "touch") || !strcmp(key, "vsync") || !strcmp(key, "fullscreen") || !strcmp(key, "anisotropy") ||
            !strcmp(key, "fps_limit") || !strcmp(key, "vk_pipeline_cache") || !strcmp(key, "vulkan_ban_ignore") ||
-           !strcmp(key, "volume");
+           !strcmp(key, "vk_debug_hide_commands") || !strcmp(key, "volume");
 }
 
 #endif

@@ -17,6 +17,7 @@
 #include "nx/gpu/vk/pagespace.h"
 #include "nx/gpu/vk/descriptors.h"
 #include "common/gpu/vk/extension_bans.h"
+#include "common/gpu/vk/extension_commands.h"
 #include "nx/gpu/vk/pipeline_parts.h"
 #include "nx/gpu/shader/shader.h"
 #include "nx/gpu/maxwell/kepler_compute_regs.h"
@@ -4821,16 +4822,16 @@ static int resident_astc_blocks(void) {
     CHECK(nsr == 1 && t->sparse && !t->bricks && req.alignment == RS_TILE &&
           t->bytes == 8 * req.alignment + sr[0].imageMipTailSize);
     u8 *in = rs_region(t, 0, 512, 320, 512, 320), *in_whole = rs_region(whole, 0, 512, 320, 512, 320),
-       *far = rs_region(t, 0, 2048, 0, 256, 256);
-    CHECK(in && in_whole && far);
+       *hole = rs_region(t, 0, 2048, 0, 256, 256);
+    CHECK(in && in_whole && hole);
     int bad = memcmp(in, in_whole, 128 * 80 * 16) != 0;
-    for (u32 i = 0; i < 64 * 64 * 16 && !bad; i++) bad = far[i] != 0;
+    for (u32 i = 0; i < 64 * 64 * 16 && !bad; i++) bad = hole[i] != 0;
     if (bad)
         fprintf(stderr, "resident texture ASTC 8x5: tile (1, 1) differs from the texture made whole, or a hole far "
                         "from the tiles isn't zeros\n");
     free(in);
     free(in_whole);
-    free(far);
+    free(hole);
     CHECK(!bad);
     gmmu_space_unmap(gva, r.lay.size);
     gmmu_space_unmap(ref_gva, ref.lay.size);
@@ -7068,6 +7069,7 @@ static void results_copied(u64 cpu, u64 len) { vk_own_cpu_touched(cpu, len); }
 #include "vulkan_storage_formats.inc"
 #include "vulkan_scaled_compute.inc"
 #include "vulkan_storage_atomics.inc"
+#include "vulkan_hidden_commands.inc"
 #include "vulkan_surface_loads.inc"
 #include "vulkan_rect_textures.inc"
 #include "vulkan_minmax_program.inc"
@@ -7464,8 +7466,8 @@ static int run_headless(int argc, char** argv) {
        uma_copies, whose auto copies them on amdgpu (vk_uma_imports_dear): in place unless the command line says
        otherwise (--uma_copies=0 or 2), and check_uma_copies takes each value itself */
     g_settings.guest_buffers_copied = 1;
-    /* the runtime's startup flags (-H), its settings as it takes them (--vk_memory=2, --memory_traps=2,
-       --vertex_input_dynamic_state=off), and the benchmarks'. Any other argument stops the run: one dropped unsaid ran
+    /* the runtime's startup flags (-H), its settings as it takes them (--vk-memory=2, --memory-traps=2,
+       --vertex-input-dynamic-state=off), and the benchmarks'. Any other argument stops the run: one dropped unsaid ran
        the checks without it */
     for (int i = 1; i < argc; i++) {
         const char* eq = strchr(argv[i], '=');
@@ -7535,10 +7537,7 @@ static int run_headless(int argc, char** argv) {
             benchmark_passes = (u32)strtoul(argv[i] + 20, NULL, 10);
             continue;
         }
-        if (!strncmp(argv[i], "--", 2) && eq && (size_t)(eq - argv[i] - 2) < sizeof key) {
-            snprintf(key, sizeof key, "%.*s", (int)(eq - argv[i] - 2), argv[i] + 2);
-            o = setting_row(key);
-        }
+        if (settings_arg(argv[i], key, sizeof key)) o = setting_row(key);
         if (!o) {
             fprintf(stderr,
                     "snx-test-vulkan: %s is not an option it takes: -H, --KEY=VALUE of the runtime's settings, "
@@ -7576,7 +7575,36 @@ static int run_headless(int argc, char** argv) {
         }
         g_spirv_translate.tex_array = (u32)n;
     }
+    /* vk_debug_hide_commands: what the renderer's start says of the commands it takes as missing, read below */
+    FILE* start_log = NULL;
+    if (g_settings.vulkan_hidden_commands[0]) {
+        char* path = snx_path_join(root, "start.log");
+        start_log = fopen(path, "w+b");
+        free(path);
+        CHECK(start_log);
+        t_plat.log_redirect = start_log;
+    }
     video_init("Headless Vulkan fixture", "");
+    if (start_log) {
+        t_plat.log_redirect = NULL;
+        long size = ftell(start_log);
+        char* text = size >= 0 ? malloc((size_t)size + 1) : NULL;
+        CHECK(text && !fseek(start_log, 0, SEEK_SET) && fread(text, 1, (size_t)size, start_log) == (size_t)size);
+        text[size] = 0;
+        fclose(start_log);
+        fputs(text, stdout);
+        int hidden = check_hidden_commands(text);
+        free(text);
+        if (hidden == 77) {
+            vk_pipeline_quiesce();
+            CHECK(!snx_remove_tree(root));
+            free(root);
+            free(shot);
+            free(ppm);
+            return 77;
+        }
+        CHECK(!hidden);
+    }
     CHECK(g_opt_headless && g_renderer_up && g_vk.dev && !g_vk.surface && !g_vk.swapchain && !g_vk.sc_count);
     CHECK(!check_vk12_way());
     if (pipeline_probe) {

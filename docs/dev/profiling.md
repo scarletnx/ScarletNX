@@ -90,29 +90,29 @@ Things that follow from this:
 
 A profile is only as good as its scene. Make the same work happen in every run:
 
-- **Get to the scene the same way.** `--state_load=at:slot` loads a save state at a fixed time; `--input_replay=N`
-  plays a recorded input file (`--input_record=N` makes one, `<game folder>/tas/<id>.<N>.snxtas`); `--script=` presses
+- **Get to the scene the same way.** `--state-load=at:slot` loads a save state at a fixed time; `--input-replay=N`
+  plays a recorded input file (`--input-record=N` makes one, `<game folder>/tas/<id>.<N>.snxtas`); `--script=` presses
   buttons at fixed times. See [Run / diagnose](development.md#run--diagnose). `native_cond_var` and `native_os_sync`
   refuse save states; set them to `0` to take one, and keep them so for the comparison.
 - **Bound the run.** `--seconds=N` or `--frames=N`, counted from the game's start after the shader loading screen.
 - **Warm the caches first.** The first run after a rebuild translates the game's shaders again
   (`prepare_shaders=2`) and makes its pipelines; the first run of a new scene JIT-compiles what the module missed.
   Run the scene once, then profile the second run, unless the cold start is what you are measuring.
-- **Remove the pace.** `--fps_limit=0 --vsync=0` lets a frame take as long as its work. With the game's pace on, a
+- **Remove the pace.** `--fps-limit=0 --vsync=0` lets a frame take as long as its work. With the game's pace on, a
   fast frame waits, and the wait shows up as idle time rather than as a higher frame rate.
 - **Keep the machine quiet.** No build, no second game, no other GPU load. A desktop compositor shares the GPU.
 
 ```sh
 games="${XDG_DATA_HOME:-$HOME/.local/share}/scarletnx/recompiled"
 g="$games/<id>/<id>"
-"$g" --state_load=2000:1 --input_replay=1 --frames=1800 --fps_limit=0 --vsync=0
+"$g" --state-load=2000:1 --input-replay=1 --frames=1800 --fps-limit=0 --vsync=0
 ```
 
 `tools/run_game.py` runs the same thing unattended and prints the average FPS of the run; options it does not know
 go to the runtime:
 
 ```sh
-python3 tools/run_game.py <id> --script "" --seconds 60 --fps_limit=0 --vsync=0 --out work/prof/base
+python3 tools/run_game.py <id> --script "" --seconds 60 --fps-limit=0 --vsync=0 --out work/prof/base
 ```
 
 ### Which tool for which question
@@ -141,7 +141,7 @@ Before any profiler, look at what the runtime already measures.
   5 s a `threads:` line with the three threads that took the most CPU, and every 600 presents an `ipc:` line with the
   slowest service commands. That alone often says which thread to profile. `--log=2` costs time itself: do not time a
   run with it.
-- **`--vk_buffer_stats=1`** logs what the renderer copies between guest memory and its buffers.
+- **`--vk-buffer-stats=1`** logs what the renderer copies between guest memory and its buffers.
 - **`F5`** dumps every thread's state (guest PC and symbol) to the log: a poor man's sample when a game hangs or
   crawls.
 
@@ -183,7 +183,7 @@ A walk through a trace:
 4. **Statistics.** *Instrumentation* sums the zones; with the sampler on, *Sampling* lists the hot functions with
    their call stacks.
 
-Turn on the sampler (`--tracy_sampling=1`) for the time between the zones. It needs Linux perf events (a normal user
+Turn on the sampler (`--tracy-sampling=1`) for the time between the zones. It needs Linux perf events (a normal user
 has them unless `kernel.perf_event_paranoid` forbids it), samples at 1 kHz (`TRACY_SAMPLING_HZ`), and names the
 runtime, the game's `_code.so` and shared libraries' exports; the JIT's code stays `[unknown]`. Without it, Tracy shows
 the instrumented zones alone, which costs much less.
@@ -232,7 +232,7 @@ user-space code; that is enough. `-1` (root) adds kernel stacks and system-wide 
 **A flat profile of a scene** (the most useful first view, as the game's code has no reliable stacks):
 
 ```sh
-"$g" --state_load=2000:1 --seconds=90 --fps_limit=0 --vsync=0 &
+"$g" --state-load=2000:1 --seconds=90 --fps-limit=0 --vsync=0 &
 sleep 30                                                  # past loading, into the scene
 perf record -F 999 -e cycles:u -p $! -o work/prof/perf.data -- sleep 30
 perf report -i work/prof/perf.data --no-children --sort comm,dso,sym
@@ -290,7 +290,7 @@ threads give no samples, so it measures CPU cost, not waits.
 ```sh
 python3 tools/profile_cpu.py tune --out work/prof/ring-search               # once: size the rings
 python3 tools/profile_cpu.py run --config work/prof/ring-search/winner.json \
-    --out work/prof/capture -- "$g" --seconds=60 --fps_limit=0
+    --out work/prof/capture -- "$g" --seconds=60 --fps-limit=0
 ```
 
 The capture holds `samples.bin` (timestamp, host PC, TID, weight), `maps.txt` to resolve the PCs against, and
@@ -435,7 +435,7 @@ asks two questions: is the GPU the bound at all, and if so, which pass, draw or 
 
 ### vk_gpu_profile: where the GPU's time goes
 
-`--vk_gpu_profile=1` (`src/nx/gpu/vk/gpuprof.c`) times every rendering pass of each frame on the GPU, with its first
+`--vk-gpu-profile=1` (`src/nx/gpu/vk/gpuprof.c`) times every rendering pass of each frame on the GPU, with its first
 color (or depth) target, its draw count, and what was recorded between it and the pass before (copies by kind and
 bytes, barriers, dispatches). Every 10 s the log gets the frame's span, the time in passes, the time in the gaps by
 what they held, and the targets that took the most. It also times each command buffer, and splits the queue's idle
@@ -445,7 +445,7 @@ recording was slower than the GPU) and "after" (a semaphore wait). It needs time
 it as `0`.
 
 ```sh
-"$g" --state_load=2000:1 --seconds=60 --fps_limit=0 --vsync=0 --vk_gpu_profile=1 --log=1
+"$g" --state-load=2000:1 --seconds=60 --fps-limit=0 --vsync=0 --vk-gpu-profile=1 --log=1
 grep 'vulkan: GPU' ~/.local/state/scarletnx/recompiled/<id>/<id>.log   # the 10-second summaries
 ```
 
@@ -471,9 +471,9 @@ per-draw GPU durations in its Event Browser (`Time` column, via the clock button
 
 ```sh
 # capture presents 500 and 800, to work/prof/rd_<frame>.rdc
-"$g" --renderdoc=work/prof/rd --renderdoc_frames=500,800
+"$g" --renderdoc=work/prof/rd --renderdoc-frames=500,800
 # or the first present after 45 seconds
-"$g" --renderdoc=work/prof/rd --renderdoc_frames=45s
+"$g" --renderdoc=work/prof/rd --renderdoc-frames=45s
 ```
 
 With `renderdoc` set, `Ctrl+Shift+F12` (`hotkey_capture`) or the game menu's **Capture frame** captures the frame after
@@ -486,7 +486,7 @@ frame of 1.4 GB); the log and a notice say when it is written.
   without it.
 - The renderer sets no debug labels or object names: passes and resources appear by their Vulkan handles and order.
   Match them to Tracy's or `vk_gpu_profile`'s pass names (the target's guest address and size), and to
-  `--gpu_trace_target=0x<address>`, which logs every clear and draw into a target.
+  `--gpu-trace-target=0x<address>`, which logs every clear and draw into a target.
 - `qrenderdoc --python script.py` scripts a capture (save each pass's targets, list draws by duration).
 - No RenderDoc on NetBSD; on FreeBSD it is not packaged, so capture on Linux or Windows.
 
@@ -512,7 +512,7 @@ single shader. NVIDIA's driver has none.
 
 A pass is slow because of one shader: take it out of the game and time it alone.
 
-1. Keep the game's shaders: `--shader_corpus=$PWD/work/corpus` (every shader is translated, none kept for the next
+1. Keep the game's shaders: `--shader-corpus=$PWD/work/corpus` (every shader is translated, none kept for the next
    run), or `diag=1` where the game takes no command line (Android: `captures/shaders` beside the game).
 2. Translate them to SPIR-V: `build/snx-shaderc work/corpus --validate --out work/translated` (`--validate` needs
    `spirv-val`).
