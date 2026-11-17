@@ -252,11 +252,12 @@ static int index_cases(GpuChannel* channel, u64 target, u64 indices) {
         CHECK(!index_draw(channel, target, &call, &px));
         CHECK(index_all_green(&px));
     }
-    /* indexed quads whose restart index (9) cuts the second short: the green quad alone, where taking 9 for a vertex
-       drew a second quad of the red corners */
-    const u32 quad_cut[8] = {4, 5, 6, 7, 9, 0, 1, 2};
-    CHECK(!index_buffer(channel, indices, quad_cut, 8, 2, 9));
-    call = (DrawCall){.topology = 7, .indexed = 1, .count = 8, .instances = 1};
+    /* indexed quads whose restart index (9) cuts the first short after two red corners: the green quad alone, where
+       taking 9 for a vertex drew one quad of the red corners, 9 and green 4. The cut comes first: a red quad after the
+       green one is not drawn over it */
+    const u32 quad_cut[7] = {0, 1, 9, 4, 5, 6, 7};
+    CHECK(!index_buffer(channel, indices, quad_cut, 7, 2, 9));
+    call = (DrawCall){.topology = 7, .indexed = 1, .count = 7, .instances = 1};
     CHECK(!index_draw(channel, target, &call, &px));
     if (!index_all_green(&px)) fprintf(stderr, "quads restarting at 9: %u green, %u red\n", px.green, px.red);
     CHECK(index_all_green(&px));
