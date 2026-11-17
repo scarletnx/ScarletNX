@@ -9,11 +9,13 @@
    (snx_ir_static_step) in two modules, one emitted by each, optimized as a game's module is (snx_ir_module_optimize,
    O2, the SLP vectorizer off as the setting's default), and the two functions are compared. Then
    both sets of steps run on this host from random states, and every register, the flags, the next pc and UNDEF must
-   match. Sequences that hand flags from one instruction to the next (SUBS then CSEL, CMP then CCMP then CSEL, ADDS
-   then ADC, SUBS then B.HI) are emitted as functions (snx_ir_emit) and compared the same way, so a compare's flags
-   still reach the condition as the compare (ir_state.c's origin). Two IRs that differ only in the order of their
-   instructions and their names count as the same; one that differs otherwise may not have more instructions than
-   the hand-written one, and is listed. --report writes each difference's two IR texts;
+   match. Sequences that hand flags or a register from one instruction to the next (SUBS then CSEL, CMP then CCMP
+   then CSEL, ADDS then ADC, SUBS then B.HI, a load from a register an ADD just wrote, FCMP then CSEL) are emitted as
+   functions (snx_ir_emit) and must give the hand-written emitters' IR, so a compare's flags still reach the condition
+   as the compare, and a value one emitter writes is the one the other reads back, whichever of the two (generated or
+   written by hand) wrote it: both keep their values in ir->state's per-block cache. Two IRs that differ only in the
+   order of their instructions and their names count as the same; a step's that differs otherwise may not have more
+   instructions than the hand-written one, and is listed. --report writes each difference's two IR texts;
    --time ROUNDS only times the two emitters (time_emitters) */
 #include "llvm_steps.h"
 #include "llvm_qemu_words.h"
@@ -47,21 +49,31 @@ static const Path paths[] = {
 };
 #define PATHS (sizeof paths / sizeof *paths)
 
-/* the flag sequences: each ends in RET (llvm-mc's encodings) */
+/* the sequences: each ends in RET (llvm-mc's encodings). Each hands a register or the flags from one emitter to the
+   next, so its IR is the hand-written emitters' (in any order): another means one read what the other did not write,
+   or a compare reached the condition as flags. other says why one may differ */
 static const struct {
     const char* what;
     u32 words[5];
+    const char* other;
 } sequences[] = {
-    {"SUBS then CSEL LT", {0xeb020020u, 0x9a85b083u, 0xd65f03c0u}},
-    {"ADDS #5 then CSEL EQ (W)", {0x31001420u, 0x1a850083u, 0xd65f03c0u}},
-    {"ANDS then CSINC GE", {0xea020020u, 0x9a85a483u, 0xd65f03c0u}},
-    {"CMP #3, CCMP NE, CSEL GT", {0xf1000c3fu, 0xfa431044u, 0x9a85c080u, 0xd65f03c0u}},
-    {"ADDS then ADC", {0xab020020u, 0x9a050083u, 0xd65f03c0u}},
-    {"CMN #7 then CSET HS (W)", {0x31001c3fu, 0x1a9f37e0u, 0xd65f03c0u}},
-    {"TST #0xff then CSET EQ", {0xf2401c3fu, 0x9a9f17e0u, 0xd65f03c0u}},
-    {"SUBS then CSNEG VS (W)", {0x6b020020u, 0x5a856483u, 0xd65f03c0u}},
-    {"ADDS #0 then CSEL MI", {0xb1000020u, 0x9a844062u, 0xd65f03c0u}},
-    {"SUBS then B.HI", {0xeb020020u, 0x54000048u, 0x91000400u, 0xd65f03c0u}},
+    {"SUBS then CSEL LT", {0xeb020020u, 0x9a85b083u, 0xd65f03c0u}, NULL},
+    {"ADDS #5 then CSEL EQ (W)", {0x31001420u, 0x1a850083u, 0xd65f03c0u}, NULL},
+    {"ANDS then CSINC GE", {0xea020020u, 0x9a85a483u, 0xd65f03c0u}, NULL},
+    {"CMP #3, CCMP NE, CSEL GT",
+     {0xf1000c3fu, 0xfa431044u, 0x9a85c080u, 0xd65f03c0u},
+     "CCMP's flags are a select each, not one of a nibble"},
+    {"ADDS then ADC", {0xab020020u, 0x9a050083u, 0xd65f03c0u}, NULL},
+    {"CMN #7 then CSET HS (W)", {0x31001c3fu, 0x1a9f37e0u, 0xd65f03c0u}, NULL},
+    {"TST #0xff then CSET EQ", {0xf2401c3fu, 0x9a9f17e0u, 0xd65f03c0u}, NULL},
+    {"SUBS then CSNEG VS (W)", {0x6b020020u, 0x5a856483u, 0xd65f03c0u}, NULL},
+    {"ADDS #0 then CSEL MI", {0xb1000020u, 0x9a844062u, 0xd65f03c0u}, NULL},
+    {"SUBS then B.HI", {0xeb020020u, 0x54000048u, 0x91000400u, 0xd65f03c0u}, NULL},
+    {"LDR from X1, ADD to X1, LDR from X1", {0xf9400022u, 0x91002021u, 0xf9400023u, 0xd65f03c0u}, NULL},
+    {"ADD to X1, STR of X1, ADD of X1", {0x91000401u, 0xf9000041u, 0x8b010023u, 0xd65f03c0u}, NULL},
+    {"FCMP then CSEL GT", {0x1e612000u, 0x9a82c020u, 0xd65f03c0u}, NULL},
+    {"CFINV then B.HS", {0xd500401fu, 0x54000042u, 0x91000400u, 0xd65f03c0u}, NULL},
+    {"SUBS, LDR, CSEL EQ", {0xeb020020u, 0xf9400003u, 0x9a8600a4u, 0xd65f03c0u}, NULL},
 };
 #define SEQUENCES (sizeof sequences / sizeof *sequences)
 
@@ -367,6 +379,11 @@ static void compare_sequence(unsigned s) {
         size_t sizes[2];
         int r = compare_fns(fn[0], fn[1], &text[0], &text[1], sizes);
         judge(r, sequences[s].what, sequences[s].words[0], "this host", text[0], text[1], sizes);
+        if (r > REORDERED && !sequences[s].other) {
+            ++g_test.failures;
+            fprintf(stderr, "FAIL: %s: the generated IR is %s, not the hand-written emitters'\n", sequences[s].what,
+                    outcome[r]);
+        }
     }
     for (int k = 0; k < 2; ++k) snx_ir_free(irs[k]);
     free(text[0]);
@@ -510,7 +527,7 @@ int main(int argc, char** argv) {
         (void)before;
     }
     for (unsigned s = 0; s < SEQUENCES; ++s) compare_sequence(s);
-    printf("%zu flag sequences compared\n", SEQUENCES);
+    printf("%zu sequences compared\n", SEQUENCES);
     if (run_compare(words, count, states)) return 1;
     printf("%zu words run from %u states each\n", count, states);
     free(words);
