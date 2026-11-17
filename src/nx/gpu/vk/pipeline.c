@@ -232,6 +232,9 @@ static struct {
            pipelines made, their ns, and the optimized ones the cache had */
         u64 made[4], hits[4], ns[4];
         u64 links, link_ns, opts, opt_ns, opt_hits;
+        /* the optimized links asked of the pipeline cache alone before a fast link (gpl_cached), their ns, and those
+           it had */
+        u64 cached_tries, cached_ns, cached;
         /* the shipped programs' parts warmed into the pipeline cache ahead of their draws (ship_warm): queued, made,
            the cache hits, their ns */
         u64 warm_queued, warm_made, warm_hit, warm_ns;
@@ -1982,9 +1985,13 @@ static VkPipeline lib_get(PipeLib* l) {
     pm_unlock(&g_pipeline.pj_lock);
     return p;
 }
-/* e's parts linked: fast, without link time optimization, for the draws to wait on; or optimized (lto), into the
-   pipeline cache, for them to take when it is ready. The parts are made already */
-static VkPipeline gpl_link(const Pipe* e, int lto, int* hit) {
+/* how gpl_link links: fast, optimized, or optimized from the pipeline cache alone */
+enum { GPL_FAST, GPL_LTO, GPL_CACHED };
+/* e's parts linked: fast, without link time optimization, for the draws to wait on; or optimized (GPL_LTO), into the
+   pipeline cache, for them to take when it is ready; or optimized only if the cache has it (GPL_CACHED), else
+   VK_NULL_HANDLE. The parts are made already */
+static VkPipeline gpl_link(const Pipe* e, int mode, int* hit) {
+    const int lto = mode != GPL_FAST;
     VkPipeline libs[4];
     for (u32 i = 0; i < 4; i++) libs[i] = e->lib[i]->p;
     VkPipelineCreationFeedback made = {0};
@@ -2010,7 +2017,9 @@ static VkPipeline gpl_link(const Pipe* e, int lto, int* hit) {
         .pNext = &li,
         .flags = (g_vk.has_descriptor_buffers ? VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT : 0) |
                  (e->k.feedback ? VK_PIPELINE_CREATE_COLOR_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT : 0) |
-                 (lto ? VK_PIPELINE_CREATE_LINK_TIME_OPTIMIZATION_BIT_EXT : 0) | vk_vrs_pipeline_flags(),
+                 (lto ? VK_PIPELINE_CREATE_LINK_TIME_OPTIMIZATION_BIT_EXT : 0) |
+                 (mode == GPL_CACHED ? VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT : 0) |
+                 vk_vrs_pipeline_flags(),
         .layout = e->layout};
     /* descriptor heaps: the flag as the parts have it, and no layout; the mappings are the stage parts' */
     VkPipelineCreateFlags2CreateInfo flags2 = {
@@ -2026,20 +2035,47 @@ static VkPipeline gpl_link(const Pipe* e, int lto, int* hit) {
     }
     VkPipeline p = VK_NULL_HANDLE;
     const VkShaderModule modules[5] = {e->k.vs, e->k.tcs, e->k.tes, e->k.gs, e->fs};
-    pipe_note(lto ? "making the optimized graphics pipeline, from libraries," : "linking the graphics pipeline", e->h,
-              modules, &e->k);
-    COMPILED(VK_OK(vkCreateGraphicsPipelines(g_vk.dev, lto ? g_pipeline.pcache : VK_NULL_HANDLE, 1, &gi, NULL, &p)));
+    pipe_note(mode == GPL_CACHED ? "taking the optimized graphics pipeline from the pipeline cache"
+              : lto              ? "making the optimized graphics pipeline, from libraries,"
+                                 : "linking the graphics pipeline",
+              e->h, modules, &e->k);
+    VkResult r = VK_SUCCESS;
+    COMPILED(r = vkCreateGraphicsPipelines(g_vk.dev, lto ? g_pipeline.pcache : VK_NULL_HANDLE, 1, &gi, NULL, &p));
     plat_thread_note_clear();
+    /* VK_PIPELINE_COMPILE_REQUIRED (GPL_CACHED's miss) is a success code with no pipeline: not VK_OK's to log */
+    if (r != VK_PIPELINE_COMPILE_REQUIRED) VK_OK(r);
+    if (r != VK_SUCCESS) p = VK_NULL_HANDLE;
     *hit = (made.flags & VK_PIPELINE_CREATION_FEEDBACK_APPLICATION_PIPELINE_CACHE_HIT_BIT) != 0;
     return p;
 }
-/* e's parts, made or waited for, and their fast link: VK_NULL_HANDLE when one can't be made */
-static VkPipeline gpl_fast(const Pipe* e, int* hit) {
+/* e's optimized link from the pipeline cache alone: VK_NULL_HANDLE when the driver would have to compile it. A run
+   after the first finds the optimized pipelines of the last one there. The draws take them from their first frame,
+   and no worker makes them again behind the fast links (PIPE_OPT_WORKERS). A miss costs the driver's lookup only */
+static VkPipeline gpl_cached(const Pipe* e) {
+    if (!g_vk.has_cache_control || !g_pipeline.pcache || g_vk.gpl_hold) return VK_NULL_HANDLE; /* a test's hold */
+    u64 t0 = plat_ns();
+    SNX_ZONE(z, "pipeline from the cache");
+    int hit = 0;
+    VkPipeline p = gpl_link(e, GPL_CACHED, &hit);
+    SNX_ZONE_END(z);
+    __atomic_add_fetch(&g_pipeline.plib.cached_tries, 1, __ATOMIC_RELAXED);
+    __atomic_add_fetch(&g_pipeline.plib.cached_ns, plat_ns() - t0, __ATOMIC_RELAXED);
+    if (p) __atomic_add_fetch(&g_pipeline.plib.cached, 1, __ATOMIC_RELAXED);
+    return p;
+}
+/* e's parts, made or waited for, and their fast link, or the optimized link when the cache has it (*opt):
+   VK_NULL_HANDLE when one can't be made */
+static VkPipeline gpl_fast(const Pipe* e, int* hit, int* opt) {
     for (u32 i = 0; i < 4; i++)
         if (!lib_get(e->lib[i])) return VK_NULL_HANDLE;
+    VkPipeline cached = gpl_cached(e);
+    if (cached) {
+        *hit = *opt = 1;
+        return cached;
+    }
     u64 t0 = plat_ns();
     SNX_ZONE(z, "pipeline link");
-    VkPipeline p = gpl_link(e, 0, hit);
+    VkPipeline p = gpl_link(e, GPL_FAST, hit);
     SNX_ZONE_END(z);
     __atomic_add_fetch(&g_pipeline.plib.links, 1, __ATOMIC_RELAXED);
     __atomic_add_fetch(&g_pipeline.plib.link_ns, plat_ns() - t0, __ATOMIC_RELAXED);
@@ -2052,7 +2088,7 @@ static void pipe_optimize(Pipe* e) {
     SNX_ZONE_T(z, "pipeline optimize", "hash %016llx", (unsigned long long)e->h);
     int hit = 0;
     pcache_note(); /* before the driver, as pipe_make */
-    VkPipeline o = gpl_link(e, 1, &hit);
+    VkPipeline o = gpl_link(e, GPL_LTO, &hit);
     SNX_ZONE_END(z);
     u64 ns = plat_ns() - t0;
     const VkShaderModule modules[5] = {e->k.vs, e->k.tcs, e->k.tes, e->k.gs, e->fs};
@@ -2092,6 +2128,11 @@ void vk_pipeline_lib_stats(u64 made[4], u64 hits[4], u64 make_ms[4], u64* links,
     *opts = __atomic_load_n(&g_pipeline.plib.opts, __ATOMIC_RELAXED);
     *opt_ms = __atomic_load_n(&g_pipeline.plib.opt_ns, __ATOMIC_RELAXED) / 1000000;
 }
+void vk_pipeline_lib_cached_stats(u64* tries, u64* cached, u64* ms) {
+    *tries = __atomic_load_n(&g_pipeline.plib.cached_tries, __ATOMIC_RELAXED);
+    *cached = __atomic_load_n(&g_pipeline.plib.cached, __ATOMIC_RELAXED);
+    *ms = __atomic_load_n(&g_pipeline.plib.cached_ns, __ATOMIC_RELAXED) / 1000000;
+}
 void vk_pipeline_lib_warm_stats(u64* made, u64* hit, u64* ms) {
     *made = __atomic_load_n(&g_pipeline.plib.warm_made, __ATOMIC_RELAXED);
     *hit = __atomic_load_n(&g_pipeline.plib.warm_hit, __ATOMIC_RELAXED);
@@ -2099,7 +2140,7 @@ void vk_pipeline_lib_warm_stats(u64* made, u64* hit, u64* ms) {
 }
 /* e's pipeline, made here. One a draw asked for is kept in the file (pf_pipe_record): once made when the GPU thread
    makes it (record), and when it queues it for a worker otherwise, as the file's tables are the GPU thread's */
-static VkPipeline pipe_make(const Pipe* e, int record) {
+static VkPipeline pipe_make(const Pipe* e, int record, int* opt) {
     SNX_ZONE_T(z_pipe, "pipeline make", "hash %016llx", (unsigned long long)e->h);
     u64 t0 = plat_ns();
     SNX_ZONE(z, "pipeline make");
@@ -2107,7 +2148,8 @@ static VkPipeline pipe_make(const Pipe* e, int record) {
        cache snapshot doesn't mistake an in-flight compile for idleness and contend for the driver's cache lock. */
     pcache_note();
     int hit = 0;
-    VkPipeline p = e->lib[0] ? gpl_fast(e, &hit) : pipe_create(e, &hit);
+    *opt = 0;
+    VkPipeline p = e->lib[0] ? gpl_fast(e, &hit, opt) : pipe_create(e, &hit);
     SNX_ZONE_END(z);
     pipe_slow_say(e, plat_ns() - t0, hit);
     pcache_note();
@@ -2213,12 +2255,14 @@ static void pipe_worker(void* low) {
             pm_unlock(&g_pipeline.pj_lock);
             continue;
         }
-        p = pipe_make(e, 0);
+        int opt;
+        p = pipe_make(e, 0, &opt);
         pm_lock(&g_pipeline.pj_lock);
         g_pipeline.pj_busy--;
         __atomic_store_n(&e->p, p, __ATOMIC_RELEASE);
+        __atomic_store_n(&e->opt, opt, __ATOMIC_RELEASE);
         __atomic_store_n(&e->ready, 1, __ATOMIC_RELEASE);
-        if (p && e->lib[0] && !g_vk.gpl_hold) pipe_queue(e, 3); /* a test's hold: the link stays */
+        if (p && e->lib[0] && !opt && !g_vk.gpl_hold) pipe_queue(e, 3); /* a test's hold: the link stays */
         pc_broadcast(&g_pipeline.pj_done);
         pm_unlock(&g_pipeline.pj_lock);
     }
@@ -2376,11 +2420,13 @@ static Pipe* pipe_entry(const PipeKey* k, int* found) {
    queued for the workers (made here too without them) */
 static VkPipeline pipe_make_here(Pipe* p, int record) {
     u64 t0 = plat_ns();
-    VkPipeline made = pipe_make(p, record);
+    int opt;
+    VkPipeline made = pipe_make(p, record, &opt);
     __atomic_store_n(&p->p, made, __ATOMIC_RELEASE);
+    __atomic_store_n(&p->opt, opt, __ATOMIC_RELEASE);
     __atomic_store_n(&p->ready, 1, __ATOMIC_RELEASE);
     __atomic_add_fetch(&g_pipeline.pipe_wait_ns, plat_ns() - t0, __ATOMIC_RELAXED);
-    if (made && p->lib[0] && !g_vk.gpl_hold) { /* a test's hold: the link stays */
+    if (made && p->lib[0] && !opt && !g_vk.gpl_hold) { /* a test's hold: the link stays */
         pm_lock(&g_pipeline.pj_lock);
         int queued = pipe_workers() != 0;
         if (queued) pipe_queue(p, 3);

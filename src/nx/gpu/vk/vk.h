@@ -240,6 +240,9 @@ typedef struct {
     /* VK_EXT_graphics_pipeline_library with fast linking (pipeline_parts.h's vk_gpl_choose): a new pipeline links
        parts of its shaders that compile once, and an optimized one is made after it (pipeline.c) */
     int has_gpl;
+    /* Vulkan 1.3's pipelineCreationCacheControl: a pipeline made from the pipeline cache alone, or not at all
+       (VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT, pipeline.c's gpl_cached) */
+    int has_cache_control;
     u32 dyn_pr; /* VK_DYN_PR_*: the pre-rasterization state those pipelines take as dynamic state */
     /* VK_KHR_index_type_uint8 (or the EXT before it): 8-bit index buffers bound as they are */
     int has_index8;
@@ -2658,6 +2661,8 @@ void vk_pipeline_lib_stats(u64 made[4], u64 hits[4], u64 make_ms[4], u64* links,
    optimized pipelines at once */
 void vk_pipeline_lib_waits(u64* waits, u64* wait_ms, u64* behind_opt_ms, u64* max_ms, int* opt_workers);
 /* the shipped programs' parts warmed into the pipeline cache ahead of their draws: made, those the cache had, their ms */
+/* the optimized links asked of the pipeline cache alone before a fast link, those it had, and the ms of the asks */
+void vk_pipeline_lib_cached_stats(u64* tries, u64* cached, u64* ms);
 void vk_pipeline_lib_warm_stats(u64* made, u64* hit, u64* ms);
 void vk_tex_stats(u64* uploads, u64* bytes); /* texture uploads from guest memory so far, and their bytes */
 u64 vk_tex_hashes(void); /* texture memory hashed so far, whole or sampled, to learn whether it changed */
