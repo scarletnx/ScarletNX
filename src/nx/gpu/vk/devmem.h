@@ -132,6 +132,8 @@ VkResult vk_devmem_image(const VkImageCreateInfo* ici, const DevMemWant* want, V
 void vk_devmem_image_destroy(VkImage img, DevMem mem);
 
 void vk_devmem_info(DevMem mem, DevMemInfo* info);
+/* the bytes of the allocations m[0..n) (0 entries skipped) that are in heap, under one lock */
+u64 vk_devmem_heap_bytes(const DevMem* m, u32 n, u32 heap);
 void vk_devmem_tag(DevMem mem, u32 tag); /* a number of the caller's, kept with the allocation (the ledger's owner) */
 /* the allocation's class (DM_PRIO_*: DM_PRIO_LOW at first for a request that said low, else DM_PRIO_MID). Its block
    takes its priority from the classes it holds (block_prio in devmem.c), and an empty block keeps the one it had. The

@@ -2588,12 +2588,14 @@ static int lossless(const Surf* s) {
    (vk_tex_demote), else evicted. One in system memory already frees none of the GPU's memory: it stays for such a
    reclaim, and an idle one goes as any texture does when nothing is asked for (want ~0, vk_tex_frame) */
 static u64 surf_evict(Surf* s);
-static u64 tex_give_way(Surf* s, u64 want) {
+/* headroom: a trim for headroom, not one for an allocation still short of what it needs (vk_mem_trim's most) */
+static u64 tex_give_way(Surf* s, u64 want, int headroom) {
     if (s->demoted) return want == ~0ull ? surf_evict(s) : 0;
     /* a texture sparse for its levels with every level it can move in system memory (vk_tex_coarser) holds only its
-       coarsest levels of the GPU's: it stays, as a demoted one does. Evicted, it gave the trim almost nothing and was
-       loaded again whole at its next use */
-    if (want != ~0ull && s->shed && s->sys_levels && !vk_tex_can_coarsen(s)) return 0;
+       coarsest levels of the GPU's: a trim for headroom passes over it, as over a demoted one. Evicted, it gave the
+       trim almost nothing and was loaded again whole at its next use. An allocation that found no memory still takes
+       what it holds */
+    if (headroom && want != ~0ull && s->shed && s->sys_levels && !vk_tex_can_coarsen(s)) return 0;
     const u64 moved = want != ~0ull ? vk_tex_demote(s) : 0;
     return moved ? moved : surf_evict(s);
 }
@@ -2648,7 +2650,7 @@ static u64 surf_reclaim(int kind, u32 before, u64 want, int lossy, u64 most, int
             if (vk_gfx_image_holds(s))
                 passed++;
             else
-                freed += kind == VK_LRU_TEX ? tex_give_way(s, want) : surf_evict(s);
+                freed += kind == VK_LRU_TEX ? tex_give_way(s, want, most != ~0ull) : surf_evict(s);
         }
     for (u32 r = g_rows.lists[kind].head, n; r && freed < want && passed < 512; r = n) {
         n = g_rows.lru[r].next;
@@ -2666,7 +2668,7 @@ static u64 surf_reclaim(int kind, u32 before, u64 want, int lossy, u64 most, int
         else if (vk_gfx_image_holds(s))
             passed++;
         else
-            freed += kind == VK_LRU_TEX ? tex_give_way(s, want) : surf_evict(s);
+            freed += kind == VK_LRU_TEX ? tex_give_way(s, want, most != ~0ull) : surf_evict(s);
     }
     return freed;
 }

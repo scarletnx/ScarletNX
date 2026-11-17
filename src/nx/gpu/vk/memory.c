@@ -872,21 +872,18 @@ u64 vk_image_sparse_level_bytes(VkImage img, u32 levels) {
     for (u32 l = 0; l < levels && l < s->sh.tail_first; l++) n += (u64)s->sh.bx[l] * s->sh.by[l] * s->sh.bz[l];
     return n * s->sh.layers * s->block;
 }
-/* a's bytes where it is in the heap the caches budget (vk_mem_heap), else 0 */
-static u64 heap_bytes(DevMem a) {
-    if (!a) return 0;
-    DevMemInfo info;
-    vk_devmem_info(a, &info);
-    return (int)vk_devmem_props()->memoryTypes[info.type].heapIndex == vk_mem_heap() ? info.size : 0;
-}
-u64 vk_image_sparse_heap_bytes(VkImage img) {
-    const Sparse* s = sparse_find(img);
-    if (!s) return 0;
-    u64 n = 0;
+/* s's memory in the heap the caches budget (vk_mem_heap): each allocation once, with the mip tails. Not its blocks in
+   system memory (vk_image_sparse_place), which hold none of it. s->bytes counts both. 0 with no memory for the list */
+static u64 sparse_heap_bytes(const Sparse* s) {
+    DevMem* m = malloc(((size_t)s->nmem + s->tails) * sizeof *m);
+    if (!m) return 0;
+    u32 n = 0;
     for (u32 i = 0; i < s->nmem; i++)
-        if (s->mem[i].refs) n += heap_bytes(s->mem[i].a);
-    for (u32 t = 0; t < s->tails; t++) n += heap_bytes(s->slot[sparse_nblocks(s) + t]);
-    return n;
+        if (s->mem[i].refs) m[n++] = s->mem[i].a;
+    for (u32 t = 0; t < s->tails; t++) m[n++] = s->slot[sparse_nblocks(s) + t];
+    const u64 bytes = vk_devmem_heap_bytes(m, n, (u32)vk_mem_heap());
+    free(m);
+    return bytes;
 }
 u64 vk_image_sparse_need(VkImage img, const u8* bits, const u64* keys) {
     const Sparse* s = sparse_find(img);
@@ -1047,9 +1044,10 @@ int vk_image_sparse_bind(VkImage img, const u8* bits, const u64* keys, u64* byte
                 if (aci.moves) vk_devmem_owner(s->slot[nb + t], s->mover);
             }
         s->bytes = s->bytes + (u64)p.nfresh * s->block + (u64)p.ntail * s->tail_size - gone * s->block;
-        *bytes = s->bytes;
+        *bytes = sparse_heap_bytes(s);
         if (dead->n) {
-            vk_defer_bytes(gone * s->block);
+            /* what comes back to the caches' heap when the frames are done: not the blocks in system memory */
+            vk_defer_bytes(vk_devmem_heap_bytes(dead->a, dead->n, (u32)vk_mem_heap()));
             vk_defer_call(sparse_dead_free, dead);
         } else
             free(dead);

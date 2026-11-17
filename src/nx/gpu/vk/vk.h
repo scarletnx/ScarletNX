@@ -382,7 +382,8 @@ int vk_sparse_unissued(VkImage img);
    in a level slice by slice, row by row, left to right. vk_image_sparse_bind binds memory to the blocks whose bit is
    set in bits (block b: bit b & 7 of bits[b >> 3]) and to the mip tail, which is bound always. It releases the memory
    of the other blocks. It gives -1 when memory ran out (nothing changed), 0 when nothing had to change, 1 when the
-   binds changed, with the bytes bound now in *bytes. keys (NULL for none): a number for each block that says what
+   binds changed, with the bytes bound now in the heap the caches budget in *bytes (vk_mem_heap: not the blocks in
+   system memory, vk_image_sparse_place). keys (NULL for none): a number for each block that says what
    its texels show, 0 for a block like no other. Blocks with one key bind the same memory where the device allows it
    (sparseResidencyAliased), so what is copied to one is in all of them, and a block whose key changed is bound
    again. vk_image_sparse_need: the bytes that such a bind adds.
@@ -430,9 +431,6 @@ int vk_image_sparse_move_end(VkImage img, DevMem a, DevMem to);
    them */
 void vk_sparse_batch_flush(void);
 u64 vk_image_sparse_level_bytes(VkImage img, u32 levels);
-/* the memory bound to img that is in the heap the caches budget (vk_mem_heap): not its blocks in system memory
-   (vk_image_sparse_place) */
-u64 vk_image_sparse_heap_bytes(VkImage img);
 void vk_sparse_stats(u64* binds, u64* bind_ns); /* statistics: sparse binds, and the host's wait for them */
 /* statistics: the blocks and mip tails with memory now of an image of either kind above, 0 for another image */
 u32 vk_image_bound_blocks(VkImage img);

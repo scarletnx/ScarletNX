@@ -1282,6 +1282,18 @@ void vk_devmem_image_destroy(VkImage img, DevMem mem) {
     vk_devmem_free(mem);
 }
 
+u64 vk_devmem_heap_bytes(const DevMem* m, u32 n, u32 heap) {
+    u64 bytes = 0;
+    pm_lock(&g_devmem.lk);
+    for (u32 i = 0; i < n; i++)
+        if (m[i]) {
+            const Rec* r = &g_devmem.rec[m[i] - 1];
+            const Block* k = &g_devmem.block[r->block - 1];
+            if (g_devmem.mp.memoryTypes[k->type].heapIndex == heap) bytes += r->size;
+        }
+    pm_unlock(&g_devmem.lk);
+    return bytes;
+}
 void vk_devmem_info(DevMem m, DevMemInfo* info) {
     *info = (DevMemInfo){0};
     if (!m) return;

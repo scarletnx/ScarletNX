@@ -270,7 +270,7 @@ static int tex_bind_at(Surf* t, int finer_ok) {
            (vk_tex_coarser) hold none. Counted with them, a texture whose levels were all there seemed to hold 2 MB on
            average, and a trim under a budget of 2 GB evicted 3,149 such textures in 151 s of one game's race, each
            of which the game used again within 60 presents, for almost none of the GPU's memory */
-        vk_surf_bytes(t, vk_image_sparse_heap_bytes(t->img));
+        vk_surf_bytes(t, bytes);
         LOG_LIMIT(32, "vulkan: a %ux%ux%u texture of %u levels has sparse residency: %llu KiB bound\n", t->w, t->h,
                   t->layers * d3, t->levels, (unsigned long long)(bytes >> 10));
     }

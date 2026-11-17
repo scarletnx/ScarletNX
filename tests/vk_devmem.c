@@ -795,6 +795,22 @@ static void check_kind_fallback(void) {
     check_counts(0);
 }
 
+/* vk_devmem_heap_bytes: the bytes of the allocations in one heap, under one lock. A sparse texture's levels in system
+   memory count none of the GPU's heap (memory.c's sparse_heap_bytes) */
+static void check_heap_bytes(void) {
+    Held g, h;
+    device(0, 1024, 64, 0);
+    CHECK(make(0, 3 * MIB, 256, 1u << T_GPU, 0, (DevMemWant){.at = DM_DEVICE}, &g) == VK_SUCCESS);
+    CHECK(make(0, 5 * MIB, 256, 1u << T_HOST, 0, (DevMemWant){.at = DM_SYSTEM}, &h) == VK_SUCCESS);
+    const DevMem m[3] = {g.mem, 0, h.mem};
+    CHECK(vk_devmem_heap_bytes(m, 3, 0) == 3 * MIB);
+    CHECK(vk_devmem_heap_bytes(m, 3, 1) == 5 * MIB);
+    CHECK(vk_devmem_heap_bytes(m, 0, 0) == 0);
+    unmake(&g);
+    unmake(&h);
+    check_counts(0);
+}
+
 /* Memory of its own that the driver only preferred is kept when let go, for the next request it fits, with no call to
    the driver (own_keep, own_take). It names no resource, and fits a request of its size up to an eighth less. Kept
    memory goes after DM_KEEP_PRESENTS presents, and the oldest of its heap goes first past keep_cap */
@@ -1474,6 +1490,7 @@ int main(void) {
     check_drain_room();
     check_kinds();
     check_kind_fallback();
+    check_heap_bytes();
     check_keep();
     check_cap();
     check_atoms(64);
