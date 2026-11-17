@@ -3282,7 +3282,7 @@ msgstr ""
 
 #: src/gui/main.c
 #, c-format
-msgid "Goes on with the run of edenprobe %s that ended before its summary, from its journal: cases so far %d, on its crash list %d"
+msgid "Goes on with the run of %s %s that ended before its summary, from its journal: cases so far %d, on its crash list %d"
 msgstr ""
 
 #: src/gui/main.c
@@ -3329,11 +3329,11 @@ msgid "A driver package's zip, a meta.json and the driver's libraries at its top
 msgstr ""
 
 #: src/gui/main.c
-msgid "edenprobe Mode"
+msgid "Amberlith Mode"
 msgstr ""
 
 #: src/gui/main.c
-msgid "What Run edenprobe runs. Quick: processor and graphics. Full: also fs (64 MiB written once), video, audio, kernel and display"
+msgid "What Run Amberlith runs. Quick: processor and graphics. Full: also fs (64 MiB written once), video, audio, kernel and display"
 msgstr ""
 
 #: src/gui/main.c
@@ -3341,12 +3341,12 @@ msgid "Quick"
 msgstr ""
 
 #: src/gui/main.c
-msgid "Run edenprobe"
+msgid "Run Amberlith"
 msgstr ""
 
 #: src/gui/main.c
 #, c-format
-msgid "edenprobe's hardware probes played as a game with this GPU driver, in a data folder of their own with the default settings, %s; then their counts"
+msgid "Amberlith's hardware probes played as a game with this GPU driver, in a data folder of their own with the default settings, %s; then their counts"
 msgstr ""
 
 #: src/gui/main.c
@@ -3432,7 +3432,7 @@ msgstr ""
 
 #: src/gui/main.c
 #, c-format
-msgid "edenprobe Mode: %s"
+msgid "Amberlith Mode: %s"
 msgstr ""
 
 #: src/gui/main.c
@@ -4130,7 +4130,7 @@ msgstr ""
 
 #: src/gui/main.c
 #, c-format
-msgid "Continue: %s holds no run of edenprobe left before its summary"
+msgid "Continue: %s holds no run of Amberlith left before its summary"
 msgstr ""
 
 #: src/gui/main.c
@@ -5143,21 +5143,21 @@ msgid "The Recompiled Library's Main is off and no Extra of it can take a game: 
 msgstr ""
 
 #: src/gui/main.c
-msgid "Run edenprobe: no state folder to run in"
+msgid "Run Amberlith: no state folder to run in"
 msgstr ""
 
 #: src/gui/main.c
-msgid "Run edenprobe: a compile goes; the probes run once the queue ends"
-msgstr ""
-
-#: src/gui/main.c
-#, c-format
-msgid "Run edenprobe needs %s: edenprobe.nro from github.com/scarletnx/edenprobe/releases"
+msgid "Run Amberlith: a compile goes; the probes run once the queue ends"
 msgstr ""
 
 #: src/gui/main.c
 #, c-format
-msgid "Run edenprobe: %s"
+msgid "Run Amberlith needs %s: a release's amberlith-<version>.nro from github.com/scarletnx/amberlith/releases, saved under that name"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Run Amberlith: %s"
 msgstr ""
 
 #: src/gui/main.c
@@ -5172,7 +5172,7 @@ msgstr ""
 
 #: src/gui/main.c
 #, c-format
-msgid "edenprobe left no report in %s"
+msgid "Amberlith left no report in %s"
 msgstr ""
 
 #: src/gui/main.c

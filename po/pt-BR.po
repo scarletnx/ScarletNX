@@ -3285,8 +3285,8 @@ msgstr "Este build do launcher não lê nenhum driver Vulkan"
 
 #: src/gui/main.c
 #, c-format
-msgid "Goes on with the run of edenprobe %s that ended before its summary, from its journal: cases so far %d, on its crash list %d"
-msgstr "Continua a execução do edenprobe %s que terminou antes do resumo, a partir do journal dela: casos até agora %d, na lista de crashes %d"
+msgid "Goes on with the run of %s %s that ended before its summary, from its journal: cases so far %d, on its crash list %d"
+msgstr "Continua a execução do %s %s que terminou antes do resumo, a partir do journal dela: casos até agora %d, na lista de crashes %d"
 
 #: src/gui/main.c
 msgid "The GPU driver Settings > App > GPU Drivers picks for every game"
@@ -3332,25 +3332,25 @@ msgid "A driver package's zip, a meta.json and the driver's libraries at its top
 msgstr "O zip de um pacote de driver, com um meta.json e as bibliotecas do driver na raiz, como as releases do Turnip e do PanVK: descompactado em gpu_drivers/ da pasta de dados do usuário"
 
 #: src/gui/main.c
-msgid "edenprobe Mode"
-msgstr "Modo do edenprobe"
+msgid "Amberlith Mode"
+msgstr "Modo do Amberlith"
 
 #: src/gui/main.c
-msgid "What Run edenprobe runs. Quick: processor and graphics. Full: also fs (64 MiB written once), video, audio, kernel and display"
-msgstr "O que o Rodar edenprobe roda. Rápido: processador e gráficos. Total: também fs (64 MiB gravados uma vez), vídeo, áudio, kernel e tela"
+msgid "What Run Amberlith runs. Quick: processor and graphics. Full: also fs (64 MiB written once), video, audio, kernel and display"
+msgstr "O que o Rodar Amberlith roda. Rápido: processador e gráficos. Total: também fs (64 MiB gravados uma vez), vídeo, áudio, kernel e tela"
 
 #: src/gui/main.c
 msgid "Quick"
 msgstr "Rápido"
 
 #: src/gui/main.c
-msgid "Run edenprobe"
-msgstr "Rodar edenprobe"
+msgid "Run Amberlith"
+msgstr "Rodar Amberlith"
 
 #: src/gui/main.c
 #, c-format
-msgid "edenprobe's hardware probes played as a game with this GPU driver, in a data folder of their own with the default settings, %s; then their counts"
-msgstr "Os testes de hardware do edenprobe rodados como um jogo com este driver de GPU, numa pasta de dados própria com os ajustes padrão, %s; depois as contagens"
+msgid "Amberlith's hardware probes played as a game with this GPU driver, in a data folder of their own with the default settings, %s; then their counts"
+msgstr "Os testes de hardware do Amberlith rodados como um jogo com este driver de GPU, numa pasta de dados própria com os ajustes padrão, %s; depois as contagens"
 
 #: src/gui/main.c
 msgid "Clear Crash List"
@@ -3435,8 +3435,8 @@ msgstr "Não adicionado: %s não pode ser lido: %s"
 
 #: src/gui/main.c
 #, c-format
-msgid "edenprobe Mode: %s"
-msgstr "Modo do edenprobe: %s"
+msgid "Amberlith Mode: %s"
+msgstr "Modo do Amberlith: %s"
 
 #: src/gui/main.c
 msgid "Clear Crash List? Its case runs again in the next run."
@@ -4133,7 +4133,7 @@ msgstr "%s: a configuração pergunta de novo"
 
 #: src/gui/main.c
 #, c-format
-msgid "Continue: %s holds no run of edenprobe left before its summary"
+msgid "Continue: %s holds no run of Amberlith left before its summary"
 msgstr ""
 
 #: src/gui/main.c
@@ -5146,22 +5146,22 @@ msgid "The Recompiled Library's Main is off and no Extra of it can take a game: 
 msgstr "A Principal da biblioteca de recompilados está desligada e nenhuma Extra dela pode receber um jogo: use Adicionar à biblioteca na Principal dela, ou adicione uma pasta a ela, em Configurações > App > Pastas"
 
 #: src/gui/main.c
-msgid "Run edenprobe: no state folder to run in"
-msgstr "Rodar edenprobe: sem pasta de estado onde rodar"
+msgid "Run Amberlith: no state folder to run in"
+msgstr "Rodar Amberlith: sem pasta de estado onde rodar"
 
 #: src/gui/main.c
-msgid "Run edenprobe: a compile goes; the probes run once the queue ends"
-msgstr "Rodar edenprobe: uma compilação está rodando; os testes rodam quando a fila terminar"
-
-#: src/gui/main.c
-#, c-format
-msgid "Run edenprobe needs %s: edenprobe.nro from github.com/scarletnx/edenprobe/releases"
-msgstr "Rodar edenprobe precisa de %s: o edenprobe.nro de github.com/scarletnx/edenprobe/releases"
+msgid "Run Amberlith: a compile goes; the probes run once the queue ends"
+msgstr "Rodar Amberlith: uma compilação está rodando; os testes rodam quando a fila terminar"
 
 #: src/gui/main.c
 #, c-format
-msgid "Run edenprobe: %s"
-msgstr "Rodar edenprobe: %s"
+msgid "Run Amberlith needs %s: a release's amberlith-<version>.nro from github.com/scarletnx/amberlith/releases, saved under that name"
+msgstr "Rodar Amberlith precisa de %s: o amberlith-<versão>.nro de um release em github.com/scarletnx/amberlith/releases, salvo com esse nome"
+
+#: src/gui/main.c
+#, c-format
+msgid "Run Amberlith: %s"
+msgstr "Rodar Amberlith: %s"
 
 #: src/gui/main.c
 #, c-format
@@ -5175,8 +5175,8 @@ msgstr "Lista de crashes limpa, casos: %d"
 
 #: src/gui/main.c
 #, c-format
-msgid "edenprobe left no report in %s"
-msgstr "O edenprobe não deixou relatório em %s"
+msgid "Amberlith left no report in %s"
+msgstr "O Amberlith não deixou relatório em %s"
 
 #: src/gui/main.c
 #, c-format
@@ -7328,6 +7328,39 @@ msgstr ""
 #: src/nx/runtime/settings.txt
 msgid "GBA"
 msgstr ""
+
+#~ msgid "Goes on with the run of edenprobe %s that ended before its summary, from its journal: cases so far %d, on its crash list %d"
+#~ msgstr "Continua a execução do edenprobe %s que terminou antes do resumo, a partir do journal dela: casos até agora %d, na lista de crashes %d"
+
+#~ msgid "edenprobe Mode"
+#~ msgstr "Modo do edenprobe"
+
+#~ msgid "What Run edenprobe runs. Quick: processor and graphics. Full: also fs (64 MiB written once), video, audio, kernel and display"
+#~ msgstr "O que o Rodar edenprobe roda. Rápido: processador e gráficos. Total: também fs (64 MiB gravados uma vez), vídeo, áudio, kernel e tela"
+
+#~ msgid "Run edenprobe"
+#~ msgstr "Rodar edenprobe"
+
+#~ msgid "edenprobe's hardware probes played as a game with this GPU driver, in a data folder of their own with the default settings, %s; then their counts"
+#~ msgstr "Os testes de hardware do edenprobe rodados como um jogo com este driver de GPU, numa pasta de dados própria com os ajustes padrão, %s; depois as contagens"
+
+#~ msgid "edenprobe Mode: %s"
+#~ msgstr "Modo do edenprobe: %s"
+
+#~ msgid "Run edenprobe: no state folder to run in"
+#~ msgstr "Rodar edenprobe: sem pasta de estado onde rodar"
+
+#~ msgid "Run edenprobe: a compile goes; the probes run once the queue ends"
+#~ msgstr "Rodar edenprobe: uma compilação está rodando; os testes rodam quando a fila terminar"
+
+#~ msgid "Run edenprobe needs %s: edenprobe.nro from github.com/scarletnx/edenprobe/releases"
+#~ msgstr "Rodar edenprobe precisa de %s: o edenprobe.nro de github.com/scarletnx/edenprobe/releases"
+
+#~ msgid "Run edenprobe: %s"
+#~ msgstr "Rodar edenprobe: %s"
+
+#~ msgid "edenprobe left no report in %s"
+#~ msgstr "O edenprobe não deixou relatório em %s"
 
 #~ msgid "3DS keys to: %s"
 #~ msgstr "Chaves do 3DS em: %s"

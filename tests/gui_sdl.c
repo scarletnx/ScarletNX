@@ -33,7 +33,7 @@ static bool more_has(const App* app, const char* key, const char* label) {
 #define APP_INI_HEAD "; Settings > App and Games' View in the launcher, as they were left\n[app]\n"
 #define GAMES_DEFAULTS                                                                                                 \
     "recent_games = on\ngames_dumps = on\ngames_sort = title\ngames_view = list\ngames_icons = medium\n"
-/* app.ini's probe_mode as edenprobe Mode leaves it by default: Quick */
+/* app.ini's probe_mode as Amberlith Mode leaves it by default: Quick */
 #define PROBE_DEFAULTS "probe_mode = quick\n"
 /* the default theme's colours, as the checks below name them */
 static const SDL_Color normal = {220, 220, 220, 255}, yellow = {255, 255, 0, 255}, red = {255, 0, 0, 255},
@@ -3116,7 +3116,7 @@ static void gpu_drivers(App* app, const char* temporary) {
     app->editor.row = GUI_APP_DRIVERS;
     render(app);
     key(app, SDLK_RETURN);
-    /* System driver, picked, Download Driver, Add Driver, edenprobe Mode and Run edenprobe; this device's line, which
+    /* System driver, picked, Download Driver, Add Driver, Amberlith Mode and Run Amberlith; this device's line, which
        says packages do not load here */
     assert(app->form == GUI_FORM_DRIVERS && gui_editor_rows(&app->editor) == 5 && !app->editor.row);
     assert(!strcmp(app->drivers_form.value[0], "(*)") && strstr(app->editor.note, "This device: Linux x86_64: ") &&
@@ -3643,7 +3643,7 @@ static void download_driver(App* app, const char* temporary) {
     free(zip);
     app->https_get = NULL;
 }
-/* Run edenprobe's launches through the fake driver, each let end as it starts (its .go), until the box */
+/* Run Amberlith's launches through the fake driver, each let end as it starts (its .go), until the box */
 static void probe_ran(App* app, const char* argv_file) {
     char* go = snx_format("%s.go", argv_file);
     Uint64 until = SDL_GetTicks() + 20000;
@@ -3656,12 +3656,12 @@ static void probe_ran(App* app, const char* argv_file) {
     remove(go);
     free(go);
 }
-/* GPU Drivers' edenprobe Mode, kept in app.ini's probe_mode, and Run edenprobe: its NRO asked for where it goes; then
+/* GPU Drivers' Amberlith Mode, kept in app.ini's probe_mode, and Run Amberlith: its NRO asked for where it goes; then
    played through the fake driver in its own data folder with quick's words and the build's machine=, which its NRO
    knows, launched again after a launch that ended before the summary, its counts in a box; a new run, which a launch
    that adds no case ends; Continue, shown for that run, going on with it to its summary; Clear Crash List, asked
    first, shown while a crash list is there */
-static void run_edenprobe(App* app, const char* temporary) {
+static void run_amberlith(App* app, const char* temporary) {
     char *was = app->state_dir, *folder, *nro, *data, *argv_file = snx_path_join(temporary, "probe argv"),
          *plan = snx_path_join(temporary, "probe plan"), *kept, *mode, *launches, *ini, *words;
     size_t size;
@@ -3670,19 +3670,19 @@ static void run_edenprobe(App* app, const char* temporary) {
                 : snx_strdup(GUI_PROBE_QUICK " machine=scarletnx\n");
     app->state_dir = snx_path_join(temporary, "probe state");
     folder = snx_path_join(app->state_dir, "probe");
-    nro = snx_path_join(folder, "edenprobe.nro");
+    nro = snx_path_join(folder, "amberlith.nro");
     data = snx_path_join(folder, ".scarletnx");
-    mode = snx_path_join(data, "recompiled/edenprobe/edenprobe_data/sdmc/edenprobe/mode");
-    launches = snx_path_join(data, "recompiled/edenprobe/edenprobe_data/sdmc/edenprobe/runs/abc1234/launches");
+    mode = snx_path_join(data, "recompiled/amberlith/amberlith_data/sdmc/amberlith/mode");
+    launches = snx_path_join(data, "recompiled/amberlith/amberlith_data/sdmc/amberlith/runs/abc1234/launches");
     open_drivers(app, NULL, NULL, 0);
-    assert(gui_editor_rows(&app->editor) == 5 && !strcmp(app->drivers_label[3], "edenprobe Mode") &&
-           !strcmp(app->drivers_form.value[3], "Quick") && !strcmp(app->drivers_label[4], "Run edenprobe") &&
+    assert(gui_editor_rows(&app->editor) == 5 && !strcmp(app->drivers_label[3], "Amberlith Mode") &&
+           !strcmp(app->drivers_form.value[3], "Quick") && !strcmp(app->drivers_label[4], "Run Amberlith") &&
            strstr(app->drivers_about[4], folder));
     render(app);
-    /* edenprobe Mode: Full, kept at once, then Quick again; a word app.ini's probe_mode does not know, named */
+    /* Amberlith Mode: Full, kept at once, then Quick again; a word app.ini's probe_mode does not know, named */
     app->editor.row = 3;
     key(app, SDLK_RETURN);
-    assert(app->probe_full && !strcmp(app->editor.note, "edenprobe Mode: Full") &&
+    assert(app->probe_full && !strcmp(app->editor.note, "Amberlith Mode: Full") &&
            !strcmp(app->drivers_form.value[3], "Full") && app->editor.row == 3);
     kept = (char*)snx_read_file(app->app_file, &size);
     assert(kept && strstr(kept, "\nprobe_mode = full\n"));
@@ -3699,24 +3699,26 @@ static void run_edenprobe(App* app, const char* temporary) {
     free(kept);
     key(app, SDLK_RETURN);
     assert(!app->probe_full && !strcmp(app->drivers_form.value[3], "Quick"));
-    /* Run edenprobe without its NRO: where it goes, nothing run */
+    /* Run Amberlith without its NRO: where it goes, nothing run */
     app->editor.row = 4;
     key(app, SDLK_RETURN);
-    ini = snx_format("Run edenprobe needs %s: edenprobe.nro from github.com/scarletnx/edenprobe/releases", nro);
+    ini = snx_format("Run Amberlith needs %s: a release's amberlith-<version>.nro from "
+                     "github.com/scarletnx/amberlith/releases, saved under that name",
+                     nro);
     assert(!app->menu.running && !app->probe_launch && !strcmp(app->editor.note, ini));
     free(ini);
     /* with it: the first launch ends before the summary, the second goes on to it; the box's counts */
-    assert(!snx_mkdirs(folder) && !snx_write_file(nro, "NRO0 machine=", 13));
+    assert(!snx_mkdirs(folder) && !snx_write_file(nro, "NRO0 sdmc:/amberlith machine=", 29));
     ini = snx_strdup("pass=2\npass=1 fail=astc summary=2,1,0,0\n");
     assert(!snx_write_file(plan, ini, strlen(ini)));
     free(ini);
     set_env("SNX_TEST_PROBE", plan);
-    driver_will(argv_file, 0, "edenprobe");
+    driver_will(argv_file, 0, "amberlith");
     key(app, SDLK_RETURN);
     assert(app->menu.running && app->probe_launch == 1);
     render(app);
     probe_ran(app, argv_file);
-    ini = snx_format("edenprobe 0.9.0 (abc1234): 2 passed, 1 failed (astc 1), 0 skipped, 0 crashed. The report: %s",
+    ini = snx_format("Amberlith 1.0.0 (abc1234): 2 passed, 1 failed (astc 1), 0 skipped, 0 crashed. The report: %s",
                      data); /* and the run's folder's report in it */
     assert(app->confirm.shown && app->confirm.ask == GUI_ASK_ERROR && !strncmp(app->error_line, ini, strlen(ini)) &&
            strstr(app->error_line, "report.jsonl"));
@@ -3737,7 +3739,7 @@ static void run_edenprobe(App* app, const char* temporary) {
     assert(!snx_write_file(plan, "pass=1\n\n", 8));
     key(app, SDLK_RETURN);
     probe_ran(app, argv_file);
-    ini = snx_strdup("edenprobe 0.9.0 (abc1234): no summary, 1 case reported after 2 launches, the last adding no "
+    ini = snx_strdup("Amberlith 1.0.0 (abc1234): no summary, 1 case reported after 2 launches, the last adding no "
                      "case. The report: ");
     assert(app->confirm.shown && !strncmp(app->error_line, ini, strlen(ini)));
     free(ini);
@@ -3753,7 +3755,7 @@ static void run_edenprobe(App* app, const char* temporary) {
     key(app, SDLK_RETURN);
     probe_ran(app, argv_file);
     assert(app->confirm.shown &&
-           !strncmp(app->error_line, "edenprobe 0.9.0 (abc1234): 2 passed, 0 failed, 0 skipped, 0 crashed. ", 69));
+           !strncmp(app->error_line, "Amberlith 1.0.0 (abc1234): 2 passed, 0 failed, 0 skipped, 0 crashed. ", 69));
     kept = (char*)snx_read_file(mode, &size);
     assert(kept && !strcmp(kept, words));
     free(kept);
@@ -3762,7 +3764,7 @@ static void run_edenprobe(App* app, const char* temporary) {
     assert(gui_editor_rows(&app->editor) == 5 && app->drivers_continue < 0); /* a whole run: nothing to go on with */
     /* Clear Crash List: shown while one is there, asked first, Cancel keeping it */
     {
-        char* crashes = snx_path_join(data, "recompiled/edenprobe/edenprobe_data/sdmc/edenprobe/crashes");
+        char* crashes = snx_path_join(data, "recompiled/amberlith/amberlith_data/sdmc/amberlith/crashes");
         assert(!snx_write_file(crashes, "gpu a case\nindex another\n", 25));
         drivers_show(app, 4);
         assert(gui_editor_rows(&app->editor) == 6 && app->drivers_clear == 5 &&
@@ -3946,7 +3948,7 @@ static void game_gpu_driver(App* app) {
     option = gui_run_option("gpu_driver", ini, "Turnip_v32");
     assert(!option); /* its own pick: the run reads it */
     app->editor.row = 0;
-    key(app, SDLK_RETURN); /* Global again: taken as the pick, never edenprobe's Continue nor its Clear Crash List */
+    key(app, SDLK_RETURN); /* Global again: taken as the pick, never the probe's Continue nor its Clear Crash List */
     assert(!snx_ini_has(ini, "gpu_driver") && !strcmp(app->drivers_form.value[0], "(*)") && !app->confirm.shown &&
            !app->probe_launch && strstr(app->editor.note, ": the GPU driver for every game (System driver)"));
     option = gui_run_option("gpu_driver", ini, "Turnip_v32");
@@ -5144,16 +5146,47 @@ static bool wait_taken(const char* path) {
     }
     return false;
 }
-/* Run edenprobe's game as the fake driver plays it (SNX_TEST_PROBE): edenprobe's report in the card of the game made
-   in the --data folder, a launch a line of the plan, each line's words "pass=N", "fail=SUITE" and
-   "summary=P,F,S,C"; the launches counted beside the report, each after its lines are there */
+/* Run Amberlith's game as the fake driver plays it (SNX_TEST_PROBE): the probe's report in the card of the game made
+   in the --data folder, named by its NRO, a launch a line of the plan, each line's words "pass=N", "fail=SUITE" and
+   "summary=P,F,S,C"; the launches counted beside the report, each after its lines are there. An NRO that carries
+   "sdmc:/amberlith" is Amberlith 1.0.0, which runs from sdmc:/amberlith but from sdmc:/edenprobe while only that one
+   holds a mode file or runs; another is edenprobe 0.9.0, which knows only sdmc:/edenprobe */
 static void fake_probe(int argc, char** argv) {
-    char *card = NULL, *runs, *report, *counter, *part, *plan, *line, *word, *last, *text;
-    int launch, i;
+    char *card = NULL, *runs, *report, *counter, *part, *plan, *line, *word, *last, *text, *nro = NULL, *bytes;
+    int launch, i, amberlith = 0;
     size_t size;
+    for (i = 1; i < argc; ++i)
+        if (snx_ends_with_nocase(argv[i], ".nro")) nro = argv[i];
+    assert(nro);
+    bytes = (char*)snx_read_file(nro, &size);
+    assert(bytes);
+    for (size_t at = 0; !amberlith && at + 15 <= size; ++at) amberlith = !memcmp(bytes + at, "sdmc:/amberlith", 15);
+    free(bytes);
     for (i = 1; i + 1 < argc; ++i)
-        if (!strcmp(argv[i], "--data"))
-            card = snx_format("%s/recompiled/edenprobe/edenprobe_data/sdmc/edenprobe", argv[i + 1]);
+        if (!strcmp(argv[i], "--data")) {
+            char* name = snx_strdup(snx_path_leaf(nro));
+            *strrchr(name, '.') = 0;
+            card = snx_format("%s/recompiled/%s/%s_data/sdmc/amberlith", argv[i + 1], name, name);
+            if (amberlith) {
+                char *mode = snx_path_join(card, "mode"), *runs_new = snx_path_join(card, "runs"),
+                     *old = snx_format("%s/recompiled/%s/%s_data/sdmc/edenprobe", argv[i + 1], name, name),
+                     *old_mode = snx_path_join(old, "mode"), *old_runs = snx_path_join(old, "runs");
+                if (!snx_path_exists(mode) && !snx_path_exists(runs_new) &&
+                    (snx_path_exists(old_mode) || snx_path_exists(old_runs))) {
+                    free(card);
+                    card = snx_strdup(old);
+                }
+                free(old_runs);
+                free(old_mode);
+                free(old);
+                free(runs_new);
+                free(mode);
+            } else {
+                free(card);
+                card = snx_format("%s/recompiled/%s/%s_data/sdmc/edenprobe", argv[i + 1], name, name);
+            }
+            free(name);
+        }
     assert(card);
     runs = snx_path_join(card, "runs/abc1234");
     report = snx_path_join(runs, "report.jsonl");
@@ -5167,7 +5200,9 @@ static void fake_probe(int argc, char** argv) {
     assert(plan);
     for (line = plan, i = 0; i < launch && strchr(line, '\n'); ++i) line = strchr(line, '\n') + 1;
     if (strchr(line, '\n')) *strchr(line, '\n') = 0;
-    text = snx_strdup(launch ? "" : "{\"type\":\"note\",\"text\":\"edenprobe 0.9.0 (abc1234) starting\"}\n");
+    text = snx_strdup(!launch && amberlith ? "{\"type\":\"note\",\"text\":\"Amberlith 1.0.0 (abc1234) starting\"}\n"
+                      : !launch            ? "{\"type\":\"note\",\"text\":\"edenprobe 0.9.0 (abc1234) starting\"}\n"
+                                           : "");
     for (word = strtok(line, " "); word; word = strtok(NULL, " ")) {
         char* more = NULL;
         if (!strncmp(word, "pass=", 5))
@@ -7072,7 +7107,7 @@ int main(int argc, char** argv) {
     assert(app.form == GUI_FORM_APP && app.editor.row == GUI_APP_THEME && GUI_APP_ROWS == 13);
     gpu_drivers(&app, temporary); /* GPU Drivers and Freedreno Settings, then back to the App's first row */
     download_driver(&app, temporary);
-    run_edenprobe(&app, temporary);
+    run_amberlith(&app, temporary);
     app.editor.row = GUI_APP_THEME;
     {
         char first[64], line[1024];

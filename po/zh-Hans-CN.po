@@ -3285,8 +3285,8 @@ msgstr "此版本的启动器不读取 Vulkan 驱动"
 
 #: src/gui/main.c
 #, c-format
-msgid "Goes on with the run of edenprobe %s that ended before its summary, from its journal: cases so far %d, on its crash list %d"
-msgstr "按其记录继续在汇总前中断的 edenprobe %s 运行：目前用例 %d 个，崩溃列表中 %d 个"
+msgid "Goes on with the run of %s %s that ended before its summary, from its journal: cases so far %d, on its crash list %d"
+msgstr "按其记录继续在汇总前中断的 %s %s 运行：目前用例 %d 个，崩溃列表中 %d 个"
 
 #: src/gui/main.c
 msgid "The GPU driver Settings > App > GPU Drivers picks for every game"
@@ -3332,25 +3332,25 @@ msgid "A driver package's zip, a meta.json and the driver's libraries at its top
 msgstr "驱动包的 zip，顶层是 meta.json 和驱动的库，如 Turnip 和 PanVK 的发布版本：解压到用户数据文件夹的 gpu_drivers/ 中"
 
 #: src/gui/main.c
-msgid "edenprobe Mode"
-msgstr "edenprobe 模式"
+msgid "Amberlith Mode"
+msgstr "Amberlith 模式"
 
 #: src/gui/main.c
-msgid "What Run edenprobe runs. Quick: processor and graphics. Full: also fs (64 MiB written once), video, audio, kernel and display"
-msgstr "「运行 edenprobe」运行的内容。快速：处理器和图形。全速：另加 fs（写入一次 64 MiB）、视频、音频、内核和显示"
+msgid "What Run Amberlith runs. Quick: processor and graphics. Full: also fs (64 MiB written once), video, audio, kernel and display"
+msgstr "「运行 Amberlith」运行的内容。快速：处理器和图形。全速：另加 fs（写入一次 64 MiB）、视频、音频、内核和显示"
 
 #: src/gui/main.c
 msgid "Quick"
 msgstr "快速"
 
 #: src/gui/main.c
-msgid "Run edenprobe"
-msgstr "运行 edenprobe"
+msgid "Run Amberlith"
+msgstr "运行 Amberlith"
 
 #: src/gui/main.c
 #, c-format
-msgid "edenprobe's hardware probes played as a game with this GPU driver, in a data folder of their own with the default settings, %s; then their counts"
-msgstr "把 edenprobe 的硬件探测当作游戏，用此 GPU 驱动运行，使用独立的数据文件夹和默认设置（%s）；然后显示其统计"
+msgid "Amberlith's hardware probes played as a game with this GPU driver, in a data folder of their own with the default settings, %s; then their counts"
+msgstr "把 Amberlith 的硬件探测当作游戏，用此 GPU 驱动运行，使用独立的数据文件夹和默认设置（%s）；然后显示其统计"
 
 #: src/gui/main.c
 msgid "Clear Crash List"
@@ -3435,8 +3435,8 @@ msgstr "未添加：无法读取 %s：%s"
 
 #: src/gui/main.c
 #, c-format
-msgid "edenprobe Mode: %s"
-msgstr "edenprobe 模式：%s"
+msgid "Amberlith Mode: %s"
+msgstr "Amberlith 模式：%s"
 
 #: src/gui/main.c
 msgid "Clear Crash List? Its case runs again in the next run."
@@ -4133,7 +4133,7 @@ msgstr "%s：初始设置将再次询问"
 
 #: src/gui/main.c
 #, c-format
-msgid "Continue: %s holds no run of edenprobe left before its summary"
+msgid "Continue: %s holds no run of Amberlith left before its summary"
 msgstr ""
 
 #: src/gui/main.c
@@ -5146,22 +5146,22 @@ msgid "The Recompiled Library's Main is off and no Extra of it can take a game: 
 msgstr "已重编译游戏库的主文件夹已关闭，且没有可放入游戏的另外的文件夹：请在「设置 > 应用 > 文件夹」中对其主文件夹使用「添加到游戏库」，或为其添加文件夹"
 
 #: src/gui/main.c
-msgid "Run edenprobe: no state folder to run in"
-msgstr "运行 edenprobe：没有可用的状态文件夹"
+msgid "Run Amberlith: no state folder to run in"
+msgstr "运行 Amberlith：没有可用的状态文件夹"
 
 #: src/gui/main.c
-msgid "Run edenprobe: a compile goes; the probes run once the queue ends"
-msgstr "运行 edenprobe：编译正在进行；队列结束后再运行探测"
-
-#: src/gui/main.c
-#, c-format
-msgid "Run edenprobe needs %s: edenprobe.nro from github.com/scarletnx/edenprobe/releases"
-msgstr "运行 edenprobe 需要 %s：来自 github.com/scarletnx/edenprobe/releases 的 edenprobe.nro"
+msgid "Run Amberlith: a compile goes; the probes run once the queue ends"
+msgstr "运行 Amberlith：编译正在进行；队列结束后再运行探测"
 
 #: src/gui/main.c
 #, c-format
-msgid "Run edenprobe: %s"
-msgstr "运行 edenprobe：%s"
+msgid "Run Amberlith needs %s: a release's amberlith-<version>.nro from github.com/scarletnx/amberlith/releases, saved under that name"
+msgstr "运行 Amberlith 需要 %s：来自 github.com/scarletnx/amberlith/releases 的 amberlith-<version>.nro，并保存为该名称"
+
+#: src/gui/main.c
+#, c-format
+msgid "Run Amberlith: %s"
+msgstr "运行 Amberlith：%s"
 
 #: src/gui/main.c
 #, c-format
@@ -5175,8 +5175,8 @@ msgstr "已清除崩溃列表，用例：%d 个"
 
 #: src/gui/main.c
 #, c-format
-msgid "edenprobe left no report in %s"
-msgstr "edenprobe 未在 %s 中留下报告"
+msgid "Amberlith left no report in %s"
+msgstr "Amberlith 未在 %s 中留下报告"
 
 #: src/gui/main.c
 #, c-format
@@ -7328,6 +7328,39 @@ msgstr ""
 #: src/nx/runtime/settings.txt
 msgid "GBA"
 msgstr ""
+
+#~ msgid "Goes on with the run of edenprobe %s that ended before its summary, from its journal: cases so far %d, on its crash list %d"
+#~ msgstr "按其记录继续在汇总前中断的 edenprobe %s 运行：目前用例 %d 个，崩溃列表中 %d 个"
+
+#~ msgid "edenprobe Mode"
+#~ msgstr "edenprobe 模式"
+
+#~ msgid "What Run edenprobe runs. Quick: processor and graphics. Full: also fs (64 MiB written once), video, audio, kernel and display"
+#~ msgstr "「运行 edenprobe」运行的内容。快速：处理器和图形。全速：另加 fs（写入一次 64 MiB）、视频、音频、内核和显示"
+
+#~ msgid "Run edenprobe"
+#~ msgstr "运行 edenprobe"
+
+#~ msgid "edenprobe's hardware probes played as a game with this GPU driver, in a data folder of their own with the default settings, %s; then their counts"
+#~ msgstr "把 edenprobe 的硬件探测当作游戏，用此 GPU 驱动运行，使用独立的数据文件夹和默认设置（%s）；然后显示其统计"
+
+#~ msgid "edenprobe Mode: %s"
+#~ msgstr "edenprobe 模式：%s"
+
+#~ msgid "Run edenprobe: no state folder to run in"
+#~ msgstr "运行 edenprobe：没有可用的状态文件夹"
+
+#~ msgid "Run edenprobe: a compile goes; the probes run once the queue ends"
+#~ msgstr "运行 edenprobe：编译正在进行；队列结束后再运行探测"
+
+#~ msgid "Run edenprobe needs %s: edenprobe.nro from github.com/scarletnx/edenprobe/releases"
+#~ msgstr "运行 edenprobe 需要 %s：来自 github.com/scarletnx/edenprobe/releases 的 edenprobe.nro"
+
+#~ msgid "Run edenprobe: %s"
+#~ msgstr "运行 edenprobe：%s"
+
+#~ msgid "edenprobe left no report in %s"
+#~ msgstr "edenprobe 未在 %s 中留下报告"
 
 #~ msgid "3DS keys to: %s"
 #~ msgstr "3DS 密钥安装到：%s"
