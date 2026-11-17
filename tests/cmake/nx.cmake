@@ -273,6 +273,12 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
     add_test(NAME vulkan_headless_descriptor_heaps COMMAND snx-test-vulkan -H --vk-descriptors-mode=2)
     set_tests_properties(vulkan_headless_descriptor_heaps PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+    # the same with draw_state_check=1: each word a stage's table keeps from its last table (memo_get) is found
+    # again the full way, and one that differs fails the test
+    add_test(NAME vulkan_headless_descriptor_heaps_check COMMAND snx-test-vulkan -H --vk-descriptors-mode=2
+        --draw-state-check=1)
+    set_tests_properties(vulkan_headless_descriptor_heaps_check PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77
+        FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR;a descriptor kept from the stage's last table")
     # every check again the Vulkan 1.2 way on a newer device, as a game's .ini with vk_api=1.2 asks (gpu/vk/device.c
     # vk12_extensions): the 1.3 commands by their extensions' names, shaders in SPIR-V 1.5, under the validation layer
     # when it is installed, which takes the instance's 1.2 as the version and flags any 1.3 use left

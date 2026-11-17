@@ -362,6 +362,9 @@ typedef struct {
        and compared (draw_state_check=1) and found different */
     uint64_t lasting_hits, lasting_made, lasting_forgotten, lasting_freed, lasting_evicted, lasting_full;
     uint64_t lasting_checked, lasting_differs, lasting_bytes;
+    /* The words a table took from the stage's last table with no lookup, and those that
+       draw_state_check=1 found again and compared, and found different */
+    uint64_t memo_kept, memo_checked, memo_differs;
 } VkDescriptorHeapStats;
 /* Counters are monotonic. Requests/payload include every logical element. On successful runs, requests equal
    lookups+replicas; sampler hits may overlap driver calls when byte interning follows native encoding.
