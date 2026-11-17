@@ -93,7 +93,7 @@ void vk_surf_use(VkCommandBuffer cb, Surf* s, VkImageLayout layout, VkPipelineSt
 }
 /* surface.c's table: the textures a case lists (live_cases), by address. Other cases list none, so a failed cache read
    finds no texture to load again (astc.c's cache_failed) and no level is copied from another texture (live_level) */
-#define LISTED 8
+#define LISTED 8 /* at least LIVE */
 static Surf* g_listed[LISTED];
 static Surf* listed_from(u32 i, u64 gva) {
     for (; i < LISTED; i++)
@@ -1173,7 +1173,8 @@ static void cache_burst(void) {
    the table. The first decodes them. The second, at another address, copies them from the first's image on the GPU:
    no cache read, no encode, the same bytes. The first written since (its wgen) and the second gone from the table, a
    third reads the cache. A fourth right after it does not copy from the third, whose read is not done yet, and reads
-   too. After a finish, a fifth copies from the fourth */
+   too. After a finish, a fifth copies from the fourth. Then other blocks: a sixth decodes them and a seventh, in the
+   same command buffer with no finish between, copies them from the sixth's image, which the encoder has just written */
 static void live_surf(Surf* t, const CacheCase* c, u64 gva) {
     const VkFormat format = c->srgb ? VK_FORMAT_BC7_SRGB_BLOCK : VK_FORMAT_BC7_UNORM_BLOCK;
     *t = (Surf){.w = c->w,
@@ -1228,6 +1229,7 @@ static u8* live_read(Surf* t, u64 size) {
     memcpy(got, actual, (size_t)size);
     return got;
 }
+#define LIVE 7 /* uploads */
 static void live_cases(void) {
     static const CacheCase c = {6, 6, 0, 97, 61, 1, 1};
     if (!g_vk.feat.textureCompressionBC || !vk_astc_cached(c.w, c.h, 1)) {
@@ -1236,30 +1238,40 @@ static void live_cases(void) {
     }
     const u64 size = (u64)((c.w + 3) / 4) * ((c.h + 3) / 4) * 16;
     u8* blocks = blocks_new(c.w, c.h, 1, c.bw, c.bh);
-    Surf t[5];
+    u8* other = blocks_new(c.w, c.h, 1, c.bw, c.bh);
+    if (!memcmp(blocks, other, (size_t)((c.w + c.bw - 1) / c.bw) * ((c.h + c.bh - 1) / c.bh) * 16))
+        fatal("live levels: the second blocks are the first's\n");
+    Surf t[LIVE];
     u64 levels, hits, copies, encodes;
     /* step: what the upload of t[i] did (copies and hits since the step before, encoder dispatches) */
-    const char* what[5] = {"decoded", "copied from the first", "read after the first was written",
-                           "read while the third's read is on its way", "copied from the fourth"};
+    const char* what[LIVE] = {"decoded",
+                              "copied from the first",
+                              "read after the first was written",
+                              "read while the third's read is on its way",
+                              "copied from the fourth",
+                              "other blocks decoded",
+                              "copied from the sixth in the same command buffer"};
     /* without the recording thread the third's read is done at once, and the fourth copies from it */
     const int later = vk_rec_threaded();
-    const u64 want_copies[5] = {0, 1, 0, later ? 0 : 1, 1}, want_hits[5] = {0, 0, 1, later ? 1 : 0, 0};
-    for (u32 i = 0; i < 5; i++) {
+    const u64 want_copies[LIVE] = {0, 1, 0, later ? 0 : 1, 1, 0, 1};
+    const u64 want_hits[LIVE] = {0, 0, 1, later ? 1 : 0, 0, 0, 0};
+    const int want_encode[LIVE] = {1, 0, 0, 0, 0, 1, 0};
+    for (u32 i = 0; i < LIVE; i++) {
         live_surf(&t[i], &c, 0x1000000ull * (i + 1));
         g_listed[i] = &t[i];
         if (i == 2) {
-            t[0].wgen++;         /* written since its upload */
+            t[0].wgen++;        /* written since its upload */
             g_listed[1] = NULL; /* gone */
         }
         if (i == 4) vk_finish(); /* the fourth's read is done */
         bc7_counts(&levels, &hits);
         copies = vk_astc_bc7_copies();
         encodes = vk_astc_dispatches();
-        live_upload(&t[i], &c, blocks);
+        live_upload(&t[i], &c, i < 5 ? blocks : other);
         u64 hits2, copies2 = vk_astc_bc7_copies();
         bc7_counts(&levels, &hits2);
         const int encoded = vk_astc_dispatches() != encodes;
-        if (copies2 - copies != want_copies[i] || hits2 - hits != want_hits[i] || encoded != !i)
+        if (copies2 - copies != want_copies[i] || hits2 - hits != want_hits[i] || encoded != want_encode[i])
             fatal("live levels: upload %u (%s) made %llu copies, %llu cache hits, %s\n", i + 1, what[i],
                   (unsigned long long)(copies2 - copies), (unsigned long long)(hits2 - hits),
                   encoded ? "an encode" : "no encode");
@@ -1268,20 +1280,26 @@ static void live_cases(void) {
     /* each image's blocks, read back after every upload: a readback waits for the GPU, which would land the third's
        read before the fourth's upload */
     u8* first = live_read(&t[0], size);
-    for (u32 i = 1; i < 5; i++) {
+    u8* sixth = live_read(&t[5], size);
+    if (!memcmp(first, sixth, (size_t)size)) fatal("live levels: the other blocks encode as the first's\n");
+    for (u32 i = 1; i < LIVE; i++) {
+        if (i == 5) continue;
+        const u8* want = i < 5 ? first : sixth;
         u8* got = live_read(&t[i], size);
         for (u64 b = 0; b < size; b++)
-            if (got[b] != first[b])
-                fatal("live levels: upload %u (%s), byte %llu is %u, the first's %u\n", i + 1, what[i],
-                      (unsigned long long)b, got[b], first[b]);
+            if (got[b] != want[b])
+                fatal("live levels: upload %u (%s), byte %llu is %u, the %s's %u\n", i + 1, what[i],
+                      (unsigned long long)b, got[b], i < 5 ? "first" : "sixth", want[b]);
         free(got);
     }
-    for (u32 i = 0; i < 5; i++) {
+    for (u32 i = 0; i < LIVE; i++) {
         g_listed[i] = NULL;
         vk_image_destroy(t[i].img, t[i].mem);
     }
     free(first);
+    free(sixth);
     free(blocks);
+    free(other);
     printf("PASS live levels: a level another texture holds is copied from its image, not read, while it holds it\n");
     fflush(stdout);
 }

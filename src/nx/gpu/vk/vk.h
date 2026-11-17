@@ -1639,10 +1639,12 @@ int vk_bc7_cache_read(const u64 key[2], u8* dst, u64 size);
    when they aren't there, -1 when there is no such thread or it can't open the file (read them with
    vk_bc7_cache_read). A record that doesn't check out is dropped, its copy left out, and the read goes to
    vk_bc7_cache_take_failed with owner and gva */
-int vk_bc7_cache_read_later(VkCommandBuffer cb, const u64 key[2], u64 size, u8* dst, DevMem mem, u64 off,
-                            VkBuffer buf, VkImage img, const VkBufferImageCopy* copy, void* owner, u64 gva);
+int vk_bc7_cache_read_later(VkCommandBuffer cb, const u64 key[2], u64 size, u8* dst, DevMem mem, u64 off, VkBuffer buf,
+                            VkImage img, const VkBufferImageCopy* copy, void* owner, u64 gva);
 /* fn of each read on the recording thread that failed since the last call, with its owner and gva (GPU thread) */
 void vk_bc7_cache_take_failed(void (*fn)(void* owner, u64 gva, const u64 key[2]));
+/* 1 while a read on the recording thread failed and vk_bc7_cache_take_failed has not given it to its owner yet */
+int vk_bc7_cache_failed_pending(void);
 /* how long a read of bytes takes, at the rate of the reads so far: 0 for none, and more than any budget before a read
    was timed */
 u64 vk_bc7_cache_read_ns(u64 bytes);
@@ -1705,8 +1707,7 @@ int vk_astc_cached(u32 w, u32 h, u32 depth);
 void vk_bc7_level_key(const u64 content[2], u32 w, u32 h, u32 depth, u32 layers, u32 bw, u32 bh, int srgb, u32 build,
                       u64 key[2]);
 void vk_astc_frame_done(u64 sub);
-int vk_bc7_cache_level(VkCommandBuffer cb, Surf* t, const u64 key[2], u32 level, u32 w, u32 h, u32 slices,
-                       int is3d);
+int vk_bc7_cache_level(VkCommandBuffer cb, Surf* t, const u64 key[2], u32 level, u32 w, u32 h, u32 slices, int is3d);
 int vk_bc7_capture_level(VkCommandBuffer cb, VkImage img, const u64 key[2], u32 level, u32 w, u32 h, u32 slices,
                          int is3d);
 u64 vk_astc_dispatches(void); /* the BC7 encoder's dispatches so far */
