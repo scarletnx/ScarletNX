@@ -398,11 +398,14 @@ void vk_image_sparse_place(VkImage img, int system);
    new memory in a block that is there (DevMemWant.existing): 1 with *to, 0 when no run holds it, -1 when a is not one
    of img's allocations now or has more regions. The owner copies the regions' texels out and submits that;
    vk_image_sparse_move_end binds a's blocks or tail to `to` in the batch, which waits for that work, and frees a
-   after it, and the owner copies the texels back in after the batch. A move not ended frees `to` (vk_devmem_free) */
+   after it, and the owner copies the texels back in after the batch. It gives 0 when a is gone meanwhile: `to` is
+   freed and nothing moved. A move not ended frees `to` (vk_devmem_free). Each region holds 64 KiB of texels at most,
+   and a move has VK_SPARSE_MOVE_REGIONS at most: a mip tail with more gets no owner */
+#define VK_SPARSE_MOVE_REGIONS 16u
 void vk_image_sparse_mover(VkImage img, void* mover);
 int vk_image_sparse_move_begin(VkImage img, DevMem a, DevMem* to, VkSparseImageMemoryBind* regions, u32 max,
                                u32* n);
-void vk_image_sparse_move_end(VkImage img, DevMem a, DevMem to);
+int vk_image_sparse_move_end(VkImage img, DevMem a, DevMem to);
 u64 vk_image_sparse_level_bytes(VkImage img, u32 levels);
 void vk_sparse_stats(u64* binds, u64* bind_ns); /* statistics: sparse binds, and the host's wait for them */
 /* statistics: the blocks and mip tails with memory now of an image of either kind above, 0 for another image */

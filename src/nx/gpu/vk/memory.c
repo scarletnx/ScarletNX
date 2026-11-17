@@ -612,6 +612,12 @@ static void sparse_region(const Sparse* s, u64 b, VkSparseImageMemoryBind* out) 
                                                 d - z0 < sh->gran.depth ? d - z0 : sh->gran.depth}};
 }
 
+/* a mip tail moves (vk_image_sparse_move_begin) when the regions of its levels, of its layer or of every layer (one
+   tail for all), are VK_SPARSE_MOVE_REGIONS at most. One that cannot gets no owner: in a block being emptied, it
+   would keep the block closed to requests until the defrag gave up on it */
+static int tail_moves(u32 levels, u32 tail_first, u32 layers, u32 tails) {
+    return (u64)(tails == 1 ? layers : 1) * (levels - tail_first) <= VK_SPARSE_MOVE_REGIONS;
+}
 /* the answers vk_sparse_supported gave, by what it was asked */
 typedef struct {
     VkFormat f;
@@ -918,6 +924,7 @@ int vk_image_sparse_bind(VkImage img, const u8* bits, const u64* keys, u64* byte
         if (ok) made++;
     }
     aci.at = DM_DEVICE; /* a mip tail is small: the GPU's memory always */
+    aci.moves = s->mover && tail_moves(s->sh.levels, s->sh.tail_first, s->sh.layers, s->tails);
     for (u32 t = 0; ok && t < p.ntail; t++) {
         VkMemoryRequirements tr = {.size = s->tail_size, .alignment = s->block, .memoryTypeBits = s->memtypes};
         ok = vk_devmem_alloc(&tr, &aci, &fresh[p.nfresh + t], &info[p.nfresh + t]) == VK_SUCCESS;
@@ -1015,7 +1022,7 @@ int vk_image_sparse_bind(VkImage img, const u8* bits, const u64* keys, u64* byte
             if (!s->slot[nb + t]) {
                 s->slot[nb + t] = fresh[k++];
                 vk_mem_track(s->slot[nb + t], VK_OWN_TEXTURE);
-                if (s->mover) vk_devmem_owner(s->slot[nb + t], s->mover);
+                if (aci.moves) vk_devmem_owner(s->slot[nb + t], s->mover);
             }
         s->bytes = s->bytes + (u64)p.nfresh * s->block + (u64)p.ntail * s->tail_size - gone * s->block;
         *bytes = s->bytes;
@@ -1083,6 +1090,10 @@ static int tail_regions(VkExtent3D extent, u32 levels, u32 tail_first, u32 layer
         }
     return 1;
 }
+/* a region is a whole block, not one at a level's edge */
+static int region_whole(const VkSparseImageMemoryBind* r, VkExtent3D block) {
+    return r->extent.width == block.width && r->extent.height == block.height && r->extent.depth == block.depth;
+}
 /* the first page of p that has allocation a: its index, ~0u for none */
 static u32 piece_page_of(const Pieces* p, DevMem a) {
     for (u32 i = 0; i < p->n; i++)
@@ -1093,9 +1104,12 @@ static int piece_move_begin(const Pieces* p, DevMem a, DevMem* to, VkSparseImage
                             u32* n) {
     const u32 i = piece_page_of(p, a), bricks = p->per_layer * p->layers;
     if (i == ~0u || !max) return -1;
-    if (i < bricks)
-        piece_region(p, i, &regions[(*n)++]);
-    else if (!tail_regions(p->extent, p->levels, p->tail_first, p->layers, p->tails, i - bricks, regions, max, n))
+    if (i < bricks) { /* the region of a whole brick of the key where it has one, else of its first */
+        piece_region(p, i, &regions[0]);
+        for (u32 j = i + 1; j < bricks && !region_whole(&regions[0], p->block); j++)
+            if (p->pages[j] == a) piece_region(p, j, &regions[0]);
+        *n = 1;
+    } else if (!tail_regions(p->extent, p->levels, p->tail_first, p->layers, p->tails, i - bricks, regions, max, n))
         return -1; /* more regions than the owner takes: it stays */
     const VkMemoryRequirements req = {.size = i < bricks ? p->req.alignment : p->tail_size,
                                       .alignment = p->req.alignment,
@@ -1104,11 +1118,11 @@ static int piece_move_begin(const Pieces* p, DevMem a, DevMem* to, VkSparseImage
     DevMemInfo info;
     return vk_devmem_alloc(&req, &want, to, &info) == VK_SUCCESS ? 1 : 0;
 }
-static void piece_move_end(Pieces* p, DevMem a, DevMem to) {
+static int piece_move_end(Pieces* p, DevMem a, DevMem to) {
     const u32 bricks = p->per_layer * p->layers;
     if (piece_page_of(p, a) == ~0u || !bind_ready()) { /* gone meanwhile: nothing moves */
         vk_devmem_free(to);
-        return;
+        return 0;
     }
     if (p->batch > g_bind.issued) bind_flush(); /* a batch binds a block once: the image's binds in it go first */
     DevMemInfo info;
@@ -1136,6 +1150,7 @@ static void piece_move_end(Pieces* p, DevMem a, DevMem to) {
         }
         p->pages[i] = to;
     }
+    return 1;
 }
 void vk_image_sparse_mover(VkImage img, void* mover) {
     Sparse* s = sparse_find(img);
@@ -1143,14 +1158,16 @@ void vk_image_sparse_mover(VkImage img, void* mover) {
         Pieces* p = pieces_of(img);
         if (!p || !p->per_layer || p->mover == mover) return;
         p->mover = mover;
+        const int tails = !mover || tail_moves(p->levels, p->tail_first, p->layers, p->tails);
         for (u32 i = 0; i < p->n; i++)
-            if (p->pages[i]) vk_devmem_owner(p->pages[i], mover);
+            if (p->pages[i] && (i < p->per_layer * p->layers || tails)) vk_devmem_owner(p->pages[i], mover);
         return;
     }
     if (s->mover == mover) return;
     s->mover = mover;
     for (u32 i = 0; i < s->nmem; i++)
         if (s->mem[i].refs) vk_devmem_owner(s->mem[i].a, mover);
+    if (mover && !tail_moves(s->sh.levels, s->sh.tail_first, s->sh.layers, s->tails)) return;
     for (u64 k = sparse_nblocks(s); k < sparse_nblocks(s) + s->tails; k++)
         if (s->slot[k]) vk_devmem_owner(s->slot[k], mover);
 }
@@ -1181,11 +1198,11 @@ int vk_image_sparse_move_begin(VkImage img, DevMem a, DevMem* to, VkSparseImageM
     u32 rec, tail;
     if (s->place_sys || !max || !sparse_place_of(s, a, &rec, &tail)) return -1;
     u64 size = s->block;
-    if (rec != ~0u) {
-        for (u64 b = 0, nb = sparse_nblocks(s); b < nb; b++)
+    if (rec != ~0u) { /* the region of a whole block of the key where it has one, else of its first */
+        for (u64 b = 0, nb = sparse_nblocks(s); b < nb && !(*n && region_whole(&regions[0], s->sh.gran)); b++)
             if (s->of[b] == rec + 1) {
-                sparse_region(s, b, &regions[(*n)++]);
-                break;
+                sparse_region(s, b, &regions[0]);
+                *n = 1;
             }
     } else {
         size = s->tail_size;
@@ -1197,20 +1214,18 @@ int vk_image_sparse_move_begin(VkImage img, DevMem a, DevMem* to, VkSparseImageM
     DevMemInfo info;
     return vk_devmem_alloc(&req, &want, to, &info) == VK_SUCCESS ? 1 : 0;
 }
-void vk_image_sparse_move_end(VkImage img, DevMem a, DevMem to) {
+int vk_image_sparse_move_end(VkImage img, DevMem a, DevMem to) {
     Sparse* s = sparse_find(img);
     if (!s) {
         Pieces* p = pieces_of(img);
-        if (p && p->per_layer)
-            piece_move_end(p, a, to);
-        else
-            vk_devmem_free(to);
-        return;
+        if (p && p->per_layer) return piece_move_end(p, a, to);
+        vk_devmem_free(to);
+        return 0;
     }
     u32 rec, tail;
     if (!sparse_place_of(s, a, &rec, &tail) || !bind_ready()) { /* gone meanwhile: nothing moves */
         vk_devmem_free(to);
-        return;
+        return 0;
     }
     if (s->batch > g_bind.issued) bind_flush(); /* a batch binds a block once: the image's binds in it go first */
     DevMemInfo info;
@@ -1225,7 +1240,7 @@ void vk_image_sparse_move_end(VkImage img, DevMem a, DevMem to) {
                                        .memoryOffset = info.offset};
         s->batch = bind_add(img, 1, &ob, sizeof ob, a, s->tail_size, 1);
         s->slot[sparse_nblocks(s) + tail] = to;
-        return;
+        return 1;
     }
     const u32 refs = s->mem[rec].refs;
     u32 n = 0;
@@ -1241,6 +1256,7 @@ void vk_image_sparse_move_end(VkImage img, DevMem a, DevMem to) {
         s->slot[b] = to;
     }
     s->mem[rec].a = to;
+    return 1;
 }
 
 int vk_image_sparse_bound(VkImage img, u32 layer, u32 level, u32 y0, u32 y1, u32 z0, u32 z1, int all) {
@@ -1484,7 +1500,9 @@ typedef struct {
 static VkResult page_change(Pieces* p, u32 i, u8* want, u64 key, PageKeys* k, const VkMemoryRequirements* mem,
                             VkDeviceMemory* memory, VkDeviceSize* offset, DevMem* had) {
     /* a texture's: the low class (ledger.c) */
-    const DevMemWant aci = {.at = DM_DEVICE, .image = 1, .low = 1, .moves = p->mover != NULL};
+    const int moves = p->mover && (i < p->per_layer * p->layers || tail_moves(p->levels, p->tail_first, p->layers,
+                                                                             p->tails));
+    const DevMemWant aci = {.at = DM_DEVICE, .image = 1, .low = 1, .moves = moves};
     DevMemInfo info;
     const DevMem old = p->pages[i];
     const u64 old_key = p->key ? p->key[i] : 0;
@@ -1501,7 +1519,7 @@ static VkResult page_change(Pieces* p, u32 i, u8* want, u64 key, PageKeys* k, co
         VkResult res = vk_devmem_alloc(mem, &aci, &use, &info);
         if (!VK_OK(res)) return res;
         vk_mem_track(use, VK_OWN_TEXTURE);
-        if (p->mover) vk_devmem_owner(use, p->mover);
+        if (moves) vk_devmem_owner(use, p->mover);
         p->bound += mem->size;
         want[i] = 2;
         if (key) k->made[k->nmade++] = (KeyBlock){key, i};

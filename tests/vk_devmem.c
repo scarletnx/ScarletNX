@@ -663,6 +663,16 @@ static void check_kinds(void) {
     const DevMemWant moves = {.at = DM_DEVICE, .moves = 1}, fixed = {.at = DM_DEVICE};
     device(0, 1024, 64, 0);
     CHECK(g_devmem.drain.on);
+    /* no room for a new block: a request takes the room of the other side, and does not fail where it found room
+       before the kinds */
+    CHECK(make(0, MIB, 256, ~0u, 0, moves, &m[0]) == VK_SUCCESS);
+    u64 room = g_drv.room[0];
+    g_drv.room[0] = g_drv.used[0];
+    CHECK(make(0, MIB, 256, ~0u, 0, fixed, &f[0]) == VK_SUCCESS && block_of(&f[0]) == block_of(&m[0]));
+    unmake(&f[0]);
+    unmake(&m[0]);
+    g_drv.room[0] = room;
+    g_devmem.full_frame[T_GPU] = 0; /* the heap has room again */
     for (u32 i = 0, j = 0; i < N; i++) {
         CHECK(make(0, MIB, 256, ~0u, 0, moves, &m[i]) == VK_SUCCESS && !alone_of(&m[i]));
         vk_devmem_owner(m[i].mem, (void*)(uintptr_t)(i + 1));
