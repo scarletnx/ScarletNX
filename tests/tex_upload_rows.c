@@ -671,6 +671,14 @@ void gpu_mem_dirty_runs(u64 since, u64 a, u64 sz, void (*fn)(void* ctx, u64 at, 
     fn(ctx, lo, hi - lo);
 }
 u64 gpu_mem_generation(void) { return g_gpu_writes.gen; }
+/* every range watched, and every write on one (texture.c's quiet check asks again after each) */
+int gpu_mem_watch(u64 gva, u64 size) {
+    (void)gva;
+    (void)size;
+    return 1;
+}
+u64 gpu_mem_watched_generation(void) { return g_gpu_writes.gen; }
+int gpu_mem_newest_kind(u64 a, u64 sz) { return gpu_mem_dirty_since(0, a, sz) ? GPU_WRITE_ENGINE : 0; }
 void vk_all_barrier(VkCommandBuffer cb) {
     (void)cb;
     all_bars++;
