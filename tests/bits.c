@@ -140,6 +140,22 @@ int main(void) {
           "trailing zeros");
     CHECK(snx_popcount64(0) == 0 && snx_popcount64(~0ull) == 64 && snx_popcount64(0x8000000000000001ull) == 2,
           "population count");
+    /* the arithmetic shifts: the top bit copied in, every count at both ends, and a signed value rounded down */
+    CHECK(snx_asr32(0x80000000u, 31) == 0xFFFFFFFFu && snx_asr32(0x80000000u, 4) == 0xF8000000u &&
+              snx_asr32(0x7FFFFFFFu, 30) == 1 && snx_asr32(0xFFFFFFF0u, 2) == 0xFFFFFFFCu &&
+              snx_asr32(0x12345678u, 0) == 0x12345678u && snx_asr32(0xF0000000u, 0) == 0xF0000000u,
+          "snx_asr32");
+    CHECK(
+        snx_asr64(0x8000000000000000ull, 63) == ~0ull && snx_asr64(0x8000000000000000ull, 8) == 0xFF80000000000000ull &&
+            snx_asr64(0x7FFFFFFFFFFFFFFFull, 62) == 1 && snx_asr64(0xFFFFFFFFFFFFFF00ull, 4) == 0xFFFFFFFFFFFFFFF0ull &&
+            snx_asr64(0x8000000000000001ull, 0) == 0x8000000000000001ull,
+        "snx_asr64");
+    CHECK(snx_asr_s64(-1, 12) == -1 && snx_asr_s64(-4097, 12) == -2 && snx_asr_s64(-4096, 12) == -1 &&
+              snx_asr_s64(INT64_MIN, 63) == -1 && snx_asr_s64(INT64_MIN, 1) == INT64_MIN / 2 &&
+              snx_asr_s64(4095, 12) == 0 && snx_asr_s64(INT64_MAX, 62) == 1 && snx_asr_s64(-7, 0) == -7,
+          "snx_asr_s64");
+    for (uint32_t n = 0; n < 32; n++) /* against the sign extension of the shifted-out width: the same bits */
+        CHECK(snx_asr32(0x9ABCDEF0u, n) == (uint32_t)snx_sext32(0x9ABCDEF0u >> n, 32 - n), "snx_asr32 by %u", n);
 #ifdef __SIZEOF_INT128__
     against_int128();
 #endif

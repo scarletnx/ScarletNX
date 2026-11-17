@@ -141,7 +141,8 @@ static int trampoline_of(u32 i, u64 pc, u64 end) {
         if (at + 4 > end) break;
         if (memcmp(GP(pc), h->head[i], 4 * k[n])) continue;
         w = snx_ld_le32(GP(at));
-        if (d >= -((i64)1 << 27) && d < ((i64)1 << 27) && w == (0x14000000u | ((u32)(d >> 2) & 0x3FFFFFFu))) return 1;
+        if (d >= -((i64)1 << 27) && d < ((i64)1 << 27) && w == (0x14000000u | ((u32)((u64)d >> 2) & 0x3FFFFFFu)))
+            return 1;
         if (w == 0xD503201Fu) at += 4; /* nop */
         if (at + 16 <= end && snx_ld_le32(GP(at)) == 0x58000051u && snx_ld_le32(GP(at + 4)) == 0xD61F0220u &&
             snx_ld_le64(GP(at + 8)) == back)
