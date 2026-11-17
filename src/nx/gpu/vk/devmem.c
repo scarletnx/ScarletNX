@@ -28,6 +28,12 @@
    the desktop's compositor failing to get video memory while one game ran, and what the game then asked for went to
    system memory, which the GPU reads across the bus */
 #define DM_MARGIN    (256ull << 20)
+/* A block's kind besides its memory type, which a request takes only from blocks of its own: bits of these. IMAGE:
+   for images only, where they cannot share a block with buffers (g_devmem.apart). FIXED: allocations that no owner
+   moves, in the capped heap where blocks are emptied (DevMemWant.moves) */
+#define DM_KIND_IMAGE 1
+#define DM_KIND_FIXED 2
+#define DM_KINDS      4
 /* why an allocation has memory of its own (alloc_in's alone, but for the first) */
 enum {
     DM_OWN_SIZE,   /* more than a block's share, and no block had a run for it */
@@ -46,7 +52,7 @@ typedef struct {
     u32 type;
     u32 allocs;
     u32 holds[DM_PRIO_N]; /* the units its allocations of each class hold (1 for memory of its own): rec_weight */
-    u8 image, own; /* image: for images only, where they cannot share a block with buffers (g_devmem.apart) */
+    u8 image, own; /* image: its kind (DM_KIND_*) besides its memory type */
     u8 reserve;    /* the reserve (vk_devmem_reserve): taken only while vk_devmem_reserve_use says, never let go */
     u8 low;        /* for requests of the low class first (DevMemWant.low): with image and type, its kind */
     u8 prio;       /* the class whose priority the driver has for it (block_prio) */
@@ -316,7 +322,7 @@ static VkResult block_memory(u32 type, u64 size, int image, int low, VkBuffer bu
     VkMemoryPriorityAllocateInfoEXT prio = {.sType = VK_STRUCTURE_TYPE_MEMORY_PRIORITY_ALLOCATE_INFO_EXT,
                                             .priority = k_prio[DM_PRIO_LOW]};
     if (buf || img) ai.pNext = &alone;
-    if (g_devmem.bda && !image) {
+    if (g_devmem.bda && !(image & DM_KIND_IMAGE)) {
         flags.pNext = ai.pNext;
         ai.pNext = &flags;
     }
@@ -450,8 +456,9 @@ static void ahead_ask(u32 type, int image, int low) {
         return;
     for (u32 i = 0; i < g_devmem.nblock; i++) {
         const Block* k = &g_devmem.block[i];
-        /* an empty block of either class: block_adopt changes its class */
-        if (k->mem && !k->own && !k->allocs && k->type == type && k->image == image) return;
+        /* an empty block of either class or either side of DM_KIND_FIXED: block_adopt changes them */
+        if (k->mem && !k->own && !k->allocs && k->type == type && (k->image & DM_KIND_IMAGE) == (image & DM_KIND_IMAGE))
+            return;
     }
     u64 size = block_size_for(type, image, low, 1, cap);
     if (heap_capped(heap) && heap_usage(heap) + 2 * size > heap_budget(heap)) return;
@@ -514,7 +521,9 @@ static u32 block_find(u32 type, int image, int low, u32 units, u32 align_units, 
         slot = 0;
         for (u32 i = 0; i < g_devmem.nblock; i++) {
             const Block* k = &g_devmem.block[i];
-            if (!k->mem || k->own || k->type != type || k->image != image || (low >= 0 && k->low != low)) continue;
+            if (!k->mem || k->own || k->type != type || (low >= 0 && k->low != low)) continue;
+            /* the reserve is never emptied: what moves and what does not both take it */
+            if (k->reserve ? (k->image & DM_KIND_IMAGE) != (image & DM_KIND_IMAGE) : k->image != image) continue;
             if ((k->reserve && !g_devmem.use_reserve) || k->drain) continue;
             if (g_devmem.drain.moving && !k->allocs) continue; /* a move goes to blocks in use (vk_devmem_moving) */
             u32 room = k->free.units - k->free.used, piece = k->free.largest;
@@ -529,19 +538,21 @@ static u32 block_find(u32 type, int image, int low, u32 units, u32 align_units, 
         from_i = slot;
     }
 }
-/* An empty block of the other class that holds units, which takes the class low, its run taken at *at: its index plus
-   one, 0 for none (lock held). An empty block holds nothing, so its class costs nothing to change, and the two
-   classes share one spare block of a kind as all requests did before the classes. With a spare and a partly filled
-   block for each class, the game held 93 MB more free memory inside its blocks at the same point */
+/* An empty block of the other class, or of the other side of DM_KIND_FIXED, that holds units, which takes the class
+   low and the kind image, its run taken at *at: its index plus one, 0 for none (lock held). An empty block holds
+   nothing, so its class and kind cost nothing to change, and the classes and the two sides share one spare block of a
+   memory type (and of images apart) as all requests did before them. With a spare and a partly filled block for each
+   class, the game held 93 MB more free memory inside its blocks at the same point */
 static u32 block_adopt(u32 type, int image, int low, u32 units, u32 align_units, u32* at) {
     if (g_devmem.drain.moving) return 0; /* a move goes to blocks in use of its own class (vk_devmem_moving) */
     for (u32 i = 0; i < g_devmem.nblock; i++) {
         Block* k = &g_devmem.block[i];
-        if (!k->mem || k->own || k->allocs || k->reserve || k->drain || k->type != type || k->image != image ||
-            k->low == low)
+        if (!k->mem || k->own || k->allocs || k->reserve || k->drain || k->type != type ||
+            (k->image & DM_KIND_IMAGE) != (image & DM_KIND_IMAGE) || (k->low == low && k->image == image))
             continue;
         if (k->free.largest < units || !space_take(&k->free, units, align_units, at)) continue;
         k->low = (u8)low;
+        k->image = (u8)image;
         return i + 1;
     }
     return 0;
@@ -566,7 +577,11 @@ static DevMem alloc_in(u32 type, const VkMemoryRequirements* req, const DevMemWa
        system memory while the buffer blocks of the GPU's heap had 1000 MB free. With shared blocks none did */
     /* the blocks of the low class only where the driver moves memory: elsewhere they would hold more for nothing (a
        block partly filled and an empty one of each kind more, 120 MiB in a test of the allocator) */
-    int image = g_devmem.apart && want->image, low = want->low && g_vk.has_pageable;
+    int image = g_devmem.apart && want->image ? DM_KIND_IMAGE : 0, low = want->low && g_vk.has_pageable;
+    /* where blocks are emptied, what no owner moves goes in blocks of its own: one such allocation keeps a block from
+       being emptied (drain_can). A move goes to the blocks of what moves */
+    if (g_devmem.drain.on && heap_capped(g_devmem.mp.memoryTypes[type].heapIndex) && !want->moves && !want->existing)
+        image |= DM_KIND_FIXED;
     /* a request that a block holds takes a free run of one, whatever its size: one of more than a block's share went
        to the driver each time, on the thread that asked, and failed at the heap's cap while the blocks had room. Only
        a request of a block's share or less opens a new block */
@@ -798,7 +813,9 @@ void vk_devmem_free(DevMem m) {
             if (g_devmem.block_bytes[heap] > budget) keep = 0;
             for (u32 i = 0; keep && i < g_devmem.nblock; i++) {
                 const Block* o = &g_devmem.block[i];
-                if (o != k && o->mem && !o->own && !o->allocs && o->type == k->type && o->image == k->image) keep = 0;
+                if (o != k && o->mem && !o->own && !o->allocs && o->type == k->type &&
+                    (o->image & DM_KIND_IMAGE) == (k->image & DM_KIND_IMAGE))
+                    keep = 0; /* one spare a memory type, for either class and either side of DM_KIND_FIXED */
             }
         }
         if (emptied) {
@@ -1102,7 +1119,7 @@ void vk_devmem_log(void) {
     struct {
         u32 blocks, empty, own;
         u64 bytes, used, own_bytes, largest;
-    } k[VK_MAX_MEMORY_TYPES][2] = {{{0}}};
+    } k[VK_MAX_MEMORY_TYPES][DM_KINDS] = {{{0}}};
     pm_lock(&g_devmem.lk);
     for (u32 i = 0; i < g_devmem.nblock; i++) {
         const Block* b = &g_devmem.block[i];
@@ -1158,16 +1175,17 @@ void vk_devmem_log(void) {
             "each)\n",
             (unsigned long long)priorities);
     for (u32 t = 0; t < g_devmem.mp.memoryTypeCount; t++)
-        for (u32 image = 0; image < 2; image++) {
+        for (u32 image = 0; image < DM_KINDS; image++) {
             if (!k[t][image].blocks && !k[t][image].own) continue;
             VkMemoryPropertyFlags f = g_devmem.mp.memoryTypes[t].propertyFlags;
-            LOG("vulkan: device memory of type %u (heap %u%s%s%s) for %s: %u blocks of %.1f MB with %.1f MB handed "
+            LOG("vulkan: device memory of type %u (heap %u%s%s%s) for %s%s: %u blocks of %.1f MB with %.1f MB handed "
                 "out, %u of them empty, the largest free piece in the others %.1f MB; %u allocations with %.1f MB "
                 "of their own\n",
                 t, g_devmem.mp.memoryTypes[t].heapIndex, f & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT ? ", the GPU's" : "",
                 f & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT ? ", mapped" : "",
                 f & VK_MEMORY_PROPERTY_HOST_CACHED_BIT ? ", cached" : "",
-                !g_devmem.apart ? "buffers and images" : image ? "images" : "buffers",
+                !g_devmem.apart ? "buffers and images" : image & DM_KIND_IMAGE ? "images" : "buffers",
+                image & DM_KIND_FIXED ? " that do not move" : "",
                 k[t][image].blocks, (double)k[t][image].bytes / 1048576.0, (double)k[t][image].used / 1048576.0,
                 k[t][image].empty, (double)k[t][image].largest / 1048576.0, k[t][image].own,
                 (double)k[t][image].own_bytes / 1048576.0);

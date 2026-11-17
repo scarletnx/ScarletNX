@@ -3755,7 +3755,7 @@ static int make_own_(u32 i, VkBuffer sb, u64 so) {
     Vb* e = &g_vb[i];
     u64 len = e->len;
     VkBufferCreateInfo bci = own_info(len);
-    DevMemWant aci = {.at = DM_DEVICE};
+    DevMemWant aci = {.at = DM_DEVICE, .moves = 1}; /* vk_buf_move */
     VkBuffer b;
     DevMem m;
     if (vk_buffer_create(&bci, &aci, &b, &m, NULL) != VK_SUCCESS) return 0;
