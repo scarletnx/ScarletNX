@@ -536,8 +536,10 @@ void vk_mirror_wrote(u64 cpu, u64 len) {
     /* a range the submission's ranges hold already adds nothing: its pages are pending until that range's batch is
        done, and the harvest takes no page more. Counted all the same, every page of it gained a count here and lost it
        again when vk_mirror_harvest joined the ranges: one game's programs write the same windows of up to 16 MiB
-       dispatch after dispatch, and half its ranges, half a billion page counts in a run, were such */
-    for (u32 i = g_mir_nnow; i-- > 0;)
+       dispatch after dispatch, and half its ranges, half a billion page counts in a run, were such. Only the last
+       ranges listed are looked at: those repeats follow each other, and a range that meets none of them is listed
+       and counted, as before, with no walk over a submission's thousands */
+    for (u32 i = g_mir_nnow, seen = 0; i-- > 0 && seen++ < 8;)
         if (g_mir_now[i].first <= r.first && r.end <= g_mir_now[i].end) return;
     if (g_mir_nnow == g_mir_capnow) {
         u32 cap = g_mir_capnow ? g_mir_capnow * 2 : 32;
@@ -738,7 +740,7 @@ static void harvest_batch(VkCommandBuffer cb, u64 submit, const MirRange* r, u32
 }
 void vk_mirror_harvest(VkCommandBuffer cb, u64 submit) {
     if (!g_mir_nnow) return;
-    /* each range written gave its pages a count (vk_mirror_wrote), and the batch takes one away from the pages of each
+    /* each range listed gave its pages a count (vk_mirror_wrote), and the batch takes one away from the pages of each
        joined range once it is done (vk_mirror_done). Where the ranges met, the joined ones take their own count first,
        then the written ones lose theirs, so a page never reads as not pending meanwhile. Without it the pages of two
        buffers that overlap stayed pending for good, and each CPU read of them waited for the GPU. The batch's ranges
@@ -822,7 +824,7 @@ static void land_entry(const u32* e) {
     u64 gen = gpu_mem_generation();
     /* Once for the page, not for each run of it: own_acquire lands whole pages, and a pending render target over a
        run is over the page. Mostly none is, and each run asked through every GPU address that maps the page: one
-       game's mirror landings made 23.7 million of those asks in 100 s, and 1,874 found a target */
+       game's mirror landings made 43 million of those asks in about 100 s, and 612 found a target */
     own_acquire(cpu, 4096);
     const int targets = vk_rt_pending_cpu(cpu, 4096);
     Gran* r = cpu / MIR_G < g_mir.granules ? g_mir.gran[cpu / MIR_G] : NULL;

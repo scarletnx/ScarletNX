@@ -4053,7 +4053,7 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
     add_executable(snx-test-mirror-landing mirror_landing.c tracy_stubs.c
                    "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/pending_pages.c")
     snx_test_target(snx-test-mirror-landing 23)
-    target_link_libraries(snx-test-mirror-landing PRIVATE snx_nx_flags scarletnx-common)
+    target_link_libraries(snx-test-mirror-landing PRIVATE snx_nx_flags)
     add_test(NAME mirror_landing COMMAND snx-test-mirror-landing)
     add_executable(snx-test-vulkan-backing vulkan_backing.c)
     snx_test_target(snx-test-vulkan-backing 11)

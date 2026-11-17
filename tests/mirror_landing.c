@@ -54,7 +54,7 @@ PFN_vkUpdateDescriptorSets vkUpdateDescriptorSets;
 /* ------------------------------------------------ what the landing asks of owners and targets, recorded */
 static struct {
     u32 acquires, targets_asked, before_writes, written_cpu;
-    u64 acquire_at[64], acquire_len[64];
+    u64 acquire_at[64], acquire_len[64], before_at[64], before_len[64];
     int targets; /* what vk_rt_pending_cpu answers */
 } g_rec;
 void own_acquire(u64 addr, u64 size) {
@@ -66,7 +66,10 @@ int vk_rt_pending_cpu(u64 cpu, u64 size) {
     g_rec.targets_asked++;
     return g_rec.targets;
 }
-void vk_rt_before_write_cpu(u64 cpu, u64 size) { (void)cpu, (void)size, g_rec.before_writes++; }
+void vk_rt_before_write_cpu(u64 cpu, u64 size) {
+    if (g_rec.before_writes < 64) g_rec.before_at[g_rec.before_writes] = cpu, g_rec.before_len[g_rec.before_writes] = size;
+    g_rec.before_writes++;
+}
 void gpu_mem_written_cpu(u64 cpu, u64 size) { (void)cpu, (void)size, g_rec.written_cpu++; }
 
 /* ------------------------------------------------ the rest: nothing these cases reach does more */
@@ -143,11 +146,14 @@ u32 vk_ww_epoch(void) { return 1; }
 u32 vk_ww_now(void) { return 1; }
 
 /* ------------------------------------------------ the cases */
-/* the pages the mirror counts as pending, as pend_hit sees them */
+/* every page's pending count added up (PendPages.total): a page that two listed ranges hold counts twice */
 static u64 pending_pages(void) { return g_mir_pend.total; }
 
-/* A written range that one of the submission's ranges holds already is neither listed nor counted: its pages stay
-   pending through the range that holds them. One that reaches past them is, as a range that meets none */
+/* A written range that one of the submission's last ranges holds already is neither listed nor counted: its pages
+   stay pending through the range that holds them. One that reaches past them is, as a range that meets none, and so
+   is one that two ranges hold between them but neither alone, and one that only a range nine or more back holds
+   (vk_mirror_wrote looks at the last 8). The counts are then taken as vk_mirror_harvest takes them, a model of it:
+   each listed range once */
 static void check_wrote_held(void) {
     vk_mirror_wrote(0x10000, 0x8000); /* pages 0x10 to 0x17 */
     CHECK(g_mir_nnow == 1 && pending_pages() == 8);
@@ -161,7 +167,18 @@ static void check_wrote_held(void) {
     CHECK(g_mir_nnow == 3 && pending_pages() == 11);
     vk_mirror_wrote(0x17800, 0x1000); /* inside the second, past the first */
     CHECK(g_mir_nnow == 3 && pending_pages() == 11);
-    /* the counts go as the harvest takes them: each listed range once */
+    vk_mirror_wrote(0x10000, 0x9000); /* the first and the second together, in neither alone: listed and counted */
+    CHECK(g_mir_nnow == 4 && pending_pages() == 20);
+    for (u32 k = 0; k < 8; k++) vk_mirror_wrote(0x100000 + (u64)k * 0x10000, 0x1000); /* 8 ranges apart */
+    CHECK(g_mir_nnow == 12 && pending_pages() == 28);
+    vk_mirror_wrote(0x12000, 0x1000); /* inside the first, 11 back: listed and counted again */
+    CHECK(g_mir_nnow == 13 && pending_pages() == 29);
+    vk_mirror_wrote(0x170000, 0x1000); /* inside the last of the 8, 2 back: held */
+    CHECK(g_mir_nnow == 13 && pending_pages() == 29);
+    vk_mirror_wrote(0x110000, 0x1000); /* inside the second of the 8, 8 back: held */
+    CHECK(g_mir_nnow == 13 && pending_pages() == 29);
+    vk_mirror_wrote(0x100000, 0x1000); /* inside the first of the 8, 9 back: listed and counted */
+    CHECK(g_mir_nnow == 14 && pending_pages() == 30);
     for (u32 i = 0; i < g_mir_nnow; i++) mir_pend_pages(g_mir_now[i].first, g_mir_now[i].end - 1, -1);
     g_mir_nnow = 0;
     CHECK(pending_pages() == 0 && !g_mir_any);
@@ -193,10 +210,10 @@ static void rec_clear(int targets) {
 }
 
 /* A page's entry lands its runs. With no render target pending over the page it lands the page's owners once and asks
-   for targets once, not for each run: each run asked both through every GPU address mapping it (23.7 million asks in
-   one game's run, 1,874 of them finding a target). With one pending it does both for each run, as a target's
-   write-back in one run may change the page's owners. A page whose mask is empty lands nothing and asks nothing. Each
-   stamps the page written */
+   for targets once, not for each run: each run asked both through every GPU address mapping it (43 million asks in
+   about 100 s of one game, 612 of them finding a target). With one pending it lands the page's owners once, then asks
+   both for each run, as before, as a target's write-back in one run may change the page's owners. A page whose mask is
+   empty lands nothing and asks nothing. Each stamps the page written */
 static void check_land_entry(void) {
     const u64 cpu = 0x40000;
     const u32 runs[3][2] = {{0, 16}, {100, 260}, {4000, 4096}};
@@ -214,8 +231,10 @@ static void check_land_entry(void) {
     land_entry(entry);
     CHECK(page_is(cpu, runs, 3, 0x80));
     CHECK(g_rec.acquires == 1 + 3 && g_rec.targets_asked == 1 && g_rec.before_writes == 3);
-    for (u32 k = 0; k < 3; k++)
+    for (u32 k = 0; k < 3; k++) {
         CHECK(g_rec.acquire_at[1 + k] == cpu + runs[k][0] && g_rec.acquire_len[1 + k] == runs[k][1] - runs[k][0]);
+        CHECK(g_rec.before_at[k] == cpu + runs[k][0] && g_rec.before_len[k] == runs[k][1] - runs[k][0]);
+    }
     CHECK(g_rec.written_cpu == 1);
     /* an empty mask: nothing landed, nothing asked */
     memset(guest + cpu, 0x11, 4096);
@@ -227,7 +246,6 @@ static void check_land_entry(void) {
 }
 
 int main(void) {
-    g_mir.on = 1;
     check_wrote_held();
     check_land_entry();
     printf("mirror_landing: %u checks passed\n", checks);
