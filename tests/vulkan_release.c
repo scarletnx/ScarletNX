@@ -166,6 +166,13 @@ int gmem_write(u64 address, const void* data, u64 size) {
     payload_writes++;
     return 1;
 }
+/* the same write, of a writer the stand-in does not record */
+int gmem_write_by(u64 address, const void* data, u64 size, int kind, u32 format, u64 surface) {
+    (void)kind;
+    (void)format;
+    (void)surface;
+    return gmem_write(address, data, size);
+}
 u8* gmem_ptr(u64 address, u64 size) {
     (void)size;
     return writeback_direct ? memory + gmmu_translate(address) : NULL;
