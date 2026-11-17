@@ -460,6 +460,7 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
         gpu/vk/cmd.c gpu/vk/descriptors.c gpu/vk/descriptor_heaps.c gpu/vk/descriptor_objects.c
         gpu/vk/memory.c gpu/vk/ledger.c gpu/vk/resource_stats.c gpu/vk/record.c gpu/vk/checkpoints.c gpu/vk/devmem.c gpu/vk/space.c ${snx_astc_plat} "${volk_SOURCE_DIR}/volk.c"
         "${PROJECT_BINARY_DIR}/generated/spirv/astc_spv.c" "${PROJECT_BINARY_DIR}/generated/spirv/blocklinear_spv.c"
+        "${PROJECT_BINARY_DIR}/generated/spirv/blocklinear_runs_spv.c"
         "${PROJECT_BINARY_DIR}/generated/spirv/texconv_spv.c" "${PROJECT_BINARY_DIR}/generated/spirv/texconv_etc2_spv.c"
         "${PROJECT_BINARY_DIR}/generated/spirv/texconv_convert_spv.c"
         "${PROJECT_BINARY_DIR}/generated/spirv/texconv_nv12_spv.c"
