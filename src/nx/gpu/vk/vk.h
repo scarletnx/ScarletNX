@@ -2118,8 +2118,8 @@ void vk_tex_kind_frame(void);
    blocks, DEFRAG_BYTES at most (texture.c). Nothing on a GPU that shares the system's memory (devmem.c) */
 void vk_tex_defrag_frame(void);
 /* An owner that can move its allocation (vk_devmem_owner) is a texture (Surf*, whose low two bits are clear), an own
-   buffer of the buffer cache, its entry's index tagged in the low bit, or a block or mip tail of a sparse texture (its
-   Surf*, tagged in the next bit: vk_image_sparse_mover) */
+   buffer of the buffer cache, its entry's index tagged in the low bit, or a block, brick or mip tail of a texture
+   with memory where it is bound (its Surf*, tagged in the next bit: vk_image_sparse_mover) */
 #define VK_MOVE_BUF(i)          ((void*)(((uintptr_t)(i) << 1) | 1u))
 #define VK_MOVE_IS_BUF(o)       (((uintptr_t)(o) & 1u) != 0)
 #define VK_MOVE_BUF_INDEX(o)    ((u32)((uintptr_t)(o) >> 1))

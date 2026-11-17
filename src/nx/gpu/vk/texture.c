@@ -1626,7 +1626,7 @@ void vk_tex_defrag_frame(void) {
         if (VK_MOVE_IS_SPARSE(owners[i])) {
             SparseMove* m = &sp[nsp];
             *m = (SparseMove){.t = VK_MOVE_SPARSE_SURF(owners[i]), .from = mems[i]};
-            if (!m->t->sparse || !m->t->img) continue;
+            if (!(m->t->sparse || m->t->bricks) || !m->t->img) continue;
             if (!scratch && !sparse_scratch(&scratch, &scratch_mem)) {
                 scratch = VK_NULL_HANDLE;
                 vk_devmem_moving_stop(); /* no room for the scratch: the block stays as it is */
@@ -2483,6 +2483,9 @@ static Surf* tex_create(u64 gva, u32 w, u32 h, u32 layers, u32 d3, u32 levels, V
     VkViewFormats vf;
     tex_info(t, f.vk, &ii, &vf, &t->storage_capable);
     if (holes && resident_image(t, &ii)) {
+        /* its pages move out of a block of device memory that is emptied (vk_tex_defrag_frame), but for an image the
+           GPU writes, whose writes may come from another queue */
+        if (!written) vk_image_sparse_mover(t->img, VK_MOVE_SPARSE(t));
         vk_surf_add(t);
         return t;
     }
