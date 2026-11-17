@@ -982,16 +982,19 @@ static FlushPart flush_whole(const Surf* s) {
 }
 /* part's pixels of s copied into buf at at, in rows of pitch bytes, a layer (or a 3D image's slice) after another. A
    packed depth layer goes whole (flush_parts gives it whole rows). 0 when a scaled one found no memory for the image
-   of the guest's size it goes through */
+   of the guest's size it goes through, -1 when a multisampled layer's samples did not unpack (vk_ms_unpack): its
+   bytes in buf stay as they were */
 static int flush_copy(VkCommandBuffer cb, Surf* s, VkBuffer buf, u64 at, u32 pitch, const FlushPart* part) {
     u64 slice = (u64)pitch * part->rows;
     u32 depth = s->type == VK_IMAGE_VIEW_TYPE_3D ? s->depth3d : 1; /* a 3D image's slices in one copy */
     if (s->msaa) { /* the part's samples drawn into the guest's layout of them a layer at a time, copied from there */
+        int left = 0;
         for (u32 layer = part->layer; layer < part->layer + part->layers; layer++) {
             VkImage grid = vk_ms_unpack(cb, s, layer, part->y, part->rows);
-            /* the flush fails: a publish reads only the bytes around the image (publish_gaps), and the layer's would
-               be left as the new buffer had them */
-            if (!grid) return 0;
+            if (!grid) {
+                left = 1;
+                continue;
+            }
             VkBufferImageCopy c = {
                 .bufferOffset = at + (u64)(layer - part->layer) * slice,
                 .bufferRowLength = pitch / s->f.bpp,
@@ -999,7 +1002,7 @@ static int flush_copy(VkCommandBuffer cb, Surf* s, VkBuffer buf, u64 at, u32 pit
                 .imageExtent = {guest_w(s), part->rows, 1}};
             rec_CmdCopyImageToBuffer(cb, grid, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), buf, 1, &c);
         }
-        return 1;
+        return left ? -1 : 1;
     }
     vk_surf_use(cb, s, VK_LAYOUT(TRANSFER_SRC_OPTIMAL),
                 VK_PIPELINE_STAGE_2_COPY_BIT | VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
@@ -1049,6 +1052,23 @@ static int flush_swizzle(VkCommandBuffer cb, Surf* s, VkBuffer buf, u64 at, cons
                   (unsigned long long)s->gva, (unsigned long long)need);
         return 0;
     }
+    if (s->msaa && !surf_volume(s)) {
+        /* a layer at a time through the scratch buffer: one whose samples did not unpack is not moved, and buf keeps
+           its bytes there, as the copy of a pitch linear one does. Moved, it would swizzle the scratch buffer's old
+           bytes over them */
+        for (u32 i = 0; i < moves; i++) {
+            FlushPart one = *part;
+            one.layer = part->layer + i;
+            one.layers = 1;
+            int copied = flush_copy(cb, s, scratch, 0, pitch, &one);
+            if (!copied) return 0;
+            if (copied < 0) continue;
+            vk_bl_barrier(cb, 1);
+            if (!vk_bl_move(cb, &m, 1, buf, at + (u64)i * s->layer_size, scratch, 0)) return 0;
+            vk_bl_barrier(cb, 0);
+        }
+        return 1;
+    }
     if (!flush_copy(cb, s, scratch, 0, pitch, part)) return 0;
     vk_bl_barrier(cb, 1);
     for (u32 i = 0; i < moves; i++)
@@ -1064,7 +1084,7 @@ static int flush_swizzle(VkCommandBuffer cb, Surf* s, VkBuffer buf, u64 at, cons
 static int flush_record(VkCommandBuffer cb, Surf* s, VkBuffer buf, u64 at, const FlushPart* part) {
     u32 row = guest_w(s) * s->f.bpp, pitch = (row + 15) & ~15u;
     u64 limit = g_vk.alloc_cap / VK_PART_SHARE, first, lo, hi;
-    if (!s->bl) return flush_copy(cb, s, buf, at, row, part);
+    if (!s->bl) return flush_copy(cb, s, buf, at, row, part) != 0;
     if ((u64)pitch * part->rows * part->layers <= limit || surf_volume(s) || depth_packs(s) ||
         (!s->msaa && (s->sw != s->w || s->sh != s->h)))
         return flush_swizzle(cb, s, buf, at, part);
@@ -1665,11 +1685,11 @@ static int publish_bands(Surf* s, u64 size, u32 mem_wgen, u64 gw0) {
     return 1;
 }
 /* the parts of a publish's span [0, size) that its flush leaves as guest memory has them, as ranges of the span in
-   r[n][2], sorted and apart: 0 when they are more than max, and the caller reads the span whole. A block linear target
-   of one 2D layer writes every GOB whose 64 bytes and 8 rows its image holds whole: the GOBs left are those at the
+   r[n][2], sorted and apart: 0 when they are more than max, and the caller reads the span whole. Each 2D layer of a
+   block linear target writes every GOB whose 64 bytes and 8 rows its image holds whole: the GOBs left are those at the
    image's right and bottom edges, which hold padding, and the span past the layout's size. The CPU's newer runs are
    read too, as the caller copies them out of the read (cpu_newer). Reading the span whole read every result over it,
-   about 35 copies a publish in a Switch 2 game's race, and the flush wrote over nearly all of them */
+   about 35 copies a publish in one game's race, and the flush wrote over nearly all of them */
 static u32 publish_gaps(const Surf* s, u64 size, const CpuRuns* newer, u64 (*r)[2], u32 max) {
     u32 n = 0;
     u64 row = (u64)guest_w(s) * s->f.bpp, h = guest_h(s), base = 0;
@@ -1760,21 +1780,30 @@ int vk_surf_publish(Surf* s) {
        keeps its bytes, and the copy is what brings them; so does a layer's span with room after it, which the copy
        leaves as it found it (publish_own writes each layer's own bytes only) */
     u64 row = (u64)guest_w(s) * s->f.bpp;
-    int covers_all = s->bl && s->layers == 1 && !surf_volume(s) && kept == 0 &&
+    int covers_all = s->bl && !s->msaa && s->layers == 1 && !surf_volume(s) && kept == 0 &&
                      bl_size((u32)row, guest_h(s), s->bh) == row * guest_h(s);
-    static u64 gaps[4096][2]; /* the renderer's thread alone publishes (vk_lock) */
-    u32 ngaps = !covers_all && s->bl && !surf_volume(s) && !depth_packs(s) &&
+    /* one list for every publish, as threads publish one at a time (vk_lock). The read below can publish again on the
+       same thread (gmem_need lands a kept storage image, image_flush_at, vk_surf_keep_end), and that publish would
+       write over the list the read walks: it reads its span whole instead */
+    static u64 gaps[4096][2];
+    static int gaps_busy;
+    /* a multisampled target reads its span whole: a layer whose samples fail to unpack (vk_ms_unpack) keeps the bytes
+       guest memory has */
+    u32 ngaps = !gaps_busy && !covers_all && s->bl && !s->msaa && !surf_volume(s) && !depth_packs(s) &&
                         (s->layers == 1 || s->layer_size >= rt_layer_bytes(s))
                     ? publish_gaps(s, size, &newer, gaps, sizeof gaps / sizeof *gaps)
                     : 0;
     if (ngaps) { /* the parts the flush leaves alone */
         u64 read = 0;
         if (ngaps != (u32)-1) {
-            if (!vk_guest_read_owned_runs(s->gva, (const u64(*)[2])gaps, ngaps, r)) {
+            for (u32 i = 0; i < ngaps; i++) read += gaps[i][1] - gaps[i][0];
+            gaps_busy = 1;
+            int ok = vk_guest_read_owned_runs(s->gva, (const u64(*)[2])gaps, ngaps, r);
+            gaps_busy = 0;
+            if (!ok) {
                 vk_own_res_unref(r);
                 return 0;
             }
-            for (u32 i = 0; i < ngaps; i++) read += gaps[i][1] - gaps[i][0];
         }
         g_vk_publish_reads_cut++;
         g_vk_publish_bytes_skipped += size - read;
