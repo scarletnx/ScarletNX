@@ -261,6 +261,16 @@ static uint32_t lc_strcat(VitaProcess* p, VitaThread* t) {
     memmove(end, s, strlen(s) + 1);
     return d;
 }
+static uint32_t lc_strncat(VitaProcess* p, VitaThread* t) {
+    uint32_t d = arg(p, t, 0), n = arg(p, t, 2);
+    const char* s = host(p, arg(p, t, 1));
+    char* end = host(p, d) + strlen(host(p, d));
+    size_t length = 0;
+    while (length < n && s[length]) ++length;
+    memmove(end, s, length);
+    end[length] = 0;
+    return d;
+}
 static uint32_t lc_strchr(VitaProcess* p, VitaThread* t) {
     return guest(p, strchr(host(p, arg(p, t, 0)), (int)(arg(p, t, 1) & 0xff)));
 }
@@ -276,6 +286,10 @@ static uint32_t lc_strstr(VitaProcess* p, VitaThread* t) {
 }
 static uint32_t lc_strspn(VitaProcess* p, VitaThread* t) {
     return (uint32_t)strspn(host(p, arg(p, t, 0)), host(p, arg(p, t, 1)));
+}
+static uint32_t lc_strpbrk(VitaProcess* p, VitaThread* t) {
+    const char* at = strpbrk(host(p, arg(p, t, 0)), host(p, arg(p, t, 1)));
+    return at ? guest(p, at) : 0;
 }
 static uint32_t lc_strcspn(VitaProcess* p, VitaThread* t) {
     return (uint32_t)strcspn(host(p, arg(p, t, 0)), host(p, arg(p, t, 1)));
@@ -359,6 +373,12 @@ static uint32_t lc_stoull(VitaProcess* p, VitaThread* t) {
     unsigned long long v = strtoull(s, &end, (int)arg(p, t, 2));
     if (arg(p, t, 1)) vita_write32(p, arg(p, t, 1), guest(p, end));
     return vita_return64(t, v);
+}
+static uint32_t lc_stoll(VitaProcess* p, VitaThread* t) {
+    char *s = host(p, arg(p, t, 0)), *end = s;
+    long long v = strtoll(s, &end, (int)arg(p, t, 2));
+    if (arg(p, t, 1)) vita_write32(p, arg(p, t, 1), guest(p, end));
+    return vita_return64(t, (uint64_t)v);
 }
 /* _Stod(s, endptr, pten): the number times 10 to pten */
 static uint32_t lc_stod(VitaProcess* p, VitaThread* t) {
@@ -1185,9 +1205,92 @@ static uint32_t cxx_exception(VitaProcess* p, VitaThread* t) {
 static uint32_t clib_snprintf(VitaProcess* p, VitaThread* t) { return lc_snprintf(p, t); }
 static uint32_t clib_vsnprintf(VitaProcess* p, VitaThread* t) { return lc_vsnprintf(p, t); }
 
+/* qsort(base, count, size, compare): the game's comparator runs as guest code, so the sort is an insertion sort
+   (adjacent swaps) stepping one comparison per callback */
+typedef struct {
+    uint32_t base, count, size, compare, i, j;
+} Qsort;
+static uint32_t qsort_step(VitaProcess* p, VitaThread* t, Qsort* q);
+static uint32_t qsort_compared(VitaProcess* p, VitaThread* t, void* context) {
+    Qsort* q = context;
+    if ((int32_t)t->cpu.r[0] > 0) {
+        uint8_t* a = (uint8_t*)vita_ptr(p, q->base + (q->j - 1) * q->size);
+        uint8_t* b = (uint8_t*)vita_ptr(p, q->base + q->j * q->size);
+        for (uint32_t k = 0; k < q->size; ++k) {
+            uint8_t x = a[k];
+            a[k] = b[k];
+            b[k] = x;
+        }
+        if (--q->j) return qsort_step(p, t, q);
+    }
+    ++q->i;
+    q->j = q->i;
+    return qsort_step(p, t, q);
+}
+static uint32_t qsort_step(VitaProcess* p, VitaThread* t, Qsort* q) {
+    if (q->i >= q->count) {
+        free(q);
+        return 0;
+    }
+    const uint32_t args[2] = {q->base + (q->j - 1) * q->size, q->base + q->j * q->size};
+    vita_hle_guest_call(p, t, q->compare, args, 2, qsort_compared, q);
+    return 0;
+}
+static uint32_t lc_qsort(VitaProcess* p, VitaThread* t) {
+    uint32_t count = arg(p, t, 1), size = arg(p, t, 2);
+    if (count < 2 || !size || !arg(p, t, 3)) return 0;
+    Qsort* q = calloc(1, sizeof *q);
+    if (!q) return 0;
+    q->base = arg(p, t, 0), q->count = count, q->size = size, q->compare = arg(p, t, 3);
+    q->i = q->j = 1;
+    return qsort_step(p, t, q);
+}
+
+/* bsearch(key, base, count, size, compare): a binary search, one comparison of the game's comparator a callback; the
+   element found, or 0 */
+typedef struct {
+    uint32_t key, base, size, compare, low, high;
+} Bsearch;
+static uint32_t bsearch_step(VitaProcess* p, VitaThread* t, Bsearch* b);
+static uint32_t bsearch_compared(VitaProcess* p, VitaThread* t, void* context) {
+    Bsearch* b = context;
+    int32_t order = (int32_t)t->cpu.r[0];
+    uint32_t middle = b->low + (b->high - b->low) / 2;
+    if (!order) {
+        uint32_t found = b->base + middle * b->size;
+        free(b);
+        return found;
+    }
+    if (order < 0)
+        b->high = middle;
+    else
+        b->low = middle + 1;
+    return bsearch_step(p, t, b);
+}
+static uint32_t bsearch_step(VitaProcess* p, VitaThread* t, Bsearch* b) {
+    if (b->low >= b->high) {
+        free(b);
+        return 0;
+    }
+    const uint32_t args[2] = {b->key, b->base + (b->low + (b->high - b->low) / 2) * b->size};
+    vita_hle_guest_call(p, t, b->compare, args, 2, bsearch_compared, b);
+    return 0;
+}
+static uint32_t lc_bsearch(VitaProcess* p, VitaThread* t) {
+    uint32_t count = arg(p, t, 2), size = arg(p, t, 3);
+    if (!count || !size || !arg(p, t, 4)) return 0;
+    Bsearch* b = calloc(1, sizeof *b);
+    if (!b) return 0;
+    b->key = arg(p, t, 0), b->base = arg(p, t, 1), b->size = size, b->compare = arg(p, t, 4);
+    b->high = count;
+    return bsearch_step(p, t, b);
+}
+
 const VitaHle vita_hle_libc[] = {
     /* SceLibc */
     {0x775a0cb2u, "malloc", lc_malloc},
+    {0xa7cbe4a6u, "qsort", lc_qsort},
+    {0xd1bc28e7u, "bsearch", lc_bsearch},
     {0x5b9bb802u, "free", lc_free},
     {0x006b54bau, "realloc", lc_realloc},
     {0xe7ec3d0bu, "calloc", lc_calloc},
@@ -1207,11 +1310,13 @@ const VitaHle vita_hle_libc[] = {
     {0x85b924b7u, "strcpy", lc_strcpy},
     {0x9f87712du, "strncpy", lc_strncpy},
     {0x1434fa46u, "strcat", lc_strcat},
+    {0xfba69bc2u, "strncat", lc_strncat},
     {0xb9336e16u, "strchr", lc_strchr},
     {0xcefdd143u, "strrchr", lc_strrchr},
     {0x0d5200cbu, "strstr", lc_strstr},
     {0x4203b663u, "strspn", lc_strspn},
     {0x0e29d27au, "strcspn", lc_strcspn},
+    {0x68c307b6u, "strpbrk", lc_strpbrk},
     {0x7a08be70u, "wmemchr", lc_wmemchr},
     {0xd9f9ddcdu, "wmemcpy", lc_wmemcpy},
     {0x4d04a480u, "wmemset", lc_wmemset},
@@ -1224,6 +1329,7 @@ const VitaHle vita_hle_libc[] = {
     {0x181827edu, "strtol", lc_strtol},
     {0xe71c5cdeu, "_Stoul", lc_stoul},
     {0x6794b3c6u, "_Stoull", lc_stoull},
+    {0x6b9e23feu, "_Stoll", lc_stoll},
     {0xbf94193bu, "_Stod", lc_stod},
     {0x9a004680u, "printf", lc_printf},
     {0x7449b359u, "sprintf", lc_sprintf},
@@ -1259,6 +1365,7 @@ const VitaHle vita_hle_libc[] = {
     {0xd63330dau, "ldiv", lc_ldiv},
     {0xdae8d60fu, "time", lc_time},
     {0xf283cfe3u, "gmtime", lc_gmtime},
+    {0xf4a2e0bfu, "localtime", lc_gmtime}, /* the console's time zone is UTC here */
     /* SceLibm */
     {0x27eab8c1u, "acosf", lm_acosf},
     {0x3a3e5424u, "asinf", lm_asinf},

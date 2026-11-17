@@ -1671,6 +1671,17 @@ static const Mode modes[] = {{"--present", "the presented screens", screens},
                              {"--shadow", "the shadow maps", shadows}};
 
 int main(int argc, char** argv) {
+    /* No window on a host that has a display: these checks render offscreen, and the ones that present do it through
+       SDL's dummy driver, which is the driver a CI host with no display gives them. A window here takes the desktop's
+       focus from whatever the user runs at the time. A caller that names a driver keeps it: ctest sets one for the
+       layout check, which needs a window */
+    if (!getenv("SDL_VIDEO_DRIVER")) {
+#ifdef _WIN32
+        _putenv_s("SDL_VIDEO_DRIVER", "dummy");
+#else
+        setenv("SDL_VIDEO_DRIVER", "dummy", 1);
+#endif
+    }
     g_model = test_ctr_model(&argc, argv);
     if (g_model == SNX_CTR_NEW) { /* the scenes in the memory only a New 3DS has */
         g_fcram = 0x28000000u;

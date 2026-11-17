@@ -40,6 +40,14 @@ typedef struct {
     uint32_t nid, library_nid, address;
     bool variable;
 } VitaExport;
+/* the most modules a process holds: the game's, the libraries' and the ones the game loads itself */
+#define VITA_MODULES 16
+typedef struct {
+    char name[28], leaf[32]; /* the module's own name, and its file's */
+    uint32_t start;          /* its module_start, with its Thumb bit */
+    unsigned first_segment, segment_count;
+    bool deferred; /* started when the game loads it (sceKernelLoadStartModule), not before the game */
+} VitaLoadedModule;
 typedef struct {
     VitaSegment segment[VITA_SEGMENTS];
     unsigned segment_count;
@@ -54,6 +62,8 @@ typedef struct {
     uint32_t export_count;
     uint32_t library_starts[16];
     uint32_t library_start_count;
+    VitaLoadedModule modules[VITA_MODULES]; /* the game's first, then each library merged into it */
+    unsigned module_count;
     /* the module's thread-local data: each thread's copy starts with filesz bytes from tls_image, then zeros to memsz */
     uint32_t tls_image, tls_filesz, tls_memsz;
     /* code pointers the relocations wrote (Thumb ones, with their bit): where discovery starts beside the exports */
@@ -69,8 +79,9 @@ bool vita_image_load(const char* path, VitaImage* image, char* error, size_t err
    of variable slots the modules loaded before it use; its own are numbered after them. */
 bool vita_image_load_at(const char* path, VitaImage* image, uint32_t origin, uint32_t variable_base,
                         char* error, size_t error_size);
-/* Appends a loaded library, preserving its guest addresses and import stub metadata. */
-bool vita_image_merge(VitaImage* image, VitaImage* library, char* error, size_t error_size);
+/* Appends a loaded library, preserving its guest addresses and import stub metadata. A deferred one is not started
+   with the others: the game's sceKernelLoadStartModule starts it */
+bool vita_image_merge(VitaImage* image, VitaImage* library, bool deferred, char* error, size_t error_size);
 void vita_image_free(VitaImage* image);
 /* the segment holding [address, address + size), NULL for none */
 const VitaSegment* vita_image_segment(const VitaImage* image, uint32_t address, uint32_t size);

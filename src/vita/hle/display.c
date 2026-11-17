@@ -84,5 +84,10 @@ const VitaHle vita_hle_display[] = {
     {0xdd0a13b8u, "sceDisplayWaitVblankStartMulti", wait_vblank_start_multi},
     {0x9423560cu, "sceDisplayWaitSetFrameBuf", wait_set_frame_buf},
     {0x7d9864a8u, "sceDisplayWaitSetFrameBufMulti", wait_set_frame_buf_multi},
+    /* the CB waits also run the thread's callbacks while it waits; none are queued here, so they are the plain waits.
+       The display queue's thread calls these two after each sceDisplaySetFrameBuf */
+    {0x05f27764u, "sceDisplayWaitVblankStartMultiCB", wait_vblank_start_multi},
+    {0x814c90afu, "sceDisplayWaitSetFrameBufCB", wait_set_frame_buf},
+    {0x3e796ef5u, "sceDisplayWaitSetFrameBufMultiCB", wait_set_frame_buf_multi},
     {0, NULL, NULL},
 };

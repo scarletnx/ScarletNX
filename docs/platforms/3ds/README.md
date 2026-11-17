@@ -690,6 +690,13 @@ the frame is not shown, the game runs on, and the run's report counts those fram
 that frames show again once an image is free. `3ds_windows_headless` starts the presenter
 with no window even where the host has a display, and checks that both screens still
 decode, their dumps are written, and `--shot`'s two-screen PPM is made.
+Each shown frame's submission signals its swapchain image's own semaphore, which the
+present waits for. A present's wait has no fence, so an image's semaphore is used again
+only once that image is acquired again. The ring moves to its next slot at every
+submission, so a slot's semaphore cannot stand for the image's. `3ds_windows_submissions`
+presents frames with other submissions between them, and
+`3ds_windows_submissions_validation` runs it under the validation layer with SDL's
+offscreen window, which needs no display.
 The RAM is one shared mapping (a memfd on Linux), so that every guest view of a page is the
 same memory, and some drivers will not import it (`VK_EXT_external_memory_host`): RADV
 imports a host pointer as an amdgpu user pointer of private anonymous memory only, and its

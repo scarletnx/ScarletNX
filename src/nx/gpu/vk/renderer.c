@@ -27,6 +27,7 @@
 #include "nx/runtime/guest_stats.h"
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/ledger.h"
+#include "nx/gpu/vk/shading_rate.h"
 #include "nx/gpu/vk/descriptors.h"
 #include "nx/gpu/vk/pagespace.h"
 #include "nx/gpu/vk/hdr_swapchain.h"
@@ -391,6 +392,12 @@ static int vkr_upscale(const GpuUpscale* u) {
     int result = vk_upscale(u);
     vk_unlock();
     return result;
+}
+static u32 vkr_shading_rate(const GpuShadingRate* r) {
+    vk_lock();
+    u32 id = vk_shading_rate(r);
+    vk_unlock();
+    return id;
 }
 static int vkr_blit_filter(const Surf2D* s, const Surf2D* d, int dx, int dy, int dw, int dh, double sx, double sy,
                            double sdx, double sdy, int linear) {
@@ -892,11 +899,11 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
                         (unsigned long long)bc7_levels, (unsigned long long)(bc7_bytes >> 20),
                         (unsigned long long)(bc7_rgba8 >> 20), (unsigned long long)vk_astc_dispatches());
                 if (cache_file)
-                    LOG("vulkan: the BC7 cache gave %llu levels and took %llu new; its file holds %llu MB (started over "
-                        "%llu times at %llu MB)\n",
-                        (unsigned long long)bc7_hits, (unsigned long long)cache_stored,
-                        (unsigned long long)(cache_file >> 20), (unsigned long long)cache_restarts,
-                        (unsigned long long)(VK_BC7_CACHE_MAX >> 20));
+                    LOG("vulkan: the BC7 cache gave %llu levels, %llu more were copied from textures that held them, "
+                        "and it took %llu new; its file holds %llu MB (started over %llu times at %llu MB)\n",
+                        (unsigned long long)bc7_hits, (unsigned long long)vk_astc_bc7_copies(),
+                        (unsigned long long)cache_stored, (unsigned long long)(cache_file >> 20),
+                        (unsigned long long)cache_restarts, (unsigned long long)(VK_BC7_CACHE_MAX >> 20));
                 VkLaterStats later;
                 vk_tex_later_stats(&later);
                 if (later.made || later.waiting || later.restarted || later.went_hot)
@@ -992,6 +999,7 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
                 (unsigned long long)g_vk_clear_loads, (unsigned long long)g_vk_dontcare_loads,
                 (unsigned long long)vk_buf_ahead());
             vk_pass_ends_log();
+            vk_vrs_log();
             vk_finishes_log();
             vk_ww_stats(600);
             vk_descriptors_stats();
@@ -1135,6 +1143,12 @@ static void vkr_refresh(void) {
         now - last < 33000000ull)
         return;
     if (!vk_trylock()) return;
+    /* nor while the GPU thread waits in a draw's setup with the lock let go (vk_upload_letting_go): a show advances
+       the frame, and two would recycle the slot that setup holds */
+    if (vk_upload_letting_go()) {
+        vk_unlock();
+        return;
+    }
     last = now;
     if (refresh_due()) {
         vk_render_end();
@@ -1402,6 +1416,7 @@ const Renderer vk_renderer = {
     .blit = vkr_blit,
     .blit_filter = vkr_blit_filter,
     .upscale = vkr_upscale,
+    .shading_rate = vkr_shading_rate,
     .vic_compose = vkr_vic_compose,
     .nvdec_write = vkr_nvdec_write,
     .nvdec_hw_device = vkr_nvdec_hw_device,

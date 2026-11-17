@@ -51,6 +51,16 @@ u64 gmmu_space_alloc(u64 size, u64 align);
 void gmmu_space_map(u64 gva, u64 cpu, u64 size);
 void gmmu_space_unmap(u64 gva, u64 size);
 void gmmu_space_free(u64 gva, u64 size);
+/* Changes of the page table that the GPU thread makes later, in order with the work queued after them, so that the
+   caller's thread doesn't wait for the renderer's lock that each change takes. gmmu_later adds one and returns its
+   sequence number: GMMU_LATER_MAP is gmmu_space_map(gva, cpu, size), GMMU_LATER_UNMAP gmmu_space_unmap(gva, size),
+   GMMU_LATER_FREE gmmu_space_free(gva, size) and then nvmap_handle_drop(nvmap). gmmu_later_post queues the GPU
+   thread's call that makes the changes up to seq: one after a few gmmu_later calls makes them all. Until a map is
+   made, gmmu_translate and gmmu_run on any other thread answer for its pages where the table has no entry, as the
+   reads of the caller's thread that come after it expect. The GPU thread's own answers follow the table */
+typedef enum { GMMU_LATER_MAP, GMMU_LATER_UNMAP, GMMU_LATER_FREE } GmmuLaterKind;
+u32 gmmu_later(GmmuLaterKind kind, u64 gva, u64 cpu, u64 size, u32 nvmap);
+void gmmu_later_post(u32 seq);
 /* Each GPU range that shows guest bytes of [cpu, cpu + size), clipped to them: fn(ctx, gva, n) for the n bytes at
    gva, each mapped page once. The same guest memory is mapped at several GPU addresses, so what is known of it by one
    address holds at the others, and this finds them all from the guest side. From any thread. fn runs under the
@@ -162,6 +172,12 @@ typedef struct {
     u32 nbound, query;
     int stale; /* the runs changed since the index was built */
 } GAlias;
+/* a change of the page table queued for the GPU thread (gmmu_later), with its sequence number */
+typedef struct {
+    u64 gva, cpu, size;
+    u32 seq, nvmap;
+    int kind; /* a GmmuLaterKind */
+} GLater;
 /* an nvhost-ctrl event slot. ev is made on first use and nvdrv keeps a reference. An armed slot (its bit in
    HleNvdrv's armed_mask) is signaled once syncpoint id reaches thresh */
 typedef struct {
@@ -248,6 +264,13 @@ typedef struct {
     PMutex lock;
     PMutex aslock; /* held across ioctl_as: the mappings below and the VA allocator */
     PMutex alias_lock;
+    PMutex later_lock; /* the queued changes below, taken last */
+    /* the changes queued for the GPU thread (gmmu_later): a ring of caplater (a power of two) from later_head, nlater
+       of them, the oldest first, under later_lock, and the last sequence number given. nlater is also read without
+       it, as a summary. Host state, as the GPU thread's queue is: a save state holds the GPU thread, so none is
+       queued then */
+    GLater* later;
+    u32 later_head, nlater, caplater, later_seq;
     PCond sync_cv;
     PMutex sync_lk;
     PMutex submit_lk; /* a submission's promise and its place in the GPU queue, in the same order */

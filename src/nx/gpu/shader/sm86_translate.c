@@ -84,6 +84,7 @@ typedef struct {
     u32 centroid_mask;  /* the inputs decorated Centroid */
     u32 legacy_fs;      /* a fragment program's legacy varying groups (shader_legacy_group), read as generics 17-31 */
     u32 point_coord, front_facing, primitive_id;
+    u32 frag_size; /* FragmentSizeNV or ShadingRateKHR (g_spirv_translate.shading_rate) */
     /* a geometry program: its input position (an array of the input primitive's vertices, as its in_attr are), its
        PrimitiveId in and out (passthrough), the viewport mask it writes (a Function variable, 1 until written) and
        whether its SPH asks for passthrough */
@@ -964,7 +965,8 @@ static void attr_store(Ctx* c, u32 addr, u32 bits) {
     }
     if (addr == 0x5c) {
         /* NAK's NAK_ATTR_VPRS_TABLE_INDEX from SM86, the primitive's shading rate: the default rate, one fragment
-           a pixel, is what the translation gives without it */
+           a pixel, is what the translation gives without it. The game's driver writes no table for the index (the
+           hardware's reset table), so the rate it selects is not known */
         return;
     } else if (addr == 0x6c) {
         /* a geometry program's point size needs GeometryPointSize, which the device may lack: then it is 1, as the
@@ -3923,6 +3925,44 @@ static void epilogue(Ctx* c) {
     }
 }
 /* an S2R system register */
+/* a fragment's size in pixels as NAK_SV_VARIABLE_RATE packs it: the width in bits 8-15, the height in bits 16-23 */
+static u32 frag_size(Ctx* c) {
+    SpvEmitter* e = &c->e;
+    int how = g_spirv_translate.shading_rate;
+    if (how == SH_RATE_NONE) return cu(c, 1u << 8 | 1u << 16);
+    if (!c->frag_size) {
+        if (how == SH_RATE_NV) {
+            spv_emit_extension(e, "SPV_NV_shading_rate");
+            spv_emit_capability(e, SPV_CAPABILITY_SHADING_RATE_NV);
+            c->frag_size = spv_emit_interface_variable(e, SPV_STORAGE_INPUT, c->t_v2u, c->t_u32, 0,
+                                                       SPV_BUILT_IN_FRAGMENT_SIZE_NV, 0, 0);
+        } else {
+            spv_emit_extension(e, "SPV_KHR_fragment_shading_rate");
+            spv_emit_capability(e, SPV_CAPABILITY_FRAGMENT_SHADING_RATE_KHR);
+            c->frag_size = spv_emit_builtin_input_u32(e, c->t_u32, SPV_BUILT_IN_SHADING_RATE_KHR);
+        }
+        spv_emit_flat(e, c->frag_size);
+        add_interface(c, c->frag_size);
+    }
+    u32 w, h;
+    if (how == SH_RATE_NV) {
+        u32 v = spv_emit_load(e, c->t_v2u, c->frag_size);
+        w = spv_emit_vec4_extract(e, c->t_u32, v, 0);
+        h = spv_emit_vec4_extract(e, c->t_u32, v, 1);
+    } else {
+        /* log2 of the height in bits 0-1 (Vertical2Pixels, Vertical4Pixels), of the width in bits 2-3 */
+        u32 v = spv_emit_load(e, c->t_u32, c->frag_size);
+        w = spv_emit_binary(e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, cu(c, 1),
+                            spv_emit_binary(e, SPV_OP_BITWISE_AND,
+                                            c->t_u32, spv_emit_binary(e, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, v, cu(c, 2)),
+                                            cu(c, 3)));
+        h = spv_emit_binary(e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, cu(c, 1),
+                            spv_emit_binary(e, SPV_OP_BITWISE_AND, c->t_u32, v, cu(c, 3)));
+    }
+    return spv_emit_binary(e, SPV_OP_BITWISE_OR, c->t_u32,
+                           spv_emit_binary(e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, w, cu(c, 8)),
+                           spv_emit_binary(e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, h, cu(c, 16)));
+}
 static u32 system_value(Ctx* c, u32 sr) {
     switch (sr) {
         case 0x1d:
@@ -3960,14 +4000,14 @@ static u32 system_value(Ctx* c, u32 sr) {
         }
         case 0x84:
             /* NAK's NAK_SV_VARIABLE_RATE, a fragment's shading rate: its width in pixels in bits 8-15 and its height
-               in bits 16-23 (1, 2 or 4), which nak_nir.c reads for load_frag_shading_rate. The runtime shades every
-               pixel at the full rate (nvn_cmd.c), so each fragment is 1 by 1. One game's fragment programs take its
-               width with PRMT R, R, 0x7771, RZ */
+               in bits 16-23 (1, 2 or 4), which nak_nir.c reads for load_frag_shading_rate. One game's fragment
+               programs take its width with PRMT R, R, 0x7771, RZ. The device's own size of the fragment, as an
+               Ounce's shading rate image gives it (vk/shading_rate.c), else 1 by 1 */
             if (c->stage != ST_FS) {
                 fail(c, "S2R system register 0x84 outside a fragment program");
                 return c->zero;
             }
-            return cu(c, 1u << 8 | 1u << 16);
+            return frag_size(c);
         case 0x1e:
         case 0x1f:
             /* SR_WSCALEFACTOR_XY and SR_WSCALEFACTOR_Z (NAK's numbering): the factors of clip space w scaling, by

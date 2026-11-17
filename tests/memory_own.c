@@ -1124,8 +1124,14 @@ static void test_stress(void) {
         g_resolve_res = r;
         g_resolve_lo = g_sa;
         g_resolve_size = 0x20000;
+        /* the watches go on under the producer's lock, as own_watch's callers hold it (the renderer watches each run
+           of a target under vk_lock). Without it, such a late fault's landing came between two of the calls: it
+           resolved the watches made so far, landed the round's owner whole, and the calls after it watched the rest
+           again, for a second resolve */
+        producer_lock();
         for (i = 0; i < 0x20000; i += 0x1800)
             CHECK(own_watch(g_sa + i, 0x20000 - i < 0x1800 ? 0x20000 - i : 0x1800) == 0);
+        producer_unlock();
         for (i = 0; i < THREADS; i++) pthread_create(&t[i], NULL, reader, (void*)(uintptr_t)(i + 1));
         for (i = 0; i < THREADS; i++) pthread_join(t[i], NULL);
         own_acquire(g_sa, 0x20000);

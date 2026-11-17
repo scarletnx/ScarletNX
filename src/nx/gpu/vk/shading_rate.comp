@@ -1,0 +1,27 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#extension GL_EXT_samplerless_texture_functions : require
+/* SPDX-License-Identifier: GPL-3.0-or-later
+   Copyright 2026 the ScarletNX contributors */
+/* An Ounce's shading rate image made the device's (vk/shading_rate.c). This file only declares what the body,
+   shading_rate.glsl, reads and writes. The tests run the body on the CPU (tests/glsl/shading_rate_glsl.cpp). CMake
+   compiles it into SPIR-V at build time (cmake/glsl.cmake). */
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+/* the game's image, palette indices, at the size the renderer holds it (a scaled target's texels are scaled too) */
+layout(set = 0, binding = 0) uniform utexture2D game;
+layout(set = 0, binding = 1, r8ui) uniform writeonly uimage2D rate;
+/* VkVrsPush (vk/shading_rate.h) */
+layout(push_constant) uniform Params {
+    uint size_x, size_y;   /* the device's image, in its texels */
+    uint game_w, game_h;   /* the game's image, in its texels */
+    uint texel_w, texel_h; /* the pixels of a texel of the device's image */
+    uint game_texel;       /* the pixels of a texel of the game's image, in x and in y */
+    uint finest;           /* the values are KHR rates: a texel takes the finest of the game's texels under it */
+    uint table[4];         /* the value of each of the 16 palette entries, a byte each */
+};
+
+#define GAME_INDEX(x, y)     texelFetch(game, ivec2(int(x), int(y)), 0).r
+#define RATE_STORE(x, y, v) imageStore(rate, ivec2(int(x), int(y)), uvec4(v))
+
+#include "shading_rate.glsl"

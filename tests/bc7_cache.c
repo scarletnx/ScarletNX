@@ -5,7 +5,8 @@
    and is the same for the same inputs. Records come back as written, with any size (one piece of the reading or
    several), from the file in a later run too; a file of another version starts over; a record whose blocks changed on
    disk is dropped when read; one cut short by a crash is cut off, the records before it kept; the bound starts the
-   file over; and the file stays locked while it is open */
+   file over; and the file stays locked while it is open. A hit read on the recording thread (vk_bc7_cache_read_later)
+   is copied only when it checks out, and one that doesn't is dropped */
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -30,6 +31,37 @@ u64 vk_hash_copy(void* dst, const void* src, u64 size) {
     memcpy(dst, src, (size_t)size);
     return vk_hash(src, size);
 }
+/* record.c, devmem.c and volk, for the reads on the recording thread: here vk_rec_call runs the read at once, as
+   record.c does with no such thread, and the copy is counted */
+static int g_threaded;
+int vk_rec_threaded(void) { return g_threaded; }
+int vk_rec_sync_until(u64 until) {
+    (void)until;
+    return 1;
+}
+void vk_rec_call(void (*fn)(const void* arg), const void* arg, u64 size) {
+    (void)size;
+    fn(arg);
+}
+VkResult vk_devmem_flush(DevMem m, u64 off, u64 size) {
+    (void)m;
+    (void)off;
+    (void)size;
+    return VK_SUCCESS;
+}
+static unsigned g_copies;
+static u64 g_copy_at;
+static VkImageLayout g_copy_layout; /* the layout the copy was given (VK_LAYOUT's, from the GPU thread) */
+static void VKAPI_PTR copy_stub(VkCommandBuffer cb, VkBuffer src, VkImage dst, VkImageLayout layout, uint32_t n,
+                                const VkBufferImageCopy* r) {
+    (void)cb;
+    (void)src;
+    (void)dst;
+    g_copy_layout = layout;
+    g_copies += n;
+    g_copy_at = r->bufferOffset;
+}
+PFN_vkCmdCopyBufferToImage vkCmdCopyBufferToImage = copy_stub;
 void logf_(int lvl, const char* fmt, ...) {
     va_list ap;
     (void)lvl;
@@ -235,9 +267,89 @@ static void file(void) {
     puts("PASS the cache's records come back as written, across runs, and its file holds up to damage and its bound");
 }
 
+/* hits read on the recording thread: copied into the image when they check out, not copied when they don't, and then
+   dropped at the index's next look; with no such thread they are read at once (-1) */
+/* the reads that failed on the recording thread, as vk_bc7_cache_take_failed gives them */
+static unsigned g_failed;
+static void* g_failed_owner;
+static u64 g_failed_gva, g_failed_key[2];
+static void took_failed(void* owner, u64 gva, const u64 key[2]) {
+    g_failed++;
+    g_failed_owner = owner;
+    g_failed_gva = gva;
+    g_failed_key[0] = key[0];
+    g_failed_key[1] = key[1];
+}
+
+static void later(void) {
+    const u64 v1[2] = {1, 2};
+    const u64 ka[2] = {10, 20}, kb[2] = {30, 40}, kc[2] = {50, 60};
+    const u64 na = 48, nb = (5u << 20) / 2 + 16; /* one piece, three */
+    u8 *a = blocks(na, 4), *b = blocks(nb, 5), *dst = malloc((size_t)nb);
+    int owner;
+    remove(PATH);
+    remove(IDX);
+    CHECK(vk_bc7_cache_open(PATH, v1, 64u << 20));
+    vk_bc7_cache_put(ka, a, na);
+    vk_bc7_cache_put(kb, b, nb);
+    vk_bc7_cache_close();
+    FILE* f = fopen(PATH, "r+b"); /* a byte of b's blocks changed on disk */
+    CHECK(f && !fseek(f, (long)(BC7_HEAD + BC7_REC + na + BC7_REC + 9), SEEK_SET));
+    int byte = fgetc(f);
+    CHECK(byte != EOF && !fseek(f, -1, SEEK_CUR) && fputc(byte ^ 1, f) != EOF && !fclose(f));
+    CHECK(vk_bc7_cache_open(PATH, v1, 64u << 20));
+    const VkCommandBuffer cb = (VkCommandBuffer)(uintptr_t)8;
+    const VkBuffer buf = (VkBuffer)(uintptr_t)16;
+    const VkImage img = (VkImage)(uintptr_t)24;
+    const VkBufferImageCopy copy = {.bufferOffset = 4096};
+    const VkImageLayout L = VK_IMAGE_LAYOUT_GENERAL; /* as with unified image layouts */
+    /* before the recording thread runs: read at once, and the next read once it runs goes there */
+    CHECK(vk_bc7_cache_read_later(cb, ka, na, dst, 1, 4096, buf, img, L, &copy, NULL, 0) == -1);
+    CHECK(!vk_bc7_cache_failed_pending());
+    g_threaded = 1;
+    CHECK(vk_bc7_cache_read_later(cb, ka, na, dst, 1, 4096, buf, img, L, &copy, NULL, 0) == 1);
+    CHECK(g_copies == 1 && g_copy_at == 4096 && g_copy_layout == L && !memcmp(dst, a, (size_t)na));
+    CHECK(vk_bc7_cache_read_later(cb, ka, na, dst, 1, 4096, buf, VK_NULL_HANDLE, L, &copy, NULL, 0) == 1 &&
+          g_copies == 1);
+    CHECK(vk_bc7_cache_read_later(cb, ka, 16, dst, 1, 4096, buf, img, L, &copy, NULL, 0) == 0); /* another size */
+    CHECK(vk_bc7_cache_read_later(cb, kc, na, dst, 1, 4096, buf, img, L, &copy, NULL, 0) == 0); /* not there */
+    CHECK(vk_bc7_cache_find(kb) == nb);
+    CHECK(vk_bc7_cache_read_later(cb, kb, nb, dst, 1, 4096, buf, img, L, &copy, &owner, 0x1234000) == 1 &&
+          g_copies == 1);
+    CHECK(!vk_bc7_cache_find(kb) && vk_bc7_cache_find(ka) == na);
+    CHECK(vk_bc7_cache_failed_pending());  /* until its owner has it */
+    vk_bc7_cache_take_failed(took_failed); /* given to its owner once */
+    CHECK(g_failed == 1 && g_failed_owner == &owner && g_failed_gva == 0x1234000 && same(g_failed_key, kb));
+    CHECK(!vk_bc7_cache_failed_pending());
+    vk_bc7_cache_take_failed(took_failed);
+    CHECK(g_failed == 1);
+    u64 hits, stored, restarts, bytes;
+    vk_bc7_cache_stats(&hits, &stored, &restarts, &bytes);
+    CHECK(hits == 2);
+    vk_bc7_cache_put(kb, b, nb); /* encoded again, and kept again at another place */
+    CHECK(vk_bc7_cache_read_later(cb, kb, nb, dst, 1, 4096, buf, img, L, &copy, &owner, 0x1234000) == 1 &&
+          g_copies == 2 && !memcmp(dst, b, (size_t)nb));
+    vk_bc7_cache_take_failed(took_failed);
+    CHECK(g_failed == 1);
+    /* the rate of the reads so far: none for nothing, and a whole budget's worth before any read was timed */
+    CHECK(!vk_bc7_cache_read_ns(0) && vk_bc7_cache_read_ns(1u << 20) < 1000000000ull);
+    vk_bc7_cache_close();
+    g_threaded = 0;
+    CHECK(vk_bc7_cache_open(PATH, v1, 64u << 20));
+    CHECK(vk_bc7_cache_read_later(cb, ka, na, dst, 1, 4096, buf, img, L, &copy, NULL, 0) == -1 && reads_as(ka, a, na));
+    vk_bc7_cache_close();
+    remove(PATH);
+    remove(IDX);
+    free(a);
+    free(b);
+    free(dst);
+    puts("PASS hits read on the recording thread are copied when they check out, and given back when they don't");
+}
+
 int main(void) {
     keys();
     file();
+    later();
     printf("All %u BC7 cache checks passed\n", checks);
     return 0;
 }

@@ -6,6 +6,7 @@
 #define SNX_NVN_DRAW_H
 #include "common/cpu/aarch64/cpu.h"
 #include "nx/gpu/draw_state.h"
+#include "nx/gpu/gpu.h"
 #include "nx/gpu/nvn/nvn_obj.h"
 
 typedef struct NvnDraw NvnDraw;
@@ -61,6 +62,8 @@ struct NvnDraw {
        out of the compare and copy at a draw. */
     u16 inl_lo[2][DS_GFX_STAGES], inl_hi[2][DS_GFX_STAGES];
     u16 root_lo, root_hi; /* and of the root tables, which every graphics stage shares */
+    GpuShadingRate rate_in; /* the bound shading rate image and the palettes (OP_RATE_IMAGE, OP_RATE_PALETTE) */
+    u32 rate;               /* the renderer's id of it, 0 with no image bound (DrawCall.shading_rate) */
     DsState scratch;  /* a texture's clear, as a target of its own (OP_CLEAR_TEX) */
     DispatchState dx; /* the compute stage's program and bindings, a dispatch's state */
 };
