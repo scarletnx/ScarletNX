@@ -178,6 +178,15 @@ static int refs(Res* r) {
     producer_unlock();
     return __atomic_load_n(&r->refs, __ATOMIC_RELAXED);
 }
+/* r's references once a two-step landing (OwnHooks' land_start) released it, waited for up to 10 s. That landing
+   lets go of the producer's lock while the GPU copies, and does not take it again: it lets its pages go, wakes the
+   owners that wait for them, and only then releases its resources (own.c). So the threads it let go can come back
+   before the release, and refs' lock does not wait for it */
+static int refs_released(Res* r) {
+    for (int waited_ms = 0; waited_ms < 10000 && __atomic_load_n(&r->refs, __ATOMIC_ACQUIRE); waited_ms++)
+        plat_sleep_ns(1000000);
+    return __atomic_load_n(&r->refs, __ATOMIC_ACQUIRE);
+}
 static Res* res_new(u64 size, u8 fill) {
     Res* r = (Res*)calloc(1, sizeof *r);
     u64 i;
@@ -757,7 +766,7 @@ static void test_two_step(void) {
     pthread_join(reader, NULL);
     pthread_join(owner, NULL);
     CHECK(__atomic_load_n(&g_two_read, __ATOMIC_ACQUIRE) == (u8)(0xA0 + 0x200) && g_lands == lands + 1);
-    CHECK(__atomic_load_n(&g_two_begun, __ATOMIC_ACQUIRE) && refs(r) == 0);
+    CHECK(__atomic_load_n(&g_two_begun, __ATOMIC_ACQUIRE) && refs_released(r) == 0);
     CHECK(own_trapped(a + 0x3800, 0x100)); /* the new owner's page stays trapped */
     g_own.hooks.land_start = NULL;
     g_own.hooks.land_end = NULL;
