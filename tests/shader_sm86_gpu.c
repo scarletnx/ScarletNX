@@ -1579,7 +1579,7 @@ static int fuse_value(Gpu* g) {
                 for (int pair = 1; pair >= 0; pair--)
                     if (got[coop][pair][i] != FILL) bad += got[coop][pair][i] != want;
         }
-        printf("fuse value: %u of %u D words differ across pair, halves and cooperative paths\n", bad, 32 * 4);
+        printf("fuse value: %u of %u D words differ across pair, halves and cooperative paths\n", bad, 32u * 4);
         ok = bad == 0;
     }
     return ok;
@@ -1861,7 +1861,7 @@ static int maxwell_log_run(Gpu* g, const char* name, const u64* insn, u32 n, int
         si.gbuf_mark[out] != 1 || si.gbuf_mark[in]) {
         fprintf(stderr, "%s: %d buffers, written %x, read %x, logged %x (%u parts, the output's %u, the input's %u)\n",
                 name, si.ngbuf, si.gbuf_wmask, si.gbuf_rmask, si.gbuf_marks, si.nmarks,
-                out >= 0 ? si.gbuf_mark[out] : 0, out >= 0 ? si.gbuf_mark[in] : 0);
+                out >= 0 ? si.gbuf_mark[out] : 0u, out >= 0 ? si.gbuf_mark[in] : 0u);
         free(spv);
         return 0;
     }

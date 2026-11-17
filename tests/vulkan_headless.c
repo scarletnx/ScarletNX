@@ -261,7 +261,7 @@ static int check_desc_pool_keep(void) {
     CHECK(after + 3 <= burst); /* the burst's slot held 4 pools or more, one of them stays */
     printf(
         "descriptor pools kept: %u before a burst of 3073 sets, %u after it, %u once %u uses of each slot took one\n",
-        before, burst, after, 2 * VK_DESC_POOL_USES);
+        before, burst, after, 2u * VK_DESC_POOL_USES);
     return 0;
 }
 /* Graphics descriptor tables fill the frame's descriptor memory. vk_frame_check, which runs before a draw's setup,
@@ -927,7 +927,7 @@ static int check_staging_burst(void) {
     g_vk.alloc_cap = saved_cap;
     vk_frame_next();
     printf("a frame's %llu MiB of uploads in requests of up to %llu MiB: the rings grew by %llu MiB, and held %llu MiB "
-           "%u frames later, %llu before\n",
+           "%d frames later, %llu before\n",
            (unsigned long long)(asked >> 20), (unsigned long long)(chunk * 5 / 2 >> 20),
            (unsigned long long)(grown >> 20), (unsigned long long)(held >> 20), VK_POOL_FRAMES + VK_FRAMES,
            (unsigned long long)(before >> 20));
@@ -1077,7 +1077,7 @@ static int check_big_uploads(void) {
     after = vk_ring_bytes();
     g_vk.alloc_cap = saved_cap;
     vk_frame_next();
-    printf("%u frames of two %llu MiB requests: %llu ring buffers made; the rings held %llu MiB %u frames later, %llu "
+    printf("%u frames of two %llu MiB requests: %llu ring buffers made; the rings held %llu MiB %d frames later, %llu "
            "before\n",
            frames, (unsigned long long)(size >> 20), (unsigned long long)big, (unsigned long long)(after >> 20),
            VK_POOL_FRAMES + VK_FRAMES, (unsigned long long)(before >> 20));
@@ -1123,7 +1123,7 @@ static int check_big_reuse(void) {
     after = vk_ring_bytes();
     g_vk.alloc_cap = saved_cap;
     vk_frame_next();
-    printf("a %llu MiB request after a %llu MiB one: %llu ring buffers made; the rings held %llu MiB %u frames later, "
+    printf("a %llu MiB request after a %llu MiB one: %llu ring buffers made; the rings held %llu MiB %d frames later, "
            "%llu before\n",
            (unsigned long long)(chunk * 3 / 2 >> 20), (unsigned long long)(chunk * 6 >> 20), (unsigned long long)made,
            (unsigned long long)(after >> 20), VK_POOL_FRAMES + VK_FRAMES, (unsigned long long)(before >> 20));
@@ -1149,7 +1149,7 @@ static int check_chunks_both_slots(void) {
     vk_finish();
     made = vk_ring_made() - made;
     vk_frame_next();
-    printf("%u frames of small uploads after one that staged nothing: %llu ring buffers made\n", 2 * VK_FRAMES,
+    printf("%u frames of small uploads after one that staged nothing: %llu ring buffers made\n", 2u * VK_FRAMES,
            (unsigned long long)made);
     CHECK(made == 0);
     return 0;
@@ -1196,7 +1196,7 @@ static int check_chunks_from_big(void) {
     after = vk_ring_bytes();
     g_vk.alloc_cap = saved_cap;
     vk_frame_next();
-    printf("%u requests of %llu MiB after a frame of %u big ones: %llu ring buffers made; the rings held %llu MiB %u "
+    printf("%u requests of %llu MiB after a frame of %u big ones: %llu ring buffers made; the rings held %llu MiB %d "
            "frames later, %llu before\n",
            parts, (unsigned long long)(chunk >> 20), bigs, (unsigned long long)made, (unsigned long long)(after >> 20),
            VK_POOL_FRAMES + VK_FRAMES, (unsigned long long)(before >> 20));
@@ -3360,7 +3360,7 @@ static int sparse_tiles(const StCase* c) {
     }
     printf("sparse tiles %s: each of the %u mapped tiles fills its %ux%ux%u brick of a %ux%ux%u texture of %u levels, "
            "the holes are zeros\n",
-           c->name, c->levels > 1 ? 4 : 3, tile[0] * c->bw, tile[1] * c->bw, c->is3d ? tile[2] : 1, tex.d.width,
+           c->name, c->levels > 1 ? 4u : 3u, tile[0] * c->bw, tile[1] * c->bw, c->is3d ? tile[2] : 1, tex.d.width,
            tex.d.height, tex.d.depth, c->levels);
     return 0;
 }
@@ -6294,7 +6294,7 @@ static int dma_reused_source(void) {
     /* each copy: the source's 2 x 5 blocks of 8 KiB, the destination's 64 lines of 256 bytes */
     if (m1 - m0 != 4 * (2 * 5 * 8192 + 64 * 256) || (tracked && (read[1] != read[0] || read[2] != read[0]))) {
         fprintf(stderr, "dma tiles, reused source: %llu bytes moved, %u meant; read on the CPU %llu, %llu, %llu\n",
-                (unsigned long long)(m1 - m0), 4 * (2 * 5 * 8192 + 64 * 256), (unsigned long long)read[0],
+                (unsigned long long)(m1 - m0), 4u * (2 * 5 * 8192 + 64 * 256), (unsigned long long)read[0],
                 (unsigned long long)read[1], (unsigned long long)read[2]);
         return 1;
     }
@@ -7718,7 +7718,7 @@ static int run_headless(int argc, char** argv) {
         char* end;
         unsigned long n = strtoul(tex_array, &end, 10);
         if (*end || !n || n > SNX_TEX_ARRAY) {
-            fprintf(stderr, "SNX_TEST_TEX_ARRAY=%s is not a whole number from 1 to %u\n", tex_array, SNX_TEX_ARRAY);
+            fprintf(stderr, "SNX_TEST_TEX_ARRAY=%s is not a whole number from 1 to %d\n", tex_array, SNX_TEX_ARRAY);
             return 2;
         }
         g_spirv_translate.tex_array = (u32)n;

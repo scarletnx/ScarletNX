@@ -681,8 +681,8 @@ static int wt_expect(const char* what, u64 cpu, u32 pages, const int* want, cons
         ok = 0;
         if (!what) continue;
         if (want[pg] >= 0)
-            fprintf(stderr, "%s: page %u should be all %02x, and starts %02x %02x %02x %02x\n", what, pg, want[pg],
-                    p[0], p[1], p[2], p[3]);
+            fprintf(stderr, "%s: page %u should be all %02x, and starts %02x %02x %02x %02x\n", what, pg,
+                    (unsigned)want[pg], p[0], p[1], p[2], p[3]);
         else
             fprintf(stderr, "%s: page %u should be %s, and starts %02x %02x %02x %02x\n", what, pg,
                     want[pg] == WT_BLUE  ? "blue (00 00 ff ff)"

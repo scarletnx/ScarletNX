@@ -348,7 +348,7 @@ static int ta_way(TpTex* x, const char* way, u32 step, u64 most) {
             x->c->name, way, now == x->t, whole && whole != now, (unsigned long long)loaded,
             (unsigned long long)(loads2 - loads), (unsigned long long)(partial2 - partial), (unsigned long long)most,
             (unsigned long long)differ, (unsigned long long)size, (unsigned long long)first,
-            got && first < size ? got[first] : 0, want && first < ref_size ? want[first] : 0);
+            got && first < size ? got[first] : 0u, want && first < ref_size ? want[first] : 0u);
     free(got);
     free(want);
     return 1;
