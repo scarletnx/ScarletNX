@@ -855,6 +855,17 @@ static void check_keep(void) {
     /* under a caches' budget less than the driver's (vk_budget_mb), the share and the full mark are of that one */
     vk_devmem_cache_budget(2ull << 30);
     CHECK(keep_budget(0) == 2ull << 30 && keep_cap(0) == DM_KEEP_BYTES);
+    /* and a request the driver would rather have alone, past four fifths of that budget, gets no memory kept for
+       reuse (DM_OWN_RATHER), which own_keep would give straight back to the driver */
+    {
+        Held r;
+        const u64 bb = g_devmem.block_bytes[0], rather = g_devmem.own_why[DM_OWN_RATHER];
+        g_devmem.block_bytes[0] = 2ull << 30;
+        CHECK(make(1, 32 * MIB, 256, ~0u, 1, gpu, &r) == VK_SUCCESS);
+        CHECK(g_devmem.own_why[DM_OWN_RATHER] == rather && !g_devmem.block[block_of(&r)].reuse);
+        g_devmem.block_bytes[0] = g_devmem.block_bytes[0] - (2ull << 30) + bb; /* its own bytes stay counted */
+        unmake(&r);
+    }
     vk_devmem_cache_budget(0);
     CHECK(keep_budget(0) == heap_budget(0));
     g_devmem.drv_budget[0] = drv;

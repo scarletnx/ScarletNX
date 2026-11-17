@@ -667,8 +667,8 @@ static u32 block_adopt(u32 type, int image, int low, u32 units, u32 align_units,
    that for the same create info and an extent and layers no greater), lost the GPU on an RTX 4090 (driver 621.01): a
    page fault in 2 of 3 runs of that race with it, and none in the run without it. The spec does not say whether an
    image may take that memory after the image it was made for is gone */
-/* past this, a heap keeps no memory: the driver's preference for memory of its own no longer holds there (alloc),
-   so no request would take it */
+/* past this, a heap keeps no memory: the driver's preference for memory of its own no longer holds there (alloc, with
+   the same budget), so no request would take it */
 static int own_full(u32 heap) { return g_devmem.block_bytes[heap] > keep_budget(heap) / 5 * 4; }
 /* the cap of the kept memory that heap's counts with: the GPU's own heap alone, or the other heaps together */
 static u64 keep_cap(u32 heap) {
@@ -919,7 +919,10 @@ static VkResult alloc(const VkMemoryRequirements* req, const DevMemWant* want, i
                minutes, for 0.85 to 1.2 s of the renderer's thread in the driver's allocate and calls of 50 to 164
                ms. In a block, the defrag can move it too */
             u32 heap = g_devmem.mp.memoryTypes[type].heapIndex, n = 0;
-            u64 budget = heap_budget(heap);
+            /* the budget own_full keeps kept memory within: with the driver's here and the caches' there, under
+               vk_budget_mb=2000 each such request got memory of its own that own_keep gave straight back, 209 of
+               them in a window of one game's race */
+            u64 budget = keep_budget(heap);
             for (u32 h = 0; h < g_devmem.mp.memoryHeapCount; h++) n += g_devmem.blocks[h];
             small = req->size <= block_cap((u32)type) / DM_OWN_SHARE;
             if (!small && g_devmem.block_bytes[heap] + req->size <= budget / 5 * 4 &&
