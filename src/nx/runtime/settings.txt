@@ -2089,6 +2089,7 @@ setting @VK_KHR_video_decode_av1
 setting @VK_KHR_video_decode_h264
 setting @VK_KHR_video_decode_queue
 setting @VK_KHR_video_queue
+setting @VK_NV_dedicated_allocation_image_aliasing
 setting @VK_NV_device_diagnostic_checkpoints
 setting @VK_NV_fragment_coverage_to_color
 setting @VK_NV_framebuffer_mixed_samples

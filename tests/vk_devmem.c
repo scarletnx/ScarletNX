@@ -530,8 +530,10 @@ static void check_random(int uma, u64 gran, u64 atom, u32 rounds) {
     u32 kinds[VK_MAX_MEMORY_TYPES][DM_KINDS] = {{0}};
     for (u32 k = 0; k < g_devmem.nblock; k++) {
         const Block* b = &g_devmem.block[k];
-        if (b->mem)
-            CHECK(!b->own && !b->allocs && !b->free.used && ++kinds[b->type][b->image & DM_KIND_IMAGE] == 1);
+        if (b->mem && b->own) /* memory of its own the driver only preferred, kept for reuse (own_keep) */
+            CHECK(!b->allocs && b->reuse && b->idle);
+        else if (b->mem)
+            CHECK(!b->allocs && !b->free.used && ++kinds[b->type][b->image & DM_KIND_IMAGE] == 1);
     }
 }
 
@@ -719,6 +721,41 @@ static void check_kinds(void) {
     CHECK(block_of(&m[0]) == block_of(&f[0]));
     unmake(&m[0]);
     unmake(&f[0]);
+    check_counts(0);
+}
+
+/* Memory of its own that the driver only preferred is kept when let go, for the next request it fits, with no call to
+   the driver (own_keep, own_take). Without VK_NV_dedicated_allocation_image_aliasing, or for a buffer, it names no
+   resource and fits a request of its size up to an eighth less. Kept memory goes after DM_KEEP_PRESENTS presents, and
+   the oldest goes first past DM_KEEP_BYTES */
+static void check_keep(void) {
+    Held a, b, c;
+    const DevMemWant gpu = {.at = DM_DEVICE};
+    device(0, 1024, 64, 0);
+    g_vk.has_image_aliasing = 0;
+    CHECK(make(1, 32 * MIB, 256, ~0u, 1, gpu, &a) == VK_SUCCESS && alone_of(&a));
+    CHECK(!g_drv.mem[(u32)(uintptr_t)a.info.memory - 1].res); /* no resource named: another may take it */
+    const VkDeviceMemory memory = a.info.memory;
+    unmake(&a);
+    CHECK(g_devmem.kept_bytes == 32 * MIB);
+    u32 calls = g_drv.allocations;
+    CHECK(make(1, 30 * MIB, 256, ~0u, 1, gpu, &a) == VK_SUCCESS && a.info.memory == memory);
+    CHECK(g_drv.allocations == calls && g_devmem.kept_bytes == 0 && g_devmem.kept_taken == 1);
+    /* more than it holds, or far less: memory of its own made for it */
+    CHECK(make(0, 40 * MIB, 256, ~0u, 1, gpu, &b) == VK_SUCCESS && b.info.memory != memory);
+    unmake(&a);
+    CHECK(make(0, 20 * MIB, 256, ~0u, 1, gpu, &c) == VK_SUCCESS && c.info.memory != memory);
+    unmake(&b);
+    unmake(&c);
+    CHECK(g_devmem.kept_bytes == 92 * MIB);
+    /* past DM_KEEP_BYTES the oldest goes */
+    Held m[8];
+    for (u32 i = 0; i < 8; i++) CHECK(make(0, 33 * MIB + i * MIB, 256, ~0u, 1, gpu, &m[i]) == VK_SUCCESS);
+    for (u32 i = 0; i < 8; i++) unmake(&m[i]);
+    CHECK(g_devmem.kept_bytes <= DM_KEEP_BYTES && g_devmem.kept_gone > 0);
+    /* and all of it after DM_KEEP_PRESENTS presents */
+    for (u32 p = 0; p <= DM_KEEP_PRESENTS; p++) vk_devmem_frame();
+    CHECK(g_devmem.kept_bytes == 0);
     check_counts(0);
 }
 
@@ -1294,6 +1331,7 @@ int main(void) {
     check_drain_alone();
     check_drain_room();
     check_kinds();
+    check_keep();
     check_cap();
     check_atoms(64);
     check_atoms(4096);
