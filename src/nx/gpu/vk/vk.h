@@ -283,6 +283,10 @@ typedef struct {
        this occurs when the budget falls: other programs or the desktop take video memory. devmem.c gives each block
        the priority of what it holds (vk_devmem_priority) */
     int has_pageable;
+    /* VK_NV_dedicated_allocation_image_aliasing: an image binds to memory made for another image alone when its create
+       info is that one's but for an extent and layers no greater. devmem.c keeps such memory when the image goes, for
+       the next image that fits it (own_take) */
+    int has_image_aliasing;
     int has_checkpoints; /* vk_checkpoints=1 on a driver that has them (checkpoints.c) */
     /* VK_GOOGLE_display_timing, enabled without present waits (Android): presents carry ids and times to be shown at,
        and the swapchain tells when each was */
