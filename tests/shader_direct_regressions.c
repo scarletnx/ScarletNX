@@ -1285,6 +1285,21 @@ static void virtual_sample_declares_push(void) {
         check(info.tex_vt_mask & 1, "its slot may hold a virtual texture");
     }
     free(code);
+    /* and in one that writes its own depth (SPH word 19, bit 1), which no driver tests before it either */
+    program = guest_program(ops, 3, NULL, &slots);
+    if (program) set_sph(program, 19, 2);
+    memset(&info, 0, sizeof info);
+    g_shader_vt_address = 0x10000;
+    code = program ? spirv_of(program, slots * sizeof *program, ST_FS, &info, &words, 1, 1, 1, 1) : NULL;
+    g_shader_vt_address = 0;
+    free(program);
+    check_translated(code, &info, "a virtual sample in a fragment program that writes depth translates");
+    if (code) {
+        check(count_opcode(code, words, 305, 0xffffffffu) + count_opcode(code, words, 306, 0xffffffffu) >= 1,
+              "a program that writes depth takes the virtual sample");
+        check(!count_opcode(code, words, 16, 9), "and asks for no tests before it");
+    }
+    free(code);
 }
 /* A device with fewer uniform buffers a stage than the 18 slots: a slot past them is a read-only storage buffer, which
    only the descriptor's type tells the renderer. The fixture goes through spirv-val */

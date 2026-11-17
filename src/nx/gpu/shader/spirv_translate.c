@@ -2187,9 +2187,10 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
     /* vt_sparse: a fragment program takes virtual samples where it may test depth before it runs
        (ShaderInfo.vt_early), and then asks for the tests first (vt_first): none that discards or has a helper's
        side effect to keep out, or writes depth or a sample mask. One that writes memory or a storage image itself
-       takes them too, with nothing asked: its tests run after it already. None that takes its target's pixels
+       (or its own depth) takes them too, with nothing asked: its tests run after it already. None that takes its target's pixels
        itself (a blend or a capture in the program) */
-    const int vt_writes = gbuf_wmask || image_info.nimg; /* memory written already: the tests run after it as it is */
+    /* memory written already, or a depth of the program's own: the tests run after it as it is */
+    const int vt_writes = gbuf_wmask || image_info.nimg || (sph[19] & 2u);
     const int vt_plain =
         !advanced_blend && !si->late_depth && !predraw && !si->coverage_to_color && !si->capture_outputs;
     c->vt_first = si->vt_early && !needs_demote && !vt_writes && !(sph[19] & 3u);

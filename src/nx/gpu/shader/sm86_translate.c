@@ -7322,6 +7322,7 @@ u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, Sha
                      op == SM86_SUATOM || op == SM86_SUATOM_B;
         vt_reads_image |= op == SM86_SULD_P || op == SM86_SULD_P_B || op == SM86_SULD_D || op == SM86_SULD_D_B;
     }
+    vt_writes |= (c->sph[19] & 2u) != 0; /* a depth of the program's own: as late as a write of memory */
     const int vt_state = si->vt_early && !(c->sph[19] & 3u);
     c->vt_first = vt_state && !vt_kill && !vt_writes && !vt_reads_image;
     c->vt_ok = g_shader_vt_address && stage == ST_FS &&
