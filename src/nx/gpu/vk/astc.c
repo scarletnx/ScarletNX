@@ -63,6 +63,17 @@ typedef struct {
     u64 off, size;
     u64 sub; /* the submission that copies them: 0, a free slot */
 } Bc7Capture;
+/* a whole BC7 level that a texture's image holds, by its BC7 cache key (live_level): the texture and what proves that
+   it still holds the level, its address, image and write generation then, and where in the image */
+typedef struct {
+    u64 key[2];
+    Surf* surf; /* NULL: a free slot */
+    u64 gva;
+    VkImage img;
+    u32 wgen, level, layer;
+    u64 sub; /* the submission after the cache read that fills it: 0, filled in stream order already */
+} Bc7Live;
+#define BC7_LIVE (1u << 16) /* slots, a power of two: one a key, the newest kept. 4 MB. A quarter of it lost 2.5 times the copies to keys in the same slot */
 /* Kept for the device lifetime, like the other internal pipelines. All uses are on g_vk.gfx, under vk_lock(), even
    when uploads originate in compute */
 typedef struct {
@@ -92,6 +103,9 @@ typedef struct {
     /* image levels (or regions of them) uploaded as BC7, those the cache gave, their bytes, and what they would have
        taken as RGBA8 (vk_astc_stats) */
     u64 bc7_levels, bc7_hits, bc7_bytes, bc7_rgba8_bytes;
+    /* the whole BC7 levels that textures hold (live_level), and the levels copied from them in place of a cache read */
+    Bc7Live live[BC7_LIVE];
+    u64 bc7_copies;
     /* astc_bcn.comp's builds, BC1, BC4 and BC5 (vk_astc_bcn), each made on its first use, which share the BC7
        encoder's layout and scratch buffer; the levels (or regions) each took, their bytes and RGBA8's
        (vk_astc_bcn_stats) */
@@ -562,17 +576,64 @@ static int stage_cached(VkCommandBuffer cb, const u64 key[2], u64 size, VkImage 
     return CACHED_DONE;
 }
 
-/* a level's blocks from the cache (size bytes of them) staged and copied into level `level` of img, t's image, w x h
-   texels and depth slices, or with layered depth layers from layer: 0 when they aren't there, staging has no room, or
-   they don't check out (then dropped). Read on the recording thread, blocks that don't check out are not copied, and
-   t is loaded again at its next use (cache_failed) */
+/* Live levels. One game holds the same ASTC level contents in textures at many addresses at once: in about a minute of
+   it 47% of the BC7 cache's reads (13,143 of 27,977, 1.0 GB) were of a level that another texture's image held, at
+   another address in all but 55. Such a level is copied from that image on the GPU (vkCmdCopyImage, BC7 to BC7) in
+   place of a read of the cache's file and its staging upload.
+
+   A texture records each whole level of its own image that its upload wrote: decoded and encoded, from the cache or
+   copied (live_put). The level is the key's, so its shape, format and blocks are the same. The record holds while the
+   texture is still at its address with the same image and write generation (every upload, load of pieces, draw into
+   it or new image changes wgen, vk_surf_gen), its upload is whole and no render target was copied in (took_drawn). A
+   level whose cache read is still on the recording thread holds once that read's submission is done and its record is
+   still in the index: a read that failed drops it (bc7_cache.c), so its blocks are not copied on */
+static void live_put(const u64 key[2], const Surf* t, u32 level, u32 layer, u64 sub) {
+    g_astc.live[key[0] & (BC7_LIVE - 1)] =
+        (Bc7Live){{key[0], key[1]}, (Surf*)t, t->gva, t->img, t->wgen, level, layer, sub};
+}
+/* the live level of key, size bytes of blocks, that another texture than t holds in an image of t's format: NULL for
+   none */
+static const Bc7Live* live_level(const u64 key[2], u64 size, const Surf* t) {
+    const Bc7Live* l = &g_astc.live[key[0] & (BC7_LIVE - 1)];
+    if (!l->surf || l->surf == t || l->key[0] != key[0] || l->key[1] != key[1]) return NULL;
+    if (l->sub && (g_bg_landed < l->sub || vk_bc7_cache_find(key) != size)) return NULL;
+    for (const Surf* s = vk_surf_first(l->gva); s; s = vk_surf_next(s))
+        if (s == l->surf)
+            return s->wgen == l->wgen && s->img == l->img && s->f.vk == t->f.vk && s->upload_valid &&
+                           !s->took_drawn && !s->sparse && !s->bricks
+                       ? l
+                       : NULL;
+    return NULL;
+}
+
+/* a level's blocks from the cache (size bytes of them) staged and copied into level `level` of img, t's image or its
+   BC7 image of later, w x h texels and depth slices, or with layered depth layers from layer: 0 when they aren't
+   there, staging has no room, or they don't check out (then dropped). Into t's own image, a level that another
+   texture holds is copied from that one's image instead (live_level). Read on the recording thread, blocks that don't
+   check out are not copied, and t is loaded again at its next use (cache_failed) */
 static int bc7_from_cache(VkCommandBuffer cb, Surf* t, VkImage img, const u64 key[2], u64 size, u32 w, u32 h,
                           u32 depth, u32 level, u32 layer, int layered) {
+    const int own = img == t->img && !t->sparse && !t->bricks;
+    const Bc7Live* l = own ? live_level(key, size, t) : NULL;
+    if (l) {
+        vk_surf_use(cb, l->surf, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+                    VK_ACCESS_2_TRANSFER_READ_BIT);
+        const VkImageCopy r = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, l->level, l->layer, layered ? depth : 1},
+                               .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, layer, layered ? depth : 1},
+                               .extent = {w, h, layered ? 1 : depth}};
+        rec_CmdCopyImage(cb, l->surf->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, img,
+                         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &r);
+        g_astc.bc7_copies++;
+        live_put(key, t, level, layer, 0);
+        return 1;
+    }
     const VkBufferImageCopy copy = {.bufferRowLength = (w + 3) / 4 * 4,
                                     .bufferImageHeight = (h + 3) / 4 * 4,
                                     .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, layer, layered ? depth : 1},
                                     .imageExtent = {w, h, layered ? 1 : depth}};
-    if (stage_cached(cb, key, size, img, copy, t) <= CACHED_NONE) return 0;
+    const int r = stage_cached(cb, key, size, img, copy, t);
+    if (r <= CACHED_NONE) return 0;
+    if (own) live_put(key, t, level, layer, r == CACHED_QUEUED ? vk_submit_number() : 0);
     g_astc.bc7_hits++;
     return 1;
 }
@@ -670,6 +731,7 @@ int vk_bc7_capture_level(VkCommandBuffer cb, VkImage img, const u64 key[2], u32 
     return 1;
 }
 
+u64 vk_astc_bc7_copies(void) { return g_astc.bc7_copies; }
 void vk_astc_stats(u64* levels, u64* hits, u64* bytes, u64* rgba8_bytes) {
     *hits = g_astc.bc7_hits;
     *levels = g_astc.bc7_levels;
@@ -1579,6 +1641,7 @@ static int astc_upload(VkCommandBuffer cb, Surf* t, u32 x, u32 y0, u32 w, u32 h,
     int capture = -1;
     VkBuffer back = VK_NULL_HANDLE;
     u64 key[2] = {0, 0};
+    int whole = 0; /* key is the whole level's, its blocks the encoder's full or fast build (live_put) */
     Bc7Job* job = NULL;
     const u64 blocks = (u64)cx * ((h + 3) / 4) * depth * 16;
     if (bc7) {
@@ -1601,6 +1664,7 @@ static int astc_upload(VkCommandBuffer cb, Surf* t, u32 x, u32 y0, u32 w, u32 h,
             /* a very large level's pieces are its fast build's */
             vk_bc7_level_key(content, w, h, layered ? 1 : depth, layered ? depth : 1, bw, bh, srgb, quick ? 1 : build,
                              key);
+            whole = !quick;
             if (quick ? pieces_from_cache(cb, t, key, w, h, depth, bh, level, layer, layered)
                       : bc7_from_cache(cb, t, t->img, key, blocks, w, h, depth, level, layer, layered)) {
                 g_astc.bc7_hits += quick; /* bc7_from_cache counts its own */
@@ -1719,6 +1783,7 @@ static int astc_upload(VkCommandBuffer cb, Surf* t, u32 x, u32 y0, u32 w, u32 h,
         }
     }
     if (capture >= 0) bc7_capture_done(cb, capture, back, key, blocks);
+    if (whole && !job && !t->sparse && !t->bricks) live_put(key, t, level, layer, 0); /* encoded whole */
     if (job) bg_job_add(job, cb);
     return 1;
 }

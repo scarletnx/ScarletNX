@@ -892,9 +892,10 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
                         (unsigned long long)bc7_levels, (unsigned long long)(bc7_bytes >> 20),
                         (unsigned long long)(bc7_rgba8 >> 20), (unsigned long long)vk_astc_dispatches());
                 if (cache_file)
-                    LOG("vulkan: the BC7 cache gave %llu levels and took %llu new; its file holds %llu MB (started over "
-                        "%llu times at %llu MB)\n",
-                        (unsigned long long)bc7_hits, (unsigned long long)cache_stored,
+                    LOG("vulkan: the BC7 cache gave %llu levels, %llu more were copied from textures that held them, "
+                        "and it took %llu new; its file holds %llu MB (started over %llu times at %llu MB)\n",
+                        (unsigned long long)bc7_hits, (unsigned long long)vk_astc_bc7_copies(),
+                        (unsigned long long)cache_stored,
                         (unsigned long long)(cache_file >> 20), (unsigned long long)cache_restarts,
                         (unsigned long long)(VK_BC7_CACHE_MAX >> 20));
                 VkLaterStats later;
