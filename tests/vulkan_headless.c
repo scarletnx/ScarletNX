@@ -15,6 +15,7 @@
 #include "common/utilities/spirv_opt.h"
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/pagespace.h"
+#include "nx/gpu/vk/pending_pages.h"
 #include "nx/gpu/vk/descriptors.h"
 #include "common/gpu/vk/extension_bans.h"
 #include "common/gpu/vk/extension_commands.h"
@@ -7120,6 +7121,7 @@ static void results_copied(u64 cpu, u64 len) { vk_own_cpu_touched(cpu, len); }
 #include "vulkan_targetless_stores.inc"
 #include "vulkan_storage_image_keep.inc"
 #include "vulkan_uma_imports.inc"
+#include "vulkan_uma_pages.inc"
 #include "vulkan_write_tracking.inc"
 #include "vulkan_tex_partial.inc"
 #include "vulkan_astc_later.inc"
@@ -8023,12 +8025,16 @@ static int run_headless(int argc, char** argv) {
         if (!strcmp(name, "logged_back") && ++ran) CHECK(!check_uma_logged_back());
         if (!strcmp(name, "trapped_window") && ++ran) CHECK(!check_uma_trapped_window());
         if (!strcmp(name, "copies") && ++ran) CHECK(!check_uma_copies());
+        if (!strcmp(name, "pages_producers") && ++ran) CHECK(!check_uma_pages_producers());
+        if (!strcmp(name, "pages_counts") && ++ran) CHECK(!check_uma_pages_counts());
+        if (!strcmp(name, "pages_partial") && ++ran) CHECK(!check_uma_pages_partial());
         if (!ran) {
             fprintf(stderr,
                     "SNX_TEST_UMA_ONLY=%s names no check: 1, runtime_write, constants, constants_copied, migrate, way, "
                     "region_writes, region_merge, writes, atlas_pending, feedback, publish, dispatch, dispatch_open, "
                     "texture_pending, dispatch_constants, "
-                    "dispatch_table, header_words, placed, placed_view, logged_back, trapped_window or copies\n",
+                    "dispatch_table, header_words, placed, placed_view, logged_back, trapped_window, copies, "
+                    "pages_producers, pages_counts, pages_partial or pages_bench\n",
                     name);
             return 2;
         }
@@ -8064,6 +8070,9 @@ static int run_headless(int argc, char** argv) {
         CHECK(!check_uma_migrate());
         CHECK(!check_uma_region_writes());
         CHECK(!check_uma_region_merge());
+        CHECK(!check_uma_pages_counts());
+        CHECK(!check_uma_pages_producers());
+        CHECK(!check_uma_pages_partial());
         vk_pipeline_quiesce();
         printf("PASS headless Vulkan in place only: %u validation messages\n", g_vk_validation_messages);
         return 0;
@@ -8298,6 +8307,9 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_uma_migrate());
     CHECK(!check_uma_region_writes());
     CHECK(!check_uma_region_merge());
+    CHECK(!check_uma_pages_counts());
+    CHECK(!check_uma_pages_producers());
+    CHECK(!check_uma_pages_partial());
     CHECK(!check_write_tracking());
     CHECK(!check_descriptor_room());
     CHECK(!check_sparse_texture());

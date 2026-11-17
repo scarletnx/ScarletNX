@@ -1495,8 +1495,9 @@ static int tex_memo_unwritten(TexMemo* m, u64 tic_at, u64 tsc_at, u32 epoch, u32
    through a frame, and the count dropped 37% of one game's lookups once the epoch no longer did */
 static int tex_memo_unpended(TexMemo* m, u64 tic_at, u64 tsc_at, u64 adds) {
     if (m->adds == adds) return 1;
+    const u64 size = vk_surf_guest_size(m->t);
     if (pend_hit(&g_pend_any, tic_at, 32) || pend_hit(&g_pend_any, tsc_at, 32) ||
-        pend_hit(&g_pend_any, m->t->gva, vk_surf_guest_size(m->t)))
+        pend_hit(&g_pend_any, m->t->gva, size))
         return 0;
     m->adds = adds;
     return 1;
@@ -1529,7 +1530,8 @@ static void tex_resolve(const DsState* ds, u32 handle, TexRes* x) {
             m = &set[w];
     u64 gw = gpu_mem_generation();
     u32 epoch = vk_ww_epoch(), now = vk_ww_now(); /* before the headers are read */
-    u64 adds = __atomic_load_n(&g_pend_any.adds, __ATOMIC_RELAXED);
+    /* a write in place is no result added: its own count moves (vk_uma_writes) */
+    u64 adds = __atomic_load_n(&g_pend_any.adds, __ATOMIC_RELAXED) + vk_uma_writes();
     x->handle = handle;
     x->have = 1;
     x->memo = 0;
@@ -2196,7 +2198,10 @@ static struct {
 /* the results added that a kept entry was checked against: results of every kind (the mirror's writes, storage
    images and queued releases too: an entry lives past the submission that lands them). Both counts only grow, so
    their sum stays while both do */
-static u64 cb_adds(void) { return __atomic_load_n(&g_pend_any.adds, __ATOMIC_RELAXED); }
+static u64 cb_adds(void) {
+    return __atomic_load_n(&g_pend_any.adds, __ATOMIC_RELAXED) +
+           vk_uma_writes(); /* the writes in place, which no other count has */
+}
 /* e made now, binding what lives as life says. CB_OWN: what the buffer cache's last lookup bound, its own buffer or
    else something of the submission's */
 static void cb_life(CbEntry* e, u32 life) {

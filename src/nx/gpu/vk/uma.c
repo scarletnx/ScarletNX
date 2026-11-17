@@ -63,7 +63,7 @@
    - Any other GPU-side write (a landed result) on a page that a command not finished yet reads in place is counted
      (the hazards line of the report). That command can read the new bytes.
    - Storage and transform feedback buffers are written in place too (vk_uma_write): a draw's or dispatch's writes are
-     pending (out, in out_pages and so in g_pend_any) until its submit is done, with nothing to land. What reads or
+     pending (out, in out_pages, and so in g_pend_any) until its submit is done, with nothing to land. What reads or
      writes those bytes on the GPU after them in place comes after a barrier (order); what copies them on the GPU
      copies them from the import (owned.c's cpu_read); the runtime's own CPU readers wait for the submit
      (vk_uma_mem_need), and so do its writes (front_write). The submit's end makes them visible to the host
@@ -125,6 +125,7 @@ typedef struct {
     int fd;
     void* handle;
     int tracked; /* a dma-buf region (imp_make_dmabuf): the driver leaves the CPU's page table alone, and scans watch it */
+    u32 rid;     /* its table of pages (Rgn) while it is in the table, 0 for none */
 } Imp;
 /* Spans the driver refused to import (pages it can't pin, or amdgpu's refusal of the alias pool's), whose ranges are copied
    until UMA_IDLE presents pass or their pages change. Without them every range in such a window asked the driver
@@ -150,10 +151,54 @@ typedef struct {
     u64 sub;                     /* the submit its last binding was in (last_read's rule) */
     u64 pages[MEM_PLACED >> 18]; /* its committed 4 KiB pages, a bit each */
     int fd;                      /* its dma-buf once a view maps it, -1 before */
+    u32 rid;                     /* its table of pages (Rgn) while it is in the table, 0 for none */
 } Chunk;
 typedef struct {
     u64 dst, src, size; /* guest memory [dst, dst + size) maps the pages of a chunk's [src, src + size) (a view) */
 } View;
+/* The page model: each region (an Imp, or a Chunk of placed maps) has a table of its pages, in a slot of
+   g_uma.rg, and g_uma.win names the slot of each 2 MiB window of guest memory, as regions are whole windows. A page's
+   table says what a read in place needs to know of it, with no other lookup:
+   - blk: some other place holds newer bytes of the page (a pending graphics or compute result, a storage image not
+     published, a queued release, the mirror's writes: the pages g_pend_blk counts, pend_set_any_watch), or the runtime
+     wrote it (front). Such a page takes the old chain of buffer.c;
+   - its stamps: the barrier sequence of its last write and read in place (UMA_WSEQ, UMA_RSEQ: barrier_no + 1 while no
+     barrier came since, order), and the submission that last read it in place (UMA_LIVE, front_write and the hazard
+     count). Each group of 64 pages and the whole region keep the newest of each, so a question about a region no page
+     of which is newer than asked is one compare.
+   Its generations move with g_uma.clock: gen when it is made or goes, bgen when a page gains a blk bit. A region that
+   goes keeps its slot (in drg) until no stamp of it can still matter (rgn_reap): the questions look at those too.
+   The writes in place still pending are counted by page in out_pages and so in g_pend_any, as before, which a lookup
+   by GPU address asks with no translation. They count in no adds but out_pages' own (adds_alone): they
+   stay out of g_pend_any.adds and vk_buf_adds, which made every later draw's buffer cache entries check every kind of
+   result again at each storage write. The caches that kept bytes add their count (vk_uma_writes). A question that the
+   GMMU translated at each lookup (the regions' tokens) made a quarter of one game's GPU thread gmmu_run. A page in no
+   region (a view of a chunk) is stamped in the tables of before (written, read, live) */
+enum { UMA_WSEQ, UMA_RSEQ, UMA_LIVE, UMA_ST_N };
+typedef struct {
+    u64 cpu, size;        /* guest memory [cpu, cpu + size), whole windows; size 0: a free slot */
+    VkBuffer buf;         /* its Imp's or Chunk's */
+    u64 gen, bgen;        /* from g_uma.clock (above) */
+    u64 newest[UMA_ST_N]; /* the newest stamp of each kind on any page */
+    u64* t;               /* front bits, pend bits (a word each 64 pages), the stamps by page, the newest by group */
+    u32 nblk;             /* words with a front or pend bit */
+    u32 at;               /* its Imp's or Chunk's index when last found (rgn_owner checks it) */
+    u32 next;             /* a free slot's: the next free one */
+    int chunk;            /* a Chunk's, not an Imp's */
+    int live;             /* in g_uma.win; 0 once it went (in drg) */
+} Rgn;
+/* the fast path's memo (vk_uma_read), by GPU range: what it resolved to while the GMMU's mappings and the region hold */
+#define UMA_MEMO_N 4096
+typedef struct {
+    u64 gva, len, cpu, gen, bgen;
+    u32 map_gen, rid;
+} UmaMemo;
+/* draw_state_check=1: the tables of before kept beside the page tables, and the answers compared */
+typedef struct {
+    WritePages written, read, live;
+} UmaCheck;
+#define UMA_WINS (AS_TOP >> 21) /* the 2 MiB windows of guest addresses g_uma.win covers */
+enum { UMA_FAST_DEAD, UMA_FAST_RUN, UMA_FAST_NONE, UMA_FAST_EDGE, UMA_FAST_BLK, UMA_FAST_ALIGN, UMA_FAST_N };
 #define UMA_LINE 64 /* a cache line (x86-64, AArch64) */
 /* The file's state. Different threads write its groups, each apart from the next by a cache line: the GPU thread
    (under vk_lock), the threads that change guest mappings (mem.c's hook, under lk), any thread that writes guest memory
@@ -219,6 +264,20 @@ typedef struct {
     u64 soon[UMA_SOON_N];
     u32 nsoon;
     u64 writer; /* the program whose writes vk_uma_writes_commit takes (vk_uma_writer) */
+    /* the page model (above Rgn): the slots, rg[0] none, nrg used of caprg and rg_free the first free one;
+       the slots of regions that went, still asked (drg); the windows' slots (win). The slots, their tables and win
+       change under lk too, as other threads read them (the hazard count, vkr_mem_pending) */
+    Rgn* rg;
+    u32 nrg, caprg, rg_free;
+    u32* drg;
+    u32 ndrg, capdrg;
+    u64 clock;    /* the generations' source */
+    int old_any[UMA_ST_N]; /* the old tables hold a stamp of that kind (a page in no region) */
+    UmaMemo memo[UMA_MEMO_N];
+    UmaCheck* chk; /* draw_state_check=1 */
+    /* statistics: the fast path's hits and misses by why (UMA_FAST_*), and the cross-checks' differences */
+    u64 fast_hits, fast_miss[UMA_FAST_N], check_diffs;
+    u32 win[UMA_WINS];
     char apart0[UMA_LINE];
     /* mem.c's hook writes these too */
     PMutex lk;         /* a leaf, under vk_lock or mem.c's lock: the dead flags, and the imports for write tracking */
@@ -269,6 +328,298 @@ int vk_uma_imports_dear(void) {
     return driver_imports_dear(g_vk.driver_id);
 }
 u64 vk_uma_bound(void) { return g_uma.bound; }
+
+/* ------------------------------------------------------------ the page model (above Rgn) */
+/* a slot's table: the front and pend bits, a word for each 64 pages; then for each kind of stamp the pages', the
+   newest of each group of 64, and the stamp of each group written whole (a 16 MiB storage window is 64 stores, not
+   4096) */
+static u64 rg_words(const Rgn* r) { return r->size >> 18; }
+static u64* rg_front(const Rgn* r) { return r->t; }
+static u64* rg_pend(const Rgn* r) { return r->t + rg_words(r); }
+static u64* rg_st(const Rgn* r, int k) { return r->t + 2 * rg_words(r) + (u64)k * (r->size >> 12); }
+static u64* rg_grp(const Rgn* r, int k) {
+    return r->t + 2 * rg_words(r) + UMA_ST_N * (r->size >> 12) + (u64)k * rg_words(r);
+}
+static u64* rg_whole(const Rgn* r, int k) {
+    return r->t + 2 * rg_words(r) + UMA_ST_N * (r->size >> 12) + (UMA_ST_N + (u64)k) * rg_words(r);
+}
+static u64 rg_table_words(u64 size) { return (2 + 2 * UMA_ST_N) * (size >> 18) + UMA_ST_N * (size >> 12); }
+/* the slot of the live region over guest address cpu, 0 for none. Atomic: the hazard count reads it on any thread */
+static u32 rid_at(u64 cpu) {
+    u64 w = cpu >> 21;
+    return w < UMA_WINS ? __atomic_load_n(&g_uma.win[w], __ATOMIC_RELAXED) : 0;
+}
+/* r's table holds [cpu, cpu + len), r is whole windows and has its table: else a fatal error that names them, not a
+   store past the table (who: the caller) */
+static void rg_holds(const Rgn* r, u64 cpu, u64 len, const char* who) {
+    if (r->t && r->size && !((r->cpu | r->size) & (UMA_WINDOW - 1)) && cpu >= r->cpu && len &&
+        cpu + len <= r->cpu + r->size)
+        return;
+    fatal("vulkan: page model: %s of guest %llx+%llx outside the table of region %llx+%llx (live %d, table %s)", who,
+          (unsigned long long)cpu, (unsigned long long)len, (unsigned long long)r->cpu, (unsigned long long)r->size,
+          r->live, r->t ? "there" : "freed");
+}
+/* r's pages of [cpu, cpu + len) (within it) stamped v of kind k. Each stamp is the newest of its kind (a submission or
+   the barrier sequence, which only grow), so the groups' and the region's take it as it is. Atomic: other threads read
+   them (WSUB under lk, LIVE for the hazard count) */
+static void rg_stamp(Rgn* r, int k, u64 cpu, u64 len, u64 v) {
+    rg_holds(r, cpu, len, "a stamp");
+    u64 p0 = (cpu - r->cpu) >> 12, p1 = (cpu + len - 1 - r->cpu) >> 12;
+    u64 *s = rg_st(r, k), *g = rg_grp(r, k), *w = rg_whole(r, k);
+    for (u64 p = p0; p <= p1;) {
+        u64 gi = p >> 6, ge = (gi << 6) + 63;
+        if (!(p & 63) && ge <= p1) { /* the whole group */
+            __atomic_store_n(&w[gi], v, __ATOMIC_RELAXED);
+            p = ge + 1;
+        } else
+            for (u64 e = ge < p1 ? ge : p1; p <= e; p++) __atomic_store_n(&s[p], v, __ATOMIC_RELAXED);
+        if (g[gi] < v) __atomic_store_n(&g[gi], v, __ATOMIC_RELAXED);
+    }
+    if (r->newest[k] < v) __atomic_store_n(&r->newest[k], v, __ATOMIC_RELAXED);
+}
+/* whether a page of r in [cpu, cpu + len) has a stamp of kind k after x: one compare where none of r's is */
+static int rg_since(const Rgn* r, int k, u64 cpu, u64 len, u64 x) {
+    u64 end = cpu + len, rend = r->cpu + r->size, lo = cpu > r->cpu ? cpu : r->cpu, hi = end < rend ? end : rend;
+    if (lo >= hi || __atomic_load_n(&r->newest[k], __ATOMIC_RELAXED) <= x) return 0;
+    rg_holds(r, lo, hi - lo, "a question");
+    const u64 *s = rg_st(r, k), *g = rg_grp(r, k), *w = rg_whole(r, k);
+    u64 p0 = (lo - r->cpu) >> 12, p1 = (hi - 1 - r->cpu) >> 12;
+    for (u64 gi = p0 >> 6; gi <= p1 >> 6; gi++) {
+        if (__atomic_load_n(&g[gi], __ATOMIC_RELAXED) <= x) continue;
+        if (__atomic_load_n(&w[gi], __ATOMIC_RELAXED) > x) return 1;
+        u64 a = gi << 6 > p0 ? gi << 6 : p0, b = (gi << 6) + 63 < p1 ? (gi << 6) + 63 : p1;
+        for (u64 p = a; p <= b; p++)
+            if (__atomic_load_n(&s[p], __ATOMIC_RELAXED) > x) return 1;
+    }
+    return 0;
+}
+/* whether a page of r in [cpu, cpu + len) (within it) has a blk bit */
+static int rg_blk(const Rgn* r, u64 cpu, u64 len) {
+    rg_holds(r, cpu, len, "a blk question");
+    if (!r->nblk) return 0;
+    const u64 *f = rg_front(r), *pd = rg_pend(r);
+    u64 p0 = (cpu - r->cpu) >> 12, p1 = (cpu + len - 1 - r->cpu) >> 12;
+    for (u64 wi = p0 >> 6; wi <= p1 >> 6; wi++) {
+        u64 a = wi << 6 > p0 ? p0 & 63 : 0, b = (wi << 6) + 63 < p1 ? 63 : p1 & 63;
+        u64 mask = (~0ull << a) & (~0ull >> (63 - b));
+        if ((f[wi] | pd[wi]) & mask) return 1;
+    }
+    return 0;
+}
+/* word wi of r's front or pend bits becomes now (bits, 1 for front): nblk follows, and bgen moves for a bit gained */
+static void rg_bits(Rgn* r, u64 wi, int front, u64 now) {
+    u64 *f = rg_front(r), *pd = rg_pend(r), was = front ? f[wi] : pd[wi], other = front ? pd[wi] : f[wi];
+    if (now == was) return;
+    if (!(was | other) != !(now | other)) r->nblk = now | other ? r->nblk + 1 : r->nblk - 1;
+    if (front)
+        f[wi] = now;
+    else
+        pd[wi] = now;
+    if (now & ~was) r->bgen = ++g_uma.clock;
+}
+/* r's pend bits over [cpu, cpu + len) (within it) as g_pend_blk counts its pages now */
+static void rg_pend_sync(Rgn* r, u64 cpu, u64 len) {
+    rg_holds(r, cpu, len, "a pend bit");
+    for (u64 wi = (cpu - r->cpu) >> 18, e = (cpu + len - 1 - r->cpu) >> 18; wi <= e; wi++)
+        rg_bits(r, wi, 0, pend_guest_group(&g_pend_blk, (r->cpu >> 18) + wi));
+}
+static void rg_front_run(void* ctx, u64 at, u64 n) { /* write_pages_runs's: pages the runtime wrote, as front */
+    Rgn* r = ctx;
+    rg_holds(r, at, n, "a front bit");
+    u64 p0 = (at - r->cpu) >> 12, p1 = (at + n - 1 - r->cpu) >> 12;
+    for (u64 p = p0; p <= p1; p++) rg_bits(r, p >> 6, 1, rg_front(r)[p >> 6] | 1ull << (p & 63));
+}
+/* pending_pages.c's watch: guest pages first to last gained or lost a result in g_pend_blk (vk_lock and pend_lock
+   held) */
+static void pend_watch(u64 first, u64 last) {
+    u64 lo = first << 12, hi = (last + 1) << 12;
+    if (first >= UMA_WINS << 9) return;
+    if (last >= UMA_WINS << 9) hi = (u64)UMA_WINS << 21;
+    for (u64 at = lo; at < hi;) {
+        u64 wend = (at | (UMA_WINDOW - 1)) + 1, n = (wend < hi ? wend : hi) - at;
+        u32 rid = rid_at(at);
+        if (rid) rg_pend_sync(&g_uma.rg[rid], at, n);
+        at += n;
+    }
+}
+/* whether every reader of a LIVE stamp s is done (done the last submission done): one looked up in the draw being
+   set up, or one whose use was recorded in a later submission than its own (vk_uma_settle's lag), is not */
+static int live_over(u64 s, u64 done) {
+    return s <= done && s < g_uma.seg && (s < g_uma.lag_lo || g_uma.lag_hi <= done);
+}
+/* the slots of regions that went are freed once no stamp of theirs can matter: their writes landed, their readers
+   done, and a barrier came after their stamps of order (vk_lock held) */
+static void rgn_reap(void) {
+    u64 submitted, done;
+    if (!g_uma.ndrg) return;
+    vk_submit_progress(&submitted, &done);
+    for (u32 i = g_uma.ndrg; i-- > 0;) {
+        u32 id = g_uma.drg[i];
+        Rgn* r = &g_uma.rg[id];
+        if (!live_over(r->newest[UMA_LIVE], done) || r->newest[UMA_WSEQ] > g_uma.barrier_no ||
+            r->newest[UMA_RSEQ] > g_uma.barrier_no)
+            continue;
+        pm_lock(&g_uma.lk);
+        free(r->t);
+        *r = (Rgn){.next = g_uma.rg_free};
+        g_uma.rg_free = id;
+        g_uma.drg[i] = g_uma.drg[g_uma.ndrg - 1];
+        __atomic_store_n(&g_uma.ndrg, g_uma.ndrg - 1, __ATOMIC_RELAXED);
+        pm_unlock(&g_uma.lk);
+    }
+}
+/* a table for the region over guest memory [cpu, cpu + size) (whole windows), its buffer buf: its slot. The pages
+   g_pend_blk counts and those the runtime wrote are blk from the start (vk_lock held) */
+static u32 rgn_new(u64 cpu, u64 size, VkBuffer buf, int chunk) {
+    if ((cpu | size) & (UMA_WINDOW - 1) || !size)
+        fatal("vulkan: page model: a table for guest %llx+%llx, which is not whole windows", (unsigned long long)cpu,
+              (unsigned long long)size);
+    u64* t = calloc(rg_table_words(size), sizeof *t);
+    if (!t)
+        fatal("vulkan: out of memory for the page table of %llu MiB of guest memory", (unsigned long long)(size >> 20));
+    Rgn r = {.cpu = cpu, .size = size, .buf = buf, .t = t, .chunk = chunk, .live = 1};
+    r.gen = r.bgen = ++g_uma.clock;
+    rg_pend_sync(&r, cpu, size);
+    write_pages_runs(&g_uma.front, 0, cpu, size, rg_front_run, &r);
+    rgn_reap();
+    pm_lock(&g_uma.lk);
+    u32 id = g_uma.rg_free;
+    if (id)
+        g_uma.rg_free = g_uma.rg[id].next;
+    else {
+        if (g_uma.nrg + 1 >= g_uma.caprg) {
+            u32 cap = g_uma.caprg ? 2 * g_uma.caprg : 64;
+            Rgn* n = realloc(g_uma.rg, sizeof *n * cap);
+            if (!n) fatal("vulkan: out of memory for %u page tables of guest memory", cap);
+            if (!g_uma.caprg) n[0] = (Rgn){0}; /* slot 0 is none */
+            g_uma.rg = n;
+            g_uma.caprg = cap;
+        }
+        id = ++g_uma.nrg;
+    }
+    g_uma.rg[id] = r;
+    for (u64 w = cpu >> 21; w < (cpu + size) >> 21 && w < UMA_WINS; w++)
+        __atomic_store_n(&g_uma.win[w], id, __ATOMIC_RELAXED);
+    pm_unlock(&g_uma.lk);
+    return id;
+}
+/* the region of slot id goes from the windows (merged, let go, killed): its table is still asked until rgn_reap frees
+   it (vk_lock held) */
+static void rgn_drop(u32 id) {
+    if (!id) return;
+    Rgn* r = &g_uma.rg[id];
+    pm_lock(&g_uma.lk);
+    for (u64 w = r->cpu >> 21; w < (r->cpu + r->size) >> 21 && w < UMA_WINS; w++)
+        if (g_uma.win[w] == id) __atomic_store_n(&g_uma.win[w], 0, __ATOMIC_RELAXED);
+    r->live = 0;
+    r->gen = ++g_uma.clock;
+    if (g_uma.ndrg == g_uma.capdrg) {
+        u32 cap = g_uma.capdrg ? 2 * g_uma.capdrg : 16;
+        u32* n = realloc(g_uma.drg, sizeof *n * cap);
+        if (!n) fatal("vulkan: out of memory for %u page tables of regions that went", cap);
+        g_uma.drg = n;
+        g_uma.capdrg = cap;
+    }
+    g_uma.drg[g_uma.ndrg] = id;
+    __atomic_store_n(&g_uma.ndrg, g_uma.ndrg + 1, __ATOMIC_RELAXED);
+    pm_unlock(&g_uma.lk);
+}
+/* region d, made over region s, takes the stamps of s's pages: the order, the pending writes and the readers of the
+   bytes that moved into it (imp_get's merge) */
+static void rgn_take(Rgn* d, const Rgn* s) {
+    u64 lo = d->cpu > s->cpu ? d->cpu : s->cpu, de = d->cpu + d->size, se = s->cpu + s->size, hi = de < se ? de : se;
+    if (lo >= hi) return;
+    u64 dp = (lo - d->cpu) >> 12, sp = (lo - s->cpu) >> 12, np = (hi - lo) >> 12;
+    for (int k = 0; k < UMA_ST_N; k++) {
+        u64 *ds = rg_st(d, k), *dg = rg_grp(d, k), *dw = rg_whole(d, k);
+        const u64 *ss = rg_st(s, k), *sg = rg_grp(s, k), *sw = rg_whole(s, k);
+        for (u64 p = 0; p < np; p++)
+            if (ss[sp + p] > ds[dp + p]) ds[dp + p] = ss[sp + p];
+        for (u64 g = 0; g < np >> 6; g++) {
+            if (sg[(sp >> 6) + g] > dg[(dp >> 6) + g]) dg[(dp >> 6) + g] = sg[(sp >> 6) + g];
+            if (sw[(sp >> 6) + g] > dw[(dp >> 6) + g]) dw[(dp >> 6) + g] = sw[(sp >> 6) + g];
+        }
+        if (s->newest[k] > d->newest[k]) d->newest[k] = s->newest[k];
+    }
+}
+/* the tables of before (the pages in no region): whether a page of [cpu, cpu + len) has a
+   stamp of kind k after x, and the stamp */
+static int old_since(const WritePages* written, const WritePages* read, const WritePages* live, int k, u64 cpu, u64 len,
+                     u64 x) {
+    switch (k) {
+        case UMA_WSEQ: return write_pages_since(written, x, cpu, len) != 0;
+        case UMA_RSEQ: return write_pages_since(read, x, cpu, len) != 0;
+        default: return write_pages_since(live, x, cpu, len) != 0;
+    }
+}
+static void hz_old(u64 cpu, u64 len);
+static void old_stamp(int k, u64 cpu, u64 len, u64 v) {
+    if (k == UMA_WSEQ) write_pages_stamp(&g_uma.written, cpu, len, v);
+    if (k == UMA_RSEQ) write_pages_stamp(&g_uma.read, cpu, len, v);
+    if (k == UMA_LIVE) hz_old(cpu, len);
+}
+/* the pieces of guest memory [cpu, cpu + len) by window: fn(ctx, rid, at, n) for each run of one region (rid its slot)
+   or of none (0) */
+static int st_pieces(u64 cpu, u64 len, int (*fn)(void* ctx, u32 rid, u64 at, u64 n), void* ctx) {
+    for (u64 at = cpu, end = cpu + len; at < end;) {
+        u32 rid = rid_at(at);
+        u64 stop = rid ? g_uma.rg[rid].cpu + g_uma.rg[rid].size : (at | (UMA_WINDOW - 1)) + 1;
+        u64 n = (stop < end ? stop : end) - at;
+        if (fn(ctx, rid, at, n)) return 1;
+        at += n;
+    }
+    return 0;
+}
+typedef struct {
+    int k;
+    u64 x;
+} StAsk;
+static int since_piece(void* ctx, u32 rid, u64 at, u64 n) {
+    const StAsk* q = ctx;
+    if (rid) rg_holds(&g_uma.rg[rid], at, n, "a question by window");
+    return rid ? rg_since(&g_uma.rg[rid], q->k, at, n, q->x) : 0;
+}
+/* whether a page of guest memory [cpu, cpu + len) has a stamp of kind k after x: in the live regions, in the regions
+   that went and keep theirs still, and in the tables of before for a page that was in no region (vk_lock held, or lk
+   on another thread) */
+static int st_since(int k, u64 cpu, u64 len, u64 x) {
+    StAsk q = {k, x};
+    if (!len) return 0;
+    if (st_pieces(cpu, len, since_piece, &q)) return 1;
+    for (u32 i = 0; i < g_uma.ndrg; i++)
+        if (rg_since(&g_uma.rg[g_uma.drg[i]], k, cpu, len, x)) return 1;
+    return __atomic_load_n(&g_uma.old_any[k], __ATOMIC_RELAXED) &&
+           old_since(&g_uma.written, &g_uma.read, &g_uma.live, k, cpu, len, x);
+}
+typedef struct {
+    int k;
+    u64 v;
+} StPut;
+static int stamp_piece(void* ctx, u32 rid, u64 at, u64 n) {
+    const StPut* q = ctx;
+    if (rid)
+        rg_stamp(&g_uma.rg[rid], q->k, at, n, q->v);
+    else {
+        __atomic_store_n(&g_uma.old_any[q->k], 1, __ATOMIC_RELAXED);
+        old_stamp(q->k, at, n, q->v);
+    }
+    return 0;
+}
+/* guest memory [cpu, cpu + len) stamped v of kind k (not WSUB: out_add) */
+static void st_stamp(int k, u64 cpu, u64 len, u64 v) {
+    StPut q = {k, v};
+    if (len) st_pieces(cpu, len, stamp_piece, &q);
+}
+/* draw_state_check=1: an answer of the page tables that the tables of before don't give */
+static void check_differs(const char* what, u64 cpu, u64 len, int now, int before) {
+    g_uma.check_diffs++;
+    WARN_LIMIT(16, "vulkan: page model: %s of guest %llx+%llx is %d, the tables of before say %d\n", what,
+               (unsigned long long)cpu, (unsigned long long)len, now, before);
+}
+static int chk_since(int k, u64 cpu, u64 len, u64 x) {
+    const UmaCheck* c = g_uma.chk;
+    return old_since(&c->written, &c->read, &c->live, k, cpu, len, x);
+}
 
 /* ------------------------------------------------------------ the model */
 static const char* model_name(int m) {
@@ -439,6 +790,8 @@ static void gone_kill(u64 lo, u64 hi) {
    (gone_reap), or as soon as its pages change or are trapped (gone_kill), as the driver keeps it in every submission
    until then (vk_lock held). Never a wait here: the submit may be the one being recorded, a draw half set up */
 static void imp_drop(u32 i) {
+    rgn_drop(g_uma.imp[i].rid); /* its table is asked until its stamps are old */
+    g_uma.imp[i].rid = 0;
     pm_lock(&g_uma.lk);
     if (g_uma.ngone == g_uma.capgone) {
         u32 cap = g_uma.capgone ? 2 * g_uma.capgone : 64;
@@ -482,7 +835,7 @@ static void pages_replaced(u64 a, u64 size) {
     for (u32 i = 0; i < g_uma.nimp; i++)
         if (g_uma.imp[i].cpu < end && a < g_uma.imp[i].cpu + g_uma.imp[i].size) {
             g_uma.imp[i].dead = 1;
-            g_uma.any_dead = 1;
+            __atomic_store_n(&g_uma.any_dead, 1, __ATOMIC_RELEASE); /* the fast path reads it without lk */
         }
     pm_unlock(&g_uma.lk);
 }
@@ -491,6 +844,7 @@ static void pages_replaced(u64 a, u64 size) {
    its pages changed (vk_uma_mapping_begin), and a submit now would take it to the driver with the new ones */
 static void imp_kill(u32 i, int dead) {
     if (!dead) read_done(last_read(&g_uma.imp[i]));
+    rgn_drop(g_uma.imp[i].rid);
     imp_destroy(&g_uma.imp[i]); /* before it leaves the table: write tracking leaves its pages alone until then */
     pm_lock(&g_uma.lk);
     memmove(&g_uma.imp[i], &g_uma.imp[i + 1], sizeof *g_uma.imp * (size_t)(g_uma.nimp - i - 1));
@@ -502,7 +856,7 @@ static void imp_kill(u32 i, int dead) {
 static void drop_dead(void) {
     pm_lock(&g_uma.lk);
     int any = g_uma.any_dead;
-    g_uma.any_dead = 0;
+    __atomic_store_n(&g_uma.any_dead, 0, __ATOMIC_RELAXED);
     pm_unlock(&g_uma.lk);
     if (!any) return;
     for (u32 i = g_uma.nimp; i-- > 0;) {
@@ -672,6 +1026,8 @@ static int chunk_make(Chunk* c, u64 cpu) {
    its memory the driver's until the submit that last bound it is done (vk_lock held) */
 static u64 last_bound(const Chunk* c);
 static void chunk_give_back(u32 i) {
+    rgn_drop(g_uma.chunk[i].rid);
+    g_uma.chunk[i].rid = 0;
     Chunk c = g_uma.chunk[i];
     VkMemoryUnmapInfoKHR ui = {
         .sType = VK_STRUCTURE_TYPE_MEMORY_UNMAP_INFO_KHR, .flags = VK_MEMORY_UNMAP_RESERVE_BIT_EXT, .memory = c.mem};
@@ -731,6 +1087,7 @@ static int placed_commit(u64 a, u64 size) {
     vk_descriptor_heaps_lasting(m.buf); /* it lives past the frame: its descriptors are kept (chunk_destroy forgets) */
     memset(GP(w), 0, (size_t)MEM_PLACED); /* the driver's memory may hold anything */
     memset(m.pages, 0xFF, sizeof m.pages);
+    m.rid = rgn_new(w, MEM_PLACED, m.buf, 1);
     u32 i = chunk_find(w);
     pm_lock(&g_uma.lk);
     memmove(&g_uma.chunk[i + 1], &g_uma.chunk[i], sizeof *g_uma.chunk * (size_t)(g_uma.nchunk - i));
@@ -1124,6 +1481,15 @@ static u32 imp_get(u64 cpu, u64 len) {
         g_uma.merges++;
         g_uma.merged += last - first;
     }
+    /* its table, with the stamps of the regions it takes over. Only a region of whole windows has one: where the
+       windows' pages are not all mapped or movable, the import holds the range's own pages (above), which the tables
+       of before stamp, as g_uma.win names a slot for whole windows only. A table of whole windows over two pages
+       wrote past its end, and below its start for a page beside them (a race crashed in rg_stamp) */
+    if (!((lo | hi) & (UMA_WINDOW - 1))) {
+        m.rid = rgn_new(lo, hi - lo, m.buf, 0);
+        for (u32 k = first; k < last; k++)
+            if (g_uma.imp[k].rid) rgn_take(&g_uma.rg[m.rid], &g_uma.rg[g_uma.imp[k].rid]);
+    }
     for (u32 k = last; k-- > first;) imp_drop(k); /* a region's pages are the new one's now */
     pm_lock(&g_uma.lk);
     memmove(&g_uma.imp[first + 1], &g_uma.imp[first], sizeof *g_uma.imp * (size_t)(g_uma.nimp - first));
@@ -1198,6 +1564,101 @@ static int bind(u64 cpu, u64 len, u64 align, VkBuffer* buf, u64* off) {
     return 1;
 }
 
+/* ------------------------------------------------------------ the fast path */
+/* r's Imp or Chunk (slot id), found at its index when last looked up, else again: its last binding is now, as bind
+   stamps it (last_read, the idle presents). 0 when it has none (vk_lock held) */
+static int rgn_bound(Rgn* r, u32 id) {
+    if (r->chunk) {
+        if (r->at >= g_uma.nchunk || g_uma.chunk[r->at].rid != id) r->at = chunk_find(r->cpu);
+        if (r->at >= g_uma.nchunk || g_uma.chunk[r->at].rid != id) return 0;
+        g_uma.chunk[r->at].sub = vk_submit_number();
+        return 1;
+    }
+    if (r->at >= g_uma.nimp || g_uma.imp[r->at].rid != id) r->at = imp_find(r->cpu);
+    if (r->at >= g_uma.nimp || g_uma.imp[r->at].rid != id) return 0;
+    g_uma.imp[r->at].used = g_vk_present;
+    g_uma.imp[r->at].sub = vk_submit_number();
+    return 1;
+}
+int vk_uma_read(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off) {
+    if (!len) return 0;
+    /* a region whose pages are other pages now goes first, in the old chain's bind (drop_dead) */
+    if (__atomic_load_n(&g_uma.any_dead, __ATOMIC_ACQUIRE)) {
+        g_uma.fast_miss[UMA_FAST_DEAD]++;
+        return 0;
+    }
+    UmaMemo* m = &g_uma.memo[(u32)(((gva ^ (len << 40)) * 0x9E3779B97F4A7C15ull) >> 52)];
+    const u32 mg = vk_buf_map_gen();
+    u64 cpu = 0;
+    Rgn* r = m->rid ? &g_uma.rg[m->rid] : NULL;
+    /* resolved before, with the same mappings into the same region, and no page of it blk since: no other lookup */
+    if (r && m->gva == gva && m->len == len && m->map_gen == mg && r->live && r->gen == m->gen &&
+        (r->bgen == m->bgen || !rg_blk(r, m->cpu, len))) {
+        cpu = m->cpu;
+        m->bgen = r->bgen;
+    } else {
+        int why = gmmu_run(gva, len, &cpu) < len ? UMA_FAST_RUN : -1;
+        u32 rid = why < 0 ? rid_at(cpu) : 0;
+        r = rid ? &g_uma.rg[rid] : NULL;
+        if (why < 0 && !r) why = UMA_FAST_NONE;
+        if (why < 0 && cpu + len > r->cpu + r->size) why = UMA_FAST_EDGE;
+        if (why < 0 && rg_blk(r, cpu, len)) why = UMA_FAST_BLK;
+        if (why >= 0) {
+            g_uma.fast_miss[why]++;
+            m->rid = 0;
+            return 0;
+        }
+        *m = (UmaMemo){.gva = gva, .len = len, .cpu = cpu, .gen = r->gen, .bgen = r->bgen, .map_gen = mg, .rid = rid};
+    }
+    const u32 rid = (u32)(r - g_uma.rg);
+    if ((cpu - r->cpu) % (align ? align : 1)) {
+        g_uma.fast_miss[UMA_FAST_ALIGN]++;
+        return 0;
+    }
+    if (!rgn_bound(r, rid)) { /* no Imp or Chunk holds it: going */
+        g_uma.fast_miss[UMA_FAST_DEAD]++;
+        return 0;
+    }
+    /* what bind, vk_uma_get and their stamps do */
+    *buf = r->buf;
+    *off = cpu - r->cpu;
+    g_uma.bound = vk_submit_number();
+    g_uma.hits++;
+    g_uma.hit_bytes += len;
+    g_uma.fast_hits++;
+    hz_mark(cpu, len);
+    order(cpu, len, 0);
+    note_read(cpu, len);
+    return 1;
+}
+void vk_uma_fast_counts(u64* hits, u64* blk) {
+    *hits = g_uma.fast_hits;
+    *blk = g_uma.fast_miss[UMA_FAST_BLK];
+}
+/* draw_state_check=1: what the old chain's own checks of uma.c say of a range the fast path bound at buf, off: the
+   reason it would not be that, NULL when it would */
+const char* vk_uma_read_differs(u64 gva, u64 len, VkBuffer buf, u64 off) {
+    u64 cpu = 0;
+    if (gmmu_run(gva, len, &cpu) < len) return "not one run of guest memory";
+    if (write_pages_since(&g_uma.front, 0, cpu, len)) return "a page the runtime wrote";
+    u32 i = imp_find(cpu);
+    if (i < g_uma.nimp && g_uma.imp[i].cpu <= cpu && cpu + len <= g_uma.imp[i].cpu + g_uma.imp[i].size) {
+        pm_lock(&g_uma.lk);
+        int dead = g_uma.imp[i].dead;
+        pm_unlock(&g_uma.lk);
+        if (dead) return "a region whose pages are other pages";
+        return g_uma.imp[i].buf == buf && g_uma.imp[i].cpu + off == cpu ? NULL : "not its import's buffer and offset";
+    }
+    const Chunk* c = g_uma.nchunk ? chunk_of(cpu, len) : NULL;
+    if (c) return c->buf == buf && c->cpu + off == cpu ? NULL : "not its chunk's buffer and offset";
+    return "no import holds it";
+}
+void vk_uma_check_diff(const char* what, u64 gva, u64 len) {
+    g_uma.check_diffs++;
+    WARN_LIMIT(16, "vulkan: fast path: a read of %llx+%llx bound in place over %s\n", (unsigned long long)gva,
+               (unsigned long long)len, what);
+}
+u64 vk_uma_check_diffs(void) { return g_uma.check_diffs; }
 /* ------------------------------------------------------------ writes in place */
 /* A barrier before what reads [cpu, cpu + len) in place, when it was written in place since the last one, or before
    what writes it, when it was read or written: the console's GPU runs its work in order. Outside a rendering pass,
@@ -1205,8 +1666,15 @@ static int bind(u64 cpu, u64 len, u64 align, VkBuffer* buf, u64* off) {
 static const Out* newest_out(u64 cpu, u64 n);
 enum { UMA_ORDER_NOW, UMA_ORDER_BEFORE, UMA_ORDER_OVER }; /* order_n's: what the barrier is for */
 static void order(u64 cpu, u64 len, int write) {
-    const int written = write_pages_since(&g_uma.written, g_uma.barrier_no, cpu, len) != 0;
-    if (!written && !(write && write_pages_since(&g_uma.read, g_uma.barrier_no, cpu, len))) return;
+    const u64 since = g_uma.barrier_no;
+    const int written = st_since(UMA_WSEQ, cpu, len, since);
+    const int read = write && st_since(UMA_RSEQ, cpu, len, since);
+    if (g_uma.chk) {
+        const int was = chk_since(UMA_WSEQ, cpu, len, since) || (write && chk_since(UMA_RSEQ, cpu, len, since));
+        if (was != (written || read))
+            check_differs(write ? "a write's barrier" : "a read's barrier", cpu, len, written || read, was);
+    }
+    if (!written && !read) return;
     /* the statistics: a write over a read or a write, else a read of a write still pending in the submission being
        recorded, or of one from an earlier submission (pending or done), which the last barrier came before. The pages
        are what the tables stamp */
@@ -1227,7 +1695,8 @@ static void note_read(u64 cpu, u64 len) {
     Seen* m = &g_uma.rmemo[(u32)(((cpu ^ (len << 32)) * 0x9E3779B97F4A7C15ull) >> 56)];
     if (m->cpu == cpu && m->len == len && m->sub == g_uma.barrier_no + 1) return;
     *m = (Seen){cpu, len, g_uma.barrier_no + 1};
-    write_pages_stamp(&g_uma.read, cpu, len, g_uma.barrier_no + 1);
+    st_stamp(UMA_RSEQ, cpu, len, g_uma.barrier_no + 1);
+    if (g_uma.chk) write_pages_stamp(&g_uma.chk->read, cpu, len, g_uma.barrier_no + 1);
 }
 void vk_uma_refused(int why) { g_uma.refused[why]++; }
 int vk_uma_write(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off) {
@@ -1264,9 +1733,12 @@ static void out_add(u64 gva, u64 cpu, u64 len) {
         g_uma.out = n;
         g_uma.capout = cap;
     }
-    g_uma.out[g_uma.nout++] = (Out){gva, cpu, len, vk_submit_number(), g_uma.writer};
-    write_pages_stamp(&g_uma.written, cpu, len, g_uma.barrier_no + 1);
+    /* pending by page until its submit is done (out_pages, in no other table), and the order's stamp of a write in
+       its region's table, or in the table of before */
     pend_add_pages(&g_uma.out_pages, cpu >> 12, (cpu + len - 1) >> 12, 1);
+    st_stamp(UMA_WSEQ, cpu, len, g_uma.barrier_no + 1);
+    if (g_uma.chk) write_pages_stamp(&g_uma.chk->written, cpu, len, g_uma.barrier_no + 1);
+    g_uma.out[g_uma.nout++] = (Out){gva, cpu, len, vk_submit_number(), g_uma.writer};
     g_uma.written_bytes += len;
     g_uma_any = 1;
 }
@@ -1301,7 +1773,8 @@ int vk_uma_pending(u64 gva, u64 len) { return g_uma_any && len && pend_hit(&g_um
 int vk_uma_pending_cpu(u64 cpu, u64 len) {
     return g_uma_any && len && pend_hit_pages(&g_uma.out_pages, cpu >> 12, (cpu + len - 1) >> 12);
 }
-u64 vk_uma_out_adds(void) { return g_uma.out_pages.adds; }
+/* in-place writes added so far, for the caches that ask vk_uma_writes */
+u64 vk_uma_writes(void) { return g_uma.out_pages.adds; }
 u64 vk_uma_out_waits(void) { return g_uma.out_waits; }
 void vk_uma_writer(u64 prog) { g_uma.writer = prog; }
 /* whether a dispatch of prog goes to the GPU at once: a CPU reader waited for one of its writes while it was still in
@@ -1366,7 +1839,7 @@ void vk_uma_mem_need(u64 gva, u64 len) {
     const Out* newest = NULL;
     if (!g_uma_any || t_uma.gpu_reads || !len) return;
     vk_lock();
-    if (pend_hit(&g_uma.out_pages, gva, len))
+    if (vk_uma_pending(gva, len))
         for (u64 at = 0; at < len;) {
             u64 cpu = 0, n = gmmu_run(gva + at, len - at, &cpu);
             if (!n) {
@@ -1453,6 +1926,11 @@ static void hz_mark(u64 cpu, u64 len) {
     g_uma.seen[h].cpu = cpu;
     g_uma.seen[h].len = len;
     g_uma.seen[h].sub = g_uma.bound;
+    st_stamp(UMA_LIVE, cpu, len, g_uma.bound);
+    if (g_uma.chk) write_pages_stamp(&g_uma.chk->live, cpu, len, g_uma.bound);
+}
+/* the tables of before: the live table, and the hazard count's pages */
+static void hz_old(u64 cpu, u64 len) {
     write_pages_stamp(&g_uma.live, cpu, len, g_uma.bound);
     for (u64 p = cpu >> 12; p <= (cpu + len - 1) >> 12; p++) {
         u32 s = (u32)(p & ((1u << HZ_BITS) - 1));
@@ -1463,12 +1941,27 @@ static void hz_mark(u64 cpu, u64 len) {
 /* a GPU-side write to guest memory [cpu, cpu + n): counted when a command that is not done yet read a page of it in
    place (any thread) */
 static void gpu_wrote(u64 cpu, u64 n) {
-    u64 done = 0;
+    u64 done = 0, dummy;
     if (!n) return;
+    /* the LIVE stamps of the regions there, under lk (their tables go only under it), when a region holds a window
+       of it or one that went may still. A stamp stored as this reads it may be missed: its submit is one the write
+       did not need to wait for */
+    int any = __atomic_load_n(&g_uma.ndrg, __ATOMIC_RELAXED) != 0;
+    for (u64 w = cpu >> 21, e = (cpu + n - 1) >> 21; w <= e && w < UMA_WINS && !any; w++)
+        any = __atomic_load_n(&g_uma.win[w], __ATOMIC_RELAXED) != 0;
+    if (any) {
+        vk_submit_progress(&dummy, &done);
+        pm_lock(&g_uma.lk);
+        const int hit = st_since(UMA_LIVE, cpu, n, done);
+        pm_unlock(&g_uma.lk);
+        if (hit) __atomic_add_fetch(&g_uma.hazards, 1, __ATOMIC_RELAXED);
+        return;
+    }
+    if (!__atomic_load_n(&g_uma.old_any[UMA_LIVE], __ATOMIC_RELAXED)) return;
     for (u64 p = cpu >> 12; p <= (cpu + n - 1) >> 12; p++) {
         u32 s = (u32)(p & ((1u << HZ_BITS) - 1));
         if (__atomic_load_n(&g_uma.hz_page[s], __ATOMIC_RELAXED) != p) continue;
-        u64 sub = __atomic_load_n(&g_uma.hz_sub[s], __ATOMIC_RELAXED), dummy;
+        u64 sub = __atomic_load_n(&g_uma.hz_sub[s], __ATOMIC_RELAXED);
         if (!done) vk_submit_progress(&dummy, &done);
         if (sub > done) {
             __atomic_add_fetch(&g_uma.hazards, 1, __ATOMIC_RELAXED);
@@ -1502,6 +1995,14 @@ void vk_uma_init(void) {
     }
     mem_set_pages_replaced(pages_replaced);
     gpu_set_write_watch(gpu_wrote);
+    /* the page model (above Rgn): in-place writes stay out of g_pend_any.adds, and g_pend_blk gives the blk
+       bits; draw_state_check=1 keeps the tables of before beside it and compares their answers */
+    g_uma.out_pages.adds_alone = 1;
+    pend_set_any_watch(pend_watch);
+    if (g_settings.draw_state_check && !g_uma.chk && !(g_uma.chk = calloc(1, sizeof *g_uma.chk)))
+        fatal("vulkan: out of memory for the tables the page model is checked against");
+    LOG("vulkan: guest memory in place: a table of pages for each region, reads bound with no other check%s\n",
+        g_uma.chk ? ", the tables of before kept to compare (draw_state_check=1)" : "");
     if (g_uma.can_place) {
         /* the chunks' memory: host-visible and coherent (the guest's CPU and the GPU see each other's writes with no
            flush), cached where a type is */
@@ -1534,6 +2035,7 @@ void vk_uma_frame(void) {
     drop_dead();
     gone_reap();
     chunk_reap();
+    rgn_reap();
     if (g_vk_present % 60 == 0)
         for (u32 i = g_uma.nimp; i-- > 0;)
             if ((u32)(g_vk_present - g_uma.imp[i].used) > UMA_IDLE) imp_let_go(i);
@@ -1593,6 +2095,30 @@ void vk_uma_frame(void) {
         (unsigned long long)g_uma.wait_open[1], (unsigned long long)g_uma.wait_by[2], (double)g_uma.wait_ns[2] / 1e6,
         (unsigned long long)g_uma.wait_open[2], (unsigned long long)g_uma.wait_by[3], (double)g_uma.wait_ns[3] / 1e6,
         (unsigned long long)g_uma.wait_open[3]);
+    /* the page model: the reads the fast path bound (vk_uma_read) and why the others took the old chain, the
+       tables, and the cross-check's differences (draw_state_check=1, here and in buffer.c's) */
+    u32 live = 0, kept = 0;
+    u64 words = 0;
+    for (u32 i = 1; i <= g_uma.nrg; i++)
+        if (g_uma.rg[i].size) {
+            live += g_uma.rg[i].live != 0;
+            kept += !g_uma.rg[i].live;
+            words += rg_table_words(g_uma.rg[i].size);
+        }
+    LOG("vulkan:   page model over 600 presents: %llu reads bound in place with no other check, %llu took the "
+        "old chain (%llu a region going, %llu not one run, %llu in no region, %llu across a region's edge, %llu "
+        "blk, %llu off the alignment); %u regions with tables, %u that went kept, %llu KB of tables; %llu "
+        "differences of the cross-check since the start\n",
+        (unsigned long long)g_uma.fast_hits,
+        (unsigned long long)(g_uma.fast_miss[UMA_FAST_DEAD] + g_uma.fast_miss[UMA_FAST_RUN] +
+                             g_uma.fast_miss[UMA_FAST_NONE] + g_uma.fast_miss[UMA_FAST_EDGE] +
+                             g_uma.fast_miss[UMA_FAST_BLK] + g_uma.fast_miss[UMA_FAST_ALIGN]),
+        (unsigned long long)g_uma.fast_miss[UMA_FAST_DEAD], (unsigned long long)g_uma.fast_miss[UMA_FAST_RUN],
+        (unsigned long long)g_uma.fast_miss[UMA_FAST_NONE], (unsigned long long)g_uma.fast_miss[UMA_FAST_EDGE],
+        (unsigned long long)g_uma.fast_miss[UMA_FAST_BLK], (unsigned long long)g_uma.fast_miss[UMA_FAST_ALIGN], live,
+        kept, (unsigned long long)(words * 8 >> 10), (unsigned long long)g_uma.check_diffs);
+    g_uma.fast_hits = 0;
+    memset(g_uma.fast_miss, 0, sizeof g_uma.fast_miss);
     memset(g_uma.order_n, 0, sizeof g_uma.order_n);
     memset(g_uma.order_pass, 0, sizeof g_uma.order_pass);
     memset(g_uma.refused, 0, sizeof g_uma.refused);
@@ -1722,16 +2248,31 @@ void vk_uma_settle(u64 ended) {
 }
 /* Guest memory [cpu, cpu + n) is written next by the runtime: the submits that read it in place are done first, a
    lookup's use recorded in a later submit than its own included (last_read), and it is copied from then on */
+/* whether a page of guest memory [cpu, cpu + n) was read in place by a submit after x */
+static int live_since(u64 cpu, u64 n, u64 x) {
+    const int now = st_since(UMA_LIVE, cpu, n, x);
+    if (g_uma.chk) {
+        const int was = write_pages_since(&g_uma.chk->live, x, cpu, n) != 0;
+        if (was != now) check_differs("a read in place since", cpu, n, now, was);
+    }
+    return now;
+}
+static int front_piece(void* ctx, u32 rid, u64 at, u64 n) { /* front_write's, in a region's table */
+    (void)ctx;
+    if (rid) rg_front_run(&g_uma.rg[rid], at, n);
+    return 0;
+}
 static void front_write(u64 cpu, u64 n) {
     u64 submitted, done, wait = 0;
     write_pages_stamp(&g_uma.front, cpu, n, 1);
+    st_pieces(cpu, n, front_piece, NULL); /* blk in the regions there: the fast path takes it no more */
     if (vk_uma_pending_cpu(cpu, n)) wait_out_why(newest_out(cpu, n), 3); /* the GPU's bytes first, then the runtime's */
     vk_submit_progress(&submitted, &done);
-    if (write_pages_since(&g_uma.live, g_uma.seg ? g_uma.seg - 1 : 0, cpu, n))
+    if (live_since(cpu, n, g_uma.seg ? g_uma.seg - 1 : 0))
         wait = vk_submit_number(); /* looked up since the draw being set up began */
-    else if (g_uma.lag_hi > done && write_pages_since(&g_uma.live, g_uma.lag_lo ? g_uma.lag_lo - 1 : 0, cpu, n))
+    else if (g_uma.lag_hi > done && live_since(cpu, n, g_uma.lag_lo ? g_uma.lag_lo - 1 : 0))
         wait = g_uma.lag_hi;
-    else if (write_pages_since(&g_uma.live, done, cpu, n))
+    else if (live_since(cpu, n, done))
         wait = vk_last_submit();
     if (!wait) return;
     g_uma.waits++;

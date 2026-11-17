@@ -41,6 +41,7 @@ static struct {
 } g;
 VkState g_vk;
 PendPages g_pend_any; /* the stand-in GPU tracks nothing per page: image_out's pend_add is a no-op here */
+PendPages g_pend_blk;
 void pend_add(PendPages* t, u64 gva, u64 size, int delta) { (void)t; (void)gva; (void)size; (void)delta; }
 int pend_hit(const PendPages* t, u64 gva, u64 size) { /* any page may be: the entries' bytes decide */
     (void)t;

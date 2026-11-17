@@ -54,7 +54,7 @@ typedef struct {
 } Gran;
 
 /* the guest pages programs wrote in the mirror that haven't landed (vk_mirror_wrote to vk_mirror_done) */
-static PendPages g_mir_pend = {.also = &g_pend_any};
+static PendPages g_mir_pend = {.also = &g_pend_blk};
 /* the pending pages gain or lose a write, and g_mir_any says whether any is left: a read of guest memory looks at the
    flag before it asks the mirror for anything (gpu.c's gmem_need) */
 static void mir_pend_pages(u64 first, u64 last, int delta) {
