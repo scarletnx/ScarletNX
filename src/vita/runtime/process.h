@@ -212,6 +212,7 @@ struct VitaNgs;
 typedef struct VitaProcess {
     unsigned char* mem; /* the reservation */
     VitaImage image;
+    bool module_started[VITA_MODULES]; /* image.modules[i]'s start ran: all but a deferred one's, until the game loads it */
     const VitaModule* module;
     char* folder;  /* the game's folder */
     char* app;     /* app0: in it */

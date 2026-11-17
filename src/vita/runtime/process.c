@@ -264,6 +264,7 @@ VitaProcess* vita_process_new(const VitaImage* image, const char* folder, char* 
         return NULL;
     }
     p->image = *image;
+    for (unsigned i = 0; i < image->module_count; ++i) p->module_started[i] = !image->modules[i].deferred;
     p->folder = snx_absolute(folder);
     p->app = p->folder ? snx_path_join(p->folder, "app") : NULL;
     p->ux0 = p->folder ? snx_path_join(p->folder, "ux0") : NULL;
