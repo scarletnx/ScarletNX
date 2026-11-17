@@ -912,6 +912,50 @@ int main(void) {
             assert(gui_saves_ctr_import(&done, zipped, "the picked.zip", "", &other, 1, &result, error, sizeof error));
             assert(!strcmp(error, "the picked.zip holds the backups of 0x0AAAA, not of A Game's, 0x01234"));
         }
+        /* an ExtSaveData backup into a game with none of its own yet, or with two, which one taking it cannot tell:
+           refused, each saying what to do */
+        {
+            char* game3 = at(ctr, "c/0004000000123400", NULL);
+            char* sd = at(game3, "sdmc/Nintendo 3DS/00000000000000000000000000000000/00000000000000000000000000000000",
+                          "extdata");
+            GuiSaveCtr third;
+            GuiSavesCtr only = {NULL, 0};
+            Member m[] = {{"extdata/0x01234 A Game/20261117-140000/x.bin", "x", 1, 0, 0, false}};
+            path = at(game3, "savedata.format", NULL);
+            put(path, pattern, 20);
+            free(path);
+            zip_make(zipped, m, 1);
+            assert(gui_saves_ctr_place(game3, "0004000000123400", "C Game", ctr_trash, &third) && !third.extdata_count);
+            assert(gui_saves_ctr_import(&done, zipped, "the picked.zip", "", &third, 1, &result, error, sizeof error));
+            assert(!strcmp(error,
+                           "C Game has no extra data yet (0 folders): its first run makes it. Play it once, then "
+                           "import"));
+            only.at = (GuiSaveCtr*)malloc(sizeof third);
+            assert(only.at);
+            only.at[0] = third;
+            only.count = 1;
+            gui_saves_ctr_free(&only);
+            path = at(sd, "00000000/00001234/user", "a.bin");
+            put_text(path, "a");
+            free(path);
+            path = at(sd, "00000000/00005678/user", "b.bin");
+            put_text(path, "b");
+            free(path);
+            assert(gui_saves_ctr_place(game3, "0004000000123400", "C Game", ctr_trash, &third) &&
+                   third.extdata_count == 2 && !third.extdata);
+            assert(gui_saves_ctr_import(&done, zipped, "the picked.zip", "", &third, 1, &result, error, sizeof error));
+            assert(!strcmp(error,
+                           "C Game has 2 folders of extra data in its SD card, and the backup's goes in one: move "
+                           "the others out, then import"));
+            only.at = (GuiSaveCtr*)malloc(sizeof third);
+            assert(only.at);
+            only.at[0] = third;
+            only.count = 1;
+            gui_saves_ctr_free(&only);
+            gui_cleaned_free(&done);
+            free(sd);
+            free(game3);
+        }
         /* a game that has not run: its save is made by its first run, which the import says to do first */
         path = at(game2, "savedata.format", NULL);
         assert(!snx_remove_tree(path));

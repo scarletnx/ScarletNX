@@ -1003,6 +1003,10 @@ int gui_saves_ctr_place(const char* game, const char* name, const char* title, c
     out->save = snx_path_join(game, "savedata");
     out->format = snx_path_join(game, "savedata.format");
     out->extdata_count = ctr_extdata(game, (char**)&out->extdata);
+    if (out->extdata_count != 1) { /* several: which the game's is, nothing here tells */
+        free((void*)out->extdata);
+        out->extdata = NULL;
+    }
     out->trash = snx_strdup(trash);
     out->name = snx_strdup(name);
     out->title = snx_strdup(title ? title : name);
