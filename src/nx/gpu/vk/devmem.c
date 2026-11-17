@@ -62,21 +62,10 @@ typedef struct {
     u8 drain;      /* being emptied (vk_devmem_moving): no request takes a run of it */
     u32 movable;   /* its allocations whose owner can move them (vk_devmem_owner) */
     u64 drain_skip; /* not emptied again before this present: a move out of it failed */
-    /* memory of its own that is kept when let go (own_keep): with no resource named (key 0), for a request of its
-       size, or (VK_NV_dedicated_allocation_image_aliasing) made for an image, for an image whose create info is that
-       one's but for a smaller or equal extent (DmImage) */
+    /* memory of its own with no resource named, kept when let go for a request of its size (own_keep) */
     u8 reuse;
     u32 idle; /* kept, unused since this present plus one: 0 in use */
-    u64 key;
-    VkExtent3D extent;
-    u32 layers;
 } Block;
-/* the image a request is for, where memory made for it alone can be another image's later (vk_devmem_image) */
-typedef struct {
-    u64 key;           /* its create info but the extent and the layers, hashed: 0 for none */
-    VkExtent3D extent;
-    u32 layers;
-} DmImage;
 /* an allocation: DevMem is its index plus one */
 typedef struct {
     u32 block;     /* its block's index plus one, 0 for a free entry */
@@ -584,12 +573,15 @@ static u32 block_adopt(u32 type, int image, int low, u32 units, u32 align_units,
 
 /* Memory of its own kept for reuse. Memory the driver only preferred alone, for a request of more than a block's share,
    was a call to the driver's allocate on the thread that asked, and its free on the thread ahead: under a budget of 2
-   GB one game's race made 621 in 191 s, the most costly of the calls left. When let go it is kept, unused, for a later
-   request it fits, with no call: a request of its size with no resource named, or with
-   VK_NV_dedicated_allocation_image_aliasing an image the driver may bind to memory made for another
-   (VUID-VkBindImageMemoryInfo-memory-02629: the same create info, but an extent and layers no greater, at offset 0).
-   Kept memory goes after DM_KEEP_PRESENTS presents, the oldest first past DM_KEEP_BYTES, and all of it while the
-   heap is past its budget (lock held) */
+   GB one game's race made 621 in 191 s, the most costly of the calls left. Such memory is made with no resource named,
+   which the driver preferred but did not require, and when let go it is kept, unused, for a later request of its size
+   (up to an eighth less), with no call. Kept memory goes after DM_KEEP_PRESENTS presents, the oldest first past
+   DM_KEEP_BYTES, and all of it past own_full's limit (lock held).
+
+   Memory made for an image alone, kept for another image (VK_NV_dedicated_allocation_image_aliasing, which allows
+   that for the same create info and an extent and layers no greater), lost the GPU on an RTX 4090 (driver 621.01): a
+   page fault in 2 of 3 runs of that race with it, and none in the run without it. The spec does not say whether an
+   image may take that memory after the image it was made for is gone */
 /* past this, a heap keeps no memory: the driver's preference for memory of its own no longer holds there (alloc),
    so no request would take it */
 static int own_full(u32 heap) { return g_devmem.block_bytes[heap] > heap_budget(heap) / 5 * 4; }
@@ -634,18 +626,15 @@ static void own_keep(Block* k) {
         g_devmem.priorities++;
     }
 }
-/* kept memory of a type that a request of size bytes takes: for img (named, with its create info) or none named, the
-   smallest that fits it. Its index plus one, 0 for none */
-static u32 own_take(u32 type, int image, u64 size, const DmImage* img) {
+/* kept memory of a type that a request of size bytes takes: the smallest that holds it, an eighth more at most. Its
+   index plus one, 0 for none */
+static u32 own_take(u32 type, int image, u64 size) {
     u32 best = 0;
     for (u32 i = 0; i < g_devmem.nblock; i++) {
         const Block* k = &g_devmem.block[i];
         if (!k->mem || !k->idle || k->type != type || (k->image & DM_KIND_IMAGE) != (image & DM_KIND_IMAGE)) continue;
         if (k->size < size || (best && k->size >= g_devmem.block[best - 1].size)) continue;
-        if (img ? k->key != img->key || img->extent.width > k->extent.width || img->extent.height > k->extent.height ||
-                      img->extent.depth > k->extent.depth || img->layers > k->layers
-                : k->key || k->size > size + size / 8) /* none named: an eighth more at most */
-            continue;
+        if (k->size > size + size / 8) continue;
         best = i + 1;
     }
     if (best) {
@@ -669,7 +658,7 @@ static void own_expire(void) {
 
 /* memory of one type (lock held): the allocation, or 0 with *res */
 static DevMem alloc_in(u32 type, const VkMemoryRequirements* req, const DevMemWant* want, int alone, VkBuffer buf,
-                       VkImage img, const DmImage* named, VkResult* res) {
+                       VkImage img, VkResult* res) {
     VkMemoryPropertyFlags f = g_devmem.mp.memoryTypes[type].propertyFlags;
     u64 align = req->alignment ? req->alignment : 1, cap = block_cap(type);
     /* what the CPU flushes is whole atoms of the device: an allocation it maps starts and ends on one */
@@ -738,19 +727,14 @@ static DevMem alloc_in(u32 type, const VkMemoryRequirements* req, const DevMemWa
     }
     if (!slot && !shared && !want->existing) { /* memory of its own: by its size, or by the request */
         units = 0;
-        /* what the driver only preferred is kept when let go (own_keep): made for the image where the driver may
-           bind another to it (named), else with no resource named */
-        const int rather = alone == DM_OWN_RATHER, plain = rather && !(named && named->key);
-        if (rather) slot = own_take(type, image, req->size, plain ? NULL : named);
+        /* what the driver only preferred: memory with no resource named, kept when let go (own_keep) */
+        const int rather = alone == DM_OWN_RATHER;
+        if (rather) slot = own_take(type, image, req->size);
         if (!slot) {
-            slot = block_new(type, req->size, image, low, 0, plain ? VK_NULL_HANDLE : buf, plain ? VK_NULL_HANDLE : img,
+            slot = block_new(type, req->size, image, low, 0, rather ? VK_NULL_HANDLE : buf, rather ? VK_NULL_HANDLE : img,
                              res);
             if (slot) g_devmem.own_why[alone]++;
-            if (slot && rather) {
-                Block* o = &g_devmem.block[slot - 1];
-                o->reuse = 1;
-                if (!plain) o->key = named->key, o->extent = named->extent, o->layers = named->layers;
-            }
+            if (slot && rather) g_devmem.block[slot - 1].reuse = 1;
         }
     }
     if (!slot) {
@@ -804,7 +788,7 @@ static void info_of(DevMem m, DevMemInfo* info) {
    that no memory type has a block for gets memory of its own in the end, in the first type that has any */
 static void drain_stop(void);
 static VkResult alloc(const VkMemoryRequirements* req, const DevMemWant* want, int alone, VkBuffer buf, VkImage img,
-                      const DmImage* named, DevMem* mem, DevMemInfo* info) {
+                      DevMem* mem, DevMemInfo* info) {
     VkResult res = VK_ERROR_OUT_OF_DEVICE_MEMORY;
     *mem = 0;
     pm_lock(&g_devmem.lk);
@@ -815,7 +799,7 @@ static VkResult alloc(const VkMemoryRequirements* req, const DevMemWant* want, i
         g_devmem.drain.moving = 1;
         for (int type; !*mem && !want->own && alone != 2 && (type = type_pick(bits, want)) >= 0;
              bits &= ~(1u << type))
-            *mem = alloc_in((u32)type, req, want, 0, buf, img, named, &res);
+            *mem = alloc_in((u32)type, req, want, 0, buf, img, &res);
         g_devmem.drain.moving = 0;
         if (*mem && info) info_of(*mem, info);
         pm_unlock(&g_devmem.lk);
@@ -838,21 +822,21 @@ static VkResult alloc(const VkMemoryRequirements* req, const DevMemWant* want, i
                 n < g_vk.props.limits.maxMemoryAllocationCount / 4 * 3)
                 own = DM_OWN_RATHER;
         }
-        *mem = alloc_in((u32)type, req, want, own, buf, img, named, &res);
+        *mem = alloc_in((u32)type, req, want, own, buf, img, &res);
         if (*mem && small) {
             g_devmem.rather_in_block++;
             g_devmem.rather_in_block_bytes += req->size;
         }
         /* a preference is not a need: when the driver has no memory for the resource alone, a block may have */
-        if (!*mem && own == DM_OWN_RATHER) *mem = alloc_in((u32)type, req, want, 0, buf, img, named, &res);
+        if (!*mem && own == DM_OWN_RATHER) *mem = alloc_in((u32)type, req, want, 0, buf, img, &res);
         /* memory kept for reuse in this type's heap takes room the request has none of: it goes, and the request is
            tried again in this type before the next, which may be a worse one (the mapped window, system memory) */
         if (!*mem && g_devmem.kept_heap[g_devmem.mp.memoryTypes[type].heapIndex] && own_give_all())
-            *mem = alloc_in((u32)type, req, want, own == DM_OWN_RATHER ? 0 : own, buf, img, named, &res);
+            *mem = alloc_in((u32)type, req, want, own == DM_OWN_RATHER ? 0 : own, buf, img, &res);
     }
     bits = req->memoryTypeBits;
     for (int type; !*mem && (type = type_pick(bits, want)) >= 0; bits &= ~(1u << type))
-        *mem = alloc_in((u32)type, req, want, DM_OWN_LAST, buf, img, named, &res);
+        *mem = alloc_in((u32)type, req, want, DM_OWN_LAST, buf, img, &res);
     /* No request takes a run of the block being emptied. One that found room nowhere else has that block given back
        to the requests: the drain stops (drain_stop), and the request looks again. Emptying a block is never why a
        request finds no memory. One that must have memory of its own takes no run: its look again would bind it into
@@ -867,7 +851,7 @@ static VkResult alloc(const VkMemoryRequirements* req, const DevMemWant* want, i
         drain_stop();
         bits = req->memoryTypeBits;
         for (int type; !*mem && (type = type_pick(bits, want)) >= 0; bits &= ~(1u << type))
-            *mem = alloc_in((u32)type, req, want, 0, buf, img, named, &res);
+            *mem = alloc_in((u32)type, req, want, 0, buf, img, &res);
     }
     if (!*mem) {
         u64 room = 0, piece = 0;
@@ -893,7 +877,7 @@ static VkResult alloc(const VkMemoryRequirements* req, const DevMemWant* want, i
     return *mem ? VK_SUCCESS : res;
 }
 VkResult vk_devmem_alloc(const VkMemoryRequirements* req, const DevMemWant* want, DevMem* mem, DevMemInfo* info) {
-    return alloc(req, want, 0, VK_NULL_HANDLE, VK_NULL_HANDLE, NULL, mem, info);
+    return alloc(req, want, 0, VK_NULL_HANDLE, VK_NULL_HANDLE, mem, info);
 }
 /* The reserve: a block of the GPU's memory for render targets alone, which the rest leave alone. On a GPU of 2 GB,
    Mario Kart World's depth targets found no memory for hundreds of presents as its race loaded: what the trim freed
@@ -1155,7 +1139,7 @@ VkResult vk_devmem_buffer(const VkBufferCreateInfo* bci, const DevMemWant* want,
     w.image = 0;
     res = alloc(&req.memoryRequirements, &w,
                 alone.requiresDedicatedAllocation ? 2 : alone.prefersDedicatedAllocation ? 1 : 0, *buf, VK_NULL_HANDLE,
-                NULL, mem, &where);
+                mem, &where);
     if (res == VK_SUCCESS) res = vkBindBufferMemory(g_vk.dev, *buf, where.memory, where.offset);
     if (res != VK_SUCCESS) {
         vk_devmem_buffer_destroy(*buf, *mem);
@@ -1170,27 +1154,6 @@ void vk_devmem_buffer_destroy(VkBuffer buf, DevMem mem) {
     if (buf) vkDestroyBuffer(g_vk.dev, buf, NULL);
     vk_devmem_free(mem);
 }
-/* An image for memory made for it alone that another image can take later (VK_NV_dedicated_allocation_image_aliasing):
-   every member of its create info but the extent and the layers, which the other's may not pass. The spec does not say
-   whether the pNext chain counts, so it counts: the format list hashed with the rest, and an image with any other
-   struct there names none. NULL where the device lets no image take another's memory */
-static const DmImage* image_named(const VkImageCreateInfo* ii, DmImage* out) {
-    if (!g_vk.has_image_aliasing) return NULL;
-    u64 h = SNX_FNV_BASIS;
-    for (const VkBaseInStructure* n = ii->pNext; n; n = n->pNext) {
-        if (n->sType != VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO) return NULL;
-        const VkImageFormatListCreateInfo* fl = (const VkImageFormatListCreateInfo*)(const void*)n;
-        h = snx_fnv_step(h, fl->viewFormatCount);
-        for (u32 i = 0; i < fl->viewFormatCount; i++) h = snx_fnv_step(h, (u64)fl->pViewFormats[i]);
-    }
-    const u64 parts[] = {ii->flags,   ii->imageType, ii->format,      ii->mipLevels,           ii->samples,
-                         ii->tiling,  ii->usage,     ii->sharingMode, ii->queueFamilyIndexCount, ii->initialLayout};
-    for (u32 i = 0; i < sizeof parts / sizeof *parts; i++) h = snx_fnv_step(h, parts[i]);
-    for (u32 i = 0; ii->sharingMode == VK_SHARING_MODE_CONCURRENT && i < ii->queueFamilyIndexCount; i++)
-        h = snx_fnv_step(h, ii->pQueueFamilyIndices[i]);
-    *out = (DmImage){.key = h ? h : 1, .extent = ii->extent, .layers = ii->arrayLayers};
-    return out;
-}
 VkResult vk_devmem_image(const VkImageCreateInfo* ici, const DevMemWant* want, VkImage* img, DevMem* mem) {
     *img = VK_NULL_HANDLE;
     *mem = 0;
@@ -1203,10 +1166,9 @@ VkResult vk_devmem_image(const VkImageCreateInfo* ici, const DevMemWant* want, V
     DevMemWant w = *want;
     DevMemInfo where;
     w.image = 1;
-    DmImage named;
     res = alloc(&req.memoryRequirements, &w,
                 alone.requiresDedicatedAllocation ? 2 : alone.prefersDedicatedAllocation ? 1 : 0, VK_NULL_HANDLE, *img,
-                image_named(ici, &named), mem, &where);
+                mem, &where);
     if (res == VK_SUCCESS) res = vkBindImageMemory(g_vk.dev, *img, where.memory, where.offset);
     if (res != VK_SUCCESS) {
         vk_devmem_image_destroy(*img, *mem);

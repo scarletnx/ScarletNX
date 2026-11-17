@@ -724,14 +724,12 @@ static void check_kinds(void) {
 }
 
 /* Memory of its own that the driver only preferred is kept when let go, for the next request it fits, with no call to
-   the driver (own_keep, own_take). Without VK_NV_dedicated_allocation_image_aliasing, or for a buffer, it names no
-   resource and fits a request of its size up to an eighth less. Kept memory goes after DM_KEEP_PRESENTS presents, and
-   the oldest goes first past DM_KEEP_BYTES */
+   the driver (own_keep, own_take). It names no resource, and fits a request of its size up to an eighth less. Kept
+   memory goes after DM_KEEP_PRESENTS presents, and the oldest goes first past DM_KEEP_BYTES */
 static void check_keep(void) {
     Held a, b, c;
     const DevMemWant gpu = {.at = DM_DEVICE};
     device(0, 1024, 64, 0);
-    g_vk.has_image_aliasing = 0;
     g_vk.has_pageable = 1;
     CHECK(make(1, 32 * MIB, 256, ~0u, 1, gpu, &a) == VK_SUCCESS && alone_of(&a));
     CHECK(!g_drv.mem[(u32)(uintptr_t)a.info.memory - 1].res); /* no resource named: another may take it */
