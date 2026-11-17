@@ -164,4 +164,5 @@ target_include_directories(snx_llvm SYSTEM PUBLIC "${SNX_LLVM_INCLUDE_DIR}")
 target_compile_options(snx_llvm PRIVATE -Wall -Wextra -Werror=missing-prototypes)
 target_compile_definitions(snx_llvm PRIVATE _CRT_SECURE_NO_WARNINGS)
 target_link_directories(snx_llvm PUBLIC "${SNX_LLVM_LIBRARY_DIR}")
-target_link_libraries(snx_llvm PUBLIC scarletnx-common snx_arm_llvm ${SNX_LLVM_LIBS} ${SNX_LLVM_SYSTEM_LIBS} Threads::Threads)
+target_link_libraries(snx_llvm PUBLIC snx_recompiler_base snx_arm_llvm ${SNX_LLVM_LIBS} ${SNX_LLVM_SYSTEM_LIBS}
+                      Threads::Threads)

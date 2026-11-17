@@ -50,8 +50,8 @@ if(SNX_TEST_SANITIZERS)
         scarletnx-common scarletnx-platform scarletnx-net scarletnx-ldn scarletnx-filesystem snx_demangle snx_lz4
         snx_zbic snx_xxhash snx_vk_common snx_https snx_cacert snx_zip snx_cgltf
         snx-logscan
-        # the recompiler and its backends
-        snx_llvm snx_arm_llvm snx_arm_decode scarletnx-recompiler scarletnx-recompiler-shared
+        # the recompiler, its backends and what they take of the common code
+        snx_recompiler_base snx_llvm snx_arm_llvm snx_arm_decode scarletnx-recompiler scarletnx-recompiler-shared
         # the driver, its extraction, the first start's setup, the settings and the build's line
         snx_driver snx_nx_module snx_driver_llvm hactool_lib snx_setup snx_settings snx_settings_runtime snx_build_info
         snx-test-build-info
@@ -3235,6 +3235,27 @@ add_executable(snx-test-recompiler-library recompiler_library.c)
 snx_test_target(snx-test-recompiler-library gnu23)
 target_link_libraries(snx-test-recompiler-library PRIVATE scarletnx-recompiler)
 add_test(NAME recompiler_library COMMAND snx-test-recompiler-library)
+# what the library's archive needs from outside it: LLVM and the system's libraries alone
+# (tests/recompiler_symbols.cmake). Its program links every object of the archive with those, named here rather than
+# taken from the archive's own link line, which a new library would join. Built by the test, so a library more fails
+# the test and not the build
+add_executable(snx-test-recompiler-symbols EXCLUDE_FROM_ALL recompiler_symbols.c)
+set_target_properties(snx-test-recompiler-symbols PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+target_compile_options(snx-test-recompiler-symbols PRIVATE -pedantic-errors -Wall -Wextra -Werror)
+add_dependencies(snx-test-recompiler-symbols scarletnx-recompiler)
+target_link_directories(snx-test-recompiler-symbols PRIVATE "${SNX_LLVM_LIBRARY_DIR}")
+target_link_libraries(snx-test-recompiler-symbols PRIVATE
+                      "$<LINK_LIBRARY:WHOLE_ARCHIVE,$<TARGET_FILE:scarletnx-recompiler>>" ${SNX_LLVM_LIBS}
+                      ${SNX_LLVM_SYSTEM_LIBS} Threads::Threads ${CMAKE_DL_LIBS})
+if(WIN32)
+    target_link_libraries(snx-test-recompiler-symbols PRIVATE advapi32)
+else()
+    target_link_libraries(snx-test-recompiler-symbols PRIVATE m)
+endif()
+snx_test_sanitize(snx-test-recompiler-symbols) # the sanitizers' runtime, which the archive's objects call there
+add_test(NAME recompiler_symbols COMMAND "${CMAKE_COMMAND}" "-DBUILD=${PROJECT_BINARY_DIR}"
+         -DTARGET=snx-test-recompiler-symbols "-DARCHIVE=$<TARGET_FILE:scarletnx-recompiler>" "-DNM=${CMAKE_NM}"
+         "-DCONFIG=$<CONFIG>" -P "${CMAKE_CURRENT_SOURCE_DIR}/recompiler_symbols.cmake")
 # The Mach-O linker on objects Clang compiles for arm64 macOS, which any host's Clang with AArch64 can: what macOS
 # would check of the dylib (link_macho.c), on hosts that can't load one
 if(TARGET OpenSSL::Crypto)
