@@ -4,6 +4,7 @@
 #include "nx/gpu/shader/shader.h"
 #include "nx/gpu/shader/sm86.h"
 #include "common/utilities/endian.h"
+#include "common/utilities/spirv_opt.h"
 #include <dirent.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -42,7 +43,7 @@ static void shell_quote(char* out, size_t size, const char* path) {
 }
 int main(int argc, char** argv) {
     const char *dir = NULL, *out = NULL;
-    int validate = 0, verbose = 0, flush = 1, dispatch_reconverge = 0;
+    int validate = 0, verbose = 0, flush = SH_FTZ_MODE, dispatch_reconverge = 0, opt = 0;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--out") && i + 1 < argc)
             out = argv[++i];
@@ -53,7 +54,11 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--dispatch-reconverge"))
             dispatch_reconverge = 1;
         else if (!strcmp(argv[i], "--no-flush")) /* a device without DenormFlushToZero: FTZ done per instruction */
-            flush = 0;
+            flush = SH_FTZ_EMULATE;
+        else if (!strcmp(argv[i], "--native-flush")) /* a device that flushes by itself (vk/ftz_probe.c): no flush */
+            flush = SH_FTZ_NATIVE;
+        else if (!strcmp(argv[i], "--opt")) /* the runtime's shared optimizer after the translator (vk_translate_spirv) */
+            opt = 1;
         else if (!strcmp(argv[i], "--sm86")) /* an Ounce game's programs, which the SM86 frontend reads */
             g_shader_sm86 = 1;
         else if (!strcmp(argv[i], "--no-doubles")) /* a device without shaderFloat64, which Apple's are */
@@ -62,12 +67,12 @@ int main(int argc, char** argv) {
         } else if (argv[i][0] != '-' && !dir)
             dir = argv[i];
         else {
-            fprintf(stderr, "usage: %s CORPUS_DIR [--out DIR] [--validate] [--verbose] [--no-flush] [--sm86] [--no-doubles] [--dispatch-reconverge]\n", argv[0]);
+            fprintf(stderr, "usage: %s CORPUS_DIR [--out DIR] [--validate] [--verbose] [--no-flush | --native-flush] [--opt] [--sm86] [--no-doubles] [--dispatch-reconverge]\n", argv[0]);
             return 2;
         }
     }
     if (!dir) {
-        fprintf(stderr, "usage: %s CORPUS_DIR [--out DIR] [--validate] [--verbose] [--no-flush] [--sm86] [--no-doubles] [--dispatch-reconverge]\n", argv[0]);
+        fprintf(stderr, "usage: %s CORPUS_DIR [--out DIR] [--validate] [--verbose] [--no-flush | --native-flush] [--opt] [--sm86] [--no-doubles] [--dispatch-reconverge]\n", argv[0]);
         return 2;
     }
     /* Match a renderer with non-uniform sampled image array indexing. Otherwise indexed
@@ -112,28 +117,27 @@ int main(int argc, char** argv) {
             u32 hlen = 0;
             printf("%s: hash %016llx stage %d\n", base, (unsigned long long)shader_hash(code, max_bytes, &hlen), stage);
         }
-        /* an Ounce program has a header of its own, which the corpus does not keep: a compute program has none, so
-           the ones this translates are the compute stages. The corpus window starts at the program's section, so the
-           program itself is the first one found in it */
+        /* An Ounce program: the corpus window starts at the program's section, so the program itself is the first
+           one found in it. A graphics program's window holds its header first, as the runtime's (pipeline.c's
+           sm86_translate) does; a compute program has none */
         u32* spv;
-        if (g_shader_sm86 && stage != ST_CS) {
-            free(code);
-            unsupported++;
-            if (verbose) printf("%s: an SM86 %s program needs its header, which the corpus does not keep\n", base,
-                                stage == ST_FS ? "fragment" : "graphics");
-            continue;
-        }
         if (g_shader_sm86) {
             Sm86Program found[1];
+            const int graphics = stage != ST_CS;
             if (sm86_find_programs(code, max_bytes, found, 1) != 1 || !found[0].complete ||
-                found[0].stage != ST_CS) {
+                (graphics ? found[0].code == found[0].header : found[0].stage != ST_CS)) {
                 free(code);
                 unsupported++;
-                if (verbose) printf("%s: no complete SM86 compute program in the window\n", base);
+                if (verbose)
+                    printf("%s: no complete SM86 %s program in the window\n", base,
+                           graphics ? "graphics program with its header" : "compute");
                 continue;
             }
-            spv = sm86_to_spirv(code + found[0].code, found[0].size, ST_CS, NULL, &info,
-                                &words); /* size counts from code */
+            u32 sph[SM86_SPH_BYTES / 4];
+            if (graphics)
+                for (u32 w = 0; w < SM86_SPH_BYTES / 4; w++) sph[w] = snx_ld_le32(code + found[0].header + 4 * w);
+            spv = sm86_to_spirv_ftz(code + found[0].code, found[0].size, stage, graphics ? sph : NULL, &info, &words,
+                                    flush); /* size counts from code */
         } else
             spv = shader_to_spirv(code, max_bytes, stage, &info, &words, flush, 1, 1, 1);
         free(code);
@@ -141,6 +145,10 @@ int main(int argc, char** argv) {
             unsupported++;
             if (verbose) printf("%s: unsupported: %s\n", base, info.first_unsupported);
             continue;
+        }
+        if (opt) {
+            words = spv_opt_values(spv, words);
+            words = spv_opt_dead_code(spv, words);
         }
         if (out || validate) {
             char output[2200];
