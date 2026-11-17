@@ -1047,7 +1047,9 @@ void vk_guest_read(u64 gva, u64 size, u8* host, VkBuffer buf, u64 at) {
 }
 
 /* Device memory's side of vk_guest_read: the guest bytes [gva, gva + size) into buf at at, which the CPU doesn't map.
-   The CPU's bytes are staged and copied, the owned ones copied from their owners, unmapped pages read as zero. Staged
+   The CPU's bytes are staged and copied, the owned ones copied from their owners, unmapped pages read as zero. A run
+   that a region of unified memory holds is copied from there on the GPU, with no staging: the barrier of its read in
+   place puts it after the writes in place, the only GPU writes there. Staged
    into host memory and read there by the GPU, a copy engine's spans went over PCIe several times: the GPU copied its
    own results and render targets out to host memory and read them back, about 34 MB a frame in one game's menu.
    Staging is taken at the range's first CPU byte, so a range its owners hold whole takes none: in a texture test 60% of
@@ -1149,6 +1151,12 @@ static int guest_read(u64 gva, u64 size, VkBuffer buf, u64 at, int ahead) {
             memset(d.p + o, 0, (size_t)n);
             dev_gap(&d, o, n);
             g_gread[1][VK_GREAD_ZERO] += n;
+        } else if (vk_uma() && vk_uma_read_cpu(cpu, n, 1, !ahead, &ib, &io)) {
+            /* ahead, no write in place is pending there (read_settled): what wrote it before is done, and the upload
+               command buffer runs before the submission's work, so no barrier */
+            VkBufferCopy c = {io, at + o, n};
+            rec_CmdCopyBuffer(dev_cmd(ahead), ib, buf, 1, &c);
+            g_gread[1][VK_GREAD_REGIONS] += n;
         } else if (!own_any()) {
             if (!dev_staging(&d)) return 0;
             memcpy(d.p + o, GP(cpu), (size_t)n);
