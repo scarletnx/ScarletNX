@@ -73,6 +73,7 @@ typedef struct {
     /* VK_KHR_copy_memory_indirect with device addresses: many buffer copies in one command, from a list the GPU reads
        (owned.c's reads of GPU-owned results) */
     int has_copy_indirect;
+    int has_inplace_loads; /* block linear loads read GPU results by device address (vk_bl_move_src) */
     int has_descriptor_heaps;
     int has_descriptor_heap_support; /* enabled device feature, retained during a draw's buffer fallback */
     VkPhysicalDeviceDescriptorBufferPropertiesEXT descriptor_props;
@@ -1532,6 +1533,21 @@ void vk_bl_range(const VkBlMove* m, u64* lo, u64* hi);
    Moves go between vk_bl_barrier(cb, 1) and vk_bl_barrier(cb, 0), several of them between one pair when they write
    different bytes */
 int vk_bl_move(VkCommandBuffer cb, const VkBlMove* m, int to_bl, VkBuffer bl, u64 bl_at, VkBuffer lin, u64 lin_at);
+/* a run of a staged range that a GPU result holds, read there in place: 16 byte units [start, end) from the range's
+   first byte, at device address addr. blocklinear.comp's InRun, member for member */
+typedef struct {
+    u32 start, end;
+    VkDeviceAddress addr;
+} VkInRun;
+/* the source of a move out of block linear: the layout's byte lo at at in buf, and n runs (a table of VkInRun at
+   tab_at in tab) that the move reads in place from their results, not from buf */
+typedef struct {
+    VkBuffer buf, tab;
+    u64 at, tab_at;
+    u32 n;
+} VkBlSrc;
+/* vk_bl_move out of block linear from s */
+int vk_bl_move_src(VkCommandBuffer cb, const VkBlMove* m, const VkBlSrc* s, VkBuffer lin, u64 lin_at);
 /* before moves (1): after the transfers and dispatches that used either side's buffers; after them (0): before the
    transfers, dispatches and host reads of what they wrote */
 void vk_bl_barrier(VkCommandBuffer cb, int before);
@@ -1626,6 +1642,11 @@ void vk_own_publish_owned(u64 cpu, u64 size, VkOwnRes* r, u64 off);
    frame's command buffer with the barriers that order them. vk_cpu_read is the same by guest CPU address. Under
    vk_lock */
 void vk_guest_read(u64 gva, u64 size, u8* host, VkBuffer buf, u64 at);
+/* vk_guest_read for a dispatch that reads the range: up to max runs that results hold, 16 byte aligned, are noted in
+   runs (from at, with their device addresses) and not copied, with a barrier recorded before the dispatch's reads of
+   them. The count noted (g_vk.has_inplace_loads) */
+u32 vk_guest_read_inplace(u64 gva, u64 size, u8* host, VkBuffer buf, u64 at, VkInRun* runs, u32 max);
+extern u64 g_vk_inplace_runs, g_vk_inplace_bytes; /* owned.c: runs of results read in place, and their bytes */
 void vk_cpu_read(u64 cpu, u64 size, u8* host, VkBuffer buf, u64 at);
 /* the guest bytes those reads and vk_guest_read_device took since the last statistics line (vk_own_log), by where they
    came from: copied by the CPU into staging (and of them, those a region of unified memory holds), copied on the GPU

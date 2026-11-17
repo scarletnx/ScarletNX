@@ -1612,6 +1612,7 @@ static bool choose_device(SnxVkChoice* c, void* user) {
     /* the copies name device addresses: the device's memory gets them for these too (bufferDeviceAddress) */
     g_vk.has_copy_indirect =
         g_settings.indirect_copies && has_copy_indirect && qcopy.indirectMemoryCopy && q12.bufferDeviceAddress;
+    g_vk.has_inplace_loads = g_settings.texture_loads_in_place && q12.bufferDeviceAddress;
     if (g_vk.has_descriptor_heap_support) {
         g_vk.descriptor_heap_props = (VkPhysicalDeviceDescriptorHeapPropertiesEXT){
             .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_HEAP_PROPERTIES_EXT};
@@ -1640,7 +1641,8 @@ static bool choose_device(SnxVkChoice* c, void* user) {
                                             .timelineSemaphore = VK_TRUE,
                                             .bufferDeviceAddress = g_vk.has_descriptor_buffers ||
                                                                    g_vk.has_descriptor_heap_support ||
-                                                                   g_vk.has_copy_indirect,
+                                                                   g_vk.has_copy_indirect ||
+                                                                   g_vk.has_inplace_loads,
                                             .shaderFloat16 = q12.shaderFloat16,
                                             .shaderOutputViewportIndex = q12.shaderOutputViewportIndex,
                                             .shaderOutputLayer = q12.shaderOutputLayer,
@@ -2266,7 +2268,8 @@ static int create_device(void) {
     vkGetDeviceQueue(g_vk.dev, g_vk.compute_family, second ? 1 : 0, &g_vk.compute);
     vk_mem_init(sparse_queue);
     /* the renderer's own allocator (devmem.c): its blocks are 64 MiB at most, and no more than the cap */
-    if (!vk_devmem_init(g_vk.has_descriptor_buffers || g_vk.has_descriptor_heap_support || g_vk.has_copy_indirect))
+    if (!vk_devmem_init(g_vk.has_descriptor_buffers || g_vk.has_descriptor_heap_support || g_vk.has_copy_indirect ||
+                        g_vk.has_inplace_loads))
         return 0;
     __atomic_store_n(&g_devmem_ready, 1, __ATOMIC_RELEASE);
     { /* a GPU of 4 GiB or less: memory held back for render targets (devmem.c vk_devmem_reserve) */
