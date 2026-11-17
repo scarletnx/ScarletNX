@@ -182,12 +182,31 @@ void gpu_submit(const void* entries, u32 n, u32 channel, u32 incs, u32 wait_id, 
     test_gpu.expect = expect;
     test_gpu.submits++;
 }
+/* with test_hold, the calls wait in test_held until the test runs them as the GPU thread (run_held) */
+static int test_hold;
+static void (*test_held_fn[8])(void*);
+static void* test_held[8];
+static u32 test_nheld;
+static int test_on_gpu; /* the test plays the GPU thread, which sees the page table and not the changes queued for it */
+int gpu_on_thread(void) { return test_on_gpu; }
 void gpu_call(void (*fn)(void*), void* arg, const u32* chans, u32 nchans) {
     CHECK(nchans <= 4);
     test_gpu.calls++;
-    memcpy(test_gpu.call_chans, chans, nchans * sizeof *chans);
+    if (nchans) memcpy(test_gpu.call_chans, chans, nchans * sizeof *chans);
     test_gpu.ncall_chans = nchans;
+    if (test_hold) {
+        CHECK(test_nheld < 8);
+        test_held_fn[test_nheld] = fn;
+        test_held[test_nheld++] = arg;
+        return;
+    }
     fn(arg); /* the GPU thread has nothing queued before it */
+}
+static void run_held(u32 k) {
+    CHECK(k < test_nheld);
+    test_on_gpu = 1;
+    test_held_fn[k](test_held[k]);
+    test_on_gpu = 0;
 }
 void gpu_channel_close(u32 channel) { test_gpu.closed_channel = channel; }
 void gpu_release_retire(u32 channel) { (void)channel; }
@@ -861,6 +880,54 @@ static void test_gmmu_freed(void) {
     CHECK(gmmu_run(g, ~0ull, &cpu) == 0x4000);
     gmmu_unmap(g, 0x4000, 0, 0);
 }
+/* changes queued for the GPU thread (gmmu_later): other threads see a queued map's pages, rounded up to whole pages,
+   where the table has no entry, the newest map first, and no queued unmap; the GPU thread sees the table alone. One
+   call makes every change up to its number, and a call whose changes went already finds nothing to do */
+static void test_gmmu_later(void) {
+    const u64 g = 0x7200000000ull, c = 0xB0000000ull;
+    u64 cpu = 0;
+    test_hold = 1;
+    test_nheld = 0;
+    u32 a = gmmu_later(GMMU_LATER_MAP, g, c, 0x1800, 0);
+    gmmu_later_post(a);
+    CHECK(test_nheld == 1 && g_host.nvdrv.nlater == 1);
+    CHECK(gmmu_translate(g + 0x1FFF) == c + 0x1FFF && !gmmu_translate(g + 0x2000));
+    CHECK(gmmu_run(g + 0x1000, ~0ull, &cpu) == 0x1000 && cpu == c + 0x1000);
+    CHECK(gmmu_run(g, 0x800, &cpu) == 0x800 && cpu == c);
+    test_on_gpu = 1;
+    CHECK(!gmmu_translate(g) && !gmmu_run(g, ~0ull, &cpu));
+    test_on_gpu = 0;
+    gmmu_later(GMMU_LATER_MAP, g, 0xC0000000ull, 0x1000, 0);
+    CHECK(gmmu_translate(g) == 0xC0000000ull && gmmu_translate(g + 0x1000) == c + 0x1000);
+    u32 u = gmmu_later(GMMU_LATER_UNMAP, g, 0, 0x2000, 0);
+    CHECK(gmmu_translate(g) == 0xC0000000ull);
+    run_held(0); /* the first change alone: the table's entries answer from then on */
+    CHECK(g_host.nvdrv.nlater == 2 && gmmu_translate(g) == c && gmmu_translate(g + 0x1FFF) == c + 0x1FFF);
+    gmmu_later_post(u);
+    run_held(1);
+    CHECK(g_host.nvdrv.nlater == 0 && !gmmu_translate(g) && !gmmu_translate(g + 0x1000));
+    gmmu_later_post(a);
+    run_held(2);
+    CHECK(g_host.nvdrv.nlater == 0 && !gmmu_translate(g));
+    /* the ring wraps, then grows with the oldest first */
+    test_nheld = 0;
+    u32 last = 0, head = g_host.nvdrv.later_head;
+    for (u32 i = 0; i < 40; i++) last = gmmu_later(GMMU_LATER_MAP, g, c, 0x1000, 0);
+    gmmu_later_post(last);
+    run_held(0);
+    CHECK(g_host.nvdrv.nlater == 0 && g_host.nvdrv.later_head == head + 40 && gmmu_translate(g) == c);
+    gmmu_later_post(gmmu_later(GMMU_LATER_UNMAP, g, 0, 0x1000, 0));
+    run_held(1);
+    for (u64 i = 0; i < 100; i++) last = gmmu_later(GMMU_LATER_MAP, g + i * 0x1000, c + i * 0x1000, 0x1000, 0);
+    CHECK(g_host.nvdrv.nlater == 100 && gmmu_translate(g + 99 * 0x1000) == c + 99 * 0x1000 && gmmu_translate(g) == c);
+    gmmu_later_post(last);
+    run_held(2);
+    CHECK(g_host.nvdrv.nlater == 0 && gmmu_translate(g + 99 * 0x1000) == c + 99 * 0x1000);
+    gmmu_later_post(gmmu_later(GMMU_LATER_UNMAP, g, 0, 100 * 0x1000, 0));
+    run_held(3);
+    CHECK(!gmmu_translate(g) && !gmmu_translate(g + 99 * 0x1000));
+    test_hold = 0;
+}
 /* gmmu_run against gmmu_translate page by page: runs longer than an entry's count, across a table's end, broken by a
    page mapped elsewhere, and what an own unmap keeps */
 static u64 run_by_pages(u64 gva, u64 max, u64* cpu) {
@@ -1092,6 +1159,7 @@ int main(void) {
     }
     test_nvmap_as();
     test_gmmu_freed();
+    test_gmmu_later();
     test_gmmu_runs();
     test_gmmu_aliases();
     nvdrv = new_nvdrv();

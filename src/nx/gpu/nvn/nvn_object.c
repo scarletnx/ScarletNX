@@ -386,50 +386,14 @@ void nvn_MemoryPoolBuilderSetFlags(CPU* c, u64 b, i32 flags) {
    its pages showing its storage. A virtual pool (flags 0x200, no storage) only reserves its range: its mapping
    requests fill it. The storage's page offset carries over, so each byte keeps one GPU address.
 
-   The GPU thread makes the page table's changes (pool_map_run), in order with the work the game submits after the
-   call: only that work and the GPU thread read the pool's GPU addresses, and the game's thread hands the change over
-   and goes on. Each change takes the renderer's lock (vkr_mapping_begin), which the GPU thread holds through a draw
-   that waits for its pipeline. One game makes and ends a pool for each heap of its allocator, thousands in a load,
-   and its loading threads waited up to 1.7 s in 5 s for that lock. The VA allocator still answers at once, and ended
-   addresses go back to it only after their unmap, so no pool gets them while they still show the old pages */
-typedef enum { POOL_MAP, POOL_UNMAP, POOL_FREE } PoolMapKind;
-typedef struct {
-    u64 gva, cpu, size; /* cpu: the guest memory a map shows */
-    PoolMapKind kind;
-} PoolMapPiece;
-typedef struct {
-    u32 n;
-    PoolMapPiece piece[];
-} PoolMapJob;
-static PoolMapJob* pool_map_job(u32 n) {
-    PoolMapJob* j = malloc(sizeof *j + (size_t)n * sizeof *j->piece);
-    if (!j) fatal("nvn: out of memory for %u changes of the GPU page table\n", n);
-    j->n = n;
-    return j;
-}
-static void pool_map_run(void* arg) {
-    PoolMapJob* j = arg;
-    for (u32 i = 0; i < j->n; i++) {
-        const PoolMapPiece* p = &j->piece[i];
-        if (p->kind == POOL_MAP)
-            gmmu_space_map(p->gva, p->cpu, p->size);
-        else if (p->kind == POOL_UNMAP)
-            gmmu_space_unmap(p->gva, p->size);
-        else
-            gmmu_space_free(p->gva, p->size);
-        gmmu_later_done(p->gva, p->kind == POOL_MAP ? p->cpu : GLATER_UNMAP, p->size);
-    }
-    free(j);
-}
-/* the game's thread reads and writes through the pool's GPU addresses at once (a program's header, its linkage
-   table): until the GPU thread makes the changes, the page table answers it as if it had (gmmu_later_add) */
-static void pool_map_queue(PoolMapJob* j) {
-    for (u32 i = 0; i < j->n; i++) {
-        const PoolMapPiece* p = &j->piece[i];
-        gmmu_later_add(p->gva, p->kind == POOL_MAP ? p->cpu : GLATER_UNMAP, p->size);
-    }
-    gpu_call(pool_map_run, j, NULL, 0);
-}
+   The GPU thread makes the page table's changes (gmmu_later), in order with the work the game submits after the call:
+   only that work and the GPU thread read the pool's GPU addresses through the table, and the game's thread queues the
+   change and goes on. Each change takes the renderer's lock (vkr_mapping_begin), which the GPU thread holds through a
+   draw that waits for its pipeline. One game makes and ends a pool for each heap of its allocator, thousands in a
+   load, and its loading threads waited up to 1.7 s in 5 s for that lock. The game's thread also reads and writes
+   through a new pool's GPU addresses at once (a program's header, its linkage table): until the map is made, the
+   table answers it for those pages. The VA allocator still answers at once, and ended addresses go back to it only
+   after their unmap, so no pool gets them while they still show the old pages */
 #define NVN_POOL_VIRTUAL 0x200u
 #define NVN_POOL_ALIGN   0x20000u /* the GPU address alignment: a big page, as compressible kinds want */
 int nvn_MemoryPoolInitialize(CPU* c, u64 p, u64 b) {
@@ -459,11 +423,7 @@ int nvn_MemoryPoolInitialize(CPU* c, u64 p, u64 b) {
         LOG_LIMIT(8, "nvn: memory pool %llx has no storage (flags %#x)\n", (unsigned long long)p, o.flags);
     lead = o.memory & 0xfff;
     va = gmmu_space_alloc(lead + o.size, NVN_POOL_ALIGN);
-    if (va && o.memory) {
-        PoolMapJob* j = pool_map_job(1);
-        j->piece[0] = (PoolMapPiece){va, o.memory - lead, lead + o.size, POOL_MAP};
-        pool_map_queue(j);
-    }
+    if (va && o.memory) gmmu_later_post(gmmu_later(GMMU_LATER_MAP, va, o.memory - lead, lead + o.size, 0));
     if (!va)
         fatal("nvn: no GPU address space left for a memory pool of %llx bytes", (unsigned long long)o.size);
     o.gpu = va + lead;
@@ -477,15 +437,14 @@ void nvn_MemoryPoolFinalize(CPU* c, u64 p) {
     NvnPool* o = NVN_OBJ(NvnPool, p);
     u64 lead = o->gpu & 0xfff;
     (void)c;
-    if (o->magic == NVN_MAGIC('P', 'O', 'O', 'L') && o->gpu) {
-        PoolMapJob* j = pool_map_job(1);
+    u32 nvmap = o->magic == NVN_MAGIC('P', 'O', 'O', 'L') ? __atomic_exchange_n(&o->nvmap, 0, __ATOMIC_ACQ_REL) : 0;
+    if (o->magic == NVN_MAGIC('P', 'O', 'O', 'L') && o->gpu) { /* the handle goes after the unmap, as it went before */
         gpu_pool_remove(o->gpu);
-        j->piece[0] = (PoolMapPiece){o->gpu - lead, 0, lead + o->size, POOL_FREE};
-        pool_map_queue(j);
+        gmmu_later_post(gmmu_later(GMMU_LATER_FREE, o->gpu - lead, 0, lead + o->size, nvmap));
+        nvmap = 0;
     }
     if (o->magic == NVN_MAGIC('P', 'O', 'O', 'L') && o->memory) nvn_cmd_memory_back(o->memory, o->size);
-    if (o->magic == NVN_MAGIC('P', 'O', 'O', 'L'))
-        nvmap_handle_drop(__atomic_exchange_n(&o->nvmap, 0, __ATOMIC_ACQ_REL));
+    nvmap_handle_drop(nvmap);
     o->magic = 0;
     o->gpu = 0;
 }
@@ -528,8 +487,8 @@ void nvn_MemoryPoolInvalidateMappedRange(CPU* c, u64 p, i64 offset, u64 size) {
 /* A virtual pool's pages show what its mapping requests put there, as the GPU's page table does: each request maps
    size bytes of a physical pool's storage from its offset at the virtual pool's offset, or unmaps them (no physical
    pool). Sparse requests at offsets of their own are just more pages. The requests before a bad one still apply, as
-   the GPU thread makes them in order (pool_map_run) */
-static int map_virtual(u64 p, i32 n, u64 requests, PoolMapJob* j) {
+   the GPU thread makes them in order (gmmu_later). *seq: the last one's sequence number, 0 for none */
+static int map_virtual(u64 p, i32 n, u64 requests, u32* seq) {
     const NvnPool* o = NVN_OBJ(const NvnPool, p);
     i32 i;
     for (i = 0; i < n; i++) {
@@ -545,7 +504,7 @@ static int map_virtual(u64 p, i32 n, u64 requests, PoolMapJob* j) {
             return 0;
         }
         if (!physical) {
-            j->piece[j->n++] = (PoolMapPiece){at, 0, r->size, POOL_UNMAP};
+            *seq = gmmu_later(GMMU_LATER_UNMAP, at, 0, r->size, 0);
             continue;
         }
         if (!phys) {
@@ -553,7 +512,7 @@ static int map_virtual(u64 p, i32 n, u64 requests, PoolMapJob* j) {
                       (unsigned long long)p, i, (unsigned long long)physical);
             return 0;
         }
-        j->piece[j->n++] = (PoolMapPiece){at, phys + (u64)r->physical_offset, r->size, POOL_MAP};
+        *seq = gmmu_later(GMMU_LATER_MAP, at, phys + (u64)r->physical_offset, r->size, 0);
     }
     LOG_LIMIT(16, "nvn: virtual pool %llx (%llx bytes at GPU %llx): %d requests mapped\n", (unsigned long long)p,
               (unsigned long long)o->size, (unsigned long long)o->gpu, n);
@@ -562,14 +521,9 @@ static int map_virtual(u64 p, i32 n, u64 requests, PoolMapJob* j) {
 /* on the GPU thread, as nvn_MemoryPoolInitialize's map changes */
 int nvn_MemoryPoolMapVirtual(CPU* c, u64 p, i32 n, u64 requests) {
     (void)c;
-    if (n <= 0) return 1;
-    PoolMapJob* j = pool_map_job((u32)n);
-    j->n = 0;
-    int ok = map_virtual(p, n, requests, j);
-    if (j->n)
-        pool_map_queue(j);
-    else
-        free(j);
+    u32 seq = 0;
+    int ok = map_virtual(p, n, requests, &seq);
+    if (seq) gmmu_later_post(seq);
     return ok;
 }
 /* ---- the Ounce's device command buffers and device messages (API 231), at the offsets of the game's driver */

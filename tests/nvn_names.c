@@ -184,14 +184,14 @@ void gmmu_space_free(u64 gva, u64 size) {
     (void)gva;
     (void)size;
 }
-void gmmu_later_add(u64 gva, u64 cpu, u64 size) { (void)gva, (void)cpu, (void)size; }
-void gmmu_later_done(u64 gva, u64 cpu, u64 size) { (void)gva, (void)cpu, (void)size; }
-/* the GPU thread's queue (gpu/gpu.c): a call runs at once, as no work of the GPU waits before it here */
-void gpu_call(void (*fn)(void*), void* arg, const u32* chans, u32 nchans) {
-    (void)chans;
-    (void)nchans;
-    fn(arg);
+/* the page table's changes the GPU thread makes later (hle/services/nvdrv.c), made at once: no page table here, and
+   a freed pool's nvmap handle goes */
+u32 gmmu_later(GmmuLaterKind kind, u64 gva, u64 cpu, u64 size, u32 nvmap) {
+    (void)gva, (void)cpu, (void)size;
+    if (kind == GMMU_LATER_FREE) nvmap_handle_drop(nvmap);
+    return 1;
 }
+void gmmu_later_post(u32 seq) { (void)seq; }
 u64 gmmu_run(u64 gva, u64 max, u64* cpu) {
     *cpu = gva;
     return max;
