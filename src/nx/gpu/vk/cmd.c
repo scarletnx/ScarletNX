@@ -1303,10 +1303,11 @@ void vk_submit_after(VkSemaphore sem, u64 wait, u64 signal) {
                                          .value = signal, .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT};
 }
 
-const char* g_vk_finish_who;
+_Thread_local const char* g_vk_finish_who;
 u64 g_vk_finishes, g_vk_finish_ns;
-/* the finishes since the last stats by their call site (a file's literal and a line), with their time, under vk_lock
-   as vk_finish is: one game made nine a frame, a round trip each with the GPU idle after it */
+/* the finishes since the last stats by their call site (a file's literal and a line, or the reason the renderer gave
+   in g_vk_finish_who, which has no line of the caller's), with their time, under vk_lock as vk_finish is: one game made
+   nine a frame, a round trip each with the GPU idle after it */
 #define FINISH_SITES 32
 static struct {
     const char* file;
@@ -1343,9 +1344,15 @@ void vk_finishes_log(void) {
             if (g_finish_sites[i].n && (best == FINISH_SITES || g_finish_sites[i].n > g_finish_sites[best].n)) best = i;
         if (best == FINISH_SITES) break;
         const char* f = strrchr(g_finish_sites[best].file, '/');
-        LOG("vulkan:   %llu finishes (%.0f%%, %.0f ms) at %s:%d\n", (unsigned long long)g_finish_sites[best].n,
-            100.0 * (double)g_finish_sites[best].n / (double)total, (double)g_finish_sites[best].ns / 1e6,
-            f ? f + 1 : g_finish_sites[best].file, g_finish_sites[best].line);
+        /* a reason the renderer gave (g_vk_finish_who) has no line of the caller's: the site is that reason alone */
+        if (g_finish_sites[best].line)
+            LOG("vulkan:   %llu finishes (%.0f%%, %.0f ms) at %s:%d\n", (unsigned long long)g_finish_sites[best].n,
+                100.0 * (double)g_finish_sites[best].n / (double)total, (double)g_finish_sites[best].ns / 1e6,
+                f ? f + 1 : g_finish_sites[best].file, g_finish_sites[best].line);
+        else
+            LOG("vulkan:   %llu finishes (%.0f%%, %.0f ms), %s\n", (unsigned long long)g_finish_sites[best].n,
+                100.0 * (double)g_finish_sites[best].n / (double)total, (double)g_finish_sites[best].ns / 1e6,
+                g_finish_sites[best].file);
         g_finish_sites[best].n = 0;
     }
     for (u32 i = 0; i < FINISH_SITES && g_finish_sites[i].file; i++) g_finish_sites[i].n = g_finish_sites[i].ns = 0;

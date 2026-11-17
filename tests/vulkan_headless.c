@@ -6454,6 +6454,83 @@ static int check_take_after_writes(void) {
     free(ch);
     return 0;
 }
+/* A guest write that covers every byte of a drawn target (vk_rt_before_write's whole) drops it instead of writing it
+   back: the image has nothing the write does not replace, so the round trip is gone, and memory is the truth that a
+   later read or draw loads. A write of a part of the target still writes it back first, and so does a range its caller
+   fills only in part (whole 0), as the copy engine's rows of blocks are. Each flush is one finish (vk_finishes_log) */
+static int check_rt_drop(void) {
+    const u64 gva = 0x4C0060000ull, cpu = HEAP_BASE + 0x540000, size = 0x400;
+    const u32 rgba8 = 0x08 | 2u << 7 | 2u << 10 | 2u << 13 | 2u << 16;
+    /* 16 by 16, blocks one GOB high: level 0 is the target's 1 KiB */
+    const u32 tic[8] = {rgba8, (u32)gva, (u32)(gva >> 32) | 3u << 21, 0, 15 | 1u << 23, 15, 0, 0};
+    static const u8 zero[4] = {0, 0, 0, 0};
+    GpuChannel* ch = calloc(1, sizeof *ch);
+    u64 dropped, finishes;
+    u8 px[4];
+    CHECK(ch);
+    gmmu_map(gva, cpu, 0x10000);
+    rt_clear(ch, gva, 16, 16, 0, 0); /* drawn and pending, red */
+    /* the program writes every byte of it: no write-back, so no finish, and the pixels are dropped */
+    dropped = g_vk_rt_dropped;
+    finishes = g_vk_finishes;
+    vk_lock();
+    vk_rt_before_write(gva, size, 1);
+    vk_unlock();
+    CHECK(g_vk_rt_dropped == dropped + 1 && g_vk_finishes == finishes);
+    memset(GP(cpu), 0, size); /* the store the hook came before */
+    gpu_mem_written(gva, size); /* as gmem_write's own: caches built on those pages check them again */
+    vk_lock();
+    Surf* s = vk_rt_find(gva);
+    CHECK(s);
+    vk_rt_note_read(s); /* a bind: it loads what the program wrote, not what the GPU drew */
+    CHECK(!read_pixel0(s, px) && !memcmp(px, zero, 4));
+    vk_unlock();
+    vk_lock();
+    Surf* t = vk_tex_from_tic(tic);
+    CHECK(t && !read_pixel0(t, px) && !memcmp(px, zero, 4)); /* a texture over it is memory's too */
+    vk_unlock();
+    /* a write of a part of the target covers no whole one: it goes to memory first */
+    rt_clear(ch, gva, 16, 16, 0, 1);
+    dropped = g_vk_rt_dropped;
+    finishes = g_vk_finishes;
+    vk_lock();
+    vk_rt_before_write(gva + 0x100, 0x10, 1);
+    vk_unlock();
+    CHECK(g_vk_rt_dropped == dropped && g_vk_finishes == finishes + 1);
+    CHECK(all_blue(GP(cpu), size));
+    /* a range its caller fills only in part, though it spans the target whole: written back, not dropped */
+    rt_clear(ch, gva, 16, 16, 0, 0);
+    dropped = g_vk_rt_dropped;
+    finishes = g_vk_finishes;
+    vk_lock();
+    vk_rt_before_write(gva - 0x100, size + 0x200, 0);
+    vk_unlock();
+    CHECK(g_vk_rt_dropped == dropped && g_vk_finishes == finishes + 1);
+    CHECK(GP(cpu)[0] == 255 && GP(cpu)[1] == 0 && GP(cpu)[2] == 0 && GP(cpu)[3] == 255);
+    /* what the drop saves on a target a game replaces each frame: 512 by 512, 1 MiB, drawn and written over again 16
+       times, with the write-back and without it. Both loops clear and end the frame, so the difference is the flush */
+    const u64 big = 0x4C0080000ull, big_cpu = HEAP_BASE + 0x900000, big_size = 512 * 512 * 4;
+    u64 drop_ns, flush_ns;
+    gmmu_map(big, big_cpu, big_size);
+    for (int pass = 0; pass < 2; pass++) {
+        u64 t0 = plat_ns();
+        for (int i = 0; i < 16; i++) {
+            rt_clear(ch, big, 512, 512, 4, 1);
+            vk_lock();
+            if (pass) vk_rt_before_write(big + 0x1000, 0x10, 1); /* a part of it: written back */
+            else vk_rt_before_write(big, big_size, 1);           /* all of it: dropped */
+            vk_unlock();
+        }
+        if (pass) flush_ns = (plat_ns() - t0) / 16;
+        else drop_ns = (plat_ns() - t0) / 16;
+    }
+    printf("render target drop: 512x512 (1 MiB) cleared and written over, 16 times: %.2f ms a frame dropped, %.2f ms "
+           "a frame written back first (%.2f ms of write-back, one finish each)\n",
+           drop_ns / 1e6, flush_ns / 1e6, (flush_ns - (double)drop_ns) / 1e6);
+    puts("render target drop: a write over all of a drawn target costs no finish, and memory is what a read loads");
+    free(ch);
+    return 0;
+}
 /* A clear whose targets' group (DsState.gen[DS_TARGETS]) and the surface table are as the last draw's or clear's keeps
    its targets (read_targets, g_vk_targets_kept) and clears them; another target, or the table changed under the same
    registers (a texture made elsewhere), looks them up again */
@@ -6615,7 +6692,7 @@ static int check_rt_watch(void) {
     CHECK(g_vk_rt_watch.publishes == w0.publishes + 1 && !own_watched(WATCH_A + t1, 1));
     CHECK(GP(WATCH_A + t1)[0] == 255 && GP(WATCH_A + t1)[2] == 0);
     vk_lock();
-    vk_rt_before_write(WATCH_GA, 0x200000); /* the targets go back to memory before it does */
+    vk_rt_before_write(WATCH_GA, 0x200000, 0); /* the targets go back to memory before it does */
     vk_unlock();
     CHECK(mem_unmap(WATCH_A, 0x200000) == 0);
     free(ch);
@@ -6689,7 +6766,7 @@ static int check_rt_watch_holder(void) {
     }
     puts("render target watch: the holder of vk_lock touched watched pages, and the CPU read the GPU's pixels");
     vk_lock();
-    vk_rt_before_write(HOLD_GA, 0x200000);
+    vk_rt_before_write(HOLD_GA, 0x200000, 0);
     vk_unlock();
     CHECK(mem_unmap(HOLD_A, 0x200000) == 0);
     free(ch);
@@ -6816,7 +6893,7 @@ static int check_zt_watch(void) {
         free(got);
     }
     vk_lock();
-    vk_rt_before_write(ZWATCH_GA, 0x200000); /* the targets go back to memory before it does */
+    vk_rt_before_write(ZWATCH_GA, 0x200000, 0); /* the targets go back to memory before it does */
     vk_unlock();
     CHECK(mem_unmap(ZWATCH_A, 0x200000) == 0);
     free(ch);
@@ -6877,8 +6954,8 @@ static int check_rt_superseded(void) {
     CHECK(!memcmp(GP(cpu + 0x4000), red, 4) && !memcmp(GP(cpu + 0x8000 - 4), red, 4));
     CHECK(all_blue(GP(cpu + 0x8000), 0x4000));
     vk_lock();
-    vk_rt_before_write(ga, span);
-    vk_rt_before_write(alias, span);
+    vk_rt_before_write(ga, span, 0);
+    vk_rt_before_write(alias, span, 0);
     vk_unlock();
     /* with every target back in memory, each byte has the last one drawn over it: the new layers' blue from where
        they start, the old first layer's bytes under them too (vk_rt_overlay publishes the new first layer inside the
@@ -6918,14 +6995,14 @@ static int check_rt_overlap(void) {
     CHECK(g_renderer->dma_copy(&o));
     guest_done(DMA_A + 0x40000, 160 * 128 * 4);
     CHECK(all_blue(GP(DMA_A + 0x40000), 160 * 128 * 4)); /* reading it lands it */
-    vk_rt_before_write(DMA_GA, 0x14000);
+    vk_rt_before_write(DMA_GA, 0x14000, 0);
     guest_done(DMA_A, 0x14000);
     CHECK(all_blue(GP(DMA_A), 0x14000));
     /* the newer one written back alone: the older one first, under it, and not again after */
     rt_clear(ch, DMA_GA + 0x10000, 64, 64, 3, 0);
     rt_clear(ch, DMA_GA, 160, 128, 4, 1);
     g_renderer->rt_flush(DMA_GA);
-    vk_rt_before_write(DMA_GA, 0x14000);
+    vk_rt_before_write(DMA_GA, 0x14000, 0);
     guest_done(DMA_A, 0x14000);
     CHECK(all_blue(GP(DMA_A), 0x14000));
     /* the older one written back alone: under the newer one, which keeps its pixels in a copy of it and goes on top
@@ -6944,7 +7021,7 @@ static int check_rt_overlap(void) {
     CHECK(g_renderer->dma_copy(&o));
     guest_done(DMA_A + 0x40000, 160 * 128 * 4);
     CHECK(all_blue(GP(DMA_A + 0x40000), 160 * 128 * 4));
-    vk_rt_before_write(DMA_GA, 0x14000);
+    vk_rt_before_write(DMA_GA, 0x14000, 0);
     guest_done(DMA_A, 0x14000);
     CHECK(all_blue(GP(DMA_A), 0x14000));
     /* a 160 by 256 target, the program's own bytes over its memory after it, and a copy of the 160 by 128 surface: the
@@ -7026,7 +7103,7 @@ static int check_rt_overlap(void) {
     guest_done(DMA_A + 0x8000, 0x2000); /* the GPU's writes there first, as the guest's fence has them */
     memset(GP(DMA_A + 0x8000), 0x5a, 0x2000);
     g_renderer->mem_may_have_changed();
-    vk_rt_before_write(DMA_GA + 0x20000, 16);
+    vk_rt_before_write(DMA_GA + 0x20000, 16, 0);
     if (tracking) CHECK(all_bytes(GP(DMA_A + 0x8000), 0x2000, 0x5a));
     guest_done(DMA_A, 0x8000);
     CHECK(all_blue(GP(DMA_A), 0x8000));
@@ -7034,7 +7111,7 @@ static int check_rt_overlap(void) {
     CHECK(all_blue(GP(DMA_A + 0xa000), 0x28000 - 0xa000));
     /* drawn over whole again: its next write-back is every pixel, the program's bytes no longer newer */
     rt_clear(ch, DMA_GA, 160, 256, 4, 1);
-    vk_rt_before_write(DMA_GA + 0x20000, 16);
+    vk_rt_before_write(DMA_GA + 0x20000, 16, 0);
     guest_done(DMA_A, 0x28000);
     CHECK(all_blue(GP(DMA_A), 0x28000));
     /* A target loaded from memory and then changed by a copy, with no draw since, so no draw baseline: the pages the
@@ -7051,7 +7128,7 @@ static int check_rt_overlap(void) {
     guest_done(DMA_A + 0x10000, 0x1000); /* the GPU's writes there first, as the guest's fence has them */
     memset(GP(DMA_A + 0x10000), 0x5b, 0x1000);
     g_renderer->mem_may_have_changed();
-    vk_rt_before_write(DMA_GA + 0x20000, 16);
+    vk_rt_before_write(DMA_GA + 0x20000, 16, 0);
     if (tracking) CHECK(all_bytes(GP(DMA_A + 0x10000), 0x1000, 0x5b));
     guest_done(DMA_A, 0x10000);
     CHECK(all_bytes(GP(DMA_A), 0x10000, 0x21));
@@ -7066,7 +7143,7 @@ static int check_rt_overlap(void) {
     guest_done(DMA_A + 0x41000, 0x1000); /* the GPU's writes there first, as the guest's fence has them */
     memset(GP(DMA_A + 0x41000), 0x6c, 0x1000);
     g_renderer->mem_may_have_changed();
-    vk_rt_before_write(split + 0x13000, 16);
+    vk_rt_before_write(split + 0x13000, 16, 0);
     if (tracking) CHECK(all_bytes(GP(DMA_A + 0x41000), 0x1000, 0x6c));
     guest_done(DMA_B, 0x10000);
     CHECK(all_blue(GP(DMA_B), 0x10000));
@@ -8570,6 +8647,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_blit());
     CHECK(!check_blit_bands());
     CHECK(!check_take_after_writes());
+    CHECK(!check_rt_drop());
     CHECK(!check_targets_kept());
     CHECK(!check_uma_in_flight());
     CHECK(!check_uma_trap_ranges());

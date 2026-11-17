@@ -1237,7 +1237,7 @@ static void flush_wait(VkCommandBuffer cb) {
                            .dstAccessMask = VK_ACCESS_2_HOST_READ_BIT};
     VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &mb};
     rec_CmdPipelineBarrier2(cb, &di);
-    vk_finish_at(g_vk_finish_who ? g_vk_finish_who : __FILE__, __LINE__);
+    vk_finish_at(g_vk_finish_who ? g_vk_finish_who : __FILE__, g_vk_finish_who ? 0 : __LINE__);
     vk_readback_ready();
 }
 /* A write-back keeps what the CPU wrote over a target after its draws. On the console the GPU's writes reached memory
@@ -2192,7 +2192,7 @@ int vk_rt_over(u64 gva, u64 size) {
     return count != 0;
 }
 
-void vk_rt_before_write(u64 gva, u64 size) {
+void vk_rt_before_write(u64 gva, u64 size, int whole) {
     Surf *local[16], **list;
     u32 count, i;
     if (!size || g_rt_flushing) return;
@@ -2203,13 +2203,15 @@ void vk_rt_before_write(u64 gva, u64 size) {
         for (i = 0; i < count; i++) {
             Surf* s = list[i];
             u64 bytes = rt_bytes(s);
-            /* The write covers every byte of the target: the guest's bytes replace every pixel, so memory is the
+            /* The caller writes every byte of the target: the guest's bytes replace every pixel, so memory is the
                truth and the image has nothing of its own to give back. Flushing it would be a wait for the GPU to
-               draw pixels the write is about to drop, 3 ms a round trip for the small targets a game replaces each
-               frame. The image is dropped instead: its layout goes undefined, so the next draw starts from none of it
-               (as a full overwrite does), and a read of it builds a texture from memory (texture.c), which the write
-               left as the truth. A write that covers part of a target still flushes it */
-            if (vk_rt_write_covers(s->gva, bytes, gva, size)) {
+               draw pixels the write is about to drop, a round trip each of about 0.3 ms for a 1 MiB target
+               (tests/vulkan_headless.c, check_rt_drop). The image is dropped instead, as a reload whose memory
+               changed leaves it (rt_reload): its layout goes undefined, so the next draw starts from none of it (a
+               full overwrite), and a read of it builds a texture from memory, which the write left as the truth. A
+               write that covers part of a target, or one whole only in part of its range, still flushes it */
+            if (whole && vk_rt_write_covers(s->gva, bytes, gva, size)) {
+                vk_surf_wrote(s); /* the copies of it (crops) are out of date */
                 vk_render_end();
                 s->layout = VK_IMAGE_LAYOUT_UNDEFINED;
                 s->draw_wseen = 0;

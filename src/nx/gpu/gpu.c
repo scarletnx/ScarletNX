@@ -49,7 +49,7 @@
 GpuState g_gpu;
 volatile u64 g_gpu_submits;
 void (*g_gpu_mem_changed)(u64 cpu_addr, u64 len);
-void (*g_gpu_before_write)(u64 gva, u64 size);
+void (*g_gpu_before_write)(u64 gva, u64 size, int whole);
 _Atomic int g_gpu_releases;
 void (*g_gpu_mapping_begin)(u64 gva, u64 size, int kind);
 void (*g_gpu_mapping_end)(void);
@@ -122,8 +122,8 @@ void gmem_need(u64 gva, u64 size) {
 }
 /* the renderer's hook (vkr_before_write) makes a release queued over the bytes happen first, with everything else
    pending there: dma.c and the inline-to-memory path call it directly */
-void gmem_before_write(u64 gva, u64 size) {
-    if (size && g_gpu_before_write) g_gpu_before_write(gva, size);
+void gmem_before_write(u64 gva, u64 size, int whole) {
+    if (size && g_gpu_before_write) g_gpu_before_write(gva, size, whole);
 }
 int gmem_read(u64 gva, void* dst, u64 size) {
     if ((atomic_load_explicit(&g_gpu_releases, memory_order_acquire) ||
@@ -156,7 +156,7 @@ int gmem_read(u64 gva, void* dst, u64 size) {
 int gmem_write_by(u64 gva, const void* src, u64 size, int kind, u32 format, u64 surface) {
     int all;
     if (!size) return 0;
-    gmem_before_write(gva, size);
+    gmem_before_write(gva, size, 1); /* every byte of it */
     all = copy_runs(gva, NULL, (const u8*)src, size);
     gpu_mem_written_by(gva, size, kind, format, surface);
     return all ? 0 : -1;
@@ -165,7 +165,7 @@ int gmem_write(u64 gva, const void* src, u64 size) { return gmem_write_by(gva, s
 int gmem_write_cb(u64 gva, const void* src, u64 size) {
     int all;
     if (!size) return 0;
-    gmem_before_write(gva, size);
+    gmem_before_write(gva, size, 1); /* every byte of it */
     all = copy_runs(gva, NULL, (const u8*)src, size);
     gpu_mem_written_cb(gva, size);
     return all ? 0 : -1;
@@ -319,7 +319,7 @@ u32 gpu_color_bpp(u32 format) {
 
 /* ------------------------------------------------------------ what the game can observe */
 void gpu_signal_point(void) {
-    if (g_gpu_before_write) g_gpu_before_write(0, 0);
+    if (g_gpu_before_write) g_gpu_before_write(0, 0, 0);
 }
 void gpu_release_write(u64 gva, const void* data, u32 len) {
     if (g_renderer->release_write) {
@@ -414,7 +414,8 @@ static void upload_block_linear(const GpuI2m* t) {
     u64 slab = (u64)(u->dest.layer >> bd) * bl_block_rows(u->dest.height, bh) * row_of_blocks;
     u64 lo = slab + ((u64)(u->dest.y >> GOB_SIZE_Y_SHIFT) >> bh) * row_of_blocks;
     u64 hi = slab + ((((u64)(u->dest.y + u->line_count - 1) >> GOB_SIZE_Y_SHIFT) >> bh) + 1) * row_of_blocks;
-    gmem_before_write(u->dest.address + lo, hi - lo);
+    /* the lines below are written, the rows of blocks between them are not: a target there keeps its pixels */
+    gmem_before_write(u->dest.address + lo, hi - lo, 0);
     for (line = 0; line < u->line_count; line++) {
         u64 row = bl_yz(u->dest.y + line, u->dest.layer, u->dest.width, u->dest.height, bh, bd);
         for (x = 0; x < u->line_length_in;) {
