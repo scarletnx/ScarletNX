@@ -1083,7 +1083,13 @@ static int mir_pending(u64 gva, u64 len) {
 void vk_mirror_mem_need(u64 gva, u64 len) {
     if (g_mir.on <= 0 || !len || !mir_pending(gva, len)) return;
     vk_lock();
-    /* a finish takes its pages in, and publishing them makes them the mirror's: the CPU's touch lands them */
+    /* the submits the GPU has already finished are landed first, which hands over their pages with no wait at all: a
+       finish submits what is being recorded and waits for every submission the game has open, and this game's pages
+       are usually done by the time the CPU reads them */
+    u64 submitted = 0, done = 0;
+    vk_submit_progress(&submitted, &done);
+    if (done) vk_land_through(done);
+    /* a finish takes what is left in, and publishing them makes them the mirror's: the CPU's touch lands them */
     if (mir_pending(gva, len)) vk_finish();
     vk_mirror_publish();
     vk_unlock();
