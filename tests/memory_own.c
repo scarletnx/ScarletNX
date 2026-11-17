@@ -172,7 +172,9 @@ static void producer_unlock(void) {
 }
 /* r's references once no landing is under way: a landing holds the producer's lock from before it cuts its entries
    until it has released them, so a thread it let go, or an own_acquire that found the entries cut already, can come
-   back before the release */
+   back before the release. A landing in two steps lets go of that lock while the GPU copies: it releases its
+   resources before its pages take owners again, so a caller sees its release once an own_begin on those pages has
+   returned (test_two_step) */
 static int refs(Res* r) {
     producer_lock();
     producer_unlock();
@@ -757,6 +759,7 @@ static void test_two_step(void) {
     pthread_join(reader, NULL);
     pthread_join(owner, NULL);
     CHECK(__atomic_load_n(&g_two_read, __ATOMIC_ACQUIRE) == (u8)(0xA0 + 0x200) && g_lands == lands + 1);
+    /* the owner's own_begin waited for the landing's inflight entry, which goes after its release */
     CHECK(__atomic_load_n(&g_two_begun, __ATOMIC_ACQUIRE) && refs(r) == 0);
     CHECK(own_trapped(a + 0x3800, 0x100)); /* the new owner's page stays trapped */
     g_own.hooks.land_start = NULL;

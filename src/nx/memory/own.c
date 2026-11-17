@@ -17,7 +17,8 @@
    the lock in turn. A landing in two steps (OwnHooks' land_start) lets go of the producer's lock while the GPU copies,
    with its entries marked. From then on it takes no lock of the producer's, so a holder that waits for its marks
    (own_begin, own_drop, another landing) sees them go. Its pages are noted (OwnState's inflight), and no owner or
-   watch comes on them until it is done (own_begin, own_watch): the producer's lock kept them away before. The
+   watch comes on them until it has let them go and released its resources (own_begin, own_watch): the producer's
+   lock kept them away before. The
    landing runs with no lock of ours held, so a thread holding the kernel's lock may fault on
    owned memory, as long as no holder of the producer's lock waits for the kernel's (nvdrv.c's syncpt_add_quiet). One
    holding mem.c's lock may not: holders of the producer's lock wait for it (own_begin, every mapping change), so mem.c
@@ -690,6 +691,10 @@ static void land_pages(u64 lo, u64 hi, int by) {
        reads such a page directly) */
     let_go(plo, phi);
     if (kept[1]) let_go(kept[0], kept[1]);
+    /* and the resources before its pages take owners again: the producer's lock kept them away until the release
+       before. A thread whose own_begin waited for this landing (inflight_wait) then sees the release too: it is
+       ordered before the inflight entry goes, under g_own.lk and with the release store of ninflight */
+    res_release(&rel);
     if (two) { /* its pages take owners and watches again */
         pm_lock(&g_own.lk);
         for (i = 0; i < g_own.ninflight; i++)
@@ -702,7 +707,6 @@ static void land_pages(u64 lo, u64 hi, int by) {
         pc_broadcast(&g_own.cv);
         pm_unlock(&g_own.lk);
     }
-    res_release(&rel);
     if (!let) producer_unlock();
 }
 
