@@ -22,7 +22,7 @@ static int check_texture_quiet_other(void) {
     int saved_check = g_settings.draw_state_check, failed = 0;
     g_settings.draw_state_check = 0;
     g_vk_present++;
-    u64 c0, q0, w0, c1, q1, w1, f0[5], f1[5];
+    u64 c0, q0, w0, c1, q1, w1, f0[6], f1[6];
     vk_lock();
     Surf* t = vk_tex_from_tic(tic); /* full: a new present */
     CHECK(t && vk_tex_from_tic(tic) == t);
@@ -136,5 +136,58 @@ static int check_texture_quiet_alias(void) {
     mem_alias_end(TQA_SRC, 0x10000);
     CHECK(mem_unmap(TQA_SRC, 0x10000) == 0);
     if (!failed) puts("PASS texture quiet alias: a view elsewhere leaves a texture quiet over an epoch with no write");
+    return failed;
+}
+/* A texture across a present (SNX_TEST_NVN_CASE=texture_quiet_present): two textures in one leaf of write tracking.
+   After a present and an epoch, B's full check takes the leaf in, and A stays quiet over the present (no write on
+   it). After a CPU write on A, a present and an epoch, A takes a full check and its texel is the CPU's */
+static int check_texture_quiet_present(void) {
+    if (mem_map(TQ_CPU, TQ_SPAN, MS_NORMAL, PERM_RW) == 0) gmmu_map(TQ_GVA, TQ_CPU, TQ_SPAN); /* else another case's */
+    NvnTexture d = {0};
+    d.d.target = NVN_TEXTURE_TARGET_2D;
+    d.d.format = NVN_FORMAT_RGBA8;
+    d.d.levels = 1;
+    d.d.width = d.d.height = TQ_SIDE;
+    d.d.depth = 1;
+    u32 tic_a[8], tic_b[8];
+    d.gpu = TQ_TEX + 0x180000;
+    CHECK(nvn_tic_encode(&d, NULL, 0, 0, tic_a));
+    d.gpu = TQ_TEX + 0x190000;
+    CHECK(nvn_tic_encode(&d, NULL, 0, 0, tic_b));
+    int saved_check = g_settings.draw_state_check, failed = 0;
+    g_settings.draw_state_check = 0;
+    u64 quiet;
+    g_renderer->mem_may_have_changed();
+    g_vk_present++;
+    Surf* a = tqa_look(tic_a, &quiet);
+    CHECK(a && tqa_look(tic_a, &quiet) == a);
+    Surf* b = tqa_look(tic_b, &quiet);
+    CHECK(b && tqa_look(tic_b, &quiet) == b);
+    /* a present and an epoch with no write: B's check takes the leaf in, then A */
+    g_renderer->mem_may_have_changed();
+    g_vk_present++;
+    CHECK(tqa_look(tic_b, &quiet) == b);
+    CHECK(tqa_look(tic_a, &quiet) == a);
+    printf("texture quiet present: over a present with no write the texture was %s\n",
+           quiet ? "quiet" : "checked in full");
+    if (quiet != 1) failed = 1;
+    /* a CPU write on A, a present and an epoch */
+    const u64 cpu = TQ_CPU + (TQ_TEX - TQ_GVA) + 0x180000;
+    guest_done(cpu, 4);
+    snx_st_le32(GP(cpu), 0xff445567u);
+    g_renderer->mem_may_have_changed();
+    g_vk_present++;
+    CHECK(tqa_look(tic_b, &quiet) == b);
+    CHECK(tqa_look(tic_a, &quiet) == a);
+    const u32 got = ct_texel(a, 0, 0);
+    if (quiet || got != 0xff445567u) {
+        fprintf(stderr,
+                "texture quiet present: after a CPU write and a present the check was %s and the texel %08x (written "
+                "ff445567)\n",
+                quiet ? "quiet" : "full", got);
+        failed = 1;
+    }
+    g_settings.draw_state_check = saved_check;
+    if (!failed) puts("PASS texture quiet present: quiet over a present with no write, a full check after a CPU write");
     return failed;
 }
