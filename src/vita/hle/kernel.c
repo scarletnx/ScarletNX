@@ -181,8 +181,8 @@ static uint32_t wait_sema(VitaProcess* p, VitaThread* t) {
         o->u.sema.count -= need;
         return 0;
     }
-    vita_wait(p, (VitaWait){.kind = VITA_WAIT_SEMA, .object = uid, .a = (uint32_t)need, .timeout = arg(p, t, 2),
-                            .deadline = vita_deadline(p, arg(p, t, 2))});
+    vita_wait(p, (VitaWait){.kind = VITA_WAIT_SEMA, .object = uid, .a = (uint32_t)need, .b = o->u.sema.cancelled,
+                            .timeout = arg(p, t, 2), .deadline = vita_deadline(p, arg(p, t, 2))});
     return 0;
 }
 static uint32_t poll_sema(VitaProcess* p, VitaThread* t) {
@@ -199,6 +199,47 @@ static uint32_t signal_sema(VitaProcess* p, VitaThread* t) {
     int32_t n = (int32_t)arg(p, t, 1);
     if (o->u.sema.max > 0 && o->u.sema.count + n > o->u.sema.max) return SCE_KERNEL_ERROR_SEMA_OVF;
     o->u.sema.count += n;
+    return 0;
+}
+/* the threads waiting on the semaphore uid */
+static uint32_t sema_waiters(VitaProcess* p, uint32_t uid) {
+    uint32_t n = 0;
+    for (unsigned i = 0; i < VITA_THREADS; ++i)
+        if (p->threads[i].state == VITA_THREAD_WAITING && p->threads[i].wait.kind == VITA_WAIT_SEMA &&
+            p->threads[i].wait.object == uid)
+            ++n;
+    return n;
+}
+/* sceKernelGetSemaInfo(uid, *info, size): SceKernelSemaInfo (size, UID, name, attribute, the initial count, the
+   count now, the most, the threads waiting; 0x3c bytes). The initial count is not kept: the count now stands for it */
+static uint32_t get_sema_info(VitaProcess* p, VitaThread* t) {
+    uint32_t uid = arg(p, t, 0), at = arg(p, t, 1);
+    VitaObject* o = vita_object(p, uid, VITA_OBJ_SEMA);
+    unsigned char* info;
+    if (!o) return SCE_KERNEL_ERROR_UNKNOWN_SEMA_ID;
+    if (!at || arg(p, t, 2) < 0x3c) return SCE_KERNEL_ERROR_ERROR;
+    info = vita_ptr(p, at);
+    memset(info, 0, 0x3c);
+    snx_st_le32(info, 0x3c);
+    snx_st_le32(info + 4, uid);
+    snprintf((char*)info + 8, 32, "%s", o->name);
+    snx_st_le32(info + 0x28, o->u.sema.attr);
+    snx_st_le32(info + 0x2c, (uint32_t)o->u.sema.count);
+    snx_st_le32(info + 0x30, (uint32_t)o->u.sema.count);
+    snx_st_le32(info + 0x34, (uint32_t)o->u.sema.max);
+    snx_st_le32(info + 0x38, sema_waiters(p, uid));
+    return 0;
+}
+/* sceKernelCancelSema(uid, count, *waiting): the waiting threads' waits end with SCE_KERNEL_ERROR_WAIT_CANCEL, the
+   count set when it is not negative, and how many were waiting written */
+static uint32_t cancel_sema(VitaProcess* p, VitaThread* t) {
+    uint32_t uid = arg(p, t, 0), waiting = arg(p, t, 2);
+    VitaObject* o = vita_object(p, uid, VITA_OBJ_SEMA);
+    int32_t count = (int32_t)arg(p, t, 1);
+    if (!o) return SCE_KERNEL_ERROR_UNKNOWN_SEMA_ID;
+    if (waiting && vita_mapped(p, waiting, 4)) vita_write32(p, waiting, sema_waiters(p, uid));
+    if (count >= 0) o->u.sema.count = count;
+    ++o->u.sema.cancelled;
     return 0;
 }
 static uint32_t delete_object(VitaProcess* p, VitaThread* t, uint32_t type, uint32_t unknown) {
@@ -613,6 +654,7 @@ bool vita_kernel_wait_try(VitaProcess* p, VitaThread* t, uint64_t now) {
         case VITA_WAIT_SEMA: {
             VitaObject* o = vita_object(p, w->object, VITA_OBJ_SEMA);
             if (!o) return t->cpu.r[0] = SCE_KERNEL_ERROR_WAIT_DELETE, true;
+            if (o->u.sema.cancelled != w->b) return t->cpu.r[0] = SCE_KERNEL_ERROR_WAIT_CANCEL, true;
             if (o->u.sema.count < (int32_t)w->a) return false;
             o->u.sema.count -= (int32_t)w->a;
             return t->cpu.r[0] = 0, true;
@@ -858,6 +900,8 @@ const VitaHle vita_hle_kernel[] = {
     {0x866ef048u, "sceKernelPollSema", poll_sema},
     {0xe6b761d1u, "sceKernelSignalSema", signal_sema},
     {0xdb32948au, "sceKernelDeleteSema", delete_sema},
+    {0x595d3fa6u, "sceKernelGetSemaInfo", get_sema_info},
+    {0x66d6bf05u, "sceKernelCancelSema", cancel_sema},
     {0xed53334au, "sceKernelCreateMutex", create_mutex},
     {0x1d8d7945u, "sceKernelLockMutex", lock_mutex},
     {0x72fc1f54u, "sceKernelTryLockMutex", try_lock_mutex},
