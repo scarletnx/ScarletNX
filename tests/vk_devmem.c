@@ -341,6 +341,9 @@ static void device(int uma, u64 gran, u64 atom, u64 budget) {
     static int first = 1;
     if (first) memcpy(g_pristine, &g_devmem, sizeof g_devmem);
     first = 0;
+    /* not while the allocator's thread runs: the copy below goes over the lock and the condition it waits on, and
+       vk_devmem_init starts a second thread on the same state */
+    CHECK(!g_devmem.ahead.on);
     for (u32 i = 0; i < g_devmem.nblock; i++) space_destroy(&g_devmem.block[i].free);
     free(g_devmem.block);
     free(g_devmem.rec);
@@ -1085,12 +1088,12 @@ static void check_ahead_class(void) {
 }
 /* With the thread ahead, the driver is told a block's priority on that thread (devmem.c prio_set), not on the one that
    asked: what each block should have is what the driver has once the queue is done, and a change undone before the
-   thread came to it makes no call */
+   thread came to it makes no call. On check_threads' device and its one thread: a device() of its own left this
+   thread running, and the next device() copied a new state over the lock and the condition it waited on, then
+   started a second thread on it. The macOS CI found the two of them in check_ahead_cap */
 static void check_priority_ahead(void) {
     Held a;
     const DevMemWant gpu = {.at = DM_DEVICE};
-    g_threads = 1;
-    device(0, 1024, 64, 0);
     CHECK(g_devmem.ahead.on);
     g_vk.has_pageable = 1;
     CHECK(make(0, MIB, 256, ~0u, 0, gpu, &a) == VK_SUCCESS);
@@ -1121,6 +1124,7 @@ static void check_threads(void) {
     pc_init(&g_drv.cv);
     check_ahead_class();
     check_ahead_cap(budget);
+    check_priority_ahead();
     for (u32 i = 0; i < WORKERS; i++) CHECK(plat_thread(worker, (void*)(uintptr_t)i, 0) == 0);
     pm_lock(&g_work.lk);
     while (g_work.done < WORKERS) pc_wait(&g_work.cv, &g_work.lk, -1);
@@ -1493,8 +1497,7 @@ int main(void) {
     check_cap();
     check_atoms(64);
     check_atoms(4096);
-    check_priority_ahead();
-    check_threads();
+    check_threads(); /* the last: the allocator's thread runs from it to the end (check_priority_ahead in it) */
     puts("vk_devmem: ok");
     return 0;
 }
