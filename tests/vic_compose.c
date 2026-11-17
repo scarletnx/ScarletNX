@@ -5,6 +5,7 @@
    the target rectangle (clipping, an odd left edge, wholly outside the surface), and the GPU asked only once the
    renderer is up. The stand-in renderer declines every job, so the CPU composes; surfaces are pitch linear */
 #include "nx/gpu/video/vic.c"
+#include "common/utilities/bits.h"
 #include "support/vic_ref.h"
 #include <stdarg.h>
 
@@ -181,8 +182,9 @@ static void bt601_matrix(void) {
                 vic_execute(regs);
                 const u8* p = px(&j, 0, 0);
                 int c = (y - 16) * 298, d = u - 128, e = v - 128;
-                int ref[3] = {clamp8((c + 409 * e + 128) >> 8), clamp8((c - 100 * d - 208 * e + 128) >> 8),
-                              clamp8((c + 516 * d + 128) >> 8)};
+                int ref[3] = {clamp8((int)snx_asr_s64(c + 409 * e + 128, 8)),
+                              clamp8((int)snx_asr_s64(c - 100 * d - 208 * e + 128, 8)),
+                              clamp8((int)snx_asr_s64(c + 516 * d + 128, 8))};
                 for (int k = 0; k < 3; k++) {
                     int diff = abs((int)p[k] - ref[k]);
                     if (diff > worst) worst = diff;
