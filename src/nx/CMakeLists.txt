@@ -232,6 +232,11 @@ snx_glsl_spirv(snx_vk SOURCE gpu/texture/texconv.comp NAME texconv_spv HEADER nx
 # its ETC2 build: BCn encoded again as ETC2 and EAC, for a GPU that samples those and not BCn (gpu/vk/texconv.c)
 snx_glsl_spirv(snx_vk SOURCE gpu/texture/texconv.comp NAME texconv_etc2_spv HEADER nx/gpu/texture/texconv_spv.h
                DEFINES SNX_TC_ETC2)
+# and again with SPIR-V's packed dot product (gpu/texture/etc2_encode.glsl's et_dot, Vulkan 1.3's
+# shaderIntegerDotProduct) for the GPUs that say they have an instruction for it: the encoder compares each texel
+# with four colours by their dot products
+snx_glsl_spirv(snx_vk SOURCE gpu/texture/texconv.comp NAME texconv_etc2_dot_spv HEADER nx/gpu/texture/texconv_spv.h
+               TARGET vulkan1.3 DEFINES SNX_TC_ETC2 SNX_BC7_DOT=1)
 # its ASTC build: BC2, BC3 and BC7 encoded again as ASTC 4x4, for a GPU that samples ASTC and not BCn
 # (gpu/texture/astc_encode.glsl over bc7_encode.glsl's fitter)
 # in three passes (gpu/texture/texconv.glsl's SNX_ASTC_PASS): the blocks that are an ASTC layout as they stand, moved

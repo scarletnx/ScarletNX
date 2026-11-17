@@ -204,6 +204,7 @@ The settings, each with its extension and, where one took it in, the Vulkan vers
 | `vk_khr_shader_maximal_reconvergence` | `auto` | `VK_KHR_shader_maximal_reconvergence` |
 | `vk_khr_swapchain` | `auto` | `VK_KHR_swapchain` |
 | `vk_khr_synchronization2` | `auto` | `VK_KHR_synchronization2`, promoted to Vulkan 1.3 |
+| `vk_khr_unified_image_layouts` | `auto` | `VK_KHR_unified_image_layouts` |
 | `vk_khr_video_decode_av1` | `auto` | `VK_KHR_video_decode_av1` |
 | `vk_khr_video_decode_h264` | `auto` | `VK_KHR_video_decode_h264` |
 | `vk_khr_video_decode_queue` | `auto` | `VK_KHR_video_decode_queue` |
