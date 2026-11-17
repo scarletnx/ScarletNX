@@ -960,7 +960,7 @@ void ir_promote_registers(SnxIr* ir, LLVMValueRef fn) {
     {
         size_t uses[SLOTS] = {0}, copies[SLOTS] = {0};
         unsigned char* depth = (unsigned char*)malloc(2 * nblocks + 1);
-        unsigned char* likely = depth + nblocks;
+        unsigned char* likely = depth ? depth + nblocks : NULL; /* NULL + n is undefined */
         if (!depth || loop_depths(blocks, nblocks, keys, depth) || likely_blocks(ir, blocks, nblocks, keys, likely)) {
             free(depth);
             goto done;
