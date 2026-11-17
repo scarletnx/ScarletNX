@@ -184,6 +184,14 @@ void gmmu_space_free(u64 gva, u64 size) {
     (void)gva;
     (void)size;
 }
+void gmmu_later_add(u64 gva, u64 cpu, u64 size) { (void)gva, (void)cpu, (void)size; }
+void gmmu_later_done(u64 gva, u64 cpu, u64 size) { (void)gva, (void)cpu, (void)size; }
+/* the GPU thread's queue (gpu/gpu.c): a call runs at once, as no work of the GPU waits before it here */
+void gpu_call(void (*fn)(void*), void* arg, const u32* chans, u32 nchans) {
+    (void)chans;
+    (void)nchans;
+    fn(arg);
+}
 u64 gmmu_run(u64 gva, u64 max, u64* cpu) {
     *cpu = gva;
     return max;

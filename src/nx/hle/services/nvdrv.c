@@ -87,12 +87,55 @@ static u32 gmmu_l2_index(u64 page) { return (u32)(page & (GMMU_L2_ENTRIES - 1));
 #define GHINT_MAX           ((1u << (GMMU_PAGE_BITS - GMMU_PTE_HINT_SHIFT)) - 1)
 #define GHINT_MASK          ((u64)GHINT_MAX << GMMU_PTE_HINT_SHIFT)
 static u64 gmmu_pte_hint(u64 e) { return (e & GHINT_MASK) >> GMMU_PTE_HINT_SHIFT; }
+/* the newest change queued for the GPU thread over gva, for a thread other than it (gmmu_later_add): 1 with the guest
+   address of gva in *cpu (GLATER_UNMAP: unmapped) and in *n the bytes from gva to the change's end */
+static int later_find(u64 gva, u64* cpu, u64* n) {
+    int hit = 0;
+    if (!__atomic_load_n(&g_hle.nvdrv.nlater, __ATOMIC_ACQUIRE) || gpu_on_thread()) return 0;
+    pm_lock(&g_host.nvdrv.later_lock);
+    for (u32 i = g_hle.nvdrv.nlater; i-- > 0;) {
+        const GLater* l = &g_hle.nvdrv.later[i];
+        if (gva - l->gva >= l->size) continue;
+        *cpu = l->cpu == GLATER_UNMAP ? GLATER_UNMAP : l->cpu + (gva - l->gva);
+        *n = l->size - (gva - l->gva);
+        hit = 1;
+        break;
+    }
+    pm_unlock(&g_host.nvdrv.later_lock);
+    return hit;
+}
+void gmmu_later_add(u64 gva, u64 cpu, u64 size) {
+    pm_lock(&g_host.nvdrv.later_lock);
+    if (g_hle.nvdrv.nlater == g_hle.nvdrv.caplater) {
+        u32 cap = g_hle.nvdrv.caplater ? g_hle.nvdrv.caplater * 2 : 64;
+        GLater* l = realloc(g_hle.nvdrv.later, (size_t)cap * sizeof *l);
+        if (!l) fatal("nvdrv: out of memory for %u queued changes of the GPU page table\n", cap);
+        g_hle.nvdrv.later = l;
+        g_hle.nvdrv.caplater = cap;
+    }
+    g_hle.nvdrv.later[g_hle.nvdrv.nlater] = (GLater){gva, cpu, size};
+    __atomic_store_n(&g_hle.nvdrv.nlater, g_hle.nvdrv.nlater + 1, __ATOMIC_RELEASE);
+    pm_unlock(&g_host.nvdrv.later_lock);
+}
+void gmmu_later_done(u64 gva, u64 cpu, u64 size) {
+    pm_lock(&g_host.nvdrv.later_lock);
+    for (u32 i = 0; i < g_hle.nvdrv.nlater; i++) { /* the oldest such: the GPU thread makes them in order */
+        const GLater* l = &g_hle.nvdrv.later[i];
+        if (l->gva != gva || l->cpu != cpu || l->size != size) continue;
+        memmove(&g_hle.nvdrv.later[i], &g_hle.nvdrv.later[i + 1],
+                (g_hle.nvdrv.nlater - i - 1) * sizeof *g_hle.nvdrv.later);
+        __atomic_store_n(&g_hle.nvdrv.nlater, g_hle.nvdrv.nlater - 1, __ATOMIC_RELEASE);
+        break;
+    }
+    pm_unlock(&g_host.nvdrv.later_lock);
+}
 /* the guest address of a GPU address, 0 when its page isn't mapped. On the GPU thread, while ioctl_as maps and unmaps
    on others */
 u64 gmmu_translate(u64 gva) {
     u64 page = gva >> GMMU_PAGE_BITS;
     u64* t = __atomic_load_n(&g_hle.nvdrv.gmmu[gmmu_l1_index(page)], __ATOMIC_ACQUIRE);
-    u64 e;
+    u64 e, n;
+    if (later_find(gva, &e, &n)) return e != GLATER_UNMAP && mem_mapped_run(e, 1) ? e : 0;
     if (!t) return 0;
     e = __atomic_load_n(&t[gmmu_l2_index(page)], __ATOMIC_RELAXED);
     if (!(e & GMMU_PTE_VALID)) return 0;
@@ -104,7 +147,13 @@ u64 gmmu_translate(u64 gva) {
 u64 gmmu_run(u64 gva, u64 max, u64* cpu) {
     u64 page = gva >> GMMU_PAGE_BITS, n, e, want;
     u64* t = __atomic_load_n(&g_hle.nvdrv.gmmu[gmmu_l1_index(page)], __ATOMIC_ACQUIRE);
-    if (!max || !t) return 0;
+    if (!max) return 0;
+    if (later_find(gva, &e, &n)) { /* a run of the queued change, which keeps its guest memory contiguous */
+        if (e == GLATER_UNMAP) return 0;
+        *cpu = e;
+        return mem_mapped_run(e, n < max ? n : max);
+    }
+    if (!t) return 0;
     e = __atomic_load_n(&t[gmmu_l2_index(page)], __ATOMIC_RELAXED);
     if (!(e & GMMU_PTE_VALID)) return 0;
     *cpu = (e & GMMU_PTE_ADDR_MASK) | (gva & GMMU_PAGE_MASK);
@@ -1968,6 +2017,7 @@ void nv_init(void) {
     pm_init(&g_host.nvdrv.lock);
     pm_init(&g_host.nvdrv.aslock);
     pm_init(&g_host.nvdrv.alias_lock);
+    pm_init(&g_host.nvdrv.later_lock);
     pm_init(&g_host.nvdrv.nvev_lk);
     pm_init(&g_host.nvdrv.sync_lk);
     pm_init(&g_host.nvdrv.submit_lk);

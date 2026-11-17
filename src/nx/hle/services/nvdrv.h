@@ -51,6 +51,12 @@ u64 gmmu_space_alloc(u64 size, u64 align);
 void gmmu_space_map(u64 gva, u64 cpu, u64 size);
 void gmmu_space_unmap(u64 gva, u64 size);
 void gmmu_space_free(u64 gva, u64 size);
+/* A change of the page table that the GPU thread makes later, in order with the work queued after it: the caller
+   adds it (cpu GLATER_UNMAP for an unmap) before it queues the change, and the GPU thread tells it done after it made
+   it. Until then gmmu_translate and gmmu_run on any other thread answer as if it were made, as the work and the reads
+   of the caller's thread that come after it expect. The GPU thread's own answers follow the table */
+void gmmu_later_add(u64 gva, u64 cpu, u64 size);
+void gmmu_later_done(u64 gva, u64 cpu, u64 size);
 /* Each GPU range that shows guest bytes of [cpu, cpu + size), clipped to them: fn(ctx, gva, n) for the n bytes at
    gva, each mapped page once. The same guest memory is mapped at several GPU addresses, so what is known of it by one
    address holds at the others, and this finds them all from the guest side. From any thread. fn runs under the
@@ -162,6 +168,12 @@ typedef struct {
     u32 nbound, query;
     int stale; /* the runs changed since the index was built */
 } GAlias;
+/* a change of the GPU page table queued for the GPU thread: [gva, gva + size) shows guest memory from cpu on, or
+   nothing (cpu GLATER_UNMAP) */
+typedef struct {
+    u64 gva, cpu, size;
+} GLater;
+#define GLATER_UNMAP (~(u64)0)
 /* an nvhost-ctrl event slot. ev is made on first use and nvdrv keeps a reference. An armed slot (its bit in
    HleNvdrv's armed_mask) is signaled once syncpoint id reaches thresh */
 typedef struct {
@@ -212,6 +224,10 @@ typedef struct {
     GRun* gruns;
     u32 ngruns, capgruns;
     GAlias alias;
+    /* the changes queued for the GPU thread (gmmu_later_add), the oldest first, under later_lock; nlater also read
+       without it, as a summary */
+    GLater* later;
+    u32 nlater, caplater;
     u32 big_page_bits; /* 64K (AS_BIG_PAGE_BITS_64K) until ALLOC_AS_EX asks otherwise */
     u64 as_range_start, as_range_end, as_range_split; /* ALLOC_AS_EX ranges reported by GET_VA_REGIONS */
     VaRange* vafree;
@@ -248,6 +264,7 @@ typedef struct {
     PMutex lock;
     PMutex aslock; /* held across ioctl_as: the mappings below and the VA allocator */
     PMutex alias_lock;
+    PMutex later_lock; /* the queued changes, taken last */
     PCond sync_cv;
     PMutex sync_lk;
     PMutex submit_lk; /* a submission's promise and its place in the GPU queue, in the same order */
