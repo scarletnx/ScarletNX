@@ -95,7 +95,7 @@ static struct {
     u64 ns, end;
     int ended;
 } g_stats_busy;
-u64 g_vk_timestamps;
+u64 g_vk_timestamps, g_vk_timestamps_read;
 /* the graphics queue's idle time between submissions, summed until the report: VK_SUB_* by what the CPU did */
 enum { IDLE_WAITED, IDLE_FRAME, IDLE_RECORDING, IDLE_QUEUED, IDLE_N };
 static const char* const g_idle_name[IDLE_N] = {
@@ -583,6 +583,7 @@ void vk_gpuprof_frame_done(u32 slot) {
         g_stats_busy.ended = 0;
         return;
     }
+    g_vk_timestamps_read += g->ops.used;
     gp_busy(g, ts);
     if (!profile) return;
     /* the frame's timestamps onto the GPU track. The context is announced calibrated when the device can put its

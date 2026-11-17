@@ -2751,10 +2751,10 @@ void vk_gpuprof_frame_done(u32 slot);
    timestamp at its begin and its end, and no pass does unless the profile asks. vk_gpuprof_timed: whether the graphics
    queue can be timed. vk_gpuprof_busy_ns: the time it was busy with the frames timed, summed, read when each frame
    slot is reused (its work is done then: no wait). g_vk_timestamps: the timestamps written, none while stats and the
-   profile are off */
+   profile are off. g_vk_timestamps_read: those read back at the slots' reuse, which a use not timed leaves out */
 int vk_gpuprof_timed(void);
 u64 vk_gpuprof_busy_ns(void);
-extern u64 g_vk_timestamps;
+extern u64 g_vk_timestamps, g_vk_timestamps_read;
 /* the device's timestamps next to the client's clock (VK_EXT_calibrated_timestamps with a host time domain) */
 int vk_gpuprof_calibrated(void);
 /* a fresh pair of the GPU's clock and the client's, for the track's calibration (0 without the extension) */
