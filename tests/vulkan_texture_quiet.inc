@@ -1,13 +1,14 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The quiet texture check (gpu/vk/texture.c tex_check): a draw's texture whose last full check was in the same round
-   (no present, write tracking epoch or GPU-side write on its watched memory since) is taken with one compare. Each case
-   draws a DrawTexture that samples texel (0, 0) of a 64x64 RGBA8 texture twice (the second draw's check must be quiet),
-   writes the texture one way, and draws again: the pixel and every texel of the image must be memory's. The ways: the
-   guest CPU (then a new epoch, as a submission starts), a DMA copy, a compute dispatch's store, and a draw into the
-   texture's memory as a render target. The writes other than the CPU's come in the same epoch and present, where only
-   the GPU-side record can tell. Each sequence runs as it is, and with draw_state_check=1, whose full check of each
-   quiet texture must find nothing the quick one missed. Synthetic data and programs only */
+/* The quiet texture check (gpu/vk/texture.c tex_check): a draw's texture with no present, write tracking epoch with a
+   CPU write on its pages or GPU-side write on its watched granules since its last full check is taken with one
+   compare. Each case draws a DrawTexture that samples texel (0, 0) of a 64x64 RGBA8 texture twice (the
+   second draw's check must be quiet), writes the texture one way, and draws again: the pixel and every texel of the
+   image must be memory's. The ways: the guest CPU (then a new epoch, as a submission starts), a DMA copy, a compute
+   dispatch's store, and a draw into the texture's memory as a render target. The writes other than the CPU's come in
+   the same epoch and present, where only the GPU-side record can tell. Each sequence runs as it is, and with
+   draw_state_check=1, whose full check of each quiet texture must find nothing the quick one missed. Synthetic data
+   and programs only */
 #define TQ_GVA    0xd40000000ull
 #define TQ_CPU    (HEAP_BASE + 0x2f000000)
 #define TQ_SPAN   0x400000ull
@@ -226,4 +227,24 @@ static int check_texture_quiet(void) {
     if (!failed)
         puts("PASS texture quiet: a texture written by the CPU, DMA, compute or a draw is drawn as memory has it");
     return failed;
+}
+
+#define TQ_DECOY      (TQ_GVA + TQ_SPAN) /* a texture in a granule of its own, past the others */
+#define TQ_DECOY_SPAN 0x200000ull
+/* the decoy texture looked up and checked, which watches its granule */
+static int tq_decoy(void) {
+    NvnTexture d = {0};
+    d.d.target = NVN_TEXTURE_TARGET_2D;
+    d.d.format = NVN_FORMAT_RGBA8;
+    d.d.levels = 1;
+    d.d.width = d.d.height = TQ_SIDE;
+    d.d.depth = 1;
+    d.gpu = TQ_DECOY;
+    u32 tic[8];
+    CHECK(nvn_tic_encode(&d, NULL, 0, 0, tic));
+    vk_lock();
+    Surf* t = vk_tex_from_tic(tic);
+    CHECK(t && vk_tex_from_tic(tic) == t); /* the second lookup checks it, and watches its granule */
+    vk_unlock();
+    return 0;
 }

@@ -710,6 +710,10 @@ void vk_tex_partial_stats(u64* loads, u64* bytes) {
    what the checks of textures loaded a piece at a time found (tex_check_pieces, tex_patch) */
 typedef struct {
     u64 checks, rechecks, quiet, changed, quiet_wrong;
+    /* the full checks by what ended the texture's quiet: none yet (never quiet, or another reason), a present, an
+       epoch (with a CPU write on its pages, or none taken in yet), a GPU-side write on its granules; and the epochs a
+       texture stayed quiet over */
+    u64 full_never, full_present, full_epoch, full_write, epochs_kept;
     u64 patches, patch_bytes, by_cpu, by_gpu, by_kind[GPU_WRITE_KINDS], again, whole, bricks, bricks_empty;
 } TexChecks;
 static TexChecks g_tex_checks;
@@ -3345,43 +3349,33 @@ static Surf* tex_check_full(Surf* t, u64 gva) {
     Surf* r = tex_check_memory(t, gva);
     return r ? later_reread(r) : NULL;
 }
-/* The quiet round: it moves when anything a full check of a texture asks about can have changed since the last one:
-   a present (the schedule of the checks by contents, the LRU's touch, Auto's turn to BC7), a write tracking epoch
-   (the CPU's writes, which a check takes in once in each) or a GPU-side write on a watched granule
-   (gpu_mem_watched_generation: the engines, results, mapping changes and constant buffer uploads, by GPU page). A
-   texture whose last full check, in this round, left it whole (Surf.quiet) gives the same answer to another: a draw's
-   check of it is one compare. Every draw of a frame checked each of its textures in full: the memory's records
-   (gpu_mem_dirty_since), the LRU's touch, and the CPU's writes in each epoch, about 3% of the GPU thread in one game's
-   race of 1800 draws a present. Under vk_lock, as the checks are */
-static struct {
-    u64 round; /* from 1: a texture's 0 is in none */
-    u64 watched;
-    u32 present, epoch;
-} g_quiet = {1, 0, 0, 0};
-static u64 quiet_round(void) {
-    const u32 epoch = vk_ww_epoch();
-    const u64 watched = gpu_mem_watched_generation();
-    if (g_quiet.present != g_vk_present || g_quiet.epoch != epoch || g_quiet.watched != watched) {
-        g_quiet.present = g_vk_present;
-        g_quiet.epoch = epoch;
-        g_quiet.watched = watched;
-        g_quiet.round++;
-    }
-    return g_quiet.round;
-}
-/* t's full check, counted: the round it is quiet in from now, where the check left it whole and its memory is
-   watched (gpu_mem_watch, before the round is read: a write after that moves it) */
+/* A texture whose last full check left it whole (Surf.quiet) gives the same answer to another while nothing that
+   check asks about can have changed since: a present (the schedule of the checks by contents, the LRU's touch, Auto's
+   turn to BC7), a CPU write on its pages in a new write tracking epoch, or a GPU-side write on its own granules
+   (gpu_mem_granules_generation: the engines, results, mapping changes and constant buffer uploads, by GPU page). A
+   draw's check of it is then one compare. Every draw of a frame checked each of its textures in full: the memory's
+   records (gpu_mem_dirty_since), the LRU's touch, and the CPU's writes in each epoch, about 3% of the GPU thread in
+   one game's race of 1800 draws a present. Under vk_lock, as the checks are.
+   t's full check, counted: from now quiet with its own state: the present, the epoch and its granules' generation,
+   read before the check (a write after them moves them), where the check left it whole and its memory is watched
+   (gpu_mem_watch, before they are read) */
 static Surf* tex_check_counted(Surf* t, u64 gva) {
     const int watched = gva == t->gva && gpu_mem_watch(gva, t->size);
-    const u64 round = watched ? quiet_round() : 0;
+    const u64 gw = watched ? gpu_mem_granules_generation(gva, t->size) : 0;
+    const u32 present = g_vk_present, epoch = vk_ww_epoch();
     const u32 wgen = t->wgen;
     Surf* r = tex_check_full(t, gva);
     if (!r || r->wgen != wgen) g_tex_checks.changed++;
-    if (r) r->quiet = r == t && round && r->upload_valid && !r->bc7_reread ? round : 0;
+    if (r) {
+        r->quiet = r == t && watched && r->upload_valid && !r->bc7_reread && gw != ~(u64)0;
+        r->q_gw = gw;
+        r->q_present = present;
+        r->q_epoch = epoch;
+    }
     return r;
 }
 /* draw_state_check=1: a texture the quick check found quiet checked in full as well. A full check that loads it
-   again, or finds it gone, is a write the round missed */
+   again, or finds it gone, is a write the quick check missed */
 static Surf* tex_quiet_cross(Surf* t, u64 gva) {
     const u32 wgen = t->wgen;
     Surf* r = tex_check_full(t, gva);
@@ -3396,16 +3390,48 @@ static Surf* tex_quiet_cross(Surf* t, u64 gva) {
     if (r) r->quiet = 0; /* the full check took a new baseline: the next asks again */
     return r;
 }
-/* a texture found for a header checked against its memory: whole without a full check where it is quiet in this
-   round */
+/* whether t, quiet since its last full check, still is: the same present, no GPU-side write on its own granules, and
+   in a new epoch no CPU write on its pages where write tracking took them in for the epoch already
+   (vk_written_quick). A write on another granule leaves it as it was. What ended it goes in *why: 1 a present, 2 an
+   epoch, 3 a write */
+static int quiet_own(Surf* t, u64 gva, int* why) {
+    if (t->q_present != g_vk_present) return *why = 1, 0;
+    if (gpu_mem_granules_generation(gva, t->size) > t->q_gw) return *why = 3, 0;
+    const u32 epoch = vk_ww_epoch();
+    if (epoch == t->q_epoch) return 1;
+    const u8* host = gmem_host(gva, t->size);
+    if (!host || vk_written_quick(host, t->size, t->wseen) != 0) return *why = 2, 0;
+    t->q_epoch = epoch;
+    g_tex_checks.epochs_kept++;
+    return 1;
+}
+/* a texture found for a header checked against its memory: whole without a full check where it is quiet (quiet_own) */
 static Surf* tex_check(Surf* t, u64 gva) {
     g_tex_checks.checks++;
-    /* the round, and what can change t outside a check (a failed load, a level given up, Auto's read again) */
-    if (t->quiet && t->quiet == quiet_round() && gva == t->gva && t->upload_valid && !t->bc7_reread) {
-        g_tex_checks.quiet++;
-        return g_settings.draw_state_check ? tex_quiet_cross(t, gva) : t;
+    int why = 0;
+    /* what can change t outside a check (a failed load, a level given up, Auto's read again) */
+    if (t->quiet && gva == t->gva && t->upload_valid && !t->bc7_reread) {
+        if (quiet_own(t, gva, &why)) {
+            g_tex_checks.quiet++;
+            return g_settings.draw_state_check ? tex_quiet_cross(t, gva) : t;
+        }
     }
+    if (why == 1)
+        g_tex_checks.full_present++;
+    else if (why == 2)
+        g_tex_checks.full_epoch++;
+    else if (why == 3)
+        g_tex_checks.full_write++;
+    else
+        g_tex_checks.full_never++;
     return tex_check_counted(t, gva);
+}
+void vk_tex_full_counts(u64 out[5]) {
+    out[0] = g_tex_checks.full_never;
+    out[1] = g_tex_checks.full_present;
+    out[2] = g_tex_checks.full_epoch;
+    out[3] = g_tex_checks.full_write;
+    out[4] = g_tex_checks.epochs_kept;
 }
 void vk_tex_check_counts(u64* checks, u64* quiet, u64* quiet_wrong) {
     *checks = g_tex_checks.checks;
@@ -3431,6 +3457,10 @@ void vk_tex_check_log(void) {
                                (unsigned long long)g_tex_checks.by_kind[k], g_write_kinds[k]);
         LOG("vulkan: the GPU-side writes of those loads of pieces, by the newest write on their pages: %s\n", kinds);
     }
+    LOG("vulkan: full texture checks a present by what ended the texture's quiet: %.1f never quiet, %.1f a present, "
+        "%.1f an epoch, %.1f a GPU-side write on its granules; %.1f epochs a texture stayed quiet over\n",
+        (double)g_tex_checks.full_never / n, (double)g_tex_checks.full_present / n, (double)g_tex_checks.full_epoch / n,
+        (double)g_tex_checks.full_write / n, (double)g_tex_checks.epochs_kept / n);
     if (g_settings.draw_state_check)
         LOG("vulkan: draw_state_check=1: %llu quiet texture checks of the last 600 presents found a change in the full "
             "check\n",

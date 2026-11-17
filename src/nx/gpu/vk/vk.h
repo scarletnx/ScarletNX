@@ -1142,9 +1142,11 @@ typedef struct Surf {
     u32 checked, next_check, stable, tfull;
     u32 wseen;    /* write-tracking clock when it last matched memory */
     u32 ww_epoch; /* the write epoch (vk_ww_epoch) of its last check for CPU writes */
-    /* textures: the quiet round (texture.c quiet_round) of its last full check that left it whole, 0 for none; the
-       present of its last load of pieces plus one, and how many presents in a row had one (the log's counts) */
+    /* textures: its last full check left it whole (texture.c tex_check_counted); the present of its last load of
+       pieces plus one, and how many presents in a row had one (the log's counts) */
     u64 quiet;
+    u64 q_gw;               /* its granules' generation at its last full check */
+    u32 q_present, q_epoch; /* and the present and the write tracking epoch of that check */
     u32 patched, patch_run;
     /* copies of regions of this render target for texture headers or feedback draws, one per size, linked through next
        (gpu/vk/texture.c rt_crop) */
@@ -2401,6 +2403,9 @@ void vk_write_changed_runs(u64 addr, const u8* res, const u8* org, u32 size, VkC
 /* 1 if [host, host+len) was written since the write-tracking clock read `since`, 0 if not, -1 when write tracking
    can't tell (no host pointer, or not available): then check the contents */
 int vk_written_since(const u8* host, u64 len, u32 since);
+/* vk_written_since where it needs no scan: its 4 MiB leaves taken in for this epoch already (by an earlier query), no
+   alias of guest memory and no import over the range. -1 where it would scan or can't tell: vk_written_since asks then */
+int vk_written_quick(const u8* host, u64 len, u32 since);
 /* fn(user, at, n) for each run of [host, host + len) on pages written after since, at the range's byte offset at: for
    a range vk_written_since(host, len, since) has just found written, so its pages are marked */
 void vk_written_runs(const u8* host, u64 len, u32 since, void (*fn)(void*, u64, u64), void* user);
@@ -2668,6 +2673,9 @@ void vk_tex_take_log(void);
 void vk_tex_take_counts(u64 out[8]);
 /* since the last log: the texture checks, those quiet (one compare), and those draw_state_check=1 found changed */
 void vk_tex_check_counts(u64* checks, u64* quiet, u64* quiet_wrong);
+/* the full checks since the last log by what ended the quiet: never quiet, a present, an epoch, a write; then the epochs
+   a texture stayed quiet over */
+void vk_tex_full_counts(u64 out[5]);
 void vk_pipeline_save(int at_exit);
 VkShaderModule vk_module_spv(const u32* words, size_t count);
 VkShaderModule vk_module_spv_location(const u32* words, size_t count, u32 location);
