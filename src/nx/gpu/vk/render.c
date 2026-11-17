@@ -3680,6 +3680,11 @@ static struct {
     int vi_set;
     VertexLayout vi;
     VkDeviceSize vi_stride[33];
+    /* the vertex buffers bound last (render_draw), with the strides as dynamic state where they are */
+    u32 vb_n;
+    int vb_strided;
+    VkBuffer vb_buf[33];
+    VkDeviceSize vb_off[33], vb_size[33], vb_stride[33];
 } g_dyn;
 #define DYN(field, value, call)                                                                                        \
     do {                                                                                                               \
@@ -6404,9 +6409,22 @@ retry:
     }
     if (g_vk.vertex_input_dynamic && !mesh) vertex_input_set(cb, pl, fresh);
     /* the strides: the layout's with dynamic vertex input, else dynamic state of their own where the device has it */
-    if (pl->vi.nbind)
-        rec_CmdBindVertexBuffers2(cb, 0, pl->vi.nbind, vbuf, voff, vsize,
-                                  !g_vk.vertex_input_dynamic && g_vk.has_dynamic_stride ? pl->stride : NULL);
+    /* bound again only where they differ from the last draw's in this command buffer: every draw bound them, and one
+       game's draws bind the same streams as the draw before in most of them */
+    const VkDeviceSize* strides = !g_vk.vertex_input_dynamic && g_vk.has_dynamic_stride ? pl->stride : NULL;
+    const u32 nvb = pl->vi.nbind;
+    if (nvb && (fresh || g_dyn.vb_n != nvb || (strides != NULL) != g_dyn.vb_strided ||
+                memcmp(g_dyn.vb_buf, vbuf, nvb * sizeof *vbuf) || memcmp(g_dyn.vb_off, voff, nvb * sizeof *voff) ||
+                memcmp(g_dyn.vb_size, vsize, nvb * sizeof *vsize) ||
+                (strides && memcmp(g_dyn.vb_stride, strides, nvb * sizeof *strides)))) {
+        rec_CmdBindVertexBuffers2(cb, 0, nvb, vbuf, voff, vsize, strides);
+        g_dyn.vb_n = nvb;
+        g_dyn.vb_strided = strides != NULL;
+        memcpy(g_dyn.vb_buf, vbuf, nvb * sizeof *vbuf);
+        memcpy(g_dyn.vb_off, voff, nvb * sizeof *voff);
+        memcpy(g_dyn.vb_size, vsize, nvb * sizeof *vsize);
+        if (strides) memcpy(g_dyn.vb_stride, strides, nvb * sizeof *strides);
+    }
 
     u32 viewports = last->si.writes_viewport ? GUEST_VIEWPORTS : 1;
     /* Empty viewports still run pre-raster stages and transform feedback. The zero scissor below suppresses pixels. */
