@@ -36,6 +36,9 @@ VkState g_vk;
 /* reentrant on the thread that holds it: landing compute results writes guest memory, which can come back here */
 static PMutex g_vklock;
 static _Thread_local int t_vkdepth;
+/* from vk_lock_pause to vk_lock_resume: the hold goes on after it, and a hold of the lock in between does not end
+   this one's (vk_own_release_held) */
+static _Thread_local int t_vkpaused;
 static u32 g_vk_owner; /* the thread holding it (plat_tid), 0 when none: a trap's fault on it can't be answered */
 /* The lock hands off fairly. A Windows SRW lock (and a pthread mutex) lets the thread that let go take it straight back
    before the waiter it woke runs: a thread whose draws ran back to back kept it, and the threads landing GPU results and
@@ -82,6 +85,9 @@ void vk_unlock(void) {
        before the lock goes, and the next CPU access publishes them */
     if (t_vkdepth == 1 && own_owed_any()) vk_rt_watch_owed();
     if (t_vkdepth == 1 && vk_own_later_any()) vk_own_release_later();
+    /* the results that commands recorded under this hold read by their address: they are recorded now. Not at a
+       pause, part-way through the work that records them */
+    if (t_vkdepth == 1 && !t_vkpaused && vk_own_held_any()) vk_own_release_held();
     if (!--t_vkdepth) vk_let_go();
 }
 int vk_trylock(void) {
@@ -93,11 +99,14 @@ u32 vk_lock_owner(void) { return __atomic_load_n(&g_vk_owner, __ATOMIC_RELAXED);
 int vk_lock_held(void) { return t_vkdepth > 0; }
 int vk_lock_pause(void) {
     if (t_vkdepth != 1) return 0;
+    t_vkpaused = 1;
     vk_unlock();
     return 1;
 }
 void vk_lock_resume(int paused) {
-    if (paused) vk_lock();
+    if (!paused) return;
+    vk_lock();
+    t_vkpaused = 0;
 }
 
 /* What held the memory at an out-of-memory, at the first ones: each heap as devmem.c counts it, and the descriptor
@@ -1612,7 +1621,23 @@ static bool choose_device(SnxVkChoice* c, void* user) {
     /* the copies name device addresses: the device's memory gets them for these too (bufferDeviceAddress) */
     g_vk.has_copy_indirect =
         g_settings.indirect_copies && has_copy_indirect && qcopy.indirectMemoryCopy && q12.bufferDeviceAddress;
+    if (g_vk.has_copy_indirect) { /* recorded in the graphics queue's command buffers: its family has to take them */
+        VkPhysicalDeviceCopyMemoryIndirectPropertiesKHR pcopy = {
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COPY_MEMORY_INDIRECT_PROPERTIES_KHR};
+        VkPhysicalDeviceProperties2 props = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &pcopy};
+        vkGetPhysicalDeviceProperties2(g_vk.phys, &props);
+        g_vk.has_copy_indirect = (pcopy.supportedQueues & VK_QUEUE_GRAPHICS_BIT) != 0;
+    }
     g_vk.has_inplace_loads = g_settings.texture_loads_in_place && q12.bufferDeviceAddress;
+    LOG("vulkan: kept results are copied %s, and texture loads read them %s\n",
+        g_vk.has_copy_indirect                                      ? "by indirect copies"
+        : !g_settings.indirect_copies                               ? "one command each (vk_copy_indirect=0)"
+        : !has_copy_indirect || !qcopy.indirectMemoryCopy          ? "one command each (no VK_KHR_copy_memory_indirect)"
+        : !q12.bufferDeviceAddress                                  ? "one command each (no bufferDeviceAddress)"
+                                                                    : "one command each (not on the graphics queue)",
+        g_vk.has_inplace_loads              ? "in place"
+        : !g_settings.texture_loads_in_place ? "from copies (vk_inplace_loads=0)"
+                                             : "from copies (no bufferDeviceAddress)");
     if (g_vk.has_descriptor_heap_support) {
         g_vk.descriptor_heap_props = (VkPhysicalDeviceDescriptorHeapPropertiesEXT){
             .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_HEAP_PROPERTIES_EXT};

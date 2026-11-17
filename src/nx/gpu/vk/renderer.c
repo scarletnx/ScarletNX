@@ -1070,29 +1070,27 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
             vk_finishes_log();
             vk_ww_stats(600);
             vk_descriptors_stats();
-            {
-                static u64 p0, b0;
-                LOG("vulkan: %llu publishes read only the bytes their flush leaves, %.1f MB not read%s",
-                    (unsigned long long)(g_vk_publish_reads_cut - p0),
-                    (double)(g_vk_publish_bytes_skipped - b0) / 1048576.0, "\n");
-                p0 = g_vk_publish_reads_cut;
-                b0 = g_vk_publish_bytes_skipped;
-            }
-            if (g_vk.has_inplace_loads) {
-                static u64 r0, y0;
-                LOG("vulkan: texture loads read %llu runs of GPU results in place, %.1f MB not copied%s",
-                    (unsigned long long)(g_vk_inplace_runs - r0), (double)(g_vk_inplace_bytes - y0) / 1048576.0,
-                    "\n");
-                r0 = g_vk_inplace_runs;
-                y0 = g_vk_inplace_bytes;
-            }
-            if (g_vk.has_copy_indirect) {
-                static u64 c0, n0;
+            static u64 cut_was, skipped_was;
+            if (g_vk_publish_reads_cut != cut_was)
+                LOG("vulkan: %llu publishes read only the bytes their flush leaves, %.1f MB not read\n",
+                    (unsigned long long)(g_vk_publish_reads_cut - cut_was),
+                    (double)(g_vk_publish_bytes_skipped - skipped_was) / 1048576.0);
+            cut_was = g_vk_publish_reads_cut;
+            skipped_was = g_vk_publish_bytes_skipped;
+            static u64 inplace_runs_was, inplace_bytes_was;
+            if (g_vk_inplace_runs != inplace_runs_was)
+                LOG("vulkan: texture loads read %llu runs of GPU results in place, %.1f MB not copied\n",
+                    (unsigned long long)(g_vk_inplace_runs - inplace_runs_was),
+                    (double)(g_vk_inplace_bytes - inplace_bytes_was) / 1048576.0);
+            inplace_runs_was = g_vk_inplace_runs;
+            inplace_bytes_was = g_vk_inplace_bytes;
+            static u64 indirect_cmds_was, indirect_copies_was;
+            if (g_vk_copy_indirect_cmds != indirect_cmds_was)
                 LOG("vulkan: %llu indirect copies took %llu copies of kept results\n",
-                    (unsigned long long)(g_vk_copy_indirect_cmds - c0), (unsigned long long)(g_vk_copy_indirect_copies - n0));
-                c0 = g_vk_copy_indirect_cmds;
-                n0 = g_vk_copy_indirect_copies;
-            }
+                    (unsigned long long)(g_vk_copy_indirect_cmds - indirect_cmds_was),
+                    (unsigned long long)(g_vk_copy_indirect_copies - indirect_copies_was));
+            indirect_cmds_was = g_vk_copy_indirect_cmds;
+            indirect_copies_was = g_vk_copy_indirect_copies;
             /* what the GPU engines keep on the GPU (docs/layers/gpu/ownership.md), and what the CPU had to wait for */
             u64 by[OWN_BY_N];
             own_landings_by(by);
