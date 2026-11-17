@@ -58,10 +58,7 @@ WHOLE = [
     ('Linux AppImage (x86_64), as installed', 'failure'),
     ('Linux AppImage (riscv64), as installed', 'skipped'),
     ('Windows zip, as installed', 'success'),
-    ('Amberlith changes', 'success'),
     ('Amberlith (Linux x86_64, lavapipe)', 'success'),
-    ("Amberlith's APK (Linux x86_64, Android layer)", 'success'),
-    ("Amberlith's main (Linux x86_64, lavapipe)", 'skipped'),
     # the scheduled run's check, which every other event skips
     ('Nightly due', 'skipped'),
 ]
@@ -194,43 +191,17 @@ with tempfile.TemporaryDirectory() as temporary:
         text,
     )
 
-    # the probe's runs are jobs of their own, each skipped on a pull request that changes nothing it loads
+    # a pull request that changes nothing either run loads: the job ends at once, passed, its notice saying why
+    why = 'not run, none of the 3 files changed is one the NRO or the APK loads'
     text = comment(
-        run_jobs=jobs(
-            ('Amberlith changes', 'success'),
-            ('Amberlith (Linux x86_64, lavapipe)', 'success'),
-            ("Amberlith's APK (Linux x86_64, Android layer)", 'skipped'),
-            ("Amberlith's main (Linux x86_64, lavapipe)", 'skipped'),
-        ),
-        notice=[{'title': 'edenprobe', 'message': TITLE}],
+        run_jobs=jobs(('Amberlith (Linux x86_64, lavapipe)', 'success')),
+        notice=[{'title': 'edenprobe', 'message': f'Amberlith: {why}'}],
     )
     check(
-        "the NRO's run alone: its result on the line, the skipped APK and the decision never named",
-        text.endswith(f'\n\n[{TITLE}]({RUN}): every case of the baseline passes\n'),
+        'Amberlith not run: the line says why, and nothing about a baseline',
+        text.endswith(f'\n\n[Amberlith]({RUN}): {why}\n') and 'baseline' not in text,
         text,
     )
-    text = comment(
-        run_jobs=jobs(
-            ('Amberlith changes', 'success'),
-            ('Amberlith (Linux x86_64, lavapipe)', 'skipped'),
-            ("Amberlith's APK (Linux x86_64, Android layer)", 'failure'),
-        ),
-        notice=[{'title': 'edenprobe', 'message': "Amberlith v1.0.0's APK: 1 passed, 1 failed"}],
-    )
-    check(
-        "the APK's run alone, failed: its notice and the failure",
-        f"[Amberlith v1.0.0's APK: 1 passed, 1 failed]({RUN}): failed, see its summary" in text
-        and 'Not built' not in text,
-        text,
-    )
-    text = comment(
-        run_jobs=jobs(
-            ('Amberlith changes', 'success'),
-            ('Amberlith (Linux x86_64, lavapipe)', 'skipped'),
-            ("Amberlith's APK (Linux x86_64, Android layer)", 'skipped'),
-        )
-    )
-    check('both runs skipped: the line says so', text.endswith(f'\n\n[Amberlith]({RUN}): skipped\n'), text)
 
     # no pull request given: the open one whose head is the commit, else nothing
     pulls = [
