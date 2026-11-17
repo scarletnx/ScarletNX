@@ -327,7 +327,7 @@ static void mic_reduction(const Mic* m, char* out, size_t size) {
         snprintf(
             out, size,
             "%s, not neural as mic_noise_reduction=%d asks: neural takes %u Hz and the stream records at %u Hz%s%s",
-            method[runs], m->asked, SNX_DENOISE_NEURAL_RATE, m->rate,
+            method[runs], m->asked, (unsigned)SNX_DENOISE_NEURAL_RATE, m->rate,
             runs == SNX_DENOISE_OFF ? ", and spectral needs " : "", runs == SNX_DENOISE_OFF ? SNX_DENOISE_LIBRARY : "");
     else if (asked == SNX_DENOISE_SPECTRAL)
         snprintf(out, size, "%s, not spectral as mic_noise_reduction=%d asks: spectral needs %s", method[runs],
