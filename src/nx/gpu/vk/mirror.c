@@ -14,7 +14,8 @@
      last brought up to date (write tracking) are compared with it, and only the bytes the CPU changed are copied in:
      the bytes a program wrote there, which haven't landed yet, stay.
    - At each submit the pages written in it (their mask words) are copied into host memory with their bytes, and land
-     in guest memory and in the shadow once it is done (vk_mirror_harvest, vk_mirror_done). The masks are cleared then.
+     in guest memory and in the shadow once it is done (vk_mirror_harvest, vk_mirror_done), but where the CPU wrote a
+     byte after the submit: the CPU's stays (land_entry). The masks are cleared then.
 
    All under vk_lock. */
 #include <stdio.h>
@@ -42,6 +43,9 @@ typedef struct {
     u8* shadow;                /* the guest bytes the mirror was given, as the GPU holds them less its own writes */
     DevMem mem, mask;   /* bound into the mirror and its mask */
     u64 valid[MIR_PAGES / 64]; /* the pages given guest memory's bytes: those bindings covered */
+    /* the valid pages that had other owners' bytes when they were given theirs: own_stage left those out, so the shadow
+       doesn't hold them, and land_entry doesn't compare such a page with it */
+    u64 owned_at_fill[MIR_PAGES / 64];
     /* each valid page's write tracking clock before it was last brought up to date: only a binding's own pages are,
        as the others may not be mapped any more */
     u32 synced[MIR_PAGES];
@@ -446,10 +450,15 @@ int vk_mirror_slice(u64 gva, u64 len, VkBuffer* buf, u64* off) {
                 }
                 OwnRange o[16];
                 u8* dst = up_bytes(&u, a, 4096);
-                if (own_stage(a, 4096, dst, o, 16)) owners = 1;
+                u64 pb = 1ull << (p % 64);
+                if (own_stage(a, 4096, dst, o, 16)) {
+                    owners = 1;
+                    r->owned_at_fill[w] |= pb;
+                } else
+                    r->owned_at_fill[w] &= ~pb;
                 memcpy(r->shadow + p * 4096, dst, 4096);
                 /* atomic: a landing clears bits of this word without vk_lock (vk_mirror_landed) */
-                __atomic_or_fetch(&r->valid[w], 1ull << (p % 64), __ATOMIC_RELAXED);
+                __atomic_or_fetch(&r->valid[w], pb, __ATOMIC_RELAXED);
             }
         if (whole && r->ck_epoch == epoch && lo <= r->ck_hi && r->ck_lo <= hi) { /* touching this epoch's: one */
             /* its generation the older's, unless this binding checked all of it again */
@@ -773,7 +782,6 @@ void vk_mirror_harvest(VkCommandBuffer cb, u64 submit) {
     g_mir_nnow = 0;
 }
 
-/* entry e of an output, whose bytes are the GPU's: the bytes its mask gives into guest memory and the shadow */
 static int bit(const u32* m, u32 b) { return m[b / 32] >> (b % 32) & 1; }
 /* the first clear bit of a page's mask from b on, 4096 for none: a word at a time. Found a bit at a time, the runs of
    the 24,000 pages one game's upscaler writes a frame took about 30 ms of their landing's 51 (a GPU without memory
@@ -786,13 +794,18 @@ static u32 run_end(const u32* m, u32 b) {
     }
     return 4096;
 }
+/* entry e of an output, whose bytes are the GPU's: the bytes its mask gives into guest memory and the shadow. On a page
+   with a shadow, a byte where guest memory no longer holds the shadow's keeps the CPU's: the shadow holds what the
+   submission's checks saw, every CPU write from before it, so the CPU wrote that byte after the submission, while the
+   GPU ran it or after. The game waited for that work before it wrote (a write during it is a race on the console too),
+   so its byte is the newer. The shadow keeps its byte there, and the next binding copies the CPU's into the
+   mirror. Landed over it, the CPU's writes were lost to guest memory and the mirror both, and no check could see them
+   (one game's light lists, about 8,000 bytes a second, squares of wrong lighting on its characters) */
 static void land_entry(const u32* e) {
     u64 cpu = (u64)e[0] << 12;
     const u32* mask = e + 4;
     const u8* data = (const u8*)(e + 132);
-    Gran* r = cpu / MIR_G < g_mir.granules ? g_mir.gran[cpu / MIR_G] : NULL;
     u64 p = (cpu % MIR_G) >> 12;
-    int shadowed = r && (r->valid[p / 64] >> (p % 64) & 1);
     for (u32 a = 0; a < 4096;) {
         u32 rest = mask[a / 32] >> (a % 32);
         if (!rest) { /* none from a to the word's end */
@@ -801,10 +814,40 @@ static void land_entry(const u32* e) {
         }
         a += snx_ctz32(rest);
         u32 b = run_end(mask, a + 1);
+        u64 gen = gpu_mem_generation();
         own_acquire(cpu + a, b - a);
         vk_rt_before_write_cpu(cpu + a, b - a);
-        memcpy(GP(cpu + a), data + a, b - a);
-        if (shadowed) memcpy(r->shadow + p * 4096 + a, data + a, b - a);
+        /* The shadow doesn't hold bytes either put into guest memory: an owner's landing lets go of it
+           (vk_mirror_landed), and a render target's write-back stamps a generation (any GPU-side write does, here or
+           on another thread). Nor does a page that had other owners when it was given its bytes hold theirs
+           (own_stage), whose landing can also come just after the binding gave the page its shadow again. Compared
+           with such a shadow, their bytes read as the CPU's and the program's went: those land as before, into the
+           shadow too where the page has one, which it keeps (a binding's landed_run takes a write-back's bytes in):
+           let go of, the next binding would fill the whole page from guest memory, over bytes later submits left
+           pending there */
+        Gran* r = cpu / MIR_G < g_mir.granules ? g_mir.gran[cpu / MIR_G] : NULL;
+        int valid = r && (__atomic_load_n(&r->valid[p / 64], __ATOMIC_RELAXED) >> (p % 64) & 1);
+        u8 *g = GP(cpu + a), *s = valid ? r->shadow + p * 4096 + a : NULL;
+        const u8* d = data + a;
+        if (valid && gpu_mem_generation() == gen && !(r->owned_at_fill[p / 64] >> (p % 64) & 1)) {
+            u32 k = 0;
+            for (; k + 8 <= b - a; k += 8) { /* eight at a time where the CPU changed none */
+                u64 x, y;
+                memcpy(&x, g + k, 8);
+                memcpy(&y, s + k, 8);
+                if (x == y) {
+                    memcpy(g + k, d + k, 8);
+                    memcpy(s + k, d + k, 8);
+                } else
+                    for (u32 j = k; j < k + 8; j++)
+                        if (g[j] == s[j]) g[j] = s[j] = d[j];
+            }
+            for (; k < b - a; k++)
+                if (g[k] == s[k]) g[k] = s[k] = d[k];
+        } else {
+            memcpy(g, d, b - a);
+            if (s) memcpy(s, d, b - a);
+        }
         g_mir_stats.landed_bytes += b - a;
         a = b;
     }
@@ -841,12 +884,11 @@ static void own_entries(const u32* out, u32 n) {
         mir_pend_pages(pg, pg, 1);
     }
 }
-/* First the CPU's changes to the pages since they were brought up to date, the bytes their programs didn't log, go
-   into the mirror: a byte both wrote keeps the program's, as a landing of the logged bytes keeps it. Then each run of
-   them is published over guest memory with the mirror as its owner, written by the submission holding those copies,
-   made first. The CPU's first touch lands a page whole, which is exact: none of its bytes can change in between.
-   Publishing can write a render target back, which can land again: the queue is taken first, and a publishing inside
-   takes none */
+/* First the CPU's changes to the pages since they were brought up to date go into the mirror: a byte both wrote keeps
+   the CPU's, as a landing of the logged bytes keeps it (land_entry). Then each run of them is published over guest
+   memory with the mirror as its owner, written by the submission holding those copies, made first. The CPU's first
+   touch lands a page whole, which is exact: none of its bytes can change in between. Publishing can write a render
+   target back, which can land again: the queue is taken first, and a publishing inside takes none */
 void vk_mirror_publish(void) {
     static int busy;
     if (g_mir.on <= 0 || !g_mir_nq || busy || vk_rec_unsafe()) return;
@@ -889,6 +931,9 @@ void vk_mirror_publish(void) {
             continue;
         }
         for (u32 k = 0; k < owned; k++) memcpy(page + (o[k].addr - cpu), sh + (o[k].addr - cpu), o[k].size);
+        /* a page that had other owners when it was given its bytes: the shadow may not hold theirs, so a byte the
+           program logged keeps the program's, as with no shadow */
+        const u32* logged = r->owned_at_fill[p / 64] >> (p % 64) & 1 ? mask : NULL;
         for (u32 a = 0; a < 4096;) {
             u64 x, y;
             if (!(a & 7)) { /* eight at a time where they agree */
@@ -899,12 +944,12 @@ void vk_mirror_publish(void) {
                     continue;
                 }
             }
-            if (page[a] == sh[a] || bit(mask, a)) {
+            if (page[a] == sh[a] || (logged && bit(logged, a))) {
                 a++;
                 continue;
             }
             u32 b = a + 1;
-            while (b < 4096 && page[b] != sh[b] && !bit(mask, b)) b++;
+            while (b < 4096 && page[b] != sh[b] && !(logged && bit(logged, b))) b++;
             memcpy(up_bytes(&u, cpu + a, b - a), page + a, b - a);
             memcpy(r->shadow + p * 4096 + a, page + a, b - a);
             a = b;
@@ -948,7 +993,8 @@ void vk_mirror_publish(void) {
    meanwhile (gran_release, which holds vk_lock and takes it after). A binding under vk_lock that sets a page's bit
    again just after this clears it keeps the shadow it read before the landing. That costs one compare too few, never
    wrong bytes: the mirror holds the owner's bytes, which are the landed ones, and a later CPU write differs from the
-   old shadow, so the next binding copies it */
+   old shadow, so the next binding copies it. The page had the owner when the binding gave it its bytes, so neither
+   land_entry nor vk_mirror_publish holds the program's bytes against that shadow (owned_at_fill) */
 static PMutex g_mir_land_lk = PMUTEX_INIT;
 void vk_mirror_landed(u64 cpu, u64 size) {
     if (g_mir.on <= 0 || !size) return;
