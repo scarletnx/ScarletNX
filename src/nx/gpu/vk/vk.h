@@ -439,6 +439,23 @@ void vk_uma_before_write(u64 gva, u64 len);   /* the runtime writes GPU range [g
    the write pending once the draw is recorded (vk_uma_writes_commit) until its submit is done. 0 when it is copied out
    as a pending result instead (buffer.c). vk_lock held */
 int vk_uma_write(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off);
+/* why a write in place was refused, for the statistics every 600 presents: a result of the renderer pending over the
+   range, bytes the GPU owns, a compute result pending, a storage image not published, a queued release (buffer.c's
+   checks before vk_uma_write), and vk_uma_write's own: not one run of guest memory, the draw's table full, bytes the
+   runtime wrote (front), no import holding it at the alignment */
+enum {
+    VK_UMA_REFUSED_RESULT,
+    VK_UMA_REFUSED_OWNED,
+    VK_UMA_REFUSED_COMPUTE,
+    VK_UMA_REFUSED_IMAGE,
+    VK_UMA_REFUSED_RELEASE,
+    VK_UMA_REFUSED_RUN,
+    VK_UMA_REFUSED_FULL,
+    VK_UMA_REFUSED_FRONT,
+    VK_UMA_REFUSED_REGION,
+    VK_UMA_REFUSED_N
+};
+void vk_uma_refused(int why);
 void vk_uma_writes_commit(void);                         /* the draw or dispatch was recorded */
 /* the compute program whose writes vk_uma_writes_commit takes next, 0 for a draw's (compute.c sets it around the
    commit); vk_uma_read_soon(prog): a CPU reader waited for its writes while they were unsubmitted, so its dispatches
@@ -2617,6 +2634,7 @@ u64 vk_cs_skipped(char* why, size_t size);
    stats every 600 presents name (vk_pass_ends_log): what splits a frame into many passes */
 void vk_render_end_at(const char* file, int line);
 #define vk_render_end() vk_render_end_at(__FILE__, __LINE__)
+int vk_render_begun(void); /* a rendering pass is open with commands or clears in it: vk_render_end ends one */
 /* the guest's fragment barrier (NVN's ORDER_FRAGMENTS or INVALIDATE_TEXTURE, the 3D engine's): the open pass's later
    draws in a feedback loop see what its earlier draws wrote (feedback_order) */
 void vk_render_fragment_barrier(void);

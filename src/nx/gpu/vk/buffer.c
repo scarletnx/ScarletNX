@@ -2913,11 +2913,19 @@ static int copy_writable(u64 gva, u32 len, VkBuffer* buf, u64* off, int ordered)
     /* with unified memory the shader writes guest memory where it is, with nothing to land: not over bytes the GPU
        holds elsewhere (owned, a compute or storage image result, a queued release), which land first as before. Its
        barriers go by page (uma.c's order) whether or not the front end gives its own (ordered 0): more than NVN asks
-       for, never fewer */
-    if (!pending && vk_uma() && !range_owned(gva, len) && !(g_cs_any && vk_compute_pending(gva, len)) &&
-        !(g_gfx_img_any && vk_gfx_image_pending(gva, len)) && !vk_release_pending(gva, len) &&
-        vk_uma_write(gva, len, bind_align, buf, off))
-        return 1;
+       for, never fewer. What refuses it is counted (vk_uma_refused) */
+    if (vk_uma()) {
+        int why = pending                                           ? VK_UMA_REFUSED_RESULT
+                  : range_owned(gva, len)                           ? VK_UMA_REFUSED_OWNED
+                  : g_cs_any && vk_compute_pending(gva, len)        ? VK_UMA_REFUSED_COMPUTE
+                  : g_gfx_img_any && vk_gfx_image_pending(gva, len) ? VK_UMA_REFUSED_IMAGE
+                  : vk_release_pending(gva, len)                    ? VK_UMA_REFUSED_RELEASE
+                                                                    : -1;
+        if (why >= 0)
+            vk_uma_refused(why);
+        else if (vk_uma_write(gva, len, bind_align, buf, off))
+            return 1;
+    }
     /* a logged result has no original bytes: its input goes straight into the buffer the shader writes */
     int logged = g_bind_log != NULL;
     /* where in place couldn't be, a logged one is written back on the GPU after its dispatch (back_record). Its input
@@ -3025,6 +3033,10 @@ int vk_buf_copy_writable_logged(u64 gva, u32 len, VkBuffer* buf, u64* off, int o
 typedef struct {
     u64 key, gva;
     int writable, bind;
+    /* an atlas page written in place by a submit not done yet (atlas_fill): its original bytes, which the GPU copies
+       there from the import after that write, for its output (draw_output_page); NULL for the others */
+    u8* initial;
+    DevMem initial_mem;
 } DrawPage;
 static int draw_page_cmp(const void* a, const void* b) {
     u64 x = ((const DrawPage*)a)->key, y = ((const DrawPage*)b)->key;
@@ -3127,9 +3139,12 @@ static int draw_output_page(const DrawPage* p, u8* ptr, VkBuffer buf, u64 off, D
     if (!o) return 0;
     /* the original bytes from guest memory, which the atlas page was filled from: staging can be device-local
        memory behind the BAR, where a CPU read crosses PCIe uncached (this copy was most of the GPU thread's memcpy
-       time in one game) */
-    page = gmem_ptr_untracked(p->gva, 4096);
-    if (page) {
+       time in one game). A page written in place before has them once the GPU has copied them (atlas_fill): they
+       are the baseline at the frame's end, as a writable owned one's */
+    if (p->initial) {
+        o->initial = p->initial;
+        o->initial_mem = p->initial_mem;
+    } else if ((page = gmem_ptr_untracked(p->gva, 4096)) != NULL) {
         memcpy(o->org, page, 4096);
         g_buffer.wstat.copied += 4096;
     } else
@@ -3173,7 +3188,13 @@ static void out_near_atlas(OutList* l, const DrawPage* p, size_t unique) {
     }
     out_list_sort(l);
 }
-static int atlas_fill(const DrawPage* p, size_t unique, u8* ptr, VkBuffer atlas, u64 atlas_off) {
+/* guest page p written in place (uma.c) by a submit not done yet: the import that holds it, whose bytes are memory's
+   once that write ran (vk_uma_copy_pending) */
+static int page_in_place(const DrawPage* p, VkBuffer* buf, u64* off) {
+    return !(p->key & (1ull << 63)) && vk_uma_copy_pending(p->key << 12, 4096, buf, off);
+}
+/* -1 when the original bytes of a page written in place can't be kept */
+static int atlas_fill(DrawPage* p, size_t unique, u8* ptr, VkBuffer atlas, u64 atlas_off) {
     CopyBatch c;
     OutList l;
     size_t i;
@@ -3181,7 +3202,10 @@ static int atlas_fill(const DrawPage* p, size_t unique, u8* ptr, VkBuffer atlas,
     if (g_cs_any)
         for (i = 0; i < unique; i++)
             if (!(p[i].key & (1ull << 63))) vk_compute_mem_need(p[i].gva, 4096);
-    /* first, so a landing comes before memory is read; it frees the results, and leaves nothing to copy */
+    /* first, so a landing comes before memory is read; it frees the results, and leaves nothing to copy. Also a
+       result on a page written in place by a submit not done yet: that page's original bytes come from the GPU after
+       the write (below), and a result's landing rebases them before the GPU has made them (out_rebase_later); no
+       write in place is over a result's own bytes (copy_writable), so the two are on one page only now and then */
     out_list_init(&l);
     if (!t_buffer.out_landing) out_near_atlas(&l, p, unique);
     for (u32 k = 0; k < l.n && !landed; k++) {
@@ -3189,14 +3213,38 @@ static int atlas_fill(const DrawPage* p, size_t unique, u8* ptr, VkBuffer atlas,
         for (u64 g = o->addr & ~4095ull, e = o->addr + o->size; g < e && !landed; g += 4096) {
             u64 key = draw_page_key(g), lo = g > o->addr ? g : o->addr, hi = g + 4096 < e ? g + 4096 : e;
             u32 at = draw_page_index(p, unique, key);
-            if (at < unique && p[at].key == key && !out_copyable(o, lo, hi)) {
+            if (at < unique && p[at].key == key &&
+                (!out_copyable(o, lo, hi) || (!(key & (1ull << 63)) && vk_uma_pending_cpu(key << 12, 4096)))) {
                 land_reason(WB_DRAW);
                 landed = 1;
             }
         }
     }
     out_list_free(&l);
+    memset(&c, 0, sizeof c);
+    c.dst = atlas;
+    /* a page written in place by a submit not done yet has its bytes in memory only once the GPU ran that write: they
+       are copied from the import on the GPU after it (copy_add's first barrier), into the atlas and into its original
+       bytes. The CPU's copy read them from before the write: an aliasing draw read what an earlier draw of its
+       submission wrote in place as it was before */
     for (i = 0; i < unique; i++) {
+        VkBuffer ib;
+        u64 io;
+        p[i].initial = NULL;
+        if (page_in_place(&p[i], &ib, &io)) {
+            VkBuffer back;
+            u64 at;
+            p[i].initial = vk_stage_back(4096, &back, &at, &p[i].initial_mem);
+            if (!p[i].initial) {
+                copy_end(&c);
+                return -1;
+            }
+            copy_add(&c, ib, io, atlas_off + i * 4096, 4096);
+            VkBufferCopy base = {io, at, 4096};
+            rec_CmdCopyBuffer(vk_cmd(), ib, back, 1, &base); /* after copy_add's barrier, before copy_end's */
+            g_buffer.wstat.read_back += 4096;
+            continue;
+        }
         const u8* page = p[i].key & (1ull << 63) ? NULL : gmem_ptr_untracked(p[i].gva, 4096);
         if (page) {
             memcpy(ptr + i * 4096, page, 4096);
@@ -3204,8 +3252,6 @@ static int atlas_fill(const DrawPage* p, size_t unique, u8* ptr, VkBuffer atlas,
         } else
             memset(ptr + i * 4096, 0, 4096);
     }
-    memset(&c, 0, sizeof c);
-    c.dst = atlas;
     /* each byte from the newest result over it, as gfx_overlay takes them */
     Covered cov;
     out_list_init(&l);
@@ -3264,6 +3310,10 @@ int vk_buf_draw_prepare(VkDrawStorage* draw) {
             return 0;
         }
         composed = atlas_fill(p, unique, ptr, atlas, atlas_off);
+        if (composed < 0) {
+            free(p);
+            return 0;
+        }
         copy_note(1, atlas_size);
     }
     for (int s = 0; s < VK_DRAW_STAGES; s++) {

@@ -290,9 +290,13 @@ static int check_uma_runtime_write(void) {
    the runtime (gmem_write) */
 #define UMA_C  (HEAP_BASE + 0x3200000) /* a window of its own: the constant buffer */
 #define UMA_GC 0x4db000000ull
-static int check_uma_constants(void) {
-    const u64 address = 0x4dc000000ull, cpu = HEAP_BASE + 0x740000;
-    const u64 stream = address + 0x12000, target = address + 0x18000;
+#define UMA_CB_PROGRAMS 0x4dc000000ull
+#define UMA_CB_TARGET   (UMA_CB_PROGRAMS + 0x18000)
+/* a channel whose draw takes the green of its color from c[0][0x644] of the window of guest memory at window (2 MiB,
+   GPU address gva), 1.0 there: NULL when it can't be set up. uma_constants_done undoes it */
+static GpuChannel* uma_constants_draw(u64 window, u64 gva) {
+    const u64 address = UMA_CB_PROGRAMS, cpu = HEAP_BASE + 0x740000;
+    const u64 stream = address + 0x12000;
     const u64 vertex[] = {0xefd9ff800807ff00ull, /* ALD R0..3, a[0x80] */
                           0xeff1ff800707ff00ull, /* position */
                           0xefd9ff800907ff00ull, /* ALD R0..3, a[0x90] */
@@ -300,30 +304,32 @@ static int check_uma_constants(void) {
                           0xeff1ff800807ff00ull, /* color varying */
                           0xe30000000007000full};
     const float position[12] = {-1, -1, 0, 1, 3, -1, 0, 1, -1, 3, 0, 1}, red[4] = {1, 0, 0, 1};
-    const float one = 1.0f, zero = 0.0f;
+    const float one = 1.0f;
     u64 fragment[5];
     u8 bytes[96];
-    if (!vk_uma()) {
-        printf("skip: guest memory is copied on this device (vk_memory)\n");
-        return 0;
-    }
     GpuChannel* channel = calloc(1, sizeof *channel);
-    CHECK(channel);
+    if (!channel) return NULL;
     channel->id = 125;
-    CHECK(mem_map(UMA_C, 0x200000, MS_NORMAL, PERM_RW) == 0);
-    gmmu_map(UMA_GC, UMA_C, 0x200000);
-    memset(GP(UMA_C), 0, 0x1000);
-    memcpy(GP(UMA_C) + 0x644, &one, 4);
+    if (mem_map(window, 0x200000, MS_NORMAL, PERM_RW) != 0) {
+        free(channel);
+        return NULL;
+    }
+    gmmu_map(gva, window, 0x200000);
+    memset(GP(window), 0, 0x1000);
+    memcpy(GP(window) + 0x644, &one, 4);
     gmmu_map(address, cpu, 0x20000);
     for (u32 i = 0; i < 4; i++) fragment[i] = 0xe000000000070000ull | (0x20ull + i) << 30 | i;
     fragment[4] = 0xe30000000007000full;
-    CHECK(mesh_program(address, vertex, 6, 0));
-    CHECK(mesh_program(address + 0x10000, fragment, 5, 1));
     for (u32 v = 0; v < 3; v++) {
         memcpy(bytes + v * 32, position + 4 * v, 16);
         memcpy(bytes + v * 32 + 16, red, 16);
     }
-    CHECK(!gmem_write(stream, bytes, sizeof bytes));
+    if (!mesh_program(address, vertex, 6, 0) || !mesh_program(address + 0x10000, fragment, 5, 1) ||
+        gmem_write(stream, bytes, sizeof bytes)) {
+        free(channel);
+        (void)mem_unmap(window, 0x200000);
+        return NULL;
+    }
     u32* r = channel->r3d;
     r[0x582] = (u32)(address >> 32);
     r[0x583] = (u32)address;
@@ -344,22 +350,85 @@ static int check_uma_constants(void) {
     r[0x702] = (u32)stream;
     r[0x7c0] = (u32)((stream + sizeof bytes - 1) >> 32);
     r[0x7c1] = (u32)(stream + sizeof bytes - 1);
-    channel->ds.bind.cb_addr[0][0] = UMA_GC;
+    channel->ds.bind.cb_addr[0][0] = gva;
     channel->ds.bind.cb_size[0][0] = 0x1000;
-    CHECK(!mesh_pixel(channel, target, 0, (const u8[4]){255, 255, 0, 255}));
-    int inplace = vk_uma_imports(UMA_C, 0x1000);
-    memcpy(GP(UMA_C) + 0x644, &zero, 4); /* the guest CPU's write */
-    g_renderer->mem_may_have_changed();
-    CHECK(!mesh_pixel(channel, target, 0, (const u8[4]){255, 0, 0, 255}));
-    CHECK(!gmem_write(UMA_GC + 0x644, &one, 4)); /* the runtime's: copied from now on */
-    CHECK(!mesh_pixel(channel, target, 0, (const u8[4]){255, 255, 0, 255}));
+    return channel;
+}
+static int uma_constants_done(GpuChannel* channel, u64 window) {
     channel->ds.bind.cb_addr[0][0] = 0;
     channel->ds.bind.cb_size[0][0] = 0;
     free(channel);
-    CHECK(mem_unmap(UMA_C, 0x200000) == 0);
+    CHECK(mem_unmap(window, 0x200000) == 0);
+    return 0;
+}
+static int check_uma_constants(void) {
+    const float one = 1.0f, zero = 0.0f;
+    if (!vk_uma()) {
+        printf("skip: guest memory is copied on this device (vk_memory)\n");
+        return 0;
+    }
+    GpuChannel* channel = uma_constants_draw(UMA_C, UMA_GC);
+    CHECK(channel);
+    CHECK(!mesh_pixel(channel, UMA_CB_TARGET, 0, (const u8[4]){255, 255, 0, 255}));
+    int inplace = vk_uma_imports(UMA_C, 0x1000);
+    memcpy(GP(UMA_C) + 0x644, &zero, 4); /* the guest CPU's write */
+    g_renderer->mem_may_have_changed();
+    CHECK(!mesh_pixel(channel, UMA_CB_TARGET, 0, (const u8[4]){255, 0, 0, 255}));
+    CHECK(!gmem_write(UMA_GC + 0x644, &one, 4)); /* the runtime's: copied from now on */
+    CHECK(!mesh_pixel(channel, UMA_CB_TARGET, 0, (const u8[4]){255, 255, 0, 255}));
+    CHECK(!uma_constants_done(channel, UMA_C));
     if (!inplace) fprintf(stderr, "constant buffer: copied, not read in place\n");
     CHECK(inplace);
     printf("in place: a constant buffer read where the guest's CPU wrote it, and copied once the runtime wrote it\n");
+    return 0;
+}
+
+/* Where uma_copies copies constant buffers (vk_uma_imports_dear), their bytes are copied straight from guest memory
+   into staging (render.c's cb_get), as on a GPU with memory of its own: the draw reads the 1.0 there. A draw that
+   writes the page in place, recorded and not yet run, keeps the next lookup off that copy, whose bytes would be from
+   before the write: the constant buffer goes through the buffer cache, after the write, and the draw reads its 0.0 */
+#define UMA_CD  (HEAP_BASE + 0x4c00000)
+#define UMA_GCD 0x4f5000000ull
+static int check_uma_constants_copied(void) {
+    const int was = g_settings.guest_buffers_copied;
+    const u8 yellow[4] = {255, 255, 0, 255}, red[4] = {255, 0, 0, 255};
+    VkDrawCounts before, after;
+    VkBuffer w;
+    u64 wo;
+    if (!vk_uma()) {
+        printf("skip: guest memory is copied on this device (vk_memory)\n");
+        return 0;
+    }
+    GpuChannel* channel = uma_constants_draw(UMA_CD, UMA_GCD);
+    CHECK(channel);
+    g_settings.guest_buffers_copied = 2;
+    vk_draw_counts(&before);
+    CHECK(!mesh_pixel(channel, UMA_CB_TARGET, 0, yellow));
+    vk_draw_counts(&after);
+    const int copied = after.cb[VK_CB_COPIED] > before.cb[VK_CB_COPIED];
+    /* the shader's write of zeros over c[0][0x600..0x6ff], in place and pending */
+    vk_lock();
+    CHECK(vk_buf_copy_writable(UMA_GCD + 0x600, 256, &w, &wo, 1));
+    const int inplace = !vk_buf_pending(UMA_GCD + 0x600, 256);
+    CHECK(!owned_test_fill(w, wo, 256, 0));
+    vk_buf_writable_commit();
+    const int pending = vk_uma_pending(UMA_GCD + 0x644, 4);
+    vk_unlock();
+    vk_draw_counts(&before);
+    CHECK(!mesh_pixel(channel, UMA_CB_TARGET, 0, red));
+    vk_draw_counts(&after);
+    const int cached =
+        after.cb[VK_CB_PENDING] > before.cb[VK_CB_PENDING] && after.cb[VK_CB_COPIED] == before.cb[VK_CB_COPIED];
+    CHECK(GP(UMA_CD)[0x644] == 0 && GP(UMA_CD)[0x647] == 0);
+    g_settings.guest_buffers_copied = was;
+    CHECK(!uma_constants_done(channel, UMA_CD));
+    g_renderer->mem_may_have_changed();
+    if (!copied || !inplace || !pending || !cached)
+        fprintf(stderr, "constant buffer: copied straight %d, the write in place %d and pending %d, then cached %d\n",
+                copied, inplace, pending, cached);
+    CHECK(copied && inplace && pending && cached);
+    printf("in place: a constant buffer copied straight into staging where the buffer cache copies, and through the "
+           "cache after a write in place over it\n");
     return 0;
 }
 
@@ -418,6 +487,74 @@ static int check_uma_writes(void) {
     CHECK(pending && shared);
     printf("in place: storage written where it is in guest memory, read after the write on the GPU and the CPU, and "
            "bound for a dispatch's read where it was written\n");
+    return 0;
+}
+
+/* An aliasing draw's storage is one page atlas (buffer.c's vk_buf_draw_prepare), which starts from guest memory. An
+   earlier draw of the same submission wrote 0x32 in place over [0x100, 0x200) of a page of 0x31, recorded and not run
+   yet: the atlas must have that write, as the GPU runs the two draws in order. The aliasing draw reads [0x100, 0x200)
+   and writes 0x33 over [0x800, 0x900), and its landing writes back only what it wrote */
+#define UMA_AT  (HEAP_BASE + 0x4e00000)
+#define UMA_GAT 0x4f5400000ull
+static int check_uma_atlas_pending(void) {
+    VkBuffer w, rb;
+    u64 wo;
+    if (!vk_uma()) {
+        printf("skip: guest memory is copied on this device (vk_memory)\n");
+        return 0;
+    }
+    CHECK(mem_map(UMA_AT, 0x200000, MS_NORMAL, PERM_RW) == 0);
+    gmmu_map(UMA_GAT, UMA_AT, 0x200000);
+    memset(GP(UMA_AT), 0x31, 0x1000);
+    vk_lock();
+    u8* result = vk_readback_buffer(0x1000, &rb);
+    CHECK(result);
+    CHECK(vk_buf_copy_writable(UMA_GAT + 0x100, 256, &w, &wo, 1));
+    const int inplace = vk_uma_imports(UMA_AT, 0x200000) == 1 && !vk_buf_pending(UMA_GAT + 0x100, 256);
+    CHECK(!owned_test_fill(w, wo, 256, 0x32)); /* the earlier draw's write */
+    vk_buf_writable_commit();
+    const int pending = vk_uma_pending(UMA_GAT + 0x100, 256);
+    VkDrawStorage draw = {0};
+    draw.n[ST_VS] = 1;
+    draw.b[ST_VS][0] = (VkDrawGbuf){.addr = UMA_GAT + 0x100, .size = 256};
+    draw.n[ST_FS] = 1;
+    draw.b[ST_FS][0] = (VkDrawGbuf){.addr = UMA_GAT + 0x800, .size = 256, .writable = 1};
+    CHECK(vk_buf_draw_has_alias(&draw) == 1);
+    CHECK(vk_buf_draw_prepare(&draw));
+    const VkDrawGbuf* in = &draw.b[ST_VS][0];
+    const VkDrawGbuf* out = &draw.b[ST_FS][0];
+    CHECK(in->aliased && out->aliased && in->buf == out->buf && in->off == out->off);
+    /* the atlas's one page, as the draw finds it; then the draw's write into it */
+    VkMemoryBarrier2 b = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+                          .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                          .srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT,
+                          .dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+                          .dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT};
+    VkDependencyInfo d = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &b};
+    rec_CmdPipelineBarrier2(vk_cmd(), &d);
+    VkBufferCopy page = {in->off, 0, 0x1000};
+    rec_CmdCopyBuffer(vk_cmd(), in->buf, rb, 1, &page);
+    CHECK(!owned_test_fill(out->buf, out->off + 0x800, 256, 0x33));
+    vk_buf_writable_commit();
+    vk_finish();
+    vk_readback_ready();
+    u32 stale = 0;
+    for (u32 i = 0; i < 0x1000; i++)
+        if (result[i] != (i >= 0x100 && i < 0x200 ? 0x32 : 0x31)) stale++;
+    vk_unlock();
+    u32 wrong = 0;
+    for (u32 i = 0; i < 0x1000; i++)
+        if (GP(UMA_AT)[i] != (i >= 0x100 && i < 0x200 ? 0x32 : i >= 0x800 && i < 0x900 ? 0x33 : 0x31)) wrong++;
+    CHECK(mem_unmap(UMA_AT, 0x200000) == 0);
+    g_renderer->mem_may_have_changed();
+    if (!inplace || !pending || stale || wrong)
+        fprintf(stderr,
+                "aliased draw: the earlier write in place %d and pending %d; the atlas had %u bytes from before "
+                "it (atlas[0x100] %02x), guest memory %u wrong bytes after the landing\n",
+                inplace, pending, stale, result[0x100], wrong);
+    CHECK(inplace && pending && !stale && !wrong);
+    printf(
+        "in place: an aliasing draw's atlas has a write in place of the same submission, and its landing keeps it\n");
     return 0;
 }
 

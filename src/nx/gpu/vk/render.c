@@ -144,6 +144,7 @@ void vk_pass_ends_log(void) {
     for (u32 i = 0; i < PASS_SITES && g_pass_ends[i].file; i++) g_pass_ends[i].n = 0;
 }
 
+int vk_render_begun(void) { return g_rp.open && (g_rp.begun || g_rp.clears); }
 void vk_render_end_at(const char* file, int line) {
     if (!g_rp.open) return;
     if (g_rp.clears) rp_record(); /* clears with nothing drawn after them still clear */
@@ -2336,10 +2337,12 @@ static int cb_get(const DsState* ds, int stage, int i, u32 sz, VkBuffer* buf, u6
        whole, unified memory reads them in place, or the GPU owns some of them (memory/own.c): that path copies those
        from their owner on the GPU. The CPU's bytes on a page the GPU owns others of are trapped, and this thread holds
        the renderer's lock, which their landing needs: own_stage reads them through the pool's mirror. What the entry
-       is checked against is read before the bytes are */
+       is checked against is read before the bytes are. Unified memory whose buffer cache copies them
+       (vk_uma_imports_dear) copies them here too: guest memory has their bytes once no write in place is
+       pending over them (pending above), and the cache's checks and hash cost each constant buffer more than its copy */
     u64 cpu = 0, adds = cb_adds(), gw = gpu_mem_generation();
     u32 life = CB_OWN; /* the buffer cache's own buffer, or else what lives for the submission */
-    if (a && !pending && !vk_uma() && !vk_mirror_pending(a, sz) && !vk_mirror_holds(a, sz) &&
+    if (a && !pending && (!vk_uma() || vk_uma_imports_dear()) && !vk_mirror_pending(a, sz) && !vk_mirror_holds(a, sz) &&
         gmmu_run(a, sz, &cpu) == sz) {
         u8* p = vk_stage_upload(sz, vk_stage_align(), buf, off);
         if (!p) return 0;

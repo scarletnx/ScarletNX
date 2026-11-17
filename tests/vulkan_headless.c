@@ -8003,11 +8003,13 @@ static int run_headless(int argc, char** argv) {
         int ran = 0;
         if (!strcmp(name, "runtime_write") && ++ran) CHECK(!check_uma_runtime_write());
         if (!strcmp(name, "constants") && ++ran) CHECK(!check_uma_constants());
+        if (!strcmp(name, "constants_copied") && ++ran) CHECK(!check_uma_constants_copied());
         if (!strcmp(name, "migrate") && ++ran) CHECK(!check_uma_migrate());
         if (!strcmp(name, "way") && ++ran) CHECK(!check_uma_way());
         if (!strcmp(name, "region_writes") && ++ran) CHECK(!check_uma_region_writes());
         if (!strcmp(name, "region_merge") && ++ran) CHECK(!check_uma_region_merge());
         if (!strcmp(name, "writes") && ++ran) CHECK(!check_uma_writes());
+        if (!strcmp(name, "atlas_pending") && ++ran) CHECK(!check_uma_atlas_pending());
         if (!strcmp(name, "feedback") && ++ran) CHECK(!check_uma_feedback());
         if (!strcmp(name, "publish") && ++ran) CHECK(!check_uma_publish());
         if (!strcmp(name, "dispatch") && ++ran) CHECK(!check_uma_dispatch());
@@ -8022,12 +8024,12 @@ static int run_headless(int argc, char** argv) {
         if (!strcmp(name, "trapped_window") && ++ran) CHECK(!check_uma_trapped_window());
         if (!strcmp(name, "copies") && ++ran) CHECK(!check_uma_copies());
         if (!ran) {
-            fprintf(
-                stderr,
-                "SNX_TEST_UMA_ONLY=%s names no check: 1, runtime_write, constants, migrate, way, region_writes, "
-                "region_merge, writes, feedback, publish, dispatch, dispatch_open, texture_pending, dispatch_constants, "
-                "dispatch_table, header_words, placed, placed_view, logged_back, trapped_window or copies\n",
-                name);
+            fprintf(stderr,
+                    "SNX_TEST_UMA_ONLY=%s names no check: 1, runtime_write, constants, constants_copied, migrate, way, "
+                    "region_writes, region_merge, writes, atlas_pending, feedback, publish, dispatch, dispatch_open, "
+                    "texture_pending, dispatch_constants, "
+                    "dispatch_table, header_words, placed, placed_view, logged_back, trapped_window or copies\n",
+                    name);
             return 2;
         }
         vk_pipeline_quiesce();
@@ -8041,7 +8043,9 @@ static int run_headless(int argc, char** argv) {
         CHECK(!check_uma_lookup_then_submit());
         CHECK(!check_uma_runtime_write());
         CHECK(!check_uma_constants());
+        CHECK(!check_uma_constants_copied());
         CHECK(!check_uma_writes());
+        CHECK(!check_uma_atlas_pending());
         CHECK(!check_uma_feedback());
         CHECK(!check_uma_publish());
         CHECK(!check_uma_dispatch());
@@ -8270,7 +8274,9 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_uma_lookup_then_submit());
     CHECK(!check_uma_runtime_write());
     CHECK(!check_uma_constants());
+    CHECK(!check_uma_constants_copied());
     CHECK(!check_uma_writes());
+    CHECK(!check_uma_atlas_pending());
     CHECK(!check_uma_feedback());
     CHECK(!check_uma_publish());
     CHECK(!check_uma_dispatch());
