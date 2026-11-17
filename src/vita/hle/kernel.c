@@ -23,6 +23,7 @@
 #define MUTEX_RECURSIVE 0x02u
 #define RW_LOCK_RECURSIVE 0x02u
 #define SCE_KERNEL_ERROR_UNKNOWN_RW_LOCK_ID   0x800281e1u
+#define SCE_KERNEL_ERROR_UNKNOWN_TIMER_ID     0x800281a1u
 #define SCE_KERNEL_ERROR_RW_LOCK_RECURSIVE    0x800281e2u
 #define SCE_KERNEL_ERROR_RW_LOCK_NOT_OWNED    0x800281e4u
 #define SCE_KERNEL_ERROR_RW_LOCK_UNLOCK_UDF   0x800281e5u
@@ -535,6 +536,49 @@ static uint32_t delete_lw_cond(VitaProcess* p, VitaThread* t) {
     return 0;
 }
 
+static uint64_t process_us(VitaProcess* p);
+/* ---- timers (counters the game reads as a clock; no event or callback is delivered) ---- */
+static uint64_t timer_time(VitaProcess* p, const VitaObject* o) {
+    return o->u.timer.accumulated + (o->u.timer.running ? process_us(p) - o->u.timer.started : 0);
+}
+static uint32_t create_timer(VitaProcess* p, VitaThread* t) {
+    char name[32];
+    VitaObject* o;
+    name_of(p, arg(p, t, 0), name);
+    uint32_t uid = vita_object_new(p, VITA_OBJ_TIMER, name, &o);
+    if (!uid) return SCE_KERNEL_ERROR_NO_MEMORY;
+    return uid;
+}
+static uint32_t start_timer(VitaProcess* p, VitaThread* t) {
+    VitaObject* o = vita_object(p, arg(p, t, 0), VITA_OBJ_TIMER);
+    if (!o) return SCE_KERNEL_ERROR_UNKNOWN_TIMER_ID;
+    if (o->u.timer.running) return 1;
+    o->u.timer.running = 1, o->u.timer.started = process_us(p);
+    return 0;
+}
+static uint32_t stop_timer(VitaProcess* p, VitaThread* t) {
+    VitaObject* o = vita_object(p, arg(p, t, 0), VITA_OBJ_TIMER);
+    if (!o) return SCE_KERNEL_ERROR_UNKNOWN_TIMER_ID;
+    if (!o->u.timer.running) return 0;
+    o->u.timer.accumulated = timer_time(p, o), o->u.timer.running = 0;
+    return 1;
+}
+static uint32_t get_timer_time_wide(VitaProcess* p, VitaThread* t) {
+    VitaObject* o = vita_object(p, arg(p, t, 0), VITA_OBJ_TIMER);
+    return vita_return64(t, o ? timer_time(p, o) : 0);
+}
+/* sceKernelSetTimerTimeWide(uid, u64 time): the time it had comes back */
+static uint32_t set_timer_time_wide(VitaProcess* p, VitaThread* t) {
+    VitaObject* o = vita_object(p, arg(p, t, 0), VITA_OBJ_TIMER);
+    if (!o) return vita_return64(t, 0);
+    uint64_t before = timer_time(p, o), now = ((uint64_t)arg(p, t, 3) << 32) | arg(p, t, 2);
+    o->u.timer.accumulated = now, o->u.timer.started = process_us(p);
+    return vita_return64(t, before);
+}
+static uint32_t delete_timer(VitaProcess* p, VitaThread* t) {
+    return delete_object(p, t, VITA_OBJ_TIMER, SCE_KERNEL_ERROR_UNKNOWN_TIMER_ID);
+}
+
 /* ---- reader-writer locks ---- */
 static uint32_t create_rw_lock(VitaProcess* p, VitaThread* t) {
     char name[32];
@@ -949,6 +993,12 @@ const VitaHle vita_hle_kernel[] = {
     {0xf4ee4fa9u, "sceKernelGetSystemTimeWide", get_process_time_wide},
     {0x4b879059u, "sceKernelLibcGettimeofday", libc_gettimeofday},
     {0x2252890cu, "sceKernelPowerTick", power_tick},
+    {0x2255b2a5u, "sceKernelCreateTimer", create_timer},
+    {0x48091e0cu, "sceKernelStartTimer", start_timer},
+    {0x869e9f20u, "sceKernelStopTimer", stop_timer},
+    {0x3efd3165u, "sceKernelGetTimerTimeWide", get_timer_time_wide},
+    {0x273b4a4du, "sceKernelSetTimerTimeWide", set_timer_time_wide},
+    {0xab1e42c4u, "sceKernelDeleteTimer", delete_timer},
     {0x8667951du, "sceKernelCreateRWLock", create_rw_lock},
     {0xfa670f0fu, "sceKernelLockReadRWLock", lock_read_rw_lock},
     {0x67a187bbu, "sceKernelLockWriteRWLock", lock_write_rw_lock},
