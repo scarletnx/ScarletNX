@@ -90,7 +90,8 @@ int main(void) {
         char* xdg = snx_path_join(root, "xdg");
         set_env("HOME", root);
         set_env("APPDATA", root);
-        set_env("USERPROFILE", root);
+        /* USERPROFILE stays: Windows makes its Documents there when the export's picker asks for it (SDL_GetUserFolder),
+           a folder no one may delete, and the data folder is APPDATA's */
         set_env("XDG_DATA_HOME", xdg);
         set_env("XDG_CONFIG_HOME", xdg);
         set_env("XDG_STATE_HOME", xdg);
