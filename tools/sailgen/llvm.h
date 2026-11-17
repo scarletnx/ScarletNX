@@ -2,9 +2,9 @@
    Copyright 2026 the ScarletNX contributors */
 /* sailgen's LLVM back end: what the generated emitters call to build IR, copied at the top of every file sailgen
    writes (gen.c), so the file stands alone. It lowers Sail's builtins and the shared functions the generator does not
-   inline (README.md, "Builtins") to the IR the recompiler's emitters have always made, and reaches the CPU state only
-   through the backend's state model (ir.h: the registers' and flags' accessors and their per-block caches), so the
-   emitters written by hand and the generated ones share one view of each block.
+   inline (README.md, "Builtins") to the IR the recompiler's emitters have always made, and reads and writes the Sail's
+   registers where ScarletNX's CPU keeps them (below, "the state"), in the per-block cache of their values that the
+   emitters written by hand keep too, so the two share one view of each block.
 
    A value the generated code knows while it recompiles (a field of the word, the pc, a mask from DecodeBitMasks) is
    C: SgS for bits (64 at most), long long for an integer, int for a bool or an enum member. A value known only when
@@ -13,6 +13,9 @@
    up to SG_SRC source values, so slices, concatenations, extensions, constant shifts and rotations, masks and
    Replicate cost no IR, and sg_d_make turns the map into the cheapest IR that builds it (a field, a sign extended
    field, a rotation, a funnel shift, a byte or bit reversal, or the OR of shifted and masked sources) */
+
+#include "common/cpu/aarch64/cpu.h" /* the CPU structure, where the registers are kept */
+#include <stddef.h>
 
 #define SG_W   128 /* the widest bits value: EXTR's concatenation */
 #define SG_SRC 4
@@ -32,11 +35,13 @@ typedef struct {
     unsigned char src_flag[SG_SRC]; /* the source is 0 or 1 (a flag as the CPU structure keeps it) */
     LLVMValueRef zero_of[SG_SRC];   /* the source is zext(X == 0) to i32 (IsZeroBit): X */
     unsigned char nsrc;
-    /* AddWithCarry's NZCV before anything reads it: the sum it is the flags of (SG_AWC_*), a + b + cin = r */
-    unsigned char awc;
-    LLVMValueRef awc_a, awc_b, awc_cin, awc_r;
+    /* NZCV before anything reads it, its bits not made yet: AddWithCarry's, of the sum a + b + cin = r (SG_NZCV_ADD,
+       SUB, CARRY), or a logical result r's (SG_NZCV_LOGIC), which a write of the four flags keeps as what a
+       condition on them then compares */
+    unsigned char nzcv;
+    LLVMValueRef nzcv_a, nzcv_b, nzcv_cin, nzcv_r;
 } SgD;
-enum { SG_AWC_NONE, SG_AWC_ADD, SG_AWC_SUB, SG_AWC_CARRY };
+enum { SG_NZCV_NONE, SG_NZCV_ADD, SG_NZCV_SUB, SG_NZCV_CARRY, SG_NZCV_LOGIC };
 
 typedef struct {
     LLVMValueRef v;
@@ -210,6 +215,7 @@ static inline SgD sg_d_flag(LLVMValueRef v, LLVMValueRef zero_of) {
 
 static inline int sg_d_is_const(const SgD* x) {
     unsigned i;
+    if (x->nzcv) return 0;
     for (i = 0; i < x->w; ++i)
         if (x->sel[i] > 1) return 0;
     return 1;
@@ -280,7 +286,7 @@ static inline int sg_d_put(SgD* m, unsigned at, const SgD* from, unsigned lo, un
 }
 /* as sg_d_put, making from (or m) one source first when the sources don't fit */
 static inline void sg_d_put_any(SgCtx* g, SgD* m, unsigned at, SgD from, unsigned lo, unsigned n) {
-    if (from.awc) sg_d_realize(g, &from);
+    if (from.nzcv) sg_d_realize(g, &from);
     if (sg_d_put(m, at, &from, lo, n)) return;
     from = sg_d_from(g, sg_d_make(g, &from));
     if (sg_d_put(m, at, &from, lo, n)) return;
@@ -337,7 +343,7 @@ static inline SgD sg_d_replicate(SgCtx* g, SgD x, long long n) {
 static inline void sg_d_set_slice(SgCtx* g, SgD* x, long long hi, long long lo, SgD v) {
     if (lo < 0 || hi < lo || hi >= (long long)x->w || v.w != (unsigned)(hi - lo + 1))
         sg_fail("a slice assignment out of its value", hi, lo);
-    if (x->awc) sg_d_realize(g, x);
+    if (x->nzcv) sg_d_realize(g, x);
     sg_d_put_any(g, x, (unsigned)lo, v, 0, v.w);
 }
 /* constant shifts and rotations move the map */
@@ -506,7 +512,7 @@ static inline LLVMValueRef sg_d_make(SgCtx* g, SgD* x) {
     unsigned w = x->w, i, k, done[SG_W];
     LLVMValueRef r = NULL, t;
     if (x->value) return x->value;
-    if (x->awc) sg_d_realize(g, x);
+    if (x->nzcv) sg_d_realize(g, x);
     if (sg_d_is_const(x)) return x->value = sg_const(g, w, sg_d_const_word(x, 0), sg_d_const_word(x, 1));
     sg_d_compact(x);
     /* a W value zero-extended into an X register: its 32 bits made (a rotation, a reversal, a funnel), then extended */
@@ -737,8 +743,8 @@ static inline SgD sg_d_select(SgCtx* g, LLVMValueRef c, SgD a, SgD b) {
     unsigned i;
     int flags = a.w <= 8;
     if (LLVMIsAConstantInt(c)) return LLVMConstIntGetZExtValue(c) ? a : b;
-    if (a.awc) sg_d_realize(g, &a);
-    if (b.awc) sg_d_realize(g, &b);
+    if (a.nzcv) sg_d_realize(g, &a);
+    if (b.nzcv) sg_d_realize(g, &b);
     for (i = 0; i < a.w && flags; ++i) flags = sg_d_is_flag_bit(&a, i) && sg_d_is_flag_bit(&b, i);
     if (flags) { /* flags (CCMP's NZCV): a select of each, which stays a 0-or-1 source */
         SgD r = sg_d_empty(a.w);
@@ -877,36 +883,12 @@ static inline SgI sg_i_cls(SgCtx* g, SgD x) {
     return sg_i(LLVMBuildSub(SG_B, sg_intrinsic(g, "llvm.ctlz", LLVMTypeOf(v), args, 2), one, ""), 0);
 }
 
-/* ---- the state ---- */
-
-static inline SgD sg_reg_read(SgCtx* g, long long n) { return sg_d_from(g, ir_x(g->ir, (unsigned)n)); }
-static inline void sg_reg_write(SgCtx* g, long long n, SgD v) {
-    if (v.w != 64) sg_fail("a register written with other than 64 bits", n, v.w);
-    ir_set_x(g->ir, (unsigned)n, sg_d_make(g, &v));
-}
-/* SP_EL0: the X register file's 32nd entry */
-static inline SgD sg_sp_read(SgCtx* g) { return sg_reg_read(g, 31); }
-static inline void sg_sp_write(SgCtx* g, SgD v) { sg_reg_write(g, 31, v); }
 static inline int sg_feature(SgCtx* g, SnxU64 feature) { return (g->ir->guest_features & feature) != 0; }
 static inline void sg_undefined(SgCtx* g) {
     ir_set_pc(g->ir, ir_i64(g->ir, g->pc));
     ir_undef(g->ir, g->pc, g->word);
 }
 
-/* the flags written alone, committed with the ones not written as they are */
-static inline void sg_flags_flush(SgCtx* g) {
-    LLVMValueRef v[4];
-    unsigned i, any = 0;
-    for (i = 0; i < 4; ++i) any |= g->flag[i] != NULL;
-    if (!any) return;
-    for (i = 0; i < 4; ++i) v[i] = g->flag[i] ? g->flag[i] : ir_flag_read(g->ir, i);
-    ir_flags_commit(g->ir, v[0], v[1], v[2], v[3]);
-    for (i = 0; i < 4; ++i) g->flag[i] = NULL;
-}
-static inline SgD sg_flag_read(SgCtx* g, int i) {
-    if (g->flag[i]) return sg_d_flag(g->flag[i], NULL);
-    return sg_d_flag(ir_flag_read(g->ir, (unsigned)i), NULL);
-}
 /* bit i of x as a flag: the 0-or-1 source itself, or the bit shifted down (and masked unless it is the top) */
 static inline LLVMValueRef sg_d_flag_value(SgCtx* g, const SgD* x, unsigned i) {
     unsigned s = x->sel[i], k, p, sw;
@@ -922,7 +904,7 @@ static inline LLVMValueRef sg_d_flag_value(SgCtx* g, const SgD* x, unsigned i) {
     return v;
 }
 
-/* AddWithCarry(a, b, cin): the result, and the NZCV the flags take when it is written to them (sg_flags_write),
+/* AddWithCarry(a, b, cin): the result, and the NZCV the flags take when it is written to them (sg_PSTATE_write),
    with the IR the recompiler always made: a - z when b is NOT(z) and cin '1' (the flags' origin a compare, which
    ConditionHolds then reads as one), a + b when cin is '0', and the sum with a run-time carry otherwise */
 static inline void sg_add_with_carry(SgCtx* g, SgD a, SgD b, SgD cin, SgD* result, SgD* nzcv) {
@@ -939,33 +921,41 @@ static inline void sg_add_with_carry(SgCtx* g, SgD a, SgD b, SgD cin, SgD* resul
             y = LLVMGetOperand(y, 0);
         else
             y = LLVMBuildNot(SG_B, y, ""); /* a + b + 1 = a - NOT(b) */
-        kind = SG_AWC_SUB;
+        kind = SG_NZCV_SUB;
         r = LLVMBuildSub(SG_B, x, y, "");
     } else if (sg_d_is_const(&cin)) {
         y = sg_d_make(g, &b);
-        kind = SG_AWC_ADD;
+        kind = SG_NZCV_ADD;
         r = LLVMBuildAdd(SG_B, x, y, "");
     } else {
         y = sg_d_make(g, &b);
         c = cin.sel[0] >= 2 && cin.src_flag[cin.sel[0] - 2] ? cin.src[cin.sel[0] - 2] : sg_d_make(g, &cin);
-        kind = SG_AWC_CARRY;
+        kind = SG_NZCV_CARRY;
         r = LLVMBuildAdd(SG_B, LLVMBuildAdd(SG_B, x, y, ""), sg_cast(g, c, w, 0), "");
     }
     *result = sg_d_from(g, r);
-    flags.awc = (unsigned char)kind;
-    flags.awc_a = x;
-    flags.awc_b = y;
-    flags.awc_cin = c;
-    flags.awc_r = r;
+    flags.nzcv = (unsigned char)kind;
+    flags.nzcv_a = x;
+    flags.nzcv_b = y;
+    flags.nzcv_cin = c;
+    flags.nzcv_r = r;
     *nzcv = flags;
 }
-/* AddWithCarry's four flags, as values (the formulas of ir_state.c's ir_flags_adds and ir_flags_subs) */
-static inline void sg_awc_flags(SgCtx* g, const SgD* f, LLVMValueRef out[4]) {
-    LLVMValueRef a = f->awc_a, b = f->awc_b, r = f->awc_r, cf, overflow;
+/* the four flags an NZCV not made yet stands for, as values: AddWithCarry's (the formulas of ir_state.c's
+   ir_flags_adds and ir_flags_subs) or a logical result's (its ir_flags_logic) */
+static inline void sg_nzcv_flags(SgCtx* g, const SgD* f, LLVMValueRef out[4]) {
+    LLVMValueRef a = f->nzcv_a, b = f->nzcv_b, r = f->nzcv_r, cf, overflow;
     LLVMTypeRef type = LLVMTypeOf(r);
     LLVMValueRef sign = LLVMConstInt(type, LLVMGetIntTypeWidth(type) - 1, 0);
+    if (f->nzcv == SG_NZCV_LOGIC) {
+        out[0] = LLVMBuildLShr(SG_B, r, sign, "");
+        out[1] = ir_bool32(g->ir, LLVMBuildICmp(SG_B, LLVMIntEQ, r, LLVMConstNull(type), ""));
+        out[2] = ir_i32(g->ir, 0);
+        out[3] = ir_i32(g->ir, 0);
+        return;
+    }
     /* in the order ir_flags_subs and ir_flags_adds build them, so the same compare is the same IR */
-    if (f->awc == SG_AWC_SUB) {
+    if (f->nzcv == SG_NZCV_SUB) {
         overflow = LLVMBuildAnd(SG_B, LLVMBuildXor(SG_B, a, b, ""), LLVMBuildXor(SG_B, a, r, ""), "");
         out[0] = LLVMBuildLShr(SG_B, r, sign, "");
         out[1] = ir_bool32(g->ir, LLVMBuildICmp(SG_B, LLVMIntEQ, r, LLVMConstNull(type), ""));
@@ -975,8 +965,8 @@ static inline void sg_awc_flags(SgCtx* g, const SgD* f, LLVMValueRef out[4]) {
     }
     out[0] = LLVMBuildLShr(SG_B, r, sign, "");
     out[1] = ir_bool32(g->ir, LLVMBuildICmp(SG_B, LLVMIntEQ, r, LLVMConstNull(type), ""));
-    if (f->awc == SG_AWC_CARRY) {
-        LLVMValueRef has = LLVMBuildICmp(SG_B, LLVMIntNE, f->awc_cin, LLVMConstNull(LLVMTypeOf(f->awc_cin)), "");
+    if (f->nzcv == SG_NZCV_CARRY) {
+        LLVMValueRef has = LLVMBuildICmp(SG_B, LLVMIntNE, f->nzcv_cin, LLVMConstNull(LLVMTypeOf(f->nzcv_cin)), "");
         LLVMValueRef ule = LLVMBuildICmp(SG_B, LLVMIntULE, r, a, "");
         cf = LLVMBuildSelect(SG_B, has, ule, LLVMBuildICmp(SG_B, LLVMIntULT, r, a, ""), "");
     } else
@@ -991,29 +981,148 @@ static inline void sg_d_realize(SgCtx* g, SgD* x) {
     LLVMValueRef v[4];
     unsigned i;
     SgD m = sg_d_empty(4);
-    if (!x->awc) return;
-    sg_awc_flags(g, x, v);
+    if (!x->nzcv) return;
+    sg_nzcv_flags(g, x, v);
     for (i = 0; i < 4; ++i) sg_d_put_any(g, &m, 3 - i, sg_d_flag(v[i], NULL), 0, 1);
     *x = m;
 }
+/* [r[N-1]] @ IsZeroBit(r) @ 0b00, a logical result's NZCV (gen.c's rule): N its top bit, Z whether it is zero, C and
+   V 0, made when they are read or written */
+static inline SgD sg_d_logic_flags(SgCtx* g, SgD r) {
+    SgD f = sg_d_empty(4);
+    f.nzcv = SG_NZCV_LOGIC;
+    f.nzcv_r = sg_d_make(g, &r);
+    return f;
+}
 
-/* PSTATE.N @ ... = v: count flags from first (N is 0), v's top bit the first. Four at once commit now, with the
-   origin of a compare or a logical result; fewer wait for sg_flags_flush */
-static inline void sg_flags_write(SgCtx* g, unsigned first, unsigned count, SgD v) {
+/* ---- the state ----
+   The Sail's registers where ScarletNX's CPU keeps them (cpu.h): nx.sail's GPR, X0 to X30 then SP_EL0, in CPU.x,
+   and PSTATE's N, Z, C and V in CPU.n, z, cf and vf, each the i32 0 or 1. sailgen calls sg_NAME_read and
+   sg_NAME_write for a register NAME: a vector's by element, a struct's by field (SG_NAME_FIELD, numbered as the
+   struct's fields; a run of them written together as the first and how many). Every write is stored at once, and
+   the values are cached for the basic block in ir->state (ir.h's SnxIrBlockState), the cache ir_state.c's accessors
+   keep for the emitters written by hand: a block that mixes the two loads a register once and reads a write back as
+   the value written, and a condition on flags a compare made is that compare, whichever emitter made them. Another
+   back end keeps them its own way behind the same names */
+
+/* a load or a store of the CPU structure's field at offset, tagged as the CPU's: the guest's memory never aliases it */
+static inline LLVMValueRef sg_cpu_load(SgCtx* g, LLVMTypeRef type, size_t offset) {
+    return ir_tag_cpu(g->ir, LLVMBuildLoad2(SG_B, type, ir_cpu(g->ir, offset), ""));
+}
+static inline void sg_cpu_store(SgCtx* g, LLVMValueRef value, size_t offset) {
+    ir_tag_cpu(g->ir, LLVMBuildStore(SG_B, value, ir_cpu(g->ir, offset)));
+}
+
+/* the registers' cache, emptied when the block changes */
+static inline SnxIrRegisterCache* sg_registers(SgCtx* g) {
+    SnxIrRegisterCache* r = &g->ir->state.registers;
+    LLVMBasicBlockRef block = LLVMGetInsertBlock(SG_B);
+    if (r->block != block) {
+        r->valid = 0;
+        r->block = block;
+    }
+    return r;
+}
+static inline SgD sg_GPR_read(SgCtx* g, long long n) {
+    SnxIrRegisterCache* r = sg_registers(g);
+    if (n < 0 || n > 31) sg_fail("an element of GPR it does not have", n, 31);
+    if (!((r->valid >> n) & 1)) {
+        r->x[n] = sg_cpu_load(g, g->ir->t_i64, offsetof(CPU, x) + 8 * (size_t)n);
+        r->valid |= (uint32_t)1 << n;
+    }
+    return sg_d_from(g, r->x[n]);
+}
+static inline void sg_GPR_write(SgCtx* g, long long n, SgD v) {
+    LLVMValueRef bits;
+    SnxIrRegisterCache* r;
+    if (n < 0 || n > 31) sg_fail("an element of GPR it does not have", n, 31);
+    if (v.w != 64) sg_fail("a GPR element written with other than 64 bits", n, v.w);
+    bits = sg_d_make(g, &v);
+    r = sg_registers(g);
+    sg_cpu_store(g, bits, offsetof(CPU, x) + 8 * (size_t)n);
+    r->x[n] = bits;
+    r->valid |= (uint32_t)1 << n;
+}
+
+/* PSTATE's fields this back end keeps, numbered as ProcState's */
+enum { SG_PSTATE_N, SG_PSTATE_Z, SG_PSTATE_C, SG_PSTATE_V };
+static const size_t sg_flag_offsets[4] = {offsetof(CPU, n), offsetof(CPU, z), offsetof(CPU, cf), offsetof(CPU, vf)};
+
+/* the flags' cache, emptied, with what made them, when the block changes */
+static inline SnxIrFlags* sg_flags(SgCtx* g) {
+    SnxIrFlags* f = &g->ir->state.flags;
+    LLVMBasicBlockRef block = LLVMGetInsertBlock(SG_B);
+    if (f->block != block) {
+        f->valid = 0;
+        f->block = block;
+        f->origin = SNX_IR_FLAGS_SOME;
+    }
+    return f;
+}
+static inline LLVMValueRef sg_flag_value(SgCtx* g, unsigned i) {
+    SnxIrFlags* f = sg_flags(g);
+    if (!((f->valid >> i) & 1)) {
+        f->value[i] = sg_cpu_load(g, g->ir->t_i32, sg_flag_offsets[i]);
+        f->valid |= 1u << i;
+    }
+    return f->value[i];
+}
+/* the four flags stored (each the i32 0 or 1) and kept as the block's, with what made them: SNX_IR_FLAGS_SUB or ADD
+   with the compare's operands, LOGIC with the result, or SOME. The dump (ir->dump_active) says each origin, as
+   ir_state.c's does */
+static inline void sg_flags_commit(SgCtx* g, LLVMValueRef v[4], unsigned origin, LLVMValueRef left,
+                                   LLVMValueRef right) {
+    SnxIrFlags* f = sg_flags(g);
     unsigned i;
-    if (v.w != count) sg_fail("flags written from a value of another width", count, v.w);
-    if (count == 4 && v.awc) {
-        LLVMValueRef f[4];
-        sg_awc_flags(g, &v, f);
-        for (i = 0; i < 4; ++i) g->flag[i] = NULL;
-        ir_flags_commit(g->ir, f[0], f[1], f[2], f[3]);
-        if (v.awc == SG_AWC_SUB) ir_flags_origin(g->ir, SNX_IR_FLAGS_SUB, v.awc_a, v.awc_b);
-        if (v.awc == SG_AWC_ADD) ir_flags_origin(g->ir, SNX_IR_FLAGS_ADD, v.awc_a, v.awc_b);
+    for (i = 0; i < 4; ++i) {
+        LLVMValueRef bits = ir_u32(g->ir, v[i]);
+        sg_cpu_store(g, bits, sg_flag_offsets[i]);
+        f->value[i] = bits;
+        g->flag[i] = NULL;
+    }
+    f->valid = 15;
+    f->origin = origin;
+    f->left = left;
+    f->right = right;
+    if (origin != SNX_IR_FLAGS_SOME && g->ir->dump_active)
+        fprintf(stderr, "IR flags pc %llx block %s origin %u\n", (unsigned long long)g->ir->dump_instruction_pc,
+                LLVMGetBasicBlockName(LLVMGetInsertBlock(SG_B)), origin);
+}
+/* the flags written alone, committed with the ones not written as they are */
+static inline void sg_flags_flush(SgCtx* g) {
+    LLVMValueRef v[4];
+    unsigned i, any = 0;
+    for (i = 0; i < 4; ++i) any |= g->flag[i] != NULL;
+    if (!any) return;
+    for (i = 0; i < 4; ++i) v[i] = g->flag[i] ? g->flag[i] : sg_flag_value(g, i);
+    sg_flags_commit(g, v, SNX_IR_FLAGS_SOME, NULL, NULL);
+}
+static inline SgD sg_PSTATE_read(SgCtx* g, long long field) {
+    if (field < 0 || field > 3) sg_fail("a field of PSTATE this back end does not keep", field, 3);
+    return sg_d_flag(g->flag[field] ? g->flag[field] : sg_flag_value(g, (unsigned)field), NULL);
+}
+/* PSTATE's fields first to first + count - 1 = v, v's top bit the first. The four at once are committed now, with
+   what made them when that is a compare or a logical result; fewer wait for sg_flags_flush */
+static inline void sg_PSTATE_write(SgCtx* g, long long first, long long count, SgD v) {
+    LLVMValueRef f[4];
+    unsigned i;
+    if (first < 0 || count < 1 || first + count > 4)
+        sg_fail("fields of PSTATE this back end does not keep", first, count);
+    if (v.w != (unsigned)count) sg_fail("flags written from a value of another width", count, v.w);
+    if (count == 4 && v.nzcv) {
+        sg_nzcv_flags(g, &v, f);
+        if (v.nzcv == SG_NZCV_SUB)
+            sg_flags_commit(g, f, SNX_IR_FLAGS_SUB, v.nzcv_a, v.nzcv_b);
+        else if (v.nzcv == SG_NZCV_ADD)
+            sg_flags_commit(g, f, SNX_IR_FLAGS_ADD, v.nzcv_a, v.nzcv_b);
+        else if (v.nzcv == SG_NZCV_LOGIC)
+            sg_flags_commit(g, f, SNX_IR_FLAGS_LOGIC, v.nzcv_r, NULL);
+        else
+            sg_flags_commit(g, f, SNX_IR_FLAGS_SOME, NULL, NULL);
         return;
     }
-    if (v.awc) sg_d_realize(g, &v);
+    if (v.nzcv) sg_d_realize(g, &v);
     if (count == 4) {
-        LLVMValueRef f[4];
         /* N the top bit of X, Z IsZeroBit(X), C and V 0: a logical result's flags */
         int logic = v.sel[3] >= 2 && v.sel[2] >= 2 && v.sel[1] == 0 && v.sel[0] == 0;
         if (logic) {
@@ -1021,23 +1130,14 @@ static inline void sg_flags_write(SgCtx* g, unsigned first, unsigned count, SgD 
             logic = !v.src_flag[k] && v.pos[3] == v.src_w[k] - 1 && v.zero_of[z] == v.src[k];
         }
         for (i = 0; i < 4; ++i) f[i] = sg_d_flag_value(g, &v, 3 - i);
-        for (i = 0; i < 4; ++i) g->flag[i] = NULL;
-        ir_flags_commit(g->ir, f[0], f[1], f[2], f[3]);
-        if (logic) ir_flags_origin(g->ir, SNX_IR_FLAGS_LOGIC, v.src[v.sel[3] - 2], NULL);
+        if (logic)
+            sg_flags_commit(g, f, SNX_IR_FLAGS_LOGIC, v.src[v.sel[3] - 2], NULL);
+        else
+            sg_flags_commit(g, f, SNX_IR_FLAGS_SOME, NULL, NULL);
         return;
     }
-    for (i = 0; i < count; ++i) g->flag[first + i] = ir_u32(g->ir, sg_d_flag_value(g, &v, count - 1 - i));
-}
-
-/* PSTATE.N @ Z @ C @ V = [r[N-1]] @ IsZeroBit(r) @ 0b00, a logical result's flags: N its top bit, Z whether it is
-   zero, C and V 0, and r the origin a condition then compares (ir_state.c's ir_flags_logic) */
-static inline void sg_flags_logic(SgCtx* g, SgD r) {
-    LLVMValueRef v = sg_d_make(g, &r), zero = LLVMConstNull(LLVMTypeOf(v));
-    unsigned i;
-    for (i = 0; i < 4; ++i) g->flag[i] = NULL;
-    ir_flags_commit(g->ir, LLVMBuildLShr(SG_B, v, LLVMConstInt(LLVMTypeOf(v), r.w - 1, 0), ""),
-                    ir_bool32(g->ir, LLVMBuildICmp(SG_B, LLVMIntEQ, v, zero, "")), ir_i32(g->ir, 0), ir_i32(g->ir, 0));
-    ir_flags_origin(g->ir, SNX_IR_FLAGS_LOGIC, v, NULL);
+    for (i = 0; i < (unsigned)count; ++i)
+        g->flag[first + i] = ir_u32(g->ir, sg_d_flag_value(g, &v, (unsigned)count - 1 - i));
 }
 
 /* ConditionHolds(cond) as the compare that set the flags, when one did in this block (ir_state.c's origin_cond):

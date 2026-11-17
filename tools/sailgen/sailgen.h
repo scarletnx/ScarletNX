@@ -58,16 +58,19 @@ typedef struct {
 } SgNode;
 
 /* top-level definitions */
-enum { D_FUNCTION, D_CLAUSE, D_VAL, D_ENUM, D_OVERLOAD, D_LET, D_REGISTER, D_OTHER };
+enum { D_FUNCTION, D_CLAUSE, D_VAL, D_ENUM, D_OVERLOAD, D_LET, D_REGISTER, D_STRUCT, D_OTHER };
 
-/* the kind of a type, enough to pick the C type of a value of it */
-enum { K_NONE, K_BOOL, K_INT, K_BITS, K_BIT, K_UNIT, K_ENUM, K_TUPLE, K_REAL, K_OTHER };
+/* the kind of a type, enough to pick the C type of a value of it. K_VECTOR is a vector of bits values (a register
+   file): the type's node has its length as child a and its element's type as child b. A struct's name is K_ENUM, as
+   every type name sailgen doesn't know, and the generator looks it up */
+enum { K_NONE, K_BOOL, K_INT, K_BITS, K_BIT, K_UNIT, K_ENUM, K_TUPLE, K_REAL, K_VECTOR, K_OTHER };
 
 typedef struct {
     unsigned char kind;
     unsigned name;        /* string offset */
     unsigned params;      /* D_FUNCTION, D_CLAUSE: the first parameter pattern (a list); D_ENUM: the first member
-                               (an N_ID list); D_OVERLOAD: the first name (an N_ID list) */
+                               (an N_ID list); D_OVERLOAD: the first name (an N_ID list); D_REGISTER: its type's
+                               node; D_STRUCT: the first field (an N_TYPED list: a its name, b its type) */
     unsigned body;        /* D_FUNCTION, D_CLAUSE, D_LET: the body or value */
     unsigned guard;       /* D_CLAUSE: the if guard */
     unsigned ret_kind;    /* D_VAL: the kind its return type has; D_LET, D_REGISTER: the kind of the value */

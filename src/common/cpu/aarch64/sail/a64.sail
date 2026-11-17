@@ -3451,6 +3451,43 @@ let EL1 : bits(2) = 0b01
 
 let EL0 : bits(2) = 0b00
 
+struct ProcState = {
+  N : bits(1),
+  Z : bits(1),
+  C : bits(1),
+  V : bits(1),
+  D : bits(1),
+  A : bits(1),
+  I : bits(1),
+  F : bits(1),
+  EXLOCK : bits(1),
+  PAN : bits(1),
+  UAO : bits(1),
+  DIT : bits(1),
+  TCO : bits(1),
+  PM : bits(1),
+  PPEND : bits(1),
+  BTYPE : bits(2),
+  ZA : bits(1),
+  SM : bits(1),
+  ALLINT : bits(1),
+  SS : bits(1),
+  IL : bits(1),
+  EL : bits(2),
+  nRW : bits(1),
+  SP : bits(1),
+  Q : bits(1),
+  GE : bits(4),
+  SSBS : bits(1),
+  IT : bits(8),
+  J : bits(1),
+  T : bits(1),
+  E : bits(1),
+  M : bits(5)
+}
+
+register PSTATE : ProcState
+
 enum FPType = {
   FPType_Zero,
   FPType_Denormal,
@@ -3461,6 +3498,8 @@ enum FPType = {
 }
 
 /* register _R : vector(31, inc, bits(64)) */
+
+overload _R = {get_R, set_R, set_R_bits}
 
 enum CountOp = {CountOp_CLZ, CountOp_CLS, CountOp_CNT}
 

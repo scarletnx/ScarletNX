@@ -61,7 +61,7 @@ LLVMValueRef ir_flag_read(SnxIr* ir, unsigned index) {
     return flags->value[index];
 }
 
-void ir_flags_commit(SnxIr* ir, LLVMValueRef n, LLVMValueRef z, LLVMValueRef c, LLVMValueRef v) {
+static void flags_commit(SnxIr* ir, LLVMValueRef n, LLVMValueRef z, LLVMValueRef c, LLVMValueRef v) {
     SnxIrFlags* flags = flags_block(ir);
     LLVMValueRef values[4] = {n, z, c, v};
     for (unsigned i = 0; i < 4; ++i) {
@@ -73,7 +73,7 @@ void ir_flags_commit(SnxIr* ir, LLVMValueRef n, LLVMValueRef z, LLVMValueRef c, 
     flags->origin = SNX_IR_FLAGS_SOME;
 }
 
-void ir_flags_origin(SnxIr* ir, unsigned origin, LLVMValueRef left, LLVMValueRef right) {
+static void flags_origin(SnxIr* ir, unsigned origin, LLVMValueRef left, LLVMValueRef right) {
     if (ir->dump_active)
         fprintf(stderr, "IR flags pc %llx block %s origin %u\n", (unsigned long long)ir->dump_instruction_pc,
                 LLVMGetBasicBlockName(LLVMGetInsertBlock(ir->b)), origin);
@@ -93,8 +93,8 @@ LLVMValueRef ir_flags_adds(SnxIr* ir, unsigned bits, LLVMValueRef a, LLVMValueRe
                         LLVMBuildICmp(ir->b, LLVMIntULE, r, a, ""), LLVMBuildICmp(ir->b, LLVMIntULT, r, a, ""), "");
     LLVMValueRef overflow =
         LLVMBuildAnd(ir->b, LLVMBuildNot(ir->b, LLVMBuildXor(ir->b, a, b, ""), ""), LLVMBuildXor(ir->b, a, r, ""), "");
-    ir_flags_commit(ir, n, z, ir_bool32(ir, cf), LLVMBuildLShr(ir->b, overflow, sign, ""));
-    if (LLVMIsAConstantInt(cin) && !LLVMConstIntGetZExtValue(cin)) ir_flags_origin(ir, SNX_IR_FLAGS_ADD, a, b);
+    flags_commit(ir, n, z, ir_bool32(ir, cf), LLVMBuildLShr(ir->b, overflow, sign, ""));
+    if (LLVMIsAConstantInt(cin) && !LLVMConstIntGetZExtValue(cin)) flags_origin(ir, SNX_IR_FLAGS_ADD, a, b);
     return r;
 }
 
@@ -103,19 +103,18 @@ LLVMValueRef ir_flags_subs(SnxIr* ir, unsigned bits, LLVMValueRef a, LLVMValueRe
     LLVMValueRef r = LLVMBuildSub(ir->b, a, b, "");
     LLVMValueRef sign = LLVMConstInt(type, bits - 1, 0);
     LLVMValueRef overflow = LLVMBuildAnd(ir->b, LLVMBuildXor(ir->b, a, b, ""), LLVMBuildXor(ir->b, a, r, ""), "");
-    ir_flags_commit(ir, LLVMBuildLShr(ir->b, r, sign, ""),
-                    ir_bool32(ir, LLVMBuildICmp(ir->b, LLVMIntEQ, r, LLVMConstNull(type), "")),
-                    ir_bool32(ir, LLVMBuildICmp(ir->b, LLVMIntUGE, a, b, "")),
-                    LLVMBuildLShr(ir->b, overflow, sign, ""));
-    ir_flags_origin(ir, SNX_IR_FLAGS_SUB, a, b);
+    flags_commit(ir, LLVMBuildLShr(ir->b, r, sign, ""),
+                 ir_bool32(ir, LLVMBuildICmp(ir->b, LLVMIntEQ, r, LLVMConstNull(type), "")),
+                 ir_bool32(ir, LLVMBuildICmp(ir->b, LLVMIntUGE, a, b, "")), LLVMBuildLShr(ir->b, overflow, sign, ""));
+    flags_origin(ir, SNX_IR_FLAGS_SUB, a, b);
     return r;
 }
 
 void ir_flags_logic(SnxIr* ir, LLVMValueRef value, unsigned bits) {
-    ir_flags_commit(ir, LLVMBuildLShr(ir->b, value, LLVMConstInt(LLVMTypeOf(value), bits - 1, 0), ""),
-                    ir_bool32(ir, LLVMBuildICmp(ir->b, LLVMIntEQ, value, LLVMConstNull(LLVMTypeOf(value)), "")),
-                    ir_i32(ir, 0), ir_i32(ir, 0));
-    ir_flags_origin(ir, SNX_IR_FLAGS_LOGIC, value, NULL);
+    flags_commit(ir, LLVMBuildLShr(ir->b, value, LLVMConstInt(LLVMTypeOf(value), bits - 1, 0), ""),
+                 ir_bool32(ir, LLVMBuildICmp(ir->b, LLVMIntEQ, value, LLVMConstNull(LLVMTypeOf(value)), "")),
+                 ir_i32(ir, 0), ir_i32(ir, 0));
+    flags_origin(ir, SNX_IR_FLAGS_LOGIC, value, NULL);
 }
 
 void ir_flags_set_nzcv(SnxIr* ir, LLVMValueRef nzcv) {
@@ -123,7 +122,7 @@ void ir_flags_set_nzcv(SnxIr* ir, LLVMValueRef nzcv) {
     LLVMValueRef n = LLVMBuildAnd(ir->b, LLVMBuildLShr(ir->b, nzcv, ir_i32(ir, 3), ""), one, "");
     LLVMValueRef z = LLVMBuildAnd(ir->b, LLVMBuildLShr(ir->b, nzcv, ir_i32(ir, 2), ""), one, "");
     LLVMValueRef c = LLVMBuildAnd(ir->b, LLVMBuildLShr(ir->b, nzcv, one, ""), one, "");
-    ir_flags_commit(ir, n, z, c, LLVMBuildAnd(ir->b, nzcv, one, ""));
+    flags_commit(ir, n, z, c, LLVMBuildAnd(ir->b, nzcv, one, ""));
 }
 
 /* Condition code (cond >> 1, but AL) on flags a compare gave, as an i1 of that compare: NULL for VS of SUB and ADD

@@ -6,14 +6,14 @@
 
    Each decode function is walked with everything it calls inlined, and each value is given the time it is known at:
    CONST (here, when sailgen runs: literals, an overlay's top-level let, what only they make), STATIC (when the
-   recompiler runs: the word's fields and all that only they make) or DYN (when the guest runs: what reads a register
-   or a flag). CONST folds here, so an if on one keeps one branch; STATIC is C in the output; DYN is the back end's
-   calls. A mutable local takes the latest time any of its assignments has, found by walking each decode function
-   until no local's time changes. A function whose arguments are all STATIC and that reaches no state becomes a C
-   function of its own (DecodeBitMasks, DecodeShift); the rest are inlined, their return in tail position. An if on a
-   DYN condition becomes a select of what each branch assigns, and its branches may not change state. Every C name is
-   unique, so inlined bodies and Sail's blocks need no braces of their own. Anything outside the part of Sail this
-   knows stops it with the file, the line and why */
+   recompiler runs: the word's fields and all that only they make) or DYN (when the guest runs: what reads a register, a
+   flag among them). CONST folds here, so an if on one keeps one branch; STATIC is C in the output; DYN is the back
+   end's calls, a register's read and write among them (below, "the state"). A mutable local takes the latest time any
+   of its assignments has, found by walking each decode function until no local's time changes. A function whose
+   arguments are all STATIC and that reaches no state becomes a C function of its own (DecodeBitMasks, DecodeShift); the
+   rest are inlined, their return in tail position. An if on a DYN condition becomes a select of what each branch
+   assigns, and its branches may not change state. Every C name is unique, so inlined bodies and Sail's blocks need no
+   braces of their own. Anything outside the part of Sail this knows stops it with the file, the line and why */
 #include "sailgen.h"
 #include <ctype.h>
 #include <stdarg.h>
@@ -82,6 +82,8 @@ static struct {
     unsigned call_depth;
     unsigned roots[1024];
     Clause clauses[1024];
+    const char* backend;      /* the back end's text (--backend), copied at the output's top */
+    const char* backend_name; /* its file's name, for the errors */
 } g_gen;
 
 /* ---- output ---- */
@@ -333,22 +335,23 @@ static unsigned through_let(unsigned n) {
     return n;
 }
 
-/* does a function reach state (a register, PSTATE, a feature, the pc), or call one that does? */
+/* does a function reach state (a register, a feature, the pc), or call one that does? A call of an overload may run
+   any of its functions */
 static int reaches_state(unsigned def, unsigned depth);
 static int node_reaches_state(unsigned n, unsigned depth) {
     if (!n) return 0;
     if (N(n).kind == N_ID) {
         const char* s = name_of(n);
-        if (!strcmp(s, "_PC") || !strcmp(s, "PSTATE") || !strncmp(s, "SP_EL", 5)) return 1;
+        if (!strcmp(s, "_PC")) return 1;
         if (sg_find(s, D_REGISTER) && !sg_find(s, D_LET)) return 1;
     }
     if (N(n).kind == N_CALL) {
         const char* s = name_of(n);
-        unsigned d = sg_find(s, D_FUNCTION);
-        if (!strcmp(s, "_R") || !strcmp(s, "IsFeatureImplemented") || !strcmp(s, "AddWithCarry") ||
-            !strcmp(s, "ConditionHolds"))
-            return 1;
+        unsigned d = sg_find(s, D_FUNCTION), o = d ? 0 : sg_find(s, D_OVERLOAD), m;
+        if (!strcmp(s, "IsFeatureImplemented") || !strcmp(s, "AddWithCarry") || !strcmp(s, "ConditionHolds")) return 1;
         if (d && reaches_state(d, depth + 1)) return 1;
+        for (m = o ? g_parse.defs[o].params : 0; m; m = N(m).next)
+            if ((d = sg_find(name_of(m), D_FUNCTION)) != 0 && reaches_state(d, depth + 1)) return 1;
     }
     return node_reaches_state(N(n).a, depth) || node_reaches_state(N(n).b, depth) ||
            node_reaches_state(N(n).c, depth) || node_reaches_state(N(n).d, depth) ||
@@ -370,6 +373,20 @@ static void param_names(unsigned def, unsigned* names, unsigned* count) {
         names[k++] = N(q).name;
     }
     *count = k;
+}
+
+/* the function a call of name with count arguments runs: its definition, or the one of that many parameters among
+   the overload name's (sail-arm's _R = {get_R, set_R, set_R_bits}: _R(n) is get_R, _R(n) = v set_R); 0 for none */
+static unsigned function_def(const char* name, unsigned count) {
+    unsigned d = sg_find(name, D_FUNCTION), o, m;
+    if (d || !(o = sg_find(name, D_OVERLOAD))) return d;
+    for (m = g_parse.defs[o].params; m; m = N(m).next) {
+        unsigned names[16], k;
+        if (!(d = sg_find(name_of(m), D_FUNCTION))) continue;
+        param_names(d, names, &k);
+        if (k == count) return d;
+    }
+    return 0;
 }
 
 /* a function whose arguments are all known when the recompiler runs, and that reaches no state, as a C function
@@ -759,12 +776,6 @@ static int builtin(unsigned n, const char* name, Val* r) {
         *r = a.bt == BT_CONST ? val_const(K_INT, -a.value) : val_c(K_INT, BT_STATIC, "(-(%s))", a.c);
         return 1;
     }
-    if (!strcmp(name, "_R")) { /* the X registers, 0 to 30 */
-        need_args(n, 1);
-        a = need_static_int(n, arg(n, 0), "a register number");
-        *r = val_c(K_BITS, BT_DYN, "sg_reg_read(g, %s)", a.c);
-        return 1;
-    }
     if (!strcmp(name, "Slice")) { /* Slice(x, lo, n): x[lo + n - 1 .. lo] */
         need_args(n, 3);
         a = need_bits(n, arg(n, 0), name);
@@ -789,8 +800,8 @@ static Val call(unsigned n) {
     Val args[16], r;
     int all_static = 1;
     if (builtin(n, name, &r)) return r;
-    def = sg_find(name, D_FUNCTION);
-    if (!def) sg_fail(n, "%s has no definition and is not one of sailgen's builtins", name);
+    def = function_def(name, count);
+    if (!def) sg_fail(n, "%s has no definition of %u arguments and is not one of sailgen's builtins", name, count);
     if (count > 16) sg_fail(n, "%s called with over 16 arguments", name);
     for (i = 0; i < count; ++i) {
         args[i] = eval(arg_at(n, i), 0);
@@ -800,6 +811,178 @@ static Val call(unsigned n) {
     if (all_static && !reaches_state(def, 0)) return helper_call(n, def, args, count);
     for (i = 0; i < count; ++i) args[i] = keep(args[i]);
     return inline_call(n, def, args, count);
+}
+
+/* ---- the state: the Sail's registers ----
+   A register a decode function reaches is read and written through the back end's functions named after it,
+   sg_NAME_read and sg_NAME_write: the whole value of a register of bits, an element of a vector of them (nx.sail's
+   GPR[n]), a field of a struct (PSTATE.N, which the back end numbers as SG_PSTATE_N). Consecutive fields assigned
+   together (PSTATE.N @ PSTATE.Z @ PSTATE.C @ PSTATE.V = nzcv) are one write, of the first and how many, so the back end
+   gets the four flags AddWithCarry makes as one value. Where the runtime keeps a register, and the cache of its
+   values, are the back end's; one it does not define stops sailgen at the line that reaches it. The pc is the one
+   register the recompiler knows: the instruction's own */
+
+/* the register an unbound name n is: its definition, else 0 (a top-level let of that name, an overlay's, is a
+   constant) */
+static unsigned register_def(unsigned n) {
+    const char* s;
+    if (!n || N(n).kind != N_ID) return 0;
+    s = name_of(n);
+    if (lookup(s) || sg_find(s, D_LET)) return 0;
+    return sg_find(s, D_REGISTER);
+}
+static const char* reg_name(unsigned reg) { return sg_str(g_parse.defs[reg].name); }
+static int reg_kind(unsigned reg) { return g_parse.defs[reg].params ? (int)N(g_parse.defs[reg].params).value : K_NONE; }
+
+/* the back end's text holds word as a whole name */
+static int backend_has(const char* word) {
+    size_t n = strlen(word);
+    const char* s = g_gen.backend;
+    while ((s = strstr(s, word)) != NULL) {
+        int before = s > g_gen.backend && (isalnum((unsigned char)s[-1]) || s[-1] == '_');
+        int after = isalnum((unsigned char)s[n]) || s[n] == '_';
+        if (!before && !after) return 1;
+        s += n;
+    }
+    return 0;
+}
+/* sg_REG_read or sg_REG_write (what), which the back end must define */
+static const char* reg_access(unsigned n, unsigned reg, const char* what) {
+    static char name[160];
+    snprintf(name, sizeof name, "sg_%s_%s", reg_name(reg), what);
+    if (!backend_has(name))
+        sg_fail(n, "the register %s: the back end %s defines no %s", reg_name(reg), g_gen.backend_name, name);
+    return name;
+}
+/* SG_REG_FIELD, the back end's number for the field */
+static const char* reg_field(unsigned n, unsigned reg, const char* field) {
+    static char name[160];
+    snprintf(name, sizeof name, "SG_%s_%s", reg_name(reg), field);
+    if (!backend_has(name))
+        sg_fail(n, "%s.%s: the back end %s defines no %s", reg_name(reg), field, g_gen.backend_name, name);
+    return name;
+}
+
+/* the struct a register is of: its definition, else 0 */
+static unsigned reg_struct(unsigned reg) {
+    unsigned t = g_parse.defs[reg].params;
+    const char* text;
+    char name[96];
+    size_t k = 0;
+    if (!t || N(t).value != K_ENUM) return 0;
+    text = sg_str(N(t).name);
+    while (text[k] && !isspace((unsigned char)text[k]) && k + 1 < sizeof name) {
+        name[k] = text[k];
+        ++k;
+    }
+    name[k] = 0;
+    return sg_find(name, D_STRUCT);
+}
+/* n is REG.FIELD, REG a struct register: REG's definition, and the field's place among the struct's in *index;
+   0 when n is not a register's field */
+static unsigned field_of(unsigned n, unsigned* index) {
+    unsigned reg, st, f, k = 0;
+    if (N(n).kind != N_FIELD || !(reg = register_def(N(n).a))) return 0;
+    if (!(st = reg_struct(reg)))
+        sg_fail(n, "%s.%s: the register %s is of no struct", reg_name(reg), name_of(n), reg_name(reg));
+    for (f = g_parse.defs[st].params; f; f = N(f).next, ++k)
+        if (!strcmp(name_of(N(f).a), name_of(n))) {
+            *index = k;
+            return reg;
+        }
+    sg_fail(n, "%s.%s: the struct %s has no field %s", reg_name(reg), name_of(n), sg_str(g_parse.defs[st].name),
+            name_of(n));
+    return 0;
+}
+
+/* REG, a register of bits, read whole */
+static Val register_read(unsigned n, unsigned reg) {
+    if (reg_kind(reg) != K_BITS)
+        sg_fail(n,
+                "the register %s read whole: sailgen reads a register of bits whole, a vector one by element and a "
+                "struct one by field",
+                reg_name(reg));
+    return val_c(K_BITS, BT_DYN, "%s(g)", reg_access(n, reg, "read"));
+}
+/* REG[i], an element of a vector register: i known when it recompiles */
+static Val element_read(unsigned n, unsigned reg) {
+    Val i;
+    if (reg_kind(reg) != K_VECTOR) sg_fail(n, "%s[...]: the register %s is not a vector", reg_name(reg), reg_name(reg));
+    i = need_static_int(n, eval(N(n).b, 0), "a register's element number");
+    return val_c(K_BITS, BT_DYN, "%s(g, %s)", reg_access(n, reg, "read"), i.c);
+}
+/* REG.FIELD, a field of a struct register */
+static Val field_read(unsigned n) {
+    unsigned index, reg = field_of(n, &index);
+    const char* field;
+    char fn[160];
+    if (!reg) sg_fail(n, "the field %s of other than a register", name_of(n));
+    snprintf(fn, sizeof fn, "%s", reg_access(n, reg, "read"));
+    field = reg_field(n, reg, name_of(n));
+    return val_c(K_BITS, BT_DYN, "%s(g, %s)", fn, field);
+}
+
+/* the leaves of an @ chain, left to right: how many (at most cap) */
+static unsigned concat_leaves(unsigned n, unsigned* out, unsigned cap) {
+    if (N(n).kind == N_BINOP && !strcmp(name_of(n), "@")) {
+        unsigned k = concat_leaves(N(n).a, out, cap);
+        return k + concat_leaves(N(n).b, out + k, cap > k ? cap - k : 0);
+    }
+    if (!cap) return 1;
+    out[0] = n;
+    return 1;
+}
+
+/* the register written is not under a run-time condition (its branches are selects, which a store is not) */
+static void need_static_write(unsigned n, unsigned reg) {
+    if (g_gen.dynamic_branch)
+        sg_fail(n, "the register %s written under a condition known only at run time", reg_name(reg));
+}
+/* REG.F = v, or REG.F1 @ REG.F2 @ ... = v of a struct register's consecutive fields: one write, of the first and how
+   many */
+static void fields_write(unsigned t, Val v) {
+    unsigned leaves[8], count = concat_leaves(t, leaves, 8), reg = 0, first = 0, k;
+    char fn[160], field[160];
+    if (count > 8) sg_fail(t, "over 8 fields assigned at once");
+    for (k = 0; k < count; ++k) {
+        unsigned index = 0, r = field_of(leaves[k], &index);
+        if (!r) sg_fail(leaves[k], "assigned other than a register's field");
+        if (!k) {
+            reg = r;
+            first = index;
+        } else if (r != reg)
+            sg_fail(leaves[k], "fields of two registers assigned at once");
+        else if (index != first + k)
+            sg_fail(leaves[k], "fields assigned other than consecutive, in their struct's order");
+    }
+    need_static_write(t, reg);
+    snprintf(fn, sizeof fn, "%s", reg_access(t, reg, "write"));
+    snprintf(field, sizeof field, "%s", reg_field(t, reg, name_of(leaves[0])));
+    v = raise(need_bits(t, v, "a register's value"), BT_DYN);
+    emit("%s(g, %s, %u, %s);\n", fn, field, count, v.c);
+}
+
+/* [r[i]] @ IsZeroBit(r) @ 0b00, i r's top bit: a logical result's NZCV, lowered whole (llvm.h's sg_d_logic_flags),
+   so a write of the four flags keeps r as what a condition on them compares; 0 when n is not that */
+static int logic_flags_rule(unsigned n, Val* out) {
+    unsigned rhs[8], bit, index, zero;
+    Val r, i;
+    if (concat_leaves(n, rhs, 8) != 3) return 0;
+    if (N(rhs[0]).kind != N_VEC || !N(rhs[0]).a || N(N(rhs[0]).a).next) return 0;
+    bit = N(rhs[0]).a;
+    zero = rhs[1];
+    if (N(bit).kind != N_INDEX || N(N(bit).a).kind != N_ID || !is_call(zero, "IsZeroBit") || arg_count(zero) != 1 ||
+        N(arg_at(zero, 0)).kind != N_ID || strcmp(name_of(N(bit).a), name_of(arg_at(zero, 0))))
+        return 0;
+    if (N(rhs[2]).kind != N_BITS || N(rhs[2]).width != 2 || N(rhs[2]).value) return 0;
+    if (!lookup(name_of(N(bit).a))) return 0;
+    index = N(bit).b;
+    r = raise(eval(N(bit).a, 0), BT_DYN);
+    i = need_static_int(index, eval(index, 0), "a bit index");
+    emit("if ((%s) != (long long)(%s).w - 1) sg_fail(\"N from other than the result's top bit\", %s, (%s).w);\n", i.c,
+         r.c, i.c, r.c);
+    *out = keep(val_c(K_BITS, BT_DYN, "sg_d_logic_flags(g, %s)", r.c));
+    return 1;
 }
 
 /* ---- names, operators, slices ---- */
@@ -819,7 +1002,7 @@ static Val ident(unsigned n) {
         return v;
     }
     if (!strcmp(s, "_PC")) return val_c(K_BITS, BT_STATIC, "sg_s(g->pc, 64)");
-    if (!strcmp(s, "SP_EL0")) return val_c(K_BITS, BT_DYN, "sg_sp_read(g)");
+    if ((d = register_def(n)) != 0) return register_read(n, d);
     if ((d = sg_find(s, D_LET)) != 0) { /* a top-level constant: an overlay's fixup */
         Val v = eval(g_parse.defs[d].body, 0);
         if (v.bt != BT_CONST) sg_fail(n, "the top-level let %s is not a constant", s);
@@ -836,8 +1019,10 @@ static Val ident(unsigned n) {
 
 static Val binop(unsigned n) {
     const char* op = name_of(n);
-    Val a = eval(N(n).a, 0), b;
+    Val a, b;
     int bt;
+    if (!strcmp(op, "@") && logic_flags_rule(n, &a)) return a;
+    a = eval(N(n).a, 0);
     /* & and | of bools short-circuit: a constant left side decides without the right */
     if ((!strcmp(op, "&") || !strcmp(op, "|")) && a.kind == K_BOOL) {
         int is_and = op[0] == '&';
@@ -931,7 +1116,11 @@ static Val binop(unsigned n) {
 }
 
 static Val slice(unsigned n) {
-    Val x = eval(N(n).a, 0), hi = need_static_int(n, eval(N(n).b, 0), "a slice's bound"), lo;
+    unsigned reg = N(n).kind == N_INDEX ? register_def(N(n).a) : 0;
+    Val x, hi, lo;
+    if (reg) return element_read(n, reg);
+    x = eval(N(n).a, 0);
+    hi = need_static_int(n, eval(N(n).b, 0), "a slice's bound");
     lo = N(n).kind == N_SLICE ? need_static_int(n, eval(N(n).c, 0), "a slice's bound") : hi;
     if (x.kind == K_INT) {
         if (x.bt == BT_DYN) return val_c(K_BITS, BT_DYN, "sg_i_slice(g, %s, %s, %s)", x.c, hi.c, lo.c);
@@ -956,16 +1145,6 @@ static Val vector(unsigned n) {
             r = val_c(K_BITS, BT_DYN, "sg_d_concat(g, %s, %s)", raise(r, BT_DYN).c, raise(x, BT_DYN).c);
     }
     return r;
-}
-
-static int flag_index(unsigned n) {
-    static const char* const names[4] = {"N", "Z", "C", "V"};
-    int i;
-    if (N(n).kind != N_FIELD || N(N(n).a).kind != N_ID || strcmp(name_of(N(n).a), "PSTATE")) return -1;
-    for (i = 0; i < 4; ++i)
-        if (!strcmp(name_of(n), names[i])) return i;
-    sg_fail(n, "PSTATE.%s: sailgen maps N, Z, C and V", name_of(n));
-    return -1;
 }
 
 /* ---- statements ---- */
@@ -1038,34 +1217,15 @@ static void let_bind(unsigned pattern, Val v, unsigned value_node) {
 }
 
 static void assign(unsigned target, Val v) {
-    unsigned t = target;
-    int f;
+    unsigned t = target, reg;
     if (N(t).kind == N_TYPED) t = N(t).a;
     if (N(t).kind == N_WILD) return;
-    if ((f = flag_index(t)) >= 0) { /* PSTATE.N = v */
-        if (g_gen.dynamic_branch) sg_fail(t, "a flag written under a condition known only at run time");
-        emit("sg_flags_write(g, %d, 1, %s);\n", f, raise(need_bits(t, v, "a flag's value"), BT_DYN).c);
+    if (N(t).kind == N_FIELD) { /* PSTATE.N = v */
+        fields_write(t, v);
         return;
     }
     if (N(t).kind == N_BINOP && !strcmp(name_of(t), "@")) { /* PSTATE.N @ PSTATE.Z @ ... = v */
-        int first = -1, count = 0;
-        unsigned stack[8], depth = 0, u;
-        stack[depth++] = t;
-        while (depth) { /* the leaves, left to right */
-            u = stack[--depth];
-            if (N(u).kind == N_BINOP && !strcmp(name_of(u), "@")) {
-                stack[depth++] = N(u).b;
-                stack[depth++] = N(u).a;
-                continue;
-            }
-            f = flag_index(u);
-            if (f < 0) sg_fail(u, "a concatenation assigned that is not of PSTATE's flags");
-            if (first < 0) first = f;
-            if (f != first + count) sg_fail(u, "flags assigned out of their order N, Z, C, V");
-            ++count;
-        }
-        if (g_gen.dynamic_branch) sg_fail(t, "flags written under a condition known only at run time");
-        emit("sg_flags_write(g, %d, %d, %s);\n", first, count, raise(need_bits(t, v, "the flags' value"), BT_DYN).c);
+        fields_write(t, v);
         return;
     }
     if (N(t).kind == N_TUPLE) {
@@ -1079,16 +1239,23 @@ static void assign(unsigned target, Val v) {
         Val args[17];
         unsigned count = arg_count(t), i, def;
         if (g_gen.dynamic_branch) sg_fail(t, "%s() = under a condition known only at run time", s);
-        if (!strcmp(s, "_R")) {
-            Val r = need_static_int(t, eval(arg_at(t, 0), 0), "a register number");
-            emit("sg_reg_write(g, %s, %s);\n", r.c, raise(need_bits(t, v, "a register's value"), BT_DYN).c);
-            return;
-        }
-        def = sg_find(s, D_FUNCTION);
-        if (!def) sg_fail(t, "the setter %s has no definition", s);
+        def = function_def(s, count + 1);
+        if (!def) sg_fail(t, "the setter %s has no definition of %u arguments", s, count + 1);
         for (i = 0; i < count; ++i) args[i] = keep(eval(arg_at(t, i), 0));
         args[count++] = keep(v);
         (void)inline_call(t, def, args, count);
+        return;
+    }
+    if (N(t).kind == N_INDEX && (reg = register_def(N(t).a)) != 0) { /* GPR[n] = v */
+        Val i;
+        char fn[160];
+        if (reg_kind(reg) != K_VECTOR)
+            sg_fail(t, "%s[...] assigned: the register %s is not a vector", reg_name(reg), reg_name(reg));
+        need_static_write(t, reg);
+        i = need_static_int(t, eval(N(t).b, 0), "a register's element number");
+        snprintf(fn, sizeof fn, "%s", reg_access(t, reg, "write"));
+        v = raise(need_bits(t, v, "a register's value"), BT_DYN);
+        emit("%s(g, %s, %s);\n", fn, i.c, v.c);
         return;
     }
     if (N(t).kind == N_SLICE || N(t).kind == N_INDEX) { /* x[hi .. lo] = v */
@@ -1111,9 +1278,17 @@ static void assign(unsigned target, Val v) {
     if (N(t).kind == N_ID) {
         const char* s = name_of(t);
         Binding* b = lookup(s);
-        if (!b && !strcmp(s, "SP_EL0")) {
-            if (g_gen.dynamic_branch) sg_fail(t, "SP written under a condition known only at run time");
-            emit("sg_sp_write(g, %s);\n", raise(need_bits(t, v, "SP's value"), BT_DYN).c);
+        if (!b && (reg = register_def(t)) != 0) { /* a register of bits, whole */
+            char fn[160];
+            if (reg_kind(reg) != K_BITS)
+                sg_fail(t,
+                        "the register %s assigned whole: sailgen writes a vector one by element and a struct one by "
+                        "field",
+                        reg_name(reg));
+            need_static_write(t, reg);
+            snprintf(fn, sizeof fn, "%s", reg_access(t, reg, "write"));
+            v = raise(need_bits(t, v, "a register's value"), BT_DYN);
+            emit("%s(g, %s);\n", fn, v.c);
             return;
         }
         if (!strcmp(s, "SEE")) return; /* the decoder's own bookkeeping */
@@ -1395,45 +1570,6 @@ static Val foreach_loop(unsigned n) {
     return unit();
 }
 
-/* the leaves of an @ chain, left to right: how many (at most cap) */
-static unsigned concat_leaves(unsigned n, unsigned* out, unsigned cap) {
-    if (N(n).kind == N_BINOP && !strcmp(name_of(n), "@")) {
-        unsigned k = concat_leaves(N(n).a, out, cap);
-        return k + concat_leaves(N(n).b, out + k, cap > k ? cap - k : 0);
-    }
-    if (!cap) return 1;
-    out[0] = n;
-    return 1;
-}
-
-/* PSTATE.N @ PSTATE.Z @ PSTATE.C @ PSTATE.V = [r[i]] @ IsZeroBit(r) @ 0b00: a logical result's flags, lowered whole
-   (llvm.h's sg_flags_logic: the result r compared as the origin of the conditions that read them); 0 when the
-   assignment is not that */
-static int logic_flags_rule(unsigned n) {
-    unsigned lhs[8], rhs[8], k, bit, index, zero;
-    Binding* b;
-    Val r, i;
-    if (concat_leaves(N(n).a, lhs, 8) != 4 || concat_leaves(N(n).b, rhs, 8) != 3) return 0;
-    for (k = 0; k < 4; ++k)
-        if (flag_index(lhs[k]) != (int)k) return 0;
-    if (N(rhs[0]).kind != N_VEC || !N(rhs[0]).a || N(N(rhs[0]).a).next) return 0;
-    bit = N(rhs[0]).a;
-    zero = rhs[1];
-    if (N(bit).kind != N_INDEX || N(N(bit).a).kind != N_ID || !is_call(zero, "IsZeroBit") || arg_count(zero) != 1 ||
-        N(arg_at(zero, 0)).kind != N_ID || strcmp(name_of(N(bit).a), name_of(arg_at(zero, 0))))
-        return 0;
-    if (N(rhs[2]).kind != N_BITS || N(rhs[2]).width != 2 || N(rhs[2]).value) return 0;
-    if (!(b = lookup(name_of(N(bit).a)))) return 0;
-    if (g_gen.dynamic_branch) sg_fail(n, "flags written under a condition known only at run time");
-    index = N(bit).b;
-    r = raise(eval(N(bit).a, 0), BT_DYN);
-    i = need_static_int(index, eval(index, 0), "a bit index");
-    emit("if ((%s) != (long long)(%s).w - 1) sg_fail(\"N from other than the result's top bit\", %s, (%s).w);\n", i.c,
-         r.c, i.c, r.c);
-    emit("sg_flags_logic(g, %s);\n", r.c);
-    return 1;
-}
-
 static Val eval(unsigned n, int tail) {
     Val v;
     if (!n) return unit();
@@ -1456,11 +1592,7 @@ static Val eval(unsigned n, int tail) {
         case N_SLICE:
         case N_INDEX: v = slice(n); break;
         case N_VEC: v = vector(n); break;
-        case N_FIELD: {
-            int f = flag_index(n);
-            if (f < 0) sg_fail(n, "a field of other than PSTATE");
-            return val_c(K_BITS, BT_DYN, "sg_flag_read(g, %d)", f);
-        }
+        case N_FIELD: return field_read(n);
         case N_IF: return if_expr(n, tail);
         case N_MATCH: return match_expr(n, tail);
         case N_BLOCK: return block(n, tail);
@@ -1485,10 +1617,7 @@ static Val eval(unsigned n, int tail) {
             return v;
         }
         case N_VAR: declare_var(N(n).name, N(n).c, N(n).b); return unit();
-        case N_ASSIGN:
-            if (logic_flags_rule(n)) return unit();
-            assign(N(n).a, eval(N(n).b, 0));
-            return unit();
+        case N_ASSIGN: assign(N(n).a, eval(N(n).b, 0)); return unit();
         case N_FOREACH: return foreach_loop(n);
         case N_RETURN:
             if (g_gen.in_helper && !tail) {
@@ -1627,7 +1756,10 @@ int sg_generate(const char* roots_path, const char* backend_path, const char* ou
     Clause* clauses = g_gen.clauses;
     unsigned root_count = read_roots(roots_path, roots, 1024), clause_count = 0, i, k, d;
     size_t backend_size;
-    char* backend;
+    char* backend = sg_read(backend_path, &backend_size);
+    const char* base = strrchr(backend_path, '/');
+    g_gen.backend = backend;
+    g_gen.backend_name = base ? base + 1 : backend_path;
     for (d = 1; d < g_parse.def_count; ++d) { /* each root's clause: the one that calls it */
         const SgDef* def = &g_parse.defs[d];
         int root;
@@ -1656,9 +1788,9 @@ int sg_generate(const char* roots_path, const char* backend_path, const char* ou
     sg_out("/* Generated by tools/sailgen (--generate %s) from", roots_path);
     for (i = 0; i < g_parse.file_count; ++i) sg_out(" %s", g_parse.files[i].path);
     sg_out(": do not edit */\n\n");
-    backend = sg_read(backend_path, &backend_size);
     sg_out("%.*s\n", (int)backend_size, backend);
     free(backend);
+    g_gen.backend = NULL;
     sg_out("/* ---- helpers: functions of what the recompiler knows ---- */\n\n");
     if (g_gen.helpers.length) sg_out("%s", g_gen.helpers.text);
     sg_out("/* ---- the decode functions ---- */\n\n");

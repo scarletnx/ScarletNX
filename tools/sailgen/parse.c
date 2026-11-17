@@ -2,7 +2,8 @@
    Copyright 2026 the ScarletNX contributors */
 /* sailgen's parser: the part of Sail that sail-arm's instruction and shared pseudocode is written in. Top-level
    definitions start at column 0 (sail-arm's files and the overlays are written so); the ones sailgen never reads
-   (type, struct, union, bitfield, mapping, infix, default, $ directives) are kept as text for --extract and skipped.
+   (type, union, bitfield, mapping, infix, default, $ directives, a struct with parameters) are kept as text for
+   --extract and skipped.
    Anything else the parser does not know stops it with the file, the line and what it found */
 #include "sailgen.h"
 #include <ctype.h>
@@ -207,7 +208,8 @@ static int kind_of_type_name(const char* name) {
 
 static unsigned parse_expr(void);
 
-/* a type: its kind, and for bits(E) the width E as child a. The text is kept as name */
+/* a type: its kind, and for bits(E) the width E as child a; for vector(N, T) the length N as child a and T as child b,
+   of kind K_VECTOR when T is bits, K_BITS when it is bit, else K_OTHER. The text is kept as name */
 static unsigned parse_type(void) {
     SgToken t = *peek();
     unsigned n = node(N_TYPE, t.line);
@@ -240,6 +242,20 @@ static unsigned parse_type(void) {
                 take();
                 NODE(n).a = parse_expr();
                 expect(")");
+            } else if (!strcmp(buffer, "vector")) { /* vector(N, [inc or dec,] T) */
+                unsigned element, kind;
+                take();
+                NODE(n).a = parse_expr();
+                expect(",");
+                if (at("inc") || at("dec")) {
+                    take();
+                    expect(",");
+                }
+                element = parse_type();
+                expect(")");
+                kind = (unsigned)NODE(element).value;
+                NODE(n).b = element;
+                NODE(n).value = kind == K_BITS ? K_VECTOR : kind == K_BIT ? K_BITS : K_OTHER;
             } else {
                 int depth = 0;
                 do {
@@ -862,8 +878,11 @@ static void parse_top(void) {
         name = take();
         d = def_add(let ? D_LET : D_REGISTER, tok_str(&name), t.line, t.start);
         if (at(":")) {
+            unsigned type;
             take();
-            g_parse.defs[d].ret_kind = (unsigned)NODE(parse_type()).value;
+            type = parse_type();
+            g_parse.defs[d].ret_kind = (unsigned)NODE(type).value;
+            if (!let) g_parse.defs[d].params = type;
         }
         if (at("=")) {
             take();
@@ -873,7 +892,38 @@ static void parse_top(void) {
         if (!top_level(peek())) fail_at(peek(), "expected the next definition at column 0");
         return;
     }
-    /* type, struct, union, bitfield, mapping, infix, default, end, $ directives: text only */
+    if (!strcmp(word, "struct")) { /* struct NAME = { field : type, ... }: its fields in order */
+        SgToken name;
+        unsigned first = 0, last = 0;
+        take();
+        name = take();
+        if (!at("=")) { /* a struct with parameters: text only */
+            d = def_add(D_OTHER, intern_c(word), t.line, t.start);
+            skip_to_top_level();
+            g_parse.defs[d].text_end = g_parse.lex.tok.start;
+            return;
+        }
+        d = def_add(D_STRUCT, tok_str(&name), t.line, t.start);
+        expect("=");
+        expect("{");
+        while (peek()->kind == T_ID) {
+            SgToken f = take();
+            unsigned typed = node(N_TYPED, f.line), id = node(N_ID, f.line);
+            NODE(id).name = tok_str(&f);
+            NODE(typed).a = id;
+            expect(":");
+            NODE(typed).b = parse_type();
+            last = list_append(&first, last, typed);
+            if (!at(",")) break;
+            take();
+        }
+        expect("}");
+        g_parse.defs[d].params = first;
+        g_parse.defs[d].text_end = g_parse.lex.tok.start;
+        if (!top_level(peek())) fail_at(peek(), "expected the next definition at column 0");
+        return;
+    }
+    /* type, union, bitfield, mapping, infix, default, end, $ directives: text only */
     take();
     d = def_add(D_OTHER, intern_c(word), t.line, t.start);
     skip_to_top_level();
