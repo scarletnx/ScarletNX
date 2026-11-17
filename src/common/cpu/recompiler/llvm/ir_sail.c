@@ -1,7 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* The generated emitters (a64_sail.inc, cmake/sailgen.cmake): sailgen's LLVM back end and one function per decode
-   function of src/common/cpu/aarch64/sail/a64.roots, which reach the CPU only through ir.h's state model */
+   function of src/common/cpu/aarch64/sail/a64.roots. They read and write the Sail's registers themselves, in the
+   per-block cache of ir->state that the emitters written by hand keep too */
 #include "common/cpu/recompiler/llvm/ir_sail.h"
 #include "common/cpu/aarch64/a64_decoder.h"
 #include <stdio.h>
