@@ -932,6 +932,8 @@ int vk_image_sparse_bind(VkImage img, const u8* bits, const u64* keys, u64* byte
     return -1;
 }
 void vk_image_sparse_place(VkImage img, int system) { (void)img, (void)system; }
+void vk_image_sparse_mover(VkImage img, void* mover) { (void)img, (void)mover; } /* no defrag here */
+void vk_compute_after_gfx(u64 value) { (void)value; } /* no compute queue here */
 u64 vk_image_sparse_level_bytes(VkImage img, u32 levels) { return (void)img, (void)levels, 0; }
 u64 vk_image_sparse_need(VkImage img, const u8* bits, const u64* keys) {
     (void)img, (void)bits, (void)keys;
