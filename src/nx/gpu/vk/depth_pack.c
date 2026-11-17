@@ -77,8 +77,8 @@ int vk_depth_pack(VkCommandBuffer cb, const Surf* s, u32 layer, VkBuffer buf, u6
         {.bufferOffset = sat,
          .imageSubresource = {VK_IMAGE_ASPECT_STENCIL_BIT, 0, layer, 1},
          .imageExtent = {w, h, 1}}};
-    rec_CmdCopyImageToBuffer(cb, s->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, db, 1, &c[0]);
-    rec_CmdCopyImageToBuffer(cb, s->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, sb, 1, &c[1]);
+    rec_CmdCopyImageToBuffer(cb, s->img, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), db, 1, &c[0]);
+    rec_CmdCopyImageToBuffer(cb, s->img, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), sb, 1, &c[1]);
     barrier(cb, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
             VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
     VkDescriptorBufferInfo bufs[3] = {{db, dat, n * 4}, {sb, sat, (n + 3) / 4 * 4}, {pb, pat, n * bpp}};

@@ -40,9 +40,9 @@ static int check_nvn_array_copies(void) {
     u8* actual = vk_readback_buffer(sizeof pixels, &buffer);
     CHECK(actual);
     VkBufferImageCopy region = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 7}, .imageExtent = {8, 1, 1}};
-    vk_surf_use(vk_cmd(), image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+    vk_surf_use(vk_cmd(), image, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), VK_PIPELINE_STAGE_2_COPY_BIT,
                 VK_ACCESS_2_TRANSFER_READ_BIT);
-    rec_CmdCopyImageToBuffer(vk_cmd(), image->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &region);
+    rec_CmdCopyImageToBuffer(vk_cmd(), image->img, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), buffer, 1, &region);
     vk_finish();
     vk_readback_ready();
     CHECK(!memcmp(actual, pixels, sizeof pixels));
@@ -93,9 +93,9 @@ static int nvn_stencil_snapshot(Surf* target, u8 out[640]) {
     VkBufferImageCopy copies[2] = {
         {.imageSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 2}, .imageExtent = {8, 8, 1}},
         {.bufferOffset = 512, .imageSubresource = {VK_IMAGE_ASPECT_STENCIL_BIT, 0, 0, 2}, .imageExtent = {8, 8, 1}}};
-    vk_surf_use(vk_cmd(), target, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+    vk_surf_use(vk_cmd(), target, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), VK_PIPELINE_STAGE_2_COPY_BIT,
                 VK_ACCESS_2_TRANSFER_READ_BIT);
-    rec_CmdCopyImageToBuffer(vk_cmd(), target->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 2, copies);
+    rec_CmdCopyImageToBuffer(vk_cmd(), target->img, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), buffer, 2, copies);
     vk_finish();
     vk_readback_ready();
     memcpy(out, result, 640);

@@ -623,7 +623,7 @@ static int mixed_prepare(VkCapture* capture, const VkCoverage* coverage, const D
         for (u32 i = 0; i < 2; i++) {
             VkImageView view = vk_tex_view(images[i], VK_IMAGE_VIEW_TYPE_2D, 0, &identity, 0);
             if (!view) return 0;
-            image_info[i] = (VkDescriptorImageInfo){VK_NULL_HANDLE, view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+            image_info[i] = (VkDescriptorImageInfo){VK_NULL_HANDLE, view, VK_LAYOUT(SHADER_READ_ONLY_OPTIMAL)};
         }
         set = vk_desc_alloc(g_capture.mixed_descriptors);
         if (!set) return 0;
@@ -658,13 +658,13 @@ int vk_capture_mixed_resolve(VkCapture* capture, const VkCoverage* coverage, con
         if (!target) continue;
         Surf* images[2] = {prepared[index].source, &capture->valid};
         for (u32 i = 0; i < 2; i++)
-            vk_surf_use(command, images[i], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+            vk_surf_use(command, images[i], VK_LAYOUT(SHADER_READ_ONLY_OPTIMAL), VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
                         VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
-        vk_surf_use(command, target, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        vk_surf_use(command, target, VK_LAYOUT(COLOR_ATTACHMENT_OPTIMAL),
             VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT |
                                                             VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
         VkRenderingAttachmentInfo color_attachment = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-            .imageView = prepared[index].attachment, .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            .imageView = prepared[index].attachment, .imageLayout = VK_LAYOUT(COLOR_ATTACHMENT_OPTIMAL),
             .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD, .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
         VkRenderingInfo rendering = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
             .renderArea = {{0, 0}, {target->sw, target->sh}}, .layerCount = 1,
