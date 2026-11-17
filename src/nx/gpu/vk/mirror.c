@@ -159,7 +159,7 @@ static Gran* gran_bind(u64 g) {
     vkGetBufferMemoryRequirements(g_vk.dev, g_mir.mask, &req[1]);
     req[0].size = MIR_G;
     req[1].size = MIR_MASK_G;
-    DevMemWant aci = {.at = DM_DEVICE};
+    DevMemWant aci = {.at = DM_DEVICE, .brief = 1}; /* granules come and go with the dispatches (DM_KIND_BRIEF) */
     DevMemInfo info[2];
     if (!r->shadow) goto fail;
     /* the GPU's memory, else system memory, where the programs read and write it over the bus: a granule that found
