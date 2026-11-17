@@ -4,7 +4,7 @@
    by name, the PPM/PGM/PFM images it reads and writes, and the conversions between such an image and the plain,
    packed and depth formats of the table. Block formats (BCn, ETC2 and EAC, ASTC LDR) are in the table for raw
    uploads only: the tool takes their bytes as they are, and has no encoder or decoder for them. texfmt.c uses only
-   the C99 library and vulkan_core.h */
+   the ISO C library and vulkan_core.h */
 #ifndef SNX_SHADERPERF_TEXFMT_H
 #define SNX_SHADERPERF_TEXFMT_H
 #include <stdbool.h>

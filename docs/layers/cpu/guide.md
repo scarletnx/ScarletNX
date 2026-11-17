@@ -171,7 +171,7 @@ title ID.
 the commit what you ran. For a crash fix, run enough times to show the crash is gone, since one good run proves nothing
 about an intermittent crash.
 
-**C.** Clang only, strict ISO C99 (`.claude/skills/snx-code-quality/SKILL.md`).
+**C.** Clang only, strict ISO C23 (`.claude/skills/snx-code-quality/SKILL.md`).
 
 * No `-fno-strict-aliasing`. Access an object through its own type, a character type, `memcpy` or
   `common/utilities/endian.h`, a union member, or a local copied in and out.

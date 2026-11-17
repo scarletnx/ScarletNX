@@ -7,7 +7,7 @@
    [code_lo, hi) when the module has the table. An NRO's code is a module of its own, <hash>.so in the folder
    <Game>_nro beside the game module, whose SnxModule names the NRO as its one module at that base. A separate symbol
    with a version of its own, as snx_routes (module_abi.h): a module without NROs has none, and SnxModule and SNX_ABI
-   stay as they are. Plain C99 with no other header's types: the recompiler's loader and driver read it too */
+   stay as they are. Plain ISO C with no other header's types: the recompiler's loader and driver read it too */
 #ifndef SNX_NX_NRO_SLOTS_H
 #define SNX_NX_NRO_SLOTS_H
 #include <stddef.h>

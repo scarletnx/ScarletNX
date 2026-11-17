@@ -29,7 +29,7 @@ if(CMAKE_CROSSCOMPILING)
     add_dependencies(snx-svcgen snx_svcgen_host)
 else()
     add_executable(snx-svcgen "${PROJECT_SOURCE_DIR}/tools/svcgen/svcgen.c")
-    set_target_properties(snx-svcgen PROPERTIES C_STANDARD 99 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF
+    set_target_properties(snx-svcgen PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF
                                                 RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}")
     target_compile_options(snx-svcgen PRIVATE -pedantic-errors -Wall -Wextra -Werror)
 endif()

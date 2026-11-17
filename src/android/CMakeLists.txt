@@ -21,7 +21,7 @@ set(snx_android_c_options -pedantic-errors -Wall -Wextra -Werror -Werror=missing
                           -Werror=missing-variable-declarations)
 add_library(snx_android_dex STATIC dex/dex.c dex/classfile.c dex/translate.c dex/annotations.c)
 target_link_libraries(snx_android_dex PUBLIC scarletnx-common)
-set_target_properties(snx_android_dex PROPERTIES C_STANDARD 99 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+set_target_properties(snx_android_dex PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
 target_compile_options(snx_android_dex PRIVATE ${snx_android_c_options})
 
 # The JDK: javac for the framework, and jni.h. The program loads libjvm at run time (runtime/jvm.c), from JAVA_HOME
@@ -67,10 +67,8 @@ snx_glsl_spirv(snx_android_program SOURCE hwui/texture.frag NAME android_texture
 target_include_directories(snx_android_program SYSTEM PUBLIC "${SNX_JAVA_HOME}/include"
                            "${SNX_JAVA_HOME}/include/${snx_jni_system}")
 target_compile_definitions(snx_android_program PRIVATE SNX_JAVA_HOME="${SNX_JAVA_HOME}")
-set_target_properties(snx_android_program PROPERTIES C_STANDARD 99 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+set_target_properties(snx_android_program PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
 target_compile_options(snx_android_program PRIVATE ${snx_android_c_options})
-# libavformat's avformat.h has an anonymous union, which C11 brought: the file that includes it is C11
-set_source_files_properties(runtime/audio.c TARGET_DIRECTORY snx_android_program PROPERTIES COMPILE_OPTIONS "-std=c11")
 if(NOT WIN32)
     find_package(Threads REQUIRED)
     target_link_libraries(snx_android_program PUBLIC Threads::Threads)
@@ -130,7 +128,7 @@ snx_glsl_spirv(snx_android_bridge SOURCE bridge/gles_expand.comp NAME android_gl
                HEADER android/bridge/gles_expand_comp_spv.h)
 target_include_directories(snx_android_bridge SYSTEM PUBLIC "${SNX_JAVA_HOME}/include"
                            "${SNX_JAVA_HOME}/include/${snx_jni_system}")
-set_target_properties(snx_android_bridge PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS ON)
+set_target_properties(snx_android_bridge PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON C_EXTENSIONS ON)
 target_compile_options(snx_android_bridge PRIVATE -Wall -Wextra -Werror -Werror=missing-prototypes
                                                   -Werror=missing-variable-declarations)
 target_link_libraries(snx_android_program PUBLIC snx_android_bridge)

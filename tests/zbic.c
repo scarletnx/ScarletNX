@@ -22,7 +22,7 @@ static int failures;
         }                                                                                                              \
     } while (0)
 
-/* the frame, in base64, a line a string (ISO C99 caps a literal's length) */
+/* the frame, in base64, a line a string (ISO C caps a literal's length) */
 static const char* const frame_b64[] = {
     "WkJJQ2AgTd2sAHqYEBQeBWYm4Q8JIx0DLyEecjAAADglLWWK7O6t/UvCFKOUcAEmASUBeLu0UreXzlIpHonYnc71S8IS5wgz+kMZe6jAnPRZvVk3",
     "J0Rteko8IbPbzBgRmZkfxKz5c7hmDKvPtBVE3iV6LxtDZBrPOizrP87+rCXqaHP5op6Z5BjKa7lEOxmmk1TqZTQQZC8P5FP30SMj4boaZvUXx9al",

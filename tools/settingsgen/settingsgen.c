@@ -10,7 +10,7 @@
    Vulkan extensions its setting @NAME lines name, each auto, on or off, auto by default: checked against the Khronos
    registry (vk.xml, --vk-registry), which gives each its help, and listed for the renderer
    (g_vk_extension_settings). Every setting's key is also its name on a command line, as --key=value, and so is the
-   key with - for each _ (--aot-threads=4): those names are listed for the drivers (g_setting_args). It is strict C99
+   key with - for each _ (--aot-threads=4): those names are listed for the drivers (g_setting_args). It is strict ISO C23
    and depends on nothing, so a cross build can build it for the machine it runs on.
 
    Usage: settingsgen --out DIR [--pipelines FILE] [--llvm-include DIR] [--vk-registry FILE] SETTINGS

@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* What the generated dispatchers use of hle/kernel/ipc.h, in C99: tests/CMakeLists.txt compiles the generated test
-   dispatcher against it with -std=c99 -pedantic-errors, so the generator's output stays ISO C */
+/* What the generated dispatchers use of hle/kernel/ipc.h, in ISO C: tests/CMakeLists.txt compiles the generated test
+   dispatcher against it with -std=c23 -pedantic-errors, so the generator's output stays ISO C */
 #ifndef SNX_IPC_H
 #define SNX_IPC_H
 #include <stdint.h>

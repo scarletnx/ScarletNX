@@ -3,7 +3,7 @@
 /* glslc_kwgen: the perfect hash of glslc's keywords (src/glslc/builtins.c's glslc_keywords), written as
    glslc_keywords.inc for src/glslc/keywords.c when glslc is built. Hash and displace: the keywords go into buckets by
    the low bits of their glslc_hash, and each bucket, the fullest first, takes the first displacement that gives every
-   keyword of it a slot of its own (glslc_keyword_slot). A lookup is then one slot and one compare. It is C99 and
+   keyword of it a slot of its own (glslc_keyword_slot). A lookup is then one slot and one compare. It is ISO C23 and
    links only builtins.c, so a cross build builds it for the machine it runs on.
 
    Usage: glslc_kwgen OUT.inc (rewritten only when it changes) */

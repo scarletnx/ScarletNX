@@ -74,7 +74,7 @@
    function's ret would, and the entries sorted by symbol and then by version (hook_symbol, hook_fn, hook_handler,
    hook_family (an index into hook_family_name), hook_key, hook_lo and hook_hi (the versions [lo, hi) of key,
    hook.h's HOOK_ANY for unversioned), hook_layouts (the variants it passes, for the log) and hook_table, the view
-   hook_select searches. It is strict C99 and depends on nothing, so a cross build can build it for the machine it
+   hook_select searches. It is strict ISO C23 and depends on nothing, so a cross build can build it for the machine it
    runs on (cmake/hookgen.cmake).
 
    Verify mode (verify.h). A hook says `pure` after its handler (and its uses) when its function depends on nothing but

@@ -12,7 +12,7 @@ if(CMAKE_CROSSCOMPILING)
     find_program(SNX_HOST_CC NAMES clang cc REQUIRED)
     set(snx_rtlib_gen "${CMAKE_CURRENT_BINARY_DIR}/snx-rtlib-gen-host")
     add_custom_command(OUTPUT "${snx_rtlib_gen}"
-        COMMAND "${SNX_HOST_CC}" -O1 -w -I "${PROJECT_SOURCE_DIR}/src"
+        COMMAND "${SNX_HOST_CC}" -std=gnu23 -O1 -w -I "${PROJECT_SOURCE_DIR}/src"
             "${CMAKE_CURRENT_SOURCE_DIR}/rtlib_gen.c" -o "${snx_rtlib_gen}"
         DEPENDS rtlib_gen.c VERBATIM)
 else()
@@ -33,7 +33,7 @@ elseif(APPLE) # the architecture, SDK and oldest system version (cmake/apple.cma
 else() # a Linux cross build's target and sysroot, and the CPU baseline (cmake/cross.cmake)
     set(snx_rtlib_flags ${SNX_TARGET_FLAGS})
 endif()
-list(APPEND snx_rtlib_flags -O2 -fvisibility=hidden -w -fno-semantic-interposition
+list(APPEND snx_rtlib_flags -std=gnu23 -O2 -fvisibility=hidden -w -fno-semantic-interposition
     -foptimize-sibling-calls -fno-stack-protector)
 # its own flags, which no target carries (cmake/banned_flags.cmake checks those)
 include("${PROJECT_SOURCE_DIR}/cmake/banned_flags.cmake")
@@ -157,9 +157,9 @@ add_library(snx_llvm STATIC ir.c ir_state.c ir_promote.c ir_emit.c ir_profile.c 
     code_loader.c code_loader_coff.c gdb_jit.c jit_service.c jit_cache.c "${PROJECT_SOURCE_DIR}/src/common/cpu/arm/exec.c"
     "${CMAKE_CURRENT_BINARY_DIR}/rtlib_object.c" "${CMAKE_CURRENT_BINARY_DIR}/rtlib_bitcode.c"
     "${CMAKE_CURRENT_BINARY_DIR}/armlib_bitcode.c")
-set_target_properties(snx_llvm PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS ON)
-# The object loader needs no LLVM headers: strict C99 (RFC #142), after the target's -std
-set_source_files_properties(elf_object.c code_loader.c code_loader_coff.c gdb_jit.c PROPERTIES COMPILE_OPTIONS "-std=c99;-pedantic-errors")
+set_target_properties(snx_llvm PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON C_EXTENSIONS ON)
+# The object loader needs no LLVM headers: strict ISO C23 (RFC #142), after the target's -std
+set_source_files_properties(elf_object.c code_loader.c code_loader_coff.c gdb_jit.c PROPERTIES COMPILE_OPTIONS "-std=c23;-pedantic-errors")
 target_include_directories(snx_llvm SYSTEM PUBLIC "${SNX_LLVM_INCLUDE_DIR}")
 target_compile_options(snx_llvm PRIVATE -Wall -Wextra -Werror=missing-prototypes)
 target_compile_definitions(snx_llvm PRIVATE _CRT_SECURE_NO_WARNINGS)

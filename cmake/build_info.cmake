@@ -12,6 +12,6 @@ add_custom_target(snx_commit
 add_library(snx_build_info STATIC "${PROJECT_SOURCE_DIR}/src/common/utilities/build_info.c")
 add_dependencies(snx_build_info snx_commit)
 target_include_directories(snx_build_info PRIVATE "${PROJECT_BINARY_DIR}/generated")
-set_target_properties(snx_build_info PROPERTIES C_STANDARD 99 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+set_target_properties(snx_build_info PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
 target_compile_options(snx_build_info PRIVATE -pedantic-errors -Wall -Wextra -Werror=missing-prototypes)
 include("${PROJECT_SOURCE_DIR}/tests/cmake/build_info.cmake") # its tests

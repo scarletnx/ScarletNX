@@ -32,7 +32,7 @@ cmake --build build
 ./build/scarletnx -r "$work/Game" Game --jobs 8
 ctest --test-dir build --output-on-failure
 python3 tests/run_filesystem_tree.py --cc clang --sanitize
-clang -fsyntax-only -Wall -I src src/common/cpu/aarch64/cpu_helpers.c
+clang -std=gnu23 -fsyntax-only -Wall -I src src/common/cpu/aarch64/cpu_helpers.c
 ```
 
 Runtime relink deploys to the data folder's `recompiled/` by default (`SNX_RECOMPILED_DIR`). Recompiler/`src/common/cpu/aarch64/` edits require `-r`.
@@ -383,7 +383,7 @@ build/snx-shaderc corpus --validate --out translated
 `--validate` needs `spirv-val`. `--out` writes SPIR-V modules for build comparisons.
 
 The instruction decoder is generated at build time. `src/nx/gpu/shader/sm53.decode` lists each encoding (a
-16-bit pattern of the word's top bits), and `tools/decodetree` (strict C99, built for the build machine in a cross
+16-bit pattern of the word's top bits), and `tools/decodetree` (strict ISO C23, built for the build machine in a cross
 build) checks it and writes a switch-based decoder into the build folder, so nothing is set up at run time.
 Patterns that overlap must be in a `{ }` group, which tries them in order: the narrower first. A new opcode is a
 pattern there and an entry of `SM53_OPS` in `translator.h` (its `O_` name and display name), from which `decode.c`
@@ -520,7 +520,7 @@ no setting names refused, one whose driver lacks a command left out of the devic
 ## SVCs
 
 `src/nx/hle/svc/hos.svc` declares the kernel's SVCs as Eden's SVC generator does, and `tools/svcgen/svcgen.c`
-(strict C99, built for the build machine in a cross build, as swipc is) lays out each SVC's registers in the
+(strict ISO C23, built for the build machine in a cross build, as swipc is) lays out each SVC's registers in the
 64-bit and 32-bit ABIs from the declaration. It writes `hle/svc/hos.svc.inc` into the build folder: the handlers'
 prototypes, a wrapper per SVC and ABI, and the tables by number that both kinds of thread dispatch through. A new
 SVC is implemented by dropping its `stub` mark in `hos.svc` and defining `svc_<Name>` in `svc.c`, with the
