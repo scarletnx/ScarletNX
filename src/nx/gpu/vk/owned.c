@@ -514,8 +514,10 @@ typedef struct {
 } Piece;
 
 /* The guest memory the CPU made land, by 64 KB granule, with the present it landed at: a compute dispatch keeps a
-   written storage buffer on the GPU only where the CPU hasn't read it lately (vk_own_cpu_read). Direct-mapped by
-   granule, each slot holding its granule's number, under vk_lock (own_land, vk_dispatch) */
+   written storage buffer on the GPU only where the CPU hasn't read it lately (vk_own_cpu_read). Only a guest access
+   arms it: a landing the runtime makes for itself (own_publish, own_acquire) says nothing about the CPU, and armed
+   the eager landing of the mirror for 1200 presents where the game read a buffer once.
+   Direct-mapped by granule, each slot holding its granule's number, under vk_lock (own_land, vk_dispatch) */
 static void cpu_read_note(u64 cpu, u64 size) {
     for (u64 g = cpu >> 16, e = (cpu + size - 1) >> 16, k = 0; g <= e && k < 256; g++, k++) {
         u32 slot = (u32)(g * 0x9E3779B97F4A7C15ull >> 52);
@@ -608,11 +610,11 @@ typedef struct {
     int apart, finished;
     VkQueue queue;
 } LandCtx;
-static LandCtx land_ctx(const OwnRange* r, u32 n) {
+static LandCtx land_ctx(const OwnRange* r, u32 n, int by) {
     LandCtx c = {0};
     for (u32 k = 0; k < n; k++) {
         u64 w = own_writer(r[k].res);
-        cpu_read_note(r[k].addr, r[k].size);
+        if (by != OWN_BY_RUNTIME) cpu_read_note(r[k].addr, r[k].size);
         if (w > c.writer) c.writer = w;
     }
     c.apart = land_apart();
@@ -709,12 +711,12 @@ static void land_finish(const LandSlot* s, u64 value, const Piece* pc, u32 np, u
     for (u32 j = 0; j < np; j++) memcpy(pc[j].dst, s->ptr + pc[j].at, pc[j].size);
 }
 /* own.c's land: every copy waited for under vk_lock */
-static void own_land(const OwnRange* r, u8* const* dst, u32 n) {
+static void own_land(const OwnRange* r, u8* const* dst, u32 n, int by) {
     u64 cap = g_vk.alloc_cap / 4, done = 0;
     u32 i = 0;
     SNX_ZONE_V(z, "vk own land", n);
     vk_lock();
-    LandCtx c = land_ctx(r, n);
+    LandCtx c = land_ctx(r, n, by);
     LandSlot* s = land_slot_take();
     while (i < n) {
         Piece pc[LAND_PIECES];
@@ -734,17 +736,17 @@ typedef struct {
 } LandCopy;
 /* own.c's land_start: a landing that fits one copy is submitted, and own_land_end waits for it with vk_lock let go.
    Its resources live until then: own.c holds them until the landing is done. A bigger one lands here, as own_land */
-static void* own_land_start(const OwnRange* r, u8* const* dst, u32 n) {
+static void* own_land_start(const OwnRange* r, u8* const* dst, u32 n, int by) {
     u64 cap = g_vk.alloc_cap / 4, all = 0;
     for (u32 k = 0; k < n; k++) all += r[k].size;
     LandCopy* h = n <= LAND_PIECES && all <= cap ? (LandCopy*)malloc(sizeof *h) : NULL;
     if (!h) {
-        own_land(r, dst, n);
+        own_land(r, dst, n, by);
         return NULL;
     }
     SNX_ZONE_V(z, "vk own land start", n);
     vk_lock();
-    LandCtx c = land_ctx(r, n);
+    LandCtx c = land_ctx(r, n, by);
     u32 i = 0;
     u64 done = 0;
     h->s = land_slot_take();
@@ -862,7 +864,8 @@ static void own_publish(u64 cpu, u64 size, VkOwnRes* r, u64 off, int in_place) {
     o.res = r;
     o.res_off = off;
     d = GP(cpu);
-    own_land(&o, &d, 1);
+    /* the runtime's own publish: it says nothing about the CPU reading those bytes (see land_ctx) */
+    own_land(&o, &d, 1, OWN_BY_RUNTIME);
 }
 void vk_own_publish(u64 cpu, u64 size, VkOwnRes* r, u64 off) { own_publish(cpu, size, r, off, 1); }
 void vk_own_publish_owned(u64 cpu, u64 size, VkOwnRes* r, u64 off) { own_publish(cpu, size, r, off, 0); }
