@@ -2432,6 +2432,27 @@ int vk_written_since(const u8* host, u64 len, u32 since) {
     }
     return 0;
 }
+int vk_written_quick(const u8* host, u64 len, u32 since) {
+    if (g_ww <= 0 || !host || !len || __atomic_load_n(&g_wscan_failed, __ATOMIC_ACQUIRE) || g_wclock == UINT32_MAX ||
+        mem_alias_any())
+        return -1;
+    u64 o = (u64)(host - g_mem), lo = o >> WW_LEAF_SHIFT, hi = (o + len - 1) >> WW_LEAF_SHIFT, end;
+    if (vk_uma_import_in(o, o + len, &end) < o + len) return -1; /* pages no scan watches */
+    const u32 seen = vk_ww_epoch() + 1;
+    for (u64 l = lo; l <= hi; l++)
+        if ((i32)(g_wleaf_seen[l] - seen) < 0) return -1; /* not taken in for this epoch yet */
+    ww_take_changed();
+    for (u64 pg = o >> 12, e = (o + len - 1) >> 12; pg <= e;) {
+        u64 l = pg >> (WW_LEAF_SHIFT - 12), lend = (l + 1) << (WW_LEAF_SHIFT - 12);
+        if (g_wleaf_max[l] > since) {
+            if (!g_wleaf[l]) return 1; /* the whole leaf was marked */
+            for (u64 q = pg; q <= e && q < lend; q++)
+                if (g_wleaf[l][q & ((1u << (WW_LEAF_SHIFT - 12)) - 1)] > since) return 1;
+        }
+        pg = lend;
+    }
+    return 0;
+}
 u32 vk_ww_now(void) { return g_wclock; }
 void vk_ww_stats(u32 presents) {
     static u32 epoch0;

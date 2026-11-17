@@ -514,6 +514,13 @@ int vk_rt_drawn_fresh(Surf* s) {
     (void)s;
     return g_drawn_fresh;
 }
+/* no answer without a scan: the full check asks */
+int vk_written_quick(const u8* host, u64 len, u32 since) {
+    (void)host;
+    (void)len;
+    (void)since;
+    return -1;
+}
 int vk_rt_drawn_fresh_in(Surf* s, u64 at, u64 size) {
     (void)at;
     (void)size;
@@ -682,7 +689,11 @@ int gpu_mem_watch(u64 gva, u64 size) {
     (void)size;
     return 1;
 }
-u64 gpu_mem_watched_generation(void) { return g_gpu_writes.gen; }
+u64 gpu_mem_granules_generation(u64 gva, u64 size) {
+    (void)gva;
+    (void)size;
+    return g_gpu_writes.gen;
+}
 int gpu_mem_newest_kind(u64 a, u64 sz) { return gpu_mem_dirty_since(0, a, sz) ? GPU_WRITE_ENGINE : 0; }
 /* an engine's write, of no surface */
 int gpu_mem_newest_write(u64 a, u64 sz, u32* format, u64* surface) {

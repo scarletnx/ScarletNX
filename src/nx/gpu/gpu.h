@@ -419,10 +419,11 @@ void gpu_mem_written_cpu(u64 cpu, u64 size);
 void gpu_set_write_watch(void (*fn)(u64 cpu, u64 n));
 u64 gpu_mem_generation(void);   /* the last generation fully published */
 /* [gva, gva + size) watched from now: a GPU-side write on a page of its 2 MiB granules moves
-   gpu_mem_watched_generation. 0 where it can't be (gpu_page_check=1, or past the GPU's addresses) */
+   gpu_mem_granules_generation. 0 where it can't be (gpu_page_check=1, or past the GPU's addresses) */
 int gpu_mem_watch(u64 gva, u64 size);
-/* the newest generation that wrote a watched granule, published after gpu_mem_generation reached it */
-u64 gpu_mem_watched_generation(void);
+/* the newest generation that wrote a page of the watched granules of [gva, gva + size), published after
+   gpu_mem_generation reached it; ~0 where one of them is not watched */
+u64 gpu_mem_granules_generation(u64 gva, u64 size);
 /* what made a GPU-side write: gpu_mem_written_cb, gpu_mem_written, gpu_mem_written_shader, gpu_mem_remapped,
    gpu_mem_written_cpu, gpu_mem_written_all; then each writer that gpu_mem_written_by names */
 enum {
