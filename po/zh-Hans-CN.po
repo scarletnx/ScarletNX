@@ -1892,7 +1892,7 @@ msgstr "已打开 %s"
 msgid "Could not open %s: %s"
 msgstr "无法打开 %s：%s"
 
-#: src/gui/main.c
+#: src/gui/main.c src/gui/saves.c
 msgid "out of memory"
 msgstr "内存不足"
 
@@ -5853,6 +5853,203 @@ msgstr "第 %d"
 #: src/gui/queue.c
 msgid "next"
 msgstr "下一个"
+
+#: src/gui/saves.c
+#, c-format
+msgid "%s is a link to %s: put the save's files there by hand"
+msgstr ""
+
+#: src/gui/saves.c
+msgid "Removed: an empty folder, no save"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "the trash, %s, could not be made: %s"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "the trash, %s, is on another disk than %s, which would be copied there"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "the trash, %s, has a hundred backups of %s from this second"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "%s could not be moved to the trash, %s: %s"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "%s could not take the place of %s: %s"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "Moved to the trash, %s, before the new save took its place"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "Moved to the trash, %s, with the save it notes"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "; its note stays in the trash, %s"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "; the save there before stays in the trash, %s"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "%s could not be made: %s"
+msgstr ""
+
+#: src/gui/saves.c
+msgid "no memory for libdeflate's compressor"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "%s could not be written: %s"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "%s could not be read: %s"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "%s could not go into the zip: %s"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "Exported as %s"
+msgstr ""
+
+#: src/gui/saves.c
+msgid "Left out: a name that starts with a dot beside a save's files is a sync tool's or the system's"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "%s is no export of saves as Eden makes one: %s"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "%s is no export of saves as Eden makes one: its member %s is no path inside a folder"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "%s is no export of saves as Eden makes one: %s is not in a folder named by a game's title ID, 16 hex digits"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "%s is an empty zip: Eden's export of saves holds a folder for each game"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "%s holds no saves of the Switch: it has no %s folder"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid " and %zu more"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "%s, left by an import cut short, could not be removed: %s"
+msgstr ""
+
+#: src/gui/saves.c
+msgid "Removed: an import of this save cut short left it"
+msgstr ""
+
+#: src/gui/saves.c
+msgid "Left out: Eden's record of the save's size, which the game never sees, of which this version keeps no file"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "%s could not be taken out of %s: %s"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "Imported from %s in %s"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "Imported %zu files (%llu bytes) of %016llX from %s; the save there before is in %s"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "Imported %zu files (%llu bytes) of %016llX from %s; there was no save before"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "Not imported: %s"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "%s holds the saves of %s, not of %016llX"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "Not imported: it holds the saves of %zu other games too, %s"
+msgstr ""
+
+#: src/gui/saves.c
+msgid "Not exported: no save there"
+msgstr ""
+
+#: src/gui/saves.c
+msgid "Exported from its working copy (1): it has no last commit (0), a commit cut short that the game's next start finishes from that copy"
+msgstr ""
+
+#: src/gui/saves.c
+msgid "Not exported: it holds neither a last commit (0) nor a working copy (1)"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "Not exported: %s holds no file"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "%016llX has no save in %s"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "None of the %zu games has a save to export"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "Exported %zu files (%llu bytes) from %zu of %zu saves"
+msgstr ""
 
 #: src/gui/settings.c
 msgid "Global"

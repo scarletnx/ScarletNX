@@ -92,6 +92,9 @@ if(BUILD_TESTING)
     add_executable(snx-test-gui-logzip "${PROJECT_SOURCE_DIR}/tests/gui_logzip.c")
     target_link_libraries(snx-test-gui-logzip PRIVATE snx_gui_support scarletnx-common)
     add_test(NAME gui_logzip COMMAND snx-test-gui-logzip)
+    add_executable(snx-test-gui-saves "${PROJECT_SOURCE_DIR}/tests/gui_saves.c")
+    target_link_libraries(snx-test-gui-saves PRIVATE snx_gui_support scarletnx-common snx_libdeflate)
+    add_test(NAME gui_saves COMMAND snx-test-gui-saves)
     # cmake/gui_icons.cmake compiles icons.hex, and refuses a glyph missing, blank or out of its place by its icon
     add_test(NAME gui_icons COMMAND "${CMAKE_COMMAND}" "-DSOURCE=${PROJECT_SOURCE_DIR}"
              "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/gui-icons-test" -P "${PROJECT_SOURCE_DIR}/tests/gui_icons.cmake")
