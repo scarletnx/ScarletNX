@@ -382,7 +382,13 @@ static uint32_t create_vertex_program(VitaProcess* p, VitaThread* t) {
             return 0;
         }
     }
-    if (slot == GXM_PROGRAMS) return SCE_GXM_ERROR_OUT_OF_MEMORY;
+    if (slot == GXM_PROGRAMS) {
+        /* silent on real hardware too (SCE_GXM_ERROR_NULL_PROGRAM on every draw with no handle): the one-time flag
+           below is this codebase's own, so a trace run always shows it even without --vita_gxm_trace=1 */
+        static bool warned;
+        if (!warned) warned = true, printf("gxm: the vertex program table (%u) is full\n", (unsigned)GXM_PROGRAMS);
+        return SCE_GXM_ERROR_OUT_OF_MEMORY;
+    }
     g->vertex[slot] = want;
     vita_write32(p, out, GXM_HANDLE_VERTEX + slot * GXM_PROGRAM_HANDLE);
     return 0;
@@ -415,7 +421,12 @@ static uint32_t create_fragment_program(VitaProcess* p, VitaThread* t) {
             return 0;
         }
     }
-    if (slot == GXM_FRAGMENT_PROGRAMS) return SCE_GXM_ERROR_OUT_OF_MEMORY;
+    if (slot == GXM_FRAGMENT_PROGRAMS) {
+        static bool warned;
+        if (!warned)
+            warned = true, printf("gxm: the fragment program table (%u) is full\n", (unsigned)GXM_FRAGMENT_PROGRAMS);
+        return SCE_GXM_ERROR_OUT_OF_MEMORY;
+    }
     g->fragment[slot] = want;
     vita_write32(p, out, GXM_HANDLE_FRAGMENT + slot * GXM_PROGRAM_HANDLE);
     return 0;
