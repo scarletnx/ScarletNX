@@ -3,8 +3,9 @@
 # Copyright 2026 the ScarletNX contributors
 """scripts/pr-builds.sh --print against a fake gh that has a run's artifacts and jobs: the builds linked, the APK's
 halves and edenprobe's report left out, the jobs that did not succeed named by their id in build.yml, the checks as
-installed, the sanitizers' build, the A64 differential's QEMU reference and Nightly due never among them, and
-edenprobe's line, its notice linked to the run. Then the pull request found from the commit when none is given. Offline."""
+installed, the sanitizers' build, the A64 differential's QEMU reference, Nightly due and the linux job a pull request's
+run skips never among them, and edenprobe's line, its notice linked to the run. Then the pull request found from the
+commit when none is given. Offline."""
 
 import json
 import os
@@ -175,6 +176,14 @@ with tempfile.TemporaryDirectory() as temporary:
     )
     check(
         'a pull request that skips the A64 differential: its QEMU reference and the job that skips it never named',
+        'Not built' not in text,
+        text,
+    )
+    text = comment(
+        run_jobs=jobs(('Linux (${{ matrix.arch }})', 'skipped'), ('Linux AppImage (x86_64)', 'success'), *WHOLE[4:5])
+    )
+    check(
+        "a pull request's run: the linux job it skips never named, its Linux built in the appimage job",
         'Not built' not in text,
         text,
     )
