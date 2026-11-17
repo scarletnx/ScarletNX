@@ -1795,10 +1795,12 @@ jobs:
           if-no-files-found: error
 
   # The packages as a user gets them, each on a runner of its own (scripts/check-package.sh): in the build jobs the
-  # checkout sits where the package looks for one, and stands in for what an installed copy lacks
+  # checkout sits where the package looks for one, and stands in for what an installed copy lacks. Not on a pull
+  # request, whose run would wait for four runners more: a push to main and the nightly check each package
   appimage-check:
     name: Linux AppImage (${{ matrix.arch }}), as installed
     needs: appimage
+    if: github.event_name != 'pull_request'
     runs-on: ${{ matrix.arch == 'aarch64' && 'ubuntu-24.04-arm' || 'ubuntu-26.04' }}
     timeout-minutes: 20
     strategy:
@@ -1832,8 +1834,8 @@ jobs:
   appimage-cross-check:
     name: Linux AppImage (${{ matrix.arch }}), as installed
     needs: appimage-cross
-    # by its own need alone: a qemu-reference a pull request skipped would skip this job too
-    if: ${{ !cancelled() && needs.appimage-cross.result == 'success' }}
+    # by its own need alone: a qemu-reference skipped would skip this job too
+    if: ${{ !cancelled() && github.event_name != 'pull_request' && needs.appimage-cross.result == 'success' }}
     runs-on: ubuntu-26.04
     timeout-minutes: 60
     continue-on-error: true
@@ -1841,13 +1843,11 @@ jobs:
       fail-fast: false
       # platform as Docker names it, qemu as qemu-user and binfmt_misc do: the architectures appimage-cross built
       matrix:
-        include: >-
-          ${{ fromJSON(github.event_name == 'pull_request' && '[
-            {"arch": "ppc64", "platform": "ppc64", "qemu": "ppc64"}]' || '[
-            {"arch": "ppc64le", "platform": "ppc64le", "qemu": "ppc64le"},
-            {"arch": "riscv64", "platform": "riscv64", "qemu": "riscv64"},
-            {"arch": "loongarch64", "platform": "loong64", "qemu": "loongarch64"},
-            {"arch": "ppc64", "platform": "ppc64", "qemu": "ppc64"}]') }}
+        include:
+          - {arch: ppc64le, platform: ppc64le, qemu: ppc64le}
+          - {arch: riscv64, platform: riscv64, qemu: riscv64}
+          - {arch: loongarch64, platform: loong64, qemu: loongarch64}
+          - {arch: ppc64, platform: ppc64, qemu: ppc64}
     steps:
       - name: Name the commit
         id: commit
@@ -1936,6 +1936,7 @@ jobs:
   windows-check:
     name: Windows zip, as installed
     needs: windows
+    if: github.event_name != 'pull_request'
     runs-on: windows-2025-vs2026
     timeout-minutes: 20
     defaults:
