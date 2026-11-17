@@ -9,12 +9,65 @@
 #include <string.h>
 
 char* gui_probe_data(const char* folder) { return snx_path_join(folder, SNX_PORTABLE_DIR); }
-char* gui_probe_nro(const char* folder) { return snx_path_join(folder, "edenprobe.nro"); }
-/* the card of the game made in folder: sdmc:/edenprobe */
-static char* card(const char* folder) {
-    char* path = snx_format("%s/%s/recompiled/edenprobe/edenprobe_data/sdmc/edenprobe", folder, SNX_PORTABLE_DIR);
+/* the program's name: its NRO's, which names the game the driver makes of it */
+static const char* game(const char* folder) {
+    char *amberlith = snx_path_join(folder, GUI_PROBE_NRO), *edenprobe = snx_path_join(folder, GUI_PROBE_OLD_NRO),
+         *made = snx_format("%s/%s/recompiled/amberlith", folder, SNX_PORTABLE_DIR),
+         *made_old = snx_format("%s/%s/recompiled/edenprobe", folder, SNX_PORTABLE_DIR);
+    const char* name;
+    snx_path_native(made);
+    snx_path_native(made_old);
+    /* neither NRO there: the game made of one before, whose report Continue and Last Run read, Amberlith's first */
+    if (snx_is_file(amberlith))
+        name = "amberlith";
+    else if (snx_is_file(edenprobe))
+        name = "edenprobe";
+    else
+        name = snx_is_dir(made) || !snx_is_dir(made_old) ? "amberlith" : "edenprobe";
+    free(made_old);
+    free(made);
+    free(edenprobe);
+    free(amberlith);
+    return name;
+}
+char* gui_probe_nro(const char* folder) {
+    char* path = snx_path_join(folder, GUI_PROBE_NRO);
+    if (!snx_is_file(path)) {
+        char* old = snx_path_join(folder, GUI_PROBE_OLD_NRO);
+        if (snx_is_file(old)) {
+            free(path);
+            return old;
+        }
+        free(old);
+    }
+    return path;
+}
+/* the folder of the game's card under the probe's name: sdmc:/amberlith (new 1) or sdmc:/edenprobe */
+static char* root(const char* folder, int new) {
+    const char* name = game(folder);
+    char* path = snx_format("%s/%s/recompiled/%s/%s_data/sdmc/%s", folder, SNX_PORTABLE_DIR, name, name,
+                            new ? "amberlith" : "edenprobe");
     snx_path_native(path);
     return path;
+}
+/* whether root holds a mode file or runs, a run's or a press's */
+static int used(const char* root) {
+    char *mode = snx_path_join(root, "mode"), *runs = snx_path_join(root, "runs");
+    int is = snx_path_exists(mode) || snx_path_exists(runs);
+    free(runs);
+    free(mode);
+    return is;
+}
+/* the card the probe runs from, as Amberlith 1.0.0 chooses it: sdmc:/amberlith, but sdmc:/edenprobe while only that
+   one holds a mode file or runs, so an edenprobe build's run goes on and is read where it is */
+static char* card(const char* folder) {
+    char *amberlith = root(folder, 1), *edenprobe = root(folder, 0);
+    if (!used(amberlith) && used(edenprobe)) {
+        free(amberlith);
+        return edenprobe;
+    }
+    free(edenprobe);
+    return amberlith;
 }
 char* gui_probe_report(const char* folder) {
     char *sdmc = card(folder), *last = snx_path_join(sdmc, "last-run"), *report = NULL;
@@ -43,8 +96,9 @@ static int gone(const char* sdmc, const char* name, char* why, size_t size) {
     free(path);
     return rc;
 }
-int gui_probe_crashes(const char* folder) {
-    char *sdmc = card(folder), *path = snx_path_join(sdmc, "crashes"), *text, *line;
+/* the cases sdmc's crash list holds */
+static int crash_count(const char* sdmc) {
+    char *path = snx_path_join(sdmc, "crashes"), *text, *line;
     size_t n = 0;
     int cases = 0;
     text = (char*)snx_read_file(path, &n);
@@ -52,6 +106,11 @@ int gui_probe_crashes(const char* folder) {
         cases += *line != '\n';
     free(text);
     free(path);
+    return cases;
+}
+int gui_probe_crashes(const char* folder) {
+    char* sdmc = card(folder);
+    int cases = crash_count(sdmc);
     free(sdmc);
     return cases;
 }
@@ -63,7 +122,7 @@ int gui_probe_clear(const char* folder, int* cleared, char* why, size_t size) {
     free(sdmc);
     return rc;
 }
-/* a version edenprobe's machine= takes: 1 to 32 letters, digits, dots, dashes and underscores */
+/* a version the probe's machine= takes: 1 to 32 letters, digits, dots, dashes and underscores */
 static int version_word(const char* commit) {
     size_t n = strlen(commit), i;
     if (!n || n > 32 || !strcmp(commit, "unknown")) return 0;
@@ -71,11 +130,10 @@ static int version_word(const char* commit) {
         if (!isalnum((unsigned char)commit[i]) && !strchr("._-", commit[i])) return 0;
     return 1;
 }
-int gui_probe_words(const char* folder, int full, const char* commit, char* words, size_t size, char* why,
-                    size_t why_size) {
-    static const char word[] = "machine=";
+/* whether folder's NRO carries text (1, 0), or -1 with why when it cannot be read */
+static int nro_knows(const char* folder, const char* text, char* why, size_t why_size) {
     char *nro = gui_probe_nro(folder), *bytes, reason[256];
-    size_t n = 0, i;
+    size_t n = 0, i, length = strlen(text);
     int knows = 0;
     bytes = (char*)snx_read_file(nro, &n);
     if (!bytes) {
@@ -83,9 +141,15 @@ int gui_probe_words(const char* folder, int full, const char* commit, char* word
         free(nro);
         return -1;
     }
-    for (i = 0; !knows && i + sizeof word - 1 <= n; i++) knows = !memcmp(bytes + i, word, sizeof word - 1);
+    for (i = 0; !knows && i + length <= n; i++) knows = !memcmp(bytes + i, text, length);
     free(bytes);
     free(nro);
+    return knows;
+}
+int gui_probe_words(const char* folder, int full, const char* commit, char* words, size_t size, char* why,
+                    size_t why_size) {
+    int knows = nro_knows(folder, "machine=", why, why_size);
+    if (knows < 0) return -1;
     if (!knows)
         snprintf(words, size, "%s", full ? GUI_PROBE_FULL : GUI_PROBE_QUICK);
     else if (version_word(commit))
@@ -95,9 +159,16 @@ int gui_probe_words(const char* folder, int full, const char* commit, char* word
     return 0;
 }
 int gui_probe_start(const char* folder, const char* words, int* cleared, char* why, size_t size) {
-    char *sdmc = card(folder), *mode = snx_path_join(sdmc, "mode"), *line = snx_format("%s\n", words), reason[256];
-    int rc = gui_probe_clear(folder, cleared, why, size) || gone(sdmc, "runs", why, size) ||
-             gone(sdmc, "last-run", why, size);
+    /* the probe's own folder: an edenprobe build reads no other, and Amberlith runs from its own once it holds the
+       mode file, whatever sdmc:/edenprobe holds */
+    int amberlith = nro_knows(folder, "sdmc:/amberlith", why, size), rc;
+    char *sdmc, *mode, *line, reason[256];
+    if (amberlith < 0) return -1;
+    sdmc = root(folder, amberlith);
+    mode = snx_path_join(sdmc, "mode");
+    line = snx_format("%s\n", words);
+    *cleared = crash_count(sdmc);
+    rc = gone(sdmc, "crashes", why, size) || gone(sdmc, "runs", why, size) || gone(sdmc, "last-run", why, size);
     if (!rc && (snx_mkdirs(sdmc) || snx_write_file(mode, line, strlen(line)))) {
         snprintf(why, size, "the mode file %s cannot be written: %s", mode, snx_os_error(reason, sizeof reason));
         rc = -1;
@@ -133,9 +204,17 @@ int gui_probe_read(const char* folder, GuiProbeReport* r) {
         o = yyjson_doc_get_root(doc);
         type = yyjson_get_str(yyjson_obj_get(o, "type"));
         note = yyjson_get_str(yyjson_obj_get(o, "text"));
-        if (type && !strcmp(type, "note") && note && !r->build[0] && !strncmp(note, "edenprobe ", 10) &&
-            strstr(note, ") starting"))
-            snprintf(r->build, sizeof r->build, "%.*s", (int)(strstr(note, ") starting") + 1 - note - 10), note + 10);
+        if (type && !strcmp(type, "note") && note && !r->build[0] && strstr(note, ") starting")) {
+            /* the name the probe went by when it was built: edenprobe before 1.0.0 */
+            static const char* const names[] = {"Amberlith ", "edenprobe "};
+            for (size_t i = 0; i < sizeof names / sizeof names[0]; i++) {
+                size_t length = strlen(names[i]);
+                if (strncmp(note, names[i], length)) continue;
+                snprintf(r->name, sizeof r->name, "%.*s", (int)length - 1, names[i]);
+                snprintf(r->build, sizeof r->build, "%.*s", (int)(strstr(note, ") starting") + 1 - note - length),
+                         note + length);
+            }
+        }
         if (type && !strcmp(type, "case")) {
             const char *suite = yyjson_get_str(yyjson_obj_get(o, "suite")),
                        *result = yyjson_get_str(yyjson_obj_get(o, "result")),
@@ -181,7 +260,8 @@ static size_t suites(const GuiProbeReport* r, int crashed, char* out, size_t at,
     return at;
 }
 void gui_probe_said(const GuiProbeReport* r, char* out, size_t size) {
-    size_t at = (size_t)snprintf(out, size, "edenprobe %s: ", r->build[0] ? r->build : "?");
+    size_t at =
+        (size_t)snprintf(out, size, "%s %s: ", r->name[0] ? r->name : "Amberlith", r->build[0] ? r->build : "?");
     if (!r->summary) {
         if (at < size)
             snprintf(out + at, size - at, "no summary, %d case%s reported", r->cases, r->cases == 1 ? "" : "s");

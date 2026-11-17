@@ -1561,7 +1561,7 @@ static char* stopped_run(App* app, const char* program, const char* name, const 
 }
 /* the run the menu did not see end, Last Run: a game Android stopped for its memory, a page first that says what ran,
    when it started, Android's reason, its process's PSS and RSS (none recorded where Android measured none, never 0
-   MB) and its log, OK alone; Run edenprobe without its
+   MB) and its log, OK alone; Run Amberlith without its
    summary, Continue (going on with it from its journal at once, a page after it held until its run is over) and Not
    Now; one that reached its
    summary, its counts in a box; a game that ended with an exit, or still runs, nothing but the log's line; with
@@ -1640,7 +1640,8 @@ static void test_last_run(App* app) {
     free(at);
     free(state);
     free(record);
-    /* Run edenprobe's launch Android stopped before its summary: Continue in focus, Not Now; the cases so far */
+    /* Run Amberlith's launch of an edenprobe build (its game edenprobe, its card sdmc:/edenprobe) Android stopped before
+       its summary, with no NRO left in its folder: read where it is; Continue in focus, Not Now; the cases so far */
     put(last, "runs/abc1234\n");
     put(report, "{\"type\":\"note\",\"text\":\"edenprobe 0.9.0 (abc1234) starting\"}\n"
                 "{\"type\":\"case\",\"suite\":\"cpu\",\"name\":\"a\",\"result\":\"pass\"}\n"
@@ -1665,8 +1666,8 @@ static void test_last_run(App* app) {
         key(app, SDLK_RETURN);
         assert(!app->setup_on && !app->stopped_go_on && !app->setup_held);
         if (go_on) { /* probe_start's Continue: here the NRO it needs, as GPU Drivers' Continue says, over the menu */
-            char* nro = join(probe, "edenprobe.nro");
-            at = snx_format("Run edenprobe needs %s", nro);
+            char* nro = join(probe, "amberlith.nro");
+            at = snx_format("Run Amberlith needs %s", nro);
             free(nro);
             assert(!strncmp(app->editor.note, at, strlen(at)) && app->confirm.shown &&
                    app->confirm.ask == GUI_ASK_ERROR && !strcmp(app->error_line, app->editor.note));
@@ -1678,7 +1679,7 @@ static void test_last_run(App* app) {
     }
     { /* Continue with a page after it (the notices due): the probe goes on at once, the page held until its run is
          over, here until the box of why it did not start is closed */
-        char* nro = join(probe, "edenprobe.nro");
+        char* nro = join(probe, "amberlith.nro");
         record = stopped_run(app, game, "edenprobe", probe, true);
         last_run_look(app);
         put(file, "[setup]\nversion = 1\nnotices = 0\n"); /* every notice due again */
@@ -1687,7 +1688,7 @@ static void test_last_run(App* app) {
         app->editor.note[0] = 0;
         app->errors_count = 0; /* said once a session: the loop above said it */
         key(app, SDLK_RETURN); /* Continue */
-        at = snx_format("Run edenprobe needs %s", nro);
+        at = snx_format("Run Amberlith needs %s", nro);
         assert(!app->setup_on && app->setup_held && !app->stopped_go_on && app->confirm.shown &&
                !strncmp(app->error_line, at, strlen(at)));
         pump(app);
@@ -1735,7 +1736,7 @@ static void test_last_run(App* app) {
     free(folder);
     free(file);
     free(config);
-    puts("PASS Last Run: a game Android stopped, Run edenprobe's Continue and Not Now, its summary's box");
+    puts("PASS Last Run: a game Android stopped, Run Amberlith's Continue and Not Now, its summary's box");
 }
 
 static void set_env(const char* name, const char* value) {

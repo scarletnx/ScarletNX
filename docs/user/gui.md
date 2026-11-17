@@ -216,15 +216,16 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   Driver are greyed, each row saying what the device lacks (*Android only*, *Unsupported GPU*...) and Enter
   the whole line; a package's box still opens for its Remove, its Use refused with that line. A
   game whose package does not load stops, saying why, and so does one whose package lists no Vulkan device, a driver
-  for another GPU. Under them, **edenprobe Mode** (Quick, the default:
-  `notime cpu graphics hooks`; Full adds `fs video audio kernel display`) and **Run edenprobe**, which plays
-  [edenprobe](../dev/edenprobe.md)'s probes as a game with the GPU driver picked here, from `probe/edenprobe.nro` of the
-  Logs folder, in a data folder of its own there (`probe/.scarletnx`: none of your settings, saves or users) with the
-  default settings, and the build as edenprobe's machine (`machine=scarletnx@<commit>`), whose ban list then skips the
-  cases that end ScarletNX every time. Its window shows edenprobe's own screens: the start screen with those families
+  for another GPU. Under them, **Amberlith Mode** (Quick, the default:
+  `notime cpu graphics hooks`; Full adds `fs video audio kernel display`) and **Run Amberlith**, which plays
+  [Amberlith](../dev/edenprobe.md)'s probes as a game with the GPU driver picked here, from `probe/amberlith.nro` of the
+  Logs folder (a release's `amberlith-<version>.nro` saved under that name; an older `probe/edenprobe.nro` when only
+  that one is there), in a data folder of its own there (`probe/.scarletnx`: none of your settings, saves or users)
+  with the default settings, and the build as the probe's machine (`machine=scarletnx@<commit>`), whose ban list then
+  skips the cases that end ScarletNX every time. Its window shows the probe's own screens: the start screen with those families
   chosen, which begins by itself after ten seconds, the running screen, then the results, which leave by themselves
   after ten seconds with nothing pressed (+ or - leaves them). A launch that ends before the report's summary is
-  followed by another, up to 16, which goes on after the case it ended inside (edenprobe's screen that asks first goes
+  followed by another, up to 16, which goes on after the case it ended inside (the probe's screen that asks first goes
   on by itself after ten seconds), while each adds cases; ESC ends it. At the end a box says the
   counts and the suites that failed or crashed, and where the report is. A next press after a whole run starts it
   over; after one that stopped inside a case (an iOS app ends with its game), it goes on. A run whose launches ended
@@ -356,7 +357,7 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   dumps/ listed and made as ScarletNX starts; `off`: neither, Remove from Library's), `recompiled_main` (`on`, the
   default; `off`: recompiled/ not listed, new games going to an Extra), `gpu_driver` (GPU Drivers' pick, a folder of
 `gpu_drivers/`; left out, the system's driver), `freedreno_env` (Freedreno Settings', `NAME=value` with a `;` between
-two; left out, none), `probe_mode` (edenprobe Mode's `quick`, the default, or `full`) and `language` (`auto`, `en` or a
+two; left out, none), `probe_mode` (Amberlith Mode's `quick`, the default, or `full`) and `language` (`auto`, `en` or a
   language's BCP 47
   tag, as `pt-BR` or `zh-Hans-CN`), and once one
   is picked `[folders]` with Folders' `data`, `recompiled`, `work`, `state` (Logs) and `cache` (Caches) (a full path,
@@ -433,7 +434,7 @@ two; left out, none), `probe_mode` (edenprobe Mode's `quick`, the default, or `f
   the system names none). The mark is `.running-<pid>` beside the log, made at the start, held while the launcher
   runs and deleted at its exit, Logs moving it; a game keeps its own beside its log, which the game's next start says
   the same way. The run going is kept beside its run log too, `last-run.ini` beside `last-run.log`, from its start
-  until the menu sees it end: a start that finds one did not see it end, says so (`last run: edenprobe, started
+  until the menu sees it end: a start that finds one did not see it end, says so (`last run: Amberlith, started
   2026-11-12 20:18:25, whose end this launcher did not see: it did not end with an exit: Android stopped it: low memory
   (...)`) and shows the setup's Last Run page ([Setup](#setup)) for a game that did not end with an exit. On Linux a
   run the kernel's out-of-memory killer ends (SIGKILL, while the OOM kills of the launcher's memory cgroup, its
@@ -558,14 +559,14 @@ game runs in). Its box says what ran and when it started, how it ended as the sy
 the reason Android keeps for the game's process, `Android stopped it: low memory (org.scarletnx:game, status 0,
 importance 100 foreground)`, the question then `Android stopped <game>`; elsewhere what it may have been), the memory
 that process held (`PSS 4.9 GB, RSS 1.9 GB`, `?` for what the system does not say, `none recorded by Android` where
-it measured none, as for a process killed by a signal) and the game's log. Run edenprobe
+it measured none, as for a process killed by a signal) and the game's log. Run Amberlith
 left before its summary has **Continue**, in focus, which goes on with it from its journal at once, as GPU Drivers'
 Continue does, the setup's other pages coming back after its run, and **Not Now**, which leaves it to that row; one that reached its summary shows its counts
 in a box instead. A game has OK alone, and the page comes only for one that did not end with an exit, its own mark left
 beside its log: one that ended with an exit, or that still runs, is said in the launcher log alone. The page writes
 nothing to `setup.ini`, the setup's Skip comes on the page after it, and `--no-setup` leaves it out. When the menu
 stays and only the game's process is ended, the run's screen says it as it says a crash, `The game stopped: Android
-stopped it: low memory (...); PSS 4.9 GB, RSS 1.9 GB` with Share Log blinking, and Run edenprobe's next launch goes on
+stopped it: low memory (...); PSS 4.9 GB, RSS 1.9 GB` with Share Log blinking, and Run Amberlith's next launch goes on
 as after any launch that ends before the summary, the launcher log saying how the last one ended.
 
 Once the last page is done the menu opens, `setup.ini` written. After an update that brings a notice, the setup

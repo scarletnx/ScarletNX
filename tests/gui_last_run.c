@@ -28,7 +28,7 @@ static void record(const char* root) {
     CHECK(!gui_last_run_path("last-run") && !gui_last_run_path(NULL));
     /* none there */
     CHECK(gui_last_run_take(path, &back, why, sizeof why) == 0 && !back.program && back.cases == -1);
-    /* a phone's Run edenprobe: its game's program, the probe's folder, its cases before this launch and its number */
+    /* a phone's Run Amberlith: its game's program, the probe's folder, its cases before this launch and its number */
     run.program = "/data/probe/.scarletnx/recompiled/edenprobe/edenprobe";
     run.name = "edenprobe";
     run.probe = "/data/probe";
