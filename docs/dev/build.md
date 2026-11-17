@@ -16,6 +16,7 @@
 * [Windows / PowerShell](#windows--powershell)
 * [Windows / MSYS2 CLANG64](#windows--msys2-clang64)
 * [Rebuild, deploy, cache](#rebuild-deploy-cache)
+* [Third-party packages](#third-party-packages)
 * [Build variants](#build-variants)
 * [Install / AppImage](#install--appimage)
 
@@ -24,12 +25,12 @@ Run from checkout root. [Extract/AOT/run](../user/usage.md) · [Tests/diagnostic
 ## Prerequisites
 
 - **Linux / FreeBSD:** Clang (CI: 23; FreeBSD's system Clang also works), LLVM's development files
-  (`llvm-config`, required by the recompiler), CMake ≥3.25, Ninja, POSIX shell, GNU make (`gmake` on FreeBSD),
+  (`llvm-config`, required by the recompiler), CMake ≥3.28, Ninja, POSIX shell, GNU make (`gmake` on FreeBSD),
   NASM on x86-64, Perl, Python 3 (the menu's languages, SPIRV-Tools' build), Git, pkg-config, `patch` and meson
   (dav1d's build).
   Use a system SDL3 development package, or X11/Wayland and audio development libraries for the bundled
   SDL3 build.
-- **macOS:** Apple silicon, macOS 13 or newer, Xcode (its Clang and SDKs), CMake ≥3.25, Ninja, meson, Python 3 and
+- **macOS:** Apple silicon, macOS 13 or newer, Xcode (its Clang and SDKs), CMake ≥3.28, Ninja, meson, Python 3 and
   Git.
   LLVM's libraries come from `scripts/apple-llvm.sh` or Homebrew ([steps](#macos)).
 - **Windows:** Win10/11 x64. CI builds in MSYS2's CLANG64 environment, which has LLVM's development files
@@ -40,8 +41,8 @@ Run from checkout root. [Extract/AOT/run](../user/usage.md) · [Tests/diagnostic
   x86-64, Windows x86-64 and macOS; elsewhere it takes the system's `glslang`), and SPIRV-Tools' `spirv-opt` and
   `spirv-val` optimize and validate them (`cmake/glsl.cmake`). Those two are the SPIRV-Tools release CMake pins, built
   from source for the machine doing the build, which needs Python 3 (`cmake/spirv_tools.cmake`).
-  `-DCPM_USE_LOCAL_PACKAGES=ON` takes the system's instead when it is that release or newer, and `-DSNX_SPIRV_OPT`,
-  `-DSNX_SPIRV_VAL` and `-DSNX_SPIRV_DIS` (the tests' disassembler) name others.
+  `-DSPIRV-Tools_FORCE_SYSTEM=ON` takes the system's instead, which must then be that release or newer, and
+  `-DSNX_SPIRV_OPT`, `-DSNX_SPIRV_VAL` and `-DSNX_SPIRV_DIS` (the tests' disassembler) name others.
 - **Display:** a Vulkan 1.3 driver. Headless runs use Vulkan offscreen and skip SDL video initialization.
   SDL3 remains a required build dependency.
 - **Compiler cache (optional):** `ccache`, or `sccache` when `ccache` is not found, makes a cold build after a
@@ -92,7 +93,8 @@ sudo apt install libwayland-dev libxkbcommon-dev wayland-protocols libdecor-0-de
 Without `libegl-dev` SDL3 quietly leaves Wayland out and builds X11 only. The `SDL_WAYLAND` line of
 its configure summary reads `(Wanted: ON): ON` when Wayland is in.
 
-CMake needs version 3.25 or newer, and Clang must support C23/C++23. Upgrade these tools if your
+CMake needs version 3.28 or newer (CPMUtil, which fetches the third-party packages, needs it), and Clang must support
+C23/C++23. Upgrade these tools if your
 release ships older versions. Install your GPU's Vulkan driver separately. For Intel/AMD or lavapipe
 on Debian/Ubuntu, the usual packages are `libvulkan1 mesa-vulkan-drivers`. NVIDIA users need a
 Vulkan-capable NVIDIA driver.
@@ -138,7 +140,7 @@ sudo pkg install git cmake ninja meson gmake nasm perl5 pkgconf python3 sdl3 llv
 ```
 
 The build uses that `sdl3` package by default (`SNX_SYSTEM_SDL3`, see [SDL3 troubleshooting](#sdl3-troubleshooting));
-pass `-DSNX_SYSTEM_SDL3=OFF` for CPM's pinned SDL3 source build instead.
+pass `-DSNX_SYSTEM_SDL3=OFF` for the pinned SDL3 source build instead.
 
 The `llvm` package is LLVM 19, which the Switch, 3DS and Vita drivers build with. The Android driver
 ([Android apps](../platforms/android-apps/README.md)) compiles an app's native code at run time with the same LLVM, and LLVM 19's
@@ -155,22 +157,22 @@ cmake --preset default -B build && cmake --build build
 
 ### SDL3 troubleshooting
 
-On all platforms, CPM first looks for a compatible SDL3 development package (3.4.18 or newer) through
-`SDL3Config.cmake`. If none is found, CPM downloads and builds the SHA-256-pinned SDL3. The fallback is static, so no separate SDL3 runtime
+On all platforms, CPMUtil first looks for a compatible SDL3 development package (3.4.18 or newer) through
+`SDL3Config.cmake`. If none is found, it downloads and builds the pinned SDL3. The fallback is static, so no separate SDL3 runtime
 installation is needed. It still needs your platform's window-system development libraries.
 
 - `SNX_SYSTEM_SDL3=ON` (the default on FreeBSD) takes the system's package from `find_package` from 3.4.12, Arch
   POWER's, which has every SDL name the tree uses, and never downloads. FreeBSD's ports `sdl3` (3.4.16) is older than
-  the pin, so without it CPM's version check builds SDL3 from source. `SNX_SYSTEM_SDL3=OFF` keeps the pinned build
+  the pin, so without it CPMUtil's version check builds SDL3 from source. `SNX_SYSTEM_SDL3=OFF` keeps the pinned build
   everywhere.
 
 - An old checkout showing `Could not find a package configuration file provided by SDL3` needs either
   the SDL3 **development** package or this updated fallback. Pull the latest checkout and configure again.
 - For SDL3 installed in a custom prefix, pass `-DCMAKE_PREFIX_PATH=/path/to/prefix`, or
   `-DSDL3_DIR=/path/to/prefix/lib/cmake/SDL3` (the directory containing `SDL3Config.cmake`).
-- To force the source build, pass `-DCPM_DOWNLOAD_SDL3=ON`. This is CPM 0.43.2's per-package override.
-  That version does not support `CPM_FORCE_BUNDLED_SDL3`. No bundled override is forced by ScarletNX.
-  The source build is recommended on Windows to match the MinGW toolchain and keep SDL3 statically linked.
+- To force the source build, pass `-DSDL3_FORCE_BUNDLED=ON`, CPMUtil's per-package option (`-DCPM_DOWNLOAD_SDL3=ON`,
+  CPM.cmake's from before it, is read as this). No bundled override is forced by ScarletNX. The source build is
+  recommended on Windows to match the MinGW toolchain and keep SDL3 statically linked.
 - If SDL3's configure reports missing X11/Wayland development libraries, install the packages above.
   Do not work around that by disabling both display backends for a windowed build.
 - No sound, and the log says `audio: SDL could not start its audio: No available audio device`: the
@@ -344,22 +346,35 @@ cmake --build build
 Default: Ninja + Clang, `RelWithDebInfo` (`-O2 -g`). Runtime relinks deploy `recompiled/Game/Game[.exe]` beside
 matching `Game_code.so/.dll`, in the data folder's `recompiled/` ([Usage](../user/usage.md#folders)); no-op builds skip deployment. Recompiler/ABI edits require [module rebuilds](development.md).
 
-CPM uses [pinned sources](../../cmake/dependencies.cmake) and a shared `.cache/cpm` cache. Archive downloads are
-checked by SHA-256. Offline configuration needs the matching sources already in the cache. Cached sources stay unmodified: FFmpeg's patch goes on a copy in the build tree.
-With tests on (`BUILD_TESTING`, the default) and the runtime, libvpx's VP9 test vectors download there too ([tests](../../tests/CMakeLists.txt)).
-The Switch runtime's shared font stand-ins download only when it is built ([Shared fonts](../platforms/nx/filesystem.md#shared-fonts)).
-Override via CMake/env `CPM_SOURCE_CACHE`. SDL3 uses CPM's system-package discovery with a pinned static
-source fallback. Use `-DCPM_DOWNLOAD_SDL3=ON` to request the bundled source build.
+CPMUtil downloads each package [cpmfile.json](../../cpmfile.json) pins once into a shared `.cache/cpm` cache, at
+`<package>/<version>`, checked by its SHA-512 ([Third-party packages](#third-party-packages)). Offline configuration
+needs the matching sources already in the cache, or `-D<package>_CUSTOM_DIR=/path` naming a folder that holds one (a
+package of one file is checked against its pin there too; a patched package, FFmpeg's and FidelityFX-FSR2's, is
+refused there, as CPMUtil would take it unpatched). A patched package is kept patched in the cache, extracted and patched
+again when its patches change. With tests on (`BUILD_TESTING`, the default) and the runtime, libvpx's VP9 test vectors download
+there too ([tests](../../tests/CMakeLists.txt)). The Switch runtime's shared font stand-ins download only when it is
+built ([Shared fonts](../platforms/nx/filesystem.md#shared-fonts)). Override via CMake/env `CPM_SOURCE_CACHE`. SDL3 is
+the system's package when `find_package` finds 3.4.18 or newer, else the pinned static source build;
+`-DSDL3_FORCE_BUNDLED=ON` asks for the source build.
 
-`-DCPM_USE_LOCAL_PACKAGES=ON` (CPM's own option, OFF by default, also read from the environment) takes LZ4 and the Vulkan
-headers from the system when `find_package` finds their CMake package at the pinned version or newer (`lz4`,
-`VulkanHeaders` with its `share/vulkan/registry/vk.xml`), and the pinned source otherwise. LZ4 then links as the system's library. The configure says where each came from:
-`CPM: Using local package lz4@1.10.0`, or `CPM: Adding package lz4@1.10.0 (...)` for the pinned source. Every other
-package keeps its pinned source with the option on ([cpm_local.cmake](../../cmake/cpm_local.cmake)): the build compiles
-it into a target of its own, with its own flags or a change of ours (FFmpeg, OpenSSL and the libcurl built on it,
-jemalloc, zstd, xxHash's x86 dispatcher, libdeflate, miniz, lunasvg and plutovg), or its package cannot be found this
-way (ENet installs none, yyjson's carries no version). For a package in a prefix of your own, add
-`-DCMAKE_PREFIX_PATH=/path/to/prefix`.
+Where a package comes from is CPMUtil's to say, by its options ([packages.cmake](../../cmake/packages.cmake)). LZ4, the
+Vulkan headers and SPIRV-Tools' programs are the pinned ones unless the system's are asked for:
+`-Dlz4_FORCE_SYSTEM=ON`, `-DVulkan-Headers_FORCE_SYSTEM=ON` (the `VulkanHeaders` package, with its
+`share/vulkan/registry/vk.xml`), `-DSPIRV-Tools_FORCE_SYSTEM=ON` (`spirv-opt`, `spirv-val` and `spirv-dis` on `PATH`),
+or `-DCPMUTIL_FORCE_SYSTEM=ON` for all of them and SDL3. Each must then be there at the pinned version or newer, or the
+configure stops; LZ4 then links as the system's library. The configure says where each came from: `[CPMUtil] Using
+system package lz4@1.10.0`, or `[CPMUtil] Using bundled package lz4@v1.10.0` for the pinned source. Every other package
+is the pinned one whatever they say: the build compiles it into a target of its own, with its own flags or a change of
+ours (FFmpeg, OpenSSL and the libcurl built on it, jemalloc, zstd, xxHash's x86 dispatcher, libdeflate, miniz, lunasvg
+and plutovg), or its package cannot be found this way (ENet installs none, yyjson's carries no version). Asking for the
+system's one of those (`-Dyyjson_FORCE_SYSTEM=ON`) stops the configure, and `CPMUTIL_FORCE_SYSTEM` lists the ones it
+leaves pinned. `-D<package>_FORCE_BUNDLED=ON` and `-DCPMUTIL_FORCE_BUNDLED=ON` (CPMUtil's default on Android and iOS)
+keep the pinned ones. For a package in a prefix of your own, add `-DCMAKE_PREFIX_PATH=/path/to/prefix`.
+
+CPM.cmake's options from before CPMUtil are read, and said once per build tree with the option that replaces them:
+`-DCPM_USE_LOCAL_PACKAGES=ON` (also from the environment) takes LZ4, the Vulkan headers and SPIRV-Tools' programs from
+the system where it has them at the pinned version or newer, and the pinned ones otherwise, as it did;
+`-DCPM_DOWNLOAD_SDL3=ON` is `-DSDL3_FORCE_BUNDLED=ON`.
 
 FFmpeg, OpenSSL and jemalloc build with their own configure and make, and SPIRV-Tools with its own CMake, in each build
 tree. With `SNX_DEPS_CACHE` (CMake or env) naming a folder, a tree reuses a finished build there whose inputs match
@@ -374,6 +389,45 @@ cache helps a cold build after a clean, while Ninja already reuses the objects o
 `-DCMAKE_C_COMPILER_LAUNCHER` or `-DCMAKE_CXX_COMPILER_LAUNCHER` is used as given (CI does this with `ccache`). `ccache`
 comes first because it is faster for local C and C++ than `sccache`, which suits a shared or remote cache.
 
+## Third-party packages
+
+The libraries, tools and test data the build downloads are pinned in [cpmfile.json](../../cpmfile.json) and added
+with [CPMUtil](../../cmake/cpmutil/CPMUtil.cmake), crueter's wrapper of CPM.cmake as Eden carries it, from
+[packages.cmake](../../cmake/packages.cmake). An entry gives the package's `version`, where it comes from (`repo` and an
+`artifact` for a release's asset, `repo` alone for the archive of a tag or commit, or a `url`) and the SHA-512 of that
+file in `hash`; CPMUtil's [documentation](https://git.crueter.xyz/CMake/CPMUtil/src/branch/master/docs/CPMUtil.md)
+gives the other fields. The file is in CPMUtil's form, which `jq --indent 4 -S . cpmfile.json` or
+`python3 -m json.tool --indent 4 --sort-keys cpmfile.json` writes.
+
+To update a package:
+
+1. Change its `version`, and its `artifact` or `url` where they name it (`%VERSION%` in an artifact, or
+   `numeric_version`, as lz4's entry has it, spare that).
+2. Download the file, check it against the digest its release publishes (GitHub shows each asset's SHA-256), and put
+   its SHA-512 in `hash`: `cmake -E sha512sum <file>`. Never the hash of what a configure happened to fetch.
+3. Configure: the new version downloads into `CPM_SOURCE_CACHE/<package>/<version>`.
+
+To add one:
+
+1. Pin it in cpmfile.json as above, under a lowercase key, as Eden's are; `package` gives the CMake name where that
+   differs (`"openssl": {"package": "OpenSSL", ...}`), and `<package>_SOURCE_DIR` is where it lands.
+2. Add it in [dependencies.cmake](../../cmake/dependencies.cmake), under the conditions that need it:
+   `AddJsonPackage(NAME <key> DOWNLOAD_ONLY FORCE_BUNDLED_PACKAGE ON)` when the build compiles its sources into a
+   target of its own, patches it or reads it as data, so no system package can stand in for it. One the system may give
+   instead, which installs a CMake package `find_package` finds, gets a `min_version` and `AddJsonPackage(<key>)`,
+   with `"bundled": true` when the pinned one stays the default (and `snx_cpm_options(<key>)` before it, for
+   CPM_USE_LOCAL_PACKAGES). A package that is one file (a header, a font, a test vector), which CPMUtil would try to
+   extract, is added with `snx_package_file(<key>)`.
+3. Its license: in the install (CMakeLists.txt, under `licenses`) when it ships, and in [CREDITS](../CREDITS.md).
+
+A patch goes in `.patch/<key>/NNNN-<what>.patch`, named in the entry's `patches` in the order they apply. CPMUtil
+applies them with `patch -p1` and no fuzz to the release it extracts, does it again on a fresh copy when one changes,
+and stops the configure on one that does not apply. To make one, edit a copy of the pristine file and rebuild the
+hunks with `diff -u --label a/<file> --label b/<file>`. `runtime_architecture` refuses a download outside CPMUtil
+(CPM.cmake's calls, FetchContent, `file(DOWNLOAD)`), a name cpmfile.json does not pin, a pin nothing adds, a package
+without a `min_version` added without `FORCE_BUNDLED_PACKAGE ON`, a patch named and missing or there and not named,
+and a cpmfile.json out of that form.
+
 ## Build variants
 
 SDL3, Vulkan and FFmpeg are mandatory for the NX runtime, including when running with `-H`.
@@ -386,7 +440,8 @@ cmake --preset default -B build -DSNX_FFMPEG_ASM=OFF && cmake --build build
 ```
 
 - `-DSNX_FFMPEG_ASM=OFF`: omit x86-64 NASM assembly; slower FFmpeg decoding.
-- `-DCPM_DOWNLOAD_SDL3=ON`: build the pinned SDL3 instead of using a system SDL3 development package.
+- `-DSDL3_FORCE_BUNDLED=ON`: build the pinned SDL3 instead of using a system SDL3 development package
+  (`-DCPM_DOWNLOAD_SDL3=ON` before CPMUtil, read as this).
 - `-DSNX_DEPLOY=OFF`: disable runtime deployment.
 - `-DSNX_JEMALLOC=OFF`: keep the C library's malloc in `scarletnx` instead of the pinned jemalloc (default ON on Linux,
   FreeBSD, macOS and Android, where it goes into the driver's executable `libscarletnx-run.so` that runs recompiles;
@@ -399,9 +454,13 @@ cmake --preset default -B build -DSNX_FFMPEG_ASM=OFF && cmake --build build
   tree's driver uses). `SNX_GAMES_DIR`, its name before, is still taken while it is empty, said as it configures. A
   tree whose value is the checkout's `games/`, the default before, is set back to empty.
 - `-DCPM_SOURCE_CACHE=/path`: override source-download cache.
-- `-DCPM_USE_LOCAL_PACKAGES=ON`: take LZ4 and the Vulkan headers from the system where it has
-  them at the pinned version or newer (default OFF: every package from its pinned source). See
+- `-Dlz4_FORCE_SYSTEM=ON`, `-DVulkan-Headers_FORCE_SYSTEM=ON`, `-DSPIRV-Tools_FORCE_SYSTEM=ON`,
+  `-DCPMUTIL_FORCE_SYSTEM=ON`: take LZ4, the Vulkan headers, SPIRV-Tools' programs, or all of them and SDL3, from the
+  system, which must have them at the pinned version or newer (default OFF: every package from its pinned source but
+  SDL3). `-DCPM_USE_LOCAL_PACKAGES=ON` before CPMUtil, read as these where the system has them. See
   [Rebuild, deploy, cache](#rebuild-deploy-cache).
+- `-D<package>_CUSTOM_DIR=/path`: a folder holding that package (as cpmfile.json names it) already, which the configure
+  takes instead of downloading it; refused for a package cpmfile.json patches, which CPMUtil would take unpatched.
 - `-DSNX_DEPS_CACHE=/path`: reuse and publish finished FFmpeg, OpenSSL, jemalloc and SPIRV-Tools builds there
   (default: the environment's `SNX_DEPS_CACHE`, else none).
 - `-DSNX_BUILD_NX=OFF`: omit the Switch runtime (default ON).

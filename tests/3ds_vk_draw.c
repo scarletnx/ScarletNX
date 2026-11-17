@@ -670,9 +670,10 @@ static void commands_after_draw(SnxCtrMemory* m) {
 }
 static void screens(SnxCtrMemory* m) { present_screens(m, false); }
 /* async_pipelines: a draw whose pipeline is new is skipped while a worker makes it, so its target keeps what it held;
-   once the pipeline is made the same list draws as the CPU reference does, and is not skipped again. Of the three
-   workers the third runs at the system's low priority. The stand-in shaders, which would draw it at once, are off:
-   3ds_vk_draw_stand_in holds them to the reference */
+   once the pipeline is made the same list draws as the CPU reference does, and is not skipped again. The workers are
+   held until the first draw is recorded: with shader objects they get its shaders as they are made, before the draw,
+   and one done by then would leave nothing to skip. Of the three workers the third runs at the system's low priority.
+   The stand-in shaders, which would draw it at once, are off: 3ds_vk_draw_stand_in holds them to the reference */
 static void async_pipelines(SnxCtrMemory* m) {
     static unsigned char start[W * H * 4], none[W * H * 4], sw[W * H * 4], sw_depth[W * H * 4], gpu[W * H * 4],
         gpu_depth[W * H * 4];
@@ -682,6 +683,7 @@ static void async_pipelines(SnxCtrMemory* m) {
     Scene* s = triangle_scene("async, then made", 6);
     random_fill(start, sizeof start);
     setup(m, s, start, none);
+    snx_ctr_vk_pipelines_hold();
     bool recorded = draw(m, s, &vulkan, gpu, gpu_depth);
     uint64_t skipped = snx_ctr_vk_pipelines_wait();
     bool kept = recorded && skipped == 1 && !memcmp(gpu, start, sizeof gpu);

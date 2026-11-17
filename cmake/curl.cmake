@@ -111,8 +111,8 @@ list(APPEND snx_curl_args
      -DCURL_DISABLE_TFTP=ON
      -DCURL_DISABLE_WEBSOCKETS=ON)
 
-snx_deps_cached(curl snx_curl_cache "source: ${snx_curl_sha256}" "configure: ${snx_curl_args}"
-                "openssl: ${snx_openssl_sha256}")
+snx_deps_cached(curl snx_curl_cache "source: ${snx_curl_hash}" "configure: ${snx_curl_args}"
+                "openssl: ${snx_openssl_hash}")
 if(snx_curl_cache_FOUND)
     set(snx_curl_prefix "${snx_curl_cache_DIR}")
 else()
@@ -121,6 +121,7 @@ else()
     if(TARGET openssl_build)
         set(snx_curl_depends openssl_build)
     endif()
+    snx_deps_binary_dir("${PROJECT_BINARY_DIR}/curl-build" "${snx_curl_src}")
     ExternalProject_Add(curl_build
         SOURCE_DIR "${snx_curl_src}"
         BINARY_DIR "${PROJECT_BINARY_DIR}/curl-build"

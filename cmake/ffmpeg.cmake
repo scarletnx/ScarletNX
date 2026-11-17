@@ -4,11 +4,11 @@
 # FFmpeg's libavcodec, libavformat, libswresample, libswscale and libavutil as static libraries (targets
 # FFmpeg::avcodec, FFmpeg::avformat, FFmpeg::swresample, FFmpeg::swscale and FFmpeg::avutil), built from the release
 # source in cmake/dependencies.cmake with FFmpeg's own configure and make, which it has instead of a CMake build. NVDEC's
-# VP9 jobs need a change to its VP9 decoder (cmake/ffmpeg-vp9-nvdec.patch), so it builds from a patched copy of the
-# release in the build tree. Only the decoders NVDEC handles are in (H.264, VP8, VP9), Opus for hwopus (FFmpeg's Opus
-# decoder resamples its SILK layer with libswresample, which is why that library is in), for the 3DS DSP's AAC, and for
-# the Vita AAC, ATRAC9, the MP4 demuxer and H.264's Annex B filter, and the Ounce's AV1 through dav1d where
-# cmake/dav1d.cmake builds it (snx_dav1d_ready). With the Android driver (SNX_BUILD_ANDROID), its
+# VP9 jobs need a change to its VP9 decoder (.patch/ffmpeg/0001-vp9-nvdec.patch), which CPMUtil applies to the release
+# it extracts (cpmfile.json's "patches"). Only the decoders NVDEC handles are in (H.264, VP8, VP9), Opus for hwopus
+# (FFmpeg's Opus decoder resamples its SILK layer with libswresample, which is why that library is in), for the 3DS
+# DSP's AAC, and for the Vita AAC, ATRAC9, the MP4 demuxer and H.264's Annex B filter, and the Ounce's AV1 through dav1d
+# where cmake/dav1d.cmake builds it (snx_dav1d_ready). With the Android driver (SNX_BUILD_ANDROID), its
 # images (src/android/hwui/image.c) add the PNG, JPEG (mjpeg), WebP, GIF and BMP decoders, the PNG and JPEG encoders, and
 # libswscale for their pixel formats; PNG needs zlib, the build's own static one (snx_zlib in cmake/dependencies.cmake).
 # Its MediaPlayer and SoundPool (src/android/runtime/audio.c) add the MP3, Vorbis, FLAC, PCM and ADPCM decoders and the
@@ -18,27 +18,15 @@
 # of it is LGPL (no --enable-gpl). It needs a POSIX shell and make (gmake on the BSDs), and NASM for the x86-64
 # assembly. macOS and iOS build it with Xcode's Clang and SDK (cmake/apple.cmake), iOS as a cross build. This file is
 # included into the top-level scope: its variables carry the snx_ffmpeg_ prefix.
-set(snx_ffmpeg_src "${PROJECT_BINARY_DIR}/_deps/ffmpeg-patched")
+set(snx_ffmpeg_src "${FFmpeg_SOURCE_DIR}")
 set(snx_ffmpeg_prefix "${PROJECT_BINARY_DIR}/ffmpeg")
 # FFmpeg's configure stops on a source path with a space in it, which would only show at build time
 if(snx_ffmpeg_src MATCHES "[ \t]")
-    message(FATAL_ERROR "FFmpeg can't be built from a path with spaces in it (${snx_ffmpeg_src}). Use a build folder "
-                        "whose path has none. FFmpeg is required by the NX runtime.")
+    message(FATAL_ERROR "FFmpeg can't be built from a path with spaces in it (${snx_ffmpeg_src}). Use a package cache "
+                        "(CPM_SOURCE_CACHE) whose path has none. FFmpeg is required by the NX runtime.")
 endif()
-set(snx_ffmpeg_patch "${PROJECT_SOURCE_DIR}/cmake/ffmpeg-vp9-nvdec.patch")
-file(SHA256 "${snx_ffmpeg_patch}" snx_ffmpeg_patch_sha256)
-set(snx_ffmpeg_patched libavcodec/vp9.c 459e8ca79e45680c98ba70ac574172e2389b177c6d19e5466fa63c3f0ff652e1)
-if(CMAKE_C_BYTE_ORDER STREQUAL "BIG_ENDIAN")
-    # the H.264 decoder's byte swaps, which only a big-endian host's build calls
-    set(snx_ffmpeg_be_patch "${PROJECT_SOURCE_DIR}/cmake/ffmpeg-h264-bigendian.patch")
-    file(SHA256 "${snx_ffmpeg_be_patch}" snx_ffmpeg_be_patch_sha256)
-    list(APPEND snx_ffmpeg_patch "${snx_ffmpeg_be_patch}")
-    string(APPEND snx_ffmpeg_patch_sha256 " ${snx_ffmpeg_be_patch_sha256}")
-    list(APPEND snx_ffmpeg_patched configure f718d0d3a53e6f905299f21938d2f22332a9046f43c6f94dfc867efdfcc0ecef)
-endif()
-include("${PROJECT_SOURCE_DIR}/cmake/patched_copy.cmake")
-snx_patched_copy(SOURCE "${FFmpeg_SOURCE_DIR}" DEST "${snx_ffmpeg_src}" PATCHES ${snx_ffmpeg_patch}
-                 FILES ${snx_ffmpeg_patched})
+# the patches as applied, which CPMUtil keeps beside them (a hash of their text): part of the dependency cache's key
+file(READ "${snx_ffmpeg_src}/.cpm_patch_key" snx_ffmpeg_patch_key)
 # sh before bash: on Windows a bash.exe in System32 is WSL's launcher, and w64devkit's sh is the one to use
 find_program(SNX_FFMPEG_SH NAMES sh bash)
 find_program(SNX_FFMPEG_MAKE NAMES gmake make)
@@ -187,9 +175,9 @@ endif()
 
 # Built once for every tree that builds it the same way, when SNX_DEPS_CACHE names a folder (cmake/deps_cache.cmake).
 # The install prefix stays out of the key: FFmpeg only quotes it in its configuration string
-snx_deps_cached(ffmpeg snx_ffmpeg_cache "source: ${snx_ffmpeg_sha256}" "patch: ${snx_ffmpeg_patch_sha256}"
-                "configure: ${snx_ffmpeg_args}" "nasm: ${snx_ffmpeg_nasm}" "dav1d: ${snx_dav1d_ready} ${snx_dav1d_sha256}"
-                "zlib: ${snx_zlib_sha256}")
+snx_deps_cached(ffmpeg snx_ffmpeg_cache "source: ${snx_ffmpeg_hash}" "patch: ${snx_ffmpeg_patch_key}"
+                "configure: ${snx_ffmpeg_args}" "nasm: ${snx_ffmpeg_nasm}" "dav1d: ${snx_dav1d_ready} ${snx_dav1d_hash}"
+                "zlib: ${snx_zlib_hash}")
 if(snx_ffmpeg_cache_FOUND)
     set(snx_ffmpeg_prefix "${snx_ffmpeg_cache_DIR}")
 else()
@@ -199,6 +187,8 @@ else()
         set(snx_ffmpeg_jobs "$ENV{CMAKE_BUILD_PARALLEL_LEVEL}")
     endif()
     include(ExternalProject)
+    # configure leaves a src link to its source there, which it does not change for another source
+    snx_deps_binary_dir("${PROJECT_BINARY_DIR}/ffmpeg-build" "${snx_ffmpeg_src}")
     # configure finds dav1d with pkg-config: it has to be installed before configure runs, as zlib does
     if(snx_dav1d_ready)
         if(snx_ffmpeg_depends)
@@ -209,9 +199,7 @@ else()
     endif()
     ExternalProject_Add(ffmpeg_build
         SOURCE_DIR "${snx_ffmpeg_src}"
-        # configure leaves a src link to its source there: a tree that built the release's own folder before would
-        # keep compiling that one
-        BINARY_DIR "${PROJECT_BINARY_DIR}/ffmpeg-build-patched"
+        BINARY_DIR "${PROJECT_BINARY_DIR}/ffmpeg-build"
         INSTALL_DIR "${snx_ffmpeg_prefix}"
         CONFIGURE_COMMAND "${CMAKE_COMMAND}" -E env ${snx_ffmpeg_env} "${SNX_FFMPEG_SH}" "${snx_ffmpeg_src}/configure"
                           --prefix=${snx_ffmpeg_prefix} ${snx_ffmpeg_args}
@@ -230,13 +218,11 @@ else()
         LOG_BUILD ON
         LOG_INSTALL ON
         LOG_OUTPUT_ON_FAILURE ON)
-    # a changed patch rewrites the patched file at configure time, which the build step doesn't see on its own: an
-    # existing tree kept linking the FFmpeg built from the old one
+    # a changed patch makes CPMUtil extract and patch the release again at configure time, in the same folder, which the
+    # steps don't see on their own: an existing tree kept linking the FFmpeg built from the old one. The big-endian
+    # patch changes configure itself, which only the configure step reads
     ExternalProject_Add_StepDependencies(ffmpeg_build build "${snx_ffmpeg_src}/libavcodec/vp9.c")
-    if(snx_ffmpeg_be_patch)
-        # and the big-endian patch changes configure itself, which only the configure step reads
-        ExternalProject_Add_StepDependencies(ffmpeg_build configure "${snx_ffmpeg_src}/configure")
-    endif()
+    ExternalProject_Add_StepDependencies(ffmpeg_build configure "${snx_ffmpeg_src}/configure")
     # the configuration FFmpeg was built with, which make install leaves out, kept with the install (and so in the
     # dependency cache) for the tests that read a decoder's private state, and its components for ffmpeg_images
     ExternalProject_Add_Step(ffmpeg_build private
@@ -244,7 +230,7 @@ else()
         COMMAND "${CMAKE_COMMAND}" -E copy_if_different config.h "${snx_ffmpeg_prefix}/private/config.h"
         COMMAND "${CMAKE_COMMAND}" -E copy_if_different config_components.h
                 "${snx_ffmpeg_prefix}/private/config_components.h"
-        WORKING_DIRECTORY "${PROJECT_BINARY_DIR}/ffmpeg-build-patched"
+        WORKING_DIRECTORY "${PROJECT_BINARY_DIR}/ffmpeg-build"
         BYPRODUCTS "${snx_ffmpeg_prefix}/private/config.h" "${snx_ffmpeg_prefix}/private/config_components.h"
         DEPENDEES build
         DEPENDERS install)

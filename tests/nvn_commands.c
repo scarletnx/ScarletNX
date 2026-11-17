@@ -474,6 +474,19 @@ int main(void) {
         check(at && nvn_cmd_unfinished(at) && nvn_cmd_unfinished(at + 0x40), "the piece being cut is unfinished");
         check(!nvn_cmd_unfinished(0x5000) && !nvn_cmd_unfinished(a.at[5]),
               "the game's memory and ended recordings aren't");
+        /* the segments' lowest start and highest end, past which an address is in none, and the segment found last,
+           which is asked first: another segment between two questions changes no answer */
+        u64 lo = ~0ull, hi = 0;
+        for (k = 0; k < g_nvn.cmd.ns; k++) {
+            if (g_nvn.cmd.s[k].at < lo) lo = g_nvn.cmd.s[k].at;
+            if (g_nvn.cmd.s[k].at + g_nvn.cmd.s[k].size > hi) hi = g_nvn.cmd.s[k].at + g_nvn.cmd.s[k].size;
+        }
+        check(g_nvn.cmd.ns > 1 && g_nvn.cmd.lo == lo && g_nvn.cmd.hi == hi,
+              "the segments' range is not their lowest start and highest end");
+        for (k = 0; k < g_nvn.cmd.ns; k++)
+            if (g_nvn.cmd.s[k].owner != cb4)
+                check(!nvn_cmd_unfinished(g_nvn.cmd.s[k].at) && nvn_cmd_unfinished(at),
+                      "a question about another segment changed the answer about the piece being cut");
         h4 = nvn_CommandBufferEndRecording(&cpu, cb4);
         check(!nvn_cmd_unfinished(at), "the piece is whole once its recording ends");
         walk(h4, &a);

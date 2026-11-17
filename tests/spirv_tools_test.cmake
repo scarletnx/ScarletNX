@@ -1,23 +1,20 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
 # Where cmake/spirv_tools.cmake takes spirv-opt, spirv-val and spirv-dis from: SNX_SPIRV_OPT and SNX_SPIRV_VAL, the
-# system's under CPM_USE_LOCAL_PACKAGES at the pinned release or newer, else the pinned release, and what it says when
-# it does not take what it was given or found. A small project includes it with cmake/dependencies.cmake's pin, fake
-# tools (shell scripts that print a version) and CPMAddPackage replaced by one that only records its arguments, so
-# nothing is downloaded or built. Run by ctest as spirv_tools, with -DSRC, -DWORK and -DCC (the C compiler the
-# dependency cache's key runs)
+# system's at the pinned release or newer when SPIRV-Tools_FORCE_SYSTEM or CPMUTIL_FORCE_SYSTEM ask (or
+# CPM_USE_LOCAL_PACKAGES, from before CPMUtil), else the pinned release, and what it says when it does not take what it
+# was given or found. A small project includes it with cmake/packages.cmake and cpmfile.json's pins, fake tools (shell
+# scripts that print a version) and AddJsonPackage replaced by one that only records its arguments, so nothing is
+# downloaded or built. Run by ctest as spirv_tools, with -DSRC, -DWORK and -DCC (the C compiler the dependency cache's
+# key runs)
 if(NOT DEFINED SRC OR NOT DEFINED WORK OR NOT DEFINED CC)
     message(FATAL_ERROR "spirv_tools_test.cmake needs -DSRC=... -DWORK=... -DCC=<C compiler>")
 endif()
 file(REMOVE_RECURSE "${WORK}")
 
-file(STRINGS "${SRC}/cmake/dependencies.cmake" pin REGEX "^set\\(snx_spirv_(tools|headers)_")
-list(LENGTH pin found)
-if(NOT found EQUAL 4)
-    message(FATAL_ERROR "cmake/dependencies.cmake has ${found} of the 4 set(snx_spirv_...) lines of the pin:\n${pin}")
-endif()
-string(JOIN "\n" pin ${pin})
-cmake_language(EVAL CODE "${pin}")
+file(READ "${SRC}/cpmfile.json" cpmfile)
+string(JSON v GET "${cpmfile}" spirv-tools version)
+string(REGEX REPLACE "^v" "" v "${v}")
 
 # a folder of fake tools, each printing VERSION as SPIRV-Tools does (on stderr, as spirv-opt does)
 function(tools dir version)
@@ -34,19 +31,21 @@ tools("${WORK}/newer" "SPIRV-Tools v2099.1 unknown hash" opt val dis)
 tools("${WORK}/newer-nodis" "SPIRV-Tools v2099.1 unknown hash" opt val)
 tools("${WORK}/noversion" "spirv-opt from somewhere" opt val dis)
 
-# the folders the replaced CPMAddPackage names, which ExternalProject_Add wants to hold something
+# the folders the replaced AddJsonPackage names, which ExternalProject_Add wants to hold something
 foreach(name SPIRV-Tools SPIRV-Headers)
     file(WRITE "${WORK}/source-${name}/CMakeLists.txt" "message(FATAL_ERROR \"the test builds nothing\")\n")
 endforeach()
-file(WRITE "${WORK}/project/CMakeLists.txt" "cmake_minimum_required(VERSION 3.25)
+file(COPY "${SRC}/cpmfile.json" DESTINATION "${WORK}/project")
+file(WRITE "${WORK}/project/CMakeLists.txt" "cmake_minimum_required(VERSION 3.28)
 project(spirv_tools_test LANGUAGES NONE)
-${pin}
-macro(CPMAddPackage)
-    cmake_parse_arguments(stub \"\" \"NAME;VERSION;URL;URL_HASH\" \"\" \${ARGN})
-    set(\${stub_NAME}_SOURCE_DIR \"${WORK}/source-\${stub_NAME}\")
-    set_property(GLOBAL APPEND PROPERTY stub_added \"\${stub_NAME}@\${stub_VERSION} \${stub_URL} \${stub_URL_HASH}\")
+include(\"${SRC}/cmake/packages.cmake\")
+macro(AddJsonPackage)
+    cmake_parse_arguments(stub \"DOWNLOAD_ONLY\" \"NAME;FORCE_BUNDLED_PACKAGE\" \"\" \${ARGN})
+    string(JSON stub_package GET \"\${CPMFILE_CONTENT}\" \${stub_NAME} package)
+    set(\${stub_package}_SOURCE_DIR \"${WORK}/source-\${stub_package}\")
+    set_property(GLOBAL APPEND PROPERTY stub_added
+                 \"\${stub_NAME} FORCE_BUNDLED_PACKAGE=\${stub_FORCE_BUNDLED_PACKAGE}\")
 endmacro()
-include(\"${SRC}/cmake/cpm_local.cmake\")
 include(\"${SRC}/cmake/deps_cache.cmake\")
 include(\"${SRC}/cmake/spirv_tools.cmake\")
 include(\"${SRC}/cmake/spirv_tools.cmake\") # again, as each folder that compiles shaders does: once is kept
@@ -96,11 +95,7 @@ function(check label)
 endfunction()
 
 # The texts name WORK for the test's folder and PINNED for where a tree builds the pinned tools
-set(v ${snx_spirv_tools_version})
-set(tools_url "https://github.com/KhronosGroup/SPIRV-Tools/archive/refs/tags/v${v}.tar.gz")
-set(headers_url "https://github.com/KhronosGroup/SPIRV-Headers/archive/${snx_spirv_headers_commit}.tar.gz")
-string(CONCAT added "added=[SPIRV-Tools@${v} ${tools_url} SHA256=${snx_spirv_tools_sha256} | SPIRV-Headers@ "
-                    "${headers_url} SHA256=${snx_spirv_headers_sha256}]")
+set(added "added=[spirv-tools FORCE_BUNDLED_PACKAGE=ON | spirv-headers FORCE_BUNDLED_PACKAGE=ON]")
 set(all_pinned "RESULT opt=[PINNED/spirv-opt] val=[PINNED/spirv-val] dis=[PINNED/spirv-dis] built=[yes] ${added}")
 set(given "opt=[WORK/given/spirv-opt] val=[WORK/given/spirv-val] dis=[WORK/given/spirv-dis] built=[no] added=[]")
 set(newer "val=[WORK/newer/spirv-val] dis=[WORK/newer/spirv-dis] built=[no] added=[]")
@@ -166,10 +161,11 @@ string(REPLACE "SNX_SPIRV_OPT=WORK/older/spirv-opt" "SNX_SPIRV_DIS=WORK/older/sp
 check(old-search PATH "${WORK}/older" SAYS "${all_pinned} option=[|]" "${from_path}" "${from_search}"
       ARGS -C "${WORK}/old-search.cmake")
 
-# CPM_USE_LOCAL_PACKAGES: the system's at the pin or newer, all three; older, without spirv-dis, or with no version
-# in its --version, the pinned release, said with what was found and the pin
+# CPM_USE_LOCAL_PACKAGES, from a configure before CPMUtil: the system's at the pin or newer, all three; older, without
+# spirv-dis, or with no version in its --version, the pinned release, said with what was found and the pin
 check(local-newer PATH "${WORK}/newer" SAYS "RESULT opt=[WORK/newer/spirv-opt] ${newer}"
-      "spirv-opt: WORK/newer/spirv-opt (the system's v2099.1, CPM_USE_LOCAL_PACKAGES)." ARGS ${local})
+      "spirv-opt: WORK/newer/spirv-opt (the system's v2099.1, CPM_USE_LOCAL_PACKAGES)."
+      "CPM_USE_LOCAL_PACKAGES=ON is CPM.cmake's option, which CPMUtil's replace: read for SPIRV-Tools as" ARGS ${local})
 string(CONCAT older "CPM_USE_LOCAL_PACKAGES=ON: WORK/older/spirv-opt is SPIRV-Tools v2020.1, older than the pinned "
                     "v${v}, so the build builds the pinned SPIRV-Tools v${v}")
 check(local-older PATH "${WORK}/older" SAYS "${all_pinned}" "${older}" ARGS ${local})
@@ -181,6 +177,18 @@ check(local-noversion PATH "${WORK}/noversion" SAYS "${all_pinned}" "${noversion
 # spirv-opt given: the system's fills spirv-val and spirv-dis
 check(local-given-opt PATH "${WORK}/newer" SAYS "RESULT opt=[WORK/given-opt/spirv-opt] ${newer}"
       ARGS ${local} "-DSNX_SPIRV_OPT=${WORK}/given-opt/spirv-opt")
+# CPMUtil's options: SPIRV-Tools' own and the global one ask for the system's, which must then be there; the pinned ones
+# asked for win over CPM_USE_LOCAL_PACKAGES
+check(system-newer PATH "${WORK}/newer" SAYS "RESULT opt=[WORK/newer/spirv-opt] ${newer}"
+      "spirv-opt: WORK/newer/spirv-opt (the system's v2099.1, SPIRV-Tools_FORCE_SYSTEM)."
+      ARGS -DSPIRV-Tools_FORCE_SYSTEM=ON)
+check(all-system-newer PATH "${WORK}/newer" SAYS "RESULT opt=[WORK/newer/spirv-opt] ${newer}"
+      "spirv-opt: WORK/newer/spirv-opt (the system's v2099.1, CPMUTIL_FORCE_SYSTEM)." ARGS -DCPMUTIL_FORCE_SYSTEM=ON)
+string(CONCAT forced_older "SPIRV-Tools_FORCE_SYSTEM=ON: WORK/older/spirv-opt is SPIRV-Tools v2020.1, older than the "
+                           "pinned v${v}.")
+check(system-older FAIL PATH "${WORK}/older" SAYS "${forced_older}" "Put SPIRV-Tools v${v} or newer on PATH"
+      ARGS -DSPIRV-Tools_FORCE_SYSTEM=ON)
+check(local-bundled PATH "${WORK}/newer" SAYS "${all_pinned}" ARGS ${local} -DSPIRV-Tools_FORCE_BUNDLED=ON)
 
 # the dependency cache's key: the same build of the tools for two trees whose Python is another file of one version
 # (a venv's and the system's), another for another Python version

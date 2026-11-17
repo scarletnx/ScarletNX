@@ -30,7 +30,8 @@ typedef struct {
     void (*unlock)(void);
     /* the host pages [addr, addr + size) of a landing, whose bytes (size of them) are as it left them, read before
        the pages are let go of: the write tracking, which takes pages it watches again for written, can tell a later
-       write from them. Called with the producer's lock held. Optional */
+       write from them. Called with the producer's lock held, or with no lock after a landing in two steps
+       (land_start), and then it must not take the producer's lock. Optional */
     void (*landed)(u64 addr, u64 size, const u8* bytes);
     /* before a landing takes the producer's lock: writer(res) of each entry it would land (called under own.c's
        lock), and wait(the largest of them) with no lock held, which may wait for the GPU. The landing is done under
@@ -52,6 +53,13 @@ typedef struct {
        read since), so the landing finds those bytes. Called with the producer's lock held and none of own.c's.
        Optional */
     void (*claim)(u64 lo, u64 hi);
+    /* A landing in two steps, so that the producer's lock is let go while the GPU copies. Optional, both or neither.
+       land_start does what land does up to the wait for the copy, with the producer's lock held and none of own.c's,
+       and gives a handle. NULL: it landed the ranges itself, as land does (a copy too big for one step). land_end(handle)
+       waits for the copy and puts the bytes in dst[], with no lock held. It never takes the producer's lock, because
+       a thread that holds that lock can wait for this landing's marks */
+    void* (*land_start)(const OwnRange* r, u8* const* dst, u32 n);
+    void (*land_end)(void* handle);
 } OwnHooks;
 
 /* 0 when the host can trap guest memory (plat_trap_init): own_begin can work from then on. -1: producers land their
@@ -185,6 +193,12 @@ typedef struct {
 #define OWN_OWED_MAX 8
     u64 owed[OWN_OWED_MAX][2]; /* the owed spans [lo, hi) (own_owed_take), under lk */
     u32 nowed;                 /* how many: changed under lk with __atomic_store_n, and read without it */
+    /* The host pages [lo, hi) of the landings that let go of the producer's lock while the GPU copies (land_start), under
+       lk. No new owner or watch comes on them until that landing is done: in place, a landing opens and fills its pages,
+       and an owner that came on one meanwhile would be opened with them */
+#define OWN_INFLIGHT_MAX 32
+    u64 inflight[OWN_INFLIGHT_MAX][2];
+    u32 ninflight;
 } OwnState;
 extern OwnState g_own;
 /* whether anything is owned: the common case's test, without a lock */

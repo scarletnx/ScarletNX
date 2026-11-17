@@ -6,24 +6,17 @@
 # the display, each leaving the number of its first failed test in a register. The AGB board's tests run them
 # (tests/agb_gba_tests.py). Test data, not shipped
 if(SNX_BUILD_AGB AND BUILD_TESTING)
-    CPMAddPackage(NAME gba-tests VERSION 2025.04.19
-                  URL https://github.com/jsmolka/gba-tests/archive/a7113b67e63f83a9b321696ddd7042ccfad6c881.tar.gz
-                  URL_HASH SHA256=b9373ef18700c48ccab0940ec480517fba47accc86516df5fd43ed9ec6cdf082
-                  DOWNLOAD_ONLY YES)
+    AddJsonPackage(NAME gba-tests DOWNLOAD_ONLY FORCE_BUNDLED_PACKAGE ON)
     # DenSinH's FuzzARM (GPL-3.0): five ROMs of 10000 random ARM and Thumb instructions each, checked against the
     # values its generator computed (tests/agb_fuzzarm.py). Test data, not shipped
-    CPMAddPackage(NAME FuzzARM VERSION 2022.06.14
-                  URL https://github.com/DenSinH/FuzzARM/archive/a675329cd57da48e3e406216ba2d79dd7e09ee20.tar.gz
-                  URL_HASH SHA256=9099fd9cc8d5dd7bddca16a17bca84a8f716a57be609bef68d056cdd4a11929a
-                  DOWNLOAD_ONLY YES)
+    AddJsonPackage(NAME fuzzarm DOWNLOAD_ONLY FORCE_BUNDLED_PACKAGE ON)
 endif()
 # mGBA's test suite (MIT), 13 sections of results measured on the console, as the ROM of mgba-emu/suite e694203 that
 # scarletnx/mgba-suite-rom's release keeps (tests/agb_mgba_suite.py). Off by default, as DraVee asked of slow GBA tests:
 # a section takes 5 to 14 s, the 13 about 90 s one after another in an -O0 tree (2026-11-13)
 option(SNX_TEST_AGB_MGBA_SUITE "Run mGBA's test suite's sections as AGB tests (downloads its ROM; about 90 s in all)" OFF)
 if(SNX_BUILD_AGB AND BUILD_TESTING AND SNX_TEST_AGB_MGBA_SUITE)
-    snx_cpm_file(mgba-suite 2026.07.08 https://github.com/scarletnx/mgba-suite-rom/releases/download/v0-e694203/suite.gba
-                 8cf68cd31c5468a70aca8a1c5b63dc372fe755c40b446cf6aa6d0fc6e3a1f035)
+    snx_package_file(mgba-suite)
 endif()
 
 set(SNX_AGB_PROGRAM "${PROJECT_BINARY_DIR}/scarletnx-agb${CMAKE_EXECUTABLE_SUFFIX}") # what the tests run
