@@ -397,6 +397,7 @@ static const struct {
                       {"vk_heap_budget_mb", "went with no replacement: it was for tests of a GPU with less memory"},
                       {"vk_nv_dedicated_allocation_image_aliasing",
                        "the renderer no longer uses the extension: it lost the GPU on NVIDIA's driver"},
+                      {"ctr_separate_windows", "now ctr_screen_layout=4"},
                       {NULL, NULL}};
 const char* ini_deprecated(const char* k) {
     int i;

@@ -233,7 +233,7 @@ bool snx_ctr_present_init(SnxCtrMemory* memory, const char* frame_dir, bool head
     g_present.up = 1;
     const SnxCtrVk* v = snx_ctr_vk();
     g_present.frame_dir = frame_dir;
-    g_present.separate = g_settings.ctr_separate_screens && v->second && v->second_surface;
+    g_present.separate = g_settings.ctr_screen_layout == SNX_CTR_LAYOUT_SEPARATE && v->second && v->second_surface;
     if (!fx_init(v)) {
         snx_ctr_present_free();
         return false;
@@ -390,8 +390,9 @@ bool snx_ctr_layout_rects(SnxCtrLayout layout, bool swap, uint32_t window_width,
     if (!shown[0]) screens.top_height = console.top_height;
     if (!shown[1]) screens.bottom_width = console.bottom_width;
     if (!shown[1]) screens.bottom_height = console.bottom_height;
-    /* the settings' range keeps to the four (ini_read clamps); another caller's value is shown stacked */
-    if ((unsigned)layout >= SNX_CTR_LAYOUT_COUNT) layout = SNX_CTR_LAYOUT_STACKED;
+    /* the settings' range keeps to the five (ini_read clamps); another caller's value is shown stacked */
+    /* separate reaches here only when no second window was made: the one window then shows the screens stacked */
+    if ((unsigned)layout >= SNX_CTR_LAYOUT_COUNT || layout == SNX_CTR_LAYOUT_SEPARATE) layout = SNX_CTR_LAYOUT_STACKED;
     if (layout == SNX_CTR_LAYOUT_SINGLE) {
         /* the one screen, the top or with the swap the bottom, scaled to fit and centred */
         uint32_t width = swap ? screens.bottom_width : screens.top_width;

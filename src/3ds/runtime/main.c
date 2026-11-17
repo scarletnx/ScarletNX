@@ -69,7 +69,7 @@ static void usage(FILE* out) {
         "                         cfg, dsp, system, am, y2r, ldr, ir, irrst, mic, cam, csnd. Given more than once, the\n"
         "                         lists add up\n"
         "  --KEY=VALUE            A setting of the 3DS display or debug table (g_ctr_display_ini, g_ctr_debug_ini\n"
-        "                         in src/nx/runtime/settings.txt): --ctr-separate-windows=1 puts each screen in a\n"
+        "                         in src/nx/runtime/settings.txt): --ctr-screen-layout=4 puts each screen in a\n"
         "                         window of its own, --ctr-top-resolution=2 and --ctr-bottom-resolution=2 render\n"
         "                         them at twice the console's, --ctr-ipc-trace=1 logs each service request,\n"
         "                         --ctr-jit-trace=1 each block compiled while the game runs, --ctr-auto-stub-ipc=0\n"

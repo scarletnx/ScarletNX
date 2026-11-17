@@ -118,6 +118,7 @@ int main(void) {
        truncated to 106 and 373, so 267 wide */
     expect("stacked", SNX_CTR_LAYOUT_STACKED, false, 73, 0, 333, 200, 106, 200, 267, 200);
     expect("stacked, swapped", SNX_CTR_LAYOUT_STACKED, true, 73, 200, 333, 200, 106, 0, 267, 200);
+    expect("separate, no second window", SNX_CTR_LAYOUT_SEPARATE, false, 73, 0, 333, 200, 106, 200, 267, 200);
     /* single screen: the top alone, scaled by the 480 width's 480/400 to 480x288 and centred in the 400-high window */
     expect("single screen", SNX_CTR_LAYOUT_SINGLE, false, 0, 56, 480, 288, 0, 0, 0, 0);
     /* the swap's single screen is the bottom: 320x240 scaled by the 480 width's 1.5 to 480x360, centred */
@@ -148,7 +149,7 @@ int main(void) {
        keeps the rectangle of the 2400x1080 large case, the first row, and the bottom gets none */
     expect_at("large, bottom without a frame", SNX_CTR_LAYOUT_LARGE, false, (SnxCtrScreens){400, 240, 0, 0}, 2400, 1080,
               (SnxCtrRects){cases[0].rects.top, {0, 0, 0, 0}});
-    /* a value past the four, which the settings clamp, is the stacked layout */
+    /* a value past the five, which the settings clamp, is the stacked layout */
     expect("unknown as stacked", (SnxCtrLayout)99, false, 73, 0, 333, 200, 106, 200, 267, 200);
     expect_refused("zero window width", SNX_CTR_LAYOUT_LARGE, 0, 400);
     expect_refused("zero window height", SNX_CTR_LAYOUT_SIDE, 480, 0);

@@ -220,7 +220,7 @@ int main(int argc, char** argv)
     fill(m, TOP, 240, 400, 0x80);
     fill(m, BOTTOM, 240, 320, 0x80);
     /* the frame the window shows is the target's, the dumps the framebuffer's */
-    g_settings.ctr_separate_screens = separate ? 1 : 0;
+    g_settings.ctr_screen_layout = separate ? SNX_CTR_LAYOUT_SEPARATE : SNX_CTR_LAYOUT_STACKED;
     if (!snx_ctr_present_init(m, dir, headless)) {
         printf("no Vulkan device: presentation checks skipped\n");
         snx_ctr_memory_free(m);

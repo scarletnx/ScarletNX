@@ -31,7 +31,7 @@ def main():
     assert '\n  --frames N' in help_text and '\n  --shot PATH' in help_text and '\n  -H, --headless' in help_text
     assert '--recomp' in help_text and '--extract' in help_text and 'scarletnx-3ds-aot' not in help_text
     assert '--extract-container' in help_text and 'read where it lies' in help_text
-    assert '--ctr-separate-windows=1' in help_text and '--ctr-top-resolution=2' in help_text
+    assert '--ctr-screen-layout=4' in help_text and '--ctr-top-resolution=2' in help_text
     assert '--vk-memory=N' in help_text
     assert '--async-pipelines=1' in help_text and '--pipeline-threads=N' in help_text
     assert '--gamepad-swap-ab=1' in help_text and '--gamepad-deadzone=N' in help_text
@@ -64,7 +64,7 @@ def main():
     run(['--model'], 2, 'requires old or new')
     run(['--model', 'other', '--board-info'], 2, 'requires old or new')
     run(['--board-info'], 0, 'Old 3DS\nARM11 cores: 2\nBase clock: 268111856 Hz\nFCRAM: 128 MiB')
-    run(['--board-info', '--ctr-separate-windows=1', '--ctr-top-resolution=2', '--ctr-bottom-resolution=2'], 0,
+    run(['--board-info', '--ctr-screen-layout=4', '--ctr-top-resolution=2', '--ctr-bottom-resolution=2'], 0,
         'Old 3DS\nARM11 cores: 2')
     run(['--model', 'new', '--board-info'], 0, 'New 3DS\nARM11 cores: 4')
     run(['--board-info', 'game.cia'], 2, 'Usage:')
@@ -73,6 +73,8 @@ def main():
     run(['--board-info', '--vk-memory=1'], 0, 'Old 3DS')
     run(['--board-info', '--async-pipelines=1', '--pipeline-threads=2'], 0, 'Old 3DS')
     run(['--board-info', '--vk-budget-mb=64'], 2, 'unknown setting: --vk-budget-mb=64')
+    # ctr_separate_windows is retired: screen layout 4 replaced it, so the old option is an unknown setting
+    run(['--board-info', '--ctr-separate-windows=1'], 2, 'unknown setting: --ctr-separate-windows=1')
     # the recompile's threads, the Switch's setting, which the launcher's queue gives every driver: a value it does
     # not take stops the run with the value
     run(['--board-info', '--aot-threads=3'], 0, 'Old 3DS')
@@ -84,7 +86,7 @@ def main():
     run(['--board-info', '--aot-threads=2000'], 2, 'aot_threads=2000 is not a whole number from 0 to 1024')
     # a key with a - for each _ is the same setting, a value not taken said by its key; some _ left is no setting
     run(
-        ['--board-info', '--ctr-separate-windows=1', '--ctr-top-resolution=2', '--vk-ext-shader-object=off'],
+        ['--board-info', '--ctr-screen-layout=4', '--ctr-top-resolution=2', '--vk-ext-shader-object=off'],
         0,
         'Old 3DS',
     )

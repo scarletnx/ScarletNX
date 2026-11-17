@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
+#include "3ds/gpu/present.h"
 #include "3ds/gpu/vk/vk.h"
 #include "3ds/gpu/vk/vk_render.h"
 #include "common/gpu/vk/device_settings.h"
@@ -615,7 +616,7 @@ static bool init(SnxCtrMemory* memory, bool headless, char* error, size_t error_
     } else if (!snx_vk_window_open("scarletnx-ctr", "ScarletNX 3DS", 600, 720, &v->host, error, error_size))
         return false;
     /* another window for the bottom screen when the screens are apart, on this instance */
-    if (g_settings.ctr_separate_screens && v->host.window) {
+    if (g_settings.ctr_screen_layout == SNX_CTR_LAYOUT_SEPARATE && v->host.window) {
         v->second = SDL_CreateWindow("ScarletNX 3DS (Bottom)", 640, 480, SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE);
         if (!v->second || !SDL_Vulkan_CreateSurface(v->second, v->host.instance.instance, NULL, &v->second_surface)) {
             if (v->second) SDL_DestroyWindow(v->second);
