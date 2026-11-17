@@ -2,10 +2,10 @@
    Copyright 2026 the ScarletNX contributors */
 
 /* Guest memory that a region of unified memory holds, read by the GPU from the region itself (gpu/vk/owned.c): a
-   texture's load binds the region's buffer to its copy or deswizzle, in place of staging that the CPU fills, and a copy
-   engine's source is copied on the GPU from the region. No extracted shaders or game data are used. Each check reads
-   the counts of vk_guest_read_counts: the bytes the CPU copied must be none, and the bytes bound or copied from the
-   region all of the read */
+   texture's load binds the region's buffer to its copy or deswizzle, in place of staging that the CPU fills, and a
+   read into device memory (the copy engine's) is copied on the GPU from the region. No extracted shaders or game data
+   are used. Each check reads the counts of vk_guest_read_counts: the bytes the CPU copied must be none, and the bytes
+   bound or copied from the region all of the read */
 #define URR_CPU (HEAP_BASE + 0x36000000) /* a window each: the pitch texture, the block linear one, the copy */
 #define URR_GVA 0x6a0000000ull
 static void urr_counts(u64 c[2][VK_GREAD_N]) {
@@ -114,5 +114,62 @@ static int check_uma_texture_region(void) {
     CHECK(held && pending && !differ && !cpu && bound == size);
     CHECK(!bl_differ && !bl_cpu_bytes && bl_bound == 0x4000);
     printf("in place: a texture's load reads a region where it is, after a write in place in the same submission\n");
+    return 0;
+}
+
+/* Guest bytes a region holds, read into device memory (owned.c's guest_read): the read the copy engine and the 2D
+   engine take for a destination's bytes and for a source under a render target, and dispatches for their constants.
+   Each run is copied on the GPU from the region's buffer, in stream order (vk_guest_read_device) and in the
+   submission's upload command buffer (vk_guest_read_ahead), and the CPU copies none of its bytes */
+static int check_uma_dma_region(void) {
+    const u64 src = URR_GVA + 0x400000, src_cpu = URR_CPU + 0x400000;
+    u64 c0[2][VK_GREAD_N], c1[2][VK_GREAD_N], at;
+    u8 bytes[2][256];
+    VkBuffer r, dev, rb;
+    u64 ro;
+    if (!vk_uma()) {
+        printf("skip: guest memory is copied on this device (vk_memory)\n");
+        return 0;
+    }
+    CHECK(mem_map(src_cpu, 0x200000, MS_NORMAL, PERM_RW) == 0);
+    gmmu_map(src, src_cpu, 0x200000);
+    for (u32 i = 0; i < 0x1000; i++) GP(src_cpu)[i] = (u8)(i * 5 + 1);
+    g_renderer->mem_may_have_changed();
+    vk_lock();
+    CHECK(vk_buf_get_input(src, 256, 4, &r, &ro)); /* a draw reads it in place: a region over its window */
+    const int held = vk_uma_held(src_cpu + 0x100, 256);
+    vk_finish();
+    vk_guest_read_counts(c0);
+    vk_render_end();
+    CHECK(vk_stage_device(512, 16, &dev, &at));
+    CHECK(vk_guest_read_device(src + 0x100, 256, dev, at));
+    const int ahead = vk_guest_read_ahead(src + 0x300, 256, dev, at + 256); /* nothing written in this submission */
+    vk_guest_read_counts(c1);
+    u8* data = vk_readback_buffer(512, &rb);
+    CHECK(data);
+    VkBufferCopy back = {at, 0, 512};
+    vk_render_end();
+    rec_CmdCopyBuffer(vk_cmd(), dev, rb, 1, &back);
+    vk_finish();
+    vk_readback_ready();
+    memcpy(bytes, data, sizeof bytes);
+    vk_unlock();
+    u32 differ = 0;
+    for (u32 i = 0; i < 256; i++) {
+        differ += bytes[0][i] != GP(src_cpu)[0x100 + i];
+        differ += bytes[1][i] != GP(src_cpu)[0x300 + i];
+    }
+    const u64 cpu = c1[1][VK_GREAD_CPU] - c0[1][VK_GREAD_CPU],
+              regions = c1[1][VK_GREAD_REGIONS] - c0[1][VK_GREAD_REGIONS];
+    CHECK(mem_unmap(src_cpu, 0x200000) == 0);
+    g_renderer->mem_may_have_changed();
+    if (!held || !ahead || differ || cpu || regions != 512)
+        fprintf(stderr,
+                "device read from a region: held %d, read ahead %d, %u of 512 bytes differ (first %02x, want %02x), "
+                "%llu bytes copied by the CPU, %llu copied from the region\n",
+                held, ahead, differ, bytes[0][0], (u8)(0x100 * 5 + 1), (unsigned long long)cpu,
+                (unsigned long long)regions);
+    CHECK(held && ahead && !differ && !cpu && regions == 512);
+    printf("in place: a read into device memory copies a region's bytes from the region on the GPU\n");
     return 0;
 }
