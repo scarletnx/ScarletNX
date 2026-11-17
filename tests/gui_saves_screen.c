@@ -49,6 +49,22 @@ static void own_answer_dropped(App* app) {
     SDL_free(own.user.data1);
     SDL_free(own.user.data2);
 }
+/* what under path could not be removed, a line each with the system's reason: a file the test left open shows */
+static void removal_said(const char* path) {
+    char** names = NULL;
+    size_t count = 0, i;
+    char why[256];
+    if (snx_is_dir(path) && !snx_list_dir(path, &names, &count)) {
+        for (i = 0; i < count; ++i) {
+            char* inner = snx_path_join(path, names[i]);
+            removal_said(inner);
+            free(inner);
+        }
+        snx_free_strings(names, count);
+    }
+    if (snx_path_exists(path) && snx_remove_tree(path))
+        fprintf(stderr, "gui_saves_screen: %s could not be removed: %s\n", path, snx_os_error(why, sizeof why));
+}
 /* name set where getenv reads it as well as SDL: on Windows the C runtime keeps a copy of its own */
 static void set_env(const char* name, const char* value) {
 #ifdef _WIN32
@@ -341,7 +357,10 @@ int main(void) {
     SDL_DestroyRenderer(app.renderer);
     SDL_DestroyWindow(app.window);
     SDL_Quit();
-    assert(!snx_remove_tree(root));
+    if (snx_remove_tree(root)) {
+        removal_said(root);
+        assert(!"the test's folder removed whole");
+    }
     free(root);
     puts("gui_saves_screen: ok");
     return 0;
