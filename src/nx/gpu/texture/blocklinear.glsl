@@ -25,6 +25,11 @@
    Each run has one invocation, so the merge needs no atomics. The C++ byte-wise
    reference checks every tail width and randomized layouts, both directions. */
 
+/* a run of the side read: blocklinear.comp's BL_RUNS reads some runs in place */
+#ifndef BL_READ
+#define BL_READ(i) src[i]
+#endif
+
 void main() {
     uint k = gl_LocalInvocationID.x;
     uint k_run = native != 0u ? ((k >> 2) & 1u) | ((k >> 3) & 2u) : ((k >> 1) & 1u) | ((k >> 3) & 2u);
@@ -41,7 +46,7 @@ void main() {
     uint lin = lin_bias + (gl_WorkGroupID.z * rows + y) * lin_runs + run;
     if (to_bl != 0u && run + 1u == runs && tail_mask[3] != 0xffffffffu) {
         uvec4 prior = dst[bl];
-        dst[bl] = prior ^ ((prior ^ src[lin]) & tail_mask);
+        dst[bl] = prior ^ ((prior ^ BL_READ(lin)) & tail_mask);
     } else
-        dst[to_bl != 0u ? bl : lin] = src[to_bl != 0u ? lin : bl];
+        dst[to_bl != 0u ? bl : lin] = BL_READ(to_bl != 0u ? lin : bl);
 }

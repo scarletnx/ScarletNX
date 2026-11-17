@@ -54,6 +54,11 @@ void vk_guest_read(u64 gva, u64 size, u8* host, VkBuffer buf, u64 at) {
     (void)buf, (void)at;
     gmem_read(gva, host, size);
 }
+u32 vk_guest_read_inplace(u64 gva, u64 size, u8* host, VkBuffer buf, u64 at, VkInRun* runs, u32 max) {
+    (void)runs, (void)max;
+    vk_guest_read(gva, size, host, buf, at);
+    return 0; /* no result holds a run to read in place */
+}
 static u32 g_peeks;
 void vk_guest_peek(u64 gva, void* dst, u64 size) {
     g_peeks++;
@@ -430,6 +435,10 @@ int vk_bl_move(VkCommandBuffer cb, const VkBlMove* m, int to_bl, VkBuffer bl, u6
     /*moves++;*/
     batch_moves++;
     return 1;
+}
+int vk_bl_move_src(VkCommandBuffer cb, const VkBlMove* m, const VkBlSrc* s, VkBuffer lin, u64 lin_at) {
+    CHECK(!s->n); /* vk_guest_read_inplace above notes no runs */
+    return vk_bl_move(cb, m, 0, s->buf, s->at, lin, lin_at);
 }
 int vk_tc_converts(const VkFmt* f) { return f->conv != VKC_NONE && f->conv != VKC_ASTC; }
 static u32 g_enc_bound;

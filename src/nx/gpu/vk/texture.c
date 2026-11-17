@@ -278,19 +278,26 @@ static int tex_bind_at(Surf* t, int finer_ok) {
    loaded the same 15 textures, 10 MB, a frame for seconds at under 2 frames a second */
 static int tex_bind(Surf* t) { return tex_bind_at(t, !t->shed); }
 
-/* the guest bytes a move of a level reads (lsz bytes at gva) staged as they are (what the GPU holds of them copied on
-   the GPU, vk_guest_read), zero past the level's end: buf and off hold the layout's first byte the move reads
-   (vk_bl_range). Bytes a region holds that reach no further than the level's end are read there (vk_guest_in_place):
-   the move takes 16-byte runs */
-static int stage_bl(const VkBlMove* m, u64 gva, u64 lsz, VkBuffer* buf, u64* off) {
+/* the guest bytes a move of a level reads (lsz bytes at gva) staged as they are, zero past the level's end: s->buf
+   and s->at hold the layout's first byte the move reads (vk_bl_range). What the GPU holds of them is read by the move
+   where it is, the runs in s's table (vk_guest_read_inplace), or copied there on the GPU. Bytes a region holds that
+   reach no further than the level's end are read there (vk_guest_in_place): the move takes 16-byte runs */
+#define STAGE_RUNS 64
+static int stage_bl(const VkBlMove* m, u64 gva, u64 lsz, VkBlSrc* s) {
     u64 lo, hi;
     vk_bl_range(m, &lo, &hi);
     u64 n = lo >= lsz ? 0 : hi <= lsz ? hi - lo : lsz - lo;
-    if (n == hi - lo && vk_guest_in_place(gva + lo, n, 16, buf, off)) return 1;
-    u8* p = vk_stage_guest_input(gva + lo, n, hi - lo, buf, off);
+    *s = (VkBlSrc){0};
+    if (n == hi - lo && vk_guest_in_place(gva + lo, n, 16, &s->buf, &s->at)) return 1;
+    u8* p = vk_stage_guest_input(gva + lo, n, hi - lo, &s->buf, &s->at);
     if (!p) return 0;
-    vk_guest_read(gva + lo, n, p, *buf, *off);
+    VkInRun runs[STAGE_RUNS];
+    s->n = vk_guest_read_inplace(gva + lo, n, p, s->buf, s->at, runs, STAGE_RUNS);
     memset(p + n, 0, hi - lo - n);
+    if (!s->n) return 1;
+    VkInRun* tab = (VkInRun*)vk_stage_upload(s->n * sizeof *tab, 16, &s->tab, &s->tab_at);
+    if (!tab) return 0;
+    memcpy(tab, runs, s->n * sizeof *tab);
     return 1;
 }
 
@@ -343,17 +350,16 @@ static int astc_rows(void* ctx, VkCommandBuffer* pcb, u32 z, u32 nz, u32 y, u32 
     if (l->t->bl && l->layers) {
         VkBlMove m = {l->rowb, l->th, l->lbh, l->lbd, y, n, 0, 1, l->rowb, l->gobs_x};
         u64 cap, slice = (u64)l->rowb * n;
-        VkBuffer* staged = malloc(nz * (sizeof *staged + sizeof(u64)));
-        u64* at = (u64*)(staged + nz);
+        VkBlSrc* staged = malloc(nz * sizeof *staged);
         *buf = vk_bl_scratch(slice * nz, &cap);
         *off = 0;
         int ok = staged && *buf;
         for (u32 k = 0; ok && k < nz; k++)
-            ok = stage_bl(&m, l->gva + (u64)(z + k) * l->t->layer_size, l->lsz, &staged[k], &at[k]);
+            ok = stage_bl(&m, l->gva + (u64)(z + k) * l->t->layer_size, l->lsz, &staged[k]);
         if (ok) {
             VkCommandBuffer cb = *pcb = upload_cb(l->t, *pcb);
             vk_bl_barrier(cb, 1);
-            for (u32 k = 0; ok && k < nz; k++) ok = vk_bl_move(cb, &m, 0, staged[k], at[k], *buf, k * slice);
+            for (u32 k = 0; ok && k < nz; k++) ok = vk_bl_move_src(cb, &m, &staged[k], *buf, k * slice);
             vk_bl_barrier(cb, 0);
         }
         free(staged);
@@ -361,15 +367,14 @@ static int astc_rows(void* ctx, VkCommandBuffer* pcb, u32 z, u32 nz, u32 y, u32 
     }
     if (l->t->bl) {
         VkBlMove m = {l->rowb, l->th, l->lbh, l->lbd, y, n, z, nz, l->rowb, l->gobs_x}; /* 16 byte blocks: whole runs */
-        VkBuffer staged;
-        u64 at;
+        VkBlSrc staged;
         u64 cap;
         *buf = vk_bl_scratch((u64)l->rowb * n * nz, &cap);
         *off = 0;
-        if (!*buf || !stage_bl(&m, l->gva, l->lsz, &staged, &at)) return 0;
+        if (!*buf || !stage_bl(&m, l->gva, l->lsz, &staged)) return 0;
         VkCommandBuffer cb = *pcb = upload_cb(l->t, *pcb);
         vk_bl_barrier(cb, 1);
-        int ok = vk_bl_move(cb, &m, 0, staged, at, *buf, 0);
+        int ok = vk_bl_move_src(cb, &m, &staged, *buf, 0);
         vk_bl_barrier(cb, 0);
         return ok;
     }
@@ -553,12 +558,12 @@ static int up_rows(Upload* u, const UpLevel* lv, VkBuffer in, u64 in_at, u32 in_
 /* a block linear strip: move m of bytes staged at staged_at deswizzled into the scratch buffer, then up_rows. Its
    rows land at row y, slice z of the level (the move's own rows and slices are a gathered layout's for a strip of
    GOB rows) */
-static int up_move(Upload* u, const UpLevel* lv, const VkBlMove* m, VkBuffer staged, u64 staged_at, u32 z, u32 y) {
+static int up_move(Upload* u, const UpLevel* lv, const VkBlMove* m, const VkBlSrc* staged, u32 z, u32 y) {
     u64 lin = (u64)m->slices * m->rows * m->lin_pitch;
     if (!up_reserve(u, lin + (lv->conv ? vk_tc_out_size(&lv->tc, m->rows, m->slices) : 0))) return 0;
     u64 at = up_space(u, lin, bl_lin_align(u->t->f.bpp));
     up_open(u);
-    if (!vk_bl_move(u->cb, m, 0, staged, staged_at, u->scratch, at)) return 0;
+    if (!vk_bl_move_src(u->cb, m, staged, u->scratch, at)) return 0;
     u->moves++;
     return up_rows(u, lv, u->scratch, at, m->lin_pitch, z, m->slices, y, m->rows);
 }
@@ -582,11 +587,10 @@ static int level_upload_bl(Upload* u, const UpLevel* lv, u64 gva, u64 lsz, u32 l
     u64 block = 512ull << (lbh + lbd), block_row = (u64)lv->gobs_x * block;
     /* scratch bytes a row of units takes: deswizzled, and converted */
     u64 per_row = pitch + (lv->conv ? vk_tc_out_size(&lv->tc, 1, 1) : 0);
-    VkBuffer staged;
-    u64 staged_at;
+    VkBlSrc staged;
     if (per_row * th * ld <= band && lsz <= band && up_bound(u, lv, 0, th, 0, ld, 1)) {
         VkBlMove m = {rowb, th, lbh, lbd, 0, th, 0, ld, pitch, lv->gobs_x};
-        return stage_bl(&m, gva, lsz, &staged, &staged_at) && up_move(u, lv, &m, staged, staged_at, 0, 0);
+        return stage_bl(&m, gva, lsz, &staged) && up_move(u, lv, &m, &staged, 0, 0);
     }
     u64 rows_cost = per_row * (8u << lbh) * nz;
     if (rows_cost <= band && block_row <= band) {
@@ -597,7 +601,7 @@ static int level_upload_bl(Upload* u, const UpLevel* lv, u64 gva, u64 lsz, u32 l
                 u32 rows = th - y < n ? th - y : n, slices = ld - z < nz ? ld - z : nz;
                 VkBlMove m = {rowb, th, lbh, lbd, y, rows, z, slices, pitch, lv->gobs_x};
                 if (!up_bound(u, lv, m.y0, m.rows, z, m.slices, 0)) continue;
-                if (!stage_bl(&m, gva, lsz, &staged, &staged_at) || !up_move(u, lv, &m, staged, staged_at, z, y))
+                if (!stage_bl(&m, gva, lsz, &staged) || !up_move(u, lv, &m, &staged, z, y))
                     return 0;
             }
         return 1;
@@ -616,16 +620,17 @@ static int level_upload_bl(Upload* u, const UpLevel* lv, u64 gva, u64 lsz, u32 l
                        ((((u64)(z & ((1u << lbd) - 1)) << lbh) + (gy & ((1u << lbh) - 1))) << 9);
             u64 end = base + (gobs_x - 1) * block + piece;
             u64 have = base >= lsz ? 0 : end <= lsz ? end - base : lsz - base;
-            u8* p = vk_stage_guest_input(gva + base, have, gobs_x * piece, &staged, &staged_at);
+            staged = (VkBlSrc){0}; /* its pieces copied: a strip of a level too big for staging whole */
+            u8* p = vk_stage_guest_input(gva + base, have, gobs_x * piece, &staged.buf, &staged.at);
             if (!p) return 0;
             for (u32 gx = 0; gx < gobs_x; gx++) {
                 u64 o = base + gx * block, n = o >= lsz ? 0 : o + piece <= lsz ? piece : lsz - o;
-                vk_guest_read(gva + o, n, p + gx * piece, staged, staged_at + gx * piece);
+                vk_guest_read(gva + o, n, p + gx * piece, staged.buf, staged.at + gx * piece);
                 memset(p + gx * piece + n, 0, piece - n);
             }
             u32 y = gy << 3;
             VkBlMove m = {rowb, 8u << k, k, 0, 0, th - y < (8u << k) ? th - y : 8u << k, 0, 1, pitch};
-            if (!up_move(u, lv, &m, staged, staged_at, z, y)) return 0;
+            if (!up_move(u, lv, &m, &staged, z, y)) return 0;
         }
     return 1;
 }
@@ -1043,13 +1048,13 @@ static int resident_upload(Surf* t) {
                         }
                         VkBlMove mv = {across, 8u << lbh, lbh, lbd, 0, 8u << lbh, 0, 1u << lbd, across};
                         const u64 lin = (u64)mv.slices * mv.rows * mv.lin_pitch;
-                        u64 staged_at, at;
-                        VkBuffer staged;
-                        ok = stage_bl(&mv, t->gva + from, t->brick_bytes, &staged, &staged_at) && up_reserve(&u, lin);
+                        u64 at;
+                        VkBlSrc staged;
+                        ok = stage_bl(&mv, t->gva + from, t->brick_bytes, &staged) && up_reserve(&u, lin);
                         if (!ok) break;
                         at = up_space(&u, lin, bl_lin_align(f->bpp));
                         up_open(&u);
-                        if (!(ok = vk_bl_move(u.cb, &mv, 0, staged, staged_at, u.scratch, at))) break;
+                        if (!(ok = vk_bl_move_src(u.cb, &mv, &staged, u.scratch, at))) break;
                         u.moves++;
                         u.src[u.nreg] = u.scratch;
                         u.reg[u.nreg++] = (VkBufferImageCopy){
@@ -2770,12 +2775,10 @@ static int level_patch_bl(Upload* u, const UpLevel* lv, u64 gva, u64 lsz, u32 lb
                           lv->ld - z < 1u << lbd ? lv->ld - z : 1u << lbd,
                           (rowb + align - 1) / align * align};
             UpLevel run = *lv;
-            VkBuffer staged;
-            u64 at;
+            VkBlSrc staged;
             run.x = x0 * (64 / f->bpp) * f->bw;
             run.cols = rowb / f->bpp * f->bw;
-            if (!stage_bl(&m, gva + k * block, lsz - k * block, &staged, &at) ||
-                !up_move(u, &run, &m, staged, at, z, y))
+            if (!stage_bl(&m, gva + k * block, lsz - k * block, &staged) || !up_move(u, &run, &m, &staged, z, y))
                 return 0;
             __atomic_add_fetch(&g_tex_upload_bytes, (e - k) * block, __ATOMIC_RELAXED);
         }

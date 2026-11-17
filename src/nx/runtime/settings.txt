@@ -1622,6 +1622,14 @@ setting Indirect copies
     words Off|On
     help 1 = where the device has VK_KHR_copy_memory_indirect and device addresses, the copies of GPU-owned results
     help into one buffer are made by one command, from a list the GPU reads; 0 = one copy command each
+setting Texture loads in place
+    key vk_inplace_loads
+    int 0 1
+    default 1
+    startup
+    words Off|On
+    help 1 = where the device has device addresses, a block linear texture load reads the bytes that GPU results
+    help hold where they are, and the CPU's bytes from staging; 0 = the results' bytes are copied into staging first
 setting Vulkan recording thread
     key vk_record
     int 0 1
