@@ -2,7 +2,8 @@
    Copyright 2026 the ScarletNX contributors */
 /* The LLVM backend: A64 to LLVM IR through the LLVM-C API. ir_codegen.c walks a function's instructions as the
    generated decoder (a64_decoder.h) decodes them, and the emitters ported from QEMU's translate-a64.c (ir_int.c,
-   ir_ldst.c, ir_fpu.c, ir_vec*.c) build each one's IR with the instruction word and pc constant. cpu.h's inline
+   ir_ldst.c, ir_fpu.c, ir_vec*.c) and those tools/sailgen generates from the Arm architecture's Sail (ir_sail.c) build
+   each one's IR with the instruction word and pc constant. cpu.h's inline
    helpers become internal always-inline IR functions (ir.c); its out-of-line helpers are called in the runtime
    library (rtlib.c), which every module links. */
 #ifndef SNX_RECOMPILER_LLVM_IR_H
@@ -215,6 +216,9 @@ typedef struct SnxIr {
     int ppc, elfv2;
     /* the guest's features (snx_a64_features) for the function being emitted: what its system registers keep */
     SnxU64 guest_features;
+    /* tests: the hand-written emitters the generated integer ones replaced (tests/support/ir_int_reference.c), used
+       instead of them, so the two can be compared; NULL everywhere else */
+    void (*int_reference)(struct SnxIr* ir, const void* decoded, SnxU32 word, SnxU64 pc);
 } SnxIr;
 
 void ir_state_invalidate(SnxIr* ir);

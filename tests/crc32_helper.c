@@ -2,7 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 /* CRC32 and CRC32C, every width, through the LLVM backend's steps (llvm_steps.c) against the bit-at-a-time
    definition: with the host's instructions where the emitter uses them (AArch64's CRC32, x86's SSE4.2 CRC32C) and
-   in the portable form, the sliced tables (ir_int.c) */
+   in the portable form, the sliced tables (sailgen's back end, tools/sailgen/llvm.h) */
 #include "llvm_steps.h"
 #include <stdio.h>
 

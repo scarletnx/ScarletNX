@@ -14,7 +14,7 @@ sailgen --generate ROOTS --backend llvm.h -o OUT INPUT... [--overlay FILE]...
 `--extract` copies the definitions of sail-arm's files that the roots reach (`extract.c`). `--generate` writes one C
 function per decode function the roots name, which emits that instruction as LLVM IR, and `sg_emit`, which picks one
 by the decode clauses' fixed bits in their order (`gen.c`). An overlay's definitions take the place of the inputs' of
-the same name: a system's fixups (`nx.sail`).
+the same name: a system's fixups (`nx.sail`). `src/common/cpu/recompiler/llvm/ir_sail.c` includes the output.
 
 ## How a decode function becomes C
 
@@ -87,3 +87,7 @@ The front (the parse, the inlining, the times) and the Sail don't depend on LLVM
 `tests/sailgen/`: `--extract` of a small file copies the closure of its root and nothing else, and `--generate`
 refuses a throw it has no meaning for and a register or a field the back end does not keep, naming its line;
 `sailgen_a64` generates the in-tree A64 subsets whole.
+
+`tests/llvm_sail_ir.c` holds the generated emitters to the hand-written ones they replaced
+(`tests/support/ir_int_reference.c`), word by word on three paths: the same optimized IR, or the same instructions in
+another order, or another IR no longer than theirs; and the same results when both run.
