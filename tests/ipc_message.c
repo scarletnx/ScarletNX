@@ -87,6 +87,7 @@ void kobj_ref(KObj* o) { o->refs++; }
 static void event_destroy(KObj* o);
 /* what each type does as its last reference goes, as kernel.c's kobj_destroy */
 void kobj_unref(KObj* o) {
+    if (!o) return;
     CHECK(o->refs > 0);
     if (--o->refs) return;
     if (o->type == KO_EVENT)

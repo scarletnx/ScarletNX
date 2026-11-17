@@ -47,7 +47,9 @@ void logf_(int level, const char* format, ...) {
     va_end(ap);
     if (level <= 1) fputs(test_last_log, stdout);
 }
-void kobj_unref(KObj* o) { o->refs--; }
+void kobj_unref(KObj* o) {
+    if (o) o->refs--;
+}
 void kevent_signal(KEvent* e) {
     e->signaled = 1;
     test_signals++;

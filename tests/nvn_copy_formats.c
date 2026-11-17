@@ -117,7 +117,8 @@ int nvn_draw_surface(u64 snapshot, const NvnView* v, DsSurf* s, int* depth, u32*
 }
 u32 gpu_color_bpp(u32 format) { return format == 0xCA ? 8 : format == 0xC0 ? 16 : format ? 4 : 0; }
 int nvn_fmt_bpb(int format, int* bw, int* bh) {
-    *bw = *bh = 1;
+    if (bw) *bw = 1;
+    if (bh) *bh = 1;
     return format == NVN_FORMAT_RGBA4 || format == NVN_FORMAT_RGB565 || format == NVN_FORMAT_RGB5A1
                ? 2
                : gpu_color_bpp(rt_format((u32)format));

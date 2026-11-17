@@ -77,6 +77,7 @@ int stub_ok(SvcObj* o, IpcCtx* c) {
 void svc_register(const char* name, SvcCtor ctor) { (void)name, (void)ctor; }
 void kobj_ref(KObj* o) { o->refs++; }
 void kobj_unref(KObj* o) {
+    if (!o) return;
     CHECK(o->refs > 0);
     if (--o->refs) return;
     free(o);

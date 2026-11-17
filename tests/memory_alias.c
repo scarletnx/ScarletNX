@@ -121,7 +121,7 @@ KObj* h_get_ref(u32 h, int type) {
 void kobj_ref(KObj* o) { o->refs++; }
 /* the destroys of the types svc_mem.c makes, as kernel.c's kobj_destroy picks them */
 void kobj_unref(KObj* o) {
-    if (--o->refs) return;
+    if (!o || --o->refs) return;
     if (o->type == KO_SHMEM)
         kshmem_destroy(o);
     else if (o->type == KO_TMEM)

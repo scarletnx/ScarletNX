@@ -155,6 +155,7 @@ void svc_register(const char* name, SvcCtor ctor) {
 /* kernel objects: a handle takes a reference, as h_new does, and the test keeps count of what is alive */
 void kobj_ref(KObj* o) { o->refs++; }
 void kobj_unref(KObj* o) {
+    if (!o) return;
     CHECK(o->refs > 0);
     if (--o->refs) return;
     if (o->type == KO_SHMEM) free(((KShmem*)o)->host); /* as kshmem_destroy lets go of its pages */

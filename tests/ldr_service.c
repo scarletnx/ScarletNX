@@ -197,7 +197,7 @@ SvcObj* svcobj_new(const char* name, int (*dispatch)(SvcObj*, IpcCtx*)) {
 }
 #include "svcobj_data.h"
 void svcobj_unref(SvcObj* o) {
-    if (--o->refs) return;
+    if (!o || --o->refs) return;
     if (o->destroy) o->destroy(o);
     test_svcobj_data_free(o);
     free(o);
