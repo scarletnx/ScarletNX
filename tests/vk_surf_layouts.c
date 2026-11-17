@@ -150,6 +150,7 @@ const VkPhysicalDeviceMemoryProperties* vk_devmem_props(void) { STUB(); }
 void vk_devmem_reserve_use(int on) { STUB(); }
 void vk_finish_at(const char* file, int line) { STUB(); }
 int vk_gfx_image_holds(const Surf* s) { STUB(); }
+int vk_guest_in_place(u64 gva, u64 size, u64 align, VkBuffer* buf, u64* off) { STUB(); }
 void vk_guest_read(u64 gva, u64 size, u8* host, VkBuffer buf, u64 at) { STUB(); }
 int vk_guest_read_device(u64 gva, u64 size, VkBuffer buf, u64 at) { STUB(); }
 u64 vk_hash(const void* p, u64 size) { STUB(); }
