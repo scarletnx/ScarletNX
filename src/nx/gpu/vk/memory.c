@@ -301,6 +301,7 @@ static void bind_flush(void) {
     g_bind.readers = 0;
 }
 
+void vk_sparse_batch_flush(void) { bind_flush(); }
 int vk_sparse_flush(VkSemaphoreSubmitInfo* wait) {
     bind_flush();
     if (g_bind.waited == g_bind.issued) return 0;
