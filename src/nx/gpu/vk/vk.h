@@ -463,7 +463,17 @@ void vk_uma_writes_commit(void);                         /* the draw or dispatch
 void vk_uma_writer(u64 prog);
 int vk_uma_read_soon(u64 prog);
 void vk_uma_writes_abort(void);                          /* it wasn't */
-void vk_uma_frame_done(u64 frame);                       /* that submit is done: its in-place writes are in memory */
+/* An aliasing draw's group of storage bindings bound in place (buffer.c's alias_in_place), vk_lock held: the writes in
+   place of the draw so far (mark), and those after it undone when the group goes to the atlas after all; no wait in
+   imp_get while no_wait is on; a count that moves at each region made or gone; the one region over guest memory
+   [cpu, cpu + len), made with no wait: 1 with its buffer and cpu's offset in it, 0 for none, -1 when it would need a
+   wait */
+u32 vk_uma_prep_mark(void);
+void vk_uma_writes_rollback(u32 mark);
+void vk_uma_no_wait(int on);
+u64 vk_uma_regions(void);
+int vk_uma_cover(u64 cpu, u64 len, VkBuffer* buf, u64* off);
+void vk_uma_frame_done(u64 frame);                      /* that submit is done: its in-place writes are in memory */
 void vk_uma_host_barrier(VkCommandBuffer cb, u64 frame); /* at that submit's end: its writes visible to the host */
 int vk_uma_pending(u64 gva, u64 len);                    /* an in-place write is pending over GPU range [gva, +len) */
 int vk_uma_pending_cpu(u64 cpu, u64 len);                /* the same by guest address */
@@ -2165,6 +2175,25 @@ static inline int vk_draw_storage_any(const VkDrawStorage* draw) {
 }
 int vk_buf_draw_has_alias(const VkDrawStorage* draw);
 int vk_buf_draw_prepare(VkDrawStorage* draw);
+/* Why an aliasing draw's group of bindings went to the page atlas, not in place (buffer.c's alias_in_place): the way
+   is off (no unified memory, uma_copies=2); a binding not one run of mapped guest memory; the
+   group in no one region; a region that a wait would make; an offset off the storage alignment; a write over newer
+   bytes elsewhere or refused by vk_uma_write; a read over newer bytes elsewhere or refused by vk_uma_get; two buffers;
+   a region made or gone while the group was bound */
+enum {
+    VK_ALIAS_OFF,
+    VK_ALIAS_RUN,
+    VK_ALIAS_REGION,
+    VK_ALIAS_WAIT,
+    VK_ALIAS_ALIGN,
+    VK_ALIAS_WRITE,
+    VK_ALIAS_READ,
+    VK_ALIAS_SPLIT,
+    VK_ALIAS_CHANGED,
+    VK_ALIAS_N
+};
+/* the aliasing draws so far: those given the atlas and its pages, those bound in place, and each fallback's why */
+void vk_buf_alias_counts(u64* atlas, u64* pages, u64* inplace, u64 why[VK_ALIAS_N]);
 void vk_buf_writable_abort(void);
 void vk_buf_writable_commit(void);
 void vk_buf_mem_need(u64 gva, u64 len);

@@ -228,7 +228,9 @@ static void own_unlink(u32 i) {
 static u64 g_copy_stage, g_copy_owned, g_copy_uncached, g_copy_zero, g_copy_calls, g_copy_peak, g_read_bound;
 static u64 g_owned_bound; /* bytes draws read where their owners hold them (buf_get_owned) */
 static u64 g_wb_outputs, g_wb_bytes, g_wb_waits, g_wb_wait_ns, g_wb_reuses;
-static u64 g_alias_draws, g_alias_pages;
+/* aliasing draws: given the atlas, its pages, bound in place, and why each of the others was not (VK_ALIAS_*). Counted
+   always, logged with buffer_copy_stats */
+static u64 g_alias_draws, g_alias_pages, g_alias_inplace, g_alias_why[VK_ALIAS_N];
 enum { WB_DRAW, WB_READ, WB_WRITE, WB_SIGNAL, WB_SYNCWAIT, WB_MAP, WB_REASON_N };
 static u64 g_wb_reason[WB_REASON_N], g_wb_reason_ns[WB_REASON_N], g_wb_draw_miss[4];
 static int copy_stats_on(void) { return g_settings.buffer_copy_stats; }
@@ -3278,8 +3280,102 @@ static int atlas_fill(DrawPage* p, size_t unique, u8* ptr, VkBuffer atlas, u64 a
     return composed;
 }
 
-/* All bindings of an aliasing draw index one page atlas. This also covers fragmented GPU mappings: the shader's
-   word index is translated through its binding's page list, so a write through either VA reaches the same word. */
+/* With unified memory, an aliasing draw's group (active: the bindings that share a guest page with a writable one) is
+   bound in place: each binding at its own offset in the one region that holds them all, where guest memory is one
+   memory as on the console. A store through one binding and a load through another meet there; the shader declares
+   its global buffers Aliased (spirv_translate.c), so the compiler keeps no value across them. Then the draw has no
+   atlas to fill, no outputs to compare at the frame's end and nothing to land: what it writes is in guest memory once
+   its submit is done (uma.c's out_add). The writes resolve first (vk_uma_write), then the reads (vk_uma_get): uma.c's
+   order puts no barrier between the bindings of one draw, which the console does not order either, where a read
+   resolved first would put one before the write after it, and end the rendering pass. Nothing here waits: a region
+   that only a wait would make, a binding over newer bytes elsewhere, or any binding that can't be in place sends the
+   whole group to the atlas, with the writes in place it bound undone (vk_uma_writes_rollback). The checks of a binding
+   are those of the fast path's blk bit and of copy_writable (fast_check's list), asked without landing anything. 1
+   when bound in place, else 0 with the reason (VK_ALIAS_*) in *why */
+static int alias_in_place(VkDrawStorage* draw, const u8 active[VK_DRAW_STAGES * 16], int* why) {
+    if (!vk_uma() || g_settings.guest_buffers_copied == 2) {
+        *why = VK_ALIAS_OFF;
+        return 0;
+    }
+    u64 cpu[VK_DRAW_STAGES * 16], lo = ~0ull, hi = 0;
+    for (int k = 0; k < VK_DRAW_STAGES * 16; k++) {
+        const VkDrawGbuf* b = &draw->b[k / 16][k % 16];
+        if (!active[k]) continue;
+        if (!b->size || gmmu_run(b->addr, b->size, &cpu[k]) != b->size) {
+            *why = VK_ALIAS_RUN;
+            return 0;
+        }
+        if (cpu[k] < lo) lo = cpu[k];
+        if (cpu[k] + b->size > hi) hi = cpu[k] + b->size;
+    }
+    if (lo >= hi) {
+        *why = VK_ALIAS_RUN;
+        return 0;
+    }
+    VkBuffer region;
+    u64 base;
+    const int cover = vk_uma_cover(lo, hi - lo, &region, &base);
+    if (cover <= 0) {
+        *why = cover < 0 ? VK_ALIAS_WAIT : VK_ALIAS_REGION;
+        return 0;
+    }
+    const u64 align = g_vk.props.limits.minStorageBufferOffsetAlignment ? g_vk.props.limits.minStorageBufferOffsetAlignment
+                                                                        : 1;
+    for (int k = 0; k < VK_DRAW_STAGES * 16; k++)
+        if (active[k] && (base + (cpu[k] - lo)) % align) {
+            *why = VK_ALIAS_ALIGN;
+            return 0;
+        }
+    const u32 mark = vk_uma_prep_mark();
+    const u64 regions = vk_uma_regions();
+    VkBuffer buf[VK_DRAW_STAGES * 16];
+    u64 off[VK_DRAW_STAGES * 16];
+    int fail = -1;
+    vk_uma_no_wait(1);
+    for (int pass = 0; pass < 2 && fail < 0; pass++) /* the writes, then the reads */
+        for (int k = 0; k < VK_DRAW_STAGES * 16 && fail < 0; k++) {
+            const VkDrawGbuf* b = &draw->b[k / 16][k % 16];
+            if (!active[k] || b->writable != !pass) continue;
+            const u64 gva = b->addr, len = b->size;
+            /* newer bytes of the range elsewhere: the mirror's writes, a pending graphics or compute result, a storage
+               image not published, a queued release, bytes the GPU owns */
+            if (vk_mirror_pending(gva, len) || vk_mirror_holds(gva, len) || vk_buf_pending(gva, len) ||
+                (g_cs_any && vk_compute_pending(gva, len)) || (g_gfx_img_any && vk_gfx_image_pending(gva, len)) ||
+                vk_release_pending(gva, len) || range_owned(gva, len))
+                fail = pass ? VK_ALIAS_READ : VK_ALIAS_WRITE;
+            else if (!(pass ? vk_uma_get(gva, len, align, &buf[k], &off[k])
+                            : vk_uma_write(gva, len, align, &buf[k], &off[k])))
+                fail = pass ? VK_ALIAS_READ : VK_ALIAS_WRITE;
+            else if (buf[k] != region || off[k] != base + (cpu[k] - lo))
+                fail = VK_ALIAS_SPLIT;
+        }
+    vk_uma_no_wait(0);
+    if (fail < 0 && vk_uma_regions() != regions) fail = VK_ALIAS_CHANGED;
+    if (fail >= 0) {
+        vk_uma_writes_rollback(mark);
+        *why = fail;
+        return 0;
+    }
+    for (int k = 0; k < VK_DRAW_STAGES * 16; k++)
+        if (active[k]) {
+            VkDrawGbuf* b = &draw->b[k / 16][k % 16];
+            b->aliased = 1;
+            b->buf = buf[k];
+            b->off = off[k];
+            b->range = b->size;
+        }
+    return 1;
+}
+void vk_buf_alias_counts(u64* atlas, u64* pages, u64* inplace, u64 why[VK_ALIAS_N]) {
+    *atlas = g_alias_draws;
+    *pages = g_alias_pages;
+    *inplace = g_alias_inplace;
+    memcpy(why, g_alias_why, sizeof g_alias_why);
+}
+
+/* All bindings of an aliasing draw index one page atlas, where they can't be bound in place (alias_in_place). This
+   also covers fragmented GPU mappings: the shader's word index is translated through its binding's page list, so a
+   write through either VA reaches the same word. */
 int vk_buf_draw_prepare(VkDrawStorage* draw) {
     size_t n = 0;
     int writable = draw_has_writable(draw) && draw_may_alias(draw);
@@ -3287,6 +3383,14 @@ int vk_buf_draw_prepare(VkDrawStorage* draw) {
     if (writable && !p) return 0;
     u8 active[VK_DRAW_STAGES * 16] = {0};
     int alias = p ? draw_alias_bindings(p, n, active) : 0;
+    if (alias) {
+        int why = VK_ALIAS_N;
+        if (alias_in_place(draw, active, &why)) {
+            g_alias_inplace++;
+            alias = 0; /* each binding as it is, with no map: its own offset in guest memory */
+        } else
+            g_alias_why[why]++;
+    }
     size_t unique = 0;
     if (alias)
         for (size_t i = 0; i < n; i++)
@@ -3358,7 +3462,7 @@ int vk_buf_draw_prepare(VkDrawStorage* draw) {
                 free(p);
                 return 0;
             }
-    if (alias && copy_stats_on()) {
+    if (alias) {
         g_alias_draws++;
         g_alias_pages += unique;
     }
@@ -4495,6 +4599,15 @@ static void buf_frame(void) {
             "slots\n",
             (unsigned long long)g_alias_draws, (unsigned long long)g_alias_pages, g_vblive,
             (unsigned long long)g_vb_lookups, (unsigned long long)g_vb_probes);
+        LOG("vulkan: aliasing draws over 600 presents: %llu bound in place, %llu given the atlas (%llu pages); the "
+            "atlas's because: %llu off, %llu not one run, %llu no one region, %llu a wait, %llu alignment, %llu a "
+            "write, %llu a read, %llu two buffers, %llu a region changed\n",
+            (unsigned long long)g_alias_inplace, (unsigned long long)g_alias_draws, (unsigned long long)g_alias_pages,
+            (unsigned long long)g_alias_why[VK_ALIAS_OFF], (unsigned long long)g_alias_why[VK_ALIAS_RUN],
+            (unsigned long long)g_alias_why[VK_ALIAS_REGION], (unsigned long long)g_alias_why[VK_ALIAS_WAIT],
+            (unsigned long long)g_alias_why[VK_ALIAS_ALIGN], (unsigned long long)g_alias_why[VK_ALIAS_WRITE],
+            (unsigned long long)g_alias_why[VK_ALIAS_READ], (unsigned long long)g_alias_why[VK_ALIAS_SPLIT],
+            (unsigned long long)g_alias_why[VK_ALIAS_CHANGED]);
         vk_gfx_image_report();
         shape_report();
         pool_report();
@@ -4507,7 +4620,8 @@ static void buf_frame(void) {
         g_copy_uncached = g_copy_stage = g_copy_owned = g_copy_zero = g_copy_calls = g_copy_peak = g_read_bound =
             g_owned_bound = 0;
         g_wb_outputs = g_wb_bytes = g_wb_waits = g_wb_wait_ns = g_wb_reuses = 0;
-        g_alias_draws = g_alias_pages = 0;
+        g_alias_draws = g_alias_pages = g_alias_inplace = 0;
+        memset(g_alias_why, 0, sizeof g_alias_why);
         memset(g_wb_reason, 0, sizeof g_wb_reason);
         memset(g_wb_reason_ns, 0, sizeof g_wb_reason_ns);
         memset(g_wb_draw_miss, 0, sizeof g_wb_draw_miss);

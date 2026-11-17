@@ -3487,6 +3487,58 @@ static int decorations(const u32* code, size_t words, u32 decoration, u32 litera
 static int has_binding(const u32* code, size_t words, u32 binding) {
     return decorations(code, words, 33, binding) > 0;
 }
+/* Two global buffers may be one memory: an aliasing draw binds each where it is in guest memory (buffer.c's
+   alias_in_place), the atlas binds both to one buffer, and a dispatch binds overlapping ranges in place. A store
+   through one and a load through the other must meet, so each is Aliased (OpDecorate 20): a graphics program's
+   (spirv_translate.c) and a compute program's, through the simple compute translator (spirv_compute.c) too. One
+   buffer alone aliases nothing */
+static void global_buffers_aliased(void) {
+    const u64 graphics[] = {
+        0x4C98078014470000ull, /* MOV R0, c[0][0x510] */
+        0x4C98078014570001ull, /* MOV R1, c[0][0x514] */
+        0x4C98078014870004ull, /* MOV R4, c[0][0x520] */
+        0x4C98078014970005ull, /* MOV R5, c[0][0x524] */
+        0xEED4200000070402ull, /* LDG.E R2, [R4] */
+        0xEEDC200000070002ull, /* STG.E [R0], R2 */
+    };
+    const u64 compute[] = {
+        0x4C9807800C870004ull, /* MOV R4, c[0][0x320] */
+        0x4C9807800C470002ull, /* MOV R2, c[0][0x310] */
+        0xEED4200000070408ull, /* LDG.E R8, [R4] */
+        0xEEDC200000070208ull, /* STG.E [R2], R8 */
+    };
+    const u64 one[] = {0x4C98078014470000ull, 0xEED4200000070002ull,  /* MOV R0, c[0][0x510]; LDG.E R2, [R0] */
+                       0xEEDC200000470002ull};                        /* STG.E [R0 + 4], R2 */
+    ShaderInfo info;
+    size_t words = 0;
+    for (int stage = ST_VS; stage <= ST_FS; stage += ST_FS - ST_VS) {
+        u32* code = translate(graphics, 6, stage, &info, &words, 1);
+        check_translated(code, &info, "a program with two global buffers translates");
+        if (code && (info.ngbuf != 2 || decorations(code, words, 20, ~0u) != 2))
+            fprintf(stderr, "stage %d: %d global buffers, %d Aliased\n", stage, info.ngbuf,
+                    decorations(code, words, 20, ~0u));
+        check(code && info.ngbuf == 2 && decorations(code, words, 20, ~0u) == 2,
+              "each of a graphics program's two global buffers is Aliased");
+        free(code);
+    }
+    u32* code = translate(compute, 4, ST_CS, &info, &words, 1);
+    check_translated(code, &info, "a compute program with two global buffers translates");
+    check(code && info.ngbuf == 2 && decorations(code, words, 20, ~0u) == 2,
+          "each of a compute program's two global buffers is Aliased");
+    free(code);
+    size_t slots;
+    u64* guest = guest_program(compute, 4, NULL, &slots);
+    memset(&info, 0, sizeof info);
+    info.cs_local[0] = info.cs_local[1] = info.cs_local[2] = 1;
+    code = guest ? compute_spirv_of(guest, slots * sizeof *guest, &info, &words, 1, 1) : NULL;
+    check(code && info.ngbuf == 2 && decorations(code, words, 20, ~0u) == 2,
+          "each of the simple compute translator's two global buffers is Aliased");
+    free(code);
+    free(guest);
+    code = translate(one, 3, ST_FS, &info, &words, 1);
+    check(code && info.ngbuf == 1 && decorations(code, words, 20, ~0u) == 0, "one global buffer is not Aliased");
+    free(code);
+}
 /* without the extension (MoltenVK) the vertex program stores the capture into storage buffers after its global
    buffers, with no TransformFeedback capability, and keeps the key for the renderer */
 static void transform_feedback_stores(void) {
@@ -6536,6 +6588,7 @@ int main(int argc, char** argv) {
     i2f_by_halves();
     flag_transfers();
     global_buffers();
+    global_buffers_aliased();
     compute_write_log();
     float_controls();
     precise_math();

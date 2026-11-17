@@ -2765,8 +2765,13 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
         c->gbuf_pointer = spv_emit_type_storage_pointer(&c->emit, c->u32_type);
     }
     if (ngbuf) {
+        /* two or more global buffers may be the same memory: an aliasing draw binds each where it is in guest memory
+           (buffer.c's alias_in_place), and the atlas binds them all to one buffer. A store through one and a load
+           through another must meet, so none is assumed apart from the others (SPIR-V's Aliased). One buffer alone
+           aliases nothing */
         for (int i = 0; i < ngbuf; i++) {
             c->gbuf[i] = spv_emit_storage_buffer(&c->emit, gbuf_struct, shader_vk_set(stage), SNX_VKB_SSBO + (u32)i);
+            if (ngbuf >= 2) spv_emit_decorate(&c->emit, c->gbuf[i], SPV_DECORATION_ALIASED, NULL, 0);
             interfaces[count++] = c->gbuf[i];
         }
         if (stage != ST_CS) {
