@@ -1134,7 +1134,7 @@ static u32 cpu_newer(const Surf* s, u64 size, CpuRuns* r) {
 static void flush_rebase(Surf* s, u64 size, int kept, u64 gw0) {
     int tracked = 0;
     if (kept) {
-        gpu_mem_written(s->gva, size);
+        gpu_mem_written_by(s->gva, size, GPU_WRITE_TARGET, (u32)s->f.vk, s->gva);
         s->gw = gw0;
         s->draw_wseen = 0;
         s->mem_wseen = 0;
@@ -1285,18 +1285,19 @@ static void flush_land(Surf* s, const u8* p, const u8* original, u64 wgen, u8** 
         for (u32 i = 0; i <= kept; i++) {
             u64 to = i < kept ? newer.run[i][0] : sz;
             if (to > at) {
-                gmem_write(gva + at, tmp + at, to - at);
+                gmem_write_by(gva + at, tmp + at, to - at, GPU_WRITE_TARGET, (u32)s->f.vk, s->gva);
                 flush_note_landed(gva, at, to);
             }
             if (i < kept) at = newer.run[i][1];
         }
         free(tmp);
     } else if (tmp) {
-        gmem_write(gva, tmp, sz);
+        gmem_write_by(gva, tmp, sz, GPU_WRITE_TARGET, (u32)s->f.vk, s->gva);
         flush_note_landed(gva, 0, sz);
         free(tmp);
     } else {
-        gpu_mem_written(gva, sz); /* caches built from this memory check it again */
+        /* caches built from this memory check it again */
+        gpu_mem_written_by(gva, sz, GPU_WRITE_TARGET, (u32)s->f.vk, s->gva);
         flush_note_landed(gva, 0, sz);
     }
     g_rt_flushing = flushing;
@@ -1532,7 +1533,7 @@ static void publish_span(const Surf* s, VkOwnRes* r, u64 base, u64 at, u64 n) {
             vk_own_publish(cpu, k, r, off - base);
         off += k;
     }
-    gpu_mem_written(s->gva + at, n);
+    gpu_mem_written_by(s->gva + at, n, GPU_WRITE_IMAGE, (u32)s->f.vk, s->gva);
 }
 #define RT_OWN_RUNS 4
 static u32 rt_own_runs(const Surf* s, u64 size, u64 run[][2], u32 max);

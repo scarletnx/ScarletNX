@@ -135,14 +135,15 @@ int gmem_read(u64 gva, void* dst, u64 size) {
     gmem_need(gva, size);
     return copy_runs(gva, (u8*)dst, NULL, size) ? 0 : -1;
 }
-int gmem_write(u64 gva, const void* src, u64 size) {
+int gmem_write_by(u64 gva, const void* src, u64 size, int kind, u32 format, u64 surface) {
     int all;
     if (!size) return 0;
     gmem_before_write(gva, size);
     all = copy_runs(gva, NULL, (const u8*)src, size);
-    gpu_mem_written(gva, size);
+    gpu_mem_written_by(gva, size, kind, format, surface);
     return all ? 0 : -1;
 }
+int gmem_write(u64 gva, const void* src, u64 size) { return gmem_write_by(gva, src, size, GPU_WRITE_RUNTIME, 0, 0); }
 int gmem_write_cb(u64 gva, const void* src, u64 size) {
     int all;
     if (!size) return 0;
@@ -398,7 +399,7 @@ static void upload_block_linear(const GpuI2m* t) {
             x += n;
         }
     }
-    gpu_mem_written(u->dest.address + lo, hi - lo);
+    gpu_mem_written_by(u->dest.address + lo, hi - lo, GPU_WRITE_INLINE, 0, 0);
 }
 /* Eden's ProcessData: a data word's bytes, low byte first, up to copy_size; the last of them writes the launch */
 void i2m_data(GpuChannel* ch, u32 v) {

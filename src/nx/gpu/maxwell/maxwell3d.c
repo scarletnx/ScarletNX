@@ -81,6 +81,10 @@ static void stamp_gpu(u64 gva, u64 n, u64 gen) {
    texture's pages, for the log's counts of loads of pieces (gpu_mem_newest_kind) */
 #define WKINDS 4096u
 static u8 g_wkind[WKINDS]; /* atomic, stored under g_wlk */
+/* the format and address of the surface whose write each generation was (gpu_mem_written_by), for the kinds of a
+   surface's write alone: atomic, stored under g_wlk */
+static u32 g_wformat[WKINDS];
+static u64 g_wsurface[WKINDS];
 /* the write's generation published, under g_wlk: its kind, g_wgen, then the watched one where it touched a watched
    granule */
 static void publish(u64 gen, int kind) {
@@ -154,7 +158,7 @@ void gpu_mem_written_cb(u64 gva, u64 size) {
     publish(gen, GPU_WRITE_CB);
     pm_unlock(&g_wlk);
 }
-static void written(u64 gva, u64 size, int kind) {
+static void written(u64 gva, u64 size, int kind, u32 format, u64 surface) {
     u64 gen;
     if (!size) return;
     pm_lock(&g_wlk);
@@ -162,10 +166,15 @@ static void written(u64 gva, u64 size, int kind) {
     stamp_gpu(gva, size, gen);
     guest_runs(gva, size, stamp_run, &gen);
     __atomic_store_n(&g_wlast, gen, __ATOMIC_RELAXED);
+    __atomic_store_n(&g_wformat[gen % WKINDS], format, __ATOMIC_RELAXED);
+    __atomic_store_n(&g_wsurface[gen % WKINDS], surface, __ATOMIC_RELAXED);
     publish(gen, kind);
     pm_unlock(&g_wlk);
 }
-void gpu_mem_written(u64 gva, u64 size) { written(gva, size, GPU_WRITE_ENGINE); }
+void gpu_mem_written(u64 gva, u64 size) { written(gva, size, GPU_WRITE_ENGINE, 0, 0); }
+void gpu_mem_written_by(u64 gva, u64 size, int kind, u32 format, u64 surface) {
+    written(gva, size, kind, format, surface);
+}
 /* A mapping change writes no guest memory: only the GPU pages that show other memory now read as written. Treated as a
    write of the guest memory behind them, each change stamped every other GPU page showing it, through the index of
    mappings by guest address, which each change leaves to be rebuilt and sorted again: a game that maps its sparse
@@ -180,7 +189,7 @@ void gpu_mem_remapped(u64 gva, u64 size) {
     publish(gen, GPU_WRITE_REMAP);
     pm_unlock(&g_wlk);
 }
-void gpu_mem_written_shader(u64 gva, u64 size) { written(gva, size, GPU_WRITE_SHADER); }
+void gpu_mem_written_shader(u64 gva, u64 size) { written(gva, size, GPU_WRITE_SHADER, 0, 0); }
 void gpu_mem_written_cpu(u64 cpu, u64 size) {
     u64 gen;
     if (!size) return;
@@ -203,10 +212,22 @@ int gpu_mem_watch(u64 gva, u64 size) {
     return 1;
 }
 u64 gpu_mem_watched_generation(void) { return __atomic_load_n(&g_wwatched, __ATOMIC_ACQUIRE); }
-int gpu_mem_newest_kind(u64 a, u64 sz) {
+int gpu_mem_newest_write(u64 a, u64 sz, u32* format, u64* surface) {
     const u64 gen = write_pages_newest(&g_wgpu, a, sz), now = __atomic_load_n(&g_wgen, __ATOMIC_ACQUIRE);
+    *format = 0;
+    *surface = 0;
     if (!gen || gen > now || now - gen >= WKINDS) return 0; /* none, or its kind written over since */
-    return __atomic_load_n(&g_wkind[gen % WKINDS], __ATOMIC_RELAXED);
+    const int kind = __atomic_load_n(&g_wkind[gen % WKINDS], __ATOMIC_RELAXED);
+    if (kind == GPU_WRITE_TARGET || kind == GPU_WRITE_IMAGE) { /* the others leave a surface of an older generation */
+        *format = __atomic_load_n(&g_wformat[gen % WKINDS], __ATOMIC_RELAXED);
+        *surface = __atomic_load_n(&g_wsurface[gen % WKINDS], __ATOMIC_RELAXED);
+    }
+    return kind;
+}
+int gpu_mem_newest_kind(u64 a, u64 sz) {
+    u32 format;
+    u64 surface;
+    return gpu_mem_newest_write(a, sz, &format, &surface);
 }
 /* a save state's load: every page reads as written after anything asked before, through the tables' overflow, which
    covers every page */
@@ -362,14 +383,14 @@ static void clear_in_memory(GpuChannel* ch, u32 v) {
         for (y = 0; y < h; y++)
             for (x = 0; x < w * bpp; x += sizeof row)
                 raw_write(a + (u64)y * pitch + x, row, w * bpp - x < sizeof row ? w * bpp - x : (u32)sizeof row);
-        gpu_mem_written(a, (u64)pitch * (h - 1) + (u64)w * bpp);
+        gpu_mem_written_by(a, (u64)pitch * (h - 1) + (u64)w * bpp, GPU_WRITE_CLEAR, 0, 0);
         return;
     }
     for (y = 0; y < h; y++) /* 16 byte runs in the layout, recorded once */
         for (x = 0; x < w * bpp; x += 16)
             raw_write(a + bl_offset(x, y, 0, w * bpp, h, bh, 0), row, w * bpp - x < 16 ? w * bpp - x : 16);
     span = (u64)((w * bpp + 63) / 64) * 64 * ((((u64)h + 7) / 8 + (1u << bh) - 1) >> bh << bh) * 8;
-    gpu_mem_written(a, span);
+    gpu_mem_written_by(a, span, GPU_WRITE_CLEAR, 0, 0);
 }
 void r3d_clear(GpuChannel* ch, u32 v) {
     if (ch->render_off) return;

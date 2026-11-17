@@ -696,7 +696,7 @@ void vk_tex_partial_stats(u64* loads, u64* bytes) {
    what the checks of textures loaded a piece at a time found (tex_check_pieces, tex_patch) */
 typedef struct {
     u64 checks, rechecks, quiet, changed, quiet_wrong;
-    u64 patches, patch_bytes, by_cpu, by_gpu, by_kind[GPU_WRITE_ALL + 1], again, whole, bricks, bricks_empty;
+    u64 patches, patch_bytes, by_cpu, by_gpu, by_kind[GPU_WRITE_KINDS], again, whole, bricks, bricks_empty;
 } TexChecks;
 static TexChecks g_tex_checks;
 /* A texture whose image has memory only where it is mapped (resident_image): its pages, as vk_image_resident takes
@@ -3073,15 +3073,28 @@ static void pieces_published(const Surf* t, u64 gva, TexPieces* p) {
         if (!vk_guest_owned_by(gva + p->piece[i].at, p->piece[i].n, t->pub_serial)) p->piece[n++] = p->piece[i];
     p->count = n;
 }
-/* what wrote a texture's pages, by gpu_mem_newest_kind (0: a GPU-side write too long ago to tell) */
-static const char* const g_write_kinds[GPU_WRITE_ALL + 1] = {
-    "an older GPU-side write", "constant buffer uploads", "engines (DMA, 2D, inline, compute)",
-    "shader results landed",   "mapping changes",         "published results",
-    "a save state's load"};
+/* what wrote a texture's pages, by gpu_mem_newest_write (0: a GPU-side write too long ago to tell) */
+static const char* const g_write_kinds[GPU_WRITE_KINDS] = {"an older GPU-side write",
+                                                           "constant buffer uploads",
+                                                           "engines (not named)",
+                                                           "shader results landed",
+                                                           "mapping changes",
+                                                           "published results",
+                                                           "a save state's load",
+                                                           "the runtime's writes",
+                                                           "inline data",
+                                                           "the 3D engine's clears",
+                                                           "2D blits",
+                                                           "DMA copies",
+                                                           "compute storage",
+                                                           "render target write-backs",
+                                                           "storage image publishes",
+                                                           "releases"};
 /* a load of pieces p of t that a check found (tex_check_pieces): written by the CPU (by_cpu) and on the GPU's side
-   (kind, -1 for not), counted for vk_tex_check_log. A texture that loads pieces in 8 presents in a row is named once
-   (16 at most): what writes it every frame */
-static void tex_patch_count(Surf* t, const TexPieces* p, int by_cpu, int kind) {
+   (kind, -1 for not; the format and address of the surface that wrote it, where one did), counted for
+   vk_tex_check_log. A texture that loads pieces in 8 presents in a row is named once (16 at most): what writes it
+   every frame */
+static void tex_patch_count(Surf* t, const TexPieces* p, int by_cpu, int kind, u32 wformat, u64 wsurface) {
     u64 sum = p->all ? t->size : 0;
     for (u32 i = 0; i < p->count && !p->all; i++) sum += p->piece[i].n;
     g_tex_checks.patches++;
@@ -3089,20 +3102,24 @@ static void tex_patch_count(Surf* t, const TexPieces* p, int by_cpu, int kind) {
     g_tex_checks.by_cpu += by_cpu != 0;
     if (kind >= 0) {
         g_tex_checks.by_gpu++;
-        g_tex_checks.by_kind[kind <= GPU_WRITE_ALL ? kind : 0]++;
+        g_tex_checks.by_kind[kind < GPU_WRITE_KINDS ? kind : 0]++;
     }
     if (t->patched && t->patched >= g_vk_present) g_tex_checks.again++; /* loaded in this present or the last too */
     if (t->patched == g_vk_present + 1) return;                         /* its run counted for this present */
     t->patch_run = t->patched && t->patched == g_vk_present ? t->patch_run + 1 : 1;
     t->patched = g_vk_present + 1;
     if (t->patch_run == 8) {
+        char surface[64] = "";
+        if (kind >= 0 && wsurface)
+            snprintf(surface, sizeof surface, " (a surface of format %u at %llx)", wformat,
+                     (unsigned long long)wsurface);
         LOG_LIMIT(16,
                   "vulkan: a %ux%ux%u texture (format %d, %llu KB at %llx%s) loaded pieces in 8 presents in a row: "
-                  "%llu KB now, written by %s%s%s\n",
+                  "%llu KB now, written by %s%s%s%s\n",
                   t->w, t->h, t->layers * t->depth3d, (int)t->f.vk, (unsigned long long)(t->size >> 10),
                   (unsigned long long)t->gva, t->bricks ? ", with bricks" : "", (unsigned long long)(sum >> 10),
                   by_cpu ? "the CPU" : "", by_cpu && kind >= 0 ? " and " : "",
-                  kind >= 0 ? g_write_kinds[kind <= GPU_WRITE_ALL ? kind : 0] : "");
+                  kind >= 0 ? g_write_kinds[kind < GPU_WRITE_KINDS ? kind : 0] : "", surface);
     }
 }
 /* the checks of a texture loaded a piece at a time (tex_can_piece; with holes, or loaded whole): the pages the GPU's
@@ -3123,9 +3140,11 @@ static int tex_check_pieces(Surf* t, u64 gva) {
         if (wr) t->wseen = vk_ww_now(); /* as tex_check's: the clock after the scans it took in */
     }
     const int by_cpu = p.count || p.all;
-    int kind = -1; /* the newest GPU-side write's kind (gpu_mem_newest_kind), -1 for none */
+    int kind = -1; /* the newest GPU-side write's kind (gpu_mem_newest_write), -1 for none */
+    u32 wformat = 0;
+    u64 wsurface = 0;
     if (gpu_mem_dirty_since(t->gw, gva, t->size)) {
-        kind = gpu_mem_newest_kind(gva, t->size);
+        kind = gpu_mem_newest_write(gva, t->size, &wformat, &wsurface);
         gpu_mem_dirty_runs(t->gw, gva, t->size, tex_dirty_piece, &r);
         if (!r.mapped) p.all = 1; /* found through the guest's addresses alone (SNX_ALIAS_CHECK) */
     }
@@ -3134,7 +3153,7 @@ static int tex_check_pieces(Surf* t, u64 gva) {
     pieces_published(t, gva, &p);
     if (p.count || p.all) {
         t->stable = 0;
-        tex_patch_count(t, &p, by_cpu, kind);
+        tex_patch_count(t, &p, by_cpu, kind, wformat, wsurface);
         tex_patch(t, &p);
     }
     return 1;
@@ -3385,7 +3404,7 @@ void vk_tex_check_log(void) {
     if (g_tex_checks.by_gpu) {
         char kinds[512];
         int at = 0;
-        for (int k = 0; k <= GPU_WRITE_ALL && at < (int)sizeof kinds; k++)
+        for (int k = 0; k < GPU_WRITE_KINDS && at < (int)sizeof kinds; k++)
             if (g_tex_checks.by_kind[k])
                 at += snprintf(kinds + at, sizeof kinds - (size_t)at, "%s%llu by %s", at ? ", " : "",
                                (unsigned long long)g_tex_checks.by_kind[k], g_write_kinds[k]);
@@ -4066,6 +4085,49 @@ static void mark_copied(Surf* s, Surf* t) {
     s->copied[0].wgen = s->wgen;
     s->copied[0].tgen = t->wgen;
 }
+/* Why tex_take_drawn takes no drawn target s for t: the first condition of its search that refuses s, NULL where s
+   was taken. The search's last conditions (a level or layer at s's offset, and no guest write since s's draw) are
+   not asked again here: vk_rt_drawn_fresh marks the target as one a texture feeds from */
+static const char* take_refusal(const Surf* s, const Surf* t) {
+    if (copied_into(s, t)) return NULL;
+    if (s->msaa || t->msaa) return "multisampled";
+    if (s->f.depth != t->f.depth || s->f.stencil != t->f.stencil || s->f.bpp != t->f.bpp)
+        return "another format class (depth, stencil or texel bytes)";
+    if (t->f.depth && s->f.vk != t->f.vk) return "another depth format";
+    if ((s->sw != s->w || s->sh != s->h) && !can_blit(s->f.vk)) return "scaled, in a format that takes no blit";
+    if (t->type == VK_IMAGE_VIEW_TYPE_3D) return "a 3D texture's slices that its layout does not give";
+    return "no level or layer at its offset, or guest memory written after its draw";
+}
+/* t, a texture that loads pieces in 8 presents in a row (tex_patch_count), named once: what its search for drawn
+   targets over its memory found (the n targets d), or why there was none (why). An engine's or a target's write each
+   frame loads its pieces from memory, where a drawn target would give them on the GPU (16 lines at most) */
+static void take_say(Surf* t, Surf* const* d, int n, const char* why) {
+    char line[320];
+    size_t at = 0;
+    int took = 0;
+    t->take_said = 1;
+    line[0] = 0;
+    for (int i = 0; i < n; i++) {
+        const char* no = take_refusal(d[i], t);
+        took += !no;
+        if (!no || at >= sizeof line - 1) continue;
+        int w = snprintf(line + at, sizeof line - at, "%s %ux%u (format %d at %llx): %s", at ? ";" : "", d[i]->w,
+                         d[i]->h, (int)d[i]->f.vk, (unsigned long long)d[i]->gva, no);
+        if (w > 0) at += (size_t)w < sizeof line - at ? (size_t)w : sizeof line - at - 1;
+    }
+    if (!why && !n) why = "no render target drawn over its memory";
+    if (why)
+        LOG_LIMIT(16,
+                  "vulkan: a %ux%ux%u texture (format %d at %llx) that loads pieces in each present takes no drawn "
+                  "target: %s\n",
+                  t->w, t->h, t->layers * t->depth3d, (int)t->f.vk, (unsigned long long)t->gva, why);
+    else
+        LOG_LIMIT(16,
+                  "vulkan: a %ux%ux%u texture (format %d at %llx) that loads pieces in each present: %d render "
+                  "target(s) drawn over its memory, %d taken; not taken:%s\n",
+                  t->w, t->h, t->layers * t->depth3d, (int)t->f.vk, (unsigned long long)t->gva, n, took,
+                  at ? line : " none");
+}
 /* the command buffer with s ready to be read from and t written to, by copies or blits */
 static VkCommandBuffer copy_begin(Surf* s, Surf* t) {
     vk_render_end();
@@ -4144,7 +4206,11 @@ static int copy_layers(VkCommandBuffer cb, Surf* s, Surf* t, u32 l, u32 dst, u32
 static void tex_take_drawn(Surf* t) {
     /* a converted format's texels differ from its host image's, but a depth texture takes its targets' host images
        as they are (the same format, below): D24S8's guest packing is converted only when it is loaded from memory */
-    if (!t || t->is_rt || (t->f.conv && !t->f.depth)) return;
+    if (!t || t->is_rt || (t->f.conv && !t->f.depth)) {
+        if (t && t->patch_run >= 8 && !t->take_said)
+            take_say(t, NULL, 0, t->is_rt ? "it is a render target" : "its format is converted on the GPU");
+        return;
+    }
     /* nothing over it changed since its last search left nothing it could take, and it wasn't loaded again */
     u64 gen = vk_rt_take_gen();
     if (t->take_gen == gen && t->take_wgen == t->wgen) return;
@@ -4321,6 +4387,7 @@ static void tex_take_drawn(Surf* t) {
             lo += bl_level_size(t->w, t->h, 1, &t->f, t->bh, t->bd, t->tile_w, l, NULL, NULL);
         }
     }
+    if (t->patch_run >= 8 && !t->take_said) take_say(t, d, n, NULL);
     if (d != small) free(d);
     if (settled && vk_rt_take_gen() == gen) {
         t->take_gen = gen;

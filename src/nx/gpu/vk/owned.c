@@ -206,7 +206,9 @@ void vk_own_room(void) {
 }
 
 /* statistics: what the ledger's kept results are, the ones in use and the freed buffers that wait in the pool */
+static void gread_log(void);
 void vk_own_log(void) {
+    gread_log();
     u64 pooled = 0, waiting = 0;
     OwnDone done = own_done();
     pm_lock(&g_pool_lk);
@@ -867,6 +869,34 @@ void vk_own_publish_owned(u64 cpu, u64 size, VkOwnRes* r, u64 off) { own_publish
 void vk_own_publish_submitted(u64 cpu, u64 size, VkOwnRes* r, u64 off) { own_publish(cpu, size, r, off, -1); }
 
 /* ---------------------------------------------------------------- reading guest memory without landing it */
+/* the guest bytes read for the GPU since the last statistics line, by where they came from (VK_GREAD_*): [0] into host
+   staging (vk_guest_read), [1] into device memory (guest_read). Under vk_lock */
+static u64 g_gread[2][VK_GREAD_N];
+/* n bytes at guest cpu that the CPU copied: and of them those a region of unified memory holds (vk_uma_held), which
+   the GPU could have read there */
+static void gread_cpu(int side, u64 cpu, u64 n) {
+    g_gread[side][VK_GREAD_CPU] += n;
+    if (vk_uma() && vk_uma_held(cpu, n)) g_gread[side][VK_GREAD_CPU_REGION] += n;
+}
+void vk_guest_read_counts(u64 counts[2][VK_GREAD_N]) {
+    for (int s = 0; s < 2; s++)
+        for (int k = 0; k < VK_GREAD_N; k++) counts[s][k] = g_gread[s][k];
+}
+static void gread_log(void) {
+    static const char* const side[2] = {"for host staging", "for device memory"};
+    const double kb = 600.0 * 1024.0; /* KB a present over the 600 */
+    for (int s = 0; s < 2; s++) {
+        const u64* c = g_gread[s];
+        LOG("vulkan: guest reads %s over the last 600 presents, KB a present: %.1f copied by the CPU (%.1f of them in a "
+            "region), %.1f copied on the GPU from owners, %.1f from regions, %.1f from writes in place pending, %.1f "
+            "from pending results, %.1f bound in place, %.1f zero\n",
+            side[s], (double)c[VK_GREAD_CPU] / kb, (double)c[VK_GREAD_CPU_REGION] / kb, (double)c[VK_GREAD_OWNERS] / kb,
+            (double)c[VK_GREAD_REGIONS] / kb, (double)c[VK_GREAD_PENDING] / kb, (double)c[VK_GREAD_RESULTS] / kb,
+            (double)c[VK_GREAD_BOUND] / kb, (double)c[VK_GREAD_ZERO] / kb);
+    }
+    for (int s = 0; s < 2; s++)
+        for (int k = 0; k < VK_GREAD_N; k++) g_gread[s][k] = 0;
+}
 /* GPU writes before reading what they wrote (before), the reads' copies before what consumes them (after) */
 static void read_barrier(VkCommandBuffer cb, int before) {
     VkMemoryBarrier2 b = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
@@ -892,26 +922,33 @@ static void cpu_read(u64 cpu, u64 size, u8* host, VkBuffer buf, u64 at, int* any
         if (!*any) read_barrier(vk_cmd(), 1);
         *any = 1;
         rec_CmdCopyBuffer(vk_cmd(), ib, buf, 1, &c);
+        g_gread[0][VK_GREAD_PENDING] += size;
         return;
     }
     vk_uma_mem_need_cpu(cpu, size); /* across imports: waited for */
     if (!own_any()) {
         memcpy(host, GP(cpu), (size_t)size);
+        gread_cpu(0, cpu, size);
         return;
     }
     n = own_stage(cpu, size, host, o, sizeof o / sizeof *o);
     if (n > sizeof o / sizeof *o) { /* more owners than noted: they land, and the bytes are read as they are then */
         own_acquire(cpu, size);
         memcpy(host, GP(cpu), (size_t)size);
+        gread_cpu(0, cpu, size);
         return;
     }
+    u64 owned = 0; /* the CPU's bytes between the owners' are in no region: an import takes no trapped page */
     for (i = 0; i < n; i++) {
         VkBufferCopy c = {o[i].res_off, at + (o[i].addr - cpu), o[i].size};
         if (!*any) read_barrier(vk_cmd(), 1);
         *any = 1;
         rec_CmdCopyBuffer(vk_cmd(), ((const VkOwnRes*)o[i].res)->buf, buf, 1, &c);
         ((VkOwnRes*)o[i].res)->used = g_vk_present;
+        owned += o[i].size;
     }
+    g_gread[0][VK_GREAD_OWNERS] += owned;
+    g_gread[0][VK_GREAD_CPU] += size - owned;
 }
 void vk_cpu_read(u64 cpu, u64 size, u8* host, VkBuffer buf, u64 at) {
     int any = 0;
@@ -957,7 +994,11 @@ static int pending_gpu_read(u64 gva, u64 size, VkBuffer buf, u64 at) {
 void vk_guest_read(u64 gva, u64 size, u8* host, VkBuffer buf, u64 at) {
     u64 o = 0;
     int any = 0;
-    if (!size || pending_gpu_read(gva, size, buf, at)) return;
+    if (!size) return;
+    if (pending_gpu_read(gva, size, buf, at)) {
+        g_gread[0][VK_GREAD_RESULTS] += size;
+        return;
+    }
     vk_uma_gpu_reads(1);  /* the in-place writes there are copied below (cpu_read), not waited for */
     gmem_need(gva, size); /* results the renderer has pending there land first, as gmem_read has them */
     vk_uma_gpu_reads(0);
@@ -967,6 +1008,7 @@ void vk_guest_read(u64 gva, u64 size, u8* host, VkBuffer buf, u64 at) {
             n = 0x1000 - ((gva + o) & 0xFFF);
             if (n > size - o) n = size - o;
             memset(host + o, 0, (size_t)n);
+            g_gread[0][VK_GREAD_ZERO] += n;
         } else {
             n = inplace_part(cpu, n);
             cpu_read(cpu, n, host + o, buf, at + o, &any);
@@ -1048,7 +1090,10 @@ static int guest_read(u64 gva, u64 size, VkBuffer buf, u64 at, int ahead) {
     int any = ahead; /* the upload command buffer waits for earlier submissions' writes itself */
     if (!size) return 1;
     if (ahead && !read_settled(gva, size)) return 0;
-    if (!ahead && pending_gpu_read(gva, size, buf, at)) return 1;
+    if (!ahead && pending_gpu_read(gva, size, buf, at)) {
+        g_gread[1][VK_GREAD_RESULTS] += size;
+        return 1;
+    }
     if (!ahead) vk_render_end(); /* the copies happen outside rendering passes */
     vk_uma_gpu_reads(1);  /* the in-place writes there are copied below, not waited for */
     gmem_need(gva, size); /* results the renderer has pending there land first, as gmem_read has them */
@@ -1068,16 +1113,19 @@ static int guest_read(u64 gva, u64 size, VkBuffer buf, u64 at, int ahead) {
             if (!any) read_barrier(vk_cmd(), 1);
             any = 1;
             rec_CmdCopyBuffer(dev_cmd(ahead), ib, buf, 1, &c);
+            g_gread[1][VK_GREAD_PENDING] += n;
         } else if (!n) { /* an unmapped page reads as zero */
             n = 0x1000 - ((gva + o) & 0xFFF);
             if (n > size - o) n = size - o;
             if (!dev_staging(&d)) return 0;
             memset(d.p + o, 0, (size_t)n);
             dev_gap(&d, o, n);
+            g_gread[1][VK_GREAD_ZERO] += n;
         } else if (!own_any()) {
             if (!dev_staging(&d)) return 0;
             memcpy(d.p + o, GP(cpu), (size_t)n);
             dev_gap(&d, o, n);
+            gread_cpu(1, cpu, n);
         } else /* the owners as many at a time as r holds: landing the range when it had more waits for the GPU and
                   reads all its results back (a copy engine's tiles cut a surface into many owners). Staging only
                   where CPU bytes lie among them: a part its owners hold whole is copied from them alone */
@@ -1092,6 +1140,8 @@ static int guest_read(u64 gva, u64 size, VkBuffer buf, u64 at, int ahead) {
                     if (!dev_staging(&d)) return 0;
                     k = own_stage(c, part, d.p + o + (c - cpu), r, max);
                 }
+                g_gread[1][VK_GREAD_OWNERS] += owned_bytes(r, k);
+                g_gread[1][VK_GREAD_CPU] += part - owned_bytes(r, k);
                 u64 from = c; /* the CPU's bytes between the owners, which own_stage staged; the owners' from them */
                 for (i = 0; i < k; i++) {
                     VkBufferCopy cp = {r[i].res_off, at + o + (r[i].addr - cpu), r[i].size};
