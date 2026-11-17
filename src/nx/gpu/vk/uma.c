@@ -260,6 +260,11 @@ typedef struct {
     u64 order_n[3], order_pass[3];
     u64 refused[VK_UMA_REFUSED_N]; /* the writes in place refused, by why (vk_uma_refused) */
     u64 merges, merged;            /* regions made over others (imp_get), and the others they took over */
+    /* an aliasing draw's storage bound in place (vk_uma_cover, buffer.c's alias_in_place): imp_get makes no wait
+       while no_wait is on, and counts in would_wait the imports it did not make or let go for that. regions moves at
+       each import or chunk made or gone, never set back: the group's buffers are one region's while it holds */
+    int no_wait;
+    u64 would_wait, regions;
     /* the programs whose dispatches go to the GPU at once (vk_uma_read_soon): open addressing, 0 for a free slot */
     u64 soon[UMA_SOON_N];
     u32 nsoon;
@@ -802,6 +807,7 @@ static void imp_drop(u32 i) {
     }
     g_uma.gone[g_uma.ngone++] = g_uma.imp[i];
     g_uma.dropped++;
+    g_uma.regions++;
     memmove(&g_uma.imp[i], &g_uma.imp[i + 1], sizeof *g_uma.imp * (size_t)(g_uma.nimp - i - 1));
     g_uma.nimp--;
     pm_unlock(&g_uma.lk);
@@ -810,6 +816,7 @@ static void imp_drop(u32 i) {
    reservation's own with their bytes, so that its memory, which the system never swaps, goes with the buffer. Pending
    commands read the buffer as it was (vk_lock held) */
 static void region_writes_land(u64 lo, u64 hi);
+static int region_writes_wait(u64 lo, u64 hi);
 static void imp_let_go(u32 i) {
     const Imp* m = &g_uma.imp[i];
     int r;
@@ -851,6 +858,7 @@ static void imp_kill(u32 i, int dead) {
     g_uma.nimp--;
     pm_unlock(&g_uma.lk);
     g_uma.dropped++;
+    g_uma.regions++;
 }
 /* the dead ones go from the driver (vk_lock held) */
 static void drop_dead(void) {
@@ -1049,6 +1057,7 @@ static void chunk_give_back(u32 i) {
     g_uma.nchunk--;
     pm_unlock(&g_uma.lk);
     g_uma.chunks_gone++;
+    g_uma.regions++;
 }
 static void page_bits(Chunk* c, u64 a, u64 size, int on) {
     for (u64 p = (a - c->cpu) >> 12, e = (a - c->cpu + size + 0xFFF) >> 12; p < e; p++)
@@ -1095,6 +1104,7 @@ static int placed_commit(u64 a, u64 size) {
     g_uma.nchunk++;
     pm_unlock(&g_uma.lk);
     g_uma.chunks_made++;
+    g_uma.regions++;
     return 0;
 }
 /* the views over [a, a + size) unmapped, their addresses reserved again, and the rest of the range decommitted */
@@ -1445,6 +1455,10 @@ static u32 imp_get(u64 cpu, u64 len) {
         u32 old = 0;
         for (u32 k = 1; k < g_uma.nimp; k++)
             if ((i32)(g_uma.imp[k].used - g_uma.imp[old].used) < 0) old = k;
+        if (g_uma.no_wait && region_writes_wait(g_uma.imp[old].cpu, g_uma.imp[old].cpu + g_uma.imp[old].size)) {
+            g_uma.would_wait++;
+            return ~0u;
+        }
         imp_let_go(old);
         g_uma.imp_why[5]++;
         return ~0u; /* the indexes moved: the next lookup makes it */
@@ -1453,6 +1467,10 @@ static u32 imp_get(u64 cpu, u64 len) {
        the move copies what their pages hold (mem_migrate), and a write landing after it would land in a buffer no
        page maps any more (a copy engine's results into a region read nought past the lookup that grew it) */
     if (g_uma.migrate && last > first) {
+        if (g_uma.no_wait && region_writes_wait(lo, hi)) {
+            g_uma.would_wait++;
+            return ~0u;
+        }
         u32 n = g_uma.nimp;
         u64 dropped = g_uma.dropped;
         region_writes_land(lo, hi);
@@ -1495,6 +1513,7 @@ static u32 imp_get(u64 cpu, u64 len) {
     memmove(&g_uma.imp[first + 1], &g_uma.imp[first], sizeof *g_uma.imp * (size_t)(g_uma.nimp - first));
     g_uma.imp[first] = m;
     g_uma.nimp++;
+    g_uma.regions++;
     pm_unlock(&g_uma.lk);
     if (opened) plat_ww_close(GP(lo), hi - lo);
     return first;
@@ -1747,6 +1766,39 @@ void vk_uma_writes_commit(void) {
     g_uma.nprep = 0;
 }
 void vk_uma_writes_abort(void) { g_uma.nprep = 0; }
+/* The writes in place of the draw being set up so far (vk_uma_prep_mark), and those after the mark undone: a group of
+   bindings that went to the atlas after some of its writes were bound in place leaves none of them pending. The
+   barriers order recorded for them stay, which only order more */
+u32 vk_uma_prep_mark(void) { return g_uma.nprep; }
+void vk_uma_writes_rollback(u32 mark) {
+    if (mark < g_uma.nprep) g_uma.nprep = mark;
+}
+void vk_uma_no_wait(int on) { g_uma.no_wait = on; }
+u64 vk_uma_regions(void) { return g_uma.regions; }
+/* The one region that holds guest memory [cpu, cpu + len), made or grown over the imports there as a lookup makes it,
+   but with no wait (no_wait): its buffer. 1 when there is one, 0 when the range is copied, -1 when the region would
+   need a wait for the writes in place pending in the imports it takes over or lets go (vk_lock held), with the
+   offset of cpu in the buffer. It stamps nothing: each binding's own lookup (vk_uma_write, vk_uma_get) does */
+int vk_uma_cover(u64 cpu, u64 len, VkBuffer* buf, u64* off) {
+    if (!vk_uma() || !len) return 0;
+    drop_dead();
+    u64 at = cpu;
+    const Chunk* c = g_uma.nchunk ? placed_of(&at, len) : NULL;
+    if (c) {
+        *buf = c->buf;
+        *off = at - c->cpu;
+        return 1;
+    }
+    const int was = g_uma.no_wait;
+    const u64 waits = g_uma.would_wait;
+    g_uma.no_wait = 1;
+    u32 i = imp_get(cpu, len);
+    g_uma.no_wait = was;
+    if (i == ~0u) return g_uma.would_wait != waits ? -1 : 0;
+    *buf = g_uma.imp[i].buf;
+    *off = cpu - g_uma.imp[i].cpu;
+    return 1;
+}
 void vk_uma_frame_done(u64 frame) {
     u32 k = 0;
     while (k < g_uma.nout && g_uma.out[k].sub <= frame) {
@@ -1824,17 +1876,20 @@ static void wait_out_why(const Out* o, int why) {
 /* The writes in place pending in the regions over guest memory [lo, hi) done, before their pages change or move back:
    a region's buffer is the guest's memory until then, and its readers are waited for by nobody (quiesce), as the buffer
    keeps the bytes they read; a write landing after the change would land in the buffer alone (vk_lock held) */
-static void region_writes_land(u64 lo, u64 hi) {
+static const Out* region_writes_newest(u64 lo, u64 hi) {
     const Out* newest = NULL;
-    if (!g_uma_any) return;
+    if (!g_uma_any) return NULL;
     for (u32 i = 0; i < g_uma.nimp; i++) {
         const Imp* m = &g_uma.imp[i];
         if (m->fd < 0 || m->cpu >= hi || lo >= m->cpu + m->size) continue;
         u64 a = m->cpu > lo ? m->cpu : lo, b = m->cpu + m->size < hi ? m->cpu + m->size : hi;
         newest = newer_out(newest, newest_out(a, b - a));
     }
-    wait_out_why(newest, 0);
+    return newest;
 }
+static void region_writes_land(u64 lo, u64 hi) { wait_out_why(region_writes_newest(lo, hi), 0); }
+/* whether region_writes_land over [lo, hi) would wait */
+static int region_writes_wait(u64 lo, u64 hi) { return region_writes_newest(lo, hi) != NULL; }
 void vk_uma_mem_need(u64 gva, u64 len) {
     const Out* newest = NULL;
     if (!g_uma_any || t_uma.gpu_reads || !len) return;

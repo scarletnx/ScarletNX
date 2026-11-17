@@ -6,6 +6,8 @@
 static int check_draw_storage_stages(void) {
     const u64 gva = 0x4f0000000ull, cpu = HEAP_BASE + 0x5000000;
     gmmu_map(gva, cpu, 0x10000);
+    const int was = g_settings.guest_buffers_copied;
+    g_settings.guest_buffers_copied = 2; /* the atlas's layout: in place has no map (vulkan_uma_imports.inc) */
     VkDrawStorage draw = {0};
     draw.n[ST_GS] = 1; /* the geometry stage writes 256 bytes */
     draw.b[ST_GS][0] = (VkDrawGbuf){.addr = gva, .size = 256, .writable = 1};
@@ -21,6 +23,7 @@ static int check_draw_storage_stages(void) {
     CHECK(draw.map_buf[ST_VS] && !draw.map_buf[ST_FS]); /* the fragment stage has no global memory */
     vk_buf_writable_abort();
     vk_unlock();
+    g_settings.guest_buffers_copied = was;
     /* the same storage only read, by the geometry stage alone: nothing is written, so nothing aliases */
     VkDrawStorage read = {0};
     read.n[ST_GS] = 1;

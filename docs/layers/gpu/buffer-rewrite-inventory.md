@@ -673,6 +673,11 @@ place.**
   storage was a twentieth of the GPU thread in one game.
 - Comment: `buffer.c`, above `vk_buf_draw_prepare` and above `draw_may_alias`.
 - Check: `check_draw_storage_stages` in `tests/vulkan_draw_storage_stages.inc`.
+- With unified memory (unless `uma_copies=2`), the group binds in place instead: each binding at its
+  own offset in the one region that holds them all, with no map and no output (`alias_in_place`). The shader declares
+  its global buffers `Aliased` when it has two or more. A group that one binding keeps out of place goes to the atlas,
+  and the writes in place it bound are undone. Nothing in that branch waits. Checks: `check_uma_alias_*` in
+  `tests/vulkan_uma_imports.inc`, `check_alias_shader` and `check_uma_alias_order` in `tests/vulkan_nvn_storage.inc`.
 
 **R32. A range that one owner holds whole binds where the owner is.**
 
