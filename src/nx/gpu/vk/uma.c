@@ -112,7 +112,6 @@
 #define UMA_WINDOW (2ull << 20) /* imports cover whole windows of this size where guest memory is mapped */
 #define UMA_MAX    512          /* imports at most: the least recently used goes past it */
 #define UMA_IDLE   600          /* presents unused before an import goes */
-#define HZ_BITS    16           /* the table of pages read in place, by guest page */
 #define UMA_REGION_MAX (256ull << 20) /* the migrate way's biggest region */
 #define UMA_PREP_N 64           /* in-place writes of one draw or dispatch */
 
@@ -297,15 +296,11 @@ typedef struct {
     Fail fail[FAIL_N]; /* under lk */
     char apart1[UMA_LINE];
     u64 hazards; /* any thread's, atomic */
+    u64 hz_done; /* a submit known done when the hazard count last asked (gpu_wrote), any thread's, atomic */
     char apart2[UMA_LINE];
-    /* the submit that last read each guest page in place, by page number modulo the table: page << 20 | submit's low
-       20 bits would lose order, so the two in their own words. The GPU thread writes them, atomic, and the threads
-       that write guest memory for the GPU read them */
-    u64 hz_page[1u << HZ_BITS], hz_sub[1u << HZ_BITS];
 } Uma;
 static_assert(offsetof(Uma, lk) - offsetof(Uma, apart0) >= UMA_LINE &&
-                  offsetof(Uma, hazards) - offsetof(Uma, apart1) >= UMA_LINE &&
-                  offsetof(Uma, hz_page) - offsetof(Uma, apart2) >= UMA_LINE,
+                  offsetof(Uma, hazards) - offsetof(Uma, apart1) >= UMA_LINE,
               "two groups of Uma share a cache line");
 static Uma g_uma = {.lk = PMUTEX_INIT, .align = 4096, .out_pages = {.also = &g_pend_any}};
 /* this thread's: vk_uma_gpu_reads, the caller copies the in-place writes pending on the GPU */
@@ -2033,19 +2028,15 @@ static void hz_mark(u64 cpu, u64 len) {
     st_stamp(UMA_LIVE, cpu, len, g_uma.bound);
     if (g_uma.chk) write_pages_stamp(&g_uma.chk->live, cpu, len, g_uma.bound);
 }
-/* the tables of before: the live table, and the hazard count's pages */
-static void hz_old(u64 cpu, u64 len) {
-    write_pages_stamp(&g_uma.live, cpu, len, g_uma.bound);
-    for (u64 p = cpu >> 12; p <= (cpu + len - 1) >> 12; p++) {
-        u32 s = (u32)(p & ((1u << HZ_BITS) - 1));
-        __atomic_store_n(&g_uma.hz_page[s], p, __ATOMIC_RELAXED);
-        __atomic_store_n(&g_uma.hz_sub[s], g_uma.bound, __ATOMIC_RELAXED);
-    }
-}
+/* the table of before for a page read in place in no region: live */
+static void hz_old(u64 cpu, u64 len) { write_pages_stamp(&g_uma.live, cpu, len, g_uma.bound); }
 /* a GPU-side write to guest memory [cpu, cpu + n): counted when a command that is not done yet read a page of it in
-   place (any thread) */
+   place (any thread). live holds the submit that last read each page in place, and its readers take no lock. The count
+   had a table of its own, a page and a submit stored for every page of every range bound: a sixth of the GPU thread
+   in one game whose programs bind 16 MiB windows. The driver is asked how far the GPU got only when a page was read
+   in place since the last answer */
 static void gpu_wrote(u64 cpu, u64 n) {
-    u64 done = 0, dummy;
+    u64 done = __atomic_load_n(&g_uma.hz_done, __ATOMIC_RELAXED), dummy;
     if (!n) return;
     /* the LIVE stamps of the regions there, under lk (their tables go only under it), when a region holds a window
        of it or one that went may still. A stamp stored as this reads it may be missed: its submit is one the write
@@ -2061,17 +2052,11 @@ static void gpu_wrote(u64 cpu, u64 n) {
         if (hit) __atomic_add_fetch(&g_uma.hazards, 1, __ATOMIC_RELAXED);
         return;
     }
-    if (!__atomic_load_n(&g_uma.old_any[UMA_LIVE], __ATOMIC_RELAXED)) return;
-    for (u64 p = cpu >> 12; p <= (cpu + n - 1) >> 12; p++) {
-        u32 s = (u32)(p & ((1u << HZ_BITS) - 1));
-        if (__atomic_load_n(&g_uma.hz_page[s], __ATOMIC_RELAXED) != p) continue;
-        u64 sub = __atomic_load_n(&g_uma.hz_sub[s], __ATOMIC_RELAXED);
-        if (!done) vk_submit_progress(&dummy, &done);
-        if (sub > done) {
-            __atomic_add_fetch(&g_uma.hazards, 1, __ATOMIC_RELAXED);
-            return;
-        }
-    }
+    if (!__atomic_load_n(&g_uma.old_any[UMA_LIVE], __ATOMIC_RELAXED) || !write_pages_since(&g_uma.live, done, cpu, n))
+        return;
+    vk_submit_progress(&dummy, &done);
+    __atomic_store_n(&g_uma.hz_done, done, __ATOMIC_RELAXED);
+    if (write_pages_since(&g_uma.live, done, cpu, n)) __atomic_add_fetch(&g_uma.hazards, 1, __ATOMIC_RELAXED);
 }
 
 void vk_uma_init(void) {
