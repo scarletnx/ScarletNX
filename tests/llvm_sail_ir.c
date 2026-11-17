@@ -386,9 +386,7 @@ static void on_undef(CPU* c, u64 pc, u32 word) {
 static int run_compare(const u32* words, size_t count, unsigned states) {
     char error[1024];
     LlvmSteps set[2];
-    RtAPI rt = {0};
-    rt.undef = on_undef;
-    rt.cas128 = snx_runtime_cas128;
+    RtAPI rt = {.undef = on_undef, .cas128 = snx_runtime_cas128};
     for (int k = 0; k < 2; ++k) {
         if (llvm_steps_begin(&set[k], 0, LLVM_STEPS_HOST, error, sizeof error)) return snx_error("%s", error);
         if (k == 0) set[k].ir->int_reference = snx_ir_int_reference;
