@@ -57,8 +57,8 @@ sentences, no spaced hyphen as a dash.
 
 ## Pull requests
 
-When a run of the Build workflow (`.github/workflows/build.yml`) on a pull request ends, the Pull request checks
-workflow rewrites one comment on it, marked `<!-- scarletnx-builds -->`, that links the Linux, AppImage, Windows and
+When a run of the Build workflow (`.github/workflows/build.yml`) on a pull request ends, the Publish builds workflow
+rewrites one comment on it, marked `<!-- scarletnx-builds -->`, that links the Linux, AppImage, Windows and
 Android builds of the head commit and names any job that did not build (`scripts/pr-builds.sh`). A pull request from a
 fork gets no comment, since its Build ran the fork's own workflow.
 

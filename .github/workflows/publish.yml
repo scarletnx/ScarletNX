@@ -20,8 +20,9 @@ on:
 
 permissions:
   contents: write # a release, and the "nightly" prerelease's link
-  actions: read # the Build run's artifacts
-  pull-requests: write # a fork's label, taken off at its push
+  actions: read # the Build run's artifacts and jobs
+  checks: read # edenprobe's notice, for the comment of builds
+  pull-requests: write # a fork's label, taken off at its push, and the comment of builds
 
 jobs:
   publish:
@@ -164,3 +165,18 @@ jobs:
         run: |
           python3 scripts/publish-builds.py publish --repo "$GITHUB_REPOSITORY" --to "$NIGHTLY_REPO" --kind "$KIND" \
             --run "$RUN" --sha "$SHA" ${PR:+--pr "$PR"} ${TAG:+--tag "$TAG"} --artifacts artifacts --checkout .
+      # Once a Build run of a pull request of this repository ends, one comment on the pull request, which each run
+      # rewrites, links its builds and names the jobs that did not build (scripts/pr-builds.sh), main's script: here,
+      # where the end of a Build already takes a runner, and after the publishing, whatever became of it. A fork's
+      # pull request gets no comment, as its Build ran the fork's workflow, which names the builds and jobs the comment
+      # would. PR empty when the run names none: the script asks which open pull request has the commit as its head
+      - name: Link the builds from the pull request
+        if: >-
+          ${{ !cancelled() && github.event_name == 'workflow_run' &&
+          github.event.workflow_run.event == 'pull_request' &&
+          github.event.workflow_run.head_repository.full_name == github.repository }}
+        env:
+          PR: ${{ github.event.workflow_run.pull_requests[0].number }}
+          RUN: ${{ github.event.workflow_run.id }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
+        run: scripts/pr-builds.sh "$GITHUB_REPOSITORY" "$PR" "$RUN" "$SHA"
