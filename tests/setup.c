@@ -35,7 +35,8 @@ static char* text_of(const char* path) {
 }
 static void expect_text(const char* path, const char* expected) {
     char* text = text_of(path);
-    if (!text || strcmp(text, expected)) fprintf(stderr, "%s holds:\n%s\nnot:\n%s\n", path, text, expected);
+    if (!text || strcmp(text, expected))
+        fprintf(stderr, "%s holds:\n%s\nnot:\n%s\n", path, text ? text : "(no file it could read)", expected);
     assert(text && !strcmp(text, expected));
     free(text);
 }
