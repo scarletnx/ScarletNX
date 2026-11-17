@@ -309,6 +309,11 @@ indices and constant buffers, and made about 380 submissions a present: its reco
 the kernel. A range a write in place is pending over stays in place, as do a dispatch's storage ranges and what the
 GPU writes. The headless Vulkan checks of the in-place path take `uma_copies=1`.
 
+Where `uma_copies` copies, a constant buffer is copied straight from guest memory into the frame's staging, as on a
+discrete GPU (`cb_get` in `render.c`), when no write in place is pending over it. The buffer cache's checks and hash
+cost each constant buffer more than its copy. `check_uma_constants_copied` checks it, and a constant buffer under a
+write in place of the same submission.
+
 In place, a compute dispatch with nothing staged for the host to read is not submitted on its own: it waits in the
 submission being recorded for the end of the game's GPU submission (`vk_release_submit`, at the end of each NVN job)
 or whatever submits first, as the console's GPU runs what a flush handed it. Submitted each, one game's battle map
