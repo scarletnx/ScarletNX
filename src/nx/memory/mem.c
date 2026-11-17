@@ -827,9 +827,7 @@ static void unpool_nl(u64 a, u64 size, const u64* off) {
     else if (off && commit_nl(a, size))
         step = "commit", err = errno;
     else if (off) {
-        plat_ww_open(GP(a), size);
         if (plat_alias_read(*off, GP(a), size)) step = "read", err = errno;
-        plat_ww_close(GP(a), size);
     }
     if (step)
         fatal("Could not put %llu KiB of guest memory back from the alias pool (%s at %#llx failed: error %d)",
