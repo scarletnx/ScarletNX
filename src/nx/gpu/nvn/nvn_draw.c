@@ -152,6 +152,8 @@ void nvn_draw_init(NvnDraw* d, u32 owner) {
         d->scissor[j][2] = d->scissor[j][3] = 0x10000;
     }
     d->bind.tex_bank = 2;
+    for (u32 j = 0; j < 16; j++) d->rate_in.palette[j] = NVN_RATE_PALETTE_FULL;
+    d->rate_in.texel = NVN_RATE_TEXEL;
     for (s = 0; s < DS_GFX_STAGES; s++) {
         /* Maxwell's largest point size (11.4 fixed point), which GLSLC clamps a written size to: the game's driver
            writes 2047.9375 (NVN 53.13 and 55.12) */
@@ -729,6 +731,7 @@ static void indirect(DrawCall* dc, u64 ind, u64 count, i32 max, i32 stride, u32 
 }
 static void draw_fixed_state(const NvnDraw* d, DrawCall* call) {
     call->state_flags = d->fixed_flags;
+    call->shading_rate = d->rate;
     for (u32 i = 0; i < DS_TARGETS_MAX; i++)
         call->advanced_blend[i] = ((d->color >> i) & 1) && nvn_field(d->blend[i], NVN_BLEND_ADV) ? d->blend[i] : 0;
     if (d->fixed_flags & DS_DRAW_POINT_SIZE) call->point_size = d->point_size;
@@ -1227,8 +1230,38 @@ static void draw_texture(NvnDraw* d, u64 payload) {
     sync(d, 0, 0);
     g_renderer->draw_texture(&d->ds, &t);
 }
+/* The bound shading rate image given to the renderer again, with the palettes: an id for the draws after it */
+static void rate_update(NvnDraw* d, int new_image) {
+    d->rate_in.new_image = new_image;
+    d->rate = d->rate_in.addr && g_renderer->shading_rate ? g_renderer->shading_rate(&d->rate_in) : 0;
+}
+/* OP_RATE_IMAGE: the texture's header (TIC), as a texture pool would hold it, which the renderer looks up as a draw's
+   texture: the texels the GPU wrote last, wherever the renderer keeps them. 0 with none bound */
+static void rate_image(NvnDraw* d, u64 payload) {
+    NvnPRateImage r;
+    memcpy(&r, GP(payload), sizeof r);
+    d->rate_in.addr = 0;
+    NvnTexture t = {0}; /* past the snapshot's bytes */
+    if (r.tex) memcpy(&t, GP(r.tex), NVN_TEX_SNAP);
+    if (r.tex && nvn_tic_encode(&t, r.has_view ? &r.view : NULL, 0, g_nvn.loader.api, d->rate_in.tic)) {
+        d->rate_in.addr = t.gpu;
+        LOG_LIMIT(2, "nvn: a shading rate image of %ux%u texels, format %#x, at %llx\n", t.d.width, t.d.height,
+                  t.d.format, (unsigned long long)t.gpu);
+    } else if (r.tex)
+        LOG_LIMIT(1, "nvn: a shading rate image whose texture has no texture header: each pixel is shaded\n");
+    rate_update(d, 1);
+}
 int nvn_draw_record(NvnDraw* d, u32 op, u64 payload, u32 size) {
     switch (op) {
+        case OP_RATE_IMAGE: rate_image(d, payload); return 1;
+        case OP_RATE_PALETTE: {
+            const NvnPRatePalette* r = NVN_OBJ(const NvnPRatePalette, payload);
+            if (d->rate_in.palette[r->viewport & 15] == r->rates) return 1;
+            d->rate_in.palette[r->viewport & 15] = r->rates;
+            if (d->rate_in.addr) rate_update(d, 0);
+            return 1;
+        }
+        case OP_RATE_MODE: return 1;
         case OP_SET_RT: set_targets(d, payload); return 1;
         case OP_DISCARD:
             if (size >= sizeof(NvnPDiscard)) discard_targets(d, NVN_OBJ(const NvnPDiscard, payload)->targets);

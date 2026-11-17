@@ -18,6 +18,7 @@
 #include "common/utilities/common.h"
 #include "common/utilities/bits.h"
 #include <SDL3/SDL_keycode.h>
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -33,10 +34,67 @@ enum {
     PAGE_STATES,
     PAGE_SLOT,
     PAGE_ASK,
-    PAGE_KEYS
+    PAGE_KEYS,
+    PAGE_SETTINGS, /* the game's .ini's sections the menu has no page of its own for (settings_entries) */
+    PAGE_SECTION   /* one of them: its rows */
 };
-/* the first page's items: Capture frame only while RenderDoc can capture */
-enum { M_CONTROLS, M_PADS, M_STATES, M_SHORTCUTS, M_TV_MODE, M_STATS, M_VOLUME, M_CAPTURE, M_EXIT, M_COUNT };
+/* the first page's items: Capture frame only while RenderDoc can capture, Clean Old Settings while the game's files
+   keep old keys (options.h's ini_old_settings) */
+enum {
+    M_CONTROLS,
+    M_PADS,
+    M_STATES,
+    M_SHORTCUTS,
+    M_TV_MODE,
+    M_STATS,
+    M_VOLUME,
+    M_SETTINGS,
+    M_CAPTURE,
+    M_CLEAN,
+    M_EXIT,
+    M_COUNT
+};
+/* the Settings page's entries: the sections of the game's .ini (settings.txt's) the launcher's Settings group, those
+   the menu has a page of its own for left out, in the launcher's order with Debug last, a section's own page (Vulkan
+   Extensions) after it. Each a table of g_ini_sections, the game's own rows (INI_IN_GAME) left out of its page */
+static const char* const SETTINGS_SECTIONS[] = {"Display", "Graphics", "Audio", "Performance", "Network", "Debug"};
+enum { ENTRIES_MAX = 3 * (int)(sizeof SETTINGS_SECTIONS / sizeof *SETTINGS_SECTIONS) };
+static struct {
+    int section, table;
+} entries[ENTRIES_MAX];
+static int nentries, entry_at; /* how many; the one PAGE_SECTION shows */
+static void settings_entries(void) {
+    size_t k;
+    int s, t;
+    const IniOpt* o;
+    nentries = 0;
+    for (k = 0; k < sizeof SETTINGS_SECTIONS / sizeof *SETTINGS_SECTIONS; ++k)
+        for (s = 0; s < g_ini_sections_count; ++s)
+            for (t = 0; !strcmp(g_ini_sections[s].name, SETTINGS_SECTIONS[k]) && t < 3 && g_ini_sections[s].table[t];
+                 ++t) {
+                for (o = g_ini_sections[s].table[t]; o->key && (o->flags & INI_IN_GAME); ++o) continue;
+                if (o->key && nentries < ENTRIES_MAX) {
+                    entries[nentries].section = s;
+                    entries[nentries++].table = t;
+                }
+            }
+}
+static const char* entry_name(int e) {
+    const IniSection* sec = &g_ini_sections[entries[e].section];
+    return sec->page[entries[e].table] ? sec->page[entries[e].table] : sec->name;
+}
+/* entry e's row i, NULL past its last */
+static const IniOpt* entry_row(int e, int i) {
+    const IniOpt* o;
+    for (o = g_ini_sections[entries[e].section].table[entries[e].table]; o->key; ++o)
+        if (!(o->flags & INI_IN_GAME) && !i--) return o;
+    return NULL;
+}
+static int entry_rows(int e) {
+    int n = 0;
+    while (entry_row(e, n)) ++n;
+    return n;
+}
 enum { S_SAVE, S_LOAD, S_DELETE, S_BACK, S_COUNT };              /* a slot's page's, the auto slot without Save */
 enum { P_PLAYER, P_SWAP, P_DEADZONE, P_RUMBLE, P_BACKGROUND, P_MAP, P_BACK, P_COUNT }; /* the gamepads' page's */
 /* the controls page's items */
@@ -160,7 +218,7 @@ static int shown, page, focus, top; /* top: the first item showing */
 static OverlaySlot slots[OVERLAY_SLOTS_MAX];
 static int nslots = 1, slot_at, ask, slots_stale;
 /* what the question asks besides the OVERLAY_ codes it gives back: the on-screen controls put back */
-enum { ASK_RESET = -1 };
+enum { ASK_RESET = -1, ASK_CLEAN = -2 };
 static u32 slots_gen; /* counts the lists given: the picture is set again */
 static char toast[OVERLAY_COLS_MAX + 1];
 static u64 toast_until;
@@ -174,25 +232,41 @@ static char refused[2 * OVERLAY_COLS_MAX];
 
 /* a slot's page's items: the auto slot has no Save */
 static int slot_item(int i) { return slot_at ? i : i + 1; }
-/* the first page's item shown at i: past Stats, Exit where RenderDoc can't capture */
-static int main_item(int i) { return i >= M_CAPTURE && !g_renderer->capture(0) ? i + 1 : i; }
+/* the first page's item m shown now */
+static int main_shows(int m) {
+    return m == M_CAPTURE ? g_renderer->capture(0) != 0 : m == M_CLEAN ? ini_old_settings() > 0 : 1;
+}
+/* the first page's item shown at i, those that do not show now skipped */
+static int main_item(int i) {
+    int m;
+    for (m = 0; m < M_COUNT; ++m)
+        if (main_shows(m) && !i--) return m;
+    return M_COUNT;
+}
+static int main_count(void) {
+    int m, n = 0;
+    for (m = 0; m < M_COUNT; ++m) n += main_shows(m);
+    return n;
+}
 /* the colour of item i of the page shown: Exit, which ends the game, a slot's Delete and its Save over a state have no
    way back; a slot's Load (what was played since goes, unless the auto slot keeps it) and the controls' Reset want
    care; and so the question's choice; 0 for none */
 static u32 item_tone(int i) {
     int what = slot_item(i);
-    if (page == PAGE_ASK) return i ? 0 : ask == OVERLAY_LOAD || ask == ASK_RESET ? UI_WARNING : UI_FAILURE;
+    if (page == PAGE_ASK)
+        return i ? 0 : ask == OVERLAY_LOAD || ask == ASK_RESET || ask == ASK_CLEAN ? UI_WARNING : UI_FAILURE;
     if (page == PAGE_MAIN) return main_item(i) == M_EXIT ? UI_FAILURE : 0;
     if (page == PAGE_CONTROLS) return i == C_RESET ? UI_WARNING : 0;
     if (page != PAGE_SLOT || !slots[slot_at].when[0]) return 0;
     return what == S_DELETE || what == S_SAVE ? UI_FAILURE : what == S_LOAD ? UI_WARNING : 0;
 }
-/* the first page's row Exit is on */
-static int exit_row(void) {
+/* the first page's row item m is on (it shows) */
+static int main_row(int m) {
     int i = 0;
-    while (main_item(i) != M_EXIT) ++i;
+    while (main_item(i) != m && main_item(i) != M_COUNT) ++i;
     return i;
 }
+static int exit_row(void) { return main_row(M_EXIT); }
 /* the Shortcuts page's rows: the runtime's keys this build has (hotkeys.h), then Back. The action at row i, -1 for
    Back */
 static int shortcut(int i) {
@@ -207,7 +281,7 @@ static int shortcuts(void) {
     return n;
 }
 static int items(void) {
-    return page == PAGE_MAIN        ? M_COUNT - !g_renderer->capture(0)
+    return page == PAGE_MAIN        ? main_count()
            : page == PAGE_SHORTCUTS ? shortcuts() + 1
            : page == PAGE_CONTROLS  ? C_COUNT
            : page == PAGE_PADS      ? P_COUNT
@@ -215,9 +289,12 @@ static int items(void) {
            : page == PAGE_SLOT      ? S_COUNT - !slot_at
            : page == PAGE_ASK       ? 2
            : page == PAGE_KEYS      ? keys_rows()
+           : page == PAGE_SETTINGS  ? nentries + 1
+           : page == PAGE_SECTION   ? entry_rows(entry_at) + 1
                                     : SNX_VPAD_COUNT + 2;
 }
 static void page_open(int p) {
+    if (p == PAGE_SETTINGS) settings_entries();
     page = p;
     focus = top = 0;
     listening = 0;
@@ -267,6 +344,7 @@ static int all_shown(void) {
 }
 /* the setting an item is, NULL for an action */
 static const IniOpt* setting(int i) {
+    if (page == PAGE_SECTION) return entry_row(entry_at, i);
     if (page == PAGE_MAIN)
         return main_item(i) == M_STATS    ? ini_find(g_display_ini, "stats")
                : main_item(i) == M_VOLUME ? ini_find(g_audio_ini, "volume")
@@ -281,8 +359,29 @@ static const IniOpt* setting(int i) {
     if (page == PAGE_PADS) return ini_find(g_gamepad_ini, PADS[i]);
     return page == PAGE_BUTTONS && i > 0 && i <= SNX_VPAD_COUNT ? &g_vpad_shown_ini[i - 1] : NULL;
 }
+/* the key of item i that the game's picks can hold: a setting's, and TV mode's (docked); NULL for an action */
+static const char* pick_key(int i) {
+    const IniOpt* o = setting(i);
+    if (o) return o->key;
+    return page == PAGE_MAIN && main_item(i) == M_TV_MODE ? "docked" : NULL;
+}
+/* item i set for this game alone, in its picks: its value marked *, Y or Delete back to Global */
+static int picked(int i) {
+    const char* k = pick_key(i);
+    return k && ini_picked(k);
+}
+/* a page with an item the game's picks hold, which its second line of help says how to read */
+static int page_picked(void) {
+    int i, n = page == PAGE_KEYS ? 0 : items();
+    for (i = 0; i < n; ++i)
+        if (picked(i)) return 1;
+    return 0;
+}
 /* a number, stepped by the arrows around it, not a word; a slider's is its own (INI_SLIDER) */
-static int arrows(const IniOpt* o) { return o && !(o->flags & INI_SLIDER) && (!o->words || strchr(o->words, '#')); }
+static int arrows(const IniOpt* o) {
+    if (!o || o->type == INI_TEXT) return 0; /* a text's words are stepped as words, one with none only read */
+    return o->type == INI_FLOAT || (!(o->flags & INI_SLIDER) && (!o->words || strchr(o->words, '#')));
+}
 static const IniOpt* slider(int i) {
     const IniOpt* o = setting(i);
     return o && (o->flags & INI_SLIDER) ? o : NULL;
@@ -292,7 +391,7 @@ static int slider_place(const IniOpt* o) {
     int v = __atomic_load_n((const int*)o->var, __ATOMIC_RELAXED);
     return o->hi > o->lo ? (int)(((double)v - o->lo) * 1000.0 / (o->hi - o->lo) + 0.5) : 0;
 }
-/* the columns its value takes at its widest, which the slider ends before whatever it says */
+/* the columns its value takes at its widest, with a pick's " *", which the slider ends before whatever it says */
 static int slider_cols(const IniOpt* o) {
     char word[OVERLAY_COLS];
     int v, step = o->step > 0 ? o->step : 1, most = 0;
@@ -300,7 +399,7 @@ static int slider_cols(const IniOpt* o) {
         ini_word(o, v, word, sizeof word);
         if ((int)strlen(word) > most) most = (int)strlen(word);
     }
-    return most;
+    return most + 2;
 }
 /* the slider of item i set to the step nearest to at, thousandths of its way: stored, as a step is (act) */
 static int slide_to(int i, int at) {
@@ -314,25 +413,109 @@ static int slide_to(int i, int at) {
     vpad_store_opt(o);
     return OVERLAY_NONE;
 }
-/* an item's text, and its value at the right */
+/* a text's value as the menu shows it: its word (words value=word between '|'), else the text */
+static void text_word(const IniOpt* o, const char* v, char* out, size_t n) {
+    const char* w = o->words;
+    size_t len = strlen(v);
+    while (w && *w) {
+        const char* end = w + strcspn(w, "|");
+        const char* eq = memchr(w, '=', (size_t)(end - w));
+        if (eq && (size_t)(eq - w) == len && !strncmp(w, v, len)) {
+            snprintf(out, n, "%.*s", (int)(end - eq - 1), eq + 1);
+            return;
+        }
+        w = *end ? end + 1 : end;
+    }
+    snprintf(out, n, "%s", v);
+}
+/* a text's value step words from v, round, into out: 1, or 0 for a text with no words, which the menu only reads */
+static int text_step(const IniOpt* o, const char* v, int step, char* out, size_t n) {
+    const char* at[64];
+    const char* w = o->words;
+    int count = 0, i, now = -1;
+    while (w && *w && count < 64) {
+        at[count] = w;
+        if (!strncmp(w, v, strlen(v)) && w[strlen(v)] == '=') now = count;
+        ++count;
+        w += strcspn(w, "|");
+        if (*w) ++w;
+    }
+    if (!count) return 0;
+    i = now < 0 ? 0 : ((now + step) % count + count) % count;
+    snprintf(out, n, "%.*s", (int)strcspn(at[i], "="), at[i]);
+    return 1;
+}
+enum { PICK_TEXT = 256 }; /* a value the Settings page reads or steps */
+/* a section row's value: the next start's where it is read at the start and that differs (ini_next_start), else the
+   value in effect, as text */
+static void row_now(const IniOpt* o, char* out, size_t n) {
+    if ((o->flags & INI_STARTUP) && ini_next_start(o->key, out, n)) return;
+    if (o->type == INI_INT)
+        snprintf(out, n, "%d", __atomic_load_n((const int*)o->var, __ATOMIC_RELAXED));
+    else if (o->type == INI_FLOAT)
+        snprintf(out, n, "%g", (double)*(const float*)o->var);
+    else
+        snprintf(out, n, "%s", (const char*)o->var);
+}
+/* a section row stepped (a select steps up): the next word or number from row_now, a float by a quarter or, for one
+   within 2 of its range, a twentieth; saved to the game's picks and applied by the next tick (ini_set_apply), at the
+   next start for one read then. A text without words is only read */
+static int section_step(const IniOpt* o, int step) {
+    char now[PICK_TEXT], to[PICK_TEXT];
+    row_now(o, now, sizeof now);
+    if (o->type == INI_INT)
+        snprintf(to, sizeof to, "%d", ini_step(o, atoi(now), step));
+    else if (o->type == INI_FLOAT) {
+        double unit = o->hi - o->lo > 2 ? 0.25 : 0.05, v = strtod(now, NULL);
+        v = (double)(long long)((v + step * unit) / unit + (step > 0 ? 0.5 : -0.5)) * unit;
+        snprintf(to, sizeof to, "%g", v < o->lo ? o->lo : v > o->hi ? o->hi : v);
+    } else if (!text_step(o, now, step, to, sizeof to))
+        return OVERLAY_NONE;
+    ini_set_apply(o->key, to);
+    return OVERLAY_NONE;
+}
+/* an item's text, and its value at the right, * after a value the game's picks hold */
 static void label(int i, char* text, size_t size, char* value, size_t vsize) {
     const IniOpt* o = setting(i);
+    const char* own = picked(i) ? " *" : "";
     *value = 0;
+    if (o && page == PAGE_SECTION) { /* any type; one read when the game starts says so */
+        char now[PICK_TEXT], word[OVERLAY_COLS_MAX];
+        row_now(o, now, sizeof now);
+        if (o->type == INI_INT)
+            ini_word(o, atoi(now), word, sizeof word);
+        else if (o->type == INI_TEXT)
+            text_word(o, now, word, sizeof word);
+        else
+            snprintf(word, sizeof word, "%s", now);
+        snprintf(text, size, (o->flags & INI_STARTUP) ? "%s (next start)" : "%s", o->name ? o->name : o->key);
+        snprintf(value, vsize, arrows(o) ? "< %s%s >" : "%s%s", word, own);
+        return;
+    }
     if (o) {
         char word[OVERLAY_COLS];
         snprintf(text, size, "%s", o->name);
         ini_word(o, __atomic_load_n((const int*)o->var, __ATOMIC_RELAXED), word, sizeof word);
-        snprintf(value, vsize, arrows(o) ? "< %s >" : "%s", word);
+        snprintf(value, vsize, arrows(o) ? "< %s%s >" : "%s%s", word, own);
+        return;
+    }
+    if (page == PAGE_SETTINGS || page == PAGE_SECTION) { /* an entry, which opens its rows; then Back */
+        int last = page == PAGE_SETTINGS ? nentries : entry_rows(entry_at);
+        snprintf(text, size, "%s", i < last && page == PAGE_SETTINGS ? entry_name(i) : "Back");
+        if (i < last && page == PAGE_SETTINGS) snprintf(value, vsize, ">");
         return;
     }
     if (page == PAGE_MAIN) {
         static const char* const main_items[M_COUNT] = {SNX_VPAD_PAGE, SNX_GAMEPAD_PAGE, "Save states",
                                                         "Shortcuts",   "TV mode",        "Stats",
-                                                        "Volume",      "Capture frame",  "Exit"};
+                                                        "Volume",      "Settings",       "Capture frame",
+                                                        "Clean Old Settings", "Exit"};
+        char word[OVERLAY_COLS];
         snprintf(text, size, "%s", main_items[main_item(i)]);
-        if (main_item(i) == M_TV_MODE) /* the choice in effect, in docked's words: the .ini keeps its own */
-            ini_word(ini_find(g_display_ini, "docked"), options_tv_mode_choice(), value, vsize);
-        else if (main_item(i) < M_CAPTURE)
+        if (main_item(i) == M_TV_MODE) { /* the choice in effect, in docked's words */
+            ini_word(ini_find(g_display_ini, "docked"), options_tv_mode_choice(), word, sizeof word);
+            snprintf(value, vsize, "%s%s", word, own);
+        } else if (main_item(i) < M_CAPTURE)
             snprintf(value, vsize, ">");
         return;
     }
@@ -365,6 +548,7 @@ static void label(int i, char* text, size_t size, char* value, size_t vsize) {
                  : ask == OVERLAY_SAVE ? "Save"
                  : ask == OVERLAY_EXIT ? "Exit"
                  : ask == ASK_RESET    ? "Reset"
+                 : ask == ASK_CLEAN    ? "Clean"
                                        : "Delete");
         return;
     }
@@ -457,6 +641,14 @@ void overlay_shortcut_key(unsigned key, unsigned mods) {
     listening = 0;
     if (key != SDLK_ESCAPE && key != SDLK_AC_BACK) shortcut_give(key, mods);
 }
+int overlay_delete(void) {
+    const char* k = page == PAGE_KEYS || page == PAGE_MAP ? NULL : pick_key(focus);
+    if (page == PAGE_SHORTCUTS) return overlay_backspace();
+    if (!k || !ini_picked(k)) return OVERLAY_NONE;
+    changed();
+    ini_unpick(k);
+    return OVERLAY_NONE;
+}
 int overlay_backspace(void) {
     unsigned key, mods;
     char why[160];
@@ -524,6 +716,7 @@ static int act(int i, int step) {
         options_tv_mode_step(step < 0 ? -1 : 1, NULL, 0);
         return OVERLAY_NONE;
     }
+    if (o && page == PAGE_SECTION) return section_step(o, step ? step : 1);
     if (o) {
         int* v = (int*)o->var;
         int to = ini_step(o, *v, step ? step : 1);
@@ -558,6 +751,17 @@ static int act(int i, int step) {
             return OVERLAY_NONE;
         }
         if (main_item(i) == M_CAPTURE) return OVERLAY_CAPTURE;
+        if (main_item(i) == M_SETTINGS) {
+            page_open(PAGE_SETTINGS);
+            return OVERLAY_NONE;
+        }
+        if (main_item(i) == M_CLEAN) { /* asked first: the old keys go */
+            ask = ASK_CLEAN;
+            page = PAGE_ASK;
+            focus = 1; /* Cancel */
+            top = 0;
+            return OVERLAY_NONE;
+        }
         page_open(i == M_PADS        ? PAGE_PADS
                   : i == M_STATES    ? PAGE_STATES
                   : i == M_SHORTCUTS ? PAGE_SHORTCUTS
@@ -565,6 +769,11 @@ static int act(int i, int step) {
         return OVERLAY_NONE;
     }
     if (step) return OVERLAY_NONE;
+    if (page == PAGE_SETTINGS && i < nentries) { /* an entry: its rows */
+        entry_at = i;
+        page_open(PAGE_SECTION);
+        return OVERLAY_NONE;
+    }
     if (page == PAGE_SHORTCUTS && shortcut(i) >= 0) { /* the next key pressed is its key */
         listening = 1;
         refused[0] = 0;
@@ -589,6 +798,14 @@ static int act(int i, int step) {
     if (page == PAGE_ASK && i == 0 && ask == OVERLAY_EXIT) {
         page_open(PAGE_MAIN);
         return OVERLAY_EXIT;
+    }
+    if (page == PAGE_ASK && i == 0 && ask == ASK_CLEAN) { /* at the next tick; the menu's first page again */
+        char said[64];
+        snprintf(said, sizeof said, "Clean Old Settings: %d taken out", ini_old_settings());
+        ini_clean_old();
+        overlay_notice(said);
+        page_open(PAGE_MAIN);
+        return OVERLAY_NONE;
     }
     if (page == PAGE_ASK && i == 0 && ask == ASK_RESET) {
         vpad_reset_layout();
@@ -671,6 +888,7 @@ void overlay_toggle(void) {
     changed();
     if (!shown) page_open(PAGE_MAIN);
     __atomic_store_n(&shown, !shown, __ATOMIC_RELEASE);
+    vpad_menu(shown); /* the on-screen controls hide under it */
 }
 /* the panel's rows: the page's items under the head, a blank row under them */
 static int rows(void) { return FIRST + (items() < visible() ? items() : visible()) + 1; }
@@ -752,13 +970,37 @@ typedef char DialogRows[DIALOG_PARAS][DIALOG_LINES][FATAL_ROW];
 enum { KB_WAITING, KB_GIVEN, KB_CANCELLED };
 /* The keyboard's box: what the game asked, the line as typed (kb.text) and its UTF-16 units, whether it shows (the
    renderer and the backend read it), Enter pressed short of the least (said until the line changes), and the answer
-   until it is taken. The event thread's rows, for its taps and the line's place */
+   until it is taken. The event thread's rows, for its taps and the line's place. What the hints name (overlay_input_):
+   a controller's buttons when pad, with the names of those sending A and B, else the keyboard's keys */
 static struct {
     OverlayKeyboard kb;
     u32 units;
     int kb_shown, refused, answer;
     DialogRows event_rows;
-} g_overlay;
+    struct {
+        int pad;
+        char ok[OVERLAY_INPUT_NAME], back[OVERLAY_INPUT_NAME];
+    } input;
+} g_overlay
+#ifdef __ANDROID__
+    = {.input = {1, "A", "B"}}
+#endif
+;
+void overlay_input_keys(void) {
+    if (!g_overlay.input.pad) return;
+    g_overlay.input.pad = 0;
+    changed();
+}
+void overlay_input_pad(const char* ok, const char* back) {
+    char was_ok[OVERLAY_INPUT_NAME], was_back[OVERLAY_INPUT_NAME];
+    int was = g_overlay.input.pad;
+    memcpy(was_ok, g_overlay.input.ok, sizeof was_ok);
+    memcpy(was_back, g_overlay.input.back, sizeof was_back);
+    g_overlay.input.pad = 1;
+    snprintf(g_overlay.input.ok, sizeof g_overlay.input.ok, "%s", ok ? ok : "A");
+    snprintf(g_overlay.input.back, sizeof g_overlay.input.back, "%s", back ? back : "B");
+    if (!was || strcmp(was_ok, g_overlay.input.ok) || strcmp(was_back, g_overlay.input.back)) changed();
+}
 /* item i's slider, at its row's letters ty on a box from x cols wide (cells cw x ch), in its letters' colour fg as
    the launcher's (src/gui's slider_row_draw): a thin line, thicker up to the knob, and the knob, a cell wide; ending a
    column before its value at its widest, OVERLAY_SLIDER_COLS long where the label leaves room, a column after it.
@@ -1006,7 +1248,7 @@ int overlay_keyboard_take(u32* ticket, char* out, size_t size) {
 /* the texts the box's dialog points at */
 typedef struct {
     char line[OVERLAY_KB_TEXT + 3]; /* the line and its cursor */
-    char count[96], ok[sizeof g_overlay.kb.ok], hint[sizeof g_overlay.kb.ok + 40];
+    char count[96], ok[sizeof g_overlay.kb.ok], hint[sizeof g_overlay.kb.ok + 2 * OVERLAY_INPUT_NAME + 16];
 } KbTexts;
 /* the box as a dialog: the game's header, sub and guide texts, the line with its cursor at the end (each character an
    asterisk for a password), how many characters it holds against the game's limits, what the keys do, and the game's
@@ -1033,7 +1275,10 @@ static void kb_dialog(Dialog* d, KbTexts* t) {
                  (unsigned)k->max, (unsigned)k->min);
     else
         snprintf(t->count, sizeof t->count, "%u of %u characters.", (unsigned)g_overlay.units, (unsigned)k->max);
-    snprintf(t->hint, sizeof t->hint, "Enter or A: %s. Esc or B: Cancel.", ok);
+    if (g_overlay.input.pad)
+        snprintf(t->hint, sizeof t->hint, "%s: %s. %s: Cancel.", g_overlay.input.ok, ok, g_overlay.input.back);
+    else
+        snprintf(t->hint, sizeof t->hint, "Enter: %s. Esc: Cancel.", ok);
     fatal_cp437(ok, t->ok, sizeof t->ok); /* the items are drawn in the font's bytes */
     {
         /* on a short picture the hint gives up its rows first, then the guide, the sub and the header text; never the
@@ -1141,6 +1386,7 @@ int overlay_pad(u64 button) {
     switch (button) {
         case 1ull << 0: return overlay_select(); /* A */
         case 1ull << 1: return overlay_back();   /* B */
+        case 1ull << 3: return overlay_delete(); /* Y */
         case 1ull << 12:                         /* the D-pad's left and the left stick's */
         case 1ull << 16: return overlay_side(-1);
         case 1ull << 13: /* up */
@@ -1195,6 +1441,16 @@ int overlay_back(void) {
     } else if (page == PAGE_ASK && ask == OVERLAY_EXIT) {
         page_open(PAGE_MAIN);
         focus = exit_row();
+    } else if (page == PAGE_ASK && ask == ASK_CLEAN) {
+        page_open(PAGE_MAIN);
+        focus = main_row(M_CLEAN);
+        keep_in_view();
+    } else if (page == PAGE_SECTION) { /* the Settings page, on its entry */
+        page_open(PAGE_SETTINGS);
+        focus = entry_at;
+    } else if (page == PAGE_SETTINGS) {
+        page_open(PAGE_MAIN);
+        focus = main_row(M_SETTINGS);
     } else if (page == PAGE_ASK && ask == ASK_RESET) {
         page_open(PAGE_CONTROLS);
         focus = C_RESET;
@@ -1274,8 +1530,16 @@ static void menu_dialog(Dialog* d, char (*text)[OVERLAY_COLS_MAX + 1], char (*va
     d->para[0].text = page == PAGE_PADS ? pads_hint(pads, size / 2) : page < PAGE_SLOT ? hints[page] : pads;
     d->para[0].rgba = UI_SOFT;
     d->paras = 1;
+    if (page_picked()) { /* with fingers, a tap on the line takes the focused row's pick out (overlay_tap) */
+        d->para[1].text = fingers ? "*: set for this game alone. Tap here: the row in focus back to Global."
+                                  : "*: set for this game alone. Y or Delete: back to Global.";
+        d->para[1].rgba = UI_SOFT;
+        d->para[1].link = fingers;
+        d->paras = 2;
+    }
     if (page == PAGE_SHORTCUTS && listening && shortcut(focus) >= 0) {
-        snprintf(pads, size / 2, "Press the key for %s. Esc or B cancels.", hotkey_row(shortcut(focus))->name);
+        snprintf(pads, size / 2, "Press the key for %s. %s cancels.", hotkey_row(shortcut(focus))->name,
+                 g_overlay.input.pad ? g_overlay.input.back : "Esc");
         d->para[0].text = pads;
     }
     if (page == PAGE_SHORTCUTS && refused[0]) { /* why the last key given isn't the row's */
@@ -1289,6 +1553,21 @@ static void menu_dialog(Dialog* d, char (*text)[OVERLAY_COLS_MAX + 1], char (*va
         snprintf(pads, size / 2, "%s",
                  ask == OVERLAY_EXIT ? "The game ends: what was played since it last saved is lost."
                                      : "The on-screen controls go back where they start.");
+    } else if (page == PAGE_SETTINGS || page == PAGE_SECTION) {
+        char* c;
+        if (page == PAGE_SETTINGS)
+            snprintf(title, size / 2, "SCARLETNX  /  SETTINGS");
+        else
+            snprintf(title, size / 2, "SCARLETNX  /  SETTINGS  /  %s", entry_name(entry_at));
+        for (c = title; *c; ++c) *c = (char)toupper((unsigned char)*c);
+        snprintf(pads, size / 2, "%s",
+                 page == PAGE_SETTINGS ? "This game's own, over the launcher's Settings for every game."
+                                       : "(next start): read when the game starts, taken at its next start.");
+    } else if (page == PAGE_ASK && ask == ASK_CLEAN) {
+        int n = ini_old_settings();
+        snprintf(title, size / 2, "SCARLETNX  /  CLEAN OLD SETTINGS?");
+        snprintf(pads, size / 2, "%d key%s this version does not use go from the game's .ini and its own picks.", n,
+                 n == 1 ? "" : "s");
     } else if (page >= PAGE_SLOT) {
         char name[16];
         if (slot_at)
@@ -1319,7 +1598,7 @@ static void menu_dialog(Dialog* d, char (*text)[OVERLAY_COLS_MAX + 1], char (*va
             d->paras = 2;
         }
     }
-    d->aside = page >= PAGE_STATES ? 1 : 0;
+    d->aside = page >= PAGE_STATES && page <= PAGE_ASK ? 1 : 0; /* the save states' picture */
     d->items = n;
     d->top = top;
     d->focus = focus;
@@ -1327,7 +1606,8 @@ static void menu_dialog(Dialog* d, char (*text)[OVERLAY_COLS_MAX + 1], char (*va
     for (r = 0; r < d->shown; ++r) {
         static const unsigned main_icons[M_COUNT] = {GUI_ICON_POINTER,  GUI_ICON_GAMEPAD_2, GUI_ICON_SAVE,
                                                      GUI_ICON_KEYBOARD, GUI_ICON_MONITOR,   GUI_ICON_ACTIVITY,
-                                                     GUI_ICON_VOLUME_2, GUI_ICON_IMAGE,     GUI_ICON_LOG_OUT};
+                                                     GUI_ICON_VOLUME_2, GUI_ICON_SLIDERS_HORIZONTAL,
+                                                     GUI_ICON_IMAGE,    GUI_ICON_ERASER,    GUI_ICON_LOG_OUT};
         const IniOpt* o = slider(top + r);
         label(top + r, text[r], sizeof *text, value[r], sizeof *value);
         d->label[r] = text[r];
@@ -1361,6 +1641,7 @@ int overlay_tap(float x, float y, int sw, int sh) {
     menu_dialog(&d, text, value, pads, sizeof pads);
     dialog_draw(NULL, sw, sh, &d, g_overlay.event_rows, &at);
     if (!overlay_error_hit(&at.box, x, y)) return OVERLAY_CLOSE;
+    if (at.link.w > 0 && overlay_error_hit(&at.link, x, y)) return overlay_delete(); /* the picks' line */
     for (r = 0; r < d.shown && !overlay_error_hit(&at.item[r], x, y); ++r) {}
     if (r == d.shown) return OVERLAY_NONE;
     focus = d.top + r;
@@ -1548,7 +1829,7 @@ static void aside_draw(SnxUiList* l, const SnxOverlayRect* r) {
    they read from elsewhere: the keys' and the gamepads' counts, the TV mode, whether a frame can be captured, the
    users, and the settings the page's rows show, whose variables are watched (g_menu.watch) */
 enum { MENU_NONE, MENU_PAGE, MENU_KB };
-enum { MENU_QUADS = 4096, MENU_WATCH = SNX_VPAD_COUNT + VISIBLE + 1 };
+enum { MENU_QUADS = 4096, MENU_WATCH = SNX_VPAD_COUNT + VISIBLE + 2 };
 typedef struct {
     int sw, sh, what, tv, capture, users;
     u32 changes, hotkeys, pads;
@@ -1603,6 +1884,7 @@ static void menu_lay(int sw, int sh, const MenuKey* key) {
         if (page == PAGE_BUTTONS)
             for (r = 0; r < SNX_VPAD_COUNT; ++r) watch(&g_settings.control_shown[r]); /* All's */
         if (page == PAGE_ASK) watch(&g_settings.save_state_backup);
+        watch(ini_picks_changes()); /* a pick the launcher set or took out meanwhile: its * */
     }
     g_menu.n = l.n;
     g_menu.key = *key;

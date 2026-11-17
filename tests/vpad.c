@@ -173,6 +173,14 @@ int main(void) {
         assert(!vpad_shown() && !logged[0]);
         vpad_auto(1, 0);
         assert(vpad_shown() && strstr(logged, "shown"));
+        /* the game's menu over the picture: the controls neither drawn nor taking a finger, a held one let go as it
+           opens; closed, shown and taking them again */
+        assert(vpad_down(3, mx(SNX_VPAD_A), my(SNX_VPAD_A), safe) && buttons(NULL) == 1);
+        vpad_menu(1);
+        assert(!vpad_shown() && !buttons(NULL) && !draw(&l) && !vpad_down(4, mx(SNX_VPAD_A), my(SNX_VPAD_A), safe));
+        vpad_menu(0);
+        assert(vpad_shown() && draw(&l) && vpad_down(5, mx(SNX_VPAD_A), my(SNX_VPAD_A), safe) && buttons(NULL) == 1);
+        vpad_up(5);
         assert(vpad_ini("controls", "0") && !vpad_shown()); /* Off whatever the device has */
         vpad_auto(0, 0);
     }

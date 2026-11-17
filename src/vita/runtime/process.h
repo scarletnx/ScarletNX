@@ -147,6 +147,7 @@ enum {
     VITA_OBJ_MEMBLOCK,
     VITA_OBJ_COND,
     VITA_OBJ_RWLOCK,
+    VITA_OBJ_TIMER,
 };
 typedef struct {
     uint32_t type;
@@ -155,7 +156,7 @@ typedef struct {
         uint32_t thread; /* the index in threads */
         struct {
             int32_t count, max;
-            uint32_t attr;
+            uint32_t attr, cancelled; /* cancelled: how many times sceKernelCancelSema ran, which a waiter notices */
         } sema;
         struct {
             uint32_t owner; /* the owning thread's UID, 0 for none */
@@ -176,6 +177,10 @@ typedef struct {
             int32_t writes, reads; /* the writer's locks (recursive ones), the readers' */
             uint32_t attr;
         } rwlock;
+        struct {
+            uint64_t accumulated, started; /* the microseconds it counted before the last start, the process time of it */
+            uint32_t running;
+        } timer;
     } u;
 } VitaObject;
 
@@ -212,6 +217,7 @@ struct VitaNgs;
 typedef struct VitaProcess {
     unsigned char* mem; /* the reservation */
     VitaImage image;
+    bool module_started[VITA_MODULES]; /* image.modules[i]'s start ran: all but a deferred one's, until the game loads it */
     const VitaModule* module;
     char* folder;  /* the game's folder */
     char* app;     /* app0: in it */

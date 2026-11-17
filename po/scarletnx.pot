@@ -973,6 +973,12 @@ msgstr ""
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
+msgid "Del: Global."
+msgstr ""
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
 msgid "Up/Down: group. Enter: open. ESC: back."
 msgstr ""
 
@@ -1174,6 +1180,12 @@ msgstr ""
 #: src/gui/main.c
 #, snx-keys
 msgid "X: default."
+msgstr ""
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "X: Global."
 msgstr ""
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
@@ -1520,6 +1532,18 @@ msgstr ""
 msgid "Select: help."
 msgstr ""
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "More."
+msgstr ""
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "F3: more."
+msgstr ""
+
 #: src/gui/main.c
 msgid "Updates and DLCs"
 msgstr ""
@@ -1726,6 +1750,14 @@ msgid "Clean"
 msgstr ""
 
 #: src/gui/main.c
+msgid "Keep the Games' Own"
+msgstr ""
+
+#: src/gui/main.c
+msgid "With the Games' Own"
+msgstr ""
+
+#: src/gui/main.c
 msgid "Reset"
 msgstr ""
 
@@ -1924,7 +1956,7 @@ msgstr ""
 msgid "GPU Driver: %s"
 msgstr ""
 
-#: src/gui/main.c
+#: src/gui/main.c src/gui/settings.c
 #, c-format
 msgid "Global (%s)"
 msgstr ""
@@ -2178,6 +2210,10 @@ msgid "S lists the save states of a recompiled Switch game in focus."
 msgstr ""
 
 #: src/gui/main.c
+msgid "Settings of its own are a recompiled Switch game's, in focus."
+msgstr ""
+
+#: src/gui/main.c
 #, c-format
 msgid "It can't be played from that state: %s."
 msgstr ""
@@ -2233,6 +2269,11 @@ msgstr ""
 
 #: src/gui/main.c
 msgid "SCARLETNX  /  SETTINGS  /  FREEDRENO SETTINGS"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "SCARLETNX  /  SETTINGS  /  %s"
 msgstr ""
 
 #: src/gui/main.c
@@ -2513,6 +2554,11 @@ msgstr ""
 #: src/gui/main.c
 #, c-format
 msgid "Not found: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Own settings: %s"
 msgstr ""
 
 #: src/gui/main.c
@@ -2923,6 +2969,14 @@ msgstr ""
 
 #: src/gui/main.c
 msgid "The theme, the menu's letters, the theme editor and the folders"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Reset to Global"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Every setting of this game back to Global, the launcher's for every game, asked first"
 msgstr ""
 
 #: src/gui/main.c
@@ -3705,6 +3759,20 @@ msgid "User %d is %s now"
 msgstr ""
 
 #: src/gui/main.c
+#, c-format
+msgid "%s is no recompiled Switch game: only one has settings of its own"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Out of memory"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s holds what no setting takes, which the next change leaves out: %s"
+msgstr ""
+
+#: src/gui/main.c
 msgid "Keep"
 msgstr ""
 
@@ -3727,6 +3795,11 @@ msgstr ""
 #: src/gui/main.c
 #, c-format
 msgid "%s is compiling (%d%%): %s waits until the queue ends"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Not saved: %s could not be removed (%s)"
 msgstr ""
 
 #: src/gui/main.c
@@ -3817,6 +3890,10 @@ msgstr ""
 
 #: src/gui/main.c
 msgid "The runtime listed no settings"
+msgstr ""
+
+#: src/gui/main.c
+msgid "For this game's next runs. Global: as the launcher's Settings say"
 msgstr ""
 
 #: src/gui/main.c
@@ -4457,10 +4534,6 @@ msgid "Shortcuts"
 msgstr ""
 
 #: src/gui/main.c
-msgid "Out of memory"
-msgstr ""
-
-#: src/gui/main.c
 #, c-format
 msgid "The game starts its program %d, %s, which is not made: Recompile the game to make its programs"
 msgstr ""
@@ -4600,11 +4673,39 @@ msgid "Clean Old Settings? %d old key"
 msgstr ""
 
 #: src/gui/main.c
+msgid "Clean Old Settings?"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid " The games' own settings keep %d old keys."
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid " The games' own settings keep %d old key."
+msgstr ""
+
+#: src/gui/main.c
 msgid "Nothing to clean: no [Deprecated] in a game's .ini, no old keys"
 msgstr ""
 
 #: src/gui/main.c
+msgid "Every setting of this game is Global"
+msgstr ""
+
+#: src/gui/main.c
 msgid "Every setting is at its default"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Reset to Global? %d settings of %s change"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Reset to Global? %d setting of %s changes"
 msgstr ""
 
 #: src/gui/main.c
@@ -4615,6 +4716,16 @@ msgstr ""
 #: src/gui/main.c
 #, c-format
 msgid "Reset to Defaults? %d setting changes"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%d settings back to Global"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%d setting back to Global"
 msgstr ""
 
 #: src/gui/main.c
@@ -4720,6 +4831,20 @@ msgid "Remove from Games"
 msgstr ""
 
 #: src/gui/main.c
+msgid "Every key of this screen is in its foot"
+msgstr ""
+
+#. A key of the foot's sentences, which a click finds by this word
+#: src/gui/main.c
+#, snx-key
+msgid "More"
+msgstr ""
+
+#: src/gui/main.c
+msgid "The rest of this screen's keys"
+msgstr ""
+
+#: src/gui/main.c
 #, c-format
 msgid "Each theme shows as the focus reaches it: Enter keeps it, ESC goes back to %s"
 msgstr ""
@@ -4747,6 +4872,10 @@ msgstr ""
 #: src/gui/main.c
 #, snx-key
 msgid "Mods"
+msgstr ""
+
+#: src/gui/main.c
+msgid "AOT Pack"
 msgstr ""
 
 #: src/gui/main.c
@@ -5461,6 +5590,12 @@ msgstr ""
 #. A key of the foot's sentences, which a click finds by this word
 #: src/gui/main.c
 #, snx-key
+msgid "F3"
+msgstr ""
+
+#. A key of the foot's sentences, which a click finds by this word
+#: src/gui/main.c
+#, snx-key
 msgid "Select"
 msgstr ""
 
@@ -5714,6 +5849,10 @@ msgstr ""
 
 #: src/gui/queue.c
 msgid "next"
+msgstr ""
+
+#: src/gui/settings.c
+msgid "Global"
 msgstr ""
 
 #: src/gui/settings.c

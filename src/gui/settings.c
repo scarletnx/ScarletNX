@@ -4,6 +4,7 @@
 #include "3ds/runtime/main.h"
 #include "common/utilities/bits.h"
 #include "common/utilities/common.h"
+#include "common/utilities/game_ini.h"
 #include "common/platform/file.h"
 #include "common/utilities/ini_lines.h"
 #include "gui/i18n.h"
@@ -32,15 +33,15 @@ static GuiSetting* row(GuiSettings* s, const char* section, const char* key, con
     v->key = key;
     return v;
 }
-/* a row's values, value=word between '|', split in place: its words (.ini first) from *pool, NULL when one has no =.
-   values gets them by word */
-static const char** words_of(char* list, const char*** pool, const char*** values) {
+/* a row's values, value=word between '|', split in place: its words (.ini first, a game's Global) from *pool, NULL
+   when one has no =. values gets them by word */
+static const char** words_of(char* list, const char*** pool, const char*** values, int game) {
     const char** words = *pool;
     int n = 1, i;
     char* c;
     for (c = list; *c; ++c) n += *c == '|';
     *values = words + n + 2;
-    words[0] = ".ini";
+    words[0] = game ? SNX_TR_NOOP("Global") : ".ini";
     (*values)[0] = NULL;
     for (i = 1, c = list; i <= n; ++i) {
         char *end = c + strcspn(c, "|"), *equals;
@@ -62,10 +63,12 @@ static void plain(GuiSettings* s, int i) {
     ++s->values[i].values;
     s->values[i].plain = 1;
 }
-int gui_settings_read(GuiSettings* s, const char* runtime) {
+/* the rows of the runtime's list; with game, a game's own (gui_settings_read_game) */
+static int read_list(GuiSettings* s, const char* runtime, int game) {
     /* the launcher's own rows and the recompiler's (settings.txt's launcher sections), listed as the runtime lists the
-       game's, then the runtime's */
-    size_t own = ini_list_text(g_launch_sections, g_launch_sections_count, NULL, 0), size, n = 3, bars = 0, pool;
+       game's, then the runtime's; a game's the runtime's alone */
+    size_t own = game ? 0 : ini_list_text(g_launch_sections, g_launch_sections_count, NULL, 0), size, n = 3, bars = 0,
+           pool;
     const char* c;
     const char** free_words;
     char *line, *next, *text, *page = NULL, *list, *own_end;
@@ -75,7 +78,7 @@ int gui_settings_read(GuiSettings* s, const char* runtime) {
     size = own + strlen(runtime) + 1;
     list = malloc(size);
     if (!list) return 1;
-    ini_list_text(g_launch_sections, g_launch_sections_count, list, own + 1);
+    if (!game) ini_list_text(g_launch_sections, g_launch_sections_count, list, own + 1);
     memcpy(list + own, runtime, strlen(runtime) + 1);
     for (c = list; *c; ++c) { /* a row a line, a page's own two before its first; and the words */
         n += *c == '\n' ? 3 : 0;
@@ -100,7 +103,7 @@ int gui_settings_read(GuiSettings* s, const char* runtime) {
     memset(s->values, 0, n * sizeof *s->values);
     for (line = text; *line; line = next) {
         char* field[12];
-        if (line >= own_end && !s->own) s->own = s->count; /* the launcher's rows end there */
+        if (!game && line >= own_end && !s->own) s->own = s->count; /* the launcher's rows end there */
         const char **words = NULL, **values = NULL;
         int f = 1;
         next = line + strcspn(line, "\n");
@@ -125,7 +128,7 @@ int gui_settings_read(GuiSettings* s, const char* runtime) {
             all->kind = GUI_SETTING_ALL;
             all->first = s->count;
         }
-        if (*field[8]) words = words_of(field[8], &free_words, &values);
+        if (*field[8]) words = words_of(field[8], &free_words, &values, game);
         v = row(s, field[0], field[1], field[7], field[6], words, words ? GUI_KEY_WORD : GUI_KEY_TEXT);
         v->values = values;
         v->type_text = !strcmp(field[3], "text");
@@ -145,7 +148,9 @@ int gui_settings_read(GuiSettings* s, const char* runtime) {
                 v->fallback = words[w];
                 v->word = w;
             }
-        if (values && v->word) { /* its default a word: no .ini's besides, which would be that value twice */
+        if (values && v->word && game) /* a game's starts at Global, which every row has */
+            v->word = 0;
+        else if (values && v->word) { /* its default a word: no .ini's besides, which would be that value twice */
             plain(s, s->count - 1);
             --v->word;
         }
@@ -155,10 +160,13 @@ int gui_settings_read(GuiSettings* s, const char* runtime) {
             all->count = s->count - all->first;
         }
     }
-    if (!s->own) s->own = s->count; /* no runtime listed any */
+    if (!s->own && !game) s->own = s->count; /* no runtime listed any */
+    s->game = game;
     gui_settings_sync(s);
     return 0;
 }
+int gui_settings_read(GuiSettings* s, const char* runtime) { return read_list(s, runtime, 0); }
+int gui_settings_read_game(GuiSettings* s, const char* runtime) { return read_list(s, runtime, 1); }
 void gui_settings_free(GuiSettings* s) {
     free(s->keys);
     memset(s, 0, sizeof *s);
@@ -290,10 +298,11 @@ int gui_settings_save(const GuiSettings* s, const char* path) {
     text = (char*)malloc(room);
     folder = snx_dirname(path);
     staged = snx_format("%s.new", path);
-    if (text)
-        at = (size_t)snprintf(text, room,
-                              "; what the launcher's Settings changed, for every game it runs: over each "
-                              "game's .ini\n");
+    if (text) /* a game's own picks file starts as the runtime writes it */
+        at = (size_t)snprintf(text, room, "%s",
+                              s->game ? SNX_GAME_PICKS_HEAD
+                                      : "; what the launcher's Settings changed, for every game it runs: over each "
+                                        "game's .ini\n");
     for (i = 0; text && i < s->count; ++i) {
         const char* value = kept(s, i);
         if (!strcmp(value, s->values[i].start)) continue;
@@ -452,9 +461,54 @@ void gui_settings_shown(const GuiSettings* s, int row, char* out, size_t size) {
     else
         snprintf(out, size, "%s%s%s", v->fallback, v->fallback[0] ? " " : "", snx_tr("[default]"));
 }
+void gui_settings_shown_game(const GuiSettings* game, const GuiSettings* global, int row, char* out, size_t size) {
+    const GuiSetting* v = &game->values[row];
+    int g = global ? find(global, v->key ? v->key : "") : 0;
+    char shown[GUI_SETTING_TEXT + 64];
+    if (v->kind || picked(game, row)) {
+        gui_settings_shown(game, row, out, size);
+        return;
+    }
+    if (global && g < global->count)
+        gui_settings_shown(global, g, shown, sizeof shown);
+    else
+        snprintf(shown, sizeof shown, "%s", v->fallback ? v->fallback : "");
+    snprintf(out, size, snx_tr("Global (%s)"), shown);
+}
 const char* gui_settings_value(const GuiSettings* s, const char* key) {
     int i = find(s, key);
     return i < s->count ? picked(s, i) : NULL;
+}
+int gui_settings_game_own(const char* ini, char* out, size_t size) {
+    size_t at = 0, bytes;
+    char *path = ini ? snx_game_picks(ini) : NULL, *text = path ? (char*)snx_read_file(path, &bytes) : NULL, *key,
+         *value, *own;
+    int count = 0;
+    SnxIni lines;
+    if (size) out[0] = 0;
+    if (text) {
+        snx_ini_start(&lines, text);
+        while (snx_ini_next(&lines, &key, &value)) {
+            if (at < size) at += (size_t)snprintf(out + at, size - at, "%s%s=%s", count ? ", " : "", key, value);
+            ++count;
+        }
+    }
+    /* the GPU driver and Freedreno's variables the game's box picks for it, in its .ini */
+    if (ini && snx_ini_has(ini, "gpu_driver")) {
+        own = snx_ini_value(ini, "gpu_driver");
+        if (at < size)
+            at += (size_t)snprintf(out + at, size - at, "%sgpu_driver=%s", count ? ", " : "", own ? own : "");
+        ++count;
+        free(own);
+    }
+    if (ini && (own = snx_ini_value(ini, "freedreno_env")) != NULL) {
+        if (at < size) snprintf(out + at, size - at, "%sfreedreno_env", count ? ", " : "");
+        ++count;
+        free(own);
+    }
+    free(text);
+    free(path);
+    return count;
 }
 /* one of the launcher's own rows turned on (its value "on"), as its file of picks keeps it */
 static int own_on(const GuiSettings* s, const char* key) {
@@ -474,20 +528,30 @@ static int debug_row(const GuiSettings* s, int i) {
     const char* section = s->keys[i].section;
     return !s->values[i].kind && section && !strncmp(section, "Debug", 5) && (!section[5] || section[5] == '/');
 }
-int gui_settings_debug(const GuiSettings* s, const char* ini, int picks, char* out, size_t size) {
-    size_t at = 0, bytes;
-    char *text = ini ? (char*)snx_read_file(ini, &bytes) : NULL, *key, *value;
-    const char** file = s->count ? (const char**)calloc((size_t)s->count, sizeof *file) : NULL; /* by row */
-    int count = 0, i;
+/* the values a file of keys gives the rows, the last one's of a key given twice as the runtime reads it, into by_row
+   (count of them); the file's text they point into, which the caller frees, NULL for none */
+static char* file_by_row(const GuiSettings* s, const char* path, const char** by_row) {
+    size_t bytes;
+    char *text = path && by_row ? (char*)snx_read_file(path, &bytes) : NULL, *key, *value;
     SnxIni lines;
+    int i;
+    if (!text) return NULL;
+    snx_ini_start(&lines, text);
+    while (snx_ini_next(&lines, &key, &value))
+        if ((i = find(s, key)) < s->count) by_row[i] = value;
+    return text;
+}
+int gui_settings_debug(const GuiSettings* s, const char* ini, int picks, char* out, size_t size) {
+    size_t at = 0;
+    /* by row: the .ini's values, then the game's picks' */
+    const char** file = s->count ? (const char**)calloc(2 * (size_t)s->count, sizeof *file) : NULL;
+    const char** own = file ? file + s->count : NULL;
+    char *own_path = ini ? snx_game_picks(ini) : NULL, *text = file_by_row(s, ini, file),
+         *own_text = file_by_row(s, own_path, own);
+    int count = 0, i;
     if (size) out[0] = 0;
-    if (text && file) {
-        snx_ini_start(&lines, text);
-        while (snx_ini_next(&lines, &key, &value))
-            if ((i = find(s, key)) < s->count) file[i] = value; /* the last one's, as the runtime reads it */
-    }
     for (i = 0; i < s->count; ++i) {
-        const char* now = picks ? picked(s, i) : NULL;
+        const char* now = own && own[i] ? own[i] : picks ? picked(s, i) : NULL;
         const GuiSetting* v = &s->values[i];
         if (!debug_row(s, i) || !v->def) continue;
         if (!now) now = file && file[i] ? file[i] : v->def;
@@ -504,11 +568,32 @@ int gui_settings_debug(const GuiSettings* s, const char* ini, int picks, char* o
     }
     free(file);
     free(text);
+    free(own_text);
+    free(own_path);
     return count;
 }
 const char* gui_settings_tmpfs(const GuiSettings* s) { return own_on(s, "tmpfs") ? "--tmpfs" : NULL; }
 const char* gui_settings_extract(const GuiSettings* s) { return own_on(s, "extract") ? "--extract-container" : NULL; }
-size_t gui_settings_recompile(GuiSettings* s, int make, const char** argv) {
+/* row i's value a run or a recompile is given: the game's own pick of a setting the recompile takes, which reads its
+   settings from its options alone (picks: the game's picks file, NULL for none), else the launcher's pick; NULL for
+   none. A value of the game's is kept in the row's option, which the caller writes over with its --key=value */
+static const char* given(GuiSettings* s, int i, const char* picks) {
+    char* own =
+        picks && ini_find(g_recompile_game_ini, s->values[i].key) ? snx_ini_value(picks, s->values[i].key) : NULL;
+    if (!own) return picked(s, i);
+    snprintf(s->values[i].option, sizeof s->values[i].option, "%s", own);
+    free(own);
+    return s->values[i].option;
+}
+/* row i's --key=value in its option, for argv */
+static const char* option_of(GuiSettings* s, int i, const char* value) {
+    char v[sizeof s->values[i].option];
+    snprintf(v, sizeof v, "%s", value); /* value may be the option itself (given) */
+    ini_option(s->values[i].option, sizeof s->values[i].option, s->values[i].key, v);
+    return s->values[i].option;
+}
+size_t gui_settings_recompile(GuiSettings* s, int make, const char* game_ini, const char** argv) {
+    char* picks = make && game_ini ? snx_game_picks(game_ini) : NULL;
     size_t n = 0;
     int i;
     for (i = 0; i < s->own; ++i) {
@@ -521,11 +606,11 @@ size_t gui_settings_recompile(GuiSettings* s, int make, const char** argv) {
     }
     /* -r reads the game's settings it recompiles with from its options alone: a run gets them with the game's */
     for (i = s->own; make && i < s->count; ++i) {
-        const char* value = s->values[i].kind ? NULL : picked(s, i);
-        if (!value || !ini_find(g_recompile_game_ini, s->values[i].key)) continue;
-        ini_option(s->values[i].option, sizeof s->values[i].option, s->values[i].key, value);
-        argv[n++] = s->values[i].option;
+        const char* value;
+        if (s->values[i].kind || !ini_find(g_recompile_game_ini, s->values[i].key)) continue;
+        if ((value = given(s, i, picks)) != NULL) argv[n++] = option_of(s, i, value);
     }
+    free(picks);
     return n;
 }
 size_t gui_settings_recompile_shared(GuiSettings* s, const char** argv) {
@@ -563,23 +648,26 @@ size_t gui_settings_one(GuiSettings* s, const char* key, const char** argv) {
     argv[0] = s->values[i].option;
     return 1;
 }
-/* argv's --key=value for each setting picked whose key starts with prefix (all of them without one) */
 /* argv's --key=value of each setting picked; with ctr, the 3DS driver's only: its tables' (keys that start with ctr_)
-   and the Switch's it takes too */
-static size_t picked_options(GuiSettings* s, const char** argv, int ctr) {
+   and the Switch's it takes too. A Switch run's, the game's .ini at game_ini (NULL: none), are the launcher's picks for
+   every game, said by --launcher-picks=1, under the game's own picks, which the runtime reads; the recompile, which
+   reads none, gets the game's own of its settings (given) */
+static size_t picked_options(GuiSettings* s, const char** argv, int ctr, const char* game_ini) {
+    char* picks = !ctr && game_ini ? snx_game_picks(game_ini) : NULL;
     size_t n = 0;
     int i;
     for (i = s->own; i < s->count; ++i) {
-        const char* value = picked(s, i);
         const char* key = s->values[i].key;
-        if (!value || !key || (ctr && strncmp(key, "ctr_", 4) && !snx_ctr_shared_setting(key))) continue;
-        ini_option(s->values[i].option, sizeof s->values[i].option, s->values[i].key, value);
-        argv[n++] = s->values[i].option;
+        const char* value;
+        if (!key || (ctr && strncmp(key, "ctr_", 4) && !snx_ctr_shared_setting(key))) continue;
+        if ((value = ctr ? picked(s, i) : given(s, i, picks)) != NULL) argv[n++] = option_of(s, i, value);
     }
+    if (n && !ctr) argv[n++] = "--" SNX_LAUNCHER_PICKS "=1";
+    free(picks);
     return n;
 }
-size_t gui_settings_options(GuiSettings* s, int launch, const char** argv) {
-    size_t n = picked_options(s, argv, 0);
+size_t gui_settings_options(GuiSettings* s, int launch, const char* game_ini, const char** argv) {
+    size_t n = picked_options(s, argv, 0, game_ini);
     if (launch && gui_settings_tmpfs(s)) argv[n++] = gui_settings_tmpfs(s);
     if (launch && gui_settings_extract(s)) argv[n++] = gui_settings_extract(s);
     if (launch && own_on(s, "gdbstub")) {
@@ -588,4 +676,4 @@ size_t gui_settings_options(GuiSettings* s, int launch, const char** argv) {
     }
     return n;
 }
-size_t gui_settings_ctr_options(GuiSettings* s, const char** argv) { return picked_options(s, argv, 1); }
+size_t gui_settings_ctr_options(GuiSettings* s, const char** argv) { return picked_options(s, argv, 1, NULL); }

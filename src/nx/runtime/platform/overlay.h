@@ -85,6 +85,9 @@ int overlay_shortcut_listening(void);
 void overlay_shortcut_key(unsigned key, unsigned mods);
 /* Backspace: on the Shortcuts page the row in focus back to its default key, as a key given; elsewhere overlay_back */
 int overlay_backspace(void);
+/* Delete, and a controller's Y: the setting in focus that the game's picks hold (its value marked *) back to Global,
+   the launcher's for every game (options.h's ini_unpick); on the Shortcuts page as Backspace */
+int overlay_delete(void);
 /* a tap at x, y on a picture of sw x sh: what it did, OVERLAY_CLOSE outside the panel */
 int overlay_tap(float x, float y, int sw, int sh);
 /* a finger or the mouse (touch.h's SNX_TOUCH_MOUSE) on the open menu, at x, y in the picture's pixels: down off the
@@ -166,6 +169,15 @@ typedef struct {
 } OverlayKeyboard;
 /* the box for k, in place of one that shows */
 void overlay_keyboard_show(const OverlayKeyboard* k);
+/* What the menu's and the box's hints name: the keyboard's keys, or a controller's buttons, as the last of them
+   pressed says (the backend's events: a key, or a button, a stick or a trigger past SNX_PAD_TRIGGER; a finger or the
+   mouse changes nothing). For a controller, ok and back are the names its face gives the controls that send the
+   console's A and B ("B" and "A" on an Xbox pad, "Circle" and "Cross" on a PlayStation one), NULL for "A" and "B";
+   OVERLAY_INPUT_NAME bytes each at most. The keyboard's until then, on Android the on-screen controls' (a
+   controller's) */
+#define OVERLAY_INPUT_NAME 16
+void overlay_input_keys(void);
+void overlay_input_pad(const char* ok, const char* back);
 /* the box for ticket taken away unanswered, as the game takes its keyboard away; another one stays */
 void overlay_keyboard_hide(u32 ticket);
 int overlay_keyboard_shown(void); /* for any thread */

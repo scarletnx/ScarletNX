@@ -9,6 +9,16 @@
 /* the game's settings, <name>.ini, where the runtime reads them: in its folder, or in an installed build's config
    folder (snx_user_path). Owned */
 char* snx_game_ini(const char* folder, const char* name);
+/* the game's own picks beside its .ini at ini, <name>.picks for <name>.ini: the settings its menu and the launcher's
+   Settings of the game set for it alone, which the runtime reads over the launcher's for every game and the .ini.
+   A run given SNX_LAUNCHER_PICKS=1 (--launcher-picks=1) has the launcher's for every game as its settings on the command
+   line, which the game's picks go over. Owned */
+#define SNX_LAUNCHER_PICKS "launcher-picks"
+char* snx_game_picks(const char* ini);
+/* the comment a game's picks file starts with, whichever writes it, the runtime or the launcher */
+#define SNX_GAME_PICKS_HEAD                                                                                            \
+    "; This game's own settings, set for it alone in its menu or the launcher's Settings of the game. Each\n"         \
+    "; goes over the launcher's for every game and over the game's .ini; one taken out goes back to them\n"
 /* key's value in the .ini at path, the last one's, malloc'd: NULL for none, an empty one or no such file */
 char* snx_ini_value(const char* path, const char* key);
 /* key=value in [Game] of the .ini at path, every older key= taken out and the file made when there is none, left as

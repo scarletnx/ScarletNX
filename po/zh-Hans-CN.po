@@ -976,6 +976,12 @@ msgstr "Del: 默认."
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
+msgid "Del: Global."
+msgstr ""
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
 msgid "Up/Down: group. Enter: open. ESC: back."
 msgstr "上/下: 分组. Enter: 打开. ESC: 返回."
 
@@ -1178,6 +1184,12 @@ msgstr "十字键: 设置项、更改. A: 输入. B: 返回."
 #, snx-keys
 msgid "X: default."
 msgstr "X: 默认."
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "X: Global."
+msgstr ""
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
@@ -1523,6 +1535,18 @@ msgstr "F1: 帮助."
 msgid "Select: help."
 msgstr "Select: 帮助."
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "More."
+msgstr ""
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "F3: more."
+msgstr ""
+
 #: src/gui/main.c
 msgid "Updates and DLCs"
 msgstr "更新和 DLC"
@@ -1729,6 +1753,14 @@ msgid "Clean"
 msgstr "清理"
 
 #: src/gui/main.c
+msgid "Keep the Games' Own"
+msgstr ""
+
+#: src/gui/main.c
+msgid "With the Games' Own"
+msgstr ""
+
+#: src/gui/main.c
 msgid "Reset"
 msgstr "重置"
 
@@ -1927,7 +1959,7 @@ msgstr "已删除 %s 的缓存：%s"
 msgid "GPU Driver: %s"
 msgstr "GPU 驱动：%s"
 
-#: src/gui/main.c
+#: src/gui/main.c src/gui/settings.c
 #, c-format
 msgid "Global (%s)"
 msgstr "全局（%s）"
@@ -2181,6 +2213,10 @@ msgid "S lists the save states of a recompiled Switch game in focus."
 msgstr "S 列出选中的已重编译 Switch 游戏的即时存档。"
 
 #: src/gui/main.c
+msgid "Settings of its own are a recompiled Switch game's, in focus."
+msgstr ""
+
+#: src/gui/main.c
 #, c-format
 msgid "It can't be played from that state: %s."
 msgstr "无法从该即时存档运行：%s。"
@@ -2237,6 +2273,11 @@ msgstr "SCARLETNX  /  设置  /  GPU 驱动  /  下载"
 #: src/gui/main.c
 msgid "SCARLETNX  /  SETTINGS  /  FREEDRENO SETTINGS"
 msgstr "SCARLETNX  /  设置  /  FREEDRENO 设置"
+
+#: src/gui/main.c
+#, c-format
+msgid "SCARLETNX  /  SETTINGS  /  %s"
+msgstr ""
 
 #: src/gui/main.c
 #, c-format
@@ -2516,6 +2557,11 @@ msgstr "生成方式：O%c，AOT %s"
 #: src/gui/main.c
 #, c-format
 msgid "Not found: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Own settings: %s"
 msgstr ""
 
 #: src/gui/main.c
@@ -2927,6 +2973,14 @@ msgstr "应用"
 #: src/gui/main.c
 msgid "The theme, the menu's letters, the theme editor and the folders"
 msgstr "主题、菜单文字、主题编辑器和文件夹"
+
+#: src/gui/main.c
+msgid "Reset to Global"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Every setting of this game back to Global, the launcher's for every game, asked first"
+msgstr ""
 
 #: src/gui/main.c
 msgid "is not there"
@@ -3708,6 +3762,20 @@ msgid "User %d is %s now"
 msgstr "用户 %d 现在是 %s"
 
 #: src/gui/main.c
+#, c-format
+msgid "%s is no recompiled Switch game: only one has settings of its own"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Out of memory"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s holds what no setting takes, which the next change leaves out: %s"
+msgstr ""
+
+#: src/gui/main.c
 msgid "Keep"
 msgstr "保留"
 
@@ -3731,6 +3799,11 @@ msgstr "保留此显示大小？将恢复为 %s，剩余 %d 秒"
 #, c-format
 msgid "%s is compiling (%d%%): %s waits until the queue ends"
 msgstr "%s 正在编译（%d%%）：%s 要等到队列结束"
+
+#: src/gui/main.c
+#, c-format
+msgid "Not saved: %s could not be removed (%s)"
+msgstr ""
 
 #: src/gui/main.c
 #, c-format
@@ -3821,6 +3894,10 @@ msgstr "数据、日志、缓存、提取和已重编译游戏库的主文件夹
 #: src/gui/main.c
 msgid "The runtime listed no settings"
 msgstr "运行时未列出任何设置"
+
+#: src/gui/main.c
+msgid "For this game's next runs. Global: as the launcher's Settings say"
+msgstr ""
 
 #: src/gui/main.c
 msgid "For the next runs, over the game's .ini"
@@ -4460,10 +4537,6 @@ msgid "Shortcuts"
 msgstr "快捷键"
 
 #: src/gui/main.c
-msgid "Out of memory"
-msgstr ""
-
-#: src/gui/main.c
 #, c-format
 msgid "The game starts its program %d, %s, which is not made: Recompile the game to make its programs"
 msgstr "游戏要启动其程序 %d（%s），但它尚未生成：重新编译游戏以生成其程序"
@@ -4603,12 +4676,40 @@ msgid "Clean Old Settings? %d old key"
 msgstr "清理旧设置？%d 个旧键"
 
 #: src/gui/main.c
+msgid "Clean Old Settings?"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid " The games' own settings keep %d old keys."
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid " The games' own settings keep %d old key."
+msgstr ""
+
+#: src/gui/main.c
 msgid "Nothing to clean: no [Deprecated] in a game's .ini, no old keys"
 msgstr "无需清理：游戏的 .ini 中没有 [Deprecated]，也没有旧键"
 
 #: src/gui/main.c
+msgid "Every setting of this game is Global"
+msgstr ""
+
+#: src/gui/main.c
 msgid "Every setting is at its default"
 msgstr "全部设置已是默认"
+
+#: src/gui/main.c
+#, c-format
+msgid "Reset to Global? %d settings of %s change"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Reset to Global? %d setting of %s changes"
+msgstr ""
 
 #: src/gui/main.c
 #, c-format
@@ -4619,6 +4720,16 @@ msgstr "恢复默认？%d 项设置将更改"
 #, c-format
 msgid "Reset to Defaults? %d setting changes"
 msgstr "恢复默认？%d 项设置将更改"
+
+#: src/gui/main.c
+#, c-format
+msgid "%d settings back to Global"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%d setting back to Global"
+msgstr ""
 
 #: src/gui/main.c
 #, c-format
@@ -4723,6 +4834,20 @@ msgid "Remove from Games"
 msgstr ""
 
 #: src/gui/main.c
+msgid "Every key of this screen is in its foot"
+msgstr ""
+
+#. A key of the foot's sentences, which a click finds by this word
+#: src/gui/main.c
+#, snx-key
+msgid "More"
+msgstr ""
+
+#: src/gui/main.c
+msgid "The rest of this screen's keys"
+msgstr ""
+
+#: src/gui/main.c
 #, c-format
 msgid "Each theme shows as the focus reaches it: Enter keeps it, ESC goes back to %s"
 msgstr "焦点到哪个主题就显示哪个：Enter 保留，ESC 回到 %s"
@@ -4751,6 +4876,10 @@ msgstr "查看进度"
 #, snx-key
 msgid "Mods"
 msgstr "模组"
+
+#: src/gui/main.c
+msgid "AOT Pack"
+msgstr ""
 
 #: src/gui/main.c
 #, c-format
@@ -5464,6 +5593,12 @@ msgstr "F1"
 #. A key of the foot's sentences, which a click finds by this word
 #: src/gui/main.c
 #, snx-key
+msgid "F3"
+msgstr ""
+
+#. A key of the foot's sentences, which a click finds by this word
+#: src/gui/main.c
+#, snx-key
 msgid "Select"
 msgstr "Select"
 
@@ -5718,6 +5853,10 @@ msgstr "第 %d"
 #: src/gui/queue.c
 msgid "next"
 msgstr "下一个"
+
+#: src/gui/settings.c
+msgid "Global"
+msgstr ""
 
 #: src/gui/settings.c
 msgid "Its own page, as in the game's menu"

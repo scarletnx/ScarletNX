@@ -130,6 +130,30 @@ int main(void) {
         free(second);
         free(own);
     }
+    /* the games' own picks files (Clean Old Settings takes their old keys out): one directly in the folder, of any
+       case, and a game folder's own <name>.picks; not another file of a game's folder */
+    {
+        char** paths;
+        size_t n, i;
+        int first = 0, own = 0;
+        path = snx_path_join(games, "First.PICKS");
+        write_text(path, "[Audio]\nvolume=40\n");
+        free(path);
+        path = snx_path_join(games, "0100ABCD12345000/0100ABCD12345000.picks");
+        write_text(path, "[Other]\nnewer_key=5\n");
+        free(path);
+        path = snx_path_join(games, "0100ABCD12345000/other.picks");
+        write_text(path, "[Other]\nnewer_key=5\n");
+        free(path);
+        n = gui_picks_files(games, &paths);
+        for (i = 0; i < n; ++i) {
+            first += strstr(paths[i], "First.PICKS") != NULL;
+            own += strstr(paths[i], "0100ABCD12345000.picks") != NULL;
+        }
+        assert(n == 2 && first == 1 && own == 1);
+        snx_free_strings(paths, n);
+        assert(!gui_picks_files(NULL, &paths) && !paths);
+    }
     path = snx_path_join(games, "0100ABCD12345000/other.ini");
     text = read_text(path);
     assert(!strcmp(text, "[Deprecated]\nx=1\n"));

@@ -131,9 +131,11 @@ void vk_wlog_ready(VkWriteLog* l) {
     g_ready[l->parts - 1].used = g_vk_present;
 }
 int vk_wlog_on_gpu(const VkWriteLog* l) { return l->gpu; }
-void vk_wlog_clear(VkCommandBuffer cb, VkWriteLog* l) {
+void vk_wlog_clear(VkCommandBuffer cb, VkWriteLog* l, u32 cleared) {
     /* after its readers (the fold's dispatches), and before any later work that writes it again: the barrier after the
-       fill is the one every later dispatch that takes the log from the pool comes after */
+       fills is the one every later dispatch that takes the log from the pool comes after. A part the folds left clear
+       needs no fill: filling every part wrote 2 MiB each after each dispatch in the mirror, where the folds clear the
+       windows written */
     VkMemoryBarrier2 b[2] = {
         {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
          .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
@@ -141,14 +143,16 @@ void vk_wlog_clear(VkCommandBuffer cb, VkWriteLog* l) {
          .dstStageMask = VK_PIPELINE_STAGE_2_CLEAR_BIT,
          .dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT},
         {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
-         .srcStageMask = VK_PIPELINE_STAGE_2_CLEAR_BIT,
-         .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+         .srcStageMask = VK_PIPELINE_STAGE_2_CLEAR_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+         .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
          .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
          .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT}};
     VkDependencyInfo d = {
         .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &b[0]};
-    rec_CmdPipelineBarrier2(cb, &d);
-    rec_CmdFillBuffer(cb, l->buf, 0, VK_WHOLE_SIZE, 0);
+    u32 left = ((1u << l->parts) - 1u) & ~cleared; /* 16 parts at most (log_get) */
+    if (left) rec_CmdPipelineBarrier2(cb, &d);
+    for (u32 p = 0; p < l->parts; p++)
+        if (left >> p & 1) rec_CmdFillBuffer(cb, l->buf, (u64)p * SH_WLOG_PART * 4, (u64)SH_WLOG_PART * 4, 0);
     d.pMemoryBarriers = &b[1];
     rec_CmdPipelineBarrier2(cb, &d);
 }

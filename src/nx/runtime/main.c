@@ -839,7 +839,8 @@ static void frontend_loop(void) {
             SNX_ZONE_END(z_hid);
         }
         if (plat_ns() >= vsync) vsync = vsync_signal(vsync, paused);
-        if (++tick % 60 == 0) ini_poll(0);
+        int due = ini_poll_due(); /* a pick the menu took out, shown at once */
+        if (++tick % 60 == 0 || due) ini_poll(0);
         frontend_frame();
         switch_tick();
         SNX_ZONE_END(z_frontend);

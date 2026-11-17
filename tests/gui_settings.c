@@ -3,6 +3,7 @@
 /* The menu's Settings (src/gui/settings.c): the runtime's list read into the form's rows, a setting's pick and the
    options a run gets. With a runtime's path, its own --settings list too */
 #include "common/utilities/common.h"
+#include "common/utilities/game_ini.h"
 #include "gui/editor.h"
 #include "gui/settings.h"
 #include "snx_settings.h"
@@ -98,7 +99,7 @@ int main(int argc, char** argv) {
            !strcmp(s.values[3].key, "java_home") && strstr(s.keys[3].about, "--java-home") &&
            !gui_settings_java_home(&s, options));
     assert(gui_settings_set(&s, "java_home", "/opt/jdk") && gui_settings_java_home(&s, options) == 1 &&
-           !strcmp(options[0], "--java-home=/opt/jdk") && !gui_settings_recompile(&s, 0, options) &&
+           !strcmp(options[0], "--java-home=/opt/jdk") && !gui_settings_recompile(&s, 0, NULL, options) &&
            gui_settings_set(&s, "java_home", "") && !gui_settings_java_home(&s, options));
     assert(!tracy || !strcmp(s.keys[at(&s, "tracy_capture")].section, "Debug")); /* with the profiler's other rows */
     assert(!gui_settings_extract(&s)); /* off: a dump read in place */
@@ -106,12 +107,15 @@ int main(int argc, char** argv) {
        LLVM batch full or ipo, the AOT threads a number (0 Auto) and the most Auto opens (0 the cores'), the unit size a
        number of instructions, the unit cache limit a number of GB (0 none), and LLVM Internals is a page of its own */
     assert(!strcmp(s.keys[opt].section, "Launch") && !strcmp(s.keys[opt].key, "Optimization level") &&
-           !strcmp(s.values[opt].key, "opt") && words(&s.keys[opt]) == 6 && !gui_settings_recompile(&s, 0, options));
-    assert(gui_settings_set(&s, "opt", "2") && !gui_settings_recompile(&s, 0, options)); /* the default: no pick */
-    assert(gui_settings_set(&s, "opt", "z") && gui_settings_recompile(&s, 0, options) == 1 && !strcmp(options[0], "--opt=z"));
+           !strcmp(s.values[opt].key, "opt") && words(&s.keys[opt]) == 6 &&
+           !gui_settings_recompile(&s, 0, NULL, options));
+    assert(gui_settings_set(&s, "opt", "2") &&
+           !gui_settings_recompile(&s, 0, NULL, options)); /* the default: no pick */
+    assert(gui_settings_set(&s, "opt", "z") && gui_settings_recompile(&s, 0, NULL, options) == 1 &&
+           !strcmp(options[0], "--opt=z"));
     assert(!gui_settings_set(&s, "opt", "q") && gui_settings_set(&s, "opt", "s") &&
            gui_settings_set(&s, "aot_threads", "4"));
-    assert(gui_settings_recompile(&s, 0, options) == 2 && !strcmp(options[0], "--opt=s") &&
+    assert(gui_settings_recompile(&s, 0, NULL, options) == 2 && !strcmp(options[0], "--opt=s") &&
            !strcmp(options[1], "--aot-threads=4"));
     /* the 3DS, Vita and GBA drivers' recompiles take the level and the threads, never LLVM Internals' */
     assert(gui_settings_set(&s, "llvm_batch", "ipo") && gui_settings_recompile_shared(&s, options) == 2 &&
@@ -121,28 +125,28 @@ int main(int argc, char** argv) {
            !strcmp(s.values[opt + 1].key, "llvm_batch") && !strcmp(s.values[opt + 1].def, "full") &&
            words(&s.keys[opt + 1]) == 2); /* full, the default, which is not passed, and ipo */
     assert(!gui_settings_set(&s, "llvm_batch", "fast") && gui_settings_set(&s, "llvm_batch", "ipo") &&
-           gui_settings_recompile(&s, 0, options) == 3 && !strcmp(options[1], "--llvm-batch=ipo") &&
+           gui_settings_recompile(&s, 0, NULL, options) == 3 && !strcmp(options[1], "--llvm-batch=ipo") &&
            !strcmp(options[2], "--aot-threads=4") && !gui_settings_set(&s, "llvm_batch", ".ini") &&
-           gui_settings_set(&s, "llvm_batch", "full") && gui_settings_recompile(&s, 0, options) == 2);
+           gui_settings_set(&s, "llvm_batch", "full") && gui_settings_recompile(&s, 0, NULL, options) == 2);
     assert(!strcmp(s.keys[opt + 3].section, "Launch") && !strcmp(s.keys[opt + 3].key, "AOT threads at most") &&
            !strcmp(s.values[opt + 3].key, "aot_threads_most") &&
            !strcmp(s.values[opt + 3].def, "0")); /* Auto, the default, which is not passed */
-    assert(gui_settings_set(&s, "aot_threads_most", "3") && gui_settings_recompile(&s, 0, options) == 3 &&
+    assert(gui_settings_set(&s, "aot_threads_most", "3") && gui_settings_recompile(&s, 0, NULL, options) == 3 &&
            !strcmp(options[2], "--aot-threads-most=3") && gui_settings_set(&s, "aot_threads_most", ""));
     assert(!strcmp(s.keys[opt + 4].section, "Launch") && !strcmp(s.keys[opt + 4].key, "Unit size") &&
            !strcmp(s.values[opt + 4].key, "unit_instructions") && !strcmp(s.values[opt + 4].def, "90000"));
-    assert(gui_settings_set(&s, "unit_instructions", "20000") && gui_settings_recompile(&s, 0, options) == 3 &&
+    assert(gui_settings_set(&s, "unit_instructions", "20000") && gui_settings_recompile(&s, 0, NULL, options) == 3 &&
            !strcmp(options[2], "--unit-instructions=20000") && gui_settings_set(&s, "unit_instructions", ""));
     assert(!strcmp(s.keys[opt + 5].section, "Launch") && !strcmp(s.keys[opt + 5].key, "Unit cache limit") &&
            !strcmp(s.values[opt + 5].key, "unit_cache_gb") && strstr(s.keys[opt + 5].about, "0 = no limit"));
     assert(!strcmp(s.values[opt + 5].def, "0") &&
            strstr(s.keys[opt + 5].about, "a tenth of its disk free, at most 10 GB")); /* no limit */
-    assert(gui_settings_set(&s, "unit_cache_gb", "50") && gui_settings_recompile(&s, 0, options) == 3 &&
+    assert(gui_settings_set(&s, "unit_cache_gb", "50") && gui_settings_recompile(&s, 0, NULL, options) == 3 &&
            !strcmp(options[2], "--unit-cache-gb=50") && gui_settings_set(&s, "unit_cache_gb", ""));
     assert(!strcmp(s.keys[opt + 6].section, "Launch") && s.values[opt + 6].kind == GUI_SETTING_PAGE &&
            !strcmp(s.keys[opt + 6].key, "LLVM Internals"));
     assert(gui_settings_set(&s, "opt", "2") && gui_settings_set(&s, "aot_threads", "") &&
-           !gui_settings_recompile(&s, 0, options));
+           !gui_settings_recompile(&s, 0, NULL, options));
     /* Settings > GBA's Covers, the launcher's own after Launch's: None by default, Box art (libretro-thumbnails) when
        picked, an unknown value refused, and never a recompile's option nor a run's */
     {
@@ -154,7 +158,7 @@ int main(int argc, char** argv) {
         assert(!gui_settings_set(&s, "gba_covers", "screenshot") && gui_settings_set(&s, "gba_covers", "boxart") &&
                !strcmp(gui_settings_value(&s, "gba_covers"), "boxart") &&
                !strcmp(on_screen(&s, "gba_covers"), "Box art (libretro-thumbnails)"));
-        assert(!gui_settings_recompile(&s, 1, options) && !gui_settings_one(&s, "gba_covers", options));
+        assert(!gui_settings_recompile(&s, 1, NULL, options) && !gui_settings_one(&s, "gba_covers", options));
         assert(gui_settings_set(&s, "gba_covers", "none") && !gui_settings_value(&s, "gba_covers"));
     }
     /* Settings > GBA's Colors after it: GBA screen by default and then no option for the run (the runner's own default),
@@ -167,7 +171,7 @@ int main(int argc, char** argv) {
         assert(!gui_settings_set(&s, "gba_color", "sepia") && gui_settings_set(&s, "gba_color", "raw") &&
                !strcmp(on_screen(&s, "gba_color"), "Raw") && gui_settings_gba(&s, options) == 1 &&
                !strcmp(options[0], "--gba-color=raw"));
-        assert(!gui_settings_recompile(&s, 1, options) && !gui_settings_one(&s, "gba_color", options));
+        assert(!gui_settings_recompile(&s, 1, NULL, options) && !gui_settings_one(&s, "gba_color", options));
         assert(gui_settings_set(&s, "gba_color", "gba") && !gui_settings_gba(&s, options));
     }
     /* a game's setting alone, as a GBA run takes fullscreen: once picked, and never a launcher's own */
@@ -178,13 +182,13 @@ int main(int argc, char** argv) {
     /* a run that makes the game (-r) takes the game's settings the recompile takes too, after the recompiler's: Debug's
        SLP vectorizer, not a setting of the game alone (docked); a run gets them with the game's options, never twice */
     assert(gui_settings_set(&s, "opt", "z") && gui_settings_set(&s, "docked", "0"));
-    assert(gui_settings_recompile(&s, 1, options) == 2 && !strcmp(options[0], "--opt=z") &&
+    assert(gui_settings_recompile(&s, 1, NULL, options) == 2 && !strcmp(options[0], "--opt=z") &&
            !strcmp(options[1], "--slp-vectorizer=1"));
-    assert(gui_settings_recompile(&s, 0, options) == 1 && !strcmp(options[0], "--opt=z"));
+    assert(gui_settings_recompile(&s, 0, NULL, options) == 1 && !strcmp(options[0], "--opt=z"));
     assert(gui_settings_set(&s, "opt", "2") && gui_settings_set(&s, "docked", "1") &&
-           gui_settings_recompile(&s, 1, options) == 1 && !strcmp(options[0], "--slp-vectorizer=1"));
+           gui_settings_recompile(&s, 1, NULL, options) == 1 && !strcmp(options[0], "--slp-vectorizer=1"));
     assert(gui_settings_set(&s, "slp_vectorizer", "0") && !gui_settings_one(&s, "slp_vectorizer", options) &&
-           !gui_settings_recompile(&s, 1, options));
+           !gui_settings_recompile(&s, 1, NULL, options));
     assert(!strcmp(s.keys[s.own].section, "Display") && !strcmp(s.keys[s.own].key, "docked"));
     assert(!strcmp(s.keys[s.own].about, "1 = TV mode") && !strcmp(key(&s, "fullscreen")->about, "1 = start in fullscreen"));
     assert(!strcmp(s.keys[s.count - 1].key, "log") && !strcmp(s.keys[s.count - 1].about, "Log detail"));
@@ -233,8 +237,8 @@ int main(int argc, char** argv) {
     assert(!gui_settings_set(&s, "language", "3.5") && gui_settings_set(&s, "language", "3.0") &&
            !strcmp(gui_settings_value(&s, "language"), "3") && gui_settings_set(&s, "language", ""));
     /* the scale goes to a run as it was picked, any scale within the row's range */
-    assert(gui_settings_set(&s, "resolution", "1.22") && gui_settings_options(&s, 0, options) == 1 &&
-           !strcmp(options[0], "--resolution=1.22"));
+    assert(gui_settings_set(&s, "resolution", "1.22") && gui_settings_options(&s, 0, NULL, options) == 2 &&
+           !strcmp(options[0], "--resolution=1.22") && !strcmp(options[1], "--launcher-picks=1"));
     assert(gui_settings_set(&s, "resolution", "") && !gui_settings_value(&s, "resolution"));
     assert(key(&s, "old")->type == GUI_KEY_TEXT && key(&s, "broken")->type == GUI_KEY_TEXT);
     assert(!strcmp(shown(&s, "touch"), "Fingers and mouse") && !strcmp(shown(&s, "log"), "1"));
@@ -270,8 +274,8 @@ int main(int argc, char** argv) {
     assert(gui_settings_set(&s, "old", "0.5 0.5 100 1") && gui_settings_set(&s, "language", ""));
     assert(!gui_settings_value(&s, "language") && !gui_settings_set(&s, "nothing", "1"));
     assert(!gui_settings_set(&s, "Buttons", ">") && !gui_settings_set(&s, "All", ".ini"));
-    assert(gui_settings_options(&s, 1, options) == 2 && !strcmp(options[0], "--old=0.5 0.5 100 1"));
-    assert(!strcmp(options[1], "--touch=1"));
+    assert(gui_settings_options(&s, 1, NULL, options) == 3 && !strcmp(options[0], "--old=0.5 0.5 100 1"));
+    assert(!strcmp(options[1], "--touch=1") && !strcmp(options[2], "--launcher-picks=1"));
     assert(gui_settings_set(&s, "touch", "2") && gui_settings_set(&s, "old", ""));
 
     /* All: every row of its page to the first one's next word, either way; Mixed when they differ */
@@ -285,7 +289,8 @@ int main(int argc, char** argv) {
     assert(gui_settings_step_all(&s, all, -1) && !strcmp(shown(&s, "All"), ".ini"));
     assert(gui_settings_step_all(&s, all, 0) && gui_settings_step_all(&s, all, 0) &&
            !strcmp(shown(&s, "All"), "Shown"));
-    assert(gui_settings_options(&s, 0, options) == 2 && !strcmp(options[0], "--controls-a-shown=1"));
+    assert(gui_settings_options(&s, 0, NULL, options) == 3 && !strcmp(options[0], "--controls-a-shown=1") &&
+           !strcmp(options[2], "--launcher-picks=1"));
     /* the page's row, or its All, back to where they started: its rows */
     gui_settings_mark(&s);
     gui_settings_step_all(&s, all, 1);
@@ -427,7 +432,7 @@ int main(int argc, char** argv) {
                         assert(gui_settings_set(&s, "extract", extract ? "on" : "off"));
                         assert(extract ? !strcmp(gui_settings_extract(&s), "--extract-container")
                                        : !gui_settings_extract(&s));
-                        n = gui_settings_options(&s, launch, options);
+                        n = gui_settings_options(&s, launch, NULL, options);
                         assert(n <= (size_t)s.count + 1);
                         if (fullscreen) {
                             snprintf(want, sizeof want, "--fullscreen=%s", picks[fullscreen]);
@@ -437,6 +442,8 @@ int main(int argc, char** argv) {
                             snprintf(want, sizeof want, "--touch=%s", picks[touch]);
                             assert(i < n && !strcmp(options[i++], want));
                         }
+                        /* the picks the launcher's for every game, which the game's own go over */
+                        if (i) assert(i < n && !strcmp(options[i++], "--launcher-picks=1"));
                         if (launch && tmpfs) assert(i < n && !strcmp(options[i++], "--tmpfs"));
                         if (launch && extract) assert(i < n && !strcmp(options[i++], "--extract-container"));
                         if (launch && stub) {
@@ -452,12 +459,12 @@ int main(int argc, char** argv) {
        a build without the client lists no row for it at all */
     if (tracy) {
         size_t i;
-        assert(gui_settings_set(&s, "tracy_capture", "1") && !gui_settings_recompile(&s, 0, options));
-        tracy_n = gui_settings_options(&s, 1, options);
+        assert(gui_settings_set(&s, "tracy_capture", "1") && !gui_settings_recompile(&s, 0, NULL, options));
+        tracy_n = gui_settings_options(&s, 1, NULL, options);
         for (i = 0; i < tracy_n && strcmp(options[i], "--tracy-capture=1"); ++i) continue;
         assert(i < tracy_n); /* among the run's, where the .ini's other Debug rows are */
         assert(gui_settings_set(&s, "tracy_capture", "0"));
-        tracy_n = gui_settings_options(&s, 1, options);
+        tracy_n = gui_settings_options(&s, 1, NULL, options);
         for (i = 0; i < tracy_n; ++i) assert(strcmp(options[i], "--tracy-capture=1"));
     }
     gui_settings_free(&s);
@@ -487,7 +494,8 @@ int main(int argc, char** argv) {
         assert(!strcmp(gui_settings_value(&s, "gdbstub"), "on") && !strcmp(gui_settings_value(&s, "language"), "3"));
         assert(!strcmp(gui_settings_value(&s, "fullscreen"), "1") && !strcmp(gui_settings_value(&s, "touch"), "1"));
         assert(!gui_settings_value(&s, "log") && !strcmp(gui_settings_value(&s, "controls_b_shown"), "0"));
-        assert(!strcmp(shown(&s, "All"), "Mixed") && gui_settings_options(&s, 1, options) == 6);
+        assert(!strcmp(shown(&s, "All"), "Mixed") && gui_settings_options(&s, 1, NULL, options) == 7 &&
+               !strcmp(options[4], "--launcher-picks=1") && !strcmp(options[5], "-S"));
         /* a row back to where it started, then every one; how many a reset of every one changes, counted */
         changed = gui_settings_changed(&s); /* gdbstub, language, fullscreen, touch, B; not the All made Mixed */
         assert(changed == 5);
@@ -497,7 +505,7 @@ int main(int argc, char** argv) {
         gui_settings_reset(&s, -1);
         assert(!gui_settings_changed(&s));
         assert(!strcmp(gui_settings_value(&s, "fullscreen"), "0") && !gui_settings_value(&s, "touch"));
-        assert(!gui_settings_value(&s, "gdbstub") && gui_settings_options(&s, 1, options) == 1);
+        assert(!gui_settings_value(&s, "gdbstub") && gui_settings_options(&s, 1, NULL, options) == 2);
         assert(!strcmp(shown(&s, "All"), ".ini"));
         gui_settings_load(&s, path, NULL, 0);                        /* and the file's picks again */
         gui_settings_load(&s, "/nonexistent/settings.ini", NULL, 0); /* none: nothing changes */
@@ -554,8 +562,8 @@ int main(int argc, char** argv) {
         gui_settings_mark(&s);
         assert(!strcmp(on_screen(&s, "controls"), "Off [default]") && !strcmp(gui_settings_value(&s, "controls"), "0"));
         assert(!strcmp(on_screen(&s, "fullscreen"), "0 [default]") && !gui_settings_changed(&s));
-        assert(gui_settings_options(&s, 0, options) == 2 && !strcmp(options[0], "--fullscreen=0") &&
-               !strcmp(options[1], "--controls=0"));
+        assert(gui_settings_options(&s, 0, NULL, options) == 3 && !strcmp(options[0], "--fullscreen=0") &&
+               !strcmp(options[1], "--controls=0") && !strcmp(options[2], "--launcher-picks=1"));
         /* the form goes round Off and On, either way, and Select steps */
         gui_editor_form(&form, s.keys, s.count, s.values, NULL);
         form.row = row = at(&s, "controls");
@@ -618,7 +626,7 @@ int main(int argc, char** argv) {
                                 "touch=.ini is no longer a value of Touch screen: touch=2 now"));
             assert(!gui_settings_value(&s, "docked") && !gui_settings_value(&s, "touch") &&
                    !gui_settings_value(&s, "controls_b_shown") && !strcmp(gui_settings_value(&s, "log"), "2"));
-            assert(!strcmp(on_screen(&s, "docked"), "1 [default]") && gui_settings_options(&s, 0, options) == 1 &&
+            assert(!strcmp(on_screen(&s, "docked"), "1 [default]") && gui_settings_options(&s, 0, NULL, options) == 2 &&
                    !strcmp(options[0], "--log=2"));
             assert(!gui_settings_save(&s, path));
             text = (char*)snx_read_file(path, &size);
@@ -645,7 +653,7 @@ int main(int argc, char** argv) {
             assert(gui_settings_load(&s, path, old, sizeof old) == 1);
             assert(!strcmp(old, "vk_descriptors=1 is deprecated: Descriptor buffers is vk_descriptors_mode=1 now"));
             assert(!strcmp(gui_settings_value(&s, "vk_descriptors_mode"), "1") &&
-                   gui_settings_options(&s, 0, options) == 1 && !strcmp(options[0], "--vk-descriptors-mode=1"));
+                   gui_settings_options(&s, 0, NULL, options) == 2 && !strcmp(options[0], "--vk-descriptors-mode=1"));
             assert(!gui_settings_save(&s, path));
             text = (char*)snx_read_file(path, &size);
             assert(text && strstr(text, "\n[Debug]\nvk_descriptors_mode=1\n") && !strstr(text, "vk_descriptors="));
@@ -673,7 +681,7 @@ int main(int argc, char** argv) {
         free(dir);
     }
     assert(!gui_settings_read(&s, "") && s.count == s.own); /* no runtime: the launcher's alone */
-    assert(gui_settings_options(&s, 1, options) == 0 && !gui_settings_set(&s, "touch", "1"));
+    assert(gui_settings_options(&s, 1, NULL, options) == 0 && !gui_settings_set(&s, "touch", "1"));
     /* and a pick of theirs kept then: the runtime's picks in the file, which no row has, stay as they were */
     {
         char *dir = snx_temp_dir(NULL), *path = snx_path_join(dir, "settings.ini"), *text;
@@ -723,7 +731,7 @@ int main(int argc, char** argv) {
             assert(!gui_settings_value(&s, "resolution"));
             assert(!strcmp(on_screen(&s, "resolution"), "1 [default]"));
             {
-                size_t n = gui_settings_options(&s, 0, options), j;
+                size_t n = gui_settings_options(&s, 0, NULL, options), j;
                 for (j = 0; j < n; ++j) assert(strncmp(options[j], "--resolution=", 13));
             }
         }
@@ -737,7 +745,7 @@ int main(int argc, char** argv) {
             gui_settings_load(&s, path, NULL, 0);
             assert(!strcmp(gui_settings_value(&s, "resolution"), "8.2"));
             {
-                size_t n = gui_settings_options(&s, 0, options), j;
+                size_t n = gui_settings_options(&s, 0, NULL, options), j;
                 int found = 0;
                 for (j = 0; j < n; ++j) found += !strcmp(options[j], "--resolution=8.2");
                 assert(found == 1);
@@ -836,12 +844,51 @@ int main(int argc, char** argv) {
                     snprintf(value, sizeof value, "%g", atof(o->def) == o->lo ? o->hi : o->lo);
                 ini_option(want, sizeof want, o->key, value);
                 assert(at(&s, o->key) >= s.own && gui_settings_set(&s, o->key, value));
-                assert(gui_settings_recompile(&s, 1, options) == 1 && !strcmp(options[0], want));
-                assert(!gui_settings_recompile(&s, 0, options) && gui_settings_set(&s, o->key, o->def) &&
-                       !gui_settings_recompile(&s, 1, options));
+                assert(gui_settings_recompile(&s, 1, NULL, options) == 1 && !strcmp(options[0], want));
+                assert(!gui_settings_recompile(&s, 0, NULL, options) && gui_settings_set(&s, o->key, o->def) &&
+                       !gui_settings_recompile(&s, 1, NULL, options));
                 nce += !strcmp(want, "--nce=0");
             }
             assert(nce == 1);
+        }
+        /* a game's own picks (<name>.picks beside its .ini): its pick of a setting the recompile takes goes to its
+           recompile and to its runs over the launcher's, since the recompile reads its options alone; its other picks
+           are the runtime's to read, a run given the launcher's with --launcher-picks=1 */
+        {
+            static const char own[] = "[Performance]\nnce=0\n[Audio]\nvolume=40\n", on[] = "[Performance]\nnce=1\n";
+            char *dir = snx_temp_dir(NULL), *ini = snx_path_join(dir, "game.ini"), *picks = snx_game_picks(ini);
+            size_t n, j;
+            int nce = 0, volume = 0;
+            assert(picks && !strcmp(picks + strlen(picks) - 10, "game.picks")); /* after either separator */
+            assert(!snx_write_file(picks, own, sizeof own - 1));
+            assert(gui_settings_recompile(&s, 1, ini, options) == 1 && !strcmp(options[0], "--nce=0"));
+            assert(!gui_settings_recompile(&s, 1, NULL, options) && !gui_settings_recompile(&s, 0, ini, options));
+            /* the launcher's picks none of them: the game's NCE alone, its volume the runtime's to read */
+            n = gui_settings_options(&s, 0, ini, options);
+            for (j = 0; j < n; ++j) {
+                nce += !strncmp(options[j], "--nce=", 6) ? !strcmp(options[j], "--nce=0") ? 1 : 100 : 0;
+                volume += !strncmp(options[j], "--volume=", 9);
+            }
+            assert(nce == 1 && !volume && !strcmp(options[n - 1], "--launcher-picks=1"));
+            /* the launcher's NCE Off and Volume 75, the game's NCE On: NCE On, the launcher's 75 */
+            assert(!snx_write_file(picks, on, sizeof on - 1));
+            assert(gui_settings_set(&s, "nce", "0") && gui_settings_set(&s, "volume", "75"));
+            assert(gui_settings_recompile(&s, 1, ini, options) == 1 && !strcmp(options[0], "--nce=1"));
+            n = gui_settings_options(&s, 0, ini, options);
+            for (j = 0, nce = 0; j < n; ++j) {
+                nce += !strncmp(options[j], "--nce=", 6) ? !strcmp(options[j], "--nce=1") ? 1 : 100 : 0;
+                volume += !strcmp(options[j], "--volume=75");
+            }
+            assert(nce == 1 && volume == 1 && !strcmp(options[n - 1], "--launcher-picks=1"));
+            /* no picks file: the launcher's */
+            n = gui_settings_options(&s, 0, "/nonexistent/game.ini", options);
+            for (j = 0, nce = 0; j < n; ++j) nce += !strcmp(options[j], "--nce=0");
+            assert(nce == 1);
+            assert(gui_settings_set(&s, "nce", "1") && gui_settings_set(&s, "volume", "100"));
+            assert(!snx_remove_tree(dir));
+            free(picks);
+            free(ini);
+            free(dir);
         }
         gui_settings_free(&s);
         free(output);
@@ -861,7 +908,7 @@ int main(int argc, char** argv) {
                !s.values[at(&s, "shadows")].only && !strcmp(s.values[at(&s, "profile")].only, "Windows only"));
         assert(words(key(&s, "vulkan_driver")) == 2 && !strcmp(key(&s, "vulkan_driver")->words[1], "MoltenVK") &&
                words(key(&s, "profile")) == 2 && !strcmp(on_screen(&s, "vulkan_driver"), "Auto [default]"));
-        assert(gui_settings_set(&s, "vulkan_driver", "moltenvk") && gui_settings_options(&s, 0, options) == 1 &&
+        assert(gui_settings_set(&s, "vulkan_driver", "moltenvk") && gui_settings_options(&s, 0, NULL, options) == 2 &&
                !strcmp(options[0], "--vulkan-driver=moltenvk") && !strcmp(on_screen(&s, "vulkan_driver"), "MoltenVK"));
         gui_settings_free(&s);
     }
@@ -886,8 +933,73 @@ int main(int argc, char** argv) {
         assert(gui_settings_debug(&s, NULL, 1, out, sizeof out) == 2 && !strcmp(out, "log=2, gdbstub"));
         assert(gui_settings_debug(&s, ini, 1, out, 8) == 3 && !strcmp(out, "log=2, ")); /* cut, every one counted */
         assert(gui_settings_debug(&s, "/nonexistent/game.ini", 0, out, sizeof out) == 0);
+        /* the game's own picks over the launcher's and over its .ini, with the launcher's or alone */
+        {
+            static const char own[] = "[Debug]\nlog=0\nvk_budget_mb=64\n";
+            char* picks = snx_game_picks(ini);
+            assert(!snx_write_file(picks, own, sizeof own - 1));
+            assert(gui_settings_debug(&s, ini, 0, out, sizeof out) == 3 &&
+                   !strcmp(out, "log=0, vk_budget_mb=64, renderdoc"));
+            assert(gui_settings_debug(&s, ini, 1, out, sizeof out) == 4 &&
+                   !strcmp(out, "log=0, vk_budget_mb=64, renderdoc, gdbstub"));
+            free(picks);
+        }
         gui_settings_free(&s);
         assert(!snx_remove_tree(dir));
+        free(ini);
+        free(dir);
+    }
+    /* a game's own picks (gui_settings_read_game): the runtime's rows alone, each starting at Global, which no pick has,
+       no plain row nor slider; Global and the launcher's value shown while not picked, a pick saved by section to its
+       picks file and read back, its default too, and Global back by a reset; what a game has of its own said, its
+       picks then its box's GPU driver and Freedreno variables */
+    {
+        static const char list[] = "Display\tfullscreen\t0\tint\t0\t1\tWhole screen\tFullscreen\t0=Off|1=On\n"
+                                   "Graphics\tresolution\t1\tfloat\t0.25\t16\tScale\tResolution\t\n"
+                                   "Audio\tvolume\t100\tint\t0\t100\tLoud\tVolume\t0=Mute|50=50%|100=100%\t\t\tslider";
+        GuiSettings game = {0}, global = {0};
+        char *dir = snx_temp_dir(NULL), *ini = snx_path_join(dir, "game.ini"), *picks = snx_game_picks(ini), *text,
+             out[256];
+        size_t size;
+        int v;
+        assert(!gui_settings_read_game(&game, list) && !gui_settings_read(&global, list));
+        assert(game.game && !game.own && game.count == 3 && !global.game && global.own > 0);
+        v = at(&game, "volume");
+        assert(!game.values[v].plain && !game.values[v].slider && !game.values[v].word &&
+               !strcmp(key(&game, "volume")->words[0], "Global") && global.values[at(&global, "volume")].slider);
+        gui_settings_mark(&game);
+        assert(!gui_settings_value(&game, "volume") && !gui_settings_value(&game, "fullscreen") &&
+               !gui_settings_changed(&game));
+        assert(gui_settings_set(&global, "volume", "50"));
+        gui_settings_shown_game(&game, &global, v, out, sizeof out);
+        assert(!strcmp(out, "Global (50%)"));
+        gui_settings_shown_game(&game, &global, at(&game, "fullscreen"), out, sizeof out);
+        assert(!strcmp(out, "Global (Off [default])"));
+        /* its default picked: a pick of its own, over the launcher's 50 */
+        assert(gui_settings_set(&game, "volume", "100") && !strcmp(gui_settings_value(&game, "volume"), "100"));
+        gui_settings_shown_game(&game, &global, v, out, sizeof out);
+        assert(!strcmp(out, "100%") && gui_settings_changed(&game) == 1 && !gui_settings_save(&game, picks));
+        assert((text = (char*)snx_read_file(picks, &size)) && strstr(text, "[Audio]\nvolume=100\n") &&
+               !strstr(text, "fullscreen") && !strstr(text, "resolution") &&
+               !strncmp(text, SNX_GAME_PICKS_HEAD, strlen(SNX_GAME_PICKS_HEAD))); /* as the runtime writes it */
+        free(text);
+        assert(gui_settings_game_own(ini, out, sizeof out) == 1 && !strcmp(out, "volume=100"));
+        assert(!snx_ini_record(ini, "gpu_driver", "Turnip_v32") &&
+               !snx_ini_record(ini, "freedreno_env", "TU_DEBUG=noubwc"));
+        assert(gui_settings_game_own(ini, out, sizeof out) == 3 &&
+               !strcmp(out, "volume=100, gpu_driver=Turnip_v32, freedreno_env"));
+        assert(gui_settings_game_own(ini, out, 12) == 3 && !strcmp(out, "volume=100,")); /* cut, every one counted */
+        gui_settings_free(&game);
+        assert(!gui_settings_read_game(&game, list));
+        gui_settings_mark(&game);
+        assert(!gui_settings_load(&game, picks, NULL, 0) && !strcmp(gui_settings_value(&game, "volume"), "100"));
+        gui_settings_reset(&game, v);
+        assert(!gui_settings_value(&game, "volume") && !gui_settings_changed(&game));
+        assert(gui_settings_game_own(NULL, out, sizeof out) == 0 && !out[0]);
+        gui_settings_free(&game);
+        gui_settings_free(&global);
+        assert(!snx_remove_tree(dir));
+        free(picks);
         free(ini);
         free(dir);
     }
@@ -954,7 +1066,7 @@ int main(int argc, char** argv) {
         assert(!gui_settings_slide(&s, v, 1) && gui_settings_knob(&s, v) == 1000); /* its end: never round to Mute */
         assert(gui_settings_slide(&s, v, -1) && !strcmp(gui_settings_value(&s, "volume"), "75") &&
                gui_settings_knob(&s, v) == 750);
-        assert(gui_settings_options(&s, 0, options) == 1 && !strcmp(options[0], "--volume=75"));
+        assert(gui_settings_options(&s, 0, NULL, options) == 2 && !strcmp(options[0], "--volume=75"));
         assert(gui_settings_slide_to(&s, v, 0) && !strcmp(gui_settings_value(&s, "volume"), "0"));
         assert(!gui_settings_slide(&s, v, -1) && !strcmp(on_screen(&s, "volume"), "Mute")); /* never round to 100% */
         assert(gui_settings_slide_to(&s, v, 374) && !strcmp(gui_settings_value(&s, "volume"), "25")); /* nearer 250 */

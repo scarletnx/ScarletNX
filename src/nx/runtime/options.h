@@ -1,8 +1,11 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The game's settings file, <Game>.ini (options.c): its sections, the command line's overrides, reloading it while the
-   game runs and writing back what the game's menu changes. Every setting's value is in g_settings (settings.h, from
-   settings.txt); what the runtime derives from some of them is here */
+/* The game's settings file, <Game>.ini (options.c): its sections, the command line's overrides, the game's own picks
+   beside it (<Game>.picks, game_ini.h's snx_game_picks), reloading both while the game runs and writing back what the
+   game's menu changes. A setting takes this run's command line's value, else the game's pick, else the launcher's pick
+   for every game (the command line's of a run with --launcher-picks=1), else the .ini's, else its default. Every
+   setting's value is in g_settings (settings.h, from settings.txt); what the runtime derives from some of them is
+   here */
 #ifndef SNX_OPTIONS_H
 #define SNX_OPTIONS_H
 #include <stddef.h>
@@ -10,7 +13,8 @@
 #include "nx/runtime/startup.h"
 #include "snx_settings.h"
 
-/* --key=value: k's value for this run, over the file's, which keeps its own. Before ini_open; v is kept, not copied */
+/* --key=value: k's value for this run, over the file's, which keeps its own, and over the game's pick unless the
+   run has --launcher-picks=1. Before ini_open; v is kept, not copied */
 void ini_override(const char* k, const char* v);
 const char* ini_overridden(const char* k); /* k's value for this run, NULL when nothing gave one */
 /* deprecated_env.c: the environment variables an older version read for settings the .ini has now
@@ -18,8 +22,32 @@ const char* ini_overridden(const char* k); /* k's value for this run, NULL when 
    the command line or a variable before it gives that key; then says each, with the value in effect */
 void options_old_environment(void);
 void options_old_environment_say(void);
-/* a value the game's menu set, already applied: written to the file at the next poll, even over an edit made meanwhile */
+/* a value the game's menu set, already applied: saved at the next poll, even over an edit made meanwhile, and played
+   over this run's command line from then on. A key the launcher's Settings show goes to the game's picks, another (a
+   control's place) to the .ini */
 void ini_set(const char* k, const char* v);
+/* the same for a value the menu did not apply: the next tick applies it (one read when the game starts at its next
+   start), then saves it */
+void ini_set_apply(const char* k, const char* v);
+/* the game's pick of k taken out, from its menu: at the next tick its value is the one without it (the launcher's for
+   every game, else the .ini's, else the default), applied, and the picks file saved without it */
+void ini_unpick(const char* k);
+/* 1 when the game's picks have k, a change of the menu's not saved yet counted; from any thread */
+int ini_picked(const char* k);
+/* the value the next start takes for k where it is not this run's, into out (n bytes, cut where it ends): the game's
+   pick, a change of the menu's not saved yet counted, else for a setting read at the start whose pick the menu took
+   out this run the value without it. 1, else 0 with out empty. From any thread: the menu's row of a setting read at
+   the start shows it */
+int ini_next_start(const char* k, char* out, size_t n);
+/* a count of the changes to the game's picks and to ini_old_settings, which the menu watches to show them again */
+const int* ini_picks_changes(void);
+/* 1 once after ini_unpick or ini_clean_old: the frontend's loop polls at once (ini_poll) */
+int ini_poll_due(void);
+/* the keys Clean Old Settings takes out, as the files were last read or written: the .ini's under [Deprecated] and
+   the picks' that no pick takes. From any thread */
+int ini_old_settings(void);
+/* the game's menu's Clean Old Settings: at the next tick those keys are taken out of both files, said in the log */
+void ini_clean_old(void);
 /* every setting of the file's sections but the game's own (a control's place), a line each on stdout, nine fields
    between tabs: the section (with /page for a page of its own), the key, its default, int | float | text, the lowest
    and highest number, the help on one line, the menus' name, and the values as value=word between '|' (empty for a
@@ -29,8 +57,8 @@ void ini_list(const IniSection* sections, int count);
 /* 1 for a key of the file or an unattended-run option (platform/unattended.h): the driver passes only those on to a
    game (driver.h) */
 int snx_setting_known(const char* key);
-/* reads path, applies it with the overrides, writes it back with its help, and watches it: ini_poll reloads it when it
-   changes and saves what the game's menu set */
+/* reads path and the game's picks beside it, applies them with the overrides, writes the .ini back with its help, and
+   watches both: ini_poll reloads either when it changes and saves what the game's menu set */
 void ini_open(const char* path);
 /* the Debug section's settings not at their default (ini_changed's flags), then gdbstub when the GDB stub runs, between
    ", ": how many. ini_open and a reload show the list at the top of the picture (hud.h), a reload that changes it in the

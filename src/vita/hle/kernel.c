@@ -3,7 +3,9 @@
 /* SceLibKernel, SceThreadmgr, SceSysmem and SceProcessmgr: threads, their synchronization, memory blocks and time, as
    the vitasdk headers (MIT) declare them */
 #include "vita/hle/hle.h"
+#include "common/utilities/ascii.h"
 #include "common/utilities/common.h"
+#include "common/utilities/endian.h"
 #include "snx_settings.h"
 #include <inttypes.h>
 #include <stdio.h>
@@ -21,6 +23,7 @@
 #define MUTEX_RECURSIVE 0x02u
 #define RW_LOCK_RECURSIVE 0x02u
 #define SCE_KERNEL_ERROR_UNKNOWN_RW_LOCK_ID   0x800281e1u
+#define SCE_KERNEL_ERROR_UNKNOWN_TIMER_ID     0x800281a1u
 #define SCE_KERNEL_ERROR_RW_LOCK_RECURSIVE    0x800281e2u
 #define SCE_KERNEL_ERROR_RW_LOCK_NOT_OWNED    0x800281e4u
 #define SCE_KERNEL_ERROR_RW_LOCK_UNLOCK_UDF   0x800281e5u
@@ -179,8 +182,8 @@ static uint32_t wait_sema(VitaProcess* p, VitaThread* t) {
         o->u.sema.count -= need;
         return 0;
     }
-    vita_wait(p, (VitaWait){.kind = VITA_WAIT_SEMA, .object = uid, .a = (uint32_t)need, .timeout = arg(p, t, 2),
-                            .deadline = vita_deadline(p, arg(p, t, 2))});
+    vita_wait(p, (VitaWait){.kind = VITA_WAIT_SEMA, .object = uid, .a = (uint32_t)need, .b = o->u.sema.cancelled,
+                            .timeout = arg(p, t, 2), .deadline = vita_deadline(p, arg(p, t, 2))});
     return 0;
 }
 static uint32_t poll_sema(VitaProcess* p, VitaThread* t) {
@@ -197,6 +200,47 @@ static uint32_t signal_sema(VitaProcess* p, VitaThread* t) {
     int32_t n = (int32_t)arg(p, t, 1);
     if (o->u.sema.max > 0 && o->u.sema.count + n > o->u.sema.max) return SCE_KERNEL_ERROR_SEMA_OVF;
     o->u.sema.count += n;
+    return 0;
+}
+/* the threads waiting on the semaphore uid */
+static uint32_t sema_waiters(VitaProcess* p, uint32_t uid) {
+    uint32_t n = 0;
+    for (unsigned i = 0; i < VITA_THREADS; ++i)
+        if (p->threads[i].state == VITA_THREAD_WAITING && p->threads[i].wait.kind == VITA_WAIT_SEMA &&
+            p->threads[i].wait.object == uid)
+            ++n;
+    return n;
+}
+/* sceKernelGetSemaInfo(uid, *info, size): SceKernelSemaInfo (size, UID, name, attribute, the initial count, the
+   count now, the most, the threads waiting; 0x3c bytes). The initial count is not kept: the count now stands for it */
+static uint32_t get_sema_info(VitaProcess* p, VitaThread* t) {
+    uint32_t uid = arg(p, t, 0), at = arg(p, t, 1);
+    VitaObject* o = vita_object(p, uid, VITA_OBJ_SEMA);
+    unsigned char* info;
+    if (!o) return SCE_KERNEL_ERROR_UNKNOWN_SEMA_ID;
+    if (!at || arg(p, t, 2) < 0x3c) return SCE_KERNEL_ERROR_ERROR;
+    info = vita_ptr(p, at);
+    memset(info, 0, 0x3c);
+    snx_st_le32(info, 0x3c);
+    snx_st_le32(info + 4, uid);
+    snprintf((char*)info + 8, 32, "%s", o->name);
+    snx_st_le32(info + 0x28, o->u.sema.attr);
+    snx_st_le32(info + 0x2c, (uint32_t)o->u.sema.count);
+    snx_st_le32(info + 0x30, (uint32_t)o->u.sema.count);
+    snx_st_le32(info + 0x34, (uint32_t)o->u.sema.max);
+    snx_st_le32(info + 0x38, sema_waiters(p, uid));
+    return 0;
+}
+/* sceKernelCancelSema(uid, count, *waiting): the waiting threads' waits end with SCE_KERNEL_ERROR_WAIT_CANCEL, the
+   count set when it is not negative, and how many were waiting written */
+static uint32_t cancel_sema(VitaProcess* p, VitaThread* t) {
+    uint32_t uid = arg(p, t, 0), waiting = arg(p, t, 2);
+    VitaObject* o = vita_object(p, uid, VITA_OBJ_SEMA);
+    int32_t count = (int32_t)arg(p, t, 1);
+    if (!o) return SCE_KERNEL_ERROR_UNKNOWN_SEMA_ID;
+    if (waiting && vita_mapped(p, waiting, 4)) vita_write32(p, waiting, sema_waiters(p, uid));
+    if (count >= 0) o->u.sema.count = count;
+    ++o->u.sema.cancelled;
     return 0;
 }
 static uint32_t delete_object(VitaProcess* p, VitaThread* t, uint32_t type, uint32_t unknown) {
@@ -492,6 +536,49 @@ static uint32_t delete_lw_cond(VitaProcess* p, VitaThread* t) {
     return 0;
 }
 
+static uint64_t process_us(VitaProcess* p);
+/* ---- timers (counters the game reads as a clock; no event or callback is delivered) ---- */
+static uint64_t timer_time(VitaProcess* p, const VitaObject* o) {
+    return o->u.timer.accumulated + (o->u.timer.running ? process_us(p) - o->u.timer.started : 0);
+}
+static uint32_t create_timer(VitaProcess* p, VitaThread* t) {
+    char name[32];
+    VitaObject* o;
+    name_of(p, arg(p, t, 0), name);
+    uint32_t uid = vita_object_new(p, VITA_OBJ_TIMER, name, &o);
+    if (!uid) return SCE_KERNEL_ERROR_NO_MEMORY;
+    return uid;
+}
+static uint32_t start_timer(VitaProcess* p, VitaThread* t) {
+    VitaObject* o = vita_object(p, arg(p, t, 0), VITA_OBJ_TIMER);
+    if (!o) return SCE_KERNEL_ERROR_UNKNOWN_TIMER_ID;
+    if (o->u.timer.running) return 1;
+    o->u.timer.running = 1, o->u.timer.started = process_us(p);
+    return 0;
+}
+static uint32_t stop_timer(VitaProcess* p, VitaThread* t) {
+    VitaObject* o = vita_object(p, arg(p, t, 0), VITA_OBJ_TIMER);
+    if (!o) return SCE_KERNEL_ERROR_UNKNOWN_TIMER_ID;
+    if (!o->u.timer.running) return 0;
+    o->u.timer.accumulated = timer_time(p, o), o->u.timer.running = 0;
+    return 1;
+}
+static uint32_t get_timer_time_wide(VitaProcess* p, VitaThread* t) {
+    VitaObject* o = vita_object(p, arg(p, t, 0), VITA_OBJ_TIMER);
+    return vita_return64(t, o ? timer_time(p, o) : 0);
+}
+/* sceKernelSetTimerTimeWide(uid, u64 time): the time it had comes back */
+static uint32_t set_timer_time_wide(VitaProcess* p, VitaThread* t) {
+    VitaObject* o = vita_object(p, arg(p, t, 0), VITA_OBJ_TIMER);
+    if (!o) return vita_return64(t, 0);
+    uint64_t before = timer_time(p, o), now = ((uint64_t)arg(p, t, 3) << 32) | arg(p, t, 2);
+    o->u.timer.accumulated = now, o->u.timer.started = process_us(p);
+    return vita_return64(t, before);
+}
+static uint32_t delete_timer(VitaProcess* p, VitaThread* t) {
+    return delete_object(p, t, VITA_OBJ_TIMER, SCE_KERNEL_ERROR_UNKNOWN_TIMER_ID);
+}
+
 /* ---- reader-writer locks ---- */
 static uint32_t create_rw_lock(VitaProcess* p, VitaThread* t) {
     char name[32];
@@ -611,6 +698,7 @@ bool vita_kernel_wait_try(VitaProcess* p, VitaThread* t, uint64_t now) {
         case VITA_WAIT_SEMA: {
             VitaObject* o = vita_object(p, w->object, VITA_OBJ_SEMA);
             if (!o) return t->cpu.r[0] = SCE_KERNEL_ERROR_WAIT_DELETE, true;
+            if (o->u.sema.cancelled != w->b) return t->cpu.r[0] = SCE_KERNEL_ERROR_WAIT_CANCEL, true;
             if (o->u.sema.count < (int32_t)w->a) return false;
             o->u.sema.count -= (int32_t)w->a;
             return t->cpu.r[0] = 0, true;
@@ -743,7 +831,97 @@ static uint32_t power_tick(VitaProcess* p, VitaThread* t) {
     return 0;
 }
 
+/* ---- modules: the game's own, the libraries merged into it, and the ones the game loads by path ---- */
+#define MODULE_UID_BASE        0x40020000u
+#define MODULE_INFO_SIZE       0x1b8u
+#define SCE_ERROR_ERRNO_ENOENT 0x80010002u
+#define SCE_KERNEL_ERROR_MODULEMGR_NO_MOD 0x8002d082u
+
+static VitaLoadedModule* module_of(VitaProcess* p, uint32_t uid) {
+    return uid >= MODULE_UID_BASE && uid - MODULE_UID_BASE < p->image.module_count
+               ? &p->image.modules[uid - MODULE_UID_BASE]
+               : NULL;
+}
+static bool same_name(const char* a, const char* b) {
+    for (; *a && *b; ++a, ++b)
+        if (snx_to_upper((unsigned char)*a) != snx_to_upper((unsigned char)*b)) return false;
+    return *a == *b;
+}
+/* the module's start has run: its result is the load's unless it failed */
+static uint32_t module_started(VitaProcess* p, VitaThread* t, void* context) {
+    uint32_t uid = MODULE_UID_BASE + (uint32_t)(uintptr_t)context;
+    (void)p;
+    return (int32_t)t->cpu.r[0] < 0 ? t->cpu.r[0] : uid;
+}
+/* sceKernelLoadStartModule(path, args, argp, flags, option, *result): a module the game ships, found by its file's
+   name among those loaded with it (nothing is loaded at run time: the code was compiled with the game's), started
+   once; any other file is not there */
+static uint32_t load_start_module(VitaProcess* p, VitaThread* t) {
+    char path[256];
+    const char* leaf = path;
+    uint32_t args = arg(p, t, 1), argp = arg(p, t, 2), result = arg(p, t, 5);
+    if (!vita_string(p, arg(p, t, 0), path, sizeof path)) return SCE_ERROR_ERRNO_ENOENT;
+    for (const char* c = path; *c; ++c)
+        if (*c == '/' || *c == ':' || *c == '\\') leaf = c + 1;
+    for (unsigned i = 1; i < p->image.module_count; ++i) {
+        VitaLoadedModule* m = &p->image.modules[i];
+        if (!same_name(m->leaf, leaf)) continue;
+        printf("vita: sceKernelLoadStartModule(\"%s\") -> module %u%s\n", path, i, p->module_started[i] ? "" : ", started");
+        if (p->module_started[i]) return MODULE_UID_BASE + i;
+        uint32_t start_args[2] = {args, argp};
+        p->module_started[i] = true;
+        if (result) snx_st_le32(vita_ptr(p, result), 0);
+        vita_hle_guest_call(p, t, m->start, start_args, 2, module_started, (void*)(uintptr_t)i);
+        return 0;
+    }
+    printf("vita: sceKernelLoadStartModule(\"%s\") -> no such file\n", path);
+    return SCE_ERROR_ERRNO_ENOENT;
+}
+/* sceKernelGetModuleList(flags, *ids, *count): the started modules, the game's last */
+static uint32_t get_module_list(VitaProcess* p, VitaThread* t) {
+    uint32_t ids = arg(p, t, 1), count = arg(p, t, 2), room, n = 0;
+    if (!ids || !count) return SCE_KERNEL_ERROR_MODULEMGR_NO_MOD;
+    room = snx_ld_le32(vita_ptr(p, count));
+    for (unsigned i = 1; i <= p->image.module_count && n < room; ++i) {
+        unsigned module = i % p->image.module_count; /* 1, 2, ... then 0 */
+        if (!p->module_started[module]) continue;
+        snx_st_le32(vita_ptr(p, ids + 4 * n++), MODULE_UID_BASE + module);
+    }
+    snx_st_le32(vita_ptr(p, count), n);
+    return 0;
+}
+/* sceKernelGetModuleInfo(uid, *info): SceKernelModuleInfo, 0x1b8 bytes, with its segments' places */
+static uint32_t get_module_info(VitaProcess* p, VitaThread* t) {
+    VitaLoadedModule* m = module_of(p, arg(p, t, 0));
+    uint32_t at = arg(p, t, 1);
+    unsigned char* info;
+    if (!m || !at) return SCE_KERNEL_ERROR_MODULEMGR_NO_MOD;
+    info = vita_ptr(p, at);
+    memset(info, 0, MODULE_INFO_SIZE);
+    snx_st_le32(info, MODULE_INFO_SIZE);
+    snx_st_le32(info + 4, arg(p, t, 0));
+    snprintf((char*)info + 0xc, 28, "%s", m->name);
+    snx_st_le32(info + 0x2c, m->start);
+    if (arg(p, t, 0) == MODULE_UID_BASE)
+        snprintf((char*)info + 0x54, 256, "app0:eboot.bin");
+    else
+        snprintf((char*)info + 0x54, 256, "app0:sce_module/%s", m->leaf);
+    for (unsigned k = 0; k < 4 && k < m->segment_count; ++k) {
+        const VitaSegment* s = &p->image.segment[m->first_segment + k];
+        unsigned char* out = info + 0x154 + 0x18 * k;
+        snx_st_le32(out, 0x18);
+        snx_st_le32(out + 4, s->flags);
+        snx_st_le32(out + 8, s->address);
+        snx_st_le32(out + 12, s->size);
+        snx_st_le32(out + 16, s->size);
+    }
+    return 0;
+}
+
 const VitaHle vita_hle_kernel[] = {
+    {0x2dcc4afau, "sceKernelLoadStartModule", load_start_module},
+    {0x2ef2581fu, "sceKernelGetModuleList", get_module_list},
+    {0x36585dafu, "sceKernelGetModuleInfo", get_module_info},
     {0xc5c11ee7u, "sceKernelCreateThread", create_thread},
     {0xf08de149u, "sceKernelStartThread", start_thread},
     {0x0c8a38e1u, "sceKernelExitThread", exit_thread},
@@ -766,6 +944,8 @@ const VitaHle vita_hle_kernel[] = {
     {0x866ef048u, "sceKernelPollSema", poll_sema},
     {0xe6b761d1u, "sceKernelSignalSema", signal_sema},
     {0xdb32948au, "sceKernelDeleteSema", delete_sema},
+    {0x595d3fa6u, "sceKernelGetSemaInfo", get_sema_info},
+    {0x66d6bf05u, "sceKernelCancelSema", cancel_sema},
     {0xed53334au, "sceKernelCreateMutex", create_mutex},
     {0x1d8d7945u, "sceKernelLockMutex", lock_mutex},
     {0x72fc1f54u, "sceKernelTryLockMutex", try_lock_mutex},
@@ -813,6 +993,12 @@ const VitaHle vita_hle_kernel[] = {
     {0xf4ee4fa9u, "sceKernelGetSystemTimeWide", get_process_time_wide},
     {0x4b879059u, "sceKernelLibcGettimeofday", libc_gettimeofday},
     {0x2252890cu, "sceKernelPowerTick", power_tick},
+    {0x2255b2a5u, "sceKernelCreateTimer", create_timer},
+    {0x48091e0cu, "sceKernelStartTimer", start_timer},
+    {0x869e9f20u, "sceKernelStopTimer", stop_timer},
+    {0x3efd3165u, "sceKernelGetTimerTimeWide", get_timer_time_wide},
+    {0x273b4a4du, "sceKernelSetTimerTimeWide", set_timer_time_wide},
+    {0xab1e42c4u, "sceKernelDeleteTimer", delete_timer},
     {0x8667951du, "sceKernelCreateRWLock", create_rw_lock},
     {0xfa670f0fu, "sceKernelLockReadRWLock", lock_read_rw_lock},
     {0x67a187bbu, "sceKernelLockWriteRWLock", lock_write_rw_lock},
@@ -821,6 +1007,7 @@ const VitaHle vita_hle_kernel[] = {
     {0xe73649cau, "sceKernelDeleteRWLock", delete_rw_lock},
     {0x8d9c5461u, "sceKernelGetThreadInfo", get_thread_info},
     {0xf1ae5654u, "sceKernelGetThreadCpuAffinityMask", get_thread_cpu_affinity_mask},
+    {0x15129174u, "sceKernelChangeThreadCpuAffinityMask", get_thread_cpu_affinity_mask},
     {0x03e23af6u, "sceKernelCloseMutex", close_object},
     {0xadca94e5u, "sceKernelWaitSignal", wait_signal},
     {0x24460bb3u, "sceKernelWaitSignalCB", wait_signal},

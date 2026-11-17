@@ -34,6 +34,10 @@ u32 gamepad_slot_id(int slot); /* SDL joystick instance ID, 0 for an empty slot 
 void gamepad_motion(int slot, PadMotion out[2]);
 /* the HidNpadButton bit one of a gamepad's buttons (an SDL_GamepadButton) is, as the game reads it; 0 for none */
 u64 gamepad_button(u32 id, int button);
+/* the name gamepad id's face gives the control that sends the console's button bit (0 A, 1 B...), its player's map
+   and A/B swap applied: "B" for A on an Xbox pad, "Circle" on a PlayStation one; a Joy-Con alone, whose buttons turn
+   with it, the console's name. Into out (size bytes); 0 with out empty when the pad is gone or no control sends it */
+int gamepad_sends_name(u32 id, int bit, char* out, size_t size);
 /* legacy combined rumble, played on every open gamepad that can vibrate */
 void gamepad_rumble(u32 left, u32 right);
 /* one guest player's vibration (hid.h's PadState.rumble), played on that slot's gamepad each poll at now_ns

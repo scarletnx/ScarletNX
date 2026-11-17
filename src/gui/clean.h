@@ -18,6 +18,10 @@ size_t gui_clean_deprecated(char* text, size_t size);
 /* the .ini files directly in folder, and the one of each game's folder in it (<name>/<name>.ini), with a [Deprecated]
    section: how many. With done, each is written again without it, an entry each */
 int gui_clean_inis(GuiCleaned* done, const char* folder);
+/* the games' own picks files (game_ini.h's snx_game_picks) directly in folder and in each game's folder in it
+   (<name>/<name>.picks), as gui_clean_inis finds their .ini: their paths in *paths, a block the caller frees with
+   snx_free_strings. How many */
+size_t gui_picks_files(const char* folder, char*** paths);
 /* an entry of the caller's: file, and what was done to it or why not */
 void gui_cleaned_add(GuiCleaned* done, bool ok, const char* file, const char* what);
 /* entry at's fields; the next entry, NULL after the last */

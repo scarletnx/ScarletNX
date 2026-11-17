@@ -504,6 +504,26 @@ u64 gamepad_button(u32 id, int button) {
     map_of(slot < SNX_GAMEPADS ? slot : -1, &map);
     return map.bit[control] < 0 ? 0 : 1ull << map.bit[control];
 }
+int gamepad_sends_name(u32 id, int bit, char* out, size_t size) {
+    SDL_Gamepad* g = SDL_GetGamepadFromID(id);
+    int labels[4], control, slot, type;
+    SnxPadMap map;
+    if (!size) return 0;
+    out[0] = 0;
+    if (!g) return 0;
+    type = SDL_GetGamepadType(g);
+    if (type == SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_LEFT || type == SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_RIGHT) {
+        snprintf(out, size, "%s", snx_pad_button_name(bit));
+        return 1;
+    }
+    for (slot = 0; slot < SNX_GAMEPADS && g_gamepad.pads[slot] != g; slot++) {}
+    map_of(slot < SNX_GAMEPADS ? slot : -1, &map);
+    control = snx_pad_map_find(&map, bit);
+    if (control < 0) return 0;
+    snx_pad_labels(g, labels);
+    snprintf(out, size, "%s", snx_pad_control_name(control, labels));
+    return 1;
+}
 int gamepad_slot_type(int slot) {
     if (slot < 0 || slot >= SNX_GAMEPADS || !g_gamepad.pads[slot]) return SDL_GAMEPAD_TYPE_UNKNOWN;
     return SDL_GetGamepadType(g_gamepad.pads[slot]);

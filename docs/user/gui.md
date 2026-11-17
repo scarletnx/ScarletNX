@@ -264,7 +264,10 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   how many it would take out, then takes out the settings nothing reads any more: the `[Deprecated]` section the runtime
   gives a game's `.ini` for the keys it no longer uses (in the config folder's `recompiled/`, in `recompiled/`
   and in the player's folders), the keys of `settings.ini` that no setting of the runtime's takes
-  (only while the runtime lists its settings) and those of `app.ini` the menu does not know. A box
+  (only while the runtime lists its settings) and those of `app.ini` the menu does not know. While a game's own
+  picks (`<id>.picks`, [Settings](settings.md)) keep keys no setting takes, the question says how many and its
+  choices are **Keep the Games' Own** and **With the Games' Own**, in focus, which writes each of those files again
+  without them (removed with no pick left); Back takes out nothing. A box
   over the screen then lists each file and what was done to it, or why not, Up/Down and the wheel going over those
   that do not fit, until another key closes it;
   Share Log lists them too. **Move Old Files** (its value how many folders an older version left, the setup's Old Files
@@ -295,8 +298,11 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   ([Usage](usage.md)), and is kept for every game:
   what was changed, by the `.ini`'s sections and keys, in `settings.ini` of the config folder on
   Linux (`~/.config/scarletnx/`), else the data folder's `config/`. A run takes a setting from what that
-  run picks, then from the game's own picks (to come), then from these, and last from the game's
-  `.ini`. A row not at its default has `*` after its value (*On \**, *2 \**), a page's row and an **All** while
+  run picks, then from the game's own picks (`<id>.picks` beside its `.ini`, which its menu writes:
+  [Settings](settings.md)), then from these, and last from the game's `.ini`; a run is given them with
+  `--launcher-picks=1`, which puts the game's own over them. A setting the recompile takes too (NCE, Debug's SLP
+  vectorizer) goes to a game's recompile and runs as the game's own pick where it has one, since the recompile reads
+  its settings from its options alone. A row not at its default has `*` after its value (*On \**, *2 \**), a page's row and an **All** while
   any of their rows has; Del puts a setting back to its default, and App's **Reset to Defaults** every one.
   **Fullscreen** and
   **Show controls** are the launcher's own choices, Off or On, passed to every run over the `.ini`; `[default]` marks
@@ -655,7 +661,8 @@ cannot be read is named and the others still listed.
   ([AOT packs](aot-packs.md)) through the same queue.
 - A finger held on a game half a second without moving, or a right click on it, opens its box: **Play** (**View
   Progress** for a game of the queue, which shows it on the Compile tab as Enter does), **Recompile** (R), and for a
-  recompiled Switch game **Mods** (M) and **Save States** (S). The finger's lift then taps nothing.
+  recompiled Switch game **Mods** (M), **Save States** (S) and **Settings**, its own (below), Back from them to
+  Games, then **AOT Pack** (B) where B builds one. The finger's lift then taps nothing.
 - **M** (on Android a tap on *Mods* at the foot) opens the box of the recompiled Switch game in focus, recent or on
   the page, that Enter opens for a game with updates, DLCs, mods, cheats or other programs beside it, and for a game
   with none of them too, whose **Add Mod** and **Add Cheats** copy a folder or a `.txt` the system's picker gives
@@ -666,7 +673,14 @@ cannot be read is named and the others still listed.
   Settings > App's pages for that game alone: GPU Driver's first row, **Global**, follows the launcher's pick, the
   game's own kept as `gpu_driver=` in its `.ini` (nothing: the system's driver); where no package loads the row is
   greyed, saying what the device lacks, unless the game is set to a package, to take that pick back. Freedreno
-  Settings with none of its own takes the launcher's. A collection's game ([Usage](usage.md#collections)) has a
+  Settings with none of its own takes the launcher's. **Settings** opens the Settings of that game alone, Back from
+  its groups to the box: a group a section of the runtime's (none of the launcher's own), each row **Global** and
+  the launcher's value (*Global (60%)*) until picked, a pick marked `*` and kept at once in the game's own picks
+  (`<id>.picks` beside its `.ini`, [Settings](settings.md)), which its runs take over the launcher's; Del puts a row
+  back to Global, the file going with its last pick, and **Reset to Global**, the last group, every row, asked first
+  with how many. A game with settings of its own, there or its GPU Driver and Freedreno Settings, has the sliders
+  icon after its name in Games and Recent Games, and the side panel lists them (*Own settings: volume=40,
+  gpu_driver=Turnip_v32*). A collection's game ([Usage](usage.md#collections)) has a
   **Play Program N** row for
   each other program it has made, which plays that program directly as Play plays the game's own (its menu, program
   0), the box's picks kept. On
@@ -776,8 +790,12 @@ run's output), never what the tips already say (what the row does, a game's kind
 box. The tips have a row of their own under the head, their letters a half step under the text's (1.5x by a 2x text),
 as the Status box's and the note at the foot of a Settings box are; the setup's go to the foot beside its keys, where they take one row,
 a long one sliding, or wrap over its rows with `[tips] wrap`, the last sliding what does not fit. At the foot the
-screen's keys, the whole width (the setup's beside its tips), in letters a size under the rest's: its own keys, ESC alone
-at the left of the row, **F1** last, which opens a box over the screen, Shortcuts, with every key it has, those every
+screen's keys, the whole width (the setup's beside its tips), in letters a size under the rest's, each after its icon
+(the one F1's box gives it): ESC alone at the left of the row, the screen's own first three, **More** (F3; on a phone
+the word *More*) where it has others, which opens the picks box over the screen with those others, a row each with its
+icon and key, a click, a tap, Enter or a pad's A pressing it as the keyboard does (Games' Save states, AOT pack,
+Folders, View and Refresh past Play, Recompile and Mods; a pad's foot leaves them to F1's box, its buttons pressing
+them all the same), and **F1** last, which opens a box over the screen, Shortcuts, with every key it has, those every
 screen has too (the arrows and the mouse, Enter, Space and a click, the pages, Tab and F2), as the other boxes over a
 screen are: the screen darkened under it, a row a key with its icon, the keys as the foot draws them, the screen's own
 first and those every screen has under the title Every screen (ESC among them; no title where all are those), OK under

@@ -1189,10 +1189,33 @@ void vk_submit_recorded(void) {
     if (g_fr[g_cur].recording) submit_why(VK_NULL_HANDLE, 0, VK_NULL_HANDLE, VK_SUB_OTHER);
 }
 /* What is recorded goes to the GPU, and this waits until the GPU has done it. It lands nothing, so it may run while a
-   draw is set up: that draw starts its setup again on the new submission number */
-void vk_submit_upload_wait(void) {
+   draw is set up: that draw starts its setup again on the new submission number.
+
+   With let_go, the wait lets go of vk_lock when this thread holds it once, outside a landing or a recycling: 1 when it
+   did. The BC7 encoder's pace (astc.c) waited here with the lock held, part-way through a draw's setup, and the threads
+   landing results waited behind it: in one game (game-d1ed1846) 41 waits, 600 ms of 71 s, of which 462 ms overlapped
+   the landing thread's long waits for the lock. Other threads may record, submit and land meanwhile; the setup starts
+   again anyway, as this submitted. A refresh of the window (vkr_refresh) is not taken meanwhile (vk_upload_letting_go):
+   two frame advances would recycle the slot whose pools and rings the setup holds */
+static int g_letting_go; /* under vk_lock */
+int vk_upload_letting_go(void) { return g_letting_go; }
+int vk_submit_upload_wait(int let_go) {
     if (g_fr[g_cur].recording) submit(NULL, NULL, 0, VK_SUB_OTHER);
-    timeline_wait(g_gval, VK_WAIT_FINISH);
+    const u64 at = g_gval; /* other threads submit meanwhile: this waits for its own */
+    int paused = 0;
+    if (let_go && !g_rec_unsafe && !g_landing && !g_letting_go) {
+        g_letting_go = 1;
+        paused = vk_lock_pause();
+        if (!paused) g_letting_go = 0;
+    }
+    SNX_ZONE_V(z, "vk upload wait", paused);
+    timeline_wait(at, VK_WAIT_FINISH);
+    SNX_ZONE_END(z);
+    if (paused) {
+        vk_lock_resume(1);
+        g_letting_go = 0;
+    }
+    return paused;
 }
 void vk_submit_after(VkSemaphore sem, u64 wait, u64 signal) {
     g_after[0] = (VkSemaphoreSubmitInfo){.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, .semaphore = sem,

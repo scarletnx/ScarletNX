@@ -5,6 +5,7 @@
    runs, and the values the game's menu changes, written back */
 #include "nx/runtime/options.h"
 #include "common/utilities/common.h"
+#include "common/utilities/game_ini.h"
 #include "common/utilities/ini_lines.h"
 #include "common/utilities/key_said.h"
 #include "nx/hle/hle.h"
@@ -239,7 +240,9 @@ static const IniOpt* find_row(const char* key, int* own) {
     return NULL;
 }
 
-int snx_setting_known(const char* key) { return find_row(key, NULL) || unattended_known(key); }
+int snx_setting_known(const char* key) {
+    return find_row(key, NULL) || unattended_known(key) || !strcmp(key, SNX_LAUNCHER_PICKS);
+}
 
 /* ---- the file's values, the command line's, and the menu's waiting to be written ---- */
 
@@ -259,10 +262,12 @@ typedef struct {
 } Entry;
 static Entry g_store[STORE_MAX];
 static int g_nstore;
-/* the command line's, set before ini_open and only read after */
+/* the command line's, set before ini_open; after it only the thread that opens and polls the file touches them */
 typedef struct {
     char key[KEY_MAX];
     const char* value;
+    int launcher; /* given with --launcher-picks=1: the launcher's pick for every game, which the game's own go over */
+    int beaten;   /* the game's menu set the key since: its value is the menu's from then on */
 } Override;
 static Override g_over[OVERRIDE_MAX];
 static int g_nover;
@@ -271,6 +276,8 @@ static int g_nover;
 typedef struct {
     char key[KEY_MAX];
     char value[PENDING_VALUE];
+    int unpick; /* the game's pick taken out (ini_unpick): value is empty */
+    int apply;  /* the menu did not apply it (ini_set_apply): the poll does */
 } Pending;
 static Pending g_pending[PENDING_MAX];
 static int g_npending;
@@ -281,12 +288,88 @@ static char g_path[1400];
 static int g_started; /* ini_open is done: the startup settings are kept from now on */
 static u64 g_hash;    /* the file as this run last read or wrote it */
 static u64 g_seen;    /* a changed file seen by the last poll, read once a second poll sees it unchanged */
+/* The game's own picks, <name>.picks beside its .ini (picks_path): what its menu and the launcher's Settings of the
+   game set for it alone, kept apart from the .ini, which the runtime writes whole, defaults too. Only the thread that
+   opens and polls the files changes them, under g_picks_lock (a leaf), so that ini_picked reads them from the menu's */
+static struct {
+    Entry entry[STORE_MAX];
+    int n;
+    int dirty;     /* a change the file does not have yet */
+    int changes;   /* atomic: counts the changes, which the menu watches to show them */
+    int poll_soon; /* atomic: a pick the menu took out, shown at once: polled at the next tick (ini_poll_due) */
+    char path[sizeof g_path + 8];
+    u64 hash, seen; /* as g_hash and g_seen are the .ini's */
+    int old;        /* atomic: the keys Clean Old Settings takes out, the .ini's deprecated ones and the picks' no
+                       pick takes, as the files were last read or written */
+    /* the settings read at the start whose pick the menu took out this run: the value the next start takes without
+       it (value_of then), which this run's is not; under g_picks_lock */
+    Entry next[16];
+    int nnext;
+    int clean_soon; /* atomic: the game's menu's Clean Old Settings, taken at the next tick */
+} g_picks;
+static PMutex g_picks_lock = PMUTEX_INIT;
 
-static const char* override_of(const char* key) {
+static int override_at(const char* key) {
     int i;
     for (i = 0; i < g_nover; i++)
-        if (!strcmp(g_over[i].key, key)) return g_over[i].value;
+        if (!strcmp(g_over[i].key, key)) return i;
+    return -1;
+}
+static const char* override_of(const char* key) {
+    int i = override_at(key);
+    return i < 0 ? NULL : g_over[i].value;
+}
+/* the command line's value that goes over the game's picks: one the launcher did not mark as its pick for every game,
+   nor the menu set since */
+static const char* run_value(const char* key) {
+    int i = override_at(key);
+    return i < 0 || g_over[i].launcher || g_over[i].beaten ? NULL : g_over[i].value;
+}
+static const char* launcher_value(const char* key) {
+    int i = override_at(key);
+    return i < 0 || !g_over[i].launcher || g_over[i].beaten ? NULL : g_over[i].value;
+}
+static Entry* picks_find(const char* key) {
+    int i;
+    for (i = 0; i < g_picks.n; i++)
+        if (!strcmp(g_picks.entry[i].key, key)) return &g_picks.entry[i];
     return NULL;
+}
+/* a key the game's picks take: one the launcher's Settings show, a row of the .ini's sections that is not the game's
+   own (INI_IN_GAME: a control's place, the dump it was made from) */
+static int picks_key(const char* key) {
+    const IniOpt* o = find_row(key, NULL);
+    return o && !(o->flags & INI_IN_GAME);
+}
+/* key's pick set to value, or taken out (value NULL); one that does not fit is said and left out, never cut */
+static void picks_put(const char* key, const char* value) {
+    Entry* e;
+    int i;
+    if (value && (strlen(key) >= KEY_MAX || strlen(value) >= VALUE_MAX)) {
+        WARN_LIMIT(1, "settings: %s's value is too long for %s, and this game's pick of it is not saved\n", key,
+                   g_picks.path);
+        return;
+    }
+    if (value && !picks_find(key) && g_picks.n == STORE_MAX) {
+        WARN_LIMIT(1, "settings: %s holds %d picks already, so %s=%s is not saved\n", g_picks.path, STORE_MAX, key,
+                   value);
+        return;
+    }
+    pm_lock(&g_picks_lock);
+    for (i = 0; value && i < g_picks.nnext; i++) /* picked again: the pick is the next start's */
+        if (!strcmp(g_picks.next[i].key, key)) g_picks.next[i--] = g_picks.next[--g_picks.nnext];
+    e = picks_find(key);
+    if (!value && e)
+        *e = g_picks.entry[--g_picks.n];
+    else if (value) {
+        if (!e) {
+            e = &g_picks.entry[g_picks.n++];
+            memcpy(e->key, key, strlen(key) + 1);
+        }
+        memcpy(e->value, value, strlen(value) + 1);
+    }
+    pm_unlock(&g_picks_lock);
+    __atomic_add_fetch(&g_picks.changes, 1, __ATOMIC_RELEASE);
 }
 static Entry* store_find(const char* key) {
     int i;
@@ -338,10 +421,14 @@ static void store_parse(char* text) {
         store_put(key, value);
     }
 }
+/* a setting's value: this run's command line's, else the game's pick, else the launcher's pick for every game (its
+   command line's too), else the .ini's, else its default */
 static const char* value_of(const IniOpt* o) {
-    const char* v = override_of(o->key);
+    const char* v = run_value(o->key);
     const Entry* e;
     if (v) return v;
+    if (!(o->flags & INI_IN_GAME) && (e = picks_find(o->key)) != NULL) return e->value;
+    if ((v = launcher_value(o->key)) != NULL) return v;
     e = store_find(o->key);
     return e ? e->value : o->def;
 }
@@ -371,10 +458,11 @@ void ini_override(const char* k, const char* v) {
 
 const char* ini_overridden(const char* k) { return override_of(k); }
 
-void ini_set(const char* k, const char* v) {
+/* the menu's change, or its taking out of the game's pick (unpick), waiting for the next poll; apply: the poll applies
+   it */
+static void pending_put(const char* k, const char* v, int unpick, int apply) {
     size_t kn = strlen(k), vn = strlen(v);
     int i;
-    if (override_of(k)) return; /* this run's value, not the file's */
     if (kn >= KEY_MAX || vn >= PENDING_VALUE) {
         WARN_LIMIT(1, "settings: %s's value is too long to save\n", k);
         return;
@@ -384,29 +472,124 @@ void ini_set(const char* k, const char* v) {
     if (i < PENDING_MAX) {
         if (i == g_npending) memcpy(g_pending[g_npending++].key, k, kn + 1);
         memcpy(g_pending[i].value, v, vn + 1);
+        g_pending[i].unpick = unpick;
+        g_pending[i].apply = apply;
     }
     pm_unlock(&g_pending_lock);
     if (i == PENDING_MAX) WARN_LIMIT(1, "settings: too many changes at once, %s is not saved\n", k);
 }
+void ini_set(const char* k, const char* v) { pending_put(k, v, 0, 0); }
+void ini_set_apply(const char* k, const char* v) {
+    pending_put(k, v, 0, 1);
+    __atomic_store_n(&g_picks.poll_soon, 1, __ATOMIC_RELEASE);
+}
+void ini_unpick(const char* k) {
+    if (picks_key(k)) pending_put(k, "", 1, 0);
+    __atomic_store_n(&g_picks.poll_soon, 1, __ATOMIC_RELEASE);
+}
+int ini_picked(const char* k) {
+    int i, picked = -1, pickable = picks_key(k);
+    pm_lock(&g_pending_lock);
+    for (i = 0; i < g_npending; i++)
+        if (!strcmp(g_pending[i].key, k)) {
+            picked = pickable && !g_pending[i].unpick;
+            break;
+        }
+    pm_unlock(&g_pending_lock);
+    if (picked >= 0) return picked;
+    pm_lock(&g_picks_lock);
+    picked = picks_find(k) != NULL;
+    pm_unlock(&g_picks_lock);
+    return picked;
+}
+int ini_next_start(const char* k, char* out, size_t n) {
+    const Entry* e;
+    int i, found = -1;
+    if (n) out[0] = 0;
+    pm_lock(&g_pending_lock);
+    for (i = 0; i < g_npending; i++)
+        if (!strcmp(g_pending[i].key, k)) {
+            found = !g_pending[i].unpick;
+            if (found && n) snprintf(out, n, "%s", g_pending[i].value);
+            break;
+        }
+    pm_unlock(&g_pending_lock);
+    if (found >= 0) return found;
+    pm_lock(&g_picks_lock);
+    e = picks_find(k);
+    for (i = 0; !e && i < g_picks.nnext; i++)
+        if (!strcmp(g_picks.next[i].key, k)) e = &g_picks.next[i];
+    if (e && n) snprintf(out, n, "%s", e->value);
+    pm_unlock(&g_picks_lock);
+    return e != NULL;
+}
+const int* ini_picks_changes(void) { return &g_picks.changes; }
+int ini_poll_due(void) { return __atomic_exchange_n(&g_picks.poll_soon, 0, __ATOMIC_ACQ_REL); }
+int ini_old_settings(void) { return __atomic_load_n(&g_picks.old, __ATOMIC_ACQUIRE); }
+void ini_clean_old(void) {
+    __atomic_store_n(&g_picks.clean_soon, 1, __ATOMIC_RELEASE);
+    __atomic_store_n(&g_picks.poll_soon, 1, __ATOMIC_RELEASE);
+}
 
-/* the menu's changes into the store: their copy in taken, for pending_written once the file has them */
+static void apply(const char* key, const char* value);
+/* key's value for the next start, a setting read at the start whose pick was taken out this run */
+static void next_put(const char* key, const char* value) {
+    int i;
+    if (strlen(key) >= KEY_MAX || strlen(value) >= VALUE_MAX) return; /* a row's: never */
+    pm_lock(&g_picks_lock);
+    for (i = 0; i < g_picks.nnext && strcmp(g_picks.next[i].key, key); i++) continue;
+    if (i < (int)(sizeof g_picks.next / sizeof *g_picks.next)) {
+        if (i == g_picks.nnext) memcpy(g_picks.next[g_picks.nnext++].key, key, strlen(key) + 1);
+        memcpy(g_picks.next[i].value, value, strlen(value) + 1);
+    }
+    pm_unlock(&g_picks_lock);
+}
+/* the menu's change of key over the command line's value of it, which the run plays no longer */
+static void override_beaten(const char* key, int beaten) {
+    int i = override_at(key);
+    if (i >= 0) g_over[i].beaten = beaten;
+}
+/* the menu's changes taken: a key the launcher's Settings show into the game's picks, another into the store (the
+   .ini), each over this run's command line from then on; a pick taken out back to the value without it, applied at
+   once. Their copy in taken, for pending_written once the files have them */
 static int pending_take(Pending* taken) {
     int n, i;
     pm_lock(&g_pending_lock);
     n = g_npending;
     memcpy(taken, g_pending, (size_t)n * sizeof *taken);
     pm_unlock(&g_pending_lock);
-    for (i = 0; i < n; i++) store_put(taken[i].key, taken[i].value);
+    for (i = 0; i < n; i++) {
+        const char* key = taken[i].key;
+        const IniOpt* o;
+        if (taken[i].unpick) {
+            if (picks_find(key)) {
+                picks_put(key, NULL);
+                g_picks.dirty = 1;
+            }
+            override_beaten(key, 0);
+            if ((o = find_row(key, NULL)) != NULL && value_of(o)) apply(key, value_of(o));
+            if (o && g_started && (o->flags & INI_STARTUP) && value_of(o)) next_put(key, value_of(o));
+        } else if (picks_key(key)) {
+            picks_put(key, taken[i].value);
+            g_picks.dirty = 1;
+            if (run_value(key)) override_beaten(key, 1);
+            if (taken[i].apply && (o = find_row(key, NULL)) != NULL) apply(key, value_of(o));
+        } else {
+            store_put(key, taken[i].value);
+            override_beaten(key, 1);
+        }
+    }
     return n;
 }
-/* drops the changes the file now has; one set again meanwhile stays for the next write */
+/* drops the changes the files now have; one set again meanwhile stays for the next write */
 static void pending_written(const Pending* taken, int n) {
     int i, j;
     pm_lock(&g_pending_lock);
     for (i = 0; i < n; i++)
         for (j = 0; j < g_npending; j++)
             if (!strcmp(g_pending[j].key, taken[i].key)) {
-                if (!strcmp(g_pending[j].value, taken[i].value)) g_pending[j] = g_pending[--g_npending];
+                if (g_pending[j].unpick == taken[i].unpick && !strcmp(g_pending[j].value, taken[i].value))
+                    g_pending[j] = g_pending[--g_npending];
                 break;
             }
     pm_unlock(&g_pending_lock);
@@ -440,7 +623,8 @@ static void apply_all(void) {
     for (i = 0; i < g_nstore; i++)
         if (!find_row(g_store[i].key, NULL) && !override_of(g_store[i].key)) apply(g_store[i].key, g_store[i].value);
     for (i = 0; i < g_nover; i++)
-        if (!find_row(g_over[i].key, NULL)) apply(g_over[i].key, g_over[i].value);
+        if (!find_row(g_over[i].key, NULL) && strcmp(g_over[i].key, SNX_LAUNCHER_PICKS))
+            apply(g_over[i].key, g_over[i].value);
 }
 
 /* ---- writing ---- */
@@ -546,6 +730,184 @@ static int write_file(void) {
     g_hash = g_seen = text ? snx_fnv1a(SNX_FNV_BASIS, text, size) : 0;
     free(text);
     return 0;
+}
+
+/* ---- the game's picks file ---- */
+
+static void picks_path(void) {
+    char* path = snx_game_picks(g_path);
+    snprintf(g_picks.path, sizeof g_picks.path, "%s", path);
+    free(path);
+}
+/* the picks as they are on the disk now, none where there is no file; a key given twice takes its last line's. One no
+   pick takes (a newer version's, a typo, a control's place) is said with its value, kept in the file and does
+   nothing */
+static void picks_load(void) {
+    size_t size;
+    unsigned char* text = snx_read_file(g_picks.path, &size);
+    SnxIni ini;
+    char *key, *value;
+    int i;
+    pm_lock(&g_picks_lock);
+    g_picks.n = 0;
+    pm_unlock(&g_picks_lock);
+    g_picks.hash = g_picks.seen = text ? snx_fnv1a(SNX_FNV_BASIS, text, size) : 0;
+    if (text) {
+        snx_ini_start(&ini, (char*)text);
+        while (snx_ini_next(&ini, &key, &value)) picks_put(key, value);
+    }
+    free(text);
+    for (i = 0; i < g_picks.n; i++)
+        if (!picks_key(g_picks.entry[i].key))
+            WARN("settings: %s=%s in %s is no setting a game's picks take: it is kept there and does nothing\n",
+                 g_picks.entry[i].key, g_picks.entry[i].value, g_picks.path);
+    __atomic_add_fetch(&g_picks.changes, 1, __ATOMIC_RELEASE);
+}
+/* the picks into their file by the .ini's sections, the keys no pick takes after them as they were; beside it, then
+   moved over it. With no pick left the file is removed. 0, or -1 (warned once, the change kept for the next write) */
+static int picks_write(void) {
+    char tmp[sizeof g_picks.path + 8], why[256];
+    FILE* f;
+    int s, t, i, other = 0, failed;
+    unsigned char* text;
+    size_t size;
+    if (!g_picks.n) {
+        if (remove(g_picks.path) && snx_path_exists(g_picks.path)) {
+            WARN_LIMIT(1, "settings: could not remove %s, which has no pick left: %s\n", g_picks.path,
+                       snx_os_error(why, sizeof why));
+            return -1;
+        }
+        g_picks.hash = g_picks.seen = 0;
+        g_picks.dirty = 0;
+        return 0;
+    }
+    snprintf(tmp, sizeof tmp, "%s.tmp", g_picks.path);
+    if (!(f = fopen(tmp, "wb"))) {
+        WARN_LIMIT(1, "settings: could not write %s: %s\n", tmp, snx_os_error(why, sizeof why));
+        return -1;
+    }
+    fputs(SNX_GAME_PICKS_HEAD, f);
+    for (s = 0; s < g_ini_sections_count; s++) {
+        int head = 0;
+        for (t = 0; t < 3 && g_ini_sections[s].table[t]; t++) {
+            const IniOpt* o;
+            const Entry* e;
+            for (o = g_ini_sections[s].table[t]; o->key; o++)
+                if (!(o->flags & INI_IN_GAME) && (e = picks_find(o->key)) != NULL) {
+                    if (!head++) fprintf(f, "\n[%s]\n", g_ini_sections[s].name);
+                    fprintf(f, "%s=%s\n", e->key, e->value);
+                }
+        }
+    }
+    for (i = 0; i < g_picks.n; i++)
+        if (!picks_key(g_picks.entry[i].key)) {
+            if (!other++) fprintf(f, "\n[Other]\n; keys no pick of this version takes, kept as they are\n");
+            fprintf(f, "%s=%s\n", g_picks.entry[i].key, g_picks.entry[i].value);
+        }
+    failed = ferror(f);
+    if (fclose(f)) failed = 1;
+    if (failed || plat_replace_file(tmp, g_picks.path)) {
+        snx_os_error(why, sizeof why);
+        remove(tmp);
+        WARN_LIMIT(1, "settings: could not write %s (%s): this game's picks are not saved\n", g_picks.path, why);
+        return -1;
+    }
+    text = snx_read_file(g_picks.path, &size);
+    g_picks.hash = g_picks.seen = text ? snx_fnv1a(SNX_FNV_BASIS, text, size) : 0;
+    free(text);
+    g_picks.dirty = 0;
+    return 0;
+}
+/* the game's picks in the log, each with what this run's command line gives over it */
+static void picks_said(void) {
+    char line[2048];
+    size_t at;
+    int i;
+    if (!g_picks.n) return;
+    at = (size_t)snprintf(line, sizeof line, "settings: this game's own, from %s:", g_picks.path);
+    for (i = 0; i < g_picks.n && at < sizeof line; i++) {
+        const char* run = picks_key(g_picks.entry[i].key) ? run_value(g_picks.entry[i].key) : NULL;
+        at += (size_t)snprintf(line + at, sizeof line - at, "%s %s=%s", i ? "," : "", g_picks.entry[i].key,
+                               g_picks.entry[i].value);
+        if (run && at < sizeof line)
+            at += (size_t)snprintf(line + at, sizeof line - at, " (this run plays %s=%s, its command line's)",
+                                   g_picks.entry[i].key, run);
+    }
+    LOG("%s\n", line);
+}
+/* the picks file changed on the disk (the launcher's Settings of the game, a hand) and settled: read again and said.
+   1 when it was */
+static int picks_poll(void) {
+    size_t size;
+    unsigned char* text = snx_read_file(g_picks.path, &size);
+    u64 h = text ? snx_fnv1a(SNX_FNV_BASIS, text, size) : 0;
+    free(text);
+    if (h == g_picks.hash) return 0;
+    if (h != g_picks.seen) { /* maybe still being saved: read at the next poll if it stays so */
+        g_picks.seen = h;
+        return 0;
+    }
+    picks_load();
+    LOG("settings: %s reloaded\n", g_picks.path);
+    picks_said();
+    return 1;
+}
+/* --launcher-picks=1: this run's settings on the command line are the launcher's picks for every game, under the
+   game's own. Before the old environment variables, which stay this run's */
+static void launcher_picks(void) {
+    const char* v = override_of(SNX_LAUNCHER_PICKS);
+    int i;
+    if (!v || !strcmp(v, "0")) return;
+    if (strcmp(v, "1")) {
+        WARN("settings: --%s=%s is not 0 or 1: it is 0 this run, the command line's settings over the game's picks\n",
+             SNX_LAUNCHER_PICKS, v);
+        return;
+    }
+    for (i = 0; i < g_nover; i++) g_over[i].launcher = strcmp(g_over[i].key, SNX_LAUNCHER_PICKS) != 0;
+}
+
+/* the keys Clean Old Settings would take out, counted for the menu's row */
+static void old_counted(void) {
+    int i, n = 0;
+    for (i = 0; i < g_nstore; i++) n += ini_deprecated(g_store[i].key) != NULL;
+    for (i = 0; i < g_picks.n; i++) n += !picks_key(g_picks.entry[i].key);
+    if (__atomic_exchange_n(&g_picks.old, n, __ATOMIC_ACQ_REL) != n) /* the menu's row comes or goes */
+        __atomic_add_fetch(&g_picks.changes, 1, __ATOMIC_RELEASE);
+}
+/* Clean Old Settings from the game's menu: the .ini's deprecated keys and the picks' keys no pick takes taken out,
+   both files written without them, and each said in the log with its value */
+static void clean_old(void) {
+    char line[2048];
+    size_t at = (size_t)snprintf(line, sizeof line, "settings: Clean Old Settings took out");
+    int i, n = 0;
+    for (i = 0; i < g_nstore;)
+        if (ini_deprecated(g_store[i].key)) {
+            if (at < sizeof line)
+                at += (size_t)snprintf(line + at, sizeof line - at, "%s %s=%s", n++ ? "," : "", g_store[i].key,
+                                       g_store[i].value);
+            memmove(&g_store[i], &g_store[i + 1], (size_t)(--g_nstore - i) * sizeof *g_store); /* in their order */
+        } else
+            i++;
+    for (i = 0; i < g_picks.n;)
+        if (!picks_key(g_picks.entry[i].key)) {
+            if (at < sizeof line)
+                at += (size_t)snprintf(line + at, sizeof line - at, "%s %s=%s (%s)", n++ ? "," : "",
+                                       g_picks.entry[i].key, g_picks.entry[i].value, g_picks.path);
+            picks_put(g_picks.entry[i].key, NULL);
+            g_picks.dirty = 1;
+        } else
+            i++;
+    if (!n) return;
+    LOG("%s\n", line);
+    write_file();
+    if (g_picks.dirty) picks_write();
+}
+/* the store into the .ini and the picks into theirs, then the menu's changes they hold dropped: each file tried, and
+   the changes kept for the next poll while either could not be written */
+static void files_write(const Pending* taken, int n) {
+    int failed = g_picks.dirty && picks_write();
+    if (write_file()) failed = 1;
+    if (!failed) pending_written(taken, n);
 }
 
 /* ini_read's line about a value clamped or left, in the log */
@@ -720,11 +1082,14 @@ void ini_open(const char* path) {
     int i, n;
     char why[256];
     snprintf(g_path, sizeof g_path, "%s", path);
+    picks_path();
     ini_set_say(say_setting);
     for (i = 0; i < g_nover; i++) /* --vk_descriptors is read as vk_descriptors_mode, said there */
         if (!snx_setting_known(g_over[i].key) && strcmp(g_over[i].key, "vk_descriptors"))
             WARN("--%s is not a setting, so it does nothing\n", g_over[i].key);
+    launcher_picks();
     options_old_environment();
+    picks_load();
     text = snx_read_file(g_path, &size);
     if (!text) snx_os_error(why, sizeof why);
     if (!text && snx_path_exists(g_path)) {
@@ -732,9 +1097,11 @@ void ini_open(const char* path) {
              g_path, why);
         vk_descriptors_old(); /* the command line's */
         apply_all();
+        picks_said();
         options_old_environment_say();
         debug_shown(0);
         options_settings(g_said, sizeof g_said);
+        old_counted();
         g_started = 1;
         return;
     }
@@ -749,10 +1116,12 @@ void ini_open(const char* path) {
     n = pending_take(taken);
     say_deprecated();
     apply_all();
+    picks_said();
     options_old_environment_say();
     debug_shown(0);
     options_settings(g_said, sizeof g_said);
-    if (!write_file()) pending_written(taken, n);
+    files_write(taken, n);
+    old_counted();
     g_started = 1;
 }
 
@@ -762,25 +1131,18 @@ void ini_poll(int final) {
     Pending taken[PENDING_MAX];
     unsigned char* text;
     size_t size;
-    int pending, n;
+    int pending, n, picks;
     u64 h;
     if (!g_path[0]) return;
     pm_lock(&g_poll_lock);
     pm_lock(&g_pending_lock);
     pending = g_npending;
     pm_unlock(&g_pending_lock);
+    picks = picks_poll();
+    if (__atomic_exchange_n(&g_picks.clean_soon, 0, __ATOMIC_ACQ_REL)) clean_old();
     text = snx_read_file(g_path, &size);
-    if (!text) {
-        /* unreadable: left alone. Gone: made again when there is something to save */
-        if (!snx_path_exists(g_path) && pending) {
-            n = pending_take(taken);
-            if (!write_file()) pending_written(taken, n);
-        }
-        pm_unlock(&g_poll_lock);
-        return;
-    }
-    h = snx_fnv1a(SNX_FNV_BASIS, text, size);
-    if (h != g_hash && (final ? pending : h == g_seen)) {
+    h = text ? snx_fnv1a(SNX_FNV_BASIS, text, size) : 0;
+    if (text && h != g_hash && (final ? pending : h == g_seen)) {
         /* changed, and settled (seen the same a second before), or the menu's changes are to be saved at exit */
         store_parse((char*)text);
         n = pending_take(taken);
@@ -788,13 +1150,22 @@ void ini_poll(int final) {
         LOG("settings: %s reloaded\n", g_path);
         debug_shown(1);
         settings_reloaded();
-        if (!write_file()) pending_written(taken, n);
-    } else if (h != g_hash)
-        g_seen = h; /* changed: maybe still being saved, read at the next poll if it stays so */
-    else if (pending) {
-        n = pending_take(taken);
-        if (!write_file()) pending_written(taken, n);
+        files_write(taken, n);
+    } else {
+        if (text && h != g_hash)
+            g_seen = h; /* changed: maybe still being saved, read at the next poll if it stays so */
+        else if (pending && (text || !snx_path_exists(g_path))) {
+            /* the menu's changes; the file made again when it is gone, and left alone while it cannot be read */
+            n = pending_take(taken);
+            files_write(taken, n);
+        }
+        if (picks) {
+            apply_all();
+            debug_shown(1);
+            settings_reloaded();
+        }
     }
+    old_counted();
     free(text);
     pm_unlock(&g_poll_lock);
 }

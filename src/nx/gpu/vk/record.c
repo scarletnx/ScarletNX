@@ -112,6 +112,8 @@ static int rec_on(VkCommandBuffer cb) {
     return g_rec > 0 && (cb == g_rec_cb || (cb && cb == vk_cmd_upload_recording()));
 }
 
+int vk_rec_ring(VkCommandBuffer cb) { return rec_on(cb); }
+
 static void wake(void) {
     if (__atomic_load_n(&g_sleep, __ATOMIC_SEQ_CST)) {
         pm_lock(&g_m);
@@ -808,7 +810,6 @@ REC3(CmdResetQueryPool, VkQueryPool, u32, u32)
 REC3(CmdWriteTimestamp2, VkPipelineStageFlags2, VkQueryPool, u32)
 REC3(CmdBeginQuery, VkQueryPool, u32, VkQueryControlFlags)
 REC2(CmdEndQuery, VkQueryPool, u32)
-REC4(CmdFillBuffer, VkBuffer, VkDeviceSize, VkDeviceSize, u32)
 REC7(CmdCopyQueryPoolResults, VkQueryPool, u32, u32, VkBuffer, VkDeviceSize, VkDeviceSize, VkQueryResultFlags)
 REC0(CmdEndConditionalRenderingEXT)
 
@@ -1330,23 +1331,36 @@ void rec_CmdCopyImage(VkCommandBuffer cb, VkImage src, VkImageLayout sl, VkImage
     rec_CmdCopyImage_raw(cb, src, sl, dst, dl, n, r);
     if (timed) vk_gpuprof_op_end(cb);
 }
+/* a transfer of kind (VK_OP_*) timed for vk_gpu_profile by where it was recorded, site its caller's return address: 1
+   when it is, for xfer_end */
+static int xfer_begin(VkCommandBuffer cb, u32 kind, const void* site, u64 bytes) {
+    return vk_gpuprof_profiled(cb) &&
+           vk_gpuprof_op_begin(cb, kind, (u64)((const u8*)site - (const u8*)vk_gpuprof_base()), bytes);
+}
+static void xfer_end(VkCommandBuffer cb, int timed) {
+    if (timed) vk_gpuprof_op_end(cb);
+}
 void rec_CmdBlitImage(VkCommandBuffer cb, VkImage src, VkImageLayout sl, VkImage dst, VkImageLayout dl, u32 n,
                       const VkImageBlit* r, VkFilter filter) {
-    if (!rec_on(cb)) {
+    int timed = xfer_begin(cb, VK_OP_BLIT, __builtin_return_address(0), 0);
+    if (!rec_on(cb))
         vkCmdBlitImage(cb, src, sl, dst, dl, n, r, filter);
-        return;
+    else {
+        rec_xfer(blit_run, cb, (u64)src, sl, (u64)dst, dl, n, r, n * sizeof *r)->e = filter;
+        rec_commit();
     }
-    rec_xfer(blit_run, cb, (u64)src, sl, (u64)dst, dl, n, r, n * sizeof *r)->e = filter;
-    rec_commit();
+    xfer_end(cb, timed);
 }
 void rec_CmdResolveImage(VkCommandBuffer cb, VkImage src, VkImageLayout sl, VkImage dst, VkImageLayout dl, u32 n,
                          const VkImageResolve* r) {
-    if (!rec_on(cb)) {
+    int timed = xfer_begin(cb, VK_OP_RESOLVE, __builtin_return_address(0), 0);
+    if (!rec_on(cb))
         vkCmdResolveImage(cb, src, sl, dst, dl, n, r);
-        return;
+    else {
+        rec_xfer(resolve_run, cb, (u64)src, sl, (u64)dst, dl, n, r, n * sizeof *r);
+        rec_commit();
     }
-    rec_xfer(resolve_run, cb, (u64)src, sl, (u64)dst, dl, n, r, n * sizeof *r);
-    rec_commit();
+    xfer_end(cb, timed);
 }
 static void rec_CmdCopyBufferToImage_raw(VkCommandBuffer cb, VkBuffer src, VkImage dst, VkImageLayout dl, u32 n,
                                          const VkBufferImageCopy* r) {
@@ -1386,21 +1400,47 @@ void rec_CmdCopyImageToBuffer(VkCommandBuffer cb, VkImage src, VkImageLayout sl,
 }
 void rec_CmdClearColorImage(VkCommandBuffer cb, VkImage img, VkImageLayout l, const VkClearColorValue* c, u32 n,
                             const VkImageSubresourceRange* r) {
-    if (!rec_on(cb)) {
+    int timed = xfer_begin(cb, VK_OP_CLEAR, __builtin_return_address(0), 0);
+    if (!rec_on(cb))
         vkCmdClearColorImage(cb, img, l, c, n, r);
-        return;
+    else {
+        rec_xfer(clear_color_run, cb, (u64)img, l, 0, 0, n, r, n * sizeof *r)->v.color = *c;
+        rec_commit();
     }
-    rec_xfer(clear_color_run, cb, (u64)img, l, 0, 0, n, r, n * sizeof *r)->v.color = *c;
-    rec_commit();
+    xfer_end(cb, timed);
 }
 void rec_CmdClearDepthStencilImage(VkCommandBuffer cb, VkImage img, VkImageLayout l, const VkClearDepthStencilValue* c,
                                    u32 n, const VkImageSubresourceRange* r) {
-    if (!rec_on(cb)) {
+    int timed = xfer_begin(cb, VK_OP_CLEAR, __builtin_return_address(0), 0);
+    if (!rec_on(cb))
         vkCmdClearDepthStencilImage(cb, img, l, c, n, r);
-        return;
+    else {
+        rec_xfer(clear_depth_run, cb, (u64)img, l, 0, 0, n, r, n * sizeof *r)->v.depthStencil = *c;
+        rec_commit();
     }
-    rec_xfer(clear_depth_run, cb, (u64)img, l, 0, 0, n, r, n * sizeof *r)->v.depthStencil = *c;
-    rec_commit();
+    xfer_end(cb, timed);
+}
+typedef struct {
+    VkCommandBuffer cb;
+    VkBuffer buf;
+    VkDeviceSize off, size;
+    u32 data;
+} FillArgs;
+static void fill_run(const void* p) {
+    const FillArgs* x = p;
+    vkCmdFillBuffer(x->cb, x->buf, x->off, x->size, x->data);
+}
+void rec_CmdFillBuffer(VkCommandBuffer cb, VkBuffer buf, VkDeviceSize off, VkDeviceSize size, u32 data) {
+    /* its bytes where they are known: VK_WHOLE_SIZE counts none */
+    int timed = xfer_begin(cb, VK_OP_FILL, __builtin_return_address(0), size == VK_WHOLE_SIZE ? 0 : size);
+    if (!rec_on(cb))
+        vkCmdFillBuffer(cb, buf, off, size, data);
+    else {
+        FillArgs* x = rec_push(fill_run, sizeof *x);
+        *x = (FillArgs){cb, buf, off, size, data};
+        rec_commit();
+    }
+    xfer_end(cb, timed);
 }
 
 typedef struct {
@@ -1485,6 +1525,9 @@ typedef struct {
     VkRect2D area;
     u32 layers, view_mask, n;
     int depth, stencil;
+    /* an Ounce's shading rate image as the pass's attachment (shading_rate.c), VK_NULL_HANDLE for none */
+    VkImageView rate;
+    VkExtent2D rate_texel;
 } RenderArgs;
 static void rendering_run(const void* p) {
     const RenderArgs* x = p;
@@ -1498,11 +1541,22 @@ static void rendering_run(const void* p) {
                           .pColorAttachments = a,
                           .pDepthAttachment = x->depth ? &a[x->n] : NULL,
                           .pStencilAttachment = x->stencil ? &a[x->n + 1] : NULL};
+    VkRenderingFragmentShadingRateAttachmentInfoKHR rate = {
+        .sType = VK_STRUCTURE_TYPE_RENDERING_FRAGMENT_SHADING_RATE_ATTACHMENT_INFO_KHR,
+        .imageView = x->rate,
+        .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
+        .shadingRateAttachmentTexelSize = x->rate_texel};
+    if (x->rate) ri.pNext = &rate;
     vkCmdBeginRendering(x->cb, &ri);
 }
 void rec_CmdBeginRendering(VkCommandBuffer cb, const VkRenderingInfo* ri) {
     vk_ck(cb, VK_CK_PASS, ri->renderArea.extent.width, ri->renderArea.extent.height, ri->colorAttachmentCount, 0);
-    int chained = ri->pNext || (ri->pDepthAttachment && ri->pDepthAttachment->pNext) ||
+    /* a shading rate attachment alone goes in the packet */
+    const VkRenderingFragmentShadingRateAttachmentInfoKHR* rate = ri->pNext;
+    if (rate && (rate->sType != VK_STRUCTURE_TYPE_RENDERING_FRAGMENT_SHADING_RATE_ATTACHMENT_INFO_KHR || rate->pNext ||
+                 rate->imageLayout != VK_IMAGE_LAYOUT_GENERAL))
+        rate = NULL;
+    int chained = (ri->pNext && !rate) || (ri->pDepthAttachment && ri->pDepthAttachment->pNext) ||
                   (ri->pStencilAttachment && ri->pStencilAttachment->pNext);
     for (u32 i = 0; i < ri->colorAttachmentCount && !chained; i++) chained = ri->pColorAttachments[i].pNext != NULL;
     if (!rec_on(cb) || chained) {
@@ -1513,8 +1567,16 @@ void rec_CmdBeginRendering(VkCommandBuffer cb, const VkRenderingInfo* ri) {
     u32 n = ri->colorAttachmentCount;
     RenderArgs* x = rec_push(rendering_run, REC_AL(sizeof *x) + (n + 2) * sizeof(VkRenderingAttachmentInfo));
     VkRenderingAttachmentInfo* a = (void*)((u8*)x + REC_AL(sizeof *x));
-    *x = (RenderArgs){cb, ri->flags, ri->renderArea, ri->layerCount, ri->viewMask, n, !!ri->pDepthAttachment,
-                      !!ri->pStencilAttachment};
+    *x = (RenderArgs){cb,
+                      ri->flags,
+                      ri->renderArea,
+                      ri->layerCount,
+                      ri->viewMask,
+                      n,
+                      !!ri->pDepthAttachment,
+                      !!ri->pStencilAttachment,
+                      rate ? rate->imageView : VK_NULL_HANDLE,
+                      rate ? rate->shadingRateAttachmentTexelSize : (VkExtent2D){0, 0}};
     memcpy(a, ri->pColorAttachments, n * sizeof *a);
     if (ri->pDepthAttachment) a[n] = *ri->pDepthAttachment;
     if (ri->pStencilAttachment) a[n + 1] = *ri->pStencilAttachment;

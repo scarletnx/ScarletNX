@@ -6,9 +6,9 @@
    named and its values worded as the game's menu shows them. A setting is the .ini's, passed to no run, while it is at
    its default: a word row's value is one of its words, the default's marked [default]; one whose default has no word
    (an empty one) has the .ini's as a word of its own, shown [default]. The picks are kept in a file, an .ini of the
-   game's sections and keys, and go to every run as --key=value. A run takes a setting from what that run picks, then
-   from the game's own file of picks (to come: today there is only the global one, every game's), then from the global
-   file, and last from the game's .ini */
+   game's sections and keys, and go to every run as --key=value with --launcher-picks=1. A run takes a setting from what
+   that run picks, then from the game's own file of picks (<name>.picks beside its .ini, which its menu writes and the
+   runtime reads), then from the global file, and last from the game's .ini */
 #ifndef SNX_GUI_SETTINGS_H
 #define SNX_GUI_SETTINGS_H
 #include <stddef.h>
@@ -41,6 +41,8 @@ typedef struct {
     GuiSetting* values; /* their values, which the keys' offsets are in */
     int count;          /* in one block with the list the keys' names and help point into */
     int own;            /* the launcher's own rows and the recompiler's, first (their page's rows among them) */
+    int game;           /* a game's own picks (gui_settings_read_game): none of the launcher's rows, every word row's
+                           first word Global, no pick */
 } GuiSettings;
 /* the launcher's own rows and the recompiler's (g_launch_sections, listed by ini_list_text), then the runtime's list of
    the game's settings, a line each (section[/page], key, default, int | float | text, lowest, highest, help, name, the
@@ -49,6 +51,10 @@ typedef struct {
    nothing. A page's rows are listed after its section's others, one page a section. 0, else nonzero when out of
    memory */
 int gui_settings_read(GuiSettings* settings, const char* runtime);
+/* the rows of a game's own picks, its picks file (<name>.picks beside its .ini) as gui_settings_load and
+   gui_settings_save read and write it: the runtime's alone, each with Global first, the value it starts with, which
+   no pick has and the launcher's picks then give (no plain row, no slider). As gui_settings_read: 0, else nonzero */
+int gui_settings_read_game(GuiSettings* settings, const char* runtime);
 void gui_settings_free(GuiSettings* settings);
 /* the row of key set to value, a word or a text as the row takes: 1 when it did */
 int gui_settings_set(GuiSettings* settings, const char* key, const char* value);
@@ -93,16 +99,27 @@ void gui_settings_sync(GuiSettings* settings);
    [default]", "[default]" for an empty one), an All's word its rows share or Mixed, [default] after it or alone
    while none of its rows is picked; an always row's word, [default] after the one it starts with */
 void gui_settings_shown(const GuiSettings* settings, int row, char* out, size_t size);
-/* the Debug section's settings not at their default for a run of the game whose .ini is at ini (NULL: none read): a
-   row's pick, else the file's value, else its default; then gdbstub when the launcher's row is on. With picks 0 the
-   file's alone, the picks and gdbstub left out. key=value between ", ", a text's by its key alone, as the game says
+/* the Debug section's settings not at their default for a run of the game whose .ini is at ini (NULL: none read): the
+   game's own pick (its picks file beside the .ini), else a row's pick, else the file's value, else its default; then
+   gdbstub when the launcher's row is on. With picks 0 the game's own alone (its picks and its .ini), the launcher's
+   picks and gdbstub left out. key=value between ", ", a text's by its key alone, as the game says
    them over its picture (the runtime's options_debug): how many. out cut where it ends, NUL-terminated */
 int gui_settings_debug(const GuiSettings* settings, const char* ini, int picks, char* out, size_t size);
+/* a game's own row's value as its Settings show it: a pick as gui_settings_shown says it, else Global and the
+   launcher's value of it as its Settings show that ("Global (60%)", "Global (Off [default])") */
+void gui_settings_shown_game(const GuiSettings* game, const GuiSettings* global, int row, char* out, size_t size);
+/* what the game whose .ini is at ini has of its own: its picks (<name>.picks), key=value, then the GPU driver and
+   Freedreno's variables its box picked, kept in the .ini (gpu_driver=value, freedreno_env by its key alone), ", "
+   between, cut where out ends: how many */
+int gui_settings_game_own(const char* ini, char* out, size_t size);
 /* the value picked for key, NULL for the .ini's or no such row */
 const char* gui_settings_value(const GuiSettings* settings, const char* key);
-/* argv's options for a run: --key=value for each setting picked; with launch the launcher's too, -S -s for the stub,
-   --tmpfs and --extract-container. Their count, count + 1 at most */
-size_t gui_settings_options(GuiSettings* settings, int launch, const char** argv);
+/* argv's options for a run of the game whose .ini is at game_ini (NULL: a dump's, or none): --key=value for each
+   setting picked and --launcher-picks=1 after them, which puts the game's own picks over them; of the settings the
+   recompile takes too (settings.txt's recompile), which it reads from its options alone, the game's own pick where it
+   has one. With launch the launcher's too, -S -s for the stub, --tmpfs and --extract-container. Their count, count + 5
+   at most */
+size_t gui_settings_options(GuiSettings* settings, int launch, const char* game_ini, const char** argv);
 /* argv's --key=value for each of the 3DS driver's settings picked: its tables' (keys that start with ctr_) and the
    Switch's it takes too (3ds/runtime/main.h's snx_ctr_shared_setting, vk_memory). Its count */
 size_t gui_settings_ctr_options(GuiSettings* settings, const char** argv);
@@ -114,9 +131,9 @@ const char* gui_settings_extract(const GuiSettings* settings);
 /* argv's --key=value for each of the recompiler's settings picked (the optimization level, the AOT threads, LLVM
    Internals), which the Switch driver takes for a run (which recompiles when it must) and for R's recompile; with
    make, a run that makes the game and plays nothing (-r), each of the game's settings the recompile takes too
-   (settings.txt's recompile: NCE, Debug's SLP vectorizer) picked, which a run gets with the game's options. Their
-   count */
-size_t gui_settings_recompile(GuiSettings* settings, int make, const char** argv);
+   (settings.txt's recompile: NCE, Debug's SLP vectorizer) picked, which a run gets with the game's options: the game's
+   own pick where its picks beside game_ini (NULL: none) have one, else the launcher's. Their count */
+size_t gui_settings_recompile(GuiSettings* settings, int make, const char* game_ini, const char** argv);
 /* argv's --key=value for each of the recompile's settings every driver that recompiles takes picked: the optimization
    level and the AOT threads, which the 3DS, Vita and GBA drivers read as the Switch's does. Their count */
 size_t gui_settings_recompile_shared(GuiSettings* settings, const char** argv);

@@ -11,7 +11,7 @@
 int main(void) {
     static const char expected[] =
         "\n[Deprecated]\n; keys an older version used, which do nothing now (docs/user/deprecations.md): delete them, or use "
-        "Settings > App >\n;   Clean Old Settings in the launcher\n; renderer: Vulkan is the only renderer\n"
+        "Clean Old Settings\n;   in the game's menu or the launcher's Settings > App\n; renderer: Vulkan is the only renderer\n"
         "renderer=opengl\n; touch_controls: now controls\ntouch_controls=1\n";
     const char* keys[] = {"renderer", "touch_controls"};
     char text[1024], small[40];
@@ -51,7 +51,7 @@ int main(void) {
     assert(!ini_deprecated_note(text, sizeof text, "Game.ini", keys, 0));
     assert(ini_deprecated_note(text, sizeof text, "Game.ini", keys, 1));
     assert(!strcmp(text, "settings: Game.ini keeps 1 key this version does not use (renderer), under [Deprecated]: "
-                         "delete it, or use Settings > App > Clean Old Settings in the launcher"));
+                         "delete it, or use Clean Old Settings in the game's menu or the launcher's Settings > App"));
     assert(ini_deprecated_note(text, sizeof text, "Game.ini", keys, 2) &&
            strstr(text, "keeps 2 keys this version does not use (renderer, touch_controls)") &&
            strstr(text, "delete them"));

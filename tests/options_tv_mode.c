@@ -18,6 +18,8 @@
 #include "nx/runtime/ini.h"
 #include "nx/runtime/loader.h"
 #include "nx/runtime/main.h"
+#include "common/utilities/game_ini.h"
+#include "snx_settings.h" /* settings_arg, as a driver and the game read a command line */
 #include "nx/runtime/options.h"
 #include "nx/runtime/platform/backend.h"
 #include "nx/runtime/platform/hud.h"
@@ -563,16 +565,242 @@ static int options_vk_descriptors_first(const char* which) {
     return 0;
 }
 
-/* the .ini as the next poll writes it, the menu's and the keys' changes in it */
-static char* ini_written(const char* path) {
+/* ---- the game's own picks, <name>.picks beside its .ini: a process each, as the command line's overrides stay ---- */
+
+/* a game's folder with its .ini and, when picks is not NULL, its picks file: the paths in ini and in picks */
+static char* picks_game(const char* text, const char* picks_text, char** ini, char** picks) {
+    char* dir = snx_temp_dir(NULL);
+    CHECK(dir);
+    *ini = snx_path_join(dir, "game.ini");
+    *picks = snx_path_join(dir, "game.picks");
+    CHECK(*ini && *picks && !snx_write_file(*ini, text, strlen(text)));
+    if (picks_text) CHECK(!snx_write_file(*picks, picks_text, strlen(picks_text)));
+    return dir;
+}
+static char* file_text(const char* path) {
     size_t size;
-    char* text;
+    return (char*)snx_read_file(path, &size);
+}
+/* the order in a launcher's run (--launcher-picks=1): the game's picks, then the launcher's for every game, then the
+   .ini. Volume is the launcher's 60 and the game's 40: 40. The FPS limit the launcher's 90 and the game's 30: 30. Stats
+   the launcher's alone: on, over the .ini's off. The .ini keeps its own values */
+static int picks_order(void) {
+    char *ini, *picks,
+        *dir = picks_game("[Audio]\nvolume=100\n[Performance]\nfps_limit=120\n[Display]\nstats=0\n",
+                          "[Audio]\nvolume=40\n[Performance]\nfps_limit=30\n", &ini, &picks),
+        *text;
+    { /* the launcher's flag as the driver takes it and passes it on, and as the game reads that: its key */
+        char key[64], on[64];
+        const char* value = settings_arg("--launcher-picks=1", key, sizeof key);
+        CHECK(value && !strcmp(key, SNX_LAUNCHER_PICKS));
+        ini_option(on, sizeof on, key, value);
+        CHECK(!strcmp(on, "--launcher-picks=1") && (value = settings_arg(on, key, sizeof key)) &&
+              !strcmp(key, SNX_LAUNCHER_PICKS) && !strcmp(value, "1"));
+    }
+    ini_override(SNX_LAUNCHER_PICKS, "1"); /* what it read, in strings that last as argv's do: ini_override keeps them */
+    ini_override("volume", "60");
+    ini_override("fps_limit", "90");
+    ini_override("stats", "1");
+    g_test.write = 1;
+    g_test.said[0] = 0;
+    ini_open(ini);
+    CHECK(g_settings.volume == 40 && g_opt_fps == 30 && g_settings.stats == 1);
+    CHECK(strstr(g_test.said, "settings: this game's own, from ") &&
+          strstr(g_test.said, "game.picks: volume=40, fps_limit=30\n"));
+    CHECK(!strstr(g_test.said, "is not a setting")); /* --launcher-picks is known */
+    CHECK((text = file_text(ini)) && strstr(text, "\nvolume=100\n") && strstr(text, "\nfps_limit=120\n") &&
+          strstr(text, "\nstats=0\n"));
+    free(text);
+    CHECK(ini_picked("volume") && ini_picked("fps_limit") && !ini_picked("stats"));
+    CHECK(!snx_remove_tree(dir));
+    free(ini);
+    free(picks);
+    free(dir);
+    return 0;
+}
+/* the game's menu: Volume set goes to the game's picks, over the launcher's 60, and the .ini keeps its 100; taken out
+   (Del), the launcher's 60 again at the next tick and the picks file gone with its last pick. A control's place, the
+   game's own, goes to the .ini and makes no picks file */
+static int picks_menu(void) {
+    char *ini, *picks, *dir = picks_game("[Audio]\nvolume=100\n", NULL, &ini, &picks), *text, place[32];
+    const IniOpt* o;
+    ini_override("volume", "60");
+    ini_override(SNX_LAUNCHER_PICKS, "volume");
+    g_test.write = 1;
+    ini_open(ini);
+    CHECK(g_settings.volume == 60 && !ini_picked("volume") && !snx_path_exists(picks));
+    __atomic_store_n(&g_settings.volume, 30, __ATOMIC_RELAXED); /* as the menu's slider sets it */
+    ini_set("volume", "30");
+    CHECK(ini_picked("volume")); /* shown at once, before the poll saves it */
     ini_poll(0);
-    CHECK((text = (char*)snx_read_file(path, &size)));
+    CHECK((text = file_text(picks)) && strstr(text, "\n[Audio]\nvolume=30\n"));
+    free(text);
+    CHECK((text = file_text(ini)) && strstr(text, "\nvolume=100\n") && !strstr(text, "volume=30"));
+    free(text);
+    CHECK(ini_picked("volume") && g_settings.volume == 30);
+    ini_unpick("volume");
+    CHECK(!ini_picked("volume") && ini_poll_due() && !ini_poll_due());
+    ini_poll(0);
+    CHECK(g_settings.volume == 60 && !ini_picked("volume") && !snx_path_exists(picks));
+    for (o = g_vpad_ini; o->key && !(o->flags & INI_IN_GAME); o++) continue;
+    CHECK(o->key);
+    snprintf(place, sizeof place, "%s", o->key);
+    ini_set(place, "0.25 0.5 100");
+    ini_poll(0);
+    CHECK(!ini_picked(place) && !snx_path_exists(picks));
+    CHECK((text = file_text(ini)) && strstr(text, "=0.25 0.5 100\n"));
+    free(text);
+    CHECK(!snx_remove_tree(dir));
+    free(ini);
+    free(picks);
+    free(dir);
+    return 0;
+}
+/* a setting read at the start: its pick is the next start's value, this run keeping the one it started with; taken
+   out, the next start's is the value without it (the .ini's, else the default), which ini_next_start says */
+static int picks_next(void) {
+    char *ini, *picks, *dir = picks_game("[Graphics]\nresolution=2\n", "[Graphics]\nresolution=1.25\n", &ini, &picks),
+                      next[32];
+    const IniOpt* o = ini_find(g_graphics_ini, "resolution");
+    g_test.write = 1;
+    ini_open(ini);
+    CHECK(o && *(const float*)o->var == 1.25f);
+    CHECK(ini_next_start("resolution", next, sizeof next) && !strcmp(next, "1.25"));
+    ini_set_apply("resolution", "1.5");
+    CHECK(ini_next_start("resolution", next, sizeof next) && !strcmp(next, "1.5") && ini_poll_due());
+    ini_poll(0);
+    CHECK(*(const float*)o->var == 1.25f && ini_next_start("resolution", next, sizeof next) && !strcmp(next, "1.5"));
+    ini_unpick("resolution");
+    CHECK(!ini_next_start("resolution", next, sizeof next) && !next[0]); /* until the poll takes it out */
+    ini_poll(0);
+    CHECK(ini_next_start("resolution", next, sizeof next) && !strcmp(next, "2") && *(const float*)o->var == 1.25f);
+    CHECK(!snx_path_exists(picks) && !ini_next_start("vsync", next, sizeof next));
+    CHECK(!snx_remove_tree(dir));
+    free(ini);
+    free(picks);
+    free(dir);
+    return 0;
+}
+/* a value this run's command line gives by hand, with no --launcher-picks=1, goes over the game's pick, which the log
+   says, until the menu sets the key: the menu's from then on, a reload of the .ini too, and its pick taken out gives
+   the command line's back */
+static int picks_hand(void) {
+    char *ini, *picks, *dir = picks_game("[Audio]\nvolume=100\n", "[Audio]\nvolume=40\n", &ini, &picks), *text;
+    ini_override("volume", "60");
+    g_test.write = 1;
+    g_test.said[0] = 0;
+    ini_open(ini);
+    CHECK(g_settings.volume == 60 && ini_picked("volume"));
+    CHECK(strstr(g_test.said, "game.picks: volume=40 (this run plays volume=60, its command line's)\n"));
+    __atomic_store_n(&g_settings.volume, 30, __ATOMIC_RELAXED);
+    ini_set("volume", "30");
+    ini_poll(0);
+    CHECK((text = file_text(picks)) && strstr(text, "\nvolume=30\n"));
+    free(text);
+    CHECK(!snx_write_file(ini, "[Audio]\nvolume=90\n", strlen("[Audio]\nvolume=90\n"))); /* a hand's edit */
+    ini_poll(0);
+    ini_poll(0); /* settled: read again */
+    CHECK(g_settings.volume == 30);
+    ini_unpick("volume");
+    ini_poll(0);
+    CHECK(g_settings.volume == 60 && !snx_path_exists(picks));
+    CHECK(!snx_remove_tree(dir));
+    free(ini);
+    free(picks);
+    free(dir);
+    return 0;
+}
+/* the picks file changed while the game runs (the launcher's Settings of the game): read once it settles, applied and
+   said. A key no pick takes is said with its value, does nothing, and is kept when the menu's change writes the file.
+   --launcher-picks=2 is said with the 0 it is taken as */
+static int picks_reload(void) {
+    char *ini, *picks, *dir = picks_game("[Audio]\nvolume=100\n", "[Audio]\nvolume=40\n", &ini, &picks), *text;
+    static const char changed[] = "[Audio]\nvolume=20\n[Other]\nnewer_key=5\n";
+    ini_override(SNX_LAUNCHER_PICKS, "2");
+    g_test.write = 1;
+    g_test.said[0] = 0;
+    ini_open(ini);
+    CHECK(g_settings.volume == 40);
+    CHECK(strstr(g_test.said, "settings: --launcher-picks=2 is not 0 or 1: it is 0 this run, the command line's "
+                              "settings over the game's picks\n"));
+    CHECK(!snx_write_file(picks, changed, sizeof changed - 1));
+    ini_poll(0);
+    CHECK(g_settings.volume == 40); /* maybe still being saved */
+    g_test.said[0] = 0;
+    ini_poll(0);
+    CHECK(g_settings.volume == 20);
+    CHECK(strstr(g_test.said, "game.picks reloaded\n"));
+    CHECK(strstr(g_test.said, "settings: newer_key=5 in ") &&
+          strstr(g_test.said, "game.picks is no setting a game's picks take: it is kept there and does nothing\n"));
+    ini_set("fps_limit", "45");
+    ini_poll(0);
+    CHECK((text = file_text(picks)) && strstr(text, "\n[Audio]\nvolume=20\n") &&
+          strstr(text, "\n[Performance]\nfps_limit=45\n") && strstr(text, "\n[Other]\n") &&
+          strstr(text, "\nnewer_key=5\n"));
+    free(text);
+    CHECK(!snx_remove_tree(dir));
+    free(ini);
+    free(picks);
+    free(dir);
+    return 0;
+}
+/* the game's menu's Clean Old Settings: the .ini's deprecated keys and the picks' keys no pick takes counted, then
+   at the next tick taken out of both files, said in the log with their values, and none counted after */
+static int picks_clean(void) {
+    char *ini, *picks, *dir = picks_game("[Display]\nstats=0\n[Performance]\nmemory_fit=1\n",
+                                         "[Audio]\nvolume=40\n[Other]\nnewer_key=5\n", &ini, &picks),
+                      *text;
+    g_test.write = 1;
+    ini_open(ini);
+    CHECK(ini_old_settings() == 2);
+    CHECK((text = file_text(ini)) && strstr(text, "\n[Deprecated]\n") && strstr(text, "\nmemory_fit=1\n"));
+    free(text);
+    g_test.said[0] = 0;
+    ini_clean_old();
+    CHECK(ini_poll_due() && !ini_poll_due());
+    ini_poll(0);
+    CHECK(ini_old_settings() == 0);
+    CHECK(strstr(g_test.said, "settings: Clean Old Settings took out memory_fit=1, newer_key=5 (") &&
+          strstr(g_test.said, "game.picks)\n"));
+    CHECK((text = file_text(ini)) && !strstr(text, "[Deprecated]") && !strstr(text, "memory_fit=") &&
+          strstr(text, "\nstats=0\n"));
+    free(text);
+    CHECK((text = file_text(picks)) && strstr(text, "\n[Audio]\nvolume=40\n") && !strstr(text, "newer_key"));
+    free(text);
+    CHECK(g_settings.volume == 40);
+    CHECK(!snx_remove_tree(dir));
+    free(ini);
+    free(picks);
+    free(dir);
+    return 0;
+}
+static int options_picks(const char* which) {
+    int failed = !strcmp(which, "--picks-clean")    ? picks_clean()
+                 : !strcmp(which, "--picks-next")   ? picks_next()
+                 : !strcmp(which, "--picks-order")  ? picks_order()
+                 : !strcmp(which, "--picks-menu")   ? picks_menu()
+                 : !strcmp(which, "--picks-hand")   ? picks_hand()
+                 : !strcmp(which, "--picks-reload") ? picks_reload()
+                                                    : 2;
+    if (failed == 2)
+        fprintf(stderr, "options_tv_mode: %s is none of --picks-order, -menu, -hand, -reload, -clean, -next\n",
+                which);
+    if (!failed) printf("options_tv_mode %s: ok\n", which);
+    return failed;
+}
+
+/* the game's picks beside the .ini at path as the next poll writes them, the menu's and the keys' changes in them */
+static char* picks_written(const char* path) {
+    size_t size;
+    char *text, *picks = snx_game_picks(path);
+    ini_poll(0);
+    CHECK(picks && (text = (char*)snx_read_file(picks, &size)));
+    free(picks);
     return text;
 }
 /* hotkey_fps_limit, hotkey_showcase and hotkey_stats: each press says the value now and the one before it, the same
-   words in the log and over the game (the toast's text), and writes the new one to the .ini. The FPS limit's three:
+   words in the log and over the game (the toast's text), and writes the new one to the game's picks, the .ini keeping
+   its own. The FPS limit's three:
    a number off and back to it, the game's pace off and back, and a run that started off going to the game's pace */
 static void test_key_steps(void) {
     char *dir = snx_temp_dir(NULL), *path, *text, said[64];
@@ -585,12 +813,14 @@ static void test_key_steps(void) {
     CHECK(g_opt_fps == 120);
     CHECK(options_fps_limit_step(&was, said, sizeof said) == 0 && g_opt_fps == 0 && was == 120);
     CHECK(!strcmp(said, "FPS limit: off (was 120)") && !strcmp(g_test.logged, "FPS limit: off (was 120)\n"));
-    text = ini_written(path);
+    text = picks_written(path);
     CHECK(strstr(text, "\nfps_limit=0\n"));
+    free(text);
+    CHECK((text = (char*)snx_read_file(path, &(size_t){0})) && strstr(text, "\nfps_limit=120\n"));
     free(text);
     CHECK(options_fps_limit_step(&was, said, sizeof said) == 120 && g_opt_fps == 120);
     CHECK(!strcmp(said, "FPS limit: 120 (was off)") && !strcmp(g_test.logged, "FPS limit: 120 (was off)\n"));
-    text = ini_written(path);
+    text = picks_written(path);
     CHECK(strstr(text, "\nfps_limit=120\n"));
     free(text);
     /* the game's pace, fps_limit's default */
@@ -600,7 +830,7 @@ static void test_key_steps(void) {
     CHECK(!strcmp(said, "FPS limit: off (was the game's pace)"));
     CHECK(options_fps_limit_step(&was, said, sizeof said) == SNX_FPS_GAME && g_opt_fps == SNX_FPS_GAME);
     CHECK(!strcmp(said, "FPS limit: the game's pace (was off)"));
-    text = ini_written(path);
+    text = picks_written(path);
     CHECK(strstr(text, "\nfps_limit=game\n"));
     free(text);
     /* fps_limit=0 from the start, nothing taken off yet: the game's pace. No room given: the log's line alone */
@@ -618,14 +848,14 @@ static void test_key_steps(void) {
           !strcmp(g_test.logged, "Showcase: on (was off), showcase_corner=tr\n"));
     CHECK(options_stats_step(said, sizeof said) == 1 && g_settings.stats == 1);
     CHECK(!strcmp(said, "Stats: on (was off)") && !strcmp(g_test.logged, "Stats: on (was off), stats_corner=br\n"));
-    text = ini_written(path);
+    text = picks_written(path);
     CHECK(strstr(text, "\nshowcase=1\n") && strstr(text, "\nstats=1\n"));
     free(text);
     CHECK(options_showcase_step(said, sizeof said) == 0 && g_settings.showcase == 0);
     CHECK(!strcmp(said, "Showcase: off (was on)") && !strcmp(g_test.logged, "Showcase: off (was on)\n"));
     CHECK(options_stats_step(said, sizeof said) == 0 && g_settings.stats == 0);
     CHECK(!strcmp(said, "Stats: off (was on)") && !strcmp(g_test.logged, "Stats: off (was on)\n"));
-    text = ini_written(path);
+    text = picks_written(path);
     CHECK(strstr(text, "\nshowcase=0\n") && strstr(text, "\nstats=0\n"));
     free(text);
     /* a toast's buffer too small: cut, ended; the log's line whole */
@@ -638,6 +868,7 @@ static void test_key_steps(void) {
 }
 
 int main(int argc, char** argv) {
+    if (argc > 1 && !strncmp(argv[1], "--picks-", 8)) return options_picks(argv[1]);
     if (argc > 1) return options_vk_descriptors_first(argv[1]);
     test_fixed();
     test_auto_watched();
