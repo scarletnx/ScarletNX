@@ -2844,7 +2844,7 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
     }
     u32 push = 0, push_pointer = 0;
     if ((stage == ST_FS && ((target & 15) || capture_output || needs_point_coord || needs_texel_scale || needs_frag_y ||
-                            needs_frag_ndc || predraw)) ||
+                            needs_frag_ndc || predraw || vt_needs)) ||
         position_fix || needs_instance || base_vertex || (point_size && !point_size_used)) {
         /* the fragment stage's uvec4: its scaled textures (shader_scaled_fetch) and the window's origin
            (shader_frag_y_origin). After it, each at its own member whichever the program reads: at byte 80 the draw's
