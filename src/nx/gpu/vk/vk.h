@@ -243,6 +243,8 @@ typedef struct {
     /* Vulkan 1.3's pipelineCreationCacheControl: a pipeline made from the pipeline cache alone, or not at all
        (VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT, pipeline.c's gpl_cached) */
     int has_cache_control;
+    /* VK_KHR_pipeline_executable_properties, on only for the pipeline_stats setting (pipeline_stats.c) */
+    int has_exec_stats;
     u32 dyn_pr; /* VK_DYN_PR_*: the pre-rasterization state those pipelines take as dynamic state */
     /* VK_KHR_index_type_uint8 (or the EXT before it): 8-bit index buffers bound as they are */
     int has_index8;
