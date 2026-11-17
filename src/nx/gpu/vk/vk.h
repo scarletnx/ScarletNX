@@ -424,6 +424,18 @@ int vk_image_sparse_bound(VkImage img, u32 layer, u32 level, u32 y0, u32 y1, u32
    memory) or the GPU's (0, as made); a mip tail takes the GPU's always. vk_image_sparse_level_bytes: the bytes of the
    blocks of its levels before `levels`, every layer */
 void vk_image_sparse_place(VkImage img, int system);
+/* Blocks that move when their device memory block is emptied (devmem.h). vk_image_sparse_mover: the allocations of
+   img's blocks and mip tails have mover as their owner, which vk_devmem_moving gives back; NULL: none moves
+   (vk_defer_image sets it). vk_image_sparse_move_begin: for allocation a of img, the regions whose texels it holds
+   (*n of them, max at most: one of the blocks it holds, as all of them show its texels, or a mip tail's levels) and
+   new memory in a block that is there (DevMemWant.existing): 1 with *to, 0 when no run holds it, -1 when a is not one
+   of img's allocations now or has more regions. The owner copies the regions' texels out and submits that;
+   vk_image_sparse_move_end binds a's blocks or tail to `to` in the batch, which waits for that work, and frees a
+   after it, and the owner copies the texels back in after the batch. A move not ended frees `to` (vk_devmem_free) */
+void vk_image_sparse_mover(VkImage img, void* mover);
+int vk_image_sparse_move_begin(VkImage img, DevMem a, DevMem* to, VkSparseImageMemoryBind* regions, u32 max,
+                               u32* n);
+void vk_image_sparse_move_end(VkImage img, DevMem a, DevMem to);
 u64 vk_image_sparse_level_bytes(VkImage img, u32 levels);
 void vk_sparse_stats(u64* binds, u64* bind_ns); /* statistics: sparse binds, and the host's wait for them */
 /* statistics: the blocks and mip tails with memory now of an image of either kind above, 0 for another image */
@@ -2148,11 +2160,15 @@ void vk_tex_kind_frame(void);
 /* After that, its own submission too: the textures in the block of device memory that is being emptied move to other
    blocks, DEFRAG_BYTES at most (texture.c). Nothing on a GPU that shares the system's memory (devmem.c) */
 void vk_tex_defrag_frame(void);
-/* An owner that can move its allocation (vk_devmem_owner) is a texture (Surf*, whose low bit is clear), or an own
-   buffer of the buffer cache, its entry's index tagged in the low bit */
-#define VK_MOVE_BUF(i)       ((void*)(((uintptr_t)(i) << 1) | 1u))
-#define VK_MOVE_IS_BUF(o)    (((uintptr_t)(o) & 1u) != 0)
-#define VK_MOVE_BUF_INDEX(o) ((u32)((uintptr_t)(o) >> 1))
+/* An owner that can move its allocation (vk_devmem_owner) is a texture (Surf*, whose low two bits are clear), an own
+   buffer of the buffer cache, its entry's index tagged in the low bit, or a block or mip tail of a sparse texture (its
+   Surf*, tagged in the next bit: vk_image_sparse_mover) */
+#define VK_MOVE_BUF(i)          ((void*)(((uintptr_t)(i) << 1) | 1u))
+#define VK_MOVE_IS_BUF(o)       (((uintptr_t)(o) & 1u) != 0)
+#define VK_MOVE_BUF_INDEX(o)    ((u32)((uintptr_t)(o) >> 1))
+#define VK_MOVE_SPARSE(t)       ((void*)((uintptr_t)(t) | 2u))
+#define VK_MOVE_IS_SPARSE(o)    (((uintptr_t)(o) & 3u) == 2u)
+#define VK_MOVE_SPARSE_SURF(o)  ((Surf*)(void*)((uintptr_t)(o) & ~(uintptr_t)3u))
 /* buffer.c: own buffer i, whose memory is from, made again in a run of another block (DevMemWant.existing) and copied
    there on cb, the old one freed when the frames in flight are done. 1 with *bytes, 0 when no run held it, -1 when
    the entry no longer has that memory */

@@ -828,6 +828,38 @@ int vk_rt_move(VkCommandBuffer cb, Surf* s, u64* bytes) {
     (void)cb, (void)s, (void)bytes;
     abort();
 }
+/* a sparse texture's block or brick moved (memory.c): no sparse texture is moved here */
+int vk_image_sparse_move_begin(VkImage img, DevMem a, DevMem* to, VkSparseImageMemoryBind* regions, u32 max,
+                               u32* n) {
+    (void)img, (void)a, (void)to, (void)regions, (void)max, (void)n;
+    abort();
+}
+void vk_image_sparse_move_end(VkImage img, DevMem a, DevMem to) {
+    (void)img, (void)a, (void)to;
+    abort();
+}
+VkResult vk_devmem_buffer(const VkBufferCreateInfo* bci, const DevMemWant* want, VkBuffer* buf, DevMem* mem,
+                          DevMemInfo* info) {
+    (void)bci, (void)want, (void)buf, (void)mem, (void)info;
+    abort();
+}
+void vk_devmem_free(DevMem mem) {
+    (void)mem;
+    abort();
+}
+void vk_defer_buffer(VkBuffer b, DevMem a) {
+    (void)b, (void)a;
+    abort();
+}
+void rec_CmdCopyImageToBuffer(VkCommandBuffer cb, VkImage src, VkImageLayout sl, VkBuffer dst, u32 n,
+                              const VkBufferImageCopy* r) {
+    (void)cb, (void)src, (void)sl, (void)dst, (void)n, (void)r;
+    abort();
+}
+void rec_CmdPipelineBarrier2(VkCommandBuffer cb, const VkDependencyInfo* dep) {
+    (void)cb, (void)dep;
+    abort();
+}
 const VkPhysicalDeviceMemoryProperties* vk_devmem_props(void) {
     static const VkPhysicalDeviceMemoryProperties none = {0};
     return &none;
