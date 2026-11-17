@@ -732,11 +732,17 @@ static void check_keep(void) {
     const DevMemWant gpu = {.at = DM_DEVICE};
     device(0, 1024, 64, 0);
     g_vk.has_image_aliasing = 0;
+    g_vk.has_pageable = 1;
     CHECK(make(1, 32 * MIB, 256, ~0u, 1, gpu, &a) == VK_SUCCESS && alone_of(&a));
     CHECK(!g_drv.mem[(u32)(uintptr_t)a.info.memory - 1].res); /* no resource named: another may take it */
     const VkDeviceMemory memory = a.info.memory;
     unmake(&a);
     CHECK(g_devmem.kept_bytes == 32 * MIB);
+    /* kept: handed out for the caches (no free room inside blocks), at the low class's priority */
+    DevMemBudget bud[VK_MAX_MEMORY_HEAPS];
+    vk_devmem_budgets(bud);
+    CHECK(bud[0].allocated_bytes == 32 * MIB && bud[0].block_bytes == 32 * MIB);
+    CHECK(g_drv.mem[(u32)(uintptr_t)memory - 1].prio == 0.0f);
     u32 calls = g_drv.allocations;
     CHECK(make(1, 30 * MIB, 256, ~0u, 1, gpu, &a) == VK_SUCCESS && a.info.memory == memory);
     CHECK(g_drv.allocations == calls && g_devmem.kept_bytes == 0 && g_devmem.kept_taken == 1);
@@ -755,6 +761,18 @@ static void check_keep(void) {
     /* and all of it after DM_KEEP_PRESENTS presents */
     for (u32 p = 0; p <= DM_KEEP_PRESENTS; p++) vk_devmem_frame();
     CHECK(g_devmem.kept_bytes == 0);
+    /* a request with no room but the kept memory's: it goes, and the request takes the room (the thread ahead is off,
+       so that the driver has its memory back before the request asks again) */
+    g_devmem.ahead.on = 0;
+    CHECK(make(1, 32 * MIB, 256, ~0u, 1, gpu, &a) == VK_SUCCESS);
+    unmake(&a);
+    CHECK(g_devmem.kept_bytes == 32 * MIB);
+    u64 room = g_drv.room[0];
+    g_drv.room[0] = g_drv.used[0] + 16 * MIB;
+    CHECK(make(0, 40 * MIB, 256, ~0u, 1, gpu, &b) == VK_SUCCESS && g_devmem.kept_bytes == 0 && b.info.type == T_GPU);
+    unmake(&b);
+    g_drv.room[0] = room;
+    g_vk.has_pageable = 0;
     check_counts(0);
 }
 

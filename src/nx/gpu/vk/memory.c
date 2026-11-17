@@ -614,10 +614,12 @@ static void sparse_region(const Sparse* s, u64 b, VkSparseImageMemoryBind* out) 
 }
 
 /* a mip tail moves (vk_image_sparse_move_begin) when the regions of its levels, of its layer or of every layer (one
-   tail for all), are VK_SPARSE_MOVE_REGIONS at most. One that cannot gets no owner: in a block being emptied, it
-   would keep the block closed to requests until the defrag gave up on it */
-static int tail_moves(u32 levels, u32 tail_first, u32 layers, u32 tails) {
-    return (u64)(tails == 1 ? layers : 1) * (levels - tail_first) <= VK_SPARSE_MOVE_REGIONS;
+   tail for all), are VK_SPARSE_MOVE_REGIONS at most and its memory VK_SPARSE_MOVE_BYTES at most: each level's texels
+   then fit in a slot. A narrow image (4096x64) can have all its levels in its tail, of a MiB. One that cannot move
+   gets no owner: in a block being emptied, it would keep the block closed to requests until the defrag gave up */
+static int tail_moves(u32 levels, u32 tail_first, u32 layers, u32 tails, u64 tail_size) {
+    return (u64)(tails == 1 ? layers : 1) * (levels - tail_first) <= VK_SPARSE_MOVE_REGIONS &&
+           tail_size <= VK_SPARSE_MOVE_BYTES;
 }
 /* the answers vk_sparse_supported gave, by what it was asked */
 typedef struct {
@@ -925,7 +927,7 @@ int vk_image_sparse_bind(VkImage img, const u8* bits, const u64* keys, u64* byte
         if (ok) made++;
     }
     aci.at = DM_DEVICE; /* a mip tail is small: the GPU's memory always */
-    aci.moves = s->mover && tail_moves(s->sh.levels, s->sh.tail_first, s->sh.layers, s->tails);
+    aci.moves = s->mover && tail_moves(s->sh.levels, s->sh.tail_first, s->sh.layers, s->tails, s->tail_size);
     for (u32 t = 0; ok && t < p.ntail; t++) {
         VkMemoryRequirements tr = {.size = s->tail_size, .alignment = s->block, .memoryTypeBits = s->memtypes};
         ok = vk_devmem_alloc(&tr, &aci, &fresh[p.nfresh + t], &info[p.nfresh + t]) == VK_SUCCESS;
@@ -1158,17 +1160,19 @@ void vk_image_sparse_mover(VkImage img, void* mover) {
     if (!s) {
         Pieces* p = pieces_of(img);
         if (!p || !p->per_layer || p->mover == mover) return;
+        if (mover && p->req.alignment > VK_SPARSE_MOVE_BYTES) return; /* a brick's texels past a slot: none moves */
         p->mover = mover;
-        const int tails = !mover || tail_moves(p->levels, p->tail_first, p->layers, p->tails);
+        const int tails = !mover || tail_moves(p->levels, p->tail_first, p->layers, p->tails, p->tail_size);
         for (u32 i = 0; i < p->n; i++)
             if (p->pages[i] && (i < p->per_layer * p->layers || tails)) vk_devmem_owner(p->pages[i], mover);
         return;
     }
     if (s->mover == mover) return;
+    if (mover && s->block > VK_SPARSE_MOVE_BYTES) return; /* a block's texels past a slot: none moves */
     s->mover = mover;
     for (u32 i = 0; i < s->nmem; i++)
         if (s->mem[i].refs) vk_devmem_owner(s->mem[i].a, mover);
-    if (mover && !tail_moves(s->sh.levels, s->sh.tail_first, s->sh.layers, s->tails)) return;
+    if (mover && !tail_moves(s->sh.levels, s->sh.tail_first, s->sh.layers, s->tails, s->tail_size)) return;
     for (u64 k = sparse_nblocks(s); k < sparse_nblocks(s) + s->tails; k++)
         if (s->slot[k]) vk_devmem_owner(s->slot[k], mover);
 }
@@ -1501,8 +1505,8 @@ typedef struct {
 static VkResult page_change(Pieces* p, u32 i, u8* want, u64 key, PageKeys* k, const VkMemoryRequirements* mem,
                             VkDeviceMemory* memory, VkDeviceSize* offset, DevMem* had) {
     /* a texture's: the low class (ledger.c) */
-    const int moves = p->mover && (i < p->per_layer * p->layers || tail_moves(p->levels, p->tail_first, p->layers,
-                                                                             p->tails));
+    const int moves = p->mover && (i < p->per_layer * p->layers ||
+                                   tail_moves(p->levels, p->tail_first, p->layers, p->tails, p->tail_size));
     const DevMemWant aci = {.at = DM_DEVICE, .image = 1, .low = 1, .moves = moves};
     DevMemInfo info;
     const DevMem old = p->pages[i];
