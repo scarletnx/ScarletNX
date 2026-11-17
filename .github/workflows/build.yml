@@ -780,7 +780,8 @@ jobs:
   appimage-cross:
     name: Linux AppImage (${{ matrix.arch }})
     needs: qemu-reference
-    # without a reference to run against (a pull request that changes nothing the differential tests), the AppImage alone
+    # without a reference to run against (a pull request that changes nothing the differential tests), the build and
+    # the launcher's tests alone
     if: >-
       ${{ !cancelled() && (needs.qemu-reference.result == 'success' || needs.qemu-reference.result == 'skipped') }}
     runs-on: ubuntu-26.04
@@ -796,8 +797,8 @@ jobs:
       DEBLOATED_PACKAGES_SHA: d215f7676785f1a1bb8784e69085d66c1df81488ef31f1ba7198325a5be05130
     strategy:
       fail-fast: false
-      # A pull request builds big-endian ppc64's alone; ppc64le, riscv64 and loongarch64 build where a nightly can
-      # come of the run (a push or a manual run)
+      # A pull request builds big-endian ppc64's alone, and makes no AppImage of it: its build and tests run, its
+      # bundle where a nightly can come of the run (a push or a manual run), as ppc64le's, riscv64's and loongarch64's
       matrix:
         include: >-
           ${{ fromJSON(github.event_name == 'pull_request' && '[
@@ -885,14 +886,15 @@ jobs:
           key: pacman-${{ github.job }}-${{ steps.week.outputs.week }}
           restore-keys: pacman-${{ github.job }}-
       # The target container is where the packages and then the runtime go: / is the image, so pacman, quick-sharun
-      # and get-debloated-pkgs work unmodified
+      # and get-debloated-pkgs work unmodified. A pull request bundles nothing, so it starts none
       - name: Start the build and target containers
         run: |
           mkdir -p "$RUNNER_TEMP/pacman"
           docker run --detach --name build --volume "$PWD:/src" --volume "$RUNNER_TEMP/pacman:/var/cache/pacman/pkg" \
             --workdir /src ghcr.io/pkgforge-dev/archlinux:latest sleep infinity
-          docker run --detach --name target --platform linux/${{ matrix.platform }} \
-            --volume "$PWD:/src" --workdir /src ghcr.io/pkgforge-dev/archlinux:latest sleep infinity
+          [ "$GITHUB_EVENT_NAME" = pull_request ] ||
+            docker run --detach --name target --platform linux/${{ matrix.platform }} \
+              --volume "$PWD:/src" --workdir /src ghcr.io/pkgforge-dev/archlinux:latest sleep infinity
       - name: Unpack the ${{ matrix.arch }} system root
         if: steps.sysroot.outputs.cache-hit != 'true'
         run: |
@@ -906,6 +908,7 @@ jobs:
       # links libLLVM), ICU and Opus, so it runs last. Each pacman is tried 3 times, as in the linux job. The token is
       # get-debloated-pkgs' api.github.com rate limit, the one the appimage job's copy is given
       - name: Install the target container's tools and libraries
+        if: github.event_name != 'pull_request'
         env:
           LINUX_ONLY: ${{ matrix.linux-only && '1' || '' }}
           GITHUB_TOKEN: ${{ github.token }}
@@ -936,6 +939,7 @@ jobs:
       # The build machine's packaging tool: quick-sharun makes the AppImage, and this appimagetool compresses natively,
       # takes the target's runtime from APPIMAGE_ARCH, and resolves mkdwarfs for this machine rather than the target's
       - name: Install the packaging tools
+        if: github.event_name != 'pull_request'
         run: |
           docker exec -i -e QUICK_SHARUN -e QUICK_SHARUN_SHA -e APPIMAGETOOL_URL -e APPIMAGETOOL_SHA build sh -s <<'EOF'
           set -eu
@@ -1118,8 +1122,10 @@ jobs:
           path: .cache/deps
           key: ${{ steps.deps-used.outputs.key }}
       # Packaging runs where / is the target's system root, so quick-sharun reads it and the licenses' packages come
-      # from its pacman database; the AppImage itself is compressed on the build machine
+      # from its pacman database; the AppImage itself is compressed on the build machine. Not on a pull request: no
+      # one runs its AppImage, which took half of the job's time, and a push to main and the nightly bundle it
       - name: Bundle the AppImage
+        if: github.event_name != 'pull_request'
         run: |
           for try in 1 2 3; do
             if docker exec -i target sh -s <<'EOF'
@@ -1136,6 +1142,7 @@ jobs:
             sleep 30
           done
       - name: Make the AppImage
+        if: github.event_name != 'pull_request'
         run: |
           docker exec -i -e GITHUB_REPOSITORY -e GITHUB_REF_TYPE -e VERSION="$(git describe --always --dirty)" \
             -e MAKE_APPIMAGE_ONLY=1 -e ARCH=${{ matrix.arch }} -e APPIMAGETOOL=/usr/local/bin/appimagetool \
@@ -1144,13 +1151,15 @@ jobs:
           scripts/make-appimage.sh
           EOF
       - name: Check the AppImage
+        if: github.event_name != 'pull_request'
         run: |
           docker exec -i -e ARCH=${{ matrix.arch }} build sh -s <<'EOF'
           set -eu
           scripts/check-appimage.sh
           EOF
       # Only what the script made: dist/ also holds the tracked desktop entry and icon
-      - uses: actions/upload-artifact@v7
+      - if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v7
         with:
           name: ScarletNX-linux-${{ matrix.arch }}-${{ steps.commit.outputs.short }}.AppImage
           path: |

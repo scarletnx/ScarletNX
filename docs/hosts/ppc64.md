@@ -19,7 +19,8 @@ lavapipe as the Vulkan driver. No real POWER machine has run it yet. CI cross-bu
 for pull requests
 (`ScarletNX-linux-ppc64le.AppImage`, the `appimage-cross` job in `.github/workflows/build.yml`) against an Arch POWER
 system root and runs it under qemu as installed; no job runs the test suite. The big-endian AppImage
-(`ScarletNX-linux-ppc64.AppImage`, ELFv2) is cross-built the same way for pull requests and nightlies alike. No job
+(`ScarletNX-linux-ppc64.AppImage`, ELFv2) is cross-built the same way for the nightlies; a pull request cross-builds
+and tests it alike and makes no AppImage. No job
 builds or tests the ELFv1 port (`linux-ppc64-cross`, Debian ports' glibc).
 
 On a big-endian host the Linux runtime runs AArch64 and 32-bit Arm programs, with Debian ports' glibc

@@ -43,8 +43,9 @@ ZSYNC = [
     'ScarletNX-linux-riscv64.AppImage.zsync',
     'ScarletNX-linux-loongarch64.AppImage.zsync',
 ]
-# what a pull request's run builds: the cross AppImages but big-endian PowerPC64's are a nightly's alone
-NIGHTLY_ONLY = ('ppc64le', 'riscv64', 'loongarch64')
+# what a pull request's run makes: every cross AppImage is a nightly's alone, big-endian PowerPC64's built and tested
+# there without its AppImage
+NIGHTLY_ONLY = ('ppc64le', 'ppc64', 'riscv64', 'loongarch64')
 PR_FILES = [name for name in FILES + ZSYNC if not any(f'-{arch}.' in name for arch in NIGHTLY_ONLY)]
 failures = []
 
@@ -547,10 +548,12 @@ with tempfile.TemporaryDirectory() as temporary:
         pre,
     )
     check(
-        'no row for what only a nightly builds, a row for the big-endian PowerPC64 a pull request builds',
+        'no row for what only a nightly makes: no cross AppImage, the big-endian PowerPC64 one either',
         pre
-        and all(f'| {arch} |' not in pre['body'] for arch in ('PowerPC64 LE', 'RISC-V 64', 'LoongArch64'))
-        and '| **Linux** | PowerPC64 BE | [AppImage (Linux programs)]' in pre['body'],
+        and all(
+            f'| {arch} |' not in pre['body'] for arch in ('PowerPC64 LE', 'PowerPC64 BE', 'RISC-V 64', 'LoongArch64')
+        )
+        and '| **Linux** | x86-64 |' in pre['body'],
         pre and pre['body'],
     )
     check(
@@ -686,7 +689,8 @@ with tempfile.TemporaryDirectory() as temporary:
 
 server.shutdown()
 
-# the packages a pull request's notes leave out are those build.yml's appimage-cross makes for a nightly's run alone
+# the packages a pull request's notes leave out are those build.yml's appimage-cross makes for a nightly's run alone:
+# the legs a pull request's run has not, and the others too where it skips their bundle
 spec = importlib.util.spec_from_file_location('publish_builds', SCRIPT)
 publish_builds = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(publish_builds)
@@ -694,12 +698,14 @@ workflow = (SCRIPT.parent.parent / '.github' / 'workflows' / 'build.yml').read_t
 cross = workflow[workflow.index('\n  appimage-cross:\n') :]
 legs = re.search(r"github\.event_name == 'pull_request' && '(\[.*?\])' \|\| '(\[.*?\])'", cross, re.S)
 check("build.yml's appimage-cross has a pull request's legs and the others", legs, cross[:400])
+bundle = re.search(r'\n      - name: Bundle the AppImage\n        if: ([^\n]*)\n', cross)
 if legs:
     pull_arches, every_arch = ({leg['arch'] for leg in json.loads(text)} for text in legs.groups())
-    expected = {f'ScarletNX-linux-{arch}.AppImage' for arch in every_arch - pull_arches}
+    pull_made = set() if bundle and bundle[1] == "github.event_name != 'pull_request'" else pull_arches
+    expected = {f'ScarletNX-linux-{arch}.AppImage' for arch in every_arch - pull_made}
     check(
-        "NIGHTLY_ONLY is what build.yml's appimage-cross builds for a nightly's run and not a pull request's",
-        getattr(publish_builds, 'NIGHTLY_ONLY', None) == expected and set(NIGHTLY_ONLY) == every_arch - pull_arches,
+        "NIGHTLY_ONLY is what build.yml's appimage-cross makes for a nightly's run and not a pull request's",
+        getattr(publish_builds, 'NIGHTLY_ONLY', None) == expected and set(NIGHTLY_ONLY) == every_arch - pull_made,
         f'NIGHTLY_ONLY {sorted(getattr(publish_builds, "NIGHTLY_ONLY", ()))}, build.yml {sorted(expected)}',
     )
 
