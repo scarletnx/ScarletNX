@@ -59,7 +59,7 @@ void pm_init(PMutex* m) { (void)m; }
 int main(void) {
     hle_init();
     static u8 memory[0x1000];
-    IpcBuf buf;
+    IpcBuf buf = {0};
     nn_settings_LanguageCode code;
     i32 count;
     u32 i;
@@ -151,7 +151,7 @@ int main(void) {
 
     /* a setting there is none of: size 0, its value buffer zeroed */
     {
-        IpcBuf name, key, value;
+        IpcBuf name = {0}, key = {0}, value = {0};
         u64 size = 1;
         memset(memory, 0xAA, sizeof memory);
         strcpy((char*)memory + 0x100, "time");

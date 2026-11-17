@@ -297,7 +297,7 @@ static int same_uid(const u8* bytes, const u64 v[2]) {
 static void test_one_user(void) {
     static u8 memory[0x400];
     char why[512], text[33];
-    IpcBuf list;
+    IpcBuf list = {0};
     nn_account_Uid uid;
     i32 count;
     u8 exists;
@@ -330,7 +330,7 @@ static void test_one_user(void) {
 static void test_open_context(void) {
     static u8 memory[0x400];
     char why[512];
-    IpcBuf list;
+    IpcBuf list = {0};
     nn_account_Uid uid;
     SvcObj* manager = NULL;
     int i;
@@ -520,7 +520,7 @@ static void test_account_command_replies(void) {
 static void test_users(void) {
     static u8 memory[0x400];
     char why[512];
-    IpcBuf list, image;
+    IpcBuf list = {0}, image = {0};
     nn_account_Uid uid, got;
     nn_account_profile_ProfileBase base;
     SvcObj* profile;
@@ -812,7 +812,7 @@ static void test_deprecated_user_log(void) {
 static void test_first_uid(void) {
     static u8 memory[0x400];
     char why[512], text[33];
-    IpcBuf list;
+    IpcBuf list = {0};
     nn_account_Uid uid;
     uint64_t v[2];
     g_mem = memory;
@@ -857,7 +857,7 @@ static void test_user_data(void) {
     nn_account_profile_ProfileBase base;
     nn_account_Uid uid;
     SvcObj* profile = NULL;
-    IpcBuf buffer;
+    IpcBuf buffer = {0};
     int i;
     g_mem = memory;
     for (i = 0; i < SNX_USERS_DATA; i++) data[i] = (unsigned char)(i * 7 + 1);
@@ -1420,7 +1420,7 @@ static void test_refused(void) {
         nn_account_Uid uid;
         u32 size = 0;
         SvcObj* profile = NULL;
-        IpcBuf image;
+        IpcBuf image = {0};
         static u8 memory[0x100];
         g_mem = memory;
         image.addr = 0x10;
