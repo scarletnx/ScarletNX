@@ -4028,13 +4028,15 @@ static u64 draw_last_vertex(const u32* inline_indices, const DsIndex* ix, int in
 /* Index buffers Vulkan can't read as they are, made on the GPU (texconv's TC_INDEX_* modes) in this frame's output
    ring: quads as triangles, 8-bit indices without VK_KHR_index_type_uint8, and a restart index other than all ones.
    The CPU made them for each draw before, reading guest memory an index at a time, and the restart rewrite read the
-   output ring back, which can be device memory behind the BAR. Quads of vertex numbers take one buffer for every
-   draw, made once for each size it grows to: 0 1 2 0 2 3, 4 5 6 4 6 7..., drawn from the draw's first vertex */
+   output ring back, which can be device memory behind the BAR. Quads and quad strips of vertex numbers take one
+   buffer for every draw of each kind and provoking vertex (QUADS_ flags, quad_indices.h's order), made once for each
+   size it grows to, drawn from the draw's first vertex */
+enum { QUADS_LAST = 1, QUADS_STRIP = 2 }; /* TC_INDEX_QUADS's const_a */
 static struct {
     VkBuffer buf;
     DevMem mem;
     u32 quads; /* how many quads it has the indices of */
-} g_quads;
+} g_quads[4];
 /* what the GPU wrote (src: the stage and access) before what reads it next (dst) */
 static void index_barrier(VkCommandBuffer cb, VkPipelineStageFlags2 src_stage, VkAccessFlags2 src_access,
                           VkPipelineStageFlags2 dst_stage, VkAccessFlags2 dst_access) {
@@ -4066,9 +4068,9 @@ static int restride(u64 gva, u64 len, u32 gstride, u32 stride, VkBuffer* buf, Vk
     *size = nv * stride;
     return 1;
 }
-static int quad_indices(u32 nq, VkBuffer* buf, u64* off) {
-    if (nq > g_quads.quads) {
-        u32 cap = g_quads.quads ? g_quads.quads : 16384;
+static int quad_indices(u32 nq, u32 flags, VkBuffer* buf, u64* off) {
+    if (nq > g_quads[flags].quads) {
+        u32 cap = g_quads[flags].quads ? g_quads[flags].quads : 16384;
         while (cap < nq) cap *= 2;
         VkBufferCreateInfo bci = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
                                   .size = (u64)cap * 24,
@@ -4082,47 +4084,49 @@ static int quad_indices(u32 nq, VkBuffer* buf, u64* off) {
         vk_render_end(); /* dispatches happen outside rendering passes */
         VkCommandBuffer cb = vk_cmd();
         /* the input is bound but not read: vertex numbers are their own indices */
-        if (!vk_tc_index(cb, TC_INDEX_QUADS, 0, 0, cap, b, 0, 0, b, 0, (u64)cap * 24)) {
+        if (!vk_tc_index(cb, TC_INDEX_QUADS, 0, flags, cap, b, 0, 0, b, 0, (u64)cap * 24)) {
             vk_defer_buffer(b, m);
             return 0;
         }
         /* every later draw reads it, in this submission and the ones after (a barrier's second scope) */
         index_barrier(cb, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
                       VK_PIPELINE_STAGE_2_INDEX_INPUT_BIT, VK_ACCESS_2_INDEX_READ_BIT);
-        if (g_quads.buf) vk_defer_buffer(g_quads.buf, g_quads.mem); /* earlier draws of this frame still read it */
-        g_quads.buf = b;
-        g_quads.mem = m;
-        g_quads.quads = cap;
+        if (g_quads[flags].buf) /* earlier draws of this frame still read it */
+            vk_defer_buffer(g_quads[flags].buf, g_quads[flags].mem);
+        g_quads[flags].buf = b;
+        g_quads[flags].mem = m;
+        g_quads[flags].quads = cap;
     }
-    *buf = g_quads.buf;
+    *buf = g_quads[flags].buf;
     *off = 0;
     return 1;
 }
-/* An indexed draw's nq quads as triangles made here, into the staging ring, where the CPU has the indices: the draw's
-   inline ones, or the guest's in one run of guest memory with no pending result over it and no part the GPU holds
-   (reading those would wait for the GPU). The GPU's conversion is a dispatch, outside the rendering pass, so each such
-   draw ended its pass: 235 a frame in one game's scene. 0 when the CPU hasn't them, or they're past QUAD_CPU_BYTES:
-   the GPU makes them then */
+/* An indexed draw's count indices drawn as quads (flags QUADS_) made into triangles here, into the staging ring, where
+   the CPU has the indices: the draw's inline ones, or the guest's in one run of guest memory with no pending result
+   over it and no part the GPU holds (reading those would wait for the GPU). The GPU's conversion is a dispatch, outside
+   the rendering pass, so each such draw ended its pass: 235 a frame in one game's scene. The quads made, or -1 when
+   the CPU hasn't the indices, or they're past QUAD_CPU_BYTES: the GPU makes them then */
 #define QUAD_CPU_BYTES 16384
-static int quad_indices_cpu(const DrawCall* dc, int inline_indices, u64 ia, u32 isz, u32 first, u32 nq, VkBuffer* buf,
-                            u64* off) {
-    u32 esz = inline_indices ? 4 : isz; /* inline indices are host words */
-    u64 len = (u64)nq * 4 * esz, gva = ia + (u64)first * isz, cpu = 0;
-    u8 in[QUAD_CPU_BYTES];
+static int quad_cpu_reads(int inline_indices, u64 ia, u32 isz, u32 first, u32 count) {
+    u64 len = (u64)count * (inline_indices ? 4 : isz), gva = ia + (u64)first * isz, cpu = 0; /* inline: host words */
     OwnRange held;
-    if (!nq || len > sizeof in) return 0;
+    if (!count || len > QUAD_CPU_BYTES) return 0;
+    return inline_indices || !(vk_buf_pending(gva, len) || vk_uma_pending(gva, len) || vk_compute_pending(gva, len) ||
+                               gmmu_run(gva, len, &cpu) < len || own_lookup(cpu, len, &held, 1));
+}
+static i64 quad_indices_cpu(const DrawCall* dc, int inline_indices, u64 ia, u32 isz, u32 first, u32 count, u32 flags,
+                            VkBuffer* buf, u64* off) {
+    u32 esz = inline_indices ? 4 : isz, nq = snx_quads_of(count, (flags & QUADS_STRIP) != 0);
+    u8 in[QUAD_CPU_BYTES];
+    if (!nq) return 0;
+    if (!quad_cpu_reads(inline_indices, ia, isz, first, count)) return -1;
     if (inline_indices)
-        for (u32 j = 0; j < 4 * nq; j++) snx_st_le32(in + 4 * (size_t)j, dc->inline_indices[first + j]);
-    else {
-        if (vk_buf_pending(gva, len) || vk_uma_pending(gva, len) || vk_compute_pending(gva, len) ||
-            gmmu_run(gva, len, &cpu) < len || own_lookup(cpu, len, &held, 1))
-            return 0;
-        gmem_read_raw(gva, in, len);
-    }
+        for (u32 j = 0; j < count; j++) snx_st_le32(in + 4 * (size_t)j, dc->inline_indices[first + j]);
+    else
+        gmem_read_raw(ia + (u64)first * isz, in, (u64)count * esz);
     u8* out = vk_stage((u64)nq * 24, vk_stage_align(), buf, off);
-    if (!out) return 0;
-    snx_quad_indices(in, esz, nq, out);
-    return 1;
+    if (!out) return -1;
+    return snx_quad_indices(in, esz, count, (flags & QUADS_STRIP) != 0, flags & QUADS_LAST, out);
 }
 /* Whether a draw goes as a list of lines or points made of its primitives (polygon_edges.h, edge_indices) instead of
    as Vulkan draws its topology: a line loop, which Vulkan has none of; polygons in the polygon mode Line or Point
@@ -5304,7 +5308,7 @@ retry:
         }
         count = (u32)(avail - first);
     }
-    if ((topology == 7 || (indexed && ifmt == 0)) && count > (1u << 24)) {
+    if ((topology == 7 || topology == 8 || (indexed && ifmt == 0)) && count > (1u << 24)) {
         LOG_LIMIT(1, "vulkan: a draw of %u vertices made into other indices (cut to %u)\n", count, 1u << 24);
         count = 1u << 24;
     }
@@ -5346,20 +5350,29 @@ retry:
             g_vk_skipped++;
             return;
         }
-    } else if (topology == 7) { /* quads -> two triangles each */
-        u32 nq = count / 4;
-        int made = indexed ? quad_indices_cpu(dc, indexed == 3, ia, isz, first, nq, &ibuf, &ioff) ||
-                                 index_convert(dc, indexed == 3, ia, isz, first, count, TC_INDEX_QUADS, isz, 0, nq,
-                                               (u64)nq * 24, &ibuf, &ioff)
-                           : quad_indices(nq, &ibuf, &ioff);
-        if (!made) {
+    } else if (topology == 7 || (topology == 8 && !(indexed && ds->index.restart))) {
+        /* quads, and quad strips, -> two triangles each that carry the quad's provoking vertex (quad_indices.h). A
+           strip with a restart index stays the triangle strip it covers the same pixels as, which restarts there, its
+           quads' second halves taking the colour of the vertex before their provoking one */
+        u32 flags = (ds->rkey.provoking_last ? QUADS_LAST : 0) | (topology == 8 ? QUADS_STRIP : 0);
+        u32 nq = snx_quads_of(count, topology == 8);
+        i64 made = -1;
+        if (indexed) {
+            made = quad_indices_cpu(dc, indexed == 3, ia, isz, first, count, flags, &ibuf, &ioff);
+            if (made < 0 && index_convert(dc, indexed == 3, ia, isz, first, count, TC_INDEX_QUADS, isz, flags, nq,
+                                          (u64)nq * 24, &ibuf, &ioff))
+                made = nq;
+        } else if (quad_indices(nq, flags, &ibuf, &ioff))
+            made = nq;
+        if (made < 0) {
             draw_images_discard(&images);
             if (late_depth) vk_depth_shadow_cancel();
             return;
         }
         if (!indexed) voffset = (i32)first; /* the vertex numbers count from the draw's first */
-        icount = nq * 6;
+        icount = (u32)made * 6;
         indexed = 2; /* drawn indexed, as triangles */
+        topo = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
     } else if (indexed) {
         u32 ones = isz == 1 ? 0xFFu : isz == 2 ? 0xFFFFu : 0xFFFFFFFFu, ri = ds->index.restart_index & ones;
         u64 bytes = (u64)count * isz;

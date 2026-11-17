@@ -19,6 +19,7 @@
 #include "common/gpu/vk/extension_bans.h"
 #include "common/gpu/vk/extension_commands.h"
 #include "nx/gpu/vk/pipeline_parts.h"
+#include "nx/gpu/vk/quad_indices.h"
 #include "nx/gpu/shader/shader.h"
 #include "nx/gpu/maxwell/kepler_compute_regs.h"
 #include "nx/gpu/maxwell/engines_int.h"
