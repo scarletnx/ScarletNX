@@ -106,7 +106,8 @@ what that run loads (the job's first step: `git diff --name-only` of its merge c
 `src/gnuabi/`, `src/glslc/`, `src/common/gpu/` and its baseline; both for `src/multicall/`, `scripts/edenprobe.py`, this
 workflow, `CMakeLists.txt`, `CMakePresets.json`, `cpmfile.json` and `cmake/`. One that changes neither ends the job in
 seconds, passed, its notice (and the comment's line) saying why. The runs called for go side by side on the runner's
-cores, each with its own output, summary and exit, and the job fails when the NRO's or the APK's does.
+cores, each with its own output, summary and exit, the APK's and the main's at the lowest priority (the NRO's kernel
+family times its threads), and the job fails when the NRO's or the APK's does.
 
 On every run but a pull request's, the job also runs Amberlith's main, the NRO of its `nightly` release (checked by its
 `.sha256`), with `scripts/edenprobe.py run --advisory-baseline tests/edenprobe/linux-x86_64.txt`: beside the pinned
