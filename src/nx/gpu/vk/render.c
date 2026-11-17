@@ -3011,13 +3011,17 @@ static struct {
 } g_dset;
 static VkDescriptorSet desc_set_cached(VkDescriptorSetLayout layout, DescWrites* d, int stage) {
     /* Two ways share one cache line on 64-bit hosts. A collision need not discard a live descriptor set.
-       Both ways remain scoped to the frame whose pools and resources keep the sets alive. */
+       Both ways remain scoped to the frame whose pools and resources keep the sets alive, and to the forgets of
+       objects (vk_descriptor_heaps_forgets): a guest memory import destroyed in the middle of a frame (uma.c) let a
+       new import of the same handle take the old one's set, whose descriptor named the unmapped memory, and lavapipe
+       read it from the CPU and faulted */
     static DescSetEntry cache[1u << 14][2];
     /* Two indexed image arrays and otherwise at most one element per write. Serialize only initialized fields,
        then hash them with the SIMD dispatcher instead of two serial multiply chains for every descriptor. */
     u64 key[VK_DESCRIPTOR_KEY_WORDS(SNX_VKB_END, SNX_VKB_END + 2 * SNX_TEX_ARRAY)];
     size_t words = vk_descriptor_key(key, layout, d->w, d->n);
-    u64 frame = ((vk_frame_id() + 1) << 2) | (g_vk.has_descriptor_heaps ? 2 : g_vk.has_descriptor_buffers ? 1 : 0);
+    const u64 mode = g_vk.has_descriptor_heaps ? 2 : g_vk.has_descriptor_buffers ? 1 : 0;
+    u64 frame = (((vk_frame_id() + 1) << 2) | mode) ^ vk_descriptor_heaps_forgets() * VK_FIB_MULT;
     u64 heaps = g_vk.has_descriptor_heaps ? vk_descriptor_heaps_epoch() : 0; /* it moves at each draw without heaps */
     int keep = (u32)stage < DS_GFX_STAGES && words <= sizeof g_dset.last[0].key / sizeof *key;
     if (keep && g_dset.last[stage].frame == frame && g_dset.last[stage].heaps == heaps &&

@@ -518,8 +518,15 @@ static void lasting_forget(u64 object) {
         g_heaps.queue.lost = 1;
     queue_unlock();
 }
-void vk_descriptor_heaps_forget_buffer(VkBuffer buffer) { lasting_forget(handle_key(buffer)); }
+/* the forgets so far, of any mode's objects: render.c's descriptor sets of the frame name the objects by handle too */
+static u64 g_forgets;
+u64 vk_descriptor_heaps_forgets(void) { return __atomic_load_n(&g_forgets, __ATOMIC_ACQUIRE); }
+void vk_descriptor_heaps_forget_buffer(VkBuffer buffer) {
+    __atomic_add_fetch(&g_forgets, 1, __ATOMIC_RELEASE);
+    lasting_forget(handle_key(buffer));
+}
 void vk_descriptor_heaps_forget_view(VkImageView view) {
+    __atomic_add_fetch(&g_forgets, 1, __ATOMIC_RELEASE);
 #if VK_USE_64_BIT_PTR_DEFINES
     lasting_forget((u64)(uintptr_t)view);
 #else
