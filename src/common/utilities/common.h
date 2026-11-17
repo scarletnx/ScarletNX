@@ -7,7 +7,7 @@
 #include <stdint.h>
 #include <stdio.h>
 
-/* C99 implementation; fixed-width types come from <stdint.h>. */
+/* ISO C; fixed-width types come from <stdint.h>. */
 typedef uint32_t SnxU32;
 typedef uint64_t SnxU64;
 typedef struct {

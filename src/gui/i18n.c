@@ -2,7 +2,7 @@
    Copyright 2026 the ScarletNX contributors
 
    snx_mo_lookup is musl's src/locale/__mo_lookup.c (https://git.musl-libc.org/cgit/musl/tree/src/locale/__mo_lookup.c),
-   in C99, reading the catalog a byte at a time (it may lie at any address) and checking its whole tables are in it.
+   in ISO C, reading the catalog a byte at a time (it may lie at any address) and checking its whole tables are in it.
    musl's notice:
 
    Copyright (c) 2005-2020 Rich Felker, et al.

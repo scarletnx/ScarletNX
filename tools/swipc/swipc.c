@@ -18,7 +18,7 @@
    - the raw data is little-endian, and a handler's raw arguments and outputs are host numbers: the unpacker converts
      scalars, and structs field by field, with a function the header defines for each struct (swipc_le_<type>). The
      contents of buffers are the guest's bytes, which their handler converts
-   It is strict C99 and depends on nothing, so a cross build can build it for the machine it runs on.
+   It is strict ISO C23 and depends on nothing, so a cross build can build it for the machine it runs on.
 
    Usage: swipc --root DIR --out DIR FILE.swipc...
    Each FILE is relative to --root, and its outputs are --out/FILE.h and --out/FILE.inc. The header has the types

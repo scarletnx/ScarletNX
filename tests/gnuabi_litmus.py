@@ -237,7 +237,7 @@ def build(name, linker, cc, cc_flags, scratch, iterations):
     image = scratch / name
     flags = [cc, *cc_flags, f'-fuse-ld={linker}', '-static', '-O2', '-ffreestanding',
              '-fno-builtin', '-fno-stack-protector', '-fno-pie', '-nostdlib', '-march=armv8-a', '-mno-outline-atomics',
-             '-std=c99', '-pedantic', '-Wall', '-Wextra', '-Werror', f'-DLITMUS_TEST={LITMUS[name]["test"]}',
+             '-std=c23', '-pedantic', '-Wall', '-Wextra', '-Werror', f'-DLITMUS_TEST={LITMUS[name]["test"]}',
              f'-DLITMUS_ITERATIONS={iterations[name]}', '-Wl,-e,_start', '-I', str(SOURCE), str(SOURCE / 'start.S'),
              str(SOURCE / 'thread_start.S'), str(SOURCE / 'litmus.c'), '-o', str(image)]
     try:

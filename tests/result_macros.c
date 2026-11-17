@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The R_ result helpers (nx/hle/result.h), built as strict C99: what each returns, that each argument is evaluated
+/* The R_ result helpers (nx/hle/result.h), built as strict ISO C23: what each returns, that each argument is evaluated
    once, and that the statement macros stay one statement under an if without braces */
 #include "nx/hle/result.h"
 #include <assert.h>

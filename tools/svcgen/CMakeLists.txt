@@ -4,5 +4,5 @@
 cmake_minimum_required(VERSION 3.25)
 project(svcgen LANGUAGES C)
 add_executable(svcgen svcgen.c)
-# strict ISO C99, as the main build's strict C
-set_target_properties(svcgen PROPERTIES C_STANDARD 99 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+# strict ISO C23, as the main build's strict C
+set_target_properties(svcgen PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)

@@ -21,7 +21,7 @@ set_target_properties(snx-sm86 PROPERTIES LINKER_LANGUAGE CXX RUNTIME_OUTPUT_DIR
 if(TARGET Vulkan::Headers)
     add_executable(snx-shaderperf shaderperf/main.c shaderperf/gpu.c shaderperf/reflect.c shaderperf/stats.c
                                   shaderperf/texfmt.c)
-    set_target_properties(snx-shaderperf PROPERTIES C_STANDARD 99 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF
+    set_target_properties(snx-shaderperf PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF
                                                     RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}")
     # the {sType} initializers of Vulkan structures leave the other members to 0
     target_compile_options(snx-shaderperf PRIVATE -Wall -Wextra -Wno-missing-field-initializers

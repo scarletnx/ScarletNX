@@ -4,5 +4,5 @@
 cmake_minimum_required(VERSION 3.25)
 project(swipc LANGUAGES C)
 add_executable(swipc swipc.c)
-# strict ISO C99, as the main build's strict C
-set_target_properties(swipc PROPERTIES C_STANDARD 99 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+# strict ISO C23, as the main build's strict C
+set_target_properties(swipc PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)

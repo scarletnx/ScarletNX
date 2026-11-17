@@ -79,7 +79,7 @@ other translation units include the generated `.h`.
   64-word envelope; unsupported wire types and `@stub`, `@unsorted`, `@fallback`
   are refused. Unspecified commands stop; there is no default successful stub.
 - The host generator and dedicated hand-encoded generator fixture compile as
-  strict C99. The CTR runtime target remains C11.
+  strict ISO C23. The CTR runtime target is GNU C23.
 
 ## Implemented services
 
@@ -184,7 +184,7 @@ See [the exact witness](supertux.md).
 including forged PID replacement, PXI buffer directions, the handle limit, stub
 lists and moved handles on success and on refusal, malformed counts/descriptors, read-only,
 unmapped/misaligned/MMIO TLS, stale/duplicate handles, endpoint/handle exhaustion,
-rollback and non-resumable waits. `ctr_swipc_dispatch` is a generator-only C99
+rollback and non-resumable waits. `ctr_swipc_dispatch` is a generator-only ISO C
 fixture with deliberately test-local resource accounting; it checks declaration
 order, 64-bit/byte/PID layout, reply packing and failed-output rollback.
 `ctr_swipc_validation` rejects unsupported schemas, checks full-envelope bounds

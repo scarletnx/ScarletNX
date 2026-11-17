@@ -29,7 +29,7 @@ if(CMAKE_CROSSCOMPILING)
     add_dependencies(snx-uigen snx_uigen_host)
 else()
     add_executable(snx-uigen "${PROJECT_SOURCE_DIR}/tools/uigen/uigen.c")
-    set_target_properties(snx-uigen PROPERTIES C_STANDARD 99 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF
+    set_target_properties(snx-uigen PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF
                                                RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}")
     target_compile_options(snx-uigen PRIVATE -pedantic-errors -Wall -Wextra -Werror)
 endif()

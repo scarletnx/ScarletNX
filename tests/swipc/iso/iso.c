@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The generated test dispatchers compiled as strict C99 (tests/CMakeLists.txt): a service's file includes its .inc and
+/* The generated test dispatchers compiled as strict ISO C23 (tests/CMakeLists.txt): a service's file includes its .inc and
    defines the handlers, as this one does with handlers that do nothing */
 #include "tests/swipc/other.swipc.inc"
 #include "tests/swipc/test.swipc.inc"

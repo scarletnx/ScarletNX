@@ -11,7 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* one string a section: C99 promises string literals of 4095 characters only */
+/* one string a section: ISO C promises string literals of 4095 characters only */
 static const char* const k_help[] = {
     "usage: snx-shaderperf [options] SHADER.spv[#entry] [SHADER2.spv ...]\n"
     "\n",

@@ -2,7 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 /* The menu's languages. Its phrases are English in the code, each through snx_tr; scripts/build-languages.py lists
    them in po/scarletnx.pot and makes each po/<language>.po a catalog (the .mo format) compiled into the menu. A phrase
-   a language has no translation for stays English. Strict ISO C99, no SDL: main.c asks the system for its locales. */
+   a language has no translation for stays English. Strict ISO C23, no SDL: main.c asks the system for its locales. */
 #ifndef SNX_GUI_I18N_H
 #define SNX_GUI_I18N_H
 #include <stddef.h>

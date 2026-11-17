@@ -41,7 +41,7 @@ int32_t dex_sleb(const unsigned char** p, const unsigned char* end) {
     return (int32_t)value;
 }
 
-/* the class defs sorted by descriptor: a merge sort, as qsort has no context argument in C99 */
+/* the class defs sorted by descriptor: a merge sort, as ISO C's qsort has no context argument */
 static void sort_classes(const Dex* dex, uint32_t* items, uint32_t* scratch, uint32_t count) {
     if (count < 2) return;
     uint32_t half = count / 2;

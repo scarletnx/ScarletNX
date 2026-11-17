@@ -69,7 +69,7 @@ jobs:
       # ctest game_reports_workflow runs this step on the files of the sparse list above alone
       - name: Build the log summary
         run: |
-          cc -std=c99 -O2 -Isrc -c src/common/utilities/logscan.c src/common/utilities/logscan_main.c \
+          cc -std=c23 -O2 -Isrc -c src/common/utilities/logscan.c src/common/utilities/logscan_main.c \
             src/common/utilities/demangle.c
           cc -o snx-logscan logscan.o logscan_main.o demangle.o -lstdc++
       # a run by hand passes its number, which the script refuses unless it is an issue's with a log

@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* What module_llvm.c's descriptor and module_arm.c's share, in LLVM IR (C11 and the LLVM-C headers: not for the C99
+/* What module_llvm.c's descriptor and module_arm.c's share, in LLVM IR (GNU C23 and the LLVM-C headers: not for the ISO C
    driver, which includes module_llvm.h) */
 #ifndef SNX_NX_MODULE_IR_H
 #define SNX_NX_MODULE_IR_H

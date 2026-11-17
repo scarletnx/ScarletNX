@@ -862,7 +862,7 @@ void spv_emit_void_op(SpvEmitter* e, uint32_t opcode, const uint32_t* operands, 
 uint32_t spv_emit_ext(SpvEmitter* e, uint32_t type, uint32_t instruction, const uint32_t* operands, size_t count);
 
 /* the shorthands: SPV(e, opcode, type, operands...) and SPV_VOID(e, opcode, operands...), SPV_EXT(e, type,
-   instruction, operands...), each with one operand at least (C99 has no empty variadic arguments): an instruction
+   instruction, operands...), each with one operand at least (SPV_ARGS's array of unknown size takes no empty initializer): an instruction
    without any is spv_emit_void_op(e, opcode, NULL, 0) */
 #define SPV_ARGS(...)             ((const uint32_t[]){__VA_ARGS__}), (sizeof((const uint32_t[]){__VA_ARGS__}) / 4)
 #define SPV(e, opcode, type, ...) spv_emit_op((e), (opcode), (type), SPV_ARGS(__VA_ARGS__))

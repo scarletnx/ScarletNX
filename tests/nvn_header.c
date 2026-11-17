@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* src/nx/gpu/nvn/nvn.h compiles as strict ISO C99, and its objects hold the fields docs/layers/gpu/nvn.md records: the
+/* src/nx/gpu/nvn/nvn.h compiles as strict ISO C23, and its objects hold the fields docs/layers/gpu/nvn.md records: the
    command buffer's, in both SDK layouts read there, end before its reserved size. The NVN functions' types, which
    hookgen makes of gpu/nvn/nvn.hook (the generated gpu/nvn/nvn.hook.h), compile with it and are the C prototypes
    they stand for: each integer at its guest size, a pointer as the type it points to */

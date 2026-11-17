@@ -200,7 +200,7 @@ the game's image read from that image.
   clocks and sleep, files, address space and shared libraries. The NX runtime's `runtime/platform/` builds on it.
   NX extraction retains its isolated key environment.
 
-Host tooling is strict C99 with SDK fixed-width types, formatting and OS APIs.
+Host tooling is strict ISO C23 with SDK fixed-width types, formatting and OS APIs.
 The runtime and generated guest code retain their existing Clang/ABI requirements.
 Normal builds link the driver into the runtime; `SNX_TOOLS_ONLY` builds the same CLI independently.
 

@@ -41,7 +41,7 @@ foreach(kind IN LISTS snx_recompiler_kinds)
         set(target scarletnx-recompiler-shared)
     endif()
     add_library(${target} ${kind} library.c ${snx_recompiler_objects})
-    set_target_properties(${target} PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS ON
+    set_target_properties(${target} PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON C_EXTENSIONS ON
         OUTPUT_NAME scarletnx-recompiler)
     add_dependencies(${target} ${snx_recompiler_parts})
     # installed, the headers' layout under the prefix; in this tree (a project that adds ScarletNX with CPM or

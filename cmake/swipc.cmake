@@ -34,7 +34,7 @@ if(CMAKE_CROSSCOMPILING)
     add_dependencies(snx-swipc snx_swipc_host)
 else()
     add_executable(snx-swipc "${PROJECT_SOURCE_DIR}/tools/swipc/swipc.c")
-    set_target_properties(snx-swipc PROPERTIES C_STANDARD 99 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+    set_target_properties(snx-swipc PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
     target_compile_options(snx-swipc PRIVATE -pedantic-errors -Wall -Wextra -Werror)
 endif()
 
