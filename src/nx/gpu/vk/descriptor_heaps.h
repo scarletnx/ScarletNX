@@ -382,6 +382,9 @@ void vk_descriptor_heaps_get_stats(VkDescriptorHeapStats* stats);
 void vk_descriptor_heaps_lasting(VkBuffer buffer);
 void vk_descriptor_heaps_forget_buffer(VkBuffer buffer);
 void vk_descriptor_heaps_forget_view(VkImageView view);
+/* the forgets so far, in any descriptor mode: a descriptor set kept by the handles its writes name holds while it
+   stays the same, as a destroy in the middle of a frame lets a new object of the same handle come */
+uint64_t vk_descriptor_heaps_forgets(void);
 
 /* Any legacy descriptor or push command invalidates heap state across both bind points. */
 void vk_descriptor_heaps_invalidate(void);
