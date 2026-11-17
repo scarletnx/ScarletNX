@@ -130,9 +130,9 @@ static int vtc_draw(GpuChannel* channel, u32 program, u8* pixels) {
                               .imageExtent = {VTC_W, VTC_W, 1}};
     CHECK(g_vk_drawn == drawn + 1);
     CHECK(surface && surface->sw == VTC_W && surface->sh == VTC_W && data);
-    vk_surf_use(vk_cmd(), surface, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+    vk_surf_use(vk_cmd(), surface, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), VK_PIPELINE_STAGE_2_COPY_BIT,
                 VK_ACCESS_2_TRANSFER_READ_BIT);
-    rec_CmdCopyImageToBuffer(vk_cmd(), surface->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &copy);
+    rec_CmdCopyImageToBuffer(vk_cmd(), surface->img, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), buffer, 1, &copy);
     vk_finish();
     vk_readback_ready();
     memcpy(pixels, data, 4ull * VTC_W * VTC_W);

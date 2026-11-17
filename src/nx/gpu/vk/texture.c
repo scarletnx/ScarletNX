@@ -2344,7 +2344,7 @@ int vk_tex_vt_load(Surf* t) {
     const VkFmt* f = &t->f;
     vk_render_end(); /* copies happen outside rendering passes */
     VkCommandBuffer cb = vk_cmd();
-    vk_surf_use(cb, t, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
+    vk_surf_use(cb, t, VK_LAYOUT(TRANSFER_DST_OPTIMAL), VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
                 VK_ACCESS_2_TRANSFER_WRITE_BIT);
     Upload u = {.cb = cb, .t = t};
     int ok = 1;
