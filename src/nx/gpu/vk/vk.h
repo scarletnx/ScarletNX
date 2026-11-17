@@ -2813,8 +2813,8 @@ void vk_tex_take_counts(u64 out[8]);
 /* since the last log: the texture checks, those quiet (one compare), and those draw_state_check=1 found changed */
 void vk_tex_check_counts(u64* checks, u64* quiet, u64* quiet_wrong);
 /* the full checks since the last log by what ended the quiet: never quiet, a present, an epoch, a write; then the epochs
-   a texture stayed quiet over */
-void vk_tex_full_counts(u64 out[5]);
+   and the presents a texture stayed quiet over */
+void vk_tex_full_counts(u64 out[6]);
 void vk_pipeline_save(int at_exit);
 VkShaderModule vk_module_spv(const u32* words, size_t count);
 VkShaderModule vk_module_spv_location(const u32* words, size_t count, u32 location);

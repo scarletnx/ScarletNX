@@ -719,7 +719,7 @@ typedef struct {
     /* the full checks by what ended the texture's quiet: none yet (never quiet, or another reason), a present, an
        epoch (with a CPU write on its pages, or none taken in yet), a GPU-side write on its granules; and the epochs a
        texture stayed quiet over */
-    u64 full_never, full_present, full_epoch, full_write, epochs_kept;
+    u64 full_never, full_present, full_epoch, full_write, epochs_kept, presents_kept;
     u64 patches, patch_bytes, by_cpu, by_gpu, by_kind[GPU_WRITE_KINDS], again, whole, bricks, bricks_empty;
 } TexChecks;
 static TexChecks g_tex_checks;
@@ -3703,19 +3703,28 @@ static Surf* tex_quiet_cross(Surf* t, u64 gva) {
     if (r) r->quiet = 0; /* the full check took a new baseline: the next asks again */
     return r;
 }
-/* whether t, quiet since its last full check, still is: the same present, no GPU-side write on its own granules, and
-   in a new epoch no CPU write on its pages where write tracking took them in for the epoch already
-   (vk_written_quick). A write on another granule leaves it as it was. What ended it goes in *why: 1 a present, 2 an
-   epoch, 3 a write */
+/* whether t, quiet since its last full check, still is: no GPU-side write on its own granules, and in a new epoch no
+   CPU write on its pages where write tracking took them in for the epoch already (vk_written_quick). A write on
+   another granule leaves it as it was. It crosses a present on the same terms, and takes the work a full check does
+   once a present: the LRU's touch, and Auto's cooling of a texture held Exact. In one game's race about 85% of the
+   full checks came from the new present alone, with no write on the texture. What ended it goes in *why: 1 a present
+   (with a write tracking epoch that can't tell), 2 an epoch, 3 a write */
 static int quiet_own(Surf* t, u64 gva, int* why) {
-    if (t->q_present != g_vk_present) return *why = 1, 0;
+    const int present = t->q_present != g_vk_present;
     if (gpu_mem_granules_generation(gva, t->size) > t->q_gw) return *why = 3, 0;
     const u32 epoch = vk_ww_epoch();
-    if (epoch == t->q_epoch) return 1;
-    const u8* host = gmem_host(gva, t->size);
-    if (!host || vk_written_quick(host, t->size, t->wseen) != 0) return *why = 2, 0;
-    t->q_epoch = epoch;
-    g_tex_checks.epochs_kept++;
+    if (epoch != t->q_epoch) {
+        const u8* host = gmem_host(gva, t->size);
+        if (!host || vk_written_quick(host, t->size, t->wseen) != 0) return *why = present ? 1 : 2, 0;
+        t->q_epoch = epoch;
+        g_tex_checks.epochs_kept++;
+    }
+    if (present) {
+        vk_surf_touch(t);
+        later_cool(t);
+        t->q_present = g_vk_present;
+        g_tex_checks.presents_kept++;
+    }
     return 1;
 }
 /* a texture found for a header checked against its memory: whole without a full check where it is quiet (quiet_own) */
@@ -3739,12 +3748,13 @@ static Surf* tex_check(Surf* t, u64 gva) {
         g_tex_checks.full_never++;
     return tex_check_counted(t, gva);
 }
-void vk_tex_full_counts(u64 out[5]) {
+void vk_tex_full_counts(u64 out[6]) {
     out[0] = g_tex_checks.full_never;
     out[1] = g_tex_checks.full_present;
     out[2] = g_tex_checks.full_epoch;
     out[3] = g_tex_checks.full_write;
     out[4] = g_tex_checks.epochs_kept;
+    out[5] = g_tex_checks.presents_kept;
 }
 void vk_tex_check_counts(u64* checks, u64* quiet, u64* quiet_wrong) {
     *checks = g_tex_checks.checks;
@@ -3771,9 +3781,11 @@ void vk_tex_check_log(void) {
         LOG("vulkan: the GPU-side writes of those loads of pieces, by the newest write on their pages: %s\n", kinds);
     }
     LOG("vulkan: full texture checks a present by what ended the texture's quiet: %.1f never quiet, %.1f a present, "
-        "%.1f an epoch, %.1f a GPU-side write on its granules; %.1f epochs a texture stayed quiet over\n",
+        "%.1f an epoch, %.1f a GPU-side write on its granules; %.1f epochs and %.1f presents a texture stayed quiet "
+        "over\n",
         (double)g_tex_checks.full_never / n, (double)g_tex_checks.full_present / n, (double)g_tex_checks.full_epoch / n,
-        (double)g_tex_checks.full_write / n, (double)g_tex_checks.epochs_kept / n);
+        (double)g_tex_checks.full_write / n, (double)g_tex_checks.epochs_kept / n,
+        (double)g_tex_checks.presents_kept / n);
     if (g_settings.draw_state_check)
         LOG("vulkan: draw_state_check=1: %llu quiet texture checks of the last 600 presents found a change in the full "
             "check\n",
