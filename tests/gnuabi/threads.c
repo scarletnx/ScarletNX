@@ -5,7 +5,7 @@
    CMP_REQUEUE, WAKE_OP, timeouts), and exit_group from a thread while the main thread sleeps. Exits 0 */
 #include "threading.h"
 
-static u8 stacks[6][65536] __attribute__((aligned(16)));
+alignas(16) static u8 stacks[6][65536];
 static volatile u32 lock_word, counter, ctid[6], ptid[6], tls_seen[6], requeue_word, requeue_target, woken;
 static volatile u32 tids[6];
 

@@ -67,23 +67,23 @@ static u32 histogram[1u << READERS];
 static u32 bad_values;
 static u32 arrive, sense, phase[THREADS];
 static u32 ptid[THREADS], ctid[THREADS];
-static u8 stacks[THREADS][65536] __attribute__((aligned(16)));
+alignas(16) static u8 stacks[THREADS][65536];
 
 /* the test's own accesses: volatile keeps the fixture's compiler from caching or removing them, and leaves them
    ordinary guest loads and stores (not exclusive or atomic) for the translator. A build uses only the accessors its
    test names, so each is marked to keep -Wunused-function quiet. */
-#define RETAIN __attribute__((unused))
-static inline RETAIN u32 plain_load(u32* p) { return *(volatile u32*)p; }
-static inline RETAIN void plain_store(u32* p, u32 v) { *(volatile u32*)p = v; }
-static inline RETAIN void dmb_ish(void) { __asm__ volatile("dmb ish" ::: "memory"); }
-static inline RETAIN void dmb_ishst(void) { __asm__ volatile("dmb ishst" ::: "memory"); }
-static inline RETAIN void dmb_ishld(void) { __asm__ volatile("dmb ishld" ::: "memory"); }
-static inline RETAIN u32 acquire_load(u32* p) {
+#define RETAIN [[maybe_unused]]
+RETAIN static inline u32 plain_load(u32* p) { return *(volatile u32*)p; }
+RETAIN static inline void plain_store(u32* p, u32 v) { *(volatile u32*)p = v; }
+RETAIN static inline void dmb_ish(void) { __asm__ volatile("dmb ish" ::: "memory"); }
+RETAIN static inline void dmb_ishst(void) { __asm__ volatile("dmb ishst" ::: "memory"); }
+RETAIN static inline void dmb_ishld(void) { __asm__ volatile("dmb ishld" ::: "memory"); }
+RETAIN static inline u32 acquire_load(u32* p) {
     u32 v;
     __asm__ volatile("ldar %w0, [%1]" : "=r"(v) : "r"(p) : "memory");
     return v;
 }
-static inline RETAIN void release_store(u32* p, u32 v) {
+RETAIN static inline void release_store(u32* p, u32 v) {
     __asm__ volatile("stlr %w1, [%0]" : : "r"(p), "r"(v) : "memory");
 }
 

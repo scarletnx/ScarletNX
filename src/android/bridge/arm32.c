@@ -382,7 +382,7 @@ void arm32_thread_end(void) {
 
 /* ---- the dispatch loop ---- */
 
-static _Noreturn void guest_fault(const SnxArmCPU* c, const char* what) {
+[[noreturn]] static void guest_fault(const SnxArmCPU* c, const char* what) {
     fprintf(stderr, "scarletnx-android: arm32: %s at pc 0x%08x (%s, exit %u, syndrome 0x%08x)\n", what, c->r[15],
             c->cpsr & SNX_ARM_T ? "Thumb" : "A32", c->exit, c->syndrome);
     const Arm32Library* l = arm32_owner(c->r[15]);

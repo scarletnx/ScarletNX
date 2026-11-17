@@ -21,7 +21,7 @@
         }                                                                                                              \
     } while (0)
 
-static _Noreturn void stub_hit(const char* name) {
+[[noreturn]] static void stub_hit(const char* name) {
     fprintf(stderr, "vk_mem_trim: an unexpected call of %s\n", name);
     abort();
 }

@@ -324,10 +324,10 @@ static u32 span_between(const u8* sa, const u8* sb, i64* span) {
 
 /* ============================================================ the hooks */
 /* the SDK stops the game on these */
-SNX_NORETURN static void precondition(const char* function, const char* what) {
+[[noreturn]] static void precondition(const char* function, const char* what) {
     fatal("nn::time::%s: %s, which the SDK stops the game on", function, what);
 }
-SNX_NORETURN static void result_abort(const char* function, u32 r) {
+[[noreturn]] static void result_abort(const char* function, u32 r) {
     fatal("nn::time::%s failed with result 0x%x (error %04u-%04u), which the SDK stops the game on", function, r,
           2000 + (r & 0x1ff), (r >> 9) & 0x1fff);
 }

@@ -26,7 +26,7 @@
 
 #if defined(__ELF__)
 /* the start of the runtime's own image, for addr2line: the linker defines it for an executable and a library alike */
-extern const char __ehdr_start[] __attribute__((weak, visibility("hidden")));
+[[gnu::weak, gnu::visibility("hidden")]] extern const char __ehdr_start[];
 #endif
 
 #define NEAR_FUNCTION ((u64)1 << 20)   /* a host pc this far past a recompiled function's start is still in it */

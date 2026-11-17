@@ -9,7 +9,7 @@
 #include "snx_settings.h" /* g_settings.log_level, the .ini's log */
 
 /* lvl 0 is a warning, 1 a normal line, 2 a verbose one. Checked like printf */
-void logf_(int lvl, const char* fmt, ...) __attribute__((format(printf, 2, 3)));
+[[gnu::format(printf, 2, 3)]] void logf_(int lvl, const char* fmt, ...);
 #define WARN(...) logf_(0, __VA_ARGS__)
 #define LOG(...)  logf_(1, __VA_ARGS__)
 #define LOGV(...)                                                                                                      \
@@ -37,9 +37,9 @@ void log_sync(void);
 void log_error_line(const char* line);
 
 /* Logs "FATAL: ..." and ends the process with status, after the error box where there is one */
-void fatal_code(int status, const char* fmt, ...) __attribute__((format(printf, 2, 3), noreturn));
+[[gnu::format(printf, 2, 3), noreturn]] void fatal_code(int status, const char* fmt, ...);
 /* fatal_code with status 1 */
-void fatal(const char* fmt, ...) __attribute__((format(printf, 1, 2), noreturn));
+[[gnu::format(printf, 1, 2), noreturn]] void fatal(const char* fmt, ...);
 
 /* log.c's thread state, this thread's */
 typedef struct {

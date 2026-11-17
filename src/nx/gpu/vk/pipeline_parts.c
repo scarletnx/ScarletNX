@@ -306,7 +306,7 @@ void vk_pipe_split(const PipeKey* k, VkShaderModule fs, const PipeSplitDevice* d
 }
 
 /* out's text from at, which may be past its end (the text is then cut): where the next one goes */
-static size_t key_say(char* out, size_t n, size_t at, const char* fmt, ...) __attribute__((format(printf, 4, 5)));
+[[gnu::format(printf, 4, 5)]] static size_t key_say(char* out, size_t n, size_t at, const char* fmt, ...);
 static size_t key_say(char* out, size_t n, size_t at, const char* fmt, ...) {
     va_list ap;
     int wrote;

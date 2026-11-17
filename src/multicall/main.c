@@ -98,7 +98,7 @@ static int has_driver(const char* name) { return named(name) != NULL; }
 #endif
 
 /* Android's game activity finds it by name in libscarletnx.so (nx/runtime/platform/android_run.c does the same) */
-__attribute__((visibility("default"))) int main(int argc, char** argv);
+[[gnu::visibility("default")]] int main(int argc, char** argv);
 
 int main(int argc, char** argv) {
     const char* self = argc > 0 && argv[0] ? argv[0] : "";

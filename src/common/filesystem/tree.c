@@ -722,8 +722,8 @@ int fs_tree_mapped(const FsNode* node) { return __atomic_load_n(&node->fd, __ATO
 
 /* rc, with what the caller says (fs_tree_why): the host path where the index stopped, directory and name (NULL when the
    path is directory alone), and why, a phrase after it ("is a symbolic link, which the index doesn't follow") */
-static FsTreeResult refuse(FsTree* tree, FsTreeResult rc, const char* directory, const char* name, const char* why, ...)
-    __attribute__((format(printf, 5, 6)));
+[[gnu::format(printf, 5, 6)]] static FsTreeResult refuse(FsTree* tree, FsTreeResult rc, const char* directory,
+                                                         const char* name, const char* why, ...);
 static FsTreeResult refuse(FsTree* tree, FsTreeResult rc, const char* directory, const char* name, const char* why,
                            ...) {
     va_list a;

@@ -106,7 +106,7 @@ static void alt_stack_off(void) {
 
 /* the alternate stack lives in this frame for as long as fn runs, and is switched off before the frame goes. Not
    inlined: in thread_start's frame the array would take its room on every thread, the small ones too */
-__attribute__((noinline)) static void run_with_alt_stack(PThreadFn fn, void* arg) {
+[[gnu::noinline]] static void run_with_alt_stack(PThreadFn fn, void* arg) {
     char stack[PLAT_ALT_STACK_SIZE];
     stack_t ss;
     memset(&ss, 0, sizeof ss);

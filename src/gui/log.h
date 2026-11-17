@@ -21,7 +21,7 @@ void gui_log_folder(const char* folder);
 void gui_log_path(const char* file, char* out, size_t size);
 /* a line, as printf formats it, in the log and on stderr (iOS: the log is stderr's file, written once); a text of
    several lines takes a stamp each */
-void gui_log(const char* format, ...) __attribute__((format(printf, 1, 2)));
+[[gnu::format(printf, 1, 2)]] void gui_log(const char* format, ...);
 /* a fatal error: in the log and in scarletnx-error.log */
 void gui_log_fatal(const char* text);
 /* how a game's run ended, from its log at path (common/utilities/logscan.h): the outcome, SNX_LOG_NONE when it logged

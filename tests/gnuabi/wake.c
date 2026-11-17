@@ -5,8 +5,8 @@
    when the ppoll has not returned 10 s later. Exits 0 */
 #include "threading.h"
 
-static u8 stack[65536] __attribute__((aligned(16)));
-static u8 watchdog_stack[65536] __attribute__((aligned(16)));
+alignas(16) static u8 stack[65536];
+alignas(16) static u8 watchdog_stack[65536];
 static volatile u32 handled, main_tid, ready, ctid, watchdog_ctid, done;
 struct pollfd {
     s32 fd;

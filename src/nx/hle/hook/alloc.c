@@ -117,11 +117,11 @@ static ExtentHooks g_hooks = {extent_alloc, extent_dalloc, extent_destroy, NULL,
 #if defined(__ELF__)
 /* cmake/jemalloc.cmake links jemalloc whole and unprefixed into the program, which exports only SNX_JEMALLOC_EXPORTS:
    dlsym's RTLD_DEFAULT doesn't see these. Weak, so a program without jemalloc links and finds them NULL */
-extern void* mallocx(size_t size, int flags) __attribute__((weak));
-extern void* rallocx(void* p, size_t size, int flags) __attribute__((weak));
-extern void dallocx(void* p, int flags) __attribute__((weak));
-extern size_t sallocx(const void* p, int flags) __attribute__((weak));
-extern int mallctl(const char* name, void* old, size_t* oldlen, void* new_value, size_t newlen) __attribute__((weak));
+[[gnu::weak]] extern void* mallocx(size_t size, int flags);
+[[gnu::weak]] extern void* rallocx(void* p, size_t size, int flags);
+[[gnu::weak]] extern void dallocx(void* p, int flags);
+[[gnu::weak]] extern size_t sallocx(const void* p, int flags);
+[[gnu::weak]] extern int mallctl(const char* name, void* old, size_t* oldlen, void* new_value, size_t newlen);
 #endif
 #if !defined(_WIN32)
 static void* sym(const char* name) {

@@ -56,8 +56,10 @@ static struct {
     pthread_t collector;
     struct sigaction prior;
 } g_sample = {.fd = -1};
-static __thread struct { ThreadSamples* samples; int* error; } t_sample
-    __attribute__((tls_model("initial-exec")));
+[[gnu::tls_model("initial-exec")]] static __thread struct {
+    ThreadSamples* samples;
+    int* error;
+} t_sample;
 
 static ThreadSamples* thread_at(unsigned i) { return (ThreadSamples*)(g_sample.states + (size_t)i * g_sample.header->stride); }
 static void report_error(int error) { __atomic_store_n(&g_sample.header->error, (unsigned)error, __ATOMIC_RELAXED); }
@@ -198,7 +200,7 @@ static void fork_child(void) {
     t_sample.samples = NULL;
     sigaction(SIGPROF, &g_sample.prior, NULL);
 }
-__attribute__((constructor)) static void sample_start(void) {
+[[gnu::constructor]] static void sample_start(void) {
     Create create = resolve_create();
     const char* path = getenv("SNX_SAMPLE_PATH");
     if (!path || number("SNX_SAMPLE_PARENT_PID", (uint64_t)getppid()) != (uint64_t)getppid()) return;

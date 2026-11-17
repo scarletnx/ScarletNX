@@ -192,7 +192,7 @@ static int apple_arena(SnxCodeLoader* loader, char* error, size_t error_size) {
    region: with x0 NULL the debugger maps x1 bytes read-execute (read and execute, not execute-only, on an A16 with
    iOS 26.6.1: .context/ios-jit-results.md) and touches each of its pages, about 4 s for a GiB, and returns its address
    in x0, which stays as it was when it fails. Written from the protocol's description, not from the debugger's code */
-__attribute__((noinline, optnone, naked)) static void* ios_jit_prepare(void* address, size_t length) {
+[[gnu::noinline, clang::optnone, gnu::naked]] static void* ios_jit_prepare(void* address, size_t length) {
     __asm__ volatile("mov x16, #1\n brk #0xf00d\n ret\n");
 }
 

@@ -925,7 +925,7 @@ HANDLER(f_getpagesize) {
    the size of (bionic/libc/bionic/fortify.cpp), then the function. A failed check ends the app as bionic's
    __fortify_fatal does: its message, with the sizes, then abort() ---- */
 
-static _Noreturn void fortify_fatal(const char* format, ...) {
+[[noreturn]] static void fortify_fatal(const char* format, ...) {
     char text[256];
     va_list a;
     va_start(a, format);

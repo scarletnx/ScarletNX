@@ -124,5 +124,5 @@ static void* dl_open_from_cache(const char* path) {
     if (!library) fprintf(stderr, "scarletnx: the cache's copy at %s does not load either: %s\n", copy, dlerror());
     return library;
 }
-__attribute__((constructor)) static void dl_cache_register(void) { plat_dl_fallback(dl_open_from_cache); }
+[[gnu::constructor]] static void dl_cache_register(void) { plat_dl_fallback(dl_open_from_cache); }
 #endif

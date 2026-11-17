@@ -69,8 +69,8 @@ int DllMainCRTStartup(void* module, unsigned long reason, void* reserved) {
    register but the flags comes back as it was. It reads one byte in each page from the caller's stack pointer down to
    the new one, nearest first, so each read meets the guard page or a page already committed. The compiler runtime's
    ___chkstk_ms does the same, and a module links no compiler runtime. Naked, with the unwind codes of its two pushes */
-__attribute__((naked)) void snx_stack_probe(void);
-__attribute__((naked)) void snx_stack_probe(void) {
+[[gnu::naked]] void snx_stack_probe(void);
+[[gnu::naked]] void snx_stack_probe(void) {
     __asm__(".seh_proc snx_stack_probe\n\t"
             "pushq %rcx\n\t"
             ".seh_pushreg %rcx\n\t"

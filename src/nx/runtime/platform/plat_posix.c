@@ -98,7 +98,7 @@ static void wp_thread_start(void);
    can fault, and SDL's per-thread state (plat_sdl.c's calls set its error text) ended with it. A constructor, so it is
    in place before any thread, in the runtime and in each test that compiles this file */
 static void sdl_thread_end(void) { SDL_CleanupTLS(); }
-__attribute__((constructor)) static void plat_posix_threads(void) {
+[[gnu::constructor]] static void plat_posix_threads(void) {
     static const PThreadHooks hooks = {wp_thread_start, sdl_thread_end};
     plat_thread_hooks(&hooks);
 }
@@ -157,7 +157,7 @@ JNIEXPORT void JNICALL Java_org_scarletnx_GameActivity_nativePowerChanged(JNIEnv
 int plat_power_watch(void) { return 0; } /* the receiver is registered with the activity */
 #elif defined(__APPLE__) && TARGET_OS_IPHONE
 /* iOS's battery state notification is in apple.m, which the app links */
-extern int snx_apple_power_watch(void) __attribute__((weak));
+[[gnu::weak]] extern int snx_apple_power_watch(void);
 int plat_power_watch(void) { return snx_apple_power_watch ? snx_apple_power_watch() : -1; }
 #elif defined(__APPLE__)
 /* macOS's IOKit power source run loop: the thread blocks in the run loop, so nothing polls the state */

@@ -28,7 +28,7 @@ typedef double f64;
 #define RESTRICT    __restrict__
 #define LIKELY(x)   __builtin_expect(!!(x), 1)
 #define UNLIKELY(x) __builtin_expect(!!(x), 0)
-#define SNX_INLINE static inline __attribute__((always_inline))
+#define SNX_INLINE [[gnu::always_inline]] static inline
 
 /* The version of the contract between a game module and the runtime: this header (the CPU layout, the SNX_FP_*
    numbers), the helpers in cpu_helpers.c, RtAPI and the module descriptor. The recompiler writes it into each
@@ -67,7 +67,7 @@ typedef double f64;
 #if defined(_WIN32)
 #define SNX_EXPORT __declspec(dllexport)
 #else
-#define SNX_EXPORT __attribute__((visibility("default")))
+#define SNX_EXPORT [[gnu::visibility("default")]]
 #endif
 
 /* one 128-bit vector register holding the guest's bytes, lane 0 in the lowest-addressed ones: on a big-endian host the
@@ -561,9 +561,9 @@ SNX_INLINE void dc_zva(u8* M, u64 a) { memset(MP(a & ~(u64)63), 0, 64); }
 /* Guest memory holds whatever the guest stored last, at any width: the helpers' typed accesses to it go through
    these, which may alias every other access as a char's would, so none is assumed apart from another of a different
    type once the helpers are inlined into each other */
-typedef u16 __attribute__((may_alias)) snx_guest_u16;
-typedef u32 __attribute__((may_alias)) snx_guest_u32;
-typedef u64 __attribute__((may_alias)) snx_guest_u64;
+typedef u16 snx_guest_u16 [[gnu::may_alias]];
+typedef u32 snx_guest_u32 [[gnu::may_alias]];
+typedef u64 snx_guest_u64 [[gnu::may_alias]];
 SNX_INLINE u32 snx_cas64(snx_guest_u64* p, u64 expected, u64 desired) {
     return __atomic_compare_exchange_n(p, &expected, desired, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
 }

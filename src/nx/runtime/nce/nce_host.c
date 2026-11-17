@@ -73,15 +73,15 @@ static _Thread_local NceTls t_nce;
 #if defined(__ANDROID__)
 #define NCE_SLOT_APP 16 /* TLS_SLOT_APP (2) from TPIDR_EL0, in bytes */
 #else
-static _Thread_local NceTls* t_word __attribute__((tls_model("initial-exec")));
+[[gnu::tls_model("initial-exec")]] static _Thread_local NceTls* t_word;
 #endif
 #else
 #define NCE_INDIRECT 0
-static _Thread_local NceTls t_nce __attribute__((tls_model("initial-exec")));
+[[gnu::tls_model("initial-exec")]] static _Thread_local NceTls t_nce;
 #endif
 /* the word's distance from TPIDR_EL0. Only the asm reads it, so it is external: clang takes a static one that C code
    never reads as unused (-Wunused-but-set-global) */
-extern u64 g_nce_tls __attribute__((visibility("hidden")));
+[[gnu::visibility("hidden")]] extern u64 g_nce_tls;
 u64 g_nce_tls;
 static NceHostConfig g_config;
 static int g_net_base; /* the seccomp filters of the thread that ran nce_host_init: a thread's without the net */
@@ -116,10 +116,10 @@ static u64 word_offset(void) {
 }
 
 /* the asm's entries, local to this file */
-void nce_outcall(void) __attribute__((visibility("hidden")));
-int nce_host_save(NceHost* h) __attribute__((visibility("hidden"), returns_twice));
-_Noreturn void nce_host_jump(NceHost* h) __attribute__((visibility("hidden")));
-CPU* nce_outcall_c(CPU* c, u64 code, u64 ret, u64 nzcv) __attribute__((visibility("hidden")));
+[[gnu::visibility("hidden")]] void nce_outcall(void);
+[[gnu::visibility("hidden"), gnu::returns_twice]] int nce_host_save(NceHost* h);
+[[noreturn, gnu::visibility("hidden")]] void nce_host_jump(NceHost* h);
+[[gnu::visibility("hidden")]] CPU* nce_outcall_c(CPU* c, u64 code, u64 ret, u64 nzcv);
 
 /* the thread's NceTls into x17 (then its CPU pointer) and x9 from the word at x30 and x10: the word, or what it
    points to (indirect) */

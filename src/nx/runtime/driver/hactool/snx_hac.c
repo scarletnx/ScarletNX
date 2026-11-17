@@ -86,7 +86,7 @@ size_t snx_hac_fwrite(const void *data, size_t size, size_t count, FILE *file) {
     return n;
 }
 
-_Noreturn void snx_hac_exit(int status) {
+[[noreturn]] void snx_hac_exit(int status) {
     void (*cleanup)(void *) = io.cleanup;
     io.cleanup = NULL; /* once, should the cleanup itself end in here */
     if (cleanup) cleanup(io.cleanup_data);

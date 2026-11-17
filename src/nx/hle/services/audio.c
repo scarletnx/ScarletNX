@@ -50,7 +50,7 @@ int snx_audio_guest_ok(u64 addr, u64 size, u32 perm) {
 
 /* A part of nn::audio the runtime answers only natively: a game that asks service for what got here through an SDK
    function that is not native yet, as one that opens a native-only service did (sm.c), and stops the same way */
-static _Noreturn void native_only(const char* service, const char* what) {
+[[noreturn]] static void native_only(const char* service, const char* what) {
     WARN("\n*** The program asked %s for %s, which the runtime answers only natively ***\n", service, what);
     kernel_dump_threads();
     fatal("%s: the program asked for %s, which the runtime answers only in the SDK's own functions, nn::audio "
