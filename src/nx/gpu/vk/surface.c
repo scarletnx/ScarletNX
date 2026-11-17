@@ -523,13 +523,13 @@ int vk_rt_move(VkCommandBuffer cb, Surf* s, u64* bytes) {
     const int copied = was != VK_IMAGE_LAYOUT_UNDEFINED; /* nothing to copy out of one in UNDEFINED */
     if (copied) {
         const VkImageAspectFlags aspect = vk_aspect(&s->f);
-        vk_surf_use(cb, s, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+        vk_surf_use(cb, s, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), VK_PIPELINE_STAGE_2_COPY_BIT,
                     VK_ACCESS_2_TRANSFER_READ_BIT);
         vk_barrier(cb, img, aspect, VK_PIPELINE_STAGE_2_NONE, 0, VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_COPY_BIT,
-                   VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+                   VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_LAYOUT(TRANSFER_DST_OPTIMAL));
         const VkImageSubresourceLayers sub = {.aspectMask = aspect, .mipLevel = 0, .layerCount = s->layers};
         const VkImageCopy rg = {.srcSubresource = sub, .dstSubresource = sub, .extent = {s->sw, s->sh, 1}};
-        rec_CmdCopyImage(cb, s->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
+        rec_CmdCopyImage(cb, s->img, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), img, VK_LAYOUT(TRANSFER_DST_OPTIMAL), 1,
                          &rg);
     }
     /* the old image and every view of it go once the frames that use them are done; the views are made again of
@@ -545,12 +545,12 @@ int vk_rt_move(VkCommandBuffer cb, Surf* s, u64* bytes) {
     s->img = img;
     s->mem = mem;
     vk_surf_bytes(s, info.size);
-    s->layout = copied ? VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED;
+    s->layout = copied ? VK_LAYOUT(TRANSFER_DST_OPTIMAL) : VK_IMAGE_LAYOUT_UNDEFINED;
     s->stage = copied ? VK_PIPELINE_STAGE_2_COPY_BIT : 0;
     s->access = copied ? VK_ACCESS_2_TRANSFER_WRITE_BIT : 0;
     surf_att_create(s, usage, storage_format);
     vk_devmem_owner(mem, s);
-    if (copied && was != VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) vk_surf_use(cb, s, was, stage, access);
+    if (copied && was != VK_LAYOUT(TRANSFER_DST_OPTIMAL)) vk_surf_use(cb, s, was, stage, access);
     return 1;
 }
 /* SET_SRGB_WRITE selects the attachment view, leaving the image's stored bytes and sampling format intact. */

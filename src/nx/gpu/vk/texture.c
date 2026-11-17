@@ -1474,10 +1474,10 @@ static int tex_move(VkCommandBuffer cb, Surf* t, const DevMemWant* want, u64* by
     if (copied) {
         const VkImageAspectFlags aspect = vk_aspect(&t->f);
         const int is3d = t->type == VK_IMAGE_VIEW_TYPE_3D;
-        vk_surf_use(cb, t, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+        vk_surf_use(cb, t, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), VK_PIPELINE_STAGE_2_COPY_BIT,
                     VK_ACCESS_2_TRANSFER_READ_BIT);
         vk_barrier(cb, img, aspect, VK_PIPELINE_STAGE_2_NONE, 0, VK_IMAGE_LAYOUT_UNDEFINED,
-                   VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+                   VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_LAYOUT(TRANSFER_DST_OPTIMAL));
         VkImageCopy rg[VK_TEX_MAX_LEVELS];
         const u32 levels = ii.mipLevels < VK_TEX_MAX_LEVELS ? ii.mipLevels : VK_TEX_MAX_LEVELS;
         for (u32 l = 0; l < levels; l++) {
@@ -1490,12 +1490,12 @@ static int tex_move(VkCommandBuffer cb, Surf* t, const DevMemWant* want, u64* by
                                              ii.extent.height >> l ? ii.extent.height >> l : 1,
                                              ii.extent.depth >> l ? ii.extent.depth >> l : 1}};
         }
-        rec_CmdCopyImage(cb, t->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        rec_CmdCopyImage(cb, t->img, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), img, VK_LAYOUT(TRANSFER_DST_OPTIMAL),
                          levels, rg);
     }
     vk_devmem_owner(t->mem, NULL); /* the old allocation is not given out again */
     tex_image_swap(t, img, mem, info.size, t->f.vk, copied);
-    if (copied && was != VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) vk_surf_use(cb, t, was, stage, access);
+    if (copied && was != VK_LAYOUT(TRANSFER_DST_OPTIMAL)) vk_surf_use(cb, t, was, stage, access);
     return 1;
 }
 /* t's image in a free run of another block of its class, copied on cb. 1 when moved, 0 when no run held it */
@@ -1574,9 +1574,9 @@ static void sparse_copy_out(VkCommandBuffer cb, SparseMove* m, const SparseMove*
     m->access = first < nsp ? sp[first].access : m->t->access;
     m->copied = m->was != VK_IMAGE_LAYOUT_UNDEFINED; /* an image in UNDEFINED holds nothing to copy */
     if (!m->copied) return;
-    vk_surf_use(cb, m->t, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+    vk_surf_use(cb, m->t, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), VK_PIPELINE_STAGE_2_COPY_BIT,
                 VK_ACCESS_2_TRANSFER_READ_BIT);
-    rec_CmdCopyImageToBuffer(cb, m->t->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, scratch, m->ncopy, m->copy);
+    rec_CmdCopyImageToBuffer(cb, m->t->img, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), scratch, m->ncopy, m->copy);
 }
 /* after the copies out went to the queue: the memory bound again in the batch after them, and the copies back in, in
    the next submission, after the batch, for the moves that took place; each texture copied back in its layout */
@@ -1606,9 +1606,9 @@ static void sparse_moves_end(SparseMove* sp, u32 nsp, VkBuffer scratch) {
             rec_CmdCopyBuffer(cb, scratch, sp[i].buf, 1, &c);
             continue;
         }
-        vk_surf_use(cb, sp[i].t, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+        vk_surf_use(cb, sp[i].t, VK_LAYOUT(TRANSFER_DST_OPTIMAL), VK_PIPELINE_STAGE_2_COPY_BIT,
                     VK_ACCESS_2_TRANSFER_WRITE_BIT);
-        rec_CmdCopyBufferToImage(cb, scratch, sp[i].t->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, sp[i].ncopy,
+        rec_CmdCopyBufferToImage(cb, scratch, sp[i].t->img, VK_LAYOUT(TRANSFER_DST_OPTIMAL), sp[i].ncopy,
                                  sp[i].copy);
     }
     for (u32 i = 0; i < nsp; i++) { /* back in its layout once, where the defrag's first copy of it changed it */
