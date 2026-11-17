@@ -439,6 +439,9 @@ void vk_image_sparse_place(VkImage img, int system);
    freed and nothing moved. A move not ended frees `to` (vk_devmem_free). Each region holds 64 KiB of texels at most,
    and a move has VK_SPARSE_MOVE_REGIONS at most: a mip tail with more gets no owner */
 #define VK_SPARSE_MOVE_REGIONS 16u
+/* the most memory of a block, a brick or a mip tail that moves: each region's texels fit in a slot of this many bytes
+   of the defrag's scratch (texture.c). One with more memory gets no owner */
+#define VK_SPARSE_MOVE_BYTES (64u << 10)
 void vk_image_sparse_mover(VkImage img, void* mover);
 int vk_image_sparse_move_begin(VkImage img, DevMem a, DevMem* to, VkSparseImageMemoryBind* regions, u32 max,
                                u32* n);
