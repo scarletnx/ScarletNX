@@ -37,6 +37,7 @@
 #include "nx/gpu/video/host1x.h"
 #include "nx/runtime/clock.h"
 #include "nx/runtime/platform/tracy.h"
+#include "snx_settings.h"
 #include <stdlib.h>
 #include <string.h>
 static void nv_events_check(void);
@@ -266,6 +267,71 @@ static u32 grun_find(u64 g) {
     }
     return lo;
 }
+/* The runs' edges in guest order (GAlias.edge), kept at each change of the runs: the index's build
+   was a qsort of 2 * ngruns edges after each mapping change, most of its time (gmmu_aliases' callers ask after each
+   change, and one game changes its mappings many times a frame). Each edge names its run by its place in gruns, so a
+   run put in or taken out moves the places after it (edge_shift). Not kept while edges_ok is 0: the next build sorts
+   them again */
+static int edges_kept(void) { return g_hle.nvdrv.alias.edges_ok; }
+/* the first edge of key `key` or after */
+static u32 edge_find(u64 key) {
+    const GEdge* e = g_hle.nvdrv.alias.edge;
+    u32 lo = 0, hi = g_hle.nvdrv.alias.nedge;
+    while (lo < hi) {
+        u32 m = lo + (hi - lo) / 2;
+        if (e[m].key < key)
+            lo = m + 1;
+        else
+            hi = m;
+    }
+    return lo;
+}
+static void edge_insert(u64 key, u32 run) {
+    GAlias* x = &g_hle.nvdrv.alias;
+    if (x->nedge == x->capedge) {
+        u32 nc = x->capedge ? x->capedge * 2 : 2048;
+        GEdge* e = realloc(x->edge, (size_t)nc * sizeof *e);
+        if (!e) fatal("nvdrv: out of memory for the GPU mappings' edges\n");
+        x->edge = e;
+        x->capedge = nc;
+    }
+    u32 k = edge_find(key);
+    memmove(&x->edge[k + 1], &x->edge[k], (x->nedge - k) * sizeof *x->edge);
+    x->edge[k] = (GEdge){key, run};
+    x->nedge++;
+}
+static void edge_remove(u64 key, u32 run) {
+    GAlias* x = &g_hle.nvdrv.alias;
+    u32 k = edge_find(key);
+    while (k < x->nedge && x->edge[k].key == key && x->edge[k].run != run) k++;
+    if (k == x->nedge || x->edge[k].key != key) { /* not there: the edges no longer match the runs */
+        WARN_LIMIT(4, "nvdrv: no edge of GPU mapping run %u at guest page %llx: the edges are sorted again\n", run,
+                   (unsigned long long)(key >> 1));
+        x->edges_ok = 0;
+        return;
+    }
+    memmove(&x->edge[k], &x->edge[k + 1], (x->nedge - k - 1) * sizeof *x->edge);
+    x->nedge--;
+}
+/* run k's two edges in, or out */
+static void run_edges(u32 k, int in) {
+    const GRun* r = &g_hle.nvdrv.gruns[k];
+    if (!edges_kept()) return;
+    if (in) {
+        edge_insert(r->cpage << 1 | 1, k);
+        edge_insert((r->cpage + r->pages) << 1, k);
+    } else {
+        edge_remove(r->cpage << 1 | 1, k);
+        edge_remove((r->cpage + r->pages) << 1, k);
+    }
+}
+/* the runs at from on moved by delta places (a run put in before them, or runs taken out) */
+static void edge_shift(u32 from, u32 delta, int up) {
+    GAlias* x = &g_hle.nvdrv.alias;
+    if (!edges_kept()) return;
+    for (u32 i = 0; i < x->nedge; i++)
+        if (x->edge[i].run >= from) x->edge[i].run = up ? x->edge[i].run + delta : x->edge[i].run - delta;
+}
 /* takes pages [g0, g1) out of the runs. With own, only from the runs still showing guest page c0 + (p - g0) at each
    page p, which are the pages gmmu_unmap's own clears: a run shows them at all its pages or at none */
 static void grun_cut(u64 g0, u64 g1, int own, u64 c0) {
@@ -277,14 +343,22 @@ static void grun_cut(u64 g0, u64 g1, int own, u64 c0) {
         tail.gpage = g1;
         tail.pages = r[k].gpage + r[k].pages - g1;
         tail.cpage = r[k].cpage + (g1 - r[k].gpage);
+        run_edges(k, 0);
         r[k].pages = g0 - r[k].gpage;
+        run_edges(k, 1);
         grun_room(1);
         r = g_hle.nvdrv.gruns;
         memmove(&r[k + 2], &r[k + 1], (n - k - 1) * sizeof *r);
         r[k + 1] = tail;
         g_hle.nvdrv.ngruns++;
+        edge_shift(k + 1, 1, 1);
+        run_edges(k + 1, 1);
         return;
     }
+    const u32 k0 = k;
+    u32 kend = k;
+    while (kend < n && r[kend].gpage < g1) kend++;
+    for (u32 j = k0; j < kend; j++) run_edges(j, 0); /* in again below, as they are after the cut */
     for (w = k; k < n && r[k].gpage < g1; k++) {
         GRun e = r[k];
         u64 end = e.gpage + e.pages;
@@ -300,9 +374,12 @@ static void grun_cut(u64 g0, u64 g1, int own, u64 c0) {
         }
         r[w++] = e;
     }
-    if (w == k) return;
-    memmove(&r[w], &r[k], (n - k) * sizeof *r);
-    g_hle.nvdrv.ngruns = n - (k - w);
+    if (w != k) {
+        memmove(&r[w], &r[k], (n - k) * sizeof *r);
+        g_hle.nvdrv.ngruns = n - (k - w);
+        edge_shift(kend, kend - w, 0);
+    }
+    for (u32 j = k0; j < w; j++) run_edges(j, 1);
 }
 /* the table's pages first to last (gmmu_map's and gmmu_unmap's numbers) changed: mapped to guest memory from cpu on,
    or cleared (with own, only those still mapped where a mapping of cpu put them) */
@@ -322,6 +399,8 @@ static void grun_change(u64 first, u64 last, int map, int own, u64 cpu) {
             g_hle.nvdrv.gruns[k].pages = n;
             g_hle.nvdrv.gruns[k].cpage = cpu >> GMMU_PAGE_BITS;
             g_hle.nvdrv.ngruns++;
+            edge_shift(k, 1, 1);
+            run_edges(k, 1);
         } else if (!own || !(cpu & GHINT_MASK)) /* an own unmap compares its address's hint bits too: set, none match */
             grun_cut(g, g + n, own, cpu >> GMMU_PAGE_BITS);
         if (n >= last - first + 1) break;
@@ -331,40 +410,54 @@ static void grun_change(u64 first, u64 last, int map, int own, u64 cpu) {
     g_hle.nvdrv.alias.stale = 1;
     pm_unlock(&g_host.nvdrv.alias_lock);
 }
-/* where a run starts (bit 0 set) or ends in guest memory, by page, ends first at a page */
-typedef struct {
-    u64 key;
-    u32 run;
-} GEdge;
 static int gedge_cmp(const void* a, const void* b) {
     u64 x = ((const GEdge*)a)->key, y = ((const GEdge*)b)->key;
     return (x > y) - (x < y);
 }
-/* the index from the runs: a sweep over their edges in guest order, keeping the runs over the current interval in
-   act (pos[r] is run r's place there). The first pass counts what the second writes */
-static void alias_build(void) {
-    GAlias* x = &g_hle.nvdrv.alias;
+/* the runs' edges into e (2 * ngruns of them), sorted */
+static void edges_sort(GEdge* e) {
     const GRun* r = g_hle.nvdrv.gruns;
-    u32 n = g_hle.nvdrv.ngruns, ne = 2 * n, i, nb = 0, nact, pass;
-    u64 ncover = 0;
-    GEdge* e;
-    u32 *act, *pos;
-    x->stale = 0;
-    x->nbound = 0;
-    x->query = 0;
-    if (!n) return;
-    if (n > 0x40000000u) fatal("nvdrv: too many GPU mappings for their index\n");
-    e = malloc((size_t)ne * sizeof *e + 2 * (size_t)n * sizeof *act);
-    if (!e) fatal("nvdrv: out of memory for the GPU mappings' index\n");
-    act = (u32*)(e + ne);
-    pos = act + n;
-    for (i = 0; i < n; i++) {
+    u32 n = g_hle.nvdrv.ngruns;
+    for (u32 i = 0; i < n; i++) {
         e[2 * i].key = r[i].cpage << 1 | 1;
         e[2 * i].run = i;
         e[2 * i + 1].key = (r[i].cpage + r[i].pages) << 1;
         e[2 * i + 1].run = i;
     }
-    qsort(e, ne, sizeof *e, gedge_cmp);
+    qsort(e, 2 * (size_t)n, sizeof *e, gedge_cmp);
+}
+/* the index from the runs: a sweep over their edges in guest order, keeping the runs over the current interval in
+   act (pos[r] is run r's place there). The first pass counts what the second writes. The edges are the ones kept in
+   order at each change (sorted again once where they don't match the runs) */
+static void alias_build(void) {
+    GAlias* x = &g_hle.nvdrv.alias;
+    u32 n = g_hle.nvdrv.ngruns, ne = 2 * n, i, nb = 0, nact, pass;
+    u64 ncover = 0, t0 = plat_ns();
+    GEdge* e;
+    u32 *act, *pos;
+    x->stale = 0;
+    x->nbound = 0;
+    x->query = 0;
+    x->builds++;
+    if (x->edges_ok && x->nedge != ne)
+        WARN_LIMIT(4, "nvdrv: %u edges kept for %u GPU mapping runs: sorted again\n", x->nedge, n);
+    if (!x->edges_ok || x->nedge != ne) { /* after a state's load, or edges that went wrong: once */
+        if (ne > x->capedge) {
+            GEdge* grown = realloc(x->edge, (size_t)(ne ? ne : 1) * sizeof *grown);
+            if (!grown) fatal("nvdrv: out of memory for the GPU mappings' edges\n");
+            x->edge = grown;
+            x->capedge = ne ? ne : 1;
+        }
+        edges_sort(x->edge);
+        x->nedge = ne;
+        x->edges_ok = 1;
+    }
+    if (!n) return;
+    if (n > 0x40000000u) fatal("nvdrv: too many GPU mappings for their index\n");
+    act = malloc(2 * (size_t)n * sizeof *act);
+    if (!act) fatal("nvdrv: out of memory for the GPU mappings' index\n");
+    pos = act + n;
+    e = x->edge;
     for (pass = 0; pass < 2; pass++) {
         nb = 0;
         ncover = 0;
@@ -408,7 +501,18 @@ static void alias_build(void) {
     }
     x->first[nb] = (u32)ncover;
     x->nbound = nb;
-    free(e);
+    free(act);
+    x->build_ns += plat_ns() - t0;
+}
+void gmmu_alias_log(void) {
+    GAlias* x = &g_hle.nvdrv.alias;
+    pm_lock(&g_host.nvdrv.alias_lock);
+    const u32 builds = x->builds, runs = g_hle.nvdrv.ngruns;
+    const u64 ns = x->build_ns;
+    x->builds = 0;
+    x->build_ns = 0;
+    pm_unlock(&g_host.nvdrv.alias_lock);
+    LOG("gmmu: %u alias index builds over 600 presents, %u runs, %.2f ms\n", builds, runs, (double)ns / 1e6);
 }
 void gmmu_aliases(u64 cpu, u64 size, void (*fn)(void* ctx, u64 gva, u64 n), void* ctx) {
     GAlias* x = &g_hle.nvdrv.alias;

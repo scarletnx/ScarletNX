@@ -841,6 +841,7 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
                 disp_was = g_vk_dispatches;
             }
             vk_render_stats_log();
+            gmmu_alias_log();
             if (g_vk_depth_apart_draws) {
                 static u64 apart_was, moved_was;
                 LOG("vulkan: %llu draws of the last 600 frames clip and clamp depth, as the console's clamp off does, "
