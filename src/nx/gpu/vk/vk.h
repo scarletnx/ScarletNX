@@ -360,6 +360,10 @@ int vk_sparse_flush(VkSemaphoreSubmitInfo* wait);
    work submitted before may still read the range, and the batch waits for it. The batch's number, 0 when there is no
    memory for a batch */
 u64 vk_buffer_sparse_bind(VkBuffer buf, const VkSparseMemoryBind* bind, DevMem gone, u64 size, int readers);
+/* readers of a bind: VK_BIND_GFX, the work the graphics queue has been given may read the range. VK_BIND_MOVE, a
+   defrag's move: the compute queue's work too, as a dispatch reads the buffer cache's buffers in place */
+#define VK_BIND_GFX  1
+#define VK_BIND_MOVE 3
 /* img has binds in a batch that hasn't gone to the queue yet, which goes ahead of the next submission */
 int vk_sparse_unissued(VkImage img);
 /* Sparse residency (memory.c), for a texture that guest memory maps only in part. vk_sparse_supported: the device
@@ -2575,6 +2579,10 @@ int vk_compute_gpu_src(u64 gva, u64 len, VkBuffer* buf, u64* off);
    found where the windows can't hold them */
 u32 vk_pointer_windows(u64* v, u32 n, u32 windows, u32 reach, int whole, u64* base, u32* len);
 extern VkSemaphore g_vk_csem;  /* timeline semaphore the compute queue signals */
+/* compute.c: the compute timeline's value of its last batch submitted, 0 none. vk_compute_after_gfx: the next batch
+   waits for that graphics timeline value (a defrag's copies back of what a dispatch may read in place) */
+u64 vk_compute_submitted(void);
+void vk_compute_after_gfx(u64 value);
 extern u64 g_vk_cs_wait_value; /* the value graphics work waits for before reading compute results */
 extern u64 g_vk_dispatches, g_vk_cs_batches, g_vk_cs_wait_ns; /* statistics */
 extern u64 g_vk_cs_cpu_reads; /* dispatches kept on the compute queue because the CPU reads what they write */

@@ -96,6 +96,7 @@ static u32 g_npieces, g_cappieces;
    an image in pieces, VkSparseImageMemoryBind for blocks */
 typedef struct {
     u64 gfx;   /* the graphics timeline value it waits for, 0 none */
+    u64 comp;  /* the compute timeline value it waits for (a move's: VK_BIND_MOVE), 0 none */
     u64 after; /* the batch before it, 0 none */
     u64 value; /* its own on the bind timeline */
     u32 nimg, nopaque, nbuf; /* its entries of each kind */
@@ -124,7 +125,7 @@ static struct {
     u64 used, last;  /* the batch's bytes, 0 none; where its last BindOne is */
     u32 ngone;
     u64 gone_bytes;
-    int readers; /* it changes blocks of an image in use: after the work submitted before it */
+    int readers; /* it changes blocks of an image in use: after the work submitted before it (VK_BIND_*) */
 } g_bind;
 
 /* An allocation of size bytes of system memory, no bigger than g_vk.alloc_cap, found none while its heap had the
@@ -240,10 +241,11 @@ static void bind_run(const void* arg) {
         at += (u64)one.n * bind_each(one.kind);
         binds += one.n;
     }
-    VkSemaphore wait[2];
-    u64 values[2];
+    VkSemaphore wait[3];
+    u64 values[3];
     u32 nw = 0;
     if (h->gfx) wait[nw] = vk_gfx_timeline(), values[nw++] = h->gfx;
+    if (h->comp) wait[nw] = g_vk_csem, values[nw++] = h->comp;
     if (h->after) wait[nw] = g_bind.sem, values[nw++] = h->after;
     VkTimelineSemaphoreSubmitInfo ts = {.sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO,
                                         .waitSemaphoreValueCount = nw,
@@ -289,6 +291,7 @@ static void bind_flush(void) {
     if (g_bind.used) {
         BindHead* h = (BindHead*)(void*)g_bind.buf;
         h->gfx = g_bind.readers ? vk_last_submit() : 0;
+        h->comp = g_bind.readers & VK_BIND_MOVE ? vk_compute_submitted() : 0;
         h->after = g_bind.issued;
         h->value = ++g_bind.issued;
         vk_rec_call(bind_run, g_bind.buf, g_bind.used);
@@ -1143,13 +1146,13 @@ static int piece_move_end(Pieces* p, DevMem a, DevMem to) {
             piece_region(p, i, &b);
             b.memory = info.memory;
             b.memoryOffset = info.offset;
-            p->batch = bind_add(p->img, 0, &b, sizeof b, last ? a : 0, last ? p->req.alignment : 0, 1);
+            p->batch = bind_add(p->img, 0, &b, sizeof b, last ? a : 0, last ? p->req.alignment : 0, VK_BIND_MOVE);
         } else {
             const VkSparseMemoryBind b = {.resourceOffset = p->tail_offset + (i - bricks) * p->tail_stride,
                                           .size = p->tail_size,
                                           .memory = info.memory,
                                           .memoryOffset = info.offset};
-            p->batch = bind_add(p->img, 1, &b, sizeof b, last ? a : 0, last ? p->tail_size : 0, 1);
+            p->batch = bind_add(p->img, 1, &b, sizeof b, last ? a : 0, last ? p->tail_size : 0, VK_BIND_MOVE);
         }
         p->pages[i] = to;
     }
@@ -1243,7 +1246,7 @@ int vk_image_sparse_move_end(VkImage img, DevMem a, DevMem to) {
                                        .size = s->tail_size,
                                        .memory = info.memory,
                                        .memoryOffset = info.offset};
-        s->batch = bind_add(img, 1, &ob, sizeof ob, a, s->tail_size, 1);
+        s->batch = bind_add(img, 1, &ob, sizeof ob, a, s->tail_size, VK_BIND_MOVE);
         s->slot[sparse_nblocks(s) + tail] = to;
         return 1;
     }
@@ -1257,7 +1260,7 @@ int vk_image_sparse_move_end(VkImage img, DevMem a, DevMem to) {
         ib.memoryOffset = info.offset;
         n++;
         /* the old allocation goes with the last of its blocks, after the batch and the frames that read it */
-        s->batch = bind_add(img, 0, &ib, sizeof ib, n == refs ? a : 0, n == refs ? s->block : 0, 1);
+        s->batch = bind_add(img, 0, &ib, sizeof ib, n == refs ? a : 0, n == refs ? s->block : 0, VK_BIND_MOVE);
         s->slot[b] = to;
     }
     s->mem[rec].a = to;

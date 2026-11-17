@@ -400,7 +400,14 @@ static int cs_spill(const CsPipe* p, int indirect, u32 gx, u32 gy, u32 gz, int g
 
 static GpOp g_op[VK_GP_OPS];
 static GpOps g_ops = {.op = g_op, .cap = VK_GP_OPS, .queries = VK_GP_QUERIES};
-/* submits the batch without waiting; it signals g_vk_csem with the next value */
+/* a graphics timeline value the next batch waits for (vk_compute_after_gfx), 0 none */
+static u64 g_after_gfx;
+u64 vk_compute_submitted(void) { return g_vk_csem ? g_cval : 0; }
+void vk_compute_after_gfx(u64 value) {
+    if (value > g_after_gfx) g_after_gfx = value;
+}
+/* submits the batch without waiting; it signals g_vk_csem with the next value. A batch after a defrag's move of what
+   its dispatches may read in place (vk_compute_after_gfx) waits for the graphics submission that copied it back */
 static void cs_submit(void) {
     if (!g_recording) return;
     vk_devmem_flush(g_ar_mem, 0, VK_WHOLE_SIZE); /* the arena may not be host coherent */
@@ -411,11 +418,18 @@ static void cs_submit(void) {
                                  .semaphore = g_vk_csem,
                                  .value = ++g_cval,
                                  .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT};
+    const VkSemaphoreSubmitInfo after = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+                                         .semaphore = vk_gfx_timeline(),
+                                         .value = g_after_gfx,
+                                         .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT};
     VkSubmitInfo2 si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
+                        .waitSemaphoreInfoCount = g_after_gfx ? 1 : 0,
+                        .pWaitSemaphoreInfos = &after,
                         .commandBufferInfoCount = 1,
                         .pCommandBufferInfos = &c,
                         .signalSemaphoreInfoCount = 1,
                         .pSignalSemaphoreInfos = &sig};
+    g_after_gfx = 0;
     vk_rec_queue(g_vk.compute); /* after the graphics submissions before it, when the queue is theirs too */
     vk_wait_foreground();
     vk_queue_lock(g_vk.compute);

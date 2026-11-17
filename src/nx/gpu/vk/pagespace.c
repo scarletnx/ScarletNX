@@ -350,7 +350,7 @@ int vk_pages_move_end(void* owner, DevMem a, DevMem to) {
                                   .memory = info.memory,
                                   .memoryOffset = info.offset};
     vk_devmem_owner(a, NULL); /* not given out again: freed after the batch */
-    if (!vk_buffer_sparse_bind(q->region->buf, &b, a, PG_SIZE, 1)) { /* no room for the bind: it stays */
+    if (!vk_buffer_sparse_bind(q->region->buf, &b, a, PG_SIZE, VK_BIND_MOVE)) { /* no room for the bind: it stays */
         vk_devmem_owner(a, owner);
         vk_devmem_free(to);
         return 0;
