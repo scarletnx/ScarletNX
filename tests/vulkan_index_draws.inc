@@ -193,7 +193,7 @@ static int index_quads_gpu_cases(void) {
                 for (u32 b = 0; b < isz; b++) in[isz * j + b] = (u8)(idx[j] >> (8 * b));
             int strip = (flags & 2) != 0, last = flags & 1;
             u32 nq = snx_quads_of(10, strip);
-            CHECK(snx_quad_indices(in, isz, 10, strip, last, want) == nq);
+            CHECK(snx_quad_indices(in, isz, 10, strip, last, 0, 0, want) == nq);
             VkBuffer src, out, rb;
             u64 at, oat;
             u8* staged = vk_stage(40, vk_stage_align(), &src, &at);
@@ -251,6 +251,15 @@ static int index_cases(GpuChannel* channel, u64 target, u64 indices) {
         CHECK(!index_draw(channel, target, &call, &px));
         CHECK(index_all_green(&px));
     }
+    /* indexed quads whose restart index (9) cuts the second short: the green quad alone, where taking 9 for a vertex
+       drew a second quad of the red corners */
+    const u32 quad_cut[8] = {4, 5, 6, 7, 9, 0, 1, 2};
+    CHECK(!index_buffer(channel, indices, quad_cut, 8, 2, 9));
+    call = (DrawCall){.topology = 7, .indexed = 1, .count = 8, .instances = 1};
+    CHECK(!index_draw(channel, target, &call, &px));
+    if (!index_all_green(&px)) fprintf(stderr, "quads restarting at 9: %u green, %u red\n", px.green, px.red);
+    CHECK(index_all_green(&px));
+    channel->r3d[0x591] = 0;
     /* inline indices: quads, and a strip with its restart index */
     call = (DrawCall){.topology = 7, .indexed = 3, .first = 1, .count = 4, .instances = 1, .inline_indices = quad};
     CHECK(!index_draw(channel, target, &call, &px));

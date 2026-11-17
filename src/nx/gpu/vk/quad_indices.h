@@ -29,16 +29,22 @@ static inline void snx_quad_triangles(const uint32_t v[4], int strip, int last, 
     for (int k = 0; k < 6; k++) snx_st_le32(out + 4 * k, t[last ? turned[k] : k]);
 }
 /* The triangles of count little-endian indices of isz bytes drawn as quads, or as a quad strip, into out (24 bytes a
-   quad), the last vertex provoking when last is set. Returns the quads made, snx_quads_of(count) */
+   quad, snx_quads_of(count) at most), the last vertex provoking when last is set. Where restart is set the index ri
+   ends the primitive under way, as the 3D engine's primitive restart does, and the next index begins another: a quad
+   it cuts short is not drawn. Returns the quads made */
 static inline uint32_t snx_quad_indices(const uint8_t* in, uint32_t isz, uint32_t count, int strip, int last,
-                                        uint8_t* out) {
-    uint32_t n = snx_quads_of(count, strip), step = strip ? 2 : 4;
-    for (uint32_t q = 0; q < n; q++) {
-        uint32_t v[4];
-        for (uint32_t k = 0; k < 4; k++) v[k] = snx_quad_index(in, isz, q * step + k);
-        snx_quad_triangles(v, strip, last, out + 24 * (size_t)q);
+                                        int restart, uint32_t ri, uint8_t* out) {
+    uint32_t made = 0, start = 0, step = strip ? 2 : 4;
+    for (uint32_t j = 0; j <= count; j++) {
+        if (j < count && !(restart && snx_quad_index(in, isz, j) == ri)) continue;
+        for (uint32_t q = 0, n = snx_quads_of(j - start, strip); q < n; q++) {
+            uint32_t v[4];
+            for (uint32_t k = 0; k < 4; k++) v[k] = snx_quad_index(in, isz, start + q * step + k);
+            snx_quad_triangles(v, strip, last, out + 24 * (size_t)made++);
+        }
+        start = j + 1;
     }
-    return n;
+    return made;
 }
 
 #endif
