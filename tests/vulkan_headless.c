@@ -7174,6 +7174,7 @@ static int check_hmma_file_key(void) {
 #include "vulkan_pipeline_probe.inc"
 #include "vulkan_indexed_map_bench.inc"
 #include "vulkan_nvn_storage.inc"
+#include "vulkan_uma_storage_reads.inc"
 #include "vulkan_nvn_compat.inc"
 #include "vulkan_nvn_copy_flags.inc"
 #include "vulkan_nvn_copy_conversions.inc"
@@ -8040,6 +8041,7 @@ static int run_headless(int argc, char** argv) {
         if (!strcmp(name, "pages_partial") && ++ran) CHECK(!check_uma_pages_partial());
         if (!strcmp(name, "texture_region") && ++ran) CHECK(!check_uma_texture_region());
         if (!strcmp(name, "dma_region") && ++ran) CHECK(!check_uma_dma_region());
+        if (!strcmp(name, "storage_region") && ++ran) CHECK(!check_uma_storage_region());
         if (!strcmp(name, "alias_in_place") && ++ran) CHECK(!check_uma_alias_in_place());
         if (!strcmp(name, "alias_fallback") && ++ran) CHECK(!check_uma_alias_fallback());
         if (!strcmp(name, "alias_merge") && ++ran) CHECK(!check_uma_alias_merge());
@@ -8052,7 +8054,7 @@ static int run_headless(int argc, char** argv) {
                     "region_writes, region_merge, writes, atlas_pending, feedback, publish, dispatch, dispatch_open, "
                     "texture_pending, dispatch_constants, "
                     "dispatch_table, header_words, placed, placed_view, logged_back, trapped_window, copies, "
-                    "pages_producers, pages_counts, pages_partial, texture_region, dma_region, "
+                    "pages_producers, pages_counts, pages_partial, texture_region, dma_region, storage_region, "
                     "alias_in_place, alias_fallback, alias_merge, "
                     "alias_cpu_read, alias_shader or alias_order\n",
                     name);
@@ -8101,6 +8103,7 @@ static int run_headless(int argc, char** argv) {
         CHECK(!check_uma_alias_cpu_read());
         CHECK(!check_alias_shader());
         CHECK(!check_uma_alias_order());
+        CHECK(!check_uma_storage_region());
         vk_pipeline_quiesce();
         printf("PASS headless Vulkan in place only: %u validation messages\n", g_vk_validation_messages);
         return 0;
@@ -8349,6 +8352,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_uma_alias_cpu_read());
     CHECK(!check_alias_shader());
     CHECK(!check_uma_alias_order());
+    CHECK(!check_uma_storage_region());
     CHECK(!check_write_tracking());
     CHECK(!check_descriptor_room());
     CHECK(!check_sparse_texture());

@@ -492,6 +492,14 @@ const char* vk_uma_read_differs(u64 gva, u64 len, VkBuffer buf, u64 off);
 /* the same, with the buffer cache's own reasons first (a pending result, the mirror's writes, a storage image, a queued
    release, bytes the GPU owns): what draw_state_check=1 asks of a read in place that no draw makes (buffer.c) */
 const char* vk_buf_fast_why(u64 gva, u64 len, VkBuffer buf, u64 off);
+/* a draw's read-only storage buffer of its own size (render.c), at align: read in place where it can be, else copied
+   as vertices are (buffer.c) */
+int vk_buf_get_storage(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off);
+/* the draws' read-only storage lookups since the last statistics line: [0] their count, [1] their bytes, by how they
+   were bound: in place, a pending result, else copied because a copy was asked for, imports are dear, the fast path
+   refused them, or there is no unified memory */
+enum { VK_SREAD_IN_PLACE, VK_SREAD_PENDING, VK_SREAD_ASKED, VK_SREAD_DEAR, VK_SREAD_REFUSED, VK_SREAD_OFF, VK_SREAD_N };
+void vk_buf_storage_counts(u64 counts[2][VK_SREAD_N]);
 void vk_uma_check_diff(const char* what, u64 gva, u64 len);
 u64 vk_uma_check_diffs(void);
 /* the writes in place added so far, which the page model leaves out of vk_buf_adds and g_pend_any.adds (but not out
