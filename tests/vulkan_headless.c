@@ -7123,6 +7123,7 @@ static void results_copied(u64 cpu, u64 len) { vk_own_cpu_touched(cpu, len); }
 #include "vulkan_storage_image_keep.inc"
 #include "vulkan_uma_imports.inc"
 #include "vulkan_uma_pages.inc"
+#include "vulkan_uma_region_reads.inc"
 #include "vulkan_write_tracking.inc"
 #include "vulkan_tex_partial.inc"
 #include "vulkan_texture_quiet.inc"
@@ -8034,6 +8035,7 @@ static int run_headless(int argc, char** argv) {
         if (!strcmp(name, "pages_producers") && ++ran) CHECK(!check_uma_pages_producers());
         if (!strcmp(name, "pages_counts") && ++ran) CHECK(!check_uma_pages_counts());
         if (!strcmp(name, "pages_partial") && ++ran) CHECK(!check_uma_pages_partial());
+        if (!strcmp(name, "texture_region") && ++ran) CHECK(!check_uma_texture_region());
         if (!strcmp(name, "alias_in_place") && ++ran) CHECK(!check_uma_alias_in_place());
         if (!strcmp(name, "alias_fallback") && ++ran) CHECK(!check_uma_alias_fallback());
         if (!strcmp(name, "alias_merge") && ++ran) CHECK(!check_uma_alias_merge());
@@ -8046,7 +8048,8 @@ static int run_headless(int argc, char** argv) {
                     "region_writes, region_merge, writes, atlas_pending, feedback, publish, dispatch, dispatch_open, "
                     "texture_pending, dispatch_constants, "
                     "dispatch_table, header_words, placed, placed_view, logged_back, trapped_window, copies, "
-                    "pages_producers, pages_counts, pages_partial, alias_in_place, alias_fallback, alias_merge, "
+                    "pages_producers, pages_counts, pages_partial, texture_region, "
+                    "alias_in_place, alias_fallback, alias_merge, "
                     "alias_cpu_read, alias_shader or alias_order\n",
                     name);
             return 2;
@@ -8086,6 +8089,7 @@ static int run_headless(int argc, char** argv) {
         CHECK(!check_uma_pages_counts());
         CHECK(!check_uma_pages_producers());
         CHECK(!check_uma_pages_partial());
+        CHECK(!check_uma_texture_region());
         CHECK(!check_uma_alias_in_place());
         CHECK(!check_uma_alias_fallback());
         CHECK(!check_uma_alias_merge());
@@ -8331,6 +8335,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_uma_pages_counts());
     CHECK(!check_uma_pages_producers());
     CHECK(!check_uma_pages_partial());
+    CHECK(!check_uma_texture_region());
     CHECK(!check_uma_alias_in_place());
     CHECK(!check_uma_alias_fallback());
     CHECK(!check_uma_alias_merge());

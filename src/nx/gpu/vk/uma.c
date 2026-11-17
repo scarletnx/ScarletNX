@@ -41,7 +41,9 @@
      are read in place (vk_buf_get_uniform).
    - Ranges that GPU results not landed yet cover (buffer.c's pending results, compute results) and GPU-owned ranges
      (memory/own.c): their bytes are not in guest memory.
-   - Textures and render targets: their layout differs (block linear, compressed formats).
+   - Textures and render targets: their layout differs (block linear, compressed formats). Their loads read their
+     bytes in a region all the same (vk_uma_read_cpu, owned.c's vk_guest_in_place): the
+     deswizzle or the copy into the image takes the region's buffer where it took staging.
 
    The rules that keep it correct:
    - A release that the guest can see (a syncpoint, a semaphore) is performed only after the GPU ran every command that
@@ -1610,6 +1612,18 @@ static int rgn_bound(Rgn* r, u32 id) {
     g_uma.imp[r->at].sub = vk_submit_number();
     return 1;
 }
+/* [cpu, cpu + len) of region r bound for a read: what bind, vk_uma_get and their stamps do. ordered 0 leaves out the
+   barrier after the writes in place before it (order), for a read the caller puts ahead of them */
+static void read_in(const Rgn* r, u64 cpu, u64 len, int ordered, VkBuffer* buf, u64* off) {
+    *buf = r->buf;
+    *off = cpu - r->cpu;
+    g_uma.bound = vk_submit_number();
+    g_uma.hits++;
+    g_uma.hit_bytes += len;
+    hz_mark(cpu, len);
+    if (ordered) order(cpu, len, 0);
+    note_read(cpu, len);
+}
 int vk_uma_read(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off) {
     if (!len) return 0;
     /* a region whose pages are other pages now goes first, in the old chain's bind (drop_dead) */
@@ -1649,16 +1663,18 @@ int vk_uma_read(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off) {
         g_uma.fast_miss[UMA_FAST_DEAD]++;
         return 0;
     }
-    /* what bind, vk_uma_get and their stamps do */
-    *buf = r->buf;
-    *off = cpu - r->cpu;
-    g_uma.bound = vk_submit_number();
-    g_uma.hits++;
-    g_uma.hit_bytes += len;
     g_uma.fast_hits++;
-    hz_mark(cpu, len);
-    order(cpu, len, 0);
-    note_read(cpu, len);
+    read_in(r, cpu, len, 1, buf, off);
+    return 1;
+}
+int vk_uma_read_cpu(u64 cpu, u64 len, u64 align, int ordered, VkBuffer* buf, u64* off) {
+    if (!len || __atomic_load_n(&g_uma.any_dead, __ATOMIC_ACQUIRE)) return 0;
+    const u32 rid = rid_at(cpu);
+    Rgn* r = rid ? &g_uma.rg[rid] : NULL;
+    if (!r || cpu + len > r->cpu + r->size || (cpu - r->cpu) % (align ? align : 1) || rg_blk(r, cpu, len) ||
+        !rgn_bound(r, rid))
+        return 0;
+    read_in(r, cpu, len, ordered, buf, off);
     return 1;
 }
 void vk_uma_fast_counts(u64* hits, u64* blk) {

@@ -908,8 +908,16 @@ static void read_barrier(VkCommandBuffer cb, int before) {
     rec_CmdPipelineBarrier2(cb, &d);
 }
 
+/* A run a region holds is copied from there on the GPU where the copies' barriers are recorded
+   anyway, or where it is this many bytes or more: under it, the CPU's copy takes less time than the barrier after the
+   copies (READ_COPIED) costs the GPU. A load's whole range is bound where it is instead (vk_guest_in_place) */
+#define REGION_COPY_MIN (64u << 10)
+/* cpu_read's *any: the barrier before the copies is recorded (after the GPU's writes that they read), and copies are
+   recorded (the caller records the barrier after them) */
+enum { READ_ORDERED = 1, READ_COPIED = 2 };
 /* guest CPU bytes [cpu, cpu + size) into host, and the owned parts copied by the GPU into buf at at (host's place
-   there) over them: the copies recorded so far, their barriers left to the caller (*any set when there were some) */
+   there) over them: the copies recorded so far, their barriers left to the caller (*any, READ_*). A run a region holds
+   is copied from there (REGION_COPY_MIN) */
 static void cpu_read(u64 cpu, u64 size, u8* host, VkBuffer buf, u64 at, int* any) {
     OwnRange o[16];
     u32 n, i;
@@ -919,13 +927,22 @@ static void cpu_read(u64 cpu, u64 size, u8* host, VkBuffer buf, u64 at, int* any
        GPU-owned as well: those are written over whole */
     if (vk_uma_copy_pending(cpu, size, &ib, &io)) {
         VkBufferCopy c = {io, at, size};
-        if (!*any) read_barrier(vk_cmd(), 1);
-        *any = 1;
+        if (!(*any & READ_ORDERED)) read_barrier(vk_cmd(), 1);
+        *any = READ_ORDERED | READ_COPIED;
         rec_CmdCopyBuffer(vk_cmd(), ib, buf, 1, &c);
         g_gread[0][VK_GREAD_PENDING] += size;
         return;
     }
     vk_uma_mem_need_cpu(cpu, size); /* across imports: waited for */
+    /* in a region, with no page whose newer bytes are elsewhere: the read in place's barrier orders it after the writes
+       in place (uma.c's order), the only GPU writes there */
+    if ((*any || size >= REGION_COPY_MIN) && vk_uma() && vk_uma_read_cpu(cpu, size, 1, 1, &ib, &io)) {
+        VkBufferCopy c = {io, at, size};
+        *any |= READ_COPIED;
+        rec_CmdCopyBuffer(vk_cmd(), ib, buf, 1, &c);
+        g_gread[0][VK_GREAD_REGIONS] += size;
+        return;
+    }
     if (!own_any()) {
         memcpy(host, GP(cpu), (size_t)size);
         gread_cpu(0, cpu, size);
@@ -941,8 +958,8 @@ static void cpu_read(u64 cpu, u64 size, u8* host, VkBuffer buf, u64 at, int* any
     u64 owned = 0; /* the CPU's bytes between the owners' are in no region: an import takes no trapped page */
     for (i = 0; i < n; i++) {
         VkBufferCopy c = {o[i].res_off, at + (o[i].addr - cpu), o[i].size};
-        if (!*any) read_barrier(vk_cmd(), 1);
-        *any = 1;
+        if (!(*any & READ_ORDERED)) read_barrier(vk_cmd(), 1);
+        *any = READ_ORDERED | READ_COPIED;
         rec_CmdCopyBuffer(vk_cmd(), ((const VkOwnRes*)o[i].res)->buf, buf, 1, &c);
         ((VkOwnRes*)o[i].res)->used = g_vk_present;
         owned += o[i].size;
@@ -989,6 +1006,17 @@ static int pending_gpu_read(u64 gva, u64 size, VkBuffer buf, u64 at) {
                           .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT};
     VkDependencyInfo dep = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &b};
     rec_CmdPipelineBarrier2(cb, &dep);
+    return 1;
+}
+int vk_guest_in_place(u64 gva, u64 size, u64 align, VkBuffer* buf, u64* off) {
+    u64 cpu = 0;
+    if (!size || !vk_uma() || gmmu_run(gva, size, &cpu) < size || !vk_uma_read_cpu(cpu, size, align, 1, buf, off))
+        return 0;
+    if (g_settings.draw_state_check) { /* the buffer cache's own checks, which the region's blk bits stand for */
+        const char* why = vk_buf_fast_why(gva, size, *buf, *off);
+        if (why) vk_uma_check_diff(why, gva, size);
+    }
+    g_gread[0][VK_GREAD_BOUND] += size;
     return 1;
 }
 void vk_guest_read(u64 gva, u64 size, u8* host, VkBuffer buf, u64 at) {
