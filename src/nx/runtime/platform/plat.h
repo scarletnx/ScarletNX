@@ -153,7 +153,7 @@ int plat_alias_unmap(u8* p, u64 size);
    allocation temporarily, then move the requested page range to p without a copy. */
 int plat_vm_map_fd(u8* p, u64 size, int fd, u64 off, u64 allocation_size);
 void plat_vm_fd_close(int fd);
-/* copies between host memory and the pool: 0, or -1 */
+/* copies between host memory and the pool: 0, or -1 with errno (ENXIO for a read past the pool's end) */
 int plat_alias_write(u64 off, const void* src, u64 size);
 int plat_alias_read(u64 off, void* dst, u64 size);
 void plat_alias_free(u64 off, u64 size); /* the range reads as zero again and uses no memory */

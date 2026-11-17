@@ -814,10 +814,22 @@ static void unmap_nl(u64 a, u64 size) {
    without off. Also what a failed MAP_FIXED needs, as it may have taken the old pages with it; a host that can't do
    even this leaves nothing to run on */
 static void unpool_nl(u64 a, u64 size, const u64* off) {
+    const char* step = NULL;
     runs_stale_nl();
     pages_replaced_nl(a, size);
-    if (plat_alias_unmap(GP(a), size) || (off && (commit_nl(a, size) || plat_alias_read(*off, GP(a), size))))
-        fatal("Could not put %llu KiB of guest memory back from the alias pool", (unsigned long long)(size >> 10));
+    if (plat_alias_unmap(GP(a), size))
+        step = "mapping the reservation's own pages there";
+    else if (off && commit_nl(a, size))
+        step = "making them writable";
+    else if (off && plat_alias_read(*off, GP(a), size))
+        step = "reading the pool's contents into them";
+    if (!step) return;
+    if (off)
+        fatal(
+            "Could not put %llu KiB of guest memory at %#llx back from offset %#llx of the alias pool: %s failed (%s)",
+            (unsigned long long)(size >> 10), (unsigned long long)a, (unsigned long long)*off, step, strerror(errno));
+    fatal("Could not put %llu KiB of guest memory at %#llx back from the alias pool: %s failed (%s)",
+          (unsigned long long)(size >> 10), (unsigned long long)a, step, strerror(errno));
 }
 /* Moves mapped memory into the pool: its contents are copied there and the pool's pages mapped over it, so views of
    it can map them too. Memory that is pool pages already (a view of a view) stays as it is. Pool pages mapped here

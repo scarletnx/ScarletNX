@@ -14,6 +14,7 @@
 #include "nx/runtime/ini.h"
 #include "snx_settings.h"
 #include <dirent.h>
+#include <errno.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -41,12 +42,22 @@ void logf_(int level, const char* fmt, ...) {
     (void)level;
     (void)fmt;
 }
+/* the message a case expects fatal to give (test_unpool_read_fails), which ends its run as passed */
+static char g_fatal_want[256];
 void fatal(const char* fmt, ...) {
+    char msg[512];
     va_list ap;
     va_start(ap, fmt);
-    vfprintf(stderr, fmt, ap);
+    vsnprintf(msg, sizeof msg, fmt, ap);
     va_end(ap);
-    abort();
+    fprintf(stderr, "%s\n", msg);
+    if (!g_fatal_want[0]) abort();
+    if (strcmp(msg, g_fatal_want)) {
+        fprintf(stderr, "memory_alias.c: the message wanted: %s\n", g_fatal_want);
+        abort();
+    }
+    printf("memory alias: a read back from the pool that fails names its step, range, offset and error\n");
+    exit(0);
 }
 void log_crash_mode(void) {}
 /* nce.c, whose NCE no game here is of: mem.c's reservation asks it first, and the crash handler gives it the
@@ -608,10 +619,53 @@ static void test_physical_pool(void)
 	CHECK(mem_unmap_physical(a, 0x4000) == 0);
 }
 
+#if defined(__linux__)
+/* the pool's memfd, by the name /proc gives it (plat_posix.c's ALIAS_NAME): -1 when there is none */
+static int pool_fd(void) {
+    DIR* d = opendir("/proc/self/fd");
+    struct dirent* e;
+    int fd = -1;
+    if (!d) return -1;
+    while (fd < 0 && (e = readdir(d)) != NULL) {
+        char path[64], to[64];
+        ssize_t n;
+        snprintf(path, sizeof path, "/proc/self/fd/%s", e->d_name);
+        n = readlink(path, to, sizeof to - 1);
+        if (n <= 0) continue;
+        to[n] = 0;
+        if (!strcmp(to, "/memfd:snx-alias (deleted)")) fd = atoi(e->d_name);
+    }
+    closedir(d);
+    return fd;
+}
+/* a view's source given back while the pool can't give its bytes (cut short under it here): the fatal names the step
+   that failed, the range, its offset in the pool and the error */
+static void test_unpool_read_fails(void) {
+    const u64 a = HEAP_BASE + 0x100000, size = 0x10000;
+    u64 first;
+    MemBlock b;
+    int fd = pool_fd();
+    CHECK(fd >= 0);
+    CHECK(mem_pool_host(0x3000, &first)); /* pool pages before the range's, so its offset isn't 0 */
+    CHECK(mem_alias_begin(a, size) == 0);
+    mem_query(a, &b);
+    CHECK(b.pool && b.pool - 1 + (a - b.addr) != 0);
+    snprintf(
+        g_fatal_want, sizeof g_fatal_want,
+        "Could not put 64 KiB of guest memory at %#llx back from offset %#llx of the alias pool: reading the pool's "
+        "contents into them failed (%s)",
+        (unsigned long long)a, (unsigned long long)(b.pool - 1 + (a - b.addr)), strerror(ENXIO));
+    CHECK(ftruncate(fd, 0) == 0);
+    mem_alias_end(a, size);
+    CHECK(!"the pages came back from a pool with no bytes");
+}
+#endif
+
 int main(int argc, char** argv) {
-    int copies = 0, nce = 0;
+    int copies = 0, nce = 0, unpool_fails = 0;
     /* Debug settings as the runtime takes them, --key=value (--write_tracking=1: the tracking of hosts without Linux
-       6.7's); --copies runs the Windows path on a host that has a pool (alias_pool=0); --nce NCE's layout */
+       6.7's); --copies runs the Windows path on a host that has a pool (alias_pool=0); --nce NCE's layout;
+       --unpool-read-fails test_unpool_read_fails alone, as it ends the run */
     for (int i = 1; i < argc; i++) {
         const char* eq = strchr(argv[i], '=');
         char key[64];
@@ -622,6 +676,10 @@ int main(int argc, char** argv) {
         }
         if (!strcmp(argv[i], "--nce")) {
             nce = 1;
+            continue;
+        }
+        if (!strcmp(argv[i], "--unpool-read-fails")) {
+            unpool_fails = 1;
             continue;
         }
         CHECK(!strncmp(argv[i], "--", 2) && eq && (size_t)(eq - argv[i] - 2) < sizeof key);
@@ -679,6 +737,13 @@ int main(int argc, char** argv) {
     g_code_memory = 55 * MIB;
     g_main_stack_size = MIB;
     CHECK(svc_set_heap_size(2 * MIB) == 0);
+    if (unpool_fails) {
+#if defined(__linux__)
+        test_unpool_read_fails();
+#endif
+        printf("skipped: the pool is cut short through its memfd, which only Linux names in /proc\n");
+        return 77;
+    }
     CHECK(mem_map(info, 0x1000, MS_STACK, PERM_RW) == 0);
     check_tracking(HEAP_BASE, 2 * MIB);
     if (nce) { /* the tracking that the runtime's probe found, at the moved heap */

@@ -1588,6 +1588,7 @@ int plat_alias_read(u64 off, void* dst, u64 size) {
         ssize_t n = pread(g_alias, d, (size_t)size, (off_t)off);
         if (n <= 0) {
             if (n < 0 && errno == EINTR) continue;
+            if (!n) errno = ENXIO; /* the pool ends before off: lseek's SEEK_DATA says so past a file's end */
             return -1;
         }
         d += n, off += (u64)n, size -= (u64)n;
