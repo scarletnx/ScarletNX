@@ -315,8 +315,8 @@ static LLVMValueRef flow_operand(SnxIr* ir, const SnxA64Insn* insn) { return snx
 
 /* What word does to the flow for a guest with these features, insn its decode. ir_ldst.c, ir_fpu.c and ir_vec.c
    implement their ops for every feature the decode allows (the LSE and RCpc atomics, FEAT_FP16's halves, FEAT_JSCVT,
-   FEAT_FRINTTS, BFCVT, the AdvSIMD extensions). ir_int.c implements the integer instructions of the ounce target
-   (the Switch's, PAuth with authentication disabled, FlagM and ESB). An op needing another feature is UNDEF
+   FEAT_FRINTTS, BFCVT, the AdvSIMD extensions). ir_int.c, with ir_sail.c's generated data processing, implements the
+   integer instructions of the ounce target (the Switch's, PAuth with authentication disabled, FlagM and ESB). An op needing another feature is UNDEF
    until implemented, as is an op no emitter has (the coverage report lists them), like a word no row matches. */
 static SnxA64Flow decode(SnxU32 word, SnxU64 features, SnxA64Insn* insn) {
     snx_a64_decode_word(word, features, insn);
