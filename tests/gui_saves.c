@@ -1,0 +1,732 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later
+   Copyright 2026 the ScarletNX contributors */
+/* A game's saves out of ScarletNX and back in (src/gui/saves.c): Eden's zips as its Android app (the Java zip writer's
+   data descriptors, deflate at level 0) and its Qt Data Manager (a member for each folder) write them, imported file
+   by file into a save's last commit; an export imported into an empty place the same byte for byte; the save there
+   before in the trash with its note; and each refusal naming what the zip holds and what was asked */
+#include "gui/saves.h"
+#include "common/utilities/common.h"
+#include "common/utilities/zip.h"
+#include <assert.h>
+#include <libdeflate.h>
+#include <miniz.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+
+/* a member of a zip made here, as the zip writers of Eden's two frontends lay one out: stored (method 0) or deflated
+   at level (8), with a data descriptor after it and no sizes in its local header (Java's ZipOutputStream) or not */
+typedef struct {
+    const char* name;
+    const void* data;
+    size_t size;
+    int method, level;
+    bool descriptor;
+} Member;
+static void le16(unsigned char** p, unsigned v) {
+    *(*p)++ = (unsigned char)v;
+    *(*p)++ = (unsigned char)(v >> 8);
+}
+static void le32(unsigned char** p, uint32_t v) {
+    le16(p, (unsigned)(v & 0xffff));
+    le16(p, (unsigned)(v >> 16));
+}
+/* the count members into a zip at path */
+static void zip_make(const char* path, const Member* m, size_t count) {
+    size_t cap = 1 << 16, i, n;
+    unsigned char *zip, *p, *central, *c;
+    uint32_t* offsets = calloc(count ? count : 1, sizeof *offsets);
+    uint32_t* packed = calloc(count ? count : 1, sizeof *packed);
+    uint32_t* crcs = calloc(count ? count : 1, sizeof *crcs);
+    for (i = 0; i < count; ++i) cap += m[i].size * 2 + 256;
+    zip = p = malloc(cap);
+    central = c = malloc(1 << 16);
+    assert(offsets && packed && crcs && zip && central);
+    for (i = 0; i < count; ++i) {
+        size_t name = strlen(m[i].name);
+        unsigned flags = 0x0800u | (m[i].descriptor ? 8u : 0u);
+        unsigned char* data = malloc(m[i].size * 2 + 64);
+        assert(data);
+        crcs[i] = libdeflate_crc32(0, m[i].data, m[i].size);
+        if (m[i].method == 8) {
+            struct libdeflate_compressor* d = libdeflate_alloc_compressor(m[i].level);
+            assert(d);
+            n = libdeflate_deflate_compress(d, m[i].data, m[i].size, data, m[i].size * 2 + 64);
+            assert(n);
+            libdeflate_free_compressor(d);
+        } else {
+            if (m[i].size) memcpy(data, m[i].data, m[i].size);
+            n = m[i].size;
+        }
+        packed[i] = (uint32_t)n;
+        offsets[i] = (uint32_t)(p - zip);
+        le32(&p, 0x04034b50u);
+        le16(&p, 20);
+        le16(&p, flags);
+        le16(&p, (unsigned)m[i].method);
+        le16(&p, 0);
+        le16(&p, 0x21); /* 1980-01-01 */
+        le32(&p, m[i].descriptor ? 0 : crcs[i]);
+        le32(&p, m[i].descriptor ? 0 : packed[i]);
+        le32(&p, m[i].descriptor ? 0 : (uint32_t)m[i].size);
+        le16(&p, (unsigned)name);
+        le16(&p, 0);
+        memcpy(p, m[i].name, name);
+        p += name;
+        if (n) memcpy(p, data, n);
+        p += n;
+        if (m[i].descriptor) {
+            le32(&p, 0x08074b50u);
+            le32(&p, crcs[i]);
+            le32(&p, packed[i]);
+            le32(&p, (uint32_t)m[i].size);
+        }
+        free(data);
+        le32(&c, 0x02014b50u);
+        le16(&c, 20);
+        le16(&c, 20);
+        le16(&c, flags);
+        le16(&c, (unsigned)m[i].method);
+        le16(&c, 0);
+        le16(&c, 0x21);
+        le32(&c, crcs[i]);
+        le32(&c, packed[i]);
+        le32(&c, (uint32_t)m[i].size);
+        le16(&c, (unsigned)name);
+        le16(&c, 0);
+        le16(&c, 0);
+        le16(&c, 0);
+        le16(&c, 0);
+        le32(&c, m[i].name[name - 1] == '/' ? 0x10u : 0);
+        le32(&c, offsets[i]);
+        memcpy(c, m[i].name, name);
+        c += name;
+    }
+    n = (size_t)(c - central);
+    memcpy(p, central, n);
+    {
+        uint32_t at = (uint32_t)(p - zip);
+        p += n;
+        le32(&p, 0x06054b50u);
+        le16(&p, 0);
+        le16(&p, 0);
+        le16(&p, (unsigned)count);
+        le16(&p, (unsigned)count);
+        le32(&p, (uint32_t)n);
+        le32(&p, at);
+        le16(&p, 0);
+    }
+    assert(!snx_write_file(path, zip, (size_t)(p - zip)));
+    free(central);
+    free(zip);
+    free(crcs);
+    free(packed);
+    free(offsets);
+}
+/* a file of n bytes at path, its folders made */
+static void put(const char* path, const void* data, size_t n) {
+    char* folder = snx_dirname(path);
+    assert(folder && !snx_mkdirs(folder));
+    assert(!snx_write_file(path, data, n));
+    free(folder);
+}
+static void put_text(const char* path, const char* text) { put(path, text, strlen(text)); }
+/* the file at path holds the n bytes at data */
+static bool holds(const char* path, const void* data, size_t n) {
+    size_t size = 0;
+    unsigned char* got = snx_read_file(path, &size);
+    bool same = got && size == n && (!n || !memcmp(got, data, n));
+    free(got);
+    return same;
+}
+static bool holds_text(const char* path, const char* text) { return holds(path, text, strlen(text)); }
+/* the folders a and b hold the same names, folders as folders, and files of the same bytes, all the way down */
+static bool same_tree(const char* a, const char* b) {
+    char **x = NULL, **y = NULL;
+    size_t nx = 0, ny = 0, i;
+    bool same = !snx_list_dir(a, &x, &nx) && !snx_list_dir(b, &y, &ny) && nx == ny;
+    for (i = 0; same && i < nx; ++i) {
+        char *p = snx_path_join(a, x[i]), *q = snx_path_join(b, y[i]);
+        size_t n = 0;
+        unsigned char* data;
+        same = !strcmp(x[i], y[i]) && snx_is_dir(p) == snx_is_dir(q);
+        if (same && snx_is_dir(p))
+            same = same_tree(p, q);
+        else if (same) {
+            data = snx_read_file(p, &n);
+            same = data && holds(q, data, n);
+            free(data);
+        }
+        free(p);
+        free(q);
+    }
+    snx_free_strings(x, nx);
+    snx_free_strings(y, ny);
+    return same;
+}
+/* path joined to the parts after it, as the code joins them */
+static char* at(const char* path, const char* a, const char* b) {
+    char *first = snx_path_join(path, a), *both = b && first ? snx_path_join(first, b) : first;
+    if (both != first) free(first);
+    assert(both);
+    return both;
+}
+/* the one entry of folder, joined to it; NULL when it holds none or more than one */
+static char* only_entry(const char* folder, const char* not_ending) {
+    char **names = NULL, *found = NULL;
+    size_t count = 0, i, kept = 0;
+    if (snx_list_dir(folder, &names, &count)) return NULL;
+    for (i = 0; i < count; ++i) {
+        size_t n = strlen(names[i]), e = strlen(not_ending);
+        if (n >= e && !strcmp(names[i] + n - e, not_ending)) continue;
+        if (!kept++) found = snx_path_join(folder, names[i]);
+    }
+    snx_free_strings(names, count);
+    if (kept == 1) return found;
+    free(found);
+    return NULL;
+}
+/* a place gui_saves_nx_place or gui_saves_nx_find gave: its strings */
+static void place_free(GuiSaveNx* place) {
+    free((void*)place->folder);
+    free((void*)place->trash);
+    free((void*)place->name);
+}
+/* the zip at path has a member of that name */
+static bool has_member(const char* path, const char* name) {
+    char error[512];
+    uint32_t index;
+    SnxZip* zip = snx_zip_open(path, error, sizeof error);
+    bool has = zip && snx_zip_find(zip, name, &index);
+    snx_zip_close(zip);
+    return has;
+}
+
+#define UID  "0123456789abcdef0011223344556677"
+#define GAME 0x0100ABCD12340000ull
+static const unsigned char size_record[16] = {0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0};
+
+int main(void) {
+    char *root = snx_temp_dir(NULL), *data, *trash, *folder, *zip, *path, *path2, error[8192];
+    unsigned char bytes[70000], pattern[1024];
+    GuiCleaned done = {0};
+    GuiSavesDone result = {0};
+    SnxU64* titles = NULL;
+    size_t count = 0, i;
+    unsigned seed = 12345;
+    assert(root);
+    for (i = 0; i < sizeof bytes; ++i) {
+        seed = seed * 1103515245u + 12345u;
+        bytes[i] = (unsigned char)(seed >> 16);
+    }
+    for (i = 0; i < sizeof pattern; ++i) pattern[i] = (unsigned char)i;
+    data = snx_path_join(root, "data");
+    trash = snx_path_join(data, "trash");
+    folder = at(data, "save/user." UID, "0100ABCD12340000");
+
+    /* Eden's Android export of one game: <title ID>/ and its files only, deflated at level 0 with data descriptors;
+       its .yuzu_save_size left out, the files in the save's last commit and nothing else beside it */
+    {
+        static const char text[] = "a game's own save file\n";
+        Member m[] = {{"0100ABCD12340000/save.bin", bytes, 5000, 8, 0, true},
+                      {"0100ABCD12340000/sub/deep.txt", text, sizeof text - 1, 8, 6, true},
+                      {"0100ABCD12340000/.yuzu_save_size", size_record, sizeof size_record, 8, 0, true}};
+        GuiSaveNx save = {GAME, folder, trash, "0100ABCD12340000.user." UID};
+        zip = snx_path_join(root, "android.zip");
+        zip_make(zip, m, 3);
+        assert(!gui_saves_eden_titles(zip, zip, "", &titles, &count, error, sizeof error) && count == 1 &&
+               titles[0] == GAME);
+        free(titles);
+        assert(!gui_saves_eden_import(&done, zip, zip, "", &save, 1, &result, error, sizeof error));
+        assert(result.saves == 1 && result.files == 2 && result.bytes == 5023 && !result.backups && !result.backup[0]);
+        path = at(folder, "snx-journaled", NULL);
+        assert(snx_is_file(path) && snx_file_size(path) == 0);
+        free(path);
+        path = at(folder, "0", "save.bin");
+        assert(holds(path, bytes, 5000));
+        free(path);
+        path = at(folder, "0", "sub");
+        path2 = at(path, "deep.txt", NULL);
+        assert(holds_text(path2, text));
+        free(path2);
+        free(path);
+        path = at(folder, "0", ".yuzu_save_size");
+        assert(!snx_path_exists(path));
+        free(path);
+        path = at(folder, "1", NULL);
+        assert(!snx_path_exists(path)); /* the game's start makes its working copy */
+        free(path);
+        path = at(data, "save/user." UID, ".0100ABCD12340000.importing");
+        assert(!snx_path_exists(path));
+        free(path);
+        assert(!snx_path_exists(trash)); /* there was no save before: nothing to keep */
+        assert(done.done == done.count && strstr(done.text, "Left out: Eden's record of the save's size") &&
+               strstr(done.text, "Imported 2 files (5023 bytes) of 0100ABCD12340000 from ") &&
+               strstr(done.text, "there was no save before"));
+        gui_cleaned_free(&done);
+        free(zip);
+    }
+
+    /* Qt's export of every game's: a member for each folder, stored and deflated; one game taken, the save there
+       before (save_layout=game's place) and its note to the trash, the other game said and left */
+    {
+        static const char a[] = "the other game's", b[] = "the game asked for";
+        char* game = at(root, "games/g", "g_data");
+        char* own = at(game, "save", "user." UID);
+        char *note = snx_format("%s.version", own), *mark, *backup;
+        Member m[] = {{"0100AAAA00000000/", "", 0, 0, 0, false},
+                      {"0100AAAA00000000/a.bin", a, sizeof a - 1, 0, 0, false},
+                      {"0100abcd12340000/", "", 0, 0, 0, false},
+                      {"0100abcd12340000/empty/", "", 0, 0, 0, false},
+                      {"0100abcd12340000/b.bin", b, sizeof b - 1, 8, 6, false}};
+        char* game_trash = at(game, "trash", NULL);
+        GuiSaveNx save = {GAME, own, game_trash, "game.user." UID};
+        zip = snx_path_join(root, "qt.zip");
+        zip_make(zip, m, 5);
+        assert(!gui_saves_eden_titles(zip, zip, "", &titles, &count, error, sizeof error) && count == 2 &&
+               titles[0] == 0x0100AAAA00000000ull && titles[1] == GAME);
+        free(titles);
+        path = at(own, "0", "old.bin");
+        put_text(path, "the save before");
+        free(path);
+        path = at(own, "1", "old.bin");
+        put_text(path, "the save before, worked on");
+        free(path);
+        mark = at(own, "snx-journaled", NULL);
+        put_text(mark, "");
+        put_text(note, "program=0100ABCD12340000\n");
+        memset(&result, 0, sizeof result);
+        assert(!gui_saves_eden_import(&done, zip, zip, "", &save, 1, &result, error, sizeof error));
+        path = at(own, "0", "b.bin");
+        assert(holds_text(path, b));
+        free(path);
+        path = at(own, "0", "empty");
+        assert(snx_is_dir(path));
+        free(path);
+        path = at(own, "0", "old.bin");
+        assert(!snx_path_exists(path));
+        free(path);
+        assert(!snx_path_exists(note));
+        backup = only_entry(game_trash, ".version");
+        assert(result.saves == 1 && result.backups == 1 && backup && !strcmp(result.backup, backup));
+        assert(backup && !strncmp(snx_path_leaf(backup), "game.user." UID ".", strlen("game.user." UID ".")));
+        path = at(backup, "0", "old.bin");
+        assert(holds_text(path, "the save before"));
+        free(path);
+        path = snx_format("%s.version", backup);
+        assert(holds_text(path, "program=0100ABCD12340000\n"));
+        free(path);
+        assert(strstr(done.text, "Not imported: it holds the saves of 1 other games too, 0100AAAA00000000") &&
+               strstr(done.text, "the save there before is in ") && strstr(done.text, snx_path_leaf(backup)));
+        gui_cleaned_free(&done);
+        free(backup);
+        free(mark);
+        free(note);
+        free(game_trash);
+        free(own);
+        free(game);
+        free(zip);
+    }
+
+    /* an export imported into an empty place: the same last commit byte for byte, its folders (one empty), a file of
+       no bytes, one that does not deflate smaller and a name with a dot inside 0/ (the game's) included; the working
+       copy not exported */
+    {
+        char *a = at(root, "rt/a", "0100ABCD12340000"), *b = at(root, "rt/b", "0100ABCD12340000");
+        char* out = at(root, "rt", "out.zip");
+        GuiSaveNx save = {GAME, a, trash, "rt"}, back = {GAME, b, trash, "rt"};
+        path = at(a, "snx-journaled", NULL);
+        put_text(path, "");
+        free(path);
+        path = at(a, "0", "random.dat");
+        put(path, bytes, sizeof bytes);
+        free(path);
+        path = at(a, "0", "pattern.dat");
+        put(path, pattern, sizeof pattern);
+        free(path);
+        path = at(a, "0", "empty.dat");
+        put(path, "", 0);
+        free(path);
+        path = at(a, "0", ".game_hidden");
+        put_text(path, "the game's own dot name");
+        free(path);
+        path = at(a, "0", "dir/nested/deep.txt");
+        put_text(path, "deep");
+        free(path);
+        path = at(a, "0", "emptydir");
+        assert(!snx_mkdirs(path));
+        free(path);
+        path = at(a, "1", "work.dat");
+        put_text(path, "not committed");
+        free(path);
+        assert(!gui_saves_eden_export(&done, out, &save, 1, error, sizeof error));
+        path = snx_format("%s.part", out);
+        assert(snx_is_file(out) && !snx_path_exists(path));
+        free(path);
+        assert(has_member(out, "0100ABCD12340000/") && has_member(out, "0100ABCD12340000/emptydir/") &&
+               has_member(out, "0100ABCD12340000/dir/nested/deep.txt") &&
+               has_member(out, "0100ABCD12340000/.game_hidden") && !has_member(out, "0100ABCD12340000/work.dat"));
+        assert(strstr(done.text, "Exported 5 files (71051 bytes) from 1 of 1 saves"));
+        gui_cleaned_free(&done);
+        assert(!gui_saves_eden_import(&done, out, out, "", &back, 1, &result, error, sizeof error));
+        path = at(a, "0", NULL);
+        path2 = at(b, "0", NULL);
+        assert(same_tree(path, path2));
+        free(path2);
+        free(path);
+        gui_cleaned_free(&done);
+
+        /* as Eden reads it back: a miniz reader opens it and finds the bytes, the CRC checked */
+        {
+            mz_zip_archive reader;
+            size_t n = 0;
+            void* got;
+            mz_zip_zero_struct(&reader);
+            unsigned char* file = snx_read_file(out, &n);
+            assert(file && mz_zip_reader_init_mem(&reader, file, n, 0));
+            got = mz_zip_reader_extract_file_to_heap(&reader, "0100ABCD12340000/random.dat", &n, 0);
+            assert(got && n == sizeof bytes && !memcmp(got, bytes, n));
+            mz_free(got);
+            mz_zip_reader_end(&reader);
+            free(file);
+        }
+
+        /* a save as the versions before kept one: the folder's own files, not a sync tool's dot name at its top; a
+           commit cut short: its working copy; two saves, one not there: the one there alone */
+        {
+            char *flat = at(root, "rt/flat", "0100ABCD12340000"), *cut = at(root, "rt/cut", "0100ABCD12340000");
+            char* none = at(root, "rt/none", "0100AAAA00000000");
+            GuiSaveNx two[2] = {{0x0100AAAA00000000ull, none, trash, "none"}, {GAME, flat, trash, "flat"}};
+            GuiSaveNx cut_save = {GAME, cut, trash, "cut"};
+            path = at(flat, "file.sav", NULL);
+            put_text(path, "flat");
+            free(path);
+            path = at(flat, ".stfolder", NULL);
+            assert(!snx_mkdirs(path));
+            free(path);
+            assert(!gui_saves_eden_export(&done, out, two, 2, error, sizeof error));
+            assert(has_member(out, "0100ABCD12340000/file.sav") && !has_member(out, "0100ABCD12340000/.stfolder/") &&
+                   !has_member(out, "0100AAAA00000000/"));
+            assert(strstr(done.text, "Not exported: no save there") &&
+                   strstr(done.text, "Left out: a name that starts with a dot") &&
+                   strstr(done.text, "Exported 1 files (4 bytes) from 1 of 2 saves"));
+            gui_cleaned_free(&done);
+            path = at(cut, "snx-journaled", NULL);
+            put_text(path, "");
+            free(path);
+            path = at(cut, "1", "work.sav");
+            put_text(path, "cut short");
+            free(path);
+            assert(!gui_saves_eden_export(&done, out, &cut_save, 1, error, sizeof error));
+            assert(has_member(out, "0100ABCD12340000/work.sav") && strstr(done.text, "Exported from its working copy"));
+            gui_cleaned_free(&done);
+            free(none);
+            free(cut);
+            free(flat);
+        }
+
+        /* nothing to export: said with the title ID and the folder, and the file there before as it was */
+        {
+            char* none = at(root, "rt/none", "0100AAAA00000000");
+            GuiSaveNx empty = {0x0100AAAA00000000ull, none, trash, "none"};
+            put_text(out, "the file there before");
+            assert(gui_saves_eden_export(&done, out, &empty, 1, error, sizeof error));
+            path = snx_format("0100AAAA00000000 has no save in %s", none);
+            assert(!strcmp(error, path));
+            free(path);
+            assert(holds_text(out, "the file there before"));
+            gui_cleaned_free(&done);
+            free(none);
+        }
+        free(out);
+        free(b);
+        free(a);
+    }
+
+    /* refusals, each naming what the zip holds or what is wrong with it; nothing written for any */
+    {
+        char* place = at(root, "refused", "0100ABCD12340000");
+        GuiSaveNx save = {GAME, place, trash, "refused"};
+        static const char x[] = "x";
+        zip = snx_path_join(root, "refused.zip");
+
+        put_text(zip, "not a zip at all, some text");
+        assert(gui_saves_eden_import(&done, zip, zip, "", &save, 1, &result, error, sizeof error));
+        path = snx_format("%s is no export of saves as Eden makes one: ", zip);
+        assert(!strncmp(error, path, strlen(path)));
+        free(path);
+
+        {
+            Member m[] = {{"save.bin", x, 1, 0, 0, false}};
+            zip_make(zip, m, 1);
+            assert(gui_saves_eden_import(&done, zip, zip, "", &save, 1, &result, error, sizeof error));
+            path = snx_format("%s is no export of saves as Eden makes one: save.bin is not in a folder named by a "
+                              "game's title ID, 16 hex digits",
+                              zip);
+            assert(!strcmp(error, path));
+            free(path);
+        }
+        { /* Eden's layout of a save it calls the future one leaves its 0/ at the zip's top */
+            Member m[] = {{"0/save.bin", x, 1, 0, 0, false}};
+            zip_make(zip, m, 1);
+            assert(gui_saves_eden_titles(zip, zip, "", &titles, &count, error, sizeof error) && !titles && !count);
+            assert(strstr(error, ": 0/save.bin is not in a folder named by a game's title ID"));
+        }
+        {
+            Member m[] = {{"0100AAAA00000000/../x", x, 1, 0, 0, false}};
+            zip_make(zip, m, 1);
+            assert(gui_saves_eden_import(&done, zip, zip, "", &save, 1, &result, error, sizeof error));
+            path = snx_format("%s is no export of saves as Eden makes one: its member 0100AAAA00000000/../x is no "
+                              "path inside a folder",
+                              zip);
+            assert(!strcmp(error, path));
+            free(path);
+        }
+        zip_make(zip, NULL, 0);
+        assert(gui_saves_eden_import(&done, zip, zip, "", &save, 1, &result, error, sizeof error));
+        path = snx_format("%s is an empty zip: Eden's export of saves holds a folder for each game", zip);
+        assert(!strcmp(error, path));
+        free(path);
+        {
+            Member m[] = {{"0100AAAA00000000/x", x, 1, 0, 0, false}};
+            zip_make(zip, m, 1);
+            assert(gui_saves_eden_import(&done, zip, zip, "", &save, 1, &result, error, sizeof error));
+            path = snx_format("%s holds the saves of 0100AAAA00000000, not of 0100ABCD12340000", zip);
+            assert(!strcmp(error, path));
+            free(path);
+            /* a copy of the file picked: its messages name the file picked */
+            assert(gui_saves_eden_import(&done, zip, "the picked.zip", "", &save, 1, &result, error, sizeof error));
+            assert(!strcmp(error, "the picked.zip holds the saves of 0100AAAA00000000, not of 0100ABCD12340000"));
+        }
+        {
+            Member m[] = {{"0100000000010000/x", x, 1, 0, 0, false}, {"0100000000020000/x", x, 1, 0, 0, false},
+                          {"0100000000030000/x", x, 1, 0, 0, false}, {"0100000000040000/x", x, 1, 0, 0, false},
+                          {"0100000000050000/x", x, 1, 0, 0, false}, {"0100000000060000/x", x, 1, 0, 0, false}};
+            zip_make(zip, m, 6);
+            assert(gui_saves_eden_import(&done, zip, zip, "", &save, 1, &result, error, sizeof error));
+            path = snx_format("%s holds the saves of 0100000000010000, 0100000000020000, 0100000000030000, "
+                              "0100000000040000 and 2 more, not of 0100ABCD12340000",
+                              zip);
+            assert(!strcmp(error, path));
+            free(path);
+        }
+        path = at(root, "refused", NULL);
+        assert(!snx_path_exists(path)); /* not even the folder above the save */
+        free(path);
+        gui_cleaned_free(&done);
+        free(zip);
+        free(place);
+    }
+
+    /* the trash cannot be made (under a file, which no user, root neither, can make a folder in): the save there
+       before as it was, the import's own folder gone, and why said with the path */
+    {
+        char *blocked = at(root, "a file", NULL), *bad_trash = at(blocked, "trash", NULL);
+        char* keep = at(root, "kept", "0100ABCD12340000");
+        Member m[] = {{"0100ABCD12340000/new.bin", "new", 3, 0, 0, false}};
+        GuiSaveNx save = {GAME, keep, bad_trash, "kept"};
+        put_text(blocked, "a file, not a folder");
+        path = at(keep, "0", "old.bin");
+        put_text(path, "kept");
+        free(path);
+        zip = snx_path_join(root, "kept.zip");
+        zip_make(zip, m, 1);
+        assert(gui_saves_eden_import(&done, zip, zip, "", &save, 1, &result, error, sizeof error));
+        path = snx_format("the trash, %s, could not be made: ", bad_trash);
+        assert(!strncmp(error, path, strlen(path)));
+        free(path);
+        path = at(keep, "0", "old.bin");
+        assert(holds_text(path, "kept"));
+        free(path);
+        path = at(keep, "0", "new.bin");
+        assert(!snx_path_exists(path));
+        free(path);
+        path = at(root, "kept", ".0100ABCD12340000.importing");
+        assert(!snx_path_exists(path));
+        free(path);
+        assert(done.count && strstr(done.text, "Not imported: the trash, "));
+        gui_cleaned_free(&done);
+        free(zip);
+        free(keep);
+        free(bad_trash);
+        free(blocked);
+    }
+
+    /* the name an export's file takes: what it holds and when in local time, the letters no system takes in a name
+       as _ */
+    {
+        char name[256], stamp[32], want[256];
+        time_t when = 1794931200; /* 2026-11-17 */
+        assert(strftime(stamp, sizeof stamp, "%Y-%m-%d %H-%M", localtime(&when)));
+        gui_saves_file_name(name, sizeof name, "A: game/with \"bad\" <letters>|?*\\\t", (SnxU64)when, "zip");
+        snprintf(want, sizeof want, "A_ game_with _bad_ _letters______ %s.zip", stamp);
+        assert(!strcmp(name, want));
+    }
+
+    /* where a user's Switch saves are: save_layout=global's data folder, a game's own folder while only it holds one
+       (an older version's place), every save of the user listed once in title ID order, and where a title's goes */
+    {
+        char *nx = at(root, "nx", NULL), *nx_data = at(nx, "data", NULL), *games = at(nx, "recompiled", NULL);
+        char* shared_a = at(nx_data, "save/user." UID, "0100AAAA00000000");
+        char* shared_d = at(nx_data, "save/user." UID, "0100DDDD00000000");
+        char* own_b = at(games, "0100BBBB00000000/0100BBBB00000000_data", "save/user." UID);
+        char *game_a = at(games, "0100AAAA00000000", NULL), *game_b = at(games, "0100BBBB00000000", NULL);
+        char *game_c = at(games, "0100CCCC00000000", NULL), *own_c = at(game_c, "0100CCCC00000000_data", NULL);
+        char* trash_b = at(games, "0100BBBB00000000/0100BBBB00000000_data", "trash");
+        char *shared_c = at(nx_data, "save/user." UID, "0100CCCC00000000"), *nx_trash = at(nx_data, "trash", NULL);
+        char *notes = at(nx_data, "save/user." UID, "notes"), *own_a = at(game_a, "0100AAAA00000000_data", NULL);
+        char* shared_e = at(nx_data, "save/user." UID, "0100EEEE00000000");
+        const char* folders[1] = {games};
+        GuiSaveNx place;
+        GuiSavesNx list;
+        assert(!snx_mkdirs(shared_a) && !snx_mkdirs(shared_d) && !snx_mkdirs(own_b) && !snx_mkdirs(own_c) &&
+               !snx_mkdirs(notes) && !snx_mkdirs(own_a));
+        assert(gui_saves_nx_place(game_a, "0100AAAA00000000", nx_data, UID, true, &place) &&
+               place.title == 0x0100AAAA00000000ull && !strcmp(place.folder, shared_a) &&
+               !strcmp(place.trash, nx_trash) && !strcmp(place.name, "0100AAAA00000000.user." UID));
+        place_free(&place);
+        assert(gui_saves_nx_place(game_b, "0100BBBB00000000", nx_data, UID, true, &place) &&
+               !strcmp(place.folder, own_b) && !strcmp(place.trash, trash_b));
+        place_free(&place);
+        assert(gui_saves_nx_place(game_c, "0100CCCC00000000", nx_data, UID, true, &place) &&
+               !strcmp(place.folder, shared_c));
+        place_free(&place);
+        path = at(game_c, "0100CCCC00000000_data/save", "user." UID);
+        assert(gui_saves_nx_place(game_c, "0100CCCC00000000", nx_data, UID, false, &place) &&
+               !strcmp(place.folder, path));
+        free(path);
+        place_free(&place);
+        assert(gui_saves_nx_place(game_a, "0100AAAA00000000", nx_data, UID, false, &place) &&
+               !strcmp(place.folder, shared_a)); /* save_layout=game, only the data folder's holding it */
+        place_free(&place);
+        assert(!gui_saves_nx_place(game_c, "a homebrew", nx_data, UID, true, &place));
+        gui_saves_nx_list(nx_data, folders, 1, UID, true, &list);
+        assert(list.count == 3 && list.at[0].title == 0x0100AAAA00000000ull && !strcmp(list.at[0].folder, shared_a) &&
+               list.at[1].title == 0x0100BBBB00000000ull && !strcmp(list.at[1].folder, own_b) &&
+               list.at[2].title == 0x0100DDDD00000000ull && !strcmp(list.at[2].folder, shared_d));
+        gui_saves_nx_free(&list);
+        gui_saves_nx_list(nx_data, folders, 1, UID, false, &list);
+        assert(list.count == 2 && !strcmp(list.at[0].folder, shared_a) && !strcmp(list.at[1].folder, own_b));
+        gui_saves_nx_free(&list);
+        assert(gui_saves_nx_find(nx_data, folders, 1, UID, true, 0x0100EEEE00000000ull, &place) &&
+               !strcmp(place.folder, shared_e) && !strcmp(place.trash, nx_trash));
+        place_free(&place);
+        assert(!gui_saves_nx_find(nx_data, folders, 1, UID, false, 0x0100EEEE00000000ull, &place));
+        free(shared_e);
+        free(own_a);
+        free(notes);
+        free(nx_trash);
+        free(shared_c);
+        free(trash_b);
+        free(own_c);
+        free(game_c);
+        free(game_b);
+        free(game_a);
+        free(own_b);
+        free(shared_d);
+        free(shared_a);
+        free(games);
+        free(nx_data);
+        free(nx);
+    }
+
+    /* a zip of every console's: the Switch's under switch/, as Eden's, the other consoles' folders left to them; one
+       written with that folder read back the same; one without it, or read as Eden's own, refused saying why */
+    {
+        char *every = at(root, "every.zip", NULL), *a = at(root, "every/a", "0100ABCD12340000");
+        char* b = at(root, "every/b", "0100ABCD12340000");
+        GuiSaveNx save = {GAME, a, trash, "every"}, back = {GAME, b, trash, "every"};
+        GuiSavesZip* writing;
+        size_t kept = 0, files = 0;
+        SnxU64 took = 0;
+        path = at(a, "0", "data.bin");
+        put(path, bytes, 3000);
+        free(path);
+        path = at(a, "snx-journaled", NULL);
+        put_text(path, "");
+        free(path);
+        writing = gui_saves_zip_begin(every, &done, error, sizeof error);
+        assert(writing && !gui_saves_eden_add(writing, GUI_SAVES_SWITCH, &save, 1, &kept, error, sizeof error) &&
+               kept == 1);
+        assert(!gui_saves_zip_end(writing, true, &files, &took, error, sizeof error) && files == 1 && took == 3000);
+        assert(has_member(every, "switch/0100ABCD12340000/") && has_member(every, "switch/0100ABCD12340000/data.bin"));
+        assert(!gui_saves_eden_titles(every, every, GUI_SAVES_SWITCH, &titles, &count, error, sizeof error) &&
+               count == 1 && titles[0] == GAME);
+        free(titles);
+        assert(!gui_saves_eden_import(&done, every, every, GUI_SAVES_SWITCH, &back, 1, &result, error, sizeof error));
+        path = at(a, "0", NULL);
+        path2 = at(b, "0", NULL);
+        assert(same_tree(path, path2));
+        free(path2);
+        free(path);
+        gui_cleaned_free(&done);
+        {
+            Member m[] = {{"switch/0100ABCD12340000/x", "x", 1, 0, 0, false}, {"3ds/a game/y", "y", 1, 0, 0, false}};
+            zip_make(every, m, 2);
+            assert(!gui_saves_eden_titles(every, every, GUI_SAVES_SWITCH, &titles, &count, error, sizeof error) &&
+                   count == 1 && titles[0] == GAME);
+            free(titles);
+            assert(gui_saves_eden_titles(every, every, "", &titles, &count, error, sizeof error));
+            path =
+                snx_format("%s is no export of saves as Eden makes one: switch/0100ABCD12340000/x is not in a folder "
+                           "named by a game's title ID, 16 hex digits",
+                           every);
+            assert(!strcmp(error, path));
+            free(path);
+        }
+        {
+            Member m[] = {{"3ds/a game/y", "y", 1, 0, 0, false}};
+            zip_make(every, m, 1);
+            assert(gui_saves_eden_titles(every, every, GUI_SAVES_SWITCH, &titles, &count, error, sizeof error));
+            path = snx_format("%s holds no saves of the Switch: it has no switch/ folder", every);
+            assert(!strcmp(error, path));
+            free(path);
+        }
+        free(b);
+        free(a);
+        free(every);
+    }
+
+#ifndef _WIN32 /* a link Windows makes only with developer mode or an administrator */
+    /* a save folder that is a link: refused, naming what it links to, the link and that folder as they were */
+    {
+        char *target = at(root, "elsewhere", NULL), *linked = at(root, "linked", "0100ABCD12340000");
+        Member m[] = {{"0100ABCD12340000/new.bin", "new", 3, 0, 0, false}};
+        GuiSaveNx save = {GAME, linked, trash, "linked"};
+        path = at(target, "mine.bin", NULL);
+        put_text(path, "mine");
+        free(path);
+        path = at(root, "linked", NULL);
+        assert(!snx_mkdirs(path));
+        free(path);
+        assert(!snx_symlink(target, linked));
+        zip = snx_path_join(root, "linked.zip");
+        zip_make(zip, m, 1);
+        assert(gui_saves_eden_import(&done, zip, zip, "", &save, 1, &result, error, sizeof error));
+        path = snx_format("%s is a link to %s: put the save's files there by hand", linked, target);
+        assert(!strcmp(error, path));
+        free(path);
+        path = at(linked, "mine.bin", NULL);
+        assert(snx_is_link(linked) && holds_text(path, "mine"));
+        free(path);
+        path = at(target, "new.bin", NULL);
+        assert(!snx_path_exists(path));
+        free(path);
+        gui_cleaned_free(&done);
+        free(zip);
+        free(linked);
+        free(target);
+    }
+#endif
+
+    assert(!snx_remove_tree(root));
+    free(folder);
+    free(trash);
+    free(data);
+    free(root);
+    puts("gui_saves: ok");
+    return 0;
+}
