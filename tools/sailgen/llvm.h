@@ -999,59 +999,74 @@ static inline SgD sg_d_logic_flags(SgCtx* g, SgD r) {
    The Sail's registers where ScarletNX's CPU keeps them (cpu.h): nx.sail's GPR, X0 to X30 then SP_EL0, in CPU.x,
    and PSTATE's N, Z, C and V in CPU.n, z, cf and vf, each the i32 0 or 1. sailgen calls sg_NAME_read and
    sg_NAME_write for a register NAME: a vector's by element, a struct's by field (SG_NAME_FIELD, numbered as the
-   struct's fields; a run of them written together as the first and how many). Every write is stored at once, and
-   the values are cached for the basic block in ir->state (ir.h's SnxIrBlockState), the cache ir_state.c's accessors
-   keep for the emitters written by hand: a block that mixes the two loads a register once and reads a write back as
-   the value written, and a condition on flags a compare made is that compare, whichever emitter made them. Another
-   back end keeps them its own way behind the same names */
+   struct's fields; a run of them written together as the first and how many). Every write is stored at once, and the
+   values are cached for the basic block in ir->state (ir.h's SnxIrBlockState), with what the four flags came from
+   when a compare or a logical result made them. That cache is every emitter's: the functions over the IR builder
+   (sg_x, sg_set_x, sg_flag, sg_flags_store, sg_flags_origin, sg_origin_cond and the two forgets) are also ir.h's
+   accessors for the emitters written by hand (ir_sail.c), so a block that mixes the two loads a register once, reads
+   a write back as the value written, and reads a condition on flags a compare made as that compare. Another back end
+   keeps them its own way behind the same names */
 
 /* a load or a store of the CPU structure's field at offset, tagged as the CPU's: the guest's memory never aliases it */
-static inline LLVMValueRef sg_cpu_load(SgCtx* g, LLVMTypeRef type, size_t offset) {
-    return ir_tag_cpu(g->ir, LLVMBuildLoad2(SG_B, type, ir_cpu(g->ir, offset), ""));
+static inline LLVMValueRef sg_cpu_load(SnxIr* ir, LLVMTypeRef type, size_t offset) {
+    return ir_tag_cpu(ir, LLVMBuildLoad2(ir->b, type, ir_cpu(ir, offset), ""));
 }
-static inline void sg_cpu_store(SgCtx* g, LLVMValueRef value, size_t offset) {
-    ir_tag_cpu(g->ir, LLVMBuildStore(SG_B, value, ir_cpu(g->ir, offset)));
+static inline void sg_cpu_store(SnxIr* ir, LLVMValueRef value, size_t offset) {
+    ir_tag_cpu(ir, LLVMBuildStore(ir->b, value, ir_cpu(ir, offset)));
 }
 
-/* the registers' cache, emptied when the block changes */
-static inline SnxIrRegisterCache* sg_registers(SgCtx* g) {
-    SnxIrRegisterCache* r = &g->ir->state.registers;
-    LLVMBasicBlockRef block = LLVMGetInsertBlock(SG_B);
+/* the registers' cache, emptied when the block changes, and dropped (an unknown call, a store that may alias it) */
+static inline SnxIrRegisterCache* sg_registers(SnxIr* ir) {
+    SnxIrRegisterCache* r = &ir->state.registers;
+    LLVMBasicBlockRef block = LLVMGetInsertBlock(ir->b);
     if (r->block != block) {
         r->valid = 0;
         r->block = block;
     }
     return r;
 }
-static inline SgD sg_GPR_read(SgCtx* g, long long n) {
-    SnxIrRegisterCache* r = sg_registers(g);
-    if (n < 0 || n > 31) sg_fail("an element of GPR it does not have", n, 31);
+static inline void sg_registers_forget(SnxIr* ir) {
+    ir->state.registers.valid = 0;
+    ir->state.registers.block = NULL;
+}
+/* X n (0 to 31, SP the last): loaded once a block */
+static inline LLVMValueRef sg_x(SnxIr* ir, unsigned n) {
+    SnxIrRegisterCache* r = sg_registers(ir);
+    if (n > 31) sg_fail("an element of GPR it does not have", n, 31);
     if (!((r->valid >> n) & 1)) {
-        r->x[n] = sg_cpu_load(g, g->ir->t_i64, offsetof(CPU, x) + 8 * (size_t)n);
+        r->x[n] = sg_cpu_load(ir, ir->t_i64, offsetof(CPU, x) + 8 * (size_t)n);
         r->valid |= (uint32_t)1 << n;
     }
-    return sg_d_from(g, r->x[n]);
+    return r->x[n];
+}
+/* X n = bits (an i64): stored, and read back as bits */
+static inline void sg_set_x(SnxIr* ir, unsigned n, LLVMValueRef bits) {
+    SnxIrRegisterCache* r = sg_registers(ir);
+    if (n > 31) sg_fail("an element of GPR it does not have", n, 31);
+    sg_cpu_store(ir, bits, offsetof(CPU, x) + 8 * (size_t)n);
+    r->x[n] = bits;
+    r->valid |= (uint32_t)1 << n;
+}
+static inline SgD sg_GPR_read(SgCtx* g, long long n) {
+    if (n < 0) sg_fail("an element of GPR it does not have", n, 31);
+    return sg_d_from(g, sg_x(g->ir, (unsigned)n));
 }
 static inline void sg_GPR_write(SgCtx* g, long long n, SgD v) {
     LLVMValueRef bits;
-    SnxIrRegisterCache* r;
-    if (n < 0 || n > 31) sg_fail("an element of GPR it does not have", n, 31);
+    if (n < 0) sg_fail("an element of GPR it does not have", n, 31);
     if (v.w != 64) sg_fail("a GPR element written with other than 64 bits", n, v.w);
     bits = sg_d_make(g, &v);
-    r = sg_registers(g);
-    sg_cpu_store(g, bits, offsetof(CPU, x) + 8 * (size_t)n);
-    r->x[n] = bits;
-    r->valid |= (uint32_t)1 << n;
+    sg_set_x(g->ir, (unsigned)n, bits);
 }
 
 /* PSTATE's fields this back end keeps, numbered as ProcState's */
 enum { SG_PSTATE_N, SG_PSTATE_Z, SG_PSTATE_C, SG_PSTATE_V };
 static const size_t sg_flag_offsets[4] = {offsetof(CPU, n), offsetof(CPU, z), offsetof(CPU, cf), offsetof(CPU, vf)};
 
-/* the flags' cache, emptied, with what made them, when the block changes */
-static inline SnxIrFlags* sg_flags(SgCtx* g) {
-    SnxIrFlags* f = &g->ir->state.flags;
-    LLVMBasicBlockRef block = LLVMGetInsertBlock(SG_B);
+/* the flags' cache, emptied, with what made them, when the block changes, and dropped */
+static inline SnxIrFlags* sg_flags(SnxIr* ir) {
+    SnxIrFlags* f = &ir->state.flags;
+    LLVMBasicBlockRef block = LLVMGetInsertBlock(ir->b);
     if (f->block != block) {
         f->valid = 0;
         f->block = block;
@@ -1059,34 +1074,93 @@ static inline SnxIrFlags* sg_flags(SgCtx* g) {
     }
     return f;
 }
-static inline LLVMValueRef sg_flag_value(SgCtx* g, unsigned i) {
-    SnxIrFlags* f = sg_flags(g);
+static inline void sg_flags_forget(SnxIr* ir) {
+    ir->state.flags.valid = 0;
+    ir->state.flags.block = NULL;
+    ir->state.flags.origin = SNX_IR_FLAGS_SOME;
+}
+/* flag i (N, Z, C, V), the i32 0 or 1: loaded once a block */
+static inline LLVMValueRef sg_flag(SnxIr* ir, unsigned i) {
+    SnxIrFlags* f = sg_flags(ir);
     if (!((f->valid >> i) & 1)) {
-        f->value[i] = sg_cpu_load(g, g->ir->t_i32, sg_flag_offsets[i]);
+        f->value[i] = sg_cpu_load(ir, ir->t_i32, sg_flag_offsets[i]);
         f->valid |= 1u << i;
     }
     return f->value[i];
 }
-/* the four flags stored (each the i32 0 or 1) and kept as the block's, with what made them: SNX_IR_FLAGS_SUB or ADD
-   with the compare's operands, LOGIC with the result, or SOME. The dump (ir->dump_active) says each origin, as
-   ir_state.c's does */
-static inline void sg_flags_commit(SgCtx* g, LLVMValueRef v[4], unsigned origin, LLVMValueRef left,
-                                   LLVMValueRef right) {
-    SnxIrFlags* f = sg_flags(g);
+/* the four flags (any integer width) stored, each as the i32 0 or 1, and read back as those; made by anything until
+   sg_flags_origin says what */
+static inline void sg_flags_store(SnxIr* ir, LLVMValueRef v[4]) {
+    SnxIrFlags* f = sg_flags(ir);
     unsigned i;
     for (i = 0; i < 4; ++i) {
-        LLVMValueRef bits = ir_u32(g->ir, v[i]);
-        sg_cpu_store(g, bits, sg_flag_offsets[i]);
+        LLVMValueRef bits = ir_u32(ir, v[i]);
+        sg_cpu_store(ir, bits, sg_flag_offsets[i]);
         f->value[i] = bits;
-        g->flag[i] = NULL;
     }
     f->valid = 15;
-    f->origin = origin;
-    f->left = left;
-    f->right = right;
-    if (origin != SNX_IR_FLAGS_SOME && g->ir->dump_active)
-        fprintf(stderr, "IR flags pc %llx block %s origin %u\n", (unsigned long long)g->ir->dump_instruction_pc,
-                LLVMGetBasicBlockName(LLVMGetInsertBlock(SG_B)), origin);
+    f->origin = SNX_IR_FLAGS_SOME;
+}
+/* what the four flags just stored came from: SNX_IR_FLAGS_SUB or ADD with the compare's operands, LOGIC with the
+   result. The dump (ir->dump_active) says each */
+static inline void sg_flags_origin(SnxIr* ir, unsigned origin, LLVMValueRef left, LLVMValueRef right) {
+    if (ir->dump_active)
+        fprintf(stderr, "IR flags pc %llx block %s origin %u\n", (unsigned long long)ir->dump_instruction_pc,
+                LLVMGetBasicBlockName(LLVMGetInsertBlock(ir->b)), origin);
+    ir->state.flags.origin = origin;
+    ir->state.flags.left = left;
+    ir->state.flags.right = right;
+}
+/* condition code (cond >> 1, but AL) on flags a compare made in this block, as that compare's i1: NULL when none
+   did, or the condition needs the flags themselves (VS of SUB and ADD, and the ones of ADD a variable needs the
+   overflow for). CMN with a constant k other than 0 and the most negative value gives the four flags of CMP with -k
+   (its carry is a + k >= 2^n, so a >= -k; its overflow that of the same sum), and ANDS those of CMP of its result
+   with 0, but for C, which ANDS clears */
+static inline LLVMValueRef sg_origin_cond(SnxIr* ir, unsigned code) {
+    static const LLVMIntPredicate sub[7] = {LLVMIntEQ,  LLVMIntUGE, LLVMIntSLT, LLVMIntEQ,
+                                            LLVMIntUGT, LLVMIntSGE, LLVMIntSGT};
+    SnxIrFlags* f = sg_flags(ir);
+    unsigned origin = f->origin, bits;
+    LLVMValueRef left = f->left, right = f->right, zero, r;
+    LLVMTypeRef type;
+    if (code > 6 || origin == SNX_IR_FLAGS_SOME) return NULL;
+    type = LLVMTypeOf(left);
+    bits = LLVMGetIntTypeWidth(type);
+    zero = LLVMConstNull(type);
+    if (origin == SNX_IR_FLAGS_ADD && LLVMIsAConstantInt(right)) {
+        SnxU64 k = LLVMConstIntGetZExtValue(right), top = 1ull << (bits - 1);
+        if (k != 0 && k != top) {
+            origin = SNX_IR_FLAGS_SUB;
+            right = LLVMConstNeg(right);
+        }
+    }
+    switch (origin) {
+        case SNX_IR_FLAGS_SUB:
+            if (code == 3) return NULL;
+            if (code == 2) return LLVMBuildICmp(ir->b, LLVMIntSLT, LLVMBuildSub(ir->b, left, right, ""), zero, "");
+            return LLVMBuildICmp(ir->b, sub[code], left, right, "");
+        case SNX_IR_FLAGS_ADD:
+            if (code > 2) return NULL;
+            r = LLVMBuildAdd(ir->b, left, right, "");
+            if (code == 0) return LLVMBuildICmp(ir->b, LLVMIntEQ, r, zero, "");
+            if (code == 1) return LLVMBuildICmp(ir->b, LLVMIntULT, r, left, ""); /* the carry out */
+            return LLVMBuildICmp(ir->b, LLVMIntSLT, r, zero, "");
+        case SNX_IR_FLAGS_LOGIC:
+            if (code == 1 || code == 3 || code == 4) return LLVMConstInt(ir->t_i1, 0, 0); /* C and V are 0 */
+            if (code == 2) return LLVMBuildICmp(ir->b, LLVMIntSLT, left, zero, "");
+            return LLVMBuildICmp(ir->b, sub[code], left, zero, "");
+        default: return NULL;
+    }
+}
+
+/* the four flags committed, with what made them when a compare or a logical result did; the ones written alone are
+   no longer waiting */
+static inline void sg_flags_commit(SgCtx* g, LLVMValueRef v[4], unsigned origin, LLVMValueRef left,
+                                   LLVMValueRef right) {
+    unsigned i;
+    for (i = 0; i < 4; ++i) g->flag[i] = NULL;
+    sg_flags_store(g->ir, v);
+    if (origin != SNX_IR_FLAGS_SOME) sg_flags_origin(g->ir, origin, left, right);
 }
 /* the flags written alone, committed with the ones not written as they are */
 static inline void sg_flags_flush(SgCtx* g) {
@@ -1094,12 +1168,12 @@ static inline void sg_flags_flush(SgCtx* g) {
     unsigned i, any = 0;
     for (i = 0; i < 4; ++i) any |= g->flag[i] != NULL;
     if (!any) return;
-    for (i = 0; i < 4; ++i) v[i] = g->flag[i] ? g->flag[i] : sg_flag_value(g, i);
+    for (i = 0; i < 4; ++i) v[i] = g->flag[i] ? g->flag[i] : sg_flag(g->ir, i);
     sg_flags_commit(g, v, SNX_IR_FLAGS_SOME, NULL, NULL);
 }
 static inline SgD sg_PSTATE_read(SgCtx* g, long long field) {
     if (field < 0 || field > 3) sg_fail("a field of PSTATE this back end does not keep", field, 3);
-    return sg_d_flag(g->flag[field] ? g->flag[field] : sg_flag_value(g, (unsigned)field), NULL);
+    return sg_d_flag(g->flag[field] ? g->flag[field] : sg_flag(g->ir, (unsigned)field), NULL);
 }
 /* PSTATE's fields first to first + count - 1 = v, v's top bit the first. The four at once are committed now, with
    what made them when that is a compare or a logical result; fewer wait for sg_flags_flush */
@@ -1140,59 +1214,13 @@ static inline void sg_PSTATE_write(SgCtx* g, long long first, long long count, S
         g->flag[first + i] = ir_u32(g->ir, sg_d_flag_value(g, &v, (unsigned)count - 1 - i));
 }
 
-/* ConditionHolds(cond) as the compare that set the flags, when one did in this block (ir_state.c's origin_cond):
-   NULL when none did, or the condition needs the flags themselves (VS of a compare), so the Sail body reads them */
+/* ConditionHolds(cond) as the compare that set the flags, when one did in this block (sg_origin_cond): NULL when
+   none did, or the condition needs the flags themselves (VS of a compare), so the Sail body reads them */
 static inline LLVMValueRef sg_condition_origin(SgCtx* g, SgS cond) {
-    static const LLVMIntPredicate sub[7] = {LLVMIntEQ,  LLVMIntUGE, LLVMIntSLT, LLVMIntEQ,
-                                            LLVMIntUGT, LLVMIntSGE, LLVMIntSGT};
-    const SnxIrFlags* flags = &g->ir->state.flags;
-    unsigned code = (unsigned)(cond.v >> 1), origin, bits;
-    LLVMValueRef left, right, zero, r = NULL;
-    LLVMTypeRef type;
+    LLVMValueRef r;
     sg_flags_flush(g);
-    if (code == 7 || flags->block != LLVMGetInsertBlock(SG_B)) return NULL;
-    origin = flags->origin;
-    left = flags->left;
-    right = flags->right;
-    if (origin == SNX_IR_FLAGS_SOME) return NULL;
-    type = LLVMTypeOf(left);
-    bits = LLVMGetIntTypeWidth(type);
-    zero = LLVMConstNull(type);
-    if (origin == SNX_IR_FLAGS_ADD && LLVMIsAConstantInt(right)) {
-        SnxU64 k = LLVMConstIntGetZExtValue(right), top = 1ull << (bits - 1);
-        if (k != 0 && k != top) { /* CMN with k is CMP with -k */
-            origin = SNX_IR_FLAGS_SUB;
-            right = LLVMConstNeg(right);
-        }
-    }
-    switch (origin) {
-        case SNX_IR_FLAGS_SUB:
-            if (code == 3) return NULL;
-            if (code == 2)
-                r = LLVMBuildICmp(SG_B, LLVMIntSLT, LLVMBuildSub(SG_B, left, right, ""), zero, "");
-            else
-                r = LLVMBuildICmp(SG_B, sub[code], left, right, "");
-            break;
-        case SNX_IR_FLAGS_ADD: {
-            LLVMValueRef sum;
-            if (code > 2) return NULL;
-            sum = LLVMBuildAdd(SG_B, left, right, "");
-            if (code == 0) r = LLVMBuildICmp(SG_B, LLVMIntEQ, sum, zero, "");
-            if (code == 1) r = LLVMBuildICmp(SG_B, LLVMIntULT, sum, left, "");
-            if (code == 2) r = LLVMBuildICmp(SG_B, LLVMIntSLT, sum, zero, "");
-            break;
-        }
-        case SNX_IR_FLAGS_LOGIC:
-            if (code == 1 || code == 3 || code == 4)
-                r = LLVMConstInt(g->ir->t_i1, 0, 0);
-            else if (code == 2)
-                r = LLVMBuildICmp(SG_B, LLVMIntSLT, left, zero, "");
-            else
-                r = LLVMBuildICmp(SG_B, sub[code], left, zero, "");
-            break;
-        default: return NULL;
-    }
-    if (cond.v & 1) r = LLVMBuildNot(SG_B, r, "");
+    r = sg_origin_cond(g->ir, (unsigned)(cond.v >> 1));
+    if (r && (cond.v & 1)) r = LLVMBuildNot(SG_B, r, "");
     return r;
 }
 
