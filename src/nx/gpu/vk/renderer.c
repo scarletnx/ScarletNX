@@ -27,6 +27,7 @@
 #include "nx/runtime/guest_stats.h"
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/ledger.h"
+#include "nx/gpu/vk/shading_rate.h"
 #include "nx/gpu/vk/descriptors.h"
 #include "nx/gpu/vk/pagespace.h"
 #include "nx/gpu/vk/hdr_swapchain.h"
@@ -391,6 +392,12 @@ static int vkr_upscale(const GpuUpscale* u) {
     int result = vk_upscale(u);
     vk_unlock();
     return result;
+}
+static u32 vkr_shading_rate(const GpuShadingRate* r) {
+    vk_lock();
+    u32 id = vk_shading_rate(r);
+    vk_unlock();
+    return id;
 }
 static int vkr_blit_filter(const Surf2D* s, const Surf2D* d, int dx, int dy, int dw, int dh, double sx, double sy,
                            double sdx, double sdy, int linear) {
@@ -992,6 +999,7 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
                 (unsigned long long)g_vk_clear_loads, (unsigned long long)g_vk_dontcare_loads,
                 (unsigned long long)vk_buf_ahead());
             vk_pass_ends_log();
+            vk_vrs_log();
             vk_finishes_log();
             vk_ww_stats(600);
             vk_descriptors_stats();
@@ -1407,6 +1415,7 @@ const Renderer vk_renderer = {
     .blit = vkr_blit,
     .blit_filter = vkr_blit_filter,
     .upscale = vkr_upscale,
+    .shading_rate = vkr_shading_rate,
     .vic_compose = vkr_vic_compose,
     .nvdec_write = vkr_nvdec_write,
     .nvdec_hw_device = vkr_nvdec_hw_device,

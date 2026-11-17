@@ -3,6 +3,7 @@
 ## Index
 
 * [The encoder](#the-encoder)
+  * [What a texel costs](#what-a-texel-costs)
 * [As ASTC](#as-astc)
 * [By vendor](#by-vendor)
 * [What it costs](#what-it-costs)
@@ -63,6 +64,42 @@ are tried, and every transparent texel takes index 2 and no opaque one. EAC trie
 multipliers around the one that spans the block's values, the base that centres each, and the best base a step either
 way; an alpha the same throughout is written at once. Integer arithmetic only, so the tests run the same file on the
 CPU (`tests/glsl/glsl.hpp`) and get the GPU's bytes.
+
+### What a texel costs
+
+The formats are Strom and Akenine-Moller's iPACKMAN, ETC1 ("iPACKMAN: High-Quality, Low-Complexity Texture
+Compression for Mobile Phones", Graphics Hardware 2005), and Strom and Pettersson's ETC2 ("ETC2: Texture Compression
+using Invalid Combinations", Graphics Hardware 2007), whose T and H blocks start from the block's two colour clusters,
+as `et_cluster`'s do.
+
+The candidates are searched as above, and each step below writes the same blocks, byte for byte, as the search written
+out plainly did (a checksum of 20000 blocks of every candidate and of the encoder's choice holds them to it):
+
+- A texel takes the nearest of four colours (ETC1's base and its table's modifiers, or T's and H's colours), which are
+  the same for each texel: they are clamped as the decoder clamps them once for the base and table (`et1_setup`) or
+  the distance (`et_th_word`), not once a texel and index. A texel p's squared distance from a colour c is |p|^2 +
+  |c|^2 - 2 p.c, and |p|^2 is the same for the four, so the nearest is the least of |c|^2 - 2 p.c: three multiply-adds
+  a colour, with no branch (`et_near4`). An index and its error share a word, error above, so the first of the least is
+  the minimum of four words.
+- Where the GPU says its packed 4x8 bit dot product is accelerated (`g_vk.bc7_dot`: Pascal's DP4A, Valhall's and
+  Adreno's from a6xx's third generation) the build `texconv_etc2_dot_spv` makes each p.c one instruction.
+- A colour of a base and a modifier clamps only at 255 where the modifier is not negative, and only at 0 where it is;
+  the planar mode's texel (x, y) is ((4 - x - y) eo + x eh + y ev + 2) >> 2, which needs no clamp where x + y <= 4,
+  13 of the 16 texels. ucas's `simplify` on the build's SPIR-V found these, and ucas's tests `etc2planar.ucas` and
+  `etc1index.ucas` hold the proofs.
+- EAC works out a candidate's eight values (table, multiplier and base, clamped) once, and a texel's index is the
+  minimum of eight words of its distance and index.
+- The planar mode's search stops once the channels done reach the best candidate's error, and each pass after the first
+  tries only the levels the one before it didn't.
+- A subblock's loops walk its 8 texels, not the block's 16.
+
+What was measured and not kept: the early compression-mode decision of Nah's QuickETC2 ("QuickETC2: Fast ETC2
+Texture Compression using Luma Differences", ACM Transactions on Graphics 39, 6, 2020,
+[doi:10.1145/3414685.3417787](https://doi.org/10.1145/3414685.3417787)), which tries
+T and H only where a block's texels spread widely and the planar search only where its fit is good, makes the
+encoder slower on a GPU. Four Kodak crops made BC7 took 93 to 128 ms on a GT 1030 with it and 85 to 106 without
+(before the dot build), for 0.02 to 0.18 dB less. A subgroup runs the candidates any of its invocations takes, and
+a picture's 32 neighbouring blocks seldom all skip one.
 
 ## As ASTC
 
@@ -282,10 +319,22 @@ and two 256x256 icons with alpha, made BCn by the test's own encoders and the BC
 BC7 loses most: ETC2 RGBA8 holds less than BC7's partitions and 4 bit weights do, which is why BC2, BC3 and BC7 go to
 ASTC 4x4 where the GPU samples it ([As ASTC](#as-astc)).
 
-Time, `snx-test-astc-vulkan --bench-etc2` on llvmpipe (a 12-core x86 CPU, other work running), a 2048x2048 level of
-random blocks, the dispatch alone: BC1 7 ms decoded, 105 ms encoded again; BC3 9 and 95; BC4 5 and 35; BC5 10 and 65;
-BC7 26 and 117. Random blocks take every candidate; a game's blocks of one colour or one alpha stop earlier. The
-pipeline is compiled the first time a BCn texture loads (1.3 s on llvmpipe), and kept in the pipeline cache.
+Time, `snx-test-astc-vulkan --bench-etc2` on a GT 1030 (the build with packed dot products), a 2048x2048 level, the
+dispatch alone, encoded again as ETC2 or EAC, before and after the steps of [What a texel costs](#what-a-texel-costs):
+
+| Blocks | before | now |
+| --- | --- | --- |
+| random BC1 | 199 ms | 76 ms |
+| random BC3 | 178 ms | 82 ms |
+| random BC4 | 55 ms | 11 ms |
+| random BC5 | 119 ms | 22 ms |
+| random BC7 | 192 ms | 90 ms |
+| a Kodak crop made BC7 (`--bench-etc2 FILE.rgba`, 512x512 repeated) | 85 to 106 ms | 57 ms |
+
+The same picture's blocks encoded again as ASTC 4x4 take 5 ms: most of them are moved, not searched for. Random
+blocks take every candidate; a game's blocks of one colour or one alpha stop earlier. On llvmpipe, before these steps:
+BC1 105 ms, BC3 95, BC4 35, BC5 65, BC7 117. The pipeline is compiled the first time a BCn texture loads (1.3 s on the
+GT 1030), and kept in the pipeline cache.
 
 ## Tests
 

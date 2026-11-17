@@ -232,6 +232,11 @@ typedef struct {
     int has_conservative;
     int has_depth_range_unrestricted; /* raw D32F copies retain every imported bit */
     float conservative_extra;
+    /* how an Ounce's shading rate image lowers the rate of its draws (shading_rate.c): VK_VRS_NV with
+       VK_NV_shading_rate_image, VK_VRS_KHR with the attachment of VK_KHR_fragment_shading_rate, VK_VRS_NONE (each
+       pixel shaded) without either. vrs_texel: the pixels that one texel of the device's rate image covers */
+    int vrs;
+    VkExtent2D vrs_texel;
     /* VK_EXT_graphics_pipeline_library with fast linking (pipeline_parts.h's vk_gpl_choose): a new pipeline links
        parts of its shaders that compile once, and an optimized one is made after it (pipeline.c) */
     int has_gpl;
@@ -269,6 +274,7 @@ typedef struct {
 } VkState;
 enum { VK_MEM_SMALL_BAR, VK_MEM_REBAR, VK_MEM_UMA };
 enum { VK_MEM_PATH_COPY, VK_MEM_PATH_UMA };
+enum { VK_VRS_NONE, VK_VRS_NV, VK_VRS_KHR }; /* VkState.vrs */
 extern VkState g_vk;
 /* The layout of an image for a use, VK_IMAGE_LAYOUT_<name>: GENERAL with unified image layouts. Each layout the
    renderer names for its own images goes through this, so an image's barriers, attachments and descriptors agree.
@@ -2764,6 +2770,7 @@ enum {
     VK_PROF_QUERY_PREDICATE, /* the queries' predicates (query_predicate.comp) */
     VK_PROF_QUERY_COMPARE,   /* a query compare (query_compare.comp) */
     VK_PROF_QUERY_COUNT,     /* the queries' counts (query_count.comp) */
+    VK_PROF_SHADING_RATE,    /* an Ounce's shading rate image made the device's (shading_rate.comp) */
     VK_PROF_N
 };
 void vk_gpuprof_cb_begin(VkCommandBuffer cb);
@@ -2774,10 +2781,10 @@ void vk_gpuprof_frame_done(u32 slot);
    timestamp at its begin and its end, and no pass does unless the profile asks. vk_gpuprof_timed: whether the graphics
    queue can be timed. vk_gpuprof_busy_ns: the time it was busy with the frames timed, summed, read when each frame
    slot is reused (its work is done then: no wait). g_vk_timestamps: the timestamps written, none while stats and the
-   profile are off */
+   profile are off. g_vk_timestamps_read: those read back at the slots' reuse, which a use not timed leaves out */
 int vk_gpuprof_timed(void);
 u64 vk_gpuprof_busy_ns(void);
-extern u64 g_vk_timestamps;
+extern u64 g_vk_timestamps, g_vk_timestamps_read;
 /* the device's timestamps next to the client's clock (VK_EXT_calibrated_timestamps with a host time domain) */
 int vk_gpuprof_calibrated(void);
 /* a fresh pair of the GPU's clock and the client's, for the track's calibration (0 without the extension) */

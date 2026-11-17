@@ -6,6 +6,7 @@
    programs, which spirv-val checks when the test gets its path. No word here comes from a game. */
 #include "nx/gpu/shader/sm86.h"
 #include "common/utilities/endian.h"
+#include "common/utilities/spirv_emit.h"
 #include "support/spv_eval.h"
 #include <math.h>
 #include <stdio.h>
@@ -2455,7 +2456,49 @@ static void test_shading_rate(const char* dir) {
     u32* spv = sm86_to_spirv(code, 3 * 16, ST_VS, vsph, &si, &count);
     CHECK(!spv && strstr(si.first_unsupported, "0x84 outside a fragment program"));
     free(spv);
-    (void)dir;
+    /* where the device reads an Ounce's shading rate image (g_spirv_translate.shading_rate), the fragment's size
+       comes from its builtin: FragmentSizeNV of SPV_NV_shading_rate, or ShadingRateKHR, each Flat, with its
+       capability and extension. spirv-val checks each module (keep_module) */
+    static const struct {
+        int how;
+        u32 capability, builtin;
+        const char *extension, *name;
+    } modes[] = {{SH_RATE_NV, SPV_CAPABILITY_SHADING_RATE_NV, SPV_BUILT_IN_FRAGMENT_SIZE_NV, "SPV_NV_shading_rate",
+                  "shading_rate_nv"},
+                 {SH_RATE_KHR, SPV_CAPABILITY_FRAGMENT_SHADING_RATE_KHR, SPV_BUILT_IN_SHADING_RATE_KHR,
+                  "SPV_KHR_fragment_shading_rate", "shading_rate_khr"}};
+    int had = g_spirv_translate.shading_rate;
+    u32 fsph[32] = {0};
+    fsph[0] = sph0(2, 5);
+    fsph[18] = 0xf;
+    for (size_t m = 0; m < sizeof modes / sizeof *modes; m++) {
+        g_spirv_translate.shading_rate = modes[m].how;
+        si = (ShaderInfo){0};
+        spv = sm86_to_spirv(code, 3 * 16, ST_FS, fsph, &si, &count);
+        CHECK(spv != NULL);
+        if (!spv) continue;
+        u32 at[64];
+        int capability = 0, builtin = 0, flat = 0, extension = 0;
+        u32 n = spv_find(spv, count, SPV_OP_CAPABILITY, at, 64);
+        for (u32 k = 0; k < n; k++) capability |= spv[at[k] + 1] == modes[m].capability;
+        u32 variable = 0;
+        n = spv_find(spv, count, SPV_OP_DECORATE, at, 64);
+        for (u32 k = 0; k < n; k++)
+            if (spv[at[k] + 2] == SPV_DECORATION_BUILT_IN && spv[at[k] + 3] == modes[m].builtin) {
+                builtin = 1;
+                variable = spv[at[k] + 1];
+            }
+        for (u32 k = 0; k < n; k++) flat |= variable && spv[at[k] + 1] == variable && spv[at[k] + 2] == 14 /* Flat */;
+        n = spv_find(spv, count, 10 /* OpExtension */, at, 64);
+        for (u32 k = 0; k < n; k++) extension |= !strcmp((const char*)&spv[at[k] + 1], modes[m].extension);
+        CHECK(capability && builtin && flat && extension);
+        if (!(capability && builtin && flat && extension))
+            fprintf(stderr, "S2R 0x84 with %s: capability %d, builtin %d, Flat %d, extension %d\n", modes[m].name,
+                    capability, builtin, flat, extension);
+        if (dir) CHECK(keep_module(dir, modes[m].name, spv, count));
+        free(spv);
+    }
+    g_spirv_translate.shading_rate = had;
 }
 /* FMUL's scale (bits 84-86, 2^(field - 4): nvdisasm's .D4 at 2, .M4 at 6) is part of the product whatever the device
    rounds in: 3.0 * 2.0 is 1.5 with .D4 and 24.0 with .M4, with doubles and without them. And it is applied before the

@@ -87,6 +87,16 @@ u32 nvn_rt_format(u32 format, int* depth) {
     if (format == NVN_FORMAT_RG32UI) return 0xCD;
     return format == NVN_FORMAT_RGBA8 ? 0xD5 : 0; /* compressed formats: no target takes them */
 }
+/* a texture header (nvn_tic.c's): words that name the texture, which the shading rate case reads back */
+int nvn_tic_encode(const NvnTexture* t, const NvnView* v, int image, u32 api, u32 out[8]) {
+    (void)v;
+    (void)image;
+    (void)api;
+    memset(out, 0, 8 * sizeof *out);
+    out[0] = t->d.format;
+    out[1] = (u32)t->gpu;
+    return t->d.format != 0; /* format 0: a texture with no header */
+}
 void nvn_tex_layout(const NvnTexDesc* d, NvnTexLayout* o) {
     (void)d;
     memset(o, 0, sizeof *o);
@@ -567,6 +577,115 @@ static void test_equal_bindings(void) {
     apply_binding_records(0);
     nvn_draw_record(&d, OP_DRAW, DRAW, sizeof draw);
     check(d.ds.bind.cb_addr[0][6] == 0 && d.ds.bind.cb_size[0][6] == 0, "zero size unbinds a previously bound UBO");
+}
+/* An Ounce's shading rate image (OP_RATE_IMAGE, OP_RATE_PALETTE, OP_RATE_MODE): the renderer gets the texture's
+   header, its address and every viewport's palette at each bind, and again when a palette changes while an image is
+   bound. The draws after it carry the renderer's id. A palette set before the bind waits for it, an equal palette and
+   the mode call the renderer for nothing, and a null texture unbinds. A renderer without the hook gives each draw 0.
+   A record's snapshot moves with the record (nvn_record_relocate) */
+static struct {
+    u32 calls, next_id, draw_rate;
+    GpuShadingRate last;
+} g_rate;
+static u32 rate_hook(const GpuShadingRate* r) {
+    g_rate.calls++;
+    g_rate.last = *r;
+    return ++g_rate.next_id;
+}
+static void rate_draw(const DsState* ds, const DrawCall* dc, DrawOwner* o) {
+    (void)ds;
+    (void)o;
+    g_rate.draw_rate = dc->shading_rate;
+}
+#define RATE_REC  0x9000u
+#define RATE_SNAP 0x9100u
+#define RATE_PAL  0x9200u
+static void rate_bind(u64 gpu, u32 format) {
+    NvnTexture t = {0};
+    t.magic = NVN_MAGIC('T', 'E', 'X', 0);
+    t.gpu = gpu;
+    t.d.format = (u16)format;
+    t.d.target = NVN_TEXTURE_TARGET_2D;
+    t.d.width = 160, t.d.height = 90, t.d.depth = t.d.levels = 1;
+    memcpy(g_mem + RATE_SNAP, &t, NVN_TEX_SNAP);
+    NvnPRateImage r = {0};
+    r.tex = gpu || format ? RATE_SNAP : 0;
+    memcpy(g_mem + RATE_REC, &r, sizeof r);
+    check(nvn_draw_record(&d, OP_RATE_IMAGE, RATE_REC, sizeof r) == 1, "OP_RATE_IMAGE was not taken");
+}
+static void rate_palette(i32 viewport, u64 rates) {
+    NvnPRatePalette p = {.viewport = viewport, .rates = rates};
+    memcpy(g_mem + RATE_PAL, &p, sizeof p);
+    check(nvn_draw_record(&d, OP_RATE_PALETTE, RATE_PAL, sizeof p) == 1, "OP_RATE_PALETTE was not taken");
+}
+static void rate_draw_once(void) {
+    NvnPDraw draw = {.count = 3, .instances = 1};
+    memcpy(GP(DRAW), &draw, sizeof draw);
+    g_rate.draw_rate = ~0u;
+    nvn_draw_record(&d, OP_DRAW, DRAW, sizeof draw);
+}
+static void test_shading_rate(void) {
+    static Renderer hooked;
+    const Renderer* was = g_renderer;
+    hooked = *was;
+    hooked.shading_rate = rate_hook;
+    hooked.draw = rate_draw;
+    g_renderer = &hooked;
+    memset(&g_rate, 0, sizeof g_rate);
+    memset(&d, 0, sizeof d);
+    nvn_draw_init(&d, 0);
+    int full = 1;
+    for (u32 v = 0; v < 16; v++) full &= d.rate_in.palette[v] == NVN_RATE_PALETTE_FULL;
+    check(full && d.rate_in.texel == NVN_RATE_TEXEL && !d.rate, "a queue starts with 1x1 palettes and no image");
+    rate_draw_once();
+    check(g_rate.draw_rate == 0, "a draw with no image bound carries 0, not %u", g_rate.draw_rate);
+
+    rate_palette(1, 0xb988888866665555ull);
+    check(g_rate.calls == 0, "a palette set with no image bound calls the renderer");
+    rate_bind(0x123000, 0x23);
+    check(g_rate.calls == 1 && g_rate.last.new_image && g_rate.last.addr == 0x123000 && g_rate.last.texel == 16,
+          "the bind gives the renderer the image");
+    check(g_rate.last.tic[0] == 0x23 && g_rate.last.tic[1] == 0x123000, "the bind gives the texture's header");
+    check(g_rate.last.palette[1] == 0xb988888866665555ull && g_rate.last.palette[0] == NVN_RATE_PALETTE_FULL,
+          "the bind gives the palettes set before it");
+    rate_draw_once();
+    check(g_rate.draw_rate == 1, "a draw after the bind carries its id, not %u", g_rate.draw_rate);
+
+    rate_palette(0, 0xb985555555555555ull);
+    check(g_rate.calls == 2 && !g_rate.last.new_image && g_rate.last.palette[0] == 0xb985555555555555ull,
+          "a new palette with an image bound calls the renderer, with the same image");
+    rate_draw_once();
+    check(g_rate.draw_rate == 2, "a draw after the palette carries the new id, not %u", g_rate.draw_rate);
+    rate_palette(0, 0xb985555555555555ull);
+    rate_palette(16, 0xb985555555555555ull); /* viewport 16 is viewport 0, as the driver masks it */
+    check(g_rate.calls == 2, "an equal palette calls the renderer");
+    u32 mode = 1;
+    memcpy(g_mem + RATE_PAL, &mode, sizeof mode);
+    check(nvn_draw_record(&d, OP_RATE_MODE, RATE_PAL, sizeof mode) == 1 && g_rate.calls == 2,
+          "the palette mode is taken and calls nothing");
+
+    rate_bind(0, 0);
+    check(g_rate.calls == 2 && d.rate == 0 && d.rate_in.addr == 0, "a null texture unbinds with no call");
+    rate_draw_once();
+    check(g_rate.draw_rate == 0, "a draw after the unbind carries 0, not %u", g_rate.draw_rate);
+    rate_bind(0x124000, 0);
+    check(g_rate.calls == 2 && d.rate == 0, "a texture with no header binds nothing");
+
+    hooked.shading_rate = NULL;
+    rate_bind(0x123000, 0x23);
+    rate_draw_once();
+    check(d.rate == 0 && g_rate.draw_rate == 0, "a renderer without the hook: each draw carries 0");
+    g_renderer = was;
+
+    /* the record's snapshot pointer moves with a copy of the record: a pointer into it moves, one outside stays */
+    u64 src = 0xa000, dst = 0xb000, inside = src + 8 + sizeof(NvnPRateImage), outside = 0xc000;
+    gw64(src + 8 + offsetof(NvnPRateImage, tex), inside);
+    gw64(dst + 8 + offsetof(NvnPRateImage, tex), inside);
+    nvn_record_relocate(dst, src, OP_RATE_IMAGE, 0x100);
+    check(gr64(dst + 8 + offsetof(NvnPRateImage, tex)) == inside - src + dst, "a snapshot inside the record moves");
+    gw64(dst + 8 + offsetof(NvnPRateImage, tex), outside);
+    nvn_record_relocate(dst, src, OP_RATE_IMAGE, 0x100);
+    check(gr64(dst + 8 + offsetof(NvnPRateImage, tex)) == outside, "a texture outside the record stays");
 }
 static void test_depth_mode_equal_bind(void) {
     u32 origin = __atomic_load_n(&g_nvn.draw.origin, __ATOMIC_RELAXED);
@@ -1482,6 +1601,7 @@ int main(int argc, char** argv) {
     test_channel_masks();
     test_indexed_viewports();
     test_depth_mode_equal_bind();
+    test_shading_rate();
     if (argc == 2 && !strcmp(argv[1], "--bench")) bench_inline_updates();
     if (argc == 2 && !strcmp(argv[1], "--bench-state")) bench_equal_bindings();
     if (argc == 2 && !strcmp(argv[1], "--bench-geometry")) bench_geometry();
