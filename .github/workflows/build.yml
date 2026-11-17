@@ -44,7 +44,7 @@ concurrency:
     ${{ github.event_name == 'pull_request' || github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
 # The Linux x86-64 and AArch64 tests' options: the linux job's, and the appimage job's, which builds a pull request's
-# x86-64 alone. SNX_TEST_OPTIONS go on the default tree, SNX_HEADLESS_OPTIONS make the headless Vulkan tree
+# Linux alone. SNX_TEST_OPTIONS go on the default tree, SNX_HEADLESS_OPTIONS make the headless Vulkan tree
 env:
   SNX_TEST_OPTIONS: -DSNX_TEST_VP9_VECTORS=ON -DSNX_TEST_ARM_DIFF=ON -DSNX_TEST_LLVM_SWEEP=ON
   SNX_HEADLESS_OPTIONS: -DSNX_BUILD_GUI=OFF -DSNX_DEPLOY=OFF -DSNX_TEST_VULKAN=ON -DSNX_TEST_AV1_VECTORS=ON
@@ -87,16 +87,17 @@ jobs:
           esac
   linux:
     name: Linux (${{ matrix.arch }})
+    # Not on a pull request: each architecture's tests run in the appimage job there, on the build its AppImage is
+    # made of, so a pull request's run builds each Linux once, and edenprobe takes that job's install
+    if: github.event_name != 'pull_request'
     runs-on: ${{ matrix.arch == 'aarch64' && 'ubuntu-24.04-arm' || 'ubuntu-26.04' }}
     timeout-minutes: 60
     # Arch's image is x86-64 only; pkgforge's (the AppImage's) is Arch Linux ARM on AArch64, with the same LLVM
     container: ${{ matrix.arch == 'aarch64' && 'ghcr.io/pkgforge-dev/archlinux:latest' || 'archlinux:latest' }}
     strategy:
       fail-fast: false
-      # A pull request builds AArch64's alone: x86-64's tests run in the appimage job, on the build its AppImage is
-      # made of, and edenprobe takes that job's install
       matrix:
-        arch: ${{ fromJSON(github.event_name == 'pull_request' && '["aarch64"]' || '["x86_64", "aarch64"]') }}
+        arch: [x86_64, aarch64]
     steps:
       # Artifacts carry the commit they came from: the branch's head in a pull request, else the commit pushed
       - name: Name the commit
@@ -202,22 +203,10 @@ jobs:
             -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           cmake --build --preset default --parallel "$(getconf _NPROCESSORS_ONLN)"
           cmake --install build/default --prefix stage
-      # The fallback is CMake's (cpmfile.json pins SDL3) and the Windows job builds the same SDL3 from source: a pull
-      # request that changes no CMake file, no pin and not this workflow skips it, a push always builds it
-      - name: Look for CMake changes
-        id: cmake-changed
-        if: github.event_name == 'pull_request'
-        run: |
-          # safe.directory for this command only: the container's git refuses the checkout, and the build
-          # (cmake/commit.cmake) and build_info_commit after it must see it the same way
-          changed=$(git -c safe.directory="$GITHUB_WORKSPACE" diff --name-only HEAD^1 HEAD)
-          printf '%s\n' "$changed"
-          if grep -qE '(^|/)CMakeLists\.txt$|\.cmake$|^CMakePresets\.json$|^cpmfile\.json$|^\.github/workflows/build\.yml$' <<<"$changed"; then
-            echo "yes=true" >> "$GITHUB_OUTPUT"
-          fi
+      # The fallback is CMake's (cpmfile.json pins SDL3) and the Windows job builds the same SDL3 from source. A pull
+      # request builds it in the appimage job, when it changes a CMake file, a pin or this workflow
       - name: Build the SDL3 fallback without a system package
-        if: github.event_name != 'pull_request' || steps.cmake-changed.outputs.yes == 'true'
-        run: |
+        run: &sdl-fallback |
           cmake --preset default -B build/sdl-fallback -DCMAKE_DISABLE_FIND_PACKAGE_SDL3=ON \
             -DSNX_DEPLOY=OFF -DBUILD_TESTING=OFF -DSDL_WAYLAND=OFF \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
@@ -268,7 +257,7 @@ jobs:
       - name: Test native tooling and indexed filesystems
         run: &native-tests ctest --test-dir build/default --output-on-failure --parallel 4
       - name: Check optional Python diagnostics
-        run: |
+        run: &python-diagnostics |
           python -m compileall -q tools
           python tools/run_game.py --help > /dev/null
       - uses: actions/upload-artifact@v7
@@ -692,16 +681,16 @@ jobs:
           path: |
             dist/*.AppImage*
             dist/appinfo
-      # A pull request's x86-64 build is this one alone (the linux job builds AArch64's): its install goes to edenprobe,
-      # and the linux job's x86-64 tests run on it, each step after the AppImage is made, so the AppImage is the one a
-      # push makes. The install is the AppImage's runtime as it was built
-      - name: Stage the install for edenprobe
-        if: matrix.arch == 'x86_64' && github.event_name == 'pull_request'
+      # A pull request's Linux builds are this job's alone (the linux job runs on a push): each architecture's install,
+      # x86-64's for edenprobe, and the linux job's tests run on it, each step after the AppImage is made, so the
+      # AppImage is the one a push makes. The install is the AppImage's runtime as it was built
+      - name: Stage the install
+        if: github.event_name == 'pull_request'
         run: |
           # out of /usr first: the tests run as the linux job's do, with no copy of ScarletNX installed there
           xargs -d '\n' rm -f -- < build/default/install_manifest.txt
           cmake --install build/default --prefix stage
-      - if: matrix.arch == 'x86_64' && github.event_name == 'pull_request'
+      - if: github.event_name == 'pull_request'
         uses: actions/upload-artifact@v7
         with:
           name: ScarletNX-linux-${{ matrix.arch }}-${{ steps.commit.outputs.short }}-install
@@ -709,7 +698,7 @@ jobs:
       # The linux job's test tools this image lacks, and Arch's own Mesa back, which the linux job tests lavapipe with:
       # the debloated one is for the AppImage alone. Each pacman install is tried 3 times, as in the linux job
       - name: Install the test tools
-        if: matrix.arch == 'x86_64' && github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request'
         run: |
           for try in 1 2 3; do
             pacman -S --noconfirm mesa && pacman -S --noconfirm --needed lld qemu-user pkgconf libxtst libxrandr \
@@ -718,30 +707,32 @@ jobs:
             sleep 5
           done
       - name: Install Unicorn
-        if: matrix.arch == 'x86_64' && github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request'
         run: *unicorn
-      # The linux job's compiler cache and dependency builds from main, where it builds x86-64's test and headless
-      # trees: this job's own hold the AppImage's tree alone, not the headless tree's FFmpeg nor its compiles. Read
-      # after the dependency builds are named and saved above, which keep only the AppImage's
-      - if: matrix.arch == 'x86_64' && github.event_name == 'pull_request'
+      # The linux job's compiler cache and dependency builds from main, where it builds this architecture's test and
+      # headless trees: this job's own hold the AppImage's tree alone, not the headless tree's FFmpeg nor its compiles.
+      # Read after the dependency builds are named and saved above, which keep only the AppImage's
+      - if: github.event_name == 'pull_request'
         uses: actions/cache/restore@v5
         with:
           path: .cache/ccache
-          key: ccache-linux-x86_64-${{ github.run_id }}-${{ github.run_attempt }}
-          restore-keys: ccache-linux-x86_64-
-      - if: matrix.arch == 'x86_64' && github.event_name == 'pull_request'
+          key: ccache-linux-${{ matrix.arch }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: ccache-linux-${{ matrix.arch }}-
+      - if: github.event_name == 'pull_request'
         uses: actions/cache/restore@v5
         with:
           path: .cache/deps
-          key: deps-linux-x86_64-${{ github.run_id }}
-          restore-keys: deps-linux-x86_64-
-      # The linux job's test options on the same tree, its tests on, and its headless tree with this job's LLVM: the A64
-      # disassembler stays out, as in the AppImage, so on a pull request its tests run on x86-64 in the sanitizers' job
-      # alone, and on AArch64 in the linux job. The compiler cache's counts are this build's, zeroed by the trim above
+          key: deps-linux-${{ matrix.arch }}-${{ github.run_id }}
+          restore-keys: deps-linux-${{ matrix.arch }}-
+      # The linux job's test options on the same tree, its tests on, and its headless tree with this job's LLVM. The
+      # A64 disassembler, which the AppImage leaves out, is back in AArch64's test tree, where a pull request runs its
+      # tests on that host; on x86-64 they run in the sanitizers' job. The compiler cache's counts are this build's,
+      # zeroed by the trim above
       - name: Build the tests and the headless Vulkan tree
-        if: matrix.arch == 'x86_64' && github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request'
         run: |
           cmake build/default ${{ env.SNX_TEST_OPTIONS }} -DBUILD_TESTING=ON \
+            -DSNX_A64_DISASM=${{ matrix.arch == 'aarch64' && 'ON' || 'OFF' }} \
             -DPython3_EXECUTABLE="$PWD/.cache/unicorn/bin/python"
           cmake --build build/default --parallel "$(getconf _NPROCESSORS_ONLN)"
           cmake --preset default -B build/headless ${{ env.SNX_HEADLESS_OPTIONS }} \
@@ -749,15 +740,32 @@ jobs:
             -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           cmake --build build/headless --parallel "$(getconf _NPROCESSORS_ONLN)"
           ccache --show-stats
+      # The linux job's SDL3 fallback, on AArch64 alone as it was there, when the pull request changes a CMake file, a
+      # pin or this workflow
+      - name: Look for CMake changes
+        id: cmake-changed
+        if: matrix.arch == 'aarch64' && github.event_name == 'pull_request'
+        run: |
+          changed=$(git diff --name-only HEAD^1 HEAD)
+          printf '%s\n' "$changed"
+          if grep -qE '(^|/)CMakeLists\.txt$|\.cmake$|^CMakePresets\.json$|^cpmfile\.json$|^\.github/workflows/build\.yml$' <<<"$changed"; then
+            echo "yes=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Build the SDL3 fallback without a system package
+        if: steps.cmake-changed.outputs.yes == 'true'
+        run: *sdl-fallback
       - name: Test headless Vulkan and NX runtime
-        if: matrix.arch == 'x86_64' && github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request'
         run: *headless-tests
       - name: Check the ABI helpers compile
-        if: matrix.arch == 'x86_64' && github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request'
         run: *abi-helpers
       - name: Test native tooling and indexed filesystems
-        if: matrix.arch == 'x86_64' && github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request'
         run: *native-tests
+      - name: Check optional Python diagnostics
+        if: github.event_name == 'pull_request'
+        run: *python-diagnostics
       - *fail-fast-file
       - *fail-fast-mark
 
@@ -1962,7 +1970,7 @@ jobs:
   # run by hand run both, and Amberlith's main beside the release; a pull request runs each only when it changes what
   # that run loads (scripts/edenprobe.py runs), never the main's, and ends at once, passed, when it changes neither. The
   # runs called for go one after the other. The install is the linux job's, or on a pull request the appimage job's,
-  # which builds a pull request's x86-64 alone
+  # which builds a pull request's Linux alone
   edenprobe:
     name: Amberlith (Linux x86_64, lavapipe)
     needs: [linux, appimage]

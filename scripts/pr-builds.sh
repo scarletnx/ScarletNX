@@ -11,8 +11,9 @@
 # the run that did not succeed gets a line, by its id in build.yml, but edenprobe, which builds nothing: its line is its
 # results, the notices its job leaves (the NRO's and the APK's), linked to the run's summary (docs/dev/edenprobe.md).
 # The checks of a package as installed, the sanitizers' build, the A64 differential's QEMU reference, the job that says
-# whether a pull request needs it and the scheduled run's Nightly due make no package, so they get none. NEEDS, when
-# set, stands for the run's jobs, in the shape of toJSON(needs). --print writes the comment to stdout and posts nothing.
+# whether a pull request needs it and the scheduled run's Nightly due make no package, so they get none; nor does the
+# linux job a pull request's run skips, whose builds and tests are the appimage job's there. NEEDS, when set, stands for
+# the run's jobs, in the shape of toJSON(needs). --print writes the comment to stdout and posts nothing.
 # gh needs a token that may read the run's artifacts, jobs and checks, and write on pull requests.
 set -euo pipefail
 
@@ -57,6 +58,7 @@ if [ -z "${NEEDS:-}" ]; then
             elif startswith("Amberlith") or startswith("edenprobe") then "edenprobe"
             elif endswith(", as installed") then empty
             elif . == "Recompiler changes" or startswith("A64 differential") or . == "Nightly due" then empty
+            elif . == "Linux (${{ matrix.arch }})" then empty
             elif test("^Linux AppImage \\((x86_64|aarch64)\\)$") then "appimage"
             elif startswith("Linux AppImage (") then "appimage-cross"
             elif test("^Linux \\([^,]*\\)$") then "linux"
