@@ -3218,6 +3218,35 @@ static VkDescriptorSet stage_set(const DsState* ds, int stage, VkSh* s, Surf** r
     SNX_ZONE_END(z);
     return set;
 }
+/* Constant buffers through windows of the staging ring (ShCaps.cb_windows): a vertex or fragment program's uniform
+   bank binds up to 64 KiB of the ring chunk its copy is in, from an aligned base at or before it, and the program adds
+   the copy's offset in that window (16-byte units) from push constants (SH_PUSH_CB_WINDOW). Each bank keeps its window
+   while its copies land in it: a draw that writes new constants, about a copy a draw in one game, binds the same
+   descriptor and keeps its set, where each new copy's offset made a new set. RPCS3's constant ring windows, the idea
+   only. A copy that is in no chunk, or past where a window from it can reach, binds alone with offset 0. A window
+   stays within its frame (frame, vk_frame_id() + 1): a chunk the frame copies into lives through it, and one destroyed
+   later may give its handle to a smaller one */
+typedef struct {
+    VkBuffer b;
+    u64 base, range, frame;
+} CbWindow;
+static CbWindow g_cb_windows[2][18];
+static u16 g_cb_offsets[2][18]; /* the draw's offsets, by the stage's set (0 vertex, 1 fragment) and bank */
+static int cb_window_place(int vs_fs, int bank, VkBuffer b, u64 o, u32 sz, u64* base, u64* range) {
+    CbWindow* w = &g_cb_windows[vs_fs][bank];
+    const u64 frame = vk_frame_id() + 1;
+    if (w->b != b || w->frame != frame || o < w->base || o + sz > w->base + w->range) {
+        const u64 size = vk_stage_buffer_size(b), align = g_vk.props.limits.minUniformBufferOffsetAlignment;
+        const u64 at = align ? o / align * align : o;
+        if (!size || at >= size || (o - at) & 15) return 0;
+        const u64 reach = size - at < 65536 ? size - at : 65536;
+        if (o + sz > at + reach) return 0;
+        *w = (CbWindow){b, at, reach, frame};
+    }
+    *base = w->base;
+    *range = w->range;
+    return 1;
+}
 /* with split sets (ShCaps.split_sets): the texture set stage_set_ made last for each stage's buffer set number (0 to 4) */
 static VkDescriptorSet g_stage_tex_set[5];
 /* an indirect mesh draw's first group, which mesh_indirect copied for the draw: the uniform buffer stage_set binds */
@@ -3238,7 +3267,16 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
         VkBuffer b;
         u64 o;
         if (!cb_get(ds, stage, i, sz, &b, &o)) return VK_NULL_HANDLE;
-        dw_buffer(&d, set, SNX_VKB_CB + i, vk_cbuf_type((u32)i), b, o, sz);
+        u64 base, range;
+        const int vs_fs = shader_vk_set(s->stage);
+        if (s->si.cb_window && vs_fs < 2 && (u32)i < g_spirv_translate.uniform_cbufs &&
+            cb_window_place(vs_fs, i, b, o, sz, &base, &range)) {
+            g_cb_offsets[vs_fs][i] = (u16)((o - base) >> 4);
+            dw_buffer(&d, set, SNX_VKB_CB + i, vk_cbuf_type((u32)i), b, base, (u32)range);
+        } else {
+            if (vs_fs < 2) g_cb_offsets[vs_fs][i] = 0;
+            dw_buffer(&d, set, SNX_VKB_CB + i, vk_cbuf_type((u32)i), b, o, sz);
+        }
     }
     if (s->si.root_max) {
         u32 sz = (s->si.root_max + 15u) & ~15u;
@@ -6598,7 +6636,8 @@ retry:
        scaled textures (stage_set) and the surface clip's height, which the fragment's y counts up from in a lower-left
        window (shader/emit_io.c's shader_frag_y_origin). The test's function, the window's origin and the point
        sprite's T flip are the pipeline's (vk_pipe_fs_spec) */
-    float pc[32] = {0, ds->dyn.depth_mode || (g_vk.dyn_pr & VK_DYN_PR_DEPTH_RANGE) ? 0.0f : 1.0f, 0, 0};
+    float pc[SH_PUSH_BYTES_WINDOWS / 4] = {0, ds->dyn.depth_mode || (g_vk.dyn_pr & VK_DYN_PR_DEPTH_RANGE) ? 0.0f : 1.0f,
+                                           0, 0};
     /* with the viewport transform off, the viewport's width and height (window_size), which the last stage before
        rasterization takes the position's pixels to clip space by (SNX_SH_WINDOW_XY) */
     u32 window_w = 0, window_h = 0;
@@ -6649,7 +6688,14 @@ retry:
     }
     /* the whole block: a Maxwell fragment program declares every member up to the capture's at byte 112
        (spirv_translate.c), and with descriptor heaps the validation layer wants each declared member pushed */
-    rec_CmdPushConstants(cb, g_vk_playout, VK_PUSH_STAGES, 0, sizeof pc, pc);
+    /* the vertex and fragment programs' constant buffer window offsets (cb_window_place), two banks a word */
+    if (g_spirv_translate.cb_windows)
+        for (u32 st = 0; st < 2; st++)
+            for (u32 w = 0; w < 9; w++) {
+                const u32 packed = (u32)g_cb_offsets[st][2 * w] | (u32)g_cb_offsets[st][2 * w + 1] << 16;
+                memcpy(&pc[(st ? SH_PUSH_CB_WINDOW_FS : SH_PUSH_CB_WINDOW) / 4 + w], &packed, sizeof packed);
+            }
+    rec_CmdPushConstants(cb, g_vk_playout, VK_PUSH_STAGES, 0, g_spirv_translate.cb_windows ? (u32)sizeof pc : 128, pc);
     if (texture) {
         Surf* source = fres[0].t;
         if (!source || !rt[0]) {

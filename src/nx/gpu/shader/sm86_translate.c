@@ -92,6 +92,9 @@ typedef struct {
     u32 stage_slots;                 /* hmma's A and B staged a warp each (g_spirv_translate.hmma_stage, Workgroup) */
     u32 warp_base;                   /* warp_read's index high bits, made once: every read of a module's is the same */
     u32 push, push_ptr; /* a vertex program's push constant vec4: the base instance, the depth fix (vk/render.c) */
+    /* with cb_windows, a vertex or fragment program's one push block (unified_push): the members of push and
+       scaled_push, then the three uvec4 of its constant buffers' window offsets from member cbw_member */
+    u32 cbw_member, cbw_u32_ptr;
     u32 centroid_mask;  /* the inputs decorated Centroid */
     u32 legacy_fs;      /* a fragment program's legacy varying groups (shader_legacy_group), read as generics 17-31 */
     u32 point_coord, front_facing, primitive_id;
@@ -306,6 +309,7 @@ static u32 root_var(Ctx* c, u32 end) {
 /* the word at byte offset off of a bank, plus the register value index when it isn't 0. A root table's bytes are
    past those of the tables before it, and an index stays in the tables */
 static u32 push_component(Ctx* c, u32 k);
+static u32 cbuf_window(Ctx* c, u32 bank, u32 element);
 static u32 builtin_u32(Ctx* c, u32* var, u32 builtin);
 static u32 cbuf_load(Ctx* c, u32 bank, u32 off, u32 index) {
     /* The draw's base instance, which the console's driver writes into bank 0 for a vertex program to add to its
@@ -338,6 +342,7 @@ static u32 cbuf_load(Ctx* c, u32 bank, u32 off, u32 index) {
         element = cu(c, (off >> 4) & (elements - 1));
         component = cu(c, (off >> 2) & 3);
     }
+    if (!root) element = cbuf_window(c, bank, element);
     return spv_emit_uniform_component(&c->e, c->cbuf_ptr, var, c->zero, element, component, c->t_u32);
 }
 /* NAK's MemType U8 (0), I8 (1), U16 (2), I16 (3) at byte offset off of a bank, plus index when it isn't 0: a byte or
@@ -635,12 +640,51 @@ static u32 float_fma(Ctx* c, u32 mode, u32 x, u32 y, u32 z) {
 
 /* component k of the vec4 at push constant offset 0, which the renderer gives a vertex program as it gives the
    Maxwell one (spirv_translate.c): x the base instance's bits, y not 0 when the depth fix is on */
+/* With cb_windows, a vertex or fragment program declares one push block for everything it reads of them: the vec4 at 0
+   (push_component), the fragment stage's members at 16, 32 and 96 (scaled_slot), then the window offsets of its
+   constant buffers (SH_PUSH_CB_WINDOW, SH_PUSH_CB_WINDOW_FS). A program has one push block at most */
+static int cb_windowed(const Ctx* c) {
+    return g_spirv_translate.cb_windows && (c->stage == ST_VS || c->stage == ST_FS);
+}
+static void unified_push(Ctx* c) {
+    if (c->push) return;
+    const int fs = c->stage == ST_FS;
+    u32 members[7], offsets[7], n = 0;
+    members[n] = c->t_v4f, offsets[n++] = 0;
+    if (fs) {
+        members[n] = c->t_v4f, offsets[n++] = 16;
+        members[n] = c->t_v4u, offsets[n++] = 32;
+        members[n] = c->t_v4u, offsets[n++] = 96;
+    }
+    c->cbw_member = n;
+    for (u32 k = 0; k < 3; k++)
+        members[n] = c->t_v4u, offsets[n++] = (fs ? SH_PUSH_CB_WINDOW_FS : SH_PUSH_CB_WINDOW) + 16 * k;
+    u32 block = spv_emit_type_struct(&c->e, members, offsets, n);
+    spv_emit_decorate(&c->e, block, SPV_DECORATION_BLOCK, NULL, 0);
+    c->push = c->scaled_push = spv_emit_variable(&c->e, SPV_STORAGE_PUSH_CONSTANT, block);
+    c->push_ptr = spv_emit_type_pointer(&c->e, SPV_STORAGE_PUSH_CONSTANT, c->t_f32);
+    c->cbw_u32_ptr = spv_emit_type_pointer(&c->e, SPV_STORAGE_PUSH_CONSTANT, c->t_u32);
+    add_interface(c, c->push);
+}
 static u32 push_component(Ctx* c, u32 k) {
+    if (cb_windowed(c)) unified_push(c);
     if (!c->push) {
         c->push = spv_emit_push_vec4(&c->e, c->t_v4f, c->t_f32, 0, 0, &c->push_ptr);
         add_interface(c, c->push);
     }
     return spv_emit_push_component_f32(&c->e, c->push_ptr, c->push, c->zero, cu(c, k), c->t_f32);
+}
+/* element plus the bank's window offset in 16-byte units (a 16-bit field, two banks a word), with cb_windows */
+static u32 cbuf_window(Ctx* c, u32 bank, u32 element) {
+    if (!cb_windowed(c) || bank >= 18 || bank >= g_spirv_translate.uniform_cbufs) return element;
+    unified_push(c);
+    c->si->cb_window = 1;
+    const u32 word = bank / 2;
+    u32 packed = spv_emit_push_component_f32(&c->e, c->cbw_u32_ptr, c->push, cu(c, c->cbw_member + word / 4),
+                                             cu(c, word & 3), c->t_u32);
+    if (bank & 1) packed = spv_emit_binary(&c->e, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, packed, cu(c, 16));
+    return spv_emit_iadd_u32(&c->e, c->t_u32, element,
+                             spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, packed, cu(c, 0xFFFF)));
 }
 /* The depth fix of spirv_translate.c's vertex_depth_fix: with the push constant's y not 0, z becomes (z + w) / 2,
    from the console's clip space depth of -w to w to Vulkan's of 0 to w */
@@ -792,6 +836,7 @@ static u32 scale_component(Ctx* c, u32 k) {
    push constant offset 16 (vk/render.c: x the slots 0 to 31, y 32 to 63), as a bool. With own, whether that target
    has the size of the one the draw renders to as well (render.c's own_size): its bit in the uvec4 at offset 96 */
 static u32 scaled_slot(Ctx* c, int slot, int own) {
+    if (cb_windowed(c)) unified_push(c); /* members 2 and 3 there too */
     if (!c->scaled_push) {
         const u32 members[3] = {c->t_v4f, c->t_v4u, c->t_v4u}, offsets[3] = {16, 32, 96};
         u32 block = spv_emit_type_struct(&c->e, members, offsets, 3);
@@ -800,7 +845,8 @@ static u32 scaled_slot(Ctx* c, int slot, int own) {
         add_interface(c, c->scaled_push);
     }
     u32 bits = spv_emit_push_component_f32(&c->e, spv_emit_type_pointer(&c->e, SPV_STORAGE_PUSH_CONSTANT, c->t_u32),
-                                           c->scaled_push, cu(c, own ? 2 : 1), cu(c, slot >= 32), c->t_u32);
+                                           c->scaled_push, cu(c, (cb_windowed(c) ? 1u : 0u) + (own ? 2u : 1u)),
+                                           cu(c, slot >= 32), c->t_u32);
     u32 bit = spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32,
                               spv_emit_binary(&c->e, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, bits, cu(c, (u32)slot & 31)),
                               cu(c, 1));
