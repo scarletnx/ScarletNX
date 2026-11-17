@@ -133,6 +133,7 @@ static struct {
     /* memory of its own kept for reuse: the bytes kept now, and since the last report the requests that took kept
        memory and the kept memory given back */
     u64 kept_bytes, kept_taken, kept_gone;
+    u64 kept_heap[VK_MAX_MEMORY_HEAPS]; /* kept_bytes by heap: counted as handed out (vk_devmem_budgets) */
     /* requests that found no memory since the last report: all of them, those no larger than the free space inside
        the capped heap's blocks then (no one run held them), and the largest */
     u64 failed, failed_room, failed_max;
@@ -245,7 +246,8 @@ void vk_devmem_budgets(DevMemBudget* b) {
     if (g_devmem.since >= DM_REFETCH) budgets_fetch();
     for (u32 h = 0; h < VK_MAX_MEMORY_HEAPS; h++) {
         b[h] = (DevMemBudget){.block_bytes = g_devmem.block_bytes[h],
-                              .allocated_bytes = g_devmem.allocated[h],
+                              /* kept memory is not free room for the caches: it is held for a request */
+                              .allocated_bytes = g_devmem.allocated[h] + g_devmem.kept_heap[h],
                               .blocks = g_devmem.blocks[h],
                               .allocations = g_devmem.allocs[h]};
         if (h >= g_devmem.mp.memoryHeapCount) continue;
@@ -592,15 +594,30 @@ static u32 block_adopt(u32 type, int image, int low, u32 units, u32 align_units,
    (VUID-VkBindImageMemoryInfo-memory-02629: the same create info, but an extent and layers no greater, at offset 0).
    Kept memory goes after DM_KEEP_PRESENTS presents, the oldest first past DM_KEEP_BYTES, and all of it while the
    heap is past its budget (lock held) */
+/* past this, a heap keeps no memory: the driver's preference for memory of its own no longer holds there (alloc),
+   so no request would take it */
+static int own_full(u32 heap) { return g_devmem.block_bytes[heap] > heap_budget(heap) / 5 * 4; }
 static void own_give(Block* k) {
     g_devmem.kept_bytes -= k->size;
+    g_devmem.kept_heap[g_devmem.mp.memoryTypes[k->type].heapIndex] -= k->size;
     g_devmem.kept_gone++;
     block_gone(k);
 }
-/* k, memory of its own let go: kept when it can be */
+/* every kept memory goes: a request found none other (alloc), and their blocks may take it */
+static int own_give_all(void) {
+    int gave = 0;
+    for (u32 i = 0; g_devmem.kept_bytes && i < g_devmem.nblock; i++)
+        if (g_devmem.block[i].mem && g_devmem.block[i].idle) {
+            own_give(&g_devmem.block[i]);
+            gave = 1;
+        }
+    return gave;
+}
+/* k, memory of its own let go: kept when it can be, at the low class's priority, so that the driver moves it out of
+   the GPU's memory first where that is short */
 static void own_keep(Block* k) {
     u32 heap = g_devmem.mp.memoryTypes[k->type].heapIndex;
-    if (!k->reuse || k->size > DM_KEEP_BYTES || g_devmem.block_bytes[heap] > heap_budget(heap)) {
+    if (!k->reuse || k->size > DM_KEEP_BYTES || own_full(heap)) {
         block_gone(k);
         return;
     }
@@ -614,6 +631,12 @@ static void own_keep(Block* k) {
     }
     k->idle = (u32)g_devmem.frame + 1;
     g_devmem.kept_bytes += k->size;
+    g_devmem.kept_heap[heap] += k->size;
+    if (g_vk.has_pageable && k->prio != DM_PRIO_LOW) { /* a request that takes it gives it its class (block_prio) */
+        vkSetDeviceMemoryPriorityEXT(g_vk.dev, k->mem, k_prio[DM_PRIO_LOW]);
+        k->prio = DM_PRIO_LOW;
+        g_devmem.priorities++;
+    }
 }
 /* kept memory of a type that a request of size bytes takes: for img (named, with its create info) or none named, the
    smallest that fits it. Its index plus one, 0 for none */
@@ -633,18 +656,18 @@ static u32 own_take(u32 type, int image, u64 size, const DmImage* img) {
         Block* k = &g_devmem.block[best - 1];
         k->idle = 0;
         g_devmem.kept_bytes -= k->size;
+        g_devmem.kept_heap[g_devmem.mp.memoryTypes[k->type].heapIndex] -= k->size;
         g_devmem.kept_taken++;
     }
     return best;
 }
-/* once a present: kept memory past DM_KEEP_PRESENTS goes, and all of it while its heap is past the budget */
+/* once a present: kept memory past DM_KEEP_PRESENTS goes, and all of it while its heap is past own_full's limit */
 static void own_expire(void) {
     for (u32 i = 0; g_devmem.kept_bytes && i < g_devmem.nblock; i++) {
         Block* k = &g_devmem.block[i];
         if (!k->mem || !k->idle) continue;
         u32 heap = g_devmem.mp.memoryTypes[k->type].heapIndex;
-        if (g_devmem.frame + 1 - k->idle > DM_KEEP_PRESENTS || g_devmem.block_bytes[heap] > heap_budget(heap))
-            own_give(k);
+        if (g_devmem.frame + 1 - k->idle > DM_KEEP_PRESENTS || own_full(heap)) own_give(k);
     }
 }
 
@@ -826,6 +849,10 @@ static VkResult alloc(const VkMemoryRequirements* req, const DevMemWant* want, i
         }
         /* a preference is not a need: when the driver has no memory for the resource alone, a block may have */
         if (!*mem && own == DM_OWN_RATHER) *mem = alloc_in((u32)type, req, want, 0, buf, img, named, &res);
+        /* memory kept for reuse in this type's heap takes room the request has none of: it goes, and the request is
+           tried again in this type before the next, which may be a worse one (the mapped window, system memory) */
+        if (!*mem && g_devmem.kept_heap[g_devmem.mp.memoryTypes[type].heapIndex] && own_give_all())
+            *mem = alloc_in((u32)type, req, want, own == DM_OWN_RATHER ? 0 : own, buf, img, named, &res);
     }
     bits = req->memoryTypeBits;
     for (int type; !*mem && (type = type_pick(bits, want)) >= 0; bits &= ~(1u << type))
