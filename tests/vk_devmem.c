@@ -16,6 +16,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "common/platform/thread.h"
+#include "common/platform/time.h"
 /* the allocator's thread starts only while g_threads is set: the checks before that count the driver's calls */
 static int g_threads;
 static int thread_or_none(PThreadFn fn, void* arg, size_t stack) {
@@ -1006,8 +1007,11 @@ static void worker(void* arg) {
 }
 /* the allocator's thread has made the block it was asked for and given back what it had to: or `until` is set */
 static void ahead_wait(const u32* until) {
+    /* by the clock, not by the waits: a timed wait may come back early, and on a CI machine of macOS 20,000 of them
+       ended in 0.3 s while the thread was still at work */
+    const u64 t0 = plat_ns();
     pm_lock(&g_work.lk);
-    for (u32 tries = 0;; tries++) {
+    for (;;) {
         u32 blocks = 0;
         pm_lock(&g_devmem.lk);
         int idle = !g_devmem.ahead.want && !g_devmem.ahead.busy && !g_devmem.ahead.ngone;
@@ -1017,7 +1021,7 @@ static void ahead_wait(const u32* until) {
         int done = until ? *until != 0 : idle && blocks == g_drv.mems; /* a free on its way is still the driver's */
         pm_unlock(&g_drv.lk);
         if (done) break;
-        CHECK(tries < 20000);
+        CHECK(plat_ns() - t0 < 30000000000ull);
         pc_wait(&g_work.cv, &g_work.lk, 1000000);
     }
     pm_unlock(&g_work.lk);
