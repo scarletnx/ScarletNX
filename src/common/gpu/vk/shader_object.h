@@ -45,6 +45,9 @@ const void* snx_vk_shader_binary(const SnxVkShaderBinaries* b, uint64_t key, siz
 bool snx_vk_shader_binaries_keep(SnxVkShaderBinaries* b, VkDevice dev, uint64_t key, VkShaderEXT shader);
 /* b written to path as snx_vk_pipeline_cache_save writes, through a temporary file. 0 when written, its bytes in *saved;
    -1 with the reason in why */
+/* data, the driver's binary of key, kept in b: added, or in place of the one b has (a binary the driver refused).
+   False when the host is out of memory. The caller gets data from the driver itself, outside a lock of its own */
+bool snx_vk_shader_binaries_put(SnxVkShaderBinaries* b, uint64_t key, const void* data, size_t size);
 int snx_vk_shader_binaries_save(SnxVkShaderBinaries* b, const char* path, size_t* saved, char* why, size_t n);
 void snx_vk_shader_binaries_free(SnxVkShaderBinaries* b);
 

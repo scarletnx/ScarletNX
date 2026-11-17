@@ -26,6 +26,7 @@
 #include "nx/runtime/platform/prepare_screen.h"
 #include "nx/runtime/guest_stats.h"
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/vk/shader_objects.h"
 #include "nx/gpu/vk/ledger.h"
 #include "nx/gpu/vk/shading_rate.h"
 #include "nx/gpu/vk/descriptors.h"
@@ -925,6 +926,14 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
                         (unsigned long long)made[0], (unsigned long long)made[3],
                         (unsigned long long)(make_ms[0] + make_ms[3]), (unsigned long long)links,
                         (unsigned long long)link_ms, (unsigned long long)opts, (unsigned long long)opt_ms);
+                    if (g_vk.has_shader_objects) {
+                        u64 so_made, so_binary, so_ms, so_mb;
+                        vk_so_stats(&so_made, &so_binary, &so_ms, &so_mb);
+                        LOG("vulkan: shader objects: %llu made (%llu from the binaries of earlier runs, %llu ms), "
+                            "%llu MB of SPIR-V kept for them\n",
+                            (unsigned long long)so_made, (unsigned long long)so_binary, (unsigned long long)so_ms,
+                            (unsigned long long)so_mb);
+                    }
                     u64 cached_tries, cached, cached_ms;
                     vk_pipeline_lib_cached_stats(&cached_tries, &cached, &cached_ms);
                     if (cached_tries)

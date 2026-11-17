@@ -317,8 +317,10 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
     add_test(NAME vulkan_headless_vertex_input_off COMMAND snx-test-vulkan -H --vertex-input-dynamic-state=off)
     # every check again under the validation layer with graphics pipeline libraries (pipeline_libraries=1, where the
     # device has them) and without them: the parts, their layouts and their dynamic state checked by the layer
-    add_test(NAME vulkan_headless_libraries COMMAND snx-test-vulkan -H --pipeline-libraries=1 --vk-validation=1)
-    add_test(NAME vulkan_headless_libraries_off COMMAND snx-test-vulkan -H --pipeline-libraries=0 --vk-validation=1)
+    add_test(NAME vulkan_headless_libraries COMMAND snx-test-vulkan -H --pipeline-libraries=1 --vk-validation=1
+                                                    --vk-ext-shader-object=off)
+    add_test(NAME vulkan_headless_libraries_off COMMAND snx-test-vulkan -H --pipeline-libraries=0 --vk-validation=1
+                                                        --vk-ext-shader-object=off)
     set_tests_properties(vulkan_headless_libraries vulkan_headless_libraries_off PROPERTIES TIMEOUT 120
         ENVIRONMENT "VK_KHRONOS_VALIDATION_REPORT_FLAGS=error" FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
     set_tests_properties(vulkan_headless_vertex_input_off PROPERTIES TIMEOUT 120
@@ -326,13 +328,22 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
     # every check again with each draw binding the pipeline linked from its parts, never the one made whole, under the
     # validation layer when it is installed (gpu/vk/pipeline.c, VK_EXT_graphics_pipeline_library; a device that
     # doesn't link them skips, 77); and with each pipeline made whole, with the dynamic state the libraries gave
-    add_test(NAME vulkan_headless_pipeline_library_linked COMMAND snx-test-vulkan -H --vk-validation=1)
-    add_test(NAME vulkan_headless_pipeline_library_whole COMMAND snx-test-vulkan -H)
+    add_test(NAME vulkan_headless_pipeline_library_linked COMMAND snx-test-vulkan -H --vk-validation=1
+                                                                  --vk-ext-shader-object=off)
+    add_test(NAME vulkan_headless_pipeline_library_whole COMMAND snx-test-vulkan -H --vk-ext-shader-object=off)
     set_tests_properties(vulkan_headless_pipeline_library_linked PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77
         ENVIRONMENT "SNX_TEST_GPL=linked;VK_KHRONOS_VALIDATION_REPORT_FLAGS=error"
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
     set_tests_properties(vulkan_headless_pipeline_library_whole PROPERTIES TIMEOUT 120 ENVIRONMENT "SNX_TEST_GPL=whole"
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+    # every check again under the validation layer with each draw's shader objects (gpu/vk/shader_objects.c,
+    # VK_EXT_shader_object): their dynamic state and the layout their sets are bound with checked by the layer. A device
+    # that draws through pipelines, for any reason its log line gives, skips. The pipeline tests above turn them off, so that they still test pipelines
+    add_test(NAME vulkan_headless_shader_objects COMMAND snx-test-vulkan -H --vk-validation=1)
+    set_tests_properties(vulkan_headless_shader_objects PROPERTIES TIMEOUT 120
+        ENVIRONMENT "VK_KHRONOS_VALIDATION_REPORT_FLAGS=error"
+        SKIP_REGULAR_EXPRESSION "draws go through pipelines:"
+        FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR;refused a shader object")
     # the on-screen layer's pass (gpu/vk/ui.c, tests/vulkan_ui.inc) under the validation layer when it is installed:
     # quads as instances, sampled in texels, and the device's buffer given only the quads that changed
     # a vk_gpu_profile pool smaller than asked for, which a driver gave (check_gpuprof_small_pool)

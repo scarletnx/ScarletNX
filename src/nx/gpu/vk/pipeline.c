@@ -27,6 +27,7 @@
 #include "nx/gpu/vk/pipeline_parts.h"
 #include "nx/gpu/vk/shading_rate.h"
 #include "nx/gpu/vk/pipeline_stats.h"
+#include "nx/gpu/vk/shader_objects.h"
 #include "nx/gpu/vk/cb_fold.h"
 #include "nx/gpu/vk/internal_spv.h"
 #include "nx/gpu/vk/tess_passthrough.h"
@@ -89,8 +90,18 @@ typedef struct Pipe {
     u64 queued_ns;
     int behind_opt;
     u32 standin;       /* its index + 1 in the stand-ins' table (vk_pipeline_get_deferred), 0 for none yet */
+    /* drawn with shader objects (shader_objects.c): sh, its stages' objects, and p only a mark that they are made.
+       Written before ready, read after it (atomic): a key whose objects the device refuses is made as a pipeline */
+    int so;
+    VkShaderEXT sh[5];
+    /* taken by vk_so_takes when the entry was made, never changed: the draws get its stand-in, and bind their sets
+       with its layout of no independent sets (vk_pipeline_layout), which a pipeline made in place of refused objects
+       has too */
+    int so_layout;
     struct Pipe *next, *job;
 } Pipe;
+/* p of a Pipe drawn with shader objects once they are made: not a handle, never bound (vk_pipeline_bind) */
+#define PIPE_SO_MADE ((VkPipeline)(uintptr_t)1)
 #define PIPEH 4096
 /* a shader of the shipped file: its key's words, the clip word of the key the pass gave it (ship_clip), and where its
    record starts (at 0: a free slot) */
@@ -136,7 +147,9 @@ static struct {
     char driver_tag[SNX_VK_DRIVER_TAG]; /* the driver's, whose files of the cache these are (snx_vk_driver_tag) */
     int pcache_dirty;        /* pipelines made since the cache was last written (atomic: it is saved outside vk_lock) */
     u64 pcache_used;         /* plat_ns when a pipeline last went into the cache (atomic) */
-    VkPipelineLayout playouts[1u << 5]; /* by the sets with texture arrays, made when first used */
+    /* by independent sets ([0], with pipeline libraries) or not ([1], for shader objects, playout), and by the sets
+       with texture arrays: made when first used */
+    VkPipelineLayout playouts[2][1u << 5];
     PMutex playout_lock;                /* making one: the file's reading thread asks for them too */
     VkPipelineCache pcache;
     PMutex psave; /* vk_pipeline_save's: one save at a time */
@@ -285,6 +298,7 @@ static const char* const vk_tracy_stage[] = {"vert", "tess ctrl", "tess eval", "
 #endif
 
 VkPipelineLayout g_vk_playout;
+u64 g_vk_dslayout_hash = SNX_FNV_BASIS;
 VkDescriptorSetLayout g_vk_dslayout[2][5];
 u32 g_vk_stage_sets;
 int g_vk_ftz; /* SH_FTZ_*: how translations flush FP32 subnormals (vk_pipeline_init) */
@@ -620,12 +634,17 @@ int vk_dslayout_arrays(VkDescriptorSetLayout layout) {
     return 0;
 }
 int vk_graphics_playout_is(VkPipelineLayout layout) {
-    for (u32 i = 0; i < sizeof g_pipeline.playouts / sizeof g_pipeline.playouts[0]; i++)
-        if (layout && __atomic_load_n(&g_pipeline.playouts[i], __ATOMIC_ACQUIRE) == layout) return 1;
+    for (u32 j = 0; j < 2; j++)
+        for (u32 i = 0; i < sizeof g_pipeline.playouts[j] / sizeof g_pipeline.playouts[j][0]; i++)
+            if (layout && __atomic_load_n(&g_pipeline.playouts[j][i], __ATOMIC_ACQUIRE) == layout) return 1;
     return 0;
 }
-VkPipelineLayout vk_playout(u32 arrays) {
-    VkPipelineLayout* l = &g_pipeline.playouts[arrays & ((1u << 5) - 1)];
+static struct Pipe* standin_pipe(VkPipeline h);
+/* the layout of a draw pipeline's sets (vk_playout), or with independent 0 one without
+   VK_PIPELINE_LAYOUT_CREATE_INDEPENDENT_SETS_BIT_EXT, which the sets of a draw with shader objects are bound with:
+   sets bound through a layout of independent sets are not compatible with a shader object's set layouts */
+static VkPipelineLayout playout(u32 arrays, int independent) {
+    VkPipelineLayout* l = &g_pipeline.playouts[independent ? 0 : 1][arrays & ((1u << 5) - 1)];
     VkPipelineLayout made = __atomic_load_n(l, __ATOMIC_ACQUIRE);
     if (made) return made;
     pm_lock(&g_pipeline.playout_lock);
@@ -637,7 +656,7 @@ VkPipelineLayout vk_playout(u32 arrays) {
         VkPushConstantRange pc = {VK_PUSH_STAGES, 0, 128};
         /* with pipeline libraries, a link of parts whose layouts have only their own sets (part_layout) */
         VkPipelineLayoutCreateInfo pl = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-                                         .flags = g_vk.has_gpl ? VK_PIPELINE_LAYOUT_CREATE_INDEPENDENT_SETS_BIT_EXT : 0,
+                                         .flags = independent ? VK_PIPELINE_LAYOUT_CREATE_INDEPENDENT_SETS_BIT_EXT : 0,
                                          .setLayoutCount = g_vk_stage_sets,
                                          .pSetLayouts = sets,
                                          .pushConstantRangeCount = 1,
@@ -648,6 +667,11 @@ VkPipelineLayout vk_playout(u32 arrays) {
     made = *l;
     pm_unlock(&g_pipeline.playout_lock);
     return made;
+}
+VkPipelineLayout vk_playout(u32 arrays) { return playout(arrays, g_vk.has_gpl); }
+VkPipelineLayout vk_pipeline_layout(VkPipeline h, u32 arrays) {
+    Pipe* p = standin_pipe(h);
+    return p ? p->layout : vk_playout(arrays);
 }
 
 static void plib_init(void);
@@ -712,6 +736,16 @@ void vk_pipeline_init(void) {
                 .pBindings = b};
             if (!VK_OK(vkCreateDescriptorSetLayout(g_vk.dev, &dl, NULL, &g_vk_dslayout[arrays][s])))
                 fatal("vulkan: cannot create shader descriptor layout");
+            /* what the layout is made of, for the key of a shader object's binary (shader_objects.c): a layout
+               another build or setting makes is another program to the driver, with the same SPIR-V */
+            u64 h = snx_fnv_step(snx_fnv_step(snx_fnv_step(g_vk_dslayout_hash, (u64)s), (u64)arrays), dl.flags);
+            for (u32 i = 0; i < n; i++) {
+                h = snx_fnv_step(h, b[i].binding);
+                h = snx_fnv_step(h, (u64)b[i].descriptorType);
+                h = snx_fnv_step(h, b[i].descriptorCount);
+                h = snx_fnv_step(h, b[i].stageFlags);
+            }
+            g_vk_dslayout_hash = h;
             vk_descriptors_layout(g_vk_dslayout[arrays][s], b, n);
         }
     }
@@ -801,6 +835,7 @@ void vk_pipeline_init(void) {
                                                   (size_t)data.size, &loaded, why, sizeof why);
     if (why[0]) LOG("vulkan: %s: %s\n", from ? from : g_pipeline.pcache_path, why);
     if (loaded) LOG("vulkan: pipeline cache loaded (%zu KB)\n", loaded >> 10);
+    vk_so_init();
     free(legacy);
     plat_file_unmap(&data); /* the cache copied it, and a mapped file can't be replaced on Windows */
     /* how shaders get the console's FP32 flush to zero, settled before the reading thread translates any */
@@ -1038,6 +1073,7 @@ static VkSh* sh_make(const u8* code, u32 mlen, u64 h, int stage, const u32 mask[
             snprintf(s->si.first_unsupported, sizeof s->si.first_unsupported, "vkCreateShaderModule failed");
         } else {
             modinfo_put(s->mod, h, stage, nw);
+            vk_so_keep_spirv(s->mod, spv, nw);
             pf_shader_record(s, spv, nw, code, src_bytes(mlen), xfb);
         }
         free(spv);
@@ -1378,8 +1414,11 @@ VkShaderModule vk_module_spv_location(const u32* source, size_t nw, u32 location
 }
 /* an empty fragment shader for depth-only passes */
 static VkShaderModule null_fs(void) {
-    if (!g_pipeline.null_fs)
+    if (!g_pipeline.null_fs) {
         g_pipeline.null_fs = vk_module_spv(snx_null_fs_spv, snx_null_fs_spv_size / sizeof *snx_null_fs_spv);
+        if (g_pipeline.null_fs) /* for the shader objects of draws without a fragment program */
+            vk_so_keep_spirv(g_pipeline.null_fs, snx_null_fs_spv, snx_null_fs_spv_size / sizeof *snx_null_fs_spv);
+    }
     return g_pipeline.null_fs;
 }
 
@@ -1451,6 +1490,52 @@ typedef struct {
     VkPipelineCreateFlags flags; /* the descriptor buffers', the feedback loop's and the shading rate's */
     VkVrsPipe vrs;               /* an Ounce's shading rate image (shading_rate.c) */
 } PipeInfo;
+/* the color targets' blend states of k (the first k->ncolor of cba), as a pipeline and the shader objects' bind
+   (vk_so_bind) give them: the device's lacks of dual-source and independent blending taken in, and an advanced
+   equation in place of each operation */
+void vk_pipe_blend(const PipeKey* k, VkPipelineColorBlendAttachmentState cba[8]) {
+    int changed = 0;
+    for (u32 i = 0; i < k->ncolor; i++) {
+        VkPipelineColorBlendAttachmentState* a = &cba[i];
+        *a = (VkPipelineColorBlendAttachmentState){.blendEnable = k->blend[i].en,
+                                                   .srcColorBlendFactor = (VkBlendFactor)k->blend[i].sc,
+                                                   .dstColorBlendFactor = (VkBlendFactor)k->blend[i].dc,
+                                                   .colorBlendOp = (VkBlendOp)k->blend[i].cop,
+                                                   .srcAlphaBlendFactor = (VkBlendFactor)k->blend[i].sa,
+                                                   .dstAlphaBlendFactor = (VkBlendFactor)k->blend[i].da,
+                                                   .alphaBlendOp = (VkBlendOp)k->blend[i].aop,
+                                                   /* no fragment shader: its outputs would be undefined */
+                                                   .colorWriteMask = k->fs ? k->blend[i].mask : 0};
+        if (!g_vk.feat.dualSrcBlend) { /* the second source's factors become the first's */
+            VkBlendFactor* f[4] = {&a->srcColorBlendFactor, &a->dstColorBlendFactor, &a->srcAlphaBlendFactor,
+                                   &a->dstAlphaBlendFactor};
+            for (int j = 0; j < 4; j++) {
+                VkBlendFactor b = *f[j];
+                *f[j] = b == VK_BLEND_FACTOR_SRC1_COLOR             ? VK_BLEND_FACTOR_SRC_COLOR
+                        : b == VK_BLEND_FACTOR_ONE_MINUS_SRC1_COLOR ? VK_BLEND_FACTOR_ONE_MINUS_SRC_COLOR
+                        : b == VK_BLEND_FACTOR_SRC1_ALPHA           ? VK_BLEND_FACTOR_SRC_ALPHA
+                        : b == VK_BLEND_FACTOR_ONE_MINUS_SRC1_ALPHA ? VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA
+                                                                    : b;
+                changed |= *f[j] != b;
+            }
+        }
+    }
+    if (!g_vk.feat.independentBlend) /* every attachment blends as the first */
+        for (u32 i = 1; i < k->ncolor; i++) {
+            changed |= memcmp(&cba[i], &cba[0], sizeof cba[0]) != 0;
+            cba[i] = cba[0];
+        }
+    if (changed) {
+        LOG_LIMIT(
+            1, "vulkan: blending that needs dual-source or independent blend, which this GPU lacks, is simplified\n");
+    }
+    if (k->advanced.operation) {
+        /* NVN advanced modes select color output zero only. Other bound attachments must have no writes. */
+        for (u32 i = 0; i < k->ncolor; i++)
+            cba[i].colorBlendOp = cba[i].alphaBlendOp = (VkBlendOp)k->advanced.operation;
+        if (k->ncolor) cba[0].blendEnable = VK_TRUE;
+    }
+}
 static void pipe_info(const PipeKey* k, VkShaderModule fs, PipeInfo* o) {
     static const VkShaderStageFlagBits bits[5] = {VK_SHADER_STAGE_VERTEX_BIT, VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT,
                                                   VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT,
@@ -1585,52 +1670,12 @@ static void pipe_info(const PipeKey* k, VkShaderModule fs, PipeInfo* o) {
         .alphaToCoverageEnable = k->alpha_to_coverage != 0,
         .alphaToOneEnable = k->alpha_to_one != 0};
     o->ds = (VkPipelineDepthStencilStateCreateInfo){.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
-    int changed = 0;
-    for (u32 i = 0; i < k->ncolor; i++) {
-        VkPipelineColorBlendAttachmentState* a = &o->cba[i];
-        *a = (VkPipelineColorBlendAttachmentState){.blendEnable = k->blend[i].en,
-                                                   .srcColorBlendFactor = (VkBlendFactor)k->blend[i].sc,
-                                                   .dstColorBlendFactor = (VkBlendFactor)k->blend[i].dc,
-                                                   .colorBlendOp = (VkBlendOp)k->blend[i].cop,
-                                                   .srcAlphaBlendFactor = (VkBlendFactor)k->blend[i].sa,
-                                                   .dstAlphaBlendFactor = (VkBlendFactor)k->blend[i].da,
-                                                   .alphaBlendOp = (VkBlendOp)k->blend[i].aop,
-                                                   /* no fragment shader: its outputs would be undefined */
-                                                   .colorWriteMask = k->fs ? k->blend[i].mask : 0};
-        if (!g_vk.feat.dualSrcBlend) { /* the second source's factors become the first's */
-            VkBlendFactor* f[4] = {&a->srcColorBlendFactor, &a->dstColorBlendFactor, &a->srcAlphaBlendFactor,
-                                   &a->dstAlphaBlendFactor};
-            for (int j = 0; j < 4; j++) {
-                VkBlendFactor b = *f[j];
-                *f[j] = b == VK_BLEND_FACTOR_SRC1_COLOR             ? VK_BLEND_FACTOR_SRC_COLOR
-                        : b == VK_BLEND_FACTOR_ONE_MINUS_SRC1_COLOR ? VK_BLEND_FACTOR_ONE_MINUS_SRC_COLOR
-                        : b == VK_BLEND_FACTOR_SRC1_ALPHA           ? VK_BLEND_FACTOR_SRC_ALPHA
-                        : b == VK_BLEND_FACTOR_ONE_MINUS_SRC1_ALPHA ? VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA
-                                                                    : b;
-                changed |= *f[j] != b;
-            }
-        }
-    }
-    if (!g_vk.feat.independentBlend) /* every attachment blends as the first */
-        for (u32 i = 1; i < k->ncolor; i++) {
-            changed |= memcmp(&o->cba[i], &o->cba[0], sizeof o->cba[0]) != 0;
-            o->cba[i] = o->cba[0];
-        }
-    if (changed) {
-        LOG_LIMIT(
-            1, "vulkan: blending that needs dual-source or independent blend, which this GPU lacks, is simplified\n");
-    }
+    vk_pipe_blend(k, o->cba);
     o->advanced = (VkPipelineColorBlendAdvancedStateCreateInfoEXT){
         .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_ADVANCED_STATE_CREATE_INFO_EXT,
         .srcPremultiplied = k->advanced.src_premultiplied,
         .dstPremultiplied = VK_TRUE,
         .blendOverlap = (VkBlendOverlapEXT)k->advanced.overlap};
-    if (k->advanced.operation) {
-        /* NVN advanced modes select color output zero only. Other bound attachments must have no writes. */
-        for (u32 i = 0; i < k->ncolor; i++)
-            o->cba[i].colorBlendOp = o->cba[i].alphaBlendOp = (VkBlendOp)k->advanced.operation;
-        if (k->ncolor) o->cba[0].blendEnable = VK_TRUE;
-    }
     /* a logic operation takes the place of blending on integer and normalized targets; float and sRGB ones pass
        their color through, as the 3D engine's LOGIC_OP does */
     o->cb = (VkPipelineColorBlendStateCreateInfo){.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
@@ -2154,20 +2199,35 @@ void vk_pipeline_lib_warm_stats(u64* made, u64* hit, u64* ms) {
 }
 /* e's pipeline, made here. One a draw asked for is kept in the file (pf_pipe_record): once made when the GPU thread
    makes it (record), and when it queues it for a worker otherwise, as the file's tables are the GPU thread's */
-static VkPipeline pipe_make(const Pipe* e, int record, int* opt) {
+static VkPipeline pipe_make(Pipe* e, int record, int* opt) {
     SNX_ZONE_T(z_pipe, "pipeline make", "hash %016llx", (unsigned long long)e->h);
     u64 t0 = plat_ns();
     SNX_ZONE(z, "pipeline make");
     /* A new-area pipeline can arrive after a long quiet spell. Mark it before entering the driver, so a periodic
        cache snapshot doesn't mistake an in-flight compile for idleness and contend for the driver's cache lock. */
-    pcache_note();
+    int so = __atomic_load_n(&e->so, __ATOMIC_RELAXED);
+    if (!so) pcache_note();
     int hit = 0;
     *opt = 0;
-    VkPipeline p = e->lib[0] ? gpl_fast(e, &hit, opt) : pipe_create(e, &hit);
+    VkPipeline p = VK_NULL_HANDLE;
+    /* shader objects go to no pipeline cache: making them leaves it as it is */
+    if (__atomic_load_n(&e->so, __ATOMIC_RELAXED)) {
+        if (vk_so_make(&e->k, e->fs, e->sh))
+            p = PIPE_SO_MADE;
+        else /* made as a pipeline, whole: it has no parts */
+            __atomic_store_n(&e->so, 0, __ATOMIC_RELAXED);
+    }
+    if (!p) p = e->lib[0] ? gpl_fast(e, &hit, opt) : pipe_create(e, &hit);
     SNX_ZONE_END(z);
-    if (!e->lib[0] || *opt) pipe_stats(p, e, *opt ? "optimized" : "whole"); /* a fast link runs unoptimized code */
-    pipe_slow_say(e, plat_ns() - t0, hit);
-    pcache_note();
+    if (p != PIPE_SO_MADE && (!e->lib[0] || *opt))
+        pipe_stats(p, e, *opt ? "optimized" : "whole"); /* a fast link runs unoptimized code */
+    if (p == PIPE_SO_MADE) {
+        const VkShaderModule modules[5] = {e->k.vs, e->k.tcs, e->k.tes, e->k.gs, e->fs};
+        slow_say("a draw's shader objects", modules, plat_ns() - t0, 0);
+    } else {
+        pipe_slow_say(e, plat_ns() - t0, hit);
+        pcache_note();
+    }
     if (e->prewarm)
         __atomic_add_fetch(&g_pipeline.pf.made, 1, __ATOMIC_RELAXED);
     else {
@@ -2424,12 +2484,21 @@ static Pipe* pipe_entry(const PipeKey* k, int* found) {
     p->h = h;
     p->layout = vk_playout(k->arrays);
     p->fs = k->fs ? k->fs : null_fs();
-    pipe_parts(p);
+    if (vk_so_takes(k, p->fs)) {
+        p->so = p->so_layout = 1;
+        p->layout = playout(k->arrays, 0); /* a pipeline made in its place takes it too */
+    } else
+        pipe_parts(p);
     p->next = g_pipeline.pipeh[b];
     g_pipeline.pipeh[b] = p;
     g_pipeline.pipes_new++;
     g_pipeline.recent[g_pipeline.recent_next++ & 3] = p;
     return p;
+}
+/* the handle a draw gets for p once made: its pipeline, or for shader objects a stand-in, which vk_pipeline_bind binds
+   as the objects (VK_NULL_HANDLE for none made, or no stand-in) */
+static VkPipeline pipe_handle(Pipe* p, VkPipeline made) {
+    return made && p->so_layout ? pipe_standin(p) : made;
 }
 /* a pipeline made here, on the thread that asks for it: with pipeline libraries its fast link, and the optimized one
    queued for the workers (made here too without them) */
@@ -2456,13 +2525,11 @@ VkPipeline vk_pipeline_get(const PipeKey* k) {
     Pipe* p = pipe_entry(k, &found);
     if (!p) return VK_NULL_HANDLE;
     if (found) {
-        if (__atomic_load_n(&p->ready, __ATOMIC_ACQUIRE)) {
-            return __atomic_load_n(&p->p, __ATOMIC_ACQUIRE);
-        }
+        if (__atomic_load_n(&p->ready, __ATOMIC_ACQUIRE)) return pipe_handle(p, __atomic_load_n(&p->p, __ATOMIC_ACQUIRE));
         if (p->prewarm) pipe_promote(p);
-        return pipe_wait_here(p);
+        return pipe_handle(p, pipe_wait_here(p));
     }
-    return pipe_make_here(p, 1);
+    return pipe_handle(p, pipe_make_here(p, 1));
 }
 /* A draw's pipeline when its commands go through the recording thread: the pipeline if it is ready, otherwise a
    stand-in, with the pipeline made on a worker in the order draws asked for them. The GPU thread goes on with the
@@ -2480,6 +2547,7 @@ VkPipeline vk_pipeline_get_deferred(const PipeKey* k) {
     if (found) {
         if (__atomic_load_n(&p->ready, __ATOMIC_ACQUIRE)) {
             VkPipeline made = __atomic_load_n(&p->p, __ATOMIC_ACQUIRE);
+            if (p->so_layout) return pipe_handle(p, made);
             if (!p->lib[0] || !made || __atomic_load_n(&p->opt, __ATOMIC_ACQUIRE)) return made;
         } else if (p->prewarm)
             pipe_promote(p);
@@ -2492,38 +2560,52 @@ VkPipeline vk_pipeline_get_deferred(const PipeKey* k) {
             queued = 1;
         }
         pm_unlock(&g_pipeline.pj_lock);
-        if (!queued) return pipe_make_here(p, 0); /* no worker: made here */
+        if (!queued) return pipe_handle(p, pipe_make_here(p, 0)); /* no worker: made here */
     }
     VkPipeline s = pipe_standin(p);
-    return s ? s : pipe_wait_here(p);
+    return s ? s : pipe_handle(p, pipe_wait_here(p));
+}
+/* the entry a stand-in names, NULL for a pipeline's own handle */
+static struct Pipe* standin_pipe(VkPipeline h) {
+    u64 v = (u64)(uintptr_t)h;
+    if ((v & ~(u64)0xFFFFFFFFull) != PIPE_STANDIN) return NULL;
+    u32 i = (u32)v - 1;
+    return g_pipeline.pstand[i / PSTAND_PAGE][i % PSTAND_PAGE];
+}
+/* what h names once p is ready: the pipeline, or for shader objects h itself (VK_NULL_HANDLE when none was made) */
+static VkPipeline standin_made(Pipe* p, VkPipeline h) {
+    VkPipeline made = __atomic_load_n(&p->p, __ATOMIC_ACQUIRE);
+    return made && __atomic_load_n(&p->so, __ATOMIC_RELAXED) ? h : made;
 }
 /* on the recording thread: the pipeline a handle from vk_pipeline_get_deferred names, waited for while a worker makes
    it. VK_NULL_HANDLE when it couldn't be made */
 VkPipeline vk_pipeline_resolve(VkPipeline h) {
-    u64 v = (u64)(uintptr_t)h;
-    if ((v & ~(u64)0xFFFFFFFFull) != PIPE_STANDIN) return h;
-    u32 i = (u32)v - 1;
-    Pipe* p = g_pipeline.pstand[i / PSTAND_PAGE][i % PSTAND_PAGE];
-    if (__atomic_load_n(&p->ready, __ATOMIC_ACQUIRE)) return __atomic_load_n(&p->p, __ATOMIC_ACQUIRE);
+    Pipe* p = standin_pipe(h);
+    if (!p) return h;
+    if (__atomic_load_n(&p->ready, __ATOMIC_ACQUIRE)) return standin_made(p, h);
     u64 t0 = plat_ns();
-    VkPipeline got = pipe_wait(p, -1);
+    (void)pipe_wait(p, -1);
     __atomic_add_fetch(&g_pipeline.pipe_wait_ns, plat_ns() - t0, __ATOMIC_RELAXED);
-    return got;
+    return standin_made(p, h);
 }
 /* the pipeline a handle from vk_pipeline_get_deferred names once it is ready, else the handle: without waiting */
 VkPipeline vk_pipeline_ready(VkPipeline h) {
-    u64 v = (u64)(uintptr_t)h;
-    if ((v & ~(u64)0xFFFFFFFFull) != PIPE_STANDIN) return h;
-    u32 i = (u32)v - 1;
-    Pipe* p = g_pipeline.pstand[i / PSTAND_PAGE][i % PSTAND_PAGE];
-    return __atomic_load_n(&p->ready, __ATOMIC_ACQUIRE) ? __atomic_load_n(&p->p, __ATOMIC_ACQUIRE) : h;
+    Pipe* p = standin_pipe(h);
+    return p && __atomic_load_n(&p->ready, __ATOMIC_ACQUIRE) ? standin_made(p, h) : h;
 }
 /* the pipeline h names without waiting for it: VK_NULL_HANDLE with *pending set while a worker still makes it, and
    VK_NULL_HANDLE alone when it couldn't be made */
 VkPipeline vk_pipeline_now(VkPipeline h, int* pending) {
-    VkPipeline p = vk_pipeline_ready(h);
-    *pending = (((u64)(uintptr_t)p) & ~(u64)0xFFFFFFFFull) == PIPE_STANDIN;
-    return *pending ? VK_NULL_HANDLE : p;
+    Pipe* p = standin_pipe(h);
+    *pending = p && !__atomic_load_n(&p->ready, __ATOMIC_ACQUIRE);
+    return *pending ? VK_NULL_HANDLE : p ? standin_made(p, h) : h;
+}
+void vk_pipeline_bind(VkCommandBuffer cb, VkPipelineBindPoint bp, VkPipeline h) {
+    Pipe* p = standin_pipe(h);
+    if (p && __atomic_load_n(&p->so, __ATOMIC_RELAXED))
+        vk_so_bind(cb, &p->k, p->sh);
+    else
+        vkCmdBindPipeline(cb, bp, p ? __atomic_load_n(&p->p, __ATOMIC_ACQUIRE) : h);
 }
 void vk_pipeline_stats(u64* pipes, u64* hits, u64* make_ms, u64* wait_ms, u64* shaders, u64* shader_ms) {
     *pipes = g_pipeline.pipes_new;
@@ -2663,6 +2745,7 @@ static VkSh* sh_from_record(const PfShader* r, const u32* cbr, const u32* spv) {
     for (int i = 0; i < s->si.ntex; i++) s->indexed |= (s->si.tex[i].flags & SNX_TEX_INDEXED) != 0;
     s->mod = vk_module_spv(spv, r->nspv);
     modinfo_put(s->mod, s->hash, s->stage, r->nspv);
+    vk_so_keep_spirv(s->mod, spv, r->nspv);
     if (!s->mod) {
         free(s->cbr.r);
         free(s);
@@ -2736,6 +2819,7 @@ static u64 pf_load_source(void* ctx, const PfSource* r, const u32* cbr, const u8
     g_pipeline.replay = NULL;
     if (!spv || vk_spirv_unavailable(spv, nw) || !(s->mod = vk_module_spv(spv, nw))) goto fail;
     modinfo_put(s->mod, r->hash, (int)r->stage, nw);
+    vk_so_keep_spirv(s->mod, spv, nw);
     pf_shader_into(&g_pipeline.pf.file, s, mod_bits(s->mod), spv, nw, window, r->ncode, xfb);
     free(spv);
     free(window);
@@ -2817,7 +2901,11 @@ static void pf_load_pipe(void* ctx, const u64 m[5], const void* key, u32 keylen)
         }
     p->layout = vk_playout(p->k.arrays);
     p->fs = p->k.fs ? p->k.fs : null_fs();
-    pipe_parts(p);
+    if (vk_so_takes(&p->k, p->fs)) {
+        p->so = p->so_layout = 1;
+        p->layout = playout(p->k.arrays, 0); /* a pipeline made in its place takes it too */
+    } else
+        pipe_parts(p);
     p->prewarm = 1;
     if (((const PfLoad*)ctx)->rebuild) pf_pipe_record(&p->k);
     pm_lock(&g_pipeline.pj_lock);
@@ -3110,6 +3198,7 @@ static VkSh* pf_ship_take(u64 h, int stage, const u32 mask[SH_KEY_WORDS], u32 le
     free(owned); /* sh_from_record copied the reads */
     if (!s) return NULL;
     if (!vk_cb_folds_hold(&s->cbr, sh_cb_read, sh_cb_bytes)) {
+        vk_so_forget_spirv(s->mod); /* a later module may get its handle */
         vkDestroyShaderModule(g_vk.dev, s->mod, NULL);
         free(s->cbr.r);
         free(s);
@@ -3149,6 +3238,8 @@ static void ship_warm(int stage, int indexed, const u32* spv, u32 nw) {
        compiles whole, and a part made for it is a create the driver was not given (MoltenVK reads the null
        rasterization state of a fragment part and ends its pipeline worker) */
     if (!g_vk.has_gpl) return;
+    /* draws with shader objects make no parts: their objects are made for their draws */
+    if (g_vk.has_shader_objects) return;
     /* a control program shares the pre-rasterization part with the vertex program, so it is warmed with its draw */
     if (stage != ST_VS && stage != ST_FS) return;
     VkShaderModule mod = vk_module_spv(spv, nw);
@@ -3435,6 +3526,7 @@ static void pf_start_load(void) {
         return;
     }
     g_pipeline.pf.on = 1;
+    vk_so_open(g_pipeline.cache_dir, g_pipeline.driver_tag); /* the key of the shader file is settled now */
     null_fs(); /* made here, before the reading thread uses it */
     snx_vk_driver_path(g_pipeline.pf.path, sizeof g_pipeline.pf.path, g_pipeline.cache_dir, g_exename,
                        g_pipeline.driver_tag, ".vkshaders");

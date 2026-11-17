@@ -1100,8 +1100,9 @@ setting Vulkan pipeline cache
     default 1
     startup
     words Off|On
-    help 1 = the GPU driver's compiled pipelines are kept between runs (shader_cache/vk_pipelines.bin). 0 = they are
-    help neither read nor written: every pipeline is compiled again, as in a first run, to measure that
+    help 1 = the GPU driver's compiled pipelines are kept between runs (shader_cache/vk_pipelines.bin), and so are its
+    help shader objects' binaries (vk_shaders.bin). 0 = they are neither read nor written: every pipeline and shader
+    help object is compiled again, as in a first run, to measure that
 setting GPU mirror past limit
     key vk_mirror_past_limit
     int 0 1
