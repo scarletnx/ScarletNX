@@ -382,7 +382,13 @@ static uint32_t create_vertex_program(VitaProcess* p, VitaThread* t) {
             return 0;
         }
     }
-    if (slot == GXM_PROGRAMS) return SCE_GXM_ERROR_OUT_OF_MEMORY;
+    if (slot == GXM_PROGRAMS) {
+        /* silent on real hardware too (SCE_GXM_ERROR_NULL_PROGRAM on every draw with no handle): the one-time flag
+           below is this codebase's own, so a trace run always shows it even without --vita_gxm_trace=1 */
+        static bool warned;
+        if (!warned) warned = true, printf("gxm: the vertex program table (%u) is full\n", (unsigned)GXM_PROGRAMS);
+        return SCE_GXM_ERROR_OUT_OF_MEMORY;
+    }
     g->vertex[slot] = want;
     vita_write32(p, out, GXM_HANDLE_VERTEX + slot * GXM_PROGRAM_HANDLE);
     return 0;
@@ -415,7 +421,12 @@ static uint32_t create_fragment_program(VitaProcess* p, VitaThread* t) {
             return 0;
         }
     }
-    if (slot == GXM_FRAGMENT_PROGRAMS) return SCE_GXM_ERROR_OUT_OF_MEMORY;
+    if (slot == GXM_FRAGMENT_PROGRAMS) {
+        static bool warned;
+        if (!warned)
+            warned = true, printf("gxm: the fragment program table (%u) is full\n", (unsigned)GXM_FRAGMENT_PROGRAMS);
+        return SCE_GXM_ERROR_OUT_OF_MEMORY;
+    }
     g->fragment[slot] = want;
     vita_write32(p, out, GXM_HANDLE_FRAGMENT + slot * GXM_PROGRAM_HANDLE);
     return 0;
@@ -757,6 +768,86 @@ static uint32_t draw(VitaProcess* p, VitaThread* t) {
     return 0;
 }
 
+/* ---- precomputed draws and fragment states: the state's words (program handle, extra data) and what the extra data
+   holds (a draw's vertex streams, a fragment state's uniform buffers), all in guest memory ---- */
+enum { PD_PROGRAM = 0, PD_EXTRA = 4, PD_TYPE = 8, PD_FORMAT = 12, PD_INDICES = 16, PD_COUNT = 20 };
+static uint32_t precomputed_draw_size(VitaProcess* p, VitaThread* t) {
+    (void)p, (void)t;
+    return GXM_STREAMS * 4u;
+}
+static uint32_t precomputed_fragment_size(VitaProcess* p, VitaThread* t) {
+    (void)p, (void)t;
+    return GXP_DEFAULT_CONTAINER * 4u;
+}
+static uint32_t precomputed_init(VitaProcess* p, VitaThread* t, uint32_t extra_bytes) {
+    uint32_t state = arg(p, t, 0), program = arg(p, t, 1), extra = arg(p, t, 2);
+    if (!state || !program || !extra) return SCE_GXM_ERROR_INVALID_POINTER;
+    if (extra & 15) return SCE_GXM_ERROR_INVALID_ALIGNMENT;
+    memset(vita_ptr(p, state), 0, 24);
+    memset(vita_ptr(p, extra), 0, extra_bytes);
+    vita_write32(p, state + PD_PROGRAM, program);
+    vita_write32(p, state + PD_EXTRA, extra);
+    return 0;
+}
+static uint32_t precomputed_draw_init(VitaProcess* p, VitaThread* t) { return precomputed_init(p, t, GXM_STREAMS * 4u); }
+static uint32_t precomputed_fragment_init(VitaProcess* p, VitaThread* t) {
+    return precomputed_init(p, t, GXP_DEFAULT_CONTAINER * 4u);
+}
+static uint32_t precomputed_draw_set_stream(VitaProcess* p, VitaThread* t) {
+    uint32_t state = arg(p, t, 0), index = arg(p, t, 1);
+    if (!state) return SCE_GXM_ERROR_INVALID_POINTER;
+    if (index >= GXM_STREAMS) return SCE_GXM_ERROR_INVALID_VALUE;
+    vita_write32(p, vita_read32(p, state + PD_EXTRA) + index * 4u, arg(p, t, 2));
+    return 0;
+}
+/* sceGxmPrecomputedDrawSetParams(state, primitive type, index format, indices, count) */
+static uint32_t precomputed_draw_set_params(VitaProcess* p, VitaThread* t) {
+    uint32_t state = arg(p, t, 0);
+    if (!state || !arg(p, t, 3)) return SCE_GXM_ERROR_INVALID_POINTER;
+    vita_write32(p, state + PD_TYPE, arg(p, t, 1));
+    vita_write32(p, state + PD_FORMAT, arg(p, t, 2));
+    vita_write32(p, state + PD_INDICES, arg(p, t, 3));
+    vita_write32(p, state + PD_COUNT, arg(p, t, 4));
+    return 0;
+}
+static uint32_t precomputed_fragment_set_uniform_buffer(VitaProcess* p, VitaThread* t) {
+    uint32_t state = arg(p, t, 0), index = arg(p, t, 1);
+    if (!state) return SCE_GXM_ERROR_INVALID_POINTER;
+    if (index >= GXP_DEFAULT_CONTAINER) return SCE_GXM_ERROR_INVALID_VALUE;
+    vita_write32(p, vita_read32(p, state + PD_EXTRA) + index * 4u, arg(p, t, 2));
+    return 0;
+}
+/* sceGxmSetPrecomputedFragmentState(context, state) */
+static uint32_t set_precomputed_fragment_state(VitaProcess* p, VitaThread* t) {
+    GxmContext* c = context_of(p, arg(p, t, 0));
+    uint32_t state = arg(p, t, 1);
+    if (!c || !state) return 0;
+    c->fragment_program = vita_read32(p, state + PD_PROGRAM);
+    uint32_t extra = vita_read32(p, state + PD_EXTRA);
+    for (unsigned i = 0; i < GXP_DEFAULT_CONTAINER; ++i) c->fragment_uniform[i] = vita_read32(p, extra + i * 4u);
+    return 0;
+}
+/* sceGxmDrawPrecomputed(context, draw) */
+static uint32_t draw_precomputed(VitaProcess* p, VitaThread* t) {
+    GxmContext* c = context_of(p, arg(p, t, 0));
+    uint32_t d = arg(p, t, 1);
+    if (!c || !d) return SCE_GXM_ERROR_INVALID_POINTER;
+    if (!c->in_scene) return SCE_GXM_ERROR_NOT_WITHIN_SCENE;
+    uint32_t count = vita_read32(p, d + PD_COUNT), extra = vita_read32(p, d + PD_EXTRA);
+    c->vertex_program = vita_read32(p, d + PD_PROGRAM);
+    for (unsigned i = 0; i < GXM_STREAMS; ++i) {
+        uint32_t stream = vita_read32(p, extra + i * 4u);
+        if (stream) c->streams[i] = stream;
+    }
+    if (!vertex_of(p->gxm, c->vertex_program) || !fragment_of(p->gxm, c->fragment_program))
+        return SCE_GXM_ERROR_NULL_PROGRAM;
+    if (!count) return SCE_GXM_ERROR_INVALID_INDEX_COUNT;
+    ++p->gxm->draws;
+    vita_render_draw(p, c, vita_read32(p, d + PD_TYPE), vita_read32(p, d + PD_FORMAT), vita_read32(p, d + PD_INDICES),
+                     count, 1);
+    return 0;
+}
+
 /* ---- textures: their control words (vita/gpu/texture.h) ---- */
 static GxmTexture texture_read(VitaProcess* p, uint32_t address) {
     GxmTexture texture;
@@ -1057,6 +1148,19 @@ static uint32_t parameter_get_type(VitaProcess* p, VitaThread* t) {
 static uint32_t parameter_get_component_count(VitaProcess* p, VitaThread* t) {
     return gxp_parameter_components(vita_ptr(p, arg(p, t, 0)));
 }
+/* sceGxmProgramParameterGetIndex(program, parameter): its place among the program's parameters */
+static uint32_t parameter_get_index(VitaProcess* p, VitaThread* t) {
+    uint32_t program = arg(p, t, 0), parameter = arg(p, t, 1);
+    const unsigned char* g = vita_ptr(p, program);
+    uint32_t first = program + (uint32_t)(gxp_parameter(g, 0) - g);
+    return parameter >= first ? (parameter - first) / 16 : 0;
+}
+static uint32_t parameter_get_container_index(VitaProcess* p, VitaThread* t) {
+    return gxp_parameter_container(vita_ptr(p, arg(p, t, 0)));
+}
+static uint32_t program_is_native_color_used(VitaProcess* p, VitaThread* t) {
+    return (snx_ld_le32(vita_ptr(p, arg(p, t, 0)) + GXP_FLAGS) & GXP_FLAG_NATIVECOLOR_USED) != 0;
+}
 static uint32_t parameter_get_array_size(VitaProcess* p, VitaThread* t) {
     return gxp_parameter_array_size(vita_ptr(p, arg(p, t, 0)));
 }
@@ -1067,6 +1171,16 @@ static uint32_t vertex_program_get_program(VitaProcess* p, VitaThread* t) {
 static uint32_t fragment_program_get_program(VitaProcess* p, VitaThread* t) {
     GxmFragmentProgram* f = p->gxm ? fragment_of(p->gxm, arg(p, t, 0)) : NULL;
     return f ? f->program : 0;
+}
+
+/* sceGxmFragmentProgramGetPassType(program): SceGxmPassType (opaque 0, translucent 1, discard 2, mask update 3, depth
+   replace 4) from what the program does: it writes its depth, it discards pixels, or it blends. (Vita3K returns opaque
+   for all; mask update is never told apart, no GXP flag of it is known here) */
+static uint32_t fragment_program_get_pass_type(VitaProcess* p, VitaThread* t) {
+    GxmFragmentProgram* f = p->gxm ? fragment_of(p->gxm, arg(p, t, 0)) : NULL;
+    if (!f) return 0;
+    uint32_t flags = f->program ? vita_read32(p, f->program + GXP_FLAGS) : 0;
+    return flags & GXP_FLAG_DEPTH_USED ? 4 : flags & GXP_FLAG_DISCARD_USED ? 2 : f->blend ? 1 : 0;
 }
 
 /* ---- more of the context's state ---- */
@@ -1205,6 +1319,15 @@ const VitaHle vita_hle_gxm[] = {
     {0x7b1fabb6u, "sceGxmReserveFragmentDefaultUniformBuffer", reserve_fragment},
     {0x65dd0c84u, "sceGxmSetUniformDataF", set_uniform_data_f},
     {0xbc059afcu, "sceGxmDraw", draw},
+    {0x85de8506u, "sceGxmGetPrecomputedFragmentStateSize", precomputed_fragment_size},
+    {0xe297d7afu, "sceGxmPrecomputedFragmentStateInit", precomputed_fragment_init},
+    {0xb452f1fbu, "sceGxmPrecomputedFragmentStateSetUniformBuffer", precomputed_fragment_set_uniform_buffer},
+    {0xf8952750u, "sceGxmSetPrecomputedFragmentState", set_precomputed_fragment_state},
+    {0x41bbd792u, "sceGxmGetPrecomputedDrawSize", precomputed_draw_size},
+    {0xa197f096u, "sceGxmPrecomputedDrawInit", precomputed_draw_init},
+    {0x6c936214u, "sceGxmPrecomputedDrawSetVertexStream", precomputed_draw_set_stream},
+    {0x884d0d08u, "sceGxmPrecomputedDrawSetParams", precomputed_draw_set_params},
+    {0xed3f78b8u, "sceGxmDrawPrecomputed", draw_precomputed},
     {0x4811aecbu, "sceGxmTextureInitLinear", texture_init_linear},
     {0xd572d547u, "sceGxmTextureInitSwizzled", texture_init_swizzled},
     {0xe6f0db27u, "sceGxmTextureInitTiled", texture_init_tiled},
@@ -1245,8 +1368,12 @@ const VitaHle vita_hle_gxm[] = {
     {0x7b9023c3u, "sceGxmProgramParameterGetType", parameter_get_type},
     {0xbd2998d1u, "sceGxmProgramParameterGetComponentCount", parameter_get_component_count},
     {0xdba8d061u, "sceGxmProgramParameterGetArraySize", parameter_get_array_size},
+    {0x6e61ddf5u, "sceGxmProgramParameterGetIndex", parameter_get_index},
+    {0xbb58267du, "sceGxmProgramParameterGetContainerIndex", parameter_get_container_index},
+    {0xa4297e57u, "sceGxmProgramIsNativeColorUsed", program_is_native_color_used},
     {0xbc52320eu, "sceGxmVertexProgramGetProgram", vertex_program_get_program},
     {0xe0e3b3f8u, "sceGxmFragmentProgramGetProgram", fragment_program_get_program},
+    {0xce0b0a76u, "sceGxmFragmentProgramGetPassType", fragment_program_get_pass_type},
     {0xb042a4d2u, "sceGxmSetBackDepthFunc", set_back_depth_func},
     {0xc18b706bu, "sceGxmSetBackDepthWriteEnable", ok},
     {0xb8645a9au, "sceGxmSetFrontStencilFunc", set_front_stencil_func},

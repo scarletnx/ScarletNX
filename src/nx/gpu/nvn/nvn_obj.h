@@ -564,6 +564,9 @@ enum {
     OP_PUSH_CONSTANTS,
     OP_DRAW_MESH,
     OP_DLSS,
+    OP_RATE_IMAGE,
+    OP_RATE_PALETTE,
+    OP_RATE_MODE,
     OP_COUNT_
 };
 typedef char NvnOpcodeMaskFits[(OP_COUNT_ <= 128) ? 1 : -1]; /* nvn_replay.h's unknown[2] */
@@ -833,6 +836,32 @@ typedef struct {
     i32 base[5][2];               /* NvnDlssParameters.base */
     NVNcopyRegion sr[2], dr[2];   /* the stand-in copies */
 } NvnPDlss;
+/* An Ounce's shading rate image (nvnCommandBufferBindShadingRateImage), its texture's snapshot after it: 0 unbinds it.
+   Each texel is an index into the palette of the viewport that a primitive is drawn in, for 16x16 pixels */
+typedef struct {
+    u64 tex;
+    NvnView view;
+    u8 has_view, pad[7];
+} NvnPRateImage;
+/* a viewport's palette (nvnCommandBufferShadingRateImagePalette), as the game's driver packs it for methods 0xed1 and
+   0xed2: entry i in bits 4i to 4i+3. An entry is a rate as the hardware numbers it, which VkShadingRatePaletteEntryNV
+   keeps (5: one invocation for each pixel, which fills the entries that the game leaves out) */
+typedef struct {
+    i32 viewport, pad;
+    u64 rates;
+} NvnPRatePalette;
+#define NVN_RATE_PALETTE_FULL 0x5555555555555555ull /* each entry one invocation for each pixel */
+#define NVN_RATE_TEXEL        16u                    /* the pixels that a texel of the image covers, in x and in y */
+/* the palette that nvnCommandBufferShadingRateImagePalette packs from the game's n rates (NULL for none): the low 4
+   bits of each of the first n, up to 16, and 5 in the other entries */
+static inline u64 nvn_rate_palette(const u32* rates, i32 n) {
+    u64 p = NVN_RATE_PALETTE_FULL;
+    for (i32 i = 0; rates && i < n && i < 16; i++) {
+        u32 shift = 4u * (u32)i;
+        p = (p & ~(15ull << shift)) | (u64)(rates[i] & 15u) << shift;
+    }
+    return p;
+}
 typedef struct {
     u64 texture;
     NvnView view;

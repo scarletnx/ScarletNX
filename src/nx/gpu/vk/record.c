@@ -112,6 +112,8 @@ static int rec_on(VkCommandBuffer cb) {
     return g_rec > 0 && (cb == g_rec_cb || (cb && cb == vk_cmd_upload_recording()));
 }
 
+int vk_rec_ring(VkCommandBuffer cb) { return rec_on(cb); }
+
 static void wake(void) {
     if (__atomic_load_n(&g_sleep, __ATOMIC_SEQ_CST)) {
         pm_lock(&g_m);
@@ -1485,6 +1487,9 @@ typedef struct {
     VkRect2D area;
     u32 layers, view_mask, n;
     int depth, stencil;
+    /* an Ounce's shading rate image as the pass's attachment (shading_rate.c), VK_NULL_HANDLE for none */
+    VkImageView rate;
+    VkExtent2D rate_texel;
 } RenderArgs;
 static void rendering_run(const void* p) {
     const RenderArgs* x = p;
@@ -1498,11 +1503,22 @@ static void rendering_run(const void* p) {
                           .pColorAttachments = a,
                           .pDepthAttachment = x->depth ? &a[x->n] : NULL,
                           .pStencilAttachment = x->stencil ? &a[x->n + 1] : NULL};
+    VkRenderingFragmentShadingRateAttachmentInfoKHR rate = {
+        .sType = VK_STRUCTURE_TYPE_RENDERING_FRAGMENT_SHADING_RATE_ATTACHMENT_INFO_KHR,
+        .imageView = x->rate,
+        .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
+        .shadingRateAttachmentTexelSize = x->rate_texel};
+    if (x->rate) ri.pNext = &rate;
     vkCmdBeginRendering(x->cb, &ri);
 }
 void rec_CmdBeginRendering(VkCommandBuffer cb, const VkRenderingInfo* ri) {
     vk_ck(cb, VK_CK_PASS, ri->renderArea.extent.width, ri->renderArea.extent.height, ri->colorAttachmentCount, 0);
-    int chained = ri->pNext || (ri->pDepthAttachment && ri->pDepthAttachment->pNext) ||
+    /* a shading rate attachment alone goes in the packet */
+    const VkRenderingFragmentShadingRateAttachmentInfoKHR* rate = ri->pNext;
+    if (rate && (rate->sType != VK_STRUCTURE_TYPE_RENDERING_FRAGMENT_SHADING_RATE_ATTACHMENT_INFO_KHR || rate->pNext ||
+                 rate->imageLayout != VK_IMAGE_LAYOUT_GENERAL))
+        rate = NULL;
+    int chained = (ri->pNext && !rate) || (ri->pDepthAttachment && ri->pDepthAttachment->pNext) ||
                   (ri->pStencilAttachment && ri->pStencilAttachment->pNext);
     for (u32 i = 0; i < ri->colorAttachmentCount && !chained; i++) chained = ri->pColorAttachments[i].pNext != NULL;
     if (!rec_on(cb) || chained) {
@@ -1513,8 +1529,16 @@ void rec_CmdBeginRendering(VkCommandBuffer cb, const VkRenderingInfo* ri) {
     u32 n = ri->colorAttachmentCount;
     RenderArgs* x = rec_push(rendering_run, REC_AL(sizeof *x) + (n + 2) * sizeof(VkRenderingAttachmentInfo));
     VkRenderingAttachmentInfo* a = (void*)((u8*)x + REC_AL(sizeof *x));
-    *x = (RenderArgs){cb, ri->flags, ri->renderArea, ri->layerCount, ri->viewMask, n, !!ri->pDepthAttachment,
-                      !!ri->pStencilAttachment};
+    *x = (RenderArgs){cb,
+                      ri->flags,
+                      ri->renderArea,
+                      ri->layerCount,
+                      ri->viewMask,
+                      n,
+                      !!ri->pDepthAttachment,
+                      !!ri->pStencilAttachment,
+                      rate ? rate->imageView : VK_NULL_HANDLE,
+                      rate ? rate->shadingRateAttachmentTexelSize : (VkExtent2D){0, 0}};
     memcpy(a, ri->pColorAttachments, n * sizeof *a);
     if (ri->pDepthAttachment) a[n] = *ri->pDepthAttachment;
     if (ri->pStencilAttachment) a[n + 1] = *ri->pStencilAttachment;

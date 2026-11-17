@@ -471,7 +471,8 @@ bool vita_render_init(VitaProcess* p) {
     for (unsigned s = 0; ok && s < VITA_VK_SLOTS; ++s) {
         VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
                                  .size = STAGING,
-                                 .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                                 .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
+                                          VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
                                  .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
         ok = vkCreateBuffer(v->device, &bi, NULL, &r->staging[s].buffer) == VK_SUCCESS;
         VkMemoryRequirements req;
@@ -832,7 +833,11 @@ bool vita_render_show(VitaProcess* p, uint32_t address, uint32_t pitch, uint32_t
         return true;
     VkDeviceSize at;
     const Import* m = buffer_of(r, p, address, bytes, &at);
-    if (!m) return false;
+    if (!m) {
+        once_value(r, 21, address, "the display's framebuffer at 0x%08" PRIx32 " is not in memory the GPU can reach",
+                   address);
+        return false;
+    }
     uint64_t since = vita_watch_protect(address, bytes);
     /* the present's own commands (a copy, a blit) can't go inside the next scene's render pass, which the game may
        already have open (begin_scene) while this, the already-finished frame, is still what gets shown. The present

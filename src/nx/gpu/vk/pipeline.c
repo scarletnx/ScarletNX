@@ -25,6 +25,7 @@
 #include "nx/gpu/vk/lookup_ways.h"
 #include "nx/gpu/vk/pipeline_file.h"
 #include "nx/gpu/vk/pipeline_parts.h"
+#include "nx/gpu/vk/shading_rate.h"
 #include "nx/gpu/vk/cb_fold.h"
 #include "nx/gpu/vk/internal_spv.h"
 #include "nx/gpu/vk/tess_passthrough.h"
@@ -404,6 +405,10 @@ const char* vk_spirv_unavailable(const u32* spv, size_t words) {
             return "cooperativeMatrix or the Vulkan memory model is unavailable";
         if (width == 2 && spv[at + 1] == SPV_CAPABILITY_ATOMIC_FLOAT32_ADD_EXT && !g_spirv_translate.float_atomic_add)
             return "shaderBufferFloat32AtomicAdd is unavailable";
+        if (width == 2 && spv[at + 1] == SPV_CAPABILITY_SHADING_RATE_NV && g_vk.vrs != VK_VRS_NV)
+            return "shadingRateImage is unavailable";
+        if (width == 2 && spv[at + 1] == SPV_CAPABILITY_FRAGMENT_SHADING_RATE_KHR && g_vk.vrs != VK_VRS_KHR)
+            return "attachmentFragmentShadingRate is unavailable";
         at += width;
     }
     return NULL;
@@ -1439,7 +1444,8 @@ typedef struct {
     VkPipelineCreationFeedback made;
     VkPipelineCreationFeedbackCreateInfo fi;
     PipeDynIn dyn;
-    VkPipelineCreateFlags flags; /* the descriptor buffers' and the feedback loop's */
+    VkPipelineCreateFlags flags; /* the descriptor buffers', the feedback loop's and the shading rate's */
+    VkVrsPipe vrs;               /* an Ounce's shading rate image (shading_rate.c) */
 } PipeInfo;
 static void pipe_info(const PipeKey* k, VkShaderModule fs, PipeInfo* o) {
     static const VkShaderStageFlagBits bits[5] = {VK_SHADER_STAGE_VERTEX_BIT, VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT,
@@ -1664,9 +1670,12 @@ static void pipe_info(const PipeKey* k, VkShaderModule fs, PipeInfo* o) {
                          .vertex_input = g_vk.vertex_input_dynamic,
                          .tess = k->tes != VK_NULL_HANDLE,
                          .mesh = k->mesh != 0,
-                         .clamp_range = g_vk.has_depth_clamp_range};
+                         .clamp_range = g_vk.has_depth_clamp_range,
+                         .rate_palette = g_vk.vrs == VK_VRS_NV};
     o->flags = (g_vk.has_descriptor_buffers ? VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT : 0) |
-               (k->feedback ? VK_PIPELINE_CREATE_COLOR_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT : 0);
+               (k->feedback ? VK_PIPELINE_CREATE_COLOR_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT : 0) | vk_vrs_pipeline_flags();
+    /* each draw pipeline reads the shading rate image, which shades each pixel where none is bound */
+    vk_vrs_pipeline(&o->vrs, &o->vp, &o->fi);
 }
 /* the creation feedback after next in a chain: the robustness of vertex inputs where the device has it, then the
    feedback */
@@ -1716,7 +1725,8 @@ static VkPipeline pipe_create(const Pipe* e, int* hit) {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_CREATE_FLAGS_2_CREATE_INFO,
         .pNext = gi.pNext,
         .flags = VK_PIPELINE_CREATE_2_DESCRIPTOR_HEAP_BIT_EXT |
-                 (e->k.feedback ? VK_PIPELINE_CREATE_2_COLOR_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT : 0)};
+                 (e->k.feedback ? VK_PIPELINE_CREATE_2_COLOR_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT : 0) |
+                 (VkPipelineCreateFlags2)vk_vrs_pipeline_flags()};
     if (e->k.heaps) {
         gi.pNext = &flags2;
         gi.flags = 0;
@@ -1867,7 +1877,8 @@ static VkPipeline lib_create(const PipeLib* l, int* hit) {
                                        .pNext = &gl,
                                        .flags = VK_PIPELINE_CREATE_LIBRARY_BIT_KHR |
                                                 VK_PIPELINE_CREATE_RETAIN_LINK_TIME_OPTIMIZATION_INFO_BIT_EXT |
-                                                (o.flags & VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT),
+                                                (o.flags & VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT) |
+                                                vk_vrs_pipeline_flags(),
                                        .pDynamicState = &dy};
     VkPipelineCache cache = VK_NULL_HANDLE; /* the interfaces cost microseconds: nothing worth a cache entry */
     switch (l->part) {
@@ -1984,7 +1995,7 @@ static VkPipeline gpl_link(const Pipe* e, int lto, int* hit) {
         .pNext = &li,
         .flags = (g_vk.has_descriptor_buffers ? VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT : 0) |
                  (e->k.feedback ? VK_PIPELINE_CREATE_COLOR_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT : 0) |
-                 (lto ? VK_PIPELINE_CREATE_LINK_TIME_OPTIMIZATION_BIT_EXT : 0),
+                 (lto ? VK_PIPELINE_CREATE_LINK_TIME_OPTIMIZATION_BIT_EXT : 0) | vk_vrs_pipeline_flags(),
         .layout = e->layout};
     VkPipeline p = VK_NULL_HANDLE;
     const VkShaderModule modules[5] = {e->k.vs, e->k.tcs, e->k.tes, e->k.gs, e->fs};
@@ -2798,6 +2809,8 @@ static void pf_key(char* out, size_t n, size_t* guest) {
                   (u32)g_spirv_translate.dynamic_texture_offsets,
                   g_vk.feat13.maintenance4,
                   (u32)g_vk.has_depth_range_unrestricted,
+                  /* how a fragment program reads its fragment's size (S2R 0x84) */
+                  (u32)g_spirv_translate.shading_rate,
                   (u32)g_vk.vertex_input_dynamic};
     /* the last word, dynamic vertex input, only where it is on: its keys hold no vertex layout (PipeKey.vi), and the
        files of every device without it keep the key they have */

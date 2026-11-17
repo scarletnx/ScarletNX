@@ -214,6 +214,16 @@ static uint32_t receive_app_event(VitaProcess* p, VitaThread* t) {
     vita_write32(p, out, 0); /* no event */
     return 0;
 }
+/* sceAppMgrAppParamGetString(pid, param, *out, size): the title ID (param 12), what a plugin loader names its files by */
+static uint32_t app_param_get_string(VitaProcess* p, VitaThread* t) {
+    uint32_t out = vita_arg(p, t, 2), size = vita_arg(p, t, 3);
+    size_t length = strlen(p->title_id);
+    if (vita_arg(p, t, 1) != 12 || !out || !size || !vita_mapped(p, out, size)) return 0x80010016u; /* EINVAL */
+    if (length >= size) length = size - 1;
+    memcpy(vita_ptr(p, out), p->title_id, length);
+    ((char*)vita_ptr(p, out))[length] = 0;
+    return 0;
+}
 /* sceAppUtilAppParamGetInt(id, *value): the game's full version (SCE_APPUTIL_APPPARAM_ID_SKU_FLAG 0, SKU 3) */
 static uint32_t app_param_get_int(VitaProcess* p, VitaThread* t) {
     uint32_t out = vita_arg(p, t, 1);
@@ -450,6 +460,51 @@ static uint32_t font_fail(VitaProcess* p, VitaThread* t) {
     return SCE_FONT_ERROR_HANDLER_OPEN_FAILED;
 }
 
+/* sceAppUtilSaveDataGetQuota(SceSize* quota KiB, SceSize* used KiB, mount point): the save data's room. The game's
+   SAVEDATA_MAX_SIZE is not at hand here, so the quota is a card's worth of room (as sceAppUtilSaveDataDataSave's
+   "required" says there is room) and none of it used */
+static uint32_t save_data_get_quota(VitaProcess* p, VitaThread* t) {
+    uint32_t quota = vita_arg(p, t, 0), used = vita_arg(p, t, 1);
+    if (!quota && !used) return SCE_APPUTIL_ERROR_PARAMETER;
+    if ((quota && !vita_mapped(p, quota, 4)) || (used && !vita_mapped(p, used, 4))) return SCE_APPUTIL_ERROR_PARAMETER;
+    if (quota) vita_write32(p, quota, 64u << 10);
+    if (used) vita_write32(p, used, 0);
+    return 0;
+}
+/* sceAppUtilSaveSafeMemory and LoadSafeMemory(buffer, size, offset): the 64 KiB the console keeps for a game's
+   settings apart from its save data, kept in a file of the save data folder. Both return the size; a load of a memory
+   never saved gives zeros */
+#define SAFE_MEMORY_SIZE (64u * 1024)
+static char* safe_memory_path(VitaProcess* p) { return snx_path_join(p->savedata, ".safe_memory"); }
+static bool safe_memory_range(VitaProcess* p, VitaThread* t, uint32_t* buffer, uint32_t* size, uint32_t* offset) {
+    *buffer = vita_arg(p, t, 0), *size = vita_arg(p, t, 1);
+    uint64_t at = vita_arg(p, t, 2) | (uint64_t)vita_arg(p, t, 3) << 32; /* a 64-bit argument, from an even register */
+    if (!*buffer || at > SAFE_MEMORY_SIZE || *size > SAFE_MEMORY_SIZE - at || !vita_mapped(p, *buffer, *size))
+        return false;
+    *offset = (uint32_t)at;
+    return true;
+}
+static uint32_t save_safe_memory(VitaProcess* p, VitaThread* t) {
+    uint32_t buffer, size, offset;
+    if (!safe_memory_range(p, t, &buffer, &size, &offset)) return SCE_APPUTIL_ERROR_PARAMETER;
+    char* path = safe_memory_path(p);
+    bool ok = path && save_file(path, vita_ptr(p, buffer), size, offset, false);
+    free(path);
+    return ok ? size : SCE_APPUTIL_ERROR_SAVEDATA_NO_SPACE_FS;
+}
+static uint32_t load_safe_memory(VitaProcess* p, VitaThread* t) {
+    uint32_t buffer, size, offset;
+    if (!safe_memory_range(p, t, &buffer, &size, &offset)) return SCE_APPUTIL_ERROR_PARAMETER;
+    char* path = safe_memory_path(p);
+    size_t have = 0;
+    unsigned char* bytes = path && snx_is_file(path) ? snx_read_file(path, &have) : NULL;
+    memset(vita_ptr(p, buffer), 0, size);
+    if (bytes && have > offset) memcpy(vita_ptr(p, buffer), bytes + offset, have - offset < size ? have - offset : size);
+    free(bytes);
+    free(path);
+    return size;
+}
+
 const VitaHle vita_hle_misc[] = {
     {0x2085d15du, "scePowerGetBatteryLifePercent", battery_percent},
     {0x8efb3fa2u, "scePowerGetBatteryLifeTime", battery_life_time},
@@ -487,6 +542,7 @@ const VitaHle vita_hle_misc[] = {
     {0x10b5765fu, "sceAppMgrReceiveSystemEvent", receive_system_event},
     {0xfff8f7f0u, "sceAppMgrIsGameProgram", one},
     {0xafceab96u, "sceAppMgrAcquireBgmPort", zero},
+    {0xf3717e37u, "sceAppMgrReleaseBgmPort", zero},
     {0xb18370c2u, "sceTouchEnableTouchForce", zero},
     {0x76e674d1u, "sceScreenShotEnable", zero},
     {0x50ae9ff9u, "sceScreenShotDisable", zero},
@@ -497,6 +553,7 @@ const VitaHle vita_hle_misc[] = {
     {0x3e9172eau, "_sceFiosKernelOverlayThreadSetDisabled", zero},
     {0xee0dbed9u, "sceAppUtilReceiveAppEvent", receive_app_event},
     {0xcd7fd67au, "sceAppUtilAppParamGetInt", app_param_get_int},
+    {0x0c733ae2u, "sceAppMgrAppParamGetString", app_param_get_string},
     {0x7e8fe96au, "sceAppUtilSaveDataSlotCreate", save_data_slot_create},
     {0x266a7646u, "sceAppUtilSaveDataSlotDelete", save_data_slot_delete},
     {0x93f0d89fu, "sceAppUtilSaveDataSlotGetParam", save_data_slot_get_param},
@@ -505,6 +562,9 @@ const VitaHle vita_hle_misc[] = {
     {0x2db7be3bu, "sceAppUtilDrmOpen", drm_open},
     {0x6a140498u, "sceAppUtilDrmClose", drm_close},
     {0xd1c6ab8eu, "sceAppUtilSaveDataDataRemove", save_data_data_remove},
+    {0xc560e716u, "sceAppUtilSaveDataGetQuota", save_data_get_quota},
+    {0x9d8ac677u, "sceAppUtilSaveSafeMemory", save_safe_memory},
+    {0x3424d772u, "sceAppUtilLoadSafeMemory", load_safe_memory},
     {0xe6774abcu, "sceAppMgrLoadExec", load_exec},
     {0x5e86319au, "_sceAppMgrGetAppState", get_app_state},
     {0x210c0046u, "__sceAppMgrGetAppState", get_app_state},

@@ -190,6 +190,7 @@ The settings, each with its extension and, where one took it in, the Vulkan vers
 | `vk_khr_external_memory_win32` | `auto` | `VK_KHR_external_memory_win32` |
 | `vk_khr_format_feature_flags2` | `auto` | `VK_KHR_format_feature_flags2`, promoted to Vulkan 1.3 |
 | `vk_khr_fragment_shader_barycentric` | `auto` | `VK_KHR_fragment_shader_barycentric` |
+| `vk_khr_fragment_shading_rate` | `auto` | `VK_KHR_fragment_shading_rate` |
 | `vk_khr_index_type_uint8` | `auto` | `VK_KHR_index_type_uint8`, promoted to Vulkan 1.4 |
 | `vk_khr_load_store_op_none` | `auto` | `VK_KHR_load_store_op_none`, promoted to Vulkan 1.4 |
 | `vk_khr_maintenance4` | `auto` | `VK_KHR_maintenance4`, promoted to Vulkan 1.3 |
@@ -214,6 +215,7 @@ The settings, each with its extension and, where one took it in, the Vulkan vers
 | `vk_nv_device_diagnostic_checkpoints` | `auto` | `VK_NV_device_diagnostic_checkpoints` |
 | `vk_nv_fragment_coverage_to_color` | `auto` | `VK_NV_fragment_coverage_to_color` |
 | `vk_nv_framebuffer_mixed_samples` | `auto` | `VK_NV_framebuffer_mixed_samples` |
+| `vk_nv_shading_rate_image` | `auto` | `VK_NV_shading_rate_image` |
 | `vk_valve_shader_mixed_float_dot_product` | `auto` | `VK_VALVE_shader_mixed_float_dot_product` |
 
 ## Audio

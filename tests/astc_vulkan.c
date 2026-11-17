@@ -91,6 +91,24 @@ void vk_surf_use(VkCommandBuffer cb, Surf* s, VkImageLayout layout, VkPipelineSt
     s->stage = stage;
     s->access = access;
 }
+/* surface.c's table: the textures a case lists (live_cases), by address. Other cases list none, so a failed cache read
+   finds no texture to load again (astc.c's cache_failed) and no level is copied from another texture (live_level) */
+#define LISTED 8 /* at least LIVE */
+static Surf* g_listed[LISTED];
+static Surf* listed_from(u32 i, u64 gva) {
+    for (; i < LISTED; i++)
+        if (g_listed[i] && g_listed[i]->gva == gva) return g_listed[i];
+    return NULL;
+}
+Surf* vk_surf_first(u64 gva) { return listed_from(0, gva); }
+Surf* vk_surf_next(const Surf* s) {
+    for (u32 i = 0; i < LISTED; i++)
+        if (g_listed[i] == s) return listed_from(i + 1, s->gva);
+    return NULL;
+}
+#if defined(_WIN32)
+void plat_prof_add_thread(HANDLE h) { (void)h; } /* profiler_win32.c's: no profiler here */
+#endif
 /* The standalone upload test has no guest buffer cache to flush or retire. */
 void vk_buf_frame_done(u64 frame) { (void)frame; }
 void vk_gfx_image_frame_done(u64 sub) { (void)sub; }
@@ -121,6 +139,11 @@ int gmem_read(u64 gva, void* dst, u64 size) {
 void vk_lock(void) {}
 void vk_unlock(void) {}
 int vk_lock_held(void) { return 1; } /* cmd.c's wait for the next frame slot then waits under the lock, as before */
+/* the lock is no lock here, so a wait has nothing to let go of (device.c) */
+int vk_lock_pause(void) { return 0; }
+void vk_lock_resume(int paused) { (void)paused; }
+/* no draw's setup runs here, so an upload never lets the lock go to restart one (render.c) */
+int vk_render_setup_restarts(void) { return 0; }
 /* record.c resolves stand-ins for pipelines still being made (pipeline.c, not here): the test binds real ones */
 VkPipeline vk_pipeline_resolve(VkPipeline h) { return h; }
 VkPipeline vk_pipeline_now(VkPipeline h, int* pending) {
@@ -1151,6 +1174,140 @@ static void cache_burst(void) {
     printf("PASS the BC7 cache: a burst of %d encodes in one submission, every one stored\n", N);
     fflush(stdout);
 }
+/* Live levels (astc.c's live_level): one level's blocks in textures at several addresses, each its own image, listed in
+   the table. The first decodes them. The second, at another address, copies them from the first's image on the GPU:
+   no cache read, no encode, the same bytes. The first written since (its wgen) and the second gone from the table, a
+   third reads the cache. A fourth right after it does not copy from the third, whose read is not done yet, and reads
+   too. After a finish, a fifth copies from the fourth. Then other blocks: a sixth decodes them and a seventh, in the
+   same command buffer with no finish between, copies them from the sixth's image, which the encoder has just written */
+static void live_surf(Surf* t, const CacheCase* c, u64 gva) {
+    const VkFormat format = c->srgb ? VK_FORMAT_BC7_SRGB_BLOCK : VK_FORMAT_BC7_UNORM_BLOCK;
+    *t = (Surf){.w = c->w,
+                .h = c->h,
+                .layers = 1,
+                .levels = 1,
+                .depth3d = 1,
+                .gva = gva,
+                .wgen = (u32)gva >> 20,
+                .upload_valid = 1,
+                .type = VK_IMAGE_VIEW_TYPE_2D,
+                .f = {.vk = format, .bw = c->bw, .bh = c->bh}};
+    VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                            .imageType = VK_IMAGE_TYPE_2D,
+                            .format = format,
+                            .extent = {c->w, c->h, 1},
+                            .mipLevels = 1,
+                            .arrayLayers = 1,
+                            .samples = VK_SAMPLE_COUNT_1_BIT,
+                            .tiling = VK_IMAGE_TILING_OPTIMAL,
+                            .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT};
+    if (!vk_image_create(&ii, &t->img, &t->mem)) fatal("cannot create a %ux%u BC7 image\n", c->w, c->h);
+    vk_surf_use(vk_cmd(), t, VK_LAYOUT(TRANSFER_DST_OPTIMAL), VK_PIPELINE_STAGE_2_COPY_BIT,
+                VK_ACCESS_2_TRANSFER_WRITE_BIT);
+}
+/* the level into t, with the key texture.c makes of its blocks */
+static void live_upload(Surf* t, const CacheCase* c, const u8* blocks) {
+    const u32 nx = (c->w + c->bw - 1) / c->bw, ny = (c->h + c->bh - 1) / c->bh;
+    const u32 layout[8] = {0, nx * 16, nx * 16, ny, 0, 0, 0, 1};
+    u64 content[2] = {0, 0};
+    vk_bc7_content(content, layout, sizeof layout);
+    vk_bc7_content(content, blocks, (u64)nx * ny * 16);
+    Level lv = {blocks, nx, ny, NULL, 2, 0};
+    vk_surf_use(vk_cmd(), t, VK_LAYOUT(TRANSFER_DST_OPTIMAL), VK_PIPELINE_STAGE_2_COPY_BIT,
+                VK_ACCESS_2_TRANSFER_WRITE_BIT);
+    if (!vk_astc_upload(vk_cmd(), t, 0, 0, c->w, c->h, 1, 0, 0, level_rows, &lv, content))
+        fatal("live upload failed\n");
+}
+/* t's blocks, read back (the caller frees them) */
+static u8* live_read(Surf* t, u64 size) {
+    vk_surf_use(vk_cmd(), t, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), VK_PIPELINE_STAGE_2_COPY_BIT,
+                VK_ACCESS_2_TRANSFER_READ_BIT);
+    VkBuffer readback;
+    u8* actual = vk_readback_buffer(size, &readback);
+    if (!actual) fatal("no readback buffer of %llu bytes\n", (unsigned long long)size);
+    VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {t->w, t->h, 1}};
+    rec_CmdCopyImageToBuffer(vk_cmd(), t->img, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), readback, 1, &copy);
+    vk_finish();
+    vk_readback_ready();
+    u8* got = malloc((size_t)size);
+    if (!got) fatal("no memory for %llu bytes\n", (unsigned long long)size);
+    memcpy(got, actual, (size_t)size);
+    return got;
+}
+#define LIVE 7 /* uploads */
+static void live_cases(void) {
+    static const CacheCase c = {6, 6, 0, 97, 61, 1, 1};
+    if (!g_vk.feat.textureCompressionBC || !vk_astc_cached(c.w, c.h, 1)) {
+        printf("SKIP live levels: the device has no BC7 image, or the cache does not take the level\n");
+        return;
+    }
+    const u64 size = (u64)((c.w + 3) / 4) * ((c.h + 3) / 4) * 16;
+    u8* blocks = blocks_new(c.w, c.h, 1, c.bw, c.bh);
+    u8* other = blocks_new(c.w, c.h, 1, c.bw, c.bh);
+    if (!memcmp(blocks, other, (size_t)((c.w + c.bw - 1) / c.bw) * ((c.h + c.bh - 1) / c.bh) * 16))
+        fatal("live levels: the second blocks are the first's\n");
+    Surf t[LIVE];
+    u64 levels, hits, copies, encodes;
+    /* step: what the upload of t[i] did (copies and hits since the step before, encoder dispatches) */
+    const char* what[LIVE] = {"decoded",
+                              "copied from the first",
+                              "read after the first was written",
+                              "read while the third's read is on its way",
+                              "copied from the fourth",
+                              "other blocks decoded",
+                              "copied from the sixth in the same command buffer"};
+    /* without the recording thread the third's read is done at once, and the fourth copies from it */
+    const int later = vk_rec_threaded();
+    const u64 want_copies[LIVE] = {0, 1, 0, later ? 0 : 1, 1, 0, 1};
+    const u64 want_hits[LIVE] = {0, 0, 1, later ? 1 : 0, 0, 0, 0};
+    const int want_encode[LIVE] = {1, 0, 0, 0, 0, 1, 0};
+    for (u32 i = 0; i < LIVE; i++) {
+        live_surf(&t[i], &c, 0x1000000ull * (i + 1));
+        g_listed[i] = &t[i];
+        if (i == 2) {
+            t[0].wgen++;        /* written since its upload */
+            g_listed[1] = NULL; /* gone */
+        }
+        if (i == 4) vk_finish(); /* the fourth's read is done */
+        bc7_counts(&levels, &hits);
+        copies = vk_astc_bc7_copies();
+        encodes = vk_astc_dispatches();
+        live_upload(&t[i], &c, i < 5 ? blocks : other);
+        u64 hits2, copies2 = vk_astc_bc7_copies();
+        bc7_counts(&levels, &hits2);
+        const int encoded = vk_astc_dispatches() != encodes;
+        if (copies2 - copies != want_copies[i] || hits2 - hits != want_hits[i] || encoded != want_encode[i])
+            fatal("live levels: upload %u (%s) made %llu copies, %llu cache hits, %s\n", i + 1, what[i],
+                  (unsigned long long)(copies2 - copies), (unsigned long long)(hits2 - hits),
+                  encoded ? "an encode" : "no encode");
+        if (!i) vk_finish(); /* its blocks into the cache, for the third */
+    }
+    /* each image's blocks, read back after every upload: a readback waits for the GPU, which would land the third's
+       read before the fourth's upload */
+    u8* first = live_read(&t[0], size);
+    u8* sixth = live_read(&t[5], size);
+    if (!memcmp(first, sixth, (size_t)size)) fatal("live levels: the other blocks encode as the first's\n");
+    for (u32 i = 1; i < LIVE; i++) {
+        if (i == 5) continue;
+        const u8* want = i < 5 ? first : sixth;
+        u8* got = live_read(&t[i], size);
+        for (u64 b = 0; b < size; b++)
+            if (got[b] != want[b])
+                fatal("live levels: upload %u (%s), byte %llu is %u, the %s's %u\n", i + 1, what[i],
+                      (unsigned long long)b, got[b], i < 5 ? "first" : "sixth", want[b]);
+        free(got);
+    }
+    for (u32 i = 0; i < LIVE; i++) {
+        g_listed[i] = NULL;
+        vk_image_destroy(t[i].img, t[i].mem);
+    }
+    free(first);
+    free(sixth);
+    free(blocks);
+    free(other);
+    printf("PASS live levels: a level another texture holds is copied from its image, not read, while it holds it\n");
+    fflush(stdout);
+}
 static void cache_cases(void) {
     remove(CACHE_PATH);
     vk_astc_cache_open(CACHE_PATH);
@@ -1161,6 +1318,7 @@ static void cache_cases(void) {
         {10, 5, 0, 2051, 1101, 1, 1}, {10, 5, 1, 4100, 1030, 1, 1}, {8, 8, 1, 2048, 2048, 1, 1}};
     for (u32 i = 0; i < sizeof cases / sizeof cases[0]; i++) cache_case(&cases[i]);
     cache_burst();
+    live_cases();
     vk_bc7_cache_close();
     remove(CACHE_PATH);
 }
@@ -2098,14 +2256,33 @@ static void bench_etc2(int runs, const char* file) {
        slice decoded, repeated over the level and made BC7 by the CPU's encoder (its fast build) */
     u8* pic = NULL;
     if (file) {
-        BenchSource src = {file, 0, 0};
-        u8* astc = bench_blocks(&src, w, h);
         u8* texels = malloc((size_t)w * h * 4);
         pic = malloc((size_t)bw * bh * 16);
-        astc_decode_image(astc, w, h, src.bw, src.bh, texels, 0);
+        const size_t len = strlen(file);
+        if (len > 5 && !strcmp(file + len - 5, ".rgba")) {
+            /* FILE.rgba: a square picture of RGBA8 texels, its side from its size, repeated over the level */
+            FILE* f = fopen(file, "rb");
+            if (!f) fatal("cannot open %s\n", file);
+            fseek(f, 0, SEEK_END);
+            const long size = ftell(f);
+            fseek(f, 0, SEEK_SET);
+            u32 side = 1;
+            while ((u64)(side + 1) * (side + 1) * 4 <= (u64)size) side++;
+            u8* raw = malloc((size_t)side * side * 4);
+            if (!raw || fread(raw, 4, (size_t)side * side, f) != (size_t)side * side) fatal("cannot read %s\n", file);
+            fclose(f);
+            for (u32 y = 0; y < h; y++)
+                for (u32 x = 0; x < w; x++)
+                    memcpy(texels + ((size_t)y * w + x) * 4, raw + ((size_t)(y % side) * side + x % side) * 4, 4);
+            free(raw);
+        } else {
+            BenchSource src = {file, 0, 0};
+            u8* astc = bench_blocks(&src, w, h);
+            astc_decode_image(astc, w, h, src.bw, src.bh, texels, 0);
+            free(astc);
+        }
         bc7_encode_cpu_fast(texels, w, h, 1, pic);
         free(texels);
-        free(astc);
     }
     for (int ki = file ? 4 : 0; ki < 5; ki++) {
         int kind = kinds[ki];
