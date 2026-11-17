@@ -545,7 +545,7 @@ static int bc7_from_cache(VkCommandBuffer cb, VkImage img, const u64 key[2], u64
                               .bufferImageHeight = (h + 3) / 4 * 4,
                               .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, layer, layered ? depth : 1},
                               .imageExtent = {w, h, layered ? 1 : depth}};
-    rec_CmdCopyBufferToImage(cb, buf, img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+    rec_CmdCopyBufferToImage(cb, buf, img, VK_LAYOUT(TRANSFER_DST_OPTIMAL), 1, &copy);
     g_astc.bc7_hits++;
     return 1;
 }
@@ -617,8 +617,8 @@ int vk_bc7_capture_level(VkCommandBuffer cb, VkImage img, const u64 key[2], u32 
                                .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
                                .dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
                                .dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT,
-                               .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                               .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                               .oldLayout = VK_LAYOUT(TRANSFER_DST_OPTIMAL),
+                               .newLayout = VK_LAYOUT(TRANSFER_SRC_OPTIMAL),
                                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                                .image = img,
@@ -631,13 +631,13 @@ int vk_bc7_capture_level(VkCommandBuffer cb, VkImage img, const u64 key[2], u32 
                               .bufferImageHeight = (h + 3) / 4 * 4,
                               .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, 0, is3d ? 1 : slices},
                               .imageExtent = {w, h, is3d ? slices : 1}};
-    rec_CmdCopyImageToBuffer(cb, img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buf, 1, &copy);
+    rec_CmdCopyImageToBuffer(cb, img, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), buf, 1, &copy);
     /* the level back to where the encoder's copies leave the rest of the image */
     b.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
     b.srcAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
     b.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-    b.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-    b.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    b.oldLayout = VK_LAYOUT(TRANSFER_SRC_OPTIMAL);
+    b.newLayout = VK_LAYOUT(TRANSFER_DST_OPTIMAL);
     rec_CmdPipelineBarrier2(cb, &d);
     bc7_capture_done(cb, slot, buf, key, size);
     return 1;
@@ -1102,10 +1102,10 @@ static VkBufferImageCopy piece_copy(const Bc7Pieces* p, const Bc7Piece* q, u64 o
 static void bg_to_image(VkCommandBuffer cb, const Bc7Job* j, const Bc7Piece* q, VkBuffer buf, u64 off) {
     Surf* t = j->surf;
     if (!t || t->took_drawn) return;
-    vk_surf_use(cb, t, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
+    vk_surf_use(cb, t, VK_LAYOUT(TRANSFER_DST_OPTIMAL), VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
                 VK_ACCESS_2_TRANSFER_WRITE_BIT);
     const VkBufferImageCopy copy = piece_copy(&j->p, q, off, j->w, j->h, j->level, j->layer, j->as_layers);
-    rec_CmdCopyBufferToImage(cb, buf, t->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+    rec_CmdCopyBufferToImage(cb, buf, t->img, VK_LAYOUT(TRANSFER_DST_OPTIMAL), 1, &copy);
 }
 void vk_astc_forget(const Surf* t, u32 level) {
     for (u32 k = 0; k < g_bg.njobs; k++)
@@ -1394,7 +1394,7 @@ static int pieces_from_cache(VkCommandBuffer cb, Surf* t, const u64 key[2], u32 
         }
         if (!(to = vk_stage(q.bytes, 16, &buf, &off)) || !vk_bc7_cache_read(q.key, to, q.bytes)) return 0;
         const VkBufferImageCopy copy = piece_copy(&p, &q, off, w, h, level, layer, as_layers);
-        rec_CmdCopyBufferToImage(cb, buf, t->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+        rec_CmdCopyBufferToImage(cb, buf, t->img, VK_LAYOUT(TRANSFER_DST_OPTIMAL), 1, &copy);
     }
     g_hit_ns = plat_ns() - t0;
     return 1;
@@ -1619,7 +1619,7 @@ static int astc_upload(VkCommandBuffer cb, Surf* t, u32 x, u32 y0, u32 w, u32 h,
                 .imageOffset = {(i32)x, (i32)(y0 + y * bh), layered ? 0 : (i32)z},
                 .imageExtent = {w, height, layered ? 1 : nz}};
             vk_ck(cb, VK_CK_COPY, w, height, nz, level);
-            rec_CmdCopyBufferToImage(cb, from, t->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+            rec_CmdCopyBufferToImage(cb, from, t->img, VK_LAYOUT(TRANSFER_DST_OPTIMAL), 1, &copy);
             vk_ck(cb, VK_CK_STRIP_DONE, w, height, nz, level);
             if (bc7) {
                 g_astc.bc7_queued.blocks += (u64)cx * ((height + 3) / 4) * nz;
@@ -1788,7 +1788,7 @@ int vk_bc7_encode_kept(VkCommandBuffer cb, Surf* t, VkImage dst, u32 level, u32 
                              .imageOffset = {0, (i32)(y * bh), is3d ? (i32)z : 0},
                              .imageExtent = {lw, height, is3d ? nz : 1}};
     vk_ck(cb, VK_CK_COPY, lw, height, nz, level);
-    rec_CmdCopyBufferToImage(cb, g_astc.bc7_scratch, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &out);
+    rec_CmdCopyBufferToImage(cb, g_astc.bc7_scratch, dst, VK_LAYOUT(TRANSFER_DST_OPTIMAL), 1, &out);
     vk_ck(cb, VK_CK_STRIP_DONE, lw, height, nz, level);
     return 1;
 }

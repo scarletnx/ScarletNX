@@ -3575,6 +3575,15 @@ static int buf_get_owned(u32 i, Vb* e, u64 gva, u64 len, int strict, u32 epoch, 
     e->stable = 0;
     if (gmmu_run(gva, len, &cpu) == len && own_lookup(cpu, len, o, 2) == 1 && o[0].addr == cpu && o[0].size == len &&
         !(o[0].res_off & ((align ? align : 1) - 1))) {
+        /* draws write owners inside passes too: the page cache's (pagespace.c vk_pages_write, which its own readers
+           order with order_use) and kept results (keep_new). Bound here instead, one written in this submission may
+           have had no barrier since: the draw must see that write, as the console's GPU runs its work in order */
+        const VkOwnRes* res = o[0].res;
+        if ((res->borrowed || res->by == VK_OWN_BY_DRAW) &&
+            __atomic_load_n(&res->written, __ATOMIC_ACQUIRE) == vk_submit_number()) {
+            vk_render_end();
+            vk_all_barrier(vk_cmd());
+        }
         sb = ((const VkOwnRes*)o[0].res)->buf;
         so = o[0].res_off;
         ((VkOwnRes*)o[0].res)->read = ++g_buffer.order.owner_reads;

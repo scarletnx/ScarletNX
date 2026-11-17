@@ -35,10 +35,10 @@ static int index_pixels(u64 target, IndexPixels* px) {
     VkBuffer buffer;
     u8* data = vk_readback_buffer(64, &buffer);
     CHECK(surface && data);
-    vk_surf_use(vk_cmd(), surface, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+    vk_surf_use(vk_cmd(), surface, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), VK_PIPELINE_STAGE_2_COPY_BIT,
                 VK_ACCESS_2_TRANSFER_READ_BIT);
     VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {4, 4, 1}};
-    rec_CmdCopyImageToBuffer(vk_cmd(), surface->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &copy);
+    rec_CmdCopyImageToBuffer(vk_cmd(), surface->img, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), buffer, 1, &copy);
     vk_finish();
     vk_readback_ready();
     *px = (IndexPixels){0};
@@ -82,10 +82,10 @@ static int index_first_pixel(u64 target, u8 out[4]) {
         vk_unlock();
         return -1;
     }
-    vk_surf_use(vk_cmd(), surface, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+    vk_surf_use(vk_cmd(), surface, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), VK_PIPELINE_STAGE_2_COPY_BIT,
                 VK_ACCESS_2_TRANSFER_READ_BIT);
     VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {4, 4, 1}};
-    rec_CmdCopyImageToBuffer(vk_cmd(), surface->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &copy);
+    rec_CmdCopyImageToBuffer(vk_cmd(), surface->img, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), buffer, 1, &copy);
     vk_finish();
     vk_readback_ready();
     memcpy(out, data, 4);
@@ -1118,10 +1118,10 @@ static int shadow_map_depth(u64 map, float* depth) {
     VkBuffer buffer;
     u8* data = vk_readback_buffer(4, &buffer);
     CHECK(surface && data);
-    vk_surf_use(vk_cmd(), surface, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+    vk_surf_use(vk_cmd(), surface, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), VK_PIPELINE_STAGE_2_COPY_BIT,
                 VK_ACCESS_2_TRANSFER_READ_BIT);
     VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1}, .imageExtent = {1, 1, 1}};
-    rec_CmdCopyImageToBuffer(vk_cmd(), surface->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &copy);
+    rec_CmdCopyImageToBuffer(vk_cmd(), surface->img, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), buffer, 1, &copy);
     vk_finish();
     vk_readback_ready();
     memcpy(depth, data, 4);
@@ -1486,12 +1486,12 @@ static int own_target_case(GpuChannel* channel, u64 target, u64 address, int cli
         ok = staged != NULL;
         if (ok) {
             memcpy(staged, initial, sizeof initial);
-            vk_surf_use(vk_cmd(), surface, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+            vk_surf_use(vk_cmd(), surface, VK_LAYOUT(TRANSFER_DST_OPTIMAL), VK_PIPELINE_STAGE_2_COPY_BIT,
                         VK_ACCESS_2_TRANSFER_WRITE_BIT);
             VkBufferImageCopy region = {.bufferOffset = offset,
                                         .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
                                         .imageExtent = {4, 4, 1}};
-            rec_CmdCopyBufferToImage(vk_cmd(), upload, surface->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+            rec_CmdCopyBufferToImage(vk_cmd(), upload, surface->img, VK_LAYOUT(TRANSFER_DST_OPTIMAL), 1, &region);
             vk_surf_wrote(surface);
             vk_rt_drawn(surface);
             vk_surf_touch(surface);
@@ -1503,11 +1503,11 @@ static int own_target_case(GpuChannel* channel, u64 target, u64 address, int cli
             data = vk_readback_buffer(64, &readback);
         }
         if (ok && data) {
-            vk_surf_use(vk_cmd(), surface, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+            vk_surf_use(vk_cmd(), surface, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), VK_PIPELINE_STAGE_2_COPY_BIT,
                         VK_ACCESS_2_TRANSFER_READ_BIT);
             VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
                                       .imageExtent = {4, 4, 1}};
-            rec_CmdCopyImageToBuffer(vk_cmd(), surface->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, readback, 1, &copy);
+            rec_CmdCopyImageToBuffer(vk_cmd(), surface->img, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), readback, 1, &copy);
             vk_finish();
             vk_readback_ready();
             memcpy(out, data, sizeof out);
@@ -1560,11 +1560,11 @@ static int feedback_upload(u64 target, const u8* pixels) {
     u8* staged = surface ? vk_stage(64, 4, &upload, &offset) : NULL;
     if (!staged) return 0;
     memcpy(staged, pixels, 64);
-    vk_surf_use(vk_cmd(), surface, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+    vk_surf_use(vk_cmd(), surface, VK_LAYOUT(TRANSFER_DST_OPTIMAL), VK_PIPELINE_STAGE_2_COPY_BIT,
                 VK_ACCESS_2_TRANSFER_WRITE_BIT);
     VkBufferImageCopy region = {
         .bufferOffset = offset, .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {4, 4, 1}};
-    rec_CmdCopyBufferToImage(vk_cmd(), upload, surface->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+    rec_CmdCopyBufferToImage(vk_cmd(), upload, surface->img, VK_LAYOUT(TRANSFER_DST_OPTIMAL), 1, &region);
     vk_surf_wrote(surface);
     vk_rt_drawn(surface);
     vk_surf_touch(surface);
@@ -1719,11 +1719,11 @@ static int feedback_interval_case(GpuChannel* channel, u64 target, u64 address) 
         }
         Surf* surface = vk_rt_find(read);
         if (ok && data && surface) {
-            vk_surf_use(vk_cmd(), surface, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+            vk_surf_use(vk_cmd(), surface, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), VK_PIPELINE_STAGE_2_COPY_BIT,
                         VK_ACCESS_2_TRANSFER_READ_BIT);
             VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
                                       .imageExtent = {4, 4, 1}};
-            rec_CmdCopyImageToBuffer(vk_cmd(), surface->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, readback, 1, &copy);
+            rec_CmdCopyImageToBuffer(vk_cmd(), surface->img, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), readback, 1, &copy);
             vk_finish();
             vk_readback_ready();
             memcpy(out, data, sizeof out);

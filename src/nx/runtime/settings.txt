@@ -2018,6 +2018,7 @@ setting @VK_KHR_shader_clock
 setting @VK_KHR_shader_maximal_reconvergence
 setting @VK_KHR_swapchain
 setting @VK_KHR_synchronization2
+setting @VK_KHR_unified_image_layouts
 setting @VK_KHR_video_decode_av1
 setting @VK_KHR_video_decode_h264
 setting @VK_KHR_video_decode_queue
