@@ -157,6 +157,7 @@ void vk_release_events(void) { syncpt_events(); }
 /* lands the results of every submit up to gate and compute batch up to cgate (they have finished) and performs the
    releases they gate, in order */
 static void release_through(u64 gate, u64 cgate) {
+    int wrote = 0;
     vk_lock();
     vk_result_begin();
     vk_compute_land_through(cgate);
@@ -185,8 +186,12 @@ static void release_through(u64 gate, u64 cgate) {
         if (g_rtail == g_rhead) __atomic_store_n(&g_gpu_releases, 0, __ATOMIC_RELEASE);
         pm_unlock(&g_rlock);
         if (r.gva) perform(&r);
+        wrote |= r.gva != 0;
     }
     vk_unlock();
+    /* a replay's event wait may look at what they wrote, which no other wake reaches (a syncpoint kicks): once for
+       them all, not for each of one game's thousands of reports */
+    if (wrote) gpu_kick_polls();
 }
 static void release_thread(void* p) {
     (void)p;

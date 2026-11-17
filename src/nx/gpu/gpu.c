@@ -765,6 +765,14 @@ static PCond g_qcv;
 static int g_qcv_ready, g_qthread;
 static GpuItem *g_qhead, *g_qtail;
 static u64 g_qgen;                /* bumped by each new item and kick: a pass that saw an older one looks again */
+static u64 g_qkicks;              /* the kicks among them */
+/* A poll's wait, which nothing but WAIT_POLL_NS ended where the write it waits for came with no kick: in one game
+   about 7 of these sleeps a frame, 5 ms, at the start of each frame. g_qpolls (atomic) is 1 while a poll waits: the
+   GPU thread sets it before the pass that polls again, so a write that gpu_kick_polls finds it 0 for came before that
+   pass's look (both seq_cst), and one that finds it 1 kicks */
+static int g_qpolls;
+static u32 g_qwhy;                /* GPU thread: the last poll's gpu_poll_why */
+static GpuPollStats g_qpstat;     /* under g_qlk */
 static u32 g_qjobs[GPU_CHANNELS]; /* each channel's queued jobs */
 static u32 g_qtotal;
 static u8 g_qparked[GPU_CHANNELS];    /* the channel's oldest job waits (gpu_park) */
@@ -937,6 +945,7 @@ static u32 runnable(void) {
         if (g_qparked[c]) n -= g_qjobs[c];
     return n;
 }
+static int g_qmissed; /* under g_qlk: a poll of the pass running returned 0 */
 /* one pass over the queue, its lock held (dropped while an item runs): 1 when something ran. *wake is the time to
    look again at the waits */
 static int run_pass(i64* wake) {
@@ -952,11 +961,14 @@ static int run_pass(i64* wake) {
             u64 lane = 1ull << it->lane;
             if (calls_blocked || (lanes_blocked & lane)) continue;
             pm_unlock(&g_qlk);
+            g_qwhy = GPU_POLL_OTHER;
             done = it->poll(it->arg);
             pm_lock(&g_qlk);
             if (!done) {
                 lanes_blocked |= lane;
+                g_qpstat.misses[g_qwhy < GPU_POLL_N ? g_qwhy : GPU_POLL_OTHER]++;
                 if (*wake < 0 || *wake > (i64)WAIT_POLL_NS) *wake = WAIT_POLL_NS;
+                g_qmissed = 1;
                 continue;
             }
             if (prev)
@@ -1113,13 +1125,27 @@ static void gpu_thread(void* arg) {
         u64 gen = g_qgen;
         i64 wake = -1;
         const u64 t0 = plat_ns();
+        g_qmissed = 0;
         const int ran = run_pass(&wake);
         __atomic_add_fetch(&g_busy_ns, plat_ns() - t0, __ATOMIC_RELAXED);
         if (ran) continue;
+        /* a poll waits: set before the pass that looks again, at once where it was not, as gpu_kick_polls asks */
+        const int polls = g_qmissed;
+        if (polls != __atomic_load_n(&g_qpolls, __ATOMIC_RELAXED)) {
+            __atomic_store_n(&g_qpolls, polls, __ATOMIC_SEQ_CST);
+            if (polls) continue;
+        }
         /* A whole pass ran nothing: sleep until a new item, a kick, or the next look at a wait. A plot, not a zone:
            this wait can last the rest of the run. */
         SNX_PLOT("gpu thread idle", 1);
-        if (gen == g_qgen) pc_wait(&g_qcv, &g_qlk, wake);
+        if (gen == g_qgen) {
+            const u64 kicks = g_qkicks, s0 = plat_ns();
+            pc_wait(&g_qcv, &g_qlk, wake);
+            const int end = g_qkicks != kicks ? 0 : g_qgen != gen ? 1 : 2;
+            g_qpstat.sleeps[end]++;
+            g_qpstat.last = (u32)end;
+            g_qpstat.sleep_ns[end] += plat_ns() - s0;
+        }
         SNX_PLOT("gpu thread idle", 0);
     }
 }
@@ -1157,7 +1183,18 @@ void gpu_cpu_signal(void) { may_have_changed(); }
 void gpu_kick(void) {
     pm_lock(&g_qlk);
     g_qgen++;
+    g_qkicks++;
     if (g_qcv_ready) pc_broadcast(&g_qcv);
+    pm_unlock(&g_qlk);
+}
+void gpu_kick_polls(void) {
+    __atomic_thread_fence(__ATOMIC_SEQ_CST); /* the write before the look, as the GPU thread's flag before its poll */
+    if (__atomic_load_n(&g_qpolls, __ATOMIC_SEQ_CST)) gpu_kick();
+}
+void gpu_poll_why(u32 why) { g_qwhy = why; }
+void gpu_poll_stats(GpuPollStats* s) {
+    pm_lock(&g_qlk);
+    *s = g_qpstat;
     pm_unlock(&g_qlk);
 }
 void gpu_call(void (*fn)(void*), void* arg, const u32* chans, u32 nchans) {
