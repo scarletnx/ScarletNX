@@ -6,9 +6,10 @@ recompiled and run headless, its report held against a baseline: how each case e
 the how and why.
 
     scripts/edenprobe.py run --runtime SCARLETNX (--nro PROBE.nro | --apk PROBE.apk [--java-home DIR])
-                             --mode WORDS --out DIR [--baseline FILE | --advisory REPORT] [--summary FILE]
-                             [--timeout SECONDS] [--launches N] [--jobs N]
+                             --mode WORDS --out DIR [--baseline FILE | --advisory REPORT | --advisory-baseline FILE]
+                             [--summary FILE] [--timeout SECONDS] [--launches N] [--jobs N]
     scripts/edenprobe.py baseline BASELINE... -o FILE
+    git diff --name-only BASE HEAD | scripts/edenprobe.py runs
 
 run recompiles the NRO into DIR/work, writes WORDS to its card's mode file, sdmc:/amberlith/mode (sdmc:/edenprobe/mode
 for a build from before 1.0.0, whose NRO does not carry "sdmc:/amberlith"), with machine=scarletnx@<the runtime's
@@ -28,7 +29,17 @@ summary exits 1 too, as does one whose program crashed or had to be killed after
 
 With --advisory REPORT, the pinned release's report.jsonl, the NRO is another build (the probe's main) and the run never
 fails: its cases REPORT lacks that do not pass, REPORT's passing cases that it does not pass, and what would have failed
-the run are warnings (GitHub's ::warning:: lines).
+the run are warnings (GitHub's ::warning:: lines). --advisory-baseline FILE takes the pinned release's baseline in place
+of its report: its cases are the ones the release ends as it says on this machine, so a job of its own can run the
+probe's main without waiting for the release's run.
+
+runs reads the files a pull request changed, a path a line, and prints which of the Build's probe runs they call for,
+nro=true|false and apk=true|false (for $GITHUB_OUTPUT), each with the files that call for it on stderr. The NRO's run
+loads the Switch runtime and what it shares (src/nx/, src/common/) and is held to tests/edenprobe/linux-x86_64.txt; the
+APK's loads the Android layer (src/android/), the GNU ABI kernel its native code runs on (src/gnuabi/), the GLES shader
+compiler (src/glslc/) and the GPU code it shares (src/common/gpu/), held to tests/edenprobe/android-x86_64.txt; both
+load the program's main (src/multicall/), this script, the job (.github/workflows/build.yml) and the build's own files
+(CMakeLists.txt, CMakePresets.json, cpmfile.json, cmake/).
 
 baseline writes the cases that end the same way in every BASELINE given (baseline.txt of runs of one build and one
 mode): a case that passes only now and then stays out.
@@ -60,6 +71,15 @@ APPS = [
     Path('scarletnx', 'android', 'data', f'org.scarletnx.{card}', 'external', 'files', card)
     for card in (CARD, OLD_CARD)
 ]
+# the paths each probe run of the Build loads (runs, above), and the ones both do
+RUN_PATHS = {
+    'nro': r'^(src/(nx|common)/|tests/edenprobe/linux-x86_64\.txt$)',
+    'apk': r'^(src/(android|gnuabi|glslc)/|src/common/gpu/|tests/edenprobe/android-x86_64\.txt$)',
+}
+BOTH_PATHS = (
+    r'^(\.github/workflows/build\.yml$|scripts/edenprobe\.py$|CMakeLists\.txt$|CMakePresets\.json$|cpmfile\.json$|'
+    r'cmake/|src/multicall/)'
+)
 # the longest folder the probe takes for its own (RUNNER_ROOT_MAX of its source/runner.h): the APK refuses a longer one
 ROOT_MAX = 160
 
@@ -149,6 +169,9 @@ class Baseline:
                     self.cases[line] = 'pass'
         if not self.build or self.mode is None:
             raise Failed(f'{path} names no build or no mode: "# build: ..." and "# mode: ..." come first')
+
+    def passed(self):
+        return sorted(key for key, expected in self.cases.items() if expected == 'pass')
 
     @staticmethod
     def text(build, mode, cases):
@@ -441,11 +464,12 @@ def run(args):
         text = Baseline.text(report.build, args.mode, ends)
         (out / 'baseline.txt').write_text(text, encoding='utf-8')
     warnings = []
-    if report and report.summary and args.advisory:
+    advisory = args.advisory or args.advisory_baseline
+    if report and report.summary and advisory:
         try:
-            warnings, lines = beside(report, Report(args.advisory))
+            warnings, lines = beside(report, Report(advisory) if args.advisory else Baseline(advisory))
         except (Failed, OSError) as error:
-            problems.append(f'{args.advisory}: {error}')
+            problems.append(f'{advisory}: {error}')
 
     title = f'{report.name or "Amberlith"} {report.build}' if report else 'Amberlith (no report)'
     if args.apk:
@@ -456,7 +480,7 @@ def run(args):
         )
     else:
         title += ', no summary'
-    if args.advisory:
+    if advisory:
         title += " (Amberlith's main: warnings only)"
     text = [
         f'### {title}',
@@ -471,7 +495,7 @@ def run(args):
     if args.summary:
         with open(args.summary, 'a', encoding='utf-8') as file:
             file.write(summary)
-    if args.advisory:
+    if advisory:
         for line in (problems + warnings)[:MOST]:
             warn(line)
         return 0
@@ -504,6 +528,25 @@ def baseline(args):
     return 0
 
 
+def which_runs(changed):
+    """nro=... and apk=... for the files changed, the files that call for each said on stderr"""
+    files = [line.strip() for line in changed if line.strip()]
+    for run, paths in RUN_PATHS.items():
+        hits = [path for path in files if re.search(paths, path) or re.search(BOTH_PATHS, path)]
+        print(f'{run}={"true" if hits else "false"}')
+        if hits:
+            shown = ', '.join(hits[:10]) + (f' and {len(hits) - 10} more' if len(hits) > 10 else '')
+            print(
+                f'the {run.upper()} runs, for {len(hits)} of the {len(files)} files changed: {shown}', file=sys.stderr
+            )
+        else:
+            print(
+                f'the {run.upper()} does not run: none of the {len(files)} files changed is one it loads',
+                file=sys.stderr,
+            )
+    return 0
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     commands = parser.add_subparsers(dest='command', required=True)
@@ -518,6 +561,9 @@ def main():
     against = runs.add_mutually_exclusive_group()
     against.add_argument('--baseline', type=Path)
     against.add_argument('--advisory', type=Path, metavar='REPORT', help="the pinned release's report.jsonl")
+    against.add_argument(
+        '--advisory-baseline', type=Path, metavar='FILE', help="the pinned release's baseline, in place of its report"
+    )
     runs.add_argument('--summary', type=Path)
     runs.add_argument(
         '--timeout', type=float, default=600, help='seconds a launch may go without a new report line (default 600)'
@@ -534,8 +580,11 @@ def main():
     writes = commands.add_parser('baseline', help='the cases that end the same way in every baseline.txt given')
     writes.add_argument('baselines', type=Path, nargs='+')
     writes.add_argument('-o', '--output', type=Path, required=True)
+    commands.add_parser('runs', help="the probe runs a pull request's changed files, on stdin, call for")
     args = parser.parse_args()
     try:
+        if args.command == 'runs':
+            return which_runs(sys.stdin)
         return run(args) if args.command == 'run' else baseline(args)
     except Failed as error:
         sys.exit(str(error))
