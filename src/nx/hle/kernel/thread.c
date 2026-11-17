@@ -12,6 +12,7 @@
 #include "nx/runtime/platform/tracy.h"
 #include "nx/hle/hle.h"
 #include "nx/gpu/gpu.h"
+#include "nx/runtime/armature.h"
 #include "nx/runtime/nce/nce.h"
 #include "nx/runtime/guest_stats.h"
 
@@ -626,6 +627,8 @@ static void thread_run(KThread* t, u64 pc) {
         arm_thread_run(t);
     else if (nce_on())
         nce_thread_run(t, pc); /* the code runs natively until the entry function returns */
+    else if (armature_on())
+        armature_thread_run(t, pc); /* the code runs on Armature until the entry function returns */
     else
         do snx_lookup(&t->cpu, pc)(&t->cpu, pc);
         while ((pc = t->cpu.pc) != 0);

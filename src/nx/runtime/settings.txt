@@ -1320,6 +1320,14 @@ setting NCE foreign scan
     help game's (another owner's mapping over its memory, a run nothing maps), 1 to 3600, each new finding logged once.
     help 0 = off: only as the game's code starts and in a crash report. Each look reads /proc/self/maps, a few
     help milliseconds
+setting Armature JIT
+    key armature
+    text 1024
+    default ""
+    startup
+    help The path of an Armature library (armature.dll, libarmature.so): with it the game's code runs on that JIT,
+    help an A64 to x86-64 translator in Rust, in place of the code the recompiler made ahead of time. The hooks, NVN
+    help and the SVCs stay the runtime's (runtime/armature.c). Empty: the recompiled code, as always. For A/B tests
 setting GPU page check
     key gpu_page_check
     int 0 1
