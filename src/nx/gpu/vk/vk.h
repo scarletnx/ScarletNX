@@ -1387,6 +1387,12 @@ void vk_tex_dma_seen(Surf** hit, int n); /* their memory as of now is the copy's
 void vk_rt_drawn(Surf* s);               /* a render target was drawn to (gpu/vk/render.c) */
 void vk_rt_drawn_full(Surf* s);          /* a full clear or blit replaced every pixel */
 int vk_rt_drawn_fresh(Surf* s);          /* no guest-memory write has replaced the target since its last draw */
+/* the same for its bytes [at, at + size) alone (a texture's level in one of its layers that the target gives): a
+   write past them, in the rows that a taller block height puts after the level, leaves the level as it was */
+int vk_rt_drawn_fresh_in(Surf* s, u64 at, u64 size);
+/* a storage image surface published after a dispatch wrote it (compute.c): its texels are guest memory's now, and a
+   texture over that memory takes them on the GPU as it takes a drawn target's (texture.c tex_take_drawn) */
+void vk_surf_stored(Surf* s);
 int vk_rt_drawn_in(u64 lo, u64 hi, Surf** out, int max); /* count drawn in [lo, hi), write up to max */
 /* a count that moves whenever what vk_rt_drawn_in returns, or the pixels of a target it returned, can have changed */
 u64 vk_rt_take_gen(void);
@@ -2655,6 +2661,11 @@ VkPipelineCache vk_pipeline_cache(void);     /* for pipelines made elsewhere (co
 void vk_tex_partial_stats(u64* loads, u64* bytes);
 /* the log lines of the texture checks over the last 600 presents (texture.c tex_check), whose counts start over */
 void vk_tex_check_log(void);
+/* the log line of what textures took from drawn targets and storage image surfaces (texture.c tex_take_drawn) */
+void vk_tex_take_log(void);
+/* those counts since the last log: targets and storage surfaces taken, refused for their format class, scaled, at no
+   level or layer, with newer memory, then the loads of pieces that left some out and their bytes */
+void vk_tex_take_counts(u64 out[8]);
 /* since the last log: the texture checks, those quiet (one compare), and those draw_state_check=1 found changed */
 void vk_tex_check_counts(u64* checks, u64* quiet, u64* quiet_wrong);
 void vk_pipeline_save(int at_exit);

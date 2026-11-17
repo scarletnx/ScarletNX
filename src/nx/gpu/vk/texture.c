@@ -3145,6 +3145,7 @@ static void tex_patch_count(Surf* t, const TexPieces* p, int by_cpu, int kind, u
    records and write tracking name since the last ones, loaded once both were asked, so the image holds what either
    found. 0 when write tracking can't tell: checked by contents (an engine's write after that check in the same epoch
    is loaded by its pages, and leaves the contents' check a hash that differs, so the next one loads it whole) */
+static void take_cover(Surf* t, TexPieces* p);
 static int tex_check_pieces(Surf* t, u64 gva) {
     TexPieces p;
     TexRuns r = {0, gva, 0, 0, 0, 0, &p};
@@ -3170,6 +3171,7 @@ static int tex_check_pieces(Surf* t, u64 gva) {
     t->gw = gw;
     pieces_own(t, &p);
     pieces_published(t, gva, &p);
+    take_cover(t, &p); /* what a drawn target or a stored surface gives it on the GPU after the check */
     if (p.count || p.all) {
         t->stable = 0;
         tex_patch_count(t, &p, by_cpu, kind, wformat, wsurface);
@@ -4216,6 +4218,117 @@ static int copy_layers(VkCommandBuffer cb, Surf* s, Surf* t, u32 l, u32 dst, u32
     return 1;
 }
 
+/* What tex_take_drawn took over the last 600 presents, from render targets and from storage image surfaces
+   (vk_surf_stored), and what it left by reason (vk_tex_take_log) */
+typedef struct {
+    u64 targets, stored, format, scaled, no_place, stale, cut, cut_bytes;
+} TakeCounts;
+static TakeCounts g_takes;
+/* the subresource of t, a 2D texture or an array or cube, that s over its memory gives: level l of `count` layers from
+   layer, lw x lh of t's texels or blocks, and the level's bytes in one layer */
+typedef struct {
+    u32 l, layer, count, lw, lh;
+    u64 bytes;
+} TakePlace;
+static int take_place(const Surf* s, const Surf* t, TakePlace* at) {
+    const u64 stride = t->layer_size, off = s->gva - t->gva;
+    u32 layer = stride ? (u32)(off / stride) : 0;
+    u64 rem = off - (u64)layer * stride, lo = 0;
+    for (u32 l = 0; l < t->levels && layer < t->layers; l++) {
+        u32 lw = t->w >> l ? t->w >> l : 1, lh = t->h >> l ? t->h >> l : 1;
+        /* a compressed level in blocks, the target's texels. The copy's extent counts the target's texels, and
+           the blocks over a level's edge are the level's */
+        lw = (lw + t->f.bw - 1) / t->f.bw;
+        lh = (lh + t->f.bh - 1) / t->f.bh;
+        /* a block-linear level's rows take whole GOBs (64 bytes), so a target drawn as wide as them covers the
+           level (a 120-texel depth pyramid level drawn 128 wide, a cube mip narrower than a GOB one GOB wide, a
+           230-texel BC5 label's 58 blocks drawn 60 wide): only its left lw texels are the level's */
+        int padded_row =
+            t->bl && s->bl && (s->f.vk == t->f.vk || t->f.bw > 1) && s->w > lw &&
+            ((u64)s->w * s->f.bpp + 63) / 64 == bl_level_gobs_x(lw * t->f.bpp, lh, 1, t->bh, t->bd, t->tile_w);
+        u64 size = t->bl ? bl_level_size(t->w, t->h, 1, &t->f, t->bh, t->bd, t->tile_w, l, NULL, NULL) : t->size;
+        if (rem == lo && (s->w == lw || padded_row) && s->h == lh) {
+            /* a layered target spaced as the texture's layers fills as many of them as it has, at any level: one
+               game draws each level of its reflection cube through a target of six layers a whole face apart,
+               whose layer k is face k of that level (taken at level 0 alone, faces 1 to 5 of the blurred levels
+               kept guest memory's bytes, and its shiny surfaces reflected noise) */
+            u32 count = 1;
+            if (s->layers > 1 && !s->volume && s->layer_size == stride) /* a volume's are GOB slices */
+                count = s->layers < t->layers - layer ? s->layers : t->layers - layer;
+            *at = (TakePlace){l, layer, count, lw, lh, size};
+            return 1;
+        }
+        if (!t->bl) return 0;
+        lo += size;
+    }
+    return 0;
+}
+/* no newer guest memory over what s gives t at `at` (vk_rt_drawn_fresh): only the level's own bytes in each layer
+   are asked: a target of a taller block height than the level's spans the face's other levels
+   after it, which a dispatch writes as storage images after the faces' draws (one game's reflection cubes refused
+   every face so, and loaded them from memory in each present) */
+static int take_fresh(Surf* s, const Surf* t, const TakePlace* at) {
+    for (u32 k = 0; k < at->count; k++)
+        if (!vk_rt_drawn_fresh_in(s, (u64)k * t->layer_size, at->bytes)) return 0;
+    return 1;
+}
+/* p without its bytes [a, b) */
+static void pieces_cut(TexPieces* p, u64 a, u64 b) {
+    TexPieces q;
+    q.count = 0, q.all = 0;
+    for (u32 i = 0; i < p->count; i++) {
+        u64 at = p->piece[i].at, end = at + p->piece[i].n;
+        if (end <= a || at >= b) {
+            pieces_add(&q, at, end - at);
+            continue;
+        }
+        if (at < a) pieces_add(&q, at, a - at);
+        if (end > b) pieces_add(&q, b, end - b);
+    }
+    *p = q;
+}
+/* the pieces of p that a drawn target or a stored surface over t gives, fresh, out of p. tex_take_drawn
+   copies them after the check on the GPU, so their bytes in memory (a storage image's publish, a target's write-back
+   for it) are not loaded on the way. It asks what tex_take_drawn asks, of 2D textures, arrays and cubes alone */
+static void take_cover(Surf* t, TexPieces* p) {
+    if (p->all || !p->count || t->is_rt || (t->f.conv && !t->f.depth) || t->msaa || t->type == VK_IMAGE_VIEW_TYPE_3D)
+        return;
+    Surf* d[32];
+    int n = vk_rt_drawn_in(t->gva, t->gva + t->size, d, 32);
+    if (n > 32) n = 32; /* the ones past those load from memory, as before */
+    for (int i = 0; i < n; i++) {
+        Surf* s = d[i];
+        if (s == t || s->img == t->img) continue; /* its own image, written in place */
+        TakePlace at;
+        if (s->f.depth != t->f.depth || s->f.stencil != t->f.stencil || s->f.bpp != t->f.bpp ||
+            (t->f.depth && s->f.vk != t->f.vk) || s->msaa || ((s->sw != s->w || s->sh != s->h) && !can_blit(s->f.vk)) ||
+            !take_place(s, t, &at) || !take_fresh(s, t, &at))
+            continue;
+        const u64 off = s->gva - t->gva;
+        u64 before = 0, after = 0;
+        for (u32 j = 0; j < p->count; j++) before += p->piece[j].n;
+        for (u32 k = 0; k < at.count; k++)
+            pieces_cut(p, off + (u64)k * t->layer_size, off + (u64)k * t->layer_size + at.bytes);
+        for (u32 j = 0; j < p->count; j++) after += p->piece[j].n;
+        g_takes.cut++;
+        g_takes.cut_bytes += before - after;
+    }
+}
+void vk_tex_take_counts(u64 out[8]) {
+    const TakeCounts* c = &g_takes;
+    const u64 v[8] = {c->targets, c->stored, c->format, c->scaled, c->no_place, c->stale, c->cut, c->cut_bytes};
+    memcpy(out, v, sizeof v);
+}
+void vk_tex_take_log(void) {
+    LOG("vulkan: textures took %llu drawn targets and %llu storage image surfaces on the GPU over the last 600 "
+        "presents, and loads of pieces left out %llu KB that %llu of those give; not taken: %llu of another format "
+        "class, %llu scaled in a format that takes no blit, %llu at no level or layer, %llu with newer guest memory\n",
+        (unsigned long long)g_takes.targets, (unsigned long long)g_takes.stored,
+        (unsigned long long)(g_takes.cut_bytes >> 10), (unsigned long long)g_takes.cut,
+        (unsigned long long)g_takes.format, (unsigned long long)g_takes.scaled, (unsigned long long)g_takes.no_place,
+        (unsigned long long)g_takes.stale);
+    g_takes = (TakeCounts){0};
+}
 /* a texture whose layers, levels or 3D slices were drawn as render targets of their own is copied from those targets
    on the GPU: they are never written back to its memory. Only a target matching one subresource (or, layered, the
    layers from one), whose backing memory has not been overwritten since its draw. Generated textures can be first
@@ -4280,13 +4393,20 @@ static void tex_take_drawn(Surf* t) {
             mark_copied(s, t);
             continue;
         }
+        /* the texture's own image, which a storage view of a level of it wrote in place: nothing to take */
+        if (copied_into(s, t) || s == t || s->img == t->img) continue;
         if (s->f.depth != t->f.depth || s->f.stencil != t->f.stencil || s->f.bpp != t->f.bpp ||
-            (t->f.depth && s->f.vk != t->f.vk) || copied_into(s, t) || s->msaa || t->msaa)
+            (t->f.depth && s->f.vk != t->f.vk) || s->msaa || t->msaa) {
+            g_takes.format++;
             continue;
+        }
         /* a scaled target is blitted to the guest's size, into the texture or an image of its own format first
            (copy_layers): one its format can't be blitted from stays */
         int scaled = s->sw != s->w || s->sh != s->h;
-        if (scaled && !can_blit(s->f.vk)) continue;
+        if (scaled && !can_blit(s->f.vk)) {
+            g_takes.scaled++;
+            continue;
+        }
         u64 off = s->gva - t->gva;
         if (t->type == VK_IMAGE_VIEW_TYPE_3D) {
             if (t->f.depth) continue;
@@ -4373,38 +4493,23 @@ static void tex_take_drawn(Surf* t) {
             }
             continue;
         }
-        u32 layer = stride ? (u32)(off / stride) : 0;
-        u64 rem = off - (u64)layer * stride, lo = 0;
-        for (u32 l = 0; l < t->levels && layer < t->layers; l++) {
-            u32 lw = t->w >> l ? t->w >> l : 1, lh = t->h >> l ? t->h >> l : 1;
-            /* a compressed level in blocks, the target's texels. The copy's extent counts the target's texels, and
-               the blocks over a level's edge are the level's */
-            lw = (lw + t->f.bw - 1) / t->f.bw;
-            lh = (lh + t->f.bh - 1) / t->f.bh;
-            /* a block-linear level's rows take whole GOBs (64 bytes), so a target drawn as wide as them covers the
-               level (a 120-texel depth pyramid level drawn 128 wide, a cube mip narrower than a GOB one GOB wide, a
-               230-texel BC5 label's 58 blocks drawn 60 wide): only its left lw texels are the level's */
-            int padded_row =
-                t->bl && s->bl && (s->f.vk == t->f.vk || t->f.bw > 1) && s->w > lw &&
-                ((u64)s->w * s->f.bpp + 63) / 64 == bl_level_gobs_x(lw * t->f.bpp, lh, 1, t->bh, t->bd, t->tile_w);
-            if (rem == lo && (s->w == lw || padded_row) && s->h == lh) {
-                if (!vk_rt_drawn_fresh(s)) break; /* newer guest memory at this address takes precedence */
-                /* a layered target spaced as the texture's layers fills as many of them as it has, at any level: one
-                   game draws each level of its reflection cube through a target of six layers a whole face apart,
-                   whose layer k is face k of that level (taken at level 0 alone, faces 1 to 5 of the blurred levels
-                   kept guest memory's bytes, and its shiny surfaces reflected noise) */
-                u32 count = 1;
-                if (s->layers > 1 && !s->volume && s->layer_size == stride) /* a volume's are GOB slices */
-                    count = s->layers < t->layers - layer ? s->layers : t->layers - layer;
-                if (copy_layers(copy_begin(s, t), s, t, l, layer, count, lw, lh, 0))
-                    mark_copied(s, t);
-                else
-                    settled = 0;
-                break;
-            }
-            if (!t->bl) break;
-            lo += bl_level_size(t->w, t->h, 1, &t->f, t->bh, t->bd, t->tile_w, l, NULL, NULL);
+        TakePlace at;
+        if (!take_place(s, t, &at)) {
+            g_takes.no_place++;
+            continue;
         }
+        if (!take_fresh(s, t, &at)) { /* newer guest memory at this address takes precedence */
+            g_takes.stale++;
+            continue;
+        }
+        if (copy_layers(copy_begin(s, t), s, t, at.l, at.layer, at.count, at.lw, at.lh, 0)) {
+            mark_copied(s, t);
+            if (s->is_rt)
+                g_takes.targets++;
+            else
+                g_takes.stored++;
+        } else
+            settled = 0;
     }
     if (t->patch_run >= 8 && !t->take_said) take_say(t, d, n, NULL);
     if (d != small) free(d);

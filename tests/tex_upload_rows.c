@@ -514,6 +514,11 @@ int vk_rt_drawn_fresh(Surf* s) {
     (void)s;
     return g_drawn_fresh;
 }
+int vk_rt_drawn_fresh_in(Surf* s, u64 at, u64 size) {
+    (void)at;
+    (void)size;
+    return vk_rt_drawn_fresh(s);
+}
 int vk_rt_drawn_in(u64 lo, u64 hi, Surf** out, int max) {
     (void)lo, (void)hi;
     g_drawn_searches++;

@@ -7128,6 +7128,7 @@ static void results_copied(u64 cpu, u64 len) { vk_own_cpu_touched(cpu, len); }
 #include "vulkan_write_tracking.inc"
 #include "vulkan_tex_partial.inc"
 #include "vulkan_texture_quiet.inc"
+#include "vulkan_cube_take.inc"
 #include "vulkan_astc_later.inc"
 #include "vulkan_astc_kind.inc"
 
@@ -7830,6 +7831,8 @@ static int run_headless(int argc, char** argv) {
             result = check_shader_stage_images();
         else if (!strcmp(name, "tessellation"))
             result = check_nvn_default_tessellation();
+        else if (!strcmp(name, "cube_take"))
+            result = check_cube_take();
         else if (!strcmp(name, "texture_quiet"))
             result = check_texture_quiet();
         else if (!strcmp(name, "draw_texture"))
@@ -8211,6 +8214,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_shader_integer_float());
     CHECK(!check_draw_texture());
     CHECK(!check_texture_quiet());
+    CHECK(!check_cube_take());
     CHECK(!check_descriptor_heaps());
     CHECK(!check_descriptor_memo());
     CHECK(!check_fragment_barrier_backend());

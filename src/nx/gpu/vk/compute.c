@@ -2391,7 +2391,10 @@ rebind:
             for (int k = 0; k < i && !seen; k++) seen = images[k] == images[i];
             if (!images[i] || seen) continue;
             vk_surf_wrote(images[i]);
-            if (!vk_surf_publish(images[i])) vk_surf_flush(images[i], NULL);
+            if (!vk_surf_publish(images[i]))
+                vk_surf_flush(images[i], NULL);
+            else
+                vk_surf_stored(images[i]); /* a texture over its memory takes its texels on the GPU */
         }
         g_vk_dispatches++;
         /* Not one in the GPU mirror: its results land only where the CPU first touches them, and that read submits

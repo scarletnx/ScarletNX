@@ -876,6 +876,7 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
                     (unsigned long long)(partial_bytes >> 20), (unsigned long long)slow_frames,
                     (unsigned long long)(slowest_ns / 1000000));
                 vk_tex_check_log();
+                vk_tex_take_log();
                 if (vk_shader_folds())
                     LOG("vulkan: %llu of those shaders translated again, to hold more of their draws' constant buffer "
                         "words as constants\n",
