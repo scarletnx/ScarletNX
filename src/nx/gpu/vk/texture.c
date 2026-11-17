@@ -295,7 +295,8 @@ static int stage_bl(const VkBlMove* m, u64 gva, u64 lsz, VkBlSrc* s) {
     s->n = vk_guest_read_inplace(gva + lo, n, p, s->buf, s->at, runs, STAGE_RUNS);
     memset(p + n, 0, hi - lo - n);
     if (!s->n) return 1;
-    VkInRun* tab = (VkInRun*)vk_stage_upload(s->n * sizeof *tab, 16, &s->tab, &s->tab_at);
+    /* a storage buffer's offset in the move's descriptor: the device's alignment for one */
+    VkInRun* tab = (VkInRun*)vk_stage_upload(s->n * sizeof *tab, vk_stage_align(), &s->tab, &s->tab_at);
     if (!tab) return 0;
     memcpy(tab, runs, s->n * sizeof *tab);
     return 1;
@@ -2054,7 +2055,7 @@ static int tex_rehash(Surf* t) {
     /* The GPU wrote its bytes in place and that write is still pending: its content is new, so the upload is due
        whatever the bytes hash to. Loading them reads them on the CPU (mem_hash's gmem_ptr), which waits for the
        GPU to finish the write: a title's video frames are four such textures a frame, and those waits were a third
-       of its frame. The upload itself stages them on the GPU (stage_bl through vk_guest_read's copy), no wait.
+       of its frame. The upload itself reads them on the GPU (stage_bl, in place or copied), no wait.
        t->hash keeps what it had, so the first later whole check loads the texture once more before it settles */
     if (vk_uma_pending(t->gva, t->size) && !t->sparse && !t->piecewise) {
         tex_upload(t);
@@ -2113,7 +2114,7 @@ void vk_tex_note_writeback(Surf* t) {
        and hashes only a texture it says the CPU wrote, which then loads anyway: no hash now, 0, which a check by its
        contents takes as changed. Hashing every write-back's texels took a tenth of the GPU thread in an Ounce game */
     /* 0, a check that takes it as changed, when the GPU's write to it is still pending too: hashing its bytes would
-       read them on the CPU and wait for that write, and the load that follows is on the GPU (stage_bl's copy) */
+       read them on the CPU and wait for that write, and the load that follows reads them on the GPU (stage_bl) */
     t->hash = tex_tracked(t) || vk_uma_pending(t->gva, t->size) ? 0 : tex_hash(t);
     t->gw = gpu_mem_generation();
     t->wseen = vk_ww_now();
@@ -2949,9 +2950,9 @@ static int later_pieces_whole(const Surf* t, u64 sum) {
    at most twice their bytes, in fewer moves), or when they are too many BC7 blocks to encode at once
    (later_pieces_whole). Render targets' pixels copied into it (tex_take_drawn) stay where no piece goes: the new
    wgen below makes tex_take_drawn copy the targets drawn fresh again over the pieces, as after a whole upload, and
-   memory has no newer bytes for the rest (no write the records name). A
-   texture loaded whole whose hash is still its image's (no blocks loaded alone since) is hashed for that, as a change
-   found by its hash is: its pages written with the bytes they had load nothing. 1 when the image has them */
+   memory has no newer bytes for the rest (no write the records name). A texture loaded whole whose hash is still its
+   image's (no blocks loaded alone since) is hashed for that, as a change found by its hash is: its pages written with
+   the bytes they had load nothing. 1 when the image has them */
 static int tex_patch(Surf* t, const TexPieces* p) {
     u64 sum = 0, bytes = __atomic_load_n(&g_tex_upload_bytes, __ATOMIC_RELAXED);
     for (u32 i = 0; i < p->count; i++) sum += p->piece[i].n;
@@ -3168,7 +3169,7 @@ static void tex_patch_count(Surf* t, const TexPieces* p, int by_cpu, int kind, u
                   kind >= 0 ? g_write_kinds[kind < GPU_WRITE_KINDS ? kind : 0] : "", surface);
     }
 }
-/* the checks of a texture loaded a piece at a time (tex_can_piece; with holes, or loaded whole): the pages the GPU's
+/* the checks of a texture loaded a piece at a time (tex_patchable; with holes, or loaded whole): the pages the GPU's
    records and write tracking name since the last ones, loaded once both were asked, so the image holds what either
    found. 0 when write tracking can't tell: checked by contents (an engine's write after that check in the same epoch
    is loaded by its pages, and leaves the contents' check a hash that differs, so the next one loads it whole) */

@@ -13,8 +13,9 @@
 
    One shader for both directions: the direction is a push constant that selects which of the two offsets, computed
    either way, is read and which written. A uniform select per 16 bytes costs nothing measurable, while a second
-   shader, or a specialization constant, would be a second pipeline to compile at startup (on lavapipe each one is
-   an LLVM compile) and to keep in the pipeline cache, for the same instructions. */
+   shader, or a specialization constant, would be a second pipeline to compile (on lavapipe each one is an LLVM
+   compile) and to keep in the pipeline cache, for the same instructions. BL_RUNS is the one other build: a
+   deswizzle whose source has runs that GPU results hold, read from them in place (vk/blocklinear.c). */
 
 /* a GOB's 32 runs on x, two GOBs side by side on y: 64 invocations, the size every vendor runs well */
 layout(local_size_x = 32, local_size_y = 2, local_size_z = 1) in;
@@ -67,20 +68,8 @@ layout(std430, binding = 2) readonly restrict buffer Tab {
 layout(buffer_reference, std430, buffer_reference_align = 16) readonly buffer Words {
     uvec4 w[];
 };
-/* run i of the bound range: from the result that holds it, else from Src */
-uvec4 bl_read(uint i) {
-    uint j = i - tab_bias, lo = 0u, hi = nruns;
-    while (lo < hi) { /* the first run that starts past j */
-        uint mid = (lo + hi) >> 1;
-        if (tab[mid].start <= j)
-            lo = mid + 1u;
-        else
-            hi = mid;
-    }
-    if (lo != 0u && j < tab[lo - 1u].end) return Words(tab[lo - 1u].addr).w[j - tab[lo - 1u].start];
-    return src[i];
-}
-#define BL_READ(i) bl_read(i)
+/* run k of the result at addr (blocklinear.glsl's bl_read) */
+#define BL_RUN_WORD(addr, k) Words(addr).w[k]
 #endif
 
 #include "blocklinear.glsl"
