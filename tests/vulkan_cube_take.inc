@@ -157,3 +157,64 @@ static int check_cube_take(void) {
     if (!failed) puts("PASS cube take: faces drawn and a mip stored are in the cube, from memory and on the GPU");
     return failed;
 }
+/* The race's pattern (SNX_TEST_NVN_CASE=cube_take_frames): each frame the 6 faces drawn, then every level from 1 of
+   every face stored as a dispatch stores it, then the cube looked up, 8 frames. After the first frame the cube must
+   load no pieces from memory: it holds what the targets and the stored surfaces give on the GPU. Each frame's loads
+   of pieces, their bytes and the takes are printed, and a stored level and a drawn face checked */
+static int check_cube_take_frames(void) {
+    GpuChannel* ch = calloc(1, sizeof *ch);
+    CHECK(ch);
+    ch->id = 147;
+    CHECK(mem_map(CT_CPU, CT_SPAN, MS_NORMAL, PERM_RW) == 0);
+    gmmu_map(CT_GVA, CT_CPU, CT_SPAN);
+    CtCube c;
+    CHECK(!ct_cube(&c, CT_GVA + 0x100000));
+    memset(GP(CT_CPU + 0x100000), 0x40, (size_t)c.lay.size);
+    unsigned th = 0, td = 0;
+    nvn_tex_level_tiles(&c.cube.d, 0, &th, &td);
+    int failed = 0;
+    for (u32 f = 0; f < 8; f++) {
+        g_renderer->mem_may_have_changed();
+        g_vk_present++;
+        u64 loads0, bytes0, loads1, bytes1, up0, upb0, up1, upb1, t0[8], t1[8];
+        vk_tex_partial_stats(&loads0, &bytes0);
+        vk_tex_stats(&up0, &upb0);
+        vk_tex_take_counts(t0);
+        for (u32 k = 0; k < 6; k++) {
+            const u32 col = g_ct_faces[k] ^ f;
+            const float rgba[4] = {(float)(col & 255) / 255.0f, (float)(col >> 8 & 255) / 255.0f,
+                                   (float)(col >> 16 & 255) / 255.0f, (float)(col >> 24) / 255.0f};
+            ct_clear(ch, c.cube.gpu + (u64)k * c.lay.layer_size, CT_SIDE, CT_SIDE, th, rgba);
+        }
+        for (u32 k = 0; k < 6; k++)
+            for (u32 l = 1; l < c.cube.d.levels; l++) CHECK(!ct_store(&c, l, k, (g_ct_mip ^ f) + l));
+        vk_lock();
+        Surf* t = vk_tex_from_tic(c.tic);
+        vk_unlock();
+        CHECK(t);
+        vk_tex_partial_stats(&loads1, &bytes1);
+        vk_tex_stats(&up1, &upb1);
+        vk_tex_take_counts(t1);
+        const u32 top = ct_texel(t, c.cube.d.levels - 1, 5), face = ct_texel(t, 0, 3);
+        printf("cube take frames, frame %u: %llu loads (%llu of pieces, %llu KB), %llu targets and %llu stored taken, "
+               "%llu refused with newer memory, %llu at no level\n",
+               f, (unsigned long long)(up1 - up0), (unsigned long long)(loads1 - loads0),
+               (unsigned long long)((upb1 - upb0) >> 10), (unsigned long long)(t1[0] - t0[0]),
+               (unsigned long long)(t1[1] - t0[1]), (unsigned long long)(t1[5] - t0[5]),
+               (unsigned long long)(t1[4] - t0[4]));
+        if (top != (g_ct_mip ^ f) + c.cube.d.levels - 1 || face != (g_ct_faces[3] ^ f)) {
+            fprintf(stderr,
+                    "cube take frames, frame %u: face 5's last level %08x (stored %08x), face 3 %08x (drawn "
+                    "%08x)\n",
+                    f, top, (g_ct_mip ^ f) + c.cube.d.levels - 1, face, g_ct_faces[3] ^ f);
+            failed = 1;
+        }
+        if (f && (loads1 != loads0 || up1 != up0 || t1[5] != t0[5])) {
+            fprintf(stderr, "cube take frames, frame %u: the cube loaded from memory, or refused a take\n", f);
+            failed = 1;
+        }
+    }
+    free(ch);
+    if (!failed) puts("PASS cube take frames: after the first frame the cube loads nothing from memory");
+    return failed;
+}
