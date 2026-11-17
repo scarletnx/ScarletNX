@@ -724,10 +724,10 @@ static int cache_index(Cache* c) {
 static void cache_open(SnxJitService* s) {
     Cache* c = &s->cache;
     char* key = cache_key(s);
+    if (!key) return;
     FILE* f = fopen(s->config.cache_path, "rb");
     size_t size = 0, used = 0;
     long length = -1;
-    if (!key) return;
     size_t key_length = strlen(key);
     size_t header = 8 + 4 + key_length;
     if (f && !fseek(f, 0, SEEK_END)) length = ftell(f);
