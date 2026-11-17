@@ -397,9 +397,14 @@ int snx_link_coff(const SnxLinkInput* inputs, size_t count, const char* const* e
                     snx_st_le64(p, (absolute ? S : IMAGE_BASE + S) + addend);
                     if (!absolute) {
                         if (nbases == cap_bases) {
-                            cap_bases = cap_bases ? cap_bases * 2 : 1024;
-                            bases = (uint32_t*)realloc(bases, cap_bases * sizeof(*bases));
-                            if (!bases) goto done;
+                            uint32_t cap = cap_bases ? cap_bases * 2 : 1024;
+                            uint32_t* grown = (uint32_t*)realloc(bases, cap * sizeof(*bases));
+                            if (!grown) {
+                                snprintf(error, error_size, "out of memory");
+                                goto done;
+                            }
+                            bases = grown;
+                            cap_bases = cap;
                         }
                         bases[nbases++] = P;
                     }
@@ -443,9 +448,14 @@ int snx_link_coff(const SnxLinkInput* inputs, size_t count, const char* const* e
             if (resolve(&l, found >> 32, (uint32_t)found, &S, &absolute, &section)) goto done;
             snx_st_le64(image[O_DATA].data + (slot - l.out_rva[O_DATA]), IMAGE_BASE + S);
             if (nbases == cap_bases) {
-                cap_bases = cap_bases ? cap_bases * 2 : 1024;
-                bases = (uint32_t*)realloc(bases, cap_bases * sizeof(*bases));
-                if (!bases) goto done;
+                uint32_t cap = cap_bases ? cap_bases * 2 : 1024;
+                uint32_t* grown = (uint32_t*)realloc(bases, cap * sizeof(*bases));
+                if (!grown) {
+                    snprintf(error, error_size, "out of memory");
+                    goto done;
+                }
+                bases = grown;
+                cap_bases = cap;
             }
             bases[nbases++] = slot;
         }
