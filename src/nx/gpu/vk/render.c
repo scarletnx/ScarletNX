@@ -266,7 +266,7 @@ static int render_begin(Surf** rt, Surf* zt, u32 n, int zt_ro, int srgb_write, u
         int loop = g_vk.has_feedback &&
                    ((fb >> i & 1) || rt[i]->layout == VK_IMAGE_LAYOUT_ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT);
         VkImageLayout layout =
-            loop ? VK_IMAGE_LAYOUT_ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            loop ? VK_IMAGE_LAYOUT_ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT : VK_LAYOUT(COLOR_ATTACHMENT_OPTIMAL);
         /* the fragment shader's reads are in the barrier's second scope, so the pass begins with every earlier write
            visible to them */
         vk_surf_use(cb, rt[i], layout,
@@ -286,7 +286,7 @@ static int render_begin(Surf** rt, Surf* zt, u32 n, int zt_ro, int srgb_write, u
                                     .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
                                     .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
     VkImageLayout zl =
-        zt_ro ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        zt_ro ? VK_LAYOUT(DEPTH_STENCIL_READ_ONLY_OPTIMAL) : VK_LAYOUT(DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
     /* a read-only depth target keeps its contents: a store would write it at the end of the pass, which the read
        access vk_surf_use records doesn't cover, and the next barrier wouldn't wait for it */
     if (zt_ro) za.storeOp = VK_ATTACHMENT_STORE_OP_NONE;
@@ -2261,13 +2261,13 @@ static int tex_kind_init(TexKind* tk, const ShaderInfo* si, int slot) {
     if (!tk->none) return 0;
     VkSampler null_sampler = vk_tex_bind_sampler(null_tsc, NULL, &plain, tk->num, NULL, tk->want, 0);
     if (!null_sampler) return 0;
-    tk->info = (VkDescriptorImageInfo){null_sampler, tk->none, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    tk->info = (VkDescriptorImageInfo){null_sampler, tk->none, VK_LAYOUT(SHADER_READ_ONLY_OPTIMAL)};
     if (!kind->shadow) return 1;
     VkImageView farthest = vk_null_view(tk->want, 3, 0); /* not far: windef.h defines it away */
     VkSampler null_compare =
         farthest ? vk_tex_bind_sampler(null_tsc, NULL, kind, 0, NULL, tk->want, 0) : VK_NULL_HANDLE;
     if (!null_compare) return 0;
-    tk->depth = (VkDescriptorImageInfo){null_compare, farthest, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    tk->depth = (VkDescriptorImageInfo){null_compare, farthest, VK_LAYOUT(SHADER_READ_ONLY_OPTIMAL)};
     return 1;
 }
 
@@ -2428,7 +2428,7 @@ static int tex_tables_set(const DsState* ds, int stage, const VkSh* s, const int
                                                     tk->want, 0);
                 if (!smp) return 0;
                 d->table[id] = (VkDescriptorImageInfo){
-                    smp, color_view, color_view == tk->none ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : layout};
+                    smp, color_view, color_view == tk->none ? VK_LAYOUT(SHADER_READ_ONLY_OPTIMAL) : layout};
                 if (kind->shadow) {
                     VkImageView depth_view = depth && view != tk->none ? view : tk->depth.imageView;
                     if (depth_view != tk->depth.imageView && !g_settings.shadows) shadow_map_sampled(x.t);
@@ -2437,7 +2437,7 @@ static int tex_tables_set(const DsState* ds, int stage, const VkSh* s, const int
                     if (!compare) return 0;
                     d->depth_table[id] = (VkDescriptorImageInfo){
                         compare, depth_view,
-                        depth_view == tk->depth.imageView ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : layout};
+                        depth_view == tk->depth.imageView ? VK_LAYOUT(SHADER_READ_ONLY_OPTIMAL) : layout};
                 } else if (depth_fill)
                     d->depth_table[id] = depth_fill->depth;
             }
@@ -2813,7 +2813,7 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
     }
     if (table_count &&
         !tex_tables_set(ds, stage, s, table_first, table_count, rt, zt, n,
-                        images->sampled_general ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, &d, set))
+                        images->sampled_general ? VK_IMAGE_LAYOUT_GENERAL : VK_LAYOUT(SHADER_READ_ONLY_OPTIMAL), &d, set))
         return VK_NULL_HANDLE;
     /* a stage fs_key didn't key: its handles in one read (tex_handles) */
     u32 handles[SH_MAXTEX];
@@ -2881,7 +2881,7 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
                   : ((s->si.tex_sint_mask >> i) & 1)               ? 2
                                                                    : 1;
         VkImageView view = VK_NULL_HANDLE;
-        VkImageLayout layout = images->sampled_general ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        VkImageLayout layout = images->sampled_general ? VK_IMAGE_LAYOUT_GENERAL : VK_LAYOUT(SHADER_READ_ONLY_OPTIMAL);
         /* sampling the depth target needs it read-only: no depth writes, and no stencil writes on either face */
         int sten_w = zt && zt->f.stencil && ds->dyn.stencil_test &&
                      ((ds->dyn.face[0].wmask & 0xFF) || (ds->dyn.face[1].wmask & 0xFF));
@@ -2945,7 +2945,7 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
         }
         if (view && depth_ro) {
             *zt_ro = 1; /* render_begin moves it to the read-only layout */
-            layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+            layout = VK_LAYOUT(DEPTH_STENCIL_READ_ONLY_OPTIMAL);
         } else if (view && slots)
             layout = VK_IMAGE_LAYOUT_ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT; /* render_begin moves it there */
         else if (view)
@@ -2969,7 +2969,7 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
                                    : "float",
                           t->f.is_int ? (t->f.sint ? "signed" : "unsigned") : "float");
             view = vk_null_view(want, st->shadow ? 3 : num, ms);
-            layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            layout = VK_LAYOUT(SHADER_READ_ONLY_OPTIMAL);
         }
         if (!view) return VK_NULL_HANDLE;
         VkSampler smp =

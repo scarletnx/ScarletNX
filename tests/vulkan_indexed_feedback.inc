@@ -76,11 +76,11 @@ static int check_indexed_texture_feedback(void) {
     u8* staged = vk_stage(sizeof initial, 4, &upload, &offset);
     CHECK(staged);
     memcpy(staged, initial, sizeof initial);
-    vk_surf_use(vk_cmd(), surface, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+    vk_surf_use(vk_cmd(), surface, VK_LAYOUT(TRANSFER_DST_OPTIMAL), VK_PIPELINE_STAGE_2_COPY_BIT,
                 VK_ACCESS_2_TRANSFER_WRITE_BIT);
     VkBufferImageCopy region = {.bufferOffset = offset, .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
                                 .imageExtent = {4, 4, 1}};
-    rec_CmdCopyBufferToImage(vk_cmd(), upload, surface->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+    rec_CmdCopyBufferToImage(vk_cmd(), upload, surface->img, VK_LAYOUT(TRANSFER_DST_OPTIMAL), 1, &region);
     vk_surf_wrote(surface); vk_rt_drawn(surface); vk_surf_touch(surface);
     DrawCall call = {.topology = 4, .count = 3, .instances = 1};
     u64 uploads_before = g_vk_itable_uploads, reused_before = g_vk_itable_reused, bytes_before = g_vk_itable_bytes;
