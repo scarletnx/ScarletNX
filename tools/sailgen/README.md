@@ -67,14 +67,16 @@ member that takes that many arguments. sailgen checks that the back end defines 
 that reaches one it does not. The pc is the one register sailgen knows itself: the instruction's.
 
 `llvm.h` keeps them where the CPU does (`cpu.h`: `x[32]`, and the flags `n`, `z`, `cf` and `vf`, each the i32 0 or 1).
-Each write is stored at once, and the values are cached for the basic block in `ir->state`, the cache `ir_state.c`'s
-accessors keep for the emitters still written by hand: a block that mixes the two loads a register once and reads a
-write back as the value written, and the alias tags and the promotion of registers (`ir_promote.c`) treat its loads and
-stores as the hand-written emitters'. When the four flags are written from `AddWithCarry(x, NOT(y), '1')` they keep the
-compare `x - y` as their origin, from `AddWithCarry(x, y, '0')` the sum, and from `[r[N-1]] @ IsZeroBit(r) @ 0b00` the
-logical result `r`; `ConditionHolds` then reads a condition on them as one `icmp` of the operands, and so does
-`ir_state.c`'s `ir_flags_cond` for B.cond and the other emitters written by hand. Flags written alone (CFINV, RMIF,
-SETF8) are stored with the others at the end of the instruction.
+Each write is stored at once, and the values are cached for the basic block in `ir->state`, with what the four flags
+came from. That cache is every emitter's: its functions over the IR builder are also `ir.h`'s accessors (`ir_x`,
+`ir_set_x`, `ir_flag_read`, `ir_flags_commit`, `ir_flags_origin` and the invalidations, which `ir_sail.c` gives) for the
+emitters still written by hand, so a block that mixes the two loads a register once and reads a write back as the value
+written, and the alias tags and the promotion of registers (`ir_promote.c`) see one kind of load and store. When the
+four flags are written from `AddWithCarry(x, NOT(y), '1')` they keep the compare `x - y` as their origin, from
+`AddWithCarry(x, y, '0')` the sum, and from `[r[N-1]] @ IsZeroBit(r) @ 0b00` the logical result `r`; `ConditionHolds`
+then reads a condition on them as one `icmp` of the operands, by the laws of `sg_origin_cond`, which `ir_state.c`'s
+`ir_flags_cond` uses too for B.cond and the other emitters written by hand. Flags written alone (CFINV, RMIF, SETF8) are
+stored with the others at the end of the instruction.
 
 ## Another back end
 
