@@ -1007,6 +1007,7 @@ const VitaHle vita_hle_kernel[] = {
     {0xe73649cau, "sceKernelDeleteRWLock", delete_rw_lock},
     {0x8d9c5461u, "sceKernelGetThreadInfo", get_thread_info},
     {0xf1ae5654u, "sceKernelGetThreadCpuAffinityMask", get_thread_cpu_affinity_mask},
+    {0x15129174u, "sceKernelChangeThreadCpuAffinityMask", get_thread_cpu_affinity_mask},
     {0x03e23af6u, "sceKernelCloseMutex", close_object},
     {0xadca94e5u, "sceKernelWaitSignal", wait_signal},
     {0x24460bb3u, "sceKernelWaitSignalCB", wait_signal},
