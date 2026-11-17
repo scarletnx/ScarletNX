@@ -54,7 +54,7 @@ if [ -z "${NEEDS:-}" ]; then
             if . == "macOS and iOS (arm64)" then "apple"
             elif . == "Android APK" then "android"
             elif startswith("Windows (") then "windows"
-            elif startswith("edenprobe") then "edenprobe"
+            elif startswith("Amberlith") or startswith("edenprobe") then "edenprobe"
             elif endswith(", as installed") then empty
             elif . == "Recompiler changes" or startswith("A64 differential") or . == "Nightly due" then empty
             elif test("^Linux AppImage \\((x86_64|aarch64)\\)$") then "appimage"
@@ -86,7 +86,7 @@ fi
 failed=$(jq -r 'to_entries[] | select(.key != "edenprobe" and .value.result != "success") |
     "\(.key) (\(.value.result))"' <<<"$needs" | paste -sd, - | sed 's/,/, /g')
 probe=$(jq -r --arg url "https://github.com/$repo/actions/runs/$run" '.edenprobe // empty |
-    "[\(.outputs.result // "edenprobe")](\($url)): " +
+    "[\(.outputs.result // "Amberlith")](\($url)): " +
     if .result == "success" then "every case of the baseline passes"
     elif .result == "failure" then "failed, see its summary" else .result end' <<<"$needs")
 
