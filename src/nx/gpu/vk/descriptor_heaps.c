@@ -392,11 +392,19 @@ static u64 lasting_done(void) {
     vk_submit_progress(&submitted, &done);
     return done;
 }
-/* the dying slots that no table can name, free again */
+/* the dying slots that no table can name, free again. None can be while the GPU has not done L->ended, which every
+   slot's lasting_idle needs: at a new frame L->ended is the last submission, which the GPU has almost never done
+   yet, and the walk over every slot waiting would free none */
 static void lasting_reap(u64 done) {
     LastingState* L = &g_heaps.lasting;
+    if (L->ended > done) {
+        g_heaps.stats.lasting_reaps_skipped++;
+        return;
+    }
+    g_heaps.stats.lasting_reaps++;
     for (u32* link = &L->dying; *link;) {
         Lasting* e = &L->slot[*link];
+        g_heaps.stats.lasting_reap_looked++;
         if (!lasting_idle(e, done)) {
             link = &e->next;
             continue;
@@ -1317,7 +1325,8 @@ void vk_descriptor_heaps_stats(void) {
         (unsigned long long)(s->buffer_hits + s->image_hits + s->sampler_hits - p->buffer_hits - p->image_hits - p->sampler_hits));
     if (g_heaps.lasting.slot)
         LOG("vulkan: descriptor heaps' lasting part: %llu descriptors found, %llu made, %llu forgotten with their "
-            "object, %llu freed, %llu taken back, %llu not kept (no slot), %llu checked, %llu different\n",
+            "object, %llu freed, %llu taken back, %llu not kept (no slot), %llu checked, %llu different; lasting "
+            "reap: %llu walks (%llu skipped, the GPU not done with the last frame), %llu slots looked at\n",
             (unsigned long long)(s->lasting_hits - p->lasting_hits),
             (unsigned long long)(s->lasting_made - p->lasting_made),
             (unsigned long long)(s->lasting_forgotten - p->lasting_forgotten),
@@ -1325,7 +1334,10 @@ void vk_descriptor_heaps_stats(void) {
             (unsigned long long)(s->lasting_evicted - p->lasting_evicted),
             (unsigned long long)(s->lasting_full - p->lasting_full),
             (unsigned long long)(s->lasting_checked - p->lasting_checked),
-            (unsigned long long)(s->lasting_differs - p->lasting_differs));
+            (unsigned long long)(s->lasting_differs - p->lasting_differs),
+            (unsigned long long)(s->lasting_reaps - p->lasting_reaps),
+            (unsigned long long)(s->lasting_reaps_skipped - p->lasting_reaps_skipped),
+            (unsigned long long)(s->lasting_reap_looked - p->lasting_reap_looked));
     LOG("vulkan: descriptor heaps: %llu descriptors kept from the stage's last table with no lookup, of %llu buffer, "
         "image and sampler requests\n",
         (unsigned long long)(s->memo_kept - p->memo_kept),
