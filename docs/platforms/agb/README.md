@@ -229,7 +229,7 @@ image. A ROM the console would reject is refused with the failing byte named.
 ## Tests
 
 The board's unit tests are `tests/agb_*.c`. A test build also downloads
-[jsmolka's gba-tests](https://github.com/jsmolka/gba-tests) (`cmake/dependencies.cmake`)
+[jsmolka's gba-tests](https://github.com/jsmolka/gba-tests) (pinned in `cpmfile.json`)
 and runs each ROM as a test of its own, `agb_gba_<rom>` (`tests/agb_gba_tests.py`).
 The ROMs check the ARM and Thumb instruction sets, the BIOS's open bus, the
 memory map, the save memory and the display. A self-checking ROM leaves the

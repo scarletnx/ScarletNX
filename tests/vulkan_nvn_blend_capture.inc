@@ -172,7 +172,7 @@ static int blend_capture_instances(GpuChannel* channel, u64 gpu) {
         VkBuffer readback;
         u8* mapped = vk_readback_buffer(sizeof color_bytes, &readback);
         CHECK(mapped);
-        vk_surf_use(vk_cmd(), surface, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        vk_surf_use(vk_cmd(), surface, VK_LAYOUT(TRANSFER_SRC_OPTIMAL),
                     VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
         VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
                                   .imageExtent = {4, 4, 1}};
@@ -321,12 +321,12 @@ static int check_nvn_blend_capture(void) {
         u8* color_bytes = vk_readback_buffer(336, &readback);
         CHECK(color_bytes);
         u8* depth_bytes = color_bytes + 256;
-        vk_surf_use(vk_cmd(), color_surface, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        vk_surf_use(vk_cmd(), color_surface, VK_LAYOUT(TRANSFER_SRC_OPTIMAL),
                     VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
         VkBufferImageCopy color_copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
                                          .imageExtent = {4, 4, 1}};
         rec_CmdCopyImageToBuffer(vk_cmd(), color_surface->img, color_surface->layout, readback, 1, &color_copy);
-        vk_surf_use(vk_cmd(), depth_surface, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        vk_surf_use(vk_cmd(), depth_surface, VK_LAYOUT(TRANSFER_SRC_OPTIMAL),
                     VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
         const VkBufferImageCopy depth_copy[2] = {
             {.bufferOffset = 256, .imageSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1}, .imageExtent = {4, 4, 1}},

@@ -228,6 +228,7 @@ int vk_upscale(const GpuUpscale* u) {
     Surf* reads[5] = {color, depth, motion, exposure, reactive};
     for (u32 i = 0; i < 5; i++) {
         if (!reads[i] || (i == 3 && (flags & SNX_FSR2_AUTO_EXPOSURE))) continue;
+        /* FSR 2 writes its descriptors itself, with this layout (fsr2.h), also with unified image layouts */
         vk_surf_use(cb, reads[i], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                     VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
     }
@@ -269,13 +270,13 @@ int vk_upscale(const GpuUpscale* u) {
     vk_barrier(cb, g_upscale.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_2_COPY_BIT,
                VK_ACCESS_2_TRANSFER_READ_BIT, VK_IMAGE_LAYOUT_GENERAL);
-    vk_surf_use(cb, out, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+    vk_surf_use(cb, out, VK_LAYOUT(TRANSFER_DST_OPTIMAL), VK_PIPELINE_STAGE_2_COPY_BIT,
                 VK_ACCESS_2_TRANSFER_WRITE_BIT);
     VkImageCopy copy = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
                         .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
                         .dstOffset = {u->out_base[0], u->out_base[1], 0},
                         .extent = {u->out[0], u->out[1], 1}};
-    rec_CmdCopyImage(cb, g_upscale.image, VK_IMAGE_LAYOUT_GENERAL, out->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
+    rec_CmdCopyImage(cb, g_upscale.image, VK_IMAGE_LAYOUT_GENERAL, out->img, VK_LAYOUT(TRANSFER_DST_OPTIMAL), 1,
                      &copy);
     vk_barrier(cb, g_upscale.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_COPY_BIT,
                VK_ACCESS_2_TRANSFER_READ_BIT, VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,

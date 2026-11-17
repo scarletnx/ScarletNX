@@ -121,7 +121,8 @@ enum {
     R_BAD_DIR_MODE = FSR(6074),
     R_READ_ONLY = FSR(6364),       /* the RomFS refuses a change of its tree */
     R_UNFLUSHED_CLOSE = FSR(6454), /* CloseFile after a write that no flush followed */
-    R_UNMOUNT_OPEN = FSR(6455),    /* Unmount with files or directories open on the mount */
+    R_FILE_NOT_CLOSED = FSR(6455), /* Unmount with a file open on the mount */
+    R_DIR_NOT_CLOSED = FSR(6456),  /* Unmount with only directories open on it */
 };
 
 #define PATH_MAX_LEN   0x300 /* a longer path after normalization is R_PATH_TOO_LONG */
@@ -866,6 +867,85 @@ int nnfs_is_mounted(CPU* c, u64 name) {
     return (int)(sdk_own(c, SYM_IS_MOUNTED) & 1);
 }
 
+/* A path made from its end in at, before what at holds from *pos: '/' and name, of n bytes. 0, or -1 when it doesn't
+   fit */
+static int path_prepend(char at[PATH_MAX_LEN + 1], size_t* pos, const char* name, size_t n) {
+    if (n + 1 > *pos) return -1;
+    *pos -= n;
+    memcpy(at + *pos, name, n);
+    at[--*pos] = '/';
+    return 0;
+}
+/* the path on its mount of RomFS entry e, a directory's when dir ("/" the root's, entry 0 of the directory table):
+   a pointer into at, or NULL when the tables give none that fits */
+static const char* rom_path(const NRom* rm, int dir, u32 e, char at[PATH_MAX_LEN + 1]) {
+    size_t pos = PATH_MAX_LEN;
+    at[pos] = 0;
+    while (!dir || e) {
+        u32 n;
+        const char* name = rom_name(rm, dir, e, &n);
+        if (!name || path_prepend(at, &pos, name, n)) return NULL;
+        e = dir ? rom_dir_field(rm, e, 0) : rom_file_field(rm, e, 0);
+        dir = 1;
+    }
+    if (pos == PATH_MAX_LEN) at[--pos] = '/';
+    return at + pos;
+}
+/* the same for a save's node under its mount's root (tree.lock held): NULL when it doesn't fit, or when the node is no
+   longer under root */
+static const char* save_path(const FsNode* root, const FsNode* node, char at[PATH_MAX_LEN + 1]) {
+    size_t pos = PATH_MAX_LEN;
+    at[pos] = 0;
+    for (; node != root; node = node->parent)
+        if (!node || !node->name || path_prepend(at, &pos, node->name, strlen(node->name))) return NULL;
+    if (pos == PATH_MAX_LEN) at[--pos] = '/';
+    return at + pos;
+}
+static void open_logged(const NMount* mt, const char* what, const char* path) {
+    if (path)
+        LOG("nn::fs::Unmount(\"%s\"): the %s %s:%s is open\n", mt->name, what, mt->name, path);
+    else
+        LOG("nn::fs::Unmount(\"%s\"): a %s is open at no path the mount still gives\n", mt->name, what);
+}
+/* Unmount of mount m with a file or a directory open on it (lock held) stops the game, as the SDK's accessor does:
+   on FileNotClosed when a file is open, else on DirectoryNotClosed. Each one open is logged first with its path, which
+   the stop's message, a report's signature, leaves out */
+static void stop_if_open(int m) {
+    const NMount* mt = &g_hle.nnfs.mounts[m];
+    char at[PATH_MAX_LEN + 1];
+    const char* p;
+    u32 files = 0, dirs = 0;
+    for (int i = 0; i < NFILES; i++) {
+        const NFile* f = &g_hle.nnfs.files[i];
+        if (!f->used || f->mount != (u32)m) continue;
+        files++;
+        if (mt->kind == MOUNT_SAVE) {
+            fs_lock();
+            p = save_path(mount_root(m), file_data(f)->node, at);
+            fs_unlock();
+        } else
+            p = rom_path(rom_at(f->rom), 0, f->entry, at);
+        open_logged(mt, "file", p);
+    }
+    for (int i = 0; i < NDIRS; i++) {
+        const NDir* d = &g_hle.nnfs.dirs[i];
+        if (!d->used || d->mount != (u32)m) continue;
+        dirs++;
+        if (mt->kind == MOUNT_SAVE) {
+            fs_lock();
+            p = save_path(mount_root(m), dir_data(d)->node, at);
+            fs_unlock();
+        } else
+            p = rom_path(rom_at(mt->rom), 1, d->dir, at);
+        open_logged(mt, "directory", p);
+    }
+    if (!files && !dirs) return;
+    u32 r = files ? R_FILE_NOT_CLOSED : R_DIR_NOT_CLOSED;
+    fatal("nn::fs::Unmount(\"%s\") failed with result 0x%x (error %04u-%04u), which the SDK stops the game on (open on "
+          "it, each logged above: files %u, directories %u)",
+          mt->name, r, 2000 + (r & 0x1ff), (r >> 9) & 0x1fff, files, dirs);
+}
+
 void nnfs_unmount(CPU* c, u64 name) {
     pm_lock(&g_nnfs.lock);
     int m = mount_named(name ? gstr(c, name) : NULL);
@@ -874,8 +954,8 @@ void nnfs_unmount(CPU* c, u64 name) {
         sdk_own(c, SYM_UNMOUNT);
         return;
     }
+    stop_if_open(m);
     NMount* mt = &g_hle.nnfs.mounts[m];
-    if (mt->opens) stop("Unmount", R_UNMOUNT_OPEN);
     if (mt->kind == MOUNT_SAVE) {
         fs_lock();
         fs_root_release(g_hle.fs.fss[mt->fss].root);
@@ -911,8 +991,7 @@ u32 nnfs_open_file(CPU* c, u64 handle, u64 path, i32 mode) {
         if (!r && is_dir) r = R_PATH_NOT_FOUND;
         if (!r) {
             opened.rom = mt->rom;
-            opened.data = rm->data + rom_file_u64(rm, e, 8);
-            opened.size = rom_file_u64(rm, e, 16);
+            opened.entry = e;
         }
     } else if (!r && mt->read_only && (mode & 2)) {
         r = R_BAD_OPEN_MODE; /* HYPOTHESIS: a read-only save refuses a write mode as the RomFS does */
@@ -935,7 +1014,6 @@ u32 nnfs_open_file(CPU* c, u64 handle, u64 path, i32 mode) {
         f->gen = gen;
         f->mount = (u32)m;
         f->mode = (u32)mode;
-        mt->opens++;
         put_handle(c, handle, handle_make(0, gen, (u32)i));
     }
     pm_unlock(&g_nnfs.lock);
@@ -955,7 +1033,6 @@ void nnfs_close_file(CPU* c, u64 h) {
         *file_data(f) = (FileData){0};
         fs_unlock();
     }
-    g_hle.nnfs.mounts[f->mount].opens--;
     u32 gen = f->gen;
     *f = (NFile){0};
     f->gen = gen;
@@ -993,7 +1070,7 @@ static u32 file_read(const char* function, u64 h, u64 read_out, int want_read, i
     /* a RomFS never changes, and its image stays while a file is open on it (Unmount stops the game first): read it
        with no lock held */
     NRom* rm = rom_at(f->rom);
-    u64 data = f->data, total = f->size;
+    u64 data = rm->data + rom_file_u64(rm, f->entry, 8), total = rom_file_u64(rm, f->entry, 16);
     pm_unlock(&g_nnfs.lock);
     if ((u64)offset > total) return R_OUT_OF_RANGE; /* at the end reads nothing, past it is an error */
     u64 count = size < total - (u64)offset ? size : total - (u64)offset;
@@ -1114,12 +1191,13 @@ u32 nnfs_get_file_size(CPU* c, u64 size, u64 h) {
     u32 r = f->sticky;
     if (!r && !size) r = R_NULL_ARGUMENT;
     if (!r) {
-        u64 n = f->size;
+        u64 n;
         if (is_save(f)) {
             fs_lock();
             n = file_data(f)->node->size;
             fs_unlock();
-        }
+        } else
+            n = rom_file_u64(rom_at(f->rom), f->entry, 16);
         put_u64(c, size, n);
     }
     pm_unlock(&g_nnfs.lock);
@@ -1216,7 +1294,6 @@ u32 nnfs_open_directory(CPU* c, u64 handle, u64 path, i32 mode) {
         d->used = 1;
         d->gen = gen;
         d->mount = (u32)m;
-        mt->opens++;
         put_handle(c, handle, handle_make(1, gen, (u32)i));
     }
     pm_unlock(&g_nnfs.lock);
@@ -1316,7 +1393,6 @@ void nnfs_close_directory(CPU* c, u64 h) {
         *dir_data(d) = (DirData){0};
         fs_unlock();
     }
-    g_hle.nnfs.mounts[d->mount].opens--;
     u32 gen = d->gen;
     *d = (NDir){0};
     d->gen = gen;

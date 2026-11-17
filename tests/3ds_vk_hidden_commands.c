@@ -62,7 +62,11 @@ int main(int argc, char** argv) {
     CHECK(init_said(m, log, sizeof log, why, sizeof why));
     const SnxCtrVk* v = snx_ctr_vk();
     CHECK(v && !v->shader_object);
-    for (uint32_t i = 0; i < v->extension_count; i++) CHECK(strcmp(v->extensions[i], "VK_EXT_shader_object"));
+    /* the line that says what the device is made with (common/gpu/vk/device.c) */
+    const char* made = strstr(log, "3ds gpu: the device is ");
+    const char* end = made ? strchr(made, '\n') : NULL;
+    const char* named = made ? strstr(made, "VK_EXT_shader_object") : NULL;
+    CHECK(end && (!named || named > end));
     CHECK(strstr(log, "vulkan: vk_debug_hide_commands=vkCreateShadersEXT hides 1 command of the extensions"));
     CHECK(strstr(log,
                  "lists VK_EXT_shader_object without vkCreateShadersEXT, which it requires (vk_debug_hide_commands "

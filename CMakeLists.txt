@@ -11,7 +11,9 @@
 #
 # After each build the runtime is copied next to every recompiled game in the data folder's games/ (SNX_DEPLOY), so a
 # runtime fix reaches the games without recompiling them.
-cmake_minimum_required(VERSION 3.25)
+# CMake 3.28 for CPMUtil (cmake/packages.cmake); the policies stay 3.25's, which the build is written and tested to
+cmake_minimum_required(VERSION 3.28)
+cmake_policy(VERSION 3.25)
 
 # Clang only: the runtime, the generated game code and the third-party libraries are built and tested with one
 # compiler. It is the default here, so a plain `cmake -B build` picks it over the system's cc
@@ -286,8 +288,9 @@ endif()
 # and the driver (hactool among them), each in a folder named after it
 set(licenses "${CMAKE_INSTALL_DATADIR}/licenses/scarletnx")
 install(FILES LICENSE DESTINATION ${licenses})
-# FFmpeg's with the change made to it (cmake/ffmpeg-vp9-nvdec.patch), which its LGPL wants carried with the binaries
-install(FILES "${FFmpeg_SOURCE_DIR}/COPYING.LGPLv2.1" "${FFmpeg_SOURCE_DIR}/LICENSE.md" cmake/ffmpeg-vp9-nvdec.patch
+# FFmpeg's with the changes made to it (.patch/ffmpeg), which its LGPL wants carried with the binaries
+install(FILES "${FFmpeg_SOURCE_DIR}/COPYING.LGPLv2.1" "${FFmpeg_SOURCE_DIR}/LICENSE.md"
+              .patch/ffmpeg/0001-vp9-nvdec.patch .patch/ffmpeg/0002-h264-bigendian.patch
         DESTINATION ${licenses}/FFmpeg)
 if(TARGET snx_zlib) # in FFmpeg's PNG decoder and encoder
     install(FILES "${zlib_SOURCE_DIR}/LICENSE" DESTINATION ${licenses}/zlib)
@@ -295,7 +298,7 @@ endif()
 install(FILES dist/licenses/Noto/OFL.txt DESTINATION ${licenses}/Noto) # the shared fonts' stand-ins (pl.c)
 install(FILES dist/licenses/Montserrat/OFL.txt DESTINATION ${licenses}/Montserrat) # the 3DS shared font's stand-in
 install(FILES dist/licenses/Ryujinx/LICENSE.txt DESTINATION ${licenses}/Ryujinx) # the default Miis (misc.c)
-# a package the system gave (CPM_USE_LOCAL_PACKAGES) is not in the install: its license comes with its own package
+# a package the system gave (Vulkan-Headers_FORCE_SYSTEM) is not in the install: its license comes with its own package
 if(Vulkan-Headers_ADDED)
     install(FILES "${Vulkan-Headers_SOURCE_DIR}/LICENSE.md" DESTINATION ${licenses}/Vulkan-Headers)
     install(DIRECTORY "${Vulkan-Headers_SOURCE_DIR}/LICENSES" DESTINATION ${licenses}/Vulkan-Headers)

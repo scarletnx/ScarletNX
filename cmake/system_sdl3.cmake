@@ -11,11 +11,11 @@ macro(snx_system_sdl3)
     if(NOT SDL3_FOUND)
         message(FATAL_ERROR "SNX_SYSTEM_SDL3: no SDL3 package found, ${SNX_SDL3_OLDEST} or newer wanted (FreeBSD: "
                             "pkg install sdl3; NetBSD: pkgin install SDL3; Arch: pacman -S sdl3). "
-                            "Use -DSNX_SYSTEM_SDL3=OFF for CPM's pinned source build.")
+                            "Use -DSNX_SYSTEM_SDL3=OFF for the pinned source build.")
     endif()
     if(SDL3_VERSION VERSION_LESS SNX_SDL3_OLDEST)
         message(FATAL_ERROR "SNX_SYSTEM_SDL3: the system's SDL3 is ${SDL3_VERSION}, older than ${SNX_SDL3_OLDEST}. "
-                            "Use -DSNX_SYSTEM_SDL3=OFF for CPM's pinned source build.")
+                            "Use -DSNX_SYSTEM_SDL3=OFF for the pinned source build.")
     endif()
     if(NOT TARGET SDL3::SDL3)
         message(FATAL_ERROR "SNX_SYSTEM_SDL3: the system's SDL3 ${SDL3_VERSION} has no SDL3::SDL3 target")

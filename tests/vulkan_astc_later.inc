@@ -108,9 +108,9 @@ static u8* al_image(const AlTex* x, Surf* t, u64* size) {
     u8* back = vk_readback_buffer(at + kept, &buffer);
     u8* out = back ? malloc((size_t)(at + kept)) : NULL;
     if (out) {
-        vk_surf_use(vk_cmd(), t, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+        vk_surf_use(vk_cmd(), t, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), VK_PIPELINE_STAGE_2_COPY_BIT,
                     VK_ACCESS_2_TRANSFER_READ_BIT);
-        rec_CmdCopyImageToBuffer(vk_cmd(), t->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, n, c);
+        rec_CmdCopyImageToBuffer(vk_cmd(), t->img, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), buffer, n, c);
         if (kept) {
             /* after the uploads' copies into it and the encoder's reads of it */
             VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,

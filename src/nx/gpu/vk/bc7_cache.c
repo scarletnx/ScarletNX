@@ -451,6 +451,7 @@ typedef struct {
     VkCommandBuffer cb;
     VkBuffer buf;
     VkImage img;
+    VkImageLayout layout; /* img's, VK_LAYOUT's of the GPU thread */
     DevMem mem;
     VkBufferImageCopy copy;
 } Bc7Later;
@@ -460,7 +461,7 @@ static void bc7_later_run(const void* p) {
     if (f && bc7_read_at(f, g_bc7_cache.rd.piece, l->key, l->at, l->size, l->dst) > 0) {
         /* staging may not be host coherent, and its submission's flush (cmd.c's rings_flush) came before this */
         vk_devmem_flush(l->mem, l->off, l->size);
-        if (l->img) vkCmdCopyBufferToImage(l->cb, l->buf, l->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &l->copy);
+        if (l->img) vkCmdCopyBufferToImage(l->cb, l->buf, l->img, l->layout, 1, &l->copy);
         __atomic_add_fetch(&g_bc7_cache.rd.hits, 1, __ATOMIC_RELAXED);
         return;
     }
@@ -483,7 +484,7 @@ static void bc7_later_run(const void* p) {
 }
 
 int vk_bc7_cache_read_later(VkCommandBuffer cb, const u64 key[2], u64 size, u8* dst, DevMem mem, u64 off, VkBuffer buf,
-                            VkImage img, const VkBufferImageCopy* copy, void* owner, u64 gva) {
+                            VkImage img, VkImageLayout layout, const VkBufferImageCopy* copy, void* owner, u64 gva) {
     if (!g_bc7_cache.f) return 0;
     /* the recording thread's handle, at the first read once that thread runs: the cache can open before it starts */
     if (!__atomic_load_n(&g_bc7_cache.rd.f, __ATOMIC_ACQUIRE) && !g_bc7_cache.rd.tried && vk_rec_threaded()) {
@@ -504,7 +505,7 @@ int vk_bc7_cache_read_later(VkCommandBuffer cb, const u64 key[2], u64 size, u8* 
     if (!__atomic_load_n(&g_bc7_cache.rd.f, __ATOMIC_ACQUIRE)) return -1;
     const Bc7Entry* e = bc7_entry(key, size);
     if (!e) return 0;
-    const Bc7Later l = {{key[0], key[1]}, e->at, size, off, gva, dst, owner, cb, buf, img, mem, *copy};
+    const Bc7Later l = {{key[0], key[1]}, e->at, size, off, gva, dst, owner, cb, buf, img, layout, mem, *copy};
     vk_rec_call(bc7_later_run, &l, sizeof l);
     return 1;
 }

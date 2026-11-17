@@ -672,9 +672,15 @@ const VkPhysicalDeviceMemoryProperties* vk_devmem_props(void) {
     return &none;
 }
 int vk_mem_heap(void) { return 0; }
+/* no image is made, unless g_crop_images: then each is made, with a handle of its own (check_crop_reuse) */
+static u32 g_crop_images;
 int vk_cache_image_create(const VkImageCreateInfo* ii, VkImage* img, DevMem* mem, u32 owner, u64* bytes) {
-    (void)ii, (void)img, (void)mem, (void)owner, (void)bytes;
-    return 0;
+    (void)ii, (void)owner;
+    if (!g_crop_images) return 0;
+    *img = (VkImage)(uintptr_t)(0xC40 + g_crop_images++);
+    *mem = 0;
+    *bytes = 0;
+    return 1;
 }
 /* images with memory only where it is bound: of the shape g_res.shape gives (none while its block is 0 texels), their
    pages bound as vk_image_resident is asked, each 64 KiB, those it gives memory marked 2 as memory.c marks them. With
@@ -1004,6 +1010,72 @@ static void check_take_skip(void) {
     CHECK(g_drawn_searches == 5 && g_image_copies == 1); /* taken once */
     g_drawn_target = NULL;
     g_drawn_fresh = 0;
+    vkCmdCopyImage = NULL;
+}
+
+/* A crop of a target (rt_crop: a read narrower than the target, or in another format) is copied again only after a
+   texture barrier (g_vk_texture_epoch), as a same-size read (vk_rt_snapshot) is: a draw to the target with no barrier
+   since the copy reuses it. A guest-size copy (rt_guest) still follows each draw. Each read is counted in copies of
+   the image (vkCmdCopyImage) and in g_vk_rt_copy_writes */
+static void check_crop_reuse(void) {
+    Surf rt = tex(800, 448, 1, 1, 4, 2, 0, 1);
+    VkFmt as = rt.f;
+    as.vk = VK_FORMAT_R32_UINT; /* the same texel size, read as another format */
+    rt.is_rt = 1;
+    rt.sw = rt.w;
+    rt.sh = rt.h;
+    rt.img = (VkImage)(uintptr_t)0x3C7;
+    rt.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    rt.wgen = 1;
+    vkCmdCopyImage = count_copy_image;
+    g_crop_images = 1;
+    g_image_copies = 0;
+    u64 writes = g_vk_rt_copy_writes, epoch = g_vk_texture_epoch;
+    /* the first read copies */
+    Surf* c = rt_crop(&rt, 792, 448, NULL);
+    CHECK(c && c != &rt && c->w == 792 && c->h == 448 && c->crop_gen == rt.wgen);
+    CHECK(g_image_copies == 1 && g_vk_rt_copy_writes == writes + 1);
+    /* read again with no draw since: the same copy */
+    CHECK(rt_crop(&rt, 792, 448, NULL) == c && g_image_copies == 1);
+    /* drawn to, with no texture barrier since the copy: the copy is reused, three times */
+    for (int i = 0; i < 3; i++) {
+        rt.wgen++;
+        CHECK(rt_crop(&rt, 792, 448, NULL) == c);
+    }
+    CHECK(g_image_copies == 1 && g_vk_rt_copy_writes == writes + 1);
+    /* a texture barrier after those draws: copied once, then reused */
+    g_vk_texture_epoch++;
+    CHECK(rt_crop(&rt, 792, 448, NULL) == c && c->crop_gen == rt.wgen && c->crop_epoch == g_vk_texture_epoch);
+    CHECK(g_image_copies == 2 && g_vk_rt_copy_writes == writes + 2);
+    CHECK(rt_crop(&rt, 792, 448, NULL) == c && g_image_copies == 2);
+    rt.wgen++;
+    CHECK(rt_crop(&rt, 792, 448, NULL) == c && g_image_copies == 2);
+    /* another size, and another format: each a copy of its own, made at its first read */
+    Surf* d = rt_crop(&rt, 800, 440, NULL);
+    Surf* e = rt_crop(&rt, 800, 448, &as);
+    CHECK(d && e && d != c && e != c && d != e && e->f.vk == VK_FORMAT_R32_UINT);
+    CHECK(g_image_copies == 4 && g_vk_rt_copy_writes == writes + 4);
+    rt.wgen++;
+    CHECK(rt_crop(&rt, 800, 440, NULL) == d && rt_crop(&rt, 800, 448, &as) == e && g_image_copies == 4);
+    /* each draw after a barrier is copied once for each crop */
+    g_vk_texture_epoch++;
+    rt.wgen++;
+    CHECK(rt_crop(&rt, 792, 448, NULL) == c && rt_crop(&rt, 800, 440, NULL) == d);
+    CHECK(rt_crop(&rt, 800, 448, &as) == e && g_image_copies == 7 && g_vk_rt_copy_writes == writes + 7);
+    /* a same-size read does the same (vk_rt_snapshot) */
+    Surf* s = vk_rt_snapshot(&rt, 1);
+    CHECK(s && s != &rt && g_image_copies == 8);
+    rt.wgen++;
+    CHECK(vk_rt_snapshot(&rt, 1) == s && g_image_copies == 8);
+    g_vk_texture_epoch++;
+    CHECK(vk_rt_snapshot(&rt, 1) == s && g_image_copies == 9);
+    while (rt.crop) {
+        Surf* x = rt.crop;
+        rt.crop = x->next;
+        free(x);
+    }
+    g_vk_texture_epoch = epoch;
+    g_crop_images = 0;
     vkCmdCopyImage = NULL;
 }
 
@@ -1556,6 +1628,7 @@ static void check_hash_runs(void) {
 int main(void) {
     fill();
     check_take_skip();
+    check_crop_reuse();
     g_vk.alloc_cap = 256ull << 20;
     /* the video's picture: 1920 wide in 4 byte pixels, rows of whole pieces, 16 GOBs a block */
     Surf a = tex(1920, 136, 1, 1, 4, 4, 0, 1);

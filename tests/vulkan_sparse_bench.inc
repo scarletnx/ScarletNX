@@ -399,7 +399,7 @@ static int bench_texture_reads(void) {
                                     .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
         CHECK(vkCreateImageView(g_vk.dev, &vi, NULL, &view[k]) == VK_SUCCESS);
         VkDescriptorBufferInfo dbi = {out, 0, 4096};
-        VkDescriptorImageInfo dii = {sampler, view[k], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+        VkDescriptorImageInfo dii = {sampler, view[k], VK_LAYOUT(SHADER_READ_ONLY_OPTIMAL)};
         VkWriteDescriptorSet w[2] = {{.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
                                       .dstSet = set[k],
                                       .dstBinding = 0,
@@ -428,7 +428,7 @@ static int bench_texture_reads(void) {
                 vk_lock();
                 vk_render_end();
                 VkCommandBuffer cb = vk_cmd();
-                vk_surf_use(cb, t[k], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                vk_surf_use(cb, t[k], VK_LAYOUT(SHADER_READ_ONLY_OPTIMAL), VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                             VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
                 rec_CmdResetQueryPool(cb, queries, 0, 2);
                 rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline[v]);

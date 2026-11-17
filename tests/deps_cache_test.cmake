@@ -5,7 +5,7 @@
 #
 # The dependency cache (cmake/deps_cache.cmake, cmake/deps_publish.cmake): one folder per exact build, the same from
 # any build tree, another for any change of source, configure line, compiler or recipe, found only once complete, and
-# published whole, never over a finished one.
+# published whole, never over a finished one. A build folder another source left is emptied.
 foreach(var CC SRC WORK)
     if(NOT DEFINED ${var})
         message(FATAL_ERROR "deps_cache_test.cmake needs -D${var}=...")
@@ -149,5 +149,29 @@ endif()
 dir_of(g tree7 "# recipe" "source: 1" "configure: --x")
 if(NOT (g_FOUND AND g STREQUAL a))
     fail("a complete folder is found")
+endif()
+# a dependency's build folder (snx_deps_binary_dir): made, with the source it builds from named; kept for that source;
+# emptied for another, named in it or in the CMakeCache.txt of a CMake build (a configure from before the name)
+set(build "${WORK}/lib-build")
+snx_deps_binary_dir("${build}" "${WORK}/cache/lib/1")
+file(READ "${build}/snx-source.txt" named)
+if(NOT named STREQUAL "${WORK}/cache/lib/1")
+    fail("the build folder names [${named}] for the source ${WORK}/cache/lib/1")
+endif()
+file(WRITE "${build}/lib.o" "")
+snx_deps_binary_dir("${build}" "${WORK}/cache/lib/./1")
+if(NOT EXISTS "${build}/lib.o")
+    fail("the build folder of the same source is emptied")
+endif()
+snx_deps_binary_dir("${build}" "${WORK}/cache/lib/2")
+file(READ "${build}/snx-source.txt" named)
+if(EXISTS "${build}/lib.o" OR NOT named STREQUAL "${WORK}/cache/lib/2")
+    fail("another source's build folder is kept, naming [${named}]")
+endif()
+file(WRITE "${build}/lib.o" "")
+file(WRITE "${build}/CMakeCache.txt" "CMAKE_HOME_DIRECTORY:INTERNAL=${WORK}/cache/lib/a054\n")
+snx_deps_binary_dir("${build}" "${WORK}/cache/lib/2")
+if(EXISTS "${build}/lib.o")
+    fail("a CMake build folder another source configured is kept")
 endif()
 message(STATUS "deps_cache: ok")

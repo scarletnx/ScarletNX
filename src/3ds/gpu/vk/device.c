@@ -2,8 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 #include "3ds/gpu/vk/vk.h"
 #include "3ds/gpu/vk/vk_render.h"
-#include "common/gpu/vk/extension_bans.h"
-#include "common/gpu/vk/extension_commands.h"
+#include "common/gpu/vk/device_settings.h"
 #include "common/gpu/vk/vk_common.h"
 #include "common/memory/host.h"
 #include "common/utilities/common.h"
@@ -54,73 +53,31 @@ static uint32_t extension_needs(bool windowed, VkExtensionNeed* need) {
                                       "Vulkan has a portability driver's subset on wherever the driver lists it"};
     return needs;
 }
-/* The extension settings (vk_ext_*) and the drivers' bans (extension_bans.txt) on e, the device's list, before
-   anything reads it, as on a Switch game's device: an extension off or banned leaves the list. False when a setting is
-   wrong (a value not auto, on or off, or off for what the device can't do without), which the log says */
-static bool extension_rules(VkPhysicalDevice phys, SnxVkExtensions* e, bool windowed) {
-    VkPhysicalDeviceVulkan12Properties p12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_PROPERTIES};
-    VkPhysicalDeviceProperties2 p = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &p12};
-    vkGetPhysicalDeviceProperties2(phys, &p);
-    VkBanDevice bd = {p.properties.deviceName,    p12.driverName,        p12.driverInfo, (uint32_t)p12.driverID,
-                      p.properties.driverVersion, p.properties.deviceID, vk_ban_system()};
-    vk_bans_device(&bd);
-    vk_bans_ignored(ban_say);
-    static VkExtensionSetting settings[160];
-    uint32_t count = 0, needs = 0;
-    for (int i = 0; i < g_vk_extension_settings_count && count < sizeof settings / sizeof *settings; i++)
-        settings[count++] = (VkExtensionSetting){g_vk_extension_settings[i].name, g_vk_extension_settings[i].value,
-                                                 g_vk_extension_settings[i].core};
-    VkExtensionNeed need[2];
-    needs = extension_needs(windowed, need);
-    char err[512];
-    if (!vk_extension_settings(e, settings, count, need, needs, err, sizeof err)) {
-        fprintf(stderr, "3ds gpu: settings: %s\n", err);
-        return false;
-    }
-    (void)vk_bans_filter(e, ban_say);
-    return true;
-}
-/* A device of this physical device and queue family, if it has what the 3DS needs (snx_vk_first_device's make) */
-static bool make_device(VkPhysicalDevice phys, uint32_t family, void* user) {
+/* The 3DS's device on a physical device and queue family (common/gpu/vk/device.h) */
+static bool choose(SnxVkChoice* c, void* user) {
     SnxCtrVk* v = user;
-    SnxVkExtensions list;
-    if (!snx_vk_device_extensions(phys, &list)) return false;
-    if (!extension_rules(phys, &list, v->host.surface || v->second_surface)) {
-        snx_vk_extensions_free(&list);
-        return false;
-    }
-    const char* extensions[8];
-    uint32_t n = 0;
-    /* the RAM imported, or the device's memory that the RAM moves into (snx_ctr_vk_init), each where it can be; a
-       device with neither takes a copy of the RAM in its host-visible memory instead */
-    bool host = snx_vk_extensions_has(&list, VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME);
-    bool dmabuf = snx_vk_extensions_has(&list, VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME) &&
-                  snx_vk_extensions_has(&list, VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME);
-    /* neither: the RAM is a copy in the device's host-visible memory, which the CPU keeps in step with the board's
-       (render.c), as a driver that cannot take guest memory leaves no other way to run the GPU */
-    bool ok = true;
-    if (host) extensions[n++] = VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME;
-    if (dmabuf) {
-        extensions[n++] = VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME;
-        extensions[n++] = VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME;
-    }
-    if (v->host.surface || v->second_surface) {
-        ok = ok && snx_vk_extensions_has(&list, VK_KHR_SWAPCHAIN_EXTENSION_NAME);
-        extensions[n++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
-    }
-    bool index8 = snx_vk_extensions_has(&list, VK_EXT_INDEX_TYPE_UINT8_EXTENSION_NAME);
-    if (index8) extensions[n++] = VK_EXT_INDEX_TYPE_UINT8_EXTENSION_NAME;
-    /* a portability driver's subset must be enabled when it lists one (MoltenVK), as the Switch frontend does */
-    bool portability = snx_vk_extensions_has(&list, "VK_KHR_portability_subset");
-    if (portability) extensions[n++] = "VK_KHR_portability_subset";
-    bool objects = snx_vk_extensions_has(&list, VK_EXT_SHADER_OBJECT_EXTENSION_NAME);
-    snx_vk_extensions_free(&list);
-    if (!ok) return false;
+    VkPhysicalDevice phys = c->phys;
+    uint32_t family = c->family;
+    if ((v->host.surface || v->second_surface) && !snx_vk_choice_enable(c, VK_KHR_SWAPCHAIN_EXTENSION_NAME))
+        return snx_vk_choice_refuse(c, "has no VK_KHR_swapchain to draw the windows with");
     if (v->second_surface) { /* the same queue presents to both windows */
         VkBool32 presents = VK_FALSE;
         if (vkGetPhysicalDeviceSurfaceSupportKHR(phys, family, v->second_surface, &presents) != VK_SUCCESS || !presents)
-            return false;
+            return snx_vk_choice_refuse(c, "has no queue family that presents to both windows");
     }
+    /* the RAM imported, or the device's memory that the RAM moves into (snx_ctr_vk_init), each where it can be; a
+       device with neither takes a copy of the RAM in its host-visible memory instead */
+    bool host = snx_vk_choice_enable(c, VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME);
+    bool dmabuf = snx_vk_choice_has(c, VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME) &&
+                  snx_vk_choice_has(c, VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME) &&
+                  snx_vk_choice_enable(c, VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME) &&
+                  snx_vk_choice_enable(c, VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME);
+    /* neither: the RAM is a copy in the device's host-visible memory, which the CPU keeps in step with the board's
+       (render.c), as a driver that cannot take guest memory leaves no other way to run the GPU */
+    bool index8 = snx_vk_choice_enable(c, VK_EXT_INDEX_TYPE_UINT8_EXTENSION_NAME);
+    /* a portability driver's subset must be enabled when it lists one (MoltenVK), as the Switch frontend does */
+    snx_vk_choice_enable(c, "VK_KHR_portability_subset");
+    bool objects = snx_vk_choice_has(c, VK_EXT_SHADER_OBJECT_EXTENSION_NAME);
     VkPhysicalDeviceIndexTypeUint8FeaturesEXT index_features = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_INDEX_TYPE_UINT8_FEATURES_EXT};
     VkPhysicalDeviceShaderObjectFeaturesEXT object_features = {
@@ -131,13 +88,13 @@ static bool make_device(VkPhysicalDevice phys, uint32_t family, void* user) {
     void* const query[] = {&features, &v12, &v13, index8 ? &index_features : NULL, objects ? &object_features : NULL};
     snx_vk_chain(query, sizeof query / sizeof *query);
     vkGetPhysicalDeviceFeatures2(phys, &features);
-    if (!v12.storageBuffer8BitAccess || !v13.dynamicRendering) return false;
+    if (!v12.storageBuffer8BitAccess || !v13.dynamicRendering)
+        return snx_vk_choice_refuse(c, "has no storageBuffer8BitAccess or no dynamicRendering");
     /* without them the ring waits for the fence of each slot (extension_bans.txt turns them off on Android) */
     if (vk_ban("timelineSemaphore", v12.timelineSemaphore, ban_say)) v12.timelineSemaphore = VK_FALSE;
     /* shader objects need the feature alone: with it, every call that sets the state they draw with is the device's,
        whatever the extended dynamic state features say (VK_EXT_shader_object) */
-    objects = objects && object_features.shaderObject;
-    if (objects) extensions[n++] = VK_EXT_SHADER_OBJECT_EXTENSION_NAME;
+    objects = objects && object_features.shaderObject && snx_vk_choice_enable(c, VK_EXT_SHADER_OBJECT_EXTENSION_NAME);
     VkPhysicalDeviceShaderObjectFeaturesEXT want_object = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_OBJECT_FEATURES_EXT, .shaderObject = VK_TRUE};
     /* what the 3DS uses of them, nothing more */
@@ -161,11 +118,7 @@ static bool make_device(VkPhysicalDevice phys, uint32_t family, void* user) {
     want.features.samplerAnisotropy = features.features.samplerAnisotropy;
     void* const enable[] = {&want, &want12, &want13, index8 ? &want_index : NULL, objects ? &want_object : NULL};
     snx_vk_chain(enable, sizeof enable / sizeof *enable);
-    if (snx_vk_device_create(phys, family, &want, extensions, n, &v->device) != VK_SUCCESS) return false;
-    v->phys = phys;
-    v->family = family;
-    memcpy(v->extensions, extensions, n * sizeof *extensions);
-    v->extension_count = n;
+    if (!snx_vk_choice_create(c, &want, NULL, NULL, 0)) return false;
     v->index8 = index8 && index_features.indexTypeUint8;
     v->shader_object = objects;
     v->logic_op = features.features.logicOp;
@@ -670,51 +623,37 @@ static bool init(SnxCtrMemory* memory, bool headless, char* error, size_t error_
             v->second_surface = VK_NULL_HANDLE;
         }
     }
-    /* the drivers known to break an extension or feature, read before a device is made (make_device): a table the
-       build carries that does not read is the build's fault; a key of vulkan_ban_ignore the table has not is the
-       player's, who meant a ban that would otherwise still hold */
-    if (!vk_bans_load(snx_vk_extension_bans_text, error, error_size) ||
-        !vk_bans_ignore(g_settings.vulkan_ban_ignore, error, error_size) ||
-        !snx_vk_hide_check(g_settings.vulkan_hidden_commands, error, error_size)) {
+    VkExtensionNeed need[2];
+    VkExtensionSetting settings[VK_EXTENSION_SETTINGS];
+    SnxVkDeviceRequest request = {.who = "3ds gpu",
+                                  .none = "no Vulkan 1.3 device with 8-bit storage buffers and dynamic rendering",
+                                  .instance = v->host.instance.instance,
+                                  .api = VK_API_VERSION_1_3,
+                                  .queues = VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT,
+                                  .surface = v->host.surface,
+                                  .choose = choose,
+                                  .user = v,
+                                  .need = need,
+                                  .needs = extension_needs(v->host.surface || v->second_surface, need)};
+    snx_vk_device_settings(&request, settings);
+    SnxVkDevice made;
+    bool up = snx_vk_device_make(&request, &made, error, error_size);
+    if (!up && made.passed_over && v->second) { /* no device presents to both windows: one window again */
+        fprintf(stderr, "3ds gpu: %s; the bottom screen goes back into the one window\n", error);
+        vkDestroySurfaceKHR(v->host.instance.instance, v->second_surface, NULL);
+        SDL_DestroyWindow(v->second);
+        v->second = NULL;
+        v->second_surface = VK_NULL_HANDLE;
+        request.needs = extension_needs(v->host.surface != VK_NULL_HANDLE, need);
+        up = snx_vk_device_make(&request, &made, error, error_size);
+    }
+    if (!up) {
         snx_ctr_vk_free();
         return false;
     }
-    const VkQueueFlags queue = VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT;
-    /* each command of each extension the device is made with, as on a Switch game's device: one its driver gives no
-       pointer for takes the extension out of the device made again, once (snx_vk_device_commands) */
-    for (int again = 0;; again = 1) {
-        bool made =
-            snx_vk_first_device(v->host.instance.instance, VK_API_VERSION_1_3, queue, v->host.surface, make_device, v);
-        if (!made && v->second) { /* no device presents to both windows: one window again */
-            vkDestroySurfaceKHR(v->host.instance.instance, v->second_surface, NULL);
-            SDL_DestroyWindow(v->second);
-            v->second = NULL;
-            v->second_surface = VK_NULL_HANDLE;
-            made = snx_vk_first_device(v->host.instance.instance, VK_API_VERSION_1_3, queue, v->host.surface,
-                                       make_device, v);
-        }
-        if (!made) {
-            snprintf(error, error_size, "no Vulkan 1.3 device with 8-bit storage buffers and dynamic rendering");
-            snx_ctr_vk_free();
-            return false;
-        }
-        volkLoadDevice(v->device);
-        VkPhysicalDeviceProperties made_on;
-        vkGetPhysicalDeviceProperties(v->phys, &made_on);
-        VkExtensionNeed need[2];
-        uint32_t needs = extension_needs(v->host.surface || v->second_surface, need);
-        int lacks =
-            snx_vk_device_commands(v->device, made_on.deviceName, VK_API_VERSION_1_3, v->extensions, v->extension_count,
-                                   need, needs, g_settings.vulkan_hidden_commands, again, ban_say, error, error_size);
-        if (!lacks) break;
-        vkDestroyDevice(v->device, NULL);
-        v->device = VK_NULL_HANDLE;
-        if (lacks < 0) {
-            fprintf(stderr, "3ds gpu: %s\n", error);
-            snx_ctr_vk_free();
-            return false;
-        }
-    }
+    v->phys = made.phys;
+    v->device = made.device;
+    v->family = made.family;
     VkPhysicalDeviceDriverProperties driver = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
     VkPhysicalDeviceProperties2 chosen = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &driver};
     vkGetPhysicalDeviceProperties2(v->phys, &chosen);
@@ -729,8 +668,8 @@ static bool init(SnxCtrMemory* memory, bool headless, char* error, size_t error_
     if (said[0]) fprintf(stderr, "3ds gpu: %s\n", said);
     fprintf(stderr, v->shader_object
                         ? "3ds gpu: draws bind shader objects (VK_EXT_shader_object): no pipeline is made\n"
-                        : "3ds gpu: draws go through pipelines: VK_EXT_shader_object is not on the device's list "
-                          "(the driver has it not, vk_ext_shader_object=off, or a ban holds)\n");
+                        : "3ds gpu: draws go through pipelines: the device is made without VK_EXT_shader_object "
+                          "(the line on it above says why, or the driver lacks its shaderObject feature)\n");
     /* a recording's sets: a draw takes two (three uniform blocks, three LUTs and eight textures, tex0's six for a
        shadow cube's faces) and a shadow pass one more, a compute dispatch one; running out finishes the recording
        early (vk/render.c) */
