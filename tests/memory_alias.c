@@ -14,6 +14,7 @@
 #include "nx/runtime/ini.h"
 #include "snx_settings.h"
 #include <dirent.h>
+#include <pthread.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -164,6 +165,34 @@ static void check_tracking(u64 a, u64 size) {
     GP(a)[size / 2] ^= 1;
     CHECK(scan_reports(a, size, a + size / 2) == 1);
     CHECK(scan_reports(a, size, a + size / 2) == 0);
+}
+
+/* A source given back from the pool (mem_alias_end) while another thread scans it, as the renderer's scanner thread
+   does. The pool's contents come back through a read of its file: the kernel writes the fresh pages, and where the
+   tracking is by protection (write_tracking=1, a container without userfaultfd), a scan in between protected them and
+   the read failed with EFAULT (FATAL: Could not put 256 KiB of guest memory back from the alias pool) */
+static int g_scan_stop;
+static void on_written_quiet(u8* p, u64 size) { (void)p, (void)size; }
+static void* scan_loop(void* arg) {
+    u64 a = *(const u64*)arg;
+    while (!__atomic_load_n(&g_scan_stop, __ATOMIC_ACQUIRE)) (void)plat_ww_scan(GP(a), 0x10000, on_written_quiet);
+    return NULL;
+}
+static void test_demote_while_scanned(void) {
+    u64 a = HEAP_BASE + MIB;
+    pthread_t t;
+    if (!g_ww) return;
+    __atomic_store_n(&g_scan_stop, 0, __ATOMIC_RELEASE);
+    CHECK(pthread_create(&t, NULL, scan_loop, &a) == 0);
+    for (u32 round = 0; round < 2000; round++) {
+        CHECK(mem_alias_begin(a, 0x10000) == 0);
+        for (u64 at = 0; at < 0x10000; at += 0x1000) gw32(a + at, round ^ (u32)at);
+        mem_alias_end(a, 0x10000);
+        for (u64 at = 0; at < 0x10000; at += 0x1000) CHECK(gr32(a + at) == (round ^ (u32)at));
+    }
+    __atomic_store_n(&g_scan_stop, 1, __ATOMIC_RELEASE);
+    CHECK(pthread_join(t, NULL) == 0);
+    CHECK(mem_pool_used() == 0);
 }
 
 static u32 info_attr_perm(u64 info, u64 a, u32* perm) {
@@ -685,6 +714,7 @@ int main(int argc, char** argv) {
         printf("memory alias in NCE's layout: %u checks passed%s\n", checks, g_ww ? "" : " (no write tracking)");
         return 0;
     }
+    test_demote_while_scanned();
     test_map_memory(info);
     test_code_memory();
     test_code_view();

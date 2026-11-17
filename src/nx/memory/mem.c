@@ -812,12 +812,28 @@ static void unmap_nl(u64 a, u64 size) {
 }
 /* [a, a + size) the reservation's own pages again: committed with the pool's contents from *off, or decommitted
    without off. Also what a failed MAP_FIXED needs, as it may have taken the old pages with it; a host that can't do
-   even this leaves nothing to run on */
+   even this leaves nothing to run on.
+   The contents come back through a read of the pool's file, so the kernel writes the fresh pages. The write tracking
+   by protection (where userfaultfd can't track, as in a container) has a scanner on a thread of its own, which takes
+   no lock of ours: from the commit on, it may protect the pages again, and the kernel fails its write to a read-only
+   page with EFAULT. The scans leave the range alone while it is open (plat_ww_open) */
 static void unpool_nl(u64 a, u64 size, const u64* off) {
+    const char* step = NULL;
+    int err = 0;
     runs_stale_nl();
     pages_replaced_nl(a, size);
-    if (plat_alias_unmap(GP(a), size) || (off && (commit_nl(a, size) || plat_alias_read(*off, GP(a), size))))
-        fatal("Could not put %llu KiB of guest memory back from the alias pool", (unsigned long long)(size >> 10));
+    if (plat_alias_unmap(GP(a), size))
+        step = "unmap", err = errno;
+    else if (off && commit_nl(a, size))
+        step = "commit", err = errno;
+    else if (off) {
+        plat_ww_open(GP(a), size);
+        if (plat_alias_read(*off, GP(a), size)) step = "read", err = errno;
+        plat_ww_close(GP(a), size);
+    }
+    if (step)
+        fatal("Could not put %llu KiB of guest memory back from the alias pool (%s at %#llx failed: error %d)",
+              (unsigned long long)(size >> 10), step, (unsigned long long)a, err);
 }
 /* Moves mapped memory into the pool: its contents are copied there and the pool's pages mapped over it, so views of
    it can map them too. Memory that is pool pages already (a view of a view) stays as it is. Pool pages mapped here
