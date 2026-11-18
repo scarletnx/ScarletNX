@@ -91,6 +91,7 @@ snx_component(gpu gpu/gpu.c gpu/guest_pools.c gpu/guest_textures.c gpu/maxwell/e
               gpu/nvn/nvn_save.c
               gpu/gl/gl_census.c
               gpu/gl/gl_loader.c gpu/gl/gl_egl.c gpu/gl/gl_calls.c gpu/gl/gl_program_calls.c gpu/gl/gl_object_calls.c
+              gpu/gl/gl_texture_calls.c
               gpu/gl/gl_host_nx.c
               gpu/shipped_pass.c)
 # the NVN functions nvn implements: their adapters and table, generated from gpu/nvn/nvn.hook
