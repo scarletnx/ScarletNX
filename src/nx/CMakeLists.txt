@@ -145,6 +145,7 @@ target_compile_definitions(snx_platform PRIVATE SNX_TRACY_VERSION="${SNX_TRACY_V
 snx_component(shader gpu/shader/shader.c gpu/shader/decode.c gpu/shader/corpus.c gpu/shader/shipped.c
                      gpu/shader/spirv_translate.c gpu/shader/spirv_compute.c gpu/shader/structure.c
                      gpu/shader/shared_reach.c gpu/shader/registers.c gpu/shader/forms.c gpu/shader/dataflow.c
+                     gpu/shader/direct_eval.c
                      gpu/shader/emit_int.c gpu/shader/emit_float.c gpu/shader/emit_memory.c gpu/shader/emit_texture.c
                      gpu/shader/emit_io.c gpu/shader/emit_flow.c gpu/shader/fuse.c
                      gpu/shader/warp_idioms.c gpu/shader/sm86_lone.c
