@@ -2561,6 +2561,18 @@ int vk_written_quick(const u8* host, u64 len, u32 since);
    a range vk_written_since(host, len, since) has just found written, so its pages are marked */
 void vk_written_runs(const u8* host, u64 len, u32 since, void (*fn)(void*, u64, u64), void* user);
 u32 vk_ww_now(void);
+/* vk_written_since without its answer: the scans and changes over [host, host + len) taken in, so the stamps and the
+   dirty bits of its pages are up to date. 0, or -1 where vk_written_since is -1. Under vk_lock */
+int vk_ww_take(const u8* host, u64 len);
+/* 1 if the page at guest address cpu was stamped written after the clock read since (as vk_written_since asks) */
+int vk_ww_page_after(u64 cpu, u32 since);
+/* The page cache's dirty bits, a bit a 4 KiB page of guest memory, set with each stamp of the write tracking and
+   cleared by the page cache when it takes a page's bytes. vk_ww_dirty_init makes them (0, or -1 when there is no
+   memory: then no bits are set). vk_ww_dirty_any is 1 if a page of [cpu, cpu + len) has its bit (and always 1 with no
+   bits), and vk_ww_dirty_clear clears those of [cpu, cpu + len). Under vk_lock */
+int vk_ww_dirty_init(void);
+int vk_ww_dirty_any(u64 cpu, u64 len);
+void vk_ww_dirty_clear(u64 cpu, u64 len);
 /* [host, host + len)'s hot pages (write_tracking_hot, plat_ww_cool), and those at its pages' other addresses, protected
    again and taken in as written, so the next vk_ww_now is a baseline after which "written" stands for a write: for a
    render target, whose write-back keeps memory's bytes on the pages written since its baseline. A hot page reads as

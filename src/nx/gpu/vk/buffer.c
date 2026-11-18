@@ -1870,6 +1870,40 @@ static u32 g_wleaf_seen[AS_TOP >> WW_LEAF_SHIFT];
 static _Atomic u32 g_ww_epoch; /* atomic */
 static u32 g_wclock = 1;
 static int g_ww = -1; /* -1 not tried yet, 0 not available, 1 on */
+/* the pages the stamps above marked since the page cache last took their bytes (vk_ww_dirty_clear): a bit a 4 KiB page
+   of guest memory, set with each stamp. NULL until the page cache is on (vk_ww_dirty_init), or when there was no
+   memory for it: no bits are set then */
+static u64* g_wdirty;
+int vk_ww_dirty_init(void) {
+    if (!g_wdirty) g_wdirty = calloc(AS_SIZE >> 15, 1);
+    return g_wdirty ? 0 : -1;
+}
+/* the bits of the pages [pg, pe) set */
+static void ww_dirty_set(u64 pg, u64 pe) {
+    if (!g_wdirty) return;
+    if (pe > AS_SIZE >> 12) pe = AS_SIZE >> 12;
+    for (; pg < pe && (pg & 63); pg++) g_wdirty[pg >> 6] |= 1ull << (pg & 63);
+    for (; pg + 64 <= pe; pg += 64) g_wdirty[pg >> 6] = ~0ull;
+    for (; pg < pe; pg++) g_wdirty[pg >> 6] |= 1ull << (pg & 63);
+}
+/* the bits of the pages of [cpu, cpu + len) ORed together, and cleared when clear is 1 */
+static u64 ww_dirty_words(u64 cpu, u64 len, int clear) {
+    if (cpu >= AS_SIZE || !len) return 0;
+    if (len > AS_SIZE - cpu) len = AS_SIZE - cpu;
+    u64 pg = cpu >> 12, pe = (cpu + len - 1) >> 12, any = 0;
+    for (u64 w = pg >> 6; w <= pe >> 6; w++) {
+        u64 m = ~0ull;
+        if (w == pg >> 6) m &= ~0ull << (pg & 63);
+        if (w == pe >> 6) m &= ~0ull >> (63 - (pe & 63));
+        any |= g_wdirty[w] & m;
+        if (clear) g_wdirty[w] &= ~m;
+    }
+    return any;
+}
+int vk_ww_dirty_any(u64 cpu, u64 len) { return !g_wdirty || ww_dirty_words(cpu, len, 0) != 0; }
+void vk_ww_dirty_clear(u64 cpu, u64 len) {
+    if (g_wdirty) (void)ww_dirty_words(cpu, len, 1);
+}
 static void ww_mark(u8* p, u64 n) {
     u64 o = (u64)(p - g_mem);
     if (o >= AS_SIZE || !n) return;
@@ -1883,7 +1917,11 @@ static void ww_mark(u8* p, u64 n) {
                 for (u32 i = 0; i < 1u << (WW_LEAF_SHIFT - 12); i++) t[i] = g_wleaf_max[l];
             g_wleaf[l] = t;
         }
-        if (g_wleaf[l]) g_wleaf[l][pg & ((1u << (WW_LEAF_SHIFT - 12)) - 1)] = g_wclock;
+        if (g_wleaf[l]) {
+            g_wleaf[l][pg & ((1u << (WW_LEAF_SHIFT - 12)) - 1)] = g_wclock;
+            if (g_wdirty) g_wdirty[pg >> 6] |= 1ull << (pg & 63);
+        } else /* no table: the stamp below stands for the whole leaf */
+            ww_dirty_set(l << (WW_LEAF_SHIFT - 12), (l + 1) << (WW_LEAF_SHIFT - 12));
         g_wleaf_max[l] = g_wclock;
     }
 }
@@ -1897,9 +1935,10 @@ static void ww_mark_pages(u64 o, u64 e) {
     const u64 lp = 1ull << (WW_LEAF_SHIFT - 12);
     for (u64 pg = o >> 12, pe = (e + 4095) >> 12; pg < pe;) {
         u64 l = pg >> (WW_LEAF_SHIFT - 12), lend = (l + 1) * lp, end = pe < lend ? pe : lend;
-        if (!g_wleaf[l] && pg == l * lp && end == lend)
+        if (!g_wleaf[l] && pg == l * lp && end == lend) {
             g_wleaf_max[l] = g_wclock;
-        else
+            ww_dirty_set(pg, end);
+        } else
             ww_mark(GP(pg << 12), (end - pg) << 12);
         pg = end;
     }
@@ -2387,7 +2426,9 @@ static void ww_take_peers(void) {
     for (int i = 0; i < n; i++) mem_alias_peers(g_wpeer.r[i].a, g_wpeer.r[i].e - g_wpeer.r[i].a, ww_peer_mark, NULL);
 }
 
-int vk_written_since(const u8* host, u64 len, u32 since) {
+/* the scans and changes over [host, host + len) taken in, so the stamps of its pages are up to date: 0, or -1 when
+   write tracking can't tell (vk_written_since) */
+static int ww_take(const u8* host, u64 len) {
     if (!g_ww || !host || !len) return -1;
     if (g_ww < 0) {
         g_ww = mem_ww_probe(ww_mark) == 0;
@@ -2434,6 +2475,12 @@ int vk_written_since(const u8* host, u64 len, u32 since) {
         return -1;
     }
     if (peers.over) return -1;
+    return 0;
+}
+int vk_written_since(const u8* host, u64 len, u32 since) {
+    int r = ww_take(host, len);
+    if (r) return r;
+    u64 o = (u64)(host - g_mem);
     for (u64 pg = o >> 12, e = (o + len - 1) >> 12; pg <= e;) {
         u64 l = pg >> (WW_LEAF_SHIFT - 12), lend = (l + 1) << (WW_LEAF_SHIFT - 12);
         if (g_wleaf_max[l] > since) {
@@ -2469,6 +2516,19 @@ int vk_written_quick(const u8* host, u64 len, u32 since) {
         pg = lend;
     }
     return 0;
+}
+int vk_ww_take(const u8* host, u64 len) {
+    /* nothing to take: the range's leaves taken in for this epoch already, no change noted, no alias and no import */
+    if (g_ww > 0 && host && len && !atomic_load_explicit(&g_wscan_failed, memory_order_acquire) &&
+        g_wclock != UINT32_MAX && !atomic_load_explicit(&g_wchg_n, memory_order_acquire) && !mem_alias_any()) {
+        u64 o = (u64)(host - g_mem), lo = o >> WW_LEAF_SHIFT, hi = (o + len - 1) >> WW_LEAF_SHIFT, end, l;
+        if (vk_uma_import_in(o, o + len, &end) >= o + len) {
+            const u32 seen = vk_ww_epoch() + 1;
+            for (l = lo; l <= hi && (i32)(g_wleaf_seen[l] - seen) >= 0; l++) {}
+            if (l > hi) return 0;
+        }
+    }
+    return ww_take(host, len);
 }
 u32 vk_ww_now(void) { return g_wclock; }
 void vk_ww_stats(u32 presents) {
@@ -2522,6 +2582,7 @@ static int page_written(u64 pg, u32 since) {
     u64 l = pg >> (WW_LEAF_SHIFT - 12);
     return g_wleaf_max[l] > since && (!g_wleaf[l] || g_wleaf[l][pg & ((1u << (WW_LEAF_SHIFT - 12)) - 1)] > since);
 }
+int vk_ww_page_after(u64 cpu, u32 since) { return page_written(cpu >> 12, since); }
 void vk_written_runs(const u8* host, u64 len, u32 since, void (*fn)(void*, u64, u64), void* user) {
     u64 o = (u64)(host - g_mem), first = o >> 12, last = (o + len - 1) >> 12, run = 0, pg;
     int in = 0;
