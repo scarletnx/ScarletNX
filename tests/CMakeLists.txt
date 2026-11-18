@@ -1293,7 +1293,7 @@ foreach(case IN ITEMS register field)
                      "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/refused_${case}.sail")
 endforeach()
 set_tests_properties(sailgen_refused_register PROPERTIES PASS_REGULAR_EXPRESSION
-    "refused_register.sail:6: error: the register FPCR: the back end llvm.h defines no sg_FPCR_read")
+    "refused_register.sail:6: error: the register DBGDTR_EL0: the back end llvm.h defines no sg_DBGDTR_EL0_read")
 set_tests_properties(sailgen_refused_field PROPERTIES PASS_REGULAR_EXPRESSION
     "refused_field.sail:12: error: PSTATE.D: the back end llvm.h defines no SG_PSTATE_D")
 # the same two through a back end that only mentions those names (a comment, a string, a declaration, a call, an
@@ -1306,7 +1306,7 @@ foreach(case IN ITEMS register field)
                      "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/refused_${case}.sail")
 endforeach()
 set_tests_properties(sailgen_refused_mention_register PROPERTIES PASS_REGULAR_EXPRESSION
-    "refused_register.sail:6: error: the register FPCR: the back end mention_backend.h defines no sg_FPCR_read")
+    "refused_register.sail:6: error: the register DBGDTR_EL0: the back end mention_backend.h defines no sg_DBGDTR_EL0_read")
 set_tests_properties(sailgen_refused_mention_field PROPERTIES PASS_REGULAR_EXPRESSION
     "refused_field.sail:12: error: PSTATE.D: the back end mention_backend.h defines no SG_PSTATE_D")
 # a word handed on to the next clause (Error_See) under a run-time condition, and a write to a field a let holds fixed
@@ -3027,11 +3027,12 @@ if(NOT WIN32)
     snx_decodetree_a64(snx-test-llvm-lowering)
     add_test(NAME llvm_lowering COMMAND snx-test-llvm-lowering "${CMAKE_CURRENT_SOURCE_DIR}/llvm_lowering_expected.txt")
     set_tests_properties(llvm_lowering PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 300)
-    # the integer, branch and general-purpose load and store emitters sailgen generates from the Sail against the
-    # hand-written ones they replaced (support/ir_int_reference.c, ir_ldst_reference.c): the same optimized IR word by
-    # word on three paths, the same results (registers, flags, guest memory) run here
+    # the integer, branch, general-purpose load and store and scalar floating-point emitters sailgen generates from the
+    # Sail against the hand-written ones they replaced (support/ir_int_reference.c, ir_ldst_reference.c,
+    # ir_fpu_reference.c): the same optimized IR word by word on three paths, the same results (registers, flags, FPCR,
+    # FPSR, guest memory) run here
     add_executable(snx-test-llvm-sail-ir llvm_sail_ir.c llvm_qemu_words.c llvm_steps.c support/ir_int_reference.c
-                   support/ir_ldst_reference.c)
+                   support/ir_ldst_reference.c support/ir_fpu_reference.c)
     snx_test_target(snx-test-llvm-sail-ir gnu23)
     target_include_directories(snx-test-llvm-sail-ir PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
     target_link_libraries(snx-test-llvm-sail-ir PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})

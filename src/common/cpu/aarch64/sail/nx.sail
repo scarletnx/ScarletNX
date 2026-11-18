@@ -250,3 +250,43 @@ function MemAtomic (address, cmpoperand, operand, accdesc_in) = match accdesc_in
   MemAtomicOp_SWP => GuestAtomicSwap(address, operand),
   MemAtomicOp_CAS => GuestCompareSwap(address, cmpoperand, operand)
 }
+
+// ScarletNX's CPU keeps the 32 SIMD&FP registers as 128 bits each (cpu.h's CPU.v), and the NX has no SVE: sail-arm keeps
+// them in _Z, SVE's registers of up to 2048 bits, which a write zeroes above the vector length. Here they are _V's
+// elements, which the back end loads only as far as an instruction reads (sg__V_read_bits: a scalar's low lane)
+register _V : vector(32, bits(128))
+
+val V_read : forall 'n 'width, 'width in {8, 16, 32, 64, 128}. (int('n), int('width)) -> bits('width)
+function V_read (n, width) = _V[n][width - 1 .. 0]
+
+val V_set : forall 'n 'width, 'width in {8, 16, 32, 64, 128}. (int('n), int('width), bits('width)) -> unit
+function V_set (n, width, value_name) = {
+    _V[n] = ZeroExtend(value_name, 128)
+}
+
+// FPCR as the CPU keeps it (cpu.h's CPU.fpcr): the NX implements none of its trap enables, which read as 0 (sail-arm's
+// __get_FPCR asks each as IMPDEF), so the register is all FPCR_read gives
+register FPCR : bits(64)
+
+val FPCR_read : unit -> bits(64)
+function FPCR_read () = FPCR
+
+// Horizon runs EL0 with CPACR_EL1.FPEN 0b11: floating point and AdvSIMD never trap
+val CheckFPEnabled64 : unit -> unit
+function CheckFPEnabled64 () = ()
+
+val CheckFPAdvSIMDEnabled64 : unit -> unit
+function CheckFPAdvSIMDEnabled64 () = ()
+
+// No FEAT_AFP (Armv8.7's, which a64.profile names nowhere, so HaveAltFP is false): FPCR.NEP is RES0, and a scalar
+// result never merges into the destination's other elements
+val IsMerging : bits(64) -> bool
+function IsMerging fpcr = false
+
+// The A64 instructions run in AArch64 alone: a 32-bit game's code goes through the A32 recompiler
+val UsingAArch32 : unit -> bool
+function UsingAArch32 () = false
+
+// sail-arm declares HaveFP16Ext and leaves its answer to its runtime: the guest's FEAT_FP16
+val HaveFP16Ext : unit -> bool
+function HaveFP16Ext () = IsFeatureImplemented(FEAT_FP16)

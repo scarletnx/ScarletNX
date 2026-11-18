@@ -82,11 +82,20 @@ the runtime's `rt_wfe`, `SendEvent` its `rt_sev`), the barriers (`DataMemoryBarr
 a fence by the accesses they order, `InstructionSynchronizationBarrier` a full one) and the exclusive monitor
 (`ClearExclusiveLocal`), each with why, and those that do nothing here (`Hint_WFI`, `SynchronizeErrors`, `Hint_DGH`).
 
+The floating-point functions (`FPAdd`, `FPSub`, `FPMul`, `FPDiv`, `FPMulAdd`, `FPSqrt`, `FPMax`, `FPMin`, `FPMaxNum`,
+`FPMinNum`, `FPCompare`, `FPRoundInt`, `FPRoundIntN`, `FPConvert`, `FixedToFP`, `FPToFixed`, `FPToFixedJS`,
+`FPConvertBF`) are lowered as the recompiler's scalar emitters made them: the host's IEEE arithmetic behind a guard that
+proves it gives the console's result and FPSR flags for the FPCR the Sail hands them (round to nearest, the operands
+FZ would flush, a result that can't underflow; IXC exact where cheap, else only once it is set), and cpu.h's
+soft-float helpers otherwise, which raise their FPSR flags as `FPProcessException` does. `FPAbs`, `FPNeg`,
+`VFPExpandImm`, `FPZero` and the registers' moves stay the Sail's.
+
 ## The state
 
 The registers are the Sail's: sail-arm's `PSTATE` (its `struct ProcState`), and `nx.sail`'s `GPR`, the array ScarletNX's
 CPU keeps X0 to X30 and SP_EL0 in, which `get_R`, `set_R`, `SP_read` and `SP_set` index where sail-arm picks one of 31
-registers by a match. A read or a write of a register `NAME` is a call of the back end's `sg_NAME_read` or
+registers by a match; its `_V`, the 32 SIMD&FP registers of 128 bits that `V_read` and `V_set` index where sail-arm
+keeps SVE's `_Z`, and `FPCR`. A read or a write of a register `NAME` is a call of the back end's `sg_NAME_read` or
 `sg_NAME_write`: of the whole value for a register of bits or a bool, of an element for a vector of them (`GPR[n]`; `sg_NAME_read_bits` for `NAME[n][hi .. lo]` where the back end
 defines it, so a scalar's lane is all it loads), of
 a field for a struct (`PSTATE.N`, which the back end numbers `SG_PSTATE_N`); consecutive fields assigned together
@@ -96,7 +105,9 @@ stops at the line that reaches one it does not. The pc is the one register sailg
 top-level `let` named for a register's field holds that field fixed (`PSTATE_EL`, `PSTATE.EL`): a read of the field is
 the `let`'s value, and a write to it stops sailgen.
 
-`llvm.h` keeps them where the CPU does (`cpu.h`: `x[32]`, and the flags `n`, `z`, `cf` and `vf`, each the i32 0 or 1).
+`llvm.h` keeps them where the CPU does (`cpu.h`: `x[32]`, the flags `n`, `z`, `cf` and `vf`, each the i32 0 or 1, `v[32]`
+and `fpcr`). `_V` goes through `ir.h`'s vector accessors and their per-block cache of each register's low lanes, every
+emitter's; a write stores both doublewords but one that holds the value the register already does (Vpart_set's).
 Each write is stored at once, and the values are cached for the basic block in `ir->state`, with what the four flags
 came from. That cache is every emitter's: its functions over the IR builder are also `ir.h`'s accessors (`ir_x`,
 `ir_set_x`, `ir_flag_read`, `ir_flags_commit`, `ir_flags_origin` and the invalidations, which `ir_sail.c` gives) for the
@@ -133,5 +144,6 @@ end's function that takes no `path` under a run-time condition and one whose `va
 `sailgen_a64` generates the in-tree A64 subsets whole.
 
 `tests/llvm_sail_ir.c` holds the generated emitters to the hand-written ones they replaced
-(`tests/support/ir_int_reference.c`), word by word on three paths: the same optimized IR, or the same instructions in
-another order, or another IR no longer than theirs; and the same results when both run.
+(`tests/support/ir_int_reference.c`, `tests/support/ir_fpu_reference.c`), word by word on three paths: the same
+optimized IR, or the same instructions in another order, or another IR no longer than theirs; and the same results
+when both run, the floating point from FPCRs and operands chosen for its paths.

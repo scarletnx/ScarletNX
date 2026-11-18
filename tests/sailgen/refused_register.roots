@@ -1,2 +1,2 @@
 # a register the back end does not keep: refused with its file and line, and the name the back end lacks
-root decode_fpcr_aarch64_instrs_test
+root decode_dbgdtr_aarch64_instrs_test
