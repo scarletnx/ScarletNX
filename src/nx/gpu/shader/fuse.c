@@ -10,9 +10,8 @@
 
 /* the HMMA's A fragment's first register, which a fused pair's LDSM must fill */
 #define HMMA_RA 24u
-/* an LDSM's fields, which the pass checks: its destination, the register its address is in, its immediate offset,
-   the matrices it loads and whether it transposes them */
-#define LDSM_DST 16u
+/* an LDSM's fields, which the pass checks: the register its address is in, its immediate offset, the matrices it
+   loads and whether it transposes them */
 #define LDSM_A   24u
 #define LDSM_IMM 40u
 #define LDSM_CNT 72u
@@ -30,6 +29,9 @@ static int pair_ok(const Sm86Insn* ldsm, const Sm86Insn* hmma) {
     if (ldsm->pred != hmma->pred || ldsm->pred_not != hmma->pred_not) return 0;
     /* the fields ldsm() rejects: its fused block uses ldsm_words(), which would otherwise accept them */
     if (sm86_field(ldsm, 74, 4) || sm86_field(ldsm, 79, 12) || sm86_field(ldsm, 91, 1)) return 0;
+    /* the HMMA's bits that the LDSM's fields are packed into (sm86.h), which must be zero for the OR to keep them */
+    if (sm86_field(hmma, 40, 24) || sm86_field(hmma, SM86_FUSE_LDSM_A, SM86_FUSE_LDSM_TR + 1 - SM86_FUSE_LDSM_A))
+        return 0;
     u32 fill = 1u << count;
     u32 need = (sm86_field(hmma, 72, 19) >> 3 & 1) ? 4u : 2u; /* A's words, 4 for k16 and 2 for k8 */
     if (fill < need) return 0; /* the unfilled words hold the registers' old values, which the fused block would lose */
@@ -80,10 +82,10 @@ void sm86_fuse_make(Sm86Insn* in, u32* n, FuseSpan* spans, u32 count) {
         if (pos + len > *n) break;
         Sm86Insn fused = in[pos + 1]; /* the second half's fields, which the passes and the emitter follow */
         const Sm86Insn* first = &in[pos];
-        /* the first half's fields into the bits the second half does not use: its immediate where an LDSM puts it,
-           at 40, and its destination, address register, matrix count and transpose at 91, which is in hi */
-        fused.hi |= (u64)sm86_field(first, LDSM_DST, 8) << (SM86_FUSE_LDSM_DST - 64) |
-                    (u64)sm86_field(first, LDSM_A, 8) << (SM86_FUSE_LDSM_A - 64) |
+        /* the first half's fields into the bits the second half leaves zero: its immediate where an LDSM puts it, at
+           40, and its address register, matrix count and transpose at 91, which is in hi. Its destination is the
+           HMMA's A already */
+        fused.hi |= (u64)sm86_field(first, LDSM_A, 8) << (SM86_FUSE_LDSM_A - 64) |
                     (u64)sm86_field(first, LDSM_CNT, 2) << (SM86_FUSE_LDSM_CNT - 64) |
                     (u64)sm86_field(first, LDSM_TR, 1) << (SM86_FUSE_LDSM_TR - 64);
         fused.lo |= (u64)ldsm_imm(first) << 40;

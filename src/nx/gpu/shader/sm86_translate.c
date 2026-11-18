@@ -4372,7 +4372,6 @@ static void fused_ldsm_hmma(Ctx* c, const Sm86Insn* in) {
     u32 na = k16 ? 4 : 2, a[4], out[4];
     ldsm_do(c, sm86_fuse_ldsm_dst(in), sm86_fuse_ldsm_a(in), bias, count, trans, out);
     if (c->failed) return;
-    if (sm86_fuse_ldsm_dst(in) != sm86_field(in, 24, 8)) return;
     if (1u << count < 4u)
         for (u32 k = 1u << count; k < 4; k++) out[k] = c->zero; /* fewer fragments: the rest is zero */
     for (u32 k = 0; k < na; k++) a[k] = out[k];

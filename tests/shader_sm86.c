@@ -5477,7 +5477,9 @@ static void test_complementary_pair(const char* dir) {
 }
 
 /* the fuse of an LDSM and the HMMA that reads its fragments (fuse.c): one instruction where the two were, with the
-   HMMA's fields kept and the LDSM's packed beside them */
+   HMMA's fields kept and the LDSM's packed beside them. The HMMA has the scheduling bits a compiled one has (105-125:
+   its stalls, yield, barriers, waits and reuse), which the LDSM's fields once took: OR'ed into stall 15 and yield,
+   the LDSM read R199 for R7, took a count of 3 (eight matrices into a four word array) and transposed */
 static void test_fuse_pairs(void) {
     Word x = fix(0x83b); /* an LDSM: R24, the address in R7, 0x40 on, four matrices, not transposed */
     set(&x, 16, 8, 24);
@@ -5490,6 +5492,8 @@ static void test_fuse_pairs(void) {
     set(&y, 32, 8, 12);
     set(&y, 64, 8, 255);
     set(&y, 72, 19, 0x18);
+    const u32 sched = 15u | 1u << 4 | 5u << 5 | 3u << 8 | 0x2bu << 11 | 6u << 17; /* stall, yield, barriers, reuse */
+    set(&y, 105, 21, sched);
     Sm86Insn pair[2] = {dec(x), dec(y)};
     u32 n = 2, count = 0;
     FuseSpan* spans = sm86_fuse_find(pair, n, &count);
@@ -5500,13 +5504,24 @@ static void test_fuse_pairs(void) {
     CHECK(sm86_fuse_ldsm_dst(&pair[0]) == 24 && sm86_fuse_ldsm_a(&pair[0]) == 7 &&
           sm86_fuse_ldsm_count(&pair[0]) == 2 && sm86_fuse_ldsm_trans(&pair[0]) == 0 &&
           sm86_field(&pair[0], 40, 24) == 0x40);
-    /* the HMMA's fields, kept as they were */
+    if (sm86_fuse_ldsm_a(&pair[0]) != 7 || sm86_fuse_ldsm_count(&pair[0]) != 2 || sm86_fuse_ldsm_trans(&pair[0]))
+        fprintf(stderr, "fuse pairs: the LDSM's R%u, count %u, transpose %u, not R7, 2, 0\n",
+                sm86_fuse_ldsm_a(&pair[0]), sm86_fuse_ldsm_count(&pair[0]), sm86_fuse_ldsm_trans(&pair[0]));
+    /* the HMMA's fields, kept as they were, its scheduling too */
     CHECK(pair[0].dst == 40 && sm86_field(&pair[0], 24, 8) == 24 && sm86_field(&pair[0], 32, 8) == 12 &&
-          sm86_field(&pair[0], 72, 19) == 0x18);
+          sm86_field(&pair[0], 72, 19) == 0x18 && sm86_field(&pair[0], 105, 21) == sched);
     /* a pair the HMMA's A is not the LDSM's destination, and a program of one instruction, are no pair */
     Sm86Insn two[2] = {pair[0], dec(y)};
     CHECK(!sm86_fuse_find(two, 2, &count) && count == 0);
     CHECK(!sm86_fuse_find(pair, 1, &count) && count == 0);
+    /* nor is an HMMA with a bit set where the LDSM's fields would go, at 40-63 or 91-101 */
+    static const u32 taken[2] = {63, 101};
+    for (u32 k = 0; k < 2; k++) {
+        Word z = y;
+        set(&z, taken[k], 1, 1);
+        Sm86Insn other[2] = {dec(x), dec(z)};
+        CHECK(!sm86_fuse_find(other, 2, &count) && count == 0);
+    }
 }
 
 /* a program's LDSM and HMMAs on the same fragments, in two shapes: the LDSM beside the first HMMA (a pair), and the
