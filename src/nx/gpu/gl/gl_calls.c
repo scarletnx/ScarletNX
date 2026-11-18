@@ -3,6 +3,7 @@
 /* The GL layer's GL calls on the console (gl_layer.h, gpu/gl/gl.hook's state and draw families): each the shared
    layer's (common/gpu/gl/gl_state.h) on the calling thread's current context, with the guest's pointers read and
    written here. Without a current context a call does nothing and returns 0, as GL's do */
+#include "common/gpu/gl/gl_framebuffer.h"
 #include "common/gpu/gl/gl_state.h"
 #include "gpu/gl/gl.hook.h"
 #include "nx/gpu/gl/gl_layer.h"
@@ -200,5 +201,10 @@ void gl_clear(CPU* c, u32 mask) {
     u32 buffers, draw = gl_egl_draw();
     CTX;
     buffers = snx_gl_clear(ctx, mask);
+    if (buffers && snx_gl_framebuffers(ctx)->draw) { /* drawing into a framebuffer object comes with the draw path */
+        LOG_LIMIT(1, "gl layer: glClear of framebuffer %u isn't drawn yet: only the window's (framebuffer 0) is\n",
+                  (unsigned)snx_gl_framebuffers(ctx)->draw);
+        return;
+    }
     if (draw && (buffers & GL_COLOR_BUFFER_BIT_)) gl_host_clear(draw, ctx, buffers);
 }

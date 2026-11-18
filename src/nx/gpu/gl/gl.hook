@@ -8,7 +8,8 @@
 # it. The handlers: gpu/gl/gl_egl.c (EGL), gpu/gl/gl_calls.c (GL, over common/gpu/gl/gl_state.h),
 # gpu/gl/gl_program_calls.c (shaders and programs, over common/gpu/gl/gl_program.h), gpu/gl/gl_object_calls.c
 # (buffers and vertex arrays, over common/gpu/gl/gl_object.h), gpu/gl/gl_texture_calls.c (textures and samplers, over
-# common/gpu/gl/gl_texture.h).
+# common/gpu/gl/gl_texture.h), gpu/gl/gl_framebuffer_calls.c (framebuffers and renderbuffers, over
+# common/gpu/gl/gl_framebuffer.h).
 
 # EGL functions no hook implements yet, which a game's main calls directly: through their slots, to that handler
 route eglBindTexImage
@@ -324,3 +325,26 @@ hook _glSamplerParameteriv(u32 sampler, u32 pname, addr params) = gl_sampler_par
 hook _glSamplerParameterfv(u32 sampler, u32 pname, addr params) = gl_sampler_parameterfv
 hook _glGetSamplerParameteriv(u32 sampler, u32 pname, addr params) = gl_get_sampler_parameteriv
 hook _glGetSamplerParameterfv(u32 sampler, u32 pname, addr params) = gl_get_sampler_parameterfv
+
+family framebuffer
+hook _glGenRenderbuffers(i32 n, addr renderbuffers) = gl_gen_renderbuffers
+hook _glDeleteRenderbuffers(i32 n, addr renderbuffers) = gl_delete_renderbuffers
+hook _glIsRenderbuffer(u32 renderbuffer) -> u8 = gl_is_renderbuffer
+hook _glBindRenderbuffer(u32 target, u32 renderbuffer) = gl_bind_renderbuffer
+hook _glRenderbufferStorage(u32 target, u32 internal, i32 width, i32 height) = gl_renderbuffer_storage
+hook _glRenderbufferStorageMultisample(u32 target, i32 samples, u32 internal, i32 width, i32 height) = gl_renderbuffer_storage_multisample
+hook _glGetRenderbufferParameteriv(u32 target, u32 pname, addr params) = gl_get_renderbuffer_parameteriv
+hook _glGenFramebuffers(i32 n, addr framebuffers) = gl_gen_framebuffers
+hook _glDeleteFramebuffers(i32 n, addr framebuffers) = gl_delete_framebuffers
+hook _glIsFramebuffer(u32 framebuffer) -> u8 = gl_is_framebuffer
+hook _glBindFramebuffer(u32 target, u32 framebuffer) = gl_bind_framebuffer
+hook _glFramebufferTexture2D(u32 target, u32 attachment, u32 textarget, u32 texture, i32 level) = gl_framebuffer_texture_2d
+hook _glFramebufferTextureLayer(u32 target, u32 attachment, u32 texture, i32 level, i32 layer) = gl_framebuffer_texture_layer
+hook _glFramebufferTexture(u32 target, u32 attachment, u32 texture, i32 level) = gl_framebuffer_texture
+hook _glFramebufferRenderbuffer(u32 target, u32 attachment, u32 rbtarget, u32 renderbuffer) = gl_framebuffer_renderbuffer
+hook _glCheckFramebufferStatus(u32 target) -> u32 = gl_check_framebuffer_status
+hook _glGetFramebufferAttachmentParameteriv(u32 target, u32 attachment, u32 pname, addr params) = gl_get_framebuffer_attachment_parameteriv
+hook _glDrawBuffers(i32 n, addr buffers) = gl_draw_buffers
+hook _glDrawBuffer(u32 mode) = gl_draw_buffer
+hook _glReadBuffer(u32 mode) = gl_read_buffer
+hook _glInvalidateFramebuffer(u32 target, i32 n, addr attachments) = gl_invalidate_framebuffer

@@ -41,6 +41,10 @@ void gl_object_calls_unlock(void);
 /* the shared layer's textures keep their texels in guest memory, and say in the log what they leave out */
 void gl_texture_calls_init(void);
 
+/* ---- gl_framebuffer_calls.c */
+/* the shared layer's framebuffers and renderbuffers, with no platform image of a renderbuffer yet */
+void gl_framebuffer_calls_init(void);
+
 /* ---- gl_host_nx.c */
 #define GL_HOST_SURFACES 8
 /* a window or pbuffer surface of w x h RGBA8 pixels, two images in guest memory: its name, 0 when every one is used
