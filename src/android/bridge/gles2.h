@@ -18,6 +18,7 @@
    call that reaches Vulkan holds g_gles_vk.lock */
 #include "android/bridge/gles_vk.h"
 #include "android/bridge/hle.h"
+#include "common/gpu/gl/gl_object.h"
 #include "common/gpu/gl/gl_program.h"
 #include "common/gpu/gl/gl_state.h"
 #include "common/cpu/aarch64/cpu.h"
@@ -46,11 +47,11 @@ typedef struct {
     VkDeviceSize offset;
 } G2Ref;
 
+/* a buffer's Vulkan copy, by the shared layer's name - 1 (common/gpu/gl/gl_object.h): data and size are the layer's
+   bytes as gles2_buffer gives them; a buffer of the bridge's own fills them itself */
 typedef struct {
-    bool used;
-    unsigned char* data;   /* what the guest wrote: the copy the CPU reads and writes */
+    unsigned char* data; /* what the guest wrote: the copy the CPU reads and writes */
     size_t size;
-    unsigned usage;
     /* the Vulkan copy, host-visible */
     VkBuffer buffer;
     VkDeviceMemory memory;
@@ -64,9 +65,6 @@ typedef struct {
     /* a copy in the frame's arena, while the Vulkan copy is in use: for the frame of arena_serial */
     G2Ref arena;
     uint64_t arena_serial;
-    bool mapped;
-    size_t map_offset, map_length;
-    unsigned map_access;
 } G2Buffer;
 
 typedef struct {
@@ -145,30 +143,6 @@ typedef struct {
     uint32_t generation; /* counts the changes of its attachments */
 } G2Framebuffer;
 
-/* an attribute's format, and the binding it reads (GLES 3.1's glVertexAttribBinding; glVertexAttribPointer sets
-   binding i of attribute i) */
-typedef struct {
-    bool enabled, normalized, integer;
-    int size;
-    unsigned type;
-    int stride;        /* glVertexAttribPointer's, for its query */
-    uint32_t relative; /* the offset in the binding's vertex */
-    uint8_t binding;
-} G2Attrib;
-
-typedef struct {
-    unsigned buffer;
-    uint64_t offset; /* in buffer, or the guest's client array without one */
-    uint32_t stride, divisor;
-} G2VertexBinding;
-
-typedef struct {
-    bool used;
-    G2Attrib attribs[G2_ATTRIBS];
-    G2VertexBinding bindings[G2_ATTRIBS];
-    unsigned elements;
-} G2VertexArray;
-
 typedef struct {
     bool used, active;
     unsigned target;
@@ -196,17 +170,6 @@ typedef struct {
     uint64_t default_frame[3];    /* the frame it went into */
 } G2ProgramVk;
 
-/* the current values of the generic attributes (glVertexAttrib4f) */
-typedef struct {
-    uint32_t bits[4];
-    uint8_t base; /* GlslcBase: FLOAT, INT or UINT */
-} G2Generic;
-
-typedef struct {
-    unsigned buffer;
-    int64_t offset, size;
-} G2IndexedBuffer;
-
 /* a context of GLES 2 or 3: its fixed state is the shared GL layer's (common/gpu/gl/gl_state.h), named by ctx */
 typedef struct Gles2Context {
     uint32_t ctx;
@@ -218,22 +181,14 @@ typedef struct Gles2Context {
     unsigned active;
     unsigned textures[G2_UNITS][G2_TARGETS];
     unsigned samplers[G2_UNITS];
-    /* the bindings */
-    unsigned array_buffer, copy_read, copy_write, pixel_pack, pixel_unpack, uniform_buffer, tf_buffer;
-    G2IndexedBuffer uniform_buffers[G2_UBO_BINDINGS];
     /* GLES 3.1: the shader storage buffers, the image units, the indirect buffers, the sample mask */
-    unsigned storage_buffer, draw_indirect, dispatch_indirect;
-    G2IndexedBuffer storage_buffers[G2_SSBO_BINDINGS];
     struct {
         unsigned texture;
         int level, layer;
         bool layered;
         unsigned access, format;
     } images[G2_IMAGE_UNITS];
-    unsigned vertex_array; /* 0: the context's own */
-    G2VertexArray default_vao;
     unsigned draw_fbo, read_fbo, renderbuffer;
-    G2Generic generic[G2_ATTRIBS];
     unsigned query_any; /* the active occlusion query, or 0 */
     unsigned query_any_target;
 } Gles2Context;
@@ -258,8 +213,7 @@ typedef struct {
 
 /* the module's state: the share group's objects, and the caches of the device's objects */
 typedef struct {
-    G2Buffer* buffers;
-    size_t buffer_count;
+    G2Buffer buffer_vk[SNX_GL_BUFFERS];
     G2Texture* textures;
     size_t texture_count;
     G2Sampler* samplers;
@@ -268,8 +222,6 @@ typedef struct {
     size_t renderbuffer_count;
     G2Framebuffer* framebuffers;
     size_t framebuffer_count;
-    G2VertexArray* vertex_arrays;
-    size_t vertex_array_count;
     G2Query* queries;
     size_t query_count;
     G2Sync* syncs;
@@ -329,11 +281,15 @@ void gles2_rendering_end(GlesSurface* s);
 void gles2_surface_gone(GlesSurface* s);
 
 /* gles2_object.c */
-G2Buffer* gles2_buffer(unsigned name);   /* NULL for 0 or a name not made */
+/* the shared layer's buffers tell this file what the CPU wrote and when one goes */
+void gles2_buffers_init(void);
+/* a buffer's Vulkan copy, with the shared layer's bytes and size now: NULL for 0 or a name not made */
+G2Buffer* gles2_buffer(unsigned name);
+/* the context's buffer bindings, vertex arrays and generic attributes (common/gpu/gl/gl_object.h) */
+static inline SnxGlObjectContext* gles2_objects(const Gles2Context* gl) { return snx_gl_objects(gl->ctx); }
 G2Texture* gles2_texture(unsigned name);
 G2Renderbuffer* gles2_renderbuffer(unsigned name);
 G2Framebuffer* gles2_framebuffer(unsigned name);
-G2VertexArray* gles2_vertex_array(Gles2Context* gl); /* the bound one */
 const G2SamplerState* gles2_unit_sampler(Gles2Context* gl, unsigned unit, const G2Texture* t);
 VkSampler gles2_vk_sampler(const G2SamplerState* state, bool integer);
 /* the buffer's range as commands read it in the frame of slot; writes: the GPU writes it */
@@ -361,8 +317,6 @@ void gles2_queries_end(Gles2Context* gl, VkCommandBuffer cb);
 /* the texture of a unit and target, or NULL */
 G2Texture* gles2_unit_texture(Gles2Context* gl, unsigned unit, unsigned target);
 
-/* the bytes of a vertex attribute of size components of type, packed */
-uint32_t gles2_vertex_bytes(unsigned type, int size);
 /* the image unit's view for a storage image of dimension dim (G2_T*), its texture in GENERAL; NULL without one */
 VkImageView gles2_image_unit(Gles2Context* gl, unsigned unit, uint8_t dim);
 /* a barrier of every write before it to every read and write after it, outside rendering (glMemoryBarrier, a
