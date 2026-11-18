@@ -75,6 +75,9 @@ typedef struct {
     u32 cbuf[18], cbuf_ptr, root;
     u32 gbuf[16], gbuf_ptr, smap;
     u32 gbuf_f32[16];  /* each global buffer's view as floats, for OpAtomicFAddEXT (atomic_fadd) */
+    /* gbuf_address in this program (gbuf_by_address): gbuf[] are ids that only name the slots, and no storage buffer
+       is declared for them */
+    int gbuf_addressed;
     u32 cas_var;       /* atomic_fadd's loop's word, made at the start where the device has no float atomics */
     u32 wpages, mbase; /* SNX_VKB_WPAGES, and SNX_VKB_MBASE (the windows of pointer tables, SH_GBUF_TABLE) */
     u32 gkey;         /* the global buffer the last global_address named */
@@ -1144,6 +1147,37 @@ static void gs_passthrough(Ctx* c) {
 
 /* ---- global and shared memory ---- */
 
+/* the buffer that names local memory to mem_ptr, mem_load and mem_store */
+#define MEM_LOCAL 0xffffffffu
+/* ---- global memory by device address (ShCaps.gbuf_address) ---- */
+
+static u32 record_word(Ctx* c, u32 k);
+/* A vertex or fragment program of the texture table reads its global buffers by address: the record of the draw holds
+   each slot's address and length (SH_RECORD_GBUF), where the renderer bound a descriptor of the same bytes before.
+   The word index into the slot (and the atlas's table, SNX_VKB_SMAP) stays as it was */
+static int gbuf_by_address(const Ctx* c) {
+    return g_spirv_translate.gbuf_address && g_spirv_translate.tex_table && cb_windowed(c);
+}
+static int gbuf_slot_of(const Ctx* c, u32 buffer) {
+    int slot = 0;
+    while (slot < 15 && c->gbuf[slot] != buffer) slot++;
+    return slot;
+}
+static int gbuf_is_address(const Ctx* c, u32 buffer) { return c->gbuf_addressed && buffer && buffer != MEM_LOCAL; }
+/* a pointer of pointee type to word index of the slot of buffer. Robustness doesn't cover addresses: an index at or past
+   the slot's length takes the record's scratch word, which reads what a dropped store left, where a descriptor read
+   zero */
+static u32 gbuf_pointer(Ctx* c, u32 buffer, u32 index, u32 type) {
+    const u32 rec = 4u * (u32)gbuf_slot_of(c, buffer);
+    u32 address = pair64(c, record_word(c, rec), record_word(c, rec + 1));
+    u32 words = spv_emit_binary(&c->e, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, record_word(c, rec + 2), cu(c, 2));
+    u32 inside = spv_emit_binary(&c->e, SPV_OP_U_LESS_THAN, c->t_bool, index, words);
+    address = op2(c, SPV_OP_I_ADD, u64_type(c), address,
+                  op2(c, SPV_OP_SHIFT_LEFT_LOGICAL, u64_type(c), to64(c, index), c64(c, 2)));
+    u32 scratch = pair64(c, record_word(c, SH_RECORD_SCRATCH), record_word(c, SH_RECORD_SCRATCH + 1));
+    address = spv_emit_ternary(&c->e, SPV_OP_SELECT, u64_type(c), inside, address, scratch);
+    return spv_emit_address_pointer(&c->e, type, address);
+}
 static u32 gbuf_slot(Ctx* c, u32 key, int write) {
     int slot = -1;
     for (int i = 0; i < c->si->ngbuf; i++)
@@ -1157,6 +1191,11 @@ static u32 gbuf_slot(Ctx* c, u32 key, int write) {
         }
         slot = c->si->ngbuf++;
         c->si->gbuf_cbuf_off[slot] = key;
+    }
+    if (!c->gbuf[slot] && gbuf_by_address(c)) {
+        c->gbuf_addressed = 1;
+        c->si->gbuf_address = 1;
+        c->gbuf[slot] = spv_emit_id(&c->e); /* a name: gbuf_pointer reads the slot's address from the record */
     }
     if (!c->gbuf[slot]) {
         u32 array = spv_emit_type_runtime_array(&c->e, c->t_u32, 4);
@@ -1848,10 +1887,10 @@ static u32 shared_block_base(Ctx* c) {
                                                   builtin_vec3(c, &c->num_groups, SPV_BUILT_IN_NUM_WORKGROUPS, k)));
     return spv_emit_binary(&c->e, SPV_OP_I_MUL, c->t_u32, place, cu(c, c->shared_words));
 }
-/* the buffer that names local memory to mem_ptr, mem_load and mem_store */
-#define MEM_LOCAL 0xffffffffu
 static u32 smap_word(Ctx* c, u32 index) {
-    return spv_emit_load(&c->e, c->t_u32, spv_emit_storage_access_u32(&c->e, c->gbuf_ptr, c->smap, c->zero, index));
+    /* the table's own pointer type: a program of gbuf_address has no global buffer variable to take it from */
+    const u32 ptr = spv_emit_type_storage_pointer(&c->e, c->t_u32);
+    return spv_emit_load(&c->e, c->t_u32, spv_emit_storage_access_u32(&c->e, ptr, c->smap, c->zero, index));
 }
 /* Where a word of a global buffer is in what is bound. A draw whose writable storage shares a page with another of its
    buffers has them all bound as one atlas of pages (vk_buf_draw_prepare), and a table (SNX_VKB_SMAP) gives each
@@ -1912,7 +1951,10 @@ static u32 gbuf_word_index(Ctx* c, u32 buffer, u32 word) {
 /* A global buffer's bytes as the program sees them: the array's length where it is bound whole, and in an atlas of
    pages its own words that SNX_VKB_SMAP gives, as gbuf_word_index takes them */
 static u32 gbuf_bytes(Ctx* c, u32 buffer) {
-    u32 bound = SPV(&c->e, SPV_OP_ARRAY_LENGTH, c->t_u32, buffer, 0);
+    u32 bound = gbuf_is_address(c, buffer)
+                    ? spv_emit_binary(&c->e, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32,
+                                      record_word(c, 4u * (u32)gbuf_slot_of(c, buffer) + 2), cu(c, 2))
+                    : SPV(&c->e, SPV_OP_ARRAY_LENGTH, c->t_u32, buffer, 0);
     if (c->stage != ST_CS) {
         u32 slot = smap_slot(c, buffer);
         u32 none = spv_emit_binary(&c->e, SPV_OP_I_EQUAL, c->t_bool, smap_word(c, cu(c, slot)), cu(c, ~0u));
@@ -1929,6 +1971,7 @@ static u32 mem_ptr(Ctx* c, u32 buffer, u32 address, u32 word) {
         return spv_emit_function_element_pointer(
             &c->e, c->local_ptr, c->local,
             spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, index, cu(c, c->local_words - 1)));
+    if (gbuf_is_address(c, buffer)) return gbuf_pointer(c, buffer, gbuf_word_index(c, buffer, index), c->t_u32);
     if (buffer)
         return spv_emit_storage_access_u32(&c->e, c->gbuf_ptr, buffer, c->zero, gbuf_word_index(c, buffer, index));
     u32 shared = shared_var(c), last = cu(c, c->shared_words - 1);
@@ -1964,11 +2007,15 @@ static u32 atomic_opcode(u32 type, u32 how) {
    barriers order for the workgroup's other invocations) */
 static u32 mem_word_load(Ctx* c, u32 buffer, u32 ptr) {
     if (buffer && buffer != MEM_LOCAL && c->coop) return spv_emit_atomic_load_u32(&c->e, c->t_u32, ptr);
+    /* by address: Volatile for what Coherent gave the descriptor's (gbuf_slot), and the alignment it must name */
+    if (gbuf_is_address(c, buffer)) return spv_emit_load_aligned(&c->e, c->t_u32, ptr, 4, 1);
     return buffer ? spv_emit_load(&c->e, c->t_u32, ptr) : spv_emit_load_nonprivate(&c->e, c->t_u32, ptr);
 }
 static void mem_word_store(Ctx* c, u32 buffer, u32 ptr, u32 value) {
     if (buffer && buffer != MEM_LOCAL && c->coop)
         spv_emit_atomic_store_u32(&c->e, c->t_u32, ptr, value);
+    else if (gbuf_is_address(c, buffer))
+        spv_emit_store_aligned(&c->e, ptr, value, 4, 1);
     else if (buffer)
         spv_emit_store(&c->e, ptr, value);
     else
@@ -1985,7 +2032,9 @@ static void mem_ptrs(Ctx* c, u32 buffer, u32 address, u32 n, u32 ptrs[4]) {
     gbuf_word_indices(c, buffer, spv_emit_binary(&c->e, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, address, cu(c, 2)), n,
                       index);
     for (u32 k = 0; k < n; k++)
-        ptrs[k] = spv_emit_storage_access_u32(&c->e, c->gbuf_ptr, buffer, c->zero, index[k]);
+        ptrs[k] = gbuf_is_address(c, buffer)
+                      ? gbuf_pointer(c, buffer, index[k], c->t_u32)
+                      : spv_emit_storage_access_u32(&c->e, c->gbuf_ptr, buffer, c->zero, index[k]);
 }
 /* a load of mem_type (NAK's MemType) into registers dst on */
 static void mem_load(Ctx* c, u32 buffer, u32 address, u32 type, u32 dst, int uniform_dst) {
@@ -2053,6 +2102,14 @@ static void mem_store(Ctx* c, u32 buffer, u32 address, u32 type, u32 data) {
    of the lanes that race on a word succeeds each time round. Its sum flushes subnormals as the instruction does
    (ftz) */
 static u32 atomic_fadd(Ctx* c, u32 buffer, u32 address, u32 data) {
+    if (g_spirv_translate.float_atomic_add && gbuf_is_address(c, buffer)) {
+        spv_emit_extension(&c->e, "SPV_EXT_shader_atomic_float_add");
+        spv_emit_capability(&c->e, SPV_CAPABILITY_ATOMIC_FLOAT32_ADD_EXT);
+        u32 index =
+            gbuf_word_index(c, buffer, spv_emit_binary(&c->e, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, address, cu(c, 2)));
+        return to_u(c, SPV(&c->e, SPV_OP_ATOMIC_F_ADD_EXT, c->t_f32, gbuf_pointer(c, buffer, index, c->t_f32),
+                           cu(c, SPV_SCOPE_DEVICE), cu(c, SPV_MEMORY_SEMANTICS_RELAXED), to_f(c, data)));
+    }
     if (g_spirv_translate.float_atomic_add) {
         u32 slot = 0;
         while (slot < 15 && c->gbuf[slot] != buffer) slot++;
@@ -2556,21 +2613,28 @@ static int tex_table_slot(Ctx* c, int i, u32 type, u32 array, u32 shadow, u32 ms
 /* For this instruction, a table slot's tex[]: its word from the draw's words (the window offset at SH_PUSH_TEX_WORDS,
    x the vertex stage's, y the fragment stage's, in 16-byte units, plus the slot), and the image and the sampler that
    the word names */
-static void table_element(Ctx* c, int slot) {
-    if (!c->tex_images[slot]) return;
+/* word k of the stage's record in the draw's words: the window offset at SH_PUSH_TEX_WORDS (x the vertex stage's, y the
+   fragment stage's, in 16-byte units), plus k */
+static u32 record_word(Ctx* c, u32 k) {
     if (!c->tex_words) {
         c->tex_words = spv_emit_uniform_vec4_array(&c->e, c->t_v4u, c->t_u32, c->t_u32, (u32)shader_vk_set(c->stage),
                                                    SNX_VKB_TEXWORDS, 4096, &c->tex_words_ptr);
         add_interface(c, c->tex_words);
-        c->table_samplers = spv_emit_sampler_table(&c->e, c->t_u32, g_spirv_translate.table_set, 1, SNX_TABLE_SAMPLERS);
-        add_interface(c, c->table_samplers);
     }
     unified_push(c);
     u32 base = spv_emit_push_component_f32(&c->e, c->cbw_u32_ptr, c->push, cu(c, c->tw_member),
                                            cu(c, c->stage == ST_FS), c->t_u32);
     u32 index = spv_emit_iadd_u32(
-        &c->e, c->t_u32, spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, base, cu(c, 2)), cu(c, (u32)slot));
-    u32 word = uniform_word(c, c->tex_words_ptr, c->tex_words, index);
+        &c->e, c->t_u32, spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, base, cu(c, 2)), cu(c, k));
+    return uniform_word(c, c->tex_words_ptr, c->tex_words, index);
+}
+static void table_element(Ctx* c, int slot) {
+    if (!c->tex_images[slot]) return;
+    if (!c->table_samplers) {
+        c->table_samplers = spv_emit_sampler_table(&c->e, c->t_u32, g_spirv_translate.table_set, 1, SNX_TABLE_SAMPLERS);
+        add_interface(c, c->table_samplers);
+    }
+    u32 word = record_word(c, (g_spirv_translate.gbuf_address ? SH_RECORD_GBUF : 0) + (u32)slot);
     u32 image = spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, word, cu(c, (1u << SNX_TABLE_SAMPLER_SHIFT) - 1));
     u32 sampler = spv_emit_binary(&c->e, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, word, cu(c, SNX_TABLE_SAMPLER_SHIFT));
     c->tex[slot] =

@@ -751,6 +751,20 @@ void vk_pipeline_init(void) {
             : no                        ? no
                                         : why);
     }
+    /* SM86 programs' global memory by device address, in the texture table's records: where the device gives
+       addresses (has_gbuf_address) and the buffers come from the GPU mirror or the ring, not memory shared with the
+       CPU */
+    g_spirv_translate.gbuf_address = 0;
+    if (g_shader_sm86) {
+        const char* no = !g_spirv_translate.tex_table ? "no texture table"
+                         : !g_vk.has_gbuf_address     ? "the device has no buffer device address or 64-bit integers"
+                         : vk_uma()                   ? "guest memory is shared with the CPU"
+                         : !vk_table_scratch_init()   ? "no scratch memory"
+                                                      : NULL;
+        g_spirv_translate.gbuf_address = !no;
+        LOG("vulkan: SM86 global memory %s%s\n", no ? "through storage buffer descriptors, as " : "by device address",
+            no ? no : "");
+    }
     for (int s = 0; s < 5; s++) {
         VkDescriptorSetLayoutBinding b[SNX_VKB_END];
         u32 count = 0;
@@ -3052,6 +3066,7 @@ static void pf_key(char* out, size_t n, size_t* guest) {
                   (u32)g_spirv_translate.split_sets,
                   (u32)g_spirv_translate.cb_windows,
                   (u32)g_spirv_translate.tex_table,
+                  (u32)g_spirv_translate.gbuf_address,
                   (u32)g_spirv_translate.stage_point_size,
                   (u32)g_spirv_translate.output_layer,
                   (u32)g_spirv_translate.geometry,

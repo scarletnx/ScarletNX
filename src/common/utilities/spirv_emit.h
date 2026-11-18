@@ -63,6 +63,8 @@ typedef struct {
        barriers' and atomics' acquire and release semantics then also make memory visible and available, as GLSL450
        implies, and spv_emit_load_nonprivate and spv_emit_store_nonprivate access memory other invocations share */
     int vulkan_memory_model;
+    /* the module reads memory by device address (spv_emit_address_pointer): PhysicalStorageBuffer64 addressing */
+    int physical_addressing;
     /* the memory semantics' storage class bit of "shared" memory, for the shared atomics and the control barrier: 0 for
        WorkgroupMemory, or UniformMemory (0x40) for a program whose shared memory a storage buffer holds (a block that
        asks for more than the device gives, vk/compute.c), so that its barriers and atomics order that buffer's words */
@@ -158,6 +160,7 @@ enum {
     SPV_OP_CONVERT_S_TO_F = 111,
     SPV_OP_CONVERT_U_TO_F = 112,
     SPV_OP_U_CONVERT = 113,
+    SPV_OP_CONVERT_U_TO_PTR = 120,
     SPV_OP_S_CONVERT = 114,
     SPV_OP_F_CONVERT = 115,
     SPV_OP_BITCAST = 124,
@@ -298,7 +301,8 @@ enum {
     SPV_STORAGE_FUNCTION = 7,
     SPV_STORAGE_PUSH_CONSTANT = 9,
     SPV_STORAGE_IMAGE = 11,
-    SPV_STORAGE_STORAGE_BUFFER = 12
+    SPV_STORAGE_STORAGE_BUFFER = 12,
+    SPV_STORAGE_PHYSICAL_STORAGE_BUFFER = 5349
 };
 enum {
     SPV_DECORATION_SPEC_ID = 1,
@@ -422,6 +426,7 @@ enum {
     SPV_CAPABILITY_SAMPLED_IMAGE_ARRAY_NON_UNIFORM_INDEXING = 5307,
     SPV_CAPABILITY_VULKAN_MEMORY_MODEL = 5345,
     SPV_CAPABILITY_VULKAN_MEMORY_MODEL_DEVICE_SCOPE = 5346,
+    SPV_CAPABILITY_PHYSICAL_STORAGE_BUFFER_ADDRESSES = 5347,
     SPV_CAPABILITY_FRAGMENT_SHADER_PIXEL_INTERLOCK_EXT = 5378,
     SPV_CAPABILITY_DEMOTE_TO_HELPER_INVOCATION = 5379,
     SPV_CAPABILITY_COOPERATIVE_MATRIX_KHR = 6022,
@@ -681,6 +686,14 @@ void spv_emit_label(SpvEmitter* e, uint32_t label);
 uint32_t spv_emit_function_variable(SpvEmitter* e, uint32_t pointer_type);
 uint32_t spv_emit_function_variable_init(SpvEmitter* e, uint32_t pointer_type, uint32_t initial_value);
 uint32_t spv_emit_load(SpvEmitter* e, uint32_t result_type, uint32_t pointer);
+/* A pointer to a pointee_type at a 64-bit device address (a u64 value): PhysicalStorageBuffer storage, which the module
+   then declares the capability and the addressing model for. Accesses through it take an alignment
+   (spv_emit_load_aligned, spv_emit_store_aligned). Nothing bounds them: the caller checks the range */
+uint32_t spv_emit_address_pointer(SpvEmitter* e, uint32_t pointee_type, uint32_t address);
+/* volatile_access: each access reaches memory that other invocations and the host share (as Coherent does) */
+uint32_t spv_emit_load_aligned(SpvEmitter* e, uint32_t result_type, uint32_t pointer, uint32_t alignment,
+                               int volatile_access);
+void spv_emit_store_aligned(SpvEmitter* e, uint32_t pointer, uint32_t value, uint32_t alignment, int volatile_access);
 /* OpPhi of two values: a when control came from block from_a, b from from_b */
 uint32_t spv_emit_phi2(SpvEmitter* e, uint32_t result_type, uint32_t a, uint32_t from_a, uint32_t b, uint32_t from_b);
 /* The common forms: an instruction of op, its result type, a new id and one, two or three operands, the id returned.

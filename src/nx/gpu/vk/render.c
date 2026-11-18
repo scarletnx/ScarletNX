@@ -3383,7 +3383,7 @@ static int cb_window_place(int vs_fs, int bank, VkBuffer b, u64 o, u32 sz, u64* 
    SH_PUSH_TEX_WORDS. The same words as the stage's last draw in this frame take the same bytes: the set and the push
    stay */
 static struct {
-    u32 words[SH_MAXTEX], n;
+    u32 words[SH_RECORD_GBUF + SH_MAXTEX], n;
     u64 frame;
     VkBuffer b;
     u64 o;
@@ -3479,22 +3479,45 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
     SNX_ZONE_END(zcb);
     SNX_ZONE(zsb, "stage set storage");
     int ordered = !g_settings.nvn_storage_ordering;
+    /* The stage's record in its words' window (table_words): with gbuf_address, each global buffer slot's device
+       address and length and the scratch words' address (SH_RECORD_GBUF), then the texture words. A program of
+       gbuf_address takes its slots' addresses there, at any offset, where a descriptor was bound */
+    const int recorded = g_spirv_translate.gbuf_address && shader_vk_set(s->stage) < 2;
+    const int addressed = recorded && s->si.gbuf_address;
+    u32 rec[SH_RECORD_GBUF + SH_MAXTEX], rec_n = 0;
+    if (addressed) {
+        memset(rec, 0, SH_RECORD_GBUF * sizeof *rec);
+        const u64 scratch = vk_table_scratch();
+        rec[SH_RECORD_SCRATCH] = (u32)scratch;
+        rec[SH_RECORD_SCRATCH + 1] = (u32)(scratch >> 32);
+        rec_n = SH_RECORD_GBUF;
+    }
     for (int i = 0; i < s->si.ngbuf && i < 16; i++) {
         const VkDrawGbuf* gb = &draw->b[stage][i];
         u64 addr = gb->addr;
         u32 size = gb->size;
-        u64 sa = g_vk.props.limits.minStorageBufferOffsetAlignment; /* an earlier draw's result is read in place */
+        /* an earlier draw's result is read in place. By address a slot takes any word: a range in the GPU mirror at an
+           offset no descriptor binds is bound in place, where it was copied out and ended the rendering pass */
+        u64 sa = addressed ? 4 : g_vk.props.limits.minStorageBufferOffsetAlignment;
         VkBuffer b;
         u64 o;
         /* no address: a null buffer where the device has them, which reads zero, else a staging copy of zeros */
-        int ok = gb->aliased             ? (b = gb->buf, o = gb->off, 1)
-                 : addr && gb->writable  ? vk_buf_copy_writable(addr, size, &b, &o, ordered)
-                 : addr && gb->bare      ? vk_buf_get_window(addr, size, &b, &o)
-                 : addr                  ? vk_buf_get_storage(addr, size, sa, &b, &o)
-                 : vk_null_descriptors() ? (b = VK_NULL_HANDLE, o = 0, 1)
-                                         : vk_buf_copy(0, size, &b, &o);
+        int ok = gb->aliased                         ? (b = gb->buf, o = gb->off, 1)
+                 : addr && gb->writable && addressed ? vk_buf_copy_writable_word(addr, size, &b, &o, ordered)
+                 : addr && gb->writable              ? vk_buf_copy_writable(addr, size, &b, &o, ordered)
+                 : addr && gb->bare                  ? vk_buf_get_window(addr, size, addressed ? 4 : 0, &b, &o)
+                 : addr                              ? vk_buf_get_storage(addr, size, sa, &b, &o)
+                 : vk_null_descriptors()             ? (b = VK_NULL_HANDLE, o = 0, 1)
+                                                     : vk_buf_copy(0, size, &b, &o);
         if (!ok) return VK_NULL_HANDLE;
         u64 range = !b ? VK_WHOLE_SIZE : gb->aliased ? gb->range : size;
+        if (addressed) { /* no buffer: length 0, each access takes the scratch words */
+            const u64 at = b ? vk_buffer_address(b) + o : 0;
+            rec[4 * i] = (u32)at;
+            rec[4 * i + 1] = (u32)(at >> 32);
+            rec[4 * i + 2] = b ? (u32)range : 0;
+            continue;
+        }
         dw_buffer(&d, set, SNX_VKB_SSBO + i, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, b, o, range);
     }
     SNX_ZONE_END(zsb);
@@ -3593,7 +3616,7 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
     u32 handles[SH_MAXTEX];
     /* a program of the texture table: each plain slot's word, in place of its descriptor */
     const int table = s->si.tex_table && g_spirv_translate.tex_table && shader_vk_set(s->stage) < 2;
-    u32 words[SH_MAXTEX];
+    u32* words = rec + (recorded ? SH_RECORD_GBUF : 0); /* after the global buffers' part */
     VkImageView tviews[SH_MAXTEX];
     VkImageLayout tlayouts[SH_MAXTEX];
     VkSampler tsamplers[SH_MAXTEX];
@@ -3771,8 +3794,10 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
         for (int i = 0; i < nt; i++)
             if (s->si.tex[i].flags & SNX_TEX_INDEXED) tviews[i] = VK_NULL_HANDLE; /* in the stage's set: word 0 */
         if (!vk_table_words(tviews, tlayouts, tsamplers, (u32)nt, words)) return VK_NULL_HANDLE;
-        if (!table_words(&d, set, shader_vk_set(s->stage), words, (u32)nt)) return VK_NULL_HANDLE;
+        if (recorded && !addressed) memset(rec, 0, SH_RECORD_GBUF * sizeof *rec);
+        rec_n = (recorded ? SH_RECORD_GBUF : 0) + (u32)nt;
     }
+    if (rec_n && !table_words(&d, set, shader_vk_set(s->stage), rec, rec_n)) return VK_NULL_HANDLE;
     SNX_ZONE_END(ztex);
     /* by the bindings' stage (DsBindings): an Ounce's task and mesh programs' last */
     static const VkPipelineStageFlags2 image_stages[DS_GFX_STAGES] = {
