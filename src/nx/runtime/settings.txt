@@ -1449,11 +1449,11 @@ setting Pipeline stats
     text 1024
     default ""
     startup
-    help A CSV file that gets the driver's statistics of each whole and optimized graphics pipeline
-    help (VK_KHR_pipeline_executable_properties): for each shader stage, the instructions, registers, spills and the
-    help others that the driver reports, by the program hashes of the log's lines (a shader corpus file of the program
-    help starts with the same first 8 hex digits). On some drivers, pipelines made
-    help with it are not the ones in the pipeline cache of runs without it. Empty: none
+    help A CSV file that gets the driver's statistics of each whole and optimized graphics pipeline, and of each
+    help compute pipeline (VK_KHR_pipeline_executable_properties): for each shader stage, the instructions, registers,
+    help spills and the others that the driver reports, by the program hashes of the log's lines (a shader corpus file
+    help of the program starts with the same first 8 hex digits). Draws that bind shader objects get no rows. On some
+    help drivers, pipelines made with it are not the ones in the pipeline cache of runs without it. Empty: none
 setting ASTC dump
     key astc_dump
     text 1024

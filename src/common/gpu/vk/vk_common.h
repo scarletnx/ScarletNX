@@ -137,6 +137,10 @@ VkResult snx_vk_compute_pipeline(VkDevice dev, VkPipelineCache cache, VkPipeline
 VkResult snx_vk_compute_pipeline_subgroups(VkDevice dev, VkPipelineCache cache, VkPipelineLayout layout,
                                            const uint32_t* words, size_t size, uint32_t subgroup, bool full,
                                            VkPipeline* out);
+/* the same made with flags (VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR for the driver's statistics) */
+VkResult snx_vk_compute_pipeline_flags(VkDevice dev, VkPipelineCache cache, VkPipelineLayout layout,
+                                       const uint32_t* words, size_t size, uint32_t subgroup, bool full,
+                                       VkPipelineCreateFlags flags, VkPipeline* out);
 /* A compute program's layouts: a descriptor set layout of buffers storage buffers at bindings 0 on, then images storage
    images, the compute stage's, and a pipeline layout of that one set with push bytes of push constants (0: none).
    Neither is left when one cannot be made, nor with more than SNX_VK_COMPUTE_BINDINGS bindings, which gives
