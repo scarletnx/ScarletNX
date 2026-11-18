@@ -2306,6 +2306,8 @@ VkBuffer vk_mirror_mask(void);
 /* [gva, gva + len), one run of guest memory, up to date in the mirror for the work recorded next: the mirror in *buf,
    at *off, which is the guest address of gva. 0 when it can't be (not one run, the mirror off) */
 int vk_mirror_slice(u64 gva, u64 len, VkBuffer* buf, u64* off);
+/* vk_mirror_slice with the run's guest address cpu, which gmmu_run gave for all of [gva, gva + len) */
+int vk_mirror_slice_at(u64 gva, u64 cpu, u64 len, VkBuffer* buf, u64* off);
 /* a program recorded now writes [cpu, cpu + len) of the mirror: pending until the submit's harvest lands it */
 void vk_mirror_wrote(u64 cpu, u64 len);
 /* a buffer in the mirror that a dispatch writes: its guest bytes [cpu, cpu + len) and its part of the write log */
@@ -2326,6 +2328,7 @@ int vk_mirror_pending(u64 gva, u64 len);
 /* whether the mirror owns a part of [gva, gva + len), one run of guest memory: written by its programs and landed
    only as far as the CPU touched it (vk_mirror_publish). The mirror holds the range's bytes then, guest memory not */
 int vk_mirror_holds(u64 gva, u64 len);
+int vk_mirror_holds_at(u64 cpu, u64 len); /* vk_mirror_holds of the run at guest address cpu */
 void vk_mirror_mem_need(u64 gva, u64 len);
 /* at a submit, recorded into cb: the pages its programs wrote, copied for landing; and once submissions up to done are,
    their landing in guest memory */
