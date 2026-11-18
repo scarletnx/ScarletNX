@@ -509,13 +509,13 @@ static void return_to_lr(SnxArmCPU* c) {
 /* Linux's kernel helpers at the top of the window (Documentation/arch/arm/kernel_user_helpers.rst) */
 static void kuser(SnxArmCPU* c) {
     switch (c->r[15]) {
-        case 0xffff0fa0: /* __kuser_memory_barrier */ atomic_thread_fence(memory_order_seq_cst); break;
-        case 0xffff0fc0: { /* __kuser_cmpxchg(oldval, newval, ptr): 0 and C set when *ptr was oldval and is newval now */
-            uint32_t expected = c->r[0];
-            bool ok = atomic_compare_exchange_strong_explicit((_Atomic uint32_t*)(arm32_mem + c->r[2]), &expected,
-                                                              c->r[1], memory_order_seq_cst, memory_order_seq_cst);
-            c->r[0] = ok ? 0 : 1;
-            if (ok) c->cpsr |= 1u << 29;
+    case 0xffff0fa0: /* __kuser_memory_barrier */ atomic_thread_fence(memory_order_seq_cst); break;
+    case 0xffff0fc0: { /* __kuser_cmpxchg(oldval, newval, ptr): 0 and C set when *ptr was oldval and is newval now */
+        uint32_t expected = c->r[0];
+        bool ok = atomic_compare_exchange_strong_explicit((_Atomic uint32_t*)(arm32_mem + c->r[2]), &expected, c->r[1],
+                                                          memory_order_seq_cst, memory_order_seq_cst);
+        c->r[0] = ok ? 0 : 1;
+        if (ok) c->cpsr |= 1u << 29;
         else c->cpsr &= ~(1u << 29);
         break;
     }

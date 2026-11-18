@@ -186,8 +186,8 @@ typedef struct {
     _Atomic GuestFn ext[HOOK_SITES];
     const char* ext_handler[HOOK_SITES];
     _Atomic u64 tramp[HOOK_SITES];
-    _Atomic u32
-        ext_count; /* atomic: the sites with an ext_skyline hook, so a miss looks for no trampoline in a game with none */
+    /* the sites with an ext_skyline hook, so a miss looks for no trampoline in a game with none */
+    _Atomic u32 ext_count;
     /* verify mode: which scratch slots are taken (bit i, atomic), and each site's calls that agreed, differed and
        were skipped (atomic) */
     _Atomic u32 verify_taken;

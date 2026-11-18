@@ -522,7 +522,7 @@ static void build_lookup(SnxIr* ir, LLVMValueRef function) {
     ir_likely(ir, LLVMBuildCondBr(B, inside, table, none));
     LLVMPositionBuilderAtEnd(B, table);
     LLVMValueRef index = LLVMBuildLShr(B, o, ir_i64(ir, 2), "");
-    /* atomic_load_explicit(&c->disp[o>>2], memory_order_relaxed): the runtime JIT fills slots while this runs (cpu.h) */
+    /* atomic_load_explicit(&c->disp[o>>2],memory_order_relaxed): the runtime JIT fills slots while this runs (cpu.h) */
     LLVMValueRef slot = LLVMBuildGEP2(B, ir->t_ptr, ir_cpu_load(ir, ir->t_ptr, offsetof(CPU, disp)), &index, 1, "");
     LLVMValueRef f = LLVMBuildLoad2(B, ir->t_ptr, slot, "");
     LLVMSetOrdering(f, LLVMAtomicOrderingMonotonic);
