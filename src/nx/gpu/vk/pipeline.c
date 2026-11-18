@@ -1088,6 +1088,11 @@ static VkSh* sh_make(const u8* code, u32 mlen, u64 h, int stage, const u32 mask[
                   "vulkan: program %016llx chooses the texture of %u TEX.B%s when it runs, among the constant buffer "
                   "handles that reach it: a handle equal to none of them samples (0, 0, 0, 0) (%s)\n",
                   (unsigned long long)h, s->si.chosen_tex, s->si.chosen_tex == 1 ? "" : "s", s->si.chosen_why);
+    /* a program whose branches and loops aren't SPIR-V's own runs them in the translator's dispatch loop, one switch
+       inside one loop, which costs the driver and the GPU about as much as the program's code: why, once a program */
+    if (!s->failed && s->si.flow_why[0])
+        LOG_LIMIT(64, "vulkan: program %016llx runs its control flow in a dispatch loop: %s\n", (unsigned long long)h,
+                  s->si.flow_why);
     if (!s->failed && s->si.memh_none)
         LOG_LIMIT(64, "vulkan: program %016llx samples %u texture%s as none, whose handles it loads from memory at "
                       "addresses no draw gives (%s)\n",

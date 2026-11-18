@@ -146,6 +146,7 @@ int main(int argc, char** argv) {
             if (verbose) printf("%s: unsupported: %s\n", base, info.first_unsupported);
             continue;
         }
+        if (verbose && info.flow_why[0]) printf("%s: dispatch loop: %s\n", base, info.flow_why);
         if (opt) {
             words = spv_opt_values(spv, words);
             words = spv_opt_dead_code(spv, words);

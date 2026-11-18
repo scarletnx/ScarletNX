@@ -1634,7 +1634,7 @@ int shader_al2p_predicate_unseen(const ShFlow* f, u32 at) {
     work = malloc(n * sizeof *work);
     if (stack) pops = calloc(n, sizeof *pops);
     if (!seen || !work || (stack && !pops)) goto done;
-    crs = stack && shader_resolve_crs(insn, n, pops);
+    crs = stack && shader_resolve_crs(insn, n, pops, NULL, 0);
     seen[at] = 1;
     i = at + 1 + ((at + 1 - 10) % 4 == 0);
     if (i < n) {
