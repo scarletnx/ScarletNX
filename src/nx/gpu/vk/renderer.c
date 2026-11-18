@@ -14,6 +14,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 #include "nx/runtime/main.h"
 #include "nx/runtime/options.h"
 #include "nx/gpu/gpu.h"
@@ -128,7 +129,7 @@ static int guest_covered(u64 a, u64 size) {
 static int mapping_lands(u64 gva, u64 size, int kind) {
     if (kind == GPU_MAPPING_GMMU) return 0;
     if (kind == GPU_MAPPING_GUEST || size == ~0ull || gva + size < gva)
-        return g_pend_any.total || own_any() || g_gfx_img_any;
+        return g_pend_any.total || own_any() || atomic_load_explicit(&g_gfx_img_any, memory_order_relaxed);
     return guest_held(gva, size);
 }
 /* The brackets of this thread that skipped vk_lock, a bit each by depth: mem.c's brackets don't nest, the GMMU's
@@ -291,7 +292,7 @@ static void vkr_method_barrier(int kind)
 {
 	/* a fragment barrier, and the 3D engine's texture data cache invalidation (kind 2), make earlier draws' writes
 	 * visible to texture reads (vk_rt_snapshot) */
-	if (kind == 0 || kind == 2) __atomic_add_fetch(&g_vk_texture_epoch, 1, __ATOMIC_RELAXED);
+	if (kind == 0 || kind == 2) atomic_fetch_add_explicit(&g_vk_texture_epoch, 1, memory_order_relaxed);
 	VkMemoryBarrier2 mb = {
 		.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
 		.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
@@ -548,7 +549,7 @@ static int frame_kind(const SnxHdrFrame* hdr) {
 /* the window's surface: lost while the app is in the background (Android), made anew when it comes back */
 static u32 g_generation;
 static int g_lost;
-static u64 g_shown_ns; /* when the game last gave the window a frame (atomic: vkr_refresh reads it unlocked) */
+static _Atomic u64 g_shown_ns; /* when the game last gave the window a frame (atomic: vkr_refresh reads it unlocked) */
 /* The HDR metadata of the game's window, given to the swapchain made for its frames: once the swapchain is made,
    and again whenever the game's window names other values */
 static void hdr_metadata(const SnxHdrFrame* hdr) {
@@ -660,7 +661,7 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
        frames after its SDR ones, or back */
     if (shown && ww > 0 && wh > 0 &&
         (ww != g_vk.sc_win_w || wh != g_vk.sc_win_h || kind != g_sc_kind ||
-         __atomic_load_n(&g_settings.vsync, __ATOMIC_RELAXED) != g_vk.sc_vsync)) {
+         atomic_load_explicit((_Atomic int*)&g_settings.vsync, memory_order_relaxed) != g_vk.sc_vsync)) {
         vk_finish();
         g_sc_kind = kind;
         vk_swapchain_create(kind);
@@ -817,10 +818,12 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
         resource_was = resource_is;
         last_present_ns = now_ns;
         g_vk_present++;
-        __atomic_add_fetch(&g_vk_texture_epoch, 1, __ATOMIC_RELAXED); /* a frame's snapshots never outlive it */
+        atomic_fetch_add_explicit(&g_vk_texture_epoch, 1,
+                                  memory_order_relaxed); /* a frame's snapshots never outlive it */
         {
             SnxStatsGpu gpu = {0};
-            if (__atomic_load_n(&g_settings.stats, __ATOMIC_RELAXED)) { /* read only while the box shows */
+            if (atomic_load_explicit((_Atomic int*)&g_settings.stats,
+                                     memory_order_relaxed)) { /* read only while the box shows */
                 gpu.busy_ns = vk_gpuprof_busy_ns();
                 gpu.timed = vk_gpuprof_timed();
                 vk_mem_driver_use(&gpu.vram, &gpu.vram_budget, &gpu.vram_ours);
@@ -851,11 +854,11 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
                 (unsigned long long)g_vk_drawn, (unsigned long long)g_vk_skipped, (unsigned long long)g_vk_mesh_draws,
                 (unsigned long long)(g_vk_mesh_draws - g_vk_mesh_drawn), (unsigned long long)g_vk_dispatches,
                 (unsigned long long)g_vk_cs_batches,
-                (unsigned long long)(__atomic_load_n(&g_vk_cs_wait_ns, __ATOMIC_RELAXED) / 1000000),
+                (unsigned long long)(atomic_load_explicit(&g_vk_cs_wait_ns, memory_order_relaxed) / 1000000),
                 (unsigned long long)cs_skipped, cs_why, (unsigned long long)g_vk_finishes,
                 (unsigned long long)(g_vk_finish_ns / 1000000),
-                (unsigned long long)__atomic_load_n(&g_vk_release_forwards, __ATOMIC_RELAXED),
-                (unsigned long long)__atomic_load_n(&g_vk_counts_on_gpu, __ATOMIC_RELAXED),
+                (unsigned long long)atomic_load_explicit(&g_vk_release_forwards, memory_order_relaxed),
+                (unsigned long long)atomic_load_explicit(&g_vk_counts_on_gpu, memory_order_relaxed),
                 (unsigned long long)g_vk_dset_new, (unsigned long long)g_vk_dset_reused, vk_desc_pools(),
                 (unsigned long long)vk_desc_array_sets(), (unsigned long long)g_vk_draw_kept,
                 (unsigned long long)g_vk_draw_checked, (unsigned long long)g_vk_targets_kept);
@@ -1207,14 +1210,14 @@ static void vkr_present_buffer(u64 cpu_addr, u32 w, u32 h, u32 pitch, u32 layout
         ui_unlock();
     }
     show(src, &hdr, x1 - x0, y1 - y0, transform, 1, released_ns, period_ns, shown_syncpt);
-    __atomic_store_n(&g_shown_ns, plat_ns(), __ATOMIC_RELAXED);
+    atomic_store_explicit(&g_shown_ns, plat_ns(), memory_order_relaxed);
     vk_unlock();
 }
 /* the presenting thread's, before its present: nothing else reads g_next_hdr */
 static void vkr_present_hdr(const SnxHdrFrame* frame) { g_next_hdr = *frame; }
 /* what the display session tells a game (vi2's GetHdrStatus and GetHdrPaperWhite), any thread */
 static int vkr_hdr_display(u32* peak, u32* paper_white) {
-    if (!__atomic_load_n(&g_vk.hdr_display, __ATOMIC_RELAXED)) return 0;
+    if (!atomic_load_explicit(&g_vk.hdr_display, memory_order_relaxed)) return 0;
     *peak = (u32)g_settings.hdr_peak;
     *paper_white = snx_hdr_paper_white(g_settings.hdr_paper_white);
     return 1;
@@ -1229,7 +1232,8 @@ static int refresh_due(void) {
     int ww, wh, due;
     backend_window_size(&ww, &wh);
     due = g_lost || backend_window_generation() != g_generation || ww != g_vk.sc_win_w || wh != g_vk.sc_win_h ||
-          __atomic_load_n(&g_settings.vsync, __ATOMIC_RELAXED) != g_vk.sc_vsync || events != seen;
+          atomic_load_explicit((_Atomic int*)&g_settings.vsync, memory_order_relaxed) != g_vk.sc_vsync ||
+          events != seen;
     if (vk_ui_changed()) due = 1; /* asked whatever the window says: it makes the layer's parts, as a frame does */
     if (due) seen = events;
     return due;
@@ -1242,7 +1246,7 @@ static const char* vkr_device_name(void) { return g_vk.props.deviceName; }
 static void vkr_refresh(void) {
     static u64 last;
     u64 now = plat_ns();
-    if (!backend_window_shown() || now - __atomic_load_n(&g_shown_ns, __ATOMIC_RELAXED) < 250000000ull ||
+    if (!backend_window_shown() || now - atomic_load_explicit(&g_shown_ns, memory_order_relaxed) < 250000000ull ||
         now - last < 33000000ull)
         return;
     if (!vk_trylock()) return;

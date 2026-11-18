@@ -10,6 +10,7 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdatomic.h>
 
 #include "nx/hle/services/nvdrv.c"
 #include "nx/hle/hle.c"
@@ -61,7 +62,7 @@ int pc_wait(PCond* c, PMutex* m, i64 timeout_ns) {
         test_fail("nothing here waits for a syncpoint", __LINE__);
         return 1;
     }
-    __atomic_add_fetch(&g_hle.nvdrv.syncpt[test_wake], 1, __ATOMIC_SEQ_CST);
+    atomic_fetch_add_explicit(&g_hle.nvdrv.syncpt[test_wake], 1, memory_order_seq_cst);
     test_wake = 0;
     return 1;
 }

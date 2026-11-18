@@ -4,6 +4,7 @@
 #include "common/cpu/aarch64/cpu.h"
 #include <stdio.h>
 #include <string.h>
+#include <stdatomic.h>
 
 /* ---- cpu.h's inline helpers ----
    Each mirrors its C body. They are internal and always inlined, as SNX_INLINE asks, so a constant argument
@@ -375,7 +376,7 @@ static void build_ldx(SnxIr* ir, LLVMValueRef function) {
     ir_cpu_store(ir, ir_i32(ir, 1), offsetof(CPU, excl_on));
     LLVMBuildRet(B, v);
 }
-/* snx_cas8..64(p,o,n): __atomic_compare_exchange_n, strong, seq_cst */
+/* snx_cas8..64(p,o,n): atomic_compare_exchange_strong_explicit, seq_cst */
 static LLVMValueRef cas(SnxIr* ir, LLVMValueRef address, unsigned bits, LLVMValueRef expected, LLVMValueRef value) {
     LLVMTypeRef t = LLVMIntTypeInContext(ir->ctx, bits);
     /* the values are numbers, memory holds the guest's little-endian bytes (ir_ldacq swapped excl_val too) */
@@ -521,7 +522,7 @@ static void build_lookup(SnxIr* ir, LLVMValueRef function) {
     ir_likely(ir, LLVMBuildCondBr(B, inside, table, none));
     LLVMPositionBuilderAtEnd(B, table);
     LLVMValueRef index = LLVMBuildLShr(B, o, ir_i64(ir, 2), "");
-    /* __atomic_load_n(&c->disp[o>>2],__ATOMIC_RELAXED): the runtime JIT fills slots while this runs (cpu.h) */
+    /* atomic_load_explicit(&c->disp[o>>2],memory_order_relaxed): the runtime JIT fills slots while this runs (cpu.h) */
     LLVMValueRef slot = LLVMBuildGEP2(B, ir->t_ptr, ir_cpu_load(ir, ir->t_ptr, offsetof(CPU, disp)), &index, 1, "");
     LLVMValueRef f = LLVMBuildLoad2(B, ir->t_ptr, slot, "");
     LLVMSetOrdering(f, LLVMAtomicOrderingMonotonic);

@@ -33,6 +33,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 
 extern const unsigned char snx_font_japanese[], snx_font_chinese_simplified[], snx_font_chinese_traditional[],
     snx_font_korean[], snx_font_extended[];
@@ -176,17 +177,17 @@ void nnpl_init(void) {
 
 /* the guest address of the fonts' memory, mapped read only at the first ask */
 static u64 fonts_base(void) {
-    u64 base = __atomic_load_n(&g_hle.pl.base, __ATOMIC_ACQUIRE);
+    u64 base = atomic_load_explicit(&g_hle.pl.base, memory_order_acquire);
     if (base) return base;
     pm_lock(&g_nnpl.lock);
-    base = g_hle.pl.base;
+    base = atomic_load_explicit(&g_hle.pl.base, memory_order_relaxed);
     if (!base) {
         base = kshmem_map_free((KShmem*)kobj_at(g_hle.pl.shm), PERM_R);
         if (!base) {
             pm_unlock(&g_nnpl.lock);
             fatal("nn::pl: no free guest pages for the shared fonts' 0x%x bytes", PL_SHM_SIZE);
         }
-        __atomic_store_n(&g_hle.pl.base, base, __ATOMIC_RELEASE);
+        atomic_store_explicit(&g_hle.pl.base, base, memory_order_release);
         LOG("pl: the shared fonts are at 0x%llx in the game, read only\n", (unsigned long long)base);
     }
     pm_unlock(&g_nnpl.lock);

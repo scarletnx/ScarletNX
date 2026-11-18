@@ -22,6 +22,7 @@
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 #if defined(_WIN32)
 /* what the handlers call, for the table to link: the family is off on Windows (hook.c's family_unready) */
 #define strcasecmp  _stricmp
@@ -331,16 +332,16 @@ u32 libc_htons(CPU* c, u32 v) {
 
 /* ---- pseudo-random numbers, musl's: rand's 64-bit LCG, which srand seeds with seed - 1 and a program that never calls
    it starts at 0; rand_r's 32-bit one, tempered */
-static u64 g_rand;
+static _Atomic u64 g_rand;
 i32 libc_rand(CPU* c) {
     (void)c;
-    u64 s = __atomic_load_n(&g_rand, __ATOMIC_RELAXED) * 6364136223846793005ull + 1;
-    __atomic_store_n(&g_rand, s, __ATOMIC_RELAXED);
+    u64 s = atomic_load_explicit(&g_rand, memory_order_relaxed) * 6364136223846793005ull + 1;
+    atomic_store_explicit(&g_rand, s, memory_order_relaxed);
     return (i32)(s >> 33);
 }
 void libc_srand(CPU* c, u32 seed) {
     (void)c;
-    __atomic_store_n(&g_rand, (u64)(seed - 1), __ATOMIC_RELAXED);
+    atomic_store_explicit(&g_rand, (u64)(seed - 1), memory_order_relaxed);
 }
 i32 libc_rand_r(CPU* c, u64 seed) {
     u32 x = snx_ld_le32(hook_host(c, seed)) * 1103515245u + 12345u;

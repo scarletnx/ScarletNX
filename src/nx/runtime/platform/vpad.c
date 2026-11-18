@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 
 enum { KIND_BUTTON, KIND_DPAD, KIND_STICK };
 typedef struct {
@@ -140,16 +141,16 @@ void vpad_reset_layout(void) {
 typedef char vpad_ini_places[SETTINGS_CONTROLS_COUNT == SNX_VPAD_COUNT ? 1 : -1];
 /* controls=2 (Auto): shown while the device has a touch screen and no gamepad (vpad_auto), atomic: the backend's thread
    writes it, the drawing reads it */
-static int g_auto_shown;
-static int g_menu_open; /* atomic: the game's menu over the picture, which hides the controls (vpad_menu) */
+static _Atomic int g_auto_shown;
+static _Atomic int g_menu_open; /* atomic: the game's menu over the picture, which hides the controls (vpad_menu) */
 static int on(void) {
-    int c = __atomic_load_n(&g_settings.show_controls, __ATOMIC_RELAXED);
-    if (__atomic_load_n(&g_menu_open, __ATOMIC_ACQUIRE)) return 0;
-    return c == 1 || (c == 2 && __atomic_load_n(&g_auto_shown, __ATOMIC_RELAXED));
+    int c = atomic_load_explicit((_Atomic int*)&g_settings.show_controls, memory_order_relaxed);
+    if (atomic_load_explicit(&g_menu_open, memory_order_acquire)) return 0;
+    return c == 1 || (c == 2 && atomic_load_explicit(&g_auto_shown, memory_order_relaxed));
 }
 void vpad_menu(int open) {
     ++g_version;
-    __atomic_store_n(&g_menu_open, open != 0, __ATOMIC_RELEASE);
+    atomic_store_explicit(&g_menu_open, open != 0, memory_order_release);
     if (open) vpad_release();
 }
 int vpad_auto_shown(int touch, int pads) { return touch && !pads; }
@@ -163,8 +164,8 @@ void vpad_auto(int touch, int pads) {
     static int said = -1;
     int shown = vpad_auto_shown(touch, pads);
     char line[128];
-    __atomic_store_n(&g_auto_shown, shown, __ATOMIC_RELAXED);
-    if (__atomic_load_n(&g_settings.show_controls, __ATOMIC_RELAXED) != 2) return;
+    atomic_store_explicit(&g_auto_shown, shown, memory_order_relaxed);
+    if (atomic_load_explicit((_Atomic int*)&g_settings.show_controls, memory_order_relaxed) != 2) return;
     if (!shown) vpad_release();
     if (said == shown) return; /* said once a change */
     said = shown;
@@ -590,7 +591,7 @@ static void controls_draw(SnxUiList* l, const int safe[4]) {
 /* the showcase: player 1's controller as the game gets it, in a corner */
 static u64 g_show_buttons;
 static float g_show_axis[2][2]; /* each stick, -1 to 1 right and down */
-static int g_corner = 3;        /* showcase_corner's, an index of CORNERS */
+static _Atomic int g_corner = 3; /* showcase_corner's, an index of CORNERS */
 static const char* const CORNERS[4] = {"tl", "tr", "bl", "br"};
 /* each control's middle across and down the showcase's box (5:3) and its longer side, of the box's height; none for
    Capture and Home, which never reach the game, nor for L3 and R3, which press their stick's knob */
@@ -616,10 +617,10 @@ void vpad_showcase_corner_set(const IniOpt* o, const char* v) {
     ++g_show_place;
     int i = vpad_corner(v);
     if (i >= 0) {
-        __atomic_store_n(&g_corner, i, __ATOMIC_RELAXED); /* the renderer's thread reads it */
+        atomic_store_explicit(&g_corner, i, memory_order_relaxed); /* the renderer's thread reads it */
         return;
     }
-    i = __atomic_load_n(&g_corner, __ATOMIC_RELAXED);
+    i = atomic_load_explicit(&g_corner, memory_order_relaxed);
     LOG("settings: showcase_corner=%s is not tl, tr, bl or br: it keeps %s\n", v, CORNERS[i]);
     snprintf((char*)o->var, o->size, "%s", CORNERS[i]);
 }
@@ -651,8 +652,8 @@ int vpad_showcase_fps(u32 presents, u64 now_ns) {
 }
 int vpad_showcase_box(const int safe[4], float box[4]) {
     float shorter = (float)(safe[2] < safe[3] ? safe[2] : safe[3]), h = SHOWCASE_BOX * shorter, w = h * 5 / 3;
-    int corner = __atomic_load_n(&g_corner, __ATOMIC_RELAXED);
-    if (!__atomic_load_n(&g_settings.showcase, __ATOMIC_RELAXED)) return -1;
+    int corner = atomic_load_explicit(&g_corner, memory_order_relaxed);
+    if (!atomic_load_explicit((_Atomic int*)&g_settings.showcase, memory_order_relaxed)) return -1;
     box[0] = corner & 1 ? (float)(safe[0] + safe[2]) - h / 15 - w : (float)safe[0] + h / 15;
     box[1] = corner & 2 ? (float)(safe[1] + safe[3]) - h / 15 - h : (float)safe[1] + h / 15;
     box[2] = w;
@@ -662,7 +663,8 @@ int vpad_showcase_box(const int safe[4], float box[4]) {
 void vpad_showcase_draw(SnxUiList* l, const int safe[4], int fps, int scale) {
     float box[4];
     if (vpad_showcase_box(safe, box) < 0) return;
-    if (__atomic_load_n(&g_settings.stats, __ATOMIC_RELAXED)) fps = -1; /* the stats panel says it already */
+    if (atomic_load_explicit((_Atomic int*)&g_settings.stats, memory_order_relaxed))
+        fps = -1; /* the stats panel says it already */
     if (!g_shown.laid || g_shown.drawn != g_show_version || g_shown.fps != fps || g_shown.scale != scale ||
         memcmp(g_shown.safe, safe, sizeof g_shown.safe)) {
         SnxUiList kept = {g_shown.q, 0, (int)(sizeof g_shown.q / sizeof g_shown.q[0])};

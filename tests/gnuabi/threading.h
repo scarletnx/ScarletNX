@@ -5,6 +5,7 @@
 #ifndef SNX_GNUABI_TEST_THREADING_H
 #define SNX_GNUABI_TEST_THREADING_H
 #include "guest.h"
+#include <stdatomic.h>
 typedef int s32;
 
 /* clone's flags as glibc's pthread_create gives them */
@@ -55,8 +56,12 @@ static inline void sleep_ns(s64 ns) {
     s64 t[2] = {ns / 1000000000, ns % 1000000000};
     while (call(101, (u64)t, (u64)t, 0) == -EINTR) {}
 }
-static inline u32 load(volatile u32* p) { return __atomic_load_n(p, __ATOMIC_SEQ_CST); }
-static inline void store(volatile u32* p, u32 v) { __atomic_store_n(p, v, __ATOMIC_SEQ_CST); }
+/* the words the kernel shares (a futex's, CLONE_CHILD_CLEARTID's tid) stay plain u32, as it reads and writes them:
+   atomic here */
+static inline u32 load(volatile u32* p) { return atomic_load_explicit((volatile _Atomic u32*)p, memory_order_seq_cst); }
+static inline void store(volatile u32* p, u32 v) {
+    atomic_store_explicit((volatile _Atomic u32*)p, v, memory_order_seq_cst);
+}
 /* until a thread's CLONE_CHILD_CLEARTID word is 0 */
 static inline void join(volatile u32* ctid) {
     for (u32 v; (v = load(ctid)) != 0;) futex(ctid, 0, v, 0, 0, 0);

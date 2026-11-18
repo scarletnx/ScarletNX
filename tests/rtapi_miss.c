@@ -150,7 +150,7 @@ static void call(CPU* c, u64 pc) {
 }
 
 int main(void) {
-    static GuestFn disp[(0x8001000 - 0x8000000) / 4]; /* no slot holds code: an NCE recompile's module */
+    static _Atomic GuestFn disp[(0x8001000 - 0x8000000) / 4]; /* no slot holds code: an NCE recompile's module */
     CPU c;
     memset(&c, 0, sizeof c);
     c.rt = &g_rtapi;

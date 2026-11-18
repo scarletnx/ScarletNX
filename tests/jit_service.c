@@ -24,6 +24,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <stdatomic.h>
 #ifdef _WIN32
 #include <windows.h>
 #else
@@ -46,7 +47,7 @@
 #define NRO        0x34000 /* the added image's text, NRO_COUNT functions every 0x40 bytes, outside CPU.disp */
 #define NRO_COUNT  64
 
-static int failures;
+static _Atomic int failures;
 #define CHECK(x)                                                                                                       \
     do {                                                                                                               \
         if (!(x)) {                                                                                                    \
@@ -56,20 +57,20 @@ static int failures;
     } while (0)
 
 static unsigned char* memory;
-static GuestFn dispatch[(CODE_HI - CODE_LO) / 4];
+static _Atomic GuestFn dispatch[(CODE_HI - CODE_LO) / 4];
 static SnxJitService* service;
 static RtAPI rt = {.cas128 = snx_runtime_cas128};
-static unsigned misses, wrapped;
+static _Atomic unsigned misses, wrapped;
 /* the batches the report saw, and the first after which 0x3800 had code */
-static unsigned batch_count, live_batch;
+static _Atomic unsigned batch_count, live_batch;
 
 /* the guest's code is little-endian whatever the host's byte order */
 static void put(u64 address, const u32* words, size_t count) {
     size_t i;
     for (i = 0; i < count * 4; ++i) memory[address + i] = (unsigned char)(words[i / 4] >> (i % 4 * 8));
 }
-static GuestFn* slot(u64 address) { return &dispatch[(address - CODE_LO) / 4]; }
-static GuestFn get(u64 address) { return __atomic_load_n(slot(address), __ATOMIC_RELAXED); }
+static _Atomic GuestFn* slot(u64 address) { return &dispatch[(address - CODE_LO) / 4]; }
+static GuestFn get(u64 address) { return atomic_load_explicit(slot(address), memory_order_relaxed); }
 
 /* the module's function at 0x2000: x0 += 100, then return */
 static void aot_add100(CPU* c, u64 e) {
@@ -87,27 +88,27 @@ static void aot_poisoned(CPU* c, u64 e) {
 /* rtapi.c's rt_miss */
 static void miss(CPU* c, u64 pc) {
     GuestFn f;
-    __atomic_fetch_add(&misses, 1, __ATOMIC_RELAXED);
+    atomic_fetch_add_explicit(&misses, 1, memory_order_relaxed);
     f = snx_jit_wait(service, pc);
     if (!f) {
         fprintf(stderr, "no code for %llx\n", (unsigned long long)pc);
-        __atomic_fetch_add(&failures, 1, __ATOMIC_RELAXED);
+        atomic_fetch_add_explicit(&failures, 1, memory_order_relaxed);
         c->pc = c->x[30];
         return;
     }
     f(c, pc);
 }
-static void poll(CPU* c) { __atomic_store_n(&c->poll, 0, __ATOMIC_RELAXED); }
+static void poll(CPU* c) { atomic_store_explicit(&c->poll, 0, memory_order_relaxed); }
 static void undef(CPU* c, u64 pc, u32 w) {
     (void)c;
     fprintf(stderr, "undefined instruction %08x at %llx\n", w, (unsigned long long)pc);
-    __atomic_fetch_add(&failures, 1, __ATOMIC_RELAXED);
+    atomic_fetch_add_explicit(&failures, 1, memory_order_relaxed);
 }
 #ifdef __linux__
 /* the nice value of the thread that compiled the batch whose first pc is nice_pc (NICE_UNSEEN: no such batch yet) */
 #define NICE_UNSEEN 1000
-static SnxU64 nice_pc;
-static int nice_seen = NICE_UNSEEN;
+static _Atomic SnxU64 nice_pc;
+static _Atomic int nice_seen = NICE_UNSEEN;
 static int thread_nice(void) {
     errno = 0;
     int nice = getpriority(PRIO_PROCESS, (id_t)syscall(SYS_gettid));
@@ -116,21 +117,22 @@ static int thread_nice(void) {
 #endif
 /* on a compile thread */
 static void report(const SnxJitReport* r) {
-    unsigned i = __atomic_fetch_add(&batch_count, 1, __ATOMIC_RELAXED), unset = ~0u;
+    unsigned i = atomic_fetch_add_explicit(&batch_count, 1, memory_order_relaxed), unset = ~0u;
 #ifdef __linux__
-    if (r->pc == __atomic_load_n(&nice_pc, __ATOMIC_RELAXED))
-        __atomic_store_n(&nice_seen, thread_nice(), __ATOMIC_RELAXED);
+    if (r->pc == atomic_load_explicit(&nice_pc, memory_order_relaxed))
+        atomic_store_explicit(&nice_seen, thread_nice(), memory_order_relaxed);
 #endif
-    if (get(0x3800)) __atomic_compare_exchange_n(&live_batch, &unset, i, 0, __ATOMIC_RELAXED, __ATOMIC_RELAXED);
+    if (get(0x3800))
+        atomic_compare_exchange_strong_explicit(&live_batch, &unset, i, memory_order_relaxed, memory_order_relaxed);
     if (r->error) {
         fprintf(stderr, "jit: %llx: %s\n", (unsigned long long)r->pc, r->error);
-        __atomic_fetch_add(&failures, 1, __ATOMIC_RELAXED);
+        atomic_fetch_add_explicit(&failures, 1, memory_order_relaxed);
     }
 }
 
 /* the function at 0x3400 behind a wrapper put into an empty slot: its original is the miss */
 static void wrapper(CPU* c, u64 e) {
-    __atomic_fetch_add(&wrapped, 1, __ATOMIC_RELAXED);
+    atomic_fetch_add_explicit(&wrapped, 1, memory_order_relaxed);
     rt.miss(c, e);
 }
 
@@ -157,7 +159,7 @@ static SnxJitService* start(size_t batch, unsigned threads) {
     SnxJitConfig config;
     static SnxCodeImage image;
     static const u64 aot_addresses[] = {0x2000};
-    static const GuestFn aot_functions[] = {aot_add100};
+    static const _Atomic GuestFn aot_functions[] = {aot_add100};
     char error[512];
     SnxJitService* s;
     memset(dispatch, 0, sizeof(dispatch));
@@ -183,8 +185,8 @@ static SnxJitService* start(size_t batch, unsigned threads) {
     config.threads = threads;
     config.report = report;
     config.cache_path = cache_path;
-    __atomic_store_n(&batch_count, 0, __ATOMIC_RELAXED);
-    __atomic_store_n(&live_batch, ~0u, __ATOMIC_RELAXED);
+    atomic_store_explicit(&batch_count, 0, memory_order_relaxed);
+    atomic_store_explicit(&live_batch, ~0u, memory_order_relaxed);
     s = snx_jit_service_new(&config, error, sizeof(error));
     if (!s) fprintf(stderr, "jit: %s\n", error);
     return s;
@@ -238,7 +240,7 @@ static void* race(void* p) {
         r->cpu.x[1] = 0x30000;
         r->cpu.x[30] = RETURN;
         run(&r->cpu, BANK + 0x40 * (u64)i);
-        if (r->cpu.x[0] != (u64)i || r->cpu.pc != RETURN) __atomic_fetch_add(&failures, 1, __ATOMIC_RELAXED);
+        if (r->cpu.x[0] != (u64)i || r->cpu.pc != RETURN) atomic_fetch_add_explicit(&failures, 1, memory_order_relaxed);
     }
     return NULL;
 }
@@ -312,7 +314,7 @@ static void* run_nro(void* p) {
         r->cpu.x[0] = 0;
         r->cpu.x[30] = RETURN;
         run(&r->cpu, NRO + 0x40 * (u64)i);
-        if (r->cpu.x[0] != (u64)i) __atomic_fetch_add(&failures, 1, __ATOMIC_RELAXED);
+        if (r->cpu.x[0] != (u64)i) atomic_fetch_add_explicit(&failures, 1, memory_order_relaxed);
     }
     return NULL;
 }
@@ -902,17 +904,17 @@ static void test_waited_priority(void) {
     SnxJitService* s = start(0, 2);
     CHECK(s != NULL);
     if (!s) return;
-    __atomic_store_n(&nice_seen, NICE_UNSEEN, __ATOMIC_RELAXED);
-    __atomic_store_n(&nice_pc, 0x3400, __ATOMIC_RELAXED);
+    atomic_store_explicit(&nice_seen, NICE_UNSEEN, memory_order_relaxed);
+    atomic_store_explicit(&nice_pc, 0x3400, memory_order_relaxed);
     CHECK(snx_jit_wait(s, 0x3400) != NULL);
     snx_jit_drain(s); /* the report comes after the batch's pcs are published */
-    int waited = __atomic_load_n(&nice_seen, __ATOMIC_RELAXED);
-    __atomic_store_n(&nice_seen, NICE_UNSEEN, __ATOMIC_RELAXED);
-    __atomic_store_n(&nice_pc, warm[0], __ATOMIC_RELAXED);
+    int waited = atomic_load_explicit(&nice_seen, memory_order_relaxed);
+    atomic_store_explicit(&nice_seen, NICE_UNSEEN, memory_order_relaxed);
+    atomic_store_explicit(&nice_pc, warm[0], memory_order_relaxed);
     CHECK(snx_jit_warm(s, warm, 1) == 1);
     snx_jit_drain(s);
-    int background = __atomic_load_n(&nice_seen, __ATOMIC_RELAXED);
-    __atomic_store_n(&nice_pc, 0, __ATOMIC_RELAXED);
+    int background = atomic_load_explicit(&nice_seen, memory_order_relaxed);
+    atomic_store_explicit(&nice_pc, 0, memory_order_relaxed);
     printf("waited priority: the test at nice %d, the waited miss compiled at nice %d, the warm batch at nice %d\n",
            mine, waited, background);
     CHECK(waited == mine);
@@ -988,7 +990,7 @@ int main(int argc, char** argv) {
     run(&c, 0x1000);
     CHECK(c.x[0] == 7 * 3 + 1 + 100 + 5 && c.pc == RETURN && misses == before_misses);
     /* the JIT's call to 0x2000 is direct: what its slot holds now doesn't matter */
-    __atomic_store_n(slot(0x2000), aot_poisoned, __ATOMIC_RELAXED);
+    atomic_store_explicit(slot(0x2000), aot_poisoned, memory_order_relaxed);
     cpu_init(&c, 0xF000);
     c.x[0] = 1;
     run(&c, 0x1000);
@@ -1037,7 +1039,7 @@ int main(int argc, char** argv) {
 
     /* a wrapper in an empty slot: the first miss waits for 0x3400's compile, the second finds the code in the service's
        table */
-    __atomic_store_n(slot(0x3400), wrapper, __ATOMIC_RELAXED);
+    atomic_store_explicit(slot(0x3400), wrapper, memory_order_relaxed);
     before_misses = misses;
     for (i = 0; i < 2; ++i) {
         cpu_init(&c, 0xF000);

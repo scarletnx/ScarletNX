@@ -22,6 +22,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 
 /* the JNINativeInterface's functions, by index (jni.h, JNI 1.6 and Android's), the kind of each one's result
    (hle_call's), and whether it takes variable arguments (... or a va_list) */
@@ -261,10 +262,10 @@ static const struct {
 };
 enum { REMAP_COUNT = sizeof remaps / sizeof *remaps };
 static jmethodID remap_method(JNIEnv* env, jmethodID id) {
-    static jmethodID from[REMAP_COUNT], to[REMAP_COUNT];
-    static int ready;
+    static _Atomic jmethodID from[REMAP_COUNT], to[REMAP_COUNT];
+    static _Atomic int ready;
     if (!id) return id;
-    if (!__atomic_load_n(&ready, __ATOMIC_ACQUIRE)) {
+    if (!atomic_load_explicit(&ready, memory_order_acquire)) {
         jclass runtime = (*env)->FindClass(env, "snx/dalvik/Runtime");
         jmethodID a[REMAP_COUNT], b[REMAP_COUNT];
         for (unsigned i = 0; i < REMAP_COUNT; ++i) {
@@ -278,13 +279,14 @@ static jmethodID remap_method(JNIEnv* env, jmethodID id) {
             }
         }
         for (unsigned i = 0; i < REMAP_COUNT; ++i) {
-            __atomic_store_n(&from[i], a[i], __ATOMIC_RELAXED);
-            __atomic_store_n(&to[i], b[i], __ATOMIC_RELAXED);
+            atomic_store_explicit(&from[i], a[i], memory_order_relaxed);
+            atomic_store_explicit(&to[i], b[i], memory_order_relaxed);
         }
-        __atomic_store_n(&ready, 1, __ATOMIC_RELEASE);
+        atomic_store_explicit(&ready, 1, memory_order_release);
     }
     for (unsigned i = 0; i < REMAP_COUNT; ++i)
-        if (id == __atomic_load_n(&from[i], __ATOMIC_RELAXED)) return __atomic_load_n(&to[i], __ATOMIC_RELAXED);
+        if (id == atomic_load_explicit(&from[i], memory_order_relaxed))
+            return atomic_load_explicit(&to[i], memory_order_relaxed);
     return id;
 }
 

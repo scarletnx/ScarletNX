@@ -26,6 +26,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 #if defined(_WIN32)
 #include <process.h>
 #else
@@ -37,7 +38,7 @@
 #include <sys/prctl.h>
 #endif
 
-static unsigned checks;
+static _Atomic unsigned checks;
 static int diagnostic_log;
 static char g_log[4096]; /* the log's lines until the threads start (g_log_on), as far as they fit */
 static int g_log_on = 1;
@@ -49,7 +50,7 @@ static void test_fail(const char* expr, int line) {
 }
 #define CHECK(expr)                                                                                                    \
     do {                                                                                                               \
-        __atomic_add_fetch(&checks, 1, __ATOMIC_RELAXED);                                                              \
+        (atomic_fetch_add_explicit(&checks, 1, memory_order_relaxed) + 1);                                             \
         if (!(expr)) test_fail(#expr, __LINE__);                                                                       \
     } while (0)
 
@@ -106,59 +107,60 @@ void gpu_mem_changed(u64 a, u64 size) {
 /* ---------------------------------------------------------------- owners whose GPU copy is host memory */
 typedef struct {
     u8* data;
-    int refs;
+    _Atomic int refs;
 } Res;
-static int g_lands, g_landed_bytes;
-static u64 g_land_by[OWN_BY_N]; /* atomic: the landings the producer's hook saw, by what asked for them */
+static _Atomic int g_lands, g_landed_bytes;
+static _Atomic u64 g_land_by[OWN_BY_N]; /* atomic: the landings the producer's hook saw, by what asked for them */
 static u32 g_busy_tid;
 /* test_republish_after_landing's order: the thread that lands g_hold_res (once) waits in producer_unlock, after it lets
    go of the producer's lock, until g_republished. Its own unlock alone: the thread's unlock of a landing begun before,
    seen after the hold is set, would wait with the reader's fault behind it, which nothing then lands */
-static void* g_hold_res;  /* atomic */
-static u32 g_hold_tid;    /* atomic: the thread that landed it, until that unlock */
-static int g_republished; /* atomic */
+static void* _Atomic g_hold_res;  /* atomic */
+static _Atomic u32 g_hold_tid;    /* atomic: the thread that landed it, until that unlock */
+static _Atomic int g_republished; /* atomic */
 static void land(const OwnRange* r, u8* const* dst, u32 n, int by) {
     CHECK(by >= 0 && by < OWN_BY_N);
-    __atomic_add_fetch(&g_land_by[by], 1, __ATOMIC_RELAXED);
+    atomic_fetch_add_explicit(&g_land_by[by], 1, memory_order_relaxed);
     u32 i;
     for (i = 0; i < n; i++) {
         const Res* res = (const Res*)r[i].res;
         void* held = r[i].res;
         memcpy(dst[i], res->data + r[i].res_off, r[i].size);
-        __atomic_add_fetch(&g_landed_bytes, (int)r[i].size, __ATOMIC_RELAXED);
-        if (__atomic_compare_exchange_n(&g_hold_res, &held, NULL, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
-            __atomic_store_n(&g_hold_tid, plat_tid(), __ATOMIC_RELEASE);
+        atomic_fetch_add_explicit(&g_landed_bytes, (int)r[i].size, memory_order_relaxed);
+        if (atomic_compare_exchange_strong_explicit(&g_hold_res, &held, NULL, memory_order_acq_rel,
+                                                    memory_order_acquire))
+            atomic_store_explicit(&g_hold_tid, plat_tid(), memory_order_release);
     }
-    __atomic_add_fetch(&g_lands, 1, __ATOMIC_RELAXED);
+    atomic_fetch_add_explicit(&g_lands, 1, memory_order_relaxed);
 }
-static void retain(void* res) { __atomic_add_fetch(&((Res*)res)->refs, 1, __ATOMIC_RELAXED); }
+static void retain(void* res) { atomic_fetch_add_explicit(&((Res*)res)->refs, 1, memory_order_relaxed); }
 static u64 g_release_touch; /* a guest address the release reads, 0 for none: test_release_order's */
 static int g_release_read;
 static void release(void* res) {
-    __atomic_sub_fetch(&((Res*)res)->refs, 1, __ATOMIC_RELAXED);
+    atomic_fetch_sub_explicit(&((Res*)res)->refs, 1, memory_order_relaxed);
     if (g_release_touch) g_release_read = *(volatile u8*)GP(g_release_touch);
 }
 static u32 busy_tid(void) { return g_busy_tid; }
 /* the producer's answer to a watch (own_watch): g_resolve_res published over [g_resolve_lo, + g_resolve_size), or
    nothing when it is NULL. Called with the producer's lock held, as own_begin needs */
-static int g_resolves; /* atomic */
+static _Atomic int g_resolves; /* atomic */
 static void* g_resolve_res;
 static u64 g_resolve_lo, g_resolve_size;
 static void resolve(u64 addr, u64 size) {
     (void)addr;
     (void)size;
-    __atomic_add_fetch(&g_resolves, 1, __ATOMIC_RELAXED);
+    atomic_fetch_add_explicit(&g_resolves, 1, memory_order_relaxed);
     if (g_resolve_res) CHECK(own_begin(g_resolve_lo, g_resolve_size, g_resolve_res, 0) == 0);
 }
 /* the producer's answer before owners land (OwnHooks' refresh): g_refresh_res published over
    [g_refresh_lo, + g_refresh_size), or nothing when it is NULL */
-static int g_refreshes; /* atomic */
+static _Atomic int g_refreshes; /* atomic */
 static void* g_refresh_res;
 static u64 g_refresh_lo, g_refresh_size;
 static void refresh(u64 addr, u64 size) {
     (void)addr;
     (void)size;
-    __atomic_add_fetch(&g_refreshes, 1, __ATOMIC_RELAXED);
+    atomic_fetch_add_explicit(&g_refreshes, 1, memory_order_relaxed);
     if (g_refresh_res) CHECK(own_begin(g_refresh_lo, g_refresh_size, g_refresh_res, 0) == 0);
 }
 /* the producer's lock: recursive, as the renderer's */
@@ -167,8 +169,9 @@ static void producer_lock(void) { pthread_mutex_lock(&g_producer); }
 static void producer_unlock(void) {
     u32 self = plat_tid();
     pthread_mutex_unlock(&g_producer);
-    if (!__atomic_compare_exchange_n(&g_hold_tid, &self, 0, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) return;
-    for (int waited_ms = 0; !__atomic_load_n(&g_republished, __ATOMIC_ACQUIRE); waited_ms++) {
+    if (!atomic_compare_exchange_strong_explicit(&g_hold_tid, &self, 0, memory_order_acq_rel, memory_order_acquire))
+        return;
+    for (int waited_ms = 0; !atomic_load_explicit(&g_republished, memory_order_acquire); waited_ms++) {
         if (waited_ms == 10000) test_fail("the reader republished the page within 10 s", __LINE__);
         plat_sleep_ns(1000000);
     }
@@ -181,7 +184,7 @@ static void producer_unlock(void) {
 static int refs(Res* r) {
     producer_lock();
     producer_unlock();
-    return __atomic_load_n(&r->refs, __ATOMIC_RELAXED);
+    return atomic_load_explicit(&r->refs, memory_order_relaxed);
 }
 static Res* res_new(u64 size, u8 fill) {
     Res* r = (Res*)calloc(1, sizeof *r);
@@ -253,18 +256,18 @@ static void test_read_write(void) {
 static void test_land_by(void) {
     u64 a = region(R0 + 0x180000, 0x10000);
     Res* r = res_new(0x1000, 0x30);
-    u64 read = __atomic_load_n(&g_land_by[OWN_BY_READ], __ATOMIC_RELAXED);
-    u64 write = __atomic_load_n(&g_land_by[OWN_BY_WRITE], __ATOMIC_RELAXED);
-    u64 runtime = __atomic_load_n(&g_land_by[OWN_BY_RUNTIME], __ATOMIC_RELAXED);
+    u64 read = atomic_load_explicit(&g_land_by[OWN_BY_READ], memory_order_relaxed);
+    u64 write = atomic_load_explicit(&g_land_by[OWN_BY_WRITE], memory_order_relaxed);
+    u64 runtime = atomic_load_explicit(&g_land_by[OWN_BY_RUNTIME], memory_order_relaxed);
     CHECK(own_begin(a + 0x1000, 0x1000, r, 0) == 0);
     CHECK(GP(a)[0x1010] == (u8)(0x30 + 0x10));
-    CHECK(__atomic_load_n(&g_land_by[OWN_BY_READ], __ATOMIC_RELAXED) == read + 1);
+    CHECK(atomic_load_explicit(&g_land_by[OWN_BY_READ], memory_order_relaxed) == read + 1);
     CHECK(own_begin(a + 0x2000, 0x1000, r, 0) == 0);
     GP(a)[0x2010] = 0x77;
-    CHECK(__atomic_load_n(&g_land_by[OWN_BY_WRITE], __ATOMIC_RELAXED) == write + 1);
+    CHECK(atomic_load_explicit(&g_land_by[OWN_BY_WRITE], memory_order_relaxed) == write + 1);
     CHECK(own_begin(a + 0x3000, 0x1000, r, 0) == 0);
     own_acquire(a + 0x3000, 0x1000);
-    CHECK(__atomic_load_n(&g_land_by[OWN_BY_RUNTIME], __ATOMIC_RELAXED) == runtime + 1);
+    CHECK(atomic_load_explicit(&g_land_by[OWN_BY_RUNTIME], memory_order_relaxed) == runtime + 1);
     CHECK(GP(a)[0x3010] == (u8)(0x30 + 0x10));
     CHECK(mem_unmap(a, 0x10000) == 0);
     res_free(r);
@@ -274,7 +277,7 @@ static void test_land_by(void) {
    its own, once, paced so the move happens while the owner's page is written: a write lost in the copy leaves its
    slot short */
 #define SLOTS 1984 /* u32s: all but the owner's last 0x100 bytes of the two pages */
-static volatile u32 g_progress;
+static volatile _Atomic u32 g_progress;
 static u64 g_hammer;
 static void* hammer(void* arg) {
     u32 i;
@@ -283,7 +286,7 @@ static void* hammer(void* arg) {
         volatile u32 spin;
         u32 v = i + 1;
         memcpy(GP(g_hammer + 4ull * i), &v, 4);
-        __atomic_store_n(&g_progress, i, __ATOMIC_RELEASE);
+        atomic_store_explicit(&g_progress, i, memory_order_release);
         for (spin = 0; spin < 300; spin++) {
         }
     }
@@ -300,8 +303,7 @@ static void test_freeze(void) {
         g_progress = 0;
         pthread_create(&t, NULL, hammer, NULL);
         /* on the owner's page (the second, the one that moves), early on it */
-        while (__atomic_load_n(&g_progress, __ATOMIC_ACQUIRE) < 1024 + 64) {
-        }
+        while (atomic_load_explicit(&g_progress, memory_order_acquire) < 1024 + 64) {}
         CHECK(own_begin(pages + 0x2000 - 0x100, 0x100, r, 0) == 0);
         pthread_join(t, NULL);
         for (k = 0; k < SLOTS; k++) {
@@ -688,17 +690,18 @@ static void test_republish_after_landing(void) {
     OwnRange o;
     int lands = g_lands;
     CHECK(own_begin(a, 0x1000, r1, 0) == 0 && own_begin(a + 0x2000, 0x1000, r3, 0) == 0);
-    __atomic_store_n(&g_republished, 0, __ATOMIC_RELEASE);
-    __atomic_store_n(&g_hold_res, r1, __ATOMIC_RELEASE);
+    atomic_store_explicit(&g_republished, 0, memory_order_release);
+    atomic_store_explicit(&g_hold_res, r1, memory_order_release);
     CHECK(GP(a)[5] == 0x25); /* r1 lands on the trap's thread, which then waits in producer_unlock */
     producer_lock();
     CHECK(own_begin(a, 0x1000, r2, 0) == 0); /* its caller holds the producer's lock, as the renderer's do */
     producer_unlock();
-    __atomic_store_n(&g_republished, 1, __ATOMIC_RELEASE);
+    atomic_store_explicit(&g_republished, 1, memory_order_release);
     CHECK(GP(a + 0x2000)[7] == 0xC7);
     CHECK(g_lands == lands + 2 && refs(r1) == 0 && refs(r3) == 0);
     /* r1's lander was the one held, and has let go */
-    CHECK(!__atomic_load_n(&g_hold_res, __ATOMIC_ACQUIRE) && !__atomic_load_n(&g_hold_tid, __ATOMIC_ACQUIRE));
+    CHECK(!atomic_load_explicit(&g_hold_res, memory_order_acquire) &&
+          !atomic_load_explicit(&g_hold_tid, memory_order_acquire));
     CHECK(own_lookup(a, 0x1000, &o, 1) == 1 && o.res == r2 && refs(r2) == 1); /* nothing touched r2's bytes */
     CHECK(GP(a)[9] == (u8)(0x80 + 9) && g_lands == lands + 3 && refs(r2) == 0);
     CHECK(mem_unmap(a, 0x4000) == 0);
@@ -711,7 +714,7 @@ static void test_republish_after_landing(void) {
    land_end holds until g_two_go. Meanwhile another thread takes the lock, the landing's owner is still there for a
    lookup, and an owner that comes on one of its pages waits for it to end. Then the reader has the landed bytes, and
    the new owner's page is still trapped */
-static int g_two_in, g_two_go; /* atomic: the copy is under way, with the lock let go; it may end */
+static _Atomic int g_two_in, g_two_go; /* atomic: the copy is under way, with the lock let go; it may end */
 typedef struct {
     OwnRange r[8];
     u8* dst[8];
@@ -733,28 +736,28 @@ static void two_end(void* handle) {
     TwoCopy* c = (TwoCopy*)handle;
     /* here, not in two_start: own.c lets go of the producer's lock after land_start returns and before land_end, and
        the test takes that lock once it sees g_two_in */
-    __atomic_store_n(&g_two_in, 1, __ATOMIC_RELEASE);
-    for (int waited_ms = 0; !__atomic_load_n(&g_two_go, __ATOMIC_ACQUIRE); waited_ms++) {
+    atomic_store_explicit(&g_two_in, 1, memory_order_release);
+    for (int waited_ms = 0; !atomic_load_explicit(&g_two_go, memory_order_acquire); waited_ms++) {
         if (waited_ms == 10000) test_fail("the test let the two-step copy end within 10 s", __LINE__);
         plat_sleep_ns(1000000);
     }
     land(c->r, c->dst, c->n, c->by);
     free(c);
 }
-static int g_two_read; /* the reader's byte */
+static _Atomic int g_two_read; /* the reader's byte */
 static void* two_reader(void* a) {
-    __atomic_store_n(&g_two_read, GP((u64)(uintptr_t)a)[0x200], __ATOMIC_RELEASE);
+    atomic_store_explicit(&g_two_read, GP((u64)(uintptr_t)a)[0x200], memory_order_release);
     return NULL;
 }
 static Res* g_two_r2;
 static u64 g_two_at;
-static int g_two_begun; /* atomic: the second owner's own_begin returned */
+static _Atomic int g_two_begun; /* atomic: the second owner's own_begin returned */
 static void* two_owner(void* unused) {
     (void)unused;
     producer_lock(); /* as the renderer's callers of own_begin do */
     CHECK(own_begin(g_two_at, 0x100, g_two_r2, 0) == 0);
     producer_unlock();
-    __atomic_store_n(&g_two_begun, 1, __ATOMIC_RELEASE);
+    atomic_store_explicit(&g_two_begun, 1, memory_order_release);
     return NULL;
 }
 static void test_two_step(void) {
@@ -765,12 +768,12 @@ static void test_two_step(void) {
     int lands = g_lands;
     g_own.hooks.land_start = two_start;
     g_own.hooks.land_end = two_end;
-    __atomic_store_n(&g_two_in, 0, __ATOMIC_RELEASE);
-    __atomic_store_n(&g_two_go, 0, __ATOMIC_RELEASE);
-    __atomic_store_n(&g_two_begun, 0, __ATOMIC_RELEASE);
+    atomic_store_explicit(&g_two_in, 0, memory_order_release);
+    atomic_store_explicit(&g_two_go, 0, memory_order_release);
+    atomic_store_explicit(&g_two_begun, 0, memory_order_release);
     CHECK(own_begin(a + 0x1100, 0x2000, r, 0) == 0); /* on the pages a + 0x1000 to a + 0x4000 */
     pthread_create(&reader, NULL, two_reader, (void*)(uintptr_t)(a + 0x1100));
-    for (int waited_ms = 0; !__atomic_load_n(&g_two_in, __ATOMIC_ACQUIRE); waited_ms++) {
+    for (int waited_ms = 0; !atomic_load_explicit(&g_two_in, memory_order_acquire); waited_ms++) {
         if (waited_ms == 10000) test_fail("the read started a two-step landing within 10 s", __LINE__);
         plat_sleep_ns(1000000);
     }
@@ -783,13 +786,13 @@ static void test_two_step(void) {
     g_two_at = a + 0x3800;
     pthread_create(&owner, NULL, two_owner, NULL);
     plat_sleep_ns(50000000);
-    CHECK(!__atomic_load_n(&g_two_begun, __ATOMIC_ACQUIRE));
-    __atomic_store_n(&g_two_go, 1, __ATOMIC_RELEASE);
+    CHECK(!atomic_load_explicit(&g_two_begun, memory_order_acquire));
+    atomic_store_explicit(&g_two_go, 1, memory_order_release);
     pthread_join(reader, NULL);
     pthread_join(owner, NULL);
-    CHECK(__atomic_load_n(&g_two_read, __ATOMIC_ACQUIRE) == (u8)(0xA0 + 0x200) && g_lands == lands + 1);
+    CHECK(atomic_load_explicit(&g_two_read, memory_order_acquire) == (u8)(0xA0 + 0x200) && g_lands == lands + 1);
     /* the owner's own_begin waited for the landing's inflight entry, which goes after its release */
-    CHECK(__atomic_load_n(&g_two_begun, __ATOMIC_ACQUIRE) && refs(r) == 0);
+    CHECK(atomic_load_explicit(&g_two_begun, memory_order_acquire) && refs(r) == 0);
     CHECK(own_trapped(a + 0x3800, 0x100)); /* the new owner's page stays trapped */
     g_own.hooks.land_start = NULL;
     g_own.hooks.land_end = NULL;
@@ -882,7 +885,7 @@ static void test_let_go_watched(void) {
 static void test_refresh(void) {
     u64 a = region(R0 + 0xF00000, 0x10000);
     Res *r = res_new(0x2000, 0xB0), *newer = res_new(0x2000, 0xC0), *plain = res_new(0x1000, 0xD0);
-    int asked = __atomic_load_n(&g_refreshes, __ATOMIC_ACQUIRE);
+    int asked = atomic_load_explicit(&g_refreshes, memory_order_acquire);
     CHECK(own_begin(a + 0x1000, 0x2000, r, 0) == 0);
     g_refresh_res = newer;
     g_refresh_lo = a + 0x1000;
@@ -891,11 +894,11 @@ static void test_refresh(void) {
     g_refresh_res = NULL;
     CHECK(GP(a)[0x2FFF] == (u8)(0xC0 + 0x1FFF) && GP(a)[0x0FFF] == (u8)(0x11 + 0x0FFF));
     CHECK(refs(r) == 0 && refs(newer) == 0 && !own_trapped(a, 0x10000));
-    CHECK(__atomic_load_n(&g_refreshes, __ATOMIC_ACQUIRE) == asked + 1);
+    CHECK(atomic_load_explicit(&g_refreshes, memory_order_acquire) == asked + 1);
     /* nothing newer: asked once, and the owner's bytes land */
     CHECK(own_begin(a + 0x5000, 0x1000, plain, 0) == 0);
     CHECK(GP(a)[0x5010] == (u8)(0xD0 + 0x10) && refs(plain) == 0);
-    CHECK(__atomic_load_n(&g_refreshes, __ATOMIC_ACQUIRE) == asked + 2);
+    CHECK(atomic_load_explicit(&g_refreshes, memory_order_acquire) == asked + 2);
     /* the producer's lock holder is not asked */
     res_free(plain);
     plain = res_new(0x1000, 0xE0);
@@ -904,7 +907,7 @@ static void test_refresh(void) {
     own_acquire(a + 0x7000, 0x1000);
     g_busy_tid = 0;
     CHECK(GP(a)[0x7010] == (u8)(0xE0 + 0x10));
-    CHECK(refs(plain) == 0 && __atomic_load_n(&g_refreshes, __ATOMIC_ACQUIRE) == asked + 2);
+    CHECK(refs(plain) == 0 && atomic_load_explicit(&g_refreshes, memory_order_acquire) == asked + 2);
     CHECK(mem_unmap(a, 0x10000) == 0);
     res_free(r);
     res_free(newer);
@@ -1060,7 +1063,7 @@ static void test_watch_many(void) {
 static u64 g_sa;
 static int g_round;
 static u64 g_stale[STALE_MAX]; /* the offsets read stale, in place */
-static int g_nstale;           /* atomic */
+static _Atomic int g_nstale;   /* atomic */
 static int g_stale_total;
 static void* reader(void* arg) {
     u32 seed = (u32)(uintptr_t)arg * 2654435761u + (u32)g_round;
@@ -1071,7 +1074,7 @@ static void* reader(void* arg) {
         off = (seed >> 4) % 0x20000;
         if (GP(g_sa)[off] == (u8)(g_round * 7 + off)) continue;
         CHECK(!plat_alias_mirror()); /* a mirror's landing is never seen half written */
-        int k = __atomic_fetch_add(&g_nstale, 1, __ATOMIC_RELAXED);
+        int k = atomic_fetch_add_explicit(&g_nstale, 1, memory_order_relaxed);
         if (k < STALE_MAX) g_stale[k] = off;
     }
     return NULL;
@@ -1083,16 +1086,17 @@ static void* reader(void* arg) {
    ready before its watch: a fault of the round before's readers can come late, and with none it would drop the watch */
 #define REARM_READERS 16
 static u64 g_rearm_at;
-static int g_rearm_round, g_rearm_seen, g_rearm_stale; /* g_rearm_stale atomic */
+static int g_rearm_round, g_rearm_seen;
+static _Atomic int g_rearm_stale; /* g_rearm_stale atomic */
 static void* rearm_reader(void* arg) {
     u32 k = (u32)(uintptr_t)arg;
-    while (__atomic_load_n(&g_resolves, __ATOMIC_ACQUIRE) == g_rearm_seen) {}
+    while (atomic_load_explicit(&g_resolves, memory_order_acquire) == g_rearm_seen) {}
     for (volatile u32 spin = 0; spin < k * 400; spin++) {}
     for (u32 page = k % 4; page < 32; page += 4) {
         u64 off = page * 0x1000 + 0x80 + k;
         /* in place a page is open while the landing fills it, and its old byte can be read then (test_stress) */
         if (GP(g_rearm_at)[off] != (u8)(g_rearm_round * 5 + off) && plat_alias_mirror())
-            __atomic_add_fetch(&g_rearm_stale, 1, __ATOMIC_RELAXED);
+            atomic_fetch_add_explicit(&g_rearm_stale, 1, memory_order_relaxed);
     }
     return NULL;
 }
@@ -1104,7 +1108,7 @@ static void test_rearm(void) {
         g_resolve_res = r;
         g_resolve_lo = g_rearm_at;
         g_resolve_size = 0x20000;
-        g_rearm_seen = __atomic_load_n(&g_resolves, __ATOMIC_ACQUIRE);
+        g_rearm_seen = atomic_load_explicit(&g_resolves, memory_order_acquire);
         CHECK(own_watch(g_rearm_at, 0x20000) == 0);
         for (u32 i = 0; i < REARM_READERS; i++) pthread_create(&t[i], NULL, rearm_reader, (void*)(uintptr_t)i);
         CHECK(GP(g_rearm_at)[0x7F] == (u8)(g_rearm_round * 5 + 0x7F)); /* the fault that asks for the publish */

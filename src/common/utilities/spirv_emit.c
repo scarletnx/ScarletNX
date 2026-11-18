@@ -16,7 +16,7 @@ uint32_t spv_emit_version(void) { return g_spirv_emit.version; }
 
 /* s at a capacity of at least need words: doubled from 512 (a small shader's section, so most grow once or never)
    until it holds them. Out of line, so the test that calls it stays small enough to be inlined everywhere */
-__attribute__((noinline, cold)) static void grow(SpvWords* s, size_t need) {
+[[gnu::noinline, gnu::cold]] static void grow(SpvWords* s, size_t need) {
     size_t cap = s->capacity ? s->capacity : 512;
     while (cap < need) {
         assert(cap <= SIZE_MAX / 2);

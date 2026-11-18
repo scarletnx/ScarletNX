@@ -365,12 +365,12 @@ static int fp_host_sqrt(SnxFpEnv* c, u64 a, int width, u64* out) {
    from. A case the scalar paths leave to the soft-float (a sum's rounding error the host can't give) is a lane for
    fp_host_lanes to do alone. Under FPCR.FZ a tiny lane's operands are zeros before the host's operation, so it never
    makes a denormal */
-typedef u32 FpHostU4 __attribute__((vector_size(16)));
-typedef int32_t FpHostM4 __attribute__((vector_size(16))); /* a lane mask: all ones or zero */
-typedef float FpHostF4 __attribute__((vector_size(16)));
-typedef double FpHostD4 __attribute__((vector_size(32)));
-typedef u64 FpHostQ4 __attribute__((vector_size(32)));
-typedef int64_t FpHostL4 __attribute__((vector_size(32)));
+typedef u32 FpHostU4 [[gnu::vector_size(16)]];
+typedef int32_t FpHostM4 [[gnu::vector_size(16)]]; /* a lane mask: all ones or zero */
+typedef float FpHostF4 [[gnu::vector_size(16)]];
+typedef double FpHostD4 [[gnu::vector_size(32)]];
+typedef u64 FpHostQ4 [[gnu::vector_size(32)]];
+typedef int64_t FpHostL4 [[gnu::vector_size(32)]];
 
 #define FP_HOST_DNAN32 0x7FC00000u
 

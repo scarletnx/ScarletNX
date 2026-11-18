@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/renderer.h"
 #include "nx/runtime/platform/log.h"
@@ -706,7 +707,7 @@ void vk_texture_pipeline_stats(u64* count, u64* ns) {
 }
 void vk_tex_stats(u64* uploads, u64* bytes) {
     *uploads = g_tex_loads.uploads;
-    *bytes = __atomic_load_n(&g_tex_upload_bytes, __ATOMIC_RELAXED);
+    *bytes = atomic_load_explicit(&g_tex_upload_bytes, memory_order_relaxed);
 }
 void vk_tex_partial_stats(u64* loads, u64* bytes) {
     *loads = g_tex_loads.partial;
@@ -1066,7 +1067,7 @@ static int resident_upload(Surf* t) {
                             .imageOffset = {(i32)x, (i32)y, (i32)z},
                             .imageExtent = {lw - x < g.width ? lw - x : g.width, lh - y < g.height ? lh - y : g.height,
                                             ld - z < g.depth ? ld - z : g.depth}};
-                        __atomic_add_fetch(&g_tex_upload_bytes, t->brick_bytes, __ATOMIC_RELAXED);
+                        atomic_fetch_add_explicit(&g_tex_upload_bytes, t->brick_bytes, memory_order_relaxed);
                     }
         }
     for (u32 k = 0; k < t->tails && ok; k++)
@@ -1139,7 +1140,7 @@ static void later_drop_image(Surf* t) {
     if (t->bc7.img) {
         vk_defer_image(t->bc7.img, t->bc7.mem, VK_NULL_HANDLE, VK_NULL_HANDLE);
         vk_defer_bytes(t->bc7.bytes);
-        __atomic_add_fetch(&g_tex_frees, 1, __ATOMIC_RELAXED);
+        atomic_fetch_add_explicit(&g_tex_frees, 1, memory_order_relaxed);
     }
     t->bc7.img = VK_NULL_HANDLE;
     t->bc7.mem = 0;
@@ -1259,7 +1260,7 @@ static void tex_image_swap(Surf* t, VkImage img, DevMem mem, u64 bytes, VkFormat
     t->present = VK_NULL_HANDLE;
     vk_defer_image(t->img, t->mem, VK_NULL_HANDLE, VK_NULL_HANDLE);
     vk_defer_bytes(t->bytes);
-    __atomic_add_fetch(&g_tex_frees, 1, __ATOMIC_RELAXED);
+    atomic_fetch_add_explicit(&g_tex_frees, 1, memory_order_relaxed);
     t->img = img;
     t->mem = mem;
     if (t->took_drawn) vk_devmem_priority(mem, DM_PRIO_MID); /* new memory has the low class of its owner */
@@ -1321,7 +1322,7 @@ static u32 later_encode(VkCommandBuffer cb, Surf* t, u32 left, int begun) {
             vk_bc7_cache_level(cb, t, t->bc7.key[l], l, lw, lh, slices, is3d)) {
             used += (u32)((slice_blocks * slices + 15) / 16);
             t->bc7.level++;
-            __atomic_add_fetch(&g_tex_cache_hits, 1, __ATOMIC_RELAXED);
+            atomic_fetch_add_explicit(&g_tex_cache_hits, 1, memory_order_relaxed);
             continue;
         }
         u32 nz = 1, n;
@@ -1357,7 +1358,7 @@ static u32 later_encode(VkCommandBuffer cb, Surf* t, u32 left, int begun) {
             if (keyed) vk_bc7_capture_level(cb, t->bc7.img, t->bc7.key[l], l, lw, lh, slices, is3d);
             t->bc7.slice = 0;
             t->bc7.level++;
-            __atomic_add_fetch(&g_tex_cache_misses, 1, __ATOMIC_RELAXED);
+            atomic_fetch_add_explicit(&g_tex_cache_misses, 1, memory_order_relaxed);
         }
     }
     return used;
@@ -1981,7 +1982,7 @@ static int kind_image(VkCommandBuffer cb, Surf* t, VkFormat to) {
     if (!vk_astc_bcn_kept(cb, t, img, vk_astc_bcn(to))) {
         vk_defer_image(img, mem, VK_NULL_HANDLE, VK_NULL_HANDLE);
         vk_defer_bytes(bytes);
-        __atomic_add_fetch(&g_tex_frees, 1, __ATOMIC_RELAXED);
+        atomic_fetch_add_explicit(&g_tex_frees, 1, memory_order_relaxed);
         LOG_LIMIT(4, "vulkan: the %s image of a %ux%ux%u ASTC texture could not be made: it stays %s\n",
                   astc_held_name(to), t->w, t->h, t->layers * t->depth3d, astc_held_name(t->f.vk));
         return 0;
@@ -2106,7 +2107,7 @@ static int tex_upload_(Surf* t) {
     SNX_ZONE_VALUE(z_up, t->size);
     g_tex_loads.uploads++;
     if (!t->bricks) /* a brick at a time for the others */
-        __atomic_add_fetch(&g_tex_upload_bytes, t->size, __ATOMIC_RELAXED);
+        atomic_fetch_add_explicit(&g_tex_upload_bytes, t->size, memory_order_relaxed);
     /* loaded before: not its first load */
     const int loaded = t->wgen != 0;
     if (t->upload_valid || !t->bc7_wrote) later_wrote(t); /* the first load, or a write: not a failed one tried again */
@@ -2754,7 +2755,7 @@ static Surf* rt_copy(Surf* rt, u32 w, u32 h, const VkFmt* as, int guest, int pix
         c->crop_gen = rt->wgen;
         g_vk_rt_copy_writes++;
     }
-    u64 epoch = __atomic_load_n(&g_vk_texture_epoch, __ATOMIC_RELAXED);
+    u64 epoch = atomic_load_explicit(&g_vk_texture_epoch, memory_order_relaxed);
     if (c->crop_gen != rt->wgen && !(reuse && c->crop_gen != ~0u && c->crop_epoch == epoch)) {
         VkCommandBuffer cb = vk_cmd();
         VkImageCopy r[2];
@@ -3070,7 +3071,7 @@ static int level_patch_bl(Upload* u, const UpLevel* lv, u64 gva, u64 lsz, u32 lb
             run.cols = rowb / f->bpp * f->bw;
             if (!stage_bl(&m, gva + k * block, lsz - k * block, &staged) || !up_move(u, &run, &m, &staged, z, y))
                 return 0;
-            __atomic_add_fetch(&g_tex_upload_bytes, (e - k) * block, __ATOMIC_RELAXED);
+            atomic_fetch_add_explicit(&g_tex_upload_bytes, (e - k) * block, memory_order_relaxed);
         }
         k = e;
     }
@@ -3137,7 +3138,7 @@ static int pitch_patch(Upload* u, const PitchRect* r) {
         } else if (p)
             for (u64 k = 0; k < n; k++) vk_guest_read(gva + first + k * gp, w, p + k * w, staged, at + k * w);
         if (!up_reserve(u, 0) || !up_rows(u, &lv, staged, at, in_pitch, z, 1, y, (u32)n)) return 0;
-        __atomic_add_fetch(&g_tex_upload_bytes, n * w, __ATOMIC_RELAXED);
+        atomic_fetch_add_explicit(&g_tex_upload_bytes, n * w, memory_order_relaxed);
         row += n;
     }
     return 1;
@@ -3194,7 +3195,7 @@ static int level_patch_astc(Upload* u, const UpLevel* lv, u64 gva, u64 lsz, u32 
                 return 0;
             u->scratch = VK_NULL_HANDLE; /* astc_rows may have grown the scratch buffer: asked for again */
             u->cap = 0;
-            __atomic_add_fetch(&g_tex_upload_bytes, (e - k) * block, __ATOMIC_RELAXED);
+            atomic_fetch_add_explicit(&g_tex_upload_bytes, (e - k) * block, memory_order_relaxed);
         }
         k = e;
     }
@@ -3243,7 +3244,7 @@ static int later_pieces_whole(const Surf* t, u64 sum) {
    image's (no blocks loaded alone since) is hashed for that, as a change found by its hash is: its pages written with
    the bytes they had load nothing. 1 when the image has them */
 static int tex_patch(Surf* t, const TexPieces* p) {
-    u64 sum = 0, bytes = __atomic_load_n(&g_tex_upload_bytes, __ATOMIC_RELAXED);
+    u64 sum = 0, bytes = atomic_load_explicit(&g_tex_upload_bytes, memory_order_relaxed);
     for (u32 i = 0; i < p->count; i++) sum += p->piece[i].n;
     /* a texture held as BC1, BC4 or BC5 for what its blocks held loads whole, which reads them again
        (kind_again): pieces of other blocks would show in a format that does not hold them */
@@ -3309,7 +3310,7 @@ static int tex_patch(Surf* t, const TexPieces* p) {
     t->bc7.keyed = 0;       /* its levels' bytes changed: no longer the cache's keys */
     if (ok) later_queue(t); /* an RGBA8 one the encoder starts on again */
     g_tex_loads.partial++;
-    g_tex_loads.partial_bytes += __atomic_load_n(&g_tex_upload_bytes, __ATOMIC_RELAXED) - bytes;
+    g_tex_loads.partial_bytes += atomic_load_explicit(&g_tex_upload_bytes, memory_order_relaxed) - bytes;
     if (!ok) {
         LOG_LIMIT(1,
                   "vulkan: out of memory or staging loading %llu KB of a %ux%ux%u texture: it loads again in the next "
@@ -3878,7 +3879,7 @@ static Surf* tex_from_tic(const u32* tic, int raw, int use) {
     u64 stride =
         bl ? bl_layer_size(gw, gh, d3, &f, bh, bd, tile_w, glevels) : (u64)pitch * ((gh + f.bh - 1) / f.bh) * d3;
     /* A texture upload reads guest memory. Complete any compute storage writes that overlap it first. */
-    if (g_cs_any) vk_compute_mem_need(gva, stride * layers);
+    if (atomic_load_explicit(&g_cs_any, memory_order_relaxed)) vk_compute_mem_need(gva, stride * layers);
     /* the levels the shader sees, base level to max level (word 7), as a texture of their own the way Ryujinx makes
        it: the base level's address, size and blocks. Pitch-linear textures have one level */
     u32 levels = bl ? glevels : 1;
@@ -4932,7 +4933,7 @@ Surf* vk_tex_from_tic_guest(const u32* tic, int raw) {
 }
 Surf* vk_tex_recheck(Surf* t) {
     g_tex_checks.rechecks++;
-    if (g_cs_any) vk_compute_mem_need(t->gva, t->layer_size * t->layers);
+    if (atomic_load_explicit(&g_cs_any, memory_order_relaxed)) vk_compute_mem_need(t->gva, t->layer_size * t->layers);
     t = tex_check(t, t->gva);
     tex_take_drawn(t);
     return t;

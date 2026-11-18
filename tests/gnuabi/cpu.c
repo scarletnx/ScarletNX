@@ -3,7 +3,7 @@
 #include "guest.h"
 
 extern u64 boundary_probe(u64);
-typedef u32 vec4 __attribute__((vector_size(16)));
+typedef u32 vec4 [[gnu::vector_size(16)]];
 static volatile u64 input[] = {0xfedcba9876543210UL, 0x123456789abcdef1UL, 63, 17};
 static volatile double fp_input[] = {1.5, -2.25, 4.0};
 static volatile vec4 simd_input[] = {{1, 0x80000000U, 7, 0xffffffffU}, {3, 11, 19, 23}};

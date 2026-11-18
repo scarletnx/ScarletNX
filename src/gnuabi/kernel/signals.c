@@ -15,6 +15,7 @@
 #include <signal.h>
 #include <stdio.h>
 #include <string.h>
+#include <stdatomic.h>
 #ifndef _WIN32
 #include <unistd.h>
 #if defined(__linux__)
@@ -44,13 +45,16 @@ int gnu_guest_signal(int s) { return s; }
 #endif
 
 /* ---- queues, under the process's lock ---- */
-static void set_pending(GnuSigQueue* q, uint64_t pending) { __atomic_store_n(&q->pending, pending, __ATOMIC_SEQ_CST); }
+static void set_pending(GnuSigQueue* q, uint64_t pending) {
+    atomic_store_explicit(&q->pending, pending, memory_order_seq_cst);
+}
 static int enqueue(GnuSigQueue* q, const SnxLinuxSiginfo* info) {
     uint64_t bit = SNX_SIGBIT(info->signo);
-    if (info->signo < 32 && (q->pending & bit)) return 0; /* a standard signal is pending once */
+    if (info->signo < 32 && (atomic_load_explicit(&q->pending, memory_order_relaxed) & bit))
+        return 0; /* a standard signal is pending once */
     if (q->count == GNU_SIGQUEUE_MAX) return info->signo < 32 ? 0 : -GNU_EAGAIN;
     q->entries[q->count++] = *info;
-    set_pending(q, q->pending | bit);
+    set_pending(q, atomic_load_explicit(&q->pending, memory_order_relaxed) | bit);
     return 0;
 }
 /* the first entry of sig, out of q */
@@ -65,7 +69,7 @@ static SnxLinuxSiginfo dequeue(GnuSigQueue* q, int sig) {
         for (uint32_t j = i; j < q->count && !more; j++) more = q->entries[j].signo == sig;
         break;
     }
-    if (!more) set_pending(q, q->pending & ~SNX_SIGBIT(sig));
+    if (!more) set_pending(q, atomic_load_explicit(&q->pending, memory_order_relaxed) & ~SNX_SIGBIT(sig));
     return info;
 }
 /* every entry of the signals in bits goes */
@@ -74,7 +78,7 @@ static void discard(GnuSigQueue* q, uint64_t bits) {
     for (uint32_t i = 0; i < q->count; i++)
         if (!(SNX_SIGBIT(q->entries[i].signo) & bits)) q->entries[kept++] = q->entries[i];
     q->count = kept;
-    set_pending(q, q->pending & ~bits);
+    set_pending(q, atomic_load_explicit(&q->pending, memory_order_relaxed) & ~bits);
 }
 static void discard_everywhere(GnuKernel* p, uint64_t bits) {
     discard(&p->queue, bits);
@@ -121,7 +125,8 @@ int gnu_signal_fault(GnuKernelThread* t, int signo, int code, uint64_t addr) {
     uint64_t bit = SNX_SIGBIT(signo);
     gnu_mutex_lock(&p->lock);
     uint64_t handler = p->actions[signo].handler;
-    int taken = handler > 1 && !(t->signal_mask & bit) && !(t->queue.pending & bit) && !enqueue(&t->queue, &info);
+    int taken = handler > 1 && !(t->signal_mask & bit) &&
+                !(atomic_load_explicit(&t->queue.pending, memory_order_relaxed) & bit) && !enqueue(&t->queue, &info);
     gnu_mutex_unlock(&p->lock);
     return taken;
 }
@@ -129,22 +134,25 @@ int gnu_signal_fault(GnuKernelThread* t, int signo, int code, uint64_t addr) {
 /* the next signal t takes, under the lock: 0 for none */
 static int next_locked(const GnuKernelThread* t) {
     const GnuKernel* p = t->kernel;
-    return snx_linux_signal_next(t->queue.pending | p->queue.pending, blocked(t));
+    return snx_linux_signal_next(atomic_load_explicit(&t->queue.pending, memory_order_relaxed) |
+                                     atomic_load_explicit(&p->queue.pending, memory_order_relaxed),
+                                 blocked(t));
 }
 
 int gnu_signal_maybe(GnuKernelThread* t) {
     GnuKernel* p = t->kernel;
-    return __atomic_load_n(&t->interrupt, __ATOMIC_RELAXED) || __atomic_load_n(&p->stopping, __ATOMIC_RELAXED) ||
-           ((__atomic_load_n(&t->queue.pending, __ATOMIC_RELAXED) |
-             __atomic_load_n(&p->queue.pending, __ATOMIC_RELAXED)) &
+    return atomic_load_explicit(&t->interrupt, memory_order_relaxed) ||
+           atomic_load_explicit(&p->stopping, memory_order_relaxed) ||
+           ((atomic_load_explicit(&t->queue.pending, memory_order_relaxed) |
+             atomic_load_explicit(&p->queue.pending, memory_order_relaxed)) &
             ~t->signal_mask) != 0;
 }
 
 int gnu_signal_wanted(GnuKernelThread* t) {
     GnuKernel* p = t->kernel;
     gnu_mutex_lock(&p->lock);
-    __atomic_store_n(&t->interrupt, 0, __ATOMIC_SEQ_CST);
-    int wanted = next_locked(t) != 0 || (__atomic_load_n(&p->stopping, __ATOMIC_SEQ_CST) && p->stopper != t);
+    atomic_store_explicit(&t->interrupt, 0, memory_order_seq_cst);
+    int wanted = next_locked(t) != 0 || (atomic_load_explicit(&p->stopping, memory_order_seq_cst) && p->stopper != t);
     gnu_mutex_unlock(&p->lock);
     return wanted;
 }
@@ -153,7 +161,7 @@ int gnu_signal_sleep(GnuKernelThread* t, int64_t deadline) {
     if (gnu_signal_wanted(t)) return 0;
     gnu_mutex_lock(&t->wait_lock);
     for (;;) {
-        if (__atomic_load_n(&t->interrupt, __ATOMIC_SEQ_CST)) {
+        if (atomic_load_explicit(&t->interrupt, memory_order_seq_cst)) {
             gnu_mutex_unlock(&t->wait_lock);
             if (gnu_signal_wanted(t)) return 0;
             gnu_mutex_lock(&t->wait_lock);
@@ -209,13 +217,15 @@ int gnu_signal_deliver(GnuKernelThread* t, int64_t* result, uint64_t orig_x0) {
     gnu_kernel_check_stop(t);
     while (gnu_signal_maybe(t)) {
         gnu_mutex_lock(&p->lock);
-        __atomic_store_n(&t->interrupt, 0, __ATOMIC_SEQ_CST);
+        atomic_store_explicit(&t->interrupt, 0, memory_order_seq_cst);
         int sig = next_locked(t);
         if (!sig) {
             gnu_mutex_unlock(&p->lock);
             break;
         }
-        SnxLinuxSiginfo info = dequeue(t->queue.pending & SNX_SIGBIT(sig) ? &t->queue : &p->queue, sig);
+        SnxLinuxSiginfo info = dequeue(
+            atomic_load_explicit(&t->queue.pending, memory_order_relaxed) & SNX_SIGBIT(sig) ? &t->queue : &p->queue,
+            sig);
         SnxLinuxSigaction action = p->actions[sig];
         if (action.handler > SNX_SIG_IGN && (action.flags & SNX_SA_RESETHAND)) p->actions[sig].handler = SNX_SIG_DFL;
         gnu_mutex_unlock(&p->lock);
@@ -404,7 +414,9 @@ static int64_t sigpending_call(GnuKernelThread* t, const uint64_t a[6]) {
     GnuKernel* p = t->kernel;
     if (a[1] > 8) return -GNU_EINVAL;
     gnu_mutex_lock(&p->lock);
-    uint64_t pending = (t->queue.pending | p->queue.pending) & t->signal_mask;
+    uint64_t pending = (atomic_load_explicit(&t->queue.pending, memory_order_relaxed) |
+                        atomic_load_explicit(&p->queue.pending, memory_order_relaxed)) &
+                       t->signal_mask;
     gnu_mutex_unlock(&p->lock);
     uint8_t out[8];
     snx_st_le64(out, pending);
@@ -435,10 +447,14 @@ static int64_t sigtimedwait_call(GnuKernelThread* t, const uint64_t a[6]) {
     int64_t result;
     for (;;) {
         gnu_mutex_lock(&p->lock);
-        uint64_t ready = (t->queue.pending | p->queue.pending) & set;
+        uint64_t ready = (atomic_load_explicit(&t->queue.pending, memory_order_relaxed) |
+                          atomic_load_explicit(&p->queue.pending, memory_order_relaxed)) &
+                         set;
         if (ready) {
             int sig = snx_linux_signal_next(ready, 0);
-            SnxLinuxSiginfo info = dequeue(t->queue.pending & SNX_SIGBIT(sig) ? &t->queue : &p->queue, sig);
+            SnxLinuxSiginfo info = dequeue(
+                atomic_load_explicit(&t->queue.pending, memory_order_relaxed) & SNX_SIGBIT(sig) ? &t->queue : &p->queue,
+                sig);
             t->wait_set = 0;
             gnu_mutex_unlock(&p->lock);
             result = put_siginfo(p, a[1], &info);
@@ -456,7 +472,7 @@ static int64_t sigtimedwait_call(GnuKernelThread* t, const uint64_t a[6]) {
             break;
         }
         gnu_mutex_lock(&p->lock);
-        int stop = __atomic_load_n(&p->stopping, __ATOMIC_SEQ_CST) && p->stopper != t;
+        int stop = atomic_load_explicit(&p->stopping, memory_order_seq_cst) && p->stopper != t;
         gnu_mutex_unlock(&p->lock);
         if (stop) {
             result = -GNU_ERESTARTNOHAND;

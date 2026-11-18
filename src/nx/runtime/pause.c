@@ -20,6 +20,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 
 /* how long each part may take to stop before the pause gives up */
 #define PAUSE_MS 2000
@@ -28,7 +29,8 @@
    force: its index in the setting (row, the next one when none is), its end in unattended_ms, and what it saw at its
    start */
 static struct {
-    int depth, player;
+    _Atomic int depth;
+    int player;
     u64 since;
     int row, in_row;
     u64 row_end, hash, bytes, guest_at;
@@ -36,8 +38,9 @@ static struct {
 
 int game_pause(void) {
     u64 t0;
-    if (g_pause.depth) {
-        __atomic_store_n(&g_pause.depth, g_pause.depth + 1, __ATOMIC_RELEASE);
+    if (atomic_load_explicit(&g_pause.depth, memory_order_relaxed)) {
+        atomic_store_explicit(&g_pause.depth, atomic_load_explicit(&g_pause.depth, memory_order_relaxed) + 1,
+                              memory_order_release);
         return 0;
     }
     t0 = plat_ns();
@@ -49,22 +52,23 @@ int game_pause(void) {
     audio_hold();
     clock_pause();
     g_pause.since = plat_ns();
-    __atomic_store_n(&g_pause.depth, 1, __ATOMIC_RELEASE);
+    atomic_store_explicit(&g_pause.depth, 1, memory_order_release);
     LOG("pause: the game is paused at guest time %.3f s (stopping took %.1f ms)\n", (double)guest_ns() / 1e9,
         (double)(g_pause.since - t0) / 1e6);
     return 0;
 }
 void game_resume(void) {
-    if (!g_pause.depth) return;
-    __atomic_store_n(&g_pause.depth, g_pause.depth - 1, __ATOMIC_RELEASE);
-    if (g_pause.depth) return;
+    if (!atomic_load_explicit(&g_pause.depth, memory_order_relaxed)) return;
+    atomic_store_explicit(&g_pause.depth, atomic_load_explicit(&g_pause.depth, memory_order_relaxed) - 1,
+                          memory_order_release);
+    if (atomic_load_explicit(&g_pause.depth, memory_order_relaxed)) return;
     clock_resume();
     audio_release();
     gpu_release();
     kernel_release();
     LOG("pause: the game goes on after %.2f s paused\n", (double)(plat_ns() - g_pause.since) / 1e9);
 }
-int game_paused(void) { return __atomic_load_n(&g_pause.depth, __ATOMIC_ACQUIRE) > 0; }
+int game_paused(void) { return atomic_load_explicit(&g_pause.depth, memory_order_acquire) > 0; }
 int game_pause_toggle(char* text, size_t size) {
     char line[96];
     int now = 1;

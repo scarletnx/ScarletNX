@@ -21,6 +21,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <stdatomic.h>
 #if defined(__FreeBSD__)
 #include <pthread_np.h>
 #endif
@@ -243,14 +244,14 @@ typedef struct {
 
 /* the keys with a guest destructor, which a guest thread runs as it ends, as bionic does */
 enum { MAX_KEYS = 1024 };
-static uint64_t destructors[MAX_KEYS];
+static _Atomic uint64_t destructors[MAX_KEYS];
 
 static void run_destructors(void) {
     /* as POSIX: up to PTHREAD_DESTRUCTOR_ITERATIONS rounds while a value remains */
     for (int round = 0; round < 4; ++round) {
         bool any = false;
         for (unsigned k = 0; k < MAX_KEYS; ++k) {
-            uint64_t d = __atomic_load_n(&destructors[k], __ATOMIC_ACQUIRE);
+            uint64_t d = atomic_load_explicit(&destructors[k], memory_order_acquire);
             if (!d) continue;
             void* v = pthread_getspecific((pthread_key_t)k);
             if (!v) continue;
@@ -334,7 +335,7 @@ static void g_pthread_key_create(CPU* c, void* data) {
         r = EAGAIN;
     }
     if (!r) {
-        __atomic_store_n(&destructors[k], X(1), __ATOMIC_RELEASE);
+        atomic_store_explicit(&destructors[k], X(1), memory_order_release);
         int32_t key = (int32_t)k;
         memcpy(PTR(0), &key, sizeof key);
     }
@@ -342,7 +343,7 @@ static void g_pthread_key_create(CPU* c, void* data) {
 }
 static void g_pthread_key_delete(CPU* c, void* data) {
     (void)data;
-    if (X(0) < MAX_KEYS) __atomic_store_n(&destructors[X(0)], 0, __ATOMIC_RELEASE);
+    if (X(0) < MAX_KEYS) atomic_store_explicit(&destructors[X(0)], 0, memory_order_release);
     X(0) = (uint64_t)pthread_key_delete((pthread_key_t)X(0));
 }
 
@@ -350,13 +351,13 @@ static void g_pthread_key_delete(CPU* c, void* data) {
 
 static void g_pthread_once(CPU* c, void* data) {
     (void)data;
-    int* once = PTR(0);
+    _Atomic int* once = PTR(0);
     int expected = 0;
-    if (__atomic_compare_exchange_n(once, &expected, 1, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+    if (atomic_compare_exchange_strong_explicit(once, &expected, 1, memory_order_acq_rel, memory_order_acquire)) {
         bridge_call(X(1), NULL, 0);
-        __atomic_store_n(once, 2, __ATOMIC_RELEASE);
+        atomic_store_explicit(once, 2, memory_order_release);
     } else {
-        while (__atomic_load_n(once, __ATOMIC_ACQUIRE) != 2) sched_yield();
+        while (atomic_load_explicit(once, memory_order_acquire) != 2) sched_yield();
     }
     X(0) = 0;
 }

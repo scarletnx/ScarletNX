@@ -1,8 +1,9 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The LLVM backend's cache of the guest's X registers within a basic block (ir_state.c): a second read is the first
-   one's value, a write is forwarded to later reads and leaves other registers cached, a store to the flags keeps
-   them, a direct store into the X array, an explicit invalidation and a new block drop them */
+/* The LLVM backend's cache of the guest's X registers within a basic block (the back end's, tools/sailgen/llvm.h,
+   through ir.h's accessors, ir_sail.c; the vectors' in ir_state.c): a second read is the first one's value, a write
+   is forwarded to later reads and leaves other registers cached, a store to the flags keeps them, a direct store
+   into the X array, an explicit invalidation and a new block drop them */
 #include "common/cpu/aarch64/cpu.h"
 #include "common/cpu/recompiler/llvm/ir.h"
 #include "common/cpu/recompiler/llvm/ir_vec.h"

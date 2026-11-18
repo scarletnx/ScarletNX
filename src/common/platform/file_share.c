@@ -3,6 +3,7 @@
 /* Files shared read-only with the host's page cache for the whole run (file.h) */
 #include "common/platform/file.h"
 #include <stdlib.h>
+#include <stdatomic.h>
 #if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -81,9 +82,9 @@ static rlim_t descriptor_limit(const struct rlimit* rl) {
 /* a game's RomFS can have more files than the default soft limit of descriptors: raise it to the hard limit, once.
    If that fails the old limit stays, and the reserve check below refuses what doesn't fit */
 static void raise_descriptor_limit(void) {
-    static int done;
+    static _Atomic int done;
     struct rlimit rl;
-    if (__atomic_exchange_n(&done, 1, __ATOMIC_ACQ_REL)) return;
+    if (atomic_exchange_explicit(&done, 1, memory_order_acq_rel)) return;
     if (getrlimit(RLIMIT_NOFILE, &rl) || rl.rlim_cur == rl.rlim_max) return;
     rl.rlim_cur = rl.rlim_max;
     (void)setrlimit(RLIMIT_NOFILE, &rl);

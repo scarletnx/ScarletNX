@@ -32,6 +32,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -115,9 +116,9 @@ struct snx_recompiled {
     void* image;       /* dlopen/LoadLibrary handle */
     char* image_file;  /* Windows: the DLL's file, deleted after FreeLibrary */
     int image_fd;      /* Linux: the memfd the module was loaded from, kept open while it is (see load_image) */
-    GuestFn* dispatch; /* (pc - code_lo) >> 2 -> function, NULL for one the JIT compiles when reached */
+    _Atomic GuestFn* dispatch; /* (pc - code_lo) >> 2 -> function, NULL for one the JIT compiles when reached */
     /* snx_recompiled_set_fallback's: what a miss runs instead of the module's JIT, NULL for the JIT */
-    GuestFn fallback;
+    _Atomic GuestFn fallback;
     uint64_t code_lo, code_hi;
     size_t functions;
     /* the code ranges, views and bytes in one block (keep_code), which the JIT reads for as long as the module lives:
@@ -126,9 +127,9 @@ struct snx_recompiled {
     size_t view_count;
     /* the descriptor's entries, which the JIT's code calls directly */
     const uint64_t* entry_addresses;
-    const GuestFn* entry_functions;
+    const _Atomic GuestFn* entry_functions;
     size_t entry_count;
-    uint8_t* stale;
+    _Atomic uint8_t* stale;
     char* jit_cache_path; /* the file of the module's JIT units, in the recompiler's cache folder: NULL for none */
     SnxCompiledFunction* compiled_functions;
     size_t compiled_function_count;
@@ -140,7 +141,7 @@ struct snx_recompiled {
     SnxU64 features; /* the recompiler's when the module was made: its JIT decodes as its code was */
     int hook_direct_calls;
     /* made by the first miss (module_jit), JIT_NONE when it can't start */
-    SnxJitService* jit;
+    SnxJitService* _Atomic jit;
 };
 static char jit_none;
 #define JIT_NONE ((SnxJitService*)(void*)&jit_none)
@@ -289,7 +290,7 @@ static void default_poll(CPU* c) { (void)c; }
 /* The module's JIT, made by the first miss of any thread (the first to publish it keeps its own): NULL when it can't
    start (a host without the JIT loader) */
 static SnxJitService* module_jit(struct snx_recompiled* m) {
-    SnxJitService *s = __atomic_load_n(&m->jit, __ATOMIC_ACQUIRE), *expected = NULL;
+    SnxJitService *s = atomic_load_explicit(&m->jit, memory_order_acquire), *expected = NULL;
     char error[512];
     if (s) return s == JIT_NONE ? NULL : s;
     if (!m->view_count) return NULL; /* snx_recompile_from's: the caller compiles what the module lacks */
@@ -309,7 +310,8 @@ static SnxJitService* module_jit(struct snx_recompiled* m) {
     config.cache_path = m->jit_cache_path; /* read when the service starts */
     config.hook_direct_calls = m->hook_direct_calls;
     s = snx_jit_service_new(&config, error, sizeof(error));
-    if (!__atomic_compare_exchange_n(&m->jit, &expected, s ? s : JIT_NONE, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+    if (!atomic_compare_exchange_strong_explicit(&m->jit, &expected, s ? s : JIT_NONE, memory_order_acq_rel,
+                                                 memory_order_acquire)) {
         snx_jit_service_free(s);
         s = expected;
     }
@@ -321,8 +323,8 @@ static GuestFn module_code(struct snx_recompiled* m, uint64_t pc) {
     uint64_t o = pc - m->code_lo;
     SnxJitService* s;
     GuestFn f = NULL;
-    if (o < m->code_hi - m->code_lo && !(pc & 3)) f = __atomic_load_n(&m->dispatch[o >> 2], __ATOMIC_ACQUIRE);
-    if (!f) f = __atomic_load_n(&m->fallback, __ATOMIC_ACQUIRE);
+    if (o < m->code_hi - m->code_lo && !(pc & 3)) f = atomic_load_explicit(&m->dispatch[o >> 2], memory_order_acquire);
+    if (!f) f = atomic_load_explicit(&m->fallback, memory_order_acquire);
     if (!f && (s = module_jit(m)) != NULL) f = snx_jit_wait(s, pc);
     return f;
 }
@@ -591,16 +593,16 @@ static int load_descriptor(struct snx_recompiler* r, struct snx_recompiled* m, c
         return -1;
     }
     block[0] = m;
-    m->dispatch = (GuestFn*)(block + 1);
+    m->dispatch = (_Atomic GuestFn*)(block + 1);
     for (size_t i = 0; i < d->count; ++i) {
         uint64_t a = d->addresses[i];
         if (a < m->code_lo || a >= m->code_hi || (a & 3)) continue;
-        m->dispatch[(a - m->code_lo) >> 2] = d->functions[i];
+        atomic_store_explicit(&m->dispatch[(a - m->code_lo) >> 2], d->functions[i], memory_order_relaxed);
     }
     m->entry_addresses = d->addresses;
-    m->entry_functions = d->functions;
+    m->entry_functions = (const _Atomic GuestFn*)d->functions; /* the module's table: atomic in this view */
     m->entry_count = (size_t)d->count;
-    m->stale = d->stale;
+    m->stale = (_Atomic uint8_t*)d->stale; /* the module's bytes: atomic in this view */
     return 0;
 }
 
@@ -1183,7 +1185,7 @@ static int keep_invalidation_map(struct snx_recompiler* r, struct snx_recompiled
         return -1;
     }
     for (size_t i = 0; i < m->entry_count; ++i) {
-        m->entry_aliases[i].code = (uintptr_t)m->entry_functions[i];
+        m->entry_aliases[i].code = (uintptr_t)atomic_load_explicit(&m->entry_functions[i], memory_order_relaxed);
         m->entry_aliases[i].entry = i;
     }
     m->entry_alias_count = m->entry_count;
@@ -1209,7 +1211,7 @@ static int keep_invalidation_map(struct snx_recompiler* r, struct snx_recompiled
         SnxCompiledFunction* compiled = &m->compiled_functions[count++];
         compiled->start = start;
         compiled->end = last + 4;
-        compiled->code = m->entry_functions[first_entry];
+        compiled->code = atomic_load_explicit(&m->entry_functions[first_entry], memory_order_relaxed);
         compiled->entry = first_entry;
         compiled->stale_index = i;
         compiled->leaders = m->leader_entries + leader_base;
@@ -1336,8 +1338,10 @@ void snx_recompiled_free(struct snx_recompiled* m) {
         snx_code_loader_free(m->arena_owner->arena);
         m->arena_owner->arena = NULL;
     }
-    if (m->jit && m->jit != JIT_NONE)
-        snx_jit_service_free(m->jit); /* its threads stop before the code they read goes */
+    if (atomic_load_explicit(&m->jit, memory_order_relaxed) &&
+        atomic_load_explicit(&m->jit, memory_order_relaxed) != JIT_NONE)
+        snx_jit_service_free(
+            atomic_load_explicit(&m->jit, memory_order_relaxed)); /* its threads stop before the code they read goes */
     free(m->jit_cache_path);
     free(m->compiled_functions);
     free(m->entry_aliases);
@@ -1372,11 +1376,12 @@ GuestFn snx_recompiled_lookup(struct snx_recompiled* m, uint64_t pc) { return mo
 
 GuestFn snx_recompiled_function(const struct snx_recompiled* m, uint64_t pc) {
     uint64_t o = pc - m->code_lo;
-    return o < m->code_hi - m->code_lo && !(pc & 3) ? __atomic_load_n(&m->dispatch[o >> 2], __ATOMIC_ACQUIRE) : NULL;
+    return o < m->code_hi - m->code_lo && !(pc & 3) ? atomic_load_explicit(&m->dispatch[o >> 2], memory_order_acquire)
+                                                    : NULL;
 }
 
 void snx_recompiled_set_fallback(struct snx_recompiled* m, GuestFn fallback) {
-    __atomic_store_n(&m->fallback, fallback, __ATOMIC_RELEASE);
+    atomic_store_explicit(&m->fallback, fallback, memory_order_release);
 }
 
 size_t snx_recompiled_invalidate(struct snx_recompiled* m, uint64_t addr, uint64_t size,
@@ -1409,7 +1414,7 @@ size_t snx_recompiled_invalidate(struct snx_recompiled* m, uint64_t addr, uint64
             size_t entry = m->entry_aliases[alias_lo].entry;
             uint64_t address = m->entry_addresses[entry];
             if (address >= m->code_lo && address < m->code_hi)
-                __atomic_store_n(&m->dispatch[(address - m->code_lo) >> 2], NULL, __ATOMIC_RELEASE);
+                atomic_store_explicit(&m->dispatch[(address - m->code_lo) >> 2], NULL, memory_order_release);
         }
         /* The aliases above share the first leader's wrapper; every other leader's slot goes too, so a call through
            one of them cannot re-enter the retired function */
@@ -1417,16 +1422,16 @@ size_t snx_recompiled_invalidate(struct snx_recompiled* m, uint64_t addr, uint64
             size_t entry = function->leaders[k];
             uint64_t address = m->entry_addresses[entry];
             if (address >= m->code_lo && address < m->code_hi)
-                __atomic_store_n(&m->dispatch[(address - m->code_lo) >> 2], NULL, __ATOMIC_RELEASE);
+                atomic_store_explicit(&m->dispatch[(address - m->code_lo) >> 2], NULL, memory_order_release);
         }
         /* Clear dispatch before marking stale so diversions miss rather than re-enter */
-        __atomic_store_n(&m->stale[function->stale_index], 1, __ATOMIC_RELEASE);
+        atomic_store_explicit(&m->stale[function->stale_index], 1, memory_order_release);
         if (callback) callback(context, function->start, function->end);
         ++count;
     }
     /* Invalidate overlapping lazy JIT units */
     {
-        SnxJitService* jit = __atomic_load_n(&m->jit, __ATOMIC_ACQUIRE);
+        SnxJitService* jit = atomic_load_explicit(&m->jit, memory_order_acquire);
         if (jit && jit != JIT_NONE) snx_jit_invalidate_ranges(jit, addr, size, callback, context);
     }
     return count;

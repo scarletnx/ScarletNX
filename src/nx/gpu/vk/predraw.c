@@ -27,6 +27,7 @@
 #include "nx/gpu/vk/predraw.h"
 #include "nx/gpu/vk/descriptor_objects.h"
 #include "nx/runtime/platform/log.h"
+#include <stdatomic.h>
 
 static struct {
     Surf stamp;                /* the capture number of the last draw that captured each pixel */
@@ -128,7 +129,7 @@ int vk_predraw_reserve(u32 sw, u32 sh, u32 sides) {
    So does one that reads a target through another swizzle or sRGB reading: a side image holds the texel as the draw
    that captured it read it */
 u32 vk_predraw_next(const Surf* const* targets, const u32* views, u32 n) {
-    u64 epoch = __atomic_load_n(&g_vk_texture_epoch, __ATOMIC_RELAXED);
+    u64 epoch = atomic_load_explicit(&g_vk_texture_epoch, memory_order_relaxed);
     int same = g_predraw.draw && epoch == g_predraw.epoch && n == g_predraw.nslot;
     for (u32 k = 0; same && k < n; k++) same = targets[k] == g_predraw.slot[k] && views[k] == g_predraw.view[k];
     if (same) return g_predraw.draw;

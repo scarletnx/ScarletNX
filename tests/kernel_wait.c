@@ -47,7 +47,7 @@ u32 kt_seq(const KThread* t) {
 }
 void kt_notify_later(KThread* t) { (void)t; }
 /* the wake of a futex waiter on a mutex word (sync.c, g_lock_futex), which no test turns on */
-void plat_wake_word_one(u32* w) { (void)w; }
+void plat_wake_word_one(_Atomic u32* w) { (void)w; }
 void klock_unlock(void) {}
 /* what another thread does while the caller waits, and what the caller's wait looked like then */
 static void (*g_during)(KThread* t);

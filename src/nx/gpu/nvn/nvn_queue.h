@@ -12,10 +12,10 @@
    builder named last (atomic: SDK 5's 0x2c bytes of builder have no room for it, and a game has one, vi's layer); and
    how far the pacer's clock is ahead of plat_ns (nvn_now), 0 until a save state's load sets it */
 typedef struct {
-    u64 submits, period;
-    int stuck;
-    u64 native_window;
-    i64 clock;
+    _Atomic u64 submits, period;
+    _Atomic int stuck;
+    _Atomic u64 native_window;
+    _Atomic i64 clock;
 } NvnQueueState;
 
 /* The pacer's clock, which the syncs' ready times, the queues' and the windows' times in the game's memory count on:

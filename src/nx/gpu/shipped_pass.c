@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 
 #define FILE_MAX  (512u << 20)    /* a file or a decompressed stream past this isn't read, by this build ever */
 #define HELD_MAX  (1024ull << 20) /* the bytes the walk reads into at once, a file's and its streams' */
@@ -124,7 +125,7 @@ static void say(Walk* w, int shown, const char* fmt, va_list ap) {
     w->sink->note(w->sink->ctx, line, shown);
 }
 /* a line for the log and the screen */
-static void note(Walk* w, const char* fmt, ...) __attribute__((format(printf, 2, 3)));
+[[gnu::format(printf, 2, 3)]] static void note(Walk* w, const char* fmt, ...);
 static void note(Walk* w, const char* fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
@@ -132,7 +133,7 @@ static void note(Walk* w, const char* fmt, ...) {
     va_end(ap);
 }
 /* a line for the log alone */
-static void detail(Walk* w, const char* fmt, ...) __attribute__((format(printf, 2, 3)));
+[[gnu::format(printf, 2, 3)]] static void detail(Walk* w, const char* fmt, ...);
 static void detail(Walk* w, const char* fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
@@ -156,7 +157,7 @@ static int each_program(void* ctx, const u8* sph, size_t avail, int stage, const
         w->stages[vertex_a ? ST_CS + 1 : stage & ~SHIPPED_OUNCE]++;
         return 0;
     }
-    __atomic_add_fetch(&w->progress->programs_done, 1, __ATOMIC_RELAXED);
+    atomic_fetch_add_explicit(&w->progress->programs_done, 1, memory_order_relaxed);
     switch (w->sink->program(w->sink->ctx, sph, avail, stage, consts, nconsts)) {
         case SHIP_NEW: w->made++; break;
         case SHIP_KNOWN: w->known++; break;
@@ -402,7 +403,7 @@ int ship_walk(const ShipSink* sink, ShipProgress* progress, int count, int ounce
         free(w.src);
         return 0;
     }
-    __atomic_store_n(&progress->files, w.nsrc, __ATOMIC_RELAXED);
+    atomic_store_explicit(&progress->files, w.nsrc, memory_order_relaxed);
     w.counting = count;
     for (i = 0; i < w.nsrc && !stopped(&w); i++) {
         const Source* s = &w.src[i];
@@ -412,7 +413,7 @@ int ship_walk(const ShipSink* sink, ShipProgress* progress, int count, int ounce
         const u8* d;
         int kind, got, rc;
         sink->at(sink->ctx, s->name);
-        __atomic_add_fetch(&progress->files_seen, 1, __ATOMIC_RELAXED);
+        atomic_fetch_add_explicit(&progress->files_seen, 1, memory_order_relaxed);
         /* a file of a kind skipped by its name, or that an earlier run of this walk found nothing in: none of it read */
         if (!s->mem && ((shipped_name_skips(s->name) && !(w.ounce && shipped_name_ounce(s->name))) ||
                         sink->scanned(sink->ctx, SHIP_NONE, place)))
@@ -464,7 +465,7 @@ int ship_walk(const ShipSink* sink, ShipProgress* progress, int count, int ounce
     }
     sink->at(sink->ctx, "");
     if (w.counting && !stopped(&w)) { /* each hit's programs translated, now that their number is known */
-        __atomic_store_n(&progress->programs, w.found, __ATOMIC_RELAXED);
+        atomic_store_explicit(&progress->programs, w.found, memory_order_relaxed);
         w.counting = 0;
         w.again = 1;
         w.found = 0;

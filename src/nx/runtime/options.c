@@ -28,8 +28,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 
-int g_opt_fps = SNX_FPS_GAME;
+_Atomic int g_opt_fps = SNX_FPS_GAME;
 
 /* ---- the runtime's own settings ---- */
 
@@ -45,7 +46,7 @@ void options_language_set(const IniOpt* o, const char* v) {
 /* the choice in effect, docked's (0 Off, 1 On, 2 Auto) until a step changes it for the run, and Auto's view of the
    host. g_settings.tv_mode holds the mode in effect, 0 or 1, so every service reads it as it always has */
 static struct {
-    int choice;     /* atomic: the game's menu shows it from the renderer's thread */
+    _Atomic int choice; /* atomic: the game's menu shows it from the renderer's thread */
     int told;       /* the mode the services last heard of: a step there and back is no change */
     int on_charger; /* the host's state at Auto's last read: 1, 0 or -1 */
     int watch;      /* 1 when the platform watches the power source, 0 when Auto polls it */
@@ -55,7 +56,8 @@ static struct {
 #define TV_POLL_NS (15ull * 1000000000ull)
 /* Auto picks TV mode unless the host runs on its battery. A host whose state cannot be read is on TV mode */
 static int tv_mode_now(void) {
-    if (g_tv.choice != 2) return g_tv.choice;
+    if (atomic_load_explicit(&g_tv.choice, memory_order_relaxed) != 2)
+        return atomic_load_explicit(&g_tv.choice, memory_order_relaxed);
     return plat_power_on_charger() != 0;
 }
 void options_tv_mode_set(const IniOpt* o, const char* v) {
@@ -63,9 +65,9 @@ void options_tv_mode_set(const IniOpt* o, const char* v) {
     long n = strtol(v, &end, 10);
     (void)o;
     if (end == v) return;
-    __atomic_store_n(&g_tv.choice, n < 0 ? 0 : n > 2 ? 2 : (int)n, __ATOMIC_RELAXED);
+    atomic_store_explicit(&g_tv.choice, n < 0 ? 0 : n > 2 ? 2 : (int)n, memory_order_relaxed);
     g_tv.told = tv_mode_now(); /* the mode the game starts in is no change */
-    __atomic_store_n(&g_settings.tv_mode, g_tv.told, __ATOMIC_RELAXED);
+    atomic_store_explicit((_Atomic int*)&g_settings.tv_mode, g_tv.told, memory_order_relaxed);
 }
 /* Auto's read of the host's power state: the mode it picks in effect, and its line in the log when say asks for it or
    the state or the mode changed since the last read */
@@ -81,7 +83,7 @@ static void tv_auto_read(int say) {
     }
     g_tv.on_charger = on;
     if (!g_tv.watch) g_tv.poll_next = plat_ns() + TV_POLL_NS;
-    __atomic_store_n(&g_settings.tv_mode, mode, __ATOMIC_RELAXED);
+    atomic_store_explicit((_Atomic int*)&g_settings.tv_mode, mode, memory_order_relaxed);
 }
 /* Auto's read now, said in the log, with a change the watcher marked before it */
 static void tv_auto_now(void) {
@@ -98,28 +100,30 @@ static void tv_mode_tell(void) {
     hid_mode_changed();
 }
 void options_tv_mode_start(void) {
-    if (g_tv.choice != 2) return; /* fixed On and Off need no watcher */
+    if (atomic_load_explicit(&g_tv.choice, memory_order_relaxed) != 2) return; /* fixed On and Off need no watcher */
     g_tv.watch = plat_power_watch() == 0;
     tv_auto_now();
     tv_mode_tell();
 }
 void options_tv_mode_update(void) {
     /* the host read again when its watcher marked a change, or with none every TV_POLL_NS, and nowhere else */
-    if (g_tv.choice == 2 && (g_tv.watch ? plat_power_take_change() : plat_ns() >= g_tv.poll_next)) tv_auto_read(0);
+    if (atomic_load_explicit(&g_tv.choice, memory_order_relaxed) == 2 &&
+        (g_tv.watch ? plat_power_take_change() : plat_ns() >= g_tv.poll_next))
+        tv_auto_read(0);
     /* a step's mode too: told here, out of the input's lock the menu's pads step under, which hid's change takes */
     tv_mode_tell();
 }
-int options_tv_mode_choice(void) { return __atomic_load_n(&g_tv.choice, __ATOMIC_RELAXED); }
+int options_tv_mode_choice(void) { return atomic_load_explicit(&g_tv.choice, memory_order_relaxed); }
 int options_tv_mode_step(int step, char* text, size_t size) {
     /* round On (1), Off (0) and Auto (2): forward a value down, from Off round to Auto */
-    int choice = (g_tv.choice + (step < 0 ? 1 : 2)) % 3;
+    int choice = (atomic_load_explicit(&g_tv.choice, memory_order_relaxed) + (step < 0 ? 1 : 2)) % 3;
     char word[16], line[64];
-    __atomic_store_n(&g_tv.choice, choice, __ATOMIC_RELAXED);
+    atomic_store_explicit(&g_tv.choice, choice, memory_order_relaxed);
     if (choice == 2) {
         if (!g_tv.watch) g_tv.watch = plat_power_watch() == 0; /* once: on macOS each call starts a thread */
         tv_auto_now();
     } else
-        __atomic_store_n(&g_settings.tv_mode, choice, __ATOMIC_RELAXED);
+        atomic_store_explicit((_Atomic int*)&g_settings.tv_mode, choice, memory_order_relaxed);
     ini_word(ini_find(g_display_ini, "docked"), choice, word, sizeof word);
     snprintf(line, sizeof line, "TV mode: %s (%s)", word, snx_tv_mode() ? "TV mode" : "handheld mode");
     LOG("%s\n", line);
@@ -137,7 +141,7 @@ void options_fps_set(const IniOpt* o, const char* v) {
     while (*v == ' ' || *v == '\t') v++;
     if ((v[0] == 'g' || v[0] == 'G') && (v[1] == 'a' || v[1] == 'A') && (v[2] == 'm' || v[2] == 'M') &&
         (v[3] == 'e' || v[3] == 'E') && !v[4 + strspn(v + 4, " \t")]) {
-        __atomic_store_n(&g_opt_fps, SNX_FPS_GAME, __ATOMIC_RELAXED);
+        atomic_store_explicit(&g_opt_fps, SNX_FPS_GAME, memory_order_relaxed);
         return;
     }
     d = strtod(v, &end);
@@ -148,7 +152,7 @@ void options_fps_set(const IniOpt* o, const char* v) {
         fps = 0;
     else
         fps = d < 10 ? 10 : d > 1000 ? 1000 : (int)d;
-    __atomic_store_n(&g_opt_fps, fps, __ATOMIC_RELAXED);
+    atomic_store_explicit(&g_opt_fps, fps, memory_order_relaxed);
 }
 void fps_limit_text(int fps, char* out, size_t n) {
     if (fps == SNX_FPS_GAME)
@@ -157,14 +161,14 @@ void fps_limit_text(int fps, char* out, size_t n) {
         snprintf(out, n, "%d", fps);
 }
 int options_fps_limit_step(int* was, char* text, size_t size) {
-    int before = __atomic_load_n(&g_opt_fps, __ATOMIC_RELAXED), now;
+    int before = atomic_load_explicit(&g_opt_fps, memory_order_relaxed), now;
     char v[16], old[16], line[64];
     if (before) {
         *was = before;
         now = 0;
     } else
         now = *was ? *was : SNX_FPS_GAME;
-    __atomic_store_n(&g_opt_fps, now, __ATOMIC_RELAXED); /* present_pace reads it on the game's threads */
+    atomic_store_explicit(&g_opt_fps, now, memory_order_relaxed); /* present_pace reads it on the game's threads */
     fps_limit_text(now, v, sizeof v);
     ini_set("fps_limit", v);
     fps_limit_text(before, old, sizeof old);
@@ -175,10 +179,11 @@ int options_fps_limit_step(int* was, char* text, size_t size) {
 }
 /* showcase's and stats's steps: setting off or on, the .ini's key with it (a run's --key=1 stays out of the file);
    the log's line names the corner it draws in */
-static int onoff_step(int* setting, const char* key, const char* what, const char* corner, char* text, size_t size) {
-    int on = !__atomic_load_n(setting, __ATOMIC_RELAXED);
+static int onoff_step(_Atomic int* setting, const char* key, const char* what, const char* corner, char* text,
+                      size_t size) {
+    int on = !atomic_load_explicit(setting, memory_order_relaxed);
     char line[64];
-    __atomic_store_n(setting, on, __ATOMIC_RELAXED); /* the renderer reads it */
+    atomic_store_explicit(setting, on, memory_order_relaxed); /* the renderer reads it */
     ini_set(key, on ? "1" : "0");
     snx_key_said(line, sizeof line, what, on ? "on" : "off", on ? "off" : "on");
     if (on)
@@ -189,10 +194,11 @@ static int onoff_step(int* setting, const char* key, const char* what, const cha
     return on;
 }
 int options_showcase_step(char* text, size_t size) {
-    return onoff_step(&g_settings.showcase, "showcase", "Showcase", g_settings.showcase_corner, text, size);
+    return onoff_step((_Atomic int*)&g_settings.showcase, "showcase", "Showcase", g_settings.showcase_corner, text,
+                      size);
 }
 int options_stats_step(char* text, size_t size) {
-    return onoff_step(&g_settings.stats, "stats", "Stats", g_settings.stats_corner, text, size);
+    return onoff_step((_Atomic int*)&g_settings.stats, "stats", "Stats", g_settings.stats_corner, text, size);
 }
 
 int g_opt_ldn = SNX_OPT_LDN_LAN;
@@ -295,17 +301,17 @@ static struct {
     Entry entry[STORE_MAX];
     int n;
     int dirty;     /* a change the file does not have yet */
-    int changes;   /* atomic: counts the changes, which the menu watches to show them */
-    int poll_soon; /* atomic: a pick the menu took out, shown at once: polled at the next tick (ini_poll_due) */
+    _Atomic int changes;   /* atomic: counts the changes, which the menu watches to show them */
+    _Atomic int poll_soon; /* atomic: a pick the menu took out, shown at once: polled at the next tick (ini_poll_due) */
     char path[sizeof g_path + 8];
     u64 hash, seen; /* as g_hash and g_seen are the .ini's */
-    int old;        /* atomic: the keys Clean Old Settings takes out, the .ini's deprecated ones and the picks' no
+    _Atomic int old; /* atomic: the keys Clean Old Settings takes out, the .ini's deprecated ones and the picks' no
                        pick takes, as the files were last read or written */
     /* the settings read at the start whose pick the menu took out this run: the value the next start takes without
        it (value_of then), which this run's is not; under g_picks_lock */
     Entry next[16];
     int nnext;
-    int clean_soon; /* atomic: the game's menu's Clean Old Settings, taken at the next tick */
+    _Atomic int clean_soon; /* atomic: the game's menu's Clean Old Settings, taken at the next tick */
 } g_picks;
 static PMutex g_picks_lock = PMUTEX_INIT;
 
@@ -369,7 +375,7 @@ static void picks_put(const char* key, const char* value) {
         memcpy(e->value, value, strlen(value) + 1);
     }
     pm_unlock(&g_picks_lock);
-    __atomic_add_fetch(&g_picks.changes, 1, __ATOMIC_RELEASE);
+    atomic_fetch_add_explicit(&g_picks.changes, 1, memory_order_release);
 }
 static Entry* store_find(const char* key) {
     int i;
@@ -481,11 +487,11 @@ static void pending_put(const char* k, const char* v, int unpick, int apply) {
 void ini_set(const char* k, const char* v) { pending_put(k, v, 0, 0); }
 void ini_set_apply(const char* k, const char* v) {
     pending_put(k, v, 0, 1);
-    __atomic_store_n(&g_picks.poll_soon, 1, __ATOMIC_RELEASE);
+    atomic_store_explicit(&g_picks.poll_soon, 1, memory_order_release);
 }
 void ini_unpick(const char* k) {
     if (picks_key(k)) pending_put(k, "", 1, 0);
-    __atomic_store_n(&g_picks.poll_soon, 1, __ATOMIC_RELEASE);
+    atomic_store_explicit(&g_picks.poll_soon, 1, memory_order_release);
 }
 int ini_picked(const char* k) {
     int i, picked = -1, pickable = picks_key(k);
@@ -523,12 +529,12 @@ int ini_next_start(const char* k, char* out, size_t n) {
     pm_unlock(&g_picks_lock);
     return e != NULL;
 }
-const int* ini_picks_changes(void) { return &g_picks.changes; }
-int ini_poll_due(void) { return __atomic_exchange_n(&g_picks.poll_soon, 0, __ATOMIC_ACQ_REL); }
-int ini_old_settings(void) { return __atomic_load_n(&g_picks.old, __ATOMIC_ACQUIRE); }
+const _Atomic int* ini_picks_changes(void) { return &g_picks.changes; }
+int ini_poll_due(void) { return atomic_exchange_explicit(&g_picks.poll_soon, 0, memory_order_acq_rel); }
+int ini_old_settings(void) { return atomic_load_explicit(&g_picks.old, memory_order_acquire); }
 void ini_clean_old(void) {
-    __atomic_store_n(&g_picks.clean_soon, 1, __ATOMIC_RELEASE);
-    __atomic_store_n(&g_picks.poll_soon, 1, __ATOMIC_RELEASE);
+    atomic_store_explicit(&g_picks.clean_soon, 1, memory_order_release);
+    atomic_store_explicit(&g_picks.poll_soon, 1, memory_order_release);
 }
 
 static void apply(const char* key, const char* value);
@@ -761,7 +767,7 @@ static void picks_load(void) {
         if (!picks_key(g_picks.entry[i].key))
             WARN("settings: %s=%s in %s is no setting a game's picks take: it is kept there and does nothing\n",
                  g_picks.entry[i].key, g_picks.entry[i].value, g_picks.path);
-    __atomic_add_fetch(&g_picks.changes, 1, __ATOMIC_RELEASE);
+    atomic_fetch_add_explicit(&g_picks.changes, 1, memory_order_release);
 }
 /* the picks into their file by the .ini's sections, the keys no pick takes after them as they were; beside it, then
    moved over it. With no pick left the file is removed. 0, or -1 (warned once, the change kept for the next write) */
@@ -871,8 +877,8 @@ static void old_counted(void) {
     int i, n = 0;
     for (i = 0; i < g_nstore; i++) n += ini_deprecated(g_store[i].key) != NULL;
     for (i = 0; i < g_picks.n; i++) n += !picks_key(g_picks.entry[i].key);
-    if (__atomic_exchange_n(&g_picks.old, n, __ATOMIC_ACQ_REL) != n) /* the menu's row comes or goes */
-        __atomic_add_fetch(&g_picks.changes, 1, __ATOMIC_RELEASE);
+    if (atomic_exchange_explicit(&g_picks.old, n, memory_order_acq_rel) != n) /* the menu's row comes or goes */
+        atomic_fetch_add_explicit(&g_picks.changes, 1, memory_order_release);
 }
 /* Clean Old Settings from the game's menu: the .ini's deprecated keys and the picks' keys no pick takes taken out,
    both files written without them, and each said in the log with its value */
@@ -1139,7 +1145,7 @@ void ini_poll(int final) {
     pending = g_npending;
     pm_unlock(&g_pending_lock);
     picks = picks_poll();
-    if (__atomic_exchange_n(&g_picks.clean_soon, 0, __ATOMIC_ACQ_REL)) clean_old();
+    if (atomic_exchange_explicit(&g_picks.clean_soon, 0, memory_order_acq_rel)) clean_old();
     text = snx_read_file(g_path, &size);
     h = text ? snx_fnv1a(SNX_FNV_BASIS, text, size) : 0;
     if (text && h != g_hash && (final ? pending : h == g_seen)) {

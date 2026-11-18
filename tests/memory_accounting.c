@@ -17,6 +17,7 @@
 #include <sys/resource.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#include <stdatomic.h>
 #if defined(__linux__)
 #include <sys/prctl.h>
 #endif
@@ -606,15 +607,15 @@ static void test_locked_shrink(void) {
     CHECK(svc_set_heap_size(2 * MIB) == 0);
     CHECK(svc_set_heap_size(0) == 0);
 }
-static int ready, go;
+static _Atomic int ready, go;
 typedef struct {
     int physical;
     u32 result;
 } Request;
 static void* race_request(void* arg) {
     Request* q = arg;
-    __atomic_add_fetch(&ready, 1, __ATOMIC_SEQ_CST);
-    while (!__atomic_load_n(&go, __ATOMIC_SEQ_CST)) sched_yield();
+    atomic_fetch_add_explicit(&ready, 1, memory_order_seq_cst);
+    while (!atomic_load_explicit(&go, memory_order_seq_cst)) sched_yield();
     q->result = q->physical ? svc_map_physical(ALIAS_BASE, 2 * MIB) : svc_set_heap_size(2 * MIB);
     return NULL;
 }
@@ -628,8 +629,8 @@ static void test_shared_budget(void) {
         pthread_t t[2];
         CHECK(pthread_create(&t[0], NULL, race_request, &q[0]) == 0);
         CHECK(pthread_create(&t[1], NULL, race_request, &q[1]) == 0);
-        while (__atomic_load_n(&ready, __ATOMIC_SEQ_CST) != 2) sched_yield();
-        __atomic_store_n(&go, 1, __ATOMIC_SEQ_CST);
+        while (atomic_load_explicit(&ready, memory_order_seq_cst) != 2) sched_yield();
+        atomic_store_explicit(&go, 1, memory_order_seq_cst);
         CHECK(pthread_join(t[0], NULL) == 0 && pthread_join(t[1], NULL) == 0);
         CHECK((q[0].result == 0 && q[1].result == SNX_RC_SVC_LIMIT_REACHED) ||
               (q[0].result == SNX_RC_SVC_LIMIT_REACHED && q[1].result == 0));
@@ -1013,7 +1014,7 @@ static void test_alias_layouts(void) {
 /* a word GP reaches from a guest address, checked as the runtime checks an object it is handed: the address can be 0,
    so a null host pointer stands for none. Not inlined, so the compiler sees only GP's own arithmetic */
 #if defined(__linux__) && !defined(__SANITIZE_ADDRESS__) /* test_moved's hosts, the one caller */
-static __attribute__((noinline)) int gp_holds(u64 a, u32 want) {
+[[gnu::noinline]] static int gp_holds(u64 a, u32 want) {
     const u32* p = a ? (const u32*)(void*)GP(a) : NULL;
     return p && *p == want;
 }

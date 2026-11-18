@@ -18,6 +18,7 @@ static bool more_has(const App* app, const char* key, const char* label) {
 #include "common/cpu/aarch64/cpu.h" /* SNX_ABI, which a save state names */
 #include <assert.h>
 #include <miniz.h> /* Share Log's zip, read back */
+#include <stdatomic.h>
 #ifdef _WIN32
 #include "win32_crash.h"
 #include <windows.h> /* the queue's recompile's priority class */
@@ -6748,7 +6749,7 @@ int main(int argc, char** argv) {
         key(&app, SDLK_SPACE);
         assert(app.space && app.free_bytes);
         render(&app);
-        while (!__atomic_load_n(&app.space->done, __ATOMIC_ACQUIRE) && SDL_GetTicks() < until) SDL_Delay(5);
+        while (!atomic_load_explicit(&app.space->done, memory_order_acquire) && SDL_GetTicks() < until) SDL_Delay(5);
         for (int i = 0; i < GUI_SPACE_DIRS; ++i) total += gui_tree_size(app.space->dirs[i], &app.space->stop);
         assert(app.space->done && app.space->used == total && same_path(app.space->dirs[0], app.games_dir));
         gui_size_text(used, sizeof used, total);
@@ -16361,7 +16362,7 @@ int main(int argc, char** argv) {
             free(path);
         }
         assert(!strstr(app.left, "other.txt"));
-        while (!__atomic_load_n(&app.left_space->done, __ATOMIC_ACQUIRE)) SDL_Delay(1);
+        while (!atomic_load_explicit(&app.left_space->done, memory_order_acquire)) SDL_Delay(1);
         for (i = 0; i < 6; ++i) {
             path = snx_path_join(old, olds[i][0]);
             for (j = 0; j < app.left_space->count && strcmp(app.left_space->dirs[j], path); ++j) {}
@@ -16548,7 +16549,7 @@ int main(int argc, char** argv) {
                 left_behind(&app);
                 assert(app.lefts == 8);
                 /* a list that changed is counted again */
-                while (!__atomic_load_n(&app.left_space->done, __ATOMIC_ACQUIRE)) SDL_Delay(1);
+                while (!atomic_load_explicit(&app.left_space->done, memory_order_acquire)) SDL_Delay(1);
                 assert(app.left_space->count == 8 && !strcmp(app.left_space->dirs[7], keys));
                 for (i = 0; i < 3; ++i) {
                     assert(strstr(app.left, said[i]));
@@ -16575,7 +16576,7 @@ int main(int argc, char** argv) {
                 const char* labels[GUI_SETUP_CHOICES];
                 SnxSetup setup_was = app.setup;
                 bool ok;
-                while (!__atomic_load_n(&app.left_space->done, __ATOMIC_ACQUIRE)) SDL_Delay(1);
+                while (!atomic_load_explicit(&app.left_space->done, memory_order_acquire)) SDL_Delay(1);
                 assert(app.left_space->count == 5 && app.left_space->bytes[0] == 9 &&
                        app.left_space->bytes[1] == 3u << 20 && app.left_space->bytes[2] == 0 &&
                        app.left_space->bytes[3] == sizeof meta);
@@ -16595,11 +16596,11 @@ int main(int argc, char** argv) {
                 {
                     char* elsewhere[] = {"/elsewhere"}; /* a count for another list is not this one's */
                     space_count(&app.left_space, &app.left_counter, elsewhere, 1, true);
-                    while (!__atomic_load_n(&app.left_space->done, __ATOMIC_ACQUIRE)) SDL_Delay(1);
+                    while (!atomic_load_explicit(&app.left_space->done, memory_order_acquire)) SDL_Delay(1);
                     render(&app);
                     shows(&app, "size        counting", ink);
                     left_behind(&app); /* this list counted again */
-                    while (!__atomic_load_n(&app.left_space->done, __ATOMIC_ACQUIRE)) SDL_Delay(1);
+                    while (!atomic_load_explicit(&app.left_space->done, memory_order_acquire)) SDL_Delay(1);
                     assert(app.left_space->count == 5);
                 }
                 for (n = 0; n < 5; ++n) { /* each page: its head, its size, and Move All's and Delete All's words */

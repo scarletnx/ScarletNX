@@ -1,16 +1,13 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "common/cpu/recompiler/llvm/ir.h"
+#include "common/cpu/recompiler/llvm/ir_sail.h"
 #include "common/cpu/aarch64/cpu.h"
 #include <stdio.h>
 
-/* A register snapshot is only valid in its owning basic block. Guest state is
-   still written at every architectural store; this cache forwards IR values. */
-void ir_registers_invalidate(SnxIr* ir) {
-    ir->state.registers.valid = 0;
-    ir->state.registers.block = NULL;
-}
-
+/* The registers' and flags' per-block cache is the back end's (tools/sailgen/llvm.h): ir_sail.c gives ir.h's
+   accessors (ir_x, ir_set_x, ir_flag_read, ir_flags_commit, ir_flags_origin and the invalidations) over it, so the
+   emitters written by hand and the generated ones keep one set of values. What is here builds on them */
 void ir_vectors_invalidate(SnxIr* ir) {
     for (unsigned i = 0; i < 4; i++) ir->state.vectors.valid[i] = 0;
     ir->state.vectors.block = NULL;
@@ -21,65 +18,6 @@ void ir_state_invalidate(SnxIr* ir) {
     ir_registers_invalidate(ir);
     ir_vectors_invalidate(ir);
     ir_flags_invalidate(ir);
-}
-
-static void registers_block(SnxIr* ir) {
-    LLVMBasicBlockRef block = LLVMGetInsertBlock(ir->b);
-    if (ir->state.registers.block == block) return;
-    ir->state.registers.valid = 0;
-    ir->state.registers.block = block;
-}
-
-/* Flags are N, Z, C, V in their architectural order. Avoid carrying
-   a value across block boundaries: PHI inputs and unknown calls may change it. */
-static const size_t flag_offsets[4] = {offsetof(CPU, n), offsetof(CPU, z), offsetof(CPU, cf), offsetof(CPU, vf)};
-
-void ir_flags_invalidate(SnxIr* ir) {
-    ir->state.flags.valid = 0;
-    ir->state.flags.block = NULL;
-    ir->state.flags.origin = SNX_IR_FLAGS_SOME;
-}
-
-static SnxIrFlags* flags_block(SnxIr* ir) {
-    SnxIrFlags* flags = &ir->state.flags;
-    LLVMBasicBlockRef block = LLVMGetInsertBlock(ir->b);
-    if (flags->block != block) {
-        flags->valid = 0;
-        flags->block = block;
-        flags->origin = SNX_IR_FLAGS_SOME;
-    }
-    return flags;
-}
-
-LLVMValueRef ir_flag_read(SnxIr* ir, unsigned index) {
-    SnxIrFlags* flags = flags_block(ir);
-    unsigned bit = 1u << index;
-    if (!(flags->valid & bit)) {
-        flags->value[index] = ir_cpu_load(ir, ir->t_i32, flag_offsets[index]);
-        flags->valid |= bit;
-    }
-    return flags->value[index];
-}
-
-static void flags_commit(SnxIr* ir, LLVMValueRef n, LLVMValueRef z, LLVMValueRef c, LLVMValueRef v) {
-    SnxIrFlags* flags = flags_block(ir);
-    LLVMValueRef values[4] = {n, z, c, v};
-    for (unsigned i = 0; i < 4; ++i) {
-        LLVMValueRef bits = ir_u32(ir, values[i]);
-        ir_tag_cpu(ir, LLVMBuildStore(ir->b, bits, ir_cpu(ir, flag_offsets[i])));
-        flags->value[i] = bits;
-    }
-    flags->valid = 15;
-    flags->origin = SNX_IR_FLAGS_SOME;
-}
-
-static void flags_origin(SnxIr* ir, unsigned origin, LLVMValueRef left, LLVMValueRef right) {
-    if (ir->dump_active)
-        fprintf(stderr, "IR flags pc %llx block %s origin %u\n", (unsigned long long)ir->dump_instruction_pc,
-                LLVMGetBasicBlockName(LLVMGetInsertBlock(ir->b)), origin);
-    ir->state.flags.origin = origin;
-    ir->state.flags.left = left;
-    ir->state.flags.right = right;
 }
 
 LLVMValueRef ir_flags_adds(SnxIr* ir, unsigned bits, LLVMValueRef a, LLVMValueRef b, LLVMValueRef cin) {
@@ -93,8 +31,8 @@ LLVMValueRef ir_flags_adds(SnxIr* ir, unsigned bits, LLVMValueRef a, LLVMValueRe
                         LLVMBuildICmp(ir->b, LLVMIntULE, r, a, ""), LLVMBuildICmp(ir->b, LLVMIntULT, r, a, ""), "");
     LLVMValueRef overflow =
         LLVMBuildAnd(ir->b, LLVMBuildNot(ir->b, LLVMBuildXor(ir->b, a, b, ""), ""), LLVMBuildXor(ir->b, a, r, ""), "");
-    flags_commit(ir, n, z, ir_bool32(ir, cf), LLVMBuildLShr(ir->b, overflow, sign, ""));
-    if (LLVMIsAConstantInt(cin) && !LLVMConstIntGetZExtValue(cin)) flags_origin(ir, SNX_IR_FLAGS_ADD, a, b);
+    ir_flags_commit(ir, n, z, ir_bool32(ir, cf), LLVMBuildLShr(ir->b, overflow, sign, ""));
+    if (LLVMIsAConstantInt(cin) && !LLVMConstIntGetZExtValue(cin)) ir_flags_origin(ir, SNX_IR_FLAGS_ADD, a, b);
     return r;
 }
 
@@ -103,18 +41,19 @@ LLVMValueRef ir_flags_subs(SnxIr* ir, unsigned bits, LLVMValueRef a, LLVMValueRe
     LLVMValueRef r = LLVMBuildSub(ir->b, a, b, "");
     LLVMValueRef sign = LLVMConstInt(type, bits - 1, 0);
     LLVMValueRef overflow = LLVMBuildAnd(ir->b, LLVMBuildXor(ir->b, a, b, ""), LLVMBuildXor(ir->b, a, r, ""), "");
-    flags_commit(ir, LLVMBuildLShr(ir->b, r, sign, ""),
-                 ir_bool32(ir, LLVMBuildICmp(ir->b, LLVMIntEQ, r, LLVMConstNull(type), "")),
-                 ir_bool32(ir, LLVMBuildICmp(ir->b, LLVMIntUGE, a, b, "")), LLVMBuildLShr(ir->b, overflow, sign, ""));
-    flags_origin(ir, SNX_IR_FLAGS_SUB, a, b);
+    ir_flags_commit(ir, LLVMBuildLShr(ir->b, r, sign, ""),
+                    ir_bool32(ir, LLVMBuildICmp(ir->b, LLVMIntEQ, r, LLVMConstNull(type), "")),
+                    ir_bool32(ir, LLVMBuildICmp(ir->b, LLVMIntUGE, a, b, "")),
+                    LLVMBuildLShr(ir->b, overflow, sign, ""));
+    ir_flags_origin(ir, SNX_IR_FLAGS_SUB, a, b);
     return r;
 }
 
 void ir_flags_logic(SnxIr* ir, LLVMValueRef value, unsigned bits) {
-    flags_commit(ir, LLVMBuildLShr(ir->b, value, LLVMConstInt(LLVMTypeOf(value), bits - 1, 0), ""),
-                 ir_bool32(ir, LLVMBuildICmp(ir->b, LLVMIntEQ, value, LLVMConstNull(LLVMTypeOf(value)), "")),
-                 ir_i32(ir, 0), ir_i32(ir, 0));
-    flags_origin(ir, SNX_IR_FLAGS_LOGIC, value, NULL);
+    ir_flags_commit(ir, LLVMBuildLShr(ir->b, value, LLVMConstInt(LLVMTypeOf(value), bits - 1, 0), ""),
+                    ir_bool32(ir, LLVMBuildICmp(ir->b, LLVMIntEQ, value, LLVMConstNull(LLVMTypeOf(value)), "")),
+                    ir_i32(ir, 0), ir_i32(ir, 0));
+    ir_flags_origin(ir, SNX_IR_FLAGS_LOGIC, value, NULL);
 }
 
 void ir_flags_set_nzcv(SnxIr* ir, LLVMValueRef nzcv) {
@@ -122,52 +61,14 @@ void ir_flags_set_nzcv(SnxIr* ir, LLVMValueRef nzcv) {
     LLVMValueRef n = LLVMBuildAnd(ir->b, LLVMBuildLShr(ir->b, nzcv, ir_i32(ir, 3), ""), one, "");
     LLVMValueRef z = LLVMBuildAnd(ir->b, LLVMBuildLShr(ir->b, nzcv, ir_i32(ir, 2), ""), one, "");
     LLVMValueRef c = LLVMBuildAnd(ir->b, LLVMBuildLShr(ir->b, nzcv, one, ""), one, "");
-    flags_commit(ir, n, z, c, LLVMBuildAnd(ir->b, nzcv, one, ""));
-}
-
-/* Condition code (cond >> 1, but AL) on flags a compare gave, as an i1 of that compare: NULL for VS of SUB and ADD
-   and the ones of ADD a variable needs the overflow for. CMN with a constant k other than 0 and the most negative
-   value gives the four flags of CMP with -k (its carry is a + k >= 2^n, so a >= -k; its overflow that of the same
-   sum), and ANDS those of CMP of its result with 0, but for C, which ANDS clears */
-static LLVMValueRef origin_cond(SnxIr* ir, const SnxIrFlags* flags, unsigned code) {
-    LLVMValueRef left = flags->left, right = flags->right;
-    LLVMTypeRef type = LLVMTypeOf(left);
-    unsigned origin = flags->origin, bits = LLVMGetIntTypeWidth(type);
-    static const LLVMIntPredicate sub[7] = {LLVMIntEQ, LLVMIntUGE, LLVMIntSLT, 0, LLVMIntUGT, LLVMIntSGE, LLVMIntSGT};
-    LLVMValueRef zero = LLVMConstNull(type);
-    if (origin == SNX_IR_FLAGS_ADD && LLVMIsAConstantInt(right)) {
-        SnxU64 k = LLVMConstIntGetZExtValue(right), top = (SnxU64)1 << (bits - 1);
-        if (k != 0 && k != top) {
-            origin = SNX_IR_FLAGS_SUB;
-            right = LLVMConstNeg(right);
-        }
-    }
-    switch (origin) {
-        case SNX_IR_FLAGS_SUB:
-            if (code == 3) return NULL;
-            if (code == 2) return LLVMBuildICmp(ir->b, LLVMIntSLT, LLVMBuildSub(ir->b, left, right, ""), zero, "");
-            return LLVMBuildICmp(ir->b, sub[code], left, right, "");
-        case SNX_IR_FLAGS_ADD: {
-            LLVMValueRef r = LLVMBuildAdd(ir->b, left, right, "");
-            if (code == 0) return LLVMBuildICmp(ir->b, LLVMIntEQ, r, zero, "");
-            if (code == 1) return LLVMBuildICmp(ir->b, LLVMIntULT, r, left, ""); /* the carry out */
-            if (code == 2) return LLVMBuildICmp(ir->b, LLVMIntSLT, r, zero, "");
-            return NULL;
-        }
-        case SNX_IR_FLAGS_LOGIC:
-            if (code == 1 || code == 3 || code == 4) return LLVMConstInt(ir->t_i1, 0, 0); /* C and V are 0 */
-            if (code == 2) return LLVMBuildICmp(ir->b, LLVMIntSLT, left, zero, "");
-            return LLVMBuildICmp(ir->b, sub[code], left, zero, "");
-        default: return NULL;
-    }
+    ir_flags_commit(ir, n, z, c, LLVMBuildAnd(ir->b, nzcv, one, ""));
 }
 
 LLVMValueRef ir_flags_cond(SnxIr* ir, unsigned cond) {
     unsigned code = cond >> 1;
     if (code == 7) return ir_i32(ir, 1);
     LLVMValueRef r, z, c, n, v;
-    SnxIrFlags* flags = flags_block(ir);
-    if (flags->origin != SNX_IR_FLAGS_SOME && (r = origin_cond(ir, flags, code)) != NULL) {
+    if ((r = snx_ir_sail_origin(ir, code)) != NULL) { /* the compare the flags came from */
         if (cond & 1) r = LLVMBuildNot(ir->b, r, "");
         return ir_bool32(ir, r);
     }
@@ -230,8 +131,7 @@ LLVMValueRef ir_cpu_load(SnxIr* ir, LLVMTypeRef type, size_t offset) {
     return ir_tag_cpu(ir, ir_load(ir, type, ir_cpu(ir, offset)));
 }
 void ir_cpu_store(SnxIr* ir, LLVMValueRef value, size_t offset) {
-    for (unsigned i = 0; i < 4; ++i)
-        if (offset == flag_offsets[i]) ir_flags_invalidate(ir);
+    if (offset >= offsetof(CPU, n) && offset < offsetof(CPU, vf) + sizeof(((CPU*)0)->vf)) ir_flags_invalidate(ir);
     /* Flag and FP-state stores cannot change the disjoint GPR array. */
     if (offset >= offsetof(CPU, x) && offset < offsetof(CPU, x) + sizeof(((CPU*)0)->x)) ir_registers_invalidate(ir);
     if (offset >= offsetof(CPU, v) && offset < offsetof(CPU, v) + sizeof(((CPU*)0)->v)) ir_vectors_invalidate(ir);
@@ -243,22 +143,6 @@ size_t ir_off_v(unsigned n) { return offsetof(CPU, v) + 16 * (size_t)n; }
 size_t ir_off_excl_on(void) { return offsetof(CPU, excl_on); }
 size_t ir_off_mem(void) { return offsetof(CPU, mem); }
 
-LLVMValueRef ir_x(SnxIr* ir, unsigned n) {
-    registers_block(ir);
-    uint32_t bit = (uint32_t)1 << n;
-    if (!(ir->state.registers.valid & bit)) {
-        ir->state.registers.x[n] = ir_cpu_load(ir, ir->t_i64, ir_off_x(n));
-        ir->state.registers.valid |= bit;
-    }
-    return ir->state.registers.x[n];
-}
-void ir_set_x(SnxIr* ir, unsigned n, LLVMValueRef value) {
-    LLVMValueRef bits = ir_u64(ir, value);
-    registers_block(ir);
-    ir_tag_cpu(ir, LLVMBuildStore(ir->b, bits, ir_cpu(ir, ir_off_x(n))));
-    ir->state.registers.x[n] = bits;
-    ir->state.registers.valid |= (uint32_t)1 << n;
-}
 LLVMValueRef ir_rx(SnxIr* ir, unsigned n) { return n == 31 ? ir_i64(ir, 0) : ir_x(ir, n); }
 void ir_setx(SnxIr* ir, unsigned n, LLVMValueRef value) {
     /* the value is computed even for XZR: it may set flags or touch memory */
@@ -361,7 +245,8 @@ void ir_wr(SnxIr* ir, LLVMValueRef address, unsigned bits, LLVMValueRef value) {
     LLVMSetVolatile(store, snx_ir_volatile());
     ir_tag_guest(ir, store);
 }
-/* __atomic_load_n/__atomic_store_n on T* (cpu.h LDACQ/STREL): seq_cst, naturally aligned as the C type says */
+/* atomic_load_explicit and atomic_store_explicit on _Atomic T* (cpu.h LDACQ/STREL): seq_cst, naturally aligned as the
+   C type says */
 LLVMValueRef ir_ldacq(SnxIr* ir, LLVMValueRef address, unsigned bits) {
     LLVMValueRef load = LLVMBuildLoad2(ir->b, ir_int_type(ir, bits), ir_mp(ir, address), "");
     LLVMSetOrdering(load, LLVMAtomicOrderingSequentiallyConsistent);

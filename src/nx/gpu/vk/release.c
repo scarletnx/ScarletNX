@@ -16,6 +16,7 @@
    releases until it stops, at its end or at a wait (vk_release_submit), when the commands after them have read guest
    memory, and the ones no GPU work holds are performed then. */
 #include <string.h>
+#include <stdatomic.h>
 #include "common/utilities/common.h"
 #include "common/utilities/endian.h"
 #include "nx/gpu/gpu.h"
@@ -27,8 +28,8 @@
 #include "nx/runtime/platform/tracy.h" /* tests/vulkan_release.c stubs vk.h */
 
 typedef struct {
-    u64 gate;  /* the graphics submit whose completion it waits for */
-    u64 cgate; /* and the compute batch, 0 for none */
+    _Atomic u64 gate;  /* the graphics submit whose completion it waits for */
+    _Atomic u64 cgate; /* and the compute batch, 0 for none */
     u64 gva;   /* the payload's address, or 0 for a syncpoint increment */
     u32 id, len;
     u8 data[16];
@@ -52,9 +53,9 @@ enum { PRED_NONE = -3, PRED_ZERO = -2, PRED_NONZERO = -1 };
 #define SYNC_N 128  /* nvdrv's syncpoint ids */
 
 static Release g_rq[RQ_N];
-static u64 g_rhead, g_rtail; /* releases queued, performed */
+static _Atomic u64 g_rhead, g_rtail; /* releases queued, performed */
 static u64 g_rheld;          /* the first release the stream still holds: those from it on aren't performed yet */
-static u32 g_rincr[SYNC_N];  /* increments queued per syncpoint */
+static _Atomic u32 g_rincr[SYNC_N]; /* increments queued per syncpoint */
 static PMutex g_rlock = PMUTEX_INIT;
 static PCond g_rcv;
 static int g_rthread;
@@ -62,7 +63,7 @@ static int g_rthread;
    payload is queued, removed when it is written, both under vk_lock, and a mapping change drains the queue before any
    translation changes (vkr_mapping_begin), so a payload loses the pages it gained */
 static PendPages g_rpages = {.also = &g_pend_blk};
-u64 g_vk_release_forwards;
+_Atomic u64 g_vk_release_forwards;
 
 /* The queued payloads by the guest words they write: for each 4-byte word, the latest release queued over it and how
    many are, so the render enable finds the release that decides a count without looking through the queue
@@ -168,22 +169,28 @@ static void release_through(u64 gate, u64 cgate) {
     for (;;) {
         Release r;
         pm_lock(&g_rlock);
-        if (g_rtail == g_rheld || g_rq[g_rtail % RQ_N].gate > gate || g_rq[g_rtail % RQ_N].cgate > cgate) {
+        if (atomic_load_explicit(&g_rtail, memory_order_relaxed) == g_rheld ||
+            atomic_load_explicit(&g_rq[atomic_load_explicit(&g_rtail, memory_order_relaxed) % RQ_N].gate,
+                                 memory_order_relaxed) > gate ||
+            atomic_load_explicit(&g_rq[atomic_load_explicit(&g_rtail, memory_order_relaxed) % RQ_N].cgate,
+                                 memory_order_relaxed) > cgate) {
             pm_unlock(&g_rlock);
             break;
         }
-        r = g_rq[g_rtail % RQ_N];
-        if (r.gva) rix_track(&r, g_rtail, -1);
-        g_rtail++;
+        r = g_rq[atomic_load_explicit(&g_rtail, memory_order_relaxed) % RQ_N];
+        if (r.gva) rix_track(&r, atomic_load_explicit(&g_rtail, memory_order_relaxed), -1);
+        atomic_store_explicit(&g_rtail, atomic_load_explicit(&g_rtail, memory_order_relaxed) + 1, memory_order_relaxed);
         if (r.pred > 0) vk_query_pred_drop((u32)r.pred - 1); /* the draws recorded with it may still hold it */
         if (r.dpred > 0) vk_query_pred_drop((u32)r.dpred - 1);
         if (r.gva) pend_add(&g_rpages, r.gva, r.len, -1);
         if (!r.gva) {
             /* release_value sees the transfer from queued to completed atomically. */
             perform(&r);
-            if (r.id < SYNC_N) __atomic_sub_fetch(&g_rincr[r.id], 1, __ATOMIC_RELEASE);
+            if (r.id < SYNC_N) atomic_fetch_sub_explicit(&g_rincr[r.id], 1, memory_order_release);
         }
-        if (g_rtail == g_rhead) __atomic_store_n(&g_gpu_releases, 0, __ATOMIC_RELEASE);
+        if (atomic_load_explicit(&g_rtail, memory_order_relaxed) ==
+            atomic_load_explicit(&g_rhead, memory_order_relaxed))
+            atomic_store_explicit(&g_gpu_releases, 0, memory_order_release);
         pm_unlock(&g_rlock);
         if (r.gva) perform(&r);
         wrote |= r.gva != 0;
@@ -199,9 +206,11 @@ static void release_thread(void* p) {
     for (;;) {
         u64 gate, cgate;
         pm_lock(&g_rlock);
-        while (g_rtail == g_rheld) pc_wait(&g_rcv, &g_rlock, -1);
-        gate = g_rq[g_rtail % RQ_N].gate;
-        cgate = g_rq[g_rtail % RQ_N].cgate;
+        while (atomic_load_explicit(&g_rtail, memory_order_relaxed) == g_rheld) pc_wait(&g_rcv, &g_rlock, -1);
+        gate = atomic_load_explicit(&g_rq[atomic_load_explicit(&g_rtail, memory_order_relaxed) % RQ_N].gate,
+                                    memory_order_relaxed);
+        cgate = atomic_load_explicit(&g_rq[atomic_load_explicit(&g_rtail, memory_order_relaxed) % RQ_N].cgate,
+                                     memory_order_relaxed);
         pm_unlock(&g_rlock);
         SNX_ZONE(z_release, "vk release");
         vk_wait_submit(gate);
@@ -222,7 +231,8 @@ static void release_thread(void* p) {
 static void hold_inplace(u64 from, u64 to) {
     u64 bound = vk_uma() ? vk_uma_bound() : 0;
     for (u64 i = from; bound && i < to; i++)
-        if (g_rq[i % RQ_N].gate < bound) g_rq[i % RQ_N].gate = bound;
+        if (atomic_load_explicit(&g_rq[i % RQ_N].gate, memory_order_relaxed) < bound)
+            atomic_store_explicit(&g_rq[i % RQ_N].gate, bound, memory_order_relaxed);
 }
 /* the submit gate names, recorded still: submitted now, so waiting for it ends (vk_lock) */
 static void submit_through(u64 gate) {
@@ -234,7 +244,7 @@ static void release(Release* r) {
     vk_lock();
     vk_rt_publish_drawn();
     vk_gfx_image_put_aside();
-    r->cgate = vk_compute_put_aside();
+    atomic_store_explicit(&r->cgate, vk_compute_put_aside(), memory_order_relaxed);
     /* the work before it: none when nothing is pending (a samples-passed report always waits for the GPU, its count
        is the draws'). Else results of earlier submits are older, and the submit being recorded holds the rest (and a
        samples-passed report's counts). The release waits for that submit without submitting it now: whoever needs the
@@ -242,18 +252,25 @@ static void release(Release* r) {
        Submitting at each release made Pokemon Legends Z-A submit about 150 times a frame, with storage results
        pending through most of its releases */
     u64 recording = vk_submit_number();
-    if (!r->samples && !vk_buf_pending_any() && !vk_gfx_image_in_flight(0) && !r->cgate)
-        r->gate = 0;
+    if (!r->samples && !vk_buf_pending_any() && !vk_gfx_image_in_flight(0) &&
+        !atomic_load_explicit(&r->cgate, memory_order_relaxed))
+        atomic_store_explicit(&r->gate, 0, memory_order_relaxed);
     else
-        r->gate =
-            r->samples || vk_buf_pending_unsubmitted() || vk_gfx_image_in_flight(1) ? recording : vk_last_submit();
+        atomic_store_explicit(
+            &r->gate,
+            r->samples || vk_buf_pending_unsubmitted() || vk_gfx_image_in_flight(1) ? recording : vk_last_submit(),
+            memory_order_relaxed);
     int freed = 0; /* the stream's hold ended for the queue: the release thread may perform the rest */
     pm_lock(&g_rlock);
-    if (g_rhead - g_rtail == RQ_N) { /* full: the oldest goes now, held or not */
-        hold_inplace(g_rheld, g_rhead);
-        g_rheld = g_rhead;
+    if (atomic_load_explicit(&g_rhead, memory_order_relaxed) - atomic_load_explicit(&g_rtail, memory_order_relaxed) ==
+        RQ_N) { /* full: the oldest goes now, held or not */
+        hold_inplace(g_rheld, atomic_load_explicit(&g_rhead, memory_order_relaxed));
+        g_rheld = atomic_load_explicit(&g_rhead, memory_order_relaxed);
         freed = 1;
-        u64 oldest = g_rq[g_rtail % RQ_N].gate, coldest = g_rq[g_rtail % RQ_N].cgate;
+        u64 oldest = atomic_load_explicit(&g_rq[atomic_load_explicit(&g_rtail, memory_order_relaxed) % RQ_N].gate,
+                                          memory_order_relaxed),
+            coldest = atomic_load_explicit(&g_rq[atomic_load_explicit(&g_rtail, memory_order_relaxed) % RQ_N].cgate,
+                                           memory_order_relaxed);
         pm_unlock(&g_rlock);
         submit_through(oldest);
         vk_wait_submit(oldest);
@@ -263,17 +280,23 @@ static void release(Release* r) {
     }
     /* Gates cover the entire queued prefix even if ordinary reads already landed
        the batches belonging to earlier releases. */
-    if (g_rhead != g_rtail) {
-        const Release* prev = &g_rq[(g_rhead - 1) % RQ_N];
-        if (r->gate < prev->gate) r->gate = prev->gate;
-        if (r->cgate < prev->cgate) r->cgate = prev->cgate;
+    if (atomic_load_explicit(&g_rhead, memory_order_relaxed) != atomic_load_explicit(&g_rtail, memory_order_relaxed)) {
+        const Release* prev = &g_rq[(atomic_load_explicit(&g_rhead, memory_order_relaxed) - 1) % RQ_N];
+        if (atomic_load_explicit(&r->gate, memory_order_relaxed) <
+            atomic_load_explicit(&prev->gate, memory_order_relaxed))
+            atomic_store_explicit(&r->gate, atomic_load_explicit(&prev->gate, memory_order_relaxed),
+                                  memory_order_relaxed);
+        if (atomic_load_explicit(&r->cgate, memory_order_relaxed) <
+            atomic_load_explicit(&prev->cgate, memory_order_relaxed))
+            atomic_store_explicit(&r->cgate, atomic_load_explicit(&prev->cgate, memory_order_relaxed),
+                                  memory_order_relaxed);
     }
-    if (r->gva) rix_track(r, g_rhead, 1);
-    g_rq[g_rhead % RQ_N] = *r;
-    g_rhead++;
+    if (r->gva) rix_track(r, atomic_load_explicit(&g_rhead, memory_order_relaxed), 1);
+    g_rq[atomic_load_explicit(&g_rhead, memory_order_relaxed) % RQ_N] = *r;
+    atomic_store_explicit(&g_rhead, atomic_load_explicit(&g_rhead, memory_order_relaxed) + 1, memory_order_relaxed);
     if (r->gva) pend_add(&g_rpages, r->gva, r->len, 1);
-    if (!r->gva && r->id < SYNC_N) __atomic_add_fetch(&g_rincr[r->id], 1, __ATOMIC_RELEASE);
-    __atomic_store_n(&g_gpu_releases, 1, __ATOMIC_RELEASE);
+    if (!r->gva && r->id < SYNC_N) atomic_fetch_add_explicit(&g_rincr[r->id], 1, memory_order_release);
+    atomic_store_explicit(&g_gpu_releases, 1, memory_order_release);
     if (!g_rthread) {
         pc_init(&g_rcv);
         g_rthread = 1;
@@ -301,15 +324,21 @@ void vk_release_write(u64 gva, const void* data, u32 len) {
 }
 /* the GPFIFO submission ended or waits: the stream's releases go, those no GPU work holds at once, and a release still
    gated on the submit being recorded goes to the GPU, as the guest may look at it now */
-u64 g_vk_texture_epoch; /* vk.h: the points that make draws' writes visible to texture reads */
+_Atomic u64 g_vk_texture_epoch; /* vk.h: the points that make draws' writes visible to texture reads */
 void vk_release_submit(void) {
     SNX_ZONE(z, "vk release submit");
-    __atomic_add_fetch(&g_vk_texture_epoch, 1, __ATOMIC_RELAXED); /* the console's GPU idles its caches here */
+    atomic_fetch_add_explicit(&g_vk_texture_epoch, 1,
+                              memory_order_relaxed); /* the console's GPU idles its caches here */
     vk_lock();
     pm_lock(&g_rlock);
-    hold_inplace(g_rheld, g_rhead);
-    g_rheld = g_rhead; /* the commands after the releases have read guest memory */
-    u64 gate = g_rhead != g_rtail ? g_rq[(g_rhead - 1) % RQ_N].gate : 0; /* the gates only grow */
+    hold_inplace(g_rheld, atomic_load_explicit(&g_rhead, memory_order_relaxed));
+    g_rheld = atomic_load_explicit(&g_rhead,
+                                   memory_order_relaxed); /* the commands after the releases have read guest memory */
+    u64 gate =
+        atomic_load_explicit(&g_rhead, memory_order_relaxed) != atomic_load_explicit(&g_rtail, memory_order_relaxed)
+            ? atomic_load_explicit(&g_rq[(atomic_load_explicit(&g_rhead, memory_order_relaxed) - 1) % RQ_N].gate,
+                                   memory_order_relaxed)
+            : 0; /* the gates only grow */
     if (g_rthread) pc_broadcast(&g_rcv);
     pm_unlock(&g_rlock);
     release_through(0, 0); /* those no GPU work holds */
@@ -332,11 +361,11 @@ void vk_release_samples(u64 gva, u32 len, u32 counter, u64 first, u64 end, u64 t
 }
 /* the releases queued, and the submissions the oldest waits for: read unlocked, for the stall report */
 void vk_release_queued(u64* n, u64* gate, u64* cgate) {
-    u64 tail = __atomic_load_n(&g_rtail, __ATOMIC_RELAXED);
+    u64 tail = atomic_load_explicit(&g_rtail, memory_order_relaxed);
     const Release* r = &g_rq[tail % RQ_N];
-    *n = __atomic_load_n(&g_rhead, __ATOMIC_RELAXED) - tail;
-    *gate = *n ? __atomic_load_n(&r->gate, __ATOMIC_RELAXED) : 0;
-    *cgate = *n ? __atomic_load_n(&r->cgate, __ATOMIC_RELAXED) : 0;
+    *n = atomic_load_explicit(&g_rhead, memory_order_relaxed) - tail;
+    *gate = *n ? atomic_load_explicit(&r->gate, memory_order_relaxed) : 0;
+    *cgate = *n ? atomic_load_explicit(&r->cgate, memory_order_relaxed) : 0;
 }
 void vk_release_incr(u32 id) {
     Release r;
@@ -442,7 +471,8 @@ static i64 latest_in(u64 cpu, u64 n, i64 best) {
    in the page index and the range has fewer pages than the queue has releases, else through the queue */
 static i64 latest_over(const Backing* b) {
     i64 best = -1;
-    u64 queued = g_rhead - g_rtail;
+    u64 queued =
+        atomic_load_explicit(&g_rhead, memory_order_relaxed) - atomic_load_explicit(&g_rtail, memory_order_relaxed);
     if (!g_rodd && b->len / 4096 + b->runs < queued) {
         if (!b->paged)
             for (u32 i = 0; i < b->runs; i++) best = latest_in(b->cpu[i], b->n[i], best);
@@ -455,7 +485,8 @@ static i64 latest_over(const Backing* b) {
             }
         return best;
     }
-    for (u64 i = g_rtail; i < g_rhead; i++)
+    for (u64 i = atomic_load_explicit(&g_rtail, memory_order_relaxed);
+         i < atomic_load_explicit(&g_rhead, memory_order_relaxed); i++)
         if (release_overlaps(&g_rq[i % RQ_N], b)) best = (i64)i;
     return best;
 }
@@ -471,17 +502,22 @@ static void release_match(u64 gva, u64 len, u32 id, int all) {
     Backing range = {0};
     if (len && !all) backing_of(&range, gva, len);
     pm_lock(&g_rlock);
-    hold_inplace(g_rheld, g_rhead);
-    g_rheld = g_rhead; /* needed now: the stream holds them no longer */
+    hold_inplace(g_rheld, atomic_load_explicit(&g_rhead, memory_order_relaxed));
+    g_rheld = atomic_load_explicit(&g_rhead, memory_order_relaxed); /* needed now: the stream holds them no longer */
     if (g_rthread) pc_broadcast(&g_rcv);
     if (all)
-        last = g_rhead != g_rtail ? (i64)g_rhead - 1 : -1;
+        last =
+            atomic_load_explicit(&g_rhead, memory_order_relaxed) != atomic_load_explicit(&g_rtail, memory_order_relaxed)
+                ? (i64)atomic_load_explicit(&g_rhead, memory_order_relaxed) - 1
+                : -1;
     else if (len)
         last = latest_over(&range);
     else
-        for (u64 i = g_rtail; i < g_rhead; i++)
+        for (u64 i = atomic_load_explicit(&g_rtail, memory_order_relaxed);
+             i < atomic_load_explicit(&g_rhead, memory_order_relaxed); i++)
             if (!g_rq[i % RQ_N].gva && g_rq[i % RQ_N].id == id) last = (i64)i;
-    u64 gate = last >= 0 ? g_rq[last % RQ_N].gate : 0, cgate = last >= 0 ? g_rq[last % RQ_N].cgate : 0;
+    u64 gate = last >= 0 ? atomic_load_explicit(&g_rq[last % RQ_N].gate, memory_order_relaxed) : 0,
+        cgate = last >= 0 ? atomic_load_explicit(&g_rq[last % RQ_N].cgate, memory_order_relaxed) : 0;
     pm_unlock(&g_rlock);
     if (last >= 0) {
         submit_through(gate);
@@ -516,7 +552,10 @@ static int read_queued(u64 gva, void* dst, u64 len, SamplesCount* counts, u32 ma
     Backing range = {0};
     backing_of(&range, gva, len);
     pm_lock(&g_rlock);
-    u64 head = g_rhead, from = latest_over(&range) < 0 ? head : g_rtail; /* the queue only when a release is there */
+    u64 head = atomic_load_explicit(&g_rhead, memory_order_relaxed),
+        from = latest_over(&range) < 0
+                   ? head
+                   : atomic_load_explicit(&g_rtail, memory_order_relaxed); /* the queue only when a release is there */
     for (u64 i = from; i < head && r >= 0; i++) {
         const Release* q = &g_rq[i % RQ_N];
         if (!release_overlaps(q, &range)) continue;
@@ -532,8 +571,8 @@ static int read_queued(u64 gva, void* dst, u64 len, SamplesCount* counts, u32 ma
         if (gpu) {
             listed[*n] = i;
             counts[(*n)++] = (SamplesCount){q->qch, (u32)(q->gva - gva), bytes, q->qfirst, q->qend};
-        } else if (q->gate > sgate)
-            sgate = q->gate;
+        } else if (atomic_load_explicit(&q->gate, memory_order_relaxed) > sgate)
+            sgate = atomic_load_explicit(&q->gate, memory_order_relaxed);
     }
     pm_unlock(&g_rlock);
     if (r > 0 && (vk_compute_pending(gva, len) || vk_buf_pending(gva, len) || vk_gfx_image_pending(gva, len) ||
@@ -545,8 +584,8 @@ static int read_queued(u64 gva, void* dst, u64 len, SamplesCount* counts, u32 ma
            a game's threads waited longer for them. They stay queued until this read is done: vk_lock keeps
            release_through from taking them */
         pm_lock(&g_rlock);
-        hold_inplace(g_rheld, g_rhead);
-        g_rheld = g_rhead;
+        hold_inplace(g_rheld, atomic_load_explicit(&g_rhead, memory_order_relaxed));
+        g_rheld = atomic_load_explicit(&g_rhead, memory_order_relaxed);
         if (g_rthread) pc_broadcast(&g_rcv);
         pm_unlock(&g_rlock);
         submit_through(sgate);
@@ -555,7 +594,7 @@ static int read_queued(u64 gva, void* dst, u64 len, SamplesCount* counts, u32 ma
     if (r > 0) {
         pm_lock(&g_rlock);
         gmem_read_raw(gva, dst, len);
-        for (u64 i = g_rtail; i < head; i++) {
+        for (u64 i = atomic_load_explicit(&g_rtail, memory_order_relaxed); i < head; i++) {
             const Release* q = &g_rq[i % RQ_N];
             u64 lo, hi;
             if (!q->gva || gva >= q->gva + q->len || q->gva >= gva + len) continue;
@@ -577,7 +616,7 @@ static int read_queued(u64 gva, void* dst, u64 len, SamplesCount* counts, u32 ma
             memcpy((u8*)dst + (lo - gva), from_data + (lo - q->gva), (size_t)(hi - lo));
         }
         pm_unlock(&g_rlock);
-        __atomic_add_fetch(&g_vk_release_forwards, 1, __ATOMIC_RELAXED);
+        atomic_fetch_add_explicit(&g_vk_release_forwards, 1, memory_order_relaxed);
     } else
         *n = 0;
     vk_unlock();
@@ -598,7 +637,7 @@ int vk_release_read_counts(u64 gva, void* dst, u64 len, SamplesCount* counts, u3
     return read_queued(gva, dst, len, counts, max, n);
 }
 void vk_release_need(u64 gva, u64 len) {
-    if (len && __atomic_load_n(&g_gpu_releases, __ATOMIC_ACQUIRE)) release_match(gva, len, 0, 0);
+    if (len && atomic_load_explicit(&g_gpu_releases, memory_order_acquire)) release_match(gva, len, 0, 0);
 }
 void vk_release_drain(void) { release_match(0, 0, 0, 1); }
 void vk_release_retire(u32 id) { release_match(0, 0, id, 0); }
@@ -640,7 +679,7 @@ static int compare_on_gpu(u64 a, int equal, u32* pred) {
     u32 slot = 0;
     int queued = 0;
     if (!(vk_compute_pending(a, 24) || vk_buf_pending(a, 24) || vk_gfx_image_pending(a, 24))) return -1;
-    if (__atomic_load_n(&g_gpu_releases, __ATOMIC_ACQUIRE)) {
+    if (atomic_load_explicit(&g_gpu_releases, memory_order_acquire)) {
         pm_lock(&g_rlock);
         queued = count_queued(a) != -1 || count_queued(a + 16) != -1;
         pm_unlock(&g_rlock);
@@ -668,7 +707,8 @@ static int compare_queued(i64 ia, i64 ib, int equal, u32* pred) {
         i64 last[VK_QUERY_COUNTERS];
         u32 nb = 0, j;
         for (j = 0; j < VK_QUERY_COUNTERS; j++) last[j] = -1;
-        for (u64 i = g_rtail; i < g_rhead; i++) {
+        for (u64 i = atomic_load_explicit(&g_rtail, memory_order_relaxed);
+             i < atomic_load_explicit(&g_rhead, memory_order_relaxed); i++) {
             Release* r = &g_rq[i % RQ_N];
             const Release* p;
             if (!r->samples || r->qch >= VK_QUERY_COUNTERS) continue;
@@ -714,7 +754,7 @@ int vk_render_predicate(u64 a, int equal, u32* pred) {
     i64 ia, ib, at;
     u32 slot = 0;
     int got = -1, k, pair;
-    if (!__atomic_load_n(&g_gpu_releases, __ATOMIC_ACQUIRE)) {
+    if (!atomic_load_explicit(&g_gpu_releases, memory_order_acquire)) {
         vk_lock();
         got = vk_query_pred_ok() ? compare_on_gpu(a, equal, pred) : -1;
         vk_unlock();
@@ -754,7 +794,8 @@ int vk_render_predicate(u64 a, int equal, u32* pred) {
         i64 last[VK_QUERY_COUNTERS]; /* each counter's report before, in the queue */
         u32 nb = 0, j;
         for (j = 0; j < VK_QUERY_COUNTERS; j++) last[j] = -1;
-        for (u64 i = g_rtail; i < g_rhead; i++) {
+        for (u64 i = atomic_load_explicit(&g_rtail, memory_order_relaxed);
+             i < atomic_load_explicit(&g_rhead, memory_order_relaxed); i++) {
             Release* r = &g_rq[i % RQ_N];
             const Release* p;
             int prev = VK_PRED_PREV_NONE;
@@ -798,13 +839,13 @@ void vk_render_predicate_drop(u32 pred) {
 }
 u32 vk_release_value(u32 id) {
     pm_lock(&g_rlock);
-    u32 n = syncpt_read(id) + (id < SYNC_N ? __atomic_load_n(&g_rincr[id], __ATOMIC_RELAXED) : 0);
+    u32 n = syncpt_read(id) + (id < SYNC_N ? atomic_load_explicit(&g_rincr[id], memory_order_relaxed) : 0);
     pm_unlock(&g_rlock);
     return n;
 }
 /* the queued count first: an increment performs (syncpt_add) before it leaves the count, so one that moves between the
    two reads is counted twice, never missed */
 u32 vk_release_value_at_least(u32 id) {
-    u32 queued = id < SYNC_N ? __atomic_load_n(&g_rincr[id], __ATOMIC_ACQUIRE) : 0;
+    u32 queued = id < SYNC_N ? atomic_load_explicit(&g_rincr[id], memory_order_acquire) : 0;
     return syncpt_read(id) + queued;
 }

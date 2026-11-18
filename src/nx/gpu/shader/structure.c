@@ -204,7 +204,7 @@ static int terminators(Cfg* g, const u32* pop_targets) {
         const Op* op = decode(w);
         int id = op ? op->id : O_NONE;
         u32 target = NONE;
-        if (id == O_CAL || id == O_RET || id == O_PRET || id == O_PEXIT || id == O_JMP) return 0;
+        if (id == O_CAL || id == O_PEXIT || id == O_JMP) return 0;
         if (id == O_BRX) {
             /* the translator's BRX gives the word its table entry names, which the switch takes: its distinct
                targets. One under a predicate would also go on to the next block */
@@ -223,7 +223,8 @@ static int terminators(Cfg* g, const u32* pop_targets) {
         }
         if (id == O_BRA)
             target = bra_target(w, last);
-        else if (id == O_SYNC || id == O_BRK || id == O_CONT)
+        else if (id == O_SYNC || id == O_BRK || id == O_CONT || id == O_RET)
+            /* a RET's is its PRET's target: one that ends the program has none, nor does a structure */
             target = pop_targets ? pop_targets[last] : 0;
         u32 next = b + 1 < g->nb ? b + 1 : NONE;
         if (target != NONE) {

@@ -17,7 +17,7 @@
 enum { FUTEX_WAIT = 0, FUTEX_WAKE = 1, FUTEX_WAIT_BITSET = 9, FUTEX_PRIVATE = 128, FUTEX_CLOCK_REALTIME = 256 };
 
 /* the kernel's futex for the HLE call that c makes */
-static int futex_wait(void* context, uint32_t* word, uint32_t value, const BionicTime* deadline) {
+static int futex_wait(void* context, _Atomic uint32_t* word, uint32_t value, const BionicTime* deadline) {
     uint8_t at[16];
     uint64_t a[6] = {(uint64_t)(uintptr_t)word, FUTEX_WAIT | FUTEX_PRIVATE, value, 0, 0, ~0u};
     if (deadline) {
@@ -28,7 +28,7 @@ static int futex_wait(void* context, uint32_t* word, uint32_t value, const Bioni
     }
     return (int)hle_kernel_syscall(98, a, context, NULL);
 }
-static void futex_wake(void* context, uint32_t* word, int count) {
+static void futex_wake(void* context, _Atomic uint32_t* word, int count) {
     const uint64_t a[6] = {(uint64_t)(uintptr_t)word, FUTEX_WAKE | FUTEX_PRIVATE, (uint64_t)count, 0, 0, 0};
     (void)hle_kernel_syscall(98, a, context, NULL);
 }

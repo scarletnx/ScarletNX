@@ -47,7 +47,7 @@ void arm32_thread_stack(uint32_t* base, uint32_t* size);
 void arm32_thread_end(void);
 /* the signals sent to the calling thread and not run yet, a bit for each (arm32_thread.c): the dispatch loop runs
    them between blocks with arm32_signals_run, which sets up each handler's frame from c */
-extern _Thread_local uint32_t arm32_pending_signals;
+extern _Thread_local _Atomic uint32_t arm32_pending_signals;
 void arm32_signals_run(SnxArmCPU* c);
 /* a system call that guest code makes (svc): number r7, arguments r0 to r5, the result or -errno (arm32_thread.c) */
 uint32_t arm32_syscall(uint32_t number, const uint32_t args[6]);

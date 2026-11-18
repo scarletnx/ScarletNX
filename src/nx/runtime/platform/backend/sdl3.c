@@ -37,6 +37,7 @@
 #include <SDL3/SDL_vulkan.h>
 #include <SDL3/SDL.h>
 #include <time.h>
+#include <stdatomic.h>
 #include "common/utilities/common.h"
 #include "common/utilities/window_icon.h"
 #ifdef SDL_PLATFORM_IOS
@@ -59,7 +60,7 @@ static struct {
     SDL_Window* win;
     /* the window's size in pixels, width | height << 32: the renderer reads it on its own thread, and one atomic keeps
        a width from one resize from pairing with the height of another. 0 until a window gave one: 1280 by 720 */
-    u64 wsize; /* atomic */
+    _Atomic u64 wsize; /* atomic */
     u64 keys_held;
     u64 menu_held;      /* keyboard, scripted and on-screen buttons held while the menu had them */
     u64 menu_held_pad0; /* No1's physical pad, tracked separately so a replacement has fresh presses */
@@ -74,8 +75,8 @@ static struct {
         SDL_Rect area;
     } typing;
     int audio_ready;
-    int hidden;      /* the app is in the background (Android) */
-    int given_up;    /* the window went to a fatal error's screen: the renderer presents nothing more */
+    _Atomic int hidden;   /* the app is in the background (Android) */
+    _Atomic int given_up; /* the window went to a fatal error's screen: the renderer presents nothing more */
     char title[256]; /* the game's name, for that screen */
     /* The press that skips main.c's prepare screen (backend_pressed), taken while that screen asks for one: from its
        first call until the frontend's first pass once the game's first thread runs (frontend_frame), before the game
@@ -95,25 +96,25 @@ static struct {
         char said[64];
     } press;
     SDL_Haptic* buzzer;             /* the phone's vibrator, for the on-screen controls' taps (Android) */
-    u32 generation;                 /* the window's surface came back this many times */
-    u32 window_changes;             /* the app's, the displays' and the window's events (backend_window_changes) */
+    _Atomic u32 generation;         /* the window's surface came back this many times */
+    _Atomic u32 window_changes;     /* the app's, the displays' and the window's events (backend_window_changes) */
     u64 touch_ids[SNX_HID_TOUCHES]; /* the finger in each slot of g_hle.hid.touch */
     int touch_lift; /* backend_touch_mode_set asks video_poll to lift what the touch screen no longer takes */
     /* the window's display's refresh period in ns (0 not known), set on the main thread when the window opens or moves
        to another display, read by the renderer's threads */
-    u64 refresh_ns;
+    _Atomic u64 refresh_ns;
     /* the size of that display's mode in pixels, w | h << 32 (0 not known), set and read as refresh_ns is */
-    u64 mode_px;
+    _Atomic u64 mode_px;
     /* the window's part clear of the system's bars, in pixels, x | y << 16 | w << 32 | h << 48, or 0 for all of it: set
        on the main thread with the size, read by the renderer on its own */
-    u64 wsafe;
-    u32 memory_said; /* memory_line's lines so far (atomic) */
+    _Atomic u64 wsafe;
+    _Atomic u32 memory_said; /* memory_line's lines so far (atomic) */
 #ifdef SDL_PLATFORM_APPLE
     dispatch_source_t pressure; /* the system's memory pressure's source (pressure_watch) */
 #endif
     /* minimized or covered: a compositor shows nothing of it, and may never hand its swapchain's images back (Wayland
        with FIFO), so presenting stops until it is back (the main thread sets it, the renderer reads it) */
-    int minimized;
+    _Atomic int minimized;
     /* vulkan_driver's pick, once made */
     SnxVulkanDriver driver;
     int driver_picked;
@@ -122,8 +123,8 @@ static struct {
     void* driver_module;
     int driver_looked;
 #endif
-    char* fatal_left; /* an error another thread left for the main thread to show */
-    int fatal_taken;  /* the main thread is showing it */
+    char* _Atomic fatal_left; /* an error another thread left for the main thread to show */
+    _Atomic int fatal_taken;  /* the main thread is showing it */
     /* fatal_screen's: as many as the renderer's list, a long message's rows on a wide window */
     SnxUiQuad fatal_quads[4096];
     int fps_was; /* the limit the fps hotkey took off, to put back (0 for none yet: the game's pace) */
@@ -145,7 +146,7 @@ struct PAudio {
 };
 /* the player's Volume on a's device: the setting the .ini, its reload and the game's menu change, read as it is now */
 static int audio_volume(PAudio* a) {
-    int volume = __atomic_load_n(&g_settings.volume, __ATOMIC_RELAXED);
+    int volume = atomic_load_explicit((_Atomic int*)&g_settings.volume, memory_order_relaxed);
     if (!snx_audio_volume_follow(a->stream, volume, &a->volume))
         WARN_LIMIT(4, "audio: SDL could not set the output's volume to %d%%: %s\n", volume, SDL_GetError());
     return volume;
@@ -393,7 +394,7 @@ int backend_ini(const char* k, const char* v) {
 }
 
 static void wsize_set(int w, int h) {
-    if (w > 0 && h > 0) __atomic_store_n(&g_sdl3.wsize, (u64)(u32)w | (u64)(u32)h << 32, __ATOMIC_RELAXED);
+    if (w > 0 && h > 0) atomic_store_explicit(&g_sdl3.wsize, (u64)(u32)w | (u64)(u32)h << 32, memory_order_relaxed);
 }
 static void refresh_set(void) {
     const SDL_DisplayMode* m = g_sdl3.win ? SDL_GetCurrentDisplayMode(SDL_GetDisplayForWindow(g_sdl3.win)) : NULL;
@@ -402,20 +403,20 @@ static void refresh_set(void) {
         ns = (u64)1000000000u * (u64)m->refresh_rate_denominator / (u64)m->refresh_rate_numerator;
     else if (m && m->refresh_rate > 0)
         ns = (u64)(1e9 / m->refresh_rate);
-    __atomic_store_n(&g_sdl3.refresh_ns, ns, __ATOMIC_RELAXED);
+    atomic_store_explicit(&g_sdl3.refresh_ns, ns, memory_order_relaxed);
     /* a mode's size is in the desktop's units, which its pixel density scales to pixels (a 4K display at 200% is a
        1920x1080 mode of density 2) */
     if (m && m->w > 0 && m->h > 0) {
         float d = m->pixel_density > 0 ? m->pixel_density : 1.0f;
         px = (u64)(u32)((float)m->w * d + 0.5f) | (u64)(u32)((float)m->h * d + 0.5f) << 32;
     }
-    __atomic_store_n(&g_sdl3.mode_px, px, __ATOMIC_RELAXED);
+    atomic_store_explicit(&g_sdl3.mode_px, px, memory_order_relaxed);
 }
 u64 backend_display_refresh_ns(void) {
-    return g_opt_headless ? 0 : __atomic_load_n(&g_sdl3.refresh_ns, __ATOMIC_RELAXED);
+    return g_opt_headless ? 0 : atomic_load_explicit(&g_sdl3.refresh_ns, memory_order_relaxed);
 }
 void backend_display_mode(u32* w, u32* h) {
-    u64 v = g_opt_headless ? 0 : __atomic_load_n(&g_sdl3.mode_px, __ATOMIC_RELAXED);
+    u64 v = g_opt_headless ? 0 : atomic_load_explicit(&g_sdl3.mode_px, memory_order_relaxed);
     *w = (u32)v;
     *h = (u32)(v >> 32);
 }
@@ -425,10 +426,10 @@ static void wsafe_set(void) {
     u64 v = 0;
     if (!g_sdl3.fullscreen && d > 0 && SDL_GetWindowSafeArea(g_sdl3.win, &r))
         v = (u64)(u16)(r.x * d) | (u64)(u16)(r.y * d) << 16 | (u64)(u16)(r.w * d) << 32 | (u64)(u16)(r.h * d) << 48;
-    __atomic_store_n(&g_sdl3.wsafe, v, __ATOMIC_RELEASE);
+    atomic_store_explicit(&g_sdl3.wsafe, v, memory_order_release);
 }
 void backend_window_safe(int* x, int* y, int* w, int* h) {
-    u64 v = __atomic_load_n(&g_sdl3.wsafe, __ATOMIC_ACQUIRE);
+    u64 v = atomic_load_explicit(&g_sdl3.wsafe, memory_order_acquire);
     *x = (int)(u16)v;
     *y = (int)(u16)(v >> 16);
     *w = (int)(u16)(v >> 32);
@@ -448,8 +449,8 @@ void backend_window_safe(int* x, int* y, int* w, int* h) {
 static int memory_line(const char* why) {
     char stats[320], gpu[1024] = "";
     u32 n;
-    if (__atomic_load_n(&g_sdl3.memory_said, __ATOMIC_RELAXED) >= MEMORY_LINES ||
-        (n = __atomic_fetch_add(&g_sdl3.memory_said, 1, __ATOMIC_RELAXED)) >= MEMORY_LINES)
+    if (atomic_load_explicit(&g_sdl3.memory_said, memory_order_relaxed) >= MEMORY_LINES ||
+        (n = atomic_fetch_add_explicit(&g_sdl3.memory_said, 1, memory_order_relaxed)) >= MEMORY_LINES)
         return 0;
     resources_text(stats, sizeof stats);
     if (g_renderer && g_renderer->memory_text) g_renderer->memory_text(gpu, sizeof gpu);
@@ -500,26 +501,26 @@ static bool SDLCALL lifecycle(void* unused, SDL_Event* e) {
         case SDL_EVENT_TERMINATING: LOG("lifecycle: the system is ending the app\n"); break;
         default: break;
     }
-    if (e->type == SDL_EVENT_WILL_ENTER_BACKGROUND) __atomic_store_n(&g_sdl3.hidden, 1, __ATOMIC_RELEASE);
+    if (e->type == SDL_EVENT_WILL_ENTER_BACKGROUND) atomic_store_explicit(&g_sdl3.hidden, 1, memory_order_release);
     if (e->type == SDL_EVENT_DID_ENTER_FOREGROUND) {
 #ifndef SDL_PLATFORM_IOS
         /* Android makes the window's surface anew when the app comes back. iOS keeps it: making another from the
            renderer's thread is UIKit work off the main thread, which aborts the app */
-        __atomic_add_fetch(&g_sdl3.generation, 1, __ATOMIC_RELEASE);
+        atomic_fetch_add_explicit(&g_sdl3.generation, 1, memory_order_release);
 #endif
-        __atomic_store_n(&g_sdl3.hidden, 0, __ATOMIC_RELEASE);
+        atomic_store_explicit(&g_sdl3.hidden, 0, memory_order_release);
     }
     return true;
 }
 int backend_window_shown(void) {
-    return !g_opt_headless && !__atomic_load_n(&g_sdl3.hidden, __ATOMIC_ACQUIRE) &&
-           !__atomic_load_n(&g_sdl3.minimized, __ATOMIC_ACQUIRE) &&
-           !__atomic_load_n(&g_sdl3.given_up, __ATOMIC_ACQUIRE);
+    return !g_opt_headless && !atomic_load_explicit(&g_sdl3.hidden, memory_order_acquire) &&
+           !atomic_load_explicit(&g_sdl3.minimized, memory_order_acquire) &&
+           !atomic_load_explicit(&g_sdl3.given_up, memory_order_acquire);
 }
-u32 backend_window_generation(void) { return __atomic_load_n(&g_sdl3.generation, __ATOMIC_ACQUIRE); }
-u32 backend_window_changes(void) { return __atomic_load_n(&g_sdl3.window_changes, __ATOMIC_ACQUIRE); }
+u32 backend_window_generation(void) { return atomic_load_explicit(&g_sdl3.generation, memory_order_acquire); }
+u32 backend_window_changes(void) { return atomic_load_explicit(&g_sdl3.window_changes, memory_order_acquire); }
 void backend_window_size(int* w, int* h) {
-    u64 s = g_opt_headless ? 0 : __atomic_load_n(&g_sdl3.wsize, __ATOMIC_RELAXED);
+    u64 s = g_opt_headless ? 0 : atomic_load_explicit(&g_sdl3.wsize, memory_order_relaxed);
     if (!s && !g_opt_headless) s = 1280 | (720ull << 32);
     *w = (int)(u32)s;
     *h = (int)(u32)(s >> 32);
@@ -947,7 +948,7 @@ static int fatal_screen(const char* msg) {
     int aw = 0, ah = 0, done = 0, i;
     Uint64 since;
     if (!g_sdl3.win) return 0;
-    __atomic_store_n(&g_sdl3.given_up, 1, __ATOMIC_RELEASE);
+    atomic_store_explicit(&g_sdl3.given_up, 1, memory_order_release);
     if (g_renderer_up && g_renderer->release_window && !g_renderer->release_window()) return 0;
     if (!fatal_draw_make(&r, &atlas, &aw, &ah)) return 0;
     shown_msg = fatal_shown(msg);
@@ -1143,8 +1144,8 @@ void win_fatal_box(const char* msg) {
     if (g_opt_headless || unattended_active()) return;
     if (SDL_IsMainThread()) {
         /* an error another thread left first: this one followed from it */
-        char* left = __atomic_load_n(&g_sdl3.fatal_left, __ATOMIC_ACQUIRE);
-        __atomic_store_n(&g_sdl3.fatal_taken, 1, __ATOMIC_RELEASE);
+        char* left = atomic_load_explicit(&g_sdl3.fatal_left, memory_order_acquire);
+        atomic_store_explicit(&g_sdl3.fatal_taken, 1, memory_order_release);
         if (!fatal_screen(left ? left : msg))
             SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "ScarletNX", left ? left : msg, g_sdl3.win);
         return;
@@ -1154,13 +1155,13 @@ void win_fatal_box(const char* msg) {
         char* copy = SDL_strdup(msg);
         int i;
         /* the renderer stops presenting and lets go of the window here: the main thread may be waiting for it */
-        __atomic_store_n(&g_sdl3.given_up, 1, __ATOMIC_RELEASE);
+        atomic_store_explicit(&g_sdl3.given_up, 1, memory_order_release);
         if (g_renderer_up && g_renderer->release_window) g_renderer->release_window();
-        if (!copy ||
-            !__atomic_compare_exchange_n(&g_sdl3.fatal_left, &none, copy, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
+        if (!copy || !atomic_compare_exchange_strong_explicit(&g_sdl3.fatal_left, &none, copy, memory_order_acq_rel,
+                                                              memory_order_acquire))
             SDL_free(copy); /* a second error: the first one shows */
         for (i = 0; i < 300; ++i) {
-            if (__atomic_load_n(&g_sdl3.fatal_taken, __ATOMIC_ACQUIRE))
+            if (atomic_load_explicit(&g_sdl3.fatal_taken, memory_order_acquire))
                 for (;;) SDL_Delay(1000); /* the main thread shows it and ends the process */
             SDL_Delay(10);
         }
@@ -1530,7 +1531,7 @@ static void mouse_fed_update(void) {
     HidMouse* m = &g_hle.hid.mouse;
     pm_lock(&g_host.hid.input_lock);
     m->dx = m->dy = m->wheel = 0;
-    m->buttons = 0;
+    atomic_store_explicit(&m->buttons, 0, memory_order_relaxed);
     pm_unlock(&g_host.hid.input_lock);
 }
 /* hotkey_mouse: at Hotkey, mouse mode declared or ended, at Auto the mouse let go or held again */
@@ -1582,7 +1583,11 @@ static void game_mouse(const SDL_Event* e) {
                   : e->button.button == SDL_BUTTON_RIGHT  ? 2u
                   : e->button.button == SDL_BUTTON_MIDDLE ? 4u
                                                           : 0;
-        m->buttons = e->type == SDL_EVENT_MOUSE_BUTTON_DOWN ? m->buttons | bit : m->buttons & ~bit;
+        atomic_store_explicit(&m->buttons,
+                              e->type == SDL_EVENT_MOUSE_BUTTON_DOWN
+                                  ? atomic_load_explicit(&m->buttons, memory_order_relaxed) | bit
+                                  : atomic_load_explicit(&m->buttons, memory_order_relaxed) & ~bit,
+                              memory_order_relaxed);
     }
     pm_unlock(&g_host.hid.input_lock);
 }
@@ -1787,9 +1792,9 @@ static void keyboard_sync(void) {
 }
 void video_poll(void) {
     SDL_Event e;
-    char* left = __atomic_load_n(&g_sdl3.fatal_left, __ATOMIC_ACQUIRE);
+    char* left = atomic_load_explicit(&g_sdl3.fatal_left, memory_order_acquire);
     if (left) { /* another thread's fatal error, left for this thread to show */
-        __atomic_store_n(&g_sdl3.fatal_taken, 1, __ATOMIC_RELEASE);
+        atomic_store_explicit(&g_sdl3.fatal_taken, 1, memory_order_release);
         if (!fatal_screen(left)) SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "ScarletNX", left, g_sdl3.win);
         plat_exit_now(1);
     }
@@ -1800,18 +1805,18 @@ void video_poll(void) {
     while (!g_opt_headless && SDL_PollEvent(&e)) {
         int action = e.type == SDL_EVENT_KEY_DOWN ? key_action(&e.key) : -1; /* the runtime key it is */
         /* SDL numbers the app's, the displays' and the window's events under the keyboard's */
-        if (e.type < SDL_EVENT_KEY_DOWN) __atomic_add_fetch(&g_sdl3.window_changes, 1, __ATOMIC_RELEASE);
+        if (e.type < SDL_EVENT_KEY_DOWN) atomic_fetch_add_explicit(&g_sdl3.window_changes, 1, memory_order_release);
         input_seen(&e);
         if (press_event(&e, action)) continue;
         if (overlay_event(&e, action)) continue;
         switch (e.type) {
             case SDL_EVENT_QUIT: g_quit = 1; break;
             case SDL_EVENT_WINDOW_MINIMIZED:
-            case SDL_EVENT_WINDOW_OCCLUDED: __atomic_store_n(&g_sdl3.minimized, 1, __ATOMIC_RELEASE); break;
+            case SDL_EVENT_WINDOW_OCCLUDED: atomic_store_explicit(&g_sdl3.minimized, 1, memory_order_release); break;
             case SDL_EVENT_WINDOW_RESTORED:
             case SDL_EVENT_WINDOW_MAXIMIZED:
             case SDL_EVENT_WINDOW_EXPOSED:
-            case SDL_EVENT_WINDOW_SHOWN: __atomic_store_n(&g_sdl3.minimized, 0, __ATOMIC_RELEASE); break;
+            case SDL_EVENT_WINDOW_SHOWN: atomic_store_explicit(&g_sdl3.minimized, 0, memory_order_release); break;
             case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
                 if (e.window.windowID == SDL_GetWindowID(g_sdl3.win)) wsize_set(e.window.data1, e.window.data2);
                 wsafe_set();
@@ -1906,8 +1911,8 @@ void video_poll(void) {
         pm_lock(&g_host.hid.lock);
         for (int i = 0; i < SNX_GAMEPADS; i++)
             for (int m = 0; m < 2; m++) {
-                u32 now = __atomic_load_n(&(i ? &g_hle.hid.pad_extra[i - 1] : &g_hle.hid.pad1)->rumble[m],
-                                          __ATOMIC_RELAXED);
+                u32 now = atomic_load_explicit(&(i ? &g_hle.hid.pad_extra[i - 1] : &g_hle.hid.pad1)->rumble[m],
+                                               memory_order_relaxed);
                 /* with the strongest the game asked since the last poll, so a short pulse is not lost between two */
                 u32 peak = i < HID_PADS ? g_host.hid.rumble_peak[i][m] : 0;
                 if (i < HID_PADS) g_host.hid.rumble_peak[i][m] = 0;
@@ -1935,8 +1940,8 @@ void video_poll(void) {
         int connected = id != 0 || kept;
         /* A disconnect and replacement can happen in one poll. Do not send the old player's rumble to the new pad. */
         if (g_sdl3.previous_ids[i] != id) {
-            __atomic_store_n(&player->rumble[0], 0, __ATOMIC_RELAXED);
-            __atomic_store_n(&player->rumble[1], 0, __ATOMIC_RELAXED);
+            atomic_store_explicit(&player->rumble[0], 0, memory_order_relaxed);
+            atomic_store_explicit(&player->rumble[1], 0, memory_order_relaxed);
             rumble[i][0] = rumble[i][1] = 0;
             if (i)
                 g_sdl3.menu_held_extra[i - 1] = 0;
@@ -1947,12 +1952,13 @@ void video_poll(void) {
         gamepad_state_slot(i, &one_buttons, one_sticks);
         gamepad_rumble_slot(i, rumble[i][0], rumble[i][1], hz[i], plat_ns());
         /* each player as its settings say: seen or not, and the kind of controller the game sees */
-        __atomic_store_n(&player->connected, (connected && gamepad_player_seen(i)) || i == 0, __ATOMIC_RELAXED);
-        __atomic_store_n(
+        atomic_store_explicit(&player->connected, (connected && gamepad_player_seen(i)) || i == 0,
+                              memory_order_relaxed);
+        atomic_store_explicit(
             &player->kind,
             gamepad_player_kind(i, connected ? gamepad_kind(kept ? gamepad_slot_kept_type(i) : gamepad_slot_type(i))
                                              : SNX_PAD_FULL_KEY),
-            __ATOMIC_RELAXED);
+            memory_order_relaxed);
         player->source_id = id;
         player->buttons = one_buttons;
         player->lx = one_sticks[0];
@@ -2089,8 +2095,8 @@ void frontend_frame(void) {
        it is paused */
     if (g_renderer->refresh &&
         (overlay_shown() || overlay_keyboard_shown() || vpad_shown() || game_paused() || overlay_toasting(plat_ns()) ||
-         __atomic_load_n(&g_settings.showcase, __ATOMIC_RELAXED) ||
-         __atomic_load_n(&g_settings.stats, __ATOMIC_RELAXED)))
+         atomic_load_explicit((_Atomic int*)&g_settings.showcase, memory_order_relaxed) ||
+         atomic_load_explicit((_Atomic int*)&g_settings.stats, memory_order_relaxed)))
         g_renderer->refresh();
     if (g_sdl3.shot_req) {
         g_sdl3.shot_req = 0;

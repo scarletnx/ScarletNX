@@ -13,6 +13,7 @@
    timeline need none, as a timeline value can be waited for before its submission. */
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 #include "common/utilities/common.h"
 #include "nx/runtime/options.h"
 #include "nx/runtime/platform/log.h"
@@ -39,32 +40,32 @@ static u8* g_ring;
 static int g_rec = -1; /* recording on the thread: 1, at once: 0, not decided yet: -1 */
 static VkCommandBuffer g_rec_cb;
 /* written by the producer: the end of what it has added, and the consumer: the end of what it has made */
-static u64 g_head;
+static _Atomic u64 g_head;
 static char g_pad0[64];
-static u64 g_tail;
+static _Atomic u64 g_tail;
 static char g_pad1[64];
-static u32 g_rec_tid; /* the recording thread's plat_tid: a vk_rec_sync from it waits for no one */
-static int g_sleep; /* the consumer waits on g_cv for more */
+static _Atomic u32 g_rec_tid; /* the recording thread's plat_tid: a vk_rec_sync from it waits for no one */
+static _Atomic int g_sleep;   /* the consumer waits on g_cv for more */
 static PMutex g_m;
 static PCond g_cv;
 
 static void rec_thread(void* arg) {
     u64 tail = 0;
     (void)arg;
-    __atomic_store_n(&g_rec_tid, plat_tid(), __ATOMIC_RELEASE); /* other threads read it in vk_rec_sync */
+    atomic_store_explicit(&g_rec_tid, plat_tid(), memory_order_release); /* other threads read it in vk_rec_sync */
     (void)g_pad0;
     (void)g_pad1;
     SNX_THREAD_NAME("Vulkan recorder");
     for (;;) {
-        u64 head = __atomic_load_n(&g_head, __ATOMIC_ACQUIRE);
+        u64 head = atomic_load_explicit(&g_head, memory_order_acquire);
         /* nothing more yet: sleep until the producer publishes (REC_PUBLISH). It spun 4000 pauses first, which with
            a publish every 4 KiB kept it from sleeping at all: a host core spent on waiting (0.8 of one in Tears of
            the Kingdom, 0.26 with this) */
         if (head == tail) {
             pm_lock(&g_m);
-            __atomic_store_n(&g_sleep, 1, __ATOMIC_SEQ_CST);
-            while ((head = __atomic_load_n(&g_head, __ATOMIC_SEQ_CST)) == tail) pc_wait(&g_cv, &g_m, -1);
-            __atomic_store_n(&g_sleep, 0, __ATOMIC_RELAXED);
+            atomic_store_explicit(&g_sleep, 1, memory_order_seq_cst);
+            while ((head = atomic_load_explicit(&g_head, memory_order_seq_cst)) == tail) pc_wait(&g_cv, &g_m, -1);
+            atomic_store_explicit(&g_sleep, 0, memory_order_relaxed);
             pm_unlock(&g_m);
         }
         [[maybe_unused]] u64 records = 0; /* the zone's value; only the profiler reads it */
@@ -77,7 +78,7 @@ static void rec_thread(void* arg) {
         }
         SNX_ZONE_VALUE(z_rec, records);
         SNX_ZONE_END(z_rec);
-        __atomic_store_n(&g_tail, tail, __ATOMIC_RELEASE);
+        atomic_store_explicit(&g_tail, tail, memory_order_release);
     }
 }
 
@@ -104,7 +105,9 @@ static int rec_enabled(void) {
 void vk_rec_init(void) { rec_enabled(); }
 int vk_rec_threaded(void) { return g_rec > 0; }
 u64 vk_rec_behind(void) {
-    return g_rec > 0 ? __atomic_load_n(&g_head, __ATOMIC_ACQUIRE) - __atomic_load_n(&g_tail, __ATOMIC_ACQUIRE) : 0;
+    return g_rec > 0 ? atomic_load_explicit(&g_head, memory_order_acquire) -
+                           atomic_load_explicit(&g_tail, memory_order_acquire)
+                     : 0;
 }
 
 /* a command for cb goes through the ring */
@@ -115,7 +118,7 @@ static int rec_on(VkCommandBuffer cb) {
 int vk_rec_ring(VkCommandBuffer cb) { return rec_on(cb); }
 
 static void wake(void) {
-    if (__atomic_load_n(&g_sleep, __ATOMIC_SEQ_CST)) {
+    if (atomic_load_explicit(&g_sleep, memory_order_seq_cst)) {
         pm_lock(&g_m);
         pc_signal(&g_cv);
         pm_unlock(&g_m);
@@ -129,7 +132,7 @@ static void wake(void) {
 static u64 g_pending, g_published;
 static void publish(void) {
     g_published = g_pending;
-    __atomic_store_n(&g_head, g_pending, __ATOMIC_SEQ_CST);
+    atomic_store_explicit(&g_head, g_pending, memory_order_seq_cst);
     wake();
 }
 /* room for a packet of size bytes of arguments, filled in and then made known by rec_commit */
@@ -140,7 +143,7 @@ static void* rec_push(RecFn fn, u64 size) {
         fatal("vulkan: a command of %llu bytes, past what the recording ring takes", (unsigned long long)need);
     if (at + need > REC_CAP) { /* the packet doesn't fit before the end: the rest is skipped */
         u64 skip = REC_CAP - at;
-        while (g_pending + skip - __atomic_load_n(&g_tail, __ATOMIC_ACQUIRE) > REC_CAP) {
+        while (g_pending + skip - atomic_load_explicit(&g_tail, memory_order_acquire) > REC_CAP) {
             publish();
             plat_yield();
         }
@@ -150,7 +153,7 @@ static void* rec_push(RecFn fn, u64 size) {
         g_pending += skip;
         at = 0;
     }
-    while (g_pending + need - __atomic_load_n(&g_tail, __ATOMIC_ACQUIRE) > REC_CAP) {
+    while (g_pending + need - atomic_load_explicit(&g_tail, memory_order_acquire) > REC_CAP) {
         publish();
         plat_yield();
     }
@@ -172,10 +175,10 @@ int vk_rec_sync_until(u64 until) {
        here, and the process then spins at full speed instead of showing the error (record.c's submit_run). Every
        packet before this one is already recorded, and the packet after it is not part of what the caller asks for */
     u32 self = plat_tid();
-    if (__atomic_load_n(&g_rec_tid, __ATOMIC_ACQUIRE) == self) return 1;
+    if (atomic_load_explicit(&g_rec_tid, memory_order_acquire) == self) return 1;
     vk_lock(); /* no command is added meanwhile */
     publish();
-    while (__atomic_load_n(&g_tail, __ATOMIC_ACQUIRE) != g_pending) {
+    while (atomic_load_explicit(&g_tail, memory_order_acquire) != g_pending) {
         if (until != VK_REC_FOREVER && plat_ns() >= until) {
             drained = 0;
             break;
@@ -255,8 +258,8 @@ typedef struct {
 } Submit;
 /* the graphics timeline value of the last submission vkQueueSubmit2 took (atomic): the GPU has that work. A value
    handed to the ring after it is not on the GPU yet (vk_wait_semaphore) */
-static u64 g_gfx_queued;
-u64 vk_rec_gfx_queued(void) { return __atomic_load_n(&g_gfx_queued, __ATOMIC_ACQUIRE); }
+static _Atomic u64 g_gfx_queued;
+u64 vk_rec_gfx_queued(void) { return atomic_load_explicit(&g_gfx_queued, memory_order_acquire); }
 static void submit_run(const void* p) {
     const Submit* x = p;
     VkCommandBufferSubmitInfo c[2] = {{.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = x->up},
@@ -275,7 +278,7 @@ static void submit_run(const void* p) {
     VkResult r = vkQueueSubmit2(g_vk.gfx, 1, &si, VK_NULL_HANDLE);
     vk_queue_unlock(g_vk.gfx);
     if (r == VK_SUCCESS && x->timeline == vk_gfx_timeline())
-        __atomic_store_n(&g_gfx_queued, x->value, __ATOMIC_RELEASE);
+        atomic_store_explicit(&g_gfx_queued, x->value, memory_order_release);
     if (r == VK_ERROR_DEVICE_LOST) {
         vk_ck_report();
         fatal("vulkan: the GPU device was lost (driver reset or crash)");
@@ -326,7 +329,8 @@ typedef struct {
     u32 stage;  /* the present stage the domain is local to, 0 none */
     int clock;  /* the swapchain's VkClock: how the id and the time are given */
 } Present;
-static VkResult g_present_result; /* atomic: the last present's result that wasn't VK_SUCCESS, until it is taken */
+static _Atomic VkResult
+    g_present_result; /* atomic: the last present's result that wasn't VK_SUCCESS, until it is taken */
 static VkResult present_run(const Present* x) {
     VkPresentInfoKHR pi = {.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
                            .waitSemaphoreCount = 1,
@@ -363,7 +367,7 @@ static VkResult present_run(const Present* x) {
 }
 static void present_queued(const void* p) {
     VkResult r = present_run(p);
-    if (r != VK_SUCCESS) __atomic_store_n(&g_present_result, r, __ATOMIC_RELEASE);
+    if (r != VK_SUCCESS) atomic_store_explicit(&g_present_result, r, memory_order_release);
 }
 VkResult vk_rec_present(VkSwapchainKHR sc, u32 idx, VkSemaphore wait, u64 id, u64 target) {
     Present x = {sc, wait, idx, id, g_vk.sc_hold ? target : 0, g_vk.sc_time_domain, g_vk.sc_time_stage, g_vk.sc_clock};
@@ -373,7 +377,7 @@ VkResult vk_rec_present(VkSwapchainKHR sc, u32 idx, VkSemaphore wait, u64 id, u6
     return vk_rec_present_result();
 }
 VkResult vk_rec_present_result(void) {
-    return g_rec > 0 ? __atomic_exchange_n(&g_present_result, VK_SUCCESS, __ATOMIC_ACQ_REL) : VK_SUCCESS;
+    return g_rec > 0 ? atomic_exchange_explicit(&g_present_result, VK_SUCCESS, memory_order_acq_rel) : VK_SUCCESS;
 }
 
 /* ------------------------------------------------------------ commands of scalar arguments */
@@ -485,13 +489,13 @@ typedef struct {
     u64 after; /* the marker of checkpoints.c set last before it: which piece of work the draw came after */
 } CpDesc;
 static CpDesc g_cp_desc[CP_LOG];
-static u64 g_cp_seq;
+static _Atomic u64 g_cp_seq;
 static u64 g_cp_after; /* checkpoints.c's last marker in the commands recorded so far */
 /* the top bit tells these markers from checkpoints.c's (vk_checkpoints=1), which count up from 1 in the same queues */
 #define CP_MARK ((uintptr_t)1 << (sizeof(uintptr_t) * 8 - 1))
 static void vk_checkpoint(VkCommandBuffer cb, const char* what, u64 key, u64 addr, u32 gx, u32 gy, u32 gz) {
     if (!g_vk.has_nv_checkpoints) return;
-    u64 seq = __atomic_fetch_add(&g_cp_seq, 1, __ATOMIC_RELAXED) & (CP_LOG - 1);
+    u64 seq = atomic_fetch_add_explicit(&g_cp_seq, 1, memory_order_relaxed) & (CP_LOG - 1);
     g_cp_desc[seq] = (CpDesc){what, key, addr, gx, gy, gz, g_cp_after};
     vkCmdSetCheckpointNV(cb, (const void*)(CP_MARK | (uintptr_t)(seq + 1)));
 }
@@ -1021,12 +1025,12 @@ static void sets_run(const void* p) {
         if (!(real[i] = rec_set_real(sets[i]))) return; /* a set the pools had no room for: not bound */
     vkCmdBindDescriptorSets(x->cb, x->bp, x->layout, x->first, x->n, real, x->ndyn, x->ndyn ? dyn : NULL);
 }
-static u64 g_set_binds;
-u64 vk_rec_set_binds(void) { return __atomic_load_n(&g_set_binds, __ATOMIC_RELAXED); }
+static _Atomic u64 g_set_binds;
+u64 vk_rec_set_binds(void) { return atomic_load_explicit(&g_set_binds, memory_order_relaxed); }
 void rec_CmdBindDescriptorSets(VkCommandBuffer cb, VkPipelineBindPoint bp, VkPipelineLayout layout, u32 first, u32 n,
                                const VkDescriptorSet* sets, u32 ndyn, const u32* dyn) {
     vk_descriptor_heaps_invalidate();
-    __atomic_add_fetch(&g_set_binds, 1, __ATOMIC_RELAXED);
+    atomic_fetch_add_explicit(&g_set_binds, 1, memory_order_relaxed);
     if (!rec_on(cb)) {
         vkCmdBindDescriptorSets(cb, bp, layout, first, n, sets, ndyn, dyn);
         return;

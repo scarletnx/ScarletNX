@@ -10,6 +10,7 @@
 #include <limits.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 #if !defined(_WIN32)
 #include <sched.h>
 #include <signal.h>
@@ -20,8 +21,8 @@
 #endif
 
 /* ================================================================ threads */
-static const PThreadHooks* g_hooks; /* plat_thread_hooks's */
-void plat_thread_hooks(const PThreadHooks* hooks) { __atomic_store_n(&g_hooks, hooks, __ATOMIC_RELEASE); }
+static const PThreadHooks* _Atomic g_hooks; /* plat_thread_hooks's */
+void plat_thread_hooks(const PThreadHooks* hooks) { atomic_store_explicit(&g_hooks, hooks, memory_order_release); }
 
 #if defined(_WIN32)
 #define GUARANTEE_MIN_THREAD ((size_t)256 << 10)
@@ -40,7 +41,7 @@ static DWORD WINAPI thread_start(LPVOID p) {
         ULONG g = PLAT_STACK_GUARANTEE;
         SetThreadStackGuarantee(&g);
     }
-    const PThreadHooks* hk = __atomic_load_n(&g_hooks, __ATOMIC_ACQUIRE);
+    const PThreadHooks* hk = atomic_load_explicit(&g_hooks, memory_order_acquire);
     if (hk && hk->start) hk->start();
     s.fn(s.arg);
     if (hk && hk->end) hk->end();
@@ -61,13 +62,13 @@ int plat_thread(PThreadFn fn, void* arg, size_t stack) {
         SetLastError(why);
         return -1;
     }
-    const PThreadHooks* hk = __atomic_load_n(&g_hooks, __ATOMIC_ACQUIRE);
+    const PThreadHooks* hk = atomic_load_explicit(&g_hooks, memory_order_acquire);
     if (hk && hk->created) hk->created(h); /* it takes its own handle when it keeps one */
     CloseHandle(h);
     return 0;
 }
 void plat_thread_exit(void) {
-    const PThreadHooks* hk = __atomic_load_n(&g_hooks, __ATOMIC_ACQUIRE);
+    const PThreadHooks* hk = atomic_load_explicit(&g_hooks, memory_order_acquire);
     if (hk && hk->end) hk->end();
     ExitThread(0);
 }
@@ -106,7 +107,7 @@ static void alt_stack_off(void) {
 
 /* the alternate stack lives in this frame for as long as fn runs, and is switched off before the frame goes. Not
    inlined: in thread_start's frame the array would take its room on every thread, the small ones too */
-__attribute__((noinline)) static void run_with_alt_stack(PThreadFn fn, void* arg) {
+[[gnu::noinline]] static void run_with_alt_stack(PThreadFn fn, void* arg) {
     char stack[PLAT_ALT_STACK_SIZE];
     stack_t ss;
     memset(&ss, 0, sizeof ss);
@@ -120,7 +121,7 @@ __attribute__((noinline)) static void run_with_alt_stack(PThreadFn fn, void* arg
 static void* thread_start(void* p) {
     ThreadStart s = *(ThreadStart*)p;
     free(p);
-    const PThreadHooks* h = __atomic_load_n(&g_hooks, __ATOMIC_ACQUIRE);
+    const PThreadHooks* h = atomic_load_explicit(&g_hooks, memory_order_acquire);
     if (h && h->start) h->start();
     if (s.alt_stack)
         run_with_alt_stack(s.fn, s.arg);
@@ -171,7 +172,7 @@ int plat_thread(PThreadFn fn, void* arg, size_t stack) {
 }
 void plat_thread_exit(void) {
     /* pthread_exit leaves run_with_alt_stack's frame without returning through it */
-    const PThreadHooks* h = __atomic_load_n(&g_hooks, __ATOMIC_ACQUIRE);
+    const PThreadHooks* h = atomic_load_explicit(&g_hooks, memory_order_acquire);
     alt_stack_off();
     if (h && h->end) h->end();
     pthread_exit(NULL);

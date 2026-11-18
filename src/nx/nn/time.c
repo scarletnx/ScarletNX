@@ -31,6 +31,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
+#include <stdatomic.h>
 
 #define TIME_NS                   1000000000ll
 #define TIME_INITIAL_YEAR         2019 /* set:sys's time!standard_user_clock_initial_year on the 12.1.0 set reports */
@@ -324,14 +325,14 @@ static u32 span_between(const u8* sa, const u8* sb, i64* span) {
 
 /* ============================================================ the hooks */
 /* the SDK stops the game on these */
-SNX_NORETURN static void precondition(const char* function, const char* what) {
+[[noreturn]] static void precondition(const char* function, const char* what) {
     fatal("nn::time::%s: %s, which the SDK stops the game on", function, what);
 }
-SNX_NORETURN static void result_abort(const char* function, u32 r) {
+[[noreturn]] static void result_abort(const char* function, u32 r) {
     fatal("nn::time::%s failed with result 0x%x (error %04u-%04u), which the SDK stops the game on", function, r,
           2000 + (r & 0x1ff), (r >> 9) & 0x1fff);
 }
-static int initialized(void) { return __atomic_load_n(&g_hle.time.count, __ATOMIC_ACQUIRE) != 0; }
+static int initialized(void) { return atomic_load_explicit(&g_hle.time.count, memory_order_acquire) != 0; }
 static void need_initialized(const char* function) {
     if (!initialized()) precondition(function, "nn::time is not initialized");
 }
@@ -341,13 +342,14 @@ static void need_initialized(const char* function) {
 /* every Initialize* in one: a later call must give the mode of the first */
 static u32 initialize(u32 mode) {
     pm_lock(&g_nntime.lock);
-    if (g_hle.time.count) {
+    if (atomic_load_explicit(&g_hle.time.count, memory_order_relaxed)) {
         if (g_hle.time.mode != mode) {
             pm_unlock(&g_nntime.lock);
             fatal("nn::time::Initialize* of mode %u after one of mode %u, which the SDK stops the game on", mode,
                   g_hle.time.mode);
         }
-        g_hle.time.count++;
+        atomic_store_explicit(&g_hle.time.count, atomic_load_explicit(&g_hle.time.count, memory_order_relaxed) + 1,
+                              memory_order_relaxed);
         pm_unlock(&g_nntime.lock);
         R_SUCCEED();
     }
@@ -357,7 +359,7 @@ static u32 initialize(u32 mode) {
         g_hle.time.adjusted = 1;
     }
     g_hle.time.mode = mode;
-    __atomic_store_n(&g_hle.time.count, 1u, __ATOMIC_RELEASE);
+    atomic_store_explicit(&g_hle.time.count, 1u, memory_order_release);
     pm_unlock(&g_nntime.lock);
     R_SUCCEED();
 }
@@ -384,14 +386,16 @@ u32 nntime_initialize_for_system_user(CPU* c) {
 u32 nntime_finalize(CPU* c) {
     (void)c;
     pm_lock(&g_nntime.lock);
-    if (g_hle.time.count) __atomic_store_n(&g_hle.time.count, g_hle.time.count - 1, __ATOMIC_RELEASE);
+    if (atomic_load_explicit(&g_hle.time.count, memory_order_relaxed))
+        atomic_store_explicit(&g_hle.time.count, atomic_load_explicit(&g_hle.time.count, memory_order_relaxed) - 1,
+                              memory_order_release);
     pm_unlock(&g_nntime.lock);
     R_SUCCEED();
 }
 int nntime_is_initialized(CPU* c) {
     (void)c;
     pm_lock(&g_nntime.lock);
-    int r = g_hle.time.count != 0;
+    int r = atomic_load_explicit(&g_hle.time.count, memory_order_relaxed) != 0;
     pm_unlock(&g_nntime.lock);
     return r;
 }

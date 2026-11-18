@@ -18,6 +18,7 @@
  *
  * The images are freestanding (no libc, no libgcc) for aarch64-linux-gnu, as tests/gnuabi/threads.c is. */
 #include "threading.h"
+#include <stdatomic.h>
 
 #define T_SB     1 /* store buffering, DMB ISH between each store and the other thread's load */
 #define T_MP     2 /* message passing, DMB ISH between the stores and between the loads */
@@ -65,25 +66,26 @@ static u32 seen[THREADS][2];
 static u32 values[READERS];
 static u32 histogram[1u << READERS];
 static u32 bad_values;
-static u32 arrive, sense, phase[THREADS];
+static _Atomic u32 arrive, sense;
+static u32 phase[THREADS];
 static u32 ptid[THREADS], ctid[THREADS];
-static u8 stacks[THREADS][65536] __attribute__((aligned(16)));
+alignas(16) static u8 stacks[THREADS][65536];
 
 /* the test's own accesses: volatile keeps the fixture's compiler from caching or removing them, and leaves them
    ordinary guest loads and stores (not exclusive or atomic) for the translator. A build uses only the accessors its
    test names, so each is marked to keep -Wunused-function quiet. */
-#define RETAIN __attribute__((unused))
-static inline RETAIN u32 plain_load(u32* p) { return *(volatile u32*)p; }
-static inline RETAIN void plain_store(u32* p, u32 v) { *(volatile u32*)p = v; }
-static inline RETAIN void dmb_ish(void) { __asm__ volatile("dmb ish" ::: "memory"); }
-static inline RETAIN void dmb_ishst(void) { __asm__ volatile("dmb ishst" ::: "memory"); }
-static inline RETAIN void dmb_ishld(void) { __asm__ volatile("dmb ishld" ::: "memory"); }
-static inline RETAIN u32 acquire_load(u32* p) {
+#define RETAIN [[maybe_unused]]
+RETAIN static inline u32 plain_load(u32* p) { return *(volatile u32*)p; }
+RETAIN static inline void plain_store(u32* p, u32 v) { *(volatile u32*)p = v; }
+RETAIN static inline void dmb_ish(void) { __asm__ volatile("dmb ish" ::: "memory"); }
+RETAIN static inline void dmb_ishst(void) { __asm__ volatile("dmb ishst" ::: "memory"); }
+RETAIN static inline void dmb_ishld(void) { __asm__ volatile("dmb ishld" ::: "memory"); }
+RETAIN static inline u32 acquire_load(u32* p) {
     u32 v;
     __asm__ volatile("ldar %w0, [%1]" : "=r"(v) : "r"(p) : "memory");
     return v;
 }
-static inline RETAIN void release_store(u32* p, u32 v) {
+RETAIN static inline void release_store(u32* p, u32 v) {
     __asm__ volatile("stlr %w1, [%0]" : : "r"(p), "r"(v) : "memory");
 }
 
@@ -93,11 +95,11 @@ static inline RETAIN void release_store(u32* p, u32 v) {
 static void sync_point(u32 tid) {
     u32 mine = phase[tid] ^ 1u;
     phase[tid] = mine;
-    if (__atomic_add_fetch(&arrive, 1, __ATOMIC_SEQ_CST) == THREADS) {
-        __atomic_store_n(&arrive, 0, __ATOMIC_RELAXED);
-        __atomic_store_n(&sense, mine, __ATOMIC_SEQ_CST);
+    if ((atomic_fetch_add_explicit(&arrive, 1, memory_order_seq_cst) + 1) == THREADS) {
+        atomic_store_explicit(&arrive, 0, memory_order_relaxed);
+        atomic_store_explicit(&sense, mine, memory_order_seq_cst);
     } else {
-        while (__atomic_load_n(&sense, __ATOMIC_SEQ_CST) != mine) {}
+        while (atomic_load_explicit(&sense, memory_order_seq_cst) != mine) {}
     }
 }
 

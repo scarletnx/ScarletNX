@@ -114,7 +114,7 @@ static int verify(const char* symbol, GuestFn own) {
 }
 
 int main(void) {
-    static GuestFn disp[64];
+    static _Atomic GuestFn disp[64];
     u8* mem = calloc(MEM, 1);
     int i, k;
     assert(mem);

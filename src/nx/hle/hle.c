@@ -4,6 +4,7 @@
 #include "nx/hle/hle.h"
 #include "nx/runtime/platform/log.h"
 #include <stdlib.h>
+#include <stdatomic.h>
 
 /* zero, in .bss: hle_init sets what starts out non-zero */
 Hle g_hle;
@@ -43,10 +44,10 @@ void hle_init(void) {
     g_hle.kernel.hfree = -1;
     g_hle.kernel.hlinear = 1;
     g_hle.kernel.process.type = KO_PROCESS;
-    g_hle.kernel.process.refs = 1;
+    atomic_store_explicit(&g_hle.kernel.process.refs, 1, memory_order_relaxed);
     kobj_set_name(&g_hle.kernel.process, "process");
     g_hle.svc.reslimit.type = KO_RESLIMIT;
-    g_hle.svc.reslimit.refs = 1;
+    atomic_store_explicit(&g_hle.svc.reslimit.refs, 1, memory_order_relaxed);
     kobj_set_name(&g_hle.svc.reslimit, "resource limit");
     for (i = 0; i < NCORES; i++) g_hle.thread.core_best[i] = 64; /* no thread waits for a core */
     g_hle.thread.tls_used = 8;

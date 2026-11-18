@@ -43,22 +43,14 @@ struct SnxSocket {
     int domain, type, protocol;
     int nonblocking;
     int64_t rcvtimeo_us, sndtimeo_us; /* 0: wait forever */
-    int refs;
+    _Atomic int refs;
     void* impl;
 };
 
 /* net.c */
 SnxSocket* snx_net_socket_new(const SnxSocketOps* ops, SnxHostFd fd, int domain, int type, int protocol);
-void snx_net_log(const char* fmt, ...)
-#if defined(__GNUC__) || defined(__clang__)
-    __attribute__((format(printf, 1, 2)))
-#endif
-    ;
-void snx_net_warn(const char* fmt, ...) /* what the player must hear of */
-#if defined(__GNUC__) || defined(__clang__)
-    __attribute__((format(printf, 1, 2)))
-#endif
-    ;
+[[gnu::format(printf, 1, 2)]] void snx_net_log(const char* fmt, ...);
+[[gnu::format(printf, 1, 2)]] void snx_net_warn(const char* fmt, ...); /* what the player must hear of */
 int snx_net_host_error(void);       /* the last socket call's error, -SNX_E* */
 int snx_net_close_fd(SnxHostFd fd);
 int snx_net_set_host_nonblocking(SnxHostFd fd);

@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 
 #define B ir->b
 
@@ -127,8 +128,8 @@ static size_t index_of(const SnxFunction* function, SnxU64 address) {
     return lo;
 }
 
-/* if(UNLIKELY(__atomic_load_n(&c->poll,__ATOMIC_RELAXED))){ c->rt->poll(c); } (codegen.c): a loop that makes no SVC
-   can still be taken off its core, for a waiter of higher priority.
+/* if(UNLIKELY(atomic_load_explicit(&c->poll,memory_order_relaxed))){ c->rt->poll(c); } (codegen.c): a loop that makes
+   no SVC can still be taken off its core, for a waiter of higher priority.
    On a backward branch (resume, its target) the poll then leaves the function: { c->pc=resume; c->rt->poll(c);
    F_start(c,resume); return; }. The call of the function itself goes to the target's label through the entry mismatch
    and D_, with the registers that the poll's site stored. A poll that returned into the loop was a call in every loop
@@ -293,8 +294,8 @@ void snx_ir_stale_checks(SnxIr* ir) {
     ir->stale = g;
 }
 
-/* if(UNLIKELY(__atomic_load_n(&snx_stale[index],__ATOMIC_RELAXED))){ c->pc=e; return; }: the guest changed code
-   this function was compiled from (RtAPI.code_changed), and the runtime has taken its entries out of dispatch. A
+/* if(UNLIKELY(atomic_load_explicit(&snx_stale[index],memory_order_relaxed))){ c->pc=e; return; }: the guest changed
+   code this function was compiled from (RtAPI.code_changed), and the runtime has taken its entries out of dispatch. A
    caller's return check finds CPU.pc not its own return address and returns too, each function on the way storing
    its registers at its return, up to the runtime's dispatch loop, which looks e up and compiles the code there now
    from the CPU structure. A direct caller relies on it: it stores only what this function's summary reads
@@ -314,8 +315,8 @@ static LLVMValueRef flow_operand(SnxIr* ir, const SnxA64Insn* insn) { return snx
 
 /* What word does to the flow for a guest with these features, insn its decode. ir_ldst.c, ir_fpu.c and ir_vec.c
    implement their ops for every feature the decode allows (the LSE and RCpc atomics, FEAT_FP16's halves, FEAT_JSCVT,
-   FEAT_FRINTTS, BFCVT, the AdvSIMD extensions). ir_int.c implements the integer instructions of the ounce target
-   (the Switch's, PAuth with authentication disabled, FlagM and ESB). An op needing another feature is UNDEF
+   FEAT_FRINTTS, BFCVT, the AdvSIMD extensions). ir_int.c, with ir_sail.c's generated data processing, implements the
+   integer instructions of the ounce target (the Switch's, PAuth with authentication disabled, FlagM and ESB). An op needing another feature is UNDEF
    until implemented, as is an op no emitter has (the coverage report lists them), like a word no row matches. */
 static SnxA64Flow decode(SnxU32 word, SnxU64 features, SnxA64Insn* insn) {
     snx_a64_decode_word(word, features, insn);

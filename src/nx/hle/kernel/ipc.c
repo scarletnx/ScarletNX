@@ -11,6 +11,7 @@
 #include "nx/runtime/platform/tracy.h"
 #include "common/utilities/bits.h"
 #include <assert.h>
+#include <stdatomic.h>
 
 #define SFCI                 0x49434653u /* the CmifInHeader's magic */
 #define SFCO                 0x4F434653u /* the CmifOutHeader's */
@@ -30,7 +31,7 @@ enum { IPC_DOMAIN_SESSION = 1, IPC_DOMAIN_MESSAGE = 2 };
    pairs, the registry and the crash report's ring; log=2's counters are g_host.ipc's */
 
 /* ============================================================ the crash report's ring */
-u32 ipc_ring_count(void) { return __atomic_load_n(&g_hle.ipc.ring_n, __ATOMIC_RELAXED); }
+u32 ipc_ring_count(void) { return atomic_load_explicit(&g_hle.ipc.ring_n, memory_order_relaxed); }
 void ipc_ring_text(u32 seq, char* out, size_t n) {
     const IpcRec* r = &g_hle.ipc.ring[seq & 31];
     const char* name = r->name ? r->name : "?";
@@ -56,12 +57,12 @@ void ipc_ring_text(u32 seq, char* out, size_t n) {
     }
 }
 /* each request takes the next entry, served or not; the number it returns names it */
-static u32 ring_claim(void) { return __atomic_fetch_add(&g_hle.ipc.ring_n, 1, __ATOMIC_RELAXED); }
+static u32 ring_claim(void) { return atomic_fetch_add_explicit(&g_hle.ipc.ring_n, 1, memory_order_relaxed); }
 /* rewrites entry seq, unless 32 later requests have taken its slot meanwhile (a service that ran long). Each request
    stores its fields, and only a crash report formats them: a text entry cost two vsnprintf calls a request */
 static void ring_set(u32 seq, u32 kind, const char* name, u32 type, u32 cmd, const u32* in, u32 rc, const char* what) {
     IpcRec* r = &g_hle.ipc.ring[seq & 31];
-    if (__atomic_load_n(&g_hle.ipc.ring_n, __ATOMIC_RELAXED) - seq > 32) return;
+    if (atomic_load_explicit(&g_hle.ipc.ring_n, memory_order_relaxed) - seq > 32) return;
     r->name = name;
     r->what = what;
     r->kind = kind;
@@ -170,7 +171,7 @@ SvcObj* svcobj_new_data(const char* name, int (*dispatch)(SvcObj*, IpcCtx*), voi
     o = (SvcObj*)POOL_TAKE(g_hle.ipc.svcobjs, g_hle.ipc.svcobj_next, "service objects");
     o->name = name;
     o->dispatch = dispatch;
-    o->refs = 1;
+    atomic_store_explicit(&o->refs, 1, memory_order_relaxed);
     o->ptrbuf = POINTER_BUFFER;
     if (base) {
         u32 id = POOL_INDEX(g_hle.ipc.svcobjs, o) + 1;
@@ -185,10 +186,10 @@ SvcObj* svcobj_new(const char* name, int (*dispatch)(SvcObj*, IpcCtx*)) {
     return svcobj_new_data(name, dispatch, NULL, 0, 0, NULL, NULL);
 }
 void svcobj_ref(SvcObj* o) {
-    if (o) __atomic_add_fetch(&o->refs, 1, __ATOMIC_RELAXED);
+    if (o) atomic_fetch_add_explicit(&o->refs, 1, memory_order_relaxed);
 }
 void svcobj_unref(SvcObj* o) {
-    if (!o || __atomic_sub_fetch(&o->refs, 1, __ATOMIC_ACQ_REL)) return;
+    if (!o || (atomic_fetch_sub_explicit(&o->refs, 1, memory_order_acq_rel) - 1)) return;
     if (o->destroy) o->destroy(o); /* outside the lock: it may let go of other objects */
     pm_lock(&g_host.ipc.lk);
     if (o->data) pool_put(o->data, o->datasize);
@@ -205,14 +206,14 @@ static Domain* domain_new(SvcObj* root) {
     if (d) {
         d->obj[0] = root;
         d->n = 1;
-        d->refs = 1;
+        atomic_store_explicit(&d->refs, 1, memory_order_relaxed);
     }
     pm_unlock(&g_host.ipc.lk);
     return d;
 }
 static void domain_unref(Domain* d) {
     int i;
-    if (!d || __atomic_sub_fetch(&d->refs, 1, __ATOMIC_ACQ_REL)) return;
+    if (!d || (atomic_fetch_sub_explicit(&d->refs, 1, memory_order_acq_rel) - 1)) return;
     for (i = 0; i < d->n; i++) svcobj_unref(d->obj[i]); /* nothing else reaches the domain now */
     pm_lock(&g_host.ipc.lk);
     POOL_PUT(d);
@@ -258,7 +259,7 @@ static SvcObj* domain_take(Domain* d, u32 id) {
 void ksession_destroy(KObj* o) {
     KSession* s = (KSession*)o;
     svcobj_unref(s->obj);
-    domain_unref(s->domain);
+    domain_unref(atomic_load_explicit(&s->domain, memory_order_relaxed));
     pm_lock(&g_host.ipc.lk);
     POOL_PUT(s);
     pm_unlock(&g_host.ipc.lk);
@@ -272,7 +273,7 @@ static u32 session_make(SvcObj* obj, Domain* d) {
     s->o.type = KO_SESSION;
     kobj_set_name(&s->o, obj ? obj->name : "session");
     s->obj = obj;
-    s->domain = d;
+    atomic_store_explicit(&s->domain, d, memory_order_relaxed);
     pm_unlock(&g_host.ipc.lk);
     kobj_ref(&s->o); /* so a full handle table destroys it here */
     h = h_new(&s->o);
@@ -509,7 +510,7 @@ static void respond(IpcCtx* c) {
         SvcObj* o = c->out_objs[i];
         c->out_objs[i] = NULL; /* the domain or the session has its reference from here */
         if (dom)
-            ids[nids++] = o ? domain_add(c->sess->domain, o) : 0;
+            ids[nids++] = o ? domain_add(atomic_load_explicit(&c->sess->domain, memory_order_relaxed), o) : 0;
         else if (!(moves[nmove++] = o ? session_new(o) : 0) && o) {
             while (nmove) /* the sessions of the objects before it go with their handles */
                 if (moves[--nmove]) h_close(moves[nmove]);
@@ -593,7 +594,7 @@ static void answer(IpcCtx* c, u32 rc, u32 seq, const char* name, const char* wha
    ConvertCurrentObjectToDomain, CopyFromCurrentDomain, CloneCurrentObject, QueryPointerBufferSize and
    CloneCurrentObjectEx */
 static u32 control(IpcCtx* c, KSession* s) {
-    Domain* d = __atomic_load_n(&s->domain, __ATOMIC_ACQUIRE);
+    Domain* d = atomic_load_explicit(&s->domain, memory_order_acquire);
     u32 id = 0;
     SNX_ZONE(z_control, "ipc control");
     switch (c->cmd) {
@@ -610,7 +611,8 @@ static u32 control(IpcCtx* c, KSession* s) {
                                s->obj ? s->obj->name : "session", DOMAIN_MAX, SNX_RC_SF_HIPC_OUT_OF_DOMAINS);
                     R_THROW(SNX_RC_SF_HIPC_OUT_OF_DOMAINS);
                 }
-                if (!__atomic_compare_exchange_n(&s->domain, &d, n, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
+                if (!atomic_compare_exchange_strong_explicit(&s->domain, &d, n, memory_order_acq_rel,
+                                                             memory_order_acquire))
                     domain_unref(n); /* another thread converted it first */
             }
             out32(c, 1); /* the session's object is the domain's first */
@@ -629,7 +631,7 @@ static u32 control(IpcCtx* c, KSession* s) {
         case 2:
         case 4:
             svcobj_ref(s->obj);
-            if (d) __atomic_add_fetch(&d->refs, 1, __ATOMIC_RELAXED);
+            if (d) atomic_fetch_add_explicit(&d->refs, 1, memory_order_relaxed);
             id = session_make(s->obj, d);
             R_UNLESS(id, SNX_RC_SVC_OUT_OF_HANDLES);
             out_move_h(c, id);
@@ -684,7 +686,7 @@ u32 ipc_handle(u32 handle, u64 msg_addr, u64 msg_size) {
         return SNX_RC_SVC_INVALID_HANDLE;
     }
     name = s->obj ? s->obj->name : "session";
-    if (__atomic_load_n(&s->closed, __ATOMIC_ACQUIRE)) {
+    if (atomic_load_explicit(&s->closed, memory_order_acquire)) {
         ring_set(seq, IPC_REC_SESSION_CLOSED, name, 0, 0, NULL, SNX_RC_SVC_SESSION_CLOSED, NULL);
         kobj_unref(&s->o);
         return SNX_RC_SVC_SESSION_CLOSED;
@@ -708,14 +710,14 @@ u32 ipc_handle(u32 handle, u64 msg_addr, u64 msg_size) {
         else
             answer(&c, SNX_RC_SF_UNKNOWN_METHOD_ID, seq, name, "command");
     } else if (c.type < 4 || c.type > 7) {
-        __atomic_store_n(&s->closed, 1, __ATOMIC_RELEASE);
+        atomic_store_explicit(&s->closed, 1, memory_order_release);
         ring_set(seq, IPC_REC_TYPE_CLOSED, name, c.type, 0, NULL, SNX_RC_SVC_SESSION_CLOSED, NULL);
         if (c.type != 2 && c.type != 15)
             WARN_LIMIT(4, "ipc: %s: message type %u, which sf doesn't serve: the session is closed\n", name, c.type);
         rc = SNX_RC_SVC_SESSION_CLOSED;
     } else {
         int ctl = c.type == 5 || c.type == 7;
-        d = __atomic_load_n(&s->domain, __ATOMIC_ACQUIRE);
+        d = atomic_load_explicit(&s->domain, memory_order_acquire);
         parse_cmif(&c, &h, d && !ctl);
         if (d && ctl) c.is_domain = IPC_DOMAIN_SESSION;
         if (c.header_rc)
@@ -794,7 +796,7 @@ int ipc_bad_objects(SvcObj* o, IpcCtx* c) {
 }
 SvcObj* ipc_in_obj(IpcCtx* c, int i) {
     if (c->is_domain != IPC_DOMAIN_MESSAGE || i < 0 || i >= c->nin_objs || !c->sess) return NULL;
-    return domain_get(__atomic_load_n(&c->sess->domain, __ATOMIC_ACQUIRE), c->in_objs[i]);
+    return domain_get(atomic_load_explicit(&c->sess->domain, memory_order_acquire), c->in_objs[i]);
 }
 
 /* ============================================================ the service registry */

@@ -41,7 +41,7 @@ static inline void snx_tracy_zone_end_at_scope(TracyCZoneCtx* ctx) { snx_tracy_z
 #define SNX_ZONE(ctx, name)                                                                                            \
     static const struct ___tracy_source_location_data TracyConcat(snx_tracy_source_, TracyLine) =                     \
         {name, __func__, TracyFile, (uint32_t)TracyLine, 0};                                                           \
-    TracyCZoneCtx ctx __attribute__((cleanup(snx_tracy_zone_end_at_scope))) =                                          \
+    [[gnu::cleanup(snx_tracy_zone_end_at_scope)]] TracyCZoneCtx ctx =                                                  \
         snx_tracy_zone_begin(&TracyConcat(snx_tracy_source_, TracyLine))
 /* a short emission: gated, and skipped when nothing is attached */
 #define SNX_TRACY_EMIT(...)                                                                                            \
@@ -64,7 +64,7 @@ static inline void snx_tracy_zone_end_at_scope(TracyCZoneCtx* ctx) { snx_tracy_z
 #define SNX_ZONE_C(ctx, name, color)                                                                                   \
     static const struct ___tracy_source_location_data TracyConcat(snx_tracy_source_, TracyLine) =                     \
         {name, __func__, TracyFile, (uint32_t)TracyLine, (uint32_t)(color)};                                           \
-    TracyCZoneCtx ctx __attribute__((cleanup(snx_tracy_zone_end_at_scope))) =                                          \
+    [[gnu::cleanup(snx_tracy_zone_end_at_scope)]] TracyCZoneCtx ctx =                                                  \
         snx_tracy_zone_begin(&TracyConcat(snx_tracy_source_, TracyLine))
 #define SNX_MEM_ALLOC(ptr, size, pool) SNX_TRACY_EMIT(TracyCAllocN((const void*)(ptr), (size_t)(size), (pool)))
 #define SNX_MEM_FREE(ptr, pool) SNX_TRACY_EMIT(TracyCFreeN((const void*)(ptr), (pool)))
@@ -76,7 +76,7 @@ typedef struct {
     const char* name;
 } SnxTracyFrame;
 #define SNX_FRAME_SCOPED(ctx, name)                                                                                    \
-    SnxTracyFrame ctx __attribute__((cleanup(snx_tracy_frame_at_scope))) = {snx_tracy_frame_start(name), (name)}
+    [[gnu::cleanup(snx_tracy_frame_at_scope)]] SnxTracyFrame ctx = {snx_tracy_frame_start(name), (name)}
 #define SNX_PLOT(name, value) SNX_TRACY_EMIT(TracyCPlot(name, value))
 /* the name goes into the client's table, which the server asks for when a GUI connects; kept per thread, so a
    thread that named itself before the client started is named again when it attaches */

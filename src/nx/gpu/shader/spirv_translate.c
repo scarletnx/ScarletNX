@@ -675,6 +675,7 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
     int first_indexed[SH_INDEXED_TABLES] = {0}, indexed_count = 0, indexed_table[SH_MAXTEX] = {0}, k_indexed;
     int indexed_shadow = 0;
     int has_stack = 0, has_pexit = 0, has_conditional_exit = 0;
+    int has_return = 0; /* a PRET or a RET, which the CRS stack's static walk resolves as it does a PBK and a BRK */
     int needs_local = 0, needs_shared = 0, needs_subgroup = 0, needs_atomic_cas = 0, lane_used = 0, needs_quad = 0;
     int votes = 0, swizzle_lanes = 0; /* VOTE or SHFL; FSWZADD whose lanes take different modes */
     int quad_reads = 0;               /* a fragment program's SHFL within its quad that reads another pixel of it */
@@ -828,7 +829,8 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
             u32 target_index = bra_target(insn[i], i);
             if (target_index >= n || !IDX_OK(target_index)) return direct_reject(si, "branch target");
             has_flow = 1;
-            if (op->id != O_BRA) has_calls = 1;
+            if (op->id == O_CAL) has_calls = 1;
+            if (op->id == O_PRET) has_return = 1;
         }
         if ((op->id == O_CAL && B(insn[i], 5, 1)) || op->id == O_JCAL) has_flow = has_calls = 1;
         if (op->id == O_JMP || op->id == O_JMX) has_flow = 1;
@@ -838,7 +840,7 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
             cbuf_used[bank] = 1;
             cbuf_max[bank] = op->id == O_JMX ? 65536 : ((off | 15u) + 1);
         }
-        if (op->id == O_RET) has_flow = has_calls = 1; /* a RET with no CAL pops an empty stack: it ends the program */
+        if (op->id == O_RET) has_flow = has_return = 1;
         if ((op->id == O_RED || op->id == O_ATOM) &&
             shader_global_atomic_opcode(insn[i], op->id == O_RED) == 0xffffffffu)
             needs_atomic_cas = 1;
@@ -1842,9 +1844,16 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
     if (needs_shared && (stage != ST_CS || si->shared_size <= 0)) return direct_reject(si, "shared memory size");
     for (int i = 0; i < texture_count; i++)
         if (textures[i].shadow && (si->tex_int_mask & (1ull << i))) return direct_reject(si, "integer shadow texture");
-    u32* pop_targets = has_stack ? calloc(n, sizeof *pop_targets) : NULL;
-    if (has_stack && !pop_targets) return NULL;
-    int dynamic_stack = has_pexit || (has_stack && !shader_resolve_crs(insn, n, pop_targets));
+    u32* pop_targets = has_stack || has_return ? calloc(n, sizeof *pop_targets) : NULL;
+    if ((has_stack || has_return) && !pop_targets) return NULL;
+    /* why the program's flow runs in the dispatch loop below, for the log (ShaderInfo.flow_why) */
+    char flow_why[sizeof si->flow_why] = "";
+    int crs_static =
+        !has_pexit && (has_stack || has_return) && shader_resolve_crs(insn, n, pop_targets, flow_why, sizeof flow_why);
+    int dynamic_stack = has_pexit || (has_stack && !crs_static);
+    /* where the walk follows the stack, each RET branches to its PRET's target or ends the program: only calls, and
+       returns it can't follow, keep a stack of return points at run time */
+    if (has_return && !crs_static) has_calls = 1;
 
     u8* gb_at = calloc(n, 1);
     if (!gb_at) {
@@ -2141,6 +2150,7 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
                 id == O_PBK || id == O_PCNT)
                 block_start[bra_target(insn[i], i)] = 1;
             if (!dynamic_stack && (id == O_SYNC || id == O_BRK || id == O_CONT)) block_start[pop_targets[i]] = 1;
+            if (!has_calls && id == O_RET && pop_targets[i]) block_start[pop_targets[i]] = 1;
             if (id == O_BRA || id == O_CAL || id == O_JCAL || id == O_JMP || id == O_JMX || id == O_RET ||
                 id == O_BRX || id == O_SYNC || id == O_BRK || id == O_CONT || id == O_EXIT) {
                 u32 next = shader_next_instruction(i, n);
@@ -2159,6 +2169,15 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
         if (!advanced_blend && !dynamic_stack && !has_calls && (!converge || g_spirv_translate.maximal_reconvergence) &&
             !unknown_brx)
             structure = shader_structure(insn, n, block_start, pop_targets);
+        if (!structure && !flow_why[0])
+            snprintf(flow_why, sizeof flow_why, "%s",
+                     advanced_blend ? "advanced blend"
+                     : has_pexit    ? "a PEXIT"
+                     : has_calls    ? "a call"
+                     : unknown_brx  ? "an indirect jump"
+                     : converge && !g_spirv_translate.maximal_reconvergence
+                         ? "lanes that reconverge, without maximal reconvergence"
+                         : "flow the structure can't take");
         if (quad_flow && !structure) {
             const char* with = advanced_blend  ? "advanced blend"
                                : dynamic_stack ? "a run-time control stack"
@@ -3285,7 +3304,7 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
         u32 d = B(w, 0, 8), a = B(w, 8, 8), b = B(w, 20, 8);
         u32 guard_merge = 0;
         c->guard = 0; /* the instruction before may have ended its translation early */
-        if (structure && (op == O_BRA || op == O_SYNC || op == O_BRK || op == O_CONT)) {
+        if (structure && (op == O_BRA || op == O_SYNC || op == O_BRK || op == O_CONT || op == O_RET)) {
             /* the branch that ends the block: the structure's SHS_IF takes its condition */
             c->branch_cond = 0;
             if (!flow_always(w)) {
@@ -3295,7 +3314,8 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
             continue;
         }
         int skip_helper = stage == ST_FS && shader_helper_side_effect(op);
-        if (op != O_SSY && op != O_PBK && op != O_PCNT && op != O_PEXIT && op != O_CAL &&
+        /* SSY, PBK, PCNT, CAL and PRET have no predicate: their bits 16 to 19 are zero, not P0 */
+        if (op != O_SSY && op != O_PBK && op != O_PCNT && op != O_PEXIT && op != O_CAL && op != O_PRET &&
             (B(w, 16, 3) != 7 || B(w, 19, 1) || (shader_flow_has_cc(op) && B(w, 0, 5) != 15) || skip_helper)) {
             u32 condition = pred_read(c, B(w, 16, 3), B(w, 19, 1));
             if (shader_flow_has_cc(op) && B(w, 0, 5) != 15)
@@ -3398,6 +3418,7 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
     next.stage = stage;
     next.chosen_tex = chosen_tex;
     memcpy(next.chosen_why, chosen_why, sizeof next.chosen_why);
+    if (has_flow && !structure) memcpy(next.flow_why, flow_why, sizeof next.flow_why);
     next.flow_base = si->flow_base;
     next.advanced_blend = si->advanced_blend;
     next.advanced_blend_mask = si->advanced_blend_mask;

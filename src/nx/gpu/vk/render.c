@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 #include "nx/runtime/options.h"
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/maxwell/draw_state.h"
@@ -1583,7 +1584,7 @@ static void tex_resolve(const DsState* ds, u32 handle, TexRes* x) {
     u64 gw = gpu_mem_generation();
     u32 epoch = vk_ww_epoch(), now = vk_ww_now(); /* before the headers are read */
     /* a write in place is no result added: its own count moves (vk_uma_writes) */
-    u64 adds = __atomic_load_n(&g_pend_any.adds, __ATOMIC_RELAXED) + vk_uma_writes();
+    u64 adds = atomic_load_explicit(&g_pend_any.adds, memory_order_relaxed) + vk_uma_writes();
     x->handle = handle;
     x->have = 1;
     x->memo = 0;
@@ -1616,8 +1617,8 @@ static void tex_resolve(const DsState* ds, u32 handle, TexRes* x) {
     int miss = !m                                                   ? (same_handle ? MEMO_STATE : MEMO_WAY)
                : m->surf_epoch != vk_surf_epoch_at(m->t_gva)        ? MEMO_SURFACE
                : !tex_memo_unwritten(m, tic_at, tsc_at, epoch, now) ? MEMO_HEADERS
-               : g_gfx_img_any && tex_memo_image_pending(m)         ? MEMO_IMAGE
-               : !tex_memo_unpended(m, tic_at, tsc_at, adds)        ? MEMO_PENDING
+               : atomic_load_explicit(&g_gfx_img_any, memory_order_relaxed) && tex_memo_image_pending(m) ? MEMO_IMAGE
+               : !tex_memo_unpended(m, tic_at, tsc_at, adds)                                             ? MEMO_PENDING
                : m->gw != gw && (gpu_mem_dirty_since(m->gw, tic_at, 32) || gpu_mem_dirty_since(m->gw, tsc_at, 32))
                    ? MEMO_GPU
                    : -1;
@@ -2303,7 +2304,7 @@ static struct {
    images and queued releases too: an entry lives past the submission that lands them). Both counts only grow, so
    their sum stays while both do */
 static u64 cb_adds(void) {
-    return __atomic_load_n(&g_pend_any.adds, __ATOMIC_RELAXED) +
+    return atomic_load_explicit(&g_pend_any.adds, memory_order_relaxed) +
            vk_uma_writes(); /* the writes in place, which no other count has */
 }
 /* e made now, binding what lives as life says. CB_OWN: what the buffer cache's last lookup bound, its own buffer or
@@ -2425,8 +2426,9 @@ static int cb_get(const DsState* ds, int stage, int i, u32 sz, VkBuffer* buf, u6
        below see: the buffer then comes from vk_buf_get_strict, which reads it on the GPU, and isn't cached. Neither is
        one under a result of another kind (the mirror's writes, a storage image, a queued release), which the buffer
        cache looks for: the entry would live past the submission that lands it */
-    if (g_cs_any && a) vk_compute_mem_need(a, sz);
-    int pending = a && ((g_gfx_any && vk_buf_pending(a, sz)) || vk_uma_pending(a, sz) || /* written in place too */
+    if (atomic_load_explicit(&g_cs_any, memory_order_relaxed) && a) vk_compute_mem_need(a, sz);
+    int pending = a && ((atomic_load_explicit(&g_gfx_any, memory_order_relaxed) && vk_buf_pending(a, sz)) ||
+                        vk_uma_pending(a, sz) || /* written in place too */
                         pend_hit(&g_pend_any, a, sz));
     if (!pending && (cb_kept(e, a, sz, 0, epoch) || (cb_kept(x, a, sz, 0, epoch) && (*e = *x, 1)))) {
         /* no result of any kind is over the bytes it holds: the next draw takes it at the first check, while no

@@ -167,8 +167,8 @@ static VkImageLayout color_layout(const struct VitaRender* r) {
 /* a reason logged once for each distinct value: the bit's first call, and the first call after a different value,
    print; a repeat of the same value returns before touching the format string, as the plain bit did before. A
    caller with nothing that varies (a message with no %, truly one reason) passes 0 for value */
-static void once_value(struct VitaRender* r, unsigned bit, uint64_t value, const char* format, ...)
-    __attribute__((format(printf, 4, 5)));
+[[gnu::format(printf, 4, 5)]] static void once_value(struct VitaRender* r, unsigned bit, uint64_t value,
+                                                     const char* format, ...);
 static void once_value(struct VitaRender* r, unsigned bit, uint64_t value, const char* format, ...) {
     if ((r->logged & (1u << bit)) && r->logged_value[bit] == value) return;
     r->logged |= 1u << bit;
@@ -181,7 +181,7 @@ static void once_value(struct VitaRender* r, unsigned bit, uint64_t value, const
     va_end(list);
 }
 /* once_value for a message with nothing that varies: the same reason every time it is reached */
-static void once(struct VitaRender* r, unsigned bit, const char* format, ...) __attribute__((format(printf, 3, 4)));
+[[gnu::format(printf, 3, 4)]] static void once(struct VitaRender* r, unsigned bit, const char* format, ...);
 static void once(struct VitaRender* r, unsigned bit, const char* format, ...) {
     if (r->logged & (1u << bit)) return;
     r->logged |= 1u << bit;

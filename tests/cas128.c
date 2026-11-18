@@ -7,6 +7,7 @@
 #include "common/runtime/interface.h"
 #include <assert.h>
 #include <stdio.h>
+#include <stdatomic.h>
 #ifndef _WIN32
 #include <pthread.h>
 #endif
@@ -26,15 +27,15 @@ static void one(Cas cas) {
 #ifndef _WIN32
 #define THREADS 4
 #define ADDS    20000
-static _Alignas(16) uint64_t g_pair[2];
+static _Alignas(16) uint64_t g_pair[2]; /* guest memory's pair: plain, read through _Atomic pointers */
 static Cas g_cas;
 static void* adder(void* unused) {
     int i;
     (void)unused;
     for (i = 0; i < ADDS; i++)
         for (;;) { /* as LDXP reads it: a half at a time, the compare-and-swap telling a pair torn */
-            uint64_t lo = __atomic_load_n(&g_pair[0], __ATOMIC_SEQ_CST),
-                     hi = __atomic_load_n(&g_pair[1], __ATOMIC_SEQ_CST);
+            uint64_t lo = atomic_load_explicit((_Atomic uint64_t*)&g_pair[0], memory_order_seq_cst),
+                     hi = atomic_load_explicit((_Atomic uint64_t*)&g_pair[1], memory_order_seq_cst);
             if (g_cas(g_pair, lo, hi, lo + 1, ~(lo + 1))) break;
         }
     return NULL;

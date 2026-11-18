@@ -27,6 +27,7 @@
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 #if !defined(_WIN32)
 #include <dlfcn.h>
 #include <pthread.h>
@@ -66,7 +67,7 @@ static struct {
     void (*dallocx)(void*, int);
     size_t (*sallocx)(const void*, int);
     int (*mallctl)(const char*, void*, size_t*, void*, size_t);
-    u64 mapped;             /* statistics: the window's bytes mapped */
+    _Atomic u64 mapped;     /* statistics: the window's bytes mapped */
     signed char copied[32]; /* alloc_new_shape's verdict by module: 1 none, -1 its lookup is copied, 0 not read */
 } g_alloc;
 
@@ -82,7 +83,7 @@ static void* extent_alloc(ExtentHooks* h, void* new_addr, size_t size, size_t al
         if (!a || a < g_alloc.lo || a + size > g_alloc.hi) return NULL;
         int r = mem_map(a, size, MS_NORMAL, PERM_RW);
         if (!r) {
-            __atomic_add_fetch(&g_alloc.mapped, size, __ATOMIC_RELAXED);
+            atomic_fetch_add_explicit(&g_alloc.mapped, size, memory_order_relaxed);
             *zero = true;
             *commit = true;
             return GP(a);
@@ -94,7 +95,7 @@ static void* extent_alloc(ExtentHooks* h, void* new_addr, size_t size, size_t al
 static bool extent_dalloc(ExtentHooks* h, void* addr, size_t size, bool committed, unsigned arena) {
     (void)h, (void)committed, (void)arena;
     if (mem_unmap((u64)((u8*)addr - g_mem), size)) return true; /* kept: jemalloc retains it */
-    __atomic_sub_fetch(&g_alloc.mapped, size, __ATOMIC_RELAXED);
+    atomic_fetch_sub_explicit(&g_alloc.mapped, size, memory_order_relaxed);
     return false;
 }
 static void extent_destroy(ExtentHooks* h, void* addr, size_t size, bool committed, unsigned arena) {
@@ -117,11 +118,11 @@ static ExtentHooks g_hooks = {extent_alloc, extent_dalloc, extent_destroy, NULL,
 #if defined(__ELF__)
 /* cmake/jemalloc.cmake links jemalloc whole and unprefixed into the program, which exports only SNX_JEMALLOC_EXPORTS:
    dlsym's RTLD_DEFAULT doesn't see these. Weak, so a program without jemalloc links and finds them NULL */
-extern void* mallocx(size_t size, int flags) __attribute__((weak));
-extern void* rallocx(void* p, size_t size, int flags) __attribute__((weak));
-extern void dallocx(void* p, int flags) __attribute__((weak));
-extern size_t sallocx(const void* p, int flags) __attribute__((weak));
-extern int mallctl(const char* name, void* old, size_t* oldlen, void* new_value, size_t newlen) __attribute__((weak));
+[[gnu::weak]] extern void* mallocx(size_t size, int flags);
+[[gnu::weak]] extern void* rallocx(void* p, size_t size, int flags);
+[[gnu::weak]] extern void dallocx(void* p, int flags);
+[[gnu::weak]] extern size_t sallocx(const void* p, int flags);
+[[gnu::weak]] extern int mallctl(const char* name, void* old, size_t* oldlen, void* new_value, size_t newlen);
 #endif
 #if !defined(_WIN32)
 static void* sym(const char* name) {
@@ -202,14 +203,15 @@ int alloc_ready(void) {
 #define LIVE_MAX   (LIVE_SLOTS / 4 * 3)
 #define LIVE_GONE  1ull
 static struct {
-    int lk; /* a spin lock: held for one probe sequence */
+    _Atomic int lk; /* a spin lock: held for one probe sequence */
     u64 at[LIVE_SLOTS];
-    u32 n, used, said; /* the blocks held, and the slots not empty: theirs and the tombstones */
+    u32 n, used;
+    _Atomic u32 said; /* the blocks held, and the slots not empty: theirs and the tombstones */
 } g_live;
 static void live_lock(void) {
-    while (__atomic_exchange_n(&g_live.lk, 1, __ATOMIC_ACQUIRE)) {}
+    while (atomic_exchange_explicit(&g_live.lk, 1, memory_order_acquire)) {}
 }
-static void live_unlock(void) { __atomic_store_n(&g_live.lk, 0, __ATOMIC_RELEASE); }
+static void live_unlock(void) { atomic_store_explicit(&g_live.lk, 0, memory_order_release); }
 static u32 live_slot(u64 a) { return (u32)((a >> 4) * 0x9E3779B97F4A7C15ull >> (64 - LIVE_BITS)); }
 /* the table made again with no tombstone, each held block put back: a lookup of a pointer it doesn't hold stops at the
    first empty slot, which tombstones would use up as blocks come and go. Under the lock */
@@ -274,7 +276,7 @@ static int live_has(u64 a) {
 static void* own_block(u64 a, const char* by) {
     if (a < g_alloc.lo || a >= g_alloc.hi) return NULL;
     if (live_take(a)) return GP(a);
-    if (__atomic_fetch_add(&g_live.said, 1, __ATOMIC_RELAXED) < 16)
+    if (atomic_fetch_add_explicit(&g_live.said, 1, memory_order_relaxed) < 16)
         LOG("hooks: %s gave %llx, in the arena's window but no block it gave: the game's own code takes it\n", by,
             (unsigned long long)a);
     return NULL;

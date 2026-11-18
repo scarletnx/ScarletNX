@@ -21,13 +21,13 @@ typedef enum { SNX_PAD_FULL_KEY = 0, SNX_PAD_JOY_DUAL, SNX_PAD_JOY_LEFT, SNX_PAD
 typedef struct {
     u64 buttons;
     i32 lx, ly, rx, ry;
-    int connected; /* player 1 stays connected, for the keyboard and scripted input */
-    PadKind kind;
+    _Atomic int connected; /* player 1 stays connected, for the keyboard and scripted input */
+    _Atomic PadKind kind;
     u32 source_id;       /* the SDL instance id, which changes when the controller is replaced */
     PadMotion motion[2]; /* the left (or only) sensor, and the right one when there is one */
     /* vibration the game asked for, left and right: amp_low in bits 0-15, amp_high in bits 16-31. Game threads write
        it and the frontend plays it */
-    u32 rumble[2];
+    _Atomic u32 rumble[2];
 } PadState;
 
 u64 hid_update(void); /* the LIFO states it wrote */
@@ -58,10 +58,10 @@ typedef struct {
 typedef struct {
     u32 jcms_tmem, nmouse_tmem;
     u64 jcms, nmouse;
-    u32 jcms_on;             /* the Jcms started, by index */
+    _Atomic u32 jcms_on;     /* the Jcms started, by index */
     i32 width, height, x, y; /* the pointer's range and where it is */
     float dx, dy, wheel;     /* the frontend's motion not yet taken, under input_lock */
-    u32 buttons;             /* nn::hid::MouseButton, under input_lock */
+    _Atomic u32 buttons;     /* nn::hid::MouseButton, under input_lock */
 } HidMouse;
 typedef struct {
     /* The frontend publishes these and hid samples them, both under input_lock */
@@ -72,7 +72,8 @@ typedef struct {
     u32 style_ev[HID_ENTRIES];
     u64 samp;            /* the sampling number of the latest states */
     u64 last_ns;         /* when they were taken */
-    u32 supported_styles, supported_ids; /* the game's: styles, and Npads by entry index */
+    _Atomic u32 supported_styles;
+    u32 supported_ids; /* the game's: styles, and Npads by entry index */
     i64 hold, handheld_mode, comm_mode;
     i64 header_hold; /* the hold type the single Joy-Cons' headers were written for */
     PadState pad[HID_PADS]; /* the frontend's players, as the last update saw them */
@@ -94,6 +95,6 @@ typedef struct {
        a pulse the game starts and ends between two reads still plays, for one */
     u32 rumble_peak[HID_PADS][2];
     /* atomic: the input ticks done, and the LIFO states they wrote, which the profiler's rates read */
-    u64 updates, states;
+    _Atomic u64 updates, states;
 } HostHid;
 #endif

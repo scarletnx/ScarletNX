@@ -32,6 +32,7 @@
 #include "nx/hle/kernel/kernel_int.h"
 #include "nx/runtime/clock.h"
 #include "nx/runtime/platform/log.h"
+#include <stdatomic.h>
 
 /* the functions that write the two words, which the family takes all of or none of */
 static const char* const k_word_writers[] = {
@@ -51,16 +52,16 @@ int os_sync_ready(void) {
     return 1;
 }
 
-static u32* word(CPU* c, u64 a) { return (u32*)(void*)hook_host(c, a); }
-static u32 ld(const u32* p) { return snx_le32(__atomic_load_n(p, __ATOMIC_ACQUIRE)); }
-static int cas(u32* p, u32* cur, u32 nv) {
+static _Atomic u32* word(CPU* c, u64 a) { return (_Atomic u32*)(void*)hook_host(c, a); }
+static u32 ld(const _Atomic u32* p) { return snx_le32(atomic_load_explicit(p, memory_order_acquire)); }
+static int cas(_Atomic u32* p, u32* cur, u32 nv) {
     u32 e = snx_le32(*cur);
-    int ok = __atomic_compare_exchange_n(p, &e, snx_le32(nv), 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
+    int ok = atomic_compare_exchange_strong_explicit(p, &e, snx_le32(nv), memory_order_acq_rel, memory_order_acquire);
     *cur = snx_le32(e);
     return ok;
 }
 /* the guest word plus d, the new value */
-static u32 add(u32* p, u32 d) {
+static u32 add(_Atomic u32* p, u32 d) {
     u32 v = ld(p);
     while (!cas(p, &v, v + d)) {}
     return v + d;
@@ -113,7 +114,7 @@ i32 os_core_number_impl(CPU* c, u64 self) {
 
 /* ---- InternalCriticalSection: the word at cs */
 static void cs_enter(CPU* c, u64 cs) {
-    u32* p = word(c, cs);
+    _Atomic u32* p = word(c, cs);
     u32 tag = me(), v = 0;
     int waited = 0;
     if (cas(p, &v, tag)) return;
@@ -142,7 +143,7 @@ static void cs_leave(CPU* c, u64 cs) {
 }
 static int cs_mine(CPU* c, u64 cs) { return (ld(word(c, cs)) & ~HANDLE_WAIT) == me(); }
 
-void os_cs_init(CPU* c, u64 cs) { __atomic_store_n(word(c, cs), 0u, __ATOMIC_RELEASE); }
+void os_cs_init(CPU* c, u64 cs) { atomic_store_explicit(word(c, cs), 0u, memory_order_release); }
 void os_cs_enter(CPU* c, u64 cs) { cs_enter(c, cs); }
 int os_cs_try_enter(CPU* c, u64 cs) { return cs_try_enter(c, cs); }
 void os_cs_leave(CPU* c, u64 cs) { cs_leave(c, cs); }
@@ -152,7 +153,7 @@ int os_cs_mine(CPU* c, u64 cs) { return cs_mine(c, cs); }
 #define CV_WAITERS 0xFFFFu
 #define CV_SIGNAL  0x10000u
 static void cv_wake(CPU* c, u64 cv, int all) {
-    u32* p = word(c, cv);
+    _Atomic u32* p = word(c, cv);
     if (!(ld(p) & CV_WAITERS)) return;
     add(p, CV_SIGNAL);
     if (all)
@@ -163,7 +164,7 @@ static void cv_wake(CPU* c, u64 cv, int all) {
 /* cs held by the caller, which it lets go of while it waits: until a signal (1), or until the host's clock reaches
    end (plat_ns; 0 for none) first (0). It holds cs again either way */
 static int cv_wait(CPU* c, u64 cv, u64 cs, u64 end) {
-    u32* p = word(c, cv);
+    _Atomic u32* p = word(c, cv);
     u32 v = add(p, 1u), now;
     int got = 0;
     cs_leave(c, cs);
@@ -202,7 +203,7 @@ static i64 ticks_left_ns(u64 tick) {
     return (i64)(s * 1000000000u + (d % r.freq) * 1000000000u / r.freq);
 }
 
-void os_cv_init(CPU* c, u64 cv) { __atomic_store_n(word(c, cv), 0u, __ATOMIC_RELEASE); }
+void os_cv_init(CPU* c, u64 cv) { atomic_store_explicit(word(c, cv), 0u, memory_order_release); }
 void os_cv_signal(CPU* c, u64 cv) { cv_wake(c, cv, 0); }
 void os_cv_broadcast(CPU* c, u64 cv) { cv_wake(c, cv, 1); }
 /* the SDK checks the caller holds cs, and aborts otherwise */
@@ -236,7 +237,7 @@ void os_sdk_mutex_unlock(CPU* c, u64 m) {
     cs_leave(c, m);
 }
 void os_sdk_recursive_init(CPU* c, u64 m) {
-    __atomic_store_n(word(c, m), 0u, __ATOMIC_RELEASE);
+    atomic_store_explicit(word(c, m), 0u, memory_order_release);
     snx_st_le32(hook_host(c, m + 4), 0);
 }
 static void recursive_more(CPU* c, u64 m) {
@@ -299,7 +300,7 @@ static int lw_retry(u32 rc) { return RC_DESC(rc) == RC_DESC(SNX_RC_SVC_INVALID_S
 /* the word set to signaled: every waiter woken (all) or one, by SignalAndIncrementIfEqual or
    SignalAndModifyByWaitingCountIfEqual, as the SDK's manual and automatic clears signal */
 static void lw_signal(CPU* c, u64 a, int all) {
-    u32* p = word(c, a);
+    _Atomic u32* p = word(c, a);
     for (;;) {
         u32 v = ld(p);
         if (v == LW_SIGNALED) return;
@@ -315,7 +316,7 @@ static void lw_signal(CPU* c, u64 a, int all) {
 /* a wait on the word while nobody signaled it: 1 when woken, 2 when the word changed before the wait began (the
    arbiter's InvalidState), 0 when it was signaled already */
 static int lw_wait(CPU* c, u64 a) {
-    u32* p = word(c, a);
+    _Atomic u32* p = word(c, a);
     for (;;) {
         u32 v = ld(p);
         if (v == LW_SIGNALED) return 0;
@@ -336,14 +337,14 @@ static void lw_clear(CPU* c, u64 a) {
 }
 /* a light object's spinlock word */
 static void spin_lock(CPU* c, u64 a) {
-    u32* p = word(c, a);
+    _Atomic u32* p = word(c, a);
     for (u32 n = 0;; n++) {
         u32 v = 0;
         if (cas(p, &v, 1u)) return;
         if (n >= 64) plat_yield();
     }
 }
-static void spin_unlock(CPU* c, u64 a) { __atomic_store_n(word(c, a), 0u, __ATOMIC_RELEASE); }
+static void spin_unlock(CPU* c, u64 a) { atomic_store_explicit(word(c, a), 0u, memory_order_release); }
 
 /* LightEventType (hooks.hook gives its layout per SDK): whether its clear is automatic, that it is initialized, and the
    waiter word. Its functions keep to the layout of the SDK that built the game, as the SDK's own TimedWait, which the
@@ -352,7 +353,7 @@ typedef const HookLayout_nn_os_LightEventType LightEventLayout;
 static void light_event_init(CPU* c, LightEventLayout* L, u64 e, int signaled, u32 mode) {
     hook_put_bool(c, L->auto_clear, e, mode == 1);
     hook_put_bool(c, L->initialized, e, 1);
-    __atomic_store_n(word(c, e + L->waiter.offset), snx_le32(signaled ? LW_SIGNALED : 0u), __ATOMIC_RELEASE);
+    atomic_store_explicit(word(c, e + L->waiter.offset), snx_le32(signaled ? LW_SIGNALED : 0u), memory_order_release);
 }
 void os_light_event_init(CPU* c, LightEventLayout* L, u64 e, int signaled, u32 mode) {
     light_event_init(c, L, e, signaled, mode);
@@ -369,7 +370,7 @@ void os_light_event_clear(CPU* c, LightEventLayout* L, u64 e) { lw_clear(c, e + 
 /* an automatic one's signal is taken: the wake of one waiter, or the word's signaled state cleared */
 void os_light_event_wait(CPU* c, LightEventLayout* L, u64 e) {
     const u64 a = e + L->waiter.offset;
-    u32* p = word(c, a);
+    _Atomic u32* p = word(c, a);
     if (!hook_get_bool(c, L->auto_clear, e)) { /* manual: a wake, or the word found changed, ends it */
         lw_wait(c, a);
         return;
@@ -383,7 +384,7 @@ void os_light_event_wait(CPU* c, LightEventLayout* L, u64 e) {
 }
 int os_light_event_try_wait(CPU* c, LightEventLayout* L, u64 e) {
     u32 v = LW_SIGNALED;
-    u32* p = word(c, e + L->waiter.offset);
+    _Atomic u32* p = word(c, e + L->waiter.offset);
     if (hook_get_bool(c, L->auto_clear, e)) return cas(p, &v, 0);
     return ld(p) == LW_SIGNALED;
 }

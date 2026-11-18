@@ -41,6 +41,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 
 #define CB(a)                   NVN_OBJ(NvnCmdBuf, a)
 /* room a piece of the runtime's memory keeps after every record: one JUMP to the next piece */
@@ -95,7 +96,7 @@ static void put_hdr(u64 at, u32 op, u32 size, u32 cost) {
 /* the target before the header: a walk of another submission that reads the JUMP reads where it goes (nvn_replay.c) */
 static void put_jump(u64 at, u64 to) {
     memcpy(GP(at + 8), &to, 8);
-    __atomic_thread_fence(__ATOMIC_RELEASE);
+    atomic_thread_fence(memory_order_release);
     put_hdr(at, OP_JUMP, 16, 0);
 }
 
@@ -165,7 +166,8 @@ static void spill_census(const NvnCmdState* st) {
             }
     LOG("nvn: census of the runtime's record memory: %u of %u pieces in use, in %u of %u segments, %llu KiB with the "
         "small store's, %u cut in all\n",
-        st->np, NVN_SPILL_PIECES, live_segs, st->ns, (unsigned long long)(st->total >> 10), st->serial);
+        atomic_load_explicit(&st->np, memory_order_relaxed), NVN_SPILL_PIECES, live_segs, st->ns,
+        (unsigned long long)(st->total >> 10), st->serial);
     for (int j = 0; j < SHOWN && top[j]; j++) {
         u32 k = top[j] - 1; /* NvnCmdBuf.ctl: the control slot plus 1 */
         const Tally* a = &t[k];
@@ -199,7 +201,7 @@ static u32 spill_cut(u64 cb, u64 anchor, u32 need, u64* at, u32* piece) {
     u64 want = (u64)need + OP_RESERVE, canchor = ctl_anchor(cb);
     NvnCtl* own = ctl_of(cb);
     u32 who = CB(cb)->ctl, k, i, slot, b, any;
-    if (__atomic_load_n(&st->np, __ATOMIC_RELAXED) >= st->sweep) spill_sweep(st);
+    if (atomic_load_explicit(&st->np, memory_order_relaxed) >= st->sweep) spill_sweep(st);
     pm_lock(&st->lock);
     /* From the segment its last piece came from, and only one that holds no other command buffer's pieces: a segment
        comes back when all of its pieces do, and they do when the ring they are anchored in passes them. One game has a ring
@@ -270,9 +272,10 @@ static u32 spill_cut(u64 cb, u64 anchor, u32 need, u64* at, u32* piece) {
     st->p[slot].serial = ++st->serial;
     st->p[slot].next = st->bucket[b];
     st->bucket[b] = slot;
-    st->np++;
-    if (st->np / (NVN_SPILL_PIECES / 4) > st->census) { /* a quarter, a half and three quarters of the slots */
-        st->census = st->np / (NVN_SPILL_PIECES / 4);
+    atomic_store_explicit(&st->np, atomic_load_explicit(&st->np, memory_order_relaxed) + 1, memory_order_relaxed);
+    if (atomic_load_explicit(&st->np, memory_order_relaxed) / (NVN_SPILL_PIECES / 4) >
+        st->census) { /* a quarter, a half and three quarters of the slots */
+        st->census = atomic_load_explicit(&st->np, memory_order_relaxed) / (NVN_SPILL_PIECES / 4);
         spill_census(st);
     }
     st->hint = k;
@@ -347,7 +350,7 @@ static void piece_free(NvnCmdState* st, u32 slot, int control) {
     q->next = st->free;
     st->free = slot;
     q->anchor = q->canchor = 0; /* free: nvn_cmd_describe lists the others */
-    st->np--;
+    atomic_store_explicit(&st->np, atomic_load_explicit(&st->np, memory_order_relaxed) - 1, memory_order_relaxed);
     if (q->seg >= NVN_SPILL_SMALL) {
         if (q->at) small_give(st, q->seg - NVN_SPILL_SMALL, q->at); /* 0: a newer recording took its block */
         return;
@@ -688,8 +691,11 @@ static void spill_sweep(NvnCmdState* st) {
     u32 n = 0, gone = 0;
     pm_lock(&st->lock);
     st->sweep = ~0u; /* one at a time */
-    Seen* seen = malloc((st->np ? st->np : 1) * sizeof *seen);
-    for (u32 i = 1; seen && i <= st->slots && n < st->np; i++)
+    Seen* seen = malloc((atomic_load_explicit(&st->np, memory_order_relaxed)
+                             ? atomic_load_explicit(&st->np, memory_order_relaxed)
+                             : 1) *
+                        sizeof *seen);
+    for (u32 i = 1; seen && i <= st->slots && n < atomic_load_explicit(&st->np, memory_order_relaxed); i++)
         if (st->p[i].anchor && st->p[i].mark)
             seen[n++] = (Seen){(st->p[i].anchor + 7) & ~7ull, st->p[i].mark, i, st->p[i].serial};
     pm_unlock(&st->lock);
@@ -706,7 +712,10 @@ static void spill_sweep(NvnCmdState* st) {
             gone++;
         }
     }
-    st->sweep = st->np + (st->np > 4096 ? st->np : 4096); /* the next once as many more are in use as stay */
+    st->sweep = atomic_load_explicit(&st->np, memory_order_relaxed) +
+                (atomic_load_explicit(&st->np, memory_order_relaxed) > 4096
+                     ? atomic_load_explicit(&st->np, memory_order_relaxed)
+                     : 4096); /* the next once as many more are in use as stay */
     pm_unlock(&st->lock);
     free(seen);
     if (gone)

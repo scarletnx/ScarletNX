@@ -14,7 +14,7 @@
 
 static u64 g_now;
 u64 test_ns(void) { return g_now; }
-int g_frames;
+_Atomic int g_frames;
 char g_exedir[1024], g_exename[256]; /* the game's folder and name, the slots' */
 void snx_save_before_exit(void) {}
 void ini_poll(int final) { (void) final; }

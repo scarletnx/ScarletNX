@@ -9,6 +9,7 @@
 #include "common/utilities/common.h"
 #include <stdio.h>
 #include <string.h>
+#include <stdatomic.h>
 
 #define MIB(n) ((SnxU64)(n) << 20)
 
@@ -194,23 +195,23 @@ typedef struct {
     const SnxAotReading* script; /* a tick's reading each, the first the one before the first unit */
     unsigned ticks;              /* how many it holds: the queue has no unit left once they are read */
     unsigned read;               /* how many were read, by the control's thread alone */
-    int stop;                    /* atomic: no unit left */
-    unsigned started;            /* atomic: the threads that ran the worker */
+    _Atomic int stop;            /* atomic: no unit left */
+    _Atomic unsigned started;    /* atomic: the threads that ran the worker */
     char lines[LINES][768];
     unsigned said;
 } Fake;
 
 static void fake_worker(void* arg) {
     Fake* f = (Fake*)arg;
-    __atomic_add_fetch(&f->started, 1, __ATOMIC_SEQ_CST);
-    while (!__atomic_load_n(&f->stop, __ATOMIC_SEQ_CST)) plat_sleep_ns(1000000); /* a unit of 1 ms */
+    atomic_fetch_add_explicit(&f->started, 1, memory_order_seq_cst);
+    while (!atomic_load_explicit(&f->stop, memory_order_seq_cst)) plat_sleep_ns(1000000); /* a unit of 1 ms */
 }
 static void fake_state(void* arg, SnxAotReading* r) {
     Fake* f = (Fake*)arg;
     r->active = 1; /* the script's memory is one unit's, whatever the threads */
     r->done = 1;
     r->held = 0;
-    r->left = __atomic_load_n(&f->stop, __ATOMIC_SEQ_CST) ? 0 : 1000;
+    r->left = atomic_load_explicit(&f->stop, memory_order_seq_cst) ? 0 : 1000;
 }
 static void fake_read(void* arg, SnxAotReading* r, char* pressure, size_t size) {
     Fake* f = (Fake*)arg;
@@ -221,7 +222,7 @@ static void fake_read(void* arg, SnxAotReading* r, char* pressure, size_t size) 
         r->available_known = f->script[f->read].available_known;
         r->pressure = f->script[f->read].pressure;
     }
-    if (++f->read >= f->ticks) __atomic_store_n(&f->stop, 1, __ATOMIC_SEQ_CST);
+    if (++f->read >= f->ticks) atomic_store_explicit(&f->stop, 1, memory_order_seq_cst);
 }
 static void fake_say(void* arg, const char* line) {
     Fake* f = (Fake*)arg;

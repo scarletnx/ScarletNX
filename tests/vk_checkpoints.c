@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 #if !defined(_WIN32)
 #include <sched.h>
 #endif
@@ -18,16 +19,18 @@ PFN_vkGetQueueCheckpointData2NV vkGetQueueCheckpointData2NV;
 enum { PRODUCERS = 4, RECORDS = 512 };
 static struct {
     PMutex log_lock;
-    unsigned checks, failures, calls, submit_reads, reports, ready, release, finished, concurrent;
-    u64 last_marker, marker[4];
+    _Atomic unsigned checks, failures, calls, submit_reads, reports, ready, release, finished;
+    unsigned concurrent;
+    _Atomic u64 last_marker;
+    u64 marker[4];
     char log[65536];
     size_t log_size;
 } g_test = {.log_lock = PMUTEX_INIT};
 static _Thread_local struct { int checkpoint_locked; } t_test;
 
 static void check(int pass, const char* what) {
-    __atomic_fetch_add(&g_test.checks, 1, __ATOMIC_RELAXED);
-    if (!pass && __atomic_fetch_add(&g_test.failures, 1, __ATOMIC_RELAXED) < 12)
+    atomic_fetch_add_explicit(&g_test.checks, 1, memory_order_relaxed);
+    if (!pass && atomic_fetch_add_explicit(&g_test.failures, 1, memory_order_relaxed) < 12)
         fprintf(stderr, "FAIL: %s\n", what);
 }
 static void yield_thread(void) {
@@ -71,7 +74,7 @@ void logf_(int level, const char* format, ...) {
 }
 u64 vk_submit_number(void) {
     outside_lock();
-    __atomic_fetch_add(&g_test.submit_reads, 1, __ATOMIC_RELAXED);
+    atomic_fetch_add_explicit(&g_test.submit_reads, 1, memory_order_relaxed);
     return 77;
 }
 static void emit(u32 value) {
@@ -93,17 +96,17 @@ void rec_CmdSetCheckpointNV(VkCommandBuffer cb, const void* pointer) {
         check(value.submit == 77 && value.kind == value.a % VK_CK_KINDS && value.b == value.a * 3u + 1u &&
               value.c == (value.a ^ 0xa51ce399u) && value.d == ~value.a, "record publication has one complete payload");
     }
-    __atomic_store_n(&g_test.last_marker, marker, __ATOMIC_RELAXED);
-    __atomic_fetch_add(&g_test.calls, 1, __ATOMIC_RELAXED);
+    atomic_store_explicit(&g_test.last_marker, marker, memory_order_relaxed);
+    atomic_fetch_add_explicit(&g_test.calls, 1, memory_order_relaxed);
 }
 void vk_submit_progress(u64* submitted, u64* done) {
     outside_lock();
-    __atomic_fetch_add(&g_test.reports, 1, __ATOMIC_RELAXED);
+    atomic_fetch_add_explicit(&g_test.reports, 1, memory_order_relaxed);
     if (g_test.concurrent) {
         /* Deterministically release all producers only after the report has taken its snapshot. Their attempts
            must finish without changing that snapshot, even while this external callback is still running. */
-        __atomic_store_n(&g_test.release, 1, __ATOMIC_RELEASE);
-        while (__atomic_load_n(&g_test.finished, __ATOMIC_ACQUIRE) != PRODUCERS) yield_thread();
+        atomic_store_explicit(&g_test.release, 1, memory_order_release);
+        while (atomic_load_explicit(&g_test.finished, memory_order_acquire) != PRODUCERS) yield_thread();
     }
     emit(0xeffe0001u); /* reentrant recorder attempt must be suppressed after the freeze */
     vk_ck_report(); /* a second reporter must return without querying Vulkan again */
@@ -198,10 +201,10 @@ static void wide_marker_case(void) {
 static void produce(void* argument) {
     u32 worker = (u32)(uintptr_t)argument;
     for (u32 i = 0; i < RECORDS; i++) emit(worker * RECORDS + i);
-    __atomic_fetch_add(&g_test.ready, 1, __ATOMIC_RELEASE);
-    while (!__atomic_load_n(&g_test.release, __ATOMIC_ACQUIRE)) yield_thread();
+    atomic_fetch_add_explicit(&g_test.ready, 1, memory_order_release);
+    while (!atomic_load_explicit(&g_test.release, memory_order_acquire)) yield_thread();
     for (u32 i = 0; i < RECORDS; i++) emit(0x10000000u + worker * RECORDS + i);
-    __atomic_fetch_add(&g_test.finished, 1, __ATOMIC_RELEASE);
+    atomic_fetch_add_explicit(&g_test.finished, 1, memory_order_release);
 }
 #if defined(_WIN32)
 static DWORD WINAPI produce_entry(LPVOID argument) { produce(argument); return 0; }
@@ -225,7 +228,7 @@ static void concurrent_case(void) {
             check(0, "producer thread creation"); exit(1);
         }
 #endif
-    while (__atomic_load_n(&g_test.ready, __ATOMIC_ACQUIRE) != PRODUCERS) yield_thread();
+    while (atomic_load_explicit(&g_test.ready, memory_order_acquire) != PRODUCERS) yield_thread();
     g_test.marker[0] = 1;
     g_test.marker[1] = PRODUCERS * RECORDS;
     g_test.concurrent = 1;

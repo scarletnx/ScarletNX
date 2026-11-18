@@ -1454,6 +1454,15 @@ setting Pipeline stats
     help spills and the others that the driver reports, by the program hashes of the log's lines (a shader corpus file
     help of the program starts with the same first 8 hex digits). Draws that bind shader objects get no rows. On some
     help drivers, pipelines made with it are not the ones in the pipeline cache of runs without it. Empty: none
+setting GL call census
+    key gl_call_census
+    text 1024
+    default ""
+    startup
+    help A TSV file that gets, for a game that draws through its own OpenGL driver, each GL function it calls: the
+    help calls, the frames it is called in, the most in one frame, the first and last frame, and the driver's own calls
+    help of it apart. Written every 600 frames and as the game ends. Every GL call costs a count while it is set; the
+    help driver still runs each one. Empty: none
 setting ASTC dump
     key astc_dump
     text 1024

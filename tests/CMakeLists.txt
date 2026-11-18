@@ -82,7 +82,7 @@ if(SNX_TEST_SANITIZERS)
         # GLSL ES into SPIR-V
         snx_glslc snx-glslc-cli snx-test-glslc-lex snx-test-glslc-parse snx-test-glslc-emit snx-test-glslc-fuzz
         # the code generators, which tests run on files they refuse
-        snx-swipc snx-svcgen snx-hookgen snx-settingsgen snx-uigen snx-decodetree snx-vkcmdgen)
+        snx-swipc snx-svcgen snx-hookgen snx-settingsgen snx-uigen snx-decodetree snx-vkcmdgen snx-sailgen)
 endif()
 # one Python for the scripted tests: without it they are left out
 find_package(Python3 QUIET COMPONENTS Interpreter)
@@ -1260,6 +1260,58 @@ set_tests_properties(a64_decode_unordered PROPERTIES PASS_REGULAR_EXPRESSION
     "unordered.decode:7: %wide spans 0 to 2097151: !function=xor_2 is not rising, and a span is tried whole up to 1048576 values")
 
 
+# sailgen (tools/sailgen/): --extract copies the closure of a root (its clause, what it calls, the enum it names) and
+# nothing else; --generate refuses a throw it has no meaning for, with its file and line
+include("${PROJECT_SOURCE_DIR}/cmake/sailgen.cmake")
+add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/sailgen/extract.sail"
+    COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/sailgen"
+    COMMAND snx-sailgen --extract "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/fixture.roots"
+            -o "${CMAKE_CURRENT_BINARY_DIR}/sailgen/extract.sail" "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/upstream.sail"
+    DEPENDS snx-sailgen "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/fixture.roots"
+            "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/upstream.sail" VERBATIM)
+add_custom_target(snx_sailgen_extract_test ALL DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/sailgen/extract.sail")
+add_test(NAME sailgen_extract COMMAND "${CMAKE_COMMAND}" -E compare_files --ignore-eol
+         "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/extract_expected.sail" "${CMAKE_CURRENT_BINARY_DIR}/sailgen/extract.sail")
+add_test(NAME sailgen_refused
+         COMMAND snx-sailgen --generate "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/refused.roots"
+                 --backend "${PROJECT_SOURCE_DIR}/tools/sailgen/llvm.h" -o "${CMAKE_CURRENT_BINARY_DIR}/sailgen/refused.inc"
+                 "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/refused.sail")
+set_tests_properties(sailgen_refused PROPERTIES PASS_REGULAR_EXPRESSION
+    "refused.sail:4: error: a throw of other than Error_Undefined\\(\\) or Error_ConstrainedUnpredictable\\(\\)")
+# a register, or a struct register's field, the back end does not keep: refused at the line that reads it, naming
+# what the back end lacks
+foreach(case IN ITEMS register field)
+    add_test(NAME sailgen_refused_${case}
+             COMMAND snx-sailgen --generate "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/refused_${case}.roots"
+                     --backend "${PROJECT_SOURCE_DIR}/tools/sailgen/llvm.h"
+                     -o "${CMAKE_CURRENT_BINARY_DIR}/sailgen/refused_${case}.inc"
+                     "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/refused_${case}.sail")
+endforeach()
+set_tests_properties(sailgen_refused_register PROPERTIES PASS_REGULAR_EXPRESSION
+    "refused_register.sail:6: error: the register FPCR: the back end llvm.h defines no sg_FPCR_read")
+set_tests_properties(sailgen_refused_field PROPERTIES PASS_REGULAR_EXPRESSION
+    "refused_field.sail:12: error: PSTATE.D: the back end llvm.h defines no SG_PSTATE_D")
+# the same two through a back end that only mentions those names (a comment, a string, a declaration, a call, an
+# initializer): a name counts where it is defined
+foreach(case IN ITEMS register field)
+    add_test(NAME sailgen_refused_mention_${case}
+             COMMAND snx-sailgen --generate "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/refused_${case}.roots"
+                     --backend "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/mention_backend.h"
+                     -o "${CMAKE_CURRENT_BINARY_DIR}/sailgen/refused_mention_${case}.inc"
+                     "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/refused_${case}.sail")
+endforeach()
+set_tests_properties(sailgen_refused_mention_register PROPERTIES PASS_REGULAR_EXPRESSION
+    "refused_register.sail:6: error: the register FPCR: the back end mention_backend.h defines no sg_FPCR_read")
+set_tests_properties(sailgen_refused_mention_field PROPERTIES PASS_REGULAR_EXPRESSION
+    "refused_field.sail:12: error: PSTATE.D: the back end mention_backend.h defines no SG_PSTATE_D")
+# and the A64 subsets of src/common/cpu/aarch64/sail/ generate whole, with the NX's fixups
+add_test(NAME sailgen_a64
+         COMMAND snx-sailgen --generate "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/sail/a64.roots"
+                 --backend "${PROJECT_SOURCE_DIR}/tools/sailgen/llvm.h" -o "${CMAKE_CURRENT_BINARY_DIR}/sailgen/a64_sail.inc"
+                 "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/sail/a64.sail"
+                 --overlay "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/sail/nx.sail")
+
+
 # The QEMU reference (tests/qemu_ref/): hand-checked cases, the ported cases and the decoder's UNDEF sets under
 # qemu-aarch64 -cpu max and -cpu cortex-a57. Skipped (ctest's skip, code 77) without qemu-aarch64, ld.lld or a Clang
 # for AArch64
@@ -1337,6 +1389,13 @@ target_include_directories(snx-test-hook-install PRIVATE "${PROJECT_SOURCE_DIR}/
 snx_service_swipc(snx-test-hook-install)
 snx_hookgen(snx-test-hook-install SPEC "${CMAKE_CURRENT_SOURCE_DIR}/hook/install.hook" A32_MARKED)
 add_test(NAME hook_install COMMAND snx-test-hook-install)
+# the GL call census (src/nx/gpu/gl/gl_census.c), with the runtime stubbed: the driver's _gl exports and the
+# addresses its eglGetProcAddress answers count the game's calls and still run, and the file's counts
+add_executable(snx-test-gl-census gl_census.c)
+snx_test_target(snx-test-gl-census gnu23)
+target_link_libraries(snx-test-gl-census PRIVATE scarletnx-common)
+target_include_directories(snx-test-gl-census PRIVATE "${PROJECT_SOURCE_DIR}/src")
+add_test(NAME gl_census COMMAND snx-test-gl-census "${CMAKE_CURRENT_BINARY_DIR}/gl_census.tsv")
 # native_cond_var (src/nx/hle/hook/family.c, hook.c) over tests/hook/states.hook: the cond_var family's hooks at 1, the
 # game's own wait at 0, and save states refused while the host's wait runs, by a message naming the setting's value
 add_executable(snx-test-hook-states hook_states.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/version.c"
@@ -2906,6 +2965,15 @@ if(NOT WIN32)
     snx_decodetree_a64(snx-test-llvm-lowering)
     add_test(NAME llvm_lowering COMMAND snx-test-llvm-lowering "${CMAKE_CURRENT_SOURCE_DIR}/llvm_lowering_expected.txt")
     set_tests_properties(llvm_lowering PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 300)
+    # the integer emitters sailgen generates from the Sail against the hand-written ones they replaced
+    # (support/ir_int_reference.c): the same optimized IR word by word on three paths, the same results run here
+    add_executable(snx-test-llvm-sail-ir llvm_sail_ir.c llvm_qemu_words.c llvm_steps.c support/ir_int_reference.c)
+    snx_test_target(snx-test-llvm-sail-ir gnu23)
+    target_include_directories(snx-test-llvm-sail-ir PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+    target_link_libraries(snx-test-llvm-sail-ir PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
+    snx_decodetree_a64(snx-test-llvm-sail-ir)
+    add_test(NAME llvm_sail_ir COMMAND snx-test-llvm-sail-ir)
+    set_tests_properties(llvm_sail_ir PROPERTIES TIMEOUT 600)
     # snx_ir_object's check of the symbols an object names (llvm_object_symbols.c)
     add_executable(snx-test-llvm-object-symbols llvm_object_symbols.c)
     snx_test_target(snx-test-llvm-object-symbols c23)
@@ -3215,11 +3283,16 @@ add_executable(snx-test-llvm-branch-profile llvm_branch_profile.c)
 snx_test_target(snx-test-llvm-branch-profile gnu23)
 target_link_libraries(snx-test-llvm-branch-profile PRIVATE snx_driver)
 add_test(NAME llvm_branch_profile COMMAND snx-test-llvm-branch-profile "${CMAKE_CURRENT_BINARY_DIR}")
-# the X registers' cache within a block (ir_state.c)
+# the X registers' cache within a block (tools/sailgen/llvm.h, ir.h's accessors by ir_sail.c)
 add_executable(snx-test-llvm-gpr-cache llvm_gpr_cache.c)
 snx_test_target(snx-test-llvm-gpr-cache gnu23)
 target_link_libraries(snx-test-llvm-gpr-cache PRIVATE snx_llvm snx_driver)
 add_test(NAME llvm_gpr_cache COMMAND snx-test-llvm-gpr-cache)
+# the flags' cache within a block, and the compare their origin gives a condition as (tools/sailgen/llvm.h)
+add_executable(snx-test-llvm-flags-cache llvm_flags_cache.c)
+snx_test_target(snx-test-llvm-flags-cache gnu23)
+target_link_libraries(snx-test-llvm-flags-cache PRIVATE snx_llvm snx_driver)
+add_test(NAME llvm_flags_cache COMMAND snx-test-llvm-flags-cache)
 add_executable(snx-test-llvm-fp-store llvm_fp_store.c llvm_steps.c)
 snx_test_target(snx-test-llvm-fp-store gnu23)
 target_link_libraries(snx-test-llvm-fp-store PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})

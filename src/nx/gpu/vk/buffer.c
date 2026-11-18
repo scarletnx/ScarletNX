@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/guest_pools.h"
 #include "nx/gpu/renderer.h"
@@ -739,8 +740,9 @@ void vk_buf_writable_commit(void) {
         g_out = g_prep;
     g_out_tail = g_prep_tail;
     g_prep = g_prep_tail = NULL;
-    g_gfx_any = 1;
+    atomic_store_explicit(&g_gfx_any, 1, memory_order_relaxed);
 }
+u64 vk_buf_commits_staged(void) { return g_buffer.order.writes; }
 /* whether two sorted page lists share a page */
 static int pages_meet(const GfxOut* a, const GfxOut* b) {
     u32 i = 0, j = 0;
@@ -931,7 +933,7 @@ void vk_buf_frame_done(u64 frame) {
     }
     g_out_tail = NULL;
     for (GfxOut* o = g_out; o; o = o->next) g_out_tail = o;
-    g_gfx_any = g_out != NULL || done != NULL;
+    atomic_store_explicit(&g_gfx_any, g_out != NULL || done != NULL, memory_order_relaxed);
     DevMem invalidated = 0;
     t_buffer.out_landing++;
     while (done) {
@@ -980,7 +982,7 @@ void vk_buf_frame_done(u64 frame) {
             g_retire[kept++] = g_retire[i];
     g_nretire = kept;
     vk_mirror_done(frame);
-    g_gfx_any = g_out != NULL;
+    atomic_store_explicit(&g_gfx_any, g_out != NULL, memory_order_relaxed);
     vk_uma_frame_done(frame);
 }
 /* At the frame's submit: its storage results are copied into host-cached memory (vk_stage_back), where landing them
@@ -1048,9 +1050,9 @@ static void wait_finish(int reason) {
     }
 }
 static void land_reason(int reason) {
-    if (!g_gfx_any || t_buffer.out_landing) return;
+    if (!atomic_load_explicit(&g_gfx_any, memory_order_relaxed) || t_buffer.out_landing) return;
     vk_lock();
-    if (g_gfx_any && !t_buffer.out_landing) wait_finish(reason);
+    if (atomic_load_explicit(&g_gfx_any, memory_order_relaxed) && !t_buffer.out_landing) wait_finish(reason);
     vk_unlock();
 }
 void vk_buf_land(void) { land_reason(WB_SIGNAL); }
@@ -1155,7 +1157,9 @@ static void mem_need_reason(u64 gva, u64 len, int reason) {
     RangePages q;
     OutList l;
     RangeMap rm = {0};
-    if (!g_gfx_any || t_buffer.out_landing || t_buffer.under_results || !len) return;
+    if (!atomic_load_explicit(&g_gfx_any, memory_order_relaxed) || t_buffer.out_landing || t_buffer.under_results ||
+        !len)
+        return;
     /* asked first without the lock, which another thread may hold: results are added on the GPU thread, so a miss
        here can only be one another thread has landed since. A hit is asked again with it */
     if (reason != WB_MAP && !pend_hit(&g_out_pages, gva, len)) return;
@@ -1189,8 +1193,8 @@ static void mem_need_reason(u64 gva, u64 len, int reason) {
     vk_unlock();
 }
 void vk_buf_mem_need(u64 gva, u64 len) { mem_need_reason(gva, len, WB_READ); }
-int vk_buf_pending_any(void) { return g_gfx_any; }
-u64 vk_buf_adds(void) { return g_out_pages.adds; }
+int vk_buf_pending_any(void) { return atomic_load_explicit(&g_gfx_any, memory_order_relaxed); }
+u64 vk_buf_adds(void) { return atomic_load_explicit(&g_out_pages.adds, memory_order_relaxed); }
 int vk_buf_pending_unsubmitted(void) {
     for (GfxOut* o = g_out; o; o = o->next)
         if (o->frame == vk_submit_number()) return 1;
@@ -1200,7 +1204,9 @@ int vk_buf_pending(u64 gva, u64 len) {
     RangePages q;
     OutList l;
     int hit = 0;
-    if (!g_gfx_any || t_buffer.under_results || !len || !pend_hit(&g_out_pages, gva, len)) return 0;
+    if (!atomic_load_explicit(&g_gfx_any, memory_order_relaxed) || t_buffer.under_results || !len ||
+        !pend_hit(&g_out_pages, gva, len))
+        return 0;
     range_pages(gva, len, &q);
     out_near(&l, gva, len, &q);
     for (u32 i = 0; i < l.n && !hit; i++)
@@ -1667,8 +1673,8 @@ static int gfx_gpu_src(u64 gva, u64 len, VkBuffer* buf, u64* off, int writable, 
     RangePages q;
     OutList l;
     RangeMap rm = {0};
-    if (!g_gfx_any || t_buffer.out_landing || !gva || !len) return 0;
-    if (g_cs_any) vk_compute_mem_need(gva, len);
+    if (!atomic_load_explicit(&g_gfx_any, memory_order_relaxed) || t_buffer.out_landing || !gva || !len) return 0;
+    if (atomic_load_explicit(&g_cs_any, memory_order_relaxed)) vk_compute_mem_need(gva, len);
     if (!pend_hit(&g_out_pages, gva, len)) return 0;
     g_src_plain = 1;
     out_list_init(&l);
@@ -1861,7 +1867,7 @@ static u32 g_wleaf_max[AS_TOP >> WW_LEAF_SHIFT];
    leaves, so the textures and buffers checked in one epoch share a few scans: one game made 5,600 of them a frame.
    g_wleaf_seen holds the epoch + 1 whose scans of the leaf its table has taken in (checks only, under vk_lock) */
 static u32 g_wleaf_seen[AS_TOP >> WW_LEAF_SHIFT];
-static u32 g_ww_epoch; /* atomic */
+static _Atomic u32 g_ww_epoch; /* atomic */
 static u32 g_wclock = 1;
 static int g_ww = -1; /* -1 not tried yet, 0 not available, 1 on */
 static void ww_mark(u8* p, u64 n) {
@@ -1928,16 +1934,16 @@ static void ww_mark_range(u64 o, u64 e) {
    changed: a cache over the rest only checks its contents once */
 #define WW_CHG_N 32
 static WwRange g_wchg[WW_CHG_N];
-static int g_wchg_n; /* atomic: read without the lock to skip it */
+static _Atomic int g_wchg_n; /* atomic: read without the lock to skip it */
 static PMutex g_wchg_lock = PMUTEX_INIT;
 void vk_mem_changed(u64 cpu, u64 len) {
     if (cpu >= AS_SIZE || !len) return;
     u64 e = len > AS_SIZE - cpu ? AS_SIZE : cpu + len;
     pm_lock(&g_wchg_lock);
-    int n = __atomic_load_n(&g_wchg_n, __ATOMIC_RELAXED);
+    int n = atomic_load_explicit(&g_wchg_n, memory_order_relaxed);
     if (n < WW_CHG_N) {
         g_wchg[n] = (WwRange){cpu, e};
-        __atomic_store_n(&g_wchg_n, n + 1, __ATOMIC_RELEASE);
+        atomic_store_explicit(&g_wchg_n, n + 1, memory_order_release);
     } else {
         WwRange* r = &g_wchg[WW_CHG_N - 1];
         if (cpu < r->a) r->a = cpu;
@@ -1946,12 +1952,12 @@ void vk_mem_changed(u64 cpu, u64 len) {
     pm_unlock(&g_wchg_lock);
 }
 static void ww_take_changed(void) {
-    if (!__atomic_load_n(&g_wchg_n, __ATOMIC_ACQUIRE)) return;
+    if (!atomic_load_explicit(&g_wchg_n, memory_order_acquire)) return;
     WwRange c[WW_CHG_N];
     pm_lock(&g_wchg_lock);
-    int n = __atomic_load_n(&g_wchg_n, __ATOMIC_RELAXED);
+    int n = atomic_load_explicit(&g_wchg_n, memory_order_relaxed);
     memcpy(c, g_wchg, (size_t)n * sizeof *c);
-    __atomic_store_n(&g_wchg_n, 0, __ATOMIC_RELAXED);
+    atomic_store_explicit(&g_wchg_n, 0, memory_order_relaxed);
     pm_unlock(&g_wchg_lock);
     if (n) g_wclock++; /* what it marks is newer than every baseline taken before (vk_written_since) */
     for (int i = 0; i < n; i++) ww_mark_range(c[i].a, c[i].e);
@@ -1969,22 +1975,22 @@ static void ww_take_changed(void) {
 #define WW_RES_N       4096
 #define WW_RUN_MAX     8 /* leaves the scanner scans in one call at most */
 #define WW_USED_EPOCHS 4 /* the scanner scans the leaves the checks of the last epochs needed */
-static u32 g_wleaf_done[AS_TOP >> WW_LEAF_SHIFT]; /* atomic, stored by the leaf's claimer */
-static u32 g_wleaf_used[AS_TOP >> WW_LEAF_SHIFT]; /* atomic: only a hint for the scanner */
+static _Atomic u32 g_wleaf_done[AS_TOP >> WW_LEAF_SHIFT]; /* atomic, stored by the leaf's claimer */
+static _Atomic u32 g_wleaf_used[AS_TOP >> WW_LEAF_SHIFT]; /* atomic: only a hint for the scanner */
 /* The leaves a check ever needed, a bit each, with a bit for each word that has one. A game's few used leaves can lie
    far apart: one had 15 under a g_wleaf_top of 18090, and passes that tested every leaf below it were a sixth of the
    samples of the runtime. Set by the checks under vk_lock, and read by the scanner as a hint like g_wleaf_used */
 #define WW_EVER_WORDS ((AS_TOP >> WW_LEAF_SHIFT) / 64)
 #define WW_EVER_TOPS  (WW_EVER_WORDS / 64)
-static u64 g_wleaf_ever[WW_EVER_WORDS];    /* atomic */
-static u64 g_wleaf_ever_top[WW_EVER_TOPS]; /* atomic */
-static u8 g_wleaf_busy[AS_TOP >> WW_LEAF_SHIFT];  /* atomic: 1 while a scan has claimed the leaf */
+static _Atomic u64 g_wleaf_ever[WW_EVER_WORDS];          /* atomic */
+static _Atomic u64 g_wleaf_ever_top[WW_EVER_TOPS];       /* atomic */
+static _Atomic u8 g_wleaf_busy[AS_TOP >> WW_LEAF_SHIFT]; /* atomic: 1 while a scan has claimed the leaf */
 static u32 g_ww_used[WW_USED_EPOCHS];             /* the last epochs + 1 checks needed leaves in, under vk_lock */
 static u32 g_ww_used_i;
-static u32 g_ww_used_from; /* atomic: the oldest of them */
+static _Atomic u32 g_ww_used_from; /* atomic: the oldest of them */
 /* one past the highest leaf a check has needed, where the scanner's pass ends: a leaf above it was never needed, and a
    pass to AS_SIZE's last leaf read 131072 of them at 512 GiB (atomic, stored by the checks under vk_lock) */
-static u64 g_wleaf_top;
+static _Atomic u64 g_wleaf_top;
 /* a scan's written pages before they go to g_wres: the scanner's, and the checks' (under vk_lock) */
 struct WwStage {
     WwRange r[WW_RES_N];
@@ -1992,10 +1998,10 @@ struct WwStage {
 };
 static WwStage g_wstage_scanner, g_wstage_check;
 static WwRange g_wres[WW_RES_N]; /* what scans found written, for the next check to mark */
-static int g_wres_n;             /* atomic: read without the lock to skip it */
+static _Atomic int g_wres_n;     /* atomic: read without the lock to skip it */
 static PMutex g_wres_lk = PMUTEX_INIT; /* after a leaf's claim */
-static int g_wscan_failed; /* atomic */
-static int g_wscan_on;     /* atomic: the scanner runs */
+static _Atomic int g_wscan_failed;     /* atomic */
+static _Atomic int g_wscan_on;         /* atomic: the scanner runs */
 static PMutex g_wscan_wlk = PMUTEX_INIT;
 static PCond g_wscan_cv;
 /* plat_ww_scan's callback: a run of written pages. When the stage is full its last range grows over the new one
@@ -2013,7 +2019,8 @@ static void ww_note(u8* p, u64 n) {
 }
 static int ww_claim(u64 l) {
     u8 free = 0;
-    return __atomic_compare_exchange_n(&g_wleaf_busy[l], &free, 1, 0, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED);
+    return atomic_compare_exchange_strong_explicit(&g_wleaf_busy[l], &free, 1, memory_order_acquire,
+                                                   memory_order_relaxed);
 }
 /* guest memory [a, e) scanned, but for the pages an import of unified memory holds: the driver takes them again at
    each submission, writable, which a scan would report as the CPU's writes, and after a scan protected them it faults
@@ -2030,7 +2037,7 @@ static int ww_scan_free(u64 a, u64 e) {
 /* what a scan put in st, in g_wres for the next check to mark, before its leaves' claims end */
 static void ww_publish(WwStage* st) {
     pm_lock(&g_wres_lk);
-    int n = g_wres_n;
+    int n = atomic_load_explicit(&g_wres_n, memory_order_relaxed);
     for (int i = 0; i < st->n; i++)
         if (n < WW_RES_N)
             g_wres[n++] = st->r[i];
@@ -2039,12 +2046,12 @@ static void ww_publish(WwStage* st) {
             if (st->r[i].a < w->a) w->a = st->r[i].a;
             if (st->r[i].e > w->e) w->e = st->r[i].e;
         }
-    __atomic_store_n(&g_wres_n, n, __ATOMIC_RELEASE);
+    atomic_store_explicit(&g_wres_n, n, memory_order_release);
     pm_unlock(&g_wres_lk);
     st->n = 0;
 }
 /* the scans since the last stats (vk_ww_stats), the scanner's [0] and the checks' [1]: leaves, and their time */
-static u64 g_wscan_leaves[2], g_wscan_ns[2]; /* atomic */
+static _Atomic u64 g_wscan_leaves[2], g_wscan_ns[2]; /* atomic */
 static u64 g_wscan_skipped; /* the leaves a check claimed that the scanner had scanned in their epoch already */
 /* scans leaves [lo, hi], claimed by the caller, in the epoch seen - 1, and ends the claims: 0, or -1 when tracking
    failed */
@@ -2052,13 +2059,13 @@ static int ww_scan_leaves(u64 lo, u64 hi, u32 seen, WwStage* st) {
     t_buffer.wstage = st;
     u64 t0 = plat_ns();
     int r = ww_scan_free(lo << WW_LEAF_SHIFT, (hi + 1) << WW_LEAF_SHIFT);
-    __atomic_add_fetch(&g_wscan_leaves[st != &g_wstage_scanner], hi - lo + 1, __ATOMIC_RELAXED);
-    __atomic_add_fetch(&g_wscan_ns[st != &g_wstage_scanner], plat_ns() - t0, __ATOMIC_RELAXED);
+    atomic_fetch_add_explicit(&g_wscan_leaves[st != &g_wstage_scanner], hi - lo + 1, memory_order_relaxed);
+    atomic_fetch_add_explicit(&g_wscan_ns[st != &g_wstage_scanner], plat_ns() - t0, memory_order_relaxed);
     ww_publish(st);
-    if (r < 0) __atomic_store_n(&g_wscan_failed, 1, __ATOMIC_RELEASE);
+    if (r < 0) atomic_store_explicit(&g_wscan_failed, 1, memory_order_release);
     for (u64 l = lo; l <= hi; l++) {
-        if (r == 0) __atomic_store_n(&g_wleaf_done[l], seen, __ATOMIC_RELEASE);
-        __atomic_store_n(&g_wleaf_busy[l], 0, __ATOMIC_RELEASE);
+        if (r == 0) atomic_store_explicit(&g_wleaf_done[l], seen, memory_order_release);
+        atomic_store_explicit(&g_wleaf_busy[l], 0, memory_order_release);
     }
     return r < 0 ? -1 : 0;
 }
@@ -2200,43 +2207,45 @@ static void ww_mark_scanned(u64 o, u64 e) {
 /* marks what scans found written, newer than every baseline taken before: those were taken before the scans
    re-protected the pages, and their caches may have read memory before the writes */
 static void ww_take_scanned(void) {
-    if (!__atomic_load_n(&g_wres_n, __ATOMIC_ACQUIRE)) return;
+    if (!atomic_load_explicit(&g_wres_n, memory_order_acquire)) return;
     pm_lock(&g_wres_lk);
-    if (g_wres_n) g_wclock++;
+    if (atomic_load_explicit(&g_wres_n, memory_order_relaxed)) g_wclock++;
     pm_lock(&g_wland_lk);
     if (g_wland_n) {
         landed_sort();
         g_wland_gone = g_wland_n;
-        for (int i = 0; i < g_wres_n; i++) ww_mark_scanned(g_wres[i].a, g_wres[i].e);
+        for (int i = 0; i < atomic_load_explicit(&g_wres_n, memory_order_relaxed); i++)
+            ww_mark_scanned(g_wres[i].a, g_wres[i].e);
         u32 n = g_wland_gone; /* the entries before the first that went stay where they are */
         for (u32 i = n; i < g_wland_n; i++)
             if (g_wland[i].bytes) g_wland[n++] = g_wland[i];
         g_wland_n = g_wland_sorted = n;
     } else
-        for (int i = 0; i < g_wres_n; i++) ww_mark_range(g_wres[i].a, g_wres[i].e);
+        for (int i = 0; i < atomic_load_explicit(&g_wres_n, memory_order_relaxed); i++)
+            ww_mark_range(g_wres[i].a, g_wres[i].e);
     pm_unlock(&g_wland_lk);
-    __atomic_store_n(&g_wres_n, 0, __ATOMIC_RELAXED);
+    atomic_store_explicit(&g_wres_n, 0, memory_order_relaxed);
     pm_unlock(&g_wres_lk);
 }
 /* whether the scanner scans leaf l for the epoch seen - 1: a check of the last epochs needed it, and it wasn't scanned
    in this epoch or a later one */
 static int ww_wanted(u64 l, u32 seen, u32 from) {
-    u32 u = __atomic_load_n(&g_wleaf_used[l], __ATOMIC_RELAXED);
-    return u && (i32)(u - from) >= 0 && (i32)(__atomic_load_n(&g_wleaf_done[l], __ATOMIC_ACQUIRE) - seen) < 0;
+    u32 u = atomic_load_explicit(&g_wleaf_used[l], memory_order_relaxed);
+    return u && (i32)(u - from) >= 0 && (i32)(atomic_load_explicit(&g_wleaf_done[l], memory_order_acquire) - seen) < 0;
 }
 /* the first leaf at or after l that a check ever needed; n or more when there is none below n */
 static u64 ww_next_ever(u64 l, u64 n) {
     while (l < n) {
-        u64 w = l >> 6, bits = __atomic_load_n(&g_wleaf_ever[w], __ATOMIC_RELAXED) >> (l & 63);
+        u64 w = l >> 6, bits = atomic_load_explicit(&g_wleaf_ever[w], memory_order_relaxed) >> (l & 63);
         if (bits) return l + snx_ctz64(bits);
         w++;
         u64 t = w >> 6;
         if (t >= WW_EVER_TOPS) return n;
-        u64 words = __atomic_load_n(&g_wleaf_ever_top[t], __ATOMIC_RELAXED) >> (w & 63);
+        u64 words = atomic_load_explicit(&g_wleaf_ever_top[t], memory_order_relaxed) >> (w & 63);
         while (!words) {
             if (++t >= WW_EVER_TOPS) return n;
             w = t << 6;
-            words = __atomic_load_n(&g_wleaf_ever_top[t], __ATOMIC_RELAXED);
+            words = atomic_load_explicit(&g_wleaf_ever_top[t], memory_order_relaxed);
         }
         l = (w + snx_ctz64(words)) << 6;
     }
@@ -2251,12 +2260,13 @@ static void ww_scanner(void* arg) {
     for (;;) {
         u32 e, seen, from;
         pm_lock(&g_wscan_wlk);
-        while ((e = __atomic_load_n(&g_ww_epoch, __ATOMIC_ACQUIRE)) == last) pc_wait(&g_wscan_cv, &g_wscan_wlk, -1);
+        while ((e = atomic_load_explicit(&g_ww_epoch, memory_order_acquire)) == last)
+            pc_wait(&g_wscan_cv, &g_wscan_wlk, -1);
         pm_unlock(&g_wscan_wlk);
         last = e;
         seen = e + 1;
-        from = __atomic_load_n(&g_ww_used_from, __ATOMIC_RELAXED);
-        for (u64 l = 0, n = __atomic_load_n(&g_wleaf_top, __ATOMIC_RELAXED); l < n;) {
+        from = atomic_load_explicit(&g_ww_used_from, memory_order_relaxed);
+        for (u64 l = 0, n = atomic_load_explicit(&g_wleaf_top, memory_order_relaxed); l < n;) {
             if (!ww_wanted(l, seen, from)) {
                 l = ww_next_ever(l + 1, n);
                 continue;
@@ -2268,29 +2278,30 @@ static void ww_scanner(void* arg) {
                 continue;
             }
             if (ww_scan_leaves(lo, l - 1, seen, &g_wstage_scanner) < 0) return;
-            if (__atomic_load_n(&g_ww_epoch, __ATOMIC_RELAXED) != e) break; /* a newer one: start over for it */
+            if (atomic_load_explicit(&g_ww_epoch, memory_order_relaxed) != e)
+                break; /* a newer one: start over for it */
         }
     }
 }
 void vk_ww_new_epoch(void) {
-    u32 e = __atomic_add_fetch(&g_ww_epoch, 1, __ATOMIC_RELEASE);
+    u32 e = (atomic_fetch_add_explicit(&g_ww_epoch, 1, memory_order_release) + 1);
     if (t_buffer.ww_streaming)
         t_buffer.ww_stream = e; /* a wait of the running job ended: what the CPU wrote before is its to see */
-    if (__atomic_load_n(&g_wscan_on, __ATOMIC_ACQUIRE)) {
+    if (atomic_load_explicit(&g_wscan_on, memory_order_acquire)) {
         pm_lock(&g_wscan_wlk);
         pc_signal(&g_wscan_cv);
         pm_unlock(&g_wscan_wlk);
     }
 }
 void vk_ww_seen(void) {
-    if (t_buffer.ww_streaming) t_buffer.ww_stream = __atomic_load_n(&g_ww_epoch, __ATOMIC_ACQUIRE);
+    if (t_buffer.ww_streaming) t_buffer.ww_stream = atomic_load_explicit(&g_ww_epoch, memory_order_acquire);
 }
 u32 vk_ww_epoch(void) {
-    return t_buffer.ww_streaming ? t_buffer.ww_stream : __atomic_load_n(&g_ww_epoch, __ATOMIC_ACQUIRE);
+    return t_buffer.ww_streaming ? t_buffer.ww_stream : atomic_load_explicit(&g_ww_epoch, memory_order_acquire);
 }
 void vk_ww_stream(int on) {
     t_buffer.ww_streaming = on;
-    t_buffer.ww_stream = __atomic_load_n(&g_ww_epoch, __ATOMIC_ACQUIRE);
+    t_buffer.ww_stream = atomic_load_explicit(&g_ww_epoch, memory_order_acquire);
 }
 /* a check in the epoch seen - 1 needs leaves: the scanner's next passes scan what the last epochs needed */
 static void ww_used_epoch(u32 seen) {
@@ -2298,7 +2309,7 @@ static void ww_used_epoch(u32 seen) {
     if (cur && (i32)(seen - cur) <= 0) return; /* this one, or an older one's check (another thread's) */
     g_ww_used[++g_ww_used_i % WW_USED_EPOCHS] = seen;
     u32 oldest = g_ww_used[(g_ww_used_i + 1) % WW_USED_EPOCHS];
-    __atomic_store_n(&g_ww_used_from, oldest ? oldest : seen, __ATOMIC_RELAXED);
+    atomic_store_explicit(&g_ww_used_from, oldest ? oldest : seen, memory_order_relaxed);
 }
 
 /* the leaves [lo, hi] taken in for the epoch seen - 1: those not taken in yet scanned in it (by the scanner already,
@@ -2309,15 +2320,16 @@ static int ww_take_leaves(u64 lo, u64 hi, u32 seen) {
     if (l > hi) return 0;
     u64 first = hi + 1, last = 0;
     ww_used_epoch(seen);
-    if (__atomic_load_n(&g_wleaf_top, __ATOMIC_RELAXED) <= hi) __atomic_store_n(&g_wleaf_top, hi + 1, __ATOMIC_RELAXED);
+    if (atomic_load_explicit(&g_wleaf_top, memory_order_relaxed) <= hi)
+        atomic_store_explicit(&g_wleaf_top, hi + 1, memory_order_relaxed);
     for (a = l; a <= hi; a++) {
         if ((i32)(g_wleaf_seen[a] - seen) >= 0) continue;
-        __atomic_store_n(&g_wleaf_used[a], seen, __ATOMIC_RELAXED);
-        if (!(__atomic_load_n(&g_wleaf_ever[a >> 6], __ATOMIC_RELAXED) >> (a & 63) & 1)) {
-            __atomic_fetch_or(&g_wleaf_ever[a >> 6], 1ull << (a & 63), __ATOMIC_RELAXED);
-            __atomic_fetch_or(&g_wleaf_ever_top[a >> 12], 1ull << (a >> 6 & 63), __ATOMIC_RELAXED);
+        atomic_store_explicit(&g_wleaf_used[a], seen, memory_order_relaxed);
+        if (!(atomic_load_explicit(&g_wleaf_ever[a >> 6], memory_order_relaxed) >> (a & 63) & 1)) {
+            atomic_fetch_or_explicit(&g_wleaf_ever[a >> 6], 1ull << (a & 63), memory_order_relaxed);
+            atomic_fetch_or_explicit(&g_wleaf_ever_top[a >> 12], 1ull << (a >> 6 & 63), memory_order_relaxed);
         }
-        if ((i32)(__atomic_load_n(&g_wleaf_done[a], __ATOMIC_ACQUIRE) - seen) < 0) {
+        if ((i32)(atomic_load_explicit(&g_wleaf_done[a], memory_order_acquire) - seen) < 0) {
             if (first > hi) first = a;
             last = a;
         }
@@ -2329,16 +2341,16 @@ static int ww_take_leaves(u64 lo, u64 hi, u32 seen) {
         /* the runs of them not scanned in this epoch, each scanned once: one the scanner did between two the check
            needs is let go, as one at either end is */
         for (a = first; a <= last;) {
-            if ((i32)(__atomic_load_n(&g_wleaf_done[a], __ATOMIC_RELAXED) - seen) >= 0) {
-                __atomic_store_n(&g_wleaf_busy[a], 0, __ATOMIC_RELEASE);
+            if ((i32)(atomic_load_explicit(&g_wleaf_done[a], memory_order_relaxed) - seen) >= 0) {
+                atomic_store_explicit(&g_wleaf_busy[a], 0, memory_order_release);
                 g_wscan_skipped++;
                 a++;
                 continue;
             }
             u64 run = a;
-            while (a <= last && (i32)(__atomic_load_n(&g_wleaf_done[a], __ATOMIC_RELAXED) - seen) < 0) a++;
+            while (a <= last && (i32)(atomic_load_explicit(&g_wleaf_done[a], memory_order_relaxed) - seen) < 0) a++;
             if (ww_scan_leaves(run, a - 1, seen, &g_wstage_check) < 0) {
-                for (; a <= last; a++) __atomic_store_n(&g_wleaf_busy[a], 0, __ATOMIC_RELEASE);
+                for (; a <= last; a++) atomic_store_explicit(&g_wleaf_busy[a], 0, memory_order_release);
                 return -1;
             }
         }
@@ -2383,9 +2395,10 @@ int vk_written_since(const u8* host, u64 len, u32 since) {
             g_ww ? "write tracking on (caches skip unchanged memory)" : "no write tracking (caches check contents)");
         if (!g_ww) return -1;
         pc_init(&g_wscan_cv);
-        if (!plat_thread(ww_scanner, NULL, (size_t)1 << 20)) __atomic_store_n(&g_wscan_on, 1, __ATOMIC_RELEASE);
+        if (!plat_thread(ww_scanner, NULL, (size_t)1 << 20))
+            atomic_store_explicit(&g_wscan_on, 1, memory_order_release);
     }
-    if (__atomic_load_n(&g_wscan_failed, __ATOMIC_ACQUIRE)) {
+    if (atomic_load_explicit(&g_wscan_failed, memory_order_acquire)) {
         g_ww = 0;
         LOG("vulkan: write tracking failed, caches check contents\n");
         return -1;
@@ -2433,7 +2446,8 @@ int vk_written_since(const u8* host, u64 len, u32 since) {
     return 0;
 }
 int vk_written_quick(const u8* host, u64 len, u32 since) {
-    if (g_ww <= 0 || !host || !len || __atomic_load_n(&g_wscan_failed, __ATOMIC_ACQUIRE) || g_wclock == UINT32_MAX)
+    if (g_ww <= 0 || !host || !len || atomic_load_explicit(&g_wscan_failed, memory_order_acquire) ||
+        g_wclock == UINT32_MAX)
         return -1;
     u64 o = (u64)(host - g_mem), lo = o >> WW_LEAF_SHIFT, hi = (o + len - 1) >> WW_LEAF_SHIFT, end;
     /* a write through another address of these pages reads as none here (vk_written_since takes their peers). Any
@@ -2459,11 +2473,11 @@ int vk_written_quick(const u8* host, u64 len, u32 since) {
 u32 vk_ww_now(void) { return g_wclock; }
 void vk_ww_stats(u32 presents) {
     static u32 epoch0;
-    u32 e = __atomic_load_n(&g_ww_epoch, __ATOMIC_RELAXED);
+    u32 e = atomic_load_explicit(&g_ww_epoch, memory_order_relaxed);
     u64 l[2], ns[2];
     for (int i = 0; i < 2; i++) {
-        l[i] = __atomic_exchange_n(&g_wscan_leaves[i], 0, __ATOMIC_RELAXED);
-        ns[i] = __atomic_exchange_n(&g_wscan_ns[i], 0, __ATOMIC_RELAXED);
+        l[i] = atomic_exchange_explicit(&g_wscan_leaves[i], 0, memory_order_relaxed);
+        ns[i] = atomic_exchange_explicit(&g_wscan_ns[i], 0, memory_order_relaxed);
     }
     if (g_ww > 0 && presents)
         LOG("vulkan: write scans over %u presents: %.1f epochs a present; the scanner %.1f leaves of 4 MiB a present "
@@ -2483,7 +2497,7 @@ static int ww_cool_range(u64 a, u64 e) {
     t_buffer.wstage = &g_wstage_check;
     plat_ww_cool(GP(a), e - a, ww_note);
     ww_publish(&g_wstage_check);
-    for (u64 l = lo; l <= hi; l++) __atomic_store_n(&g_wleaf_busy[l], 0, __ATOMIC_RELEASE);
+    for (u64 l = lo; l <= hi; l++) atomic_store_explicit(&g_wleaf_busy[l], 0, memory_order_release);
     return 1;
 }
 void vk_ww_cool(const u8* host, u64 len) {
@@ -2543,7 +2557,7 @@ static const u8* guest_bytes(u64 gva, u64 len) {
    waited for the GPU to run everything recorded until the reports */
 static const u8* draw_bytes(u64 gva, u64 len, SamplesCount* counts, u32 max, u32* n) {
     *n = 0;
-    if (__atomic_load_n(&g_gpu_releases, __ATOMIC_ACQUIRE) && len <= 0x10000) {
+    if (atomic_load_explicit(&g_gpu_releases, memory_order_acquire) && len <= 0x10000) {
         if (g_tmp_cap < len) {
             u8* grown = realloc(g_tmp, len);
             if (!grown) return NULL;
@@ -2646,7 +2660,8 @@ static int keep_pages(u64 gva, u32 len, u64 cpu, u64 align, int ordered, VkBuffe
         why = KF_PAGE_RUN;
     else if (pend_hit(&g_out_pages, pgva, plen))
         why = KF_PAGE_RESULT;
-    else if ((g_cs_any && vk_compute_pending(pgva, plen)) || (g_gfx_img_any && vk_gfx_image_pending(pgva, plen)) ||
+    else if ((atomic_load_explicit(&g_cs_any, memory_order_relaxed) && vk_compute_pending(pgva, plen)) ||
+             (atomic_load_explicit(&g_gfx_img_any, memory_order_relaxed) && vk_gfx_image_pending(pgva, plen)) ||
              vk_release_pending(pgva, plen) || vk_mirror_pending(pgva, plen) || vk_mirror_holds(pgva, plen))
         why = KF_PAGE_OTHER;
     for (const GfxOut* o = g_prep; o && !why; o = o->next) /* the draw being set up, bound before this binding */
@@ -2820,7 +2835,8 @@ static int back_can(u64 gva, u64 len) {
     u64 cpu = 0;
     u32 n;
     return vk_uma() && len && !((gva | len) & 3) && gmmu_run(gva, len, &cpu) == len &&
-           !(g_cs_any && vk_compute_pending(gva, len)) && !(g_gfx_img_any && vk_gfx_image_pending(gva, len)) &&
+           !(atomic_load_explicit(&g_cs_any, memory_order_relaxed) && vk_compute_pending(gva, len)) &&
+           !(atomic_load_explicit(&g_gfx_img_any, memory_order_relaxed) && vk_gfx_image_pending(gva, len)) &&
            !vk_release_pending(gva, len) && !vk_mirror_pending(gva, len) && back_parts(cpu, len, 0, p, &n);
 }
 static void back_unref(BackPart* p, u32 n) {
@@ -2945,12 +2961,14 @@ static int copy_writable(u64 gva, u32 len, VkBuffer* buf, u64* off, int ordered)
        barriers go by page (uma.c's order) whether or not the front end gives its own (ordered 0): more than NVN asks
        for, never fewer. What refuses it is counted (vk_uma_refused) */
     if (vk_uma()) {
-        int why = pending                                           ? VK_UMA_REFUSED_RESULT
-                  : range_owned(gva, len)                           ? VK_UMA_REFUSED_OWNED
-                  : g_cs_any && vk_compute_pending(gva, len)        ? VK_UMA_REFUSED_COMPUTE
-                  : g_gfx_img_any && vk_gfx_image_pending(gva, len) ? VK_UMA_REFUSED_IMAGE
-                  : vk_release_pending(gva, len)                    ? VK_UMA_REFUSED_RELEASE
-                                                                    : -1;
+        int why = pending                 ? VK_UMA_REFUSED_RESULT
+                  : range_owned(gva, len) ? VK_UMA_REFUSED_OWNED
+                  : atomic_load_explicit(&g_cs_any, memory_order_relaxed) && vk_compute_pending(gva, len)
+                      ? VK_UMA_REFUSED_COMPUTE
+                  : atomic_load_explicit(&g_gfx_img_any, memory_order_relaxed) && vk_gfx_image_pending(gva, len)
+                      ? VK_UMA_REFUSED_IMAGE
+                  : vk_release_pending(gva, len) ? VK_UMA_REFUSED_RELEASE
+                                                 : -1;
         if (why >= 0)
             vk_uma_refused(why);
         else if (vk_uma_write(gva, len, bind_align, buf, off))
@@ -3229,7 +3247,7 @@ static int atlas_fill(DrawPage* p, size_t unique, u8* ptr, VkBuffer atlas, u64 a
     OutList l;
     size_t i;
     int landed = 0, composed = 0;
-    if (g_cs_any)
+    if (atomic_load_explicit(&g_cs_any, memory_order_relaxed))
         for (i = 0; i < unique; i++)
             if (!(p[i].key & (1ull << 63))) vk_compute_mem_need(p[i].gva, 4096);
     /* first, so a landing comes before memory is read; it frees the results, and leaves nothing to copy. Also a
@@ -3367,7 +3385,8 @@ static int alias_in_place(VkDrawStorage* draw, const u8 active[VK_DRAW_STAGES * 
             /* newer bytes of the range elsewhere: the mirror's writes, a pending graphics or compute result, a storage
                image not published, a queued release, bytes the GPU owns */
             if (vk_mirror_pending(gva, len) || vk_mirror_holds(gva, len) || vk_buf_pending(gva, len) ||
-                (g_cs_any && vk_compute_pending(gva, len)) || (g_gfx_img_any && vk_gfx_image_pending(gva, len)) ||
+                (atomic_load_explicit(&g_cs_any, memory_order_relaxed) && vk_compute_pending(gva, len)) ||
+                (atomic_load_explicit(&g_gfx_img_any, memory_order_relaxed) && vk_gfx_image_pending(gva, len)) ||
                 vk_release_pending(gva, len) || range_owned(gva, len))
                 fail = pass ? VK_ALIAS_READ : VK_ALIAS_WRITE;
             else if (!(pass ? vk_uma_get(gva, len, align, &buf[k], &off[k])
@@ -3896,7 +3915,7 @@ static int buf_get_owned(u32 i, Vb* e, u64 gva, u64 len, int strict, u32 epoch, 
            have had no barrier since: the draw must see that write, as the console's GPU runs its work in order */
         const VkOwnRes* res = o[0].res;
         if ((res->borrowed || res->by == VK_OWN_BY_DRAW) &&
-            __atomic_load_n(&res->written, __ATOMIC_ACQUIRE) == vk_submit_number()) {
+            atomic_load_explicit(&res->written, memory_order_acquire) == vk_submit_number()) {
             vk_render_end();
             vk_all_barrier(vk_cmd());
         }
@@ -3978,10 +3997,11 @@ const char* vk_buf_fast_why(u64 gva, u64 len, VkBuffer buf, u64 off) {
     return vk_mirror_pending(gva, len) || vk_mirror_holds(gva, len) ? "the mirror's writes"
            : vk_buf_pending(gva, len)                               ? "a pending graphics result"
            : vk_compute_pending(gva, len)                           ? "a pending compute result"
-           : g_gfx_img_any && vk_gfx_image_pending(gva, len)        ? "a storage image not published"
-           : vk_release_pending(gva, len)                           ? "a queued release's payload"
-           : range_owned(gva, len)                                  ? "bytes the GPU owns"
-                                                                    : vk_uma_read_differs(gva, len, buf, off);
+           : atomic_load_explicit(&g_gfx_img_any, memory_order_relaxed) && vk_gfx_image_pending(gva, len)
+               ? "a storage image not published"
+           : vk_release_pending(gva, len) ? "a queued release's payload"
+           : range_owned(gva, len)        ? "bytes the GPU owns"
+                                          : vk_uma_read_differs(gva, len, buf, off);
 }
 static void fast_check(u64 gva, u64 len, VkBuffer buf, u64 off, int strict, u64 align, int inplace) {
     const char* why = vk_buf_fast_why(gva, len, buf, off);
@@ -4014,7 +4034,8 @@ static int buf_get_(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 a
     }
     if (!g_buffer.chain_only && g_buffer.lk != LK_WINDOW)
         g_buffer.nf = !vk_uma() ? NF_OFF : !(inplace & 3) ? NF_ASKED_COPY : dear ? NF_DEAR : NF_REFUSED;
-    if (g_gfx_img_any) vk_gfx_image_read_need(gva, len); /* a kept storage image's owner holds older bytes */
+    if (atomic_load_explicit(&g_gfx_img_any, memory_order_relaxed))
+        vk_gfx_image_read_need(gva, len); /* a kept storage image's owner holds older bytes */
     /* over writes of the GPU mirror's programs that haven't landed: read in the mirror, which has them, after them. At
        an offset the use can't bind (a draw's constants or vertices, a few bytes at any address, where a uniform
        buffer binds at 64), the bytes are copied on the GPU from the mirror into device memory that it can: landing
@@ -4077,7 +4098,7 @@ static int buf_get_(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 a
         }
         /* one that covers the range only in part lands first (its write shows in gpu_mem_dirty_since below): the
            cached copy would otherwise be used without it */
-        if (g_cs_any) vk_compute_mem_need(gva, len);
+        if (atomic_load_explicit(&g_cs_any, memory_order_relaxed)) vk_compute_mem_need(gva, len);
         if (e) {
             e->cs_adds = vk_compute_adds();
             e->gfx_adds = vk_buf_adds();
@@ -4089,7 +4110,8 @@ static int buf_get_(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 a
        constant buffer read in place over a payload queued before its draw drew the old bytes */
     if ((inplace & 3) && vk_uma() && !range_owned(gva, len) &&
         !((inplace & IN_DEAR) && vk_uma_imports_dear() && !vk_uma_pending(gva, len)) && !vk_release_pending(gva, len) &&
-        !(g_gfx_img_any && vk_gfx_image_pending(gva, len)) && vk_uma_get(gva, len, align, buf, off)) {
+        !(atomic_load_explicit(&g_gfx_img_any, memory_order_relaxed) && vk_gfx_image_pending(gva, len)) &&
+        vk_uma_get(gva, len, align, buf, off)) {
         g_buf_kind = 16;
         return 1;
     }
@@ -4498,7 +4520,8 @@ void vk_buf_prefetch(u64 gva, u64 len, int step) {
    At the storage binding's own alignment, which the import's offset must meet (a tensor's address is a multiple of 32
    bytes), not the staging ring's, which can be larger */
 int vk_buf_get_strict(u64 gva, u64 len, VkBuffer* buf, u64* off) {
-    if (vk_uma() && !(g_gfx_img_any && vk_gfx_image_pending(gva, len)) && !vk_release_pending(gva, len)) {
+    if (vk_uma() && !(atomic_load_explicit(&g_gfx_img_any, memory_order_relaxed) && vk_gfx_image_pending(gva, len)) &&
+        !vk_release_pending(gva, len)) {
         u64 align = g_vk.props.limits.minStorageBufferOffsetAlignment;
         g_buffer.lk = LK_STRICT;
         const int got = buf_get(gva, len, buf, off, 1, align ? align : 1, IN_TRY);

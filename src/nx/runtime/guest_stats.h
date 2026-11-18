@@ -33,7 +33,7 @@ void guest_stats_svc(u32 ix, u32 imm);
 void guest_stats_add(u32 ix, unsigned what);
 /* the counter of GSTAT_* what of guest thread ix, for its own code to add to with a load and a store: NCE's counter
    stubs, which count with no outcall */
-u64* guest_stats_counter(u32 ix, unsigned what);
+_Atomic u64* guest_stats_counter(u32 ix, unsigned what);
 /* the index of the family name (a copy is kept), the same for each call with it: a hooked function's under NCE, whose
    outcalls guest_stats_hook counts by it */
 unsigned guest_stats_family(const char* name);

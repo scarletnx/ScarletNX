@@ -8,50 +8,50 @@
 
 /* a thread holding vk_lock until let go, as the GPU thread did while it waited for the GPU. 1: to take it, 2: held,
    3: to let it go, 0: let go */
-static u32 g_lw_hold;
+static _Atomic u32 g_lw_hold;
 static void lw_holder(void* arg) {
     (void)arg;
     vk_lock();
-    __atomic_store_n(&g_lw_hold, 2, __ATOMIC_RELEASE);
+    atomic_store_explicit(&g_lw_hold, 2, memory_order_release);
     plat_wake_word(&g_lw_hold);
-    while (__atomic_load_n(&g_lw_hold, __ATOMIC_ACQUIRE) != 3) plat_wait_word(&g_lw_hold, 2, -1);
+    while (atomic_load_explicit(&g_lw_hold, memory_order_acquire) != 3) plat_wait_word(&g_lw_hold, 2, -1);
     vk_unlock();
-    __atomic_store_n(&g_lw_hold, 0, __ATOMIC_RELEASE);
+    atomic_store_explicit(&g_lw_hold, 0, memory_order_release);
     plat_wake_word(&g_lw_hold);
 }
 static int lw_hold(void) {
     u32 v;
-    __atomic_store_n(&g_lw_hold, 1, __ATOMIC_RELEASE);
+    atomic_store_explicit(&g_lw_hold, 1, memory_order_release);
     CHECK(plat_thread(lw_holder, NULL, 0) == 0);
-    while ((v = __atomic_load_n(&g_lw_hold, __ATOMIC_ACQUIRE)) != 2) plat_wait_word(&g_lw_hold, v, -1);
+    while ((v = atomic_load_explicit(&g_lw_hold, memory_order_acquire)) != 2) plat_wait_word(&g_lw_hold, v, -1);
     return 0;
 }
 static void lw_let_go(void) {
     u32 v;
-    __atomic_store_n(&g_lw_hold, 3, __ATOMIC_RELEASE);
+    atomic_store_explicit(&g_lw_hold, 3, memory_order_release);
     plat_wake_word(&g_lw_hold);
-    while ((v = __atomic_load_n(&g_lw_hold, __ATOMIC_ACQUIRE)) != 0) plat_wait_word(&g_lw_hold, v, -1);
+    while ((v = atomic_load_explicit(&g_lw_hold, memory_order_acquire)) != 0) plat_wait_word(&g_lw_hold, v, -1);
 }
 
 /* work on threads of their own, which the test waits for at most a while: 0 running, 1 done */
-static u32 g_lw_done[2];
+static _Atomic u32 g_lw_done[2];
 static void (*g_lw_fn[2])(void);
 static void lw_worker(void* arg) {
     u32 slot = (u32)(uintptr_t)arg;
     g_lw_fn[slot]();
-    __atomic_store_n(&g_lw_done[slot], 1, __ATOMIC_RELEASE);
+    atomic_store_explicit(&g_lw_done[slot], 1, memory_order_release);
     plat_wake_word(&g_lw_done[slot]);
 }
 static int lw_start_on(u32 slot, void (*fn)(void)) {
     g_lw_fn[slot] = fn;
-    __atomic_store_n(&g_lw_done[slot], 0, __ATOMIC_RELEASE);
+    atomic_store_explicit(&g_lw_done[slot], 0, memory_order_release);
     CHECK(plat_thread(lw_worker, (void*)(uintptr_t)slot, 0) == 0);
     return 0;
 }
 /* 1 when the work is done within ms milliseconds (a negative ms: until it is) */
 static int lw_done_on(u32 slot, i64 ms) {
     u64 until = plat_ns() + (u64)(ms < 0 ? 0 : ms) * 1000000u;
-    while (!__atomic_load_n(&g_lw_done[slot], __ATOMIC_ACQUIRE)) {
+    while (!atomic_load_explicit(&g_lw_done[slot], memory_order_acquire)) {
         u64 now = plat_ns();
         if (ms >= 0 && now >= until) return 0;
         plat_wait_word(&g_lw_done[slot], 0, ms < 0 ? -1 : (i64)(until - now));

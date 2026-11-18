@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include <stdlib.h>
+#include <stdatomic.h>
 #include "common/utilities/bits.h"
 #include "nx/gpu/vk/pending_pages.h"
 #include "nx/hle/services/nvdrv.h"
@@ -46,7 +47,7 @@ static void group_down(PendLeaf* l, u32 g) {
 static struct {
     PendPages* table[12]; /* uma.c's cross-check (draw_state_check=1) counts in one more */
     u32 n;
-    int check;
+    _Atomic int check;
     void (*any_watch)(u64 first, u64 last); /* pend_set_any_watch's */
 } g_pending_pages = {{0}, 0, -1, NULL};
 
@@ -214,7 +215,7 @@ static int each_run(u64 gva, u64 size, int (*fn)(void* t, u64 first, u64 last, i
 static void count_add(PendPages* t, int delta) {
     if (delta <= 0) return;
     for (PendPages* u = t; u; u = u->also) {
-        u->adds++;
+        atomic_store_explicit(&u->adds, atomic_load_explicit(&u->adds, memory_order_relaxed) + 1, memory_order_relaxed);
         if (u->adds_alone) return;
     }
 }
@@ -250,10 +251,10 @@ static int gpu_ranges(u64 gva, u64 size, u64 r[4]) {
 }
 /* read by threads with vk_lock and by threads with g_pend_lk, so atomic */
 static int alias_check_on(void) {
-    int check = __atomic_load_n(&g_pending_pages.check, __ATOMIC_RELAXED);
+    int check = atomic_load_explicit(&g_pending_pages.check, memory_order_relaxed);
     if (check < 0) {
         check = g_settings.gpu_page_check != 0;
-        if (__atomic_exchange_n(&g_pending_pages.check, check, __ATOMIC_RELAXED) < 0 && check)
+        if (atomic_exchange_explicit(&g_pending_pages.check, check, memory_order_relaxed) < 0 && check)
             LOG("vulkan: gpu_page_check=1: pending results are checked through the GMMU too\n");
     }
     return check;

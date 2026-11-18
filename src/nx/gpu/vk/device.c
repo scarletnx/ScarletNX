@@ -4,6 +4,7 @@
    and dynamic rendering (1.3): it runs on Vulkan 1.3, or on 1.2 with the extensions 1.3 took in (vk12_extensions). */
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 #include "nx/runtime/options.h"
 #include "nx/runtime/platform/backend.h"
 #include "nx/runtime/platform/log.h"
@@ -39,34 +40,35 @@ static _Thread_local int t_vkdepth;
 /* from vk_lock_pause to vk_lock_resume: the hold goes on after it, and a hold of the lock in between does not end
    this one's (vk_own_release_held) */
 static _Thread_local int t_vkpaused;
-static u32 g_vk_owner; /* the thread holding it (plat_tid), 0 when none: a trap's fault on it can't be answered */
+static _Atomic u32
+    g_vk_owner; /* the thread holding it (plat_tid), 0 when none: a trap's fault on it can't be answered */
 /* The lock hands off fairly. A Windows SRW lock (and a pthread mutex) lets the thread that let go take it straight back
    before the waiter it woke runs: a thread whose draws ran back to back kept it, and the threads landing GPU results and
    signalling fences waited milliseconds for each hold of a few microseconds. A thread letting go with
    others waiting in pm_lock sets the baton; until one of them (or any thread) takes the lock, a thread coming to it
    waits for the baton, not the lock, and only those already waiting compete */
-static u32 g_vk_waiting; /* threads blocked in pm_lock on g_vklock */
-static u32 g_vk_baton;   /* 1: let go to a waiter, which hasn't taken it yet */
+static _Atomic u32 g_vk_waiting; /* threads blocked in pm_lock on g_vklock */
+static _Atomic u32 g_vk_baton;   /* 1: let go to a waiter, which hasn't taken it yet */
 static void vk_took(void) {
-    __atomic_store_n(&g_vk_owner, plat_tid(), __ATOMIC_RELAXED);
-    if (__atomic_load_n(&g_vk_baton, __ATOMIC_RELAXED)) {
-        __atomic_store_n(&g_vk_baton, 0, __ATOMIC_RELEASE);
+    atomic_store_explicit(&g_vk_owner, plat_tid(), memory_order_relaxed);
+    if (atomic_load_explicit(&g_vk_baton, memory_order_relaxed)) {
+        atomic_store_explicit(&g_vk_baton, 0, memory_order_release);
         plat_wake_word(&g_vk_baton);
     }
 }
 void vk_lock(void) {
     if (!t_vkdepth++) {
-        int got = !__atomic_load_n(&g_vk_baton, __ATOMIC_ACQUIRE) && pm_trylock(&g_vklock);
+        int got = !atomic_load_explicit(&g_vk_baton, memory_order_acquire) && pm_trylock(&g_vklock);
         if (!got) { /* held: the GPU thread says so for the stall report */
             /* Only a contended acquisition gets a zone. */
             SNX_ZONE(z_wait, "vk lock wait");
             gpu_wait_note("vk_lock, which another thread holds", 0);
             /* the timeout only guards against a wake lost to the store's race: the baton is cleared at each take */
-            while (__atomic_load_n(&g_vk_baton, __ATOMIC_ACQUIRE)) plat_wait_word(&g_vk_baton, 1, 1000000);
+            while (atomic_load_explicit(&g_vk_baton, memory_order_acquire)) plat_wait_word(&g_vk_baton, 1, 1000000);
             if (!pm_trylock(&g_vklock)) {
-                __atomic_add_fetch(&g_vk_waiting, 1, __ATOMIC_SEQ_CST);
+                atomic_fetch_add_explicit(&g_vk_waiting, 1, memory_order_seq_cst);
                 pm_lock(&g_vklock);
-                __atomic_sub_fetch(&g_vk_waiting, 1, __ATOMIC_SEQ_CST);
+                atomic_fetch_sub_explicit(&g_vk_waiting, 1, memory_order_seq_cst);
             }
             gpu_wait_note(NULL, 0);
         }
@@ -75,8 +77,9 @@ void vk_lock(void) {
 }
 /* lets go of this thread's last hold, then signals the event slots its releases under it reached */
 static void vk_let_go(void) {
-    __atomic_store_n(&g_vk_owner, 0, __ATOMIC_RELAXED);
-    if (__atomic_load_n(&g_vk_waiting, __ATOMIC_SEQ_CST)) __atomic_store_n(&g_vk_baton, 1, __ATOMIC_RELEASE);
+    atomic_store_explicit(&g_vk_owner, 0, memory_order_relaxed);
+    if (atomic_load_explicit(&g_vk_waiting, memory_order_seq_cst))
+        atomic_store_explicit(&g_vk_baton, 1, memory_order_release);
     pm_unlock(&g_vklock);
     vk_release_events();
 }
@@ -95,7 +98,7 @@ int vk_trylock(void) {
     if (!t_vkdepth++) vk_took();
     return 1;
 }
-u32 vk_lock_owner(void) { return __atomic_load_n(&g_vk_owner, __ATOMIC_RELAXED); }
+u32 vk_lock_owner(void) { return atomic_load_explicit(&g_vk_owner, memory_order_relaxed); }
 int vk_lock_held(void) { return t_vkdepth > 0; }
 int vk_lock_pause(void) {
     if (t_vkdepth != 1) return 0;
@@ -114,15 +117,15 @@ void vk_lock_resume(int paused) {
    is what the driver and the other allocations of the process took. Any thread can fail, and the counts take
    devmem.c's own lock */
 /* set once devmem.c knows the device's memory: vk_memory_text's threads ask it only after they see this, atomic */
-static int g_devmem_ready;
+static _Atomic int g_devmem_ready;
 #define OOM_REPORTS 3
 static void oom_report(VkResult r) {
-    static u32 reports;
+    static _Atomic u32 reports;
     DevMemBudget b[VK_MAX_MEMORY_HEAPS];
     const VkPhysicalDeviceMemoryProperties* mp;
     if (r != VK_ERROR_OUT_OF_DEVICE_MEMORY && r != VK_ERROR_OUT_OF_HOST_MEMORY) return;
-    if (!__atomic_load_n(&g_devmem_ready, __ATOMIC_ACQUIRE) ||
-        __atomic_fetch_add(&reports, 1, __ATOMIC_RELAXED) >= OOM_REPORTS)
+    if (!atomic_load_explicit(&g_devmem_ready, memory_order_acquire) ||
+        atomic_fetch_add_explicit(&reports, 1, memory_order_relaxed) >= OOM_REPORTS)
         return;
     vk_devmem_budgets(b);
     mp = vk_devmem_props();
@@ -146,7 +149,7 @@ u64 vk_memory_blocks(void) {
     DevMemBudget b[VK_MAX_MEMORY_HEAPS];
     const VkPhysicalDeviceMemoryProperties* mp;
     u64 sum = 0;
-    if (!__atomic_load_n(&g_devmem_ready, __ATOMIC_ACQUIRE)) return 0;
+    if (!atomic_load_explicit(&g_devmem_ready, memory_order_acquire)) return 0;
     vk_devmem_budgets(b);
     mp = vk_devmem_props();
     for (u32 h = 0; h < mp->memoryHeapCount; h++) sum += b[h].block_bytes;
@@ -158,7 +161,7 @@ void vk_memory_text(char* out, size_t size) {
     size_t n = 0;
     if (!size) return;
     out[0] = 0;
-    if (!__atomic_load_n(&g_devmem_ready, __ATOMIC_ACQUIRE)) {
+    if (!atomic_load_explicit(&g_devmem_ready, memory_order_acquire)) {
         snprintf(out, size, "no GPU heaps yet, %u descriptor pools", vk_desc_pools());
         return;
     }
@@ -2332,7 +2335,7 @@ static int create_device(void) {
     if (!vk_devmem_init(g_vk.has_descriptor_buffers || g_vk.has_descriptor_heap_support || g_vk.has_copy_indirect ||
                         g_vk.has_inplace_loads))
         return 0;
-    __atomic_store_n(&g_devmem_ready, 1, __ATOMIC_RELEASE);
+    atomic_store_explicit(&g_devmem_ready, 1, memory_order_release);
     { /* a GPU of 4 GiB or less: memory held back for render targets (devmem.c vk_devmem_reserve) */
         VkPhysicalDeviceMemoryProperties mp;
         vkGetPhysicalDeviceMemoryProperties(g_vk.phys, &mp);
@@ -2571,7 +2574,7 @@ static int hdr_surface(u32 space, VkSurfaceFormatKHR* fmt) {
             LOG("vulkan: hdr_game=1, and a game is told the display is SDR: %s\n", why);
         said = on;
     }
-    __atomic_store_n(&g_vk.hdr_display, on, __ATOMIC_RELAXED);
+    atomic_store_explicit(&g_vk.hdr_display, on, memory_order_relaxed);
     found = on && vk_hdr_surface_format(space, formats, n, fmt);
     if (space != SNX_HDR_SPACE_SRGB && !on) /* on: the surface lists both spaces' formats */
         LOG_LIMIT(4, "vulkan: %s frames are shown on an SDR swapchain, their values as they are: %s\n",
@@ -2618,7 +2621,7 @@ int vk_swapchain_create(int kind) {
 
     /* vsync=1: FIFO, which every device has. Otherwise mailbox, else immediate, else FIFO all the same. Read once: the
        main thread's .ini reload writes it */
-    int vsync = __atomic_load_n(&g_settings.vsync, __ATOMIC_RELAXED);
+    int vsync = atomic_load_explicit((_Atomic int*)&g_settings.vsync, memory_order_relaxed);
     u32 nm = 0;
     vkGetPhysicalDeviceSurfacePresentModesKHR(g_vk.phys, g_vk.surface, &nm, NULL);
     VkPresentModeKHR* ms = calloc(nm ? nm : 1, sizeof *ms);
@@ -2632,7 +2635,8 @@ int vk_swapchain_create(int kind) {
        once the one before is displayed, so frames don't queue for the display: one image more than the driver keeps
        is enough, and more would only let frames that came early (a menu's, fps_limit's) queue */
     int clock = g_vk.has_present_wait || g_vk.has_display_timing;
-    u32 extra = clock && mode == VK_PRESENT_MODE_FIFO_KHR && __atomic_load_n(&g_settings.frame_pacing, __ATOMIC_RELAXED)
+    u32 extra = clock && mode == VK_PRESENT_MODE_FIFO_KHR &&
+                        atomic_load_explicit((_Atomic int*)&g_settings.frame_pacing, memory_order_relaxed)
                     ? 1
                     : VK_FRAMES;
     u32 count = snx_vk_swap_image_count(&caps, extra, VK_SC_MAX);

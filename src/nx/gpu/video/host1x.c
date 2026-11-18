@@ -28,6 +28,7 @@
 #include "nx/gpu/video/vic_regs.h"
 #include "nx/runtime/platform/tracy.h"
 #include "nx/runtime/state_io.h"
+#include <stdatomic.h>
 
 /* NvResult, the codes these ioctls answer with */
 enum { NV_OK = 0, NV_BAD_PARAMETER = 4, NV_INSUFFICIENT_MEMORY = 6 };
@@ -100,7 +101,7 @@ static struct {
     IovaMap iova[IOVA_SLOTS]; /* sorted by iova */
     u32 niova;
     PMutex engine_lk; /* the engines: one job's command buffers at a time */
-    u32 jobs;         /* queued or running on any channel, with __atomic operations: what host1x_drain waits for */
+    _Atomic u32 jobs; /* queued or running on any channel, with __atomic operations: what host1x_drain waits for */
 } g_host1x = {PMUTEX_INIT, {{0}}, 0, PMUTEX_INIT, 0};
 
 /* A job is one block of words: the command buffer count, the increment count, each command buffer as its length and
@@ -323,7 +324,7 @@ static void worker(void* arg) {
         SNX_ZONE_VALUE(z_job, spval);
         SNX_ZONE_END(z_job);
         free(job);
-        __atomic_sub_fetch(&g_host1x.jobs, 1, __ATOMIC_RELEASE);
+        atomic_fetch_sub_explicit(&g_host1x.jobs, 1, memory_order_release);
         pm_lock(&ch->lk);
         ch->head = (ch->head + 1) % H1_QUEUE;
         ch->count--;
@@ -419,7 +420,7 @@ static u32 submit(H1Ch* ch, u8* d, u32 n) {
     }
     ch->queue[(ch->head + ch->count) % H1_QUEUE] = job;
     ch->count++;
-    __atomic_add_fetch(&g_host1x.jobs, 1, __ATOMIC_RELAXED);
+    atomic_fetch_add_explicit(&g_host1x.jobs, 1, memory_order_relaxed);
     pc_broadcast(&ch->cv);
     if (!ch->started) {
         ch->started = 1;
@@ -431,10 +432,10 @@ static u32 submit(H1Ch* ch, u8* d, u32 n) {
 /* a game pause, with no guest thread left to submit: polled, as pauses are rare and the jobs take milliseconds */
 int host1x_drain(int timeout_ms) {
     u64 t0 = plat_ns();
-    while (__atomic_load_n(&g_host1x.jobs, __ATOMIC_ACQUIRE)) {
+    while (atomic_load_explicit(&g_host1x.jobs, memory_order_acquire)) {
         if (plat_ns() - t0 >= (u64)timeout_ms * 1000000u) {
-            WARN("pause: host1x still has %u jobs after %d ms\n", __atomic_load_n(&g_host1x.jobs, __ATOMIC_RELAXED),
-                 timeout_ms);
+            WARN("pause: host1x still has %u jobs after %d ms\n",
+                 atomic_load_explicit(&g_host1x.jobs, memory_order_relaxed), timeout_ms);
             return -1;
         }
         plat_sleep_ns(1000000);

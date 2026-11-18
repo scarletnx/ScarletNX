@@ -31,6 +31,7 @@
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 
 #define STREAMS_MAX    16
 #define STREAM_STOPPED 1
@@ -79,18 +80,19 @@ typedef struct {
 } Stream;
 
 static PMutex g_lk;
-static int g_lk_ready;
+static _Atomic int g_lk_ready;
 static Stream g_streams[STREAMS_MAX];
 
 static void lock(void) {
-    int ready = __atomic_load_n(&g_lk_ready, __ATOMIC_ACQUIRE);
+    int ready = atomic_load_explicit(&g_lk_ready, memory_order_acquire);
     if (ready != 2) {
         int expected = 0;
-        if (__atomic_compare_exchange_n(&g_lk_ready, &expected, 1, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+        if (atomic_compare_exchange_strong_explicit(&g_lk_ready, &expected, 1, memory_order_acq_rel,
+                                                    memory_order_acquire)) {
             pm_init(&g_lk);
-            __atomic_store_n(&g_lk_ready, 2, __ATOMIC_RELEASE);
+            atomic_store_explicit(&g_lk_ready, 2, memory_order_release);
         } else
-            while (__atomic_load_n(&g_lk_ready, __ATOMIC_ACQUIRE) != 2) {}
+            while (atomic_load_explicit(&g_lk_ready, memory_order_acquire) != 2) {}
     }
     pm_lock(&g_lk);
 }
@@ -353,7 +355,7 @@ static Mic* mic_open(u32 rate) {
     }
     if (strcmp(g_settings.microphone, "off")) m->dev = plat_mic_open(rate, g_settings.microphone);
     m->rate = rate;
-    m->asked = __atomic_load_n(&g_settings.microphone_noise_reduction, __ATOMIC_RELAXED);
+    m->asked = atomic_load_explicit((_Atomic int*)&g_settings.microphone_noise_reduction, memory_order_relaxed);
     if (m->dev) m->denoise = snx_denoise_new(rate, m->block, m->asked);
     /* said for the first starts only: a game may start and stop its stream for each recording */
     if (!strcmp(g_settings.microphone, "off"))
@@ -382,7 +384,7 @@ static void mic_push(Mic* m, const i16* x, u32 n) {
 /* a whole block: reduced as the setting has it now. A change of method makes a new reducer, which learns the noise
    again in a second or so */
 static void mic_block(Mic* m) {
-    int want = __atomic_load_n(&g_settings.microphone_noise_reduction, __ATOMIC_RELAXED);
+    int want = atomic_load_explicit((_Atomic int*)&g_settings.microphone_noise_reduction, memory_order_relaxed);
     if (want != m->asked) {
         char said[192];
         snx_denoise_free(m->denoise);
@@ -735,7 +737,7 @@ i32 audio_write_stream(CPU* c, u64 stream, u64 data, i32 frames) {
    turn, out of the ring to the host's output (the first two channels), and its event is signaled for the room */
 void outstream_tick(u64 now) {
     static i16 out[48000 / 20 * 2 * 2];
-    if (!__atomic_load_n(&g_lk_ready, __ATOMIC_ACQUIRE)) return;
+    if (!atomic_load_explicit(&g_lk_ready, memory_order_acquire)) return;
     lock();
     for (u32 i = 0; i < STREAMS_MAX; i++) {
         Stream* s = &g_streams[i];

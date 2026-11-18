@@ -5,6 +5,7 @@
    compiled its blocks for the checked memory model of a host that is flat */
 #include "common/memory/host.h"
 #include <stdio.h>
+#include <stdatomic.h>
 #ifdef _WIN32
 #include <windows.h>
 #else
@@ -15,7 +16,7 @@
 
 #define THREADS 64
 
-static int g_arrived, g_open;
+static _Atomic int g_arrived, g_open;
 static size_t g_page[THREADS];
 
 static void yield_thread(void) {
@@ -35,8 +36,8 @@ static size_t os_page(void) {
 #endif
 }
 static void first_call(size_t* page) {
-    __atomic_add_fetch(&g_arrived, 1, __ATOMIC_ACQ_REL);
-    while (!__atomic_load_n(&g_open, __ATOMIC_ACQUIRE)) yield_thread();
+    atomic_fetch_add_explicit(&g_arrived, 1, memory_order_acq_rel);
+    while (!atomic_load_explicit(&g_open, memory_order_acquire)) yield_thread();
     *page = snx_host_page();
 }
 #ifdef _WIN32
@@ -53,8 +54,8 @@ static void* worker(void* page) {
 
 /* a count of the threads at the gate, not a sleep, says they all wait there before the gate opens */
 static void open_gate(void) {
-    while (__atomic_load_n(&g_arrived, __ATOMIC_ACQUIRE) < THREADS) yield_thread();
-    __atomic_store_n(&g_open, 1, __ATOMIC_RELEASE);
+    while (atomic_load_explicit(&g_arrived, memory_order_acquire) < THREADS) yield_thread();
+    atomic_store_explicit(&g_open, 1, memory_order_release);
 }
 
 int main(void) {

@@ -8,12 +8,12 @@
 #define PK_GVA  0x6f8000000ull
 #define PK_LANE 60 /* a lane no queue of nvn_replay.c uses */
 
-static int g_pk_seen; /* atomic: the poll found the word */
+static _Atomic int g_pk_seen; /* the poll found the word */
 static u64 g_pk_ns;   /* when, set before g_pk_seen */
 static u32 g_pk_end;  /* what ended the GPU thread's last sleep then (GpuPollStats.last) */
 static int pk_poll(void* arg) {
     (void)arg;
-    if (!__atomic_load_n((u32*)GP(PK_CPU), __ATOMIC_ACQUIRE)) {
+    if (!atomic_load_explicit((_Atomic u32*)GP(PK_CPU), memory_order_acquire)) {
         gpu_poll_why(GPU_POLL_EVENT);
         return 0;
     }
@@ -21,7 +21,7 @@ static int pk_poll(void* arg) {
     gpu_poll_stats(&s);
     g_pk_ns = plat_ns();
     g_pk_end = s.last;
-    __atomic_store_n(&g_pk_seen, 1, __ATOMIC_RELEASE);
+    atomic_store_explicit(&g_pk_seen, 1, memory_order_release);
     return 1;
 }
 /* trials polls, each ended by a release: how many of them the last sleep's kick ended, and the median ns from the
@@ -34,8 +34,8 @@ static int pk_trials(u32 trials, u64* median) {
         vk_lock();
         vk_finish(); /* nothing in flight: the release has no gate, and is made at vk_release_submit */
         vk_unlock();
-        __atomic_store_n((u32*)GP(PK_CPU), 0, __ATOMIC_RELEASE);
-        __atomic_store_n(&g_pk_seen, 0, __ATOMIC_RELEASE);
+        atomic_store_explicit((_Atomic u32*)GP(PK_CPU), 0, memory_order_release);
+        atomic_store_explicit(&g_pk_seen, 0, memory_order_release);
         GpuPollStats s0, s;
         gpu_poll_stats(&s0);
         gpu_call_poll(pk_poll, NULL, PK_LANE);
@@ -48,8 +48,9 @@ static int pk_trials(u32 trials, u64* median) {
         const u64 t0 = plat_ns();
         vk_release_write(PK_GVA, &one, 4);
         vk_release_submit();
-        while (!__atomic_load_n(&g_pk_seen, __ATOMIC_ACQUIRE) && plat_ns() < until + 2000000000ull) plat_yield();
-        if (!__atomic_load_n(&g_pk_seen, __ATOMIC_ACQUIRE)) return -1;
+        while (!atomic_load_explicit(&g_pk_seen, memory_order_acquire) && plat_ns() < until + 2000000000ull)
+            plat_yield();
+        if (!atomic_load_explicit(&g_pk_seen, memory_order_acquire)) return -1;
         ns[t] = g_pk_ns - t0;
         kicked += g_pk_end == 0;
     }

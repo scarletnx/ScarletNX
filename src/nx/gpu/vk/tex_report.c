@@ -210,7 +210,7 @@ static const char* host_format_name(u32 format, char* s, size_t n) {
 }
 
 /* text added to a line of size bytes at *at: what does not fit is cut */
-static void line_add(char* line, size_t size, size_t* at, const char* fmt, ...) __attribute__((format(printf, 4, 5)));
+[[gnu::format(printf, 4, 5)]] static void line_add(char* line, size_t size, size_t* at, const char* fmt, ...);
 static void line_add(char* line, size_t size, size_t* at, const char* fmt, ...) {
     if (*at >= size) return;
     va_list ap;

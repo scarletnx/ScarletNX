@@ -19,6 +19,7 @@
 #include "nx/runtime/platform/log.h"
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 
 #define CODEC_MANAGERS     8
 #define CODEC_DECODERS     512
@@ -46,19 +47,20 @@ typedef struct {
 } CodecManager;
 
 static PMutex g_lk;
-static int g_lk_ready;
+static _Atomic int g_lk_ready;
 static CodecManager g_managers[CODEC_MANAGERS];
 static CodecDecoder* g_decoders[CODEC_DECODERS];
 
 static void lock(void) {
-    int ready = __atomic_load_n(&g_lk_ready, __ATOMIC_ACQUIRE);
+    int ready = atomic_load_explicit(&g_lk_ready, memory_order_acquire);
     if (ready != 2) {
         int expected = 0;
-        if (__atomic_compare_exchange_n(&g_lk_ready, &expected, 1, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+        if (atomic_compare_exchange_strong_explicit(&g_lk_ready, &expected, 1, memory_order_acq_rel,
+                                                    memory_order_acquire)) {
             pm_init(&g_lk);
-            __atomic_store_n(&g_lk_ready, 2, __ATOMIC_RELEASE);
+            atomic_store_explicit(&g_lk_ready, 2, memory_order_release);
         } else
-            while (__atomic_load_n(&g_lk_ready, __ATOMIC_ACQUIRE) != 2) {}
+            while (atomic_load_explicit(&g_lk_ready, memory_order_acquire) != 2) {}
     }
     pm_lock(&g_lk);
 }
