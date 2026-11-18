@@ -260,10 +260,12 @@ jobs:
         run: &python-diagnostics |
           python -m compileall -q tools
           python tools/run_game.py --help > /dev/null
+      # The install tree, no package: the checks as installed and the Amberlith job take it within the run
       - uses: actions/upload-artifact@v7
         with:
           name: ScarletNX-linux-${{ matrix.arch }}-${{ steps.commit.outputs.short }}-install
           path: stage
+          retention-days: 1
       # A run stops at its first failed job, whatever its event: the jobs done keep their results, and the others are
       # cancelled instead of building for nothing. A failed job marks its run with this artifact, and the jobs still
       # running cancel the run once this one has ended (scripts/fail-fast.py), so it keeps its failure: a job that
@@ -690,11 +692,13 @@ jobs:
           # out of /usr first: the tests run as the linux job's do, with no copy of ScarletNX installed there
           xargs -d '\n' rm -f -- < build/default/install_manifest.txt
           cmake --install build/default --prefix stage
-      - if: github.event_name == 'pull_request'
+      # A pull request's install tree, no package: the Amberlith job takes x86-64's within the run, and no job AArch64's
+      - if: github.event_name == 'pull_request' && matrix.arch == 'x86_64'
         uses: actions/upload-artifact@v7
         with:
           name: ScarletNX-linux-${{ matrix.arch }}-${{ steps.commit.outputs.short }}-install
           path: stage
+          retention-days: 1
       # The linux job's test tools this image lacks, and Arch's own Mesa back, which the linux job tests lavapipe with:
       # the debloated one is for the AppImage alone. Each pacman install is tried 3 times, as in the linux job
       - name: Install the test tools

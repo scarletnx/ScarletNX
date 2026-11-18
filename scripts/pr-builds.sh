@@ -36,12 +36,13 @@ if [ -z "$print" ] && [ "$(gh api "repos/$repo/pulls/$pr" --jq .head.sha)" != "$
     echo "$sha is no longer the head of #$pr: its comment stays"
     exit 0
 fi
-# every artifact but the APK's halves (-stage), which only the job that packs the APK takes, edenprobe's reports,
-# which its line below links through the run, and a failed job's mark (scripts/fail-fast.py)
-artifacts=$(gh api "repos/$repo/actions/runs/$run/artifacts?per_page=100")
+# every artifact but the APK's halves (-stage), which only the job that packs the APK takes, the install trees
+# (-install), which only the run's own jobs take, edenprobe's reports, which its line below links through the run, and
+# a failed job's mark (scripts/fail-fast.py): the packages a person downloads, kept until the first of them expires
+artifacts=$(gh api "repos/$repo/actions/runs/$run/artifacts?per_page=100" | jq '.artifacts |= map(select((.expired | not)
+    and (.name | endswith("-stage") or endswith("-install") or startswith("edenprobe-") or startswith("fail-fast-") | not)))')
 links=$(jq -r --arg url "https://github.com/$repo/actions/runs/$run/artifacts" '
-    .artifacts | map(select((.expired | not) and (.name | endswith("-stage") or startswith("edenprobe-") or startswith("fail-fast-") | not))) |
-    sort_by(.name)[] |
+    .artifacts | sort_by(.name)[] |
     "- [\(.name)](\($url)/\(.id)), \(.size_in_bytes / 1048576 | floor) MiB"' <<<"$artifacts")
 until=$(jq -r '[.artifacts[].expires_at] | min // empty | .[:10]' <<<"$artifacts")
 
