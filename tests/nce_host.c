@@ -163,7 +163,7 @@ static void patch(u32 offset, size_t count) { patch_with(offset, count, &g_env);
 /* ---- the runtime's side ---- */
 
 static int g_hook_handles = 1; /* 1: the hook's handler answers, 0: the function's own code runs */
-static u64 g_reads;            /* the main thread's count of counter reads, which the stubs add to */
+static _Atomic u64 g_reads;    /* the main thread's count of counter reads, which the stubs add to */
 static u64 g_original;
 static u64 g_moved[4]; /* c's, t's, x's and q's own code, from their moved first words: hooks 8 to 11 */
 static unsigned g_preempts, g_traps;

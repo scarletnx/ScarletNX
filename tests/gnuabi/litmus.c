@@ -66,7 +66,8 @@ static u32 seen[THREADS][2];
 static u32 values[READERS];
 static u32 histogram[1u << READERS];
 static u32 bad_values;
-static u32 arrive, sense, phase[THREADS];
+static _Atomic u32 arrive, sense;
+static u32 phase[THREADS];
 static u32 ptid[THREADS], ctid[THREADS];
 alignas(16) static u8 stacks[THREADS][65536];
 
