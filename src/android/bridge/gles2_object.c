@@ -172,20 +172,9 @@ static void* entry(void** items, size_t* count, size_t size, unsigned name) {
         }                                                                                                              \
     }
 
-GEN(renderbuffers, renderbuffer_count, renderbuffers, G2Renderbuffer, (void)0)
-GEN(framebuffers, framebuffer_count, framebuffers, G2Framebuffer, x->draw[0] = GL_COLOR_ATTACHMENT0_;
-    x->read = GL_COLOR_ATTACHMENT0_)
 GEN(queries, query_count, queries, G2Query, (void)0)
 #undef GEN
 
-G2Renderbuffer* gles2_renderbuffer(unsigned name) {
-    return name && name < g_gles2.renderbuffer_count && g_gles2.renderbuffers[name].used ? &g_gles2.renderbuffers[name]
-                                                                                         : NULL;
-}
-G2Framebuffer* gles2_framebuffer(unsigned name) {
-    return name && name < g_gles2.framebuffer_count && g_gles2.framebuffers[name].used ? &g_gles2.framebuffers[name]
-                                                                                       : NULL;
-}
 static G2Query* query_object(unsigned name) {
     return name && name < g_gles2.query_count && g_gles2.queries[name].used ? &g_gles2.queries[name] : NULL;
 }
@@ -1277,42 +1266,85 @@ static void g_get_sampler_parameterfv(CPU* c, Gles2Context* gl) {
     if (snx_gl_get_sampler_parameter(gl->ctx, (uint32_t)X(0), (uint32_t)X(1), &v)) memcpy(PTR(2), &v, 4);
 }
 
-/* ---- renderbuffers ---- */
+/* ---- renderbuffers and framebuffers: the shared layer's (common/gpu/gl/gl_framebuffer.h), and each renderbuffer's
+   image here ---- */
 
-static void g_gen_renderbuffers(CPU* c, Gles2Context* gl) {
-    gen_call(c, gl, gen_renderbuffers);
+/* a renderbuffer's image, with the shared layer's record copied in now: NULL for 0 or a name not made */
+G2Renderbuffer* gles2_renderbuffer(unsigned name) {
+    const SnxGlRenderbuffer* x = snx_gl_renderbuffer(name);
+    if (!x) return NULL;
+    G2Renderbuffer* r = &g_gles2.renderbuffer_vk[name - 1];
+    r->used = true;
+    r->format = gles2_format_at(x->format);
+    r->width = x->width, r->height = x->height;
+    r->samples = (VkSampleCountFlagBits)x->samples;
+    r->generation = x->generation;
+    return r;
 }
-static void g_bind_renderbuffer(CPU* c, Gles2Context* gl) {
-    unsigned name = (unsigned)X(1);
-    if ((unsigned)X(0) != GL_RENDERBUFFER_) {
-        gles2_error(gl, GL_INVALID_ENUM_);
-        return;
-    }
-    if (name && !gles2_renderbuffer(name)) {
-        G2Renderbuffer* r = entry((void**)&g_gles2.renderbuffers, &g_gles2.renderbuffer_count, sizeof *r, name);
-        if (!r) return;
-        *r = (G2Renderbuffer){0};
-        r->used = true;
-    }
-    gl->renderbuffer = name;
-}
+G2Framebuffer* gles2_framebuffer(unsigned name) { return snx_gl_framebuffer(name); }
+
 static void renderbuffer_free(G2Renderbuffer* r) {
     if (r->image.image)
         gles_vk_retire((GlesGarbage){.image = r->image.image, .view = r->image.view, .memory = r->image.memory});
     r->image = (GlesImage){0};
+    r->ready = false;
 }
-static void forget_renderbuffer(Gles2Context* gl, unsigned name) {
+/* the shared layer made the renderbuffer's storage anew: its image, of a format the device renders to */
+static int renderbuffer_storage(uint32_t ctx, uint32_t name) {
+    Gles2Context* gl = texture_context(ctx);
     G2Renderbuffer* r = gles2_renderbuffer(name);
-    if (!r) return;
+    if (!r || !r->format) return 0;
+    const G2Format* f = r->format;
+    renderbuffer_free(r);
+    bool expanded;
+    VkComponentMapping swizzle;
+    VkFormat vk = pick(f, needs(f, false), &expanded, &swizzle);
+    if (!vk && f->kind == G2_STENCIL) vk = VK_FORMAT_D32_SFLOAT_S8_UINT;
+    if (!vk) {
+        gles2_warn(6, "a renderbuffer format the device does not render to");
+        return 0;
+    }
+    VkImageAspectFlags aspect = gles2_aspect(f);
+    if (vk == VK_FORMAT_D24_UNORM_S8_UINT || vk == VK_FORMAT_D32_SFLOAT_S8_UINT)
+        aspect = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
+    VkImageCreateInfo info = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                              .imageType = VK_IMAGE_TYPE_2D,
+                              .format = vk,
+                              .extent = {(uint32_t)r->width, (uint32_t)r->height, 1},
+                              .mipLevels = 1,
+                              .arrayLayers = 1,
+                              .samples = r->samples,
+                              .tiling = VK_IMAGE_TILING_OPTIMAL,
+                              .usage = (f->kind >= G2_DEPTH ? VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT
+                                                            : VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) |
+                                       VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT};
+    if (!gles_vk_image(&info, VK_IMAGE_VIEW_TYPE_2D, aspect, &r->image)) {
+        gles2_error(gl, GL_OUT_OF_MEMORY_);
+        return 0;
+    }
+    r->vk = vk;
+    return 1;
+}
+static void renderbuffer_gone(uint32_t name) {
+    G2Renderbuffer* r = &g_gles2.renderbuffer_vk[name - 1];
+    if (!r->used) return;
     renderbuffer_free(r);
     *r = (G2Renderbuffer){0};
-    if (gl->renderbuffer == name) gl->renderbuffer = 0;
     gles2_target_forget();
+}
+static void window_bits(uint32_t ctx, int32_t* depth, int32_t* stencil) {
+    Gles2Context* gl = texture_context(ctx);
+    *depth = gl && gl->draw ? gl->draw->depth_bits : 0;
+    *stencil = gl && gl->draw ? gl->draw->stencil_bits : 0;
+}
+void gles2_framebuffers_init(void) {
+    snx_gl_framebuffer_host(&(SnxGlFramebufferHost){renderbuffer_storage, renderbuffer_gone, gles2_target_forget,
+                                                    window_bits, texture_max_size});
 }
 void gles2_objects_vk_free(void) {
     for (size_t i = 0; i < SNX_GL_BUFFERS; ++i) buffer_vk_free(&g_gles2.buffer_vk[i]);
     for (size_t i = 0; i < SNX_GL_TEXTURES; ++i) texture_free(&g_gles2.texture_vk[i]);
-    for (size_t i = 0; i < g_gles2.renderbuffer_count; ++i) renderbuffer_free(&g_gles2.renderbuffers[i]);
+    for (size_t i = 0; i < SNX_GL_RENDERBUFFERS; ++i) renderbuffer_free(&g_gles2.renderbuffer_vk[i]);
     for (size_t i = 0; i < g_gles2.query_count; ++i) {
         G2Query* q = &g_gles2.queries[i];
         if (q->pool) V.vk.vkDestroyQueryPool(V.device, q->pool, NULL);
@@ -1330,305 +1362,61 @@ void gles2_objects_vk_free(void) {
     g_gles2.expand_layout = VK_NULL_HANDLE;
     g_gles2.expand_set = VK_NULL_HANDLE;
 }
+
+static void g_gen_renderbuffers(CPU* c, Gles2Context* gl) { snx_gl_gen_renderbuffers(gl->ctx, (int32_t)X(0), PTR(1)); }
 static void g_delete_renderbuffers(CPU* c, Gles2Context* gl) {
-    each_name(c, gl, forget_renderbuffer);
+    snx_gl_delete_renderbuffers(gl->ctx, (int32_t)X(0), PTR(1));
 }
 static void g_is_renderbuffer(CPU* c, Gles2Context* gl) {
     (void)gl;
-    X(0) = gles2_renderbuffer((unsigned)X(0)) != NULL;
+    X(0) = (uint64_t)snx_gl_is_renderbuffer((uint32_t)X(0));
 }
-/* a renderbuffer's format: the sized ones of GLES 2 and 3 */
-static const G2Format* renderbuffer_format(unsigned internal) {
-    switch (internal) {
-    case 0x8d62: return gles2_format(0x8d62, 0, 0); /* GL_RGB565 */
-    case 0x8056:
-    case 0x8057:
-    case 0x8058:
-    case 0x8051:
-    default: return gles2_format(internal, 0, 0);
-    }
-}
-static void renderbuffer_storage(Gles2Context* gl, int samples, unsigned internal, int w, int h) {
-    G2Renderbuffer* r = gles2_renderbuffer(gl->renderbuffer);
-    if (!r) {
-        gles2_error(gl, GL_INVALID_OPERATION_);
-        return;
-    }
-    const G2Format* f = renderbuffer_format(internal);
-    if (!f || f->block) {
-        gles2_error(gl, GL_INVALID_ENUM_);
-        return;
-    }
-    if (w < 0 || h < 0 || (uint32_t)w > V.max_texture || (uint32_t)h > V.max_texture || samples < 0) {
-        gles2_error(gl, GL_INVALID_VALUE_);
-        return;
-    }
-    renderbuffer_free(r);
-    r->width = w, r->height = h;
-    r->format = f;
-    r->generation++;
-    r->ready = false;
-    gles2_target_forget();
-    if (!w || !h) return;
-    bool expanded;
-    VkComponentMapping swizzle;
-    VkFormat vk = pick(f, needs(f, false), &expanded, &swizzle);
-    if (!vk && f->kind == G2_STENCIL) vk = VK_FORMAT_D32_SFLOAT_S8_UINT;
-    if (!vk) {
-        gles2_warn(6, "a renderbuffer format the device does not render to");
-        return;
-    }
-    VkSampleCountFlagBits count = samples > 2 ? VK_SAMPLE_COUNT_4_BIT : samples > 1 ? VK_SAMPLE_COUNT_2_BIT
-                                  : samples == 1                         ? VK_SAMPLE_COUNT_2_BIT
-                                                                        : VK_SAMPLE_COUNT_1_BIT;
-    VkImageAspectFlags aspect = gles2_aspect(f);
-    if (vk == VK_FORMAT_D24_UNORM_S8_UINT || vk == VK_FORMAT_D32_SFLOAT_S8_UINT)
-        aspect = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
-    VkImageCreateInfo info = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-                              .imageType = VK_IMAGE_TYPE_2D,
-                              .format = vk,
-                              .extent = {(uint32_t)w, (uint32_t)h, 1},
-                              .mipLevels = 1,
-                              .arrayLayers = 1,
-                              .samples = count,
-                              .tiling = VK_IMAGE_TILING_OPTIMAL,
-                              .usage = (f->kind >= G2_DEPTH ? VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT
-                                                           : VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) |
-                                       VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT};
-    if (!gles_vk_image(&info, VK_IMAGE_VIEW_TYPE_2D, aspect, &r->image)) {
-        gles2_error(gl, GL_OUT_OF_MEMORY_);
-        return;
-    }
-    r->vk = vk;
-    r->samples = count;
+static void g_bind_renderbuffer(CPU* c, Gles2Context* gl) {
+    snx_gl_bind_renderbuffer(gl->ctx, (uint32_t)X(0), (uint32_t)X(1));
 }
 static void g_renderbuffer_storage(CPU* c, Gles2Context* gl) {
-    renderbuffer_storage(gl, 0, (unsigned)X(1), (int)X(2), (int)X(3));
+    snx_gl_renderbuffer_storage(gl->ctx, (uint32_t)X(0), 0, (uint32_t)X(1), (int32_t)X(2), (int32_t)X(3));
 }
 static void g_renderbuffer_storage_multisample(CPU* c, Gles2Context* gl) {
-    renderbuffer_storage(gl, (int)X(1), (unsigned)X(2), (int)X(3), (int)X(4));
+    snx_gl_renderbuffer_storage(gl->ctx, (uint32_t)X(0), (int32_t)X(1), (uint32_t)X(2), (int32_t)X(3), (int32_t)X(4));
 }
 static void g_get_renderbuffer_parameteriv(CPU* c, Gles2Context* gl) {
-    G2Renderbuffer* r = gles2_renderbuffer(gl->renderbuffer);
     int32_t v = 0;
-    if (!r) {
-        gles2_error(gl, GL_INVALID_OPERATION_);
-        return;
-    }
-    const G2Format* f = r->format;
-    switch ((unsigned)X(1)) {
-    case 0x8d42: v = r->width; break;
-    case 0x8d43: v = r->height; break;
-    case 0x8d44: v = f ? (int32_t)f->internal : 0x8056; break;
-    case 0x8cab: v = r->samples > 1 ? (int32_t)r->samples : 0; break;
-    case 0x8d50: /* GL_RENDERBUFFER_RED_SIZE .. ALPHA */
-    case 0x8d51:
-    case 0x8d52:
-    case 0x8d53: v = f && f->kind < G2_DEPTH ? 8 : 0; break;
-    case 0x8d54: v = f && (f->kind == G2_DEPTH || f->kind == G2_DS) ? 24 : 0; break;
-    case 0x8d55: v = f && (f->kind == G2_STENCIL || f->kind == G2_DS) ? 8 : 0; break;
-    default: gles2_error(gl, GL_INVALID_ENUM_); return;
-    }
-    memcpy(PTR(2), &v, 4);
+    if (snx_gl_get_renderbuffer_parameter(gl->ctx, (uint32_t)X(0), (uint32_t)X(1), &v)) memcpy(PTR(2), &v, 4);
 }
 
-/* ---- framebuffers ---- */
-
-static void g_gen_framebuffers(CPU* c, Gles2Context* gl) {
-    gen_call(c, gl, gen_framebuffers);
-}
-static void g_bind_framebuffer(CPU* c, Gles2Context* gl) {
-    unsigned target = (unsigned)X(0), name = (unsigned)X(1);
-    if (target != GL_FRAMEBUFFER_ && target != GL_READ_FRAMEBUFFER_ && target != GL_DRAW_FRAMEBUFFER_) {
-        gles2_error(gl, GL_INVALID_ENUM_);
-        return;
-    }
-    if (name && !gles2_framebuffer(name)) {
-        G2Framebuffer* f = entry((void**)&g_gles2.framebuffers, &g_gles2.framebuffer_count, sizeof *f, name);
-        if (!f) return;
-        *f = (G2Framebuffer){0};
-        f->used = true;
-        f->draw[0] = GL_COLOR_ATTACHMENT0_;
-        f->read = GL_COLOR_ATTACHMENT0_;
-    }
-    if (target != GL_READ_FRAMEBUFFER_) gl->draw_fbo = name;
-    if (target != GL_DRAW_FRAMEBUFFER_) gl->read_fbo = name;
-}
-static void forget_framebuffer(Gles2Context* gl, unsigned name) {
-    G2Framebuffer* f = gles2_framebuffer(name);
-    if (!f) return;
-    *f = (G2Framebuffer){0};
-    if (gl->draw_fbo == name) gl->draw_fbo = 0;
-    if (gl->read_fbo == name) gl->read_fbo = 0;
-    gles2_target_forget();
-}
+static void g_gen_framebuffers(CPU* c, Gles2Context* gl) { snx_gl_gen_framebuffers(gl->ctx, (int32_t)X(0), PTR(1)); }
 static void g_delete_framebuffers(CPU* c, Gles2Context* gl) {
-    each_name(c, gl, forget_framebuffer);
+    snx_gl_delete_framebuffers(gl->ctx, (int32_t)X(0), PTR(1));
 }
 static void g_is_framebuffer(CPU* c, Gles2Context* gl) {
     (void)gl;
-    X(0) = gles2_framebuffer((unsigned)X(0)) != NULL;
+    X(0) = (uint64_t)snx_gl_is_framebuffer((uint32_t)X(0));
 }
-static G2Framebuffer* target_framebuffer(Gles2Context* gl, unsigned target) {
-    unsigned name = target == GL_READ_FRAMEBUFFER_ ? gl->read_fbo : gl->draw_fbo;
-    if (target != GL_FRAMEBUFFER_ && target != GL_READ_FRAMEBUFFER_ && target != GL_DRAW_FRAMEBUFFER_) {
-        gles2_error(gl, GL_INVALID_ENUM_);
-        return NULL;
-    }
-    G2Framebuffer* f = gles2_framebuffer(name);
-    if (!f) gles2_error(gl, GL_INVALID_OPERATION_);
-    return f;
-}
-/* the attachment points of a GL attachment: up to two (depth and stencil) */
-static int attachment_points(unsigned attachment, int out[2]) {
-    if (attachment >= GL_COLOR_ATTACHMENT0_ && attachment < GL_COLOR_ATTACHMENT0_ + G2_COLORS) {
-        out[0] = (int)(attachment - GL_COLOR_ATTACHMENT0_);
-        return 1;
-    }
-    if (attachment == GL_DEPTH_ATTACHMENT_) return out[0] = G2_DEPTH_ATTACHMENT, 1;
-    if (attachment == GL_STENCIL_ATTACHMENT_) return out[0] = G2_STENCIL_ATTACHMENT, 1;
-    if (attachment == GL_DEPTH_STENCIL_ATTACHMENT_) {
-        out[0] = G2_DEPTH_ATTACHMENT;
-        out[1] = G2_STENCIL_ATTACHMENT;
-        return 2;
-    }
-    return 0;
-}
-static void attach(Gles2Context* gl, unsigned target, unsigned attachment, G2Attachment a) {
-    G2Framebuffer* f = target_framebuffer(gl, target);
-    int points[2];
-    int n = attachment_points(attachment, points);
-    if (!f) return;
-    if (!n) {
-        gles2_error(gl, GL_INVALID_ENUM_);
-        return;
-    }
-    if (!a.name) a = (G2Attachment){0};
-    for (int i = 0; i < n; ++i) f->at[points[i]] = a;
-    f->generation++;
-    gles2_target_forget();
+static void g_bind_framebuffer(CPU* c, Gles2Context* gl) {
+    snx_gl_bind_framebuffer(gl->ctx, (uint32_t)X(0), (uint32_t)X(1));
 }
 static void g_framebuffer_texture_2d(CPU* c, Gles2Context* gl) {
-    unsigned textarget = (unsigned)X(2);
-    int layer = textarget >= GL_TEXTURE_CUBE_MAP_POSITIVE_X_ && textarget < GL_TEXTURE_CUBE_MAP_POSITIVE_X_ + 6
-                    ? (int)(textarget - GL_TEXTURE_CUBE_MAP_POSITIVE_X_)
-                    : 0;
-    attach(gl, (unsigned)X(0), (unsigned)X(1), (G2Attachment){1, (unsigned)X(3), (int)X(4), layer});
+    snx_gl_framebuffer_texture(gl->ctx, (uint32_t)X(0), (uint32_t)X(1), (uint32_t)X(2), (uint32_t)X(3), (int32_t)X(4),
+                               0);
 }
 static void g_framebuffer_texture_layer(CPU* c, Gles2Context* gl) {
-    attach(gl, (unsigned)X(0), (unsigned)X(1), (G2Attachment){1, (unsigned)X(2), (int)X(3), (int)X(4)});
+    snx_gl_framebuffer_texture(gl->ctx, (uint32_t)X(0), (uint32_t)X(1), 0, (uint32_t)X(2), (int32_t)X(3),
+                               (int32_t)X(4));
 }
 static void g_framebuffer_renderbuffer(CPU* c, Gles2Context* gl) {
-    attach(gl, (unsigned)X(0), (unsigned)X(1), (G2Attachment){2, (unsigned)X(3), 0, 0});
-}
-/* the size, format and samples of an attachment; false when it has no image */
-static bool attachment_image(const G2Attachment* a, int* w, int* h, const G2Format** f, VkSampleCountFlagBits* s) {
-    if (a->kind == 1) {
-        G2Texture* t = gles2_texture(a->name);
-        if (!t || !t->image.image || a->level >= t->levels) return false;
-        *w = snx_gl_level_size(t->width, a->level), *h = snx_gl_level_size(t->height, a->level), *f = t->format,
-        *s = t->samples;
-        return true;
-    }
-    G2Renderbuffer* r = gles2_renderbuffer(a->name);
-    if (!r || !r->image.image) return false;
-    *w = r->width, *h = r->height, *f = r->format, *s = r->samples;
-    return true;
-}
-static unsigned completeness(G2Framebuffer* fb) {
-    int count = 0, width = -1, height = -1;
-    VkSampleCountFlagBits samples = 0;
-    for (int i = 0; i < G2_ATTACHMENTS; ++i) {
-        const G2Attachment* a = &fb->at[i];
-        if (!a->kind) continue;
-        int w, h;
-        const G2Format* f;
-        VkSampleCountFlagBits s;
-        if (!attachment_image(a, &w, &h, &f, &s)) return GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT_;
-        bool depth = f->kind >= G2_DEPTH;
-        if ((i < G2_COLORS && depth) || (i >= G2_COLORS && !depth)) return GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT_;
-        if (count && (w != width || h != height)) return GL_FRAMEBUFFER_INCOMPLETE_DIMENSIONS_;
-        if (count && s != samples) return 0x8d56; /* GL_FRAMEBUFFER_INCOMPLETE_MULTISAMPLE */
-        width = w, height = h, samples = s;
-        ++count;
-    }
-    if (!count) return GL_FRAMEBUFFER_INCOMPLETE_MISSING_ATTACHMENT_;
-    const G2Attachment* d = &fb->at[G2_DEPTH_ATTACHMENT];
-    const G2Attachment* st = &fb->at[G2_STENCIL_ATTACHMENT];
-    if (d->kind && st->kind && (d->kind != st->kind || d->name != st->name)) return GL_FRAMEBUFFER_UNSUPPORTED_;
-    return GL_FRAMEBUFFER_COMPLETE_;
+    snx_gl_framebuffer_renderbuffer(gl->ctx, (uint32_t)X(0), (uint32_t)X(1), (uint32_t)X(2), (uint32_t)X(3));
 }
 static void g_check_framebuffer_status(CPU* c, Gles2Context* gl) {
-    unsigned target = (unsigned)X(0);
-    if (target != GL_FRAMEBUFFER_ && target != GL_READ_FRAMEBUFFER_ && target != GL_DRAW_FRAMEBUFFER_) {
-        gles2_error(gl, GL_INVALID_ENUM_);
-        X(0) = 0;
-        return;
-    }
-    unsigned name = target == GL_READ_FRAMEBUFFER_ ? gl->read_fbo : gl->draw_fbo;
-    G2Framebuffer* f = gles2_framebuffer(name);
-    X(0) = !name || !f ? GL_FRAMEBUFFER_COMPLETE_ : completeness(f);
+    X(0) = snx_gl_check_framebuffer_status(gl->ctx, (uint32_t)X(0));
 }
 static void g_get_framebuffer_attachment_parameteriv(CPU* c, Gles2Context* gl) {
-    unsigned target = (unsigned)X(0), pname = (unsigned)X(2);
-    unsigned name = target == GL_READ_FRAMEBUFFER_ ? gl->read_fbo : gl->draw_fbo;
-    G2Framebuffer* f = gles2_framebuffer(name);
     int32_t v = 0;
-    if (!name || !f) {
-        /* the default framebuffer: the window's */
-        if (pname == 0x8cd0) v = 0x8218; /* GL_FRAMEBUFFER_DEFAULT */
-        else if (pname >= 0x8212 && pname <= 0x8215) v = 8;
-        else if (pname == 0x8216) v = gl->draw ? gl->draw->depth_bits : 0;
-        else if (pname == 0x8217) v = gl->draw ? gl->draw->stencil_bits : 0;
-        else if (pname == 0x8211) v = 0x8c17; /* GL_UNSIGNED_NORMALIZED */
+    if (snx_gl_get_framebuffer_attachment_parameter(gl->ctx, (uint32_t)X(0), (uint32_t)X(1), (uint32_t)X(2), &v))
         memcpy(PTR(3), &v, 4);
-        return;
-    }
-    int points[2];
-    if (!attachment_points((unsigned)X(1), points)) {
-        gles2_error(gl, GL_INVALID_ENUM_);
-        return;
-    }
-    const G2Attachment* a = &f->at[points[0]];
-    switch (pname) {
-    case 0x8cd0: v = a->kind == 1 ? 0x1702 : a->kind == 2 ? GL_RENDERBUFFER_ : 0; break; /* GL_TEXTURE, ... */
-    case 0x8cd1: v = (int32_t)a->name; break;
-    case 0x8cd2: v = a->level; break;
-    case 0x8cd3: v = a->kind == 1 ? (int32_t)GL_TEXTURE_CUBE_MAP_POSITIVE_X_ + a->layer : 0; break;
-    case 0x8cd4: v = a->layer; break;
-    case 0x8210: v = 0x2601; break; /* GL_FRAMEBUFFER_ATTACHMENT_COLOR_ENCODING: GL_LINEAR */
-    case 0x8211: v = 0x8c17; break; /* GL_UNSIGNED_NORMALIZED */
-    case 0x8212:
-    case 0x8213:
-    case 0x8214:
-    case 0x8215: v = points[0] < G2_COLORS && a->kind ? 8 : 0; break;
-    case 0x8216: v = points[0] == G2_DEPTH_ATTACHMENT && a->kind ? 24 : 0; break;
-    case 0x8217: v = points[0] == G2_STENCIL_ATTACHMENT && a->kind ? 8 : 0; break;
-    default: gles2_error(gl, GL_INVALID_ENUM_); return;
-    }
-    memcpy(PTR(3), &v, 4);
 }
-static void g_draw_buffers(CPU* c, Gles2Context* gl) {
-    int n = (int)X(0);
-    const unsigned char* bufs = PTR(1);
-    if (n < 0 || n > G2_COLORS) {
-        gles2_error(gl, GL_INVALID_VALUE_);
-        return;
-    }
-    G2Framebuffer* f = gles2_framebuffer(gl->draw_fbo);
-    if (!gl->draw_fbo || !f) return; /* the window's: GL_BACK or GL_NONE, both draw into its one buffer here */
-    for (int i = 0; i < G2_COLORS; ++i) {
-        uint32_t b = 0;
-        if (i < n) memcpy(&b, bufs + 4 * i, 4);
-        f->draw[i] = b;
-    }
-    f->generation++;
-    gles2_target_forget();
-}
-static void g_read_buffer(CPU* c, Gles2Context* gl) {
-    G2Framebuffer* f = gles2_framebuffer(gl->read_fbo);
-    if (gl->read_fbo && f) f->read = (unsigned)X(0);
-}
+static void g_draw_buffers(CPU* c, Gles2Context* gl) { snx_gl_draw_buffers(gl->ctx, (int32_t)X(0), PTR(1)); }
+static void g_read_buffer(CPU* c, Gles2Context* gl) { snx_gl_read_buffer(gl->ctx, (uint32_t)X(0)); }
 static void g_invalidate_framebuffer(CPU* c, Gles2Context* gl) {
     (void)c, (void)gl; /* a hint: what it drew stays */
 }

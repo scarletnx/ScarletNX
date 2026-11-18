@@ -1546,6 +1546,12 @@ add_executable(snx-test-gl-texture gl_texture.c)
 snx_test_target(snx-test-gl-texture c23)
 target_link_libraries(snx-test-gl-texture PRIVATE snx_gl)
 add_test(NAME gl_texture COMMAND snx-test-gl-texture)
+# the shared GL layer's framebuffers and renderbuffers (src/common/gpu/gl/gl_framebuffer.c), with no GPU: bindings,
+# storage, attachments and completeness, the window's parameters, what the platform hears, and a save state
+add_executable(snx-test-gl-framebuffer gl_framebuffer.c)
+snx_test_target(snx-test-gl-framebuffer c23)
+target_link_libraries(snx-test-gl-framebuffer PRIVATE snx_gl)
+add_test(NAME gl_framebuffer COMMAND snx-test-gl-framebuffer)
 # the console's GL layer (src/nx/gpu/gl/) over a stubbed GL driver module, guest memory and renderer: the slots taken
 # with gl_layer=1, EGL, glClear's color in the surface's image, eglSwapBuffers's present, a function without a handler
 add_executable(snx-test-gl-layer gl_layer.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/gl/gl_loader.c"

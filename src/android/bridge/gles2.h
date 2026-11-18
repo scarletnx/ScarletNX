@@ -19,6 +19,7 @@
 #include "android/bridge/gles_vk.h"
 #include "android/bridge/hle.h"
 #include "common/gpu/gl/gl_format.h"
+#include "common/gpu/gl/gl_framebuffer.h"
 #include "common/gpu/gl/gl_object.h"
 #include "common/gpu/gl/gl_texture.h"
 #include "common/gpu/gl/gl_program.h"
@@ -120,6 +121,7 @@ typedef struct {
     uint32_t view_count;
 } G2Texture;
 
+/* a renderbuffer's image, and its shared record's fields as gles2_renderbuffer() copied them */
 typedef struct {
     bool used;
     GlesImage image;
@@ -131,21 +133,14 @@ typedef struct {
     uint32_t generation;
 } G2Renderbuffer;
 
-/* an attachment of a framebuffer: a texture's level and layer, or a renderbuffer */
-typedef struct {
-    uint8_t kind; /* 0 none, 1 texture, 2 renderbuffer */
-    unsigned name;
-    int level, layer;
-} G2Attachment;
-enum { G2_DEPTH_ATTACHMENT = G2_COLORS, G2_STENCIL_ATTACHMENT = G2_COLORS + 1, G2_ATTACHMENTS = G2_COLORS + 2 };
-
-typedef struct {
-    bool used;
-    G2Attachment at[G2_ATTACHMENTS];
-    unsigned draw[G2_COLORS]; /* glDrawBuffers: GL_COLOR_ATTACHMENTi or GL_NONE */
-    unsigned read;
-    uint32_t generation; /* counts the changes of its attachments */
-} G2Framebuffer;
+/* a framebuffer and its attachments, the shared layer's (common/gpu/gl/gl_framebuffer.h) */
+typedef SnxGlAttachment G2Attachment;
+typedef SnxGlFramebuffer G2Framebuffer;
+enum {
+    G2_DEPTH_ATTACHMENT = SNX_GL_DEPTH_ATTACHMENT,
+    G2_STENCIL_ATTACHMENT = SNX_GL_STENCIL_ATTACHMENT,
+    G2_ATTACHMENTS = SNX_GL_ATTACHMENTS
+};
 
 typedef struct {
     bool used, active;
@@ -182,7 +177,6 @@ typedef struct Gles2Context {
     GlesSurface* read;
     GlesSurface* own; /* a 1x1 pbuffer, for a context current without a surface */
     bool sized;
-    unsigned draw_fbo, read_fbo, renderbuffer;
     unsigned query_any; /* the active occlusion query, or 0 */
     unsigned query_any_target;
 } Gles2Context;
@@ -209,10 +203,7 @@ typedef struct {
 typedef struct {
     G2Buffer buffer_vk[SNX_GL_BUFFERS];
     G2Texture texture_vk[SNX_GL_TEXTURES];
-    G2Renderbuffer* renderbuffers;
-    size_t renderbuffer_count;
-    G2Framebuffer* framebuffers;
-    size_t framebuffer_count;
+    G2Renderbuffer renderbuffer_vk[SNX_GL_RENDERBUFFERS];
     G2Query* queries;
     size_t query_count;
     G2Sync* syncs;
@@ -284,7 +275,13 @@ void gles2_textures_init(void);
 G2Texture* gles2_texture(unsigned name);
 /* a level of the texture written here (a copy into it): it has texels now */
 void gles2_texture_defined(G2Texture* t, int level);
+/* the shared layer's renderbuffers tell this file when one's storage is new or goes, and its framebuffers when they
+   change */
+void gles2_framebuffers_init(void);
+/* a renderbuffer's image, with the shared layer's record copied in now: NULL for 0 or a name not made */
 G2Renderbuffer* gles2_renderbuffer(unsigned name);
+/* the context's framebuffer and renderbuffer bindings (common/gpu/gl/gl_framebuffer.h) */
+static inline SnxGlFramebufferContext* gles2_fbos(const Gles2Context* gl) { return snx_gl_framebuffers(gl->ctx); }
 G2Framebuffer* gles2_framebuffer(unsigned name);
 const G2SamplerState* gles2_unit_sampler(Gles2Context* gl, unsigned unit, const G2Texture* t);
 VkSampler gles2_vk_sampler(const G2SamplerState* state, bool integer);
