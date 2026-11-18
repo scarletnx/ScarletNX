@@ -18,6 +18,7 @@
    call that reaches Vulkan holds g_gles_vk.lock */
 #include "android/bridge/gles_vk.h"
 #include "android/bridge/hle.h"
+#include "common/gpu/gl/gl_format.h"
 #include "common/gpu/gl/gl_object.h"
 #include "common/gpu/gl/gl_program.h"
 #include "common/gpu/gl/gl_state.h"
@@ -89,7 +90,15 @@ typedef struct {
     uint8_t kind;               /* G2_FLOAT (normalized too), G2_INT, G2_UINT, G2_DEPTH, G2_STENCIL, G2_DS */
     uint8_t block;              /* a compressed format's block width and height, 0 for others */
 } G2Format;
-enum { G2_FLOAT = 0, G2_INT = 1, G2_UINT = 2, G2_DEPTH = 3, G2_STENCIL = 4, G2_DS = 5 };
+/* a format's kind, the shared layer's (common/gpu/gl/gl_format.h) */
+enum {
+    G2_FLOAT = SNX_GL_FLOAT,
+    G2_INT = SNX_GL_INT,
+    G2_UINT = SNX_GL_UINT,
+    G2_DEPTH = SNX_GL_DEPTH,
+    G2_STENCIL = SNX_GL_STENCIL,
+    G2_DS = SNX_GL_DS
+};
 
 typedef struct {
     bool used;
@@ -245,7 +254,7 @@ typedef struct {
     VkPipeline expand;
     bool said[26];         /* the warnings said once */
     char extensions[1024]; /* GL_EXTENSIONS, joined at its first query */
-    G2Format astc[28];     /* the ASTC formats' entries, made at their first use */
+    G2Format formats[SNX_GL_FORMATS]; /* each format's entry, made at its first use (gles2_format) */
 } Gles2;
 extern Gles2 g_gles2;
 
@@ -306,8 +315,9 @@ VkImageAspectFlags gles2_aspect(const G2Format* f);
 VkImageLayout gles2_rest_layout(const G2Format* f, bool sampled);
 /* the command buffer to copy in, outside rendering: the draw surface's frame */
 GlesSlot* gles2_transfer_slot(Gles2Context* gl);
-/* the format of a GL internal format (and type, for an unsized one) */
+/* the format of a GL internal format (and type, for an unsized one); of the shared layer's index (gl_format.h) */
 const G2Format* gles2_format(unsigned internal, unsigned format, unsigned type);
+const G2Format* gles2_format_at(int index);
 /* the texture's image at width, height, depth, levels and layers of format: made again when it differs */
 bool gles2_texture_storage(Gles2Context* gl, G2Texture* t, const G2Format* f, int width, int height, int depth,
                            int levels);
