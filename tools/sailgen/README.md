@@ -67,7 +67,10 @@ Builtins, lowered by the back end rather than from Sail:
 
 A function with no Sail definition that the back end defines as `sg_NAME` is one of the machine's actions: a
 statement, given the call's arguments (DYN ones as the back end's values, the others as C integers), or the context
-alone when `sg_NAME` takes nothing else.
+alone when `sg_NAME` takes nothing else. `llvm.h` gives the hints (`Hint_Yield` the host's spin-wait hint, `Hint_WFE`
+the runtime's `rt_wfe`, `SendEvent` its `rt_sev`), the barriers (`DataMemoryBarrier` and `DataSynchronizationBarrier`
+a fence by the accesses they order, `InstructionSynchronizationBarrier` a full one) and the exclusive monitor
+(`ClearExclusiveLocal`), each with why, and those that do nothing here (`Hint_WFI`, `SynchronizeErrors`, `Hint_DGH`).
 
 ## The state
 

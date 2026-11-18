@@ -1,7 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The integer, branch and system instructions' emitters, keyed on the generated decoder's ops (ir_int.c, which sends
-   the data-processing ones and the branches' operands to their emitters generated from the Sail, ir_sail.c) */
+/* The integer, branch, hint and system instructions' emitters, keyed on the generated decoder's ops (ir_int.c, which
+   sends the data-processing ones, the hints, the barriers and the branches' operands to their emitters generated from
+   the Sail, ir_sail.c) */
 #ifndef SNX_RECOMPILER_LLVM_IR_INT_H
 #define SNX_RECOMPILER_LLVM_IR_INT_H
 

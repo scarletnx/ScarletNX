@@ -3,9 +3,9 @@
    Ported from QEMU (target/arm/tcg/translate-a64.c: the trans_* functions of these instructions, and its
    logic_imm_decode_wmask), LGPL-2.1-or-later:
    Copyright (c) 2013 Alexander Graf <agraf@suse.de> */
-/* The integer data-processing emitters and branch operands written by hand that the ones tools/sailgen generates from
-   the Sail took the place of (ir_int.c, ir_sail.c), kept as they were for tests/llvm_sail_ir.c, which holds the
-   generated IR to theirs word by word */
+/* The integer data-processing, hint and barrier emitters and the branch operands written by hand that the ones
+   tools/sailgen generates from the Sail took the place of (ir_int.c, ir_sail.c), kept as they were for
+   tests/llvm_sail_ir.c, which holds the generated IR to theirs word by word */
 #include "support/ir_int_reference.h"
 #include "common/cpu/aarch64/a64_decoder.h"
 #include "common/cpu/aarch64/cpu.h"
@@ -442,6 +442,17 @@ static void setf(SnxIr* ir, const SnxA64Args* a, unsigned bits) {
     ir_flags_set_nzcv(ir, LLVMBuildOr(B, nzcv, LLVMBuildXor(B, top, next, ""), ""));
 }
 
+/* DMB and DSB: loads before loads and stores (MBReqTypes_Reads) is an acquire fence, stores before stores a release
+   one (which also orders loads before stores), anything else a full one (trans_DSB_DMB) */
+static void barrier(SnxIr* ir, unsigned types) {
+    if (types == 1)
+        LLVMBuildFence(B, LLVMAtomicOrderingAcquire, 0, "");
+    else if (types == 2)
+        LLVMBuildFence(B, LLVMAtomicOrderingRelease, 0, "");
+    else
+        ir_fence(ir);
+}
+
 /* ---- the entry point ---- */
 
 void snx_ir_int_reference(SnxIr* ir, const void* decoded, SnxU32 word, SnxU64 pc) {
@@ -546,7 +557,28 @@ void snx_ir_int_reference(SnxIr* ir, const void* decoded, SnxU32 word, SnxU64 pc
         case SNX_A64_OP_RMIF: rmif(ir, a); break;
         case SNX_A64_OP_SETF8: setf(ir, a, 8); break;
         case SNX_A64_OP_SETF16: setf(ir, a, 16); break;
-        default: break; /* PACIA and the others of PAuth with its keys disabled: nothing */
+        case SNX_A64_OP_XPACLRI: { /* XPACI's, of X30 */
+            V pointer = ir_rx(ir, 30);
+            const SnxU64 low = (1ull << 39) - 1;
+            V upper = LLVMBuildSelect(B, nonzero(ir, LLVMBuildAnd(B, pointer, ir_i64(ir, 1ull << 55), "")),
+                                      ir_i64(ir, ~low), ir_i64(ir, 0), "");
+            set_reg(ir, 30, LLVMBuildOr(B, LLVMBuildAnd(B, pointer, ir_i64(ir, low), ""), upper, ""));
+            break;
+        }
+        case SNX_A64_OP_YIELD: ir_yield(ir); break;
+        case SNX_A64_OP_WFE: { /* the runtime lets the core's other threads run: the spin waits on one of them */
+            LLVMTypeRef param = ir->t_ptr;
+            V c = ir->c;
+            ir_rt_call(ir, ir_rt_wfe(), ir->t_void, &param, &c, 1);
+            break;
+        }
+        case SNX_A64_OP_SEV:
+        case SNX_A64_OP_SEVL: ir_rt_call(ir, ir_rt_sev(), ir->t_void, NULL, NULL, 0); break;
+        case SNX_A64_OP_CLREX: ir_cpu_store(ir, ir_i32(ir, 0), ir_off_excl_on()); break;
+        case SNX_A64_OP_DSB_DMB: barrier(ir, (unsigned)a->types); break;
+        case SNX_A64_OP_ISB: ir_fence(ir); break;
+        /* PACIA and the others of PAuth with its keys disabled, NOP and WFI (SCTLR_EL1.nTWI: no trap), ESB: nothing */
+        default: break;
     }
 }
 
