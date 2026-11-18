@@ -1509,6 +1509,12 @@ static bool choose_device(SnxVkChoice* c, void* user) {
                                    "robustBufferAccess2"
                                  : NULL;
         g_vk.has_shader_objects = !so_why;
+        /* a shader object has no executables to ask statistics of: a draw that binds them makes no pipeline, and no
+           row */
+        if (g_vk.has_shader_objects && g_vk.has_exec_stats)
+            WARN("vulkan: pipeline_stats: draws bind shader objects (VK_EXT_shader_object), which the driver gives no "
+                 "statistics of: only compute pipelines, and the pipelines of draws shader objects can't take, get "
+                 "rows; with vk_ext_shader_object=off every draw's program gets them\n");
         if (g_vk.has_shader_objects) {
             VkPhysicalDeviceShaderObjectPropertiesEXT sop = {
                 .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_OBJECT_PROPERTIES_EXT};

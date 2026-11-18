@@ -50,6 +50,7 @@
 #include "support/sm86_ref.h"
 #include "support/thread_nice.h"
 #include <libavutil/buffer.h>
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -7206,6 +7207,35 @@ static void results_copied(u64 cpu, u64 len) { vk_own_cpu_touched(cpu, len); }
 #include "vulkan_ui.inc"
 #include "vulkan_storage_formats.inc"
 #include "vulkan_scaled_compute.inc"
+
+/* pipeline_stats (gpu/vk/pipeline_stats.c): a compute program's pipeline gets the driver's statistics too, each row
+   naming the program in the cs column. The resolution scale's compute check makes the pipelines. A driver without
+   VK_KHR_pipeline_executable_properties has no statistics: said, and skipped */
+static int check_pipeline_stats_compute(void) {
+    static const char header[] = "what,vs,tcs,tes,gs,fs,cs,executable,stages,subgroup,statistic,value\n";
+    char line[1024];
+    int rows = 0, headed = 0;
+    if (!g_settings.pipeline_stats[0] || !g_vk.has_exec_stats) {
+        printf("SKIP pipeline stats: %s\n", g_settings.pipeline_stats[0]
+                                                ? "the driver has no VK_KHR_pipeline_executable_"
+                                                  "properties"
+                                                : "run without --pipeline-stats");
+        return 0;
+    }
+    CHECK(!check_scaled_compute());
+    FILE* f = fopen(g_settings.pipeline_stats, "r");
+    CHECK(f);
+    headed = fgets(line, sizeof line, f) && !strcmp(line, header);
+    while (fgets(line, sizeof line, f))
+        rows += !strncmp(line, "compute,,,,,,", 13) && isxdigit((unsigned char)line[13]) && line[29] == ',';
+    fclose(f);
+    if (!headed || !rows)
+        fprintf(stderr, "pipeline stats: %s has %s and %d rows of compute pipelines\n", g_settings.pipeline_stats,
+                headed ? "the header" : "another header", rows);
+    CHECK(headed && rows);
+    printf("pipeline stats: %d rows of compute pipelines, each naming its program in the cs column\n", rows);
+    return 0;
+}
 #include "vulkan_storage_atomics.inc"
 #include "vulkan_hidden_commands.inc"
 #include "vulkan_surface_loads.inc"
@@ -8103,6 +8133,13 @@ static int run_headless(int argc, char** argv) {
         vk_finish();
         vk_pipeline_quiesce();
         printf("PASS headless Vulkan resolution scale only: %u validation messages\n", g_vk_validation_messages);
+        return 0;
+    }
+    if (getenv("SNX_TEST_PIPELINE_STATS_ONLY")) { /* pipeline_stats' compute rows alone: run with --pipeline-stats */
+        CHECK(!check_pipeline_stats_compute());
+        vk_finish();
+        vk_pipeline_quiesce();
+        printf("PASS headless Vulkan pipeline stats only: %u validation messages\n", g_vk_validation_messages);
         return 0;
     }
     if (getenv("SNX_TEST_SLICES_ONLY")) { /* textures taking their slices from targets alone, for their mutants */

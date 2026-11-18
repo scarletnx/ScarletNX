@@ -232,6 +232,11 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
     add_test(NAME vulkan_recorder COMMAND snx-test-vulkan -H)
     set_tests_properties(vulkan_recorder PROPERTIES TIMEOUT 30 ENVIRONMENT "SNX_TEST_RECORDER_ONLY=1"
         PASS_REGULAR_EXPRESSION "PASS headless Vulkan recorder only")
+    # pipeline_stats' rows of compute pipelines (check_pipeline_stats_compute), where the driver has the statistics
+    add_test(NAME vulkan_pipeline_stats COMMAND snx-test-vulkan -H
+        "--pipeline-stats=${CMAKE_CURRENT_BINARY_DIR}/vulkan_pipeline_stats.csv")
+    set_tests_properties(vulkan_pipeline_stats PROPERTIES TIMEOUT 60 ENVIRONMENT "SNX_TEST_PIPELINE_STATS_ONLY=1"
+        SKIP_REGULAR_EXPRESSION "SKIP pipeline stats" FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
     # the writable storage buffers' check (tests/vulkan_storage_buffer_keep.inc) with guest buffers copied: the default
     # run takes unified memory on an integrated device and on lavapipe, which writes them in guest memory instead of
     # keeping them on the GPU. A run that hangs fails at the timeout

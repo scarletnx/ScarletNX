@@ -367,12 +367,14 @@ void snx_vk_compile_leave(int entered) {
     if (entered) pm_unlock(&g_compile);
 }
 static VkResult module_pipeline(VkDevice dev, VkPipelineCache cache, VkPipelineLayout layout, VkShaderModule module,
-                                const VkSpecializationInfo* spec, uint32_t subgroup, bool full, VkPipeline* out) {
+                                const VkSpecializationInfo* spec, uint32_t subgroup, bool full,
+                                VkPipelineCreateFlags flags, VkPipeline* out) {
     VkPipelineShaderStageRequiredSubgroupSizeCreateInfo size = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO,
         .requiredSubgroupSize = subgroup};
     VkComputePipelineCreateInfo info = {
         .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+        .flags = flags,
         .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
                   .pNext = subgroup ? &size : NULL,
                   .flags = full ? VK_PIPELINE_SHADER_STAGE_CREATE_REQUIRE_FULL_SUBGROUPS_BIT : 0,
@@ -388,17 +390,22 @@ static VkResult module_pipeline(VkDevice dev, VkPipelineCache cache, VkPipelineL
 }
 VkResult snx_vk_module_pipeline(VkDevice dev, VkPipelineCache cache, VkPipelineLayout layout, VkShaderModule module,
                                 const VkSpecializationInfo* spec, VkPipeline* out) {
-    return module_pipeline(dev, cache, layout, module, spec, 0, false, out);
+    return module_pipeline(dev, cache, layout, module, spec, 0, false, 0, out);
+}
+VkResult snx_vk_compute_pipeline_flags(VkDevice dev, VkPipelineCache cache, VkPipelineLayout layout,
+                                       const uint32_t* words, size_t size, uint32_t subgroup, bool full,
+                                       VkPipelineCreateFlags flags, VkPipeline* out) {
+    VkShaderModule module;
+    VkResult r = snx_vk_shader_module(dev, words, size, &module);
+    if (r != VK_SUCCESS) return r;
+    r = module_pipeline(dev, cache, layout, module, NULL, subgroup, full, flags, out);
+    vkDestroyShaderModule(dev, module, NULL);
+    return r;
 }
 VkResult snx_vk_compute_pipeline_subgroups(VkDevice dev, VkPipelineCache cache, VkPipelineLayout layout,
                                            const uint32_t* words, size_t size, uint32_t subgroup, bool full,
                                            VkPipeline* out) {
-    VkShaderModule module;
-    VkResult r = snx_vk_shader_module(dev, words, size, &module);
-    if (r != VK_SUCCESS) return r;
-    r = module_pipeline(dev, cache, layout, module, NULL, subgroup, full, out);
-    vkDestroyShaderModule(dev, module, NULL);
-    return r;
+    return snx_vk_compute_pipeline_flags(dev, cache, layout, words, size, subgroup, full, 0, out);
 }
 VkResult snx_vk_compute_pipeline(VkDevice dev, VkPipelineCache cache, VkPipelineLayout layout, const uint32_t* words,
                                  size_t size, VkPipeline* out) {

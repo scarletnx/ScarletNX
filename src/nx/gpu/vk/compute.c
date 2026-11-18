@@ -29,6 +29,7 @@
 #include "nx/gpu/renderer.h"
 #include "nx/gpu/vk/backing.h"
 #include "nx/gpu/vk/pending_pages.h"
+#include "nx/gpu/vk/pipeline_stats.h"
 #include "nx/memory/own.h"
 
 typedef struct CsPipe {
@@ -1036,9 +1037,11 @@ static CsPipe* cs_make(const u8* code, u32 blen, u64 key, u32 flow_base, u32 lx,
     plat_thread_note("making the compute pipeline %016llx (%zu KB of SPIR-V, a block of %ux%ux%u, %u bytes of shared "
                      "memory)",
                      (unsigned long long)key, nw / 256, lx, ly, lz, (unsigned)p->si.shared_size);
-    if (!VK_OK(snx_vk_compute_pipeline_subgroups(g_vk.dev, vk_pipeline_cache(), g_vk.cs_playout, spv, (size_t)nw * 4,
-                                                 warp ? 32 : 0, warp && lx % 32 == 0, &p->p)))
+    if (!VK_OK(snx_vk_compute_pipeline_flags(g_vk.dev, vk_pipeline_cache(), g_vk.cs_playout, spv, (size_t)nw * 4,
+                                             warp ? 32 : 0, warp && lx % 32 == 0, vk_pipeline_stats_flags(), &p->p)))
         p->failed = 1;
+    else
+        vk_pipeline_stats_write_compute(p->p, key);
     plat_thread_note_clear();
     free(spv);
     /* as a draw's program says it (pipeline.c): the textures a compute program samples as none */
