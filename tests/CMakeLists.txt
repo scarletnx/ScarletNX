@@ -1461,9 +1461,10 @@ if(SNX_JEMALLOC AND NOT WIN32)
     add_test(NAME alloc_arena COMMAND snx-test-alloc-arena)
     set_tests_properties(alloc_arena PROPERTIES TIMEOUT 60)
 endif()
-# operator new's check (src/nx/hle/hook/alloc.c's alloc_new_shape): a module that copies its operator delete's code
-# where no hook takes it, inlined or to a function no symbol names, keeps its own operator new; the deletes' own
-# bodies, the family's functions, loads spread wide, a forwarder and a delete of one global do not count
+# operator new's check (src/nx/hle/hook/alloc.c's alloc_new_shape): a module whose operator delete looks the block's
+# allocator up by its address and copies that code where no hook takes it, inlined or to a function no symbol names,
+# keeps its own operator new; the deletes' own bodies, the family's functions, loads spread wide, a forwarder, and a
+# copied delete without the lookup (a heap's, by the size, on a link-time table with one global) do not count
 if(NOT WIN32)
     add_executable(snx-test-alloc-new-shape alloc_new_shape.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/alloc.c")
     snx_test_target(snx-test-alloc-new-shape 11)
