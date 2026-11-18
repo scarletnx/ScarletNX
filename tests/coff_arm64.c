@@ -19,12 +19,16 @@
 
 #define IMAGE_BASE ((uint64_t)0x180000000ULL) /* link_coff.c's */
 
-static int failures;
+/* the failed checks, and the data the JIT load reads through its slot */
+static struct {
+    int failures;
+    SnxU64 probe_data;
+} g_coff_arm64 = {0, 0x1234};
 
 static void check(int ok, const char* what) {
     if (!ok) {
         printf("FAIL: %s\n", what);
-        ++failures;
+        ++g_coff_arm64.failures;
     }
 }
 
@@ -341,7 +345,6 @@ static void large_module(const unsigned char* caller, size_t caller_size, const 
     free(filler);
 }
 
-static SnxU64 probe_data = 0x1234;
 static SnxU64 probe_fn(SnxU64 a) { return a; }
 
 /* JIT: the objects loaded into an ARM64 arena, read and never run */
@@ -358,7 +361,7 @@ static void jit(const char* triple, const unsigned char* caller_data, size_t cal
         return;
     }
     if (snx_code_define(loader, "ext_fn", (SnxU64)(size_t)&probe_fn) ||
-        snx_code_define(loader, "ext_data", (SnxU64)(size_t)&probe_data)) {
+        snx_code_define(loader, "ext_data", (SnxU64)(size_t)&g_coff_arm64.probe_data)) {
         check(0, "ext_fn and ext_data defined in the loader");
         snx_code_loader_free(loader);
         return;
@@ -379,7 +382,7 @@ static void jit(const char* triple, const unsigned char* caller_data, size_t cal
               "the call to ext_fn, outside the arena, through a stub and its slot");
     }
     slot = first_slot(code, caller);
-    check(slot && get64((const unsigned char*)(size_t)slot) == (SnxU64)(size_t)&probe_data,
+    check(slot && get64((const unsigned char*)(size_t)slot) == (SnxU64)(size_t)&g_coff_arm64.probe_data,
           "the .refptr slot of ext_data holds its address");
     /* a later load calling the first, in reach: directly */
     if (caller_object(triple, "caller", "second", &data, &size)) return;
@@ -450,6 +453,6 @@ static int llvm_objects(void) {
 int main(void) {
     relocations();
     if (llvm_objects()) return 1;
-    printf("coff_arm64: %s\n", failures ? "FAILED" : "passed");
-    return failures ? 1 : 0;
+    printf("coff_arm64: %s\n", g_coff_arm64.failures ? "FAILED" : "passed");
+    return g_coff_arm64.failures ? 1 : 0;
 }
