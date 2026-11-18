@@ -20,7 +20,10 @@
 
 #include "a64_sail.inc"
 
-int snx_ir_sail(SnxIr* ir, SnxU32 word, SnxU64 pc) { return sg_emit(ir, word, pc); }
+int snx_ir_sail(SnxIr* ir, SnxU32 word, SnxU64 pc) { return sg_emit(ir, word, pc, NULL, NULL); }
+int snx_ir_sail_branch(SnxIr* ir, SnxU32 word, SnxU64 pc, LLVMValueRef* taken, LLVMValueRef* target) {
+    return sg_emit(ir, word, pc, taken, target);
+}
 
 /* ir.h's register and flag accessors, for the emitters written by hand: the back end's cache, the one the generated
    emitters keep their state in */

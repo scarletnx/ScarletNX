@@ -9,5 +9,8 @@
 /* the body of a plain integer instruction whose emitter sailgen generates (decoded: its SnxA64Insn), as ir_int.c
    wrote it by hand; the shape of SnxIr.int_reference */
 void snx_ir_int_reference(SnxIr* ir, const void* decoded, SnxU32 word, SnxU64 pc);
+/* the operand of a branch whose operand sailgen generates, as ir_int.c wrote it by hand; the shape of
+   SnxIr.operand_reference */
+LLVMValueRef snx_ir_int_operand_reference(SnxIr* ir, const void* decoded, SnxU32 word, SnxU64 pc);
 
 #endif

@@ -116,7 +116,7 @@ the game's image read from that image.
 - `toolchain.c`: the runtime build for deployment.
 - The code generator, LLVM (`src/common/cpu/recompiler/llvm/`, a required dependency), builds LLVM IR with the
   LLVM-C API: `ir_int.c`, `ir_ldst.c`, `ir_fpu.c` and `ir_vec*.c`, ported from QEMU's `translate-a64.c`, and
-  `ir_sail.c`, the integer data-processing ops `tools/sailgen` generates from the Arm architecture's Sail
+  `ir_sail.c`, the integer data-processing ops and branch operands `tools/sailgen` generates from the Arm architecture's Sail
   (`src/common/cpu/aarch64/sail/`), emit each op of the generated decoder, `ir_codegen.c` the functions of `codegen.c`, and
   `src/nx/loader/module_llvm.c` the chunks and `SnxModule` of `module.c`. It links the objects itself (`link_elf.c`,
   `link_coff.c`, `link_macho.c`) with `rtlib.c`, the helpers compiled when the recompiler is built, into a module

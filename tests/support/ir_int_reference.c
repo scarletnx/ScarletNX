@@ -3,9 +3,9 @@
    Ported from QEMU (target/arm/tcg/translate-a64.c: the trans_* functions of these instructions, and its
    logic_imm_decode_wmask), LGPL-2.1-or-later:
    Copyright (c) 2013 Alexander Graf <agraf@suse.de> */
-/* The integer data-processing emitters written by hand that the ones tools/sailgen generates from the Sail took the
-   place of (ir_int.c, ir_sail.c), kept as they were for tests/llvm_sail_ir.c, which holds the generated IR to theirs
-   word by word */
+/* The integer data-processing emitters and branch operands written by hand that the ones tools/sailgen generates from
+   the Sail took the place of (ir_int.c, ir_sail.c), kept as they were for tests/llvm_sail_ir.c, which holds the
+   generated IR to theirs word by word */
 #include "support/ir_int_reference.h"
 #include "common/cpu/aarch64/a64_decoder.h"
 #include "common/cpu/aarch64/cpu.h"
@@ -547,5 +547,36 @@ void snx_ir_int_reference(SnxIr* ir, const void* decoded, SnxU32 word, SnxU64 pc
         case SNX_A64_OP_SETF8: setf(ir, a, 8); break;
         case SNX_A64_OP_SETF16: setf(ir, a, 16); break;
         default: break; /* PACIA and the others of PAuth with its keys disabled: nothing */
+    }
+}
+
+/* the branches' operands as ir_int.c wrote them by hand (snx_ir_int_operand), with BLR's link register, which
+   ir_codegen.c wrote after it; the shape of SnxIr.operand_reference */
+LLVMValueRef snx_ir_int_operand_reference(SnxIr* ir, const void* decoded, SnxU32 word, SnxU64 pc) {
+    const SnxA64Insn* insn = (const SnxA64Insn*)decoded;
+    const SnxA64Args* a = &insn->args;
+    V target;
+    (void)word;
+    switch (insn->op) {
+        case SNX_A64_OP_B_cond: return nonzero(ir, ir_flags_cond(ir, (unsigned)a->cond));
+        case SNX_A64_OP_CBZ:
+            return LLVMBuildICmp(B, a->nz ? LLVMIntNE : LLVMIntEQ, reg(ir, (unsigned)a->rt, a->sf), konst(ir, a->sf, 0),
+                                 "");
+        case SNX_A64_OP_TBZ: {
+            V bit = LLVMBuildAnd(B, ir_rx(ir, (unsigned)a->rt), ir_i64(ir, 1ull << (unsigned)a->bitpos), "");
+            return LLVMBuildICmp(B, a->nz ? LLVMIntNE : LLVMIntEQ, bit, ir_i64(ir, 0), "");
+        }
+        case SNX_A64_OP_BR:
+        case SNX_A64_OP_RET:
+        case SNX_A64_OP_BRA:
+        case SNX_A64_OP_BRAZ: return ir_rx(ir, (unsigned)a->rn);
+        case SNX_A64_OP_BLR:
+        case SNX_A64_OP_BLRA:
+        case SNX_A64_OP_BLRAZ:
+            target = ir_rx(ir, (unsigned)a->rn);
+            ir_set_x(ir, 30, ir_i64(ir, pc + 4));
+            return target;
+        case SNX_A64_OP_RETA: return ir_rx(ir, 30);
+        default: return NULL;
     }
 }

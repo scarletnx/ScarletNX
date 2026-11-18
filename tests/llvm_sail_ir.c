@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The integer emitters tools/sailgen generates from the Sail (ir_sail.c) against the hand-written ones they replaced
-   (support/ir_int_reference.c), word by word: the same IR, and the same results.
+/* The integer emitters and branch operands tools/sailgen generates from the Sail (ir_sail.c) against the hand-written
+   ones they replaced (support/ir_int_reference.c), word by word: the same IR, and the same results.
      snx-test-llvm-sail-ir [--report FILE] [--samples N] [--states N]
    The words: samples of every decoder row the generated subset covers (llvm_qemu_words.c), decoded for the ounce target
    (TARGET: the Switch's features with PAuth and FlagM), each again with its register fields 31 (the zero register or
@@ -28,7 +28,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* the ops ir_int.c's generated() sends to the Sail */
+/* the ops ir_int.c sends to the Sail: the data-processing ones (generated()), the branches' operands
+   (generated_branch()) */
 static const char* const generated_ops[] = {
     "ADR",    "ADRP",   "ADD_i",  "ADDS_i",  "SUB_i",   "SUBS_i",   "AND_i",    "ORR_i",  "EOR_i",  "ANDS_i", "MOVN",
     "MOVZ",   "MOVK",   "SBFM",   "BFM",     "UBFM",    "EXTR",     "AND_r",    "ORR_r",  "EOR_r",  "ANDS_r", "ADD_r",
@@ -36,7 +37,8 @@ static const char* const generated_ops[] = {
     "CCMP",   "CSEL",   "RBIT",   "REV16",   "REV32",   "REV64",    "CLZ",      "CLS",    "UDIV",   "SDIV",   "LSLV",
     "LSRV",   "ASRV",   "RORV",   "CRC32",   "CRC32C",  "MADD_w",   "MSUB_w",   "MADD_x", "MSUB_x", "SMADDL", "SMSUBL",
     "UMADDL", "UMSUBL", "SMULH",  "UMULH",   "XPACI",   "XPACD",    "PACGA",    "PACIA",  "PACIB",  "PACDA",  "PACDB",
-    "AUTIA",  "AUTIB",  "AUTDA",  "AUTDB",   "CFINV",   "RMIF",     "SETF8",    "SETF16"};
+    "AUTIA",  "AUTIB",  "AUTDA",  "AUTDB",   "CFINV",   "RMIF",     "SETF8",    "SETF16", "B_cond", "CBZ",    "TBZ",
+    "BR",     "BLR",    "RET",    "BRA",     "BRAZ",    "BLRA",     "BLRAZ",    "RETA"};
 #define GENERATED_OPS (sizeof generated_ops / sizeof *generated_ops)
 
 typedef struct {
@@ -281,7 +283,10 @@ static SnxIr* path_ir(const Path* p, int reference, char* error, size_t size) {
     SnxIr* ir = snx_ir_new_target(reference ? "reference" : "generated", '2', p->triple, error, size);
     if (!ir) return NULL;
     ir->features = &p->features;
-    if (reference) ir->int_reference = snx_ir_int_reference;
+    if (reference) {
+        ir->int_reference = snx_ir_int_reference;
+        ir->operand_reference = snx_ir_int_operand_reference;
+    }
     return ir;
 }
 
@@ -393,7 +398,10 @@ static void compare_sequence(unsigned s) {
             if (k) snx_ir_free(irs[0]);
             return;
         }
-        if (k == 0) ir->int_reference = reference_uncached;
+        if (k == 0) {
+            ir->int_reference = reference_uncached;
+            ir->operand_reference = snx_ir_int_operand_reference;
+        }
         snx_ir_emit(ir, &codegen, &function);
         if (snx_ir_module_optimize(ir, ir->mod, '2', error, sizeof error)) {
             fprintf(stderr, "FAIL: %s: %s\n", sequences[s].what, error);
@@ -432,7 +440,10 @@ static int run_compare(const u32* words, size_t count, unsigned states) {
     RtAPI rt = {.undef = on_undef, .cas128 = snx_runtime_cas128};
     for (int k = 0; k < 2; ++k) {
         if (llvm_steps_begin(&set[k], 0, LLVM_STEPS_HOST, error, sizeof error)) return snx_error("%s", error);
-        if (k == 0) set[k].ir->int_reference = snx_ir_int_reference;
+        if (k == 0) {
+            set[k].ir->int_reference = snx_ir_int_reference;
+            set[k].ir->operand_reference = snx_ir_int_operand_reference;
+        }
         for (size_t i = 0; i < count; ++i) llvm_steps_add(&set[k], words[i], 0x1000, TARGET);
         if (llvm_steps_load(&set[k], error, sizeof error)) return snx_error("%s", error);
     }
@@ -483,7 +494,10 @@ static int time_emitters(const u32* words, size_t count, unsigned rounds) {
             double start = now_seconds(), emitted;
             SnxIr* ir = snx_ir_new("timing", '2', error, sizeof error);
             if (!ir) return snx_error("%s", error);
-            if (k == 0) ir->int_reference = snx_ir_int_reference;
+            if (k == 0) {
+                ir->int_reference = snx_ir_int_reference;
+                ir->operand_reference = snx_ir_int_operand_reference;
+            }
             for (size_t i = 0; i < count; ++i) {
                 char name[32];
                 snprintf(name, sizeof name, "S_%zu", i);

@@ -79,6 +79,7 @@ static struct {
     int indent;
     int in_helper;      /* walking a static helper: a throw returns 1, a return sets its outputs */
     int dynamic_branch; /* inside a branch of a DYN if: no state may change */
+    char path[400];     /* the run-time condition (an i1's C expression) the code walked is under, "" for none */
     unsigned call_depth;
     unsigned roots[1024];
     Clause clauses[1024];
@@ -348,7 +349,9 @@ static int node_reaches_state(unsigned n, unsigned depth) {
     if (N(n).kind == N_CALL) {
         const char* s = name_of(n);
         unsigned d = sg_find(s, D_FUNCTION), o = d ? 0 : sg_find(s, D_OVERLOAD), m;
-        if (!strcmp(s, "IsFeatureImplemented") || !strcmp(s, "AddWithCarry") || !strcmp(s, "ConditionHolds")) return 1;
+        if (!strcmp(s, "IsFeatureImplemented") || !strcmp(s, "AddWithCarry") || !strcmp(s, "ConditionHolds") ||
+            !strcmp(s, "BranchTo") || !strcmp(s, "BranchNotTaken"))
+            return 1;
         if (d && reaches_state(d, depth + 1)) return 1;
         for (m = o ? g_parse.defs[o].params : 0; m; m = N(m).next)
             if ((d = sg_find(name_of(m), D_FUNCTION)) != 0 && reaches_state(d, depth + 1)) return 1;
@@ -783,6 +786,18 @@ static int builtin(unsigned n, const char* name, Val* r) {
         c = need_static_int(n, arg(n, 2), "a slice's width");
         *r = a.bt == BT_DYN ? val_c(K_BITS, BT_DYN, "sg_d_slice(g, %s, (%s) + (%s) - 1, %s)", a.c, b.c, c.c, b.c)
                             : val_c(K_BITS, BT_STATIC, "sg_s_slice(%s, (%s) + (%s) - 1, %s)", a.c, b.c, c.c, b.c);
+        return 1;
+    }
+    if (!strcmp(name, "BranchTo")) { /* BranchTo(target, type, conditional): where the instruction goes, and when */
+        need_args(n, 3);
+        a = raise(need_bits(n, arg(n, 0), "a branch's target"), BT_DYN);
+        emit("sg_branch_to(g, %s, %s);\n", a.c, g_gen.path[0] ? g_gen.path : "NULL");
+        *r = unit();
+        return 1;
+    }
+    if (!strcmp(name, "BranchNotTaken")) { /* the way on: nothing to record */
+        need_args(n, 2);
+        *r = unit();
         return 1;
     }
     if (!strcmp(name, "Unreachable")) {
@@ -1459,17 +1474,30 @@ static Val dynamic_if(unsigned n, Val c, int tail) {
         snprintf(copy.val.c, sizeof copy.val.c, "%s", names_t[i]);
         bind(copy.name, copy.val, copy.var, 0);
     }
-    then_v = eval(N(n).b, tail);
-    if (then_v.kind != K_UNIT) then_v = keep(raise(then_v, BT_DYN));
-    g_gen.depth = saved_depth;
-    for (i = 0; i < count; ++i) {
-        Binding copy = *var_binding(vars[i]);
-        snprintf(copy.val.c, sizeof copy.val.c, "%s", names_e[i]);
-        bind(copy.name, copy.val, copy.var, 0);
-    }
-    if (N(n).c) {
-        else_v = eval(N(n).c, tail);
-        if (else_v.kind != K_UNIT) else_v = keep(raise(else_v, BT_DYN));
+    {
+        char saved[sizeof g_gen.path];
+        int n_path;
+        snprintf(saved, sizeof saved, "%s", g_gen.path);
+        n_path = saved[0] ? snprintf(g_gen.path, sizeof g_gen.path, "LLVMBuildAnd(SG_B, %s, %s, \"\")", saved, cond)
+                          : snprintf(g_gen.path, sizeof g_gen.path, "%s", cond);
+        if (n_path < 0 || (size_t)n_path >= sizeof g_gen.path) sg_fail(n, "run-time conditions nested too deep");
+        then_v = eval(N(n).b, tail);
+        if (then_v.kind != K_UNIT) then_v = keep(raise(then_v, BT_DYN));
+        n_path = saved[0] ? snprintf(g_gen.path, sizeof g_gen.path,
+                                     "LLVMBuildAnd(SG_B, %s, LLVMBuildNot(SG_B, %s, \"\"), \"\")", saved, cond)
+                          : snprintf(g_gen.path, sizeof g_gen.path, "LLVMBuildNot(SG_B, %s, \"\")", cond);
+        if (n_path < 0 || (size_t)n_path >= sizeof g_gen.path) sg_fail(n, "run-time conditions nested too deep");
+        g_gen.depth = saved_depth;
+        for (i = 0; i < count; ++i) {
+            Binding copy = *var_binding(vars[i]);
+            snprintf(copy.val.c, sizeof copy.val.c, "%s", names_e[i]);
+            bind(copy.name, copy.val, copy.var, 0);
+        }
+        if (N(n).c) {
+            else_v = eval(N(n).c, tail);
+            if (else_v.kind != K_UNIT) else_v = keep(raise(else_v, BT_DYN));
+        }
+        snprintf(g_gen.path, sizeof g_gen.path, "%s", saved);
     }
     g_gen.depth = saved_depth;
     --g_gen.dynamic_branch;
@@ -1779,6 +1807,7 @@ static void generate_decode(const Clause* c) {
         g_gen.temp = 0;
         g_gen.call_depth = 0;
         g_gen.dynamic_branch = 0;
+        g_gen.path[0] = 0;
         g_gen.in_helper = 0;
         g_gen.out = &scratch;
         g_gen.indent = 1;
@@ -1883,8 +1912,10 @@ int sg_generate(const char* roots_path, const char* backend_path, const char* ou
     if (g_gen.helpers.length) sg_out("%s", g_gen.helpers.text);
     sg_out("/* ---- the decode functions ---- */\n\n");
     if (g_gen.body.length) sg_out("%s", g_gen.body.text);
-    sg_out("/* the word's instruction emitted at pc, when it is one of these: 1, else 0 */\n");
-    sg_out("static int sg_emit(SnxIr* ir, SnxU32 word, SnxU64 pc) {\n");
+    sg_out(
+        "/* the word's instruction emitted at pc, when it is one of these: 1, else 0. A branch's condition (an i1) and target\n"
+        "   (an i64) in *taken and *target when they are not NULL (sg_branch_to) */\n");
+    sg_out("static int sg_emit(SnxIr* ir, SnxU32 word, SnxU64 pc, LLVMValueRef* taken, LLVMValueRef* target) {\n");
     sg_out("    SgCtx context, *g = &context;\n");
     sg_out("    memset(g, 0, sizeof *g);\n    g->ir = ir;\n    g->word = word;\n    g->pc = pc;\n   ");
     for (i = 0; i < clause_count; ++i) {
@@ -1896,6 +1927,6 @@ int sg_generate(const char* roots_path, const char* backend_path, const char* ou
         sg_out(" if ((word & 0x%08llxu) == 0x%08llxu)\n        sg_%s(g);\n    else", clauses[i].mask, clauses[i].value,
                sg_str(g_parse.defs[clauses[i].decode].name));
     }
-    sg_out("\n        return 0;\n    sg_flags_flush(g);\n    return 1;\n}\n");
+    sg_out("\n        return 0;\n    sg_flags_flush(g);\n    sg_branch_result(g, taken, target);\n    return 1;\n}\n");
     return sg_flush(out_path);
 }

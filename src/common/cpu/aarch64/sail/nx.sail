@@ -28,6 +28,15 @@ function SP_set value_name = {
     GPR[31] = value_name
 }
 
+// No Guarded Control Stack: the NX's CPUs have none (FEAT_GCS is Armv9.4's), so a call pushes no record and a return
+// checks none
+val HaveGCS : unit -> bool
+function HaveGCS () = false
+
+// No branch target identification: Horizon maps no guarded page, so no instruction checks the branch type that led to
+// it (BTypeNext, which the back end keeps nowhere)
+let InGuardedPage : bool = false
+
 // No Statistical Profiling Extension: no sample is ever in flight
 let SPESampleInFlight : bool = false
 
