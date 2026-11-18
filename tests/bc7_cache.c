@@ -99,7 +99,7 @@ void logf_(int lvl, const char* fmt, ...) {
 #include <unistd.h>
 /* A disk that answers no read while g_hold is set, as one past full held the recording thread 184 s (#2487): every
    pread of the cache (file.c's plat_pread_fd) comes through here, and waits */
-static _Atomic int g_hold;
+static _Atomic int g_hold, g_hold_writes;
 static _Atomic u32 g_slow_us;                                /* and a disk that answers each read this late */
 ssize_t pread64(int fd, void* buf, size_t n, __off64_t off); /* unistd.h declares it only for _LARGEFILE64_SOURCE */
 ssize_t pread64(int fd, void* buf, size_t n, __off64_t off) {
@@ -107,6 +107,12 @@ ssize_t pread64(int fd, void* buf, size_t n, __off64_t off) {
     if (atomic_load_explicit(&g_slow_us, memory_order_acquire))
         usleep(atomic_load_explicit(&g_slow_us, memory_order_acquire));
     return (ssize_t)syscall(SYS_pread64, fd, buf, n, off);
+}
+/* the same for writes (file.c's plat_pwrite_fd): a disk that takes none while g_hold_writes is set */
+ssize_t pwrite64(int fd, const void* buf, size_t n, __off64_t off);
+ssize_t pwrite64(int fd, const void* buf, size_t n, __off64_t off) {
+    while (atomic_load_explicit(&g_hold_writes, memory_order_acquire)) usleep(1000);
+    return (ssize_t)syscall(SYS_pwrite64, fd, buf, n, off);
 }
 #endif
 
@@ -482,7 +488,8 @@ static void slow_disk(void) {
     CHECK(longest >= 140 && longest < 250);
 
     u64 late, skipped;
-    vk_bc7_cache_late(&late, &skipped);
+    u64 unkept;
+    vk_bc7_cache_late(&late, &skipped, &unkept);
     CHECK(late == 2 && skipped == 2);
     vk_bc7_cache_take_failed(took_failed); /* to their owner, loaded again */
     CHECK(g_failed == failed + 2 && g_failed_owner == &owner && g_failed_gva == 0x5000 && same(g_failed_key, ka));
@@ -500,8 +507,68 @@ static void slow_disk(void) {
     puts("PASS a held or slow read: the recording thread leaves it late and goes on, no more are asked meanwhile, and "
          "the log says how long the reads took");
 }
+
+/* Records put while the disk takes no write: the GPU thread puts each at once, in the index, and goes on; a read of
+   one, with the write held past BC7_IO_LATE_NS, is not tried (0), its record kept; past 64 MiB waiting a record is
+   not kept; once the disk takes them they are read back, and in a later run, and the log says how long the write took
+   and what was not kept. A watchdog lets the disk go after 3 s, so a put that waits for its write fails the check of
+   its time */
+static void let_writes_go_by(void* arg) {
+    const u64 until = *(const u64*)arg;
+    while (atomic_load_explicit(&g_hold_writes, memory_order_acquire) && plat_ns() < until) usleep(1000);
+    atomic_store_explicit(&g_hold_writes, 0, memory_order_release);
+}
+static void slow_writes(void) {
+    const u64 v1[2] = {1, 2}, k1[2] = {91, 1}, k2[2] = {91, 2}, k3[2] = {91, 3};
+    const u64 n = 30u << 20; /* two wait, the third would pass 64 MiB */
+    u8 *a = blocks(n, 7), *b = blocks(n, 8), *c = blocks(n, 9);
+    remove(PATH);
+    remove(IDX);
+    CHECK(vk_bc7_cache_open(PATH, v1, 1ull << 30));
+    u64 late0, skipped0, unkept0;
+    vk_bc7_cache_late(&late0, &skipped0, &unkept0);
+    static u64 until;
+    until = plat_ns() + 3000000000ull;
+    atomic_store_explicit(&g_hold_writes, 1, memory_order_release);
+    CHECK(plat_thread(let_writes_go_by, &until, 0) == 0);
+    const u64 t0 = plat_ns();
+    vk_bc7_cache_put(k1, a, n);
+    const u64 took = plat_ns() - t0;
+    printf("The GPU thread put a record of 30 MiB in %.1f ms with the disk taking no write\n", (double)took / 1e6);
+    CHECK(took < 1500000000ull);       /* not held to the watchdog's 3 s */
+    CHECK(vk_bc7_cache_find(k1) == n); /* in the index at once */
+    u8* back = malloc((size_t)n);
+    usleep(300000); /* the write held past BC7_IO_LATE_NS: the reads are not tried */
+    CHECK(!vk_bc7_cache_read(k1, back, n) && vk_bc7_cache_find(k1) == n); /* left, the record kept */
+    vk_bc7_cache_put(k2, b, n);
+    vk_bc7_cache_put(k3, c, n);
+    CHECK(vk_bc7_cache_find(k2) == n && !vk_bc7_cache_find(k3)); /* the third not kept */
+    usleep(500000);                                              /* the write held 0.8 s at least */
+    atomic_store_explicit(&g_hold_writes, 0, memory_order_release);
+    CHECK(io_idle_by(plat_ns() + 10000000000ull));
+    const double held = logged_after("vulkan: a write of 30720 KiB to the BC7 cache took ");
+    CHECK(held >= 0.7 && held < 3.0);
+    CHECK(logged(" s: 1 new levels were not kept meanwhile, more than 64 MiB waiting to be written\n"));
+    u64 late, skipped, unkept;
+    vk_bc7_cache_late(&late, &skipped, &unkept);
+    CHECK(unkept == unkept0 + 1 && skipped == skipped0 + 1);
+    CHECK(reads_as(k1, a, n) && reads_as(k2, b, n));
+    vk_bc7_cache_close();
+    CHECK(vk_bc7_cache_open(PATH, v1, 1ull << 30)); /* a later run finds them in the file */
+    CHECK(reads_as(k1, a, n) && reads_as(k2, b, n) && !vk_bc7_cache_find(k3));
+    vk_bc7_cache_close();
+    remove(PATH);
+    remove(IDX);
+    free(a);
+    free(b);
+    free(c);
+    free(back);
+    puts("PASS records put while the disk takes no write: the GPU thread goes on, the queue holds 64 MiB, and the log "
+         "says how long the write took");
+}
 #else
 static void slow_disk(void) { puts("SKIP a held read: the interposed pread is Linux's"); }
+static void slow_writes(void) { puts("SKIP held writes: the interposed pwrite is Linux's"); }
 #endif
 
 int main(void) {
@@ -509,6 +576,7 @@ int main(void) {
     file();
     later();
     slow_disk();
+    slow_writes();
     printf("All %u BC7 cache checks passed\n", checks);
     return 0;
 }
