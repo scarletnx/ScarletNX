@@ -9,7 +9,7 @@
 # gpu/gl/gl_program_calls.c (shaders and programs, over common/gpu/gl/gl_program.h), gpu/gl/gl_object_calls.c
 # (buffers and vertex arrays, over common/gpu/gl/gl_object.h), gpu/gl/gl_texture_calls.c (textures and samplers, over
 # common/gpu/gl/gl_texture.h), gpu/gl/gl_framebuffer_calls.c (framebuffers and renderbuffers, over
-# common/gpu/gl/gl_framebuffer.h).
+# common/gpu/gl/gl_framebuffer.h), gpu/gl/gl_sync_calls.c (fences, over common/gpu/gl/gl_sync.h).
 
 # EGL functions no hook implements yet, which a game's main calls directly: through their slots, to that handler
 route eglBindTexImage
@@ -350,3 +350,11 @@ hook _glDrawBuffers(i32 n, addr buffers) = gl_draw_buffers
 hook _glDrawBuffer(u32 mode) = gl_draw_buffer
 hook _glReadBuffer(u32 mode) = gl_read_buffer
 hook _glInvalidateFramebuffer(u32 target, i32 n, addr attachments) = gl_invalidate_framebuffer
+
+family sync
+hook _glFenceSync(u32 condition, u32 flags) -> addr = gl_fence_sync
+hook _glDeleteSync(addr sync) = gl_delete_sync
+hook _glIsSync(addr sync) -> u8 = gl_is_sync
+hook _glClientWaitSync(addr sync, u32 flags, u64 timeout) -> u32 = gl_client_wait_sync
+hook _glWaitSync(addr sync, u32 flags, u64 timeout) = gl_wait_sync
+hook _glGetSynciv(addr sync, u32 pname, i32 count, addr length, addr values) = gl_get_synciv

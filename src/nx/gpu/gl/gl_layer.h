@@ -45,6 +45,10 @@ void gl_texture_calls_init(void);
 /* the shared layer's framebuffers and renderbuffers, with no platform image of a renderbuffer yet */
 void gl_framebuffer_calls_init(void);
 
+/* ---- gl_sync_calls.c */
+/* the shared layer's fences, every one signaled while the layer records no GPU work */
+void gl_sync_calls_init(void);
+
 /* ---- gl_host_nx.c */
 #define GL_HOST_SURFACES 8
 /* a window or pbuffer surface of w x h RGBA8 pixels, two images in guest memory: its name, 0 when every one is used
