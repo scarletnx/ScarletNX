@@ -181,7 +181,7 @@ static int check_nvn_savestate(const char* shot) {
     nvn_CommandBufferAddControlMemory(NULL, cmd, cpu + 0x2000, 0x1000);
     /* the game resolves three NVN functions of its driver: one the runtime implements, one it doesn't, and the
        resolver, which it wraps. Their slots are the runtime's then */
-    static GuestFn code[16];
+    static _Atomic GuestFn code[16];
     NvnLoaderState* resolved = (NvnLoaderState*)calloc(1, sizeof *resolved);
     CHECK(resolved);
     for (u32 i = 0; i < 16; i++) code[i] = driver_code;

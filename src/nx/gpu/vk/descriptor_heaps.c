@@ -17,6 +17,7 @@
 #include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 
 #define HEAP_SAMPLER_FRAME (128ull << 10)
 #define HEAP_RESOURCE_CACHE 4096u
@@ -72,9 +73,9 @@ typedef struct {
    own */
 typedef struct {
     char pad0[64];
-    char lock;
+    _Atomic char lock;
     int lost; /* the queue was full: the next lookup forgets everything */
-    u32 n;
+    _Atomic u32 n;
     u64 handle[LASTING_QUEUE];
     char pad1[64];
 } LastingQueue;
@@ -118,7 +119,7 @@ typedef struct {
     VkDescriptorPool transition_pool;
     VkDescriptorSet transition_set;
     LastingState lasting;
-    int lasting_ready; /* read by the forgets of every thread */
+    _Atomic int lasting_ready; /* read by the forgets of every thread */
     LastingQueue queue;
     u64 memo_gen; /* the generation of the DescMemo entries that hold: a new one empties them all */
 } HeapState;
@@ -185,7 +186,7 @@ static void heap_discard(Heap* heap) {
 }
 /* Heaps refused at setup: what failed, and the graphics backend the device keeps instead (device.c chose buffers
    or sets before it tried heaps) */
-static int refused(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
+[[gnu::format(printf, 1, 2)]] static int refused(const char* fmt, ...);
 static int refused(const char* fmt, ...) {
     char why[256];
     va_list ap;
@@ -196,10 +197,13 @@ static int refused(const char* fmt, ...) {
          g_vk.has_descriptor_buffers ? "buffers" : "sets");
     return 0;
 }
-static int heap_create(Heap* heap, const VkDescriptorHeapMemoryPlan* plan, const char* name) {
+/* usage: what the heap's buffer is used as besides a heap. The resource heap holds the index tables that push data
+   names, which a shader reads as a uniform buffer: the buffer whose address push data has must have
+   VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT (VUID-vkCmdDraw-None-11437) */
+static int heap_create(Heap* heap, const VkDescriptorHeapMemoryPlan* plan, const char* name, VkBufferUsageFlags usage) {
     VkBufferCreateInfo create = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
         .size = plan->allocation_size,
-        .usage = VK_BUFFER_USAGE_DESCRIPTOR_HEAP_BIT_EXT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+        .usage = VK_BUFFER_USAGE_DESCRIPTOR_HEAP_BIT_EXT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | usage,
         .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
     DevMemWant allocation = {.at = DM_HOST,
                              .mapped = 1,
@@ -303,10 +307,10 @@ static void lasting_init(void) {
         }
     }
     g_heaps.stats.lasting_bytes = plan->lasting_size;
-    __atomic_store_n(&g_heaps.lasting_ready, 1, __ATOMIC_RELEASE);
+    atomic_store_explicit(&g_heaps.lasting_ready, 1, memory_order_release);
 }
 static void lasting_destroy(void) {
-    __atomic_store_n(&g_heaps.lasting_ready, 0, __ATOMIC_RELEASE);
+    atomic_store_explicit(&g_heaps.lasting_ready, 0, memory_order_release);
     free(g_heaps.lasting.slot);
     free(g_heaps.lasting.buffers);
 }
@@ -481,20 +485,19 @@ static void lasting_forget_all(void) {
     memo_clear();
 }
 static void queue_lock(void) {
-    while (__atomic_test_and_set(&g_heaps.queue.lock, __ATOMIC_ACQUIRE)) {
-    }
+    while (atomic_exchange_explicit(&g_heaps.queue.lock, 1, memory_order_acquire)) {}
 }
-static void queue_unlock(void) { __atomic_clear(&g_heaps.queue.lock, __ATOMIC_RELEASE); }
+static void queue_unlock(void) { atomic_store_explicit(&g_heaps.queue.lock, 0, memory_order_release); }
 /* the forgets other threads queued, done (vk_lock held) */
 static void lasting_drain(void) {
-    if (!__atomic_load_n(&g_heaps.queue.n, __ATOMIC_ACQUIRE)) return;
+    if (!atomic_load_explicit(&g_heaps.queue.n, memory_order_acquire)) return;
     u64 handles[LASTING_QUEUE];
     queue_lock();
-    u32 n = g_heaps.queue.n;
+    u32 n = atomic_load_explicit(&g_heaps.queue.n, memory_order_relaxed);
     int lost = g_heaps.queue.lost;
     memcpy(handles, g_heaps.queue.handle, sizeof *handles * n);
     g_heaps.queue.lost = 0;
-    __atomic_store_n(&g_heaps.queue.n, 0, __ATOMIC_RELEASE);
+    atomic_store_explicit(&g_heaps.queue.n, 0, memory_order_release);
     queue_unlock();
     if (lost) {
         lasting_forget_all();
@@ -503,30 +506,30 @@ static void lasting_drain(void) {
     for (u32 i = 0; i < n; i++) lasting_forget_now(handles[i]);
 }
 static void lasting_forget(u64 object) {
-    if (!object || !__atomic_load_n(&g_heaps.lasting_ready, __ATOMIC_ACQUIRE)) return;
+    if (!object || !atomic_load_explicit(&g_heaps.lasting_ready, memory_order_acquire)) return;
     if (vk_lock_held()) { /* vk_lock orders it with every lookup: they run under it */
         lasting_drain();
         lasting_forget_now(object);
         return;
     }
     queue_lock();
-    u32 n = g_heaps.queue.n;
+    u32 n = atomic_load_explicit(&g_heaps.queue.n, memory_order_relaxed);
     if (n < LASTING_QUEUE) {
         g_heaps.queue.handle[n] = object;
-        __atomic_store_n(&g_heaps.queue.n, n + 1, __ATOMIC_RELEASE);
+        atomic_store_explicit(&g_heaps.queue.n, n + 1, memory_order_release);
     } else
         g_heaps.queue.lost = 1;
     queue_unlock();
 }
 /* the forgets so far, of any mode's objects: render.c's descriptor sets of the frame name the objects by handle too */
-static u64 g_forgets;
-u64 vk_descriptor_heaps_forgets(void) { return __atomic_load_n(&g_forgets, __ATOMIC_ACQUIRE); }
+static _Atomic u64 g_forgets;
+u64 vk_descriptor_heaps_forgets(void) { return atomic_load_explicit(&g_forgets, memory_order_acquire); }
 void vk_descriptor_heaps_forget_buffer(VkBuffer buffer) {
-    __atomic_add_fetch(&g_forgets, 1, __ATOMIC_RELEASE);
+    atomic_fetch_add_explicit(&g_forgets, 1, memory_order_release);
     lasting_forget(handle_key(buffer));
 }
 void vk_descriptor_heaps_forget_view(VkImageView view) {
-    __atomic_add_fetch(&g_forgets, 1, __ATOMIC_RELEASE);
+    atomic_fetch_add_explicit(&g_forgets, 1, memory_order_release);
 #if VK_USE_64_BIT_PTR_DEFINES
     lasting_forget((u64)(uintptr_t)view);
 #else
@@ -535,7 +538,7 @@ void vk_descriptor_heaps_forget_view(VkImageView view) {
 }
 /* without vk_lock the buffer is not named: its descriptors are then made in each frame */
 void vk_descriptor_heaps_lasting(VkBuffer buffer) {
-    if (!buffer || !__atomic_load_n(&g_heaps.lasting_ready, __ATOMIC_ACQUIRE) || !vk_lock_held()) return;
+    if (!buffer || !atomic_load_explicit(&g_heaps.lasting_ready, memory_order_acquire) || !vk_lock_held()) return;
     lasting_drain();
     lasting_name(handle_key(buffer));
 }
@@ -709,8 +712,8 @@ int vk_descriptor_heaps_init(const VkPhysicalDeviceDescriptorHeapPropertiesEXT* 
                        (unsigned long long)(encoding_bytes + samplers.frame_size));
     g_heaps.scratch_size = (size_t)(encoding_bytes + samplers.frame_size);
     g_heaps.sampler_bytes = g_heaps.scratch + encoding_bytes;
-    if (!heap_create(&g_heaps.resource, &resources, "resource") ||
-        !heap_create(&g_heaps.sampler, &samplers, "sampler") || !transition_create()) {
+    if (!heap_create(&g_heaps.resource, &resources, "resource", VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT) ||
+        !heap_create(&g_heaps.sampler, &samplers, "sampler", 0) || !transition_create()) {
         transition_destroy();
         heap_discard(&g_heaps.resource);
         heap_discard(&g_heaps.sampler);
@@ -803,7 +806,7 @@ static ResourceEntry* resource_entry(const ResourceEntry* key, int* hit) {
 /* A buffer range's or a view's descriptor: its heap offset into *offset. The lasting part first, for a view or a named
    buffer; then the frame's cache; else it is made, into a lasting slot where one is free, else into the
    frame's space */
-__attribute__((always_inline)) static inline int resource_descriptor(u32 slot, const VkWriteDescriptorSet* write, u32 element,
+[[gnu::always_inline]] static inline int resource_descriptor(u32 slot, const VkWriteDescriptorSet* write, u32 element,
                                 VkBuffer* previous_buffer, VkDeviceAddress* previous_address, u32* offset) {
     int k = kind(write->descriptorType);
     if (k < 0 || k == HEAP_SAMPLER) return 0;
@@ -1013,7 +1016,7 @@ static int memo_sampler(u32 slot, const HeapLayout* l, VkSampler sampler, u32 at
     return 1;
 }
 /* Keep repeated-array scanning/filling out of the scalar buffer writer's register and inlining budget. */
-__attribute__((noinline)) static int write_image_array(u32 slot, const HeapLayout* layout, u32 table,
+[[gnu::noinline]] static int write_image_array(u32 slot, const HeapLayout* layout, u32 table,
                                                       const VkWriteDescriptorSet* write) {
     VkBuffer previous_buffer = VK_NULL_HANDLE;
     VkDeviceAddress previous_address = 0;
@@ -1046,7 +1049,7 @@ __attribute__((noinline)) static int write_image_array(u32 slot, const HeapLayou
 }
 /* Keep the original scalar loop in its own compiler frame. Image-array run handling must not change
    its stack/register budget or the buffer-address reuse between writes in the same table. */
-__attribute__((noinline)) static int write_scalar_table(u32 slot, const HeapLayout* layout, u32 table, u32 count,
+[[gnu::noinline]] static int write_scalar_table(u32 slot, const HeapLayout* layout, u32 table, u32 count,
                                                        const VkWriteDescriptorSet* writes) {
     VkBuffer previous_buffer = VK_NULL_HANDLE;
     VkDeviceAddress previous_address = 0;
@@ -1065,7 +1068,7 @@ __attribute__((noinline)) static int write_scalar_table(u32 slot, const HeapLayo
     }
     return 1;
 }
-__attribute__((noinline)) static int write_array_table(u32 slot, const HeapLayout* layout, u32 table, u32 count,
+[[gnu::noinline]] static int write_array_table(u32 slot, const HeapLayout* layout, u32 table, u32 count,
                                                       const VkWriteDescriptorSet* writes) {
     VkBuffer previous_buffer = VK_NULL_HANDLE;
     VkDeviceAddress previous_address = 0;
@@ -1093,7 +1096,7 @@ __attribute__((noinline)) static int write_array_table(u32 slot, const HeapLayou
 }
 /* Only unformatted scalar buffers enter this helper. Keeping its planning arrays out of the original writer
    preserves the singleton/image paths' compiler frame. Each chunk is a transaction; earlier chunks stay live. */
-__attribute__((noinline)) static int write_buffer_batch(u32 slot, const HeapLayout* layout, u32 table, u32 count,
+[[gnu::noinline]] static int write_buffer_batch(u32 slot, const HeapLayout* layout, u32 table, u32 count,
                                                        const VkWriteDescriptorSet* writes, VkBuffer* previous_buffer,
                                                        VkDeviceAddress* previous_address) {
     VkDescriptorHeapBufferBatch batch;
@@ -1182,7 +1185,7 @@ static int batchable_buffer(const VkWriteDescriptorSet* write) {
         (write->descriptorType == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER || write->descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) &&
         (!lasting_on() || !write->pBufferInfo || !lasting_named(handle_key(write->pBufferInfo->buffer)));
 }
-__attribute__((noinline)) static int write_batched_table(u32 slot, const HeapLayout* layout, u32 table, u32 count,
+[[gnu::noinline]] static int write_batched_table(u32 slot, const HeapLayout* layout, u32 table, u32 count,
                                                         const VkWriteDescriptorSet* writes) {
     VkBuffer previous_buffer = VK_NULL_HANDLE;
     VkDeviceAddress previous_address = 0;

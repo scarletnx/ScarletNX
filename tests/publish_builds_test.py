@@ -31,6 +31,7 @@ FILES = [
     'ScarletNX-linux-riscv64.AppImage',
     'ScarletNX-linux-loongarch64.AppImage',
     'ScarletNX-windows-x86_64.zip',
+    'ScarletNX-windows-aarch64.zip',
     'ScarletNX-android-universal.apk',
     'ScarletNX-macos-arm64.zip',
     'ScarletNX-ios-arm64.ipa',
@@ -138,6 +139,7 @@ with tempfile.TemporaryDirectory() as temporary:
                 'ScarletNX-linux-loongarch64.AppImage.zsync': 'zsync loong',
             },
             f'ScarletNX-windows-x86_64-{short}': {'bin/scarletnx.exe': 'MZ', 'share/licenses/LICENSE': 'GPL'},
+            f'ScarletNX-windows-aarch64-{short}': {'bin/scarletnx.exe': 'MZ arm64', 'share/licenses/LICENSE': 'GPL'},
             f'ScarletNX-android-universal-{short}.apk': {f'ScarletNX-android-universal-{short}.apk': 'PK apk'},
             # skip-decompress: the macOS zip lands at the artifact's own path, the IPA inside its folder
             f'ScarletNX-macos-arm64-{short}.zip': {'': 'PK app'},
@@ -543,8 +545,10 @@ with tempfile.TemporaryDirectory() as temporary:
         pre
         and '| **Windows** | x86-64 | not built, [see the run](https://github.com/owner/repo/actions/runs/50) |  |'
         in pre['body']
+        and '| **Windows** | ARM64 | not built, [see the run](https://github.com/owner/repo/actions/runs/50) |  |'
+        in pre['body']
         and '- **Windows**' not in pre['body']
-        and len(pre['assets']) == len(PR_FILES) - 1,
+        and len(pre['assets']) == len(PR_FILES) - 2,
         pre,
     )
     check(
@@ -711,23 +715,22 @@ if legs:
 
 
 def installed_checks(text):
-    """{job id: what is wrong with when it runs} of build.yml's checks of the packages as installed: a version's
-    release waits on them (a run that builds everywhere), so they run on every push, main's and a tag's, the nightly
-    and a run by hand, and never on a pull request"""
+    """{job id: what is wrong with when it runs} of build.yml's checks of the packages as installed, the steps named
+    "Run ... as a user would" at the end of the jobs that make them: a version's release waits on them (a run that
+    builds everywhere), so they run on every push, main's and a tag's, the nightly and a run by hand, and never on a
+    pull request"""
     out = {}
     jobs = text[text.index('\njobs:\n') :]
     for block in re.split(r'\n(?=  [\w-]+:\n)', jobs)[1:]:
-        name = re.search(r'^    name: (.+)$', block, re.MULTILINE)
-        if not name or not name[1].endswith(', as installed'):
-            continue
-        cond = re.search(r'^    if: (>-\n(?:      .*\n)+|.*\n)', block + '\n', re.MULTILINE)
-        cond = ' '.join(cond[1].replace('>-', '').split()) if cond else ''
-        wrong = []
-        if "github.event_name != 'pull_request'" not in cond:
-            wrong.append('runs on a pull request')
-        if 'refs/heads' in cond or "'push'" in cond or "'schedule'" in cond:
-            wrong.append(f'leaves out a push, a tag or the nightly: {cond}')
-        out[block.split(':', 1)[0].strip()] = wrong
+        for step in re.finditer(r'^      - name: Run [^\n]* as a user would\n((?:        .*\n)*)', block + '\n', re.M):
+            cond = re.search(r'^        if: (.*)$', step[1], re.M)
+            cond = cond[1] if cond else ''
+            wrong = []
+            if "github.event_name != 'pull_request'" not in cond:
+                wrong.append('runs on a pull request')
+            if 'refs/heads' in cond or "'push'" in cond or "'schedule'" in cond:
+                wrong.append(f'leaves out a push, a tag or the nightly: {cond}')
+            out.setdefault(block.split(':', 1)[0].strip(), []).extend(wrong)
     if "tags: ['v*']" not in text[: text.index('\njobs:\n')]:
         out['on'] = ["a version's tag starts no Build"]
     return out
@@ -735,18 +738,20 @@ def installed_checks(text):
 
 got = installed_checks(workflow)
 check(
-    "the checks as installed run on every push, a version's tag's among them, and on no pull request",
-    sorted(got) == ['appimage-check', 'appimage-cross-check', 'windows-check'] and not any(got.values()),
+    "the checks as installed, in the jobs that make the packages, run on every push, a version's tag's among them, and"
+    ' on no pull request',
+    sorted(got) == ['appimage', 'appimage-cross', 'windows'] and not any(got.values()),
     got,
 )
 for what, copy in {
     'on pull requests too': workflow.replace(
-        "    needs: appimage\n    if: github.event_name != 'pull_request'\n", '    needs: appimage\n'
+        "      - name: Run the AppImage as a user would\n        if: github.event_name != 'pull_request'\n",
+        '      - name: Run the AppImage as a user would\n',
     ),
     "on main's pushes alone": workflow.replace(
-        "  windows-check:\n    name: Windows zip, as installed\n    needs: windows\n    if: github.event_name != 'pull_request'",
-        '  windows-check:\n    name: Windows zip, as installed\n    needs: windows\n'
-        "    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'",
+        "      - name: Run the zip's scarletnx.exe as a user would\n        if: github.event_name != 'pull_request'\n",
+        "      - name: Run the zip's scarletnx.exe as a user would\n"
+        "        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'\n",
     ),
     'without the tags': workflow.replace("tags: ['v*']", 'tags: []'),
 }.items():

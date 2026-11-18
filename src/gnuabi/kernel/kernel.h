@@ -35,7 +35,7 @@ struct GnuKernelThread;
    entries; pending, a bit for each signal with an entry, is also read without it (atomic) */
 #define GNU_SIGQUEUE_MAX 64
 typedef struct GnuSigQueue {
-    uint64_t pending;
+    _Atomic uint64_t pending;
     uint32_t count;
     SnxLinuxSiginfo entries[GNU_SIGQUEUE_MAX];
 } GnuSigQueue;
@@ -45,7 +45,7 @@ typedef struct GnuFutexWaiter {
     struct GnuFutexWaiter *prev, *next;
     uint64_t address; /* the guest address of its word: a requeue changes it */
     uint32_t bitset;
-    uint32_t woken; /* atomic */
+    _Atomic uint32_t woken; /* atomic */
     struct GnuKernelThread* thread;
 } GnuFutexWaiter;
 /* The futexes of a process: one lock and one list of waiters, in the order they came. A private futex and a shared
@@ -73,9 +73,9 @@ typedef struct GnuKernelThread {
     SnxLinuxAltStack altstack;
     /* atomics: another thread wants this one at a delivery point (a signal, or the end of the process); the thread
        is in a system call (gnu_kernel_enter_call), where only its runtime wait or GnuKernelOps.kick reaches it */
-    uint32_t interrupt;
+    _Atomic uint32_t interrupt;
     char apart[60]; /* other threads write interrupt, this one blocking: a cache line each */
-    uint32_t blocking;
+    _Atomic uint32_t blocking;
     /* a wait in the kernel (futex, sleeps, rt_sigsuspend) sleeps on wake, under wait_lock */
     GnuMutex wait_lock;
     GnuCond wake;
@@ -128,12 +128,12 @@ typedef struct GnuKernel {
     SnxLinuxSigaction actions[65];
     GnuSigQueue queue; /* signals to the process: the first thread that doesn't block one takes it */
     /* atomic: 1 while the process ends, 2 while an execve stops the other threads. stopper is the thread that does */
-    uint32_t stopping;
+    _Atomic uint32_t stopping;
     GnuKernelThread* stopper;
     GnuFutexTable futex;
     /* prctl's: PR_SET_DUMPABLE, PR_SET_NO_NEW_PRIVS, PR_SET_THP_DISABLE, PR_SET_CHILD_SUBREAPER (atomic) */
-    uint32_t dumpable, no_new_privs, thp_disable, subreaper;
-    uint32_t membarrier_registered; /* atomic: membarrier's REGISTER commands this process made */
+    _Atomic uint32_t dumpable, no_new_privs, thp_disable, subreaper;
+    _Atomic uint32_t membarrier_registered; /* atomic: membarrier's REGISTER commands this process made */
 } GnuKernel;
 
 /* ---- the process and its threads (thread.c) ---- */

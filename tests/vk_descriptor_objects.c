@@ -28,6 +28,8 @@ void vk_descriptor_heaps_forget_view(VkImageView view) {
     g_test.forgets_late += g_test.forgets != g_test.view_destroys; /* an earlier destroy had no forget before it */
     g_test.forgets++;
 }
+/* table.c's: no texture table here */
+void vk_table_forget_view(VkImageView view) { (void)view; }
 static void check(int pass, const char* what) {
     g_test.checks++;
     if (!pass && g_test.failures++ < 12) fprintf(stderr, "FAIL: %s\n", what);

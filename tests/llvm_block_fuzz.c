@@ -288,7 +288,7 @@ static int run(const char* qemu, const char* runner, const char* dir, unsigned c
         GuestFn root, helper;
         memcpy(&root, &steps.steps[i * 2], sizeof root);
         memcpy(&helper, &steps.steps[i * 2 + 1], sizeof helper);
-        GuestFn dispatch[WORDS] = {0};
+        _Atomic GuestFn dispatch[WORDS] = {0};
         dispatch[0] = root;
         dispatch[HELPER_WORD] = helper;
         for (unsigned n = 0; n < STATES; ++n) {

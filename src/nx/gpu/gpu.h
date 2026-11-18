@@ -158,10 +158,10 @@ typedef struct GpuChannel {
     u32 dma_launch_index;
     /* what the stream waits for before its next method (gpu_park). The GPU thread runs other channels meanwhile, as
        the GPU's host interface (PFIFO) switches channels on an acquire that fails */
-    u32 park;      /* GPU_PARK_*, or 0 */
-    u32 park_val;  /* the value compared with, or the syncpoint's threshold */
-    int park_geq;  /* reach park_val (a wrapping compare) instead of equalling it */
-    u64 park_addr; /* the semaphore's GPU address, or the syncpoint id */
+    _Atomic u32 park;      /* GPU_PARK_*, or 0 */
+    _Atomic u32 park_val;  /* the value compared with, or the syncpoint's threshold */
+    _Atomic int park_geq;  /* reach park_val (a wrapping compare) instead of equalling it */
+    _Atomic u64 park_addr; /* the semaphore's GPU address, or the syncpoint id */
     u64 park_end;  /* the plat_ns() past which the stream goes on anyway */
 } GpuChannel;
 /* A verify channel (gpu/nvn/nvn_verify.c): the game's NVN driver's stream, decoded into its registers on the GPU
@@ -500,6 +500,19 @@ void gpu_park(GpuChannel* ch, u32 kind, u64 addr, u32 val, int geq);
 /* something a parked channel may wait for changed (a syncpoint increment, on the GPU thread or off it): look again.
    Any thread */
 void gpu_kick(void);
+/* gpu_kick, only while a poll of the GPU thread (gpu_call_poll) waits: a write to guest memory that such a wait may
+   look at, made off the GPU thread with no kick of its own (vk/release.c's releases). Any thread, after the write */
+void gpu_kick_polls(void);
+/* why a poll returns 0, said by the poll before it returns (the GPU thread): what gpu_poll_stats counts */
+enum { GPU_POLL_OTHER, GPU_POLL_EVENT, GPU_POLL_SYNC, GPU_POLL_SETTLE, GPU_POLL_PRESENT, GPU_POLL_N };
+void gpu_poll_why(u32 why);
+/* the GPU thread's sleeps after a pass that ran nothing, by what ended them (0 a kick, 1 a new item, 2 neither: the
+   timeout), their counts and ns, and the polls that returned 0 by why */
+typedef struct {
+    u64 sleeps[3], sleep_ns[3], misses[GPU_POLL_N];
+    u32 last; /* what ended the newest sleep */
+} GpuPollStats;
+void gpu_poll_stats(GpuPollStats* s);
 /* the GPU thread's wall time outside its wait for work so far, in ns: replay, setup and recording, the waits inside
    them (locks, fences) included */
 u64 gpu_thread_busy_ns(void);
@@ -525,7 +538,7 @@ extern void (*g_gpu_mem_changed)(u64 cpu_addr, u64 len); /* the renderer's side 
 /* the renderer lands pending shader results before the stream goes on past them: before a write of memory those
    results overlap (size > 0), and before anything the game can observe (gpu_signal_point, size 0) */
 extern void (*g_gpu_before_write)(u64 gva, u64 size);
-extern int g_gpu_releases; /* the renderer holds releases waiting to happen (renderer.h release_need) */
+extern _Atomic int g_gpu_releases; /* the renderer holds releases waiting to happen (renderer.h release_need) */
 /* what a change of backing changes (g_gpu_mapping_begin's kind) */
 enum {
     GPU_MAPPING_GMMU = 0,  /* the GPU address space: gva and size are its GPU range */

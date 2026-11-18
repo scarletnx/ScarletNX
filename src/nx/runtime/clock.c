@@ -6,12 +6,13 @@
 #include "nx/runtime/clock.h"
 #include "nx/runtime/platform/plat.h"
 #include <stddef.h>
+#include <stdatomic.h>
 
 /* The guest time a pause stopped at plus 1 (0 while none is in force), and the clock's reading at guest time 0, moved
    on by each pause's length as it ends. A resume stores start before it clears frozen, so a reader that sees no pause
    sees the start that goes with it. NCE's counter stubs read both words, frozen first, as guest_ns does (clock.h) */
 static struct ClockWords {
-    u64 frozen, start;
+    _Atomic u64 frozen, start;
     ClockCounter counter; /* mul_hi 0: the clock is plat_ns. Set once, mul_hi last */
     u8 ounce;             /* the system tick is the Ounce's 31.25 MHz */
 } g_clock;
@@ -30,7 +31,8 @@ static u64 counter_read(void) {
 /* the clock's reading in nanoseconds: plat_ns, or the counter's under NCE, in the arithmetic of its stubs */
 static u64 clock_now(void) {
 #if defined(__aarch64__)
-    u64 hi = __atomic_load_n(&g_clock.counter.mul_hi, __ATOMIC_ACQUIRE);
+    /* the counter the NCE stubs read in place (words): a plain object, atomic here */
+    u64 hi = atomic_load_explicit((_Atomic u64*)&g_clock.counter.mul_hi, memory_order_acquire);
     if (hi) {
         u64 cnt = counter_read(), top;
         snx_mul_wide(cnt, g_clock.counter.mul_lo, &top);
@@ -40,29 +42,29 @@ static u64 clock_now(void) {
     return plat_ns();
 }
 
-void clock_start(void) { __atomic_store_n(&g_clock.start, clock_now(), __ATOMIC_RELEASE); }
-u64 g_t0_ns(void) { return __atomic_load_n(&g_clock.start, __ATOMIC_ACQUIRE); }
+void clock_start(void) { atomic_store_explicit(&g_clock.start, clock_now(), memory_order_release); }
+u64 g_t0_ns(void) { return atomic_load_explicit(&g_clock.start, memory_order_acquire); }
 u64 guest_ns(void) {
-    u64 f = __atomic_load_n(&g_clock.frozen, __ATOMIC_ACQUIRE);
-    return f ? f - 1 : clock_now() - __atomic_load_n(&g_clock.start, __ATOMIC_ACQUIRE);
+    u64 f = atomic_load_explicit(&g_clock.frozen, memory_order_acquire);
+    return f ? f - 1 : clock_now() - atomic_load_explicit(&g_clock.start, memory_order_acquire);
 }
 void clock_pause(void) {
-    if (!__atomic_load_n(&g_clock.frozen, __ATOMIC_RELAXED))
-        __atomic_store_n(&g_clock.frozen, guest_ns() + 1, __ATOMIC_RELEASE);
+    if (!atomic_load_explicit(&g_clock.frozen, memory_order_relaxed))
+        atomic_store_explicit(&g_clock.frozen, guest_ns() + 1, memory_order_release);
 }
 void clock_resume(void) {
-    u64 f = __atomic_load_n(&g_clock.frozen, __ATOMIC_RELAXED);
+    u64 f = atomic_load_explicit(&g_clock.frozen, memory_order_relaxed);
     if (!f) return;
-    __atomic_store_n(&g_clock.start, clock_now() - (f - 1), __ATOMIC_RELEASE);
-    __atomic_store_n(&g_clock.frozen, 0, __ATOMIC_RELEASE);
+    atomic_store_explicit(&g_clock.start, clock_now() - (f - 1), memory_order_release);
+    atomic_store_explicit(&g_clock.frozen, 0, memory_order_release);
 }
 
 /* a save state's load: guest time is the state's, stopped there while the game is paused */
 void clock_set(u64 ns) {
-    if (__atomic_load_n(&g_clock.frozen, __ATOMIC_RELAXED))
-        __atomic_store_n(&g_clock.frozen, ns + 1, __ATOMIC_RELEASE);
+    if (atomic_load_explicit(&g_clock.frozen, memory_order_relaxed))
+        atomic_store_explicit(&g_clock.frozen, ns + 1, memory_order_release);
     else
-        __atomic_store_n(&g_clock.start, clock_now() - ns, __ATOMIC_RELEASE);
+        atomic_store_explicit(&g_clock.start, clock_now() - ns, memory_order_release);
 }
 
 int clock_from_counter(ClockCounter* out) {
@@ -85,8 +87,8 @@ int clock_from_counter(ClockCounter* out) {
     g_clock.counter.words = c.words;
     g_clock.counter.mul_lo = c.mul_lo;
     g_clock.counter.origin = c.origin;
-    __atomic_store_n(&g_clock.counter.mul_hi, c.mul_hi,
-                     __ATOMIC_RELEASE); /* last: a reader that sees it has the rest */
+    atomic_store_explicit((_Atomic u64*)&g_clock.counter.mul_hi, c.mul_hi,
+                          memory_order_release); /* last: a reader that sees it has the rest */
     *out = c;
     return 0;
 #else

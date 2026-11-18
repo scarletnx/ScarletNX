@@ -308,7 +308,12 @@ void emit_flow(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
     u32* call_stack = t->call_stack;
     u32 pc = t->pc;
     ShStructure* structure = t->structure;
-    if (op == O_CAL || op == O_JCAL || op == O_PRET) {
+    if ((op == O_PRET || op == O_RET) && !call_ptr) {
+        /* the CRS stack's static walk followed the program's returns: a PRET pushes nothing at run time, and a RET goes
+           to its PRET's target, or ends the program where it found none */
+        if (op == O_RET)
+            spv_emit_store(&c->emit, pc, shader_u32(c, pop_targets && pop_targets[i] ? pop_targets[i] : UINT32_MAX));
+    } else if (op == O_CAL || op == O_JCAL || op == O_PRET) {
         /* CAL pushes the instruction after it and jumps. PRET only pushes its target, where a later RET returns */
         u32 sp = spv_emit_load(&c->emit, c->u32_type, call_ptr);
         u32 room = spv_emit_binary(&c->emit, SPV_OP_U_LESS_THAN, c->bool_type, sp, shader_u32(c, 32));

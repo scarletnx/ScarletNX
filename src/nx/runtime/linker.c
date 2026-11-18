@@ -15,6 +15,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 
 /* nn::init::Start as the SDKs export it, with three callbacks of the linker's and with two: what a game's linker
    calls last. The route list names them (hle/hook/hooks.hook), so the module calls them through their slots */
@@ -40,7 +41,7 @@ typedef struct {
     u64 start;        /* nn::init::Start, 0 when the game has none the runtime knows */
     int links;        /* the runtime linked the modules: the game's linker does not run */
     GuestFn original; /* what nn::init::Start's dispatch slot held, while the game's linker is watched */
-    int done;
+    _Atomic int done;
 } Linker;
 static Linker g_linker;
 
@@ -95,7 +96,7 @@ static const char* own_linker(void) {
         g_linker.start = kernel_find_symbol_exact(linker_start[i]);
     }
     if (!g_linker.start || g_linker.start < g_code_lo || g_linker.start >= g_code_hi || (g_linker.start & 3) ||
-        !g_disp[(g_linker.start - g_code_lo) / 4]) {
+        !atomic_load_explicit(&g_disp[(g_linker.start - g_code_lo) / 4], memory_order_relaxed)) {
         g_linker.start = 0;
         return "the game has no recompiled nn::init::Start";
     }
@@ -167,8 +168,8 @@ static void compare(void) {
    else of the game has run */
 static void start(CPU* c, u64 entry) {
     GuestFn original = g_linker.original;
-    if (!__atomic_exchange_n(&g_linker.done, 1, __ATOMIC_ACQ_REL)) {
-        __atomic_store_n(&g_disp[(g_linker.start - g_code_lo) / 4], original, __ATOMIC_RELEASE);
+    if (!atomic_exchange_explicit(&g_linker.done, 1, memory_order_acq_rel)) {
+        atomic_store_explicit(&g_disp[(g_linker.start - g_code_lo) / 4], original, memory_order_release);
         compare();
     }
     original(c, entry);
@@ -219,7 +220,8 @@ void linker_init(void) {
     u32 i;
     if (!g_mod || g_arm_mod) return;
     if (l->links) {
-        for (i = 0; i < 3; i++) __atomic_store_n(&g_disp[(callback(i) - g_code_lo) / 4], handlers[i], __ATOMIC_RELEASE);
+        for (i = 0; i < 3; i++)
+            atomic_store_explicit(&g_disp[(callback(i) - g_code_lo) / 4], handlers[i], memory_order_release);
         return;
     }
     /* the game's linker runs: compared with the runtime's, where its last call can be watched */
@@ -243,8 +245,8 @@ void linker_init(void) {
         modules_free();
         return;
     }
-    l->original = g_disp[(l->start - g_code_lo) / 4];
-    __atomic_store_n(&g_disp[(l->start - g_code_lo) / 4], start, __ATOMIC_RELEASE);
+    l->original = atomic_load_explicit(&g_disp[(l->start - g_code_lo) / 4], memory_order_relaxed);
+    atomic_store_explicit(&g_disp[(l->start - g_code_lo) / 4], start, memory_order_release);
 }
 
 u64 linker_entry(u64 entry) { return g_linker.links ? g_linker.start : entry; }

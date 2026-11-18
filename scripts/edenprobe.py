@@ -30,16 +30,16 @@ summary exits 1 too, as does one whose program crashed or had to be killed after
 With --advisory REPORT, the pinned release's report.jsonl, the NRO is another build (the probe's main) and the run never
 fails: its cases REPORT lacks that do not pass, REPORT's passing cases that it does not pass, and what would have failed
 the run are warnings (GitHub's ::warning:: lines). --advisory-baseline FILE takes the pinned release's baseline in place
-of its report: its cases are the ones the release ends as it says on this machine, so a job of its own can run the
-probe's main without waiting for the release's run.
+of its report: its cases are the ones the release ends as it says on this machine, so the probe's main runs without
+the release's run before it.
 
 runs reads the files a pull request changed, a path a line, and prints which of the Build's probe runs they call for,
 nro=true|false and apk=true|false (for $GITHUB_OUTPUT), each with the files that call for it on stderr. The NRO's run
 loads the Switch runtime and what it shares (src/nx/, src/common/) and is held to tests/edenprobe/linux-x86_64.txt; the
 APK's loads the Android layer (src/android/), the GNU ABI kernel its native code runs on (src/gnuabi/), the GLES shader
 compiler (src/glslc/) and the GPU code it shares (src/common/gpu/), held to tests/edenprobe/android-x86_64.txt; both
-load the program's main (src/multicall/), this script, the job (.github/workflows/build.yml) and the build's own files
-(CMakeLists.txt, CMakePresets.json, cpmfile.json, cmake/).
+load the program's main (src/multicall/), this script, the workflow (.github/workflows/build.yml) and the build's own
+files (CMakeLists.txt, CMakePresets.json, cpmfile.json, cmake/).
 
 baseline writes the cases that end the same way in every BASELINE given (baseline.txt of runs of one build and one
 mode): a case that passes only now and then stays out.

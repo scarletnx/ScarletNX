@@ -5,6 +5,7 @@
 and the update's is served apart (SelfNCCH's path type 5, which an updated game opens at boot), a mismatched update,
 an update given as the game and a game given as the update are refused, and a game with no update reads as before."""
 
+import os
 import subprocess
 import sys
 import tempfile
@@ -37,6 +38,10 @@ def main():
                 (state / 'exefs' / 'icon').write_bytes(b'old')
                 (state / 'romfs').mkdir()
                 (state / 'romfs' / 'old.txt').write_bytes(b'old')
+                # and the DLLs a package's runtime places beside the game's copy of it, linked to the package's own
+                for dll in ('libc++.dll', 'ZLIB1.DLL'):
+                    (root / f'{name}-package-{dll}').write_bytes(b'dll')
+                    os.link(root / f'{name}-package-{dll}', state / dll)
             p = subprocess.run(
                 [probe, str(g), '--update', str(u), str(state)], capture_output=True, text=True, timeout=20
             )
@@ -51,10 +56,11 @@ def main():
         assert (
             f'title {TITLE:016x} name PATCHED exheader {UPDATE_TITLE:016x} romfs base update-romfs update icon 1' in out
         ), out
-        assert 'self romfs base update-romfs update' in out, out
-        # the game read from its dump over an extraction's leftovers: they are not read, and its ExeFS icon is its own
+        assert 'self romfs base update-romfs update exefs-icon own' in out, out
+        # the game read from its dump over an extraction's leftovers and a package's DLLs: none is read, and its ExeFS
+        # icon is its own
         code, out = run(game, cia(application=update_ncch(), title=UPDATE_TITLE), 'leftover', leftover=True)
-        assert code == 0 and 'self romfs base update-romfs update' in out, out
+        assert code == 0 and 'self romfs base update-romfs update exefs-icon own' in out, out
 
         # a console's update: the NCCH under the update's ID, its ExHeader naming the game's program
         def console_update():

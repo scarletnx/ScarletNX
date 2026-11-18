@@ -90,6 +90,14 @@ CHECKS = {'hello': check_hello, 'shades': check_shades, 'stripes': check_stripes
 SAVES = {'save_sram': 0x8000, 'save_flash64': 0x10000, 'save_flash128': 0x20000}
 
 
+def same_file(path, other):
+    """whether path, absolute, names the file other is: False for a relative path and for one that names none"""
+    try:
+        return os.path.isabs(path) and os.path.samefile(path, other)
+    except OSError:
+        return False
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--runner', required=True, help='scarletnx-agb')
@@ -145,7 +153,10 @@ def main():
         stem = rom.stem
         copy = work / stem / (stem + ('.exe' if os.name == 'nt' else ''))
         ini = (work / stem / ('%s.ini' % stem)).read_text()
-        if not copy.is_file() or 'system=gba' not in ini or 'source=%s' % rom.resolve() not in ini:
+        # the ROM by the file source= names, not its spelling: the driver writes a Windows path with \, which MSYS2's
+        # Python (the Windows on Arm job's) spells with /
+        source = re.search(r'^source=(.*)$', ini, re.MULTILINE)
+        if not copy.is_file() or 'system=gba' not in ini or not source or not same_file(source.group(1), rom):
             sys.exit("%s: no copy of the runtime %s, or its .ini is not a GBA game's:\n%s" % (args.name, copy, ini))
         # code=, the header's game code: its printable characters up to the first other, as the launcher reads them
         header = rom.read_bytes()[0xAC:0xB0]

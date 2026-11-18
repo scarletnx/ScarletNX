@@ -5,6 +5,7 @@
 #include "common/utilities/endian.h"
 #include "support/spv_eval.h"
 #include <limits.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -21,6 +22,7 @@
 #define FMUL_IMM       0x3868003F00070000ull
 #define FFMA_FMZ       0x59C0000000070000ull
 #define FFMA_KEEP      0x5980000000070000ull
+#define DFMA_R         0x5B70000000070000ull
 
 static int failures;
 static const char* storage_paths[4];
@@ -47,6 +49,8 @@ static const char* xfb_path;
 static const char* xfb_stores_path;
 static const char* passthrough_paths[6];
 static const char* structured_paths[2];
+/* the fractal structured and with its dispatch loop, nested returns structured and in the dispatch loop, by path */
+static const char* return_paths[5];
 static const char* fswzadd_path;
 static const char* surface_op_paths[7];
 static const char* legacy_paths[4];
@@ -1127,6 +1131,45 @@ static void precise_math(void) {
     }
 }
 
+/* how many of a module's GLSL Fma results have no NoContraction decoration: -1 when it has no Fma */
+static int fma_without_no_contraction(const u32* code, size_t words) {
+    int fmas = 0, bare = 0;
+    for (size_t i = 5; i < words;) {
+        u32 width = code[i] >> 16;
+        if (!width || i + width > words) return -1;
+        if ((code[i] & 0xffff) == 12 && width > 4 && code[i + 4] == 50) {
+            int decorated = 0;
+            for (size_t j = 5; j < words && code[j] >> 16;) {
+                decorated |=
+                    (code[j] & 0xffff) == 71 && code[j] >> 16 >= 3 && code[j + 1] == code[i + 2] && code[j + 2] == 42;
+                j += code[j] >> 16;
+            }
+            fmas++;
+            bare += !decorated;
+        }
+        i += width;
+    }
+    return fmas ? bare : -1;
+}
+
+/* FFMA and DFMA round once, and a GLSL Fma without NoContraction may be split into a multiply and an add: RADV did so
+   in a fractal's loop once its control flow was structured, and the counts it drew drifted from the processor's */
+static void fused_fma(void) {
+    const u64 fma[] = {FFMA_KEEP, DFMA_R};
+    const int stages[] = {ST_VS, ST_FS, ST_CS};
+    for (size_t i = 0; i < sizeof stages / sizeof *stages; i++)
+        for (int n = 1; n <= 2; n++) {
+            ShaderInfo info;
+            size_t words = 0;
+            u32* code = translate(fma, n, stages[i], &info, &words, 0);
+            check_translated(code, &info, "FFMA and DFMA translate");
+            int bare = code ? fma_without_no_contraction(code, words) : -1;
+            if (code && bare) fprintf(stderr, "stage %d, %d FMAs: %d Fma without NoContraction\n", stages[i], n, bare);
+            check(code && bare == 0, "every Fma has NoContraction");
+            free(code);
+        }
+}
+
 /* F2F between two halves with bit 42 rounds to an integer: DREDGE's colour grading takes frac() of a half as x minus
    F2F.F16.F16.FLOOR of it, and without the floor every colour came out grey */
 static int glsl_ext_count(const u32* code, size_t words, u32 inst) {
@@ -1888,6 +1931,275 @@ static void structured_flow(void) {
         save_fixture(structured_paths[1], spv, words);
     }
     free(spv);
+}
+
+/* a relative flow instruction (its opcode the top 12 bits) at word at to word to, under PT with condition T; the
+   pushes, which UAM writes with no predicate, as zeros in bits 0 to 19 */
+static u64 flow_to(u64 top12, u32 at, u32 to) {
+    return top12 << 52 | (u64)(((to - (at + 1)) * 8) & 0xFFFFFF) << 20 | 0x7000Full;
+}
+static u64 push_to(u64 top12, u32 at, u32 to) { return flow_to(top12, at, to) & ~0xFFFFFull; }
+/* the word guest_program puts instruction i at */
+static u32 flow_word(u32 i) { return 11 + i + i / 3; }
+
+#define MOV_R4_C0 0x4C98078000070004ull /* MOV R4, c[0x0][0x0] */
+#define MOV_R5_C4 0x4C98078000170005ull /* MOV R5, c[0x0][0x4] */
+#define P0_R4_0   0x5B6503800FF70407ull /* ISETP.EQ.U32.AND P0, PT, R4, RZ, PT */
+#define P1_R5_0   0x5B6503800FF7050Full /* ISETP.EQ.U32.AND P1, PT, R5, RZ, PT */
+#define RET_P0    0xE32000000000000Full /* @P0 RET */
+#define RET_P1    0xE32000000001000Full /* @P1 RET */
+#define RET_T     0xE32000000007000Full /* RET */
+
+/* Amberlith's fractal compute program (shaders/fractal.comp.glsl) as UAM, deko3d's compiler, writes it: a PRET to
+   the EXIT, an early @P0 RET for an invocation past the target, a loop with a PBK and two BRKs, and the store of
+   the iteration count, from word 10. A compute program has no SPH: words 0 to 9 are zero */
+static const u64 fractal_code[82] = {
+    0x001c8400e02007edull, 0xe270000027000000ull, 0xf0c8000002570000ull, 0xf0c8000002670001ull, 0x003f8404fcc0074full,
+    0xf0c8000002070002ull, 0x3800000100070203ull, 0x5c18018000370000ull, 0x001fb402fc2007e6ull, 0x38000000a1070202ull,
+    0x5c18018000270101ull, 0x4b6c038800870007ull, 0x07e4043ffda007edull, 0x4b6c200800970107ull, 0xe32000000000000full,
+    0x5cb8000000070a02ull, 0x001d3c00fcc007e6ull, 0x4c98078800870003ull, 0x3828000000170303ull, 0x5cb8000000370a03ull,
+    0x00080401fe0027e6ull, 0x3958003f00070303ull, 0x5c58200000370202ull, 0x5cb8000000170a03ull, 0x001dbc00fcc007e6ull,
+    0x4c98078800970004ull, 0x3828000000170404ull, 0x5cb8000000470a04ull, 0x001f9801fc2047e6ull, 0x3958003f00070404ull,
+    0x5c58200000470303ull, 0x4c98078800070004ull, 0x001f8400fcc007e1ull, 0x4980020800270204ull, 0x4c98078800170002ull,
+    0x4981010800270302ull, 0x07ff843ffc2007edull, 0x4b6a03880067ff07ull, 0x5c98078000400003ull, 0x5c9807800ff80003ull,
+    0x07ff843ffc21ffedull, 0x4b6a03880067ff07ull, 0x5c98078000200005ull, 0x5c9807800ff80005ull, 0x07ffb43ffc21ffedull,
+    0x4b6a03880067ff07ull, 0x4c98078800400004ull, 0x4b6a03880067ff07ull, 0x001fb43ffe01ffe1ull, 0x4c98078800500002ull,
+    0x5c9807800ff70006ull, 0xe2a0000009000000ull, 0x07ff983ffda1ffedull, 0x4b6c038800370607ull, 0xe34000000000000full,
+    0x5c68000000570507ull, 0x07ffb400fda007e6ull, 0x5980038000370307ull, 0x36b403c080070707ull, 0xe34000000000000full,
+    0x001f98c0fc21ffe6ull, 0x5981020000570507ull, 0x5980038000370307ull, 0x5c58000000370303ull, 0x001fc000fc2007e1ull,
+    0x5980010000570305ull, 0x3810000000170606ull, 0x5c98078000770003ull, 0x001f943ffc2007edull, 0xe2400ffff787000full,
+    0x4c98078800870002ull, 0x4e00000800870100ull, 0x001f9800fcc207e6ull, 0x5b007fa800170201ull, 0x5b30001800170200ull,
+    0x3848000000270000ull, 0x00038400fcc007e6ull, 0x4c10800005070000ull, 0x4c1008000517ff01ull, 0xeedc200000070006ull,
+    0x001f8000ffe1ffefull, 0xe30000000007000full,
+};
+
+/* the frame's uniform block, c[2] (std140): the centre, the step, the most iterations, the seed, julia, the target */
+typedef struct {
+    float centre[2], step;
+    u32 iterations;
+    float seed[2];
+    u32 julia, shift, width, height;
+} FractalFrame;
+
+/* the count of the pixel at x, y as the program's floating point gives it, each multiply and add one fma */
+static u32 fractal_count(const FractalFrame* f, u32 x, u32 y) {
+    float px = (float)x - ((float)(f->width / 2u) - 0.5f), py = (float)y - ((float)(f->height / 2u) - 0.5f);
+    float ax = fmaf(px, f->step, f->centre[0]), ay = fmaf(py, -f->step, f->centre[1]);
+    float zx = f->julia ? ax : 0.0f, zy = f->julia ? ay : 0.0f;
+    float cx = f->julia ? f->seed[0] : ax, cy = f->julia ? f->seed[1] : ay;
+    u32 n = 0;
+    for (; n < f->iterations; n++) {
+        if (fmaf(zx, zx, zy * zy) > 4.0f) break;
+        float nx = fmaf(zx, zx, fmaf(-zy, zy, cx)), ny = fmaf(zx + zx, zy, cy);
+        zx = nx;
+        zy = ny;
+    }
+    return n;
+}
+
+/* Runs a translated fractal module over 2 x 2 groups of 8 x 8 invocations, for a target of 13 x 11 (the last
+   group's invocations past it return early): each pixel's count against fractal_count, and nothing stored by an
+   invocation past the target. 0 when every invocation ran and agreed */
+static int fractal_run(const u32* spv, size_t words, const FractalFrame* f, const char* what) {
+    u32 frame[16] = {0}, driver[128] = {0}, counts[13 * 11];
+    u32* log = calloc(SH_WLOG_PART, sizeof *log); /* the write log (write_log.h) the store records its bytes in */
+    int bad = 0;
+    if (!log) return 1;
+    memcpy(frame, f, sizeof *f);
+    driver[0x140 / 4] = 0x10000u; /* the counts' address, c[0][0x140], and its size */
+    driver[0x148 / 4] = sizeof counts;
+    for (u32 k = 0; k < 13 * 11; k++) counts[k] = 0xdeadbeefu;
+    for (u32 pass = 0; pass < 2; pass++) /* the invocations past the target last: what they'd store would stay */
+        for (u32 i = 0; i < 256; i++) {
+            u32 gx = i >> 7 & 1, gy = i >> 6 & 1, x = gx * 8 + (i & 7), y = gy * 8 + (i >> 3 & 7);
+            if ((x >= 13 || y >= 11) != (pass == 1)) continue;
+            SpvEvalEnv env = {0};
+            env.builtin[26][0] = gx; /* WorkgroupId */
+            env.builtin[26][1] = gy;
+            env.builtin[27][0] = i & 7; /* LocalInvocationId */
+            env.builtin[27][1] = i >> 3 & 7;
+            env.builtin[24][0] = env.builtin[24][1] = 2; /* NumWorkgroups */
+            env.builtin[24][2] = 1;
+            env.ubo[SNX_VKB_CB] = driver;
+            env.ubo_words[SNX_VKB_CB] = 128;
+            env.ubo[SNX_VKB_CB + 2] = frame;
+            env.ubo_words[SNX_VKB_CB + 2] = 16;
+            env.ubo[SNX_VKB_SSBO] = counts;
+            env.ubo_words[SNX_VKB_SSBO] = 13 * 11;
+            env.ubo[SNX_VKB_WPAGES] = log;
+            env.ubo_words[SNX_VKB_WPAGES] = SH_WLOG_PART;
+            const char* why = spv_eval(spv, words, &env);
+            if (why && bad++ < 4) fprintf(stderr, "%s: invocation %u, %u stops: %s\n", what, x, y, why);
+        }
+    for (u32 y = 0; y < 11; y++)
+        for (u32 x = 0; x < 13; x++)
+            if (counts[y * 13 + x] != fractal_count(f, x, y) && bad++ < 4)
+                fprintf(stderr, "%s: pixel %u, %u counts %u, %u expected\n", what, x, y, counts[y * 13 + x],
+                        fractal_count(f, x, y));
+    /* the counts are in window 0: its flag, and the coarse word of windows 0 to 63 (shader.h's SH_WLOG_COARSE) */
+    const u32* coarse = log + SH_WPAGE_SLOT * (1u + SH_WLOG_MASK);
+    if ((log[0] != 1 || coarse[0] != 1) && bad++ < 4)
+        fprintf(stderr, "%s: the write log's flag of window 0 is %u and its coarse word %u, 1 expected\n", what,
+                log[0], coarse[0]);
+    free(log);
+    return bad;
+}
+
+/* PRET and RET resolved on the CRS stack's static walk: the fractal's early return becomes a branch to its EXIT, so
+   the program's loop is SPIR-V's own, with no dispatch loop and no stack at run time; each pixel's count is the
+   same as the dispatch loop's and as the CPU's. The dispatch loop's program is the same with a call to a lone RET
+   before its EXIT, which changes nothing it does and keeps both stacks at run time */
+static void pret_returns(void) {
+    static const FractalFrame frames[2] = {
+        {{-0.6f, 0.0f}, 0.2f, 48u, {0.0f, 0.0f}, 0u, 0u, 13u, 11u},
+        {{0.0f, 0.0f}, 0.25f, 64u, {-0.835f, -0.2321f}, 1u, 0u, 13u, 11u},
+    };
+    u64 code[94] = {0};
+    memcpy(code + 10, fractal_code, sizeof fractal_code);
+    for (int dispatch = 0; dispatch < 2; dispatch++) {
+        ShaderInfo info = {0};
+        size_t words = 0;
+        int switches;
+        info.cs_local[0] = info.cs_local[1] = 8;
+        info.cs_local[2] = 1;
+        if (dispatch) { /* CAL 93, EXIT, RET */
+            code[91] = push_to(0xE26, 91, 93);
+            code[92] = EXIT;
+            code[93] = RET_T;
+        }
+        /* not spirv_of, whose checks are the small programs' here: the program reads two of WorkgroupId's
+           components in one block, each S2R a load of the variable */
+        u8* guest = guest_bytes(code, (dispatch ? 94 : 92) * 8);
+        u32* spv = guest ? shader_to_spirv(guest, (dispatch ? 94 : 92) * 8, ST_CS, &info, &words, 1, 1, 1, 1) : NULL;
+        free(guest);
+        check_translated(spv, &info, dispatch ? "the fractal with a call translates" : "the fractal translates");
+        if (!spv) continue;
+        int cases = switch_cases(spv, words, &switches);
+        if (!dispatch) {
+            check(!switches && !cases && !info.flow_why[0],
+                  "the fractal's early return and loop are SPIR-V's own: no dispatch loop");
+            if (info.flow_why[0]) fprintf(stderr, "the fractal keeps a dispatch loop: %s\n", info.flow_why);
+        } else {
+            if (switches != 1 || strcmp(info.flow_why, "CAL at 0x2d8: a call"))
+                fprintf(stderr, "the fractal with a call: %d switches, %d cases, the reason \"%s\"\n", switches, cases,
+                        info.flow_why);
+            check(switches == 1 && !strcmp(info.flow_why, "CAL at 0x2d8: a call"),
+                  "a call keeps the dispatch loop, and the reason names it");
+        }
+        for (int k = 0; k < 2; k++)
+            check(!fractal_run(spv, words, &frames[k], dispatch ? "dispatch loop" : "structured"),
+                  k ? "the julia counts are the CPU's" : "the mandelbrot counts are the CPU's");
+        save_fixture(return_paths[dispatch], spv, words);
+        free(spv);
+    }
+}
+
+/* A fragment program's returns run on the CPU with c[0][0] and c[0][4] (P0 and P1 when zero): its color 0, R0 to R3
+   as an integer target's bits, in out, and in *dispatch whether its module has the dispatch loop's switch; 0 when it
+   ran to its outputs. The module is the fixture return_paths[fixture] when fixture isn't -1 */
+static int returns_run(const u64* instructions, int count, u32 c0, u32 c1, u32 out[4], ShaderInfo* info, int* dispatch,
+                       int fixture) {
+    size_t words = 0, slots;
+    u64* code = guest_program(instructions, count, NULL, &slots);
+    if (!code) return -1;
+    set_sph(code, 18, 0xf);
+    memset(info, 0, sizeof *info);
+    info->rt_int_mask = 1;
+    u32* spv = spirv_of(code, slots * sizeof *code, ST_FS, info, &words, 1, 1, 1, 1);
+    free(code);
+    check_translated(spv, info, "a program with returns translates");
+    if (!spv) return -1;
+    SpvEvalEnv env = {0};
+    float one[4] = {1.0f, 1.0f, 1.0f, 0.0f};
+    u32 scale[4], constants[4] = {c0, c1, 0, 0};
+    memcpy(scale, one, sizeof one);
+    env.ubo[SNX_VKB_RS] = scale;
+    env.ubo_words[SNX_VKB_RS] = 4;
+    env.ubo[SNX_VKB_CB] = constants;
+    env.ubo_words[SNX_VKB_CB] = 4;
+    const char* why = spv_eval(spv, words, &env);
+    if (why) fprintf(stderr, "a program with returns stops: %s\n", why);
+    memcpy(out, env.out[0], 4 * sizeof *out);
+    int switches;
+    *dispatch = switch_cases(spv, words, &switches) || switches;
+    if (fixture >= 0) save_fixture(return_paths[fixture], spv, words);
+    free(spv);
+    return why || !env.out_written[0];
+}
+
+static u64 vote(u32 mode, u32 d, u32 out, u32 in, int negate);
+/* nested returns: an outer PRET to the EXIT and an inner one, each region left by @P RET or run to its end. With a
+   VOTE before the EXIT on a device without maximal reconvergence, the lanes must reconverge in the dispatch loop: its
+   RETs go to the targets the walk found there too */
+static void pret_nested(void) {
+    const u32 outer = flow_word(13), inner = flow_word(10);
+    u64 program[] = {
+        MOV_R4_C0,                           /* R4 = c[0][0] */
+        MOV_R5_C4,                           /* R5 = c[0][4] */
+        P0_R4_0,                             /* P0 = R4 == 0 */
+        P1_R5_0,                             /* P1 = R5 == 0 */
+        push_to(0xE27, flow_word(4), outer), /* PRET to the NOP */
+        mov32i(0, 1),                        /* R0 = 1 */
+        push_to(0xE27, flow_word(6), inner), /* PRET to R1 = 3 */
+        RET_P0,                              /* @P0 RET, to R1 = 3 */
+        mov32i(0, 2),                        /* R0 = 2 */
+        RET_T,                               /* RET, to R1 = 3 */
+        mov32i(1, 3),                        /* R1 = 3 */
+        RET_P1,                              /* @P1 RET, to the NOP */
+        mov32i(2, 4),                        /* R2 = 4 */
+        0x50B0000000070F00ull,               /* NOP, or VOTE.ALL R6, PT, PT; then the EXIT */
+    };
+    int device = g_spirv_translate.maximal_reconvergence;
+    for (u32 p = 0; p < 8; p++) {
+        ShaderInfo info;
+        u32 out[4];
+        int converge = p >= 4;
+        program[13] = converge ? vote(0, 6, 7, 7, 0) : 0x50B0000000070F00ull;
+        int fixture = p == 0 ? 2 : p == 4 ? 3 : -1;
+        g_spirv_translate.maximal_reconvergence = 0;
+        int dispatch = 0, ran = returns_run(program, 14, p & 1 ? 0 : 1, p & 2 ? 0 : 1, out, &info, &dispatch, fixture);
+        g_spirv_translate.maximal_reconvergence = device;
+        u32 r0 = p & 1 ? 1 : 2, r2 = p & 2 ? 0 : 4;
+        if (ran || out[0] != r0 || out[1] != 3 || out[2] != r2)
+            fprintf(stderr, "nested returns, P0 %u P1 %u%s: R0-R2 %u %u %u (%u 3 %u expected)\n", p & 1, p >> 1 & 1,
+                    converge ? ", reconverging" : "", out[0], out[1], out[2], r0, r2);
+        check(!ran && out[0] == r0 && out[1] == 3 && out[2] == r2, "nested returns each go to their own PRET's target");
+        if (!converge)
+            check(!dispatch && !info.flow_why[0], "nested returns need no dispatch loop");
+        else
+            check(dispatch && !strcmp(info.flow_why, "lanes that reconverge, without maximal reconvergence"),
+                  "lanes that reconverge keep the dispatch loop without maximal reconvergence, and the reason says so");
+    }
+}
+
+/* a RET whose return point depends on the path: @P0 to a PRET of its own, else another, then one RET. It keeps the
+   dispatch loop with a stack of returns, where a PRET pushes whatever P0 holds: its bits 16 to 19 are zero, not P0 */
+static void pret_by_path(void) {
+    const u32 l1 = flow_word(5), l2 = flow_word(6), a = flow_word(8), b = flow_word(10);
+    const u64 program[] = {
+        MOV_R4_C0,                                      /* R4 = c[0][0] */
+        P0_R4_0,                                        /* P0 = R4 == 0 */
+        flow_to(0xE24, flow_word(2), l1) & ~0xF0000ull, /* @P0 BRA l1 */
+        push_to(0xE27, flow_word(3), a),                /* PRET a */
+        flow_to(0xE24, flow_word(4), l2),               /* BRA l2 */
+        push_to(0xE27, flow_word(5), b),                /* l1: PRET b */
+        mov32i(1, 5),                                   /* l2: R1 = 5 */
+        RET_T,                                          /* RET, to a or b */
+        mov32i(0, 1),                                   /* a: R0 = 1 */
+        EXIT,                                           /* EXIT */
+        mov32i(0, 2),                                   /* b: R0 = 2, and the EXIT guest_program ends with */
+    };
+    for (u32 p = 0; p < 2; p++) {
+        ShaderInfo info;
+        u32 out[4];
+        int dispatch = 0, ran = returns_run(program, 11, p ? 0 : 1, 0, out, &info, &dispatch, p ? -1 : 4);
+        if (ran || out[0] != (p ? 2u : 1u) || out[1] != 5)
+            fprintf(stderr, "a return by path, P0 %u: %s, R0 %u R1 %u (%u 5 expected)\n", p, ran ? "stopped" : "ran",
+                    out[0], out[1], p ? 2u : 1u);
+        check(!ran && out[0] == (p ? 2u : 1u) && out[1] == 5, "a RET returns to the PRET its path pushed");
+        check(dispatch && !strcmp(info.flow_why, "RET at 0xa0: its paths disagree on where it returns"),
+              "a return by path keeps the dispatch loop, and the reason says where");
+    }
 }
 
 /* Indirect calls read compiler constants at execution time, so a changed selection can reuse the same module.
@@ -5629,7 +5941,6 @@ static int has_float_constant(const u32* code, size_t words, u32 bits) {
     return 0;
 }
 /* the word of instruction i as guest_program lays a program out: a scheduling word before every third */
-static u32 flow_word(u32 i) { return 11 + i + i / 3; }
 /* BRA from instruction from to instruction to, on predicate (7: always) */
 static u64 flow_bra(u32 from, u32 to, u32 predicate) {
     u32 bytes = (flow_word(to) - (flow_word(from) + 1)) * 8;
@@ -6570,6 +6881,10 @@ int main(int argc, char** argv) {
             snprintf(name, sizeof name, "quad_read_%d", i);
             quad_read_paths[i] = fixture_path(argv[1], name);
         }
+        for (int i = 0; i < 5; i++) {
+            snprintf(name, sizeof name, "return_%d", i);
+            return_paths[i] = fixture_path(argv[1], name);
+        }
         if (g_fixtures.failed) {
             fprintf(stderr, "failed to allocate fixture paths\n");
             return 2;
@@ -6592,6 +6907,7 @@ int main(int argc, char** argv) {
     compute_write_log();
     float_controls();
     precise_math();
+    fused_fma();
     f2f_half_rounding();
     saturate_nan();
     hfma2_immediate();
@@ -6638,6 +6954,9 @@ int main(int argc, char** argv) {
     viewport_mask();
     indexed_attribute_load();
     structured_flow();
+    pret_returns();
+    pret_nested();
+    pret_by_path();
     fswzadd_forms();
     shfl_quad_forms();
     shfl_predicate();

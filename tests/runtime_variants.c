@@ -44,8 +44,8 @@ static SnxModInfo g_mods[1];
 static SnxModule g_module;
 const SnxModule* g_mod = &g_module;
 
-static GuestFn g_dispatch[(CODE_HI - CODE_LO) / 4];
-GuestFn* g_disp = g_dispatch;
+static _Atomic GuestFn g_dispatch[(CODE_HI - CODE_LO) / 4];
+_Atomic GuestFn* g_disp = g_dispatch;
 u64 g_code_lo = CODE_LO, g_code_hi = CODE_HI;
 const SnxNros* g_nros; /* main.c's: set by the NRO module checks */
 int g_ounce; /* main.c's: a Switch program */
@@ -297,6 +297,7 @@ static void nro_modules(const char* path) {
     u32 entries = 9;
     int k;
     CHECK(root != NULL);
+    if (!root) return;
     memset(id, 0x42, sizeof id);
     memset(other, 0x24, sizeof other);
     memset(slots, 0, sizeof slots);
@@ -322,7 +323,7 @@ static void nro_modules(const char* path) {
     CHECK(!g_disp[(0x1100 - CODE_LO) / 4]);
     /* the game module's function at 0x2400, in its entries and its slot: what the NRO module's import of it calls */
     static const u64 game_addr[1] = {0x2400};
-    static GuestFn game_fn[1] = {test_fn2};
+    static _Atomic GuestFn game_fn[1] = {test_fn2};
     g_module.nentries = 1;
     g_module.entry_addr = game_addr;
     g_module.entry_fn = game_fn;

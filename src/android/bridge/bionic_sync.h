@@ -26,9 +26,9 @@ typedef struct {
 typedef struct {
     /* until *word is not value, a wake, deadline (NULL: none) or a signal: 0, or -ETIMEDOUT, -EAGAIN, -EINTR, -EINVAL
        (Linux's numbers) */
-    int (*wait)(void* context, uint32_t* word, uint32_t value, const BionicTime* deadline);
+    int (*wait)(void* context, _Atomic uint32_t* word, uint32_t value, const BionicTime* deadline);
     /* up to count waiters on word */
-    void (*wake)(void* context, uint32_t* word, int count);
+    void (*wake)(void* context, _Atomic uint32_t* word, int count);
     /* the calling thread's id, never 0 */
     uint32_t (*tid)(void* context);
     void* context;

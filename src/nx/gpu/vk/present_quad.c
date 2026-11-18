@@ -10,6 +10,7 @@
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/ui.h"
 #include "snx_settings.h"
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -28,7 +29,7 @@ static struct {
     u32 serials;          /* the views made */
     /* the upscaler and the anti-aliasing (vk_present_quad_effects): what runs for this run (atomic: a shortcut steps
        them on the frontend's thread), the effects once either is on, and an HDR frame said once */
-    int upscaler, aa;
+    _Atomic int upscaler, aa;
     char upscaler_seen[sizeof g_settings.upscaler], aa_seen[sizeof g_settings.anti_aliasing]; /* the words last read */
     SnxFx* fx;
     int fx_failed, hdr_said;
@@ -250,26 +251,26 @@ static void effects_follow(int start) {
     memcpy(g_present_quad.upscaler_seen, upscaler, sizeof upscaler);
     memcpy(g_present_quad.aa_seen, aa, sizeof aa);
     if (snx_fx_settings(&c, upscaler, 0, aa, said, sizeof said)) LOG("settings: %s\n", said);
-    __atomic_store_n(&g_present_quad.upscaler, c.upscaler, __ATOMIC_RELAXED);
-    __atomic_store_n(&g_present_quad.aa, c.aa, __ATOMIC_RELAXED);
+    atomic_store_explicit(&g_present_quad.upscaler, c.upscaler, memory_order_relaxed);
+    atomic_store_explicit(&g_present_quad.aa, c.aa, memory_order_relaxed);
     LOG("vulkan: upscaler %s, anti-aliasing %s%s\n", snx_fx_upscale_label(c.upscaler), snx_fx_aa_label(c.aa),
         start ? "" : ", as the settings say now");
 }
 void vk_present_quad_effects_init(void) { effects_follow(1); }
 u64 vk_present_quad_effects_frames(void) { return g_present_quad.fx_frames; }
 const char* vk_present_quad_effects_step(int which) {
-    int* at = which ? &g_present_quad.aa : &g_present_quad.upscaler;
-    int was = __atomic_load_n(at, __ATOMIC_RELAXED);
+    _Atomic int* at = which ? &g_present_quad.aa : &g_present_quad.upscaler;
+    int was = atomic_load_explicit(at, memory_order_relaxed);
     int next = which ? snx_fx_aa_next(was) : snx_fx_upscale_next(was);
-    while (!__atomic_compare_exchange_n(at, &was, next, 0, __ATOMIC_RELAXED, __ATOMIC_RELAXED))
+    while (!atomic_compare_exchange_strong_explicit(at, &was, next, memory_order_relaxed, memory_order_relaxed))
         next = which ? snx_fx_aa_next(was) : snx_fx_upscale_next(was);
     return which ? snx_fx_aa_label(next) : snx_fx_upscale_label(next);
 }
 int vk_present_quad_effects(VkCommandBuffer cb, SnxPresentSource* s, VkRect2D* crop, VkRect2D to, u32 transform) {
     effects_follow(0);
-    int filter = __atomic_load_n(&g_present_quad.upscaler, __ATOMIC_RELAXED);
-    int aa = __atomic_load_n(&g_present_quad.aa, __ATOMIC_RELAXED);
-    int sharpness = __atomic_load_n(&g_settings.upscaler_sharpness, __ATOMIC_RELAXED);
+    int filter = atomic_load_explicit(&g_present_quad.upscaler, memory_order_relaxed);
+    int aa = atomic_load_explicit(&g_present_quad.aa, memory_order_relaxed);
+    int sharpness = atomic_load_explicit((_Atomic int*)&g_settings.upscaler_sharpness, memory_order_relaxed);
     u32 w = transform & 4 ? to.extent.height : to.extent.width, h = transform & 4 ? to.extent.width : to.extent.height;
     SnxFxImage out;
     /* Bilinear is the quad's own sampler: with anti-aliasing Off, it and Off record no pass (snx_fx_render), so they

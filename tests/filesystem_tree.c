@@ -435,13 +435,41 @@ static void test_failed_initialization(const char* scratch) {
     CHECK(strstr(invalid.refused, "/hardlinks/alias.bin") || strstr(invalid.refused, "/hardlinks/original.bin"));
     CHECK(!strcmp(invalid.why, "is a file of 2 names (hard links), and the index takes a file of one name only"));
     CHECK(fs_tree_why(&invalid, FS_TREE_INVALID) == invalid.why);
+    /* skipped, the file's names are not read: each by its name, or both by their ending in any case (the 3DS mount's
+       "*.dll", a package's DLLs linked into a game's folder). An ending that one name alone has leaves the other */
+    static const char *const by_name[] = {"alias.bin", "original.bin", NULL}, *const by_ending[] = {"*.BIN", NULL},
+                             *const one[] = {"*riginal.bin", NULL}, *const longer[] = {"*xoriginal.bin", NULL},
+                             *const star[] = {"*.bin", "*", NULL};
+    const char* const* const skips[] = {by_name, by_ending};
+    CHECK(snprintf(path, sizeof path, "%s/hardlinks", scratch) < (int)sizeof path);
+    for (size_t i = 0; i < 2; i++) {
+        FsTree skipping;
+        scans_allowed = 1;
+        OK(fs_tree_init_skipping(&skipping, path, skips[i]));
+        scans_allowed = 0;
+        pm_lock(&skipping.lock);
+        FsNode* node = NULL;
+        CHECK(fs_tree_lookup(&skipping, NULL, "alias.bin", &node) == FS_TREE_NOTFOUND);
+        CHECK(fs_tree_lookup(&skipping, NULL, "original.bin", &node) == FS_TREE_NOTFOUND);
+        fs_tree_destroy(&skipping);
+        pm_unlock(&skipping.lock);
+    }
+    scans_allowed = 1;
+    CHECK(fs_tree_init_skipping(&invalid, path, one) == FS_TREE_INVALID && strstr(invalid.refused, "/alias.bin"));
+    CHECK(fs_tree_init_skipping(&invalid, path, longer) == FS_TREE_INVALID);
+    /* a '*' alone would skip every entry: refused, named, before anything is read */
+    scans_allowed = 0;
+    CHECK(fs_tree_init_skipping(&invalid, path, star) == FS_TREE_INVALID && invalid.root == NULL &&
+          strstr(invalid.why, "skipping '*': a '*' with nothing after it leaves out every entry"));
+    scans_allowed = 1;
+    scans_allowed = 0;
     CHECK(snprintf(path, sizeof path, "%s/no-such-directory", scratch) < (int)sizeof path);
     scans_allowed = 1;
     CHECK(fs_tree_init(&invalid, path) != FS_TREE_OK);
     scans_allowed = 0;
     CHECK(invalid.root == NULL && invalid.base == NULL);
     CHECK(strstr(invalid.refused, "no-such-directory") && !strncmp(invalid.why, "can't be read (", 15));
-    puts("PASS failed scans discard the index, say where they stopped, and initial hardlinks are rejected");
+    puts("PASS failed scans discard the index, say where they stopped, and initial hardlinks are rejected unless skipped");
 }
 
 static int host_there(const char* path);

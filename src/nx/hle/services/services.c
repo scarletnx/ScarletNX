@@ -15,6 +15,7 @@
 #include "hle/services/network/dns.swipc.h"
 #include "hle/services/network/nifm.swipc.h"
 #include "hle/services/network/ssl.swipc.h"
+#include <stdatomic.h>
 
 /* ============================================================ events */
 /* a handle to e for a reply: the handle takes its own reference */
@@ -30,7 +31,7 @@ int new_event(u32* event, const char* name, int signaled) {
                    SNX_RC_SVC_OUT_OF_RESOURCE);
         R_THROW(SNX_RC_SVC_OUT_OF_RESOURCE);
     }
-    e->signaled = signaled;
+    atomic_store_explicit(&e->signaled, signaled, memory_order_relaxed);
     /* the reference held here keeps the event alive while the handle is made, and goes with it: the game's handle
        is the only one left, or none when the table is full */
     kobj_ref(&e->o);

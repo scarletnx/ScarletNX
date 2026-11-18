@@ -27,6 +27,17 @@ void vk_gpl_bans(VkGplDevice* d, VkBanSay say) {
 #undef EDS3
 }
 
+float vk_conservative_dilation(u32 conservative, float most, char* line, size_t n) {
+    float asked = conservative > 1 ? (float)(conservative - 1) * 0.25f : 0.0f;
+    float drawn = asked < most ? asked : most;
+    if (n) line[0] = 0;
+    if (drawn < asked)
+        snprintf(line, n,
+                 "vulkan: a conservative raster dilation of %.2f pixels is drawn as %.2f, the most this device "
+                 "overestimates by (maxExtraPrimitiveOverestimationSize): the pixels between the two are left out",
+                 (double)asked, (double)drawn);
+    return drawn;
+}
 void vk_depth_range_line(const VkGplDevice* d, u32 dyn_pr, char* line, size_t n) {
     if (dyn_pr & VK_DYN_PR_DEPTH_RANGE) {
         snprintf(line, n,
@@ -95,6 +106,7 @@ void vk_pipe_part_src(u32 part, const void* key, PipeKey* out) {
         const PipeViKey* vi = key;
         out->topo_class = vi->topo_class;
         out->vi = vi->vi;
+        out->fetch = vi->fetch;
         out->heaps = vi->heaps;
     } else if (part == VK_PART_PR) {
         const PipePrKey* pr = key;
@@ -236,6 +248,7 @@ void vk_pipe_split(const PipeKey* k, VkShaderModule fs, const PipeSplitDevice* d
     *vi = (PipeViKey){0};
     vi->topo_class = k->topo_class;
     vi->vi = k->vi;
+    vi->fetch = k->fetch;
     vi->heaps = k->heaps;
 
     *pr = (PipePrKey){0};
@@ -295,7 +308,7 @@ void vk_pipe_split(const PipeKey* k, VkShaderModule fs, const PipeSplitDevice* d
 }
 
 /* out's text from at, which may be past its end (the text is then cut): where the next one goes */
-static size_t key_say(char* out, size_t n, size_t at, const char* fmt, ...) __attribute__((format(printf, 4, 5)));
+[[gnu::format(printf, 4, 5)]] static size_t key_say(char* out, size_t n, size_t at, const char* fmt, ...);
 static size_t key_say(char* out, size_t n, size_t at, const char* fmt, ...) {
     va_list ap;
     int wrote;

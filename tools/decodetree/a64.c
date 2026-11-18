@@ -1191,8 +1191,7 @@ static void write_decoder(const char* path) {
     out("\n};\n\n");
     if (g.uses_bitmask) write_bitmask_ok();
     out("/* snx_a64_rest stays a call: inside snx_a64_row its loop would cost every row's body a wider frame */\n"
-        "#if defined(__GNUC__)\n#define SNX_A64_NOINLINE __attribute__((noinline))\n#else\n#define SNX_A64_NOINLINE\n"
-        "#endif\n\n"
+        "#define SNX_A64_NOINLINE [[gnu::noinline]]\n\n"
         "SNX_A64_NOINLINE static SnxA64Op snx_a64_rest(const uint16_t* at, const uint16_t* end, uint32_t w,\n"
         "                                              uint64_t features, SnxA64Insn* insn);\n\n");
     out("/* the row *at, whose mask, value and features fit the word and the target: fills insn (the row's op, flow, nop\n"

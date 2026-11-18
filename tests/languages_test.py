@@ -89,7 +89,7 @@ static const char* k[] = {SNX_TR_KEY("ESC"), SNX_TR_NOOP("A \"quoted\" (paren)")
         self.assertEqual(bl.code_phrases(ROOT)['Load Switch NSP/XCI/NRO'][1], [bl.UI])
 
     def test_the_pot_is_the_code(self):
-        self.assertEqual((ROOT / bl.POT).read_text(), bl.pot_text(bl.code_phrases(ROOT)))
+        self.assertEqual((ROOT / bl.POT).read_text(encoding='utf-8'), bl.pot_text(bl.code_phrases(ROOT)))
 
     def test_the_setup_notices_the_menu_shows(self):
         # setup.c's marked words, the setup's pages showing them; its paths and options left as they are
@@ -279,10 +279,10 @@ class Files(unittest.TestCase):
         folder = Path(Po(self, '').path).parent / 'po'
         folder.mkdir()
         pot = folder / 'scarletnx.pot'
-        pot.write_text(bl.pot_text(phrases))
+        pot.write_text(bl.pot_text(phrases), encoding='utf-8')
         po = folder / 'pt-BR.po'
         body = entry('Settings', 'Ajustes') + '#, fuzzy\n' + entry('Back', 'Voltar') + entry('Share log', 'Partilhar')
-        po.write_text(HEADER.format(code='pt-BR', name='Português (Brasil)') + body)
+        po.write_text(HEADER.format(code='pt-BR', name='Português (Brasil)') + body, encoding='utf-8')
         self.assertEqual(
             bl.po_drift(po, pot),
             [
@@ -302,7 +302,7 @@ class Files(unittest.TestCase):
         warned = bl.lagging(folder, pot, DRAWN)
         self.assertEqual(warned[:2], bl.po_drift(po, pot))
         self.assertIn('2 entries lag po/scarletnx.pot, which the menu shows in English', warned[2])
-        po.write_text(merged)
+        po.write_text(merged, encoding='utf-8')
         self.assertEqual(bl.po_drift(po, pot), [])
         self.assertEqual(bl.lagging(folder, pot, DRAWN), [])
         self.assertEqual(bl.merged_po(po, phrases), merged)

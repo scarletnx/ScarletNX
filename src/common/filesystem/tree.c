@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 #if defined(_WIN32)
 #include <fcntl.h>
 #include <io.h>
@@ -34,12 +35,13 @@ static FsNode* node_new(const char* name, int is_dir) {
         return NULL;
     }
     n->is_dir = is_dir;
-    n->fd = -1;
+    atomic_store_explicit(&n->fd, -1, memory_order_relaxed);
     return n;
 }
 
 static void node_free(FsNode* n) {
-    if (n->fd >= 0) plat_file_unshare(n->fd, n->map, n->size);
+    if (atomic_load_explicit(&n->fd, memory_order_relaxed) >= 0)
+        plat_file_unshare(atomic_load_explicit(&n->fd, memory_order_relaxed), n->map, n->size);
     free(n->virtual_data);
     free(n->host);
     free(n->name);
@@ -694,7 +696,7 @@ static FsTreeResult share_file(FsTree* tree, FsNode* node, FsShare* share) {
         share->failed++;
     else {
         node->map = map;
-        __atomic_store_n(&node->fd, fd, __ATOMIC_RELEASE);
+        atomic_store_explicit(&node->fd, fd, memory_order_release);
         share->shared++;
         share->mapped_bytes += node->size;
     }
@@ -710,20 +712,21 @@ FsTreeResult fs_tree_share(FsTree* tree, FsNode* node, FsShare* share) {
         }
         return FS_TREE_OK;
     }
-    if (node->is_virtual || node->fd >= 0 || share->lazy) return FS_TREE_OK;
+    if (node->is_virtual || atomic_load_explicit(&node->fd, memory_order_relaxed) >= 0 || share->lazy)
+        return FS_TREE_OK;
     return share_file(tree, node, share);
 }
 int fs_tree_map(FsTree* tree, FsNode* node, FsShare* share) {
-    if (node->fd >= 0) return 0;
+    if (atomic_load_explicit(&node->fd, memory_order_relaxed) >= 0) return 0;
     if (node->is_dir || node->is_virtual || !node->readonly || !node->attached || !belongs_to(tree, node)) return -1;
-    return share_file(tree, node, share) || node->fd < 0 ? -1 : 0;
+    return share_file(tree, node, share) || atomic_load_explicit(&node->fd, memory_order_relaxed) < 0 ? -1 : 0;
 }
-int fs_tree_mapped(const FsNode* node) { return __atomic_load_n(&node->fd, __ATOMIC_ACQUIRE) >= 0; }
+int fs_tree_mapped(const FsNode* node) { return atomic_load_explicit(&node->fd, memory_order_acquire) >= 0; }
 
 /* rc, with what the caller says (fs_tree_why): the host path where the index stopped, directory and name (NULL when the
    path is directory alone), and why, a phrase after it ("is a symbolic link, which the index doesn't follow") */
-static FsTreeResult refuse(FsTree* tree, FsTreeResult rc, const char* directory, const char* name, const char* why, ...)
-    __attribute__((format(printf, 5, 6)));
+[[gnu::format(printf, 5, 6)]] static FsTreeResult refuse(FsTree* tree, FsTreeResult rc, const char* directory,
+                                                         const char* name, const char* why, ...);
 static FsTreeResult refuse(FsTree* tree, FsTreeResult rc, const char* directory, const char* name, const char* why,
                            ...) {
     va_list a;
@@ -827,10 +830,22 @@ static FsTreeResult link_folder(FsTree* tree, const FsNode* parent, const char* 
     return FS_TREE_OK;
 }
 
-/* whether name is one of names (NULL-terminated, or NULL for none) */
+/* whether name is one of names (NULL-terminated, or NULL for none): equal to one, or, for one that starts with '*',
+   ending in what follows it, in any case */
 static int named(const char* const* names, const char* name) {
-    for (size_t i = 0; names && names[i]; i++)
-        if (!strcmp(names[i], name)) return 1;
+    const size_t length = strlen(name);
+    for (size_t i = 0; names && names[i]; i++) {
+        if (names[i][0] != '*') {
+            if (!strcmp(names[i], name)) return 1;
+            continue;
+        }
+        const char* ending = names[i] + 1;
+        const size_t e = strlen(ending);
+        if (e > length) continue;
+        size_t k = 0;
+        while (k < e && snx_to_lower(name[length - e + k]) == snx_to_lower(ending[k])) k++;
+        if (k == e) return 1;
+    }
     return 0;
 }
 static FsTreeResult scan_linked(FsTree* tree, FsNode* n);
@@ -1178,6 +1193,12 @@ FsTreeResult fs_tree_init_skipping(FsTree* tree, const char* directory, const ch
     if (!tree || !directory || !*directory) return FS_TREE_INVALID;
     *tree = (FsTree){0};
     pm_init(&tree->lock);
+    /* a '*' with nothing after it is an ending every name has: the whole directory would be left out */
+    for (size_t i = 0; skipped && skipped[i]; i++)
+        if (skipped[i][0] == '*' && !skipped[i][1])
+            return refuse(tree, FS_TREE_INVALID, directory, NULL,
+                          "can't be indexed skipping '%s': a '*' with nothing after it leaves out every entry",
+                          skipped[i]);
     char absolute[FS_TREE_PATH_MAX];
     FsTreeResult rc = host_directory(tree, directory, absolute);
     if (rc) return rc;

@@ -10,7 +10,7 @@
    called, and for a save state's load in a process that hasn't resolved them (nvn_loader_state_install). Filled under
    lock, read by the handler of a call, which only runs once its entry was published */
 typedef struct {
-    u64 addr;
+    _Atomic u64 addr;
     char name[128];
 } NvnResolved;
 #define NVN_RESOLVED_SLOTS 1024 /* a power of two above the ~530 functions NVN has */
@@ -27,7 +27,8 @@ typedef struct {
     u64 bootstrap_entry;
     u64 flag; /* nvnPrivate0's address, 0 when the driver exports none */
     u32 api;
-    int active, decided, a32;
+    _Atomic int active;
+    int decided, a32;
     /* the driver's recompiled code for the NvRm sync conversions and their addresses, which the game resolved and
        nvn took over (nvn_object.c runs them on a sync in the driver's layout); 0 until resolved */
     GuestFn nvrm_get, nvrm_init;

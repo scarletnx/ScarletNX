@@ -30,7 +30,7 @@ static void mo_target(GpuChannel* ch, u64 gva, u32 side, const float rgba[4]) {
     vk_unlock();
     /* the texture barrier a game puts between drawing a target and sampling it: rt_crop keeps a copy made since the
        last one (g_vk_texture_epoch), as the console's texture cache keeps the old texels until it */
-    __atomic_add_fetch(&g_vk_texture_epoch, 1, __ATOMIC_RELAXED);
+    atomic_fetch_add_explicit(&g_vk_texture_epoch, 1, memory_order_relaxed);
 }
 /* n DrawTexture draws of the texture's texel (0, 0) into the 4x4 target: its pixel (0, 0), and the textures the memo
    kept in *kept */

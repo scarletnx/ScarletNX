@@ -9,6 +9,14 @@
 #include <string.h>
 
 #define CRASH_FRAMES 32
+/* the context's program counter and stack pointer */
+#if defined(__x86_64__) || defined(_M_X64)
+#define CONTEXT_PC Rip
+#define CONTEXT_SP Rsp
+#elif defined(__aarch64__) || defined(_M_ARM64)
+#define CONTEXT_PC Pc
+#define CONTEXT_SP Sp
+#endif
 
 static void say(const char* text) {
     DWORD wrote;
@@ -84,14 +92,14 @@ static LONG WINAPI crash_said(EXCEPTION_POINTERS* e) {
         say(line);
     }
     say("\n");
-#if defined(__x86_64__) || defined(_M_X64)
+#ifdef CONTEXT_PC
     {
         static ULONG_PTR own[CRASH_FRAMES];
         CONTEXT c = *e->ContextRecord;
         HMODULE self = GetModuleHandleW(NULL);
         int owns = 0, i;
-        for (i = 0; i < CRASH_FRAMES && c.Rip; ++i) {
-            DWORD64 pc = c.Rip, sp = c.Rsp, base = 0, frame = 0;
+        for (i = 0; i < CRASH_FRAMES && c.CONTEXT_PC; ++i) {
+            DWORD64 pc = c.CONTEXT_PC, sp = c.CONTEXT_SP, base = 0, frame = 0;
             ULONG_PTR at = (ULONG_PTR)(i ? pc - 1 : pc); /* past the first, a return address: its call is before it */
             HMODULE m = module_of(at, name, sizeof name);
             PRUNTIME_FUNCTION f = RtlLookupFunctionEntry(pc, &base, NULL);
@@ -102,11 +110,15 @@ static LONG WINAPI crash_said(EXCEPTION_POINTERS* e) {
             if (m == self) own[owns++] = at - (ULONG_PTR)m;
             if (f)
                 RtlVirtualUnwind(UNW_FLAG_NHANDLER, base, pc, f, &c, &data, &frame, NULL);
-            else { /* a leaf: its return address on the top of the stack */
+            else { /* a leaf: its return address on the top of the stack, or in the link register on ARM64 */
+#if defined(__x86_64__) || defined(_M_X64)
                 c.Rip = *(DWORD64*)(ULONG_PTR)c.Rsp;
                 c.Rsp += 8;
+#else
+                c.Pc = c.Lr;
+#endif
             }
-            if (c.Rip == pc && c.Rsp == sp) break; /* no way further up */
+            if (c.CONTEXT_PC == pc && c.CONTEXT_SP == sp) break; /* no way further up */
         }
         if (owns && !symbolize(own, owns))
             say("  no llvm-symbolizer on the PATH: the offsets are into this build's test program\n");

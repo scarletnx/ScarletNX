@@ -19,6 +19,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <stdatomic.h>
 
 static u8 memory[1 << 20];
 u8* g_mem = memory; /* guest address a is memory + a */
@@ -688,8 +689,8 @@ static void test_shading_rate(void) {
     check(gr64(dst + 8 + offsetof(NvnPRateImage, tex)) == outside, "a texture outside the record stays");
 }
 static void test_depth_mode_equal_bind(void) {
-    u32 origin = __atomic_load_n(&g_nvn.draw.origin, __ATOMIC_RELAXED);
-    u32 old_mode = __atomic_load_n(&g_nvn.draw.depth_mode, __ATOMIC_RELAXED);
+    u32 origin = atomic_load_explicit(&g_nvn.draw.origin, memory_order_relaxed);
+    u32 old_mode = atomic_load_explicit(&g_nvn.draw.depth_mode, memory_order_relaxed);
     u32 mode = old_mode == NVN_DEPTH_MODE_NEAR_IS_ZERO ? NVN_DEPTH_MODE_NEAR_IS_MINUS_W : NVN_DEPTH_MODE_NEAR_IS_ZERO;
     memset(&d, 0, sizeof d);
     nvn_draw_init(&d, 0);
@@ -850,8 +851,8 @@ static void test_equal_geometry(void) {
     check(!(d.ds.vfmt.constant & 1) && d.ds.vfmt.stride[0] == 16,
           "larger counts restore retained vertex state bytes");
 
-    u32 origin = __atomic_load_n(&g_nvn.draw.origin, __ATOMIC_RELAXED);
-    u32 depth = __atomic_load_n(&g_nvn.draw.depth_mode, __ATOMIC_RELAXED);
+    u32 origin = atomic_load_explicit(&g_nvn.draw.origin, memory_order_relaxed);
+    u32 depth = atomic_load_explicit(&g_nvn.draw.depth_mode, memory_order_relaxed);
     u32 other = origin == NVN_WINDOW_ORIGIN_MODE_UPPER_LEFT ? NVN_WINDOW_ORIGIN_MODE_LOWER_LEFT
                                                          : NVN_WINDOW_ORIGIN_MODE_UPPER_LEFT;
     u64 generation = d.ds.gen[DS_VIEWPORTS];

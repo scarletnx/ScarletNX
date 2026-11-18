@@ -6,6 +6,7 @@
    bsd.c is built beside, for the address a game socket binds while ldn is up */
 #include "nx/hle/services/network/network.h"
 #include <stdarg.h>
+#include <stdatomic.h>
 #ifdef _WIN32
 #include <windows.h>
 #else
@@ -135,6 +136,7 @@ void svc_register(const char* name, SvcCtor ctor) { (void)name, (void)ctor; }
 /* kernel objects: a handle takes a reference, and the test counts what is alive */
 void kobj_ref(KObj* o) { o->refs++; }
 void kobj_unref(KObj* o) {
+    if (!o) return;
     CHECK(o->refs > 0);
     if (--o->refs) return;
     free(o);
@@ -148,7 +150,7 @@ KEvent* kevent_new(const char* name) {
     test_kobjs++;
     return e;
 }
-void kevent_signal(KEvent* e) { __atomic_store_n(&e->signaled, 1, __ATOMIC_RELEASE); }
+void kevent_signal(KEvent* e) { atomic_store_explicit(&e->signaled, 1, memory_order_release); }
 static KObj* test_handles[64];
 u32 h_new(KObj* o) {
     CHECK(test_next_handle - 0x100 < 64);
@@ -181,7 +183,7 @@ static void sleep_ms(int ms) { snx_net_poll(NULL, 0, ms); }
 /* takes the event's signal, waiting up to ms for it */
 static int took_signal(KEvent* e, int ms) {
     for (int i = 0; i <= ms; i++) {
-        if (__atomic_exchange_n(&e->signaled, 0, __ATOMIC_ACQ_REL)) return 1;
+        if (atomic_exchange_explicit(&e->signaled, 0, memory_order_acq_rel)) return 1;
         sleep_ms(1);
     }
     return 0;

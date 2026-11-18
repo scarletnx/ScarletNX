@@ -44,7 +44,7 @@ int vk_xfb_control_buffer(VkBuffer counters, u64 counter_offset, u64 control, u3
             snx_st_le32(staged, stride);
             memset(staged + 4, 0, 16); /* the bytes copied to the GPU's four counters */
         }
-    } else if (!vk_buf_get(control + 4, 16, &buffer, &offset))
+    } else if (!vk_buf_get_at(control + 4, 16, 4, &buffer, &offset)) /* a copy's source: any 4 bytes */
         return 0;
     VkCommandBuffer cb = vk_cmd();
     /* Private counters can be read by a capture and written by its end; copies must wait for both uses. */
@@ -79,7 +79,8 @@ int vk_xfb_indirect(u64 control, VkBuffer* arguments, u64* offset) {
     VkBuffer input;
     u64 input_offset, alignment = g_vk.props.limits.minStorageBufferOffsetAlignment;
     if (!alignment) alignment = 1;
-    if (!vk_buf_get(control, 8, &input, &input_offset)) return 0;
+    /* at any 4 bytes: the binding starts at the storage alignment below and the program reads from first */
+    if (!vk_buf_get_at(control, 8, 4, &input, &input_offset)) return 0;
     if (!vk_stage_output(16, alignment < 4 ? 4 : alignment, arguments, offset, NULL)) return 0;
     VkDescriptorSet set = vk_desc_alloc(g_xfb_indirect.descriptors);
     if (!set) return 0;

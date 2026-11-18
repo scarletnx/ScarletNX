@@ -67,15 +67,15 @@ static void own_block(SnxArmCPU* a) { (void)a; }
 static void own_a32(SnxArmCPU* a) { a->r[0] = 0x40 + a->r[0], a->r[14] = 0xdead; }
 static void own_thumb(SnxArmCPU* a) { a->r[0] = 0x80 + a->r[0], a->r[14] = 0xdead; }
 static void own_caller(SnxArmCPU* a) { a->r[0] = 0xc0, a->r[14] = 0xdead; }
-static SnxArmBlock a32_slots[0x40], thumb_slots[0x40];
-SnxArmBlock* arm_slot(u32 addr, int thumb) {
+static _Atomic SnxArmBlock a32_slots[0x40], thumb_slots[0x40];
+_Atomic SnxArmBlock* arm_slot(u32 addr, int thumb) {
     assert(!(addr & 1));
     if (thumb) return addr >= 0x2000 && addr < 0x2080 ? &thumb_slots[(addr - 0x2000) / 2] : NULL;
     return addr >= 0x1000 && addr < 0x1100 ? &a32_slots[(addr - 0x1000) / 4] : NULL;
 }
 /* arm.c's: what a slot holds, and a run of one block that returns to stop_at as the function's bx lr would */
 SnxArmBlock arm_block(u32 addr, int thumb) {
-    const SnxArmBlock* slot = arm_slot(addr, thumb);
+    const _Atomic SnxArmBlock* slot = arm_slot(addr, thumb);
     return slot ? *slot : NULL;
 }
 static SnxArmCPU a;
@@ -103,7 +103,7 @@ static const SnxModInfo modules[2] = {
 static SnxArmModule module = {.nmods = 2, .mods = modules};
 const SnxArmModule* g_arm_mod = &module;
 const SnxModule* g_mod;
-GuestFn* g_disp;
+_Atomic GuestFn* g_disp;
 u64 g_code_lo, g_code_hi;
 u8* g_mem;
 Hle g_hle;

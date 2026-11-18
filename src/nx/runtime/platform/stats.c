@@ -9,6 +9,7 @@
 #include "snx_settings.h"
 #include <stdio.h>
 #include <string.h>
+#include <stdatomic.h>
 
 /* no box behind the lines: each letter and icon backed (ui.h's UI_BACKED), its clear pixels in the ground's colour,
    a line a band of it from its icon to its field's end, and the graph on the same ground. All of them opaque, which
@@ -30,7 +31,7 @@ static struct {
     u64 busy_ns;            /* and the GPU's busy time read with that frame, if it was timed */
     int busy_timed;
     SnxStatsMeasure shown;            /* stats_measured's */
-    int corner;                       /* stats_corner's, as vpad_corner reads it */
+    _Atomic int corner;               /* stats_corner's, as vpad_corner reads it */
     SnxStatsCapture capture;          /* stats_capture's, which stats off keeps */
     char debugger[SNX_DEBUGGER_NAME]; /* stats_debugger's */
     u32 measures, notes;              /* counts of stats_measured's, and of the changes to the lines under the graph */
@@ -63,7 +64,7 @@ typedef struct {
     int safe[4], scale, showcase;
     u32 place, layout;
 } StatsKey;
-static u32 g_layout; /* the corner's changes (stats_corner_set, on the main thread) */
+static _Atomic u32 g_layout; /* the corner's changes (stats_corner_set, on the main thread) */
 static struct {
     int laid;    /* the quads are laid out for key */
     float at[4]; /* the box they are laid out in: x, y, w, h */
@@ -92,11 +93,11 @@ static struct {
 void stats_corner_set(const IniOpt* o, const char* v) {
     int i = vpad_corner(v);
     if (i >= 0) {
-        __atomic_store_n(&g_stats.corner, i, __ATOMIC_RELAXED); /* the renderer's thread reads it */
-        __atomic_add_fetch(&g_layout, 1, __ATOMIC_RELAXED);
+        atomic_store_explicit(&g_stats.corner, i, memory_order_relaxed); /* the renderer's thread reads it */
+        atomic_fetch_add_explicit(&g_layout, 1, memory_order_relaxed);
         return;
     }
-    i = __atomic_load_n(&g_stats.corner, __ATOMIC_RELAXED);
+    i = atomic_load_explicit(&g_stats.corner, memory_order_relaxed);
     LOG("settings: stats_corner=%s is not tl, tr, bl or br: it keeps %s\n", v, vpad_corner_word(i));
     snprintf((char*)o->var, o->size, "%s", vpad_corner_word(i));
 }
@@ -124,14 +125,14 @@ void stats_frame(u64 now_ns, const SnxStatsGpu* gpu) {
     u64 cpu_ns, total;
     unsigned cores;
     char debugger[SNX_DEBUGGER_NAME];
-    if (!__atomic_load_n(&g_settings.stats, __ATOMIC_RELAXED)) {
+    if (!atomic_load_explicit((_Atomic int*)&g_settings.stats, memory_order_relaxed)) {
         if (g_stats.frames || g_stats.sampled_ns) { /* the next turn on starts from nothing but RenderDoc's lines */
-            int corner = g_stats.corner;
+            int corner = atomic_load_explicit(&g_stats.corner, memory_order_relaxed);
             ui_lock();
             SnxStatsCapture capture = g_stats.capture;
             memset(&g_stats, 0, sizeof g_stats);
             g_stats.fps10 = g_stats.shown.cpu = g_stats.shown.gpu = -1;
-            g_stats.corner = corner;
+            atomic_store_explicit(&g_stats.corner, corner, memory_order_relaxed);
             g_stats.capture = capture;
             g_box.laid = 0;
             ui_unlock();
@@ -231,7 +232,7 @@ static void notes_make(StatsNotes* s, size_t room) {
 /* stats_box's, with the lines under the graph it is made for */
 static void box_notes(const int safe[4], int scale, float box[4], StatsNotes* notes) {
     float cw = 8.0f * (float)scale, ch = 16.0f * (float)scale, gap = ch / 2, showcase[4];
-    int corner = __atomic_load_n(&g_stats.corner, __ATOMIC_RELAXED);
+    int corner = atomic_load_explicit(&g_stats.corner, memory_order_relaxed);
     /* a line's room: the safe area's letters within its gaps, past the icon's three and a letter at the right; a
        picture narrower than the box still gets the box's */
     float fit = ((float)safe[2] - 2 * gap) / cw;
@@ -253,7 +254,7 @@ void stats_box(const int safe[4], int scale, float box[4]) {
     box_notes(safe, scale, box, &notes);
 }
 int stats_box_drawn(float box[4]) {
-    if (!__atomic_load_n(&g_settings.stats, __ATOMIC_RELAXED) || !g_box.laid) return 0;
+    if (!atomic_load_explicit((_Atomic int*)&g_settings.stats, memory_order_relaxed) || !g_box.laid) return 0;
     memcpy(box, g_box.at, sizeof g_box.at);
     return 1;
 }
@@ -384,7 +385,7 @@ void stats_draw(SnxUiList* l, const int safe[4], int menu_scale, u64 now_ns) {
     char text[64], *at;
     StatsKey key;
     unsigned j;
-    if (!__atomic_load_n(&g_settings.stats, __ATOMIC_RELAXED)) return;
+    if (!atomic_load_explicit((_Atomic int*)&g_settings.stats, memory_order_relaxed)) return;
     if (!g_stats.since_ns) { /* the first half second starts at the first draw */
         g_stats.since_ns = now_ns;
         g_stats.since = g_stats.frames;
@@ -398,9 +399,9 @@ void stats_draw(SnxUiList* l, const int safe[4], int menu_scale, u64 now_ns) {
     memset(&key, 0, sizeof key);
     memcpy(key.safe, safe, sizeof key.safe);
     key.scale = scale;
-    key.showcase = __atomic_load_n(&g_settings.showcase, __ATOMIC_RELAXED);
+    key.showcase = atomic_load_explicit((_Atomic int*)&g_settings.showcase, memory_order_relaxed);
     key.place = vpad_showcase_place_version();
-    key.layout = __atomic_load_n(&g_layout, __ATOMIC_RELAXED) + g_stats.notes;
+    key.layout = atomic_load_explicit(&g_layout, memory_order_relaxed) + g_stats.notes;
     /* the capture key only while RenderDoc's line names it */
     if (!g_box.laid || memcmp(&key, &g_box.key, sizeof key) ||
         (g_stats.capture.ready && strcmp(g_box.shortcut, g_settings.render_doc_capture_shortcut)))

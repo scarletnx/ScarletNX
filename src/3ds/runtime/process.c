@@ -261,11 +261,14 @@ static bool mount(SnxCtrProcess* p, const char* directory, const SnxCtrSource* g
     p->source = game;
     FsTree* tree = calloc(1, sizeof *tree);
     if (!tree) return false;
-    /* A game read from its dump has its RomFS and ExeFS from the dump (below). An extraction's romfs/ and exefs/ left
-       in its folder are not indexed: an extraction stopped before its exheader.bin, which no run removes, kept an
-       exefs/icon whose name the dump's own icon takes, and the mount failed */
-    static const char* const extraction[] = {"exefs", "romfs", NULL};
-    FsTreeResult indexed = fs_tree_init_skipping(tree, directory, game ? extraction : NULL);
+    /* The title's folder holds the game's copy of the runtime, and on Windows the DLLs it loads beside it, which
+       snx_place_runtime links to the package's own where the disk takes links. The game reaches none of them, and the
+       index refuses a file of more than one name, so they are not indexed. A game read from its dump has its RomFS
+       and ExeFS from the dump (below). An extraction's romfs/ and exefs/ left in its folder are not indexed: an
+       extraction stopped before its exheader.bin, which no run removes, kept an exefs/icon whose name the dump's own
+       icon takes, and the mount failed */
+    static const char* const runtime[] = {"*.dll", NULL}, *const extraction[] = {"*.dll", "exefs", "romfs", NULL};
+    FsTreeResult indexed = fs_tree_init_skipping(tree, directory, game ? extraction : runtime);
     if (indexed != FS_TREE_OK) {
         fprintf(stderr, "3ds fs: %s %s\n", tree->refused[0] ? tree->refused : directory, fs_tree_why(tree, indexed));
         pm_destroy(&tree->lock);

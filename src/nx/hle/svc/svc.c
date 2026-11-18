@@ -46,7 +46,7 @@ static int valid_prio(i32 p) { return p >= 0 && p < 64 && ((g_hle.svcmem.prio_ma
    one it is in (2), off its core, until it is resumed. A thread blocked inside an SVC runs no game code, which is
    paused enough for GetThreadContext3 */
 static int pause_point(KThread* t, int where) {
-    if (!__atomic_load_n(&t->suspended, __ATOMIC_SEQ_CST)) return 0;
+    if (!atomic_load_explicit(&t->suspended, memory_order_seq_cst)) return 0;
     core_leave(t);
     pm_lock(&g_host.kernel.klock);
     t->pause_at = where;
@@ -55,7 +55,7 @@ static int pause_point(KThread* t, int where) {
     for (;;) {
         u32 seq = kt_seq(t);
         kthread_retire_check(&g_host.kernel.klock);
-        if (!t->suspended) break;
+        if (!atomic_load_explicit(&t->suspended, memory_order_relaxed)) break;
         kt_wait(t, seq, &g_host.kernel.klock, -1);
     }
     t->pause_at = 0;
@@ -66,8 +66,9 @@ static int pause_point(KThread* t, int where) {
    outside one (stopped: a hook's, NVN's or a JIT compile's, kthread_block), stopped at a pause point, has exited, or
    was resumed meanwhile. pause_point, kthread_block and svc_exit_thread wake it */
 static void pause_settle_nl(KThread* cur, KThread* t) {
-    while (t->suspended && t->state == 1 && !t->pause_at && !__atomic_load_n(&t->in_svc, __ATOMIC_SEQ_CST) &&
-           !__atomic_load_n(&t->stopped, __ATOMIC_SEQ_CST)) {
+    while (atomic_load_explicit(&t->suspended, memory_order_relaxed) && t->state == 1 && !t->pause_at &&
+           !atomic_load_explicit(&t->in_svc, memory_order_seq_cst) &&
+           !atomic_load_explicit(&t->stopped, memory_order_seq_cst)) {
         cur->woken = 0;
         cur->wait_kind = 5;
         cur->wait_svc = WAIT_SVC_SETTLE;
@@ -81,15 +82,15 @@ int svc_pause_point(KThread* t) { return pause_point(t, 2); }
 /* the core a thread whose core is no longer in its affinity mask moves to: its ideal core, or the highest it may use,
    as the console's SetCoreMask picks it */
 static int core_allowed(const KThread* t) {
-    u64 mask = __atomic_load_n(&t->affinity, __ATOMIC_RELAXED);
-    int ideal = __atomic_load_n(&t->ideal_core, __ATOMIC_RELAXED), k;
+    u64 mask = atomic_load_explicit(&t->affinity, memory_order_relaxed);
+    int ideal = atomic_load_explicit(&t->ideal_core, memory_order_relaxed), k;
     if (ideal >= 0 && ideal < NCORES && ((mask >> ideal) & 1)) return ideal;
     for (k = NCORES - 1; k >= 0; k--)
         if ((mask >> k) & 1) return k;
     return t->core;
 }
 static void svc_enter(KThread* t) {
-    __atomic_store_n(&t->in_svc, 1, __ATOMIC_SEQ_CST);
+    atomic_store_explicit(&t->in_svc, 1, memory_order_seq_cst);
     pause_point(t, 1);
     kthread_hold_point(t, PARK_ENTER); /* a game pause, before the SVC does anything */
     core_enter(t);
@@ -102,15 +103,16 @@ static void svc_enter(KThread* t) {
    its SVC or the thread sees the pause. A paused thread holds no core, so nobody waits for it */
 static void svc_leave(KThread* t) {
     g_host.thread.committed[kt_ix(t) - 1] = 0; /* its request, if it served one, is answered */
-    if (t->core < 0 || t->core >= NCORES || !((__atomic_load_n(&t->affinity, __ATOMIC_RELAXED) >> t->core) & 1)) {
+    if (t->core < 0 || t->core >= NCORES ||
+        !((atomic_load_explicit(&t->affinity, memory_order_relaxed) >> t->core) & 1)) {
         core_leave(t);
         t->core = core_allowed(t);
     }
     core_enter(t);
     core_preempt(t);
     sync_owner_runs(t);
-    __atomic_store_n(&g_host.thread.svc_ns[kt_ix(t) - 1], plat_ns(), __ATOMIC_RELAXED);
-    __atomic_store_n(&t->in_svc, 0, __ATOMIC_SEQ_CST);
+    atomic_store_explicit(&g_host.thread.svc_ns[kt_ix(t) - 1], plat_ns(), memory_order_relaxed);
+    atomic_store_explicit(&t->in_svc, 0, memory_order_seq_cst);
     if (pause_point(t, 2)) core_enter(t);
     if (kthread_hold_point(t, PARK_RUN)) core_enter(t);
 }
@@ -131,7 +133,7 @@ void svc_resume(KThread* t) {
             t->arm.r[15] -= t->arm.cpsr & SNX_ARM_T ? 2u : 4u;
         else
             t->cpu.pc -= 4;
-        __atomic_store_n(&t->in_svc, 0, __ATOMIC_SEQ_CST);
+        atomic_store_explicit(&t->in_svc, 0, memory_order_seq_cst);
         return;
     }
     sync_resume(t);
@@ -232,15 +234,15 @@ static u32 set_thread_core_mask(KThread* cur, u32 h, i32 core, u64 mask) {
     R_UNLESS(t, SNX_RC_SVC_INVALID_HANDLE);
     pm_lock(&g_host.kernel.klock);
     if (core == -3) {
-        core = t->ideal_core;
+        core = atomic_load_explicit(&t->ideal_core, memory_order_relaxed);
         if (core >= 0 && !((mask >> core) & 1)) {
             klock_unlock();
             thread_put(t);
             R_THROW(SNX_RC_SVC_INVALID_COMBINATION);
         }
     }
-    __atomic_store_n(&t->ideal_core, core, __ATOMIC_RELAXED);
-    __atomic_store_n(&t->affinity, mask, __ATOMIC_RELAXED);
+    atomic_store_explicit(&t->ideal_core, core, memory_order_relaxed);
+    atomic_store_explicit(&t->affinity, mask, memory_order_relaxed);
     if (t->state == 0) t->core = core_allowed(t); /* not started: on no core's list yet */
     klock_unlock();
     if (t == cur) {
@@ -267,10 +269,10 @@ static u32 set_thread_activity(KThread* cur, u32 h, u32 act) {
         R_THROW(SNX_RC_SVC_BUSY);
     }
     pm_lock(&g_host.kernel.klock);
-    if (t->state != 1 || t->suspended == (int)act)
+    if (t->state != 1 || atomic_load_explicit(&t->suspended, memory_order_relaxed) == (int)act)
         r = SNX_RC_SVC_INVALID_STATE;
     else {
-        __atomic_store_n(&t->suspended, (int)act, __ATOMIC_SEQ_CST);
+        atomic_store_explicit(&t->suspended, (int)act, memory_order_seq_cst);
         if (!act) {
             kt_notify(t);
             kobj_wake_nl(&t->o, 5); /* a GetThreadContext3 waiting for it to pause has its answer */
@@ -306,7 +308,7 @@ static u32 get_thread_context(KThread* cur, u64 out, u32 h) {
     }
     pm_lock(&g_host.kernel.klock);
     pause_settle_nl(cur, t);
-    if (t->state != 2 && (t->state != 1 || !t->suspended)) {
+    if (t->state != 2 && (t->state != 1 || !atomic_load_explicit(&t->suspended, memory_order_relaxed))) {
         klock_unlock();
         thread_put(t);
         R_THROW(SNX_RC_SVC_INVALID_STATE);
@@ -428,10 +430,10 @@ static u32 clear_event(u32 h, int reset) {
         r = SNX_RC_SVC_INVALID_HANDLE;
     if (R_SUCCEEDED(r)) {
         pm_lock(&g_host.kernel.klock);
-        if (reset && (!e || !e->signaled))
+        if (reset && (!e || !atomic_load_explicit(&e->signaled, memory_order_relaxed)))
             r = SNX_RC_SVC_INVALID_STATE;
         else
-            e->signaled = 0;
+            atomic_store_explicit(&e->signaled, 0, memory_order_relaxed);
         klock_unlock();
     }
     kobj_unref(o);
@@ -559,7 +561,7 @@ static u32 svc_begin(KThread* t, SvcRec* in, u32 imm, int flags) {
     in->o1 = 0;
     in->tid = t->id;
     if (!(flags & SVC_QUIET)) {
-        n = __atomic_fetch_add(&g_hle.kernel.svc_ring_n, 1, __ATOMIC_RELAXED);
+        n = atomic_fetch_add_explicit(&g_hle.kernel.svc_ring_n, 1, memory_order_relaxed);
         g_hle.kernel.svc_ring[n & 63] = *in;
     }
     guest_stats_svc(kt_ix(t), imm);
@@ -584,13 +586,15 @@ static void svc_end(KThread* t, const SvcRec* in, u32 n, int flags, u64 res, u64
         WARN_LIMIT(20, "svc %02x with an invalid handle (x0=%llx x1=%llx x2=%llx x3=%llx), lr %llx\n", in->imm,
                    (unsigned long long)in->a[0], (unsigned long long)in->a[1], (unsigned long long)in->a[2],
                    (unsigned long long)in->a[3], (unsigned long long)in->lr);
-    if (!(flags & SVC_QUIET) && __atomic_load_n(&g_hle.kernel.svc_ring_n, __ATOMIC_RELAXED) - n < 64) { /* not another SVC's yet */
+    if (!(flags & SVC_QUIET) &&
+        atomic_load_explicit(&g_hle.kernel.svc_ring_n, memory_order_relaxed) - n < 64) { /* not another SVC's yet */
         g_hle.kernel.svc_ring[n & 63].res = (u32)res;
         g_hle.kernel.svc_ring[n & 63].o1 = o1;
     }
 }
 
 #include "hle/svc/hos.svc.inc"
+#include <stdatomic.h>
 
 /* every SVC svcgen has no handler for, a stub's or an unknown number's: NotImplemented, logged */
 static void not_implemented(u32 imm, u64 a0, u64 a1, u64 a2) {
@@ -674,8 +678,8 @@ static u32 svc_SetThreadPriority(u32 thread_handle, i32 priority) {
 static u32 svc_GetThreadCoreMask(i32* out_core_id, u64* out_affinity_mask, u32 thread_handle) {
     KThread* o = thread_of(thread_handle);
     R_UNLESS(o, SNX_RC_SVC_INVALID_HANDLE);
-    *out_core_id = o->ideal_core;
-    *out_affinity_mask = o->affinity;
+    *out_core_id = atomic_load_explicit(&o->ideal_core, memory_order_relaxed);
+    *out_affinity_mask = atomic_load_explicit(&o->affinity, memory_order_relaxed);
     thread_put(o);
     R_SUCCEED();
 }

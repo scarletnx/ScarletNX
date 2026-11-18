@@ -121,7 +121,7 @@ KObj* h_get_ref(u32 h, int type) {
 void kobj_ref(KObj* o) { o->refs++; }
 /* the destroys of the types svc_mem.c makes, as kernel.c's kobj_destroy picks them */
 void kobj_unref(KObj* o) {
-    if (--o->refs) return;
+    if (!o || --o->refs) return;
     if (o->type == KO_SHMEM)
         kshmem_destroy(o);
     else if (o->type == KO_TMEM)
@@ -592,6 +592,44 @@ static void test_migrate_placed(void) {
     munmap(v, (size_t)MIB);
     close(f);
 }
+/* Pages a GPU owner moved into the pool (mem_own_prepare), which stay there once it lets go: they move into a
+   buffer as the reservation's own pages do (uma.c imports them so), with their bytes, alone or beside the
+   reservation's own, and the pool has them back. A service's pool pages (shared memory's) stay where they are */
+static void test_migrate_owned(void) {
+    const u64 a = HEAP_BASE + 48 * MIB, size = 0x4000;
+    MemPoolRun runs[4];
+    u32 n;
+    MemBlock b;
+    u8* v;
+    u64 off, used = mem_pool_used();
+    int f = buffer(size, &v);
+    CHECK(mem_map(a, size, MS_NORMAL, PERM_RW) == 0);
+    for (u64 i = 0; i < size; i++) GP(a)[i] = fill(i);
+    CHECK(mem_own_prepare(a, size, runs, 4, &n) == 0 && n == 1 && mem_pool_used() == used + size);
+    mem_query(a, &b);
+    CHECK(b.pool && GP(a)[5] == fill(5));
+    CHECK(mem_movable(a, size) && mem_migrate(a, size, f) == 0);
+    CHECK(mem_pool_used() == used && v[5] == fill(5) && v[size - 1] == fill(size - 1));
+    mem_query(a, &b);
+    CHECK(!b.pool);
+    GP(a)[7] = 0x5A;
+    CHECK(v[7] == 0x5A);
+    CHECK(mem_unmigrate(a, size) == 0 && GP(a)[7] == 0x5A);
+    /* one pool page among the reservation's own */
+    CHECK(mem_own_prepare(a + 0x1000, 0x1000, runs, 4, &n) == 0 && n == 1 && mem_pool_used() == used + 0x1000);
+    CHECK(mem_migrate(a, size, f) == 0 && mem_pool_used() == used);
+    CHECK(v[7] == 0x5A && v[0x1003] == fill(0x1003) && v[0x2003] == fill(0x2003));
+    CHECK(mem_unmigrate(a, size) == 0);
+    /* a service's mapping of the pool pages outside the reservation, which a move would leave behind */
+    u8* p = mem_pool_host(0x1000, &off);
+    CHECK(p && mem_map_pool(a + size, off, 0x1000, MS_SHARED, PERM_RW) == 0);
+    CHECK(!mem_movable(a + size, 0x1000) && mem_migrate(a + size, 0x1000, f) == MEM_BADSTATE);
+    CHECK(mem_unmap_pool(a + size, off, 0x1000, MS_SHARED) == 0);
+    mem_pool_host_free(p, off, 0x1000);
+    CHECK(mem_unmap(a, size) == 0 && mem_pool_used() == used);
+    munmap(v, (size_t)size);
+    close(f);
+}
 #endif
 
 /* GPU-owned physical pages retain their normal guest state after moving into the alias pool. */
@@ -760,6 +798,7 @@ int main(int argc, char** argv) {
 #if defined(__linux__)
     test_migrate();
     test_migrate_placed();
+    test_migrate_owned();
 #endif
     CHECK(mapping_depth == 0);
     if (g_ww) CHECK(plat_ww_scan(g_mem, AS_SIZE, on_written) == 0); /* tracking never went off */

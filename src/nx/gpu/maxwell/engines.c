@@ -526,7 +526,7 @@ static const u16 g_m3d_group[MAXWELL3D_MACRO_REGISTERS_START] = {
 #undef M3D_RT
 /* inline indices packed in one word, 32 / bits of them, the low ones first (InlineIndex4x8, InlineIndex2x16,
    draw_inline_index). Out of line: its array, inlined, made maxwell3d_method check a stack canary on every method */
-__attribute__((noinline)) static void inline_push_packed(GpuChannel* ch, u32 v, u32 bits) {
+[[gnu::noinline]] static void inline_push_packed(GpuChannel* ch, u32 v, u32 bits) {
     u32 idx[32 / MAXWELL3D_INLINE_INDEX_BITS_4X8], n = 32 / bits, i, mask = bits == 32 ? ~0u : (1u << bits) - 1;
     for (i = 0; i < n; i++) idx[i] = (v >> (i * bits)) & mask;
     inline_push(ch, idx, n);
@@ -534,7 +534,7 @@ __attribute__((noinline)) static void inline_push_packed(GpuChannel* ch, u32 v, 
 
 /* a plain register's value v, after the draw held, which v changes or which is another channel's: out of line, so the
    path that calls nothing (maxwell3d_method) saves no registers */
-__attribute__((noinline)) static void plain_flushed(GpuChannel* ch, u32 m, u32 v) {
+[[gnu::noinline]] static void plain_flushed(GpuChannel* ch, u32 m, u32 v) {
     r3d_pending_flush();
     if (ch->r3d[m] == v) return;
     ch->r3d_dirty |= g_m3d_group[m];
@@ -547,7 +547,7 @@ static inline u32 shadow_ram(GpuChannel* ch, u32 m, u32 v) {
     return v;
 }
 /* the methods that act, the macros' and a plain register while constant buffer data is held */
-__attribute__((noinline)) static void method_acts(GpuChannel* ch, u32 m, u32 v, int last);
+[[gnu::noinline]] static void method_acts(GpuChannel* ch, u32 m, u32 v, int last);
 /* A 3D engine method (Eden's Maxwell3D::CallMethod). A plain register (most method words) is stored without the
    switch, and a value as it was needs no store and changes nothing a held draw or the renderer read. The rest goes
    out of line: with every call in this function, it saved and restored five registers or more for each method word */

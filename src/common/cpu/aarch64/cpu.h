@@ -13,6 +13,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <string.h>
+#include <stdatomic.h>
 
 typedef uint8_t u8;
 typedef uint16_t u16;
@@ -28,7 +29,7 @@ typedef double f64;
 #define RESTRICT    __restrict__
 #define LIKELY(x)   __builtin_expect(!!(x), 1)
 #define UNLIKELY(x) __builtin_expect(!!(x), 0)
-#define SNX_INLINE static inline __attribute__((always_inline))
+#define SNX_INLINE [[gnu::always_inline]] static inline
 
 /* The version of the contract between a game module and the runtime: this header (the CPU layout, the SNX_FP_*
    numbers), the helpers in cpu_helpers.c, RtAPI and the module descriptor. The recompiler writes it into each
@@ -67,7 +68,7 @@ typedef double f64;
 #if defined(_WIN32)
 #define SNX_EXPORT __declspec(dllexport)
 #else
-#define SNX_EXPORT __attribute__((visibility("default")))
+#define SNX_EXPORT [[gnu::visibility("default")]]
 #endif
 
 /* one 128-bit vector register holding the guest's bytes, lane 0 in the lowest-addressed ones: on a big-endian host the
@@ -101,14 +102,14 @@ typedef struct CPU {
     u32 excl_size;
     u32 excl_on;
     u8* mem;       /* the host address of guest address 0 */
-    GuestFn* disp; /* the function of each code word: disp[(pc - code_lo) >> 2], 0 for none */
+    _Atomic GuestFn* disp; /* the function of each code word: disp[(pc - code_lo) >> 2], 0 for none */
     u64 code_lo, code_hi;
     const RtAPI* rt;
     void* thread; /* the runtime thread or process this CPU belongs to */
     /* written by another host thread when the runtime wants this thread's core back (a thread of higher priority
        waits for it): generated code reads it on each backward branch, the interpreter on each taken branch, and then
        calls rt->poll */
-    u32 poll;
+    _Atomic u32 poll;
 } CPU;
 
 /* The emitters bake these offsets into generated code, so modules built before a layout change would read the
@@ -170,7 +171,7 @@ SNX_INLINE GuestFn snx_lookup(CPU* c, u64 pc) {
     u64 offset = pc - c->code_lo;
     GuestFn fn;
     if (UNLIKELY(offset >= c->code_hi - c->code_lo || (pc & 3))) return c->rt->miss;
-    fn = __atomic_load_n(&c->disp[offset >> 2], __ATOMIC_RELAXED);
+    fn = atomic_load_explicit(&c->disp[offset >> 2], memory_order_relaxed);
     return LIKELY(fn != 0) ? fn : c->rt->miss;
 }
 #define CALLDYN(t)                                                                                                     \
@@ -561,20 +562,28 @@ SNX_INLINE void dc_zva(u8* M, u64 a) { memset(MP(a & ~(u64)63), 0, 64); }
 /* Guest memory holds whatever the guest stored last, at any width: the helpers' typed accesses to it go through
    these, which may alias every other access as a char's would, so none is assumed apart from another of a different
    type once the helpers are inlined into each other */
-typedef u16 __attribute__((may_alias)) snx_guest_u16;
-typedef u32 __attribute__((may_alias)) snx_guest_u32;
-typedef u64 __attribute__((may_alias)) snx_guest_u64;
-SNX_INLINE u32 snx_cas64(snx_guest_u64* p, u64 expected, u64 desired) {
-    return __atomic_compare_exchange_n(p, &expected, desired, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+/* Guest memory, the guest's registers and the settings stay plain objects the code reads without atomics; their few
+   atomic accesses go through an _Atomic T*, which needs _Atomic T laid out as T */
+static_assert(sizeof(_Atomic u8) == 1 && sizeof(_Atomic u16) == 2 && sizeof(_Atomic u32) == 4 &&
+                  sizeof(_Atomic u64) == 8 && sizeof(_Atomic int) == sizeof(int) &&
+                  sizeof(_Atomic float) == sizeof(float) && alignof(_Atomic u16) == alignof(u16) &&
+                  alignof(_Atomic u32) == alignof(u32) && alignof(_Atomic u64) == alignof(u64) &&
+                  alignof(_Atomic int) == alignof(int) && alignof(_Atomic float) == alignof(float),
+              "an _Atomic integer or float is laid out as its plain type");
+typedef u16 snx_guest_u16 [[gnu::may_alias]];
+typedef u32 snx_guest_u32 [[gnu::may_alias]];
+typedef u64 snx_guest_u64 [[gnu::may_alias]];
+SNX_INLINE u32 snx_cas64(_Atomic snx_guest_u64* p, u64 expected, u64 desired) {
+    return atomic_compare_exchange_strong_explicit(p, &expected, desired, memory_order_seq_cst, memory_order_seq_cst);
 }
-SNX_INLINE u32 snx_cas32(snx_guest_u32* p, u32 expected, u32 desired) {
-    return __atomic_compare_exchange_n(p, &expected, desired, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+SNX_INLINE u32 snx_cas32(_Atomic snx_guest_u32* p, u32 expected, u32 desired) {
+    return atomic_compare_exchange_strong_explicit(p, &expected, desired, memory_order_seq_cst, memory_order_seq_cst);
 }
-SNX_INLINE u32 snx_cas16(snx_guest_u16* p, u16 expected, u16 desired) {
-    return __atomic_compare_exchange_n(p, &expected, desired, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+SNX_INLINE u32 snx_cas16(_Atomic snx_guest_u16* p, u16 expected, u16 desired) {
+    return atomic_compare_exchange_strong_explicit(p, &expected, desired, memory_order_seq_cst, memory_order_seq_cst);
 }
-SNX_INLINE u32 snx_cas8(u8* p, u8 expected, u8 desired) {
-    return __atomic_compare_exchange_n(p, &expected, desired, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+SNX_INLINE u32 snx_cas8(_Atomic u8* p, u8 expected, u8 desired) {
+    return atomic_compare_exchange_strong_explicit(p, &expected, desired, memory_order_seq_cst, memory_order_seq_cst);
 }
 /* one atomic 16-byte compare-and-swap of both halves (p[0] the low one): cmpxchg16b on x86-64, lqarx/stqcx. on
    POWER8, c->rt->cas128 on RISC-V, LoongArch, MIPS64 and PowerPC64 builds for an older baseline */
@@ -587,15 +596,15 @@ u32 snx_cas128(CPU* c, u64* p, u64 o0, u64 o1, u64 n0, u64 n1);
          : sizeof(T) == 4 ? snx_bswap32((u32)(v))                                                                      \
          : sizeof(T) == 8 ? snx_bswap64((u64)(v))                                                                      \
                           : (v)))
-#define LDACQ(T, a)    SNX_GUEST_T(T, __atomic_load_n((snx_guest_##T*)MP(a), __ATOMIC_SEQ_CST))
+#define LDACQ(T, a) SNX_GUEST_T(T, atomic_load_explicit((_Atomic snx_guest_##T*)MP(a), memory_order_seq_cst))
 #else
-#define LDACQ(T, a)    __atomic_load_n((snx_guest_##T*)MP(a), __ATOMIC_SEQ_CST)
+#define LDACQ(T, a) atomic_load_explicit((_Atomic snx_guest_##T*)MP(a), memory_order_seq_cst)
 #endif
 /* LDXR/LDAXR of 1 << sz bytes */
 SNX_INLINE u64 ldx(CPU* c, u8* M, u64 a, u32 sz) {
     u64 v;
     if (sz == 0)
-        v = __atomic_load_n(MP(a), __ATOMIC_SEQ_CST);
+        v = atomic_load_explicit((_Atomic u8*)MP(a), memory_order_seq_cst);
     else if (sz == 1)
         v = LDACQ(u16, a);
     else if (sz == 2)
@@ -619,13 +628,13 @@ SNX_INLINE u32 stx(CPU* c, u8* M, u64 a, u32 sz, u64 v) {
     u64 armed = 8ull << (c->excl_size & 3), requested = 8ull << (sz & 3);
     if (c->excl_on && c->excl_addr == a && requested <= armed) {
         if (sz == 0)
-            stored = snx_cas8((u8*)MP(a), (u8)c->excl_val, (u8)v);
+            stored = snx_cas8((_Atomic u8*)MP(a), (u8)c->excl_val, (u8)v);
         else if (sz == 1)
-            stored = snx_cas16((snx_guest_u16*)MP(a), SNX_GUEST16((u16)c->excl_val), SNX_GUEST16((u16)v));
+            stored = snx_cas16((_Atomic snx_guest_u16*)MP(a), SNX_GUEST16((u16)c->excl_val), SNX_GUEST16((u16)v));
         else if (sz == 2)
-            stored = snx_cas32((snx_guest_u32*)MP(a), SNX_GUEST32((u32)c->excl_val), SNX_GUEST32((u32)v));
+            stored = snx_cas32((_Atomic snx_guest_u32*)MP(a), SNX_GUEST32((u32)c->excl_val), SNX_GUEST32((u32)v));
         else
-            stored = snx_cas64((snx_guest_u64*)MP(a), SNX_GUEST64(c->excl_val), SNX_GUEST64(v));
+            stored = snx_cas64((_Atomic snx_guest_u64*)MP(a), SNX_GUEST64(c->excl_val), SNX_GUEST64(v));
     }
     c->excl_on = 0;
     return !stored;
@@ -653,7 +662,7 @@ SNX_INLINE u32 stxp(CPU* c, u8* M, u64 a, u32 sz, u64 v1, u64 v2) {
     u32 stored = 0;
     if (c->excl_on && c->excl_addr == a && c->excl_size == (sz | 0x10)) {
         if (sz == 2)
-            stored = snx_cas64((snx_guest_u64*)MP(a), SNX_GUEST64(c->excl_val),
+            stored = snx_cas64((_Atomic snx_guest_u64*)MP(a), SNX_GUEST64(c->excl_val),
                                SNX_GUEST64((u64)(u32)v1 | ((u64)v2 << 32)));
         else
             stored = snx_cas128(c, (u64*)MP(a), c->excl_val, c->excl_val2, v1, v2);

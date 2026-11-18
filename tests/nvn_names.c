@@ -29,8 +29,8 @@ static u8 memory[4 << 20];
 u8* g_mem = memory; /* guest address a is memory + a */
 u64 g_code_lo, g_code_hi;
 const SnxNros* g_nros; /* main.c's: a game module without NROs of its own */
-int g_frames, g_opt_fps;
-int g_vi_refresh_hz = 60; /* present.c's: the display at VI_REFRESH_HZ */
+_Atomic int g_frames, g_opt_fps;
+_Atomic int g_vi_refresh_hz = 60; /* present.c's: the display at VI_REFRESH_HZ */
 
 /* the memory: a pool's storage at POOL_MEM, objects below it */
 #define POOL      0x1000u

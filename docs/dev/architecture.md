@@ -115,12 +115,14 @@ the game's image read from that image.
   table, chunk labels, progress lines); chunks batch whole functions up to `CHUNK_INSTRUCTIONS` (`library.c`), 90000 (20000 on Android).
 - `toolchain.c`: the runtime build for deployment.
 - The code generator, LLVM (`src/common/cpu/recompiler/llvm/`, a required dependency), builds LLVM IR with the
-  LLVM-C API: `ir_int.c`, `ir_ldst.c`, `ir_fpu.c` and `ir_vec*.c`, ported from QEMU's `translate-a64.c`, emit each
-  op of the generated decoder, `ir_codegen.c` the functions of `codegen.c`, and
-  `src/nx/loader/module_llvm.c` the chunks and `SnxModule` of `module.c`. It links the objects itself (`link_elf.c`,
+  LLVM-C API: `ir_int.c`, `ir_ldst.c` and `ir_vec*.c`, ported from QEMU's `translate-a64.c`, and
+  `ir_sail.c`, the integer data-processing ops, the hints, the barriers, the branch operands, the general-purpose
+  registers' loads and stores and the scalar floating point `tools/sailgen` generates from the Arm architecture's Sail
+  (`src/common/cpu/aarch64/sail/`), emit each op of the generated decoder, `ir_codegen.c` the functions of `codegen.c`,
+  and `src/nx/loader/module_llvm.c` the chunks and `SnxModule` of `module.c`. It links the objects itself (`link_elf.c`,
   `link_coff.c`, `link_macho.c`) with `rtlib.c`, the helpers compiled when the recompiler is built, into a module
-  with no imports, for the host it runs on: x86-64 (ELF or COFF), AArch64 (ELF, or on macOS and iOS a Mach-O dylib
-  with an ad hoc signature, either with a veneer for a branch past 128 MiB), PowerPC64 (ELF, ELFv1 or ELFv2, with a stub for a branch past 32 MiB: [PowerPC64](../hosts/ppc64.md)), RISC-V and LoongArch (ELF: [RISC-V and LoongArch](../hosts/riscv-loongarch.md)), MIPS64 (ELF with the ABI's GOT: [MIPS64](../hosts/mips64.md)) or s390x (ELF: [s390x](../hosts/s390x.md)). `tests/llvm_qemu_differential.c` runs its step functions against
+  with no imports, for the host it runs on: x86-64 (ELF or COFF), AArch64 (ELF, COFF on Windows, or on macOS and iOS a Mach-O dylib
+  with an ad hoc signature, each with a veneer for a branch past 128 MiB), PowerPC64 (ELF, ELFv1 or ELFv2, with a stub for a branch past 32 MiB: [PowerPC64](../hosts/ppc64.md)), RISC-V and LoongArch (ELF: [RISC-V and LoongArch](../hosts/riscv-loongarch.md)), MIPS64 (ELF with the ABI's GOT: [MIPS64](../hosts/mips64.md)) or s390x (ELF: [s390x](../hosts/s390x.md)). `tests/llvm_qemu_differential.c` runs its step functions against
   `qemu-aarch64 -cpu max` (`tests/qemu_ref/`) on random states, for words of every row of the generated decoder, with
   the groups known to differ in `tests/llvm_qemu_expected.txt` (a new group, or a listed one that no longer differs,
   fails it; `--sweep` runs more of each), loaded as a module, with the JIT's loader and in the emitters' portable
@@ -187,7 +189,8 @@ the game's image read from that image.
   registers). Guest accesses are unaligned, and volatile only when `volatile_memory` is enabled (off by default).
   Logical immediates and SIMD
   immediates are folded; FP arithmetic, compares and conversions run inline on the host's IEEE unit when the result is
-  provably the soft-float helper's, flags included (`fast_binary`, `fast_sqrt` and `fast_fma` in `ir_fpu.c`);
+  provably the soft-float helper's, flags included (`sg_fp_fast_binary`, `sg_fp_fast_sqrt` and `sg_fp_fast_fma` in
+  `tools/sailgen/llvm.h` for the scalar instructions, `ir_vec_fp.c` for AdvSIMD);
   the AdvSIMD and crypto encodings are inline, not calls
   to helpers, AES as S-box lookups where the host has no AES-NI. Build == host == target: the
   generated code uses the host's extensions (`snx_ir_host`, from LLVM's host detection), and the runtime library's

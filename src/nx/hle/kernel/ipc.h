@@ -81,11 +81,11 @@ typedef struct SvcObj {
     const char* name;
     int (*dispatch)(struct SvcObj* self, IpcCtx* ctx);
     void (*destroy)(struct SvcObj* self);
-    int refs;
+    _Atomic int refs;
     u32 ptrbuf; /* the server's pointer buffer size, which QueryPointerBufferSize answers (0x8000 unless set) */
     void* data;   /* a slot of its service's pool in g_hle (svcobj_new_data), or NULL */
     u32 datasize; /* the slot's size, zeroed as the object goes */
-    u64 u[8];
+    _Atomic u64 u[8];
 } SvcObj;
 
 typedef struct KSession {
@@ -93,8 +93,8 @@ typedef struct KSession {
     SvcObj* obj;
     /* NULL until ConvertCurrentObjectToDomain, then set once with an atomic store that other threads' requests load,
        and shared by the session's clones */
-    struct Domain* domain;
-    int closed; /* the server closed it: requests answer SNX_RC_SVC_SESSION_CLOSED */
+    struct Domain* _Atomic domain;
+    _Atomic int closed; /* the server closed it: requests answer SNX_RC_SVC_SESSION_CLOSED */
 } KSession;
 
 /* A domain's objects, numbered from 1 (id = index + 1): a closed one leaves a hole the next object takes, as sf
@@ -103,7 +103,7 @@ typedef struct KSession {
 typedef struct Domain {
     SvcObj* obj[DOMAIN_OBJECTS];
     int n; /* the slots ever taken: obj[n] and those after it are free */
-    int refs;
+    _Atomic int refs;
 } Domain;
 
 typedef SvcObj* (*SvcCtor)(void);
@@ -238,7 +238,7 @@ typedef struct {
     /* the crash report's ring of the last 32 requests: ring_n counts every request, on every thread */
     IpcRec ring[32];
     char apart[64];
-    u32 ring_n;
+    _Atomic u32 ring_n;
 } HleIpc;
 #define IPC_STAT_PAIRS 1024 /* the (service, command) pairs log=2 counts apart: past them, one sum for the rest */
 #define IPC_STAT_SLOTS (2 * IPC_STAT_PAIRS) /* their hash table, kept half empty as the warned pairs' */

@@ -1,0 +1,4 @@
+# sailgen's tests (tests/CMakeLists.txt): the closure of one decode function, its clause, what it calls and the enum
+# it names; not_reached and Unused are left out, and _R is the state the generator maps
+root decode_thing_aarch64_instrs_test
+stop _R

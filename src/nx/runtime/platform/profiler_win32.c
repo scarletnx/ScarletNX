@@ -14,10 +14,12 @@
 #include "nx/runtime/main.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
+#include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 
 #define PROF_THREADS 256
 #define PROF_BUCKETS   65536 /* a power of two */
@@ -26,8 +28,8 @@
 extern char __ImageBase; /* the linker's: the executable's load address */
 
 /* A slot is free when NULL. Threads take one with a compare-exchange; the sampler frees it once the thread ended */
-static HANDLE g_threads[PROF_THREADS];
-static int g_threads_used; /* slots ever taken: only grows */
+static _Atomic HANDLE g_threads[PROF_THREADS];
+static _Atomic int g_threads_used; /* slots ever taken: only grows */
 
 /* the sampler's own (no other thread touches these) */
 typedef struct {
@@ -102,11 +104,11 @@ void plat_prof_add_thread(HANDLE h) {
         return;
     for (i = 0; i < PROF_THREADS; i++) {
         HANDLE none = NULL;
-        if (__atomic_compare_exchange_n(&g_threads[i], &none, own, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
-            used = __atomic_load_n(&g_threads_used, __ATOMIC_ACQUIRE);
-            while (used < i + 1 &&
-                   !__atomic_compare_exchange_n(&g_threads_used, &used, i + 1, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
-            }
+        if (atomic_compare_exchange_strong_explicit(&g_threads[i], &none, own, memory_order_acq_rel,
+                                                    memory_order_acquire)) {
+            used = atomic_load_explicit(&g_threads_used, memory_order_acquire);
+            while (used < i + 1 && !atomic_compare_exchange_strong_explicit(
+                                       &g_threads_used, &used, i + 1, memory_order_acq_rel, memory_order_acquire)) {}
             return;
         }
     }
@@ -123,7 +125,7 @@ static void fns_index(void) {
     g_fns = malloc((size_t)g_mod->nentries * sizeof *g_fns);
     if (!g_fns) return;
     for (i = 0; i < g_mod->nentries; i++) {
-        g_fns[i].host = (u64)(size_t)g_mod->entry_fn[i];
+        g_fns[i].host = (u64)(size_t)atomic_load_explicit(&g_mod->entry_fn[i], memory_order_relaxed);
         g_fns[i].guest = g_mod->entry_addr[i];
     }
     qsort(g_fns, g_mod->nentries, sizeof *g_fns, fn_cmp);
@@ -174,12 +176,12 @@ static int pair_cmp(const void* a, const void* b) {
 static void slot_names(void) {
     typedef HRESULT(WINAPI * DescriptionFn)(HANDLE, PWSTR*);
     static DescriptionFn description;
-    int i, used = __atomic_load_n(&g_threads_used, __ATOMIC_ACQUIRE);
+    int i, used = atomic_load_explicit(&g_threads_used, memory_order_acquire);
     if (!description)
         description =
             (DescriptionFn)(void (*)(void))GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "GetThreadDescription");
     for (i = 0; description && i < used; i++) {
-        HANDLE h = __atomic_load_n(&g_threads[i], __ATOMIC_ACQUIRE);
+        HANDLE h = atomic_load_explicit(&g_threads[i], memory_order_acquire);
         PWSTR wide = NULL;
         if (!h || !SUCCEEDED(description(h, &wide)) || !wide) continue;
         if (wide[0] &&
@@ -207,7 +209,7 @@ static void write_profile(u64 started) {
     char path[1200];
     u64 image = (u64)(size_t)&__ImageBase;
     FILE* f;
-    int i, j, n = 0, used = __atomic_load_n(&g_threads_used, __ATOMIC_ACQUIRE);
+    int i, j, n = 0, used = atomic_load_explicit(&g_threads_used, memory_order_acquire);
     slot_names();
     snprintf(path, sizeof path, "%sprofile.txt", g_exedir);
     f = fopen(path, "w");
@@ -275,16 +277,16 @@ static DWORD WINAPI sampler(LPVOID unused) {
     fns_index();
     text_bounds();
     for (;;) {
-        int i, used = __atomic_load_n(&g_threads_used, __ATOMIC_ACQUIRE);
+        int i, used = atomic_load_explicit(&g_threads_used, memory_order_acquire);
         Sleep(1);
         g_ticks++;
         for (i = 0; i < used; i++) {
-            HANDLE h = __atomic_load_n(&g_threads[i], __ATOMIC_ACQUIRE);
+            HANDLE h = atomic_load_explicit(&g_threads[i], memory_order_acquire);
             CONTEXT c;
             ULONG64 cycles = 0, last;
             if (!h) continue;
             if (WaitForSingleObject(h, 0) == WAIT_OBJECT_0) { /* the thread ended: its slot is free again */
-                __atomic_store_n(&g_threads[i], NULL, __ATOMIC_RELEASE);
+                atomic_store_explicit(&g_threads[i], NULL, memory_order_release);
                 CloseHandle(h);
                 g_cycles[i] = 0;
                 continue;

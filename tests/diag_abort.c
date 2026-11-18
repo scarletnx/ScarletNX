@@ -357,3 +357,4 @@ void hook_guest_call(CPU* c, u64 fn, u64 a0, u64 a1, u64 a2, u64 a3) { (void)c, 
 void hook_run_original(CPU* c, u64 addr) { (void)c, (void)addr; } /* libc_fmt.c's way out, never taken here */
 void alloc_vector_free(CPU* c, u64 self) { (void)c, (void)self; }
 int alloc_vector_shape(u64 addr) { return (void)addr, 0; }
+int alloc_new_shape(u64 addr) { return (void)addr, 0; }

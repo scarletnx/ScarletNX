@@ -298,7 +298,23 @@ typedef struct {
        equal to none of them samples zeros, which the log says once a program, naming the first such TEX.B */
     u32 chosen_tex;
     char chosen_why[96]; /* "TEX.B at <byte offset>, R<handle>: c[<bank>][<byte>], ..." */
+    /* why the program's control flow runs in the translator's dispatch loop, a switch on the program's position inside
+       one loop, which the log says once a program: empty where its branches and loops are SPIR-V's own, or it has none.
+       "<instruction> at <byte offset>: <what>" where the CRS stack's static walk stops (shader_resolve_crs) */
+    char flow_why[96];
     u32 spec;          /* the specialization constants the module declares: bit SH_SPEC_ of each */
+    /* the program adds each bank's window offset from push constants to its constant buffer reads (cb_windows) */
+    u32 cb_window;
+    /* the program reads its plain texture slots through the texture table (ShCaps.tex_table): slot i's word,
+       view slot | sampler slot << SNX_TABLE_SAMPLER_SHIFT, is word i of its words (SNX_VKB_TEXWORDS) */
+    u32 tex_table;
+    /* the program reads its global buffers by device address (ShCaps.gbuf_address): each slot's address and length
+       are words of its record, and no storage buffer descriptor is bound for them */
+    u32 gbuf_address;
+    /* a vertex program that fetches its own generic attributes by device address (ShCaps.vertex_fetch): each
+       attribute's address, length and format are words of its record (SH_RECORD_ATTR), and the draw binds no vertex
+       buffers and sets no vertex input */
+    u32 vertex_fetch;
 } ShaderInfo;
 /* A fragment module's specialization constants, by SpecId: state a draw has before its program runs, which the
    pipeline gives the module (vk/pipeline.c, PipeKey.fs_spec) so that the driver compiles the program for it. As a
@@ -412,11 +428,14 @@ static inline void shader_query_hint_unpack(const u32 words[SH_QUERY_WORDS], u8 
 /* The write log: for each logged global buffer (ShaderInfo.gbuf_mark), a part of SH_WLOG_PART words. Its first
    SH_WPAGE_SLOT words are flags, word j set to 1 by any store to the 4 KiB window j of the binding; then a bit for each
    byte of each window, SH_WLOG_MASK words a window, bit b of word k of window j standing for byte j * 4096 + k * 32 +
-   b, set by the store that writes that byte. A store past the windows sets no bit. The flags are an index, so that
-   reading and clearing the log costs the windows written, not the windows bound */
+   b, set by the store that writes that byte. A store past the windows sets no bit. Last, SH_WLOG_COARSE words, word g
+   set to 1 by any store that sets a flag of windows g * 64 to g * 64 + 63. The flags are an index, so that reading
+   and clearing the log costs the windows written, not the windows bound, and the coarse words are an index of the
+   flags: the clear reads 64 of them, not 4096 flags (writelog.c's vk_wlog_unref) */
 #define SH_WPAGE_SLOT    4096u /* the windows of a global buffer: 16 MiB, the most vk_gbuf_desc binds */
 #define SH_WLOG_MASK     128u  /* the mask words of a window: a bit for each of its 4096 bytes */
-#define SH_WLOG_PART     (SH_WPAGE_SLOT * (1u + SH_WLOG_MASK))
+#define SH_WLOG_COARSE   (SH_WPAGE_SLOT / 64u) /* the coarse words of a part, after its masks */
+#define SH_WLOG_PART     (SH_WPAGE_SLOT * (1u + SH_WLOG_MASK) + SH_WLOG_COARSE)
 #define SNX_VKB_ROOT     (SNX_VKB_SMAP + 1)      /* an Ounce program's root tables, banks 24 to 31 (SH_ROOT_BYTES) */
 #define SNX_VKB_IMGBUF   (SNX_VKB_ROOT + 1)      /* 8 buffer images (compute, vertex, fragment) */
 #define SNX_VKB_BLEND    SNX_VKB_IMG             /* fragment: ordered blend uses IMG+nimg, after the guest images */
@@ -445,6 +464,42 @@ static inline void shader_query_hint_unpack(const u32 words[SH_QUERY_WORDS], u8 
 #define SH_ROOT_TABLE    256
 #define SH_ROOT_BYTES    (SH_ROOT_TABLES * SH_ROOT_TABLE)
 #define SNX_TEX_INDEXED  4
+/* With cb_windows: the push constant bytes of the constant buffers' window offsets, three uvec4 a stage (the vertex
+   stage's, then the fragment stage's): bank b's offset in 16-byte units is the 16 bits at (b & 1) * 16 of word b / 2.
+   Past the 128 bytes of the push block that every pipeline layout had, which the device has 256 of where they're on */
+#define SH_PUSH_CB_WINDOW    128
+#define SH_PUSH_CB_WINDOW_FS 176
+#define SH_PUSH_BYTES_WINDOWS 224
+/* With tex_table: the window offsets (16-byte units) of the vertex and fragment programs' texture words, x and y of the
+   uvec4 at this byte, and the push block's size */
+#define SH_PUSH_TEX_WORDS       224
+#define SH_PUSH_BYTES_TABLE     240
+/* The texture table (ShCaps.tex_table): one descriptor set after the stages' (table_set), images at binding 0 and
+   samplers at binding 1. A vertex or fragment program reads its words, one for each plain texture slot, from a window
+   of the staging ring at SNX_VKB_TEXWORDS, the binding only compute programs use otherwise */
+#define SNX_VKB_TEXWORDS        SNX_VKB_FMT
+#define SNX_TABLE_IMAGES        65536u
+#define SNX_TABLE_SAMPLERS      4096u
+#define SNX_TABLE_SAMPLER_SHIFT 20
+/* With gbuf_address, a stage's record in the words' window: for each of 16 global buffer slots its address (low,
+   high) and length in bytes and a word unused, then a scratch word's address, where an access past a slot's length
+   goes. The texture words follow */
+#define SH_RECORD_GBUF          68u
+#define SH_RECORD_SCRATCH       64u
+/* With vertex_fetch, a vertex program's record holds the 32 generic attributes after the global buffers, 4 words an
+   attribute: the address of its first element (low, high), the bytes from there to the end of its stream (0: no data),
+   and its format, packed with the SH_ATTR_ fields. Each attribute's instance divisor follows in a word of its own at
+   SH_RECORD_DIVISOR (the 3D engine's divisor has 32 bits), then the texture words at SH_RECORD_TEX_FETCH. A fragment
+   program's texture words stay at SH_RECORD_GBUF */
+#define SH_RECORD_ATTR          68u
+#define SH_RECORD_DIVISOR       (SH_RECORD_ATTR + 32u * 4u)
+#define SH_RECORD_TEX_FETCH     (SH_RECORD_DIVISOR + 32u)
+#define SH_ATTR_STRIDE_MASK     0xFFFu /* bits 0-11: the stream's stride in bytes */
+#define SH_ATTR_SIZE_SHIFT      12     /* bits 12-17: the 3D engine's size code */
+#define SH_ATTR_TYPE_SHIFT      18     /* bits 18-20: 1 snorm, 2 unorm, 3 sint, 4 uint, 5 uscaled, 6 sscaled, 7 float */
+#define SH_ATTR_BGRA            (1u << 21) /* the first and third components swap */
+#define SH_ATTR_CONSTANT        (1u << 22) /* no data: 0, 0, 0, 1 */
+#define SH_ATTR_INSTANCED       (1u << 23) /* an element each divisor (SH_RECORD_DIVISOR) instances, not each vertex */
 /* Device capabilities the renderer sets before translating, and the values offline translation takes. A 1-bit
    field holds 0 or 1: a mask goes in through a test (!= 0), or its bit is lost */
 typedef struct {
@@ -456,6 +511,24 @@ typedef struct {
     /* constant buffers from this slot up are read-only storage buffers, on a device with fewer uniform buffers a stage
        than the 18 slots and the renderer's own need (18: none) */
     u32 uniform_cbufs;
+    /* each graphics stage's textures in a set of their own, five after its buffers' (shader_vk_tex_set): a draw that
+       binds the same textures keeps that set while its constant buffers change (vk/render.c stage_set_) */
+    unsigned split_sets : 1;
+    /* a vertex or fragment program reads its uniform constant buffers through windows of the renderer's staging ring:
+       each bank's offset into its window comes from push constants (SH_PUSH_CB_WINDOW), so a draw that writes new
+       constants keeps its buffer set (vk/render.c stage_set_) */
+    unsigned cb_windows : 1;
+    /* with cb_windows, an SM86 vertex or fragment program's plain textures come from the texture table at set
+       table_set, by the words the renderer gives each draw (SH_PUSH_TEX_WORDS), not from its stage's set */
+    unsigned tex_table : 1;
+    u32 table_set;
+    /* with tex_table, an SM86 vertex or fragment program reads its global memory by device address: each slot's
+       address and length are words of the draw's record (SH_RECORD_GBUF), not a storage buffer descriptor */
+    unsigned gbuf_address : 1;
+    /* with gbuf_address and draw parameters, an SM86 vertex program fetches its own generic attributes by device
+       address, from the words of its record (SH_RECORD_ATTR): the draw binds no vertex buffers and sets no vertex
+       input */
+    unsigned vertex_fetch : 1;
     /* tessellation and geometry programs may write the point size (shaderTessellationAndGeometryPointSize) */
     unsigned stage_point_size : 1;
     /* vertex and tessellation programs may write the layer (shaderOutputLayer, the ShaderLayer capability); without it
@@ -604,6 +677,7 @@ void shader_hmma_choose(int subgroups, int radv_warp32, int shuffle_loops, int s
 #define SNX_SH_SWIZZLE_SHIFT 8
 /* the descriptor set of a stage's bindings */
 int shader_vk_set(int stage);
+int shader_vk_tex_set(int stage);
 /* can_flush: how the module gets the console's FP32 flush to zero (FTZ on FADD, FMUL and FFMA). SH_FTZ_EMULATE: a
    test and a select on each such operand and result; SH_FTZ_MODE: the DenormFlushToZero execution mode, in a module
    whose every such instruction flushes; SH_FTZ_NATIVE: neither, on a device that flushes them by itself (vk/ftz_probe.c) */

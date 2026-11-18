@@ -10,15 +10,16 @@
 #include "nx/hle/hle.h"
 #include "nx/runtime/clock.h"
 #include "nx/runtime/platform/tracy.h"
+#include <stdatomic.h>
 
 /* ============================================================ references */
 void kobj_ref(KObj* o) {
-    if (o) __atomic_add_fetch(&o->refs, 1, __ATOMIC_RELAXED);
+    if (o) atomic_fetch_add_explicit(&o->refs, 1, memory_order_relaxed);
 }
 /* the last reference destroys the object. Never called with g_klock held where a destroy may take it (a session's
    service objects do) */
 void kobj_unref(KObj* o) {
-    if (o && __atomic_sub_fetch(&o->refs, 1, __ATOMIC_ACQ_REL) == 0) kobj_destroy(o);
+    if (o && (atomic_fetch_sub_explicit(&o->refs, 1, memory_order_acq_rel) - 1) == 0) kobj_destroy(o);
 }
 static void kevent_destroy(KObj* o) {
     pm_lock(&g_host.kernel.pool_lk);
@@ -41,7 +42,7 @@ void kobj_destroy(KObj* o) {
 int kobj_waitable(const KObj* o) { return o->type == KO_EVENT || o->type == KO_THREAD || o->type == KO_PROCESS; }
 int kobj_signaled(const KObj* o) {
     switch (o->type) {
-        case KO_EVENT: return ((const KEvent*)o)->signaled;
+        case KO_EVENT: return atomic_load_explicit(&(((const KEvent*)o)->signaled), memory_order_relaxed);
         case KO_THREAD: return ((const KThread*)o)->state == 2;
         default: return 0;
     }
@@ -246,7 +247,7 @@ int sleep_nl(KThread* t, i64 timeout) {
     if (t->woken || !timeout) return t->woken;
     core_leave(t);
     t->park = PARK_WAIT;
-    __atomic_store_n(&t->stopped, 1, __ATOMIC_SEQ_CST);
+    atomic_store_explicit(&t->stopped, 1, memory_order_seq_cst);
 #if defined(SNX_TRACY)
     {
         char reason[128];
@@ -259,7 +260,7 @@ int sleep_nl(KThread* t, i64 timeout) {
         i64 left = -1;
         kthread_retire_check(&g_host.kernel.klock);
         if (t->woken) break;
-        if (timeout > 0 && !g_hle.thread.hold) {
+        if (timeout > 0 && !atomic_load_explicit(&g_hle.thread.hold, memory_order_relaxed)) {
             u64 now = guest_ns();
             if (now >= end) {
                 r = 0;
@@ -271,11 +272,11 @@ int sleep_nl(KThread* t, i64 timeout) {
     }
     for (;;) {
         u32 seq = kt_seq(t);
-        if (!g_hle.thread.hold) break;
+        if (!atomic_load_explicit(&g_hle.thread.hold, memory_order_relaxed)) break;
         kthread_retire_check(&g_host.kernel.klock);
         kt_wait(t, seq, &g_host.kernel.klock, -1);
     }
-    __atomic_store_n(&t->stopped, 0, __ATOMIC_SEQ_CST);
+    atomic_store_explicit(&t->stopped, 0, memory_order_seq_cst);
     SNX_FIBER_LEAVE();
     return r;
 }
@@ -301,12 +302,12 @@ KEvent* kevent_try_new(const char* name) { return event_take(name, 0); }
    by itself */
 void kevent_signal(KEvent* e) {
     pm_lock(&g_host.kernel.klock);
-    e->signaled = 1;
+    atomic_store_explicit(&e->signaled, 1, memory_order_relaxed);
     kobj_signal_nl(&e->o);
     klock_unlock();
 }
 void kevent_clear(KEvent* e) {
     pm_lock(&g_host.kernel.klock);
-    e->signaled = 0;
+    atomic_store_explicit(&e->signaled, 0, memory_order_relaxed);
     klock_unlock();
 }

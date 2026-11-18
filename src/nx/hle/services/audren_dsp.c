@@ -38,7 +38,7 @@ enum {
     SNX_AUDREN_WARN_RANGE = 32,
     SNX_AUDREN_WARN_MIX_ID = 64
 };
-static void warn_once(ARState* s, u32 bit, const char* format, ...) __attribute__((format(printf, 3, 4)));
+[[gnu::format(printf, 3, 4)]] static void warn_once(ARState* s, u32 bit, const char* format, ...);
 static void warn_once(ARState* s, u32 bit, const char* format, ...) {
     char what[160];
     va_list args;

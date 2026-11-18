@@ -197,7 +197,7 @@ static int abort_needed(u32 r) {
     if ((r & 0x1ff) != 2) return 1;
     return ((r >> 9) & 0x1fff) >= 1000;
 }
-SNX_NORETURN static void stop(const char* function, u32 r) {
+[[noreturn]] static void stop(const char* function, u32 r) {
     fatal("nn::fs::%s failed with result 0x%x (error %04u-%04u), which the SDK stops the game on", function, r,
           2000 + (r & 0x1ff), (r >> 9) & 0x1fff);
 }
@@ -544,7 +544,7 @@ static int is_native(u64 h) { return g_arm_mod ? (h & H32_NATIVE) != 0 : (h & TA
 
 /* a native handle that no live object has: the game passed a closed one, which the SDK's own code would read freed
    memory for */
-SNX_NORETURN static void stale(const char* function, u64 h) {
+[[noreturn]] static void stale(const char* function, u64 h) {
     if (!g_arm_mod && (h & ((1u << H64_LOW) - 1)))
         fatal("nn::fs::%s: the game passed the handle %llx, whose low %d bits a native handle has clear: flags of the "
               "game's own left in it, or a save state from a runtime that put a handle's index there",

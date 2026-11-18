@@ -58,6 +58,10 @@ set(CMAKE_C_EXTENSIONS ON)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS ON)
+# No C++ here or in a package uses modules. A package whose own policies scan for them (SDL3's Android hidapi) would
+# otherwise build `import std` where the host's libstdc++ ships the std module, and on Android from the host's
+# headers: the NDK's scan then stops on stdbit.h
+set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 # The strict ISO C (RFC #142: the driver, swipc, the build info and their tests) builds as C23 with -pedantic-errors
 # and without extensions (C_EXTENSIONS OFF on those targets)
 
@@ -356,7 +360,12 @@ endif()
 # No -fno-strict-aliasing or -fwrapv in ScarletNX's own code, once every target is defined (cmake/banned_flags.cmake)
 include(cmake/banned_flags.cmake)
 snx_check_project_flags()
+# Every access to an _Atomic object in src/ names its order, once every target is defined (cmake/atomic_explicit.cmake)
+include(cmake/atomic_explicit.cmake)
+snx_atomic_explicit()
 # plat_posix.c's power watcher needs both Apple frameworks named by every target that compiles it, once every
 # target is defined (cmake/power_frameworks.cmake)
 include(cmake/power_frameworks.cmake)
 snx_check_power_frameworks()
+# `cmake --build <tree> --target cppcheck`, on demand only (cmake/cppcheck.cmake)
+include(cmake/cppcheck.cmake)

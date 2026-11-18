@@ -27,6 +27,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 
 #define NVN_STATE_VERSION 3 /* 3: the programs' early test flags */
 /* the heap memory g_nvn's members own, after it: g_nvn.object's program metadata and linkage maps, and the blocks the
@@ -50,7 +51,7 @@ static void nil_host(Nvn* c) {
     c->loader.bootstrap_original = c->loader.getproc_original = NULL;
     c->loader.bootstrap_original32 = c->loader.getproc_original32 = NULL;
     c->loader.nvrm_get = c->loader.nvrm_init = NULL;
-    c->queue.clock = 0;
+    atomic_store_explicit(&c->queue.clock, 0, memory_order_relaxed);
     memset(&c->object.xfb_lock, 0, sizeof c->object.xfb_lock);
     c->object.xfb = NULL;
     c->object.tess = NULL;
@@ -171,14 +172,16 @@ static int chain_ok(const NvnCmdState* c, u32 head, int control, u32* links) {
    those in use are made all zero, as the runtime finds unused ones */
 static int cmd_ok(NvnCmdState* c) {
     u32 i, live = 0, links;
-    if (c->ns > NVN_SPILL_SEGS || c->slots > NVN_SPILL_PIECES || c->np > c->slots) return 0;
+    if (c->ns > NVN_SPILL_SEGS || c->slots > NVN_SPILL_PIECES ||
+        atomic_load_explicit(&c->np, memory_order_relaxed) > c->slots)
+        return 0;
     for (i = 1; i <= c->slots; i++) {
         const NvnSpillPiece* q = &c->p[i];
         if (!q->anchor) continue;
         live++;
         if (q->seg >= NVN_SPILL_SMALL ? q->seg - NVN_SPILL_SMALL >= NVN_SMALL_CLASSES : q->seg >= c->ns) return 0;
     }
-    if (live != c->np) return 0;
+    if (live != atomic_load_explicit(&c->np, memory_order_relaxed)) return 0;
     links = c->slots; /* a slot is in one bucket's chain or the free list, through next */
     for (i = 0; i < NVN_SPILL_BUCKETS; i++)
         if (!chain_ok(c, c->bucket[i], 0, &links)) return 0;
@@ -324,7 +327,8 @@ void nvn_state_install(NvnStaged* s) {
     n->cmd.lock = g_nvn.cmd.lock;
     n->replay.lock = g_nvn.replay.lock;
     n->copy.read_lock = g_nvn.copy.read_lock;
-    n->queue.clock = (i64)(s->now - plat_ns()); /* nvn_now() is the state's now from here */
+    atomic_store_explicit(&n->queue.clock, (i64)(s->now - plat_ns()),
+                          memory_order_relaxed); /* nvn_now() is the state's now from here */
     memcpy(&g_nvn, n, sizeof g_nvn);
     free(s);
 }

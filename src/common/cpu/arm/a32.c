@@ -33,7 +33,7 @@ typedef struct {
 /* a trans_ function that gives check(word): a kind, or SNX_A32_UNDEFINED. It always answers true, so a { } group
    never tries a later pattern for a word one has refused. Inlined, so the decoder leaves out the fields it ignores */
 #define KIND(name, check)                                                                                              \
-    static inline __attribute__((always_inline)) bool trans_##name(DisasContext* ctx, arg_##name* a) {                 \
+    [[gnu::always_inline]] static inline bool trans_##name(DisasContext* ctx, arg_##name* a) {                 \
         (void)a;                                                                                                       \
         ctx->kind = check(ctx->w);                                                                                     \
         return true;                                                                                                   \

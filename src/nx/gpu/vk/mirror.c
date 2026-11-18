@@ -21,6 +21,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/renderer.h"
 #include "nx/memory/mem.h"
@@ -42,7 +43,7 @@
 typedef struct {
     u8* shadow;                /* the guest bytes the mirror was given, as the GPU holds them less its own writes */
     DevMem mem, mask;   /* bound into the mirror and its mask */
-    u64 valid[MIR_PAGES / 64]; /* the pages given guest memory's bytes: those bindings covered */
+    _Atomic u64 valid[MIR_PAGES / 64]; /* the pages given guest memory's bytes: those bindings covered */
     /* the valid pages that had other owners' bytes when they were given theirs: own_stage left those out, so the shadow
        doesn't hold them, and land_entry doesn't compare such a page with it */
     u64 owned_at_fill[MIR_PAGES / 64];
@@ -52,7 +53,8 @@ typedef struct {
     /* the pages [ck_lo, ck_hi) all valid and brought up to date in the stream's epoch ck_epoch (vk_ww_epoch), and
        with the GPU-side writes up to generation ck_gen (gpu_mem_generation): a binding inside them needs nothing more
        in that epoch while no GPU-side write lands there (vk_mirror_slice). Emptied when a page loses its shadow */
-    u32 ck_epoch, ck_lo, ck_hi;
+    u32 ck_epoch;
+    _Atomic u32 ck_lo, ck_hi;
     u64 ck_gen;
     u32 used; /* the present a binding last took it at (vk_mirror_idle) */
 } Gran;
@@ -63,13 +65,13 @@ static PendPages g_mir_pend = {.also = &g_pend_blk};
    flag before it asks the mirror for anything (gpu.c's gmem_need) */
 static void mir_pend_pages(u64 first, u64 last, int delta) {
     pend_add_pages(&g_mir_pend, first, last, delta);
-    g_mir_any = g_mir_pend.total != 0;
+    atomic_store_explicit(&g_mir_any, g_mir_pend.total != 0, memory_order_relaxed);
 }
 static struct {
     int on; /* -1 until vk_mirror_init has decided */
     VkBuffer buf, mask;
     u64 granules;
-    Gran** gran; /* by granule, NULL where none is bound */
+    Gran* _Atomic* gran; /* by granule, NULL where none is bound */
     u64 bound;   /* granules bound */
     u64 trim_at; /* where vk_mirror_trim looks next */
     u64 released; /* statistics: granules it let go */
@@ -105,7 +107,9 @@ int vk_mirror_on(void) {
                               .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
                                        VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
                                        VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
-                                       VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
+                                       VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
+                                       /* SM86 programs' global memory read by address (gbuf_address) */
+                                       (g_vk.has_gbuf_address ? VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT : 0),
                               .sharingMode = fam[0] != fam[1] ? VK_SHARING_MODE_CONCURRENT : VK_SHARING_MODE_EXCLUSIVE,
                               .queueFamilyIndexCount = fam[0] != fam[1] ? 2 : 0,
                               .pQueueFamilyIndices = fam};
@@ -159,7 +163,7 @@ static Gran* gran_bind(u64 g) {
     vkGetBufferMemoryRequirements(g_vk.dev, g_mir.mask, &req[1]);
     req[0].size = MIR_G;
     req[1].size = MIR_MASK_G;
-    DevMemWant aci = {.at = DM_DEVICE};
+    DevMemWant aci = {.at = DM_DEVICE, .brief = 1}; /* granules come and go with the dispatches (DM_KIND_BRIEF) */
     DevMemInfo info[2];
     if (!r->shadow) goto fail;
     /* the GPU's memory, else system memory, where the programs read and write it over the bus: a granule that found
@@ -304,7 +308,7 @@ typedef struct {
 static void diff_run(void* user, u64 at, u64 n) {
     const Diff* d = user;
     for (u64 p = d->lo + (at >> 12); p < d->lo + ((at + n + 4095) >> 12); p++) {
-        if (!(d->r->valid[p / 64] >> (p % 64) & 1)) continue;
+        if (!(atomic_load_explicit(&d->r->valid[p / 64], memory_order_relaxed) >> (p % 64) & 1)) continue;
         /* read without touching a trapped page: a page written, then made GPU-owned, is copied from its owner
            instead (up_owned), so its owned bytes are taken as the shadow has them here */
         static u8 page[4096];
@@ -368,16 +372,22 @@ static void landed_run(void* user, u64 at, u64 n) {
    are looked at by the 64 of a mask word, as a loop over each page's bit was a fourteenth of one game's GPU thread */
 int vk_mirror_slice(u64 gva, u64 len, VkBuffer* buf, u64* off) {
     u64 cpu = 0;
-    if (!vk_mirror_on() || !len || gmmu_run(gva, len, &cpu) != len || cpu + len > AS_SIZE) return 0;
+    if (!vk_mirror_on() || !len || gmmu_run(gva, len, &cpu) != len) return 0;
+    return vk_mirror_slice_at(gva, cpu, len, buf, off);
+}
+int vk_mirror_slice_at(u64 gva, u64 cpu, u64 len, VkBuffer* buf, u64* off) {
+    if (!vk_mirror_on() || !len || cpu + len > AS_SIZE) return 0;
     u32 now = vk_ww_now(), epoch = vk_ww_epoch(); /* before any byte is read */
     u64 gen = gpu_mem_generation();
     u64 g0 = cpu / MIR_G, g1 = (cpu + len - 1) / MIR_G;
     Up u = {0};
     int owners = 0, fresh = 0;
     for (u64 g = g0; g <= g1; g++) {
-        Gran* r = g_mir.gran[g];
+        Gran* r = atomic_load_explicit(&g_mir.gran[g], memory_order_relaxed);
         if (!r) {
-            if (!(r = g_mir.gran[g] = gran_bind(g))) {
+            r = gran_bind(g);
+            atomic_store_explicit(&g_mir.gran[g], r, memory_order_relaxed);
+            if (!r) {
                 up_end(&u);
                 return 0;
             }
@@ -399,7 +409,9 @@ int vk_mirror_slice(u64 gva, u64 len, VkBuffer* buf, u64* off) {
         u64 a = base + lo * 4096 > cpu ? base + lo * 4096 : cpu;
         u64 b = base + hi * 4096 < cpu + len ? base + hi * 4096 : cpu + len;
         int landed = r->ck_gen && gpu_mem_dirty_since(r->ck_gen, gva + (a - cpu), b - a);
-        if (r->ck_epoch == epoch && r->ck_lo <= lo && hi <= r->ck_hi && !landed) continue;
+        if (r->ck_epoch == epoch && atomic_load_explicit(&r->ck_lo, memory_order_relaxed) <= lo &&
+            hi <= atomic_load_explicit(&r->ck_hi, memory_order_relaxed) && !landed)
+            continue;
         /* the binding's valid pages written since the oldest of them was brought up to date: the bytes the CPU
            changed, those that differ from the shadow (a page brought up to date later compares equal). Owned pages
            aren't watched: their owners are copied in below */
@@ -407,7 +419,7 @@ int vk_mirror_slice(u64 gva, u64 len, VkBuffer* buf, u64* off) {
         u32 age = 0;
         int any = 0;
         for (u64 w = lo / 64; w < (hi + 63) / 64; w++) {
-            u64 bits = r->valid[w] & span_bits(w, lo, hi);
+            u64 bits = atomic_load_explicit(&r->valid[w], memory_order_relaxed) & span_bits(w, lo, hi);
             const u32* at = r->synced + w * 64;
             if (!bits) continue;
             any = 1;
@@ -440,14 +452,18 @@ int vk_mirror_slice(u64 gva, u64 len, VkBuffer* buf, u64* off) {
         for (u64 p = lo; p < hi; p++) r->synced[p] = now;
         /* the binding's pages not given yet: whole, guest memory's bytes, an owned part's left for its owner. One the
            mirror owns has its bytes there already */
-        int whole = 1; /* every page of [lo, hi) valid after this */
+        int whole = 1; /* every page of [lo, hi) valid after this, or the mirror's own (below) */
         for (u64 w = lo / 64; w < (hi + 63) / 64; w++)
-            for (u64 bits = ~r->valid[w] & span_bits(w, lo, hi); bits; bits &= bits - 1) {
+            for (u64 bits = ~atomic_load_explicit(&r->valid[w], memory_order_relaxed) & span_bits(w, lo, hi); bits;
+                 bits &= bits - 1) {
                 u64 p = w * 64 + snx_ctz64(bits), a = base + p * 4096;
-                if (mirror_owns(a, 4096)) { /* filled at a binding after it lands */
-                    whole = 0;
-                    continue;
-                }
+                /* The mirror holds this page's newest bytes: it is filled at a binding after it lands. It leaves the
+                   check whole all the same. What changes it later moves what a check asks: its landing or another
+                   GPU-side write (landed, from ck_gen), or a CPU write in a new epoch. Taken as not whole, no check was
+                   recorded while a page waited to land: each binding of the granule walked it, compared the runs
+                   landed since an old ck_gen and tried the fill again, 50 to 130 us a draw in one game's first
+                   scene for 40 s */
+                if (mirror_owns(a, 4096)) continue;
                 OwnRange o[16];
                 u8* dst = up_bytes(&u, a, 4096);
                 u64 pb = 1ull << (p % 64);
@@ -458,17 +474,22 @@ int vk_mirror_slice(u64 gva, u64 len, VkBuffer* buf, u64* off) {
                     r->owned_at_fill[w] &= ~pb;
                 memcpy(r->shadow + p * 4096, dst, 4096);
                 /* atomic: a landing clears bits of this word without vk_lock (vk_mirror_landed) */
-                __atomic_or_fetch(&r->valid[w], pb, __ATOMIC_RELAXED);
+                atomic_fetch_or_explicit(&r->valid[w], pb, memory_order_relaxed);
             }
-        if (whole && r->ck_epoch == epoch && lo <= r->ck_hi && r->ck_lo <= hi) { /* touching this epoch's: one */
+        if (whole && r->ck_epoch == epoch && lo <= atomic_load_explicit(&r->ck_hi, memory_order_relaxed) &&
+            atomic_load_explicit(&r->ck_lo, memory_order_relaxed) <= hi) { /* touching this epoch's: one */
             /* its generation the older's, unless this binding checked all of it again */
-            if (lo <= r->ck_lo && r->ck_hi <= hi) r->ck_gen = gen;
-            if (lo < r->ck_lo) r->ck_lo = (u32)lo;
-            if (hi > r->ck_hi) r->ck_hi = (u32)hi;
+            if (lo <= atomic_load_explicit(&r->ck_lo, memory_order_relaxed) &&
+                atomic_load_explicit(&r->ck_hi, memory_order_relaxed) <= hi)
+                r->ck_gen = gen;
+            if (lo < atomic_load_explicit(&r->ck_lo, memory_order_relaxed))
+                atomic_store_explicit(&r->ck_lo, (u32)lo, memory_order_relaxed);
+            if (hi > atomic_load_explicit(&r->ck_hi, memory_order_relaxed))
+                atomic_store_explicit(&r->ck_hi, (u32)hi, memory_order_relaxed);
         } else if (whole) {
             r->ck_epoch = epoch;
-            r->ck_lo = (u32)lo;
-            r->ck_hi = (u32)hi;
+            atomic_store_explicit(&r->ck_lo, (u32)lo, memory_order_relaxed);
+            atomic_store_explicit(&r->ck_hi, (u32)hi, memory_order_relaxed);
             r->ck_gen = gen;
         }
     }
@@ -556,6 +577,8 @@ int vk_mirror_holds(u64 gva, u64 len) {
     u64 cpu = 0;
     return g_mir.on > 0 && len && own_any() && gmmu_run(gva, len, &cpu) == len && mirror_owns(cpu, len);
 }
+int vk_mirror_holds_at(u64 cpu, u64 len) { return g_mir.on > 0 && len && own_any() && mirror_owns(cpu, len); }
+int vk_mirror_owns_any(void) { return g_mir.on > 0 && own_any(); }
 
 static int range_cmp(const void* a, const void* b) {
     u64 x = ((const MirRange*)a)->first, y = ((const MirRange*)b)->first;
@@ -827,7 +850,8 @@ static void land_entry(const u32* e) {
        game's mirror landings made 43 million of those asks in about 100 s, and 612 found a target */
     own_acquire(cpu, 4096);
     const int targets = vk_rt_pending_cpu(cpu, 4096);
-    Gran* r = cpu / MIR_G < g_mir.granules ? g_mir.gran[cpu / MIR_G] : NULL;
+    Gran* r =
+        cpu / MIR_G < g_mir.granules ? atomic_load_explicit(&g_mir.gran[cpu / MIR_G], memory_order_relaxed) : NULL;
     for (u32 a = 0; a < 4096;) {
         u32 rest = mask[a / 32] >> (a % 32);
         if (!rest) { /* none from a to the word's end */
@@ -849,7 +873,7 @@ static void land_entry(const u32* e) {
            shadow too where the page has one, which it keeps (a binding's landed_run takes a write-back's bytes in):
            let go of, the next binding would fill the whole page from guest memory, over bytes later submits left
            pending there */
-        int valid = r && (__atomic_load_n(&r->valid[p / 64], __ATOMIC_RELAXED) >> (p % 64) & 1);
+        int valid = r && (atomic_load_explicit(&r->valid[p / 64], memory_order_relaxed) >> (p % 64) & 1);
         u8 *g = GP(cpu + a), *s = valid ? r->shadow + p * 4096 + a : NULL;
         const u8* d = data + a;
         if (valid && gpu_mem_generation() == gen && !(r->owned_at_fill[p / 64] >> (p % 64) & 1)) {
@@ -927,14 +951,15 @@ void vk_mirror_publish(void) {
         const u32* e = q + i * MIR_ENTRY_PAGE;
         const u32* mask = e + 4;
         u64 cpu = (u64)e[0] << 12, p = (cpu % MIR_G) >> 12;
-        Gran* r = cpu / MIR_G < g_mir.granules ? g_mir.gran[cpu / MIR_G] : NULL;
+        Gran* r =
+            cpu / MIR_G < g_mir.granules ? atomic_load_explicit(&g_mir.gran[cpu / MIR_G], memory_order_relaxed) : NULL;
         pages[i] = cpu >> 12;
         if (!r || mirror_owns(cpu, 4096)) continue; /* the mirror's already: the CPU couldn't change it */
         static u8 page[4096];
         OwnRange o[16];
         /* a page landed since it was brought up to date has no shadow: every byte the program didn't log is guest
            memory's (sh at the page's own bytes compares none equal) */
-        int valid = r->valid[p / 64] >> (p % 64) & 1;
+        int valid = atomic_load_explicit(&r->valid[p / 64], memory_order_relaxed) >> (p % 64) & 1;
         const u8* sh = valid ? r->shadow + p * 4096 : NULL;
         u32 owned = own_stage(cpu, 4096, page, o, 16);
         if (owned > 16) continue; /* other owners' bytes all over it: theirs went into the mirror when it was bound */
@@ -994,7 +1019,7 @@ void vk_mirror_publish(void) {
     qsort(pages, n, sizeof *pages, u64_cmp);
     VkOwnRes* res = vk_own_res_borrow(g_mir.buf);
     if (!res) fatal("Out of memory keeping the GPU mirror's writes");
-    res->written = submit;
+    atomic_store_explicit(&res->written, submit, memory_order_relaxed);
     for (u32 i = 0; i < n;) {
         u32 j = i + 1;
         while (j < n && pages[j] <= pages[j - 1] + 1) j++;
@@ -1024,11 +1049,11 @@ void vk_mirror_landed(u64 cpu, u64 size) {
     pm_lock(&g_mir_land_lk);
     for (u64 pg = cpu >> 12, e = (cpu + size - 1) >> 12; pg <= e; pg++) {
         u64 g = (pg << 12) / MIR_G, p = ((pg << 12) % MIR_G) >> 12;
-        Gran* r = g < g_mir.granules ? __atomic_load_n(&g_mir.gran[g], __ATOMIC_ACQUIRE) : NULL;
+        Gran* r = g < g_mir.granules ? atomic_load_explicit(&g_mir.gran[g], memory_order_acquire) : NULL;
         if (!r) continue;
-        __atomic_and_fetch(&r->valid[p / 64], ~(1ull << (p % 64)), __ATOMIC_RELAXED);
-        __atomic_store_n(&r->ck_lo, 0, __ATOMIC_RELAXED);
-        __atomic_store_n(&r->ck_hi, 0, __ATOMIC_RELAXED);
+        atomic_fetch_and_explicit(&r->valid[p / 64], ~(1ull << (p % 64)), memory_order_relaxed);
+        atomic_store_explicit(&r->ck_lo, 0, memory_order_relaxed);
+        atomic_store_explicit(&r->ck_hi, 0, memory_order_relaxed);
     }
     pm_unlock(&g_mir_land_lk);
 }
@@ -1171,7 +1196,7 @@ void vk_mirror_mem_need(u64 gva, u64 len) {
    mirror's own, whose only bytes are here. Those land now, as the CPU's touch would land them, and the granule goes
    at a later call */
 static int gran_release(u64 g) {
-    Gran* r = g_mir.gran[g];
+    Gran* r = atomic_load_explicit(&g_mir.gran[g], memory_order_relaxed);
     const u64 base = g * MIR_G;
     if (pend_hit_pages(&g_mir_pend, base >> 12, (base + MIR_G - 1) >> 12)) return 0;
     if (own_any()) {
@@ -1190,7 +1215,7 @@ static int gran_release(u64 g) {
     if (!vk_buffer_sparse_bind(g_mir.mask, &b[1], r->mask, MIR_MASK_G, 1))
         fatal("vulkan: could not unbind a granule of the GPU mirror's mask");
     pm_lock(&g_mir_land_lk); /* a landing without vk_lock may be in vk_mirror_landed */
-    __atomic_store_n(&g_mir.gran[g], NULL, __ATOMIC_RELEASE);
+    atomic_store_explicit(&g_mir.gran[g], NULL, memory_order_release);
     pm_unlock(&g_mir_land_lk);
     free(r->shadow);
     free(r);
@@ -1218,7 +1243,7 @@ void vk_mirror_trim(void) {
     u32 done = 0;
     for (u64 n = 0; n < g_mir.granules / 8 && done < MIR_RELEASE; n++) {
         u64 g = g_mir.trim_at++ % g_mir.granules;
-        const Gran* r = g_mir.gran[g];
+        const Gran* r = atomic_load_explicit(&g_mir.gran[g], memory_order_relaxed);
         if (r && (u32)(g_vk_present - r->used) >= idle) {
             gran_release(g);
             done++;
@@ -1229,7 +1254,8 @@ u64 vk_mirror_released(void) { return g_mir.released; }
 u64 vk_mirror_idle(u32 presents) {
     u64 n = 0;
     for (u64 g = 0; g_mir.on > 0 && g < g_mir.granules; g++)
-        n += g_mir.gran[g] && (u32)(g_vk_present - g_mir.gran[g]->used) >= presents;
+        n += atomic_load_explicit(&g_mir.gran[g], memory_order_relaxed) &&
+             (u32)(g_vk_present - atomic_load_explicit(&g_mir.gran[g], memory_order_relaxed)->used) >= presents;
     return n;
 }
 void vk_mirror_stats(u64* granules, u64* harvests, u64* pages, u64* landed, u64* overflows, u32* room) {

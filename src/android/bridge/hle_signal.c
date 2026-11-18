@@ -19,6 +19,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -132,8 +133,9 @@ static const GnuKernelOps g_ops = {op_read, op_write, NULL, op_kick, op_end, op_
 
 /* the blocking flag the kernel kicks by: in a blocking HLE call, or outside guest code */
 static void update_blocking(GuestSignals* t) {
-    int blocking = __atomic_load_n(&t->parked, __ATOMIC_RELAXED) || !__atomic_load_n(&t->busy, __ATOMIC_RELAXED);
-    __atomic_store_n(&t->k.blocking, (uint32_t)blocking, __ATOMIC_SEQ_CST);
+    int blocking =
+        atomic_load_explicit(&t->parked, memory_order_relaxed) || !atomic_load_explicit(&t->busy, memory_order_relaxed);
+    atomic_store_explicit(&t->k.blocking, (uint32_t)blocking, memory_order_seq_cst);
 }
 
 /* ---- delivery ---- */
@@ -157,7 +159,7 @@ static int kernel_deliver(GuestSignals* t, int64_t* result, uint64_t orig_x0) {
 static bool run_handler(CPU* c, GuestSignals* t) {
     int sig = (int)c->x[0];
     c->excl_on = 0; /* an exception clears the exclusive monitor */
-    __atomic_add_fetch(&t->delivered, 1, __ATOMIC_RELAXED);
+    atomic_fetch_add_explicit(&t->delivered, 1, memory_order_relaxed);
     if (s.verbose)
         fprintf(stderr, "scarletnx-android: signal %d to thread %d: its handler 0x%llx\n", sig, (int)t->k.tid,
                 (unsigned long long)c->pc);
@@ -173,15 +175,15 @@ static bool run_handler(CPU* c, GuestSignals* t) {
 static void deliver(CPU* c, GuestSignals* t) {
     int saved_errno = errno;
     /* while it delivers, a carrier on this thread waits for the next point: the handler's own parked calls take it */
-    int parked = __atomic_exchange_n(&t->parked, 0, __ATOMIC_RELAXED);
-    __atomic_add_fetch(&t->busy, 1, __ATOMIC_RELAXED);
+    int parked = atomic_exchange_explicit(&t->parked, 0, memory_order_relaxed);
+    atomic_fetch_add_explicit(&t->busy, 1, memory_order_relaxed);
     update_blocking(t);
-    __atomic_signal_fence(__ATOMIC_SEQ_CST);
+    atomic_signal_fence(memory_order_seq_cst);
     while (gnu_signal_maybe(&t->k) && kernel_deliver(t, NULL, 0) == GNU_DELIVER_HANDLER)
         if (!run_handler(c, t)) break;
-    __atomic_signal_fence(__ATOMIC_SEQ_CST);
-    __atomic_sub_fetch(&t->busy, 1, __ATOMIC_RELAXED);
-    __atomic_store_n(&t->parked, parked, __ATOMIC_RELAXED);
+    atomic_signal_fence(memory_order_seq_cst);
+    atomic_fetch_sub_explicit(&t->busy, 1, memory_order_relaxed);
+    atomic_store_explicit(&t->parked, parked, memory_order_relaxed);
     update_blocking(t);
     errno = saved_errno;
 }
@@ -192,20 +194,22 @@ static void deliver(CPU* c, GuestSignals* t) {
 static void carrier_deliver(void) {
     GuestSignals* t = t_signal.self;
     if (!t || t_signal.in_kernel) return;
-    if ((__atomic_load_n(&t->parked, __ATOMIC_RELAXED) || !__atomic_load_n(&t->busy, __ATOMIC_RELAXED)) &&
+    if ((atomic_load_explicit(&t->parked, memory_order_relaxed) ||
+         !atomic_load_explicit(&t->busy, memory_order_relaxed)) &&
         gnu_signal_maybe(&t->k))
         deliver(t->cpu, t);
 }
 
 CPU* signals_guest_code_cpu(void) {
     GuestSignals* t = t_signal.self;
-    if (!t || !__atomic_load_n(&t->busy, __ATOMIC_RELAXED) || __atomic_load_n(&t->in_export, __ATOMIC_RELAXED))
+    if (!t || !atomic_load_explicit(&t->busy, memory_order_relaxed) ||
+        atomic_load_explicit(&t->in_export, memory_order_relaxed))
         return NULL;
     return t->cpu;
 }
 
 void signals_in_export(uint64_t address) {
-    if (t_signal.self) __atomic_store_n(&t_signal.self->in_export, address, __ATOMIC_RELAXED);
+    if (t_signal.self) atomic_store_explicit(&t_signal.self->in_export, address, memory_order_relaxed);
 }
 
 /* --sample: every 5 seconds, each guest thread's pc, x30 and the export it is in, for a stall. The CPU
@@ -220,20 +224,20 @@ static void* sampler(void* unused) {
         gnu_mutex_lock(&s.kernel.lock);
         for (size_t i = 0; i < s.kernel.thread_count; i++) {
             GuestSignals* t = s.kernel.threads[i]->runtime;
-            __atomic_store_n(&t->cpu->poll, 1, __ATOMIC_RELAXED);
+            atomic_store_explicit(&t->cpu->poll, 1, memory_order_relaxed);
         }
         gnu_mutex_unlock(&s.kernel.lock);
         gnu_sleep(0, 20000000);
         gnu_mutex_lock(&s.kernel.lock);
         for (size_t i = 0; i < s.kernel.thread_count; i++) {
             GuestSignals* t = s.kernel.threads[i]->runtime;
-            uint64_t pc = __atomic_load_n(&t->cpu->pc, __ATOMIC_RELAXED);
-            uint64_t lr = __atomic_load_n(&t->cpu->x[30], __ATOMIC_RELAXED);
-            uint64_t e = __atomic_load_n(&t->in_export, __ATOMIC_RELAXED);
+            uint64_t pc = atomic_load_explicit((_Atomic u64*)&t->cpu->pc, memory_order_relaxed);
+            uint64_t lr = atomic_load_explicit((_Atomic u64*)&t->cpu->x[30], memory_order_relaxed);
+            uint64_t e = atomic_load_explicit(&t->in_export, memory_order_relaxed);
             const char* name = e ? bridge_export_name(e) : NULL;
-            uint64_t x0 = __atomic_load_n(&t->cpu->x[0], __ATOMIC_RELAXED);
-            uint64_t x1 = __atomic_load_n(&t->cpu->x[1], __ATOMIC_RELAXED);
-            uint64_t x2 = __atomic_load_n(&t->cpu->x[2], __ATOMIC_RELAXED);
+            uint64_t x0 = atomic_load_explicit((_Atomic u64*)&t->cpu->x[0], memory_order_relaxed);
+            uint64_t x1 = atomic_load_explicit((_Atomic u64*)&t->cpu->x[1], memory_order_relaxed);
+            uint64_t x2 = atomic_load_explicit((_Atomic u64*)&t->cpu->x[2], memory_order_relaxed);
             fprintf(stderr, "sample: thread %d pc 0x%llx lr 0x%llx x0 0x%llx x1 0x%llx x2 0x%llx %s%s\n",
                     (int)t->k.tid, (unsigned long long)pc, (unsigned long long)lr, (unsigned long long)x0,
                     (unsigned long long)x1, (unsigned long long)x2, name ? "in " : "", name ? name : "");
@@ -285,9 +289,10 @@ void signals_init(void) {
 void signals_thread_start(GuestSignals* t, CPU* c) {
     t->cpu = c;
     t->host = pthread_self();
-    t->parked = t->busy = 0;
-    t->delivered = 0;
-    t->in_export = 0;
+    atomic_store_explicit(&t->busy, 0, memory_order_relaxed);
+    atomic_store_explicit(&t->parked, 0, memory_order_relaxed);
+    atomic_store_explicit(&t->delivered, 0, memory_order_relaxed);
+    atomic_store_explicit(&t->in_export, 0, memory_order_relaxed);
     if (gnu_kernel_thread_add(&s.kernel, &t->k, plat_tid(), c, t)) {
         fprintf(stderr, "scarletnx-android: no memory for a guest thread's signals\n");
         abort();
@@ -296,7 +301,7 @@ void signals_thread_start(GuestSignals* t, CPU* c) {
     t->k.signal_mask = t_signal.inherited & ~SNX_SIG_UNBLOCKABLE;
     gnu_mutex_unlock(&s.kernel.lock);
     update_blocking(t);
-    __atomic_signal_fence(__ATOMIC_SEQ_CST);
+    atomic_signal_fence(memory_order_seq_cst);
     t_signal.self = t;
     gnu_kernel_set_self(&t->k);
 }
@@ -304,7 +309,7 @@ void signals_thread_start(GuestSignals* t, CPU* c) {
 void signals_thread_end(GuestSignals* t) {
     t_signal.self = NULL;
     gnu_kernel_set_self(NULL);
-    __atomic_signal_fence(__ATOMIC_SEQ_CST);
+    atomic_signal_fence(memory_order_seq_cst);
     gnu_kernel_thread_remove(&t->k);
     gnu_kernel_thread_destroy(&t->k);
 }
@@ -339,9 +344,9 @@ void signals_check(CPU* c) {
 int signals_park(CPU* c) {
     GuestSignals* t = t_signal.self;
     if (!t) return 0;
-    int previous = __atomic_exchange_n(&t->parked, 1, __ATOMIC_RELAXED);
+    int previous = atomic_exchange_explicit(&t->parked, 1, memory_order_relaxed);
     update_blocking(t);
-    __atomic_signal_fence(__ATOMIC_SEQ_CST);
+    atomic_signal_fence(memory_order_seq_cst);
     /* what came before the wait: the carrier that brought it is gone */
     if (gnu_signal_maybe(&t->k)) deliver(c, t);
     return previous;
@@ -349,24 +354,24 @@ int signals_park(CPU* c) {
 void signals_unpark(int previous) {
     GuestSignals* t = t_signal.self;
     if (!t) return;
-    __atomic_signal_fence(__ATOMIC_SEQ_CST);
-    __atomic_store_n(&t->parked, previous, __ATOMIC_RELAXED);
+    atomic_signal_fence(memory_order_seq_cst);
+    atomic_store_explicit(&t->parked, previous, memory_order_relaxed);
     update_blocking(t);
 }
 
 void signals_enter(void) {
     GuestSignals* t = t_signal.self;
     if (t) {
-        __atomic_add_fetch(&t->busy, 1, __ATOMIC_RELAXED);
+        atomic_fetch_add_explicit(&t->busy, 1, memory_order_relaxed);
         update_blocking(t);
     }
-    __atomic_signal_fence(__ATOMIC_SEQ_CST);
+    atomic_signal_fence(memory_order_seq_cst);
 }
 void signals_leave(void) {
-    __atomic_signal_fence(__ATOMIC_SEQ_CST);
+    atomic_signal_fence(memory_order_seq_cst);
     GuestSignals* t = t_signal.self;
     if (t) {
-        __atomic_sub_fetch(&t->busy, 1, __ATOMIC_RELAXED);
+        atomic_fetch_sub_explicit(&t->busy, 1, memory_order_relaxed);
         update_blocking(t);
     }
 }
@@ -394,10 +399,10 @@ static int64_t kernel_call(CPU* c, uint64_t number, const uint64_t a[6], bool* k
         int d = kernel_deliver(t, &r, a[0]);
         if (d == GNU_DELIVER_RESTART) continue;
         if (d != GNU_DELIVER_HANDLER) return is_restart(r) ? -GNU_EINTR : r;
-        __atomic_add_fetch(&t->busy, 1, __ATOMIC_RELAXED);
+        atomic_fetch_add_explicit(&t->busy, 1, memory_order_relaxed);
         update_blocking(t);
         bool back = run_handler(c, t);
-        __atomic_sub_fetch(&t->busy, 1, __ATOMIC_RELAXED);
+        atomic_fetch_sub_explicit(&t->busy, 1, memory_order_relaxed);
         update_blocking(t);
         if (!back) return -GNU_EINTR;
         int again = c->pc == saved.pc - 4;

@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/renderer.h"
 #include "nx/gpu/vk/vk.h"
@@ -115,7 +116,7 @@ void vk_gfx_image_record(Surf* surf, u8* original, u32 size, u64 after, const Vk
                                                          .id = ++g_image_out.ids,
                                                          .after = after,
                                                          .keep = k};
-    g_gfx_img_any = 1;
+    atomic_store_explicit(&g_gfx_img_any, 1, memory_order_relaxed);
     pend_add(&g_img_pages, surf->gva, size, 1);
 }
 /* [cpu, cpu + n) meets the image's bytes: the first run ending past cpu starts before cpu + n */
@@ -158,7 +159,7 @@ static void image_remove(size_t index) {
     memmove(g_image_out.out + index, g_image_out.out + index + 1,
             (g_image_out.count - index - 1) * sizeof *g_image_out.out);
     g_image_out.count--;
-    g_gfx_img_any = g_image_out.count != 0;
+    atomic_store_explicit(&g_gfx_img_any, g_image_out.count != 0, memory_order_relaxed);
 }
 /* the entry of id: waiting for the GPU can land others and move the entries, so an entry is found again after one */
 static size_t image_find(u64 id) {
@@ -278,7 +279,7 @@ static void image_flush_at(size_t index) {
     if (index < g_image_out.count) image_remove(index);
 }
 void vk_gfx_image_mem_need(u64 gva, u64 size) {
-    if (!g_gfx_img_any || g_img_landing || !size) return;
+    if (!atomic_load_explicit(&g_gfx_img_any, memory_order_relaxed) || g_img_landing || !size) return;
     SNX_ZONE(z, "vk image mem need");
     vk_lock();
     g_img_landing = 1;
@@ -294,7 +295,7 @@ void vk_gfx_image_mem_need(u64 gva, u64 size) {
 }
 /* the same for guest memory [cpu, cpu + size) (size ~0: all of it), by the runs each entry's bytes are in */
 void vk_gfx_image_guest_need(u64 cpu, u64 size) {
-    if (!g_gfx_img_any || g_img_landing || !size) return;
+    if (!atomic_load_explicit(&g_gfx_img_any, memory_order_relaxed) || g_img_landing || !size) return;
     SNX_ZONE(z, "vk image guest need");
     vk_lock();
     g_img_landing = 1;
@@ -309,15 +310,15 @@ void vk_gfx_image_guest_need(u64 cpu, u64 size) {
 }
 /* every entry holds its surface until it lands, its copy recorded or not (vk_gfx_image_unrecorded leaves those out) */
 int vk_gfx_image_holds(const Surf* s) {
-    for (size_t i = 0; g_gfx_img_any && i < g_image_out.count; i++)
+    for (size_t i = 0; atomic_load_explicit(&g_gfx_img_any, memory_order_relaxed) && i < g_image_out.count; i++)
         if (g_image_out.out[i].surf == s) return 1;
     return 0;
 }
 int vk_gfx_image_pending(u64 gva, u64 size) { return vk_gfx_image_pending_besides(gva, size, NULL); }
-u64 vk_gfx_image_adds(void) { return __atomic_load_n(&g_img_pages.adds, __ATOMIC_RELAXED); }
+u64 vk_gfx_image_adds(void) { return atomic_load_explicit(&g_img_pages.adds, memory_order_relaxed); }
 int vk_gfx_image_pending_besides(u64 gva, u64 size, const Surf* self) {
     int hit = 0;
-    if (!g_gfx_img_any || !size) return 0;
+    if (!atomic_load_explicit(&g_gfx_img_any, memory_order_relaxed) || !size) return 0;
     vk_lock();
     /* by the page first: a released entry stays pending across the frame (vk_gfx_image_put_aside), and every texture's
        memo asks this. Walking each entry's runs through the GMMU for each one cost 0.8 ms a frame in one game */
@@ -328,7 +329,7 @@ int vk_gfx_image_pending_besides(u64 gva, u64 size, const Surf* self) {
     return hit;
 }
 void vk_gfx_image_land(void) {
-    if (!g_gfx_img_any || g_img_landing) return;
+    if (!atomic_load_explicit(&g_gfx_img_any, memory_order_relaxed) || g_img_landing) return;
     SNX_ZONE(z, "vk image land");
     vk_lock();
     g_img_landing = 1;
@@ -337,7 +338,7 @@ void vk_gfx_image_land(void) {
     vk_unlock();
 }
 void vk_gfx_image_put_aside(void) {
-    if (!g_gfx_img_any || g_img_landing) return;
+    if (!atomic_load_explicit(&g_gfx_img_any, memory_order_relaxed) || g_img_landing) return;
     SNX_ZONE(z, "vk image put aside");
     vk_lock();
     g_img_landing = 1;
@@ -402,12 +403,12 @@ static void released_flush(u64 a, u64 size, int gpu) {
     vk_unlock();
 }
 void vk_gfx_image_cpu_need(u64 cpu, u64 size) {
-    if (!g_gfx_img_any || g_img_landing || !size) return;
+    if (!atomic_load_explicit(&g_gfx_img_any, memory_order_relaxed) || g_img_landing || !size) return;
     SNX_ZONE(z, "vk image cpu need");
     released_flush(cpu, size, 0);
 }
 void vk_gfx_image_read_need(u64 gva, u64 size) {
-    if (!g_gfx_img_any || g_img_landing || !size) return;
+    if (!atomic_load_explicit(&g_gfx_img_any, memory_order_relaxed) || g_img_landing || !size) return;
     SNX_ZONE(z, "vk image read need");
     vk_lock();
     if (pend_hit(&g_img_pages, gva, size)) released_flush(gva, size, 1);

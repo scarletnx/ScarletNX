@@ -34,7 +34,7 @@ typedef struct FsNode {
        its contents at map (NULL when empty): at startup, or by fs_tree_map when it is first read. Such nodes are
        readonly, so map and size never change, and fd is set once, after map (read it with fs_tree_mapped without
        the tree's lock) */
-    int fd;
+    _Atomic int fd;
     const uint8_t* map;
     unsigned refs; /* open handles; attached nodes are additionally owned by the tree */
     char* host;    /* a graft's top (fs_tree_graft, a followed link): the host folder its subtree is in, else NULL */
@@ -60,7 +60,8 @@ typedef struct {
    Close open handles before destroy; retain/release keep removed entries alive while their handles exist. */
 FsTreeResult fs_tree_init(FsTree* tree, const char* directory);
 /* fs_tree_init with the data directory's own entries named in skipped (NULL-terminated, or NULL) left out of the index,
-   as if they weren't there: folders read apart from it (a game's mods) */
+   as if they weren't there: folders read apart from it (a game's mods). A name that starts with '*' skips each entry
+   whose name ends in the rest, in any case ("*.dll") */
 FsTreeResult fs_tree_init_skipping(FsTree* tree, const char* directory, const char* const* skipped);
 /* Startup only: name, a child of the data directory it doesn't have, indexed from another host directory, as
    fs_tree_init indexes its own and with the same rejections, and readonly. The game's RomFS kept in tmpfs */

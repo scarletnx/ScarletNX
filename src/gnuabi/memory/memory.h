@@ -14,7 +14,7 @@
 #define GNU_ADDRESS_LIMIT 0x100000000ull
 typedef struct GnuMemory {
     unsigned char* base;
-    unsigned char* pages;
+    _Atomic unsigned char* pages;
     uint64_t size, mmap_next, brk_base, brk_current, brk_limit;
     /* the host's page, which base is aligned to and protected in: GNU_PAGE_SIZE, or larger (16 KiB on Apple silicon
        and some Android kernels, 64 KiB on PowerPC64), when each host page holds several guest pages (host_protect) */

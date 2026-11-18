@@ -25,6 +25,7 @@
 #include <assert.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 #if defined(__APPLE__)
 #include <TargetConditionals.h>
 #endif
@@ -42,7 +43,7 @@ static char g_jit_cache[1400];     /* <Game>.jitcache in the user's cache folder
 static SnxCodeImage* g_jit_images; /* the modules' text in guest memory, for the variant hash and the JIT */
 static SnxCodeImage g_jit_synthetic[SNX_JIT_IMAGES]; /* blocks the game maps, for the variant hash and the JIT */
 static PMutex g_jit_synthetic_lock = PMUTEX_INIT;
-static unsigned long g_jit_hits, g_jit_misses;
+static _Atomic unsigned long g_jit_hits, g_jit_misses;
 
 /* the hot lookup: one leader per entry, sorted by pc. The const table's function pointers and run pointers stay cold */
 typedef struct {
@@ -160,17 +161,17 @@ static GuestFn variant_resolve(SnxU64 pc) {
         if (h1 != function->h1 || h2 != function->h2) continue;
         if (pc >= g_code_lo && pc < g_code_hi) {
             GuestFn expected = NULL;
-            __atomic_compare_exchange_n(&g_disp[(pc - g_code_lo) >> 2], &expected, function->fn, 0, __ATOMIC_RELEASE,
-                                        __ATOMIC_RELAXED);
+            atomic_compare_exchange_strong_explicit(&g_disp[(pc - g_code_lo) >> 2], &expected, function->fn,
+                                                    memory_order_release, memory_order_relaxed);
         }
         result = function->fn;
         break;
     }
     pm_unlock(&g_jit_synthetic_lock);
     if (result)
-        __atomic_add_fetch(&g_jit_hits, 1, __ATOMIC_RELAXED);
+        atomic_fetch_add_explicit(&g_jit_hits, 1, memory_order_relaxed);
     else
-        __atomic_add_fetch(&g_jit_misses, 1, __ATOMIC_RELAXED);
+        atomic_fetch_add_explicit(&g_jit_misses, 1, memory_order_relaxed);
     return result;
 }
 
@@ -208,8 +209,8 @@ static void jit_report_plots(const SnxJitReport* r) {
     SNX_PLOT("jit instructions", (double)r->instructions);
     /* the AOT lookup's hits and misses, between one batch and the next; the compiled code's own counts are above */
     {
-        unsigned long hits = __atomic_load_n(&g_jit_hits, __ATOMIC_RELAXED);
-        unsigned long misses = __atomic_load_n(&g_jit_misses, __ATOMIC_RELAXED);
+        unsigned long hits = atomic_load_explicit(&g_jit_hits, memory_order_relaxed);
+        unsigned long misses = atomic_load_explicit(&g_jit_misses, memory_order_relaxed);
         SNX_PLOT("jit variant hits", (double)(hits - t_jit_plot.hits));
         SNX_PLOT("jit variant misses", (double)(misses - t_jit_plot.misses));
         t_jit_plot.hits = hits;
@@ -340,7 +341,7 @@ void jit_init(void) {
 GuestFn jit_resolve(u64 pc) {
     GuestFn code;
     if (pc >= g_code_lo && pc < g_code_hi) {
-        code = __atomic_load_n(&g_disp[(pc - g_code_lo) >> 2], __ATOMIC_ACQUIRE);
+        code = atomic_load_explicit(&g_disp[(pc - g_code_lo) >> 2], memory_order_acquire);
         if (code) return code;
     }
     code = variant_resolve(pc);
@@ -496,8 +497,7 @@ void jit_code_invalidate(u64 addr, u64 size) {
     size_t i;
     if (!g_jit_images) return;
     if (lo & 3) lo = (lo + 3) & ~(u64)3;
-    for (at = lo; at < hi; at += 4)
-        __atomic_store_n(&g_disp[(at - g_code_lo) >> 2], NULL, __ATOMIC_RELEASE);
+    for (at = lo; at < hi; at += 4) atomic_store_explicit(&g_disp[(at - g_code_lo) >> 2], NULL, memory_order_release);
     if (g_jit) snx_jit_invalidate(g_jit, addr, size);
     pm_lock(&g_jit_synthetic_lock);
     for (i = 0; i < SNX_JIT_IMAGES; ++i) {
@@ -536,14 +536,15 @@ static int fn_order(void) {
    module's own table, which it filled at load) go first, so a thread that reads its byte set finds no code for the
    entry it was called at, and the lookup compiles the code there now. An inlined copy reads the same byte */
 static void fn_stale(const SnxModule* mod, u32 i) {
-    GuestFn f = mod->fn[i], *entry_fn = (GuestFn*)(uintptr_t)mod->entry_fn;
+    GuestFn f = mod->fn[i];
+    _Atomic GuestFn* entry_fn = (_Atomic GuestFn*)(uintptr_t)mod->entry_fn;
     u64 lo = mod->fn_lo[i], hi = lo + mod->fn_len[i], pc;
     size_t a = 0, b = mod->nentries, m;
     for (pc = lo; pc < hi; pc += 4)
         if (pc >= g_code_lo && pc < g_code_hi) {
             GuestFn expected = f;
-            __atomic_compare_exchange_n(&g_disp[(pc - g_code_lo) >> 2], &expected, NULL, 0, __ATOMIC_RELEASE,
-                                        __ATOMIC_RELAXED);
+            atomic_compare_exchange_strong_explicit(&g_disp[(pc - g_code_lo) >> 2], &expected, NULL,
+                                                    memory_order_release, memory_order_relaxed);
         }
     while (a < b) {
         m = a + (b - a) / 2;
@@ -553,8 +554,9 @@ static void fn_stale(const SnxModule* mod, u32 i) {
             b = m;
     }
     for (; a < mod->nentries && mod->entry_addr[a] < hi; a++)
-        if (__atomic_load_n(&entry_fn[a], __ATOMIC_RELAXED) == f) __atomic_store_n(&entry_fn[a], NULL, __ATOMIC_RELEASE);
-    __atomic_store_n(&mod->stale[i], 1, __ATOMIC_RELEASE);
+        if (atomic_load_explicit(&entry_fn[a], memory_order_relaxed) == f)
+            atomic_store_explicit(&entry_fn[a], NULL, memory_order_release);
+    atomic_store_explicit(&mod->stale[i], 1, memory_order_release);
     hook_orig_stale(f); /* a hooked function's own code is what the game put there now */
 }
 
@@ -608,9 +610,9 @@ static const SnxNroImports* nro_imports_bind(void* library, u64 base) {
                 hi = middle;
         }
         if (lo < g_mod->nentries && g_mod->entry_addr[lo] == a)
-            entry = __atomic_load_n(&g_mod->entry_fn[lo], __ATOMIC_ACQUIRE);
+            entry = atomic_load_explicit(&g_mod->entry_fn[lo], memory_order_acquire);
         if (a >= g_code_lo && a < g_code_hi && !(a & 3))
-            held = __atomic_load_n(&g_disp[(a - g_code_lo) >> 2], __ATOMIC_ACQUIRE);
+            held = atomic_load_explicit(&g_disp[(a - g_code_lo) >> 2], memory_order_acquire);
         if (held && held == entry) {
             f = held;
             direct++;
@@ -619,7 +621,7 @@ static const SnxNroImports* nro_imports_bind(void* library, u64 base) {
             direct++;
             own++;
         }
-        __atomic_store_n((GuestFn*)&im->function[i], f, __ATOMIC_RELEASE);
+        atomic_store_explicit((_Atomic GuestFn*)&im->function[i], f, memory_order_release);
     }
     LOG("jit: the NRO at %llx calls %u of the %u functions of the game its module imports directly, %u of them the "
         "runtime's own in the game's place (hooks, NVN)\n",
@@ -710,9 +712,11 @@ int jit_nro_added(const u8* hash, u64 base, u64 size, const u8* id, u32* entries
         for (i = 0; i < m->nentries; i++) {
             u64 a = m->entry_addr[i];
             GuestFn expected = NULL;
-            if (a < base || a >= base + size || (a & 3) || !m->entry_fn[i]) continue;
-            n += (u32)__atomic_compare_exchange_n(&g_disp[(a - g_code_lo) >> 2], &expected, m->entry_fn[i], 0,
-                                                  __ATOMIC_RELEASE, __ATOMIC_RELAXED);
+            if (a < base || a >= base + size || (a & 3) || !atomic_load_explicit(&m->entry_fn[i], memory_order_relaxed))
+                continue;
+            n += (u32)atomic_compare_exchange_strong_explicit(
+                &g_disp[(a - g_code_lo) >> 2], &expected, atomic_load_explicit(&m->entry_fn[i], memory_order_relaxed),
+                memory_order_release, memory_order_relaxed);
         }
         g_nro_modules[place].mapped = 1;
         *entries = n;
@@ -737,7 +741,7 @@ void jit_slot_taken(u64 addr, GuestFn fn) {
                 hi = middle;
         }
         if (im && lo < im->count && im->address[lo] == addr)
-            __atomic_store_n((GuestFn*)&im->function[lo], fn, __ATOMIC_RELEASE);
+            atomic_store_explicit((_Atomic GuestFn*)&im->function[lo], fn, memory_order_release);
     }
     pm_unlock(&g_fn_lock);
 }
@@ -750,10 +754,10 @@ void jit_nro_removed(u64 base) {
         if (!g_nro_modules[k].mapped || g_nros->slots[k].base != base) continue;
         for (i = 0; i < m->nentries; i++) {
             u64 a = m->entry_addr[i];
-            GuestFn expected = m->entry_fn[i];
+            GuestFn expected = atomic_load_explicit(&m->entry_fn[i], memory_order_relaxed);
             if (a < g_code_lo || a >= g_code_hi || (a & 3) || !expected) continue;
-            __atomic_compare_exchange_n(&g_disp[(a - g_code_lo) >> 2], &expected, NULL, 0, __ATOMIC_RELEASE,
-                                        __ATOMIC_RELAXED);
+            atomic_compare_exchange_strong_explicit(&g_disp[(a - g_code_lo) >> 2], &expected, NULL,
+                                                    memory_order_release, memory_order_relaxed);
         }
         g_nro_modules[k].mapped = 0;
     }
@@ -776,7 +780,8 @@ void jit_code_changed(u64 addr, u64 size) {
         }
         for (; a < g_mod->nfns && g_mod->fn_lo[g_fn_order[a]] < end; a++) {
             u32 i = g_fn_order[a];
-            if (g_mod->fn_lo[i] + g_mod->fn_len[i] <= addr || __atomic_load_n(&g_mod->stale[i], __ATOMIC_RELAXED))
+            if (g_mod->fn_lo[i] + g_mod->fn_len[i] <= addr ||
+                atomic_load_explicit(&g_mod->stale[i], memory_order_relaxed))
                 continue;
             fn_stale(g_mod, i);
             LOG_LIMIT(64, "jit: the game changed its code at %llx, compiled into its function from %llx: compiled again\n",
@@ -792,7 +797,7 @@ void jit_code_changed(u64 addr, u64 size) {
             continue;
         for (i = 0; i < m->nfns; i++) {
             if (m->fn_lo[i] >= end || m->fn_lo[i] + m->fn_len[i] <= addr ||
-                __atomic_load_n(&m->stale[i], __ATOMIC_RELAXED))
+                atomic_load_explicit(&m->stale[i], memory_order_relaxed))
                 continue;
             fn_stale(m, i);
             LOG_LIMIT(64,
@@ -809,9 +814,9 @@ void jit_report(void) {
     size_t i;
     for (i = 0; i < SNX_JIT_IMAGES; ++i)
         if (g_jit_synthetic[i].text_size) ++images;
-    LOG("jit: %u AOT variants, %zu leaders, %lu hits, %lu misses, %lu images\n",
-        g_variants ? g_variants->count : 0, g_variant_leader_count, __atomic_load_n(&g_jit_hits, __ATOMIC_RELAXED),
-        __atomic_load_n(&g_jit_misses, __ATOMIC_RELAXED), images);
+    LOG("jit: %u AOT variants, %zu leaders, %lu hits, %lu misses, %lu images\n", g_variants ? g_variants->count : 0,
+        g_variant_leader_count, atomic_load_explicit(&g_jit_hits, memory_order_relaxed),
+        atomic_load_explicit(&g_jit_misses, memory_order_relaxed), images);
     if (g_jit) {
         SnxJitStats stats;
         snx_jit_stats(g_jit, &stats);

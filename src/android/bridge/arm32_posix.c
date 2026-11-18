@@ -32,6 +32,7 @@
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <stdatomic.h>
 #if defined(__linux__) || defined(__FreeBSD__)
 #include <sys/eventfd.h>
 #endif
@@ -302,7 +303,7 @@ static void waited(SnxArmCPU* c, const char* name, unsigned timeout_arg) {
             R(0) = (uint32_t)r;
             return;
         }
-        if (__atomic_load_n(&arm32_pending_signals, __ATOMIC_RELAXED)) {
+        if (atomic_load_explicit(&arm32_pending_signals, memory_order_relaxed)) {
             arm32_signals_run(c);
             R(0) = fail(L_EINTR);
             return;

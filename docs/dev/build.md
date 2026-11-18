@@ -33,10 +33,11 @@ Run from checkout root. [Extract/AOT/run](../user/usage.md) · [Tests/diagnostic
 - **macOS:** Apple silicon, macOS 13 or newer, Xcode (its Clang and SDKs), CMake ≥3.28, Ninja, meson, Python 3 and
   Git.
   LLVM's libraries come from `scripts/apple-llvm.sh` or Homebrew ([steps](#macos)).
-- **Windows:** Win10/11 x64. CI builds in MSYS2's CLANG64 environment, which has LLVM's development files
-  ([steps](#windows--msys2-clang64)). Bootstrap stages SHA-256-checked llvm-mingw/Clang, CMake, Ninja,
-  NASM, Strawberry Perl and w64devkit in `deps/tools`. llvm-mingw has no LLVM libraries, so that route also needs a
-  MinGW LLVM's `llvm-config` set with `-DSNX_LLVM_CONFIG=/path/to/llvm-config`. CMake fails without it.
+- **Windows:** Win10/11 x64, or Windows 11 on Arm. CI builds in MSYS2's CLANG64 environment, and on Arm in its
+  CLANGARM64 one, which have LLVM's development files ([steps](#windows--msys2-clang64)). Bootstrap stages
+  SHA-256-checked llvm-mingw/Clang, CMake, Ninja, NASM, Strawberry Perl and w64devkit in `deps/tools`. llvm-mingw has
+  no LLVM libraries, so that route also needs a MinGW LLVM's `llvm-config` set with
+  `-DSNX_LLVM_CONFIG=/path/to/llvm-config`. CMake fails without it.
 - **Shaders:** glslang's `glslangValidator` compiles them at build time (CMake fetches its pinned release on Linux
   x86-64, Windows x86-64 and macOS; elsewhere it takes the system's `glslang`), and SPIRV-Tools' `spirv-opt` and
   `spirv-val` optimize and validate them (`cmake/glsl.cmake`). Those two are the SPIRV-Tools release CMake pins, built
@@ -303,7 +304,9 @@ runtime must not mix with another LLVM build.
    ```
 
    Python builds the menu's languages and runs SPIRV-Tools' build, which optimizes and validates the shaders. CI also
-   installs ccache, which is optional here, as sccache is.
+   installs ccache, which is optional here, as sccache is. On Windows on Arm, open the **MSYS2 CLANGARM64** shell
+   instead and install the same packages with `mingw-w64-clang-aarch64-` in place of `mingw-w64-clang-x86_64-`, as the
+   job's AArch64 leg does; the steps below are the same there, and its DLLs are in `/clangarm64/bin`.
 3. Clone to a path without spaces:
 
    ```sh
@@ -478,8 +481,9 @@ Test options, read when `BUILD_TESTING` is on (CTest's default), all OFF by defa
 
 - `-DSNX_TEST_SANITIZERS=ON`: build the native tests, and the programs and libraries of the repository they run or
   link, with ASan and UBSan (`runtime_architecture` names one left out). The runtime is one, so it is not deployed.
-  CI's `Linux (x86_64, ASan + UBSan)` job runs the tests this way, with `LSAN_OPTIONS=use_stacks=0:use_registers=0`
-  so the leak check finds the same leaks on every machine.
+  CI's Linux x86-64 job (`Linux AppImage (x86_64)`) runs the tests this way, with
+  `LSAN_OPTIONS=use_stacks=0:use_registers=0:suppressions=$PWD/tests/lsan.supp` so the leak check finds the same leaks
+  on every machine, and none of the system's libraries' own (SDL's ALSA backend never frees ALSA's device hints).
 - `-DSNX_TEST_VULKAN=ON`: add the offscreen Vulkan integration tests, see below.
 - `-DSNX_TEST_EDENPROBE=/path/to/edenprobe.nro`: add `edenprobe_vk_memory_1` and `edenprobe_vk_memory_2`, which run
   edenprobe as CI does against its baseline, with guest buffers copied and read in place (docs/dev/edenprobe.md).

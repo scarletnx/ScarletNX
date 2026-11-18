@@ -18,6 +18,7 @@ static bool keyboard_asked(SDL_Window* window) {
 #define SNX_SCREEN_TEST "gui_setup.c"
 #include "gui_screen.h"
 #include <assert.h>
+#include <stdatomic.h>
 
 #define FIRST "0123456789abcdeffedcba9876543210"
 
@@ -42,7 +43,8 @@ static char* text_of(const char* folder, const char* name) {
 }
 static void holds(const char* folder, const char* name, const char* words) {
     char* text = text_of(folder, name);
-    if (!text || !strstr(text, words)) fprintf(stderr, "%s/%s holds:\n%s\nnot: %s\n", folder, name, text, words);
+    if (!text || !strstr(text, words))
+        fprintf(stderr, "%s/%s holds:\n%s\nnot: %s\n", folder, name, text ? text : "(no file it could read)", words);
     assert(text && strstr(text, words));
     free(text);
 }
@@ -890,7 +892,7 @@ static void test_old_files(App* app) {
         free(account);
     }
     left_behind(app);
-    while (!__atomic_load_n(&app->left_space->done, __ATOMIC_ACQUIRE)) SDL_Delay(1);
+    while (!atomic_load_explicit(&app->left_space->done, memory_order_acquire)) SDL_Delay(1);
     assert(app->lefts == 5 && left_groups(app) == 4);
     setup_start(app);
     assert(app->setup_on && app->setup_count == 1 && page(app) == SETUP_LEFT && !setup_steps(app));
@@ -1117,7 +1119,7 @@ static void test_saves_one_page(App* app) {
         put(path, "save");
     }
     left_behind(app);
-    while (!__atomic_load_n(&app->left_space->done, __ATOMIC_ACQUIRE)) SDL_Delay(1);
+    while (!atomic_load_explicit(&app->left_space->done, memory_order_acquire)) SDL_Delay(1);
     assert(app->lefts == 14 && left_groups(app) == 1);
     setup_start(app);
     assert(app->setup_on && page(app) == SETUP_LEFT && setup_labels(app, labels) == 3 &&
@@ -1176,7 +1178,7 @@ static void test_data_saves(App* app) {
     assert(!snx_path_format(path, sizeof path, "%s/save/device/0100000000ABC000/d.bin", app->data_dir));
     put(path, "save");
     left_behind(app);
-    while (!__atomic_load_n(&app->left_space->done, __ATOMIC_ACQUIRE)) SDL_Delay(1);
+    while (!atomic_load_explicit(&app->left_space->done, memory_order_acquire)) SDL_Delay(1);
     assert(app->lefts == 1 && left_groups(app) == 1);
     setup_start(app);
     assert(app->setup_on && page(app) == SETUP_LEFT && setup_labels(app, labels) == 3 &&

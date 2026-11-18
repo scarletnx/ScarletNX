@@ -15,7 +15,8 @@ int snx_link(const SnxLinkInput* inputs, size_t count, const char* const* export
     }
     if (inputs[0].size >= 4 && !memcmp(inputs[0].data, "\177ELF", 4))
         return snx_link_elf(inputs, count, exports, export_count, soname, output, error, error_size);
-    if (inputs[0].size >= 2 && inputs[0].data[0] == 0x64 && inputs[0].data[1] == 0x86)
+    /* COFF's machine: IMAGE_FILE_MACHINE_AMD64 or IMAGE_FILE_MACHINE_ARM64, little-endian */
+    if (inputs[0].size >= 2 && inputs[0].data[0] == 0x64 && (inputs[0].data[1] == 0x86 || inputs[0].data[1] == 0xAA))
         return snx_link_coff(inputs, count, exports, export_count, soname, output, error, error_size);
     if (inputs[0].size >= 4 && !memcmp(inputs[0].data, "\xcf\xfa\xed\xfe", 4)) /* MH_MAGIC_64, little-endian */
         return snx_link_macho(inputs, count, exports, export_count, soname, output, error, error_size);

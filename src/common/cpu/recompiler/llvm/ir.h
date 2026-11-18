@@ -2,7 +2,8 @@
    Copyright 2026 the ScarletNX contributors */
 /* The LLVM backend: A64 to LLVM IR through the LLVM-C API. ir_codegen.c walks a function's instructions as the
    generated decoder (a64_decoder.h) decodes them, and the emitters ported from QEMU's translate-a64.c (ir_int.c,
-   ir_ldst.c, ir_fpu.c, ir_vec*.c) build each one's IR with the instruction word and pc constant. cpu.h's inline
+   ir_ldst.c, ir_fpu.c, ir_vec*.c) and those tools/sailgen generates from the Arm architecture's Sail (ir_sail.c) build
+   each one's IR with the instruction word and pc constant. cpu.h's inline
    helpers become internal always-inline IR functions (ir.c); its out-of-line helpers are called in the runtime
    library (rtlib.c), which every module links. */
 #ifndef SNX_RECOMPILER_LLVM_IR_H
@@ -87,7 +88,8 @@ typedef struct {
 extern SnxIrFeatures snx_ir_host;
 
 /* The cache belongs to the IR builder, not the guest CPU. One bit per GPR;
-   changing blocks or observing an unknown write drops the whole snapshot. */
+   changing blocks or observing an unknown write drops the whole snapshot. The back end that generates the
+   emitters keeps it and the flags' (tools/sailgen/llvm.h), for every emitter: ir_sail.c gives the accessors */
 typedef struct {
     LLVMValueRef x[32];
     LLVMBasicBlockRef block;
@@ -215,6 +217,15 @@ typedef struct SnxIr {
     int ppc, elfv2;
     /* the guest's features (snx_a64_features) for the function being emitted: what its system registers keep */
     SnxU64 guest_features;
+    /* tests: the hand-written emitters the generated integer ones replaced (tests/support/ir_int_reference.c), used
+       instead of them, so the two can be compared; NULL everywhere else */
+    void (*int_reference)(struct SnxIr* ir, const void* decoded, SnxU32 word, SnxU64 pc);
+    /* and the branches' hand-written operands (snx_ir_int_operand's) the generated ones replaced, the same way */
+    LLVMValueRef (*operand_reference)(struct SnxIr* ir, const void* decoded, SnxU32 word, SnxU64 pc);
+    /* and the general-purpose registers' loads and stores written by hand (tests/support/ir_ldst_reference.c) */
+    void (*ldst_reference)(struct SnxIr* ir, const void* decoded, SnxU32 word, SnxU64 pc);
+    /* and the hand-written scalar floating-point emitters (tests/support/ir_fpu_reference.c), the same way */
+    void (*fpu_reference)(struct SnxIr* ir, const void* decoded, SnxU32 word, SnxU64 pc);
 } SnxIr;
 
 void ir_state_invalidate(SnxIr* ir);
@@ -222,6 +233,10 @@ void ir_vectors_invalidate(SnxIr* ir);
 void ir_registers_invalidate(SnxIr* ir);
 void ir_flags_invalidate(SnxIr* ir);
 LLVMValueRef ir_flag_read(SnxIr* ir, unsigned index);
+/* the four flags written (any integer width: each is stored as the i32 0 or 1 the CPU structure keeps) and kept as
+   this block's values; and what all four came from, when a compare made them (SNX_IR_FLAGS_SUB, ADD, LOGIC) */
+void ir_flags_commit(SnxIr* ir, LLVMValueRef n, LLVMValueRef z, LLVMValueRef c, LLVMValueRef v);
+void ir_flags_origin(SnxIr* ir, unsigned origin, LLVMValueRef left, LLVMValueRef right);
 LLVMValueRef ir_flags_adds(SnxIr* ir, unsigned bits, LLVMValueRef a, LLVMValueRef b, LLVMValueRef cin);
 LLVMValueRef ir_flags_subs(SnxIr* ir, unsigned bits, LLVMValueRef a, LLVMValueRef b);
 void ir_flags_logic(SnxIr* ir, LLVMValueRef value, unsigned bits);
@@ -303,8 +318,10 @@ char* snx_ir_text(SnxIr* ir);
 
 /* ---- functions (ir_codegen.c) ---- */
 /* the stack probe a generated function for Windows x86-64 calls when its frame is a page or more: the runtime
-   library's (rtlib.c), which every module and the JIT's code arena link */
-#define SNX_IR_STACK_PROBE "snx_stack_probe"
+   library's (rtlib.c), which every module and the JIT's code arena link. On Windows on Arm the probe is __chkstk, the
+   name LLVM's AArch64 backend calls, which the runtime library defines there */
+#define SNX_IR_STACK_PROBE       "snx_stack_probe"
+#define SNX_IR_STACK_PROBE_ARM64 "__chkstk"
 /* F_<address>, declared on first use, defined by snx_ir_emit */
 LLVMValueRef snx_ir_guest_function(SnxIr* ir, SnxU64 address);
 void snx_ir_emit(SnxIr* ir, SnxCodegen* codegen, const SnxFunction* function);

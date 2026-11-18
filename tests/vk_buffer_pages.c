@@ -69,7 +69,7 @@ u64 g_as_size;
 _Atomic(int) g_cs_any;
 _Atomic(int) g_gfx_any;
 _Atomic(int) g_gfx_img_any;
-int g_gpu_releases;
+_Atomic int g_gpu_releases;
 u8* g_mem;
 OwnState g_own;
 PendPages g_pend_any;
@@ -91,6 +91,11 @@ void gpu_mem_written_cpu(u64 cpu, u64 size) { abort(); }
 void gpu_mem_written_shader(u64 gva, u64 size) { abort(); }
 u32 gpu_pools(GpuPool* out, u32 cap) { abort(); }
 int mem_alias_any(void) { abort(); }
+int mem_alias_clear(u64 a, u64 size) {
+    (void)a;
+    (void)size;
+    abort();
+}
 void mem_alias_peers(u64 a, u64 size, void (*fn)(void*, u64, u64), void* user) { abort(); }
 int mem_pool_any(u64 a, u64 size) { abort(); }
 int mem_ww_probe(void (*cb)(u8*, u64)) { abort(); }
@@ -151,6 +156,9 @@ void vk_mem_use(u64* usage, u64* budget) { abort(); }
 void vk_mirror_done(u64 done) { abort(); }
 void vk_mirror_harvest(VkCommandBuffer cb, u64 submit) { abort(); }
 int vk_mirror_holds(u64 gva, u64 len) { abort(); }
+int vk_mirror_holds_at(u64 cpu, u64 len) { abort(); }
+int vk_mirror_owns_any(void) { return 0; } /* no mirror here */
+int vk_mirror_slice_at(u64 gva, u64 cpu, u64 len, VkBuffer* buf, u64* off) { abort(); }
 u64 vk_mirror_idle(u32 presents) { abort(); }
 void vk_mirror_mem_need(u64 gva, u64 len) { abort(); }
 int vk_mirror_pending(u64 gva, u64 len) { abort(); }

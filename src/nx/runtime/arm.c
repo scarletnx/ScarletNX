@@ -19,6 +19,7 @@
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 
 const SnxArmModule* g_arm_mod;
 static SnxModule g_view;
@@ -26,7 +27,7 @@ static SnxModule g_view;
 /* the blocks in the modules' code [g_lo, g_hi): A32 ones by word, Thumb ones by halfword. Written once each, by the
    recompiled module or under g_jit_lock, and read without a lock */
 static u32 g_lo, g_hi;
-static SnxArmBlock *g_a32, *g_t32;
+static _Atomic SnxArmBlock *g_a32, *g_t32;
 /* blocks compiled while the game runs: the compiler, and the blocks outside the modules' code (ldr:ro's) */
 static PMutex g_jit_lock;
 static SnxArmExec* g_jit;
@@ -91,15 +92,15 @@ void arm_dispatch_init(void) {
         u32 key = m->entry_addr[i], a = key & ~1u;
         if (a < g_lo || a >= g_hi) continue;
         if (key & 1)
-            g_t32[(a - g_lo) / 2] = m->entry_fn[i];
+            atomic_store_explicit(&g_t32[(a - g_lo) / 2], m->entry_fn[i], memory_order_relaxed);
         else
-            g_a32[(a - g_lo) / 4] = m->entry_fn[i];
+            atomic_store_explicit(&g_a32[(a - g_lo) / 4], m->entry_fn[i], memory_order_relaxed);
     }
     LOG("AArch32: %u recompiled blocks in %x-%x\n", m->nentries, g_lo, g_hi);
     mem_set_code_invalidate(code_invalidate);
 }
 
-static SnxArmBlock* slot(u32 pc, int thumb) {
+static _Atomic SnxArmBlock* slot(u32 pc, int thumb) {
     if (pc < g_lo || pc >= g_hi) return NULL;
     return thumb ? &g_t32[(pc - g_lo) / 2] : &g_a32[(pc - g_lo) / 4];
 }
@@ -107,11 +108,12 @@ static SnxArmBlock* slot(u32 pc, int thumb) {
 /* the block at pc that the recompiler didn't make: compiled from the game's memory when that is code (mapped
    executable), else NULL. Out of line: inlined into lookup, its error buffer gave every dispatch a frame and a stack
    canary (tests/arm_dispatch_frame.py) */
-__attribute__((noinline, cold)) static SnxArmBlock compile(u32 pc, int thumb) {
-    SnxArmBlock *s = slot(pc, thumb), b = NULL;
+[[gnu::noinline, gnu::cold]] static SnxArmBlock compile(u32 pc, int thumb) {
+    _Atomic SnxArmBlock* s = slot(pc, thumb);
+    SnxArmBlock b = NULL;
     u32 key = pc | (thumb ? 1u : 0u);
     pm_lock(&g_jit_lock);
-    if (s) b = *s; /* another thread compiled it meanwhile */
+    if (s) b = atomic_load_explicit(&(*s), memory_order_relaxed); /* another thread compiled it meanwhile */
     for (int i = 0; !s && !b && i < g_nextra; i++)
         if (g_extra[i].key == key) b = g_extra[i].fn;
     if (!b) {
@@ -125,7 +127,7 @@ __attribute__((noinline, cold)) static SnxArmBlock compile(u32 pc, int thumb) {
         SnxArmExecRange range = {m.addr, NULL, (size_t)m.size};
         if ((m.perm & PERM_X) && m.state != MS_FREE) b = snx_arm_exec_block(g_jit, &range, 1, pc, thumb, g_mem);
         if (b && s)
-            __atomic_store_n(s, b, __ATOMIC_RELEASE);
+            atomic_store_explicit(s, b, memory_order_release);
         else if (b) {
             if (g_nextra == g_capextra) {
                 g_capextra = g_capextra ? g_capextra * 2 : 64;
@@ -145,8 +147,8 @@ __attribute__((noinline, cold)) static SnxArmBlock compile(u32 pc, int thumb) {
 }
 
 static SnxArmBlock lookup(u32 pc, int thumb) {
-    SnxArmBlock* s = slot(pc, thumb);
-    SnxArmBlock b = s ? __atomic_load_n(s, __ATOMIC_ACQUIRE) : NULL;
+    _Atomic SnxArmBlock* s = slot(pc, thumb);
+    SnxArmBlock b = s ? atomic_load_explicit(s, memory_order_acquire) : NULL;
     return b ? b : compile(pc, thumb);
 }
 
@@ -195,7 +197,7 @@ static void run_block(KThread* t, SnxArmCPU* c, SnxArmBlock b) {
     }
     /* a thread of higher priority waits for its core: blocks end at every branch, so this is as often as the
        64-bit code's backward branches check it */
-    if (UNLIKELY(__atomic_load_n(&t->cpu.poll, __ATOMIC_RELAXED))) core_poll(t);
+    if (UNLIKELY(atomic_load_explicit(&t->cpu.poll, memory_order_relaxed))) core_poll(t);
 }
 
 void arm_thread_run(KThread* t) {
@@ -208,7 +210,7 @@ static KThread* arm_thread(SnxArmCPU* c) { return (KThread*)(void*)((char*)c - o
 
 CPU* hook_a32_cpu(SnxArmCPU* arm) { return &arm_thread(arm)->cpu; }
 
-SnxArmBlock* arm_slot(u32 addr, int thumb) { return slot(addr, thumb); }
+_Atomic SnxArmBlock* arm_slot(u32 addr, int thumb) { return slot(addr, thumb); }
 SnxArmBlock arm_block(u32 addr, int thumb) { return lookup(addr, thumb); }
 int arm_code_range(u64* lo, u64* hi) {
     *lo = g_lo;
@@ -274,7 +276,7 @@ static void rt_coproc(SnxArmCPU* c, u32 w) {
         return;
     }
     if (r == 0x0E070FBA || r == 0x0E070F9A || r == 0x0E070F95) { /* CP15DMB, CP15DSB, CP15ISB */
-        __atomic_thread_fence(__ATOMIC_SEQ_CST);
+        atomic_thread_fence(memory_order_seq_cst);
         return;
     }
     snx_arm_coproc_user(c, w);

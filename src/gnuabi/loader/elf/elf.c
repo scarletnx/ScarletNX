@@ -10,6 +10,7 @@
 #include <stdarg.h>
 #include <errno.h>
 #include <inttypes.h>
+#include <stdatomic.h>
 static uint64_t down(uint64_t n) { return n & ~4095ull; }
 static uint64_t up(uint64_t n) { return (n + 4095) & ~4095ull; }
 /* One program header, normalized across ELF32 and ELF64 layouts. */
@@ -146,7 +147,8 @@ int gnu_elf_load_at(GnuElf* elf, GnuMemory* m, const void* source, size_t size, 
         if (h.pt != 1 || !h.memsz) continue;
         uint64_t va = h.va + elf->bias;
         for (uint64_t page = down(va); page < up(va + h.memsz); page += GNU_PAGE_SIZE) {
-            if (!(m->pages[page / GNU_PAGE_SIZE] & GNU_PAGE_MAPPED) && gnu_memory_map(m, page, GNU_PAGE_SIZE, 3, 0)) {
+            if (!(atomic_load_explicit(&m->pages[page / GNU_PAGE_SIZE], memory_order_relaxed) & GNU_PAGE_MAPPED) &&
+                gnu_memory_map(m, page, GNU_PAGE_SIZE, 3, 0)) {
                 gnu_elf_destroy(elf);
                 return fail(error, cap, "Cannot map the ELF's page at 0x%" PRIx64, page);
             }

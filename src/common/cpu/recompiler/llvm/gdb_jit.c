@@ -9,6 +9,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 
 /* The names, layout and version are GDB's, which reads them from the process's memory */
 enum { JIT_NOACTION, JIT_REGISTER_FN, JIT_UNREGISTER_FN };
@@ -44,8 +45,8 @@ void snx_gdb_jit_remove(const void* owner) { (void)owner; }
    descriptor's stores before it */
 void __jit_debug_register_code(void);
 extern struct jit_descriptor __jit_debug_descriptor;
-__attribute__((weak, noinline)) void __jit_debug_register_code(void) { __asm__ __volatile__("" ::: "memory"); }
-__attribute__((weak)) struct jit_descriptor __jit_debug_descriptor = {1, JIT_NOACTION, NULL, NULL};
+[[gnu::weak, gnu::noinline]] void __jit_debug_register_code(void) { __asm__ __volatile__("" ::: "memory"); }
+[[gnu::weak]] struct jit_descriptor __jit_debug_descriptor = {1, JIT_NOACTION, NULL, NULL};
 
 /* An entry and its object, one allocation: GDB reads the jit_code_entry at its start */
 typedef struct Entry {
@@ -60,10 +61,10 @@ static struct {
     /* 0 until snx_gdb_jit_enable, then 1 for good, read without the lock: a loader that saw it on at a load sees it on
        at its free (it is stored once, and reads of one object keep their order), and one that saw it off registered
        nothing. Never on, nothing takes the lock (nor finds it held by a thread a fork left behind) */
-    int on;
+    _Atomic int on;
 } g_gdb_jit = {PTHREAD_MUTEX_INITIALIZER, NULL, 0};
 
-void snx_gdb_jit_enable(void) { __atomic_store_n(&g_gdb_jit.on, 1, __ATOMIC_RELAXED); }
+void snx_gdb_jit_enable(void) { atomic_store_explicit(&g_gdb_jit.on, 1, memory_order_relaxed); }
 
 /* under the lock */
 static void notify(struct jit_code_entry* entry, uint32_t action) {
@@ -75,7 +76,7 @@ static void notify(struct jit_code_entry* entry, uint32_t action) {
 }
 
 unsigned char* snx_gdb_jit_copy(const void* owner, const void* object, size_t size) {
-    if (!__atomic_load_n(&g_gdb_jit.on, __ATOMIC_RELAXED) || size > SIZE_MAX - sizeof(Entry)) return NULL;
+    if (!atomic_load_explicit(&g_gdb_jit.on, memory_order_relaxed) || size > SIZE_MAX - sizeof(Entry)) return NULL;
     Entry* e = (Entry*)malloc(sizeof(Entry) + size);
     if (!e) return NULL;
     memcpy(e + 1, object, size);
@@ -100,7 +101,7 @@ void snx_gdb_jit_add(unsigned char* copy) {
 
 void snx_gdb_jit_remove(const void* owner) {
     Entry* e;
-    if (!__atomic_load_n(&g_gdb_jit.on, __ATOMIC_RELAXED)) return;
+    if (!atomic_load_explicit(&g_gdb_jit.on, memory_order_relaxed)) return;
     pthread_mutex_lock(&g_gdb_jit.lock);
     for (Entry** link = &g_gdb_jit.first; (e = *link) != NULL;) {
         if (e->owner != owner) {

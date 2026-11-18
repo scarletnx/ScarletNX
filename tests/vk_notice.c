@@ -214,7 +214,7 @@ int main(void) {
                     bad += abs((int)p[bgra ? 2 : 0] - ground[0]) > 1 || abs((int)p[1] - ground[1]) > 1 ||
                            abs((int)p[bgra ? 0 : 2] - ground[2]) > 1;
             }
-        printf("vk_notice: \"%s\" over a %ux%u %s window%s: %u pixels of its band, %u wrong\n", n.text, WW, WH,
+        printf("vk_notice: \"%s\" over a %dx%d %s window%s: %u pixels of its band, %u wrong\n", n.text, WW, WH,
                bgra ? "BGRA" : "RGBA sRGB", k == 3 ? " past its time" : "", inside, bad);
         CHECK(!bad && (k == 3 || inside == (unsigned)(rect[2] * rect[3])));
         vkDestroyImage(m.dev, win, NULL);

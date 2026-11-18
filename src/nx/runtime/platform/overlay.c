@@ -22,6 +22,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 
 enum { FIRST = 3, VISIBLE = OVERLAY_ROWS - FIRST - 1 }; /* the items' first row, and how many show at once */
 enum {
@@ -172,8 +173,8 @@ enum { KEYS_COUNT = sizeof KEYS / sizeof *KEYS };
 /* counts the changes to what the menu and the keyboard's box show: each call below that takes input or sets their
    state adds one, and the renderer lays them out again only when it, or what they read from elsewhere, changed
    (overlay_draw) */
-static u32 g_changes;
-static void changed(void) { __atomic_add_fetch(&g_changes, 1, __ATOMIC_RELEASE); }
+static _Atomic u32 g_changes;
+static void changed(void) { atomic_fetch_add_explicit(&g_changes, 1, memory_order_release); }
 /* RenderDoc in the process, which shows the capture key's row (overlay_keys_extra), and the debugger's name */
 static int keys_capture, keys_mouse; /* keys_mouse: the mouse key's row shows (overlay_keys_mouse) */
 static char keys_debugger[32];
@@ -214,7 +215,8 @@ void overlay_keys_extra(int capture, const char* debugger) {
     keys_capture = capture != 0;
     snprintf(keys_debugger, sizeof keys_debugger, "%s", debugger ? debugger : "");
 }
-static int shown, page, focus, top; /* top: the first item showing */
+static _Atomic int shown;
+static int page, focus, top; /* top: the first item showing */
 /* the save state slots listed (slot 0 the auto one), the one a slot's page is for, what its question asks (OVERLAY_LOAD
    or OVERLAY_DELETE), and whether the list is to be read again */
 static OverlaySlot slots[OVERLAY_SLOTS_MAX];
@@ -303,7 +305,7 @@ static void page_open(int p) {
     refused[0] = 0;
     if (p == PAGE_STATES) slots_stale = 1;
 }
-static int display_percent = 100; /* set on the event thread, read by the renderer's */
+static _Atomic int display_percent = 100; /* set on the event thread, read by the renderer's */
 /* A screen of fingers, as the backend says (a phone's): an item's row is a finger's high at the least, the launcher's
    48 pixels (src/gui's GUI_FINGER_ROW) at the display's scale, its letters in its middle, and a page shows as many
    items at once as the picture has room for. picture: its size as overlay_place last had it */
@@ -318,11 +320,11 @@ static int place_scale(int sw, int sh) {
     /* the tallest page sets the scale, so the letters keep their size from page to page: half the picture, or twice
        the display's scale as the menu's UI scale Auto (src/gui) if that is more, within three quarters of it. A
        phone's short picture held its letters at 2x by the half alone */
-    return snx_menu_scale(sw, sh, __atomic_load_n(&display_percent, __ATOMIC_RELAXED));
+    return snx_menu_scale(sw, sh, atomic_load_explicit(&display_percent, memory_order_relaxed));
 }
 /* an item's row in pixels, its letters at scale s */
 static int item_h(int s) {
-    int finger = (FINGER_ROW * __atomic_load_n(&display_percent, __ATOMIC_RELAXED) + 50) / 100;
+    int finger = (FINGER_ROW * atomic_load_explicit(&display_percent, memory_order_relaxed) + 50) / 100;
     return fingers && finger > 16 * s ? finger : 16 * s;
 }
 /* the items a page shows at once: VISIBLE, or on a screen of fingers as many of their rows as the picture holds with
@@ -390,7 +392,7 @@ static const IniOpt* slider(int i) {
 }
 /* a slider's value now, its knob's place in thousandths of the way from its lowest to its highest */
 static int slider_place(const IniOpt* o) {
-    int v = __atomic_load_n((const int*)o->var, __ATOMIC_RELAXED);
+    int v = atomic_load_explicit((_Atomic const int*)o->var, memory_order_relaxed);
     return o->hi > o->lo ? (int)(((double)v - o->lo) * 1000.0 / (o->hi - o->lo) + 0.5) : 0;
 }
 /* the columns its value takes at its widest, with a pick's " *", which the slider ends before whatever it says */
@@ -411,7 +413,7 @@ static int slide_to(int i, int at) {
     step = o->step > 0 ? o->step : 1;
     steps = (int)((o->hi - o->lo) / step);
     k = (snx_clamp_int(at, 0, 1000) * steps + 500) / 1000;
-    __atomic_store_n((int*)o->var, (int)o->lo + k * step, __ATOMIC_RELAXED);
+    atomic_store_explicit((_Atomic int*)o->var, (int)o->lo + k * step, memory_order_relaxed);
     vpad_store_opt(o);
     return OVERLAY_NONE;
 }
@@ -453,7 +455,7 @@ enum { PICK_TEXT = 256 }; /* a value the Settings page reads or steps */
 static void row_now(const IniOpt* o, char* out, size_t n) {
     if ((o->flags & INI_STARTUP) && ini_next_start(o->key, out, n)) return;
     if (o->type == INI_INT)
-        snprintf(out, n, "%d", __atomic_load_n((const int*)o->var, __ATOMIC_RELAXED));
+        snprintf(out, n, "%d", atomic_load_explicit((_Atomic const int*)o->var, memory_order_relaxed));
     else if (o->type == INI_FLOAT)
         snprintf(out, n, "%g", (double)*(const float*)o->var);
     else
@@ -497,7 +499,7 @@ static void label(int i, char* text, size_t size, char* value, size_t vsize) {
     if (o) {
         char word[OVERLAY_COLS];
         snprintf(text, size, "%s", o->name);
-        ini_word(o, __atomic_load_n((const int*)o->var, __ATOMIC_RELAXED), word, sizeof word);
+        ini_word(o, atomic_load_explicit((_Atomic const int*)o->var, memory_order_relaxed), word, sizeof word);
         snprintf(value, vsize, arrows(o) ? "< %s%s >" : "%s%s", word, own);
         return;
     }
@@ -728,7 +730,7 @@ static int act(int i, int step) {
             *v = to;
             vpad_store_shown(i - 1);
         } else if (page == PAGE_MAIN) { /* stats: the renderer's thread reads it */
-            __atomic_store_n(v, to, __ATOMIC_RELAXED);
+            atomic_store_explicit((_Atomic int*)v, to, memory_order_relaxed);
             vpad_store_opt(o);
         } else {
             *v = to;
@@ -844,7 +846,7 @@ static int act(int i, int step) {
     return OVERLAY_NONE;
 }
 
-int overlay_shown(void) { return __atomic_load_n(&shown, __ATOMIC_ACQUIRE); }
+int overlay_shown(void) { return atomic_load_explicit(&shown, memory_order_acquire); }
 int overlay_states_shown(void) {
     return overlay_shown() && (page == PAGE_STATES || page == PAGE_SLOT || page == PAGE_ASK);
 }
@@ -879,26 +881,26 @@ int overlay_toasting(u64 now_ns) { return toast[0] && now_ns < toast_until; }
    or not */
 static PMutex notice_lock = PMUTEX_INIT;
 static char notice[OVERLAY_COLS_MAX + 1];
-static int notice_given; /* a line waits: the draw takes the lock only then */
+static _Atomic int notice_given; /* a line waits: the draw takes the lock only then */
 void overlay_notice(const char* text) {
     pm_lock(&notice_lock);
     snprintf(notice, sizeof notice, "%s", text);
-    __atomic_store_n(&notice_given, 1, __ATOMIC_RELEASE);
+    atomic_store_explicit(&notice_given, 1, memory_order_release);
     pm_unlock(&notice_lock);
 }
 void overlay_toggle(void) {
     changed();
-    if (!shown) page_open(PAGE_MAIN);
-    __atomic_store_n(&shown, !shown, __ATOMIC_RELEASE);
-    vpad_menu(shown); /* the on-screen controls hide under it */
+    if (!atomic_load_explicit(&shown, memory_order_relaxed)) page_open(PAGE_MAIN);
+    atomic_store_explicit(&shown, !atomic_load_explicit(&shown, memory_order_relaxed), memory_order_release);
+    vpad_menu(atomic_load_explicit(&shown, memory_order_relaxed)); /* the on-screen controls hide under it */
 }
 /* the panel's rows: the page's items under the head, a blank row under them */
 static int rows(void) { return FIRST + (items() < visible() ? items() : visible()) + 1; }
 void overlay_set_display_scale(float scale) {
-    __atomic_store_n(&display_percent, snx_display_percent(scale), __ATOMIC_RELAXED);
+    atomic_store_explicit(&display_percent, snx_display_percent(scale), memory_order_relaxed);
     changed();
 }
-int overlay_display_percent(void) { return __atomic_load_n(&display_percent, __ATOMIC_RELAXED); }
+int overlay_display_percent(void) { return atomic_load_explicit(&display_percent, memory_order_relaxed); }
 void overlay_place(int sw, int sh, int* x, int* y, int* scale) {
     picture[0] = sw;
     picture[1] = sh;
@@ -977,7 +979,8 @@ enum { KB_WAITING, KB_GIVEN, KB_CANCELLED };
 static struct {
     OverlayKeyboard kb;
     u32 units;
-    int kb_shown, refused, answer;
+    _Atomic int kb_shown;
+    int refused, answer;
     DialogRows event_rows;
     struct {
         int pad;
@@ -1200,28 +1203,28 @@ void overlay_keyboard_show(const OverlayKeyboard* k) {
     kb_add(k->text);
     g_overlay.refused = 0;
     g_overlay.answer = KB_WAITING;
-    __atomic_store_n(&g_overlay.kb_shown, 1, __ATOMIC_RELEASE);
+    atomic_store_explicit(&g_overlay.kb_shown, 1, memory_order_release);
     changed();
 }
 void overlay_keyboard_hide(u32 ticket) {
-    if (g_overlay.kb.ticket == ticket) __atomic_store_n(&g_overlay.kb_shown, 0, __ATOMIC_RELEASE);
+    if (g_overlay.kb.ticket == ticket) atomic_store_explicit(&g_overlay.kb_shown, 0, memory_order_release);
     changed();
 }
-int overlay_keyboard_shown(void) { return __atomic_load_n(&g_overlay.kb_shown, __ATOMIC_ACQUIRE); }
+int overlay_keyboard_shown(void) { return atomic_load_explicit(&g_overlay.kb_shown, memory_order_acquire); }
 void overlay_keyboard_type(const char* text) {
-    if (!g_overlay.kb_shown) return;
+    if (!atomic_load_explicit(&g_overlay.kb_shown, memory_order_relaxed)) return;
     kb_add(text);
     g_overlay.refused = 0;
     changed();
 }
 static int kb_answer(int answer) {
     g_overlay.answer = answer;
-    __atomic_store_n(&g_overlay.kb_shown, 0, __ATOMIC_RELEASE);
+    atomic_store_explicit(&g_overlay.kb_shown, 0, memory_order_release);
     return OVERLAY_KEYBOARD;
 }
 int overlay_keyboard_key(int key) {
     size_t end, at;
-    if (!g_overlay.kb_shown) return OVERLAY_NONE;
+    if (!atomic_load_explicit(&g_overlay.kb_shown, memory_order_relaxed)) return OVERLAY_NONE;
     changed();
     if (key == OVERLAY_KEY_CANCEL) return kb_answer(KB_CANCELLED);
     if (key == OVERLAY_KEY_ENTER) {
@@ -1320,7 +1323,7 @@ int overlay_keyboard_typing(int sw, int sh, OverlayTyping* t) {
     KbTexts texts;
     Dialog d;
     DialogDrawn at;
-    if (!g_overlay.kb_shown) return 0;
+    if (!atomic_load_explicit(&g_overlay.kb_shown, memory_order_relaxed)) return 0;
     kb_dialog(&d, &texts);
     dialog_draw(NULL, sw, sh, &d, g_overlay.event_rows, &at);
     t->ticket = g_overlay.kb.ticket;
@@ -1407,7 +1410,10 @@ int overlay_controls(u64 buttons, const i32 sticks[4], u64 ms) {
     const u64 sides = 1ull << 12 | 1ull << 14 | 1ull << 16 | 1ull << 18; /* their lefts and rights */
     u64 now = buttons | (sticks[0] < -16384 ? 1ull << 16 : 0) | (sticks[1] > 16384 ? 1ull << 17 : 0) |
               (sticks[0] > 16384 ? 1ull << 18 : 0) | (sticks[1] < -16384 ? 1ull << 19 : 0),
-        pressed = shown || g_overlay.kb_shown ? now & ~seen : 0;
+        pressed = atomic_load_explicit(&shown, memory_order_relaxed) ||
+                          atomic_load_explicit(&g_overlay.kb_shown, memory_order_relaxed)
+                      ? now & ~seen
+                      : 0;
     int bit, did = OVERLAY_NONE;
     if (map_swallow) { /* the press the button map page took */
         map_swallow = 0;
@@ -1415,15 +1421,18 @@ int overlay_controls(u64 buttons, const i32 sticks[4], u64 ms) {
         return OVERLAY_NONE;
     }
     u64 held = 0;                   /* the lowest direction held, again */
-    if ((pressed & dirs) || !shown) /* a direction held as the menu opens waits as a fresh press would */
+    if ((pressed & dirs) ||
+        !atomic_load_explicit(
+            &shown, memory_order_relaxed)) /* a direction held as the menu opens waits as a fresh press would */
         next = ms + SNX_OVERLAY_REPEAT_DELAY;
-    else if (shown && (now & dirs) && ms >= next) {
+    else if (atomic_load_explicit(&shown, memory_order_relaxed) && (now & dirs) && ms >= next) {
         held = now & dirs & (~(now & dirs) + 1);
         next = ms + SNX_OVERLAY_REPEAT_MS;
     }
     seen = now;
     for (bit = 0; bit < 20 && did == OVERLAY_NONE; ++bit)
-        if (pressed >> bit & 1) did = shown ? overlay_pad(1ull << bit) : kb_pad(1ull << bit);
+        if (pressed >> bit & 1)
+            did = atomic_load_explicit(&shown, memory_order_relaxed) ? overlay_pad(1ull << bit) : kb_pad(1ull << bit);
     if (did == OVERLAY_NONE && held)
         did = held & sides ? overlay_side_held(held & (1ull << 12 | 1ull << 16) ? -1 : 1) : overlay_pad(held);
     return did;
@@ -1633,7 +1642,9 @@ int overlay_tap(float x, float y, int sw, int sh) {
     DialogDrawn at;
     int r, col;
     changed();
-    if (!shown && g_overlay.kb_shown) return kb_tap(x, y, sw, sh);
+    if (!atomic_load_explicit(&shown, memory_order_relaxed) &&
+        atomic_load_explicit(&g_overlay.kb_shown, memory_order_relaxed))
+        return kb_tap(x, y, sw, sh);
     if (listening) { /* a tap, no key: the wait cancelled */
         listening = 0;
         return OVERLAY_NONE;
@@ -1664,7 +1675,9 @@ static int on_panel(float x, float y) {
     char text[VISIBLE][OVERLAY_COLS_MAX + 1], value[VISIBLE][OVERLAY_COLS_MAX + 1], pads[2 * OVERLAY_COLS_MAX + 64];
     Dialog d;
     DialogDrawn at;
-    if (!shown || page == PAGE_MAP || page == PAGE_KEYS || picture[0] <= 0 || picture[1] <= 0) return 0;
+    if (!atomic_load_explicit(&shown, memory_order_relaxed) || page == PAGE_MAP || page == PAGE_KEYS ||
+        picture[0] <= 0 || picture[1] <= 0)
+        return 0;
     menu_dialog(&d, text, value, pads, sizeof pads);
     dialog_draw(NULL, picture[0], picture[1], &d, g_overlay.event_rows, &at);
     return overlay_error_hit(&at.box, x, y);
@@ -1684,7 +1697,9 @@ static int slider_under(float x, float y, SnxOverlayRect* bar, int* scale) {
     Dialog d;
     DialogDrawn at;
     int r;
-    if (!shown || page == PAGE_MAP || page == PAGE_KEYS || picture[0] <= 0 || picture[1] <= 0) return -1;
+    if (!atomic_load_explicit(&shown, memory_order_relaxed) || page == PAGE_MAP || page == PAGE_KEYS ||
+        picture[0] <= 0 || picture[1] <= 0)
+        return -1;
     menu_dialog(&d, text, value, pads, sizeof pads);
     dialog_draw(NULL, picture[0], picture[1], &d, g_overlay.event_rows, &at);
     for (r = 0; r < d.shown; ++r)
@@ -1727,7 +1742,7 @@ static void page_scroll(int rows) {
 }
 void overlay_pointer_move(u64 id, float x, float y, const int safe[4]) {
     /* a finger's slip: 8 pixels at the display's scale, as a tap a phone takes */
-    float slip = 8.0f * (float)__atomic_load_n(&display_percent, __ATOMIC_RELAXED) / 100.0f, dx, dy;
+    float slip = 8.0f * (float)atomic_load_explicit(&display_percent, memory_order_relaxed) / 100.0f, dx, dy;
     int row, rows;
     if (!tap_down || id != tap_id) {
         vpad_move(id, x, y, safe);
@@ -1742,7 +1757,7 @@ void overlay_pointer_move(u64 id, float x, float y, const int safe[4]) {
     dy = y - tap_at[1];
     if (!tap_dragged && dx * dx + dy * dy < slip * slip) return;
     tap_dragged = 1;
-    if (!shown || page == PAGE_MAP || picture[1] <= 0) return;
+    if (!atomic_load_explicit(&shown, memory_order_relaxed) || page == PAGE_MAP || picture[1] <= 0) return;
     row = item_h(place_scale(picture[0], picture[1]));
     rows = (int)(-dy / (float)row); /* up a row, the page a row on */
     if (rows != tap_rows) page_scroll(rows - tap_rows);
@@ -1895,14 +1910,15 @@ static void menu_lay(int sw, int sh, const MenuKey* key) {
 }
 void overlay_draw(SnxUiList* l, int sw, int sh, u64 now_ns) {
     MenuKey key;
-    if (__atomic_load_n(&notice_given, __ATOMIC_ACQUIRE)) {
+    if (atomic_load_explicit(&notice_given, memory_order_acquire)) {
         pm_lock(&notice_lock);
         if (notice[0]) overlay_toast(notice, now_ns);
         notice[0] = 0;
-        __atomic_store_n(&notice_given, 0, __ATOMIC_RELAXED);
+        atomic_store_explicit(&notice_given, 0, memory_order_relaxed);
         pm_unlock(&notice_lock);
     }
-    if (shown && page == PAGE_MAP) { /* the button map's page shows what the pads hold as they hold it */
+    if (atomic_load_explicit(&shown, memory_order_relaxed) &&
+        page == PAGE_MAP) { /* the button map's page shows what the pads hold as they hold it */
         map_draw(l, sw, sh);
         g_menu.laid = 0;
         return;
@@ -1910,8 +1926,10 @@ void overlay_draw(SnxUiList* l, int sw, int sh, u64 now_ns) {
     memset(&key, 0, sizeof key);
     key.sw = sw;
     key.sh = sh;
-    key.what = shown ? MENU_PAGE : g_overlay.kb_shown ? MENU_KB : MENU_NONE;
-    key.changes = __atomic_load_n(&g_changes, __ATOMIC_ACQUIRE);
+    key.what = atomic_load_explicit(&shown, memory_order_relaxed)                ? MENU_PAGE
+               : atomic_load_explicit(&g_overlay.kb_shown, memory_order_relaxed) ? MENU_KB
+                                                                                 : MENU_NONE;
+    key.changes = atomic_load_explicit(&g_changes, memory_order_acquire);
     if (key.what != MENU_NONE) {
         key.hotkeys = hotkeys_version();
         key.pads = gamepad_names_version();

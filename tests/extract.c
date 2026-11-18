@@ -23,6 +23,9 @@
 #if defined(_WIN32) && defined(__clang__)
 #pragma clang diagnostic pop
 #endif
+#ifdef _WIN32
+#include "win32_crash.h"
+#endif
 
 /* the checks made, and the last error line said, which snx_error_sink sends to said_line */
 static struct {
@@ -87,11 +90,16 @@ static void game_add(Game* game, const char* name, blob_t content) {
     game->files[game->count++].content = content;
 }
 
-static blob_t npdm(void) {
+/* an NPDM's header alone, its ACID named at acid_offset: 0 for none of its own */
+static blob_t npdm_acid_at(uint32_t acid_offset) {
     blob_t b = {zalloc(0x80), 0x80};
     memcpy(b.data, "META", 4);
+    put32(b.data + 0x78, acid_offset);
     return b;
 }
+static blob_t npdm(void) { return npdm_acid_at(0); }
+/* an ACID offset 2 GiB past the NPDM, where nothing is mapped */
+#define ACID_FAR 0x7FFFFF00u
 
 static blob_t nacp(void) {
     blob_t b = {zalloc(0x4000), 0x4000};
@@ -108,8 +116,9 @@ static blob_t ticket(void) {
     return b;
 }
 
-static blob_t program(uint64_t title, int with_main) {
-    blob_t code = text_blob("synthetic main"), npdm_file = npdm(), data = text_blob("synthetic romfs data");
+static blob_t program_acid(uint64_t title, int with_main, uint32_t acid_offset) {
+    blob_t code = text_blob("synthetic main"), npdm_file = npdm_acid_at(acid_offset),
+           data = text_blob("synthetic romfs data");
     blob_t first = text_blob("first nro"), second = text_blob("the second NRO");
     romfs_file_t exefs[2] = {{"main.npdm", npdm_file}, {"main", code}};
     /* two files a recompile takes for NROs by their names (driver/nros.c), among others */
@@ -122,6 +131,7 @@ static blob_t program(uint64_t title, int with_main) {
     free(second.data);
     return nca;
 }
+static blob_t program(uint64_t title, int with_main) { return program_acid(title, with_main, 0); }
 
 /* the game's icon as a Control NCA holds it: a JPEG's first bytes and some more, under a language past the first */
 static blob_t icon(void) { return text_blob("\xff\xd8\xff synthetic icon"); }
@@ -522,7 +532,8 @@ static int scenario(const char* scratch, const char* mode) {
             nca_encrypt(&nca, header_key, 20);
             game_add(&game, "program.nca", nca);
         } else
-            game_add(&game, "program.nca", program(TITLE, strcmp(mode, "no-main")));
+            game_add(&game, "program.nca",
+                     program_acid(TITLE, strcmp(mode, "no-main"), strcmp(mode, "npdm-outside") ? 0 : ACID_FAR));
         if (strcmp(mode, "no-control") && strcmp(mode, "dlc-alone")) game_add(&game, "control.nca", control(TITLE));
         write_container(base, &game, kind);
     }
@@ -600,7 +611,7 @@ static int scenario(const char* scratch, const char* mode) {
     } else if (!result) {
         char* romfs = snx_path_join(out, "romfs");
         char* control_romfs = snx_path_join(out, "control.romfs");
-        blob_t want = nacp(), meta = npdm();
+        blob_t want = nacp(), meta = npdm_acid_at(strcmp(mode, "npdm-outside") ? 0 : ACID_FAR);
         CHECK(file_is(exefs, "main", "synthetic main", 14) && file_is(exefs, "main.npdm", meta.data, meta.size));
         free(meta.data);
         CHECK(file_is(romfs, "data.bin", "synthetic romfs data", 20));
@@ -632,6 +643,9 @@ static int scenario(const char* scratch, const char* mode) {
 }
 
 int main(int argc, char** argv) {
+#ifdef _WIN32
+    snx_test_crash_said(); /* a scenario's crash says where it was, in the output its failure prints */
+#endif
     /* name, whether it extracts, and what it must say */
     static const struct {
         const char *mode, *says;
@@ -641,6 +655,8 @@ int main(int argc, char** argv) {
         {"xci", "Done: ", 0},
         {"xci-keyarea", "Done: ", 0},
         {"renamed", "Done: ", 0}, /* an NSP named .XCI: the header decides */
+        /* an NPDM whose ACID is 2 GiB past it: its signature is not read */
+        {"npdm-outside", "Done: ", 0},
         {"homekeys", "prod.keys: line 5 is not a key", 0},
         {"explicit", "prod.keys: line 5 is not a key", 0},
         {"named", "Done: ", 0},

@@ -1,8 +1,9 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* What ir_fpu.c (scalar) and ir_vec_fp.c (AdvSIMD) share of the floating-point emitters: FPCR and FPSR in the CPU
-   structure, i1 logic, the host's FP features the fast paths need, and a few IR pieces that work on scalars and
-   vectors alike. Internal to those two files. */
+/* What the floating-point emitters share: sailgen's back end (tools/sailgen/llvm.h, the scalar instructions) and
+   ir_vec_fp.c (AdvSIMD), and the hand-written scalar ones the tests hold the back end to
+   (tests/support/ir_fpu_reference.c): FPCR and FPSR in the CPU structure, i1 logic, the host's FP features the fast
+   paths need, and a few IR pieces that work on scalars and vectors alike. Internal to them. */
 #ifndef SNX_RECOMPILER_LLVM_IR_FP_H
 #define SNX_RECOMPILER_LLVM_IR_FP_H
 
@@ -58,8 +59,8 @@ static inline int ir_fp_reply_in_memory(SnxIr* ir) {
    helper reads and writes no memory, so it is no site for ir_promote_registers (nothing of the CPU structure is
    unknown behind it) and LLVM may share the FPCR load and the calls themselves. Where the reply comes back
    through memory it lands in a local, which keeps the call out of ir_promote_registers too. */
-static inline LLVMValueRef ir_fp_reply_call(SnxIr* ir, const char* name, LLVMValueRef* operands, unsigned count,
-                                            int with_fpsr) {
+static inline LLVMValueRef ir_fp_reply_call_fpcr(SnxIr* ir, const char* name, LLVMValueRef* operands, unsigned count,
+                                                 int with_fpsr, LLVMValueRef fpcr_value) {
     /* in registers, a big-endian host's ABI (PowerPC64's ELFv2, MIPS64's n64) loads the structure's second
        doubleword whole, the flags in its high half. The byte order is the target machine's: llvm_vfp_compare sets
        big_endian on a little-endian host to run the big-endian lane paths, and the helper's ABI stays the host's */
@@ -72,7 +73,7 @@ static inline LLVMValueRef ir_fp_reply_call(SnxIr* ir, const char* name, LLVMVal
         args[i] = operands[i];
         params[i] = LLVMTypeOf(operands[i]);
     }
-    args[n] = fpcr(ir);
+    args[n] = fpcr_value;
     params[n++] = ir->t_i32;
     if (with_fpsr) {
         args[n] = fpsr(ir);
@@ -104,6 +105,11 @@ static inline LLVMValueRef ir_fp_reply_call(SnxIr* ir, const char* name, LLVMVal
     if (high) flags = LLVMBuildTrunc(ir->b, LLVMBuildLShr(ir->b, flags, ir_i64(ir, 32), ""), ir->t_i32, "");
     ir_cpu_store(ir, LLVMBuildOr(ir->b, fpsr(ir), flags, ""), offsetof(CPU, fpsr));
     return LLVMBuildExtractValue(ir->b, call, 0, "");
+}
+/* the same with FPCR as fpcr_value (an i32): the value an instruction read once */
+static inline LLVMValueRef ir_fp_reply_call(SnxIr* ir, const char* name, LLVMValueRef* operands, unsigned count,
+                                            int with_fpsr) {
+    return ir_fp_reply_call_fpcr(ir, name, operands, count, with_fpsr, fpcr(ir));
 }
 static inline LLVMValueRef ir_fp_call(SnxIr* ir, const char* name, LLVMValueRef* operands, unsigned count) {
     return ir_fp_reply_call(ir, name, operands, count, 0);
@@ -202,13 +208,14 @@ static inline LLVMValueRef float_ne(SnxIr* ir, LLVMValueRef a, LLVMValueRef b) {
     return LLVMBuildFCmp(ir->b, LLVMRealUNE, a, b, "");
 }
 
-/* Fixed Arm rounding modes, or 5 for FPCR.RMode. A dynamic mode executes only its selected intrinsic. */
-static inline LLVMValueRef ir_fp_round_value(SnxIr* ir, LLVMValueRef value, unsigned mode) {
+/* Fixed Arm rounding modes, or 5 for FPCR.RMode, rmode (an i32 0-3). A dynamic mode executes only its selected
+   intrinsic. */
+static inline LLVMValueRef ir_fp_round_value_in(SnxIr* ir, LLVMValueRef value, unsigned mode, LLVMValueRef rmode) {
     static const char* const names[] = {"llvm.roundeven", "llvm.ceil", "llvm.floor", "llvm.trunc", "llvm.round"};
     if (mode < 5) return ir_intrinsic(ir, names[mode], LLVMTypeOf(value), &value, 1);
     LLVMBasicBlockRef blocks[4], join = ir_block(ir, "fp_round_join");
     for (unsigned i = 0; i < 4; ++i) blocks[i] = ir_block(ir, "fp_round_mode");
-    LLVMValueRef select = LLVMBuildSwitch(ir->b, fpcr_rmode(ir), blocks[3], 3), results[4];
+    LLVMValueRef select = LLVMBuildSwitch(ir->b, rmode, blocks[3], 3), results[4];
     for (unsigned i = 0; i < 3; ++i) LLVMAddCase(select, ir_i32(ir, i), blocks[i]);
     for (unsigned i = 0; i < 4; ++i) {
         LLVMPositionBuilderAtEnd(ir->b, blocks[i]);
@@ -219,6 +226,10 @@ static inline LLVMValueRef ir_fp_round_value(SnxIr* ir, LLVMValueRef value, unsi
     LLVMValueRef result = LLVMBuildPhi(ir->b, LLVMTypeOf(value), "");
     LLVMAddIncoming(result, results, blocks, 4);
     return result;
+}
+/* with FPCR's mode read here */
+static inline LLVMValueRef ir_fp_round_value(SnxIr* ir, LLVMValueRef value, unsigned mode) {
+    return ir_fp_round_value_in(ir, value, mode, mode < 5 ? NULL : fpcr_rmode(ir));
 }
 
 /* Knuth TwoSum's error term, with the rounded sum already available. No reassociation or contraction is allowed. */

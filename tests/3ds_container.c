@@ -247,9 +247,18 @@ static int with_update(const char* game_path, const char* update_path, const cha
     uint32_t init[] = {0x8010002, 0x20, 0xffffffff};
     ctr_call(p, fs, init, 3, SNX_CTR_SVC_RETURN, 0);
     assert(!ctr_command_word(p, 1));
+    /* the tree's exefs/icon: the source's own bytes, a host file (an extraction's left in STATE), or none */
+    const unsigned char* own = snx_ctr_source_exefs(game, "icon", &icon);
+    FsNode* node = NULL;
+    pm_lock(&p->tree->lock);
+    const char* exefs_icon = fs_tree_lookup(p->tree, NULL, "exefs/icon", &node) ? "none"
+                             : !node->is_virtual                               ? "host"
+                             : own && node->size == icon && !memcmp(node->virtual_data, own, (size_t)icon) ? "own"
+                                                                                                          : "other";
+    pm_unlock(&p->tree->lock);
     char self[32], self_update[32];
-    printf("self romfs %s update-romfs %s\n", self_romfs(p, fs, 0, self, sizeof self),
-           self_romfs(p, fs, 5, self_update, sizeof self_update));
+    printf("self romfs %s update-romfs %s exefs-icon %s\n", self_romfs(p, fs, 0, self, sizeof self),
+           self_romfs(p, fs, 5, self_update, sizeof self_update), exefs_icon);
     snx_ctr_process_free(p);
     snx_ctr_source_close(game);
     return 0;

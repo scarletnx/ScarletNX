@@ -55,7 +55,7 @@ guest for free, and each part below notes where that matters.
 | Host | Systems | Objects | Pages | Runtime JIT | General registers | Flags | Memory order against Arm's |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | x86-64 | Linux, Windows, FreeBSD, Solaris, Android | ELF, COFF on Windows | 4 KiB | Yes, on Windows from 10 1803 | 16 | Yes, with the carry of a subtraction inverted against Arm's C | Stronger (TSO) |
-| AArch64 | Linux, Android, iOS, macOS | ELF, or a Mach-O dylib with an ad hoc signature on Apple systems | 4 KiB on most Linux and Android, 16 KiB on Apple silicon | Yes. macOS through `MAP_JIT`, iOS only with a debugger attached | 31, the guest's own | NZCV, the guest's own | The same |
+| AArch64 | Linux, Android, iOS, macOS, Windows | ELF, a Mach-O dylib with an ad hoc signature on Apple systems, COFF on Windows | 4 KiB on most Linux and Android, 16 KiB on Apple silicon | Yes. macOS through `MAP_JIT`, iOS only with a debugger attached | 31, the guest's own | NZCV, the guest's own | The same |
 | PowerPC64, little and big endian | Linux | ELF, ELFv1 or ELFv2 | 64 KiB on most ppc64le kernels | Yes | 32, less r1, r2 and r13 | Condition register fields and the carry in XER | Weaker: not multi-copy atomic |
 | RISC-V 64 | Linux | ELF | 4 KiB | No | 32, less zero, sp, gp and tp | No integer flags | Close (RVWMO) |
 | LoongArch 64 | Linux | ELF | Set by the kernel | No | 32, less zero, tp, sp and r21 | No integer flags | Weak, still to be compared with Arm's |
@@ -633,7 +633,7 @@ I7 reduces state synchronization but leaves one call per lane. It is a prerequis
   Keep existing code where LLVM already produces the proposed sequence. Add a target-specific lowering only for a
   measured gap, with a portable exact path for other hosts. SLP remains a separately tested option while its known
   compiler issue is unresolved (`slp_vectorizer` in `settings.txt`).
-- **Where.** `ir_vec_fp.c`, `ir_vec.c`, `ir_fpu.c`, `ir_vec_crypto.c` where applicable, and `tests/` for compiler
+- **Where.** `ir_vec_fp.c`, `ir_vec.c`, `tools/sailgen/llvm.h`, `ir_vec_crypto.c` where applicable, and `tests/` for compiler
   fixtures, exactness tests and benchmarks. New helper contracts also touch `cpu.h` and `helpers/`.
 - **ABI.** Internal IR changes need no bump. New generated-code/runtime helper contracts require review and a bump
   when incompatible. Include affected helper definitions in cache invalidation.
@@ -720,7 +720,7 @@ not claims about Rosetta's undocumented implementation. They do not depend on a 
 
 - **Change.** Emit the Arm ARM's estimate tables and steps inline, for all lanes at once. The results are defined bit
   for bit, so the inline form must match the helper exactly. Games use these estimates in vector math.
-- **Where.** `ir_vec_fp.c`, `ir_fpu.c`.
+- **Where.** `ir_vec_fp.c`, `tools/sailgen/llvm.h`.
 - **ABI.** None.
 - **Proof.** The differential test with `--sweep` on these rows.
 - **Size and priority.** M, P1.
@@ -751,8 +751,8 @@ Johnson writes that the M1 has a non-standard mode, close to the later FEAT_AFP 
 in hardware. x87 is a full but slow software emulation.
 
 **ScarletNX now.** FP runs on the host's IEEE unit only behind guards that prove the result and the cumulative flags
-equal the soft-float helper's, and the helper runs otherwise (`fast_binary`, `fast_sqrt` and `fast_fma` in
-`src/common/cpu/recompiler/llvm/ir_fpu.c`). The helpers follow the Arm ARM for NaN propagation, the default NaN, flush
+equal the soft-float helper's, and the helper runs otherwise (`sg_fp_fast_binary`, `sg_fp_fast_sqrt` and `sg_fp_fast_fma` in
+`tools/sailgen/llvm.h`). The helpers follow the Arm ARM for NaN propagation, the default NaN, flush
 to zero and every rounding mode (`src/common/cpu/aarch64/helpers/fp.c`), and no FP group differs from QEMU
 (`tests/llvm_qemu_expected.txt`). A directed rounding mode sends every operation to a helper. The FMA fast path waits
 until FPSR.IXC is set and needs a host FMA. Halves, scalar `FRINT*` and `FJCVTZS` always call helpers. The
@@ -761,14 +761,14 @@ until FPSR.IXC is set and needs a host FMA. Halves, scalar `FRINT*` and `FJCVTZS
 **On each host.** The guards are host-generic, because each proves the host result equal to the helper's whatever the
 host's own rules are. That covers RISC-V, which never propagates a NaN payload, since the fast paths never produce a
 NaN. Only ties-away rounding (`FRINTA`, `FCVTA*`) has a fast path limited to AArch64 hosts, which have that rounding
-instruction (`ir_fpu.c`). An AArch64 host can drop the guards altogether, as Rosetta's hardware mode lets it (I12).
+instruction (`tools/sailgen/llvm.h`). An AArch64 host can drop the guards altogether, as Rosetta's hardware mode lets it (I12).
 
 ##### I11 More guarded FP paths
 
 - **Change.** Prove the inexact flag of a single FMA through a residual in double, and of a double FMA with an
   error-free residual. Use F16C for halves on x86-64 hosts that have it, and the `llvm.roundeven` family for scalar
   `FRINT*` as the vector form already does.
-- **Where.** `ir_fpu.c`, `ir_vec_fp.c`.
+- **Where.** `tools/sailgen/llvm.h`, `ir_vec_fp.c`.
 - **ABI.** None.
 - **Proof.** The differential test with `--sweep`, on each host.
 - **Size and priority.** M, P2.
@@ -779,7 +779,7 @@ instruction (`ir_fpu.c`). An AArch64 host can drop the guards altogether, as Ros
   the host's on every path into the runtime. Emit plain host FP with no guards, read the host FPSR at `MRS FPSR` and at
   exits, and keep `FPCR.AH` clear on hosts with FEAT_AFP. Mark functions with LLVM's dynamic denormal mode so constant
   folding does not assume the default environment.
-- **Where.** `ir_fpu.c`, `ir_vec_fp.c`, `ir_codegen.c`, the thread loop and the SVC entry in the runtime.
+- **Where.** `tools/sailgen/llvm.h`, `ir_vec_fp.c`, `ir_codegen.c`, the thread loop and the SVC entry in the runtime.
 - **ABI.** Bump.
 - **Proof.** The differential test on an AArch64 host, with all FPCR modes.
 - **Size and priority.** M, P1 for AArch64 hosts.
@@ -862,8 +862,9 @@ can show what plain accesses do there.
   that emits an AArch64 object, and mold and then LLD by linking, rather than looking a name up on `PATH`, and uses
   the first pair that builds the image. `gnuabi_litmus_lld` forces LLD, so both linkers are
   covered where both are installed. `gnuabi_litmus_self` checks the driver's own decisions and needs no toolchain, so
-  it runs on every host, Windows and macOS included. The AArch64 Linux job installs Clang, LLD and mold, so both
-  linker paths run there. The x86-64 job installs LLD alone, so its two runs use LLD. The guest fixtures are registered under `if (NOT WIN32)`, so Windows x86-64 or ARM64 runs the guest
+  it runs on every host, Windows and macOS included. Each Linux job installs Clang, LLD and mold for its tests, so
+  both linker paths run on x86-64 and AArch64.
+  The guest fixtures are registered under `if (NOT WIN32)`, so Windows x86-64 or ARM64 runs the guest
   half only once that registration leaves the block. Load buffering, IRIW, message passing with an address dependency,
   and the `dmb ishst` and `STLR` fixes are not there yet.
 - **ABI.** None.
@@ -1151,8 +1152,8 @@ The readers of the code for this plan found these. Each needs a check against th
 
 * `docs/dev/architecture.md` says guest accesses are volatile, and the header comment of `ir_ldst.c` says the same. The
   `volatile_memory` setting defaults to 0, so they are volatile only when it is on.
-* `docs/dev/architecture.md` names `ir_fp_fast`, which does not exist. The fast paths are `fast_binary`, `fast_sqrt` and
-  `fast_fma` in `ir_fpu.c`.
+* `docs/dev/architecture.md` names `ir_fp_fast`, which does not exist. The fast paths are `sg_fp_fast_binary`, `sg_fp_fast_sqrt` and
+  `sg_fp_fast_fma` in `tools/sailgen/llvm.h`.
 * `docs/history/divergences.md` lists FP failures from an older audit. The code now uses guarded fast paths and soft-float
   helpers, and `tests/llvm_qemu_expected.txt` lists no FP group.
 * `docs/dev/roadmap.md` lists ARM NaN propagation, default NaN and directed rounding as CPU work. The helpers in

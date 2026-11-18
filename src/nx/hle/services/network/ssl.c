@@ -26,6 +26,7 @@
 #include <openssl/pkcs12.h>
 #include <openssl/ssl.h>
 #include <openssl/x509v3.h>
+#include <stdatomic.h>
 
 enum {
     /* SslVersion: Auto, or the versions allowed, one bit each from TLS 1.0 at bit 3 */
@@ -818,7 +819,7 @@ static void ctx_destroy(SvcObj* o) {
     EVP_PKEY_free(x->client_key);
     X509_free(x->client_cert);
     sk_X509_pop_free(x->client_chain, X509_free);
-    __atomic_sub_fetch(&g_hle.ssl.contexts, 1, __ATOMIC_RELAXED);
+    atomic_fetch_sub_explicit(&g_hle.ssl.contexts, 1, memory_order_relaxed);
 }
 
 /* ============================================================ ISslService */
@@ -867,13 +868,13 @@ static int nn_ssl_sf_ISslService_CreateContext(SvcObj* self, nn_ssl_sf_SslVersio
     x->pid = pid;
     x->crl_date_check = 1; /* libnx: 1 when the context is made */
     o->destroy = ctx_destroy;
-    __atomic_add_fetch(&g_hle.ssl.contexts, 1, __ATOMIC_RELAXED);
+    atomic_fetch_add_explicit(&g_hle.ssl.contexts, 1, memory_order_relaxed);
     LOG("ssl: CreateContext(version %#x)\n", (unsigned)ssl_version);
     *context = o;
     R_SUCCEED();
 }
 static int nn_ssl_sf_ISslService_GetContextCount(SvcObj* self, u32* count) {
-    *count = (u32)__atomic_load_n(&g_hle.ssl.contexts, __ATOMIC_RELAXED);
+    *count = (u32)atomic_load_explicit(&g_hle.ssl.contexts, memory_order_relaxed);
     R_SUCCEED();
 }
 /* No system archive, so no built-in certificates: the buffer holds just the terminating entry {-1, -1, 0, 0} */

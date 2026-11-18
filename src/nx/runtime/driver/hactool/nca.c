@@ -548,7 +548,9 @@ void nca_process(nca_ctx_t *ctx) {
                     /* Verify NPDM sig now, if we can... */
                     if (ctx->section_contexts[i].pfs0_ctx.is_exefs) {
                         ctx->npdm = ctx->section_contexts[i].pfs0_ctx.npdm;
-                        if (rsa2048_pss_verify(&signed_header->magic, 0x200, ctx->header.npdm_key_sig, npdm_get_acid(ctx->npdm)->modulus)) {
+                        /* ScarletNX: an ACID outside the NPDM is not read, and its signature is invalid */
+                        if (npdm_acid_inside(ctx->npdm, ctx->section_contexts[i].pfs0_ctx.npdm_size) &&
+                            rsa2048_pss_verify(&signed_header->magic, 0x200, ctx->header.npdm_key_sig, npdm_get_acid(ctx->npdm)->modulus)) {
                             ctx->npdm_sig_validity = VALIDITY_VALID;
                         } else {
                             ctx->npdm_sig_validity = VALIDITY_INVALID;
@@ -1064,6 +1066,7 @@ void nca_process_pfs0_section(nca_section_ctx_t *ctx) {
             }
 
             ctx->pfs0_ctx.npdm = malloc(cur_file->size);
+            ctx->pfs0_ctx.npdm_size = cur_file->size;
             if (ctx->pfs0_ctx.npdm == NULL) {
                 fprintf(stderr, "Failed to allocate NPDM!\n");
                 exit(EXIT_FAILURE);

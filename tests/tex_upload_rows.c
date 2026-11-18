@@ -195,7 +195,7 @@ void rec_CmdClearDepthStencilImage(VkCommandBuffer cb, VkImage img, VkImageLayou
 
 /* ------------------------------------------------ what texture.c reaches otherwise, unused here */
 VkState g_vk;
-u64 g_vk_texture_epoch; /* release.c's: render target snapshots, which no upload takes */
+_Atomic u64 g_vk_texture_epoch; /* release.c's: render target snapshots, which no upload takes */
 /* Uploading into the fixture's existing image never creates views or samplers. Keep the registry boundary
    explicit, and fail if an upload unexpectedly starts exercising object creation. */
 VkResult vk_image_view_create(VkDevice device, const VkImageViewCreateInfo* info,
@@ -211,7 +211,7 @@ VkResult vk_sampler_create(VkDevice device, const VkSamplerCreateInfo* info,
     abort();
 }
 _Atomic int g_cs_any;
-u64 g_tex_cache_hits, g_tex_cache_misses, g_tex_upload_bytes, g_tex_frees;
+_Atomic u64 g_tex_cache_hits, g_tex_cache_misses, g_tex_upload_bytes, g_tex_frees;
 u32 g_vk_present;
 static char g_log[1024]; /* the last line logged */
 void logf_(int lvl, const char* fmt, ...) {
@@ -260,6 +260,31 @@ static struct {
     u64 content[2];
 } g_astc_key;
 u64 vk_bc7_strip_blocks(void) { abort(); }
+/* the ASTC stream on the compute queue (astc.c): no texture here goes to it, so its images take the graphics queue
+   alone and nothing else of it runs */
+int vk_astc_stream_fits(const Surf* t) {
+    (void)t;
+    return 0;
+}
+void vk_both_queues(VkSharingMode* mode, u32* count, const u32** families) {
+    *mode = VK_SHARING_MODE_EXCLUSIVE;
+    *count = 0;
+    *families = NULL;
+}
+VkCommandBuffer vk_astc_stream_cmd(void) { abort(); }
+VkBuffer vk_astc_stream_bl(u64 size, u64* cap_out) {
+    (void)size, (void)cap_out;
+    abort();
+}
+u8* vk_stream_upload(u64 size, u64 align, VkBuffer* buf, u64* off) {
+    (void)size, (void)align, (void)buf, (void)off;
+    abort();
+}
+int vk_release_pending(u64 gva, u64 len) {
+    (void)gva, (void)len;
+    abort();
+}
+const Renderer* g_renderer; /* read by the stream's check alone */
 /* the blocks a texture held as BC7 keeps for its BC7 image (astc.c): a buffer in name only, which no case here reads */
 int vk_astc_keep(Surf* t) {
     t->bc7.kept = (VkBuffer)(uintptr_t)0xB7;
@@ -352,6 +377,9 @@ void vk_surf_use(VkCommandBuffer cb, Surf* s, VkImageLayout layout, VkPipelineSt
                  VkAccessFlags2 access) {
     (void)cb, (void)s, (void)layout, (void)stage_, (void)access;
 }
+/* surface.c's batch of a copy's two barriers: vk_surf_use records nothing here */
+void vk_surf_batch_begin(void) {}
+void vk_surf_batch_end(void) {}
 VkImageAspectFlags vk_aspect(const VkFmt* f) {
     return f->depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
 }

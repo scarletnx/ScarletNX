@@ -1597,9 +1597,11 @@ static int logged_marks(VkWriteLog* log, const u32* from, const u32* n, u32 runs
         for (u32 i = 0; i < SH_WLOG_MASK; i++) flag |= masks[w][i] != 0;
         memcpy(data, &flag, 4);
         memcpy(data + 16, masks[w], sizeof masks[w]);
-        VkBufferCopy copy[2] = {{at, (u64)w * 4, 4},
-                                {at + 16, ((u64)SH_WPAGE_SLOT + (u64)w * SH_WLOG_MASK) * 4, sizeof masks[w]}};
-        rec_CmdCopyBuffer(vk_cmd(), src, vk_wlog_buffer(log), 2, copy);
+        VkBufferCopy copy[3] = {{at, (u64)w * 4, 4},
+                                {at + 16, ((u64)SH_WPAGE_SLOT + (u64)w * SH_WLOG_MASK) * 4, sizeof masks[w]},
+                                {at, ((u64)SH_WPAGE_SLOT * (1u + SH_WLOG_MASK) + w / 64) * 4, 4}};
+        /* the coarse word only from a window written: an unwritten one's 0 would clear another's */
+        rec_CmdCopyBuffer(vk_cmd(), src, vk_wlog_buffer(log), flag ? 3 : 2, copy);
     }
     return 0;
 }
@@ -1919,13 +1921,13 @@ static int check_uma_alias_merge(void) {
 #define UMA_GAR 0xc40000000ull
 typedef struct {
     u8 bytes[256];
-    u32 done;
+    _Atomic u32 done;
     int failed;
 } AliasRead;
 static void alias_read_thread(void* arg) {
     AliasRead* r = arg;
     r->failed = gmem_read(UMA_GAR + 0x800, r->bytes, sizeof r->bytes) != 0;
-    __atomic_store_n(&r->done, 1u, __ATOMIC_RELEASE);
+    atomic_store_explicit(&r->done, 1u, memory_order_release);
     plat_wake_word(&r->done);
 }
 static int check_uma_alias_cpu_read(void) {
@@ -1948,7 +1950,7 @@ static int check_uma_alias_cpu_read(void) {
     const u64 recorded = vk_submit_number();
     vk_unlock();
     CHECK(plat_thread(alias_read_thread, &r, 0) == 0);
-    while (!__atomic_load_n(&r.done, __ATOMIC_ACQUIRE)) plat_wait_word(&r.done, 0, 100000000);
+    while (!atomic_load_explicit(&r.done, memory_order_acquire)) plat_wait_word(&r.done, 0, 100000000);
     u32 old = 0;
     for (u32 i = 0; i < 256; i++) old += r.bytes[i] != 0x44;
     vk_lock();

@@ -9,6 +9,7 @@
 #include "nx/runtime/platform/tracy.h"
 #include <stdio.h>
 #include <string.h>
+#include <stdatomic.h>
 
 #define GSTAT_TOP_THREADS 5  /* the busiest threads a line names */
 #define GSTAT_TOP_SVCS    6  /* the SVCs a line names, the most made first */
@@ -17,9 +18,9 @@ typedef char snx_check_gstat_top[GSTAT_TOP_THREADS <= GSTAT_FAMILIES && GSTAT_TO
 
 /* a slot's counters, which only its thread adds to (slot 0: any host thread's) */
 typedef struct {
-    u64 svc[GSTAT_SVCS];
-    u64 count[GSTAT_COUNTS];
-    u64 hook[GSTAT_FAMILIES];
+    _Atomic u64 svc[GSTAT_SVCS];
+    _Atomic u64 count[GSTAT_COUNTS];
+    _Atomic u64 hook[GSTAT_FAMILIES];
     char pad[64]; /* the next slot's counters on another cache line, wherever the array starts */
 } GstatCounters;
 
@@ -44,17 +45,17 @@ static struct {
 
 /* one more in a counter of slot ix. Only its own thread writes a guest thread's slot, so a load and a store do, with no
    locked add on the paths that count; slot 0's are any host thread's */
-static void bump(u32 ix, u64* n) {
+static void bump(u32 ix, _Atomic u64* n) {
     if (ix)
-        __atomic_store_n(n, __atomic_load_n(n, __ATOMIC_RELAXED) + 1, __ATOMIC_RELAXED);
+        atomic_store_explicit(n, atomic_load_explicit(n, memory_order_relaxed) + 1, memory_order_relaxed);
     else
-        __atomic_add_fetch(n, 1, __ATOMIC_RELAXED);
+        atomic_fetch_add_explicit(n, 1, memory_order_relaxed);
 }
 void guest_stats_svc(u32 ix, u32 imm) {
     bump(ix, &g_guest_stats.slot[ix].svc[imm < SNX_SVC_COUNT ? imm : SNX_SVC_COUNT]);
 }
 void guest_stats_add(u32 ix, unsigned what) { bump(ix, &g_guest_stats.slot[ix].count[what]); }
-u64* guest_stats_counter(u32 ix, unsigned what) { return &g_guest_stats.slot[ix].count[what]; }
+_Atomic u64* guest_stats_counter(u32 ix, unsigned what) { return &g_guest_stats.slot[ix].count[what]; }
 void guest_stats_hook(u32 ix, unsigned family) { bump(ix, &g_guest_stats.slot[ix].hook[family]); }
 unsigned guest_stats_family(const char* name) {
     unsigned i;
@@ -123,9 +124,9 @@ static void sums(u64 svc[GSTAT_SVCS], u64 count[GSTAT_COUNTS], u64 hook[GSTAT_FA
     memset(hook, 0, GSTAT_FAMILIES * sizeof *hook);
     for (u32 ix = 0; ix < GSTAT_SLOTS; ix++) {
         const GstatCounters* s = &g_guest_stats.slot[ix];
-        for (u32 i = 0; i < GSTAT_SVCS; i++) svc[i] += __atomic_load_n(&s->svc[i], __ATOMIC_RELAXED);
-        for (u32 i = 0; i < GSTAT_COUNTS; i++) count[i] += __atomic_load_n(&s->count[i], __ATOMIC_RELAXED);
-        for (u32 i = 0; i < GSTAT_FAMILIES; i++) hook[i] += __atomic_load_n(&s->hook[i], __ATOMIC_RELAXED);
+        for (u32 i = 0; i < GSTAT_SVCS; i++) svc[i] += atomic_load_explicit(&s->svc[i], memory_order_relaxed);
+        for (u32 i = 0; i < GSTAT_COUNTS; i++) count[i] += atomic_load_explicit(&s->count[i], memory_order_relaxed);
+        for (u32 i = 0; i < GSTAT_FAMILIES; i++) hook[i] += atomic_load_explicit(&s->hook[i], memory_order_relaxed);
     }
 }
 

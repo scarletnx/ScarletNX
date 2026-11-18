@@ -7,6 +7,7 @@
 #include "nx/hle/services/network/network.h"
 #include <stdarg.h>
 #include <time.h>
+#include <stdatomic.h>
 
 #include "hle/services/network/bsd.swipc.h"
 #include "nx/hle/services/network/ssl.c"
@@ -205,7 +206,7 @@ static int sbio_create(BIO* b) {
    server answers with its close_notify, or until the client goes */
 enum { SERVER_CONNECTIONS = 5 };
 static SnxSocket* listener;
-static int server_handshakes;
+static _Atomic int server_handshakes;
 #ifdef _WIN32
 static DWORD WINAPI server(void* arg) {
 #else
@@ -234,7 +235,7 @@ static void* server(void* arg) {
         BIO_set_data(b, s);
         SSL_set_bio(ssl, b, b);
         if (SSL_accept(ssl) == 1) {
-            __atomic_add_fetch(&server_handshakes, 1, __ATOMIC_SEQ_CST);
+            atomic_fetch_add_explicit(&server_handshakes, 1, memory_order_seq_cst);
             while (SSL_read_ex(ssl, line, sizeof line, &n) == 1) {
                 if (n == 5 && !memcmp(line, "close", 5)) {
                     SSL_shutdown(ssl);

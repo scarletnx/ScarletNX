@@ -3,6 +3,7 @@
 #include "nx/gpu/vk/shader_objects.h"
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 #include "common/gpu/vk/shader_object.h"
 #include "common/gpu/vk/vk_common.h"
 #include "common/utilities/bits.h"
@@ -69,10 +70,10 @@ static struct {
     /* the binaries of the objects, and their file (bin_lock): open once vk_so_init read it */
     PMutex bin_lock;
     SnxVkShaderBinaries bin;
-    int bin_open;
+    _Atomic int bin_open;
     char bin_path[1200];
     /* atomics: the objects made, those from a binary, and their ns */
-    u64 made, from_binary, ns;
+    _Atomic u64 made, from_binary, ns;
 } g_so = {.spirv_lock = PMUTEX_INIT, .stage_lock = PMUTEX_INIT, .bin_lock = PMUTEX_INIT};
 
 static u64 mod_bits(VkShaderModule m) { return (u64)(uintptr_t)m; }
@@ -170,9 +171,12 @@ static VkShaderStageFlags next_stages(VkShaderStageFlagBits stage) {
 /* The object of st made, from the binary of an earlier run where the file has one the driver takes, else compiled
    from words and its binary kept. VK_NULL_HANDLE when the device refuses it */
 static VkShaderEXT stage_create(const SoStage* st, const u32* words, size_t count) {
-    VkDescriptorSetLayout sets[5];
-    for (u32 s = 0; s < g_vk_stage_sets; s++) sets[s] = g_vk_dslayout[(st->arrays >> s) & 1][s];
-    VkPushConstantRange pc = {VK_PUSH_STAGES, 0, 128}; /* vk_playout's */
+    /* vk_playout's sets: with split sets, each stage's textures five after its buffers */
+    VkDescriptorSetLayout sets[11];
+    u32 nsets = g_spirv_translate.split_sets ? 10 : g_vk_stage_sets;
+    for (u32 s = 0; s < nsets; s++) sets[s] = g_vk_dslayout[(st->arrays >> (s % 5)) & 1][s];
+    if (g_spirv_translate.tex_table) sets[nsets++] = vk_table_layout(); /* at table_set */
+    VkPushConstantRange pc = {VK_PUSH_STAGES, 0, vk_push_bytes()};      /* vk_playout's */
     u32 values[SH_SPEC_COUNT];
     VkSpecializationMapEntry entries[SH_SPEC_COUNT];
     VkSpecializationInfo spec = {0};
@@ -192,7 +196,7 @@ static VkShaderEXT stage_create(const SoStage* st, const u32* words, size_t coun
         .codeSize = count * sizeof *words,
         .pCode = words,
         .pName = "main",
-        .setLayoutCount = g_vk_stage_sets,
+        .setLayoutCount = nsets,
         .pSetLayouts = sets,
         .pushConstantRangeCount = 1,
         .pPushConstantRanges = &pc,
@@ -207,7 +211,7 @@ static VkShaderEXT stage_create(const SoStage* st, const u32* words, size_t coun
     void* binary = NULL;
     size_t size = 0;
     pm_lock(&g_so.bin_lock);
-    if (g_so.bin_open) {
+    if (atomic_load_explicit(&g_so.bin_open, memory_order_relaxed)) {
         const void* kept = snx_vk_shader_binary(&g_so.bin, key, &size);
         if (kept && (binary = malloc(size)) != NULL) memcpy(binary, kept, size); /* its table may grow meanwhile */
     }
@@ -221,7 +225,7 @@ static VkShaderEXT stage_create(const SoStage* st, const u32* words, size_t coun
         if (vkCreateShadersEXT(g_vk.dev, 1, &from, NULL, &obj) != VK_SUCCESS) obj = VK_NULL_HANDLE;
         free(binary);
         if (obj)
-            __atomic_add_fetch(&g_so.from_binary, 1, __ATOMIC_RELAXED);
+            atomic_fetch_add_explicit(&g_so.from_binary, 1, memory_order_relaxed);
         else
             refused = 1; /* compiled again below, and its new binary takes the place of this one */
     }
@@ -237,7 +241,7 @@ static VkShaderEXT stage_create(const SoStage* st, const u32* words, size_t coun
         /* the driver's binary got outside bin_lock, which the other workers' lookups take */
         size_t got = 0;
         void* data = NULL;
-        if (__atomic_load_n(&g_so.bin_open, __ATOMIC_ACQUIRE) &&
+        if (atomic_load_explicit(&g_so.bin_open, memory_order_acquire) &&
             vkGetShaderBinaryDataEXT(g_vk.dev, obj, &got, NULL) == VK_SUCCESS && got && (data = malloc(got)) != NULL &&
             vkGetShaderBinaryDataEXT(g_vk.dev, obj, &got, data) == VK_SUCCESS) {
             pm_lock(&g_so.bin_lock);
@@ -248,8 +252,8 @@ static VkShaderEXT stage_create(const SoStage* st, const u32* words, size_t coun
         }
         free(data);
     }
-    __atomic_add_fetch(&g_so.made, 1, __ATOMIC_RELAXED);
-    __atomic_add_fetch(&g_so.ns, plat_ns() - t0, __ATOMIC_RELAXED);
+    atomic_fetch_add_explicit(&g_so.made, 1, memory_order_relaxed);
+    atomic_fetch_add_explicit(&g_so.ns, plat_ns() - t0, memory_order_relaxed);
     return obj;
 }
 
@@ -442,13 +446,13 @@ void vk_so_open(const char* dir, const char* tag) {
     pm_lock(&g_so.bin_lock);
     snx_vk_shader_binaries_init(&g_so.bin, uuid, g_vk.so_binary_version);
     snx_vk_shader_binaries_load(&g_so.bin, g_so.bin_path, &loaded);
-    __atomic_store_n(&g_so.bin_open, 1, __ATOMIC_RELEASE);
+    atomic_store_explicit(&g_so.bin_open, 1, memory_order_release);
     pm_unlock(&g_so.bin_lock);
     if (loaded) LOG("vulkan: shader object binaries loaded (%zu KB)\n", loaded >> 10);
 }
 void vk_so_save(void) {
     pm_lock(&g_so.bin_lock);
-    if (g_so.bin_open && g_so.bin.dirty) {
+    if (atomic_load_explicit(&g_so.bin_open, memory_order_relaxed) && g_so.bin.dirty) {
         size_t saved;
         char why[512];
         if (snx_vk_shader_binaries_save(&g_so.bin, g_so.bin_path, &saved, why, sizeof why))
@@ -461,7 +465,7 @@ void vk_so_stats(u64* made, u64* from_binary, u64* ms, u64* spirv_mb) {
     pm_lock(&g_so.spirv_lock);
     *spirv_mb = g_so.spirv_bytes >> 20;
     pm_unlock(&g_so.spirv_lock);
-    *made = __atomic_load_n(&g_so.made, __ATOMIC_RELAXED);
-    *from_binary = __atomic_load_n(&g_so.from_binary, __ATOMIC_RELAXED);
-    *ms = __atomic_load_n(&g_so.ns, __ATOMIC_RELAXED) / 1000000;
+    *made = atomic_load_explicit(&g_so.made, memory_order_relaxed);
+    *from_binary = atomic_load_explicit(&g_so.from_binary, memory_order_relaxed);
+    *ms = atomic_load_explicit(&g_so.ns, memory_order_relaxed) / 1000000;
 }

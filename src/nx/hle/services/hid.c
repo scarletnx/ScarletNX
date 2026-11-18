@@ -17,6 +17,7 @@
 #include "nx/runtime/clock.h"
 
 #include "hle/services/hid.swipc.inc"
+#include <stdatomic.h>
 
 #define HID_LIFO_N  17 /* each LIFO's entries */
 
@@ -57,9 +58,12 @@ static u32 hid_npad_id(int e) { return e < 8 ? (u32)e : e == 8 ? 0x20u : 0x10u; 
 static u8* hid_npad(int e) {
     return shm_ptr(g_hle.hid.shm) + HO_HidSharedMemory_npad + (u64)e * HS_HidNpadSharedMemoryEntry;
 }
-static int hid_connected(int p) { return p == 0 || g_hle.hid.pad[p].connected; } /* player 1 is the keyboard's too */
+static int hid_connected(int p) {
+    return p == 0 || atomic_load_explicit(&g_hle.hid.pad[p].connected, memory_order_relaxed);
+} /* player 1 is the keyboard's too */
 static int hid_single(int p) {
-    return g_hle.hid.pad[p].kind == SNX_PAD_JOY_LEFT || g_hle.hid.pad[p].kind == SNX_PAD_JOY_RIGHT;
+    return atomic_load_explicit(&g_hle.hid.pad[p].kind, memory_order_relaxed) == SNX_PAD_JOY_LEFT ||
+           atomic_load_explicit(&g_hle.hid.pad[p].kind, memory_order_relaxed) == SNX_PAD_JOY_RIGHT;
 }
 /* the player merged into p's Npad, -1 for none; and the one whose Npad p's Joy-Con is merged into */
 static int hid_partner(int p) { return g_hle.hid.merged[p] ? g_hle.hid.merged[p] - 1 : -1; }
@@ -78,8 +82,8 @@ static void hid_sources(HidSource src[HID_ENTRIES]) {
         if (!hid_connected(p) || hid_merged_into(p) >= 0) continue;
         if ((q = hid_partner(p)) >= 0) {
             src[p].kind = SRC_MERGED;
-            src[p].p = g_hle.hid.pad[p].kind == SNX_PAD_JOY_LEFT ? p : q;
-            src[p].q = g_hle.hid.pad[p].kind == SNX_PAD_JOY_LEFT ? q : p;
+            src[p].p = atomic_load_explicit(&g_hle.hid.pad[p].kind, memory_order_relaxed) == SNX_PAD_JOY_LEFT ? p : q;
+            src[p].q = atomic_load_explicit(&g_hle.hid.pad[p].kind, memory_order_relaxed) == SNX_PAD_JOY_LEFT ? q : p;
         } else if (g_hle.hid.split[p]) {
             src[p].kind = g_hle.hid.keep_right[p] ? SRC_RIGHT_HALF : SRC_LEFT_HALF;
             src[p].p = p;
@@ -98,13 +102,14 @@ static u32 hid_style_of(int e, const HidSource* s) {
                                      {STYLE_JOY_DUAL, STYLE_FULL_KEY, 0},
                                      {STYLE_JOY_LEFT, STYLE_FULL_KEY, STYLE_JOY_DUAL},
                                      {STYLE_JOY_RIGHT, STYLE_FULL_KEY, STYLE_JOY_DUAL}};
-    u32 ok = g_hle.hid.supported_styles;
+    u32 ok = atomic_load_explicit(&g_hle.hid.supported_styles, memory_order_relaxed);
     int i;
     if (!((g_hle.hid.supported_ids >> e) & 1)) return 0;
     switch (s->kind) {
     case SRC_PAD:
         for (i = 0; i < 3; i++)
-            if (prefer[g_hle.hid.pad[s->p].kind][i] & ok) return prefer[g_hle.hid.pad[s->p].kind][i];
+            if (prefer[atomic_load_explicit(&g_hle.hid.pad[s->p].kind, memory_order_relaxed)][i] & ok)
+                return prefer[atomic_load_explicit(&g_hle.hid.pad[s->p].kind, memory_order_relaxed)][i];
         return ok & STYLE_JOY_DUAL2;
     case SRC_LEFT_HALF: return ok & STYLE_JOY_LEFT ? STYLE_JOY_LEFT : ok & STYLE_JOY_LEFT2;
     case SRC_RIGHT_HALF: return ok & STYLE_JOY_RIGHT;
@@ -192,13 +197,14 @@ static void hid_validate(void) {
     for (p = 0; p < HID_PADS; p++) {
         if (g_hle.hid.split[p]) {
             d = g_hle.hid.split[p] - 1;
-            if (!hid_connected(p) || g_hle.hid.pad[p].kind != SNX_PAD_JOY_DUAL || hid_connected(d) ||
-                !((g_hle.hid.supported_ids >> d) & 1) || !((g_hle.hid.supported_ids >> p) & 1))
+            if (!hid_connected(p) ||
+                atomic_load_explicit(&g_hle.hid.pad[p].kind, memory_order_relaxed) != SNX_PAD_JOY_DUAL ||
+                hid_connected(d) || !((g_hle.hid.supported_ids >> d) & 1) || !((g_hle.hid.supported_ids >> p) & 1))
                 g_hle.hid.split[p] = 0;
         }
-        if ((q = hid_partner(p)) >= 0 &&
-            (!hid_connected(p) || !hid_connected(q) || !hid_single(p) || !hid_single(q) ||
-             g_hle.hid.pad[p].kind == g_hle.hid.pad[q].kind))
+        if ((q = hid_partner(p)) >= 0 && (!hid_connected(p) || !hid_connected(q) || !hid_single(p) || !hid_single(q) ||
+                                          atomic_load_explicit(&g_hle.hid.pad[p].kind, memory_order_relaxed) ==
+                                              atomic_load_explicit(&g_hle.hid.pad[q].kind, memory_order_relaxed)))
             g_hle.hid.merged[p] = 0;
     }
 }
@@ -240,16 +246,16 @@ static void hid_lifo_push(u8* lifo, u32 n, const void* state, u32 state_size) {
     tail = (tail + 1) % HID_LIFO_N;
     entry = lifo + 0x20 + tail * n;
     stamp = g_hle.hid.samp << 1 | 1;
-    __atomic_store_n((u64*)entry, snx_le64(stamp), __ATOMIC_SEQ_CST);
-    __atomic_thread_fence(__ATOMIC_RELEASE);
+    atomic_store_explicit((_Atomic u64*)entry, snx_le64(stamp), memory_order_seq_cst);
+    atomic_thread_fence(memory_order_release);
     memcpy(entry + 8, state, state_size);
-    __atomic_store_n((u64*)entry, snx_le64(g_hle.hid.samp << 1), __ATOMIC_RELEASE);
-    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    atomic_store_explicit((_Atomic u64*)entry, snx_le64(g_hle.hid.samp << 1), memory_order_release);
+    atomic_thread_fence(memory_order_seq_cst);
     snx_st_le64(lifo + HO_HidCommonLifoHeader_buffer_count, HID_LIFO_N);
     if (count < HID_LIFO_N - 1) count++;
     snx_st_le64(lifo + HO_HidCommonLifoHeader_count, count);
-    __atomic_store_n((u64*)(lifo + HO_HidCommonLifoHeader_tail), snx_le64(tail), __ATOMIC_RELEASE);
-    __atomic_add_fetch(&g_host.hid.states, 1, __ATOMIC_RELAXED);
+    atomic_store_explicit((_Atomic u64*)(lifo + HO_HidCommonLifoHeader_tail), snx_le64(tail), memory_order_release);
+    atomic_fetch_add_explicit(&g_host.hid.states, 1, memory_order_relaxed);
 }
 
 /* a sideways single Joy-Con's stick (as the host reports it) held upright, and back */
@@ -292,9 +298,9 @@ static void hid_npad_state(const HidSource* s, u32 style, u8* out) {
         } else if (style == STYLE_JOY_RIGHT) {
             st[0] = st[1] = 0;
             if (!horizontal) stick_upright(&st[2], &st[3], 0);
-        } else if (style == STYLE_JOY_DUAL && a->kind == SNX_PAD_JOY_LEFT)
+        } else if (style == STYLE_JOY_DUAL && atomic_load_explicit(&a->kind, memory_order_relaxed) == SNX_PAD_JOY_LEFT)
             stick_upright(&st[0], &st[1], 1);
-        else if (style == STYLE_JOY_DUAL && a->kind == SNX_PAD_JOY_RIGHT)
+        else if (style == STYLE_JOY_DUAL && atomic_load_explicit(&a->kind, memory_order_relaxed) == SNX_PAD_JOY_RIGHT)
             stick_upright(&st[2], &st[3], 0);
         break;
     case SRC_LEFT_HALF:
@@ -319,7 +325,7 @@ static void hid_npad_state(const HidSource* s, u32 style, u8* out) {
     buttons |= stick_buttons(st[0], st[1], 16) | stick_buttons(st[2], st[3], 20);
     /* a Joy-Con in mouse mode clicks with its shoulder buttons: R the mouse's left button, ZR its right */
     if (s->p == 0 && hid_mouse_mode()) {
-        u32 mouse = __atomic_load_n(&g_hle.hid.mouse.buttons, __ATOMIC_RELAXED);
+        u32 mouse = atomic_load_explicit(&g_hle.hid.mouse.buttons, memory_order_relaxed);
         if (mouse & 1) buttons |= 1ull << 7;
         if (mouse & 2) buttons |= 1ull << 9;
     }
@@ -381,8 +387,11 @@ static void hid_take_input(TouchState* touch) {
     *touch = g_hle.hid.touch;
     pm_unlock(&g_host.hid.input_lock);
     for (p = 0; p < HID_PADS; p++) {
-        if (now[p].source_id != g_hle.hid.pad[p].source_id || now[p].kind != g_hle.hid.pad[p].kind ||
-            now[p].connected != g_hle.hid.pad[p].connected) {
+        if (now[p].source_id != g_hle.hid.pad[p].source_id ||
+            atomic_load_explicit(&now[p].kind, memory_order_relaxed) !=
+                atomic_load_explicit(&g_hle.hid.pad[p].kind, memory_order_relaxed) ||
+            atomic_load_explicit(&now[p].connected, memory_order_relaxed) !=
+                atomic_load_explicit(&g_hle.hid.pad[p].connected, memory_order_relaxed)) {
             g_hle.hid.split[p] = 0;
             g_hle.hid.merged[p] = 0;
             if ((q = hid_merged_into(p)) >= 0) g_hle.hid.merged[q] = 0;
@@ -404,7 +413,7 @@ u64 hid_update(void) {
     u64 now = guest_ns(), dt; /* the motion sensors integrate guest time: none passes while paused */
     int e, i;
     pm_lock(&g_host.hid.lock);
-    u64 states = __atomic_load_n(&g_host.hid.states, __ATOMIC_RELAXED);
+    u64 states = atomic_load_explicit(&g_host.hid.states, memory_order_relaxed);
     hid_take_input(&touch);
     hid_layout();
     hid_sources(src);
@@ -459,12 +468,12 @@ u64 hid_update(void) {
     hid_lifo_push(shm + HO_HidSharedMemory_keyboard + HO_HidKeyboardSharedMemoryFormat_lifo, 8 + HS_HidKeyboardState,
                   other, HS_HidKeyboardState);
     hid_mouse_update(now);
-    u64 written = __atomic_load_n(&g_host.hid.states, __ATOMIC_RELAXED) - states;
-    __atomic_add_fetch(&g_host.hid.updates, 1, __ATOMIC_RELAXED);
+    u64 written = atomic_load_explicit(&g_host.hid.states, memory_order_relaxed) - states;
+    atomic_fetch_add_explicit(&g_host.hid.updates, 1, memory_order_relaxed);
     pm_unlock(&g_host.hid.lock);
     return written;
 }
-u64 hid_updates(void) { return __atomic_load_n(&g_host.hid.updates, __ATOMIC_RELAXED); }
+u64 hid_updates(void) { return atomic_load_explicit(&g_host.hid.updates, memory_order_relaxed); }
 
 /* ---- an Ounce's mouse mode. The SDK reads both memories itself (nn::hid::detail::GetJcmsStates,
    NmouseTransferMemoryAccessor), so their layouts are its reads. A Jcms is a Joy-Con's sensor: the memory holds a LIFO of
@@ -505,12 +514,12 @@ static void hid_mouse_update(u64 now) {
     m->dx -= (float)dx;
     m->dy -= (float)dy;
     m->wheel -= (float)wheel;
-    buttons = m->buttons;
+    buttons = atomic_load_explicit(&m->buttons, memory_order_relaxed);
     pm_unlock(&g_host.hid.input_lock);
     if (m->jcms)
         for (u32 i = 0; i < JCMS_INDEXES; i++) {
             u8 state[0x20] = {0};
-            if (!(m->jcms_on >> i & 1)) continue;
+            if (!(atomic_load_explicit(&m->jcms_on, memory_order_relaxed) >> i & 1)) continue;
             snx_st_le64(state + 8, g_hle.hid.samp);
             snx_st_le32(state + 0x10, i & 1 ? (u32)dx : 0);
             snx_st_le32(state + 0x14, i & 1 ? (u32)dy : 0);
@@ -562,8 +571,8 @@ static void hid_mouse_release(u32* object, u64* guest) {
 }
 /* the game reads a Joy-Con's sensor and takes only Joy-Con 2: it is playing with the mouse. Read on the frontend's thread */
 int hid_mouse_mode(void) {
-    u32 styles = __atomic_load_n(&g_hle.hid.supported_styles, __ATOMIC_RELAXED);
-    return __atomic_load_n(&g_hle.hid.mouse.jcms_on, __ATOMIC_RELAXED) && styles &&
+    u32 styles = atomic_load_explicit(&g_hle.hid.supported_styles, memory_order_relaxed);
+    return atomic_load_explicit(&g_hle.hid.mouse.jcms_on, memory_order_relaxed) && styles &&
            !(styles & ~(STYLE_JOY_DUAL2 | STYLE_JOY_LEFT2));
 }
 static int nn_hid_IHidServer_InitializeJcms(SvcObj* self, u64 aruid, u64 size, u32 tmem) {
@@ -580,7 +589,7 @@ static int nn_hid_IHidServer_FinalizeJcms(SvcObj* self, u64 aruid) {
     (void)self, (void)aruid;
     pm_lock(&g_host.hid.lock);
     hid_mouse_release(&m->jcms_tmem, &m->jcms);
-    m->jcms_on = 0;
+    atomic_store_explicit(&m->jcms_on, 0, memory_order_relaxed);
     pm_unlock(&g_host.hid.lock);
     R_SUCCEED();
 }
@@ -592,14 +601,18 @@ static u32 jcms_bit(u32 handle) {
 static int nn_hid_IHidServer_StartJcms(SvcObj* self, u32 handle, u64 aruid) {
     (void)self, (void)aruid;
     pm_lock(&g_host.hid.lock);
-    g_hle.hid.mouse.jcms_on |= jcms_bit(handle);
+    atomic_store_explicit(&g_hle.hid.mouse.jcms_on,
+                          atomic_load_explicit(&g_hle.hid.mouse.jcms_on, memory_order_relaxed) | (jcms_bit(handle)),
+                          memory_order_relaxed);
     pm_unlock(&g_host.hid.lock);
     R_SUCCEED();
 }
 static int nn_hid_IHidServer_StopJcms(SvcObj* self, u32 handle, u64 aruid) {
     (void)self, (void)aruid;
     pm_lock(&g_host.hid.lock);
-    g_hle.hid.mouse.jcms_on &= ~jcms_bit(handle);
+    atomic_store_explicit(&g_hle.hid.mouse.jcms_on,
+                          atomic_load_explicit(&g_hle.hid.mouse.jcms_on, memory_order_relaxed) & (~jcms_bit(handle)),
+                          memory_order_relaxed);
     pm_unlock(&g_host.hid.lock);
     R_SUCCEED();
 }
@@ -774,7 +787,7 @@ static int nn_hid_IHidServer_IsSixAxisSensorAtRest(SvcObj* self, nn_hid_SixAxisS
 static int nn_hid_IHidServer_SetSupportedNpadStyleSet(SvcObj* self, nn_hid_NpadStyleSet style_set, u64 aruid) {
     (void)self, (void)aruid;
     pm_lock(&g_host.hid.lock);
-    g_hle.hid.supported_styles = style_set & STYLE_ALL;
+    atomic_store_explicit(&g_hle.hid.supported_styles, style_set & STYLE_ALL, memory_order_relaxed);
     hid_layout();
     pm_unlock(&g_host.hid.lock);
     R_SUCCEED();
@@ -782,7 +795,7 @@ static int nn_hid_IHidServer_SetSupportedNpadStyleSet(SvcObj* self, nn_hid_NpadS
 static int nn_hid_IHidServer_GetSupportedNpadStyleSet(SvcObj* self, u64 aruid, nn_hid_NpadStyleSet* style_set) {
     (void)self, (void)aruid;
     pm_lock(&g_host.hid.lock);
-    *style_set = g_hle.hid.supported_styles;
+    *style_set = atomic_load_explicit(&g_hle.hid.supported_styles, memory_order_relaxed);
     pm_unlock(&g_host.hid.lock);
     R_SUCCEED();
 }
@@ -857,7 +870,9 @@ static int hid_assign_single(int e, int keep_right) {
         return -1;
     }
     hid_sources(src);
-    if (src[e].kind != SRC_PAD || g_hle.hid.pad[e].kind != SNX_PAD_JOY_DUAL) return -1;
+    if (src[e].kind != SRC_PAD ||
+        atomic_load_explicit(&g_hle.hid.pad[e].kind, memory_order_relaxed) != SNX_PAD_JOY_DUAL)
+        return -1;
     p = src[e].p;
     for (d = 0; d < HID_PADS; d++) {
         if (d == e || hid_connected(d) || !((g_hle.hid.supported_ids >> d) & 1)) continue;
@@ -927,7 +942,9 @@ static int nn_hid_IHidServer_MergeSingleJoyAsDualJoy(SvcObj* self, nn_hid_NpadId
             if ((q = hid_merged_into(p)) >= 0) g_hle.hid.merged[q] = 0;
         }
         if (hid_connected(a) && hid_connected(b) && hid_single(a) && hid_single(b) && !g_hle.hid.split[a] &&
-            !g_hle.hid.split[b] && g_hle.hid.pad[a].kind != g_hle.hid.pad[b].kind)
+            !g_hle.hid.split[b] &&
+            atomic_load_explicit(&g_hle.hid.pad[a].kind, memory_order_relaxed) !=
+                atomic_load_explicit(&g_hle.hid.pad[b].kind, memory_order_relaxed))
             g_hle.hid.merged[a] = b + 1;
     }
     hid_layout();
@@ -976,8 +993,8 @@ static void hid_vibrate(u32 handle, const nn_hid_VibrationValue* v) {
     g_hle.hid.vibration[p][motor].amp_high = v->amp_high;
     g_hle.hid.vibration[p][motor].freq_high = v->freq_high;
     u32 lo = hid_amplitude(v->amp_low), hi = hid_amplitude(v->amp_high);
-    __atomic_store_n(&(p ? &g_hle.hid.pad_extra[p - 1] : &g_hle.hid.pad1)->rumble[motor], lo | hi << 16,
-                     __ATOMIC_RELAXED);
+    atomic_store_explicit(&(p ? &g_hle.hid.pad_extra[p - 1] : &g_hle.hid.pad1)->rumble[motor], lo | hi << 16,
+                          memory_order_relaxed);
     if (p < HID_PADS) {
         u32* peak = &g_host.hid.rumble_peak[p][motor];
         u32 plo = *peak & 0xffff, phi = *peak >> 16;
@@ -1087,7 +1104,7 @@ void svc_hid_init(void) {
             g_hle.hid.vibration[p][e].freq_high = 320.0f;
         }
     /* every style and every Npad until the game says which it takes; Joy-Cons held upright */
-    g_hle.hid.supported_styles = STYLE_ALL;
+    atomic_store_explicit(&g_hle.hid.supported_styles, STYLE_ALL, memory_order_relaxed);
     g_hle.hid.supported_ids = (1u << HID_ENTRIES) - 1;
     pm_lock(&g_host.hid.lock);
     hid_layout();

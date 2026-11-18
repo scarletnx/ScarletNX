@@ -33,9 +33,9 @@ u32 nvn_replay_present(u32 queue, const NvnReplayPresent* p, u32* shown) {
     *shown = 0;
     return 1;
 }
-int g_opt_fps; /* 0: no pace, so a present neither waits nor holds */
-int g_frames;
-int g_vi_refresh_hz = 60; /* present.c's: the display at VI_REFRESH_HZ */
+_Atomic int g_opt_fps; /* 0: no pace, so a present neither waits nor holds */
+_Atomic int g_frames;
+_Atomic int g_vi_refresh_hz = 60; /* present.c's: the display at VI_REFRESH_HZ */
 void pm_init(PMutex* m) { (void)m; }
 u64 plat_ns(void) { return 0; }
 void plat_sleep_ns(i64 ns) { (void)ns; }

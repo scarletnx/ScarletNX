@@ -100,6 +100,10 @@ int main(int argc, char** argv) {
     /* two sections, the big one put in pieces, compressed as frames side by side */
     w = sw_open(path, &h, thumb, why, sizeof why);
     CHECK(w != NULL);
+    if (!w) {
+        fprintf(stderr, "state_file: %s\n", why);
+        return 1;
+    }
     CHECK(!sw_begin(w, "SMALL", 7) && !sw_put(w, &small, sizeof small) && !sw_end(w));
     CHECK(!sw_begin(w, "MEM", 0xABCDEFull) && !sw_put(w, big, 1 << 20) &&
           !sw_put(w, big + (1 << 20), sizeof big - (1 << 20)));
@@ -115,6 +119,10 @@ int main(int argc, char** argv) {
     /* the sections, the later one first, then the other in two reads */
     r = sr_open(path, &got, why, sizeof why);
     CHECK(r != NULL);
+    if (!r) {
+        fprintf(stderr, "state_file: %s\n", why);
+        return 1;
+    }
     CHECK(!sr_begin(r, "MEM", &schema) && schema == 0xABCDEFull && sr_left(r) == sizeof big);
     CHECK(!sr_get(r, back, 1000) && !sr_get(r, back + 1000, sizeof big - 1000) && !memcmp(back, big, sizeof big));
     CHECK(sr_get(r, back, 1) == -1); /* nothing left */

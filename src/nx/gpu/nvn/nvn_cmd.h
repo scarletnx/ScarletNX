@@ -82,7 +82,9 @@ typedef struct {
     NvnSpillPiece p[NVN_SPILL_PIECES + 1];
     u32 bucket[NVN_SPILL_BUCKETS], cbucket[NVN_SPILL_BUCKETS];
     NvnCtl ctl[NVN_CTL_SLOTS];
-    u32 ns, np, slots, free, serial, hint, census, sweep;
+    u32 ns;
+    _Atomic u32 np;
+    u32 slots, free, serial, hint, census, sweep;
     u32 found;  /* the segment nvn_cmd_unfinished found last */
     u64 lo, hi; /* the lowest start and the highest end of the segments: an address outside is in none */
     NvnSmallClass small[NVN_SMALL_CLASSES];

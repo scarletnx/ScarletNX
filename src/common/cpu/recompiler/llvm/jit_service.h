@@ -86,11 +86,11 @@ typedef struct {
     const SnxCodeImage* images;
     size_t image_count;
     /* CPU.disp: one slot per instruction of [code_lo, code_hi), which the service fills from NULL only */
-    GuestFn* dispatch;
+    _Atomic GuestFn* dispatch;
     SnxU64 code_lo, code_hi;
     /* the AOT module's entries by ascending address: JIT code calls these directly */
     const u64* aot_addresses;
-    const GuestFn* aot_functions;
+    const _Atomic GuestFn* aot_functions;
     size_t aot_count;
     /* every call through CPU.disp, as the AOT module's --hook-direct-calls (gpu/nvn/nvn_loader.c takes slots) */
     int hook_direct_calls;

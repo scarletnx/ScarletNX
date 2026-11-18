@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <stdatomic.h>
 #include "common/platform/vm.h"
 #ifndef _WIN32
 #include <sys/mman.h> /* madvise */
@@ -15,11 +16,11 @@
 
 /* a page's flags, which another thread may change while this one reads them */
 static unsigned page_flags(const GnuMemory* m, uint64_t page) {
-    return __atomic_load_n(&m->pages[page], __ATOMIC_RELAXED);
+    return atomic_load_explicit(&m->pages[page], memory_order_relaxed);
 }
 static void pages_set(GnuMemory* m, uint64_t first, uint64_t count, unsigned flags) {
     for (uint64_t i = first; i < first + count; i++)
-        __atomic_store_n(&m->pages[i], (unsigned char)flags, __ATOMIC_RELAXED);
+        atomic_store_explicit(&m->pages[i], (unsigned char)flags, memory_order_relaxed);
 }
 void gnu_memory_lock(GnuMemory* m) { gnu_mutex_lock(&m->lock); }
 void gnu_memory_unlock(GnuMemory* m) { gnu_mutex_unlock(&m->lock); }
@@ -53,7 +54,9 @@ static int host_protect(GnuMemory* m, uint64_t address, uint64_t length, unsigne
     for (int i = 0; i < (last != first ? 2 : 1); i++) {
         unsigned wants = 0;
         for (uint64_t g = edge[i]; g < edge[i] + hp; g += GNU_PAGE_SIZE)
-            wants |= g >= address && g < end ? permissions : host_wants(m->pages[g / GNU_PAGE_SIZE]);
+            wants |= g >= address && g < end
+                         ? permissions
+                         : host_wants(atomic_load_explicit(&m->pages[g / GNU_PAGE_SIZE], memory_order_relaxed));
         if (host_protect_pages(m, edge[i], hp, wants)) return -GNU_ENOMEM;
     }
     return 0;
@@ -62,7 +65,7 @@ static int host_protect(GnuMemory* m, uint64_t address, uint64_t length, unsigne
 static void code_changes(GnuMemory* m, uint64_t a, uint64_t n) {
     if (!m->code_changed) return;
     for (uint64_t i = a / GNU_PAGE_SIZE; i < (a + n + GNU_PAGE_SIZE - 1) / GNU_PAGE_SIZE; i++)
-        if (m->pages[i] & GNU_PROT_EXEC) {
+        if (atomic_load_explicit(&m->pages[i], memory_order_relaxed) & GNU_PROT_EXEC) {
             m->code_changed(m->code_context, a, n);
             return;
         }
@@ -112,7 +115,7 @@ void gnu_memory_watch_code(GnuMemory* m, uint64_t a, uint64_t n) {
     if (n > m->size - a) n = m->size - a;
     gnu_mutex_lock(&m->lock);
     for (uint64_t i = a / GNU_PAGE_SIZE; i <= (a + n - 1) / GNU_PAGE_SIZE; i++) {
-        unsigned flags = m->pages[i];
+        unsigned flags = atomic_load_explicit(&m->pages[i], memory_order_relaxed);
         if ((flags & (GNU_PAGE_MAPPED | GNU_PROT_WRITE | GNU_PAGE_CODE)) != (GNU_PAGE_MAPPED | GNU_PROT_WRITE)) continue;
         if (host_protect(m, i * GNU_PAGE_SIZE, GNU_PAGE_SIZE, flags & ~GNU_PROT_WRITE & 7u)) continue;
         pages_set(m, i, 1, flags | GNU_PAGE_CODE);
@@ -127,13 +130,13 @@ int gnu_memory_code_written(GnuMemory* m, uint64_t a) {
     uint64_t page = a & ~(uint64_t)(GNU_PAGE_SIZE - 1), host = a & ~(m->host_page - 1);
     if (a >= m->size) return 0;
     gnu_mutex_lock(&m->lock);
-    unsigned flags = m->pages[page / GNU_PAGE_SIZE];
+    unsigned flags = atomic_load_explicit(&m->pages[page / GNU_PAGE_SIZE], memory_order_relaxed);
     if (!(flags & GNU_PAGE_CODE)) {
         gnu_mutex_unlock(&m->lock);
         return (flags & (GNU_PAGE_MAPPED | GNU_PROT_WRITE)) == (GNU_PAGE_MAPPED | GNU_PROT_WRITE);
     }
     for (uint64_t g = host; g < host + m->host_page; g += GNU_PAGE_SIZE) {
-        unsigned f = m->pages[g / GNU_PAGE_SIZE];
+        unsigned f = atomic_load_explicit(&m->pages[g / GNU_PAGE_SIZE], memory_order_relaxed);
         if (!(f & GNU_PAGE_CODE)) continue;
         pages_set(m, g / GNU_PAGE_SIZE, 1, f & ~GNU_PAGE_CODE);
         if (m->code_changed) m->code_changed(m->code_context, g, GNU_PAGE_SIZE);
@@ -166,7 +169,7 @@ static int map_locked(GnuMemory* m, uint64_t a, uint64_t n, unsigned p, int repl
     n = up(n);
     if (!replace)
         for (uint64_t i = a / GNU_PAGE_SIZE; i < (a + n) / GNU_PAGE_SIZE; i++)
-            if (m->pages[i] & GNU_PAGE_MAPPED) return -GNU_EEXIST;
+            if (atomic_load_explicit(&m->pages[i], memory_order_relaxed) & GNU_PAGE_MAPPED) return -GNU_EEXIST;
     code_changes(m, a, n);
     /* committed by the protect where the host commits (Windows) */
     if (host_protect(m, a, n, GNU_PROT_READ | GNU_PROT_WRITE)) return -GNU_ENOMEM;
@@ -196,7 +199,7 @@ static int protect_locked(GnuMemory* m, uint64_t a, uint64_t n, unsigned p) {
     if (!range(m, a, n) || (p & ~7u)) return -GNU_EINVAL;
     n = up(n);
     for (uint64_t i = a / GNU_PAGE_SIZE; i < (a + n) / GNU_PAGE_SIZE; i++)
-        if (!(m->pages[i] & GNU_PAGE_MAPPED)) return -GNU_ENOMEM;
+        if (!(atomic_load_explicit(&m->pages[i], memory_order_relaxed) & GNU_PAGE_MAPPED)) return -GNU_ENOMEM;
     code_changes(m, a, n);
     if (host_protect(m, a, n, p)) return -GNU_ENOMEM;
     pages_set(m, a / GNU_PAGE_SIZE, n / GNU_PAGE_SIZE, GNU_PAGE_MAPPED | p);
@@ -227,7 +230,7 @@ static int64_t mmap_locked(GnuMemory* m, uint64_t a, uint64_t n, unsigned p, uin
         if (start > end || n > end - start) continue;
         for (uint64_t candidate = start; candidate <= end - n;) {
             uint64_t i = candidate / GNU_PAGE_SIZE, last = (candidate + n) / GNU_PAGE_SIZE;
-            while (i < last && !(m->pages[i] & GNU_PAGE_MAPPED)) i++;
+            while (i < last && !(atomic_load_explicit(&m->pages[i], memory_order_relaxed) & GNU_PAGE_MAPPED)) i++;
             if (i == last) {
                 int r = map_locked(m, candidate, n, p, 0);
                 if (r) return r;
@@ -250,13 +253,15 @@ static uint64_t brk_locked(GnuMemory* m, uint64_t requested) {
 static size_t maps_locked(GnuMemory* m, char* destination, size_t capacity) {
     size_t used = 0;
     for (uint64_t i = 0; i < m->size / GNU_PAGE_SIZE;) {
-        if (!(m->pages[i] & GNU_PAGE_MAPPED)) {
+        if (!(atomic_load_explicit(&m->pages[i], memory_order_relaxed) & GNU_PAGE_MAPPED)) {
             i++;
             continue;
         }
         uint64_t begin = i;
-        unsigned p = m->pages[i] & 15u;
-        do { i++; } while (i < m->size / GNU_PAGE_SIZE && (m->pages[i] & 15u) == p);
+        unsigned p = atomic_load_explicit(&m->pages[i], memory_order_relaxed) & 15u;
+        do {
+            i++;
+        } while (i < m->size / GNU_PAGE_SIZE && (atomic_load_explicit(&m->pages[i], memory_order_relaxed) & 15u) == p);
         char line[128];
         int n = snprintf(line, sizeof line, "%016llx-%016llx %c%c%cp 00000000 00:00 0\n",
                          (unsigned long long)(begin * GNU_PAGE_SIZE), (unsigned long long)(i * GNU_PAGE_SIZE),

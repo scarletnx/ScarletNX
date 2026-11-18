@@ -14,6 +14,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 #if defined(__has_feature)
 #if __has_feature(address_sanitizer)
 #include <sanitizer/lsan_interface.h>
@@ -55,10 +56,11 @@ static struct {
     unsigned char* window; /* the reservation; a guest address is its host address */
     uint64_t lo, hi;       /* the window's guest addresses */
     uint64_t next;         /* the first free address for a library */
-    GuestFn* table;
+    _Atomic GuestFn* table;
     struct snx_recompiler* recompiler;
     struct snx_recompiled** modules;
-    size_t module_count, module_capacity;
+    _Atomic size_t module_count;
+    size_t module_capacity;
     CodeRange* ranges;
     size_t range_count, range_capacity;
     /* by (address - exports' base) / 4: reserved whole, so that a call reads it while another thread adds one */
@@ -89,7 +91,8 @@ static _Thread_local Thread* t_thread;
 
 static int compiled(void* context, uint64_t address) {
     (void)context;
-    return address >= b.lo && address < b.hi && __atomic_load_n(&b.table[(address - b.lo) >> 2], __ATOMIC_RELAXED);
+    return address >= b.lo && address < b.hi &&
+           atomic_load_explicit(&b.table[(address - b.lo) >> 2], memory_order_relaxed);
 }
 
 static const CodeRange* range_of(uint64_t pc) {
@@ -133,13 +136,13 @@ static bool compile(uint64_t pc) {
     snx_recompiled_range(m, &lo, &hi);
     for (uint64_t a = lo; a < hi; a += 4) {
         GuestFn f = snx_recompiled_function(m, a);
-        if (f) __atomic_store_n(&b.table[(a - b.lo) >> 2], f, __ATOMIC_RELEASE);
+        if (f) atomic_store_explicit(&b.table[(a - b.lo) >> 2], f, memory_order_release);
     }
-    if (b.module_count == b.module_capacity) {
+    if (atomic_load_explicit(&b.module_count, memory_order_relaxed) == b.module_capacity) {
         b.module_capacity = b.module_capacity ? b.module_capacity * 2 : 64;
         b.modules = snx_realloc(b.modules, b.module_capacity * sizeof *b.modules);
     }
-    b.modules[b.module_count++] = m;
+    b.modules[atomic_fetch_add_explicit(&b.module_count, 1, memory_order_relaxed)] = m;
     if (b.verbose)
         fprintf(stderr, "scarletnx-android: JIT 0x%llx: 0x%llx-0x%llx, %.2f s\n", (unsigned long long)pc,
                 (unsigned long long)lo, (unsigned long long)hi, snx_seconds() - started);
@@ -156,7 +159,7 @@ static void miss(CPU* c, u64 pc) {
                 (unsigned long long)pc, (unsigned long long)c->x[30]);
         abort();
     }
-    b.table[(pc - b.lo) >> 2](c, pc);
+    atomic_load_explicit(&b.table[(pc - b.lo) >> 2], memory_order_relaxed)(c, pc);
 }
 
 /* an undefined instruction is the guest's SIGILL, as on Linux: OpenSSL's CPU probes (armcap.c) run an instruction
@@ -207,7 +210,7 @@ static void stop(CPU* c, u64 entry) {
 
 /* generated code reached a poll: a guest signal, the only reason the bridge sets CPU.poll */
 static void poll(CPU* c) {
-    __atomic_store_n(&c->poll, 0, __ATOMIC_RELAXED);
+    atomic_store_explicit(&c->poll, 0, memory_order_relaxed);
     signals_check(c);
 }
 
@@ -230,7 +233,7 @@ uint64_t bridge_export(const char* name, BridgeHandler handler, void* data) {
     b.exports[i].data = data;
     b.export_count = i + 1;
     uint64_t address = b.exports_base + 4 * i;
-    __atomic_store_n(&b.table[(address - b.lo) >> 2], call_export, __ATOMIC_RELEASE);
+    atomic_store_explicit(&b.table[(address - b.lo) >> 2], call_export, memory_order_release);
     pthread_mutex_unlock(&b.lock);
     return address;
 }
@@ -308,9 +311,9 @@ bool bridge_init(const char* cache, char* error, size_t error_size) {
     if (gnu_random_bytes(&b.guard, sizeof b.guard)) b.guard = 0x5ca7105ca7100ull;
     b.guard &= ~(uint64_t)0xff;
     b.stop = bridge_export("<stop>", NULL, NULL);
-    b.table[(b.stop - b.lo) >> 2] = stop;
+    atomic_store_explicit(&b.table[(b.stop - b.lo) >> 2], stop, memory_order_relaxed);
     b.sigreturn = bridge_export("<sigreturn>", NULL, NULL);
-    b.table[(b.sigreturn - b.lo) >> 2] = stop;
+    atomic_store_explicit(&b.table[(b.sigreturn - b.lo) >> 2], stop, memory_order_relaxed);
     signals_init();
     return true;
 }
@@ -411,7 +414,7 @@ uint64_t bridge_call(uint64_t fn, const uint64_t* args, unsigned count) {
 uint64_t bridge_guest_of_host(uintptr_t host) {
     uintptr_t best = 0;
     uint64_t guest = 0;
-    size_t count = __atomic_load_n(&b.module_count, __ATOMIC_ACQUIRE);
+    size_t count = atomic_load_explicit(&b.module_count, memory_order_acquire);
     for (size_t i = 0; i < count; ++i) {
         uint64_t lo, hi;
         snx_recompiled_range(b.modules[i], &lo, &hi);

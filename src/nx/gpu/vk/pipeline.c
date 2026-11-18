@@ -29,6 +29,7 @@
 #include "nx/gpu/vk/pipeline_stats.h"
 #include "nx/gpu/vk/shader_objects.h"
 #include "nx/gpu/vk/cb_fold.h"
+#include "nx/gpu/vk/cb_windows.h"
 #include "nx/gpu/vk/internal_spv.h"
 #include "nx/gpu/vk/tess_passthrough.h"
 #include "nx/gpu/vk/texture_arrays.h"
@@ -41,6 +42,7 @@
 #include "common/utilities/endian.h"
 #include "common/utilities/spirv_opt.h"
 #include <sys/stat.h>
+#include <stdatomic.h>
 
 /* SH_CODE (vk.h), the bytes of a program vk_shader_get reads from its SPH. The SPH has no size, so shader_hash ends the
    program at its EXIT or the zero padding after it, and NVN packs programs into one pool: the window has to reach past
@@ -73,14 +75,14 @@ typedef struct Pipe {
     PipeKey k;
     u64 h;
     /* once ready, the best one made (atomic): the link of its parts, then the optimized one, with pipeline libraries */
-    VkPipeline p;
-    int ready;         /* set by the worker after p, with release order */
+    _Atomic VkPipeline p;
+    _Atomic int ready;      /* set by the worker after p, with release order */
     struct PipeLib* lib[4]; /* with pipeline libraries, its parts (vertex input, pre-rasterization, fragment shader,
                                fragment output: VK_PART_* by bit), else NULL */
     /* p is the optimized pipeline (atomic, release after p). The link it took the place of stays, as every pipeline
        does for the run: the draws keep the handles they had (render.c's g_draw), and a link freed once gave its handle
        to a new pipeline, which the headless test's watch then took for the link */
-    int opt;
+    _Atomic int opt;
     VkPipelineLayout layout;
     VkShaderModule fs; /* k.fs, or the empty fragment shader */
     int prewarm;       /* one of the file's, made before a draw asked for it */
@@ -92,7 +94,7 @@ typedef struct Pipe {
     u32 standin;       /* its index + 1 in the stand-ins' table (vk_pipeline_get_deferred), 0 for none yet */
     /* drawn with shader objects (shader_objects.c): sh, its stages' objects, and p only a mark that they are made.
        Written before ready, read after it (atomic): a key whose objects the device refuses is made as a pipeline */
-    int so;
+    _Atomic int so;
     VkShaderEXT sh[5];
     /* taken by vk_so_takes when the entry was made, never changed: the draws get its stand-in, and bind their sets
        with its layout of no independent sets (vk_pipeline_layout), which a pipeline made in place of refused objects
@@ -145,11 +147,12 @@ static struct {
     /* the BC7 cache's file while it is still to open (vk_pipeline_bc7_cache), empty once opened */
     char bc7_cache[1200];
     char driver_tag[SNX_VK_DRIVER_TAG]; /* the driver's, whose files of the cache these are (snx_vk_driver_tag) */
-    int pcache_dirty;        /* pipelines made since the cache was last written (atomic: it is saved outside vk_lock) */
-    u64 pcache_used;         /* plat_ns when a pipeline last went into the cache (atomic) */
+    _Atomic int
+        pcache_dirty;        /* pipelines made since the cache was last written (atomic: it is saved outside vk_lock) */
+    _Atomic u64 pcache_used; /* plat_ns when a pipeline last went into the cache (atomic) */
     /* by independent sets ([0], with pipeline libraries) or not ([1], for shader objects, playout), and by the sets
        with texture arrays: made when first used */
-    VkPipelineLayout playouts[2][1u << 5];
+    _Atomic VkPipelineLayout playouts[2][1u << 5];
     PMutex playout_lock;                /* making one: the file's reading thread asks for them too */
     VkPipelineCache pcache;
     PMutex psave; /* vk_pipeline_save's: one save at a time */
@@ -178,9 +181,9 @@ static struct {
        their translation and modules took (all on the GPU thread) */
     u64 pipes_new, sh_new, sh_ns;
     u64 sh_folds;           /* of sh_new, the translations made beside one that held, to fold more of a draw's words */
-    u64 pipe_wait_ns;       /* the GPU thread's and the recording thread's waits, added atomically */
-    u64 pipe_make_ns;       /* the workers' time making pipelines, added atomically */
-    u64 pipe_hits;          /* pipelines the pipeline cache had */
+    _Atomic u64 pipe_wait_ns; /* the GPU thread's and the recording thread's waits, added atomically */
+    _Atomic u64 pipe_make_ns; /* the workers' time making pipelines, added atomically */
+    _Atomic u64 pipe_hits;    /* pipelines the pipeline cache had */
     VkShaderModule null_fs; /* an empty fragment shader for depth-only passes, made when first asked for */
     Pipe* pipeh[PIPEH];
     /* The shaders and pipelines of earlier runs (pipeline_file.c), so that each run doesn't translate the same shaders
@@ -223,14 +226,14 @@ static struct {
         char walk_at[RENDERER_FILE_SIZE]; /* the file or segment the pass looks in now (ShipSink's at) */
         /* atomics, written by the reading thread */
         ShipProgress progress;
-        u32 ship_new;                   /* the pass's new shaders */
-        int scanning;                   /* the pass runs */
-        int ship_ready;                 /* the pass is over, or won't run: the draws may read the index (release) */
-        u32 shaders_total, pipes_total; /* nsh and npipe once the file was read */
+        _Atomic u32 ship_new;   /* the pass's new shaders */
+        _Atomic int scanning;   /* the pass runs */
+        _Atomic int ship_ready; /* the pass is over, or won't run: the draws may read the index (release) */
+        _Atomic u32 shaders_total, pipes_total; /* nsh and npipe once the file was read */
         char apart[64];
         /* atomics, written by the GPU thread and the pipeline workers */
-        u64 made, hits; /* the file's pipelines made, and those the pipeline cache had */
-        u32 ship_used;  /* the shipped file's shaders a draw found */
+        _Atomic u64 made, hits; /* the file's pipelines made, and those the pipeline cache had */
+        _Atomic u32 ship_used;  /* the shipped file's shaders a draw found */
         u32 ship_said;  /* ship_used as vk_pipeline_save last logged it (psave) */
     } pf;
     PMutex pj_lock;
@@ -241,17 +244,18 @@ static struct {
            */
         PMutex lock;
         PipeLib* h[PLIBH];
-        VkPipelineLayout layouts[2][1u << 5]; /* the parts' own: [0] before rasterization, [1] fragment, by arrays */
+        _Atomic VkPipelineLayout
+            layouts[2][1u << 5]; /* the parts' own: [0] before rasterization, [1] fragment, by arrays */
         /* atomics: parts made by VK_PART_* bit, those the pipeline cache had and their ns; the links and the optimized
            pipelines made, their ns, and the optimized ones the cache had */
-        u64 made[4], hits[4], ns[4];
-        u64 links, link_ns, opts, opt_ns, opt_hits;
+        _Atomic u64 made[4], hits[4], ns[4];
+        _Atomic u64 links, link_ns, opts, opt_ns, opt_hits;
         /* the optimized links asked of the pipeline cache alone before a fast link (gpl_cached), their ns, and those
            it had */
-        u64 cached_tries, cached_ns, cached;
+        _Atomic u64 cached_tries, cached_ns, cached;
         /* the shipped programs' parts warmed into the pipeline cache ahead of their draws (ship_warm): queued, made,
            the cache hits, their ns */
-        u64 warm_queued, warm_made, warm_hit, warm_ns;
+        _Atomic u64 warm_queued, warm_made, warm_hit, warm_ns;
         /* the draws' pipelines' waits for a worker: how many, their ns, the ns of those queued while every worker was
            busy and one or more made an optimized pipeline, and the longest (pj_lock) */
         u64 job_waits, job_wait_ns, job_behind_opt_ns, job_wait_max_ns;
@@ -299,7 +303,7 @@ static const char* const vk_tracy_stage[] = {"vert", "tess ctrl", "tess eval", "
 
 VkPipelineLayout g_vk_playout;
 u64 g_vk_dslayout_hash = SNX_FNV_BASIS;
-VkDescriptorSetLayout g_vk_dslayout[2][5];
+VkDescriptorSetLayout g_vk_dslayout[2][10];
 u32 g_vk_stage_sets;
 int g_vk_ftz; /* SH_FTZ_*: how translations flush FP32 subnormals (vk_pipeline_init) */
 static void pf_start_load(void);
@@ -577,6 +581,18 @@ static void cbufs_fit_limits(void) {
         fit);
 }
 
+/* the push constant bytes of a draw's layouts: the window offsets (cb_windows) and the texture words' offsets
+   (tex_table) past the 128 bytes that every layout has */
+u32 vk_push_bytes(void) {
+    return g_spirv_translate.tex_table    ? SH_PUSH_BYTES_TABLE
+           : g_spirv_translate.cb_windows ? SH_PUSH_BYTES_WINDOWS
+                                          : 128;
+}
+/* the bindings of a stage's textures, which split sets (ShCaps.split_sets) put in a set of their own (shader_vk_tex_set) */
+int vk_binding_is_texture(u32 i) {
+    return (i >= SNX_VKB_TEX && i < SNX_VKB_TEX + SH_MAXTEX) || i == SNX_VKB_TEXARRAY || i == SNX_VKB_TEXFUNCS ||
+           i == SNX_VKB_TEXDEPTH || i == SNX_VKB_TEXMAP;
+}
 /* descriptors of each type in one set: the binding ranges in shader.h */
 static VkDescriptorType binding_type(u32 i) {
     if (i == SNX_VKB_SMAP || i == SNX_VKB_CAPTURE) return VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
@@ -629,14 +645,14 @@ VkShaderStageFlags vk_set_stages(int s) {
 }
 u32 vk_texture_array_elements(void) { return g_spirv_translate.texture_arrays ? g_spirv_translate.tex_array : 0; }
 int vk_dslayout_arrays(VkDescriptorSetLayout layout) {
-    for (u32 s = 0; s < 5; s++)
+    for (u32 s = 0; s < 10; s++)
         if (layout && layout == g_vk_dslayout[1][s]) return g_spirv_translate.texture_arrays;
     return 0;
 }
 int vk_graphics_playout_is(VkPipelineLayout layout) {
     for (u32 j = 0; j < 2; j++)
         for (u32 i = 0; i < sizeof g_pipeline.playouts[j] / sizeof g_pipeline.playouts[j][0]; i++)
-            if (layout && __atomic_load_n(&g_pipeline.playouts[j][i], __ATOMIC_ACQUIRE) == layout) return 1;
+            if (layout && atomic_load_explicit(&g_pipeline.playouts[j][i], memory_order_acquire) == layout) return 1;
     return 0;
 }
 static struct Pipe* standin_pipe(VkPipeline h);
@@ -644,27 +660,29 @@ static struct Pipe* standin_pipe(VkPipeline h);
    VK_PIPELINE_LAYOUT_CREATE_INDEPENDENT_SETS_BIT_EXT, which the sets of a draw with shader objects are bound with:
    sets bound through a layout of independent sets are not compatible with a shader object's set layouts */
 static VkPipelineLayout playout(u32 arrays, int independent) {
-    VkPipelineLayout* l = &g_pipeline.playouts[independent ? 0 : 1][arrays & ((1u << 5) - 1)];
-    VkPipelineLayout made = __atomic_load_n(l, __ATOMIC_ACQUIRE);
+    _Atomic VkPipelineLayout* l = &g_pipeline.playouts[independent ? 0 : 1][arrays & ((1u << 5) - 1)];
+    VkPipelineLayout made = atomic_load_explicit(l, memory_order_acquire);
     if (made) return made;
     pm_lock(&g_pipeline.playout_lock);
-    if (!*l) {
-        VkDescriptorSetLayout sets[5];
-        for (u32 s = 0; s < g_vk_stage_sets; s++) sets[s] = g_vk_dslayout[(arrays >> s) & 1][s];
+    if (!atomic_load_explicit(&(*l), memory_order_relaxed)) {
+        VkDescriptorSetLayout sets[11];
+        u32 nsets = g_spirv_translate.split_sets ? 10 : g_vk_stage_sets;
+        for (u32 s = 0; s < nsets; s++) sets[s] = g_vk_dslayout[(arrays >> (s % 5)) & 1][s];
+        if (g_spirv_translate.tex_table) sets[nsets++] = vk_table_layout(); /* at table_set, after the stages' */
         /* push constants: viewport/depth pc[0..3], fragment alpha test pc[4..6], sprite T flip pc[7], scaled textures
            pc[8..9], and of those the ones of the draw's size pc[24..25] */
-        VkPushConstantRange pc = {VK_PUSH_STAGES, 0, 128};
+        VkPushConstantRange pc = {VK_PUSH_STAGES, 0, vk_push_bytes()};
         /* with pipeline libraries, a link of parts whose layouts have only their own sets (part_layout) */
         VkPipelineLayoutCreateInfo pl = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
                                          .flags = independent ? VK_PIPELINE_LAYOUT_CREATE_INDEPENDENT_SETS_BIT_EXT : 0,
-                                         .setLayoutCount = g_vk_stage_sets,
+                                         .setLayoutCount = nsets,
                                          .pSetLayouts = sets,
                                          .pushConstantRangeCount = 1,
                                          .pPushConstantRanges = &pc};
         if (!VK_OK(vkCreatePipelineLayout(g_vk.dev, &pl, NULL, &made))) made = VK_NULL_HANDLE;
-        __atomic_store_n(l, made, __ATOMIC_RELEASE);
+        atomic_store_explicit(l, made, memory_order_release);
     }
-    made = *l;
+    made = atomic_load_explicit(&(*l), memory_order_relaxed);
     pm_unlock(&g_pipeline.playout_lock);
     return made;
 }
@@ -694,6 +712,74 @@ void vk_pipeline_init(void) {
         if (line[0]) LOG("%s\n", line);
     }
     cbufs_fit_limits();
+    /* a stage's textures in a set of their own (shader_vk_tex_set): with plain sets, where all five stage sets are and
+       the device binds ten. Descriptor buffers and heaps keep one set a stage */
+    g_spirv_translate.split_sets = g_vk_stage_sets == 5 && g_vk.props.limits.maxBoundDescriptorSets >= 10 &&
+                                   !g_vk.has_descriptor_buffers && !g_vk.has_descriptor_heap_support;
+    LOG("vulkan: %s\n", g_spirv_translate.split_sets ? "each stage's textures are in a descriptor set of their own"
+                                                       : "one descriptor set a stage, its textures with its buffers");
+    /* the vertex and fragment programs' constant buffers through windows of the staging ring, their offsets in push
+       constants past the 128 bytes every layout had (cb_windows.h) */
+    {
+        const SnxVkCbWindowDevice wd = {g_vk.props.limits.maxPushConstantsSize, g_vk.props.limits.maxUniformBufferRange,
+                                        g_spirv_translate.uniform_cbufs, g_vk.has_descriptor_heap_support,
+                                        g_vk.driver_id == VK_DRIVER_ID_MESA_LLVMPIPE};
+        char line[512];
+        g_spirv_translate.cb_windows =
+            snx_vk_cb_windows_say(line, sizeof line, &wd, SH_PUSH_BYTES_WINDOWS, g_settings.constant_buffer_windows);
+        LOG("%s\n", line);
+    }
+    /* SM86 programs' plain textures through the texture table (table.c), a set after the stages' sets: where the
+       constant buffers are in windows (the words take one), the sets are plain ones, and the device pushes the
+       words' offsets and binds one more set */
+    g_spirv_translate.tex_table = 0;
+    if (g_shader_sm86) {
+        const u32 table_set = g_spirv_translate.split_sets ? 10 : g_vk_stage_sets;
+        char why[160] = "";
+        const char* no = !g_spirv_translate.cb_windows ? "constant buffers are not bound as windows"
+                         : g_vk.has_descriptor_buffers || g_vk.has_descriptor_heap_support
+                             ? "descriptor buffers or heaps hold the sets"
+                         : g_vk.props.limits.maxPushConstantsSize < SH_PUSH_BYTES_TABLE
+                             ? "the device pushes fewer than 240 bytes"
+                         : g_vk.props.limits.maxBoundDescriptorSets <= table_set ? "the device binds fewer sets"
+                                                                                 : NULL;
+        if (!no && vk_table_init(why, sizeof why)) {
+            g_spirv_translate.tex_table = 1;
+            g_spirv_translate.table_set = table_set;
+        }
+        LOG("vulkan: SM86 textures %s%s\n",
+            g_spirv_translate.tex_table ? "through the texture table, one word a texture"
+                                        : "in descriptor sets of their own: no texture table, as ",
+            g_spirv_translate.tex_table ? ""
+            : no                        ? no
+                                        : why);
+    }
+    /* SM86 programs' global memory by device address, in the texture table's records: where the device gives
+       addresses (has_gbuf_address) and the buffers come from the GPU mirror or the ring, not memory shared with the
+       CPU */
+    g_spirv_translate.gbuf_address = 0;
+    if (g_shader_sm86) {
+        const char* no = !g_spirv_translate.tex_table ? "no texture table"
+                         : !g_vk.has_gbuf_address     ? "the device has no buffer device address or 64-bit integers"
+                         : vk_uma()                   ? "guest memory is shared with the CPU"
+                         : !vk_table_scratch_init()   ? "no scratch memory"
+                                                      : NULL;
+        g_spirv_translate.gbuf_address = !no;
+        LOG("vulkan: SM86 global memory %s%s\n", no ? "through storage buffer descriptors, as " : "by device address",
+            no ? no : "");
+    }
+    /* SM86 vertex programs fetch their own attributes by device address, from the words of their records: with global
+       memory by address (the record, the scratch word and buffers with addresses), and with draw parameters, which
+       give the first instance that an attribute stepped per instance counts from */
+    g_spirv_translate.vertex_fetch = 0;
+    if (g_shader_sm86) {
+        const char* no = !g_spirv_translate.gbuf_address      ? "global memory is not read by device address"
+                         : !g_spirv_translate.draw_parameters ? "the device has no draw parameters"
+                                                              : NULL;
+        g_spirv_translate.vertex_fetch = !no;
+        LOG("vulkan: SM86 vertex attributes %s%s\n", no ? "through vertex input, as " : "fetched by the vertex program",
+            no ? no : "");
+    }
     for (int s = 0; s < 5; s++) {
         VkDescriptorSetLayoutBinding b[SNX_VKB_END];
         u32 count = 0;
@@ -726,29 +812,52 @@ void vk_pipeline_init(void) {
                 .descriptorCount = (i == SNX_VKB_TEXARRAY || i == SNX_VKB_TEXDEPTH) ? g_spirv_translate.tex_array : 1,
                 .stageFlags = vk_set_stages(s)};
         }
+        /* split: the buffers' set s, the same with the arrays or without, and the textures' set s + 5 */
+        VkDescriptorSetLayoutBinding tex[SNX_VKB_END];
+        u32 ntex = 0;
+        if (g_spirv_translate.split_sets) {
+            u32 kept = 0;
+            for (u32 k = 0; k < count; k++)
+                if (vk_binding_is_texture(b[k].binding))
+                    tex[ntex++] = b[k];
+                else
+                    b[kept++] = b[k];
+            count = kept;
+        }
         for (int arrays = 0; arrays < 2; arrays++) {
-            u32 n = count;
-            while (!arrays && n && b[n - 1].binding >= SNX_VKB_TEXARRAY) n--; /* the arrays are the last bindings */
-            VkDescriptorSetLayoutCreateInfo dl = {
-                .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-                .flags = g_vk.has_descriptor_buffers ? VK_DESCRIPTOR_SET_LAYOUT_CREATE_DESCRIPTOR_BUFFER_BIT_EXT : 0,
-                .bindingCount = n,
-                .pBindings = b};
-            if (!VK_OK(vkCreateDescriptorSetLayout(g_vk.dev, &dl, NULL, &g_vk_dslayout[arrays][s])))
-                fatal("vulkan: cannot create shader descriptor layout");
-            /* what the layout is made of, for the key of a shader object's binary (shader_objects.c): a layout
-               another build or setting makes is another program to the driver, with the same SPIR-V */
-            u64 h = snx_fnv_step(snx_fnv_step(snx_fnv_step(g_vk_dslayout_hash, (u64)s), (u64)arrays), dl.flags);
-            for (u32 i = 0; i < n; i++) {
-                h = snx_fnv_step(h, b[i].binding);
-                h = snx_fnv_step(h, (u64)b[i].descriptorType);
-                h = snx_fnv_step(h, b[i].descriptorCount);
-                h = snx_fnv_step(h, b[i].stageFlags);
+            VkDescriptorSetLayoutBinding* list = g_spirv_translate.split_sets ? tex : b;
+            u32 n = g_spirv_translate.split_sets ? ntex : count;
+            while (!arrays && n && list[n - 1].binding >= SNX_VKB_TEXARRAY) n--; /* the arrays are the last bindings */
+            for (int k = 0; k < (g_spirv_translate.split_sets ? 2 : 1); k++) {
+                /* k 1: the buffers' set of a split stage, with no arrays either way */
+                VkDescriptorSetLayoutBinding* l = k ? b : list;
+                u32 ln = k ? count : n;
+                int set = g_spirv_translate.split_sets && !k ? s + 5 : s;
+                VkDescriptorSetLayoutCreateInfo dl = {
+                    .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+                    .flags = g_vk.has_descriptor_buffers ? VK_DESCRIPTOR_SET_LAYOUT_CREATE_DESCRIPTOR_BUFFER_BIT_EXT : 0,
+                    .bindingCount = ln,
+                    .pBindings = l};
+                if (!VK_OK(vkCreateDescriptorSetLayout(g_vk.dev, &dl, NULL, &g_vk_dslayout[arrays][set])))
+                    fatal("vulkan: cannot create shader descriptor layout");
+                /* what the layout is made of, for the key of a shader object's binary (shader_objects.c): a layout
+                   another build or setting makes is another program to the driver, with the same SPIR-V */
+                u64 h =
+                    snx_fnv_step(snx_fnv_step(snx_fnv_step(g_vk_dslayout_hash, (u64)set), (u64)arrays), dl.flags);
+                for (u32 i = 0; i < ln; i++) {
+                    h = snx_fnv_step(h, l[i].binding);
+                    h = snx_fnv_step(h, (u64)l[i].descriptorType);
+                    h = snx_fnv_step(h, l[i].descriptorCount);
+                    h = snx_fnv_step(h, l[i].stageFlags);
+                }
+                g_vk_dslayout_hash = h;
+                vk_descriptors_layout(g_vk_dslayout[arrays][set], l, ln);
             }
-            g_vk_dslayout_hash = h;
-            vk_descriptors_layout(g_vk_dslayout[arrays][s], b, n);
         }
     }
+    /* a layout with the table is another program to the driver (shader_objects.c) */
+    if (g_spirv_translate.tex_table)
+        g_vk_dslayout_hash = snx_fnv_step(snx_fnv_step(g_vk_dslayout_hash, 0x7AB1Eu), g_spirv_translate.table_set);
     /* A compute dispatch does not bind the five graphics sets. Give it the full per-stage image budget instead
        of reusing the vertex layout's share of the whole graphics pipeline budget. */
     {
@@ -1088,6 +1197,11 @@ static VkSh* sh_make(const u8* code, u32 mlen, u64 h, int stage, const u32 mask[
                   "vulkan: program %016llx chooses the texture of %u TEX.B%s when it runs, among the constant buffer "
                   "handles that reach it: a handle equal to none of them samples (0, 0, 0, 0) (%s)\n",
                   (unsigned long long)h, s->si.chosen_tex, s->si.chosen_tex == 1 ? "" : "s", s->si.chosen_why);
+    /* a program whose branches and loops aren't SPIR-V's own runs them in the translator's dispatch loop, one switch
+       inside one loop, which costs the driver and the GPU about as much as the program's code: why, once a program */
+    if (!s->failed && s->si.flow_why[0])
+        LOG_LIMIT(64, "vulkan: program %016llx runs its control flow in a dispatch loop: %s\n", (unsigned long long)h,
+                  s->si.flow_why);
     if (!s->failed && s->si.memh_none)
         LOG_LIMIT(64, "vulkan: program %016llx samples %u texture%s as none, whose handles it loads from memory at "
                       "addresses no draw gives (%s)\n",
@@ -1438,8 +1552,7 @@ static void pf_pipe_record(const PipeKey* k);
 /* conservative rasterization overestimates, as the 3D engine's does, by the dilation asked for (PipeKey.conservative:
    1 plus quarter pixels) up to the device's most */
 float vk_conservative_extra(u32 conservative) {
-    float extra = conservative > 1 ? (float)(conservative - 1) * 0.25f : 0.0f;
-    return extra < g_vk.conservative_extra ? extra : g_vk.conservative_extra;
+    return vk_conservative_dilation(conservative, g_vk.conservative_extra, NULL, 0);
 }
 /* Everything a pipeline of a key is made of, filled in place by pipe_info (its members point at each other). A whole
    pipeline takes all of it (pipe_create), a library part what that part holds (lib_create). A part is made from the
@@ -1716,7 +1829,7 @@ static void pipe_info(const PipeKey* k, VkShaderModule fs, PipeInfo* o) {
     o->dyn = (PipeDynIn){.dyn_pr = g_vk.dyn_pr,
                          .feedback_dynamic = g_vk.has_feedback_dynamic,
                          .stride = l->nbind && g_vk.has_dynamic_stride,
-                         .vertex_input = g_vk.vertex_input_dynamic,
+                         .vertex_input = g_vk.vertex_input_dynamic && !k->fetch,
                          .tess = k->tes != VK_NULL_HANDLE,
                          .mesh = k->mesh != 0,
                          .clamp_range = g_vk.has_depth_clamp_range,
@@ -1788,7 +1901,8 @@ static VkPipeline pipe_create(const Pipe* e, int* hit) {
     COMPILED(VK_OK(vkCreateGraphicsPipelines(g_vk.dev, g_pipeline.pcache, 1, &gi, NULL, &p)));
     plat_thread_note_clear();
     *hit = (o.made.flags & VK_PIPELINE_CREATION_FEEDBACK_APPLICATION_PIPELINE_CACHE_HIT_BIT) != 0;
-    if (*hit) __atomic_add_fetch(e->prewarm ? &g_pipeline.pf.hits : &g_pipeline.pipe_hits, 1, __ATOMIC_RELAXED);
+    if (*hit)
+        atomic_fetch_add_explicit(e->prewarm ? &g_pipeline.pf.hits : &g_pipeline.pipe_hits, 1, memory_order_relaxed);
     return p;
 }
 /* ------------------------------------------------------------ pipeline libraries */
@@ -1810,16 +1924,22 @@ static void plib_init(void) {
    program's bit in the vertex program's key and compile it again for each kind of fragment program it meets */
 static VkPipelineLayout part_layout(u32 part, u32 arrays) {
     int fs = part == VK_PART_FS;
-    VkPipelineLayout* l = &g_pipeline.plib.layouts[fs][arrays & ((1u << 5) - 1)];
-    VkPipelineLayout made = __atomic_load_n(l, __ATOMIC_ACQUIRE);
+    _Atomic VkPipelineLayout* l = &g_pipeline.plib.layouts[fs][arrays & ((1u << 5) - 1)];
+    VkPipelineLayout made = atomic_load_explicit(l, memory_order_acquire);
     if (made) return made;
     pm_lock(&g_pipeline.playout_lock);
-    if (!*l) {
-        VkDescriptorSetLayout sets[5] = {0};
-        u32 n = fs ? 2 : g_vk_stage_sets;
+    if (!atomic_load_explicit(&(*l), memory_order_relaxed)) {
+        VkDescriptorSetLayout sets[11] = {0};
+        u32 n = g_spirv_translate.split_sets ? (fs ? 7 : 10) : fs ? 2 : g_vk_stage_sets;
         for (u32 s = 0; s < n; s++)
-            if ((s == 1) == fs) sets[s] = g_vk_dslayout[(arrays >> s) & 1][s];
-        VkPushConstantRange pc = {VK_PUSH_STAGES, 0, 128}; /* vk_playout's: a link's parts take its push constants */
+            if ((s % 5 == 1) == fs) sets[s] = g_vk_dslayout[(arrays >> (s % 5)) & 1][s];
+        /* the table: both parts read it (table_set, after every stage's set) */
+        if (g_spirv_translate.tex_table) {
+            n = g_spirv_translate.table_set + 1;
+            sets[g_spirv_translate.table_set] = vk_table_layout();
+        }
+        /* vk_playout's: a link's parts take its push constants */
+        VkPushConstantRange pc = {VK_PUSH_STAGES, 0, vk_push_bytes()};
         VkPipelineLayoutCreateInfo pl = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
                                          .flags = VK_PIPELINE_LAYOUT_CREATE_INDEPENDENT_SETS_BIT_EXT,
                                          .setLayoutCount = n,
@@ -1827,9 +1947,9 @@ static VkPipelineLayout part_layout(u32 part, u32 arrays) {
                                          .pushConstantRangeCount = 1,
                                          .pPushConstantRanges = &pc};
         if (!VK_OK(vkCreatePipelineLayout(g_vk.dev, &pl, NULL, &made))) made = VK_NULL_HANDLE;
-        __atomic_store_n(l, made, __ATOMIC_RELEASE);
+        atomic_store_explicit(l, made, memory_order_release);
     }
-    made = *l;
+    made = atomic_load_explicit(&(*l), memory_order_relaxed);
     pm_unlock(&g_pipeline.playout_lock);
     return made;
 }
@@ -2033,9 +2153,9 @@ static VkPipeline lib_get(PipeLib* l) {
                                        i == 2 ? l->fs : VK_NULL_HANDLE};
     slow_say(what, modules, ns, hit);
     if (i == 1 || i == 2) pcache_note();
-    __atomic_add_fetch(&g_pipeline.plib.made[i], 1, __ATOMIC_RELAXED);
-    __atomic_add_fetch(&g_pipeline.plib.ns[i], ns, __ATOMIC_RELAXED);
-    if (hit) __atomic_add_fetch(&g_pipeline.plib.hits[i], 1, __ATOMIC_RELAXED);
+    atomic_fetch_add_explicit(&g_pipeline.plib.made[i], 1, memory_order_relaxed);
+    atomic_fetch_add_explicit(&g_pipeline.plib.ns[i], ns, memory_order_relaxed);
+    if (hit) atomic_fetch_add_explicit(&g_pipeline.plib.hits[i], 1, memory_order_relaxed);
     pm_lock(&g_pipeline.pj_lock);
     l->p = p;
     l->state = 2;
@@ -2116,9 +2236,9 @@ static VkPipeline gpl_cached(const Pipe* e) {
     int hit = 0;
     VkPipeline p = gpl_link(e, GPL_CACHED, &hit);
     SNX_ZONE_END(z);
-    __atomic_add_fetch(&g_pipeline.plib.cached_tries, 1, __ATOMIC_RELAXED);
-    __atomic_add_fetch(&g_pipeline.plib.cached_ns, plat_ns() - t0, __ATOMIC_RELAXED);
-    if (p) __atomic_add_fetch(&g_pipeline.plib.cached, 1, __ATOMIC_RELAXED);
+    atomic_fetch_add_explicit(&g_pipeline.plib.cached_tries, 1, memory_order_relaxed);
+    atomic_fetch_add_explicit(&g_pipeline.plib.cached_ns, plat_ns() - t0, memory_order_relaxed);
+    if (p) atomic_fetch_add_explicit(&g_pipeline.plib.cached, 1, memory_order_relaxed);
     return p;
 }
 /* e's parts, made or waited for, and their fast link, or the optimized link when the cache has it (*opt):
@@ -2135,8 +2255,8 @@ static VkPipeline gpl_fast(const Pipe* e, int* hit, int* opt) {
     SNX_ZONE(z, "pipeline link");
     VkPipeline p = gpl_link(e, GPL_FAST, hit);
     SNX_ZONE_END(z);
-    __atomic_add_fetch(&g_pipeline.plib.links, 1, __ATOMIC_RELAXED);
-    __atomic_add_fetch(&g_pipeline.plib.link_ns, plat_ns() - t0, __ATOMIC_RELAXED);
+    atomic_fetch_add_explicit(&g_pipeline.plib.links, 1, memory_order_relaxed);
+    atomic_fetch_add_explicit(&g_pipeline.plib.link_ns, plat_ns() - t0, memory_order_relaxed);
     return p;
 }
 /* on a worker, after e's fast link: the optimized pipeline, which the draws take from then on (vk_pipeline_resolve
@@ -2152,9 +2272,9 @@ static void pipe_optimize(Pipe* e) {
     const VkShaderModule modules[5] = {e->k.vs, e->k.tcs, e->k.tes, e->k.gs, e->fs};
     slow_say("an optimized pipeline, in the background,", modules, ns, hit);
     pcache_note();
-    __atomic_add_fetch(&g_pipeline.plib.opts, 1, __ATOMIC_RELAXED);
-    __atomic_add_fetch(&g_pipeline.plib.opt_ns, ns, __ATOMIC_RELAXED);
-    if (hit) __atomic_add_fetch(&g_pipeline.plib.opt_hits, 1, __ATOMIC_RELAXED);
+    atomic_fetch_add_explicit(&g_pipeline.plib.opts, 1, memory_order_relaxed);
+    atomic_fetch_add_explicit(&g_pipeline.plib.opt_ns, ns, memory_order_relaxed);
+    if (hit) atomic_fetch_add_explicit(&g_pipeline.plib.opt_hits, 1, memory_order_relaxed);
     if (!o) { /* the fast link stays */
         char stages[320];
         stages_text(modules, stages, sizeof stages);
@@ -2163,8 +2283,8 @@ static void pipe_optimize(Pipe* e) {
         return;
     }
     pipe_stats(o, e, "optimized");
-    __atomic_store_n(&e->p, o, __ATOMIC_RELEASE);
-    __atomic_store_n(&e->opt, 1, __ATOMIC_RELEASE);
+    atomic_store_explicit(&e->p, o, memory_order_release);
+    atomic_store_explicit(&e->opt, 1, memory_order_release);
 }
 void vk_pipeline_lib_waits(u64* waits, u64* wait_ms, u64* behind_opt_ms, u64* max_ms, int* opt_workers) {
     pm_lock(&g_pipeline.pj_lock);
@@ -2178,24 +2298,24 @@ void vk_pipeline_lib_waits(u64* waits, u64* wait_ms, u64* behind_opt_ms, u64* ma
 void vk_pipeline_lib_stats(u64 made[4], u64 hits[4], u64 make_ms[4], u64* links, u64* link_ms, u64* opts,
                            u64* opt_ms) {
     for (int i = 0; i < 4; i++) {
-        made[i] = __atomic_load_n(&g_pipeline.plib.made[i], __ATOMIC_RELAXED);
-        hits[i] = __atomic_load_n(&g_pipeline.plib.hits[i], __ATOMIC_RELAXED);
-        make_ms[i] = __atomic_load_n(&g_pipeline.plib.ns[i], __ATOMIC_RELAXED) / 1000000;
+        made[i] = atomic_load_explicit(&g_pipeline.plib.made[i], memory_order_relaxed);
+        hits[i] = atomic_load_explicit(&g_pipeline.plib.hits[i], memory_order_relaxed);
+        make_ms[i] = atomic_load_explicit(&g_pipeline.plib.ns[i], memory_order_relaxed) / 1000000;
     }
-    *links = __atomic_load_n(&g_pipeline.plib.links, __ATOMIC_RELAXED);
-    *link_ms = __atomic_load_n(&g_pipeline.plib.link_ns, __ATOMIC_RELAXED) / 1000000;
-    *opts = __atomic_load_n(&g_pipeline.plib.opts, __ATOMIC_RELAXED);
-    *opt_ms = __atomic_load_n(&g_pipeline.plib.opt_ns, __ATOMIC_RELAXED) / 1000000;
+    *links = atomic_load_explicit(&g_pipeline.plib.links, memory_order_relaxed);
+    *link_ms = atomic_load_explicit(&g_pipeline.plib.link_ns, memory_order_relaxed) / 1000000;
+    *opts = atomic_load_explicit(&g_pipeline.plib.opts, memory_order_relaxed);
+    *opt_ms = atomic_load_explicit(&g_pipeline.plib.opt_ns, memory_order_relaxed) / 1000000;
 }
 void vk_pipeline_lib_cached_stats(u64* tries, u64* cached, u64* ms) {
-    *tries = __atomic_load_n(&g_pipeline.plib.cached_tries, __ATOMIC_RELAXED);
-    *cached = __atomic_load_n(&g_pipeline.plib.cached, __ATOMIC_RELAXED);
-    *ms = __atomic_load_n(&g_pipeline.plib.cached_ns, __ATOMIC_RELAXED) / 1000000;
+    *tries = atomic_load_explicit(&g_pipeline.plib.cached_tries, memory_order_relaxed);
+    *cached = atomic_load_explicit(&g_pipeline.plib.cached, memory_order_relaxed);
+    *ms = atomic_load_explicit(&g_pipeline.plib.cached_ns, memory_order_relaxed) / 1000000;
 }
 void vk_pipeline_lib_warm_stats(u64* made, u64* hit, u64* ms) {
-    *made = __atomic_load_n(&g_pipeline.plib.warm_made, __ATOMIC_RELAXED);
-    *hit = __atomic_load_n(&g_pipeline.plib.warm_hit, __ATOMIC_RELAXED);
-    *ms = __atomic_load_n(&g_pipeline.plib.warm_ns, __ATOMIC_RELAXED) / 1000000;
+    *made = atomic_load_explicit(&g_pipeline.plib.warm_made, memory_order_relaxed);
+    *hit = atomic_load_explicit(&g_pipeline.plib.warm_hit, memory_order_relaxed);
+    *ms = atomic_load_explicit(&g_pipeline.plib.warm_ns, memory_order_relaxed) / 1000000;
 }
 /* e's pipeline, made here. One a draw asked for is kept in the file (pf_pipe_record): once made when the GPU thread
    makes it (record), and when it queues it for a worker otherwise, as the file's tables are the GPU thread's */
@@ -2205,17 +2325,17 @@ static VkPipeline pipe_make(Pipe* e, int record, int* opt) {
     SNX_ZONE(z, "pipeline make");
     /* A new-area pipeline can arrive after a long quiet spell. Mark it before entering the driver, so a periodic
        cache snapshot doesn't mistake an in-flight compile for idleness and contend for the driver's cache lock. */
-    int so = __atomic_load_n(&e->so, __ATOMIC_RELAXED);
+    int so = atomic_load_explicit(&e->so, memory_order_relaxed);
     if (!so) pcache_note();
     int hit = 0;
     *opt = 0;
     VkPipeline p = VK_NULL_HANDLE;
     /* shader objects go to no pipeline cache: making them leaves it as it is */
-    if (__atomic_load_n(&e->so, __ATOMIC_RELAXED)) {
+    if (atomic_load_explicit(&e->so, memory_order_relaxed)) {
         if (vk_so_make(&e->k, e->fs, e->sh))
             p = PIPE_SO_MADE;
         else /* made as a pipeline, whole: it has no parts */
-            __atomic_store_n(&e->so, 0, __ATOMIC_RELAXED);
+            atomic_store_explicit(&e->so, 0, memory_order_relaxed);
     }
     if (!p) p = e->lib[0] ? gpl_fast(e, &hit, opt) : pipe_create(e, &hit);
     SNX_ZONE_END(z);
@@ -2229,9 +2349,9 @@ static VkPipeline pipe_make(Pipe* e, int record, int* opt) {
         pcache_note();
     }
     if (e->prewarm)
-        __atomic_add_fetch(&g_pipeline.pf.made, 1, __ATOMIC_RELAXED);
+        atomic_fetch_add_explicit(&g_pipeline.pf.made, 1, memory_order_relaxed);
     else {
-        __atomic_add_fetch(&g_pipeline.pipe_make_ns, plat_ns() - t0, __ATOMIC_RELAXED);
+        atomic_fetch_add_explicit(&g_pipeline.pipe_make_ns, plat_ns() - t0, memory_order_relaxed);
         if (p && record) pf_pipe_record(&e->k);
     }
     return p;
@@ -2256,10 +2376,10 @@ static void warm_run(WarmItem* w) {
     u64 t0 = plat_ns();
     VkPipeline p = lib_create(&lib, &hit);
     u64 ns = plat_ns() - t0;
-    __atomic_add_fetch(&g_pipeline.plib.warm_ns, ns, __ATOMIC_RELAXED);
+    atomic_fetch_add_explicit(&g_pipeline.plib.warm_ns, ns, memory_order_relaxed);
     pcache_note();
-    __atomic_add_fetch(&g_pipeline.plib.warm_made, 1, __ATOMIC_RELAXED);
-    if (hit) __atomic_add_fetch(&g_pipeline.plib.warm_hit, 1, __ATOMIC_RELAXED);
+    atomic_fetch_add_explicit(&g_pipeline.plib.warm_made, 1, memory_order_relaxed);
+    if (hit) atomic_fetch_add_explicit(&g_pipeline.plib.warm_hit, 1, memory_order_relaxed);
     if (p) vkDestroyPipeline(g_vk.dev, p, NULL);
     VkShaderModule mod = w->part == VK_PART_PR ? w->src.vs : w->fs;
     if (mod) vkDestroyShaderModule(g_vk.dev, mod, NULL);
@@ -2334,9 +2454,9 @@ static void pipe_worker(void* low) {
         p = pipe_make(e, 0, &opt);
         pm_lock(&g_pipeline.pj_lock);
         g_pipeline.pj_busy--;
-        __atomic_store_n(&e->p, p, __ATOMIC_RELEASE);
-        __atomic_store_n(&e->opt, opt, __ATOMIC_RELEASE);
-        __atomic_store_n(&e->ready, 1, __ATOMIC_RELEASE);
+        atomic_store_explicit(&e->p, p, memory_order_release);
+        atomic_store_explicit(&e->opt, opt, memory_order_release);
+        atomic_store_explicit(&e->ready, 1, memory_order_release);
         if (p && e->lib[0] && !opt && !g_vk.gpl_hold) pipe_queue(e, 3); /* a test's hold: the link stays */
         pc_broadcast(&g_pipeline.pj_done);
         pm_unlock(&g_pipeline.pj_lock);
@@ -2348,7 +2468,7 @@ void vk_pipeline_quiesce(void) {
         pm_lock(&g_pipeline.pf.lock);
         while (!g_pipeline.pf.loaded) pc_wait(&g_pipeline.pf.done, &g_pipeline.pf.lock, -1);
         pm_unlock(&g_pipeline.pf.lock);
-        while (!__atomic_load_n(&g_pipeline.pf.ship_ready, __ATOMIC_ACQUIRE)) plat_sleep_ns(1000000);
+        while (!atomic_load_explicit(&g_pipeline.pf.ship_ready, memory_order_acquire)) plat_sleep_ns(1000000);
     }
     pm_lock(&g_pipeline.pj_lock);
     /* the optimized pipelines still to make are left: the fast links serve until the end */
@@ -2426,14 +2546,15 @@ static VkPipeline pipe_wait(Pipe* e, i64 ns) {
     u64 until = ns < 0 ? 0 : plat_ns() + (u64)ns;
     SNX_ZONE(z, "pipeline wait");
     pm_lock(&g_pipeline.pj_lock);
-    while (!e->ready) {
+    while (!atomic_load_explicit(&e->ready, memory_order_relaxed)) {
         u64 now = plat_ns();
         if (ns >= 0 && now >= until) break;
         pc_wait(&g_pipeline.pj_done, &g_pipeline.pj_lock, ns < 0 ? -1 : (i64)(until - now));
     }
     pm_unlock(&g_pipeline.pj_lock);
     SNX_ZONE_END(z);
-    return __atomic_load_n(&e->ready, __ATOMIC_ACQUIRE) ? __atomic_load_n(&e->p, __ATOMIC_ACQUIRE) : VK_NULL_HANDLE;
+    return atomic_load_explicit(&e->ready, memory_order_acquire) ? atomic_load_explicit(&e->p, memory_order_acquire)
+                                                                 : VK_NULL_HANDLE;
 }
 /* Stand-ins for pipelines still being made, which the GPU thread hands the recording thread in their place
    (vk_pipeline_get_deferred): PIPE_STANDIN in the top bits, which no handle has (record.c's REC_STANDIN tells the same
@@ -2458,7 +2579,7 @@ static VkPipeline pipe_wait_here(Pipe* p) {
     gpu_wait_note("a pipeline being made", p->h);
     VkPipeline got = pipe_wait(p, -1);
     gpu_wait_note(NULL, 0);
-    __atomic_add_fetch(&g_pipeline.pipe_wait_ns, plat_ns() - t0, __ATOMIC_RELAXED);
+    atomic_fetch_add_explicit(&g_pipeline.pipe_wait_ns, plat_ns() - t0, memory_order_relaxed);
     return got;
 }
 /* k's entry, found or added (NULL with no memory): *found says whether it was there */
@@ -2485,7 +2606,7 @@ static Pipe* pipe_entry(const PipeKey* k, int* found) {
     p->layout = vk_playout(k->arrays);
     p->fs = k->fs ? k->fs : null_fs();
     if (vk_so_takes(k, p->fs)) {
-        p->so = p->so_layout = 1;
+        atomic_store_explicit(&p->so, p->so_layout = 1, memory_order_relaxed);
         p->layout = playout(k->arrays, 0); /* a pipeline made in its place takes it too */
     } else
         pipe_parts(p);
@@ -2506,10 +2627,10 @@ static VkPipeline pipe_make_here(Pipe* p, int record) {
     u64 t0 = plat_ns();
     int opt;
     VkPipeline made = pipe_make(p, record, &opt);
-    __atomic_store_n(&p->p, made, __ATOMIC_RELEASE);
-    __atomic_store_n(&p->opt, opt, __ATOMIC_RELEASE);
-    __atomic_store_n(&p->ready, 1, __ATOMIC_RELEASE);
-    __atomic_add_fetch(&g_pipeline.pipe_wait_ns, plat_ns() - t0, __ATOMIC_RELAXED);
+    atomic_store_explicit(&p->p, made, memory_order_release);
+    atomic_store_explicit(&p->opt, opt, memory_order_release);
+    atomic_store_explicit(&p->ready, 1, memory_order_release);
+    atomic_fetch_add_explicit(&g_pipeline.pipe_wait_ns, plat_ns() - t0, memory_order_relaxed);
     if (made && p->lib[0] && !opt && !g_vk.gpl_hold) { /* a test's hold: the link stays */
         pm_lock(&g_pipeline.pj_lock);
         int queued = pipe_workers() != 0;
@@ -2525,7 +2646,8 @@ VkPipeline vk_pipeline_get(const PipeKey* k) {
     Pipe* p = pipe_entry(k, &found);
     if (!p) return VK_NULL_HANDLE;
     if (found) {
-        if (__atomic_load_n(&p->ready, __ATOMIC_ACQUIRE)) return pipe_handle(p, __atomic_load_n(&p->p, __ATOMIC_ACQUIRE));
+        if (atomic_load_explicit(&p->ready, memory_order_acquire))
+            return pipe_handle(p, atomic_load_explicit(&p->p, memory_order_acquire));
         if (p->prewarm) pipe_promote(p);
         return pipe_handle(p, pipe_wait_here(p));
     }
@@ -2545,10 +2667,10 @@ VkPipeline vk_pipeline_get_deferred(const PipeKey* k) {
     Pipe* p = pipe_entry(k, &found);
     if (!p) return VK_NULL_HANDLE;
     if (found) {
-        if (__atomic_load_n(&p->ready, __ATOMIC_ACQUIRE)) {
-            VkPipeline made = __atomic_load_n(&p->p, __ATOMIC_ACQUIRE);
+        if (atomic_load_explicit(&p->ready, memory_order_acquire)) {
+            VkPipeline made = atomic_load_explicit(&p->p, memory_order_acquire);
             if (p->so_layout) return pipe_handle(p, made);
-            if (!p->lib[0] || !made || __atomic_load_n(&p->opt, __ATOMIC_ACQUIRE)) return made;
+            if (!p->lib[0] || !made || atomic_load_explicit(&p->opt, memory_order_acquire)) return made;
         } else if (p->prewarm)
             pipe_promote(p);
     } else {
@@ -2574,44 +2696,44 @@ static struct Pipe* standin_pipe(VkPipeline h) {
 }
 /* what h names once p is ready: the pipeline, or for shader objects h itself (VK_NULL_HANDLE when none was made) */
 static VkPipeline standin_made(Pipe* p, VkPipeline h) {
-    VkPipeline made = __atomic_load_n(&p->p, __ATOMIC_ACQUIRE);
-    return made && __atomic_load_n(&p->so, __ATOMIC_RELAXED) ? h : made;
+    VkPipeline made = atomic_load_explicit(&p->p, memory_order_acquire);
+    return made && atomic_load_explicit(&p->so, memory_order_relaxed) ? h : made;
 }
 /* on the recording thread: the pipeline a handle from vk_pipeline_get_deferred names, waited for while a worker makes
    it. VK_NULL_HANDLE when it couldn't be made */
 VkPipeline vk_pipeline_resolve(VkPipeline h) {
     Pipe* p = standin_pipe(h);
     if (!p) return h;
-    if (__atomic_load_n(&p->ready, __ATOMIC_ACQUIRE)) return standin_made(p, h);
+    if (atomic_load_explicit(&p->ready, memory_order_acquire)) return standin_made(p, h);
     u64 t0 = plat_ns();
     (void)pipe_wait(p, -1);
-    __atomic_add_fetch(&g_pipeline.pipe_wait_ns, plat_ns() - t0, __ATOMIC_RELAXED);
+    atomic_fetch_add_explicit(&g_pipeline.pipe_wait_ns, plat_ns() - t0, memory_order_relaxed);
     return standin_made(p, h);
 }
 /* the pipeline a handle from vk_pipeline_get_deferred names once it is ready, else the handle: without waiting */
 VkPipeline vk_pipeline_ready(VkPipeline h) {
     Pipe* p = standin_pipe(h);
-    return p && __atomic_load_n(&p->ready, __ATOMIC_ACQUIRE) ? standin_made(p, h) : h;
+    return p && atomic_load_explicit(&p->ready, memory_order_acquire) ? standin_made(p, h) : h;
 }
 /* the pipeline h names without waiting for it: VK_NULL_HANDLE with *pending set while a worker still makes it, and
    VK_NULL_HANDLE alone when it couldn't be made */
 VkPipeline vk_pipeline_now(VkPipeline h, int* pending) {
     Pipe* p = standin_pipe(h);
-    *pending = p && !__atomic_load_n(&p->ready, __ATOMIC_ACQUIRE);
+    *pending = p && !atomic_load_explicit(&p->ready, memory_order_acquire);
     return *pending ? VK_NULL_HANDLE : p ? standin_made(p, h) : h;
 }
 void vk_pipeline_bind(VkCommandBuffer cb, VkPipelineBindPoint bp, VkPipeline h) {
     Pipe* p = standin_pipe(h);
-    if (p && __atomic_load_n(&p->so, __ATOMIC_RELAXED))
+    if (p && atomic_load_explicit(&p->so, memory_order_relaxed))
         vk_so_bind(cb, &p->k, p->sh);
     else
-        vkCmdBindPipeline(cb, bp, p ? __atomic_load_n(&p->p, __ATOMIC_ACQUIRE) : h);
+        vkCmdBindPipeline(cb, bp, p ? atomic_load_explicit(&p->p, memory_order_acquire) : h);
 }
 void vk_pipeline_stats(u64* pipes, u64* hits, u64* make_ms, u64* wait_ms, u64* shaders, u64* shader_ms) {
     *pipes = g_pipeline.pipes_new;
-    *hits = __atomic_load_n(&g_pipeline.pipe_hits, __ATOMIC_RELAXED);
-    *make_ms = __atomic_load_n(&g_pipeline.pipe_make_ns, __ATOMIC_RELAXED) / 1000000;
-    *wait_ms = __atomic_load_n(&g_pipeline.pipe_wait_ns, __ATOMIC_RELAXED) / 1000000;
+    *hits = atomic_load_explicit(&g_pipeline.pipe_hits, memory_order_relaxed);
+    *make_ms = atomic_load_explicit(&g_pipeline.pipe_make_ns, memory_order_relaxed) / 1000000;
+    *wait_ms = atomic_load_explicit(&g_pipeline.pipe_wait_ns, memory_order_relaxed) / 1000000;
     *shaders = g_pipeline.sh_new;
     *shader_ms = g_pipeline.sh_ns / 1000000;
 }
@@ -2842,7 +2964,7 @@ fail:
    draw that needs its pipeline makes it from its own key */
 static int pf_key_holds(const PipeKey* k) {
     const VkShaderModule mods[5] = {k->vs, k->tcs, k->tes, k->gs, k->fs};
-    u32 arrays = 0, attrs = 0, in = 0;
+    u32 arrays = 0, attrs = 0, in = 0, fetch = 0;
     for (int i = 0; i < 5; i++) {
         const VkSh* sh = NULL;
         if (!mods[i]) continue;
@@ -2850,11 +2972,13 @@ static int pf_key_holds(const PipeKey* k) {
             if (q->mod == mods[i]) sh = q;
         if (!sh) return 0;
         if (sh->indexed) arrays |= 1u << shader_vk_set(sh->stage);
-        if (i == 0) in = sh->si.in_mask;
+        if (i == 0) in = sh->si.in_mask, fetch = sh->si.vertex_fetch;
     }
     for (u32 i = 0; i < k->vi.nattr; i++) attrs |= 1u << k->vi.attr[i].loc;
-    /* with dynamic vertex input a key holds no layout, which the draws give */
-    return arrays == k->arrays && (g_vk.vertex_input_dynamic ? !k->vi.nattr && !k->vi.nbind : attrs == in);
+    /* with dynamic vertex input a key holds no layout, which the draws give, and a program that fetches its own
+       attributes has none */
+    return arrays == k->arrays && fetch == k->fetch &&
+           (g_vk.vertex_input_dynamic || fetch ? !k->vi.nattr && !k->vi.nbind : attrs == in);
 }
 void vk_pf_cspipe(u64 key, const u32 launch[5], const VkCbReads* cbr, const void* vkey, u32 nkey, const u8* code,
                   u32 ncode) {
@@ -2902,7 +3026,7 @@ static void pf_load_pipe(void* ctx, const u64 m[5], const void* key, u32 keylen)
     p->layout = vk_playout(p->k.arrays);
     p->fs = p->k.fs ? p->k.fs : null_fs();
     if (vk_so_takes(&p->k, p->fs)) {
-        p->so = p->so_layout = 1;
+        atomic_store_explicit(&p->so, p->so_layout = 1, memory_order_relaxed);
         p->layout = playout(p->k.arrays, 0); /* a pipeline made in its place takes it too */
     } else
         pipe_parts(p);
@@ -2956,6 +3080,11 @@ static void pf_key(char* out, size_t n, size_t* guest) {
                   g_vk.advanced_blend_caps.all_operations,
                   (u32)g_vk.has_fragment_interlock,
                   arrays,
+                  (u32)g_spirv_translate.split_sets,
+                  (u32)g_spirv_translate.cb_windows,
+                  (u32)g_spirv_translate.tex_table,
+                  (u32)g_spirv_translate.gbuf_address,
+                  (u32)g_spirv_translate.vertex_fetch,
                   (u32)g_spirv_translate.stage_point_size,
                   (u32)g_spirv_translate.output_layer,
                   (u32)g_spirv_translate.geometry,
@@ -3070,7 +3199,7 @@ static void pf_note(const char* fmt, ...) {
 }
 static void pf_ship_found(VkSh* s) {
     s->shipped = 2;
-    __atomic_add_fetch(&g_pipeline.pf.ship_used, 1, __ATOMIC_RELAXED);
+    atomic_fetch_add_explicit(&g_pipeline.pf.ship_used, 1, memory_order_relaxed);
 }
 
 /* the index's slot for a key: its entry, or the free one where it would go (NULL with no index) */
@@ -3186,7 +3315,7 @@ static VkSh* pf_ship_take(u64 h, int stage, const u32 mask[SH_KEY_WORDS], u32 le
     u64 check = 0;
     u8* owned;
     VkSh* s;
-    if (!g_pipeline.pf.on || !__atomic_load_n(&g_pipeline.pf.ship_ready, __ATOMIC_ACQUIRE) ||
+    if (!g_pipeline.pf.on || !atomic_load_explicit(&g_pipeline.pf.ship_ready, memory_order_acquire) ||
         !ship_key_only_clip(mask) || !(e = idx_slot(h, stage, mask[6], len, qh, len_a, qh_a)) || !e->at)
         return NULL;
     spv = ship_payload(e->at, &r, &check, &cbr, &owned);
@@ -3272,7 +3401,7 @@ static void ship_warm(int stage, int indexed, const u32* spv, u32 nw) {
     else
         g_pipeline.warm_head = w;
     g_pipeline.warm_tail = w;
-    __atomic_add_fetch(&g_pipeline.plib.warm_queued, 1, __ATOMIC_RELAXED);
+    atomic_fetch_add_explicit(&g_pipeline.plib.warm_queued, 1, memory_order_relaxed);
     pc_signal(&g_pipeline.pj_work);
     pm_unlock(&g_pipeline.pj_lock);
 }
@@ -3309,7 +3438,7 @@ static int ship_make(const u8* code, u64 h, int stage, u32 len, u64 qh, u32 len_
     }
     if (!at) return SHIP_STOP;
     idx_add(h, stage, mask[6], len, qh, len_a, qh_a, at);
-    __atomic_add_fetch(&g_pipeline.pf.ship_new, 1, __ATOMIC_RELAXED);
+    atomic_fetch_add_explicit(&g_pipeline.pf.ship_new, 1, memory_order_relaxed);
     return SHIP_NEW;
 }
 /* A VertexA with the VertexB after it, merged as a draw that binds the two merges them (vk_shader_get): the VertexB is
@@ -3423,18 +3552,18 @@ static void pf_ship_pass(void) {
         snprintf(key, sizeof key, "walk=%s", ship_walk_version());
         pf_open_mapped(&g_pipeline.pf.scan, g_pipeline.pf.scan_path, key, pf_scan_rec, NULL);
         pf_unseal(&g_pipeline.pf.scan);
-        __atomic_store_n(&g_pipeline.pf.scanning, 1, __ATOMIC_RELAXED);
+        atomic_store_explicit(&g_pipeline.pf.scanning, 1, memory_order_relaxed);
         int rc = ship_walk(&sink, &g_pipeline.pf.progress, g_settings.prepare_shaders == 2, g_ounce);
-        __atomic_store_n(&g_pipeline.pf.scanning, 0, __ATOMIC_RELAXED);
+        atomic_store_explicit(&g_pipeline.pf.scanning, 0, memory_order_relaxed);
         pf_close(&g_pipeline.pf.scan);
         LOG("vulkan: the game's own shaders: %u translated new, %u in %s, in %llu ms%s; %llu large ones queued to warm "
             "their parts\n",
-            __atomic_load_n(&g_pipeline.pf.ship_new, __ATOMIC_RELAXED), g_pipeline.pf.nidx, g_pipeline.pf.ship_path,
-            (unsigned long long)((plat_ns() - t0) / 1000000),
+            atomic_load_explicit(&g_pipeline.pf.ship_new, memory_order_relaxed), g_pipeline.pf.nidx,
+            g_pipeline.pf.ship_path, (unsigned long long)((plat_ns() - t0) / 1000000),
             rc > 0   ? " (stopped: the file takes no more)"
             : rc < 0 ? " (a later run reads what wasn't)"
                      : "",
-            (unsigned long long)__atomic_load_n(&g_pipeline.plib.warm_queued, __ATOMIC_RELAXED));
+            (unsigned long long)atomic_load_explicit(&g_pipeline.plib.warm_queued, memory_order_relaxed));
     } /* else pf_open_mapped or pf_unseal said why the file can't be written */
     pf_seal(&g_pipeline.pf.ship); /* mapped again with the records appended, for the draws to read */
 }
@@ -3448,17 +3577,18 @@ void vk_pipeline_prepare(RendererPrepare* p) {
     pm_lock(&g_pipeline.pf.lock);
     loaded = g_pipeline.pf.loaded;
     pm_unlock(&g_pipeline.pf.lock);
-    p->files = __atomic_load_n(&g_pipeline.pf.progress.files, __ATOMIC_RELAXED);
-    p->files_seen = __atomic_load_n(&g_pipeline.pf.progress.files_seen, __ATOMIC_RELAXED);
-    p->programs = __atomic_load_n(&g_pipeline.pf.progress.programs, __ATOMIC_RELAXED);
-    p->programs_done = __atomic_load_n(&g_pipeline.pf.progress.programs_done, __ATOMIC_RELAXED);
-    p->shipped = __atomic_load_n(&g_pipeline.pf.ship_new, __ATOMIC_RELAXED);
-    p->scanning = __atomic_load_n(&g_pipeline.pf.scanning, __ATOMIC_RELAXED);
-    p->shaders = __atomic_load_n(&g_pipeline.pf.shaders_total, __ATOMIC_RELAXED);
-    p->pipes = __atomic_load_n(&g_pipeline.pf.pipes_total, __ATOMIC_RELAXED);
-    p->pipes_made = (u32)__atomic_load_n(&g_pipeline.pf.made, __ATOMIC_RELAXED);
+    p->files = atomic_load_explicit(&g_pipeline.pf.progress.files, memory_order_relaxed);
+    p->files_seen = atomic_load_explicit(&g_pipeline.pf.progress.files_seen, memory_order_relaxed);
+    p->programs = atomic_load_explicit(&g_pipeline.pf.progress.programs, memory_order_relaxed);
+    p->programs_done = atomic_load_explicit(&g_pipeline.pf.progress.programs_done, memory_order_relaxed);
+    p->shipped = atomic_load_explicit(&g_pipeline.pf.ship_new, memory_order_relaxed);
+    p->scanning = atomic_load_explicit(&g_pipeline.pf.scanning, memory_order_relaxed);
+    p->shaders = atomic_load_explicit(&g_pipeline.pf.shaders_total, memory_order_relaxed);
+    p->pipes = atomic_load_explicit(&g_pipeline.pf.pipes_total, memory_order_relaxed);
+    p->pipes_made = (u32)atomic_load_explicit(&g_pipeline.pf.made, memory_order_relaxed);
     p->loaded = loaded;
-    p->done = loaded && __atomic_load_n(&g_pipeline.pf.ship_ready, __ATOMIC_ACQUIRE) && p->pipes_made >= p->pipes;
+    p->done =
+        loaded && atomic_load_explicit(&g_pipeline.pf.ship_ready, memory_order_acquire) && p->pipes_made >= p->pipes;
     pm_lock(&g_pipeline.pf.note_lock);
     p->notes = g_pipeline.pf.nnote < RENDERER_NOTES ? (int)g_pipeline.pf.nnote : RENDERER_NOTES;
     for (int i = 0; i < p->notes; i++) /* oldest first */
@@ -3498,15 +3628,16 @@ static void pf_load(void* arg) {
         g_pipeline.pf.nsh, g_pipeline.pf.npipe, g_vk.driver_name, g_pipeline.driver_tag, g_pipeline.pf.path,
         (unsigned long long)((plat_ns() - t0) / 1000000), g_pipeline.pf.ncs, g_pipeline.pf.ncs_failed,
         g_pipeline.pf.nidx, g_pipeline.pf.ship_path);
-    __atomic_store_n(&g_pipeline.pf.shaders_total, g_pipeline.pf.nsh, __ATOMIC_RELAXED);
-    __atomic_store_n(&g_pipeline.pf.pipes_total, g_pipeline.pf.npipe, __ATOMIC_RELAXED);
+    atomic_store_explicit(&g_pipeline.pf.shaders_total, g_pipeline.pf.nsh, memory_order_relaxed);
+    atomic_store_explicit(&g_pipeline.pf.pipes_total, g_pipeline.pf.npipe, memory_order_relaxed);
     pm_lock(&g_pipeline.pf.lock);
     g_pipeline.pf.loaded = 1;
     pc_broadcast(&g_pipeline.pf.done);
     pm_unlock(&g_pipeline.pf.lock);
     if (arg && g_settings.prepare_shaders) pf_ship_pass(); /* translating needs this thread's stack */
     ship_release();
-    __atomic_store_n(&g_pipeline.pf.ship_ready, 1, __ATOMIC_RELEASE); /* the index and the view no longer change */
+    atomic_store_explicit(&g_pipeline.pf.ship_ready, 1,
+                          memory_order_release); /* the index and the view no longer change */
 }
 static void pf_load_thread(void* arg) {
     SNX_THREAD_NAME("pipeline load");
@@ -3589,8 +3720,8 @@ static void pf_merge(void) {
         }
 }
 void vk_pipeline_prewarm_stats(u64* made, u64* hits, u64* left) {
-    *made = __atomic_load_n(&g_pipeline.pf.made, __ATOMIC_RELAXED);
-    *hits = __atomic_load_n(&g_pipeline.pf.hits, __ATOMIC_RELAXED);
+    *made = atomic_load_explicit(&g_pipeline.pf.made, memory_order_relaxed);
+    *hits = atomic_load_explicit(&g_pipeline.pf.hits, memory_order_relaxed);
     *left = g_pipeline.pf.merged && g_pipeline.pf.npipe > *made ? g_pipeline.pf.npipe - *made
                                                                 : 0; /* npipe is settled once merged */
 }

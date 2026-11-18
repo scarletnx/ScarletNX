@@ -51,7 +51,7 @@ extern char g_confdir[1024], g_statedir[1024], g_cachedir[1024];
 extern volatile int g_quit; /* set to leave the main loop, which saves and exits */
 /* the program ends as a quit does, for the one ExecuteProgram asked for (am.c), which its hand-over names, to start */
 void snx_program_end(void);
-extern int g_frames;        /* the frames shown so far, atomic: the presenting thread counts them */
+extern _Atomic int g_frames; /* the frames shown so far, atomic: the presenting thread counts them */
 /* an Ounce game, as its NPDM tells (loader/ounce.h): the one flag of the platform. main.c's npdm_layout sets it once
    at start, before anything runs, with what follows from it (its comment lists them) */
 extern int g_ounce;

@@ -11,19 +11,20 @@
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
 #include "nx/runtime/platform/tracy.h"
+#include <stdatomic.h>
 
-int g_frames;
-int g_vi_refresh_hz = VI_REFRESH_HZ;
+_Atomic int g_frames;
+_Atomic int g_vi_refresh_hz = VI_REFRESH_HZ;
 
 /* the game's pace (present_pace). Several threads may queue frames, so the schedule is under a lock */
 static struct {
     PMutex lock;
     u64 last;          /* when the frame before was due, 0 before the first */
-    int display_stuck; /* atomic: the display didn't take the frames in time: they aren't waited for */
+    _Atomic int display_stuck; /* atomic: the display didn't take the frames in time: they aren't waited for */
     /* when each of vi's slots was last handed to the game, for the display times the renderer logs, and the game's
        pace for its frame, 0 none (renderer.h present_buffer): the game's threads write them as the dequeue returns,
        the GPU thread reads them at the slot's present (atomic) */
-    u64 released_ns[VI_SLOTS], period_ns[VI_SLOTS];
+    _Atomic u64 released_ns[VI_SLOTS], period_ns[VI_SLOTS];
 } g_pace = {.lock = PMUTEX_INIT};
 
 void vi_show_buffer(u32 nvmap_id, u32 offset, u32 w, u32 h, u32 pitch, u32 layout, u32 bhl, u32 fmt, const i32 crop[4],
@@ -36,9 +37,9 @@ void vi_show_buffer(u32 nvmap_id, u32 offset, u32 w, u32 h, u32 pitch, u32 layou
     /* the flips are the display's: the guest's buffer is never turned */
     int known = slot >= 0 && slot < VI_SLOTS;
     g_renderer->present_buffer(a + offset, w, h, pitch, layout, bhl, fmt, crop, transform,
-                               known ? __atomic_load_n(&g_pace.released_ns[slot], __ATOMIC_RELAXED) : 0,
-                               known ? __atomic_load_n(&g_pace.period_ns[slot], __ATOMIC_RELAXED) : 0, 0);
-    __atomic_add_fetch(&g_frames, 1, __ATOMIC_RELAXED);
+                               known ? atomic_load_explicit(&g_pace.released_ns[slot], memory_order_relaxed) : 0,
+                               known ? atomic_load_explicit(&g_pace.period_ns[slot], memory_order_relaxed) : 0, 0);
+    atomic_fetch_add_explicit(&g_frames, 1, memory_order_relaxed);
     cheats_frame(); /* the cheats run once per frame shown, as dmnt's run on the console */
     SNX_FRAME_MARK();
 }
@@ -66,12 +67,12 @@ u64 present_display_period(u64 period, u64 refresh) {
 
 static void released(int slot, u64 period) {
     if (slot < 0 || slot >= VI_SLOTS) return;
-    __atomic_store_n(&g_pace.released_ns[slot], plat_ns(), __ATOMIC_RELAXED);
-    __atomic_store_n(&g_pace.period_ns[slot], period, __ATOMIC_RELAXED);
+    atomic_store_explicit(&g_pace.released_ns[slot], plat_ns(), memory_order_relaxed);
+    atomic_store_explicit(&g_pace.period_ns[slot], period, memory_order_relaxed);
 }
 
 void present_pace(u32 interval, int slot) {
-    int fps = __atomic_load_n(&g_opt_fps, __ATOMIC_RELAXED);
+    int fps = atomic_load_explicit(&g_opt_fps, memory_order_relaxed);
     u64 refresh, period, now, next;
     if (!fps || (fps == SNX_FPS_GAME && !interval)) {
         released(slot, 0);
@@ -81,11 +82,11 @@ void present_pace(u32 interval, int slot) {
     period = fps == SNX_FPS_GAME ? refresh * interval : refresh;
     [[maybe_unused]] u64 started = plat_ns();
     if (fps == SNX_FPS_GAME && g_renderer->display_wait) {
-        int stuck = __atomic_load_n(&g_pace.display_stuck, __ATOMIC_RELAXED);
+        int stuck = atomic_load_explicit(&g_pace.display_stuck, memory_order_relaxed);
         u64 shown = 0, start = plat_ns();
         /* two periods at most, or none while the display is stuck: only whether it took the frames since */
         int r = g_renderer->display_wait(stuck ? start : start + 2 * period, &shown);
-        if (r >= 0) __atomic_store_n(&g_pace.display_stuck, !r, __ATOMIC_RELAXED);
+        if (r >= 0) atomic_store_explicit(&g_pace.display_stuck, !r, memory_order_relaxed);
         if (r > 0 && shown) {
             u64 d = present_display_period(period, shown);
             if (d != period) {

@@ -13,6 +13,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 #define NONE  UINT32_MAX
 typedef struct {
     FsNode* node;
@@ -457,7 +458,7 @@ bool snx_ctr_romfs_read(SnxCtrRomfs* r, uint64_t offset, void* output, size_t si
         uint64_t at = start - f->data;
         unsigned char* dest = data + (size_t)(start - offset);
         FsNode* node = f->node;
-        if (node->fd >= 0)
+        if (atomic_load_explicit(&node->fd, memory_order_relaxed) >= 0)
             memcpy(dest, node->map + at, n);
         else {
             FILE* file = fs_tree_open(r->tree, node, "rb");

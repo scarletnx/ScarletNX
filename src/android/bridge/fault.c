@@ -13,6 +13,7 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
+#include <stdatomic.h>
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -111,8 +112,8 @@ static void on_fault(int sig, siginfo_t* info, void* context) {
     size_t i = 0;
     while (i < 3 && signals[i] != sig) ++i;
     if (c) {
-        static int reported;
-        if (!__atomic_exchange_n(&reported, 1, __ATOMIC_RELAXED)) {
+        static _Atomic int reported;
+        if (!atomic_exchange_explicit(&reported, 1, memory_order_relaxed)) {
             uint64_t pc = 0;
 #if defined(__linux__) && defined(__x86_64__)
             pc = (uint64_t)((ucontext_t*)context)->uc_mcontext.gregs[REG_RIP];
@@ -144,8 +145,8 @@ static void on_fault(int sig, siginfo_t* info, void* context) {
 }
 
 void fault_install(void) {
-    static int done;
-    if (__atomic_exchange_n(&done, 1, __ATOMIC_RELAXED)) return;
+    static _Atomic int done;
+    if (atomic_exchange_explicit(&done, 1, memory_order_relaxed)) return;
     for (size_t i = 0; i < sizeof signals / sizeof *signals; ++i) {
         struct sigaction a = {0};
         a.sa_sigaction = on_fault;

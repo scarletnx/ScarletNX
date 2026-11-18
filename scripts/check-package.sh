@@ -2,9 +2,11 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
 # Runs a packaged ScarletNX as a user would, in an empty folder of a machine without the checkout it was built from:
-# the AppImage, or bin/scarletnx(.exe) of `cmake --install` (the Windows zip). CI runs it in jobs of their own
-# (.github/workflows/build.yml): in the build jobs the checkout is where the package looks for it, and hides what an
-# installed copy lacks.
+# the AppImage, or bin/scarletnx(.exe) of `cmake --install` (the Windows zip). CI runs it at the end of the jobs that
+# make the packages (.github/workflows/build.yml), where nothing of the build stands in for what an installed copy
+# lacks: the AppImage in a container of its own, without the build's tools, checkout and tree, the cross ones on the
+# runner, which has neither the build container's checkout nor its tree, and the zip in Git Bash, without MSYS2 on
+# PATH. An installed copy never takes the checkout of the tree it was built in (snx_checkout).
 #
 #   scripts/check-package.sh dist/ScarletNX-linux-x86_64.AppImage
 #   scripts/check-package.sh stage/bin/scarletnx.exe

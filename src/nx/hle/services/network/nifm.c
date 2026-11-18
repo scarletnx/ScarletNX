@@ -11,6 +11,7 @@
 #include "nx/hle/hle.h"
 #include "common/utilities/bits.h"
 #include "hle/services/network/nifm.swipc.inc"
+#include <stdatomic.h>
 
 enum { REQ_INVALID = 1, REQ_ON_HOLD = 2, REQ_ACCEPTED = 3 }; /* nn::nifm::RequestState (1 is also NotSubmitted) */
 
@@ -20,11 +21,11 @@ static void nifm_req_destroy(SvcObj* o) {
     for (int i = 0; i < 2; i++) kobj_unref(kobj_at(r->ev[i]));
 }
 static int nn_nifm_detail_IRequest_GetRequestState(SvcObj* self, i32* state) {
-    *state = network_online() ? (i32)__atomic_load_n(&self->u[0], __ATOMIC_RELAXED) : REQ_INVALID;
+    *state = network_online() ? (i32)atomic_load_explicit(&self->u[0], memory_order_relaxed) : REQ_INVALID;
     R_SUCCEED();
 }
 static int nn_nifm_detail_IRequest_GetResult(SvcObj* self) {
-    return network_online() && __atomic_load_n(&self->u[0], __ATOMIC_RELAXED) != REQ_INVALID
+    return network_online() && atomic_load_explicit(&self->u[0], memory_order_relaxed) != REQ_INVALID
                ? 0
                : SNX_RC_NIFM_NO_INTERNET_CONNECTION;
 }
@@ -36,13 +37,13 @@ static int nn_nifm_detail_IRequest_GetSystemEventReadableHandles(SvcObj* self, u
     R_SUCCEED();
 }
 static int nn_nifm_detail_IRequest_Cancel(SvcObj* self) {
-    __atomic_store_n(&self->u[0], REQ_INVALID, __ATOMIC_RELAXED);
+    atomic_store_explicit(&self->u[0], REQ_INVALID, memory_order_relaxed);
     R_SUCCEED();
 }
 /* the host is connected already, so it is accepted at once. Offline it is refused at once, and the state event says
    so either way, as it does when the network went down after the request was made */
 static int nn_nifm_detail_IRequest_Submit(SvcObj* self) {
-    __atomic_store_n(&self->u[0], network_online() ? REQ_ACCEPTED : REQ_INVALID, __ATOMIC_RELAXED);
+    atomic_store_explicit(&self->u[0], network_online() ? REQ_ACCEPTED : REQ_INVALID, memory_order_relaxed);
     ev_signal(((NifmRequest*)self->data)->ev[0]);
     R_SUCCEED();
 }
@@ -73,8 +74,8 @@ static SvcObj* nifm_req_new(void) {
     r->ev[0] = owned_event("nifm0");
     r->ev[1] = owned_event("nifm1");
     /* offline the state event starts signaled: the SDK reads the state, which says the request was refused */
-    if (!network_online()) kev(r->ev[0])->signaled = 1;
-    o->u[0] = REQ_INVALID;
+    if (!network_online()) atomic_store_explicit(&(kev(r->ev[0])->signaled), 1, memory_order_relaxed);
+    atomic_store_explicit(&o->u[0], REQ_INVALID, memory_order_relaxed);
     o->destroy = nifm_req_destroy;
     return o;
 }

@@ -26,6 +26,7 @@ SYSTEMS = {
     'ScarletNX-linux-riscv64.AppImage': ('Linux', 'RISC-V 64', 'AppImage'),
     'ScarletNX-linux-loongarch64.AppImage': ('Linux', 'LoongArch64', 'AppImage'),
     'ScarletNX-windows-x86_64.zip': ('Windows', 'x86-64', 'zip'),
+    'ScarletNX-windows-aarch64.zip': ('Windows', 'ARM64', 'zip'),
     'ScarletNX-android-universal.apk': ('Android', 'ARM64, x86-64', 'APK'),
     'ScarletNX-macos-arm64.zip': ('macOS', 'ARM64', 'zip'),
     'ScarletNX-ios-arm64.ipa': ('iOS', 'ARM64', 'IPA'),

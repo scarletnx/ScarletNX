@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include <stdio.h>
+#include <stdatomic.h>
 #include "nx/runtime/platform/log.h"
 #include "nx/gpu/vk/ledger.h"
 
@@ -52,24 +53,24 @@ static const u8 k_owner_prio[VK_OWN_N] = {
 /* the driver's calls of one kind since the start: all of them, and those made by a thread that held vk_lock, which
    is a thread in the middle of the renderer's work */
 typedef struct {
-    u64 n, bytes, ns, slow; /* slow: those that took a millisecond or more */
-    u64 max_ns;             /* the longest since the last report */
-    u64 locked_n, locked_ns;
+    _Atomic u64 n, bytes, ns, slow; /* slow: those that took a millisecond or more */
+    _Atomic u64 max_ns;             /* the longest since the last report */
+    _Atomic u64 locked_n, locked_ns;
 } DriverCalls;
 
 /* Every thread that allocates adds to these (the GPU thread, the encoders' workers), each with one atomic add: the
    counts are read for a report only, so they share their lines */
 static struct {
-    u64 device[VK_OWN_N], host[VK_OWN_N], heap[VK_OWN_N], count[VK_OWN_N];
+    _Atomic u64 device[VK_OWN_N], host[VK_OWN_N], heap[VK_OWN_N], count[VK_OWN_N];
     DriverCalls allocate, release, priority;
     DriverCalls reported[3]; /* the three above at the last report */
 } g_ledger;
 
-static void add(u64* to, u64 v) { __atomic_fetch_add(to, v, __ATOMIC_RELAXED); }
-static u64 get(const u64* from) { return __atomic_load_n(from, __ATOMIC_RELAXED); }
+static void add(_Atomic u64* to, u64 v) { atomic_fetch_add_explicit(to, v, memory_order_relaxed); }
+static u64 get(const _Atomic u64* from) { return atomic_load_explicit(from, memory_order_relaxed); }
 
 /* where an allocation's bytes count: the heap the caches budget is the device's */
-static u64* bytes_of(u32 owner, const DevMemInfo* info) {
+static _Atomic u64* bytes_of(u32 owner, const DevMemInfo* info) {
     const VkPhysicalDeviceMemoryProperties* mp;
     mp = vk_devmem_props();
     return (int)mp->memoryTypes[info->type].heapIndex == vk_mem_heap() ? &g_ledger.device[owner]
@@ -121,7 +122,8 @@ static void driver_call(DriverCalls* c, u64 bytes, u64 ns) {
         add(&c->locked_ns, ns);
     }
     u64 max = get(&c->max_ns);
-    while (ns > max && !__atomic_compare_exchange_n(&c->max_ns, &max, ns, 1, __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {}
+    while (ns > max &&
+           !atomic_compare_exchange_weak_explicit(&c->max_ns, &max, ns, memory_order_relaxed, memory_order_relaxed)) {}
 }
 
 VkResult VKAPI_CALL vk_ledger_allocate(VkDevice dev, const VkMemoryAllocateInfo* ai, const VkAllocationCallbacks* cb,
@@ -158,18 +160,24 @@ static u64 driver_report(DriverCalls* c, DriverCalls* reported, DriverCalls* out
                        .bytes = get(&c->bytes),
                        .ns = get(&c->ns),
                        .slow = get(&c->slow),
-                       .max_ns = __atomic_exchange_n(&c->max_ns, 0, __ATOMIC_RELAXED),
+                       .max_ns = atomic_exchange_explicit(&c->max_ns, 0, memory_order_relaxed),
                        .locked_n = get(&c->locked_n),
                        .locked_ns = get(&c->locked_ns)};
-    *out = (DriverCalls){.n = now.n - reported->n,
-                         .bytes = now.bytes - reported->bytes,
-                         .ns = now.ns - reported->ns,
-                         .slow = now.slow - reported->slow,
-                         .max_ns = now.max_ns,
-                         .locked_n = now.locked_n - reported->locked_n,
-                         .locked_ns = now.locked_ns - reported->locked_ns};
+    *out = (DriverCalls){.n = atomic_load_explicit(&now.n, memory_order_relaxed) -
+                              atomic_load_explicit(&reported->n, memory_order_relaxed),
+                         .bytes = atomic_load_explicit(&now.bytes, memory_order_relaxed) -
+                                  atomic_load_explicit(&reported->bytes, memory_order_relaxed),
+                         .ns = atomic_load_explicit(&now.ns, memory_order_relaxed) -
+                               atomic_load_explicit(&reported->ns, memory_order_relaxed),
+                         .slow = atomic_load_explicit(&now.slow, memory_order_relaxed) -
+                                 atomic_load_explicit(&reported->slow, memory_order_relaxed),
+                         .max_ns = atomic_load_explicit(&now.max_ns, memory_order_relaxed),
+                         .locked_n = atomic_load_explicit(&now.locked_n, memory_order_relaxed) -
+                                     atomic_load_explicit(&reported->locked_n, memory_order_relaxed),
+                         .locked_ns = atomic_load_explicit(&now.locked_ns, memory_order_relaxed) -
+                                      atomic_load_explicit(&reported->locked_ns, memory_order_relaxed)};
     *reported = now;
-    return out->n;
+    return atomic_load_explicit(&out->n, memory_order_relaxed);
 }
 
 u64 vk_ledger_owners(void) {
@@ -221,13 +229,26 @@ void vk_ledger_log(void) {
         LOG("vulkan: the driver allocated %llu blocks (%.0f MB) in %.1f ms, the longest %.1f ms, %llu of a millisecond "
             "or more, %llu (%.1f ms) inside the renderer's work; it freed %llu in %.1f ms, the longest %.1f ms, %llu "
             "(%.1f ms) inside the renderer's work\n",
-            (unsigned long long)a.n, mb(a.bytes), ms(a.ns), ms(a.max_ns), (unsigned long long)a.slow,
-            (unsigned long long)a.locked_n, ms(a.locked_ns), (unsigned long long)f.n, ms(f.ns), ms(f.max_ns),
-            (unsigned long long)f.locked_n, ms(f.locked_ns));
+            (unsigned long long)atomic_load_explicit(&a.n, memory_order_relaxed),
+            mb(atomic_load_explicit(&a.bytes, memory_order_relaxed)),
+            ms(atomic_load_explicit(&a.ns, memory_order_relaxed)),
+            ms(atomic_load_explicit(&a.max_ns, memory_order_relaxed)),
+            (unsigned long long)atomic_load_explicit(&a.slow, memory_order_relaxed),
+            (unsigned long long)atomic_load_explicit(&a.locked_n, memory_order_relaxed),
+            ms(atomic_load_explicit(&a.locked_ns, memory_order_relaxed)),
+            (unsigned long long)atomic_load_explicit(&f.n, memory_order_relaxed),
+            ms(atomic_load_explicit(&f.ns, memory_order_relaxed)),
+            ms(atomic_load_explicit(&f.max_ns, memory_order_relaxed)),
+            (unsigned long long)atomic_load_explicit(&f.locked_n, memory_order_relaxed),
+            ms(atomic_load_explicit(&f.locked_ns, memory_order_relaxed)));
     DriverCalls p;
     if (driver_report(&g_ledger.priority, &g_ledger.reported[2], &p))
         LOG("vulkan: the driver set %llu priorities of device memory in %.1f ms, the longest %.2f ms, %llu of a "
             "millisecond or more, %llu (%.1f ms) inside the renderer's work\n",
-            (unsigned long long)p.n, ms(p.ns), ms(p.max_ns), (unsigned long long)p.slow, (unsigned long long)p.locked_n,
-            ms(p.locked_ns));
+            (unsigned long long)atomic_load_explicit(&p.n, memory_order_relaxed),
+            ms(atomic_load_explicit(&p.ns, memory_order_relaxed)),
+            ms(atomic_load_explicit(&p.max_ns, memory_order_relaxed)),
+            (unsigned long long)atomic_load_explicit(&p.slow, memory_order_relaxed),
+            (unsigned long long)atomic_load_explicit(&p.locked_n, memory_order_relaxed),
+            ms(atomic_load_explicit(&p.locked_ns, memory_order_relaxed)));
 }

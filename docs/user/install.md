@@ -17,6 +17,7 @@ builds. The latest:
 | Linux RISC-V 64 | [ScarletNX-linux-riscv64.AppImage](https://github.com/scarletnx/nightly/releases/latest/download/ScarletNX-linux-riscv64.AppImage) | Cross-built ([RISC-V and LoongArch](../hosts/riscv-loongarch.md)), when its job built |
 | Linux LoongArch 64 | [ScarletNX-linux-loongarch64.AppImage](https://github.com/scarletnx/nightly/releases/latest/download/ScarletNX-linux-loongarch64.AppImage) | Cross-built ([RISC-V and LoongArch](../hosts/riscv-loongarch.md)), when its job built |
 | Windows x86-64 | [ScarletNX-windows-x86_64.zip](https://github.com/scarletnx/nightly/releases/latest/download/ScarletNX-windows-x86_64.zip) | Run `bin\scarletnx.exe` |
+| Windows ARM64 | [ScarletNX-windows-aarch64.zip](https://github.com/scarletnx/nightly/releases/latest/download/ScarletNX-windows-aarch64.zip) | Run `bin\scarletnx.exe`, when its job built |
 | Android, arm64 and x86_64 | [ScarletNX-android-universal.apk](https://github.com/scarletnx/nightly/releases/latest/download/ScarletNX-android-universal.apk) | [Android](../hosts/android-app.md) |
 
 Games need a Vulkan 1.3 driver. MIPS64 and s390x have no download: they build from their presets ([MIPS64](../hosts/mips64.md),

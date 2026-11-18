@@ -6,6 +6,7 @@
 #include "nds/cpu/nds_cpu.h"
 #include "nds/bios/bios.h"
 #include "nds/cpu/recomp.h"
+#include "common/utilities/bits.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -83,7 +84,7 @@ static uint32_t shifted(uint32_t value, unsigned type, uint32_t amount, int by_r
                 return value >> 31 ? 0xFFFFFFFFu : 0;
             }
             *carry = value >> (amount - 1) & 1;
-            return (uint32_t)((int32_t)value >> amount);
+            return snx_asr32(value, amount);
         default:
             amount &= 31;
             if (amount) value = value >> amount | value << (32 - amount);

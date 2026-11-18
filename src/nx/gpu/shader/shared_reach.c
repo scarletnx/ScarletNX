@@ -287,7 +287,7 @@ u32 shader_shared_reach(const u8* code, u32 max_bytes, const u32 local[3]) {
     pop = (u32*)(void*)mem;
     block = pop + n;
     lead = (u8*)(block + n);
-    if (!shader_resolve_crs(words, n, pop)) goto done;
+    if (!shader_resolve_crs(words, n, pop, NULL, 0)) goto done;
     lead[11] = 1;
     for (u32 i = 11; i < n; i = next_word(i)) {
         const Op* op = decode(words[i]);

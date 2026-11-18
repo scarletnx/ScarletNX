@@ -6,6 +6,7 @@
 #define SNX_MEMORY_OWN_H
 #include "common/cpu/aarch64/cpu.h"
 #include "common/platform/thread.h"
+#include <stdatomic.h>
 
 /* guest bytes [addr, addr + size) whose contents are in the producer's resource res, from res_off on */
 typedef struct {
@@ -45,6 +46,9 @@ typedef struct {
        or mark of own.c's, on a thread that did not hold the producer's lock before. The watches left over the bytes
        after it go. Optional: without it, a watch only goes */
     void (*resolve)(u64 addr, u64 size);
+    /* [addr, addr + size) of an own_drop, its owners cut with no landing: what the producer keeps of those bytes
+       beside guest memory is stale. Called with the producer's lock held and none of own.c's. Optional */
+    void (*dropped)(u64 addr, u64 size);
     /* a CPU access of pages [addr, addr + size) that owners are on: the producer publishes what it holds of those
        bytes that is newer than their owners (own_begin), and the access then lands that. A render target drawn
        again since its publish is such a holder: it is not published at each release (vk/surface.c's rt_watch).
@@ -91,8 +95,9 @@ int own_covered(u64 addr, u64 size);
 /* the watches over [addr, addr + size) go (clipped to it), and their pages open where no entry is left. Nothing lands.
    The caller holds the producer's lock */
 void own_unwatch(u64 addr, u64 size);
-/* 1 when an owner or a watch is on a host page of [addr, addr + size): the pages are trapped, and a direct read of
-   them faults. own_lookup counts only owners, and only their bytes */
+/* 1 when an owner or a watch is on a host page of [addr, addr + size), or a landing in two steps that has not let go
+   of its traps yet: the pages are trapped, and a direct read of them faults. own_lookup counts only owners, and only
+   their bytes */
 int own_trapped(u64 addr, u64 size);
 /* the first byte of [addr, addr + size) on a host page that an owner or a watch is on (own_trapped), or addr + size
    when there is none */
@@ -145,27 +150,27 @@ typedef struct {
 typedef struct {
     u8* p;
     u64 cap;
-    int busy; /* atomic */
+    _Atomic int busy; /* atomic */
 } Scratch;
 typedef struct {
     OwnHooks hooks;
     int traps;  /* own_init found traps */
     u64 page;   /* the host's page, which traps are armed in */
     u8* mirror; /* the pool's mirror, which landings write through; NULL where they land in place */
-    u64 lands; /* atomic: landings so far, for the statistics */
+    _Atomic u64 lands; /* atomic: landings so far, for the statistics */
     char own_pad_lands[64];
-    u64 lands_by[3]; /* atomic: the same by what asked for them (OWN_BY_*) */
+    _Atomic u64 lands_by[3]; /* atomic: the same by what asked for them (OWN_BY_*) */
     char own_pad_lands_by[64];
-    u64 faults; /* atomic: the faults that landed */
+    _Atomic u64 faults; /* atomic: the faults that landed */
     char own_pad_faults[64];
-    u64 land_bytes; /* atomic: the bytes landed */
+    _Atomic u64 land_bytes; /* atomic: the bytes landed */
     PMutex lk;  /* the entries' lock */
     /* arming pages and the check that lets them go, one at a time: a page let go just as an entry lands on it stays
        trapped (taken before lk) */
     PMutex trap_lk;
     PCond cv; /* a landing's marks let go */
     Own* ent; /* the entries, sorted by lo, apart, under lk */
-    u32 nown; /* how many: changed under lk with __atomic_store_n, and read without it (own_any) */
+    _Atomic u32 nown; /* how many: changed under lk with atomic_store_explicit, and read without it (own_any) */
     u32 capown;
     /* The entries on each 4 MB region of guest memory, changed with them under lk and read without it: the GPU thread
        reads guest memory through copy_runs, which asked under the lock whether any entry was on each run it read, and
@@ -173,7 +178,7 @@ typedef struct {
        of the GPU thread in one game's underground scene. A count of 0 answers for the region without the lock; a
        reader racing an entry being made finds it or not, as one taking the lock first or second would. NULL: the lock
        always */
-    u32* region;
+    _Atomic u32* region;
     u64 nregion;
     /* The shadows by page, under trap_lk: leaves of 1 << OWN_SHADOW_LEAF_SHIFT pages, each entry a page's slot + 1 (0 for
        none), made on first use and kept, with the number of shadows in each leaf (shadow_n), so a drop skips the empty
@@ -191,21 +196,21 @@ typedef struct {
     Scratch stage;       /* a landing's staging copy, in place */
     Scratch snap;        /* the pages own_watch and own_begin copy into shadows */
     Scratch held;        /* own_begin's and own_watch's: the pages an entry was on before theirs (arm_new) */
-    int said_unshadowed; /* atomic: a trapped page with no shadow was read as zero, and the log said so once */
+    _Atomic int said_unshadowed; /* atomic: a trapped page with no shadow was read as zero, and the log said so once */
 #define OWN_OWED_MAX 8
     u64 owed[OWN_OWED_MAX][2]; /* the owed spans [lo, hi) (own_owed_take), under lk */
-    u32 nowed;                 /* how many: changed under lk with __atomic_store_n, and read without it */
+    _Atomic u32 nowed;         /* how many: changed under lk with atomic_store_explicit, and read without it */
     /* The host pages [lo, hi) of the landings that let go of the producer's lock while the GPU copies (land_start), under
        lk. No new owner or watch comes on them until that landing is done: in place, a landing opens and fills its pages,
        and an owner that came on one meanwhile would be opened with them */
 #define OWN_INFLIGHT_MAX 32
     u64 inflight[OWN_INFLIGHT_MAX][2];
-    u32 ninflight;
+    _Atomic u32 ninflight;
 } OwnState;
 extern OwnState g_own;
 /* whether anything is owned: the common case's test, without a lock */
-static inline int own_any(void) { return __atomic_load_n(&g_own.nown, __ATOMIC_ACQUIRE) != 0; }
+static inline int own_any(void) { return atomic_load_explicit(&g_own.nown, memory_order_acquire) != 0; }
 /* whether a span is owed (own_owed_take): the test of each outermost vk_unlock, without a lock */
-static inline int own_owed_any(void) { return __atomic_load_n(&g_own.nowed, __ATOMIC_ACQUIRE) != 0; }
+static inline int own_owed_any(void) { return atomic_load_explicit(&g_own.nowed, memory_order_acquire) != 0; }
 
 #endif

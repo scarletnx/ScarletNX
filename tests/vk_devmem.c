@@ -717,6 +717,19 @@ static void check_kinds(void) {
     for (u32 i = 0; i < N; i++)
         for (u32 j = 0; j < F; j++) CHECK(block_of(&m[i]) != block_of(&f[j]));
     for (u32 j = 0; j < F; j++) CHECK(g_devmem.block[block_of(&f[j])].image & DM_KIND_FIXED);
+    /* what does not move and comes and goes (DevMemWant.brief) has blocks apart from what stays, and from what moves:
+       a block of brief allocations empties when they go, though rings and encoders stay */
+    Held b[2];
+    const DevMemWant brief = {.at = DM_DEVICE, .brief = 1};
+    CHECK(make(0, MIB, 256, ~0u, 0, brief, &b[0]) == VK_SUCCESS && make(0, MIB, 256, ~0u, 0, brief, &b[1]) == VK_SUCCESS);
+    CHECK(block_of(&b[0]) == block_of(&b[1]));
+    CHECK(g_devmem.block[block_of(&b[0])].image == (DM_KIND_FIXED | DM_KIND_BRIEF));
+    for (u32 j = 0; j < F; j++) CHECK(block_of(&b[0]) != block_of(&f[j]));
+    for (u32 i = 0; i < N; i++) CHECK(block_of(&b[0]) != block_of(&m[i]));
+    const u32 bb = block_of(&b[0]);
+    unmake(&b[0]);
+    unmake(&b[1]);
+    CHECK(!g_devmem.block[bb].allocs);
     /* the first block of what moves keeps one allocation and the last another, with room for the first's block: the
        first is emptied, past the budget, though the blocks of what does not move hold allocations still */
     const u32 first = block_of(&m[0]), last = block_of(&m[N - 1]);
@@ -752,9 +765,44 @@ static void check_kinds(void) {
     check_counts(0);
 }
 
+/* With no room for a new block, a request takes a block of another kind of its side: what stays takes the blocks of
+   what moves before the brief ones, which it would keep from being emptied, and what comes and goes takes the blocks of
+   what stays first */
+static void check_kind_fallback(void) {
+    const DevMemWant moves = {.at = DM_DEVICE, .moves = 1}, fixed = {.at = DM_DEVICE},
+                     brief = {.at = DM_DEVICE, .brief = 1};
+    Held a, b, f;
+    device(0, 1024, 64, 0);
+    CHECK(make(0, MIB, 256, ~0u, 0, moves, &a) == VK_SUCCESS);
+    vk_devmem_owner(a.mem, (void*)(uintptr_t)1);
+    CHECK(make(0, MIB, 256, ~0u, 0, brief, &b) == VK_SUCCESS && block_of(&b) != block_of(&a));
+    u64 room = g_drv.room[0];
+    g_drv.room[0] = g_drv.used[0];
+    CHECK(make(0, MIB, 256, ~0u, 0, fixed, &f) == VK_SUCCESS && block_of(&f) == block_of(&a));
+    g_drv.room[0] = room;
+    unmake(&f);
+    unmake(&b);
+    vk_devmem_owner(a.mem, NULL);
+    unmake(&a);
+    check_counts(0);
+    device(0, 1024, 64, 0);
+    CHECK(make(0, MIB, 256, ~0u, 0, moves, &a) == VK_SUCCESS);
+    vk_devmem_owner(a.mem, (void*)(uintptr_t)1);
+    CHECK(make(0, MIB, 256, ~0u, 0, fixed, &f) == VK_SUCCESS && block_of(&f) != block_of(&a));
+    room = g_drv.room[0];
+    g_drv.room[0] = g_drv.used[0];
+    CHECK(make(0, MIB, 256, ~0u, 0, brief, &b) == VK_SUCCESS && block_of(&b) == block_of(&f));
+    g_drv.room[0] = room;
+    unmake(&b);
+    unmake(&f);
+    vk_devmem_owner(a.mem, NULL);
+    unmake(&a);
+    check_counts(0);
+}
+
 /* Memory of its own that the driver only preferred is kept when let go, for the next request it fits, with no call to
    the driver (own_keep, own_take). It names no resource, and fits a request of its size up to an eighth less. Kept
-   memory goes after DM_KEEP_PRESENTS presents, and the oldest goes first past DM_KEEP_BYTES */
+   memory goes after DM_KEEP_PRESENTS presents, and the oldest of its heap goes first past keep_cap */
 static void check_keep(void) {
     Held a, b, c;
     const DevMemWant gpu = {.at = DM_DEVICE};
@@ -781,11 +829,47 @@ static void check_keep(void) {
     unmake(&b);
     unmake(&c);
     CHECK(g_devmem.kept_bytes == 92 * MIB);
-    /* past DM_KEEP_BYTES the oldest goes */
+    /* past keep_cap the oldest goes: DM_KEEP_BYTES under a budget of 2 GiB */
+    const u64 drv = g_devmem.drv_budget[0];
+    const int had = g_vk.has_budget;
+    g_vk.has_budget = 1;
+    g_devmem.drv_budget[0] = 2ull << 30;
+    CHECK(keep_cap(0) == DM_KEEP_BYTES);
     Held m[8];
     for (u32 i = 0; i < 8; i++) CHECK(make(0, 33 * MIB + i * MIB, 256, ~0u, 1, gpu, &m[i]) == VK_SUCCESS);
     for (u32 i = 0; i < 8; i++) unmake(&m[i]);
     CHECK(g_devmem.kept_bytes <= DM_KEEP_BYTES && g_devmem.kept_gone > 0);
+    /* a heap of a large budget keeps a share of it */
+    g_devmem.drv_budget[0] = 16ull << 30;
+    CHECK(keep_cap(0) == heap_budget(0) / DM_KEEP_SHARE && keep_cap(0) > DM_KEEP_BYTES);
+    /* only in the GPU's own heap: the others keep DM_KEEP_BYTES */
+    CHECK(heap_capped(0));
+    for (u32 h = 0; h < g_devmem.mp.memoryHeapCount; h++)
+        if (!heap_capped(h)) CHECK(keep_cap(h) == DM_KEEP_BYTES);
+    /* the other heaps count together against that cap, the GPU's own heap alone */
+    CHECK(!heap_capped(1) && !heap_capped(2));
+    const u64 k0 = g_devmem.kept_heap[0], k1 = g_devmem.kept_heap[1], k2 = g_devmem.kept_heap[2];
+    g_devmem.kept_heap[1] = 10, g_devmem.kept_heap[2] = 20, g_devmem.kept_heap[0] = 40;
+    CHECK(kept_with(1) == 30 && kept_with(2) == 30 && kept_with(0) == 40);
+    g_devmem.kept_heap[0] = k0, g_devmem.kept_heap[1] = k1, g_devmem.kept_heap[2] = k2;
+    /* under a caches' budget less than the driver's (vk_budget_mb), the share and the full mark are of that one */
+    vk_devmem_cache_budget(2ull << 30);
+    CHECK(keep_budget(0) == 2ull << 30 && keep_cap(0) == DM_KEEP_BYTES);
+    /* and a request the driver would rather have alone, past four fifths of that budget, gets no memory kept for
+       reuse (DM_OWN_RATHER), which own_keep would give straight back to the driver */
+    {
+        Held r;
+        const u64 bb = g_devmem.block_bytes[0], rather = g_devmem.own_why[DM_OWN_RATHER];
+        g_devmem.block_bytes[0] = 2ull << 30;
+        CHECK(make(1, 32 * MIB, 256, ~0u, 1, gpu, &r) == VK_SUCCESS);
+        CHECK(g_devmem.own_why[DM_OWN_RATHER] == rather && !g_devmem.block[block_of(&r)].reuse);
+        g_devmem.block_bytes[0] = g_devmem.block_bytes[0] - (2ull << 30) + bb; /* its own bytes stay counted */
+        unmake(&r);
+    }
+    vk_devmem_cache_budget(0);
+    CHECK(keep_budget(0) == heap_budget(0));
+    g_devmem.drv_budget[0] = drv;
+    g_vk.has_budget = had;
     /* and all of it after DM_KEEP_PRESENTS presents */
     for (u32 p = 0; p <= DM_KEEP_PRESENTS; p++) vk_devmem_frame();
     CHECK(g_devmem.kept_bytes == 0);
@@ -1409,6 +1493,7 @@ int main(void) {
     check_drain_alone();
     check_drain_room();
     check_kinds();
+    check_kind_fallback();
     check_keep();
     check_cap();
     check_atoms(64);

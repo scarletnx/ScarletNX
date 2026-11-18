@@ -27,7 +27,7 @@ NOT_A_PULL_REQUEST = "github.event_name != 'pull_request'"
 # the LLVM builds of the workflow and its saves of a compiler cache: fewer found means this check no longer reads the
 # file as it is written
 BUILDS = 6
-COMPILER_CACHES = 7
+COMPILER_CACHES = 5
 
 
 def indent(line):
@@ -183,15 +183,15 @@ def self_test(text):
     build = (
         "      - name: Build LLVM's libraries for x86_64\n        if: steps.llvm-x86_64.outputs.cache-hit != 'true'\n"
     )
-    sanitizers = (
+    linux = (
         f'      - if: {NOT_A_PULL_REQUEST}\n        uses: actions/cache/save@v5\n'
         '        with:\n          path: .cache/ccache\n'
-        '          key: ccache-${{ github.job }}-${{ github.run_id }}-${{ github.run_attempt }}\n'
-        '      - name: Test under the sanitizers\n'
+        '          key: ccache-${{ github.job }}-${{ matrix.arch }}-${{ github.run_id }}-${{ github.run_attempt }}\n'
+        "      # Only the dependency builds this run's trees used stay"
     )
     reference = (
         '      - uses: actions/cache/restore@v5\n        with:\n          path: .cache/ccache\n'
-        '          key: ccache-linux-x86_64-${{ github.run_id }}-${{ github.run_attempt }}\n'
+        '          key: ccache-appimage-x86_64-${{ github.run_id }}-${{ github.run_attempt }}\n'
     )
     cases = [
         (
@@ -257,10 +257,8 @@ def self_test(text):
         ),
         (
             "a compiler cache saved on a pull request's run too",
-            replace_once(
-                text, sanitizers, sanitizers.replace(f'      - if: {NOT_A_PULL_REQUEST}\n        uses', '      - uses')
-            ),
-            'linux-sanitizers: the save of .cache/ccache runs if ""',
+            replace_once(text, linux, linux.replace(f'      - if: {NOT_A_PULL_REQUEST}\n        uses', '      - uses')),
+            'appimage: the save of .cache/ccache runs if ""',
         ),
         (
             'a compiler cache saved whenever the run is not cancelled',
@@ -274,8 +272,8 @@ def self_test(text):
         ),
         (
             "a compiler cache's save taken out",
-            replace_once(text, sanitizers, '      - name: Test under the sanitizers\n'),
-            f'6 steps save .cache/ccache, and the workflow had {COMPILER_CACHES}',
+            replace_once(text, linux, "      # Only the dependency builds this run's trees used stay"),
+            f'4 steps save .cache/ccache, and the workflow had {COMPILER_CACHES}',
         ),
     ]
     failed = []

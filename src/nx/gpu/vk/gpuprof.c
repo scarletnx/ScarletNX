@@ -23,6 +23,7 @@
    or read. */
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 #include "common/gpu/vk/vk_common.h"
 #include "nx/gpu/vk/gpuprof_setting.h"
 #include "nx/gpu/vk/vk.h"
@@ -92,7 +93,8 @@ static int g_dead; /* the query pool was refused once: stop asking */
 /* vk_gpuprof_busy_ns's sum, and the device's tick at the latest end counted in it while the slot uses read follow one
    another (ended) */
 static struct {
-    u64 ns, end;
+    _Atomic u64 ns;
+    u64 end;
     int ended;
 } g_stats_busy;
 u64 g_vk_timestamps, g_vk_timestamps_read;
@@ -161,10 +163,11 @@ static int gp_on(void) {
     return g_on;
 }
 int vk_gpuprof_timed(void) { return g_vk.gfx_timestamp_bits && !g_dead; }
-u64 vk_gpuprof_busy_ns(void) { return __atomic_load_n(&g_stats_busy.ns, __ATOMIC_RELAXED); }
+u64 vk_gpuprof_busy_ns(void) { return atomic_load_explicit(&g_stats_busy.ns, memory_order_relaxed); }
 /* the frame's command buffers timed: for the profile (gp_on), or for the stats box, which shows */
 static int gp_timed(void) {
-    return gp_on() || (__atomic_load_n(&g_settings.stats, __ATOMIC_RELAXED) && vk_gpuprof_timed());
+    return gp_on() ||
+           (atomic_load_explicit((_Atomic int*)&g_settings.stats, memory_order_relaxed) && vk_gpuprof_timed());
 }
 /* a timestamp into the slot's pool, counted */
 static void gp_stamp(VkCommandBuffer cb, VkPipelineStageFlags2 stage, VkQueryPool pool, u32 query) {
@@ -553,7 +556,8 @@ static void gp_busy(const GpSlot* g, const u64* ts) {
         g_stats_busy.end = e;
         g_stats_busy.ended = 1;
     }
-    __atomic_add_fetch(&g_stats_busy.ns, (u64)((double)ticks * g_vk.props.limits.timestampPeriod), __ATOMIC_RELAXED);
+    atomic_fetch_add_explicit(&g_stats_busy.ns, (u64)((double)ticks * g_vk.props.limits.timestampPeriod),
+                              memory_order_relaxed);
 }
 static void gp_ops_done(GpOps* o, const u64* ts, double period, int ctx) {
     for (u32 i = 0; i < o->nop; i++) {
@@ -709,7 +713,7 @@ static void gp_idle_report(void) {
                            k ? "," : "", wait[k], (double)(g_vk_wait_ns[k] - wait0[k]) / 1e6 / f,
                            (double)(g_vk_waits[k] - waits0[k]) / f, (double)g_round_ns[k] / 1e6 / f);
         LOG("vulkan: GPU   the GPU thread's waits for the graphics queue a present:%s; for the compute queue %.2f ms\n",
-            line, (double)(__atomic_load_n(&g_vk_cs_wait_ns, __ATOMIC_RELAXED) - cs0) / 1e6 / f);
+            line, (double)(atomic_load_explicit(&g_vk_cs_wait_ns, memory_order_relaxed) - cs0) / 1e6 / f);
         at = 0;
         for (int w = 0; w < VK_SUB_N; w++)
             at += snprintf(line + at, sizeof line - (size_t)at, "%s %s %.1f", w ? "," : "", why[w],
@@ -726,7 +730,7 @@ static void gp_idle_report(void) {
         wait0[k] = g_vk_wait_ns[k];
         waits0[k] = g_vk_waits[k];
     }
-    cs0 = __atomic_load_n(&g_vk_cs_wait_ns, __ATOMIC_RELAXED);
+    cs0 = atomic_load_explicit(&g_vk_cs_wait_ns, memory_order_relaxed);
     memset(g_idle_ns, 0, sizeof g_idle_ns);
     memset(g_idles, 0, sizeof g_idles);
     memset(g_round_ns, 0, sizeof g_round_ns);

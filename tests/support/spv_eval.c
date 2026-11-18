@@ -773,6 +773,12 @@ static const char* run(Ev* e) {
                 r->type = t;
                 r->v = e->ids[in[4]].v;
                 break;
+            case 354: /* UMin of a scalar: the invocation's own value, for an exclusive scan (operation 2) the identity */
+                r->kind = K_VALUE;
+                r->type = t;
+                r->v = e->ids[in[5]].v;
+                if (in[4] == 2) r->v.c[0] = trunc_to(e, t, ~0ull);
+                break;
             case 339: { /* Ballot */
                 uint32_t lane = e->env->builtin[41][0];
                 r->kind = K_VALUE;
@@ -1048,6 +1054,14 @@ static const char* exchange(Ev* e, uint32_t n) {
                         equal &= !memcmp(&e[k].ids[in[4]].v, &e[0].ids[in[4]].v, sizeof(Val));
                     }
                     v.c[0] = (uint64_t)(op == 334 ? all : op == 335 ? any : equal), pick = 0;
+                    break;
+                }
+                case 354: { /* UMin of a scalar: a reduce (0), an inclusive (1) or exclusive (2) scan of the lanes */
+                    uint32_t end = in[4] == 0 ? n : in[4] == 1 ? l + 1 : l;
+                    v.c[0] = trunc_to(e, in[1], ~0ull);
+                    for (uint32_t k = 0; k < end; k++)
+                        if (e[k].ids[in[5]].v.c[0] < v.c[0]) v.c[0] = e[k].ids[in[5]].v.c[0];
+                    pick = 0;
                     break;
                 }
                 case 339: /* Ballot: lanes 32k to 32k + 31 in component k */

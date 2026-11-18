@@ -170,7 +170,7 @@ static int run(const char* path, const unsigned char* image, size_t image_size, 
     memset(out, 0, sizeof(*out));
     rt.miss = no_miss; /* every kernel is found whole */
     memory = (unsigned char*)calloc(1, (size_t)mod->mods[0].base + MEMORY);
-    out->disp = (GuestFn*)calloc((size_t)(mod->code_hi - mod->code_lo) / 4, sizeof(GuestFn));
+    out->disp = (_Atomic GuestFn*)calloc((size_t)(mod->code_hi - mod->code_lo) / 4, sizeof(GuestFn));
     memcpy(memory + mod->mods[0].base, image, image_size);
     for (i = 0; i < mod->nentries; ++i) out->disp[(mod->entry_addr[i] - mod->code_lo) / 4] = mod->entry_fn[i];
     out->mem = memory;

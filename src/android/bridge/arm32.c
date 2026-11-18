@@ -17,6 +17,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <stdatomic.h>
 
 uint8_t* arm32_mem;
 
@@ -44,8 +45,8 @@ typedef struct {
 /* a range of code, with the blocks compiled for each address of it */
 typedef struct {
     uint32_t lo, hi;
-    SnxArmBlock* arm;   /* one for each word */
-    SnxArmBlock* thumb; /* one for each halfword */
+    _Atomic SnxArmBlock* arm;   /* one for each word */
+    _Atomic SnxArmBlock* thumb; /* one for each halfword */
 } CodeRange;
 enum { MAX_RANGES = 64 };
 
@@ -57,7 +58,7 @@ static struct {
     SnxArmExec* exec;
     CodeRange ranges[MAX_RANGES];
     SnxArmExecRange exec_ranges[MAX_RANGES];
-    unsigned range_count;
+    _Atomic unsigned range_count;
 } s = {.lock = PTHREAD_MUTEX_INITIALIZER};
 
 typedef struct {
@@ -67,7 +68,7 @@ typedef struct {
 } Thread;
 static _Thread_local Thread* t_thread;
 /* the signals sent to this thread and not run yet (arm32_thread.c): the dispatch loop runs them between blocks */
-_Thread_local uint32_t arm32_pending_signals;
+_Thread_local _Atomic uint32_t arm32_pending_signals;
 
 bool arm32_active(void) { return s.active; }
 
@@ -342,9 +343,9 @@ SnxArmCPU* arm32_cpu_with_stack(uint32_t stack_size) {
     t->stack = stack;
     t->stack_size = stack_size;
     t->tls = tls;
-    static uint32_t next_id = 1000;
+    static _Atomic uint32_t next_id = 1000;
     wr32(tls, tls);
-    wr32(tls + 4, __atomic_add_fetch(&next_id, 1, __ATOMIC_RELAXED));
+    wr32(tls + 4, (atomic_fetch_add_explicit(&next_id, 1, memory_order_relaxed) + 1));
     t->cpu.cpsr = 0x10;
     t->cpu.mem = arm32_mem;
     t->cpu.mem_size = WINDOW_SIZE;
@@ -382,7 +383,7 @@ void arm32_thread_end(void) {
 
 /* ---- the dispatch loop ---- */
 
-static _Noreturn void guest_fault(const SnxArmCPU* c, const char* what) {
+[[noreturn]] static void guest_fault(const SnxArmCPU* c, const char* what) {
     fprintf(stderr, "scarletnx-android: arm32: %s at pc 0x%08x (%s, exit %u, syndrome 0x%08x)\n", what, c->r[15],
             c->cpsr & SNX_ARM_T ? "Thumb" : "A32", c->exit, c->syndrome);
     const Arm32Library* l = arm32_owner(c->r[15]);
@@ -409,7 +410,7 @@ typedef struct DynPage {
 enum { DYN_BUCKETS = 4096, DYN_MAX_BYTES = 1024, THREAD_CACHE = 1024 };
 static struct {
     DynPage* buckets[DYN_BUCKETS];
-    uint32_t generation;
+    _Atomic uint32_t generation;
 } dyn;
 static _Thread_local struct {
     uint32_t key, generation;
@@ -431,7 +432,7 @@ static DynPage* dyn_page(uint32_t page, bool make) {
 
 static SnxArmBlock dyn_block(uint32_t pc, int thumb) {
     uint32_t key = pc | (uint32_t)thumb, slot = (key >> 1) % THREAD_CACHE;
-    uint32_t generation = __atomic_load_n(&dyn.generation, __ATOMIC_ACQUIRE);
+    uint32_t generation = atomic_load_explicit(&dyn.generation, memory_order_acquire);
     if (t_dyn[slot].key == key && t_dyn[slot].generation == generation && t_dyn[slot].fn) return t_dyn[slot].fn;
     pthread_mutex_lock(&s.lock);
     SnxArmBlock fn = NULL;
@@ -452,7 +453,7 @@ static SnxArmBlock dyn_block(uint32_t pc, int thumb) {
         }
         if (fn && p->count < p->capacity) p->blocks[p->count++] = (DynBlock){key, pc + (uint32_t)(consumed * unit), fn};
     }
-    generation = dyn.generation;
+    generation = atomic_load_explicit(&dyn.generation, memory_order_relaxed);
     pthread_mutex_unlock(&s.lock);
     if (fn) {
         t_dyn[slot].key = key;
@@ -472,27 +473,28 @@ void arm32_code_changed(uint32_t lo, uint32_t hi) {
             if (p->blocks[i].end > lo && (p->blocks[i].key & ~1u) < hi) p->blocks[i] = p->blocks[--p->count];
             else ++i;
     }
-    __atomic_add_fetch(&dyn.generation, 1, __ATOMIC_RELEASE);
+    atomic_fetch_add_explicit(&dyn.generation, 1, memory_order_release);
     pthread_mutex_unlock(&s.lock);
 }
 
 static SnxArmBlock block_at(uint32_t pc, int thumb) {
-    unsigned n = __atomic_load_n(&s.range_count, __ATOMIC_ACQUIRE);
-    SnxArmBlock* slot = NULL;
+    unsigned n = atomic_load_explicit(&s.range_count, memory_order_acquire);
+    _Atomic SnxArmBlock* slot = NULL;
     for (unsigned i = 0; i < n; ++i) {
         CodeRange* r = &s.ranges[i];
         if (pc >= r->lo && pc < r->hi) {
             slot = thumb ? &r->thumb[(pc - r->lo) >> 1] : &r->arm[(pc - r->lo) >> 2];
-            SnxArmBlock b = __atomic_load_n(slot, __ATOMIC_ACQUIRE);
+            SnxArmBlock b = atomic_load_explicit(slot, memory_order_acquire);
             if (b) return b;
             break;
         }
     }
     if (!slot) return dyn_block(pc, thumb);
     pthread_mutex_lock(&s.lock);
-    SnxArmBlock b = snx_arm_exec_block(s.exec, s.exec_ranges, s.range_count, pc, thumb, arm32_mem);
+    SnxArmBlock b = snx_arm_exec_block(
+        s.exec, s.exec_ranges, atomic_load_explicit(&s.range_count, memory_order_relaxed), pc, thumb, arm32_mem);
     pthread_mutex_unlock(&s.lock);
-    if (b && slot) __atomic_store_n(slot, b, __ATOMIC_RELEASE);
+    if (b && slot) atomic_store_explicit(slot, b, memory_order_release);
     return b;
 }
 
@@ -507,11 +509,11 @@ static void return_to_lr(SnxArmCPU* c) {
 /* Linux's kernel helpers at the top of the window (Documentation/arch/arm/kernel_user_helpers.rst) */
 static void kuser(SnxArmCPU* c) {
     switch (c->r[15]) {
-    case 0xffff0fa0: /* __kuser_memory_barrier */ __atomic_thread_fence(__ATOMIC_SEQ_CST); break;
+    case 0xffff0fa0: /* __kuser_memory_barrier */ atomic_thread_fence(memory_order_seq_cst); break;
     case 0xffff0fc0: { /* __kuser_cmpxchg(oldval, newval, ptr): 0 and C set when *ptr was oldval and is newval now */
         uint32_t expected = c->r[0];
-        bool ok = __atomic_compare_exchange_n((uint32_t*)(arm32_mem + c->r[2]), &expected, c->r[1], false,
-                                              __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+        bool ok = atomic_compare_exchange_strong_explicit((_Atomic uint32_t*)(arm32_mem + c->r[2]), &expected, c->r[1],
+                                                          memory_order_seq_cst, memory_order_seq_cst);
         c->r[0] = ok ? 0 : 1;
         if (ok) c->cpsr |= 1u << 29;
         else c->cpsr &= ~(1u << 29);
@@ -522,8 +524,8 @@ static void kuser(SnxArmCPU* c) {
         uint64_t expected, desired;
         memcpy(&expected, arm32_mem + c->r[0], 8);
         memcpy(&desired, arm32_mem + c->r[1], 8);
-        bool ok = __atomic_compare_exchange_n((uint64_t*)(arm32_mem + c->r[2]), &expected, desired, false,
-                                              __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+        bool ok = atomic_compare_exchange_strong_explicit((_Atomic uint64_t*)(arm32_mem + c->r[2]), &expected, desired,
+                                                          memory_order_seq_cst, memory_order_seq_cst);
         c->r[0] = ok ? 0 : 1;
         if (ok) c->cpsr |= 1u << 29;
         else c->cpsr &= ~(1u << 29);
@@ -554,7 +556,7 @@ static void run(SnxArmCPU* c) {
             if (c->r[15] == pc) return_to_lr(c);
             continue;
         }
-        if (__atomic_load_n(&arm32_pending_signals, __ATOMIC_RELAXED)) {
+        if (atomic_load_explicit(&arm32_pending_signals, memory_order_relaxed)) {
             arm32_signals_run(c);
             continue;
         }
@@ -643,14 +645,17 @@ bool arm32_init(char* error, size_t error_size) {
 /* code at [lo, hi) of a library, compiled when first reached */
 static void add_code(uint32_t lo, uint32_t hi) {
     pthread_mutex_lock(&s.lock);
-    if (s.range_count < MAX_RANGES) {
-        CodeRange* r = &s.ranges[s.range_count];
+    if (atomic_load_explicit(&s.range_count, memory_order_relaxed) < MAX_RANGES) {
+        CodeRange* r = &s.ranges[atomic_load_explicit(&s.range_count, memory_order_relaxed)];
         r->lo = lo & ~3u;
         r->hi = (uint32_t)snx_align_up(hi, 4);
         r->arm = calloc((r->hi - r->lo) / 4, sizeof *r->arm);
         r->thumb = calloc((r->hi - r->lo) / 2, sizeof *r->thumb);
-        s.exec_ranges[s.range_count] = (SnxArmExecRange){r->lo, arm32_mem + r->lo, r->hi - r->lo};
-        if (r->arm && r->thumb) __atomic_store_n(&s.range_count, s.range_count + 1, __ATOMIC_RELEASE);
+        s.exec_ranges[atomic_load_explicit(&s.range_count, memory_order_relaxed)] =
+            (SnxArmExecRange){r->lo, arm32_mem + r->lo, r->hi - r->lo};
+        if (r->arm && r->thumb)
+            atomic_store_explicit(&s.range_count, atomic_load_explicit(&s.range_count, memory_order_relaxed) + 1,
+                                  memory_order_release);
     }
     pthread_mutex_unlock(&s.lock);
 }

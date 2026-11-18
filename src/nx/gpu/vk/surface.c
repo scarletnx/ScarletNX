@@ -12,6 +12,7 @@
 #include "common/utilities/bits.h"
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 #include "nx/gpu/gpu.h"
 #include "nx/hle/services/nvdrv.h"
 #include "nx/memory/mem.h"
@@ -243,12 +244,12 @@ void vk_surf_textures(void (*fn)(Surf* t, void* ctx), void* ctx) {
         for (u32 r = g_rows.lists[list].head; r; r = g_rows.lru[r].next) fn(g_rows.surf[r], ctx);
 }
 static _Thread_local int g_rt_flushing;
-u32 g_vk_surf_epoch;
+_Atomic u32 g_vk_surf_epoch;
 static u32 g_surf_bucket_epoch[SURFH];
 u32 vk_surf_epoch_at(u64 gva) { return g_surf_bucket_epoch[hkey(gva)]; }
 /* a change of the surface table at gva: of its own bucket (a parked target's high bit leaves it in the same one) */
 static void surf_changed(u64 gva) {
-    g_vk_surf_epoch++;
+    atomic_fetch_add_explicit(&g_vk_surf_epoch, 1, memory_order_relaxed);
     g_surf_bucket_epoch[hkey(gva)]++;
 }
 
@@ -270,6 +271,25 @@ VkImageAspectFlags vk_aspect(const VkFmt* f) {
     return VK_IMAGE_ASPECT_DEPTH_BIT | (f->stencil ? VK_IMAGE_ASPECT_STENCIL_BIT : 0);
 }
 
+/* the image barriers that vk_surf_use makes between vk_surf_batch_begin and vk_surf_batch_end, recorded in one call
+   when the batch ends: barriers on different images in one call are the same as one call each, in their order. A
+   pass's start puts a barrier on each of its targets, and a copy on its two surfaces */
+#define SURF_BATCH 16
+static _Thread_local struct {
+    VkImageMemoryBarrier2 b[SURF_BATCH];
+    const Surf* s[SURF_BATCH];
+    VkCommandBuffer cb;
+    u32 n;
+    int on;
+} g_surf_batch;
+static void surf_batch_flush(void) {
+    if (!g_surf_batch.n) return;
+    VkDependencyInfo dependency = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+                                    .imageMemoryBarrierCount = g_surf_batch.n,
+                                    .pImageMemoryBarriers = g_surf_batch.b};
+    rec_CmdPipelineBarrier2(g_surf_batch.cb, &dependency);
+    g_surf_batch.n = 0;
+}
 static void surf_barrier(VkCommandBuffer cb, const Surf* s, VkPipelineStageFlags2 source_stage,
                           VkAccessFlags2 source_access, VkImageLayout old_layout, VkPipelineStageFlags2 stage,
                           VkAccessFlags2 access, VkImageLayout layout) {
@@ -288,9 +308,26 @@ static void surf_barrier(VkCommandBuffer cb, const Surf* s, VkPipelineStageFlags
                                     .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .image = s->img,
                                     .subresourceRange = {vk_aspect(&s->f), 0, VK_REMAINING_MIP_LEVELS, 0,
                                                          VK_REMAINING_ARRAY_LAYERS}};
+    /* a barrier with sample locations stays on its own: a chained one makes the recorder sync (rec_CmdPipelineBarrier2).
+       A second barrier on the same image waits for the first one's call: in one call they would not be ordered */
+    if (g_surf_batch.on && !image.pNext) {
+        int again = g_surf_batch.n == SURF_BATCH || (g_surf_batch.n && g_surf_batch.cb != cb);
+        for (u32 i = 0; i < g_surf_batch.n && !again; i++) again = g_surf_batch.s[i] == s;
+        if (again) surf_batch_flush();
+        g_surf_batch.cb = cb;
+        g_surf_batch.s[g_surf_batch.n] = s;
+        g_surf_batch.b[g_surf_batch.n++] = image;
+        return;
+    }
+    surf_batch_flush(); /* the barriers collected before this one go first */
     VkDependencyInfo dependency = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
                                     .imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &image};
     rec_CmdPipelineBarrier2(cb, &dependency);
+}
+void vk_surf_batch_begin(void) { g_surf_batch.on = 1; }
+void vk_surf_batch_end(void) {
+    surf_batch_flush();
+    g_surf_batch.on = 0;
 }
 void vk_surf_use(VkCommandBuffer cb, Surf* s, VkImageLayout layout, VkPipelineStageFlags2 stage,
                  VkAccessFlags2 access) {
@@ -1943,7 +1980,7 @@ int vk_surf_publish(Surf* s) {
     publish_own(s, r, size);
     keep_fresh_after(&keep);
     g_rt_publishing = publishing;
-    s->pub_serial = __atomic_load_n(&r->serial, __ATOMIC_ACQUIRE);
+    s->pub_serial = atomic_load_explicit(&r->serial, memory_order_acquire);
     vk_own_res_unref(r);
     /* guest memory (its owner) has the image's pixels now: the texture cache finds them current, by their owner */
     flush_rebase(s, size, kept != 0, gw0);

@@ -44,6 +44,12 @@ int shader_vk_set(int stage) {
         default: return 0;
     }
 }
+/* the set of a stage's textures, samplers and their indexed arrays: its own set, or with split_sets the set five after
+   it. A compute program keeps one set */
+int shader_vk_tex_set(int stage) {
+    const int set = shader_vk_set(stage);
+    return g_spirv_translate.split_sets && stage != ST_CS ? set + 5 : set;
+}
 
 /* the code word after i */
 static u32 next_code(u32 i) {
@@ -427,11 +433,17 @@ int shader_absolute_flow(const u8* code, u32 bytes) {
     return 0;
 }
 
-/* One CRS stack entry: target << 2 | kind (CRS_KIND) */
+/* The CRS stack a block starts with, its entries from the bottom: target << 3 | kind (CRS_KIND, PRET's 4 among
+   them). Where the paths that reach a block disagree, it keeps the entries they agree on from the top, and below
+   says that what lies under those isn't known */
 typedef struct {
     u32 depth; /* CRS_DEPTH + 1 marks a block not reached yet */
+    u32 below;
     u32 entry[CRS_DEPTH];
 } CrsStack;
+#define CRS_ENTRY(target, kind) ((target) << 3 | (u32)(kind))
+#define CRS_TARGET(entry)       ((entry) >> 3)
+#define CRS_ENTRY_KIND(entry)   ((entry) & 7)
 
 typedef struct {
     const u64* words;
@@ -439,8 +451,11 @@ typedef struct {
     u8 leader[65536 / 8];
     u32* start;      /* each block's first word, ascending */
     u32* work;       /* blocks to walk */
+    u8* queued;      /* whether each block is in work */
     CrsStack* stack; /* the stack each block starts with */
     u32 nwork;
+    char* why; /* where the walk says why it stops, why_size bytes; NULL when the caller doesn't ask */
+    size_t why_size;
 } CrsWalk;
 
 static int is_leader(const CrsWalk* c, u32 i) { return i < c->count && (c->leader[i >> 3] >> (i & 7) & 1); }
@@ -448,9 +463,17 @@ static void mark_leader(CrsWalk* c, u32 i) {
     if (i < c->count) c->leader[i >> 3] |= (u8)(1u << (i & 7));
 }
 
-/* control arrives at target with stack s: the block's first arrival sets its stack, a later one must agree */
+/* why the stack can't be followed: name, the instruction at word i, and what */
+static int crs_fail(CrsWalk* c, u32 i, const char* name, const char* what) {
+    if (c->why) snprintf(c->why, c->why_size, "%s at 0x%x: %s", name, i * 8, what);
+    return 0;
+}
+
+/* control arrives at target with stack s: the block's first arrival sets its stack, and a later one that differs
+   leaves it only the entries both agree on from the top, with what lies under them unknown. A block whose stack
+   changes is walked again; each change takes an entry or marks below, so the walk ends */
 static int crs_arrive(CrsWalk* c, u32 target, const CrsStack* s) {
-    u32 lo = 0, hi = c->blocks;
+    u32 lo = 0, hi = c->blocks, k = 0, below;
     CrsStack* at;
     if (!is_leader(c, target)) return 0;
     while (lo < hi) {
@@ -461,12 +484,21 @@ static int crs_arrive(CrsWalk* c, u32 target, const CrsStack* s) {
             hi = mid;
     }
     at = &c->stack[lo];
-    if (at->depth > CRS_DEPTH) {
+    if (at->depth > CRS_DEPTH)
         *at = *s;
-        c->work[c->nwork++] = lo;
-        return 1;
+    else {
+        while (k < at->depth && k < s->depth && at->entry[at->depth - 1 - k] == s->entry[s->depth - 1 - k]) k++;
+        below = at->below || s->below || k < at->depth || k < s->depth;
+        if (k == at->depth && below == at->below) return 1;
+        memmove(at->entry, at->entry + at->depth - k, k * sizeof *at->entry);
+        at->depth = k;
+        at->below = below;
     }
-    return at->depth == s->depth && !memcmp(at->entry, s->entry, s->depth * sizeof *s->entry);
+    if (!c->queued[lo]) {
+        c->queued[lo] = 1;
+        c->work[c->nwork++] = lo;
+    }
+    return 1;
 }
 
 /* Walks one block from its stack. 0 when the stack can't be known statically. */
@@ -485,39 +517,50 @@ static int crs_block(CrsWalk* c, u32 b, u32* pop_targets) {
             case O_SSY:
             case O_PBK:
             case O_PCNT:
+            case O_PRET:
                 /* a push happens whatever its predicate says */
-                if (s.depth == CRS_DEPTH) return 0;
-                s.entry[s.depth++] = bra_target(w, i) << 2 | (u32)CRS_KIND(op->id);
+                if (s.depth == CRS_DEPTH) return crs_fail(c, i, op->name, "a stack deeper than 16");
+                s.entry[s.depth++] = CRS_ENTRY(bra_target(w, i), CRS_KIND(op->id));
                 break;
             case O_SYNC:
             case O_BRK:
-            case O_CONT: {
+            case O_CONT:
+            case O_RET: {
                 CrsStack popped = s;
                 kind = (u32)CRS_KIND(op->id);
-                for (k = s.depth; k > 0 && (s.entry[k - 1] & 3) != kind; k--) {}
-                if (!k) return 0;
+                for (k = s.depth; k > 0 && CRS_ENTRY_KIND(s.entry[k - 1]) != kind; k--) {}
+                if (!k && s.below)
+                    return crs_fail(c, i, op->name,
+                                    op->id == O_RET ? "its paths disagree on where it returns"
+                                                    : "its paths disagree on the token it pops");
+                if (!k && op->id == O_RET) {
+                    /* no PRET's return point on the stack: the RET ends the program */
+                    if (pop_targets[i]) return crs_fail(c, i, op->name, "it both returns and ends the program");
+                    if (flow_always(w)) return 1;
+                    break;
+                }
+                if (!k) return crs_fail(c, i, op->name, "no token of its kind on the stack");
                 /* the pop takes the nearest entry of its kind and drops the ones pushed after it */
-                t = s.entry[k - 1] >> 2;
-                if (pop_targets[i] && pop_targets[i] != t) return 0;
+                t = CRS_TARGET(s.entry[k - 1]);
+                if (pop_targets[i] && pop_targets[i] != t) return crs_fail(c, i, op->name, "two targets");
                 pop_targets[i] = t;
                 popped.depth = k - 1;
-                if (!crs_arrive(c, t, &popped)) return 0;
+                if (!crs_arrive(c, t, &popped)) return crs_fail(c, i, op->name, "a target that starts no block");
                 if (flow_always(w)) return 1;
                 break;
             }
             case O_BRA:
-                if (!crs_arrive(c, bra_target(w, i), &s)) return 0;
+                if (!crs_arrive(c, bra_target(w, i), &s)) return crs_fail(c, i, op->name, "a target past the program");
                 if (flow_always(w)) return 1;
                 break;
             case O_BRX:
                 count = shader_brx_targets(c->words, i, c->count, targets, 64);
-                if (count < 0) return 0;
+                if (count < 0) return crs_fail(c, i, op->name, "a jump table it can't read");
                 for (n = 0; n < count; n++)
-                    if (!crs_arrive(c, targets[n], &s)) return 0;
+                    if (!crs_arrive(c, targets[n], &s)) return crs_fail(c, i, op->name, "a target past the program");
                 if (flow_always(w)) return 1;
                 break;
             case O_EXIT:
-            case O_RET: /* without calls a RET ends the program */
                 if (flow_always(w)) return 1;
                 break;
             default: break;
@@ -526,43 +569,61 @@ static int crs_block(CrsWalk* c, u32 b, u32* pop_targets) {
     return 1;
 }
 
-/* The single CRS stack resolved at translation time: SSY, PBK and PCNT push a token and its target, and SYNC, BRK
-   and CONT pop down to the nearest token of their kind (Eden's control_flow.cpp Stack). Walks the control flow from
-   the entry with an empty stack and gives each pop its one target in pop_targets. Returns 0 when that can't be done
-   statically (calls, PEXIT, JMP, an unreadable jump table, a pop with no token, a block or pop reached with two
-   stacks, a deep stack, no memory): the translator then keeps the stack at run time. */
-int shader_resolve_crs(const u64* words, u32 count, u32* pop_targets) {
+/* The single CRS stack resolved at translation time: SSY, PBK, PCNT and PRET push a token and its target, and SYNC,
+   BRK, CONT and RET pop down to the nearest token of their kind (Eden's control_flow.cpp Stack); a RET with no PRET
+   token ends the program. Walks the control flow from the entry with an empty stack and gives each pop its one
+   target in pop_targets (0 for a RET that ends the program, and for a pop the walk doesn't reach). Returns 0 when
+   that can't be done statically (calls, PEXIT, JMP, an unreadable jump table, a pop with no token, one whose paths
+   disagree on the token it takes, a deep stack, no memory), and then writes why into why (why_size bytes) when it
+   isn't NULL: the translator keeps the stack at run time. */
+int shader_resolve_crs(const u64* words, u32 count, u32* pop_targets, char* why, size_t why_size) {
     CrsWalk* c;
     u32 i, b, targets[64];
-    int ok = 1, k, n;
+    int ok = 1, k, n, pret = 0;
     size_t bytes;
-    if (count < 12 || count > 65536 || !words || !pop_targets) return 0;
+    if (why && why_size) *why = 0;
+    if (count < 12 || count > 65536 || !words || !pop_targets) {
+        if (why && why_size) snprintf(why, why_size, "a program of %u words", count);
+        return 0;
+    }
     c = calloc(1, sizeof *c);
-    if (!c) return 0;
+    if (!c) {
+        if (why && why_size) snprintf(why, why_size, "no memory");
+        return 0;
+    }
     c->words = words;
     c->count = count;
+    c->why = why && why_size ? why : NULL;
+    c->why_size = why_size;
     mark_leader(c, 11);
+    for (i = 11; i < count; i = next_code(i)) {
+        const Op* op = decode(words[i]);
+        pret |= op && op->id == O_PRET;
+    }
     for (i = 11; i < count && ok; i = next_code(i)) {
         u64 w = words[i];
         const Op* op = decode(w);
         if (!op) continue;
         switch (op->id) {
-            case O_CAL:
-            case O_PRET:
-            case O_PEXIT:
-            case O_JMP: ok = 0; break;
+            case O_CAL: ok = crs_fail(c, i, op->name, "a call"); break;
+            case O_JCAL: /* its RETs return to it, not to a PRET's target */
+                if (pret) ok = crs_fail(c, i, op->name, "a call in a program with PRET");
+                break;
+            case O_PEXIT: ok = crs_fail(c, i, op->name, "an exit token"); break;
+            case O_JMP: ok = crs_fail(c, i, op->name, "a jump to a register's address"); break;
             case O_BRA:
             case O_SSY:
             case O_PBK:
-            case O_PCNT: {
+            case O_PCNT:
+            case O_PRET: {
                 u32 t = bra_target(w, i);
-                if (t >= count || !IDX_OK(t)) ok = 0;
+                if (t >= count || !IDX_OK(t)) ok = crs_fail(c, i, op->name, "a target past the program");
                 mark_leader(c, t);
                 break;
             }
             case O_BRX:
                 n = shader_brx_targets(words, i, count, targets, 64);
-                if (n < 0) ok = 0;
+                if (n < 0) ok = crs_fail(c, i, op->name, "a jump table it can't read");
                 for (k = 0; k < n; k++) mark_leader(c, targets[k]);
                 break;
             default: break;
@@ -572,14 +633,17 @@ int shader_resolve_crs(const u64* words, u32 count, u32* pop_targets) {
             mark_leader(c, next_code(i));
     }
     for (i = 0; i < count && ok; i++) c->blocks += is_leader(c, i);
-    bytes = (size_t)c->blocks * (2 * sizeof(u32) + sizeof(CrsStack));
+    bytes = (size_t)c->blocks * (2 * sizeof(u32) + sizeof(CrsStack) + 1);
     if (ok) c->stack = malloc(bytes);
     if (!c->stack) {
+        if (ok && why && why_size) snprintf(why, why_size, "no memory");
         free(c);
         return 0;
     }
     c->start = (u32*)(c->stack + c->blocks);
     c->work = c->start + c->blocks;
+    c->queued = (u8*)(c->work + c->blocks);
+    memset(c->queued, 0, c->blocks);
     for (i = 0, b = 0; i < count; i++)
         if (is_leader(c, i)) {
             c->start[b] = i;
@@ -591,7 +655,11 @@ int shader_resolve_crs(const u64* words, u32 count, u32* pop_targets) {
         memset(&empty, 0, sizeof empty);
         crs_arrive(c, 11, &empty);
     }
-    while (ok && c->nwork) ok = crs_block(c, c->work[--c->nwork], pop_targets);
+    while (ok && c->nwork) {
+        b = c->work[--c->nwork];
+        c->queued[b] = 0;
+        ok = crs_block(c, b, pop_targets);
+    }
     free(c->stack);
     free(c);
     return ok;

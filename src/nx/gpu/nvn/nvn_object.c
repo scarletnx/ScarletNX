@@ -39,13 +39,14 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdatomic.h>
 
-u64 nvn_serial(void) { return __atomic_add_fetch(&g_nvn.object.serial, 1, __ATOMIC_RELAXED); }
+u64 nvn_serial(void) { return (atomic_fetch_add_explicit(&g_nvn.object.serial, 1, memory_order_relaxed) + 1); }
 
 u64 nvn_pool_memory(u64 pool) { return pool ? NVN_OBJ(NvnPool, pool)->memory : 0; }
 u64 nvn_pool_gpu(u64 pool) { return pool ? NVN_OBJ(NvnPool, pool)->gpu : 0; }
-u32 nvn_device_flags(void) { return __atomic_load_n(&g_nvn.object.device_flags, __ATOMIC_RELAXED); }
-u64 nvn_device(void) { return __atomic_load_n(&g_nvn.object.device, __ATOMIC_RELAXED); }
+u32 nvn_device_flags(void) { return atomic_load_explicit(&g_nvn.object.device_flags, memory_order_relaxed); }
+u64 nvn_device(void) { return atomic_load_explicit(&g_nvn.object.device, memory_order_relaxed); }
 
 /* the small state objects are copied by value and may sit anywhere in the game's structures: read and written whole */
 static u32 ld32(u64 a) {
@@ -112,8 +113,8 @@ int nvn_DeviceInitialize(CPU* c, u64 d, u64 b) {
     o.flags = NVN_OBJ(NvnDeviceBuilder, b)->flags;
     o.origin = NVN_WINDOW_ORIGIN_MODE_LOWER_LEFT; /* NVN's defaults: lower-left origin, near = -w */
     memcpy(GP(d), &o, sizeof o);
-    __atomic_store_n(&g_nvn.object.device_flags, o.flags, __ATOMIC_RELAXED);
-    __atomic_store_n(&g_nvn.object.device, d, __ATOMIC_RELAXED);
+    atomic_store_explicit(&g_nvn.object.device_flags, o.flags, memory_order_relaxed);
+    atomic_store_explicit(&g_nvn.object.device, d, memory_order_relaxed);
     nvn_draw_device(o.origin, o.depth_mode);
     LOG("nvn: device %llx initialized, flags %#x\n", (unsigned long long)d, o.flags);
     /* An Ounce game's device with flag 0x10000 keeps the Maxwell GOB: the game's driver hands its texture setup
@@ -129,7 +130,7 @@ void nvn_DeviceFinalize(CPU* c, u64 d) {
     u64 was = d;
     (void)c;
     NVN_OBJ(NvnDevice, d)->magic = 0;
-    __atomic_compare_exchange_n(&g_nvn.object.device, &was, 0, 0, __ATOMIC_RELAXED, __ATOMIC_RELAXED);
+    atomic_compare_exchange_strong_explicit(&g_nvn.object.device, &was, 0, memory_order_relaxed, memory_order_relaxed);
 }
 i32 nvn_DeviceBuilderGetFlags(CPU* c, u64 b) {
     (void)c;
@@ -163,7 +164,7 @@ i32 nvn_DeviceGenerateDebugDomainId(CPU* c, u64 d, u64 name) {
     (void)c;
     (void)d;
     (void)name;
-    return (i32)__atomic_fetch_add(&g_nvn.object.debug_domain, 1, __ATOMIC_RELAXED);
+    return (i32)atomic_fetch_add_explicit(&g_nvn.object.debug_domain, 1, memory_order_relaxed);
 }
 int nvn_DeviceIsExternalDebuggerAttached(CPU* c, u64 d) {
     (void)c;
@@ -231,7 +232,7 @@ void nvn_device_driver(u64 func) {
     u64 lo = g_code_lo, hi;
     /* a 32-bit game's driver is A32 code, in the block table's range */
     int (*info)(const u8*, u64, u64, u64, u32, i32*) = g_nvn.loader.a32 ? nvn_driver_info32 : nvn_driver_info;
-    if (__atomic_load_n(&g_nvn.object.driver, __ATOMIC_ACQUIRE)) return; /* resolved again: read once */
+    if (atomic_load_explicit(&g_nvn.object.driver, memory_order_acquire)) return; /* resolved again: read once */
     if (g_nvn.loader.a32 && !arm_code_range(&lo, &hi)) return;
     r.func = func;
     loader_segments(ro_after, &r);
@@ -246,18 +247,19 @@ void nvn_device_driver(u64 func) {
         WARN("nvn: the game's nvnDeviceGetInteger at %llx doesn't read as a known switch: the device answers API "
              "%d.%d from its own table, which the game may refuse\n",
              (unsigned long long)func, g_nvn.object.info[0], g_nvn.object.info[1]);
-    __atomic_store_n(&g_nvn.object.driver, 1, __ATOMIC_RELEASE);
+    atomic_store_explicit(&g_nvn.object.driver, 1, memory_order_release);
     LOG("nvn: the game's driver answers API %d.%d and GPU code %d.%d to %d.%d, %u items in all from its code\n",
         g_nvn.object.info[0], g_nvn.object.info[1], g_nvn.object.info[0x2f], g_nvn.object.info[0x31],
         g_nvn.object.info[0x2e], g_nvn.object.info[0x30], n);
 }
 u32 nvn_device_api(void) {
-    if (!__atomic_load_n(&g_nvn.object.driver, __ATOMIC_ACQUIRE) || !g_nvn.object.read_api) return 0;
+    if (!atomic_load_explicit(&g_nvn.object.driver, memory_order_acquire) || !g_nvn.object.read_api) return 0;
     return nvn_api_pack(g_nvn.object.info[0], g_nvn.object.info[1]);
 }
 void nvn_DeviceGetInteger(CPU* c, u64 d, i32 what, u64 out) {
     u32 w = (u32)what;
-    const i32* info = __atomic_load_n(&g_nvn.object.driver, __ATOMIC_ACQUIRE) ? g_nvn.object.info : device_info;
+    const i32* info =
+        atomic_load_explicit(&g_nvn.object.driver, memory_order_acquire) ? g_nvn.object.info : device_info;
     i32 v = w < NVN_DEVICE_INFO_ITEMS ? info[w] : 0;
     (void)c;
     (void)d;
@@ -437,7 +439,8 @@ void nvn_MemoryPoolFinalize(CPU* c, u64 p) {
     NvnPool* o = NVN_OBJ(NvnPool, p);
     u64 lead = o->gpu & 0xfff;
     (void)c;
-    u32 nvmap = o->magic == NVN_MAGIC('P', 'O', 'O', 'L') ? __atomic_exchange_n(&o->nvmap, 0, __ATOMIC_ACQ_REL) : 0;
+    u32 nvmap =
+        o->magic == NVN_MAGIC('P', 'O', 'O', 'L') ? atomic_exchange_explicit(&o->nvmap, 0, memory_order_acq_rel) : 0;
     if (o->magic == NVN_MAGIC('P', 'O', 'O', 'L') && o->gpu) { /* the handle goes after the unmap, as it went before */
         gpu_pool_remove(o->gpu);
         gmmu_later_post(gmmu_later(GMMU_LATER_FREE, o->gpu - lead, 0, lead + o->size, nvmap));
@@ -453,7 +456,7 @@ void nvn_MemoryPoolFinalize(CPU* c, u64 p) {
    Two threads can ask at once: the first handle stored stays. 0 for a pool without storage of its own */
 static u32 pool_nvmap(u64 pool) {
     NvnPool* o = NVN_OBJ(NvnPool, pool);
-    u32 h = __atomic_load_n(&o->nvmap, __ATOMIC_ACQUIRE), none = 0;
+    u32 h = atomic_load_explicit(&o->nvmap, memory_order_acquire), none = 0;
     if (h || o->magic != NVN_MAGIC('P', 'O', 'O', 'L') || !o->memory) return h;
     h = nvmap_handle_new(o->memory, o->size);
     if (!h) {
@@ -461,7 +464,8 @@ static u32 pool_nvmap(u64 pool) {
                   (unsigned long long)pool, (unsigned long long)o->size, (unsigned long long)o->memory);
         return 0;
     }
-    if (__atomic_compare_exchange_n(&o->nvmap, &none, h, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) return h;
+    if (atomic_compare_exchange_strong_explicit(&o->nvmap, &none, h, memory_order_acq_rel, memory_order_acquire))
+        return h;
     nvmap_handle_drop(h);
     return none;
 }
@@ -1052,9 +1056,9 @@ int nvn_TextureInitialize(CPU* c, u64 t, u64 b) {
     o.size = l.size;
     memcpy(o.layout, s->layout, sizeof o.layout);
     o.serial = nvn_serial();
-    if (o.d.format < 256 &&
-        !(__atomic_fetch_or(&g_nvn.object.formats[o.d.format >> 5], 1u << (o.d.format & 31), __ATOMIC_RELAXED) &
-          1u << (o.d.format & 31)))
+    if (o.d.format < 256 && !(atomic_fetch_or_explicit(&g_nvn.object.formats[o.d.format >> 5], 1u << (o.d.format & 31),
+                                                       memory_order_relaxed) &
+                              1u << (o.d.format & 31)))
         LOG("nvn: the first texture of format %#x (target %u, %ux%u)\n", o.d.format, o.d.target, o.d.width, o.d.height);
     if (o.d.samples > 1)
         LOG_LIMIT(4, "nvn: a %u-sample texture of format %#x, %ux%u\n", (unsigned)o.d.samples, o.d.format, o.d.width,
@@ -2411,7 +2415,7 @@ int nvn_SyncGetNvRmSyncNVX(CPU* c, u64 s, u64 nvrm) {
     u8 sync[NVRM_SYNC] = {0};
     u32 n = 0;
     if (!g_nvn.loader.nvrm_get) fatal("nvn: nvnSyncGetNvRmSyncNVX was called before the game resolved it");
-    if (__atomic_load_n(&o->fenced, __ATOMIC_ACQUIRE)) {
+    if (atomic_load_explicit(&o->fenced, memory_order_acquire)) {
         if (o->syncpt) {
             snx_st_le32(sync + 0x10, o->syncpt);
             snx_st_le32(sync + 0x14, o->value);
@@ -2439,7 +2443,7 @@ int nvn_SyncInitializeFromNvRmSyncNVX(CPU* c, u64 s, u64 d, u64 nvrm) {
     n = snx_ld_le32(sync + 0x0c);
     o.magic = NVN_MAGIC('S', 'Y', 'N', 'C');
     if (ok && snx_ld_le32(sync + 0x08) == 5 && n) {
-        o.fenced = 1;
+        atomic_store_explicit(&o.fenced, 1, memory_order_relaxed);
         o.syncpt = snx_ld_le32(sync + 0x10);
         o.value = snx_ld_le32(sync + 0x14);
         for (i = 1; i < n && i < 4; i++)
@@ -2497,7 +2501,7 @@ void nvn_EventSignal(CPU* c, u64 e, i32 mode, u32 value) {
     u64 a = NVN_OBJ(NvnEvent, e)->value;
     (void)c;
     gpu_cpu_signal(); /* a stream's wait on the event takes in what the CPU wrote before (nvn_replay.c) */
-    __atomic_thread_fence(__ATOMIC_RELEASE);
+    atomic_thread_fence(memory_order_release);
     gw32(a, mode == NVN_EVENT_SIGNAL_MODE_ADD ? gr32(a) + value : value);
     gpu_kick();
 }

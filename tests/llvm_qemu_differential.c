@@ -38,6 +38,7 @@
 #include "common/cpu/recompiler/llvm/ir.h"
 #include "common/cpu/recompiler/llvm/ir_ldst.h"
 #include "common/cpu/recompiler/llvm/ir_fpu.h"
+#include "common/cpu/recompiler/llvm/ir_int.h"
 #include "common/cpu/recompiler/llvm/ir_vec.h"
 #include "common/runtime/interface.h"
 #include "llvm_qemu_words.h"
@@ -395,6 +396,9 @@ static const u32 kept[] = {
     0x1E221820, 0x1F020C20, 0x1E22C020, 0x1E200020, 0x4E22D420, 0x1E63C020, 0x9E580020, 0x1E61C020, 0x1E228820,
     0x1E23C020, 0x0E216820, 0x1F420C20, 0x1F620C20, 0x4E62CC20, 0x7EE1D820, 0x4EA1D820, 0x4EE1D820, 0x5EE1D820,
     0x9E630020, 0x6E61D820, 0x4E218800, 0x6E20D400, 0x6E21D820,
+    /* codegen_test.c's ounce_cpu_test: UDOT, CFINV, RMIF x3 #4 #0b1010, SETF8 w3, SETF16 w3, ESB (the rows' own
+       samples name x0 or xzr alone, and RMIF's rotate by 0 or 63) */
+    0x6E849427, 0xD500401F, 0xBA02046A, 0x3A00086D, 0x3A00486D, 0xD503221F,
     /* the FP witnesses' reserved encodings */
     0x5E218820, 0x0E618820, 0x5E217820, 0x5EA1C820, 0x7EA1C820, 0x7EA1F820};
 #define KEPT (sizeof(kept) / sizeof(kept[0]))
@@ -1165,15 +1169,21 @@ int main(int argc, char** argv) {
         it->step = (u32)nsteps;
         for (k = 0; k < it->nwords; ++k) {
             unsigned long before = ir->fallbacks;
-            SnxA64Insn max, sw;
+            SnxA64Insn max, ounce, sw;
             SnxU64 features = 0;
             /* the load/store emitters (ir_ldst.c) implement the LSE and RCpc atomics too, the scalar FP ones
                (ir_fpu.c) FEAT_FP16, FEAT_JSCVT, FEAT_FRINTTS and BFCVT, the AdvSIMD ones (ir_vec.c) the vector
-               extensions: a word the Switch lacks that they emit runs with max's features, against QEMU's -cpu max */
+               extensions: a word the Switch lacks that they emit runs with max's features, against QEMU's -cpu max.
+               The integer ones (ir_int.c) implement the ounce target's FlagM and ESB, which run with its features;
+               PAuth stays out, as QEMU signs with keys where the emitters run with authentication off */
             if (snx_a64_decode_word(it->words[k], SNX_A64_TARGET_MAX, &max) != SNX_A64_OP_UNDEF &&
                 (snx_ir_ldst_handles(max.op) || snx_ir_fpu_handles(max.op) || snx_ir_vec_handles(max.op)) &&
                 (max.feature & ~(SnxU64)SNX_A64_TARGET_SWITCH))
                 features = SNX_A64_TARGET_MAX;
+            else if (snx_a64_decode_word(it->words[k], SNX_A64_TARGET_OUNCE, &ounce) != SNX_A64_OP_UNDEF &&
+                     snx_ir_int_handles(ounce.op) && (ounce.feature & ~(SnxU64)SNX_A64_TARGET_SWITCH) &&
+                     !(ounce.feature & SNX_A64_FEAT_PAUTH))
+                features = SNX_A64_TARGET_OUNCE;
             else if (snx_a64_decode_word(it->words[k], 0, &sw) == SNX_A64_OP_UNDEF)
                 it->skip = 1;
             snprintf(g_test.running, sizeof(g_test.running), "the IR of word %08x (%s emitters)", it->words[k],

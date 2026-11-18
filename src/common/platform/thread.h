@@ -19,14 +19,14 @@
 /* A mutex with a static initializer on both hosts; the member is l on both */
 typedef struct {
     SRWLOCK l;
-    void* tracy; /* the profiler's context for a named lock (pm_lock_announce), null otherwise */
+    void* _Atomic tracy; /* the profiler's context for a named lock (pm_lock_announce), null otherwise */
 } PMutex;
 #define PMUTEX_INIT {SRWLOCK_INIT, NULL}
 #else
 #include <pthread.h>
 typedef struct {
     pthread_mutex_t l;
-    void* tracy; /* the profiler's context for a named lock (pm_lock_announce), null otherwise */
+    void* _Atomic tracy; /* the profiler's context for a named lock (pm_lock_announce), null otherwise */
 } PMutex;
 #define PMUTEX_INIT {PTHREAD_MUTEX_INITIALIZER, NULL}
 #endif
@@ -80,9 +80,9 @@ int pc_wait(PCond* c, PMutex* m, int64_t timeout_ns);
    timeout_ns (negative: no limit), and may also return early for no reason; plat_wake_word wakes every thread waiting
    on w, plat_wake_word_one one of them (a lock's next owner, where waking them all has the rest wait again). The waker
    changes *w before it wakes them */
-void plat_wait_word(uint32_t* w, uint32_t v, int64_t timeout_ns);
-void plat_wake_word(uint32_t* w);
-void plat_wake_word_one(uint32_t* w);
+void plat_wait_word(_Atomic uint32_t* w, uint32_t v, int64_t timeout_ns);
+void plat_wake_word(_Atomic uint32_t* w);
+void plat_wake_word_one(_Atomic uint32_t* w);
 
 /* ---- threads */
 typedef void (*PThreadFn)(void* arg);
@@ -123,7 +123,7 @@ uint32_t plat_tid(void);
    pipeline: the crash report of a runtime thread prints it, as the place it gives for such a crash is only the
    library's. A line, cut at PLAT_THREAD_NOTE_SIZE - 1 bytes, kept until plat_thread_note_clear. Per thread */
 #define PLAT_THREAD_NOTE_SIZE 512
-void plat_thread_note(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
+[[gnu::format(printf, 1, 2)]] void plat_thread_note(const char* fmt, ...);
 void plat_thread_note_clear(void);
 /* the calling thread's note, "" without one */
 const char* plat_thread_note_get(void);

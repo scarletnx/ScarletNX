@@ -6,6 +6,7 @@
 #include "gnuabi/kernel/signals.h"
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdatomic.h>
 #ifndef _WIN32
 #include <pthread.h>
 #include <unistd.h>
@@ -55,7 +56,8 @@ static void syscall_entry(CPU* c, u32 immediate) {
             gnu_thread_drain(t);
             result = never_restarts(number) ? -GNU_ERESTARTNOHAND : -GNU_ERESTARTSYS;
         }
-        if (__atomic_load_n(&t->k.interrupt, __ATOMIC_SEQ_CST)) gnu_thread_drain(t); /* before the kernel looks */
+        if (atomic_load_explicit(&t->k.interrupt, memory_order_seq_cst))
+            gnu_thread_drain(t); /* before the kernel looks */
         int delivered = gnu_signal_deliver(&t->k, &result, args[0]);
         if (delivered == GNU_DELIVER_RESTART) continue;
         if (delivered == GNU_DELIVER_HANDLER) {
@@ -98,12 +100,12 @@ static void wait_event(CPU* c) { (void)c; }
    sent it */
 static void poll(CPU* c) {
     GnuThread* t = c->thread;
-    __atomic_store_n(&c->poll, 0, __ATOMIC_RELAXED);
-    if (__atomic_exchange_n(&t->sample, 0, __ATOMIC_RELAXED))
+    atomic_store_explicit(&c->poll, 0, memory_order_relaxed);
+    if (atomic_exchange_explicit(&t->sample, 0, memory_order_relaxed))
         fprintf(stderr, "[%u:%u] sample: pc 0x%llx lr 0x%llx sp 0x%llx x0 0x%llx x1 0x%llx\n",
                 gnu_process_of(t)->kernel.pid, t->k.tid, (unsigned long long)c->pc, (unsigned long long)c->x[30], (unsigned long long)c->x[31],
                 (unsigned long long)c->x[0], (unsigned long long)c->x[1]);
-    if (__atomic_load_n(&t->k.interrupt, __ATOMIC_SEQ_CST)) gnu_thread_drain(t);
+    if (atomic_load_explicit(&t->k.interrupt, memory_order_seq_cst)) gnu_thread_drain(t);
     if (gnu_signal_deliver(&t->k, NULL, 0) == GNU_DELIVER_HANDLER) resume(t);
 }
 const RtAPI gnu_rtapi = {syscall_entry, undefined,  hint, ticks, breakpoint,   fpcr,
@@ -123,8 +125,8 @@ static void* sampler(void* process) {
         gnu_mutex_lock(&p->kernel.lock);
         for (size_t i = 0; i < p->kernel.thread_count; i++) {
             GnuThread* t = p->kernel.threads[i]->runtime;
-            __atomic_store_n(&t->sample, 1, __ATOMIC_RELAXED);
-            __atomic_store_n(&t->cpu.poll, 1, __ATOMIC_RELAXED);
+            atomic_store_explicit(&t->sample, 1, memory_order_relaxed);
+            atomic_store_explicit(&t->cpu.poll, 1, memory_order_relaxed);
         }
         gnu_mutex_unlock(&p->kernel.lock);
     }

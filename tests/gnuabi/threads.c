@@ -4,23 +4,26 @@
    contend for, CLONE_CHILD_CLEARTID's wake at a thread's exit, the futex operations (WAIT, WAKE, WAIT_BITSET,
    CMP_REQUEUE, WAKE_OP, timeouts), and exit_group from a thread while the main thread sleeps. Exits 0 */
 #include "threading.h"
+#include <stdatomic.h>
 
-static u8 stacks[6][65536] __attribute__((aligned(16)));
-static volatile u32 lock_word, counter, ctid[6], ptid[6], tls_seen[6], requeue_word, requeue_target, woken;
+alignas(16) static u8 stacks[6][65536];
+static volatile u32 lock_word, counter, ctid[6], ptid[6], tls_seen[6], requeue_word, requeue_target;
+static volatile _Atomic u32 woken;
 static volatile u32 tids[6];
 
 static void lock(void) {
     /* 0 free, 1 taken, 2 taken with waiters (Drepper's mutex) */
+    volatile _Atomic u32* w = (volatile _Atomic u32*)&lock_word; /* the futex's word: plain, as threading.h's load */
     u32 c = 0;
-    if (__atomic_compare_exchange_n(&lock_word, &c, 1, 0, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) return;
-    if (c != 2) c = __atomic_exchange_n(&lock_word, 2, __ATOMIC_ACQUIRE);
+    if (atomic_compare_exchange_strong_explicit(w, &c, 1, memory_order_acquire, memory_order_relaxed)) return;
+    if (c != 2) c = atomic_exchange_explicit(w, 2, memory_order_acquire);
     while (c) {
         futex(&lock_word, 128 /* WAIT | PRIVATE */, 2, 0, 0, 0);
-        c = __atomic_exchange_n(&lock_word, 2, __ATOMIC_ACQUIRE);
+        c = atomic_exchange_explicit(w, 2, memory_order_acquire);
     }
 }
 static void unlock(void) {
-    if (__atomic_fetch_sub(&lock_word, 1, __ATOMIC_RELEASE) != 1) {
+    if (atomic_fetch_sub_explicit((volatile _Atomic u32*)&lock_word, 1, memory_order_release) != 1) {
         store(&lock_word, 0);
         futex(&lock_word, 129 /* WAKE | PRIVATE */, 1, 0, 0, 0);
     }
@@ -42,7 +45,7 @@ static int worker(u64 index) {
 static int requeued(u64 index) {
     (void)index;
     while (load(&requeue_word) == 0) futex(&requeue_word, 0, 0, 0, 0, 0);
-    __atomic_fetch_add(&woken, 1, __ATOMIC_SEQ_CST);
+    atomic_fetch_add_explicit(&woken, 1, memory_order_seq_cst);
     return 0;
 }
 

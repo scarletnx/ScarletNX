@@ -75,7 +75,7 @@ static int lone_lane_pass(GpuChannel* channel, u64 address, u64 cpu, u32 offset,
         if (snx_ld_le32(GP(cpu + 0x5000 + 4 * v)) != (v % 2 ? 2u : 1u)) wrong++, first = first < v ? first : v;
     if (!drew || count != LONE_POINTS || wrong)
         fprintf(stderr,
-                "lone lane, %s: drawn %d, %u vertices counted (expected %u), %u results wrong (first: vertex %u, %u)\n",
+                "lone lane, %s: drawn %d, %u vertices counted (expected %d), %u results wrong (first: vertex %u, %u)\n",
                 what, drew, count, LONE_POINTS, wrong, first,
                 first < LONE_POINTS ? snx_ld_le32(GP(cpu + 0x5000 + 4 * first)) : 0);
     CHECK(drew && count == LONE_POINTS && !wrong);
@@ -121,7 +121,7 @@ static int check_lone_lane(void) {
     channel->ds.bind.cb_addr[0][0] = 0;
     channel->ds.bind.cb_size[0][0] = 0;
     free(channel);
-    printf("PASS lone lane: a warp-aggregated atomic counted %u vertices and VOTE.ALL's branch kept each vertex's "
+    printf("PASS lone lane: a warp-aggregated atomic counted %d vertices and VOTE.ALL's branch kept each vertex's "
            "result, %s and as lane 0 alone\n",
            LONE_POINTS, has_vertex ? "with the device's vertex subgroups" : "on a device without them");
     return 0;

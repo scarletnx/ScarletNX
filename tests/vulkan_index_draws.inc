@@ -762,7 +762,7 @@ static int minmax_fragment_case(GpuChannel* channel, u64 target, u64 address) {
             if (!ok)
                 fprintf(stderr, "min/max %s: the %s of a texel of 0 and one of 1 reads red %u, not %u\n",
                         device ? "by the device's sampler" : "in a fragment program",
-                        reduction == 1 ? "least" : "greatest", first[0], reduction == 1 ? 0 : 255);
+                        reduction == 1 ? "least" : "greatest", first[0], reduction == 1 ? 0u : 255u);
         }
     }
     g_vk.feat12.samplerFilterMinmax = had;

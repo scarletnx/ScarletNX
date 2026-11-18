@@ -1,0 +1,80 @@
+# The checks that still have findings in the src/ and tests/ files a tree compiles (cmake/cppcheck.cmake): each
+# finding is shown, and one of these checks does not fail the target. A check brought to zero leaves this list
+# and fails the target from then on. Every finding was read; each group says why its checks stay.
+
+# Every build keeps assert (no -DNDEBUG, the tests add -UNDEBUG), so an assert's call or assignment always runs.
+assertWithSideEffect
+assignmentInAssert
+
+# A malloc or fopen a test does not check fails the test, which reports it; in src/ the code tests the NULL on a
+# path cppcheck does not follow, and hactool (src/nx/runtime/driver/hactool/) is its authors' code as it came.
+nullPointerOutOfMemory
+nullPointerArithmeticOutOfMemory
+nullPointerOutOfResources
+ctunullpointerOutOfMemory
+
+# False: a guard cppcheck does not follow (a count every caller keeps in range, a value written on every path
+# before its read, an index or divisor checked before), or a whole-program check (ctu) that matches functions of
+# different programs by their name.
+uninitvar
+legacyUninitvar
+uninitdata
+uninitMemberVar
+nullPointer
+ctunullpointer
+nullPointerRedundantCheck
+nullPointerArithmeticRedundantCheck
+nullPointerArithmetic
+arrayIndexOutOfBounds
+arrayIndexOutOfBoundsCond
+bufferAccessOutOfBounds
+pointerOutOfBoundsCond
+negativeIndex
+objectIndex
+zerodivcond
+invalidFunctionArg
+identicalInnerCondition
+oppositeInnerCondition
+autoVariables
+va_list_usedBeforeStarted
+
+# False: an out-parameter set again before the second free, and an fclose inside a call's argument, which
+# cppcheck 2.20 reads as a use after it.
+doubleFree
+deallocuse
+resourceLeak
+memleak
+leakReturnValNotUsed
+
+# Guest memory and host handles are addresses and integers by design: the casts between them are the point.
+dangerousTypeCast
+invalidPointerCast
+intToPointerCast
+CastAddressToIntegerAtReturn
+
+# False: an enum with no negative value (unsigned in Clang and GCC), a ?: of 0 and a u32 (a u32), and an
+# unsigned 1-bit field (promoted to int) given to printf; snprintf with an argument the format leaves unread;
+# hactool's own code.
+invalidPrintfArgType_uint
+invalidPrintfArgType_sint
+wrongPrintfScanfArgNum
+
+# False: assert(!"text") and CHECK(0 && "text") on purpose; a memcpy size from an element count (sizeof a /
+# sizeof *a); a declaration and a definition that name the same arguments differently; a sizeof inside an
+# initializer list, read as a statement.
+incorrectStringBooleanError
+sizeofDivisionMemfunc
+funcArgOrderDifferent
+constStatement
+
+# cppcheck reads the GLSL the C++ tests include (src/nx/gpu/texture, video): its shifts by 32 happen only with a
+# count past 32, and GLSL has no references to pass by.
+shiftTooManyBits
+passedByValue
+
+# C++: fsr2.cpp clears a struct of floats, whose all-zero bytes are 0.0f in IEEE 754.
+memsetClassFloat
+
+# cppcheck 2.20's own parse failures: an AST it could not build, a macro it could not expand.
+internalAstError
+unknownMacro

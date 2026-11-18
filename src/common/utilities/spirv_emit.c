@@ -16,7 +16,7 @@ uint32_t spv_emit_version(void) { return g_spirv_emit.version; }
 
 /* s at a capacity of at least need words: doubled from 512 (a small shader's section, so most grow once or never)
    until it holds them. Out of line, so the test that calls it stays small enough to be inlined everywhere */
-__attribute__((noinline, cold)) static void grow(SpvWords* s, size_t need) {
+[[gnu::noinline, gnu::cold]] static void grow(SpvWords* s, size_t need) {
     size_t cap = s->capacity ? s->capacity : 512;
     while (cap < need) {
         assert(cap <= SIZE_MAX / 2);
@@ -99,6 +99,11 @@ static size_t table_size(size_t count, size_t least) {
 #define KNOWN_LEAST         128u
 #define CONSTANTS_LEAST     256u
 #define NONUNIFORM_LEAST    64u
+/* an element of a texture table (spv_emit_table_element): the sampled image spv_emit_load makes of it */
+struct SpvSplit {
+    uint32_t id, sampled_type, images, image_index, samplers, sampler_index;
+};
+typedef struct SpvSplit SpvSplit;
 
 /* the slot of a known_slots of size slots to look for hash h from */
 static size_t known_slot(uint64_t h, size_t size) { return (size_t)(h ^ h >> 29) & (size - 1); }
@@ -175,6 +180,7 @@ void spv_emit_destroy(SpvEmitter* e) {
     free(e->nonuniform);
     free(e->constants);
     free(e->constant_ids);
+    free(e->splits);
     *e = (SpvEmitter){0};
 }
 
@@ -801,6 +807,77 @@ uint32_t spv_emit_sampler_image_array_ex(SpvEmitter* e, uint32_t scalar_type, ui
     return variable;
 }
 
+uint32_t spv_emit_image_table(SpvEmitter* e, uint32_t scalar_type, uint32_t u32_type, uint32_t set, uint32_t binding,
+                              uint32_t type, int array, int shadow, int multisample, uint32_t count,
+                              uint32_t* sampled_type) {
+    *sampled_type = sampled_image_type(e, scalar_type, type, array, shadow, multisample);
+    uint32_t length = spv_emit_constant_u32(e, u32_type, count);
+    uint32_t array_type = spv_emit_id(e);
+    EMIT(&e->types, SPV_OP_TYPE_ARRAY, array_type, image_of(e, *sampled_type), length);
+    uint32_t variable = spv_emit_id(e);
+    EMIT(&e->decorations, SPV_OP_DECORATE, variable, 34, set);     /* DescriptorSet */
+    EMIT(&e->decorations, SPV_OP_DECORATE, variable, 33, binding); /* Binding */
+    EMIT(&e->types, SPV_OP_VARIABLE, spv_emit_type_pointer(e, SPV_STORAGE_UNIFORM_CONSTANT, array_type), variable, 0);
+    return variable;
+}
+static uint32_t type_sampler(SpvEmitter* e) {
+    const uint32_t none = 0; /* no operands: a pointer all the same */
+    return known(e, SPV_OP_TYPE_SAMPLER, 1, &none, 0);
+}
+uint32_t spv_emit_sampler_table(SpvEmitter* e, uint32_t u32_type, uint32_t set, uint32_t binding, uint32_t count) {
+    uint32_t length = spv_emit_constant_u32(e, u32_type, count);
+    uint32_t array_type = spv_emit_id(e);
+    EMIT(&e->types, SPV_OP_TYPE_ARRAY, array_type, type_sampler(e), length);
+    uint32_t variable = spv_emit_id(e);
+    EMIT(&e->decorations, SPV_OP_DECORATE, variable, 34, set);     /* DescriptorSet */
+    EMIT(&e->decorations, SPV_OP_DECORATE, variable, 33, binding); /* Binding */
+    EMIT(&e->types, SPV_OP_VARIABLE, spv_emit_type_pointer(e, SPV_STORAGE_UNIFORM_CONSTANT, array_type), variable, 0);
+    return variable;
+}
+/* the entry of id in the elements (it or the free one where it would go) */
+static size_t split_slot(const SpvSplit* t, size_t capacity, uint32_t id) {
+    size_t i = (size_t)((id * 0x9e3779b1u) >> 8) & (capacity - 1);
+    while (t[i].id && t[i].id != id) i = (i + 1) & (capacity - 1);
+    return i;
+}
+static const SpvSplit* split_find(const SpvEmitter* e, uint32_t id) {
+    const SpvSplit* s = &e->splits[split_slot(e->splits, e->split_mask + 1, id)];
+    return s->id == id ? s : NULL;
+}
+uint32_t spv_emit_table_element(SpvEmitter* e, uint32_t sampled_type, uint32_t images, uint32_t image_index,
+                                uint32_t samplers, uint32_t sampler_index) {
+    size_t size = e->split_count ? e->split_mask + 1 : 0;
+    size_t grown = table_size(e->split_count + 1, NONUNIFORM_LEAST);
+    if (grown != size) {
+        SpvSplit* t = (SpvSplit*)calloc(grown, sizeof *t);
+        if (!t) abort();
+        for (size_t i = 0; i < size; i++)
+            if (e->splits[i].id) t[split_slot(t, grown, e->splits[i].id)] = e->splits[i];
+        free(e->splits);
+        e->splits = t;
+        e->split_mask = grown - 1;
+    }
+    uint32_t id = spv_emit_id(e);
+    e->splits[split_slot(e->splits, grown, id)] =
+        (SpvSplit){id, sampled_type, images, image_index, samplers, sampler_index};
+    e->split_count++;
+    return id;
+}
+static uint32_t split_load(SpvEmitter* e, uint32_t result_type, const SpvSplit* s) {
+    const SpvSplit x = *s; /* the table may grow below */
+    const uint32_t image_type = image_of(e, x.sampled_type), sampler_type = type_sampler(e);
+    uint32_t image_ptr = spv_emit_id(e), sampler_ptr = spv_emit_id(e);
+    EMIT(&e->functions, SPV_OP_ACCESS_CHAIN, spv_emit_type_pointer(e, SPV_STORAGE_UNIFORM_CONSTANT, image_type),
+         image_ptr, x.images, x.image_index);
+    EMIT(&e->functions, SPV_OP_ACCESS_CHAIN, spv_emit_type_pointer(e, SPV_STORAGE_UNIFORM_CONSTANT, sampler_type),
+         sampler_ptr, x.samplers, x.sampler_index);
+    uint32_t image = spv_emit_id(e), sampler = spv_emit_id(e), id = spv_emit_id(e);
+    EMIT(&e->functions, SPV_OP_LOAD, image_type, image, image_ptr);
+    EMIT(&e->functions, SPV_OP_LOAD, sampler_type, sampler, sampler_ptr);
+    EMIT(&e->functions, SPV_OP_SAMPLED_IMAGE, result_type, id, image, sampler);
+    return id;
+}
+
 /* the element index of a texture array, a pointer the sampling functions take in place of a texture variable */
 uint32_t spv_emit_sampler_array_element(SpvEmitter* e, uint32_t sampled_type, uint32_t array_variable, uint32_t index) {
     uint32_t id = spv_emit_id(e);
@@ -843,6 +920,8 @@ uint32_t spv_emit_phi2(SpvEmitter* e, uint32_t result_type, uint32_t a, uint32_t
 }
 
 uint32_t spv_emit_load(SpvEmitter* e, uint32_t result_type, uint32_t pointer) {
+    const SpvSplit* split = e->split_count ? split_find(e, pointer) : NULL;
+    if (split) return split_load(e, result_type, split);
     uint32_t id = spv_emit_id(e);
     EMIT(&e->functions, SPV_OP_LOAD, result_type, id, pointer);
     if (e->nonuniform_count && is_nonuniform(e, pointer)) nonuniform(e, id);
@@ -1443,6 +1522,28 @@ uint32_t spv_emit_umul_high_u32(SpvEmitter* e, uint32_t u32_type, uint32_t left,
 void spv_emit_store(SpvEmitter* e, uint32_t pointer, uint32_t value) {
     EMIT(&e->functions, SPV_OP_STORE, pointer, value);
 }
+uint32_t spv_emit_address_pointer(SpvEmitter* e, uint32_t pointee_type, uint32_t address) {
+    spv_emit_capability(e, SPV_CAPABILITY_PHYSICAL_STORAGE_BUFFER_ADDRESSES);
+    e->physical_addressing = 1;
+    uint32_t id = spv_emit_id(e);
+    EMIT(&e->functions, SPV_OP_CONVERT_U_TO_PTR,
+         spv_emit_type_pointer(e, SPV_STORAGE_PHYSICAL_STORAGE_BUFFER, pointee_type), id, address);
+    return id;
+}
+uint32_t spv_emit_pointer_address(SpvEmitter* e, uint32_t u64_type, uint32_t pointer) {
+    uint32_t id = spv_emit_id(e);
+    EMIT(&e->functions, SPV_OP_CONVERT_PTR_TO_U, u64_type, id, pointer);
+    return id;
+}
+uint32_t spv_emit_load_aligned(SpvEmitter* e, uint32_t result_type, uint32_t pointer, uint32_t alignment,
+                               int volatile_access) {
+    uint32_t id = spv_emit_id(e);
+    EMIT(&e->functions, SPV_OP_LOAD, result_type, id, pointer, volatile_access ? 0x3u : 0x2u, alignment); /* Aligned */
+    return id;
+}
+void spv_emit_store_aligned(SpvEmitter* e, uint32_t pointer, uint32_t value, uint32_t alignment, int volatile_access) {
+    EMIT(&e->functions, SPV_OP_STORE, pointer, value, volatile_access ? 0x3u : 0x2u, alignment); /* Aligned */
+}
 uint32_t spv_emit_load_nonprivate(SpvEmitter* e, uint32_t result_type, uint32_t pointer) {
     if (!e->vulkan_memory_model) return spv_emit_load(e, result_type, pointer);
     uint32_t id = spv_emit_id(e);
@@ -1755,7 +1856,7 @@ uint32_t* spv_emit_finish(const SpvEmitter* e, size_t* word_count) {
     if (e->imports.count) memcpy(out + p, e->imports.words, e->imports.count * sizeof(uint32_t));
     p += e->imports.count;
     out[p++] = (3u << 16) | SPV_OP_MEMORY_MODEL;
-    out[p++] = 0; /* Logical */
+    out[p++] = e->physical_addressing ? 5348u : 0u; /* PhysicalStorageBuffer64, Logical */
     out[p++] = e->vulkan_memory_model ? 3 : 1; /* Vulkan, GLSL450 */
     for (size_t i = 3; i < sizeof sections / sizeof sections[0]; i++) {
         if (sections[i]->count) memcpy(out + p, sections[i]->words, sections[i]->count * sizeof(uint32_t));

@@ -13,7 +13,7 @@
 int snx_hac_printf(const char *format, ...);
 int snx_hac_fprintf(FILE *file, const char *format, ...);
 size_t snx_hac_fwrite(const void *data, size_t size, size_t count, FILE *file);
-_Noreturn void snx_hac_exit(int status);
+[[noreturn]] void snx_hac_exit(int status);
 
 #define printf snx_hac_printf
 #define fprintf snx_hac_fprintf

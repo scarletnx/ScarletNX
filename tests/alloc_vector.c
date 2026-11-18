@@ -29,6 +29,9 @@ const SnxModule* g_mod = &g_module;
 static int g_original;
 
 u64 kernel_find_symbol_exact(const char* name) { return !strcmp(name, "_ZdlPv") ? DELETE : 0; }
+/* alloc_new_shape's symbols, which no case here asks */
+int kernel_symbol(u32 i, u64* addr, const char** name) { return (void)i, (void)addr, (void)name, 0; }
+u64 kernel_symbol_size(u32 i) { return (void)i, 0; }
 void hook_run_original(CPU* c, u64 addr) {
     (void)c, (void)addr;
     g_original++;
@@ -43,11 +46,11 @@ int mem_map(u64 addr, u64 size, u32 state, u32 perm) { return (void)addr, (void)
 int mem_unmap(u64 addr, u64 size) { return (void)addr, (void)size, 0; }
 
 /* the instructions, each with its branch's offset from itself */
-static u32 b(i64 off) { return 0x14000000u | (u32)(off >> 2 & 0x3FFFFFF); }
-static u32 bl(i64 off) { return 0x94000000u | (u32)(off >> 2 & 0x3FFFFFF); }
-static u32 cbz(i64 off) { return 0xB4000000u | (u32)(off >> 2 & 0x7FFFF) << 5; }
-static u32 bcond(int cond, i64 off) { return 0x54000000u | (u32)(off >> 2 & 0x7FFFF) << 5 | (u32)cond; }
-static u32 tbz(i64 off) { return 0x36000000u | (u32)(off >> 2 & 0x3FFF) << 5; }
+static u32 b(i64 off) { return 0x14000000u | (u32)((u64)off >> 2 & 0x3FFFFFF); }
+static u32 bl(i64 off) { return 0x94000000u | (u32)((u64)off >> 2 & 0x3FFFFFF); }
+static u32 cbz(i64 off) { return 0xB4000000u | (u32)((u64)off >> 2 & 0x7FFFF) << 5; }
+static u32 bcond(int cond, i64 off) { return 0x54000000u | (u32)((u64)off >> 2 & 0x7FFFF) << 5 | (u32)cond; }
+static u32 tbz(i64 off) { return 0x36000000u | (u32)((u64)off >> 2 & 0x3FFF) << 5; }
 #define RET 0xD65F03C0u
 #define NOP 0xD503201Fu /* the loads, stores and arithmetic, which the check doesn't read */
 #define BLR 0xD63F0100u /* blr x8 */

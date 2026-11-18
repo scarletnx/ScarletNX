@@ -284,7 +284,7 @@ static int bench_capture_tiles(void) {
             qsort(times[method], 8, sizeof(double), capture_bench_double_compare);
             double median = (times[method][3] + times[method][4]) * 0.5;
             printf("GPU_TIMESTAMP_BENCH workload=capture_tiles_%s method=%s operations=%u gpu_ns=%.0f min_gpu_ns=%.0f max_gpu_ns=%.0f samples=8 exact=1\n",
-                   names[workload], method == 2 ? "adaptive_full" : method ? "tiled" : "full_grid", workload == 1 ? 4096 : workload == 3 ? 0 : 1,
+                   names[workload], method == 2 ? "adaptive_full" : method ? "tiled" : "full_grid", workload == 1 ? 4096u : workload == 3 ? 0u : 1u,
                    median, times[method][0], times[method][7]);
         }
     }

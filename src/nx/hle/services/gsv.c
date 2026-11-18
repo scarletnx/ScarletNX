@@ -45,6 +45,7 @@ static int gsv_camera_none(SvcObj* self, IpcCtx* c) {
 #include "hle/services/gsv.swipc.inc"
 #include "hle/services/nvdrv.swipc.h"
 #include "nx/hle/services/nvdrv.h"
+#include <stdatomic.h>
 
 SvcObj* new_gsv_session(void) {
     return nn_gsv_UserSession_new();
@@ -646,7 +647,7 @@ static void vi2_present_cb(void* arg) {
     i32 crop[4] = {0, 0, (i32)p->w, (i32)p->h};
     g_renderer->present_buffer(p->cpu, p->w, p->h, p->pitch, 3 /* block linear */, p->bhl, 1 /* RGBA8888 */, crop, 0,
                                0, 0, 0);
-    __atomic_add_fetch(&g_frames, 1, __ATOMIC_RELAXED);
+    atomic_fetch_add_explicit(&g_frames, 1, memory_order_relaxed);
     if (p->client) {
         Vi2Client* c = &vi2_clients[p->client - 1];
         c->available |= 1ull << p->slot;
@@ -823,7 +824,7 @@ static int nn_vi2_IVi2Session_SetDisplayRefreshRateCapability(SvcObj* self, cons
         LOG_LIMIT(4, "gsv: the game turned 120 Hz on, which the TV doesn't take: the display stays at 60 Hz\n");
     if (hz == vi_refresh_hz()) R_SUCCEED();
     LOG("gsv: the display runs at %u Hz, as the game turned 120 Hz %s\n", hz, hz == 120 ? "on" : "off");
-    __atomic_store_n(&g_vi_refresh_hz, (int)hz, __ATOMIC_RELAXED);
+    atomic_store_explicit(&g_vi_refresh_hz, (int)hz, memory_order_relaxed);
     for (i = 0; i < 8; i++)
         if (vi2_group_refresh[i] && vi2_group_events[i]) ev_signal(vi2_group_events[i]);
     R_SUCCEED();

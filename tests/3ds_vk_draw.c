@@ -288,7 +288,7 @@ static void compare(const Scene* s, const unsigned char* sw, const unsigned char
             bool wrong = e > (dbpp == 2 ? 64u : 16384u) || stencil;
             if (wrong && depth_off < 4)
                 printf("    depth at (%u, %u): the reference's 0x%06x stencil %u, the GPU's 0x%06x stencil %u\n", i % W,
-                       i / W, a, dbpp == 4 ? sw_depth[i * 4 + 3] : 0, b, dbpp == 4 ? gpu_depth[i * 4 + 3] : 0);
+                       i / W, a, dbpp == 4 ? sw_depth[i * 4 + 3] : 0u, b, dbpp == 4 ? gpu_depth[i * 4 + 3] : 0u);
             depth_off += wrong;
         }
     }

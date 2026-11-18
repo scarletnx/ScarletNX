@@ -6,8 +6,8 @@
    freestanding (-fropi: no relocations at run time), no game assets */
 typedef unsigned int u32;
 typedef unsigned long long u64;
-#define NOINLINE __attribute__((noinline))
-#define THUMB    __attribute__((target("thumb"), noinline))
+#define NOINLINE [[gnu::noinline]]
+#define THUMB    [[gnu::target("thumb"), gnu::noinline]]
 
 static u32 length(const char* s) {
     u32 n = 0;

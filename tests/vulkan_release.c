@@ -68,7 +68,7 @@ int vk_written_since(const u8* host, u64 len, u32 since) { /* no write tracking 
     return -1;
 }
 
-int g_gpu_releases;
+_Atomic int g_gpu_releases;
 static unsigned lock_depth, landing_calls, payload_writes, submits, query_reads, events_signaled;
 static int events_due;
 static u64 next_compute, next_graphics = 1, waited_compute, waited_graphics;
@@ -143,6 +143,7 @@ u32 syncpt_read(u32 id) { return id < 128 ? completed[id] : 0; }
 /* under vk_lock, so the events it reaches wait for vk_unlock (memory/own.c's traps are answered under vk_lock) */
 /* the GPU mirror's pages landed submits wrote, not yet GPU-owned: no release may let the game read them */
 static int mirror_unpublished;
+void gpu_kick_polls(void) {}
 void syncpt_add_quiet(u32 id, u32 n) {
     assert(lock_depth && vk_result_landing());
     assert(!mirror_unpublished);

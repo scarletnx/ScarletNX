@@ -14,6 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <stdatomic.h>
 
 #if defined(SNX_TRACY)
 #include <SDL3/SDL_process.h>
@@ -26,11 +27,11 @@
 #define SNX_TRACY_OFF     0 /* not started */
 #define SNX_TRACY_ON      1
 #define SNX_TRACY_STOPPED 2 /* shut down, for good */
-static int g_tracy_state;
-static int g_tracy_pending;
+static _Atomic int g_tracy_state;
+static _Atomic int g_tracy_pending;
 /* zones wanted deeper than SNX_TRACY_ZONE_MAX: dropped rather than leaked, and counted so a hole in a trace
    where the innermost work should be says it was this */
-static uint32_t g_tracy_dropped;
+static _Atomic uint32_t g_tracy_dropped;
 typedef struct {
     TracyCZoneCtx zones[SNX_TRACY_ZONE_MAX];
     int zone_depth;
@@ -79,17 +80,17 @@ static void tracy_plots_send(void);
    gray sample zones, which with JIT'd guest code and the drivers' own threads (the NVIDIA helpers', MangoHud's) reads
    as a wall of [unknown]; the instrumented zones alone don't, so the sampler is off unless the trace wants the flame
    graphs. */
-static int g_tracy_sampling;
+static _Atomic int g_tracy_sampling;
 static void tracy_sampling_start(void) {
     /* Tracy 0.15.0 starts its system trace (the OS's context switches, and the sampled stacks with it) from
        BeginSamplingProfiling, which this build makes manual. Both settings ask for that one call; without it the
        context-switch lanes stay empty even though the library can capture them. */
     if (!g_settings.tracy_sampling && !g_settings.tracy_context_switches) return;
-    if (__atomic_exchange_n(&g_tracy_sampling, 1, __ATOMIC_ACQ_REL)) return;
+    if (atomic_exchange_explicit(&g_tracy_sampling, 1, memory_order_acq_rel)) return;
     if (TracyCBeginSamplingProfiling()) LOG("tracy: the stack sampler and the OS's context switches are on\n");
 }
 static void tracy_sampling_stop(void) {
-    if (!__atomic_exchange_n(&g_tracy_sampling, 0, __ATOMIC_ACQ_REL)) return;
+    if (!atomic_exchange_explicit(&g_tracy_sampling, 0, memory_order_acq_rel)) return;
     TracyCEndSamplingProfiling();
 }
 
@@ -241,15 +242,15 @@ static const PmTracy g_pm_tracy_snx = {pm_tracy_make, pm_tracy_free,   pm_tracy_
 static void tracy_start_client(void) {
     char info[512];
     int n;
-    if (__atomic_load_n(&g_tracy_state, __ATOMIC_ACQUIRE) != SNX_TRACY_OFF) return;
+    if (atomic_load_explicit(&g_tracy_state, memory_order_acquire) != SNX_TRACY_OFF) return;
     ___tracy_startup_profiler();
-    __atomic_store_n(&g_tracy_state, SNX_TRACY_ON, __ATOMIC_RELEASE);
+    atomic_store_explicit(&g_tracy_state, SNX_TRACY_ON, memory_order_release);
     pm_tracy_register(&g_pm_tracy_snx); /* safe again: each lock keeps its single context */
     n = snprintf(info, sizeof info, "%s\n%s", snx_build_info(), g_tracy_title);
-    __atomic_add_fetch(&g_tracy_pending, 1, __ATOMIC_ACQ_REL);
+    atomic_fetch_add_explicit(&g_tracy_pending, 1, memory_order_acq_rel);
     TracyCSetThreadName("main");
     if (n > 0) TracyCAppInfo(info, (size_t)(n < (int)sizeof info ? n : (int)sizeof info - 1));
-    __atomic_sub_fetch(&g_tracy_pending, 1, __ATOMIC_ACQ_REL);
+    atomic_fetch_sub_explicit(&g_tracy_pending, 1, memory_order_acq_rel);
     if (g_opt_tracy_capture)
         LOG("tracy: profiling this run to its capture\n");
     else
@@ -297,7 +298,7 @@ static void tracy_capture_connected(void) {
 void snx_tracy_capture_now(void) {
     int status = 0, state;
     tracy_capture_lock();
-    state = __atomic_load_n(&g_tracy_state, __ATOMIC_ACQUIRE);
+    state = atomic_load_explicit(&g_tracy_state, memory_order_acquire);
     if (state == SNX_TRACY_STOPPED) goto out;
     if (state == SNX_TRACY_OFF) {
         tracy_port_setup(1); /* before the client reads it, which is when it starts */
@@ -325,14 +326,14 @@ out:
 
 /* 1 while the client's emissions are allowed: closed before it starts and, again, before it shuts down. tracy_conn
    reads it so TracyCIsConnected is never reached while the client has no data to read (an assert). */
-int snx_tracy_gate_open(void) { return __atomic_load_n(&g_tracy_state, __ATOMIC_ACQUIRE) == SNX_TRACY_ON; }
+int snx_tracy_gate_open(void) { return atomic_load_explicit(&g_tracy_state, memory_order_acquire) == SNX_TRACY_ON; }
 
 int snx_tracy_enter(void) {
     /* The count comes before the second gate read, and both are sequenced with the exchange shutdown closes it with,
        so a thread that is about to emit is either counted before shutdown looks or sees the gate closed. */
-    if (__atomic_load_n(&g_tracy_state, __ATOMIC_ACQUIRE) != SNX_TRACY_ON) return 0;
-    __atomic_add_fetch(&g_tracy_pending, 1, __ATOMIC_SEQ_CST);
-    if (__atomic_load_n(&g_tracy_state, __ATOMIC_SEQ_CST) != SNX_TRACY_ON) {
+    if (atomic_load_explicit(&g_tracy_state, memory_order_acquire) != SNX_TRACY_ON) return 0;
+    atomic_fetch_add_explicit(&g_tracy_pending, 1, memory_order_seq_cst);
+    if (atomic_load_explicit(&g_tracy_state, memory_order_seq_cst) != SNX_TRACY_ON) {
         snx_tracy_leave();
         return 0;
     }
@@ -342,7 +343,7 @@ int snx_tracy_enter(void) {
 void snx_tracy_leave(void) {
     /* Whenever the count reaches zero, wake whoever waits on it, whether or not shutdown has marked itself: a
        thread may read that mark before shutdown's store is visible and so not wake a waiter already blocking. */
-    if (__atomic_sub_fetch(&g_tracy_pending, 1, __ATOMIC_ACQ_REL) == 0) {
+    if ((atomic_fetch_sub_explicit(&g_tracy_pending, 1, memory_order_acq_rel) - 1) == 0) {
         pm_lock(&g_tracy_wait_lock);
         pc_broadcast(&g_tracy_wait_cond);
         pm_unlock(&g_tracy_wait_lock);
@@ -360,10 +361,10 @@ static void tracy_announce(void) {
 TracyCZoneCtx snx_tracy_zone_begin(const struct ___tracy_source_location_data* srcloc) {
     TracyCZoneCtx ctx = {0};
     uint64_t conn;
-    if (__atomic_load_n(&g_tracy_state, __ATOMIC_ACQUIRE) != SNX_TRACY_ON) return ctx;
+    if (atomic_load_explicit(&g_tracy_state, memory_order_acquire) != SNX_TRACY_ON) return ctx;
     /* No room to track a deeper zone: drop it rather than leak a begin. */
     if (t_tracy.zone_depth >= SNX_TRACY_ZONE_MAX) {
-        __atomic_add_fetch(&g_tracy_dropped, 1, __ATOMIC_RELAXED);
+        atomic_fetch_add_explicit(&g_tracy_dropped, 1, memory_order_relaxed);
         return ctx;
     }
     /* A thread not mirroring a connection asks at every zone, so one that makes few — the frontend's one a frame,
@@ -381,7 +382,7 @@ TracyCZoneCtx snx_tracy_zone_begin(const struct ___tracy_source_location_data* s
             tracy_announce();
         }
         if (TracyCIsConnected) /* the poll already pays for the count */
-            TracyCPlot("tracy dropped zones", (double)__atomic_load_n(&g_tracy_dropped, __ATOMIC_RELAXED));
+            TracyCPlot("tracy dropped zones", (double)atomic_load_explicit(&g_tracy_dropped, memory_order_relaxed));
         snx_tracy_leave();
         if (!t_tracy.attached) return ctx;
     }
@@ -826,7 +827,8 @@ void snx_tracy_shutdown(void) {
     snx_tracy_fiber_leave_all(); /* this thread's fibers, while the client can still hear their end */
     /* Close the gate, once and only on a running client; the exchange is sequenced with the counts, so a thread that
        passed it is already counted. */
-    if (!__atomic_compare_exchange_n(&g_tracy_state, &on, SNX_TRACY_STOPPED, 0, __ATOMIC_SEQ_CST, __ATOMIC_ACQUIRE))
+    if (!atomic_compare_exchange_strong_explicit(&g_tracy_state, &on, SNX_TRACY_STOPPED, memory_order_seq_cst,
+                                                 memory_order_acquire))
         return;
     tracy_sampling_stop();
     /* End this thread's nested zones, each releasing its own count. */
@@ -836,7 +838,7 @@ void snx_tracy_shutdown(void) {
     until = plat_ns() + 2000000000ull;
     for (;;) {
         i64 left;
-        if (!__atomic_load_n(&g_tracy_pending, __ATOMIC_ACQUIRE)) {
+        if (!atomic_load_explicit(&g_tracy_pending, memory_order_acquire)) {
             ___tracy_shutdown_profiler();
             tracy_capture_finish(1);
             return;
@@ -845,7 +847,7 @@ void snx_tracy_shutdown(void) {
         /* the bound is computed under the lock, right before the wait: a wait cannot be given a stale one and
            run past the deadline */
         left = (i64)(until - plat_ns());
-        if (left > 0 && __atomic_load_n(&g_tracy_pending, __ATOMIC_ACQUIRE))
+        if (left > 0 && atomic_load_explicit(&g_tracy_pending, memory_order_acquire))
             pc_wait(&g_tracy_wait_cond, &g_tracy_wait_lock, left);
         pm_unlock(&g_tracy_wait_lock);
         if (left <= 0) break;

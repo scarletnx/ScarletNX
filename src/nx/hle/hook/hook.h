@@ -171,7 +171,7 @@ typedef struct {
     u16 hook[HOOK_SITES];     /* its hook, in the generated table */
     u64 addr[HOOK_SITES];     /* the function's guest address */
     GuestFn orig[HOOK_SITES]; /* its recompiled code, which its slot held */
-    u8 stale[HOOK_SITES];     /* atomic: the game changed the function's code (a mod's patch), so orig is stale */
+    _Atomic u8 stale[HOOK_SITES]; /* atomic: the game changed the function's code (a mod's patch), so orig is stale */
     GuestFn fn[HOOK_SITES];   /* what its slot holds now: the hook's adapter, or verify mode's check */
     /* each site by its address, for the calls that find a site from it: site + 1 in the slot of the address's hash or
        in the first empty one after it, 0 in an empty slot */
@@ -179,18 +179,19 @@ typedef struct {
     /* the function's first 20 bytes at hook_install (fewer at the end of the code): the first 4, which a mod's hook
        writes over, are compared; all of them find the mod's trampoline */
     u32 head[HOOK_SITES][5];
-    u8 invalid[HOOK_SITES]; /* atomic: the game changed them, so the native hook is off (hook_restore) */
+    _Atomic u8 invalid[HOOK_SITES]; /* atomic: the game changed them, so the native hook is off (hook_restore) */
     u32 sdk[HOOK_SITES];    /* the SDK version of the module that exports it, which picks its ext_skyline hook */
     /* once invalidated: its ext_skyline hook's adapter and handler (NULL for none), and the mod's trampoline that
        adapter runs at, 0 until it first runs (hook_trampoline) */
-    GuestFn ext[HOOK_SITES];
+    _Atomic GuestFn ext[HOOK_SITES];
     const char* ext_handler[HOOK_SITES];
-    u64 tramp[HOOK_SITES];
-    u32 ext_count; /* atomic: the sites with an ext_skyline hook, so a miss looks for no trampoline in a game with none */
+    _Atomic u64 tramp[HOOK_SITES];
+    /* the sites with an ext_skyline hook, so a miss looks for no trampoline in a game with none */
+    _Atomic u32 ext_count;
     /* verify mode: which scratch slots are taken (bit i, atomic), and each site's calls that agreed, differed and
        were skipped (atomic) */
-    u32 verify_taken;
-    u64 agreed[HOOK_SITES], differed[HOOK_SITES], skipped[HOOK_SITES];
+    _Atomic u32 verify_taken;
+    _Atomic u64 agreed[HOOK_SITES], differed[HOOK_SITES], skipped[HOOK_SITES];
     /* a 32-bit game's hooked functions: each one's address (bit 0 set for Thumb) and the block its slot held, for
        hook_run_original_a32; and the symbols hook_install found declared only for other versions than their
        module's, for hook_missed_text: how many, and the first one's first entry in its table, its module and that

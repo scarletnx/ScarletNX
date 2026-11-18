@@ -11,6 +11,7 @@
 #include "nx/hle/hle.h"
 #include "nx/runtime/arm.h"
 #include "nx/runtime/clock.h"
+#include <stdatomic.h>
 
 /* The threads blocked in each kind of wait, in arrival order, linked by next_waiter. Each wakes the best priority
    first, the earliest among equals; a thread whose priority changes while it waits goes to the back, behind the
@@ -68,7 +69,7 @@ static u32 check_mapped(u64 addr, u64 size) {
     R_UNLESS(mem_user_mapped(addr, size), SNX_RC_SVC_INVALID_CURRENT_MEMORY);
     R_SUCCEED();
 }
-static u32* uword(u64 addr) { return (u32*)(void*)GP(addr); }
+static _Atomic u32* uword(u64 addr) { return (_Atomic u32*)(void*)GP(addr); }
 int g_lock_futex;
 static void futex_wake(u64 addr) {
     if (g_lock_futex) plat_wake_word_one(uword(addr));
@@ -76,11 +77,13 @@ static void futex_wake(u64 addr) {
 /* The words are little-endian, the guest's order: these take and give host numbers, and convert at the access (nothing
    on a little-endian host). A compare-and-swap's expected value is converted in and out, so a failed one gives the
    word's current value as a host number */
-static u32 word_load(const u32* p) { return snx_le32(__atomic_load_n(p, __ATOMIC_SEQ_CST)); }
-static void word_store(u32* p, u32 v) { __atomic_store_n(p, snx_le32(v), __ATOMIC_SEQ_CST); }
-static int word_cas(u32* p, u32* cur, u32 nv, int weak) {
+static u32 word_load(const _Atomic u32* p) { return snx_le32(atomic_load_explicit(p, memory_order_seq_cst)); }
+static void word_store(_Atomic u32* p, u32 v) { atomic_store_explicit(p, snx_le32(v), memory_order_seq_cst); }
+static int word_cas(_Atomic u32* p, u32* cur, u32 nv, int weak) {
     u32 e = snx_le32(*cur);
-    int ok = __atomic_compare_exchange_n(p, &e, snx_le32(nv), weak, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+    int ok =
+        weak ? atomic_compare_exchange_weak_explicit(p, &e, snx_le32(nv), memory_order_seq_cst, memory_order_seq_cst)
+             : atomic_compare_exchange_strong_explicit(p, &e, snx_le32(nv), memory_order_seq_cst, memory_order_seq_cst);
     *cur = snx_le32(e);
     return ok;
 }
@@ -114,9 +117,11 @@ void prio_set_base_nl(KThread* t, int prio) {
    (SIGNALED). The kernel's hand-off makes a thread the owner (g_host.thread.handed) until it leaves its SVC */
 enum { MWAIT_LOCK, MWAIT_LATE, MWAIT_SIGNALED };
 static u8* mwait_how(const KThread* t) { return &g_host.thread.mwait_how[kt_ix(t) - 1]; }
-static void handed_nl(const KThread* t) { __atomic_store_n(&g_host.thread.handed[kt_ix(t) - 1], 1, __ATOMIC_RELAXED); }
+static void handed_nl(const KThread* t) {
+    atomic_store_explicit(&g_host.thread.handed[kt_ix(t) - 1], 1, memory_order_relaxed);
+}
 void sync_owner_runs(const KThread* t) {
-    if (t) __atomic_store_n(&g_host.thread.handed[kt_ix(t) - 1], 0, __ATOMIC_RELAXED);
+    if (t) atomic_store_explicit(&g_host.thread.handed[kt_ix(t) - 1], 0, memory_order_relaxed);
 }
 /* t waits for owner to hand over the mutex at t->wait_addr */
 static void mutex_wait_nl(KThread* owner, KThread* t) {
@@ -203,8 +208,9 @@ u32 svc_arbitrate_lock(KThread* t, u32 owner, u64 addr, u32 tag) {
     t->wait_tag = tag;
     t->wait_svc = WAIT_SVC_LOCK;
     mutex_wait_nl((KThread*)o, t);
-    *mwait_how(t) =
-        __atomic_load_n(&g_host.thread.handed[kt_ix((KThread*)o) - 1], __ATOMIC_RELAXED) ? MWAIT_LATE : MWAIT_LOCK;
+    *mwait_how(t) = atomic_load_explicit(&g_host.thread.handed[kt_ix((KThread*)o) - 1], memory_order_relaxed)
+                        ? MWAIT_LATE
+                        : MWAIT_LOCK;
     sleep_nl(t, -1); /* until it is handed the mutex: nothing cancels this wait */
     r = (u32)t->wait_result;
     klock_unlock();
@@ -231,7 +237,8 @@ u32 svc_arbitrate_unlock(u64 addr) {
 /* ============================================================ condition variables */
 /* Eden's KConditionVariable::SignalImpl: a signaled waiter takes its mutex if it is free, or waits for its owner */
 static void cv_take_mutex_nl(KThread* w) {
-    u32 *p, old, nv;
+    _Atomic u32* p;
+    u32 old, nv;
     KObj* o;
     if (check_mapped(w->wait_addr, 4)) { /* its mutex's page went while it waited */
         wake(w, SNX_RC_SVC_INVALID_CURRENT_MEMORY);
@@ -341,7 +348,7 @@ static u32 addr_finish_nl(KThread* t, int woke) {
    console checks the address, then its alignment (8 for type 3), then the type. A type 3 waiter waits on addr as the
    others do, so any SignalToAddress on addr wakes it */
 u32 svc_wait_addr(KThread* t, u64 addr, u32 type, i64 value, i64 timeout) {
-    u32* p;
+    _Atomic u32* p;
     u32 cur;
     u32 r;
     int unmet;
@@ -355,7 +362,7 @@ u32 svc_wait_addr(KThread* t, u64 addr, u32 type, i64 value, i64 timeout) {
     p = uword(addr);
     pm_lock(&g_host.kernel.klock);
     if (type == 3)
-        unmet = (i64)snx_le64(__atomic_load_n((u64*)(void*)GP(addr), __ATOMIC_SEQ_CST)) != value;
+        unmet = (i64)snx_le64(atomic_load_explicit((_Atomic u64*)(void*)GP(addr), memory_order_seq_cst)) != value;
     else {
         cur = word_load(p);
         if (type == 1)
@@ -387,7 +394,7 @@ u32 svc_signal_addr(u64 addr, u32 type, i32 value, i32 count) {
     KThread* w;
     u32* l;
     i32 n = 0;
-    u32* p;
+    _Atomic u32* p;
     R_TRY(check_word(addr));
     R_UNLESS(type <= 2, SNX_RC_SVC_INVALID_ENUM_VALUE);
     if (type) R_TRY(check_mapped(addr, 4)); /* a plain signal reads nothing */

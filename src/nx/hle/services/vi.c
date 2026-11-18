@@ -18,6 +18,7 @@
 #include "nx/runtime/options.h" /* g_opt_fps */
 
 #include "hle/services/vi.swipc.inc"
+#include <stdatomic.h>
 
 /* android::status_t */
 #define BQ_OK            0
@@ -62,8 +63,9 @@ enum { SLOT_FREE, SLOT_DEQUEUED, SLOT_QUEUED };
 static int vi_layer_open(u64 layer_id, int first) {
     int i, free_i = -1;
     for (i = 0; i < VI_LAYERS; i++) {
-        if (g_hle.vi.layer[i].layer_id == layer_id) return i + 1;
-        if (!g_hle.vi.layer[i].layer_id && free_i < 0 && i >= first) free_i = i;
+        if (atomic_load_explicit(&g_hle.vi.layer[i].layer_id, memory_order_relaxed) == layer_id) return i + 1;
+        if (!atomic_load_explicit(&g_hle.vi.layer[i].layer_id, memory_order_relaxed) && free_i < 0 && i >= first)
+            free_i = i;
     }
     if (free_i < 0) return 0;
     if (!g_hle.vi.layer[free_i].event) {
@@ -71,8 +73,9 @@ static int vi_layer_open(u64 layer_id, int first) {
         ev_signal(g_hle.vi.layer[free_i].event);
     }
     /* the interval and the id atomic: vi_vsync_period reads them without the lock */
-    __atomic_store_n(&g_hle.vi.layer[free_i].interval, 1, __ATOMIC_RELAXED); /* until its first frame says another */
-    __atomic_store_n(&g_hle.vi.layer[free_i].layer_id, layer_id, __ATOMIC_RELAXED);
+    atomic_store_explicit(&g_hle.vi.layer[free_i].interval, 1,
+                          memory_order_relaxed); /* until its first frame says another */
+    atomic_store_explicit(&g_hle.vi.layer[free_i].layer_id, layer_id, memory_order_relaxed);
     g_hle.vi.layer[free_i].width = VI_WIDTH;
     g_hle.vi.layer[free_i].height = VI_HEIGHT;
     g_hle.vi.layer[free_i].format = 1; /* RGBA8888 */
@@ -86,10 +89,10 @@ static void vi_layer_close(u64 layer_id) {
     int i;
     for (i = 0; i < VI_LAYERS; i++) {
         ViLayer* l = &g_hle.vi.layer[i];
-        if (l->layer_id != layer_id) continue;
-        __atomic_store_n(&l->layer_id, 0, __ATOMIC_RELAXED);
+        if (atomic_load_explicit(&l->layer_id, memory_order_relaxed) != layer_id) continue;
+        atomic_store_explicit(&l->layer_id, 0, memory_order_relaxed);
         l->connected = 0;
-        __atomic_store_n(&l->interval, 1, __ATOMIC_RELAXED); /* not 0, which is a rate of its own */
+        atomic_store_explicit(&l->interval, 1, memory_order_relaxed); /* not 0, which is a rate of its own */
         l->max_buffer_count = 2;
         l->gen++;
         memset(l->slot, 0, sizeof l->slot);
@@ -100,7 +103,8 @@ static void vi_layer_close(u64 layer_id) {
     LOG_LIMIT(4, "vi: closing layer %llx, which isn't open\n", (unsigned long long)layer_id);
 }
 static ViLayer* vi_binder(i32 binder_id) {
-    return binder_id >= 1 && binder_id <= VI_LAYERS && g_hle.vi.layer[binder_id - 1].layer_id
+    return binder_id >= 1 && binder_id <= VI_LAYERS &&
+                   atomic_load_explicit(&g_hle.vi.layer[binder_id - 1].layer_id, memory_order_relaxed)
                ? &g_hle.vi.layer[binder_id - 1]
                : NULL;
 }
@@ -268,13 +272,14 @@ static void vi_queue(ViLayer* l, int slot, const u8* in, ParcelOut* out) {
     /* the SDK's intervals are 0 to 4. 0 and less are also what frame rate mods ask for, made for the yuzu family's
        extension, where they are a multiple of 120 refreshes a second (vi_vsync_period) */
     interval = swap < VI_INTERVAL_MIN ? VI_INTERVAL_MIN : swap > 4 ? 4 : swap;
-    if (interval != l->interval) LOG_LIMIT(16, "vi: swap interval %d\n", interval);
+    if (interval != atomic_load_explicit(&l->interval, memory_order_relaxed))
+        LOG_LIMIT(16, "vi: swap interval %d\n", interval);
     if (memcmp(crop, s->crop, sizeof crop) || transform != s->transform)
         LOG_LIMIT(16, "vi: crop %d,%d to %d,%d, transform %u\n", crop[0], crop[1], crop[2], crop[3], transform);
     memcpy(s->crop, crop, sizeof crop);
     s->transform = transform;
     s->state = SLOT_QUEUED;
-    __atomic_store_n(&l->interval, interval, __ATOMIC_RELAXED);
+    atomic_store_explicit(&l->interval, interval, memory_order_relaxed);
     for (i = 0; i < VI_SLOTS; i++) pending += l->slot[i].state == SLOT_QUEUED;
     parcel_w32(out, l->width);
     parcel_w32(out, l->height);
@@ -314,7 +319,7 @@ static void vi_transact(ViLayer* l, u32 code, IpcBuf parcel, IpcBuf reply) {
     fence_none[0] = 0;
     pm_lock(&g_host.vi.lock);
     /* 0: the layer closed after vi_binder_call found it, and its queue is gone */
-    switch (l->layer_id ? code : 0) {
+    switch (atomic_load_explicit(&l->layer_id, memory_order_relaxed) ? code : 0) {
         case 0: status = BQ_NO_INIT; break;
         case BQ_REQUEST_BUFFER:
             slot = (i32)parcel_u32(&in);
@@ -340,7 +345,7 @@ static void vi_transact(ViLayer* l, u32 code, IpcBuf parcel, IpcBuf reply) {
             if (!l->slot[slot].has_buffer) status = BQ_NEEDS_REALLOC;
             parcel_w32(&out, (u32)slot);
             parcel_flat(&out, fence_none, VI_FENCE); /* the buffer was shown and freed: no fence to wait for */
-            interval = l->interval;
+            interval = atomic_load_explicit(&l->interval, memory_order_relaxed);
             dequeued = 1;
             break;
         case BQ_QUEUE_BUFFER:
@@ -750,10 +755,10 @@ static int nn_visrv_sf_IManagerDisplayService_GetDisplayModeChangedEvent(SvcObj*
    0 */
 u64 vi_vsync_period(void) {
     const ViLayer* l = &g_hle.vi.layer[VI_SHOWN];
-    int fps = __atomic_load_n(&g_opt_fps, __ATOMIC_RELAXED);
+    int fps = atomic_load_explicit(&g_opt_fps, memory_order_relaxed);
     if (fps != SNX_FPS_GAME) return 1000000000u / (u64)(fps > 0 ? fps : VI_NO_LIMIT_VSYNC_HZ);
-    i32 interval = __atomic_load_n(&l->interval, __ATOMIC_RELAXED);
-    if (!__atomic_load_n(&l->layer_id, __ATOMIC_RELAXED) || interval > 0) return 1000000000u / VI_REFRESH_HZ;
+    i32 interval = atomic_load_explicit(&l->interval, memory_order_relaxed);
+    if (!atomic_load_explicit(&l->layer_id, memory_order_relaxed) || interval > 0) return 1000000000u / VI_REFRESH_HZ;
     if (interval < VI_INTERVAL_MIN) interval = VI_INTERVAL_MIN;
     return 1000000000u / (VI_UNLOCKED_HZ * (u64)(1 - interval));
 }

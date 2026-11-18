@@ -235,7 +235,7 @@ typedef struct {
        free buffers for every clip, and a handle past the table would be written outside it */
     u32 nvh_free[NVMAP_HANDLES];
     u32 nvh_nfree;
-    u64* gmmu[NV_GMMU_L1]; /* gmmu[i] -> GMMU_L2_ENTRIES page entries (nvdrv.c's GMMU_PTE_*) */
+    _Atomic u64* _Atomic gmmu[NV_GMMU_L1]; /* gmmu[i] -> GMMU_L2_ENTRIES page entries (nvdrv.c's GMMU_PTE_*) */
     GMap* gmaps;
     u32 ngmaps, capgmaps;
     /* the GPU page table again as runs, sorted by GPU page and disjoint, changed with it (gmmu_map, gmmu_unmap: every
@@ -249,7 +249,7 @@ typedef struct {
     VaRange* vafree;
     u32 nvafree, capvafree;
     int va_ready; /* the free ranges hold the whole region at first (va_init) */
-    u32 syncpt[SYNCPT_IDS];
+    _Atomic u32 syncpt[SYNCPT_IDS];
     u32 syncpt_max[SYNCPT_IDS];
     u8 syncpt_used[SYNCPT_N];
     u8 syncpt_gpu[SYNCPT_N]; /* a GPU channel's: submissions promise its increments (syncpt_max), the GPU thread makes
@@ -264,9 +264,9 @@ typedef struct {
     u32 ctrl_evt_next;
     /* the event slots armed now, a bit each under nvev_lk, and the tables that have one: syncpt_add skips the scan of
        every slot while none is, which is the common case for a game that waits on none of them */
-    u64 armed_mask[NV_CTRL_TABLES];
+    _Atomic u64 armed_mask[NV_CTRL_TABLES];
     /* RFC #142 rule 1's exception, a summary read without the lock: 1 ns a syncpt_add, the 64 words of armed_mask 8 */
-    u64 armed_tables;
+    _Atomic u64 armed_tables;
     /* a game thread arms a slot while GPU and video threads run nv_events_check after their increments: syncpt_add's
        at once, syncpt_add_quiet's at the outermost vk_unlock, after vk_lock goes (syncpt_events). Arming clears the
        event first and does both in one hold: an increment between a separate arm and clear would signal and then
@@ -286,7 +286,9 @@ typedef struct {
        it, as a summary. Host state, as the GPU thread's queue is: a save state holds the GPU thread, so none is
        queued then */
     GLater* later;
-    u32 later_head, nlater, caplater, later_seq;
+    u32 later_head;
+    _Atomic u32 nlater;
+    u32 caplater, later_seq;
     PCond sync_cv;
     PMutex sync_lk;
     PMutex submit_lk; /* a submission's promise and its place in the GPU queue, in the same order */
@@ -294,9 +296,9 @@ typedef struct {
     /* nv_first_use's (device, ioctl) pairs, under seen_lock */
     PMutex seen_lock;
     /* the waits that blocked (syncpt_wait), and those whose time ran out first, both atomic: the profiler's rates */
-    u64 syncpt_waits;
+    _Atomic u64 syncpt_waits;
     char syncpt_pad[64];
-    u64 syncpt_timeouts;
+    _Atomic u64 syncpt_timeouts;
 } HostNvdrv;
 /* nvdrv's thread state, t_hle.nvdrv (hle.h's) */
 typedef struct {

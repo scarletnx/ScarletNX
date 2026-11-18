@@ -14,6 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <stdatomic.h>
 #if defined(_WIN32)
 #include <io.h>
 #else
@@ -30,26 +31,26 @@ _Thread_local PlatTls t_plat;
 /* Initialised statically: threads log from the first moments of the run, and a lazy init would race */
 static PMutex g_log_lock = PMUTEX_INIT;
 /* Everything below is written under g_log_lock. The few fields crash mode reads without it are accessed atomically */
-static FILE* g_log;        /* atomic for crash mode's reads */
+static FILE* _Atomic g_log; /* atomic for crash mode's reads */
 #if !defined(_WIN32)
-static int g_log_fd = -1; /* g_log's descriptor, for crash mode's write() */
+static _Atomic int g_log_fd = -1; /* g_log's descriptor, for crash mode's write() */
 #endif
 static int g_log_gave_up;  /* the log could not be created: the console has it all */
 static char g_early[EARLY_MAX]; /* lines from before the log exists, written at its top */
 static size_t g_early_len;
 static int g_early_full; /* a line did not fit: no more are kept, so the saved part has no gap */
-static u64 g_log_t0;     /* plat_ns() of the first line, atomic */
+static _Atomic u64 g_log_t0; /* plat_ns() of the first line, atomic */
 static char g_log_path[1400];
 static u64 g_log_size;       /* what the log holds, about (text mode's \r not counted): a cut when past log_max */
 static int g_log_cuts;       /* the cuts made; one that failed stops them */
 static long g_log_head = -1; /* the run's start a cut keeps, from the first: the line saying what went comes after it */
-static int g_log_full;       /* log_max in MiB from the first cut until log_full_take, atomic */
+static _Atomic int g_log_full; /* log_max in MiB from the first cut until log_full_take, atomic */
 /* written by every line, apart from the flag every line reads */
-static _Alignas(64) int g_mid_line; /* the last text written did not end its line, atomic */
-static _Alignas(64) int g_crashing; /* log_crash_mode was called, atomic */
+static _Alignas(64) _Atomic int g_mid_line; /* the last text written did not end its line, atomic */
+static _Alignas(64) _Atomic int g_crashing; /* log_crash_mode was called, atomic */
 
 void log_crash_mode(void) {
-    __atomic_store_n(&g_crashing, 1, __ATOMIC_SEQ_CST);
+    atomic_store_explicit(&g_crashing, 1, memory_order_seq_cst);
     t_plat.log_redirect = NULL;
 }
 
@@ -115,7 +116,7 @@ static void log_keep_run(const char* path, char* why, size_t size) {
 static void log_create_nl(void) {
     char path[1400], why[1700], out[LINE_MAX_ + 32], *full, *where;
     FILE* file;
-    if (g_log || g_log_gave_up || !g_mod) return;
+    if (atomic_load_explicit(&g_log, memory_order_relaxed) || g_log_gave_up || !g_mod) return;
     snprintf(path, sizeof path, "%s%s.log", g_statedir, g_exename);
     log_keep_run(path, why, sizeof why);
     file = fopen(path, "w");
@@ -144,9 +145,9 @@ static void log_create_nl(void) {
         free(full);
         fflush(file);
 #if !defined(_WIN32)
-        __atomic_store_n(&g_log_fd, fileno(file), __ATOMIC_RELEASE);
+        atomic_store_explicit(&g_log_fd, fileno(file), memory_order_release);
 #endif
-        __atomic_store_n(&g_log, file, __ATOMIC_RELEASE);
+        atomic_store_explicit(&g_log, file, memory_order_release);
     }
     g_early_full = 1; /* either way nothing more is kept */
 }
@@ -154,12 +155,12 @@ static void log_create_nl(void) {
 /* the "[seconds] " stamp when text starts a line, then the text, into out */
 static size_t log_compose(char* out, size_t cap, const char* text) {
     size_t n = 0, len = strlen(text);
-    u64 t0 = __atomic_load_n(&g_log_t0, __ATOMIC_RELAXED);
-    if (!__atomic_load_n(&g_mid_line, __ATOMIC_RELAXED)) {
+    u64 t0 = atomic_load_explicit(&g_log_t0, memory_order_relaxed);
+    if (!atomic_load_explicit(&g_mid_line, memory_order_relaxed)) {
         int w;
         if (!t0) {
             t0 = plat_ns();
-            __atomic_store_n(&g_log_t0, t0 ? t0 : 1, __ATOMIC_RELAXED);
+            atomic_store_explicit(&g_log_t0, t0 ? t0 : 1, memory_order_relaxed);
         }
         w = snprintf(out, cap, "[%7.2f] ", (double)(plat_ns() - t0) / 1e9);
         n = w > 0 && (size_t)w < cap ? (size_t)w : 0;
@@ -168,7 +169,7 @@ static size_t log_compose(char* out, size_t cap, const char* text) {
     memcpy(out + n, text, len);
     n += len;
     out[n] = 0;
-    if (len) __atomic_store_n(&g_mid_line, text[len - 1] != '\n', __ATOMIC_RELAXED);
+    if (len) atomic_store_explicit(&g_mid_line, text[len - 1] != '\n', memory_order_relaxed);
     return n;
 }
 
@@ -178,7 +179,7 @@ static void log_crash_write(const char* text) {
     size_t n = log_compose(out, sizeof out, text);
 #if defined(_WIN32)
     /* the report runs in an exception filter, on the thread that crashed; stdio's locks are recursive */
-    FILE* file = __atomic_load_n(&g_log, __ATOMIC_ACQUIRE);
+    FILE* file = atomic_load_explicit(&g_log, memory_order_acquire);
     (void)n;
     if (file) {
         fputs(out, file);
@@ -187,7 +188,7 @@ static void log_crash_write(const char* text) {
     fputs(text, stderr);
     fflush(stderr);
 #else
-    int fd = __atomic_load_n(&g_log_fd, __ATOMIC_ACQUIRE);
+    int fd = atomic_load_explicit(&g_log_fd, memory_order_acquire);
     ssize_t r;
     if (fd >= 0) r = write(fd, out, n);
     r = write(2, text, strlen(text));
@@ -210,16 +211,16 @@ static void log_cut_nl(long limit) {
     long size, head = 0, from, to, n;
     size_t got, i;
     int moved;
-    u64 t0 = __atomic_load_n(&g_log_t0, __ATOMIC_RELAXED);
+    u64 t0 = atomic_load_explicit(&g_log_t0, memory_order_relaxed);
     FILE* f;
-    fflush(g_log);
+    fflush(atomic_load_explicit(&g_log, memory_order_relaxed));
     f = fopen(g_log_path, "r+b");
     if (!f || fseek(f, 0, SEEK_END) || (size = ftell(f)) <= limit / 2) {
         if (!f) {
             g_log_cuts = -1;
             snprintf(mark, sizeof mark, "log: cannot cut %s past log_max=%ld MiB (%s): it grows on\n", g_log_path,
                      limit >> 20, strerror(errno));
-            fputs(mark, g_log);
+            fputs(mark, atomic_load_explicit(&g_log, memory_order_relaxed));
             fputs(mark, stderr);
         } else
             fclose(f);
@@ -267,15 +268,16 @@ static void log_cut_nl(long limit) {
         fputs(mark, stderr);
     }
     fclose(f);
-    fseek(g_log, 0, SEEK_END); /* the descriptor's offset too, which crash mode writes at */
+    fseek(atomic_load_explicit(&g_log, memory_order_relaxed), 0,
+          SEEK_END); /* the descriptor's offset too, which crash mode writes at */
     g_log_size = (u64)to;
     if (!moved)
-        fputs(mark, g_log);
+        fputs(mark, atomic_load_explicit(&g_log, memory_order_relaxed));
     else if (!g_log_cuts++)
-        __atomic_store_n(&g_log_full, (int)(limit >> 20), __ATOMIC_RELEASE);
+        atomic_store_explicit(&g_log_full, (int)(limit >> 20), memory_order_release);
 }
 
-int log_full_take(void) { return __atomic_exchange_n(&g_log_full, 0, __ATOMIC_ACQ_REL); }
+int log_full_take(void) { return atomic_exchange_explicit(&g_log_full, 0, memory_order_acq_rel); }
 
 void logf_(int lvl, const char* fmt, ...) {
     char text[LINE_MAX_], out[LINE_MAX_ + 32];
@@ -292,7 +294,7 @@ void logf_(int lvl, const char* fmt, ...) {
         fputs(text, t_plat.log_redirect);
         return;
     }
-    if (__atomic_load_n(&g_crashing, __ATOMIC_SEQ_CST)) {
+    if (atomic_load_explicit(&g_crashing, memory_order_seq_cst)) {
         log_crash_write(text);
         return;
     }
@@ -300,10 +302,10 @@ void logf_(int lvl, const char* fmt, ...) {
     pm_lock(&g_log_lock);
     log_create_nl();
     n = log_compose(out, sizeof out, text);
-    if (g_log) {
-        long limit = (long)__atomic_load_n(&g_settings.log_size_limit, __ATOMIC_RELAXED) << 20;
-        fputs(out, g_log);
-        fflush(g_log);
+    if (atomic_load_explicit(&g_log, memory_order_relaxed)) {
+        long limit = (long)atomic_load_explicit((_Atomic int*)&g_settings.log_size_limit, memory_order_relaxed) << 20;
+        fputs(out, atomic_load_explicit(&g_log, memory_order_relaxed));
+        fflush(atomic_load_explicit(&g_log, memory_order_relaxed));
         g_log_size += n;
         if (g_log_cuts >= 0 && g_log_size > (u64)limit) log_cut_nl(limit);
         if (lvl <= 1 || g_settings.log_level >= 2) {
@@ -325,22 +327,24 @@ void logf_(int lvl, const char* fmt, ...) {
 }
 
 void log_sync(void) {
-    if (__atomic_load_n(&g_crashing, __ATOMIC_SEQ_CST)) return; /* crash mode's lines skip stdio, and its locks */
+    if (atomic_load_explicit(&g_crashing, memory_order_seq_cst))
+        return; /* crash mode's lines skip stdio, and its locks */
     pm_lock(&g_log_lock);
-    if (g_log) fflush(g_log); /* logf_ flushed each line already */
+    if (atomic_load_explicit(&g_log, memory_order_relaxed))
+        fflush(atomic_load_explicit(&g_log, memory_order_relaxed)); /* logf_ flushed each line already */
     pm_unlock(&g_log_lock);
     fflush(stdout); /* line buffered, so only a line not ended yet waits in it */
     fflush(stderr);
 #if defined(_WIN32)
     {
         /* FlushFileBuffers, outside the lock as below; the log stays open to the end of the run */
-        FILE* file = __atomic_load_n(&g_log, __ATOMIC_ACQUIRE);
+        FILE* file = atomic_load_explicit(&g_log, memory_order_acquire);
         if (file) (void)_commit(_fileno(file));
     }
 #else
     {
         /* outside the lock, since the disk can take a while. A pipe or a terminal refuses, which is no matter */
-        int fd = __atomic_load_n(&g_log_fd, __ATOMIC_ACQUIRE);
+        int fd = atomic_load_explicit(&g_log_fd, memory_order_acquire);
         if (fd >= 0) (void)fsync(fd);
         (void)fsync(1);
         (void)fsync(2);
@@ -363,14 +367,14 @@ void fatal_code(int status, const char* fmt, ...) {
     snx_tracy_fatal(msg); /* the message pane says why the trace ends here */
 #if !defined(_WIN32)
     /* from the crash handler: a box or a flush could wait on a lock the crashed code holds */
-    if (__atomic_load_n(&g_crashing, __ATOMIC_SEQ_CST)) _exit(status);
+    if (atomic_load_explicit(&g_crashing, memory_order_seq_cst)) _exit(status);
 #endif
     /* everywhere, since a player started from a desktop entry sees no console and no log. A remake's too: a game
        an app or a shortcut started has no driver to recompile it, and one the driver started recompiles once
        the box is closed */
     /* Close the client so a connected capture writes the trace up to this point. From the crash handler there is
        neither time nor safety for it: _exit above leaves the socket, and the capture writes what it has. */
-    if (!__atomic_load_n(&g_crashing, __ATOMIC_SEQ_CST)) snx_tracy_shutdown();
+    if (!atomic_load_explicit(&g_crashing, memory_order_seq_cst)) snx_tracy_shutdown();
     win_fatal_box(msg);
     plat_exit_now(status);
 }

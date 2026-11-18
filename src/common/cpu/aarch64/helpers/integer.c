@@ -33,9 +33,9 @@ u32 snx_cas128(CPU* c, u64* p, u64 o0, u64 o1, u64 n0, u64 n1) {
 #if !defined(__SIZEOF_INT128__)
 #error "STXP's 16-byte compare-and-swap needs the compiler's 128-bit integer, which this compiler has not"
 #endif
-__extension__ typedef unsigned __int128 __attribute__((may_alias, aligned(16))) snx_u128;
+__extension__ typedef unsigned __int128 snx_u128 [[gnu::may_alias, gnu::aligned(16)]];
 #if defined(__x86_64__)
-__attribute__((target("cx16")))
+[[gnu::target("cx16")]]
 #endif
 u32 snx_cas128(CPU* c, u64* p, u64 o0, u64 o1, u64 n0, u64 n1) {
 #if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
@@ -47,7 +47,8 @@ u32 snx_cas128(CPU* c, u64* p, u64 o0, u64 o1, u64 n0, u64 n1) {
     snx_u128 expected = ((snx_u128)o1 << 64) | o0, desired = ((snx_u128)n1 << 64) | n0;
 #endif
     (void)c;
-    return __atomic_compare_exchange_n((snx_u128*)p, &expected, desired, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+    return atomic_compare_exchange_strong_explicit((_Atomic snx_u128*)p, &expected, desired, memory_order_seq_cst,
+                                                   memory_order_seq_cst);
 }
 #endif
 

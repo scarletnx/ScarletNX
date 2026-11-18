@@ -3,6 +3,7 @@
 /* RtAPI.cas128 (interface.h): STXP's 16-byte compare-and-swap, for the modules of the hosts that have no such
    instruction on every machine (RISC-V before Zacas, LoongArch before v1.1, PowerPC64 before POWER8, MIPS64) */
 #include "common/runtime/interface.h"
+#include <stdatomic.h>
 #if defined(__powerpc64__) && !defined(_ARCH_PWR8)
 #include <sys/auxv.h> /* AT_HWCAP2's PPC_FEATURE2_ARCH_2_07: whether the machine has lqarx/stqcx. */
 #endif
@@ -17,7 +18,7 @@
 #if !defined(__SIZEOF_INT128__)
 #error "STXP's 16-byte compare-and-swap needs the compiler's 128-bit integer, which this compiler has not"
 #endif
-__extension__ typedef unsigned __int128 __attribute__((may_alias, aligned(16))) snx_cas_u128;
+__extension__ typedef unsigned __int128 snx_cas_u128 [[gnu::may_alias, gnu::aligned(16)]];
 
 /* The host's instruction: amocas.q on RISC-V, LL.D and SC.Q on LoongArch, cmpxchg16b (this file is built with -mcx16,
    src/common/CMakeLists.txt: the attribute alone was inlined into a libatomic call), LDAXP/STLXP and lqarx/stqcx.
@@ -27,7 +28,7 @@ __extension__ typedef unsigned __int128 __attribute__((may_alias, aligned(16))) 
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Watomic-alignment"
 #if defined(__loongarch__)
-__attribute__((target("scq")))
+[[gnu::target("scq")]]
 #endif
 static uint32_t cas_native(uint64_t* p, uint64_t o0, uint64_t o1, uint64_t n0, uint64_t n1) {
 #if defined(__riscv)
@@ -73,10 +74,12 @@ static uint32_t cas_native(uint64_t* p, uint64_t o0, uint64_t o1, uint64_t n0, u
 #elif defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
     /* p[0] is the integer's high half on a big-endian host */
     snx_cas_u128 expected = ((snx_cas_u128)o0 << 64) | o1, desired = ((snx_cas_u128)n0 << 64) | n1;
-    return __atomic_compare_exchange_n((snx_cas_u128*)p, &expected, desired, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+    return atomic_compare_exchange_strong_explicit((snx_cas_u128*)p, &expected, desired, memory_order_seq_cst,
+                                                   memory_order_seq_cst);
 #else
     snx_cas_u128 expected = ((snx_cas_u128)o1 << 64) | o0, desired = ((snx_cas_u128)n1 << 64) | n0;
-    return __atomic_compare_exchange_n((snx_cas_u128*)p, &expected, desired, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+    return atomic_compare_exchange_strong_explicit((_Atomic snx_cas_u128*)p, &expected, desired, memory_order_seq_cst,
+                                                   memory_order_seq_cst);
 #endif
 }
 #pragma clang diagnostic pop
@@ -103,22 +106,23 @@ static int native_cas(void) {
 #endif
 
 #define CAS_STRIPES 64
-static uint32_t g_stripes[CAS_STRIPES]; /* a spin lock for each 16-byte stripe of the address space */
+static _Atomic uint32_t g_stripes[CAS_STRIPES]; /* a spin lock for each 16-byte stripe of the address space */
 
 uint32_t snx_runtime_cas128_locked(uint64_t* p, uint64_t o0, uint64_t o1, uint64_t n0, uint64_t n1) {
-    uint32_t* lock = &g_stripes[((uintptr_t)p >> 4) % CAS_STRIPES];
+    _Atomic uint64_t* w = (_Atomic uint64_t*)p; /* guest memory: atomic only here */
+    _Atomic uint32_t* lock = &g_stripes[((uintptr_t)p >> 4) % CAS_STRIPES];
     uint64_t seen = o0;
     uint32_t stored = 0;
-    while (__atomic_exchange_n(lock, 1, __ATOMIC_ACQUIRE))
-        while (__atomic_load_n(lock, __ATOMIC_RELAXED)) {}
-    if (__atomic_compare_exchange_n(p, &seen, n0, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST)) {
+    while (atomic_exchange_explicit(lock, 1, memory_order_acquire))
+        while (atomic_load_explicit(lock, memory_order_relaxed)) {}
+    if (atomic_compare_exchange_strong_explicit(w, &seen, n0, memory_order_seq_cst, memory_order_seq_cst)) {
         seen = o1;
-        stored = __atomic_compare_exchange_n(p + 1, &seen, n1, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+        stored = atomic_compare_exchange_strong_explicit(w + 1, &seen, n1, memory_order_seq_cst, memory_order_seq_cst);
         seen = n0;
         /* a compare-and-swap too: a store another thread made to the low half in between stays */
-        if (!stored) __atomic_compare_exchange_n(p, &seen, o0, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+        if (!stored) atomic_compare_exchange_strong_explicit(w, &seen, o0, memory_order_seq_cst, memory_order_seq_cst);
     }
-    __atomic_store_n(lock, 0, __ATOMIC_RELEASE);
+    atomic_store_explicit(lock, 0, memory_order_release);
     return stored;
 }
 
@@ -128,11 +132,11 @@ uint32_t snx_runtime_cas128(uint64_t* p, uint64_t o0, uint64_t o1, uint64_t n0, 
        releases before have no paired form */
     return snx_runtime_cas128_locked(p, o0, o1, n0, n1);
 #else
-    static int g_native = -1; /* unknown until the first call; threads that race to it find the same */
-    int native = __atomic_load_n(&g_native, __ATOMIC_RELAXED);
+    static _Atomic int g_native = -1; /* unknown until the first call; threads that race to it find the same */
+    int native = atomic_load_explicit(&g_native, memory_order_relaxed);
     if (native < 0) {
         native = native_cas();
-        __atomic_store_n(&g_native, native, __ATOMIC_RELAXED);
+        atomic_store_explicit(&g_native, native, memory_order_relaxed);
     }
     return native ? cas_native(p, o0, o1, n0, n1) : snx_runtime_cas128_locked(p, o0, o1, n0, n1);
 #endif

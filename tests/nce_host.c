@@ -122,7 +122,7 @@ u64 plat_ns(void) {
 
 static _Alignas(16) u8 g_exit_stack[0x2000];
 static int g_exit_after;
-static u64 g_exit_reads;
+static _Atomic u64 g_exit_reads;
 static void* exit_thread(void* p) {
     CPU* c = (CPU*)p;
     char why[240];
@@ -163,7 +163,7 @@ static void patch(u32 offset, size_t count) { patch_with(offset, count, &g_env);
 /* ---- the runtime's side ---- */
 
 static int g_hook_handles = 1; /* 1: the hook's handler answers, 0: the function's own code runs */
-static u64 g_reads;            /* the main thread's count of counter reads, which the stubs add to */
+static _Atomic u64 g_reads;    /* the main thread's count of counter reads, which the stubs add to */
 static u64 g_original;
 static u64 g_moved[4]; /* c's, t's, x's and q's own code, from their moved first words: hooks 8 to 11 */
 static unsigned g_preempts, g_traps;

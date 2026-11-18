@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 
 #define CHECK(x)                                                                                                       \
     do {                                                                                                               \
@@ -44,7 +45,7 @@ static const GnuKernelOps ops = {op_read, op_write, op_check, NULL, op_end, op_l
 
 static struct {
     GnuKernel kernel;
-    uint32_t next_tid;
+    _Atomic uint32_t next_tid;
 } g = {.next_tid = 100};
 
 typedef struct {
@@ -55,8 +56,9 @@ static _Thread_local TestThread* t_self;
 
 static void attach(void) {
     TestThread* t = calloc(1, sizeof *t);
-    CHECK(t && !gnu_kernel_thread_add(&g.kernel, &t->k, __atomic_add_fetch(&g.next_tid, 1, __ATOMIC_RELAXED),
-                                      &t->cpu, t));
+    CHECK(t &&
+          !gnu_kernel_thread_add(&g.kernel, &t->k,
+                                 (atomic_fetch_add_explicit(&g.next_tid, 1, memory_order_relaxed) + 1), &t->cpu, t));
     gnu_kernel_set_self(&t->k);
     t_self = t;
 }
@@ -67,7 +69,7 @@ static void detach(void) {
     t_self = NULL;
 }
 
-static int wait_on(void* context, uint32_t* word, uint32_t value, const BionicTime* deadline) {
+static int wait_on(void* context, _Atomic uint32_t* word, uint32_t value, const BionicTime* deadline) {
     (void)context;
     int64_t at[2];
     uint64_t a[6] = {(uint64_t)(uintptr_t)word, 0 | 128, value, 0, 0, ~0u};
@@ -79,7 +81,7 @@ static int wait_on(void* context, uint32_t* word, uint32_t value, const BionicTi
     }
     return (int)gnu_futex(&t_self->k, a);
 }
-static void wake(void* context, uint32_t* word, int count) {
+static void wake(void* context, _Atomic uint32_t* word, int count) {
     (void)context;
     const uint64_t a[6] = {(uint64_t)(uintptr_t)word, 1 | 128, (uint64_t)count, 0, 0, 0};
     (void)gnu_futex(&t_self->k, a);
@@ -211,7 +213,7 @@ static void* broadcaster(void* arg) {
     return NULL;
 }
 static void* waiter_or_broadcaster(void* arg) {
-    int index = __atomic_fetch_add((int*)arg, 1, __ATOMIC_RELAXED);
+    int index = atomic_fetch_add_explicit((_Atomic int*)arg, 1, memory_order_relaxed);
     return index < 3 ? waiter(NULL) : broadcaster(NULL);
 }
 static void conds(void) {
@@ -237,18 +239,18 @@ static void conds(void) {
 
 /* ---- rwlocks ---- */
 static Storage rwlock; /* PTHREAD_RWLOCK_INITIALIZER */
-static int readers, most_readers, writing;
+static _Atomic int readers, most_readers, writing;
 static void* reader(void* arg) {
     (void)arg;
     attach();
     for (int i = 0; i < 2000; i++) {
         CHECK(!bionic_rwlock_rdlock(&f, &rwlock, NULL));
-        int now = __atomic_add_fetch(&readers, 1, __ATOMIC_ACQ_REL);
-        CHECK(!__atomic_load_n(&writing, __ATOMIC_ACQUIRE));
-        int seen = __atomic_load_n(&most_readers, __ATOMIC_RELAXED);
-        while (now > seen && !__atomic_compare_exchange_n(&most_readers, &seen, now, 0, __ATOMIC_RELAXED,
-                                                          __ATOMIC_RELAXED)) {}
-        __atomic_sub_fetch(&readers, 1, __ATOMIC_ACQ_REL);
+        int now = (atomic_fetch_add_explicit(&readers, 1, memory_order_acq_rel) + 1);
+        CHECK(!atomic_load_explicit(&writing, memory_order_acquire));
+        int seen = atomic_load_explicit(&most_readers, memory_order_relaxed);
+        while (now > seen && !atomic_compare_exchange_strong_explicit(&most_readers, &seen, now, memory_order_relaxed,
+                                                                      memory_order_relaxed)) {}
+        atomic_fetch_sub_explicit(&readers, 1, memory_order_acq_rel);
         CHECK(!bionic_rwlock_unlock(&f, &rwlock));
     }
     detach();
@@ -260,16 +262,17 @@ static void* writer(void* arg) {
     attach();
     for (int i = 0; i < 2000; i++) {
         CHECK(!bionic_rwlock_wrlock(&f, &rwlock, NULL));
-        CHECK(!__atomic_exchange_n(&writing, 1, __ATOMIC_ACQ_REL) && !__atomic_load_n(&readers, __ATOMIC_ACQUIRE));
+        CHECK(!atomic_exchange_explicit(&writing, 1, memory_order_acq_rel) &&
+              !atomic_load_explicit(&readers, memory_order_acquire));
         written++;
-        __atomic_store_n(&writing, 0, __ATOMIC_RELEASE);
+        atomic_store_explicit(&writing, 0, memory_order_release);
         CHECK(!bionic_rwlock_unlock(&f, &rwlock));
     }
     detach();
     return NULL;
 }
 static void* reader_or_writer(void* arg) {
-    int index = __atomic_fetch_add((int*)arg, 1, __ATOMIC_RELAXED);
+    int index = atomic_fetch_add_explicit((_Atomic int*)arg, 1, memory_order_relaxed);
     return index < 4 ? reader(NULL) : writer(NULL);
 }
 static Storage two_readers;
@@ -299,13 +302,13 @@ static void rwlocks(void) {
 
 /* ---- semaphores, barriers, spinlocks ---- */
 static Storage sem;
-static int taken;
+static _Atomic int taken;
 static void* sem_taker(void* arg) {
     (void)arg;
     attach();
     int error = 0;
     CHECK(!bionic_sem_wait(&f, &sem, NULL, &error));
-    __atomic_add_fetch(&taken, 1, __ATOMIC_RELAXED);
+    atomic_fetch_add_explicit(&taken, 1, memory_order_relaxed);
     detach();
     return NULL;
 }
@@ -318,17 +321,17 @@ static void* sem_poster(void* arg) {
     return NULL;
 }
 static void* taker_or_poster(void* arg) {
-    int index = __atomic_fetch_add((int*)arg, 1, __ATOMIC_RELAXED);
+    int index = atomic_fetch_add_explicit((_Atomic int*)arg, 1, memory_order_relaxed);
     return index < 2 ? sem_taker(NULL) : sem_poster(NULL);
 }
 static Storage barrier;
-static int serial;
+static _Atomic int serial;
 static void* rounds(void* arg) {
     (void)arg;
     attach();
     for (int i = 0; i < 200; i++)
         if (bionic_barrier_wait(&f, &barrier) == BIONIC_BARRIER_SERIAL_THREAD)
-            __atomic_add_fetch(&serial, 1, __ATOMIC_RELAXED);
+            atomic_fetch_add_explicit(&serial, 1, memory_order_relaxed);
     detach();
     return NULL;
 }

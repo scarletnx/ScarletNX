@@ -87,6 +87,7 @@ void kobj_ref(KObj* o) { o->refs++; }
 static void event_destroy(KObj* o);
 /* what each type does as its last reference goes, as kernel.c's kobj_destroy */
 void kobj_unref(KObj* o) {
+    if (!o) return;
     CHECK(o->refs > 0);
     if (--o->refs) return;
     if (o->type == KO_EVENT)
@@ -1007,7 +1008,7 @@ static void counters(u32 h) {
         snprintf(want, sizeof want,
                  "ipc: %u requests served in 1.00 s (%u a second) took %.3f ms, to %u commands; "
                  "the most time: test:p cmd 9 2 in 0.500 ms, stat:fill cmd ",
-                 IPC_STAT_PAIRS + 103, IPC_STAT_PAIRS + 103, (double)(IPC_STAT_PAIRS + 100) / 1e3 + 0.505,
+                 IPC_STAT_PAIRS + 103u, IPC_STAT_PAIRS + 103u, (double)(IPC_STAT_PAIRS + 100) / 1e3 + 0.505,
                  IPC_STAT_PAIRS - used + 1);
         CHECK(!strncmp(test_line, want, strlen(want)));
         snprintf(want, sizeof want, "; %u more in %.3f ms to commands past the first %d\n", 101 + used,

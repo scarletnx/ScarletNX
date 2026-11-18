@@ -30,6 +30,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 #ifdef _WIN32
 #include <windows.h>
 #endif
@@ -152,7 +153,7 @@ static void docked(const char* v) {
     CHECK(o && o->set == options_tv_mode_set);
     ini_read(o, v);
 }
-static int mode(void) { return __atomic_load_n(&g_settings.tv_mode, __ATOMIC_RELAXED); }
+static int mode(void) { return atomic_load_explicit((_Atomic int*)&g_settings.tv_mode, memory_order_relaxed); }
 
 /* Off and On are the mode, whatever the host's power: the host is never asked, nothing is watched or switched */
 static void test_fixed(void) {
@@ -629,7 +630,8 @@ static int picks_menu(void) {
     g_test.write = 1;
     ini_open(ini);
     CHECK(g_settings.volume == 60 && !ini_picked("volume") && !snx_path_exists(picks));
-    __atomic_store_n(&g_settings.volume, 30, __ATOMIC_RELAXED); /* as the menu's slider sets it */
+    atomic_store_explicit((_Atomic int*)&g_settings.volume, 30,
+                          memory_order_relaxed); /* as the menu's slider sets it */
     ini_set("volume", "30");
     CHECK(ini_picked("volume")); /* shown at once, before the poll saves it */
     ini_poll(0);
@@ -692,7 +694,7 @@ static int picks_hand(void) {
     ini_open(ini);
     CHECK(g_settings.volume == 60 && ini_picked("volume"));
     CHECK(strstr(g_test.said, "game.picks: volume=40 (this run plays volume=60, its command line's)\n"));
-    __atomic_store_n(&g_settings.volume, 30, __ATOMIC_RELAXED);
+    atomic_store_explicit((_Atomic int*)&g_settings.volume, 30, memory_order_relaxed);
     ini_set("volume", "30");
     ini_poll(0);
     CHECK((text = file_text(picks)) && strstr(text, "\nvolume=30\n"));

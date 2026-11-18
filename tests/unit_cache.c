@@ -234,7 +234,7 @@ static u64 run(const char* output) {
     cpu.mem = g_unit_cache.memory;
     cpu.code_lo = mod->code_lo;
     cpu.code_hi = mod->code_hi;
-    cpu.disp = (GuestFn*)calloc((size_t)(mod->code_hi - mod->code_lo) / 4 + 1, sizeof(GuestFn));
+    cpu.disp = (_Atomic GuestFn*)calloc((size_t)(mod->code_hi - mod->code_lo) / 4 + 1, sizeof(GuestFn));
     for (i = 0; i < mod->nentries; ++i) cpu.disp[(mod->entry_addr[i] - mod->code_lo) / 4] = mod->entry_fn[i];
     cpu.x[0] = 41;
     cpu.x[30] = 0xDEAD0000;

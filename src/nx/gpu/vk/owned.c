@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/ledger.h"
@@ -29,13 +30,13 @@ static struct {
     /* each landing's copy signals it on one queue (land_apart's): a value is taken under vk_lock, as the copy is
        submitted, and waited for with or without it */
     VkHostTimeline done;
-    u64 serial; /* the last VkOwnRes.serial given */
-    VkOwnRes* later; /* released while another thread held vk_lock: freed at a later vk_unlock (atomic stack) */
+    _Atomic u64 serial;      /* the last VkOwnRes.serial given */
+    VkOwnRes* _Atomic later; /* released while another thread held vk_lock: freed at a later vk_unlock (atomic stack) */
     /* the results with a buffer of their own that are in use, and their buffers' bytes: any thread adds and takes */
-    u64 live[VK_OWN_BY_N], live_bytes[VK_OWN_BY_N];
+    _Atomic u64 live[VK_OWN_BY_N], live_bytes[VK_OWN_BY_N];
     /* those let go since the last statistics, by how many presents they were kept: under 8, under 120, under 1200,
        longer */
-    u64 let_go[4];
+    _Atomic u64 let_go[4];
     /* since the last statistics: the results vk_own_trim landed and their bytes, the freed buffers it let go */
     u64 trim_landed, trim_bytes, trim_pooled;
     /* since the last statistics, for a result the heap had no room for: the submissions ended for the freed buffers
@@ -87,7 +88,7 @@ typedef struct {
     u32 put;   /* the present it came back at: one no result took for OWN_IDLE presents goes (vk_own_trim) */
 } OwnPoolEntry;
 static OwnPoolEntry g_pool[OWN_POOL_MAX];
-static u32 g_pool_n;
+static _Atomic u32 g_pool_n;
 static PMutex g_pool_lk = PMUTEX_INIT;
 /* what the GPU has done, for the pool's entries: asked of the driver, so before the pool's lock */
 typedef struct {
@@ -105,13 +106,14 @@ static int own_pool_free(const OwnPoolEntry* e, OwnDone d) { return e->after <= 
 static int own_pool_put(VkBuffer buf, DevMem mem, u64 cap) {
     int put;
     pm_lock(&g_pool_lk);
-    if ((put = g_pool_n < OWN_POOL_MAX))
-        g_pool[g_pool_n++] = (OwnPoolEntry){.buf = buf,
-                                            .mem = mem,
-                                            .cap = cap,
-                                            .after = vk_submit_number(),
-                                            .cafter = vk_compute_number(),
-                                            .put = g_vk_present};
+    if ((put = atomic_load_explicit(&g_pool_n, memory_order_relaxed) < OWN_POOL_MAX))
+        g_pool[atomic_fetch_add_explicit(&g_pool_n, 1, memory_order_relaxed)] =
+            (OwnPoolEntry){.buf = buf,
+                           .mem = mem,
+                           .cap = cap,
+                           .after = vk_submit_number(),
+                           .cafter = vk_compute_number(),
+                           .put = g_vk_present};
     pm_unlock(&g_pool_lk);
     return put;
 }
@@ -120,16 +122,16 @@ static int own_pool_put(VkBuffer buf, DevMem mem, u64 cap) {
 static OwnPoolEntry own_pool_take(u64 size) {
     OwnPoolEntry e = {0};
     i32 best = -1;
-    if (!__atomic_load_n(&g_pool_n, __ATOMIC_RELAXED)) return e;
+    if (!atomic_load_explicit(&g_pool_n, memory_order_relaxed)) return e;
     OwnDone done = own_done();
     pm_lock(&g_pool_lk);
-    for (u32 i = 0; i < g_pool_n; i++)
+    for (u32 i = 0; i < atomic_load_explicit(&g_pool_n, memory_order_relaxed); i++)
         if (g_pool[i].cap >= size && own_pool_free(&g_pool[i], done) &&
             (best < 0 || g_pool[i].cap < g_pool[best].cap))
             best = (i32)i;
     if (best >= 0) {
         e = g_pool[best];
-        g_pool[best] = g_pool[--g_pool_n];
+        g_pool[best] = g_pool[atomic_fetch_sub_explicit(&g_pool_n, 1, memory_order_relaxed) - 1];
     }
     pm_unlock(&g_pool_lk);
     return e;
@@ -141,10 +143,10 @@ static OwnPoolEntry own_pool_take(u64 size) {
    one, and their memory is what the heap lacks. They are free at once (nothing uses them). Their count */
 static u32 own_pool_drop(void) {
     u32 n = 0;
-    if (!__atomic_load_n(&g_pool_n, __ATOMIC_RELAXED)) return 0;
+    if (!atomic_load_explicit(&g_pool_n, memory_order_relaxed)) return 0;
     OwnDone done = own_done();
     pm_lock(&g_pool_lk);
-    for (u32 i = 0; i < g_pool_n;) {
+    for (u32 i = 0; i < atomic_load_explicit(&g_pool_n, memory_order_relaxed);) {
         if (!own_pool_free(&g_pool[i], done)) {
             i++;
             continue;
@@ -152,7 +154,7 @@ static u32 own_pool_drop(void) {
         g_owned.room_dropped_bytes += g_pool[i].cap;
         vk_mem_untrack(g_pool[i].mem);
         vk_devmem_buffer_destroy(g_pool[i].buf, g_pool[i].mem);
-        g_pool[i] = g_pool[--g_pool_n];
+        g_pool[i] = g_pool[atomic_fetch_sub_explicit(&g_pool_n, 1, memory_order_relaxed) - 1];
         n++;
     }
     pm_unlock(&g_pool_lk);
@@ -167,11 +169,11 @@ static u32 own_pool_drop(void) {
 static int own_pool_await(u64 size) {
     u64 submitted = 0, csubmitted = 0, wait = 0;
     OwnDone done = {0};
-    if (!__atomic_load_n(&g_pool_n, __ATOMIC_RELAXED)) return 0;
+    if (!atomic_load_explicit(&g_pool_n, memory_order_relaxed)) return 0;
     vk_submit_progress(&submitted, &done.gfx);
     vk_compute_progress(&csubmitted, &done.compute);
     pm_lock(&g_pool_lk);
-    for (u32 i = 0; i < g_pool_n; i++) {
+    for (u32 i = 0; i < atomic_load_explicit(&g_pool_n, memory_order_relaxed); i++) {
         const OwnPoolEntry* e = &g_pool[i];
         if (e->after <= done.gfx || e->after > submitted || e->cafter > done.compute) continue;
         if (size ? e->cap >= size && (!wait || e->after < wait) : e->after > wait) wait = e->after;
@@ -192,10 +194,10 @@ int vk_own_make_room(void) { return own_pool_drop() || (own_pool_await(0) && own
    the submission goes on: its results take new buffers */
 #define OWN_OPEN_MIN (32ull << 20)
 void vk_own_room(void) {
-    if (!__atomic_load_n(&g_pool_n, __ATOMIC_RELAXED) || vk_rec_unsafe()) return;
+    if (!atomic_load_explicit(&g_pool_n, memory_order_relaxed) || vk_rec_unsafe()) return;
     u64 now = vk_submit_number(), open = 0, usage, budget;
     pm_lock(&g_pool_lk);
-    for (u32 i = 0; i < g_pool_n; i++)
+    for (u32 i = 0; i < atomic_load_explicit(&g_pool_n, memory_order_relaxed); i++)
         if (g_pool[i].after == now) open += g_pool[i].cap;
     pm_unlock(&g_pool_lk);
     if (open < OWN_OPEN_MIN) return;
@@ -212,7 +214,7 @@ void vk_own_log(void) {
     u64 pooled = 0, waiting = 0;
     OwnDone done = own_done();
     pm_lock(&g_pool_lk);
-    u32 n = g_pool_n;
+    u32 n = atomic_load_explicit(&g_pool_n, memory_order_relaxed);
     for (u32 i = 0; i < n; i++) {
         pooled += g_pool[i].cap;
         if (!own_pool_free(&g_pool[i], done)) waiting += g_pool[i].cap;
@@ -223,8 +225,8 @@ void vk_own_log(void) {
     size_t at = 0;
     u64 live = 0;
     for (u32 k = 0; k < VK_OWN_BY_N; k++) {
-        u64 count = __atomic_load_n(&g_owned.live[k], __ATOMIC_RELAXED),
-            bytes = __atomic_load_n(&g_owned.live_bytes[k], __ATOMIC_RELAXED);
+        u64 count = atomic_load_explicit(&g_owned.live[k], memory_order_relaxed),
+            bytes = atomic_load_explicit(&g_owned.live_bytes[k], memory_order_relaxed);
         live += count;
         if (!count) continue;
         int w = snprintf(line + at, sizeof line - at, "%s %llu of %s (%.1f MB)", at ? "," : "",
@@ -232,7 +234,7 @@ void vk_own_log(void) {
         if (w > 0) at += (size_t)w < sizeof line - at ? (size_t)w : sizeof line - at - 1;
     }
     u64 gone[4];
-    for (u32 k = 0; k < 4; k++) gone[k] = __atomic_exchange_n(&g_owned.let_go[k], 0, __ATOMIC_RELAXED);
+    for (u32 k = 0; k < 4; k++) gone[k] = atomic_exchange_explicit(&g_owned.let_go[k], 0, memory_order_relaxed);
     if (n || live)
         LOG("vulkan: kept results in use:%s; %u freed buffers in the pool (%.1f MB, %.1f of them the GPU still "
             "uses); let go since the last report after under 8 presents %llu, under 120 %llu, under 1200 %llu, "
@@ -294,18 +296,18 @@ void vk_own_trim(void) {
     const u32 idle = usage < budget / 5 * 4 ? OWN_IDLE : OWN_IDLE_SHORT;
     OwnDone done = own_done();
     pm_lock(&g_pool_lk);
-    for (u32 i = 0; i < g_pool_n;) {
+    for (u32 i = 0; i < atomic_load_explicit(&g_pool_n, memory_order_relaxed);) {
         if ((u32)(g_vk_present - g_pool[i].put) < idle || !own_pool_free(&g_pool[i], done)) {
             i++;
             continue;
         }
         vk_mem_untrack(g_pool[i].mem);
         vk_devmem_buffer_destroy(g_pool[i].buf, g_pool[i].mem); /* free: the GPU is done with it */
-        g_pool[i] = g_pool[--g_pool_n];
+        g_pool[i] = g_pool[atomic_fetch_sub_explicit(&g_pool_n, 1, memory_order_relaxed) - 1];
         g_owned.trim_pooled++;
     }
     pm_unlock(&g_pool_lk);
-    u32 n = __atomic_load_n(&g_own.nown, __ATOMIC_ACQUIRE);
+    u32 n = atomic_load_explicit(&g_own.nown, memory_order_acquire);
     if (!g_owned.traps || !n || usage < budget / 5 * 4) return; /* four fifths: before the caches' trim starts */
     u32 max = n + 64; /* more than there are: a publish may add some before the lookup */
     OwnRange* r = malloc((size_t)max * sizeof *r);
@@ -322,7 +324,9 @@ void vk_own_trim(void) {
         const VkOwnRes* o = (const VkOwnRes*)r[i].res;
         /* not one of another's buffer (the mirror's), nor one whose writes are still being recorded, nor one in system
            memory */
-        if (!o || o->borrowed || o->host || (u32)(g_vk_present - o->used) < alone || o->written >= now) continue;
+        if (!o || o->borrowed || o->host || (u32)(g_vk_present - o->used) < alone ||
+            atomic_load_explicit(&o->written, memory_order_relaxed) >= now)
+            continue;
         pick[np++] = (OwnPick){r[i].addr, r[i].size, o->used};
     }
     free(r);
@@ -350,24 +354,25 @@ VkOwnRes* vk_own_res_new(u64 size, u32 by) {
         r->size = e.cap;
     } else {
         u32 fam[2];
-        VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-                                 .size = want,
-                                 /* bound where it is for whatever reads the bytes it holds: a draw's vertices, indices and
+        VkBufferCreateInfo bi = {
+            .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+            .size = want,
+            /* bound where it is for whatever reads the bytes it holds: a draw's vertices, indices and
                                     buffers (buffer.c buf_get_owned), a dispatch's (compute.c res_bind), VIC's job words;
                                     and what draws write there, transform feedback's captures too (buffer.c keep_new) */
-                                 .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
-                                          VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                                          VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT |
-                                          VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
-                                          VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
-                                          (g_vk.has_xfb ? VK_BUFFER_USAGE_TRANSFORM_FEEDBACK_BUFFER_BIT_EXT : 0) |
-                                          /* an indirect copy or an in-place read names it by its address
+            .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
+                     VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                     VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT |
+                     VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                     VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
+                     (g_vk.has_xfb ? VK_BUFFER_USAGE_TRANSFORM_FEEDBACK_BUFFER_BIT_EXT : 0) |
+                     /* an indirect copy or an in-place read names it by its address
                                              (copy_batch_flush, inplace_note) */
                                           (g_vk.has_copy_indirect || g_vk.has_inplace_loads
                                                ? VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT
                                                : 0),
                                  .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
-        DevMemWant ai = {.at = DM_DEVICE};
+        DevMemWant ai = {.at = DM_DEVICE, .brief = 1}; /* results come and go by the hundred MB (DM_KIND_BRIEF) */
         land_sharing(&bi, fam);
         if (size > g_vk.alloc_cap) {
             free(r);
@@ -430,44 +435,51 @@ VkOwnRes* vk_own_res_new(u64 size, u32 by) {
             r->size = want;
         }
     }
-    r->refs = 1;
-    r->serial = __atomic_add_fetch(&g_owned.serial, 1, __ATOMIC_RELAXED);
+    atomic_store_explicit(&r->refs, 1, memory_order_relaxed);
+    atomic_store_explicit(&r->serial, (atomic_fetch_add_explicit(&g_owned.serial, 1, memory_order_relaxed) + 1),
+                          memory_order_relaxed);
     r->by = (u8)by;
     r->born = r->used = g_vk_present;
-    __atomic_fetch_add(&g_owned.live[by], 1, __ATOMIC_RELAXED);
-    __atomic_fetch_add(&g_owned.live_bytes[by], r->size, __ATOMIC_RELAXED);
+    atomic_fetch_add_explicit(&g_owned.live[by], 1, memory_order_relaxed);
+    atomic_fetch_add_explicit(&g_owned.live_bytes[by], r->size, memory_order_relaxed);
     return r;
 }
-static void res_retain(void* res) { __atomic_add_fetch(&((VkOwnRes*)res)->refs, 1, __ATOMIC_RELAXED); }
+static void res_retain(void* res) { atomic_fetch_add_explicit(&((VkOwnRes*)res)->refs, 1, memory_order_relaxed); }
 VkOwnRes* vk_own_res_borrow(VkBuffer buf) {
     VkOwnRes* r = (VkOwnRes*)calloc(1, sizeof *r);
     if (!r) return NULL;
     r->buf = buf;
     r->size = ~0ull;
-    r->refs = 1;
+    atomic_store_explicit(&r->refs, 1, memory_order_relaxed);
     r->borrowed = 1;
-    r->serial = __atomic_add_fetch(&g_owned.serial, 1, __ATOMIC_RELAXED);
+    atomic_store_explicit(&r->serial, (atomic_fetch_add_explicit(&g_owned.serial, 1, memory_order_relaxed) + 1),
+                          memory_order_relaxed);
     return r;
 }
 static void res_free_buffer(VkOwnRes* r);
 static void res_release(void* res) {
     VkOwnRes* r = (VkOwnRes*)res;
-    if (__atomic_sub_fetch(&r->refs, 1, __ATOMIC_ACQ_REL)) return;
+    if ((atomic_fetch_sub_explicit(&r->refs, 1, memory_order_acq_rel) - 1)) return;
     if (r->borrowed) {
         free(r);
         return;
     }
     u32 kept = g_vk_present - r->born;
-    __atomic_fetch_sub(&g_owned.live[r->by], 1, __ATOMIC_RELAXED);
-    __atomic_fetch_sub(&g_owned.live_bytes[r->by], r->size, __ATOMIC_RELAXED);
-    __atomic_fetch_add(&g_owned.let_go[kept < 8 ? 0 : kept < 120 ? 1 : kept < 1200 ? 2 : 3], 1, __ATOMIC_RELAXED);
+    atomic_fetch_sub_explicit(&g_owned.live[r->by], 1, memory_order_relaxed);
+    atomic_fetch_sub_explicit(&g_owned.live_bytes[r->by], r->size, memory_order_relaxed);
+    atomic_fetch_add_explicit(&g_owned.let_go[kept < 8      ? 0
+                                              : kept < 120  ? 1
+                                              : kept < 1200 ? 2
+                                                            : 3],
+                              1, memory_order_relaxed);
     /* Another thread holds vk_lock: the buffer goes later, at that thread's outermost vk_unlock or the next one
        (vk_own_release_later). A landing lets its resources go after it let go of vk_lock (own.c's land_start), and a
        wait for the lock there held the faulting game thread behind the renderer's draws: 6.2 s in 83 s of one game */
     if (!vk_trylock()) {
-        VkOwnRes* head = __atomic_load_n(&g_owned.later, __ATOMIC_RELAXED);
+        VkOwnRes* head = atomic_load_explicit(&g_owned.later, memory_order_relaxed);
         do r->later = head;
-        while (!__atomic_compare_exchange_n(&g_owned.later, &head, r, 1, __ATOMIC_RELEASE, __ATOMIC_RELAXED));
+        while (!atomic_compare_exchange_weak_explicit(&g_owned.later, &head, r, memory_order_release,
+                                                      memory_order_relaxed));
         return;
     }
     res_free_buffer(r);
@@ -481,9 +493,9 @@ static void res_free_buffer(VkOwnRes* r) {
     if (r->host || !own_pool_put(r->buf, r->mem, r->size)) vk_defer_buffer(r->buf, r->mem);
     free(r);
 }
-int vk_own_later_any(void) { return __atomic_load_n(&g_owned.later, __ATOMIC_ACQUIRE) != NULL; }
+int vk_own_later_any(void) { return atomic_load_explicit(&g_owned.later, memory_order_acquire) != NULL; }
 void vk_own_release_later(void) {
-    VkOwnRes* r = __atomic_exchange_n(&g_owned.later, NULL, __ATOMIC_ACQUIRE);
+    VkOwnRes* r = atomic_exchange_explicit(&g_owned.later, NULL, memory_order_acquire);
     while (r) {
         VkOwnRes* next = r->later;
         res_free_buffer(r);
@@ -635,7 +647,9 @@ static void land_prepare(LandSlot* s, u64 size) {
 
 /* the submission a resource's writes are in (0: unstamped, everything submitted): own.c's writer, on a thread without
    vk_lock too */
-static u64 own_writer(void* res) { return __atomic_load_n(&((const VkOwnRes*)res)->written, __ATOMIC_ACQUIRE); }
+static u64 own_writer(void* res) {
+    return atomic_load_explicit(&((const VkOwnRes*)res)->written, memory_order_acquire);
+}
 
 /* what a landing's copies wait for, worked out under vk_lock before the first */
 typedef struct {
@@ -823,6 +837,10 @@ static void own_landed(u64 addr, u64 size, const u8* bytes) {
     vk_ww_landed(addr, size, bytes);
     vk_mirror_landed(addr, size);
 }
+/* owners dropped with no landing (an unmap, a remap, a decommit): the GPU mirror's copy of those pages is no longer
+   guest memory's, and its next binding of them fills them again, as a landing has it. A page the mirror owns leaves
+   its granule's check whole (mirror.c), which no other change of these pages would end */
+static void own_dropped(u64 addr, u64 size) { vk_mirror_landed(addr, size); }
 
 int vk_own_init(void) {
     /* vk_lock and vk_unlock themselves, not g_vklock: the outermost unlock also signals what the hold's releases
@@ -836,6 +854,7 @@ int vk_own_init(void) {
                   .lock = vk_lock,
                   .unlock = vk_unlock,
                   .landed = own_landed,
+                  .dropped = own_dropped,
                   .writer = own_writer,
                   .wait = own_wait,
                   .resolve = vk_rt_watch_hit,
@@ -848,8 +867,10 @@ int vk_own_init(void) {
 void vk_own_res_wrote(VkOwnRes* r) {
     r->used = g_vk_present;
     /* atomic: own_writer reads it on a thread without vk_lock */
-    if (r->written < vk_submit_number()) __atomic_store_n(&r->written, vk_submit_number(), __ATOMIC_RELEASE);
-    __atomic_store_n(&r->serial, __atomic_add_fetch(&g_owned.serial, 1, __ATOMIC_RELAXED), __ATOMIC_RELEASE);
+    if (atomic_load_explicit(&r->written, memory_order_relaxed) < vk_submit_number())
+        atomic_store_explicit(&r->written, vk_submit_number(), memory_order_release);
+    atomic_store_explicit(&r->serial, (atomic_fetch_add_explicit(&g_owned.serial, 1, memory_order_relaxed) + 1),
+                          memory_order_release);
 }
 
 int vk_own_watch(u64 cpu, u64 size) {
@@ -869,7 +890,8 @@ static void own_publish(u64 cpu, u64 size, VkOwnRes* r, u64 off, int in_place) {
     if (in_place >= 0)
         vk_own_res_wrote(r); /* every producer records its writes before it publishes them */
     else
-        __atomic_store_n(&r->serial, __atomic_add_fetch(&g_owned.serial, 1, __ATOMIC_RELAXED), __ATOMIC_RELEASE);
+        atomic_store_explicit(&r->serial, (atomic_fetch_add_explicit(&g_owned.serial, 1, memory_order_relaxed) + 1),
+                              memory_order_release);
     in_place = in_place > 0;
     vk_rt_before_publish_cpu(cpu, size);
     gpu_mem_written_cpu(cpu, size); /* what is built from the bytes (textures, buffers) takes the new ones */
@@ -1198,7 +1220,8 @@ static int read_settled(u64 gva, u64 size) {
         else if (own_any() && (k = own_lookup(cpu, n, r, sizeof r / sizeof *r)) > 0) {
             if (k > sizeof r / sizeof *r) return 0;
             for (u32 i = 0; i < k; i++)
-                if (((const VkOwnRes*)r[i].res)->written >= now) return 0;
+                if (atomic_load_explicit(&(((const VkOwnRes*)r[i].res)->written), memory_order_relaxed) >= now)
+                    return 0;
         }
         o += n;
     }
@@ -1428,7 +1451,7 @@ void vk_guest_peek(u64 gva, void* dst, u64 size) {
             } else
                 for (i = 0; i < k; i++) { /* the owner's identity in place of its stale bytes: its serial, as a new
                                              owner can take a freed one's address (a glyph cache's copies did) */
-                    u64 serial = __atomic_load_n(&((const VkOwnRes*)r[i].res)->serial, __ATOMIC_ACQUIRE);
+                    u64 serial = atomic_load_explicit(&((const VkOwnRes*)r[i].res)->serial, memory_order_acquire);
                     u64 tag = (serial * 0x9E3779B97F4A7C15ull) ^ (r[i].res_off - (r[i].addr - cpu));
                     u8* t = d + o + (r[i].addr - cpu);
                     u8 word[8];
@@ -1468,13 +1491,14 @@ int vk_guest_owned_whole(u64 gva, u64 size, u64* tag) {
     if (!size || !own_any()) return 0;
     gmem_need(gva, size);
     if (!owned_one(gva, size, &r)) return 0;
-    *tag = __atomic_load_n(&((const VkOwnRes*)r.res)->serial, __ATOMIC_ACQUIRE) * 0x9E3779B97F4A7C15ull ^ r.res_off;
+    *tag = atomic_load_explicit(&((const VkOwnRes*)r.res)->serial, memory_order_acquire) * 0x9E3779B97F4A7C15ull ^
+           r.res_off;
     return 1;
 }
 int vk_guest_owned_by(u64 gva, u64 size, u64 serial) {
     OwnRange r;
     return size && serial && own_any() && owned_one(gva, size, &r) &&
-           __atomic_load_n(&((const VkOwnRes*)r.res)->serial, __ATOMIC_ACQUIRE) == serial;
+           atomic_load_explicit(&((const VkOwnRes*)r.res)->serial, memory_order_acquire) == serial;
 }
 
 void vk_all_barrier(VkCommandBuffer cb) {

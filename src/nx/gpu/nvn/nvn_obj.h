@@ -85,7 +85,7 @@ NVN_FITS(NvnPoolBuilder, 0x40);
 typedef struct {
     u32 magic, flags;
     u64 memory, size, gpu;
-    u32 nvmap;
+    _Atomic u32 nvmap;
     u32 linear_pitch; /* a video image, written pitch linear: a texture on it reads it so */
 } NvnPool;
 NVN_FITS(NvnPool, 0x100);
@@ -315,7 +315,8 @@ NVN_FITS(NvnDeviceMessageBuffer, 0x28);
    of a freed block link its heap's free list */
 typedef struct {
     u32 magic, pad;
-    u32 fenced, syncpt;
+    _Atomic u32 fenced;
+    u32 syncpt;
     u32 value, shown;
     u64 ready;
 } NvnSync;

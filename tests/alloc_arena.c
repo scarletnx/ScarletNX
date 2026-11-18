@@ -42,6 +42,9 @@ static int g_original;
 static char g_log[512];
 
 u64 kernel_find_symbol_exact(const char* name) { return (void)name, 0; }
+/* alloc_new_shape's symbols, which no case here asks */
+int kernel_symbol(u32 i, u64* addr, const char** name) { return (void)i, (void)addr, (void)name, 0; }
+u64 kernel_symbol_size(u32 i) { return (void)i, 0; }
 void hook_run_original(CPU* c, u64 addr) {
     (void)addr;
     g_original++;

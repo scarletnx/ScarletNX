@@ -1,8 +1,11 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* COFF: x86-64 objects into a PE32+ DLL without imports or an entry point.
+/* COFF: x86-64 or ARM64 objects into a PE32+ DLL without imports or an entry point.
    Sections: .text, .rdata (read-only data, unwind data, the export directory), .data, .bss, .pdata (function table,
-   sorted), .reloc (DIR64 base relocations for absolute addresses). COMDAT sections keep their first copy.
+   sorted), .reloc (DIR64 base relocations for absolute addresses). COMDAT sections keep their first copy. An ARM64
+   module of more code than B and BL reach (VENEER_TEXT) gives each object an island after its last code section,
+   with a veneer for each symbol it branches to that another object defines, which a branch out of reach goes through
+   when its field holds no addend: one veneer serves every branch of the object to the symbol.
    The structures are read and written byte by byte, so this builds anywhere (no <windows.h>). */
 #include "common/cpu/recompiler/llvm/coff_defs.h"
 #include "common/cpu/recompiler/llvm/link_internal.h"
@@ -15,6 +18,115 @@
 #define IMAGE_BASE        ((uint64_t)0x180000000ULL)
 #define SECTION_ALIGNMENT 0x1000
 #define FILE_ALIGNMENT    0x200
+/* Below this much code every ARM64 B and BL of a module reaches its target (128 MiB, with room for the islands), and
+   no object gets veneers */
+#define VENEER_TEXT       ((uint64_t)120 << 20)
+
+/* ---- ARM64's relocations and veneers (coff_defs.h), shared with the JIT loader (code_loader_coff.c). Everything in
+   uint64_t: a negative displacement is its two's complement, which the masks cut to the field ---- */
+
+/* whether value, read as signed, fits a signed field of bits */
+static int fits(uint64_t value, unsigned bits) { return (value + ((uint64_t)1 << (bits - 1))) >> bits == 0; }
+/* the low bits of value as the signed number they are */
+static uint64_t sign_extend(uint64_t value, unsigned bits) {
+    uint64_t m = (uint64_t)1 << (bits - 1);
+    return ((value & ((m << 1) - 1)) ^ m) - m;
+}
+/* ADR's and ADRP's immediate: its low two bits at 29, the rest at 5 */
+static uint64_t adr_immediate(uint32_t insn) {
+    return sign_extend((insn >> 29 & 3) | (uint64_t)(insn >> 5 & 0x7FFFF) << 2, 21);
+}
+/* the 12-bit immediate of an ADD or of a load or store's offset */
+static uint64_t imm12(uint32_t insn) { return insn >> 10 & 0xFFF; }
+/* log2 of a load or store's access size: its size bits, 4 for a 128-bit SIMD access (V with opc's high bit) */
+static unsigned access_scale(uint32_t insn) { return (insn & 0x04800000u) == 0x04800000u ? 4 : insn >> 30; }
+/* a branch's displacement, in instructions, into its field */
+static int a64_branch(unsigned char* p, uint64_t displacement, unsigned bits, unsigned shift) {
+    if (!fits(displacement, bits + 2)) return SNX_LINK_RANGE;
+    if (displacement & 3) return SNX_LINK_MISALIGNED;
+    snx_link_field(p, displacement >> 2, shift, bits);
+    return 0;
+}
+
+int snx_coff_a64_relocate(unsigned char* p, size_t room, unsigned type, uint64_t S, uint64_t P, uint64_t base,
+                          uint64_t section_start) {
+    uint64_t target, offset;
+    unsigned scale;
+    if (type == REL_A64_ABSOLUTE) return 0;
+    if (room < 4) return SNX_LINK_OUTSIDE;
+    uint32_t insn = snx_ld_le32(p);
+    switch (type) {
+        case REL_A64_ADDR32NB:
+        case REL_A64_SECREL:
+            target = S - (type == REL_A64_ADDR32NB ? base : section_start) + insn;
+            if (target > 0xFFFFFFFFu) return SNX_LINK_RANGE;
+            snx_st_le32(p, (uint32_t)target);
+            return 0;
+        case REL_A64_REL32: return snx_link_rel32(p, S + sign_extend(insn, 32), P + 4); /* from the field's end */
+        case REL_A64_BRANCH26: return a64_branch(p, S + (sign_extend(insn, 26) << 2) - P, 26, 0);
+        case REL_A64_BRANCH19: return a64_branch(p, S + (sign_extend(insn >> 5, 19) << 2) - P, 19, 5);
+        case REL_A64_BRANCH14: return a64_branch(p, S + (sign_extend(insn >> 5, 14) << 2) - P, 14, 5);
+        case REL_A64_PAGEBASE_REL21: /* pages from P's to the target's: 21 bits reach 4 GiB either way */
+            target = snx_link_page_of(S + adr_immediate(insn)) - snx_link_page_of(P);
+            if (!fits(target, 33)) return SNX_LINK_RANGE;
+            snx_link_adr_field(p, target >> 12);
+            return 0;
+        case REL_A64_REL21:
+            target = S + adr_immediate(insn) - P;
+            if (!fits(target, 21)) return SNX_LINK_RANGE;
+            snx_link_adr_field(p, target);
+            return 0;
+        case REL_A64_PAGEOFFSET_12A: snx_link_field(p, S + imm12(insn), 10, 12); return 0;
+        case REL_A64_PAGEOFFSET_12L: /* scaled by the access's size, which the address must be a multiple of */
+            scale = access_scale(insn);
+            target = S + (imm12(insn) << scale);
+            if (target & (((uint64_t)1 << scale) - 1)) return SNX_LINK_MISALIGNED;
+            snx_link_field(p, (target & 0xFFF) >> scale, 10, 12);
+            return 0;
+        /* the offset in S's section, each field's part added to the addend it holds, as lld-link writes them */
+        case REL_A64_SECREL_HIGH12A:
+            offset = S - section_start;
+            if (offset >> 24) return SNX_LINK_RANGE;
+            snx_link_field(p, imm12(insn) + (offset >> 12), 10, 12);
+            return 0;
+        case REL_A64_SECREL_LOW12A:
+        case REL_A64_SECREL_LOW12L:
+            offset = (S - section_start) & 0xFFF;
+            scale = type == REL_A64_SECREL_LOW12L ? access_scale(insn) : 0;
+            if (offset & (((uint64_t)1 << scale) - 1)) return SNX_LINK_MISALIGNED;
+            snx_link_field(p, imm12(insn) + (offset >> scale), 10, 12);
+            return 0;
+        default: return SNX_LINK_UNSUPPORTED;
+    }
+}
+
+int snx_coff_a64_veneer(unsigned char* v, uint64_t at, uint64_t target, int indirect) {
+    uint64_t pages = snx_link_page_of(target) - snx_link_page_of(at);
+    if (!fits(pages, 33)) return SNX_LINK_RANGE;
+    if (indirect && (target & 7)) return SNX_LINK_MISALIGNED;
+    snx_st_le32(v, 0x90000010u); /* ADRP x16, target */
+    snx_link_adr_field(v, pages >> 12);
+    if (indirect) {
+        snx_st_le32(v + 4, 0xF9400210u); /* LDR x16, [x16, :lo12:target], scaled by 8 */
+        snx_link_field(v + 4, (target & 0xFFF) >> 3, 10, 12);
+    } else {
+        snx_st_le32(v + 4, 0x91000210u); /* ADD x16, x16, :lo12:target */
+        snx_link_field(v + 4, target & 0xFFF, 10, 12);
+    }
+    snx_st_le32(v + 8, 0xD61F0200u); /* BR x16 */
+    return 0;
+}
+
+/* an ARM64 relocation type that snx_coff_a64_relocate writes, in the relocation loop: above any type's 16 bits */
+#define A64_CODE 0x10000u
+
+/* why snx_coff_a64_relocate refused, for a message */
+static const char* a64_refusal(int rc) {
+    return rc == SNX_LINK_RANGE        ? "its target is out of the instruction's reach"
+           : rc == SNX_LINK_MISALIGNED ? "its target is not aligned as the instruction needs"
+           : rc == SNX_LINK_OUTSIDE    ? "its field is past the end of its section"
+                                       : "the linker does not know its type";
+}
 
 enum { O_TEXT, O_RDATA, O_DATA, O_BSS, O_PDATA, O_RELOC, O_COUNT };
 static const char* const output_names[O_COUNT] = {".text", ".rdata", ".data", ".bss", ".pdata", ".reloc"};
@@ -39,6 +151,7 @@ typedef struct {
     const char* strings;
     uint32_t strings_size;
     Sec* sections;
+    uint32_t island, veneers; /* ARM64: the island's RVA, and its veneers (count_veneers) */
 } Obj;
 
 typedef struct {
@@ -47,6 +160,8 @@ typedef struct {
     SnxLinkNames globals; /* name -> object << 32 | symbol index */
     SnxLinkNames comdats;
     SnxLinkNames imports; /* "__imp_X" of a defined X -> pointer slot */
+    SnxLinkNames veneer;  /* ARM64: "object:name" -> that object's veneer to name */
+    unsigned machine;     /* COFF_X64 or COFF_ARM64, the first object's, which every object has */
     uint32_t imports_rva;
     uint32_t out_rva[O_COUNT], out_size[O_COUNT], out_raw[O_COUNT], out_raw_size[O_COUNT];
     char* error;
@@ -71,9 +186,14 @@ static int classify(Sec* s) {
 
 static int parse(Link* l, Obj* o, const SnxLinkInput* input) {
     const unsigned char* d = input->data;
+    unsigned machine = input->size >= 20 ? snx_ld_le16(d) : 0;
     o->input = input;
-    if (input->size < 20 || snx_ld_le16(d) != 0x8664 || snx_ld_le16(d + 16))
-        return fail(l, "%s: not an x86-64 COFF object%s", input->name, "");
+    if (input->size < 20 || (machine != COFF_X64 && machine != COFF_ARM64) || snx_ld_le16(d + 16))
+        return fail(l, "%s: not an x86-64 or ARM64 COFF object%s", input->name, "");
+    if (!l->machine) l->machine = machine;
+    if (machine != l->machine)
+        return fail(l, "%s: not of the machine of the first object (%s)", input->name,
+                    l->machine == COFF_ARM64 ? "ARM64" : "x86-64");
     o->nsections = snx_ld_le16(d + 2);
     uint32_t table = snx_ld_le32(d + 8);
     o->nsymbols = snx_ld_le32(d + 12);
@@ -264,6 +384,61 @@ static void find_imports(Link* l) {
         }
     }
 }
+/* ARM64, in a module with islands: each object's veneers, one for each symbol its B and BL name that it does not define
+   (another object's) */
+static void count_veneers(Link* l) {
+    char name[256], key[300];
+    size_t found;
+    for (size_t i = 0; i < l->nobjs; ++i) {
+        Obj* o = &l->objs[i];
+        for (uint32_t n = 1; n <= o->nsections; ++n) {
+            const Sec* s = &o->sections[n];
+            if (s->output != O_TEXT) continue;
+            for (uint32_t j = 0; j < s->nrelocs; ++j) {
+                const unsigned char* r = o->input->data + s->relocs + 10 * (size_t)j;
+                uint32_t index = snx_ld_le32(r + 4);
+                if (snx_ld_le16(r + 8) != REL_A64_BRANCH26 || index >= o->nsymbols ||
+                    snx_ld_le16(symbol(o, index) + 12))
+                    continue;
+                snx_coff_symbol_name(o->strings, o->strings_size, symbol(o, index), name, sizeof(name));
+                snprintf(key, sizeof(key), "%zu:%s", i, name);
+                if (!snx_link_find(&l->veneer, key, &found)) snx_link_insert(&l->veneer, key, o->veneers++);
+            }
+        }
+    }
+}
+
+/* An ARM64 B or BL at p (RVA P) in object caller, to S with no addend in its field, which it does not reach: through
+   the caller's veneer for its symbol index, written into text (the .text image, at text_rva) to jump there. 0, or
+   SNX_LINK_RANGE when the caller has no veneer for the symbol or does not reach its own */
+static int veneer_branch(Link* l, size_t caller, uint32_t index, unsigned char* text, uint32_t text_rva,
+                         unsigned char* p, uint64_t P, uint64_t S) {
+    const Obj* o = &l->objs[caller];
+    char name[256], key[300];
+    size_t slot;
+    if (index >= o->nsymbols || snx_ld_le16(symbol(o, index) + 12)) return SNX_LINK_RANGE; /* its own definition */
+    snx_coff_symbol_name(o->strings, o->strings_size, symbol(o, index), name, sizeof(name));
+    snprintf(key, sizeof(key), "%zu:%s", caller, name);
+    if (!snx_link_find(&l->veneer, key, &slot)) return SNX_LINK_RANGE;
+    uint64_t at = o->island + (uint64_t)SNX_COFF_A64_VENEER_SIZE * slot;
+    int rc = snx_coff_a64_veneer(text + (at - text_rva), at, S, 0);
+    if (rc) return rc;
+    return snx_coff_a64_relocate(p, 4, REL_A64_BRANCH26, at, P, 0, 0);
+}
+
+/* .reloc's entry for the 8-byte address at rva: 0, or -1 out of memory */
+static int add_base(uint32_t** bases, uint32_t* nbases, uint32_t* cap_bases, uint32_t rva) {
+    if (*nbases == *cap_bases) {
+        uint32_t cap = *cap_bases ? *cap_bases * 2 : 1024;
+        uint32_t* grown = (uint32_t*)realloc(*bases, cap * sizeof(**bases));
+        if (!grown) return -1;
+        *bases = grown;
+        *cap_bases = cap;
+    }
+    (*bases)[(*nbases)++] = rva;
+    return 0;
+}
+
 static uint32_t section_alignment(const Sec* s) {
     uint32_t bits = (s->flags & SCN_ALIGN_MASK) >> 20;
     return bits ? 1u << (bits - 1) : 16;
@@ -298,6 +473,7 @@ int snx_link_coff(const SnxLinkInput* inputs, size_t count, const char* const* e
     uint32_t edata_rva = 0, edata_size = 0, *bases = NULL, nbases = 0, cap_bases = 0;
     SnxLinkBuffer image[O_COUNT] = {{0}}, out = {0};
     const char** sorted = NULL;
+    size_t* last_text = NULL; /* ARM64 with islands: each object's last code section in the order */
     int rc = -1, nout = 0, used[O_COUNT];
     *output = (SnxLinkOutput){0};
     l.error = error;
@@ -323,13 +499,34 @@ int snx_link_coff(const SnxLinkInput* inputs, size_t count, const char* const* e
             }
     sort_link = &l;
     qsort(order, norder, sizeof(Order), compare_order);
+    if (l.machine == COFF_ARM64) {
+        uint64_t text = 0;
+        for (size_t k = 0; k < norder; ++k) {
+            const Sec* s = &l.objs[order[k].object].sections[order[k].section];
+            if (s->output == O_TEXT) text = snx_align_up(text, section_alignment(s)) + s->size;
+        }
+        if (text >= VENEER_TEXT) {
+            count_veneers(&l);
+            /* each object's last code section in the order, which its island follows */
+            last_text = (size_t*)malloc(count * sizeof(*last_text));
+            if (!last_text) goto done;
+            for (size_t i = 0; i < count; ++i) last_text[i] = norder;
+            for (size_t k = 0; k < norder; ++k)
+                if (l.objs[order[k].object].sections[order[k].section].output == O_TEXT) last_text[order[k].object] = k;
+        }
+    }
     for (int o_index = 0; o_index < O_COUNT; ++o_index)
         for (size_t k = 0; k < norder; ++k) {
-            Sec* s = &l.objs[order[k].object].sections[order[k].section];
+            Obj* o = &l.objs[order[k].object];
+            Sec* s = &o->sections[order[k].section];
             if (s->output != o_index) continue;
             l.out_size[o_index] = snx_align_up(l.out_size[o_index], section_alignment(s));
             s->rva = l.out_size[o_index]; /* offset for now */
             l.out_size[o_index] += s->size;
+            if (last_text && last_text[order[k].object] == k && o->veneers) {
+                o->island = snx_align_up(l.out_size[O_TEXT], 4); /* offset for now */
+                l.out_size[O_TEXT] = o->island + SNX_COFF_A64_VENEER_SIZE * o->veneers;
+            }
         }
     if (l.imports.count) {
         l.out_size[O_DATA] = snx_align_up(l.out_size[O_DATA], 8);
@@ -361,11 +558,14 @@ int snx_link_coff(const SnxLinkInput* inputs, size_t count, const char* const* e
         Sec* s = &l.objs[order[k].object].sections[order[k].section];
         s->rva += l.out_rva[s->output];
     }
+    for (size_t i = 0; i < count; ++i)
+        if (l.objs[i].veneers) l.objs[i].island += l.out_rva[O_TEXT];
     edata_rva += l.out_rva[O_RDATA];
     l.imports_rva += l.out_rva[O_DATA];
     for (int o_index = 0; o_index < O_RELOC; ++o_index)
         if (o_index != O_BSS) snx_link_reserve(&image[o_index], l.out_size[o_index]);
-    if (l.out_size[O_TEXT]) memset(image[O_TEXT].data, 0xCC, l.out_size[O_TEXT]); /* int3 between functions */
+    /* between functions: int3 on x86-64, UDF #0 (zeros) on ARM64 */
+    if (l.out_size[O_TEXT]) memset(image[O_TEXT].data, l.machine == COFF_ARM64 ? 0 : 0xCC, l.out_size[O_TEXT]);
     for (size_t k = 0; k < norder; ++k) {
         const Obj* o = &l.objs[order[k].object];
         const Sec* s = &o->sections[order[k].section];
@@ -384,6 +584,12 @@ int snx_link_coff(const SnxLinkInput* inputs, size_t count, const char* const* e
             uint32_t at = snx_ld_le32(r), type = snx_ld_le16(r + 8), P = s->rva + at;
             uint64_t S;
             int absolute, target_section;
+            if (l.machine == COFF_ARM64) /* its data relocations, written as x86-64's below */
+                type = type == REL_A64_ABSOLUTE  ? REL_ABSOLUTE
+                       : type == REL_A64_ADDR64  ? REL_ADDR64
+                       : type == REL_A64_ADDR32  ? REL_ADDR32
+                       : type == REL_A64_SECTION ? REL_SECTION
+                                                 : type | A64_CODE;
             if (type == REL_ABSOLUTE) continue;
             if (at + 4 > s->size || (type == REL_ADDR64 && at + 8 > s->size)) {
                 snprintf(error, error_size, "%s: relocation outside section %s", o->input->name, s->name);
@@ -391,17 +597,30 @@ int snx_link_coff(const SnxLinkInput* inputs, size_t count, const char* const* e
             }
             if (resolve(&l, order[k].object, snx_ld_le32(r + 4), &S, &absolute, &target_section)) goto done;
             unsigned char* p = image[s->output].data + (P - l.out_rva[s->output]);
+            if (type & A64_CODE) {
+                uint64_t start = target_section >= 0 ? l.out_rva[target_section] : 0;
+                type &= ~A64_CODE;
+                /* the branch's addend, which its symbol's one veneer cannot hold for each branch */
+                int addend = type == REL_A64_BRANCH26 && (snx_ld_le32(p) & 0x3FFFFFFu);
+                int rc = snx_coff_a64_relocate(p, s->size - at, type, S, P, 0, start);
+                if (rc == SNX_LINK_RANGE && type == REL_A64_BRANCH26 && last_text && !addend)
+                    rc = veneer_branch(&l, order[k].object, snx_ld_le32(r + 4), image[O_TEXT].data, l.out_rva[O_TEXT],
+                                       p, P, S);
+                if (rc) {
+                    snprintf(error, error_size, "%s: ARM64 relocation %u at %s+%#x to RVA %#llx: %s%s", o->input->name,
+                             (unsigned)type, s->name, (unsigned)at, (unsigned long long)S, a64_refusal(rc),
+                             rc == SNX_LINK_RANGE && addend ? ", and a branch with an addend takes no veneer" : "");
+                    goto done;
+                }
+                continue;
+            }
             switch (type) {
                 case REL_ADDR64: {
                     uint64_t addend = (uint64_t)snx_ld_le32(p) | (uint64_t)snx_ld_le32(p + 4) << 32;
                     snx_st_le64(p, (absolute ? S : IMAGE_BASE + S) + addend);
-                    if (!absolute) {
-                        if (nbases == cap_bases) {
-                            cap_bases = cap_bases ? cap_bases * 2 : 1024;
-                            bases = (uint32_t*)realloc(bases, cap_bases * sizeof(*bases));
-                            if (!bases) goto done;
-                        }
-                        bases[nbases++] = P;
+                    if (!absolute && add_base(&bases, &nbases, &cap_bases, P)) {
+                        snprintf(error, error_size, "out of memory");
+                        goto done;
                     }
                     break;
                 }
@@ -442,16 +661,15 @@ int snx_link_coff(const SnxLinkInput* inputs, size_t count, const char* const* e
             snx_link_find(&l.globals, l.imports.keys[k] + 6, &found);
             if (resolve(&l, found >> 32, (uint32_t)found, &S, &absolute, &section)) goto done;
             snx_st_le64(image[O_DATA].data + (slot - l.out_rva[O_DATA]), IMAGE_BASE + S);
-            if (nbases == cap_bases) {
-                cap_bases = cap_bases ? cap_bases * 2 : 1024;
-                bases = (uint32_t*)realloc(bases, cap_bases * sizeof(*bases));
-                if (!bases) goto done;
+            if (add_base(&bases, &nbases, &cap_bases, slot)) {
+                snprintf(error, error_size, "out of memory");
+                goto done;
             }
-            bases[nbases++] = slot;
         }
     /* RtlLookupFunctionEntry binary-searches .pdata: sort the RUNTIME_FUNCTIONs by start address */
-    if (l.out_size[O_PDATA] % 12 == 0)
-        qsort(image[O_PDATA].data, l.out_size[O_PDATA] / 12, 12, snx_coff_compare_function);
+    size_t entry = snx_coff_function_size(l.machine);
+    if (l.out_size[O_PDATA] % entry == 0)
+        qsort(image[O_PDATA].data, l.out_size[O_PDATA] / entry, entry, snx_coff_compare_function);
     /* export directory */
     if (export_count) {
         uint32_t functions = edata_rva + 40, names = functions + 4 * (uint32_t)export_count,
@@ -527,7 +745,7 @@ int snx_link_coff(const SnxLinkInput* inputs, size_t count, const char* const* e
     snx_st_le32(p + 0x3C, 0x80);
     memcpy(p + 0x80, "PE\0\0", 4);
     p += 0x84;
-    snx_st_le16(p, 0x8664);
+    snx_st_le16(p, l.machine);
     snx_st_le16(p + 2, (uint32_t)nout);
     snx_st_le16(p + 16, 240);
     snx_st_le16(p + 18, 0x0002 | 0x0020 | 0x2000); /* executable image, large address aware, DLL */
@@ -591,5 +809,7 @@ done:
     snx_link_names_free(&l.globals);
     snx_link_names_free(&l.comdats);
     snx_link_names_free(&l.imports);
+    snx_link_names_free(&l.veneer);
+    free(last_text);
     return rc;
 }
