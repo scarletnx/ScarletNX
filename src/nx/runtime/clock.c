@@ -31,7 +31,8 @@ static u64 counter_read(void) {
 /* the clock's reading in nanoseconds: plat_ns, or the counter's under NCE, in the arithmetic of its stubs */
 static u64 clock_now(void) {
 #if defined(__aarch64__)
-    u64 hi = atomic_load_explicit(&g_clock.counter.mul_hi, memory_order_acquire);
+    /* the counter the NCE stubs read in place (words): a plain object, atomic here */
+    u64 hi = atomic_load_explicit((_Atomic u64*)&g_clock.counter.mul_hi, memory_order_acquire);
     if (hi) {
         u64 cnt = counter_read(), top;
         snx_mul_wide(cnt, g_clock.counter.mul_lo, &top);
@@ -86,7 +87,7 @@ int clock_from_counter(ClockCounter* out) {
     g_clock.counter.words = c.words;
     g_clock.counter.mul_lo = c.mul_lo;
     g_clock.counter.origin = c.origin;
-    atomic_store_explicit(&g_clock.counter.mul_hi, c.mul_hi,
+    atomic_store_explicit((_Atomic u64*)&g_clock.counter.mul_hi, c.mul_hi,
                           memory_order_release); /* last: a reader that sees it has the rest */
     *out = c;
     return 0;

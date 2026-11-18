@@ -262,7 +262,7 @@ static const struct {
 };
 enum { REMAP_COUNT = sizeof remaps / sizeof *remaps };
 static jmethodID remap_method(JNIEnv* env, jmethodID id) {
-    static jmethodID from[REMAP_COUNT], to[REMAP_COUNT];
+    static _Atomic jmethodID from[REMAP_COUNT], to[REMAP_COUNT];
     static _Atomic int ready;
     if (!id) return id;
     if (!atomic_load_explicit(&ready, memory_order_acquire)) {
