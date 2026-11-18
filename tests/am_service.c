@@ -615,7 +615,7 @@ static void test_cpu_boost(void) {
 static void resolution(int ounce, int tv, int setting, u32 w, u32 h, i32 want_w, i32 want_h) {
     i32 width = 0, height = 0;
     g_ounce = ounce;
-    g_settings.tv_mode = tv;
+    g_opt_tv_mode = tv;
     g_settings.tv_resolution = setting;
     display_w = w;
     display_h = h;
@@ -635,7 +635,7 @@ static void test_default_resolution(void) {
     resolution(0, 1, 2, 3840, 2160, 1920, 1080); /* a Switch game */
     resolution(1, 0, 2, 3840, 2160, 1280, 720);  /* handheld mode */
     g_ounce = 0;
-    g_settings.tv_mode = 0;
+    g_opt_tv_mode = 0;
     g_settings.tv_resolution = 0;
 }
 

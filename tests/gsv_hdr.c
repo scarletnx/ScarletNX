@@ -29,6 +29,7 @@ u8* g_mem;
 MemLayout g_layout;
 HleHost g_host;
 Settings g_settings;
+int g_opt_tv_mode; /* the TV mode in effect, which options.c keeps: handheld */
 int g_frames;
 u64 g_sync_shim_cpu;
 const Renderer* g_renderer;
@@ -242,9 +243,9 @@ static void max_resolution(void) {
     u8 r[12];
     u64 resolution = 0;
     request(r, DEFAULT_DISPLAY, 0);
-    g_settings.tv_mode = 1;
+    g_opt_tv_mode = 1;
     CHECK(!nn_vi2_IVi2Session_GetBufferMaxResolution(NULL, r, &resolution) && resolution == 8);
-    g_settings.tv_mode = 0;
+    g_opt_tv_mode = 0;
     CHECK(!nn_vi2_IVi2Session_GetBufferMaxResolution(NULL, r, &resolution) && resolution == 2);
     request(r, 0x1234, 0); /* no such display */
     CHECK(nn_vi2_IVi2Session_GetBufferMaxResolution(NULL, r, &resolution) != 0);
