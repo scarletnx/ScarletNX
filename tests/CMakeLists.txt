@@ -94,6 +94,11 @@ if(Python3_Interpreter_FOUND)
     add_test(NAME gnu_extensions COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/gnu_extensions.py"
                                          --repo "${PROJECT_SOURCE_DIR}")
 endif()
+# every C source of src/ compiled with -Werror=atomic-implicit-seq-cst, no test's own (cmake/atomic_explicit.cmake)
+if(Python3_Interpreter_FOUND AND CMAKE_EXPORT_COMPILE_COMMANDS)
+    add_test(NAME atomic_explicit COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/atomic_explicit_test.py"
+                                          "${PROJECT_BINARY_DIR}" "${PROJECT_SOURCE_DIR}")
+endif()
 # each native hook of a mod's trampoline (src/nx/hle/hook/ext_skyline.hooks) as the function's own native hook
 if(Python3_Interpreter_FOUND)
     add_test(NAME ext_skyline_hooks COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/ext_skyline_hooks.py")
