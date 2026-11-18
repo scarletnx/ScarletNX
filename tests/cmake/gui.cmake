@@ -155,7 +155,8 @@ if(BUILD_TESTING)
         set_tests_properties(gui_sdl_events PROPERTIES TIMEOUT 120 ENVIRONMENT "${gui_screen_env}")
     endif()
     # Saves (gui_saves_screen.c): its boxes and the picker's answers as gui_sdl's, with no picker of the desktop's
-    add_executable(snx-test-gui-saves-screen "${PROJECT_SOURCE_DIR}/tests/gui_saves_screen.c")
+    add_executable(snx-test-gui-saves-screen "${PROJECT_SOURCE_DIR}/tests/gui_saves_screen.c"
+                   "${PROJECT_SOURCE_DIR}/tests/support/ble_fake_system.c")
     target_link_libraries(snx-test-gui-saves-screen PRIVATE snx_gui_support snx_gui_ui scarletnx-common SDL3::SDL3
                           snx_window_icon snx_build_info snx_pad_sdl snx_gui_pad snx_splash snx_gui_languages_test snx_demangle)
     if(APPLE)
