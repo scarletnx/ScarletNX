@@ -170,9 +170,12 @@ bool vita_vk_init(const char* title, char* error, size_t error_size) {
     snx_vk_device_settings(&request, settings);
     SnxVkDevice device;
     if (!snx_vk_device_make(&request, &device, error, error_size)) {
-        /* a package whose driver lists no device that can draw: its name and this device's GPU, not the generic line */
+        /* a package whose driver lists no device at all: its name and this device's GPU, not the generic line. A device
+           it lists and the renderer refuses has its reason in error already */
         char said[512];
-        if (gpu_driver_no_device(said, sizeof said)) snprintf(error, error_size, "%s", said);
+        uint32_t listed = 0;
+        vkEnumeratePhysicalDevices(v->host.instance.instance, &listed, NULL);
+        if (!listed && gpu_driver_no_device(said, sizeof said)) snprintf(error, error_size, "%s", said);
         vita_vk_free();
         return false;
     }
