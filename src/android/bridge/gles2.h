@@ -9,8 +9,8 @@
                     and the HLE table of libGLESv2 and libGLESv3
    gles2_object.c   buffers, textures and their formats, samplers, renderbuffers, framebuffers, vertex arrays,
                     queries and sync objects
-   gles2_program.c  shaders and programs: glslc compiles each stage, the binding map places the resources, the
-                    stages are linked by name, and the loose uniforms live in a buffer of each stage
+   gles2_program.c  shaders and programs: the shared GL layer's (common/gpu/gl/gl_program.h), and each program's
+                    Vulkan objects, made from its link
    gles2_draw.c     the render targets (dynamic rendering), the pipelines from the GL state at draw time, the draws,
                     clears, glReadPixels, blits and copies
 
@@ -18,6 +18,7 @@
    call that reaches Vulkan holds g_gles_vk.lock */
 #include "android/bridge/gles_vk.h"
 #include "android/bridge/hle.h"
+#include "common/gpu/gl/gl_program.h"
 #include "common/gpu/gl/gl_state.h"
 #include "common/cpu/aarch64/cpu.h"
 #include "glslc/glslc.h"
@@ -183,102 +184,17 @@ typedef struct {
     uint64_t serial;
 } G2Sync;
 
+/* a program's Vulkan objects, made from its link (common/gpu/gl/gl_program.h) at its first draw, by name - 1 */
 typedef struct {
-    bool used, deleted, compiled;
-    unsigned type; /* GL_VERTEX_SHADER, GL_FRAGMENT_SHADER, GL_COMPUTE_SHADER */
-    char* source;
-    size_t length;
-    char* log;
-    unsigned attached; /* how many programs have it */
-} G2Shader;
-
-/* a uniform of a program, as GL lists them: a default block's member (of a stage or both), a block's member, or a
-   sampler */
-typedef struct {
-    uint32_t name;       /* the offset of its name in the program's names */
-    unsigned type;       /* GL_FLOAT_VEC4, GL_SAMPLER_2D and the others */
-    uint16_t count;      /* elements of an array, 1 for others */
-    int16_t block;       /* the uniform block's index, -1 for the default block */
-    int32_t offset[3];   /* in each stage's default block (or the block), -1 where the stage has none */
-    uint16_t array_stride, matrix_stride;
-    int32_t location;    /* the first element's, -1 in a block */
-    int32_t sampler;     /* the index of its first unit in the program's units, -1 when not a sampler */
-} G2Uniform;
-
-/* a descriptor binding of a program's set */
-typedef struct {
-    uint32_t name;     /* its name in names: a sampler's or a block's */
-    uint8_t kind;      /* SNX_GLSLC_REFLECT_SAMPLER, IMAGE, UNIFORM_BLOCK or BUFFER_BLOCK; UNIFORM_BLOCK with an
-                          empty name is a stage's default block */
-    uint8_t stage;     /* a default block's stage */
-    uint8_t dim;       /* a sampler's G2_T*, from its SPIR-V type */
-    uint8_t texel_buffer;
-    uint16_t count;    /* descriptors */
-    uint16_t binding;
-    uint16_t first;    /* a sampler's first unit in the program's units; a block's index */
-    uint32_t size;     /* a block's bytes */
-} G2Binding;
-
-typedef struct {
-    uint32_t name;
-    unsigned type;
-    uint16_t count;    /* elements of an array */
-    uint8_t base;      /* GlslcBase */
-    uint8_t columns;   /* locations each element takes */
-    int32_t location;  /* GL's */
-    int32_t spirv;     /* the module's */
-} G2Input;
-
-typedef struct {
-    bool used, deleted, linked;
-    bool separable; /* GL_PROGRAM_SEPARABLE: it links without the other stage */
-    bool hidden;    /* a program pipeline's stages linked together, which GL does not name */
-    unsigned shaders[3]; /* the vertex, fragment and compute shaders attached */
-    char* log;
-    /* glBindAttribLocation's: name\0 pairs with their location, at the next link */
-    char* bound;
-    size_t bound_size;
-    /* the link's */
-    uint32_t generation; /* counts the links: the pipelines of an older one are stale */
+    uint32_t generation; /* the link's they were made from, 0 for none */
     VkShaderModule modules[3];
     VkDescriptorSetLayout set_layout;
     VkPipelineLayout layout;
     VkPipeline compute;
-    G2Binding* bindings;
-    uint32_t binding_count;
-    G2Uniform* uniforms;
-    uint32_t uniform_count;
-    uint32_t location_count; /* the uniform locations: one for each element */
-    int32_t* locations;      /* location to uniform index * 65536 + element */
-    G2Input* inputs;
-    uint32_t input_count;
-    G2Input* outputs; /* a fragment shader's, for glGetFragDataLocation */
-    uint32_t output_count;
-    uint32_t block_count;    /* the uniform blocks: bindings with kind UNIFORM_BLOCK and a name */
-    unsigned block_binding[G2_UBO_BINDINGS];
-    int32_t* units;          /* each sampler element's texture unit */
-    uint32_t unit_count;
-    char* names;
-    size_t names_size;
-    unsigned char* defaults[3]; /* each stage's default uniform block */
-    uint32_t default_size[3];
-    uint32_t default_binding[3];
-    bool default_dirty[3];
-    G2Ref default_ref[3];
-    uint64_t default_serial[3];
-    uint32_t local_size[3];
-} G2Program;
-
-/* GLES 3.1's program pipeline: a separable program for each stage. A draw uses a hidden program linked from the
-   stages' shaders, its uniforms copied from theirs */
-typedef struct {
-    bool used;
-    unsigned stages[3]; /* the vertex, fragment and compute stages' programs */
-    unsigned active;    /* glActiveShaderProgram's, for glUniform* */
-    unsigned linked;    /* the hidden program */
-    uint32_t generations[2]; /* of the vertex and fragment programs it was linked from */
-    unsigned names[2];
-} G2ProgramPipeline;
+    G2Ref default_ref[3];         /* each stage's default block in its frame's arena */
+    uint32_t default_uploaded[3]; /* the program's default_serial it holds */
+    uint64_t default_frame[3];    /* the frame it went into */
+} G2ProgramVk;
 
 /* the current values of the generic attributes (glVertexAttrib4f) */
 typedef struct {
@@ -302,8 +218,6 @@ typedef struct Gles2Context {
     unsigned active;
     unsigned textures[G2_UNITS][G2_TARGETS];
     unsigned samplers[G2_UNITS];
-    unsigned program;
-    unsigned program_pipeline;
     /* the bindings */
     unsigned array_buffer, copy_read, copy_write, pixel_pack, pixel_unpack, uniform_buffer, tf_buffer;
     G2IndexedBuffer uniform_buffers[G2_UBO_BINDINGS];
@@ -360,12 +274,7 @@ typedef struct {
     size_t query_count;
     G2Sync* syncs;
     size_t sync_count;
-    G2Shader* shaders;
-    size_t shader_count;
-    G2Program* programs;
-    size_t program_count;
-    G2ProgramPipeline* program_pipelines;
-    size_t program_pipeline_count;
+    G2ProgramVk program_vk[SNX_GL_PROGRAM_NAMES];
     /* the Vulkan samplers by their state */
     struct {
         G2SamplerState state;
@@ -382,11 +291,7 @@ typedef struct {
     VkDescriptorSetLayout expand_set;
     VkPipelineLayout expand_layout;
     VkPipeline expand;
-    /* glslc's workspace and module, used under the lock */
-    GlslcWorkspace workspace;
-    uint32_t* words;
-    GlslcResult result;
-    bool said[24]; /* the warnings said once */
+    bool said[26];         /* the warnings said once */
     char extensions[1024]; /* GL_EXTENSIONS, joined at its first query */
     G2Format astc[28];     /* the ASTC formats' entries, made at their first use */
 } Gles2;
@@ -429,7 +334,6 @@ G2Texture* gles2_texture(unsigned name);
 G2Renderbuffer* gles2_renderbuffer(unsigned name);
 G2Framebuffer* gles2_framebuffer(unsigned name);
 G2VertexArray* gles2_vertex_array(Gles2Context* gl); /* the bound one */
-G2Program* gles2_program(unsigned name);
 const G2SamplerState* gles2_unit_sampler(Gles2Context* gl, unsigned unit, const G2Texture* t);
 VkSampler gles2_vk_sampler(const G2SamplerState* state, bool integer);
 /* the buffer's range as commands read it in the frame of slot; writes: the GPU writes it */
@@ -466,11 +370,15 @@ VkImageView gles2_image_unit(Gles2Context* gl, unsigned unit, uint8_t dim);
 void gles2_memory_barrier(VkCommandBuffer cb);
 
 /* gles2_program.c */
-/* the program a draw (or a dispatch, compute) uses: the current one, else the bound program pipeline's; NULL for
-   none */
-G2Program* gles2_draw_program(Gles2Context* gl, bool compute);
-/* the default block's of program p written to the frame's arena when they changed: true when each stage's is */
-bool gles2_program_defaults(GlesSlot* slot, G2Program* p);
+/* the shared layer's programs tell this file when a link is gone, and say what does not compile or link */
+void gles2_programs_init(void);
+/* the program a draw (or a dispatch, compute) uses: the current one, else the bound program pipeline's; 0 for none */
+uint32_t gles2_draw_program(Gles2Context* gl, bool compute);
+/* a linked program's Vulkan objects, made now for its link when they are not: NULL (said once) when Vulkan refuses */
+G2ProgramVk* gles2_program_vk(uint32_t name);
+/* each stage's default block of a program written to the frame's arena when it changed or the frame is new: true when
+   every one is there */
+bool gles2_program_defaults(GlesSlot* slot, uint32_t name);
 
 /* gles2_draw.c */
 /* the render target of the bound draw framebuffer, open in the frame: false when it cannot be drawn into */
@@ -478,7 +386,7 @@ bool gles2_rendering_begin(Gles2Context* gl);
 /* the rendering of the frame ended, if open (before a copy into its images) */
 void gles2_rendering_stop(Gles2Context* gl);
 /* the pipelines made for a program's link, retired before it links again or goes */
-void gles2_pipelines_forget(const G2Program* p);
+void gles2_pipelines_forget(uint32_t program);
 /* the textures and renderbuffers that a framebuffer's views were made of are gone or changed */
 void gles2_target_forget(void);
 /* glReadPixels's copy of a rectangle of the read framebuffer into host-cached memory, then into pixels */

@@ -195,7 +195,10 @@ alpha test, mipmaps, the second texture unit, and `glReadPixels`, which reads ze
 
 **GLES 2, 3.0 and 3.1** (`gles2.c`, `gles2_object.c`, `gles2_program.c`, `gles2_draw.c`) are done as Mesa's zink does them:
 
-- **Shaders** compile with glslc (`docs/layers/gpu/glslc.md`). `glCompileShader` compiles for the errors and the info log.
+- **Shaders** and programs are the shared GL layer's (`src/common/gpu/gl/gl_program.c`, which the console's GL games
+  use too): flat records and a byte arena a save state holds, while each program's Vulkan objects (its modules and
+  layouts) are the bridge's, made from the link at its first draw. They compile with glslc (`docs/layers/gpu/glslc.md`).
+  `glCompileShader` compiles for the errors and the info log.
   `glLinkProgram` compiles each stage again with a binding map: binding 0 of the program's set is the vertex
   shader's default uniform block, 1 the fragment shader's, then each sampler, image and block of one name at one
   binding for both stages. The link writes the vertex outputs' locations into the fragment shader's inputs of the

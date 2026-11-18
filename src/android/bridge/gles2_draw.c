@@ -440,7 +440,7 @@ static uint8_t topology_class(unsigned mode) {
     return mode == GL_POINTS_ ? 0 : mode <= GL_LINE_STRIP_ ? 1 : 2;
 }
 
-static VkPipeline pipeline(const G2Program* p, const G2PipelineKey* k) {
+static VkPipeline pipeline(const G2ProgramVk* p, const G2PipelineKey* k) {
     uint64_t hash = snx_fnv1a(SNX_FNV_BASIS, k, sizeof *k);
     if (g_gles2.pipeline_capacity) {
         for (size_t i = hash & (g_gles2.pipeline_capacity - 1);; i = (i + 1) & (g_gles2.pipeline_capacity - 1)) {
@@ -572,10 +572,9 @@ static VkPipeline pipeline(const G2Program* p, const G2PipelineKey* k) {
     return made;
 }
 
-void gles2_pipelines_forget(const G2Program* p) {
+void gles2_pipelines_forget(uint32_t name) {
     size_t cap = g_gles2.pipeline_capacity;
     if (!cap) return;
-    uint32_t name = (uint32_t)(p - g_gles2.programs);
     /* the table without them, entries moved back to fill the gaps of open addressing */
     G2PipelineEntry* table = calloc(cap, sizeof *table);
     if (!table) return;
@@ -686,12 +685,12 @@ typedef struct {
 
 /* the vertex inputs of p for the vertices [lo, hi] and the instances [0, instances): the key's formats and rates,
    and the buffers. A client array's range is copied into the frame's arena */
-static bool vertex_inputs(Gles2Context* gl, GlesSlot* slot, const G2Program* p, uint32_t lo, uint32_t hi,
+static bool vertex_inputs(Gles2Context* gl, GlesSlot* slot, const SnxGlProgram* p, uint32_t lo, uint32_t hi,
                           uint32_t instances, G2PipelineKey* key, Vertices* v) {
     G2VertexArray* vao = gles2_vertex_array(gl);
     *v = (Vertices){0};
     for (uint32_t i = 0; i < p->input_count; ++i) {
-        const G2Input* in = &p->inputs[i];
+        const SnxGlInput* in = &snx_gl_program_inputs(p)[i];
         if (in->location < 0 || in->spirv < 0) continue;
         for (uint32_t e = 0; e < (uint32_t)in->count * in->columns; ++e) {
             uint32_t index = (uint32_t)in->location + e, loc = (uint32_t)in->spirv + e;
@@ -803,14 +802,18 @@ static bool zeros_ref(GlesSlot* slot, G2Ref* out) {
 enum { MAX_DESCRIPTORS = 96 };
 
 /* the program's set for the draw: written, or the last draw's when nothing changed */
-static VkDescriptorSet descriptor_set(Gles2Context* gl, GlesSlot* slot, G2Program* p) {
-    if (!gles2_program_defaults(slot, p)) return VK_NULL_HANDLE;
+static VkDescriptorSet descriptor_set(Gles2Context* gl, GlesSlot* slot, uint32_t name) {
+    if (!gles2_program_defaults(slot, name)) return VK_NULL_HANDLE;
+    const SnxGlProgram* p = snx_gl_program(name);
+    const G2ProgramVk* m = &g_gles2.program_vk[name - 1];
+    const SnxGlBinding* bindings = snx_gl_program_bindings(p);
+    const int32_t* units = snx_gl_program_units(p);
     VkDescriptorImageInfo images[MAX_DESCRIPTORS];
     VkDescriptorBufferInfo buffers[MAX_DESCRIPTORS];
     VkWriteDescriptorSet writes[64];
     uint32_t ni = 0, nb = 0, nw = 0;
     for (uint32_t i = 0; i < p->binding_count && nw < 64; ++i) {
-        const G2Binding* b = &p->bindings[i];
+        const SnxGlBinding* b = &bindings[i];
         VkWriteDescriptorSet w = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstBinding = b->binding,
                                   .descriptorCount = b->count};
         if (b->kind == SNX_GLSLC_REFLECT_SAMPLER && !b->texel_buffer) {
@@ -818,7 +821,7 @@ static VkDescriptorSet descriptor_set(Gles2Context* gl, GlesSlot* slot, G2Progra
             w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
             w.pImageInfo = &images[ni];
             for (uint32_t k = 0; k < b->count; ++k) {
-                int32_t unit = p->units[b->first + k];
+                int32_t unit = units[b->first + k];
                 G2Texture* t = gles2_unit_texture(gl, (unsigned)unit, b->dim);
                 int levels = 0;
                 VkImageView view = VK_NULL_HANDLE;
@@ -859,8 +862,8 @@ static VkDescriptorSet descriptor_set(Gles2Context* gl, GlesSlot* slot, G2Progra
             for (uint32_t k = 0; k < b->count; ++k) {
                 VkDeviceSize size = b->size ? b->size : 16;
                 if (!b->name) { /* a stage's default block */
-                    buffers[nb++] = (VkDescriptorBufferInfo){p->default_ref[b->stage].buffer,
-                                                             p->default_ref[b->stage].offset, size};
+                    buffers[nb++] = (VkDescriptorBufferInfo){m->default_ref[b->stage].buffer,
+                                                             m->default_ref[b->stage].offset, size};
                     continue;
                 }
                 bool uniform = b->kind == SNX_GLSLC_REFLECT_UNIFORM_BLOCK;
@@ -912,11 +915,11 @@ static VkDescriptorSet descriptor_set(Gles2Context* gl, GlesSlot* slot, G2Progra
         writes[nw++] = w;
     }
     /* the set as the last draw had it: the same contents of the same layout in this frame */
-    uint64_t hash = snx_fnv1a(SNX_FNV_BASIS, &p->set_layout, sizeof p->set_layout);
+    uint64_t hash = snx_fnv1a(SNX_FNV_BASIS, &m->set_layout, sizeof m->set_layout);
     hash = snx_fnv1a(hash, images, ni * sizeof *images);
     hash = snx_fnv1a(hash, buffers, nb * sizeof *buffers);
     if (g_draw.set && g_draw.set_hash == hash && g_draw.set_serial == gles_vk_pending()) return g_draw.set;
-    VkDescriptorSet set = gles_vk_set(slot, p->set_layout);
+    VkDescriptorSet set = gles_vk_set(slot, m->set_layout);
     if (!set) return VK_NULL_HANDLE;
     for (uint32_t i = 0; i < nw; ++i) writes[i].dstSet = set;
     V.vk.vkUpdateDescriptorSets(V.device, nw, writes, 0, NULL);
@@ -1048,9 +1051,11 @@ static void draw(Gles2Context* gl, unsigned mode, int32_t first, int32_t count, 
         gles2_error(gl, GL_INVALID_VALUE_);
         return;
     }
-    G2Program* p = gles2_draw_program(gl, false);
+    uint32_t name = gles2_draw_program(gl, false);
+    const SnxGlProgram* p = snx_gl_program(name);
+    const G2ProgramVk* m = gles2_program_vk(name);
     GlesSurface* s = gles2_surface(gl);
-    if (!p || !p->linked || !p->modules[0] || (!indirect && (!count || !instances)) || !s) return;
+    if (!p || !m || !m->modules[0] || (!indirect && (!count || !instances)) || !s) return;
     if (!V.v13) return;
     if (!gles_frame_begin(s)) return;
     GlesSlot* slot = &s->slots[s->slot];
@@ -1138,12 +1143,12 @@ static void draw(Gles2Context* gl, unsigned mode, int32_t first, int32_t count, 
     }
     G2Ref command = {0};
     if (indirect && !gles2_buffer_ref(slot, indirect, false, &command)) return;
-    VkDescriptorSet set = descriptor_set(gl, slot, p);
+    VkDescriptorSet set = descriptor_set(gl, slot, name);
     if (!set) return;
     if (!gles2_rendering_begin(gl)) return;
     const Target* t = &g_draw.open;
     /* the pipeline's state */
-    key.program = (uint32_t)(p - g_gles2.programs);
+    key.program = name;
     key.generation = p->generation;
     for (int i = 0; i < G2_COLORS; ++i) key.colors[i] = (uint32_t)t->colors[i];
     key.depth = (uint32_t)t->depth;
@@ -1171,17 +1176,17 @@ static void draw(Gles2Context* gl, unsigned mode, int32_t first, int32_t count, 
         key.sample_mask &= gles2_fixed(gl)->coverage_invert ? ~coverage : coverage;
     }
     if (!V.depth_clip_control) gles2_warn(15, "the device has no VK_EXT_depth_clip_control: depth is [0, 1] of GL's");
-    VkPipeline pl = pipeline(p, &key);
+    VkPipeline pl = pipeline(m, &key);
     if (!pl) return;
     VkCommandBuffer cb = slot->cb;
     V.vk.vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pl);
     dynamic_state(gl, cb, t, mode);
-    V.vk.vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, p->layout, 0, 1, &set, 0, NULL);
+    V.vk.vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, m->layout, 0, 1, &set, 0, NULL);
     /* gl_FragCoord.y and gl_PointCoord.y as GL has them: the window's from the bottom, a framebuffer's points' t
        from the top */
     float flip[4] = {-1, (float)t->extent.height, 1, 0};
     if (!t->flip) flip[0] = 1, flip[1] = 0, flip[2] = -1, flip[3] = 1;
-    V.vk.vkCmdPushConstants(cb, p->layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof flip, flip);
+    V.vk.vkCmdPushConstants(cb, m->layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof flip, flip);
     for (uint32_t loc = 0; loc < G2_ATTRIBS; ++loc)
         if (vertices.used & (1u << loc))
             V.vk.vkCmdBindVertexBuffers2(cb, loc, 1, &vertices.buffers[loc], &vertices.offsets[loc], NULL,
@@ -1269,36 +1274,39 @@ static void g_draw_elements_indirect(CPU* c, Gles2Context* gl) {
    the writes before visible to the dispatch and its writes to what follows (GLES 3.1 asks a glMemoryBarrier for
    those; one here costs little and keeps the GPU's order) */
 static void dispatch(Gles2Context* gl, uint32_t x, uint32_t y, uint32_t z, G2Buffer* indirect, uint64_t offset) {
-    G2Program* p = gles2_draw_program(gl, true);
-    if (!p || !p->linked || !p->modules[2]) {
+    uint32_t name = gles2_draw_program(gl, true);
+    const SnxGlProgram* p = snx_gl_program(name);
+    if (!p || !p->linked || !p->spirv_words[2]) {
         gles2_error(gl, GL_INVALID_OPERATION_);
         return;
     }
+    G2ProgramVk* m = gles2_program_vk(name);
+    if (!m) return;
     if (!V.v13) return;
     GlesSlot* slot = gles2_transfer_slot(gl);
     if (!slot) return;
-    if (!p->compute) {
+    if (!m->compute) {
         VkComputePipelineCreateInfo info = {.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
                                             .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
                                                       .stage = VK_SHADER_STAGE_COMPUTE_BIT,
-                                                      .module = p->modules[2],
+                                                      .module = m->modules[2],
                                                       .pName = "main"},
-                                            .layout = p->layout};
-        if (V.vk.vkCreateComputePipelines(V.device, VK_NULL_HANDLE, 1, &info, NULL, &p->compute) != VK_SUCCESS) {
-            p->compute = VK_NULL_HANDLE;
+                                            .layout = m->layout};
+        if (V.vk.vkCreateComputePipelines(V.device, VK_NULL_HANDLE, 1, &info, NULL, &m->compute) != VK_SUCCESS) {
+            m->compute = VK_NULL_HANDLE;
             gles2_warn(22, "Vulkan does not make a compute pipeline of a program");
             return;
         }
     }
     G2Ref command = {0};
     if (indirect && !gles2_buffer_ref(slot, indirect, false, &command)) return;
-    VkDescriptorSet set = descriptor_set(gl, slot, p);
+    VkDescriptorSet set = descriptor_set(gl, slot, name);
     if (!set) return;
     /* descriptor_set may have recorded copies (a texture made for a sampler): the slot's frame is the same */
     VkCommandBuffer cb = slot->cb;
     gles2_memory_barrier(cb);
-    V.vk.vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, p->compute);
-    V.vk.vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, p->layout, 0, 1, &set, 0, NULL);
+    V.vk.vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, m->compute);
+    V.vk.vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, m->layout, 0, 1, &set, 0, NULL);
     if (indirect) V.vk.vkCmdDispatchIndirect(cb, command.buffer, command.offset + offset);
     else V.vk.vkCmdDispatch(cb, x, y, z);
     gles2_memory_barrier(cb);
