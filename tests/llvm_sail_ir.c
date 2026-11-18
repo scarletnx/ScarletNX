@@ -99,11 +99,20 @@ static const struct {
 };
 #define SEQUENCES (sizeof sequences / sizeof *sequences)
 
+/* guest memory for the loads and stores: each side's own, guest address 0 MEMORY_ZERO bytes in, the same random
+   bytes in both before each run. The address registers of a load or store are made 0x1000 to 0x1ff0 (16-aligned, so
+   the exclusives and the atomics are aligned host atomics), so every access lands below MEMORY_TOUCHED, which a run
+   compares and puts back; a literal reaches pc 0x1000 plus or minus 1 MiB, which only loads read */
+#define MEMORY_SIZE    (4u << 20)
+#define MEMORY_ZERO    (2u << 20)
+#define MEMORY_TOUCHED 0x14000u
+
 static struct {
     u64 seed;
     FILE* report;
     unsigned failures;
     unsigned undef, sev, wfe; /* the UNDEFs a step raised, its runtime calls for SEV and WFE */
+    u8 memory[3][MEMORY_SIZE]; /* each side's guest memory, and the bytes both start from (run_compare) */
     size_t outcomes[4];
 } g_test;
 
@@ -513,15 +522,6 @@ static void on_wfe(CPU* c) {
     ++g_test.wfe;
 }
 
-/* guest memory for the loads and stores: each side's own, guest address 0 MEMORY_ZERO bytes in, the same random
-   bytes in both before each run. The address registers of a load or store are made 0x1000 to 0x1ff0 (16-aligned, so
-   the exclusives and the atomics are aligned host atomics), so every access lands below MEMORY_TOUCHED, which a run
-   compares and puts back; a literal reaches pc 0x1000 plus or minus 1 MiB, which only loads read */
-#define MEMORY_SIZE    (4u << 20)
-#define MEMORY_ZERO    (2u << 20)
-#define MEMORY_TOUCHED 0x14000u
-static u8 g_memory[3][MEMORY_SIZE];
-
 /* a load or store's start: its address registers in the window; for a store-exclusive the monitor armed at its
    address in some states, with the value there (it stores) or another (it fails), for the size its own load-exclusive
    arms: STXR's, and STXP's of doublewords (ldxp's 0x13). A pair of words is left unarmed: its generated emitter is a
@@ -539,8 +539,8 @@ static void ldst_start(CPU* c, u32 word, unsigned s) {
     if (insn.op == SNX_A64_OP_STXR || (insn.op == SNX_A64_OP_STXP && insn.args.sz == 3)) {
         c->excl_on = 1;
         c->excl_addr = address;
-        memcpy(&c->excl_val, g_memory[2] + MEMORY_ZERO + address, 8);
-        memcpy(&c->excl_val2, g_memory[2] + MEMORY_ZERO + address + 8, 8);
+        memcpy(&c->excl_val, g_test.memory[2] + MEMORY_ZERO + address, 8);
+        memcpy(&c->excl_val2, g_test.memory[2] + MEMORY_ZERO + address + 8, 8);
         if (s & 2) c->excl_val = ~c->excl_val;
         c->excl_size = insn.op == SNX_A64_OP_STXP ? 0x13 : (u32)insn.args.sz;
     }
@@ -552,10 +552,10 @@ static int run_compare(const u32* words, size_t count, unsigned states) {
     RtAPI rt = {.undef = on_undef, .sev = on_sev, .wfe = on_wfe, .cas128 = snx_runtime_cas128};
     for (size_t i = 0; i < MEMORY_SIZE; i += 8) {
         u64 v = rnd();
-        memcpy(g_memory[2] + i, &v, 8);
+        memcpy(g_test.memory[2] + i, &v, 8);
     }
-    memcpy(g_memory[0], g_memory[2], MEMORY_SIZE);
-    memcpy(g_memory[1], g_memory[2], MEMORY_SIZE);
+    memcpy(g_test.memory[0], g_test.memory[2], MEMORY_SIZE);
+    memcpy(g_test.memory[1], g_test.memory[2], MEMORY_SIZE);
     for (int k = 0; k < 2; ++k) {
         if (llvm_steps_begin(&set[k], 0, LLVM_STEPS_HOST, error, sizeof error)) return snx_error("%s", error);
         if (k == 0) {
@@ -586,17 +586,17 @@ static int run_compare(const u32* words, size_t count, unsigned states) {
             start.pc = 0x1000;
             for (int k = 0; k < 2; ++k) {
                 end[k] = start;
-                end[k].mem = g_memory[k] + MEMORY_ZERO;
+                end[k].mem = g_test.memory[k] + MEMORY_ZERO;
                 g_test.undef = g_test.sev = g_test.wfe = 0;
                 next[k] = set[k].steps[i](&end[k]);
                 undef[k] = g_test.undef;
                 sev[k] = g_test.sev;
                 wfe[k] = g_test.wfe;
             }
-            memory = ldst && memcmp(g_memory[0] + MEMORY_ZERO, g_memory[1] + MEMORY_ZERO, MEMORY_TOUCHED);
+            memory = ldst && memcmp(g_test.memory[0] + MEMORY_ZERO, g_test.memory[1] + MEMORY_ZERO, MEMORY_TOUCHED);
             if (ldst)
                 for (int k = 0; k < 2; ++k)
-                    memcpy(g_memory[k] + MEMORY_ZERO, g_memory[2] + MEMORY_ZERO, MEMORY_TOUCHED);
+                    memcpy(g_test.memory[k] + MEMORY_ZERO, g_test.memory[2] + MEMORY_ZERO, MEMORY_TOUCHED);
             if (next[0] != next[1] || undef[0] != undef[1] || sev[0] != sev[1] || wfe[0] != wfe[1] ||
                 memcmp(end[0].x, end[1].x, sizeof end[0].x) || end[0].n != end[1].n || end[0].z != end[1].z ||
                 end[0].cf != end[1].cf || end[0].vf != end[1].vf || end[0].pc != end[1].pc ||
