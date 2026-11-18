@@ -260,6 +260,31 @@ static struct {
     u64 content[2];
 } g_astc_key;
 u64 vk_bc7_strip_blocks(void) { abort(); }
+/* the ASTC stream on the compute queue (astc.c): no texture here goes to it, so its images take the graphics queue
+   alone and nothing else of it runs */
+int vk_astc_stream_fits(const Surf* t) {
+    (void)t;
+    return 0;
+}
+void vk_both_queues(VkSharingMode* mode, u32* count, const u32** families) {
+    *mode = VK_SHARING_MODE_EXCLUSIVE;
+    *count = 0;
+    *families = NULL;
+}
+VkCommandBuffer vk_astc_stream_cmd(void) { abort(); }
+VkBuffer vk_astc_stream_bl(u64 size, u64* cap_out) {
+    (void)size, (void)cap_out;
+    abort();
+}
+u8* vk_stream_upload(u64 size, u64 align, VkBuffer* buf, u64* off) {
+    (void)size, (void)align, (void)buf, (void)off;
+    abort();
+}
+int vk_release_pending(u64 gva, u64 len) {
+    (void)gva, (void)len;
+    abort();
+}
+const Renderer* g_renderer; /* read by the stream's check alone */
 /* the blocks a texture held as BC7 keeps for its BC7 image (astc.c): a buffer in name only, which no case here reads */
 int vk_astc_keep(Surf* t) {
     t->bc7.kept = (VkBuffer)(uintptr_t)0xB7;
