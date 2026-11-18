@@ -12,8 +12,9 @@ name: Pull request checks
 #   console maker's name as a word and the names of piracy sites; and the documentation held to the checkout
 #   (scripts/check-docs.py): links and anchors that resolve, the ## Index of each long doc, docs/README.md linking
 #   every doc, docs/user/settings.md saying each key and default settings.txt has, and docs/layers/gpu/driver-quirks.md
-#   showing each line of the extension ban table as --bans writes it. Both read files build.yml skips a
-#   pull request for (those no build or test reads), so they run on every pull request
+#   showing each line of the extension ban table as --bans writes it; and CLAUDE.md and .claude/'s Markdown in
+#   ASD-STE100 (.claude/skills/ste100/check.py, the ctest claude_ste100). All three read files build.yml skips a pull
+#   request for, so they run on every pull request
 # Each run of a check checks all it stands for, so its newest run on a commit is the whole answer. A ruleset of main
 # that held the merge would require them by the names they run under: "Title and assignees" and "Tracked material and
 # docs".
@@ -154,3 +155,9 @@ jobs:
         run: |
           python3 tests/docs_test.py
           python3 scripts/check-docs.py
+      # also after the steps before it failed, so the run says each
+      - name: Claude files in ASD-STE100, the checker's self-test then the checkout
+        if: ${{ !cancelled() }}
+        run: |
+          sh .claude/skills/ste100/test/test-check.sh
+          python3 .claude/skills/ste100/check.py --all
