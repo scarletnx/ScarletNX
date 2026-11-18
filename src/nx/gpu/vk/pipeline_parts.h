@@ -87,6 +87,7 @@ u32 vk_pipe_dynamic(u32 parts, const PipeDynIn* in, VkDynamicState* out);
 typedef struct {
     u32 topo_class;
     VertexLayout vi;
+    u32 fetch; /* PipeKey.fetch: no vertex input state, none of it dynamic */
     u32 heaps; /* PipeKey.heaps: a library of heaps links only with others of heaps (in each part's key) */
 } PipeViKey;
 typedef struct {

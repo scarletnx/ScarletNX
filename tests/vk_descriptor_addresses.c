@@ -30,6 +30,7 @@ typedef struct {
 } DevMemInfo;
 static struct {
     int has_descriptor_buffers, has_descriptor_heap_support, has_descriptor_heaps;
+    int has_gbuf_address; /* vk_buffer_create adds device-address usage with it: 0 here */
     VkPhysicalDeviceDescriptorBufferPropertiesEXT descriptor_props;
     VkPhysicalDeviceFeatures feat;
     VkDevice dev;

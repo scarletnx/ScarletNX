@@ -171,9 +171,12 @@ static VkShaderStageFlags next_stages(VkShaderStageFlagBits stage) {
 /* The object of st made, from the binary of an earlier run where the file has one the driver takes, else compiled
    from words and its binary kept. VK_NULL_HANDLE when the device refuses it */
 static VkShaderEXT stage_create(const SoStage* st, const u32* words, size_t count) {
-    VkDescriptorSetLayout sets[5];
-    for (u32 s = 0; s < g_vk_stage_sets; s++) sets[s] = g_vk_dslayout[(st->arrays >> s) & 1][s];
-    VkPushConstantRange pc = {VK_PUSH_STAGES, 0, 128}; /* vk_playout's */
+    /* vk_playout's sets: with split sets, each stage's textures five after its buffers */
+    VkDescriptorSetLayout sets[11];
+    u32 nsets = g_spirv_translate.split_sets ? 10 : g_vk_stage_sets;
+    for (u32 s = 0; s < nsets; s++) sets[s] = g_vk_dslayout[(st->arrays >> (s % 5)) & 1][s];
+    if (g_spirv_translate.tex_table) sets[nsets++] = vk_table_layout(); /* at table_set */
+    VkPushConstantRange pc = {VK_PUSH_STAGES, 0, vk_push_bytes()};      /* vk_playout's */
     u32 values[SH_SPEC_COUNT];
     VkSpecializationMapEntry entries[SH_SPEC_COUNT];
     VkSpecializationInfo spec = {0};
@@ -193,7 +196,7 @@ static VkShaderEXT stage_create(const SoStage* st, const u32* words, size_t coun
         .codeSize = count * sizeof *words,
         .pCode = words,
         .pName = "main",
-        .setLayoutCount = g_vk_stage_sets,
+        .setLayoutCount = nsets,
         .pSetLayouts = sets,
         .pushConstantRangeCount = 1,
         .pPushConstantRanges = &pc,

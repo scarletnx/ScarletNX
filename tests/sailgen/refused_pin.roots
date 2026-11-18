@@ -1,0 +1,3 @@
+# a field a top-level let holds fixed (PSTATE_EL: guest code runs at EL0 alone) is read as that let; a write to it is
+# refused with its file and line
+root decode_pin_aarch64_instrs_test

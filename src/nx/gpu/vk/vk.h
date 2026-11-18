@@ -207,6 +207,12 @@ typedef struct {
     /* VK_KHR_unified_image_layouts: GENERAL serves each use as well as its own layout, so the renderer keeps its images
        in GENERAL (VK_LAYOUT), and a read after a read of another kind takes no layout change */
     int has_unified_layouts;
+    /* the features of the texture table (table.c) that an SM86 game asked of the device: partially bound sets, sampled
+       image updates after bind and while unused descriptors are pending, and arrays indexed by a uniform value */
+    int has_table_features;
+    /* bufferDeviceAddress and shaderInt64 for an SM86 game: global memory by device address (ShCaps.gbuf_address)
+       may be on, and the buffers its bindings come from get device addresses */
+    int has_gbuf_address;
     int feedback_mode; /* VK_FEEDBACK_*: how a draw reads a color target it writes, at its own pixel (device.c) */
     /* VK_EXT_conditional_rendering: a render enable comparing a samples-passed count not known yet with zero
        predicates its draws on the GPU (gpu/vk/query.c) instead of waiting for the count */
@@ -648,6 +654,7 @@ VkCommandBuffer vk_cmd_upload_recording(void); /* that command buffer while it i
 /* size bytes of the current frame's mapped staging memory (flushed when the frame is submitted), valid until
    that frame's work is done. NULL past g_vk.alloc_cap: a big upload stages in parts */
 u8* vk_stage(u64 size, u64 align, VkBuffer* buf, u64* off);
+u64 vk_stage_buffer_size(VkBuffer b); /* a ring chunk's size, 0 for another buffer */
 /* the most a request to a frame ring takes out of a pooled chunk: a bigger one gets a pooled big buffer of its size
    class */
 u64 vk_stage_chunk(void);
@@ -825,6 +832,7 @@ void vk_desc_pools_keep(VkDescriptorPool* pools, int* npool, int* peak, u32* use
 void vk_desc_taken(VkDescriptorSetLayout layout, u32 n); /* n sets of layout taken from a frame's pools */
 u64 vk_desc_array_sets(void);                            /* the sets of the arrays layouts taken so far */
 int vk_dslayout_arrays(VkDescriptorSetLayout layout);    /* one of the stage layouts with the texture arrays */
+int vk_binding_is_texture(u32 binding); /* a binding of the textures' own set with split sets */
 u32 vk_texture_array_elements(void); /* each texture array's elements, 0 where the device takes none (pipeline.c) */
 /* each heap's use and budget and the descriptor pools, as text for a line: any thread, also one that never calls
    Vulkan */
@@ -1349,6 +1357,10 @@ int vk_rt_pages_hit(u64 gva, u64 size);
 VkImage vk_unscaled_image(const Surf* s, u32 layers, DevMem* mem);
 /* moves a surface into a layout for a use, with the barrier that needs (which ends an open rendering pass) */
 void vk_surf_use(VkCommandBuffer cb, Surf* s, VkImageLayout layout, VkPipelineStageFlags2 stage, VkAccessFlags2 access);
+/* vk_surf_use's barriers between these two in one barrier call, at the end: for uses of different surfaces that
+   nothing is recorded between (a pass's targets, a copy's two surfaces) */
+void vk_surf_batch_begin(void);
+void vk_surf_batch_end(void);
 /* the stages a texture moved to SHADER_READ_ONLY_OPTIMAL is made visible to: all that sample, since a later read in
    the same layout gets no barrier of its own */
 #define VK_SAMPLED_STAGES (VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
@@ -1478,7 +1490,7 @@ u64 vk_rt_take_gen(void);
 void vk_rt_reload(u64 gva);
 /* textures share the surface table. g_vk_surf_epoch changes whenever a surface enters it, leaves it or moves (a
    target parked or taken back), so what was found there can be kept until it changes */
-extern u32 g_vk_surf_epoch;
+extern _Atomic u32 g_vk_surf_epoch;
 u32 vk_surf_epoch_at(u64 gva); /* the same, for the surfaces of gva's bucket of the table only */
 /* the surfaces of gva's bucket of the table: vk_surf_first, then vk_surf_next until NULL */
 Surf* vk_surf_first(u64 gva);
@@ -2133,6 +2145,24 @@ VkImageView vk_tex_storage_view(Surf* s, VkImageViewType type);
 /* an empty texture of a view type: num 0 float, 1 unsigned, 2 signed integer, 3 depth at 1.0 (shadow samplers);
    ms: a multisampled one (2D and 2D array views, not depth) */
 VkImageView vk_null_view(VkImageViewType type, int num, int ms);
+/* The texture table (table.c): the set of ShCaps.tex_table, with a slot for each sampled view in a layout and for each
+   sampler. vk_table_init says if the device can hold it (and why not, in why), and makes it */
+int vk_table_init(char* why, size_t size);
+/* the push constant bytes of a draw's pipeline layouts (pipeline.c) */
+u32 vk_push_bytes(void);
+/* With ShCaps.gbuf_address (table.c): the scratch words that an access past a global buffer's length goes to, made
+   by vk_table_scratch_init, and a buffer's device address */
+int vk_table_scratch_init(void);
+u64 vk_table_scratch(void);
+u64 vk_buffer_address(VkBuffer b);
+VkDescriptorSetLayout vk_table_layout(void);
+VkDescriptorSet vk_table_set(void);
+/* each texture's word, view slot | sampler slot << SNX_TABLE_SAMPLER_SHIFT, under one lock: 0 where views[i] is 0. 0
+   when the table is full */
+int vk_table_words(const VkImageView* views, const VkImageLayout* layouts, const VkSampler* samplers, u32 n,
+                   u32* words);
+/* a view that is destroyed now (vk_image_view_destroy): its slots are free again */
+void vk_table_forget_view(VkImageView view);
 /* An image slot a program declares whose header is empty (word 0 zero: no format, nothing bound there): a 1x1 storage
    image of zeros, its format by the slot's kind (ShaderInfo.img[].kind), viewed as type (2D, 2D array or 3D) in
    *view. The caller makes it ready for its stage (vk_surf_use, layout GENERAL) and writes nothing of it back. NULL
@@ -2241,17 +2271,26 @@ void vk_tex_later_stats(VkLaterStats* s);
 
 /* gpu/vk/buffer.c: guest memory [gva, gva + len) as a buffer the GPU reads, valid until the next submit */
 int vk_buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off);
+/* vk_buf_get for a use that takes any offset that is a multiple of align: an indirect draw's or dispatch's records and
+   count, and a copy's source, take 4 (Vulkan's rule for them). At the uniform and storage alignment, the GPU mirror's
+   records at a 4-byte address were copied out, and each copy ended the rendering pass (most of one game's pass ends) */
+int vk_buf_get_at(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off);
 /* the same for a vertex, index or storage buffer, whose offset needs only to be a multiple of align (a power of two) */
 int vk_buf_get_input(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off);
 /* the same inside a window shared with the ranges it overlaps (a storage buffer with no size of its own): *off is the
    range's offset in it, a multiple of minStorageBufferOffsetAlignment */
-int vk_buf_get_window(u64 gva, u64 len, VkBuffer* buf, u64* off);
+/* align: the binding's offset alignment, 0 for a storage buffer descriptor's (4 for one read by device address) */
+int vk_buf_get_window(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off);
 int vk_buf_get_window_input(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off);
 /* the cache lines vk_buf_get(gva, len) will read, fetched ahead: step 0 its index slot, step 1 (after step 0 for every
    range) its entry. For a caller with several ranges to look up, so their misses overlap */
 void vk_buf_prefetch(u64 gva, u64 len, int step);
 void vk_buf_mapping_changed(void); /* the GPU mappings or the guest memory under them changed: translations go */
 int vk_buf_get_uniform(u64 gva, u64 len, VkBuffer* buf, u64* off); /* a constant buffer: in place where it can be */
+/* vk_buf_get_uniform for a binding that takes any offset that is a multiple of align: a constant buffer bound through
+   a window (render.c cb_window_place) takes 16, where a descriptor of its own takes minUniformBufferOffsetAlignment.
+   The GPU mirror's bytes at such an offset are bound where they are, not copied (which ends the rendering pass) */
+int vk_buf_get_uniform_at(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off);
 /* The buffer of its own of the cache's entry for the range that the last lookup (vk_buf_get_uniform and the others)
    bound: the entry's index, and in *id that buffer's number. 0 when the lookup bound something else: a copy in the
    stream, the page cache, guest memory in place, the mirror, a pending result, which live for their submission only.
@@ -2316,6 +2355,8 @@ VkBuffer vk_mirror_mask(void);
 /* [gva, gva + len), one run of guest memory, up to date in the mirror for the work recorded next: the mirror in *buf,
    at *off, which is the guest address of gva. 0 when it can't be (not one run, the mirror off) */
 int vk_mirror_slice(u64 gva, u64 len, VkBuffer* buf, u64* off);
+/* vk_mirror_slice with the run's guest address cpu, which gmmu_run gave for all of [gva, gva + len) */
+int vk_mirror_slice_at(u64 gva, u64 cpu, u64 len, VkBuffer* buf, u64* off);
 /* a program recorded now writes [cpu, cpu + len) of the mirror: pending until the submit's harvest lands it */
 void vk_mirror_wrote(u64 cpu, u64 len);
 /* a buffer in the mirror that a dispatch writes: its guest bytes [cpu, cpu + len) and its part of the write log */
@@ -2336,6 +2377,8 @@ int vk_mirror_pending(u64 gva, u64 len);
 /* whether the mirror owns a part of [gva, gva + len), one run of guest memory: written by its programs and landed
    only as far as the CPU touched it (vk_mirror_publish). The mirror holds the range's bytes then, guest memory not */
 int vk_mirror_holds(u64 gva, u64 len);
+int vk_mirror_holds_at(u64 cpu, u64 len); /* vk_mirror_holds of the run at guest address cpu */
+int vk_mirror_owns_any(void);             /* the mirror is made and owns pages: makes nothing, as vk_mirror_on() can */
 void vk_mirror_mem_need(u64 gva, u64 len);
 /* at a submit, recorded into cb: the pages its programs wrote, copied for landing; and once submissions up to done are,
    their landing in guest memory */
@@ -2361,6 +2404,8 @@ int vk_buf_copy_writable_logged(u64 gva, u32 len, VkBuffer* buf, u64* off, int o
 /* the dispatch's own reference to l, dropped once the submit being recorded is done */
 void vk_buf_log_retire(VkWriteLog* l);
 int vk_buf_copy_writable(u64 gva, u32 len, VkBuffer* buf, u64* off, int ordered);
+/* the same for a binding read by device address: an earlier result is taken in place at any word */
+int vk_buf_copy_writable_word(u64 gva, u32 len, VkBuffer* buf, u64* off, int ordered);
 /* Shader-data invalidation needs writes only. Execution order also covers reads before an in-place writer. */
 int vk_buf_order_pending(int writes_only);
 void vk_buf_order_request(int writes_only);
@@ -2381,6 +2426,11 @@ typedef struct {
     int n[VK_DRAW_STAGES];
     VkBuffer map_buf[VK_DRAW_STAGES];
     u64 map_off[VK_DRAW_STAGES], map_size[VK_DRAW_STAGES];
+    /* a vertex program that fetches its own attributes (ShaderInfo.vertex_fetch): each attribute's 4 words of its
+       record (SH_RECORD_ATTR) and its instance divisor (SH_RECORD_DIVISOR), which render.c's fetch_records fills from
+       the draw's vertex streams */
+    u32 attr[32][4];
+    u32 divisor[32];
 } VkDrawStorage;
 /* whether any stage of the draw reads or writes global memory */
 static inline int vk_draw_storage_any(const VkDrawStorage* draw) {
@@ -2433,6 +2483,7 @@ int vk_buf_pending(u64 gva, u64 len); /* a pending graphics result overlaps the 
 /* GPU-owned bytes are on the range's pages (memory/own.c): reading them on the CPU lands them, a wait for the GPU */
 int vk_buf_owned(u64 gva, u64 len);
 u32 vk_buf_sources(void);             /* where the ranges bound since the last call came from (buffer.c) */
+u32 vk_buf_kind(void);                /* where the last range buf_get bound came from: one bit of vk_buf_sources' */
 u32 vk_tex_tags(void);                /* and what the textures looked up since then were (texture.c) */
 u64 vk_buf_adds(void);                /* graphics results committed so far: as vk_compute_adds */
 int vk_buf_pending_any(void);         /* any graphics result is pending */
@@ -2560,6 +2611,18 @@ int vk_written_quick(const u8* host, u64 len, u32 since);
    a range vk_written_since(host, len, since) has just found written, so its pages are marked */
 void vk_written_runs(const u8* host, u64 len, u32 since, void (*fn)(void*, u64, u64), void* user);
 u32 vk_ww_now(void);
+/* vk_written_since without its answer: the scans and changes over [host, host + len) taken in, so the stamps and the
+   dirty bits of its pages are up to date. 0, or -1 where vk_written_since is -1. Under vk_lock */
+int vk_ww_take(const u8* host, u64 len);
+/* 1 if the page at guest address cpu was stamped written after the clock read since (as vk_written_since asks) */
+int vk_ww_page_after(u64 cpu, u32 since);
+/* The page cache's dirty bits, a bit a 4 KiB page of guest memory, set with each stamp of the write tracking and
+   cleared by the page cache when it takes a page's bytes. vk_ww_dirty_init makes them (0, or -1 when there is no
+   memory: then no bits are set). vk_ww_dirty_any is 1 if a page of [cpu, cpu + len) has its bit (and always 1 with no
+   bits), and vk_ww_dirty_clear clears those of [cpu, cpu + len). Under vk_lock */
+int vk_ww_dirty_init(void);
+int vk_ww_dirty_any(u64 cpu, u64 len);
+void vk_ww_dirty_clear(u64 cpu, u64 len);
 /* [host, host + len)'s hot pages (write_tracking_hot, plat_ww_cool), and those at its pages' other addresses, protected
    again and taken in as written, so the next vk_ww_now is a baseline after which "written" stands for a write: for a
    render target, whose write-back keeps memory's bytes on the pages written since its baseline. A hot page reads as
@@ -2664,7 +2727,7 @@ extern VkShaderStageFlags g_vk_subgroup_stages;
 /* by set, shader_vk_set(stage): [0] without the indexed texture arrays, [1] with them. A set holding 512 array
    descriptors cost the driver twice the time to bind (one game's 6,700 draws a frame), so only an indexed shader's has
    them */
-extern VkDescriptorSetLayout g_vk_dslayout[2][5];
+extern VkDescriptorSetLayout g_vk_dslayout[2][10];
 /* a hash of what the layouts of g_vk_dslayout are made of (pipeline.c), in the key of a shader object's binary */
 extern u64 g_vk_dslayout_hash;
 extern u32 g_vk_stage_sets; /* sets in the pipeline layout: 5, or 2 without the tessellation and geometry stages */
@@ -2746,6 +2809,9 @@ typedef struct {
     /* all zero with dynamic vertex input (g_vk.vertex_input_dynamic): each draw sets its own (render.c), and one
        pipeline serves every layout its programs are drawn with */
     VertexLayout vi;
+    /* the vertex program fetches its own attributes (ShaderInfo.vertex_fetch): vi is all zero, and the pipeline has
+       an empty vertex input state, none of it dynamic */
+    u32 fetch;
     u32 ncolor;
     u32 color[8];
     u32 depth, stencil;

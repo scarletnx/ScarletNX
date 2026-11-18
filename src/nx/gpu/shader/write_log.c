@@ -28,6 +28,12 @@ void shader_wlog_store(SpvEmitter* e, u32 u32_type, u32 bool_type, u32 log, u32 
     window = spv_emit_ternary(e, SPV_OP_SELECT, u32_type, past, last, window);
     u32 flag = spv_emit_iadd_u32(e, u32_type, window, spv_emit_constant_u32(e, u32_type, base));
     spv_emit_store(e, spv_emit_storage_access_u32(e, ptr_type, log, zero, flag), spv_emit_constant_u32(e, u32_type, 1));
+    /* the coarse word of the window's 64, after the part's masks */
+    u32 group = spv_emit_binary(e, SPV_OP_SHIFT_RIGHT_LOGICAL, u32_type, window, spv_emit_constant_u32(e, u32_type, 6));
+    u32 coarse = spv_emit_iadd_u32(e, u32_type, group,
+                                   spv_emit_constant_u32(e, u32_type, base + SH_WPAGE_SLOT * (1u + SH_WLOG_MASK)));
+    spv_emit_store(e, spv_emit_storage_access_u32(e, ptr_type, log, zero, coarse),
+                   spv_emit_constant_u32(e, u32_type, 1));
     /* the mask word: window * SH_WLOG_MASK + (at & 4095) / 32, after the part's flags */
     u32 masks = spv_emit_binary(e, SPV_OP_I_MUL, u32_type, window, spv_emit_constant_u32(e, u32_type, SH_WLOG_MASK));
     u32 in_window = spv_emit_binary(e, SPV_OP_BITWISE_AND, u32_type, at, spv_emit_constant_u32(e, u32_type, 4095));

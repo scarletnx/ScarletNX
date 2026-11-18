@@ -60,6 +60,8 @@ typedef struct {
        when none); branched 0 until it does */
     LLVMValueRef taken, target;
     int branched, undefined;
+    /* the block's last instruction before this one's: a clause that hands the word on (sg_see) has emitted nothing */
+    LLVMValueRef start;
 } SgCtx;
 
 #define SG_B (g->ir->b)
@@ -924,6 +926,76 @@ static inline void sg_branch_result(SgCtx* g, LLVMValueRef* taken, LLVMValueRef*
     if (target) *target = go ? g->target : ir_i64(g->ir, g->pc);
 }
 
+/* a decode function that throws Error_See hands the word on to the next clause that matches it (the hint space's
+   PAuth hints): 0. Only its fields were read, so the block holds nothing of it yet */
+static inline int sg_see(SgCtx* g) {
+    if (LLVMGetLastInstruction(LLVMGetInsertBlock(g->ir->b)) != g->start || g->branched || g->undefined || g->flag[0] ||
+        g->flag[1] || g->flag[2] || g->flag[3])
+        sg_fail("a word handed on to the next clause after its own emitted IR", (long long)g->word, 0);
+    return 0;
+}
+
+/* ---- the machine's actions ----
+   The Sail's functions with no definition of their own that a hint, a barrier or the exclusive monitor calls, lowered
+   as sg_NAME (sailgen's action_call): given the call's arguments, or the context alone when they mean nothing here */
+
+/* sail-arm's MBReqTypes, in its order: the accesses a barrier orders */
+enum { SG_MBReqTypes_Reads, SG_MBReqTypes_Writes, SG_MBReqTypes_All };
+/* loads before loads and stores (Reads) is an acquire fence, stores before stores a release one (which also orders
+   loads before stores), all of them a full one. The guest's memory is the host's, one domain */
+static inline void sg_barrier(SgCtx* g, long long types) {
+    if (types == SG_MBReqTypes_Reads)
+        LLVMBuildFence(SG_B, LLVMAtomicOrderingAcquire, 0, "");
+    else if (types == SG_MBReqTypes_Writes)
+        LLVMBuildFence(SG_B, LLVMAtomicOrderingRelease, 0, "");
+    else
+        ir_fence(g->ir);
+}
+static inline void sg_DataMemoryBarrier(SgCtx* g, long long domain, long long types) {
+    (void)domain;
+    sg_barrier(g, types);
+}
+/* nXS (FEAT_XS) only exempts accesses that the host has no such kind of */
+static inline void sg_DataSynchronizationBarrier(SgCtx* g, long long domain, long long types, long long nxs) {
+    (void)domain;
+    (void)nxs;
+    sg_barrier(g, types);
+}
+/* SSBB and PSSBB (DSB #0 and #4): on the console's Armv8.0 cores those are DSB SY, as DMB #0 and #4 still are
+   (decode_dmb's types All) */
+static inline void sg_SpeculativeStoreBypassBarrierToVA(SgCtx* g) { ir_fence(g->ir); }
+static inline void sg_SpeculativeStoreBypassBarrierToPA(SgCtx* g) { ir_fence(g->ir); }
+/* ISB: what follows waits for what came before, a full fence */
+static inline void sg_InstructionSynchronizationBarrier(SgCtx* g) { ir_fence(g->ir); }
+/* CSDB limits the speculation on data values the guest's own core does: the host's is not the guest's to limit */
+static inline void sg_ConsumptionOfSpeculativeDataBarrier(SgCtx* g) { (void)g; }
+/* ESB's: no SError is ever pending, the runtime raises none */
+static inline void sg_SynchronizeErrors(SgCtx* g) { (void)g; }
+static inline void sg_TakeUnmaskedSErrorInterrupts(SgCtx* g) { (void)g; }
+/* DGH: the accesses that follow need not be gathered with those before, and nothing gathers them */
+static inline void sg_Hint_DGH(SgCtx* g) { (void)g; }
+/* CLRBHB clears the branch history the guest's core predicts with: the host's is not the guest's */
+static inline void sg_Hint_CLRBHB(SgCtx* g) { (void)g; }
+/* PSB CSYNC and TSB CSYNC: no profiling and no trace unit, so nothing to synchronize */
+static inline void sg_ProfilingSynchronizationBarrier(SgCtx* g) { (void)g; }
+static inline void sg_TraceSynchronizationBarrier(SgCtx* g) { (void)g; }
+
+/* YIELD: the host's spin-wait hint (ir_yield) */
+static inline void sg_Hint_Yield(SgCtx* g) { ir_yield(g->ir); }
+/* WFE, its timeout and kind aside: the runtime lets the core's other threads run, as the spin waits on one of them */
+static inline void sg_Hint_WFE(SgCtx* g) {
+    LLVMTypeRef param = g->ir->t_ptr;
+    LLVMValueRef c = g->ir->c;
+    ir_rt_call(g->ir, ir_rt_wfe(), g->ir->t_void, &param, &c, 1);
+}
+/* WFI at EL0 does not trap (SCTLR_EL1.nTWI) and waits for an interrupt the guest never takes: it goes on at once */
+static inline void sg_Hint_WFI(SgCtx* g) { (void)g; }
+/* SEV and SEVL: the runtime's one event (rt_sev), which wakes no thread since none sleeps in WFE */
+static inline void sg_SendEvent(SgCtx* g) { ir_rt_call(g->ir, ir_rt_sev(), g->ir->t_void, NULL, NULL, 0); }
+static inline void sg_SendEventLocal(SgCtx* g) { sg_SendEvent(g); }
+/* CLREX: the running thread's local monitor (CPU.excl_on) is the one the processor's id names */
+static inline void sg_ClearExclusiveLocal(SgCtx* g) { ir_cpu_store(g->ir, ir_i32(g->ir, 0), ir_off_excl_on()); }
+
 /* bit i of x as a flag: the 0-or-1 source itself, or the bit shifted down (and masked unless it is the top) */
 static inline LLVMValueRef sg_d_flag_value(SgCtx* g, const SgD* x, unsigned i) {
     unsigned s = x->sel[i], k, p, sw;
@@ -1097,6 +1169,11 @@ static inline void sg_GPR_write(SgCtx* g, long long n, SgD v) {
 /* BTypeNext, the branch type the next instruction checks under BTI: no page is guarded (nx.sail's InGuardedPage), so
    nothing checks it and the runtime keeps it nowhere */
 static inline void sg_BTypeNext_write(SgCtx* g, SgD v) {
+    (void)g;
+    (void)v;
+}
+/* BTypeCompatible, whether this instruction may be a branch's target under BTI: only a guarded page's check reads it */
+static inline void sg_BTypeCompatible_write(SgCtx* g, LLVMValueRef v) {
     (void)g;
     (void)v;
 }

@@ -2239,7 +2239,7 @@ rebind:
     }
     /* an indirect dispatch's grid, as the GPU holds it (a compute program's results that haven't landed where they
        are) */
-    if (d->indirect && ((d->indirect & 3) || !vk_buf_get(d->indirect, 12, &grid_buf, &grid_off))) {
+    if (d->indirect && ((d->indirect & 3) || !vk_buf_get_at(d->indirect, 12, 4, &grid_buf, &grid_off))) {
         LOG_LIMIT(4, "vulkan: an indirect dispatch's grid at %llx can't be read\n", (unsigned long long)d->indirect);
         vk_buf_writable_abort();
         res_unref_all(made, ng);

@@ -2710,13 +2710,13 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
     }
     if (indexed_shadow) {
         c->tex_func_buffer =
-            spv_emit_uniform_vec4_array(&c->emit, vec4_u32, c->u32_type, c->u32_type, shader_vk_set(stage),
+            spv_emit_uniform_vec4_array(&c->emit, vec4_u32, c->u32_type, c->u32_type, shader_vk_tex_set(stage),
                                         SNX_VKB_TEXFUNCS, SNX_TEX_ARRAY / 4, &c->tex_func_pointer);
         interfaces[count++] = c->tex_func_buffer;
     }
     if (indexed_count) {
         c->tex_map_buffer =
-            spv_emit_uniform_vec4_array(&c->emit, vec4_u32, c->u32_type, c->u32_type, shader_vk_set(stage),
+            spv_emit_uniform_vec4_array(&c->emit, vec4_u32, c->u32_type, c->u32_type, shader_vk_tex_set(stage),
                                         SNX_VKB_TEXMAP, (u32)indexed_count * SNX_TEX_ARRAY / 4, &c->tex_map_pointer);
         interfaces[count++] = c->tex_map_buffer;
     }
@@ -2735,13 +2735,13 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
                 same++;
             if (same == i) { /* the first slot of its kind declares the kind's arrays */
                 c->tex_array[i] = spv_emit_sampler_image_array_ex(
-                    &c->emit, scalar, c->u32_type, shader_vk_set(stage), SNX_VKB_TEXARRAY,
+                    &c->emit, scalar, c->u32_type, shader_vk_tex_set(stage), SNX_VKB_TEXARRAY,
                     textures[i].type == 0 ? 1 : textures[i].type, textures[i].array, 0, !!(textures[i].flags & 2),
                     g_spirv_translate.tex_array, &c->sampled_type[i]);
                 interfaces[count++] = c->tex_array[i];
                 if (textures[i].shadow) {
                     c->tex_depth[i] = spv_emit_sampler_image_array(
-                        &c->emit, c->f32_type, c->u32_type, shader_vk_set(stage), SNX_VKB_TEXDEPTH,
+                        &c->emit, c->f32_type, c->u32_type, shader_vk_tex_set(stage), SNX_VKB_TEXDEPTH,
                         textures[i].type == 0 ? 1 : textures[i].type, textures[i].array, 1, g_spirv_translate.tex_array,
                         &c->tex_depth_type[i]);
                     interfaces[count++] = c->tex_depth[i];
@@ -2755,7 +2755,7 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
             c->sampler[i] = c->tex_array[i];
             continue;
         }
-        c->sampler[i] = spv_emit_sampler_image(&c->emit, scalar, shader_vk_set(stage), SNX_VKB_TEX + (u32)i,
+        c->sampler[i] = spv_emit_sampler_image(&c->emit, scalar, shader_vk_tex_set(stage), SNX_VKB_TEX + (u32)i,
                                                textures[i].type == 0 ? 1 : textures[i].type, textures[i].array,
                                                textures[i].shadow && shader_dc_color_func(si, i) < 0,
                                                !!(textures[i].flags & 2), &c->sampled_type[i]);
@@ -2851,31 +2851,49 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
         interfaces[count++] = shared_array;
     }
     u32 push = 0, push_pointer = 0;
-    if ((stage == ST_FS && ((target & 15) || capture_output || needs_point_coord || needs_texel_scale || needs_frag_y ||
+    /* A vertex or fragment program's uniform constant buffers read through windows of the renderer's staging ring
+       (cb_windows): three uvec4 after the block's own members hold each bank's offset into its window
+       (SH_PUSH_CB_WINDOW), which every read of those banks adds (emit_memory.c) */
+    int cb_window = 0;
+    if (g_spirv_translate.cb_windows && (stage == ST_VS || stage == ST_FS))
+        for (u32 i = 0; i < 18 && i < g_spirv_translate.uniform_cbufs; i++)
+            if (cbuf_used[i]) cb_window = 1;
+    const int own_push = (stage == ST_FS && ((target & 15) || capture_output || needs_point_coord || needs_texel_scale || needs_frag_y ||
                             needs_frag_ndc || predraw)) ||
-        position_fix || needs_instance || base_vertex || (point_size && !point_size_used)) {
-        /* the fragment stage's uvec4: its scaled textures (shader_scaled_fetch) and the window's origin
-           (shader_frag_y_origin). After it, each at its own member whichever the program reads: at byte 80 the draw's
-           viewport (shader_frag_ndc), at 96 the scaled textures of the size drawn to (vk/render.c's own_size), at 112
-           the capture's words */
-        if (stage == ST_FS && (needs_frag_ndc || capture_output || needs_texel_scale || predraw)) {
-            u32 members[5] = {vec4, vec4_u32, vec4, vec4_u32, vec4_u32}, offsets[5] = {16, 32, 80, 96, 112};
-            u32 structure = spv_emit_type_struct(&c->emit, members, offsets, 5);
-            spv_emit_decorate(&c->emit, structure, SPV_DECORATION_BLOCK, NULL, 0);
-            push = spv_emit_variable(&c->emit, SPV_STORAGE_PUSH_CONSTANT, structure);
-            push_pointer = spv_emit_type_pointer(&c->emit, SPV_STORAGE_PUSH_CONSTANT, c->f32_type);
+        position_fix || needs_instance || base_vertex || (point_size && !point_size_used);
+    if (own_push || cb_window) {
+        u32 members[8], offsets[8], n = 0;
+        if (!own_push) {
+        } else if (stage == ST_FS && (needs_frag_ndc || capture_output || needs_texel_scale || predraw)) {
+            /* the fragment stage's uvec4: its scaled textures (shader_scaled_fetch) and the window's origin
+               (shader_frag_y_origin). After it, each at its own member whichever the program reads: at byte 80 the
+               draw's viewport (shader_frag_ndc), at 96 the scaled textures of the size drawn to (vk/render.c's
+               own_size), at 112 the capture's words */
+            const u32 m[5] = {vec4, vec4_u32, vec4, vec4_u32, vec4_u32}, o[5] = {16, 32, 80, 96, 112};
+            for (u32 k = 0; k < 5; k++) members[n] = m[k], offsets[n++] = o[k];
         } else if (point_size && !point_size_used) {
             /* The first vector retains the viewport/draw ABI. Fixed point size has a separate vector at byte48,
                beyond the fragment-stage vectors, so every graphics stage can use one shared pipeline layout. */
-            u32 members[2] = {vec4, vec4}, offsets[2] = {0, 48};
-            u32 structure = spv_emit_type_struct(&c->emit, members, offsets, 2);
-            spv_emit_decorate(&c->emit, structure, SPV_DECORATION_BLOCK, NULL, 0);
-            push = spv_emit_variable(&c->emit, SPV_STORAGE_PUSH_CONSTANT, structure);
-            push_pointer = spv_emit_type_pointer(&c->emit, SPV_STORAGE_PUSH_CONSTANT, c->f32_type);
-        } else
-            push =
-                spv_emit_push_vec4(&c->emit, vec4, c->f32_type, stage == ST_FS ? 16 : 0,
-                                   stage == ST_FS && (needs_texel_scale || needs_frag_y) ? vec4_u32 : 0, &push_pointer);
+            members[n] = vec4, offsets[n++] = 0;
+            members[n] = vec4, offsets[n++] = 48;
+        } else {
+            members[n] = vec4, offsets[n++] = stage == ST_FS ? 16 : 0;
+            if (stage == ST_FS && (needs_texel_scale || needs_frag_y)) members[n] = vec4_u32, offsets[n++] = 32;
+        }
+        const u32 first_window = n;
+        for (u32 k = 0; cb_window && k < 3; k++)
+            members[n] = vec4_u32, offsets[n++] = (stage == ST_FS ? SH_PUSH_CB_WINDOW_FS : SH_PUSH_CB_WINDOW) + 16 * k;
+        u32 structure = spv_emit_type_struct(&c->emit, members, offsets, n);
+        spv_emit_decorate(&c->emit, structure, SPV_DECORATION_BLOCK, NULL, 0);
+        push = spv_emit_variable(&c->emit, SPV_STORAGE_PUSH_CONSTANT, structure);
+        push_pointer = spv_emit_type_pointer(&c->emit, SPV_STORAGE_PUSH_CONSTANT, c->f32_type);
+        if (cb_window) {
+            c->cbw_push = push;
+            c->cbw_pointer = spv_emit_type_pointer(&c->emit, SPV_STORAGE_PUSH_CONSTANT, c->u32_type);
+            c->cbw_member = first_window;
+            c->cbw_banks = (1u << (g_spirv_translate.uniform_cbufs < 18 ? g_spirv_translate.uniform_cbufs : 18)) - 1u;
+            si->cb_window = 1;
+        }
         interfaces[count++] = push;
     }
     if (base_vertex) {

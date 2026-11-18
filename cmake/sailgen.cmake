@@ -38,16 +38,18 @@ else()
 endif()
 
 # snx_sailgen_a64(<target>): generates a64_sail.inc (the A64 subsets' emitters, sailgen's back end at its top) into
-# the build folder from a64.roots, a64.sail and nx.sail, and gives <target> its include root
+# the build folder from a64.roots, a64.sail and nx.sail, with the features the decoder's profile names, and gives
+# <target> its include root
 function(snx_sailgen_a64 target)
     set(dir "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/sail")
     set(backend "${PROJECT_SOURCE_DIR}/tools/sailgen/llvm.h")
+    set(profile "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/decode/a64.profile")
     set(out "${CMAKE_CURRENT_BINARY_DIR}/sailgen")
     add_custom_command(OUTPUT "${out}/a64_sail.inc"
         COMMAND "${CMAKE_COMMAND}" -E make_directory "${out}"
-        COMMAND snx-sailgen --generate "${dir}/a64.roots" --backend "${backend}" -o "${out}/a64_sail.inc"
-                "${dir}/a64.sail" --overlay "${dir}/nx.sail"
-        DEPENDS snx-sailgen "${dir}/a64.roots" "${dir}/a64.sail" "${dir}/nx.sail" "${backend}"
+        COMMAND snx-sailgen --generate "${dir}/a64.roots" --backend "${backend}" --profile "${profile}"
+                -o "${out}/a64_sail.inc" "${dir}/a64.sail" --overlay "${dir}/nx.sail"
+        DEPENDS snx-sailgen "${dir}/a64.roots" "${dir}/a64.sail" "${dir}/nx.sail" "${backend}" "${profile}"
         COMMENT "Generating the A64 emitters from Sail" VERBATIM)
     target_sources(${target} PRIVATE "${out}/a64_sail.inc")
     target_include_directories(${target} PRIVATE "${out}")

@@ -34,6 +34,7 @@ static struct {
     u8 region[SPACE];      /* the region's buffer, where a granule has memory */
     u8 bound[SPACE >> 16]; /* the granules with memory */
     u32 wrote[NPAGES];     /* the clock at a page's last write by the CPU */
+    u8 dirty[NPAGES];      /* the tracking's dirty bit of a page: set at each write, cleared by the cache */
     u32 clock, epoch;
     u64 sub;
     u8 stage[STAGE];
@@ -81,6 +82,20 @@ int vk_written_since(const u8* host, u64 len, u32 since) {
     for (u64 p = (u64)(host - g_t.mem) >> 12, e = (u64)(host - g_t.mem + len - 1) >> 12; p <= e; p++)
         if (g_t.wrote[p] > since) return 1;
     return 0;
+}
+/* the dirty bits (buffer.c): the cache asks them where it is in dirty mode, the default */
+int vk_ww_take(const u8* host, u64 len) {
+    (void)host, (void)len;
+    return 0;
+}
+int vk_ww_dirty_init(void) { return 0; }
+int vk_ww_dirty_any(u64 cpu, u64 len) {
+    for (u64 p = cpu >> 12, e = (cpu + len - 1) >> 12; p <= e; p++)
+        if (g_t.dirty[p]) return 1;
+    return 0;
+}
+void vk_ww_dirty_clear(u64 cpu, u64 len) {
+    for (u64 p = cpu >> 12, e = (cpu + len - 1) >> 12; p <= e; p++) g_t.dirty[p] = 0;
 }
 void vk_written_runs(const u8* host, u64 len, u32 since, void (*fn)(void*, u64, u64), void* user) {
     u64 first = (u64)(host - g_t.mem) >> 12, n = (len + 4095) >> 12;
@@ -221,7 +236,7 @@ static u32 rnd(void) {
 /* the CPU writes [at, at + n): new bytes, and its pages written now */
 static void cpu_write(u64 at, u64 n) {
     for (u64 i = 0; i < n; i++) g_t.mem[at + i] = (u8)rnd();
-    for (u64 p = at >> 12; p <= (at + n - 1) >> 12; p++) g_t.wrote[p] = ++g_t.clock;
+    for (u64 p = at >> 12; p <= (at + n - 1) >> 12; p++) g_t.wrote[p] = ++g_t.clock, g_t.dirty[p] = 1;
 }
 /* the next submission of a stream's job, and its next job: the CPU's writes so far are what its checks look for */
 static void next_submission(void) {

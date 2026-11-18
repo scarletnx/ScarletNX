@@ -50,6 +50,17 @@ u32 shader_atomic_wrap_loop(DirectCtx* c, u32 old_var, u32 pointer, u32 value, i
 
 /* A constant buffer word is loaded as an integer: a float load may flush the bits of an integer that look like a
    denormal (Adreno does, in a shader that declares DenormFlushToZero), and a jump table of small offsets reads 0. */
+/* element plus bank's window offset in 16-byte units (cb_windows: a 16-bit field of the push block, two banks a word),
+   or element where the bank reads no window */
+static u32 cbuf_window(DirectCtx* c, u32 bank, u32 element) {
+    if (!c->cbw_push || bank >= 18 || !(c->cbw_banks >> bank & 1)) return element;
+    const u32 word = bank / 2;
+    u32 packed = spv_emit_push_component_f32(&c->emit, c->cbw_pointer, c->cbw_push, shader_u32(c, c->cbw_member + word / 4),
+                                             shader_u32(c, word & 3), c->u32_type);
+    if (bank & 1) packed = spv_emit_binary(&c->emit, SPV_OP_SHIFT_RIGHT_LOGICAL, c->u32_type, packed, shader_u32(c, 16));
+    const u32 offset = spv_emit_binary(&c->emit, SPV_OP_BITWISE_AND, c->u32_type, packed, shader_u32(c, 0xFFFF));
+    return spv_emit_iadd_u32(&c->emit, c->u32_type, element, offset);
+}
 /* the cache entry of instruction w's constant buffer operand, read in this block if it wasn't */
 static u32 cbuf_entry(DirectCtx* c, u64 w) {
     u32 idx = B(w, 34, 5), off = B(w, 20, 14) * 4, key = (idx << 16 | off >> 2) + 1;
@@ -64,7 +75,7 @@ static u32 cbuf_entry(DirectCtx* c, u64 w) {
         return at;
     }
     u32 member = shader_u32(c, 0);
-    u32 element = shader_u32(c, off >> 4);
+    u32 element = cbuf_window(c, idx, shader_u32(c, off >> 4));
     u32 component = shader_u32(c, (off >> 2) & 3);
     u32 word = spv_emit_uniform_component(&c->emit, c->cbuf_pointer[idx], c->cbuf[idx], member, element, component,
                                           c->u32_type);
@@ -95,7 +106,7 @@ u32 shader_cbuf_read_dynamic(DirectCtx* c, u32 bank, u32 address) {
     u32 four = shader_u32(c, 4);
     u32 two = shader_u32(c, 2);
     u32 three = shader_u32(c, 3);
-    u32 element = spv_emit_binary(&c->emit, SPV_OP_SHIFT_RIGHT_LOGICAL, c->u32_type, address, four);
+    u32 element = cbuf_window(c, bank, spv_emit_binary(&c->emit, SPV_OP_SHIFT_RIGHT_LOGICAL, c->u32_type, address, four));
     u32 component =
         spv_emit_binary(&c->emit, SPV_OP_BITWISE_AND, c->u32_type,
                         spv_emit_binary(&c->emit, SPV_OP_SHIFT_RIGHT_LOGICAL, c->u32_type, address, two), three);

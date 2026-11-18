@@ -1259,6 +1259,7 @@ void own_drop(u64 addr, u64 size) {
     cut_nl(addr, addr + size, &rel);
     pm_unlock(&g_own.lk);
     let_go(lo & ~(g_own.page - 1), (hi + g_own.page - 1) & ~(g_own.page - 1)); /* before the release, as land_pages */
+    if (g_own.hooks.dropped) g_own.hooks.dropped(lo, hi - lo);
     res_release(&rel);
 }
 u64 own_landings(void) { return atomic_load_explicit(&g_own.lands, memory_order_relaxed); }

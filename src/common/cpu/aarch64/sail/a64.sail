@@ -1552,6 +1552,63 @@ function clause __DecodeA64_DataProcReg ((pc, ([bitone, bitone, bitzero, bitone,
     decode_autia_aarch64_instrs_integer_pac_autia_dp_1src(Rd, Rn, Z)
 }
 
+val decode_autia_aarch64_instrs_integer_pac_autia_hint : (bits(3), bits(4)) -> unit
+
+function decode_autia_aarch64_instrs_integer_pac_autia_hint (op2, CRm) = {
+    d : {17, 30} = 17;
+    n : int = undefined;
+    source_is_sp : bool = false;
+    match CRm @ op2 {
+      0b0011100 => {
+          d = 30;
+          n = 31
+      },
+      0b0011101 => {
+          d = 30;
+          source_is_sp = true
+      },
+      0b0001100 => {
+          d = 17;
+          n = 16
+      },
+      0b0001000 => {
+          throw(Error_See("PACIA"))
+      },
+      0b0001010 => {
+          throw(Error_See("PACIB"))
+      },
+      0b0001110 => {
+          throw(Error_See("AUTIB"))
+      },
+      [bitzero, bitzero, bitone, bitone, bitzero, bitzero, _] => {
+          throw(Error_See("PACIA"))
+      },
+      [bitzero, bitzero, bitone, bitone, bitzero, bitone, _] => {
+          throw(Error_See("PACIB"))
+      },
+      [bitzero, bitzero, bitone, bitone, bitone, bitone, _] => {
+          throw(Error_See("AUTIB"))
+      },
+      0b0000111 => {
+          throw(Error_See("XPACLRI"))
+      },
+      _ => {
+          throw(Error_See("HINT"))
+      }
+    };
+    let 'n = n;
+    let 'd = d;
+    assert(constraint((0 <= 'n & 'n <= 31)));
+    execute_aarch64_instrs_integer_pac_autia_dp_1src(d, n, source_is_sp)
+}
+
+function clause __DecodeA64_BranchExcSys ((pc, ([bitone, bitone, bitzero, bitone, bitzero, bitone, bitzero, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitzero, bitone, bitzero, bitzero, bitzero, _, bitone, bitone, bitzero, _, bitone, bitone, bitone, bitone, bitone] as __opcode)) if SEE < 63) = {
+    SEE = 63;
+    let op2 = Slice(__opcode, 5, 3);
+    let CRm = Slice(__opcode, 8, 4);
+    decode_autia_aarch64_instrs_integer_pac_autia_hint(op2, CRm)
+}
+
 val execute_aarch64_instrs_integer_pac_autib_dp_1src : forall 'd 'n ('source_is_sp : Bool),
   (0 <= 'n & 'n <= 31 & 0 <= 'd & 'd <= 31).
   (int('d), int('n), bool('source_is_sp)) -> unit
@@ -1597,6 +1654,63 @@ function clause __DecodeA64_DataProcReg ((pc, ([bitone, bitone, bitzero, bitone,
     let Rn = Slice(__opcode, 5, 5);
     let Z = Slice(__opcode, 13, 1);
     decode_autib_aarch64_instrs_integer_pac_autib_dp_1src(Rd, Rn, Z)
+}
+
+val decode_autib_aarch64_instrs_integer_pac_autib_hint : (bits(3), bits(4)) -> unit
+
+function decode_autib_aarch64_instrs_integer_pac_autib_hint (op2, CRm) = {
+    d : {17, 30} = 17;
+    n : int = undefined;
+    source_is_sp : bool = false;
+    match CRm @ op2 {
+      0b0011110 => {
+          d = 30;
+          n = 31
+      },
+      0b0011111 => {
+          d = 30;
+          source_is_sp = true
+      },
+      0b0001110 => {
+          d = 17;
+          n = 16
+      },
+      0b0001000 => {
+          throw(Error_See("PACIA"))
+      },
+      0b0001010 => {
+          throw(Error_See("PACIB"))
+      },
+      0b0001100 => {
+          throw(Error_See("AUTIA"))
+      },
+      [bitzero, bitzero, bitone, bitone, bitzero, bitzero, _] => {
+          throw(Error_See("PACIA"))
+      },
+      [bitzero, bitzero, bitone, bitone, bitzero, bitone, _] => {
+          throw(Error_See("PACIB"))
+      },
+      [bitzero, bitzero, bitone, bitone, bitone, bitzero, _] => {
+          throw(Error_See("AUTIA"))
+      },
+      0b0000111 => {
+          throw(Error_See("XPACLRI"))
+      },
+      _ => {
+          throw(Error_See("HINT"))
+      }
+    };
+    let 'n = n;
+    let 'd = d;
+    assert(constraint((0 <= 'n & 'n <= 31)));
+    execute_aarch64_instrs_integer_pac_autib_dp_1src(d, n, source_is_sp)
+}
+
+function clause __DecodeA64_BranchExcSys ((pc, ([bitone, bitone, bitzero, bitone, bitzero, bitone, bitzero, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitzero, bitone, bitzero, bitzero, bitzero, _, bitone, bitone, bitone, _, bitone, bitone, bitone, bitone, bitone] as __opcode)) if SEE < 65) = {
+    SEE = 65;
+    let op2 = Slice(__opcode, 5, 3);
+    let CRm = Slice(__opcode, 8, 4);
+    decode_autib_aarch64_instrs_integer_pac_autib_hint(op2, CRm)
 }
 
 val execute_aarch64_instrs_branch_conditional_cond : (bits(4), bits(64)) -> unit
@@ -2231,6 +2345,1159 @@ function clause __DecodeA64_BranchExcSys ((pc, ([bitone, bitone, bitzero, bitone
     decode_reta_aarch64_instrs_branch_unconditional_register(Rm, Rn, M, A, op, Z)
 }
 
+val execute_aarch64_instrs_system_hints : SystemHintOp -> unit
+
+function execute_aarch64_instrs_system_hints op = {
+    match op {
+      SystemHintOp_YIELD => {
+          Hint_Yield()
+      },
+      SystemHintOp_DGH => {
+          Hint_DGH()
+      },
+      SystemHintOp_WFE => {
+          let 'localtimeout = (1 << 64);
+          Hint_WFE(localtimeout, WFxType_WFE)
+      },
+      SystemHintOp_WFI => {
+          let 'localtimeout = (1 << 64);
+          Hint_WFI(localtimeout, WFxType_WFI)
+      },
+      SystemHintOp_SEV => {
+          SendEvent()
+      },
+      SystemHintOp_SEVL => {
+          SendEventLocal()
+      },
+      SystemHintOp_ESB => {
+          if HaveTME() & TSTATE.depth > 0 then {
+              FailTransaction(TMFailure_ERR, false)
+          };
+          SynchronizeErrors();
+          AArch64_ESBOperation();
+          if (PSTATE.EL == EL0 | PSTATE.EL == EL1) & EL2Enabled() then {
+              AArch64_vESBOperation()
+          };
+          TakeUnmaskedSErrorInterrupts()
+      },
+      SystemHintOp_PSB => {
+          ProfilingSynchronizationBarrier()
+      },
+      SystemHintOp_TSB => {
+          TraceSynchronizationBarrier()
+      },
+      SystemHintOp_GCSB => {
+          GCSSynchronizationBarrier()
+      },
+      SystemHintOp_CHKFEAT => {
+          X_set(16, 64) = AArch64_ChkFeat(X_read(16, 64))
+      },
+      SystemHintOp_CSDB => {
+          ConsumptionOfSpeculativeDataBarrier()
+      },
+      SystemHintOp_CLRBHB => {
+          Hint_CLRBHB()
+      },
+      SystemHintOp_BTI => {
+          SetBTypeNext(0b00)
+      },
+      SystemHintOp_NOP => {
+          return()
+      },
+      _ => {
+          Unreachable()
+      }
+    }
+}
+
+val decode_bti_aarch64_instrs_system_hints : (bits(3), bits(4)) -> unit
+
+function decode_bti_aarch64_instrs_system_hints (op2, CRm) = {
+    op : SystemHintOp = undefined;
+    match CRm @ op2 {
+      0b0000000 => {
+          op = SystemHintOp_NOP
+      },
+      0b0000001 => {
+          op = SystemHintOp_YIELD
+      },
+      0b0000010 => {
+          op = SystemHintOp_WFE
+      },
+      0b0000011 => {
+          op = SystemHintOp_WFI
+      },
+      0b0000100 => {
+          op = SystemHintOp_SEV
+      },
+      0b0000101 => {
+          op = SystemHintOp_SEVL
+      },
+      0b0000110 => {
+          if not_bool(HaveDGHExt()) then {
+              EndOfInstruction()
+          };
+          op = SystemHintOp_DGH
+      },
+      0b0000111 => {
+          throw(Error_See("XPACLRI"))
+      },
+      [bitzero, bitzero, bitzero, bitone, _, _, _] => {
+          match op2 {
+            0b000 => {
+                throw(Error_See("PACIA1716"))
+            },
+            0b010 => {
+                throw(Error_See("PACIB1716"))
+            },
+            0b100 => {
+                throw(Error_See("AUTIA1716"))
+            },
+            0b110 => {
+                throw(Error_See("AUTIB1716"))
+            },
+            _ => {
+                EndOfInstruction()
+            }
+          }
+      },
+      0b0010000 => {
+          if not_bool(HaveRASExt()) then {
+              EndOfInstruction()
+          };
+          op = SystemHintOp_ESB
+      },
+      0b0010001 => {
+          if not_bool(HaveStatisticalProfiling()) then {
+              EndOfInstruction()
+          };
+          op = SystemHintOp_PSB
+      },
+      0b0010010 => {
+          if not_bool(HaveSelfHostedTrace()) then {
+              EndOfInstruction()
+          };
+          op = SystemHintOp_TSB
+      },
+      0b0010011 => {
+          if not_bool(IsFeatureImplemented(FEAT_GCS)) then {
+              EndOfInstruction()
+          };
+          op = SystemHintOp_GCSB
+      },
+      0b0010100 => {
+          op = SystemHintOp_CSDB
+      },
+      0b0010110 => {
+          if not_bool(HaveFeatCLRBHB()) then {
+              EndOfInstruction()
+          };
+          op = SystemHintOp_CLRBHB
+      },
+      [bitzero, bitzero, bitone, bitone, _, _, _] => {
+          match op2 {
+            0b000 => {
+                throw(Error_See("PACIAZ"))
+            },
+            0b001 => {
+                throw(Error_See("PACIASP"))
+            },
+            0b010 => {
+                throw(Error_See("PACIBZ"))
+            },
+            0b011 => {
+                throw(Error_See("PACIBSP"))
+            },
+            0b100 => {
+                throw(Error_See("AUTIAZ"))
+            },
+            0b101 => {
+                throw(Error_See("AUTIASP"))
+            },
+            0b110 => {
+                throw(Error_See("AUTIBZ"))
+            },
+            0b111 => {
+                throw(Error_See("AUTIBSP"))
+            }
+          }
+      },
+      [bitzero, bitone, bitzero, bitzero, _, _, bitzero] => {
+          op = SystemHintOp_BTI;
+          SetBTypeCompatible(BTypeCompatible_BTI(op2[2 .. 1]))
+      },
+      0b0101000 => {
+          if not_bool(IsFeatureImplemented(FEAT_CHK)) then {
+              EndOfInstruction()
+          };
+          op = SystemHintOp_CHKFEAT
+      },
+      _ => {
+          EndOfInstruction()
+      }
+    };
+    execute_aarch64_instrs_system_hints(op)
+}
+
+function clause __DecodeA64_BranchExcSys ((pc, ([bitone, bitone, bitzero, bitone, bitzero, bitone, bitzero, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitzero, bitone, bitzero, bitzero, bitone, bitzero, bitzero, _, _, bitzero, bitone, bitone, bitone, bitone, bitone] as __opcode)) if SEE < 97) = {
+    SEE = 97;
+    let op2 = Slice(__opcode, 5, 3);
+    let CRm = Slice(__opcode, 8, 4);
+    decode_bti_aarch64_instrs_system_hints(op2, CRm)
+}
+
+val decode_chkfeat_aarch64_instrs_system_hints : (bits(3), bits(4)) -> unit
+
+function decode_chkfeat_aarch64_instrs_system_hints (op2, CRm) = {
+    op : SystemHintOp = undefined;
+    match CRm @ op2 {
+      0b0000000 => {
+          op = SystemHintOp_NOP
+      },
+      0b0000001 => {
+          op = SystemHintOp_YIELD
+      },
+      0b0000010 => {
+          op = SystemHintOp_WFE
+      },
+      0b0000011 => {
+          op = SystemHintOp_WFI
+      },
+      0b0000100 => {
+          op = SystemHintOp_SEV
+      },
+      0b0000101 => {
+          op = SystemHintOp_SEVL
+      },
+      0b0000110 => {
+          if not_bool(HaveDGHExt()) then {
+              EndOfInstruction()
+          };
+          op = SystemHintOp_DGH
+      },
+      0b0000111 => {
+          throw(Error_See("XPACLRI"))
+      },
+      [bitzero, bitzero, bitzero, bitone, _, _, _] => {
+          match op2 {
+            0b000 => {
+                throw(Error_See("PACIA1716"))
+            },
+            0b010 => {
+                throw(Error_See("PACIB1716"))
+            },
+            0b100 => {
+                throw(Error_See("AUTIA1716"))
+            },
+            0b110 => {
+                throw(Error_See("AUTIB1716"))
+            },
+            _ => {
+                EndOfInstruction()
+            }
+          }
+      },
+      0b0010000 => {
+          if not_bool(HaveRASExt()) then {
+              EndOfInstruction()
+          };
+          op = SystemHintOp_ESB
+      },
+      0b0010001 => {
+          if not_bool(HaveStatisticalProfiling()) then {
+              EndOfInstruction()
+          };
+          op = SystemHintOp_PSB
+      },
+      0b0010010 => {
+          if not_bool(HaveSelfHostedTrace()) then {
+              EndOfInstruction()
+          };
+          op = SystemHintOp_TSB
+      },
+      0b0010011 => {
+          if not_bool(IsFeatureImplemented(FEAT_GCS)) then {
+              EndOfInstruction()
+          };
+          op = SystemHintOp_GCSB
+      },
+      0b0010100 => {
+          op = SystemHintOp_CSDB
+      },
+      0b0010110 => {
+          if not_bool(HaveFeatCLRBHB()) then {
+              EndOfInstruction()
+          };
+          op = SystemHintOp_CLRBHB
+      },
+      [bitzero, bitzero, bitone, bitone, _, _, _] => {
+          match op2 {
+            0b000 => {
+                throw(Error_See("PACIAZ"))
+            },
+            0b001 => {
+                throw(Error_See("PACIASP"))
+            },
+            0b010 => {
+                throw(Error_See("PACIBZ"))
+            },
+            0b011 => {
+                throw(Error_See("PACIBSP"))
+            },
+            0b100 => {
+                throw(Error_See("AUTIAZ"))
+            },
+            0b101 => {
+                throw(Error_See("AUTIASP"))
+            },
+            0b110 => {
+                throw(Error_See("AUTIBZ"))
+            },
+            0b111 => {
+                throw(Error_See("AUTIBSP"))
+            }
+          }
+      },
+      [bitzero, bitone, bitzero, bitzero, _, _, bitzero] => {
+          op = SystemHintOp_BTI;
+          SetBTypeCompatible(BTypeCompatible_BTI(op2[2 .. 1]))
+      },
+      0b0101000 => {
+          if not_bool(IsFeatureImplemented(FEAT_CHK)) then {
+              EndOfInstruction()
+          };
+          op = SystemHintOp_CHKFEAT
+      },
+      _ => {
+          EndOfInstruction()
+      }
+    };
+    execute_aarch64_instrs_system_hints(op)
+}
+
+function clause __DecodeA64_BranchExcSys ((pc, (0b11010101000000110010010100011111 as __opcode)) if SEE < 98) = {
+    SEE = 98;
+    let op2 = Slice(__opcode, 5, 3);
+    let CRm = Slice(__opcode, 8, 4);
+    decode_chkfeat_aarch64_instrs_system_hints(op2, CRm)
+}
+
+val decode_clrbhb_aarch64_instrs_system_hints : (bits(3), bits(4)) -> unit
+
+function decode_clrbhb_aarch64_instrs_system_hints (op2, CRm) = {
+    op : SystemHintOp = undefined;
+    match CRm @ op2 {
+      0b0000000 => {
+          op = SystemHintOp_NOP
+      },
+      0b0000001 => {
+          op = SystemHintOp_YIELD
+      },
+      0b0000010 => {
+          op = SystemHintOp_WFE
+      },
+      0b0000011 => {
+          op = SystemHintOp_WFI
+      },
+      0b0000100 => {
+          op = SystemHintOp_SEV
+      },
+      0b0000101 => {
+          op = SystemHintOp_SEVL
+      },
+      0b0000110 => {
+          if not_bool(HaveDGHExt()) then {
+              EndOfInstruction()
+          };
+          op = SystemHintOp_DGH
+      },
+      0b0000111 => {
+          throw(Error_See("XPACLRI"))
+      },
+      [bitzero, bitzero, bitzero, bitone, _, _, _] => {
+          match op2 {
+            0b000 => {
+                throw(Error_See("PACIA1716"))
+            },
+            0b010 => {
+                throw(Error_See("PACIB1716"))
+            },
+            0b100 => {
+                throw(Error_See("AUTIA1716"))
+            },
+            0b110 => {
+                throw(Error_See("AUTIB1716"))
+            },
+            _ => {
+                EndOfInstruction()
+            }
+          }
+      },
+      0b0010000 => {
+          if not_bool(HaveRASExt()) then {
+              EndOfInstruction()
+          };
+          op = SystemHintOp_ESB
+      },
+      0b0010001 => {
+          if not_bool(HaveStatisticalProfiling()) then {
+              EndOfInstruction()
+          };
+          op = SystemHintOp_PSB
+      },
+      0b0010010 => {
+          if not_bool(HaveSelfHostedTrace()) then {
+              EndOfInstruction()
+          };
+          op = SystemHintOp_TSB
+      },
+      0b0010011 => {
+          if not_bool(IsFeatureImplemented(FEAT_GCS)) then {
+              EndOfInstruction()
+          };
+          op = SystemHintOp_GCSB
+      },
+      0b0010100 => {
+          op = SystemHintOp_CSDB
+      },
+      0b0010110 => {
+          if not_bool(HaveFeatCLRBHB()) then {
+              EndOfInstruction()
+          };
+          op = SystemHintOp_CLRBHB
+      },
+      [bitzero, bitzero, bitone, bitone, _, _, _] => {
+          match op2 {
+            0b000 => {
+                throw(Error_See("PACIAZ"))
+            },
+            0b001 => {
+                throw(Error_See("PACIASP"))
+            },
+            0b010 => {
+                throw(Error_See("PACIBZ"))
+            },
+            0b011 => {
+                throw(Error_See("PACIBSP"))
+            },
+            0b100 => {
+                throw(Error_See("AUTIAZ"))
+            },
+            0b101 => {
+                throw(Error_See("AUTIASP"))
+            },
+            0b110 => {
+                throw(Error_See("AUTIBZ"))
+            },
+            0b111 => {
+                throw(Error_See("AUTIBSP"))
+            }
+          }
+      },
+      [bitzero, bitone, bitzero, bitzero, _, _, bitzero] => {
+          op = SystemHintOp_BTI;
+          SetBTypeCompatible(BTypeCompatible_BTI(op2[2 .. 1]))
+      },
+      0b0101000 => {
+          if not_bool(IsFeatureImplemented(FEAT_CHK)) then {
+              EndOfInstruction()
+          };
+          op = SystemHintOp_CHKFEAT
+      },
+      _ => {
+          EndOfInstruction()
+      }
+    };
+    execute_aarch64_instrs_system_hints(op)
+}
+
+function clause __DecodeA64_BranchExcSys ((pc, (0b11010101000000110010001011011111 as __opcode)) if SEE < 99) = {
+    SEE = 99;
+    let op2 = Slice(__opcode, 5, 3);
+    let CRm = Slice(__opcode, 8, 4);
+    decode_clrbhb_aarch64_instrs_system_hints(op2, CRm)
+}
+
+val decode_csdb_aarch64_instrs_system_hints : (bits(3), bits(4)) -> unit
+
+function decode_csdb_aarch64_instrs_system_hints (op2, CRm) = {
+    op : SystemHintOp = undefined;
+    match CRm @ op2 {
+      0b0000000 => {
+          op = SystemHintOp_NOP
+      },
+      0b0000001 => {
+          op = SystemHintOp_YIELD
+      },
+      0b0000010 => {
+          op = SystemHintOp_WFE
+      },
+      0b0000011 => {
+          op = SystemHintOp_WFI
+      },
+      0b0000100 => {
+          op = SystemHintOp_SEV
+      },
+      0b0000101 => {
+          op = SystemHintOp_SEVL
+      },
+      0b0000110 => {
+          if not_bool(HaveDGHExt()) then {
+              EndOfInstruction()
+          };
+          op = SystemHintOp_DGH
+      },
+      0b0000111 => {
+          throw(Error_See("XPACLRI"))
+      },
+      [bitzero, bitzero, bitzero, bitone, _, _, _] => {
+          match op2 {
+            0b000 => {
+                throw(Error_See("PACIA1716"))
+            },
+            0b010 => {
+                throw(Error_See("PACIB1716"))
+            },
+            0b100 => {
+                throw(Error_See("AUTIA1716"))
+            },
+            0b110 => {
+                throw(Error_See("AUTIB1716"))
+            },
+            _ => {
+                EndOfInstruction()
+            }
+          }
+      },
+      0b0010000 => {
+          if not_bool(HaveRASExt()) then {
+              EndOfInstruction()
+          };
+          op = SystemHintOp_ESB
+      },
+      0b0010001 => {
+          if not_bool(HaveStatisticalProfiling()) then {
+              EndOfInstruction()
+          };
+          op = SystemHintOp_PSB
+      },
+      0b0010010 => {
+          if not_bool(HaveSelfHostedTrace()) then {
+              EndOfInstruction()
+          };
+          op = SystemHintOp_TSB
+      },
+      0b0010011 => {
+          if not_bool(IsFeatureImplemented(FEAT_GCS)) then {
+              EndOfInstruction()
+          };
+          op = SystemHintOp_GCSB
+      },
+      0b0010100 => {
+          op = SystemHintOp_CSDB
+      },
+      0b0010110 => {
+          if not_bool(HaveFeatCLRBHB()) then {
+              EndOfInstruction()
+          };
+          op = SystemHintOp_CLRBHB
+      },
+      [bitzero, bitzero, bitone, bitone, _, _, _] => {
+          match op2 {
+            0b000 => {
+                throw(Error_See("PACIAZ"))
+            },
+            0b001 => {
+                throw(Error_See("PACIASP"))
+            },
+            0b010 => {
+                throw(Error_See("PACIBZ"))
+            },
+            0b011 => {
+                throw(Error_See("PACIBSP"))
+            },
+            0b100 => {
+                throw(Error_See("AUTIAZ"))
+            },
+            0b101 => {
+                throw(Error_See("AUTIASP"))
+            },
+            0b110 => {
+                throw(Error_See("AUTIBZ"))
+            },
+            0b111 => {
+                throw(Error_See("AUTIBSP"))
+            }
+          }
+      },
+      [bitzero, bitone, bitzero, bitzero, _, _, bitzero] => {
+          op = SystemHintOp_BTI;
+          SetBTypeCompatible(BTypeCompatible_BTI(op2[2 .. 1]))
+      },
+      0b0101000 => {
+          if not_bool(IsFeatureImplemented(FEAT_CHK)) then {
+              EndOfInstruction()
+          };
+          op = SystemHintOp_CHKFEAT
+      },
+      _ => {
+          EndOfInstruction()
+      }
+    };
+    execute_aarch64_instrs_system_hints(op)
+}
+
+function clause __DecodeA64_BranchExcSys ((pc, (0b11010101000000110010001010011111 as __opcode)) if SEE < 100) = {
+    SEE = 100;
+    let op2 = Slice(__opcode, 5, 3);
+    let CRm = Slice(__opcode, 8, 4);
+    decode_csdb_aarch64_instrs_system_hints(op2, CRm)
+}
+
+val decode_dgh_aarch64_instrs_system_hints : (bits(3), bits(4)) -> unit
+
+function decode_dgh_aarch64_instrs_system_hints (op2, CRm) = {
+    op : SystemHintOp = undefined;
+    match CRm @ op2 {
+      0b0000000 => {
+          op = SystemHintOp_NOP
+      },
+      0b0000001 => {
+          op = SystemHintOp_YIELD
+      },
+      0b0000010 => {
+          op = SystemHintOp_WFE
+      },
+      0b0000011 => {
+          op = SystemHintOp_WFI
+      },
+      0b0000100 => {
+          op = SystemHintOp_SEV
+      },
+      0b0000101 => {
+          op = SystemHintOp_SEVL
+      },
+      0b0000110 => {
+          if not_bool(HaveDGHExt()) then {
+              EndOfInstruction()
+          };
+          op = SystemHintOp_DGH
+      },
+      0b0000111 => {
+          throw(Error_See("XPACLRI"))
+      },
+      [bitzero, bitzero, bitzero, bitone, _, _, _] => {
+          match op2 {
+            0b000 => {
+                throw(Error_See("PACIA1716"))
+            },
+            0b010 => {
+                throw(Error_See("PACIB1716"))
+            },
+            0b100 => {
+                throw(Error_See("AUTIA1716"))
+            },
+            0b110 => {
+                throw(Error_See("AUTIB1716"))
+            },
+            _ => {
+                EndOfInstruction()
+            }
+          }
+      },
+      0b0010000 => {
+          if not_bool(HaveRASExt()) then {
+              EndOfInstruction()
+          };
+          op = SystemHintOp_ESB
+      },
+      0b0010001 => {
+          if not_bool(HaveStatisticalProfiling()) then {
+              EndOfInstruction()
+          };
+          op = SystemHintOp_PSB
+      },
+      0b0010010 => {
+          if not_bool(HaveSelfHostedTrace()) then {
+              EndOfInstruction()
+          };
+          op = SystemHintOp_TSB
+      },
+      0b0010011 => {
+          if not_bool(IsFeatureImplemented(FEAT_GCS)) then {
+              EndOfInstruction()
+          };
+          op = SystemHintOp_GCSB
+      },
+      0b0010100 => {
+          op = SystemHintOp_CSDB
+      },
+      0b0010110 => {
+          if not_bool(HaveFeatCLRBHB()) then {
+              EndOfInstruction()
+          };
+          op = SystemHintOp_CLRBHB
+      },
+      [bitzero, bitzero, bitone, bitone, _, _, _] => {
+          match op2 {
+            0b000 => {
+                throw(Error_See("PACIAZ"))
+            },
+            0b001 => {
+                throw(Error_See("PACIASP"))
+            },
+            0b010 => {
+                throw(Error_See("PACIBZ"))
+            },
+            0b011 => {
+                throw(Error_See("PACIBSP"))
+            },
+            0b100 => {
+                throw(Error_See("AUTIAZ"))
+            },
+            0b101 => {
+                throw(Error_See("AUTIASP"))
+            },
+            0b110 => {
+                throw(Error_See("AUTIBZ"))
+            },
+            0b111 => {
+                throw(Error_See("AUTIBSP"))
+            }
+          }
+      },
+      [bitzero, bitone, bitzero, bitzero, _, _, bitzero] => {
+          op = SystemHintOp_BTI;
+          SetBTypeCompatible(BTypeCompatible_BTI(op2[2 .. 1]))
+      },
+      0b0101000 => {
+          if not_bool(IsFeatureImplemented(FEAT_CHK)) then {
+              EndOfInstruction()
+          };
+          op = SystemHintOp_CHKFEAT
+      },
+      _ => {
+          EndOfInstruction()
+      }
+    };
+    execute_aarch64_instrs_system_hints(op)
+}
+
+function clause __DecodeA64_BranchExcSys ((pc, (0b11010101000000110010000011011111 as __opcode)) if SEE < 101) = {
+    SEE = 101;
+    let op2 = Slice(__opcode, 5, 3);
+    let CRm = Slice(__opcode, 8, 4);
+    decode_dgh_aarch64_instrs_system_hints(op2, CRm)
+}
+
+val decode_esb_aarch64_instrs_system_hints : (bits(3), bits(4)) -> unit
+
+function decode_esb_aarch64_instrs_system_hints (op2, CRm) = {
+    op : SystemHintOp = undefined;
+    match CRm @ op2 {
+      0b0000000 => {
+          op = SystemHintOp_NOP
+      },
+      0b0000001 => {
+          op = SystemHintOp_YIELD
+      },
+      0b0000010 => {
+          op = SystemHintOp_WFE
+      },
+      0b0000011 => {
+          op = SystemHintOp_WFI
+      },
+      0b0000100 => {
+          op = SystemHintOp_SEV
+      },
+      0b0000101 => {
+          op = SystemHintOp_SEVL
+      },
+      0b0000110 => {
+          if not_bool(HaveDGHExt()) then {
+              EndOfInstruction()
+          };
+          op = SystemHintOp_DGH
+      },
+      0b0000111 => {
+          throw(Error_See("XPACLRI"))
+      },
+      [bitzero, bitzero, bitzero, bitone, _, _, _] => {
+          match op2 {
+            0b000 => {
+                throw(Error_See("PACIA1716"))
+            },
+            0b010 => {
+                throw(Error_See("PACIB1716"))
+            },
+            0b100 => {
+                throw(Error_See("AUTIA1716"))
+            },
+            0b110 => {
+                throw(Error_See("AUTIB1716"))
+            },
+            _ => {
+                EndOfInstruction()
+            }
+          }
+      },
+      0b0010000 => {
+          if not_bool(HaveRASExt()) then {
+              EndOfInstruction()
+          };
+          op = SystemHintOp_ESB
+      },
+      0b0010001 => {
+          if not_bool(HaveStatisticalProfiling()) then {
+              EndOfInstruction()
+          };
+          op = SystemHintOp_PSB
+      },
+      0b0010010 => {
+          if not_bool(HaveSelfHostedTrace()) then {
+              EndOfInstruction()
+          };
+          op = SystemHintOp_TSB
+      },
+      0b0010011 => {
+          if not_bool(IsFeatureImplemented(FEAT_GCS)) then {
+              EndOfInstruction()
+          };
+          op = SystemHintOp_GCSB
+      },
+      0b0010100 => {
+          op = SystemHintOp_CSDB
+      },
+      0b0010110 => {
+          if not_bool(HaveFeatCLRBHB()) then {
+              EndOfInstruction()
+          };
+          op = SystemHintOp_CLRBHB
+      },
+      [bitzero, bitzero, bitone, bitone, _, _, _] => {
+          match op2 {
+            0b000 => {
+                throw(Error_See("PACIAZ"))
+            },
+            0b001 => {
+                throw(Error_See("PACIASP"))
+            },
+            0b010 => {
+                throw(Error_See("PACIBZ"))
+            },
+            0b011 => {
+                throw(Error_See("PACIBSP"))
+            },
+            0b100 => {
+                throw(Error_See("AUTIAZ"))
+            },
+            0b101 => {
+                throw(Error_See("AUTIASP"))
+            },
+            0b110 => {
+                throw(Error_See("AUTIBZ"))
+            },
+            0b111 => {
+                throw(Error_See("AUTIBSP"))
+            }
+          }
+      },
+      [bitzero, bitone, bitzero, bitzero, _, _, bitzero] => {
+          op = SystemHintOp_BTI;
+          SetBTypeCompatible(BTypeCompatible_BTI(op2[2 .. 1]))
+      },
+      0b0101000 => {
+          if not_bool(IsFeatureImplemented(FEAT_CHK)) then {
+              EndOfInstruction()
+          };
+          op = SystemHintOp_CHKFEAT
+      },
+      _ => {
+          EndOfInstruction()
+      }
+    };
+    execute_aarch64_instrs_system_hints(op)
+}
+
+function clause __DecodeA64_BranchExcSys ((pc, (0b11010101000000110010001000011111 as __opcode)) if SEE < 102) = {
+    SEE = 102;
+    let op2 = Slice(__opcode, 5, 3);
+    let CRm = Slice(__opcode, 8, 4);
+    decode_esb_aarch64_instrs_system_hints(op2, CRm)
+}
+
+val decode_gcsb_aarch64_instrs_system_hints : (bits(3), bits(4)) -> unit
+
+function decode_gcsb_aarch64_instrs_system_hints (op2, CRm) = {
+    op : SystemHintOp = undefined;
+    match CRm @ op2 {
+      0b0000000 => {
+          op = SystemHintOp_NOP
+      },
+      0b0000001 => {
+          op = SystemHintOp_YIELD
+      },
+      0b0000010 => {
+          op = SystemHintOp_WFE
+      },
+      0b0000011 => {
+          op = SystemHintOp_WFI
+      },
+      0b0000100 => {
+          op = SystemHintOp_SEV
+      },
+      0b0000101 => {
+          op = SystemHintOp_SEVL
+      },
+      0b0000110 => {
+          if not_bool(HaveDGHExt()) then {
+              EndOfInstruction()
+          };
+          op = SystemHintOp_DGH
+      },
+      0b0000111 => {
+          throw(Error_See("XPACLRI"))
+      },
+      [bitzero, bitzero, bitzero, bitone, _, _, _] => {
+          match op2 {
+            0b000 => {
+                throw(Error_See("PACIA1716"))
+            },
+            0b010 => {
+                throw(Error_See("PACIB1716"))
+            },
+            0b100 => {
+                throw(Error_See("AUTIA1716"))
+            },
+            0b110 => {
+                throw(Error_See("AUTIB1716"))
+            },
+            _ => {
+                EndOfInstruction()
+            }
+          }
+      },
+      0b0010000 => {
+          if not_bool(HaveRASExt()) then {
+              EndOfInstruction()
+          };
+          op = SystemHintOp_ESB
+      },
+      0b0010001 => {
+          if not_bool(HaveStatisticalProfiling()) then {
+              EndOfInstruction()
+          };
+          op = SystemHintOp_PSB
+      },
+      0b0010010 => {
+          if not_bool(HaveSelfHostedTrace()) then {
+              EndOfInstruction()
+          };
+          op = SystemHintOp_TSB
+      },
+      0b0010011 => {
+          if not_bool(IsFeatureImplemented(FEAT_GCS)) then {
+              EndOfInstruction()
+          };
+          op = SystemHintOp_GCSB
+      },
+      0b0010100 => {
+          op = SystemHintOp_CSDB
+      },
+      0b0010110 => {
+          if not_bool(HaveFeatCLRBHB()) then {
+              EndOfInstruction()
+          };
+          op = SystemHintOp_CLRBHB
+      },
+      [bitzero, bitzero, bitone, bitone, _, _, _] => {
+          match op2 {
+            0b000 => {
+                throw(Error_See("PACIAZ"))
+            },
+            0b001 => {
+                throw(Error_See("PACIASP"))
+            },
+            0b010 => {
+                throw(Error_See("PACIBZ"))
+            },
+            0b011 => {
+                throw(Error_See("PACIBSP"))
+            },
+            0b100 => {
+                throw(Error_See("AUTIAZ"))
+            },
+            0b101 => {
+                throw(Error_See("AUTIASP"))
+            },
+            0b110 => {
+                throw(Error_See("AUTIBZ"))
+            },
+            0b111 => {
+                throw(Error_See("AUTIBSP"))
+            }
+          }
+      },
+      [bitzero, bitone, bitzero, bitzero, _, _, bitzero] => {
+          op = SystemHintOp_BTI;
+          SetBTypeCompatible(BTypeCompatible_BTI(op2[2 .. 1]))
+      },
+      0b0101000 => {
+          if not_bool(IsFeatureImplemented(FEAT_CHK)) then {
+              EndOfInstruction()
+          };
+          op = SystemHintOp_CHKFEAT
+      },
+      _ => {
+          EndOfInstruction()
+      }
+    };
+    execute_aarch64_instrs_system_hints(op)
+}
+
+function clause __DecodeA64_BranchExcSys ((pc, (0b11010101000000110010001001111111 as __opcode)) if SEE < 103) = {
+    SEE = 103;
+    let op2 = Slice(__opcode, 5, 3);
+    let CRm = Slice(__opcode, 8, 4);
+    decode_gcsb_aarch64_instrs_system_hints(op2, CRm)
+}
+
+val decode_hint_aarch64_instrs_system_hints : (bits(3), bits(4)) -> unit
+
+function decode_hint_aarch64_instrs_system_hints (op2, CRm) = {
+    op : SystemHintOp = undefined;
+    match CRm @ op2 {
+      0b0000000 => {
+          op = SystemHintOp_NOP
+      },
+      0b0000001 => {
+          op = SystemHintOp_YIELD
+      },
+      0b0000010 => {
+          op = SystemHintOp_WFE
+      },
+      0b0000011 => {
+          op = SystemHintOp_WFI
+      },
+      0b0000100 => {
+          op = SystemHintOp_SEV
+      },
+      0b0000101 => {
+          op = SystemHintOp_SEVL
+      },
+      0b0000110 => {
+          if not_bool(HaveDGHExt()) then {
+              EndOfInstruction()
+          };
+          op = SystemHintOp_DGH
+      },
+      0b0000111 => {
+          throw(Error_See("XPACLRI"))
+      },
+      [bitzero, bitzero, bitzero, bitone, _, _, _] => {
+          match op2 {
+            0b000 => {
+                throw(Error_See("PACIA1716"))
+            },
+            0b010 => {
+                throw(Error_See("PACIB1716"))
+            },
+            0b100 => {
+                throw(Error_See("AUTIA1716"))
+            },
+            0b110 => {
+                throw(Error_See("AUTIB1716"))
+            },
+            _ => {
+                EndOfInstruction()
+            }
+          }
+      },
+      0b0010000 => {
+          if not_bool(HaveRASExt()) then {
+              EndOfInstruction()
+          };
+          op = SystemHintOp_ESB
+      },
+      0b0010001 => {
+          if not_bool(HaveStatisticalProfiling()) then {
+              EndOfInstruction()
+          };
+          op = SystemHintOp_PSB
+      },
+      0b0010010 => {
+          if not_bool(HaveSelfHostedTrace()) then {
+              EndOfInstruction()
+          };
+          op = SystemHintOp_TSB
+      },
+      0b0010011 => {
+          if not_bool(IsFeatureImplemented(FEAT_GCS)) then {
+              EndOfInstruction()
+          };
+          op = SystemHintOp_GCSB
+      },
+      0b0010100 => {
+          op = SystemHintOp_CSDB
+      },
+      0b0010110 => {
+          if not_bool(HaveFeatCLRBHB()) then {
+              EndOfInstruction()
+          };
+          op = SystemHintOp_CLRBHB
+      },
+      [bitzero, bitzero, bitone, bitone, _, _, _] => {
+          match op2 {
+            0b000 => {
+                throw(Error_See("PACIAZ"))
+            },
+            0b001 => {
+                throw(Error_See("PACIASP"))
+            },
+            0b010 => {
+                throw(Error_See("PACIBZ"))
+            },
+            0b011 => {
+                throw(Error_See("PACIBSP"))
+            },
+            0b100 => {
+                throw(Error_See("AUTIAZ"))
+            },
+            0b101 => {
+                throw(Error_See("AUTIASP"))
+            },
+            0b110 => {
+                throw(Error_See("AUTIBZ"))
+            },
+            0b111 => {
+                throw(Error_See("AUTIBSP"))
+            }
+          }
+      },
+      [bitzero, bitone, bitzero, bitzero, _, _, bitzero] => {
+          op = SystemHintOp_BTI;
+          SetBTypeCompatible(BTypeCompatible_BTI(op2[2 .. 1]))
+      },
+      0b0101000 => {
+          if not_bool(IsFeatureImplemented(FEAT_CHK)) then {
+              EndOfInstruction()
+          };
+          op = SystemHintOp_CHKFEAT
+      },
+      _ => {
+          EndOfInstruction()
+      }
+    };
+    execute_aarch64_instrs_system_hints(op)
+}
+
+function clause __DecodeA64_BranchExcSys ((pc, ([bitone, bitone, bitzero, bitone, bitzero, bitone, bitzero, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, _, _, bitone, bitone, bitone, bitone, bitone] as __opcode)) if SEE < 104) = {
+    SEE = 104;
+    let op2 = Slice(__opcode, 5, 3);
+    let CRm = Slice(__opcode, 8, 4);
+    decode_hint_aarch64_instrs_system_hints(op2, CRm)
+}
+
 val execute_aarch64_instrs_branch_conditional_compare : forall 'datasize ('iszero : Bool) 't,
   (0 <= 't & 't <= 31 & 'datasize in {32, 64}).
   (int('datasize), bool('iszero), bits(64), int('t)) -> unit
@@ -2458,6 +3725,24 @@ function clause __DecodeA64_BranchExcSys ((pc, (0b110101010000000001000000000111
     } else {
         decode_cfinv_aarch64_instrs_integer_flags_cfinv(CRm)
     }
+}
+
+val execute_aarch64_instrs_system_monitors : unit -> unit
+
+function execute_aarch64_instrs_system_monitors () = {
+    ClearExclusiveLocal(ProcessorID())
+}
+
+val decode_clrex_aarch64_instrs_system_monitors : bits(4) -> unit
+
+function decode_clrex_aarch64_instrs_system_monitors CRm = {
+    execute_aarch64_instrs_system_monitors()
+}
+
+function clause __DecodeA64_BranchExcSys ((pc, ([bitone, bitone, bitzero, bitone, bitzero, bitone, bitzero, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitzero, bitone, bitone, _, _, _, _, bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitone] as __opcode)) if SEE < 124) = {
+    SEE = 124;
+    let CRm = Slice(__opcode, 8, 4);
+    decode_clrex_aarch64_instrs_system_monitors(CRm)
 }
 
 val execute_aarch64_instrs_integer_arithmetic_cnt : forall 'd 'datasize 'n,
@@ -2717,6 +4002,142 @@ function clause __DecodeA64_DataProcReg ((pc, ([_, bitone, bitzero, bitone, bito
     decode_csneg_aarch64_instrs_integer_conditional_select(Rd, Rn, o2, cond, Rm, op, sf)
 }
 
+val execute_aarch64_instrs_system_barriers_dmb : (MBReqDomain, MBReqTypes) -> unit
+
+function execute_aarch64_instrs_system_barriers_dmb (domain, types) = {
+    DataMemoryBarrier(domain, types)
+}
+
+val decode_dmb_aarch64_instrs_system_barriers_dmb : (bits(2), bits(4)) -> unit
+
+function decode_dmb_aarch64_instrs_system_barriers_dmb (opc, CRm) = {
+    domain : MBReqDomain = undefined;
+    types : MBReqTypes = undefined;
+    match CRm[3 .. 2] {
+      0b00 => {
+          domain = MBReqDomain_OuterShareable
+      },
+      0b01 => {
+          domain = MBReqDomain_Nonshareable
+      },
+      0b10 => {
+          domain = MBReqDomain_InnerShareable
+      },
+      0b11 => {
+          domain = MBReqDomain_FullSystem
+      }
+    };
+    match CRm[1 .. 0] {
+      0b00 => {
+          types = MBReqTypes_All;
+          domain = MBReqDomain_FullSystem
+      },
+      0b01 => {
+          types = MBReqTypes_Reads
+      },
+      0b10 => {
+          types = MBReqTypes_Writes
+      },
+      0b11 => {
+          types = MBReqTypes_All
+      }
+    };
+    let types = types;
+    execute_aarch64_instrs_system_barriers_dmb(domain, types)
+}
+
+function clause __DecodeA64_BranchExcSys ((pc, ([bitone, bitone, bitzero, bitone, bitzero, bitone, bitzero, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitzero, bitone, bitone, _, _, _, _, bitone, bitzero, bitone, bitone, bitone, bitone, bitone, bitone] as __opcode)) if SEE < 195) = {
+    SEE = 195;
+    let opc = Slice(__opcode, 5, 2);
+    let CRm = Slice(__opcode, 8, 4);
+    decode_dmb_aarch64_instrs_system_barriers_dmb(opc, CRm)
+}
+
+val execute_aarch64_instrs_system_barriers_dsb : forall ('nXS : Bool).
+  (DSBAlias, MBReqDomain, bool('nXS), MBReqTypes) -> unit
+
+function execute_aarch64_instrs_system_barriers_dsb (alias, domain, nXS__arg, types) = {
+    nXS : bool = nXS__arg;
+    match alias {
+      DSBAlias_SSBB => {
+          SpeculativeStoreBypassBarrierToVA()
+      },
+      DSBAlias_PSSBB => {
+          SpeculativeStoreBypassBarrierToPA()
+      },
+      DSBAlias_DSB => {
+          if HaveTME() & TSTATE.depth > 0 then {
+              FailTransaction(TMFailure_ERR, false)
+          };
+          if not_bool(nXS) & HaveFeatXS() then {
+              nXS = ((PSTATE.EL == EL0 | PSTATE.EL == EL1) & IsHCRXEL2Enabled()) & HCRX_EL2[FnXS] == 0b1
+          };
+          DataSynchronizationBarrier(domain, types, nXS)
+      },
+      _ => {
+          Unreachable()
+      }
+    }
+}
+
+val decode_dsb_aarch64_instrs_system_barriers_dsb : (bits(2), bits(4)) -> unit
+
+function decode_dsb_aarch64_instrs_system_barriers_dsb (opc, CRm) = {
+    let nXS : bool = false;
+    alias : DSBAlias = undefined;
+    match CRm {
+      0b0000 => {
+          alias = DSBAlias_SSBB
+      },
+      0b0100 => {
+          alias = DSBAlias_PSSBB
+      },
+      _ => {
+          alias = DSBAlias_DSB
+      }
+    };
+    let alias = alias;
+    domain : MBReqDomain = undefined;
+    match CRm[3 .. 2] {
+      0b00 => {
+          domain = MBReqDomain_OuterShareable
+      },
+      0b01 => {
+          domain = MBReqDomain_Nonshareable
+      },
+      0b10 => {
+          domain = MBReqDomain_InnerShareable
+      },
+      0b11 => {
+          domain = MBReqDomain_FullSystem
+      }
+    };
+    types : MBReqTypes = undefined;
+    match CRm[1 .. 0] {
+      0b00 => {
+          types = MBReqTypes_All;
+          domain = MBReqDomain_FullSystem
+      },
+      0b01 => {
+          types = MBReqTypes_Reads
+      },
+      0b10 => {
+          types = MBReqTypes_Writes
+      },
+      0b11 => {
+          types = MBReqTypes_All
+      }
+    };
+    execute_aarch64_instrs_system_barriers_dsb(alias, domain, nXS, types)
+}
+
+function clause __DecodeA64_BranchExcSys ((pc, ([bitone, bitone, bitzero, bitone, bitzero, bitone, bitzero, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitzero, bitone, bitone, _, _, _, _, bitone, bitzero, bitzero, bitone, bitone, bitone, bitone, bitone] as __opcode)) if SEE < 197) = {
+    SEE = 197;
+    let opc = Slice(__opcode, 5, 2);
+    let CRm = Slice(__opcode, 8, 4);
+    decode_dsb_aarch64_instrs_system_barriers_dsb(opc, CRm)
+}
+
 val execute_aarch64_instrs_integer_ins_ext_extract_immediate : forall 'd 'datasize 'lsb 'm 'n,
   (0 <= 'n & 'n <= 31 & 0 <= 'm & 'm <= 31 & 0 <= 'lsb & 'lsb <= 63 & 'datasize in {32, 64} & 0 <= 'd & 'd <= 31).
   (int('d), int('datasize), int('lsb), int('m), int('n)) -> unit
@@ -2756,6 +4177,32 @@ function clause __DecodeA64_DataProcImm ((pc, ([_, bitzero, bitzero, bitone, bit
     let N = Slice(__opcode, 22, 1);
     let sf = Slice(__opcode, 31, 1);
     decode_extr_aarch64_instrs_integer_ins_ext_extract_immediate(Rd, Rn, imms, Rm, N, sf)
+}
+
+val execute_aarch64_instrs_system_barriers_isb : unit -> unit
+
+function execute_aarch64_instrs_system_barriers_isb () = {
+    InstructionSynchronizationBarrier();
+    if HaveBRBExt() & BRBEBranchOnISB() then {
+        BRBEISB()
+    };
+    if HaveStatisticalProfiling() then {
+        SPEISB()
+    };
+    ()
+}
+
+val decode_isb_aarch64_instrs_system_barriers_isb : (bits(2), bits(4)) -> unit
+
+function decode_isb_aarch64_instrs_system_barriers_isb (opc, CRm) = {
+    execute_aarch64_instrs_system_barriers_isb()
+}
+
+function clause __DecodeA64_BranchExcSys ((pc, ([bitone, bitone, bitzero, bitone, bitzero, bitone, bitzero, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitzero, bitone, bitone, _, _, _, _, bitone, bitone, bitzero, bitone, bitone, bitone, bitone, bitone] as __opcode)) if SEE < 483) = {
+    SEE = 483;
+    let opc = Slice(__opcode, 5, 2);
+    let CRm = Slice(__opcode, 8, 4);
+    decode_isb_aarch64_instrs_system_barriers_isb(opc, CRm)
 }
 
 val execute_aarch64_instrs_integer_arithmetic_mul_uniform_add_sub : forall 'a 'd 'datasize 'destsize 'm 'n ('sub_op : Bool),
@@ -3129,6 +4576,67 @@ function clause __DecodeA64_DataProcReg ((pc, ([bitone, bitone, bitzero, bitone,
     decode_pacia_aarch64_instrs_integer_pac_pacia_dp_1src(Rd, Rn, Z)
 }
 
+val decode_pacia_aarch64_instrs_integer_pac_pacia_hint : (bits(3), bits(4)) -> unit
+
+function decode_pacia_aarch64_instrs_integer_pac_pacia_hint (op2, CRm) = {
+    d : {17, 30} = 17;
+    n : int = undefined;
+    source_is_sp : bool = false;
+    match CRm @ op2 {
+      0b0011000 => {
+          d = 30;
+          n = 31
+      },
+      0b0011001 => {
+          d = 30;
+          source_is_sp = true;
+          if HaveBTIExt() then {
+              SetBTypeCompatible(BTypeCompatible_PACIXSP())
+          };
+          ()
+      },
+      0b0001000 => {
+          d = 17;
+          n = 16
+      },
+      0b0001010 => {
+          throw(Error_See("PACIB"))
+      },
+      0b0001100 => {
+          throw(Error_See("AUTIA"))
+      },
+      0b0001110 => {
+          throw(Error_See("AUTIB"))
+      },
+      [bitzero, bitzero, bitone, bitone, bitzero, bitone, _] => {
+          throw(Error_See("PACIB"))
+      },
+      [bitzero, bitzero, bitone, bitone, bitone, bitzero, _] => {
+          throw(Error_See("AUTIA"))
+      },
+      [bitzero, bitzero, bitone, bitone, bitone, bitone, _] => {
+          throw(Error_See("AUTIB"))
+      },
+      0b0000111 => {
+          throw(Error_See("XPACLRI"))
+      },
+      _ => {
+          throw(Error_See("HINT"))
+      }
+    };
+    let 'n = n;
+    let 'd = d;
+    assert(constraint((0 <= 'n & 'n <= 31)));
+    execute_aarch64_instrs_integer_pac_pacia_dp_1src(d, n, source_is_sp)
+}
+
+function clause __DecodeA64_BranchExcSys ((pc, ([bitone, bitone, bitzero, bitone, bitzero, bitone, bitzero, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitzero, bitone, bitzero, bitzero, bitzero, _, bitone, bitzero, bitzero, _, bitone, bitone, bitone, bitone, bitone] as __opcode)) if SEE < 712) = {
+    SEE = 712;
+    let op2 = Slice(__opcode, 5, 3);
+    let CRm = Slice(__opcode, 8, 4);
+    decode_pacia_aarch64_instrs_integer_pac_pacia_hint(op2, CRm)
+}
+
 val execute_aarch64_instrs_integer_pac_pacib_dp_1src : forall 'd 'n ('source_is_sp : Bool),
   (0 <= 'n & 'n <= 31 & 0 <= 'd & 'd <= 31).
   (int('d), int('n), bool('source_is_sp)) -> unit
@@ -3173,6 +4681,67 @@ function clause __DecodeA64_DataProcReg ((pc, ([bitone, bitone, bitzero, bitone,
     let Rn = Slice(__opcode, 5, 5);
     let Z = Slice(__opcode, 13, 1);
     decode_pacib_aarch64_instrs_integer_pac_pacib_dp_1src(Rd, Rn, Z)
+}
+
+val decode_pacib_aarch64_instrs_integer_pac_pacib_hint : (bits(3), bits(4)) -> unit
+
+function decode_pacib_aarch64_instrs_integer_pac_pacib_hint (op2, CRm) = {
+    d : {17, 30} = 17;
+    n : int = undefined;
+    source_is_sp : bool = false;
+    match CRm @ op2 {
+      0b0011010 => {
+          d = 30;
+          n = 31
+      },
+      0b0011011 => {
+          d = 30;
+          source_is_sp = true;
+          if HaveBTIExt() then {
+              SetBTypeCompatible(BTypeCompatible_PACIXSP())
+          };
+          ()
+      },
+      0b0001010 => {
+          d = 17;
+          n = 16
+      },
+      0b0001000 => {
+          throw(Error_See("PACIA"))
+      },
+      0b0001100 => {
+          throw(Error_See("AUTIA"))
+      },
+      0b0001110 => {
+          throw(Error_See("AUTIB"))
+      },
+      [bitzero, bitzero, bitone, bitone, bitzero, bitzero, _] => {
+          throw(Error_See("PACIA"))
+      },
+      [bitzero, bitzero, bitone, bitone, bitone, bitzero, _] => {
+          throw(Error_See("AUTIA"))
+      },
+      [bitzero, bitzero, bitone, bitone, bitone, bitone, _] => {
+          throw(Error_See("AUTIB"))
+      },
+      0b0000111 => {
+          throw(Error_See("XPACLRI"))
+      },
+      _ => {
+          throw(Error_See("HINT"))
+      }
+    };
+    let 'n = n;
+    let 'd = d;
+    assert(constraint((0 <= 'n & 'n <= 31)));
+    execute_aarch64_instrs_integer_pac_pacib_dp_1src(d, n, source_is_sp)
+}
+
+function clause __DecodeA64_BranchExcSys ((pc, ([bitone, bitone, bitzero, bitone, bitzero, bitone, bitzero, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitzero, bitone, bitzero, bitzero, bitzero, _, bitone, bitzero, bitone, _, bitone, bitone, bitone, bitone, bitone] as __opcode)) if SEE < 714) = {
+    SEE = 714;
+    let op2 = Slice(__opcode, 5, 3);
+    let CRm = Slice(__opcode, 8, 4);
+    decode_pacib_aarch64_instrs_integer_pac_pacib_hint(op2, CRm)
 }
 
 val execute_aarch64_instrs_integer_arithmetic_rbit : forall 'd 'datasize 'n,
@@ -3748,6 +5317,19 @@ function clause __DecodeA64_DataProcReg ((pc, ([bitone, bitone, bitzero, bitone,
     decode_xpac_aarch64_instrs_integer_pac_strip_dp_1src(Rd, Rn, D)
 }
 
+val decode_xpac_aarch64_instrs_integer_pac_strip_hint : unit -> unit
+
+function decode_xpac_aarch64_instrs_integer_pac_strip_hint () = {
+    let 'd = 30;
+    let data : bool = false;
+    execute_aarch64_instrs_integer_pac_strip_dp_1src(d, data)
+}
+
+function clause __DecodeA64_BranchExcSys ((pc, (0b11010101000000110010000011111111 as __opcode)) if SEE < 1033) = {
+    SEE = 1033;
+    decode_xpac_aarch64_instrs_integer_pac_strip_hint()
+}
+
 enum Feature = {
   FEAT_AA32EL0,
   FEAT_AA32EL1,
@@ -4054,6 +5636,19 @@ struct ProcState = {
 
 register PSTATE : ProcState
 
+enum DSBAlias = {DSBAlias_SSBB, DSBAlias_PSSBB, DSBAlias_DSB}
+
+enum WFxType = {WFxType_WFE, WFxType_WFI, WFxType_WFET, WFxType_WFIT}
+
+enum MBReqDomain = {
+  MBReqDomain_Nonshareable,
+  MBReqDomain_InnerShareable,
+  MBReqDomain_OuterShareable,
+  MBReqDomain_FullSystem
+}
+
+enum MBReqTypes = {MBReqTypes_Reads, MBReqTypes_Writes, MBReqTypes_All}
+
 enum FPType = {
   FPType_Zero,
   FPType_Denormal,
@@ -4083,6 +5678,8 @@ enum BranchType = {
 
 register BTypeNext : bits(2)
 
+register BTypeCompatible : bool
+
 enum GCSInstruction = {
   GCSInstType_PRET,
   GCSInstType_POPM,
@@ -4092,6 +5689,17 @@ enum GCSInstruction = {
   GCSInstType_SS2,
   GCSInstType_POPCX,
   GCSInstType_POPX
+}
+
+enum TMFailure = {
+  TMFailure_CNCL,
+  TMFailure_DBG,
+  TMFailure_ERR,
+  TMFailure_NEST,
+  TMFailure_SIZE,
+  TMFailure_MEM,
+  TMFailure_TRIVIAL,
+  TMFailure_IMP
 }
 
 enum CountOp = {CountOp_CLZ, CountOp_CLS, CountOp_CNT}
@@ -4113,6 +5721,26 @@ enum ShiftType = {ShiftType_LSL, ShiftType_LSR, ShiftType_ASR, ShiftType_ROR}
 
 enum LogicalOp = {LogicalOp_AND, LogicalOp_EOR, LogicalOp_ORR}
 
+enum SystemHintOp = {
+  SystemHintOp_NOP,
+  SystemHintOp_YIELD,
+  SystemHintOp_WFE,
+  SystemHintOp_WFI,
+  SystemHintOp_SEV,
+  SystemHintOp_SEVL,
+  SystemHintOp_DGH,
+  SystemHintOp_ESB,
+  SystemHintOp_PSB,
+  SystemHintOp_TSB,
+  SystemHintOp_BTI,
+  SystemHintOp_WFET,
+  SystemHintOp_WFIT,
+  SystemHintOp_CLRBHB,
+  SystemHintOp_GCSB,
+  SystemHintOp_CHKFEAT,
+  SystemHintOp_CSDB
+}
+
 val Unreachable : unit -> unit
 
 function Unreachable () = {
@@ -4125,10 +5753,28 @@ function HavePACExt () = {
     return(IsFeatureImplemented(FEAT_PAuth))
 }
 
+val HaveTME : unit -> bool
+
+function HaveTME () = {
+    return(IsFeatureImplemented(FEAT_TME))
+}
+
 val PC_read : unit -> bits(64)
 
 function PC_read () = {
     return(_PC)
+}
+
+val HaveBRBExt : unit -> bool
+
+function HaveBRBExt () = {
+    return(IsFeatureImplemented(FEAT_BRBE))
+}
+
+val HaveStatisticalProfiling : unit -> bool
+
+function HaveStatisticalProfiling () = {
+    return(IsFeatureImplemented(FEAT_SPE))
 }
 
 val SP_set : bits(64) -> unit
@@ -4169,6 +5815,12 @@ function X_set (n, width, value_name) = {
     return()
 }
 
+val HaveBTIExt : unit -> bool
+
+function HaveBTIExt () = {
+    return(IsFeatureImplemented(FEAT_BTI))
+}
+
 val ConditionHolds : bits(4) -> bool
 
 function ConditionHolds cond = {
@@ -4203,6 +5855,14 @@ function ConditionHolds cond = {
         result = not_bool(result)
     };
     return(result)
+}
+
+val AArch64_ChkFeat : bits(64) -> bits(64)
+
+function AArch64_ChkFeat feat_select = {
+    feat_en : bits(64) = Zeros(64);
+    feat_en[0] = Bit(if HaveGCS() & GCSEnabled(PSTATE.EL) then 0b1 else 0b0);
+    return(feat_select & not_vec(feat_en))
 }
 
 val HaveCRCExt : unit -> bool
@@ -4249,16 +5909,46 @@ function AddWithCarry (x, y, carry_in) = {
     return((result, ((n @ z) @ c) @ v))
 }
 
+val HaveRASExt : unit -> bool
+
+function HaveRASExt () = {
+    return(IsFeatureImplemented(FEAT_RAS))
+}
+
 val HaveFlagManipulateExt : unit -> bool
 
 function HaveFlagManipulateExt () = {
     return(IsFeatureImplemented(FEAT_FlagM))
 }
 
+val HaveSelfHostedTrace : unit -> bool
+
+function HaveSelfHostedTrace () = {
+    return(IsFeatureImplemented(FEAT_TRF))
+}
+
+val HaveDGHExt : unit -> bool
+
+function HaveDGHExt () = {
+    return(IsFeatureImplemented(FEAT_DGH))
+}
+
+val HaveFeatXS : unit -> bool
+
+function HaveFeatXS () = {
+    return(IsFeatureImplemented(FEAT_XS))
+}
+
 val HaveFeatHBC : unit -> bool
 
 function HaveFeatHBC () = {
     return(IsFeatureImplemented(FEAT_HBC))
+}
+
+val HaveFeatCLRBHB : unit -> bool
+
+function HaveFeatCLRBHB () = {
+    return(IsFeatureImplemented(FEAT_CLRBHB))
 }
 
 val X_read : forall 'n 'width,
@@ -4273,6 +5963,40 @@ function X_read (n, width) = {
     } else {
         return(Zeros(width))
     }
+}
+
+val BTypeCompatible_BTI : bits(2) -> bool
+
+function BTypeCompatible_BTI hintcode = {
+    match hintcode {
+      0b00 => {
+          return(false)
+      },
+      0b01 => {
+          return(PSTATE.BTYPE != 0b11)
+      },
+      0b10 => {
+          return(PSTATE.BTYPE != 0b10)
+      },
+      0b11 => {
+          return(true)
+      },
+      _ => {
+          return(undefined : bool)
+      }
+    }
+}
+
+val SetBTypeCompatible : forall ('x : Bool). bool('x) -> unit
+
+function SetBTypeCompatible x = {
+    BTypeCompatible = x
+}
+
+val SetBTypeNext : bits(2) -> unit
+
+function SetBTypeNext x = {
+    BTypeNext = x
 }
 
 val SP_read : unit -> bits(64)
@@ -4328,6 +6052,12 @@ function DecodeBitMasks (immN, imms, immr, immediate, M) = {
     let wmask : bits('M) = Replicate(ROR(welem, r), DIV(M, esize));
     let tmask : bits('M) = Replicate(telem, DIV(M, esize));
     return((wmask, tmask))
+}
+
+val GCSSynchronizationBarrier : unit -> unit
+
+function GCSSynchronizationBarrier () = {
+    return()
 }
 
 val DecodeRegExtend : bits(3) -> ExtendType

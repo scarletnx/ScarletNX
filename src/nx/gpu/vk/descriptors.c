@@ -58,7 +58,7 @@ static struct {
 VkResult vk_buffer_create(const VkBufferCreateInfo* info, const DevMemWant* allocation, VkBuffer* buffer,
                           DevMem* memory, DevMemInfo* details) {
     VkBufferCreateInfo create = *info;
-    if ((g_vk.has_descriptor_buffers || g_vk.has_descriptor_heap_support) &&
+    if ((g_vk.has_descriptor_buffers || g_vk.has_descriptor_heap_support || g_vk.has_gbuf_address) &&
         (create.usage & (VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                          VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT)))
         create.usage |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;

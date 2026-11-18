@@ -265,6 +265,7 @@ static void mf_log(u32* log, u32 p, u32 from, u32 to) {
         int past = window > SH_WPAGE_SLOT - 1;
         if (past) window = SH_WPAGE_SLOT - 1;
         part[window] = 1;
+        part[SH_WPAGE_SLOT * (1u + SH_WLOG_MASK) + window / 64] = 1;
         if (!past) part[SH_WPAGE_SLOT + window * SH_WLOG_MASK + (x & 4095) / 32] |= 1u << (x % 32);
     }
 }
@@ -656,6 +657,7 @@ static int check_mirror(void) {
             }
         }
         own_acquire(cpu, len); /* the CPU's touch: it lands */
+        vk_own_cpu_touched(cpu, len); /* as the guest's landing notes it: own_acquire lands as the runtime */
         CHECK(own_landings() > lands && !own_lookup(cpu, len, o, 4));
     }
     for (u32 i = 0; i < len; i++) {
@@ -719,6 +721,7 @@ static int check_mirror(void) {
         CHECK(own_lookup(cpu, 0x1000, o, 2) == 1 && ((const VkOwnRes*)o[0].res)->buf == vk_mirror_buffer());
         g_vk_present = present; /* before the touch: noted at the present it is, the page is touched lately again */
         own_acquire(cpu, 0x1000); /* the CPU's touch: it lands */
+        vk_own_cpu_touched(cpu, 0x1000); /* as the guest's landing notes it */
         CHECK(vk_mirror_slice(gva, len, &buf, &off)); /* bound again, for the checks after: the landing let go of the
                                                          page's shadow */
         for (u32 i = 0x340; i < 0x348; i++) {

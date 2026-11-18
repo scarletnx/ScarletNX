@@ -1597,9 +1597,11 @@ static int logged_marks(VkWriteLog* log, const u32* from, const u32* n, u32 runs
         for (u32 i = 0; i < SH_WLOG_MASK; i++) flag |= masks[w][i] != 0;
         memcpy(data, &flag, 4);
         memcpy(data + 16, masks[w], sizeof masks[w]);
-        VkBufferCopy copy[2] = {{at, (u64)w * 4, 4},
-                                {at + 16, ((u64)SH_WPAGE_SLOT + (u64)w * SH_WLOG_MASK) * 4, sizeof masks[w]}};
-        rec_CmdCopyBuffer(vk_cmd(), src, vk_wlog_buffer(log), 2, copy);
+        VkBufferCopy copy[3] = {{at, (u64)w * 4, 4},
+                                {at + 16, ((u64)SH_WPAGE_SLOT + (u64)w * SH_WLOG_MASK) * 4, sizeof masks[w]},
+                                {at, ((u64)SH_WPAGE_SLOT * (1u + SH_WLOG_MASK) + w / 64) * 4, 4}};
+        /* the coarse word only from a window written: an unwritten one's 0 would clear another's */
+        rec_CmdCopyBuffer(vk_cmd(), src, vk_wlog_buffer(log), flag ? 3 : 2, copy);
     }
     return 0;
 }

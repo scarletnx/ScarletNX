@@ -27,11 +27,11 @@
 #define SNX_TRACY_OFF     0 /* not started */
 #define SNX_TRACY_ON      1
 #define SNX_TRACY_STOPPED 2 /* shut down, for good */
-static int g_tracy_state;
-static int g_tracy_pending;
+static _Atomic int g_tracy_state;
+static _Atomic int g_tracy_pending;
 /* zones wanted deeper than SNX_TRACY_ZONE_MAX: dropped rather than leaked, and counted so a hole in a trace
    where the innermost work should be says it was this */
-static uint32_t g_tracy_dropped;
+static _Atomic uint32_t g_tracy_dropped;
 typedef struct {
     TracyCZoneCtx zones[SNX_TRACY_ZONE_MAX];
     int zone_depth;
@@ -80,7 +80,7 @@ static void tracy_plots_send(void);
    gray sample zones, which with JIT'd guest code and the drivers' own threads (the NVIDIA helpers', MangoHud's) reads
    as a wall of [unknown]; the instrumented zones alone don't, so the sampler is off unless the trace wants the flame
    graphs. */
-static int g_tracy_sampling;
+static _Atomic int g_tracy_sampling;
 static void tracy_sampling_start(void) {
     /* Tracy 0.15.0 starts its system trace (the OS's context switches, and the sampled stacks with it) from
        BeginSamplingProfiling, which this build makes manual. Both settings ask for that one call; without it the

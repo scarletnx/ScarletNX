@@ -98,6 +98,29 @@ root decode_bra_aarch64_instrs_branch_unconditional_register
 root decode_blra_aarch64_instrs_branch_unconditional_register
 root decode_reta_aarch64_instrs_branch_unconditional_register
 
+# A64 hints, barriers and the exclusive monitor (ir_int.c's hint space, DSB, DMB, ISB, CLREX), with the PAuth hints
+# and XPACLRI. A hint word goes to the first clause that matches it, as Sail's decode tries them, and on to the next
+# when that one throws Error_See: AUTIA's and AUTIB's clauses come first, then BTI's and the hints of one word each,
+# then HINT's, which takes the rest of the space (NOP, YIELD, WFE, WFI, SEV, SEVL, whose own clauses come after it and
+# are never reached) and hands the PAuth hints and XPACLRI on to theirs
+root decode_autia_aarch64_instrs_integer_pac_autia_hint
+root decode_autib_aarch64_instrs_integer_pac_autib_hint
+root decode_bti_aarch64_instrs_system_hints
+root decode_chkfeat_aarch64_instrs_system_hints
+root decode_clrbhb_aarch64_instrs_system_hints
+root decode_csdb_aarch64_instrs_system_hints
+root decode_dgh_aarch64_instrs_system_hints
+root decode_esb_aarch64_instrs_system_hints
+root decode_gcsb_aarch64_instrs_system_hints
+root decode_hint_aarch64_instrs_system_hints
+root decode_clrex_aarch64_instrs_system_monitors
+root decode_dmb_aarch64_instrs_system_barriers_dmb
+root decode_dsb_aarch64_instrs_system_barriers_dsb
+root decode_isb_aarch64_instrs_system_barriers_isb
+root decode_pacia_aarch64_instrs_integer_pac_pacia_hint
+root decode_pacib_aarch64_instrs_integer_pac_pacib_hint
+root decode_xpac_aarch64_instrs_integer_pac_strip_hint
+
 # what the generator knows when it recompiles (gen.c: the pc, the decode's SEE) and the state no instruction here
 # reaches: the banked stack pointers the original SP_read picks among (nx.sail's reads GPR's last element), SPE's
 # sample (nx.sail's constant) and the features' table (IsFeatureImplemented is lowered)
@@ -114,9 +137,47 @@ stop FeatureImpl
 stop IsFeatureImplemented
 stop BranchTo
 stop BranchNotTaken
+stop EndOfInstruction
+
+# the machine's actions the back end lowers (llvm.h, sg_NAME): the hints, the barriers, the exclusive monitor
+stop Hint_Yield
+stop Hint_WFE
+stop Hint_WFI
+stop SendEvent
+stop SendEventLocal
+stop DataMemoryBarrier
+stop DataSynchronizationBarrier
+stop SpeculativeStoreBypassBarrierToVA
+stop SpeculativeStoreBypassBarrierToPA
+stop InstructionSynchronizationBarrier
+stop ConsumptionOfSpeculativeDataBarrier
+stop SynchronizeErrors
+stop TakeUnmaskedSErrorInterrupts
+stop Hint_DGH
+stop Hint_CLRBHB
+stop ProfilingSynchronizationBarrier
+stop TraceSynchronizationBarrier
+stop ClearExclusiveLocal
+stop ProcessorID
+
+# never reached: behind a feature no guest has (a64.profile names no FEAT_TME, FEAT_BRBE, FEAT_SPE, FEAT_BTI,
+# FEAT_DGH, FEAT_CLRBHB or FEAT_TRF, so sailgen folds the ifs on them) or behind a fixup's false (EL2Enabled,
+# HaveGCS); a generation that reaches one stops on its missing definition
+stop TSTATE
+stop FailTransaction
+stop BRBEBranchOnISB
+stop BRBEISB
+stop SPEISB
+stop AArch64_vESBOperation
+stop HCRX_EL2
+stop GCSEnabled
+stop BTypeCompatible_PACIXSP
 
 # NX's fixups (nx.sail) in their place: the register file is GPR's elements; nothing writes a part of a register; no
-# Guarded Control Stack, so its records are never reached; no guarded page
+# Guarded Control Stack, so its records are never reached; no guarded page; no EL2; no SError
+stop EL2Enabled
+stop IsHCRXEL2Enabled
+stop AArch64_ESBOperation
 stop HaveGCS
 stop GCSPCREnabled
 stop AddGCSRecord

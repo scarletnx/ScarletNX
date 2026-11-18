@@ -107,7 +107,9 @@ int vk_mirror_on(void) {
                               .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
                                        VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
                                        VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
-                                       VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
+                                       VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
+                                       /* SM86 programs' global memory read by address (gbuf_address) */
+                                       (g_vk.has_gbuf_address ? VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT : 0),
                               .sharingMode = fam[0] != fam[1] ? VK_SHARING_MODE_CONCURRENT : VK_SHARING_MODE_EXCLUSIVE,
                               .queueFamilyIndexCount = fam[0] != fam[1] ? 2 : 0,
                               .pQueueFamilyIndices = fam};
@@ -370,7 +372,11 @@ static void landed_run(void* user, u64 at, u64 n) {
    are looked at by the 64 of a mask word, as a loop over each page's bit was a fourteenth of one game's GPU thread */
 int vk_mirror_slice(u64 gva, u64 len, VkBuffer* buf, u64* off) {
     u64 cpu = 0;
-    if (!vk_mirror_on() || !len || gmmu_run(gva, len, &cpu) != len || cpu + len > AS_SIZE) return 0;
+    if (!vk_mirror_on() || !len || gmmu_run(gva, len, &cpu) != len) return 0;
+    return vk_mirror_slice_at(gva, cpu, len, buf, off);
+}
+int vk_mirror_slice_at(u64 gva, u64 cpu, u64 len, VkBuffer* buf, u64* off) {
+    if (!vk_mirror_on() || !len || cpu + len > AS_SIZE) return 0;
     u32 now = vk_ww_now(), epoch = vk_ww_epoch(); /* before any byte is read */
     u64 gen = gpu_mem_generation();
     u64 g0 = cpu / MIR_G, g1 = (cpu + len - 1) / MIR_G;
@@ -446,15 +452,18 @@ int vk_mirror_slice(u64 gva, u64 len, VkBuffer* buf, u64* off) {
         for (u64 p = lo; p < hi; p++) r->synced[p] = now;
         /* the binding's pages not given yet: whole, guest memory's bytes, an owned part's left for its owner. One the
            mirror owns has its bytes there already */
-        int whole = 1; /* every page of [lo, hi) valid after this */
+        int whole = 1; /* every page of [lo, hi) valid after this, or the mirror's own (below) */
         for (u64 w = lo / 64; w < (hi + 63) / 64; w++)
             for (u64 bits = ~atomic_load_explicit(&r->valid[w], memory_order_relaxed) & span_bits(w, lo, hi); bits;
                  bits &= bits - 1) {
                 u64 p = w * 64 + snx_ctz64(bits), a = base + p * 4096;
-                if (mirror_owns(a, 4096)) { /* filled at a binding after it lands */
-                    whole = 0;
-                    continue;
-                }
+                /* The mirror holds this page's newest bytes: it is filled at a binding after it lands. It leaves the
+                   check whole all the same. What changes it later moves what a check asks: its landing or another
+                   GPU-side write (landed, from ck_gen), or a CPU write in a new epoch. Taken as not whole, no check was
+                   recorded while a page waited to land: each binding of the granule walked it, compared the runs
+                   landed since an old ck_gen and tried the fill again, 50 to 130 us a draw in one game's first
+                   scene for 40 s */
+                if (mirror_owns(a, 4096)) continue;
                 OwnRange o[16];
                 u8* dst = up_bytes(&u, a, 4096);
                 u64 pb = 1ull << (p % 64);
@@ -568,6 +577,8 @@ int vk_mirror_holds(u64 gva, u64 len) {
     u64 cpu = 0;
     return g_mir.on > 0 && len && own_any() && gmmu_run(gva, len, &cpu) == len && mirror_owns(cpu, len);
 }
+int vk_mirror_holds_at(u64 cpu, u64 len) { return g_mir.on > 0 && len && own_any() && mirror_owns(cpu, len); }
+int vk_mirror_owns_any(void) { return g_mir.on > 0 && own_any(); }
 
 static int range_cmp(const void* a, const void* b) {
     u64 x = ((const MirRange*)a)->first, y = ((const MirRange*)b)->first;

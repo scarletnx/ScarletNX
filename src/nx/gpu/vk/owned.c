@@ -354,18 +354,19 @@ VkOwnRes* vk_own_res_new(u64 size, u32 by) {
         r->size = e.cap;
     } else {
         u32 fam[2];
-        VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-                                 .size = want,
-                                 /* bound where it is for whatever reads the bytes it holds: a draw's vertices, indices and
+        VkBufferCreateInfo bi = {
+            .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+            .size = want,
+            /* bound where it is for whatever reads the bytes it holds: a draw's vertices, indices and
                                     buffers (buffer.c buf_get_owned), a dispatch's (compute.c res_bind), VIC's job words;
                                     and what draws write there, transform feedback's captures too (buffer.c keep_new) */
-                                 .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
-                                          VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                                          VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT |
-                                          VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
-                                          VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
-                                          (g_vk.has_xfb ? VK_BUFFER_USAGE_TRANSFORM_FEEDBACK_BUFFER_BIT_EXT : 0) |
-                                          /* an indirect copy or an in-place read names it by its address
+            .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
+                     VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                     VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT |
+                     VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                     VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
+                     (g_vk.has_xfb ? VK_BUFFER_USAGE_TRANSFORM_FEEDBACK_BUFFER_BIT_EXT : 0) |
+                     /* an indirect copy or an in-place read names it by its address
                                              (copy_batch_flush, inplace_note) */
                                           (g_vk.has_copy_indirect || g_vk.has_inplace_loads
                                                ? VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT
@@ -836,6 +837,10 @@ static void own_landed(u64 addr, u64 size, const u8* bytes) {
     vk_ww_landed(addr, size, bytes);
     vk_mirror_landed(addr, size);
 }
+/* owners dropped with no landing (an unmap, a remap, a decommit): the GPU mirror's copy of those pages is no longer
+   guest memory's, and its next binding of them fills them again, as a landing has it. A page the mirror owns leaves
+   its granule's check whole (mirror.c), which no other change of these pages would end */
+static void own_dropped(u64 addr, u64 size) { vk_mirror_landed(addr, size); }
 
 int vk_own_init(void) {
     /* vk_lock and vk_unlock themselves, not g_vklock: the outermost unlock also signals what the hold's releases
@@ -849,6 +854,7 @@ int vk_own_init(void) {
                   .lock = vk_lock,
                   .unlock = vk_unlock,
                   .landed = own_landed,
+                  .dropped = own_dropped,
                   .writer = own_writer,
                   .wait = own_wait,
                   .resolve = vk_rt_watch_hit,

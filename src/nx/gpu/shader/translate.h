@@ -46,6 +46,9 @@ typedef struct {
     /* a vertex program's reads of NVN's draw parameters in bank 0 (shader.h SH_CB0_): the push block and pointer type
        whose z says which come from BaseVertex and BaseInstance, and those inputs. 0 when it reads neither */
     u32 dp_push, dp_push_pointer, dp_base_vertex, dp_base_instance;
+    /* with cb_windows: the push block, its pointer type to a u32 and the member of its first offsets' uvec4, and the
+       banks the offsets are added to (the uniform ones). 0 when the program reads no window */
+    u32 cbw_push, cbw_pointer, cbw_member, cbw_banks;
     /* the last stage before rasterization takes its position's x and y from pixels (SNX_SH_WINDOW_XY), and gives
        it a viewport swizzle (the key's SNX_SH_SWIZZLE and its fields, else 0), in shader_vertex_position_fix */
     int window_xy;

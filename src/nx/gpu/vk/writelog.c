@@ -242,12 +242,17 @@ void vk_wlog_unref(VkWriteLog* l) {
             }
             mark[k] = 0;
         }
-        /* the windows past them, 64 flags at a time: an OR of each 64, which the compiler makes wide */
-        for (u32 c = scanned & ~63u; c < SH_WPAGE_SLOT; c += 64) {
-            u32 any = 0;
-            for (u32 j = 0; j < 64; j++) any |= flags[c + j];
+        /* the windows past them, by the coarse words: a store set the word of each 64 windows it set a flag in. A
+           group the reads covered whole had its flags marked above, and only its word is cleared. An OR of all 4096
+           flags, 64 at a time, was most of the unref's 0.7% of one game's GPU thread, and few groups have a store */
+        u32* coarse = masks + (size_t)SH_WPAGE_SLOT * SH_WLOG_MASK;
+        for (u32 g = 0; g < SH_WLOG_COARSE; g++) {
+            if (!coarse[g]) continue;
+            coarse[g] = 0;
+            cleared = 1;
+            const u32 c = g * 64;
+            if (c + 64 <= scanned) continue;
             g_wlog.scanned += 64;
-            if (!any) continue;
             for (u32 j = c; j < c + 64; j++)
                 if (flags[j]) {
                     flags[j] = 0;

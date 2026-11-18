@@ -136,7 +136,7 @@ and at the plan.
 | --- | --- |
 | Finding functions | `src/common/cpu/recompiler/codegen.c`, `src/nx/loader/loader.c`, `src/nx/loader/codegen_view.c` |
 | The instruction emitters, ported from QEMU's `translate-a64.c` | `ir_int.c`, `ir_ldst.c`, `ir_fpu.c`, `ir_vec.c`, `ir_vec_fp.c`, `ir_vec_crypto.c` in `src/common/cpu/recompiler/llvm/` |
-| The integer data-processing emitters and branch operands, generated from the Arm architecture's Sail | `ir_sail.c` (`tools/sailgen`'s output), the Sail and the NX's fixups in `src/common/cpu/aarch64/sail/` |
+| The integer data-processing, hint and barrier emitters and the branch operands, generated from the Arm architecture's Sail | `ir_sail.c` (`tools/sailgen`'s output), the Sail and the NX's fixups in `src/common/cpu/aarch64/sail/` |
 | A guest function's IR: calls, returns, polls, stale checks | `ir_codegen.c` |
 | Guest registers' and flags' per-block cache, for every emitter | `tools/sailgen/llvm.h` (the back end), whose functions are `ir.h`'s accessors in `ir_sail.c` |
 | The flags' helpers, the vectors' cache and memory accesses | `ir_state.c` |

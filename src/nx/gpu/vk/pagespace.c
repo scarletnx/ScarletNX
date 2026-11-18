@@ -146,6 +146,7 @@ typedef struct {
 static struct {
     int on;    /* -1 until vk_pages_on has decided */
     int slabs; /* the regions' bytes are in slabs, not in sparse buffers */
+    int dirty; /* the write tracking's dirty bits tell which pages were written, not the clocks: 0 without them */
     u32 nslabs;
     VkMemoryRequirements req;
     PgRegion** region; /* by region of guest memory, NULL where no range was asked for */
@@ -216,6 +217,10 @@ int vk_pages_on(void) {
             "in granules of %llu KiB%s (vk_buffer_pages=%d)\n",
             (unsigned long long)(PG_REGION >> 30), g_pages.region_max, (unsigned long long)(PG_SIZE >> 10),
             g_settings.buffer_pages >= 2 ? ", and draws write guest memory there" : "", g_settings.buffer_pages);
+    if (vk_ww_dirty_init() < 0)
+        LOG("vulkan: no memory for the page cache's dirty bits: it compares the clocks of the pages\n");
+    else
+        g_pages.dirty = 1;
     return g_pages.on = 1;
 }
 
@@ -236,14 +241,15 @@ static VkBufferCreateInfo pg_buffer_info(VkBufferCreateFlags flags, u64 size, u3
         /* whatever a draw or a dispatch binds guest memory as, and a copy's source and destination (buffer.c's
            make_own_); what a draw writes there, transform feedback's captures too (owned.c vk_own_res_new); its
            address too where descriptors are written into buffers (descriptors.c vk_buffer_create) */
-        .usage =
-            VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
-            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT |
-            VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-            VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
-            (g_vk.has_xfb ? VK_BUFFER_USAGE_TRANSFORM_FEEDBACK_BUFFER_BIT_EXT : 0) |
-            (g_vk.has_descriptor_buffers || g_vk.has_descriptor_heap_support ? VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT
-                                                                             : 0),
+        .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
+                 VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                 VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT |
+                 VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
+                 VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+                 (g_vk.has_xfb ? VK_BUFFER_USAGE_TRANSFORM_FEEDBACK_BUFFER_BIT_EXT : 0) |
+                 (g_vk.has_descriptor_buffers || g_vk.has_descriptor_heap_support || g_vk.has_gbuf_address
+                      ? VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT
+                      : 0),
         .sharingMode = fam[0] != fam[1] ? VK_SHARING_MODE_CONCURRENT : VK_SHARING_MODE_EXCLUSIVE,
         .queueFamilyIndexCount = fam[0] != fam[1] ? 2 : 0,
         .pQueueFamilyIndices = fam};
@@ -605,6 +611,11 @@ static void cpu_note(void* user, u64 at, u64 n) {
     for (u64 p = at >> 12, e = (at + n - 1) >> 12; p <= e; p++)
         if ((a->take[p] & 15) == PG_CUR) a->take[p] |= PG_CPU;
 }
+/* the pages of a with their dirty bit set, written since they were taken (cpu_note's, from vk_ww_dirty_any) */
+static void dirty_note(PgAsk* a, u64 n) {
+    for (u64 p = 0; p < n; p++)
+        if ((a->take[p] & 15) == PG_CUR && vk_ww_dirty_any(a->base + (p << 12), 4096)) a->take[p] |= PG_CPU;
+}
 static void gpu_note(void* user, u64 at, u64 n) { /* at: a GPU address (gpu_mem_dirty_runs) */
     PgAsk* a = user;
     for (u64 p = (at - a->bgva) >> 12, e = (at - a->bgva + n - 1) >> 12; p <= e; p++)
@@ -623,10 +634,9 @@ static int ask(u64 gva, u64 len, u64 align, int patch, int whole, PgAsk* a) {
     a->at = cpu & (PG_REGION - 1);
     if (cpu + len > AS_SIZE || (cpu + len - 1) >> PG_REGION_SHIFT != rg) return refuse(PG_NO_REGION);
     if (align > 1 && a->at % align) return refuse(PG_NO_ALIGN);
-    u32 now = a->now = vk_ww_now(), epoch = a->epoch = vk_ww_epoch();
+    u32 epoch = a->epoch = vk_ww_epoch();
     a->gnow = gpu_mem_generation();
     a->sub = vk_submit_number();
-    if (!now) return refuse(PG_NO_TRACK); /* a stamp of 0 is a page with no bytes */
     PgRegion* r = a->r = region_get(rg);
     if (!r) return refuse(PG_NO_MEMORY);
     u64 p0 = a->p0 = a->at >> 12, p1 = a->p1 = (a->at + len - 1) >> 12, n = p1 - p0 + 1;
@@ -693,7 +703,13 @@ static int ask(u64 gva, u64 len, u64 align, int patch, int whole, PgAsk* a) {
         gpu_mem_dirty_runs(oldest, bgva, n << 12, gpu_note, a);
         looks = 1;
     }
-    if (unasked) {
+    if (unasked && g_pages.dirty) {
+        if (vk_ww_take(GP(base), n << 12) < 0) return refuse(PG_NO_TRACK);
+        if (vk_ww_dirty_any(base, n << 12)) {
+            dirty_note(a, n);
+            looks = 1;
+        }
+    } else if (unasked) {
         int w = vk_written_since(GP(base), n << 12, first);
         if (w < 0) return refuse(PG_NO_TRACK);
         if (w) {
@@ -701,6 +717,10 @@ static int ask(u64 gva, u64 len, u64 align, int patch, int whole, PgAsk* a) {
             looks = 1;
         }
     }
+    /* the clock after the query, before any byte is read: the pages it took in are marked with this clock at most, so
+       a page taken now is not found written again for them */
+    a->now = vk_ww_now();
+    if (!a->now) return refuse(PG_NO_TRACK); /* a stamp of 0 is a page with no bytes */
     /* a page to be read from guest memory must not be trapped there, and one to be the cache's own must have no watch.
        With nothing written since and no page new, a page is read only to be the cache's own (whole): a range that
        neither takes nor publishes a page walks none of them, where each draw that bound it walked all */
@@ -714,7 +734,7 @@ static int ask(u64 gva, u64 len, u64 align, int patch, int whole, PgAsk* a) {
             u32 k = (u32)(p & (PG_PAGES - 1));
             int old = (t & PG_GPU) && gpu_mem_dirty_since(q->gw[k], bgva + ((p - p0) << 12), 4096), by_cpu = 0;
             if (!old && (t & PG_CPU) && (q->ck_epoch != epoch || !(q->ck_mask >> k & 1))) {
-                int w = vk_written_since(GP(pcpu), 4096, q->seen[k]);
+                int w = g_pages.dirty ? vk_ww_dirty_any(pcpu, 4096) : vk_written_since(GP(pcpu), 4096, q->seen[k]);
                 if (w < 0) return refuse(PG_NO_TRACK);
                 old = by_cpu = w;
             }
@@ -821,6 +841,7 @@ static int bring(PgAsk* a) {
                 }
             }
             memcpy(host + (done << 12), GP(a->base + ((p - p0) << 12)), 4096);
+            vk_ww_dirty_clear(a->base + ((p - p0) << 12), 4096); /* taken: a later stamp sets it again */
             q->seen[k] = a->now;
             q->gw[k] = a->gnow;
             q->full |= (u16)(1u << k);

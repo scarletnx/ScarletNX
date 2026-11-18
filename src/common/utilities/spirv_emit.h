@@ -63,6 +63,8 @@ typedef struct {
        barriers' and atomics' acquire and release semantics then also make memory visible and available, as GLSL450
        implies, and spv_emit_load_nonprivate and spv_emit_store_nonprivate access memory other invocations share */
     int vulkan_memory_model;
+    /* the module reads memory by device address (spv_emit_address_pointer): PhysicalStorageBuffer64 addressing */
+    int physical_addressing;
     /* the memory semantics' storage class bit of "shared" memory, for the shared atomics and the control barrier: 0 for
        WorkgroupMemory, or UniformMemory (0x40) for a program whose shared memory a storage buffer holds (a block that
        asks for more than the device gives, vk/compute.c), so that its barriers and atomics order that buffer's words */
@@ -73,6 +75,10 @@ typedef struct {
     /* the masks of known_slots, the constants' tables and the NonUniform set: each one's size less one, set as it
        grows (its count decides when), read only while its count is not 0 */
     size_t known_mask, constant_mask, nonuniform_mask;
+    /* the elements of texture tables (spv_emit_table_element): open addressing by id on a power of two, id 0 a free
+       entry, at most half full, so its size follows from split_count */
+    struct SpvSplit* splits;
+    size_t split_count, split_mask;
 } SpvEmitter;
 
 typedef enum {
@@ -103,6 +109,7 @@ enum {
     SPV_OP_TYPE_FLOAT = 22,
     SPV_OP_TYPE_VECTOR = 23,
     SPV_OP_TYPE_IMAGE = 25,
+    SPV_OP_TYPE_SAMPLER = 26,
     SPV_OP_TYPE_SAMPLED_IMAGE = 27,
     SPV_OP_TYPE_ARRAY = 28,
     SPV_OP_TYPE_RUNTIME_ARRAY = 29,
@@ -153,6 +160,8 @@ enum {
     SPV_OP_CONVERT_S_TO_F = 111,
     SPV_OP_CONVERT_U_TO_F = 112,
     SPV_OP_U_CONVERT = 113,
+    SPV_OP_CONVERT_PTR_TO_U = 117,
+    SPV_OP_CONVERT_U_TO_PTR = 120,
     SPV_OP_S_CONVERT = 114,
     SPV_OP_F_CONVERT = 115,
     SPV_OP_BITCAST = 124,
@@ -293,7 +302,8 @@ enum {
     SPV_STORAGE_FUNCTION = 7,
     SPV_STORAGE_PUSH_CONSTANT = 9,
     SPV_STORAGE_IMAGE = 11,
-    SPV_STORAGE_STORAGE_BUFFER = 12
+    SPV_STORAGE_STORAGE_BUFFER = 12,
+    SPV_STORAGE_PHYSICAL_STORAGE_BUFFER = 5349
 };
 enum {
     SPV_DECORATION_SPEC_ID = 1,
@@ -417,6 +427,7 @@ enum {
     SPV_CAPABILITY_SAMPLED_IMAGE_ARRAY_NON_UNIFORM_INDEXING = 5307,
     SPV_CAPABILITY_VULKAN_MEMORY_MODEL = 5345,
     SPV_CAPABILITY_VULKAN_MEMORY_MODEL_DEVICE_SCOPE = 5346,
+    SPV_CAPABILITY_PHYSICAL_STORAGE_BUFFER_ADDRESSES = 5347,
     SPV_CAPABILITY_FRAGMENT_SHADER_PIXEL_INTERLOCK_EXT = 5378,
     SPV_CAPABILITY_DEMOTE_TO_HELPER_INVOCATION = 5379,
     SPV_CAPABILITY_COOPERATIVE_MATRIX_KHR = 6022,
@@ -646,6 +657,18 @@ uint32_t spv_emit_sampler_image_array_ex(SpvEmitter* e, uint32_t scalar_type, ui
                                          uint32_t binding, uint32_t type, int array, int shadow, int multisample,
                                          uint32_t count, uint32_t* sampled_type);
 uint32_t spv_emit_sampler_array_element(SpvEmitter* e, uint32_t sampled_type, uint32_t array_variable, uint32_t index);
+/* A texture table (bindless): count images of one kind at a binding, and count samplers at another. Tables of other
+   kinds of image can share one binding (descriptor aliasing): a program reads each element through the kind its
+   descriptor holds. Returns the variable; *sampled_type is the sampled image type of the kind */
+uint32_t spv_emit_image_table(SpvEmitter* e, uint32_t scalar_type, uint32_t u32_type, uint32_t set, uint32_t binding,
+                              uint32_t type, int array, int shadow, int multisample, uint32_t count,
+                              uint32_t* sampled_type);
+uint32_t spv_emit_sampler_table(SpvEmitter* e, uint32_t u32_type, uint32_t set, uint32_t binding, uint32_t count);
+/* image element image_index of images and sampler element sampler_index of samplers, as an id that the sampling
+   functions take in place of a texture variable: spv_emit_load makes the sampled image where it is loaded, in the
+   block that uses it, as SPIR-V wants of OpSampledImage. Both indices are dynamically uniform */
+uint32_t spv_emit_table_element(SpvEmitter* e, uint32_t sampled_type, uint32_t images, uint32_t image_index,
+                                uint32_t samplers, uint32_t sampler_index);
 static inline uint32_t spv_emit_sampler2d(SpvEmitter* e, uint32_t f32_type, uint32_t set, uint32_t binding, int shadow,
                                           uint32_t* sampled_type);
 uint32_t spv_emit_sampler_image(SpvEmitter* e, uint32_t f32_type, uint32_t set, uint32_t binding, uint32_t type,
@@ -664,6 +687,16 @@ void spv_emit_label(SpvEmitter* e, uint32_t label);
 uint32_t spv_emit_function_variable(SpvEmitter* e, uint32_t pointer_type);
 uint32_t spv_emit_function_variable_init(SpvEmitter* e, uint32_t pointer_type, uint32_t initial_value);
 uint32_t spv_emit_load(SpvEmitter* e, uint32_t result_type, uint32_t pointer);
+/* A pointer to a pointee_type at a 64-bit device address (a u64 value): PhysicalStorageBuffer storage, which the module
+   then declares the capability and the addressing model for. Accesses through it take an alignment
+   (spv_emit_load_aligned, spv_emit_store_aligned). Nothing bounds them: the caller checks the range */
+uint32_t spv_emit_address_pointer(SpvEmitter* e, uint32_t pointee_type, uint32_t address);
+/* the device address (of the u64 type u64_type) of a pointer spv_emit_address_pointer made */
+uint32_t spv_emit_pointer_address(SpvEmitter* e, uint32_t u64_type, uint32_t pointer);
+/* volatile_access: each access reaches memory that other invocations and the host share (as Coherent does) */
+uint32_t spv_emit_load_aligned(SpvEmitter* e, uint32_t result_type, uint32_t pointer, uint32_t alignment,
+                               int volatile_access);
+void spv_emit_store_aligned(SpvEmitter* e, uint32_t pointer, uint32_t value, uint32_t alignment, int volatile_access);
 /* OpPhi of two values: a when control came from block from_a, b from from_b */
 uint32_t spv_emit_phi2(SpvEmitter* e, uint32_t result_type, uint32_t a, uint32_t from_a, uint32_t b, uint32_t from_b);
 /* The common forms: an instruction of op, its result type, a new id and one, two or three operands, the id returned.
