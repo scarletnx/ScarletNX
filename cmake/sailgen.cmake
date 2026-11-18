@@ -32,7 +32,7 @@ if(CMAKE_CROSSCOMPILING)
     add_dependencies(snx-sailgen snx_sailgen_host)
 else()
     add_executable(snx-sailgen ${snx_sailgen_sources})
-    set_target_properties(snx-sailgen PROPERTIES C_STANDARD 99 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF
+    set_target_properties(snx-sailgen PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF
                                                  RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}")
     target_compile_options(snx-sailgen PRIVATE -pedantic-errors -Wall -Wextra -Werror)
 endif()

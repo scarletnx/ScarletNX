@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* sailgen: ScarletNX's instruction emitters generated from the Sail of the Arm architecture (rems-project's sail-arm,
-   the Arm ASL translated, BSD 3-Clause Clear), in strict C99 with no dependency, so a cross build can build it for
+   the Arm ASL translated, BSD 3-Clause Clear), in strict C23 with no dependency, so a cross build can build it for
    the machine it runs on, as tools/decodetree.
 
      sailgen --extract ROOTS -o OUT INPUT...
