@@ -90,10 +90,14 @@ snx_component(gpu gpu/gpu.c gpu/guest_pools.c gpu/guest_textures.c gpu/maxwell/e
               gpu/nvn/nvn_tex.c gpu/nvn/nvn_driver.c gpu/nvn/nvn_tic.c gpu/nvn/nvn_replay.c gpu/nvn/nvn_draw.c gpu/nvn/nvn_copy.c gpu/nvn/nvn_state.c
               gpu/nvn/nvn_save.c
               gpu/gl/gl_census.c
+              gpu/gl/gl_loader.c gpu/gl/gl_egl.c gpu/gl/gl_calls.c gpu/gl/gl_host_nx.c
               gpu/shipped_pass.c)
 # the NVN functions nvn implements: their adapters and table, generated from gpu/nvn/nvn.hook
 target_link_libraries(snx_gpu PRIVATE snx_zstd) # an Ounce game's .zs shader files (gpu/shipped_pass.c)
 snx_hookgen(snx_gpu SPEC "${CMAKE_CURRENT_SOURCE_DIR}/gpu/nvn/nvn.hook" PREFIX nvn NAME gpu/nvn/nvn.hook A32)
+# the EGL and GL functions the GL layer implements (gpu/gl/gl.hook), over the shared layer's state machine (snx_gl)
+snx_hookgen(snx_gpu SPEC "${CMAKE_CURRENT_SOURCE_DIR}/gpu/gl/gl.hook" PREFIX gl NAME gpu/gl/gl.hook)
+target_link_libraries(snx_gpu PRIVATE snx_gl)
 include("${PROJECT_SOURCE_DIR}/cmake/ship_walk.cmake")
 snx_ship_walk(gpu/shipped_pass.c)
 

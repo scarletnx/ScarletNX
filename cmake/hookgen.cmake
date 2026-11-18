@@ -101,7 +101,7 @@ function(snx_hook_routes target)
     snx_hook_patches(patches)
     snx_hook_sdk(sdk)
     set(specs "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/hooks.hook" ${sdk} "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn.hook"
-              ${patches})
+              "${PROJECT_SOURCE_DIR}/src/nx/gpu/gl/gl.hook" ${patches})
     if(arg_SPECS)
         set(specs ${arg_SPECS})
     endif()

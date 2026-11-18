@@ -1,0 +1,92 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+#
+# The EGL and OpenGL functions the GL layer implements for a game that draws through its own GL driver
+# (gpu/gl/gl_loader.c, with gl_layer=1), for tools/hookgen with --prefix gl: hooks.hook's grammar, each function by the
+# symbol the driver exports it as (eglInitialize, _glClearColor; eglGetProcAddress answers glClearColor with that
+# export's address). Every other egl and _gl export of the driver takes the handler that says its name once and
+# returns 0. The handlers: gpu/gl/gl_egl.c (EGL), gpu/gl/gl_calls.c (GL, over common/gpu/gl/gl_state.h).
+
+# EGL functions no hook implements yet, which a game's main calls directly: through their slots, to that handler
+route eglBindTexImage
+route eglCopyBuffers
+route eglCreatePbufferFromClientBuffer
+route eglCreatePixmapSurface
+route eglReleaseTexImage
+
+family egl
+hook eglGetError() -> i32 = gl_egl_get_error
+hook eglGetDisplay(addr native) -> addr = gl_egl_get_display
+hook eglInitialize(addr dpy, addr major, addr minor) -> u32 = gl_egl_initialize
+hook eglTerminate(addr dpy) -> u32 = gl_egl_terminate
+hook eglQueryString(addr dpy, i32 name) -> addr = gl_egl_query_string
+hook eglBindAPI(u32 api) -> u32 = gl_egl_bind_api
+hook eglQueryAPI() -> u32 = gl_egl_query_api
+hook eglGetConfigs(addr dpy, addr configs, i32 size, addr count) -> u32 = gl_egl_get_configs
+hook eglChooseConfig(addr dpy, addr attribs, addr configs, i32 size, addr count) -> u32 = gl_egl_choose_config
+hook eglGetConfigAttrib(addr dpy, addr config, i32 attribute, addr value) -> u32 = gl_egl_get_config_attrib
+hook eglCreateContext(addr dpy, addr config, addr share, addr attribs) -> addr = gl_egl_create_context
+hook eglDestroyContext(addr dpy, addr context) -> u32 = gl_egl_destroy_context
+hook eglQueryContext(addr dpy, addr context, i32 attribute, addr value) -> u32 = gl_egl_query_context
+hook eglCreateWindowSurface(addr dpy, addr config, addr window, addr attribs) -> addr = gl_egl_create_window_surface
+hook eglCreatePbufferSurface(addr dpy, addr config, addr attribs) -> addr = gl_egl_create_pbuffer_surface
+hook eglDestroySurface(addr dpy, addr surface) -> u32 = gl_egl_destroy_surface
+hook eglQuerySurface(addr dpy, addr surface, i32 attribute, addr value) -> u32 = gl_egl_query_surface
+hook eglSurfaceAttrib(addr dpy, addr surface, i32 attribute, i32 value) -> u32 = gl_egl_surface_attrib
+hook eglMakeCurrent(addr dpy, addr draw, addr read, addr context) -> u32 = gl_egl_make_current
+hook eglGetCurrentContext() -> addr = gl_egl_get_current_context
+hook eglGetCurrentDisplay() -> addr = gl_egl_get_current_display
+hook eglGetCurrentSurface(i32 which) -> addr = gl_egl_get_current_surface
+hook eglSwapBuffers(addr dpy, addr surface) -> u32 = gl_egl_swap_buffers
+hook eglSwapInterval(addr dpy, i32 interval) -> u32 = gl_egl_swap_interval
+hook eglWaitClient() -> u32 = gl_egl_wait_client
+hook eglWaitGL() -> u32 = gl_egl_wait_gl
+hook eglWaitNative(i32 engine) -> u32 = gl_egl_wait_native
+hook eglReleaseThread() -> u32 = gl_egl_release_thread
+hook eglGetProcAddress(addr name) -> addr = gl_egl_get_proc_address
+
+family state
+hook _glGetError() -> u32 = gl_get_error
+hook _glEnable(u32 cap) = gl_enable
+hook _glDisable(u32 cap) = gl_disable
+hook _glIsEnabled(u32 cap) -> u8 = gl_is_enabled
+hook _glBlendFunc(u32 src, u32 dst) = gl_blend_func
+hook _glBlendFuncSeparate(u32 src_rgb, u32 dst_rgb, u32 src_alpha, u32 dst_alpha) = gl_blend_func_separate
+hook _glBlendEquation(u32 mode) = gl_blend_equation
+hook _glBlendEquationSeparate(u32 rgb, u32 alpha) = gl_blend_equation_separate
+hook _glBlendColor(f32 r, f32 g, f32 b, f32 a) = gl_blend_color
+hook _glColorMask(u8 r, u8 g, u8 b, u8 a) = gl_color_mask
+hook _glDepthMask(u8 flag) = gl_depth_mask
+hook _glDepthFunc(u32 func) = gl_depth_func
+hook _glDepthRangef(f32 n, f32 f) = gl_depth_rangef
+hook _glDepthRange(f64 n, f64 f) = gl_depth_range
+hook _glCullFace(u32 mode) = gl_cull_face
+hook _glFrontFace(u32 mode) = gl_front_face
+hook _glStencilFunc(u32 func, i32 ref, u32 mask) = gl_stencil_func
+hook _glStencilFuncSeparate(u32 face, u32 func, i32 ref, u32 mask) = gl_stencil_func_separate
+hook _glStencilOp(u32 fail, u32 zfail, u32 zpass) = gl_stencil_op
+hook _glStencilOpSeparate(u32 face, u32 fail, u32 zfail, u32 zpass) = gl_stencil_op_separate
+hook _glStencilMask(u32 mask) = gl_stencil_mask
+hook _glStencilMaskSeparate(u32 face, u32 mask) = gl_stencil_mask_separate
+hook _glClearColor(f32 r, f32 g, f32 b, f32 a) = gl_clear_color
+hook _glClearDepthf(f32 depth) = gl_clear_depthf
+hook _glClearDepth(f64 depth) = gl_clear_depth
+hook _glClearStencil(i32 s) = gl_clear_stencil
+hook _glViewport(i32 x, i32 y, i32 width, i32 height) = gl_viewport
+hook _glScissor(i32 x, i32 y, i32 width, i32 height) = gl_scissor
+hook _glLineWidth(f32 width) = gl_line_width
+hook _glPolygonOffset(f32 factor, f32 units) = gl_polygon_offset
+hook _glSampleCoverage(f32 value, u8 invert) = gl_sample_coverage
+hook _glHint(u32 target, u32 mode) = gl_hint
+hook _glPixelStorei(u32 pname, i32 value) = gl_pixel_storei
+hook _glGetIntegerv(u32 pname, addr data) = gl_get_integerv
+hook _glGetInteger64v(u32 pname, addr data) = gl_get_integer64v
+hook _glGetFloatv(u32 pname, addr data) = gl_get_floatv
+hook _glGetBooleanv(u32 pname, addr data) = gl_get_booleanv
+hook _glGetString(u32 name) -> addr = gl_get_string
+hook _glGetStringi(u32 name, u32 index) -> addr = gl_get_stringi
+hook _glFlush() = gl_flush
+hook _glFinish() = gl_finish
+
+family draw
+hook _glClear(u32 mask) = gl_clear

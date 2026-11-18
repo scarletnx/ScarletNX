@@ -1489,6 +1489,16 @@ setting SM86 dump
     help A folder that keeps the bytes of each Ounce program (SM86) the translator refuses, and of each block of
     help shader memory with no whole program in it, for tools/snx_sm86.c (the game's own code: keep it local). Empty:
     help none
+setting GL layer
+    key gl_layer
+    int 0 1
+    default 0
+    startup
+    words Driver|Layer
+    help For a game that draws through its own OpenGL driver: 0 = the driver runs and the GPU's front end reads what
+    help it submits; 1 = the runtime's GL layer takes the game's EGL and GL calls and the driver never runs (in progress:
+    help it draws glClear's color, and a function it doesn't implement yet says its name once in the log and returns 0).
+    help The game must be recompiled with this runtime for its EGL calls
 setting GPU trace target
     key gpu_trace_target
     text 64

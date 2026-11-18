@@ -1456,6 +1456,16 @@ add_executable(snx-test-gl-state gl_state.c)
 snx_test_target(snx-test-gl-state c23)
 target_link_libraries(snx-test-gl-state PRIVATE snx_gl)
 add_test(NAME gl_state COMMAND snx-test-gl-state)
+# the console's GL layer (src/nx/gpu/gl/) over a stubbed GL driver module, guest memory and renderer: the slots taken
+# with gl_layer=1, EGL, glClear's color in the surface's image, eglSwapBuffers's present, a function without a handler
+add_executable(snx-test-gl-layer gl_layer.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/gl/gl_loader.c"
+               "${PROJECT_SOURCE_DIR}/src/nx/gpu/gl/gl_egl.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/gl/gl_calls.c"
+               "${PROJECT_SOURCE_DIR}/src/nx/gpu/gl/gl_host_nx.c" "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/version.c")
+snx_test_target(snx-test-gl-layer gnu23)
+target_link_libraries(snx-test-gl-layer PRIVATE snx_gl scarletnx-common)
+target_include_directories(snx-test-gl-layer PRIVATE "${PROJECT_SOURCE_DIR}/src")
+snx_hookgen(snx-test-gl-layer SPEC "${PROJECT_SOURCE_DIR}/src/nx/gpu/gl/gl.hook" PREFIX gl NAME gpu/gl/gl.hook)
+add_test(NAME gl_layer COMMAND snx-test-gl-layer)
 # native_cond_var (src/nx/hle/hook/family.c, hook.c) over tests/hook/states.hook: the cond_var family's hooks at 1, the
 # game's own wait at 0, and save states refused while the host's wait runs, by a message naming the setting's value
 add_executable(snx-test-hook-states hook_states.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/version.c"
