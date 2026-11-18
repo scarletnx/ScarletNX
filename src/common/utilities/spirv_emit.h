@@ -160,6 +160,7 @@ enum {
     SPV_OP_CONVERT_S_TO_F = 111,
     SPV_OP_CONVERT_U_TO_F = 112,
     SPV_OP_U_CONVERT = 113,
+    SPV_OP_CONVERT_PTR_TO_U = 117,
     SPV_OP_CONVERT_U_TO_PTR = 120,
     SPV_OP_S_CONVERT = 114,
     SPV_OP_F_CONVERT = 115,
@@ -690,6 +691,8 @@ uint32_t spv_emit_load(SpvEmitter* e, uint32_t result_type, uint32_t pointer);
    then declares the capability and the addressing model for. Accesses through it take an alignment
    (spv_emit_load_aligned, spv_emit_store_aligned). Nothing bounds them: the caller checks the range */
 uint32_t spv_emit_address_pointer(SpvEmitter* e, uint32_t pointee_type, uint32_t address);
+/* the device address (of the u64 type u64_type) of a pointer spv_emit_address_pointer made */
+uint32_t spv_emit_pointer_address(SpvEmitter* e, uint32_t u64_type, uint32_t pointer);
 /* volatile_access: each access reaches memory that other invocations and the host share (as Coherent does) */
 uint32_t spv_emit_load_aligned(SpvEmitter* e, uint32_t result_type, uint32_t pointer, uint32_t alignment,
                                int volatile_access);

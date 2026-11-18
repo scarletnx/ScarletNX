@@ -2362,6 +2362,7 @@ int vk_mirror_pending(u64 gva, u64 len);
    only as far as the CPU touched it (vk_mirror_publish). The mirror holds the range's bytes then, guest memory not */
 int vk_mirror_holds(u64 gva, u64 len);
 int vk_mirror_holds_at(u64 cpu, u64 len); /* vk_mirror_holds of the run at guest address cpu */
+int vk_mirror_owns_any(void);             /* the mirror is made and owns pages: makes nothing, as vk_mirror_on() can */
 void vk_mirror_mem_need(u64 gva, u64 len);
 /* at a submit, recorded into cb: the pages its programs wrote, copied for landing; and once submissions up to done are,
    their landing in guest memory */
@@ -2410,8 +2411,10 @@ typedef struct {
     VkBuffer map_buf[VK_DRAW_STAGES];
     u64 map_off[VK_DRAW_STAGES], map_size[VK_DRAW_STAGES];
     /* a vertex program that fetches its own attributes (ShaderInfo.vertex_fetch): each attribute's 4 words of its
-       record (SH_RECORD_ATTR), which render.c's fetch_records fills from the draw's vertex streams */
+       record (SH_RECORD_ATTR) and its instance divisor (SH_RECORD_DIVISOR), which render.c's fetch_records fills from
+       the draw's vertex streams */
     u32 attr[32][4];
+    u32 divisor[32];
 } VkDrawStorage;
 /* whether any stage of the draw reads or writes global memory */
 static inline int vk_draw_storage_any(const VkDrawStorage* draw) {
@@ -2464,6 +2467,7 @@ int vk_buf_pending(u64 gva, u64 len); /* a pending graphics result overlaps the 
 /* GPU-owned bytes are on the range's pages (memory/own.c): reading them on the CPU lands them, a wait for the GPU */
 int vk_buf_owned(u64 gva, u64 len);
 u32 vk_buf_sources(void);             /* where the ranges bound since the last call came from (buffer.c) */
+u32 vk_buf_kind(void);                /* where the last range buf_get bound came from: one bit of vk_buf_sources' */
 u32 vk_tex_tags(void);                /* and what the textures looked up since then were (texture.c) */
 u64 vk_buf_adds(void);                /* graphics results committed so far: as vk_compute_adds */
 int vk_buf_pending_any(void);         /* any graphics result is pending */

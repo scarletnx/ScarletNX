@@ -7,8 +7,10 @@
    combination.
 
    A view takes a slot for each layout it is sampled in, the first time a draw samples it so, and keeps it until the view
-   is destroyed (vk_image_view_destroy). A view is destroyed when the frames that used it are done (vk_defer_image), so a
-   slot that comes back free is used by no pending command buffer. A sampler takes a slot for good, as vk_sampler keeps
+   is destroyed (vk_image_view_destroy). A view that a draw samples is destroyed only through vk_defer_image, when the
+   frames that used it are done, so a slot that comes back free is used by no pending command buffer. Where every slot
+   is taken, the slots no frame in flight used go back (table_reclaim): textures stay alive while memory lasts, and a
+   game's thousands of them would otherwise run the table out, and skip each draw that samples one more. A sampler takes a slot for good, as vk_sampler keeps
    its samplers. The set is UPDATE_AFTER_BIND with its slots partially bound: a new slot is written while command
    buffers that bind the set are pending, and those do not read it (UPDATE_UNUSED_WHILE_PENDING). */
 #include <string.h>
@@ -45,6 +47,9 @@ static struct {
     TableSampler samplers[TABLE_SAMPLERS];
     u32 free[SNX_TABLE_IMAGES]; /* the image slots given back, a stack */
     u32 nfree, next_image, next_sampler;
+    /* each image slot's view and layout, and the frame (vk_frame_id) a draw last took it in: table_reclaim's */
+    TableView slot_view[SNX_TABLE_IMAGES];
+    u64 slot_frame[SNX_TABLE_IMAGES];
     /* the entries a draw found last, direct-mapped: a draw's few views and samplers stay in the CPU's nearest caches,
        where the tables above are megabytes. view 0 or sampler 0 is no entry */
     TableView near_views[1024];
@@ -141,24 +146,74 @@ int vk_table_scratch_init(void) {
 u64 vk_table_scratch(void) { return g_table.scratch_address; }
 VkDescriptorSet vk_table_set(void) { return g_table.set; }
 
+/* the entry of view in layout leaves the table, its slot back to the free stack: the entries after it in their run
+   move back where their home lets them (deletion in linear probing without tombstones), so that a lookup stops at the
+   first free entry still. Under the lock */
+static void forget_entry(u32 i) {
+    const TableView gone = g_table.views[i];
+    g_table.free[g_table.nfree++] = gone.slot;
+    g_table.slot_view[gone.slot] = (TableView){0};
+    TableView* hit = &g_table.near_views[near_view_index(gone.view, gone.layout)];
+    if (hit->view == gone.view && hit->layout == gone.layout) *hit = (TableView){0};
+    u32 hole = i;
+    for (u32 j = (i + 1) & (TABLE_VIEWS - 1); g_table.views[j].view; j = (j + 1) & (TABLE_VIEWS - 1)) {
+        const u32 home = view_home(g_table.views[j].view);
+        /* j may fill the hole when its home is not in (hole, j] going round */
+        const int stays = hole <= j ? (home > hole && home <= j) : (home > hole || home <= j);
+        if (stays) continue;
+        g_table.views[hole] = g_table.views[j];
+        hole = j;
+    }
+    g_table.views[hole] = (TableView){0};
+}
+/* every slot no frame in flight took back to the free stack: a slot a draw took in frame f is read until that frame
+   is done, f + VK_FRAMES <= vk_frame_id(), as the compute arenas are kept (compute.c). Under the lock */
+static void table_reclaim(void) {
+    const u64 now = vk_frame_id();
+    u32 taken = 0;
+    for (u32 slot = 0; slot < g_table.next_image; slot++) {
+        const TableView v = g_table.slot_view[slot];
+        if (!v.view || g_table.slot_frame[slot] + VK_FRAMES > now) continue;
+        u32 i = view_home(v.view);
+        while (g_table.views[i].view && (g_table.views[i].view != v.view || g_table.views[i].layout != v.layout))
+            i = (i + 1) & (TABLE_VIEWS - 1);
+        if (!g_table.views[i].view) continue;
+        forget_entry(i);
+        taken++;
+    }
+    LOG_LIMIT(4, "vulkan: the texture table was full: %u slots no frame in flight used came back\n", taken);
+}
 /* the slot of view in layout, new where it has none: under the lock */
 static u32 view_slot(VkImageView view, VkImageLayout layout) {
     TableView* hit = &g_table.near_views[near_view_index(view, layout)];
-    if (hit->view == view && hit->layout == layout) return hit->slot;
+    if (hit->view == view && hit->layout == layout) {
+        g_table.slot_frame[hit->slot] = vk_frame_id();
+        return hit->slot;
+    }
     u32 i = view_home(view);
     while (g_table.views[i].view && (g_table.views[i].view != view || g_table.views[i].layout != layout))
         i = (i + 1) & (TABLE_VIEWS - 1);
     TableView* e = &g_table.views[i];
     if (!e->view) {
+        if (!g_table.nfree && g_table.next_image == SNX_TABLE_IMAGES) {
+            table_reclaim();
+            /* entries moved back: view's free place is found again */
+            i = view_home(view);
+            while (g_table.views[i].view) i = (i + 1) & (TABLE_VIEWS - 1);
+            e = &g_table.views[i];
+        }
         const u32 slot = g_table.nfree                           ? g_table.free[--g_table.nfree]
                          : g_table.next_image < SNX_TABLE_IMAGES ? g_table.next_image++
                                                                  : ~0u;
         if (slot == ~0u) {
-            LOG_LIMIT(1, "vulkan: the texture table is full (%u views): draws that sample more views are skipped\n",
+            LOG_LIMIT(1,
+                      "vulkan: the texture table is full (%u views, each used by a frame in flight): draws that "
+                      "sample more views are skipped\n",
                       SNX_TABLE_IMAGES);
             return ~0u;
         }
         *e = (TableView){view, layout, slot};
+        g_table.slot_view[slot] = *e;
         const VkDescriptorImageInfo ii = {VK_NULL_HANDLE, view, layout};
         const VkWriteDescriptorSet w = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
                                         .dstSet = g_table.set,
@@ -170,6 +225,7 @@ static u32 view_slot(VkImageView view, VkImageLayout layout) {
         vkUpdateDescriptorSets(g_vk.dev, 1, &w, 0, NULL);
     }
     *hit = *e;
+    g_table.slot_frame[e->slot] = vk_frame_id();
     return e->slot;
 }
 static u32 sampler_slot(VkSampler sampler) {
@@ -213,8 +269,7 @@ int vk_table_words(const VkImageView* views, const VkImageLayout* layouts, const
     pm_unlock(&g_table.lock);
     return ok;
 }
-/* each entry of view goes, and the entries after it in their run move back where their home lets them (deletion in
-   linear probing without tombstones), so that a lookup stops at the first free entry still */
+/* each entry of view goes (forget_entry) */
 void vk_table_forget_view(VkImageView view) {
     if (!g_table.set || !view) return;
     pm_lock(&g_table.lock);
@@ -222,19 +277,7 @@ void vk_table_forget_view(VkImageView view) {
         u32 i = view_home(view);
         while (g_table.views[i].view && g_table.views[i].view != view) i = (i + 1) & (TABLE_VIEWS - 1);
         if (!g_table.views[i].view) break;
-        g_table.free[g_table.nfree++] = g_table.views[i].slot;
-        TableView* hit = &g_table.near_views[near_view_index(view, g_table.views[i].layout)];
-        if (hit->view == view) *hit = (TableView){0};
-        u32 hole = i;
-        for (u32 j = (i + 1) & (TABLE_VIEWS - 1); g_table.views[j].view; j = (j + 1) & (TABLE_VIEWS - 1)) {
-            const u32 home = view_home(g_table.views[j].view);
-            /* j may fill the hole when its home is not in (hole, j] going round */
-            const int stays = hole <= j ? (home > hole && home <= j) : (home > hole || home <= j);
-            if (stays) continue;
-            g_table.views[hole] = g_table.views[j];
-            hole = j;
-        }
-        g_table.views[hole] = (TableView){0};
+        forget_entry(i);
     }
     pm_unlock(&g_table.lock);
 }

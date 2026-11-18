@@ -837,6 +837,10 @@ static void own_landed(u64 addr, u64 size, const u8* bytes) {
     vk_ww_landed(addr, size, bytes);
     vk_mirror_landed(addr, size);
 }
+/* owners dropped with no landing (an unmap, a remap, a decommit): the GPU mirror's copy of those pages is no longer
+   guest memory's, and its next binding of them fills them again, as a landing has it. A page the mirror owns leaves
+   its granule's check whole (mirror.c), which no other change of these pages would end */
+static void own_dropped(u64 addr, u64 size) { vk_mirror_landed(addr, size); }
 
 int vk_own_init(void) {
     /* vk_lock and vk_unlock themselves, not g_vklock: the outermost unlock also signals what the hold's releases
@@ -850,6 +854,7 @@ int vk_own_init(void) {
                   .lock = vk_lock,
                   .unlock = vk_unlock,
                   .landed = own_landed,
+                  .dropped = own_dropped,
                   .writer = own_writer,
                   .wait = own_wait,
                   .resolve = vk_rt_watch_hit,
