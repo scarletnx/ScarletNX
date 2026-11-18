@@ -33,10 +33,8 @@ static struct {
 
 #if defined(__GNUC__) || defined(__clang__)
 #define SNX_FORMAT(n) __attribute__((format(printf, n, n + 1)))
-#define SNX_NORETURN  __attribute__((noreturn))
 #else
 #define SNX_FORMAT(n)
-#define SNX_NORETURN
 #endif
 /* a line of the run's log */
 static void say(const char* fmt, ...) SNX_FORMAT(1);
@@ -52,8 +50,8 @@ static void say(const char* fmt, ...) {
         fputs(line, stdout);
 }
 /* the end of a run that cannot go on, with why */
-static void stop(const char* fmt, ...) SNX_FORMAT(1) SNX_NORETURN;
-static void stop(const char* fmt, ...) {
+[[noreturn]] static void stop(const char* fmt, ...) SNX_FORMAT(1);
+[[noreturn]] static void stop(const char* fmt, ...) {
     char line[2048];
     va_list ap;
     va_start(ap, fmt);
