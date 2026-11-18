@@ -553,6 +553,8 @@ static void ldst_start(CPU* c, u32 word, unsigned s) {
     c->x[31] = 0x1000 + (rnd() & 0xff0);
     c->x[insn.args.rn] = 0x1000 + (rnd() & 0xff0);
     c->x[insn.args.rm] = 0x1000 + (rnd() & 0xff0);
+    if (insn.op == SNX_A64_OP_LDAPR_i || insn.op == SNX_A64_OP_STLR_i) /* the base plus the offset aligned (ordered) */
+        c->x[insn.args.rn] -= (c->x[insn.args.rn] + (u64)(int64_t)insn.args.imm) & ((1u << insn.args.sz) - 1);
     address = c->x[insn.args.rn];
     c->excl_on = 0;
     if (!(s & 1)) return;
@@ -564,6 +566,41 @@ static void ldst_start(CPU* c, u32 word, unsigned s) {
         if (s & 2) c->excl_val = ~c->excl_val;
         c->excl_size = insn.op == SNX_A64_OP_STXP ? 0x13 : (u32)insn.args.sz;
     }
+}
+
+/* an ordered access's address (an acquire or a release, an exclusive, an atomic) when it is off the alignment it needs,
+   its size or a pair's two, which an AArch64 host's ldar, stlr, ldxp or cas fault on and an x86-64 host's do not: 0
+   when it is on it, or the access is a plain one */
+static u64 ordered_misaligned(const CPU* c, u32 word) {
+    SnxA64Insn insn;
+    u64 address, size;
+    snx_a64_decode_word(word, TARGET, &insn);
+    address = c->x[insn.args.rn];
+    size = 1ull << insn.args.sz;
+    switch (insn.op) {
+        case SNX_A64_OP_LDAPR_i:
+        case SNX_A64_OP_STLR_i: address += (u64)(int64_t)insn.args.imm; break;
+        case SNX_A64_OP_STXP:
+        case SNX_A64_OP_LDXP:
+        case SNX_A64_OP_CASP: size *= 2; break;
+        case SNX_A64_OP_STXR:
+        case SNX_A64_OP_LDXR:
+        case SNX_A64_OP_STLR:
+        case SNX_A64_OP_LDAR:
+        case SNX_A64_OP_LDAPR:
+        case SNX_A64_OP_CAS:
+        case SNX_A64_OP_LDADD:
+        case SNX_A64_OP_LDCLR:
+        case SNX_A64_OP_LDEOR:
+        case SNX_A64_OP_LDSET:
+        case SNX_A64_OP_LDSMAX:
+        case SNX_A64_OP_LDSMIN:
+        case SNX_A64_OP_LDUMAX:
+        case SNX_A64_OP_LDUMIN:
+        case SNX_A64_OP_SWP: break;
+        default: return 0;
+    }
+    return address % size ? address : 0;
 }
 
 static int run_compare(const u32* words, size_t count, unsigned states) {
@@ -610,6 +647,13 @@ static int run_compare(const u32* words, size_t count, unsigned states) {
             start.vf = rnd() & 1;
             start.excl_on = (u32)(rnd() & 1); /* CLREX clears it */
             if (ldst) ldst_start(&start, words[i], s);
+            if (ldst && ordered_misaligned(&start, words[i])) {
+                ++g_test.failures;
+                fprintf(stderr, "FAIL: %s %08x state %u: its ordered access at %llx is off its alignment\n",
+                        op_name(words[i]), (unsigned)words[i], s,
+                        (unsigned long long)ordered_misaligned(&start, words[i]));
+                break;
+            }
             start.rt = &rt;
             start.pc = 0x1000;
             for (int k = 0; k < 2; ++k) {
