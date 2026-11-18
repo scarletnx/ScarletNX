@@ -162,6 +162,10 @@ static int memory_give(uint64_t at, uint64_t size) {
     return 0;
 }
 
+uint8_t* snx_gl_client_bytes(uint64_t at) { return bytes(at); }
+uint64_t snx_gl_memory_take(uint64_t size) { return memory_take(size); }
+void snx_gl_memory_give(uint64_t at, uint64_t size) { memory_give(at, size); }
+
 /* ---- the objects ---- */
 
 SnxGlObjectContext* snx_gl_objects(uint32_t ctx) { return &S.contexts[ctx - 1]; }
@@ -773,6 +777,7 @@ int snx_gl_object_state_check(const void* in, size_t size, char* why, size_t why
         }
     return 0;
 }
+int snx_gl_object_checked_holds(uint64_t at, uint64_t size) { return in_chunk(&g_gl_object.checked, at, size); }
 void snx_gl_object_state_load(const void* in) {
     memcpy(&S, (const unsigned char*)in + 2 * sizeof(uint32_t), sizeof S);
     for (uint32_t n = 1; n <= SNX_GL_BUFFERS; n++) gone(n); /* what a platform made is of the old records */

@@ -64,6 +64,7 @@ Gles2Context* gles2_context_new(int version) {
     }
     gles2_programs_init();
     gles2_buffers_init();
+    gles2_textures_init();
     gl->version = version;
     gl->draw_fbo = gl->read_fbo = 0;
     return gl;
@@ -255,14 +256,14 @@ static void g_finish(CPU* c, Gles2Context* gl) {
 /* ---- the queries of state ---- */
 
 static unsigned binding_of(Gles2Context* gl, unsigned target) {
-    unsigned unit = gl->active;
+    const SnxGlTextureContext* x = snx_gl_textures(gl->ctx);
     switch (target) {
-    case 0x8069: return gl->textures[unit][G2_T2D];
-    case 0x8514: return gl->textures[unit][G2_TCUBE];
-    case 0x806a: return gl->textures[unit][G2_T3D];
-    case 0x8c1d: return gl->textures[unit][G2_TARRAY];
-    case 0x9104: return gl->textures[unit][G2_TMS];
-    default: return 0;
+        case 0x8069: return x->textures[x->active][G2_T2D];
+        case 0x8514: return x->textures[x->active][G2_TCUBE];
+        case 0x806a: return x->textures[x->active][G2_T3D];
+        case 0x8c1d: return x->textures[x->active][G2_TARRAY];
+        case 0x9104: return x->textures[x->active][G2_TMS];
+        default: return 0;
     }
 }
 
@@ -447,13 +448,13 @@ static int state(Gles2Context* gl, unsigned pname, double* v) {
     case 0x2a00: v[0] = fs->offset_units; return 1;
     case 0x80aa: v[0] = fs->coverage_value; return 1;
     case 0x80ab: v[0] = fs->coverage_invert; return 1;
-    case 0x84e0: v[0] = 0x84c0 + gl->active; return 1;
+    case 0x84e0: v[0] = 0x84c0 + snx_gl_textures(gl->ctx)->active; return 1;
     case 0x8069:
     case 0x8514:
     case 0x806a:
     case 0x8c1d:
     case 0x9104: v[0] = binding_of(gl, pname); return 1;
-    case 0x8919: v[0] = gl->samplers[gl->active]; return 1;
+    case 0x8919: v[0] = snx_gl_textures(gl->ctx)->samplers[snx_gl_textures(gl->ctx)->active]; return 1;
     case 0x8894: v[0] = gles2_objects(gl)->array; return 1;
     case 0x8895: v[0] = vao ? vao->elements : 0; return 1;
     case 0x8b8d: v[0] = snx_gl_current_program(gl->ctx); return 1;
@@ -565,8 +566,12 @@ static bool indexed(Gles2Context* gl, unsigned pname, unsigned i, int64_t* v) {
         return true;
     }
     if (i < G2_IMAGE_UNITS && pname >= 0x8f3a && pname <= 0x8f3e) {
-        *v = pname == 0x8f3a ? gl->images[i].texture : pname == 0x8f3b ? gl->images[i].level
-             : pname == 0x8f3c ? gl->images[i].layered : pname == 0x8f3d ? gl->images[i].layer : gl->images[i].access;
+        const SnxGlImageUnit* u = &snx_gl_textures(gl->ctx)->images[i];
+        *v = pname == 0x8f3a   ? u->texture
+             : pname == 0x8f3b ? (uint32_t)u->level
+             : pname == 0x8f3c ? u->layered
+             : pname == 0x8f3d ? (uint32_t)u->layer
+                               : u->access;
         return true;
     }
     if (i < 1 && pname == 0x8e52) {
