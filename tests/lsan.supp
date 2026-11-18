@@ -1,0 +1,7 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+# LeakSanitizer's suppressions for the sanitizers' tests (SNX_TEST_SANITIZERS), given by an absolute path:
+# LSAN_OPTIONS=suppressions=$PWD/tests/lsan.supp. Each is a system library's own leak, which no code of ours can free.
+# SDL 3.4's ALSA backend never frees the device hints it asks ALSA for as audio starts (ALSA_guess_device_prefix);
+# a machine with no audio server, as CI's, falls through to that backend
+leak:snd_device_name_hint
