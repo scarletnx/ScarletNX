@@ -224,6 +224,8 @@ typedef struct SnxIr {
     LLVMValueRef (*operand_reference)(struct SnxIr* ir, const void* decoded, SnxU32 word, SnxU64 pc);
     /* and the general-purpose registers' loads and stores written by hand (tests/support/ir_ldst_reference.c) */
     void (*ldst_reference)(struct SnxIr* ir, const void* decoded, SnxU32 word, SnxU64 pc);
+    /* and the hand-written scalar floating-point emitters (tests/support/ir_fpu_reference.c), the same way */
+    void (*fpu_reference)(struct SnxIr* ir, const void* decoded, SnxU32 word, SnxU64 pc);
 } SnxIr;
 
 void ir_state_invalidate(SnxIr* ir);

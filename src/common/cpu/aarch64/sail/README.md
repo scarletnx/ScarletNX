@@ -24,9 +24,11 @@ and change the commit above. A new subset is its decode functions added to `a64.
 `a64.sail`, and its definitions take the place of `a64.sail`'s of the same name: the general-purpose registers as
 ScarletNX's CPU keeps them (one array, `GPR`), EL0's stack pointer and exception level, no EL2, no SError, no Guarded
 Control Stack, no guarded page, no Statistical Profiling, PAuth with its keys disabled, XPAC on 39-bit addresses and
-PACGA's fixed mix; and for the loads and stores, an access descriptor of EL0's, a pair as one access, little-endian
+PACGA's fixed mix; for the loads and stores, an access descriptor of EL0's, a pair as one access, little-endian
 data, no alignment fault, a CONSTRAINED UNPREDICTABLE encoding run as it is written, and guest memory, the exclusive
-monitor and the atomics as ScarletNX makes them (functions the back end lowers). Another system's fixups (the 3DS's,
+monitor and the atomics as ScarletNX makes them (functions the back end lowers); and for the floating point, the
+SIMD&FP registers as 128 bits each (`_V`) and FPCR as the CPU keeps them, floating point enabled at EL0, no merging of
+a scalar result without FEAT_AFP, AArch64 alone, and FEAT_FP16 as the guest's. Another system's fixups (the 3DS's,
 the NDS's) go in a file of their own the same way.
 
 `tools/sailgen --generate` makes the LLVM emitters from them (`snx_sailgen_a64` of `cmake/sailgen.cmake`), with the

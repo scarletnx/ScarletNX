@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The scalar floating-point instructions' emitters, keyed on the generated decoder's ops (ir_fpu.c) */
+/* The scalar floating-point instructions' emitters, keyed on the generated decoder's ops (ir_fpu.c), which sailgen
+   generates from their Sail */
 #ifndef SNX_RECOMPILER_LLVM_IR_FPU_H
 #define SNX_RECOMPILER_LLVM_IR_FPU_H
 

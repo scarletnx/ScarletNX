@@ -1768,6 +1768,38 @@ function clause __DecodeA64_BranchExcSys ((pc, ([bitzero, bitone, bitzero, biton
     decode_bc_cond_aarch64_instrs_branch_conditional_hinted(cond, imm19)
 }
 
+val execute_aarch64_instrs_vector_cvt_bf16_scalar : forall 'd 'n,
+  (0 <= 'n & 'n <= 31 & 0 <= 'd & 'd <= 31).
+  (int('d), int('n)) -> unit
+
+function execute_aarch64_instrs_vector_cvt_bf16_scalar (d, n) = {
+    CheckFPEnabled64();
+    let operand : bits(32) = V_read(n, 32);
+    let fpcr : FPCRType = FPCR_read();
+    let merge : bool = IsMerging(fpcr);
+    result : bits(128) = if merge then V_read(d, 128) else Zeros(128);
+    result = Elem_set(result, 0, 16, FPConvertBF__1(operand, fpcr));
+    V_set(d, 128) = result
+}
+
+val decode_bfcvt_float_aarch64_instrs_vector_cvt_bf16_scalar : (bits(5), bits(5)) -> unit
+
+function decode_bfcvt_float_aarch64_instrs_vector_cvt_bf16_scalar (Rd, Rn) = {
+    if not_bool(HaveBF16Ext()) then {
+        throw(Error_Undefined())
+    };
+    let 'n = UInt(Rn);
+    let 'd = UInt(Rd);
+    execute_aarch64_instrs_vector_cvt_bf16_scalar(d, n)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, bitone, bitone, bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitone, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 72) = {
+    SEE = 72;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    decode_bfcvt_float_aarch64_instrs_vector_cvt_bf16_scalar(Rd, Rn)
+}
+
 val execute_aarch64_instrs_integer_bitfield : forall 'd 'datasize ('extend : Bool) ('inzero : Bool) 'n 'r 's,
   (0 <= 's & 's <= 63 & 0 <= 'r & 'r <= 63 & 0 <= 'n & 'n <= 31 & 'datasize in {32, 64} & 0 <= 'd & 'd <= 31).
   (int('d), int('datasize), bool('extend), bool('inzero), int('n), int('r), int('s), bits('datasize), bits('datasize)) -> unit
@@ -4367,6 +4399,3756 @@ function clause __DecodeA64_DataProcImm ((pc, ([_, bitzero, bitzero, bitone, bit
     let N = Slice(__opcode, 22, 1);
     let sf = Slice(__opcode, 31, 1);
     decode_extr_aarch64_instrs_integer_ins_ext_extract_immediate(Rd, Rn, imms, Rm, N, sf)
+}
+
+val execute_aarch64_instrs_float_arithmetic_unary : forall 'd 'esize 'n,
+  (0 <= 'n & 'n <= 31 & 'esize in {16, 32, 64} & 0 <= 'd & 'd <= 31).
+  (int('d), int('esize), FPUnaryOp, int('n)) -> unit
+
+function execute_aarch64_instrs_float_arithmetic_unary (d, esize, fpop, n) = {
+    CheckFPEnabled64();
+    let fpcr : FPCRType = FPCR_read();
+    let merge : bool = fpop != FPUnaryOp_MOV & IsMerging(fpcr);
+    result : bits(128) = if merge then V_read(d, 128) else 0[127 .. 0];
+    let operand : bits('esize) = V_read(n, esize);
+    match fpop {
+      FPUnaryOp_MOV => {
+          result = Elem_set(result, 0, esize, operand)
+      },
+      FPUnaryOp_ABS => {
+          result = Elem_set(result, 0, esize, FPAbs(operand))
+      },
+      FPUnaryOp_NEG => {
+          result = Elem_set(result, 0, esize, FPNeg(operand))
+      },
+      FPUnaryOp_SQRT => {
+          result = Elem_set(result, 0, esize, FPSqrt(operand, fpcr))
+      }
+    };
+    V_set(d, 128) = result
+}
+
+val decode_fabs_float_aarch64_instrs_float_arithmetic_unary : (bits(5), bits(5), bits(2), bits(2)) -> unit
+
+function decode_fabs_float_aarch64_instrs_float_arithmetic_unary (Rd, Rn, opc, ftype) = {
+    let 'd = UInt(Rd);
+    let 'n = UInt(Rn);
+    esize : {16, 32, 64} = 16;
+    match ftype {
+      0b00 => {
+          esize = 32
+      },
+      0b01 => {
+          esize = 64
+      },
+      0b10 => {
+          throw(Error_Undefined())
+      },
+      0b11 => {
+          if HaveFP16Ext() then {
+              esize = 16
+          } else {
+              throw(Error_Undefined())
+          }
+      }
+    };
+    let 'esize = esize;
+    fpop : FPUnaryOp = undefined;
+    match opc {
+      0b00 => {
+          fpop = FPUnaryOp_MOV
+      },
+      0b01 => {
+          fpop = FPUnaryOp_ABS
+      },
+      0b10 => {
+          fpop = FPUnaryOp_NEG
+      },
+      0b11 => {
+          fpop = FPUnaryOp_SQRT
+      }
+    };
+    let fpop = fpop;
+    execute_aarch64_instrs_float_arithmetic_unary(d, esize, fpop, n)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 211) = {
+    SEE = 211;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let opc = Slice(__opcode, 15, 2);
+    let ftype = Slice(__opcode, 22, 2);
+    decode_fabs_float_aarch64_instrs_float_arithmetic_unary(Rd, Rn, opc, ftype)
+}
+
+val decode_fmov_float_aarch64_instrs_float_arithmetic_unary : (bits(5), bits(5), bits(2), bits(2)) -> unit
+
+function decode_fmov_float_aarch64_instrs_float_arithmetic_unary (Rd, Rn, opc, ftype) = {
+    let 'd = UInt(Rd);
+    let 'n = UInt(Rn);
+    esize : {16, 32, 64} = 16;
+    match ftype {
+      0b00 => {
+          esize = 32
+      },
+      0b01 => {
+          esize = 64
+      },
+      0b10 => {
+          throw(Error_Undefined())
+      },
+      0b11 => {
+          if HaveFP16Ext() then {
+              esize = 16
+          } else {
+              throw(Error_Undefined())
+          }
+      }
+    };
+    let 'esize = esize;
+    fpop : FPUnaryOp = undefined;
+    match opc {
+      0b00 => {
+          fpop = FPUnaryOp_MOV
+      },
+      0b01 => {
+          fpop = FPUnaryOp_ABS
+      },
+      0b10 => {
+          fpop = FPUnaryOp_NEG
+      },
+      0b11 => {
+          fpop = FPUnaryOp_SQRT
+      }
+    };
+    let fpop = fpop;
+    execute_aarch64_instrs_float_arithmetic_unary(d, esize, fpop, n)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 212) = {
+    SEE = 212;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let opc = Slice(__opcode, 15, 2);
+    let ftype = Slice(__opcode, 22, 2);
+    decode_fmov_float_aarch64_instrs_float_arithmetic_unary(Rd, Rn, opc, ftype)
+}
+
+val decode_fneg_float_aarch64_instrs_float_arithmetic_unary : (bits(5), bits(5), bits(2), bits(2)) -> unit
+
+function decode_fneg_float_aarch64_instrs_float_arithmetic_unary (Rd, Rn, opc, ftype) = {
+    let 'd = UInt(Rd);
+    let 'n = UInt(Rn);
+    esize : {16, 32, 64} = 16;
+    match ftype {
+      0b00 => {
+          esize = 32
+      },
+      0b01 => {
+          esize = 64
+      },
+      0b10 => {
+          throw(Error_Undefined())
+      },
+      0b11 => {
+          if HaveFP16Ext() then {
+              esize = 16
+          } else {
+              throw(Error_Undefined())
+          }
+      }
+    };
+    let 'esize = esize;
+    fpop : FPUnaryOp = undefined;
+    match opc {
+      0b00 => {
+          fpop = FPUnaryOp_MOV
+      },
+      0b01 => {
+          fpop = FPUnaryOp_ABS
+      },
+      0b10 => {
+          fpop = FPUnaryOp_NEG
+      },
+      0b11 => {
+          fpop = FPUnaryOp_SQRT
+      }
+    };
+    let fpop = fpop;
+    execute_aarch64_instrs_float_arithmetic_unary(d, esize, fpop, n)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitzero, bitone, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 213) = {
+    SEE = 213;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let opc = Slice(__opcode, 15, 2);
+    let ftype = Slice(__opcode, 22, 2);
+    decode_fneg_float_aarch64_instrs_float_arithmetic_unary(Rd, Rn, opc, ftype)
+}
+
+val decode_fsqrt_float_aarch64_instrs_float_arithmetic_unary : (bits(5), bits(5), bits(2), bits(2)) -> unit
+
+function decode_fsqrt_float_aarch64_instrs_float_arithmetic_unary (Rd, Rn, opc, ftype) = {
+    let 'd = UInt(Rd);
+    let 'n = UInt(Rn);
+    esize : {16, 32, 64} = 16;
+    match ftype {
+      0b00 => {
+          esize = 32
+      },
+      0b01 => {
+          esize = 64
+      },
+      0b10 => {
+          throw(Error_Undefined())
+      },
+      0b11 => {
+          if HaveFP16Ext() then {
+              esize = 16
+          } else {
+              throw(Error_Undefined())
+          }
+      }
+    };
+    let 'esize = esize;
+    fpop : FPUnaryOp = undefined;
+    match opc {
+      0b00 => {
+          fpop = FPUnaryOp_MOV
+      },
+      0b01 => {
+          fpop = FPUnaryOp_ABS
+      },
+      0b10 => {
+          fpop = FPUnaryOp_NEG
+      },
+      0b11 => {
+          fpop = FPUnaryOp_SQRT
+      }
+    };
+    let fpop = fpop;
+    execute_aarch64_instrs_float_arithmetic_unary(d, esize, fpop, n)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 214) = {
+    SEE = 214;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let opc = Slice(__opcode, 15, 2);
+    let ftype = Slice(__opcode, 22, 2);
+    decode_fsqrt_float_aarch64_instrs_float_arithmetic_unary(Rd, Rn, opc, ftype)
+}
+
+val execute_aarch64_instrs_float_arithmetic_add_sub : forall 'd 'esize 'm 'n ('sub_op : Bool),
+  (0 <= 'n & 'n <= 31 & 0 <= 'm & 'm <= 31 & 'esize in {16, 32, 64} & 0 <= 'd & 'd <= 31).
+  (int('d), int('esize), int('m), int('n), bool('sub_op)) -> unit
+
+function execute_aarch64_instrs_float_arithmetic_add_sub (d, esize, m, n, sub_op) = {
+    CheckFPEnabled64();
+    let operand1 : bits('esize) = V_read(n, esize);
+    let operand2 : bits('esize) = V_read(m, esize);
+    let fpcr : FPCRType = FPCR_read();
+    let merge : bool = IsMerging(fpcr);
+    result : bits(128) = if merge then V_read(n, 128) else Zeros(128);
+    if sub_op then {
+        result = Elem_set(result, 0, esize, FPSub(operand1, operand2, fpcr))
+    } else {
+        result = Elem_set(result, 0, esize, FPAdd(operand1, operand2, fpcr))
+    };
+    V_set(d, 128) = result
+}
+
+val decode_fadd_float_aarch64_instrs_float_arithmetic_add_sub : (bits(5), bits(5), bits(1), bits(5), bits(2)) -> unit
+
+function decode_fadd_float_aarch64_instrs_float_arithmetic_add_sub (Rd, Rn, op, Rm, ftype) = {
+    let 'd = UInt(Rd);
+    let 'n = UInt(Rn);
+    let 'm = UInt(Rm);
+    esize : {16, 32, 64} = 16;
+    match ftype {
+      0b00 => {
+          esize = 32
+      },
+      0b01 => {
+          esize = 64
+      },
+      0b10 => {
+          throw(Error_Undefined())
+      },
+      0b11 => {
+          if HaveFP16Ext() then {
+              esize = 16
+          } else {
+              throw(Error_Undefined())
+          }
+      }
+    };
+    let 'esize = esize;
+    let sub_op : bool = op == 0b1;
+    execute_aarch64_instrs_float_arithmetic_add_sub(d, esize, m, n, sub_op)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitzero, bitone, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 243) = {
+    SEE = 243;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op = Slice(__opcode, 12, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let ftype = Slice(__opcode, 22, 2);
+    decode_fadd_float_aarch64_instrs_float_arithmetic_add_sub(Rd, Rn, op, Rm, ftype)
+}
+
+val decode_fsub_float_aarch64_instrs_float_arithmetic_add_sub : (bits(5), bits(5), bits(1), bits(5), bits(2)) -> unit
+
+function decode_fsub_float_aarch64_instrs_float_arithmetic_add_sub (Rd, Rn, op, Rm, ftype) = {
+    let 'd = UInt(Rd);
+    let 'n = UInt(Rn);
+    let 'm = UInt(Rm);
+    esize : {16, 32, 64} = 16;
+    match ftype {
+      0b00 => {
+          esize = 32
+      },
+      0b01 => {
+          esize = 64
+      },
+      0b10 => {
+          throw(Error_Undefined())
+      },
+      0b11 => {
+          if HaveFP16Ext() then {
+              esize = 16
+          } else {
+              throw(Error_Undefined())
+          }
+      }
+    };
+    let 'esize = esize;
+    let sub_op : bool = op == 0b1;
+    execute_aarch64_instrs_float_arithmetic_add_sub(d, esize, m, n, sub_op)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 244) = {
+    SEE = 244;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op = Slice(__opcode, 12, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let ftype = Slice(__opcode, 22, 2);
+    decode_fsub_float_aarch64_instrs_float_arithmetic_add_sub(Rd, Rn, op, Rm, ftype)
+}
+
+val execute_aarch64_instrs_float_compare_cond : forall 'datasize 'm 'n ('signal_all_nans : Bool),
+  (0 <= 'n & 'n <= 31 & 0 <= 'm & 'm <= 31 & 'datasize in {16, 32, 64}).
+  (bits(4), int('datasize), bits(4), int('m), int('n), bool('signal_all_nans)) -> unit
+
+function execute_aarch64_instrs_float_compare_cond (condition, datasize, flags__arg, m, n, signal_all_nans) = {
+    flags : bits(4) = flags__arg;
+    CheckFPEnabled64();
+    let operand1 : bits('datasize) = V_read(n, datasize);
+    let operand2 : bits('datasize) = V_read(m, datasize);
+    taken : bool = false;
+    if ConditionHolds(condition) then {
+        flags = FPCompare(operand1, operand2, signal_all_nans, FPCR_read());
+        taken = true
+    };
+    (PSTATE.N @ PSTATE.Z @ PSTATE.C @ PSTATE.V) = flags;
+    if SPESampleInFlight then {
+        let conditional : bool = true;
+        SPESampleAddOpOther(conditional, taken)
+    };
+    ()
+}
+
+val decode_fccmp_float_aarch64_instrs_float_compare_cond : (bits(4), bits(1), bits(5), bits(4), bits(5), bits(2)) -> unit
+
+function decode_fccmp_float_aarch64_instrs_float_compare_cond (nzcv, op, Rn, cond, Rm, ftype) = {
+    let 'n = UInt(Rn);
+    let 'm = UInt(Rm);
+    datasize : {16, 32, 64} = 16;
+    match ftype {
+      0b00 => {
+          datasize = 32
+      },
+      0b01 => {
+          datasize = 64
+      },
+      0b10 => {
+          throw(Error_Undefined())
+      },
+      0b11 => {
+          if HaveFP16Ext() then {
+              datasize = 16
+          } else {
+              throw(Error_Undefined())
+          }
+      }
+    };
+    let 'datasize = datasize;
+    let signal_all_nans : bool = op == 0b1;
+    let condition : bits(4) = cond;
+    let flags : bits(4) = nzcv;
+    execute_aarch64_instrs_float_compare_cond(condition, datasize, flags, m, n, signal_all_nans)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, _, _, _, _, bitzero, bitone, _, _, _, _, _, bitzero, _, _, _, _] as __opcode)) if SEE < 248) = {
+    SEE = 248;
+    let nzcv = Slice(__opcode, 0, 4);
+    let op = Slice(__opcode, 4, 1);
+    let Rn = Slice(__opcode, 5, 5);
+    let cond = Slice(__opcode, 12, 4);
+    let Rm = Slice(__opcode, 16, 5);
+    let ftype = Slice(__opcode, 22, 2);
+    decode_fccmp_float_aarch64_instrs_float_compare_cond(nzcv, op, Rn, cond, Rm, ftype)
+}
+
+val decode_fccmpe_float_aarch64_instrs_float_compare_cond : (bits(4), bits(1), bits(5), bits(4), bits(5), bits(2)) -> unit
+
+function decode_fccmpe_float_aarch64_instrs_float_compare_cond (nzcv, op, Rn, cond, Rm, ftype) = {
+    let 'n = UInt(Rn);
+    let 'm = UInt(Rm);
+    datasize : {16, 32, 64} = 16;
+    match ftype {
+      0b00 => {
+          datasize = 32
+      },
+      0b01 => {
+          datasize = 64
+      },
+      0b10 => {
+          throw(Error_Undefined())
+      },
+      0b11 => {
+          if HaveFP16Ext() then {
+              datasize = 16
+          } else {
+              throw(Error_Undefined())
+          }
+      }
+    };
+    let 'datasize = datasize;
+    let signal_all_nans : bool = op == 0b1;
+    let condition : bits(4) = cond;
+    let flags : bits(4) = nzcv;
+    execute_aarch64_instrs_float_compare_cond(condition, datasize, flags, m, n, signal_all_nans)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, _, _, _, _, bitzero, bitone, _, _, _, _, _, bitone, _, _, _, _] as __opcode)) if SEE < 249) = {
+    SEE = 249;
+    let nzcv = Slice(__opcode, 0, 4);
+    let op = Slice(__opcode, 4, 1);
+    let Rn = Slice(__opcode, 5, 5);
+    let cond = Slice(__opcode, 12, 4);
+    let Rm = Slice(__opcode, 16, 5);
+    let ftype = Slice(__opcode, 22, 2);
+    decode_fccmpe_float_aarch64_instrs_float_compare_cond(nzcv, op, Rn, cond, Rm, ftype)
+}
+
+val execute_aarch64_instrs_float_compare_uncond : forall ('cmp_with_zero : Bool) 'datasize 'm 'n ('signal_all_nans : Bool),
+  (0 <= 'n & 'n <= 31 & 0 <= 'm & 'm <= 31 & 'datasize in {16, 32, 64}).
+  (bool('cmp_with_zero), int('datasize), int('m), int('n), bool('signal_all_nans)) -> unit
+
+function execute_aarch64_instrs_float_compare_uncond (cmp_with_zero, datasize, m, n, signal_all_nans) = {
+    CheckFPEnabled64();
+    let operand1 : bits('datasize) = V_read(n, datasize);
+    let operand2 : bits('datasize) = if cmp_with_zero then FPZero(0b0, datasize)
+    else
+      V_read(m, datasize);
+    (PSTATE.N @ PSTATE.Z @ PSTATE.C @ PSTATE.V) = FPCompare(operand1, operand2, signal_all_nans, FPCR_read())
+}
+
+val decode_fcmp_float_aarch64_instrs_float_compare_uncond : (bits(2), bits(5), bits(5), bits(2)) -> unit
+
+function decode_fcmp_float_aarch64_instrs_float_compare_uncond (opc, Rn, Rm, ftype) = {
+    let 'n = UInt(Rn);
+    let 'm = UInt(Rm);
+    datasize : {16, 32, 64} = 16;
+    match ftype {
+      0b00 => {
+          datasize = 32
+      },
+      0b01 => {
+          datasize = 64
+      },
+      0b10 => {
+          throw(Error_Undefined())
+      },
+      0b11 => {
+          if HaveFP16Ext() then {
+              datasize = 16
+          } else {
+              throw(Error_Undefined())
+          }
+      }
+    };
+    let 'datasize = datasize;
+    let signal_all_nans : bool = [opc[1]] == 0b1;
+    let cmp_with_zero : bool = [opc[0]] == 0b1;
+    execute_aarch64_instrs_float_compare_uncond(cmp_with_zero, datasize, m, n, signal_all_nans)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitzero, bitone, bitzero, bitzero, bitzero, _, _, _, _, _, bitzero, _, bitzero, bitzero, bitzero] as __opcode)) if SEE < 272) = {
+    SEE = 272;
+    let opc = Slice(__opcode, 3, 2);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let ftype = Slice(__opcode, 22, 2);
+    decode_fcmp_float_aarch64_instrs_float_compare_uncond(opc, Rn, Rm, ftype)
+}
+
+val decode_fcmpe_float_aarch64_instrs_float_compare_uncond : (bits(2), bits(5), bits(5), bits(2)) -> unit
+
+function decode_fcmpe_float_aarch64_instrs_float_compare_uncond (opc, Rn, Rm, ftype) = {
+    let 'n = UInt(Rn);
+    let 'm = UInt(Rm);
+    datasize : {16, 32, 64} = 16;
+    match ftype {
+      0b00 => {
+          datasize = 32
+      },
+      0b01 => {
+          datasize = 64
+      },
+      0b10 => {
+          throw(Error_Undefined())
+      },
+      0b11 => {
+          if HaveFP16Ext() then {
+              datasize = 16
+          } else {
+              throw(Error_Undefined())
+          }
+      }
+    };
+    let 'datasize = datasize;
+    let signal_all_nans : bool = [opc[1]] == 0b1;
+    let cmp_with_zero : bool = [opc[0]] == 0b1;
+    execute_aarch64_instrs_float_compare_uncond(cmp_with_zero, datasize, m, n, signal_all_nans)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitzero, bitone, bitzero, bitzero, bitzero, _, _, _, _, _, bitone, _, bitzero, bitzero, bitzero] as __opcode)) if SEE < 273) = {
+    SEE = 273;
+    let opc = Slice(__opcode, 3, 2);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let ftype = Slice(__opcode, 22, 2);
+    decode_fcmpe_float_aarch64_instrs_float_compare_uncond(opc, Rn, Rm, ftype)
+}
+
+val execute_aarch64_instrs_float_move_fp_select : forall 'd 'datasize 'm 'n,
+  (0 <= 'n & 'n <= 31 & 0 <= 'm & 'm <= 31 & 'datasize in {16, 32, 64} & 0 <= 'd & 'd <= 31).
+  (bits(4), int('d), int('datasize), int('m), int('n)) -> unit
+
+function execute_aarch64_instrs_float_move_fp_select (condition, d, datasize, m, n) = {
+    CheckFPEnabled64();
+    let result : bits('datasize) = if ConditionHolds(condition) then
+      V_read(n, datasize)
+    else
+      V_read(m, datasize);
+    V_set(d, datasize) = result
+}
+
+val decode_fcsel_float_aarch64_instrs_float_move_fp_select : (bits(5), bits(5), bits(4), bits(5), bits(2)) -> unit
+
+function decode_fcsel_float_aarch64_instrs_float_move_fp_select (Rd, Rn, cond, Rm, ftype) = {
+    let 'd = UInt(Rd);
+    let 'n = UInt(Rn);
+    let 'm = UInt(Rm);
+    datasize : {16, 32, 64} = 16;
+    match ftype {
+      0b00 => {
+          datasize = 32
+      },
+      0b01 => {
+          datasize = 64
+      },
+      0b10 => {
+          throw(Error_Undefined())
+      },
+      0b11 => {
+          if HaveFP16Ext() then {
+              datasize = 16
+          } else {
+              throw(Error_Undefined())
+          }
+      }
+    };
+    let 'datasize = datasize;
+    let condition : bits(4) = cond;
+    execute_aarch64_instrs_float_move_fp_select(condition, d, datasize, m, n)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, _, _, _, _, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 274) = {
+    SEE = 274;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let cond = Slice(__opcode, 12, 4);
+    let Rm = Slice(__opcode, 16, 5);
+    let ftype = Slice(__opcode, 22, 2);
+    decode_fcsel_float_aarch64_instrs_float_move_fp_select(Rd, Rn, cond, Rm, ftype)
+}
+
+val execute_aarch64_instrs_float_convert_fp : forall 'd 'dstsize 'n 'srcsize,
+  ('srcsize in {16, 32, 64} & 0 <= 'n & 'n <= 31 & 'dstsize in {16, 32, 64} & 0 <= 'd & 'd <= 31).
+  (int('d), int('dstsize), int('n), int('srcsize)) -> unit
+
+function execute_aarch64_instrs_float_convert_fp (d, dstsize, n, srcsize) = {
+    CheckFPEnabled64();
+    let operand : bits('srcsize) = V_read(n, srcsize);
+    let fpcr : FPCRType = FPCR_read();
+    let merge : bool = IsMerging(fpcr);
+    result : bits(128) = if merge then V_read(d, 128) else Zeros(128);
+    result = Elem_set(result, 0, dstsize, FPConvert__1(operand, fpcr, dstsize));
+    V_set(d, 128) = result
+}
+
+val decode_fcvt_float_aarch64_instrs_float_convert_fp : (bits(5), bits(5), bits(2), bits(2)) -> unit
+
+function decode_fcvt_float_aarch64_instrs_float_convert_fp (Rd, Rn, opc, ftype) = {
+    let 'd = UInt(Rd);
+    let 'n = UInt(Rn);
+    srcsize : {16, 32, 64} = 16;
+    dstsize : {16, 32, 64} = 16;
+    if ftype == opc then {
+        throw(Error_Undefined())
+    };
+    match ftype {
+      0b00 => {
+          srcsize = 32
+      },
+      0b01 => {
+          srcsize = 64
+      },
+      0b10 => {
+          throw(Error_Undefined())
+      },
+      0b11 => {
+          srcsize = 16
+      }
+    };
+    let 'srcsize = srcsize;
+    match opc {
+      0b00 => {
+          dstsize = 32
+      },
+      0b01 => {
+          dstsize = 64
+      },
+      0b10 => {
+          throw(Error_Undefined())
+      },
+      0b11 => {
+          dstsize = 16
+      }
+    };
+    let 'dstsize = dstsize;
+    execute_aarch64_instrs_float_convert_fp(d, dstsize, n, srcsize)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, bitone, bitzero, bitzero, bitzero, bitone, _, _, bitone, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 275) = {
+    SEE = 275;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let opc = Slice(__opcode, 15, 2);
+    let ftype = Slice(__opcode, 22, 2);
+    decode_fcvt_float_aarch64_instrs_float_convert_fp(Rd, Rn, opc, ftype)
+}
+
+val execute_aarch64_instrs_float_convert_int : forall 'd 'fltsize 'intsize ('is_unsigned : Bool) 'n 'part,
+  ('part in {0, 1} & 0 <= 'n & 'n <= 31 & 'intsize in {32, 64} & 'fltsize in {16, 32, 64, 128} & 0 <= 'd & 'd <= 31).
+  (int('d), int('fltsize), int('intsize), int('n), FPConvOp, int('part), FPRounding, bool('is_unsigned)) -> unit
+
+function execute_aarch64_instrs_float_convert_int (d, fltsize, intsize, n, op, part, rounding, is_unsigned) = {
+    if op == FPConvOp_CVT_FtoI_JS then {
+        CheckFPAdvSIMDEnabled64()
+    } else {
+        CheckFPEnabled64()
+    };
+    let fpcr : FPCRType = FPCR_read();
+    let merge : bool = IsMerging(fpcr);
+    let 'fsize = if op == FPConvOp_CVT_ItoF & merge then 128 else fltsize;
+    fltval : bits('fsize) = undefined;
+    intval : bits('intsize) = undefined;
+    match op {
+      FPConvOp_CVT_FtoI => {
+          let fltval : bits('fsize) = V_read(n, fsize);
+          assert(constraint(('fsize in {16, 32, 64} & 'intsize in {16, 32, 64})));
+          let intval : bits('intsize) = FPToFixed(fltval, 0, is_unsigned, fpcr, rounding, intsize);
+          X_set(d, intsize) = intval
+      },
+      FPConvOp_CVT_ItoF => {
+          let intval : bits('intsize) = X_read(n, intsize);
+          fltval : bits('fsize) = if merge then V_read(d, fsize) else
+            Zeros(fsize);
+          assert(constraint(('fltsize in {16, 32, 64} & 'intsize in {16, 32, 64})));
+          fltval = Elem_set(fltval, 0, fltsize, FixedToFP(intval, 0, is_unsigned, fpcr, rounding, fltsize));
+          V_set(d, fsize) = fltval
+      },
+      FPConvOp_MOV_FtoI => {
+          let fltval : bits('fsize) = Vpart_read(n, part, fsize);
+          assert(constraint(('fsize >= 0 & 'intsize >= 'fsize)));
+          let intval : bits('intsize) = ZeroExtend(fltval, intsize);
+          X_set(d, intsize) = intval
+      },
+      FPConvOp_MOV_ItoF => {
+          let intval : bits('intsize) = X_read(n, intsize);
+          assert(constraint((0 <= 'fsize - 1 & 'fsize - 1 < 'intsize)));
+          let fltval : bits('fsize) = intval[fsize - 1 .. 0];
+          Vpart_set(d, part, fsize) = fltval
+      },
+      FPConvOp_CVT_FtoI_JS => {
+          z : bits(1) = undefined;
+          let fltval : bits('fsize) = V_read(n, fsize);
+          assert(constraint('fsize == 64));
+          assert(constraint('intsize == 32));
+          (intval, z) = FPToFixedJS(fltval, fpcr, true, intsize);
+          (PSTATE.N @ PSTATE.Z @ PSTATE.C @ PSTATE.V) = (0b0 @ z) @ 0b00;
+          X_set(d, intsize) = intval
+      }
+    }
+}
+
+val decode_fcvtas_float_aarch64_instrs_float_convert_int : (bits(5), bits(5), bits(3), bits(2), bits(2), bits(1)) -> unit
+
+function decode_fcvtas_float_aarch64_instrs_float_convert_int (Rd, Rn, opcode, rmode, ftype, sf) = {
+    let 'd = UInt(Rd);
+    let 'n = UInt(Rn);
+    let 'intsize = if sf == 0b1 then 64 else 32;
+    fltsize : {16, 32, 64, 128} = 16;
+    op : FPConvOp = undefined;
+    rounding : FPRounding = undefined;
+    is_unsigned : bool = undefined;
+    part : {0, 1} = 0;
+    match ftype {
+      0b00 => {
+          fltsize = 32
+      },
+      0b01 => {
+          fltsize = 64
+      },
+      0b10 => {
+          if (opcode[2 .. 1] @ rmode) != 0b1101 then {
+              throw(Error_Undefined())
+          };
+          fltsize = 128
+      },
+      0b11 => {
+          if HaveFP16Ext() then {
+              fltsize = 16
+          } else {
+              throw(Error_Undefined())
+          }
+      }
+    };
+    match opcode[2 .. 1] @ rmode {
+      [bitzero, bitzero, _, _] => {
+          rounding = FPDecodeRounding(rmode);
+          is_unsigned = [opcode[0]] == 0b1;
+          op = FPConvOp_CVT_FtoI
+      },
+      0b0100 => {
+          rounding = FPRoundingMode(FPCR_read());
+          is_unsigned = [opcode[0]] == 0b1;
+          op = FPConvOp_CVT_ItoF
+      },
+      0b1000 => {
+          rounding = FPRounding_TIEAWAY;
+          is_unsigned = [opcode[0]] == 0b1;
+          op = FPConvOp_CVT_FtoI
+      },
+      0b1100 => {
+          if fltsize != 16 & fltsize != intsize then {
+              throw(Error_Undefined())
+          };
+          op = if [opcode[0]] == 0b1 then FPConvOp_MOV_ItoF else
+            FPConvOp_MOV_FtoI;
+          part = 0
+      },
+      0b1101 => {
+          if intsize != 64 | fltsize != 128 then {
+              throw(Error_Undefined())
+          };
+          op = if [opcode[0]] == 0b1 then FPConvOp_MOV_ItoF else
+            FPConvOp_MOV_FtoI;
+          part = 1;
+          fltsize = 64
+      },
+      0b1111 => {
+          if not_bool(HaveFJCVTZSExt()) then {
+              throw(Error_Undefined())
+          };
+          rounding = FPRounding_ZERO;
+          is_unsigned = [opcode[0]] == 0b1;
+          op = FPConvOp_CVT_FtoI_JS
+      },
+      _ => {
+          throw(Error_Undefined())
+      }
+    };
+    let op = op;
+    let 'part = part;
+    let 'fltsize = fltsize;
+    match fltsize {
+      16 => {
+          execute_aarch64_instrs_float_convert_int(d, 16, intsize, n, op, part, rounding, is_unsigned)
+      },
+      32 => {
+          execute_aarch64_instrs_float_convert_int(d, 32, intsize, n, op, part, rounding, is_unsigned)
+      },
+      64 => {
+          execute_aarch64_instrs_float_convert_int(d, 64, intsize, n, op, part, rounding, is_unsigned)
+      },
+      128 => {
+          execute_aarch64_instrs_float_convert_int(d, 128, intsize, n, op, part, rounding, is_unsigned)
+      },
+      _ => {
+          assert(false)
+      }
+    }
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([_, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, bitone, bitzero, bitzero, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 284) = {
+    SEE = 284;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let opcode = Slice(__opcode, 16, 3);
+    let rmode = Slice(__opcode, 19, 2);
+    let ftype = Slice(__opcode, 22, 2);
+    let sf = Slice(__opcode, 31, 1);
+    decode_fcvtas_float_aarch64_instrs_float_convert_int(Rd, Rn, opcode, rmode, ftype, sf)
+}
+
+val decode_fcvtau_float_aarch64_instrs_float_convert_int : (bits(5), bits(5), bits(3), bits(2), bits(2), bits(1)) -> unit
+
+function decode_fcvtau_float_aarch64_instrs_float_convert_int (Rd, Rn, opcode, rmode, ftype, sf) = {
+    let 'd = UInt(Rd);
+    let 'n = UInt(Rn);
+    let 'intsize = if sf == 0b1 then 64 else 32;
+    fltsize : {16, 32, 64, 128} = 16;
+    op : FPConvOp = undefined;
+    rounding : FPRounding = undefined;
+    is_unsigned : bool = undefined;
+    part : {0, 1} = 0;
+    match ftype {
+      0b00 => {
+          fltsize = 32
+      },
+      0b01 => {
+          fltsize = 64
+      },
+      0b10 => {
+          if (opcode[2 .. 1] @ rmode) != 0b1101 then {
+              throw(Error_Undefined())
+          };
+          fltsize = 128
+      },
+      0b11 => {
+          if HaveFP16Ext() then {
+              fltsize = 16
+          } else {
+              throw(Error_Undefined())
+          }
+      }
+    };
+    match opcode[2 .. 1] @ rmode {
+      [bitzero, bitzero, _, _] => {
+          rounding = FPDecodeRounding(rmode);
+          is_unsigned = [opcode[0]] == 0b1;
+          op = FPConvOp_CVT_FtoI
+      },
+      0b0100 => {
+          rounding = FPRoundingMode(FPCR_read());
+          is_unsigned = [opcode[0]] == 0b1;
+          op = FPConvOp_CVT_ItoF
+      },
+      0b1000 => {
+          rounding = FPRounding_TIEAWAY;
+          is_unsigned = [opcode[0]] == 0b1;
+          op = FPConvOp_CVT_FtoI
+      },
+      0b1100 => {
+          if fltsize != 16 & fltsize != intsize then {
+              throw(Error_Undefined())
+          };
+          op = if [opcode[0]] == 0b1 then FPConvOp_MOV_ItoF else
+            FPConvOp_MOV_FtoI;
+          part = 0
+      },
+      0b1101 => {
+          if intsize != 64 | fltsize != 128 then {
+              throw(Error_Undefined())
+          };
+          op = if [opcode[0]] == 0b1 then FPConvOp_MOV_ItoF else
+            FPConvOp_MOV_FtoI;
+          part = 1;
+          fltsize = 64
+      },
+      0b1111 => {
+          if not_bool(HaveFJCVTZSExt()) then {
+              throw(Error_Undefined())
+          };
+          rounding = FPRounding_ZERO;
+          is_unsigned = [opcode[0]] == 0b1;
+          op = FPConvOp_CVT_FtoI_JS
+      },
+      _ => {
+          throw(Error_Undefined())
+      }
+    };
+    let op = op;
+    let 'part = part;
+    let 'fltsize = fltsize;
+    match fltsize {
+      16 => {
+          execute_aarch64_instrs_float_convert_int(d, 16, intsize, n, op, part, rounding, is_unsigned)
+      },
+      32 => {
+          execute_aarch64_instrs_float_convert_int(d, 32, intsize, n, op, part, rounding, is_unsigned)
+      },
+      64 => {
+          execute_aarch64_instrs_float_convert_int(d, 64, intsize, n, op, part, rounding, is_unsigned)
+      },
+      128 => {
+          execute_aarch64_instrs_float_convert_int(d, 128, intsize, n, op, part, rounding, is_unsigned)
+      },
+      _ => {
+          assert(false)
+      }
+    }
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([_, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, bitone, bitzero, bitzero, bitone, bitzero, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 285) = {
+    SEE = 285;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let opcode = Slice(__opcode, 16, 3);
+    let rmode = Slice(__opcode, 19, 2);
+    let ftype = Slice(__opcode, 22, 2);
+    let sf = Slice(__opcode, 31, 1);
+    decode_fcvtau_float_aarch64_instrs_float_convert_int(Rd, Rn, opcode, rmode, ftype, sf)
+}
+
+val decode_fcvtms_float_aarch64_instrs_float_convert_int : (bits(5), bits(5), bits(3), bits(2), bits(2), bits(1)) -> unit
+
+function decode_fcvtms_float_aarch64_instrs_float_convert_int (Rd, Rn, opcode, rmode, ftype, sf) = {
+    let 'd = UInt(Rd);
+    let 'n = UInt(Rn);
+    let 'intsize = if sf == 0b1 then 64 else 32;
+    fltsize : {16, 32, 64, 128} = 16;
+    op : FPConvOp = undefined;
+    rounding : FPRounding = undefined;
+    is_unsigned : bool = undefined;
+    part : {0, 1} = 0;
+    match ftype {
+      0b00 => {
+          fltsize = 32
+      },
+      0b01 => {
+          fltsize = 64
+      },
+      0b10 => {
+          if (opcode[2 .. 1] @ rmode) != 0b1101 then {
+              throw(Error_Undefined())
+          };
+          fltsize = 128
+      },
+      0b11 => {
+          if HaveFP16Ext() then {
+              fltsize = 16
+          } else {
+              throw(Error_Undefined())
+          }
+      }
+    };
+    match opcode[2 .. 1] @ rmode {
+      [bitzero, bitzero, _, _] => {
+          rounding = FPDecodeRounding(rmode);
+          is_unsigned = [opcode[0]] == 0b1;
+          op = FPConvOp_CVT_FtoI
+      },
+      0b0100 => {
+          rounding = FPRoundingMode(FPCR_read());
+          is_unsigned = [opcode[0]] == 0b1;
+          op = FPConvOp_CVT_ItoF
+      },
+      0b1000 => {
+          rounding = FPRounding_TIEAWAY;
+          is_unsigned = [opcode[0]] == 0b1;
+          op = FPConvOp_CVT_FtoI
+      },
+      0b1100 => {
+          if fltsize != 16 & fltsize != intsize then {
+              throw(Error_Undefined())
+          };
+          op = if [opcode[0]] == 0b1 then FPConvOp_MOV_ItoF else
+            FPConvOp_MOV_FtoI;
+          part = 0
+      },
+      0b1101 => {
+          if intsize != 64 | fltsize != 128 then {
+              throw(Error_Undefined())
+          };
+          op = if [opcode[0]] == 0b1 then FPConvOp_MOV_ItoF else
+            FPConvOp_MOV_FtoI;
+          part = 1;
+          fltsize = 64
+      },
+      0b1111 => {
+          if not_bool(HaveFJCVTZSExt()) then {
+              throw(Error_Undefined())
+          };
+          rounding = FPRounding_ZERO;
+          is_unsigned = [opcode[0]] == 0b1;
+          op = FPConvOp_CVT_FtoI_JS
+      },
+      _ => {
+          throw(Error_Undefined())
+      }
+    };
+    let op = op;
+    let 'part = part;
+    let 'fltsize = fltsize;
+    match fltsize {
+      16 => {
+          execute_aarch64_instrs_float_convert_int(d, 16, intsize, n, op, part, rounding, is_unsigned)
+      },
+      32 => {
+          execute_aarch64_instrs_float_convert_int(d, 32, intsize, n, op, part, rounding, is_unsigned)
+      },
+      64 => {
+          execute_aarch64_instrs_float_convert_int(d, 64, intsize, n, op, part, rounding, is_unsigned)
+      },
+      128 => {
+          execute_aarch64_instrs_float_convert_int(d, 128, intsize, n, op, part, rounding, is_unsigned)
+      },
+      _ => {
+          assert(false)
+      }
+    }
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([_, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 286) = {
+    SEE = 286;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let opcode = Slice(__opcode, 16, 3);
+    let rmode = Slice(__opcode, 19, 2);
+    let ftype = Slice(__opcode, 22, 2);
+    let sf = Slice(__opcode, 31, 1);
+    decode_fcvtms_float_aarch64_instrs_float_convert_int(Rd, Rn, opcode, rmode, ftype, sf)
+}
+
+val decode_fcvtmu_float_aarch64_instrs_float_convert_int : (bits(5), bits(5), bits(3), bits(2), bits(2), bits(1)) -> unit
+
+function decode_fcvtmu_float_aarch64_instrs_float_convert_int (Rd, Rn, opcode, rmode, ftype, sf) = {
+    let 'd = UInt(Rd);
+    let 'n = UInt(Rn);
+    let 'intsize = if sf == 0b1 then 64 else 32;
+    fltsize : {16, 32, 64, 128} = 16;
+    op : FPConvOp = undefined;
+    rounding : FPRounding = undefined;
+    is_unsigned : bool = undefined;
+    part : {0, 1} = 0;
+    match ftype {
+      0b00 => {
+          fltsize = 32
+      },
+      0b01 => {
+          fltsize = 64
+      },
+      0b10 => {
+          if (opcode[2 .. 1] @ rmode) != 0b1101 then {
+              throw(Error_Undefined())
+          };
+          fltsize = 128
+      },
+      0b11 => {
+          if HaveFP16Ext() then {
+              fltsize = 16
+          } else {
+              throw(Error_Undefined())
+          }
+      }
+    };
+    match opcode[2 .. 1] @ rmode {
+      [bitzero, bitzero, _, _] => {
+          rounding = FPDecodeRounding(rmode);
+          is_unsigned = [opcode[0]] == 0b1;
+          op = FPConvOp_CVT_FtoI
+      },
+      0b0100 => {
+          rounding = FPRoundingMode(FPCR_read());
+          is_unsigned = [opcode[0]] == 0b1;
+          op = FPConvOp_CVT_ItoF
+      },
+      0b1000 => {
+          rounding = FPRounding_TIEAWAY;
+          is_unsigned = [opcode[0]] == 0b1;
+          op = FPConvOp_CVT_FtoI
+      },
+      0b1100 => {
+          if fltsize != 16 & fltsize != intsize then {
+              throw(Error_Undefined())
+          };
+          op = if [opcode[0]] == 0b1 then FPConvOp_MOV_ItoF else
+            FPConvOp_MOV_FtoI;
+          part = 0
+      },
+      0b1101 => {
+          if intsize != 64 | fltsize != 128 then {
+              throw(Error_Undefined())
+          };
+          op = if [opcode[0]] == 0b1 then FPConvOp_MOV_ItoF else
+            FPConvOp_MOV_FtoI;
+          part = 1;
+          fltsize = 64
+      },
+      0b1111 => {
+          if not_bool(HaveFJCVTZSExt()) then {
+              throw(Error_Undefined())
+          };
+          rounding = FPRounding_ZERO;
+          is_unsigned = [opcode[0]] == 0b1;
+          op = FPConvOp_CVT_FtoI_JS
+      },
+      _ => {
+          throw(Error_Undefined())
+      }
+    };
+    let op = op;
+    let 'part = part;
+    let 'fltsize = fltsize;
+    match fltsize {
+      16 => {
+          execute_aarch64_instrs_float_convert_int(d, 16, intsize, n, op, part, rounding, is_unsigned)
+      },
+      32 => {
+          execute_aarch64_instrs_float_convert_int(d, 32, intsize, n, op, part, rounding, is_unsigned)
+      },
+      64 => {
+          execute_aarch64_instrs_float_convert_int(d, 64, intsize, n, op, part, rounding, is_unsigned)
+      },
+      128 => {
+          execute_aarch64_instrs_float_convert_int(d, 128, intsize, n, op, part, rounding, is_unsigned)
+      },
+      _ => {
+          assert(false)
+      }
+    }
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([_, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, bitone, bitone, bitzero, bitzero, bitzero, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 287) = {
+    SEE = 287;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let opcode = Slice(__opcode, 16, 3);
+    let rmode = Slice(__opcode, 19, 2);
+    let ftype = Slice(__opcode, 22, 2);
+    let sf = Slice(__opcode, 31, 1);
+    decode_fcvtmu_float_aarch64_instrs_float_convert_int(Rd, Rn, opcode, rmode, ftype, sf)
+}
+
+val decode_fcvtns_float_aarch64_instrs_float_convert_int : (bits(5), bits(5), bits(3), bits(2), bits(2), bits(1)) -> unit
+
+function decode_fcvtns_float_aarch64_instrs_float_convert_int (Rd, Rn, opcode, rmode, ftype, sf) = {
+    let 'd = UInt(Rd);
+    let 'n = UInt(Rn);
+    let 'intsize = if sf == 0b1 then 64 else 32;
+    fltsize : {16, 32, 64, 128} = 16;
+    op : FPConvOp = undefined;
+    rounding : FPRounding = undefined;
+    is_unsigned : bool = undefined;
+    part : {0, 1} = 0;
+    match ftype {
+      0b00 => {
+          fltsize = 32
+      },
+      0b01 => {
+          fltsize = 64
+      },
+      0b10 => {
+          if (opcode[2 .. 1] @ rmode) != 0b1101 then {
+              throw(Error_Undefined())
+          };
+          fltsize = 128
+      },
+      0b11 => {
+          if HaveFP16Ext() then {
+              fltsize = 16
+          } else {
+              throw(Error_Undefined())
+          }
+      }
+    };
+    match opcode[2 .. 1] @ rmode {
+      [bitzero, bitzero, _, _] => {
+          rounding = FPDecodeRounding(rmode);
+          is_unsigned = [opcode[0]] == 0b1;
+          op = FPConvOp_CVT_FtoI
+      },
+      0b0100 => {
+          rounding = FPRoundingMode(FPCR_read());
+          is_unsigned = [opcode[0]] == 0b1;
+          op = FPConvOp_CVT_ItoF
+      },
+      0b1000 => {
+          rounding = FPRounding_TIEAWAY;
+          is_unsigned = [opcode[0]] == 0b1;
+          op = FPConvOp_CVT_FtoI
+      },
+      0b1100 => {
+          if fltsize != 16 & fltsize != intsize then {
+              throw(Error_Undefined())
+          };
+          op = if [opcode[0]] == 0b1 then FPConvOp_MOV_ItoF else
+            FPConvOp_MOV_FtoI;
+          part = 0
+      },
+      0b1101 => {
+          if intsize != 64 | fltsize != 128 then {
+              throw(Error_Undefined())
+          };
+          op = if [opcode[0]] == 0b1 then FPConvOp_MOV_ItoF else
+            FPConvOp_MOV_FtoI;
+          part = 1;
+          fltsize = 64
+      },
+      0b1111 => {
+          if not_bool(HaveFJCVTZSExt()) then {
+              throw(Error_Undefined())
+          };
+          rounding = FPRounding_ZERO;
+          is_unsigned = [opcode[0]] == 0b1;
+          op = FPConvOp_CVT_FtoI_JS
+      },
+      _ => {
+          throw(Error_Undefined())
+      }
+    };
+    let op = op;
+    let 'part = part;
+    let 'fltsize = fltsize;
+    match fltsize {
+      16 => {
+          execute_aarch64_instrs_float_convert_int(d, 16, intsize, n, op, part, rounding, is_unsigned)
+      },
+      32 => {
+          execute_aarch64_instrs_float_convert_int(d, 32, intsize, n, op, part, rounding, is_unsigned)
+      },
+      64 => {
+          execute_aarch64_instrs_float_convert_int(d, 64, intsize, n, op, part, rounding, is_unsigned)
+      },
+      128 => {
+          execute_aarch64_instrs_float_convert_int(d, 128, intsize, n, op, part, rounding, is_unsigned)
+      },
+      _ => {
+          assert(false)
+      }
+    }
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([_, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 288) = {
+    SEE = 288;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let opcode = Slice(__opcode, 16, 3);
+    let rmode = Slice(__opcode, 19, 2);
+    let ftype = Slice(__opcode, 22, 2);
+    let sf = Slice(__opcode, 31, 1);
+    decode_fcvtns_float_aarch64_instrs_float_convert_int(Rd, Rn, opcode, rmode, ftype, sf)
+}
+
+val decode_fcvtnu_float_aarch64_instrs_float_convert_int : (bits(5), bits(5), bits(3), bits(2), bits(2), bits(1)) -> unit
+
+function decode_fcvtnu_float_aarch64_instrs_float_convert_int (Rd, Rn, opcode, rmode, ftype, sf) = {
+    let 'd = UInt(Rd);
+    let 'n = UInt(Rn);
+    let 'intsize = if sf == 0b1 then 64 else 32;
+    fltsize : {16, 32, 64, 128} = 16;
+    op : FPConvOp = undefined;
+    rounding : FPRounding = undefined;
+    is_unsigned : bool = undefined;
+    part : {0, 1} = 0;
+    match ftype {
+      0b00 => {
+          fltsize = 32
+      },
+      0b01 => {
+          fltsize = 64
+      },
+      0b10 => {
+          if (opcode[2 .. 1] @ rmode) != 0b1101 then {
+              throw(Error_Undefined())
+          };
+          fltsize = 128
+      },
+      0b11 => {
+          if HaveFP16Ext() then {
+              fltsize = 16
+          } else {
+              throw(Error_Undefined())
+          }
+      }
+    };
+    match opcode[2 .. 1] @ rmode {
+      [bitzero, bitzero, _, _] => {
+          rounding = FPDecodeRounding(rmode);
+          is_unsigned = [opcode[0]] == 0b1;
+          op = FPConvOp_CVT_FtoI
+      },
+      0b0100 => {
+          rounding = FPRoundingMode(FPCR_read());
+          is_unsigned = [opcode[0]] == 0b1;
+          op = FPConvOp_CVT_ItoF
+      },
+      0b1000 => {
+          rounding = FPRounding_TIEAWAY;
+          is_unsigned = [opcode[0]] == 0b1;
+          op = FPConvOp_CVT_FtoI
+      },
+      0b1100 => {
+          if fltsize != 16 & fltsize != intsize then {
+              throw(Error_Undefined())
+          };
+          op = if [opcode[0]] == 0b1 then FPConvOp_MOV_ItoF else
+            FPConvOp_MOV_FtoI;
+          part = 0
+      },
+      0b1101 => {
+          if intsize != 64 | fltsize != 128 then {
+              throw(Error_Undefined())
+          };
+          op = if [opcode[0]] == 0b1 then FPConvOp_MOV_ItoF else
+            FPConvOp_MOV_FtoI;
+          part = 1;
+          fltsize = 64
+      },
+      0b1111 => {
+          if not_bool(HaveFJCVTZSExt()) then {
+              throw(Error_Undefined())
+          };
+          rounding = FPRounding_ZERO;
+          is_unsigned = [opcode[0]] == 0b1;
+          op = FPConvOp_CVT_FtoI_JS
+      },
+      _ => {
+          throw(Error_Undefined())
+      }
+    };
+    let op = op;
+    let 'part = part;
+    let 'fltsize = fltsize;
+    match fltsize {
+      16 => {
+          execute_aarch64_instrs_float_convert_int(d, 16, intsize, n, op, part, rounding, is_unsigned)
+      },
+      32 => {
+          execute_aarch64_instrs_float_convert_int(d, 32, intsize, n, op, part, rounding, is_unsigned)
+      },
+      64 => {
+          execute_aarch64_instrs_float_convert_int(d, 64, intsize, n, op, part, rounding, is_unsigned)
+      },
+      128 => {
+          execute_aarch64_instrs_float_convert_int(d, 128, intsize, n, op, part, rounding, is_unsigned)
+      },
+      _ => {
+          assert(false)
+      }
+    }
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([_, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 289) = {
+    SEE = 289;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let opcode = Slice(__opcode, 16, 3);
+    let rmode = Slice(__opcode, 19, 2);
+    let ftype = Slice(__opcode, 22, 2);
+    let sf = Slice(__opcode, 31, 1);
+    decode_fcvtnu_float_aarch64_instrs_float_convert_int(Rd, Rn, opcode, rmode, ftype, sf)
+}
+
+val decode_fcvtps_float_aarch64_instrs_float_convert_int : (bits(5), bits(5), bits(3), bits(2), bits(2), bits(1)) -> unit
+
+function decode_fcvtps_float_aarch64_instrs_float_convert_int (Rd, Rn, opcode, rmode, ftype, sf) = {
+    let 'd = UInt(Rd);
+    let 'n = UInt(Rn);
+    let 'intsize = if sf == 0b1 then 64 else 32;
+    fltsize : {16, 32, 64, 128} = 16;
+    op : FPConvOp = undefined;
+    rounding : FPRounding = undefined;
+    is_unsigned : bool = undefined;
+    part : {0, 1} = 0;
+    match ftype {
+      0b00 => {
+          fltsize = 32
+      },
+      0b01 => {
+          fltsize = 64
+      },
+      0b10 => {
+          if (opcode[2 .. 1] @ rmode) != 0b1101 then {
+              throw(Error_Undefined())
+          };
+          fltsize = 128
+      },
+      0b11 => {
+          if HaveFP16Ext() then {
+              fltsize = 16
+          } else {
+              throw(Error_Undefined())
+          }
+      }
+    };
+    match opcode[2 .. 1] @ rmode {
+      [bitzero, bitzero, _, _] => {
+          rounding = FPDecodeRounding(rmode);
+          is_unsigned = [opcode[0]] == 0b1;
+          op = FPConvOp_CVT_FtoI
+      },
+      0b0100 => {
+          rounding = FPRoundingMode(FPCR_read());
+          is_unsigned = [opcode[0]] == 0b1;
+          op = FPConvOp_CVT_ItoF
+      },
+      0b1000 => {
+          rounding = FPRounding_TIEAWAY;
+          is_unsigned = [opcode[0]] == 0b1;
+          op = FPConvOp_CVT_FtoI
+      },
+      0b1100 => {
+          if fltsize != 16 & fltsize != intsize then {
+              throw(Error_Undefined())
+          };
+          op = if [opcode[0]] == 0b1 then FPConvOp_MOV_ItoF else
+            FPConvOp_MOV_FtoI;
+          part = 0
+      },
+      0b1101 => {
+          if intsize != 64 | fltsize != 128 then {
+              throw(Error_Undefined())
+          };
+          op = if [opcode[0]] == 0b1 then FPConvOp_MOV_ItoF else
+            FPConvOp_MOV_FtoI;
+          part = 1;
+          fltsize = 64
+      },
+      0b1111 => {
+          if not_bool(HaveFJCVTZSExt()) then {
+              throw(Error_Undefined())
+          };
+          rounding = FPRounding_ZERO;
+          is_unsigned = [opcode[0]] == 0b1;
+          op = FPConvOp_CVT_FtoI_JS
+      },
+      _ => {
+          throw(Error_Undefined())
+      }
+    };
+    let op = op;
+    let 'part = part;
+    let 'fltsize = fltsize;
+    match fltsize {
+      16 => {
+          execute_aarch64_instrs_float_convert_int(d, 16, intsize, n, op, part, rounding, is_unsigned)
+      },
+      32 => {
+          execute_aarch64_instrs_float_convert_int(d, 32, intsize, n, op, part, rounding, is_unsigned)
+      },
+      64 => {
+          execute_aarch64_instrs_float_convert_int(d, 64, intsize, n, op, part, rounding, is_unsigned)
+      },
+      128 => {
+          execute_aarch64_instrs_float_convert_int(d, 128, intsize, n, op, part, rounding, is_unsigned)
+      },
+      _ => {
+          assert(false)
+      }
+    }
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([_, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, bitone, bitzero, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 290) = {
+    SEE = 290;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let opcode = Slice(__opcode, 16, 3);
+    let rmode = Slice(__opcode, 19, 2);
+    let ftype = Slice(__opcode, 22, 2);
+    let sf = Slice(__opcode, 31, 1);
+    decode_fcvtps_float_aarch64_instrs_float_convert_int(Rd, Rn, opcode, rmode, ftype, sf)
+}
+
+val decode_fcvtpu_float_aarch64_instrs_float_convert_int : (bits(5), bits(5), bits(3), bits(2), bits(2), bits(1)) -> unit
+
+function decode_fcvtpu_float_aarch64_instrs_float_convert_int (Rd, Rn, opcode, rmode, ftype, sf) = {
+    let 'd = UInt(Rd);
+    let 'n = UInt(Rn);
+    let 'intsize = if sf == 0b1 then 64 else 32;
+    fltsize : {16, 32, 64, 128} = 16;
+    op : FPConvOp = undefined;
+    rounding : FPRounding = undefined;
+    is_unsigned : bool = undefined;
+    part : {0, 1} = 0;
+    match ftype {
+      0b00 => {
+          fltsize = 32
+      },
+      0b01 => {
+          fltsize = 64
+      },
+      0b10 => {
+          if (opcode[2 .. 1] @ rmode) != 0b1101 then {
+              throw(Error_Undefined())
+          };
+          fltsize = 128
+      },
+      0b11 => {
+          if HaveFP16Ext() then {
+              fltsize = 16
+          } else {
+              throw(Error_Undefined())
+          }
+      }
+    };
+    match opcode[2 .. 1] @ rmode {
+      [bitzero, bitzero, _, _] => {
+          rounding = FPDecodeRounding(rmode);
+          is_unsigned = [opcode[0]] == 0b1;
+          op = FPConvOp_CVT_FtoI
+      },
+      0b0100 => {
+          rounding = FPRoundingMode(FPCR_read());
+          is_unsigned = [opcode[0]] == 0b1;
+          op = FPConvOp_CVT_ItoF
+      },
+      0b1000 => {
+          rounding = FPRounding_TIEAWAY;
+          is_unsigned = [opcode[0]] == 0b1;
+          op = FPConvOp_CVT_FtoI
+      },
+      0b1100 => {
+          if fltsize != 16 & fltsize != intsize then {
+              throw(Error_Undefined())
+          };
+          op = if [opcode[0]] == 0b1 then FPConvOp_MOV_ItoF else
+            FPConvOp_MOV_FtoI;
+          part = 0
+      },
+      0b1101 => {
+          if intsize != 64 | fltsize != 128 then {
+              throw(Error_Undefined())
+          };
+          op = if [opcode[0]] == 0b1 then FPConvOp_MOV_ItoF else
+            FPConvOp_MOV_FtoI;
+          part = 1;
+          fltsize = 64
+      },
+      0b1111 => {
+          if not_bool(HaveFJCVTZSExt()) then {
+              throw(Error_Undefined())
+          };
+          rounding = FPRounding_ZERO;
+          is_unsigned = [opcode[0]] == 0b1;
+          op = FPConvOp_CVT_FtoI_JS
+      },
+      _ => {
+          throw(Error_Undefined())
+      }
+    };
+    let op = op;
+    let 'part = part;
+    let 'fltsize = fltsize;
+    match fltsize {
+      16 => {
+          execute_aarch64_instrs_float_convert_int(d, 16, intsize, n, op, part, rounding, is_unsigned)
+      },
+      32 => {
+          execute_aarch64_instrs_float_convert_int(d, 32, intsize, n, op, part, rounding, is_unsigned)
+      },
+      64 => {
+          execute_aarch64_instrs_float_convert_int(d, 64, intsize, n, op, part, rounding, is_unsigned)
+      },
+      128 => {
+          execute_aarch64_instrs_float_convert_int(d, 128, intsize, n, op, part, rounding, is_unsigned)
+      },
+      _ => {
+          assert(false)
+      }
+    }
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([_, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, bitone, bitzero, bitone, bitzero, bitzero, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 291) = {
+    SEE = 291;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let opcode = Slice(__opcode, 16, 3);
+    let rmode = Slice(__opcode, 19, 2);
+    let ftype = Slice(__opcode, 22, 2);
+    let sf = Slice(__opcode, 31, 1);
+    decode_fcvtpu_float_aarch64_instrs_float_convert_int(Rd, Rn, opcode, rmode, ftype, sf)
+}
+
+val decode_fcvtzs_float_int_aarch64_instrs_float_convert_int : (bits(5), bits(5), bits(3), bits(2), bits(2), bits(1)) -> unit
+
+function decode_fcvtzs_float_int_aarch64_instrs_float_convert_int (Rd, Rn, opcode, rmode, ftype, sf) = {
+    let 'd = UInt(Rd);
+    let 'n = UInt(Rn);
+    let 'intsize = if sf == 0b1 then 64 else 32;
+    fltsize : {16, 32, 64, 128} = 16;
+    op : FPConvOp = undefined;
+    rounding : FPRounding = undefined;
+    is_unsigned : bool = undefined;
+    part : {0, 1} = 0;
+    match ftype {
+      0b00 => {
+          fltsize = 32
+      },
+      0b01 => {
+          fltsize = 64
+      },
+      0b10 => {
+          if (opcode[2 .. 1] @ rmode) != 0b1101 then {
+              throw(Error_Undefined())
+          };
+          fltsize = 128
+      },
+      0b11 => {
+          if HaveFP16Ext() then {
+              fltsize = 16
+          } else {
+              throw(Error_Undefined())
+          }
+      }
+    };
+    match opcode[2 .. 1] @ rmode {
+      [bitzero, bitzero, _, _] => {
+          rounding = FPDecodeRounding(rmode);
+          is_unsigned = [opcode[0]] == 0b1;
+          op = FPConvOp_CVT_FtoI
+      },
+      0b0100 => {
+          rounding = FPRoundingMode(FPCR_read());
+          is_unsigned = [opcode[0]] == 0b1;
+          op = FPConvOp_CVT_ItoF
+      },
+      0b1000 => {
+          rounding = FPRounding_TIEAWAY;
+          is_unsigned = [opcode[0]] == 0b1;
+          op = FPConvOp_CVT_FtoI
+      },
+      0b1100 => {
+          if fltsize != 16 & fltsize != intsize then {
+              throw(Error_Undefined())
+          };
+          op = if [opcode[0]] == 0b1 then FPConvOp_MOV_ItoF else
+            FPConvOp_MOV_FtoI;
+          part = 0
+      },
+      0b1101 => {
+          if intsize != 64 | fltsize != 128 then {
+              throw(Error_Undefined())
+          };
+          op = if [opcode[0]] == 0b1 then FPConvOp_MOV_ItoF else
+            FPConvOp_MOV_FtoI;
+          part = 1;
+          fltsize = 64
+      },
+      0b1111 => {
+          if not_bool(HaveFJCVTZSExt()) then {
+              throw(Error_Undefined())
+          };
+          rounding = FPRounding_ZERO;
+          is_unsigned = [opcode[0]] == 0b1;
+          op = FPConvOp_CVT_FtoI_JS
+      },
+      _ => {
+          throw(Error_Undefined())
+      }
+    };
+    let op = op;
+    let 'part = part;
+    let 'fltsize = fltsize;
+    match fltsize {
+      16 => {
+          execute_aarch64_instrs_float_convert_int(d, 16, intsize, n, op, part, rounding, is_unsigned)
+      },
+      32 => {
+          execute_aarch64_instrs_float_convert_int(d, 32, intsize, n, op, part, rounding, is_unsigned)
+      },
+      64 => {
+          execute_aarch64_instrs_float_convert_int(d, 64, intsize, n, op, part, rounding, is_unsigned)
+      },
+      128 => {
+          execute_aarch64_instrs_float_convert_int(d, 128, intsize, n, op, part, rounding, is_unsigned)
+      },
+      _ => {
+          assert(false)
+      }
+    }
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([_, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 292) = {
+    SEE = 292;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let opcode = Slice(__opcode, 16, 3);
+    let rmode = Slice(__opcode, 19, 2);
+    let ftype = Slice(__opcode, 22, 2);
+    let sf = Slice(__opcode, 31, 1);
+    decode_fcvtzs_float_int_aarch64_instrs_float_convert_int(Rd, Rn, opcode, rmode, ftype, sf)
+}
+
+val decode_fcvtzu_float_int_aarch64_instrs_float_convert_int : (bits(5), bits(5), bits(3), bits(2), bits(2), bits(1)) -> unit
+
+function decode_fcvtzu_float_int_aarch64_instrs_float_convert_int (Rd, Rn, opcode, rmode, ftype, sf) = {
+    let 'd = UInt(Rd);
+    let 'n = UInt(Rn);
+    let 'intsize = if sf == 0b1 then 64 else 32;
+    fltsize : {16, 32, 64, 128} = 16;
+    op : FPConvOp = undefined;
+    rounding : FPRounding = undefined;
+    is_unsigned : bool = undefined;
+    part : {0, 1} = 0;
+    match ftype {
+      0b00 => {
+          fltsize = 32
+      },
+      0b01 => {
+          fltsize = 64
+      },
+      0b10 => {
+          if (opcode[2 .. 1] @ rmode) != 0b1101 then {
+              throw(Error_Undefined())
+          };
+          fltsize = 128
+      },
+      0b11 => {
+          if HaveFP16Ext() then {
+              fltsize = 16
+          } else {
+              throw(Error_Undefined())
+          }
+      }
+    };
+    match opcode[2 .. 1] @ rmode {
+      [bitzero, bitzero, _, _] => {
+          rounding = FPDecodeRounding(rmode);
+          is_unsigned = [opcode[0]] == 0b1;
+          op = FPConvOp_CVT_FtoI
+      },
+      0b0100 => {
+          rounding = FPRoundingMode(FPCR_read());
+          is_unsigned = [opcode[0]] == 0b1;
+          op = FPConvOp_CVT_ItoF
+      },
+      0b1000 => {
+          rounding = FPRounding_TIEAWAY;
+          is_unsigned = [opcode[0]] == 0b1;
+          op = FPConvOp_CVT_FtoI
+      },
+      0b1100 => {
+          if fltsize != 16 & fltsize != intsize then {
+              throw(Error_Undefined())
+          };
+          op = if [opcode[0]] == 0b1 then FPConvOp_MOV_ItoF else
+            FPConvOp_MOV_FtoI;
+          part = 0
+      },
+      0b1101 => {
+          if intsize != 64 | fltsize != 128 then {
+              throw(Error_Undefined())
+          };
+          op = if [opcode[0]] == 0b1 then FPConvOp_MOV_ItoF else
+            FPConvOp_MOV_FtoI;
+          part = 1;
+          fltsize = 64
+      },
+      0b1111 => {
+          if not_bool(HaveFJCVTZSExt()) then {
+              throw(Error_Undefined())
+          };
+          rounding = FPRounding_ZERO;
+          is_unsigned = [opcode[0]] == 0b1;
+          op = FPConvOp_CVT_FtoI_JS
+      },
+      _ => {
+          throw(Error_Undefined())
+      }
+    };
+    let op = op;
+    let 'part = part;
+    let 'fltsize = fltsize;
+    match fltsize {
+      16 => {
+          execute_aarch64_instrs_float_convert_int(d, 16, intsize, n, op, part, rounding, is_unsigned)
+      },
+      32 => {
+          execute_aarch64_instrs_float_convert_int(d, 32, intsize, n, op, part, rounding, is_unsigned)
+      },
+      64 => {
+          execute_aarch64_instrs_float_convert_int(d, 64, intsize, n, op, part, rounding, is_unsigned)
+      },
+      128 => {
+          execute_aarch64_instrs_float_convert_int(d, 128, intsize, n, op, part, rounding, is_unsigned)
+      },
+      _ => {
+          assert(false)
+      }
+    }
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([_, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, bitone, bitone, bitone, bitzero, bitzero, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 293) = {
+    SEE = 293;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let opcode = Slice(__opcode, 16, 3);
+    let rmode = Slice(__opcode, 19, 2);
+    let ftype = Slice(__opcode, 22, 2);
+    let sf = Slice(__opcode, 31, 1);
+    decode_fcvtzu_float_int_aarch64_instrs_float_convert_int(Rd, Rn, opcode, rmode, ftype, sf)
+}
+
+val decode_fjcvtzs_aarch64_instrs_float_convert_int : (bits(5), bits(5), bits(3), bits(2), bits(2), bits(1)) -> unit
+
+function decode_fjcvtzs_aarch64_instrs_float_convert_int (Rd, Rn, opcode, rmode, ftype, sf) = {
+    let 'd = UInt(Rd);
+    let 'n = UInt(Rn);
+    let 'intsize = if sf == 0b1 then 64 else 32;
+    fltsize : {16, 32, 64, 128} = 16;
+    op : FPConvOp = undefined;
+    rounding : FPRounding = undefined;
+    is_unsigned : bool = undefined;
+    part : {0, 1} = 0;
+    match ftype {
+      0b00 => {
+          fltsize = 32
+      },
+      0b01 => {
+          fltsize = 64
+      },
+      0b10 => {
+          if (opcode[2 .. 1] @ rmode) != 0b1101 then {
+              throw(Error_Undefined())
+          };
+          fltsize = 128
+      },
+      0b11 => {
+          if HaveFP16Ext() then {
+              fltsize = 16
+          } else {
+              throw(Error_Undefined())
+          }
+      }
+    };
+    match opcode[2 .. 1] @ rmode {
+      [bitzero, bitzero, _, _] => {
+          rounding = FPDecodeRounding(rmode);
+          is_unsigned = [opcode[0]] == 0b1;
+          op = FPConvOp_CVT_FtoI
+      },
+      0b0100 => {
+          rounding = FPRoundingMode(FPCR_read());
+          is_unsigned = [opcode[0]] == 0b1;
+          op = FPConvOp_CVT_ItoF
+      },
+      0b1000 => {
+          rounding = FPRounding_TIEAWAY;
+          is_unsigned = [opcode[0]] == 0b1;
+          op = FPConvOp_CVT_FtoI
+      },
+      0b1100 => {
+          if fltsize != 16 & fltsize != intsize then {
+              throw(Error_Undefined())
+          };
+          op = if [opcode[0]] == 0b1 then FPConvOp_MOV_ItoF else
+            FPConvOp_MOV_FtoI;
+          part = 0
+      },
+      0b1101 => {
+          if intsize != 64 | fltsize != 128 then {
+              throw(Error_Undefined())
+          };
+          op = if [opcode[0]] == 0b1 then FPConvOp_MOV_ItoF else
+            FPConvOp_MOV_FtoI;
+          part = 1;
+          fltsize = 64
+      },
+      0b1111 => {
+          if not_bool(HaveFJCVTZSExt()) then {
+              throw(Error_Undefined())
+          };
+          rounding = FPRounding_ZERO;
+          is_unsigned = [opcode[0]] == 0b1;
+          op = FPConvOp_CVT_FtoI_JS
+      },
+      _ => {
+          throw(Error_Undefined())
+      }
+    };
+    let op = op;
+    let 'part = part;
+    let 'fltsize = fltsize;
+    match fltsize {
+      16 => {
+          execute_aarch64_instrs_float_convert_int(d, 16, intsize, n, op, part, rounding, is_unsigned)
+      },
+      32 => {
+          execute_aarch64_instrs_float_convert_int(d, 32, intsize, n, op, part, rounding, is_unsigned)
+      },
+      64 => {
+          execute_aarch64_instrs_float_convert_int(d, 64, intsize, n, op, part, rounding, is_unsigned)
+      },
+      128 => {
+          execute_aarch64_instrs_float_convert_int(d, 128, intsize, n, op, part, rounding, is_unsigned)
+      },
+      _ => {
+          assert(false)
+      }
+    }
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 294) = {
+    SEE = 294;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let opcode = Slice(__opcode, 16, 3);
+    let rmode = Slice(__opcode, 19, 2);
+    let ftype = Slice(__opcode, 22, 2);
+    let sf = Slice(__opcode, 31, 1);
+    decode_fjcvtzs_aarch64_instrs_float_convert_int(Rd, Rn, opcode, rmode, ftype, sf)
+}
+
+val decode_fmov_float_gen_aarch64_instrs_float_convert_int : (bits(5), bits(5), bits(3), bits(2), bits(2), bits(1)) -> unit
+
+function decode_fmov_float_gen_aarch64_instrs_float_convert_int (Rd, Rn, opcode, rmode, ftype, sf) = {
+    let 'd = UInt(Rd);
+    let 'n = UInt(Rn);
+    let 'intsize = if sf == 0b1 then 64 else 32;
+    fltsize : {16, 32, 64, 128} = 16;
+    op : FPConvOp = undefined;
+    rounding : FPRounding = undefined;
+    is_unsigned : bool = undefined;
+    part : {0, 1} = 0;
+    match ftype {
+      0b00 => {
+          fltsize = 32
+      },
+      0b01 => {
+          fltsize = 64
+      },
+      0b10 => {
+          if (opcode[2 .. 1] @ rmode) != 0b1101 then {
+              throw(Error_Undefined())
+          };
+          fltsize = 128
+      },
+      0b11 => {
+          if HaveFP16Ext() then {
+              fltsize = 16
+          } else {
+              throw(Error_Undefined())
+          }
+      }
+    };
+    match opcode[2 .. 1] @ rmode {
+      [bitzero, bitzero, _, _] => {
+          rounding = FPDecodeRounding(rmode);
+          is_unsigned = [opcode[0]] == 0b1;
+          op = FPConvOp_CVT_FtoI
+      },
+      0b0100 => {
+          rounding = FPRoundingMode(FPCR_read());
+          is_unsigned = [opcode[0]] == 0b1;
+          op = FPConvOp_CVT_ItoF
+      },
+      0b1000 => {
+          rounding = FPRounding_TIEAWAY;
+          is_unsigned = [opcode[0]] == 0b1;
+          op = FPConvOp_CVT_FtoI
+      },
+      0b1100 => {
+          if fltsize != 16 & fltsize != intsize then {
+              throw(Error_Undefined())
+          };
+          op = if [opcode[0]] == 0b1 then FPConvOp_MOV_ItoF else
+            FPConvOp_MOV_FtoI;
+          part = 0
+      },
+      0b1101 => {
+          if intsize != 64 | fltsize != 128 then {
+              throw(Error_Undefined())
+          };
+          op = if [opcode[0]] == 0b1 then FPConvOp_MOV_ItoF else
+            FPConvOp_MOV_FtoI;
+          part = 1;
+          fltsize = 64
+      },
+      0b1111 => {
+          if not_bool(HaveFJCVTZSExt()) then {
+              throw(Error_Undefined())
+          };
+          rounding = FPRounding_ZERO;
+          is_unsigned = [opcode[0]] == 0b1;
+          op = FPConvOp_CVT_FtoI_JS
+      },
+      _ => {
+          throw(Error_Undefined())
+      }
+    };
+    let op = op;
+    let 'part = part;
+    let 'fltsize = fltsize;
+    match fltsize {
+      16 => {
+          execute_aarch64_instrs_float_convert_int(d, 16, intsize, n, op, part, rounding, is_unsigned)
+      },
+      32 => {
+          execute_aarch64_instrs_float_convert_int(d, 32, intsize, n, op, part, rounding, is_unsigned)
+      },
+      64 => {
+          execute_aarch64_instrs_float_convert_int(d, 64, intsize, n, op, part, rounding, is_unsigned)
+      },
+      128 => {
+          execute_aarch64_instrs_float_convert_int(d, 128, intsize, n, op, part, rounding, is_unsigned)
+      },
+      _ => {
+          assert(false)
+      }
+    }
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([_, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, bitone, bitzero, _, bitone, bitone, _, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 295) = {
+    SEE = 295;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let opcode = Slice(__opcode, 16, 3);
+    let rmode = Slice(__opcode, 19, 2);
+    let ftype = Slice(__opcode, 22, 2);
+    let sf = Slice(__opcode, 31, 1);
+    decode_fmov_float_gen_aarch64_instrs_float_convert_int(Rd, Rn, opcode, rmode, ftype, sf)
+}
+
+val decode_scvtf_float_int_aarch64_instrs_float_convert_int : (bits(5), bits(5), bits(3), bits(2), bits(2), bits(1)) -> unit
+
+function decode_scvtf_float_int_aarch64_instrs_float_convert_int (Rd, Rn, opcode, rmode, ftype, sf) = {
+    let 'd = UInt(Rd);
+    let 'n = UInt(Rn);
+    let 'intsize = if sf == 0b1 then 64 else 32;
+    fltsize : {16, 32, 64, 128} = 16;
+    op : FPConvOp = undefined;
+    rounding : FPRounding = undefined;
+    is_unsigned : bool = undefined;
+    part : {0, 1} = 0;
+    match ftype {
+      0b00 => {
+          fltsize = 32
+      },
+      0b01 => {
+          fltsize = 64
+      },
+      0b10 => {
+          if (opcode[2 .. 1] @ rmode) != 0b1101 then {
+              throw(Error_Undefined())
+          };
+          fltsize = 128
+      },
+      0b11 => {
+          if HaveFP16Ext() then {
+              fltsize = 16
+          } else {
+              throw(Error_Undefined())
+          }
+      }
+    };
+    match opcode[2 .. 1] @ rmode {
+      [bitzero, bitzero, _, _] => {
+          rounding = FPDecodeRounding(rmode);
+          is_unsigned = [opcode[0]] == 0b1;
+          op = FPConvOp_CVT_FtoI
+      },
+      0b0100 => {
+          rounding = FPRoundingMode(FPCR_read());
+          is_unsigned = [opcode[0]] == 0b1;
+          op = FPConvOp_CVT_ItoF
+      },
+      0b1000 => {
+          rounding = FPRounding_TIEAWAY;
+          is_unsigned = [opcode[0]] == 0b1;
+          op = FPConvOp_CVT_FtoI
+      },
+      0b1100 => {
+          if fltsize != 16 & fltsize != intsize then {
+              throw(Error_Undefined())
+          };
+          op = if [opcode[0]] == 0b1 then FPConvOp_MOV_ItoF else
+            FPConvOp_MOV_FtoI;
+          part = 0
+      },
+      0b1101 => {
+          if intsize != 64 | fltsize != 128 then {
+              throw(Error_Undefined())
+          };
+          op = if [opcode[0]] == 0b1 then FPConvOp_MOV_ItoF else
+            FPConvOp_MOV_FtoI;
+          part = 1;
+          fltsize = 64
+      },
+      0b1111 => {
+          if not_bool(HaveFJCVTZSExt()) then {
+              throw(Error_Undefined())
+          };
+          rounding = FPRounding_ZERO;
+          is_unsigned = [opcode[0]] == 0b1;
+          op = FPConvOp_CVT_FtoI_JS
+      },
+      _ => {
+          throw(Error_Undefined())
+      }
+    };
+    let op = op;
+    let 'part = part;
+    let 'fltsize = fltsize;
+    match fltsize {
+      16 => {
+          execute_aarch64_instrs_float_convert_int(d, 16, intsize, n, op, part, rounding, is_unsigned)
+      },
+      32 => {
+          execute_aarch64_instrs_float_convert_int(d, 32, intsize, n, op, part, rounding, is_unsigned)
+      },
+      64 => {
+          execute_aarch64_instrs_float_convert_int(d, 64, intsize, n, op, part, rounding, is_unsigned)
+      },
+      128 => {
+          execute_aarch64_instrs_float_convert_int(d, 128, intsize, n, op, part, rounding, is_unsigned)
+      },
+      _ => {
+          assert(false)
+      }
+    }
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([_, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, bitone, bitzero, bitzero, bitzero, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 296) = {
+    SEE = 296;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let opcode = Slice(__opcode, 16, 3);
+    let rmode = Slice(__opcode, 19, 2);
+    let ftype = Slice(__opcode, 22, 2);
+    let sf = Slice(__opcode, 31, 1);
+    decode_scvtf_float_int_aarch64_instrs_float_convert_int(Rd, Rn, opcode, rmode, ftype, sf)
+}
+
+val decode_ucvtf_float_int_aarch64_instrs_float_convert_int : (bits(5), bits(5), bits(3), bits(2), bits(2), bits(1)) -> unit
+
+function decode_ucvtf_float_int_aarch64_instrs_float_convert_int (Rd, Rn, opcode, rmode, ftype, sf) = {
+    let 'd = UInt(Rd);
+    let 'n = UInt(Rn);
+    let 'intsize = if sf == 0b1 then 64 else 32;
+    fltsize : {16, 32, 64, 128} = 16;
+    op : FPConvOp = undefined;
+    rounding : FPRounding = undefined;
+    is_unsigned : bool = undefined;
+    part : {0, 1} = 0;
+    match ftype {
+      0b00 => {
+          fltsize = 32
+      },
+      0b01 => {
+          fltsize = 64
+      },
+      0b10 => {
+          if (opcode[2 .. 1] @ rmode) != 0b1101 then {
+              throw(Error_Undefined())
+          };
+          fltsize = 128
+      },
+      0b11 => {
+          if HaveFP16Ext() then {
+              fltsize = 16
+          } else {
+              throw(Error_Undefined())
+          }
+      }
+    };
+    match opcode[2 .. 1] @ rmode {
+      [bitzero, bitzero, _, _] => {
+          rounding = FPDecodeRounding(rmode);
+          is_unsigned = [opcode[0]] == 0b1;
+          op = FPConvOp_CVT_FtoI
+      },
+      0b0100 => {
+          rounding = FPRoundingMode(FPCR_read());
+          is_unsigned = [opcode[0]] == 0b1;
+          op = FPConvOp_CVT_ItoF
+      },
+      0b1000 => {
+          rounding = FPRounding_TIEAWAY;
+          is_unsigned = [opcode[0]] == 0b1;
+          op = FPConvOp_CVT_FtoI
+      },
+      0b1100 => {
+          if fltsize != 16 & fltsize != intsize then {
+              throw(Error_Undefined())
+          };
+          op = if [opcode[0]] == 0b1 then FPConvOp_MOV_ItoF else
+            FPConvOp_MOV_FtoI;
+          part = 0
+      },
+      0b1101 => {
+          if intsize != 64 | fltsize != 128 then {
+              throw(Error_Undefined())
+          };
+          op = if [opcode[0]] == 0b1 then FPConvOp_MOV_ItoF else
+            FPConvOp_MOV_FtoI;
+          part = 1;
+          fltsize = 64
+      },
+      0b1111 => {
+          if not_bool(HaveFJCVTZSExt()) then {
+              throw(Error_Undefined())
+          };
+          rounding = FPRounding_ZERO;
+          is_unsigned = [opcode[0]] == 0b1;
+          op = FPConvOp_CVT_FtoI_JS
+      },
+      _ => {
+          throw(Error_Undefined())
+      }
+    };
+    let op = op;
+    let 'part = part;
+    let 'fltsize = fltsize;
+    match fltsize {
+      16 => {
+          execute_aarch64_instrs_float_convert_int(d, 16, intsize, n, op, part, rounding, is_unsigned)
+      },
+      32 => {
+          execute_aarch64_instrs_float_convert_int(d, 32, intsize, n, op, part, rounding, is_unsigned)
+      },
+      64 => {
+          execute_aarch64_instrs_float_convert_int(d, 64, intsize, n, op, part, rounding, is_unsigned)
+      },
+      128 => {
+          execute_aarch64_instrs_float_convert_int(d, 128, intsize, n, op, part, rounding, is_unsigned)
+      },
+      _ => {
+          assert(false)
+      }
+    }
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([_, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, bitone, bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 297) = {
+    SEE = 297;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let opcode = Slice(__opcode, 16, 3);
+    let rmode = Slice(__opcode, 19, 2);
+    let ftype = Slice(__opcode, 22, 2);
+    let sf = Slice(__opcode, 31, 1);
+    decode_ucvtf_float_int_aarch64_instrs_float_convert_int(Rd, Rn, opcode, rmode, ftype, sf)
+}
+
+val execute_aarch64_instrs_float_convert_fix : forall 'd 'fltsize 'fracbits 'intsize ('is_unsigned : Bool) 'n,
+  (0 <= 'n & 'n <= 31 & 'intsize in {32, 64} & 1 <= 'fracbits & 'fracbits <= 64 & 'fltsize in {16, 32, 64} & 0 <= 'd & 'd <= 31).
+  (int('d), int('fltsize), int('fracbits), int('intsize), int('n), FPConvOp, FPRounding, bool('is_unsigned)) -> unit
+
+function execute_aarch64_instrs_float_convert_fix (d, fltsize, fracbits, intsize, n, op, rounding, is_unsigned) = {
+    CheckFPEnabled64();
+    let fpcr : FPCRType = FPCR_read();
+    let merge : bool = IsMerging(fpcr);
+    let 'fsize = if op == FPConvOp_CVT_ItoF & merge then 128 else fltsize;
+    fltval : bits('fsize) = undefined;
+    intval : bits('intsize) = undefined;
+    match op {
+      FPConvOp_CVT_FtoI => {
+          let fltval : bits('fsize) = V_read(n, fsize);
+          assert(constraint(('fsize in {16, 32, 64} & 'intsize in {16, 32, 64})));
+          let intval : bits('intsize) = FPToFixed(fltval, fracbits, is_unsigned, fpcr, rounding, intsize);
+          X_set(d, intsize) = intval
+      },
+      FPConvOp_CVT_ItoF => {
+          let intval : bits('intsize) = X_read(n, intsize);
+          fltval : bits('fsize) = if merge then V_read(d, fsize) else
+            Zeros(fsize);
+          fltval = Elem_set(fltval, 0, fltsize, FixedToFP(intval, fracbits, is_unsigned, fpcr, rounding, fltsize));
+          V_set(d, fsize) = fltval
+      },
+      _ => ()
+    }
+}
+
+val decode_fcvtzs_float_fix_aarch64_instrs_float_convert_fix : (bits(5), bits(5), bits(6), bits(3), bits(2), bits(2), bits(1)) -> unit
+
+function decode_fcvtzs_float_fix_aarch64_instrs_float_convert_fix (Rd, Rn, scale, opcode, rmode, ftype, sf) = {
+    let 'd = UInt(Rd);
+    let 'n = UInt(Rn);
+    let 'intsize = if sf == 0b1 then 64 else 32;
+    fltsize : {16, 32, 64} = 16;
+    op : FPConvOp = undefined;
+    rounding : FPRounding = undefined;
+    is_unsigned : bool = undefined;
+    match ftype {
+      0b00 => {
+          fltsize = 32
+      },
+      0b01 => {
+          fltsize = 64
+      },
+      0b10 => {
+          throw(Error_Undefined())
+      },
+      0b11 => {
+          if HaveFP16Ext() then {
+              fltsize = 16
+          } else {
+              throw(Error_Undefined())
+          }
+      }
+    };
+    let 'fltsize = fltsize;
+    if sf == 0b0 & [scale[5]] == 0b0 then {
+        throw(Error_Undefined())
+    };
+    let 'fracbits = 64 - UInt(scale);
+    match opcode[2 .. 1] @ rmode {
+      0b0011 => {
+          rounding = FPRounding_ZERO;
+          is_unsigned = [opcode[0]] == 0b1;
+          op = FPConvOp_CVT_FtoI
+      },
+      0b0100 => {
+          rounding = FPRoundingMode(FPCR_read());
+          is_unsigned = [opcode[0]] == 0b1;
+          op = FPConvOp_CVT_ItoF
+      },
+      _ => {
+          throw(Error_Undefined())
+      }
+    };
+    execute_aarch64_instrs_float_convert_fix(d, fltsize, fracbits, intsize, n, op, rounding, is_unsigned)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([_, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, bitzero, bitone, bitone, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 334) = {
+    SEE = 334;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let scale = Slice(__opcode, 10, 6);
+    let opcode = Slice(__opcode, 16, 3);
+    let rmode = Slice(__opcode, 19, 2);
+    let ftype = Slice(__opcode, 22, 2);
+    let sf = Slice(__opcode, 31, 1);
+    decode_fcvtzs_float_fix_aarch64_instrs_float_convert_fix(Rd, Rn, scale, opcode, rmode, ftype, sf)
+}
+
+val decode_fcvtzu_float_fix_aarch64_instrs_float_convert_fix : (bits(5), bits(5), bits(6), bits(3), bits(2), bits(2), bits(1)) -> unit
+
+function decode_fcvtzu_float_fix_aarch64_instrs_float_convert_fix (Rd, Rn, scale, opcode, rmode, ftype, sf) = {
+    let 'd = UInt(Rd);
+    let 'n = UInt(Rn);
+    let 'intsize = if sf == 0b1 then 64 else 32;
+    fltsize : {16, 32, 64} = 16;
+    op : FPConvOp = undefined;
+    rounding : FPRounding = undefined;
+    is_unsigned : bool = undefined;
+    match ftype {
+      0b00 => {
+          fltsize = 32
+      },
+      0b01 => {
+          fltsize = 64
+      },
+      0b10 => {
+          throw(Error_Undefined())
+      },
+      0b11 => {
+          if HaveFP16Ext() then {
+              fltsize = 16
+          } else {
+              throw(Error_Undefined())
+          }
+      }
+    };
+    let 'fltsize = fltsize;
+    if sf == 0b0 & [scale[5]] == 0b0 then {
+        throw(Error_Undefined())
+    };
+    let 'fracbits = 64 - UInt(scale);
+    match opcode[2 .. 1] @ rmode {
+      0b0011 => {
+          rounding = FPRounding_ZERO;
+          is_unsigned = [opcode[0]] == 0b1;
+          op = FPConvOp_CVT_FtoI
+      },
+      0b0100 => {
+          rounding = FPRoundingMode(FPCR_read());
+          is_unsigned = [opcode[0]] == 0b1;
+          op = FPConvOp_CVT_ItoF
+      },
+      _ => {
+          throw(Error_Undefined())
+      }
+    };
+    execute_aarch64_instrs_float_convert_fix(d, fltsize, fracbits, intsize, n, op, rounding, is_unsigned)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([_, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, bitzero, bitone, bitone, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 335) = {
+    SEE = 335;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let scale = Slice(__opcode, 10, 6);
+    let opcode = Slice(__opcode, 16, 3);
+    let rmode = Slice(__opcode, 19, 2);
+    let ftype = Slice(__opcode, 22, 2);
+    let sf = Slice(__opcode, 31, 1);
+    decode_fcvtzu_float_fix_aarch64_instrs_float_convert_fix(Rd, Rn, scale, opcode, rmode, ftype, sf)
+}
+
+val decode_scvtf_float_fix_aarch64_instrs_float_convert_fix : (bits(5), bits(5), bits(6), bits(3), bits(2), bits(2), bits(1)) -> unit
+
+function decode_scvtf_float_fix_aarch64_instrs_float_convert_fix (Rd, Rn, scale, opcode, rmode, ftype, sf) = {
+    let 'd = UInt(Rd);
+    let 'n = UInt(Rn);
+    let 'intsize = if sf == 0b1 then 64 else 32;
+    fltsize : {16, 32, 64} = 16;
+    op : FPConvOp = undefined;
+    rounding : FPRounding = undefined;
+    is_unsigned : bool = undefined;
+    match ftype {
+      0b00 => {
+          fltsize = 32
+      },
+      0b01 => {
+          fltsize = 64
+      },
+      0b10 => {
+          throw(Error_Undefined())
+      },
+      0b11 => {
+          if HaveFP16Ext() then {
+              fltsize = 16
+          } else {
+              throw(Error_Undefined())
+          }
+      }
+    };
+    let 'fltsize = fltsize;
+    if sf == 0b0 & [scale[5]] == 0b0 then {
+        throw(Error_Undefined())
+    };
+    let 'fracbits = 64 - UInt(scale);
+    match opcode[2 .. 1] @ rmode {
+      0b0011 => {
+          rounding = FPRounding_ZERO;
+          is_unsigned = [opcode[0]] == 0b1;
+          op = FPConvOp_CVT_FtoI
+      },
+      0b0100 => {
+          rounding = FPRoundingMode(FPCR_read());
+          is_unsigned = [opcode[0]] == 0b1;
+          op = FPConvOp_CVT_ItoF
+      },
+      _ => {
+          throw(Error_Undefined())
+      }
+    };
+    execute_aarch64_instrs_float_convert_fix(d, fltsize, fracbits, intsize, n, op, rounding, is_unsigned)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([_, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, bitzero, bitzero, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 336) = {
+    SEE = 336;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let scale = Slice(__opcode, 10, 6);
+    let opcode = Slice(__opcode, 16, 3);
+    let rmode = Slice(__opcode, 19, 2);
+    let ftype = Slice(__opcode, 22, 2);
+    let sf = Slice(__opcode, 31, 1);
+    decode_scvtf_float_fix_aarch64_instrs_float_convert_fix(Rd, Rn, scale, opcode, rmode, ftype, sf)
+}
+
+val decode_ucvtf_float_fix_aarch64_instrs_float_convert_fix : (bits(5), bits(5), bits(6), bits(3), bits(2), bits(2), bits(1)) -> unit
+
+function decode_ucvtf_float_fix_aarch64_instrs_float_convert_fix (Rd, Rn, scale, opcode, rmode, ftype, sf) = {
+    let 'd = UInt(Rd);
+    let 'n = UInt(Rn);
+    let 'intsize = if sf == 0b1 then 64 else 32;
+    fltsize : {16, 32, 64} = 16;
+    op : FPConvOp = undefined;
+    rounding : FPRounding = undefined;
+    is_unsigned : bool = undefined;
+    match ftype {
+      0b00 => {
+          fltsize = 32
+      },
+      0b01 => {
+          fltsize = 64
+      },
+      0b10 => {
+          throw(Error_Undefined())
+      },
+      0b11 => {
+          if HaveFP16Ext() then {
+              fltsize = 16
+          } else {
+              throw(Error_Undefined())
+          }
+      }
+    };
+    let 'fltsize = fltsize;
+    if sf == 0b0 & [scale[5]] == 0b0 then {
+        throw(Error_Undefined())
+    };
+    let 'fracbits = 64 - UInt(scale);
+    match opcode[2 .. 1] @ rmode {
+      0b0011 => {
+          rounding = FPRounding_ZERO;
+          is_unsigned = [opcode[0]] == 0b1;
+          op = FPConvOp_CVT_FtoI
+      },
+      0b0100 => {
+          rounding = FPRoundingMode(FPCR_read());
+          is_unsigned = [opcode[0]] == 0b1;
+          op = FPConvOp_CVT_ItoF
+      },
+      _ => {
+          throw(Error_Undefined())
+      }
+    };
+    execute_aarch64_instrs_float_convert_fix(d, fltsize, fracbits, intsize, n, op, rounding, is_unsigned)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([_, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, bitzero, bitzero, bitzero, bitzero, bitone, bitone, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 337) = {
+    SEE = 337;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let scale = Slice(__opcode, 10, 6);
+    let opcode = Slice(__opcode, 16, 3);
+    let rmode = Slice(__opcode, 19, 2);
+    let ftype = Slice(__opcode, 22, 2);
+    let sf = Slice(__opcode, 31, 1);
+    decode_ucvtf_float_fix_aarch64_instrs_float_convert_fix(Rd, Rn, scale, opcode, rmode, ftype, sf)
+}
+
+val execute_aarch64_instrs_float_arithmetic_div : forall 'd 'esize 'm 'n,
+  (0 <= 'n & 'n <= 31 & 0 <= 'm & 'm <= 31 & 'esize in {16, 32, 64} & 0 <= 'd & 'd <= 31).
+  (int('d), int('esize), int('m), int('n)) -> unit
+
+function execute_aarch64_instrs_float_arithmetic_div (d, esize, m, n) = {
+    CheckFPEnabled64();
+    let operand1 : bits('esize) = V_read(n, esize);
+    let operand2 : bits('esize) = V_read(m, esize);
+    let fpcr : FPCRType = FPCR_read();
+    let merge : bool = IsMerging(fpcr);
+    result : bits(128) = if merge then V_read(n, 128) else Zeros(128);
+    result = Elem_set(result, 0, esize, FPDiv(operand1, operand2, FPCR_read()));
+    V_set(d, 128) = result
+}
+
+val decode_fdiv_float_aarch64_instrs_float_arithmetic_div : (bits(5), bits(5), bits(5), bits(2)) -> unit
+
+function decode_fdiv_float_aarch64_instrs_float_arithmetic_div (Rd, Rn, Rm, ftype) = {
+    let 'd = UInt(Rd);
+    let 'n = UInt(Rn);
+    let 'm = UInt(Rm);
+    esize : {16, 32, 64} = 16;
+    match ftype {
+      0b00 => {
+          esize = 32
+      },
+      0b01 => {
+          esize = 64
+      },
+      0b10 => {
+          throw(Error_Undefined())
+      },
+      0b11 => {
+          if HaveFP16Ext() then {
+              esize = 16
+          } else {
+              throw(Error_Undefined())
+          }
+      }
+    };
+    let 'esize = esize;
+    execute_aarch64_instrs_float_arithmetic_div(d, esize, m, n)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitzero, bitzero, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 344) = {
+    SEE = 344;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let ftype = Slice(__opcode, 22, 2);
+    decode_fdiv_float_aarch64_instrs_float_arithmetic_div(Rd, Rn, Rm, ftype)
+}
+
+val execute_aarch64_instrs_float_arithmetic_mul_add_sub : forall 'a 'd 'esize 'm 'n ('op1_neg : Bool) ('opa_neg : Bool),
+  (0 <= 'n & 'n <= 31 & 0 <= 'm & 'm <= 31 & 'esize in {16, 32, 64} & 0 <= 'd & 'd <= 31 & 0 <= 'a & 'a <= 31).
+  (int('a), int('d), int('esize), int('m), int('n), bool('op1_neg), bool('opa_neg)) -> unit
+
+function execute_aarch64_instrs_float_arithmetic_mul_add_sub (a, d, esize, m, n, op1_neg, opa_neg) = {
+    CheckFPEnabled64();
+    operanda : bits('esize) = V_read(a, esize);
+    operand1 : bits('esize) = V_read(n, esize);
+    let operand2 : bits('esize) = V_read(m, esize);
+    let fpcr : FPCRType = FPCR_read();
+    let merge : bool = IsMerging(fpcr);
+    result : bits(128) = if merge then V_read(a, 128) else Zeros(128);
+    if opa_neg then {
+        operanda = FPNeg(operanda)
+    };
+    if op1_neg then {
+        operand1 = FPNeg(operand1)
+    };
+    result = Elem_set(result, 0, esize, FPMulAdd(operanda, operand1, operand2, fpcr));
+    V_set(d, 128) = result
+}
+
+val decode_fmadd_float_aarch64_instrs_float_arithmetic_mul_add_sub : (bits(5), bits(5), bits(5), bits(1), bits(5), bits(1), bits(2)) -> unit
+
+function decode_fmadd_float_aarch64_instrs_float_arithmetic_mul_add_sub (Rd, Rn, Ra, o0, Rm, o1, ftype) = {
+    let 'd = UInt(Rd);
+    let 'a = UInt(Ra);
+    let 'n = UInt(Rn);
+    let 'm = UInt(Rm);
+    esize : {16, 32, 64} = 16;
+    match ftype {
+      0b00 => {
+          esize = 32
+      },
+      0b01 => {
+          esize = 64
+      },
+      0b10 => {
+          throw(Error_Undefined())
+      },
+      0b11 => {
+          if HaveFP16Ext() then {
+              esize = 16
+          } else {
+              throw(Error_Undefined())
+          }
+      }
+    };
+    let 'esize = esize;
+    let opa_neg : bool = o1 == 0b1;
+    let op1_neg : bool = o0 != o1;
+    execute_aarch64_instrs_float_arithmetic_mul_add_sub(a, d, esize, m, n, op1_neg, opa_neg)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitzero, bitzero, bitone, bitone, bitone, bitone, bitone, _, _, bitzero, _, _, _, _, _, bitzero, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 345) = {
+    SEE = 345;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Ra = Slice(__opcode, 10, 5);
+    let o0 = Slice(__opcode, 15, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let o1 = Slice(__opcode, 21, 1);
+    let ftype = Slice(__opcode, 22, 2);
+    decode_fmadd_float_aarch64_instrs_float_arithmetic_mul_add_sub(Rd, Rn, Ra, o0, Rm, o1, ftype)
+}
+
+val decode_fmsub_float_aarch64_instrs_float_arithmetic_mul_add_sub : (bits(5), bits(5), bits(5), bits(1), bits(5), bits(1), bits(2)) -> unit
+
+function decode_fmsub_float_aarch64_instrs_float_arithmetic_mul_add_sub (Rd, Rn, Ra, o0, Rm, o1, ftype) = {
+    let 'd = UInt(Rd);
+    let 'a = UInt(Ra);
+    let 'n = UInt(Rn);
+    let 'm = UInt(Rm);
+    esize : {16, 32, 64} = 16;
+    match ftype {
+      0b00 => {
+          esize = 32
+      },
+      0b01 => {
+          esize = 64
+      },
+      0b10 => {
+          throw(Error_Undefined())
+      },
+      0b11 => {
+          if HaveFP16Ext() then {
+              esize = 16
+          } else {
+              throw(Error_Undefined())
+          }
+      }
+    };
+    let 'esize = esize;
+    let opa_neg : bool = o1 == 0b1;
+    let op1_neg : bool = o0 != o1;
+    execute_aarch64_instrs_float_arithmetic_mul_add_sub(a, d, esize, m, n, op1_neg, opa_neg)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitzero, bitzero, bitone, bitone, bitone, bitone, bitone, _, _, bitzero, _, _, _, _, _, bitone, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 346) = {
+    SEE = 346;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Ra = Slice(__opcode, 10, 5);
+    let o0 = Slice(__opcode, 15, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let o1 = Slice(__opcode, 21, 1);
+    let ftype = Slice(__opcode, 22, 2);
+    decode_fmsub_float_aarch64_instrs_float_arithmetic_mul_add_sub(Rd, Rn, Ra, o0, Rm, o1, ftype)
+}
+
+val decode_fnmadd_float_aarch64_instrs_float_arithmetic_mul_add_sub : (bits(5), bits(5), bits(5), bits(1), bits(5), bits(1), bits(2)) -> unit
+
+function decode_fnmadd_float_aarch64_instrs_float_arithmetic_mul_add_sub (Rd, Rn, Ra, o0, Rm, o1, ftype) = {
+    let 'd = UInt(Rd);
+    let 'a = UInt(Ra);
+    let 'n = UInt(Rn);
+    let 'm = UInt(Rm);
+    esize : {16, 32, 64} = 16;
+    match ftype {
+      0b00 => {
+          esize = 32
+      },
+      0b01 => {
+          esize = 64
+      },
+      0b10 => {
+          throw(Error_Undefined())
+      },
+      0b11 => {
+          if HaveFP16Ext() then {
+              esize = 16
+          } else {
+              throw(Error_Undefined())
+          }
+      }
+    };
+    let 'esize = esize;
+    let opa_neg : bool = o1 == 0b1;
+    let op1_neg : bool = o0 != o1;
+    execute_aarch64_instrs_float_arithmetic_mul_add_sub(a, d, esize, m, n, op1_neg, opa_neg)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitzero, bitzero, bitone, bitone, bitone, bitone, bitone, _, _, bitone, _, _, _, _, _, bitzero, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 347) = {
+    SEE = 347;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Ra = Slice(__opcode, 10, 5);
+    let o0 = Slice(__opcode, 15, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let o1 = Slice(__opcode, 21, 1);
+    let ftype = Slice(__opcode, 22, 2);
+    decode_fnmadd_float_aarch64_instrs_float_arithmetic_mul_add_sub(Rd, Rn, Ra, o0, Rm, o1, ftype)
+}
+
+val decode_fnmsub_float_aarch64_instrs_float_arithmetic_mul_add_sub : (bits(5), bits(5), bits(5), bits(1), bits(5), bits(1), bits(2)) -> unit
+
+function decode_fnmsub_float_aarch64_instrs_float_arithmetic_mul_add_sub (Rd, Rn, Ra, o0, Rm, o1, ftype) = {
+    let 'd = UInt(Rd);
+    let 'a = UInt(Ra);
+    let 'n = UInt(Rn);
+    let 'm = UInt(Rm);
+    esize : {16, 32, 64} = 16;
+    match ftype {
+      0b00 => {
+          esize = 32
+      },
+      0b01 => {
+          esize = 64
+      },
+      0b10 => {
+          throw(Error_Undefined())
+      },
+      0b11 => {
+          if HaveFP16Ext() then {
+              esize = 16
+          } else {
+              throw(Error_Undefined())
+          }
+      }
+    };
+    let 'esize = esize;
+    let opa_neg : bool = o1 == 0b1;
+    let op1_neg : bool = o0 != o1;
+    execute_aarch64_instrs_float_arithmetic_mul_add_sub(a, d, esize, m, n, op1_neg, opa_neg)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitzero, bitzero, bitone, bitone, bitone, bitone, bitone, _, _, bitone, _, _, _, _, _, bitone, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 348) = {
+    SEE = 348;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Ra = Slice(__opcode, 10, 5);
+    let o0 = Slice(__opcode, 15, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let o1 = Slice(__opcode, 21, 1);
+    let ftype = Slice(__opcode, 22, 2);
+    decode_fnmsub_float_aarch64_instrs_float_arithmetic_mul_add_sub(Rd, Rn, Ra, o0, Rm, o1, ftype)
+}
+
+val execute_aarch64_instrs_float_arithmetic_max_min : forall 'd 'esize 'm 'n,
+  (0 <= 'n & 'n <= 31 & 0 <= 'm & 'm <= 31 & 'esize in {16, 32, 64} & 0 <= 'd & 'd <= 31).
+  (int('d), int('esize), int('m), int('n), FPMaxMinOp) -> unit
+
+function execute_aarch64_instrs_float_arithmetic_max_min (d, esize, m, n, operation) = {
+    CheckFPEnabled64();
+    let operand1 : bits('esize) = V_read(n, esize);
+    let operand2 : bits('esize) = V_read(m, esize);
+    let fpcr : FPCRType = FPCR_read();
+    let merge : bool = IsMerging(fpcr);
+    result : bits(128) = if merge then V_read(n, 128) else Zeros(128);
+    match operation {
+      FPMaxMinOp_MAX => {
+          result = Elem_set(result, 0, esize, FPMax(operand1, operand2, fpcr))
+      },
+      FPMaxMinOp_MIN => {
+          result = Elem_set(result, 0, esize, FPMin(operand1, operand2, fpcr))
+      },
+      FPMaxMinOp_MAXNUM => {
+          result = Elem_set(result, 0, esize, FPMaxNum(operand1, operand2, fpcr))
+      },
+      FPMaxMinOp_MINNUM => {
+          result = Elem_set(result, 0, esize, FPMinNum(operand1, operand2, fpcr))
+      }
+    };
+    V_set(d, 128) = result
+}
+
+val decode_fmax_float_aarch64_instrs_float_arithmetic_max_min : (bits(5), bits(5), bits(2), bits(5), bits(2)) -> unit
+
+function decode_fmax_float_aarch64_instrs_float_arithmetic_max_min (Rd, Rn, op, Rm, ftype) = {
+    let 'd = UInt(Rd);
+    let 'n = UInt(Rn);
+    let 'm = UInt(Rm);
+    esize : {16, 32, 64} = 16;
+    match ftype {
+      0b00 => {
+          esize = 32
+      },
+      0b01 => {
+          esize = 64
+      },
+      0b10 => {
+          throw(Error_Undefined())
+      },
+      0b11 => {
+          if HaveFP16Ext() then {
+              esize = 16
+          } else {
+              throw(Error_Undefined())
+          }
+      }
+    };
+    let 'esize = esize;
+    operation : FPMaxMinOp = undefined;
+    match op {
+      0b00 => {
+          operation = FPMaxMinOp_MAX
+      },
+      0b01 => {
+          operation = FPMaxMinOp_MIN
+      },
+      0b10 => {
+          operation = FPMaxMinOp_MAXNUM
+      },
+      0b11 => {
+          operation = FPMaxMinOp_MINNUM
+      }
+    };
+    let operation = operation;
+    execute_aarch64_instrs_float_arithmetic_max_min(d, esize, m, n, operation)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitone, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 349) = {
+    SEE = 349;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op = Slice(__opcode, 12, 2);
+    let Rm = Slice(__opcode, 16, 5);
+    let ftype = Slice(__opcode, 22, 2);
+    decode_fmax_float_aarch64_instrs_float_arithmetic_max_min(Rd, Rn, op, Rm, ftype)
+}
+
+val decode_fmaxnm_float_aarch64_instrs_float_arithmetic_max_min : (bits(5), bits(5), bits(2), bits(5), bits(2)) -> unit
+
+function decode_fmaxnm_float_aarch64_instrs_float_arithmetic_max_min (Rd, Rn, op, Rm, ftype) = {
+    let 'd = UInt(Rd);
+    let 'n = UInt(Rn);
+    let 'm = UInt(Rm);
+    esize : {16, 32, 64} = 16;
+    match ftype {
+      0b00 => {
+          esize = 32
+      },
+      0b01 => {
+          esize = 64
+      },
+      0b10 => {
+          throw(Error_Undefined())
+      },
+      0b11 => {
+          if HaveFP16Ext() then {
+              esize = 16
+          } else {
+              throw(Error_Undefined())
+          }
+      }
+    };
+    let 'esize = esize;
+    operation : FPMaxMinOp = undefined;
+    match op {
+      0b00 => {
+          operation = FPMaxMinOp_MAX
+      },
+      0b01 => {
+          operation = FPMaxMinOp_MIN
+      },
+      0b10 => {
+          operation = FPMaxMinOp_MAXNUM
+      },
+      0b11 => {
+          operation = FPMaxMinOp_MINNUM
+      }
+    };
+    let operation = operation;
+    execute_aarch64_instrs_float_arithmetic_max_min(d, esize, m, n, operation)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitone, bitone, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 350) = {
+    SEE = 350;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op = Slice(__opcode, 12, 2);
+    let Rm = Slice(__opcode, 16, 5);
+    let ftype = Slice(__opcode, 22, 2);
+    decode_fmaxnm_float_aarch64_instrs_float_arithmetic_max_min(Rd, Rn, op, Rm, ftype)
+}
+
+val decode_fmin_float_aarch64_instrs_float_arithmetic_max_min : (bits(5), bits(5), bits(2), bits(5), bits(2)) -> unit
+
+function decode_fmin_float_aarch64_instrs_float_arithmetic_max_min (Rd, Rn, op, Rm, ftype) = {
+    let 'd = UInt(Rd);
+    let 'n = UInt(Rn);
+    let 'm = UInt(Rm);
+    esize : {16, 32, 64} = 16;
+    match ftype {
+      0b00 => {
+          esize = 32
+      },
+      0b01 => {
+          esize = 64
+      },
+      0b10 => {
+          throw(Error_Undefined())
+      },
+      0b11 => {
+          if HaveFP16Ext() then {
+              esize = 16
+          } else {
+              throw(Error_Undefined())
+          }
+      }
+    };
+    let 'esize = esize;
+    operation : FPMaxMinOp = undefined;
+    match op {
+      0b00 => {
+          operation = FPMaxMinOp_MAX
+      },
+      0b01 => {
+          operation = FPMaxMinOp_MIN
+      },
+      0b10 => {
+          operation = FPMaxMinOp_MAXNUM
+      },
+      0b11 => {
+          operation = FPMaxMinOp_MINNUM
+      }
+    };
+    let operation = operation;
+    execute_aarch64_instrs_float_arithmetic_max_min(d, esize, m, n, operation)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitone, bitzero, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 351) = {
+    SEE = 351;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op = Slice(__opcode, 12, 2);
+    let Rm = Slice(__opcode, 16, 5);
+    let ftype = Slice(__opcode, 22, 2);
+    decode_fmin_float_aarch64_instrs_float_arithmetic_max_min(Rd, Rn, op, Rm, ftype)
+}
+
+val decode_fminnm_float_aarch64_instrs_float_arithmetic_max_min : (bits(5), bits(5), bits(2), bits(5), bits(2)) -> unit
+
+function decode_fminnm_float_aarch64_instrs_float_arithmetic_max_min (Rd, Rn, op, Rm, ftype) = {
+    let 'd = UInt(Rd);
+    let 'n = UInt(Rn);
+    let 'm = UInt(Rm);
+    esize : {16, 32, 64} = 16;
+    match ftype {
+      0b00 => {
+          esize = 32
+      },
+      0b01 => {
+          esize = 64
+      },
+      0b10 => {
+          throw(Error_Undefined())
+      },
+      0b11 => {
+          if HaveFP16Ext() then {
+              esize = 16
+          } else {
+              throw(Error_Undefined())
+          }
+      }
+    };
+    let 'esize = esize;
+    operation : FPMaxMinOp = undefined;
+    match op {
+      0b00 => {
+          operation = FPMaxMinOp_MAX
+      },
+      0b01 => {
+          operation = FPMaxMinOp_MIN
+      },
+      0b10 => {
+          operation = FPMaxMinOp_MAXNUM
+      },
+      0b11 => {
+          operation = FPMaxMinOp_MINNUM
+      }
+    };
+    let operation = operation;
+    execute_aarch64_instrs_float_arithmetic_max_min(d, esize, m, n, operation)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 352) = {
+    SEE = 352;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op = Slice(__opcode, 12, 2);
+    let Rm = Slice(__opcode, 16, 5);
+    let ftype = Slice(__opcode, 22, 2);
+    decode_fminnm_float_aarch64_instrs_float_arithmetic_max_min(Rd, Rn, op, Rm, ftype)
+}
+
+val execute_aarch64_instrs_float_move_fp_imm : forall 'd 'datasize,
+  ('datasize in {16, 32, 64} & 0 <= 'd & 'd <= 31).
+  (int('d), int('datasize), bits('datasize)) -> unit
+
+function execute_aarch64_instrs_float_move_fp_imm (d, datasize, imm) = {
+    CheckFPEnabled64();
+    V_set(d, datasize) = imm
+}
+
+val decode_fmov_float_imm_aarch64_instrs_float_move_fp_imm : (bits(5), bits(8), bits(2)) -> unit
+
+function decode_fmov_float_imm_aarch64_instrs_float_move_fp_imm (Rd, imm8, ftype) = {
+    let 'd = UInt(Rd);
+    datasize : {16, 32, 64} = 16;
+    match ftype {
+      0b00 => {
+          datasize = 32
+      },
+      0b01 => {
+          datasize = 64
+      },
+      0b10 => {
+          throw(Error_Undefined())
+      },
+      0b11 => {
+          if HaveFP16Ext() then {
+              datasize = 16
+          } else {
+              throw(Error_Undefined())
+          }
+      }
+    };
+    let 'datasize = datasize;
+    let imm : bits('datasize) = VFPExpandImm(imm8, datasize);
+    execute_aarch64_instrs_float_move_fp_imm(d, datasize, imm)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, _, _, _, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _] as __opcode)) if SEE < 407) = {
+    SEE = 407;
+    let Rd = Slice(__opcode, 0, 5);
+    let imm8 = Slice(__opcode, 13, 8);
+    let ftype = Slice(__opcode, 22, 2);
+    decode_fmov_float_imm_aarch64_instrs_float_move_fp_imm(Rd, imm8, ftype)
+}
+
+val execute_aarch64_instrs_float_arithmetic_mul_product : forall 'd 'esize 'm 'n ('negated : Bool),
+  (0 <= 'n & 'n <= 31 & 0 <= 'm & 'm <= 31 & 'esize in {16, 32, 64} & 0 <= 'd & 'd <= 31).
+  (int('d), int('esize), int('m), int('n), bool('negated)) -> unit
+
+function execute_aarch64_instrs_float_arithmetic_mul_product (d, esize, m, n, negated) = {
+    CheckFPEnabled64();
+    let operand1 : bits('esize) = V_read(n, esize);
+    let operand2 : bits('esize) = V_read(m, esize);
+    let fpcr : FPCRType = FPCR_read();
+    let merge : bool = IsMerging(fpcr);
+    result : bits(128) = if merge then V_read(n, 128) else Zeros(128);
+    product : bits('esize) = FPMul(operand1, operand2, fpcr);
+    if negated then {
+        product = FPNeg(product)
+    };
+    result = Elem_set(result, 0, esize, product);
+    V_set(d, 128) = result
+}
+
+val decode_fmul_float_aarch64_instrs_float_arithmetic_mul_product : (bits(5), bits(5), bits(1), bits(5), bits(2)) -> unit
+
+function decode_fmul_float_aarch64_instrs_float_arithmetic_mul_product (Rd, Rn, op, Rm, ftype) = {
+    let 'd = UInt(Rd);
+    let 'n = UInt(Rn);
+    let 'm = UInt(Rm);
+    esize : {16, 32, 64} = 16;
+    match ftype {
+      0b00 => {
+          esize = 32
+      },
+      0b01 => {
+          esize = 64
+      },
+      0b10 => {
+          throw(Error_Undefined())
+      },
+      0b11 => {
+          if HaveFP16Ext() then {
+              esize = 16
+          } else {
+              throw(Error_Undefined())
+          }
+      }
+    };
+    let 'esize = esize;
+    let negated : bool = op == 0b1;
+    execute_aarch64_instrs_float_arithmetic_mul_product(d, esize, m, n, negated)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitzero, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 410) = {
+    SEE = 410;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op = Slice(__opcode, 15, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let ftype = Slice(__opcode, 22, 2);
+    decode_fmul_float_aarch64_instrs_float_arithmetic_mul_product(Rd, Rn, op, Rm, ftype)
+}
+
+val decode_fnmul_float_aarch64_instrs_float_arithmetic_mul_product : (bits(5), bits(5), bits(1), bits(5), bits(2)) -> unit
+
+function decode_fnmul_float_aarch64_instrs_float_arithmetic_mul_product (Rd, Rn, op, Rm, ftype) = {
+    let 'd = UInt(Rd);
+    let 'n = UInt(Rn);
+    let 'm = UInt(Rm);
+    esize : {16, 32, 64} = 16;
+    match ftype {
+      0b00 => {
+          esize = 32
+      },
+      0b01 => {
+          esize = 64
+      },
+      0b10 => {
+          throw(Error_Undefined())
+      },
+      0b11 => {
+          if HaveFP16Ext() then {
+              esize = 16
+          } else {
+              throw(Error_Undefined())
+          }
+      }
+    };
+    let 'esize = esize;
+    let negated : bool = op == 0b1;
+    execute_aarch64_instrs_float_arithmetic_mul_product(d, esize, m, n, negated)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitone, bitzero, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 411) = {
+    SEE = 411;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op = Slice(__opcode, 15, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let ftype = Slice(__opcode, 22, 2);
+    decode_fnmul_float_aarch64_instrs_float_arithmetic_mul_product(Rd, Rn, op, Rm, ftype)
+}
+
+val execute_aarch64_instrs_float_arithmetic_round_frint_32_64 : forall 'd 'esize 'intsize 'n,
+  (0 <= 'n & 'n <= 31 & 'intsize in {32, 64} & 'esize in {32, 64} & 0 <= 'd & 'd <= 31).
+  (int('d), int('esize), int('intsize), int('n), FPRounding) -> unit
+
+function execute_aarch64_instrs_float_arithmetic_round_frint_32_64 (d, esize, intsize, n, rounding) = {
+    CheckFPEnabled64();
+    let fpcr : FPCRType = FPCR_read();
+    let merge : bool = IsMerging(fpcr);
+    result : bits(128) = if merge then V_read(d, 128) else Zeros(128);
+    let operand : bits('esize) = V_read(n, esize);
+    result = Elem_set(result, 0, esize, FPRoundIntN(operand, fpcr, rounding, intsize));
+    V_set(d, 128) = result
+}
+
+val decode_frint32x_float_aarch64_instrs_float_arithmetic_round_frint_32_64 : (bits(5), bits(5), bits(2), bits(2)) -> unit
+
+function decode_frint32x_float_aarch64_instrs_float_arithmetic_round_frint_32_64 (Rd, Rn, op, ftype) = {
+    if not_bool(HaveFrintExt()) then {
+        throw(Error_Undefined())
+    };
+    let 'd = UInt(Rd);
+    let 'n = UInt(Rn);
+    esize : {32, 64} = 32;
+    match ftype {
+      0b00 => {
+          esize = 32
+      },
+      0b01 => {
+          esize = 64
+      },
+      [bitone, _] => {
+          throw(Error_Undefined())
+      }
+    };
+    let 'esize = esize;
+    let 'intsize = if [op[1]] == 0b0 then 32 else 64;
+    let rounding : FPRounding = if [op[0]] == 0b0 then FPRounding_ZERO else
+      FPRoundingMode(FPCR_read());
+    execute_aarch64_instrs_float_arithmetic_round_frint_32_64(d, esize, intsize, n, rounding)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, _, bitone, bitzero, bitone, bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 438) = {
+    SEE = 438;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op = Slice(__opcode, 15, 2);
+    let ftype = Slice(__opcode, 22, 2);
+    decode_frint32x_float_aarch64_instrs_float_arithmetic_round_frint_32_64(Rd, Rn, op, ftype)
+}
+
+val decode_frint32z_float_aarch64_instrs_float_arithmetic_round_frint_32_64 : (bits(5), bits(5), bits(2), bits(2)) -> unit
+
+function decode_frint32z_float_aarch64_instrs_float_arithmetic_round_frint_32_64 (Rd, Rn, op, ftype) = {
+    if not_bool(HaveFrintExt()) then {
+        throw(Error_Undefined())
+    };
+    let 'd = UInt(Rd);
+    let 'n = UInt(Rn);
+    esize : {32, 64} = 32;
+    match ftype {
+      0b00 => {
+          esize = 32
+      },
+      0b01 => {
+          esize = 64
+      },
+      [bitone, _] => {
+          throw(Error_Undefined())
+      }
+    };
+    let 'esize = esize;
+    let 'intsize = if [op[1]] == 0b0 then 32 else 64;
+    let rounding : FPRounding = if [op[0]] == 0b0 then FPRounding_ZERO else
+      FPRoundingMode(FPCR_read());
+    execute_aarch64_instrs_float_arithmetic_round_frint_32_64(d, esize, intsize, n, rounding)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, _, bitone, bitzero, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 439) = {
+    SEE = 439;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op = Slice(__opcode, 15, 2);
+    let ftype = Slice(__opcode, 22, 2);
+    decode_frint32z_float_aarch64_instrs_float_arithmetic_round_frint_32_64(Rd, Rn, op, ftype)
+}
+
+val decode_frint64x_float_aarch64_instrs_float_arithmetic_round_frint_32_64 : (bits(5), bits(5), bits(2), bits(2)) -> unit
+
+function decode_frint64x_float_aarch64_instrs_float_arithmetic_round_frint_32_64 (Rd, Rn, op, ftype) = {
+    if not_bool(HaveFrintExt()) then {
+        throw(Error_Undefined())
+    };
+    let 'd = UInt(Rd);
+    let 'n = UInt(Rn);
+    esize : {32, 64} = 32;
+    match ftype {
+      0b00 => {
+          esize = 32
+      },
+      0b01 => {
+          esize = 64
+      },
+      [bitone, _] => {
+          throw(Error_Undefined())
+      }
+    };
+    let 'esize = esize;
+    let 'intsize = if [op[1]] == 0b0 then 32 else 64;
+    let rounding : FPRounding = if [op[0]] == 0b0 then FPRounding_ZERO else
+      FPRoundingMode(FPCR_read());
+    execute_aarch64_instrs_float_arithmetic_round_frint_32_64(d, esize, intsize, n, rounding)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, _, bitone, bitzero, bitone, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 440) = {
+    SEE = 440;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op = Slice(__opcode, 15, 2);
+    let ftype = Slice(__opcode, 22, 2);
+    decode_frint64x_float_aarch64_instrs_float_arithmetic_round_frint_32_64(Rd, Rn, op, ftype)
+}
+
+val decode_frint64z_float_aarch64_instrs_float_arithmetic_round_frint_32_64 : (bits(5), bits(5), bits(2), bits(2)) -> unit
+
+function decode_frint64z_float_aarch64_instrs_float_arithmetic_round_frint_32_64 (Rd, Rn, op, ftype) = {
+    if not_bool(HaveFrintExt()) then {
+        throw(Error_Undefined())
+    };
+    let 'd = UInt(Rd);
+    let 'n = UInt(Rn);
+    esize : {32, 64} = 32;
+    match ftype {
+      0b00 => {
+          esize = 32
+      },
+      0b01 => {
+          esize = 64
+      },
+      [bitone, _] => {
+          throw(Error_Undefined())
+      }
+    };
+    let 'esize = esize;
+    let 'intsize = if [op[1]] == 0b0 then 32 else 64;
+    let rounding : FPRounding = if [op[0]] == 0b0 then FPRounding_ZERO else
+      FPRoundingMode(FPCR_read());
+    execute_aarch64_instrs_float_arithmetic_round_frint_32_64(d, esize, intsize, n, rounding)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, _, bitone, bitzero, bitone, bitzero, bitzero, bitone, bitzero, bitone, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 441) = {
+    SEE = 441;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op = Slice(__opcode, 15, 2);
+    let ftype = Slice(__opcode, 22, 2);
+    decode_frint64z_float_aarch64_instrs_float_arithmetic_round_frint_32_64(Rd, Rn, op, ftype)
+}
+
+val execute_aarch64_instrs_float_arithmetic_round_frint : forall 'd 'esize ('exact : Bool) 'n,
+  (0 <= 'n & 'n <= 31 & 'esize in {16, 32, 64} & 0 <= 'd & 'd <= 31).
+  (int('d), int('esize), bool('exact), int('n), FPRounding) -> unit
+
+function execute_aarch64_instrs_float_arithmetic_round_frint (d, esize, exact, n, rounding) = {
+    CheckFPEnabled64();
+    let fpcr : FPCRType = FPCR_read();
+    let merge : bool = IsMerging(fpcr);
+    result : bits(128) = if merge then V_read(d, 128) else Zeros(128);
+    let operand : bits('esize) = V_read(n, esize);
+    result = Elem_set(result, 0, esize, FPRoundInt(operand, fpcr, rounding, exact));
+    V_set(d, 128) = result
+}
+
+val decode_frinta_float_aarch64_instrs_float_arithmetic_round_frint : (bits(5), bits(5), bits(3), bits(2)) -> unit
+
+function decode_frinta_float_aarch64_instrs_float_arithmetic_round_frint (Rd, Rn, rmode, ftype) = {
+    let 'd = UInt(Rd);
+    let 'n = UInt(Rn);
+    esize : {16, 32, 64} = 16;
+    match ftype {
+      0b00 => {
+          esize = 32
+      },
+      0b01 => {
+          esize = 64
+      },
+      0b10 => {
+          throw(Error_Undefined())
+      },
+      0b11 => {
+          if HaveFP16Ext() then {
+              esize = 16
+          } else {
+              throw(Error_Undefined())
+          }
+      }
+    };
+    let 'esize = esize;
+    exact : bool = false;
+    rounding : FPRounding = undefined;
+    match rmode {
+      [bitzero, _, _] => {
+          rounding = FPDecodeRounding(rmode[1 .. 0])
+      },
+      0b100 => {
+          rounding = FPRounding_TIEAWAY
+      },
+      0b101 => {
+          throw(Error_Undefined())
+      },
+      0b110 => {
+          rounding = FPRoundingMode(FPCR_read());
+          exact = true
+      },
+      0b111 => {
+          rounding = FPRoundingMode(FPCR_read())
+      }
+    };
+    let rounding = rounding;
+    execute_aarch64_instrs_float_arithmetic_round_frint(d, esize, exact, n, rounding)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, bitone, bitzero, bitzero, bitone, bitone, bitzero, bitzero, bitone, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 456) = {
+    SEE = 456;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let rmode = Slice(__opcode, 15, 3);
+    let ftype = Slice(__opcode, 22, 2);
+    decode_frinta_float_aarch64_instrs_float_arithmetic_round_frint(Rd, Rn, rmode, ftype)
+}
+
+val decode_frinti_float_aarch64_instrs_float_arithmetic_round_frint : (bits(5), bits(5), bits(3), bits(2)) -> unit
+
+function decode_frinti_float_aarch64_instrs_float_arithmetic_round_frint (Rd, Rn, rmode, ftype) = {
+    let 'd = UInt(Rd);
+    let 'n = UInt(Rn);
+    esize : {16, 32, 64} = 16;
+    match ftype {
+      0b00 => {
+          esize = 32
+      },
+      0b01 => {
+          esize = 64
+      },
+      0b10 => {
+          throw(Error_Undefined())
+      },
+      0b11 => {
+          if HaveFP16Ext() then {
+              esize = 16
+          } else {
+              throw(Error_Undefined())
+          }
+      }
+    };
+    let 'esize = esize;
+    exact : bool = false;
+    rounding : FPRounding = undefined;
+    match rmode {
+      [bitzero, _, _] => {
+          rounding = FPDecodeRounding(rmode[1 .. 0])
+      },
+      0b100 => {
+          rounding = FPRounding_TIEAWAY
+      },
+      0b101 => {
+          throw(Error_Undefined())
+      },
+      0b110 => {
+          rounding = FPRoundingMode(FPCR_read());
+          exact = true
+      },
+      0b111 => {
+          rounding = FPRoundingMode(FPCR_read())
+      }
+    };
+    let rounding = rounding;
+    execute_aarch64_instrs_float_arithmetic_round_frint(d, esize, exact, n, rounding)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, bitone, bitzero, bitzero, bitone, bitone, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 457) = {
+    SEE = 457;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let rmode = Slice(__opcode, 15, 3);
+    let ftype = Slice(__opcode, 22, 2);
+    decode_frinti_float_aarch64_instrs_float_arithmetic_round_frint(Rd, Rn, rmode, ftype)
+}
+
+val decode_frintm_float_aarch64_instrs_float_arithmetic_round_frint : (bits(5), bits(5), bits(3), bits(2)) -> unit
+
+function decode_frintm_float_aarch64_instrs_float_arithmetic_round_frint (Rd, Rn, rmode, ftype) = {
+    let 'd = UInt(Rd);
+    let 'n = UInt(Rn);
+    esize : {16, 32, 64} = 16;
+    match ftype {
+      0b00 => {
+          esize = 32
+      },
+      0b01 => {
+          esize = 64
+      },
+      0b10 => {
+          throw(Error_Undefined())
+      },
+      0b11 => {
+          if HaveFP16Ext() then {
+              esize = 16
+          } else {
+              throw(Error_Undefined())
+          }
+      }
+    };
+    let 'esize = esize;
+    exact : bool = false;
+    rounding : FPRounding = undefined;
+    match rmode {
+      [bitzero, _, _] => {
+          rounding = FPDecodeRounding(rmode[1 .. 0])
+      },
+      0b100 => {
+          rounding = FPRounding_TIEAWAY
+      },
+      0b101 => {
+          throw(Error_Undefined())
+      },
+      0b110 => {
+          rounding = FPRoundingMode(FPCR_read());
+          exact = true
+      },
+      0b111 => {
+          rounding = FPRoundingMode(FPCR_read())
+      }
+    };
+    let rounding = rounding;
+    execute_aarch64_instrs_float_arithmetic_round_frint(d, esize, exact, n, rounding)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, bitone, bitzero, bitzero, bitone, bitzero, bitone, bitzero, bitone, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 458) = {
+    SEE = 458;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let rmode = Slice(__opcode, 15, 3);
+    let ftype = Slice(__opcode, 22, 2);
+    decode_frintm_float_aarch64_instrs_float_arithmetic_round_frint(Rd, Rn, rmode, ftype)
+}
+
+val decode_frintn_float_aarch64_instrs_float_arithmetic_round_frint : (bits(5), bits(5), bits(3), bits(2)) -> unit
+
+function decode_frintn_float_aarch64_instrs_float_arithmetic_round_frint (Rd, Rn, rmode, ftype) = {
+    let 'd = UInt(Rd);
+    let 'n = UInt(Rn);
+    esize : {16, 32, 64} = 16;
+    match ftype {
+      0b00 => {
+          esize = 32
+      },
+      0b01 => {
+          esize = 64
+      },
+      0b10 => {
+          throw(Error_Undefined())
+      },
+      0b11 => {
+          if HaveFP16Ext() then {
+              esize = 16
+          } else {
+              throw(Error_Undefined())
+          }
+      }
+    };
+    let 'esize = esize;
+    exact : bool = false;
+    rounding : FPRounding = undefined;
+    match rmode {
+      [bitzero, _, _] => {
+          rounding = FPDecodeRounding(rmode[1 .. 0])
+      },
+      0b100 => {
+          rounding = FPRounding_TIEAWAY
+      },
+      0b101 => {
+          throw(Error_Undefined())
+      },
+      0b110 => {
+          rounding = FPRoundingMode(FPCR_read());
+          exact = true
+      },
+      0b111 => {
+          rounding = FPRoundingMode(FPCR_read())
+      }
+    };
+    let rounding = rounding;
+    execute_aarch64_instrs_float_arithmetic_round_frint(d, esize, exact, n, rounding)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, bitone, bitzero, bitzero, bitone, bitzero, bitzero, bitzero, bitone, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 459) = {
+    SEE = 459;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let rmode = Slice(__opcode, 15, 3);
+    let ftype = Slice(__opcode, 22, 2);
+    decode_frintn_float_aarch64_instrs_float_arithmetic_round_frint(Rd, Rn, rmode, ftype)
+}
+
+val decode_frintp_float_aarch64_instrs_float_arithmetic_round_frint : (bits(5), bits(5), bits(3), bits(2)) -> unit
+
+function decode_frintp_float_aarch64_instrs_float_arithmetic_round_frint (Rd, Rn, rmode, ftype) = {
+    let 'd = UInt(Rd);
+    let 'n = UInt(Rn);
+    esize : {16, 32, 64} = 16;
+    match ftype {
+      0b00 => {
+          esize = 32
+      },
+      0b01 => {
+          esize = 64
+      },
+      0b10 => {
+          throw(Error_Undefined())
+      },
+      0b11 => {
+          if HaveFP16Ext() then {
+              esize = 16
+          } else {
+              throw(Error_Undefined())
+          }
+      }
+    };
+    let 'esize = esize;
+    exact : bool = false;
+    rounding : FPRounding = undefined;
+    match rmode {
+      [bitzero, _, _] => {
+          rounding = FPDecodeRounding(rmode[1 .. 0])
+      },
+      0b100 => {
+          rounding = FPRounding_TIEAWAY
+      },
+      0b101 => {
+          throw(Error_Undefined())
+      },
+      0b110 => {
+          rounding = FPRoundingMode(FPCR_read());
+          exact = true
+      },
+      0b111 => {
+          rounding = FPRoundingMode(FPCR_read())
+      }
+    };
+    let rounding = rounding;
+    execute_aarch64_instrs_float_arithmetic_round_frint(d, esize, exact, n, rounding)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, bitone, bitzero, bitzero, bitone, bitzero, bitzero, bitone, bitone, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 460) = {
+    SEE = 460;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let rmode = Slice(__opcode, 15, 3);
+    let ftype = Slice(__opcode, 22, 2);
+    decode_frintp_float_aarch64_instrs_float_arithmetic_round_frint(Rd, Rn, rmode, ftype)
+}
+
+val decode_frintx_float_aarch64_instrs_float_arithmetic_round_frint : (bits(5), bits(5), bits(3), bits(2)) -> unit
+
+function decode_frintx_float_aarch64_instrs_float_arithmetic_round_frint (Rd, Rn, rmode, ftype) = {
+    let 'd = UInt(Rd);
+    let 'n = UInt(Rn);
+    esize : {16, 32, 64} = 16;
+    match ftype {
+      0b00 => {
+          esize = 32
+      },
+      0b01 => {
+          esize = 64
+      },
+      0b10 => {
+          throw(Error_Undefined())
+      },
+      0b11 => {
+          if HaveFP16Ext() then {
+              esize = 16
+          } else {
+              throw(Error_Undefined())
+          }
+      }
+    };
+    let 'esize = esize;
+    exact : bool = false;
+    rounding : FPRounding = undefined;
+    match rmode {
+      [bitzero, _, _] => {
+          rounding = FPDecodeRounding(rmode[1 .. 0])
+      },
+      0b100 => {
+          rounding = FPRounding_TIEAWAY
+      },
+      0b101 => {
+          throw(Error_Undefined())
+      },
+      0b110 => {
+          rounding = FPRoundingMode(FPCR_read());
+          exact = true
+      },
+      0b111 => {
+          rounding = FPRoundingMode(FPCR_read())
+      }
+    };
+    let rounding = rounding;
+    execute_aarch64_instrs_float_arithmetic_round_frint(d, esize, exact, n, rounding)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, bitone, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitone, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 461) = {
+    SEE = 461;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let rmode = Slice(__opcode, 15, 3);
+    let ftype = Slice(__opcode, 22, 2);
+    decode_frintx_float_aarch64_instrs_float_arithmetic_round_frint(Rd, Rn, rmode, ftype)
+}
+
+val decode_frintz_float_aarch64_instrs_float_arithmetic_round_frint : (bits(5), bits(5), bits(3), bits(2)) -> unit
+
+function decode_frintz_float_aarch64_instrs_float_arithmetic_round_frint (Rd, Rn, rmode, ftype) = {
+    let 'd = UInt(Rd);
+    let 'n = UInt(Rn);
+    esize : {16, 32, 64} = 16;
+    match ftype {
+      0b00 => {
+          esize = 32
+      },
+      0b01 => {
+          esize = 64
+      },
+      0b10 => {
+          throw(Error_Undefined())
+      },
+      0b11 => {
+          if HaveFP16Ext() then {
+              esize = 16
+          } else {
+              throw(Error_Undefined())
+          }
+      }
+    };
+    let 'esize = esize;
+    exact : bool = false;
+    rounding : FPRounding = undefined;
+    match rmode {
+      [bitzero, _, _] => {
+          rounding = FPDecodeRounding(rmode[1 .. 0])
+      },
+      0b100 => {
+          rounding = FPRounding_TIEAWAY
+      },
+      0b101 => {
+          throw(Error_Undefined())
+      },
+      0b110 => {
+          rounding = FPRoundingMode(FPCR_read());
+          exact = true
+      },
+      0b111 => {
+          rounding = FPRoundingMode(FPCR_read())
+      }
+    };
+    let rounding = rounding;
+    execute_aarch64_instrs_float_arithmetic_round_frint(d, esize, exact, n, rounding)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, bitone, bitzero, bitzero, bitone, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 462) = {
+    SEE = 462;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let rmode = Slice(__opcode, 15, 3);
+    let ftype = Slice(__opcode, 22, 2);
+    decode_frintz_float_aarch64_instrs_float_arithmetic_round_frint(Rd, Rn, rmode, ftype)
 }
 
 val execute_aarch64_instrs_system_barriers_isb : unit -> unit
@@ -16893,6 +20675,30 @@ enum Feature = {
   FEAT_TRBE_MPAM
 }
 
+bitfield FPCRType : bits(64) =
+  {
+    FIZ : 0,
+    AH : 1,
+    NEP : 2,
+    IOE : 8,
+    DZE : 9,
+    OFE : 10,
+    UFE : 11,
+    IXE : 12,
+    EBF : 13,
+    IDE : 15,
+    length : 18..16,
+    FZ16 : 19,
+    Stride : 21..20,
+    RMode : 23..22,
+    FZ : 24,
+    DN : 25,
+    AHP : 26,
+    IOC : 32,
+    DZC : 33,
+    OFC : 34
+  }
+
 enum SecurityState = {SS_NonSecure, SS_Root, SS_Realm, SS_Secure}
 
 let EL3 : bits(2) = 0b11
@@ -17176,6 +20982,15 @@ enum Constraint = {
   Constraint_PMSCR_PCT_VIRT
 }
 
+enum FPRounding = {
+  FPRounding_TIEEVEN,
+  FPRounding_POSINF,
+  FPRounding_NEGINF,
+  FPRounding_ZERO,
+  FPRounding_TIEAWAY,
+  FPRounding_ODD
+}
+
 enum FPType = {
   FPType_Zero,
   FPType_Denormal,
@@ -17240,6 +21055,23 @@ enum ExtendType = {
   ExtendType_UXTH,
   ExtendType_UXTW,
   ExtendType_UXTX
+}
+
+enum FPMaxMinOp = {
+  FPMaxMinOp_MAX,
+  FPMaxMinOp_MIN,
+  FPMaxMinOp_MAXNUM,
+  FPMaxMinOp_MINNUM
+}
+
+enum FPUnaryOp = {FPUnaryOp_ABS, FPUnaryOp_MOV, FPUnaryOp_NEG, FPUnaryOp_SQRT}
+
+enum FPConvOp = {
+  FPConvOp_CVT_FtoI,
+  FPConvOp_CVT_ItoF,
+  FPConvOp_MOV_FtoI,
+  FPConvOp_MOV_ItoF,
+  FPConvOp_CVT_FtoI_JS
 }
 
 enum MoveWideOp = {MoveWideOp_N, MoveWideOp_Z, MoveWideOp_K}
@@ -17540,6 +21372,167 @@ function HaveAtomicExt () = {
     return(IsFeatureImplemented(FEAT_LSE))
 }
 
+val FPZero : forall 'N, 'N in {16, 32, 64}. (bits(1), int('N)) -> bits('N)
+
+function FPZero (sign, N) = {
+    assert(N == 16 | N == 32 | N == 64);
+    let 'E = if N == 16 then 5 else if N == 32 then 8 else 11;
+    let 'F = N - (E + 1);
+    let exp : bits('E) = Zeros(E);
+    let frac : bits('F) = Zeros(F);
+    let result : bits(1 + 'E + 'F) = (sign @ exp) @ frac;
+    return(result)
+}
+
+val HaveAltFP : unit -> bool
+
+function HaveAltFP () = {
+    return(IsFeatureImplemented(FEAT_AFP))
+}
+
+val FPDecodeRounding : bits(2) -> FPRounding
+
+function FPDecodeRounding rmode = {
+    match rmode {
+      0b00 => {
+          return(FPRounding_TIEEVEN)
+      },
+      0b01 => {
+          return(FPRounding_POSINF)
+      },
+      0b10 => {
+          return(FPRounding_NEGINF)
+      },
+      0b11 => {
+          return(FPRounding_ZERO)
+      },
+      _ => {
+          return(undefined : FPRounding)
+      }
+    }
+}
+
+val FPRoundingMode : FPCRType -> FPRounding
+
+val FixedToFP : forall 'M 'N 'fbits ('is_unsigned : Bool),
+  ('N in {16, 32, 64} & 'M in {16, 32, 64}).
+  (bits('M), int('fbits), bool('is_unsigned), FPCRType, FPRounding, int('N)) -> bits('N)
+
+val FPAbs : forall 'N, 'N in {16, 32, 64}. bits('N) -> bits('N)
+
+function FPAbs op = {
+    fptype : FPType = undefined;
+    assert('N == 16 | 'N == 32 | 'N == 64);
+    if not_bool(UsingAArch32()) & HaveAltFP() then {
+        let fpcr : FPCRType = FPCR_read();
+        if fpcr[AH] == 0b1 then {
+            let (__tup_0 : FPType, _, _) = FPUnpack__1(op, fpcr, false) in
+              {
+                  fptype = __tup_0
+              };
+            if fptype == FPType_SNaN | fptype == FPType_QNaN then {
+                return(op)
+            };
+            ()
+        };
+        ()
+    };
+    return(0b0 @ op['N - 2 .. 0])
+}
+
+val FPAdd : forall 'N, 'N in {16, 32, 64}.
+  (bits('N), bits('N), FPCRType) -> bits('N)
+
+val FPCompare : forall 'N ('signal_nans : Bool),
+  'N in {16, 32, 64}.
+  (bits('N), bits('N), bool('signal_nans), FPCRType) -> bits(4)
+
+val FPConvert__1 : forall 'M 'N,
+  ('M in {16, 32, 64} & 'N in {16, 32, 64}).
+  (bits('N), FPCRType, int('M)) -> bits('M)
+
+val FPDiv : forall 'N, 'N in {16, 32, 64}.
+  (bits('N), bits('N), FPCRType) -> bits('N)
+
+val FPMax : forall 'N, 'N in {16, 32, 64}.
+  (bits('N), bits('N), FPCRType) -> bits('N)
+
+val FPMaxNum : forall 'N, 'N in {16, 32, 64}.
+  (bits('N), bits('N), FPCRType) -> bits('N)
+
+val FPMin : forall 'N, 'N in {16, 32, 64}.
+  (bits('N), bits('N), FPCRType) -> bits('N)
+
+val FPMinNum : forall 'N, 'N in {16, 32, 64}.
+  (bits('N), bits('N), FPCRType) -> bits('N)
+
+val FPMul : forall 'N, 'N in {16, 32, 64}.
+  (bits('N), bits('N), FPCRType) -> bits('N)
+
+val FPMulAdd : forall 'N, 'N in {16, 32, 64}.
+  (bits('N), bits('N), bits('N), FPCRType) -> bits('N)
+
+val FPNeg : forall 'N, 'N in {16, 32, 64}. bits('N) -> bits('N)
+
+function FPNeg op = {
+    fptype : FPType = undefined;
+    assert('N == 16 | 'N == 32 | 'N == 64);
+    if not_bool(UsingAArch32()) & HaveAltFP() then {
+        let fpcr : FPCRType = FPCR_read();
+        if fpcr[AH] == 0b1 then {
+            let (__tup_0 : FPType, _, _) = FPUnpack__1(op, fpcr, false) in
+              {
+                  fptype = __tup_0
+              };
+            if fptype == FPType_SNaN | fptype == FPType_QNaN then {
+                return(op)
+            };
+            ()
+        };
+        ()
+    };
+    return(not_vec([op['N - 1]]) @ op['N - 2 .. 0])
+}
+
+val FPRoundInt : forall 'N ('exact : Bool),
+  'N in {16, 32, 64}.
+  (bits('N), FPCRType, FPRounding, bool('exact)) -> bits('N)
+
+val FPRoundIntN : forall 'N 'intsize, 'N in {32, 64}.
+  (bits('N), FPCRType, FPRounding, int('intsize)) -> bits('N)
+
+val FPSqrt : forall 'N, 'N in {16, 32, 64}. (bits('N), FPCRType) -> bits('N)
+
+val FPSub : forall 'N, 'N in {16, 32, 64}.
+  (bits('N), bits('N), FPCRType) -> bits('N)
+
+val FPToFixed : forall 'M 'N 'fbits ('is_unsigned : Bool),
+  ('N in {16, 32, 64} & 'M in {16, 32, 64}).
+  (bits('N), int('fbits), bool('is_unsigned), FPCRType, FPRounding, int('M)) -> bits('M)
+
+val FPToFixedJS : forall ('Is64 : Bool) 'M 'N,
+  ('M == 64 & 'N == 32).
+  (bits('M), FPCRType, bool('Is64), int('N)) -> (bits('N), bits(1))
+
+val VFPExpandImm : forall 'N, 'N in {16, 32, 64}. (bits(8), int('N)) -> bits('N)
+
+function VFPExpandImm (imm8, N) = {
+    assert(N == 16 | N == 32 | N == 64);
+    let 'E = if N == 16 then 5 else if N == 32 then 8 else 11;
+    let 'F = N - E - 1;
+    let sign : bits(1) = [imm8[7]];
+    let exp : bits(1 + ('E - 3) + 2) = (not_vec([imm8[6]]) @ Replicate([imm8[6]], E - 3)) @ imm8[5 .. 4];
+    let frac : bits(4 + ('F - 4)) = imm8[3 .. 0] @ Zeros(F - 4);
+    let result : bits(1 + (1 + ('E - 3) + 2) + (4 + ('F - 4))) = (sign @ exp) @ frac;
+    return(result)
+}
+
+val HaveFJCVTZSExt : unit -> bool
+
+function HaveFJCVTZSExt () = {
+    return(IsFeatureImplemented(FEAT_JSCVT))
+}
+
 val HaveFlagManipulateExt : unit -> bool
 
 function HaveFlagManipulateExt () = {
@@ -17552,10 +21545,22 @@ function HaveSelfHostedTrace () = {
     return(IsFeatureImplemented(FEAT_TRF))
 }
 
+val HaveFrintExt : unit -> bool
+
+function HaveFrintExt () = {
+    return(IsFeatureImplemented(FEAT_FRINTTS))
+}
+
 val HaveDGHExt : unit -> bool
 
 function HaveDGHExt () = {
     return(IsFeatureImplemented(FEAT_DGH))
+}
+
+val HaveBF16Ext : unit -> bool
+
+function HaveBF16Ext () = {
+    return(IsFeatureImplemented(FEAT_BF16))
 }
 
 val HaveFeatXS : unit -> bool
@@ -17587,6 +21592,42 @@ function X_read (n, width) = {
         return(_R(n)[width - 1 .. 0])
     } else {
         return(Zeros(width))
+    }
+}
+
+val Vpart_read : forall 'n 'part 'width,
+  'width >= 0.
+  (int('n), int('part), int('width)) -> bits('width)
+
+function Vpart_read (n, part, width) = {
+    assert(n >= 0 & n <= 31);
+    assert(part == 0 | part == 1);
+    if part == 0 then {
+        assert(width < 128);
+        assert(constraint('width in {8, 16, 32, 64, 128}));
+        return(V_read(n, width))
+    } else {
+        assert(width == 32 | width == 64);
+        let vreg : bits(128) = V_read(n, 128);
+        return(vreg[width * 2 - 1 .. width])
+    }
+}
+
+val Vpart_set : forall 'n 'part 'width,
+  'width >= 0.
+  (int('n), int('part), int('width), bits('width)) -> unit
+
+function Vpart_set (n, part, width, value_name) = {
+    assert(n >= 0 & n <= 31);
+    assert(part == 0 | part == 1);
+    if part == 0 then {
+        assert(width < 128);
+        assert(constraint('width in {8, 16, 32, 64, 128}));
+        V_set(n, width) = value_name
+    } else {
+        assert(width == 64);
+        let vreg : bits(64) = V_read(n, 64);
+        V_set(n, 128) = value_name[63 .. 0] @ vreg
     }
 }
 
@@ -17684,6 +21725,9 @@ val GCSSynchronizationBarrier : unit -> unit
 function GCSSynchronizationBarrier () = {
     return()
 }
+
+val FPConvertBF__1 : forall 'N, 'N == 32.
+  (bits('N), FPCRType) -> bits(div('N, 2))
 
 val DecodeRegExtend : bits(3) -> ExtendType
 
