@@ -35,12 +35,10 @@ typedef struct {
     u16 stride, count;
 } ShTex;
 #define SH_HANDLE_IMM 255 /* ShTex.bl2_cbuf of a handle's half that is a constant (the sampler's, from a MOV32I) */
-/* An Ounce program's handle that it loads from memory (ShTex.flags): one game's material programs take each texture's
-   handle from a table whose address is in cbuf 0 (LDG.64, then R2UR into the uniform register pair of a TEX whose
-   handle is in a uniform register, or a TEX.B's handle register). The translation keeps the instructions that compute
-   it (ShaderInfo.memh) where all they read is the draw's, and the slot names the value the handle is, a probe
-   (SH_PROBE): cbuf_off the texture's word, and with bl2 set, bl2_off the sampler's index, a separate word (the uniform
-   register after the texture's). The renderer runs them (sm86_eval) and binds the handle as a constant buffer's */
+/* A handle that a program loads from memory (ShTex.flags). The translation keeps the instructions that compute it
+   (ShaderInfo.memh) where all they read is the draw's, and the slot names the value the handle is, a probe
+   (SH_PROBE): cbuf_off the texture's word, and with bl2 set, bl2_off the sampler's index. The renderer runs them with
+   the evaluator for the program's instruction set and binds the handle as a constant buffer's. */
 #define SNX_TEX_MEMORY   8
 /* a value of ShaderInfo.memh: the register (uniform or not) as instruction insn of the list leaves it */
 #define SH_PROBE(insn, uniform, reg) ((u32)(insn) << 9 | (u32)(uniform) << 8 | (u32)(reg))
@@ -48,6 +46,21 @@ typedef struct {
 #define SH_PROBE_UNIFORM(p) ((p) >> 8 & 1u)
 #define SH_PROBE_REG(p)     ((p) & 0xffu)
 #define SH_MEMH_MAX         64 /* instructions of ShaderInfo.memh */
+/* nmemh keeps its size for the corpus format: the high bit selects the Maxwell evaluator, the low bits the count. */
+#define SH_MEMH_DIRECT    0x80000000u
+#define SH_MEMH_NUM(n)    ((n) & ~SH_MEMH_DIRECT)
+
+/* The input to the small CPU evaluators that recover a texture handle before a draw. */
+typedef struct Sm86EvalIo {
+    void* user;
+    u32 (*cbuf)(void* user, u32 bank, u32 offset);
+    int (*mem)(void* user, u64 addr, u32* out, u32 n);
+} Sm86EvalIo;
+
+/* Runs the compacted Maxwell memory-handle instructions. Outputs after an unsupported instruction or failed load
+   stay zero. */
+int direct_eval(const u64* insn, u32 n, const Sm86EvalIo* io, const u32* probes, u32 nprobes, u32* out);
+int direct_eval_memh(const u64 (*memh)[2], u32 n, const Sm86EvalIo* io, const u32* probes, u32 nprobes, u32* out);
 /* the probe of a handle whose instructions the renderer can't run before the draw (its address differs from invocation
    to invocation): the slot is bound as no texture, which samples zeros (ShaderInfo.memh_none counts them) */
 #define SH_PROBE_NONE       0xFFFFFFFEu

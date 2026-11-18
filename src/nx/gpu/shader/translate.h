@@ -164,6 +164,9 @@ typedef struct {
        in a program with a JMP, there is no telling (direct_reaching_def) */
     u32* block_start;
     u32 known_to;
+    /* by instruction: the BRK or CONT target resolved from the program's CRS
+       stack, or 0 when the stack does not resolve statically */
+    u32* pop_targets;
 } ShFlow;
 /* f for the n words at insn, which stay its own until shader_flow_free: 0 when memory runs out */
 int shader_flow_init(ShFlow* f, const u64* insn, u32 n);
@@ -252,11 +255,19 @@ int shader_direct_track_image_handle_pair(const ShFlow* f, u32 index, u32 reg, u
 /* the most constant buffer handles one TEX.B chooses among (shader_direct_handle_candidates) */
 #define SH_HANDLE_CANDIDATES 4
 int shader_direct_handle_candidates(const ShFlow* f, u32 index, u32 reg, u32* banks, u32* offs, int max);
+/* Two-word and mixed candidates for a predicated write in the use's own block. */
+int shader_direct_handle_candidates_pair(const ShFlow* f, u32 index, u32 reg, u32* banks, u32* offs, u32* bank2s,
+                                         u32* off2s, u8* words, int max);
 int shader_al2p_predicate_unseen(const ShFlow* f, u32 at);
 u32 shader_direct_indexed_handle(const ShFlow* f, u32 index, u32 reg, int stage, u32* ldc);
 int shader_direct_bindless_matches(const ShTex* t, u32 bank, int handle_count, u32 bank2, u32 off2, u32 indexed,
                                    u32 ldc);
 int shader_direct_query_type(const ShFlow* f, int bindless, u32 bank, u32 off, u32* type, u32* array);
+/* A compacted Maxwell memory-handle chain, and the probe of a use whose original definition it contains. */
+u32 shader_direct_memory_handle(const ShFlow* f, ShaderInfo* si, u32 memh_at[SH_MEMH_MAX], u32* count, u32 use,
+                                u32 reg);
+u32 shader_direct_memory_probe(const ShFlow* f, const ShaderInfo* si, const u32 memh_at[SH_MEMH_MAX], u32 use,
+                               u32 reg);
 u32* shader_untracked_handle(ShaderInfo* si, const char* kind, const u64* insn, u32 i, u32 reg);
 u32* shader_untracked_reject(ShaderInfo* si, const u64* insn, u32 i, u32 reg, u8* gb_at, u32* pop_targets);
 int shader_legacy_varyings(const u64* insn, u32 n, u32 words, const u32* sph, int stage, ShaderInfo* si, u64** moved,
@@ -561,6 +572,7 @@ typedef struct {
     const u64* insn;
     u32 n;
     const ShFlow* flow; /* insn's, for the searches of dataflow.c */
+    const u32* memh_at; /* original instruction index of each compacted Maxwell memory-handle instruction */
     u32* sph;
     u32 target;
     int passthrough;
