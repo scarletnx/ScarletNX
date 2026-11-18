@@ -147,6 +147,7 @@ u64 kmem_alloc(u64 size, u32 state, u32 perm) {
 void nce_slot_taken(u64 addr, const char* what) { (void)addr, (void)what; }
 void jit_slot_taken(u64 addr, GuestFn fn) { (void)addr, (void)fn; }
 int hook_routed(const char* name) { return (void)name, 1; }
+int shader_vk_set(int stage) { return stage == 4; } /* shader.c's: the fragment stage's set 1 */
 void pm_lock(PMutex* m) { (void)m; }
 void pm_unlock(PMutex* m) { (void)m; }
 void present_pace(u32 interval, int slot) { (void)interval, (void)slot; }

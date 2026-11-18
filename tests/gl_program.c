@@ -93,7 +93,7 @@ static const char es_fs[] = "#version 300 es\n"
 int main(void) {
     uint32_t es = snx_gl_context_new(SNX_GL_API_ES, 30, 0), desk = snx_gl_context_new(SNX_GL_API_DESKTOP, 45, 1);
     assert(es && desk);
-    snx_gl_program_host(&(SnxGlProgramHost){changed, heard});
+    snx_gl_program_host(&(SnxGlProgramHost){.program_changed = changed, .say = heard});
 
     /* shaders: a type GL has not, a GLSL ES pair, a refused one with its log and the line said */
     assert(!snx_gl_create_shader(es, 0x1234) && snx_gl_get_error(es) == SNX_GL_INVALID_ENUM);
@@ -332,6 +332,57 @@ int main(void) {
     free(saved);
     free(copy);
     free(after);
+
+    /* a platform whose draws bind each stage's resources in its own set (the console's renderer): the default block
+       and the blocks from block_base of each stage's set, the samplers from sampler_base, no flip constant; an image
+       has no place, and the link says so, naming it */
+    {
+        static const char vs[] = "#version 300 es\nin vec4 p;\nuniform mat4 m;\nuniform B { vec4 shift; };\n"
+                                 "void main() { gl_Position = m * p + shift; }\n";
+        static const char fs[] = "#version 300 es\nprecision mediump float;\nuniform sampler2D a;\n"
+                                 "uniform lowp sampler2DArray b;\nuniform vec4 tint;\nuniform B { vec4 shift; };\n"
+                                 "out vec4 o;\nvoid main() { o = texture(a, gl_FragCoord.xy) + texture(b, vec3(0)) "
+                                 "* tint + shift; }\n";
+        static const char image_fs[] = "#version 310 es\nprecision mediump float;\n"
+                                       "layout(rgba8, binding = 0) uniform readonly highp image2D im;\nout vec4 o;\n"
+                                       "void main() { o = imageLoad(im, ivec2(0)); }\n";
+        const SnxGlLayout layout = {{0, 1, 0}, 0, 17, 34, 64};
+        uint32_t p, ip;
+        const SnxGlProgram* pr;
+        snx_gl_program_host(
+            &(SnxGlProgramHost){.program_changed = changed, .say = heard, .stage_sets = 1, .layout = layout});
+        p = program(es, shader(es, VERTEX, vs), shader(es, FRAGMENT, fs));
+        assert(piv(es, p, LINK_STATUS));
+        pr = snx_gl_program(p);
+        /* each stage's module: its sets and bindings, read from its decorations */
+        for (int stage = 0; stage < 2; stage++) {
+            const uint32_t* w = snx_gl_program_spirv(pr, stage);
+            uint32_t words = pr->spirv_words[stage], sets = 0, found[64], nfound = 0;
+            for (uint32_t i = 5; i < words; i += w[i] >> 16) {
+                if ((w[i] & 0xffff) == 71 && w[i + 2] == 34) sets |= 1u << w[i + 3]; /* OpDecorate DescriptorSet */
+                if ((w[i] & 0xffff) == 71 && w[i + 2] == 33 && nfound < 64) found[nfound++] = w[i + 3]; /* Binding */
+                if (!(w[i] >> 16)) break;
+            }
+            assert(sets == (stage ? 2u : 1u));
+            if (stage == 0)
+                assert(nfound == 2 && ((found[0] == 0 && found[1] == 1) || (found[0] == 1 && found[1] == 0)));
+            else {
+                uint32_t mask = 0;
+                for (uint32_t i = 0; i < nfound; i++) mask |= 1u << (found[i] < 32 ? found[i] : found[i] - 32 + 8);
+                assert(nfound == 4 && mask == (1u | 2u | 1u << 10 | 1u << 11)); /* 0, 1, 34 and 35 */
+            }
+        }
+        /* no flip constant: the fragment module has no push constant block */
+        {
+            const uint32_t* w = snx_gl_program_spirv(pr, 1);
+            for (uint32_t i = 5; i < pr->spirv_words[1] && (w[i] >> 16); i += w[i] >> 16)
+                assert(!((w[i] & 0xffff) == 59 && w[i + 3] == 9)); /* OpVariable PushConstant */
+        }
+        ip = program(es, shader(es, VERTEX, vs), shader(es, FRAGMENT, image_fs));
+        assert(!piv(es, ip, LINK_STATUS));
+        assert(strstr(snx_gl_program_info_log(es, ip), "im is an image: this platform's GL layer binds no images yet"));
+        snx_gl_program_host(&(SnxGlProgramHost){.program_changed = changed, .say = heard});
+    }
     puts("gl_program: ok");
     return 0;
 }

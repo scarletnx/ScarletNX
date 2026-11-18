@@ -367,7 +367,8 @@ typedef struct {
     uint32_t* spirv[3]; /* each stage's module */
     uint32_t spirv_words[3];
     uint32_t local_size[3];
-    int failed; /* no memory */
+    int failed;    /* no memory */
+    char why[200]; /* what the platform's layout has no place for, "" for nothing */
 } Link;
 
 static void* grow(void* p, uint32_t count, size_t size) {
@@ -391,14 +392,42 @@ static uint32_t name_add(Link* l, const char* text, size_t len) {
 }
 
 /* the binding map: collecting (the first compilation of a stage), then placing (the second) */
+/* resource i's binding in the platform's layout (SnxGlLayout): 0, or nonzero with why it has none in l->why */
+static int layout_bind(Link* l, uint32_t i, uint32_t* binding) {
+    const SnxGlLayout* y = &g_gl_program.host.layout;
+    const Resource* x = &l->resources[i];
+    uint32_t before = 0, base = x->kind == SNX_GLSLC_REFLECT_SAMPLER ? y->sampler_base : y->block_base + 1;
+    uint32_t room = x->kind == SNX_GLSLC_REFLECT_SAMPLER ? y->samplers : y->blocks - 1;
+    if (x->kind != SNX_GLSLC_REFLECT_SAMPLER && x->kind != SNX_GLSLC_REFLECT_UNIFORM_BLOCK) {
+        snprintf(l->why, sizeof l->why, "%s %s: this platform's GL layer binds no %s yet", l->names + x->name,
+                 x->kind == SNX_GLSLC_REFLECT_IMAGE ? "is an image" : "is a storage block",
+                 x->kind == SNX_GLSLC_REFLECT_IMAGE ? "images" : "storage blocks");
+        return 1;
+    }
+    if (x->kind == SNX_GLSLC_REFLECT_SAMPLER && x->array) {
+        snprintf(l->why, sizeof l->why, "%s is an array of %u samplers: this platform's GL layer binds one a slot",
+                 l->names + x->name, (unsigned)x->array);
+        return 2;
+    }
+    for (uint32_t k = 0; k < i; ++k) before += l->resources[k].kind == x->kind;
+    if (before >= room) {
+        snprintf(l->why, sizeof l->why, "%s is the program's %s number %u, past the %u this platform binds",
+                 l->names + x->name, x->kind == SNX_GLSLC_REFLECT_SAMPLER ? "sampler" : "uniform block",
+                 (unsigned)before + 1, (unsigned)room);
+        return 3;
+    }
+    *binding = base + before;
+    return 0;
+}
 static int link_bind(void* user, const GlslcResource* r, uint32_t* set, uint32_t* binding) {
     Link* l = user;
     char text[256];
     int n;
     Resource* grown;
-    *set = 0;
+    int stage_sets = g_gl_program.host.stage_sets;
+    *set = stage_sets ? g_gl_program.host.layout.set[l->stage] : 0;
     if (r->kind == SNX_GLSLC_REFLECT_UNIFORM_BLOCK && !r->name.len) { /* the stage's default block */
-        *binding = l->stage;
+        *binding = stage_sets ? g_gl_program.host.layout.block_base : l->stage;
         return 0;
     }
     n = snprintf(text, sizeof text, "%.*s%s%.*s", (int)r->name.len, l->source + r->name.pos, r->member.len ? "." : "",
@@ -408,6 +437,7 @@ static int link_bind(void* user, const GlslcResource* r, uint32_t* set, uint32_t
         Resource* x = &l->resources[i];
         if (x->kind == (char)r->kind && !strcmp(l->names + x->name, text)) {
             x->stages |= 1u << l->stage;
+            if (stage_sets) return layout_bind(l, i, binding);
             *binding = 3 + i;
             return 0;
         }
@@ -419,6 +449,7 @@ static int link_bind(void* user, const GlslcResource* r, uint32_t* set, uint32_t
     l->resources[l->resource_count] =
         (Resource){(char)r->kind, (char)(r->member.len != 0),   r->texel_buffer, r->array, r->binding,
                    r->size,       name_add(l, text, (size_t)n), 1u << l->stage};
+    if (stage_sets) return layout_bind(l, l->resource_count++, binding);
     *binding = 3 + l->resource_count++;
     return 0;
 }
@@ -436,6 +467,20 @@ static int compiler_ready(void) {
     }
     g_gl_program.words = (uint32_t*)(g_gl_program.compiler + size);
     return 1;
+}
+
+/* what a binding of a stage's module holds: -2 the stage's default block, a resource's index, or -1 none */
+static int32_t resource_at(Link* l, uint32_t binding, int stage) {
+    if (!g_gl_program.host.stage_sets) {
+        if (binding == (uint32_t)stage && binding < 3) return -2;
+        return binding >= 3 && binding - 3 < l->resource_count ? (int32_t)(binding - 3) : -1;
+    }
+    if (binding == g_gl_program.host.layout.block_base) return -2;
+    for (uint32_t i = 0; i < l->resource_count; ++i) {
+        uint32_t b;
+        if (!layout_bind(l, i, &b) && b == binding) return (int32_t)i;
+    }
+    return -1;
 }
 
 static GlslcStage stage_of(uint32_t type) {
@@ -460,7 +505,7 @@ static int compile(uint32_t ctx, const SnxGlShader* sh, Link* l) {
     o.bind_user = l;
     o.map_default = l != NULL;
     /* a framebuffer is drawn with a negative viewport height: gl_FragCoord and gl_PointCoord through the draw's flip */
-    o.flip_y = sh->type == GL_FRAGMENT_SHADER_;
+    o.flip_y = sh->type == GL_FRAGMENT_SHADER_ && !g_gl_program.host.stage_sets;
     o.desktop = ctx && snx_gl_context_api(ctx) == SNX_GL_API_DESKTOP;
     return snx_glslc_compile(&g_gl_program.workspace, &o, source, sh->source.size ? sh->source.size - 1 : 0,
                              g_gl_program.words, SNX_GLSLC_MAX_WORDS, &g_gl_program.result);
@@ -798,21 +843,21 @@ static void reflect_module(Link* l, uint32_t* words, size_t n, int stage) {
         if (op(&s, pointer) != OP_TYPE_POINTER) continue;
         pointee = at(&s, pointer)[3];
         if (storage == SC_UNIFORM && decoration(&s, id, UINT32_MAX, DEC_BINDING, &binding, NULL)) {
-            if (binding == (uint32_t)stage && binding < 3) { /* the default block */
+            int32_t held = resource_at(l, binding, stage);
+            if (held == -2) { /* the default block */
                 flatten(l, &s, pointee, "", 0, 0, stage, -1);
-            } else if (binding >= 3 && binding - 3 < l->resource_count) {
-                Resource* r = &l->resources[binding - 3];
+            } else if (held >= 0) {
+                Resource* r = &l->resources[held];
                 if (r->kind == SNX_GLSLC_REFLECT_UNIFORM_BLOCK) {
                     uint32_t index = 0, t;
-                    for (uint32_t i = 0; i < binding - 3; ++i)
-                        index += l->resources[i].kind == SNX_GLSLC_REFLECT_UNIFORM_BLOCK;
+                    for (int32_t i = 0; i < held; ++i) index += l->resources[i].kind == SNX_GLSLC_REFLECT_UNIFORM_BLOCK;
                     t = op(&s, pointee) == OP_TYPE_ARRAY ? at(&s, pointee)[2] : pointee;
                     flatten(l, &s, t, "", 0, 0, stage, (int)index);
                 }
             }
         } else if (storage == SC_UNIFORM_CONSTANT && decoration(&s, id, UINT32_MAX, DEC_BINDING, &binding, NULL) &&
-                   binding >= 3 && binding - 3 < l->resource_count) {
-            Resource* r = &l->resources[binding - 3];
+                   resource_at(l, binding, stage) >= 0) {
+            Resource* r = &l->resources[resource_at(l, binding, stage)];
             uint8_t dim;
             uint32_t type;
             sampler_kind(&s, pointee, &dim, &type);
@@ -982,18 +1027,23 @@ static int program_arrays(uint32_t name, Link* l) {
     pn = (int32_t*)(base + offsets[3]);
     for (uint32_t i = 0; i < 3; ++i)
         if (l->default_size[i])
-            pb[nb++] = (SnxGlBinding){.kind = SNX_GLSLC_REFLECT_UNIFORM_BLOCK,
-                                      .stage = (uint8_t)i,
-                                      .count = 1,
-                                      .binding = (uint16_t)i,
-                                      .size = l->default_size[i]};
+            pb[nb++] = (SnxGlBinding){
+                .kind = SNX_GLSLC_REFLECT_UNIFORM_BLOCK,
+                .stage = (uint8_t)i,
+                .count = 1,
+                .binding = (uint16_t)(g_gl_program.host.stage_sets ? g_gl_program.host.layout.block_base : i),
+                .stages = (uint8_t)(1u << i),
+                .size = l->default_size[i]};
     for (uint32_t i = 0; i < l->resource_count; ++i) {
         const Resource* r = &l->resources[i];
         SnxGlBinding* b = &pb[nb++];
+        uint32_t binding = 3 + i;
+        if (g_gl_program.host.stage_sets) layout_bind(l, i, &binding); /* placed by the link, which it passed */
         *b = (SnxGlBinding){.name = r->name,
                             .kind = (uint8_t)r->kind,
                             .count = (uint16_t)(r->array ? r->array : 1),
-                            .binding = (uint16_t)(3 + i),
+                            .binding = (uint16_t)binding,
+                            .stages = (uint8_t)r->stages,
                             .size = r->size};
         if (r->kind == SNX_GLSLC_REFLECT_SAMPLER) {
             b->texel_buffer = r->texel_buffer & 1;
@@ -1074,7 +1124,7 @@ static void link(uint32_t ctx, uint32_t name) {
         }
         l->stage = (uint32_t)i;
         if (compile(ctx, stages[i], l) != 0) {
-            link_log(ctx, name, g_gl_program.result.error);
+            link_log(ctx, name, l->why[0] ? l->why : g_gl_program.result.error);
             goto done;
         }
     }
@@ -1084,7 +1134,7 @@ static void link(uint32_t ctx, uint32_t name) {
         if (!stages[i]) continue;
         l->stage = (uint32_t)i;
         if (compile(ctx, stages[i], l) != 0) {
-            link_log(ctx, name, g_gl_program.result.error);
+            link_log(ctx, name, l->why[0] ? l->why : g_gl_program.result.error);
             goto done;
         }
         for (uint32_t k = 0; k < g_gl_program.result.reflect_count; ++k) {
