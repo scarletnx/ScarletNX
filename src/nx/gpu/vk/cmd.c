@@ -652,7 +652,7 @@ static u32 chunk_new(u32 ring, u64 size, int bar, u32 slot) {
     } else if (ring == XRING_DEVICE)
         aci = (DevMemWant){.at = DM_DEVICE};
     else if (stage_cached() && (!bar || g_vk.mem_model == VK_MEM_UMA)) /* a discrete GPU's window has no such type */
-        aci.at = DM_CACHED;
+        aci.at = DM_CACHED; /* chunk_take asks for no window there (window_ring) */
     while (i < g_cmd.nchunk && g_cmd.chunk[i].buf) i++;
     if (i == g_cmd.capchunk) {
         u32 cap = g_cmd.capchunk ? g_cmd.capchunk * 2 : 32;
@@ -744,9 +744,16 @@ static int pool_before(const Chunk* c, const Chunk* than) {
    needs. A ring that wants a chunk outside the window with none left in the pool hands out of its smallest pooled big
    buffer instead, up to that buffer's size: a frame of more small requests than the pool kept chunks for (an ASTC
    texture's strips after a texture's bands) writes memory written before, not new chunks. 0 when none could be made */
+/* whether a chunk of ring can be in the window (chunk_new): not the device's or the back ring's, and not where the
+   rings are in cached memory on unified memory. Asked for there, the window was never what a chunk was made in, so
+   none of the pool's suited, and the staging ring made new chunks each frame (two a frame of small uploads) */
+static int window_ring(u32 ring) {
+    return ring != XRING_DEVICE && ring != XRING_BACK && !(stage_cached() && g_vk.mem_model == VK_MEM_UMA);
+}
 static u32 chunk_take(u32 ring, u64 size, int big, int bar, u32 slot) {
     u32 here = 0, other = 0, lend = 0; /* the chunks of the pool in the memory wanted, in the other memory, and the
                                           big buffer a ring with none of them hands out of */
+    bar = bar && window_ring(ring);
     for (u32 i = 0; i < g_cmd.nchunk; i++) {
         const Chunk* c = &g_cmd.chunk[i];
         u32* pick;
