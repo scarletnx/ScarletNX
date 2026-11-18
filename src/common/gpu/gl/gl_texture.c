@@ -49,6 +49,8 @@ enum {
     GL_ALPHA_ = 0x1906,
     GL_RGB_ = 0x1907,
     GL_RGBA_ = 0x1908,
+    GL_BGRA_ = 0x80e1,
+    GL_UNSIGNED_INT_8_8_8_8_REV_ = 0x8367,
     GL_UNSIGNED_BYTE_ = 0x1401,
     GL_NEAREST_MIPMAP_LINEAR_ = 0x2702,
     GL_LINEAR_ = 0x2601,
@@ -224,10 +226,17 @@ static int storage(uint32_t ctx, uint32_t name, int32_t format, int32_t w, int32
     return 0;
 }
 
+/* desktop GL takes GL_BGRA texels into a texture of RGBA bytes, its red and blue swapped on the way in */
+static int bgra_into(uint32_t ctx, const SnxGlFormat* f, uint32_t format, uint32_t type) {
+    return snx_gl_context_api(ctx) == SNX_GL_API_DESKTOP && format == GL_BGRA_ && f->format == GL_RGBA_ &&
+           f->type == GL_UNSIGNED_BYTE_ && f->bytes == 4 &&
+           (type == GL_UNSIGNED_BYTE_ || type == GL_UNSIGNED_INT_8_8_8_8_REV_);
+}
+
 /* the client's texels of a box into the texture: read where GL's unpack state says, kept where the platform asks,
    then handed to the platform */
 static void upload(uint32_t ctx, uint32_t name, int32_t level, int32_t x, int32_t y, int32_t z, int32_t w, int32_t h,
-                   int32_t d, uint64_t pixels, int compressed, uint64_t csize) {
+                   int32_t d, uint64_t pixels, int compressed, uint64_t csize, int swap_rb) {
     SnxGlTexture* t = &S.textures[name - 1];
     const SnxGlFormat* f = snx_gl_format_at(t->format);
     const SnxGlFixed* fx = snx_gl_fixed(ctx);
@@ -235,7 +244,7 @@ static void upload(uint32_t ctx, uint32_t name, int32_t level, int32_t x, int32_
     const SnxGlBuffer* b = snx_gl_buffer(unpack);
     const uint8_t* src;
     uint64_t skip = 0, need;
-    SnxGlUpload u = {level, x, y, z, w, h, d, NULL, 0, 0, 0, 0, compressed};
+    SnxGlUpload u = {level, x, y, z, w, h, d, NULL, 0, 0, 0, 0, compressed, swap_rb};
     if (!f || w <= 0 || h <= 0 || d <= 0) return;
     if (compressed) {
         int32_t bw = f->block >> 4, bh = f->block & 15;
@@ -283,8 +292,16 @@ static void upload(uint32_t ctx, uint32_t name, int32_t level, int32_t x, int32_
         for (int32_t k = 0; k < d; k++)
             for (uint64_t r = 0; r < u.rows; r++) {
                 uint64_t off = at + (uint64_t)(z + k) * level_image + (y_rows + r) * level_row + x_bytes;
-                if (off + u.row <= t->texels_size)
-                    memcpy(to + off, u.src + (uint64_t)k * u.image + r * u.stride, u.row);
+                const uint8_t* from = u.src + (uint64_t)k * u.image + r * u.stride;
+                if (off + u.row > t->texels_size) continue;
+                if (!swap_rb) {
+                    memcpy(to + off, from, u.row);
+                    continue;
+                }
+                for (uint64_t i = 0; i < u.row; i += 4) {
+                    to[off + i] = from[i + 2], to[off + i + 1] = from[i + 1];
+                    to[off + i + 2] = from[i], to[off + i + 3] = from[i + 3];
+                }
             }
     }
     if (H.upload) H.upload(ctx, name, &u);
@@ -373,6 +390,7 @@ void snx_gl_tex_image(uint32_t ctx, uint32_t target, int32_t level, uint32_t int
     uint32_t name;
     SnxGlTexture* t = bound_texture(ctx, target, &face, &name);
     int32_t index, bw, bh, bd;
+    int swap_rb = 0;
     const SnxGlFormat* f;
     if (!t) return;
     if (level < 0 || level >= SNX_GL_LEVELS || w < 0 || h < 0 || d < 0 || (uint32_t)w > max_size() ||
@@ -392,7 +410,7 @@ void snx_gl_tex_image(uint32_t ctx, uint32_t target, int32_t level, uint32_t int
         error(ctx, SNX_GL_INVALID_OPERATION);
         return;
     }
-    if (!compressed && (format != f->format || type != f->type)) {
+    if (!compressed && (format != f->format || type != f->type) && !(swap_rb = bgra_into(ctx, f, format, type))) {
         say_once(1, "texels of 0x%x/0x%x into a texture of 0x%x, whose own are 0x%x/0x%x: the texture stays empty",
                  (unsigned)format, (unsigned)type, (unsigned)internal, (unsigned)f->format, (unsigned)f->type);
         pixels = 0;
@@ -411,7 +429,7 @@ void snx_gl_tex_image(uint32_t ctx, uint32_t target, int32_t level, uint32_t int
     t->defined |= 1u << level;
     if (pixels || snx_gl_buffer(snx_gl_objects(ctx)->pixel_unpack))
         upload(ctx, name, level, 0, 0, t->target == SNX_GL_TCUBE ? face : 0, w, h, t->target == SNX_GL_TCUBE ? 1 : d,
-               pixels, compressed, csize);
+               pixels, compressed, csize, swap_rb);
 }
 void snx_gl_tex_sub_image(uint32_t ctx, uint32_t target, int32_t level, int32_t x, int32_t y, int32_t z, int32_t w,
                           int32_t h, int32_t d, uint32_t format, uint32_t type, uint64_t pixels, int compressed,
@@ -431,13 +449,14 @@ void snx_gl_tex_sub_image(uint32_t ctx, uint32_t target, int32_t level, int32_t 
         error(ctx, SNX_GL_INVALID_OPERATION);
         return;
     }
-    if (!compressed && (format != f->format || type != f->type)) {
+    if (!compressed && (format != f->format || type != f->type) && !bgra_into(ctx, f, format, type)) {
         say_once(1, "texels of 0x%x/0x%x into a texture of 0x%x, whose own are 0x%x/0x%x: the texture stays empty",
                  (unsigned)format, (unsigned)type, (unsigned)f->internal, (unsigned)f->format, (unsigned)f->type);
         return;
     }
     if (t->target == SNX_GL_TCUBE) z = face, d = 1;
-    upload(ctx, name, level, x, y, z, w, h, d, pixels, compressed, csize);
+    upload(ctx, name, level, x, y, z, w, h, d, pixels, compressed, csize,
+           !compressed && (format != f->format || type != f->type));
 }
 /* glTexStorage*'s storage of the texture bound to target, its samples a multisampled one's, else 0 */
 static void tex_storage(uint32_t ctx, uint32_t target, int32_t levels, uint32_t internal, int32_t w, int32_t h,
