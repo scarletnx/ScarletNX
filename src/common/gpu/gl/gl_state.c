@@ -31,12 +31,12 @@ typedef struct {
 
 static SnxGlFixed* fixed(uint32_t ctx) { return &g_gl.contexts[ctx - 1].fixed; }
 
-uint32_t snx_gl_context_new(uint32_t version) {
+uint32_t snx_gl_context_new(uint32_t api, uint32_t version, uint32_t debug) {
     for (uint32_t i = 0; i < SNX_GL_CONTEXTS; i++) {
         SnxGlContext* c = &g_gl.contexts[i];
         SnxGlFixed* f = &c->fixed;
         if (c->used) continue;
-        *c = (SnxGlContext){.used = 1, .version = version};
+        *c = (SnxGlContext){.used = 1, .api = api, .version = version, .debug = debug != 0};
         f->blend_src[0] = f->blend_src[1] = GL_ONE_;
         f->blend_eq[0] = f->blend_eq[1] = GL_FUNC_ADD_;
         for (int k = 0; k < 4; k++) f->color_mask[k] = 1;
@@ -67,6 +67,12 @@ void snx_gl_context_free(uint32_t ctx) {
 }
 
 SnxGlFixed* snx_gl_fixed(uint32_t ctx) { return fixed(ctx); }
+uint32_t snx_gl_context_api(uint32_t ctx) {
+    return ctx && ctx <= SNX_GL_CONTEXTS && g_gl.contexts[ctx - 1].used ? g_gl.contexts[ctx - 1].api : 0;
+}
+uint32_t snx_gl_context_version(uint32_t ctx) {
+    return ctx && ctx <= SNX_GL_CONTEXTS && g_gl.contexts[ctx - 1].used ? g_gl.contexts[ctx - 1].version : 0;
+}
 
 void snx_gl_error(uint32_t ctx, uint32_t e) {
     if (!fixed(ctx)->error) fixed(ctx)->error = e;
@@ -238,6 +244,135 @@ void snx_gl_pixel_store(uint32_t ctx, uint32_t pname, int32_t value) {
         case 0x806d: f->pixel[1].skip_images = value; return;  /* GL_UNPACK_SKIP_IMAGES */
         default: snx_gl_error(ctx, SNX_GL_INVALID_ENUM);
     }
+}
+
+/* the limits a context answers: a desktop GPU's, as the games' own driver answers on the console's */
+enum {
+    MAX_TEXTURE_SIZE = 16384,
+    MAX_VERTEX_ATTRIBS = 16,
+    MAX_TEXTURE_UNITS = 32,
+    MAX_COMBINED_TEXTURE_UNITS = 160,
+    MAX_DRAW_BUFFERS = 8,
+    MAX_UNIFORM_BLOCK_SIZE = 65536,
+};
+
+int snx_gl_get(uint32_t ctx, uint32_t pname, double v[4]) {
+    const SnxGlFixed* f = fixed(ctx);
+    const SnxGlContext* c = &g_gl.contexts[ctx - 1];
+    int on = snx_gl_capability(ctx, pname), i;
+    if (on >= 0) {
+        v[0] = on;
+        return 1;
+    }
+    switch (pname) {
+        case 0x0ba2: /* GL_VIEWPORT */
+            for (i = 0; i < 4; i++) v[i] = f->viewport[i];
+            return 4;
+        case 0x0c10: /* GL_SCISSOR_BOX */
+            for (i = 0; i < 4; i++) v[i] = f->scissor[i];
+            return 4;
+        case 0x0c22: /* GL_COLOR_CLEAR_VALUE */
+            for (i = 0; i < 4; i++) v[i] = f->clear_color[i];
+            return 4;
+        case 0x0c23: /* GL_COLOR_WRITEMASK */
+            for (i = 0; i < 4; i++) v[i] = f->color_mask[i];
+            return 4;
+        case 0x0b70: /* GL_DEPTH_RANGE */ v[0] = f->depth_range[0], v[1] = f->depth_range[1]; return 2;
+        case 0x0b73: v[0] = f->clear_depth; return 1;        /* GL_DEPTH_CLEAR_VALUE */
+        case 0x0b91: v[0] = f->clear_stencil; return 1;      /* GL_STENCIL_CLEAR_VALUE */
+        case 0x0b74: v[0] = f->depth_func; return 1;         /* GL_DEPTH_FUNC */
+        case 0x0b72: v[0] = f->depth_mask; return 1;         /* GL_DEPTH_WRITEMASK */
+        case 0x0b45: v[0] = f->cull_face; return 1;          /* GL_CULL_FACE_MODE */
+        case 0x0b46: v[0] = f->front_face; return 1;         /* GL_FRONT_FACE */
+        case 0x0b21: v[0] = f->line_width; return 1;         /* GL_LINE_WIDTH */
+        case 0x80c9: v[0] = f->blend_src[0]; return 1;       /* GL_BLEND_SRC_RGB */
+        case 0x80c8: v[0] = f->blend_dst[0]; return 1;       /* GL_BLEND_DST_RGB */
+        case 0x80cb: v[0] = f->blend_src[1]; return 1;       /* GL_BLEND_SRC_ALPHA */
+        case 0x80ca: v[0] = f->blend_dst[1]; return 1;       /* GL_BLEND_DST_ALPHA */
+        case 0x8009: v[0] = f->blend_eq[0]; return 1;        /* GL_BLEND_EQUATION_RGB */
+        case 0x883d: v[0] = f->blend_eq[1]; return 1;        /* GL_BLEND_EQUATION_ALPHA */
+        case 0x0cf5: v[0] = f->pixel[1].alignment; return 1; /* GL_UNPACK_ALIGNMENT */
+        case 0x0d05: v[0] = f->pixel[0].alignment; return 1; /* GL_PACK_ALIGNMENT */
+        case 0x821b: v[0] = c->version / 10; return 1;       /* GL_MAJOR_VERSION */
+        case 0x821c: v[0] = c->version % 10; return 1;       /* GL_MINOR_VERSION */
+        case 0x821d: v[0] = 0; return 1;                     /* GL_NUM_EXTENSIONS: none yet */
+        case 0x821e: v[0] = c->debug ? 2 : 0; return 1;      /* GL_CONTEXT_FLAGS: GL_CONTEXT_FLAG_DEBUG_BIT */
+        case 0x9126:                                         /* GL_CONTEXT_PROFILE_MASK: the core profile */
+            if (c->api != SNX_GL_API_DESKTOP) return 0;
+            v[0] = 1;
+            return 1;
+        case 0x0d33: /* GL_MAX_TEXTURE_SIZE */
+        case 0x84e8: /* GL_MAX_RENDERBUFFER_SIZE */ v[0] = MAX_TEXTURE_SIZE; return 1;
+        case 0x0d3a: /* GL_MAX_VIEWPORT_DIMS */ v[0] = v[1] = MAX_TEXTURE_SIZE; return 2;
+        case 0x8869: v[0] = MAX_VERTEX_ATTRIBS; return 1;         /* GL_MAX_VERTEX_ATTRIBS */
+        case 0x8872: v[0] = MAX_TEXTURE_UNITS; return 1;          /* GL_MAX_TEXTURE_IMAGE_UNITS */
+        case 0x8b4c: v[0] = MAX_TEXTURE_UNITS; return 1;          /* GL_MAX_VERTEX_TEXTURE_IMAGE_UNITS */
+        case 0x8b4d: v[0] = MAX_COMBINED_TEXTURE_UNITS; return 1; /* GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS */
+        case 0x8824:                                              /* GL_MAX_DRAW_BUFFERS */
+        case 0x8cdf: /* GL_MAX_COLOR_ATTACHMENTS */ v[0] = MAX_DRAW_BUFFERS; return 1;
+        case 0x8a30: v[0] = MAX_UNIFORM_BLOCK_SIZE; return 1; /* GL_MAX_UNIFORM_BLOCK_SIZE */
+        default: return 0;
+    }
+}
+
+/* GL_VERSION and GL_SHADING_LANGUAGE_VERSION of a context, by its API and version; NULL for one the layer makes no
+   context of */
+static const char* version_string(uint32_t api, uint32_t version, int glsl) {
+    static const struct {
+        uint32_t api, version;
+        const char *gl, *glsl;
+    } versions[] = {
+        {SNX_GL_API_DESKTOP, 30, "3.0.0 ScarletNX", "1.30 ScarletNX"},
+        {SNX_GL_API_DESKTOP, 31, "3.1.0 ScarletNX", "1.40 ScarletNX"},
+        {SNX_GL_API_DESKTOP, 32, "3.2.0 ScarletNX", "1.50 ScarletNX"},
+        {SNX_GL_API_DESKTOP, 33, "3.3.0 ScarletNX", "3.30 ScarletNX"},
+        {SNX_GL_API_DESKTOP, 40, "4.0.0 ScarletNX", "4.00 ScarletNX"},
+        {SNX_GL_API_DESKTOP, 41, "4.1.0 ScarletNX", "4.10 ScarletNX"},
+        {SNX_GL_API_DESKTOP, 42, "4.2.0 ScarletNX", "4.20 ScarletNX"},
+        {SNX_GL_API_DESKTOP, 43, "4.3.0 ScarletNX", "4.30 ScarletNX"},
+        {SNX_GL_API_DESKTOP, 44, "4.4.0 ScarletNX", "4.40 ScarletNX"},
+        {SNX_GL_API_DESKTOP, 45, "4.5.0 ScarletNX", "4.50 ScarletNX"},
+        {SNX_GL_API_ES, 20, "OpenGL ES 2.0 ScarletNX", "OpenGL ES GLSL ES 1.00 ScarletNX"},
+        {SNX_GL_API_ES, 30, "OpenGL ES 3.0 ScarletNX", "OpenGL ES GLSL ES 3.00 ScarletNX"},
+        {SNX_GL_API_ES, 31, "OpenGL ES 3.1 ScarletNX", "OpenGL ES GLSL ES 3.10 ScarletNX"},
+        {SNX_GL_API_ES, 32, "OpenGL ES 3.2 ScarletNX", "OpenGL ES GLSL ES 3.20 ScarletNX"},
+    };
+    for (size_t i = 0; i < sizeof versions / sizeof *versions; i++)
+        if (versions[i].api == api && versions[i].version == version) return glsl ? versions[i].glsl : versions[i].gl;
+    return NULL;
+}
+int snx_gl_version_made(uint32_t api, uint32_t version) { return version_string(api, version, 0) != NULL; }
+
+const char* snx_gl_string(uint32_t ctx, uint32_t name, int stringi, uint32_t index) {
+    const SnxGlContext* c = &g_gl.contexts[ctx - 1];
+    int desktop = c->api == SNX_GL_API_DESKTOP;
+    if (stringi) {
+        /* no extension yet: GL_NUM_EXTENSIONS is 0, so every index is past the last */
+        snx_gl_error(ctx, name == 0x1f03 ? SNX_GL_INVALID_VALUE : SNX_GL_INVALID_ENUM);
+        (void)index;
+        return NULL;
+    }
+    switch (name) {
+        case 0x1f00: return "NVIDIA Corporation"; /* GL_VENDOR: the GPU's maker, as the games' own driver says */
+        case 0x1f01: return "NVIDIA Tegra X1";    /* GL_RENDERER */
+        case 0x1f02: return version_string(c->api, c->version, 0); /* GL_VERSION */
+        case 0x8b8c: return version_string(c->api, c->version, 1); /* GL_SHADING_LANGUAGE_VERSION */
+        case 0x1f03:                                               /* GL_EXTENSIONS */
+            if (!desktop) return "";
+            break; /* the core profile has it only through glGetStringi */
+        default: break;
+    }
+    snx_gl_error(ctx, SNX_GL_INVALID_ENUM);
+    return NULL;
+}
+
+uint32_t snx_gl_clear(uint32_t ctx, uint32_t mask) {
+    const uint32_t buffers = 0x4000u | 0x0100u | 0x0400u; /* color, depth, stencil */
+    if (mask & ~buffers) {
+        snx_gl_error(ctx, SNX_GL_INVALID_VALUE);
+        return 0;
+    }
+    return mask;
 }
 
 size_t snx_gl_state_bytes(void) { return sizeof(SnxGlStateHeader) + sizeof g_gl; }
