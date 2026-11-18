@@ -7,12 +7,16 @@
    atoms inside the memory. Over that: the GPU's own heap stays under the driver's budget less the margin and its
    resources never land in system memory, a large request takes a block's free run, a resource the driver would
    rather have alone goes into a block when the driver has no memory for it alone, and requests from several threads
-   beside the allocator's own thread keep all of it. No Vulkan loader, device or GPU is used. */
+   beside the allocator's own thread keep all of it. Where the driver moves memory
+   (VK_EXT_pageable_device_local_memory), each memory has the priority of the highest class it holds, and the driver
+   is told only when that changes. Requests of the low class take blocks of their own, and those of the others only
+   when no new block can be made. No Vulkan loader, device or GPU is used. */
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "common/platform/thread.h"
+#include "common/platform/time.h"
 /* the allocator's thread starts only while g_threads is set: the checks before that count the driver's calls */
 static int g_threads;
 static int thread_or_none(PThreadFn fn, void* arg, size_t stack) {
@@ -48,6 +52,7 @@ PFN_vkBindImageMemory vkBindImageMemory;
 PFN_vkDestroyImage vkDestroyImage;
 PFN_vkFlushMappedMemoryRanges vkFlushMappedMemoryRanges;
 PFN_vkInvalidateMappedMemoryRanges vkInvalidateMappedMemoryRanges;
+PFN_vkSetDeviceMemoryPriorityEXT vkSetDeviceMemoryPriorityEXT;
 
 void logf_(int lvl, const char* fmt, ...) { (void)lvl, (void)fmt; }
 void fatal(const char* fmt, ...) {
@@ -64,6 +69,7 @@ void fatal(const char* fmt, ...) {
 typedef struct {
     u64 size;
     u32 type, res; /* res: the resource it was made for, as its index plus one */
+    float prio;    /* its priority: Vulkan's default 0.5 until it is set */
     u8 live, mapped;
 } DrvMem;
 typedef struct {
@@ -92,6 +98,7 @@ static struct {
     u64 gran, atom;
     VkMappedMemoryRange range; /* the last one flushed or invalidated */
     u32 ranges;
+    u32 priorities; /* calls that set a priority */
 } g_drv = {.lk = PMUTEX_INIT};
 
 static u32 drv_heap(u32 type) { return g_drv.mp.memoryTypes[type].heapIndex; }
@@ -99,10 +106,14 @@ VkResult VKAPI_CALL vk_ledger_allocate(VkDevice dev, const VkMemoryAllocateInfo*
                                        VkDeviceMemory* mem) {
     (void)dev, (void)cb;
     const VkMemoryDedicatedAllocateInfo* alone = NULL;
-    for (const VkBaseInStructure* s = ai->pNext; s; s = s->pNext)
+    const VkMemoryPriorityAllocateInfoEXT* prio = NULL;
+    for (const VkBaseInStructure* s = ai->pNext; s; s = s->pNext) {
         if (s->sType == VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO) alone = (const void*)s;
+        if (s->sType == VK_STRUCTURE_TYPE_MEMORY_PRIORITY_ALLOCATE_INFO_EXT) prio = (const void*)s;
+    }
     pm_lock(&g_drv.lk);
     CHECK(ai->allocationSize && ai->memoryTypeIndex < g_drv.mp.memoryTypeCount);
+    CHECK(!prio || (g_vk.has_pageable && prio->priority >= 0.0f && prio->priority <= 1.0f));
     u32 heap = drv_heap(ai->memoryTypeIndex), res = 0, i = 0;
     if (alone && (alone->buffer || alone->image)) {
         CHECK(!alone->buffer || !alone->image);
@@ -119,7 +130,11 @@ VkResult VKAPI_CALL vk_ledger_allocate(VkDevice dev, const VkMemoryAllocateInfo*
     if (out == VK_SUCCESS) {
         while (i < MEMS && g_drv.mem[i].live) i++;
         CHECK(i < MEMS);
-        g_drv.mem[i] = (DrvMem){.size = ai->allocationSize, .type = ai->memoryTypeIndex, .res = res, .live = 1};
+        g_drv.mem[i] = (DrvMem){.size = ai->allocationSize,
+                                .type = ai->memoryTypeIndex,
+                                .res = res,
+                                .prio = prio ? prio->priority : 0.5f,
+                                .live = 1};
         g_drv.used[heap] += ai->allocationSize;
         if (g_drv.used[heap] > g_drv.peak[heap]) g_drv.peak[heap] = g_drv.used[heap];
         g_drv.mems++;
@@ -275,6 +290,26 @@ static VkResult VKAPI_CALL mapped_ranges(VkDevice dev, uint32_t n, const VkMappe
     pm_unlock(&g_drv.lk);
     return VK_SUCCESS;
 }
+/* only a device with the extension's feature takes a priority, of [0, 1], and the allocator sets only a new one */
+static void VKAPI_CALL set_priority(VkDevice dev, VkDeviceMemory mem, float prio) {
+    (void)dev;
+    u32 m = (u32)(uintptr_t)mem;
+    pm_lock(&g_drv.lk);
+    CHECK(g_vk.has_pageable && m && m <= MEMS && g_drv.mem[m - 1].live);
+    CHECK(prio >= 0.0f && prio <= 1.0f && prio != g_drv.mem[m - 1].prio);
+    g_drv.mem[m - 1].prio = prio;
+    g_drv.priorities++;
+    pm_unlock(&g_drv.lk);
+}
+/* the priorities asked so far, told the driver: the thread ahead takes them from its queue (devmem.c prio_set) */
+static void prio_settle(void) {
+    pm_lock(&g_devmem.lk);
+    while (g_devmem.ahead.on && (g_devmem.ahead.nprio || g_devmem.ahead.prio_slot))
+        pc_wait(&g_devmem.ahead.done, &g_devmem.lk, 1000000);
+    pm_unlock(&g_devmem.lk);
+}
+/* ledger.c's timed priority: the driver's, here the model's */
+void vk_ledger_priority(VkDevice dev, VkDeviceMemory mem, float priority) { vkSetDeviceMemoryPriorityEXT(dev, mem, priority); }
 static void VKAPI_CALL memory_properties(VkPhysicalDevice phys, VkPhysicalDeviceMemoryProperties* out) {
     (void)phys;
     *out = g_drv.mp;
@@ -307,6 +342,9 @@ static void device(int uma, u64 gran, u64 atom, u64 budget) {
     static int first = 1;
     if (first) memcpy(g_pristine, &g_devmem, sizeof g_devmem);
     first = 0;
+    /* not while the allocator's thread runs: the copy below goes over the lock and the condition it waits on, and
+       vk_devmem_init starts a second thread on the same state */
+    CHECK(!g_devmem.ahead.on);
     for (u32 i = 0; i < g_devmem.nblock; i++) space_destroy(&g_devmem.block[i].free);
     free(g_devmem.block);
     free(g_devmem.rec);
@@ -410,7 +448,10 @@ static VkResult make_random(u32* seed, Held* h) {
     if (pick == 8) size = 16 * MIB + rnd_of(seed) % (40 * MIB); /* more than a quarter of a block */
     if (pick == 9) size = 64 * MIB + rnd_of(seed) % (8 * MIB);  /* more than a block */
     u32 alone = rnd_of(seed) % 32;
-    DevMemWant want = {.at = where, .mapped = where != DM_DEVICE, .own = rnd_of(seed) % 64 == 0};
+    DevMemWant want = {.at = where,
+                       .mapped = where != DM_DEVICE,
+                       .own = rnd_of(seed) % 64 == 0,
+                       .low = where == DM_DEVICE && rnd_of(seed) % 2};
     return make(kind < 3, size, 1ull << rnd_of(seed) % 17, ~0u, alone == 0 ? 2 : alone == 1 ? 1 : 0, want, h);
 }
 
@@ -427,20 +468,65 @@ static void check_counts(u32 held) {
     CHECK(allocations == held && blocks == g_drv.mems);
 }
 
+/* each block's classes are the units its allocations hold, and where the driver moves memory it has the priority of
+   the class of most of the units in a block of the low class, of the highest class in another. An empty block keeps
+   the priority it had */
+static void check_priorities(void) {
+    prio_settle();
+    u32 holds[MEMS][DM_PRIO_N], count[MEMS];
+    memset(holds, 0, sizeof holds);
+    memset(count, 0, sizeof count);
+    for (u32 i = 0; i < g_devmem.nrec; i++) {
+        const Rec* r = &g_devmem.rec[i];
+        if (!r->block) continue;
+        CHECK(r->prio < DM_PRIO_N && r->block <= MEMS);
+        holds[r->block - 1][r->prio] += r->units ? r->units : 1;
+        count[r->block - 1]++;
+    }
+    for (u32 k = 0; k < g_devmem.nblock; k++) {
+        const Block* b = &g_devmem.block[k];
+        if (!b->mem) continue;
+        CHECK(count[k] == b->allocs);
+        /* blocks of the low class take requests only where the driver moves memory (check_priority turns that off
+           with an empty one left, which the runtime never does) */
+        CHECK(!b->low || g_vk.has_pageable || !b->allocs);
+        u32 top = DM_PRIO_N, most = 0;
+        for (u32 c = 0; c < DM_PRIO_N; c++) {
+            CHECK(b->holds[c] == holds[k][c]);
+            if (!holds[k][c]) continue;
+            if (!b->low)
+                top = c;
+            else if (holds[k][c] >= most) { /* a tie goes to the higher class */
+                top = c;
+                most = holds[k][c];
+            }
+        }
+        if (g_vk.has_pageable) {
+            CHECK(top == DM_PRIO_N || b->prio == top);
+            prio_settle();
+            CHECK(g_drv.mem[(u32)(uintptr_t)b->mem - 1].prio == k_prio[b->prio]);
+        }
+    }
+}
+
 static void check_random(int uma, u64 gran, u64 atom, u32 rounds) {
     enum { CAP = 1024 };
     static Held held[CAP];
     u32 n = 0;
     device(uma, gran, atom, 0);
+    g_vk.has_pageable = !uma; /* and the bookkeeping alone where the driver does not move memory */
     for (u32 r = 0; r < rounds; r++) {
         if (n < CAP && (!n || rnd() % 5 < 3)) {
             if (make_random(&g_seed, &held[n]) == VK_SUCCESS) n++;
+        } else if (rnd() % 3 == 0) { /* an owner gives its class, or a texture's changes */
+            vk_devmem_priority(held[rnd() % n].mem, rnd() % DM_PRIO_N);
         } else {
             u32 k = rnd() % n;
             unmake(&held[k]);
             held[k] = held[--n];
         }
         if (r % 64 == 0) check_counts(n);
+        if (r % 64 == 0) check_priorities();
         /* a block is a power of two of 64 MiB at most, made for no resource */
         if (r % 64 == 0)
             for (u32 k = 0; k < g_devmem.nblock; k++) {
@@ -453,11 +539,16 @@ static void check_random(int uma, u64 gran, u64 atom, u32 rounds) {
     }
     while (n) unmake(&held[--n]);
     check_counts(0);
-    /* what stays is one empty block of a kind at most: a memory type's buffers, and its images where they are apart */
-    u32 kinds[VK_MAX_MEMORY_TYPES][2] = {{0}};
+    check_priorities();
+    /* what stays is one empty block at most for a memory type's buffers, and for its images where they are apart: the
+       two classes, and what moves and what does not, share it */
+    u32 kinds[VK_MAX_MEMORY_TYPES][DM_KINDS] = {{0}};
     for (u32 k = 0; k < g_devmem.nblock; k++) {
         const Block* b = &g_devmem.block[k];
-        if (b->mem) CHECK(!b->own && !b->allocs && !b->free.used && ++kinds[b->type][b->image] == 1);
+        if (b->mem && b->own) /* memory of its own the driver only preferred, kept for reuse (own_keep) */
+            CHECK(!b->allocs && b->reuse && b->idle);
+        else if (b->mem)
+            CHECK(!b->allocs && !b->free.used && ++kinds[b->type][b->image & DM_KIND_IMAGE] == 1);
     }
 }
 
@@ -467,9 +558,14 @@ static void check_alone(void) {
     DevMemWant gpu = {.at = DM_DEVICE}, mine = {.at = DM_DEVICE, .own = 1};
     device(0, 1024, 64, 0);
     CHECK(make(0, MIB, 256, ~0u, 2, gpu, &must) == VK_SUCCESS && alone_of(&must) && !must.info.offset);
-    CHECK(make(1, MIB, 256, ~0u, 1, gpu, &rather) == VK_SUCCESS && alone_of(&rather));
+    /* the driver's preference holds for more than a block's share: a smaller one goes into a block, with no call to
+       the driver of its own, and the report counts it */
+    CHECK(make(1, 32 * MIB, 256, ~0u, 1, gpu, &rather) == VK_SUCCESS && alone_of(&rather));
     CHECK(make(0, MIB, 256, ~0u, 0, mine, &own) == VK_SUCCESS && alone_of(&own));
     CHECK(make(0, MIB, 256, ~0u, 0, gpu, &block) == VK_SUCCESS && !alone_of(&block));
+    CHECK(make(1, MIB, 256, ~0u, 1, gpu, &h) == VK_SUCCESS && !alone_of(&h) && h.info.memory == block.info.memory);
+    CHECK(g_devmem.rather_in_block == 1 && g_devmem.rather_in_block_bytes == MIB);
+    unmake(&h);
     /* the driver has no memory for a resource alone: the one it would rather have so goes into a block, which has
        room, and the one it must have so fails */
     g_drv.no_alone = 1;
@@ -496,6 +592,299 @@ static void check_alone(void) {
     u32 calls = g_drv.allocations;
     CHECK(make(0, MIB, 256, ~0u, 0, gpu, &h) == VK_SUCCESS && h.info.memory == memory && g_drv.allocations == calls);
     unmake(&h);
+    check_counts(0);
+}
+
+/* two allocations in one block, and one with memory of its own: the block has the priority of the higher class it
+   holds, and the driver is told only when that changes, and never where it does not move memory */
+static void check_priority(void) {
+    Held a, b, own;
+    DevMemWant gpu = {.at = DM_DEVICE}, mine = {.at = DM_DEVICE, .own = 1};
+    device(0, 1024, 64, 0);
+    g_vk.has_pageable = 1;
+    CHECK(make(0, MIB, 256, ~0u, 0, gpu, &a) == VK_SUCCESS && make(0, MIB, 256, ~0u, 0, gpu, &b) == VK_SUCCESS);
+    CHECK(a.info.memory == b.info.memory);
+    const DrvMem* block = &g_drv.mem[(u32)(uintptr_t)a.info.memory - 1];
+    prio_settle();
+    CHECK(block->prio == 0.5f && !g_drv.priorities); /* both are of the middle class at first, as the memory */
+    vk_devmem_priority(a.mem, DM_PRIO_LOW);
+    prio_settle();
+    CHECK(block->prio == 0.5f && !g_drv.priorities); /* b holds it there */
+    vk_devmem_priority(b.mem, DM_PRIO_LOW);
+    prio_settle();
+    CHECK(block->prio == 0.0f && g_drv.priorities == 1);
+    vk_devmem_priority(b.mem, DM_PRIO_LOW); /* the same class: no call */
+    vk_devmem_priority(a.mem, DM_PRIO_HIGH);
+    prio_settle();
+    CHECK(block->prio == 1.0f && g_drv.priorities == 2);
+    unmake(&a);
+    prio_settle();
+    CHECK(block->prio == 0.0f && g_drv.priorities == 3);
+    VkDeviceMemory memory = b.info.memory;
+    unmake(&b); /* the block stays, empty, at the low class */
+    prio_settle();
+    CHECK(g_drv.mem[(u32)(uintptr_t)memory - 1].live && block->prio == 0.0f && g_drv.priorities == 3);
+    CHECK(make(0, MIB, 256, ~0u, 0, gpu, &a) == VK_SUCCESS && a.info.memory == memory);
+    prio_settle();
+    CHECK(block->prio == 0.5f && g_drv.priorities == 4); /* its new allocation's class */
+    CHECK(make(0, MIB, 256, ~0u, 0, mine, &own) == VK_SUCCESS && alone_of(&own));
+    vk_devmem_priority(own.mem, DM_PRIO_HIGH);
+    prio_settle();
+    CHECK(g_drv.mem[(u32)(uintptr_t)own.info.memory - 1].prio == 1.0f && g_drv.priorities == 5);
+    check_priorities();
+    unmake(&own);
+    unmake(&a);
+    /* a request of the low class where the driver has no room for a new block, and no block of that class exists:
+       it takes the room of a block of the other class, and does not fail where it found memory before the classes */
+    Held low_a, low_b, low_own;
+    DevMemWant low = {.at = DM_DEVICE, .low = 1}, low_mine = {.at = DM_DEVICE, .low = 1, .own = 1};
+    CHECK(make(0, MIB, 256, ~0u, 0, gpu, &a) == VK_SUCCESS);
+    u64 room = g_drv.room[0];
+    g_drv.room[0] = g_drv.used[0];
+    CHECK(make(0, MIB, 256, ~0u, 0, low, &low_a) == VK_SUCCESS && low_a.info.memory == a.info.memory);
+    check_priorities();
+    unmake(&low_a);
+    g_drv.room[0] = room;
+    g_devmem.full_frame[T_GPU] = 0; /* the heap has room again */
+    /* with room: a block of its own, made at the low priority with no call; memory of its own at that priority too */
+    u32 calls_low = g_drv.priorities;
+    CHECK(make(0, MIB, 256, ~0u, 0, low, &low_a) == VK_SUCCESS && low_a.info.memory != a.info.memory);
+    CHECK(make(0, MIB, 256, ~0u, 0, low, &low_b) == VK_SUCCESS && low_b.info.memory == low_a.info.memory);
+    prio_settle();
+    CHECK(g_drv.mem[(u32)(uintptr_t)low_a.info.memory - 1].prio == 0.0f && g_drv.priorities == calls_low);
+    CHECK(make(0, MIB, 256, ~0u, 0, low_mine, &low_own) == VK_SUCCESS && alone_of(&low_own));
+    prio_settle();
+    CHECK(g_drv.mem[(u32)(uintptr_t)low_own.info.memory - 1].prio == 0.0f && g_drv.priorities == calls_low);
+    /* a texture that took drawn pixels: its block rises, and falls again when it loads from memory */
+    vk_devmem_priority(low_b.mem, DM_PRIO_MID);
+    prio_settle();
+    CHECK(g_drv.mem[(u32)(uintptr_t)low_a.info.memory - 1].prio == 0.5f && g_drv.priorities == calls_low + 1);
+    vk_devmem_priority(low_b.mem, DM_PRIO_LOW);
+    prio_settle();
+    CHECK(g_drv.mem[(u32)(uintptr_t)low_a.info.memory - 1].prio == 0.0f && g_drv.priorities == calls_low + 2);
+    check_priorities();
+    VkDeviceMemory low_mem = low_a.info.memory;
+    unmake(&low_b);
+    unmake(&low_a); /* the low block stays empty, the one spare block of the kind */
+    unmake(&low_own);
+    unmake(&a); /* the mid block goes: the low block is the spare */
+    CHECK(g_drv.mem[(u32)(uintptr_t)low_mem - 1].live);
+    /* a request of the other class takes the empty block, with no new one from the driver */
+    u32 made = g_drv.allocations;
+    CHECK(make(0, MIB, 256, ~0u, 0, gpu, &a) == VK_SUCCESS && a.info.memory == low_mem && g_drv.allocations == made);
+    CHECK(!g_devmem.block[g_devmem.rec[a.mem - 1].block - 1].low);
+    check_priorities();
+    unmake(&a);
+    /* a driver that does not move memory: the classes are kept, with no call */
+    g_vk.has_pageable = 0;
+    u32 calls = g_drv.priorities;
+    CHECK(make(0, MIB, 256, ~0u, 0, gpu, &a) == VK_SUCCESS);
+    vk_devmem_priority(a.mem, DM_PRIO_HIGH);
+    prio_settle();
+    CHECK(g_drv.priorities == calls && g_devmem.rec[a.mem - 1].prio == DM_PRIO_HIGH);
+    check_priorities();
+    unmake(&a);
+    check_counts(0);
+}
+
+/* the block of an allocation (its index), from the allocator's table */
+static u32 block_of(const Held* h) { return g_devmem.rec[h->mem - 1].block - 1; }
+/* What moves and what does not, in blocks of their own kinds where blocks are emptied: an allocation that no owner moves
+   kept every block from being emptied (drain_can), as in one game's race under a budget of 2 GB, where sparse blocks
+   and buffer pages went into every block of the GPU's heap. A block of what moves is emptied while those exist, and a
+   move goes to the blocks of what moves. A UMA device empties no block, and keeps one kind */
+static void check_kinds(void) {
+    enum { N = 24, F = 8 };
+    Held m[N], f[F];
+    const DevMemWant moves = {.at = DM_DEVICE, .moves = 1}, fixed = {.at = DM_DEVICE};
+    device(0, 1024, 64, 0);
+    CHECK(g_devmem.drain.on);
+    /* no room for a new block: a request takes the room of the other side, and does not fail where it found room
+       before the kinds */
+    CHECK(make(0, MIB, 256, ~0u, 0, moves, &m[0]) == VK_SUCCESS);
+    u64 room = g_drv.room[0];
+    g_drv.room[0] = g_drv.used[0];
+    CHECK(make(0, MIB, 256, ~0u, 0, fixed, &f[0]) == VK_SUCCESS && block_of(&f[0]) == block_of(&m[0]));
+    unmake(&f[0]);
+    unmake(&m[0]);
+    g_drv.room[0] = room;
+    g_devmem.full_frame[T_GPU] = 0; /* the heap has room again */
+    for (u32 i = 0, j = 0; i < N; i++) {
+        CHECK(make(0, MIB, 256, ~0u, 0, moves, &m[i]) == VK_SUCCESS && !alone_of(&m[i]));
+        vk_devmem_owner(m[i].mem, (void*)(uintptr_t)(i + 1));
+        if (i % 3 == 0 && j < F) CHECK(make(0, MIB, 256, ~0u, 0, fixed, &f[j++]) == VK_SUCCESS && !alone_of(&f[j - 1]));
+    }
+    for (u32 i = 0; i < N; i++)
+        for (u32 j = 0; j < F; j++) CHECK(block_of(&m[i]) != block_of(&f[j]));
+    for (u32 j = 0; j < F; j++) CHECK(g_devmem.block[block_of(&f[j])].image & DM_KIND_FIXED);
+    /* what does not move and comes and goes (DevMemWant.brief) has blocks apart from what stays, and from what moves:
+       a block of brief allocations empties when they go, though rings and encoders stay */
+    Held b[2];
+    const DevMemWant brief = {.at = DM_DEVICE, .brief = 1};
+    CHECK(make(0, MIB, 256, ~0u, 0, brief, &b[0]) == VK_SUCCESS && make(0, MIB, 256, ~0u, 0, brief, &b[1]) == VK_SUCCESS);
+    CHECK(block_of(&b[0]) == block_of(&b[1]));
+    CHECK(g_devmem.block[block_of(&b[0])].image == (DM_KIND_FIXED | DM_KIND_BRIEF));
+    for (u32 j = 0; j < F; j++) CHECK(block_of(&b[0]) != block_of(&f[j]));
+    for (u32 i = 0; i < N; i++) CHECK(block_of(&b[0]) != block_of(&m[i]));
+    const u32 bb = block_of(&b[0]);
+    unmake(&b[0]);
+    unmake(&b[1]);
+    CHECK(!g_devmem.block[bb].allocs);
+    /* the first block of what moves keeps one allocation and the last another, with room for the first's block: the
+       first is emptied, past the budget, though the blocks of what does not move hold allocations still */
+    const u32 first = block_of(&m[0]), last = block_of(&m[N - 1]);
+    CHECK(first != last);
+    for (u32 i = 1; i < N - 1; i++) unmake(&m[i]);
+    DevMem mems[4];
+    void* owners[4];
+    u32 n = 0;
+    for (u32 p = 0; p < 31 && !n; p++) {
+        vk_devmem_frame();
+        n = vk_devmem_moving(mems, owners, 4, 1);
+    }
+    CHECK(n == 1 && mems[0] == m[0].mem && owners[0] == (void*)(uintptr_t)1);
+    CHECK(g_devmem.drain.slot == first + 1);
+    /* the move: into the last block, the one of what moves that holds something and is not being emptied */
+    Held to;
+    CHECK(make(0, MIB, 256, ~0u, 0, (DevMemWant){.at = DM_DEVICE, .existing = 1}, &to) == VK_SUCCESS);
+    CHECK(block_of(&to) == last);
+    vk_devmem_owner(m[0].mem, NULL);
+    unmake(&m[0]);
+    vk_devmem_moved(MIB);
+    unmake(&to);
+    unmake(&m[N - 1]);
+    for (u32 j = 0; j < F; j++) unmake(&f[j]);
+    check_counts(0);
+    /* a UMA device: one kind, and what moves shares blocks with what does not */
+    device(1, 1, 64, 0);
+    CHECK(!g_devmem.drain.on);
+    CHECK(make(0, MIB, 256, ~0u, 0, moves, &m[0]) == VK_SUCCESS && make(0, MIB, 256, ~0u, 0, fixed, &f[0]) == VK_SUCCESS);
+    CHECK(block_of(&m[0]) == block_of(&f[0]));
+    unmake(&m[0]);
+    unmake(&f[0]);
+    check_counts(0);
+}
+
+/* With no room for a new block, a request takes a block of another kind of its side: what stays takes the blocks of
+   what moves before the brief ones, which it would keep from being emptied, and what comes and goes takes the blocks of
+   what stays first */
+static void check_kind_fallback(void) {
+    const DevMemWant moves = {.at = DM_DEVICE, .moves = 1}, fixed = {.at = DM_DEVICE},
+                     brief = {.at = DM_DEVICE, .brief = 1};
+    Held a, b, f;
+    device(0, 1024, 64, 0);
+    CHECK(make(0, MIB, 256, ~0u, 0, moves, &a) == VK_SUCCESS);
+    vk_devmem_owner(a.mem, (void*)(uintptr_t)1);
+    CHECK(make(0, MIB, 256, ~0u, 0, brief, &b) == VK_SUCCESS && block_of(&b) != block_of(&a));
+    u64 room = g_drv.room[0];
+    g_drv.room[0] = g_drv.used[0];
+    CHECK(make(0, MIB, 256, ~0u, 0, fixed, &f) == VK_SUCCESS && block_of(&f) == block_of(&a));
+    g_drv.room[0] = room;
+    unmake(&f);
+    unmake(&b);
+    vk_devmem_owner(a.mem, NULL);
+    unmake(&a);
+    check_counts(0);
+    device(0, 1024, 64, 0);
+    CHECK(make(0, MIB, 256, ~0u, 0, moves, &a) == VK_SUCCESS);
+    vk_devmem_owner(a.mem, (void*)(uintptr_t)1);
+    CHECK(make(0, MIB, 256, ~0u, 0, fixed, &f) == VK_SUCCESS && block_of(&f) != block_of(&a));
+    room = g_drv.room[0];
+    g_drv.room[0] = g_drv.used[0];
+    CHECK(make(0, MIB, 256, ~0u, 0, brief, &b) == VK_SUCCESS && block_of(&b) == block_of(&f));
+    g_drv.room[0] = room;
+    unmake(&b);
+    unmake(&f);
+    vk_devmem_owner(a.mem, NULL);
+    unmake(&a);
+    check_counts(0);
+}
+
+/* Memory of its own that the driver only preferred is kept when let go, for the next request it fits, with no call to
+   the driver (own_keep, own_take). It names no resource, and fits a request of its size up to an eighth less. Kept
+   memory goes after DM_KEEP_PRESENTS presents, and the oldest of its heap goes first past keep_cap */
+static void check_keep(void) {
+    Held a, b, c;
+    const DevMemWant gpu = {.at = DM_DEVICE};
+    device(0, 1024, 64, 0);
+    g_vk.has_pageable = 1;
+    CHECK(make(1, 32 * MIB, 256, ~0u, 1, gpu, &a) == VK_SUCCESS && alone_of(&a));
+    CHECK(!g_drv.mem[(u32)(uintptr_t)a.info.memory - 1].res); /* no resource named: another may take it */
+    const VkDeviceMemory memory = a.info.memory;
+    unmake(&a);
+    CHECK(g_devmem.kept_bytes == 32 * MIB);
+    /* kept: handed out for the caches (no free room inside blocks), at the low class's priority */
+    DevMemBudget bud[VK_MAX_MEMORY_HEAPS];
+    vk_devmem_budgets(bud);
+    CHECK(bud[0].allocated_bytes == 32 * MIB && bud[0].block_bytes == 32 * MIB);
+    prio_settle();
+    CHECK(g_drv.mem[(u32)(uintptr_t)memory - 1].prio == 0.0f);
+    u32 calls = g_drv.allocations;
+    CHECK(make(1, 30 * MIB, 256, ~0u, 1, gpu, &a) == VK_SUCCESS && a.info.memory == memory);
+    CHECK(g_drv.allocations == calls && g_devmem.kept_bytes == 0 && g_devmem.kept_taken == 1);
+    /* more than it holds, or far less: memory of its own made for it */
+    CHECK(make(0, 40 * MIB, 256, ~0u, 1, gpu, &b) == VK_SUCCESS && b.info.memory != memory);
+    unmake(&a);
+    CHECK(make(0, 20 * MIB, 256, ~0u, 1, gpu, &c) == VK_SUCCESS && c.info.memory != memory);
+    unmake(&b);
+    unmake(&c);
+    CHECK(g_devmem.kept_bytes == 92 * MIB);
+    /* past keep_cap the oldest goes: DM_KEEP_BYTES under a budget of 2 GiB */
+    const u64 drv = g_devmem.drv_budget[0];
+    const int had = g_vk.has_budget;
+    g_vk.has_budget = 1;
+    g_devmem.drv_budget[0] = 2ull << 30;
+    CHECK(keep_cap(0) == DM_KEEP_BYTES);
+    Held m[8];
+    for (u32 i = 0; i < 8; i++) CHECK(make(0, 33 * MIB + i * MIB, 256, ~0u, 1, gpu, &m[i]) == VK_SUCCESS);
+    for (u32 i = 0; i < 8; i++) unmake(&m[i]);
+    CHECK(g_devmem.kept_bytes <= DM_KEEP_BYTES && g_devmem.kept_gone > 0);
+    /* a heap of a large budget keeps a share of it */
+    g_devmem.drv_budget[0] = 16ull << 30;
+    CHECK(keep_cap(0) == heap_budget(0) / DM_KEEP_SHARE && keep_cap(0) > DM_KEEP_BYTES);
+    /* only in the GPU's own heap: the others keep DM_KEEP_BYTES */
+    CHECK(heap_capped(0));
+    for (u32 h = 0; h < g_devmem.mp.memoryHeapCount; h++)
+        if (!heap_capped(h)) CHECK(keep_cap(h) == DM_KEEP_BYTES);
+    /* the other heaps count together against that cap, the GPU's own heap alone */
+    CHECK(!heap_capped(1) && !heap_capped(2));
+    const u64 k0 = g_devmem.kept_heap[0], k1 = g_devmem.kept_heap[1], k2 = g_devmem.kept_heap[2];
+    g_devmem.kept_heap[1] = 10, g_devmem.kept_heap[2] = 20, g_devmem.kept_heap[0] = 40;
+    CHECK(kept_with(1) == 30 && kept_with(2) == 30 && kept_with(0) == 40);
+    g_devmem.kept_heap[0] = k0, g_devmem.kept_heap[1] = k1, g_devmem.kept_heap[2] = k2;
+    /* under a caches' budget less than the driver's (vk_budget_mb), the share and the full mark are of that one */
+    vk_devmem_cache_budget(2ull << 30);
+    CHECK(keep_budget(0) == 2ull << 30 && keep_cap(0) == DM_KEEP_BYTES);
+    /* and a request the driver would rather have alone, past four fifths of that budget, gets no memory kept for
+       reuse (DM_OWN_RATHER), which own_keep would give straight back to the driver */
+    {
+        Held r;
+        const u64 bb = g_devmem.block_bytes[0], rather = g_devmem.own_why[DM_OWN_RATHER];
+        g_devmem.block_bytes[0] = 2ull << 30;
+        CHECK(make(1, 32 * MIB, 256, ~0u, 1, gpu, &r) == VK_SUCCESS);
+        CHECK(g_devmem.own_why[DM_OWN_RATHER] == rather && !g_devmem.block[block_of(&r)].reuse);
+        g_devmem.block_bytes[0] = g_devmem.block_bytes[0] - (2ull << 30) + bb; /* its own bytes stay counted */
+        unmake(&r);
+    }
+    vk_devmem_cache_budget(0);
+    CHECK(keep_budget(0) == heap_budget(0));
+    g_devmem.drv_budget[0] = drv;
+    g_vk.has_budget = had;
+    /* and all of it after DM_KEEP_PRESENTS presents */
+    for (u32 p = 0; p <= DM_KEEP_PRESENTS; p++) vk_devmem_frame();
+    CHECK(g_devmem.kept_bytes == 0);
+    /* a request with no room but the kept memory's: it goes, and the request takes the room (the thread ahead is off,
+       so that the driver has its memory back before the request asks again) */
+    g_devmem.ahead.on = 0;
+    CHECK(make(1, 32 * MIB, 256, ~0u, 1, gpu, &a) == VK_SUCCESS);
+    unmake(&a);
+    CHECK(g_devmem.kept_bytes == 32 * MIB);
+    u64 room = g_drv.room[0];
+    g_drv.room[0] = g_drv.used[0] + 16 * MIB;
+    CHECK(make(0, 40 * MIB, 256, ~0u, 1, gpu, &b) == VK_SUCCESS && g_devmem.kept_bytes == 0 && b.info.type == T_GPU);
+    unmake(&b);
+    g_drv.room[0] = room;
+    g_vk.has_pageable = 0;
     check_counts(0);
 }
 
@@ -622,8 +1011,11 @@ static void worker(void* arg) {
 }
 /* the allocator's thread has made the block it was asked for and given back what it had to: or `until` is set */
 static void ahead_wait(const u32* until) {
+    /* by the clock, not by the waits: a timed wait may come back early, and on a CI machine of macOS 20,000 of them
+       ended in 0.3 s while the thread was still at work */
+    const u64 t0 = plat_ns();
     pm_lock(&g_work.lk);
-    for (u32 tries = 0;; tries++) {
+    for (;;) {
         u32 blocks = 0;
         pm_lock(&g_devmem.lk);
         int idle = !g_devmem.ahead.want && !g_devmem.ahead.busy && !g_devmem.ahead.ngone;
@@ -633,7 +1025,7 @@ static void ahead_wait(const u32* until) {
         int done = until ? *until != 0 : idle && blocks == g_drv.mems; /* a free on its way is still the driver's */
         pm_unlock(&g_drv.lk);
         if (done) break;
-        CHECK(tries < 20000);
+        CHECK(plat_ns() - t0 < 30000000000ull);
         pc_wait(&g_work.cv, &g_work.lk, 1000000);
     }
     pm_unlock(&g_work.lk);
@@ -673,6 +1065,57 @@ static void check_ahead_cap(u64 budget) {
     ahead_wait(NULL);
     check_counts(0);
 }
+/* The thread makes the next block of a kind only when no empty block of that kind is there, of either class: an
+   empty block of the low class serves a request of the middle class (block_adopt), so no more is made for it */
+static void check_ahead_class(void) {
+    Held mid, low_a, mid_b;
+    DevMemWant gpu = {.at = DM_DEVICE}, low = {.at = DM_DEVICE, .low = 1};
+    g_vk.has_pageable = 1;
+    CHECK(make(0, MIB, 4096, ~0u, 0, gpu, &mid) == VK_SUCCESS);
+    ahead_wait(NULL); /* the spare block of the kind, of the middle class */
+    CHECK(make(0, MIB, 4096, ~0u, 0, low, &low_a) == VK_SUCCESS && low_a.info.memory != mid.info.memory);
+    ahead_wait(NULL); /* the low request took the spare: a new spare */
+    unmake(&low_a); /* one of the two empty blocks goes, and one of the low class stays */
+    ahead_wait(NULL);
+    u32 made = g_drv.allocations;
+    CHECK(make(0, MIB, 4096, ~0u, 0, gpu, &mid_b) == VK_SUCCESS && mid_b.info.memory == mid.info.memory);
+    ahead_wait(NULL);
+    CHECK(g_drv.allocations == made); /* the empty block of the low class is the spare of the middle class too */
+    unmake(&mid_b);
+    unmake(&mid);
+    ahead_wait(NULL);
+    g_vk.has_pageable = 0;
+    check_counts(0);
+}
+/* With the thread ahead, the driver is told a block's priority on that thread (devmem.c prio_set), not on the one that
+   asked: what each block should have is what the driver has once the queue is done, and a change undone before the
+   thread came to it makes no call. On check_threads' device and its one thread: a device() of its own left this
+   thread running, and the next device() copied a new state over the lock and the condition it waited on, then
+   started a second thread on it. The macOS CI found the two of them in check_ahead_cap */
+static void check_priority_ahead(void) {
+    Held a;
+    const DevMemWant gpu = {.at = DM_DEVICE};
+    CHECK(g_devmem.ahead.on);
+    g_vk.has_pageable = 1;
+    CHECK(make(0, MIB, 256, ~0u, 0, gpu, &a) == VK_SUCCESS);
+    const DrvMem* block = &g_drv.mem[(u32)(uintptr_t)a.info.memory - 1];
+    vk_devmem_priority(a.mem, DM_PRIO_HIGH);
+    prio_settle();
+    CHECK(block->prio == 1.0f);
+    check_priorities();
+    pm_lock(&g_devmem.lk); /* the thread waits for the lock: both changes are in before it comes */
+    const u32 calls = g_drv.priorities;
+    Block* k = &g_devmem.block[g_devmem.rec[a.mem - 1].block - 1];
+    prio_set(k, DM_PRIO_LOW);
+    prio_set(k, DM_PRIO_HIGH);
+    pm_unlock(&g_devmem.lk);
+    prio_settle();
+    CHECK(block->prio == 1.0f && g_drv.priorities == calls);
+    unmake(&a);
+    g_vk.has_pageable = 0;
+    ahead_wait(NULL); /* the thread gives back what was let go */
+    check_counts(0);
+}
 static void check_threads(void) {
     const u64 budget = GIB;
     g_threads = 1;
@@ -680,7 +1123,9 @@ static void check_threads(void) {
     CHECK(g_devmem.ahead.on);
     pc_init(&g_work.cv);
     pc_init(&g_drv.cv);
+    check_ahead_class();
     check_ahead_cap(budget);
+    check_priority_ahead();
     for (u32 i = 0; i < WORKERS; i++) CHECK(plat_thread(worker, (void*)(uintptr_t)i, 0) == 0);
     pm_lock(&g_work.lk);
     while (g_work.done < WORKERS) pc_wait(&g_work.cv, &g_work.lk, -1);
@@ -688,6 +1133,337 @@ static void check_threads(void) {
     ahead_wait(NULL);
     CHECK(g_devmem.ahead.made); /* it made blocks ahead of their requests */
     check_counts(0);
+}
+
+/* Defragmentation (vk_devmem_moving), with and without the priority classes (pageable). Images of 1 MiB fill
+   blocks, three of every four go, and the owners move what the allocator names, as texture.c's moves do: a move
+   lands in a block in use, never in the one being emptied or an empty one, and where the driver moves memory by
+   priority, in a block of its own class. No other request takes a run of the block being emptied. Blocks are
+   emptied, and the counts and priorities hold throughout. With pageable, a block of the low class given allocations
+   of a higher class is repaired: those alone move, to blocks of their class. Without it, no block is repaired */
+enum { DEFRAG_N = 256 };
+static Held g_dh[DEFRAG_N];
+static int defrag_round(u64 budget) {
+    DevMem mems[64];
+    void* owners[64];
+    g_devmem.frame += 31;
+    const u32 n = vk_devmem_moving(mems, owners, 64, budget);
+    /* the moves' frees count toward the forced trim (vk_defer_moved) only out of a block closed to requests: one
+       emptied, not one repaired */
+    CHECK(vk_devmem_emptying() == (g_devmem.drain.slot && !g_devmem.drain.repair));
+    int moved = 0;
+    for (u32 i = 0; i < n; i++) {
+        Held* x = owners[i];
+        CHECK(x >= g_dh && x < g_dh + DEFRAG_N && x->mem == mems[i]);
+        const u32 from = g_devmem.rec[x->mem - 1].block;
+        const u32 prio = g_devmem.rec[x->mem - 1].prio;
+        Held to;
+        DevMemWant want = {.at = DM_DEVICE, .image = 1, .existing = 1, .low = prio == DM_PRIO_LOW};
+        if (make(1, x->info.size, 4096, ~0u, 0, want, &to) != VK_SUCCESS) {
+            vk_devmem_moving_stop();
+            break;
+        }
+        const Rec* r = &g_devmem.rec[to.mem - 1];
+        const Block* k = &g_devmem.block[r->block - 1];
+        CHECK(r->block != from && !k->drain && k->allocs >= 2); /* a block in use, which held something before */
+        if (g_vk.has_pageable) CHECK(k->low == (prio == DM_PRIO_LOW)); /* of its own class */
+        /* the block that took it settles: 120 presents, 600 after a repair's move, as a class can change back */
+        CHECK(k->drain_skip >= g_devmem.frame + (g_devmem.drain.repair ? 600 : 120));
+        vk_devmem_priority(to.mem, prio);
+        vk_devmem_owner(x->mem, NULL);
+        unmake(x);
+        *x = to;
+        vk_devmem_owner(x->mem, x);
+        vk_devmem_moved(x->info.size);
+        moved++;
+    }
+    /* while a block is emptied, no request takes its runs */
+    if (g_devmem.drain.slot && !g_devmem.drain.repair) {
+        Held probe; /* of the class of the block being emptied, which its blocks are */
+        DevMemWant gpu = {.at = DM_DEVICE, .image = 1, .low = g_devmem.block[g_devmem.drain.slot - 1].low,
+                          .moves = 1};
+        CHECK(make(1, 64 * KIB, 4096, ~0u, 0, gpu, &probe) == VK_SUCCESS);
+        CHECK(g_devmem.rec[probe.mem - 1].block != g_devmem.drain.slot || !g_devmem.drain.slot);
+        unmake(&probe);
+    }
+    return moved;
+}
+static void check_defrag(int pageable) {
+    const u64 budget = 4 * GIB;
+    device(0, 1024, 64, budget);
+    g_vk.has_pageable = pageable;
+    CHECK(g_devmem.drain.on);
+    DevMemWant tex = {.at = DM_DEVICE, .image = 1, .low = 1, .moves = 1}, mid = {.at = DM_DEVICE, .image = 1, .moves = 1};
+    for (u32 i = 0; i < DEFRAG_N; i++) {
+        CHECK(make(1, MIB, 4096, ~0u, 0, i < 192 ? tex : mid, &g_dh[i]) == VK_SUCCESS);
+        vk_devmem_priority(g_dh[i].mem, i < 192 ? DM_PRIO_LOW : DM_PRIO_MID);
+        vk_devmem_owner(g_dh[i].mem, &g_dh[i]);
+    }
+    for (u32 i = 0; i < DEFRAG_N; i++)
+        if (i % 4) {
+            vk_devmem_owner(g_dh[i].mem, NULL);
+            unmake(&g_dh[i]);
+        }
+    u32 live = 0;
+    for (u32 i = 0; i < DEFRAG_N; i++) live += g_dh[i].mem != 0;
+    int moves = 0;
+    for (u32 round = 0; round < 200; round++) {
+        moves += defrag_round(budget);
+        check_counts(live);
+        if (pageable) check_priorities();
+    }
+    CHECK(moves > 0 && g_devmem.drain.emptied + g_devmem.drain.kept > 0);
+    CHECK(!g_devmem.drain.repaired); /* no class was mixed */
+    if (!pageable) CHECK(!repair_pick()); /* the classes are only kept where the driver does not move memory */
+    printf("vk_devmem: defrag %s: %d allocations moved, %llu blocks given back, %llu kept\n",
+           pageable ? "with the priority classes" : "without them", moves,
+           (unsigned long long)g_devmem.drain.emptied, (unsigned long long)g_devmem.drain.kept);
+    for (u32 i = 0; i < DEFRAG_N; i++)
+        if (g_dh[i].mem) {
+            vk_devmem_owner(g_dh[i].mem, NULL);
+            unmake(&g_dh[i]);
+        }
+    check_counts(0);
+    if (pageable) {
+        /* Repair: blocks filled in order, with no holes to gather, and in the first block of the low class half its
+           allocations rise to the high class. The repair moves those, and only those, to blocks of the higher
+           classes, and the block stays with its low ones */
+        device(0, 1024, 64, budget);
+        g_vk.has_pageable = 1;
+        enum { LOWS = 40, MIDS = 40 };
+        for (u32 i = 0; i < LOWS + MIDS; i++) {
+            CHECK(make(1, MIB, 4096, ~0u, 0, i < LOWS ? tex : mid, &g_dh[i]) == VK_SUCCESS);
+            vk_devmem_priority(g_dh[i].mem, i < LOWS ? DM_PRIO_LOW : DM_PRIO_MID);
+            vk_devmem_owner(g_dh[i].mem, &g_dh[i]);
+        }
+        const u32 slot = g_devmem.rec[g_dh[0].mem - 1].block;
+        CHECK(g_devmem.block[slot - 1].low);
+        u32 raised = 0, stays = 0;
+        for (u32 i = 0; i < LOWS; i++)
+            if (g_devmem.rec[g_dh[i].mem - 1].block == slot) {
+                if (i % 2) {
+                    vk_devmem_priority(g_dh[i].mem, DM_PRIO_HIGH);
+                    raised++;
+                } else
+                    stays++;
+            }
+        CHECK(raised && stays && misplaced(&g_devmem.block[slot - 1]));
+        int moved = 0;
+        for (u32 round = 0; round < 50 && !g_devmem.drain.repaired; round++) {
+            moved += defrag_round(budget);
+            check_counts(LOWS + MIDS);
+            check_priorities();
+        }
+        CHECK(g_devmem.drain.repaired == 1 && (u32)moved == raised);
+        CHECK(!misplaced(&g_devmem.block[slot - 1]) && g_devmem.block[slot - 1].allocs == stays);
+        printf("vk_devmem: repair: %d allocations of the high class moved out of a block of the low class\n", moved);
+        /* a move of the low class when its blocks have no room and the other class's have: it fails, and takes
+           no run of the other class (alloc_in's fallback is a request's, not a move's) */
+        Held fill[64], spare, moved_low;
+        u32 nfill = 0;
+        int full = 0;
+        while (nfill < 64 && !full) {
+            CHECK(make(1, MIB, 4096, ~0u, 0, tex, &fill[nfill]) == VK_SUCCESS);
+            nfill++;
+            full = 1;
+            for (u32 i = 0; i < g_devmem.nblock; i++) {
+                const Block* k = &g_devmem.block[i];
+                if (k->mem && !k->own && k->low && k->free.used < k->free.units) full = 0;
+            }
+        }
+        CHECK(full);
+        CHECK(make(1, MIB, 4096, ~0u, 0, mid, &spare) == VK_SUCCESS); /* a mid block with room */
+        DevMemWant move_low = {.at = DM_DEVICE, .image = 1, .existing = 1, .low = 1};
+        g_devmem.drain.moving = 0;
+        CHECK(make(1, MIB, 4096, ~0u, 0, move_low, &moved_low) == VK_ERROR_OUT_OF_DEVICE_MEMORY);
+        unmake(&spare);
+        while (nfill) unmake(&fill[--nfill]);
+        for (u32 i = 0; i < LOWS + MIDS; i++) {
+            vk_devmem_owner(g_dh[i].mem, NULL);
+            unmake(&g_dh[i]);
+        }
+        check_counts(0);
+    }
+    /* a GPU that shares the system's memory empties no block, and keeps no owner */
+    device(1, 1, 4096, 0);
+    g_vk.has_pageable = pageable;
+    CHECK(!g_devmem.drain.on);
+    Held h;
+    CHECK(make(1, MIB, 4096, ~0u, 0, tex, &h) == VK_SUCCESS);
+    vk_devmem_owner(h.mem, &h);
+    CHECK(!g_devmem.rec[h.mem - 1].owner);
+    DevMem mems[4];
+    void* owners[4];
+    g_devmem.frame += 31;
+    CHECK(vk_devmem_moving(mems, owners, 4, GIB) == 0);
+    unmake(&h);
+}
+
+/* A request that must have memory of its own (the driver requires it, or the caller asks) and finds none while a block
+   is emptied fails as it does with none emptied (check_alone): no run of a block is memory of its own, so the drain
+   is not stopped for it and its retry takes no run */
+static void check_drain_alone(void) {
+    const u64 budget = 4 * GIB;
+    device(0, 1024, 64, budget);
+    DevMemWant tex = {.at = DM_DEVICE, .image = 1, .moves = 1}, gpu = {.at = DM_DEVICE}, mine = {.at = DM_DEVICE, .own = 1};
+    for (u32 i = 0; i < DEFRAG_N; i++) {
+        CHECK(make(1, MIB, 4096, ~0u, 0, tex, &g_dh[i]) == VK_SUCCESS);
+        vk_devmem_owner(g_dh[i].mem, &g_dh[i]);
+    }
+    for (u32 i = 0; i < DEFRAG_N; i++)
+        if (i % 4) {
+            vk_devmem_owner(g_dh[i].mem, NULL);
+            unmake(&g_dh[i]);
+        }
+    DevMem mems[64];
+    void* owners[64];
+    g_devmem.frame += 31;
+    CHECK(vk_devmem_moving(mems, owners, 64, budget) > 0 && g_devmem.drain.slot && !g_devmem.drain.repair);
+    const u32 slot = g_devmem.drain.slot;
+    g_drv.no_alone = 1; /* the driver has no memory for a resource alone; the blocks have room */
+    Held h;
+    CHECK(make(1, MIB, 256, ~0u, 2, gpu, &h) != VK_SUCCESS);
+    CHECK(make(0, MIB, 256, ~0u, 0, mine, &h) != VK_SUCCESS);
+    g_drv.no_alone = 0;
+    CHECK(g_devmem.drain.slot == slot && g_devmem.block[slot - 1].drain && !g_devmem.drain.gave_up);
+    for (u32 i = 0; i < DEFRAG_N; i++)
+        if (g_dh[i].mem) {
+            vk_devmem_owner(g_dh[i].mem, NULL);
+            unmake(&g_dh[i]);
+        }
+    check_counts(0);
+}
+
+
+/* drain_pick's room test, as DXVK's on a chunk's used pages: a block is emptied when the free space in the other
+   blocks of its kind holds what it holds and half as much again, whatever the block's size. Two blocks of 1 MiB
+   images, the first filled and the second with 3 MiB free, past the budget: the first with 3 MiB in it stays, as
+   4.5 MiB do not fit in the room. With 1 MiB in it, it is emptied, though the room is less than 1.5 times its size */
+static void check_drain_room(void) {
+    const u64 room = 3 * MIB, high = 3 * MIB, low = MIB;
+    DevMemWant tex = {.at = DM_DEVICE, .image = 1, .moves = 1};
+    device(0, 1024, 64, 4 * GIB);
+    g_vk.has_pageable = 0;
+    u32 n = 0, first = 0, second = 0;
+    for (;;) {
+        CHECK(n < DEFRAG_N && make(1, MIB, 4096, ~0u, 0, tex, &g_dh[n]) == VK_SUCCESS);
+        vk_devmem_owner(g_dh[n].mem, &g_dh[n]);
+        const u32 b = g_devmem.rec[g_dh[n++].mem - 1].block;
+        if (!first) first = b;
+        if (b != first && !second) second = b;
+        CHECK(b == first || b == second);
+        if (second && g_devmem.block[second - 1].free.units - g_devmem.block[second - 1].free.used == room / DM_UNIT)
+            break;
+    }
+    const u64 size = g_devmem.block[first - 1].size;
+    CHECK(high <= size / 2 && 2 * room < 3 * high && 2 * room >= 3 * low && 2 * room < 3 * size);
+    u64 held = size;
+    for (u32 i = 0; i < n && held > high; i++)
+        if (g_devmem.rec[g_dh[i].mem - 1].block == first) {
+            vk_devmem_owner(g_dh[i].mem, NULL);
+            unmake(&g_dh[i]);
+            held -= MIB;
+        }
+    CHECK(held == high && g_devmem.block[first - 1].free.used * DM_UNIT == high);
+    pm_lock(&g_devmem.lk);
+    CHECK(drain_pick(MIB) == 0); /* 1.5 times what it holds is more than the room */
+    pm_unlock(&g_devmem.lk);
+    for (u32 i = 0; i < n && held > low; i++)
+        if (g_dh[i].mem && g_devmem.rec[g_dh[i].mem - 1].block == first) {
+            vk_devmem_owner(g_dh[i].mem, NULL);
+            unmake(&g_dh[i]);
+            held -= MIB;
+        }
+    pm_lock(&g_devmem.lk);
+    CHECK(drain_pick(MIB) == first); /* the room holds 1.5 times what it holds, not 1.5 times its size */
+    pm_unlock(&g_devmem.lk);
+    for (u32 i = 0; i < n; i++)
+        if (g_dh[i].mem) {
+            vk_devmem_owner(g_dh[i].mem, NULL);
+            unmake(&g_dh[i]);
+        }
+    check_counts(0);
+}
+
+/* A block of the low class whose first allocations rose to the high class, as check_defrag's repair: its index plus
+   one, and the count raised */
+static u32 repair_setup(u32* raised) {
+    DevMemWant tex = {.at = DM_DEVICE, .image = 1, .low = 1, .moves = 1}, mid = {.at = DM_DEVICE, .image = 1, .moves = 1};
+    device(0, 1024, 64, 4 * GIB);
+    g_vk.has_pageable = 1;
+    for (u32 i = 0; i < 80; i++) {
+        CHECK(make(1, MIB, 4096, ~0u, 0, i < 40 ? tex : mid, &g_dh[i]) == VK_SUCCESS);
+        vk_devmem_priority(g_dh[i].mem, i < 40 ? DM_PRIO_LOW : DM_PRIO_MID);
+        vk_devmem_owner(g_dh[i].mem, &g_dh[i]);
+    }
+    const u32 slot = g_devmem.rec[g_dh[0].mem - 1].block;
+    *raised = 0;
+    for (u32 i = 1; i < 40; i += 2)
+        if (g_devmem.rec[g_dh[i].mem - 1].block == slot) {
+            vk_devmem_priority(g_dh[i].mem, DM_PRIO_HIGH);
+            ++*raised;
+        }
+    CHECK(g_devmem.block[slot - 1].low && *raised);
+    return slot;
+}
+static void repair_done(void) {
+    for (u32 i = 0; i < 80; i++)
+        if (g_dh[i].mem) {
+            vk_devmem_owner(g_dh[i].mem, NULL);
+            unmake(&g_dh[i]);
+        }
+}
+/* The end of a repair. An allocation of the wrong class with no owner, which no move takes, ends it when the moves
+   are done: the block rests 600 presents, and it is not repaired or given up. A request that finds no memory while
+   the block is repaired leaves the repair as it is: the block takes requests. A block that its frees empty while it
+   is repaired ends the repair */
+static void check_repair_end(void) {
+    const u64 budget = 4 * GIB;
+    u32 raised;
+    u32 slot = repair_setup(&raised);
+    Held none;
+    DevMemWant tex = {.at = DM_DEVICE, .image = 1, .low = 1, .moves = 1};
+    CHECK(defrag_round(budget) == (int)raised && g_devmem.drain.slot == slot && g_devmem.drain.repair);
+    CHECK(make(1, MIB, 4096, 0, 0, tex, &none) != VK_SUCCESS); /* no memory type: no memory */
+    CHECK(g_devmem.drain.slot == slot && g_devmem.drain.repair && !g_devmem.drain.gave_up);
+    /* an allocation of the high class that no owner moves comes into the block, as a ring's chunk would */
+    CHECK(g_devmem.rec[g_dh[0].mem - 1].block == slot);
+    vk_devmem_owner(g_dh[0].mem, NULL);
+    vk_devmem_priority(g_dh[0].mem, DM_PRIO_HIGH);
+    CHECK(defrag_round(budget) == 0); /* nothing more that moves: the repair ends */
+    CHECK(!g_devmem.drain.slot && !g_devmem.drain.repair && !g_devmem.drain.repaired && !g_devmem.drain.gave_up);
+    CHECK(misplaced(&g_devmem.block[slot - 1]) && g_devmem.block[slot - 1].drain_skip == g_devmem.frame + 600);
+    repair_done();
+    check_counts(0);
+    /* the frees empty the block under repair */
+    slot = repair_setup(&raised);
+    CHECK(defrag_round(budget) == (int)raised && g_devmem.drain.slot == slot && g_devmem.drain.repair);
+    for (u32 i = 0; i < 80; i++)
+        if (g_dh[i].mem && g_devmem.rec[g_dh[i].mem - 1].block == slot) {
+            vk_devmem_owner(g_dh[i].mem, NULL);
+            unmake(&g_dh[i]);
+        }
+    CHECK(!g_devmem.drain.slot && !g_devmem.drain.repair);
+    repair_done();
+    check_counts(0);
+}
+
+/* The priority classes and the defrag are the device's: where the driver has the two memory extensions, the renderer
+   turns them on (device.c), and where it has not, one class of blocks and no priorities (check_priority). Each
+   extension has its one setting, as every extension the renderer can use. No setting empties no block, or lowers the
+   GPU's heap below the driver's budget */
+static void check_no_settings(void) {
+    static const char* const exts[] = {VK_EXT_MEMORY_PRIORITY_EXTENSION_NAME,
+                                       VK_EXT_PAGEABLE_DEVICE_LOCAL_MEMORY_EXTENSION_NAME};
+    static const char* const args[] = {"vk-defrag", "vk-heap-budget-mb"};
+    CHECK(g_vk_extension_settings_count > 0 && g_setting_args_count > 0);
+    for (u32 e = 0; e < sizeof exts / sizeof exts[0]; e++) {
+        u32 found = 0;
+        for (int k = 0; k < g_vk_extension_settings_count; k++) found += !strcmp(g_vk_extension_settings[k].name, exts[e]);
+        CHECK(found == 1);
+    }
+    for (int i = 0; i < g_setting_args_count; i++)
+        for (u32 a = 0; a < sizeof args / sizeof args[0]; a++) CHECK(strcmp(g_setting_args[i], args[a]));
 }
 
 int main(void) {
@@ -704,14 +1480,25 @@ int main(void) {
     vkDestroyImage = destroy_image;
     vkFlushMappedMemoryRanges = mapped_ranges;
     vkInvalidateMappedMemoryRanges = mapped_ranges;
+    vkSetDeviceMemoryPriorityEXT = set_priority;
     check_random(0, 1024, 64, 30000); /* buffers and images share the blocks */
     check_random(0, 4096, 64, 30000); /* a granularity over a unit: they have blocks apart */
     check_random(1, 1, 4096, 30000);  /* one heap, and atoms of four units */
     check_alone();
+    check_priority();
+    check_no_settings();
+    check_defrag(0); /* no priority classes: the fallback */
+    check_defrag(1);
+    check_repair_end();
+    check_drain_alone();
+    check_drain_room();
+    check_kinds();
+    check_kind_fallback();
+    check_keep();
     check_cap();
     check_atoms(64);
     check_atoms(4096);
-    check_threads();
+    check_threads(); /* the last: the allocator's thread runs from it to the end (check_priority_ahead in it) */
     puts("vk_devmem: ok");
     return 0;
 }

@@ -1,7 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* A notice (common/utilities/notice.h) over a window's image on a Vulkan device, for the 3DS's and the Vita's windows:
-   its band's pixels written to a buffer the CPU maps and copied over the picture, after the copies that drew it */
+/* A notice (common/utilities/notice.h) over a window's image on a Vulkan device, for the 3DS's, the Vita's and the
+   GBA's windows: its band's pixels written to a buffer the CPU maps, and copied over the picture after the copies that
+   drew it, or drawn from that buffer in the rendering that drew it */
 #ifndef SNX_COMMON_GPU_VK_NOTICE_H
 #define SNX_COMMON_GPU_VK_NOTICE_H
 #include "common/utilities/notice.h"
@@ -20,4 +21,11 @@ void snx_vk_notice_destroy(SnxVkNotice* vn);
 int snx_vk_notice_record(SnxVkNotice* vn, VkCommandBuffer cb, uint32_t slot, VkImage image, VkFormat format,
                          uint32_t width, uint32_t height, int percent, const SnxNotice* n, uint64_t now_ns,
                          void (*log)(const char* text));
+/* snx_vk_notice_record's band drawn instead into the rendering open on cb, after the picture's draws there: its one
+   colour attachment is the window's image, width by height, of format B8G8R8A8 or R8G8B8A8 UNORM (another is said
+   through log once and draws nothing). It binds a pipeline and a set of its own. 1 when it was drawn; 0 when none
+   shows, the band is off the picture, or its buffer or pipeline could not be made (said through log) */
+int snx_vk_notice_draw(SnxVkNotice* vn, VkCommandBuffer cb, uint32_t slot, VkFormat format, uint32_t width,
+                       uint32_t height, int percent, const SnxNotice* n, uint64_t now_ns,
+                       void (*log)(const char* text));
 #endif

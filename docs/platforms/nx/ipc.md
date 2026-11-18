@@ -180,13 +180,13 @@ constructor under the interface's service names, in `services.c` or in the servi
 pl). Names that need constructors of their own register by hand: ldr:ro and ro:1 are one interface with two kinds of
 session, and bsd:u, bsd:a and bsd:s share one interface with bsd:s the system's.
 
-The generator is strict C99 with no dependencies, so a cross build also builds it for the machine doing the build
-(`cmake/swipc.cmake`, with that machine's compiler, `SNX_HOST_CC`). Its output is C99 as well. The tests
+The generator is strict ISO C23 with no dependencies, so a cross build also builds it for the machine doing the build
+(`cmake/swipc.cmake`, with that machine's compiler, `SNX_HOST_CC`). Its output is ISO C23 as well. The tests
 (`ctest -R swipc` in `build/default`): `tests/swipc_dispatch.c` drives the dispatchers generated from
 `tests/swipc/test.swipc` and `other.swipc` through the layout rules and the byte order of every raw argument, against
 stand-ins for what `ipc.c` gives them.
-The same output is compiled with `-std=c99 -pedantic-errors` against a C99 stand-in for `ipc.h`
-(`tests/swipc/c99/`). `tests/swipc/bad/` holds definitions the generator has to
+The same output is compiled with `-std=c23 -pedantic-errors` against an ISO C stand-in for `ipc.h`
+(`tests/swipc/iso/`). `tests/swipc/bad/` holds definitions the generator has to
 refuse, each with its line and message. What `ipc.c` itself does with a reply (the order of out objects among the move
 handles, domain ids, a NULL object) is not covered by these tests, nor by the services' own, which give the
 dispatchers stand-ins too: only the homebrew smoke test (nx_runtime_homebrew, with SNX_TEST_VULKAN) and the games go
@@ -211,7 +211,7 @@ row is there once and named by the rule, and the lookup; `tests/result_codes.py`
 `RC(...)` outside `result.h` and, in `hle/`, a result written as a number.
 
 `hle/result.h`, which `ipc.h` includes, holds `RC`, `RC_OK`, the table's constants and helpers in the style of
-Atmosphère's, written anew in C99:
+Atmosphère's, written anew in ISO C:
 
 | Macro | What it does |
 | --- | --- |
@@ -224,5 +224,5 @@ Atmosphère's, written anew in C99:
 Each statement macro is a single statement (`do { } while (0)`), so it is safe as the body of an `if` or `else`
 without braces, and evaluates each argument at most once. `R_TRY` keeps the result in a 32-bit `unsigned int` in a
 block of its own, which converts back to the function's return type, `int` for a handler or `u32` for the kernel's
-`svc_` functions. The header includes only `<stddef.h>` and the table, so strict C99 code can use it. `tests/result_macros.c`
-(`ctest -R result_macros`) builds them with `-std=c99 -pedantic-errors`.
+`svc_` functions. The header includes only `<stddef.h>` and the table, so strict ISO C code can use it. `tests/result_macros.c`
+(`ctest -R result_macros`) builds them with `-std=c23 -pedantic-errors`.

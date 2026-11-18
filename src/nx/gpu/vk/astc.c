@@ -1918,7 +1918,7 @@ int vk_astc_keep(Surf* t) {
                              .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
                                       VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                              .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
-    DevMemWant ai = {.at = DM_DEVICE};
+    DevMemWant ai = {.at = DM_DEVICE, .low = 1}; /* the texture's: the low class (ledger.c) */
     if (!bytes || bytes > g_vk.alloc_cap ||
         !VK_OK(vk_buffer_create(&bi, &ai, &t->bc7.kept, &t->bc7.kept_mem, NULL))) {
         t->bc7.kept = VK_NULL_HANDLE;

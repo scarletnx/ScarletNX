@@ -43,10 +43,10 @@ def compile_tools(out):
     library = out / 'cpu_sample.so'
     workload = out / 'cpu_sample_workload'
     with (out / 'build.log').open('w') as log:
-        subprocess.run([clang, '-std=c99', '-pedantic-errors', '-O2', '-Wall', '-Wextra', '-shared', '-fPIC',
+        subprocess.run([clang, '-std=c23', '-pedantic-errors', '-O2', '-Wall', '-Wextra', '-shared', '-fPIC',
                         str(ROOT / 'tools/cpu_sample.c'), '-pthread', '-ldl', '-lrt', '-o', str(library)],
                        check=True, stdout=log, stderr=subprocess.STDOUT)
-        subprocess.run([clang, '-std=c99', '-pedantic-errors', '-O2', '-Wall', '-Wextra',
+        subprocess.run([clang, '-std=c23', '-pedantic-errors', '-O2', '-Wall', '-Wextra',
                         str(ROOT / 'tests/support/cpu_sample_workload.c'), '-pthread', '-o', str(workload)],
                        check=True, stdout=log, stderr=subprocess.STDOUT)
     return library, workload

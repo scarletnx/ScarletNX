@@ -14,6 +14,7 @@
 #include "nx/runtime/ini.h"
 #include "snx_settings.h"
 #include <dirent.h>
+#include <errno.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -41,12 +42,22 @@ void logf_(int level, const char* fmt, ...) {
     (void)level;
     (void)fmt;
 }
+/* the message a case expects fatal to give (test_unpool_read_fails), which ends its run as passed */
+static char g_fatal_want[256];
 void fatal(const char* fmt, ...) {
+    char msg[512];
     va_list ap;
     va_start(ap, fmt);
-    vfprintf(stderr, fmt, ap);
+    vsnprintf(msg, sizeof msg, fmt, ap);
     va_end(ap);
-    abort();
+    fprintf(stderr, "%s\n", msg);
+    if (!g_fatal_want[0]) abort();
+    if (strcmp(msg, g_fatal_want)) {
+        fprintf(stderr, "memory_alias.c: the message wanted: %s\n", g_fatal_want);
+        abort();
+    }
+    printf("memory alias: a read back from the pool that fails names its step, range, offset and error\n");
+    exit(0);
 }
 void log_crash_mode(void) {}
 /* nce.c, whose NCE no game here is of: mem.c's reservation asks it first, and the crash handler gives it the
@@ -110,7 +121,7 @@ KObj* h_get_ref(u32 h, int type) {
 void kobj_ref(KObj* o) { o->refs++; }
 /* the destroys of the types svc_mem.c makes, as kernel.c's kobj_destroy picks them */
 void kobj_unref(KObj* o) {
-    if (--o->refs) return;
+    if (!o || --o->refs) return;
     if (o->type == KO_SHMEM)
         kshmem_destroy(o);
     else if (o->type == KO_TMEM)
@@ -581,6 +592,44 @@ static void test_migrate_placed(void) {
     munmap(v, (size_t)MIB);
     close(f);
 }
+/* Pages a GPU owner moved into the pool (mem_own_prepare), which stay there once it lets go: they move into a
+   buffer as the reservation's own pages do (uma.c imports them so), with their bytes, alone or beside the
+   reservation's own, and the pool has them back. A service's pool pages (shared memory's) stay where they are */
+static void test_migrate_owned(void) {
+    const u64 a = HEAP_BASE + 48 * MIB, size = 0x4000;
+    MemPoolRun runs[4];
+    u32 n;
+    MemBlock b;
+    u8* v;
+    u64 off, used = mem_pool_used();
+    int f = buffer(size, &v);
+    CHECK(mem_map(a, size, MS_NORMAL, PERM_RW) == 0);
+    for (u64 i = 0; i < size; i++) GP(a)[i] = fill(i);
+    CHECK(mem_own_prepare(a, size, runs, 4, &n) == 0 && n == 1 && mem_pool_used() == used + size);
+    mem_query(a, &b);
+    CHECK(b.pool && GP(a)[5] == fill(5));
+    CHECK(mem_movable(a, size) && mem_migrate(a, size, f) == 0);
+    CHECK(mem_pool_used() == used && v[5] == fill(5) && v[size - 1] == fill(size - 1));
+    mem_query(a, &b);
+    CHECK(!b.pool);
+    GP(a)[7] = 0x5A;
+    CHECK(v[7] == 0x5A);
+    CHECK(mem_unmigrate(a, size) == 0 && GP(a)[7] == 0x5A);
+    /* one pool page among the reservation's own */
+    CHECK(mem_own_prepare(a + 0x1000, 0x1000, runs, 4, &n) == 0 && n == 1 && mem_pool_used() == used + 0x1000);
+    CHECK(mem_migrate(a, size, f) == 0 && mem_pool_used() == used);
+    CHECK(v[7] == 0x5A && v[0x1003] == fill(0x1003) && v[0x2003] == fill(0x2003));
+    CHECK(mem_unmigrate(a, size) == 0);
+    /* a service's mapping of the pool pages outside the reservation, which a move would leave behind */
+    u8* p = mem_pool_host(0x1000, &off);
+    CHECK(p && mem_map_pool(a + size, off, 0x1000, MS_SHARED, PERM_RW) == 0);
+    CHECK(!mem_movable(a + size, 0x1000) && mem_migrate(a + size, 0x1000, f) == MEM_BADSTATE);
+    CHECK(mem_unmap_pool(a + size, off, 0x1000, MS_SHARED) == 0);
+    mem_pool_host_free(p, off, 0x1000);
+    CHECK(mem_unmap(a, size) == 0 && mem_pool_used() == used);
+    munmap(v, (size_t)size);
+    close(f);
+}
 #endif
 
 /* GPU-owned physical pages retain their normal guest state after moving into the alias pool. */
@@ -608,10 +657,53 @@ static void test_physical_pool(void)
 	CHECK(mem_unmap_physical(a, 0x4000) == 0);
 }
 
+#if defined(__linux__)
+/* the pool's memfd, by the name /proc gives it (plat_posix.c's ALIAS_NAME): -1 when there is none */
+static int pool_fd(void) {
+    DIR* d = opendir("/proc/self/fd");
+    struct dirent* e;
+    int fd = -1;
+    if (!d) return -1;
+    while (fd < 0 && (e = readdir(d)) != NULL) {
+        char path[64], to[64];
+        ssize_t n;
+        snprintf(path, sizeof path, "/proc/self/fd/%s", e->d_name);
+        n = readlink(path, to, sizeof to - 1);
+        if (n <= 0) continue;
+        to[n] = 0;
+        if (!strcmp(to, "/memfd:snx-alias (deleted)")) fd = atoi(e->d_name);
+    }
+    closedir(d);
+    return fd;
+}
+/* a view's source given back while the pool can't give its bytes (cut short under it here): the fatal names the step
+   that failed, the range, its offset in the pool and the error */
+static void test_unpool_read_fails(void) {
+    const u64 a = HEAP_BASE + 0x100000, size = 0x10000;
+    u64 first;
+    MemBlock b;
+    int fd = pool_fd();
+    CHECK(fd >= 0);
+    CHECK(mem_pool_host(0x3000, &first)); /* pool pages before the range's, so its offset isn't 0 */
+    CHECK(mem_alias_begin(a, size) == 0);
+    mem_query(a, &b);
+    CHECK(b.pool && b.pool - 1 + (a - b.addr) != 0);
+    snprintf(
+        g_fatal_want, sizeof g_fatal_want,
+        "Could not put 64 KiB of guest memory at %#llx back from offset %#llx of the alias pool: reading the pool's "
+        "contents into them failed (%s)",
+        (unsigned long long)a, (unsigned long long)(b.pool - 1 + (a - b.addr)), strerror(ENXIO));
+    CHECK(ftruncate(fd, 0) == 0);
+    mem_alias_end(a, size);
+    CHECK(!"the pages came back from a pool with no bytes");
+}
+#endif
+
 int main(int argc, char** argv) {
-    int copies = 0, nce = 0;
+    int copies = 0, nce = 0, unpool_fails = 0;
     /* Debug settings as the runtime takes them, --key=value (--write_tracking=1: the tracking of hosts without Linux
-       6.7's); --copies runs the Windows path on a host that has a pool (alias_pool=0); --nce NCE's layout */
+       6.7's); --copies runs the Windows path on a host that has a pool (alias_pool=0); --nce NCE's layout;
+       --unpool-read-fails test_unpool_read_fails alone, as it ends the run */
     for (int i = 1; i < argc; i++) {
         const char* eq = strchr(argv[i], '=');
         char key[64];
@@ -622,6 +714,10 @@ int main(int argc, char** argv) {
         }
         if (!strcmp(argv[i], "--nce")) {
             nce = 1;
+            continue;
+        }
+        if (!strcmp(argv[i], "--unpool-read-fails")) {
+            unpool_fails = 1;
             continue;
         }
         CHECK(!strncmp(argv[i], "--", 2) && eq && (size_t)(eq - argv[i] - 2) < sizeof key);
@@ -679,6 +775,13 @@ int main(int argc, char** argv) {
     g_code_memory = 55 * MIB;
     g_main_stack_size = MIB;
     CHECK(svc_set_heap_size(2 * MIB) == 0);
+    if (unpool_fails) {
+#if defined(__linux__)
+        test_unpool_read_fails();
+#endif
+        printf("skipped: the pool is cut short through its memfd, which only Linux names in /proc\n");
+        return 77;
+    }
     CHECK(mem_map(info, 0x1000, MS_STACK, PERM_RW) == 0);
     check_tracking(HEAP_BASE, 2 * MIB);
     if (nce) { /* the tracking that the runtime's probe found, at the moved heap */
@@ -695,6 +798,7 @@ int main(int argc, char** argv) {
 #if defined(__linux__)
     test_migrate();
     test_migrate_placed();
+    test_migrate_owned();
 #endif
     CHECK(mapping_depth == 0);
     if (g_ww) CHECK(plat_ww_scan(g_mem, AS_SIZE, on_written) == 0); /* tracking never went off */

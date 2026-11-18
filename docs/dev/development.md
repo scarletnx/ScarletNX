@@ -32,15 +32,20 @@ cmake --build build
 ./build/scarletnx -r "$work/Game" Game --jobs 8
 ctest --test-dir build --output-on-failure
 python3 tests/run_filesystem_tree.py --cc clang --sanitize
-clang -fsyntax-only -Wall -I src src/common/cpu/aarch64/cpu_helpers.c
+clang -std=gnu23 -fsyntax-only -Wall -I src src/common/cpu/aarch64/cpu_helpers.c
+cmake --build build --target cppcheck
 ```
 
 Runtime relink deploys to the data folder's `recompiled/` by default (`SNX_RECOMPILED_DIR`). Recompiler/`src/common/cpu/aarch64/` edits require `-r`.
 Avoid builds during timing runs. Formatting isn't checked: `git clang-format` (clang-format 23) on the changed lines.
+The `cppcheck` target runs cppcheck over every file of `src/` and `tests/` the tree compiles, after a build, and shows
+every finding: `cmake/cppcheck.cfg` says what our headers cannot (`snx_alloc` never returns NULL). A finding fails the
+target unless its check is in `cmake/cppcheck-not-zero.txt`, the checks that still have findings; a check brought to
+zero leaves that list, and fails the target from then on.
 FS tests use production tree/HLE + synthetic temp data; `--only tree|service` selects a suite.
 
 CI: Linux/Windows builds, ABI syntax, native tool/FS regressions, optional Python diagnostics, the Linux AppImages
-and the Windows zip (each then run as installed), the Android APK, and [edenprobe](edenprobe.md)'s probes on lavapipe
+and the Windows zip (run as installed on `main`), the Android APK, and [edenprobe](edenprobe.md)'s probes on lavapipe
 against the cases that passed before (`scripts/edenprobe.py`). A push to `main` cancels the build of the one before it
 still running, as a push to a pull request does that pull request's. `.github/workflows/publish.yml` publishes what
 builds everywhere, each said on Discord (`scripts/publish-builds.py`): a version tag pushed (`v1.0.0`; `v1.0.0-rc1` a
@@ -383,7 +388,7 @@ build/snx-shaderc corpus --validate --out translated
 `--validate` needs `spirv-val`. `--out` writes SPIR-V modules for build comparisons.
 
 The instruction decoder is generated at build time. `src/nx/gpu/shader/sm53.decode` lists each encoding (a
-16-bit pattern of the word's top bits), and `tools/decodetree` (strict C99, built for the build machine in a cross
+16-bit pattern of the word's top bits), and `tools/decodetree` (strict ISO C23, built for the build machine in a cross
 build) checks it and writes a switch-based decoder into the build folder, so nothing is set up at run time.
 Patterns that overlap must be in a `{ }` group, which tries them in order: the narrower first. A new opcode is a
 pattern there and an entry of `SM53_OPS` in `translator.h` (its `O_` name and display name), from which `decode.c`
@@ -520,7 +525,7 @@ no setting names refused, one whose driver lacks a command left out of the devic
 ## SVCs
 
 `src/nx/hle/svc/hos.svc` declares the kernel's SVCs as Eden's SVC generator does, and `tools/svcgen/svcgen.c`
-(strict C99, built for the build machine in a cross build, as swipc is) lays out each SVC's registers in the
+(strict ISO C23, built for the build machine in a cross build, as swipc is) lays out each SVC's registers in the
 64-bit and 32-bit ABIs from the declaration. It writes `hle/svc/hos.svc.inc` into the build folder: the handlers'
 prototypes, a wrapper per SVC and ABI, and the tables by number that both kinds of thread dispatch through. A new
 SVC is implemented by dropping its `stub` mark in `hos.svc` and defining `svc_<Name>` in `svc.c`, with the

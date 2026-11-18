@@ -303,6 +303,30 @@ setting Anisotropic filtering
     startup
     words Game's|#x
     help 0 = textures filtered as the game asks, 2 to 16 = sharper surfaces seen at an angle
+setting Upscaler
+    key upscaler
+    text 16
+    default off
+    words off=Off|bilinear=Bilinear|fsr1=AMD FSR 1|nis=NVIDIA NIS|sgsr=Qualcomm SGSR
+    help The filter that grows the game's frame to the window: Off as the console's window always drew it (smooth on
+    help the Switch and the Vita, sharp pixels on the 3DS), Bilinear smooth, AMD FSR 1, NVIDIA NIS and Qualcomm SGSR
+    help with sharper edges. NIS grows a frame twice at most: past that FSR 1 runs, and the log says so. A Switch game
+    help takes a change while it runs, the Upscaler shortcut's for the run; a 3DS or Vita game takes it at start
+setting Upscaler sharpness
+    key upscaler_sharpness
+    int 0 100
+    default 75
+    help How sharp AMD FSR 1, NVIDIA NIS and Qualcomm SGSR draw the frame's edges: 0 the softest, 100 the sharpest
+setting Anti-aliasing
+    key anti_aliasing
+    text 8
+    default off
+    words off=Off|auto=Auto|fxaa=FXAA|smaa=SMAA|ssaa2=SSAA 2x|ssaa4=SSAA 4x
+    help Smoothing of the shown frame's edges, after the upscaler: Auto = FXAA where the window shows the frame at 1.25
+    help times its size or more each way, else none; FXAA and SMAA filter the frame at the window's size (with the
+    help upscaler Off, scaled as the window scales it, the 3DS in sharp pixels); SSAA 2x and 4x draw it 2 or 4 times as
+    help large and shrink it. A Switch game takes a change while it runs, the Anti-aliasing shortcut's for the run; a
+    help 3DS or Vita game takes it at start
 setting Game HDR
     key hdr_game
     label Game HDR output
@@ -997,6 +1021,22 @@ setting TV mode shortcut
     set hotkey_set
     help The key, as hotkey_help's, that steps the TV mode round On, Off and Auto while the game runs, as the game's
     help menu's TV mode row does: for this run, docked keeps the .ini's choice
+setting Upscaler shortcut
+    key hotkey_upscaler
+    text 64
+    default Ctrl+U
+    label Upscaler
+    set hotkey_set
+    help The key, as hotkey_help's, that steps the upscaler round Off, Bilinear, AMD FSR 1, NVIDIA NIS and Qualcomm
+    help SGSR while the game runs: for this run, upscaler keeps the .ini's choice
+setting Anti-aliasing shortcut
+    key hotkey_anti_aliasing
+    text 64
+    default Ctrl+Shift+A
+    label Anti-aliasing
+    set hotkey_set
+    help The key, as hotkey_help's, that steps the anti-aliasing round Off, Auto, FXAA, SMAA, SSAA 2x and SSAA 4x while
+    help the game runs: for this run, anti_aliasing keeps the .ini's choice
 
 table g_network_ini
 setting Network
@@ -1409,11 +1449,11 @@ setting Pipeline stats
     text 1024
     default ""
     startup
-    help A CSV file that gets the driver's statistics of each whole and optimized graphics pipeline
-    help (VK_KHR_pipeline_executable_properties): for each shader stage, the instructions, registers, spills and the
-    help others that the driver reports, by the program hashes of the log's lines (a shader corpus file of the program
-    help starts with the same first 8 hex digits). On some drivers, pipelines made
-    help with it are not the ones in the pipeline cache of runs without it. Empty: none
+    help A CSV file that gets the driver's statistics of each whole and optimized graphics pipeline, and of each
+    help compute pipeline (VK_KHR_pipeline_executable_properties): for each shader stage, the instructions, registers,
+    help spills and the others that the driver reports, by the program hashes of the log's lines (a shader corpus file
+    help of the program starts with the same first 8 hex digits). Draws that bind shader objects get no rows. On some
+    help drivers, pipelines made with it are not the ones in the pipeline cache of runs without it. Empty: none
 setting ASTC dump
     key astc_dump
     text 1024
@@ -1574,6 +1614,22 @@ setting Descriptor buffers
     help barriers are skipped, which the tracking of targets and buffers orders. 0 = descriptor sets for graphics
     help too, where a fragment barrier ends the render pass only after storage writes or reads that are still
     help pending, or after guest memory used in place
+setting Indirect copies
+    key vk_copy_indirect
+    int 0 1
+    default 1
+    startup
+    words Off|On
+    help 1 = where the device has VK_KHR_copy_memory_indirect and device addresses, the copies of GPU-owned results
+    help into one buffer are made by one command, from a list the GPU reads. 0 = one copy command each
+setting Texture loads in place
+    key vk_inplace_loads
+    int 0 1
+    default 1
+    startup
+    words Off|On
+    help 1 = where the device has device addresses, a block linear texture load reads the bytes that GPU results
+    help hold where they are, and the CPU's bytes from staging. 0 = the results' bytes are copied into staging first
 setting Vulkan recording thread
     key vk_record
     int 0 1
@@ -1997,7 +2053,9 @@ setting @VK_EXT_index_type_uint8
 setting @VK_EXT_load_store_op_none
 setting @VK_EXT_map_memory_placed
 setting @VK_EXT_memory_budget
+setting @VK_EXT_memory_priority
 setting @VK_EXT_mesh_shader
+setting @VK_EXT_pageable_device_local_memory
 setting @VK_EXT_pipeline_creation_feedback
 setting @VK_EXT_pipeline_robustness
 setting @VK_EXT_post_depth_coverage
@@ -2017,6 +2075,7 @@ setting @VK_EXT_vertex_input_dynamic_state
 setting @VK_GOOGLE_display_timing
 setting @VK_KHR_calibrated_timestamps
 setting @VK_KHR_cooperative_matrix
+setting @VK_KHR_copy_memory_indirect
 setting @VK_KHR_dynamic_rendering
 setting @VK_KHR_dynamic_rendering_local_read
 setting @VK_KHR_extended_flags

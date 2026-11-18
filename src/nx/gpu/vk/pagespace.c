@@ -96,8 +96,13 @@ static u64 g_pages_system; /* granules that took system memory, the GPU's having
    since the oldest of its pages was taken */
 enum { PG_CUR, PG_NEW, PG_OLD, PG_MINE, PG_OLD_CPU /* PG_OLD, by a write of the CPU */, PG_CPU = 0x10, PG_GPU = 0x20 };
 
+struct PgRegion;
 typedef struct {
     DevMem mem;  /* a sparse region's granule: its memory */
+    /* its region and its index there, for a move of its memory (vk_pages_move_begin): a granule in the GPU's memory
+       has VK_MOVE_PAGE of itself as the owner of its memory until a draw writes it (own) */
+    struct PgRegion* region;
+    u32 index;
     u32 slab;    /* with slabs: the region's slab it is in, plus one */
     /* the owner its pages are published under once a draw wrote them (vk_pages_write), with a reference: NULL until
        then. A landing waits for the submission that last wrote this granule, not the region */
@@ -123,7 +128,7 @@ typedef struct {
        upload commands run before all of them */
     u64 late;
 } PgSlab;
-typedef struct {
+typedef struct PgRegion {
     VkBuffer buf; /* the sparse buffer, or none with slabs */
     PgSlab* slab;
     u32 nslab;
@@ -283,7 +288,8 @@ static PgGran* gran_get(PgRegion* r, u64 g) {
     if (!q) return NULL;
     VkMemoryRequirements req = g_pages.req;
     req.size = PG_SIZE;
-    DevMemWant aci = {.at = DM_DEVICE};
+    /* in the GPU's memory it moves out of a block that is emptied (vk_pages_move_begin), until a draw writes it */
+    DevMemWant aci = {.at = DM_DEVICE, .moves = 1};
     DevMemInfo info;
     /* the GPU's memory, else system memory, where the GPU reads it over the bus: a range refused for want of memory
        is copied to the ring at every submission, and on a GPU of 2 GB under a desktop the GPU's memory has no room
@@ -291,6 +297,7 @@ static PgGran* gran_get(PgRegion* r, u64 g) {
     VkResult got = vk_devmem_alloc(&req, &aci, &q->mem, &info);
     if (got != VK_SUCCESS) {
         aci.at = DM_SYSTEM;
+        aci.moves = 0;
         got = vk_devmem_alloc(&req, &aci, &q->mem, &info);
         if (got == VK_SUCCESS) g_pages_system++;
     }
@@ -306,16 +313,61 @@ static PgGran* gran_get(PgRegion* r, u64 g) {
         return NULL;
     }
     vk_mem_track(q->mem, VK_OWN_BUFFER);
+    q->region = r;
+    q->index = (u32)g;
+    if (aci.moves) vk_devmem_owner(q->mem, VK_MOVE_PAGE(q));
     g_pages.bound++;
     return r->gran[g] = q;
 }
 
 u64 vk_pages_system(void) { return g_pages_system; }
+
+/* A granule moved out of a block that is emptied (the defrag, texture.c), as a sparse texture's block is: its bytes
+   copied out to scratch on the GPU and submitted, its range of the sparse buffer bound to the new memory in the batch,
+   which waits for that work, and its bytes copied back in the next submission. Not one a draw wrote (own), whose
+   writes may come from the compute queue, which none of these waits for. The owner is the granule, which gives up
+   its memory's owner before it goes (gran_drop) */
+int vk_pages_move_begin(void* owner, DevMem a, DevMem* to, VkBuffer* buf, u64* offset) {
+    *to = 0;
+    const PgGran* q = (const PgGran*)(void*)((uintptr_t)owner & ~(uintptr_t)3u);
+    if (q->mem != a || q->own || !q->region || !q->region->buf) return -1;
+    *buf = q->region->buf;
+    *offset = (u64)q->index << PG_SHIFT;
+    VkMemoryRequirements req = g_pages.req;
+    req.size = PG_SIZE;
+    const DevMemWant want = {.at = DM_DEVICE, .existing = 1};
+    DevMemInfo info;
+    return vk_devmem_alloc(&req, &want, to, &info) == VK_SUCCESS ? 1 : 0;
+}
+int vk_pages_move_end(void* owner, DevMem a, DevMem to) {
+    PgGran* q = (PgGran*)(void*)((uintptr_t)owner & ~(uintptr_t)3u);
+    if (q->mem != a || q->own) { /* gone meanwhile, or written: nothing moves */
+        vk_devmem_free(to);
+        return 0;
+    }
+    DevMemInfo info;
+    vk_devmem_info(to, &info);
+    const VkSparseMemoryBind b = {.resourceOffset = (u64)q->index << PG_SHIFT,
+                                  .size = PG_SIZE,
+                                  .memory = info.memory,
+                                  .memoryOffset = info.offset};
+    vk_devmem_owner(a, NULL); /* not given out again: freed after the batch */
+    if (!vk_buffer_sparse_bind(q->region->buf, &b, a, PG_SIZE, VK_BIND_MOVE)) { /* no room for the bind: it stays */
+        vk_devmem_owner(a, owner);
+        vk_devmem_free(to);
+        return 0;
+    }
+    vk_mem_track(to, VK_OWN_BUFFER);
+    vk_devmem_owner(to, owner);
+    q->mem = to;
+    return 1;
+}
 /* granule g of r gives its memory back, once the work that may still read it is done */
 static void gran_drop(PgRegion* r, u64 g) {
     PgGran* q = r->gran[g];
     VkSparseMemoryBind b = {.resourceOffset = g << PG_SHIFT, .size = PG_SIZE};
     if (!vk_buffer_sparse_bind(r->buf, &b, q->mem, PG_SIZE, 1)) return; /* no room for the bind now: it stays */
+    vk_devmem_owner(q->mem, NULL); /* not moved once it is let go (devmem.h) */
     r->gran[g] = NULL;
     g_pages.bound--;
     g_pages.stats.let_go++;
@@ -847,6 +899,8 @@ int vk_pages_write(u64 gva, u64 len, u64 align, int ordered, VkBuffer* buf, u64*
             g_pages.stats.write_refused[PG_WNO_OWNER]++;
             return 0;
         }
+        /* a draw writes it now, and its writes may come from the compute queue, which a move does not wait for */
+        vk_devmem_owner(q->mem, NULL);
         /* the first of all: the reads recorded so far in this submission were not kept */
         if (!g_pages.owners++) {
             order_begin();

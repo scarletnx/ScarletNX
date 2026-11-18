@@ -27,7 +27,7 @@
    order that changes from run to run where no field refers to another; this one keeps the order the fields are
    written in, which is also valid.
 
-   It is strict C99 and depends on nothing, so a cross build can build it for the machine it runs on. */
+   It is strict ISO C23 and depends on nothing, so a cross build can build it for the machine it runs on. */
 #include "decodetree.h"
 #include <ctype.h>
 #include <stdarg.h>

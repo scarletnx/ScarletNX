@@ -215,6 +215,7 @@ static int vkr_start(void) {
     if (g_vk_anisotropy > 1 && !g_vk.feat.samplerAnisotropy)
         LOG("vulkan: this GPU has no anisotropic filtering, so anisotropy=%d does nothing\n", g_vk_anisotropy);
     if (g_vk_scale != 1.0f) LOG("vulkan: render targets at %.2fx\n", g_vk_scale);
+    if (!g_opt_headless) vk_present_quad_effects_init();
     vk_cmd_init();
     vk_render_upload_cache_reset();
     vk_pipeline_init();
@@ -1069,7 +1070,40 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
             vk_vrs_log();
             vk_finishes_log();
             vk_ww_stats(600);
+            {
+                GpuPollStats ps;
+                gpu_poll_stats(&ps);
+                LOG("gpu: the GPU thread slept %llu times after a kick (%.1f ms), %llu after new work (%.1f ms), %llu to "
+                    "the timeout (%.1f ms); polls not done: %llu at an event, %llu at a sync wait, %llu settling, %llu "
+                    "for a present's turn, %llu other\n",
+                    (unsigned long long)ps.sleeps[0], (double)ps.sleep_ns[0] / 1e6, (unsigned long long)ps.sleeps[1],
+                    (double)ps.sleep_ns[1] / 1e6, (unsigned long long)ps.sleeps[2], (double)ps.sleep_ns[2] / 1e6,
+                    (unsigned long long)ps.misses[GPU_POLL_EVENT], (unsigned long long)ps.misses[GPU_POLL_SYNC],
+                    (unsigned long long)ps.misses[GPU_POLL_SETTLE], (unsigned long long)ps.misses[GPU_POLL_PRESENT],
+                    (unsigned long long)ps.misses[GPU_POLL_OTHER]);
+            }
             vk_descriptors_stats();
+            static u64 cut_was, skipped_was;
+            if (g_vk_publish_reads_cut != cut_was)
+                LOG("vulkan: %llu publishes read only the bytes their flush leaves, %.1f MB not read\n",
+                    (unsigned long long)(g_vk_publish_reads_cut - cut_was),
+                    (double)(g_vk_publish_bytes_skipped - skipped_was) / 1048576.0);
+            cut_was = g_vk_publish_reads_cut;
+            skipped_was = g_vk_publish_bytes_skipped;
+            static u64 inplace_runs_was, inplace_bytes_was;
+            if (g_vk_inplace_runs != inplace_runs_was)
+                LOG("vulkan: texture loads read %llu runs of GPU results in place, %.1f MB not copied\n",
+                    (unsigned long long)(g_vk_inplace_runs - inplace_runs_was),
+                    (double)(g_vk_inplace_bytes - inplace_bytes_was) / 1048576.0);
+            inplace_runs_was = g_vk_inplace_runs;
+            inplace_bytes_was = g_vk_inplace_bytes;
+            static u64 indirect_cmds_was, indirect_copies_was;
+            if (g_vk_copy_indirect_cmds != indirect_cmds_was)
+                LOG("vulkan: %llu indirect copies took %llu copies of kept results\n",
+                    (unsigned long long)(g_vk_copy_indirect_cmds - indirect_cmds_was),
+                    (unsigned long long)(g_vk_copy_indirect_copies - indirect_copies_was));
+            indirect_cmds_was = g_vk_copy_indirect_cmds;
+            indirect_copies_was = g_vk_copy_indirect_copies;
             /* what the GPU engines keep on the GPU (docs/layers/gpu/ownership.md), and what the CPU had to wait for */
             u64 by[OWN_BY_N];
             own_landings_by(by);
@@ -1108,6 +1142,7 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
        of the frame after its present, which they never hold back */
     vk_tex_kind_frame();
     vk_tex_later_frame();
+    vk_tex_defrag_frame();
     if (recreate && !g_lost && !g_vk.sc_lost) { /* not when this frame's create found the surface lost */
         vk_finish();
         vk_swapchain_create(kind);
@@ -1532,5 +1567,6 @@ const Renderer vk_renderer = {
     .save = vk_pipeline_save,
     .release_window = vk_window_release,
     .prepare = vk_pipeline_prepare,
+    .step_effect = vk_present_quad_effects_step,
 };
 const Renderer* g_renderer = &vk_renderer;

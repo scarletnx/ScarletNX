@@ -270,7 +270,7 @@ int main(int argc, char** argv) {
     /* the near form, as exlaunch writes it for a function within a b's reach: a pc that is no trampoline is no hook's */
     memset(guest + TRAMP, 0, 0x40);
     memcpy(guest + TRAMP, &g_host.hook.head[1][0], 4);
-    snx_st_le32(guest + TRAMP + 4, 0x14000000u | ((u32)((i64)((ANSWER + 4) - (TRAMP + 4)) >> 2) & 0x3FFFFFFu));
+    snx_st_le32(guest + TRAMP + 4, 0x14000000u | ((u32)((u64)((ANSWER + 4) - (TRAMP + 4)) >> 2) & 0x3FFFFFFu));
     assert(hook_trampoline(TRAMP + 0x100) == NULL && hook_trampoline(TRAMP + 2) == NULL);
     /* its first run takes answer's ext_skyline hook, which takes its slot: the mod's call of the original runs the
        handler with its arguments */

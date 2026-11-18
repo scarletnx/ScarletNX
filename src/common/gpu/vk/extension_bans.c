@@ -889,7 +889,7 @@ int vk_extension_settings(SnxVkExtensions* e, const VkExtensionSetting* s, uint3
     g_extension_settings.count = 0;
     for (uint32_t i = 0; i < g_extension_bans.count; i++) g_extension_bans.bans[i].forced = 0;
     if (count > VK_EXTENSION_SETTINGS) {
-        snprintf(err, n, "%u extension settings, past the %u the renderer keeps", count, VK_EXTENSION_SETTINGS);
+        snprintf(err, n, "%u extension settings, past the %u the renderer keeps", count, (unsigned)VK_EXTENSION_SETTINGS);
         return 0;
     }
     for (uint32_t k = 0; k < count; k++) {

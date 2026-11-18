@@ -25,6 +25,8 @@
 #include "nx/runtime/options.h"
 #include "nx/runtime/platform/plat.h"
 #include "nx/runtime/platform/log.h"
+#include <stdarg.h>
+#include <stdio.h>
 #include <string.h>
 
 u64 nvn_now(void) { return plat_ns() + (u64)__atomic_load_n(&g_nvn.queue.clock, __ATOMIC_RELAXED); }
@@ -47,6 +49,22 @@ static void fence_at(NvnSync* s, u32 syncpt, u32 value, u32 shown, u64 ready) {
     s->shown = shown;
     s->ready = ready;
     __atomic_store_n(&s->fenced, 1, __ATOMIC_RELEASE);
+}
+
+/* A message on the trace's timeline when a profiler is attached: the fences and presents a queue promises, by
+   syncpoint and value, and the game's call that asked (its return address), which the waits' zones name too. One
+   game waits on its queue's syncpoint for 40% of each frame, and the trace showed the wait, not the call or the
+   fence it waits for */
+/* the guest call's return address for a trace message; the tests call the queue functions with no CPU */
+static unsigned long long caller(const CPU* c) { return c ? (unsigned long long)c->x[30] : 0; }
+static void trace_msg(const char* fmt, ...) {
+    if (!snx_tracy_attached()) return;
+    char msg[128];
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(msg, sizeof msg, fmt, ap);
+    va_end(ap);
+    if (n > 0 && n < (int)sizeof msg) SNX_MSG(msg, (size_t)n);
 }
 
 /* ============================================================ queue */
@@ -234,6 +252,7 @@ void nvn_QueueSubmitCommands(CPU* c, u64 q, i32 n, u64 handles) {
     (void)c;
     __atomic_add_fetch(&g_nvn.queue.submits, 1, __ATOMIC_RELAXED);
     o->submits++;
+    SNX_ZONE_V(z, "nvn submit", n > 0 ? (u64)n : 0);
     if (n > 0) {
         u64 ready = queue_ready(o);
         nvn_replay_submit(o->replay, (u32)n, handles, &ready, &o->shown);
@@ -247,6 +266,8 @@ void nvn_QueueFenceSync(CPU* c, u64 q, u64 sync, i32 condition, i32 flags) {
     (void)condition;
     (void)flags;
     nvn_replay_fence(o->replay, sync, queue_ready(o), o->shown);
+    const NvnSync* s = NVN_OBJ(const NvnSync, sync);
+    trace_msg("nvn queue fence %u=%u from %llx", s->syncpt, s->value, caller(c));
 }
 /* A sync's present on the display, its shown value on the presents' syncpoint: waited for until the game's deadline
    (start + left, left < 0 for none), or two frame periods past the sync's ready time, after which the display counts
@@ -317,6 +338,9 @@ static i32 sync_wait(CPU* c, u64 sync, u64 timeout) {
 i32 nvn_SyncWait(CPU* c, u64 sync, u64 timeout) {
     i32 r;
     if (!timeout) return sync_wait(c, sync, timeout);
+    const NvnSync* s = NVN_OBJ(const NvnSync, sync);
+    SNX_ZONE_V(z, "nvn sync wait", (u64)s->syncpt << 32 | s->value);
+    trace_msg("nvn sync wait %u=%u shown %u from %llx", s->syncpt, s->value, s->shown, caller(c));
     nvn_wait_begin();
     r = sync_wait(c, sync, timeout);
     nvn_wait_end();
@@ -563,6 +587,7 @@ static void slot_wait(const NvnWindow* o, i32 i) {
     u64 now = nvn_now();
     int drawn = !o->drawn_syncpt[i] || syncpt_wait(o->drawn_syncpt[i], o->drawn[i], 0);
     if (o->shown_at[i] <= now && drawn) return;
+    SNX_ZONE_V(z, "nvn acquire wait", (u64)o->drawn_syncpt[i] << 32 | o->drawn[i]);
     nvn_wait_begin();
     if (o->shown_at[i] > now) plat_sleep_ns((i64)(o->shown_at[i] - now));
     if (!drawn) syncpt_wait(o->drawn_syncpt[i], o->drawn[i], -1); /* the present is queued: the replay reaches it */
@@ -668,6 +693,7 @@ void nvn_QueuePresentTexture(CPU* c, u64 q, u64 w, i32 index) {
     p.period_ns = __atomic_load_n(&g_opt_fps, __ATOMIC_RELAXED) == SNX_FPS_GAME ? period : 0;
     p.released_ns = index >= 0 && index < 4 ? host_ns(o->released[index]) : 0;
     value = nvn_replay_present(queue->replay, &p, &shown);
+    trace_msg("nvn present %u=%u texture %d from %llx", nvn_replay_syncpt(queue->replay), value, index, caller(c));
     o->on_display[1] = o->on_display[0];
     o->on_display[0] = paced ? shown : 0;
     if (index >= 0 && index < 4) {

@@ -55,13 +55,15 @@ static FILE* stats_file(void) {
         WARN("vulkan: pipeline_stats: %s can't be written: no pipeline statistics\n", g_settings.pipeline_stats);
         return NULL;
     }
-    fputs("what,vs,tcs,tes,gs,fs,executable,stages,subgroup,statistic,value\n", g_pstats.f);
-    LOG("vulkan: pipeline_stats: the driver's statistics of each whole and optimized graphics pipeline go to %s\n",
+    fputs("what,vs,tcs,tes,gs,fs,cs,executable,stages,subgroup,statistic,value\n", g_pstats.f);
+    LOG("vulkan: pipeline_stats: the driver's statistics of each whole and optimized graphics pipeline, and of each "
+        "compute pipeline, go to %s\n",
         g_settings.pipeline_stats);
     return g_pstats.f;
 }
 
-void vk_pipeline_stats_write(VkPipeline p, const char* what, const u64 programs[5]) {
+/* p's rows, its stages' programs in the columns vs to cs */
+static void stats_rows(VkPipeline p, const char* what, const u64 programs[6]) {
     if (!g_vk.has_exec_stats || !p) return;
     VkPipelineInfoKHR pi = {.sType = VK_STRUCTURE_TYPE_PIPELINE_INFO_KHR, .pipeline = p};
     uint32_t n = 0;
@@ -87,7 +89,7 @@ void vk_pipeline_stats_write(VkPipeline p, const char* what, const u64 programs[
         stage_names(props[e].stages, stages, sizeof stages);
         for (uint32_t i = 0; i < ns; i++) {
             fprintf(f, "%s", what);
-            for (int s = 0; s < 5; s++) {
+            for (int s = 0; s < 6; s++) {
                 if (programs[s])
                     fprintf(f, ",%016llx", (unsigned long long)programs[s]);
                 else
@@ -115,4 +117,12 @@ void vk_pipeline_stats_write(VkPipeline p, const char* what, const u64 programs[
     }
     if (f) fflush(f);
     pm_unlock(&g_pstats.lock);
+}
+void vk_pipeline_stats_write(VkPipeline p, const char* what, const u64 programs[5]) {
+    const u64 all[6] = {programs[0], programs[1], programs[2], programs[3], programs[4], 0};
+    stats_rows(p, what, all);
+}
+void vk_pipeline_stats_write_compute(VkPipeline p, u64 program) {
+    const u64 all[6] = {0, 0, 0, 0, 0, program};
+    stats_rows(p, "compute", all);
 }

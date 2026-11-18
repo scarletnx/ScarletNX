@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
-# Links a pull request's builds from one comment, which .github/workflows/pr-checks.yml rewrites each time a run of
+# Links a pull request's builds from one comment, which .github/workflows/publish.yml rewrites each time a run of
 # .github/workflows/build.yml on it ends, so they can be had from the pull request itself. A run of a commit that is no
 # longer the branch's head leaves the comment alone.
 #
@@ -9,11 +9,11 @@
 #
 # PR may be empty: then it is the open pull request whose head is SHA, and with none there is nothing to link. A job of
 # the run that did not succeed gets a line, by its id in build.yml, but edenprobe, which builds nothing: its line is its
-# results, the notices its jobs leave (the NRO's and the APK's, each a job of its own; a job skipped on a pull request
-# that changes nothing it loads counts only when both were), linked to the run's summary (docs/dev/edenprobe.md).
+# results, the notices its job leaves (the NRO's and the APK's), linked to the run's summary (docs/dev/edenprobe.md).
 # The checks of a package as installed, the sanitizers' build, the A64 differential's QEMU reference, the job that says
-# whether a pull request needs it and the scheduled run's Nightly due make no package, so they get none. NEEDS, when
-# set, stands for the run's jobs, in the shape of toJSON(needs). --print writes the comment to stdout and posts nothing.
+# whether a pull request needs it and the scheduled run's Nightly due make no package, so they get none; nor does the
+# linux job a pull request's run skips, whose builds and tests are the appimage job's there. NEEDS, when set, stands for
+# the run's jobs, in the shape of toJSON(needs). --print writes the comment to stdout and posts nothing.
 # gh needs a token that may read the run's artifacts, jobs and checks, and write on pull requests.
 set -euo pipefail
 
@@ -55,10 +55,10 @@ if [ -z "${NEEDS:-}" ]; then
             if . == "macOS and iOS (arm64)" then "apple"
             elif . == "Android APK" then "android"
             elif startswith("Windows (") then "windows"
-            elif . == "Amberlith changes" then empty
             elif startswith("Amberlith") or startswith("edenprobe") then "edenprobe"
             elif endswith(", as installed") then empty
             elif . == "Recompiler changes" or startswith("A64 differential") or . == "Nightly due" then empty
+            elif . == "Linux (${{ matrix.arch }})" then empty
             elif test("^Linux AppImage \\((x86_64|aarch64)\\)$") then "appimage"
             elif startswith("Linux AppImage (") then "appimage-cross"
             elif test("^Linux \\([^,]*\\)$") then "linux"
@@ -68,22 +68,18 @@ if [ -z "${NEEDS:-}" ]; then
         ["linux", "appimage", "appimage-cross", "windows", "android", "apple", "edenprobe"] as $needs |
         ["failure", "timed_out", "cancelled", "action_required", "skipped"] as $worst |
         [.jobs[] | {key: (.name | build_id), job: .id, conclusion: (.conclusion // .status)}] | group_by(.key) |
-        # the probe runs are jobs of their own, each skipped on a pull request that changes nothing it loads: skipped
-        # is the line'"'"'s only when every one of them was
-        map(if .[0].key == "edenprobe" and any(.conclusion != "skipped") then map(select(.conclusion != "skipped"))
-            else . end) |
         map((map(.conclusion) | unique) as $c | {key: .[0].key, value: {
-            job: .[0].job, jobs: map(.job),
+            job: .[0].job,
             result: (if $c == ["success"] then "success"
                 else ([$worst[] | select(. as $o | $c | any(. == $o))] + ($c - ["success"]))[0] end),
             outputs: {}}}) |
         sort_by(.key as $k | $needs | index($k) // length) |
         from_entries' <<<"$jobs")
-    probe_jobs=$(jq -r '.edenprobe | select(.result == "success" or .result == "failure") | .jobs[]' <<<"$needs")
-    if [ -n "$probe_jobs" ]; then
-        # a notice for each of its runs, each a job of its own, the NRO's first whatever order the jobs come in
-        notice=$(for job in $probe_jobs; do gh api "repos/$repo/check-runs/$job/annotations"; done |
-            jq -rs '[.[][] | select(.title == "edenprobe") | .message] | unique | sort_by(test("s APK: ")) | join("; ")')
+    probe_job=$(jq -r '.edenprobe | select(.result == "success" or .result == "failure") | .job // empty' <<<"$needs")
+    if [ -n "$probe_job" ]; then
+        # a notice for each of its runs, the NRO's first: the API does not list them in the order the job left them
+        notice=$(gh api "repos/$repo/check-runs/$probe_job/annotations" |
+            jq -r '[.[] | select(.title == "edenprobe") | .message] | sort_by(test("s APK: ")) | join("; ")')
         needs=$(jq --arg notice "$notice" 'if $notice != "" then .edenprobe.outputs.result = $notice else . end' <<<"$needs")
     fi
 else
@@ -91,10 +87,15 @@ else
 fi
 failed=$(jq -r 'to_entries[] | select(.key != "edenprobe" and .value.result != "success") |
     "\(.key) (\(.value.result))"' <<<"$needs" | paste -sd, - | sed 's/,/, /g')
+# a pull request that changes nothing either run loads ends the job at once, passed, its notice saying so
 probe=$(jq -r --arg url "https://github.com/$repo/actions/runs/$run" '.edenprobe // empty |
-    "[\(.outputs.result // "Amberlith")](\($url)): " +
-    if .result == "success" then "every case of the baseline passes"
-    elif .result == "failure" then "failed, see its summary" else .result end' <<<"$needs")
+    if (.outputs.result // "") | startswith("Amberlith: not run, ") then
+        "[Amberlith](\($url)): " + (.outputs.result | ltrimstr("Amberlith: "))
+    else
+        "[\(.outputs.result // "Amberlith")](\($url)): " +
+        if .result == "success" then "every case of the baseline passes"
+        elif .result == "failure" then "failed, see its summary" else .result end
+    end' <<<"$needs")
 
 body="$mark
 Builds of ${sha::7}${until:+, kept until $until}:

@@ -20,6 +20,7 @@
 #include "common/gpu/vk/extension_bans.h"
 #include "common/gpu/vk/extension_commands.h"
 #include "nx/gpu/vk/pipeline_parts.h"
+#include "nx/gpu/vk/present_quad.h"
 #include "nx/gpu/shader/shader.h"
 #include "nx/gpu/maxwell/kepler_compute_regs.h"
 #include "nx/gpu/maxwell/engines_int.h"
@@ -49,6 +50,7 @@
 #include "support/sm86_ref.h"
 #include "support/thread_nice.h"
 #include <libavutil/buffer.h>
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -260,7 +262,7 @@ static int check_desc_pool_keep(void) {
     CHECK(after + 3 <= burst); /* the burst's slot held 4 pools or more, one of them stays */
     printf(
         "descriptor pools kept: %u before a burst of 3073 sets, %u after it, %u once %u uses of each slot took one\n",
-        before, burst, after, 2 * VK_DESC_POOL_USES);
+        before, burst, after, 2u * VK_DESC_POOL_USES);
     return 0;
 }
 /* Graphics descriptor tables fill the frame's descriptor memory. vk_frame_check, which runs before a draw's setup,
@@ -926,7 +928,7 @@ static int check_staging_burst(void) {
     g_vk.alloc_cap = saved_cap;
     vk_frame_next();
     printf("a frame's %llu MiB of uploads in requests of up to %llu MiB: the rings grew by %llu MiB, and held %llu MiB "
-           "%u frames later, %llu before\n",
+           "%d frames later, %llu before\n",
            (unsigned long long)(asked >> 20), (unsigned long long)(chunk * 5 / 2 >> 20),
            (unsigned long long)(grown >> 20), (unsigned long long)(held >> 20), VK_POOL_FRAMES + VK_FRAMES,
            (unsigned long long)(before >> 20));
@@ -1076,7 +1078,7 @@ static int check_big_uploads(void) {
     after = vk_ring_bytes();
     g_vk.alloc_cap = saved_cap;
     vk_frame_next();
-    printf("%u frames of two %llu MiB requests: %llu ring buffers made; the rings held %llu MiB %u frames later, %llu "
+    printf("%u frames of two %llu MiB requests: %llu ring buffers made; the rings held %llu MiB %d frames later, %llu "
            "before\n",
            frames, (unsigned long long)(size >> 20), (unsigned long long)big, (unsigned long long)(after >> 20),
            VK_POOL_FRAMES + VK_FRAMES, (unsigned long long)(before >> 20));
@@ -1122,7 +1124,7 @@ static int check_big_reuse(void) {
     after = vk_ring_bytes();
     g_vk.alloc_cap = saved_cap;
     vk_frame_next();
-    printf("a %llu MiB request after a %llu MiB one: %llu ring buffers made; the rings held %llu MiB %u frames later, "
+    printf("a %llu MiB request after a %llu MiB one: %llu ring buffers made; the rings held %llu MiB %d frames later, "
            "%llu before\n",
            (unsigned long long)(chunk * 3 / 2 >> 20), (unsigned long long)(chunk * 6 >> 20), (unsigned long long)made,
            (unsigned long long)(after >> 20), VK_POOL_FRAMES + VK_FRAMES, (unsigned long long)(before >> 20));
@@ -1148,7 +1150,7 @@ static int check_chunks_both_slots(void) {
     vk_finish();
     made = vk_ring_made() - made;
     vk_frame_next();
-    printf("%u frames of small uploads after one that staged nothing: %llu ring buffers made\n", 2 * VK_FRAMES,
+    printf("%u frames of small uploads after one that staged nothing: %llu ring buffers made\n", 2u * VK_FRAMES,
            (unsigned long long)made);
     CHECK(made == 0);
     return 0;
@@ -1195,7 +1197,7 @@ static int check_chunks_from_big(void) {
     after = vk_ring_bytes();
     g_vk.alloc_cap = saved_cap;
     vk_frame_next();
-    printf("%u requests of %llu MiB after a frame of %u big ones: %llu ring buffers made; the rings held %llu MiB %u "
+    printf("%u requests of %llu MiB after a frame of %u big ones: %llu ring buffers made; the rings held %llu MiB %d "
            "frames later, %llu before\n",
            parts, (unsigned long long)(chunk >> 20), bigs, (unsigned long long)made, (unsigned long long)(after >> 20),
            VK_POOL_FRAMES + VK_FRAMES, (unsigned long long)(before >> 20));
@@ -1818,6 +1820,132 @@ static int check_srgb_blit(void) {
     vk_lock();
     vk_image_destroy(dst, mem);
     vk_unlock();
+    free(ch);
+    return 0;
+}
+
+/* The window's frame through the upscaler and the anti-aliasing (present_quad.c's vk_present_quad_effects): their
+   passes recorded at once on the frame's command buffer, which the recording thread fills, between the commands queued
+   before and after them. A flat target's crop comes out at the window rectangle's size, its colour kept, and the quad
+   draws it from there; a crop of part of the target too. Run under the Khronos layer by vulkan_present_effects */
+static int check_present_effects(void) {
+    GpuChannel* ch = calloc(1, sizeof *ch);
+    CHECK(ch);
+    u32* r = ch->r3d;
+    r[0x487] = 1;
+    r[0x201] = 0x4C0000;
+    r[0x202] = 64; /* 16 RGBA pixels, pitch linear */
+    r[0x203] = 16;
+    r[0x204] = 0xD5; /* A8B8G8R8 */
+    r[0x205] = 0x1000;
+    r[0x206] = 1;
+    r[0x207] = 1024;
+    r[0x56E] = 1;
+    const float color[4] = {0.25f, 0.5f, 0.75f, 1};
+    memcpy(&r[0x360], color, sizeof color);
+    engine_clear(ch, 15 << 2);
+    vk_render_end();
+    Surf* target = vk_rt_find(r[0x201]);
+    CHECK(target && target->sw == 16 && target->sh == 16);
+    u8 stored[4];
+    CHECK(!read_pixel0(target, stored));
+    snprintf(g_settings.upscaler, sizeof g_settings.upscaler, "fsr1");
+    snprintf(g_settings.anti_aliasing, sizeof g_settings.anti_aliasing, "fxaa");
+    g_settings.upscaler_sharpness = 75;
+    vk_present_quad_effects_init();
+    static const VkRect2D crops[2] = {{{0, 0}, {16, 16}}, {{2, 3}, {10, 9}}};
+    for (u32 k = 0; k < 2; k++) {
+        const u32 w = crops[k].extent.width * 2, h = crops[k].extent.height * 2;
+        VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                                .imageType = VK_IMAGE_TYPE_2D,
+                                .format = VK_FORMAT_R8G8B8A8_UNORM,
+                                .extent = {w, h, 1},
+                                .mipLevels = 1,
+                                .arrayLayers = 1,
+                                .samples = VK_SAMPLE_COUNT_1_BIT,
+                                .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT};
+        VkImage dst;
+        DevMem mem;
+        VkImageView view;
+        VkBuffer buffer;
+        u8* data = vk_readback_buffer((u64)w * h * 4, &buffer);
+        CHECK(data);
+        vk_lock();
+        CHECK(vk_image_create(&ii, &dst, &mem));
+        VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+                                    .image = dst,
+                                    .viewType = VK_IMAGE_VIEW_TYPE_2D,
+                                    .format = VK_FORMAT_R8G8B8A8_UNORM,
+                                    .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+        CHECK(vkCreateImageView(g_vk.dev, &vi, NULL, &view) == VK_SUCCESS);
+        VkCommandBuffer cb = vk_cmd();
+        SnxPresentSource s;
+        VkRect2D crop = crops[k], to = {{0, 0}, {w, h}};
+        CHECK(vk_present_quad_source(cb, target, 1, 1, &s));
+        CHECK(vk_present_quad_effects(cb, &s, &crop, to, 0));
+        CHECK(s.width == w && s.height == h && !crop.offset.x && crop.extent.width == w && crop.extent.height == h);
+        vk_barrier(cb, dst, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_NONE, 0, VK_IMAGE_LAYOUT_UNDEFINED,
+                   VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                   VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+        VkRenderingAttachmentInfo at = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+                                        .imageView = view,
+                                        .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                                        .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+                                        .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
+        VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+                              .renderArea = to,
+                              .layerCount = 1,
+                              .colorAttachmentCount = 1,
+                              .pColorAttachments = &at};
+        rec_CmdBeginRendering(cb, &ri);
+        CHECK(vk_present_quad_draw(cb, &s, VK_FORMAT_R8G8B8A8_UNORM, crop, to, 0));
+        rec_CmdEndRendering(cb);
+        vk_render_forget_state();
+        vk_barrier(cb, dst, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                   VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                   VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+        VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {w, h, 1}};
+        rec_CmdCopyImageToBuffer(cb, dst, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &copy);
+        vk_unlock();
+        vk_finish();
+        vk_readback_ready();
+        u32 bad = 0;
+        for (u32 i = 0; i < w * h; i++)
+            for (u32 c = 0; c < 3; c++)
+                if (abs((int)data[(size_t)i * 4 + c] - stored[c]) > 1) {
+                    if (!bad++)
+                        fprintf(stderr, "present effects: crop %ux%u at %d,%d, pixel %u,%u channel %u is %u, not %u\n",
+                                crops[k].extent.width, crops[k].extent.height, crops[k].offset.x, crops[k].offset.y,
+                                i % w, i / w, c, data[(size_t)i * 4 + c], stored[c]);
+                }
+        vk_lock();
+        vk_defer_image(dst, mem, view, VK_NULL_HANDLE);
+        vk_unlock();
+        CHECK(!bad);
+    }
+    /* the settings changed while the game runs (the game's menu): the next frame takes them, FXAA alone at the window's
+       size, then Bilinear and Off without anti-aliasing, the quad's own sampler: no pass, and the recording ring not
+       drained for one */
+    static const char* const steps[3][2] = {{"off", "fxaa"}, {"bilinear", "off"}, {"off", "off"}};
+    for (u32 k = 0; k < 3; k++) {
+        SnxPresentSource s;
+        VkRect2D crop = {{0, 0}, {16, 16}}, to = {{0, 0}, {32, 32}};
+        u64 frames = vk_present_quad_effects_frames();
+        snprintf(g_settings.upscaler, sizeof g_settings.upscaler, "%s", steps[k][0]);
+        snprintf(g_settings.anti_aliasing, sizeof g_settings.anti_aliasing, "%s", steps[k][1]);
+        vk_lock();
+        VkCommandBuffer cb = vk_cmd();
+        CHECK(vk_present_quad_source(cb, target, 1, 1, &s));
+        int ran = vk_present_quad_effects(cb, &s, &crop, to, 0);
+        vk_unlock();
+        u64 handed = vk_present_quad_effects_frames() - frames;
+        if (handed != (k ? 0u : 1u))
+            fprintf(stderr, "present effects: upscaler=%s anti_aliasing=%s handed %llu frames to the effects, not %u\n",
+                    steps[k][0], steps[k][1], (unsigned long long)handed, k ? 0u : 1u);
+        CHECK(handed == (k ? 0u : 1u));
+        CHECK(k ? !ran && s.width == 16 && crop.extent.width == 16 : ran && s.width == 32 && s.height == 32);
+        vk_finish();
+    }
     free(ch);
     return 0;
 }
@@ -2855,16 +2983,24 @@ static int dma_case(GpuDmaOp o) {
 static int dma_snap_case(GpuDmaOp o) {
     GpuDmaOp g = o, c = o;
     u64 span = gpu_dma_span(&o.src, o.lines, o.line_in), id = 0, held = vk_snap_bytes();
-    u64 low = o.src.addr + (u64)gpu_dma_low(&o.src, o.lines); /* the snapshot holds the span from its lowest byte */
+    u64 low = o.src.addr + (u64)gpu_dma_low(&o.src, o.lines);
+    /* the snapshot holds the span from its lowest byte, or the lines alone where they are far apart */
+    const int sparse = gpu_dma_sparse(&o.src, o.lines, o.line_in);
+    const u64 bytes = gpu_dma_read_bytes(&o.src, o.lines, o.line_in);
     for (int k = 0; k < 2; k++) {
         u8* t = GP(k ? DMA_B : DMA_A);
         for (u32 i = 0; i < DMA_SPAN; i++) t[i] = (u8)(i * 31 + (i >> 9) * 5 + 1);
     }
     g.src.addr += DMA_GA, g.dst.addr += DMA_GA;
     c.src.addr += DMA_GB, c.dst.addr += DMA_GB;
-    u8* snap = g_renderer->snap_alloc(span, &id);
-    CHECK(snap && id && vk_snap_bytes() == held + span);
-    memcpy(snap, GP(DMA_A) + low, span);
+    u8* snap = g_renderer->snap_alloc(bytes, &id);
+    CHECK(snap && id && vk_snap_bytes() == held + bytes);
+    if (sparse)
+        for (u32 k = 0; k < o.lines; k++)
+            memcpy(snap + (u64)k * o.line_in, GP(DMA_A) + o.src.addr + (u64)((i64)k * gpu_dma_pitch(&o.src)),
+                   o.line_in);
+    else
+        memcpy(snap, GP(DMA_A) + low, span);
     for (u64 i = 0; i < span; i++) GP(DMA_A)[low + i] ^= 0x5A; /* guest memory changes after the read */
     g.snap = snap;
     g.snap_id = id;
@@ -3233,7 +3369,7 @@ static int sparse_tiles(const StCase* c) {
     }
     printf("sparse tiles %s: each of the %u mapped tiles fills its %ux%ux%u brick of a %ux%ux%u texture of %u levels, "
            "the holes are zeros\n",
-           c->name, c->levels > 1 ? 4 : 3, tile[0] * c->bw, tile[1] * c->bw, c->is3d ? tile[2] : 1, tex.d.width,
+           c->name, c->levels > 1 ? 4u : 3u, tile[0] * c->bw, tile[1] * c->bw, c->is3d ? tile[2] : 1, tex.d.width,
            tex.d.height, tex.d.depth, c->levels);
     return 0;
 }
@@ -5241,6 +5377,50 @@ static int check_dma_flip(void) {
     return 0;
 }
 
+/* A copy of a region of a wide pitch linear surface, as a texture's 256x256 region copied out to a buffer: lines far
+   apart (gpu_dma_sparse) are read one by one and only their bytes staged, from guest memory and from the copy made at
+   submission, stepping down too, into block linear, and in bands of lines under a lowered cap. Their span was staged
+   whole before: 8 MiB for that region's 256 KiB of lines, 1.55 ms against Eden's 0.11 */
+static int check_dma_sparse(void) {
+    GpuDmaOp o = {0};
+    u64 copies, bands, moved0, moved1, bands1;
+    o.multi = 1;
+    o.width = o.line_in = o.line_out = 64;
+    o.lines = 32;
+    o.src = pitch_side(0x100, 4096); /* 32 lines 4 KiB apart: 2 KiB of them in 124 KiB */
+    o.dst = pitch_side(0x90000, 64);
+    CHECK(gpu_dma_sparse(&o.src, o.lines, o.line_in));
+    vk_dma_stats(&copies, &bands, &moved0);
+    CHECK(!dma_case(o));
+    vk_dma_stats(&copies, &bands, &moved1);
+    if (moved1 - moved0 != 2ull * o.lines * o.line_in)
+        fprintf(stderr, "dma sparse: %llu bytes moved for %u lines of %u bytes in and out, not %llu\n",
+                (unsigned long long)(moved1 - moved0), o.lines, o.line_in, 2ull * o.lines * o.line_in);
+    CHECK(moved1 - moved0 == 2ull * o.lines * o.line_in);
+    CHECK(!dma_snap_case(o));
+    o.src = pitch_side(0x100 + 31 * 4096, (u32)-4096); /* the same lines, the last first (FlipY) */
+    CHECK(!dma_case(o));
+    CHECK(!dma_snap_case(o));
+    o.dst = bl_side(0xA0000, 64, 32, 1, 0, 0); /* into block linear */
+    CHECK(!dma_case(o));
+    CHECK(!dma_snap_case(o));
+    o.width = o.line_in = o.line_out = 1024; /* 48 lines of 1 KiB, 8 KiB apart, in bands */
+    o.lines = 48;
+    o.src = pitch_side(0x1000, 8192);
+    o.dst = pitch_side(0x80000, 1024);
+    const u64 cap = g_vk.alloc_cap;
+    g_vk.alloc_cap = 16 << 10;
+    vk_dma_stats(&copies, &bands, &moved0);
+    int failed = dma_case(o) || dma_snap_case(o);
+    vk_dma_stats(&copies, &bands1, &moved1);
+    g_vk.alloc_cap = cap;
+    CHECK(!failed && bands1 > bands);
+    printf("DMA copies of lines far apart stage their lines alone: %u bytes moved for a copy of 32 lines of 64 bytes "
+           "4 KiB apart\n",
+           2u * 32u * 64u);
+    return 0;
+}
+
 /* A copy over more GPU-owned ranges than a read of guest memory notes at once: 20 lines of 64 bytes, 128 apart, each
    its own owner, then one line over them all from byte 32 of the first. Their bytes are copied on the GPU a batch at a
    time and nothing lands; landing them waited for the GPU and read its results back */
@@ -6167,7 +6347,7 @@ static int dma_reused_source(void) {
     /* each copy: the source's 2 x 5 blocks of 8 KiB, the destination's 64 lines of 256 bytes */
     if (m1 - m0 != 4 * (2 * 5 * 8192 + 64 * 256) || (tracked && (read[1] != read[0] || read[2] != read[0]))) {
         fprintf(stderr, "dma tiles, reused source: %llu bytes moved, %u meant; read on the CPU %llu, %llu, %llu\n",
-                (unsigned long long)(m1 - m0), 4 * (2 * 5 * 8192 + 64 * 256), (unsigned long long)read[0],
+                (unsigned long long)(m1 - m0), 4u * (2 * 5 * 8192 + 64 * 256), (unsigned long long)read[0],
                 (unsigned long long)read[1], (unsigned long long)read[2]);
         return 1;
     }
@@ -7079,6 +7259,35 @@ static void results_copied(u64 cpu, u64 len) { vk_own_cpu_touched(cpu, len); }
 #include "vulkan_ui.inc"
 #include "vulkan_storage_formats.inc"
 #include "vulkan_scaled_compute.inc"
+
+/* pipeline_stats (gpu/vk/pipeline_stats.c): a compute program's pipeline gets the driver's statistics too, each row
+   naming the program in the cs column. The resolution scale's compute check makes the pipelines. A driver without
+   VK_KHR_pipeline_executable_properties has no statistics: said, and skipped */
+static int check_pipeline_stats_compute(void) {
+    static const char header[] = "what,vs,tcs,tes,gs,fs,cs,executable,stages,subgroup,statistic,value\n";
+    char line[1024];
+    int rows = 0, headed = 0;
+    if (!g_settings.pipeline_stats[0] || !g_vk.has_exec_stats) {
+        printf("SKIP pipeline stats: %s\n", g_settings.pipeline_stats[0]
+                                                ? "the driver has no VK_KHR_pipeline_executable_"
+                                                  "properties"
+                                                : "run without --pipeline-stats");
+        return 0;
+    }
+    CHECK(!check_scaled_compute());
+    FILE* f = fopen(g_settings.pipeline_stats, "r");
+    CHECK(f);
+    headed = fgets(line, sizeof line, f) && !strcmp(line, header);
+    while (fgets(line, sizeof line, f))
+        rows += !strncmp(line, "compute,,,,,,", 13) && isxdigit((unsigned char)line[13]) && line[29] == ',';
+    fclose(f);
+    if (!headed || !rows)
+        fprintf(stderr, "pipeline stats: %s has %s and %d rows of compute pipelines\n", g_settings.pipeline_stats,
+                headed ? "the header" : "another header", rows);
+    CHECK(headed && rows);
+    printf("pipeline stats: %d rows of compute pipelines, each naming its program in the cs column\n", rows);
+    return 0;
+}
 #include "vulkan_storage_atomics.inc"
 #include "vulkan_hidden_commands.inc"
 #include "vulkan_surface_loads.inc"
@@ -7126,6 +7335,7 @@ static void results_copied(u64 cpu, u64 len) { vk_own_cpu_touched(cpu, len); }
 #include "vulkan_uma_pages.inc"
 #include "vulkan_uma_region_reads.inc"
 #include "vulkan_write_tracking.inc"
+#include "vulkan_poll_kick.inc"
 #include "vulkan_tex_partial.inc"
 #include "vulkan_texture_quiet.inc"
 #include "vulkan_cube_take.inc"
@@ -7591,7 +7801,7 @@ static int run_headless(int argc, char** argv) {
         char* end;
         unsigned long n = strtoul(tex_array, &end, 10);
         if (*end || !n || n > SNX_TEX_ARRAY) {
-            fprintf(stderr, "SNX_TEST_TEX_ARRAY=%s is not a whole number from 1 to %u\n", tex_array, SNX_TEX_ARRAY);
+            fprintf(stderr, "SNX_TEST_TEX_ARRAY=%s is not a whole number from 1 to %d\n", tex_array, SNX_TEX_ARRAY);
             return 2;
         }
         g_spirv_translate.tex_array = (u32)n;
@@ -7835,8 +8045,12 @@ static int run_headless(int argc, char** argv) {
             result = check_nvn_default_tessellation();
         else if (!strcmp(name, "memo_over_target"))
             result = check_memo_over_target();
+        else if (!strcmp(name, "texture_quiet_present"))
+            result = check_texture_quiet_present();
         else if (!strcmp(name, "texture_quiet_other"))
             result = check_texture_quiet_other();
+        else if (!strcmp(name, "texture_quiet_alias"))
+            result = check_texture_quiet_alias();
         else if (!strcmp(name, "cube_take"))
             result = check_cube_take();
         else if (!strcmp(name, "cube_take_frames"))
@@ -7849,6 +8063,8 @@ static int run_headless(int argc, char** argv) {
             result = check_descriptor_memo();
         else if (!strcmp(name, "wlog_clear"))
             result = check_wlog_clear();
+        else if (!strcmp(name, "poll_kick"))
+            result = check_poll_kick();
         else if (!strcmp(name, "descriptor_heaps"))
             result = check_descriptor_heaps();
         else if (!strcmp(name, "indirect_dispatch"))
@@ -7891,6 +8107,13 @@ static int run_headless(int argc, char** argv) {
         vk_finish();
         vk_pipeline_quiesce();
         printf("PASS headless Vulkan watched targets only: %u validation messages\n", g_vk_validation_messages);
+        return 0;
+    }
+    if (getenv("SNX_TEST_STORAGE_IMAGES_ONLY")) { /* the storage image formats' check alone, for its mutants */
+        CHECK(!check_storage_image_formats());
+        vk_finish();
+        vk_pipeline_quiesce();
+        printf("PASS headless Vulkan storage image formats only: %u validation messages\n", g_vk_validation_messages);
         return 0;
     }
     if (tex_array) { /* the texture arrays at the size asked: their layouts, pools and indexed draws */
@@ -7978,6 +8201,13 @@ static int run_headless(int argc, char** argv) {
         printf("PASS headless Vulkan resolution scale only: %u validation messages\n", g_vk_validation_messages);
         return 0;
     }
+    if (getenv("SNX_TEST_PIPELINE_STATS_ONLY")) { /* pipeline_stats' compute rows alone: run with --pipeline-stats */
+        CHECK(!check_pipeline_stats_compute());
+        vk_finish();
+        vk_pipeline_quiesce();
+        printf("PASS headless Vulkan pipeline stats only: %u validation messages\n", g_vk_validation_messages);
+        return 0;
+    }
     if (getenv("SNX_TEST_SLICES_ONLY")) { /* textures taking their slices from targets alone, for their mutants */
         CHECK(!check_slices_from_targets());
         vk_finish();
@@ -7988,6 +8218,12 @@ static int run_headless(int argc, char** argv) {
     if (getenv("SNX_TEST_GPUPROF_POOL_ONLY")) { /* a smaller pool than the profile asks for, alone */
         CHECK(!check_gpuprof_small_pool());
         printf("PASS headless Vulkan profile pool only: %u validation messages\n", g_vk_validation_messages);
+        return 0;
+    }
+    if (getenv("SNX_TEST_PRESENT_EFFECTS_ONLY")) { /* the window's upscaler and anti-aliasing alone */
+        CHECK(!check_present_effects());
+        vk_pipeline_quiesce();
+        printf("PASS headless Vulkan present effects only: %u validation messages\n", g_vk_validation_messages);
         return 0;
     }
     if (getenv("SNX_TEST_UI_ONLY")) { /* vulkan_ui.inc's check alone: the on-screen layer's pass */
@@ -8166,6 +8402,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_own_trim());
     CHECK(!check_wlog_again());
     CHECK(!check_wlog_clear());
+    CHECK(!check_poll_kick());
     CHECK(!check_owned_in_place_write());
     CHECK(!check_owned_read_device());
     CHECK(!check_owned_peek_identity());
@@ -8226,6 +8463,8 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_texture_quiet());
     CHECK(!check_cube_take());
     CHECK(!check_texture_quiet_other());
+    CHECK(!check_texture_quiet_alias());
+    CHECK(!check_texture_quiet_present());
     CHECK(!check_memo_over_target());
     CHECK(!check_descriptor_heaps());
     CHECK(!check_descriptor_memo());
@@ -8270,6 +8509,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_big_volume());
     CHECK(!check_srgb_write());
     CHECK(!check_srgb_blit());
+    CHECK(!check_present_effects());
     CHECK(!check_clear_load_op());
     CHECK(!check_alias_newer_target());
     CHECK(!check_sparse_while_submitting());
@@ -8293,6 +8533,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_nvdec_vic());
     CHECK(!check_dma());
     CHECK(!check_dma_flip());
+    CHECK(!check_dma_sparse());
     CHECK(!check_dma_owners());
     CHECK(!check_dma_bands());
     CHECK(!check_rt_superseded());

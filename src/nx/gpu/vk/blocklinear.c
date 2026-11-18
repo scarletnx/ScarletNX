@@ -3,13 +3,15 @@
 /* Block linear surfaces deswizzled and swizzled on the GPU (gpu/texture/blocklinear.comp). Guest bytes go to the GPU
    as they are, a copy of whole ranges into staging, and come back the same way: the 16 byte pieces of a GOB are
    moved by the shader, between the staged bytes and linear rows in a device-local scratch buffer that copies to
-   and from images take. One pipeline serves both directions; it is made on first use and kept for the device's
-   lifetime, like the other internal pipelines. Uses are on g_vk.gfx, under vk_lock() */
+   and from images take. One pipeline serves both directions, and a second build of the shader (BL_RUNS) reads the
+   runs that GPU results hold in place. Each is made on first use and kept for the device's lifetime, like the other
+   internal pipelines. Uses are on g_vk.gfx, under vk_lock() */
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/ledger.h"
 #include "nx/gpu/vk/descriptors.h"
 #include "nx/gpu/texture/blocklinear.h"
 #include "nx/gpu/texture/blocklinear_spv.h" /* compiled from blocklinear.comp by the build (cmake/glsl.cmake) */
+#include "nx/gpu/texture/blocklinear_runs_spv.h" /* the same with BL_RUNS: runs read in place by address */
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
 
@@ -18,33 +20,40 @@ typedef struct {
     u32 runs, rows, lin_runs, y0, gob_y0, z0, bh, hmask, bd, dmask, bsh, block_row, slab, bl_bias, lin_bias, to_bl;
     u32 tail_mask[4];
     u32 native;
+    u32 tab_bias, nruns; /* BL_RUNS only: where the staged range's first byte is in the bound range, and its runs */
 } BlParams;
 
-/* the moves' pipeline, and the scratch buffer with its memory and size, and the most asked of it since
-   vk_bl_scratch_asked last read it */
-static struct {
+/* a pipeline of the moves: its layouts and itself */
+typedef struct {
     VkDescriptorSetLayout ds;
     VkPipelineLayout layout;
     VkPipeline pipe;
+} BlPipe;
+/* the moves' pipelines (runs: a move that reads runs in place), and the scratch buffer with its memory and size, and
+   the most asked of it since vk_bl_scratch_asked last read it */
+static struct {
+    BlPipe plain, runs;
     VkBuffer scratch;
     DevMem mem;
     u64 cap, asked;
     u64 recent; /* the most asked since vk_bl_scratch_trim last looked */
 } g_blocklinear;
 
-static void bl_init(void) {
-    if (g_blocklinear.pipe) return;
-    if (!VK_OK(snx_vk_compute_layouts(g_vk.dev, 2, 0, sizeof(BlParams), &g_blocklinear.ds, &g_blocklinear.layout)))
+static const BlPipe* bl_init(int runs) {
+    BlPipe* p = runs ? &g_blocklinear.runs : &g_blocklinear.plain;
+    if (p->pipe) return p;
+    if (!VK_OK(snx_vk_compute_layouts(g_vk.dev, runs ? 3 : 2, 0, sizeof(BlParams), &p->ds, &p->layout)))
         fatal("vulkan: cannot create the block linear descriptor and pipeline layouts");
     VkShaderModule module;
-    if (!VK_OK(snx_vk_shader_module(g_vk.dev, blocklinear_spv, blocklinear_spv_size, &module)))
+    if (!VK_OK(snx_vk_shader_module(g_vk.dev, runs ? blocklinear_runs_spv : blocklinear_spv,
+                                    runs ? blocklinear_runs_spv_size : blocklinear_spv_size, &module)))
         fatal("vulkan: cannot load the block linear shader");
     u64 started = plat_ns();
-    if (!VK_OK(snx_vk_module_pipeline(g_vk.dev, vk_pipeline_cache(), g_blocklinear.layout, module, NULL,
-                                      &g_blocklinear.pipe)))
+    if (!VK_OK(snx_vk_module_pipeline(g_vk.dev, vk_pipeline_cache(), p->layout, module, NULL, &p->pipe)))
         fatal("vulkan: cannot create the block linear compute pipeline");
     vk_texture_pipeline_made(plat_ns() - started);
     vkDestroyShaderModule(g_vk.dev, module, NULL); /* the pipeline doesn't need it once made */
+    return p;
 }
 
 /* The scratch buffer stays as big as the most asked of it, and in Mario Kart World on a GPU of 2 GB one target's load
@@ -131,7 +140,9 @@ void vk_bl_barrier(VkCommandBuffer cb, int before) {
     rec_CmdPipelineBarrier2(cb, &d);
 }
 
-int vk_bl_move(VkCommandBuffer cb, const VkBlMove* m, int to_bl, VkBuffer bl, u64 bl_at, VkBuffer lin, u64 lin_at) {
+/* vk_bl_move, and with s (out of block linear) its runs read in place */
+static int bl_move(VkCommandBuffer cb, const VkBlMove* m, int to_bl, VkBuffer bl, u64 bl_at, VkBuffer lin, u64 lin_at,
+                   const VkBlSrc* s) {
     const VkPhysicalDeviceLimits* lim = &g_vk.props.limits;
     u64 align = lim->minStorageBufferOffsetAlignment < 16 ? 16 : lim->minStorageBufferOffsetAlignment;
     u64 lo, hi;
@@ -152,12 +163,16 @@ int vk_bl_move(VkCommandBuffer cb, const VkBlMove* m, int to_bl, VkBuffer bl, u6
                   m->rows);
         return 0;
     }
-    bl_init();
-    VkDescriptorSet set = vk_desc_alloc(g_blocklinear.ds);
+    const int in_place = s && s->n;
+    const BlPipe* pipe = bl_init(in_place);
+    VkDescriptorSet set = vk_desc_alloc(pipe->ds);
     if (!set) return 0;
     const VkDescriptorBufferInfo bl_side = {bl, bl_off, bl_size}, lin_side = {lin, lin_off, lin_size};
-    VkDescriptorBufferInfo sides[2] = {to_bl ? lin_side : bl_side, to_bl ? bl_side : lin_side}; /* read, written */
-    snx_vk_storage_buffers(g_vk.dev, set, sides, 2);
+    /* read, written, and the runs read in place */
+    VkDescriptorBufferInfo sides[3] = {to_bl ? lin_side : bl_side, to_bl ? bl_side : lin_side,
+                                       {in_place ? s->tab : VK_NULL_HANDLE, in_place ? s->tab_at : 0,
+                                        in_place ? (u64)s->n * sizeof(VkInRun) : 0}};
+    snx_vk_storage_buffers(g_vk.dev, set, sides, in_place ? 3 : 2);
     BlParams p = {.runs = runs,
                   .rows = m->rows,
                   .lin_runs = m->lin_pitch >> 4,
@@ -175,17 +190,25 @@ int vk_bl_move(VkCommandBuffer cb, const VkBlMove* m, int to_bl, VkBuffer bl, u6
                   .bl_bias = (u32)((bl_at - bl_off) >> 4) - (u32)(lo >> 4),
                   .lin_bias = (u32)((lin_at - lin_off) >> 4),
                   .to_bl = (u32)to_bl,
-                  .native = (u32)g_gob_native};
+                  .native = (u32)g_gob_native,
+                  .tab_bias = (u32)((bl_at - bl_off) >> 4),
+                  .nruns = in_place ? s->n : 0};
     for (u32 i = 0; i < 4; i++) {
         u32 tail = m->row_bytes & 15;
         u32 bytes = !tail ? 4 : tail > 4 * i ? tail - 4 * i : 0;
         p.tail_mask[i] = bytes >= 4 ? ~0u : (1u << (bytes * 8)) - 1;
     }
-    rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_blocklinear.pipe);
-    rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_blocklinear.layout, 0, 1, &set, 0, NULL);
-    rec_CmdPushConstants(cb, g_blocklinear.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof p, &p);
+    rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipe->pipe);
+    rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipe->layout, 0, 1, &set, 0, NULL);
+    rec_CmdPushConstants(cb, pipe->layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof p, &p);
     vk_ck(cb, VK_CK_DESWIZZLE, m->row_bytes, m->rows, m->slices, (u32)to_bl);
     vk_gpuprof_tag_at(VK_PROF_BL_MOVE, __builtin_return_address(0)); /* summed by its caller: many move */
     rec_CmdDispatch(cb, gx, gy, m->slices);
     return 1;
+}
+int vk_bl_move(VkCommandBuffer cb, const VkBlMove* m, int to_bl, VkBuffer bl, u64 bl_at, VkBuffer lin, u64 lin_at) {
+    return bl_move(cb, m, to_bl, bl, bl_at, lin, lin_at, NULL);
+}
+int vk_bl_move_src(VkCommandBuffer cb, const VkBlMove* m, const VkBlSrc* s, VkBuffer lin, u64 lin_at) {
+    return bl_move(cb, m, 0, s->buf, s->at, lin, lin_at, s);
 }

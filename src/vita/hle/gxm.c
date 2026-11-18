@@ -1159,7 +1159,7 @@ static uint32_t parameter_get_container_index(VitaProcess* p, VitaThread* t) {
     return gxp_parameter_container(vita_ptr(p, arg(p, t, 0)));
 }
 static uint32_t program_is_native_color_used(VitaProcess* p, VitaThread* t) {
-    return (snx_ld_le32(vita_ptr(p, arg(p, t, 0)) + GXP_FLAGS) & GXP_FLAG_NATIVECOLOR_USED) != 0;
+    return (snx_ld_le32(vita_ptr(p, arg(p, t, 0) + GXP_FLAGS)) & GXP_FLAG_NATIVECOLOR_USED) != 0;
 }
 static uint32_t parameter_get_array_size(VitaProcess* p, VitaThread* t) {
     return gxp_parameter_array_size(vita_ptr(p, arg(p, t, 0)));

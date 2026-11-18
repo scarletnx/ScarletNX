@@ -633,6 +633,21 @@ static void aliases_build_nl(void) {
     __atomic_store_n(&g_alias.n, k, __ATOMIC_RELAXED);
     __atomic_store_n(&g_alias.built, gen, __ATOMIC_RELEASE);
 }
+/* whether a page of [a, end) has another address too (a view's, its source's): g_alias built again first where the
+   pool pages behind an address moved since, then searched by address, not a scan of every block for each block */
+static int aliased_nl(u64 a, u64 end) {
+    if (__atomic_load_n(&g_alias.built, __ATOMIC_RELAXED) != __atomic_load_n(&g_alias.gen, __ATOMIC_RELAXED))
+        aliases_build_nl();
+    u32 lo = 0, hi = g_alias.n;
+    while (lo < hi) { /* the first aliased range ending past a */
+        u32 mid = lo + (hi - lo) / 2;
+        if (g_alias.r[mid].addr + g_alias.r[mid].size <= a)
+            lo = mid + 1;
+        else
+            hi = mid;
+    }
+    return lo < g_alias.n && g_alias.r[lo].addr < end;
+}
 /* whether no other address maps a page of [a, end), known without the lock: the last build is current, and none of
    its ranges is on the grains of [a, end). Read as a sequence lock: the build is checked current again after */
 static int alias_clear(u64 a, u64 end) {
@@ -647,6 +662,7 @@ static int alias_clear(u64 a, u64 end) {
     __atomic_thread_fence(__ATOMIC_ACQUIRE);
     return __atomic_load_n(&g_alias.gen, __ATOMIC_RELAXED) == built;
 }
+int mem_alias_clear(u64 a, u64 size) { return size && a + size > a && alias_clear(a, a + size); }
 int mem_alias_any(void) {
     return __atomic_load_n(&g_alias.built, __ATOMIC_ACQUIRE) != __atomic_load_n(&g_alias.gen, __ATOMIC_ACQUIRE) ||
            __atomic_load_n(&g_alias.n, __ATOMIC_RELAXED);
@@ -814,10 +830,22 @@ static void unmap_nl(u64 a, u64 size) {
    without off. Also what a failed MAP_FIXED needs, as it may have taken the old pages with it; a host that can't do
    even this leaves nothing to run on */
 static void unpool_nl(u64 a, u64 size, const u64* off) {
+    const char* step = NULL;
     runs_stale_nl();
     pages_replaced_nl(a, size);
-    if (plat_alias_unmap(GP(a), size) || (off && (commit_nl(a, size) || plat_alias_read(*off, GP(a), size))))
-        fatal("Could not put %llu KiB of guest memory back from the alias pool", (unsigned long long)(size >> 10));
+    if (plat_alias_unmap(GP(a), size))
+        step = "mapping the reservation's own pages there";
+    else if (off && commit_nl(a, size))
+        step = "making them writable";
+    else if (off && plat_alias_read(*off, GP(a), size))
+        step = "reading the pool's contents into them";
+    if (!step) return;
+    if (off)
+        fatal(
+            "Could not put %llu KiB of guest memory at %#llx back from offset %#llx of the alias pool: %s failed (%s)",
+            (unsigned long long)(size >> 10), (unsigned long long)a, (unsigned long long)*off, step, strerror(errno));
+    fatal("Could not put %llu KiB of guest memory at %#llx back from the alias pool: %s failed (%s)",
+          (unsigned long long)(size >> 10), (unsigned long long)a, step, strerror(errno));
 }
 /* Moves mapped memory into the pool: its contents are copied there and the pool's pages mapped over it, so views of
    it can map them too. Memory that is pool pages already (a view of a view) stays as it is. Pool pages mapped here
@@ -1443,22 +1471,8 @@ int mem_own_prepare(u64 a, u64 size, MemPoolRun* runs, u32 max, u32* n) {
     }
     mem_lock();
     if (placed_nl(a, size)) goto out; /* the renderer's GPU memory isn't trapped: what it gets lands at once */
-    /* pool pages of the range mapped here alone: a view of them at another address lands them first. The aliased
-       ranges are built lazily from the blocks (g_alias), searched by address here, not a scan of every block for each
-       block of the range as before */
-    if (__atomic_load_n(&g_alias.built, __ATOMIC_RELAXED) != __atomic_load_n(&g_alias.gen, __ATOMIC_RELAXED))
-        aliases_build_nl();
-    {
-        u32 lo = 0, hi = g_alias.n;
-        while (lo < hi) { /* the first aliased range ending past a */
-            u32 mid = lo + (hi - lo) / 2;
-            if (g_alias.r[mid].addr + g_alias.r[mid].size <= a)
-                lo = mid + 1;
-            else
-                hi = mid;
-        }
-        if (lo < g_alias.n && g_alias.r[lo].addr < end) goto out;
-    }
+    /* pool pages of the range mapped here alone: a view of them at another address lands them first */
+    if (aliased_nl(a, end)) goto out;
     for (i = blk_index_nl(a); i < g_nblk && g_blk[i].addr < end; i++) {
         const MemBlock* b = &g_blk[i];
         if (!data_state(b->state)) goto out;
@@ -1512,13 +1526,45 @@ out:
     mem_unlock();
     return r;
 }
+/* what mem_migrate moves: the guest's data on the reservation's own pages, or on pool pages that this address alone
+   maps. A GPU owner moves its pages into the pool to trap them (mem_own_prepare), and they stay there once it lets
+   go: refused, they kept their memory from an import for good, and every read of them by the GPU was a copy. Not
+   pool pages with a second address (a view, its source), a service's mapping outside the reservation
+   (mem_pool_host), or shared memory's, whose pool pages are its object's, mapped again at its next map */
+static int migratable_nl(u64 a, u64 size) {
+    u64 end = a + size;
+    if (!g_nblk || placed_nl(a, size) || (any_pool_nl(a, size) && aliased_nl(a, end))) return 0;
+    for (u32 i = blk_index_nl(a); i < g_nblk && g_blk[i].addr < end; i++) {
+        const MemBlock* b = &g_blk[i];
+        if (!data_state(b->state)) return 0;
+        if (b->pool) {
+            u64 lo = b->addr > a ? b->addr : a, hi = blk_end(b) < end ? blk_end(b) : end;
+            if (b->state == MS_SHARED || host_view_nl(b->pool - 1 + (lo - b->addr), hi - lo)) return 0;
+        }
+    }
+    return 1;
+}
 int mem_movable(u64 a, u64 size) {
     int r;
     if (!size || (a | size) & (g_host_page - 1) || a < AS_BASE || a + size > AS_END || a + size < a) return 0;
     mem_lock();
-    r = movable_nl(a, size);
+    r = migratable_nl(a, size);
     mem_unlock();
     return r;
+}
+/* the pool pages of [a, a + size) given back, once other pages are mapped there: no other address maps them
+   (migratable_nl), so nothing else holds their offsets */
+static void pool_give_back_nl(u64 a, u64 size) {
+    u64 end = a + size;
+    int any = 0;
+    for (u32 i = blk_index_nl(a); i < g_nblk && g_blk[i].addr < end; i++) {
+        const MemBlock* b = &g_blk[i];
+        if (!b->pool) continue;
+        u64 lo = b->addr > a ? b->addr : a, hi = blk_end(b) < end ? blk_end(b) : end;
+        pool_free_nl(b->pool - 1 + (lo - b->addr), hi - lo);
+        any = 1;
+    }
+    if (any) pool_set_nl(a, size, 0);
 }
 int mem_migrate(u64 a, u64 size, int fd) {
     u64 end = a + size;
@@ -1526,7 +1572,7 @@ int mem_migrate(u64 a, u64 size, int fd) {
     int r = 0, s;
     if (!size || (a | size) & (g_host_page - 1) || a < AS_BASE || end > AS_END || end < a) return MEM_BADSTATE;
     mem_lock();
-    if (!movable_nl(a, size)) {
+    if (!migratable_nl(a, size)) {
         r = MEM_BADSTATE;
         goto out;
     }
@@ -1538,10 +1584,12 @@ int mem_migrate(u64 a, u64 size, int fd) {
     s = plat_vm_share(GP(a), fd, size);
     plat_thaw();
     if (s == -2) fatal("Could not move %llu KiB of guest memory to a GPU's buffer", (unsigned long long)(size >> 10));
+    if (s == -3) pool_give_back_nl(a, size); /* not moved, but on fresh pages of its own now */
     if (s) {
         r = MEM_NOMEM;
         goto out;
     }
+    pool_give_back_nl(a, size);
     ext_cut_nl(a, end); /* pages another buffer had are this one's now */
     for (at = 0; at < g_ext.n && g_ext.run[at].a < a; at++) {}
     memmove(&g_ext.run[at + 1], &g_ext.run[at], sizeof *g_ext.run * (size_t)(g_ext.n - at));

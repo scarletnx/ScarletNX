@@ -226,6 +226,7 @@ void kernel_load_symbols(void);
 u64 kernel_find_symbol_exact(const char* name); /* 0 when no loaded module exports this name */
 /* the i-th exported function, in address order: its address and its name (NULL when unreadable); 0 past the last */
 int kernel_symbol(u32 i, u64* addr, const char** name);
+u64 kernel_symbol_size(u32 i); /* its size in bytes as its symbol gives it, 0 when unknown or past the last */
 void kernel_dump_regs(CPU* c);
 /* For the crash report of a fault at guest address fault: the thread's last call, when it went to the game's memcpy,
    memmove or memset (the runtime's libc hooks run them) and the fault lies in the range it copies or fills, with that

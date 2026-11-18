@@ -443,7 +443,7 @@ static int write_cache(AgbRecomp* recomp, const AgbBoard* board) {
     FILE* file = fopen(map_path, "w");
     free(map_path);
     if (!file) return -1;
-    fprintf(file, "snx-agb-code %d %u %016llX\n", AGB_RECOMP_ABI, SNX_ARM_ABI, (unsigned long long)rom_hash(board));
+    fprintf(file, "snx-agb-code %d %u %016llX\n", AGB_RECOMP_ABI, (unsigned)SNX_ARM_ABI, (unsigned long long)rom_hash(board));
     for (size_t i = 1; i <= recomp->count; ++i) {
         const AgbBlock* block = &recomp->blocks[i];
         fprintf(file, "%08X %u %u %016llX ", block->pc, block->thumb, block->instructions,
@@ -484,7 +484,7 @@ int agb_recomp_load_map_from(AgbRecomp* recomp, AgbBoard* board, const char* pat
     if (!fgets(line, sizeof(line), file) || sscanf(line, "snx-agb-code %d %u", &abi, &arm_abi) != 2 ||
         abi != AGB_RECOMP_ABI || arm_abi != SNX_ARM_ABI) {
         snprintf(error, error_size, "%s is another build's (ABI %d and %u, this one's %d and %u)", map_path, abi,
-                 arm_abi, AGB_RECOMP_ABI, SNX_ARM_ABI);
+                 arm_abi, AGB_RECOMP_ABI, (unsigned)SNX_ARM_ABI);
         fclose(file);
         return -1;
     }

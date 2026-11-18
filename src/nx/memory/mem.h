@@ -171,12 +171,14 @@ void mem_set_pages_replaced(void (*fn)(u64 a, u64 size));
    as on Android): [a, a + size), in whole host pages, moves to the pages of fd, a buffer that large, with its bytes,
    pages another buffer had included; mem_unmigrate moves the parts of [a, a + size) still in one back to the
    reservation's own pages with their bytes. Unmapping or decommitting moved pages, or moving them into the pool, puts
-   other pages there; the moves themselves don't call the hook above, as the caller holds the buffer. 0, MEM_BADSTATE
-   (not all of it is what mem_movable says), or MEM_NOMEM when the host can't share them */
+   other pages there; the moves themselves don't call the hook above, as the caller holds the buffer. Pool pages it
+   moves are given back to the pool. 0, MEM_BADSTATE (not all of it is what mem_movable says), or MEM_NOMEM when the
+   host can't share them */
 int mem_migrate(u64 a, u64 size, int fd);
 int mem_unmigrate(u64 a, u64 size);
-/* whether [a, a + size) is all the guest's data, in whole host pages, on the reservation's own pages (not the pool's,
-   which other mappings share, nor the renderer's placed windows below): what mem_migrate moves */
+/* whether [a, a + size) is all the guest's data, in whole host pages, on the reservation's own pages or on pool pages
+   that no other address maps (not a view's or its source's, not shared memory's, not those a service maps outside
+   the reservation), and not the renderer's placed windows below: what mem_migrate moves */
 int mem_movable(u64 a, u64 size);
 /* The renderer's GPU memory under the heap and physical memory (gpu/vk/uma.c, VK_EXT_map_memory_placed), a window of
    MEM_PLACED bytes at a time, mapped at its guest address. Each call takes a range within one window, under mem.c's
@@ -216,9 +218,11 @@ int mem_pool_active(void);
 /* Pages with two addresses (a view and its source, shared memory mapped twice, on a host with the pool): fn(user, at,
    n) for each other guest range [at, at + n) that maps the pool pages behind [a, a + size), under the memory lock
    (fn takes no lock of mem.c's). Nothing for a range no other address maps, and no lock for one whose 4 MiB grains
-   no such page is on. mem_alias_any: whether any page may have two addresses now, without the lock */
+   no such page is on. mem_alias_any: whether any page may have two addresses now, without the lock. mem_alias_clear:
+   whether no page of [a, a + size) has another address now, without the lock (0 where one may) */
 void mem_alias_peers(u64 a, u64 size, void (*fn)(void* user, u64 at, u64 n), void* user);
 int mem_alias_any(void);
+int mem_alias_clear(u64 a, u64 size);
 /* Pool pages of their own (shared memory): size bytes mapped outside the reservation at the pointer returned, with
    their pool offset in off; NULL without a pool or when it is full */
 u8* mem_pool_host(u64 size, u64* off);

@@ -26,6 +26,7 @@
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
 #include "nx/runtime/platform/tracy.h"
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -155,6 +156,11 @@ static void promise(void* ctx, u32 op, u64 payload, u32 size) {
     s = NVN_OBJ(NvnSync, gr64(payload));
     s->syncpt = pr->syncpt;
     s->value = syncpt_promise(pr->syncpt, 1);
+    if (snx_tracy_attached()) { /* the fences a recording promises, for the waits' zones (nvn_queue.c trace_msg) */
+        char msg[64];
+        int n = snprintf(msg, sizeof msg, "nvn recorded fence %u=%u", s->syncpt, s->value);
+        if (n > 0 && n < (int)sizeof msg) SNX_MSG(msg, (size_t)n);
+    }
     s->ready = pr->ready;
     s->shown = pr->shown;
     __atomic_store_n(&s->fenced, 1, __ATOMIC_RELEASE);
@@ -370,6 +376,7 @@ static int replay_records(NvnJob* j, NvnReplayQueue* q) {
                 if (!over && !j->waiting && g_renderer->stream_end) g_renderer->stream_end();
                 if (!over) {
                     j->waiting = 1;
+                    gpu_poll_why(op == OP_WAIT_EVENT ? GPU_POLL_EVENT : GPU_POLL_SYNC);
                     return 0;
                 }
                 __atomic_thread_fence(__ATOMIC_ACQUIRE);
@@ -467,12 +474,16 @@ static int run(void* arg) {
             if (!sync_over(&j->wait)) {
                 if (!j->waiting && g_renderer->stream_end) g_renderer->stream_end();
                 j->waiting = 1;
+                gpu_poll_why(GPU_POLL_SYNC);
                 return 0;
             }
             break;
         case JOB_FENCE: stream_incr(q->syncpt); break;
         case JOB_SETTLE:
-            if (!settled()) return 0;
+            if (!settled()) {
+                gpu_poll_why(GPU_POLL_SETTLE);
+                return 0;
+            }
             stream_incr(g_nvn.replay.settled);
             break;
         case JOB_DESTROY:
@@ -480,7 +491,10 @@ static int run(void* arg) {
             stream_incr(q->syncpt);
             break;
         case JOB_PRESENT: {
-            if (j->present_order != g_nvn.replay.present_walked + 1) return 0;
+            if (j->present_order != g_nvn.replay.present_walked + 1) {
+                gpu_poll_why(GPU_POLL_PRESENT);
+                return 0;
+            }
             const NvnReplayPresent* p = &j->present;
             u64 cpu = p->gva ? gmmu_translate(p->gva) : 0;
             if (g_renderer_up && cpu) {
@@ -618,6 +632,7 @@ void nvn_replay_queue_free(u32 queue) {
     pm_unlock(&g_nvn.replay.lock);
 }
 void nvn_replay_finish(u32 queue) {
+    SNX_ZONE(z, "nvn queue finish");
     u32 id = nvn_replay_syncpt(queue), value;
     pm_lock(&g_nvn.replay.lock);
     value = syncpt_promise(id, 1);

@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The runtime JIT (jit_service.h). C99 in style; the target's C11 is for the LLVM-C headers */
+/* The runtime JIT (jit_service.h). ISO C in style; the target's GNU C23 is for the LLVM-C headers */
 #if defined(__linux__) && !defined(_GNU_SOURCE)
 #define _GNU_SOURCE 1 /* sched_getaffinity: the CPUs this process may run on */
 #endif
@@ -724,10 +724,10 @@ static int cache_index(Cache* c) {
 static void cache_open(SnxJitService* s) {
     Cache* c = &s->cache;
     char* key = cache_key(s);
+    if (!key) return;
     FILE* f = fopen(s->config.cache_path, "rb");
     size_t size = 0, used = 0;
     long length = -1;
-    if (!key) return;
     size_t key_length = strlen(key);
     size_t header = 8 + 4 + key_length;
     if (f && !fseek(f, 0, SEEK_END)) length = ftell(f);

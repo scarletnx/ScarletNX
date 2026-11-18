@@ -3,7 +3,7 @@
 # what the backends share: function discovery over NX images, chunk labels, progress lines, the entry table
 add_library(snx_nx_module STATIC ../../loader/module.c ../../loader/codegen_view.c ../../loader/hook_routes.c
                                   ../nce/nce_patch.c)
-set_target_properties(snx_nx_module PROPERTIES C_STANDARD 99 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+set_target_properties(snx_nx_module PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
 target_compile_options(snx_nx_module PRIVATE -pedantic-errors -Wall -Wextra -Werror=missing-prototypes)
 target_link_libraries(snx_nx_module PUBLIC scarletnx-common)
 # the route list (loader/hook_routes.c): the symbols the hooks name, whose calls go through their dispatch slots
@@ -11,7 +11,7 @@ include("${PROJECT_SOURCE_DIR}/cmake/hookgen.cmake")
 snx_hook_routes(snx_nx_module)
 add_library(snx_driver STATIC driver.c container.c extract.c game_name.c nros.c recompile.c setup.c toolchain.c mcp.c
                               mcp_edenprobe.c mcp_gdb.c ../../loader/loader.c ../../loader/match.c ../../loader/relocate.c)
-set_target_properties(snx_driver PROPERTIES C_STANDARD 99 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+set_target_properties(snx_driver PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
 target_compile_definitions(snx_driver PRIVATE
     SNX_SOURCE_DIR="${PROJECT_SOURCE_DIR}" SNX_BUILD_DIR="${PROJECT_BINARY_DIR}" _CRT_SECURE_NO_WARNINGS
     SNX_NX_ABI_INCLUDE="${PROJECT_SOURCE_DIR}/src/nx/loader"
@@ -33,10 +33,10 @@ if(NOT SNX_TOOLS_ONLY)
 endif()
 include("${PROJECT_SOURCE_DIR}/cmake/llvm.cmake")
 add_subdirectory("${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/llvm" llvm-backend)
-# the NX game module through the LLVM backend; C11 for the LLVM-C headers, the driver itself stays C99
+# the NX game module through the LLVM backend; GNU C23 for the LLVM-C headers, the driver itself stays ISO C23
 add_library(snx_driver_llvm STATIC ../../loader/module_llvm.c ../../loader/module_variants.c ../../loader/module_arm.c
                                    ../../loader/unit_cache.c llvm_tuning.c disasm.c "${SNX_SETTINGS_LLVM}")
-set_target_properties(snx_driver_llvm PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS ON)
+set_target_properties(snx_driver_llvm PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON C_EXTENSIONS ON)
 target_compile_options(snx_driver_llvm PRIVATE -Wall -Wextra -Werror=missing-prototypes)
 # OpenSSL: the unit cache's SHA-256 (unit_cache.c)
 target_link_libraries(snx_driver_llvm PUBLIC snx_llvm snx_arm_llvm snx_nx_module snx_settings OpenSSL::Crypto)
@@ -57,6 +57,6 @@ add_subdirectory("${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler" recompiler-li
 # a build of the host tools: the Switch driver scarletnx runs (src/multicall) is the driver alone, which plays nothing
 if(SNX_TOOLS_ONLY)
     add_library(snx_switch_program STATIC main.c)
-    set_target_properties(snx_switch_program PROPERTIES C_STANDARD 99 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+    set_target_properties(snx_switch_program PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
     target_link_libraries(snx_switch_program PUBLIC snx_driver)
 endif()

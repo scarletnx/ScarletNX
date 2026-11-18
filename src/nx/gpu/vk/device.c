@@ -36,6 +36,9 @@ VkState g_vk;
 /* reentrant on the thread that holds it: landing compute results writes guest memory, which can come back here */
 static PMutex g_vklock;
 static _Thread_local int t_vkdepth;
+/* from vk_lock_pause to vk_lock_resume: the hold goes on after it, and a hold of the lock in between does not end
+   this one's (vk_own_release_held) */
+static _Thread_local int t_vkpaused;
 static u32 g_vk_owner; /* the thread holding it (plat_tid), 0 when none: a trap's fault on it can't be answered */
 /* The lock hands off fairly. A Windows SRW lock (and a pthread mutex) lets the thread that let go take it straight back
    before the waiter it woke runs: a thread whose draws ran back to back kept it, and the threads landing GPU results and
@@ -82,6 +85,9 @@ void vk_unlock(void) {
        before the lock goes, and the next CPU access publishes them */
     if (t_vkdepth == 1 && own_owed_any()) vk_rt_watch_owed();
     if (t_vkdepth == 1 && vk_own_later_any()) vk_own_release_later();
+    /* the results that commands recorded under this hold read by their address: they are recorded now. Not at a
+       pause, part-way through the work that records them */
+    if (t_vkdepth == 1 && !t_vkpaused && vk_own_held_any()) vk_own_release_held();
     if (!--t_vkdepth) vk_let_go();
 }
 int vk_trylock(void) {
@@ -93,11 +99,14 @@ u32 vk_lock_owner(void) { return __atomic_load_n(&g_vk_owner, __ATOMIC_RELAXED);
 int vk_lock_held(void) { return t_vkdepth > 0; }
 int vk_lock_pause(void) {
     if (t_vkdepth != 1) return 0;
+    t_vkpaused = 1;
     vk_unlock();
     return 1;
 }
 void vk_lock_resume(int paused) {
-    if (paused) vk_lock();
+    if (!paused) return;
+    vk_lock();
+    t_vkpaused = 0;
 }
 
 /* What held the memory at an out-of-memory, at the first ones: each heap as devmem.c counts it, and the descriptor
@@ -864,7 +873,7 @@ static bool choose_device(SnxVkChoice* c, void* user) {
     int has_google_timing = 0;
     int has_host_import = 0, has_ahb = 0, has_placed = 0, has_map2 = 0, has_dmabuf = 0;
     int has_descriptor_buffer = 0, has_descriptor_heap = 0, has_extended_flags = 0, has_maintenance5 = 0;
-    int has_maintenance8 = 0;
+    int has_maintenance8 = 0, has_copy_indirect = 0;
     int has_vertex_input = 0;
     int has_hdr_metadata = 0;
     int has_gpl = 0, has_eds2 = 0, has_eds3 = 0; /* the extensions of pipeline libraries and their dynamic state */
@@ -878,6 +887,7 @@ static bool choose_device(SnxVkChoice* c, void* user) {
     /* VK_EXT_shader_atomic_float: RED.ADD.F32 in one instruction (g_spirv_translate.float_atomic_add) */
     int has_atomic_float = 0;
     int has_fault = 0; /* VK_EXT_device_fault: what the GPU reports of a fault, at a lost device */
+    int has_pageable = 0;          /* VK_EXT_pageable_device_local_memory, and VK_EXT_memory_priority that it needs */
     /* VK_KHR_pipeline_executable_properties: the drivers' statistics of each pipeline, for pipeline_stats only */
     int has_exec = 0;
     /* VK_EXT_shader_object: draws bind compiled shaders and set the rest as dynamic state (shader_objects.c) */
@@ -944,6 +954,7 @@ static bool choose_device(SnxVkChoice* c, void* user) {
         has_extended_flags = snx_vk_choice_has(c, VK_KHR_EXTENDED_FLAGS_EXTENSION_NAME);
         has_maintenance5 = snx_vk_choice_has(c, VK_KHR_MAINTENANCE_5_EXTENSION_NAME);
         has_maintenance8 = snx_vk_choice_has(c, VK_KHR_MAINTENANCE_8_EXTENSION_NAME);
+        has_copy_indirect = snx_vk_choice_has(c, VK_KHR_COPY_MEMORY_INDIRECT_EXTENSION_NAME);
         has_reconvergence = snx_vk_choice_has(c, VK_KHR_SHADER_MAXIMAL_RECONVERGENCE_EXTENSION_NAME);
         g_vk.has_feedback = snx_vk_choice_has(c, VK_EXT_ATTACHMENT_FEEDBACK_LOOP_LAYOUT_EXTENSION_NAME);
         has_feedback_dynamic = snx_vk_choice_has(c, VK_EXT_ATTACHMENT_FEEDBACK_LOOP_DYNAMIC_STATE_EXTENSION_NAME);
@@ -967,6 +978,11 @@ static bool choose_device(SnxVkChoice* c, void* user) {
         /* the driver's budget for each heap, the other processes' use taken out (devmem.c): without it the budget
            is 80% of a heap's size, blind to what the desktop and other programs hold */
         g_vk.has_budget = snx_vk_choice_has(c, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
+        /* memory the driver may move to system memory when the GPU's own is short, by the priorities devmem.c gives
+           (vk_devmem_priority). Priorities alone are not used: devmem.c knows an allocation's owner only after the
+           driver made its memory, and only pageable memory takes a new priority after that */
+        has_pageable = snx_vk_choice_has(c, VK_EXT_PAGEABLE_DEVICE_LOCAL_MEMORY_EXTENSION_NAME) &&
+                       snx_vk_choice_has(c, VK_EXT_MEMORY_PRIORITY_EXTENSION_NAME);
         /* the GPU's clock next to the client's, for the profiler's GPU track (gpuprof.c's calibration) */
         has_calibrated = snx_vk_choice_has(c, VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME);
         /* a portability driver's subset must be enabled when it has one (MoltenVK) */
@@ -1131,6 +1147,10 @@ static bool choose_device(SnxVkChoice* c, void* user) {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_2_FEATURES_EXT};
     VkPhysicalDeviceFeatures2 f2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
     VkPhysicalDeviceFaultFeaturesEXT qfault = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT};
+    VkPhysicalDeviceMemoryPriorityFeaturesEXT qpriority = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PRIORITY_FEATURES_EXT};
+    VkPhysicalDevicePageableDeviceLocalMemoryFeaturesEXT qpageable = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PAGEABLE_DEVICE_LOCAL_MEMORY_FEATURES_EXT};
     VkPhysicalDeviceShaderObjectFeaturesEXT qso = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_OBJECT_FEATURES_EXT};
     VkPhysicalDevicePipelineExecutablePropertiesFeaturesKHR qexec = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_EXECUTABLE_PROPERTIES_FEATURES_KHR};
@@ -1144,6 +1164,8 @@ static bool choose_device(SnxVkChoice* c, void* user) {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_5_FEATURES_KHR};
     VkPhysicalDeviceMaintenance8FeaturesKHR qmaintenance8 = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_8_FEATURES_KHR};
+    VkPhysicalDeviceCopyMemoryIndirectFeaturesKHR qcopy = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COPY_MEMORY_INDIRECT_FEATURES_KHR};
     VkPhysicalDeviceAttachmentFeedbackLoopLayoutFeaturesEXT qloop = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ATTACHMENT_FEEDBACK_LOOP_LAYOUT_FEATURES_EXT};
     VkPhysicalDeviceAttachmentFeedbackLoopDynamicStateFeaturesEXT qloop_dyn = {
@@ -1199,6 +1221,7 @@ static bool choose_device(SnxVkChoice* c, void* user) {
                            has_extended_flags ? &qflags : NULL,
                            has_maintenance5 ? &qmaintenance5 : NULL,
                            has_maintenance8 ? &qmaintenance8 : NULL,
+                           has_copy_indirect ? &qcopy : NULL,
                            &q11,
                            &q12,
                            core13 ? &q13 : NULL,
@@ -1246,6 +1269,8 @@ static bool choose_device(SnxVkChoice* c, void* user) {
                            has_coop ? &qcoop : NULL,
                            has_atomic_float ? &qatomic_float : NULL,
                            has_fault ? &qfault : NULL,
+                           has_pageable ? &qpriority : NULL,
+                           has_pageable ? &qpageable : NULL,
                            has_exec ? &qexec : NULL,
                            has_so ? &qso : NULL,
                            has_nv_rate ? &qnv_rate : NULL,
@@ -1334,6 +1359,7 @@ static bool choose_device(SnxVkChoice* c, void* user) {
     g_vk.has_vertex_robustness2 = qpipeline.pipelineRobustness && qrobust.robustBufferAccess2 && !g_vk.robust_buffer2;
     g_vk.has_cond_render = has_cond && qcond.conditionalRendering;
     g_vk.has_fault = has_fault && qfault.deviceFault;
+    g_vk.has_pageable = has_pageable && qpriority.memoryPriority && qpageable.pageableDeviceLocalMemory;
     g_vk.has_exec_stats = has_exec && qexec.pipelineExecutableInfo;
     g_vk.has_provoking_last = has_provoking && qprov.provokingVertexLast;
     g_vk.has_list_restart = has_list_restart && qlist_restart.primitiveTopologyListRestart;
@@ -1496,6 +1522,12 @@ static bool choose_device(SnxVkChoice* c, void* user) {
                                    "robustBufferAccess2"
                                  : NULL;
         g_vk.has_shader_objects = !so_why;
+        /* a shader object has no executables to ask statistics of: a draw that binds them makes no pipeline, and no
+           row */
+        if (g_vk.has_shader_objects && g_vk.has_exec_stats)
+            WARN("vulkan: pipeline_stats: draws bind shader objects (VK_EXT_shader_object), which the driver gives no "
+                 "statistics of: only compute pipelines, and the pipelines of draws shader objects can't take, get "
+                 "rows; with vk_ext_shader_object=off every draw's program gets them\n");
         if (g_vk.has_shader_objects) {
             VkPhysicalDeviceShaderObjectPropertiesEXT sop = {
                 .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_OBJECT_PROPERTIES_EXT};
@@ -1605,6 +1637,26 @@ static bool choose_device(SnxVkChoice* c, void* user) {
             "descriptors use %s\n",
             g_settings.descriptor_buffers, heaps_missing, g_vk.has_descriptor_buffers ? "buffers" : "sets");
     g_vk.has_descriptor_heaps = g_vk.has_descriptor_heap_support;
+    /* the copies name device addresses: the device's memory gets them for these too (bufferDeviceAddress) */
+    g_vk.has_copy_indirect =
+        g_settings.indirect_copies && has_copy_indirect && qcopy.indirectMemoryCopy && q12.bufferDeviceAddress;
+    if (g_vk.has_copy_indirect) { /* recorded in the graphics queue's command buffers: its family has to take them */
+        VkPhysicalDeviceCopyMemoryIndirectPropertiesKHR pcopy = {
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COPY_MEMORY_INDIRECT_PROPERTIES_KHR};
+        VkPhysicalDeviceProperties2 props = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &pcopy};
+        vkGetPhysicalDeviceProperties2(g_vk.phys, &props);
+        g_vk.has_copy_indirect = (pcopy.supportedQueues & VK_QUEUE_GRAPHICS_BIT) != 0;
+    }
+    g_vk.has_inplace_loads = g_settings.texture_loads_in_place && q12.bufferDeviceAddress;
+    LOG("vulkan: kept results are copied %s, and texture loads read them %s\n",
+        g_vk.has_copy_indirect                                      ? "by indirect copies"
+        : !g_settings.indirect_copies                               ? "one command each (vk_copy_indirect=0)"
+        : !has_copy_indirect || !qcopy.indirectMemoryCopy          ? "one command each (no VK_KHR_copy_memory_indirect)"
+        : !q12.bufferDeviceAddress                                  ? "one command each (no bufferDeviceAddress)"
+                                                                    : "one command each (not on the graphics queue)",
+        g_vk.has_inplace_loads              ? "in place"
+        : !g_settings.texture_loads_in_place ? "from copies (vk_inplace_loads=0)"
+                                             : "from copies (no bufferDeviceAddress)");
     if (g_vk.has_descriptor_heap_support) {
         g_vk.descriptor_heap_props = (VkPhysicalDeviceDescriptorHeapPropertiesEXT){
             .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_HEAP_PROPERTIES_EXT};
@@ -1631,7 +1683,10 @@ static bool choose_device(SnxVkChoice* c, void* user) {
                                             .samplerMirrorClampToEdge = q12.samplerMirrorClampToEdge,
                                             .samplerFilterMinmax = q12.samplerFilterMinmax,
                                             .timelineSemaphore = VK_TRUE,
-                                            .bufferDeviceAddress = g_vk.has_descriptor_buffers || g_vk.has_descriptor_heap_support,
+                                            .bufferDeviceAddress = g_vk.has_descriptor_buffers ||
+                                                                   g_vk.has_descriptor_heap_support ||
+                                                                   g_vk.has_copy_indirect ||
+                                                                   g_vk.has_inplace_loads,
                                             .shaderFloat16 = q12.shaderFloat16,
                                             .shaderOutputViewportIndex = q12.shaderOutputViewportIndex,
                                             .shaderOutputLayer = q12.shaderOutputLayer,
@@ -1782,6 +1837,13 @@ static bool choose_device(SnxVkChoice* c, void* user) {
         chain = &fmaintenance8;
         snx_vk_choice_enable(c, VK_KHR_MAINTENANCE_8_EXTENSION_NAME);
     }
+    VkPhysicalDeviceCopyMemoryIndirectFeaturesKHR fcopy = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COPY_MEMORY_INDIRECT_FEATURES_KHR, .indirectMemoryCopy = VK_TRUE};
+    if (g_vk.has_copy_indirect) {
+        fcopy.pNext = chain;
+        chain = &fcopy;
+        snx_vk_choice_enable(c, VK_KHR_COPY_MEMORY_INDIRECT_EXTENSION_NAME);
+    }
     VkPhysicalDeviceDescriptorBufferFeaturesEXT fdesc = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_FEATURES_EXT,
         .pNext = chain,
@@ -1905,6 +1967,23 @@ static bool choose_device(SnxVkChoice* c, void* user) {
     if (g_vk.has_fault) {
         chain = &ffault;
         snx_vk_choice_enable(c, VK_EXT_DEVICE_FAULT_EXTENSION_NAME);
+    }
+    /* the GPU's own memory that the driver may move to system memory when it is short, the lowest priority first */
+    VkPhysicalDeviceMemoryPriorityFeaturesEXT fpriority = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PRIORITY_FEATURES_EXT,
+        .pNext = chain,
+        .memoryPriority = VK_TRUE};
+    VkPhysicalDevicePageableDeviceLocalMemoryFeaturesEXT fpageable = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PAGEABLE_DEVICE_LOCAL_MEMORY_FEATURES_EXT,
+        .pNext = &fpriority,
+        .pageableDeviceLocalMemory = VK_TRUE};
+    if (g_vk.has_pageable) {
+        chain = &fpageable;
+        snx_vk_choice_enable(c, VK_EXT_MEMORY_PRIORITY_EXTENSION_NAME);
+        snx_vk_choice_enable(c, VK_EXT_PAGEABLE_DEVICE_LOCAL_MEMORY_EXTENSION_NAME);
+        LOG("vulkan: the driver may move the GPU's memory to system memory where it is short, the lowest priority "
+            "first: render targets and rings high, textures with drawn pixels medium, textures loaded from memory low "
+            "(VK_EXT_pageable_device_local_memory)\n");
     }
     VkPhysicalDeviceShaderObjectFeaturesEXT fso = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_OBJECT_FEATURES_EXT, .pNext = chain, .shaderObject = VK_TRUE};
@@ -2250,7 +2329,9 @@ static int create_device(void) {
     vkGetDeviceQueue(g_vk.dev, g_vk.compute_family, second ? 1 : 0, &g_vk.compute);
     vk_mem_init(sparse_queue);
     /* the renderer's own allocator (devmem.c): its blocks are 64 MiB at most, and no more than the cap */
-    if (!vk_devmem_init(g_vk.has_descriptor_buffers || g_vk.has_descriptor_heap_support)) return 0;
+    if (!vk_devmem_init(g_vk.has_descriptor_buffers || g_vk.has_descriptor_heap_support || g_vk.has_copy_indirect ||
+                        g_vk.has_inplace_loads))
+        return 0;
     __atomic_store_n(&g_devmem_ready, 1, __ATOMIC_RELEASE);
     { /* a GPU of 4 GiB or less: memory held back for render targets (devmem.c vk_devmem_reserve) */
         VkPhysicalDeviceMemoryProperties mp;

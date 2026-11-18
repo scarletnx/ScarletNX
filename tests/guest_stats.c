@@ -8,7 +8,7 @@
    NCE's outcalls by kind, the hooked functions' by family, a family's index the same at each call with its name and
    the names past the table together; and the lines saying those values, the NCE line only while NCE runs */
 #if defined(__linux__)
-#define _POSIX_C_SOURCE 200809L /* nanosleep, which C99 has not */
+#define _POSIX_C_SOURCE 200809L /* nanosleep, which ISO C has not */
 #endif
 #include "nx/runtime/guest_stats.h"
 #include "common/utilities/common.h"

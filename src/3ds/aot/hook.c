@@ -502,7 +502,7 @@ static uint32_t shifted(const SnxArmCPU* cpu, const Op* op, unsigned* carry) {
         case ASR:
             if (!n) n = 32;
             c = v >> (n - 1) & 1;
-            v = n == 32 ? (uint32_t)((int32_t)v >> 31) : (uint32_t)((int32_t)v >> n);
+            v = snx_asr32(v, n == 32 ? 31 : n);
             break;
         default:
             if (!n) { /* RRX */

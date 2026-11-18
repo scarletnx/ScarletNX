@@ -7,7 +7,7 @@
    and the like; vkGetDeviceProcAddr gives no others), and the block's depends where it has one (the commands are a
    device's only when that holds). Blocks for another API (Vulkan SC) are left out. A command an extension names that
    the registry defines nowhere, an extension named twice, or a character a C string would need escaped stops it,
-   named with its line. It is strict C99 and depends on nothing, so a cross build can build it for the machine it
+   named with its line. It is strict ISO C23 and depends on nothing, so a cross build can build it for the machine it
    runs on.
 
    Usage: vkcmdgen REGISTRY OUT.c (rewritten only when it changes) */

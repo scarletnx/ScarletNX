@@ -1438,8 +1438,7 @@ static void pf_pipe_record(const PipeKey* k);
 /* conservative rasterization overestimates, as the 3D engine's does, by the dilation asked for (PipeKey.conservative:
    1 plus quarter pixels) up to the device's most */
 float vk_conservative_extra(u32 conservative) {
-    float extra = conservative > 1 ? (float)(conservative - 1) * 0.25f : 0.0f;
-    return extra < g_vk.conservative_extra ? extra : g_vk.conservative_extra;
+    return vk_conservative_dilation(conservative, g_vk.conservative_extra, NULL, 0);
 }
 /* Everything a pipeline of a key is made of, filled in place by pipe_info (its members point at each other). A whole
    pipeline takes all of it (pipe_create), a library part what that part holds (lib_create). A part is made from the

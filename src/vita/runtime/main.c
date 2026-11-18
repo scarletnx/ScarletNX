@@ -345,8 +345,9 @@ int snx_vita_main(int argc, char** argv) {
         if (common) continue;
         if (!strncmp(a, "--", 2) && strchr(a, '=')) {
             /* the Vita debug table's, --press-len= and --shot-every= being vita_press_len and vita_shot_every (a Switch
-               game's are g_unattended_ini's), vulkan_video (which the Vita's AVC decoder doesn't take yet), a Vulkan
-               extension's (vk_ext_*) and gamepad_map */
+               game's are g_unattended_ini's), vulkan_video (which the Vita's AVC decoder doesn't take yet), the
+               upscaler and the anti-aliasing (the presenter's, gpu/vk.c), a Vulkan extension's (vk_ext_*) and
+               gamepad_map */
             char key[64];
             const char* value = settings_arg(a, key, sizeof key);
             const IniOpt* o = NULL;
@@ -363,7 +364,9 @@ int snx_vita_main(int argc, char** argv) {
                                                : !strcmp(key, "shot_every") ? "vita_shot_every"
                                                                             : key);
                 if (!o) o = ini_find(g_debug_ini, key);
-                if (!o && !strcmp(key, "vulkan_video")) o = ini_find(g_graphics_ini, key);
+                if (!o && (!strcmp(key, "vulkan_video") || !strcmp(key, "upscaler") ||
+                           !strcmp(key, "upscaler_sharpness") || !strcmp(key, "anti_aliasing")))
+                    o = ini_find(g_graphics_ini, key);
                 if (!o) o = ini_find(g_vk_extensions_ini, key); /* a Vulkan extension's, as the 3DS takes them */
             }
             if (o)

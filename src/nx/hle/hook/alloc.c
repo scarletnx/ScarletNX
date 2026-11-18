@@ -10,7 +10,9 @@
    alias region, the stacks and the kernel's), where the kernel maps nothing of the game's: from KERN_END up to
    AS_END, a 39-bit game's 430 GiB. A pointer is the arena's when it lies in the window. One that isn't, which the
    game's own allocator made before its functions were hooked or through a path no hook covers, goes to the hooked
-   function's own code (hook_run_original), which made it.
+   function's own code (hook_run_original), which made it. A module whose operator delete looks the block's allocator
+   up by the block's address, and copies that code where no hook takes it, keeps its own operator new
+   (alloc_new_shape), so that no block of the arena reaches such a copy.
 
    jemalloc's functions are the program's own where it links jemalloc (weak references, as an executable exports only
    the C library's names of them), else looked up at run time (dlsym, je_ names on macOS): a build without it
@@ -64,7 +66,8 @@ static struct {
     void (*dallocx)(void*, int);
     size_t (*sallocx)(const void*, int);
     int (*mallctl)(const char*, void*, size_t*, void*, size_t);
-    u64 mapped; /* statistics: the window's bytes mapped */
+    u64 mapped;             /* statistics: the window's bytes mapped */
+    signed char copied[32]; /* alloc_new_shape's verdict by module: 1 none, -1 its lookup is copied, 0 not read */
 } g_alloc;
 
 /* ============================================================ the arena's pages */
@@ -516,4 +519,269 @@ int alloc_vector_shape(u64 addr) {
         if (ends && a >= furthest) return deletes == 1;
     }
     return 0;
+}
+
+/* ============================================================ operator new beside a copied operator delete */
+/* A game's operator delete may be its own allocator's code, and the game's build may copy that code into its callers,
+   inlined or as a function no symbol names, where no hook takes it. One game's delete looks the block's allocator up
+   in a table by the block's address, table[(block - base) >> 20]: a block of the arena that reaches a copy of it is
+   looked up past the table's end, past the heap. So in a module whose delete does that lookup and is copied,
+   operator new keeps its own code (alloc_new_shape, every operator new's check): what it returns is the game's, which
+   every copy knows; malloc, free and the hooked deletes stay the arena's. A delete that finds its allocator another
+   way (others lock the thread's heap and ask it) leaves its module's new hooked, copied or not.
+
+   The lookup is a 64-bit ldr at a register offset (ldr xt, [xn, xm], any extend or shift) on the delete's walk
+   (below), whose offset is the block's address (x0 at the entry, or a mov's copy of it) less another register (sub
+   xd, xn, xm), then through any 64-bit ubfm (lsr, ubfx, lsl) or and of an immediate. An offset made any other way (an
+   add, an asr, a 32-bit sub or shift, the size argument less something) or a 32-bit entry is not one.
+
+   A copy is told by what the delete reads: the guest addresses its code at the entry loads from (an adrp, then an
+   add or an ldr from that register), straight on past each conditional branch, past an early return to the branch
+   that skipped it, and through one leading b. Code that loads all of them within COPY_WINDOW instructions, outside
+   the family's own functions (whose code runs only for what the arena didn't make), is a copy. A delete that loads
+   fewer than 2 such addresses gives no verdict, as any code reading its one global would look alike: its module's
+   new stays hooked */
+#define COPY_LOADS  8  /* the addresses of a delete's that a copy has to load, at most */
+#define COPY_WALK   64 /* the instructions read from a delete's entry */
+#define COPY_WINDOW 24 /* the instructions a copy's loads lie within */
+#define COPY_SKIPS  48 /* the family's functions in a module that the search leaves out */
+static const char* const k_deletes[] = {"_ZdlPv",
+                                        "_ZdaPv",
+                                        "_ZdlPvm",
+                                        "_ZdaPvm",
+                                        "_ZdlPvRKSt9nothrow_t",
+                                        "_ZdaPvRKSt9nothrow_t",
+                                        "_ZdlPvSt11align_val_t",
+                                        "_ZdaPvSt11align_val_t",
+                                        "_ZdlPvmSt11align_val_t",
+                                        "_ZdaPvmSt11align_val_t",
+                                        "_ZdlPvSt11align_val_tRKSt9nothrow_t",
+                                        "_ZdaPvSt11align_val_tRKSt9nothrow_t"};
+/* the family's other functions (hooks.hook), whose code runs only through hook_run_original */
+static const char* const k_family[] = {"malloc",
+                                       "calloc",
+                                       "realloc",
+                                       "free",
+                                       "aligned_alloc",
+                                       "memalign",
+                                       "posix_memalign",
+                                       "strdup",
+                                       "strndup",
+                                       "_Znwm",
+                                       "_Znam",
+                                       "_ZnwmSt11align_val_t",
+                                       "_ZnamSt11align_val_t",
+                                       "_ZnwmRKSt9nothrow_t",
+                                       "_ZnamRKSt9nothrow_t",
+                                       "_ZnwmSt11align_val_tRKSt9nothrow_t",
+                                       "_ZnamSt11align_val_tRKSt9nothrow_t"};
+static int listed(const char* name, const char* const* names, size_t n) {
+    for (size_t i = 0; i < n; i++)
+        if (!strcmp(name, names[i])) return 1;
+    return 0;
+}
+
+/* the registers instruction w writes, as made_step and lookup_step follow them: none for a store, a branch or a
+   system instruction but x30 for bl and blr and its own for mrs, both for an ldp and its kin, else its first */
+static u32 written(u32 w) {
+    if ((w & 0x3A400000u) == 0x28400000u) return 1u << (w & 31) | 1u << (w >> 10 & 31); /* ldp and its kin */
+    if ((w & 0x3BC00000u) == 0x39000000u || (w & 0x3A400000u) == 0x28000000u) return 0; /* str, stp */
+    if ((w & 0x1C000000u) == 0x14000000u) { /* branches and system instructions */
+        if ((w & 0xFC000000u) == 0x94000000u || (w & 0xFFFFFC1Fu) == 0xD63F0000u) return 1u << 30;
+        return (w & 0xFFF00000u) == 0xD5300000u ? 1u << (w & 31) : 0; /* mrs */
+    }
+    return 1u << (w & 31);
+}
+
+/* the registers that hold a guest address the code made: x<r>'s in at[r] while bit r of known is set */
+typedef struct {
+    u64 at[32];
+    u32 known;
+} Made;
+/* instruction w at pc on m: the guest address it loads from, an ldr (64 or 32 bits, or ldrsw) at an offset from a
+   register m knows, else 0. An adrp or an add of an immediate to such a register makes one; any other instruction
+   that writes a register forgets it */
+static u64 made_step(Made* m, u64 pc, u32 w) {
+    u32 d = w & 31, n = w >> 5 & 31;
+    if ((w & 0x9F000000u) == 0x90000000u) { /* adrp */
+        m->at[d] = (pc & ~0xFFFull) + ((u64)(i64)((i32)(((w >> 5 & 0x7FFFF) << 2 | (w >> 29 & 3)) << 11) >> 11) << 12);
+        m->known |= 1u << d;
+        return 0;
+    }
+    if ((w & 0xFFC00000u) == 0x91000000u) { /* add xd, xn, #imm12 */
+        if (n != 31 && (m->known >> n & 1)) {
+            m->at[d] = m->at[n] + (w >> 10 & 0xFFF);
+            m->known |= 1u << d;
+        } else {
+            m->known &= ~(1u << d);
+        }
+        return 0;
+    }
+    if ((w & 0xFFC00000u) == 0xF9400000u || (w & 0xFFC00000u) == 0xB9400000u || (w & 0xFFC00000u) == 0xB9800000u) {
+        u64 a = n != 31 && (m->known >> n & 1) ? m->at[n] + (w >> 10 & 0xFFF) * ((w >> 30) == 3 ? 8 : 4) : 0;
+        m->known &= ~(1u << d); /* ldr xt, ldr wt, ldrsw xt, [xn, #imm] */
+        return a;
+    }
+    m->known &= ~written(w);
+    return 0;
+}
+
+/* the registers that hold, along a delete's walk, the block's address (block) and an offset made from it (offset),
+   as alloc_new_shape's comment says */
+typedef struct {
+    u32 block, offset;
+} Lookup;
+/* instruction w on l: 1 when it is the lookup, a 64-bit ldr at a register offset that l knows */
+static int lookup_step(Lookup* l, u32 w) {
+    u32 n = w >> 5 & 31, k = w >> 16 & 31, to = written(w), block = 0, offset = 0;
+    /* ldr xt, [xn, xm{, extend}], read before it writes xt, which may be xm */
+    int hit = (w & 0xFFE00C00u) == 0xF8600800u && (l->offset >> k & 1);
+    if ((w & 0xFFE0FFE0u) == 0xAA0003E0u) { /* mov xd, xm */
+        block = l->block >> k & 1;
+        offset = l->offset >> k & 1;
+    } else if ((w & 0xFF20FC00u) == 0xCB000000u) { /* sub xd, xn, xm */
+        offset = l->block >> n & 1;
+    } else if ((w & 0xFFC00000u) == 0xD3400000u || (w & 0xFF800000u) == 0x92000000u) { /* ubfm, and xd, xn, #imm */
+        offset = l->offset >> n & 1;
+    }
+    l->block = (l->block & ~to) | (block ? to : 0);
+    l->offset = (l->offset & ~to) | (offset ? to : 0);
+    return hit;
+}
+
+/* the addresses the delete at entry loads from (alloc_new_shape's comment says which), at most COPY_LOADS, in sig:
+   their count. *end is where what was read from entry ends, before a leading b went elsewhere; *lookup whether the
+   walk does the lookup */
+static u32 delete_loads(u64 entry, u64 sig[COPY_LOADS], u64* end, int* lookup) {
+    Made m = {{0}, 0};
+    Lookup l = {1, 0}; /* the block in x0 */
+    u64 pc = entry, pending[COPY_WALK];
+    u32 n = 0, np = 0, k;
+    int followed = 0;
+    *end = 0;
+    *lookup = 0;
+    for (int i = 0; i < COPY_WALK && in_module(pc, 4); i++) {
+        u32 w = snx_ld_le32(GP(pc));
+        u64 a;
+        if ((w & 0xFC000000u) == 0x14000000u) { /* b: followed once, before any load */
+            if (!*end) *end = pc + 4;
+            if (n || followed) break;
+            followed = 1;
+            pc += (u64)(i64)((i32)(w << 6) >> 4);
+            m.known = 0;
+            continue;
+        }
+        if ((w & 0xFE000000u) == 0xD6000000u) {    /* br, blr, ret and their authenticated forms */
+            if ((w >> 21 & 15) == 2 && !n && np) { /* an early return, as for a null pointer: the branch past it */
+                pc = pending[--np];
+                continue;
+            }
+            break;
+        }
+        if ((w & 0xFC000000u) == 0x94000000u) break;                              /* bl */
+        if ((w & 0x7E000000u) == 0x34000000u || (w & 0xFF000010u) == 0x54000000u) /* cbz, cbnz, b.cond */
+            pending[np++] = pc + ((u64)(i64)((i32)(w << 8) >> 13) << 2);
+        else if ((w & 0x7E000000u) == 0x36000000u) /* tbz, tbnz */
+            pending[np++] = pc + ((u64)(i64)((i32)(w << 13) >> 18) << 2);
+        *lookup |= lookup_step(&l, w);
+        a = made_step(&m, pc, w);
+        for (k = 0; a && k < n && sig[k] != a; k++) {}
+        if (a && k == n && n < COPY_LOADS) sig[n++] = a;
+        pc += 4;
+    }
+    if (!*end) *end = pc;
+    return n;
+}
+
+/* the places in [lo, hi) whose code loads every address of sig (n) within COPY_WINDOW instructions, outside skip's
+   ranges: their count, the first (the load that completes it) at *first */
+static u32 delete_copies(u64 lo, u64 hi, const u64* sig, u32 n, const u64 (*skip)[2], u32 nskip, u64* first) {
+    Made m = {{0}, 0};
+    u64 seen[COPY_LOADS] = {0}; /* the instruction, counted from 1, of each address's last load; 0 for none */
+    u32 count = 0, k;
+    for (u64 pc = lo; pc + 4 <= hi; pc += 4) {
+        u64 a = made_step(&m, pc, snx_ld_le32(GP(pc))), at = (pc - lo) / 4 + 1;
+        int all = 1;
+        if (!a) continue;
+        for (k = 0; k < n && sig[k] != a; k++) {}
+        if (k == n) continue;
+        seen[k] = at;
+        for (k = 0; k < n; k++) all &= seen[k] && at - seen[k] < COPY_WINDOW;
+        if (!all) continue;
+        memset(seen, 0, sizeof seen);
+        for (k = 0; k < nskip && (pc < skip[k][0] || pc >= skip[k][1]); k++) {}
+        if (k < nskip) continue;
+        if (!count++) *first = pc;
+    }
+    return count;
+}
+
+/* whether a and b (na and nb addresses) hold the same addresses */
+static int same_loads(const u64* a, u32 na, const u64* b, u32 nb) {
+    u32 i, k;
+    if (na != nb) return 0;
+    for (i = 0; i < na; i++) {
+        for (k = 0; k < nb && b[k] != a[i]; k++) {}
+        if (k == nb) return 0;
+    }
+    return 1;
+}
+
+/* operator new's check: 0 when the module that holds addr copies the code of an operator delete that does the
+   lookup, so that its new keeps its own code; read once a module, and said once */
+int alloc_new_shape(u64 addr) {
+    enum { DELETES = sizeof k_deletes / sizeof *k_deletes };
+    const SnxModInfo* mi = NULL;
+    const char* name;
+    u64 a, skip[COPY_SKIPS][2], sigs[DELETES][COPY_LOADS], first = 0, first_of = 0;
+    u32 i, m, k, nskip = 0, nsig = 0, nloads[DELETES], count = 0, said = 0;
+    for (m = 0; g_mod && m < g_mod->nmods; m++)
+        if (addr >= g_mod->mods[m].base && addr - g_mod->mods[m].base < g_mod->mods[m].size) {
+            mi = &g_mod->mods[m];
+            break;
+        }
+    if (!mi) return 1;
+    if (m < sizeof g_alloc.copied && g_alloc.copied[m]) return g_alloc.copied[m] > 0;
+    /* the addresses of each delete that does the lookup, once for each set, and every delete's and the family's
+       functions, which the search leaves out */
+    for (i = 0; kernel_symbol(i, &a, &name); i++) {
+        u64 size = kernel_symbol_size(i), sig[COPY_LOADS], end;
+        u32 n;
+        int lookup;
+        if (!name || a < mi->base || a - mi->base >= mi->size || nskip == COPY_SKIPS) continue;
+        if (listed(name, k_family, sizeof k_family / sizeof *k_family)) {
+            if (size) skip[nskip][0] = a, skip[nskip][1] = a + size, nskip++;
+            continue;
+        }
+        if (!listed(name, k_deletes, DELETES)) continue;
+        n = delete_loads(a, sig, &end, &lookup);
+        skip[nskip][0] = a, skip[nskip][1] = end > a + size ? end : a + size, nskip++;
+        for (k = 0; k < nsig && !same_loads(sigs[k], nloads[k], sig, n); k++) {}
+        if (!lookup || n < 2 || k < nsig || nsig == DELETES) continue;
+        memcpy(sigs[nsig], sig, n * sizeof *sig);
+        nloads[nsig++] = n;
+    }
+    for (k = 0; k < nsig; k++) {
+        u64 at = 0;
+        u32 c = delete_copies(mi->base + mi->text_off, mi->base + mi->text_off + mi->text_size, sigs[k], nloads[k],
+                              (const u64(*)[2])skip, nskip, &at);
+        if (c && !count) first = at, first_of = k;
+        count += c;
+    }
+    if (m < sizeof g_alloc.copied) g_alloc.copied[m] = count ? -1 : 1;
+    for (i = 0; count && kernel_symbol(i, &a, &name); i++) { /* the delete whose code the first copy has */
+        u64 sig[COPY_LOADS], end;
+        u32 n;
+        int lookup;
+        if (said || !name || a < mi->base || a - mi->base >= mi->size || !listed(name, k_deletes, DELETES)) continue;
+        n = delete_loads(a, sig, &end, &lookup);
+        if (!lookup || !same_loads(sigs[first_of], nloads[first_of], sig, n)) continue;
+        LOG("hooks: %s copies the code of its %s at %llx, which looks a block's allocator up by its address and loads "
+            "from %llx and %u more guest addresses, to %u place%s no hook takes, the first at %llx: its operator new "
+            "keeps its own code, as a block of the arena would go there to the game's own allocator\n",
+            mi->name, name, (unsigned long long)a, (unsigned long long)sig[0], n - 1, count, count == 1 ? "" : "s",
+            (unsigned long long)first);
+        said = 1;
+    }
+    return !count;
 }

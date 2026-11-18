@@ -74,6 +74,7 @@ typedef struct {
     Dead* dead;
     int ndead, capdead;
     u64 dead_bytes; /* device memory evicted cache entries among them release (vk_defer_bytes) */
+    u64 dead_moved; /* of those, what moves out of a block being emptied release (vk_defer_moved) */
     /* descriptor pools, reset when the frame is reused and kept */
     VkDescriptorPool pool_d[64];
     int npool, ipool; /* pool_d[ipool] is the one allocating; the ones after it are reset and waiting */
@@ -135,6 +136,7 @@ static struct {
 
 static Frame g_fr[VK_FRAMES];
 static u64 g_dead_bytes; /* every frame's dead_bytes */
+static u64 g_dead_moved; /* every frame's dead_moved */
 static u32 g_cur;
 static u32 g_cb_begun = 1; /* command buffers begun, so a command buffer's state is told from an earlier one's */
 static u64 g_frame_id;
@@ -502,6 +504,8 @@ static void frame_recycle(Frame* f) {
     dead_free(f);
     g_dead_bytes -= f->dead_bytes;
     f->dead_bytes = 0;
+    g_dead_moved -= f->dead_moved;
+    f->dead_moved = 0;
     vkResetCommandPool(g_vk.dev, f->pool, 0);
     /* the pools stay, reset: a frame's draws fill several, and making them again every frame costs. Only those the
        slot's recent uses never reached go */
@@ -527,6 +531,13 @@ int vk_cmd_ready(void) {
 
 static u64 g_cmd_uses;
 u64 vk_cmd_uses(void) { return g_cmd_uses; }
+/* how many command buffers a slot that has n adds at once: as many as it has, 4 at least and none past the frame's
+   most submissions (vk_frame_check ends a frame at 128) */
+#define CB_MOST 129u
+static u32 cb_grow(u32 n) {
+    const u32 want = n < 4 ? 4 : n;
+    return n >= CB_MOST ? 1 : n + want > CB_MOST ? CB_MOST - n : want;
+}
 VkCommandBuffer vk_cmd(void) {
     Frame* f = &g_fr[g_cur];
     g_cmd_uses++;
@@ -541,17 +552,20 @@ VkCommandBuffer vk_cmd(void) {
         }
         if (f->icb == f->ncb) {
             /* the pool's command buffers may still be recording on the recording thread, and a pool is used by one
-               thread at a time. A frame's slot only grows to its most submissions, so this is rare */
+               thread at a time: the wait for the recording thread takes as long as what it has queued. The slot grows
+               by as many as it has (CB_GROW), so it waits a few times as it grows to its most submissions, not at each
+               one. One game's loads, which submit often, waited so up to 550 ms for one buffer */
             vk_rec_sync();
+            const u32 n = cb_grow(f->ncb);
             VkCommandBufferAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
                                               .commandPool = f->pool,
                                               .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-                                              .commandBufferCount = 1};
-            VkCommandBuffer* cbs = realloc(f->cbs, sizeof *cbs * (f->ncb + 1));
+                                              .commandBufferCount = n};
+            VkCommandBuffer* cbs = realloc(f->cbs, sizeof *cbs * (f->ncb + n));
             if (!cbs) fatal("vulkan: out of memory for command buffers");
             f->cbs = cbs;
             VK_OK(vkAllocateCommandBuffers(g_vk.dev, &ai, &f->cbs[f->ncb]));
-            f->ncb++;
+            f->ncb += n;
         }
         vk_rec_begin(f->cbs[f->icb]);
         vk_gpuprof_cb_begin(f->cbs[f->icb]);
@@ -623,7 +637,9 @@ static u32 chunk_new(u32 ring, u64 size, int bar, u32 slot) {
                                        VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                                        VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT |
                                        VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
-                                       (g_vk.has_xfb ? VK_BUFFER_USAGE_TRANSFORM_FEEDBACK_BUFFER_BIT_EXT : 0),
+                                       (g_vk.has_xfb ? VK_BUFFER_USAGE_TRANSFORM_FEEDBACK_BUFFER_BIT_EXT : 0) |
+                                       /* an indirect copy's list is read at its device address (owned.c) */
+                                       (g_vk.has_copy_indirect ? VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT : 0),
                               .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
     DevMemWant aci = {.at = bar ? DM_WINDOW : DM_HOST, .mapped = 1};
     DevMemInfo info;
@@ -636,7 +652,7 @@ static u32 chunk_new(u32 ring, u64 size, int bar, u32 slot) {
     } else if (ring == XRING_DEVICE)
         aci = (DevMemWant){.at = DM_DEVICE};
     else if (stage_cached() && (!bar || g_vk.mem_model == VK_MEM_UMA)) /* a discrete GPU's window has no such type */
-        aci.at = DM_CACHED;
+        aci.at = DM_CACHED; /* chunk_take asks for no window there (window_ring) */
     while (i < g_cmd.nchunk && g_cmd.chunk[i].buf) i++;
     if (i == g_cmd.capchunk) {
         u32 cap = g_cmd.capchunk ? g_cmd.capchunk * 2 : 32;
@@ -728,9 +744,16 @@ static int pool_before(const Chunk* c, const Chunk* than) {
    needs. A ring that wants a chunk outside the window with none left in the pool hands out of its smallest pooled big
    buffer instead, up to that buffer's size: a frame of more small requests than the pool kept chunks for (an ASTC
    texture's strips after a texture's bands) writes memory written before, not new chunks. 0 when none could be made */
+/* whether a chunk of ring can be in the window (chunk_new): not the device's or the back ring's, and not where the
+   rings are in cached memory on unified memory. Asked for there, the window was never what a chunk was made in, so
+   none of the pool's suited, and the staging ring made new chunks each frame (two a frame of small uploads) */
+static int window_ring(u32 ring) {
+    return ring != XRING_DEVICE && ring != XRING_BACK && !(stage_cached() && g_vk.mem_model == VK_MEM_UMA);
+}
 static u32 chunk_take(u32 ring, u64 size, int big, int bar, u32 slot) {
     u32 here = 0, other = 0, lend = 0; /* the chunks of the pool in the memory wanted, in the other memory, and the
                                           big buffer a ring with none of them hands out of */
+    bar = bar && window_ring(ring);
     for (u32 i = 0; i < g_cmd.nchunk; i++) {
         const Chunk* c = &g_cmd.chunk[i];
         u32* pick;
@@ -1138,17 +1161,18 @@ VkCommandBuffer vk_cmd_upload(int gpu) {
     Frame* f = &g_fr[g_cur];
     vk_cmd(); /* the frame's command buffer recording too: every submit then takes this one with it */
     if (!f->up) {
-        if (f->icb >= f->nup) { /* up to this submission's: the ones before it may have had none */
+        if (f->icb >= f->nup) { /* up to this submission's, and as many again (cb_grow), as the frame's own grow */
             vk_rec_sync();
+            const u32 n = f->icb + 1 - f->nup + cb_grow(f->icb + 1);
             VkCommandBufferAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
                                               .commandPool = f->pool,
                                               .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-                                              .commandBufferCount = f->icb + 1 - f->nup};
-            VkCommandBuffer* ups = realloc(f->ups, sizeof *ups * (f->icb + 1));
+                                              .commandBufferCount = n};
+            VkCommandBuffer* ups = realloc(f->ups, sizeof *ups * (f->nup + n));
             if (!ups) fatal("vulkan: out of memory for command buffers");
             f->ups = ups;
             VK_OK(vkAllocateCommandBuffers(g_vk.dev, &ai, &f->ups[f->nup]));
-            f->nup = f->icb + 1;
+            f->nup += n;
         }
         vk_rec_begin_upload(f->ups[f->icb]);
         f->up = 1;
@@ -1563,9 +1587,14 @@ static Frame* dead_slot(void) {
     return f;
 }
 void vk_defer_image(VkImage img, DevMem a, VkImageView v1, VkImageView v2) {
+    vk_devmem_owner(a, NULL); /* not moved once it is let go (devmem.h) */
+    if (!a && img) vk_image_sparse_mover(img, NULL); /* nor are a sparse image's blocks */
     dead_push(dead_slot(), (Dead){.img = img, .mem = a, .v1 = v1, .v2 = v2});
 }
-void vk_defer_buffer(VkBuffer b, DevMem a) { dead_push(dead_slot(), (Dead){.buf = b, .mem = a}); }
+void vk_defer_buffer(VkBuffer b, DevMem a) {
+    vk_devmem_owner(a, NULL); /* not moved once it is let go (devmem.h) */
+    dead_push(dead_slot(), (Dead){.buf = b, .mem = a});
+}
 /* on the list its release goes on, so they leave the count when the release is performed: counted on a fresh slot
    before the release that started it, they left at that slot's recycling */
 void vk_defer_bytes(u64 bytes) {
@@ -1574,6 +1603,12 @@ void vk_defer_bytes(u64 bytes) {
     g_dead_bytes += bytes;
 }
 u64 vk_deferred_bytes(void) { return g_dead_bytes; }
+void vk_defer_moved(u64 bytes) {
+    if (!bytes) return;
+    dead_slot()->dead_moved += bytes;
+    g_dead_moved += bytes;
+}
+u64 vk_deferred_moved(void) { return g_dead_moved; }
 void vk_defer_buffer_view(VkBufferView v) { dead_push(dead_slot(), (Dead){.view = v}); }
 void vk_defer_call(void (*fn)(void*), void* arg) { dead_push(dead_slot(), (Dead){.fn = fn, .arg = arg}); }
 

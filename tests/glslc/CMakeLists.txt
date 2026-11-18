@@ -4,16 +4,16 @@
 # deterministic fuzz, then whole shaders beside the host's tools: SPIRV-Tools' spirv-val on every module, and, where
 # the build has glslangValidator, the same shaders, errors and words taken and refused, and the same block layouts
 add_executable(snx-glslc-cli glslc_cli.c)
-snx_test_target(snx-glslc-cli 99)
+snx_test_target(snx-glslc-cli c23)
 target_link_libraries(snx-glslc-cli PRIVATE snx_glslc)
 foreach(pass lex parse emit)
     add_executable(snx-test-glslc-${pass} ${pass}_test.c)
-    snx_test_target(snx-test-glslc-${pass} 99)
+    snx_test_target(snx-test-glslc-${pass} c23)
     target_link_libraries(snx-test-glslc-${pass} PRIVATE snx_glslc)
     add_test(NAME glslc_${pass} COMMAND snx-test-glslc-${pass})
 endforeach()
 add_executable(snx-test-glslc-fuzz glslc_fuzz.c)
-snx_test_target(snx-test-glslc-fuzz 99)
+snx_test_target(snx-test-glslc-fuzz c23)
 target_link_libraries(snx-test-glslc-fuzz PRIVATE snx_glslc)
 file(GLOB snx_glslc_shaders CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/shaders/*.vert"
      "${CMAKE_CURRENT_SOURCE_DIR}/shaders/*.frag" "${CMAKE_CURRENT_SOURCE_DIR}/shaders/*.comp")

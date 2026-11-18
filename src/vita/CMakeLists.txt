@@ -59,7 +59,7 @@ if(SNX_VITA_LOCKSTEP)
     target_compile_definitions(snx_vita_program PRIVATE SNX_VITA_LOCKSTEP)
 endif()
 foreach(target snx_vita_loader snx_vita_usse snx-vita-usse snx_vita_program)
-    set_target_properties(${target} PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+    set_target_properties(${target} PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON)
     target_compile_options(${target} PRIVATE -Wall -Wextra -Werror=missing-prototypes)
 endforeach()
 

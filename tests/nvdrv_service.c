@@ -134,6 +134,7 @@ void svc_register(const char* name, SvcCtor ctor) {
 /* kernel objects, counted; a handle takes a reference and names its object */
 void kobj_ref(KObj* o) { o->refs++; }
 void kobj_unref(KObj* o) {
+    if (!o) return;
     CHECK(o->refs > 0);
     if (--o->refs) return;
     free(o);
@@ -1072,6 +1073,20 @@ static void test_gmmu_aliases(void) {
             gmmu_unmap(ALIAS_G + g * 0x1000, n * 0x1000, 0, 0);
         }
         alias_check();
+    }
+    { /* guest pages far apart, up to the top of a guest's memory (AS_TOP), over the last GPU pages: their edges' keys
+         differ in their high bits as well, so the edges kept in order (grun_change, alias_build) are checked across
+         all of guest memory. The test's other mappings differ in their low bits only */
+        static const u64 apart[] = {0x7FFFF00000ull, ALIAS_C + 0x400000, 0x1234567000ull, 0x2000000000ull,
+                                    ALIAS_C + 0x800000, 0x40000000ull,   0x7F00000000ull, 0x3FFFFFF000ull};
+        const u32 nf = sizeof apart / sizeof *apart;
+        for (u32 k = 0; k < nf; k++) gmmu_map(ALIAS_G + (u64)(ALIAS_PAGES - 2 * nf + 2 * k) * 0x1000, apart[k], 0x2000);
+        alias_check_runs();
+        for (u32 k = 0; k < nf; k++) {
+            alias_query(apart[k], 0x2000);
+            u32 i = ALIAS_PAGES - 2 * nf + 2 * k;
+            CHECK(alias_seen.count[i] == 1 && alias_seen.count[i + 1] == 1);
+        }
     }
     gmmu_unmap(ALIAS_G, (u64)ALIAS_PAGES * 0x1000, 0, 0);
     alias_check();

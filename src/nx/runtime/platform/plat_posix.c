@@ -1189,8 +1189,8 @@ int plat_vm_share(u8* p, int fd, u64 size) {
         r = mmap(p, (size_t)size, PROT_READ | PROT_WRITE | g_vm_exec, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0) ==
                     MAP_FAILED
                 ? -2
-                : -1;
-        if (r == -1) memcpy(p, view, (size_t)size);
+                : -3;
+        if (r == -3) memcpy(p, view, (size_t)size);
     }
     wp_let(p, size, WP_MAPPED, 1);
     munmap(view, (size_t)size);
@@ -1588,6 +1588,7 @@ int plat_alias_read(u64 off, void* dst, u64 size) {
         ssize_t n = pread(g_alias, d, (size_t)size, (off_t)off);
         if (n <= 0) {
             if (n < 0 && errno == EINTR) continue;
+            if (!n) errno = ENXIO; /* the pool ends before off: lseek's SEEK_DATA says so past a file's end */
             return -1;
         }
         d += n, off += (u64)n, size -= (u64)n;

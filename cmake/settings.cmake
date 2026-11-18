@@ -36,7 +36,7 @@ if(CMAKE_CROSSCOMPILING)
     add_dependencies(snx-settingsgen snx_settingsgen_host)
 else()
     add_executable(snx-settingsgen "${PROJECT_SOURCE_DIR}/tools/settingsgen/settingsgen.c")
-    set_target_properties(snx-settingsgen PROPERTIES C_STANDARD 99 C_STANDARD_REQUIRED ON
+    set_target_properties(snx-settingsgen PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON
                                                      C_EXTENSIONS OFF RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}")
     target_compile_options(snx-settingsgen PRIVATE -pedantic-errors -Wall -Wextra -Werror)
 endif()
@@ -150,7 +150,7 @@ add_custom_target(snx_settings_generated DEPENDS ${snx_settings_outputs})
 
 add_library(snx_settings STATIC "${snx_settings_out}/settings.c" "${snx_settings_out}/settings_launch.c"
                                 "${snx_settings_out}/settings_args.c" "${PROJECT_SOURCE_DIR}/src/nx/runtime/ini.c")
-set_target_properties(snx_settings PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS ON) # ini.c: __atomic
+set_target_properties(snx_settings PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON C_EXTENSIONS ON) # ini.c: __atomic
 target_compile_options(snx_settings PRIVATE -Wall -Wextra -Werror=missing-prototypes -Werror=missing-variable-declarations)
 target_include_directories(snx_settings PUBLIC "${snx_settings_out}" "${PROJECT_SOURCE_DIR}/src")
 # the tables' rows a needs block gates resolve by the build's own macros (ini.h's INI_NEEDS_): the library that compiles
@@ -163,7 +163,7 @@ endif()
 add_dependencies(snx_settings snx_settings_generated)
 # a library, so a program links only the tables it uses (a test, one module's), and their set functions
 add_library(snx_settings_runtime STATIC ${snx_settings_runtime_files})
-set_target_properties(snx_settings_runtime PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS ON)
+set_target_properties(snx_settings_runtime PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON C_EXTENSIONS ON)
 if(SNX_TRACY)
     target_compile_definitions(snx_settings_runtime PRIVATE SNX_TRACY=1)
 endif()

@@ -42,7 +42,7 @@ def main():
             elf = scratch / name
             # -mno-outline-atomics: on an AArch64 host Clang calls libgcc's __aarch64_* helpers for atomics, and
             # -nostdlib leaves libgcc out
-            build = [args.clang, '--target=aarch64-linux-gnu', '-fuse-ld=lld', '-static', '-O2', '-ffreestanding',
+            build = [args.clang, '--target=aarch64-linux-gnu', '-fuse-ld=lld', '-static', '-std=gnu23', '-O2', '-ffreestanding',
                      '-fno-builtin', '-fno-stack-protector', '-fno-pie', '-nostdlib', '-march=armv8-a',
                      '-mno-outline-atomics',
                      '-Wl,-e,_start', '-I', str(source), str(source / 'start.S'), str(source / 'thread_start.S'),

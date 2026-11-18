@@ -118,6 +118,7 @@ static int pump(void) {
     return 0;
 }
 void gpu_kick(void) { fixture.kicked = 1; }
+void gpu_poll_why(u32 why) { (void)why; }
 /* the renderer's GPU is done with the work before the increments it held: 1 when it held any */
 static int gpu_done(void) {
     u32 n = fixture.nheld;

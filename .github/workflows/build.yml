@@ -44,27 +44,13 @@ concurrency:
     ${{ github.event_name == 'pull_request' || github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
 # The Linux x86-64 and AArch64 tests' options: the linux job's, and the appimage job's, which builds a pull request's
-# x86-64 alone. SNX_TEST_OPTIONS go on the default tree, SNX_HEADLESS_OPTIONS make the headless Vulkan tree
+# Linux alone. SNX_TEST_OPTIONS go on the default tree, SNX_HEADLESS_OPTIONS make the headless Vulkan tree
 env:
   SNX_TEST_OPTIONS: -DSNX_TEST_VP9_VECTORS=ON -DSNX_TEST_ARM_DIFF=ON -DSNX_TEST_LLVM_SWEEP=ON
   SNX_HEADLESS_OPTIONS: -DSNX_BUILD_GUI=OFF -DSNX_DEPLOY=OFF -DSNX_TEST_VULKAN=ON -DSNX_TEST_AV1_VECTORS=ON
   # the jobs that may fail without failing the run (continue-on-error), whose failure cancels nothing
   # (scripts/fail-fast.py; tests/fail_fast_test.py holds the two to each other)
   SNX_OPTIONAL_JOBS: '^(macOS and iOS \(arm64\)|Linux AppImage \((ppc64le|ppc64|riscv64|loongarch64)\)(, as installed)?)$'
-  # Amberlith's runs (the edenprobe jobs below): the release's tag and its NRO's name, which carries the version
-  EDENPROBE_VERSION: v1.0.0
-  EDENPROBE_NRO: amberlith-1.0.0.nro
-  EDENPROBE_SHA256: a5eb634b346ef3f357716b3690e2f21dbc53a14ae1ed08d08ad81b1f91bea018
-  # every family that needs no person or network: headless, the audio family's sound is never played. Not graphics:
-  # its suites write their own GPU command buffers, left out while the runtime had no Maxwell front end, and not
-  # added back since it returned (docs/dev/edenprobe.md). hooks: the runtime answers nn::fs, time, pl, ngc and nsd
-  # in the SDK's own functions and serves none of their services, so the probe asks through the functions it exports
-  EDENPROBE_MODE: quick notime cpu fs video display kernel audio hooks
-  # the APK (the probe's Android build) of a release of its own: its words run every family it has
-  EDENPROBE_APK_VERSION: v1.0.0
-  EDENPROBE_APK: amberlith-1.0.0.apk
-  EDENPROBE_APK_SHA256: 192cc7750bac972d0f4d850eea7bbada7a84b3c5b6b24d25d4d8ba7f7b6933d8
-  EDENPROBE_APK_MODE: quick
 
 # Linux jobs run in Arch Linux, which has the same Clang 23 and clang-format 23 as development, and its LLVM 23 for the
 # recompiler's code generator (required, cmake/llvm.cmake). Windows uses MSYS2 CLANG64 so Clang, the MinGW/UCRT runtime
@@ -101,16 +87,17 @@ jobs:
           esac
   linux:
     name: Linux (${{ matrix.arch }})
+    # Not on a pull request: each architecture's tests run in the appimage job there, on the build its AppImage is
+    # made of, so a pull request's run builds each Linux once, and edenprobe takes that job's install
+    if: github.event_name != 'pull_request'
     runs-on: ${{ matrix.arch == 'aarch64' && 'ubuntu-24.04-arm' || 'ubuntu-26.04' }}
     timeout-minutes: 60
     # Arch's image is x86-64 only; pkgforge's (the AppImage's) is Arch Linux ARM on AArch64, with the same LLVM
     container: ${{ matrix.arch == 'aarch64' && 'ghcr.io/pkgforge-dev/archlinux:latest' || 'archlinux:latest' }}
     strategy:
       fail-fast: false
-      # A pull request builds AArch64's alone: x86-64's tests run in the appimage job, on the build its AppImage is
-      # made of, and edenprobe takes that job's install
       matrix:
-        arch: ${{ fromJSON(github.event_name == 'pull_request' && '["aarch64"]' || '["x86_64", "aarch64"]') }}
+        arch: [x86_64, aarch64]
     steps:
       # Artifacts carry the commit they came from: the branch's head in a pull request, else the commit pushed
       - name: Name the commit
@@ -216,22 +203,10 @@ jobs:
             -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           cmake --build --preset default --parallel "$(getconf _NPROCESSORS_ONLN)"
           cmake --install build/default --prefix stage
-      # The fallback is CMake's (cpmfile.json pins SDL3) and the Windows job builds the same SDL3 from source: a pull
-      # request that changes no CMake file, no pin and not this workflow skips it, a push always builds it
-      - name: Look for CMake changes
-        id: cmake-changed
-        if: github.event_name == 'pull_request'
-        run: |
-          # safe.directory for this command only: the container's git refuses the checkout, and the build
-          # (cmake/commit.cmake) and build_info_commit after it must see it the same way
-          changed=$(git -c safe.directory="$GITHUB_WORKSPACE" diff --name-only HEAD^1 HEAD)
-          printf '%s\n' "$changed"
-          if grep -qE '(^|/)CMakeLists\.txt$|\.cmake$|^CMakePresets\.json$|^cpmfile\.json$|^\.github/workflows/build\.yml$' <<<"$changed"; then
-            echo "yes=true" >> "$GITHUB_OUTPUT"
-          fi
+      # The fallback is CMake's (cpmfile.json pins SDL3) and the Windows job builds the same SDL3 from source. A pull
+      # request builds it in the appimage job, when it changes a CMake file, a pin or this workflow
       - name: Build the SDL3 fallback without a system package
-        if: github.event_name != 'pull_request' || steps.cmake-changed.outputs.yes == 'true'
-        run: |
+        run: &sdl-fallback |
           cmake --preset default -B build/sdl-fallback -DCMAKE_DISABLE_FIND_PACKAGE_SDL3=ON \
             -DSNX_DEPLOY=OFF -DBUILD_TESTING=OFF -DSDL_WAYLAND=OFF \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
@@ -278,11 +253,11 @@ jobs:
         run: &headless-tests ctest --test-dir build/headless -R '^(vulkan_headless|vulkan_headless_options|vulkan_headless_vic_validation|vulkan_headless_pipeline_library_whole|vulkan_headless_pipeline_library_linked|vulkan_headless_libraries_off|vulkan_headless_vk12|vulkan_headless_descriptor_buffers|vulkan_headless_vertex_input_off|vulkan_headless_uma|vulkan_headless_hot|vulkan_recorder|vulkan_tex_partial|vulkan_video_av1|nx_runtime_homebrew|nx_runtime_homebrew_64k_pages|vulkan_storage_buffer_keep|vulkan_nvn_savestate|vulkan_owned_page_reads|vulkan_owned_page_reads_protection|astc_vulkan_sync|astc_vulkan_encode_dot)$' --output-on-failure --parallel "$(getconf _NPROCESSORS_ONLN)"
       # The game modules compile src/common/cpu/aarch64/cpu_helpers.c, which no CMake target does
       - name: Check the ABI helpers compile
-        run: &abi-helpers clang -fsyntax-only -Wall -I src src/common/cpu/aarch64/cpu_helpers.c
+        run: &abi-helpers clang -std=gnu23 -fsyntax-only -Wall -I src src/common/cpu/aarch64/cpu_helpers.c
       - name: Test native tooling and indexed filesystems
         run: &native-tests ctest --test-dir build/default --output-on-failure --parallel 4
       - name: Check optional Python diagnostics
-        run: |
+        run: &python-diagnostics |
           python -m compileall -q tools
           python tools/run_game.py --help > /dev/null
       - uses: actions/upload-artifact@v7
@@ -664,12 +639,13 @@ jobs:
         with:
           path: .cache/llvm/${{ matrix.arch }}
           key: ${{ steps.llvm-cache.outputs.cache-primary-key }}
-      # A release leaves out scarletnx --mcp's A64 disassembler (SNX_A64_DISASM), which is for working on the runtime
+      # A release leaves out scarletnx --mcp's A64 disassembler (SNX_A64_DISASM), which is for working on the runtime,
+      # and the test programs, which the AppImage does not carry: they were half of this build's time
       - name: Build and install into /usr
         run: |
           git config --global --add safe.directory '*'
           cmake --preset default -DSNX_DEPLOY=OFF -DCMAKE_INSTALL_PREFIX=/usr \
-            -DLLVM_DIR="$PWD/.cache/llvm/${{ matrix.arch }}/lib/cmake/llvm" -DSNX_A64_DISASM=OFF \
+            -DLLVM_DIR="$PWD/.cache/llvm/${{ matrix.arch }}/lib/cmake/llvm" -DSNX_A64_DISASM=OFF -DBUILD_TESTING=OFF \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           cmake --build --preset default --parallel "$(getconf _NPROCESSORS_ONLN)"
           cmake --install build/default
@@ -705,16 +681,16 @@ jobs:
           path: |
             dist/*.AppImage*
             dist/appinfo
-      # A pull request's x86-64 build is this one alone (the linux job builds AArch64's): its install goes to edenprobe,
-      # and the linux job's x86-64 tests run on it, each step after the AppImage is made, so the AppImage is the one a
-      # push makes. The install is the AppImage's runtime as it was built
-      - name: Stage the install for edenprobe
-        if: matrix.arch == 'x86_64' && github.event_name == 'pull_request'
+      # A pull request's Linux builds are this job's alone (the linux job runs on a push): each architecture's install,
+      # x86-64's for edenprobe, and the linux job's tests run on it, each step after the AppImage is made, so the
+      # AppImage is the one a push makes. The install is the AppImage's runtime as it was built
+      - name: Stage the install
+        if: github.event_name == 'pull_request'
         run: |
           # out of /usr first: the tests run as the linux job's do, with no copy of ScarletNX installed there
           xargs -d '\n' rm -f -- < build/default/install_manifest.txt
           cmake --install build/default --prefix stage
-      - if: matrix.arch == 'x86_64' && github.event_name == 'pull_request'
+      - if: github.event_name == 'pull_request'
         uses: actions/upload-artifact@v7
         with:
           name: ScarletNX-linux-${{ matrix.arch }}-${{ steps.commit.outputs.short }}-install
@@ -722,7 +698,7 @@ jobs:
       # The linux job's test tools this image lacks, and Arch's own Mesa back, which the linux job tests lavapipe with:
       # the debloated one is for the AppImage alone. Each pacman install is tried 3 times, as in the linux job
       - name: Install the test tools
-        if: matrix.arch == 'x86_64' && github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request'
         run: |
           for try in 1 2 3; do
             pacman -S --noconfirm mesa && pacman -S --noconfirm --needed lld qemu-user pkgconf libxtst libxrandr \
@@ -731,45 +707,65 @@ jobs:
             sleep 5
           done
       - name: Install Unicorn
-        if: matrix.arch == 'x86_64' && github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request'
         run: *unicorn
-      # The linux job's compiler cache and dependency builds from main, where it builds x86-64's test and headless
-      # trees: this job's own hold the AppImage's tree alone, not the headless tree's FFmpeg nor its compiles. Read
-      # after the dependency builds are named and saved above, which keep only the AppImage's
-      - if: matrix.arch == 'x86_64' && github.event_name == 'pull_request'
+      # The linux job's compiler cache and dependency builds from main, where it builds this architecture's test and
+      # headless trees: this job's own hold the AppImage's tree alone, not the headless tree's FFmpeg nor its compiles.
+      # Read after the dependency builds are named and saved above, which keep only the AppImage's
+      - if: github.event_name == 'pull_request'
         uses: actions/cache/restore@v5
         with:
           path: .cache/ccache
-          key: ccache-linux-x86_64-${{ github.run_id }}-${{ github.run_attempt }}
-          restore-keys: ccache-linux-x86_64-
-      - if: matrix.arch == 'x86_64' && github.event_name == 'pull_request'
+          key: ccache-linux-${{ matrix.arch }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: ccache-linux-${{ matrix.arch }}-
+      - if: github.event_name == 'pull_request'
         uses: actions/cache/restore@v5
         with:
           path: .cache/deps
-          key: deps-linux-x86_64-${{ github.run_id }}
-          restore-keys: deps-linux-x86_64-
-      # The linux job's test options on the same tree, and its headless tree with this job's LLVM: the A64 disassembler
-      # stays out, as in the AppImage, so on a pull request its tests run on x86-64 in the sanitizers' job alone, and
-      # on AArch64 in the linux job. The compiler cache's counts are this build's, zeroed by the trim above
+          key: deps-linux-${{ matrix.arch }}-${{ github.run_id }}
+          restore-keys: deps-linux-${{ matrix.arch }}-
+      # The linux job's test options on the same tree, its tests on, and its headless tree with this job's LLVM. The
+      # A64 disassembler, which the AppImage leaves out, is back in AArch64's test tree, where a pull request runs its
+      # tests on that host; on x86-64 they run in the sanitizers' job. The compiler cache's counts are this build's,
+      # zeroed by the trim above
       - name: Build the tests and the headless Vulkan tree
-        if: matrix.arch == 'x86_64' && github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request'
         run: |
-          cmake build/default ${{ env.SNX_TEST_OPTIONS }} -DPython3_EXECUTABLE="$PWD/.cache/unicorn/bin/python"
+          cmake build/default ${{ env.SNX_TEST_OPTIONS }} -DBUILD_TESTING=ON \
+            -DSNX_A64_DISASM=${{ matrix.arch == 'aarch64' && 'ON' || 'OFF' }} \
+            -DPython3_EXECUTABLE="$PWD/.cache/unicorn/bin/python"
           cmake --build build/default --parallel "$(getconf _NPROCESSORS_ONLN)"
           cmake --preset default -B build/headless ${{ env.SNX_HEADLESS_OPTIONS }} \
             -DLLVM_DIR="$PWD/.cache/llvm/${{ matrix.arch }}/lib/cmake/llvm" -DSNX_A64_DISASM=OFF \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           cmake --build build/headless --parallel "$(getconf _NPROCESSORS_ONLN)"
           ccache --show-stats
+      # The linux job's SDL3 fallback, on AArch64 alone as it was there, when the pull request changes a CMake file, a
+      # pin or this workflow
+      - name: Look for CMake changes
+        id: cmake-changed
+        if: matrix.arch == 'aarch64' && github.event_name == 'pull_request'
+        run: |
+          changed=$(git diff --name-only HEAD^1 HEAD)
+          printf '%s\n' "$changed"
+          if grep -qE '(^|/)CMakeLists\.txt$|\.cmake$|^CMakePresets\.json$|^cpmfile\.json$|^\.github/workflows/build\.yml$' <<<"$changed"; then
+            echo "yes=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Build the SDL3 fallback without a system package
+        if: steps.cmake-changed.outputs.yes == 'true'
+        run: *sdl-fallback
       - name: Test headless Vulkan and NX runtime
-        if: matrix.arch == 'x86_64' && github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request'
         run: *headless-tests
       - name: Check the ABI helpers compile
-        if: matrix.arch == 'x86_64' && github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request'
         run: *abi-helpers
       - name: Test native tooling and indexed filesystems
-        if: matrix.arch == 'x86_64' && github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request'
         run: *native-tests
+      - name: Check optional Python diagnostics
+        if: github.event_name == 'pull_request'
+        run: *python-diagnostics
       - *fail-fast-file
       - *fail-fast-mark
 
@@ -784,7 +780,8 @@ jobs:
   appimage-cross:
     name: Linux AppImage (${{ matrix.arch }})
     needs: qemu-reference
-    # without a reference to run against (a pull request that changes nothing the differential tests), the AppImage alone
+    # without a reference to run against (a pull request that changes nothing the differential tests), the build and
+    # the launcher's tests alone
     if: >-
       ${{ !cancelled() && (needs.qemu-reference.result == 'success' || needs.qemu-reference.result == 'skipped') }}
     runs-on: ubuntu-26.04
@@ -800,8 +797,8 @@ jobs:
       DEBLOATED_PACKAGES_SHA: d215f7676785f1a1bb8784e69085d66c1df81488ef31f1ba7198325a5be05130
     strategy:
       fail-fast: false
-      # A pull request builds big-endian ppc64's alone; ppc64le, riscv64 and loongarch64 build where a nightly can
-      # come of the run (a push or a manual run)
+      # A pull request builds big-endian ppc64's alone, and makes no AppImage of it: its build and tests run, its
+      # bundle where a nightly can come of the run (a push or a manual run), as ppc64le's, riscv64's and loongarch64's
       matrix:
         include: >-
           ${{ fromJSON(github.event_name == 'pull_request' && '[
@@ -889,14 +886,15 @@ jobs:
           key: pacman-${{ github.job }}-${{ steps.week.outputs.week }}
           restore-keys: pacman-${{ github.job }}-
       # The target container is where the packages and then the runtime go: / is the image, so pacman, quick-sharun
-      # and get-debloated-pkgs work unmodified
+      # and get-debloated-pkgs work unmodified. A pull request bundles nothing, so it starts none
       - name: Start the build and target containers
         run: |
           mkdir -p "$RUNNER_TEMP/pacman"
           docker run --detach --name build --volume "$PWD:/src" --volume "$RUNNER_TEMP/pacman:/var/cache/pacman/pkg" \
             --workdir /src ghcr.io/pkgforge-dev/archlinux:latest sleep infinity
-          docker run --detach --name target --platform linux/${{ matrix.platform }} \
-            --volume "$PWD:/src" --workdir /src ghcr.io/pkgforge-dev/archlinux:latest sleep infinity
+          [ "$GITHUB_EVENT_NAME" = pull_request ] ||
+            docker run --detach --name target --platform linux/${{ matrix.platform }} \
+              --volume "$PWD:/src" --workdir /src ghcr.io/pkgforge-dev/archlinux:latest sleep infinity
       - name: Unpack the ${{ matrix.arch }} system root
         if: steps.sysroot.outputs.cache-hit != 'true'
         run: |
@@ -910,6 +908,7 @@ jobs:
       # links libLLVM), ICU and Opus, so it runs last. Each pacman is tried 3 times, as in the linux job. The token is
       # get-debloated-pkgs' api.github.com rate limit, the one the appimage job's copy is given
       - name: Install the target container's tools and libraries
+        if: github.event_name != 'pull_request'
         env:
           LINUX_ONLY: ${{ matrix.linux-only && '1' || '' }}
           GITHUB_TOKEN: ${{ github.token }}
@@ -940,6 +939,7 @@ jobs:
       # The build machine's packaging tool: quick-sharun makes the AppImage, and this appimagetool compresses natively,
       # takes the target's runtime from APPIMAGE_ARCH, and resolves mkdwarfs for this machine rather than the target's
       - name: Install the packaging tools
+        if: github.event_name != 'pull_request'
         run: |
           docker exec -i -e QUICK_SHARUN -e QUICK_SHARUN_SHA -e APPIMAGETOOL_URL -e APPIMAGETOOL_SHA build sh -s <<'EOF'
           set -eu
@@ -1122,8 +1122,10 @@ jobs:
           path: .cache/deps
           key: ${{ steps.deps-used.outputs.key }}
       # Packaging runs where / is the target's system root, so quick-sharun reads it and the licenses' packages come
-      # from its pacman database; the AppImage itself is compressed on the build machine
+      # from its pacman database; the AppImage itself is compressed on the build machine. Not on a pull request: no
+      # one runs its AppImage, which took half of the job's time, and a push to main and the nightly bundle it
       - name: Bundle the AppImage
+        if: github.event_name != 'pull_request'
         run: |
           for try in 1 2 3; do
             if docker exec -i target sh -s <<'EOF'
@@ -1140,6 +1142,7 @@ jobs:
             sleep 30
           done
       - name: Make the AppImage
+        if: github.event_name != 'pull_request'
         run: |
           docker exec -i -e GITHUB_REPOSITORY -e GITHUB_REF_TYPE -e VERSION="$(git describe --always --dirty)" \
             -e MAKE_APPIMAGE_ONLY=1 -e ARCH=${{ matrix.arch }} -e APPIMAGETOOL=/usr/local/bin/appimagetool \
@@ -1148,13 +1151,15 @@ jobs:
           scripts/make-appimage.sh
           EOF
       - name: Check the AppImage
+        if: github.event_name != 'pull_request'
         run: |
           docker exec -i -e ARCH=${{ matrix.arch }} build sh -s <<'EOF'
           set -eu
           scripts/check-appimage.sh
           EOF
       # Only what the script made: dist/ also holds the tracked desktop entry and icon
-      - uses: actions/upload-artifact@v7
+      - if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v7
         with:
           name: ScarletNX-linux-${{ matrix.arch }}-${{ steps.commit.outputs.short }}.AppImage
           path: |
@@ -1742,7 +1747,7 @@ jobs:
           key: ${{ steps.deps-used.outputs.key }}
       - name: Check the ABI helpers compile
         if: ${{ !cancelled() && steps.macos-build.outcome == 'success' }}
-        run: clang -fsyntax-only -Wall -I src src/common/cpu/aarch64/cpu_helpers.c
+        run: clang -std=gnu23 -fsyntax-only -Wall -I src src/common/cpu/aarch64/cpu_helpers.c
       - name: Test native tooling and indexed filesystems
         if: ${{ !cancelled() && steps.macos-build.outcome == 'success' }}
         run: ctest --test-dir build/macos --output-on-failure --parallel 4
@@ -1799,10 +1804,12 @@ jobs:
           if-no-files-found: error
 
   # The packages as a user gets them, each on a runner of its own (scripts/check-package.sh): in the build jobs the
-  # checkout sits where the package looks for one, and stands in for what an installed copy lacks
+  # checkout sits where the package looks for one, and stands in for what an installed copy lacks. Not on a pull
+  # request, whose run would wait for four runners more: a push to main and the nightly check each package
   appimage-check:
     name: Linux AppImage (${{ matrix.arch }}), as installed
     needs: appimage
+    if: github.event_name != 'pull_request'
     runs-on: ${{ matrix.arch == 'aarch64' && 'ubuntu-24.04-arm' || 'ubuntu-26.04' }}
     timeout-minutes: 20
     strategy:
@@ -1836,8 +1843,8 @@ jobs:
   appimage-cross-check:
     name: Linux AppImage (${{ matrix.arch }}), as installed
     needs: appimage-cross
-    # by its own need alone: a qemu-reference a pull request skipped would skip this job too
-    if: ${{ !cancelled() && needs.appimage-cross.result == 'success' }}
+    # by its own need alone: a qemu-reference skipped would skip this job too
+    if: ${{ !cancelled() && github.event_name != 'pull_request' && needs.appimage-cross.result == 'success' }}
     runs-on: ubuntu-26.04
     timeout-minutes: 60
     continue-on-error: true
@@ -1845,13 +1852,11 @@ jobs:
       fail-fast: false
       # platform as Docker names it, qemu as qemu-user and binfmt_misc do: the architectures appimage-cross built
       matrix:
-        include: >-
-          ${{ fromJSON(github.event_name == 'pull_request' && '[
-            {"arch": "ppc64", "platform": "ppc64", "qemu": "ppc64"}]' || '[
-            {"arch": "ppc64le", "platform": "ppc64le", "qemu": "ppc64le"},
-            {"arch": "riscv64", "platform": "riscv64", "qemu": "riscv64"},
-            {"arch": "loongarch64", "platform": "loong64", "qemu": "loongarch64"},
-            {"arch": "ppc64", "platform": "ppc64", "qemu": "ppc64"}]') }}
+        include:
+          - {arch: ppc64le, platform: ppc64le, qemu: ppc64le}
+          - {arch: riscv64, platform: riscv64, qemu: riscv64}
+          - {arch: loongarch64, platform: loong64, qemu: loongarch64}
+          - {arch: ppc64, platform: ppc64, qemu: ppc64}
     steps:
       - name: Name the commit
         id: commit
@@ -1940,6 +1945,7 @@ jobs:
   windows-check:
     name: Windows zip, as installed
     needs: windows
+    if: github.event_name != 'pull_request'
     runs-on: windows-2025-vs2026
     timeout-minutes: 20
     defaults:
@@ -1966,203 +1972,211 @@ jobs:
       - *fail-fast-file
       - *fail-fast-mark
 
-  # Amberlith's probes (edenprobe before 1.0.0; docs/dev/edenprobe.md), each run a job of its own beside the others, so
-  # the Build waits for the slowest alone. The NRO of a release of scarletnx/amberlith, pinned by its sha256, recompiled
-  # by the Linux x86-64 install and run on lavapipe: a case of tests/edenprobe/linux-x86_64.txt, the ones that passed
-  # before, that no longer passes fails the job. The install's scarletnx-android runs the probe's APK, pinned apart,
-  # against tests/edenprobe/android-x86_64.txt the same way. Another release or other mode words want its file written
-  # again. A push, a tag, the nightly's schedule and a run by hand run both, and Amberlith's main beside the release;
-  # a pull request runs each only when it changes what that run loads (amberlith-changes), and never the main's
-  # warnings. The install is the linux job's, or on a pull request the appimage job's, which builds a pull request's
-  # x86-64 alone
-  amberlith-changes:
-    name: Amberlith changes
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-26.04
-    timeout-minutes: 5
-    outputs:
-      nro: ${{ steps.changed.outputs.nro }}
-      apk: ${{ steps.changed.outputs.apk }}
-    steps:
-      # the pull request's merge commit and the base it is diffed against
-      - uses: actions/checkout@v7
-        with:
-          fetch-depth: 2
-      # the paths each run loads are scripts/edenprobe.py's (runs), which edenprobe_script tests; it says why on the log
-      - name: Look for what each run loads
-        id: changed
-        run: git diff --name-only HEAD^1 HEAD | python3 scripts/edenprobe.py runs >> "$GITHUB_OUTPUT"
-      - *fail-fast-file
-      - *fail-fast-mark
-
+  # Amberlith's probes (edenprobe before 1.0.0; docs/dev/edenprobe.md), one job however many runs it has. The NRO of a
+  # release of scarletnx/amberlith, pinned by its sha256, recompiled by the Linux x86-64 install and run on lavapipe: a
+  # case of tests/edenprobe/linux-x86_64.txt, the ones that passed before, that no longer passes fails the job. The
+  # install's scarletnx-android runs the probe's APK, pinned apart, against tests/edenprobe/android-x86_64.txt the same
+  # way. Another release or other mode words want its file written again. A push, a tag, the nightly's schedule and a
+  # run by hand run both, and Amberlith's main beside the release; a pull request runs each only when it changes what
+  # that run loads (scripts/edenprobe.py runs), never the main's, and ends at once, passed, when it changes neither. The
+  # runs called for go one after the other. The install is the linux job's, or on a pull request the appimage job's,
+  # which builds a pull request's Linux alone
   edenprobe:
     name: Amberlith (Linux x86_64, lavapipe)
-    needs: [linux, appimage, amberlith-changes]
+    needs: [linux, appimage]
     if: >-
-      ${{ !cancelled() && (github.event_name == 'pull_request' && needs.appimage.result == 'success' &&
-      needs.amberlith-changes.outputs.nro == 'true' || github.event_name != 'pull_request' && needs.linux.result ==
-      'success') }}
+      ${{ !cancelled() && (github.event_name == 'pull_request' && needs.appimage.result == 'success' ||
+      github.event_name != 'pull_request' && needs.linux.result == 'success') }}
     runs-on: ubuntu-26.04
-    timeout-minutes: 30
+    timeout-minutes: 40
     container: archlinux:latest
+    env:
+      # the release's tag and its NRO's name, which carries the version
+      EDENPROBE_VERSION: v1.0.0
+      EDENPROBE_NRO: amberlith-1.0.0.nro
+      EDENPROBE_SHA256: a5eb634b346ef3f357716b3690e2f21dbc53a14ae1ed08d08ad81b1f91bea018
+      # every family that needs no person or network: headless, the audio family's sound is never played. Not graphics:
+      # its suites write their own GPU command buffers, left out while the runtime had no Maxwell front end, and not
+      # added back since it returned (docs/dev/edenprobe.md). hooks: the runtime answers nn::fs, time, pl, ngc and nsd
+      # in the SDK's own functions and serves none of their services, so the probe asks through the functions it exports
+      EDENPROBE_MODE: quick notime cpu fs video display kernel audio hooks
+      # the APK (the probe's Android build) of a release of its own: its words run every family it has
+      EDENPROBE_APK_VERSION: v1.0.0
+      EDENPROBE_APK: amberlith-1.0.0.apk
+      EDENPROBE_APK_SHA256: 192cc7750bac972d0f4d850eea7bbada7a84b3c5b6b24d25d4d8ba7f7b6933d8
+      EDENPROBE_APK_MODE: quick
     steps:
       # Artifacts carry the commit they came from: the branch's head in a pull request, else the commit pushed
-      - &amberlith-commit
-        name: Name the commit
+      - name: Name the commit
         id: commit
         shell: bash
         env:
           SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: echo "short=${SHA::7}" >> "$GITHUB_OUTPUT"
-      # The libraries the install links, lavapipe, and the JVM of the build's JDK, which scarletnx-android loads; each
-      # pacman install tried 3 times, as in the Linux job
-      - &amberlith-libraries
-        name: Install the runtime's libraries and lavapipe
+      # git and Python first, which the decision takes; the rest only for a run. Each pacman install tried 3 times, as
+      # in the Linux job
+      - name: Install git and Python
         run: |
           for try in 1 2 3; do
-            pacman -Syu --noconfirm --needed python llvm-libs sdl3 vulkan-icd-loader vulkan-swrast \
-              github-cli jre21-openjdk-headless && break
+            pacman -Syu --noconfirm --needed git python && break
             [ "$try" = 3 ] && exit 1
             sleep 5
           done
-      - &amberlith-checkout
-        uses: actions/checkout@v7
-      - &amberlith-install
-        uses: actions/download-artifact@v8
+      # the pull request's merge commit and the base it is diffed against
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
+      # which runs this run calls for: the paths each loads are scripts/edenprobe.py's (runs), which edenprobe_script
+      # tests. A pull request that changes none of them ends here, passed, with a notice that says so
+      - name: Look for what each run loads
+        id: runs
+        shell: bash
+        run: |
+          if [ "$GITHUB_EVENT_NAME" != pull_request ]; then
+            printf 'nro=true\napk=true\nmain=true\nany=true\n' >> "$GITHUB_OUTPUT"
+            echo "a $GITHUB_EVENT_NAME runs the NRO and the APK, and Amberlith's main beside the release"
+            exit 0
+          fi
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          changed=$(git diff --name-only HEAD^1 HEAD)
+          said=$(python3 scripts/edenprobe.py runs <<<"$changed")
+          printf '%s\nmain=false\n' "$said" >> "$GITHUB_OUTPUT"
+          if [ "$said" = $'nro=false\napk=false' ]; then
+            echo "any=false" >> "$GITHUB_OUTPUT"
+            count=0
+            [ -z "$changed" ] || count=$(wc -l <<<"$changed")
+            why="none of the $count files changed is one the NRO or the APK loads"
+            echo "::notice title=edenprobe::Amberlith: not run, $why"
+          else
+            echo "any=true" >> "$GITHUB_OUTPUT"
+          fi
+      # The libraries the install links, lavapipe, and for the APK the JVM of the build's JDK, which scarletnx-android
+      # loads
+      - name: Install the runtime's libraries and lavapipe
+        if: steps.runs.outputs.any == 'true'
+        env:
+          APK: ${{ steps.runs.outputs.apk }}
+        run: |
+          packages="llvm-libs sdl3 vulkan-icd-loader vulkan-swrast github-cli"
+          [ "$APK" = true ] && packages="$packages jre21-openjdk-headless"
+          for try in 1 2 3; do
+            pacman -S --noconfirm --needed $packages && break
+            [ "$try" = 3 ] && exit 1
+            sleep 5
+          done
+      - uses: actions/download-artifact@v8
+        if: steps.runs.outputs.any == 'true'
         with:
           name: ScarletNX-linux-x86_64-${{ steps.commit.outputs.short }}-install
           path: stage
-      # gh fetches through the REST API: the releases/download link answered 504 for hours on 2026-11-08. 3 tries
+      # gh fetches through the REST API: the releases/download link answered 504 for hours on 2026-11-08. 3 tries each.
+      # The nightly's NRO is named for its version and commit, amberlith-<version>-<commit>.nro; one that cannot be
+      # fetched or checked is a warning, and its run is left out
       - name: Fetch Amberlith
+        id: fetch
+        if: steps.runs.outputs.any == 'true'
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          NRO: ${{ steps.runs.outputs.nro }}
+          APK: ${{ steps.runs.outputs.apk }}
+          MAIN: ${{ steps.runs.outputs.main }}
         run: |
-          if [ -z "$EDENPROBE_SHA256" ]; then
-            echo "EDENPROBE_SHA256 is empty: pin the sha256 of $EDENPROBE_NRO of $EDENPROBE_VERSION" >&2
-            exit 1
+          fetch() { # TAG FILE SHA256
+            for try in 1 2 3; do
+              gh release download "$1" -R scarletnx/amberlith -p "$2" --clobber && break
+              [ "$try" = 3 ] && return 1
+              sleep 30
+            done
+            echo "$3  $2" | sha256sum -c -
+          }
+          if [ "$NRO" = true ]; then
+            if [ -z "$EDENPROBE_SHA256" ]; then
+              echo "EDENPROBE_SHA256 is empty: pin the sha256 of $EDENPROBE_NRO" >&2
+              exit 1
+            fi
+            fetch "$EDENPROBE_VERSION" "$EDENPROBE_NRO" "$EDENPROBE_SHA256" || exit 1
           fi
-          for try in 1 2 3; do
-            gh release download "$EDENPROBE_VERSION" -R scarletnx/amberlith -p "$EDENPROBE_NRO" --clobber && break
-            [ "$try" = 3 ] && exit 1
-            sleep 30
-          done
-          echo "$EDENPROBE_SHA256  $EDENPROBE_NRO" | sha256sum -c -
-      # Artifacts drop the executable bit. The summary's title is the line of the pull request's comment, as a notice
-      # of this job that scripts/pr-builds.sh reads back once the run ends; on one line, % is all a notice escapes
+          if [ "$APK" = true ]; then
+            fetch "$EDENPROBE_APK_VERSION" "$EDENPROBE_APK" "$EDENPROBE_APK_SHA256" || exit 1
+          fi
+          if [ "$MAIN" = true ]; then
+            mkdir -p edenprobe-nightly
+            if gh release download nightly -R scarletnx/amberlith -D edenprobe-nightly -p 'amberlith-*.nro' \
+                -p 'amberlith-*.nro.sha256' &&
+              mv edenprobe-nightly/amberlith-*.nro edenprobe-main.nro &&
+              mv edenprobe-nightly/amberlith-*.nro.sha256 edenprobe-main.nro.sha256 &&
+              echo "$(cut -d ' ' -f 1 edenprobe-main.nro.sha256)  edenprobe-main.nro" | sha256sum -c -; then
+              echo "main=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "::warning title=Amberlith main::Amberlith's nightly could not be fetched or checked"
+            fi
+          fi
+      # The runs called for, one after the other, each with its own output, summary and exit: the NRO and the APK held to
+      # their baselines, Amberlith's main beside the release's baseline, warnings only. Not side by side: the NRO's kernel
+      # family times its threads, and with the others beside it at the lowest priority, so that it passes, the runs took
+      # no less time in all than one after the other. Artifacts drop the executable bit.
+      # Each summary's title is a line of the pull request's comment, as a notice of this job that scripts/pr-builds.sh
+      # reads back once the run ends; on one line, % is all a notice escapes
       - name: Run Amberlith
+        if: steps.runs.outputs.any == 'true'
+        shell: bash
+        env:
+          NRO: ${{ steps.runs.outputs.nro }}
+          APK: ${{ steps.runs.outputs.apk }}
+          MAIN: ${{ steps.fetch.outputs.main }}
         run: |
           chmod +x stage/bin/*
+          # NAME ARGS...: one run, its output in NAME.log, its status in NAME.status
+          probe() {
+            local name=$1
+            shift
+            local began=$(date +%s) code=0
+            python3 scripts/edenprobe.py run --runtime stage/bin/scarletnx "$@" --summary "$name.md" \
+              > "$name.log" 2>&1 || code=$?
+            echo "$code" > "$name.status"
+            echo "$name: $(($(date +%s) - began)) s" >> times.txt
+          }
+          began=$(date +%s)
+          : > times.txt
+          [ "$NRO" = true ] && probe edenprobe --nro "$EDENPROBE_NRO" --mode "$EDENPROBE_MODE" --out edenprobe \
+            --baseline tests/edenprobe/linux-x86_64.txt
+          [ "$APK" = true ] && probe edenprobe-android --apk "$EDENPROBE_APK" --mode "$EDENPROBE_APK_MODE" \
+            --out edenprobe-android --baseline tests/edenprobe/android-x86_64.txt
+          [ "$MAIN" = true ] && probe edenprobe-main --nro edenprobe-main.nro --mode "$EDENPROBE_MODE" \
+            --out edenprobe-main --advisory-baseline tests/edenprobe/linux-x86_64.txt
           status=0
-          python3 scripts/edenprobe.py run --runtime stage/bin/scarletnx --nro "$EDENPROBE_NRO" --mode "$EDENPROBE_MODE" \
-            --out edenprobe --baseline tests/edenprobe/linux-x86_64.txt --summary "$GITHUB_STEP_SUMMARY" || status=$?
-          if [ -f edenprobe/summary.md ]; then
-            result=$(head -n 1 edenprobe/summary.md | cut -c5-)
-            echo "::notice title=edenprobe::${result//%/%25}"
-          fi
+          for name in edenprobe edenprobe-android edenprobe-main; do
+            [ -f "$name.status" ] || continue
+            echo "::group::$name, exit $(cat "$name.status")"
+            cat "$name.log"
+            echo "::endgroup::"
+            [ -f "$name.md" ] && cat "$name.md" >> "$GITHUB_STEP_SUMMARY"
+            if [ "$name" != edenprobe-main ]; then
+              if [ -f "$name/summary.md" ]; then
+                result=$(head -n 1 "$name/summary.md" | cut -c5-)
+                echo "::notice title=edenprobe::${result//%/%25}"
+              fi
+              [ "$(cat "$name.status")" = 0 ] || status=1
+            fi
+          done
+          echo "the runs: $(($(date +%s) - began)) s in all; $(tr '\n' ';' < times.txt)"
           exit "$status"
-      # The report, the failures' pictures, the logs and this run's baseline.txt; not the recompiled game. Each attempt
+      # The reports, the failures' pictures, the logs and the runs' baseline.txt; not the recompiled game. Each attempt
       # its own: a run takes one artifact of a name, and a job run again keeps the earlier attempt's to compare
       - uses: actions/upload-artifact@v7
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.runs.outputs.any == 'true' }}
         with:
           name: edenprobe-${{ steps.commit.outputs.short }}-${{ github.run_attempt }}
           path: |
             edenprobe
             !edenprobe/work
-      - *fail-fast-file
-      - *fail-fast-mark
-
-  # Amberlith's main, the NRO of its nightly (checked by its .sha256), cases the release has not got yet: held beside
-  # the release's baseline it only warns, and a nightly that cannot be fetched is a warning too. Not on a pull request
-  edenprobe-main:
-    name: Amberlith's main (Linux x86_64, lavapipe)
-    needs: [linux]
-    if: ${{ !cancelled() && github.event_name != 'pull_request' && needs.linux.result == 'success' }}
-    runs-on: ubuntu-26.04
-    timeout-minutes: 30
-    container: archlinux:latest
-    steps:
-      - *amberlith-commit
-      - *amberlith-libraries
-      - *amberlith-checkout
-      - *amberlith-install
-      # The nightly's NRO is named for its version and commit, amberlith-<version>-<commit>.nro
-      - name: Fetch Amberlith's main
-        id: main
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          mkdir -p edenprobe-nightly
-          if gh release download nightly -R scarletnx/amberlith -D edenprobe-nightly -p 'amberlith-*.nro' \
-              -p 'amberlith-*.nro.sha256' &&
-            mv edenprobe-nightly/amberlith-*.nro edenprobe-main.nro &&
-            mv edenprobe-nightly/amberlith-*.nro.sha256 edenprobe-main.nro.sha256 &&
-            echo "$(cut -d ' ' -f 1 edenprobe-main.nro.sha256)  edenprobe-main.nro" | sha256sum -c -; then
-            echo "nro=edenprobe-main.nro" >> "$GITHUB_OUTPUT"
-          else
-            echo "::warning title=Amberlith main::Amberlith's nightly could not be fetched or checked"
-          fi
-      - name: Run Amberlith's main, warnings only
-        if: ${{ steps.main.outputs.nro }}
-        run: |
-          chmod +x stage/bin/*
-          python3 scripts/edenprobe.py run --runtime stage/bin/scarletnx --nro edenprobe-main.nro \
-            --mode "$EDENPROBE_MODE" --out edenprobe-main --advisory-baseline tests/edenprobe/linux-x86_64.txt \
-            --summary "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v7
-        if: ${{ !cancelled() }}
-        with:
-          name: edenprobe-main-${{ steps.commit.outputs.short }}-${{ github.run_attempt }}
-          path: |
             edenprobe-main
             !edenprobe-main/work
-      - *fail-fast-file
-      - *fail-fast-mark
-
-  # The APK on the install's scarletnx-android: its notice goes on the NRO's line of the pull request's comment
-  edenprobe-android:
-    name: Amberlith's APK (Linux x86_64, Android layer)
-    needs: [linux, appimage, amberlith-changes]
-    if: >-
-      ${{ !cancelled() && (github.event_name == 'pull_request' && needs.appimage.result == 'success' &&
-      needs.amberlith-changes.outputs.apk == 'true' || github.event_name != 'pull_request' && needs.linux.result ==
-      'success') }}
-    runs-on: ubuntu-26.04
-    timeout-minutes: 30
-    container: archlinux:latest
-    steps:
-      - *amberlith-commit
-      - *amberlith-libraries
-      - *amberlith-checkout
-      - *amberlith-install
-      - name: Fetch Amberlith's APK
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          for try in 1 2 3; do
-            gh release download "$EDENPROBE_APK_VERSION" -R scarletnx/amberlith -p "$EDENPROBE_APK" --clobber && break
-            [ "$try" = 3 ] && exit 1
-            sleep 30
-          done
-          echo "$EDENPROBE_APK_SHA256  $EDENPROBE_APK" | sha256sum -c -
-      - name: Run Amberlith's APK on the Android layer
-        run: |
-          chmod +x stage/bin/*
-          status=0
-          python3 scripts/edenprobe.py run --runtime stage/bin/scarletnx --apk "$EDENPROBE_APK" \
-            --mode "$EDENPROBE_APK_MODE" --out edenprobe-android --baseline tests/edenprobe/android-x86_64.txt \
-            --summary "$GITHUB_STEP_SUMMARY" || status=$?
-          if [ -f edenprobe-android/summary.md ]; then
-            result=$(head -n 1 edenprobe-android/summary.md | cut -c5-)
-            echo "::notice title=edenprobe::${result//%/%25}"
-          fi
-          exit "$status"
-      - uses: actions/upload-artifact@v7
-        if: ${{ !cancelled() }}
-        with:
-          name: edenprobe-android-${{ steps.commit.outputs.short }}-${{ github.run_attempt }}
-          path: |
             edenprobe-android
             !edenprobe-android/work
+            *.log
+            times.txt
+          if-no-files-found: ignore
       - *fail-fast-file
       - *fail-fast-mark

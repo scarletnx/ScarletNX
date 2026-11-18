@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
 # snx_glslc (glslc.h): GLSL ES 1.00 to 3.20 into SPIR-V, for the backends that run OpenGL ES programs on Vulkan
-# (docs/layers/gpu/glslc.md). C99 and the C library only. No target of the build compiles a shader with it: ScarletNX's own
+# (docs/layers/gpu/glslc.md). ISO C23 and the C library only. No target of the build compiles a shader with it: ScarletNX's own
 # shaders go through the host's glslangValidator (cmake/glsl.cmake)
 add_library(snx_glslc STATIC glslc.c lexer.c builtins.c keywords.c parser.c emit.c)
-set_target_properties(snx_glslc PROPERTIES C_STANDARD 99 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+set_target_properties(snx_glslc PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
 target_compile_options(snx_glslc PRIVATE -pedantic-errors -Wall -Wextra -Werror -Werror=missing-prototypes)
 
 # glslc_keywords.inc: the keywords' perfect hash, which tools/glslc_kwgen finds for builtins.c's table as glslc is
@@ -36,7 +36,7 @@ if(CMAKE_CROSSCOMPILING)
 else()
     add_executable(snx-glslc-kwgen "${PROJECT_SOURCE_DIR}/tools/glslc_kwgen/glslc_kwgen.c" builtins.c)
     target_include_directories(snx-glslc-kwgen PRIVATE "${PROJECT_SOURCE_DIR}/src")
-    set_target_properties(snx-glslc-kwgen PROPERTIES C_STANDARD 99 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+    set_target_properties(snx-glslc-kwgen PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
     target_compile_options(snx-glslc-kwgen PRIVATE -pedantic-errors -Wall -Wextra -Werror)
 endif()
 set(snx_glslc_keywords "${CMAKE_CURRENT_BINARY_DIR}/glslc_keywords.inc")

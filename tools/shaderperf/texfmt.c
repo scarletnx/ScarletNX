@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* snx-shaderperf's texel formats (texfmt.h): the format table, the conversions of the plain, packed and depth formats
-   and the PPM/PGM/PFM images. Self-contained: the C99 library and vulkan_core.h only, no file of the repository */
+   and the PPM/PGM/PFM images. Self-contained: the ISO C library and vulkan_core.h only, no file of the repository */
 #include "texfmt.h"
 #include <math.h>
 #include <stdio.h>

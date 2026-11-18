@@ -10,8 +10,9 @@
 /* a texture of the cache evicted (surface.c surf_evict), before it is freed: its key is kept. A save state's load
    evicts them all, and counts here as any eviction */
 void vk_tex_evicted(const Surf* t);
-/* a texture made and loaded (texture.c tex_from_tic): counted when the cache evicted one of its key before */
-void vk_tex_made(const Surf* t);
+/* a texture made and loaded (texture.c tex_from_tic): counted when the cache evicted one of its key before. The
+   presents from that eviction to now, plus one, or 0 when the cache evicted none of its key */
+u32 vk_tex_made(const Surf* t);
 /* the report (renderer.c, every 600 presents): the first two always, the others with buffer_copy_stats */
 void vk_tex_report_log(void);
 #endif

@@ -19034,6 +19034,11 @@ static void launch(App* app, char* absolute, bool prepared) {
     /* the GBA's window, and the DS's, starts fullscreen as a Switch game's does; a compile opens none */
     if ((app->menu.selected == GUI_GBA || app->menu.selected == GUI_NDS) && !make) n += gui_settings_one(s, "fullscreen", argv + n);
     if (app->menu.selected == GUI_GBA && !make) n += gui_settings_gba(s, argv + n); /* its screen's colors */
+    /* the Vita's presenter takes the Switch's upscaler and anti-aliasing (vita/gpu/vk.c), each at most once in s */
+    if (app->menu.selected == GUI_VITA && !make) {
+        static const char* const effects[] = {"upscaler", "upscaler_sharpness", "anti_aliasing"};
+        for (size_t k = 0; k < sizeof effects / sizeof *effects; ++k) n += gui_settings_one(s, effects[k], argv + n);
+    }
     /* the picked extractions folder, which Extract to tmpfs leaves for the temporary one, and a Switch dump read in
        place (Extract dump off) has no use for */
     if (folders && app->place[GUI_PLACE_WORK] && app->menu.selected == GUI_SWITCH && !nro_file(absolute) &&
@@ -20498,10 +20503,10 @@ static char* log_summary(const char* path) {
     SnxLogScan scan;
     char *markdown, *out;
     FILE* f = snx_fopen(path, "rb");
-    int failed = !f || snx_logscan_file(&scan, f);
-    if (f) fclose(f);
+    int opened = f != NULL, failed = !opened || snx_logscan_file(&scan, f);
+    if (opened) fclose(f);
     if (failed) {
-        if (f) snx_logscan_free(&scan);
+        if (opened) snx_logscan_free(&scan); /* not f: a pointer's value is gone with the file it pointed to */
         return snx_strdup("");
     }
     scan.written = (long long)snx_file_time(path); /* the run's own time, for how much older its build is */

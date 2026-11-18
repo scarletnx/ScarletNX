@@ -98,6 +98,7 @@ int kernel_symbol(u32 i, u64* addr, const char** name) {
     *name = readable(g_hle.debug.syms[i].name, 1) ? (const char*)GP(g_hle.debug.syms[i].name) : NULL;
     return 1;
 }
+u64 kernel_symbol_size(u32 i) { return i < g_hle.debug.nsyms ? g_hle.debug.syms[i].size : 0; }
 /* the length of the guest string at a, at most max, when it is readable and ends within max; else 0 */
 static int gstr(u64 a, int max) {
     int n = 0;

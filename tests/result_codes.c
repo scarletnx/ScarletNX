@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The results the runtime answers (nx/hle/result_codes.inc) and their lookup (nx/hle/result.c), built as strict C99:
+/* The results the runtime answers (nx/hle/result_codes.inc) and their lookup (nx/hle/result.c), built as strict ISO C23:
    each row once, in its module's place, named by the table's rule, and found by its code; what snx_result_text
    writes. Every failure names its row */
 #include "nx/hle/result.c"

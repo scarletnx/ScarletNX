@@ -200,14 +200,17 @@ hook memalign(u64 align, u64 size) -> addr = alloc_aligned
 hook posix_memalign(addr out, u64 align, u64 size) -> i32 = alloc_posix_memalign
 hook strdup(const char* s) -> addr = alloc_strdup
 hook strndup(const char* s, u64 max) -> addr = alloc_strndup
-hook _Znwm(u64 size) -> addr = alloc_new
-hook _Znam(u64 size) -> addr = alloc_new
-hook _ZnwmSt11align_val_t(u64 size, u64 align) -> addr = alloc_new_aligned
-hook _ZnamSt11align_val_t(u64 size, u64 align) -> addr = alloc_new_aligned
-hook _ZnwmRKSt9nothrow_t(u64 size, addr nothrow) -> addr = alloc_new_nothrow
-hook _ZnamRKSt9nothrow_t(u64 size, addr nothrow) -> addr = alloc_new_nothrow
-hook _ZnwmSt11align_val_tRKSt9nothrow_t(u64 size, u64 align, addr nothrow) -> addr = alloc_new_aligned_nothrow
-hook _ZnamSt11align_val_tRKSt9nothrow_t(u64 size, u64 align, addr nothrow) -> addr = alloc_new_aligned_nothrow
+# operator new keeps its own code in a module whose operator delete looks the block's allocator up by its address and
+# is copied where no hook takes it, inlined or in a function no symbol names (alloc_new_shape): a block of the arena
+# there would be looked up past the game's table
+hook _Znwm(u64 size) -> addr = alloc_new check alloc_new_shape
+hook _Znam(u64 size) -> addr = alloc_new check alloc_new_shape
+hook _ZnwmSt11align_val_t(u64 size, u64 align) -> addr = alloc_new_aligned check alloc_new_shape
+hook _ZnamSt11align_val_t(u64 size, u64 align) -> addr = alloc_new_aligned check alloc_new_shape
+hook _ZnwmRKSt9nothrow_t(u64 size, addr nothrow) -> addr = alloc_new_nothrow check alloc_new_shape
+hook _ZnamRKSt9nothrow_t(u64 size, addr nothrow) -> addr = alloc_new_nothrow check alloc_new_shape
+hook _ZnwmSt11align_val_tRKSt9nothrow_t(u64 size, u64 align, addr nothrow) -> addr = alloc_new_aligned_nothrow check alloc_new_shape
+hook _ZnamSt11align_val_tRKSt9nothrow_t(u64 size, u64 align, addr nothrow) -> addr = alloc_new_aligned_nothrow check alloc_new_shape
 hook _ZdlPv(addr p) = alloc_delete
 hook _ZdaPv(addr p) = alloc_delete
 hook _ZdlPvm(addr p) = alloc_delete

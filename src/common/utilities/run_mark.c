@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #ifndef _WIN32
-#define _POSIX_C_SOURCE 200809L /* getpid and localtime_r, which strict C99 leaves undeclared */
+#define _POSIX_C_SOURCE 200809L /* getpid and localtime_r, which strict ISO C leaves undeclared */
 #endif
 #include "common/utilities/run_mark.h"
 #include "common/utilities/common.h"

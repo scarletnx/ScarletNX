@@ -3,7 +3,7 @@
 /* The Vulkan drivers an Apple app carries (MoltenVK, and KosmicKrisp with its loader): found beside a program or in its
    bundle, picked for a run (snx_vulkan_driver_find), and put beside the runtime copy a game runs, which is outside
    the bundle where SDL finds neither the app's Frameworks nor a system loader (docs/hosts/apple.md) */
-#define _DARWIN_C_SOURCE /* chflags and UF_IMMUTABLE, which hide behind it in a strict C99 compile */
+#define _DARWIN_C_SOURCE /* chflags and UF_IMMUTABLE, which hide behind it in a strict ISO C compile */
 #include "common/utilities/common.h"
 #include <assert.h>
 #include <dlfcn.h>

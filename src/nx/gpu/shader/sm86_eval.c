@@ -7,6 +7,7 @@
    which the renderer can then bind a slot for (vk/render.c's tex_handle). */
 #include "nx/gpu/shader/sm86.h"
 #include "common/utilities/endian.h"
+#include "common/utilities/bits.h"
 #include <string.h>
 
 typedef struct {
@@ -210,9 +211,9 @@ static int ev_step(Ev* e, const Sm86Insn* in) {
             s = sm86_field(in, 75, 1) ? s & (bits - 1) : (s < bits ? s : bits);
             u64 value = (u64)ev_bits(e, &in->c) << 32 | ev_bits(e, &in->a), shifted;
             if (s >= 64)
-                shifted = !right ? 0 : is_signed ? (u64)((i64)value >> 63) : 0;
+                shifted = !right ? 0 : is_signed ? snx_asr64(value, 63) : 0;
             else
-                shifted = !right ? value << s : is_signed ? (u64)((i64)value >> s) : value >> s;
+                shifted = !right ? value << s : is_signed ? snx_asr64(value, s) : value >> s;
             ev_dwr(e, in, sm86_field(in, 80, 1) ? (u32)(shifted >> 32) : (u32)shifted);
             return 1;
         }

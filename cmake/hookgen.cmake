@@ -29,7 +29,7 @@ if(CMAKE_CROSSCOMPILING)
     add_dependencies(snx-hookgen snx_hookgen_host)
 else()
     add_executable(snx-hookgen "${PROJECT_SOURCE_DIR}/tools/hookgen/hookgen.c")
-    set_target_properties(snx-hookgen PROPERTIES C_STANDARD 99 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF
+    set_target_properties(snx-hookgen PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF
                                                  RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
     target_compile_options(snx-hookgen PRIVATE -pedantic-errors -Wall -Wextra -Werror)
 endif()

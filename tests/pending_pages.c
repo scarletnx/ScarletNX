@@ -197,6 +197,27 @@ int main(int argc, char** argv) {
     pend_add_va(t, 0x104000, 0x2000, -1);
     check(pend_empty(t), "and their removal");
 
+    /* groups of 64 pages counted whole: a result over four of them taken away in pieces, a page's own count under a
+       whole group's, and a group added in halves taken away whole */
+    pend_add_va(t, 0x2000000, 0x100000, 1);
+    pend_add_va(t, 0x2000000, 0x3000, -1);
+    check(!pend_hit_va(t, 0x2000000, 0x3000) && pend_hit_va(t, 0x2003000, 0x1000) && pend_hit_va(t, 0x20FF000, 1),
+          "pages taken from a group counted whole");
+    pend_add_va(t, 0x2003000, 0xFD000, -1);
+    check(pend_empty(t) && !pend_hit_va(t, 0x2000000, 0x100000), "and the rest of it");
+    pend_add_va(t, 0x2000000, 0x80000, 1);
+    pend_add_va(t, 0x2020000, 0x1000, 1);
+    pend_add_va(t, 0x2000000, 0x80000, -1);
+    check(pend_hit_va(t, 0x2020000, 0x1000) && !pend_hit_va(t, 0x2000000, 0x20000) &&
+              !pend_hit_va(t, 0x2021000, 0x5F000),
+          "a page's own count stays when its group's whole one goes");
+    pend_add_va(t, 0x2020000, 0x1000, -1);
+    check(pend_empty(t), "and its removal");
+    pend_add_va(t, 0x2000000, 0x20000, 1);
+    pend_add_va(t, 0x2020000, 0x20000, 1);
+    pend_add_va(t, 0x2000000, 0x40000, -1);
+    check(pend_empty(t) && !pend_hit_va(t, 0x2000000, 0x40000), "a group added in halves and taken away whole");
+
     /* a table counted in another as well: the other sees what either holds, and empties when both do */
     {
         PendPages *u = &tables[1], *a = &tables[2];

@@ -10,6 +10,7 @@
 /* The runtime library's calls into the backend (arm.h's SnxArmRt): what generated code can't do itself is decided by
    the runtime running it, as A64 code calls RtAPI's undef. Linked into snx_arm_rt and every 32-bit game module */
 #include "common/cpu/arm/arm.h"
+#include "common/utilities/bits.h"
 
 void snx_arm_undefined(SnxArmCPU* cpu, uint32_t word, uint32_t reason) {
     if (cpu->rt && cpu->rt->undefined) {
@@ -79,7 +80,7 @@ static int multiply_carry_simple(uint32_t multiplier) { return multiplier >> 30 
 /* fewer steps: the carry-save adder's carry out of bit 31 after the last one */
 static int multiply_carry_lo(uint32_t multiplicand, uint32_t multiplier, uint32_t accum) {
     multiplicand |= 1; /* negating then inverts the upper bits; this bit never reaches the carry */
-    uint32_t booth = (uint32_t)((int32_t)(multiplier << 31) >> 31), carry = multiplicand * booth, sum = carry + accum;
+    uint32_t booth = snx_asr32(multiplier << 31, 31), carry = multiplicand * booth, sum = carry + accum;
     int shift = 29;
     do {
         for (int i = 0; i < 4; ++i, shift -= 2) { /* 8 multiplier bits in 4 Booth steps */
@@ -104,9 +105,9 @@ static int multiply_carry_hi(uint32_t multiplicand, uint32_t multiplier, uint32_
     }
     multiplicand |= 1;
     uint32_t carry = ~accum_hi & 0x20000000u, accum = accum_hi - 0x08000000u; /* the magic bits 61 and 63-60 */
-    uint32_t booth0 = (uint32_t)((int32_t)(multiplier << 27) >> 27);
-    uint32_t booth1 = (uint32_t)((int32_t)(multiplier << 29) >> 29);
-    uint32_t booth2 = (uint32_t)((int32_t)(multiplier << 31) >> 31);
+    uint32_t booth0 = snx_asr32(multiplier << 27, 27);
+    uint32_t booth1 = snx_asr32(multiplier << 29, 29);
+    uint32_t booth2 = snx_asr32(multiplier << 31, 31);
     uint32_t addend = multiplicand * (booth1 - booth2); /* the third-last addend */
     accum -= addend & 0x10000000u;
     addend = multiplicand * (booth0 - booth1); /* the second-last */

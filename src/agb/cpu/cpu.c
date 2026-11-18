@@ -4,6 +4,7 @@
 #include "agb/bios/bios.h"
 #include "agb/bios/bios_time.h"
 #include "agb/board/board.h"
+#include "common/utilities/bits.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -572,7 +573,7 @@ static uint32_t shift_register(uint32_t value, unsigned type, uint32_t amount, u
             if (!amount) break;
             if (amount < 32) {
                 *carry = value >> (amount - 1) & 1;
-                value = (uint32_t)((int32_t)value >> amount);
+                value = snx_asr32(value, amount);
             } else {
                 *carry = value >> 31 & 1;
                 value = (int32_t)value < 0 ? 0xFFFFFFFFu : 0;

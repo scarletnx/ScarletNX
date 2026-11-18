@@ -97,6 +97,9 @@ type, range and help, tab-separated. Every setting, the recompiler's too, is des
 | `vsync` | `1` | Images are shown only on the display's refresh, so nothing tears. `0` doesn't wait for it: the newest image is shown on the next refresh where the display can do that, else at once (which may tear). A display that can do neither waits for the refresh as `1` does. A 3DS game takes it too (`--vsync=0`), its window saying at start which it got |
 | `frame_pacing` | `1` | With VSync and `fps_limit=game`: `0` paces the game's frames by a timer; `1` also has the next frame wait until the one before is on the display (`VK_KHR_present_wait` or `VK_GOOGLE_display_timing`), so frames don't queue for it; `2` also holds each frame of a game that asks for two refreshes or more a frame until its refresh, where the display can say when (`VK_EXT_present_timing` or `VK_GOOGLE_display_timing`). Where the display can't do one, the one before it |
 | `anisotropy` | `0` | Texture filtering as the game asks. `2` to `16` sharpens surfaces seen at an angle. A 3DS game takes it too (`--anisotropy=N`), for its mipmapped textures filtered linearly, and says at start the value in effect |
+| `upscaler` | `off` | The filter that grows the game's frame to the window: `off` as the window always drew it (smooth on the Switch and the Vita, sharp pixels on the 3DS), `bilinear` smooth, `fsr1` AMD FSR 1, `nis` NVIDIA NIS and `sgsr` Qualcomm SGSR with sharper edges. Where the frame is not shown larger, the smooth scale runs; NIS grows a frame twice at most, and past that FSR 1 runs. The log says the filter in effect, and why where it is not the one asked. A 3DS game (`--upscaler=`) and a Vita one take it too. Another word is said at start, with `off` in its place. A change while the game runs (the game's menu) takes effect at the next frame |
+| `upscaler_sharpness` | `75` | How sharp FSR 1, NIS and SGSR draw the frame's edges, `0` the softest to `100` the sharpest |
+| `anti_aliasing` | `off` | Smoothing of the shown frame's edges, after the upscaler: `auto` is FXAA where the window shows the frame at 1.25 times its size or more each way, and none elsewhere; `fxaa` and `smaa` filter the frame at the window's size (with `upscaler` `off`, scaled as the window scales it: the 3DS in sharp pixels); `ssaa2` and `ssaa4` draw it 2 or 4 times as large and shrink it (where the device holds an image that large, else the step under it, said). Only an SDR frame: a game's own HDR frames are shown without it, which the log says. A 3DS game and a Vita one take it too. A change while the game runs (the game's menu) takes effect at the next frame |
 | `hdr_game` | `0` | `1` lets a game output HDR. A game that asks is then told the display is HDR, and the frames it draws as HDR10 (PQ in BT.2020's primaries) or scRGB (linear light, `1.0` at 80 nits) are shown as they are, in a swapchain of their own color space with the HDR metadata of the game's window. It takes a window whose display lists both kinds (`VK_EXT_swapchain_colorspace`) on a device with `VK_EXT_hdr_metadata`; where one is missing, and with `0`, the game is told the display is SDR and draws for that. The log says which, and names what is missing. A window system that lists them for a display with no HDR converts the image itself. A screenshot of an HDR frame holds its values as they are |
 | `hdr_paperwhite` | `0` | With `hdr_game`: the light of white a game is told to draw its SDR parts at, in nits, `0` to `480`. The game's menu and the on-screen controls are drawn at it too. `0` is BT.2408's reference white of 203 nits |
 | `hdr_peak` | `1000` | With `hdr_game`: the brightest light a game is told the display shows, in nits, `400` to `4000`, which the game tone maps its frames for. The display's own peak: `1000` for most TVs |
@@ -175,7 +178,9 @@ The settings, each with its extension and, where one took it in, the Vulkan vers
 | `vk_ext_load_store_op_none` | `auto` | `VK_EXT_load_store_op_none` |
 | `vk_ext_map_memory_placed` | `auto` | `VK_EXT_map_memory_placed` |
 | `vk_ext_memory_budget` | `auto` | `VK_EXT_memory_budget` |
+| `vk_ext_memory_priority` | `auto` | `VK_EXT_memory_priority`, which `VK_EXT_pageable_device_local_memory` needs: off turns both off |
 | `vk_ext_mesh_shader` | `auto` | `VK_EXT_mesh_shader` |
+| `vk_ext_pageable_device_local_memory` | `auto` | `VK_EXT_pageable_device_local_memory`: where the GPU's own memory is short because other programs take video memory, the driver moves textures loaded from memory to system memory first, and render targets last. ScarletNX keeps its own use under the driver's budget either way. Off, the renderer gives no priorities |
 | `vk_ext_pipeline_creation_feedback` | `auto` | `VK_EXT_pipeline_creation_feedback`, promoted to Vulkan 1.3 |
 | `vk_ext_pipeline_robustness` | `auto` | `VK_EXT_pipeline_robustness`, promoted to Vulkan 1.4 |
 | `vk_ext_post_depth_coverage` | `auto` | `VK_EXT_post_depth_coverage` |
@@ -195,6 +200,7 @@ The settings, each with its extension and, where one took it in, the Vulkan vers
 | `vk_google_display_timing` | `auto` | `VK_GOOGLE_display_timing` |
 | `vk_khr_calibrated_timestamps` | `auto` | `VK_KHR_calibrated_timestamps` |
 | `vk_khr_cooperative_matrix` | `auto` | `VK_KHR_cooperative_matrix` |
+| `vk_khr_copy_memory_indirect` | `auto` | `VK_KHR_copy_memory_indirect` |
 | `vk_khr_dynamic_rendering` | `auto` | `VK_KHR_dynamic_rendering`, promoted to Vulkan 1.3 |
 | `vk_khr_dynamic_rendering_local_read` | `auto` | `VK_KHR_dynamic_rendering_local_read`, promoted to Vulkan 1.4 |
 | `vk_khr_extended_flags` | `auto` | `VK_KHR_extended_flags` |
@@ -316,6 +322,8 @@ the key (with its modifiers held); Esc cancels, Backspace puts the default back,
 | `hotkey_mouse` | `Ctrl+G` | With `game_mouse` at `0`, declares an Ounce game's Joy-Con mouse mode, and ends it. At `1`, lets the mouse go from a game that holds it, and holds it again |
 | `hotkey_quit` | `Escape` | Quits the game: a first press warns, and a second within 3 seconds quits |
 | `hotkey_tv_mode` | `Ctrl+D` | Steps the TV mode round On, Off and Auto for the run, as the game's menu's **TV mode** row does; `docked` keeps the `.ini`'s choice |
+| `hotkey_upscaler` | `Ctrl+U` | Steps the upscaler round Off, Bilinear, AMD FSR 1, NVIDIA NIS and Qualcomm SGSR for the run, said over the game; `upscaler` keeps the `.ini`'s choice |
+| `hotkey_anti_aliasing` | `Ctrl+Shift+A` | Steps the anti-aliasing round Off, Auto, FXAA, SMAA, SSAA 2x and SSAA 4x for the run, said over the game; `anti_aliasing` keeps the `.ini`'s choice |
 
 ## Network
 
@@ -377,7 +385,7 @@ The profiler's rows (`tracy_`) only do something in a build with `SNX_TRACY` (`c
 | `native_cond_var` | `1` | `1` has the game's `std::condition_variable`, `std::mutex` and `std::recursive_mutex` wait on the host's own (`hooks.hook`'s `cond_var` family), and save states are refused, as a state can't hold a thread waiting there. `0` has the game's own code wait, and save states can be taken and loaded ([Hooks](../platforms/nx/hooks.md)) |
 | `native_os_sync` | `1` | `1` has nn::os's sleeps, yields, locks and condition variables (`hooks.hook`'s `os_sync` family) and its light events, semaphores and message queues (`os_light`) run on the host with no SVC, a lock's waiters waiting on its word with the host's futex, and save states are refused, as a state can't hold a thread waiting there. `0` has the game's own code make the SVCs, and save states can be taken and loaded ([Hooks](../platforms/nx/hooks.md)) |
 | `shader_corpus` | empty | A folder that keeps each translated shader for `snx-shaderc`. With it every shader is translated, and none is kept for the next run |
-| `pipeline_stats` | empty | A CSV file that gets the driver's statistics of each whole and optimized graphics pipeline: for each shader stage, the instructions, registers, spills and the others that the driver reports, by the program hashes of the log's lines (a shader corpus file of the program starts with the same first 8 hex digits). On some drivers, pipelines made with it are not the ones in the pipeline cache of runs without it |
+| `pipeline_stats` | empty | A CSV file that gets the driver's statistics of each whole and optimized graphics pipeline, and of each compute pipeline: for each shader stage, the instructions, registers, spills and the others that the driver reports, by the program hashes of the log's lines (a shader corpus file of the program starts with the same first 8 hex digits). Draws that bind shader objects get no rows. On some drivers, pipelines made with it are not the ones in the pipeline cache of runs without it |
 | `astc_dump` | empty | A folder that keeps each whole ASTC texture level the game loads, as an `.astc` file (astcenc's format, the layers or slices as its depth), for `snx-test-astc-vulkan --bench` and the BC7 encoder's measurements (the game's own textures: keep them local). At most 2 GiB a run |
 | `sm86_dump` | empty | A folder that keeps the bytes of each Ounce program (SM86) the translator refuses, and of each block of shader memory with no whole program in it, for `tools/snx_sm86.c` (the game's own code: keep it local) |
 | `gpu_trace_target` | empty | `address[:bytes]`: logs the clears and draws that write a render target starting in that GPU address range |
@@ -395,6 +403,8 @@ The profiler's rows (`tracy_`) only do something in a build with `SNX_TRACY` (`c
 | `vk_buffer_slabs` | `0` | `1` makes `vk_buffer_pages` keep its bytes in slabs, buffers with all their memory, on every GPU. That is its way on a GPU with no sparse buffers, and the value is for testing. `0` uses slabs only on such a GPU |
 | `nvn_storage_order` | `2` | How NVN draws that write storage buffers are ordered. `2` lets draws whose writable views cover the same buffer overlap, as NVN does until the game's own barrier, and puts the Vulkan barrier that barrier asks for at the next buffer use that depends on it. `1` puts it where the game's barrier is. `0` orders each such draw after the ones before it, as Maxwell draws are, to compare ([NVN storage ordering](../history/gpu-hotpath-bench.md#measure-nvn-storage-ordering)) |
 | `vk_descriptors_mode` | `3` | `3`, Automatic, is `2` on a GPU that shares the system's memory (an integrated one, a phone's) and `0` on one with memory of its own, where heaps would write each draw's descriptors on the GPU thread and sets let the recording thread write them. `2`: graphics descriptors in heaps where the device has them, else buffers, else sets, and a heap draw whose resource cannot be encoded uses buffers or sets. `1` uses descriptor buffers where supported, else sets. Heap encodings, index tables and buffer descriptors stay unchanged until their frame retires. Compute keeps its own pools. With buffers or heaps in use, the guest fragment barriers that target/buffer tracking orders are skipped. `0` uses descriptor sets, where a fragment barrier ends the render pass only after storage writes or reads that are still pending, or after guest memory used in place. See [descriptor measurements](../history/gpu-descriptor-bench.md) |
+| `vk_copy_indirect` | `1` | `1` makes the copies of GPU-owned results into one buffer with one command, from a list the GPU reads, where the device has `VK_KHR_copy_memory_indirect` and device addresses. `0` uses one copy command each |
+| `vk_inplace_loads` | `1` | `1` makes a block linear texture load read the bytes that GPU results hold where they are, where the device has device addresses, and the CPU's bytes from staging. `0` copies the results' bytes into staging first |
 | `vk_record` | `1` | `0` records Vulkan commands on the GPU thread instead of a thread of their own |
 | `compute` | `1` | `0` skips every compute shader dispatch |
 | `hmma_f16` | `0` | `1` sums an SM86 HMMA's products in half floats, two a packed `OpFma`, where the console's tensor core keeps the sum in f32 and an f32 emulation needs two instructions for the same pair: about 2 and a half times the frames a second on a device whose driver offers no matrix unit, and a result is then up to 0.4% of its products' size off (more than that of itself where they cancel), a product or partial sum past 65504 an infinity. `0` is the f32 sum. A device with the matrix unit (`VK_KHR_cooperative_matrix`) uses it in compute; one with the mixed dot product (`VK_VALVE_shader_mixed_float_dot_product`) or without `shaderFloat16` keeps the f32 sum, and the log says so |
@@ -450,6 +460,9 @@ The unattended runs' settings ([Run / diagnose](../dev/development.md#run--diagn
 | `ctr_top_resolution` | `1` | The scale of the top screen's 3D rendering, 1 to 16: `1` is the console's 400x240, `2` 800x480; the screen is scaled to its window |
 | `ctr_bottom_resolution` | `1` | The same for the bottom screen: `1` is the console's 320x240, `2` 640x480 |
 
+The Switch's `upscaler`, `upscaler_sharpness` and `anti_aliasing` (Graphics) scale each screen to its place in the
+window, and the start says which run.
+
 ## Vita driver
 
 `scarletnx-vita --key=value` ([PS Vita](../platforms/vita/README.md)), in no section of the game's `.ini`.
@@ -465,6 +478,9 @@ The unattended runs' settings ([Run / diagnose](../dev/development.md#run--diagn
 | `vita_shot_every` | `0` | With `--shot=PATH`, also a screenshot every this many vblanks (60 a second), `PATH_0000.ppm` on; `0`, only the last frame's |
 | `vita_lockstep` | `-1` | From this import call on (`0` is the first), every instruction group of the game also runs in Unicorn, and the first difference in registers, flags or written memory stops the run with both states ([Checking the CPU backend](../platforms/vita/README.md#checking-the-cpu-backend)). Only in a build configured with `-DSNX_VITA_LOCKSTEP=ON`: another build says so at start. `-1` is off |
 | `vita_lockstep_steps` | `0` | With `vita_lockstep`, how many instruction groups are compared before the game runs on without Unicorn. `0` has no limit |
+
+The Switch's `upscaler`, `upscaler_sharpness` and `anti_aliasing` (Graphics) scale the frame to the window, the
+launcher passing them, and the start says which run.
 
 ## Launch
 

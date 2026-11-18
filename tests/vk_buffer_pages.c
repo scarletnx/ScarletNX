@@ -91,6 +91,11 @@ void gpu_mem_written_cpu(u64 cpu, u64 size) { abort(); }
 void gpu_mem_written_shader(u64 gva, u64 size) { abort(); }
 u32 gpu_pools(GpuPool* out, u32 cap) { abort(); }
 int mem_alias_any(void) { abort(); }
+int mem_alias_clear(u64 a, u64 size) {
+    (void)a;
+    (void)size;
+    abort();
+}
 void mem_alias_peers(u64 a, u64 size, void (*fn)(void*, u64, u64), void* user) { abort(); }
 int mem_pool_any(u64 a, u64 size) { abort(); }
 int mem_ww_probe(void (*cb)(u8*, u64)) { abort(); }

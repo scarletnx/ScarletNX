@@ -95,9 +95,8 @@ void gamepad_map_set(const IniOpt* o, const char* v) {
 }
 /* which player a key gamepad_p<N>_... is */
 static int player_of(const IniOpt* o) { return o->key[sizeof "gamepad_p" - 1] - '1'; }
-typedef char players_counted[sizeof g_settings.player_connected / sizeof *g_settings.player_connected == SNX_GAMEPADS
-                                 ? 1
-                                 : -1];
+static_assert(sizeof g_settings.player_connected / sizeof *g_settings.player_connected == SNX_GAMEPADS,
+              "a player_connected setting for each gamepad");
 /* a player's map, as gamepad_map's: none ("") is gamepad_map's; one that cannot be read is said, and changes nothing */
 void gamepad_player_map_set(const IniOpt* o, const char* v) {
     SnxPlayerConfig* p = &g_gamepad.players[player_of(o)];

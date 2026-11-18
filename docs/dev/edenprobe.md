@@ -91,25 +91,27 @@ their submissions drew nothing and each case waited for memory that the GPU woul
 
 ## In CI
 
-Each run is a job of `.github/workflows/build.yml` of its own, beside the others, so the Build waits for the slowest
-alone. The `edenprobe` job takes the Linux x86-64 install (on a pull request, the x86-64 AppImage build's) and runs the
-NRO `EDENPROBE_NRO` of Amberlith's release `EDENPROBE_VERSION`, pinned by `EDENPROBE_SHA256` (the workflow's `env`), on
-lavapipe with the words of `EDENPROBE_MODE`, against `tests/edenprobe/linux-x86_64.txt`. The result goes in the run's
+The `edenprobe` job of `.github/workflows/build.yml`, one job for every run it has, takes the Linux x86-64 install (on a
+pull request, the x86-64 AppImage build's) and runs the NRO `EDENPROBE_NRO` of Amberlith's release `EDENPROBE_VERSION`,
+pinned by `EDENPROBE_SHA256`, on lavapipe with the words of `EDENPROBE_MODE`, against
+`tests/edenprobe/linux-x86_64.txt`. The result goes in the run's
 summary and in the pull request's comment of builds; the artifact `edenprobe-<commit>-<attempt>` holds the report,
 pictures, logs and `baseline.txt`.
 
 A regression there fails the Build run, and a run that failed publishes nothing: neither the nightly nor a version.
 
-A push, a tag, the nightly's schedule and a run by hand run every job. A pull request runs each only when it changes
-what that run loads (the `amberlith-changes` job, `git diff --name-only` of its merge commit through
+A push, a tag, the nightly's schedule and a run by hand run every run. A pull request runs each only when it changes
+what that run loads (the job's first step: `git diff --name-only` of its merge commit through
 `scripts/edenprobe.py runs`): the NRO for `src/nx/`, `src/common/` and its baseline; the APK for `src/android/`,
 `src/gnuabi/`, `src/glslc/`, `src/common/gpu/` and its baseline; both for `src/multicall/`, `scripts/edenprobe.py`, this
-workflow, `CMakeLists.txt`, `CMakePresets.json`, `cpmfile.json` and `cmake/`. A job skipped there counts as passing, and
-the comment's line says skipped only when both were.
+workflow, `CMakeLists.txt`, `CMakePresets.json`, `cpmfile.json` and `cmake/`. One that changes neither ends the job in
+seconds, passed, its notice (and the comment's line) saying why. The runs called for go one after the other, each with
+its own output, summary and exit (side by side, with the others at the lowest priority so that the NRO's kernel family,
+which times its threads, passes, they took no less time in all), and the job fails when the NRO's or the APK's does.
 
-The `edenprobe-main` job, on every run but a pull request's, runs Amberlith's main, the NRO of its `nightly` release
-(checked by its `.sha256`), with `scripts/edenprobe.py run --advisory-baseline tests/edenprobe/linux-x86_64.txt`:
-beside the pinned release's baseline it never fails. A case the release has not got that does not pass, a case the
+On every run but a pull request's, the job also runs Amberlith's main, the NRO of its `nightly` release (checked by its
+`.sha256`), with `scripts/edenprobe.py run --advisory-baseline tests/edenprobe/linux-x86_64.txt`: beside the pinned
+release's baseline it never fails. A case the release has not got that does not pass, a case the
 release passes that does not pass here, a run that ends early, or a nightly that cannot be fetched is a warning on the
 run, and the summary has a section of its own. A case new in main becomes binding when a release that has it is pinned
 and the baseline written again.
@@ -152,11 +154,11 @@ its own, with `machine=scarletnx-android@<the runtime's commit>` beside them; `q
 The probe takes a folder of 160 characters at most, so an `--out` that makes it longer is refused. The
 launches, the report and the baseline are the NRO's.
 
-In CI the `edenprobe-android` job runs it beside the NRO's, on the same install with the JRE of the build's JDK, as
+In CI the `edenprobe` job runs it beside the NRO, on the same install with the JRE of the build's JDK, as
 `EDENPROBE_APK` of the release `EDENPROBE_APK_VERSION`, pinned by `EDENPROBE_APK_SHA256`, with the words of
 `EDENPROBE_APK_MODE`, against `tests/edenprobe/android-x86_64.txt`, written as the NRO's is. Its notice follows the
-NRO's on the probe's line of the pull request's comment, and its files are in its own artifact,
-`edenprobe-android-<commit>-<attempt>`.
+NRO's on the probe's line of the pull request's comment, and its files are under `edenprobe-android/` in the job's
+artifact.
 
 ## A case from a game report
 

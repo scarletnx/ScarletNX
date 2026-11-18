@@ -2433,10 +2433,13 @@ int vk_written_since(const u8* host, u64 len, u32 since) {
     return 0;
 }
 int vk_written_quick(const u8* host, u64 len, u32 since) {
-    if (g_ww <= 0 || !host || !len || __atomic_load_n(&g_wscan_failed, __ATOMIC_ACQUIRE) || g_wclock == UINT32_MAX ||
-        mem_alias_any())
+    if (g_ww <= 0 || !host || !len || __atomic_load_n(&g_wscan_failed, __ATOMIC_ACQUIRE) || g_wclock == UINT32_MAX)
         return -1;
     u64 o = (u64)(host - g_mem), lo = o >> WW_LEAF_SHIFT, hi = (o + len - 1) >> WW_LEAF_SHIFT, end;
+    /* a write through another address of these pages reads as none here (vk_written_since takes their peers). Any
+       page of the game's with two addresses gave up for every texture: in one game's race no texture stayed quiet over
+       an epoch, and each took a full check in each one */
+    if (!mem_alias_clear(o, len)) return -1;
     if (vk_uma_import_in(o, o + len, &end) < o + len) return -1; /* pages no scan watches */
     const u32 seen = vk_ww_epoch() + 1;
     for (u64 l = lo; l <= hi; l++)
@@ -3739,24 +3742,31 @@ static int make_own(u32 i, VkBuffer sb, u64 so) {
     vk_resource_end(VK_RESOURCE_BUFFER_CACHE_BUILD, scope);
     return r;
 }
+/* an own buffer of len bytes */
+static VkBufferCreateInfo own_info(u64 len) {
+    return (VkBufferCreateInfo){.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                                .size = len,
+                                .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
+                                         VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                         VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT |
+                                         VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                                         VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
+                                         VK_BUFFER_USAGE_TRANSFER_SRC_BIT, /* render.c copies indices out of it */
+                                .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
+}
 static int make_own_(u32 i, VkBuffer sb, u64 so) {
     Vb* e = &g_vb[i];
     u64 len = e->len;
-    VkBufferCreateInfo bci = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-                              .size = len,
-                              .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
-                                       VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                                       VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT |
-                                       VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-                                       VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
-                                       VK_BUFFER_USAGE_TRANSFER_SRC_BIT, /* render.c copies indices out of it */
-                              .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
-    DevMemWant aci = {.at = DM_DEVICE};
+    VkBufferCreateInfo bci = own_info(len);
+    DevMemWant aci = {.at = DM_DEVICE, .moves = 1}; /* vk_buf_move */
     VkBuffer b;
     DevMem m;
     if (vk_buffer_create(&bci, &aci, &b, &m, NULL) != VK_SUCCESS) return 0;
     vk_mem_track(m, VK_OWN_BUFFER);
     vk_descriptor_heaps_lasting(b); /* kept descriptors until drop_own's buffer goes (devmem.c forgets) */
+    /* it can move to another block when its own is emptied (vk_buf_move): no one keeps its handle past a lookup
+       (buf_get), and no one takes its device address */
+    vk_devmem_owner(m, VK_MOVE_BUF(i));
     if (copy_stats_on()) g_copy_owned += len;
     VkBufferCopy r = {so, 0, len};
     rec_CmdCopyBuffer(vk_cmd_upload(0), sb, b, 1, &r);
@@ -4519,6 +4529,41 @@ void vk_buf_storage_counts(u64 counts[2][VK_SREAD_N]) {
         for (int k = 0; k < VK_SREAD_N; k++) counts[s][k] = g_gcopy.storage[s][k];
 }
 u64 vk_buf_copy_src_read(void) { return g_buffer.copy_src_read; }
+
+int vk_buf_move(VkCommandBuffer cb, u32 i, DevMem from, u64* bytes) {
+    Vb* e = &g_vb[i];
+    if (!e->own || e->mem != from) return -1; /* dropped or made again since the allocator named it */
+    VkBufferCreateInfo bci = own_info(e->len);
+    const DevMemWant want = {.at = DM_DEVICE, .existing = 1};
+    VkBuffer b;
+    DevMem m;
+    if (vk_buffer_create(&bci, &want, &b, &m, NULL) != VK_SUCCESS) return 0;
+    vk_mem_track(m, VK_OWN_BUFFER);
+    vk_descriptor_heaps_lasting(b); /* as make_own_'s: kept descriptors until it goes (devmem.c forgets) */
+    /* every write before it (uploads, patches, shader stores) done before the copy reads it, and the copy done before
+       anything after it reads or writes the new buffer */
+    VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+                           .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                           .srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT,
+                           .dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+                           .dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT};
+    VkDependencyInfo d = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &mb};
+    rec_CmdPipelineBarrier2(cb, &d);
+    const VkBufferCopy r = {0, 0, e->len};
+    rec_CmdCopyBuffer(cb, e->buf, b, 1, &r);
+    mb = (VkMemoryBarrier2){.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+                            .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+                            .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                            .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                            .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT};
+    rec_CmdPipelineBarrier2(cb, &d);
+    vk_defer_buffer(e->buf, e->mem); /* the frames in flight that read it are done first; its owner goes */
+    e->buf = b;
+    e->mem = m;
+    vk_devmem_owner(m, VK_MOVE_BUF(i));
+    *bytes = e->len;
+    return 1;
+}
 
 u64 vk_buf_reclaim(u32 before, u64 want) {
     u64 freed = 0;
