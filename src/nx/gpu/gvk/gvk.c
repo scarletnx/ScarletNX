@@ -3,7 +3,8 @@
 /* The guest's Vulkan (gvk.h): the slots of the game's Vulkan loader, and the copies of the structures it passes with
    their pointers made host ones */
 #include "nx/gpu/gvk/gvk.h"
-#include "nx/gpu/vk/vk.h"
+#include "nx/runtime/platform/plat.h"
+#include <vulkan/vulkan_core.h>
 #include "nx/runtime/loader.h"
 #include "nx/hle/hook/hook.h"
 #include "nx/hle/kernel/kernel.h"
@@ -18,15 +19,23 @@
 /* the host's structures have the guest's layout (gvk.h): 64-bit pointers, little-endian */
 typedef char gvk_host_lp64[sizeof(void*) == 8 && sizeof(size_t) == 8 ? 1 : -1];
 
-#define GVK_EXPORTS 512 /* the loader of one driver exports 246 */
 #define GVK_CHUNKS  24  /* scratch chunks, each at least twice the one before */
 #define GVK_CHUNK   (1u << 20)
+#define GVK_CHAIN_HOPS 64
+
+typedef struct {
+    const char* name;
+    u64 addr;
+    GuestFn fn;
+} GvkExport;
 
 static struct {
     PMutex lock; /* unknown_said */
     u32 nexports;
-    const char* export_name[GVK_EXPORTS];
-    u64 export_addr[GVK_EXPORTS];
+    GvkExport* exports;
+    u64 driver_base, driver_size;
+    u64 proc_base;
+    GuestFn proc[3];
     u32 unknown_said[64]; /* the pNext structure types said once */
     u32 nunknown;
 } g_gvk = {.lock = PMUTEX_INIT};
@@ -43,6 +52,11 @@ static _Thread_local GvkTls t_gvk;
 void gvk_scratch_reset(void) {
     t_gvk.cur = 0;
     t_gvk.used = 0;
+}
+
+void gvk_scratch_free(void) {
+    for (u32 i = 0; i < t_gvk.n; i++) free(t_gvk.chunk[i]);
+    t_gvk = (GvkTls){0};
 }
 
 void* gvk_scratch(size_t n) {
@@ -84,31 +98,31 @@ static void st_ptr(u8* p, const void* v) { memcpy(p, &v, sizeof v); }
 /* whether the game mapped [g, g + n): a pointer a structure holds where Vulkan ignores it can be anything */
 static int mapped(u64 g, u64 n) { return g && n && g < AS_SIZE && n <= AS_SIZE - g && mem_user_mapped(g, n); }
 
-static const GvkType* chain_type(u32 stype);
-
-/* plain data the host reads where the game wrote it */
-static void* plain_in(u64 g, u64 n, const char* what) {
-    if (!g || !n) return NULL;
-    if (mapped(g, n)) return GP(g);
-    LOG_LIMIT(16, "gvk: %llu bytes of %s at %llx aren't mapped: the host is given none\n", (unsigned long long)n, what,
-              (unsigned long long)g);
-    return NULL;
-}
-/* a string copied to scratch, up to its NUL within 256 bytes: the host would read to the NUL wherever it is */
-static void* str_in(u64 g, const char* what) {
-    if (!g) return NULL;
-    char* s = gvk_scratch(256);
-    if (mem_user_string(s, g, 256) > 0) return s;
-    LOG_LIMIT(16, "gvk: a string of %s at %llx isn't mapped or ends past 256 bytes: the host is given none\n", what,
-              (unsigned long long)g);
-    return NULL;
+int gvk_writable(u64 g, u64 size) {
+    if (!g || g >= AS_END || size > AS_END - g) return 0;
+    u64 end = g + size;
+    while (g < end) {
+        MemBlock b;
+        mem_query(g, &b);
+        if (b.state == MS_FREE || b.state == MS_INACCESSIBLE || !(b.perm & PERM_W)) return 0;
+        g = b.addr + b.size;
+    }
+    return 1;
 }
 
-static void fix(const GvkType* t, u8* h) {
-    if (t->stype) st_ptr(h + 8, gvk_chain_in(ld64(h + 8)));
+static const GvkType* chain_type(u32 parent, u32 stype);
+static int chain_in(u32 parent, u64 g, const void** out);
+static void* copy_in(const GvkType* t, u64 g, u64 count);
+
+static int fix(const GvkType* t, u8* h, int fix_chain) {
+    if (t->stype && fix_chain) {
+        const void* next;
+        if (!chain_in(t->stype, ld64(h + 8), &next)) return 0;
+        st_ptr(h + 8, next);
+    }
     for (const GvkField* f = t->f; f->kind; f++) {
         if (f->kind == GVK_EMBED) {
-            fix(f->type, h + f->off);
+            if (!fix(f->type, h + f->off, 1)) return 0;
             continue;
         }
         u64 g = ld64(h + f->off), count = 1;
@@ -119,20 +133,32 @@ static void fix(const GvkType* t, u8* h) {
         } else if (f->count_size == 8) {
             count = ld64(h + f->count_off);
         }
+        if (f->kind == GVK_SAMPLE_MASK) {
+            u32 samples;
+            memcpy(&samples, h + f->count_off, sizeof samples);
+            if (samples == 0 || samples > VK_SAMPLE_COUNT_64_BIT || (samples & (samples - 1))) return 0;
+            count = (samples + 31) / 32;
+        }
         void* p = NULL;
-        if (f->kind == GVK_STR)
-            p = str_in(g, t->name);
-        else if (f->kind == GVK_BYTES)
-            p = plain_in(g, count, t->name);
-        else if (f->type)
-            p = gvk_in(f->type, g, count);
-        else if (count <= UINT64_MAX / f->elem)
-            p = plain_in(g, count * f->elem, t->name);
+        if (g && count) {
+            if (f->kind == GVK_STR) {
+                char* s = gvk_scratch(256);
+                if (mem_user_string(s, g, 256) > 0) p = s;
+            } else if (f->type) {
+                p = copy_in(f->type, g, count);
+            } else if (count <= AS_SIZE / f->elem && mapped(g, count * f->elem)) {
+                p = GP(g);
+            }
+        }
+        if (count && !p && f->kind != GVK_OPTIONAL_ARRAY &&
+            (g || f->kind == GVK_ARRAY || f->kind == GVK_BYTES || f->kind == GVK_STR))
+            return 0;
         st_ptr(h + f->off, p);
     }
+    return 1;
 }
 
-void* gvk_in(const GvkType* t, u64 g, u64 count) {
+static void* copy_in(const GvkType* t, u64 g, u64 count) {
     if (!g || !count) return NULL;
     if (count > AS_SIZE / t->size || !mapped(g, count * t->size)) {
         LOG_LIMIT(16, "gvk: %llu of %s at %llx aren't mapped: the host is given none\n", (unsigned long long)count,
@@ -142,16 +168,46 @@ void* gvk_in(const GvkType* t, u64 g, u64 count) {
     size_t bytes = (size_t)(count * t->size);
     u8* h = gvk_scratch(bytes);
     memcpy(h, GP(g), bytes);
-    for (u64 i = 0; i < count; i++) fix(t, h + i * t->size);
+    for (u64 i = 0; i < count; i++) {
+        u8* item = h + i * t->size;
+        if (t->stype && snx_ld_le32(item) != t->stype) return NULL;
+        if (!fix(t, item, 1)) return NULL;
+    }
     return h;
 }
 
+void* gvk_in(const GvkType* t, u64 g, u64 count) { return copy_in(t, g, count); }
+
 /* a pNext chain: the structures gvk knows copied, the others left out of it (each type said once) */
-void* gvk_chain_in(u64 g) {
-    for (u32 hops = 0; mapped(g, 16) && hops < 64; hops++) {
+static int chain_in(u32 parent, u64 g, const void** out) {
+    u8* tail = NULL;
+    u64 seen[GVK_CHAIN_HOPS];
+    u32 hops = 0;
+    *out = NULL;
+    for (; g; g = gr64(g + 8)) {
+        if (hops == GVK_CHAIN_HOPS || !mapped(g, 16)) return 0;
+        for (u32 i = 0; i < hops; i++)
+            if (seen[i] == g) return 0;
+        seen[hops++] = g;
         u32 st = gr32(g);
-        const GvkType* t = chain_type(st);
-        if (t) return gvk_in(t, g, 1);
+        const GvkType* t = chain_type(parent, st);
+        if (t) {
+            if (!mapped(g, t->size)) return 0;
+            u8* copy = gvk_scratch(t->size);
+            memcpy(copy, GP(g), t->size);
+            if (snx_ld_le32(copy) != st || !fix(t, copy, 0)) return 0;
+            for (const u8* p = *out; p;) {
+                if (snx_ld_le32(p) == st) return 0;
+                memcpy(&p, p + 8, sizeof p);
+            }
+            st_ptr(copy + 8, NULL);
+            if (tail)
+                st_ptr(tail + 8, copy);
+            else
+                *out = copy;
+            tail = copy;
+            continue;
+        }
         pm_lock(&g_gvk.lock);
         u32 i = 0;
         while (i < g_gvk.nunknown && g_gvk.unknown_said[i] != st) i++;
@@ -160,14 +216,17 @@ void* gvk_chain_in(u64 g) {
             WARN("gvk: a pNext structure of type %u isn't known: it is left out of the chain\n", st);
         }
         pm_unlock(&g_gvk.lock);
-        g = gr64(g + 8);
     }
-    return NULL;
+    return 1;
 }
+
+int gvk_chain_in(u32 parent, u64 g, const void** out) { return chain_in(parent, g, out); }
 
 void gvk_out(const GvkType* t, u64 g, void* host) {
     u8* h = host;
-    while (t && h && mapped(g, t->size)) {
+    u32 hops = GVK_CHAIN_HOPS;
+    u32 parent = t->stype;
+    while (t && h && gvk_writable(g, t->size)) {
         memcpy(GP(g) + 16, h + 16, t->size - 16);
         u8* hn;
         memcpy(&hn, h + 8, sizeof hn);
@@ -175,10 +234,16 @@ void gvk_out(const GvkType* t, u64 g, void* host) {
         u32 st;
         memcpy(&st, hn, sizeof st);
         u64 gn = gr64(g + 8);
-        while (mapped(gn, 16) && gr32(gn) != st) gn = gr64(gn + 8);
+        while (mapped(gn, 16)) {
+            if (!hops) return;
+            hops--;
+            if (gr32(gn) == st) break;
+            gn = gr64(gn + 8);
+        }
+        if (!mapped(gn, 16)) return;
         g = gn;
         h = hn;
-        t = chain_type(st);
+        t = chain_type(parent, st);
     }
 }
 
@@ -186,6 +251,7 @@ void gvk_out(const GvkType* t, u64 g, void* host) {
 #define SZ(S, m)               ((u8)sizeof(((S*)0)->m))
 #define ARR(S, p, n, T)        {offsetof(S, p), GVK_ARRAY, SZ(S, n), offsetof(S, n), 0, &(T)}
 #define PLAIN(S, p, n, E)      {offsetof(S, p), GVK_ARRAY, SZ(S, n), offsetof(S, n), sizeof(E), NULL}
+#define OPT(S, p, n, E)        {offsetof(S, p), GVK_OPTIONAL_ARRAY, SZ(S, n), offsetof(S, n), sizeof(E), NULL}
 #define ONE(S, p, T)           {offsetof(S, p), GVK_ONE, 0, 0, 0, &(T)}
 #define ONE_PLAIN(S, p, E)     {offsetof(S, p), GVK_ONE, 0, 0, sizeof(E), NULL}
 #define BYTES(S, p, n)         {offsetof(S, p), GVK_BYTES, SZ(S, n), offsetof(S, n), 1, NULL}
@@ -216,15 +282,14 @@ static CHAINED(t_input_assembly, VkPipelineInputAssemblyStateCreateInfo,
 static CHAINED(t_tess, VkPipelineTessellationStateCreateInfo, VK_STRUCTURE_TYPE_PIPELINE_TESSELLATION_STATE_CREATE_INFO,
                {0});
 static CHAINED(t_viewport, VkPipelineViewportStateCreateInfo, VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
-               PLAIN(VkPipelineViewportStateCreateInfo, pViewports, viewportCount, VkViewport),
-               PLAIN(VkPipelineViewportStateCreateInfo, pScissors, scissorCount, VkRect2D));
+               OPT(VkPipelineViewportStateCreateInfo, pViewports, viewportCount, VkViewport),
+               OPT(VkPipelineViewportStateCreateInfo, pScissors, scissorCount, VkRect2D));
 static CHAINED(t_raster, VkPipelineRasterizationStateCreateInfo,
                VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO, {0});
-/* the sample mask of a 64-sample pipeline is two words: two are read, as a check of one would let the host past it */
 static CHAINED(t_multisample, VkPipelineMultisampleStateCreateInfo,
                VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
-               {offsetof(VkPipelineMultisampleStateCreateInfo, pSampleMask), GVK_ONE, 0, 0, 2 * sizeof(VkSampleMask),
-                NULL});
+               {offsetof(VkPipelineMultisampleStateCreateInfo, pSampleMask), GVK_SAMPLE_MASK, 0,
+                offsetof(VkPipelineMultisampleStateCreateInfo, rasterizationSamples), sizeof(VkSampleMask), NULL});
 static CHAINED(t_depth_stencil, VkPipelineDepthStencilStateCreateInfo,
                VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO, {0});
 static CHAINED(t_blend, VkPipelineColorBlendStateCreateInfo, VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
@@ -235,11 +300,11 @@ static CHAINED(t_dynamic, VkPipelineDynamicStateCreateInfo, VK_STRUCTURE_TYPE_PI
 STRUCT(t_subpass, VkSubpassDescription,
        PLAIN(VkSubpassDescription, pInputAttachments, inputAttachmentCount, VkAttachmentReference),
        PLAIN(VkSubpassDescription, pColorAttachments, colorAttachmentCount, VkAttachmentReference),
-       PLAIN(VkSubpassDescription, pResolveAttachments, colorAttachmentCount, VkAttachmentReference),
+       OPT(VkSubpassDescription, pResolveAttachments, colorAttachmentCount, VkAttachmentReference),
        ONE_PLAIN(VkSubpassDescription, pDepthStencilAttachment, VkAttachmentReference),
        PLAIN(VkSubpassDescription, pPreserveAttachments, preserveAttachmentCount, u32));
 STRUCT(t_dsbinding, VkDescriptorSetLayoutBinding,
-       PLAIN(VkDescriptorSetLayoutBinding, pImmutableSamplers, descriptorCount, VkSampler));
+       OPT(VkDescriptorSetLayoutBinding, pImmutableSamplers, descriptorCount, VkSampler));
 static CHAINED(t_inherit, VkCommandBufferInheritanceInfo, VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO, {0});
 static CHAINED(t_dedicated_req, VkMemoryDedicatedRequirements, VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS, {0});
 static CHAINED(t_dedicated_alloc, VkMemoryDedicatedAllocateInfo, VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO, {0});
@@ -262,9 +327,9 @@ CHAINED(gvk_t_submit, VkSubmitInfo, VK_STRUCTURE_TYPE_SUBMIT_INFO,
         PLAIN(VkSubmitInfo, pCommandBuffers, commandBufferCount, VkCommandBuffer),
         PLAIN(VkSubmitInfo, pSignalSemaphores, signalSemaphoreCount, VkSemaphore));
 CHAINED(gvk_t_buffer, VkBufferCreateInfo, VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-        PLAIN(VkBufferCreateInfo, pQueueFamilyIndices, queueFamilyIndexCount, u32));
+        OPT(VkBufferCreateInfo, pQueueFamilyIndices, queueFamilyIndexCount, u32));
 CHAINED(gvk_t_image, VkImageCreateInfo, VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-        PLAIN(VkImageCreateInfo, pQueueFamilyIndices, queueFamilyIndexCount, u32));
+        OPT(VkImageCreateInfo, pQueueFamilyIndices, queueFamilyIndexCount, u32));
 CHAINED(gvk_t_image_view, VkImageViewCreateInfo, VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, {0});
 CHAINED(gvk_t_buffer_view, VkBufferViewCreateInfo, VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO, {0});
 CHAINED(gvk_t_sampler, VkSamplerCreateInfo, VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO, {0});
@@ -283,9 +348,9 @@ CHAINED(gvk_t_dsalloc, VkDescriptorSetAllocateInfo, VK_STRUCTURE_TYPE_DESCRIPTOR
         PLAIN(VkDescriptorSetAllocateInfo, pSetLayouts, descriptorSetCount, VkDescriptorSetLayout));
 /* which of its three arrays a write reads goes by its descriptor type: gvk_api.c clears the others */
 CHAINED(gvk_t_write, VkWriteDescriptorSet, VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-        PLAIN(VkWriteDescriptorSet, pImageInfo, descriptorCount, VkDescriptorImageInfo),
-        PLAIN(VkWriteDescriptorSet, pBufferInfo, descriptorCount, VkDescriptorBufferInfo),
-        PLAIN(VkWriteDescriptorSet, pTexelBufferView, descriptorCount, VkBufferView));
+        OPT(VkWriteDescriptorSet, pImageInfo, descriptorCount, VkDescriptorImageInfo),
+        OPT(VkWriteDescriptorSet, pBufferInfo, descriptorCount, VkDescriptorBufferInfo),
+        OPT(VkWriteDescriptorSet, pTexelBufferView, descriptorCount, VkBufferView));
 CHAINED(gvk_t_copy, VkCopyDescriptorSet, VK_STRUCTURE_TYPE_COPY_DESCRIPTOR_SET, {0});
 CHAINED(gvk_t_rpass, VkRenderPassCreateInfo, VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
         PLAIN(VkRenderPassCreateInfo, pAttachments, attachmentCount, VkAttachmentDescription),
@@ -324,21 +389,39 @@ CHAINED(gvk_t_imreq2, VkImageMemoryRequirementsInfo2, VK_STRUCTURE_TYPE_IMAGE_ME
 CHAINED(gvk_t_bufreq2, VkBufferMemoryRequirementsInfo2, VK_STRUCTURE_TYPE_BUFFER_MEMORY_REQUIREMENTS_INFO_2, {0});
 CHAINED(gvk_t_req2, VkMemoryRequirements2, VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2, {0});
 
-static const GvkType* const g_chain_types[] = {
-    &t_stage,           &t_vertex_input,  &t_input_assembly, &t_tess,        &t_viewport,       &t_raster,
-    &t_multisample,     &t_depth_stencil, &t_blend,          &t_dynamic,     &t_inherit,        &t_dedicated_req,
-    &t_dedicated_alloc, &t_format_list,   &t_reduction,      &t_view_usage,  &t_depth_clip,     &t_provoking,
-    &t_color_write,     &gvk_t_submit,    &gvk_t_buffer,     &gvk_t_image,   &gvk_t_image_view, &gvk_t_buffer_view,
-    &gvk_t_sampler,     &gvk_t_shader,    &gvk_t_cache,      &gvk_t_playout, &gvk_t_dslayout,   &gvk_t_dspool,
-    &gvk_t_dsalloc,     &gvk_t_write,     &gvk_t_copy,       &gvk_t_rpass,   &gvk_t_fb,         &gvk_t_gpipe,
-    &gvk_t_cpipe,       &gvk_t_begin,     &gvk_t_rpbegin,    &gvk_t_mbar,    &gvk_t_bbar,       &gvk_t_ibar,
-    &gvk_t_pool,        &gvk_t_cballoc,   &gvk_t_fence,      &gvk_t_sem,     &gvk_t_query,      &gvk_t_event,
-    &gvk_t_range,       &gvk_t_imreq2,    &gvk_t_bufreq2,    &gvk_t_req2};
-
-static const GvkType* chain_type(u32 stype) {
-    for (size_t i = 0; i < sizeof g_chain_types / sizeof *g_chain_types; i++)
-        if (g_chain_types[i]->stype == stype) return g_chain_types[i];
+static const GvkType* chain_type(u32 parent, u32 stype) {
+    static const struct { u32 parent; const GvkType* type; } ext[] = {
+        {VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2, &t_dedicated_req},
+        {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, &t_dedicated_alloc},
+        {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, &t_format_list},
+        {VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO, &t_reduction},
+        {VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, &t_view_usage},
+        {VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO, &t_depth_clip},
+        {VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO, &t_provoking},
+        {VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO, &t_color_write},
+    };
+    for (size_t i = 0; i < sizeof ext / sizeof *ext; i++)
+        if (ext[i].parent == parent && ext[i].type->stype == stype) return ext[i].type;
     return NULL;
+}
+
+/* Older loaders return these extension functions from GetInstanceProcAddr without exporting their names. */
+static const char* const debug_procs[] = {
+    "vkCreateDebugReportCallbackEXT", "vkDestroyDebugReportCallbackEXT", "vkDebugReportMessageEXT"};
+
+u64 gvk_proc_space(u64 code_hi) {
+    if (!g_settings.guest_vulkan || g_arm_mod || nce_wanted() || !code_hi) return code_hi;
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+    return code_hi;
+#endif
+    u64 end = code_hi;
+    for (u32 i = 0; i < g_mod->nmods; i++) {
+        const SnxModInfo* m = &g_mod->mods[i];
+        if (m->base + m->size > end) end = m->base + m->size;
+    }
+    u64 page = plat_vm_page();
+    g_gvk.proc_base = (end + page - 1) & ~(page - 1);
+    return g_gvk.proc_base + page;
 }
 
 /* ------------------------------------------------------------ the slots */
@@ -346,7 +429,10 @@ int gvk_active(void) { return g_gvk.nexports != 0; }
 
 u64 gvk_export(const char* name) {
     for (u32 i = 0; i < g_gvk.nexports; i++)
-        if (!strcmp(g_gvk.export_name[i], name)) return g_gvk.export_addr[i];
+        if (!strcmp(g_gvk.exports[i].name, name)) return g_gvk.exports[i].addr;
+    if (g_gvk.proc_base)
+        for (u32 i = 0; i < sizeof debug_procs / sizeof *debug_procs; i++)
+            if (g_gvk.proc[i] && !strcmp(debug_procs[i], name)) return g_gvk.proc_base + 4 * i;
     return 0;
 }
 
@@ -354,10 +440,43 @@ u64 gvk_export(const char* name) {
 static void missing(CPU* RESTRICT c, u64 entry) {
     (void)c;
     for (u32 i = 0; i < g_gvk.nexports; i++)
-        if (g_gvk.export_addr[i] == entry)
+        if (g_gvk.exports[i].addr == entry)
             fatal("gvk: the game called %s, which the guest's Vulkan on the host (guest_vulkan) doesn't implement",
-                  g_gvk.export_name[i]);
+                  g_gvk.exports[i].name);
     fatal("gvk: the game called a Vulkan function at %llx that gvk doesn't know", (unsigned long long)entry);
+}
+
+static void set_slot(u64 addr, GuestFn fn) {
+    __atomic_store_n(&g_disp[(addr - g_code_lo) >> 2], fn, __ATOMIC_RELEASE);
+    jit_slot_taken(addr, fn);
+}
+
+GuestFn gvk_invalidation_slot(u64 addr) {
+    if (g_gvk.proc_base && addr - g_gvk.proc_base < sizeof debug_procs / sizeof *debug_procs * 4 &&
+        !(addr & 3)) {
+        MemBlock b;
+        mem_query(addr, &b);
+        return (b.perm & PERM_X) ? g_gvk.proc[(addr - g_gvk.proc_base) / 4] : NULL;
+    }
+    if (addr - g_gvk.driver_base >= g_gvk.driver_size) return NULL;
+    /* kernel_symbol enumerates exports in address order. */
+    u32 lo = 0, hi = g_gvk.nexports;
+    while (lo < hi) {
+        u32 mid = lo + (hi - lo) / 2;
+        if (g_gvk.exports[mid].addr < addr)
+            lo = mid + 1;
+        else
+            hi = mid;
+    }
+    if (lo == g_gvk.nexports || g_gvk.exports[lo].addr != addr) return NULL;
+    MemBlock b;
+    mem_query(addr, &b);
+    return b.state != MS_FREE && (b.perm & PERM_X) ? g_gvk.exports[lo].fn : NULL;
+}
+
+static int driver_export(const SnxModInfo* driver, u64 addr, const char* name) {
+    return addr - driver->base < driver->size && addr >= g_code_lo && addr < g_code_hi && !(addr & 3) && name &&
+           name[0] == 'v' && name[1] == 'k' && name[2] >= 'A' && name[2] <= 'Z';
 }
 
 void gvk_install(void) {
@@ -384,35 +503,73 @@ void gvk_install(void) {
             "taken\n");
         return;
     }
-    /* a module recompiled before gvk.hook calls the driver directly, beside the host's Vulkan on the same objects */
-    if (!hook_routed("vkQueueSubmit"))
-        fatal("gvk: guest_vulkan=1 needs the game recompiled with this runtime's route list, which sends its direct "
-              "Vulkan calls to gvk: recompile the game, or set guest_vulkan=0");
     u64 addr;
     const char* name;
+    u32 cap = 0;
+    for (u32 i = 0; kernel_symbol(i, &addr, &name); i++) cap += driver_export(driver, addr, name);
+    if (!cap) return;
+    g_gvk.exports = malloc(cap * sizeof *g_gvk.exports);
+    if (!g_gvk.exports) fatal("gvk: out of memory for %u Vulkan exports", cap);
     u32 taken = 0, unrouted = 0;
+    const char* unrouted_first = NULL;
     for (u32 i = 0; kernel_symbol(i, &addr, &name); i++) {
-        if (!name || name[0] != 'v' || name[1] != 'k' || name[2] < 'A' || name[2] > 'Z') continue;
-        if (addr - driver->base >= driver->size || addr < g_code_lo || addr >= g_code_hi || (addr & 3) ||
-            gvk_export(name))
-            continue;
-        if (g_gvk.nexports == GVK_EXPORTS) fatal("gvk: the game exports more than %d Vulkan functions", GVK_EXPORTS);
-        g_gvk.export_name[g_gvk.nexports] = name;
-        g_gvk.export_addr[g_gvk.nexports++] = addr;
+        if (!driver_export(driver, addr, name)) continue;
         GuestFn fn = gvk_api_find(name);
-        taken += fn != NULL;
-        if (!fn) fn = missing;
-        GuestFn* slot = &g_disp[(addr - g_code_lo) >> 2];
-        __atomic_store_n(slot, fn, __ATOMIC_RELEASE);
-        nce_slot_taken(addr, "gvk");
-        jit_slot_taken(addr, fn);
+        /* a direct call the recompiler didn't route runs the driver's own code. gvk.hook routes each export of the
+           loader. Another export of the driver (one SDK's vkDevExtError) has no function here, which a call through
+           its slot finds stopping the game, and only its direct calls would run the driver */
         if (!hook_routed(name)) {
-            unrouted++;
-            LOG_LIMIT(16, "gvk: the route list doesn't name %s: a direct call of the game to it runs its driver\n",
-                      name);
+            if (fn)
+                fatal("gvk: guest_vulkan=1 needs a Vulkan route missing from the recompiled game (%s). "
+                      "Recompile with --hook-direct-calls or set guest_vulkan=0", name);
+            if (!unrouted++) unrouted_first = name;
+        }
+        taken += fn != NULL;
+        g_gvk.exports[g_gvk.nexports++] = (GvkExport){name, addr, fn};
+    }
+    if (unrouted)
+        LOG("gvk: %u functions the driver exports beside the loader's (%s, ...) have no route: a direct call to one "
+            "runs the driver's own code\n", unrouted, unrouted_first);
+    g_gvk.driver_base = driver->base;
+    g_gvk.driver_size = driver->size;
+    for (u32 i = 0; i < g_gvk.nexports;) {
+        const GvkExport* e = &g_gvk.exports[i];
+        GuestFn fn = e->fn;
+        u32 end = i + 1;
+        while (end < g_gvk.nexports && g_gvk.exports[end].addr == e->addr) {
+            GuestFn alias = g_gvk.exports[end++].fn;
+            if (fn && alias && fn != alias) fatal("gvk: conflicting Vulkan aliases for %s", e->name);
+            if (alias) fn = alias;
+        }
+        if (!fn) fn = missing;
+        for (; i < end; i++) g_gvk.exports[i].fn = fn;
+    }
+    for (u32 i = 0; i < g_gvk.nexports; i++) {
+        const GvkExport* e = &g_gvk.exports[i];
+        if (i && e[-1].addr == e->addr) continue;
+        set_slot(e->addr, e->fn);
+        nce_slot_taken(e->addr, "gvk");
+    }
+    if (g_gvk.proc_base) {
+        int needed = 0;
+        for (u32 i = 0; i < sizeof debug_procs / sizeof *debug_procs; i++) needed |= !gvk_export(debug_procs[i]);
+        if (needed) {
+            u64 page = plat_vm_page();
+            if (mem_map(g_gvk.proc_base, page, MS_CODE, PERM_RW))
+                fatal("gvk: could not map space for private Vulkan entry points");
+            for (u32 i = 0; i < sizeof debug_procs / sizeof *debug_procs; i++)
+                gw32(g_gvk.proc_base + 4 * i, 0xd4200000u); /* BRK if entered without dispatch */
+            if (mem_set_state(g_gvk.proc_base, page, MS_CODE, PERM_RX))
+                fatal("gvk: could not protect private Vulkan entry points");
+            for (u32 i = 0; i < sizeof debug_procs / sizeof *debug_procs; i++) {
+                if (gvk_export(debug_procs[i])) continue;
+                GuestFn fn = gvk_api_find(debug_procs[i]);
+                if (!fn) continue;
+                g_gvk.proc[i] = fn;
+                set_slot(g_gvk.proc_base + 4 * i, fn);
+            }
         }
     }
     LOG("gvk: the %u Vulkan functions of the game's driver (%s) call the host's Vulkan, %u of them implemented (the "
-        "others stop the game when called), %u not on the route list\n",
-        g_gvk.nexports, driver->name ? driver->name : "?", taken, unrouted);
+        "others stop the game when called)\n", g_gvk.nexports, driver->name ? driver->name : "?", taken);
 }

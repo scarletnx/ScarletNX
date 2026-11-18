@@ -13,16 +13,20 @@
      translated to these three.
    - The window: the surface is the vi layer's, and the swapchain's images are the host's own, which a present blits
      into the renderer's window (renderer.h present_image). An acquire waits for the game's pace (present_pace), as vi's
-     dequeue does, and for the display to let the image go, as the console's buffer queue does. */
+     dequeue does, and for the display to let the image go, as the console's buffer queue does.
+   - Descriptor sets: where the host has host-only pools, each set has a twin in host memory that copies read
+     (GvkTwinSet). */
 #include "nx/gpu/gvk/gvk.h"
 #include "nx/gpu/renderer.h"
 #include "nx/gpu/vk/vk.h"
+#include "nx/hle/hook/hook.h"
 #include "nx/hle/kernel/kernel.h"
 #include "nx/hle/services/vi.h"
 #include "nx/runtime/main.h"
 #include "nx/runtime/options.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
+#include <stdlib.h>
 #include <string.h>
 
 #define GVK_MEMS       (1u << 16) /* the memory allocations the game holds at once, at most */
@@ -32,6 +36,7 @@
 #define GVK_SCALED     (1u << 14) /* its images, views and framebuffers drawn at the resolution scale */
 #define GVK_DUALS      (1u << 14) /* its fragment modules with a second color at Location 1 */
 #define GVK_SWAPCHAINS 4
+#define GVK_POOLS      (1u << 12) /* its descriptor pools with a twin */
 #define GVK_SC_IMAGES  4
 #define GVK_SURFACE    0x5653000000000001ull /* the vi layer's surface: the game's only one */
 #define GVK_GUEST_API  VK_API_VERSION_1_1    /* what the game is told: its loader has Vulkan 1.1's functions */
@@ -41,13 +46,23 @@ typedef struct {
     u64 mem;  /* the host's VkDeviceMemory, 0 for a free slot */
     u64 va;   /* where the game maps it, 0 for device-local memory */
     u64 size; /* the guest pages at va */
+    u64 allocation_size;
 } GvkMem;
 
-/* a render pass, and its twin that goes on with what the first part left (pass_back); self: a subpass depends on
-   itself, so a barrier is legal inside it */
+typedef struct {
+    u64 img;
+    VkFormat format;
+    VkSampleCountFlagBits samples;
+    VkFormatFeatureFlags features;
+    VkImageAspectFlags preinit;
+    int importable;
+} GvkImage;
+
+/* The render pass, its resume twin and the self-dependencies supported by Vulkan inside it. */
 typedef struct {
     u64 rp, resume;
-    u32 subpasses, self;
+    u32 subpasses, nself;
+    VkSubpassDependency* self;
 } GvkRpass;
 
 /* a command buffer inside a render pass: what it began, and whether its framebuffer is drawn at the resolution scale
@@ -77,8 +92,22 @@ typedef struct {
 } GvkDyn;
 
 typedef struct {
+    u64 cb, pool;
+    VkCommandBufferLevel level;
+    u32 inherited_scale;
+    u32 dynamic; /* flags of the bound graphics pipeline */
+} GvkCmd;
+typedef struct {
+    u64 pipeline;
+    u32 dynamic;
+} GvkGraphics;
+enum { DYN_VIEWPORT = 1, DYN_SCISSOR = 2 };
+
+typedef struct {
     u32 n, next;
     u32 acquired; /* a bit for each image the game holds: acquired and not presented yet */
+    u32 reserved;
+    int retired;
     VkFormat fmt;
     u32 w, h;
     VkImage img[GVK_SC_IMAGES];
@@ -92,15 +121,49 @@ typedef struct {
     u64 module, dual;
 } GvkDual;
 
+/* Objects the guest has released, in queue completion order. Keep imported pages mapped until the host memory goes. */
+typedef struct {
+    u64 gate;
+    VkImage image;
+    GvkMem memory;
+} GvkRetired;
+
+typedef struct {
+    u64 id, fn, user;
+    VkDebugReportFlagsEXT flags;
+} GvkDebugReport;
+
+/* RADV keeps a pool's descriptors in device memory that the CPU writes through write-combining, so a copy out of a set
+   reads uncached memory: one game's 1164 copies a frame took 2.3 ms there. With host-only pools (g_vk.gvk_host_sets)
+   each pool of the game has a twin in host memory, and each set a twin in it. A write goes to both, and a copy reads
+   its source's twin */
+/* a set's twin, in g_gvk_api.tsets by index (0 none): in its bucket's chain, and in its pool's list through prev and
+   next (a free slot's next is the next free one) */
+typedef struct {
+    u64 set, pool;
+    VkDescriptorSet twin;
+    u32 chain, prev, next;
+} GvkTwinSet;
+typedef struct {
+    u64 pool;
+    VkDescriptorPool twin;
+    u32 sets; /* the first of its sets with a twin */
+} GvkPoolTwin;
+
 static struct {
     PMutex lock;
+    PCond sc_available;
     int ready;                   /* the memory types are chosen */
     u32 local, coherent, cached; /* the host's memory types behind the game's 0, 1 and 2 */
+    u32 ncmd, npool, ngraphics;
+    GvkCmd cmd[GVK_CBS];
+    u64 pool[GVK_CBS];
+    GvkGraphics graphics[GVK_SCALED];
     u64 import_align;            /* minImportedHostPointerAlignment, or a host page for dma-bufs */
     VkExternalMemoryHandleTypeFlagBits handle_type; /* how the host imports guest pages: host memory or a dma-buf */
-    u32 nmem, nimportable, nrpass, npass, nscaled, nsview, nsfb, ndyn, ndual;
+    u32 nmem, nimage, nrpass, npass, nscaled, nsview, nsfb, ndyn, ndual;
     GvkMem mem[GVK_MEMS];       /* open addressing by handle */
-    u64 importable[GVK_IMAGES]; /* the images the host imports guest memory for, open addressing */
+    GvkImage image[GVK_IMAGES];
     GvkRpass rpass[GVK_RPASSES];
     GvkPass pass[GVK_CBS];
     GvkScaled scaled[GVK_SCALED];
@@ -108,7 +171,20 @@ static struct {
     GvkDyn dyn[GVK_CBS];
     GvkDual dual[GVK_DUALS];
     GvkSwapchain sc[GVK_SWAPCHAINS];
+    u32 ntpool, ntset, tset_cap, tset_free, nbuckets;
+    GvkPoolTwin tpool[GVK_POOLS];
+    GvkTwinSet* tsets; /* tset_cap slots */
+    u32* buckets;      /* the first set with a twin of each hash of its handle */
     u64 presents;
+    GvkDebugReport debug[32];
+    u64 debug_id;
+    int debug_enabled;
+    /* Protected by vk_lock, like submission to the shared graphics queue. */
+    VkHostTimeline retire;
+    u64 retire_done;
+    int retire_needs_signal;
+    GvkRetired* retired;
+    size_t retire_head, retire_count, retire_cap;
 } g_gvk_api = {.lock = PMUTEX_INIT};
 
 /* ------------------------------------------------------------ calls */
@@ -141,34 +217,113 @@ static const void* garr(u64 a, u64 n, u64 elem) {
     }
 /* n bytes of src written to the game's g, when it mapped them */
 static int put(u64 g, const void* src, size_t n) {
-    if (!g || !mem_user_mapped(g, n)) return 0;
+    if (!gvk_writable(g, n)) return 0;
     memcpy(GP(g), src, n);
     return 1;
 }
 static void put_handle(u64 g, u64 h) {
-    if (g && mem_user_mapped(g, 8)) gw64(g, h);
+    if (gvk_writable(g, 8)) gw64(g, h);
 }
+#define REQUIRE_OUT(A, SIZE)                                                                                          \
+    if (!gvk_writable((A), (SIZE))) {                                                                                  \
+        ret_vk(c, VK_ERROR_INITIALIZATION_FAILED);                                                                     \
+        return;                                                                                                       \
+    }
 /* a count and an array the game asked for (Vulkan's two-call idiom): *pCount set, at most *pCount of the n elements of
    elem bytes written. VK_INCOMPLETE when some didn't fit */
 static VkResult put_list(u64 p_count, u64 p_out, const void* items, u32 n, size_t elem) {
-    if (!p_count || !mem_user_mapped(p_count, 4)) return VK_ERROR_INITIALIZATION_FAILED;
+    if (!gvk_writable(p_count, 4)) return VK_ERROR_INITIALIZATION_FAILED;
     if (!p_out) {
         gw32(p_count, n);
         return VK_SUCCESS;
     }
     u32 room = gr32(p_count), k = room < n ? room : n;
-    if (k) put(p_out, items, k * elem);
+    if (k && !put(p_out, items, k * elem)) return VK_ERROR_INITIALIZATION_FAILED;
     gw32(p_count, k);
     return k < n ? VK_INCOMPLETE : VK_SUCCESS;
+}
+
+static void release_object(GvkRetired e) {
+    if (e.image) {
+        vkDestroyImage(g_vk.dev, e.image, NULL);
+    } else {
+        vkFreeMemory(g_vk.dev, (VkDeviceMemory)(uintptr_t)e.memory.mem, NULL);
+        if (e.memory.va) mem_unmap(e.memory.va, e.memory.size);
+    }
+}
+
+/* Under vk_lock. Queue idle also proves completion when the guest explicitly waits for it. */
+static void collect_retired(int idle) {
+    if (idle) {
+        g_gvk_api.retire_needs_signal = 0;
+        g_gvk_api.retire_done = g_gvk_api.retire.value;
+    } else if (g_gvk_api.retire_count) {
+        u64 done;
+        if (!VK_OK(vkGetSemaphoreCounterValue(g_vk.dev, g_gvk_api.retire.sem, &done))) return;
+        g_gvk_api.retire_done = done;
+    }
+    while (g_gvk_api.retire_count) {
+        GvkRetired e = g_gvk_api.retired[g_gvk_api.retire_head];
+        if (e.gate > g_gvk_api.retire_done) break;
+        g_gvk_api.retire_head = (g_gvk_api.retire_head + 1) & (g_gvk_api.retire_cap - 1);
+        g_gvk_api.retire_count--;
+        release_object(e);
+    }
+}
+
+static void retire_object(GvkRetired e) {
+    vk_lock();
+    collect_retired(0);
+    VkHostTimeline* t = &g_gvk_api.retire;
+    /* A guest can release an image just after submitting its upload, without waiting on the fence. One signal
+       covers all releases with no intervening submission, without making destruction wait for the GPU. */
+    if (g_gvk_api.retire_needs_signal) {
+        u64 value = vk_host_next(t);
+        if (!value) fatal("gvk: could not create the resource retirement timeline");
+        VkSemaphoreSubmitInfo signal = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+                                        .semaphore = t->sem,
+                                        .value = value,
+                                        .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT};
+        VkSubmitInfo2 submit = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
+                                .signalSemaphoreInfoCount = 1,
+                                .pSignalSemaphoreInfos = &signal};
+        vk_queue_lock(g_vk.gfx);
+        VkResult r = vkQueueSubmit2(g_vk.gfx, 1, &submit, VK_NULL_HANDLE);
+        vk_queue_unlock(g_vk.gfx);
+        if (r != VK_SUCCESS) fatal("gvk: could not signal the resource retirement timeline (%d)", (int)r);
+        g_gvk_api.retire_needs_signal = 0;
+    }
+    if (t->value <= g_gvk_api.retire_done) {
+        release_object(e);
+    } else {
+        size_t cap = g_gvk_api.retire_cap;
+        if (g_gvk_api.retire_count == cap) {
+            if (cap > SIZE_MAX / sizeof e / 2) fatal("gvk: too many resources awaiting retirement");
+            size_t next = cap ? 2 * cap : 32;
+            GvkRetired* objects = malloc(next * sizeof *objects);
+            if (!objects) fatal("gvk: could not grow the resource retirement queue");
+            for (size_t i = 0; i < cap; i++)
+                objects[i] = g_gvk_api.retired[(g_gvk_api.retire_head + i) & (cap - 1)];
+            free(g_gvk_api.retired);
+            g_gvk_api.retired = objects;
+            g_gvk_api.retire_head = 0;
+            g_gvk_api.retire_cap = cap = next;
+        }
+        e.gate = t->value;
+        g_gvk_api.retired[(g_gvk_api.retire_head + g_gvk_api.retire_count++) & (cap - 1)] = e;
+    }
+    vk_unlock();
 }
 
 /* the graphics queue, which the renderer's recording thread also submits to: after the frames it has queued */
 static VkResult queue_submit(u32 n, const VkSubmitInfo* s, VkFence fence) {
     vk_lock();
+    collect_retired(0);
     vk_rec_queue(g_vk.gfx);
     vk_queue_lock(g_vk.gfx);
     VkResult r = vkQueueSubmit(g_vk.gfx, n, s, fence);
     vk_queue_unlock(g_vk.gfx);
+    if (r == VK_SUCCESS && n) g_gvk_api.retire_needs_signal = 1;
     vk_unlock();
     if (r != VK_SUCCESS) WARN_LIMIT(16, "gvk: vkQueueSubmit failed (%d)\n", (int)r);
     return r;
@@ -189,16 +344,19 @@ static u32 tab_slot(const u8* t, size_t size, u32 cap, u64 key) {
     while (tab_key(t, size, i) && tab_key(t, size, i) != key) i = (i + 1) & (cap - 1);
     return i;
 }
-static void tab_put(u8* t, size_t size, u32 cap, u32* n, const void* e) {
+static void tab_put_nl(u8* t, size_t size, u32 cap, u32* n, const void* e) {
     u64 key;
     memcpy(&key, e, sizeof key);
-    pm_lock(&g_gvk_api.lock);
     u32 i = tab_slot(t, size, cap, key);
     if (!tab_key(t, size, i)) {
         if (*n == cap - 1) fatal("gvk: the game holds more than %u objects of one kind", cap - 1);
         ++*n;
     }
     memcpy(t + (size_t)i * size, e, size);
+}
+static void tab_put(u8* t, size_t size, u32 cap, u32* n, const void* e) {
+    pm_lock(&g_gvk_api.lock);
+    tab_put_nl(t, size, cap, n, e);
     pm_unlock(&g_gvk_api.lock);
 }
 /* the entry of key copied to out (zeros for none): whether there is one */
@@ -206,16 +364,18 @@ static int tab_get(const u8* t, size_t size, u32 cap, u64 key, void* out) {
     pm_lock(&g_gvk_api.lock);
     u32 i = tab_slot(t, size, cap, key);
     int has = key && tab_key(t, size, i) == key;
-    memcpy(out, t + (size_t)i * size, size);
+    if (has)
+        memcpy(out, t + (size_t)i * size, size);
+    else
+        memset(out, 0, size);
     pm_unlock(&g_gvk_api.lock);
     return has;
 }
-static int tab_take(u8* t, size_t size, u32 cap, u32* n, u64 key, void* out) {
-    pm_lock(&g_gvk_api.lock);
+static int tab_take_nl(u8* t, size_t size, u32 cap, u32* n, u64 key, void* out) {
     u32 i = tab_slot(t, size, cap, key);
     int has = key && tab_key(t, size, i) == key;
-    memcpy(out, t + (size_t)i * size, size);
     if (has) {
+        memcpy(out, t + (size_t)i * size, size);
         --*n;
         memset(t + (size_t)i * size, 0, size);
         u8 e[64];
@@ -224,12 +384,19 @@ static int tab_take(u8* t, size_t size, u32 cap, u32* n, u64 key, void* out) {
             memset(t + (size_t)j * size, 0, size);
             memcpy(t + (size_t)tab_slot(t, size, cap, tab_key(e, size, 0)) * size, e, size);
         }
+    } else {
+        memset(out, 0, size);
     }
-    pm_unlock(&g_gvk_api.lock);
     return has;
 }
+static int tab_take(u8* t, size_t size, u32 cap, u32* n, u64 key, void* out) {
+    pm_lock(&g_gvk_api.lock);
+    int found = tab_take_nl(t, size, cap, n, key, out);
+    pm_unlock(&g_gvk_api.lock);
+    return found;
+}
 typedef char gvk_entries_fit[sizeof(GvkMem) <= 64 && sizeof(GvkRpass) <= 64 && sizeof(GvkPass) <= 64 &&
-                                     sizeof(GvkScaled) <= 64 && sizeof(GvkDyn) <= 64
+                                     sizeof(GvkScaled) <= 64 && sizeof(GvkDyn) <= 64 && sizeof(GvkPoolTwin) <= 64
                                  ? 1
                                  : -1];
 
@@ -244,14 +411,25 @@ static GvkMem mem_take(u64 mem) {
     tab_take(TAB(mem), &g_gvk_api.nmem, mem, &m);
     return m;
 }
-static void importable_put(u64 img) { tab_put(TAB(importable), &g_gvk_api.nimportable, &img); }
-static int importable_has(u64 img) {
-    u64 k;
-    return tab_get(TAB(importable), img, &k);
+static u32 scale_factor(void);
+static void image_track(VkImage img, const VkImageCreateInfo* ci, int importable, VkImageAspectFlags preinit) {
+    GvkImage e = {U(img), ci->format, ci->samples, 0, preinit, importable};
+    if (scale_factor() > 1 && (ci->tiling == VK_IMAGE_TILING_OPTIMAL || ci->tiling == VK_IMAGE_TILING_LINEAR)) {
+        VkFormatProperties props;
+        vkGetPhysicalDeviceFormatProperties(g_vk.phys, ci->format, &props);
+        e.features = ci->tiling == VK_IMAGE_TILING_OPTIMAL ? props.optimalTilingFeatures : props.linearTilingFeatures;
+    }
+    tab_put(TAB(image), &g_gvk_api.nimage, &e);
 }
-static void importable_take(u64 img) {
-    u64 k;
-    tab_take(TAB(importable), &g_gvk_api.nimportable, img, &k);
+static GvkImage image_get(u64 img) {
+    GvkImage e;
+    tab_get(TAB(image), img, &e);
+    return e;
+}
+static int importable_has(u64 img) { return image_get(img).importable; }
+static void image_untrack(u64 img) {
+    GvkImage e;
+    tab_take(TAB(image), &g_gvk_api.nimage, img, &e);
 }
 
 /* ------------------------------------------------------------ the resolution scale */
@@ -353,6 +531,7 @@ static u32 host_import_bits(void) {
 /* the memory types the host exports as dma-bufs that the CPU maps over guest pages: its host-visible system memory,
    where buffers can be exported as dma-bufs. 0 for none */
 static u32 dmabuf_export_bits(void) {
+#if defined(__linux__)
     g_gvk_api.import_align = 0x10000;
     if (!vkGetMemoryFdKHR) return 0;
     VkPhysicalDeviceExternalBufferInfo bi = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_BUFFER_INFO,
@@ -373,6 +552,9 @@ static u32 dmabuf_export_bits(void) {
             !(mp->memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT))
             bits |= 1u << i;
     return bits;
+#else
+    return 0;
+#endif
 }
 
 /* once: how the host imports guest pages, and its types behind the game's three */
@@ -380,6 +562,7 @@ static void types_ready(void) {
     if (__atomic_load_n(&g_gvk_api.ready, __ATOMIC_ACQUIRE)) return;
     pm_lock(&g_gvk_api.lock);
     if (!g_gvk_api.ready) {
+        pc_init(&g_gvk_api.sc_available);
         u32 bits = 0;
         g_gvk_api.handle_type = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT;
         if (vkGetMemoryHostPointerPropertiesEXT) bits = host_import_bits();
@@ -430,6 +613,11 @@ static void memory_properties(VkPhysicalDeviceMemoryProperties* p) {
 }
 
 /* ------------------------------------------------------------ the instance and the devices */
+static int debug_available(void) {
+    return gvk_export("vkCreateDebugReportCallbackEXT") && gvk_export("vkDestroyDebugReportCallbackEXT") &&
+           gvk_export("vkDebugReportMessageEXT");
+}
+
 static void gvk_EnumerateInstanceVersion(CPU* RESTRICT c, u64 entry) {
     (void)entry;
     if (c->x[0] && mem_user_mapped(c->x[0], 4)) gw32(c->x[0], GVK_GUEST_API);
@@ -437,9 +625,10 @@ static void gvk_EnumerateInstanceVersion(CPU* RESTRICT c, u64 entry) {
 }
 
 static void gvk_EnumerateInstanceExtensionProperties(CPU* RESTRICT c, u64 entry) {
-    VkExtensionProperties e[2] = {{VK_KHR_SURFACE_EXTENSION_NAME, VK_KHR_SURFACE_SPEC_VERSION},
-                                  {"VK_NN_vi_surface", 1}};
-    ret_vk(c, put_list(c->x[1], c->x[2], e, 2, sizeof *e));
+    VkExtensionProperties e[] = {{VK_KHR_SURFACE_EXTENSION_NAME, VK_KHR_SURFACE_SPEC_VERSION},
+                                 {"VK_NN_vi_surface", 1},
+                                 {VK_EXT_DEBUG_REPORT_EXTENSION_NAME, VK_EXT_DEBUG_REPORT_SPEC_VERSION}};
+    ret_vk(c, put_list(c->x[1], c->x[2], e, debug_available() ? 3 : 2, sizeof *e));
 }
 
 static void gvk_EnumerateDeviceExtensionProperties(CPU* RESTRICT c, u64 entry) {
@@ -472,13 +661,100 @@ static void say_extensions(const char* what, u64 names, u32 n) {
 }
 
 static void gvk_CreateInstance(CPU* RESTRICT c, u64 entry) {
+    REQUIRE_OUT(c->x[2], 8);
     (void)entry;
     u64 ci = c->x[0];
-    if (ci && mem_user_mapped(ci, sizeof(VkInstanceCreateInfo)))
-        say_extensions("instance", gr64(ci + offsetof(VkInstanceCreateInfo, ppEnabledExtensionNames)),
-                       gr32(ci + offsetof(VkInstanceCreateInfo, enabledExtensionCount)));
+    if (ci && mem_user_mapped(ci, sizeof(VkInstanceCreateInfo))) {
+        u64 names = gr64(ci + offsetof(VkInstanceCreateInfo, ppEnabledExtensionNames));
+        u32 n = gr32(ci + offsetof(VkInstanceCreateInfo, enabledExtensionCount));
+        if (n && !mem_user_mapped(names, 8ull * n)) {
+            ret_vk(c, VK_ERROR_INITIALIZATION_FAILED);
+            return;
+        }
+        say_extensions("instance", names, n);
+        for (u32 i = 0; i < n; i++) {
+            char name[VK_MAX_EXTENSION_NAME_SIZE];
+            if (mem_user_string(name, gr64(names + 8ull * i), sizeof name) <= 0 ||
+                strcmp(name, VK_EXT_DEBUG_REPORT_EXTENSION_NAME))
+                continue;
+            if (!debug_available()) {
+                WARN("gvk: this guest execution mode has no VK_EXT_debug_report entry points\n");
+                ret_vk(c, VK_ERROR_EXTENSION_NOT_PRESENT);
+                return;
+            }
+            __atomic_store_n(&g_gvk_api.debug_enabled, 1, __ATOMIC_RELEASE);
+        }
+    }
     put_handle(c->x[2], U(g_vk.instance));
     ret_vk(c, VK_SUCCESS);
+}
+
+/* The guest debug stream delivers application messages to guest callbacks. The host's loader and validation
+   layers belong to the renderer's instance, so they continue to report to the runtime log. */
+static void gvk_CreateDebugReportCallbackEXT(CPU* RESTRICT c, u64 entry) {
+    REQUIRE_OUT(c->x[3], 8);
+    u64 ci = c->x[1];
+    if (c->x[0] != U(g_vk.instance) || !ci ||
+        !mem_user_mapped(ci, sizeof(VkDebugReportCallbackCreateInfoEXT)) ||
+        gr32(ci) != VK_STRUCTURE_TYPE_DEBUG_REPORT_CALLBACK_CREATE_INFO_EXT ||
+        !__atomic_load_n(&g_gvk_api.debug_enabled, __ATOMIC_ACQUIRE)) {
+        ret_vk(c, VK_ERROR_INITIALIZATION_FAILED);
+        return;
+    }
+    GvkDebugReport cb = {.fn = gr64(ci + offsetof(VkDebugReportCallbackCreateInfoEXT, pfnCallback)),
+                         .user = gr64(ci + offsetof(VkDebugReportCallbackCreateInfoEXT, pUserData)),
+                         .flags = gr32(ci + offsetof(VkDebugReportCallbackCreateInfoEXT, flags))};
+    MemBlock code;
+    mem_query(cb.fn, &code);
+    if (!cb.fn || (cb.fn & 3) || !(code.perm & PERM_X)) {
+        ret_vk(c, VK_ERROR_INITIALIZATION_FAILED);
+        return;
+    }
+    pm_lock(&g_gvk_api.lock);
+    for (size_t i = 0; i < sizeof g_gvk_api.debug / sizeof *g_gvk_api.debug; i++) {
+        if (g_gvk_api.debug[i].id) continue;
+        cb.id = ++g_gvk_api.debug_id;
+        g_gvk_api.debug[i] = cb;
+        break;
+    }
+    pm_unlock(&g_gvk_api.lock);
+    put_handle(c->x[3], cb.id);
+    ret_vk(c, cb.id ? VK_SUCCESS : VK_ERROR_OUT_OF_HOST_MEMORY);
+}
+
+static void gvk_DestroyDebugReportCallbackEXT(CPU* RESTRICT c, u64 entry) {
+    if (c->x[0] == U(g_vk.instance) && c->x[1]) {
+        pm_lock(&g_gvk_api.lock);
+        for (size_t i = 0; i < sizeof g_gvk_api.debug / sizeof *g_gvk_api.debug; i++)
+            if (g_gvk_api.debug[i].id == c->x[1]) {
+                g_gvk_api.debug[i] = (GvkDebugReport){0};
+                break;
+            }
+        pm_unlock(&g_gvk_api.lock);
+    }
+    ret(c, 0);
+}
+
+static void gvk_DebugReportMessageEXT(CPU* RESTRICT c, u64 entry) {
+    if (c->x[0] == U(g_vk.instance)) {
+        u64 args[7];
+        for (size_t i = 0; i < 7; i++) args[i] = c->x[i + 1];
+        pm_lock(&g_gvk_api.lock);
+        u64 last = g_gvk_api.debug_id;
+        for (size_t i = 0; i < sizeof g_gvk_api.debug / sizeof *g_gvk_api.debug; i++) {
+            GvkDebugReport cb = g_gvk_api.debug[i];
+            if (!cb.id || cb.id > last || !(cb.flags & (u32)args[0])) continue;
+            pm_unlock(&g_gvk_api.lock);
+            c->x[4] = args[4];
+            c->x[5] = args[5];
+            c->x[6] = args[6];
+            c->x[7] = cb.user;
+            hook_guest_call(c, cb.fn, args[0], args[1], args[2], args[3]);
+            pm_lock(&g_gvk_api.lock);
+        }
+        pm_unlock(&g_gvk_api.lock);
+    }
+    ret(c, 0);
 }
 
 static void gvk_DestroyNothing(CPU* RESTRICT c, u64 entry) { ret(c, 0); }
@@ -523,7 +799,7 @@ static void gvk_GetPhysicalDeviceProperties2(CPU* RESTRICT c, u64 entry) {
         return;
     }
     VkPhysicalDeviceProperties2 p2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
-    VkBaseOutStructure* tail = (VkBaseOutStructure*)&p2;
+    VkBaseOutStructure* tail = NULL;
     u64 at[GVK_CHAIN];
     u32 size[GVK_CHAIN], n = 0;
     VkBaseOutStructure* host[GVK_CHAIN];
@@ -540,7 +816,10 @@ static void gvk_GetPhysicalDeviceProperties2(CPU* RESTRICT c, u64 entry) {
         VkBaseOutStructure* h = gvk_scratch(bytes);
         memset(h, 0, bytes);
         h->sType = st;
-        tail->pNext = h;
+        if (tail)
+            tail->pNext = h;
+        else
+            p2.pNext = h;
         tail = h;
         at[n] = a;
         size[n] = bytes;
@@ -670,6 +949,7 @@ static void gvk_GetPhysicalDeviceImageFormatProperties(CPU* RESTRICT c, u64 entr
 }
 
 static void gvk_CreateDevice(CPU* RESTRICT c, u64 entry) {
+    REQUIRE_OUT(c->x[3], 8);
     u64 ci = c->x[1];
     if (ci && mem_user_mapped(ci, sizeof(VkDeviceCreateInfo)))
         say_extensions("device", gr64(ci + offsetof(VkDeviceCreateInfo, ppEnabledExtensionNames)),
@@ -689,6 +969,7 @@ static void gvk_DeviceWaitIdle(CPU* RESTRICT c, u64 entry) {
     vk_queue_lock(g_vk.gfx);
     VkResult r = vkQueueWaitIdle(g_vk.gfx);
     vk_queue_unlock(g_vk.gfx);
+    if (r == VK_SUCCESS) collect_retired(1);
     vk_unlock();
     kthread_host_wait_end();
     ret_vk(c, r);
@@ -696,6 +977,7 @@ static void gvk_DeviceWaitIdle(CPU* RESTRICT c, u64 entry) {
 
 /* ------------------------------------------------------------ memory */
 static void gvk_AllocateMemory(CPU* RESTRICT c, u64 entry) {
+    REQUIRE_OUT(c->x[3], 8);
     gvk_scratch_reset();
     u64 ai = c->x[1];
     if (!ai || !mem_user_mapped(ai, sizeof(VkMemoryAllocateInfo))) {
@@ -705,18 +987,33 @@ static void gvk_AllocateMemory(CPU* RESTRICT c, u64 entry) {
     types_ready();
     u64 size = gr64(ai + offsetof(VkMemoryAllocateInfo, allocationSize));
     u32 type = gr32(ai + offsetof(VkMemoryAllocateInfo, memoryTypeIndex));
+    const void* next;
+    if (!size || !gvk_chain_in(VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, gr64(ai + 8), &next)) {
+        ret_vk(c, VK_ERROR_INITIALIZATION_FAILED);
+        return;
+    }
     VkMemoryAllocateInfo hi = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = size};
     VkImportMemoryHostPointerInfoEXT imp = {.sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_HOST_POINTER_INFO_EXT,
                                             .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT};
     VkExportMemoryAllocateInfo exp = {.sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO,
                                       .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT};
     int dmabuf = g_gvk_api.handle_type == VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
-    GvkMem m = {0};
+    GvkMem m = {.allocation_size = size};
     if (type == 0) {
         hi.memoryTypeIndex = g_gvk_api.local;
-        hi.pNext = gvk_chain_in(gr64(ai + 8)); /* a dedicated allocation the host requires stays one */
+        hi.pNext = next;
     } else if (type <= 2) {
+        if (size > AS_SIZE - (g_gvk_api.import_align - 1)) {
+            ret_vk(c, VK_ERROR_OUT_OF_HOST_MEMORY);
+            return;
+        }
         m.size = (size + g_gvk_api.import_align - 1) & ~(g_gvk_api.import_align - 1);
+        const VkMemoryDedicatedAllocateInfo* dedicated = next;
+        if (dedicated && (dedicated->buffer || dedicated->image) && m.size != size) {
+            WARN_LIMIT(8, "gvk: dedicated allocation size is not aligned for guest memory import\n");
+            ret_vk(c, VK_ERROR_OUT_OF_DEVICE_MEMORY);
+            return;
+        }
         m.va = guest_pages(m.size, g_gvk_api.import_align);
         if (!m.va) {
             WARN_LIMIT(8, "gvk: no guest memory for an allocation of %llu bytes\n", (unsigned long long)size);
@@ -726,8 +1023,10 @@ static void gvk_AllocateMemory(CPU* RESTRICT c, u64 entry) {
         hi.allocationSize = m.size;
         hi.memoryTypeIndex = type == 1 ? g_gvk_api.coherent : g_gvk_api.cached;
         if (dmabuf) {
+            exp.pNext = next;
             hi.pNext = &exp;
         } else {
+            imp.pNext = next;
             imp.pHostPointer = GP(m.va);
             hi.pNext = &imp;
         }
@@ -774,25 +1073,32 @@ static void gvk_AllocateMemory(CPU* RESTRICT c, u64 entry) {
 static void gvk_FreeMemory(CPU* RESTRICT c, u64 entry) {
     if (c->x[1]) {
         GvkMem m = mem_take(c->x[1]);
-        vkFreeMemory(g_vk.dev, H(VkDeviceMemory, c->x[1]), NULL);
-        if (m.va) mem_unmap(m.va, m.size);
+        if (!m.mem) fatal("gvk: invalid device memory handle");
+        retire_object((GvkRetired){.memory = m});
     }
     ret(c, 0);
 }
+/* an offset and a size in the allocation (the guest pages it took, a whole number of import_align) */
 static void gvk_MapMemory(CPU* RESTRICT c, u64 entry) {
+    REQUIRE_OUT(c->x[5], 8);
     GvkMem m = mem_get(c->x[1]);
-    if (!m.va) {
+    u64 off = c->x[2], size = c->x[3];
+    if (!m.va || off >= m.allocation_size ||
+        (size != VK_WHOLE_SIZE && (!size || size > m.allocation_size - off))) {
         ret_vk(c, VK_ERROR_MEMORY_MAP_FAILED);
         return;
     }
-    put_handle(c->x[5], m.va + c->x[2]);
+    put_handle(c->x[5], m.va + off);
     ret_vk(c, VK_SUCCESS);
 }
 /* the CPU's types are coherent: a flush or an invalidate does nothing */
 static void gvk_FlushMappedMemoryRanges(CPU* RESTRICT c, u64 entry) { ret_vk(c, VK_SUCCESS); }
 
-static void requirements_out(u64 g, VkMemoryRequirements* r) {
-    r->memoryTypeBits = guest_bits(r->memoryTypeBits);
+/* the host's memoryTypeBits as the game's, local_only for an image the host imports no guest memory for: device-local
+   memory alone, also where the host's device-local type is the one it imports guest pages in */
+static u32 guest_type_bits(u32 host, int local_only) { return guest_bits(host) & (local_only ? 1u : 7u); }
+static void requirements_out(u64 g, VkMemoryRequirements* r, int local_only) {
+    r->memoryTypeBits = guest_type_bits(r->memoryTypeBits, local_only);
     if (!r->memoryTypeBits)
         WARN_LIMIT(8, "gvk: a resource takes none of the game's memory types (%llu bytes)\n",
                    (unsigned long long)r->size);
@@ -801,15 +1107,13 @@ static void requirements_out(u64 g, VkMemoryRequirements* r) {
 static void gvk_GetBufferMemoryRequirements(CPU* RESTRICT c, u64 entry) {
     VkMemoryRequirements r = {0};
     vkGetBufferMemoryRequirements(g_vk.dev, H(VkBuffer, c->x[1]), &r);
-    requirements_out(c->x[2], &r);
+    requirements_out(c->x[2], &r, 0);
     ret(c, 0);
 }
-/* an image the host imports no guest memory for takes device-local memory alone */
 static void gvk_GetImageMemoryRequirements(CPU* RESTRICT c, u64 entry) {
     VkMemoryRequirements r = {0};
     vkGetImageMemoryRequirements(g_vk.dev, H(VkImage, c->x[1]), &r);
-    if (!importable_has(c->x[1])) r.memoryTypeBits &= 1u << g_gvk_api.local;
-    requirements_out(c->x[2], &r);
+    requirements_out(c->x[2], &r, !importable_has(c->x[1]));
     ret(c, 0);
 }
 static void requirements2(CPU* RESTRICT c, int image) {
@@ -821,9 +1125,8 @@ static void requirements2(CPU* RESTRICT c, int image) {
             vkGetImageMemoryRequirements2(g_vk.dev, info, r);
         else
             vkGetBufferMemoryRequirements2(g_vk.dev, info, r);
-        if (image && !importable_has(U(((const VkImageMemoryRequirementsInfo2*)info)->image)))
-            r->memoryRequirements.memoryTypeBits &= 1u << g_gvk_api.local;
-        r->memoryRequirements.memoryTypeBits = guest_bits(r->memoryRequirements.memoryTypeBits);
+        int local_only = image && !importable_has(U(((const VkImageMemoryRequirementsInfo2*)info)->image));
+        r->memoryRequirements.memoryTypeBits = guest_type_bits(r->memoryRequirements.memoryTypeBits, local_only);
         gvk_out(&gvk_t_req2, c->x[2], r);
     }
     ret(c, 0);
@@ -833,14 +1136,22 @@ static void gvk_GetBufferMemoryRequirements2(CPU* RESTRICT c, u64 entry) { requi
 static void gvk_BindBufferMemory(CPU* RESTRICT c, u64 entry) {
     ret_vk(c, vkBindBufferMemory(g_vk.dev, H(VkBuffer, c->x[1]), H(VkDeviceMemory, c->x[2]), c->x[3]));
 }
+/* A preinitialized external image starts undefined on the host. Initialize its host layout at bind, before writes
+   made through the bound image's mapping. Its first guest barrier then preserves the texels. */
+static VkResult images_general(const VkImage* img, u32 n, VkImageAspectFlags aspects);
 static void gvk_BindImageMemory(CPU* RESTRICT c, u64 entry) {
-    ret_vk(c, vkBindImageMemory(g_vk.dev, H(VkImage, c->x[1]), H(VkDeviceMemory, c->x[2]), c->x[3]));
+    VkImage img = H(VkImage, c->x[1]);
+    VkResult r = vkBindImageMemory(g_vk.dev, img, H(VkDeviceMemory, c->x[2]), c->x[3]);
+    VkImageAspectFlags preinit = image_get(c->x[1]).preinit;
+    if (r == VK_SUCCESS && preinit) r = images_general(&img, 1, preinit);
+    ret_vk(c, r);
 }
 
 /* ------------------------------------------------------------ objects */
 /* vkCreateX(device, pCreateInfo, pAllocator, pX): the info copied as type t, the handle written where the game asked */
 #define CREATE(NAME, T, TYPE)                                                                                          \
     static void gvk_##NAME(CPU* RESTRICT c, u64 entry) {                                                               \
+        REQUIRE_OUT(c->x[3], 8);                                                                                       \
         gvk_scratch_reset();                                                                                           \
         const void* ci = gvk_in(&(TYPE), c->x[1], 1);                                                                  \
         T h = VK_NULL_HANDLE;                                                                                          \
@@ -857,6 +1168,7 @@ static void gvk_BindImageMemory(CPU* RESTRICT c, u64 entry) {
     }
 
 static void gvk_CreateImageView(CPU* RESTRICT c, u64 entry) {
+    REQUIRE_OUT(c->x[3], 8);
     gvk_scratch_reset();
     VkImageViewCreateInfo* ci = gvk_in(&gvk_t_image_view, c->x[1], 1);
     VkImageView h = VK_NULL_HANDLE;
@@ -892,11 +1204,12 @@ static const VkAttachmentReference* refs_in(const VkAttachmentReference* r, u32 
    the first one leaves them in: what pass_out ends early and pass_back goes on with. Its attachments are a copy of the
    game's, which it changes */
 static void gvk_CreateRenderPass(CPU* RESTRICT c, u64 entry) {
+    REQUIRE_OUT(c->x[3], 8);
     gvk_scratch_reset();
     VkRenderPassCreateInfo* ci = gvk_in(&gvk_t_rpass, c->x[1], 1);
     VkRenderPass h = VK_NULL_HANDLE, resume = VK_NULL_HANDLE;
     VkResult r = VK_ERROR_INITIALIZATION_FAILED;
-    u32 self = 0;
+    GvkRpass meta = {0};
     if (ci) {
         VkAttachmentDescription* a = NULL;
         if (ci->pAttachments && ci->attachmentCount) {
@@ -908,7 +1221,10 @@ static void gvk_CreateRenderPass(CPU* RESTRICT c, u64 entry) {
         for (u32 i = 0; a && i < ci->attachmentCount; i++) {
             a[i].format = host_format(a[i].format);
             a[i].initialLayout = host_layout(a[i].initialLayout);
-            a[i].finalLayout = host_layout(a[i].finalLayout);
+            if (a[i].initialLayout == VK_IMAGE_LAYOUT_UNDEFINED &&
+                (a[i].loadOp == VK_ATTACHMENT_LOAD_OP_LOAD || a[i].stencilLoadOp == VK_ATTACHMENT_LOAD_OP_LOAD))
+                a[i].initialLayout = VK_IMAGE_LAYOUT_GENERAL;
+            a[i].finalLayout = VK_IMAGE_LAYOUT_GENERAL;
             if (split) a[i].storeOp = a[i].stencilStoreOp = VK_ATTACHMENT_STORE_OP_STORE;
         }
         VkSubpassDescription* sp = (VkSubpassDescription*)ci->pSubpasses;
@@ -918,8 +1234,20 @@ static void gvk_CreateRenderPass(CPU* RESTRICT c, u64 entry) {
             sp[i].pResolveAttachments = refs_in(sp[i].pResolveAttachments, sp[i].colorAttachmentCount);
             sp[i].pDepthStencilAttachment = refs_in(sp[i].pDepthStencilAttachment, 1);
         }
-        for (u32 i = 0; ci->pDependencies && i < ci->dependencyCount; i++)
-            self |= ci->pDependencies[i].srcSubpass == ci->pDependencies[i].dstSubpass;
+        for (u32 i = 0; i < ci->dependencyCount; i++)
+            meta.nself += ci->pDependencies[i].srcSubpass != VK_SUBPASS_EXTERNAL &&
+                          ci->pDependencies[i].srcSubpass == ci->pDependencies[i].dstSubpass;
+        if (meta.nself) {
+            meta.self = malloc(meta.nself * sizeof *meta.self);
+            if (!meta.self) {
+                ret_vk(c, VK_ERROR_OUT_OF_HOST_MEMORY);
+                return;
+            }
+            for (u32 i = 0, at = 0; i < ci->dependencyCount; i++)
+                if (ci->pDependencies[i].srcSubpass != VK_SUBPASS_EXTERNAL &&
+                    ci->pDependencies[i].srcSubpass == ci->pDependencies[i].dstSubpass)
+                    meta.self[at++] = ci->pDependencies[i];
+        }
         r = vkCreateRenderPass(g_vk.dev, ci, NULL, &h);
         if (r == VK_SUCCESS && split) {
             for (u32 i = 0; a && i < ci->attachmentCount; i++) {
@@ -931,33 +1259,39 @@ static void gvk_CreateRenderPass(CPU* RESTRICT c, u64 entry) {
     }
     if (r != VK_SUCCESS) WARN_LIMIT(16, "gvk: vkCreateRenderPass failed (%d)\n", (int)r);
     if (h) {
-        GvkRpass e = {U(h), U(resume), ci->subpassCount, self};
-        tab_put(TAB(rpass), &g_gvk_api.nrpass, &e);
+        meta.rp = U(h);
+        meta.resume = U(resume);
+        meta.subpasses = ci->subpassCount;
+        tab_put(TAB(rpass), &g_gvk_api.nrpass, &meta);
+    } else {
+        free(meta.self);
     }
     put_handle(c->x[3], U(h));
     ret_vk(c, r);
 }
 static void gvk_DestroyRenderPass(CPU* RESTRICT c, u64 entry) {
     GvkRpass e;
-    if (tab_take(TAB(rpass), &g_gvk_api.nrpass, c->x[1], &e) && e.resume)
-        vkDestroyRenderPass(g_vk.dev, H(VkRenderPass, e.resume), NULL);
+    if (tab_take(TAB(rpass), &g_gvk_api.nrpass, c->x[1], &e)) {
+        if (e.resume) vkDestroyRenderPass(g_vk.dev, H(VkRenderPass, e.resume), NULL);
+        free(e.self);
+    }
     vkDestroyRenderPass(g_vk.dev, H(VkRenderPass, c->x[1]), NULL);
     ret(c, 0);
 }
 CREATE(CreateBufferView, VkBufferView, gvk_t_buffer_view)
 CREATE(CreateSampler, VkSampler, gvk_t_sampler)
 CREATE(CreatePipelineLayout, VkPipelineLayout, gvk_t_playout)
-CREATE(CreateDescriptorPool, VkDescriptorPool, gvk_t_dspool)
 /* a framebuffer of a scaled image's view is scaled with it */
 static void gvk_CreateFramebuffer(CPU* RESTRICT c, u64 entry) {
+    REQUIRE_OUT(c->x[3], 8);
     gvk_scratch_reset();
     VkFramebufferCreateInfo* ci = gvk_in(&gvk_t_fb, c->x[1], 1);
     VkFramebuffer h = VK_NULL_HANDLE;
     VkResult r = VK_ERROR_INITIALIZATION_FAILED;
     if (ci) {
-        int scaled = 0;
-        for (u32 i = 0; ci->pAttachments && i < ci->attachmentCount; i++)
-            scaled |= set_has(g_gvk_api.sview, GVK_SCALED, U(ci->pAttachments[i]));
+        int scaled = ci->attachmentCount != 0;
+        for (u32 i = 0; scaled && i < ci->attachmentCount; i++)
+            scaled = set_has(g_gvk_api.sview, GVK_SCALED, U(ci->pAttachments[i]));
         if (scaled) {
             ci->width *= scale_factor();
             ci->height *= scale_factor();
@@ -991,24 +1325,28 @@ static void gvk_DestroyShaderModule(CPU* RESTRICT c, u64 entry) {
 DESTROY(DestroyPipelineCache, VkPipelineCache)
 DESTROY(DestroyPipelineLayout, VkPipelineLayout)
 DESTROY(DestroyDescriptorSetLayout, VkDescriptorSetLayout)
-DESTROY(DestroyDescriptorPool, VkDescriptorPool)
 static void gvk_DestroyFramebuffer(CPU* RESTRICT c, u64 entry) {
     set_take(g_gvk_api.sfb, GVK_SCALED, &g_gvk_api.nsfb, c->x[1]);
     vkDestroyFramebuffer(g_vk.dev, H(VkFramebuffer, c->x[1]), NULL);
     ret(c, 0);
 }
-DESTROY(DestroyPipeline, VkPipeline)
+static void gvk_DestroyPipeline(CPU* RESTRICT c, u64 entry) {
+    GvkGraphics e;
+    tab_take(TAB(graphics), &g_gvk_api.ngraphics, c->x[1], &e);
+    vkDestroyPipeline(g_vk.dev, H(VkPipeline, c->x[1]), NULL);
+    ret(c, 0);
+}
 DESTROY(DestroyFence, VkFence)
 DESTROY(DestroySemaphore, VkSemaphore)
 DESTROY(DestroyQueryPool, VkQueryPool)
 DESTROY(DestroyEvent, VkEvent)
-DESTROY(DestroyCommandPool, VkCommandPool)
 
 /* A buffer or an image of the one queue family: its sharing exclusive. Each buffer can be bound to imported memory, and
    so can each linear image whose format and usage the host imports (image_importable): the images the game maps to
    write texels. An optimal image is told of device-local memory alone (GetImageMemoryRequirements), as an external
    one would need memory of its own (requiresDedicatedAllocation) */
 static void gvk_CreateBuffer(CPU* RESTRICT c, u64 entry) {
+    REQUIRE_OUT(c->x[3], 8);
     gvk_scratch_reset();
     VkBufferCreateInfo* ci = gvk_in(&gvk_t_buffer, c->x[1], 1);
     VkBuffer h = VK_NULL_HANDLE;
@@ -1056,10 +1394,13 @@ static int image_importable(const VkImageCreateInfo* ci) {
                                              .flags = ci->flags};
     VkExternalImageFormatProperties ep = {.sType = VK_STRUCTURE_TYPE_EXTERNAL_IMAGE_FORMAT_PROPERTIES};
     VkImageFormatProperties2 p = {.sType = VK_STRUCTURE_TYPE_IMAGE_FORMAT_PROPERTIES_2, .pNext = &ep};
+    VkExternalMemoryFeatureFlags feature = image_modifier() ? VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT
+                                                           : VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT;
     return vkGetPhysicalDeviceImageFormatProperties2(g_vk.phys, &info, &p) == VK_SUCCESS &&
-           (ep.externalMemoryProperties.externalMemoryFeatures & VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT);
+           (ep.externalMemoryProperties.externalMemoryFeatures & feature);
 }
 static void gvk_CreateImage(CPU* RESTRICT c, u64 entry) {
+    REQUIRE_OUT(c->x[3], 8);
     gvk_scratch_reset();
     VkImageCreateInfo* ci = gvk_in(&gvk_t_image, c->x[1], 1);
     VkImage h = VK_NULL_HANDLE;
@@ -1070,6 +1411,7 @@ static void gvk_CreateImage(CPU* RESTRICT c, u64 entry) {
         ci->pQueueFamilyIndices = NULL;
         ci->format = host_format(ci->format);
         int importable = ci->tiling == VK_IMAGE_TILING_LINEAR && image_importable(ci);
+        VkImageAspectFlags preinit = 0;
         VkImageDrmFormatModifierListCreateInfoEXT mods = {
             .sType = VK_STRUCTURE_TYPE_IMAGE_DRM_FORMAT_MODIFIER_LIST_CREATE_INFO_EXT,
             .pNext = ci->pNext,
@@ -1079,8 +1421,20 @@ static void gvk_CreateImage(CPU* RESTRICT c, u64 entry) {
                                                .pNext = ci->pNext,
                                                .handleTypes = g_gvk_api.handle_type};
         if (importable) {
-            /* an external image starts undefined, which a linear one's texels outlive: the game's preinitialized
-               ones keep what it writes before their first barrier */
+            if (ci->initialLayout == VK_IMAGE_LAYOUT_PREINITIALIZED) {
+                switch (ci->format) {
+                    case VK_FORMAT_D16_UNORM:
+                    case VK_FORMAT_X8_D24_UNORM_PACK32:
+                    case VK_FORMAT_D32_SFLOAT: preinit = VK_IMAGE_ASPECT_DEPTH_BIT; break;
+                    case VK_FORMAT_S8_UINT: preinit = VK_IMAGE_ASPECT_STENCIL_BIT; break;
+                    case VK_FORMAT_D16_UNORM_S8_UINT:
+                    case VK_FORMAT_D24_UNORM_S8_UINT:
+                    case VK_FORMAT_D32_SFLOAT_S8_UINT:
+                        preinit = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
+                        break;
+                    default: preinit = VK_IMAGE_ASPECT_COLOR_BIT; break;
+                }
+            }
             if (image_modifier()) {
                 ext.pNext = &mods;
                 ci->tiling = VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT;
@@ -1096,12 +1450,11 @@ static void gvk_CreateImage(CPU* RESTRICT c, u64 entry) {
         }
         r = vkCreateImage(g_vk.dev, ci, NULL, &h);
         if (r == VK_SUCCESS && scaled) scaled_put(U(h), w, hgt);
+        if (r == VK_SUCCESS && (importable || scale_factor() > 1)) image_track(h, ci, importable, preinit);
         if (r != VK_SUCCESS)
             WARN_LIMIT(32, "gvk: an image of format %d, %ux%ux%u, tiling %d, usage %#x, failed (%d)\n", (int)ci->format,
                        ci->extent.width, ci->extent.height, ci->extent.depth, (int)ci->tiling, ci->usage, (int)r);
-        else if (importable)
-            importable_put(U(h));
-        else if (ci->tiling == VK_IMAGE_TILING_LINEAR)
+        else if (!importable && ci->tiling == VK_IMAGE_TILING_LINEAR)
             LOG_LIMIT(16, "gvk: a linear image of format %d, usage %#x can't be bound to guest memory\n",
                       (int)ci->format, ci->usage);
     }
@@ -1109,12 +1462,14 @@ static void gvk_CreateImage(CPU* RESTRICT c, u64 entry) {
     ret_vk(c, r);
 }
 static void gvk_DestroyImage(CPU* RESTRICT c, u64 entry) {
-    if (c->x[1]) importable_take(c->x[1]);
-    if (c->x[1] && scale_factor() > 1) {
-        GvkScaled e;
-        tab_take(TAB(scaled), &g_gvk_api.nscaled, c->x[1], &e);
+    if (c->x[1]) {
+        image_untrack(c->x[1]);
+        if (scale_factor() > 1) {
+            GvkScaled e;
+            tab_take(TAB(scaled), &g_gvk_api.nscaled, c->x[1], &e);
+        }
+        retire_object((GvkRetired){.image = H(VkImage, c->x[1])});
     }
-    vkDestroyImage(g_vk.dev, H(VkImage, c->x[1]), NULL);
     ret(c, 0);
 }
 /* an image of the linear DRM format modifier tells its layout by its memory plane, not its color aspect */
@@ -1132,26 +1487,26 @@ static void gvk_GetImageSubresourceLayout(CPU* RESTRICT c, u64 entry) {
 
 /* a fragment module with a second color at Location 1 has its twin made beside it (GvkDual) */
 static void gvk_CreateShaderModule(CPU* RESTRICT c, u64 entry) {
+    REQUIRE_OUT(c->x[3], 8);
     gvk_scratch_reset();
     VkShaderModuleCreateInfo* ci = gvk_in(&gvk_t_shader, c->x[1], 1);
     VkShaderModule h = VK_NULL_HANDLE;
     VkResult r = VK_ERROR_INITIALIZATION_FAILED;
-    if (ci && ci->pCode) {
-        u32 magic;
-        memcpy(&magic, ci->pCode, sizeof magic);
-        if (magic != 0x07230203u)
-            WARN_LIMIT(4, "gvk: a shader module of %zu bytes isn't SPIR-V (its first word %08x)\n", ci->codeSize,
-                       magic);
-        size_t bytes = 0;
-        const u32* mended = ((uintptr_t)ci->pCode & 3) ? NULL : gvk_spirv_mend(ci->pCode, ci->codeSize, &bytes);
-        if (mended) {
-            ci->pCode = mended;
-            ci->codeSize = bytes;
+    if (ci && ci->pCode && !((uintptr_t)ci->pCode & 3) && ci->codeSize >= 5 * sizeof(u32) &&
+        ci->codeSize % sizeof(u32) == 0) {
+        size_t bytes;
+        u32* code = gvk_scratch(ci->codeSize);
+        memcpy(code, ci->pCode, ci->codeSize);
+        const u32* mended = gvk_spirv_mend(code, ci->codeSize, &bytes, g_vk.gvk_nonuniform);
+        if (!mended) {
+            WARN_LIMIT(16, "gvk: shader is malformed or requires buffer indexing the host device did not enable\n");
+            ret_vk(c, VK_ERROR_INITIALIZATION_FAILED);
+            return;
         }
+        ci->pCode = mended;
+        ci->codeSize = bytes;
         r = vkCreateShaderModule(g_vk.dev, ci, NULL, &h);
-        const u32* dual = r == VK_SUCCESS && !((uintptr_t)ci->pCode & 3)
-                              ? gvk_spirv_dual_source(ci->pCode, ci->codeSize, &bytes)
-                              : NULL;
+        const u32* dual = r == VK_SUCCESS ? gvk_spirv_dual_source(ci->pCode, ci->codeSize, &bytes) : NULL;
         VkShaderModule twin = VK_NULL_HANDLE;
         if (dual) {
             ci->pCode = dual;
@@ -1168,6 +1523,7 @@ static void gvk_CreateShaderModule(CPU* RESTRICT c, u64 entry) {
 }
 /* a pipeline cache of the console's driver means nothing to the host's: each one starts empty */
 static void gvk_CreatePipelineCache(CPU* RESTRICT c, u64 entry) {
+    REQUIRE_OUT(c->x[3], 8);
     gvk_scratch_reset();
     VkPipelineCacheCreateInfo* ci = gvk_in(&gvk_t_cache, c->x[1], 1);
     VkPipelineCache h = VK_NULL_HANDLE;
@@ -1198,6 +1554,7 @@ static void gvk_MergePipelineCaches(CPU* RESTRICT c, u64 entry) {
 
 /* the immutable samplers of a binding of another type are ignored, whatever the pointer holds */
 static void gvk_CreateDescriptorSetLayout(CPU* RESTRICT c, u64 entry) {
+    REQUIRE_OUT(c->x[3], 8);
     gvk_scratch_reset();
     VkDescriptorSetLayoutCreateInfo* ci = gvk_in(&gvk_t_dslayout, c->x[1], 1);
     VkDescriptorSetLayout h = VK_NULL_HANDLE;
@@ -1214,21 +1571,219 @@ static void gvk_CreateDescriptorSetLayout(CPU* RESTRICT c, u64 entry) {
     put_handle(c->x[3], U(h));
     ret_vk(c, r);
 }
+
+/* ---- the twins of the game's descriptor sets (GvkTwinSet), under g_gvk_api.lock */
+static u32 tset_bucket(u64 set, u32 cap) { return (u32)((set >> 4) * 2654435761u) & (cap - 1); }
+/* the index of set's twin in g_gvk_api.tsets, 0 for none */
+static u32 tset_find_nl(u64 set) {
+    u32 i = g_gvk_api.nbuckets ? g_gvk_api.buckets[tset_bucket(set, g_gvk_api.nbuckets)] : 0;
+    while (i && g_gvk_api.tsets[i].set != set) i = g_gvk_api.tsets[i].chain;
+    return i;
+}
+static VkDescriptorSet twin_of_nl(VkDescriptorSet set) {
+    u32 i = tset_find_nl(U(set));
+    return i ? g_gvk_api.tsets[i].twin : VK_NULL_HANDLE;
+}
+/* the pool's entry in g_gvk_api.tpool, NULL for a pool with no twin: until the table changes */
+static GvkPoolTwin* tpool_at_nl(u64 pool) {
+    u32 i = tab_slot(TAB(tpool), pool);
+    return pool && g_gvk_api.tpool[i].pool == pool ? &g_gvk_api.tpool[i] : NULL;
+}
+static void tset_drop_nl(u32 i) {
+    GvkTwinSet* e = &g_gvk_api.tsets[i];
+    u32* at = &g_gvk_api.buckets[tset_bucket(e->set, g_gvk_api.nbuckets)];
+    while (*at != i) at = &g_gvk_api.tsets[*at].chain;
+    *at = e->chain;
+    if (e->prev) {
+        g_gvk_api.tsets[e->prev].next = e->next;
+    } else {
+        GvkPoolTwin* p = tpool_at_nl(e->pool);
+        if (p) p->sets = e->next;
+    }
+    if (e->next) g_gvk_api.tsets[e->next].prev = e->prev;
+    *e = (GvkTwinSet){.next = g_gvk_api.tset_free};
+    g_gvk_api.tset_free = i;
+    g_gvk_api.ntset--;
+}
+static void tset_put_nl(u64 set, VkDescriptorSet twin, GvkPoolTwin* p) {
+    u32 old = tset_find_nl(set);
+    if (old) tset_drop_nl(old);
+    if (g_gvk_api.ntset >= g_gvk_api.nbuckets) { /* a bucket for each set at most: twice as many */
+        u32 cap = g_gvk_api.nbuckets ? 2 * g_gvk_api.nbuckets : 1024;
+        u32* b = calloc(cap, sizeof *b);
+        if (!b) fatal("gvk: out of memory for the twins of %u descriptor sets", g_gvk_api.ntset);
+        for (u32 k = 0; k < g_gvk_api.nbuckets; k++)
+            for (u32 i = g_gvk_api.buckets[k], next; i; i = next) {
+                next = g_gvk_api.tsets[i].chain;
+                g_gvk_api.tsets[i].chain = b[tset_bucket(g_gvk_api.tsets[i].set, cap)];
+                b[tset_bucket(g_gvk_api.tsets[i].set, cap)] = i;
+            }
+        free(g_gvk_api.buckets);
+        g_gvk_api.buckets = b;
+        g_gvk_api.nbuckets = cap;
+    }
+    if (!g_gvk_api.tset_free) { /* slots 1 to cap - 1, linked free; slot 0 is none */
+        u32 cap = g_gvk_api.tset_cap ? 2 * g_gvk_api.tset_cap : 1024;
+        GvkTwinSet* t = cap > g_gvk_api.tset_cap ? realloc(g_gvk_api.tsets, sizeof *t * cap) : NULL;
+        if (!t) fatal("gvk: out of memory for the twins of %u descriptor sets", g_gvk_api.ntset);
+        for (u32 i = cap - 1; i >= (g_gvk_api.tset_cap ? g_gvk_api.tset_cap : 1); i--) {
+            t[i] = (GvkTwinSet){.next = g_gvk_api.tset_free};
+            g_gvk_api.tset_free = i;
+        }
+        g_gvk_api.tsets = t;
+        g_gvk_api.tset_cap = cap;
+    }
+    u32 i = g_gvk_api.tset_free;
+    u32* bucket = &g_gvk_api.buckets[tset_bucket(set, g_gvk_api.nbuckets)];
+    g_gvk_api.tset_free = g_gvk_api.tsets[i].next;
+    g_gvk_api.tsets[i] = (GvkTwinSet){.set = set, .pool = p->pool, .twin = twin, .chain = *bucket, .next = p->sets};
+    *bucket = i;
+    if (p->sets) g_gvk_api.tsets[p->sets].prev = i;
+    p->sets = i;
+    g_gvk_api.ntset++;
+}
+static void tpool_forget_nl(GvkPoolTwin* p) {
+    while (p->sets) tset_drop_nl(p->sets);
+}
+/* the pool's twin: the same sizes and flags, in host memory, where sets can't be bound */
+static void gvk_CreateDescriptorPool(CPU* RESTRICT c, u64 entry) {
+    REQUIRE_OUT(c->x[3], 8);
+    gvk_scratch_reset();
+    VkDescriptorPoolCreateInfo* ci = gvk_in(&gvk_t_dspool, c->x[1], 1);
+    VkDescriptorPool h = VK_NULL_HANDLE;
+    VkResult r = ci ? vkCreateDescriptorPool(g_vk.dev, ci, NULL, &h) : VK_ERROR_INITIALIZATION_FAILED;
+    if (r == VK_SUCCESS && g_vk.gvk_host_sets) {
+        ci->flags = (ci->flags & ~(VkDescriptorPoolCreateFlags)VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT) |
+                    VK_DESCRIPTOR_POOL_CREATE_HOST_ONLY_BIT_EXT;
+        VkDescriptorPool twin = VK_NULL_HANDLE;
+        if (vkCreateDescriptorPool(g_vk.dev, ci, NULL, &twin) == VK_SUCCESS) {
+            GvkPoolTwin e = {U(h), twin, 0};
+            tab_put(TAB(tpool), &g_gvk_api.ntpool, &e);
+        } else {
+            WARN_LIMIT(4, "gvk: a descriptor pool has no twin in host memory: copies out of its sets read the "
+                          "device's\n");
+        }
+    }
+    if (r != VK_SUCCESS) WARN_LIMIT(16, "gvk: vkCreateDescriptorPool failed (%d)\n", (int)r);
+    put_handle(c->x[3], U(h));
+    ret_vk(c, r);
+}
+static void gvk_DestroyDescriptorPool(CPU* RESTRICT c, u64 entry) {
+    GvkPoolTwin e = {0};
+    pm_lock(&g_gvk_api.lock);
+    GvkPoolTwin* p = tpool_at_nl(c->x[1]);
+    if (p) {
+        tpool_forget_nl(p);
+        tab_take_nl(TAB(tpool), &g_gvk_api.ntpool, c->x[1], &e);
+    }
+    pm_unlock(&g_gvk_api.lock);
+    if (e.twin) vkDestroyDescriptorPool(g_vk.dev, e.twin, NULL);
+    vkDestroyDescriptorPool(g_vk.dev, H(VkDescriptorPool, c->x[1]), NULL);
+    ret(c, 0);
+}
 static void gvk_ResetDescriptorPool(CPU* RESTRICT c, u64 entry) {
+    VkDescriptorPool twin = VK_NULL_HANDLE;
+    pm_lock(&g_gvk_api.lock);
+    GvkPoolTwin* p = tpool_at_nl(c->x[1]);
+    if (p) {
+        tpool_forget_nl(p);
+        twin = p->twin;
+    }
+    pm_unlock(&g_gvk_api.lock);
+    if (twin) vkResetDescriptorPool(g_vk.dev, twin, 0);
     ret_vk(c, vkResetDescriptorPool(g_vk.dev, H(VkDescriptorPool, c->x[1]), (VkDescriptorPoolResetFlags)c->x[2]));
 }
+/* a set of a pool with a twin gets its own twin there, or none when that fails: then copies read the set itself */
 static void gvk_AllocateDescriptorSets(CPU* RESTRICT c, u64 entry) {
     gvk_scratch_reset();
-    const VkDescriptorSetAllocateInfo* ai = gvk_in(&gvk_t_dsalloc, c->x[1], 1);
+    VkDescriptorSetAllocateInfo* ai = gvk_in(&gvk_t_dsalloc, c->x[1], 1);
     VkResult r = VK_ERROR_INITIALIZATION_FAILED;
-    if (ai && c->x[2] && mem_user_mapped(c->x[2], 8ull * ai->descriptorSetCount))
+    if (ai && gvk_writable(c->x[2], 8ull * ai->descriptorSetCount))
         r = vkAllocateDescriptorSets(g_vk.dev, ai, gvk_ptr(c->x[2]));
     if (r != VK_SUCCESS) WARN_LIMIT(16, "gvk: vkAllocateDescriptorSets failed (%d)\n", (int)r);
+    GvkPoolTwin e;
+    if (r == VK_SUCCESS && ai->descriptorSetCount && tab_get(TAB(tpool), U(ai->descriptorPool), &e)) {
+        const VkDescriptorSet* sets = gvk_ptr(c->x[2]);
+        VkDescriptorSet* twins = gvk_scratch(sizeof *twins * ai->descriptorSetCount);
+        ai->descriptorPool = e.twin;
+        if (vkAllocateDescriptorSets(g_vk.dev, ai, twins) == VK_SUCCESS) {
+            pm_lock(&g_gvk_api.lock);
+            GvkPoolTwin* p = tpool_at_nl(e.pool);
+            for (u32 i = 0; p && i < ai->descriptorSetCount; i++) tset_put_nl(U(sets[i]), twins[i], p);
+            pm_unlock(&g_gvk_api.lock);
+        } else {
+            WARN_LIMIT(4, "gvk: descriptor sets have no twins in host memory: copies out of them read the device's\n");
+        }
+    }
     ret_vk(c, r);
 }
 static void gvk_FreeDescriptorSets(CPU* RESTRICT c, u64 entry) {
-    GUEST(sets, VkDescriptorSet, c->x[3], (u32)c->x[2]);
-    ret_vk(c, vkFreeDescriptorSets(g_vk.dev, H(VkDescriptorPool, c->x[1]), (u32)c->x[2], sets));
+    u32 n = (u32)c->x[2];
+    GUEST(sets, VkDescriptorSet, c->x[3], n);
+    gvk_scratch_reset();
+    VkDescriptorSet* twins = gvk_scratch(sizeof *twins * n);
+    VkDescriptorPool twin_pool = VK_NULL_HANDLE;
+    u32 k = 0;
+    pm_lock(&g_gvk_api.lock);
+    GvkPoolTwin* p = tpool_at_nl(c->x[1]);
+    for (u32 i = 0; p && i < n; i++) {
+        u32 t = sets[i] ? tset_find_nl(U(sets[i])) : 0;
+        if (!t) continue;
+        twins[k++] = g_gvk_api.tsets[t].twin;
+        tset_drop_nl(t);
+    }
+    if (p) twin_pool = p->twin;
+    pm_unlock(&g_gvk_api.lock);
+    if (k) vkFreeDescriptorSets(g_vk.dev, twin_pool, k, twins);
+    ret_vk(c, vkFreeDescriptorSets(g_vk.dev, H(VkDescriptorPool, c->x[1]), n, sets));
+}
+/* the n copies of a run, whose sources no copy of the run writes before: each reads its source's twin as it was
+   before the run (src_twin; the source itself when it has none, a run of one), and is made in the destination, then
+   in its twin (dst_twin) where it has one */
+static void copy_run(const VkCopyDescriptorSet* cp, const VkDescriptorSet* src_twin, const VkDescriptorSet* dst_twin,
+                     u32 n, VkCopyDescriptorSet* tmp) {
+    for (u32 i = 0; i < n; i++) {
+        tmp[i] = cp[i];
+        if (src_twin[i]) tmp[i].srcSet = src_twin[i];
+    }
+    vkUpdateDescriptorSets(g_vk.dev, 0, NULL, n, tmp);
+    u32 k = 0;
+    for (u32 i = 0; i < n; i++)
+        if (dst_twin[i]) {
+            tmp[k] = tmp[i];
+            tmp[k++].dstSet = dst_twin[i];
+        }
+    if (k) vkUpdateDescriptorSets(g_vk.dev, 0, NULL, k, tmp);
+}
+/* Writes, then copies in order, as vkUpdateDescriptorSets makes them, with the twins kept the same as their sets.
+   A copy reads its source's twin, so a run of copies ends before one whose source an earlier copy of the run wrote */
+static void update_with_twins(VkWriteDescriptorSet* w, u32 nw, const VkCopyDescriptorSet* cp, u32 nc) {
+    VkDescriptorSet* wt = gvk_scratch(sizeof *wt * (nw + 2 * (size_t)nc));
+    VkDescriptorSet *st = wt + nw, *dt = st + nc;
+    pm_lock(&g_gvk_api.lock);
+    for (u32 i = 0; i < nw; i++) wt[i] = twin_of_nl(w[i].dstSet);
+    for (u32 i = 0; i < nc; i++) {
+        st[i] = twin_of_nl(cp[i].srcSet);
+        dt[i] = twin_of_nl(cp[i].dstSet);
+    }
+    pm_unlock(&g_gvk_api.lock);
+    if (nw) vkUpdateDescriptorSets(g_vk.dev, nw, w, 0, NULL);
+    u32 k = 0;
+    for (u32 i = 0; i < nw; i++)
+        if (wt[i]) {
+            w[k] = w[i];
+            w[k++].dstSet = wt[i];
+        }
+    if (k) vkUpdateDescriptorSets(g_vk.dev, k, w, 0, NULL);
+    VkCopyDescriptorSet* tmp = gvk_scratch(sizeof *tmp * nc);
+    for (u32 i = 0, end; i < nc; i = end) {
+        end = i + 1;
+        for (int ok = st[i] != VK_NULL_HANDLE; ok && end < nc; end += ok) {
+            ok = st[end] != VK_NULL_HANDLE;
+            for (u32 j = i; ok && j < end; j++) ok = cp[j].dstSet != cp[end].srcSet;
+        }
+        copy_run(cp + i, st + i, dt + i, end - i, tmp);
+    }
 }
 /* a write reads the one of its three arrays its type names, its images in host_layout */
 static void gvk_UpdateDescriptorSets(CPU* RESTRICT c, u64 entry) {
@@ -1236,6 +1791,10 @@ static void gvk_UpdateDescriptorSets(CPU* RESTRICT c, u64 entry) {
     u32 nw = (u32)c->x[1], nc = (u32)c->x[3];
     VkWriteDescriptorSet* w = gvk_in(&gvk_t_write, c->x[2], nw);
     const VkCopyDescriptorSet* cp = gvk_in(&gvk_t_copy, c->x[4], nc);
+    if ((nw && !w) || (nc && !cp)) {
+        ret(c, 0);
+        return;
+    }
     for (u32 i = 0; w && i < nw; i++) {
         switch (w[i].descriptorType) {
             case VK_DESCRIPTOR_TYPE_SAMPLER:
@@ -1243,6 +1802,10 @@ static void gvk_UpdateDescriptorSets(CPU* RESTRICT c, u64 entry) {
             case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
             case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
             case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT:
+                if (!w[i].pImageInfo) {
+                    ret(c, 0);
+                    return;
+                }
                 w[i].pBufferInfo = NULL;
                 w[i].pTexelBufferView = NULL;
                 if (w[i].pImageInfo && w[i].descriptorType != VK_DESCRIPTOR_TYPE_SAMPLER) {
@@ -1256,16 +1819,27 @@ static void gvk_UpdateDescriptorSets(CPU* RESTRICT c, u64 entry) {
                 break;
             case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
             case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
+                if (!w[i].pTexelBufferView) {
+                    ret(c, 0);
+                    return;
+                }
                 w[i].pImageInfo = NULL;
                 w[i].pBufferInfo = NULL;
                 break;
             default:
+                if (!w[i].pBufferInfo) {
+                    ret(c, 0);
+                    return;
+                }
                 w[i].pImageInfo = NULL;
                 w[i].pTexelBufferView = NULL;
                 break;
         }
     }
-    vkUpdateDescriptorSets(g_vk.dev, w ? nw : 0, w, cp ? nc : 0, cp);
+    if (g_vk.gvk_host_sets)
+        update_with_twins(w, w ? nw : 0, cp, cp ? nc : 0);
+    else
+        vkUpdateDescriptorSets(g_vk.dev, w ? nw : 0, w, cp ? nc : 0, cp);
     ret(c, 0);
 }
 
@@ -1277,7 +1851,7 @@ static void gvk_CreateGraphicsPipelines(CPU* RESTRICT c, u64 entry) {
     u32 n = (u32)c->x[2];
     VkGraphicsPipelineCreateInfo* ci = gvk_in(&gvk_t_gpipe, c->x[3], n);
     VkResult r = VK_ERROR_INITIALIZATION_FAILED;
-    if (ci && c->x[5] && mem_user_mapped(c->x[5], 8ull * n)) {
+    if (ci && gvk_writable(c->x[5], 8ull * n)) {
         for (u32 i = 0; i < n; i++) { /* the tessellation state is read only with its stages */
             int tess = 0, src1 = 0;
             for (u32 s = 0; ci[i].pStages && s < ci[i].stageCount; s++)
@@ -1305,7 +1879,23 @@ static void gvk_CreateGraphicsPipelines(CPU* RESTRICT c, u64 entry) {
             }
         }
         kthread_host_wait_begin();
+        int entered = snx_vk_compile_enter();
         r = vkCreateGraphicsPipelines(g_vk.dev, H(VkPipelineCache, c->x[1]), n, ci, NULL, gvk_ptr(c->x[5]));
+        snx_vk_compile_leave(entered);
+        const VkPipeline* made = gvk_ptr(c->x[5]);
+        for (u32 i = 0; scale_factor() > 1 && i < n; i++) {
+            if (!made[i]) continue;
+            u32 dynamic = 0;
+            const VkPipelineDynamicStateCreateInfo* state = ci[i].pDynamicState;
+            for (u32 d = 0; state && d < state->dynamicStateCount; d++) {
+                if (state->pDynamicStates[d] == VK_DYNAMIC_STATE_VIEWPORT) dynamic |= DYN_VIEWPORT;
+                if (state->pDynamicStates[d] == VK_DYNAMIC_STATE_SCISSOR) dynamic |= DYN_SCISSOR;
+            }
+            if (dynamic) {
+                GvkGraphics e = {U(made[i]), dynamic};
+                tab_put(TAB(graphics), &g_gvk_api.ngraphics, &e);
+            }
+        }
         kthread_host_wait_end();
     }
     if (r != VK_SUCCESS) WARN_LIMIT(16, "gvk: vkCreateGraphicsPipelines failed (%d)\n", (int)r);
@@ -1316,9 +1906,11 @@ static void gvk_CreateComputePipelines(CPU* RESTRICT c, u64 entry) {
     u32 n = (u32)c->x[2];
     const VkComputePipelineCreateInfo* ci = gvk_in(&gvk_t_cpipe, c->x[3], n);
     VkResult r = VK_ERROR_INITIALIZATION_FAILED;
-    if (ci && c->x[5] && mem_user_mapped(c->x[5], 8ull * n)) {
+    if (ci && gvk_writable(c->x[5], 8ull * n)) {
         kthread_host_wait_begin();
+        int entered = snx_vk_compile_enter();
         r = vkCreateComputePipelines(g_vk.dev, H(VkPipelineCache, c->x[1]), n, ci, NULL, gvk_ptr(c->x[5]));
+        snx_vk_compile_leave(entered);
         kthread_host_wait_end();
     }
     if (r != VK_SUCCESS) WARN_LIMIT(16, "gvk: vkCreateComputePipelines failed (%d)\n", (int)r);
@@ -1328,26 +1920,93 @@ static void gvk_CreateComputePipelines(CPU* RESTRICT c, u64 entry) {
 /* ------------------------------------------------------------ command buffers */
 /* the game's pools are of its one family: the renderer's graphics family */
 static void gvk_CreateCommandPool(CPU* RESTRICT c, u64 entry) {
+    REQUIRE_OUT(c->x[3], 8);
     gvk_scratch_reset();
     VkCommandPoolCreateInfo* ci = gvk_in(&gvk_t_pool, c->x[1], 1);
     VkCommandPool h = VK_NULL_HANDLE;
     VkResult r = VK_ERROR_INITIALIZATION_FAILED;
     if (ci) {
         ci->queueFamilyIndex = g_vk.gfx_family;
-        r = vkCreateCommandPool(g_vk.dev, ci, NULL, &h);
+        pm_lock(&g_gvk_api.lock);
+        r = VK_ERROR_OUT_OF_HOST_MEMORY;
+        if (g_gvk_api.npool < GVK_CBS - 1) {
+            r = vkCreateCommandPool(g_vk.dev, ci, NULL, &h);
+            if (r == VK_SUCCESS) {
+                u64 k = U(h);
+                tab_put_nl(TAB(pool), &g_gvk_api.npool, &k);
+            }
+        }
+        pm_unlock(&g_gvk_api.lock);
     }
     put_handle(c->x[3], U(h));
     ret_vk(c, r);
 }
+static void cb_clear_nl(u64 cb) {
+    GvkPass p;
+    GvkDyn d;
+    tab_take_nl(TAB(pass), &g_gvk_api.npass, cb, &p);
+    tab_take_nl(TAB(dyn), &g_gvk_api.ndyn, cb, &d);
+}
+static void pool_clear(u64 pool, int destroy) {
+    pm_lock(&g_gvk_api.lock);
+    for (u32 i = 0; i < GVK_CBS;) {
+        GvkCmd* cmd = &g_gvk_api.cmd[i];
+        if (cmd->cb && cmd->pool == pool) {
+            cb_clear_nl(cmd->cb);
+            if (destroy) {
+                GvkCmd gone;
+                tab_take_nl(TAB(cmd), &g_gvk_api.ncmd, cmd->cb, &gone);
+                continue;
+            }
+            cmd->inherited_scale = 0;
+            cmd->dynamic = 0;
+        }
+        i++;
+    }
+    pm_unlock(&g_gvk_api.lock);
+}
+static VkCommandBuffer checked_cb(u64 h) {
+    GvkCmd e;
+    if (!tab_get(TAB(cmd), h, &e)) fatal("gvk: invalid command buffer handle");
+    return H(VkCommandBuffer, e.cb);
+}
+static void gvk_DestroyCommandPool(CPU* RESTRICT c, u64 entry) {
+    if (c->x[1]) {
+        u64 pool;
+        if (!tab_take(TAB(pool), &g_gvk_api.npool, c->x[1], &pool)) fatal("gvk: invalid command pool handle");
+        pool_clear(pool, 1);
+    }
+    vkDestroyCommandPool(g_vk.dev, H(VkCommandPool, c->x[1]), NULL);
+    ret(c, 0);
+}
 static void gvk_ResetCommandPool(CPU* RESTRICT c, u64 entry) {
-    ret_vk(c, vkResetCommandPool(g_vk.dev, H(VkCommandPool, c->x[1]), (VkCommandPoolResetFlags)c->x[2]));
+    if (!set_has(g_gvk_api.pool, GVK_CBS, c->x[1])) {
+        ret_vk(c, VK_ERROR_INITIALIZATION_FAILED);
+        return;
+    }
+    VkResult r = vkResetCommandPool(g_vk.dev, H(VkCommandPool, c->x[1]), (VkCommandPoolResetFlags)c->x[2]);
+    if (r == VK_SUCCESS) pool_clear(c->x[1], 0);
+    ret_vk(c, r);
 }
 static void gvk_AllocateCommandBuffers(CPU* RESTRICT c, u64 entry) {
     gvk_scratch_reset();
     const VkCommandBufferAllocateInfo* ai = gvk_in(&gvk_t_cballoc, c->x[1], 1);
     VkResult r = VK_ERROR_INITIALIZATION_FAILED;
-    if (ai && c->x[2] && mem_user_mapped(c->x[2], 8ull * ai->commandBufferCount))
-        r = vkAllocateCommandBuffers(g_vk.dev, ai, gvk_ptr(c->x[2]));
+    if (ai && ai->commandBufferCount && !(c->x[2] & 7) && gvk_writable(c->x[2], 8ull * ai->commandBufferCount) &&
+        set_has(g_gvk_api.pool, GVK_CBS, U(ai->commandPool))) {
+        VkCommandBuffer* made = gvk_ptr(c->x[2]);
+        pm_lock(&g_gvk_api.lock);
+        r = VK_ERROR_OUT_OF_HOST_MEMORY;
+        if (ai->commandBufferCount < GVK_CBS - g_gvk_api.ncmd) {
+            r = vkAllocateCommandBuffers(g_vk.dev, ai, made);
+            if (r == VK_SUCCESS)
+                for (u32 i = 0; i < ai->commandBufferCount; i++) {
+                    GvkCmd e = {.cb = U(made[i]), .pool = U(ai->commandPool), .level = ai->level};
+                    tab_put_nl(TAB(cmd), &g_gvk_api.ncmd, &e);
+                }
+        }
+        pm_unlock(&g_gvk_api.lock);
+    }
     ret_vk(c, r);
 }
 static void pass_forget(u64 cb) {
@@ -1357,22 +2016,61 @@ static void pass_forget(u64 cb) {
 static void gvk_FreeCommandBuffers(CPU* RESTRICT c, u64 entry) {
     u32 n = (u32)c->x[2];
     GUEST(cbs, VkCommandBuffer, c->x[3], n);
-    for (u32 i = 0; i < n; i++) pass_forget(U(cbs[i]));
-    vkFreeCommandBuffers(g_vk.dev, H(VkCommandPool, c->x[1]), n, cbs);
+    if (!set_has(g_gvk_api.pool, GVK_CBS, c->x[1])) fatal("gvk: invalid command pool handle");
+    gvk_scratch_reset();
+    VkCommandBuffer* copy = n ? gvk_scratch(n * sizeof *copy) : NULL;
+    if (n) memcpy(copy, cbs, n * sizeof *copy);
+    for (u32 i = 0; i < n; i++) {
+        GvkCmd e;
+        if (copy[i] && (!tab_get(TAB(cmd), U(copy[i]), &e) || e.pool != c->x[1]))
+            fatal("gvk: invalid command buffer or pool in vkFreeCommandBuffers");
+    }
+    pm_lock(&g_gvk_api.lock);
+    for (u32 i = 0; i < n; i++) {
+        GvkCmd e;
+        if (!copy[i]) continue;
+        cb_clear_nl(U(copy[i]));
+        tab_take_nl(TAB(cmd), &g_gvk_api.ncmd, U(copy[i]), &e);
+    }
+    pm_unlock(&g_gvk_api.lock);
+    vkFreeCommandBuffers(g_vk.dev, H(VkCommandPool, c->x[1]), n, copy);
     ret(c, 0);
 }
 static void gvk_BeginCommandBuffer(CPU* RESTRICT c, u64 entry) {
     gvk_scratch_reset();
-    pass_forget(c->x[0]);
-    const VkCommandBufferBeginInfo* bi = gvk_in(&gvk_t_begin, c->x[1], 1);
-    ret_vk(c, bi ? vkBeginCommandBuffer(H(VkCommandBuffer, c->x[0]), bi) : VK_ERROR_INITIALIZATION_FAILED);
+    VkCommandBuffer cb = checked_cb(c->x[0]);
+    GvkCmd cmd;
+    tab_get(TAB(cmd), c->x[0], &cmd);
+    VkCommandBufferBeginInfo* bi = gvk_in(&gvk_t_begin, c->x[1], 1);
+    u32 inherited_scale = 0;
+    if (bi && cmd.level == VK_COMMAND_BUFFER_LEVEL_PRIMARY) bi->pInheritanceInfo = NULL;
+    if (bi && bi->pInheritanceInfo && (bi->flags & VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT))
+        inherited_scale = set_has(g_gvk_api.sfb, GVK_SCALED, U(bi->pInheritanceInfo->framebuffer)) ? scale_factor() : 1;
+    VkResult r = bi ? vkBeginCommandBuffer(cb, bi) : VK_ERROR_INITIALIZATION_FAILED;
+    if (r == VK_SUCCESS) {
+        pm_lock(&g_gvk_api.lock);
+        cb_clear_nl(cmd.cb);
+        cmd.inherited_scale = inherited_scale;
+        cmd.dynamic = 0;
+        tab_put_nl(TAB(cmd), &g_gvk_api.ncmd, &cmd);
+        pm_unlock(&g_gvk_api.lock);
+    }
+    ret_vk(c, r);
 }
 static void gvk_EndCommandBuffer(CPU* RESTRICT c, u64 entry) {
-    ret_vk(c, vkEndCommandBuffer(H(VkCommandBuffer, c->x[0])));
+    ret_vk(c, vkEndCommandBuffer(checked_cb(c->x[0])));
 }
 static void gvk_ResetCommandBuffer(CPU* RESTRICT c, u64 entry) {
-    pass_forget(c->x[0]);
-    ret_vk(c, vkResetCommandBuffer(H(VkCommandBuffer, c->x[0]), (VkCommandBufferResetFlags)c->x[1]));
+    VkResult r = vkResetCommandBuffer(checked_cb(c->x[0]), (VkCommandBufferResetFlags)c->x[1]);
+    if (r == VK_SUCCESS) {
+        pm_lock(&g_gvk_api.lock);
+        u32 i = tab_slot(TAB(cmd), c->x[0]);
+        g_gvk_api.cmd[i].inherited_scale = 0;
+        g_gvk_api.cmd[i].dynamic = 0;
+        cb_clear_nl(c->x[0]);
+        pm_unlock(&g_gvk_api.lock);
+    }
+    ret_vk(c, r);
 }
 
 /* Every command before it done and its writes seen by every command after it */
@@ -1383,16 +2081,17 @@ static void full_barrier(VkCommandBuffer cb) {
     vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1, &b, 0, NULL,
                          0, NULL);
 }
-/* A transfer command or a barrier inside a render pass, which the console's driver runs where the game puts it and
-   Vulkan allows only outside one (VUID-vkCmdCopyImage-renderpass): the pass ended before it, 1, and pass_back begins
-   its twin after it, which loads what the first part stored. 0 outside a pass, and inside one of several subpasses,
-   whose rest can't be begun again */
+/* A transfer command must run outside a pass. Only a primary single-subpass pass can resume. */
 static int pass_out(VkCommandBuffer cb, GvkPass* p) {
     GvkRpass rp;
-    if (!tab_get(TAB(pass), U(cb), p)) return 0;
-    if (!tab_get(TAB(rpass), p->rp, &rp) || rp.subpasses != 1 || !rp.resume) {
-        LOG_LIMIT(4, "gvk: a transfer command inside a render pass of %u subpasses runs inside it\n", rp.subpasses);
+    if (!tab_get(TAB(pass), U(cb), p)) {
+        GvkCmd cmd;
+        if (tab_get(TAB(cmd), U(cb), &cmd) && cmd.inherited_scale)
+            fatal("gvk: cannot split a render pass in a secondary command buffer");
         return 0;
+    }
+    if (!tab_get(TAB(rpass), p->rp, &rp) || rp.subpasses != 1 || !rp.resume) {
+        fatal("gvk: cannot split this render pass for a transfer command or barrier");
     }
     vkCmdEndRenderPass(cb);
     full_barrier(cb);
@@ -1417,9 +2116,20 @@ static void pass_back(VkCommandBuffer cb, const GvkPass* p) {
         if (outside_ended) pass_back((cb), &outside_pass);                                                             \
     } while (0)
 
-#define CB H(VkCommandBuffer, c->x[0])
+#define CB checked_cb(c->x[0])
 static void gvk_CmdBindPipeline(CPU* RESTRICT c, u64 entry) {
     vkCmdBindPipeline(CB, (VkPipelineBindPoint)(u32)c->x[1], H(VkPipeline, c->x[2]));
+    if ((u32)c->x[1] == VK_PIPELINE_BIND_POINT_GRAPHICS && scale_factor() > 1) {
+        GvkGraphics e;
+        tab_get(TAB(graphics), c->x[2], &e);
+        pm_lock(&g_gvk_api.lock);
+        u32 i = tab_slot(TAB(cmd), c->x[0]);
+        g_gvk_api.cmd[i].dynamic = e.dynamic;
+        u32 d = tab_slot(TAB(dyn), c->x[0]);
+        if (!(e.dynamic & DYN_VIEWPORT)) g_gvk_api.dyn[d].has_vp = 0;
+        if (!(e.dynamic & DYN_SCISSOR)) g_gvk_api.dyn[d].has_sc = 0;
+        pm_unlock(&g_gvk_api.lock);
+    }
     ret(c, 0);
 }
 static void gvk_CmdBindIndexBuffer(CPU* RESTRICT c, u64 entry) {
@@ -1449,7 +2159,10 @@ static void gvk_CmdPushConstants(CPU* RESTRICT c, u64 entry) {
 /* the factor the commands of cb draw at now: its render pass's framebuffer's */
 static u32 pass_scale(u64 cb) {
     GvkPass p;
-    return scale_factor() > 1 && tab_get(TAB(pass), cb, &p) && p.scaled ? scale_factor() : 1;
+    if (scale_factor() == 1) return 1;
+    if (tab_get(TAB(pass), cb, &p)) return p.scaled ? scale_factor() : 1;
+    GvkCmd cmd;
+    return tab_get(TAB(cmd), cb, &cmd) && cmd.inherited_scale ? cmd.inherited_scale : 1;
 }
 static void set_viewports(VkCommandBuffer cb, u32 first, u32 n, const VkViewport* v, u32 f) {
     VkViewport* s = f > 1 ? gvk_scratch(sizeof *s * n) : NULL;
@@ -1505,16 +2218,22 @@ static void gvk_CmdSetScissor(CPU* RESTRICT c, u64 entry) {
     ret(c, 0);
 }
 /* a render pass at scale f: the viewport and scissor set at another one set again at f */
-static void dyn_again(VkCommandBuffer cb, u32 f) {
+static void dyn_again(VkCommandBuffer cb) {
+    if (scale_factor() == 1) return;
+    GvkCmd cmd;
+    if (!tab_get(TAB(cmd), U(cb), &cmd) || !cmd.dynamic) return;
+    GvkPass p;
+    if (tab_get(TAB(pass), U(cb), &p) && p.contents == VK_SUBPASS_CONTENTS_SECONDARY_COMMAND_BUFFERS) return;
+    u32 f = pass_scale(U(cb));
     GvkDyn d;
     if (!tab_get(TAB(dyn), U(cb), &d)) return;
     int changed = 0;
-    if (d.has_vp && d.vp_at != f) {
+    if ((cmd.dynamic & DYN_VIEWPORT) && d.has_vp && d.vp_at != f) {
         set_viewports(cb, 0, 1, &d.vp, f);
         d.vp_at = f;
         changed = 1;
     }
-    if (d.has_sc && d.sc_at != f) {
+    if ((cmd.dynamic & DYN_SCISSOR) && d.has_sc && d.sc_at != f) {
         set_scissors(cb, 0, 1, &d.sc, f);
         d.sc_at = f;
         changed = 1;
@@ -1551,19 +2270,27 @@ static void gvk_CmdSetStencilReference(CPU* RESTRICT c, u64 entry) {
     ret(c, 0);
 }
 static void gvk_CmdDraw(CPU* RESTRICT c, u64 entry) {
-    vkCmdDraw(CB, (u32)c->x[1], (u32)c->x[2], (u32)c->x[3], (u32)c->x[4]);
+    VkCommandBuffer cb = CB;
+    dyn_again(cb);
+    vkCmdDraw(cb, (u32)c->x[1], (u32)c->x[2], (u32)c->x[3], (u32)c->x[4]);
     ret(c, 0);
 }
 static void gvk_CmdDrawIndexed(CPU* RESTRICT c, u64 entry) {
-    vkCmdDrawIndexed(CB, (u32)c->x[1], (u32)c->x[2], (u32)c->x[3], (i32)(u32)c->x[4], (u32)c->x[5]);
+    VkCommandBuffer cb = CB;
+    dyn_again(cb);
+    vkCmdDrawIndexed(cb, (u32)c->x[1], (u32)c->x[2], (u32)c->x[3], (i32)(u32)c->x[4], (u32)c->x[5]);
     ret(c, 0);
 }
 static void gvk_CmdDrawIndirect(CPU* RESTRICT c, u64 entry) {
-    vkCmdDrawIndirect(CB, H(VkBuffer, c->x[1]), c->x[2], (u32)c->x[3], (u32)c->x[4]);
+    VkCommandBuffer cb = CB;
+    dyn_again(cb);
+    vkCmdDrawIndirect(cb, H(VkBuffer, c->x[1]), c->x[2], (u32)c->x[3], (u32)c->x[4]);
     ret(c, 0);
 }
 static void gvk_CmdDrawIndexedIndirect(CPU* RESTRICT c, u64 entry) {
-    vkCmdDrawIndexedIndirect(CB, H(VkBuffer, c->x[1]), c->x[2], (u32)c->x[3], (u32)c->x[4]);
+    VkCommandBuffer cb = CB;
+    dyn_again(cb);
+    vkCmdDrawIndexedIndirect(cb, H(VkBuffer, c->x[1]), c->x[2], (u32)c->x[3], (u32)c->x[4]);
     ret(c, 0);
 }
 static void gvk_CmdDispatch(CPU* RESTRICT c, u64 entry) {
@@ -1584,7 +2311,6 @@ static void gvk_CmdBeginRenderPass(CPU* RESTRICT c, u64 entry) {
         vkCmdBeginRenderPass(CB, bi, contents);
         GvkPass p = {c->x[0], U(bi->renderPass), U(bi->framebuffer), bi->renderArea, 0, contents, scaled};
         tab_put(TAB(pass), &g_gvk_api.npass, &p);
-        if (scale_factor() > 1) dyn_again(CB, scaled ? scale_factor() : 1);
     }
     ret(c, 0);
 }
@@ -1604,8 +2330,17 @@ static void gvk_CmdEndRenderPass(CPU* RESTRICT c, u64 entry) {
     ret(c, 0);
 }
 static void gvk_CmdExecuteCommands(CPU* RESTRICT c, u64 entry) {
-    GUEST(cbs, VkCommandBuffer, c->x[2], (u32)c->x[1]);
-    vkCmdExecuteCommands(CB, (u32)c->x[1], cbs);
+    u32 n = (u32)c->x[1];
+    GUEST(cbs, VkCommandBuffer, c->x[2], n);
+    if (!n) {
+        ret(c, 0);
+        return;
+    }
+    gvk_scratch_reset();
+    VkCommandBuffer* copy = gvk_scratch(n * sizeof *copy);
+    memcpy(copy, cbs, n * sizeof *copy);
+    for (u32 i = 0; i < n; i++) checked_cb(U(copy[i]));
+    vkCmdExecuteCommands(CB, n, copy);
     ret(c, 0);
 }
 /* The stages to add to have for each access in access that none of its stages supports, as the console's driver
@@ -1648,10 +2383,8 @@ static VkPipelineStageFlags stages_for(VkAccessFlags access, VkPipelineStageFlag
         if ((access & k[e].access) && !(have & k[e].supported)) add |= k[e].add;
     return add;
 }
-/* vkCmdPipelineBarrier(cb, src, dst, flags, nm, pm, nb, pb, ni, pi): the last two on the stack. Inside a render pass
-   whose subpass depends on itself it is legal and stays there, as the game gave it; inside another it goes outside
-   (pass_out), its stages with those its accesses need (stages_for). Its layouts are host_layout's, and a
-   guest-mapped linear image, made undefined, leaves undefined */
+/* An in-pass memory barrier must fit one self-dependency of the active subpass. Image and buffer barriers go
+   outside the pass rather than assuming that an arbitrary image is a framebuffer attachment. */
 static void gvk_CmdPipelineBarrier(CPU* RESTRICT c, u64 entry) {
     gvk_scratch_reset();
     u32 nm = (u32)c->x[4], nb = (u32)c->x[6], ni = (u32)stack_arg(c, 0);
@@ -1661,25 +2394,37 @@ static void gvk_CmdPipelineBarrier(CPU* RESTRICT c, u64 entry) {
     for (u32 k = 0; i && k < ni; k++) {
         i[k].oldLayout = host_layout(i[k].oldLayout);
         i[k].newLayout = host_layout(i[k].newLayout);
-        if (i[k].oldLayout == VK_IMAGE_LAYOUT_PREINITIALIZED && importable_has(U(i[k].image)))
-            i[k].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        if (i[k].oldLayout == VK_IMAGE_LAYOUT_PREINITIALIZED && image_get(U(i[k].image)).preinit)
+            i[k].oldLayout = VK_IMAGE_LAYOUT_GENERAL;
     }
+    if ((nm && !m) || (nb && !b) || (ni && !i)) {
+        ret(c, 0);
+        return;
+    }
+    VkAccessFlags sa = 0, da = 0;
+    for (u32 k = 0; k < nm; k++) sa |= m[k].srcAccessMask, da |= m[k].dstAccessMask;
+    for (u32 k = 0; k < nb; k++) sa |= b[k].srcAccessMask, da |= b[k].dstAccessMask;
+    for (u32 k = 0; k < ni; k++) sa |= i[k].srcAccessMask, da |= i[k].dstAccessMask;
+    VkPipelineStageFlags src = (VkPipelineStageFlags)c->x[1], dst = (VkPipelineStageFlags)c->x[2];
+    VkDependencyFlags flags = (VkDependencyFlags)c->x[3];
     GvkPass p;
     GvkRpass rp;
-    if (tab_get(TAB(pass), c->x[0], &p) && tab_get(TAB(rpass), p.rp, &rp) && rp.self)
-        vkCmdPipelineBarrier(CB, (VkPipelineStageFlags)c->x[1], (VkPipelineStageFlags)c->x[2],
-                             (VkDependencyFlags)c->x[3], m ? nm : 0, m, b ? nb : 0, b, i ? ni : 0, i);
-    else {
-        VkAccessFlags sa = 0, da = 0;
-        for (u32 k = 0; m && k < nm; k++) sa |= m[k].srcAccessMask, da |= m[k].dstAccessMask;
-        for (u32 k = 0; b && k < nb; k++) sa |= b[k].srcAccessMask, da |= b[k].dstAccessMask;
-        for (u32 k = 0; i && k < ni; k++) sa |= i[k].srcAccessMask, da |= i[k].dstAccessMask;
-        VkPipelineStageFlags src = (VkPipelineStageFlags)c->x[1], dst = (VkPipelineStageFlags)c->x[2];
-        src |= stages_for(sa, src);
-        dst |= stages_for(da, dst);
-        OUTSIDE(CB, vkCmdPipelineBarrier(CB, src, dst, (VkDependencyFlags)c->x[3], m ? nm : 0, m, b ? nb : 0, b,
-                                         i ? ni : 0, i));
+    VkCommandBuffer cb = CB;
+    if (!nb && !ni && tab_get(TAB(pass), c->x[0], &p) && p.contents == VK_SUBPASS_CONTENTS_INLINE &&
+        tab_get(TAB(rpass), p.rp, &rp)) {
+        for (u32 k = 0; k < rp.nself; k++) {
+            const VkSubpassDependency* d = &rp.self[k];
+            if (d->srcSubpass == p.subpass && !(src & ~d->srcStageMask) && !(dst & ~d->dstStageMask) &&
+                !(sa & ~d->srcAccessMask) && !(da & ~d->dstAccessMask) && flags == d->dependencyFlags) {
+                vkCmdPipelineBarrier(cb, src, dst, flags, nm, m, 0, NULL, 0, NULL);
+                ret(c, 0);
+                return;
+            }
+        }
     }
+    src |= stages_for(sa, src);
+    dst |= stages_for(da, dst);
+    OUTSIDE(cb, vkCmdPipelineBarrier(cb, src, dst, flags, nm, m, nb, b, ni, i));
     ret(c, 0);
 }
 static void gvk_CmdCopyBuffer(CPU* RESTRICT c, u64 entry) {
@@ -1708,6 +2453,10 @@ static void gvk_CmdCopyImage(CPU* RESTRICT c, u64 entry) {
         }
         OUTSIDE(CB, vkCmdCopyImage(CB, src, sl, dst, dl, n, s));
     } else {
+        GvkImage si = image_get(U(src)), di = image_get(U(dst));
+        if (si.samples != VK_SAMPLE_COUNT_1_BIT || di.samples != VK_SAMPLE_COUNT_1_BIT || si.format != di.format ||
+            !(si.features & VK_FORMAT_FEATURE_BLIT_SRC_BIT) || !(di.features & VK_FORMAT_FEATURE_BLIT_DST_BIT))
+            fatal("gvk: resolution scaling requires a blit that these image formats or sample counts do not support");
         VkImageBlit* b = gvk_scratch(sizeof *b * n);
         int color = 1;
         for (u32 i = 0; i < n; i++) {
@@ -1721,7 +2470,9 @@ static void gvk_CmdCopyImage(CPU* RESTRICT c, u64 entry) {
                                  .dstOffsets = {offset_at(r[i].dstOffset, fd), offset_at(dend, fd)}};
             color &= r[i].srcSubresource.aspectMask == VK_IMAGE_ASPECT_COLOR_BIT;
         }
-        OUTSIDE(CB, vkCmdBlitImage(CB, src, sl, dst, dl, n, b, color ? VK_FILTER_LINEAR : VK_FILTER_NEAREST));
+        VkFilter filter = color && (si.features & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT)
+                            ? VK_FILTER_LINEAR : VK_FILTER_NEAREST;
+        OUTSIDE(CB, vkCmdBlitImage(CB, src, sl, dst, dl, n, b, filter));
     }
     ret(c, 0);
 }
@@ -1882,13 +2633,26 @@ static void gvk_ResetEvent(CPU* RESTRICT c, u64 entry) { ret_vk(c, vkResetEvent(
 static void gvk_QueueSubmit(CPU* RESTRICT c, u64 entry) {
     gvk_scratch_reset();
     u32 n = (u32)c->x[1];
-    const VkSubmitInfo* s = gvk_in(&gvk_t_submit, c->x[2], n);
-    ret_vk(c, queue_submit(s ? n : 0, s, H(VkFence, c->x[3])));
+    VkSubmitInfo* s = gvk_in(&gvk_t_submit, c->x[2], n);
+    if (c->x[0] != U(g_vk.gfx) || (n && !s)) {
+        ret_vk(c, VK_ERROR_INITIALIZATION_FAILED);
+        return;
+    }
+    for (u32 i = 0; i < n; i++) {
+        u32 count = s[i].commandBufferCount;
+        if (!count) continue;
+        VkCommandBuffer* copy = gvk_scratch(count * sizeof *copy);
+        memcpy(copy, s[i].pCommandBuffers, count * sizeof *copy);
+        for (u32 k = 0; k < count; k++) checked_cb(U(copy[k]));
+        s[i].pCommandBuffers = copy;
+    }
+    ret_vk(c, queue_submit(n, s, H(VkFence, c->x[3])));
 }
 static void gvk_QueueWaitIdle(CPU* RESTRICT c, u64 entry) { gvk_DeviceWaitIdle(c, entry); }
 
 /* ------------------------------------------------------------ the window */
 static void gvk_CreateViSurfaceNN(CPU* RESTRICT c, u64 entry) {
+    REQUIRE_OUT(c->x[3], 8);
     put_handle(c->x[3], GVK_SURFACE);
     ret_vk(c, VK_SUCCESS);
 }
@@ -1941,14 +2705,17 @@ static void swapchain_free(GvkSwapchain* s) {
     for (u32 i = 0; i < s->n; i++) {
         GvkScaled e;
         if (s->img[i] && scale_factor() > 1) tab_take(TAB(scaled), &g_gvk_api.nscaled, U(s->img[i]), &e);
+        if (s->img[i]) image_untrack(U(s->img[i]));
         vkDestroyImage(g_vk.dev, s->img[i], NULL);
         vkFreeMemory(g_vk.dev, s->mem[i], NULL);
     }
+    pm_lock(&g_gvk_api.lock);
     *s = (GvkSwapchain){0};
+    pm_unlock(&g_gvk_api.lock);
 }
 /* a swapchain's new images put in GENERAL, the one layout the game's render passes take them in (host_layout), ahead
    of the game's work on the queue */
-static VkResult images_general(const VkImage* img, u32 n) {
+static VkResult images_general(const VkImage* img, u32 n, VkImageAspectFlags aspects) {
     VkCommandPoolCreateInfo pi = {.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
                                   .flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT,
                                   .queueFamilyIndex = g_vk.gfx_family};
@@ -1976,7 +2743,8 @@ static VkResult images_general(const VkImage* img, u32 n) {
                                           .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                                           .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                                           .image = img[i],
-                                          .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+                                          .subresourceRange = {aspects, 0, VK_REMAINING_MIP_LEVELS, 0,
+                                                               VK_REMAINING_ARRAY_LAYERS}};
         vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, NULL, 0,
                              NULL, n, b);
         r = vkEndCommandBuffer(cb);
@@ -1993,6 +2761,7 @@ static VkResult images_general(const VkImage* img, u32 n) {
     return r;
 }
 static void gvk_CreateSwapchainKHR(CPU* RESTRICT c, u64 entry) {
+    REQUIRE_OUT(c->x[3], 8);
     u64 ci = c->x[1];
     if (!ci || !mem_user_mapped(ci, sizeof(VkSwapchainCreateInfoKHR))) {
         ret_vk(c, VK_ERROR_INITIALIZATION_FAILED);
@@ -2006,9 +2775,19 @@ static void gvk_CreateSwapchainKHR(CPU* RESTRICT c, u64 entry) {
     /* the game draws its frame into them: at the resolution scale, as its targets */
     u32 f = usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT ? scale_factor() : 1;
     pm_lock(&g_gvk_api.lock);
+    u64 old = gr64(ci + offsetof(VkSwapchainCreateInfoKHR, oldSwapchain));
+    GvkSwapchain* retired = swapchain_of(old);
+    if (retired) {
+        retired->retired = 1;
+        pc_broadcast(&g_gvk_api.sc_available);
+    }
     u32 slot = 0;
     while (slot < GVK_SWAPCHAINS && g_gvk_api.sc[slot].n) slot++;
-    if (slot == GVK_SWAPCHAINS) fatal("gvk: the game holds more than %d swapchains", GVK_SWAPCHAINS);
+    if (slot == GVK_SWAPCHAINS) {
+        pm_unlock(&g_gvk_api.lock);
+        ret_vk(c, VK_ERROR_OUT_OF_HOST_MEMORY);
+        return;
+    }
     GvkSwapchain* s = &g_gvk_api.sc[slot];
     *s = (GvkSwapchain){.n = want < 2               ? 2
                              : want > GVK_SC_IMAGES ? GVK_SC_IMAGES
@@ -2040,8 +2819,9 @@ static void gvk_CreateSwapchainKHR(CPU* RESTRICT c, u64 entry) {
         r = vkAllocateMemory(g_vk.dev, &ai, NULL, &s->mem[i]);
         if (r == VK_SUCCESS) r = vkBindImageMemory(g_vk.dev, s->img[i], s->mem[i], 0);
         if (r == VK_SUCCESS && f > 1) scaled_put(U(s->img[i]), w, h);
+        if (r == VK_SUCCESS && scale_factor() > 1) image_track(s->img[i], &ii, 0, 0);
     }
-    if (r == VK_SUCCESS) r = images_general(s->img, s->n);
+    if (r == VK_SUCCESS) r = images_general(s->img, s->n, VK_IMAGE_ASPECT_COLOR_BIT);
     if (r != VK_SUCCESS) {
         WARN("gvk: a swapchain of %u images of format %d, %ux%u, usage %#x, failed (%d)\n", s->n, (int)fmt, w, h, usage,
              (int)r);
@@ -2069,52 +2849,69 @@ static void gvk_GetSwapchainImagesKHR(CPU* RESTRICT c, u64 entry) {
     for (u32 i = 0; i < s->n; i++) img[i] = U(s->img[i]);
     ret_vk(c, put_list(c->x[2], c->x[3], img, s->n, sizeof *img));
 }
-/* The next image in turn that the game doesn't hold, once the game's pace lets it have it (vi's dequeue waits the
-   same), and once the display has let it go: the console's driver dequeues it from vi's buffer queue, which hands an
-   image back only when the present after it is displayed. The renderer copies the image as it presents it, so here
-   the display holds none, and the wait is for that present's display (two refreshes at most). Without it one game's
-   thread that draws and presents (it presents, then acquires) went straight on, and its emulator's other threads ran
-   on another schedule: the left channel of its music went silent for good in a third of the runs. Then the
-   semaphore and the fence, signaled after the work before on the queue, the renderer's copy of the image's last
-   present among it. With every image held, none comes: VK_NOT_READY, or VK_TIMEOUT for a wait */
+/* Reserve under the swapchain lock. Pacing and display waits run without the lock or guest core. */
 static void gvk_AcquireNextImageKHR(CPU* RESTRICT c, u64 entry) {
+    REQUIRE_OUT(c->x[5], 4);
+    u64 timeout = c->x[2], start = plat_ns();
+    u64 deadline = start + (timeout > (u64)INT64_MAX ? (u64)INT64_MAX : timeout);
+    if (timeout) kthread_host_wait_begin();
+    pm_lock(&g_gvk_api.lock);
     GvkSwapchain* s = swapchain_of(c->x[1]);
-    if (!s) {
-        ret_vk(c, VK_ERROR_SURFACE_LOST_KHR);
-        return;
+    VkResult r = VK_ERROR_OUT_OF_DATE_KHR;
+    u32 idx = 0;
+    u64 shown = 0;
+    while (s && !s->retired) {
+        u32 held = s->acquired | s->reserved;
+        u32 tries = 0;
+        idx = s->next;
+        while (tries < s->n && (held & (1u << idx))) {
+            idx = (idx + 1) % s->n;
+            tries++;
+        }
+        if (tries < s->n) {
+            s->reserved |= 1u << idx;
+            shown = s->shown[idx];
+            r = VK_SUCCESS;
+            break;
+        }
+        u64 now = plat_ns();
+        if (!timeout || now >= deadline) {
+            r = timeout ? VK_TIMEOUT : VK_NOT_READY;
+            break;
+        }
+        pc_wait(&g_gvk_api.sc_available, &g_gvk_api.lock, (i64)(deadline - now));
     }
-    u32 idx = s->next, tries = 0;
-    while (tries < s->n && (s->acquired >> idx & 1)) {
-        idx = (idx + 1) % s->n;
-        tries++;
+    pm_unlock(&g_gvk_api.lock);
+    if (r == VK_SUCCESS) {
+        if (timeout && !present_pace_until(1, -1, deadline)) r = VK_TIMEOUT;
+        if (r == VK_SUCCESS && shown && vk_display_frames() > shown && !vk_display_wait_frame(shown + 1, deadline))
+            r = timeout ? VK_TIMEOUT : VK_NOT_READY;
+        VkSemaphore sem = H(VkSemaphore, c->x[3]);
+        VkFence fence = H(VkFence, c->x[4]);
+        if (r == VK_SUCCESS && (sem || fence)) {
+            VkSubmitInfo si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .signalSemaphoreCount = sem ? 1 : 0,
+                               .pSignalSemaphores = &sem};
+            r = queue_submit(1, &si, fence);
+        }
+        pm_lock(&g_gvk_api.lock);
+        s->reserved &= ~(1u << idx);
+        if (r == VK_SUCCESS) {
+            s->acquired |= 1u << idx;
+            s->next = (idx + 1) % s->n;
+        } else {
+            pc_broadcast(&g_gvk_api.sc_available);
+        }
+        pm_unlock(&g_gvk_api.lock);
     }
-    if (tries == s->n) {
-        ret_vk(c, c->x[2] ? VK_TIMEOUT : VK_NOT_READY);
-        return;
-    }
-    kthread_host_wait_begin();
-    present_pace(1, -1);
-    if (s->shown[idx] && vk_display_frames() > s->shown[idx])
-        vk_display_wait_frame(s->shown[idx] + 1, plat_ns() + 2000000000ull / vi_refresh_hz());
-    kthread_host_wait_end();
-    s->acquired |= 1u << idx;
-    s->next = (idx + 1) % s->n;
-    VkSemaphore sem = H(VkSemaphore, c->x[3]);
-    VkFence fence = H(VkFence, c->x[4]);
-    VkResult r = VK_SUCCESS;
-    if (sem || fence) {
-        VkSubmitInfo si = {
-            .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .signalSemaphoreCount = sem ? 1 : 0, .pSignalSemaphores = &sem};
-        r = queue_submit(1, &si, fence);
-    }
-    if (c->x[5] && mem_user_mapped(c->x[5], 4)) gw32(c->x[5], idx);
+    if (timeout) kthread_host_wait_end();
+    if (r == VK_SUCCESS) gw32(c->x[5], idx);
     ret_vk(c, r);
 }
 /* the game's semaphores waited for on the queue, then each image shown (renderer.h present_image) */
 static void gvk_QueuePresentKHR(CPU* RESTRICT c, u64 entry) {
     gvk_scratch_reset();
     u64 pi = c->x[1];
-    if (!pi || !mem_user_mapped(pi, sizeof(VkPresentInfoKHR))) {
+    if (c->x[0] != U(g_vk.gfx) || !pi || !mem_user_mapped(pi, sizeof(VkPresentInfoKHR))) {
         ret_vk(c, VK_ERROR_INITIALIZATION_FAILED);
         return;
     }
@@ -2124,27 +2921,42 @@ static void gvk_QueuePresentKHR(CPU* RESTRICT c, u64 entry) {
     u64 chains = gr64(pi + offsetof(VkPresentInfoKHR, pSwapchains));
     u64 indices = gr64(pi + offsetof(VkPresentInfoKHR, pImageIndices));
     u64 results = gr64(pi + offsetof(VkPresentInfoKHR, pResults));
+    GUEST(semaphores, VkSemaphore, waits, nw);
+    GUEST(swapchains, u64, chains, nsc);
+    GUEST(image_indices, u32, indices, nsc);
+    if (results) {
+        REQUIRE_OUT(results, 4ull * nsc);
+    }
     VkResult r = VK_SUCCESS;
-    if (nw && mem_user_mapped(waits, 8ull * nw)) {
+    if (nw) {
         VkPipelineStageFlags* stages = gvk_scratch(sizeof *stages * nw);
         for (u32 i = 0; i < nw; i++) stages[i] = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
         VkSubmitInfo si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
                            .waitSemaphoreCount = nw,
-                           .pWaitSemaphores = gvk_ptr(waits),
+                           .pWaitSemaphores = semaphores,
                            .pWaitDstStageMask = stages};
         r = queue_submit(1, &si, VK_NULL_HANDLE);
+        if (r != VK_SUCCESS) {
+            ret_vk(c, r);
+            return;
+        }
     }
-    for (u32 i = 0; i < nsc && mem_user_mapped(chains + 8ull * i, 8) && mem_user_mapped(indices + 4ull * i, 4); i++) {
-        GvkSwapchain* s = swapchain_of(gr64(chains + 8ull * i));
-        u32 idx = gr32(indices + 4ull * i);
-        VkResult one = s && idx < s->n ? VK_SUCCESS : VK_ERROR_SURFACE_LOST_KHR;
+    for (u32 i = 0; i < nsc; i++) {
+        pm_lock(&g_gvk_api.lock);
+        GvkSwapchain* s = swapchain_of(swapchains[i]);
+        u32 idx = image_indices[i];
+        VkResult one = s && idx < s->n && (s->acquired & (1u << idx)) ? VK_SUCCESS : VK_ERROR_OUT_OF_DATE_KHR;
+        pm_unlock(&g_gvk_api.lock);
         if (one == VK_SUCCESS) {
             if (!g_gvk_api.presents++) LOG("gvk: the game's first present\n");
             present_image(U(s->img[idx]), (u32)s->fmt, s->w, s->h);
+            pm_lock(&g_gvk_api.lock);
             s->shown[idx] = vk_display_frames();
             s->acquired &= ~(1u << idx);
+            pc_broadcast(&g_gvk_api.sc_available);
+            pm_unlock(&g_gvk_api.lock);
         }
-        if (results && mem_user_mapped(results + 4ull * i, 4)) gw32(results + 4ull * i, (u32)one);
+        if (results) gw32(results + 4ull * i, (u32)one);
         if (one != VK_SUCCESS) r = one;
     }
     ret_vk(c, r);
@@ -2179,6 +2991,9 @@ static const struct {
     E(EnumerateDeviceLayerProperties),
     E(CreateInstance),
     AS(DestroyInstance, DestroyNothing),
+    E(CreateDebugReportCallbackEXT),
+    E(DestroyDebugReportCallbackEXT),
+    E(DebugReportMessageEXT),
     E(EnumeratePhysicalDevices),
     E(GetPhysicalDeviceProperties),
     E(GetPhysicalDeviceProperties2),

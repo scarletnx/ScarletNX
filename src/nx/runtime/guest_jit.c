@@ -12,6 +12,7 @@
 #include "nx/runtime/options.h"
 #include "nx/runtime/rtapi.h"
 #include "nx/gpu/nvn/nvn_loader.h"
+#include "nx/gpu/gvk/gvk.h"
 #include "nx/hle/hook/hook.h"
 #include "nx/memory/mem.h"
 #include "nx/runtime/platform/log.h"
@@ -497,7 +498,10 @@ void jit_code_invalidate(u64 addr, u64 size) {
     size_t i;
     if (!g_jit_images) return;
     if (lo & 3) lo = (lo + 3) & ~(u64)3;
-    for (at = lo; at < hi; at += 4) atomic_store_explicit(&g_disp[(at - g_code_lo) >> 2], NULL, memory_order_release);
+    int has_gvk = gvk_active();
+    for (at = lo; at < hi; at += 4)
+        atomic_store_explicit(&g_disp[(at - g_code_lo) >> 2], has_gvk ? gvk_invalidation_slot(at) : NULL,
+                              memory_order_release);
     if (g_jit) snx_jit_invalidate(g_jit, addr, size);
     pm_lock(&g_jit_synthetic_lock);
     for (i = 0; i < SNX_JIT_IMAGES; ++i) {

@@ -372,9 +372,8 @@ setting Guest Vulkan
     default 0
     startup
     words Off|On
-    help 1 = a game that links NVIDIA's Vulkan driver calls the Vulkan of this machine directly (gpu/gvk/gvk.c): its
-    help shaders, pipelines and command buffers go to the host's driver as they are. Experimental. 0 = the game's own
-    help driver runs, and its command buffers go through the Maxwell front end
+    help 1 = run supported 64-bit games' Vulkan calls on the host after compatibility fixes. Experimental.
+    help 0 = run the game's driver through the Maxwell front end. Requires a restart to change
 setting Apple video decode
     key apple_video
     only macos
@@ -2117,6 +2116,7 @@ setting @VK_EXT_map_memory_placed
 setting @VK_EXT_memory_budget
 setting @VK_EXT_memory_priority
 setting @VK_EXT_mesh_shader
+setting @VK_EXT_mutable_descriptor_type
 setting @VK_EXT_pageable_device_local_memory
 setting @VK_EXT_pipeline_creation_feedback
 setting @VK_EXT_pipeline_robustness
