@@ -79,6 +79,7 @@ static bool make_device(void) {
         .wideLines = have->wideLines,
         .samplerAnisotropy = have->samplerAnisotropy,
         .textureCompressionETC2 = have->textureCompressionETC2,
+        .textureCompressionBC = have->textureCompressionBC,
         .textureCompressionASTC_LDR = have->textureCompressionASTC_LDR,
         .imageCubeArray = have->imageCubeArray,
         .fragmentStoresAndAtomics = have->fragmentStoresAndAtomics,

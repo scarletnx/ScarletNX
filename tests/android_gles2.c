@@ -217,6 +217,16 @@ static void textures(void) {
     GL("glTexSubImage2D", GL_TEXTURE_2D, 0, 0, 1, 1, 1, GL_LUMINANCE, GL_UNSIGNED_BYTE, P(&one));
     GL("glDrawArrays", GL_TRIANGLE_STRIP, 0, 4);
     expect(8, H - 8, 250, 250, 250, 255, "sub image");
+    /* a BCn texture, which a desktop device samples: one red BC1 block */
+    static const unsigned char bc1[8] = {0x00, 0xf8, 0x00, 0xf8, 0, 0, 0, 0};
+    uint32_t c = 0;
+    GL("glGenTextures", 1, P(&c));
+    GL("glBindTexture", GL_TEXTURE_2D, c);
+    GL("glTexParameteri", GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    GL("glCompressedTexImage2D", GL_TEXTURE_2D, 0, 0x83f1, 4, 4, 0, 8, P(bc1)); /* GL_COMPRESSED_RGBA_S3TC_DXT1_EXT */
+    GL("glDrawArrays", GL_TRIANGLE_STRIP, 0, 4);
+    no_error("bc1");
+    expect(W / 2, H / 2, 255, 0, 0, 255, "bc1 texel");
     GL("glActiveTexture", GL_TEXTURE0);
 }
 
