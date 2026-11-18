@@ -95,14 +95,16 @@ typedef struct {
    minutes on one nearly full: the recording thread, which read the hits itself, sat 184 s in one read in a race, its
    ring filled, and the GPU thread drew nothing all that while (#2487). The reads run on a thread of their own, in the
    order they were asked, each into a buffer of its own, never straight into staging: a read that comes back after its
-   frame would write over a ring handed out again. The recording thread takes a read that is done, and waits
-   BC7_IO_WAIT_NS at most for one that is not: then it leaves it (IO_LATE), its copy left out, and its texture loads
-   again, encoded (vk_bc7_cache_take_failed), the record kept. It waits for no other until the I/O thread has caught
-   up: waiting for each in turn, a disk at 200 ms a read would hold it 20 s over a hundred queued. Meanwhile, and while a read
-   runs past BC7_IO_LATE_NS, the GPU thread queues none (vk_bc7_cache_read_later answers 0, and the level is encoded
-   at once). The thread reads ahead of the recording thread by BC7_IO_AHEAD bytes at most */
+   frame would write over a ring handed out again. The recording thread takes a read that is done, and waits for one
+   that is not while the disk answers: it leaves it (IO_LATE) once the read the I/O thread is on has run
+   BC7_IO_LATE_NS, its copy left out, and its texture loads again, encoded (vk_bc7_cache_take_failed), the record
+   kept. However long the read it wants takes while the disk answers: at a race's loads, reads off a busy disk that
+   answered took 55 ms, and a bound of 50 ms on each left 15,000 of them to be encoded again. Once it left one, it
+   waits for no other until the I/O thread has caught up.
+   Meanwhile, and while a read runs past BC7_IO_LATE_NS, the GPU thread queues none (vk_bc7_cache_read_later answers
+   0, and the level is encoded at once). The thread reads ahead of the recording thread by BC7_IO_AHEAD bytes at
+   most */
 #define BC7_IO_OPS     1024u
-#define BC7_IO_WAIT_NS 50000000ull  /* a read of a level's blocks takes a few ms off a disk that answers */
 #define BC7_IO_LATE_NS 250000000ull /* a read running this long is a held disk's: none more is queued, and it is said */
 #define BC7_IO_AHEAD   (64ull << 20)
 #define BC7_IO_CLOSE_NS 5000000000ull /* a close waits this long for the writes queued */
@@ -572,8 +574,8 @@ int vk_bc7_cache_read(const u64 key[2], u8* dst, u64 size) {
     if (!bc7_writes_ok()) return 0;
     Bc7Entry* e = bc7_entry(key, size);
     if (!e) return 0;
-    /* through the I/O thread when it runs, after the writes queued: waited for BC7_IO_WAIT_NS at most, as the recording
-       thread waits, the level encoded when it is late */
+    /* through the I/O thread when it runs, after the writes queued: waited for as the recording thread waits, the
+       level encoded when it is late */
     if (g_bc7_cache.io.started > 0 && atomic_load_explicit(&g_bc7_cache.rd.f, memory_order_acquire)) {
         u64 n;
         if (!io_queue_read(key, e->at, size, &n)) return 0;
@@ -779,9 +781,9 @@ static int io_idle_by(u64 until) {
         pc_wait(&io->done, &io->m, (int64_t)(until - now));
     }
 }
-/* the recording thread: op's read once it is done, IO_OK, IO_BAD or IO_FAIL; IO_LATE when it left it, after
-   BC7_IO_WAIT_NS, or at once while the I/O thread is behind a read left before. An IO_OK's bytes stop counting
-   ahead */
+/* the recording thread: op's read once it is done, IO_OK, IO_BAD or IO_FAIL; IO_LATE when it left it, once the read
+   the I/O thread is on has run BC7_IO_LATE_NS (or BC7_IO_LATE_NS after it came with the thread on none), or at once
+   while the thread is behind a read left before. An IO_OK's bytes stop counting ahead */
 static u32 io_take(Bc7Op* op) {
     Bc7Io* io = &g_bc7_cache.io;
     const u64 came = plat_ns();
@@ -796,9 +798,10 @@ static u32 io_take(Bc7Op* op) {
             pm_unlock(&io->m);
             return s;
         }
-        const u64 now = plat_ns();
-        if (!io->late && now - came < BC7_IO_WAIT_NS) {
-            pc_wait(&io->done, &io->m, (int64_t)(BC7_IO_WAIT_NS - (now - came)));
+        const u64 now = plat_ns(), since = atomic_load_explicit(&io->since, memory_order_acquire);
+        const u64 from = since ? since : came; /* the read running, or (none) this wait's start */
+        if (!io->late && now - from < BC7_IO_LATE_NS) {
+            pc_wait(&io->done, &io->m, (int64_t)(BC7_IO_LATE_NS - (now - from)));
             continue;
         }
         if (atomic_compare_exchange_strong_explicit(&op->state, &s, IO_LATE, memory_order_acq_rel,
