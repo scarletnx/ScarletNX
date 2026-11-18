@@ -1416,8 +1416,8 @@ static void fail(u64 lo, u64 hi, const char* why) {
     g_uma.fail[old] = (Fail){lo, hi, g_vk_present};
     pm_unlock(&g_uma.lk);
 }
-/* whether guest memory [lo, hi) can be imported: mapped, and in the migrate way the guest's data on the reservation's
-   own pages, which can move. No page a trap holds (memory/own.c): a driver may read an import's pages on the CPU from
+/* whether guest memory [lo, hi) can be imported: mapped, and in the migrate way the guest's data that can move (on
+   the reservation's own pages, or pool pages no other address maps: mem_movable). No page a trap holds (memory/own.c): a driver may read an import's pages on the CPU from
    this thread, which holds vk_lock and so can't have them landed (PanVK on a Mali phone read one up to its trapped
    page, #1875), and amdgpu fails a submission over one */
 static int imp_can(u64 lo, u64 hi) {
@@ -2251,7 +2251,8 @@ static int quiesce(u64 cpu, u64 size) {
 /* Guest memory [cpu, cpu + size) becomes GPU-owned next (vk_own_publish), its pages trapped: the imports over them
    go from the driver first, after their readers ran, as amdgpu fails a later submission (EFAULT) on trapped pages.
    Whole host pages, as own_begin traps them. A region stays: the trap moves its pages into the pool, and it goes
-   then (pages_replaced) */
+   then (pages_replaced). The pages stay pool pages once the owner lets go, and the next read makes a region of them
+   again (mem_migrate takes pool pages that no other address maps) */
 void vk_uma_owning(u64 cpu, u64 size) {
     u64 page = plat_vm_page(), lo = cpu & ~(page - 1), hi = (cpu + size + page - 1) & ~(page - 1);
     if (!vk_uma()) return;

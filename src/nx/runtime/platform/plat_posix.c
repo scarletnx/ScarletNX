@@ -1189,8 +1189,8 @@ int plat_vm_share(u8* p, int fd, u64 size) {
         r = mmap(p, (size_t)size, PROT_READ | PROT_WRITE | g_vm_exec, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0) ==
                     MAP_FAILED
                 ? -2
-                : -1;
-        if (r == -1) memcpy(p, view, (size_t)size);
+                : -3;
+        if (r == -3) memcpy(p, view, (size_t)size);
     }
     wp_let(p, size, WP_MAPPED, 1);
     munmap(view, (size_t)size);

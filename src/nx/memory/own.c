@@ -1171,9 +1171,13 @@ void own_unwatch(u64 addr, u64 size) {
 int own_trapped(u64 addr, u64 size) {
     u64 lo = addr & ~(g_own.page - 1), hi = (addr + size + g_own.page - 1) & ~(g_own.page - 1);
     int any;
-    if (!size || !own_any() || !region_owned(lo, hi)) return 0;
+    if (!size) return 0;
+    /* a landing in two steps: its entries go before its traps do (let_go), so its pages count until its inflight
+       entry goes. A move of them meanwhile (mem_migrate) would map other pages over a trap */
+    int inflight = __atomic_load_n(&g_own.ninflight, __ATOMIC_ACQUIRE) != 0;
+    if (!inflight && (!own_any() || !region_owned(lo, hi))) return 0;
     pm_lock(&g_own.lk);
-    any = owned_nl(lo, hi);
+    any = owned_nl(lo, hi) || inflight_nl(lo, hi);
     pm_unlock(&g_own.lk);
     return any;
 }
