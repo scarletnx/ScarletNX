@@ -492,9 +492,19 @@ setting BC7 queue
     default 0
     startup
     words Auto|#
-    help The thousands of blocks the BC7 encoder may have queued on the GPU before an upload waits for it to do them.
-    help 0 = by the GPU's own memory: 256 for every 2 GB of it, from 256 to 4096, and 256 on a GPU that shares the
-    help computer's memory (a GT 1030, 2 GB, lost the device with more queued). 1 to 16384 = that many thousand
+    help The thousands of blocks the BC7 encoder may have queued on the GPU. An upload submits at each half of them
+    help and waits for the half before. 0 = by the GPU's own memory: 256 for every 2 GB of it, from 256 to 4096, and
+    help 256 on a GPU that shares the computer's memory (a GT 1030, 2 GB, lost the device with more queued). 1 to
+    help 16384 = that many thousand
+setting ASTC compute queue
+    key astc_compute_queue
+    int 0 1
+    default 1
+    startup
+    words Off|On
+    help On = a new ASTC texture is decoded and encoded on the GPU's compute queue, where it has one of its own,
+    help beside the drawing, and a load waits only for those encodes. Off = on the graphics queue, after the drawing
+    help before it. The textures are the same either way
 setting ASTC quick Mtexels
     label Very large ASTC textures from (megatexels)
     key astc_quick_mtexels

@@ -311,6 +311,7 @@ typedef struct {
     u64 lsz;
     u32 rowb, th, lbh, lbd, gobs_x;
     int layers;
+    int stream; /* recorded for the ASTC stream on the compute queue (vk_astc_stream_fits): copied by the CPU alone */
 } LevelSource;
 /* The part of an ASTC level's BC7 key (vk_bc7_level_key) that its guest bytes make: the words that lay its blocks out
    in guest memory, and those bytes as the CPU has them, of each of nlayers layers. 0 when the GPU holds any byte on
@@ -346,20 +347,66 @@ static VkCommandBuffer upload_cb(Surf* t, VkCommandBuffer cb) {
 }
 /* block linear blocks staged as they are and deswizzled on the GPU into the scratch buffer; pitch linear ones staged
    a row at a time */
+/* guest [gva, gva + size) into p by the CPU, unmapped pages as zeros: the ASTC stream's, whose texture's bytes are all
+   the CPU's (astc_stream_guest), so nothing of the graphics queue's writes them */
+static void guest_copy(u64 gva, u64 size, u8* p) {
+    for (u64 o = 0; o < size;) {
+        u64 cpu = 0, n = gmmu_run(gva + o, size - o, &cpu);
+        if (!n) {
+            n = 0x1000 - ((gva + o) & 0xFFF);
+            if (n > size - o) n = size - o;
+            memset(p + o, 0, (size_t)n);
+        } else
+            memcpy(p + o, GP(cpu), (size_t)n);
+        o += n;
+    }
+}
+/* stage_bl's for the ASTC stream: the bytes copied into staging by the CPU, none read in place, as what is in place is
+   the graphics queue's (the GPU's mirror, its results). The stream ring's, as vk_stage_guest_input takes the CPU's
+   bytes: a chunk comes back once the graphics submission it was taken for is done, which waits for the stream. The
+   frame's ring held a load's whole input until the frame slot came back */
+static int stage_bl_cpu(const VkBlMove* m, u64 gva, u64 lsz, VkBlSrc* s) {
+    u64 lo, hi;
+    vk_bl_range(m, &lo, &hi);
+    u64 n = lo >= lsz ? 0 : hi <= lsz ? hi - lo : lsz - lo;
+    *s = (VkBlSrc){0};
+    u8* p = vk_stream_upload(hi - lo, vk_stage_align(), &s->buf, &s->at);
+    if (!p) return 0;
+    guest_copy(gva + lo, n, p);
+    memset(p + n, 0, hi - lo - n);
+    return 1;
+}
+/* What the ASTC stream reads of t's guest memory is the CPU's alone: no result of the GPU's pending over it, no release
+   queued, no in-place write, no page the GPU owns. Then it copies the bytes by the CPU (guest_copy), and nothing the
+   graphics queue records reads or writes them. The checks land nothing: a texture with results over it goes to the
+   graphics queue, which copies them on the GPU (vk_guest_read), as a landing here could wait for the GPU in a draw's
+   setup */
+static int astc_stream_guest(const Surf* t) {
+    if (g_renderer->mem_pending(t->gva, t->size) || vk_release_pending(t->gva, t->size) ||
+        vk_buf_pending(t->gva, t->size) || vk_uma_pending(t->gva, t->size))
+        return 0;
+    for (u64 o = 0; o < t->size;) {
+        u64 cpu = 0, n = gmmu_run(t->gva + o, t->size - o, &cpu);
+        if (!n || (own_any() && own_trapped(cpu, n))) return 0;
+        o += n;
+    }
+    return 1;
+}
 static int astc_rows(void* ctx, VkCommandBuffer* pcb, u32 z, u32 nz, u32 y, u32 n, VkBuffer* buf, u64* off) {
     LevelSource* l = ctx;
+    int (*stage)(const VkBlMove*, u64, u64, VkBlSrc*) = l->stream ? stage_bl_cpu : stage_bl;
+    VkBuffer (*scratch)(u64, u64*) = l->stream ? vk_astc_stream_bl : vk_bl_scratch;
     /* each layer's level a block linear surface of its own: a move each, into the buffer one after another */
     if (l->t->bl && l->layers) {
         VkBlMove m = {l->rowb, l->th, l->lbh, l->lbd, y, n, 0, 1, l->rowb, l->gobs_x};
         u64 cap, slice = (u64)l->rowb * n;
         VkBlSrc* staged = malloc(nz * sizeof *staged);
-        *buf = vk_bl_scratch(slice * nz, &cap);
+        *buf = scratch(slice * nz, &cap);
         *off = 0;
         int ok = staged && *buf;
-        for (u32 k = 0; ok && k < nz; k++)
-            ok = stage_bl(&m, l->gva + (u64)(z + k) * l->t->layer_size, l->lsz, &staged[k]);
+        for (u32 k = 0; ok && k < nz; k++) ok = stage(&m, l->gva + (u64)(z + k) * l->t->layer_size, l->lsz, &staged[k]);
         if (ok) {
-            VkCommandBuffer cb = *pcb = upload_cb(l->t, *pcb);
+            VkCommandBuffer cb = *pcb = l->stream ? vk_astc_stream_cmd() : upload_cb(l->t, *pcb);
             vk_bl_barrier(cb, 1);
             for (u32 k = 0; ok && k < nz; k++) ok = vk_bl_move_src(cb, &m, &staged[k], *buf, k * slice);
             vk_bl_barrier(cb, 0);
@@ -371,10 +418,10 @@ static int astc_rows(void* ctx, VkCommandBuffer* pcb, u32 z, u32 nz, u32 y, u32 
         VkBlMove m = {l->rowb, l->th, l->lbh, l->lbd, y, n, z, nz, l->rowb, l->gobs_x}; /* 16 byte blocks: whole runs */
         VkBlSrc staged;
         u64 cap;
-        *buf = vk_bl_scratch((u64)l->rowb * n * nz, &cap);
+        *buf = scratch((u64)l->rowb * n * nz, &cap);
         *off = 0;
-        if (!*buf || !stage_bl(&m, l->gva, l->lsz, &staged)) return 0;
-        VkCommandBuffer cb = *pcb = upload_cb(l->t, *pcb);
+        if (!*buf || !stage(&m, l->gva, l->lsz, &staged)) return 0;
+        VkCommandBuffer cb = *pcb = l->stream ? vk_astc_stream_cmd() : upload_cb(l->t, *pcb);
         vk_bl_barrier(cb, 1);
         int ok = vk_bl_move_src(cb, &m, &staged, *buf, 0);
         vk_bl_barrier(cb, 0);
@@ -384,15 +431,19 @@ static int astc_rows(void* ctx, VkCommandBuffer* pcb, u32 z, u32 nz, u32 y, u32 
     u64 stride = l->layers ? l->t->layer_size : (u64)l->th * l->t->pitch;
     u64 first = (u64)z * stride + (u64)y * l->t->pitch;
     u64 end = (u64)(z + nz - 1) * stride + (u64)(y + n - 1) * l->t->pitch + l->rowb;
-    u8* p = vk_stage_guest_input(l->gva + first, end - first, (u64)l->rowb * n * nz, buf, off);
+    u8* p = l->stream ? vk_stream_upload((u64)l->rowb * n * nz, vk_stage_align(), buf, off)
+                      : vk_stage_guest_input(l->gva + first, end - first, (u64)l->rowb * n * nz, buf, off);
     if (!p) return 0;
     for (u32 k = 0; k < nz; k++)
         for (u32 r = 0; r < n; r++) {
             u64 at = (u64)(z + k) * stride + (u64)(y + r) * l->t->pitch;
             u64 to = ((u64)k * n + r) * l->rowb;
-            vk_guest_read(l->gva + at, l->rowb, p + to, *buf, *off + to);
+            if (l->stream)
+                guest_copy(l->gva + at, l->rowb, p + to);
+            else
+                vk_guest_read(l->gva + at, l->rowb, p + to, *buf, *off + to);
         }
-    *pcb = upload_cb(l->t, *pcb);
+    *pcb = l->stream ? vk_astc_stream_cmd() : upload_cb(l->t, *pcb);
     return 1;
 }
 
@@ -1120,6 +1171,9 @@ static void tex_info(const Surf* t, VkFormat fmt, VkImageCreateInfo* ii, VkViewF
                                        VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
                                        (t->msaa ? VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT : 0),
                               .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
+    /* an ASTC texture's: the ASTC stream on the compute queue loads it (astc.c) */
+    if (t->f.conv == VKC_ASTC && !t->msaa)
+        vk_both_queues(&ii->sharingMode, &ii->queueFamilyIndexCount, &ii->pQueueFamilyIndices);
     vkGetPhysicalDeviceFormatProperties(g_vk.phys, fmt, &fp);
     *storage = !t->msaa && (fp.optimalTilingFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT);
     if (*storage) ii->usage |= VK_IMAGE_USAGE_STORAGE_BIT;
@@ -2110,6 +2164,8 @@ static int tex_upload_(Surf* t) {
         atomic_fetch_add_explicit(&g_tex_upload_bytes, t->size, memory_order_relaxed);
     /* loaded before: not its first load */
     const int loaded = t->wgen != 0;
+    /* blocks it kept before this upload: the graphics queue may still read them (a kind read, a BC7 encode) */
+    const int kept_before = t->bc7.kept != VK_NULL_HANDLE;
     if (t->upload_valid || !t->bc7_wrote) later_wrote(t); /* the first load, or a write: not a failed one tried again */
     t->upload_valid = 0;
     t->wgen = vk_surf_gen(); /* even a new texture at a reused address invalidates an old target's copy */
@@ -2136,9 +2192,11 @@ static int tex_upload_(Surf* t) {
     t->bc7.keyed = 0; /* the BC7 cache's keys of the bytes loaded now, below */
     /* a sparse texture: the levels guest memory maps get memory first, and only they are copied */
     int bound = !t->sparse || tex_bind(t) >= 0;
+    /* a new ASTC texture whose bytes are the CPU's: decoded and encoded on the compute queue (vk.h's ASTC stream) */
+    const int stream = !kept_before && vk_astc_stream_fits(t) && astc_stream_guest(t);
     VkCommandBuffer cb = vk_cmd();
-    vk_surf_use(cb, t, VK_LAYOUT(TRANSFER_DST_OPTIMAL), VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
-                VK_ACCESS_2_TRANSFER_WRITE_BIT);
+    vk_surf_use(stream ? vk_astc_stream_cmd() : cb, t, VK_LAYOUT(TRANSFER_DST_OPTIMAL),
+                VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
     int is3d = t->type == VK_IMAGE_VIEW_TYPE_3D;
     u32 layers = t->layers, d3 = is3d ? t->depth3d : 1;
     /* a strip's scratch rows keep the buffer that big (vk_bl_scratch): VK_PART_SHARE of the cap at most */
@@ -2166,7 +2224,7 @@ static int tex_upload_(Surf* t) {
                 continue;
             }
             if (f->conv == VKC_ASTC) { /* decoded on the GPU from its block rows, deswizzled on the GPU */
-                LevelSource ls = {t, t->gva + at, lsz, rowb, th, lbh, lbd, gobs_x, astc_layers};
+                LevelSource ls = {t, t->gva + at, lsz, rowb, th, lbh, lbd, gobs_x, astc_layers, stream};
                 /* the BC7 cache's key of a level held as BC7, straight (vk_astc_upload takes it) or between frames
                    (kept for the encoder there), hashed before the upload stages the same bytes. Not a sparse
                    texture's, which memory maps not whole. A very large level straight to BC7 goes into the cache in
@@ -2186,10 +2244,12 @@ static int tex_upload_(Surf* t) {
                 }
                 const u64* key_content = keyed && straight ? content : NULL;
                 complete = up_flush(&u); /* after the hash, which can submit: the batch's buffer is the one recording */
+                /* the stream's command buffer again: the hash's landing can submit, which submits the stream's */
+                VkCommandBuffer acb = stream ? vk_astc_stream_cmd() : u.cb;
                 complete =
                     complete &&
-                    (astc_layers ? vk_astc_upload_layers(u.cb, t, lw, lh, l, 0, layers, astc_rows, &ls, key_content)
-                                 : vk_astc_upload(u.cb, t, 0, 0, lw, lh, ld, l, layer, astc_rows, &ls, key_content));
+                    (astc_layers ? vk_astc_upload_layers(acb, t, lw, lh, l, 0, layers, astc_rows, &ls, key_content)
+                                 : vk_astc_upload(acb, t, 0, 0, lw, lh, ld, l, layer, astc_rows, &ls, key_content));
                 u.scratch = VK_NULL_HANDLE; /* astc_rows may have grown the scratch buffer: asked for again */
                 u.cap = 0;
             } else {

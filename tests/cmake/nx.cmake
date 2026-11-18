@@ -523,6 +523,13 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
     # the BCn to ASTC transcoder alone with packed dot products, which a device runs where it says it has an instruction
     # for them (lavapipe says not, and has them): every vendor's builds of its later passes that take them
     add_test(NAME astc_vulkan_encode_dot COMMAND snx-test-astc-vulkan --astc-encode)
+    # every comparison again with the uploads on the ASTC stream, the compute queue's (gpu/vk/astc.c), where the device
+    # has a second queue for compute: its images and staging shared by both queues, the graphics submissions waiting
+    # for it
+    add_test(NAME astc_vulkan_stream COMMAND snx-test-astc-vulkan --stream)
+    # and under a 4 MiB allocation cap, where the images in pieces stay on the graphics queue
+    add_test(NAME astc_vulkan_stream_pieces COMMAND snx-test-astc-vulkan --stream --vk_max_allocation_mb=4)
+    set_tests_properties(astc_vulkan_stream astc_vulkan_stream_pieces PROPERTIES TIMEOUT 300 SKIP_RETURN_CODE 77)
     set_tests_properties(astc_vulkan_encode_dot PROPERTIES TIMEOUT 120 ENVIRONMENT "SNX_TEST_BC7_DOT=1"
         SKIP_RETURN_CODE 77 PASS_REGULAR_EXPRESSION "BC7 encoder: packed dot products.*by each vendor's encoder")
     # the same under the validation layer's synchronization checks, whose hazards a driver that runs commands
