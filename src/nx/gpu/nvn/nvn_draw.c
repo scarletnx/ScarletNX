@@ -286,13 +286,12 @@ static int target_formats_differ(const DsTargets* t, const DsTargets* u) {
 }
 /* a render target from a texture snapshot and its view, as the 3D engine's registers describe one: a multisampled
    texture's size in samples, its sample layout in *msaa (the texture header's, nvn_tic.c) */
-static int target(u64 snapshot, const NvnView* v, int has_view, DsSurf* s, int* depth, u32* msaa, u32* discard_width) {
+static int target_of(const NvnTexture* tex, const NvnView* v, int has_view, DsSurf* s, int* depth, u32* msaa,
+                     u32* discard_width) {
     memset(s, 0, sizeof *s); /* every byte: the targets are compared as bytes (keep) */
     *msaa = DS_MSAA_1X1;
     if (discard_width) *discard_width = 0;
-    if (!snapshot) return 0;
-    NvnTexture t = {0}; /* past the snapshot's bytes */
-    memcpy(&t, GP(snapshot), NVN_TEX_SNAP);
+    NvnTexture t = *tex;
     if (t.magic != NVN_MAGIC('T', 'E', 'X', 0) || !t.gpu) return 0;
     u32 format = has_view && (v->set & NVN_VIEW_FORMAT) ? v->format : t.d.format;
     s->format = nvn_rt_format(format, depth);
@@ -376,8 +375,22 @@ static int target(u64 snapshot, const NvnView* v, int has_view, DsSurf* s, int* 
     }
     return 1;
 }
+static int target(u64 snapshot, const NvnView* v, int has_view, DsSurf* s, int* depth, u32* msaa, u32* discard_width) {
+    NvnTexture t = {0}; /* past the snapshot's bytes */
+    if (!snapshot) {
+        memset(s, 0, sizeof *s);
+        *msaa = DS_MSAA_1X1;
+        if (discard_width) *discard_width = 0;
+        return 0;
+    }
+    memcpy(&t, GP(snapshot), NVN_TEX_SNAP);
+    return target_of(&t, v, has_view, s, depth, msaa, discard_width);
+}
 int nvn_draw_surface(u64 snapshot, const NvnView* v, DsSurf* s, int* depth, u32* msaa) {
     return target(snapshot, v, v != NULL, s, depth, msaa, NULL);
+}
+int nvn_draw_surface_of(const NvnTexture* t, const NvnView* v, DsSurf* s, int* depth, u32* msaa) {
+    return target_of(t, v, v != NULL, s, depth, msaa, NULL);
 }
 static void set_targets(NvnDraw* d, u64 payload) {
     NvnPSetRT r;

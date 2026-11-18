@@ -96,6 +96,13 @@ hook _glFinish() = gl_finish
 
 family draw
 hook _glClear(u32 mask) = gl_clear
+hook _glDrawArrays(u32 mode, i32 first, i32 count) = gl_draw_arrays
+hook _glDrawArraysInstanced(u32 mode, i32 first, i32 count, i32 instances) = gl_draw_arrays_instanced
+hook _glDrawElements(u32 mode, i32 count, u32 type, addr indices) = gl_draw_elements
+hook _glDrawRangeElements(u32 mode, u32 start, u32 end, i32 count, u32 type, addr indices) = gl_draw_range_elements
+hook _glDrawElementsBaseVertex(u32 mode, i32 count, u32 type, addr indices, i32 base) = gl_draw_elements_base_vertex
+hook _glDrawElementsInstanced(u32 mode, i32 count, u32 type, addr indices, i32 instances) = gl_draw_elements_instanced
+hook _glDrawElementsInstancedBaseVertex(u32 mode, i32 count, u32 type, addr indices, i32 instances, i32 base) = gl_draw_elements_instanced_base_vertex
 
 family program
 hook _glCreateShader(u32 type) -> u32 = gl_create_shader

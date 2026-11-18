@@ -15,11 +15,14 @@
    it read back, and a framebuffer complete once that texture is attached; the point size and polygon mode set; a
    fence signaled at once; a GL and an EGL function without a handler stopping the game, the message naming the function and
    gl_layer's value */
+#include "common/gpu/gl/gl_framebuffer.h"
+#include "common/gpu/gl/gl_object.h"
 #include "common/gpu/gl/gl_state.h"
 #include "common/gpu/gl/gl_texture.h"
 #include "common/platform/thread.h"
 #include "nx/gpu/gl/gl_layer.h"
 #include "nx/gpu/nvn/nvn_tex.h"
+#include "nx/gpu/nvn/nvn_tic.h"
 #include "nx/gpu/renderer.h"
 #include "nx/hle/hook/hook.h"
 #include "nx/memory/mem.h"
@@ -40,7 +43,7 @@
 #define NAMES   0x40000u  /* the driver's string table */
 #define SCRATCH 0x50000u  /* where the game keeps its arguments */
 #define HEAP    0x100000u /* kmem_alloc's */
-#define GUEST   (48u << 20)
+#define GUEST   (128u << 20) /* two window surfaces with their depth, the draws' 16 MiB ring */
 
 static _Atomic GuestFn slots[(END - MAIN) / 4];
 static u8 guest[GUEST];
@@ -71,8 +74,12 @@ static const char* const exports[] = {"eglGetDisplay",
                                       "_glGetString",
                                       "_glGetIntegerv",
                                       "_glEnable",
+                                      "_glDisable",
                                       "_glScissor",
                                       "_glDrawArrays",
+                                      "_glDrawElements",
+                                      "_glDispatchCompute",
+                                      "_glActiveTexture",
                                       "eglQuerySurface",
                                       "eglDestroySurface",
                                       "_glCreateShader",
@@ -101,6 +108,7 @@ static const char* const exports[] = {"eglGetDisplay",
                                       "_glBufferData",
                                       "_glVertexAttribPointer",
                                       "_glEnableVertexAttribArray",
+                                      "_glDisableVertexAttribArray",
                                       "_glGetVertexAttribiv",
                                       "_glGenTextures",
                                       "_glBindTexture",
@@ -112,6 +120,10 @@ static const char* const exports[] = {"eglGetDisplay",
                                       "_glBindFramebuffer",
                                       "_glFramebufferTexture2D",
                                       "_glCheckFramebufferStatus",
+                                      "_glGenRenderbuffers",
+                                      "_glBindRenderbuffer",
+                                      "_glRenderbufferStorage",
+                                      "_glFramebufferRenderbuffer",
                                       "_glPointSize",
                                       "_glPolygonMode",
                                       "_glFenceSync",
@@ -158,7 +170,32 @@ u64 gmmu_space_alloc(u64 size, u64 align) {
     g_gpu_next += (size + 0xffff) & ~0xffffull;
     return a;
 }
-void gmmu_space_map(u64 gva, u64 cpu, u64 size) { (void)gva, (void)cpu, (void)size; }
+static struct {
+    u64 gva, cpu, size;
+} g_maps[256];
+static unsigned g_nmaps;
+void gmmu_space_map(u64 gva, u64 cpu, u64 size) {
+    assert(g_nmaps < 256);
+    g_maps[g_nmaps].gva = gva, g_maps[g_nmaps].cpu = cpu, g_maps[g_nmaps++].size = size;
+}
+/* the guest bytes a GPU address maps to */
+static const u8* gpu_bytes(u64 gva) {
+    for (unsigned i = 0; i < g_nmaps; i++)
+        if (gva >= g_maps[i].gva && gva < g_maps[i].gva + g_maps[i].size)
+            return GP(g_maps[i].cpu + gva - g_maps[i].gva);
+    fprintf(stderr, "gl_layer: GPU address %llx is mapped nowhere\n", (unsigned long long)gva);
+    exit(1);
+}
+static u64 gpu_cpu(u64 gva) { return (u64)(gpu_bytes(gva) - guest); }
+/* nvn_draw.c's render target of an NVN texture: its GPU address and size, the view asked for kept */
+static NvnView g_surface_view;
+int nvn_draw_surface_of(const NvnTexture* t, const NvnView* v, DsSurf* s, int* depth, u32* msaa) {
+    memset(s, 0, sizeof *s);
+    g_surface_view = v ? *v : (NvnView){0};
+    s->gva = t->gpu, s->width = t->d.width, s->height = t->d.height, s->format = t->d.format, s->layers = 1;
+    *depth = t->d.format == NVN_FORMAT_DEPTH24_STENCIL8, *msaa = DS_MSAA_1X1;
+    return t->gpu != 0;
+}
 /* nvn_copy.c's upload into an NVN-laid-out texture, on the GPU thread: what the layer asked for, the bytes kept */
 static struct {
     NvnTexture t;
@@ -200,7 +237,32 @@ static void present_buffer(u64 cpu_addr, u32 w, u32 h, u32 pitch, u32 layout, u3
     shown.count++, shown.addr = cpu_addr, shown.w = w, shown.h = h, shown.pitch = pitch, shown.layout = layout;
     shown.fmt = fmt;
 }
-static Renderer renderer = {.present_buffer = present_buffer};
+/* the renderer's draws, clears and host programs: the last state, call and clears, each program's stage and description */
+static struct {
+    unsigned draws, nclear, programs;
+    DsState ds;
+    DrawCall call;
+    DrawClear clear[8];
+    int stage[8];
+    ShaderInfo si[8];
+} g_drawn;
+static void drawn(const DsState* ds, const DrawCall* dc, DrawOwner* o) {
+    (void)o;
+    g_drawn.draws++, g_drawn.ds = *ds, g_drawn.call = *dc;
+}
+static void cleared(const DsState* ds, const DrawClear* c, const DrawOwner* o) {
+    (void)o;
+    g_drawn.ds = *ds;
+    assert(g_drawn.nclear < 8);
+    g_drawn.clear[g_drawn.nclear++] = *c;
+}
+static u32 host_program(int stage, const u32* spirv, size_t words, const ShaderInfo* si) {
+    assert(g_drawn.programs < 8 && words > 5 && spirv[0] == 0x07230203u);
+    g_drawn.stage[g_drawn.programs] = stage, g_drawn.si[g_drawn.programs] = *si;
+    return 100 + g_drawn.programs++;
+}
+static Renderer renderer = {
+    .present_buffer = present_buffer, .draw = drawn, .clear = cleared, .host_program = host_program};
 const Renderer* g_renderer = &renderer;
 int g_renderer_up = 1;
 /* the log's last line */
@@ -267,8 +329,25 @@ static u64 put_ints(u64 where, const i32* v, int n) {
     for (int i = 0; i < n; i++) gw32(where + 4 * (u64)i, (u32)v[i]);
     return where;
 }
-static const u8* pixel(u64 image, u32 w, u32 h, u32 x, u32 y_from_bottom) {
-    return GP(image + ((u64)(h - 1 - y_from_bottom) * w + x) * 4);
+/* a program of a vertex and a fragment shader's text, compiled and linked through the slots: its name */
+static u64 program(const char* vs, const char* fs) {
+    const u64 text = SCRATCH + 0x4000, strings = SCRATCH + 0x4f00, status = SCRATCH + 0x4f10;
+    u64 prog = call("_glCreateProgram", 0, 0, 0, 0, 0);
+    for (int i = 0; i < 2; i++) {
+        const char* src = i ? fs : vs;
+        u64 sh = call("_glCreateShader", i ? 0x8b30 : 0x8b31, 0, 0, 0, 0);
+        memcpy(GP(text), src, strlen(src) + 1);
+        gw64(strings, text);
+        call("_glShaderSource", sh, 1, strings, 0, 0);
+        call("_glCompileShader", sh, 0, 0, 0, 0);
+        call("_glGetShaderiv", sh, 0x8b81, status, 0, 0);
+        assert(gr32(status) == 1);
+        call("_glAttachShader", prog, sh, 0, 0, 0);
+    }
+    call("_glLinkProgram", prog, 0, 0, 0, 0);
+    call("_glGetProgramiv", prog, 0x8b82, status, 0, 0);
+    assert(gr32(status) == 1);
+    return prog;
 }
 
 int main(void) {
@@ -347,38 +426,45 @@ int main(void) {
     memcpy(GP(SCRATCH + 0x400), "glNothing", 10);
     assert(call("eglGetProcAddress", SCRATCH + 0x400, 0, 0, 0, 0) == 0);
 
-    /* glClear: the whole image, then the scissor's 10x10 at GL's bottom left */
+    /* glClear: the renderer's clear of the surface's next image, pitch-linear RGBA8 at its GPU address, whole; then its
+       color and depth in the scissor's 10x10 at GL's bottom left */
     arg_f(0, 0.25f), arg_f(1, 0.5f), arg_f(2, 1), arg_f(3, 1);
     call("_glClearColor", 0, 0, 0, 0, 0);
     call("_glClear", 0x4000, 0, 0, 0, 0);
-    u64 first = 0;
+    DsSurf window;
     {
         u32 w, h;
+        float color[4];
         gl_host_surface_size((u32)surface, &w, &h);
         assert(w == 1280 && h == 720);
+        assert(g_drawn.nclear == 1 && g_drawn.clear[0].slot == 0 && g_drawn.clear[0].color_mask == 0xf);
+        assert(!g_drawn.clear[0].aspects && !g_drawn.clear[0].scissored);
+        memcpy(color, g_drawn.clear[0].color, sizeof color);
+        assert(color[0] == 0.25f && color[1] == 0.5f && color[2] == 1 && color[3] == 1);
+        window = g_drawn.ds.tgt.color[0];
+        assert(g_drawn.ds.tgt.count == 1 && window.width == 1280 * 4 && window.height == 720 && window.mem == 1u << 12);
+        assert(window.format == nvn_rt_format(NVN_FORMAT_RGBA8, &(int){0}) && g_drawn.ds.tgt.depth.gva);
+        assert(g_drawn.ds.dyn.window_origin == DS_ORIGIN_FLIP_Y && g_drawn.ds.dyn.clip_height == 720);
     }
     call("_glEnable", 0x0c11, 0, 0, 0, 0); /* GL_SCISSOR_TEST */
     call("_glScissor", 0, 0, 10, 10, 0);
-    arg_f(0, 1), arg_f(1, 0), arg_f(2, 0), arg_f(3, 1);
-    call("_glClearColor", 0, 0, 0, 0, 0);
-    call("_glClear", 0x4000, 0, 0, 0, 0);
+    g_drawn.nclear = 0;
+    call("_glClear", 0x4000 | 0x100, 0, 0, 0, 0); /* color and depth */
+    assert(g_drawn.nclear == 1 && g_drawn.clear[0].aspects == 1 && g_drawn.clear[0].scissored);
+    assert(g_drawn.ds.vp.scissor_x[0] == 10u << 16 && g_drawn.ds.vp.scissor_y[0] == 10u << 16);
+    call("_glDisable", 0x0c11, 0, 0, 0, 0);
     assert(call("eglSwapBuffers", 1, surface, 0, 0, 0) == 1);
     assert(shown.count == 1 && g_frames == 1 && shown.w == 1280 && shown.h == 720 && shown.pitch == 1280 * 4);
-    assert(shown.layout == 0 && shown.fmt == 1);
-    first = shown.addr;
-    {
-        const u8* red = pixel(first, 1280, 720, 9, 9);
-        const u8* blue = pixel(first, 1280, 720, 10, 9);
-        const u8* top = pixel(first, 1280, 720, 0, 10);
-        assert(red[0] == 255 && red[1] == 0 && red[2] == 0 && red[3] == 255);
-        assert(blue[0] == 64 && blue[1] == 128 && blue[2] == 255 && blue[3] == 255);
-        assert(top[0] == 64 && top[2] == 255);
-    }
+    assert(shown.layout == 0 && shown.fmt == 1 && shown.addr == gpu_cpu(window.gva)); /* the image cleared */
+    g_drawn.nclear = 0;
+    call("_glClear", 0x4000, 0, 0, 0, 0);
+    assert(g_drawn.nclear == 1 && g_drawn.ds.tgt.color[0].gva != window.gva); /* the other image */
     assert(call("eglSwapBuffers", 1, surface, 0, 0, 0) == 1);
-    assert(shown.count == 2 && shown.addr != first); /* the other image */
+    assert(shown.count == 2 && shown.addr == gpu_cpu(g_drawn.ds.tgt.color[0].gva));
 
     /* a program through the slots: its shaders' text from the guest's array of pointers, a 3.30 core vertex shader
        and a 1.20 fragment shader (the f suffix, a precision statement), linked; a uniform written and read back */
+    u64 prog, ab, vao;
     {
         static const char vs[] = "#version 330 core\nlayout(location = 0) in vec4 p;\nuniform mat4 m;\n"
                                  "void main() { gl_Position = m * p; }\n";
@@ -386,7 +472,7 @@ int main(void) {
                                  "void main() { gl_FragColor = tint * 0.5f; }\n";
         const u64 text = SCRATCH + 0x1000, strings = SCRATCH + 0x2000, lengths = SCRATCH + 0x2100;
         const u64 status = SCRATCH + 0x2200, out = SCRATCH + 0x2300, name = SCRATCH + 0x2400;
-        u64 v, f, prog;
+        u64 v, f;
         memcpy(GP(text), vs, sizeof vs);
         memcpy(GP(text + 0x400), fs, 20);                  /* fs in two strings: the first 20 bytes, */
         memcpy(GP(text + 0x800), fs + 20, sizeof fs - 20); /* then the rest, NUL-ended */
@@ -439,7 +525,7 @@ int main(void) {
        back; a vertex array whose attribute reads the array buffer bound */
     {
         const u64 names = SCRATCH + 0x3000, out = SCRATCH + 0x3100;
-        u64 at, b, vao, ab;
+        u64 at, b;
         call("_glCreateBuffers", 1, names, 0, 0, 0);
         b = gr32(names);
         call("_glNamedBufferStorage", b, 4096, 0, 0x2 | 0x40 | 0x80, 0); /* write, persistent, coherent */
@@ -463,6 +549,9 @@ int main(void) {
         assert(vao && gr32(out) == ab);
         call("_glGetVertexAttribiv", 2, 0x8622, out, 0, 0); /* _ENABLED */
         assert(gr32(out) == 1);
+        cpu.x[5] = 0; /* the program's p: attribute 0, three floats from the array buffer's start */
+        call("_glVertexAttribPointer", 0, 3, 0x1406, 0, 12);
+        call("_glEnableVertexAttribArray", 0, 0, 0, 0, 0);
     }
 
     /* a texture: glTexImage2D's ninth argument on the stack, its texels kept in guest memory, a parameter read back */
@@ -512,13 +601,109 @@ int main(void) {
         assert(call("_glCheckFramebufferStatus", 0x8d40, 0, 0, 0, 0) == 0x8cd7); /* _INCOMPLETE_MISSING_ATTACHMENT */
         call("_glFramebufferTexture2D", 0x8d40, 0x8ce0, 0x0de1, t, 0);
         assert(call("_glCheckFramebufferStatus", 0x8d40, 0, 0, 0, 0) == 0x8cd5); /* GL_FRAMEBUFFER_COMPLETE */
-        /* its clear is drawing, which the layer does not do yet: said, and neither of the window's images is green */
-        arg_f(0, 0), arg_f(1, 1), arg_f(2, 0), arg_f(3, 1);
-        call("_glClearColor", 0, 0, 0, 0, 0);
+        /* its clear: the renderer's, of the texture's level 0, laid out as NVN's at its GPU address */
+        g_drawn.nclear = 0;
         call("_glClear", 0x4000, 0, 0, 0, 0);
-        assert(strstr(logged, "glClear of framebuffer") && strstr(logged, "isn't drawn yet"));
-        assert(pixel(first, 1280, 720, 0, 0)[1] != 255 && pixel(shown.addr, 1280, 720, 0, 0)[1] != 255);
+        {
+            NvnTexture n;
+            assert(gl_nvn_texture(t, &n) && g_drawn.nclear == 1 && g_drawn.ds.tgt.count == 1);
+            assert(g_drawn.ds.tgt.color[0].gva == n.gpu && !g_drawn.ds.tgt.depth.gva &&
+                   g_drawn.ds.dyn.clip_height == 2);
+            assert(g_surface_view.base_level == 0 && g_surface_view.levels == 1 && g_surface_view.layers == 1);
+        }
+        /* a depth renderbuffer: its storage laid out as NVN's DEPTH24_STENCIL8 in the layer's memory, the depth the
+           framebuffer's clear and draws take */
+        call("_glGenRenderbuffers", 1, names + 12, 0, 0, 0);
+        call("_glBindRenderbuffer", 0x8d41, gr32(names + 12), 0, 0, 0);
+        call("_glRenderbufferStorage", 0x8d41, 0x88f0, 2, 2, 0); /* GL_DEPTH24_STENCIL8, 2x2 */
+        call("_glFramebufferRenderbuffer", 0x8d40, 0x821a, 0x8d41, gr32(names + 12),
+             0); /* GL_DEPTH_STENCIL_ATTACHMENT */
+        assert(call("_glCheckFramebufferStatus", 0x8d40, 0, 0, 0, 0) == 0x8cd5);
+        g_drawn.nclear = 0;
+        call("_glClear", 0x100 | 0x400, 0, 0, 0, 0); /* depth and stencil */
+        {
+            const SnxGlRenderbuffer* rb = snx_gl_renderbuffer(gr32(names + 12));
+            NvnTexture n;
+            NvnTexStorage st;
+            assert(gl_nvn_renderbuffer(gr32(names + 12), &n) && n.d.format == NVN_FORMAT_DEPTH24_STENCIL8);
+            nvn_tex_storage(&n.d, &st);
+            assert(rb->storage && rb->storage_size == st.size && !(rb->storage % st.align));
+            assert(g_drawn.nclear == 1 && g_drawn.clear[0].aspects == 3 && !g_drawn.clear[0].color_mask);
+            assert(g_drawn.ds.tgt.depth.gva == gl_gpu_address(rb->storage) && n.gpu == g_drawn.ds.tgt.depth.gva);
+        }
         call("_glBindFramebuffer", 0x8d40, 0, 0, 0, 0);
+
+        /* a draw of the program: its two stages given to the renderer once, as host programs the draw state names;
+           attribute 0 from the array buffer at its GPU address, each stage's default block a copy in the ring */
+        call("_glUseProgram", prog, 0, 0, 0, 0);
+        call("_glDrawArrays", 4, 0, 3, 0, 0); /* GL_TRIANGLES */
+        {
+            const DsState* d = &g_drawn.ds;
+            const SnxGlProgram* p = snx_gl_program((u32)prog);
+            float tint[4];
+            assert(g_drawn.draws == 1 && g_drawn.programs == 2 && g_drawn.stage[0] == ST_VS &&
+                   g_drawn.stage[1] == ST_FS);
+            assert(g_drawn.si[0].in_mask == 1 && !g_drawn.si[1].ntex);
+            assert(d->prog.on == (1u << 1 | 1u << 5) && d->prog.code[1] == (DS_HOST_PROGRAM | 100) &&
+                   d->prog.code[5] == (DS_HOST_PROGRAM | 101));
+            assert(g_drawn.call.topology == 4 && !g_drawn.call.indexed && g_drawn.call.first == 0 &&
+                   g_drawn.call.count == 3 && g_drawn.call.instances == 1);
+            assert(d->vfmt.stream_on == 1 && d->vfmt.stream[0] == 0 && d->vfmt.offset[0] == 0 &&
+                   d->vfmt.stride[0] == 12);
+            assert(d->vfmt.size[0] == 0x02 && d->vfmt.type[0] == 7 && !d->vfmt.size[2]); /* R32_G32_B32 float */
+            assert(d->vbuf.addr[0] == gl_gpu_address(snx_gl_buffer((u32)ab)->data) && d->vbuf.size[0] == 64);
+            assert(d->bind.cb_size[0][0] == p->default_size[0] && d->bind.cb_size[4][0] == p->default_size[1]);
+            memcpy(tint, gpu_bytes(d->bind.cb_addr[4][0]), sizeof tint);
+            assert(tint[0] == 0.5f && tint[1] == 0.25f && tint[2] == 1 && tint[3] == 2);
+            assert(d->tgt.color[0].gva == window.gva && d->tgt.count == 1); /* the image after two swaps */
+            assert(d->dyn.window_origin == DS_ORIGIN_FLIP_Y && d->rkey.provoking_last && d->rkey.depth_zero_one);
+            assert(d->vp.scale[0][0] == 640 && d->vp.scale[0][1] == 360 && d->vp.translate[0][1] == 360);
+            assert(d->vp.scale[0][2] == 0.5f && d->vp.translate[0][2] == 0.5f); /* GL's depth from -1 to 1 */
+        }
+        /* attribute 0 without its array: its generic value, (0, 0, 0, 1), one 16-byte vertex in the ring every vertex
+           reads, at stride 0 */
+        call("_glDisableVertexAttribArray", 0, 0, 0, 0, 0);
+        call("_glDrawArrays", 4, 0, 3, 0, 0);
+        {
+            const DsState* d = &g_drawn.ds;
+            const float one[4] = {0, 0, 0, 1};
+            assert(g_drawn.draws == 2 && d->vfmt.stream_on == 1u << 16 && d->vfmt.stream[0] == 16);
+            assert(d->vfmt.size[0] == 0x01 && d->vfmt.type[0] == 7 && d->vfmt.stride[16] == 0 &&
+                   d->vbuf.size[16] == 16);
+            assert(!memcmp(gpu_bytes(d->vbuf.addr[16]), one, sizeof one));
+        }
+        call("_glEnableVertexAttribArray", 0, 0, 0, 0, 0);
+        /* an indexed draw: its 16-bit indices from the element array buffer, at the offset given */
+        call("_glCreateBuffers", 1, names + 8, 0, 0, 0);
+        call("_glBindBuffer", 0x8893, gr32(names + 8), 0, 0, 0); /* GL_ELEMENT_ARRAY_BUFFER */
+        call("_glBufferData", 0x8893, 16, 0, 0x88e4, 0);         /* GL_STATIC_DRAW */
+        call("_glDrawElements", 4, 3, 0x1403, 2, 0);             /* GL_UNSIGNED_SHORT, from byte 2 */
+        {
+            const u64 at = gl_gpu_address(snx_gl_buffer(gr32(names + 8))->data);
+            assert(g_drawn.draws == 3 && g_drawn.programs == 2 && g_drawn.call.indexed == 1 && g_drawn.call.count == 3);
+            assert(g_drawn.ds.index.addr == at + 2 && g_drawn.ds.index.end == at + 15 && g_drawn.ds.index.format == 1);
+        }
+        /* a texture sampled: its TIC entry at its name in the pool, its sampler state's TSC entry, the handle of both
+           in the fragment stage's texture bank */
+        {
+            u64 sampled =
+                program("#version 330 core\nlayout(location = 0) in vec4 p;\nvoid main() { gl_Position = p; }\n",
+                        "#version 330 core\nuniform sampler2D s;\nout vec4 o;\n"
+                        "void main() { o = texture(s, vec2(0.5)); }\n");
+            const DsBindings* b = &g_drawn.ds.bind;
+            u32 handle, tic[8], tsc[8], zero[8] = {0};
+            call("_glActiveTexture", 0x84c0, 0, 0, 0, 0); /* GL_TEXTURE0 */
+            call("_glBindTexture", 0x0de1, t, 0, 0, 0);
+            call("_glUseProgram", sampled, 0, 0, 0, 0);
+            call("_glDrawArrays", 4, 0, 3, 0, 0);
+            assert(g_drawn.draws == 4 && g_drawn.programs == 4 && g_drawn.si[3].ntex == 1);
+            assert(b->tex_bank == 17 && b->tex_max >= t && b->cb_size[4][17] >= 4 && b->cb_addr[4][17]);
+            memcpy(&handle, gpu_bytes(b->cb_addr[4][17] + g_drawn.si[3].tex[0].cbuf_off), 4);
+            assert(handle == (t | t << 20));
+            memcpy(tic, gpu_bytes(b->tex_pool + 32ull * t), sizeof tic);
+            memcpy(tsc, gpu_bytes(b->smp_pool + 32ull * t), sizeof tsc);
+            assert(memcmp(tic, zero, sizeof tic) && memcmp(tsc, zero, sizeof tsc));
+        }
     }
 
     /* the point size and polygon mode a GL game sets, read back by glGet */
@@ -533,15 +718,16 @@ int main(void) {
         assert(gr32(out) == 0x1b01 && gr32(out + 4) == 0x1b01);
         call("_glPolygonMode", 0x0408, 0x1b02, 0, 0, 0);
     }
-    /* a fence: signaled at once, the layer records no GPU work yet */
+    /* a fence after the draws: signaled once the GPU thread finished them, here at once */
     {
         u64 sync = call("_glFenceSync", 0x9117, 0, 0, 0, 0);                         /* GL_SYNC_GPU_COMMANDS_COMPLETE */
         assert(sync && call("_glClientWaitSync", sync, 1, 1000000, 0, 0) == 0x911a); /* GL_ALREADY_SIGNALED */
     }
 
     /* a function without a handler stops the game, naming it and gl_layer's value; the driver never ran */
-    assert(!strcmp(stops("_glDrawArrays"),
-                   "gl layer: the game called glDrawArrays, which the GL layer (gl_layer=1) doesn't implement yet"));
+    assert(
+        !strcmp(stops("_glDispatchCompute"),
+                "gl layer: the game called glDispatchCompute, which the GL layer (gl_layer=1) doesn't implement yet"));
     assert(!strcmp(stops("eglCopyBuffers"),
                    "gl layer: the game called eglCopyBuffers, which the GL layer (gl_layer=1) doesn't implement yet"));
     assert(!driver_ran);

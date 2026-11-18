@@ -161,6 +161,11 @@ static u16 nvn_format(int32_t index, u16* swizzle, u8* expand) {
     *swizzle = g_nvn_formats[index].swizzle, *expand = g_nvn_formats[index].expand;
     return g_nvn_formats[index].format;
 }
+u16 gl_nvn_format(int32_t index) {
+    u16 swizzle;
+    u8 expand;
+    return nvn_format(index, &swizzle, &expand);
+}
 int gl_nvn_texture(u32 name, NvnTexture* out) {
     static const u8 targets[SNX_GL_TARGETS] = {NVN_TEXTURE_TARGET_2D, NVN_TEXTURE_TARGET_CUBEMAP, NVN_TEXTURE_TARGET_3D,
                                                NVN_TEXTURE_TARGET_2D_ARRAY, NVN_TEXTURE_TARGET_2D_MULTISAMPLE};

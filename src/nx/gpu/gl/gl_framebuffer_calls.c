@@ -8,10 +8,43 @@
 #include "common/gpu/gl/gl_state.h"
 #include "gpu/gl/gl.hook.h"
 #include "nx/gpu/gl/gl_layer.h"
+#include "nx/gpu/nvn/nvn_tex.h"
+#include "nx/runtime/platform/log.h"
 #include "nx/memory/mem.h"
 #include <string.h>
 
-void gl_framebuffer_calls_init(void) { snx_gl_framebuffer_host(NULL); }
+int gl_nvn_renderbuffer(u32 name, NvnTexture* out) {
+    const SnxGlRenderbuffer* r = snx_gl_renderbuffer(name);
+    u16 format = r ? gl_nvn_format(r->format) : 0;
+    *out = (NvnTexture){0};
+    if (!format) return 0;
+    out->magic = NVN_MAGIC('T', 'E', 'X', 0);
+    out->d = (NvnTexDesc){.format = format,
+                          .target = (u8)(r->samples > 1 ? NVN_TEXTURE_TARGET_2D_MULTISAMPLE : NVN_TEXTURE_TARGET_2D),
+                          .samples = (u8)(r->samples > 1 ? r->samples : 0),
+                          .levels = 1,
+                          .width = (u32)r->width,
+                          .height = (u32)r->height,
+                          .depth = 1};
+    out->memory = r->storage, out->size = r->storage_size;
+    out->gpu = r->storage ? gl_gpu_address(r->storage) : 0;
+    return 1;
+}
+/* a renderbuffer's storage in NVN's layout of a 2D texture of its format and size: its bytes and alignment */
+static uint64_t renderbuffer_bytes(uint32_t name, uint64_t* align) {
+    NvnTexture n;
+    NvnTexStorage st;
+    if (!gl_nvn_renderbuffer(name, &n)) {
+        LOG_LIMIT(8, "gl layer: renderbuffer %u's format has no NVN form here: it keeps no storage\n", (unsigned)name);
+        return 0;
+    }
+    nvn_tex_storage(&n.d, &st);
+    *align = st.align > 256 ? st.align : 256;
+    return st.size;
+}
+void gl_framebuffer_calls_init(void) {
+    snx_gl_framebuffer_host(&(SnxGlFramebufferHost){.storage_bytes = renderbuffer_bytes});
+}
 
 #define LOCKED(fallback, ...)                                                                                          \
     do {                                                                                                               \

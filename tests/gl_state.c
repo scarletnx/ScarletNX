@@ -184,9 +184,9 @@ int main(void) {
     copy[0] ^= 1;
     refused(copy, bytes, "not 4c47584e");
     memcpy(copy, saved, bytes);
-    copy[4] = 9; /* the layout */
-    refused(copy, bytes, "layout 9");
-    refused(saved, 20, "this build reads layout 8");
+    copy[4] = 10; /* the layout */
+    refused(copy, bytes, "layout 10");
+    refused(saved, 20, "this build reads layout 9");
     refused(saved, bytes - 4, "this build reads");
     {
         SnxGlContext c;

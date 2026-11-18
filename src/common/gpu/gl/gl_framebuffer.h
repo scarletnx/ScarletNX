@@ -25,6 +25,7 @@ typedef struct {
     int32_t width, height; /* 0 x 0 until its storage */
     int32_t samples;       /* 1, 2 or 4 */
     uint32_t generation;   /* counts the storages made: a platform's image of an older one is stale */
+    uint64_t storage, storage_size; /* the platform memory its storage takes, where the platform lays it out */
 } SnxGlRenderbuffer;
 
 /* an attachment of a framebuffer: a texture's level and layer (a cube map's face), or a renderbuffer */
@@ -60,6 +61,10 @@ typedef struct {
     /* the window's depth and stencil bits, which glGetFramebufferAttachmentParameteriv answers for framebuffer 0 */
     void (*window_bits)(uint32_t ctx, int32_t* depth, int32_t* stencil);
     uint32_t (*max_size)(void); /* the largest width and height the platform makes now; without it 16384 */
+    /* the bytes a renderbuffer's storage takes in the platform's own layout, at *align, its record just set: the
+       layer takes them from the platform memory (gl_object.h's) for the platform to draw into. 0, or without it: the
+       renderbuffer keeps no storage there */
+    uint64_t (*storage_bytes)(uint32_t renderbuffer, uint64_t* align);
 } SnxGlFramebufferHost;
 void snx_gl_framebuffer_host(const SnxGlFramebufferHost* host);
 
