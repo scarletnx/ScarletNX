@@ -3,8 +3,8 @@
 /* The console's side of the GL layer (gl_layer=1, #950): a game that draws through its own GL driver gets the
    runtime's EGL and GL instead, the driver's code never running, as nvn_loader.c takes a game's NVN. The GL state is
    the shared layer's (common/gpu/gl/gl_state.h); what is the console's alone is here: taking the driver's functions
-   (gl_loader.c), EGL's displays, configs, contexts and surfaces (gl_egl.c), the GL calls' adapters (gl_calls.c), and
-   the thunks to guest memory and the renderer (gl_host_nx.c).
+   (gl_loader.c), EGL's displays, configs, contexts and surfaces (gl_egl.c), the GL calls' adapters (gl_calls.c, and
+   gl_program_calls.c for shaders and programs), and the thunks to guest memory and the renderer (gl_host_nx.c).
 
    A function of the driver the layer doesn't implement yet stops the game when it is called, naming it, as
    nvn_loader.c does for NVN */
@@ -24,6 +24,10 @@ u64 gl_loader_lookup(const char* name);
 /* the calling thread's current GL context (gl_state.h's name) and draw surface (gl_host_nx.c's), 0 for none */
 u32 gl_egl_context(void);
 u32 gl_egl_draw(void);
+
+/* ---- gl_program_calls.c */
+/* the shared layer's programs say what does not compile or link in the log */
+void gl_program_calls_init(void);
 
 /* ---- gl_host_nx.c */
 #define GL_HOST_SURFACES 8

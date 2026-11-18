@@ -115,6 +115,7 @@ void gl_loader_init(void) {
         implemented += k >= 0;
     }
     qsort(g_gl_loader.exports, g_gl_loader.count, sizeof *g_gl_loader.exports, by_name);
+    gl_program_calls_init();
     LOG("gl layer: the game's GL driver (%s) doesn't run: the layer implements %u of its %u egl and _gl functions, "
         "and a call of any other one stops the game, naming it\n",
         driver->name ? driver->name : "?", implemented, g_gl_loader.count);
