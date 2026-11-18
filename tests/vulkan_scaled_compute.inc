@@ -131,9 +131,20 @@ static int check_scaled_compute(void) {
     vk_unlock();
     CHECK(rt && rt->sw == 2 * SC_W && rt->sh == 2 * SC_H);
 
-    /* the store */
+    /* the store. It stages nothing for the host: where guest memory is copied it stays in the submission being
+       recorded (compute.c), and the read of the target's guest bytes below submits it and lands what it stored */
     CHECK(!storage_write_words(SC_GPU + 0x8000 + 0x128, (const u32[2]){1, 3}, 2));
+    u64 left = g_vk_cs_left;
     CHECK(!sc_dispatch(channel, SC_STORE));
+    vk_lock();
+    int open = g_vk_cs_left == left + 1 && g_vk_cs_open == vk_submit_number();
+    vk_unlock();
+    if (!vk_uma() && !open)
+        fprintf(stderr,
+                "scaled compute: the store to an image alone was submitted at once (%llu dispatches left open "
+                "before it, %llu after)\n",
+                (unsigned long long)left, (unsigned long long)g_vk_cs_left);
+    CHECK(vk_uma() || open);
     CHECK(!sc_texels(target, texels));
     for (u32 y = 0; y < SC_H; y++)
         for (u32 x = 0; x < SC_W; x++)
@@ -178,6 +189,8 @@ static int check_scaled_compute(void) {
     }
     g_vk_scale = scale;
     free(channel);
-    puts("scaled compute: a store over a target at 2x, a fetch of it and its size, in the guest's texels");
+    puts(vk_uma() ? "scaled compute: a store over a target at 2x, a fetch of it and its size, in the guest's texels"
+                  : "scaled compute: a store over a target at 2x, left in the open submission until a read of it, a "
+                    "fetch of it and its size, in the guest's texels");
     return 0;
 }

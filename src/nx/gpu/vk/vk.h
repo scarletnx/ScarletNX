@@ -2395,6 +2395,9 @@ enum {
 void vk_buf_alias_counts(u64* atlas, u64* pages, u64* inplace, u64 why[VK_ALIAS_N]);
 void vk_buf_writable_abort(void);
 void vk_buf_writable_commit(void);
+/* the commits that left the host a result to read so far (pending in staging, or an output reused): a dispatch whose
+   commit moved it staged one */
+u64 vk_buf_commits_staged(void);
 void vk_buf_mem_need(u64 gva, u64 len);
 /* own buffers last used before the present `before`, the least recently used first, dropped until `want` bytes went
    (their ranges are copied again when next read). Returns the bytes */

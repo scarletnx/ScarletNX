@@ -742,6 +742,7 @@ void vk_buf_writable_commit(void) {
     g_prep = g_prep_tail = NULL;
     atomic_store_explicit(&g_gfx_any, 1, memory_order_relaxed);
 }
+u64 vk_buf_commits_staged(void) { return g_buffer.order.writes; }
 /* whether two sorted page lists share a page */
 static int pages_meet(const GfxOut* a, const GfxOut* b) {
     u32 i = 0, j = 0;
