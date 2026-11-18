@@ -31,7 +31,7 @@ static u64 lop_or(u32 d, u32 a, u32 b) {
 }
 
 static u64 iadd(u32 d, u32 a, u32 b) {
-    return 0x5c58000000070000ull | d | (u64)a << 8 | (u64)b << 20;
+    return 0x5c10000000070000ull | d | (u64)a << 8 | (u64)b << 20;
 }
 
 static u64 tld(u32 handle) {
