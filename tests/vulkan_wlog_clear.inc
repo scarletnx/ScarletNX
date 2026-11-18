@@ -2,10 +2,11 @@
    Copyright 2026 the ScarletNX contributors */
 /* A write log in host memory is clear again when it goes back to its pool (writelog.c vk_wlog_unref): each window a
    store flagged, and its byte mask. The unref clears the windows that vk_wlog_runs found
-   flagged, and reads the flags past the windows it read. A flag there comes from a store past the range its reader
-   reads (write_log.c clamps the window, and does not bound it by the binding), or from a part no reader read. Here
-   the GPU sets the flags (a fill of 4 bytes each), as a dispatch's stores do. The next user of the log, which reads
-   all 16 MiB of each part, must find no window of the user before */
+   flagged, and reads the flags past the windows it read by their coarse words. A flag there comes from a store past
+   the range its reader reads (write_log.c clamps the window, and does not bound it by the binding), or from a part no
+   reader read. Here the GPU sets the flags and their coarse words (a fill of 4 bytes each), as a dispatch's stores
+   do. The next user of the log, which reads all 16 MiB of each part, must find no window of the user before. The
+   unref reads only the flags of the groups of 64 with a coarse word that the reads left */
 typedef struct {
     u32 n;
     u32 run[8][2];
@@ -22,6 +23,7 @@ static void wlog_run_note(void* user, u32 from, u32 to) {
 static void wlog_flag(VkWriteLog* l, u32 p, u32 w, u32 k, u32 bits) {
     const u64 base = (u64)p * SH_WLOG_PART * 4;
     rec_CmdFillBuffer(vk_cmd(), vk_wlog_buffer(l), base + 4ull * w, 4, 1);
+    rec_CmdFillBuffer(vk_cmd(), vk_wlog_buffer(l), base + 4ull * (SH_WPAGE_SLOT * (1ull + SH_WLOG_MASK) + w / 64), 4, 1);
     rec_CmdFillBuffer(vk_cmd(), vk_wlog_buffer(l), base + 4ull * (SH_WPAGE_SLOT + (u64)w * SH_WLOG_MASK + k), 4, bits);
 }
 static int check_wlog_clear(void) {
@@ -57,10 +59,12 @@ static int check_wlog_clear(void) {
     vk_wlog_clear_stats(&unrefs0, &scanned0, &cleared0);
     vk_wlog_unref(l);
     vk_wlog_clear_stats(&unrefs, &scanned, &cleared);
-    failed |= unrefs != unrefs0 + 1 || cleared != cleared0 + 5;
-    if (cleared != cleared0 + 5)
-        fprintf(stderr, "write log clear: the unref cleared %llu windows, where 5 were flagged\n",
-                (unsigned long long)(cleared - cleared0));
+    /* the groups past the 3001 windows read: 2944 to 3007 and 3968 to 4031 of part 0, and 0 to 63 of part 1 */
+    failed |= unrefs != unrefs0 + 1 || cleared != cleared0 + 5 || scanned != scanned0 + 3 * 64;
+    if (cleared != cleared0 + 5 || scanned != scanned0 + 3 * 64)
+        fprintf(stderr, "write log clear: the unref cleared %llu windows, where 5 were flagged, and read %llu flags, "
+                        "where 192 were in groups with a store\n",
+                (unsigned long long)(cleared - cleared0), (unsigned long long)(scanned - scanned0));
     /* the pool gives the same log again, newest first: every window of both parts is clear */
     VkWriteLog* again = vk_wlog_get(2);
     CHECK(again == l);
