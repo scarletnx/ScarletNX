@@ -19,6 +19,7 @@
 #include "nx/gpu/gl/gl_layer.h"
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/nvn/nvn_loader.h"
+#include "nx/gpu/gvk/gvk.h"
 #include "nx/gpu/nvn/nvn_state.h"
 #include "nx/gpu/renderer.h"
 #include "nx/hle/filesystem/fs.h"
@@ -1645,7 +1646,8 @@ int snx_main(int argc, char** argv) {
     hook_install(); /* before NVN, which takes what a slot holds, and the JIT, which reads the slots */
     nvn_loader_init();
     gl_loader_init();
-    /* after the hooks, NVN and the GL layer: it counts in front of what they put in a slot */
+    gvk_install(); /* after the hooks too, and before the JIT, which reads the slots */
+    /* after the hooks, NVN, the GL layer and gvk: it counts in front of what they put in a slot */
     gl_census_init();
     linker_init(); /* after the hooks and NVN, whose slots it leaves alone */
     entry = linker_entry(entry);

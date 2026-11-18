@@ -1222,7 +1222,9 @@ static bool choose_device(SnxVkChoice* c, void* user) {
     g_vk.imports_dear =
         (g_settings.guest_buffers_copied ? vk_ban_find(imports_key) : vk_ban(imports_key, 1, ban_say)) != 0;
     int uma_with = vk_uma_choose(has_host_import, has_ahb, has_placed && has_map2, has_dmabuf);
-    if (uma_with == VK_UMA_WITH_HOST) snx_vk_choice_enable(c, VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME);
+    /* and guest memory a game's own Vulkan maps (gpu/gvk/gvk_api.c), imported as host memory */
+    if (uma_with == VK_UMA_WITH_HOST || (g_settings.guest_vulkan && has_host_import))
+        snx_vk_choice_enable(c, VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME);
     if (uma_with == VK_UMA_WITH_AHB) snx_vk_choice_enable(c, "VK_ANDROID_external_memory_android_hardware_buffer");
     /* the dma-bufs of memfds that guest memory moves into (uma.c, udmabuf), which placed maps' views also take */
     int fd_exts = uma_with == VK_UMA_WITH_DMABUF;
@@ -2014,6 +2016,9 @@ static bool choose_device(SnxVkChoice* c, void* user) {
             "after the program's\n", names);
     }
     f12.vulkanMemoryModel = f12.vulkanMemoryModelDeviceScope = g_spirv_translate.hmma_coop != 0;
+    /* a game's own SPIR-V (gpu/gvk) is the console's driver's to take, which lays blocks out as scalars */
+    f12.scalarBlockLayout = g_settings.guest_vulkan && q12.scalarBlockLayout;
+    f12.uniformBufferStandardLayout = g_settings.guest_vulkan && q12.uniformBufferStandardLayout;
     /* HMMA off the matrix unit, by the rules: pairs of lanes with subgroups of 32 where the extension bans prefer
        them (OpGroupNonUniformShuffleXor), and A and B through shared memory where the driver loops for a shuffle
        whose index differs between lanes, which no feature or property tells, so the table does. hmma_mode settles

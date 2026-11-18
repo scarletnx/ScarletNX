@@ -95,7 +95,7 @@ snx_component(gpu gpu/gpu.c gpu/gpu_queue.c gpu/guest_pools.c gpu/guest_textures
               gpu/gl/gl_texture_calls.c gpu/gl/gl_framebuffer_calls.c
               gpu/gl/gl_sync_calls.c gpu/gl/gl_draw.c
               gpu/gl/gl_host_nx.c
-              gpu/shipped_pass.c)
+              gpu/shipped_pass.c gpu/gvk/gvk.c gpu/gvk/gvk_api.c gpu/gvk/gvk_spirv.c)
 # the NVN functions nvn implements: their adapters and table, generated from gpu/nvn/nvn.hook
 target_link_libraries(snx_gpu PRIVATE snx_zstd) # an Ounce game's .zs shader files (gpu/shipped_pass.c)
 snx_hookgen(snx_gpu SPEC "${CMAKE_CURRENT_SOURCE_DIR}/gpu/nvn/nvn.hook" PREFIX nvn NAME gpu/nvn/nvn.hook A32)
