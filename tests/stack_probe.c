@@ -1,14 +1,16 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* A generated function whose frame is a page or more probes its stack on Windows x86-64. Windows commits a thread's
-   stack through the guard page below the part in use, and a frame that skips that page faults in reserved memory, where
-   the process ends with no handler run (rtlib.c's snx_stack_probe). On any host: a guest function made for
-   x86_64-w64-windows-gnu calls the runtime library's probe, so its object alone does not link. On a Windows x86-64
-   host also: that object links with the runtime library the AOT modules get, and the JIT loader runs one on a new
-   thread whose stack has only its first page committed. Without the probe the process ends there */
+/* A generated function whose frame is a page or more probes its stack on Windows, x86-64 and AArch64. Windows commits a
+   thread's stack through the guard page below the part in use, and a frame that skips that page faults in reserved
+   memory, where the process ends with no handler run (rtlib.c's snx_stack_probe, and __chkstk on AArch64). On any
+   host: a guest function made for x86_64-w64-windows-gnu or aarch64-w64-windows-gnu calls the runtime library's probe,
+   so its object alone does not link. On a Windows host of that machine also: that object links with the runtime
+   library the AOT modules get, and the JIT loader runs one on a new thread whose stack has only its first page
+   committed. Without the probe the process ends there */
 #include "common/cpu/recompiler/llvm/code_loader.h"
 #include "common/cpu/recompiler/llvm/ir.h"
 #include "common/cpu/recompiler/llvm/rtlib_object.h"
+#include <llvm-c/Target.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -18,6 +20,21 @@
 #endif
 
 #define EXIT_SKIPPED 77
+/* this host's triple when it is a Windows one whose objects the JIT loader runs (jit_run) */
+#if defined(_WIN32) && defined(__x86_64__)
+#define WINDOWS_HOST "x86_64-w64-windows-gnu"
+#elif defined(_WIN32) && defined(__aarch64__)
+#define WINDOWS_HOST "aarch64-w64-windows-gnu"
+#endif
+
+/* a Windows machine's guest functions: their triple, and the probe a large frame calls */
+typedef struct {
+    const char* triple;
+    const char* probe;
+} Machine;
+static const Machine machines[] = {{"x86_64-w64-windows-gnu", SNX_IR_STACK_PROBE},
+                                   {"aarch64-w64-windows-gnu", SNX_IR_STACK_PROBE_ARM64}};
+
 /* larger than the stack a new thread has committed, and than the guard page below it */
 #define FRAME        (256u << 10)
 
@@ -36,11 +53,11 @@ static void big_frame(SnxIr* ir) {
     LLVMBuildRetVoid(ir->b);
 }
 
-/* the object of big_frame for Windows x86-64, linked alone and (on such a host) with the runtime library */
-static int windows_object(char opt) {
+/* the object of big_frame for machine m, linked alone and (on such a host) with the runtime library */
+static int windows_object(char opt, const Machine* m) {
     static const char* const exports[] = {"F_1000"};
-    char error[512];
-    SnxIr* ir = snx_ir_new_target("probe", opt, "x86_64-w64-windows-gnu", error, sizeof error);
+    char error[512], want[128];
+    SnxIr* ir = snx_ir_new_target("probe", opt, m->triple, error, sizeof error);
     if (!ir) {
         fprintf(stderr, "skipped: %s\n", error);
         return EXIT_SKIPPED;
@@ -49,7 +66,7 @@ static int windows_object(char opt) {
     unsigned char* data = NULL;
     size_t size = 0;
     if (snx_ir_object(ir, opt, &data, &size, error, sizeof error)) {
-        fprintf(stderr, "FAIL: -O%c: %s\n", opt, error);
+        fprintf(stderr, "FAIL: %s, -O%c: %s\n", m->triple, opt, error);
         snx_ir_free(ir);
         return 1;
     }
@@ -57,28 +74,34 @@ static int windows_object(char opt) {
     SnxLinkInput inputs[2] = {{data, size, "probe"}, {NULL, 0, "rtlib"}};
     SnxLinkOutput module = {0};
     int failed = 0;
+    snprintf(want, sizeof want, "undefined symbol %s", m->probe);
     if (!snx_link(inputs, 1, exports, 1, "probe.dll", &module, error, sizeof error)) {
-        fprintf(stderr, "FAIL: -O%c: the object links without the runtime library: its frame is not probed\n", opt);
+        fprintf(stderr, "FAIL: %s, -O%c: the object links without the runtime library: its frame is not probed\n",
+                m->triple, opt);
         failed = 1;
-    } else if (!strstr(error, "undefined symbol " SNX_IR_STACK_PROBE)) {
-        fprintf(stderr, "FAIL: -O%c: the object alone fails to link for another reason: %s\n", opt, error);
+    } else if (!strstr(error, want)) {
+        fprintf(stderr, "FAIL: %s, -O%c: the object alone fails to link for another reason than %s: %s\n", m->triple,
+                opt, want, error);
         failed = 1;
     }
     free(module.data);
     module.data = NULL;
-#if defined(_WIN32) && defined(__x86_64__)
+#ifdef WINDOWS_HOST
     /* the runtime library of this host's AOT modules defines it (only a Windows build has it) */
     unsigned char* rtlib = NULL;
     size_t rtlib_size = 0;
-    if (!failed && snx_ir_rtlib_object(opt, &rtlib, &rtlib_size, error, sizeof error)) {
-        fprintf(stderr, "FAIL: -O%c: the runtime library: %s\n", opt, error);
-        failed = 1;
-    } else if (!failed) {
-        inputs[0] = (SnxLinkInput){rtlib, rtlib_size, "rtlib"};
-        inputs[1] = (SnxLinkInput){data, size, "probe"};
-        if (snx_link(inputs, 2, exports, 1, "probe.dll", &module, error, sizeof error)) {
-            fprintf(stderr, "FAIL: -O%c: the object does not link with the runtime library: %s\n", opt, error);
+    if (!failed && !strcmp(m->triple, WINDOWS_HOST)) {
+        if (snx_ir_rtlib_object(opt, &rtlib, &rtlib_size, error, sizeof error)) {
+            fprintf(stderr, "FAIL: %s, -O%c: the runtime library: %s\n", m->triple, opt, error);
             failed = 1;
+        } else {
+            inputs[0] = (SnxLinkInput){rtlib, rtlib_size, "rtlib"};
+            inputs[1] = (SnxLinkInput){data, size, "probe"};
+            if (snx_link(inputs, 2, exports, 1, "probe.dll", &module, error, sizeof error)) {
+                fprintf(stderr, "FAIL: %s, -O%c: the object does not link with the runtime library: %s\n", m->triple,
+                        opt, error);
+                failed = 1;
+            }
         }
     }
     free(rtlib);
@@ -88,7 +111,7 @@ static int windows_object(char opt) {
     return failed;
 }
 
-#if defined(_WIN32) && defined(__x86_64__)
+#ifdef WINDOWS_HOST
 static DWORD WINAPI run_frame(LPVOID p) {
     void (*fn)(void*, SnxU64);
     void* out = NULL;
@@ -152,18 +175,28 @@ static int jit_run(void) {
 
 int main(void) {
     char error[512];
+    /* both machines' targets, whatever this host's (snx_ir_init's) */
+    LLVMInitializeAllTargetInfos();
+    LLVMInitializeAllTargets();
+    LLVMInitializeAllTargetMCs();
+    LLVMInitializeAllAsmPrinters();
     if (snx_ir_init(error, sizeof error)) {
         fprintf(stderr, "FAIL: %s\n", error);
         return 1;
     }
-    int rc0 = windows_object('0');
-    int rc2 = windows_object('2');
-    if (rc0 == 1 || rc2 == 1) return 1;
-#if defined(_WIN32) && defined(__x86_64__)
+    int skipped = 0;
+    for (size_t i = 0; i < sizeof machines / sizeof *machines; ++i) {
+        int rc0 = windows_object('0', &machines[i]);
+        int rc2 = windows_object('2', &machines[i]);
+        if (rc0 == 1 || rc2 == 1) return 1;
+        if (rc0 == EXIT_SKIPPED || rc2 == EXIT_SKIPPED)
+            skipped = 1;
+        else
+            printf("stack probe: a large frame for %s calls %s\n", machines[i].triple, machines[i].probe);
+    }
+#ifdef WINDOWS_HOST
     if (jit_run()) return 1;
     puts("stack probe: a frame of 256 KiB ran on a new thread's stack");
 #endif
-    if (rc0 == EXIT_SKIPPED || rc2 == EXIT_SKIPPED) return EXIT_SKIPPED;
-    puts("stack probe: a large frame for Windows x86-64 calls " SNX_IR_STACK_PROBE);
-    return 0;
+    return skipped ? EXIT_SKIPPED : 0;
 }

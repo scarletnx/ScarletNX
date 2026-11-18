@@ -316,8 +316,10 @@ char* snx_ir_text(SnxIr* ir);
 
 /* ---- functions (ir_codegen.c) ---- */
 /* the stack probe a generated function for Windows x86-64 calls when its frame is a page or more: the runtime
-   library's (rtlib.c), which every module and the JIT's code arena link */
-#define SNX_IR_STACK_PROBE "snx_stack_probe"
+   library's (rtlib.c), which every module and the JIT's code arena link. On Windows on Arm the probe is __chkstk, the
+   name LLVM's AArch64 backend calls, which the runtime library defines there */
+#define SNX_IR_STACK_PROBE       "snx_stack_probe"
+#define SNX_IR_STACK_PROBE_ARM64 "__chkstk"
 /* F_<address>, declared on first use, defined by snx_ir_emit */
 LLVMValueRef snx_ir_guest_function(SnxIr* ir, SnxU64 address);
 void snx_ir_emit(SnxIr* ir, SnxCodegen* codegen, const SnxFunction* function);
