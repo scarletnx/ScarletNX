@@ -43,20 +43,26 @@ int vk_rec_sync_until(u64 until) {
     (void)until;
     return 1;
 }
-/* with g_defer set, the packet waits for run_deferred, as one the recording thread gets to later */
+/* with g_defer set, the packets wait for run_deferred, in order, as ones the recording thread gets to later */
 static int g_defer;
-static void (*g_deferred_fn)(const void* arg);
-static _Alignas(16) u8 g_deferred[256];
+static unsigned g_ndeferred;
+static void (*g_deferred_fn[8])(const void* arg);
+static _Alignas(16) u8 g_deferred[8][256];
 void vk_rec_call(void (*fn)(const void* arg), const void* arg, u64 size) {
     if (!g_defer) {
         fn(arg);
         return;
     }
-    if (size > sizeof g_deferred) abort();
-    memcpy(g_deferred, arg, (size_t)size);
-    g_deferred_fn = fn;
+    if (size > sizeof g_deferred[0] || g_ndeferred == 8) abort();
+    memcpy(g_deferred[g_ndeferred], arg, (size_t)size);
+    g_deferred_fn[g_ndeferred++] = fn;
 }
-static void run_deferred(void) { g_deferred_fn(g_deferred); }
+/* the next packet deferred */
+static void run_deferred(void) {
+    static unsigned ran;
+    g_deferred_fn[ran](g_deferred[ran]);
+    if (++ran == g_ndeferred) ran = g_ndeferred = 0;
+}
 VkResult vk_devmem_flush(DevMem m, u64 off, u64 size) {
     (void)m;
     (void)off;
@@ -400,14 +406,15 @@ static void later(void) {
     puts("PASS hits read on the recording thread are copied when they check out, and given back when they don't");
 }
 
-/* Hits on a disk that holds every read, then on one that answers each in 150 ms. Held: a read queued before the
-   recording thread gets to it, and none more is asked once that read runs past BC7_IO_LATE_NS (0: the level is
-   encoded); the recording thread leaves it after BC7_IO_WAIT_NS, with no copy, and goes on; once the disk lets go, the
-   log says how long the read took and what came late or was not tried. Slow: the recording thread leaves the read
-   after its wait as well, no more is asked until the I/O thread has caught up, and the line at that point gives the
-   longest read. Each late read goes to its owner with its record kept, and a disk that answers again has the reads
-   copied. A watchdog lets the disk go after 3 s, so a recording thread that waits for the read fails the check of its
-   time rather than hang */
+/* Hits on a disk that holds every read, on one that answers each in 150 ms, and on one that holds a read and then
+   answers slowly. Held: a read queued before the recording thread gets to it, and none more is asked once that read
+   runs past BC7_IO_LATE_NS (0: the level is encoded); the recording thread leaves it, with no copy, and goes on; once
+   the disk lets go, the log says how long the read took and what came late or was not tried. Slow but answering:
+   four reads queued at once, 600 ms of reads, are all waited for and copied, none left. Held, then slow: a read left
+   late, and while the I/O thread goes on with the read after it, no read is asked (0) until it has caught up, which
+   the log says with the longest read. Each late read goes to its owner with its record kept, and a disk that answers
+   again has the reads copied. A watchdog lets the disk go after 3 s, so a recording thread that waits for a held read
+   fails the check of its time rather than hang */
 #if defined(__linux__)
 static void let_go_by(void* arg) {
     const u64 until = *(const u64*)arg;
@@ -463,8 +470,8 @@ static void slow_disk(void) {
     run_deferred();
     u64 took = plat_ns() - t0;
     printf("The recording thread left the held read after %.0f ms\n", (double)took / 1e6);
-    CHECK(took >= BC7_IO_WAIT_NS && took < 2500000000ull); /* left at its bound, not held to the watchdog's 3 s */
-    CHECK(g_copies == copies + 1);                         /* its copy left out */
+    CHECK(took < 2500000000ull);   /* left, not held to the watchdog's 3 s */
+    CHECK(g_copies == copies + 1); /* its copy left out */
     CHECK(vk_bc7_cache_failed_pending());
     usleep(450000); /* the read held 0.75 s at least */
     atomic_store_explicit(&g_hold, 0, memory_order_release);
@@ -473,30 +480,54 @@ static void slow_disk(void) {
     CHECK(held >= 0.7 && held < 3.0);
     CHECK(logged(" s: 1 reads came too late meanwhile and 1 were not tried, their levels encoded instead\n"));
 
-    /* slow: 75 ms each of a hit's two reads (its record's header, then its blocks), 150 ms in all: 100 ms past the
-       recording thread's wait and under BC7_IO_LATE_NS, room for a loaded machine's late wake-ups either way */
+    /* slow but answering: 75 ms each of a hit's two reads (its record's header, then its blocks), 150 ms a read */
     atomic_store_explicit(&g_slow_us, 75000, memory_order_release);
+    g_defer = 1;
+    for (int i = 0; i < 4; i++) CHECK(READ_A() == 1);
+    g_defer = 0;
     t0 = plat_ns();
-    CHECK(READ_A() == 1);
+    for (int i = 0; i < 4; i++) {
+        memset(dst, 0, (size_t)na);
+        run_deferred();
+        CHECK(g_copies == copies + 2 + (unsigned)i && !memcmp(dst, a, (size_t)na));
+    }
     took = plat_ns() - t0;
-    CHECK(took >= BC7_IO_WAIT_NS && g_copies == copies + 1); /* left before the read ends, its copy left out */
-    CHECK(READ_A() == 0);                                    /* behind a read left late: not tried */
+    printf("The recording thread took four reads of 150 ms in %.0f ms\n", (double)took / 1e6);
+    CHECK(took >= 500000000ull); /* waited for, one after another */
+    u64 late, skipped, unkept;
+    vk_bc7_cache_late(&late, &skipped, &unkept);
+    CHECK(late == 1 && skipped == 1); /* no more than the held read's */
+
+    /* held, then slow: the read after the one left late runs while the I/O thread has not caught up */
+    atomic_store_explicit(&g_hold, 1, memory_order_release);
+    until = plat_ns() + 3000000000ull;
+    CHECK(plat_thread(let_go_by, &until, 0) == 0);
+    g_defer = 1;
+    CHECK(READ_A() == 1 && READ_A() == 1); /* the second queued while the first has just begun */
+    g_defer = 0;
+    usleep(300000);
+    run_deferred(); /* the first, held past BC7_IO_LATE_NS: left */
+    CHECK(g_copies == copies + 5);
+    const u64 held_since = atomic_load_explicit(&g_bc7_cache.io.since, memory_order_acquire);
+    atomic_store_explicit(&g_hold, 0, memory_order_release);
+    while (atomic_load_explicit(&g_bc7_cache.io.since, memory_order_acquire) == held_since) usleep(1000);
+    CHECK(READ_A() == 0); /* the second read runs, under BC7_IO_LATE_NS, behind one left late: not tried */
+    run_deferred();       /* the second, while the I/O thread has not caught up: left at once, or taken if done */
     CHECK(io_idle_by(plat_ns() + 5000000000ull));
     atomic_store_explicit(&g_slow_us, 0, memory_order_release);
-    const double longest = logged_after("vulkan: the BC7 cache's reads caught up: 1 more came too late and 1 were not "
-                                        "tried, their levels encoded instead (the longest read took ");
-    CHECK(longest >= 140 && longest < 250);
+    CHECK(logged("vulkan: the BC7 cache's reads caught up: "));
+    const double longest = logged_after("were not tried, their levels encoded instead (the longest read took ");
+    CHECK(longest >= 140 && longest < 250); /* the second read's 150 ms */
 
-    u64 late, skipped;
-    u64 unkept;
     vk_bc7_cache_late(&late, &skipped, &unkept);
-    CHECK(late == 2 && skipped == 2);
+    CHECK(late >= 2 && late <= 3 && skipped == 2);
     vk_bc7_cache_take_failed(took_failed); /* to their owner, loaded again */
-    CHECK(g_failed == failed + 2 && g_failed_owner == &owner && g_failed_gva == 0x5000 && same(g_failed_key, ka));
+    CHECK(g_failed == failed + late && g_failed_owner == &owner && g_failed_gva == 0x5000 && same(g_failed_key, ka));
     CHECK(vk_bc7_cache_find(ka) == na); /* the record kept */
     /* the disk answers again: the reads go to the I/O thread and are copied */
+    const unsigned now_copies = g_copies;
     memset(dst, 0, (size_t)na);
-    CHECK(READ_A() == 1 && g_copies == copies + 2 && !memcmp(dst, a, (size_t)na));
+    CHECK(READ_A() == 1 && g_copies == now_copies + 1 && !memcmp(dst, a, (size_t)na));
 #undef READ_A
     vk_bc7_cache_close();
     g_threaded = 0;
@@ -504,8 +535,8 @@ static void slow_disk(void) {
     remove(IDX);
     free(a);
     free(dst);
-    puts("PASS a held or slow read: the recording thread leaves it late and goes on, no more are asked meanwhile, and "
-         "the log says how long the reads took");
+    puts("PASS a held read: the recording thread leaves it late and goes on, no more are asked until the I/O thread "
+         "caught up, and the log says what it cost; a slow disk that answers has its reads waited for");
 }
 
 /* Records put while the disk takes no write: the GPU thread puts each at once, in the index, and goes on; a read of
