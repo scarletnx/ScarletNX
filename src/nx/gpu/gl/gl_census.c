@@ -6,7 +6,9 @@
    GL through the pointers eglGetProcAddress answers, so each call goes through the function's dispatch slot. The slot
    of every _gl function of that module takes a counter, which then runs what the slot held, as nvn_loader.c takes the
    NVN functions' slots: the driver still does everything it did. eglGetProcAddress is wrapped too (hooks.hook routes
-   it), so an address it answers that no export names is counted by the name the game asked for.
+   it), so an address it answers that no export names is counted by the name the game asked for. A driver answers
+   stubs there, each jumping through the current context's table to the export of its name: the game's call is the
+   stub's, and the export's calls behind it are the driver's.
 
    A call whose return address lies in the driver is the driver's own use of its export, counted apart. The frame of a
    call is the runtime's count of frames presented when it is made (g_frames). The file, a row for each function called
@@ -15,6 +17,7 @@
 #include "nx/gpu/gl/gl_census.h"
 #include "common/platform/file.h"
 #include "common/platform/thread.h"
+#include "common/utilities/bits.h"
 #include "common/utilities/common.h"
 #include "nx/hle/hook/hook.h"
 #include "nx/hle/kernel/kernel.h"
@@ -39,7 +42,10 @@ typedef struct {
     u64 addr; /* 0: a free entry */
     GuestFn own;
     u64 calls, driver_calls, frame_calls, most;
-    u32 frames, first, last, asked; /* asked: named by the game's eglGetProcAddress, not by an export */
+    u32 frames, first, last;
+    u32 asked;  /* named by the game's eglGetProcAddress, not by an export */
+    u32 behind; /* an export reached through the stub eglGetProcAddress answered for its name: its calls are the
+                   driver's */
     char name[GL_CENSUS_NAME];
 } GlCensusFn;
 /* a row of the file: a function's counts as they were read, before the rows are sorted */
@@ -48,8 +54,9 @@ typedef struct {
     u32 frames, first, last, fn;
 } GlCensusRow;
 
-/* fn: GL_CENSUS_SLOTS functions by address, then as many rows, one block, NULL while the census is off. The lock
-   orders the table's inserts, the slots taken and the file */
+/* fn: GL_CENSUS_SLOTS functions by address, then as many rows, then the exports by name (each one's index in fn plus
+   one, 0 for none), one block, NULL while the census is off. The lock orders the table's inserts, the slots taken and
+   the file */
 static struct {
     PMutex lock;
     GlCensusFn* fn;
@@ -68,6 +75,18 @@ static GlCensusFn* census_find(u64 addr) {
         if (a == addr) return &fn[i];
         if (!a) return NULL;
     }
+    return NULL;
+}
+
+static u16* by_name(void) { return (u16*)((GlCensusRow*)(g_gl_census.fn + GL_CENSUS_SLOTS) + GL_CENSUS_SLOTS); }
+static u32 name_slot(const char* name) {
+    return (u32)snx_fnv1a(SNX_FNV_BASIS, name, strlen(name)) & (GL_CENSUS_SLOTS - 1);
+}
+/* the export the census took by name, NULL for none */
+static GlCensusFn* export_named(const char* name) {
+    const u16* names = by_name();
+    for (u32 n = 0, i = name_slot(name); n < GL_CENSUS_SLOTS && names[i]; n++, i = (i + 1) & (GL_CENSUS_SLOTS - 1))
+        if (!strcmp(g_gl_census.fn[names[i] - 1].name, name)) return &g_gl_census.fn[names[i] - 1];
     return NULL;
 }
 
@@ -90,7 +109,7 @@ static void census_write(void) {
                          __atomic_load_n(&fn[i].last, __ATOMIC_RELAXED),
                          i};
         u64 now = __atomic_load_n(&fn[i].frame_calls, __ATOMIC_RELAXED);
-        if (!r.calls && !r.driver_calls) continue;
+        if (!r.calls) continue; /* the game's calls: a function only the driver called is the driver's business */
         if (now > r.most) r.most = now; /* the frame still going */
         calls += r.calls;
         /* by calls, most first, then by name: an insertion, as a few hundred functions are called */
@@ -119,13 +138,9 @@ static void census_write(void) {
     fputs("function\tcalls\tframes\tper_frame\tmost_in_a_frame\tfirst_frame\tlast_frame\tdriver_calls\tnamed_by\n", f);
     for (i = 0; i < n; i++) {
         const GlCensusRow* r = &rows[i];
-        if (r->calls)
-            fprintf(f, "%s\t%llu\t%u\t%.2f\t%llu\t%u\t%u\t%llu\t%s\n", fn[r->fn].name, (unsigned long long)r->calls,
-                    r->frames, (double)r->calls / (double)r->frames, (unsigned long long)r->most, r->first - 1,
-                    r->last - 1, (unsigned long long)r->driver_calls, fn[r->fn].asked ? "eglGetProcAddress" : "export");
-        else
-            fprintf(f, "%s\t0\t0\t0\t0\t-\t-\t%llu\t%s\n", fn[r->fn].name, (unsigned long long)r->driver_calls,
-                    fn[r->fn].asked ? "eglGetProcAddress" : "export");
+        fprintf(f, "%s\t%llu\t%u\t%.2f\t%llu\t%u\t%u\t%llu\t%s\n", fn[r->fn].name, (unsigned long long)r->calls,
+                r->frames, (double)r->calls / (double)r->frames, (unsigned long long)r->most, r->first - 1, r->last - 1,
+                (unsigned long long)r->driver_calls, fn[r->fn].asked ? "eglGetProcAddress" : "export");
     }
     if (fclose(f) || plat_replace_file(part, g_settings.gl_call_census)) {
         if (!g_gl_census.failed) WARN("gl census: %s can't be written: no table\n", g_settings.gl_call_census);
@@ -138,7 +153,8 @@ static void counted(CPU* RESTRICT c, u64 entry) {
     GlCensusFn* f = census_find(entry);
     u32 now, prev;
     if (!f) fatal("gl census: a call at %llx, where the census took no function", (unsigned long long)entry);
-    if (c->x[30] - g_gl_census.driver_lo < g_gl_census.driver_hi - g_gl_census.driver_lo) {
+    if (c->x[30] - g_gl_census.driver_lo < g_gl_census.driver_hi - g_gl_census.driver_lo ||
+        __atomic_load_n(&f->behind, __ATOMIC_RELAXED)) {
         __atomic_add_fetch(&f->driver_calls, 1, __ATOMIC_RELAXED);
         f->own(c, entry);
         return;
@@ -193,6 +209,12 @@ static int census_take(u64 addr, const char* name, u32 asked) {
     fn[i].own = cur;
     fn[i].asked = asked;
     snprintf(fn[i].name, sizeof fn[i].name, "%s", name);
+    if (!asked) {
+        u16* names = by_name();
+        u32 k = name_slot(fn[i].name);
+        while (names[k]) k = (k + 1) & (GL_CENSUS_SLOTS - 1); /* fewer exports than slots: one is free */
+        names[k] = (u16)(i + 1);
+    }
     __atomic_store_n(&fn[i].addr, addr, __ATOMIC_RELEASE);
     __atomic_store_n(slot, counted, __ATOMIC_RELEASE);
     nce_slot_taken(addr, "gl census");
@@ -222,11 +244,13 @@ static void getproc(CPU* RESTRICT c, u64 entry) {
                       : len   ? "an empty name"
                               : "a name of over 63 characters");
         else if (census_take(found, name, 1)) {
+            GlCensusFn* export = export_named(name);
+            if (export) __atomic_store_n(&export->behind, 1, __ATOMIC_RELAXED);
             g_gl_census.unnamed++;
-            LOG_LIMIT(32,
-                      "gl census: eglGetProcAddress answered %s at %llx, where the driver exports no function: "
-                      "counted by that name\n",
-                      name, (unsigned long long)found);
+            LOG_LIMIT(1,
+                      "gl census: eglGetProcAddress answers %s at %llx, where the driver exports no function (a stub "
+                      "of its own): the game's calls are counted there by the name asked%s\n",
+                      name, (unsigned long long)found, export ? ", and the export's behind it as the driver's" : "");
         } else
             LOG_LIMIT(16,
                       "gl census: eglGetProcAddress answered %s at %llx, which isn't counted (outside the game's "
@@ -268,7 +292,7 @@ void gl_census_init(void) {
              path, (unsigned long long)getproc_at);
         return;
     }
-    g_gl_census.fn = calloc(GL_CENSUS_SLOTS, sizeof(GlCensusFn) + sizeof(GlCensusRow));
+    g_gl_census.fn = calloc(GL_CENSUS_SLOTS, sizeof(GlCensusFn) + sizeof(GlCensusRow) + sizeof(u16));
     if (!g_gl_census.fn) fatal("gl census: no memory for its table of %d functions", GL_CENSUS_SLOTS);
     pm_lock(&g_gl_census.lock);
     for (i = 0; kernel_symbol(i, &addr, &name); i++)
