@@ -318,6 +318,26 @@ int main(void) {
     assert(parameter(ctx, T2D, STENCIL_MODE) == 0x1901 && parameter(ctx, T2D, IMMUTABLE_FORMAT) == 0);
     snx_gl_tex_parameter(ctx, T2D, 0x1234, 1);
     assert(snx_gl_get_error(ctx) == SNX_GL_INVALID_ENUM);
+    /* GL_BGRA texels: a desktop context takes them into an RGBA texture, red and blue swapped; GLES leaves it empty */
+    {
+        uint32_t d = 0;
+        snx_gl_gen_textures(desktop, 1, &d);
+        snx_gl_bind_texture(desktop, T2D, d);
+        snx_gl_tex_image(desktop, T2D, 0, RGBA8, 2, 1, 1, 0x80e1, UBYTE, (uint64_t)(uintptr_t)pattern, 0, 0);
+        assert(heard.last.swap_rb && texels(d)[0] == pattern[2] && texels(d)[2] == pattern[0]);
+        assert(texels(d)[1] == pattern[1] && texels(d)[3] == pattern[3] && texels(d)[4] == pattern[6]);
+        snx_gl_tex_sub_image(desktop, T2D, 0, 1, 0, 0, 1, 1, 1, 0x80e1, 0x8367, (uint64_t)(uintptr_t)(pattern + 40), 0,
+                             0); /* GL_UNSIGNED_INT_8_8_8_8_REV: the same bytes */
+        assert(texels(d)[4] == pattern[42] && texels(d)[6] == pattern[40] && texels(d)[0] == pattern[2]);
+        snx_gl_tex_sub_image(desktop, T2D, 0, 0, 0, 0, 1, 1, 1, RGBA, UBYTE, (uint64_t)(uintptr_t)(pattern + 80), 0, 0);
+        assert(!heard.last.swap_rb && texels(d)[0] == pattern[80]);
+        snx_gl_bind_texture(ctx, T2D, 1);
+        {
+            unsigned before = heard.uploads; /* the line was said once already, above */
+            snx_gl_tex_sub_image(ctx, T2D, 0, 0, 0, 0, 1, 1, 1, 0x80e1, UBYTE, (uint64_t)(uintptr_t)pattern, 0, 0);
+            assert(heard.uploads == before);
+        }
+    }
     /* the LOD bias: a desktop context's alone */
     snx_gl_tex_parameter(ctx, T2D, LOD_BIAS, 1.5f);
     assert(snx_gl_get_error(ctx) == SNX_GL_INVALID_ENUM && snx_gl_texture(1)->sampler.lod_bias == 0);

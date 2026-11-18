@@ -73,6 +73,7 @@ typedef struct {
     const uint8_t* src;
     uint64_t row, rows, stride, image;
     int compressed;
+    int swap_rb; /* the client's texels are GL_BGRA for the texture's RGBA bytes: its red and blue the other way */
 } SnxGlUpload;
 
 /* What a platform hears of the textures; each may be NULL. Not part of a save state: given again after a load */
