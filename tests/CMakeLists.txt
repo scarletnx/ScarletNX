@@ -2432,7 +2432,7 @@ if(TARGET SDL3::SDL3) # F1's and the Shortcuts pages name the runtime's keys as 
         "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ctrl_scan.c"
         "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ctrl_request.c"
         "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ui.c" support/ui_raster.c support/ui_shape_ref.c)
-    snx_test_target(snx-test-ctrl-applet 11)
+    snx_test_target(snx-test-ctrl-applet gnu23)
     # the scan's fake alone (ble_scan.h's snx_ble_fake_open): the test never reaches the system's Bluetooth
     target_link_libraries(snx-test-ctrl-applet PRIVATE scarletnx-common snx_splash snx_ble m SDL3::SDL3)
     target_include_directories(snx-test-ctrl-applet PRIVATE "${PROJECT_BINARY_DIR}/generated" "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -2574,7 +2574,7 @@ add_executable(snx-test-joycon2 joycon2.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/
     "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/joycon2_session.c"
     "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/joycon2_att.c"
     "${PROJECT_SOURCE_DIR}/src/common/platform/ble_scan.c") # the launcher's advert check, compared
-snx_test_target(snx-test-joycon2 99)
+snx_test_target(snx-test-joycon2 c23)
 target_link_libraries(snx-test-joycon2 PRIVATE m)
 add_test(NAME joycon2 COMMAND snx-test-joycon2)
 
@@ -2590,7 +2590,7 @@ add_executable(snx-test-joycon2-sdl joycon2_sdl.c "${PROJECT_SOURCE_DIR}/src/nx/
     "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/backend/gamepad.c"
     "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/connect.c" "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ui.c"
     "${PROJECT_SOURCE_DIR}/src/nx/runtime/ini.c")
-snx_test_target(snx-test-joycon2-sdl 11)
+snx_test_target(snx-test-joycon2-sdl gnu23)
 target_link_libraries(snx-test-joycon2-sdl PRIVATE scarletnx-common snx_pad_sdl snx_splash m)
 target_include_directories(snx-test-joycon2-sdl PRIVATE "${PROJECT_BINARY_DIR}/generated")
 add_test(NAME joycon2_sdl COMMAND snx-test-joycon2-sdl)
