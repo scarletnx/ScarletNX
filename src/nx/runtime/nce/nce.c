@@ -31,7 +31,7 @@
 
 static struct {
     int checked, file, wanted, on;
-    int net;       /* the net under the guest threads (thread_net): 0 not tried yet, 1 on, -1 none on this system */
+    _Atomic int net; /* the net under the guest threads (thread_net): 0 not tried yet, 1 on, -1 none on this system */
     char why[240]; /* why a game of an NCE recompile does not get it on this host (nce_host_check) */
     NceEnv env;
     PMutex lock; /* the pools and the diverts, which a guest thread changes (ldr:ro, NVN's resolver) */
@@ -40,11 +40,11 @@ static struct {
     u64 trap; /* where a run that the runtime starts returns: nce_native */
     u64 entry[NCE_DIVERTS], original[NCE_DIVERTS];
     u8 family[NCE_DIVERTS]; /* each one's family, which the log counts its outcalls by (guest_stats_family) */
-    u32 diverts;
+    _Atomic u32 diverts;
     /* each thread's host id while it runs native code, and 1 while that code is the guest's, not the runtime's: a
        kick then stops it. By the thread's index (kt_ix) */
-    int tid[KTHREAD_MAX + 1];
-    u8 guest[KTHREAD_MAX + 1];
+    _Atomic int tid[KTHREAD_MAX + 1];
+    _Atomic u8 guest[KTHREAD_MAX + 1];
     char foreign[1024]; /* what was last found that is not the game's in its addresses, so a finding is said once */
 } g_nce = {.lock = PMUTEX_INIT};
 
@@ -148,7 +148,7 @@ static void set_guest(const CPU* c, u8 v) {
 
 /* a word of the game's code, written where the host's CPU fetches it */
 static void code_write(u64 a, u32 word) {
-    atomic_store_explicit((u32*)(void*)GP(a), snx_le32(word), memory_order_release);
+    atomic_store_explicit((_Atomic u32*)(void*)GP(a), snx_le32(word), memory_order_release);
     __builtin___clear_cache((char*)GP(a), (char*)GP(a + 4));
 }
 
@@ -432,9 +432,10 @@ void nce_slot_taken(u64 addr, const char* family) {
     u32 word, i;
     if (!g_nce.on) return;
     pm_lock(&g_nce.lock);
-    for (i = 0; i < g_nce.diverts; i++)
+    u32 n = atomic_load_explicit(&g_nce.diverts, memory_order_relaxed); /* under the lock: its only writer */
+    for (i = 0; i < n; i++)
         if (g_nce.entry[i] == addr) break;
-    if (i < g_nce.diverts) {
+    if (i < n) {
         pm_unlock(&g_nce.lock);
         return;
     }
