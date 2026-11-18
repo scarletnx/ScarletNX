@@ -4,15 +4,30 @@
    gpu_driver.h), loaded on Android arm64 in place of the system's (an Adreno's or an Xclipse's: gpu_driver_android.h
    gives its library for whichever driver Android's Vulkan loader asks for), and freedreno_env, Freedreno's
    variables, set for any driver that reads them. A package that does not load, or where none can, ends the run saying
-   why: no other driver takes its place */
+   why: no other driver takes its place.
+   Every program that draws with Vulkan shares this one loader: the Switch runtime and the Vita's say what the run asked
+   for with snx_gpu_driver_use, and snx_vk_window_open (window.h) then makes its instance and its surface through the
+   package. A program that never calls snx_gpu_driver_use runs on the system's driver as before */
 #ifndef SNX_GPU_DRIVER_LOAD_H
 #define SNX_GPU_DRIVER_LOAD_H
+#include "common/gpu/vk/vk_common.h" /* VkInstance and VkSurfaceKHR, as the renderers that share this loader have them */
 #include <stddef.h>
 
-typedef struct VkInstance_T* VkInstance;
-typedef struct VkSurfaceKHR_T* VkSurfaceKHR;
+/* What a run asks of the loader, and where it says things. The strings are copied */
+typedef struct SnxGpuDriverRun {
+    const char* driver;    /* gpu_driver: "" the system's, else a package's folder name; NULL as "" */
+    const char* freedreno; /* freedreno_env: NAME=value, a ';' between two; NULL as "" */
+    /* a line the loader logs, its '\n' at its end; NULL: stdout */
+    void (*say)(const char* line);
+    /* what a run that cannot go on says, no '\n' at its end. It does not return; NULL: stderr, then exit(1) */
+    void (*stop)(const char* line);
+} SnxGpuDriverRun;
+
+/* what the run asks, before the first gpu_driver_open (snx_vk_window_open calls that). Once a run: a later call is
+   ignored */
+void snx_gpu_driver_use(const SnxGpuDriverRun* run);
 /* Freedreno's variables set, then the package's vkGetInstanceProcAddr: NULL for the system's driver (gpu_driver
-   empty). Once per run; the later calls return what the first did */
+   empty) and where snx_gpu_driver_use was never called. Once per run; the later calls return what the first did */
 void* gpu_driver_open(void);
 /* after vkCreateInstance, which opened the driver: the run ends, saying why, when the package's library did not open
    (the system's driver is then in its place, so that the instance is made) or no library of its folder is mapped */

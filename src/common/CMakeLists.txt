@@ -188,4 +188,27 @@ if(TARGET Vulkan::Headers AND TARGET SDL3::SDL3)
     snx_glsl_spirv(snx_vk_common SOURCE gpu/vk/fx/sgsr1.frag NAME fx_sgsr_frag_spv HEADER common/gpu/vk/fx_spv.h)
     # a notice's band drawn in a window's rendering (gpu/vk/notice.c), over the effects' fullscreen triangle
     snx_glsl_spirv(snx_vk_common SOURCE gpu/vk/notice.frag NAME notice_frag_spv HEADER common/gpu/vk/notice_spv.h)
+    # The GPU driver a run asks for (gpu/vk/gpu_driver_load.h), which the window's instance and surface are made through:
+    # the Switch runtime's and the Vita's share this one loader. It reads the environment and the process's maps, which
+    # the strict standard of the files above hides, so its files are compiled as the runtimes' are
+    target_sources(snx_vk_common PRIVATE gpu/vk/gpu_driver_load.c)
+    set(snx_gpu_driver_sources gpu/vk/gpu_driver_load.c)
+    if(ANDROID AND ANDROID_ABI STREQUAL "arm64-v8a")
+        # packages' one ABI: the linker namespaces the package's driver loads in (gpu/vk/gpu_driver_android.c)
+        target_sources(snx_vk_common PRIVATE gpu/vk/gpu_driver_android.c)
+        list(APPEND snx_gpu_driver_sources gpu/vk/gpu_driver_android.c)
+    endif()
+    set_source_files_properties(${snx_gpu_driver_sources} PROPERTIES COMPILE_OPTIONS "-std=gnu23")
+    if(ANDROID AND ANDROID_ABI STREQUAL "arm64-v8a")
+        # the two calls Android's Vulkan loader opens its driver with, for the copy of it a run with a GPU driver
+        # package loads (gpu/vk/gpu_driver_hook.h): -z global is what puts them before the system's
+        add_library(snx_gpu_driver_hook SHARED gpu/vk/gpu_driver_hook.c)
+        target_include_directories(snx_gpu_driver_hook PRIVATE "${PROJECT_SOURCE_DIR}/src")
+        target_compile_options(snx_gpu_driver_hook PRIVATE -Wall -Wextra -Werror=missing-prototypes)
+        target_link_options(snx_gpu_driver_hook PRIVATE LINKER:-z,global)
+        set_target_properties(snx_gpu_driver_hook PROPERTIES OUTPUT_NAME scarletnx-gpu-hook)
+        include(GNUInstallDirs)
+        install(TARGETS snx_gpu_driver_hook LIBRARY DESTINATION lib/${ANDROID_ABI})
+        install(FILES gpu/vk/ADRENOTOOLS-NOTICE.txt DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/scarletnx)
+    endif()
 endif()

@@ -107,7 +107,7 @@ set(platform runtime/platform/log.c runtime/platform/plat_sdl.c runtime/platform
              runtime/platform/audio_denoise.c
              runtime/platform/ui.c runtime/platform/vpad.c
              runtime/platform/fatal_screen.c
-             runtime/platform/prepare_screen.c runtime/platform/gpu_driver_load.c runtime/platform/resources.c)
+             runtime/platform/prepare_screen.c runtime/platform/resources.c)
 if(WIN32)
     list(APPEND platform runtime/platform/plat_win32.c runtime/platform/profiler_win32.c)
 else()
@@ -120,11 +120,6 @@ if(APPLE)
     # under ARC, as gui/apple.m is: the global that holds the activity's token keeps it
     set_source_files_properties(runtime/platform/plat_apple.m PROPERTIES COMPILE_OPTIONS -fobjc-arc)
 endif()
-if(ANDROID AND ANDROID_ABI STREQUAL "arm64-v8a")
-    # a GPU driver package loaded in place of the system's driver (runtime/platform/gpu_driver_load.c), on the
-    # packages' one ABI
-    list(APPEND platform runtime/platform/gpu_driver_android.c)
-endif()
 if(SNX_TRACY)
     # the C++ client's connection id, which the C layer's GPU track keys its epochs on
     list(APPEND platform runtime/platform/tracy_conn.cpp)
@@ -132,6 +127,8 @@ endif()
 snx_component(platform ${platform})
 # the microphone's neural noise reduction (runtime/platform/audio_denoise.c), from cmake/dependencies.cmake
 target_link_libraries(snx_platform PRIVATE snx_rnnoise)
+# the GPU driver a run asks for (src/common/gpu/vk/gpu_driver_load.h), which the other renderers share
+target_link_libraries(snx_platform PRIVATE snx_vk_common)
 # the tracy-capture a capture needs (tracy.c), the client's release (cmake/dependencies.cmake)
 target_compile_definitions(snx_platform PRIVATE SNX_TRACY_VERSION="${SNX_TRACY_VERSION}")
 
@@ -343,18 +340,7 @@ if(ANDROID)
         target_link_options(scarletnx-run PRIVATE ${snx_jemalloc_exports})
     endif()
     install(TARGETS scarletnx-run RUNTIME DESTINATION lib/${ANDROID_ABI})
-    if(ANDROID_ABI STREQUAL "arm64-v8a")
-        # the two calls Android's Vulkan loader opens its driver with, for the copy of it a run with a GPU driver
-        # package loads (runtime/platform/gpu_driver_hook.h): -z global is what puts them before the system's
-        add_library(snx_gpu_driver_hook SHARED runtime/platform/gpu_driver_hook.c)
-        target_include_directories(snx_gpu_driver_hook PRIVATE "${PROJECT_SOURCE_DIR}/src")
-        target_compile_options(snx_gpu_driver_hook PRIVATE -Wall -Wextra -Werror=missing-prototypes)
-        target_link_options(snx_gpu_driver_hook PRIVATE LINKER:-z,global)
-        set_target_properties(snx_gpu_driver_hook PROPERTIES OUTPUT_NAME scarletnx-gpu-hook)
-        install(TARGETS snx_gpu_driver_hook LIBRARY DESTINATION lib/${ANDROID_ABI})
-        include(GNUInstallDirs)
-        install(FILES runtime/platform/ADRENOTOOLS-NOTICE.txt DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/scarletnx)
-    endif()
+    # the GPU driver loader's hook library (scarletnx-gpu-hook) is src/common's, shared with the other renderers
 endif()
 list(TRANSFORM components PREPEND snx_)
 add_library(scarletnx-nx STATIC)

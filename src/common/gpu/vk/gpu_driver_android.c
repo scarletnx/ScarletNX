@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* gpu_driver_android.h */
-#include "nx/runtime/platform/gpu_driver_android.h"
-#include "nx/runtime/platform/gpu_driver_hook.h"
+#include "common/gpu/vk/gpu_driver_android.h"
+#include "common/gpu/vk/gpu_driver_hook.h"
 #include "common/utilities/elf_dynamic.h"
 #include "common/utilities/gpu_driver_stage.h"
 #include <android/dlext.h>

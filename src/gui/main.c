@@ -19013,10 +19013,10 @@ static void launch(App* app, char* absolute, bool prepared) {
     }
     if (app->menu.selected == GUI_3DS && !make) n += gui_settings_ctr_options(s, argv + n);
     /* the launcher's GPU driver and Freedreno variables, where the game's .ini has none of its own */
-    if (app->menu.selected == GUI_SWITCH && !make) {
+    if ((app->menu.selected == GUI_SWITCH || app->menu.selected == GUI_VITA) && !make) {
         free(app->run_driver);
         free(app->run_freedreno);
-        app->run_driver = gui_run_option("gpu_driver", game_ini, app->gpu_driver);
+        app->run_driver = gui_run_option("gpu_driver", game_ini, app->gpu_driver); /* a Vita game has no .ini of its own */
         app->run_freedreno = gui_run_option("freedreno_env", game_ini, app->freedreno);
         if (app->run_driver) argv[n++] = app->run_driver;
         if (app->run_freedreno) argv[n++] = app->run_freedreno;

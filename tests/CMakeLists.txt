@@ -2964,12 +2964,11 @@ if(NOT SNX_TOOLS_ONLY)
         add_test(NAME vk_device_make COMMAND snx-test-vk-device)
     endif()
     if(ANDROID)
-        # the GPU driver a run asks for (nx/runtime/platform/gpu_driver_load.c) where none loads: Freedreno's variables set,
+        # the GPU driver a run asks for (common/gpu/vk/gpu_driver_load.c) where none loads: Freedreno's variables set,
         # a wrong one, a package asked for here and a folder name that is none stopping the run with why, a run a case
-        add_executable(snx-test-gpu-driver-load gpu_driver_load.c
-                    "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/gpu_driver_load.c")
+        add_executable(snx-test-gpu-driver-load gpu_driver_load.c)
         snx_test_target(snx-test-gpu-driver-load gnu23)
-        target_link_libraries(snx-test-gpu-driver-load PRIVATE snx_nx_flags scarletnx-common)
+        target_link_libraries(snx-test-gpu-driver-load PRIVATE snx_nx_flags snx_vk_common scarletnx-common)
         foreach(case IN ITEMS env sets badenv here badid)
             add_test(NAME gpu_driver_load_${case} COMMAND snx-test-gpu-driver-load ${case})
         endforeach()

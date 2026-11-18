@@ -1,43 +1,33 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* nx/runtime/platform/gpu_driver_load.c away from Android: Freedreno's variables set before any driver reads them, and
+/* common/gpu/vk/gpu_driver_load.c away from Android: Freedreno's variables set before any driver reads them, and
    each run that asks for what it cannot have stopped, saying why, rather than going on with the system's driver. A run
    opens its driver once, so each case is a run of this program: env, sets, badenv, here, badid. With the system's driver a
    run that finds no Vulkan device has nothing to say of a package */
-#include "nx/runtime/platform/gpu_driver_load.h"
-#include "nx/runtime/options.h"
-#include "nx/runtime/platform/log.h" /* fatal and logf_, which this file stands in for */
+#include "common/gpu/vk/gpu_driver_load.h"
 #include <assert.h>
 #include <setjmp.h>
-#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 static struct {
-    jmp_buf stopped;  /* where fatal goes back to */
+    jmp_buf stopped;  /* where stop goes back to */
     char fatal[1024]; /* what it said */
     char log[4096];   /* what the run logged */
 } g_test;
-void fatal(const char* fmt, ...) {
-    va_list ap;
-    va_start(ap, fmt);
-    vsnprintf(g_test.fatal, sizeof g_test.fatal, fmt, ap);
-    va_end(ap);
+static void test_stop(const char* line) {
+    snprintf(g_test.fatal, sizeof g_test.fatal, "%s", line);
     longjmp(g_test.stopped, 1);
 }
-void logf_(int lvl, const char* fmt, ...) {
-    va_list ap;
+static void test_say(const char* line) {
     size_t n = strlen(g_test.log);
-    (void)lvl;
-    va_start(ap, fmt);
-    vsnprintf(g_test.log + n, sizeof g_test.log - n, fmt, ap);
-    va_end(ap);
+    snprintf(g_test.log + n, sizeof g_test.log - n, "%s", line);
 }
 /* gpu_driver_open with these settings: 1 when the run went on, 0 when it was stopped (g_test.fatal says why) */
 static int run(const char* driver, const char* freedreno, void** gipa) {
-    snprintf(g_settings.gpu_driver, sizeof g_settings.gpu_driver, "%s", driver);
-    snprintf(g_settings.freedreno_variables, sizeof g_settings.freedreno_variables, "%s", freedreno);
+    SnxGpuDriverRun asked = {.driver = driver, .freedreno = freedreno, .say = test_say, .stop = test_stop};
+    snx_gpu_driver_use(&asked);
     if (setjmp(g_test.stopped)) return 0;
     *gipa = gpu_driver_open();
     return 1;

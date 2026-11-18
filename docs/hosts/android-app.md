@@ -62,7 +62,7 @@ recompiles on the phone, then the game opens.
   picked for every game or for one in Settings > App > GPU Drivers ([GUI](../user/gui.md)). An Adreno is known by
   `/dev/kgsl-3d0`, a Mali by `/dev/mali0` or `/dev/mali`, an Xclipse by a render node of `/dev/dri` whose kernel
   driver DRM names `amdgpu`, the one RADV opens. The runtime loads
-  either itself (`src/nx/runtime/platform/gpu_driver_android.c`, after libadrenotools): a game that picked a package
+  either itself (`src/common/gpu/vk/gpu_driver_android.c`, after libadrenotools): a game that picked a package
   opens a second copy of Android's Vulkan loader in a linker namespace of its own, where `libscarletnx-gpu-hook.so`,
   the one library this adds to the app's libraries folder, takes the two calls that copy opens its driver with, and
   the package's library is opened for whichever driver it asks for. The linker's functions for namespaces are found in
