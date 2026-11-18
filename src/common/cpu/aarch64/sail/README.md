@@ -7,8 +7,9 @@ subsets need (`arm-v9.4-a/src/instrs64.sail` and `v8_base.sail` at commit
 `5416ef6b43e9527c38dc71fb752259c1d01a47e1`), copied as it is. sail-arm is the Arm architecture's ASL translated to
 Sail; it is BSD 3-Clause Clear (copyright Arm Limited and its authors), in `LICENSE` beside this file.
 
-`a64.roots` names what is copied: the decode functions of each subset (`root`), and the names the generator knows or
-lowers itself, the state no instruction there reaches, and the NX's fixups, which are not followed (`stop`).
+`a64.roots` names what is copied: the decode functions of each subset (`root`), the names the generator knows or
+lowers itself, the state no instruction there reaches, and the NX's fixups, which are not followed (`stop`), and the
+functions the back end lowers, of which only the `val` is copied (`lower`: the floating-point arithmetic).
 `tools/sailgen --extract` copies every definition the roots reach, in sail-arm's order. To update it, fetch the files of
 a newer commit and run, from the repository's root:
 

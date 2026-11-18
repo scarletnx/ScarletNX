@@ -28,7 +28,9 @@ Each decode function is walked with everything it calls inlined, and each value 
   make. An `if` on one keeps one branch, so a fixup such as `let SPESampleInFlight : bool = false` leaves no trace. An
   integer past 62 bits (WFE's timeout, `1 << 64`) may be bound and passed on, never computed with.
 - **STATIC**, when the recompiler runs: the word's fields, the pc, the guest's features, and all that only they make:
-  `datasize`, the immediates, `DecodeBitMasks`, the `if`s and `match`es on fields. They are C in the output.
+  `datasize`, the immediates, `DecodeBitMasks`, the `if`s and `match`es on fields, the width a `forall 'N` takes from
+  an argument of `bits('N)` (FPAbs's `op['N - 2 .. 0]`). They are C in the output; bits wider than 64 (a SIMD&FP
+  register's `Zeros(128)`) are a map of constant bits instead.
 - **DYN**, when the guest runs: what reads a register, the flags among them. They are calls of the back end that
   build IR.
 
@@ -62,16 +64,21 @@ Builtins, lowered by the back end rather than from Sail:
 | `RoundTowardsZero(Real(a) / Real(b))` | `udiv`/`sdiv` with the divisor 1 where it is 0 or -1 under the most negative value (the caller's select gives 0 for the first) |
 | `CountLeadingZeroBits`, `CountLeadingSignBits` | `llvm.ctlz` |
 | `BitReverse(Poly32Mod2(BitReverse(acc) @ Zeros(n) EOR BitReverse(val) @ Zeros(32), poly))` | the reflected CRC update: SSE4.2's CRC32C, AArch64's CRC32, or the sliced tables |
-| `LSL`, `LSR`, `ASR`, `ROR`, `Extend`, `ZeroExtend`, `SignExtend`, `Replicate`, `Zeros`, `Ones`, `IsZero`, `IsZeroBit`, `Bit`, `EOR`, `MOD`, `DIV`, `Min`, `Max`, `HighestSetBit`, `Slice` | the map, or C when the value is STATIC |
+| `LSL`, `LSR`, `ASR`, `ROR`, `Extend`, `ZeroExtend`, `SignExtend`, `Replicate`, `Zeros`, `Ones`, `IsZero`, `IsZeroBit`, `Bit`, `EOR`, `MOD`, `DIV`, `Min`, `Max`, `HighestSetBit`, `Slice`, `Elem_set` | the map, or C when the value is STATIC |
 | `IsFeatureImplemented(FEAT_X)` | the guest's feature bit (`SNX_A64_FEAT_X` of `a64.profile`); false, a CONST, for a feature `--profile` names nowhere |
 | `EndOfInstruction()` | the end of the instruction: nothing more is emitted |
 | `BranchTo(target, type, conditional)`, `BranchNotTaken(type, conditional)` | the branch's operand for the recompiler's flow (`ir_codegen.c`): the target, and the run-time condition it is under; their profiling, branch records and address tagging do nothing at the NX's EL0 |
 
-A function with no Sail definition that the back end defines as `sg_NAME` is one of the machine's actions: a
-statement, given the call's arguments (bits and DYN ones as the back end's values, the others as C integers), or the
-context alone when `sg_NAME` takes nothing else; one whose `val` gives a result (nx.sail's guest memory: `GuestMemRead`,
-the exclusives', the atomics') is a DYN value of it. `llvm.h` gives the hints (`Hint_Yield` the host's spin-wait hint,
-`Hint_WFE` the runtime's `rt_wfe`, `SendEvent` its `rt_sev`), the barriers (`DataMemoryBarrier` and `DataSynchronizationBarrier`
+A function with no Sail definition that the back end defines as `sg_NAME` is lowered by it: one of the machine's
+actions, or a function whose Sail `a64.roots` leaves out with `lower`, keeping its `val` (the floating-point
+arithmetic, which works on real numbers). `sg_NAME` takes the context, then the run-time condition the call is under
+when its next parameter is named `path` (NULL for none: FCCMP's `FPCompare` runs only where its condition holds; a
+call under one of a function that takes none stops sailgen), then the call's arguments unless it takes nothing else
+(bits as the back end's maps whatever their time, the rest as they come). Its result is its `val`'s: none, bits or a
+bool (nx.sail's guest memory: `GuestMemRead`, the exclusives', the atomics'), an enum known when it recompiles
+(`FPRoundingMode`'s is the back end's own "the mode FPCR holds when the guest runs") or a tuple of bits, its parts
+through pointers after the arguments. `llvm.h` gives the hints (`Hint_Yield` the host's spin-wait hint, `Hint_WFE`
+the runtime's `rt_wfe`, `SendEvent` its `rt_sev`), the barriers (`DataMemoryBarrier` and `DataSynchronizationBarrier`
 a fence by the accesses they order, `InstructionSynchronizationBarrier` a full one) and the exclusive monitor
 (`ClearExclusiveLocal`), each with why, and those that do nothing here (`Hint_WFI`, `SynchronizeErrors`, `Hint_DGH`).
 
@@ -80,7 +87,8 @@ a fence by the accesses they order, `InstructionSynchronizationBarrier` a full o
 The registers are the Sail's: sail-arm's `PSTATE` (its `struct ProcState`), and `nx.sail`'s `GPR`, the array ScarletNX's
 CPU keeps X0 to X30 and SP_EL0 in, which `get_R`, `set_R`, `SP_read` and `SP_set` index where sail-arm picks one of 31
 registers by a match. A read or a write of a register `NAME` is a call of the back end's `sg_NAME_read` or
-`sg_NAME_write`: of the whole value for a register of bits or a bool, of an element for a vector of them (`GPR[n]`), of
+`sg_NAME_write`: of the whole value for a register of bits or a bool, of an element for a vector of them (`GPR[n]`; `sg_NAME_read_bits` for `NAME[n][hi .. lo]` where the back end
+defines it, so a scalar's lane is all it loads), of
 a field for a struct (`PSTATE.N`, which the back end numbers `SG_PSTATE_N`); consecutive fields assigned together
 (`PSTATE.N @ PSTATE.Z @ PSTATE.C @ PSTATE.V = nzcv`) are one write of the first and how many. A call of an overload
 (`_R`) is the member that takes that many arguments. sailgen checks that the back end defines each name it calls and
@@ -118,9 +126,10 @@ The front (the parse, the inlining, the times) and the Sail don't depend on LLVM
 
 ## Tests
 
-`tests/sailgen/`: `--extract` of a small file copies the closure of its root and nothing else, and `--generate`
-refuses a throw it has no meaning for, an `Error_See` under a run-time condition, a write to a field a `let` holds
-fixed and a register or a field the back end does not keep, naming its line;
+`tests/sailgen/`: `--extract` of a small file copies the closure of its root and nothing else, and of a function it
+lowers the `val` and the types it names alone; `--generate` refuses a throw it has no meaning for, an `Error_See` under a
+run-time condition, a write to a field a `let` holds fixed, a register or a field the back end does not keep, the back
+end's function that takes no `path` under a run-time condition and one whose `val` gives an integer, naming its line;
 `sailgen_a64` generates the in-tree A64 subsets whole.
 
 `tests/llvm_sail_ir.c` holds the generated emitters to the hand-written ones they replaced

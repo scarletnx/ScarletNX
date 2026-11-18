@@ -8,7 +8,9 @@
    The roots file, one directive per line (# starts a comment):
      root NAME     a function to start from: its val, its definition, and every decode clause that calls it
      stop NAME     a name not followed and not copied: the state the generator maps (_R, SP_EL0, PSTATE...)
-                   and what it lowers itself (gen.c's builtins) */
+                   and what it lowers itself (gen.c's builtins)
+     lower NAME    a function the back end lowers (FPAdd): its val is copied, for the generator to call the back
+                   end's by, and the names the val's types name are followed; its definition is not */
 #include "sailgen.h"
 #include <ctype.h>
 #include <stdio.h>
@@ -21,6 +23,7 @@ typedef struct {
     unsigned name;     /* string offset */
     int clause;        /* a function clause: name is the scattered function's */
     int enum_def;      /* an enum: its members are names too */
+    int val_def;       /* a val */
     int keep;
 } Piece;
 
@@ -33,6 +36,8 @@ static struct {
     unsigned root_count;
     unsigned* stops;
     unsigned stop_count;
+    unsigned* lowers;
+    unsigned lower_count;
     unsigned* queue;
     unsigned queue_count;
 } g_extract;
@@ -74,6 +79,7 @@ static void piece_add(unsigned file, size_t start, const char* s, size_t n) {
     p->start = start;
     w = word_at(s, i, n);
     p->enum_def = w == 4 && !memcmp(s + i, "enum", 4);
+    p->val_def = w == 3 && !memcmp(s + i, "val", 3);
     i += w;
     while (i < n && (s[i] == ' ' || s[i] == '\t')) ++i;
     w = word_at(s, i, n);
@@ -123,11 +129,12 @@ static void keep(unsigned index) {
 /* every piece a name refers to: those it names, and the enum it is a member of */
 static void follow_name(const char* s, size_t length) {
     unsigned i;
+    int lower = listed(g_extract.lowers, g_extract.lower_count, s, length);
     if (listed(g_extract.stops, g_extract.stop_count, s, length)) return;
     for (i = 0; i < g_extract.count; ++i) {
         const Piece* p = &g_extract.pieces[i];
         const char* name = sg_str(p->name);
-        if (p->clause) continue;
+        if (p->clause || (lower && !p->val_def)) continue;
         if (strlen(name) == length && !memcmp(name, s, length))
             keep(i);
         else if (p->enum_def) {
@@ -182,6 +189,7 @@ int sg_extract(const char* roots_path, const char* out_path, const char* const* 
     g_extract.sizes = (size_t*)sg_alloc(sizeof(size_t) * (size_t)input_count);
     g_extract.roots = (unsigned*)sg_alloc(sizeof(unsigned) * (size + 1));
     g_extract.stops = (unsigned*)sg_alloc(sizeof(unsigned) * (size + 1));
+    g_extract.lowers = (unsigned*)sg_alloc(sizeof(unsigned) * (size + 1));
     for (f = 0; f < (unsigned)input_count; ++f) {
         g_extract.texts[f] = sg_read(inputs[f], &g_extract.sizes[f]);
         split(f);
@@ -199,14 +207,17 @@ int sg_extract(const char* roots_path, const char* out_path, const char* const* 
             i += w;
             while (i < e && isspace((unsigned char)roots[i])) ++i;
             w = word_at(roots, i, e);
-            if (!w || (strcmp(word, "root") && strcmp(word, "stop"))) {
-                fprintf(stderr, "%s:%u: error: expected \"root NAME\" or \"stop NAME\", found \"%.*s\"\n", roots_path,
-                        line_no, (int)(e - i + w), roots + i - w);
+            if (!w || (strcmp(word, "root") && strcmp(word, "stop") && strcmp(word, "lower"))) {
+                fprintf(stderr,
+                        "%s:%u: error: expected \"root NAME\", \"stop NAME\" or \"lower NAME\", found \"%.*s\"\n",
+                        roots_path, line_no, (int)(e - i + w), roots + i - w);
                 free(roots);
                 return 1;
             }
             if (word[0] == 'r')
                 g_extract.roots[g_extract.root_count++] = sg_intern(roots + i, w);
+            else if (word[0] == 'l')
+                g_extract.lowers[g_extract.lower_count++] = sg_intern(roots + i, w);
             else
                 g_extract.stops[g_extract.stop_count++] = sg_intern(roots + i, w);
         }
