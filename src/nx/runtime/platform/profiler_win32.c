@@ -14,6 +14,7 @@
 #include "nx/runtime/main.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
+#include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -124,7 +125,7 @@ static void fns_index(void) {
     g_fns = malloc((size_t)g_mod->nentries * sizeof *g_fns);
     if (!g_fns) return;
     for (i = 0; i < g_mod->nentries; i++) {
-        g_fns[i].host = (u64)(size_t)g_mod->entry_fn[i];
+        g_fns[i].host = (u64)(size_t)atomic_load_explicit(&g_mod->entry_fn[i], memory_order_relaxed);
         g_fns[i].guest = g_mod->entry_addr[i];
     }
     qsort(g_fns, g_mod->nentries, sizeof *g_fns, fn_cmp);
