@@ -5,8 +5,9 @@
    and is the same for the same inputs. Records come back as written, with any size (one piece of the reading or
    several), from the file in a later run too; a file of another version starts over; a record whose blocks changed on
    disk is dropped when read; one cut short by a crash is cut off, the records before it kept; the bound starts the
-   file over; and the file stays locked while it is open. A hit read on the recording thread (vk_bc7_cache_read_later)
-   is copied only when it checks out, and one that doesn't is dropped */
+   file over; and the file stays locked while it is open. A hit read for the recording thread (vk_bc7_cache_read_later)
+   is copied only when it checks out, and one that doesn't is dropped; one the disk holds is left late, its record
+   kept, and the log says what it cost */
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -39,10 +40,20 @@ int vk_rec_sync_until(u64 until) {
     (void)until;
     return 1;
 }
+/* with g_defer set, the packet waits for run_deferred, as one the recording thread gets to later */
+static int g_defer;
+static void (*g_deferred_fn)(const void* arg);
+static _Alignas(16) u8 g_deferred[256];
 void vk_rec_call(void (*fn)(const void* arg), const void* arg, u64 size) {
-    (void)size;
-    fn(arg);
+    if (!g_defer) {
+        fn(arg);
+        return;
+    }
+    if (size > sizeof g_deferred) abort();
+    memcpy(g_deferred, arg, (size_t)size);
+    g_deferred_fn = fn;
 }
+static void run_deferred(void) { g_deferred_fn(g_deferred); }
 VkResult vk_devmem_flush(DevMem m, u64 off, u64 size) {
     (void)m;
     (void)off;
@@ -62,13 +73,42 @@ static void VKAPI_PTR copy_stub(VkCommandBuffer cb, VkBuffer src, VkImage dst, V
     g_copy_at = r->bufferOffset;
 }
 PFN_vkCmdCopyBufferToImage vkCmdCopyBufferToImage = copy_stub;
+/* the lines logged, the cache's I/O thread's too, kept for the checks */
+static PMutex g_log_m = PMUTEX_INIT;
+static char g_logged[1 << 14];
+static size_t g_logged_n;
 void logf_(int lvl, const char* fmt, ...) {
+    char line[1024];
     va_list ap;
     (void)lvl;
     va_start(ap, fmt);
-    vprintf(fmt, ap);
+    vsnprintf(line, sizeof line, fmt, ap);
     va_end(ap);
+    fputs(line, stdout);
+    pm_lock(&g_log_m);
+    const size_t n = strlen(line);
+    if (n < sizeof g_logged - g_logged_n) {
+        memcpy(g_logged + g_logged_n, line, n + 1);
+        g_logged_n += n;
+    }
+    pm_unlock(&g_log_m);
 }
+
+#if defined(__linux__)
+#include <sys/syscall.h>
+#include <unistd.h>
+/* A disk that answers no read while g_hold is set, as one past full held the recording thread 184 s (#2487): every
+   pread of the cache (file.c's plat_pread_fd) comes through here, and waits */
+static _Atomic int g_hold;
+static _Atomic u32 g_slow_us;                                /* and a disk that answers each read this late */
+ssize_t pread64(int fd, void* buf, size_t n, __off64_t off); /* unistd.h declares it only for _LARGEFILE64_SOURCE */
+ssize_t pread64(int fd, void* buf, size_t n, __off64_t off) {
+    while (atomic_load_explicit(&g_hold, memory_order_acquire)) usleep(1000);
+    if (atomic_load_explicit(&g_slow_us, memory_order_acquire))
+        usleep(atomic_load_explicit(&g_slow_us, memory_order_acquire));
+    return (ssize_t)syscall(SYS_pread64, fd, buf, n, off);
+}
+#endif
 
 #define PATH "bc7_cache_test.vkbc7"
 #define IDX  PATH ".idx"
@@ -354,10 +394,121 @@ static void later(void) {
     puts("PASS hits read on the recording thread are copied when they check out, and given back when they don't");
 }
 
+/* Hits on a disk that holds every read, then on one that answers each in 150 ms. Held: a read queued before the
+   recording thread gets to it, and none more is asked once that read runs past BC7_IO_LATE_NS (0: the level is
+   encoded); the recording thread leaves it after BC7_IO_WAIT_NS, with no copy, and goes on; once the disk lets go, the
+   log says how long the read took and what came late or was not tried. Slow: the recording thread leaves the read
+   after its wait as well, no more is asked until the I/O thread has caught up, and the line at that point gives the
+   longest read. Each late read goes to its owner with its record kept, and a disk that answers again has the reads
+   copied. A watchdog lets the disk go after 3 s, so a recording thread that waits for the read fails the check of its
+   time rather than hang */
+#if defined(__linux__)
+static void let_go_by(void* arg) {
+    const u64 until = *(const u64*)arg;
+    while (atomic_load_explicit(&g_hold, memory_order_acquire) && plat_ns() < until) usleep(1000);
+    atomic_store_explicit(&g_hold, 0, memory_order_release);
+}
+/* the double after `at` in the lines logged, -1 when no line has it */
+static double logged_after(const char* at) {
+    pm_lock(&g_log_m);
+    const char* said = strstr(g_logged, at);
+    const double v = said ? atof(said + strlen(at)) : -1;
+    pm_unlock(&g_log_m);
+    return v;
+}
+static int logged(const char* text) {
+    pm_lock(&g_log_m);
+    const int found = strstr(g_logged, text) != NULL;
+    pm_unlock(&g_log_m);
+    return found;
+}
+static void slow_disk(void) {
+    const u64 v1[2] = {1, 2}, ka[2] = {70, 80};
+    const u64 na = 4096;
+    u8 *a = blocks(na, 6), *dst = malloc((size_t)na);
+    int owner;
+    remove(PATH);
+    remove(IDX);
+    CHECK(vk_bc7_cache_open(PATH, v1, 64u << 20));
+    vk_bc7_cache_put(ka, a, na);
+    g_threaded = 1;
+    const VkCommandBuffer cb = (VkCommandBuffer)(uintptr_t)8;
+    const VkBuffer buf = (VkBuffer)(uintptr_t)16;
+    const VkImage img = (VkImage)(uintptr_t)24;
+    const VkBufferImageCopy copy = {.bufferOffset = 4096};
+    const VkImageLayout L = VK_IMAGE_LAYOUT_GENERAL;
+    const unsigned copies = g_copies, failed = g_failed;
+#define READ_A() vk_bc7_cache_read_later(cb, ka, na, dst, 1, 4096, buf, img, L, &copy, &owner, 0x5000)
+    /* a disk that answers: the read is copied, the recording thread having waited for the I/O thread */
+    memset(dst, 0, (size_t)na);
+    CHECK(READ_A() == 1 && g_copies == copies + 1 && !memcmp(dst, a, (size_t)na));
+
+    /* held */
+    static u64 until;
+    until = plat_ns() + 3000000000ull;
+    atomic_store_explicit(&g_hold, 1, memory_order_release);
+    CHECK(plat_thread(let_go_by, &until, 0) == 0);
+    g_defer = 1;
+    CHECK(READ_A() == 1); /* queued, its packet still to come */
+    g_defer = 0;
+    usleep(300000);
+    CHECK(READ_A() == 0); /* the I/O thread held past BC7_IO_LATE_NS: not tried */
+    u64 t0 = plat_ns();
+    run_deferred();
+    u64 took = plat_ns() - t0;
+    printf("The recording thread left the held read after %.0f ms\n", (double)took / 1e6);
+    CHECK(took >= BC7_IO_WAIT_NS && took < 2500000000ull); /* left at its bound, not held to the watchdog's 3 s */
+    CHECK(g_copies == copies + 1);                         /* its copy left out */
+    CHECK(vk_bc7_cache_failed_pending());
+    usleep(450000); /* the read held 0.75 s at least */
+    atomic_store_explicit(&g_hold, 0, memory_order_release);
+    CHECK(io_idle_by(plat_ns() + 5000000000ull));
+    const double held = logged_after("vulkan: a read of 4 KiB from the BC7 cache took ");
+    CHECK(held >= 0.7 && held < 3.0);
+    CHECK(logged(" s: 1 reads came too late meanwhile and 1 were not tried, their levels encoded instead\n"));
+
+    /* slow: 75 ms each of a hit's two reads (its record's header, then its blocks), 150 ms in all: 100 ms past the
+       recording thread's wait and under BC7_IO_LATE_NS, room for a loaded machine's late wake-ups either way */
+    atomic_store_explicit(&g_slow_us, 75000, memory_order_release);
+    t0 = plat_ns();
+    CHECK(READ_A() == 1);
+    took = plat_ns() - t0;
+    CHECK(took >= BC7_IO_WAIT_NS && g_copies == copies + 1); /* left before the read ends, its copy left out */
+    CHECK(READ_A() == 0);                                    /* behind a read left late: not tried */
+    CHECK(io_idle_by(plat_ns() + 5000000000ull));
+    atomic_store_explicit(&g_slow_us, 0, memory_order_release);
+    const double longest = logged_after("vulkan: the BC7 cache's reads caught up: 1 more came too late and 1 were not "
+                                        "tried, their levels encoded instead (the longest read took ");
+    CHECK(longest >= 140 && longest < 250);
+
+    u64 late, skipped;
+    vk_bc7_cache_late(&late, &skipped);
+    CHECK(late == 2 && skipped == 2);
+    vk_bc7_cache_take_failed(took_failed); /* to their owner, loaded again */
+    CHECK(g_failed == failed + 2 && g_failed_owner == &owner && g_failed_gva == 0x5000 && same(g_failed_key, ka));
+    CHECK(vk_bc7_cache_find(ka) == na); /* the record kept */
+    /* the disk answers again: the reads go to the I/O thread and are copied */
+    memset(dst, 0, (size_t)na);
+    CHECK(READ_A() == 1 && g_copies == copies + 2 && !memcmp(dst, a, (size_t)na));
+#undef READ_A
+    vk_bc7_cache_close();
+    g_threaded = 0;
+    remove(PATH);
+    remove(IDX);
+    free(a);
+    free(dst);
+    puts("PASS a held or slow read: the recording thread leaves it late and goes on, no more are asked meanwhile, and "
+         "the log says how long the reads took");
+}
+#else
+static void slow_disk(void) { puts("SKIP a held read: the interposed pread is Linux's"); }
+#endif
+
 int main(void) {
     keys();
     file();
     later();
+    slow_disk();
     printf("All %u BC7 cache checks passed\n", checks);
     return 0;
 }
