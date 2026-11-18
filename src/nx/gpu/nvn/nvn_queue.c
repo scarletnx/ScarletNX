@@ -55,6 +55,8 @@ static void fence_at(NvnSync* s, u32 syncpt, u32 value, u32 shown, u64 ready) {
    syncpoint and value, and the game's call that asked (its return address), which the waits' zones name too. One
    game waits on its queue's syncpoint for 40% of each frame, and the trace showed the wait, not the call or the
    fence it waits for */
+/* the guest call's return address for a trace message; the tests call the queue functions with no CPU */
+static unsigned long long caller(const CPU* c) { return c ? (unsigned long long)c->x[30] : 0; }
 static void trace_msg(const char* fmt, ...) {
     if (!snx_tracy_attached()) return;
     char msg[128];
@@ -265,7 +267,7 @@ void nvn_QueueFenceSync(CPU* c, u64 q, u64 sync, i32 condition, i32 flags) {
     (void)flags;
     nvn_replay_fence(o->replay, sync, queue_ready(o), o->shown);
     const NvnSync* s = NVN_OBJ(const NvnSync, sync);
-    trace_msg("nvn queue fence %u=%u from %llx", s->syncpt, s->value, (unsigned long long)c->x[30]);
+    trace_msg("nvn queue fence %u=%u from %llx", s->syncpt, s->value, caller(c));
 }
 /* A sync's present on the display, its shown value on the presents' syncpoint: waited for until the game's deadline
    (start + left, left < 0 for none), or two frame periods past the sync's ready time, after which the display counts
@@ -338,7 +340,7 @@ i32 nvn_SyncWait(CPU* c, u64 sync, u64 timeout) {
     if (!timeout) return sync_wait(c, sync, timeout);
     const NvnSync* s = NVN_OBJ(const NvnSync, sync);
     SNX_ZONE_V(z, "nvn sync wait", (u64)s->syncpt << 32 | s->value);
-    trace_msg("nvn sync wait %u=%u shown %u from %llx", s->syncpt, s->value, s->shown, (unsigned long long)c->x[30]);
+    trace_msg("nvn sync wait %u=%u shown %u from %llx", s->syncpt, s->value, s->shown, caller(c));
     nvn_wait_begin();
     r = sync_wait(c, sync, timeout);
     nvn_wait_end();
@@ -691,8 +693,7 @@ void nvn_QueuePresentTexture(CPU* c, u64 q, u64 w, i32 index) {
     p.period_ns = __atomic_load_n(&g_opt_fps, __ATOMIC_RELAXED) == SNX_FPS_GAME ? period : 0;
     p.released_ns = index >= 0 && index < 4 ? host_ns(o->released[index]) : 0;
     value = nvn_replay_present(queue->replay, &p, &shown);
-    trace_msg("nvn present %u=%u texture %d from %llx", nvn_replay_syncpt(queue->replay), value, index,
-              (unsigned long long)c->x[30]);
+    trace_msg("nvn present %u=%u texture %d from %llx", nvn_replay_syncpt(queue->replay), value, index, caller(c));
     o->on_display[1] = o->on_display[0];
     o->on_display[0] = paced ? shown : 0;
     if (index >= 0 && index < 4) {
