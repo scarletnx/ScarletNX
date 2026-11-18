@@ -12,6 +12,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#if defined(__linux__)
+#include <unistd.h>
+#endif
 #include "nx/gpu/vk/bc7_cache.c"
 #if defined(__x86_64__) || defined(__i386__) || defined(_M_X64) || defined(_M_IX86) /* as xxh3.c builds it */
 #include "xxh_x86dispatch.h"
@@ -85,6 +88,11 @@ void logf_(int lvl, const char* fmt, ...) {
     vsnprintf(line, sizeof line, fmt, ap);
     va_end(ap);
     fputs(line, stdout);
+#if defined(__linux__)
+    /* the I/O thread's lines written slowly, as on the slow disk they are about: a wait for that thread to be idle
+       (io_idle_by) finds them written all the same */
+    if (strstr(line, "the BC7 cache took ") || strstr(line, "reads caught up")) usleep(100000);
+#endif
     pm_lock(&g_log_m);
     const size_t n = strlen(line);
     if (n < sizeof g_logged - g_logged_n) {
