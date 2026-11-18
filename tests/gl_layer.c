@@ -7,8 +7,8 @@
    doesn't know), a 4.5 core debug context (a 2.1 one refused with EGL_BAD_MATCH), a window surface the size of the
    handheld display, eglMakeCurrent setting the viewport to it, glGetString's version in guest memory, eglGetProcAddress
    answering a GL name with its export; glClear's color in the image, then in the scissor alone, rows from GL's bottom;
-   eglSwapBuffers presenting that image (RGBA8888, pitch-linear) and drawing into the other next; a function without a
-   handler returning 0 and saying its name once */
+   eglSwapBuffers presenting that image (RGBA8888, pitch-linear) and drawing into the other next; a GL and an EGL
+   function without a handler stopping the game, the message naming the function and gl_layer's value */
 #include "common/gpu/gl/gl_state.h"
 #include "common/platform/thread.h"
 #include "nx/gpu/gl/gl_layer.h"
@@ -20,6 +20,7 @@
 #include "nx/runtime/options.h"
 #include "nx/runtime/platform/log.h"
 #include <assert.h>
+#include <setjmp.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -105,19 +106,18 @@ static void present_buffer(u64 cpu_addr, u32 w, u32 h, u32 pitch, u32 layout, u3
 static Renderer renderer = {.present_buffer = present_buffer};
 const Renderer* g_renderer = &renderer;
 int g_renderer_up = 1;
-/* the log: the lines that name a function without a handler, counted */
-static unsigned said_draw_arrays;
-void logf_(int lvl, const char* fmt, ...) {
-    char line[512];
-    va_list ap;
-    (void)lvl;
-    va_start(ap, fmt);
-    vsnprintf(line, sizeof line, fmt, ap);
-    va_end(ap);
-    if (strstr(line, "called glDrawArrays, which the layer doesn't implement yet")) said_draw_arrays++;
-}
+void logf_(int lvl, const char* fmt, ...) { (void)lvl, (void)fmt; }
+/* the runtime's fatal: the message kept and the test resumed where it expects one, else the test fails */
+static jmp_buf stopped;
+static int expect_stop;
+static char stop_message[256];
 void fatal(const char* fmt, ...) {
-    fprintf(stderr, "fatal: %s\n", fmt);
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(stop_message, sizeof stop_message, fmt, ap);
+    va_end(ap);
+    if (expect_stop) longjmp(stopped, 1);
+    fprintf(stderr, "fatal: %s\n", stop_message);
     exit(1);
 }
 
@@ -137,6 +137,19 @@ static void arg_f(int i, float v) {
     memcpy(&cpu.v[i], &v, sizeof v);
 }
 /* a call of the export named, with x0 to x5, returning to main's code */
+static u64 call(const char* name, u64 a0, u64 a1, u64 a2, u64 a3, u64 a4);
+/* a call of the export named that must stop the game: the message it stops with */
+static const char* stops(const char* name) {
+    stop_message[0] = 0;
+    expect_stop = 1;
+    if (!setjmp(stopped)) {
+        call(name, 0, 0, 0, 0, 0);
+        fprintf(stderr, "gl_layer: %s returned instead of stopping the game\n", name);
+        exit(1);
+    }
+    expect_stop = 0;
+    return stop_message;
+}
 static u64 call(const char* name, u64 a0, u64 a1, u64 a2, u64 a3, u64 a4) {
     u64 pc, lr = MAIN + 0x10;
     cpu.x[0] = a0, cpu.x[1] = a1, cpu.x[2] = a2, cpu.x[3] = a3, cpu.x[4] = a4;
@@ -259,10 +272,12 @@ int main(void) {
     assert(call("eglSwapBuffers", 1, surface, 0, 0, 0) == 1);
     assert(shown.count == 2 && shown.addr != first); /* the other image */
 
-    /* a function without a handler: 0, its name said once; the driver never ran */
-    assert(call("_glDrawArrays", 4, 0, 3, 0, 0) == 0 && call("_glDrawArrays", 4, 0, 3, 0, 0) == 0);
-    assert(call("eglCopyBuffers", 1, surface, 0, 0, 0) == 0);
-    assert(said_draw_arrays == 1 && !driver_ran);
+    /* a function without a handler stops the game, naming it and gl_layer's value; the driver never ran */
+    assert(!strcmp(stops("_glDrawArrays"),
+                   "gl layer: the game called glDrawArrays, which the GL layer (gl_layer=1) doesn't implement yet"));
+    assert(!strcmp(stops("eglCopyBuffers"),
+                   "gl layer: the game called eglCopyBuffers, which the GL layer (gl_layer=1) doesn't implement yet"));
+    assert(!driver_ran);
     puts("gl_layer: ok");
     return 0;
 }

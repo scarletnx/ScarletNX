@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* The GL layer's loader (gl_layer.h): with gl_layer=1, the slot of every egl and _gl function of the game's GL driver
-   (the module that exports eglGetProcAddress) takes the layer's handler (gpu/gl/gl.hook), or the one that says the
-   function's name once and returns 0. The driver's own code never runs: its eglGetProcAddress is the layer's, which
+   (the module that exports eglGetProcAddress) takes the layer's handler (gpu/gl/gl.hook), or the one that stops the
+   game naming the function, as nvn_loader.c does for NVN. The driver's own code never runs: its eglGetProcAddress is the layer's, which
    answers a name with the address of the driver's export of it, whose slot holds the layer's handler. The exports are
    kept sorted by name for that lookup: their addresses and the guest addresses of their names, in one block */
 #include "nx/gpu/gl/gl_layer.h"
@@ -22,19 +22,15 @@
 
 #include "gpu/gl/gl.hook.inc"
 
-#define GL_SAID 1024 /* a power of two: the functions without a handler said once each, by address */
-
 /* an export of the driver: its address, and its name's in guest memory (the module's string table) */
 typedef struct {
     u64 addr, name;
 } GlExport;
 
 static struct {
-    PMutex lock; /* said */
     GlExport* exports;
     u32 count;
-    u64 said[GL_SAID];
-} g_gl_loader = {.lock = PMUTEX_INIT};
+} g_gl_loader;
 
 static const char* name_of(const GlExport* e) { return (const char*)GP(e->name); }
 static int by_name(const void* a, const void* b) { return strcmp(name_of(a), name_of(b)); }
@@ -56,24 +52,19 @@ u64 gl_loader_lookup(const char* name) {
     return 0;
 }
 
-/* a function of the driver the layer has no handler for: its name said once, 0 returned */
-static void missing(CPU* RESTRICT c, u64 entry) {
-    u32 i = (u32)((entry >> 2) * 2654435761u) & (GL_SAID - 1), n;
-    int say = 0;
-    pm_lock(&g_gl_loader.lock);
-    for (n = 0; n < GL_SAID && g_gl_loader.said[i] && g_gl_loader.said[i] != entry; n++) i = (i + 1) & (GL_SAID - 1);
-    if (n < GL_SAID && !g_gl_loader.said[i]) g_gl_loader.said[i] = entry, say = 1;
-    pm_unlock(&g_gl_loader.lock);
-    if (say) {
-        const char* name = "?";
-        for (u32 k = 0; k < g_gl_loader.count; k++)
-            if (g_gl_loader.exports[k].addr == entry) name = name_of(&g_gl_loader.exports[k]);
-        WARN("gl layer: the game called %s, which the layer doesn't implement yet: it returns 0\n",
-             name[0] == '_' ? name + 1 : name);
-    }
-    c->x[0] = 0;
-    memset(&c->v[0], 0, sizeof c->v[0]); /* a float result: 0 too */
-    c->pc = c->x[30];
+/* a function of the driver the layer has no handler for: the game stops, naming it. Going on with a made-up result
+   would only move the failure to a later call that no longer says what caused it */
+static void unimplemented(CPU* RESTRICT c, u64 entry) {
+    (void)c;
+    for (u32 k = 0; k < g_gl_loader.count; k++)
+        if (g_gl_loader.exports[k].addr == entry) {
+            const char* name = name_of(&g_gl_loader.exports[k]);
+            fatal("gl layer: the game called %s, which the GL layer (gl_layer=%d) doesn't implement yet",
+                  name[0] == '_' ? name + 1 : name, g_settings.gl_layer);
+        }
+    fatal("gl layer: the game called the GL driver's function at %llx, which the GL layer (gl_layer=%d) doesn't "
+          "implement yet",
+          (unsigned long long)entry, g_settings.gl_layer);
 }
 
 /* the export at addr takes fn in its slot */
@@ -120,11 +111,11 @@ void gl_loader_init(void) {
         g_gl_loader.exports[g_gl_loader.count].name = (u64)((const u8*)name - g_mem);
         g_gl_loader.count++;
         k = hook_select(&gl_table, name, versions, &first);
-        take(addr, k >= 0 ? gl_fn[k] : missing);
+        take(addr, k >= 0 ? gl_fn[k] : unimplemented);
         implemented += k >= 0;
     }
     qsort(g_gl_loader.exports, g_gl_loader.count, sizeof *g_gl_loader.exports, by_name);
     LOG("gl layer: the game's GL driver (%s) doesn't run: the layer implements %u of its %u egl and _gl functions, "
-        "and each other one says its name once and returns 0\n",
+        "and a call of any other one stops the game, naming it\n",
         driver->name ? driver->name : "?", implemented, g_gl_loader.count);
 }
