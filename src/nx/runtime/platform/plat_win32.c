@@ -157,7 +157,7 @@ static u8* g_ww_base;
 static u64 g_ww_size;
 static u8* g_ww_watched; /* plat_vm_reserve's reservation, when it has the watch */
 /* plat_vm_track's reservation, whose pages the traps arm (below) */
-static _Atomic u8* g_vm_base;
+static u8* g_vm_base;
 static u64 g_vm_size;
 static int trap_armed_at(const void* a);
 static void trap_forget(u8* p, u64 size);
@@ -407,13 +407,14 @@ static int g_trap_stray_said;
 
 /* the bit of the page at a: 1 with its index in *i, or 0 outside the reservation (or without traps) */
 static int trap_index(const void* a, u64* i) {
-    const u64* bits = atomic_load_explicit(&g_trap_bits, memory_order_acquire);
+    const _Atomic u64* bits = atomic_load_explicit(&g_trap_bits, memory_order_acquire);
     if (!bits || (const u8*)a < g_vm_base || (u64)((const u8*)a - g_vm_base) >= g_vm_size) return 0;
     *i = (u64)((const u8*)a - g_vm_base) >> 12;
     return 1;
 }
 static int trap_bit(u64 i) {
-    return (int)(atomic_load_explicit(&g_trap_bits[i >> 6], memory_order_seq_cst) >> (i & 63) & 1);
+    _Atomic u64* bits = atomic_load_explicit(&g_trap_bits, memory_order_relaxed);
+    return (int)(atomic_load_explicit(&bits[i >> 6], memory_order_seq_cst) >> (i & 63) & 1);
 }
 static int trap_armed_at(const void* a) {
     u64 i;
@@ -451,11 +452,13 @@ static void trap_open(u64 lo, u64 hi) {
                 fatal("Could not let trapped guest memory go at %p (Windows error %lu)", (void*)a,
                       (unsigned long)GetLastError());
         } else
-            for (k = i; k < run; k++) atomic_fetch_or_explicit(g_vm_base + (k << 12), (u8)0, memory_order_relaxed);
+            for (k = i; k < run; k++)
+                atomic_fetch_or_explicit((_Atomic u8*)(g_vm_base + (k << 12)), (u8)0, memory_order_relaxed);
         /* before the bits go: a fault that raced this finds the count moved, and goes again (trap_fault) */
         atomic_fetch_add_explicit(&g_trap_opened, 1, memory_order_seq_cst);
         for (k = i; k < run; k++)
-            atomic_fetch_and_explicit(&g_trap_bits[k >> 6], ~(1ull << (k & 63)), memory_order_seq_cst);
+            atomic_fetch_and_explicit(&atomic_load_explicit(&g_trap_bits, memory_order_relaxed)[k >> 6],
+                                      ~(1ull << (k & 63)), memory_order_seq_cst);
         any = 1;
         i = run;
     }
@@ -473,7 +476,8 @@ static void trap_forget(u8* p, u64 size) {
     for (i = lo; i < hi; i++)
         if (trap_bit(i)) {
             if (!any) atomic_fetch_add_explicit(&g_trap_opened, 1, memory_order_seq_cst);
-            atomic_fetch_and_explicit(&g_trap_bits[i >> 6], ~(1ull << (i & 63)), memory_order_seq_cst);
+            atomic_fetch_and_explicit(&atomic_load_explicit(&g_trap_bits, memory_order_relaxed)[i >> 6],
+                                      ~(1ull << (i & 63)), memory_order_seq_cst);
             any = 1;
         }
     if (any) trap_wake();
@@ -626,13 +630,13 @@ void plat_dump_fault_thread(u32 tid) {
 }
 int plat_trap_init(void (*fault)(u8* p, int write, u32 tid)) {
     u64 words;
-    u64* bits;
+    _Atomic u64* bits;
     u32 k;
     if (!fault || !g_vm_base || !g_vm_size || atomic_load_explicit(&g_trap_bits, memory_order_acquire)) return -1;
     words = (g_vm_size / 4096 + 63) / 64;
-    bits = (u64*)VirtualAlloc(NULL, (SIZE_T)(words * 8), MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+    bits = (_Atomic u64*)VirtualAlloc(NULL, (SIZE_T)(words * 8), MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
     if (!bits) return -1;
-    for (k = 0; k < TRAP_RING; k++) g_trap_ring[k].seq = k;
+    for (k = 0; k < TRAP_RING; k++) atomic_store_explicit(&g_trap_ring[k].seq, k, memory_order_relaxed);
     g_trap_cb = fault;
     atomic_store_explicit(&g_trap_bits, bits, memory_order_release);
     if (plat_thread(trap_thread, NULL, 0)) {
@@ -649,7 +653,9 @@ int plat_trap_arm(u8* p, u64 size) {
     DWORD old;
     if (!trap_pages(p, size, &lo, &hi)) return -1;
     /* marked first: a fault on a page from the moment it is inaccessible finds it armed */
-    for (i = lo; i < hi; i++) atomic_fetch_or_explicit(&g_trap_bits[i >> 6], 1ull << (i & 63), memory_order_seq_cst);
+    for (i = lo; i < hi; i++)
+        atomic_fetch_or_explicit(&atomic_load_explicit(&g_trap_bits, memory_order_relaxed)[i >> 6], 1ull << (i & 63),
+                                 memory_order_seq_cst);
     return VirtualProtect(p, (SIZE_T)size, PAGE_NOACCESS, &old) ? 0 : -1;
 }
 int plat_trap_fill(u8* p, const void* src, u64 size) {
