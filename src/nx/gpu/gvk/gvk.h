@@ -72,7 +72,11 @@ u64 gvk_export(const char* name);
      type): the stride goes on the member's array type, where Vulkan reads it, when that type has none.
    - a matrix member with a MatrixStride and neither RowMajor nor ColMajor (3,700 of one game's 4,000 modules): it
      gets ColMajor, which GLSL's compilers mean by none, and what that game's matrices are (RowMajor tilts its
-     scenes) */
+     scenes).
+   - a pointer into an array of uniform or storage buffers by an index that isn't a constant: NonUniform (with
+     SPV_EXT_descriptor_indexing's capabilities). One game picks each vertex's matrices from an array of four uniform
+     buffers by the vertex's matrix index. The console's GPU takes each vertex's own buffer, and AMD's and lavapipe
+     take the first vertex's of the group unless told: that game's planets drew as long thin triangles */
 const u32* gvk_spirv_mend(const u32* w, size_t bytes, size_t* out_bytes);
 
 /* the structures gvk_api.c copies (gvk.c's tables) */

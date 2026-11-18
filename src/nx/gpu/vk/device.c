@@ -2024,6 +2024,11 @@ static bool choose_device(SnxVkChoice* c, void* user) {
     /* a game's own SPIR-V (gpu/gvk) is the console's driver's to take, which lays blocks out as scalars */
     f12.scalarBlockLayout = g_settings.guest_vulkan && q12.scalarBlockLayout;
     f12.uniformBufferStandardLayout = g_settings.guest_vulkan && q12.uniformBufferStandardLayout;
+    /* and indexes its arrays of buffers per vertex, which gvk_spirv.c marks NonUniform for the host's driver */
+    f12.shaderUniformBufferArrayNonUniformIndexing =
+        g_settings.guest_vulkan && q12.shaderUniformBufferArrayNonUniformIndexing;
+    f12.shaderStorageBufferArrayNonUniformIndexing =
+        g_settings.guest_vulkan && q12.shaderStorageBufferArrayNonUniformIndexing;
     /* HMMA off the matrix unit, by the rules: pairs of lanes with subgroups of 32 where the extension bans prefer
        them (OpGroupNonUniformShuffleXor), and A and B through shared memory where the driver loops for a shuffle
        whose index differs between lanes, which no feature or property tells, so the table does. hmma_mode settles
