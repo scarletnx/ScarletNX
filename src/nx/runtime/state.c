@@ -786,7 +786,9 @@ static int save_hle(Buf* hle, Buf* heap, Names* names) {
     }
     for (i = 0; i < SESSION_MAX; i++) {
         SWZ(c->ipc.sessions[i].obj);
-        SWZ(c->ipc.sessions[i].domain);
+        /* _Atomic: read with its order named, as every access to it is */
+        SWZ_AS(c->ipc.sessions[i].domain,
+               swz(names, (const void*)atomic_load_explicit(&c->ipc.sessions[i].domain, memory_order_relaxed)));
     }
     for (i = 0; i < DOMAIN_MAX; i++)
         for (k = 0; k < DOMAIN_OBJECTS; k++) SWZ(c->ipc.domains[i].obj[k]);
