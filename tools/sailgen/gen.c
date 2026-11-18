@@ -21,7 +21,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-enum { BT_CONST, BT_STATIC, BT_DYN };
+/* LANE: when the guest runs, one value per lane of an element loop that is one vector operation (foreach_loop) */
+enum { BT_CONST, BT_STATIC, BT_DYN, BT_LANE };
 
 /* a value of a Sail struct (an access descriptor): known when the recompiler runs, a C struct of its fields (struct_ctype) */
 #define K_STRUCT 32
@@ -45,7 +46,11 @@ typedef struct {
 
 typedef struct {
     unsigned char kind, bt;
-    unsigned sdef; /* K_STRUCT: the struct's definition */
+    unsigned sdef;      /* K_STRUCT: the struct's definition */
+    unsigned lane_loop; /* BT_LANE: the element loop that made it so */
+    /* BT_LANE: set in the loop to an element's value rather than to the vector Elem_set builds, so after the loop it
+       is no value of the Sail's (the last element's) */
+    unsigned char lane_elem;
 } Var;
 
 typedef struct {
@@ -93,6 +98,15 @@ static struct {
     char path[400];     /* the run-time condition (an i1's C expression) the code walked is under, "" for none */
     unsigned call_depth;
     int sees; /* the decode function walked has thrown Error_See */
+    /* the element loop walked as one vector operation (foreach_loop): its node, its lanes' count (C, known when it
+       recompiles), whether something in it can't be (lane_refuse), the loops of this decode function that can't */
+    unsigned lane_loop;
+    int lane, lane_fail, lane_restart;
+    char lane_count[160];
+    unsigned refused[64], refused_count;
+    /* a builtin's arguments, evaluated once to see whether one is per lane (lane_builtin), for builtin() to reuse */
+    unsigned memo_node, memo_count;
+    Val memo[8];
     unsigned roots[1024];
     Clause clauses[1024];
     char* features;           /* --profile's features, " FEAT_A FEAT_B ", in capitals; NULL without one */
@@ -112,6 +126,7 @@ static void buf_add(Buffer* b, const char* text, size_t n) {
     b->length += n;
     b->text[b->length] = 0;
 }
+static void lane_refuse(const char* why);
 static void emit(const char* fmt, ...) {
     char line[4096];
     va_list ap;
@@ -121,6 +136,7 @@ static void emit(const char* fmt, ...) {
     n = vsnprintf(line, sizeof line, fmt, ap);
     va_end(ap);
     if (n < 0 || (size_t)n >= sizeof line) sg_fail(0, "a generated line over %zu characters", sizeof line);
+    if (g_gen.lane && strstr(line, "sg_lane")) lane_refuse("the lane's number used other than as an element's");
     buf_add(g_gen.out, line, (size_t)n);
 }
 
@@ -130,6 +146,7 @@ static const char* name_of(unsigned node) { return sg_str(N(node).name); }
 static void temp(char* out, size_t size) { snprintf(out, size, "t%u", ++g_gen.temp); }
 
 static const char* ctype(int kind, int bt) {
+    if (bt == BT_LANE && (kind == K_BOOL || kind == K_INT || kind == K_BITS || kind == K_BIT)) return "SgL";
     if (bt == BT_DYN) {
         switch (kind) {
             case K_BOOL: return "LLVMValueRef";
@@ -242,7 +259,28 @@ static Val keep(Val v) {
 
 /* the value at time bt (BT_DYN from STATIC or CONST) */
 static Val raise(Val v, int bt) {
-    if (bt <= BT_STATIC || v.bt == BT_DYN) {
+    if (v.bt == BT_LANE && bt != BT_LANE) { /* a lane's value where one value is wanted */
+        if (g_gen.lane) {
+            lane_refuse("a lane's value used where one value is wanted");
+            return v;
+        }
+        if (v.kind != K_BITS) sg_fail(v.node, "a lane's value of kind %d used after its loop", v.kind);
+        return val_c(K_BITS, BT_DYN, "sg_d_from_l(g, %s)", v.c);
+    }
+    if (bt == BT_LANE && v.bt != BT_LANE) { /* the same value in every lane */
+        if (!g_gen.lane) sg_fail(v.node, "a value spread over lanes outside an element loop");
+        if (v.kind != K_BITS && v.kind != K_INT && v.kind != K_BOOL) {
+            lane_refuse("a value of a kind lanes don't hold");
+            return v;
+        }
+        v = raise(v, BT_DYN);
+        return val_c(v.kind, BT_LANE, "sg_l_splat_%s(g, %s, %s)",
+                     v.kind == K_BITS  ? "d"
+                     : v.kind == K_INT ? "i"
+                                       : "b",
+                     v.c, g_gen.lane_count);
+    }
+    if (bt <= BT_STATIC || v.bt == BT_DYN || v.bt == BT_LANE) {
         if (v.bt == BT_CONST && bt == BT_STATIC && v.kind != K_TUPLE) v.bt = BT_STATIC;
         return v;
     }
@@ -313,6 +351,8 @@ static int new_var(int kind, int bt) {
     if (i >= g_gen.var_count) {
         g_gen.vars[i].kind = (unsigned char)(kind == K_BIT ? K_BITS : kind);
         g_gen.vars[i].bt = (unsigned char)(bt < BT_STATIC ? BT_STATIC : bt);
+        g_gen.vars[i].lane_loop = 0;
+        g_gen.vars[i].lane_elem = 0;
         g_gen.var_count = i + 1;
         g_gen.changed = 1;
     } else if (bt > g_gen.vars[i].bt) {
@@ -326,6 +366,31 @@ static void var_raise(int var, int bt) {
         g_gen.vars[var].bt = (unsigned char)bt;
         g_gen.changed = 1;
     }
+    if (bt == BT_LANE && g_gen.lane) g_gen.vars[var].lane_loop = g_gen.lane_loop;
+}
+
+/* ---- lanes: an element loop as one vector operation ----
+   foreach (e from 0 to elements - 1) whose body reads and sets element e of bits (Elem_read, Elem_set) is walked once,
+   e standing for every lane at once: each value it makes per element is a vector of them (BT_LANE, the back end's
+   SgL), and the result is that vector. Whatever the walk meets that lanes can't hold refuses the loop, which is then
+   walked again as the loop of elements it is (the walk of the decode function starts over) */
+static void lane_refuse(const char* why) {
+    (void)why;
+    if (g_gen.lane) g_gen.lane_fail = 1;
+}
+static int lane_refused(unsigned loop) {
+    unsigned i;
+    for (i = 0; i < g_gen.refused_count; ++i)
+        if (g_gen.refused[i] == loop) return 1;
+    return 0;
+}
+/* the loop is walked as a loop from now on: the decode function's walk starts over without its lanes */
+static void refuse_loop(unsigned loop) {
+    if (lane_refused(loop)) return;
+    if (g_gen.refused_count == sizeof g_gen.refused / sizeof *g_gen.refused) sg_fail(loop, "over 64 element loops");
+    g_gen.refused[g_gen.refused_count++] = loop;
+    g_gen.lane_restart = 1;
+    g_gen.changed = 1;
 }
 
 /* the index of the enum member name, -1 when it is none */
@@ -387,8 +452,12 @@ static const char* cond_text(const char* c, char* out, size_t size) {
 static Val need_static_int(unsigned n, Val v, const char* what) {
     if (v.kind != K_INT && v.kind != K_ENUM && v.kind != K_BOOL)
         sg_fail(n, "%s must be an integer, found kind %d", what, v.kind);
+    if (v.bt == BT_LANE && g_gen.lane) {
+        lane_refuse("a lane's value where one known when it recompiles is wanted");
+        return val_const(K_INT, 0);
+    }
     if (v.huge) sg_fail(n, "%s is an integer over 62 bits", what);
-    if (v.bt == BT_DYN) sg_fail(n, "%s must be known when the recompiler runs", what);
+    if (v.bt >= BT_DYN) sg_fail(n, "%s must be known when the recompiler runs", what);
     return v;
 }
 static Val need_bits(unsigned n, Val v, const char* what) {
@@ -666,7 +735,10 @@ static Val inline_call(unsigned n, unsigned def, Val* args, unsigned count) {
    Zeros(128)) are a map of constant bits instead, which costs no IR */
 static int wide(Val width) { return width.bt == BT_CONST && width.value > 64; }
 
-static Val arg(unsigned n, unsigned i) { return eval(arg_at(n, i), 0); }
+static Val arg(unsigned n, unsigned i) {
+    if (g_gen.memo_node == n && i < g_gen.memo_count) return g_gen.memo[i]; /* lane_builtin evaluated it */
+    return eval(arg_at(n, i), 0);
+}
 static void need_args(unsigned n, unsigned count) {
     if (arg_count(n) != count) sg_fail(n, "%s takes %u arguments, given %u", name_of(n), count, arg_count(n));
 }
@@ -713,8 +785,100 @@ static Val shift(unsigned n, int kind) {
     return val_c(K_BITS, BT_DYN, "%s(g, %s, %s)", d_fn[kind], x.c, amount.c);
 }
 
+/* the builtins an element loop's lanes can go through: their arguments are evaluated here, and one per lane makes the
+   result one per lane; else they stay in g_gen.memo for builtin_body. 1 when *r is the result */
+static int lane_builtin(unsigned n, const char* name, Val* r) {
+    static const char* const names[] = {"UInt", "SInt",       "asl_Int",    "Min",       "Max",
+                                        "Abs",  "negate",     "IsZero",     "not_vec",   "not_bool",
+                                        "EOR",  "ZeroExtend", "SignExtend", "Elem_read", "Elem_set"};
+    unsigned count = arg_count(n), i, lanes = 0;
+    Val* a = g_gen.memo;
+    for (i = 0; i < sizeof names / sizeof *names && strcmp(name, names[i]); ++i) {}
+    if (i == sizeof names / sizeof *names || count > 8) return 0;
+    for (i = 0; i < count; ++i) {
+        a[i] = eval(arg_at(n, i), 0);
+        lanes += a[i].bt == BT_LANE;
+    }
+    g_gen.memo_node = n;
+    g_gen.memo_count = count;
+    if (!strcmp(name, "Elem_read") && count == 3 && strstr(a[1].c, "sg_lane")) { /* element e: the lanes */
+        Val size = need_static_int(n, a[2], "an element's size");
+        if (strcmp(a[1].c, "sg_lane") || a[0].bt == BT_LANE || a[0].kind != K_BITS) {
+            lane_refuse("an element other than the lane's own");
+            *r = a[0];
+            return 1;
+        }
+        *r = val_c(K_BITS, BT_LANE, "sg_l_elem(g, %s, %s, %s)", raise(a[0], BT_DYN).c, size.c, g_gen.lane_count);
+        return 1;
+    }
+    if (!strcmp(name, "Elem_set") && count == 4 && strstr(a[1].c, "sg_lane")) { /* element e set: the lanes */
+        Val size = need_static_int(n, a[2], "an element's size");
+        if (strcmp(a[1].c, "sg_lane") || a[3].kind != K_BITS) {
+            lane_refuse("an element set other than the lane's own");
+            *r = a[0];
+            return 1;
+        }
+        *r = val_c(K_BITS, BT_LANE, "sg_l_bits(g, %s, %s)", raise(a[3], BT_LANE).c, size.c);
+        return 1;
+    }
+    if (!lanes) return 0;
+    if ((!strcmp(name, "UInt") || !strcmp(name, "SInt")) && count == 1 && a[0].kind == K_BITS)
+        *r = val_c(K_INT, BT_LANE, "sg_l_int(g, %s, %d)", a[0].c, name[0] == 'S');
+    else if (!strcmp(name, "asl_Int") && count == 2 && a[0].kind == K_BITS && a[1].bt <= BT_STATIC)
+        *r = val_c(K_INT, BT_LANE, "sg_l_int(g, %s, !(%s))", a[0].c, a[1].c);
+    else if ((!strcmp(name, "Min") || !strcmp(name, "Max")) && count == 2 && a[0].kind == K_INT && a[1].kind == K_INT)
+        *r = val_c(K_INT, BT_LANE, "sg_l_minmax(g, %s, %s, %d)", raise(a[0], BT_LANE).c, raise(a[1], BT_LANE).c,
+                   name[1] == 'i');
+    else if ((!strcmp(name, "Abs") || !strcmp(name, "negate")) && count == 1 && a[0].kind == K_INT)
+        *r = val_c(K_INT, BT_LANE, "sg_l_%s(g, %s)", name[0] == 'A' ? "abs" : "neg", a[0].c);
+    else if (!strcmp(name, "IsZero") && count == 1 && a[0].kind == K_BITS)
+        *r = val_c(K_BOOL, BT_LANE, "sg_l_is_zero(g, %s)", a[0].c);
+    else if ((!strcmp(name, "not_vec") && count == 1 && a[0].kind == K_BITS) ||
+             (!strcmp(name, "not_bool") && count == 1 && a[0].kind == K_BOOL))
+        *r = val_c(a[0].kind, BT_LANE, "sg_l_not(g, %s)", a[0].c);
+    else if (!strcmp(name, "EOR") && count == 2 && a[0].kind == K_BITS && a[1].kind == K_BITS)
+        *r = val_c(K_BITS, BT_LANE, "sg_l_xor(g, %s, %s)", raise(a[0], BT_LANE).c, raise(a[1], BT_LANE).c);
+    else if ((!strcmp(name, "ZeroExtend") || !strcmp(name, "SignExtend")) && count == 2 && a[0].bt == BT_LANE &&
+             a[0].kind == K_BITS && a[1].bt <= BT_STATIC)
+        *r = val_c(K_BITS, BT_LANE, "sg_l_ext(g, %s, %s, %d)", a[0].c, a[1].c, name[0] == 'S');
+    else {
+        lane_refuse("a builtin lanes don't have");
+        *r = a[0];
+    }
+    return 1;
+}
+
+static int builtin_body(unsigned n, const char* name, Val* r);
 static int builtin(unsigned n, const char* name, Val* r) {
+    unsigned saved_node = g_gen.memo_node, saved_count = g_gen.memo_count;
+    Val saved[8];
+    int done;
+    memcpy(saved, g_gen.memo, sizeof saved);
+    g_gen.memo_node = 0;
+    done = g_gen.lane && lane_builtin(n, name, r);
+    if (!done) done = builtin_body(n, name, r);
+    g_gen.memo_node = saved_node;
+    g_gen.memo_count = saved_count;
+    memcpy(g_gen.memo, saved, sizeof saved);
+    return done;
+}
+
+static int builtin_body(unsigned n, const char* name, Val* r) {
     Val a, b, c;
+    if (!strcmp(name, "Elem_read")) { /* Elem_read(x, e, size): element e of size bits of x */
+        Val e, size;
+        need_args(n, 3);
+        a = need_bits(n, arg(n, 0), name);
+        e = need_static_int(n, arg(n, 1), "an element's number");
+        size = need_static_int(n, arg(n, 2), "an element's size");
+        if (a.bt == BT_DYN)
+            *r = val_c(K_BITS, BT_DYN, "sg_d_slice(g, %s, ((%s) + 1) * (%s) - 1, (%s) * (%s))", a.c, e.c, size.c, e.c,
+                       size.c);
+        else
+            *r = val_c(K_BITS, BT_STATIC, "sg_s_slice(%s, ((%s) + 1) * (%s) - 1, (%s) * (%s))", a.c, e.c, size.c, e.c,
+                       size.c);
+        return 1;
+    }
     if (!strcmp(name, "UInt") || !strcmp(name, "SInt")) {
         int s = name[0] == 'S';
         need_args(n, 1);
@@ -1049,6 +1213,7 @@ static Val action_call(unsigned n, const char* name, int takes) {
     if (g_gen.dynamic_branch && !(takes & BACKEND_PATH))
         sg_fail(n, "%s, the back end's action, under a condition known only at run time", name);
     if (g_gen.in_helper) sg_fail(n, "%s, the back end's action, in a function of what the recompiler knows", name);
+    if (g_gen.lane) lane_refuse("the back end's action in an element loop, which lanes run once");
     if (kind == K_BIT) kind = K_BITS;
     if (kind == K_TUPLE) parts = tuple_parts(n, val);
     if (kind != K_UNIT && kind != K_NONE && kind != K_BITS && kind != K_BOOL && kind != K_ENUM && kind != K_TUPLE)
@@ -1433,6 +1598,13 @@ static Val ident(unsigned n) {
         if (b->var >= 0) {
             v.bt = g_gen.vars[b->var].bt;
             v.kind = g_gen.vars[b->var].kind;
+            if (v.bt == BT_LANE && !g_gen.lane && (v.kind != K_BITS || g_gen.vars[b->var].lane_elem)) {
+                /* only the vector Elem_set built leaves the loop */
+                refuse_loop(g_gen.vars[b->var].lane_loop); /* the walk starts over: any value of its kind */
+                return v.kind == K_INT    ? val_c(K_INT, BT_DYN, "sg_i_const(g, 0)")
+                       : v.kind == K_BITS ? val_c(K_BITS, BT_DYN, "sg_d_empty(1u)")
+                                          : val_c(K_BOOL, BT_DYN, "LLVMConstInt(g->ir->t_i1, 0, 0)");
+            }
         }
         v.node = n;
         return v;
@@ -1461,6 +1633,37 @@ static void shorten(Val* a, Val* b) {
     *b = keep(*b);
 }
 
+/* a op b, one of them a lane's: the operation on every lane (llvm.h's sg_l_*), else the loop is refused */
+enum { L_EQ, L_NE, L_LT, L_LE, L_GT, L_GE };
+static Val lane_binop(unsigned n, const char* op, Val a, Val b) {
+    static const char* const cmps[] = {"==", "!=", "<", "<=", ">", ">="};
+    unsigned i;
+    (void)n;
+    if ((a.kind == K_BITS) != (b.kind == K_BITS) || (a.kind == K_BOOL) != (b.kind == K_BOOL)) {
+        lane_refuse("an operation on lanes of two kinds");
+        return a;
+    }
+    a = raise(a, BT_LANE);
+    b = raise(b, BT_LANE);
+    for (i = 0; i < 6; ++i)
+        if (!strcmp(op, cmps[i])) {
+            if (a.kind == K_BITS && i > 1) break;
+            return val_c(K_BOOL, BT_LANE, "sg_l_cmp(g, %u, %s, %s)", i, a.c, b.c);
+        }
+    if (!strcmp(op, "&") || !strcmp(op, "|"))
+        return val_c(a.kind, BT_LANE, "sg_l_%s(g, %s, %s)", op[0] == '&' ? "and" : "or", a.c, b.c);
+    if (a.kind == K_BITS && (!strcmp(op, "+") || !strcmp(op, "-")))
+        return val_c(K_BITS, BT_LANE, "sg_l_%s(g, %s, %s)", op[0] == '+' ? "add" : "sub", a.c, b.c);
+    if (a.kind == K_INT && (!strcmp(op, "+") || !strcmp(op, "-") || !strcmp(op, "*")))
+        return val_c(K_INT, BT_LANE, "sg_l_i%s(g, %s, %s)",
+                     op[0] == '+'   ? "add"
+                     : op[0] == '-' ? "sub"
+                                    : "mul",
+                     a.c, b.c);
+    lane_refuse("an operation lanes don't have");
+    return a;
+}
+
 static Val binop(unsigned n) {
     const char* op = name_of(n);
     Val a, b;
@@ -1473,6 +1676,10 @@ static Val binop(unsigned n) {
         if (a.bt == BT_CONST && a.value == !is_and) return val_const(K_BOOL, !is_and);
         b = eval(N(n).b, 0);
         if (b.kind != K_BOOL) sg_fail(n, "%s of a bool and other than a bool", op);
+        if (a.bt == BT_LANE || b.bt == BT_LANE) {
+            if (b.bt == BT_CONST) return b.value == is_and ? a : val_const(K_BOOL, !is_and);
+            return lane_binop(n, op, a, b);
+        }
         shorten(&a, &b);
         if (a.bt == BT_CONST) return b;
         if (b.bt == BT_CONST) return b.value == is_and ? a : val_const(K_BOOL, !is_and);
@@ -1482,6 +1689,7 @@ static Val binop(unsigned n) {
                      raise(b, BT_DYN).c);
     }
     b = eval(N(n).b, 0);
+    if (a.bt == BT_LANE || b.bt == BT_LANE) return lane_binop(n, op, a, b);
     shorten(&a, &b);
     bt = top_bt(a.bt, b.bt);
     if (a.huge || b.huge) sg_fail(n, "%s of an integer over 62 bits", op);
@@ -1585,6 +1793,13 @@ static Val slice(unsigned n) {
     x = eval(N(n).a, 0);
     hi = need_static_int(n, eval(N(n).b, 0), "a slice's bound");
     lo = N(n).kind == N_SLICE ? need_static_int(n, eval(N(n).c, 0), "a slice's bound") : hi;
+    if (x.bt == BT_LANE) { /* every lane's bits hi..lo */
+        if (x.kind != K_INT && x.kind != K_BITS) {
+            lane_refuse("a slice of lanes of other than bits or integers");
+            return x;
+        }
+        return val_c(K_BITS, BT_LANE, "sg_l_slice(g, %s, %s, %s)", x.c, hi.c, lo.c);
+    }
     if (x.kind == K_INT && x.bt != BT_DYN && hi.bt == BT_CONST && lo.bt == BT_CONST && hi.value - lo.value >= 64)
         return val_c(K_BITS, BT_DYN, "sg_d_of_int(%s, %s, %s)", x.c, hi.c, lo.c); /* 0[127 .. 0]: constant bits */
     if (x.kind == K_INT) {
@@ -1625,6 +1840,8 @@ static Val undefined_of(unsigned type, int bt) {
     int kind = type_kind(type);
     unsigned st = type_struct(type);
     Val w;
+    if (bt == BT_LANE && (kind == K_BITS || kind == K_BIT || kind == K_INT || kind == K_BOOL))
+        return val_c(kind == K_BIT ? K_BITS : kind, BT_LANE, "((SgL){0})"); /* every lane is set before it is read */
     if (st) {
         w = val_c(K_STRUCT, BT_STATIC, "((%s){0})", struct_ctype(st));
         w.sdef = st;
@@ -1662,6 +1879,10 @@ static void declare_var(unsigned name, unsigned type, unsigned init_node) {
     if (g_gen.dynamic_branch) var_raise(var, BT_DYN);
     bt = g_gen.vars[var].bt;
     snprintf(cname, sizeof cname, "v%d_%s", var, sg_str(name));
+    if (bt == BT_LANE && !g_gen.lane && init.kind != K_UNIT) { /* a value set before the loop: not every lane's */
+        refuse_loop(g_gen.vars[var].lane_loop);
+        init = unit();
+    }
     init = init.kind == K_UNIT ? undefined_of(type, bt) : raise(init, bt);
     emit("%s %s = %s;\n", ctype_of(kind, bt, sdef), cname, init.c);
     local = val_c(kind, bt, "%s", cname);
@@ -1696,6 +1917,10 @@ static void assign(unsigned target, Val v) {
     Binding* b;
     if (N(t).kind == N_TYPED) t = N(t).a;
     if (N(t).kind == N_WILD) return;
+    if (g_gen.lane && (N(t).kind != N_ID || (b = lookup(name_of(t))) == NULL || b->var < 0)) {
+        lane_refuse("state set in an element loop, which lanes set once");
+        return;
+    }
     if (N(t).kind == N_FIELD && N(N(t).a).kind == N_ID && (b = lookup(name_of(N(t).a))) != NULL) { /* x.f = v */
         Val f;
         if (b->var < 0 || b->val.kind != K_STRUCT)
@@ -1788,6 +2013,17 @@ static void assign(unsigned target, Val v) {
         if (!b) sg_fail(t, "%s assigned but not declared", s);
         if (b->var < 0) sg_fail(t, "%s assigned but bound by let", s);
         var_raise(b->var, v.bt);
+        if (g_gen.lane) { /* a local set in the loop holds a value per lane, or the loop is no vector operation */
+            if (g_gen.vars[b->var].bt != BT_LANE) {
+                lane_refuse("a local carried from one element to the next");
+                return;
+            }
+            if (strncmp(v.c, "sg_l_bits(", 10)) g_gen.vars[b->var].lane_elem = 1;
+        }
+        if (g_gen.vars[b->var].bt == BT_LANE && !g_gen.lane) { /* the loop's lanes set again after it */
+            refuse_loop(g_gen.vars[b->var].lane_loop);
+            return;
+        }
         if (g_gen.dynamic_branch) var_raise(b->var, BT_DYN);
         if (v.kind != K_UNIT && (v.kind != g_gen.vars[b->var].kind || v.sdef != g_gen.vars[b->var].sdef))
             sg_fail(t, "%s (kind %d) assigned a value of kind %d", s, g_gen.vars[b->var].kind, v.kind);
@@ -1935,6 +2171,15 @@ static Val if_expr(unsigned n, int tail) {
         return N(n).c ? eval(N(n).c, tail) : unit();
     }
     if (c.bt == BT_DYN) return dynamic_if(n, c, tail);
+    if (c.bt == BT_LANE) { /* a value per lane: each lane's of one branch or the other */
+        a = N(n).c ? eval(N(n).b, tail) : unit();
+        b = N(n).c ? eval(N(n).c, tail) : unit();
+        if (a.kind != b.kind || (a.kind != K_BITS && a.kind != K_INT && a.kind != K_BOOL)) {
+            lane_refuse("an if per lane that is not a value of both branches");
+            return a.kind == K_UNIT ? unit() : a;
+        }
+        return val_c(a.kind, BT_LANE, "sg_l_select(g, %s, %s, %s)", c.c, raise(a, BT_LANE).c, raise(b, BT_LANE).c);
+    }
     a = probe(N(n).b, tail);
     b = N(n).c ? probe(N(n).c, tail) : unit();
     if (a.kind == K_UNIT || b.kind == K_UNIT || a.kind == K_TUPLE) {
@@ -2014,6 +2259,10 @@ static Val match_expr(unsigned n, int tail) {
     unsigned c;
     int valued, opened = 0, total = 0;
     char t[16];
+    if (s.bt == BT_LANE) {
+        lane_refuse("a match per lane");
+        return unit();
+    }
     if (s.bt == BT_DYN) sg_fail(n, "a match on a value known only at run time");
     s = keep(raise(s, BT_STATIC));
     for (c = N(n).b; c; c = N(c).next)
@@ -2084,6 +2333,38 @@ static Val foreach_loop(unsigned n) {
     char v[96];
     unsigned saved = g_gen.depth;
     if (g_gen.dynamic_branch) sg_fail(n, "a foreach under a run-time condition");
+    if (g_gen.lane) {
+        lane_refuse("a loop inside an element loop");
+        return unit();
+    }
+    /* from 0 by 1 up: tried as one vector operation, the lanes from 0 to `to` (lanes, above) */
+    if (!g_gen.lane && !g_gen.in_helper && from.bt == BT_CONST && !from.value && by.bt == BT_CONST && by.value == 1 &&
+        !N(n).dec && !lane_refused(n)) {
+        Buffer scratch = {0, 0, 0}, *out = g_gen.out;
+        int indent = g_gen.indent;
+        g_gen.lane = 1;
+        g_gen.lane_fail = 0;
+        g_gen.lane_loop = n;
+        snprintf(g_gen.lane_count, sizeof g_gen.lane_count, "(unsigned)((%s) + 1)", to.c);
+        g_gen.out = &scratch;
+        g_gen.indent = indent + 1;
+        bind(N(n).name, val_c(K_INT, BT_STATIC, "sg_lane"), -1, 0);
+        stmt(N(n).d);
+        g_gen.depth = saved;
+        g_gen.lane = 0;
+        g_gen.out = out;
+        g_gen.indent = indent;
+        if (!g_gen.lane_fail) {
+            emit("{ /* the lanes of %s */\n", name_of(n));
+            buf_add(g_gen.out, scratch.text ? scratch.text : "", scratch.length);
+            emit("}\n");
+            free(scratch.text);
+            return unit();
+        }
+        free(scratch.text);
+        refuse_loop(n);
+        return unit();
+    }
     snprintf(v, sizeof v, "l%u_%s", ++g_gen.temp, name_of(n));
     emit("for (long long %s = %s; %s %s %s; %s %s= %s) {\n", v, from.c, v, N(n).dec ? ">=" : "<=", to.c, v,
          N(n).dec ? "-" : "+", by.c);
@@ -2214,8 +2495,14 @@ static void generate_decode(Clause* c) {
     /* walked until no local's time changes; only the last walk's text is kept. The clause's body runs as it is:
        its lets slice __opcode (the word), its checks throw, its call is the decode function's */
     g_gen.var_count = 0;
+    g_gen.refused_count = 0;
+    g_gen.lane_restart = 0;
     for (pass = 0; pass < 8; ++pass) {
         Buffer scratch = {0, 0, 0};
+        if (g_gen.lane_restart) { /* an element loop refused its lanes: its locals' times start over */
+            g_gen.var_count = 0;
+            g_gen.lane_restart = 0;
+        }
         g_gen.changed = 0;
         g_gen.var_next = 0;
         g_gen.depth = 0;

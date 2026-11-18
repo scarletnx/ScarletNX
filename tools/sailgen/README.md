@@ -44,6 +44,19 @@ A value of a Sail struct (a load's `AccessDescriptor`) is STATIC: a C struct of 
 the helpers), which a field's assignment and read reach as C. Anything outside this part of Sail stops sailgen with the
 file, the line and why.
 
+A SIMD instruction's element loop, `foreach (e from 0 to elements - 1)` reading and setting element `e` of its operands
+(`Elem_read`, `Elem_set`), is one vector operation, as the hand-written emitters build it: the body is walked once
+with `e` standing for every lane, so each value it makes per element is a **LANE** value, a vector of one per lane
+(`llvm.h`'s `SgL`), and an operation on lanes is that operation on the vector (`sg_l_add`, `sg_l_cmp`, a select for an
+`if` per lane). Integers per lane keep their signedness and widen as an exact result needs, and the slice back to
+bits narrows them, which LLVM folds to the element's own width. A register the instruction read whole becomes its
+lanes as one load, and lanes written to a register one store (`ir_vec_read`, `ir_vec_write`). The body may only set
+locals per lane: one that sets state (a register, an action), carries a local from one element to the next (REV's
+container loop), holds another loop (MUL's, which PMUL's polynomial product shares), reads an element other than `e`,
+uses a value per lane where one is wanted, or leaves the loop with an element's value rather than the vector `Elem_set`
+built, is walked again as the loop it is, every element its own IR, which `tests/llvm_sail_ir.c` shows as longer than
+the hand-written emitter's (`sailgen_lanes` holds both outcomes).
+
 ## The back end (`llvm.h`)
 
 `llvm.h` is copied at the top of the output. It holds the lowering to LLVM of Sail's builtins and of the shared

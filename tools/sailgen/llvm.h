@@ -19,6 +19,7 @@
 
 #include "common/cpu/aarch64/cpu.h" /* the CPU structure, where the registers are kept */
 #include "common/cpu/recompiler/llvm/ir_fp.h" /* the floating-point pieces the recompiler's FP emitters share */
+#include "common/cpu/recompiler/llvm/ir_vec.h" /* a SIMD&FP register read and written as lanes */
 #include <stddef.h>
 
 #define SG_W   128 /* the widest bits value: EXTR's concatenation */
@@ -66,6 +67,11 @@ typedef struct {
     int branched, undefined;
     /* the block's last instruction before this one's: a clause that hands the word on (sg_see) has emitted nothing */
     LLVMValueRef start;
+    /* the doublewords of SIMD&FP registers this instruction loaded (sg__V_read_bits): register n's doubleword k, so
+       an element loop over them reads the register as lanes (sg_l_elem) */
+    LLVMValueRef vload[8];
+    unsigned char vload_n[8], vload_k[8];
+    unsigned vload_count;
     /* the load-exclusive's values, i64 each (two for a pair of doublewords), and the next an exclusive read takes; the
        store-exclusive's status, an i32 0 or 1 (GuestLoadExclusive, GuestStoreExclusive) */
     LLVMValueRef exclusive[2], status;
@@ -1913,14 +1919,24 @@ static inline SgD sg_crc32(SgCtx* g, SgD acc_bits, SgD value_bits, long long siz
 
 /* _V[n] bits hi..lo, an element's low lane of 8 to 64 bits as ir_ve loads it (once a block), the high doubleword as
    ir_vd does, else both doublewords */
+static inline LLVMValueRef sg__V_loaded(SgCtx* g, LLVMValueRef v, unsigned n, unsigned k) {
+    if (g->vload_count < 8) {
+        g->vload[g->vload_count] = v;
+        g->vload_n[g->vload_count] = (unsigned char)n;
+        g->vload_k[g->vload_count++] = (unsigned char)k;
+    }
+    return v;
+}
 static inline SgD sg__V_read_bits(SgCtx* g, long long n, long long hi, long long lo) {
     long long w = hi - lo + 1;
     SgD whole;
     if (n < 0 || n > 31 || lo < 0 || hi > 127 || hi < lo) sg_fail("bits of a SIMD&FP register it does not have", n, hi);
-    if (lo == 0 && (w == 8 || w == 16 || w == 32 || w == 64))
-        return sg_d_from(g, ir_ve(g->ir, (unsigned)n, w == 8 ? 0 : w == 16 ? 1 : w == 32 ? 2 : 3, 0));
-    if (lo == 64 && w == 64) return sg_d_from(g, ir_vd(g->ir, (unsigned)n, 1));
-    whole = sg_d_concat(g, sg_d_from(g, ir_vd(g->ir, (unsigned)n, 1)), sg_d_from(g, ir_vd(g->ir, (unsigned)n, 0)));
+    if (lo == 0 && w == 64) return sg_d_from(g, sg__V_loaded(g, ir_ve(g->ir, (unsigned)n, 3, 0), (unsigned)n, 0));
+    if (lo == 0 && (w == 8 || w == 16 || w == 32))
+        return sg_d_from(g, ir_ve(g->ir, (unsigned)n, w == 8 ? 0 : w == 16 ? 1 : 2, 0));
+    if (lo == 64 && w == 64) return sg_d_from(g, sg__V_loaded(g, ir_vd(g->ir, (unsigned)n, 1), (unsigned)n, 1));
+    whole = sg_d_concat(g, sg_d_from(g, sg__V_loaded(g, ir_vd(g->ir, (unsigned)n, 1), (unsigned)n, 1)),
+                        sg_d_from(g, sg__V_loaded(g, ir_vd(g->ir, (unsigned)n, 0), (unsigned)n, 0)));
     return sg_d_slice(g, whole, hi, lo);
 }
 /* doubleword k of v is the value the register already holds, read in this block (Vpart_set's other half) */
@@ -1932,15 +1948,194 @@ static inline int sg__V_holds(SgCtx* g, unsigned n, unsigned k, const SgD* v) {
         if (v->sel[i] != v->sel[0] || v->pos[i] != i) return 0;
     return v->src[v->sel[0] - 2] == cache->low[n][3];
 }
-/* _V[n] = v, the 128 bits: each doubleword stored (ir_set_vd), but one that holds that value already */
+/* the vector whose bits v's low bits are, the rest 0 (an element loop's lanes, sg_d_from_l): NULL when none */
+static inline LLVMValueRef sg_lanes_of(const SgD* v) {
+    unsigned s, w, i;
+    LLVMValueRef src;
+    if (v->sel[0] < 2) return NULL;
+    s = v->sel[0] - 2;
+    src = v->src[s];
+    w = v->src_w[s];
+    if (!LLVMIsABitCastInst(src) || LLVMGetTypeKind(LLVMTypeOf(LLVMGetOperand(src, 0))) != LLVMVectorTypeKind ||
+        w > v->w)
+        return NULL;
+    for (i = 0; i < v->w; ++i)
+        if (i < w ? v->sel[i] != v->sel[0] || v->pos[i] != i : v->sel[i] != 0) return NULL;
+    return LLVMGetOperand(src, 0);
+}
+/* _V[n] = v, the 128 bits: an element loop's lanes stored as such, the rest zeroed (ir_vec_write); else each
+   doubleword stored (ir_set_vd), but one that holds that value already */
 static inline void sg__V_write(SgCtx* g, long long n, SgD v) {
     unsigned k;
+    LLVMValueRef lanes;
     if (n < 0 || n > 31) sg_fail("an element of _V it does not have", n, 31);
     if (v.w != 128) sg_fail("a SIMD&FP register written with other than 128 bits", n, v.w);
+    if ((lanes = sg_lanes_of(&v)) != NULL) {
+        ir_vec_write(g->ir, (unsigned)n, lanes);
+        return;
+    }
     for (k = 0; k < 2; ++k) {
         SgD half = sg_d_slice(g, v, 64 * k + 63, 64 * k);
         if (!sg__V_holds(g, (unsigned)n, k, &half)) ir_set_vd(g->ir, (unsigned)n, k, sg_d_make(g, &half));
     }
+}
+
+/* ---- lanes ----
+   An element loop walked as one vector operation (gen.c's lanes): each value it makes per element is an SgL, a vector
+   of count lanes of w bits; an integer's lanes keep its signedness and widen as an exact result needs, and a slice of
+   them narrows back. The IR is the one ir_vec.c builds by hand: a register's lanes are loaded and stored whole
+   (ir_vec_read, ir_vec_write) */
+typedef struct {
+    LLVMValueRef v; /* <count x iw> */
+    unsigned w, count;
+    int is_signed;
+} SgL;
+
+static inline LLVMTypeRef sg_l_type(SgCtx* g, unsigned w, unsigned count) {
+    return LLVMVectorType(LLVMIntTypeInContext(g->ir->ctx, w), count);
+}
+static inline SgL sg_l_of(LLVMValueRef v, int is_signed) {
+    SgL l;
+    l.v = v;
+    l.count = LLVMGetVectorSize(LLVMTypeOf(v));
+    l.w = LLVMGetIntTypeWidth(LLVMGetElementType(LLVMTypeOf(v)));
+    l.is_signed = is_signed;
+    return l;
+}
+/* esize-bit elements of x (its count of them), as lanes: a SIMD&FP register this instruction loaded whole, in its
+   doublewords' order, is loaded as lanes instead (the doublewords' loads are left to die) */
+static inline SgL sg_l_elem(SgCtx* g, SgD x, long long esize, unsigned count) {
+    unsigned i, k, reg = 99;
+    if (esize < 8 || esize > 64 || x.w != (unsigned)esize * count)
+        sg_fail("lanes of other than the whole value", esize, x.w);
+    for (i = 0; i < x.w; ++i) {
+        unsigned s = x.sel[i];
+        if (s < 2 || x.pos[i] != i % 64) break;
+        for (k = 0; k < g->vload_count && g->vload[k] != x.src[s - 2]; ++k) {}
+        if (k == g->vload_count || g->vload_k[k] != i / 64 || (reg != 99 && reg != g->vload_n[k])) break;
+        reg = g->vload_n[k];
+    }
+    if (i == x.w) {
+        unsigned esz = esize == 8 ? 0 : esize == 16 ? 1 : esize == 32 ? 2 : 3;
+        return sg_l_of(ir_vec_read(g->ir, reg, esz, 0, count), 0);
+    }
+    return sg_l_of(LLVMBuildBitCast(SG_B, sg_d_make(g, &x), sg_l_type(g, (unsigned)esize, count), ""), 0);
+}
+/* the lanes as bits, the first lane the lowest: a bitcast, which sg__V_write knows for the lanes it is */
+static inline SgD sg_d_from_l(SgCtx* g, SgL l) {
+    if (!l.v) sg_fail("lanes read before any was set", 0, 0);
+    return sg_d_from(g, LLVMBuildBitCast(SG_B, l.v, LLVMIntTypeInContext(g->ir->ctx, l.w * l.count), ""));
+}
+/* lanes of exactly w bits: an element set from them (Elem_set) */
+static inline SgL sg_l_bits(SgCtx* g, SgL l, long long w) {
+    (void)g;
+    if (l.w != (unsigned)w) sg_fail("an element set from lanes of another width", l.w, w);
+    l.is_signed = 0;
+    return l;
+}
+static inline SgL sg_l_splat(SgCtx* g, LLVMValueRef v, unsigned count, int is_signed) {
+    return sg_l_of(ir_vec_splat(g->ir, v, count), is_signed);
+}
+static inline SgL sg_l_splat_d(SgCtx* g, SgD d, unsigned count) { return sg_l_splat(g, sg_d_make(g, &d), count, 0); }
+static inline SgL sg_l_splat_i(SgCtx* g, SgI i, unsigned count) { return sg_l_splat(g, i.v, count, i.is_signed); }
+static inline SgL sg_l_splat_b(SgCtx* g, LLVMValueRef b, unsigned count) { return sg_l_splat(g, b, count, 0); }
+/* l at w bits, extended by its signedness or cut */
+static inline SgL sg_l_width(SgCtx* g, SgL l, unsigned w) {
+    LLVMTypeRef t = sg_l_type(g, w, l.count);
+    if (w > l.w)
+        l.v = l.is_signed ? LLVMBuildSExt(SG_B, l.v, t, "") : LLVMBuildZExt(SG_B, l.v, t, "");
+    else if (w < l.w)
+        l.v = LLVMBuildTrunc(SG_B, l.v, t, "");
+    l.w = w;
+    return l;
+}
+/* two integers' lanes at one width that holds both exactly, signed when either is */
+static inline void sg_l_common(SgCtx* g, SgL* a, SgL* b, unsigned extra) {
+    unsigned wa = a->w + (!a->is_signed && b->is_signed), wb = b->w + (!b->is_signed && a->is_signed);
+    unsigned w = (wa > wb ? wa : wb) + extra;
+    int s = a->is_signed || b->is_signed;
+    *a = sg_l_width(g, *a, w);
+    *b = sg_l_width(g, *b, w);
+    a->is_signed = b->is_signed = s;
+}
+static inline SgL sg_l_add(SgCtx* g, SgL a, SgL b) { return sg_l_of(LLVMBuildAdd(SG_B, a.v, b.v, ""), 0); }
+static inline SgL sg_l_sub(SgCtx* g, SgL a, SgL b) { return sg_l_of(LLVMBuildSub(SG_B, a.v, b.v, ""), 0); }
+static inline SgL sg_l_and(SgCtx* g, SgL a, SgL b) { return sg_l_of(LLVMBuildAnd(SG_B, a.v, b.v, ""), 0); }
+static inline SgL sg_l_or(SgCtx* g, SgL a, SgL b) { return sg_l_of(LLVMBuildOr(SG_B, a.v, b.v, ""), 0); }
+static inline SgL sg_l_xor(SgCtx* g, SgL a, SgL b) { return sg_l_of(LLVMBuildXor(SG_B, a.v, b.v, ""), 0); }
+static inline SgL sg_l_not(SgCtx* g, SgL a) { return sg_l_of(LLVMBuildNot(SG_B, a.v, ""), 0); }
+/* bits as an integer's lanes (UInt, SInt, asl_Int) */
+static inline SgL sg_l_int(SgCtx* g, SgL a, int is_signed) {
+    (void)g;
+    a.is_signed = is_signed;
+    return a;
+}
+/* + - * of integers: exact, one bit wider (or as wide as both for *) */
+static inline SgL sg_l_iadd(SgCtx* g, SgL a, SgL b) {
+    sg_l_common(g, &a, &b, 1);
+    return sg_l_of(LLVMBuildAdd(SG_B, a.v, b.v, ""), a.is_signed);
+}
+static inline SgL sg_l_isub(SgCtx* g, SgL a, SgL b) {
+    a.is_signed = 1; /* a difference may be below 0 */
+    sg_l_common(g, &a, &b, 1);
+    return sg_l_of(LLVMBuildSub(SG_B, a.v, b.v, ""), 1);
+}
+static inline SgL sg_l_imul(SgCtx* g, SgL a, SgL b) {
+    unsigned w;
+    sg_l_common(g, &a, &b, 0);
+    w = a.w * 2;
+    a = sg_l_width(g, a, w);
+    b = sg_l_width(g, b, w);
+    return sg_l_of(LLVMBuildMul(SG_B, a.v, b.v, ""), a.is_signed);
+}
+/* negate: one bit wider, signed, so it is exact */
+static inline SgL sg_l_neg(SgCtx* g, SgL a) {
+    a = sg_l_width(g, a, a.w + 1);
+    return sg_l_of(LLVMBuildNeg(SG_B, a.v, ""), 1);
+}
+/* Abs: llvm.abs, read unsigned: the most negative lane's magnitude is its own bits that way */
+static inline SgL sg_l_abs(SgCtx* g, SgL a) {
+    LLVMValueRef args[2];
+    if (!a.is_signed) return a;
+    args[0] = a.v;
+    args[1] = LLVMConstInt(g->ir->t_i1, 0, 0);
+    return sg_l_of(sg_intrinsic(g, "llvm.abs", LLVMTypeOf(a.v), args, 2), 0);
+}
+/* the comparisons gen.c numbers L_EQ to L_GE, of bits (== and !=) or of integers: i1 lanes */
+static inline SgL sg_l_cmp(SgCtx* g, unsigned op, SgL a, SgL b) {
+    static const LLVMIntPredicate s[] = {LLVMIntEQ, LLVMIntNE, LLVMIntSLT, LLVMIntSLE, LLVMIntSGT, LLVMIntSGE};
+    static const LLVMIntPredicate u[] = {LLVMIntEQ, LLVMIntNE, LLVMIntULT, LLVMIntULE, LLVMIntUGT, LLVMIntUGE};
+    if (op > 5) sg_fail("a comparison gen.c doesn't number", op, 5);
+    if (a.w != b.w || a.is_signed != b.is_signed) sg_l_common(g, &a, &b, 0);
+    return sg_l_of(LLVMBuildICmp(SG_B, a.is_signed ? s[op] : u[op], a.v, b.v, ""), 0);
+}
+static inline SgL sg_l_is_zero(SgCtx* g, SgL a) {
+    return sg_l_of(LLVMBuildICmp(SG_B, LLVMIntEQ, a.v, LLVMConstNull(LLVMTypeOf(a.v)), ""), 0);
+}
+static inline SgL sg_l_select(SgCtx* g, SgL c, SgL a, SgL b) {
+    if (a.w != b.w || a.is_signed != b.is_signed) sg_l_common(g, &a, &b, 0);
+    return sg_l_of(LLVMBuildSelect(SG_B, c.v, a.v, b.v, ""), a.is_signed);
+}
+static inline SgL sg_l_minmax(SgCtx* g, SgL a, SgL b, int minimum) {
+    SgL c;
+    sg_l_common(g, &a, &b, 0);
+    c = sg_l_cmp(g, minimum ? 2 : 4, a, b);
+    return sg_l_of(LLVMBuildSelect(SG_B, c.v, a.v, b.v, ""), a.is_signed);
+}
+/* bits hi..lo of each lane (of bits, or of an integer, extended by its sign past its width) */
+static inline SgL sg_l_slice(SgCtx* g, SgL a, long long hi, long long lo) {
+    unsigned w = (unsigned)(hi - lo + 1);
+    if (lo < 0 || hi < lo) sg_fail("a slice of lanes out of order", hi, lo);
+    if ((unsigned)hi >= a.w) a = sg_l_width(g, a, (unsigned)hi + 1);
+    if (lo) a.v = LLVMBuildLShr(SG_B, a.v, ir_vec_k(g->ir, LLVMTypeOf(a.v), (SnxU64)lo), "");
+    a.is_signed = 0;
+    return sg_l_width(g, a, w);
+}
+static inline SgL sg_l_ext(SgCtx* g, SgL a, long long w, int is_signed) {
+    a.is_signed = is_signed;
+    a = sg_l_width(g, a, (unsigned)w);
+    a.is_signed = 0;
+    return a;
 }
 
 /* FPCR, as the CPU keeps it: 32 bits, the rest 0 */
