@@ -3041,7 +3041,7 @@ if(NOT WIN32)
     # ir_fpu_reference.c): the same optimized IR word by word on three paths, the same results (registers, flags, FPCR,
     # FPSR, guest memory) run here
     add_executable(snx-test-llvm-sail-ir llvm_sail_ir.c llvm_qemu_words.c llvm_steps.c support/ir_int_reference.c
-                   support/ir_ldst_reference.c support/ir_fpu_reference.c)
+                   support/ir_ldst_reference.c support/ir_fpu_reference.c support/ir_vec_reference.c)
     snx_test_target(snx-test-llvm-sail-ir gnu23)
     target_include_directories(snx-test-llvm-sail-ir PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
     target_link_libraries(snx-test-llvm-sail-ir PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})

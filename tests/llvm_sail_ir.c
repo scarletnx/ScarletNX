@@ -35,6 +35,7 @@
 #include "support/ir_int_reference.h"
 #include "support/ir_ldst_reference.h"
 #include "support/ir_fpu_reference.h"
+#include "support/ir_vec_reference.h"
 #include "common/cpu/aarch64/a64_decoder.h"
 #include "common/utilities/endian.h"
 #include <signal.h>
@@ -74,6 +75,10 @@ static const char* const fp_ops[] = {
     "FCVTZU_g",  "FCVTAS_g",   "FCVTAU_g",   "FJCVTZS",    "FMOV_ws",    "FMOV_sw",   "FMOV_xd",   "FMOV_dx",
     "FMOV_xu",   "FMOV_ux",    "FMOV_xh",    "FMOV_hx"};
 #define FP_OPS (sizeof fp_ops / sizeof *fp_ops)
+/* and the SIMD ones ir_vec.c sends to it (generated()), each element loop one vector operation */
+static const char* const vec_ops[] = {"ADD_v",  "SUB_v",  "CMEQ_v", "CMTST_v", "CMGE_v", "CMGT_v", "CMHI_v",
+                                      "CMHS_v", "SMAX_v", "SMIN_v", "UMAX_v",  "UMIN_v", "NEG_v",  "ABS_v"};
+#define VEC_OPS (sizeof vec_ops / sizeof *vec_ops)
 
 typedef struct {
     const char* name;
@@ -184,6 +189,8 @@ static int generated(u32 word) {
     if (!name) return 0;
     for (size_t i = 0; i < GENERATED_OPS; ++i)
         if (!strcmp(name, generated_ops[i])) return 1;
+    for (size_t i = 0; i < VEC_OPS; ++i)
+        if (!strcmp(name, vec_ops[i])) return 1;
     return is_fp_op(name);
 }
 
@@ -399,6 +406,7 @@ static SnxIr* path_ir(const Path* p, int reference, char* error, size_t size) {
         ir->operand_reference = snx_ir_int_operand_reference;
         ir->ldst_reference = snx_ir_ldst_reference;
         ir->fpu_reference = snx_ir_fpu_reference;
+        ir->vec_reference = snx_ir_vec_reference;
     }
     return ir;
 }
@@ -555,6 +563,7 @@ static void compare_sequence(unsigned s) {
             ir->operand_reference = snx_ir_int_operand_reference;
             ir->ldst_reference = reference_ldst_uncached;
             ir->fpu_reference = fpu_reference_uncached;
+            ir->vec_reference = snx_ir_vec_reference;
         }
         g_test.word = sequences[s].words[0];
         g_test.where = sequences[s].what;
@@ -706,6 +715,7 @@ static int run_compare(const u32* words, size_t count, unsigned states) {
             set[k].ir->operand_reference = snx_ir_int_operand_reference;
             set[k].ir->ldst_reference = snx_ir_ldst_reference;
             set[k].ir->fpu_reference = snx_ir_fpu_reference;
+            set[k].ir->vec_reference = snx_ir_vec_reference;
         }
         for (size_t i = 0; i < count; ++i) {
             g_test.word = words[i];
@@ -798,6 +808,7 @@ static int time_emitters(const u32* words, size_t count, unsigned rounds) {
                 ir->operand_reference = snx_ir_int_operand_reference;
                 ir->ldst_reference = snx_ir_ldst_reference;
                 ir->fpu_reference = snx_ir_fpu_reference;
+                ir->vec_reference = snx_ir_vec_reference;
             }
             for (size_t i = 0; i < count; ++i) {
                 char name[32];
@@ -858,9 +869,11 @@ int main(int argc, char** argv) {
     LLVMInitializeAllAsmPrinters();
     snx_ir_slp_vectorizer(0);
     count = corpus(samples, &words);
-    printf("%zu words of the %zu generated ops\n", count, GENERATED_OPS + FP_OPS);
-    for (size_t i = 0; i < GENERATED_OPS + FP_OPS; ++i) { /* each op has words, or it is compared nowhere */
-        const char* name = i < GENERATED_OPS ? generated_ops[i] : fp_ops[i - GENERATED_OPS];
+    printf("%zu words of the %zu generated ops\n", count, GENERATED_OPS + FP_OPS + VEC_OPS);
+    for (size_t i = 0; i < GENERATED_OPS + FP_OPS + VEC_OPS; ++i) { /* each op has words, or it is compared nowhere */
+        const char* name = i < GENERATED_OPS            ? generated_ops[i]
+                           : i < GENERATED_OPS + FP_OPS ? fp_ops[i - GENERATED_OPS]
+                                                        : vec_ops[i - GENERATED_OPS - FP_OPS];
         size_t k = 0;
         while (k < count && strcmp(op_name(words[k]), name)) ++k;
         if (k == count) {

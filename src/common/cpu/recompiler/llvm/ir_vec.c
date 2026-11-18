@@ -17,6 +17,7 @@
    A register is read and written whole or by lanes in the CPU structure (V128, aligned to 8), as numbers on any
    host. Saturation sets FPSR.QC. The shifts by register that round or saturate are helpers/vector.c's. */
 #include "common/cpu/recompiler/llvm/ir_vec.h"
+#include "common/cpu/recompiler/llvm/ir_sail.h"
 #include "common/cpu/aarch64/cpu.h"
 
 typedef LLVMValueRef V;
@@ -346,7 +347,7 @@ static void shl_helper(SnxIr* ir, const SnxA64Args* a, unsigned lanes, unsigned 
 enum {
     T_ADD, T_SUB, T_AND, T_BIC, T_ORR, T_ORN, T_EOR, T_BSL, T_BIT, T_BIF, T_SQADD, T_UQADD, T_SQSUB, T_UQSUB,
     T_SUQADD, T_USQADD, T_SSHL, T_USHL, T_CMGT, T_CMHI, T_CMGE, T_CMHS, T_CMTST, T_CMEQ, T_SHADD, T_UHADD, T_SHSUB,
-    T_UHSUB, T_SRHADD, T_URHADD, T_SMAX, T_UMAX, T_SMIN, T_UMIN, T_SABD, T_UABD, T_SABA, T_UABA, T_MUL, T_PMUL,
+    T_UHSUB, T_SRHADD, T_URHADD, T_SABD, T_UABD, T_SABA, T_UABA, T_MUL, T_PMUL,
     T_MLA, T_MLS, T_SQDMULH, T_SQRDMULH, T_SQRDMLAH, T_SQRDMLSH, T_ADDP, T_SMAXP, T_SMINP, T_UMAXP, T_UMINP
 };
 
@@ -398,10 +399,6 @@ static V same(SnxIr* ir, unsigned op, V n, V m, V d) {
         case T_UHSUB: return halving(ir, n, m, 0, 1, 0);
         case T_SRHADD: return halving(ir, n, m, 1, 0, 1);
         case T_URHADD: return halving(ir, n, m, 0, 0, 1);
-        case T_SMAX: return call2(ir, "llvm.smax", n, m);
-        case T_UMAX: return call2(ir, "llvm.umax", n, m);
-        case T_SMIN: return call2(ir, "llvm.smin", n, m);
-        case T_UMIN: return call2(ir, "llvm.umin", n, m);
         case T_SABD: return abd(ir, n, m, 1);
         case T_UABD: return abd(ir, n, m, 0);
         case T_SABA: return LLVMBuildAdd(B, d, abd(ir, n, m, 1), "");
@@ -1021,9 +1018,7 @@ static void mmla(SnxIr* ir, const SnxA64Args* a, int n_sign, int m_sign) {
 /* the integer ops: the three-same table's index, or -1 */
 static int same_op(SnxA64Op op) {
     switch (op) {
-        case SNX_A64_OP_ADD_v:
         case SNX_A64_OP_ADD_s: return T_ADD;
-        case SNX_A64_OP_SUB_v:
         case SNX_A64_OP_SUB_s: return T_SUB;
         case SNX_A64_OP_AND_v: return T_AND;
         case SNX_A64_OP_BIC_v: return T_BIC;
@@ -1049,17 +1044,11 @@ static int same_op(SnxA64Op op) {
         case SNX_A64_OP_SSHL_s: return T_SSHL;
         case SNX_A64_OP_USHL_v:
         case SNX_A64_OP_USHL_s: return T_USHL;
-        case SNX_A64_OP_CMGT_v:
         case SNX_A64_OP_CMGT_s: return T_CMGT;
-        case SNX_A64_OP_CMHI_v:
         case SNX_A64_OP_CMHI_s: return T_CMHI;
-        case SNX_A64_OP_CMGE_v:
         case SNX_A64_OP_CMGE_s: return T_CMGE;
-        case SNX_A64_OP_CMHS_v:
         case SNX_A64_OP_CMHS_s: return T_CMHS;
-        case SNX_A64_OP_CMTST_v:
         case SNX_A64_OP_CMTST_s: return T_CMTST;
-        case SNX_A64_OP_CMEQ_v:
         case SNX_A64_OP_CMEQ_s: return T_CMEQ;
         case SNX_A64_OP_SHADD_v: return T_SHADD;
         case SNX_A64_OP_UHADD_v: return T_UHADD;
@@ -1067,10 +1056,6 @@ static int same_op(SnxA64Op op) {
         case SNX_A64_OP_UHSUB_v: return T_UHSUB;
         case SNX_A64_OP_SRHADD_v: return T_SRHADD;
         case SNX_A64_OP_URHADD_v: return T_URHADD;
-        case SNX_A64_OP_SMAX_v: return T_SMAX;
-        case SNX_A64_OP_UMAX_v: return T_UMAX;
-        case SNX_A64_OP_SMIN_v: return T_SMIN;
-        case SNX_A64_OP_UMIN_v: return T_UMIN;
         case SNX_A64_OP_SABD_v: return T_SABD;
         case SNX_A64_OP_UABD_v: return T_UABD;
         case SNX_A64_OP_SABA_v: return T_SABA;
@@ -1189,8 +1174,6 @@ static int misc_of(SnxA64Op op, int* scalar) {
     }
     *scalar = 0;
     switch (op) {
-        case SNX_A64_OP_ABS_v: return M_ABS;
-        case SNX_A64_OP_NEG_v: return M_NEG;
         case SNX_A64_OP_SQABS_v: return M_SQABS;
         case SNX_A64_OP_SQNEG_v: return M_SQNEG;
         case SNX_A64_OP_CLS_v: return M_CLS;
@@ -1485,11 +1468,42 @@ static void int_body(SnxIr* ir, const SnxA64Insn* insn) {
     }
 }
 
-int snx_ir_vec_handles(SnxA64Op op) { return int_handles(op) || ir_vec_fp_handles(op) || ir_vec_crypto_handles(op); }
+/* the SIMD ops whose emitters sailgen generates from their Sail (a64.roots: each element loop one vector operation) */
+static int generated(SnxA64Op op) {
+    switch (op) {
+        case SNX_A64_OP_ADD_v:
+        case SNX_A64_OP_SUB_v:
+        case SNX_A64_OP_CMEQ_v:
+        case SNX_A64_OP_CMTST_v:
+        case SNX_A64_OP_CMGE_v:
+        case SNX_A64_OP_CMGT_v:
+        case SNX_A64_OP_CMHI_v:
+        case SNX_A64_OP_CMHS_v:
+        case SNX_A64_OP_SMAX_v:
+        case SNX_A64_OP_SMIN_v:
+        case SNX_A64_OP_UMAX_v:
+        case SNX_A64_OP_UMIN_v:
+        case SNX_A64_OP_NEG_v:
+        case SNX_A64_OP_ABS_v: return 1;
+        default: return 0;
+    }
+}
+
+int snx_ir_vec_handles(SnxA64Op op) {
+    return generated(op) || int_handles(op) || ir_vec_fp_handles(op) || ir_vec_crypto_handles(op);
+}
 
 void snx_ir_vec(SnxIr* ir, const SnxA64Insn* insn, SnxU32 word, SnxU64 pc) {
-    (void)word;
-    (void)pc;
+    if (generated(insn->op)) {
+        if (ir->vec_reference)
+            ir->vec_reference(ir, insn, word, pc);
+        else if (!snx_ir_sail(ir, word, pc) && !ir->fallbacks++) {
+            /* the decoder's op and the Sail's decode clauses disagree on the word: the module is refused, naming it */
+            ir->fallback_word = word;
+            ir->fallback_pc = pc;
+        }
+        return;
+    }
     if (int_handles(insn->op))
         int_body(ir, insn);
     else if (ir_vec_fp_handles(insn->op))
