@@ -706,7 +706,9 @@ void emit_float(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
             right = shader_float_ftz(c, right);
             addend = shader_float_ftz(c, addend);
         }
+        /* the guest's FMA rounds once; an Fma without NoContraction may be split into a multiply and an add */
         u32 result = spv_emit_glsl_ternary(&c->emit, c->f32_type, c->glsl, SPV_GLSL_FMA, left, right, addend);
+        spv_emit_no_contraction(&c->emit, result);
         if (soft_ftz) result = shader_float_ftz(c, result);
         if (B(w, 53, 2) == 2) {
             u32 zero = spv_emit_constant_f32(&c->emit, c->f32_type, 0.0f);
@@ -783,6 +785,7 @@ void emit_float(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
                                     : shader_double_read(c, vec2_u32, B(w, 39, 8));
             u32 addend = shader_double_mod(c, third, 0, B(w, 49, 1));
             value = spv_emit_glsl_ternary(&c->emit, c->f64_type, c->glsl, SPV_GLSL_FMA, left, right, addend);
+            spv_emit_no_contraction(&c->emit, value);
         } else {
             left = shader_double_mod(c, left, B(w, 46, 1), B(w, 48, 1));
             right = shader_double_mod(c, right, B(w, 49, 1), B(w, 45, 1));
