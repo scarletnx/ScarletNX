@@ -31,6 +31,7 @@
 #include "support/ir_ldst_reference.h"
 #include "common/cpu/aarch64/a64_decoder.h"
 #include "common/utilities/endian.h"
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -113,7 +114,9 @@ static struct {
     FILE* report;
     unsigned failures;
     unsigned undef, sev, wfe; /* the UNDEFs a step raised, its runtime calls for SEV and WFE */
-    u8 memory[3][MEMORY_SIZE]; /* each side's guest memory, and the bytes both start from (run_compare) */
+    /* each side's guest memory, and the bytes both start from (run_compare); 16-aligned, as the 128-bit exclusives and
+       CASP are 16-byte host atomics (x86-64's cmpxchg16b, AArch64's exclusive pairs), which fault on another address */
+    _Alignas(16) u8 memory[3][MEMORY_SIZE];
     size_t outcomes[4];
 } g_test;
 
@@ -551,6 +554,9 @@ static int run_compare(const u32* words, size_t count, unsigned states) {
     char error[1024];
     LlvmSteps set[2];
     RtAPI rt = {.undef = on_undef, .sev = on_sev, .wfe = on_wfe, .cas128 = snx_runtime_cas128};
+    if ((uintptr_t)g_test.memory % 16)
+        return snx_error("the guest memory at %p is not 16-aligned: the 128-bit atomics would fault",
+                         (void*)g_test.memory);
     for (size_t i = 0; i < MEMORY_SIZE; i += 8) {
         u64 v = rnd();
         memcpy(g_test.memory[2] + i, &v, 8);
