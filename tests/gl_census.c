@@ -5,7 +5,8 @@
    game's calls in its slot and still runs its own code (its result reaches the caller); one with no recompiled code
    and one of another module are left as they were; a call whose return address lies in the driver counts apart; an
    address eglGetProcAddress answers (through its lookup's tail call) that no export names is counted by the name the
-   game asked for. The file holds each function's calls, frames, calls a frame, most in one frame, first and last
+   game asked for, and a stub it answers, which jumps to the export of its name, counts the game's call once: at the
+   stub, the export's call behind it as the driver's. The file holds each function's calls, frames, calls a frame, most in one frame, first and last
    frame, by calls; it is written again once SNX_GL_CENSUS_EVERY frames went by, and not before */
 #include "nx/gpu/gl/gl_census.c"
 #include <assert.h>
@@ -20,6 +21,8 @@
 #define NOCODE  (DRIVER + 0x400)
 #define HIDDEN  (DRIVER + 0x500) /* a function no export names, which eglGetProcAddress answers */
 #define LOOKUP  (DRIVER + 0x600) /* eglGetProcAddress's lookup, which it tail-calls */
+#define ELEMS   (DRIVER + 0x280)
+#define STUB    (DRIVER + 0x700) /* the stub eglGetProcAddress answers for glDrawElements: it jumps to ELEMS */
 #define MAINGL  (MAIN + 0x80)    /* a _gl export of another module than the driver */
 #define NAME    0x8000u          /* where the game puts the name it asks for */
 
@@ -39,7 +42,7 @@ int g_frames;
 static const struct {
     const char* name;
     u64 addr;
-} symbols[] = {{"_glMain", MAINGL}, {"eglGetProcAddress", GETPROC}, {"_glDrawArrays", DRAW},
+} symbols[] = {{"_glMain", MAINGL}, {"eglGetProcAddress", GETPROC}, {"_glDrawArrays", DRAW}, {"_glDrawElements", ELEMS},
                {"_glClear", CLEAR}, {"_glNoCode", NOCODE},          {"_nv001rmt", LOOKUP}};
 int kernel_symbol(u32 i, u64* addr, const char** name) {
     if (i >= sizeof symbols / sizeof symbols[0]) return 0;
@@ -96,8 +99,22 @@ static void own_getproc(CPU* RESTRICT c, u64 entry) {
 static void own_lookup(CPU* RESTRICT c, u64 entry) {
     const char* name = (const char*)&guest[c->x[0]];
     (void)entry;
-    c->x[0] = !strcmp(name, "glGenBuffers") ? HIDDEN : !strcmp(name, "glClear") ? CLEAR : 0;
+    c->x[0] = !strcmp(name, "glGenBuffers")     ? HIDDEN
+              : !strcmp(name, "glClear")        ? CLEAR
+              : !strcmp(name, "glDrawElements") ? STUB
+                                                : 0;
     c->pc = c->x[30];
+}
+static unsigned elements;
+static void own_elements(CPU* RESTRICT c, u64 entry) {
+    (void)entry;
+    elements++;
+    c->pc = c->x[30];
+}
+/* the driver's stub: a jump through its context's table to the export, the game's return address kept */
+static void own_stub(CPU* RESTRICT c, u64 entry) {
+    (void)entry;
+    c->pc = ELEMS;
 }
 static void own_main(CPU* RESTRICT c, u64 entry) {
     (void)entry;
@@ -163,6 +180,8 @@ int main(int argc, char** argv) {
     *slot(GETPROC) = own_getproc;
     *slot(DRAW) = own_draw;
     *slot(CLEAR) = own_clear;
+    *slot(ELEMS) = own_elements;
+    *slot(STUB) = own_stub;
     *slot(HIDDEN) = own_hidden;
     *slot(LOOKUP) = own_lookup;
     *slot(MAINGL) = own_main;
@@ -179,12 +198,15 @@ int main(int argc, char** argv) {
     gl_census_init();
     assert(*slot(DRAW) == counted && *slot(CLEAR) == counted && *slot(GETPROC) == getproc);
     assert(*slot(MAINGL) == own_main && !*slot(NOCODE) && *slot(LOOKUP) == own_lookup);
-    assert(g_gl_census.taken == 2 && g_gl_census.no_code == 1);
+    assert(*slot(ELEMS) == counted && *slot(STUB) == own_stub);
+    assert(g_gl_census.taken == 3 && g_gl_census.no_code == 1);
 
     /* frame 0: the game resolves two names, one at an address no export names; calls each */
     assert(ask("glGenBuffers") == HIDDEN && *slot(HIDDEN) == counted);
     assert(ask("glClear") == CLEAR && ask("glNothing") == 0);
-    assert(getprocs == 3 && g_gl_census.unnamed == 1 && g_gl_census.taken == 3);
+    assert(getprocs == 3 && g_gl_census.unnamed == 1 && g_gl_census.taken == 4);
+    /* a stub answered for a name whose export the census took: the game's call counts once, at the stub */
+    assert(ask("glDrawElements") == STUB && *slot(STUB) == counted && g_gl_census.unnamed == 2);
     calls(HIDDEN, MAIN + 0x20, 2);
     calls(CLEAR, MAIN + 0x20, 1);
     /* frame 1, and the driver calling its own export */
@@ -192,26 +214,30 @@ int main(int argc, char** argv) {
     calls(DRAW, MAIN + 0x30, 3);
     calls(CLEAR, MAIN + 0x30, 1);
     calls(CLEAR, DRIVER + 0x40, 1);
+    calls(STUB, MAIN + 0x30, 3);
     /* frame 2 */
     g_frames = 2;
     calls(DRAW, MAIN + 0x30, 4);
     cpu.x[0] = 0;
     assert(call(DRAW, MAIN + 0x30) == 0x5a); /* the driver's result reaches the game */
-    assert(draws == 8 && clears == 3 && hidden == 2);
+    assert(draws == 8 && clears == 3 && hidden == 2 && elements == 3);
     assert(!read_file(path)); /* not due before SNX_GL_CENSUS_EVERY frames */
 
     gl_census_report();
     assert(read_file(path));
     fputs(text, stdout);
-    assert(strstr(text, "# gl_call_census: the game's calls to the GL functions of its driver (driver): 3 taken, 3 "
-                        "called, 12 calls, 2 frames\n"));
-    assert(strstr(text, "# eglGetProcAddress: 3 names asked, 2 answered, 1 at an address no export names\n"));
+    assert(strstr(text, "# gl_call_census: the game's calls to the GL functions of its driver (driver): 5 taken, 4 "
+                        "called, 15 calls, 2 frames\n"));
+    assert(strstr(text, "# eglGetProcAddress: 4 names asked, 3 answered, 2 at an address no export names\n"));
     assert(strstr(text, "\nfunction\tcalls\tframes\tper_frame\tmost_in_a_frame\tfirst_frame\tlast_frame\tdriver_calls\t"
                         "named_by\nglDrawArrays\t"));
     assert(!strcmp(row("glDrawArrays"), "glDrawArrays\t8\t2\t4.00\t5\t1\t2\t0\texport"));
     assert(!strcmp(row("glClear"), "glClear\t2\t2\t1.00\t1\t0\t1\t1\texport"));
     assert(!strcmp(row("glGenBuffers"), "glGenBuffers\t2\t1\t2.00\t2\t0\t0\t0\teglGetProcAddress"));
     assert(strstr(text, "glClear\t") < strstr(text, "glGenBuffers\t")); /* tied by calls: by name */
+    assert(!strcmp(row("glDrawElements"), "glDrawElements\t3\t1\t3.00\t3\t1\t1\t0\teglGetProcAddress"));
+    assert(!strstr(strstr(text, "glDrawElements\t") + 1, "glDrawElements\t")); /* its export's calls are the driver's */
+    assert(census_find(ELEMS)->driver_calls == 3 && !census_find(ELEMS)->calls);
     assert(!*row("glNoCode") && !*row("glMain"));
 
     /* written again once the frames go past SNX_GL_CENSUS_EVERY, then not before as many more */
