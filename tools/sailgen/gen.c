@@ -798,7 +798,7 @@ static Val call(unsigned n) {
     const char* name = name_of(n);
     unsigned count = arg_count(n), def, i;
     Val args[16], r;
-    int all_static = 1;
+    int all_static = 1, all_const = 1;
     if (builtin(n, name, &r)) return r;
     def = function_def(name, count);
     if (!def) sg_fail(n, "%s has no definition of %u arguments and is not one of sailgen's builtins", name, count);
@@ -807,8 +807,10 @@ static Val call(unsigned n) {
         args[i] = eval(arg_at(n, i), 0);
         args[i].node = arg_at(n, i);
         all_static &= args[i].bt != BT_DYN && args[i].kind != K_TUPLE && args[i].kind != K_UNIT;
+        all_const &= args[i].bt == BT_CONST;
     }
-    if (all_static && !reaches_state(def, 0)) return helper_call(n, def, args, count);
+    /* arguments all known here (none, or constants) inline, so a fixup's constant answer (nx.sail's HaveGCS) folds */
+    if (all_static && !all_const && !reaches_state(def, 0)) return helper_call(n, def, args, count);
     for (i = 0; i < count; ++i) args[i] = keep(args[i]);
     return inline_call(n, def, args, count);
 }
