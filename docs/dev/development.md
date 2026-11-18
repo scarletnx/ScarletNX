@@ -44,12 +44,16 @@ target unless its check is in `cmake/cppcheck-not-zero.txt`, the checks that sti
 zero leaves that list, and fails the target from then on.
 FS tests use production tree/HLE + synthetic temp data; `--only tree|service` selects a suite.
 
-CI: Linux/Windows builds, ABI syntax, native tool/FS regressions, optional Python diagnostics, the Linux AppImages
-and the Windows zip (run as installed on `main`), the Android APK, and [edenprobe](edenprobe.md)'s probes on lavapipe
-against the cases that passed before (`scripts/edenprobe.py`). A push to `main` cancels the build of the one before it
-still running, as a push to a pull request does that pull request's. `.github/workflows/publish.yml` publishes what
-builds everywhere, each said on Discord (`scripts/publish-builds.py`): a version tag pushed (`v1.0.0`; `v1.0.0-rc1` a
-prerelease) as this repository's release of it, the latest, its notes listing the changes since the version before;
+CI (`.github/workflows/build.yml`) has one job for each platform and architecture, which builds its package, then
+tests and checks it with the same tree and compiler cache: each Linux AppImage (x86-64 and AArch64) with ABI syntax,
+native tool/FS regressions, headless Vulkan on lavapipe and optional Python diagnostics, x86-64's also under ASan and
+UBSan and with [edenprobe](edenprobe.md)'s probes on lavapipe against the cases that passed before
+(`scripts/edenprobe.py`); the cross-built AppImages, the Windows zips (x86-64 and AArch64), the Android APK and the
+macOS and iOS apps. On `main` the AppImages and the zips also run as installed, at the end of their jobs. A push to
+`main` cancels the build of the one before it still running, as a push to a pull request does that pull request's.
+`.github/workflows/publish.yml` publishes what builds everywhere, each said on Discord (`scripts/publish-builds.py`): a
+version tag pushed (`v1.0.0`; `v1.0.0-rc1` a prerelease) as this repository's release of it, the latest, its notes
+listing the changes since the version before;
 each push to `main` as a release of [scarletnx/nightly](https://github.com/scarletnx/nightly/releases), the newest 30
 kept (this repository's `nightly` prerelease shows the latest's notes); each pull request as a prerelease there,
 `pr-<number>`. The notes and the messages link each download with its size and list what changed (a pull request's

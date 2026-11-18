@@ -862,8 +862,9 @@ can show what plain accesses do there.
   that emits an AArch64 object, and mold and then LLD by linking, rather than looking a name up on `PATH`, and uses
   the first pair that builds the image. `gnuabi_litmus_lld` forces LLD, so both linkers are
   covered where both are installed. `gnuabi_litmus_self` checks the driver's own decisions and needs no toolchain, so
-  it runs on every host, Windows and macOS included. The AArch64 Linux job installs Clang, LLD and mold, so both
-  linker paths run there. The x86-64 job installs LLD alone, so its two runs use LLD. The guest fixtures are registered under `if (NOT WIN32)`, so Windows x86-64 or ARM64 runs the guest
+  it runs on every host, Windows and macOS included. Each Linux job installs Clang, LLD and mold for its tests, so
+  both linker paths run on x86-64 and AArch64.
+  The guest fixtures are registered under `if (NOT WIN32)`, so Windows x86-64 or ARM64 runs the guest
   half only once that registration leaves the block. Load buffering, IRIW, message passing with an address dependency,
   and the `dmb ishst` and `STLR` fixes are not there yet.
 - **ABI.** None.

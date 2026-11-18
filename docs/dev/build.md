@@ -481,8 +481,8 @@ Test options, read when `BUILD_TESTING` is on (CTest's default), all OFF by defa
 
 - `-DSNX_TEST_SANITIZERS=ON`: build the native tests, and the programs and libraries of the repository they run or
   link, with ASan and UBSan (`runtime_architecture` names one left out). The runtime is one, so it is not deployed.
-  CI's `Linux (x86_64, ASan + UBSan)` job runs the tests this way, with `LSAN_OPTIONS=use_stacks=0:use_registers=0`
-  so the leak check finds the same leaks on every machine.
+  CI's Linux x86-64 job (`Linux AppImage (x86_64)`) runs the tests this way, with
+  `LSAN_OPTIONS=use_stacks=0:use_registers=0` so the leak check finds the same leaks on every machine.
 - `-DSNX_TEST_VULKAN=ON`: add the offscreen Vulkan integration tests, see below.
 - `-DSNX_TEST_EDENPROBE=/path/to/edenprobe.nro`: add `edenprobe_vk_memory_1` and `edenprobe_vk_memory_2`, which run
   edenprobe as CI does against its baseline, with guest buffers copied and read in place (docs/dev/edenprobe.md).

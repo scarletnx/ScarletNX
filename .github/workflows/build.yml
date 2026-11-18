@@ -43,26 +43,26 @@ concurrency:
   cancel-in-progress: >-
     ${{ github.event_name == 'pull_request' || github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
-# The Linux x86-64 and AArch64 tests' options: the linux job's, and the appimage job's, which builds a pull request's
-# Linux alone. SNX_TEST_OPTIONS go on the default tree, SNX_HEADLESS_OPTIONS make the headless Vulkan tree
+# The Linux x86-64 and AArch64 tests' options, the appimage job's: SNX_TEST_OPTIONS go on the default tree,
+# SNX_HEADLESS_OPTIONS make the headless Vulkan tree
 env:
   SNX_TEST_OPTIONS: -DSNX_TEST_VP9_VECTORS=ON -DSNX_TEST_ARM_DIFF=ON -DSNX_TEST_LLVM_SWEEP=ON
   SNX_HEADLESS_OPTIONS: -DSNX_BUILD_GUI=OFF -DSNX_DEPLOY=OFF -DSNX_TEST_VULKAN=ON -DSNX_TEST_AV1_VECTORS=ON
   # the jobs that may fail without failing the run (continue-on-error), whose failure cancels nothing
   # (scripts/fail-fast.py; tests/fail_fast_test.py holds the two to each other)
-  SNX_OPTIONAL_JOBS: '^(macOS and iOS \(arm64\)|Linux AppImage \((ppc64le|ppc64|riscv64|loongarch64)\)(, as installed)?)$'
+  SNX_OPTIONAL_JOBS: '^(macOS and iOS \(arm64\)|Linux AppImage \((ppc64le|ppc64|riscv64|loongarch64)\))$'
 
 # Linux jobs run in Arch Linux, which has the same Clang 23 and clang-format 23 as development, and its LLVM 23 for the
 # recompiler's code generator (required, cmake/llvm.cmake). Windows uses MSYS2 CLANG64 (CLANGARM64 on Arm) so Clang, the
 # MinGW/UCRT runtime and LLVM's development libraries come from one compatible toolchain. FFmpeg, OpenSSL, Vulkan, SDL3
 # and SPIRV-Tools' spirv-opt and spirv-val (cmake/spirv_tools.cmake) are built from the sources cpmfile.json pins, with
 # MSYS2 providing the shell, GNU make and NASM needed by FFmpeg and the Perl OpenSSL's Configure runs on. Downloads are
-# cached in .cache/cpm: one cache for the jobs that fetch the same sources (a Linux architecture's jobs, the four cross
+# cached in .cache/cpm: one cache for the jobs that fetch the same sources (a Linux architecture's, the four cross
 # builds, a Windows architecture's, Apple, Android), named by cpmfile.json's hash, with the name before the hash as a
 # restore key, so a bump downloads only the packages it changed. Compiles go through ccache, whose .cache/ccache each
 # compiling job restores from the newest one a push saved; a push saves it again, trimmed to what the run used, and a
-# pull request's run saves none: it reads main's (the linux job says why). The artifacts are what `cmake --install` puts
-# in place: the binaries with the licenses that go with them.
+# pull request's run saves none: it reads main's (the appimage job says why). The artifacts are what `cmake --install`
+# puts in place: the binaries with the licenses that go with them.
 jobs:
   # A scheduled run of a commit that has its nightly already: the run cancels itself, this job with it, which fails
   # nothing
@@ -85,19 +85,41 @@ jobs:
             curl -fsS -X POST -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' \
               "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/cancel" ;;
           esac
-  linux:
-    name: Linux (${{ matrix.arch }})
-    # Not on a pull request: each architecture's tests run in the appimage job there, on the build its AppImage is
-    # made of, so a pull request's run builds each Linux once, and edenprobe takes that job's install
-    if: github.event_name != 'pull_request'
+  # Each Linux architecture's one job, on every event: the runtime installed into /usr and the AppImage made of it, then
+  # the same tree with its tests on (ninja builds only what they change), the headless Vulkan tree and, on x86-64, the
+  # sanitizers' tree, each in its own folder where its flags differ, all through one compiler cache; their tests; on a
+  # push the AppImage run as installed; and on x86-64 Amberlith's probes on the AppImage's runtime. pkgforge's Arch
+  # image and tools (https://github.com/pkgforge-dev/Anylinux-AppImages), see scripts/make-appimage.sh
+  appimage:
+    name: Linux AppImage (${{ matrix.arch }})
     runs-on: ${{ matrix.arch == 'aarch64' && 'ubuntu-24.04-arm' || 'ubuntu-26.04' }}
-    timeout-minutes: 60
-    # Arch's image is x86-64 only; pkgforge's (the AppImage's) is Arch Linux ARM on AArch64, with the same LLVM
-    container: ${{ matrix.arch == 'aarch64' && 'ghcr.io/pkgforge-dev/archlinux:latest' || 'archlinux:latest' }}
+    # LLVM's build (scripts/linux-llvm.sh) adds about half an hour where its cache misses
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
         arch: [x86_64, aarch64]
+    container: ghcr.io/pkgforge-dev/archlinux:latest
+    # Amberlith's probes (edenprobe before 1.0.0; docs/dev/edenprobe.md), on x86-64. The NRO of a release of
+    # scarletnx/amberlith, pinned by its sha256, recompiled by the install and run on lavapipe: a case of
+    # tests/edenprobe/linux-x86_64.txt, the ones that passed before, that no longer passes fails the job. The install's
+    # scarletnx-android runs the probe's APK, pinned apart, against tests/edenprobe/android-x86_64.txt the same way.
+    # Another release or other mode words want its file written again
+    env:
+      # the release's tag and its NRO's name, which carries the version
+      EDENPROBE_VERSION: v1.0.0
+      EDENPROBE_NRO: amberlith-1.0.0.nro
+      EDENPROBE_SHA256: a5eb634b346ef3f357716b3690e2f21dbc53a14ae1ed08d08ad81b1f91bea018
+      # every family that needs no person or network: headless, the audio family's sound is never played. Not graphics:
+      # its suites write their own GPU command buffers, left out while the runtime had no Maxwell front end, and not
+      # added back since it returned (docs/dev/edenprobe.md). hooks: the runtime answers nn::fs, time, pl, ngc and nsd
+      # in the SDK's own functions and serves none of their services, so the probe asks through the functions it exports
+      EDENPROBE_MODE: quick notime cpu fs video display kernel audio hooks
+      # the APK (the probe's Android build) of a release of its own: its words run every family it has
+      EDENPROBE_APK_VERSION: v1.0.0
+      EDENPROBE_APK: amberlith-1.0.0.apk
+      EDENPROBE_APK_SHA256: 192cc7750bac972d0f4d850eea7bbada7a84b3c5b6b24d25d4d8ba7f7b6933d8
+      EDENPROBE_APK_MODE: quick
     steps:
       # Artifacts carry the commit they came from: the branch's head in a pull request, else the commit pushed
       - name: Name the commit
@@ -109,58 +131,41 @@ jobs:
       - name: Name the week
         id: week
         run: echo "week=$(date -u +%G-%V)" >> "$GITHUB_OUTPUT"
-      # pacman's packages, which it takes before its mirrors: this week's cache, else last week's. linux-sanitizers
-      # shares x86-64's, the same image and list
+      # pacman's packages, which it takes before its mirrors: this week's cache, else last week's
       - uses: actions/cache/restore@v5
         id: pacman
         with:
           path: /var/cache/pacman/pkg
-          key: pacman-linux-${{ matrix.arch }}-${{ steps.week.outputs.week }}
-          restore-keys: pacman-linux-${{ matrix.arch }}-
-      # jdk21-openjdk: javac and jni.h, which the Android app driver (src/android) builds with. meson: dav1d's build
-      # (cmake/dav1d.cmake), FFmpeg's AV1 decoder; without it AV1 movies play black
-      # llvm: llvm-config and LLVM-C for the recompiler (llvm-libs alone has no headers). gdb: the gdbserver gdbstub_native drives. jq: scripts/pr-builds.sh, which pr_builds tests. Mirrors drop a connection now
-      # and then (pkgforge's for aarch64 most), so each pacman install is tried 3 times, 5 s apart. -Syuu, not -Syu: an
-      # image can be built ahead of its repo (pkgforge's of 2026-11-12 had openssl 4 against Arch Linux ARM's 3.6.5,
-      # so Python lost ssl and pacman refused openssl), and the second u takes every package to the repo's version
-      - name: Install tools
+          key: pacman-appimage-${{ matrix.arch }}-${{ steps.week.outputs.week }}
+          restore-keys: pacman-appimage-${{ matrix.arch }}-
+      # Before the checkout: without git, actions/checkout downloads the files without the history, and the AppImage's
+      # version (git describe) is unknown. Mirrors drop a connection now and then (pkgforge's for aarch64 most), so each
+      # pacman install is tried 3 times, 5 s apart. -Syuu, not -Syu: an image can be built ahead of its repo (pkgforge's
+      # of 2026-11-12 had openssl 4 against Arch Linux ARM's 3.6.5, so Python lost ssl and pacman refused openssl), and
+      # the second u takes every package to the repo's version; the tools below then install from the repo
+      - name: Install git
         run: |
           for try in 1 2 3; do
-            pacman -Syuu --noconfirm --needed cmake ninja meson make patch nasm perl python git clang lld mold llvm qemu-user pkgconf sdl3 libxtst libxrandr libxss vulkan-swrast vulkan-validation-layers ccache gdb jq glslang jdk21-openjdk && break
+            pacman -Syuu --noconfirm --needed git && break
             [ "$try" = 3 ] && exit 1
             sleep 5
           done
-      # Saved once a week, by its first run: what it installed, without the versions nothing installs any more. The
-      # other runs of the week download only what changed since
-      - name: Keep the installed packages
-        if: steps.pacman.outputs.cache-hit != 'true'
-        run: pacman -Sc --noconfirm >/dev/null
-      - if: steps.pacman.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v5
-        with:
-          path: /var/cache/pacman/pkg
-          key: ${{ steps.pacman.outputs.cache-primary-key }}
-      # two commits: a pull request's merge commit and the base it is diffed against below
+      # the whole history, for git describe; the pull request's merge commit has the base it is diffed against below
       - uses: actions/checkout@v7
         with:
-          fetch-depth: 2
-      # it cancels the run once another of its jobs has failed (scripts/fail-fast.py), so the run stops at once
-      - &fail-fast-watch
-        name: Cancel the run when another job fails
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: scripts/fail-fast.py start
-      # Each architecture's cache: x86-64 fetches glslang-tools, and AArch64 uses the system's glslangValidator
-      # (cmake/glsl.cmake), so the two sets differ. The appimage job of that host and the x86-64 sanitizer job restore
-      # it alone; a bump restores the cache before it, which downloads only the packages that changed
+          fetch-depth: 0
+      # Each architecture's sources: x86-64 fetches glslang-tools, and AArch64 uses the system's glslangValidator
+      # (cmake/glsl.cmake), so the two sets differ. qemu-reference restores x86-64's; a bump restores the cache before
+      # it, which downloads only the packages that changed
       - uses: actions/cache@v5
         with:
           path: .cache/cpm
           key: cpmutil-linux-${{ matrix.arch }}-${{ hashFiles('cpmfile.json') }}
           restore-keys: cpmutil-linux-${{ matrix.arch }}-
-      # ccache under every compile, FFmpeg's, OpenSSL's and SPIRV-Tools' too, from the newest cache of this job on this
-      # branch, else on main: a pull request has none of its own, so it reads main's. Each cmake gets it as its
-      # launcher: from the environment CMake would run its configure checks through it, and they only miss
+      # ccache under every compile, FFmpeg's, OpenSSL's and SPIRV-Tools' too, of every tree this job builds: from the
+      # newest cache of this job on this branch, else on main, as a pull request has none of its own (saved below). Each
+      # cmake gets it as its launcher: from the environment CMake would run its configure checks through it, and they
+      # only miss
       - uses: actions/cache/restore@v5
         with:
           path: .cache/ccache
@@ -187,42 +192,239 @@ jobs:
             echo "SNX_DEPS_CACHE=$ws/.cache/deps"
             echo "SNX_CCACHE_START=$(date +%s)"
           } >> "$GITHUB_ENV"
+      # The action pins its own setup script only: the tools that script downloads are pinned here to a commit of
+      # Anylinux-AppImages, and checked against their SHA-256 below
+      - name: Install the packaging tools
+        uses: pkgforge-dev/anylinux-setup-action@ba7321e11074f9e387a0634e653d09b115d576cd # v6
+        env:
+          QUICK_SHARUN: https://raw.githubusercontent.com/pkgforge-dev/Anylinux-AppImages/ab06090c5b7946beb6efb04b9feea39362f6898e/useful-tools/quick-sharun.sh
+          DEBLOATED_PACKAGES: https://raw.githubusercontent.com/pkgforge-dev/Anylinux-AppImages/ab06090c5b7946beb6efb04b9feea39362f6898e/useful-tools/get-debloated-pkgs.sh
+          MAKE_AUR_PACKAGE: https://raw.githubusercontent.com/pkgforge-dev/Anylinux-AppImages/ab06090c5b7946beb6efb04b9feea39362f6898e/useful-tools/make-aur-package.sh
+      - name: Check the packaging tools
+        run: |
+          sha256sum -c <<'EOF'
+          0aea2f589658e5db1659a6ccb8d29546c4e03028f1e29b37c6450cece917249a  /usr/local/bin/quick-sharun
+          d215f7676785f1a1bb8784e69085d66c1df81488ef31f1ba7198325a5be05130  /usr/local/bin/get-debloated-pkgs
+          86afbf5045b78020c93fcd35bf0f642765a8dc339bb2dce534a0461ce3d3508d  /usr/local/bin/make-aur-package
+          EOF
+      # llvm: Clang's own, the opt of the LLVM settings, and llvm-config and LLVM-C for the trees that link Arch's LLVM
+      # (the sanitizers', the SDL3 fallback); the runtime links LLVM's libraries statically (below). jdk21-openjdk:
+      # javac and jni.h, which the Android app driver (src/android) builds with, and the JVM scarletnx-android loads for
+      # Amberlith's APK. meson: dav1d's build (cmake/dav1d.cmake), FFmpeg's AV1 decoder; without it AV1 movies play
+      # black.
+      # get-debloated-pkgs reads its release from api.github.com: unauthenticated, a runner's shared address gets
+      # GitHub's 60 requests an hour and the script's 403, so it takes the job's token for those requests. Pinning its
+      # release would still read api.github.com, and its own wait on a 403 ends after 5 tries
+      - name: Install the build tools and the debloated Mesa
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          for try in 1 2 3; do
+            pacman -Syu --noconfirm --needed cmake ninja meson make patch nasm perl python clang llvm sdl3 libx11 mesa vulkan-icd-loader ccache glslang jdk21-openjdk && break
+            [ "$try" = 3 ] && exit 1
+            sleep 5
+          done
+          get-debloated-pkgs mesa-nano opus-mini icu-mini
+      # it cancels the run once another of its jobs has failed (scripts/fail-fast.py), so the run stops at once
+      - &fail-fast-watch
+        name: Cancel the run when another job fails
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/fail-fast.py start
+      # Saved once a week, by its first run: what it installed, without the versions nothing installs any more. The
+      # other runs of the week download only what changed since
+      - name: Keep the installed packages
+        if: steps.pacman.outputs.cache-hit != 'true'
+        run: pacman -Sc --noconfirm >/dev/null
+      - if: steps.pacman.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: /var/cache/pacman/pkg
+          key: ${{ steps.pacman.outputs.cache-primary-key }}
+      # Which of Amberlith's runs this run calls for, before anything is built, so a pull request that calls for none
+      # says so even when the job fails before the runs: the paths each loads are scripts/edenprobe.py's (runs), which
+      # edenprobe_script tests. A push, a tag, the nightly's schedule and a run by hand run both, and Amberlith's main
+      # beside the release; a pull request runs each only when it changes what that run loads, never the main's
+      - name: Look for what each of Amberlith's runs loads
+        id: runs
+        if: matrix.arch == 'x86_64'
+        shell: bash
+        run: |
+          if [ "$GITHUB_EVENT_NAME" != pull_request ]; then
+            printf 'nro=true\napk=true\nmain=true\nany=true\n' >> "$GITHUB_OUTPUT"
+            echo "a $GITHUB_EVENT_NAME runs the NRO and the APK, and Amberlith's main beside the release"
+            exit 0
+          fi
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          changed=$(git diff --name-only HEAD^1 HEAD)
+          said=$(python3 scripts/edenprobe.py runs <<<"$changed")
+          printf '%s\nmain=false\n' "$said" >> "$GITHUB_OUTPUT"
+          if [ "$said" = $'nro=false\napk=false' ]; then
+            echo "any=false" >> "$GITHUB_OUTPUT"
+            count=0
+            [ -z "$changed" ] || count=$(wc -l <<<"$changed")
+            why="none of the $count files changed is one the NRO or the APK loads"
+            echo "::notice title=edenprobe::Amberlith: not run, $why"
+          else
+            echo "any=true" >> "$GITHUB_OUTPUT"
+          fi
+      # LLVM's libraries linked into the runtime, with the host's code generator alone (scripts/linux-llvm.sh), where
+      # Arch's libLLVM is one library with every target. Built once for each version, the image's LLVM's,
+      # whose opt prints the pipelines of the LLVM settings (cmake/settings.cmake)
+      - name: Name the LLVM version
+        id: llvm
+        run: echo "version=$(llvm-config --version)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache/restore@v5
+        id: llvm-cache
+        with:
+          path: .cache/llvm/${{ matrix.arch }}
+          key: linux-llvm-${{ matrix.arch }}-${{ hashFiles('scripts/linux-llvm.sh', 'scripts/llvm-libraries/CMakeLists.txt', 'cmake/llvm_components.cmake') }}-${{ steps.llvm.outputs.version }}
+      - name: Build LLVM
+        if: steps.llvm-cache.outputs.cache-hit != 'true'
+        env:
+          LLVM_VERSION: ${{ steps.llvm.outputs.version }}
+        run: scripts/linux-llvm.sh ${{ matrix.arch }} "$PWD/.cache/llvm/${{ matrix.arch }}"
+      # Saved as soon as it is built, as the apple job saves its own
+      - if: steps.llvm-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: .cache/llvm/${{ matrix.arch }}
+          key: ${{ steps.llvm-cache.outputs.cache-primary-key }}
+      # A release leaves out scarletnx --mcp's A64 disassembler (SNX_A64_DISASM), which is for working on the runtime,
+      # and the test programs, which the AppImage does not carry: they were half of this build's time. Each build
+      # step's compiler cache counts are its own: zeroed before, shown after
+      - name: Build and install into /usr
+        run: |
+          git config --global --add safe.directory '*'
+          ccache --zero-stats
+          cmake --preset default -DSNX_DEPLOY=OFF -DCMAKE_INSTALL_PREFIX=/usr \
+            -DLLVM_DIR="$PWD/.cache/llvm/${{ matrix.arch }}/lib/cmake/llvm" -DSNX_A64_DISASM=OFF -DBUILD_TESTING=OFF \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          cmake --build --preset default --parallel "$(getconf _NPROCESSORS_ONLN)"
+          cmake --install build/default
+          ccache --show-stats
+      # The script names the AppImage after `git describe`
+      - name: Make the AppImage
+        run: scripts/make-appimage.sh
+      # Only what the script made: dist/ also holds the tracked desktop entry and icon
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ScarletNX-linux-${{ matrix.arch }}-${{ steps.commit.outputs.short }}.AppImage
+          path: |
+            dist/*.AppImage*
+            dist/appinfo
+      # The AppImage as a user gets it (scripts/check-package.sh), on a push, the nightly and a run by hand: a pull
+      # request's run checks no package. In a container of its own, a plain Ubuntu with none of this job's tools and
+      # libraries, where the checkout and build tree the runtime was built in (/__w/...) are not: this job's own
+      # checkout would stand in for what an installed copy lacks. The workspace is there at /github/workspace
+      - name: Run the AppImage as a user would
+        if: github.event_name != 'pull_request'
+        uses: docker://ubuntu:24.04
+        with:
+          entrypoint: bash
+          args: scripts/check-package.sh dist/ScarletNX-linux-${{ matrix.arch }}.AppImage
+      # out of /usr, by the list that install wrote, which the next one replaces: the tests run with no copy of
+      # ScarletNX installed there
+      - name: Take the install out of /usr
+        run: xargs -d '\n' rm -f -- < build/default/install_manifest.txt
+      # Amberlith runs the AppImage's runtime as it was built, installed apart: the tree takes the test options below
+      - name: Stage the install for Amberlith
+        if: steps.runs.outputs.any == 'true'
+        run: cmake --install build/default --prefix stage
+      # The test tools this image lacks, and Arch's own Mesa back, which the tests run lavapipe with: the debloated one
+      # is for the AppImage alone. lld and mold: the two linkers gnuabi_litmus links its guest with. gdb: the gdbserver
+      # gdbstub_native drives. jq: scripts/pr-builds.sh, which pr_builds tests. github-cli: Amberlith's download. Each
+      # pacman install is tried 3 times, as Install git says
+      - name: Install the test tools
+        env:
+          AMBERLITH: ${{ steps.runs.outputs.any }}
+        run: |
+          packages="lld mold qemu-user pkgconf libxtst libxrandr libxss vulkan-swrast vulkan-validation-layers gdb jq"
+          [ "$AMBERLITH" = true ] && packages="$packages github-cli"
+          for try in 1 2 3; do
+            pacman -S --noconfirm mesa && pacman -S --noconfirm --needed $packages && break
+            [ "$try" = 3 ] && exit 1
+            sleep 5
+          done
       # Unicorn 2.1.4, the A32 and Thumb differentials' reference (SNX_TEST_ARM_DIFF), in a venv: Arch's Python takes no
       # pip install of its own. PyPI drops a connection now and then, so it is tried 3 times, 5 s apart
       - name: Install Unicorn
-        run: &unicorn |
+        run: |
           python -m venv --system-site-packages .cache/unicorn
           for try in 1 2 3; do
             .cache/unicorn/bin/pip install --quiet unicorn==2.1.4 && break
             [ "$try" = 3 ] && exit 1
             sleep 5
           done
-      - name: Build the runtime
+      # The test options on the AppImage's tree, its tests on, and the headless tree, whose options change what every
+      # target builds, in a folder of its own with this job's LLVM. The A64 disassembler, which the AppImage leaves out,
+      # is back in AArch64's test tree; on x86-64 the sanitizers' tree has it
+      - name: Build the tests and the headless Vulkan tree
         run: |
-          cmake --preset default ${{ env.SNX_TEST_OPTIONS }} -DPython3_EXECUTABLE="$PWD/.cache/unicorn/bin/python" \
+          ccache --zero-stats
+          cmake build/default ${{ env.SNX_TEST_OPTIONS }} -DBUILD_TESTING=ON \
+            -DSNX_A64_DISASM=${{ matrix.arch == 'aarch64' && 'ON' || 'OFF' }} \
+            -DPython3_EXECUTABLE="$PWD/.cache/unicorn/bin/python"
+          cmake --build build/default --parallel "$(getconf _NPROCESSORS_ONLN)"
+          ccache --show-stats
+          ccache --zero-stats
+          cmake --preset default -B build/headless ${{ env.SNX_HEADLESS_OPTIONS }} \
+            -DLLVM_DIR="$PWD/.cache/llvm/${{ matrix.arch }}/lib/cmake/llvm" -DSNX_A64_DISASM=OFF \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
-          cmake --build --preset default --parallel "$(getconf _NPROCESSORS_ONLN)"
-          cmake --install build/default --prefix stage
-      # The fallback is CMake's (cpmfile.json pins SDL3) and the Windows job builds the same SDL3 from source. A pull
-      # request builds it in the appimage job, when it changes a CMake file, a pin or this workflow
+          cmake --build build/headless --parallel "$(getconf _NPROCESSORS_ONLN)"
+          ccache --show-stats
+      # The SDL3 fallback is CMake's (cpmfile.json pins SDL3) and the Windows job builds the same SDL3 from source.
+      # Built on every push; on a pull request on AArch64 alone, when it changes a CMake file, a pin or this workflow
+      - name: Look for CMake changes
+        id: cmake-changed
+        if: matrix.arch == 'aarch64' && github.event_name == 'pull_request'
+        run: |
+          changed=$(git diff --name-only HEAD^1 HEAD)
+          printf '%s\n' "$changed"
+          if grep -qE '(^|/)CMakeLists\.txt$|\.cmake$|^CMakePresets\.json$|^cpmfile\.json$|^\.github/workflows/build\.yml$' <<<"$changed"; then
+            echo "yes=true" >> "$GITHUB_OUTPUT"
+          fi
       - name: Build the SDL3 fallback without a system package
-        run: &sdl-fallback |
+        if: github.event_name != 'pull_request' || steps.cmake-changed.outputs.yes == 'true'
+        run: |
+          ccache --zero-stats
           cmake --preset default -B build/sdl-fallback -DCMAKE_DISABLE_FIND_PACKAGE_SDL3=ON \
             -DSNX_DEPLOY=OFF -DBUILD_TESTING=OFF -DSDL_WAYLAND=OFF \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           cmake --build build/sdl-fallback --target scarletnx --parallel "$(getconf _NPROCESSORS_ONLN)"
-      - name: Build SDL3 with headless Vulkan tests
+          ccache --show-stats
+      # x86-64 with ASan and UBSan (SNX_TEST_SANITIZERS): every test, and the programs and libraries of ours it runs or
+      # links, built with them (runtime_architecture names any left out), so our code reading memory after it was freed
+      # or past its end fails on every run, not only where it happens to crash. A report stops the program that made it,
+      # a code generator of the build or a test, and fails the job, printed whole. Its flags change every object, so it
+      # has a folder of its own, and the compiler cache keeps its objects beside the other trees'. The FFmpeg, OpenSSL
+      # and SPIRV-Tools builds are the other trees': the sanitizers leave them as they are
+      - name: Build with the sanitizers
+        if: matrix.arch == 'x86_64'
+        env: &sanitizers
+          ASAN_OPTIONS: halt_on_error=1
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+          # a block only a stale stack slot or register still points at is a leak, on every machine alike: with them
+          # read, what a leak check finds depends on what the stack happened to hold at exit
+          LSAN_OPTIONS: use_stacks=0:use_registers=0
+          # the loader keeps a driver loaded past vkDestroyInstance: what the driver made once stays reachable from its
+          # globals, where an unloaded driver's would read as a leak of an unknown module (lavapipe's 128 bytes,
+          # 3ds_addons)
+          VK_LOADER_DISABLE_DYNAMIC_LIBRARY_UNLOADING: 1
         run: |
-          cmake --preset default -B build/headless ${{ env.SNX_HEADLESS_OPTIONS }} \
-            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
-          cmake --build build/headless --parallel "$(getconf _NPROCESSORS_ONLN)"
-      # Only what this run used is kept, so the cache saved is one build's worth
+          ccache --zero-stats
+          cmake --preset default -B build/sanitizers -DSNX_TEST_SANITIZERS=ON -DSNX_TEST_VP9_VECTORS=ON \
+            -DSNX_DEPLOY=OFF -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          cmake --build build/sanitizers --parallel "$(getconf _NPROCESSORS_ONLN)"
+          ccache --show-stats
+      # Only what this run used is kept, so the cache saved is one build's worth of every tree. The disk left is said:
+      # the trees share the runner's
       - name: Trim the compiler cache
         run: |
-          ccache --show-stats --verbose
           ccache --evict-older-than "$(( $(date +%s) - SNX_CCACHE_START ))s"
           ccache --zero-stats
           du -sh "$CCACHE_DIR"
+          df -h .
       # Not from a pull request: only that pull request would read what it saved, and it builds as fast from main's.
       # The repository's caches share 10 GB, the least recently read evicted first, and a cache of each run's own
       # pushes out main's LLVM builds and system roots, which every run reads
@@ -250,22 +452,129 @@ jobs:
       # As many at a time as the runner has cores, as each run keeps its shaders and frames in a folder of its own
       # (tests/vulkan_headless.c)
       - name: Test headless Vulkan and NX runtime
-        run: &headless-tests ctest --test-dir build/headless -R '^(vulkan_headless|vulkan_headless_options|vulkan_headless_vic_validation|vulkan_headless_pipeline_library_whole|vulkan_headless_pipeline_library_linked|vulkan_headless_libraries_off|vulkan_headless_vk12|vulkan_headless_descriptor_buffers|vulkan_headless_cb_windows|vulkan_headless_vertex_input_off|vulkan_headless_uma|vulkan_headless_hot|vulkan_recorder|vulkan_tex_partial|vulkan_video_av1|nx_runtime_homebrew|nx_runtime_homebrew_64k_pages|vulkan_storage_buffer_keep|vulkan_nvn_savestate|vulkan_owned_page_reads|vulkan_owned_page_reads_protection|astc_vulkan_sync|astc_vulkan_encode_dot)$' --output-on-failure --parallel "$(getconf _NPROCESSORS_ONLN)"
+        run: ctest --test-dir build/headless -R '^(vulkan_headless|vulkan_headless_options|vulkan_headless_vic_validation|vulkan_headless_pipeline_library_whole|vulkan_headless_pipeline_library_linked|vulkan_headless_libraries_off|vulkan_headless_vk12|vulkan_headless_descriptor_buffers|vulkan_headless_cb_windows|vulkan_headless_vertex_input_off|vulkan_headless_uma|vulkan_headless_hot|vulkan_recorder|vulkan_tex_partial|vulkan_video_av1|nx_runtime_homebrew|nx_runtime_homebrew_64k_pages|vulkan_storage_buffer_keep|vulkan_nvn_savestate|vulkan_owned_page_reads|vulkan_owned_page_reads_protection|astc_vulkan_sync|astc_vulkan_encode_dot)$' --output-on-failure --parallel "$(getconf _NPROCESSORS_ONLN)"
       # The game modules compile src/common/cpu/aarch64/cpu_helpers.c, which no CMake target does
       - name: Check the ABI helpers compile
-        run: &abi-helpers clang -std=gnu23 -fsyntax-only -Wall -I src src/common/cpu/aarch64/cpu_helpers.c
+        run: clang -std=gnu23 -fsyntax-only -Wall -I src src/common/cpu/aarch64/cpu_helpers.c
       - name: Test native tooling and indexed filesystems
-        run: &native-tests ctest --test-dir build/default --output-on-failure --parallel 4
+        run: ctest --test-dir build/default --output-on-failure --parallel 4
       - name: Check optional Python diagnostics
-        run: &python-diagnostics |
+        run: |
           python -m compileall -q tools
           python tools/run_game.py --help > /dev/null
-      # The install tree, no package: the checks as installed and the Amberlith job take it within the run
+      - name: Test under the sanitizers
+        if: matrix.arch == 'x86_64'
+        env: *sanitizers
+        run: ctest --test-dir build/sanitizers --output-on-failure --parallel 4
+      # gh fetches through the REST API: the releases/download link answered 504 for hours on 2026-11-08. 3 tries each.
+      # The nightly's NRO is named for its version and commit, amberlith-<version>-<commit>.nro; one that cannot be
+      # fetched or checked is a warning, and its run is left out
+      - name: Fetch Amberlith
+        id: fetch
+        if: steps.runs.outputs.any == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NRO: ${{ steps.runs.outputs.nro }}
+          APK: ${{ steps.runs.outputs.apk }}
+          MAIN: ${{ steps.runs.outputs.main }}
+        run: |
+          fetch() { # TAG FILE SHA256
+            for try in 1 2 3; do
+              gh release download "$1" -R scarletnx/amberlith -p "$2" --clobber && break
+              [ "$try" = 3 ] && return 1
+              sleep 30
+            done
+            echo "$3  $2" | sha256sum -c -
+          }
+          if [ "$NRO" = true ]; then
+            if [ -z "$EDENPROBE_SHA256" ]; then
+              echo "EDENPROBE_SHA256 is empty: pin the sha256 of $EDENPROBE_NRO" >&2
+              exit 1
+            fi
+            fetch "$EDENPROBE_VERSION" "$EDENPROBE_NRO" "$EDENPROBE_SHA256" || exit 1
+          fi
+          if [ "$APK" = true ]; then
+            fetch "$EDENPROBE_APK_VERSION" "$EDENPROBE_APK" "$EDENPROBE_APK_SHA256" || exit 1
+          fi
+          if [ "$MAIN" = true ]; then
+            mkdir -p edenprobe-nightly
+            if gh release download nightly -R scarletnx/amberlith -D edenprobe-nightly -p 'amberlith-*.nro' \
+                -p 'amberlith-*.nro.sha256' &&
+              mv edenprobe-nightly/amberlith-*.nro edenprobe-main.nro &&
+              mv edenprobe-nightly/amberlith-*.nro.sha256 edenprobe-main.nro.sha256 &&
+              echo "$(cut -d ' ' -f 1 edenprobe-main.nro.sha256)  edenprobe-main.nro" | sha256sum -c -; then
+              echo "main=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "::warning title=Amberlith main::Amberlith's nightly could not be fetched or checked"
+            fi
+          fi
+      # The runs called for, one after the other, each with its own output, summary and exit: the NRO and the APK held to
+      # their baselines, Amberlith's main beside the release's baseline, warnings only. Not side by side: the NRO's kernel
+      # family times its threads, and with the others beside it at the lowest priority, so that it passes, the runs took
+      # no less time in all than one after the other.
+      # Each summary's title is a line of the pull request's comment, as a notice of this job that scripts/pr-builds.sh
+      # reads back once the run ends, and finds by this step's name; on one line, % is all a notice escapes
+      - name: Run Amberlith
+        id: amberlith
+        if: steps.runs.outputs.any == 'true'
+        shell: bash
+        env:
+          NRO: ${{ steps.runs.outputs.nro }}
+          APK: ${{ steps.runs.outputs.apk }}
+          MAIN: ${{ steps.fetch.outputs.main }}
+        run: |
+          # NAME ARGS...: one run, its output in NAME.log, its status in NAME.status
+          probe() {
+            local name=$1
+            shift
+            local began=$(date +%s) code=0
+            python3 scripts/edenprobe.py run --runtime stage/bin/scarletnx "$@" --summary "$name.md" \
+              > "$name.log" 2>&1 || code=$?
+            echo "$code" > "$name.status"
+            echo "$name: $(($(date +%s) - began)) s" >> times.txt
+          }
+          began=$(date +%s)
+          : > times.txt
+          [ "$NRO" = true ] && probe edenprobe --nro "$EDENPROBE_NRO" --mode "$EDENPROBE_MODE" --out edenprobe \
+            --baseline tests/edenprobe/linux-x86_64.txt
+          [ "$APK" = true ] && probe edenprobe-android --apk "$EDENPROBE_APK" --mode "$EDENPROBE_APK_MODE" \
+            --out edenprobe-android --baseline tests/edenprobe/android-x86_64.txt
+          [ "$MAIN" = true ] && probe edenprobe-main --nro edenprobe-main.nro --mode "$EDENPROBE_MODE" \
+            --out edenprobe-main --advisory-baseline tests/edenprobe/linux-x86_64.txt
+          status=0
+          for name in edenprobe edenprobe-android edenprobe-main; do
+            [ -f "$name.status" ] || continue
+            echo "::group::$name, exit $(cat "$name.status")"
+            cat "$name.log"
+            echo "::endgroup::"
+            [ -f "$name.md" ] && cat "$name.md" >> "$GITHUB_STEP_SUMMARY"
+            if [ "$name" != edenprobe-main ]; then
+              if [ -f "$name/summary.md" ]; then
+                result=$(head -n 1 "$name/summary.md" | cut -c5-)
+                echo "::notice title=edenprobe::${result//%/%25}"
+              fi
+              [ "$(cat "$name.status")" = 0 ] || status=1
+            fi
+          done
+          echo "the runs: $(($(date +%s) - began)) s in all; $(tr '\n' ';' < times.txt)"
+          exit "$status"
+      # The reports, the failures' pictures, the logs and the runs' baseline.txt; not the recompiled game. Each attempt
+      # its own: a run takes one artifact of a name, and a job run again keeps the earlier attempt's to compare
       - uses: actions/upload-artifact@v7
+        if: ${{ !cancelled() && (steps.amberlith.outcome == 'success' || steps.amberlith.outcome == 'failure') }}
         with:
-          name: ScarletNX-linux-${{ matrix.arch }}-${{ steps.commit.outputs.short }}-install
-          path: stage
-          retention-days: 1
+          name: edenprobe-${{ steps.commit.outputs.short }}-${{ github.run_attempt }}
+          path: |
+            edenprobe
+            !edenprobe/work
+            edenprobe-main
+            !edenprobe-main/work
+            edenprobe-android
+            !edenprobe-android/work
+            *.log
+            times.txt
+          if-no-files-found: ignore
       # A run stops at its first failed job, whatever its event: the jobs done keep their results, and the others are
       # cancelled instead of building for nothing. A failed job marks its run with this artifact, and the jobs still
       # running cancel the run once this one has ended (scripts/fail-fast.py), so it keeps its failure: a job that
@@ -328,7 +637,8 @@ jobs:
 
   # The cross jobs (appimage-cross) can't run qemu-aarch64 beside a host binary that qemu-user runs: the QEMU side of
   # the A64 differential is recorded here, once, and handed over as an artifact. A job of its own, so the cross jobs
-  # wait for these two targets and not for the linux job's tests. The caches are the linux job's, restored and not saved
+  # wait for these two targets and not for the Linux tests. The sources, the dependency builds and the compiler cache
+  # are x86-64's appimage job's, restored and not saved; pacman's packages its own, Arch's image being another
   qemu-reference:
     name: A64 differential's QEMU reference
     needs: recompiler-changes
@@ -348,11 +658,13 @@ jobs:
       - name: Name the week
         id: week
         run: echo "week=$(date -u +%G-%V)" >> "$GITHUB_OUTPUT"
+      # pacman's packages, which it takes before its mirrors: this week's cache, else last week's
       - uses: actions/cache/restore@v5
+        id: pacman
         with:
           path: /var/cache/pacman/pkg
-          key: pacman-linux-x86_64-${{ steps.week.outputs.week }}
-          restore-keys: pacman-linux-x86_64-
+          key: pacman-${{ github.job }}-${{ steps.week.outputs.week }}
+          restore-keys: pacman-${{ github.job }}-
       # jdk21-openjdk: javac and jni.h, which the Android app driver (src/android) configures with
       - name: Install tools
         run: |
@@ -361,6 +673,15 @@ jobs:
             [ "$try" = 3 ] && exit 1
             sleep 5
           done
+      # Saved once a week, as in the appimage job
+      - name: Keep the installed packages
+        if: steps.pacman.outputs.cache-hit != 'true'
+        run: pacman -Sc --noconfirm >/dev/null
+      - if: steps.pacman.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: /var/cache/pacman/pkg
+          key: ${{ steps.pacman.outputs.cache-primary-key }}
       - uses: actions/checkout@v7
       - uses: actions/cache/restore@v5
         with:
@@ -370,13 +691,13 @@ jobs:
       - uses: actions/cache/restore@v5
         with:
           path: .cache/deps
-          key: deps-linux-x86_64-${{ github.run_id }}
-          restore-keys: deps-linux-x86_64-
+          key: deps-appimage-x86_64-${{ github.run_id }}
+          restore-keys: deps-appimage-x86_64-
       - uses: actions/cache/restore@v5
         with:
           path: .cache/ccache
-          key: ccache-linux-x86_64-${{ github.run_id }}-${{ github.run_attempt }}
-          restore-keys: ccache-linux-x86_64-
+          key: ccache-appimage-x86_64-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: ccache-appimage-x86_64-
       - name: Set up the caches
         shell: bash
         run: |
@@ -405,374 +726,6 @@ jobs:
       - *fail-fast-file
       - *fail-fast-mark
 
-  # x86-64 with ASan and UBSan (SNX_TEST_SANITIZERS): every test, and the programs and libraries of ours it runs or
-  # links, built with them (runtime_architecture names any left out), so our code reading memory after it was freed or
-  # past its end fails on every run, not only where it happens to crash. A report stops the program that made it, a code
-  # generator of the build or a test, and fails the job, printed whole. Its own compiler cache; the linux job's CPM
-  # sources and FFmpeg, OpenSSL and SPIRV-Tools builds, which the sanitizers leave as they are, are read and never saved
-  # here
-  linux-sanitizers:
-    name: Linux (x86_64, ASan + UBSan)
-    runs-on: ubuntu-26.04
-    timeout-minutes: 60
-    container: archlinux:latest
-    env:
-      ASAN_OPTIONS: halt_on_error=1
-      UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
-      # a block only a stale stack slot or register still points at is a leak, on every machine alike: with them
-      # read, what a leak check finds depends on what the stack happened to hold at exit
-      LSAN_OPTIONS: use_stacks=0:use_registers=0
-      # the loader keeps a driver loaded past vkDestroyInstance: what the driver made once stays reachable from its
-      # globals, where an unloaded driver's would read as a leak of an unknown module (lavapipe's 128 bytes, 3ds_addons)
-      VK_LOADER_DISABLE_DYNAMIC_LIBRARY_UNLOADING: 1
-    steps:
-      - name: Name the week
-        id: week
-        run: echo "week=$(date -u +%G-%V)" >> "$GITHUB_OUTPUT"
-      # pacman's packages, which it takes before its mirrors: this week's cache, else last week's. The linux job's on
-      # x86-64, the same image and list
-      - uses: actions/cache/restore@v5
-        id: pacman
-        with:
-          path: /var/cache/pacman/pkg
-          key: pacman-linux-x86_64-${{ steps.week.outputs.week }}
-          restore-keys: pacman-linux-x86_64-
-      # meson: dav1d's build (cmake/dav1d.cmake), as in the linux job
-      - name: Install tools
-        run: |
-          for try in 1 2 3; do
-            pacman -Syu --noconfirm --needed cmake ninja meson make patch nasm perl python git clang lld llvm qemu-user pkgconf sdl3 libxtst libxrandr libxss vulkan-swrast vulkan-validation-layers ccache gdb jq glslang jdk21-openjdk && break
-            [ "$try" = 3 ] && exit 1
-            sleep 5
-          done
-      # Saved once a week, by its first run: what it installed, without the versions nothing installs any more. The
-      # other runs of the week download only what changed since
-      - name: Keep the installed packages
-        if: steps.pacman.outputs.cache-hit != 'true'
-        run: pacman -Sc --noconfirm >/dev/null
-      - if: steps.pacman.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v5
-        with:
-          path: /var/cache/pacman/pkg
-          key: ${{ steps.pacman.outputs.cache-primary-key }}
-      - uses: actions/checkout@v7
-      - *fail-fast-watch
-      - uses: actions/cache/restore@v5
-        with:
-          path: .cache/cpm
-          key: cpmutil-linux-x86_64-${{ hashFiles('cpmfile.json') }}
-          restore-keys: cpmutil-linux-x86_64-
-      - uses: actions/cache/restore@v5
-        with:
-          path: .cache/deps
-          key: deps-linux-x86_64-${{ github.run_id }}
-          restore-keys: deps-linux-x86_64-
-      - uses: actions/cache/restore@v5
-        with:
-          path: .cache/ccache
-          key: ccache-${{ github.job }}-${{ github.run_id }}-${{ github.run_attempt }}
-          restore-keys: ccache-${{ github.job }}-
-      - name: Set up the caches
-        shell: bash
-        run: |
-          ws=${GITHUB_WORKSPACE//\\//}
-          {
-            echo "CCACHE_DIR=$ws/.cache/ccache"
-            echo "CCACHE_BASEDIR=$ws"
-            echo "CCACHE_NOHASHDIR=true"
-            echo "SNX_DEPS_CACHE=$ws/.cache/deps"
-            echo "SNX_CCACHE_START=$(date +%s)"
-          } >> "$GITHUB_ENV"
-      - name: Build with the sanitizers
-        run: |
-          cmake --preset default -B build/sanitizers -DSNX_TEST_SANITIZERS=ON -DSNX_TEST_VP9_VECTORS=ON \
-            -DSNX_DEPLOY=OFF -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
-          cmake --build build/sanitizers --parallel "$(getconf _NPROCESSORS_ONLN)"
-      - name: Trim the compiler cache
-        run: |
-          ccache --show-stats --verbose
-          ccache --evict-older-than "$(( $(date +%s) - SNX_CCACHE_START ))s"
-          ccache --zero-stats
-          du -sh "$CCACHE_DIR"
-      - if: github.event_name != 'pull_request'
-        uses: actions/cache/save@v5
-        with:
-          path: .cache/ccache
-          key: ccache-${{ github.job }}-${{ github.run_id }}-${{ github.run_attempt }}
-      - name: Test under the sanitizers
-        run: ctest --test-dir build/sanitizers --output-on-failure --parallel 4
-      - *fail-fast-file
-      - *fail-fast-mark
-
-  appimage:
-    name: Linux AppImage (${{ matrix.arch }})
-    runs-on: ${{ matrix.arch == 'aarch64' && 'ubuntu-24.04-arm' || 'ubuntu-26.04' }}
-    # LLVM's build (scripts/linux-llvm.sh) adds about half an hour where its cache misses
-    timeout-minutes: 120
-    strategy:
-      fail-fast: false
-      matrix:
-        arch: [x86_64, aarch64]
-    # pkgforge's Arch image and tools (https://github.com/pkgforge-dev/Anylinux-AppImages), see scripts/make-appimage.sh
-    container: ghcr.io/pkgforge-dev/archlinux:latest
-    steps:
-      # Artifacts carry the commit they came from: the branch's head in a pull request, else the commit pushed
-      - name: Name the commit
-        id: commit
-        shell: bash
-        env:
-          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-        run: echo "short=${SHA::7}" >> "$GITHUB_OUTPUT"
-      - name: Name the week
-        id: week
-        run: echo "week=$(date -u +%G-%V)" >> "$GITHUB_OUTPUT"
-      # pacman's packages, which it takes before its mirrors: this week's cache, else last week's
-      - uses: actions/cache/restore@v5
-        id: pacman
-        with:
-          path: /var/cache/pacman/pkg
-          key: pacman-appimage-${{ matrix.arch }}-${{ steps.week.outputs.week }}
-          restore-keys: pacman-appimage-${{ matrix.arch }}-
-      # Before the checkout: without git, actions/checkout downloads the files without the history, and the AppImage's
-      # version (git describe) is unknown. Each pacman install is tried 3 times, as in the linux job, and the first is
-      # -Syuu for the same reason: the packaging tools below install from the repo, which the image may be ahead of
-      - name: Install git
-        run: |
-          for try in 1 2 3; do
-            pacman -Syuu --noconfirm --needed git && break
-            [ "$try" = 3 ] && exit 1
-            sleep 5
-          done
-      - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-      # The linux job's cache of this host's architecture, which this build's sources are a part of: it restores and
-      # never saves, so the same sources are not copied for each AppImage architecture
-      - uses: actions/cache/restore@v5
-        with:
-          path: .cache/cpm
-          key: cpmutil-linux-${{ matrix.arch }}-${{ hashFiles('cpmfile.json') }}
-          restore-keys: cpmutil-linux-${{ matrix.arch }}-
-      # ccache, set up as in the linux job
-      - uses: actions/cache/restore@v5
-        with:
-          path: .cache/ccache
-          key: ccache-${{ github.job }}-${{ matrix.arch }}-${{ github.run_id }}-${{ github.run_attempt }}
-          restore-keys: ccache-${{ github.job }}-${{ matrix.arch }}-
-      # the dependency builds, as in the linux job
-      - uses: actions/cache/restore@v5
-        id: deps
-        with:
-          path: .cache/deps
-          key: deps-${{ github.job }}-${{ matrix.arch }}-${{ github.run_id }}
-          restore-keys: deps-${{ github.job }}-${{ matrix.arch }}-
-      - name: Set up the caches
-        shell: bash
-        run: |
-          ws=${GITHUB_WORKSPACE//\\//}
-          {
-            echo "CCACHE_DIR=$ws/.cache/ccache"
-            echo "CCACHE_BASEDIR=$ws"
-            echo "CCACHE_NOHASHDIR=true"
-            echo "SNX_DEPS_CACHE=$ws/.cache/deps"
-            echo "SNX_CCACHE_START=$(date +%s)"
-          } >> "$GITHUB_ENV"
-      # The action pins its own setup script only: the tools that script downloads are pinned here to a commit of
-      # Anylinux-AppImages, and checked against their SHA-256 below
-      - name: Install the packaging tools
-        uses: pkgforge-dev/anylinux-setup-action@ba7321e11074f9e387a0634e653d09b115d576cd # v6
-        env:
-          QUICK_SHARUN: https://raw.githubusercontent.com/pkgforge-dev/Anylinux-AppImages/ab06090c5b7946beb6efb04b9feea39362f6898e/useful-tools/quick-sharun.sh
-          DEBLOATED_PACKAGES: https://raw.githubusercontent.com/pkgforge-dev/Anylinux-AppImages/ab06090c5b7946beb6efb04b9feea39362f6898e/useful-tools/get-debloated-pkgs.sh
-          MAKE_AUR_PACKAGE: https://raw.githubusercontent.com/pkgforge-dev/Anylinux-AppImages/ab06090c5b7946beb6efb04b9feea39362f6898e/useful-tools/make-aur-package.sh
-      - name: Check the packaging tools
-        run: |
-          sha256sum -c <<'EOF'
-          0aea2f589658e5db1659a6ccb8d29546c4e03028f1e29b37c6450cece917249a  /usr/local/bin/quick-sharun
-          d215f7676785f1a1bb8784e69085d66c1df81488ef31f1ba7198325a5be05130  /usr/local/bin/get-debloated-pkgs
-          86afbf5045b78020c93fcd35bf0f642765a8dc339bb2dce534a0461ce3d3508d  /usr/local/bin/make-aur-package
-          EOF
-      # llvm: Clang's own, and the opt of the LLVM settings; the runtime links LLVM's libraries statically (below).
-      # jdk21-openjdk: javac and jni.h, which the Android app driver (src/android) builds with. meson: dav1d's build
-      # (cmake/dav1d.cmake), as in the linux job.
-      # get-debloated-pkgs reads its release from api.github.com: unauthenticated, a runner's shared address gets
-      # GitHub's 60 requests an hour and the script's 403, so it takes the job's token for those requests. Pinning its
-      # release would still read api.github.com, and its own wait on a 403 ends after 5 tries
-      - name: Install the build tools and the debloated Mesa
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: |
-          for try in 1 2 3; do
-            pacman -Syu --noconfirm --needed cmake ninja meson make patch nasm perl python clang llvm sdl3 libx11 mesa vulkan-icd-loader ccache glslang jdk21-openjdk && break
-            [ "$try" = 3 ] && exit 1
-            sleep 5
-          done
-          get-debloated-pkgs mesa-nano opus-mini icu-mini
-      - *fail-fast-watch
-      # Saved once a week, by its first run: what it installed, without the versions nothing installs any more. The
-      # other runs of the week download only what changed since
-      - name: Keep the installed packages
-        if: steps.pacman.outputs.cache-hit != 'true'
-        run: pacman -Sc --noconfirm >/dev/null
-      - if: steps.pacman.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v5
-        with:
-          path: /var/cache/pacman/pkg
-          key: ${{ steps.pacman.outputs.cache-primary-key }}
-      # LLVM's libraries linked into the runtime, with the host's code generator alone (scripts/linux-llvm.sh), where
-      # Arch's libLLVM is one library with every target. Built once for each version, the image's LLVM's,
-      # whose opt prints the pipelines of the LLVM settings (cmake/settings.cmake)
-      - name: Name the LLVM version
-        id: llvm
-        run: echo "version=$(llvm-config --version)" >> "$GITHUB_OUTPUT"
-      - uses: actions/cache/restore@v5
-        id: llvm-cache
-        with:
-          path: .cache/llvm/${{ matrix.arch }}
-          key: linux-llvm-${{ matrix.arch }}-${{ hashFiles('scripts/linux-llvm.sh', 'scripts/llvm-libraries/CMakeLists.txt', 'cmake/llvm_components.cmake') }}-${{ steps.llvm.outputs.version }}
-      - name: Build LLVM
-        if: steps.llvm-cache.outputs.cache-hit != 'true'
-        env:
-          LLVM_VERSION: ${{ steps.llvm.outputs.version }}
-        run: scripts/linux-llvm.sh ${{ matrix.arch }} "$PWD/.cache/llvm/${{ matrix.arch }}"
-      # Saved as soon as it is built, as the apple job saves its own
-      - if: steps.llvm-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v5
-        with:
-          path: .cache/llvm/${{ matrix.arch }}
-          key: ${{ steps.llvm-cache.outputs.cache-primary-key }}
-      # A release leaves out scarletnx --mcp's A64 disassembler (SNX_A64_DISASM), which is for working on the runtime,
-      # and the test programs, which the AppImage does not carry: they were half of this build's time
-      - name: Build and install into /usr
-        run: |
-          git config --global --add safe.directory '*'
-          cmake --preset default -DSNX_DEPLOY=OFF -DCMAKE_INSTALL_PREFIX=/usr \
-            -DLLVM_DIR="$PWD/.cache/llvm/${{ matrix.arch }}/lib/cmake/llvm" -DSNX_A64_DISASM=OFF -DBUILD_TESTING=OFF \
-            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
-          cmake --build --preset default --parallel "$(getconf _NPROCESSORS_ONLN)"
-          cmake --install build/default
-      - name: Trim the compiler cache
-        run: |
-          ccache --show-stats --verbose
-          ccache --evict-older-than "$(( $(date +%s) - SNX_CCACHE_START ))s"
-          ccache --zero-stats
-          du -sh "$CCACHE_DIR"
-      - if: github.event_name != 'pull_request'
-        uses: actions/cache/save@v5
-        with:
-          path: .cache/ccache
-          key: ccache-${{ github.job }}-${{ matrix.arch }}-${{ github.run_id }}-${{ github.run_attempt }}
-      - name: Name the dependency builds
-        id: deps-used
-        run: |
-          used=$(find build -path '*/snx-deps/*.dir' -exec cat {} + | sort -u)
-          for d in .cache/deps/*; do grep -qxF "${d##*/}" <<<"$used" || rm -rf "$d"; done
-          echo "key=deps-${{ github.job }}-${{ matrix.arch }}-$(sha256sum <<<"$used" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
-      - if: steps.deps-used.outputs.key != steps.deps.outputs.cache-matched-key
-        uses: actions/cache/save@v5
-        with:
-          path: .cache/deps
-          key: ${{ steps.deps-used.outputs.key }}
-      # The script names the AppImage after `git describe`
-      - name: Make the AppImage
-        run: scripts/make-appimage.sh
-      # Only what the script made: dist/ also holds the tracked desktop entry and icon
-      - uses: actions/upload-artifact@v7
-        with:
-          name: ScarletNX-linux-${{ matrix.arch }}-${{ steps.commit.outputs.short }}.AppImage
-          path: |
-            dist/*.AppImage*
-            dist/appinfo
-      # A pull request's Linux builds are this job's alone (the linux job runs on a push): each architecture's install,
-      # x86-64's for edenprobe, and the linux job's tests run on it, each step after the AppImage is made, so the
-      # AppImage is the one a push makes. The install is the AppImage's runtime as it was built
-      - name: Stage the install
-        if: github.event_name == 'pull_request'
-        run: |
-          # out of /usr first: the tests run as the linux job's do, with no copy of ScarletNX installed there
-          xargs -d '\n' rm -f -- < build/default/install_manifest.txt
-          cmake --install build/default --prefix stage
-      # A pull request's install tree, no package: the Amberlith job takes x86-64's within the run, and no job AArch64's
-      - if: github.event_name == 'pull_request' && matrix.arch == 'x86_64'
-        uses: actions/upload-artifact@v7
-        with:
-          name: ScarletNX-linux-${{ matrix.arch }}-${{ steps.commit.outputs.short }}-install
-          path: stage
-          retention-days: 1
-      # The linux job's test tools this image lacks, and Arch's own Mesa back, which the linux job tests lavapipe with:
-      # the debloated one is for the AppImage alone. Each pacman install is tried 3 times, as in the linux job
-      - name: Install the test tools
-        if: github.event_name == 'pull_request'
-        run: |
-          for try in 1 2 3; do
-            pacman -S --noconfirm mesa && pacman -S --noconfirm --needed lld qemu-user pkgconf libxtst libxrandr \
-              libxss vulkan-swrast vulkan-validation-layers gdb jq && break
-            [ "$try" = 3 ] && exit 1
-            sleep 5
-          done
-      - name: Install Unicorn
-        if: github.event_name == 'pull_request'
-        run: *unicorn
-      # The linux job's compiler cache and dependency builds from main, where it builds this architecture's test and
-      # headless trees: this job's own hold the AppImage's tree alone, not the headless tree's FFmpeg nor its compiles.
-      # Read after the dependency builds are named and saved above, which keep only the AppImage's
-      - if: github.event_name == 'pull_request'
-        uses: actions/cache/restore@v5
-        with:
-          path: .cache/ccache
-          key: ccache-linux-${{ matrix.arch }}-${{ github.run_id }}-${{ github.run_attempt }}
-          restore-keys: ccache-linux-${{ matrix.arch }}-
-      - if: github.event_name == 'pull_request'
-        uses: actions/cache/restore@v5
-        with:
-          path: .cache/deps
-          key: deps-linux-${{ matrix.arch }}-${{ github.run_id }}
-          restore-keys: deps-linux-${{ matrix.arch }}-
-      # The linux job's test options on the same tree, its tests on, and its headless tree with this job's LLVM. The
-      # A64 disassembler, which the AppImage leaves out, is back in AArch64's test tree, where a pull request runs its
-      # tests on that host; on x86-64 they run in the sanitizers' job. The compiler cache's counts are this build's,
-      # zeroed by the trim above
-      - name: Build the tests and the headless Vulkan tree
-        if: github.event_name == 'pull_request'
-        run: |
-          cmake build/default ${{ env.SNX_TEST_OPTIONS }} -DBUILD_TESTING=ON \
-            -DSNX_A64_DISASM=${{ matrix.arch == 'aarch64' && 'ON' || 'OFF' }} \
-            -DPython3_EXECUTABLE="$PWD/.cache/unicorn/bin/python"
-          cmake --build build/default --parallel "$(getconf _NPROCESSORS_ONLN)"
-          cmake --preset default -B build/headless ${{ env.SNX_HEADLESS_OPTIONS }} \
-            -DLLVM_DIR="$PWD/.cache/llvm/${{ matrix.arch }}/lib/cmake/llvm" -DSNX_A64_DISASM=OFF \
-            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
-          cmake --build build/headless --parallel "$(getconf _NPROCESSORS_ONLN)"
-          ccache --show-stats
-      # The linux job's SDL3 fallback, on AArch64 alone as it was there, when the pull request changes a CMake file, a
-      # pin or this workflow
-      - name: Look for CMake changes
-        id: cmake-changed
-        if: matrix.arch == 'aarch64' && github.event_name == 'pull_request'
-        run: |
-          changed=$(git diff --name-only HEAD^1 HEAD)
-          printf '%s\n' "$changed"
-          if grep -qE '(^|/)CMakeLists\.txt$|\.cmake$|^CMakePresets\.json$|^cpmfile\.json$|^\.github/workflows/build\.yml$' <<<"$changed"; then
-            echo "yes=true" >> "$GITHUB_OUTPUT"
-          fi
-      - name: Build the SDL3 fallback without a system package
-        if: steps.cmake-changed.outputs.yes == 'true'
-        run: *sdl-fallback
-      - name: Test headless Vulkan and NX runtime
-        if: github.event_name == 'pull_request'
-        run: *headless-tests
-      - name: Check the ABI helpers compile
-        if: github.event_name == 'pull_request'
-        run: *abi-helpers
-      - name: Test native tooling and indexed filesystems
-        if: github.event_name == 'pull_request'
-        run: *native-tests
-      - name: Check optional Python diagnostics
-        if: github.event_name == 'pull_request'
-        run: *python-diagnostics
-      - *fail-fast-file
-      - *fail-fast-mark
-
   # The AppImages of hosts no GitHub runner is: cross-built on x86-64 with their linux-<arch>-cross preset
   # (cmake/cross.cmake) against the system root of pkgforge's Arch image of the architecture, then bundled in a
   # container of that image, whose / holds the runtime, and made on the build machine. The build container is
@@ -780,7 +733,7 @@ jobs:
   # LoongArch). Big-endian ppc64's has every runtime (the 3DS one builds there but isn't ported to a big-endian host):
   # Arch POWER's glibc there is ELFv2, not Debian ports' ELFv1, which no job builds or tests. No POWER, RISC-V or
   # LoongArch machine has run the AppImages yet, so like the macOS and iOS jobs they may fail without failing the run
-  # (scripts/publish-builds.py, OPTIONAL)
+  # (scripts/publish-builds.py, OPTIONAL). On a push the AppImage made is run as installed at the end, through qemu
   appimage-cross:
     name: Linux AppImage (${{ matrix.arch }})
     needs: qemu-reference
@@ -836,7 +789,7 @@ jobs:
           path: .cache/cpm
           key: cpmutil-linux-cross-${{ hashFiles('cpmfile.json') }}
           restore-keys: cpmutil-linux-cross-
-      # ccache and the dependency builds, as in the linux job. The container builds as root: what it makes in them
+      # ccache and the dependency builds, as in the appimage job. The container builds as root: what it makes in them
       # goes back to the runner's user before each is saved
       - uses: actions/cache/restore@v5
         with:
@@ -849,6 +802,12 @@ jobs:
           path: .cache/deps
           key: deps-${{ github.job }}-${{ matrix.arch }}-${{ github.run_id }}
           restore-keys: deps-${{ github.job }}-${{ matrix.arch }}-
+      # The AppImage as installed runs through the runner's qemu-user (scripts/check-package.sh says why): installed
+      # before the handlers below are registered, as its package's systemd trigger can clear the handlers registered
+      # before it. No recommends: qemu-user-binfmt would register handlers of its own. ppc64's step installs its own
+      - name: Install qemu-user
+        if: github.event_name != 'pull_request' && matrix.platform != 'ppc64'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends qemu-user
       # The script's checks run the AppImage it made: the kernel runs the target's programs through qemu once their
       # binfmt handlers are registered, in the container too
       - name: Set up qemu emulation for ${{ matrix.arch }}
@@ -909,8 +868,8 @@ jobs:
           docker export "$(docker create --platform linux/${{ matrix.platform }} "$image")" | docker exec -i build tar -x -C /src/sysroot
       # The pinned Anylinux-AppImages tools and the target's libraries the runtime links and bundles: binutils and
       # patchelf are what quick-sharun needs on PATH. get-debloated-pkgs then replaces the full Mesa (its libgallium
-      # links libLLVM), ICU and Opus, so it runs last. Each pacman is tried 3 times, as in the linux job. The token is
-      # get-debloated-pkgs' api.github.com rate limit, the one the appimage job's copy is given
+      # links libLLVM), ICU and Opus, so it runs last. Each pacman is tried 3 times, as in the appimage job. The token
+      # is get-debloated-pkgs' api.github.com rate limit, the one the appimage job's copy is given
       - name: Install the target container's tools and libraries
         if: github.event_name != 'pull_request'
         env:
@@ -929,7 +888,7 @@ jobs:
           # unless its openssl-3 comes along; a port still on OpenSSL 3 has no such package
           retry pacman -Sy --noconfirm
           if pacman -Si openssl-3 >/dev/null 2>&1; then libraries="$libraries openssl-3"; fi
-          # -Suu: the image may also be ahead of the port's repo (the linux job's Install tools says how)
+          # -Suu: the image may also be ahead of the port's repo (the appimage job's Install git says how)
           retry pacman -Suu --noconfirm --needed $libraries
           curl -fsSL --retry 15 --retry-delay 20 --retry-all-errors --connect-timeout 30 -o /usr/local/bin/quick-sharun "$QUICK_SHARUN"
           curl -fsSL --retry 15 --retry-delay 20 --retry-all-errors --connect-timeout 30 -o /usr/local/bin/get-debloated-pkgs "$DEBLOATED_PACKAGES"
@@ -957,7 +916,7 @@ jobs:
       # (scripts/linux-llvm.sh), ccache caches the compiles, glslang builds the shaders, qemu-user runs the target's
       # own programs, wayland's wayland-scanner the protocols SDL3 builds, jdk21-openjdk the Android app driver's javac
       # and jni.h, meson dav1d for the target (cmake/dav1d.cmake, from a cross file). Each pacman is tried 3 times, as
-      # in the linux job
+      # in the appimage job
       - name: Install the build tools
         run: |
           docker exec -i build sh -s <<'EOF'
@@ -966,7 +925,7 @@ jobs:
           retry pacman -Syu --noconfirm --needed cmake ninja make patch perl python clang lld llvm glslang qemu-user \
             git pkgconf patchelf wayland ccache jdk21-openjdk meson
           EOF
-      # Saved once a week, as in the linux job. Every architecture's job installs the same, so one of them saves it
+      # Saved once a week, as in the appimage job. Every architecture's job installs the same, so one of them saves it
       - name: Keep the installed packages
         if: steps.pacman.outputs.cache-hit != 'true'
         run: docker exec build pacman -Sc --noconfirm >/dev/null
@@ -1095,7 +1054,7 @@ jobs:
           cmake --build --preset ${{ matrix.preset }} --parallel "$(getconf _NPROCESSORS_ONLN)" --target snx_gui_tests
           ctest --preset ${{ matrix.preset }} -R '^gui_' -E '^gui_sdl_events$' -j"$(getconf _NPROCESSORS_ONLN)"
           EOF
-      # Only what this run compiled is kept, as in the linux job: the AppImage's, the differential's and the launcher
+      # Only what this run compiled is kept, as in the appimage job: the AppImage's, the differential's and the launcher
       # tests'. The container builds as root, and the runner's user saves the cache
       - name: Keep what this run compiled
         env:
@@ -1177,6 +1136,33 @@ jobs:
           # tar saves a link as a link, whatever it points at
           unreadable=$(find .cache/cpm ! -type l ! -readable)
           [ -z "$unreadable" ] || { printf 'actions/cache cannot read:\n%s\n' "$unreadable" >&2; exit 1; }
+      # The AppImage as a user gets it, on a push, the nightly and a run by hand, on this runner, which has neither the
+      # checkout nor the build tree where the build container had them (/src). Each game the AppImage makes is a copy of
+      # it, and an AppImage carries "AI\x02" in its ELF header's padding, where the target's handler wants zeros: one
+      # more handler, made from the AppImage's own first 20 bytes with the padding left out, runs them through
+      # qemu-user. P keeps argv[0], by which the AppImage's runtime runs the dwarfs tool it carries as itself; both
+      # handlers are printed. e_type's low byte, executable or shared, is left to either: byte 16 of a little-endian
+      # header, 17 of a big-endian one (EI_DATA 2, PowerPC64 BE's)
+      - name: Run ${{ matrix.arch }} AppImages through qemu-user
+        if: github.event_name != 'pull_request'
+        run: |
+          set -- $(head -c 20 dist/*.AppImage | od -An -v -tx1)
+          low=$(($6 == 2 ? 17 : 16))
+          magic= mask= i=0
+          for byte in "$@"; do
+            case $i in 7|8|9|10|11|12|13|14|15) byte=00 m=00 ;; "$low") m=fe ;; *) m=ff ;; esac
+            magic=$magic\\x$byte mask=$mask\\x$m i=$((i + 1))
+          done
+          printf ':appimage-%s:M::%s:%s:%s:POCF\n' ${{ matrix.qemu }} "$magic" "$mask" "$(command -v qemu-${{ matrix.qemu }})" |
+            sudo tee /proc/sys/fs/binfmt_misc/register
+          grep -qx enabled /proc/sys/fs/binfmt_misc/appimage-${{ matrix.qemu }}
+          head -n 3 /proc/sys/fs/binfmt_misc/qemu-${{ matrix.qemu }} /proc/sys/fs/binfmt_misc/appimage-${{ matrix.qemu }}
+      - name: Run the AppImage as a user would
+        if: github.event_name != 'pull_request'
+        run: |
+          grep -qx enabled /proc/sys/fs/binfmt_misc/qemu-${{ matrix.qemu }} ||
+            { echo "no binfmt handler runs ${{ matrix.qemu }} programs here" >&2; exit 1; }
+          scripts/check-package.sh dist/ScarletNX-linux-${{ matrix.arch }}.AppImage
 
   # x86-64 and AArch64 (Windows on Arm, in MSYS2's CLANGARM64): the same steps, each with its own caches. The x86-64
   # leg keeps the name the branch rules require
@@ -1219,13 +1205,13 @@ jobs:
           path: .cache/cpm
           key: cpmutil-windows-${{ matrix.arch }}-${{ hashFiles('cpmfile.json') }}
           restore-keys: cpmutil-windows-${{ matrix.arch }}-
-      # ccache, set up as in the linux job
+      # ccache, set up as in the appimage job
       - uses: actions/cache/restore@v5
         with:
           path: .cache/ccache
           key: ccache-${{ github.job }}-${{ matrix.arch }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: ccache-${{ github.job }}-${{ matrix.arch }}-
-      # the dependency builds, as in the linux job
+      # the dependency builds, as in the appimage job
       - uses: actions/cache/restore@v5
         id: deps
         with:
@@ -1244,7 +1230,7 @@ jobs:
             echo "SNX_CCACHE_START=$(date +%s)"
           } >> "$GITHUB_ENV"
       # llvm-mingw alone has no LLVM development libraries. Do not mix its C++ runtime with another LLVM build. meson:
-      # dav1d's build (cmake/dav1d.cmake), as in the linux job
+      # dav1d's build (cmake/dav1d.cmake), as in the appimage job
       - name: Install Clang, LLVM development files and FFmpeg build tools
         uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # v2
         with:
@@ -1409,6 +1395,14 @@ jobs:
           name: ScarletNX-windows-${{ matrix.arch }}-${{ steps.commit.outputs.short }}
           path: stage
           if-no-files-found: error
+      # The zip as a user gets it (scripts/check-package.sh), on a push, the nightly and a run by hand: a pull request's
+      # run checks no package. In Git Bash: setup-msys2 puts only its msys2.cmd's folder on PATH, so no DLL of MSYS2's
+      # stands in for one the zip lacks. A copy installed from a build tree never takes that tree's checkout
+      # (snx_checkout), so the checkout and build/ left in place stand in for nothing either
+      - name: Run the zip's scarletnx.exe as a user would
+        if: github.event_name != 'pull_request'
+        shell: bash
+        run: bash scripts/check-package.sh stage/bin/scarletnx.exe
       - *fail-fast-file
       - *fail-fast-mark
 
@@ -1476,13 +1470,13 @@ jobs:
         with:
           path: android-llvm/arm64-v8a
           key: ${{ steps.llvm-arm64.outputs.cache-primary-key }}
-      # ccache, set up as in the linux job: one for both ABIs, which compile apart
+      # ccache, set up as in the appimage job: one for both ABIs, which compile apart
       - uses: actions/cache/restore@v5
         with:
           path: .cache/ccache
           key: ccache-${{ github.job }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: ccache-${{ github.job }}-
-      # the dependency builds, as in the linux job
+      # the dependency builds, as in the appimage job
       - uses: actions/cache/restore@v5
         id: deps
         with:
@@ -1691,7 +1685,7 @@ jobs:
         with:
           path: ios-llvm
           key: ${{ steps.ios-llvm.outputs.cache-primary-key }}
-      # ccache and the dependency builds, set up as in the linux job: one of each for both, which compile apart
+      # ccache and the dependency builds, set up as in the appimage job: one of each for both, which compile apart
       - uses: actions/cache/restore@v5
         if: ${{ !cancelled() }}
         with:
@@ -1814,385 +1808,3 @@ jobs:
           path: ScarletNX-ios-arm64-${{ steps.commit.outputs.short }}.ipa
           archive: false
           if-no-files-found: error
-
-  # The packages as a user gets them, each on a runner of its own (scripts/check-package.sh): in the build jobs the
-  # checkout sits where the package looks for one, and stands in for what an installed copy lacks. Not on a pull
-  # request, whose run would wait for four runners more: a push to main and the nightly check each package
-  appimage-check:
-    name: Linux AppImage (${{ matrix.arch }}), as installed
-    needs: appimage
-    if: github.event_name != 'pull_request'
-    runs-on: ${{ matrix.arch == 'aarch64' && 'ubuntu-24.04-arm' || 'ubuntu-26.04' }}
-    timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        # the AppImages the appimage job made
-        arch: [x86_64, aarch64]
-    steps:
-      # Artifacts carry the commit they came from: the branch's head in a pull request, else the commit pushed
-      - name: Name the commit
-        id: commit
-        shell: bash
-        env:
-          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-        run: echo "short=${SHA::7}" >> "$GITHUB_OUTPUT"
-      - uses: actions/checkout@v7
-      - uses: actions/download-artifact@v8
-        with:
-          name: ScarletNX-linux-${{ matrix.arch }}-${{ steps.commit.outputs.short }}.AppImage
-          path: dist
-      # Artifacts drop the executable bit
-      - name: Run the AppImage as a user would
-        run: |
-          chmod +x dist/*.AppImage
-          scripts/check-package.sh dist/*.AppImage
-      - *fail-fast-file
-      - *fail-fast-mark
-
-  # The cross-built AppImage as installed, as the appimage-check job runs its own: qemu's binfmt handlers run it, and
-  # everything it starts, as a machine of that architecture would
-  appimage-cross-check:
-    name: Linux AppImage (${{ matrix.arch }}), as installed
-    needs: appimage-cross
-    # by its own need alone: a qemu-reference skipped would skip this job too
-    if: ${{ !cancelled() && github.event_name != 'pull_request' && needs.appimage-cross.result == 'success' }}
-    runs-on: ubuntu-26.04
-    timeout-minutes: 60
-    continue-on-error: true
-    strategy:
-      fail-fast: false
-      # platform as Docker names it, qemu as qemu-user and binfmt_misc do: the architectures appimage-cross built
-      matrix:
-        include:
-          - {arch: ppc64le, platform: ppc64le, qemu: ppc64le}
-          - {arch: riscv64, platform: riscv64, qemu: riscv64}
-          - {arch: loongarch64, platform: loong64, qemu: loongarch64}
-          - {arch: ppc64, platform: ppc64, qemu: ppc64}
-    steps:
-      - name: Name the commit
-        id: commit
-        shell: bash
-        env:
-          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-        run: echo "short=${SHA::7}" >> "$GITHUB_OUTPUT"
-      # A cross build that failed uploaded no AppImage, and its own job says why: this one says which job that is and
-      # runs nothing more, where its download would fail as one more red job. The run's jobs come in pages of 100
-      - name: Ask how the ${{ matrix.arch }} AppImage's build ended
-        id: build
-        shell: bash # with pipefail: a failed request fails the step
-        env:
-          GH_TOKEN: ${{ github.token }}
-          JOB: Linux AppImage (${{ matrix.arch }})
-        run: |
-          result=$(gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?per_page=100" |
-            jq -r --arg job "$JOB" '.jobs[] | select(.name == $job) | .conclusion')
-          case $result in
-            success) ;;
-            failure|cancelled|timed_out)
-              echo "::notice title=No ${{ matrix.arch }} AppImage to check::the job \"$JOB\" ended as $result" ;;
-            *)
-              echo "the job \"$JOB\" of run $GITHUB_RUN_ID ended as '$result'," \
-                "not success, failure, cancelled or timed_out" >&2
-              exit 1 ;;
-          esac
-          echo "result=$result" >> "$GITHUB_OUTPUT"
-      # The AppImage itself runs through qemu-user (scripts/check-package.sh says why), the programs it starts through the
-      # binfmt handler the next step registers: installed first, as its package's systemd trigger can clear the handlers
-      # registered before it. No recommends: qemu-user-binfmt would register handlers of its own
-      - name: Install qemu-user
-        if: steps.build.outputs.result == 'success'
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends qemu-user
-      - name: Set up qemu emulation for ${{ matrix.arch }}
-        if: steps.build.outputs.result == 'success' && matrix.platform != 'ppc64'
-        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
-        with:
-          platforms: ${{ matrix.platform }}
-      # tonistiigi/binfmt, which setup-qemu-action registers, has no big-endian ppc64: the runner's qemu-user runs its
-      # programs instead, by the magic and mask Debian's qemu-user-binfmt gives them (its qemu-ppc64.conf). F opens
-      # qemu now, so the containers use it too, and P keeps argv[0], as qemu reads from the kernel since 9.0
-      - name: Set up qemu emulation for ppc64
-        if: steps.build.outputs.result == 'success' && matrix.platform == 'ppc64'
-        run: |
-          printf ':qemu-ppc64:M::%s:%s:%s:POCF\n' \
-            '\x7f\x45\x4c\x46\x02\x02\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\x15' \
-            '\xff\xff\xff\xff\xff\xff\xff\xfc\xff\xff\xff\xff\xff\xff\xff\xff\xff\xfe\xff\xff' \
-            "$(command -v qemu-ppc64)" | sudo tee /proc/sys/fs/binfmt_misc/register
-          head -n 3 /proc/sys/fs/binfmt_misc/qemu-ppc64
-      - uses: actions/checkout@v7
-        if: steps.build.outputs.result == 'success'
-      - uses: actions/download-artifact@v8
-        if: steps.build.outputs.result == 'success'
-        with:
-          name: ScarletNX-linux-${{ matrix.arch }}-${{ steps.commit.outputs.short }}.AppImage
-          path: dist
-      # Artifacts drop the executable bit
-      # Each game the AppImage makes is a copy of it, and an AppImage carries "AI\x02" in its ELF header's padding,
-      # where the handler above wants zeros: one more handler, made from the AppImage's own first 20 bytes with the
-      # padding left out, runs them through qemu-user. P keeps argv[0], by which the AppImage's runtime runs the dwarfs
-      # tool it carries as itself; both handlers are printed. e_type's low byte, executable or shared, is left to either:
-      # byte 16 of a little-endian header, 17 of a big-endian one (EI_DATA 2, PowerPC64 BE's)
-      - name: Run ${{ matrix.arch }} AppImages through qemu-user
-        if: steps.build.outputs.result == 'success'
-        run: |
-          set -- $(head -c 20 dist/*.AppImage | od -An -v -tx1)
-          low=$(($6 == 2 ? 17 : 16))
-          magic= mask= i=0
-          for byte in "$@"; do
-            case $i in 7|8|9|10|11|12|13|14|15) byte=00 m=00 ;; "$low") m=fe ;; *) m=ff ;; esac
-            magic=$magic\\x$byte mask=$mask\\x$m i=$((i + 1))
-          done
-          printf ':appimage-%s:M::%s:%s:%s:POCF\n' ${{ matrix.qemu }} "$magic" "$mask" "$(command -v qemu-${{ matrix.qemu }})" |
-            sudo tee /proc/sys/fs/binfmt_misc/register
-          grep -qx enabled /proc/sys/fs/binfmt_misc/appimage-${{ matrix.qemu }}
-          head -n 3 /proc/sys/fs/binfmt_misc/qemu-${{ matrix.qemu }} /proc/sys/fs/binfmt_misc/appimage-${{ matrix.qemu }}
-      - name: Run the AppImage as a user would
-        if: steps.build.outputs.result == 'success'
-        run: |
-          grep -qx enabled /proc/sys/fs/binfmt_misc/qemu-${{ matrix.qemu }} ||
-            { echo "no binfmt handler runs ${{ matrix.qemu }} programs here" >&2; exit 1; }
-          chmod +x dist/*.AppImage
-          scripts/check-package.sh dist/*.AppImage
-
-  windows-check:
-    name: Windows zip${{ matrix.arch == 'aarch64' && ' (aarch64)' || '' }}, as installed
-    needs: windows
-    if: github.event_name != 'pull_request'
-    runs-on: ${{ matrix.arch == 'aarch64' && 'windows-11-arm' || 'windows-2025-vs2026' }}
-    timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        arch: [x86_64, aarch64]
-    defaults:
-      run:
-        shell: bash
-    steps:
-      # Artifacts carry the commit they came from: the branch's head in a pull request, else the commit pushed
-      - name: Name the commit
-        id: commit
-        shell: bash
-        env:
-          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-        run: echo "short=${SHA::7}" >> "$GITHUB_OUTPUT"
-      # Not in the workspace root: the build's checkout was there, and the package would take this one for it
-      - uses: actions/checkout@v7
-        with:
-          path: source
-      - uses: actions/download-artifact@v8
-        with:
-          name: ScarletNX-windows-${{ matrix.arch }}-${{ steps.commit.outputs.short }}
-          path: package
-      - name: Run the zip's scarletnx.exe as a user would
-        run: bash source/scripts/check-package.sh package/bin/scarletnx.exe
-      - *fail-fast-file
-      - *fail-fast-mark
-
-  # Amberlith's probes (edenprobe before 1.0.0; docs/dev/edenprobe.md), one job however many runs it has. The NRO of a
-  # release of scarletnx/amberlith, pinned by its sha256, recompiled by the Linux x86-64 install and run on lavapipe: a
-  # case of tests/edenprobe/linux-x86_64.txt, the ones that passed before, that no longer passes fails the job. The
-  # install's scarletnx-android runs the probe's APK, pinned apart, against tests/edenprobe/android-x86_64.txt the same
-  # way. Another release or other mode words want its file written again. A push, a tag, the nightly's schedule and a
-  # run by hand run both, and Amberlith's main beside the release; a pull request runs each only when it changes what
-  # that run loads (scripts/edenprobe.py runs), never the main's, and ends at once, passed, when it changes neither. The
-  # runs called for go one after the other. The install is the linux job's, or on a pull request the appimage job's,
-  # which builds a pull request's Linux alone
-  edenprobe:
-    name: Amberlith (Linux x86_64, lavapipe)
-    needs: [linux, appimage]
-    if: >-
-      ${{ !cancelled() && (github.event_name == 'pull_request' && needs.appimage.result == 'success' ||
-      github.event_name != 'pull_request' && needs.linux.result == 'success') }}
-    runs-on: ubuntu-26.04
-    timeout-minutes: 40
-    container: archlinux:latest
-    env:
-      # the release's tag and its NRO's name, which carries the version
-      EDENPROBE_VERSION: v1.0.0
-      EDENPROBE_NRO: amberlith-1.0.0.nro
-      EDENPROBE_SHA256: a5eb634b346ef3f357716b3690e2f21dbc53a14ae1ed08d08ad81b1f91bea018
-      # every family that needs no person or network: headless, the audio family's sound is never played. Not graphics:
-      # its suites write their own GPU command buffers, left out while the runtime had no Maxwell front end, and not
-      # added back since it returned (docs/dev/edenprobe.md). hooks: the runtime answers nn::fs, time, pl, ngc and nsd
-      # in the SDK's own functions and serves none of their services, so the probe asks through the functions it exports
-      EDENPROBE_MODE: quick notime cpu fs video display kernel audio hooks
-      # the APK (the probe's Android build) of a release of its own: its words run every family it has
-      EDENPROBE_APK_VERSION: v1.0.0
-      EDENPROBE_APK: amberlith-1.0.0.apk
-      EDENPROBE_APK_SHA256: 192cc7750bac972d0f4d850eea7bbada7a84b3c5b6b24d25d4d8ba7f7b6933d8
-      EDENPROBE_APK_MODE: quick
-    steps:
-      # Artifacts carry the commit they came from: the branch's head in a pull request, else the commit pushed
-      - name: Name the commit
-        id: commit
-        shell: bash
-        env:
-          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-        run: echo "short=${SHA::7}" >> "$GITHUB_OUTPUT"
-      # git and Python first, which the decision takes; the rest only for a run. Each pacman install tried 3 times, as
-      # in the Linux job
-      - name: Install git and Python
-        run: |
-          for try in 1 2 3; do
-            pacman -Syu --noconfirm --needed git python && break
-            [ "$try" = 3 ] && exit 1
-            sleep 5
-          done
-      # the pull request's merge commit and the base it is diffed against
-      - uses: actions/checkout@v7
-        with:
-          fetch-depth: 2
-      # which runs this run calls for: the paths each loads are scripts/edenprobe.py's (runs), which edenprobe_script
-      # tests. A pull request that changes none of them ends here, passed, with a notice that says so
-      - name: Look for what each run loads
-        id: runs
-        shell: bash
-        run: |
-          if [ "$GITHUB_EVENT_NAME" != pull_request ]; then
-            printf 'nro=true\napk=true\nmain=true\nany=true\n' >> "$GITHUB_OUTPUT"
-            echo "a $GITHUB_EVENT_NAME runs the NRO and the APK, and Amberlith's main beside the release"
-            exit 0
-          fi
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
-          changed=$(git diff --name-only HEAD^1 HEAD)
-          said=$(python3 scripts/edenprobe.py runs <<<"$changed")
-          printf '%s\nmain=false\n' "$said" >> "$GITHUB_OUTPUT"
-          if [ "$said" = $'nro=false\napk=false' ]; then
-            echo "any=false" >> "$GITHUB_OUTPUT"
-            count=0
-            [ -z "$changed" ] || count=$(wc -l <<<"$changed")
-            why="none of the $count files changed is one the NRO or the APK loads"
-            echo "::notice title=edenprobe::Amberlith: not run, $why"
-          else
-            echo "any=true" >> "$GITHUB_OUTPUT"
-          fi
-      # The libraries the install links, lavapipe, and for the APK the JVM of the build's JDK, which scarletnx-android
-      # loads
-      - name: Install the runtime's libraries and lavapipe
-        if: steps.runs.outputs.any == 'true'
-        env:
-          APK: ${{ steps.runs.outputs.apk }}
-        run: |
-          packages="llvm-libs sdl3 vulkan-icd-loader vulkan-swrast github-cli"
-          [ "$APK" = true ] && packages="$packages jre21-openjdk-headless"
-          for try in 1 2 3; do
-            pacman -S --noconfirm --needed $packages && break
-            [ "$try" = 3 ] && exit 1
-            sleep 5
-          done
-      - uses: actions/download-artifact@v8
-        if: steps.runs.outputs.any == 'true'
-        with:
-          name: ScarletNX-linux-x86_64-${{ steps.commit.outputs.short }}-install
-          path: stage
-      # gh fetches through the REST API: the releases/download link answered 504 for hours on 2026-11-08. 3 tries each.
-      # The nightly's NRO is named for its version and commit, amberlith-<version>-<commit>.nro; one that cannot be
-      # fetched or checked is a warning, and its run is left out
-      - name: Fetch Amberlith
-        id: fetch
-        if: steps.runs.outputs.any == 'true'
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          NRO: ${{ steps.runs.outputs.nro }}
-          APK: ${{ steps.runs.outputs.apk }}
-          MAIN: ${{ steps.runs.outputs.main }}
-        run: |
-          fetch() { # TAG FILE SHA256
-            for try in 1 2 3; do
-              gh release download "$1" -R scarletnx/amberlith -p "$2" --clobber && break
-              [ "$try" = 3 ] && return 1
-              sleep 30
-            done
-            echo "$3  $2" | sha256sum -c -
-          }
-          if [ "$NRO" = true ]; then
-            if [ -z "$EDENPROBE_SHA256" ]; then
-              echo "EDENPROBE_SHA256 is empty: pin the sha256 of $EDENPROBE_NRO" >&2
-              exit 1
-            fi
-            fetch "$EDENPROBE_VERSION" "$EDENPROBE_NRO" "$EDENPROBE_SHA256" || exit 1
-          fi
-          if [ "$APK" = true ]; then
-            fetch "$EDENPROBE_APK_VERSION" "$EDENPROBE_APK" "$EDENPROBE_APK_SHA256" || exit 1
-          fi
-          if [ "$MAIN" = true ]; then
-            mkdir -p edenprobe-nightly
-            if gh release download nightly -R scarletnx/amberlith -D edenprobe-nightly -p 'amberlith-*.nro' \
-                -p 'amberlith-*.nro.sha256' &&
-              mv edenprobe-nightly/amberlith-*.nro edenprobe-main.nro &&
-              mv edenprobe-nightly/amberlith-*.nro.sha256 edenprobe-main.nro.sha256 &&
-              echo "$(cut -d ' ' -f 1 edenprobe-main.nro.sha256)  edenprobe-main.nro" | sha256sum -c -; then
-              echo "main=true" >> "$GITHUB_OUTPUT"
-            else
-              echo "::warning title=Amberlith main::Amberlith's nightly could not be fetched or checked"
-            fi
-          fi
-      # The runs called for, one after the other, each with its own output, summary and exit: the NRO and the APK held to
-      # their baselines, Amberlith's main beside the release's baseline, warnings only. Not side by side: the NRO's kernel
-      # family times its threads, and with the others beside it at the lowest priority, so that it passes, the runs took
-      # no less time in all than one after the other. Artifacts drop the executable bit.
-      # Each summary's title is a line of the pull request's comment, as a notice of this job that scripts/pr-builds.sh
-      # reads back once the run ends; on one line, % is all a notice escapes
-      - name: Run Amberlith
-        if: steps.runs.outputs.any == 'true'
-        shell: bash
-        env:
-          NRO: ${{ steps.runs.outputs.nro }}
-          APK: ${{ steps.runs.outputs.apk }}
-          MAIN: ${{ steps.fetch.outputs.main }}
-        run: |
-          chmod +x stage/bin/*
-          # NAME ARGS...: one run, its output in NAME.log, its status in NAME.status
-          probe() {
-            local name=$1
-            shift
-            local began=$(date +%s) code=0
-            python3 scripts/edenprobe.py run --runtime stage/bin/scarletnx "$@" --summary "$name.md" \
-              > "$name.log" 2>&1 || code=$?
-            echo "$code" > "$name.status"
-            echo "$name: $(($(date +%s) - began)) s" >> times.txt
-          }
-          began=$(date +%s)
-          : > times.txt
-          [ "$NRO" = true ] && probe edenprobe --nro "$EDENPROBE_NRO" --mode "$EDENPROBE_MODE" --out edenprobe \
-            --baseline tests/edenprobe/linux-x86_64.txt
-          [ "$APK" = true ] && probe edenprobe-android --apk "$EDENPROBE_APK" --mode "$EDENPROBE_APK_MODE" \
-            --out edenprobe-android --baseline tests/edenprobe/android-x86_64.txt
-          [ "$MAIN" = true ] && probe edenprobe-main --nro edenprobe-main.nro --mode "$EDENPROBE_MODE" \
-            --out edenprobe-main --advisory-baseline tests/edenprobe/linux-x86_64.txt
-          status=0
-          for name in edenprobe edenprobe-android edenprobe-main; do
-            [ -f "$name.status" ] || continue
-            echo "::group::$name, exit $(cat "$name.status")"
-            cat "$name.log"
-            echo "::endgroup::"
-            [ -f "$name.md" ] && cat "$name.md" >> "$GITHUB_STEP_SUMMARY"
-            if [ "$name" != edenprobe-main ]; then
-              if [ -f "$name/summary.md" ]; then
-                result=$(head -n 1 "$name/summary.md" | cut -c5-)
-                echo "::notice title=edenprobe::${result//%/%25}"
-              fi
-              [ "$(cat "$name.status")" = 0 ] || status=1
-            fi
-          done
-          echo "the runs: $(($(date +%s) - began)) s in all; $(tr '\n' ';' < times.txt)"
-          exit "$status"
-      # The reports, the failures' pictures, the logs and the runs' baseline.txt; not the recompiled game. Each attempt
-      # its own: a run takes one artifact of a name, and a job run again keeps the earlier attempt's to compare
-      - uses: actions/upload-artifact@v7
-        if: ${{ !cancelled() && steps.runs.outputs.any == 'true' }}
-        with:
-          name: edenprobe-${{ steps.commit.outputs.short }}-${{ github.run_attempt }}
-          path: |
-            edenprobe
-            !edenprobe/work
-            edenprobe-main
-            !edenprobe-main/work
-            edenprobe-android
-            !edenprobe-android/work
-            *.log
-            times.txt
-          if-no-files-found: ignore
-      - *fail-fast-file
-      - *fail-fast-mark
