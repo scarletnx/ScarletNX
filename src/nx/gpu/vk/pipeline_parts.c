@@ -260,7 +260,7 @@ void vk_pipe_split(const PipeKey* k, VkShaderModule fs, const PipeSplitDevice* d
     pr->gs = k->gs;
     pr->arrays = k->arrays & VK_ARRAYS_PR;
     pr->heaps = k->heaps;
-    const u32 fs_set = (u32)shader_vk_set(4); /* the set of pipe_info's fifth module, the fragment program */
+    const u32 fs_set = SHADER_VK_SET_FS; /* the set of pipe_info's fifth module, the fragment program */
     for (u32 s = 0; s < 5; s++) pr->cb_addr[s] = s == fs_set ? 0 : k->cb_addr[s];
     if (!(d->dyn_pr & VK_DYN_PR_PATCH)) pr->patch = k->patch;
     if (!(d->dyn_pr & VK_DYN_PR_POLYGON)) pr->polygon = k->polygon;
