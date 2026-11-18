@@ -217,6 +217,16 @@ void kthread_commit(void);
    only a wait at a point the game's code goes on from can use it */
 void kthread_block(KThread* t);
 void kthread_unblock(KThread* t);
+/* Around a wait for the host inside a call that comes straight from the game's code, with no SVC to give the core up
+   (an NVN call, a Vulkan call of gpu/gvk): the thread off its guest core. On the console a
+   thread waiting for the GPU leaves its core to the others: one game's main thread held its core through the frame's
+   wait for its fence, and a lower-priority loading thread on that core never finished. The thread is not stopped for a
+   game pause: in the middle of a function the runtime runs natively, nothing in g_hle says where it goes on, and a save
+   state taken then restarted it at a stale pc (one game's thread that waits for its fences lost its wait in
+   nvnSyncWait, and its renderer waited for good). A pause waits for the wait to end, as the GPU runs until the guest
+   threads have stopped (pause.c). Nothing on a thread that isn't a guest thread */
+void kthread_host_wait_begin(void);
+void kthread_host_wait_end(void);
 void kernel_run_main(u64 entry, const u64* args, u64 stack_size, int prio, int core);
 /* SVC #imm of a 64-bit thread (RtAPI.svc) and of a 32-bit one: g_svc64[imm] and svc.c's g_svc32[imm], each SVC's
    own entry, which takes its registers in that ABI (svcgen, hle/svc/hos.svc). The NX modules call g_svc64 by number

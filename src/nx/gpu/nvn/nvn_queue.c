@@ -19,6 +19,7 @@
 #include "nx/runtime/platform/tracy.h"
 #include "nx/hle/services/nvdrv.h"
 #include "nx/hle/services/nvdrv_ctrl_gpu.h"
+#include "nx/hle/kernel/kernel.h"
 #include "nx/runtime/clock.h"
 #include "nx/hle/services/vi.h"
 #include "nx/runtime/main.h"
@@ -235,9 +236,9 @@ void nvn_QueueFinalize(CPU* c, u64 q) {
     NvnQueue* o = NVN_OBJ(NvnQueue, q);
     (void)c;
     if (o->magic != NVN_MAGIC('Q', 'U', 'E', 'U')) return;
-    nvn_wait_begin();
+    kthread_host_wait_begin();
     nvn_replay_queue_free(o->replay);
-    nvn_wait_end();
+    kthread_host_wait_end();
     LOG("nvn: queue %llx finalized (replay %u)\n", (unsigned long long)q, o->replay);
     *o = (NvnQueue){0};
 }
@@ -252,9 +253,9 @@ void nvn_QueueFinish(CPU* c, u64 q) {
     u32 replay = NVN_OBJ(NvnQueue, q)->replay;
     nvn_queue_context_set("finish q%u sp%u", replay, nvn_replay_syncpt(replay));
     /* no zone here: nvn_replay.c's retained "nvn queue finish" zone already names this on the trace */
-    nvn_wait_begin();
+    kthread_host_wait_begin();
     nvn_replay_finish(replay);
-    nvn_wait_end();
+    kthread_host_wait_end();
 }
 /* the queue's later work waits on the GPU for the sync, so it is done no earlier than the sync signals */
 static void wait_sync(NvnQueue* o, const NvnSync* s) {
@@ -383,7 +384,7 @@ static i32 sync_wait(CPU* c, u64 sync, u64 timeout, u32* why, u64* ns) {
     if (ns) *ns = nvn_now() - entered;
     return waited ? NVN_SYNC_WAIT_RESULT_CONDITION_SATISFIED : NVN_SYNC_WAIT_RESULT_ALREADY_SIGNALED;
 }
-/* off the guest core while it waits (nvn_wait_begin); a poll (timeout 0) never waits */
+/* off the guest core while it waits (kthread_host_wait_begin); a poll (timeout 0) never waits */
 i32 nvn_SyncWait(CPU* c, u64 sync, u64 timeout) {
     i32 r;
     u32 why = 0;
@@ -391,13 +392,13 @@ i32 nvn_SyncWait(CPU* c, u64 sync, u64 timeout) {
     const NvnSync* s = NVN_OBJ(const NvnSync, sync);
     nvn_queue_context_set("wait s%u=%u", s->syncpt, s->value);
     if (!timeout) return sync_wait(c, sync, timeout, &why, NULL);
-    /* nvn_wait_begin parks the fiber: a zone over the wait would show a parked thread as busy. No zone here; the
-       plot carries the wait in microseconds, and the message carries why it ended and what it waited for */
+    /* kthread_host_wait_begin parks the fiber: a zone over the wait would show a parked thread as busy. No zone here;
+       the plot carries the wait in microseconds, and the message carries why it ended and what it waited for */
     trace_msg("nvn sync wait %u=%u shown %u from %llx: %s", s->syncpt, s->value, s->shown, caller(c),
               nvn_queue_context());
-    nvn_wait_begin();
+    kthread_host_wait_begin();
     r = sync_wait(c, sync, timeout, &why, snx_tracy_attached() ? &ns : NULL); /* the trace's alone */
-    nvn_wait_end();
+    kthread_host_wait_end();
     SNX_PLOT("nvn sync wait us", (double)(ns / 1000));
     trace_msg("nvn sync wait %u>%u at %u why %x %s %llu us: %s", s->syncpt, s->value,
               s->syncpt ? syncpt_read(s->syncpt) : 0, why,
@@ -649,12 +650,12 @@ static void slot_wait(const NvnWindow* o, i32 i) {
     int drawn = !o->drawn_syncpt[i] || syncpt_wait(o->drawn_syncpt[i], o->drawn[i], 0);
     if (o->shown_at[i] <= now && drawn) return;
     u64 waited = snx_tracy_attached() ? plat_ns() : 0; /* the plot's and the message's alone */
-    /* no zone over the wait: nvn_wait_begin parks the fiber, and a zone would show a parked thread as busy. The plot
-       carries the wait in microseconds */
-    nvn_wait_begin();
+    /* no zone over the wait: kthread_host_wait_begin parks the fiber, and a zone would show a parked thread as busy.
+       The plot carries the wait in microseconds */
+    kthread_host_wait_begin();
     if (o->shown_at[i] > now) plat_sleep_ns((i64)(o->shown_at[i] - now));
     if (!drawn) syncpt_wait(o->drawn_syncpt[i], o->drawn[i], -1); /* the present is queued: the replay reaches it */
-    nvn_wait_end();
+    kthread_host_wait_end();
     u64 us = waited ? (plat_ns() - waited) / 1000 : 0;
     SNX_PLOT("nvn acquire wait us", (double)us);
     /* on the timeline, name what held the texture: its present's slot on the pacer, the replay of that present, or

@@ -28,7 +28,7 @@
 #include <stdlib.h>
 #include <stdatomic.h>
 
-/* off the core while the thread waits, counted as stopped for a pause, as nvn_object.c's nvn_wait_begin */
+/* off the core while the thread waits, and counted as stopped for a pause (kthread_block) */
 void hook_wait_begin(void) {
     KThread* t = kthread_cur();
     if (!t) return;
