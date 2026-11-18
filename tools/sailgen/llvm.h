@@ -60,6 +60,8 @@ typedef struct {
        when none); branched 0 until it does */
     LLVMValueRef taken, target;
     int branched, undefined;
+    /* the block's last instruction before this one's: a clause that hands the word on (sg_see) has emitted nothing */
+    LLVMValueRef start;
 } SgCtx;
 
 #define SG_B (g->ir->b)
@@ -922,6 +924,15 @@ static inline void sg_branch_result(SgCtx* g, LLVMValueRef* taken, LLVMValueRef*
     int go = g->branched && !g->undefined;
     if (taken) *taken = go ? g->taken : LLVMConstInt(g->ir->t_i1, 0, 0);
     if (target) *target = go ? g->target : ir_i64(g->ir, g->pc);
+}
+
+/* a decode function that throws Error_See hands the word on to the next clause that matches it (the hint space's
+   PAuth hints): 0. Only its fields were read, so the block holds nothing of it yet */
+static inline int sg_see(SgCtx* g) {
+    if (LLVMGetLastInstruction(LLVMGetInsertBlock(g->ir->b)) != g->start || g->branched || g->undefined || g->flag[0] ||
+        g->flag[1] || g->flag[2] || g->flag[3])
+        sg_fail("a word handed on to the next clause after its own emitted IR", (long long)g->word, 0);
+    return 0;
 }
 
 /* bit i of x as a flag: the 0-or-1 source itself, or the bit shifted down (and masked unless it is the top) */

@@ -131,7 +131,7 @@ char* sg_read(const char* path, size_t* size);
 /* --extract: the definitions roots reach, copied into out (extract.c) */
 int sg_extract(const char* roots_path, const char* out_path, const char* const* inputs, int input_count);
 /* the generator: C for the decode functions roots names (gen.c), with the back end's file copied at its top */
-int sg_generate(const char* roots_path, const char* backend_path, const char* out_path);
+int sg_generate(const char* roots_path, const char* backend_path, const char* profile_path, const char* out_path);
 /* the output buffer, written only when it changes */
 void sg_out(const char* fmt, ...);
 int sg_flush(const char* path);
