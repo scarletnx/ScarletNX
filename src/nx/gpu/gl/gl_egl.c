@@ -12,6 +12,7 @@
 #include "nx/memory/mem.h"
 #include "nx/runtime/options.h"
 #include "nx/runtime/platform/log.h"
+#include <stdatomic.h>
 #include <string.h>
 
 enum {
@@ -95,7 +96,7 @@ static _Thread_local struct {
     u32 api, ctx, draw, read, error;
 } t_egl;
 static struct {
-    u32 initialized, interval;
+    _Atomic u32 initialized, interval;
 } g_gl_egl = {0, 1};
 
 static u32 fail(u32 error) {
@@ -104,7 +105,7 @@ static u32 fail(u32 error) {
 }
 static int display_ok(u64 dpy) {
     if (dpy != DISPLAY) return fail(EGL_BAD_DISPLAY), 0;
-    if (!__atomic_load_n(&g_gl_egl.initialized, __ATOMIC_RELAXED)) return fail(EGL_NOT_INITIALIZED), 0;
+    if (!atomic_load_explicit(&g_gl_egl.initialized, memory_order_relaxed)) return fail(EGL_NOT_INITIALIZED), 0;
     return 1;
 }
 static void write_i32(u64 at, i32 v) {
@@ -129,7 +130,7 @@ u64 gl_egl_get_display(CPU* c, u64 native) { return (void)c, (void)native, DISPL
 u32 gl_egl_initialize(CPU* c, u64 dpy, u64 major, u64 minor) {
     (void)c;
     if (dpy != DISPLAY) return fail(EGL_BAD_DISPLAY);
-    __atomic_store_n(&g_gl_egl.initialized, 1, __ATOMIC_RELAXED);
+    atomic_store_explicit(&g_gl_egl.initialized, 1, memory_order_relaxed);
     write_i32(major, 1);
     write_i32(minor, 5);
     return 1;
@@ -352,14 +353,18 @@ u32 gl_egl_swap_buffers(CPU* c, u64 dpy, u64 surface) {
     (void)c;
     if (!display_ok(dpy)) return 0;
     if (!surface_ok(surface)) return fail(EGL_BAD_SURFACE);
-    gl_host_present((u32)surface, __atomic_load_n(&g_gl_egl.interval, __ATOMIC_RELAXED));
+    gl_host_present((u32)surface, atomic_load_explicit(&g_gl_egl.interval, memory_order_relaxed));
     return 1;
 }
 u32 gl_egl_swap_interval(CPU* c, u64 dpy, i32 interval) {
     (void)c;
     if (!display_ok(dpy)) return 0;
     /* EGL holds it to the config's EGL_MIN_SWAP_INTERVAL and EGL_MAX_SWAP_INTERVAL */
-    __atomic_store_n(&g_gl_egl.interval, (u32)(interval < 0 ? 0 : interval > 4 ? 4 : interval), __ATOMIC_RELAXED);
+    atomic_store_explicit(&g_gl_egl.interval,
+                          (u32)(interval < 0   ? 0
+                                : interval > 4 ? 4
+                                               : interval),
+                          memory_order_relaxed);
     return 1;
 }
 u32 gl_egl_wait_client(CPU* c) { return (void)c, 1; }

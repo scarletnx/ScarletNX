@@ -33,10 +33,10 @@
 #define HEAP    0x100000u /* kmem_alloc's */
 #define GUEST   (24u << 20)
 
-static GuestFn slots[(END - MAIN) / 4];
+static _Atomic GuestFn slots[(END - MAIN) / 4];
 static u8 guest[GUEST];
 u8* g_mem = guest;
-GuestFn* g_disp = slots;
+_Atomic GuestFn* g_disp = slots;
 u64 g_code_lo = MAIN, g_code_hi = END;
 static const SnxModInfo modules[2] = {{.name = "main", .base = MAIN, .size = DRIVER - MAIN},
                                       {.name = "driver", .base = DRIVER, .size = END - DRIVER}};
@@ -44,7 +44,7 @@ static SnxModule module = {.nmods = 2, .mods = modules};
 const SnxModule* g_mod = &module;
 const SnxArmModule* g_arm_mod;
 Settings g_settings;
-int g_frames;
+_Atomic int g_frames;
 
 static const char* const exports[] = {
     "eglGetDisplay",  "eglInitialize",  "eglBindAPI",     "eglChooseConfig",        "eglCreateContext",
@@ -129,7 +129,7 @@ static void own(CPU* RESTRICT c, u64 entry) {
     c->x[0] = 0xdead;
     c->pc = c->x[30];
 }
-static GuestFn* slot(u64 addr) { return &slots[(addr - MAIN) / 4]; }
+static _Atomic GuestFn* slot(u64 addr) { return &slots[(addr - MAIN) / 4]; }
 
 static CPU cpu;
 static void arg_f(int i, float v) {
