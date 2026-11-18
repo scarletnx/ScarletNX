@@ -1,4 +1,4 @@
-The loader of GPU driver packages on Android, src/nx/runtime/platform/gpu_driver_android.c and gpu_driver_hook.c,
+The loader of GPU driver packages on Android, src/common/gpu/vk/gpu_driver_android.c and gpu_driver_hook.c,
 is written after libadrenotools (src/driver.cpp, src/hook/hook_impl.cpp, src/hook/main_hook.c) and its
 liblinkernsbypass (android_linker_ns.cpp, elf_soname_patcher.cpp): the linker namespaces a second copy of Android's
 Vulkan loader and a package's driver load in, and the library that takes that copy's two driver-opening calls.

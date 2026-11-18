@@ -20,7 +20,7 @@
 #include "nx/runtime/platform/unattended.h"
 #include "nx/runtime/platform/overlay.h"
 #include "nx/runtime/platform/fatal_screen.h"
-#include "nx/runtime/platform/gpu_driver_load.h"
+#include "common/gpu/vk/gpu_driver_load.h"
 #include "nx/runtime/platform/touch.h"
 #include "nx/runtime/platform/ui.h"
 #include "nx/runtime/platform/vpad.h"
@@ -690,12 +690,24 @@ void video_init(const char* title, const char* addons) {
 #endif
 }
 
+/* the shared GPU driver loader (common/gpu/vk/gpu_driver_load.h), told what this run asks and where to say it: its
+   lines go to the run's log, and one that stops the run is a fatal error of it */
+static void gpu_driver_say(const char* line) { LOG("%s", line); }
+static void gpu_driver_stop(const char* line) { fatal("%s", line); }
+static void* gpu_driver_begin(void) {
+    SnxGpuDriverRun run = {.driver = g_settings.gpu_driver,
+                           .freedreno = g_settings.freedreno_variables,
+                           .say = gpu_driver_say,
+                           .stop = gpu_driver_stop};
+    snx_gpu_driver_use(&run);
+    return gpu_driver_open();
+}
 void* backend_vk_loader(void) {
-    void* own = gpu_driver_open();
+    void* own = gpu_driver_begin();
     return own ? own : (void*)SDL_Vulkan_GetVkGetInstanceProcAddr();
 }
 void* backend_vk_driver(void) {
-    void* own = gpu_driver_open();
+    void* own = gpu_driver_begin();
     if (own) return own;
 #ifdef __APPLE__
     /* The library this run picked (vulkan_driver), for a run with no window: SDL's own search of the bundle needs its

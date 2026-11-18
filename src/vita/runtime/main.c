@@ -46,6 +46,8 @@ static void usage(FILE* out) {
     snx_cli_help(out, vita_cli);
     fputs(
         "Vita options:\n"
+        "  --gpu-driver=NAME      The Vulkan driver package to run with (Android arm64), --freedreno-env=NAME=value;...\n"
+        "                         its Freedreno variables, as the Switch's.\n"
         "  --KEY=VALUE            A Vita debug setting: --vita-hle-trace=1 logs each import the runtime lacks (2\n"
         "                         every call), --vita-gxm-trace=1 each scene. And the Switch's --aot-threads=N:\n"
         "                         the game's code compiles on N threads (1 to 1024; the default 0: the computer's\n"
@@ -367,6 +369,8 @@ int snx_vita_main(int argc, char** argv) {
                 if (!o && (!strcmp(key, "vulkan_video") || !strcmp(key, "upscaler") ||
                            !strcmp(key, "upscaler_sharpness") || !strcmp(key, "anti_aliasing")))
                     o = ini_find(g_graphics_ini, key);
+                /* the GPU driver package and Freedreno's variables, the Switch's settings (common/gpu/vk/gpu_driver_load.h) */
+                if (!o && (!strcmp(key, "gpu_driver") || !strcmp(key, "freedreno_env"))) o = ini_find(g_game_ini, key);
                 if (!o) o = ini_find(g_vk_extensions_ini, key); /* a Vulkan extension's, as the 3DS takes them */
             }
             if (o)

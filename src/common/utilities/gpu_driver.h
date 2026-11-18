@@ -2,7 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 /* The Vulkan driver packages a player adds, in libadrenotools' format (its tools/ADPKG.md): a zip of a meta.json and the
    driver's libraries, each kept in a folder of its own under the drivers folder, which a game's run loads in place of
-   the system's driver on Android arm64 with an Adreno, a Mali or an Xclipse GPU (nx/runtime/platform/gpu_driver_load.c). What
+   the system's driver on Android arm64 with an Adreno, a Mali or an Xclipse GPU (common/gpu/vk/gpu_driver_load.c). What
    is read and checked the same way by the launcher, which adds them (gui/gpu_driver.c), and by a run, which loads one:
    their meta.json, their folder's name, whether this device loads them, whether a run's process mapped one, and the
    Freedreno variables a run sets for Mesa's Turnip. No SDL, no Android headers: the tests run them anywhere */
@@ -15,7 +15,7 @@
 /* the folder each package's folder is in, under the user's data folder (snx_gpu_drivers_dir) */
 #define SNX_GPU_DRIVERS_DIR     "gpu_drivers"
 /* the oldest Android a package loads on: 9, API 28, whose linker has in its own symbol table the namespace functions
-   the loader calls (nx/runtime/platform/gpu_driver_android.h) */
+   the loader calls (common/gpu/vk/gpu_driver_android.h) */
 #define SNX_GPU_DRIVER_MIN_API  28
 
 /* a package's meta.json: name, libraryName and minApi it must have, the rest as it has them ("" when not) */

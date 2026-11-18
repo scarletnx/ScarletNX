@@ -1,12 +1,14 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "common/gpu/vk/window.h"
+#include "common/gpu/vk/gpu_driver_load.h"
 #include "common/platform/dl.h"
 #include "common/utilities/sdl_desktop.h"
 #include "common/utilities/common.h"
 #include <SDL3/SDL_vulkan.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #ifdef __APPLE__
 /* One driver, never two. The program's folders may carry MoltenVK (an app bundle's Frameworks, or the copy deployed
@@ -23,6 +25,20 @@ static char* carried_driver(void) {
         fprintf(stderr, "vulkan: the Vulkan driver at %s\n", driver);
     }
     return driver;
+}
+#else
+/* volk's entry points: the GPU driver package the run asked for (gpu_driver_load.h), loaded in place of the system's,
+   else the system's loader. The package's vkGetInstanceProcAddr comes as an object pointer, which a function pointer
+   takes by its bytes: no program here has them differ in size */
+static bool loader_init(void) {
+    void* own = gpu_driver_open();
+    if (own) {
+        PFN_vkGetInstanceProcAddr gipa;
+        memcpy(&gipa, &own, sizeof gipa);
+        volkInitializeCustom(gipa);
+        return true;
+    }
+    return volkInitialize() == VK_SUCCESS;
 }
 #endif
 
@@ -56,7 +72,7 @@ bool snx_vk_window_open(const char* app, const char* title, int width, int heigh
         volkInitializeCustom(gipa);
     }
 #else
-    if (volkInitialize() != VK_SUCCESS) {
+    if (!loader_init()) {
         if (out->window) SDL_DestroyWindow(out->window);
         out->window = NULL;
         if (out->video) SDL_QuitSubSystem(SDL_INIT_VIDEO);
@@ -89,7 +105,23 @@ bool snx_vk_window_open(const char* app, const char* title, int width, int heigh
             return false;
         }
     }
-    if (out->window && !SDL_Vulkan_CreateSurface(out->window, out->instance.instance, NULL, &out->surface)) {
+    /* the instance is what opens a package's driver: the run ends here, saying why, when it did not */
+    gpu_driver_check();
+    int surfaced = 0;
+    if (out->window) {
+#ifdef SDL_PLATFORM_ANDROID
+        /* a package's instance: SDL would ask the system's loader for its surface */
+        if (gpu_driver_custom())
+            surfaced = gpu_driver_surface(
+                out->instance.instance,
+                SDL_GetPointerProperty(SDL_GetWindowProperties(out->window), SDL_PROP_WINDOW_ANDROID_WINDOW_POINTER,
+                                       NULL),
+                &out->surface);
+        else
+#endif
+            surfaced = SDL_Vulkan_CreateSurface(out->window, out->instance.instance, NULL, &out->surface) ? 1 : 0;
+    }
+    if (out->window && !surfaced) {
         fprintf(stderr, "vulkan: SDL could not make the window's surface: %s\n", SDL_GetError());
         SDL_DestroyWindow(out->window);
         out->window = NULL;
@@ -123,7 +155,7 @@ bool snx_vk_headless_open(const char* app, SnxVkWindow* out, char* error, size_t
         return false;
     }
 #else
-    if (volkInitialize() != VK_SUCCESS) {
+    if (!loader_init()) {
         snprintf(error, error_size, "no Vulkan loader");
         return false;
     }
@@ -136,6 +168,7 @@ bool snx_vk_headless_open(const char* app, SnxVkWindow* out, char* error, size_t
         snprintf(error, error_size, "no Vulkan 1.3 instance (%s)", snx_vk_result_str(made));
         return false;
     }
+    gpu_driver_check();
     return true;
 }
 

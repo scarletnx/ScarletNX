@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* gpu_driver_hook.h */
-#include "nx/runtime/platform/gpu_driver_hook.h"
+#include "common/gpu/vk/gpu_driver_hook.h"
 #include <android/dlext.h>
 #include <stddef.h>
 
