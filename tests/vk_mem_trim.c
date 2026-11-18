@@ -72,6 +72,8 @@ int own_owed_take(u64* addr, u64* size) { stub_hit("own_owed_take"); }
 int own_traps(void) { stub_hit("own_traps"); }
 int pend_hit_va(const PendPages* t, u64 gva, u64 size) { stub_hit("pend_hit_va"); }
 u8* plat_alias_mirror(void) { stub_hit("plat_alias_mirror"); }
+void pm_lock(PMutex* m) { stub_hit("pm_lock"); }
+void pm_unlock(PMutex* m) { stub_hit("pm_unlock"); }
 void rec_CmdBeginRendering(VkCommandBuffer cb, const VkRenderingInfo* ri) { stub_hit("rec_CmdBeginRendering"); }
 void rec_CmdBlitImage(VkCommandBuffer cb, VkImage src, VkImageLayout sl, VkImage dst, VkImageLayout dl, u32 n,
                       const VkImageBlit* r, VkFilter filter) {
@@ -146,6 +148,7 @@ VkResult vk_image_view_create(VkDevice device, const VkImageViewCreateInfo* info
 void vk_lock(void) { stub_hit("vk_lock"); }
 int vk_mem_heap(void) { stub_hit("vk_mem_heap"); }
 void vk_mem_track(DevMem a, u32 owner) { stub_hit("vk_mem_track"); }
+u64 vk_memory_blocks(void) { stub_hit("vk_memory_blocks"); }
 int vk_ms_moves(const Surf* s) { stub_hit("vk_ms_moves"); }
 int vk_ms_pack(VkCommandBuffer cb, Surf* s, u32 layer, VkBuffer buf, u64 off, u32 pitch) { stub_hit("vk_ms_pack"); }
 int vk_ms_supported(VkFormat f, VkImageUsageFlags usage, VkImageCreateFlags flags, u32 msaa) {
