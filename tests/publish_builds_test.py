@@ -31,6 +31,7 @@ FILES = [
     'ScarletNX-linux-riscv64.AppImage',
     'ScarletNX-linux-loongarch64.AppImage',
     'ScarletNX-windows-x86_64.zip',
+    'ScarletNX-windows-aarch64.zip',
     'ScarletNX-android-universal.apk',
     'ScarletNX-macos-arm64.zip',
     'ScarletNX-ios-arm64.ipa',
@@ -138,6 +139,7 @@ with tempfile.TemporaryDirectory() as temporary:
                 'ScarletNX-linux-loongarch64.AppImage.zsync': 'zsync loong',
             },
             f'ScarletNX-windows-x86_64-{short}': {'bin/scarletnx.exe': 'MZ', 'share/licenses/LICENSE': 'GPL'},
+            f'ScarletNX-windows-aarch64-{short}': {'bin/scarletnx.exe': 'MZ arm64', 'share/licenses/LICENSE': 'GPL'},
             f'ScarletNX-android-universal-{short}.apk': {f'ScarletNX-android-universal-{short}.apk': 'PK apk'},
             # skip-decompress: the macOS zip lands at the artifact's own path, the IPA inside its folder
             f'ScarletNX-macos-arm64-{short}.zip': {'': 'PK app'},
@@ -543,8 +545,10 @@ with tempfile.TemporaryDirectory() as temporary:
         pre
         and '| **Windows** | x86-64 | not built, [see the run](https://github.com/owner/repo/actions/runs/50) |  |'
         in pre['body']
+        and '| **Windows** | ARM64 | not built, [see the run](https://github.com/owner/repo/actions/runs/50) |  |'
+        in pre['body']
         and '- **Windows**' not in pre['body']
-        and len(pre['assets']) == len(PR_FILES) - 1,
+        and len(pre['assets']) == len(PR_FILES) - 2,
         pre,
     )
     check(
