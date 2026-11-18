@@ -1222,16 +1222,21 @@ static bool choose_device(SnxVkChoice* c, void* user) {
     g_vk.imports_dear =
         (g_settings.guest_buffers_copied ? vk_ban_find(imports_key) : vk_ban(imports_key, 1, ban_say)) != 0;
     int uma_with = vk_uma_choose(has_host_import, has_ahb, has_placed && has_map2, has_dmabuf);
-    /* and guest memory a game's own Vulkan maps (gpu/gvk/gvk_api.c), imported as host memory */
+    /* and guest memory a game's own Vulkan maps (gpu/gvk/gvk_api.c), imported as host memory, or the device's own
+       exported as a dma-buf where the device imports no host memory (a capture layer: RenderDoc takes no host memory) */
     if (uma_with == VK_UMA_WITH_HOST || (g_settings.guest_vulkan && has_host_import))
         snx_vk_choice_enable(c, VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME);
     if (uma_with == VK_UMA_WITH_AHB) snx_vk_choice_enable(c, "VK_ANDROID_external_memory_android_hardware_buffer");
     /* the dma-bufs of memfds that guest memory moves into (uma.c, udmabuf), which placed maps' views also take */
     int fd_exts = uma_with == VK_UMA_WITH_DMABUF;
-    if (fd_exts) {
+    if (fd_exts || (g_settings.guest_vulkan && has_dmabuf && !has_host_import)) {
         snx_vk_choice_enable(c, VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME);
         snx_vk_choice_enable(c, VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME);
     }
+    /* a dma-buf takes an image only with a DRM format modifier: a game's own linear images (gpu/gvk) are linear's */
+    if (g_settings.guest_vulkan && has_dmabuf && !has_host_import &&
+        snx_vk_choice_has(c, VK_EXT_IMAGE_DRM_FORMAT_MODIFIER_EXTENSION_NAME))
+        snx_vk_choice_enable(c, VK_EXT_IMAGE_DRM_FORMAT_MODIFIER_EXTENSION_NAME);
     if (g_vk.has_budget) snx_vk_choice_enable(c, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
     if (has_hdr_metadata) {
         snx_vk_choice_enable(c, VK_EXT_HDR_METADATA_EXTENSION_NAME);
