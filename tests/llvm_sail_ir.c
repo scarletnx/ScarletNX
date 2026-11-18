@@ -3,7 +3,7 @@
 /* The integer, hint, barrier and general-purpose load and store emitters and the branch operands tools/sailgen
    generates from the Sail (ir_sail.c) against the hand-written ones they replaced (support/ir_int_reference.c,
    ir_ldst_reference.c), word by word: the same IR, and the same results.
-     snx-test-llvm-sail-ir [--report FILE] [--samples N] [--states N]
+     snx-test-llvm-sail-ir [--report FILE] [--samples N] [--states N] [--part K/N]
    The words: samples of every decoder row the generated subset covers (llvm_qemu_words.c), decoded for the ounce target
    (TARGET: the Switch's features with PAuth and FlagM), each again with its register fields 31 (the zero register or
    SP). On three paths (x86-64 with SSE4.2's CRC32C, AArch64 with CRC32, and the generic one other hosts take; a path
@@ -23,7 +23,8 @@
    more instructions than the hand-written one, nor be another IR for an op whose effect running can't see (strict_ops)
    or a load or store (unless ldst_other names its op, with why), so a dropped fence, ordering or atomicity shows, and
    is listed. --report writes each difference's two IR texts; --time ROUNDS only times the two emitters
-   (time_emitters) */
+   (time_emitters); --part K/N compares and runs only every Nth word from the Kth, and the sequences in part 1, so N
+   ctest runs share the words */
 #include "llvm_steps.h"
 #include "llvm_qemu_words.h"
 #include "support/ir_int_reference.h"
@@ -648,7 +649,7 @@ static int time_emitters(const u32* words, size_t count, unsigned rounds) {
 }
 
 int main(int argc, char** argv) {
-    unsigned samples = 4, states = 8, rounds = 0;
+    unsigned samples = 4, states = 8, rounds = 0, part = 1, parts = 1;
     u32* words;
     size_t count, equal = 0, compared = 0;
     char error[1024];
@@ -663,8 +664,15 @@ int main(int argc, char** argv) {
             states = (unsigned)strtoul(argv[++i], NULL, 10);
         else if (!strcmp(argv[i], "--time") && i + 1 < argc)
             rounds = (unsigned)strtoul(argv[++i], NULL, 10);
-        else
-            return snx_error("unknown argument %s (--report FILE, --samples N, --states N, --time ROUNDS)", argv[i]);
+        else if (!strcmp(argv[i], "--part") && i + 1 < argc) {
+            char end;
+            ++i;
+            if (strspn(argv[i], "0123456789/") != strlen(argv[i]) ||
+                sscanf(argv[i], "%u/%u%c", &part, &parts, &end) != 2 || !part || part > parts)
+                return snx_error("--part %s is not K/N with 1 <= K <= N", argv[i]);
+        } else
+            return snx_error("unknown argument %s (--report FILE, --samples N, --states N, --time ROUNDS, --part K/N)",
+                             argv[i]);
     }
     if (snx_ir_init(error, sizeof error)) return snx_error("%s", error);
     /* the other paths' targets, and the SLP vectorizer off, as a game's module is made by default */
@@ -688,6 +696,12 @@ int main(int argc, char** argv) {
         free(words);
         return r;
     }
+    if (parts > 1) {
+        size_t n = 0;
+        for (size_t i = part - 1; i < count; i += parts) words[n++] = words[i];
+        count = n;
+        printf("part %u of %u: %zu words\n", part, parts, count);
+    }
     for (size_t p = 0; p < PATHS; ++p) {
         size_t before = equal;
         size_t outcomes[4];
@@ -706,8 +720,10 @@ int main(int argc, char** argv) {
             g_test.outcomes[OTHER_NOT_LONGER] - outcomes[OTHER_NOT_LONGER], g_test.outcomes[LONGER] - outcomes[LONGER]);
         (void)before;
     }
-    for (unsigned s = 0; s < SEQUENCES; ++s) compare_sequence(s);
-    printf("%zu sequences compared\n", SEQUENCES);
+    if (part == 1) {
+        for (unsigned s = 0; s < SEQUENCES; ++s) compare_sequence(s);
+        printf("%zu sequences compared\n", SEQUENCES);
+    }
     if (run_compare(words, count, states)) return 1;
     printf("%zu words run from %u states each\n", count, states);
     free(words);
