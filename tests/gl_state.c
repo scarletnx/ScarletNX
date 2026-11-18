@@ -150,6 +150,12 @@ int main(void) {
     assert(snx_gl_fixed(a)->scissor[2] == 320 && snx_gl_get_error(a) == SNX_GL_INVALID_VALUE);
     snx_gl_line_width(a, 0);
     assert(snx_gl_fixed(a)->line_width == 1 && snx_gl_get_error(a) == SNX_GL_INVALID_VALUE);
+    snx_gl_point_size(a, -1);
+    assert(snx_gl_fixed(a)->point_size == 1 && snx_gl_get_error(a) == SNX_GL_INVALID_VALUE);
+    snx_gl_polygon_mode(a, 0x0404, 0x1b01); /* GL_FRONT: a core profile has both faces alone */
+    assert(snx_gl_fixed(a)->polygon_mode == 0x1b02 && snx_gl_get_error(a) == SNX_GL_INVALID_ENUM);
+    snx_gl_polygon_mode(a, 0x0408, 0x1b03);
+    assert(snx_gl_fixed(a)->polygon_mode == 0x1b02 && snx_gl_get_error(a) == SNX_GL_INVALID_ENUM);
     snx_gl_pixel_store(a, GL_PACK_ALIGNMENT, 3);
     assert(snx_gl_fixed(a)->pixel[0].alignment == 4 && snx_gl_get_error(a) == SNX_GL_INVALID_VALUE);
     snx_gl_pixel_store(a, 0x1234, 1);
@@ -180,7 +186,7 @@ int main(void) {
     memcpy(copy, saved, bytes);
     copy[4] = 9; /* the layout */
     refused(copy, bytes, "layout 9");
-    refused(saved, 20, "this build reads layout 6");
+    refused(saved, 20, "this build reads layout 7");
     refused(saved, bytes - 4, "this build reads");
     {
         SnxGlContext c;
@@ -209,6 +215,16 @@ int main(void) {
         assert(snx_gl_get(d, 0x0ba2, v) == 4 && v[0] == 5 && v[1] == 6 && v[2] == 7 && v[3] == 8);
         assert(snx_gl_get(d, GL_BLEND, v) == 1 && v[0] == 0 && snx_gl_get(a, GL_BLEND, v) == 1 && v[0] == 1);
         assert(snx_gl_get(d, 0x1234, v) == 0 && !snx_gl_fixed(d)->error); /* its caller records the error */
+        /* the limits two GL games ask for, and the point size and polygon mode they set */
+        assert(snx_gl_get(d, 0x851c, v) == 1 && v[0] == 16384 && snx_gl_get(d, 0x8073, v) == 1 && v[0] == 2048);
+        assert(snx_gl_get(d, 0x88ff, v) == 1 && v[0] == 2048 && snx_gl_get(d, 0x8d57, v) == 1 && v[0] == 4);
+        assert(snx_gl_get(d, 0x80a8, v) == 1 && v[0] == 0 && snx_gl_get(d, 0x80a9, v) == 1 && v[0] == 0);
+        assert(snx_gl_get(d, 0x0b12, v) == 2 && v[0] == 1 && v[1] == 64 && snx_gl_get(d, 0x84fd, v) == 1 && v[0] == 15);
+        assert(snx_gl_get(d, 0x91b0, v) == 1 && v[0] == 0xffffffffu);
+        snx_gl_point_size(d, 3.5f);
+        snx_gl_polygon_mode(d, 0x0408, 0x1b01); /* GL_FRONT_AND_BACK, GL_LINE */
+        assert(snx_gl_get(d, 0x0b11, v) == 1 && v[0] == 3.5 && snx_gl_get(d, 0x0b40, v) == 2 && v[1] == 0x1b01);
+        assert(!snx_gl_fixed(d)->error);
         assert(!strcmp(snx_gl_string(d, 0x1f02, 0, 0), "4.5.0 ScarletNX"));
         assert(!strcmp(snx_gl_string(d, 0x8b8c, 0, 0), "4.50 ScarletNX"));
         assert(!strcmp(snx_gl_string(d, 0x1f00, 0, 0), "NVIDIA Corporation"));

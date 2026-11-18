@@ -12,7 +12,7 @@
    guest's pointers, and a shader refused with its line in the log; a buffer of immutable storage mapped persistently
    at an address of guest memory, written through it and read back, a vertex array's attribute reading the array
    buffer bound; a texture given texels from a pointer passed on the stack, kept in guest memory, and a parameter of
-   it read back, and a framebuffer complete once that texture is attached; a GL and an EGL function without a handler stopping the game, the message naming the function and
+   it read back, and a framebuffer complete once that texture is attached; the point size and polygon mode set; a GL and an EGL function without a handler stopping the game, the message naming the function and
    gl_layer's value */
 #include "common/gpu/gl/gl_state.h"
 #include "common/gpu/gl/gl_texture.h"
@@ -108,7 +108,9 @@ static const char* const exports[] = {"eglGetDisplay",
                                       "_glGenFramebuffers",
                                       "_glBindFramebuffer",
                                       "_glFramebufferTexture2D",
-                                      "_glCheckFramebufferStatus"};
+                                      "_glCheckFramebufferStatus",
+                                      "_glPointSize",
+                                      "_glPolygonMode"};
 #define EXPORTS (sizeof exports / sizeof *exports)
 static u64 export_name[EXPORTS];
 static u64 at(const char* name) {
@@ -457,6 +459,19 @@ int main(void) {
         assert(strstr(logged, "glClear of framebuffer") && strstr(logged, "isn't drawn yet"));
         assert(pixel(first, 1280, 720, 0, 0)[1] != 255 && pixel(shown.addr, 1280, 720, 0, 0)[1] != 255);
         call("_glBindFramebuffer", 0x8d40, 0, 0, 0, 0);
+    }
+
+    /* the point size and polygon mode a GL game sets, read back by glGet */
+    {
+        const u64 out = SCRATCH + 0x3a00;
+        arg_f(0, 3);
+        call("_glPointSize", 0, 0, 0, 0, 0);
+        call("_glPolygonMode", 0x0408, 0x1b01, 0, 0, 0); /* GL_FRONT_AND_BACK, GL_LINE */
+        call("_glGetIntegerv", 0x0b11, out, 0, 0, 0);
+        assert(gr32(out) == 3);
+        call("_glGetIntegerv", 0x0b40, out, 0, 0, 0);
+        assert(gr32(out) == 0x1b01 && gr32(out + 4) == 0x1b01);
+        call("_glPolygonMode", 0x0408, 0x1b02, 0, 0, 0);
     }
 
     /* a function without a handler stops the game, naming it and gl_layer's value; the driver never ran */
