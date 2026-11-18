@@ -11,6 +11,7 @@
 #include "common/gpu/gl/gl_framebuffer.h"
 #include "common/gpu/gl/gl_program.h"
 #include "common/gpu/gl/gl_state.h"
+#include "common/gpu/gl/gl_sync.h"
 #include "common/gpu/gl/gl_texture.h"
 #include <assert.h>
 #include <stdio.h>
@@ -262,7 +263,7 @@ int main(void) {
     assert(snx_gl_framebuffers(ctx)->renderbuffer == 0);
     /* refused copies, each naming what it found */
     {
-        size_t renderbuffers = total - snx_gl_framebuffer_state_bytes() + 8;
+        size_t renderbuffers = total - snx_gl_sync_state_bytes() - snx_gl_framebuffer_state_bytes() + 8;
         size_t framebuffers = renderbuffers + SNX_GL_RENDERBUFFERS * sizeof(SnxGlRenderbuffer);
         size_t contexts = framebuffers + SNX_GL_FRAMEBUFFERS * sizeof(SnxGlFramebuffer);
         SnxGlRenderbuffer r;

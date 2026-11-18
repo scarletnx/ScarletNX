@@ -1653,76 +1653,39 @@ static void g_get_queryiv(CPU* c, Gles2Context* gl) {
     memcpy(PTR(2), &v, 4);
 }
 
-/* ---- sync objects ---- */
+/* ---- sync objects: the shared layer's (common/gpu/gl/gl_sync.h), fences of this file's submissions ---- */
 
-static G2Sync* sync_object(uint64_t handle) {
-    return handle && handle < g_gles2.sync_count && g_gles2.syncs[handle].used ? &g_gles2.syncs[handle] : NULL;
-}
-static void g_fence_sync(CPU* c, Gles2Context* gl) {
-    (void)gl;
-    unsigned name = 1;
-    while (name < g_gles2.sync_count && g_gles2.syncs[name].used) ++name;
-    G2Sync* s = entry((void**)&g_gles2.syncs, &g_gles2.sync_count, sizeof *s, name);
-    X(0) = 0;
-    if (!s) return;
-    *s = (G2Sync){true, gles_vk_pending()};
-    X(0) = name;
-}
-static void g_delete_sync(CPU* c, Gles2Context* gl) {
-    (void)gl;
-    G2Sync* s = sync_object(X(0));
-    if (s) *s = (G2Sync){0};
-}
-static void g_is_sync(CPU* c, Gles2Context* gl) {
-    (void)gl;
-    X(0) = sync_object(X(0)) != NULL;
-}
-/* glClientWaitSync(sync, flags, timeout): GL_ALREADY_SIGNALED, GL_TIMEOUT_EXPIRED or GL_CONDITION_SATISFIED */
-static void g_client_wait_sync(CPU* c, Gles2Context* gl) {
-    G2Sync* s = sync_object(X(0));
-    uint64_t timeout = X(2);
-    if (!s) {
-        gles2_error(gl, GL_INVALID_VALUE_);
-        X(0) = 0x911d; /* GL_WAIT_FAILED */
-        return;
-    }
-    if (s->serial <= V.completed) {
-        X(0) = 0x911a;
-        return;
-    }
-    if (!timeout) {
-        X(0) = 0x911b;
-        return;
-    }
-    if (s->serial > V.submitted) {
+static uint64_t sync_recorded(void) { return gles_vk_pending(); }
+static uint64_t sync_completed(void) { return V.completed; }
+/* the work up to serial: the context's rendering submitted first, when it is not yet */
+static void sync_wait(uint32_t ctx, uint64_t serial) {
+    Gles2Context* gl = texture_context(ctx);
+    if (gl && serial > V.submitted) {
         gles2_rendering_stop(gl);
         if (gl->draw) gles_flush(gl->draw);
     }
-    gles_vk_wait(s->serial);
-    X(0) = 0x911c;
+    gles_vk_wait(serial);
 }
-static void g_wait_sync(CPU* c, Gles2Context* gl) {
-    (void)c, (void)gl; /* the GPU's own wait: one queue runs in order */
+void gles2_syncs_init(void) { snx_gl_sync_host(&(SnxGlSyncHost){sync_recorded, sync_completed, sync_wait}); }
+static void g_fence_sync(CPU* c, Gles2Context* gl) {
+    X(0) = snx_gl_fence_sync(gl->ctx, (uint32_t)X(0), (uint32_t)X(1));
 }
+static void g_delete_sync(CPU* c, Gles2Context* gl) { snx_gl_delete_sync(gl->ctx, X(0)); }
+static void g_is_sync(CPU* c, Gles2Context* gl) {
+    (void)gl;
+    X(0) = (uint64_t)snx_gl_is_sync(X(0));
+}
+/* glClientWaitSync(sync, flags, timeout) */
+static void g_client_wait_sync(CPU* c, Gles2Context* gl) {
+    X(0) = snx_gl_client_wait_sync(gl->ctx, X(0), (uint32_t)X(1), X(2));
+}
+static void g_wait_sync(CPU* c, Gles2Context* gl) { snx_gl_wait_sync(gl->ctx, X(0), (uint32_t)X(1), X(2)); }
+/* glGetSynciv(sync, pname, count, length, values) */
 static void g_get_synciv(CPU* c, Gles2Context* gl) {
-    G2Sync* s = sync_object(X(0));
-    int32_t v = 0;
-    if (!s) {
-        gles2_error(gl, GL_INVALID_VALUE_);
-        return;
-    }
-    switch ((unsigned)X(1)) {
-    case 0x9112: v = 0x9116; break;
-    case 0x9113: v = 0x9117; break;
-    case 0x9114: v = s->serial <= V.completed ? 0x9119 : 0x9118; break;
-    case 0x9115: v = 0; break;
-    default: gles2_error(gl, GL_INVALID_ENUM_); return;
-    }
-    if (X(2) >= 1) memcpy(PTR(4), &v, 4);
-    if (X(3)) {
-        int32_t one = 1;
-        memcpy(PTR(3), &one, 4);
-    }
+    int32_t v = 0, one = 1;
+    if (!snx_gl_get_sync(gl->ctx, X(0), (uint32_t)X(1), &v)) return;
+    if ((int32_t)X(2) >= 1) memcpy(PTR(4), &v, 4);
+    if (X(3)) memcpy(PTR(3), &one, 4);
 }
 
 /* ---- transform feedback objects: names alone (no transform feedback is drawn yet) ---- */

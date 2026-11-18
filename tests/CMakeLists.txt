@@ -1480,6 +1480,12 @@ add_executable(snx-test-gl-framebuffer gl_framebuffer.c)
 snx_test_target(snx-test-gl-framebuffer c23)
 target_link_libraries(snx-test-gl-framebuffer PRIVATE snx_gl)
 add_test(NAME gl_framebuffer COMMAND snx-test-gl-framebuffer)
+# the shared GL layer's sync objects (src/common/gpu/gl/gl_sync.c), with no GPU: fences of a platform's serials, waits,
+# their parameters, GL's errors, and a save state's fences signaled
+add_executable(snx-test-gl-sync gl_sync.c)
+snx_test_target(snx-test-gl-sync c23)
+target_link_libraries(snx-test-gl-sync PRIVATE snx_gl)
+add_test(NAME gl_sync COMMAND snx-test-gl-sync)
 # the console's GL layer (src/nx/gpu/gl/) over a stubbed GL driver module, guest memory and renderer: the slots taken
 # with gl_layer=1, EGL, glClear's color in the surface's image, eglSwapBuffers's present, a function without a handler
 add_executable(snx-test-gl-layer gl_layer.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/gl/gl_loader.c"

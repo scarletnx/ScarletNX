@@ -62,7 +62,8 @@ endif()
 # the GL layer that translates a guest's GL to Vulkan, shared by the Android bridge and the console (gpu/gl/gl_state.h):
 # its state machine, flat records a save state holds as they are; glslc compiles its shaders (gpu/gl/gl_program.h)
 add_library(snx_gl STATIC gpu/gl/gl_state.c gpu/gl/gl_program.c gpu/gl/gl_object.c gpu/gl/gl_format.c
-                           gpu/gl/gl_texture.c gpu/gl/gl_framebuffer.c)
+                           gpu/gl/gl_texture.c gpu/gl/gl_framebuffer.c
+                           gpu/gl/gl_sync.c)
 set_target_properties(snx_gl PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
 target_compile_options(snx_gl PRIVATE -pedantic-errors -Wall -Wextra -Werror=missing-prototypes
                                       -Werror=missing-variable-declarations)

@@ -5,6 +5,7 @@
 #include "common/gpu/gl/gl_object.h"
 #include "common/gpu/gl/gl_program.h"
 #include "common/gpu/gl/gl_framebuffer.h"
+#include "common/gpu/gl/gl_sync.h"
 #include "common/gpu/gl/gl_texture.h"
 #include <stdio.h>
 #include <string.h>
@@ -422,7 +423,7 @@ uint32_t snx_gl_clear(uint32_t ctx, uint32_t mask) {
 
 size_t snx_gl_state_bytes(void) {
     return sizeof(SnxGlStateHeader) + sizeof g_gl + snx_gl_program_state_bytes() + snx_gl_object_state_bytes() +
-           snx_gl_texture_state_bytes() + snx_gl_framebuffer_state_bytes();
+           snx_gl_texture_state_bytes() + snx_gl_framebuffer_state_bytes() + snx_gl_sync_state_bytes();
 }
 
 void snx_gl_state_save(void* out) {
@@ -435,6 +436,9 @@ void snx_gl_state_save(void* out) {
                               snx_gl_object_state_bytes());
     snx_gl_framebuffer_state_save((unsigned char*)out + sizeof h + sizeof g_gl + snx_gl_program_state_bytes() +
                                   snx_gl_object_state_bytes() + snx_gl_texture_state_bytes());
+    snx_gl_sync_state_save((unsigned char*)out + sizeof h + sizeof g_gl + snx_gl_program_state_bytes() +
+                           snx_gl_object_state_bytes() + snx_gl_texture_state_bytes() +
+                           snx_gl_framebuffer_state_bytes());
 }
 /* the bytes of the programs' part at programs, of the left bytes there: 0 when its header says more than that */
 static size_t program_part(const unsigned char* programs, size_t left) {
@@ -497,18 +501,21 @@ int snx_gl_state_check(const void* in, size_t size, char* why, size_t whysize) {
                      "the GL layer's programs say more bytes than the %zu its state has after the contexts", left);
             return -1;
         }
-        size_t objects = snx_gl_object_state_bytes(), textures = snx_gl_texture_state_bytes();
+        size_t objects = snx_gl_object_state_bytes(), textures = snx_gl_texture_state_bytes(),
+               framebuffers = snx_gl_framebuffer_state_bytes();
         if (snx_gl_program_state_check(programs, part, why, whysize)) return -1;
-        if (left - part < objects + textures) {
+        if (left - part < objects + textures + framebuffers) {
             snprintf(why, whysize,
-                     "the GL layer's state has %zu bytes after its programs, less than its buffers' and textures' %zu",
-                     left - part, objects + textures);
+                     "the GL layer's state has %zu bytes after its programs, less than its buffers', textures' and "
+                     "framebuffers' %zu",
+                     left - part, objects + textures + framebuffers);
             return -1;
         }
         if (snx_gl_object_state_check(programs + part, objects, why, whysize) ||
             snx_gl_texture_state_check(programs + part + objects, textures, why, whysize) ||
-            snx_gl_framebuffer_state_check(programs + part + objects + textures, left - part - objects - textures, why,
-                                           whysize))
+            snx_gl_framebuffer_state_check(programs + part + objects + textures, framebuffers, why, whysize) ||
+            snx_gl_sync_state_check(programs + part + objects + textures + framebuffers,
+                                    left - part - objects - textures - framebuffers, why, whysize))
             return -1;
     }
     for (uint32_t i = 0; i < SNX_GL_CONTEXTS; i++) {
@@ -532,6 +539,8 @@ int snx_gl_state_load(const void* in, size_t size) {
     snx_gl_object_state_load(i + at + part);
     snx_gl_texture_state_load(i + at + part + snx_gl_object_state_bytes());
     snx_gl_framebuffer_state_load(i + at + part + snx_gl_object_state_bytes() + snx_gl_texture_state_bytes());
+    snx_gl_sync_state_load(i + at + part + snx_gl_object_state_bytes() + snx_gl_texture_state_bytes() +
+                           snx_gl_framebuffer_state_bytes());
     memcpy(&g_gl, i + sizeof(SnxGlStateHeader), sizeof g_gl);
     return 0;
 }
