@@ -9,7 +9,8 @@
 # nop: no architectural effect at EL0.
 # PREDICATE: comparisons of the row's arguments joined by | (arg, arg&MASK, OP == != < <= > >=, a number or another
 # argument), or valid=bitmask(arg) for a logical immediate. A row whose predicate fails does not match: the
-# encodings the Arm ARM reserves inside a pattern (and QEMU's trans_* refuse).
+# encodings the Arm ARM reserves inside a pattern (and QEMU's trans_* refuse), and the fields it makes all ones that
+# the Sail's decode fixes (an exclusive's unused Rs and Rt2).
 # FEATURE: the FEAT_* the Arm ARM's encoding index names (v8.0 for the base), as QEMU's translate-a64.c gates it
 # with dc_isar_feature(). FEAT_X(cond) is needed only when cond holds, as half precision is for esz == 1.
 # A row needing a feature the target lacks does not match.
@@ -142,12 +143,12 @@ HVC             EXC   v8.0 EL1
 SMC             EXC   v8.0 EL1
 BRK             BRK   v8.0
 HLT             EXC   v8.0 EL1
-STXR            PLAIN v8.0
-LDXR            PLAIN v8.0
+STXR            PLAIN rt2==31 v8.0
+LDXR            PLAIN rs==31 rt2==31 v8.0
 STLR            PLAIN v8.0 FEAT_LOR(lasr==0)
 LDAR            PLAIN v8.0 FEAT_LOR(lasr==0)
 STXP            PLAIN v8.0
-LDXP            PLAIN v8.0
+LDXP            PLAIN rs==31 v8.0
 CASP            PLAIN rs&1==0 rt&1==0 FEAT_LSE
 CAS             PLAIN FEAT_LSE
 LD_lit          PLAIN v8.0
