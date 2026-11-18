@@ -2310,6 +2310,10 @@ void vk_rt_before_write(u64 gva, u64 size, int whole) {
                 s->layout = VK_IMAGE_LAYOUT_UNDEFINED;
                 s->draw_wseen = 0;
                 s->gw = gpu_mem_generation();
+                /* Nothing of the image goes to memory, as it holds none of the target's bytes now. The layout says so
+                   only while nothing binds the image: a refresh of the last frame, a screenshot or a present reads it
+                   and leaves it in another layout (vk_surf_use), and a flush then needs this to stay off */
+                s->mem_wgen = s->wgen;
                 vk_surf_relist(s);
                 g_vk_rt_dropped++;
                 continue;
