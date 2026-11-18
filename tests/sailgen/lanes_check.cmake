@@ -1,4 +1,4 @@
-# sailgen_lanes: generates lanes.sail (SAILGEN, BACKEND, OUT) and says, for each of its three decode functions, whether
+# sailgen_lanes: generates lanes.sail (SAILGEN, BACKEND, OUT) and says, for each of its decode functions, whether
 # its element loop became one vector operation (lanes) or stayed a loop of elements (loop)
 get_filename_component(out_dir "${OUT}" DIRECTORY)
 file(MAKE_DIRECTORY "${out_dir}")
@@ -9,7 +9,7 @@ if(NOT rc EQUAL 0)
 endif()
 file(READ "${OUT}" text)
 set(line "sailgen_lanes:")
-foreach(fn IN ITEMS lanes carried last)
+foreach(fn IN ITEMS lanes carried last fixed free)
     string(FIND "${text}" "static int sg_decode_${fn}_aarch64_instrs_test(SgCtx* g) {" at)
     if(at EQUAL -1)
         message(FATAL_ERROR "sailgen_lanes: ${OUT} has no decode function for ${fn}")

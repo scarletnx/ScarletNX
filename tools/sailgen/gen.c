@@ -34,7 +34,8 @@ typedef struct {
     char c[512];        /* the C expression of the value */
     unsigned tuple[4]; /* K_TUPLE: the components, in the value pool */
     unsigned node;
-    unsigned sdef; /* K_STRUCT: the struct's definition */
+    unsigned sdef;      /* K_STRUCT: the struct's definition */
+    unsigned char word; /* the instruction's word (__opcode), whose bits the clause walked fixes (word_bits) */
 } Val;
 
 typedef struct {
@@ -103,6 +104,8 @@ static struct {
     unsigned lane_loop;
     int lane, lane_fail, lane_restart;
     char lane_count[160];
+    /* the bits of the instruction's word the clause walked fixes, and their values */
+    SgU64 word_mask, word_value;
     unsigned refused[64], refused_count;
     /* a builtin's arguments, evaluated once to see whether one is per lane (lane_builtin), for builtin() to reuse */
     unsigned memo_node, memo_count;
@@ -463,6 +466,21 @@ static Val need_static_int(unsigned n, Val v, const char* what) {
 static Val need_bits(unsigned n, Val v, const char* what) {
     if (v.kind != K_BITS) sg_fail(n, "%s must be bits, found kind %d", what, v.kind);
     return v;
+}
+
+/* bits hi..lo of the instruction's word, all of them bits the clause walked fixes: known here (CONST), so an if on
+   them keeps one branch (MUL's clause fixes U at 0, so its decode never reaches PMUL's polynomial product). 1 when
+   *r is them */
+static int word_bits(Val x, Val hi, Val lo, Val* r) {
+    SgU64 m, bits;
+    if (!x.word || hi.bt != BT_CONST || lo.bt != BT_CONST || lo.value < 0 || hi.value < lo.value || hi.value > 31)
+        return 0;
+    m = ((2ull << (hi.value - lo.value)) - 1) << lo.value;
+    if ((g_gen.word_mask & m) != m) return 0;
+    bits = (g_gen.word_value & m) >> lo.value;
+    *r = val_c(K_BITS, BT_CONST, "sg_s(0x%llxull, %lld)", (unsigned long long)bits, hi.value - lo.value + 1);
+    r->value = (long long)bits;
+    return 1;
 }
 
 /* ---- calls ---- */
@@ -1114,6 +1132,8 @@ static int builtin_body(unsigned n, const char* name, Val* r) {
         a = need_bits(n, arg(n, 0), name);
         b = need_static_int(n, arg(n, 1), "a slice's start");
         c = need_static_int(n, arg(n, 2), "a slice's width");
+        if (b.bt == BT_CONST && c.bt == BT_CONST && word_bits(a, val_const(K_INT, b.value + c.value - 1), b, r))
+            return 1;
         *r = a.bt == BT_DYN ? val_c(K_BITS, BT_DYN, "sg_d_slice(g, %s, (%s) + (%s) - 1, %s)", a.c, b.c, c.c, b.c)
                             : val_c(K_BITS, BT_STATIC, "sg_s_slice(%s, (%s) + (%s) - 1, %s)", a.c, b.c, c.c, b.c);
         return 1;
@@ -1266,7 +1286,7 @@ static Val call(unsigned n) {
         args[i].node = arg_at(n, i);
         all_static &=
             args[i].bt != BT_DYN && args[i].kind != K_TUPLE && args[i].kind != K_UNIT && args[i].kind != K_STRUCT;
-        all_const &= args[i].bt == BT_CONST;
+        all_const &= args[i].bt == BT_CONST && args[i].kind != K_BITS; /* bits known here are a helper's as before */
     }
     /* arguments all known here (none, or constants) inline, so a fixup's constant answer (nx.sail's HaveGCS) folds */
     if (all_static && !all_const && !reaches_state(def, 0)) return helper_call(n, def, args, count);
@@ -1696,6 +1716,7 @@ static Val binop(unsigned n) {
     if (!strcmp(op, "==") || !strcmp(op, "!=")) {
         int ne = op[0] == '!';
         if (a.kind == K_BITS && b.kind == K_BITS) {
+            if (bt == BT_CONST) return val_const(K_BOOL, (a.value == b.value) != ne);
             if (bt != BT_DYN) return val_c(K_BOOL, BT_STATIC, "(%ssg_s_eq(%s, %s))", ne ? "!" : "", a.c, b.c);
             {
                 Val e = val_c(K_BOOL, BT_DYN, "sg_d_eq(g, %s, %s)", raise(a, BT_DYN).c, raise(b, BT_DYN).c);
@@ -1777,7 +1798,7 @@ static Val binop(unsigned n) {
 
 static Val slice(unsigned n) {
     unsigned reg = N(n).kind == N_INDEX ? register_def(N(n).a) : 0;
-    Val x, hi, lo;
+    Val x, hi, lo, r;
     if (reg) return element_read(n, reg);
     if (N(n).kind == N_SLICE && N(N(n).a).kind == N_INDEX && (reg = register_def(N(N(n).a).a)) != 0 &&
         reg_kind(reg) == K_VECTOR) { /* REG[i][hi .. lo]: only those bits, where the back end reads them alone */
@@ -1793,6 +1814,7 @@ static Val slice(unsigned n) {
     x = eval(N(n).a, 0);
     hi = need_static_int(n, eval(N(n).b, 0), "a slice's bound");
     lo = N(n).kind == N_SLICE ? need_static_int(n, eval(N(n).c, 0), "a slice's bound") : hi;
+    if (word_bits(x, hi, lo, &r)) return r;
     if (x.bt == BT_LANE) { /* every lane's bits hi..lo */
         if (x.kind != K_INT && x.kind != K_BITS) {
             lane_refuse("a slice of lanes of other than bits or integers");
@@ -2382,8 +2404,9 @@ static Val eval(unsigned n, int tail) {
     if (!n) return unit();
     switch (N(n).kind) {
         case N_NUM: return val_const(K_INT, (long long)N(n).value);
-        case N_BITS:
-            v = val_c(K_BITS, BT_STATIC, "sg_s(0x%llxull, %u)", N(n).value, N(n).width);
+        case N_BITS: /* known here, and so is an == or != of two such bits (word_bits) */
+            v = val_c(K_BITS, BT_CONST, "sg_s(0x%llxull, %u)", N(n).value, N(n).width);
+            v.value = (long long)N(n).value;
             v.node = n;
             return v;
         case N_BOOL: return val_const(K_BOOL, (long long)N(n).value);
@@ -2515,7 +2538,13 @@ static void generate_decode(Clause* c) {
         g_gen.in_helper = 0;
         g_gen.out = &scratch;
         g_gen.indent = 1;
-        bind(sg_intern("__opcode", 8), val_c(K_BITS, BT_STATIC, "sg_s(g->word, 32)"), -1, 0);
+        {
+            Val word = val_c(K_BITS, BT_STATIC, "sg_s(g->word, 32)");
+            word.word = 1;
+            g_gen.word_mask = c->mask;
+            g_gen.word_value = c->value;
+            bind(sg_intern("__opcode", 8), word, -1, 0);
+        }
         bind(sg_intern("pc", 2), val_c(K_INT, BT_STATIC, "(long long)g->pc"), -1, 0);
         stmt(body);
         if (!g_gen.changed) {
