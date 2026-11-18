@@ -1573,7 +1573,7 @@ static void pipe_info(const PipeKey* k, VkShaderModule fs, PipeInfo* o) {
                 .sType = VK_STRUCTURE_TYPE_SHADER_DESCRIPTOR_SET_AND_BINDING_MAPPING_INFO_EXT,
                 .pNext = o->st[o->nst].pNext, /* a mesh stage's required subgroup size */
                 .mappingCount = vk_descriptor_heaps_mapping(g_vk_dslayout[(k->arrays >> set) & 1][set], set,
-                                                             o->binding_maps[o->nst], SNX_VKB_END),
+                                                             o->binding_maps[o->nst], SNX_VKB_END, k->cb_addr[set]),
                 .pMappings = o->binding_maps[o->nst]};
             o->st[o->nst].pNext = &o->mappings[o->nst];
         }

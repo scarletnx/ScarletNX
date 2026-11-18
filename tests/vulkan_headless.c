@@ -285,7 +285,7 @@ static int check_descriptor_room(void) {
     u32 slot = vk_frame_slot();
     u64 submit = vk_submit_number(), tables = 0;
     while (vk_descriptors_room(slot)) { /* what vk_frame_check asks before each draw */
-        for (int stage = 0; stage < 5; stage++) CHECK(vk_descriptors_write(g_vk_dslayout[0][0], 1, &write));
+        for (int stage = 0; stage < 5; stage++) CHECK(vk_descriptors_write(g_vk_dslayout[0][0], 1, &write, 0));
         tables += 5;
         CHECK(vk_frame_slot() == slot && vk_submit_number() == submit); /* no submit inside the "setup" */
     }
@@ -7324,6 +7324,7 @@ static int check_pipeline_stats_compute(void) {
 #include "vulkan_draw_texture.inc"
 #include "vulkan_lone_lane.inc"
 #include "vulkan_descriptor_heaps.inc"
+#include "vulkan_cb_address.inc"
 #include "vulkan_descriptor_memo.inc"
 #include "vulkan_sample_raster.inc"
 #include "vulkan_mixed_coverage.inc"
@@ -8070,6 +8071,8 @@ static int run_headless(int argc, char** argv) {
             result = check_poll_kick();
         else if (!strcmp(name, "descriptor_heaps"))
             result = check_descriptor_heaps();
+        else if (!strcmp(name, "cb_address"))
+            result = check_cb_address();
         else if (!strcmp(name, "indirect_dispatch"))
             result = check_indirect_dispatch_once();
         else if (!strcmp(name, "integer_half"))
@@ -8470,6 +8473,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_texture_quiet_present());
     CHECK(!check_memo_over_target());
     CHECK(!check_descriptor_heaps());
+    CHECK(!check_cb_address());
     CHECK(!check_descriptor_memo());
     CHECK(!check_fragment_barrier_backend());
     CHECK(!check_capture_cap());

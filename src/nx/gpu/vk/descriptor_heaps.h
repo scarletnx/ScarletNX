@@ -284,6 +284,22 @@ static inline int vk_descriptor_heap_table_append(uint32_t* words, uint32_t coun
     return 1;
 }
 
+/* Map a uniform buffer binding by address: the table's two words at word (8-byte aligned, as the table is) hold the
+   buffer's device address, which the shader reads through the address push data names (vk_cb_addr_mask). No
+   descriptor is written for it, and the read has no range: only reads the binding covers whole may go this way */
+static inline int vk_descriptor_heap_address_mapping(VkDescriptorSetAndBindingMappingEXT* mapping, uint32_t set,
+                                                     uint32_t binding, uint32_t word) {
+    if (!mapping || set >= 5 || (word & 1u) || word > UINT32_MAX / 4) return 0;
+    *mapping = (VkDescriptorSetAndBindingMappingEXT){
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_AND_BINDING_MAPPING_EXT,
+        .descriptorSet = set, .firstBinding = binding, .bindingCount = 1,
+        .resourceMask = VK_SPIRV_RESOURCE_TYPE_UNIFORM_BUFFER_BIT_EXT,
+        .source = VK_DESCRIPTOR_MAPPING_SOURCE_INDIRECT_ADDRESS_EXT,
+        .sourceData.indirectAddress = {.pushOffset = VK_DESCRIPTOR_HEAP_PUSH_OFFSET + 8 * set,
+                                       .addressOffset = 4 * word}};
+    return 1;
+}
+
 /* Map one existing binding to separate byte-index arrays. Byte strides preserve exact per-type packing and avoid
    the20-bit image/12-bit sampler limit of combined packed indices. The actual index must respect its type alignment. */
 static inline int vk_descriptor_heap_binding_mapping(VkDescriptorSetAndBindingMappingEXT* mapping,
@@ -339,10 +355,11 @@ void vk_descriptor_heaps_destroy(void);
 void vk_descriptor_heaps_layout(VkDescriptorSetLayout layout, const VkDescriptorSetLayoutBinding* bindings,
                                  uint32_t count);
 /* The caller owns maps through pipeline creation. Attach mapping info to the corresponding shader stage. */
+/* cb_addr: the constant buffer slots mapped by address (vk_cb_addr_mask), which the writes must take the same way */
 uint32_t vk_descriptor_heaps_mapping(VkDescriptorSetLayout layout, uint32_t set,
-                                      VkDescriptorSetAndBindingMappingEXT* maps, uint32_t capacity);
+                                      VkDescriptorSetAndBindingMappingEXT* maps, uint32_t capacity, uint32_t cb_addr);
 VkDescriptorSet vk_descriptor_heaps_write(VkDescriptorSetLayout layout, uint32_t count,
-                                           const VkWriteDescriptorSet* writes);
+                                           const VkWriteDescriptorSet* writes, uint32_t cb_addr);
 void vk_descriptor_heaps_bind(VkCommandBuffer cb, uint32_t first, uint32_t count, const VkDescriptorSet* sets);
 /* Writes returnNULL on exhaustion. The renderer retries the whole draw with its legacy backend; no write submits.
    Reset only after the slot's GPU work completes and its command pool is reset. */
@@ -355,6 +372,7 @@ typedef struct {
     uint64_t image_requests, image_driver_calls, image_hits, image_evictions, image_lookups, image_replicas;
     uint64_t sampler_requests, sampler_driver_calls, sampler_hits, sampler_evictions, sampler_lookups, sampler_replicas;
     uint64_t address_queries, peak_used_bytes;
+    uint64_t cb_addresses; /* constant buffers written by their address, with no descriptor (vk_cb_addr_mask) */
     uint64_t arena_allocated_bytes, cache_allocated_bytes, reserved_bytes, resource_range_bytes, sampler_range_bytes;
     uint64_t buffer_native_calls; /* API invocations; buffer_driver_calls remains encoded-element count. */
     /* The lasting part: descriptors found there, made there, forgotten with their object, given back once no
