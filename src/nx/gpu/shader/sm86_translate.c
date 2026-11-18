@@ -49,6 +49,15 @@ typedef struct {
     u32 nmat;        /* the matrices, one for each M block */
     u32 mat[2];
 } CoopAcc;
+/* the jump table of a BRX, as brx_resolve found it: the instructions that its entries name. state is 0 before the
+   search, 1 when count entries were found (in targets, malloc'd), and 2 when no table reaches the BRX on every path
+   (c->failed says why). The targets are not kept by instruction: the code window is 0x80000 bytes, so 64 words for
+   each of its 32768 instructions would be 8.6 MB of zeroing for a program that may have no BRX at all */
+typedef struct {
+    u32 count;
+    u32* targets;
+    u8 state;
+} BrxTable;
 typedef struct {
     SpvEmitter e;
     ShaderInfo* si;
@@ -131,6 +140,8 @@ typedef struct {
     u32 pairs[8][2], npairs; /* the two constant buffer bases of an address that adds both (track_step) */
     u32* jump_first; /* by instruction, the first of the BRAs and BRX that go to it in jump_from (n + 1 words), and */
     u32* jump_from;  /* those instructions: made the first time reg_const_at needs them (flow_sources) */
+    BrxTable* brx_table; /* by instruction, the jump table that brx_resolve found for its BRX */
+    int brx_resolved;    /* brx_resolve has looked for the tables */
     u32 cur;         /* the instruction being written */
     u32 branch_cond; /* the condition of the BRA that ends the body before, 0 for always */
     u32 branch_target; /* the instruction that the BRX which ends the body before goes to */
@@ -2186,18 +2197,21 @@ static int falls_through(const Sm86Insn* in) {
     return !((in->op == SM86_BRA || is_brx(in->op) || in->op == SM86_EXIT) && sm86_always(in)) && in->op != SM86_RET;
 }
 static u32 brx_targets(Ctx* c, u32 i, u32* targets, u32 max);
+static u32 brx_targets_scan(Ctx* c, u32 i, u32* targets, u32 max);
+static int brx_resolve(Ctx* c);
 /* the instructions that jump to each one, build_structure's edges: a BRA's target, a BRX's cases. Returns 0 when it
    can't be made */
 static int flow_sources(Ctx* c) {
     if (c->jump_first) return 1;
-    u32 n = c->n, total = 0, t[64];
+    if (!brx_resolve(c)) return 0;
+    u32 n = c->n, total = 0;
     for (u32 i = 0; i < n; i++) {
         const Sm86Insn* in = &c->in[i];
         if (sm86_never(in)) continue;
         if (in->op == SM86_BRA)
             total++;
         else if (is_brx(in->op))
-            total += brx_targets(c, i, t, 64);
+            total += c->brx_table[i].count;
     }
     u32* first = calloc((size_t)n + 1 + total + 1, sizeof *first);
     if (!first) return 0;
@@ -2211,17 +2225,23 @@ static int flow_sources(Ctx* c) {
         for (u32 i = 0; i < n; i++) {
             const Sm86Insn* in = &c->in[i];
             if (sm86_never(in)) continue;
-            u32 count = 0;
-            if (in->op == SM86_BRA)
-                t[count++] = sm86_branch_target(in, i);
-            else if (is_brx(in->op))
-                count = brx_targets(c, i, t, 64);
-            for (u32 k = 0; k < count; k++) {
-                if (t[k] >= n) continue;
+            if (in->op == SM86_BRA) {
+                u32 t = sm86_branch_target(in, i);
+                if (t >= n) continue;
                 if (pass == 0)
-                    first[t[k] + 1]++;
+                    first[t + 1]++;
                 else
-                    from[first[t[k]] + fill[t[k]]++] = i;
+                    from[first[t] + fill[t]++] = i;
+            } else if (is_brx(in->op)) {
+                const BrxTable* table = &c->brx_table[i];
+                for (u32 k = 0; k < table->count; k++) {
+                    u32 t = table->targets[k];
+                    if (t >= n) continue;
+                    if (pass == 0)
+                        first[t + 1]++;
+                    else
+                        from[first[t] + fill[t]++] = i;
+                }
             }
             if (pass == 0 && i + 1 == n)
                 for (u32 k = 0; k < n; k++) first[k + 1] += first[k];
@@ -5965,27 +5985,32 @@ static int writer_before(Ctx* c, u32 k, u32 r) {
     }
     return -1;
 }
-/* The entries of the jump table that the LDC at k indexes with register r, as ptxas bounds a switch's index: an
-   unsigned IMNMX with an immediate, then an IMAD by 4 or a 32-bit SHF.L by 2 into r (index = min(x, last) * 4). 0 when
-   it isn't that */
-static u32 jump_table_entries(Ctx* c, u32 k, u32 r) {
-    int m = writer_before(c, k, r);
-    if (m < 0) return 0;
-    const Sm86Insn* mul = &c->in[m];
+/* whether the instruction is ptxas's times-4 of a switch index, into its own register: an IMAD by 4 or a 32-bit
+   SHF.L by 2, of a register, with no guard */
+static int jump_table_times_4(const Sm86Insn* mul) {
     int times_4 = (mul->op == SM86_IMAD && !sm86_field(mul, 74, 1) && mul->b.value == 4) ||
                   (mul->op == SM86_SHF && !sm86_field(mul, 76, 1) && !sm86_field(mul, 80, 1) &&
                    sm86_field(mul, 73, 2) >= 2 && mul->b.value == 2);
-    if (!times_4 || mul->pred != SM86_PT || mul->pred_not || mul->a.kind != SM86_SRC_REG ||
-        mul->b.kind != SM86_SRC_IMM || mul->c.kind != SM86_SRC_REG || mul->c.reg != SM86_RZ)
-        return 0;
-    int b = writer_before(c, (u32)m, mul->a.reg);
-    if (b < 0) return 0;
-    const Sm86Insn* bound = &c->in[b];
+    return times_4 && mul->pred == SM86_PT && !mul->pred_not && mul->a.kind == SM86_SRC_REG &&
+           mul->b.kind == SM86_SRC_IMM && mul->c.kind == SM86_SRC_REG && mul->c.reg == SM86_RZ;
+}
+/* the entries that ptxas's bound of a switch's index names, 0 when the instruction isn't that: an unsigned IMNMX with
+   an immediate */
+static u32 jump_table_bound_entries(const Sm86Insn* bound) {
     if (bound->op != SM86_IMNMX || bound->pred != SM86_PT || bound->pred_not || sm86_field(bound, 73, 1) ||
         sm86_field(bound, 87, 3) != SM86_PT || sm86_field(bound, 90, 1) || bound->b.kind != SM86_SRC_IMM ||
         bound->b.value >= 64)
         return 0;
     return bound->b.value + 1;
+}
+/* The entries of the jump table that the LDC at k indexes with register r, as ptxas bounds a switch's index: an
+   unsigned IMNMX with an immediate, then an IMAD by 4 or a 32-bit SHF.L by 2 into r (index = min(x, last) * 4). 0 when
+   it isn't that in the sixteen instructions before the load */
+static u32 jump_table_entries(Ctx* c, u32 k, u32 r) {
+    int m = writer_before(c, k, r);
+    if (m < 0 || !jump_table_times_4(&c->in[m])) return 0;
+    int b = writer_before(c, (u32)m, c->in[m].a.reg);
+    return b < 0 ? 0 : jump_table_bound_entries(&c->in[b]);
 }
 /* whether the instruction writes uniform register r: the uniform ALU's, and the loads and moves into one */
 static int writes_uniform(const Sm86Insn* w, u32 r) {
@@ -5994,6 +6019,14 @@ static int writes_uniform(const Sm86Insn* w, u32 r) {
     return (w->op == SM86_ULDC || w->op == SM86_ULDC_IDX || w->op == SM86_ULDCG || w->op == SM86_S2UR ||
             w->op == SM86_R2UR || w->op == SM86_UVOTE) &&
            sm86_field(w, 16, 6) == r;
+}
+/* writes_uniform, with the high word of a 64-bit load as a write of its own: a BRX's index register may be that word */
+static int writes_uniform_word(const Sm86Insn* w, u32 r) {
+    if (w->op == SM86_ULDC || w->op == SM86_ULDC_IDX) {
+        u32 d = sm86_field(w, 16, 6);
+        return r == d || (r == d + 1 && sm86_field(w, 73, 3) == 5 && d + 1 < SM86_URZ);
+    }
+    return writes_uniform(w, r);
 }
 /* the instruction before k, back to the last branch, that writes uniform register r: its index, or -1 */
 static int uniform_writer_before(Ctx* c, u32 k, u32 r) {
@@ -6036,14 +6069,268 @@ static u32 uniform_table_entries(Ctx* c, u32 k, u32 r) {
     }
     return 0;
 }
-/* The targets of the BRX at i: the jump table of the LDC before it that writes its register, read through
-   g_shader_cb_read as spirv_translate.c reads Maxwell's: as many entries as ptxas's bound on the index says, else up
-   to the first word that is no target. Two tables one after the other were read as one, and gave a BRX the other's
-   targets as its own. The count, or 0 */
-static u32 brx_targets(Ctx* c, u32 i, u32* targets, u32 max) {
+/* The LDC or ULDC.IDX of the table of the BRX at i, from the scan of its block: its index, or -1 */
+static int brx_scan_load(Ctx* c, u32 i) {
     const Sm86Insn* in = &c->in[i];
     int uniform = in->op == SM86_BRXU;
-    u32 reg = sm86_field(in, 24, uniform ? 6 : 8), bias = brx_bias(in, i);
+    u32 reg = sm86_field(in, 24, uniform ? 6 : 8);
+    for (u32 k = i; k-- > 0 && k + 32 > i;) {
+        const Sm86Insn* w = &c->in[k];
+        if (w->op == SM86_BRA || w->op == SM86_EXIT || is_brx(w->op)) break;
+        if (uniform) { /* BRXU: the ULDC.IDX that writes its uniform register */
+            if (!writes_uniform(w, reg)) continue;
+            if (w->op != SM86_ULDC_IDX || sm86_field(w, 73, 3) != 4) break;
+        } else {
+            if (w->dst != reg || sm86_ops[w->op].kind == SM86_K_UALU) continue;
+            if (w->op != SM86_LDC || sm86_field(w, 73, 3) != 4 || sm86_field(w, 78, 2)) break;
+        }
+        return (int)k;
+    }
+    return -1;
+}
+static int brx_load(Ctx* c, u32 i, const u32* first, const u32* from);
+/* The entries of the table of the load at k that the next table in its bank starts, as ptxas puts adjacent switches'
+   tables one after another: an unclamped read would take that table's words as its own (shader_brx_targets clamps
+   Maxwell's so). A later table is the one whose load reaches its BRX over the flow, or, without the flow, the scan of
+   its block. max when no other table is found */
+static u32 brx_table_limit(Ctx* c, u32 k, u32 max, const u32* first, const u32* from) {
+    const Sm86Insn* w = &c->in[k];
+    u32 bank = sm86_field(w, 54, 5), off = sm86_field(w, 38, 16), limit = max;
+    for (u32 i = 0; i < c->n; i++) {
+        if (!is_brx(c->in[i].op) || sm86_never(&c->in[i])) continue;
+        int other = first ? brx_load(c, i, first, from) : brx_scan_load(c, i);
+        if (other < 0 || (u32)other == k) continue;
+        const Sm86Insn* o = &c->in[other];
+        u32 ooff = sm86_field(o, 38, 16), words;
+        if (sm86_field(o, 54, 5) != bank || ooff < off + 4) continue;
+        words = (ooff - off) / 4;
+        if (words < limit) limit = words;
+    }
+    return limit;
+}
+/* The targets that the jump table of the load at k names, read through g_shader_cb_read as spirv_translate.c reads
+   Maxwell's: as many entries as ptxas's bound on the index says, else up to the first word that is no target, or the
+   next table in the bank. Two tables one after the other were read as one, and gave a BRX the other's targets as its
+   own. The count, or 0 */
+static u32 brx_read_words(Ctx* c, u32 k, u32 bias, u32 entries, u32* targets, u32 max, const u32* first,
+                          const u32* from) {
+    const Sm86Insn* w = &c->in[k];
+    u32 bank = sm86_field(w, 54, 5), off = sm86_field(w, 38, 16), count = 0;
+    if (entries > max) {
+        fail(c, "BRX with a jump table of %u entries", entries);
+        return 0;
+    }
+    u32 limit = entries ? entries : brx_table_limit(c, k, max, first, from);
+    for (; count < limit; count++) {
+        u32 entry;
+        if (!g_shader_cb_read(bank, off + 4 * count, &entry)) break;
+        u32 at = entry + bias;
+        if ((at & 15) || at / 16 >= c->n) break;
+        targets[count] = at / 16;
+    }
+    if (entries && count < entries) {
+        fail(c, "BRX whose jump table in c[%u][0x%x] has %u targets of its %u entries", bank, off, count, entries);
+        return 0;
+    }
+    if (!count) {
+        u32 first = 0;
+        int read = g_shader_cb_read(bank, off, &first);
+        fail(c, "BRX with no jump table in c[%u][0x%x] (%s 0x%x)", bank, off, read ? "word" : "no word, unread", first);
+    }
+    return count;
+}
+/* brx_read_words, with the entries that the scan of the load's block gives */
+static u32 brx_read_table(Ctx* c, u32 k, u32 bias, u32* targets, u32 max) {
+    const Sm86Insn* w = &c->in[k];
+    u32 entries = w->op == SM86_ULDC_IDX ? uniform_table_entries(c, k, sm86_field(w, 24, 6))
+                                         : jump_table_entries(c, k, sm86_field(w, 24, 8));
+    return brx_read_words(c, k, bias, entries, targets, max, NULL, NULL);
+}
+/* The predecessors of each instruction from the BRAs and the jump tables that brx_resolve has found: first[k] to
+   first[k + 1] index from[]. first is malloc'd (n + 1 + the edges words, from after them), NULL when memory runs out */
+static u32* brx_preds(Ctx* c, u32** from_out) {
+    u32 n = c->n, total = 0;
+    for (u32 i = 0; i < n; i++) {
+        const Sm86Insn* in = &c->in[i];
+        if (sm86_never(in)) continue;
+        if (in->op == SM86_BRA)
+            total++;
+        else if (is_brx(in->op))
+            total += c->brx_table[i].count;
+    }
+    u32* first = calloc((size_t)n + 1 + total + 1, sizeof *first);
+    if (!first) return NULL;
+    u32 *from = first + n + 1, *fill = calloc((size_t)n + 1, sizeof *fill);
+    if (!fill) {
+        free(first);
+        return NULL;
+    }
+    for (int pass = 0; pass < 2; pass++)
+        for (u32 i = 0; i < n; i++) {
+            const Sm86Insn* in = &c->in[i];
+            if (sm86_never(in)) continue;
+            if (in->op == SM86_BRA) {
+                u32 t = sm86_branch_target(in, i);
+                if (t >= n) continue;
+                if (pass == 0)
+                    first[t + 1]++;
+                else
+                    from[first[t] + fill[t]++] = i;
+            } else if (is_brx(in->op)) {
+                const BrxTable* table = &c->brx_table[i];
+                for (u32 k = 0; k < table->count; k++) {
+                    u32 t = table->targets[k];
+                    if (t >= n) continue;
+                    if (pass == 0)
+                        first[t + 1]++;
+                    else
+                        from[first[t] + fill[t]++] = i;
+                }
+            }
+            if (pass == 0 && i + 1 == n)
+                for (u32 k = 0; k < n; k++) first[k + 1] += first[k];
+        }
+    free(fill);
+    *from_out = from;
+    return first;
+}
+/* the instructions before k on each path, walked back over the flow that brx_preds holds: k - 1 when it goes on to
+   k, and the jumps to k */
+#define BRX_PREDS(k)                                                                                                   \
+    do {                                                                                                               \
+        if ((k) == 0) ok = 0; /* the program's start: r is not written on this path */                                 \
+        if ((k) > 0 && falls_through(&c->in[(k) - 1]) && !seen[(k) - 1]) seen[(k) - 1] = 1, stack[top++] = (k) - 1;    \
+        for (u32 j = first[k]; j < first[(k) + 1]; j++)                                                                \
+            if (!seen[from[j]]) seen[from[j]] = 1, stack[top++] = from[j];                                             \
+    } while (0)
+/* The one instruction that writes register r of the regular file, or of the uniform one, that reaches instruction i on
+   every path there, without a guard: its index, or -1 when that can't be shown */
+static int brx_writer(Ctx* c, const u32* first, const u32* from, u32 i, u32 r, int uniform) {
+    u32 n = c->n, *stack = malloc(((size_t)n + 1) * sizeof *stack), top = 0;
+    u8* seen = calloc((size_t)n + 1, 1);
+    if (!stack || !seen) {
+        free(stack);
+        free(seen);
+        return -2; /* out of memory, not a value the flow can't name */
+    }
+    int ok = 1, found = -1;
+    BRX_PREDS(i);
+    while (ok && top) {
+        u32 k = stack[--top];
+        const Sm86Insn* in = &c->in[k];
+        if (!(uniform ? writes_uniform_word(in, r) : writes_word(in, r))) {
+            BRX_PREDS(k);
+            continue;
+        }
+        if (in->pred != SM86_PT || in->pred_not || (found >= 0 && (u32)found != k))
+            ok = 0;
+        else
+            found = (int)k;
+    }
+    free(stack);
+    free(seen);
+    return ok ? found : -1;
+}
+#undef BRX_PREDS
+/* The load whose table the BRX at i indexes: the instruction that writes the branch's register on every path, or the
+   load behind a chain of moves of that value. k, or -1 when no LDC, or ULDC.IDX of a uniform one, reaches it */
+static int brx_load(Ctx* c, u32 i, const u32* first, const u32* from) {
+    const Sm86Insn* brx = &c->in[i];
+    int uniform = brx->op == SM86_BRXU;
+    u32 r = sm86_field(brx, 24, uniform ? 6 : 8), at = i;
+    for (u32 depth = 0; depth < 8; depth++) {
+        int k = brx_writer(c, first, from, at, r, uniform);
+        if (k == -2) return -2;
+        if (k < 0) return -1;
+        const Sm86Insn* w = &c->in[k];
+        if (uniform ? (w->op == SM86_ULDC_IDX && sm86_field(w, 73, 3) == 4)
+                    : (w->op == SM86_LDC && sm86_field(w, 73, 3) == 4 && !sm86_field(w, 78, 2)))
+            return k;
+        /* a move of the value, whose source's writer is then the load: what ptxas leaves between the two */
+        if (w->op != SM86_MOV && w->op != SM86_UMOV) return -1;
+        const Sm86Src* s = &w->b;
+        if (s->neg || s->abs) return -1;
+        if (s->kind == SM86_SRC_REG && s->reg < SM86_RZ)
+            uniform = 0, r = s->reg;
+        else if (s->kind == SM86_SRC_UREG && s->reg < SM86_URZ)
+            uniform = 1, r = s->reg;
+        else
+            return -1;
+        at = (u32)k;
+    }
+    return -1;
+}
+/* The entries of the table of the load at k, as ptxas bounds the index that reaches it: the writer of the load's index
+   register on every path, then the writer of that instruction's source, rather than the sixteen instructions before
+   the load. 0 when neither the flow nor the scan finds such a bound, and the table is then read until a word is no
+   target */
+static u32 brx_entries_flow(Ctx* c, const u32* first, const u32* from, u32 k) {
+    const Sm86Insn* w = &c->in[k];
+    int uniform = w->op == SM86_ULDC_IDX;
+    u32 reg = sm86_field(w, 24, uniform ? 6 : 8);
+    if (uniform) return uniform_table_entries(c, k, reg);
+    u32 entries = 0;
+    int m = brx_writer(c, first, from, k, reg, 0);
+    if (m >= 0 && jump_table_times_4(&c->in[m])) {
+        int b = brx_writer(c, first, from, (u32)m, c->in[m].a.reg, 0);
+        if (b >= 0) entries = jump_table_bound_entries(&c->in[b]);
+    }
+    return entries ? entries : jump_table_entries(c, k, reg); /* the bound beside the load, when the flow has none */
+}
+/* The jump tables of the program's BRXs, found by the writer of each branch's register that reaches it rather than by
+   a scan of the 32 instructions before it: a table loaded far before its BRX, or across a branch, is the one whose
+   load reaches it on every path. A table is found from the program's start on, and only before the first BRX whose
+   table isn't: past that one, a path may arrive from anywhere. A BRX that the flow can't explain is refused, not given
+   the table of one of its paths (a switch on another path's table jumps where the console does not). */
+static int brx_resolve(Ctx* c) {
+    if (c->brx_resolved) return 1;
+    c->brx_table = calloc(c->n ? c->n : 1, sizeof *c->brx_table);
+    if (!c->brx_table) return 0;
+    c->brx_resolved = 1;
+    for (;;) {
+        u32 at = c->n;
+        for (u32 i = 0; i < c->n; i++)
+            if (is_brx(c->in[i].op) && !sm86_never(&c->in[i]) && !c->brx_table[i].state) {
+                at = i;
+                break;
+            }
+        if (at == c->n) break;
+        u32* from = NULL;
+        u32* first = brx_preds(c, &from);
+        if (!first) return 0; /* out of memory */
+        int load = brx_load(c, at, first, from);
+        u32 entries = load >= 0 && g_shader_cb_read ? brx_entries_flow(c, first, from, (u32)load) : 0;
+        if (load == -2) {
+            free(first);
+            return 0; /* out of memory */
+        }
+        u32 words[64], count = 0;
+        if (load >= 0 && g_shader_cb_read)
+            count = brx_read_words(c, (u32)load, brx_bias(&c->in[at], at), entries, words, 64, first, from);
+        free(first);
+        if (!count) {
+            /* the flow names no single table load: the scan of the block gives the reason when that is the one, and
+               the scan's own table is not used, which may be another path's */
+            u32 scan[64];
+            if (brx_targets_scan(c, at, scan, 64) && !c->failed)
+                fail(c, "BRX whose jump table load doesn't reach it on every path");
+            c->brx_table[at].state = 2;
+            return 1;
+        }
+        u32* targets = malloc((size_t)count * sizeof *targets);
+        if (!targets) return 0; /* out of memory */
+        memcpy(targets, words, (size_t)count * sizeof *targets);
+        c->brx_table[at].targets = targets;
+        c->brx_table[at].count = count;
+        c->brx_table[at].state = 1;
+    }
+    return 1;
+}
+/* The targets of the BRX at i from a scan of the 32 instructions before it, as brx_targets found them before the flow
+   was searched: the jump table of the LDC that writes its register, read as brx_read_table does. The count, or 0. It
+   gives brx_resolve the reason that a BRX has no table, and is the answer for a context that was never resolved */
+static u32 brx_targets_scan(Ctx* c, u32 i, u32* targets, u32 max) {
+    const Sm86Insn* in = &c->in[i];
     if (!(in->pred == SM86_PT && !in->pred_not)) {
         fail(c, "BRX on a predicate");
         return 0;
@@ -6052,45 +6339,21 @@ static u32 brx_targets(Ctx* c, u32 i, u32* targets, u32 max) {
         fail(c, "BRX without a reader of constant buffers");
         return 0;
     }
-    for (u32 k = i; k-- > 0 && k + 32 > i;) {
-        const Sm86Insn* w = &c->in[k];
-        if (w->op == SM86_BRA || w->op == SM86_EXIT || is_brx(w->op)) break;
-        u32 entries;
-        if (uniform) { /* BRXU: the ULDC.IDX that writes its uniform register */
-            if (!writes_uniform(w, reg)) continue;
-            if (w->op != SM86_ULDC_IDX || sm86_field(w, 73, 3) != 4) break;
-            entries = uniform_table_entries(c, k, sm86_field(w, 24, 6));
-        } else {
-            if (w->dst != reg || sm86_ops[w->op].kind == SM86_K_UALU) continue;
-            if (w->op != SM86_LDC || sm86_field(w, 73, 3) != 4 || sm86_field(w, 78, 2)) break;
-            entries = jump_table_entries(c, k, sm86_field(w, 24, 8));
-        }
-        u32 bank = sm86_field(w, 54, 5), off = sm86_field(w, 38, 16), count = 0;
-        if (entries > max) {
-            fail(c, "BRX with a jump table of %u entries", entries);
-            return 0;
-        }
-        for (; count < (entries ? entries : max); count++) {
-            u32 entry;
-            if (!g_shader_cb_read(bank, off + 4 * count, &entry)) break;
-            u32 at = entry + bias;
-            if ((at & 15) || at / 16 >= c->n) break;
-            targets[count] = at / 16;
-        }
-        if (entries && count < entries) {
-            fail(c, "BRX whose jump table in c[%u][0x%x] has %u targets of its %u entries", bank, off, count, entries);
-            return 0;
-        }
-        if (!count) {
-            u32 first = 0;
-            int read = g_shader_cb_read(bank, off, &first);
-            fail(c, "BRX with no jump table in c[%u][0x%x] (%s 0x%x)", bank, off, read ? "word" : "no word, unread",
-                 first);
-        }
-        return count;
-    }
+    int k = brx_scan_load(c, i);
+    if (k >= 0) return brx_read_table(c, (u32)k, brx_bias(in, i), targets, max);
     fail(c, "BRX without the LDC of its jump table");
     return 0;
+}
+/* The targets of the BRX at i: the table that brx_resolve found, else the scan of its block, which is only for a
+   context that was never resolved (c->failed is already set when the flow refused a table) */
+static u32 brx_targets(Ctx* c, u32 i, u32* targets, u32 max) {
+    if (c->brx_table && c->brx_table[i].state) {
+        u32 count = c->brx_table[i].count;
+        if (!count || count > max) return 0;
+        memcpy(targets, c->brx_table[i].targets, (size_t)count * sizeof *targets);
+        return count;
+    }
+    return brx_targets_scan(c, i, targets, max);
 }
 
 /* the blocks that BRA, BRX and EXIT end, and their structure */
@@ -7287,6 +7550,10 @@ u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, Sha
     free(c->mh_dep);
     free(c->mh_new);
     free(c->jump_first);
+    if (c->brx_table) {
+        for (u32 i = 0; i < c->n; i++) free(c->brx_table[i].targets);
+        free(c->brx_table);
+    }
     free(insn);
     free(words);
     free(c);

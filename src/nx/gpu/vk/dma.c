@@ -4,9 +4,10 @@
    (docs/layers/gpu/ownership.md). The destination's bytes the lines lie in (a pitch linear side's lines, a block linear one's
    tiles: the blocks of the lines' GOB columns, a run a row of blocks) are copied as they are now (guest bytes, what
    the GPU holds of them, render targets drawn over them) into a buffer of their own; the source's span is staged the
-   same way (or from the copy made at submission, or the buffer cache's). Block linear sides' GOB columns are taken
-   apart into rows (blocklinear.comp) and the lines go between rows: copied, or remapped component by component
-   (texconv.comp), exactly a line's bytes each, so what surrounds them keeps its bytes. The destination's rows go back
+   same way (or from the copy made at submission, or the buffer cache's), or its lines alone, packed, where they are
+   far apart (gpu_dma_sparse). Block linear sides' GOB columns are taken apart into rows (blocklinear.comp) and the
+   lines go between rows: copied, or remapped component by component (texconv.comp), exactly a line's bytes each, so
+   what surrounds them keeps its bytes. The destination's rows go back
    into its layout, and the buffer is published over the runs it was read from.
    A launch bigger than one allocation, or whose scratch is bigger than a quarter of one, goes in bands of lines, each
    a copy of its own (dma_bands), and the frame may end between two bands, as at a draw's start (vk_frame_check).
@@ -139,17 +140,21 @@ static u64 block_bytes(const GpuDmaSide* s) { return 512ull << (s->bh + s->bd); 
    in. The scratch: the source's rows (block linear) at 0, the destination's (block linear) at at_b and the remapped
    lines at at_c */
 typedef struct {
+    int sparse; /* a pitch linear source read line by line, packed (gpu_dma_sparse): slo 0, sspan its lines' bytes */
     u32 sv, dv; /* the lines in each side: a block linear side's rows past its surface aren't */
     u32 sx0, sgobs, dx0, dgobs, drows, druns;
     u64 slo, sspan, stiles, dlo, dlen, drun, dstride, at_b, at_c, scratch;
 } DmaNeeds;
-static DmaNeeds dma_needs(const GpuDmaOp* o) {
+static DmaNeeds dma_needs(const GpuDmaOp* o, int sparse) {
     DmaNeeds n = {0};
     u32 lines = o->lines, pc = (u32)up(o->line_out, 4);
     u64 hi;
     n.sv = o->src.bl ? side_rows(&o->src, lines) : lines;
     n.dv = o->dst.bl ? side_rows(&o->dst, lines) : lines;
-    if (!o->fill && !o->src.bl) { /* from its lowest line: the last one when the pitch steps down */
+    if (!o->fill && !o->src.bl && sparse) { /* its lines alone, one after another */
+        n.sparse = 1;
+        n.sspan = (u64)lines * o->line_in;
+    } else if (!o->fill && !o->src.bl) { /* from its lowest line: the last one when the pitch steps down */
         n.sspan = gpu_dma_span(&o->src, lines, o->line_in);
         n.slo = (u64)gpu_dma_low(&o->src, lines);
     } else if (!o->fill) { /* its columns even with no line in the surface: those read as zeros, as wide */
@@ -234,6 +239,11 @@ static int dma(const GpuDmaOp* o, const DmaNeeds* need, u64 snap_skip) {
         } else if (o->snap) { /* the same in the submitting thread's memory */
             u8* p = vk_stage(sspan, vk_stage_align(), &sb, &sat);
             if ((got = p != NULL)) memcpy(p, o->snap, sspan);
+        } else if (need->sparse) { /* each line as the GPU sees it, packed */
+            got = vk_stage_device(sspan, vk_stage_align(), &sb, &sat);
+            for (u32 k = 0; got && k < lines; k++)
+                got = vk_guest_read_seen(o->src.addr + (u64)((i64)k * gpu_dma_pitch(&o->src)), o->line_in, sb,
+                                         sat + (u64)k * o->line_in);
         } else if (!vk_rt_over(sgva, sspan)) {
             /* the buffer cache's copy, made again only when its bytes change: one game's menu copied the same
                1080p surface from guest memory twice a frame, 17 MB a frame over PCIe */
@@ -255,7 +265,7 @@ static int dma(const GpuDmaOp* o, const DmaNeeds* need, u64 snap_skip) {
     /* the lines in: the source's rows (block linear: their GOB columns taken apart, rows past its surface zero) */
     VkBuffer ib = sb;
     u64 iat = sat - need->slo; /* line 0, above the lowest when the pitch steps down */
-    i64 ip = gpu_dma_pitch(&o->src);
+    i64 ip = need->sparse ? (i64)o->line_in : gpu_dma_pitch(&o->src);
     int ok = 1;
     if (!o->fill && o->src.bl) {
         VkBlMove m = {pa, o->src.h, o->src.bh, o->src.bd, o->src.oy, sv, o->src.z, 1, pa, (o->src.wb + 63) / 64};
@@ -361,6 +371,14 @@ u32 vk_band(const VkBands* b, u32 y, u32 left, u64* most) {
 static u64 band_low(const GpuDmaSide* s, u32 all, u32 y, u32 lines) {
     return (u64)(y * gpu_dma_pitch(s) + gpu_dma_low(s, lines) - gpu_dma_low(s, all));
 }
+/* where lines [y, y + lines) of o's source start in its read: packed when sparse, else from its span's lowest byte */
+static u64 band_read(const GpuDmaOp* o, int sparse, u32 y, u32 lines) {
+    return sparse ? (u64)y * o->line_in : band_low(&o->src, o->lines, y, lines);
+}
+/* whether o's source is read line by line: the whole launch's lines decide, for each of its bands */
+static int src_sparse(const GpuDmaOp* o) {
+    return !o->fill && !o->src.bl && gpu_dma_sparse(&o->src, o->lines, o->line_in);
+}
 static GpuDmaOp dma_band(const GpuDmaOp* o, u32 y, u32 lines) {
     GpuDmaOp b = *o;
     b.lines = lines;
@@ -372,7 +390,7 @@ static GpuDmaOp dma_band(const GpuDmaOp* o, u32 y, u32 lines) {
         b.dst.oy += y;
     else
         b.dst.addr += (u64)(y * gpu_dma_pitch(&o->dst));
-    if (o->snap) b.snap = o->snap + band_low(&o->src, o->lines, y, lines);
+    if (o->snap) b.snap = o->snap + band_read(o, src_sparse(o), y, lines);
     return b;
 }
 static u64 most_of(const DmaNeeds* n) {
@@ -381,13 +399,14 @@ static u64 most_of(const DmaNeeds* n) {
 }
 static u64 dma_need(const void* user, u32 y, u32 lines) {
     GpuDmaOp b = dma_band((const GpuDmaOp*)user, y, lines);
-    DmaNeeds n = dma_needs(&b);
+    DmaNeeds n = dma_needs(&b, src_sparse((const GpuDmaOp*)user));
     return most_of(&n);
 }
 /* The scratch buffer stays as big as the most a copy asked of it, rounded up to a power of two (vk_bl_scratch): a copy
    whose scratch needs more than VK_PART_SHARE of the cap goes in bands too, each asking for that share at most */
 static int dma_bands(const GpuDmaOp* o) {
-    DmaNeeds whole = dma_needs(o);
+    int sparse = src_sparse(o);
+    DmaNeeds whole = dma_needs(o, sparse);
     VkBands bands = {g_vk.alloc_cap,
                      o->dst.bl ? 8u << o->dst.bh : 1,
                      o->dst.bl ? o->dst.oy : 0,
@@ -399,8 +418,8 @@ static int dma_bands(const GpuDmaOp* o) {
         lines = vk_band(&bands, y, o->lines - y, &most);
         GpuDmaOp b = dma_band(o, y, lines);
         if (most > bands.cap) return dma_fail(&b, "needs more than an allocation may be:", most);
-        DmaNeeds n = dma_needs(&b);
-        if (!dma(&b, &n, o->fill || o->src.bl ? 0 : band_low(&o->src, o->lines, y, lines))) return 0;
+        DmaNeeds n = dma_needs(&b, sparse);
+        if (!dma(&b, &n, o->fill || o->src.bl ? 0 : band_read(o, sparse, y, lines))) return 0;
         if (lines < o->lines) g_dma.bands++;
         if (y + lines < o->lines) vk_frame_check(); /* the next band may record in the other slot (cmd.c) */
     }

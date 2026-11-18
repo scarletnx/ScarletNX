@@ -3226,7 +3226,11 @@ static Word ushf_r(u32 ud, u32 uc, u32 shift) {
    and gives the texture's word and the sampler's index. The TEX.B takes its handle register R6 from an LDG.64 at
    [UR4 + 0x10]. A handle whose address depends on the invocation (S2R of the lane), or whose register has another
    writer on a path (a guarded MOV), is no texture (SH_PROBE_NONE), and the program translates. Variant 4 samples with
-   a TXD whose handle is in the uniform register pair (TXD_U, 0xf6c), which takes the same slot with no depth reference */
+   a TXD whose handle is in the uniform register pair (TXD_U, 0xf6c), which takes the same slot with no depth reference
+   though its bit 78, TEX's depth reference, is set. In variant 5 a TXD's fault predicate (bits 81-83) writes the P0 of
+   an ISETP before the SEL that reads it, so the handle is made with the TXD's predicate, which nothing evaluates */
+static Word isetp(u32 p, u32 q, u32 a, u32 b, u32 cmp, int is_signed, int ex, u32 low, u32 set_op, u32 acc);
+static Word sel(u32 dst, u32 a, u32 b, u32 pred);
 static void test_uniform_handle(const char* dir) {
     static const struct {
         u64 hi, lo;
@@ -3244,7 +3248,7 @@ static void test_uniform_handle(const char* dir) {
     u32 fsph[32] = {0};
     fsph[0] = sph0(2, 5);
     fsph[18] = 0xf;
-    for (u32 variant = 0; variant < 5; variant++) {
+    for (u32 variant = 0; variant < 6; variant++) {
         int txd = variant == 4, base = txd ? 0 : (int)variant; /* TXD_U's program is variant 0's */
         u8 code[16 * 20] = {0};
         u32 n = 0;
@@ -3261,6 +3265,17 @@ static void test_uniform_handle(const char* dir) {
             put(code, n++, iadd3(2, 2, 3));
         }
         if (variant == 3) put(code, n++, mov_if(2, 3, 0, 0)); /* @P0 MOV R2, R3: two writers reach the LDG */
+        if (variant == 5) { /* P0 = R2 < R3, a TXD of c[0][0x40] whose fault predicate is P0, SEL R2, R2, R3, P0 */
+            put(code, n++, isetp(0, 7, 2, 3, 1, 0, 0, 7, 0, 7));
+            Word g = {{forms[4].lo, forms[4].hi}};
+            set(&g, 10, 1, 0);
+            set(&g, 91, 1, 0);
+            set(&g, 40, 19, 0x10);
+            set(&g, 16, 8, 20); /* R20 to R23, apart from the handle's */
+            set(&g, 81, 3, 0);
+            put(code, n++, g);
+            put(code, n++, sel(2, 2, 3, 0));
+        }
         put(code, n++, shf_imm(2, 2, 5, 255, 3, 0, 0, 0)); /* SHF.L.U32 R2, R2, 5, RZ */
         put(code, n++, iadd3_imm(2, 2, 0x18));
         put(code, n++, ldg_reg_ur64(4, 2, 4, 0));
@@ -3269,6 +3284,7 @@ static void test_uniform_handle(const char* dir) {
         put(code, n++, ushf_r(9, 8, 20));
         Word t = {{forms[txd ? 4 : 0].lo, forms[txd ? 4 : 0].hi}};
         set(&t, 40, 6, 8);
+        if (txd) set(&t, 78, 1, 1);
         put(code, n++, t);
         if (variant == 1) { /* a TEX.B, its handle R6 from [UR4 + 0x10] */
             put(code, n++, ldg_uniform64(6, 4, 0x10));
@@ -3289,13 +3305,16 @@ static void test_uniform_handle(const char* dir) {
         size_t count = 0;
         u32* spv = sm86_to_spirv(code, n * 16, ST_FS, fsph, &si, &count);
         if (base >= 2) { /* no texture (SH_PROBE_NONE), the draw going on, and nothing kept to run */
-            const char* want = variant == 2 ? "made with S2R" : "has no one writer";
-            int ok = spv && si.ntex == 1 && (si.tex[0].flags & SNX_TEX_MEMORY) && si.tex[0].cbuf_off == SH_PROBE_NONE &&
-                     si.tex[0].bl2_off == SH_PROBE_NONE && si.memh_none == 1 && strstr(si.memh_why, want) &&
-                     si.nmemh == 0;
+            const char* want = variant == 2 ? "made with S2R" : variant == 5 ? "made with TXD" : "has no one writer";
+            int m = 0; /* the handle's slot: variant 5's TXD has one of its own */
+            while (m + 1 < si.ntex && !(si.tex[m].flags & SNX_TEX_MEMORY)) m++;
+            int ok = spv && si.ntex == (variant == 5 ? 2 : 1) && (si.tex[m].flags & SNX_TEX_MEMORY) &&
+                     si.tex[m].cbuf_off == SH_PROBE_NONE && si.tex[m].bl2_off == SH_PROBE_NONE && si.memh_none == 1 &&
+                     strstr(si.memh_why, want) && si.nmemh == 0;
             CHECK(ok);
             if (!ok)
-                fprintf(stderr, "memory handle, variant %u: %s, %s\n", variant, si.first_unsupported, si.memh_why);
+                fprintf(stderr, "memory handle, variant %u: %s, %s, %d textures\n", variant, si.first_unsupported,
+                        si.memh_why, si.ntex);
             if (spv) CHECK(keep_module(dir, "fs_memory_handle_none", spv, count));
             free(spv);
             continue;
@@ -5568,6 +5587,546 @@ static void test_fuse_ldsm_hmma(const char* dir) {
         CHECK(words_of[coop] == words_of[2 + coop] + 5);
 }
 
+/* ---- a jump table whose load is far from its BRX, or across a branch ---- */
+
+/* the table that the tests below read from c[1][0x10]: two targets, then a word that is no target */
+static const u32* brx_far_table;
+static u32 brx_far_words;
+static int brx_far_read(u32 idx, u32 off, u32* out) {
+    if (idx != 1 || off < 0x10 || (off - 0x10) % 4) return 0;
+    u32 k = (off - 0x10) / 4;
+    if (k >= brx_far_words) return 0;
+    *out = brx_far_table[k];
+    return 1;
+}
+/* BRX, or BRXU, of register reg at instruction ip whose offset cancels the next instruction's address: the table's
+   words are the targets' own byte addresses (brx_bias) */
+static Word brx_at(u32 ip, u32 reg, int uniform) {
+    Word x = fix(uniform ? 0x958 : 0x949);
+    set(&x, 24, uniform ? 6 : 8, reg);
+    set(&x, 34, 48, (u64)0 - (u64)(ip + 1) * 4);
+    set(&x, 87, 3, 7);
+    return x;
+}
+/* The switch's case values, in the order OpSwitch lists them */
+static u32 switch_cases(const u32* spv, size_t count, u32* values, u32 max) {
+    u32 at[4];
+    if (spv_find(spv, count, 251 /* OpSwitch */, at, 4) == 0) return 0; /* the first, for a program with two */
+    const u32* sw = spv + at[0];
+    /* the word count in the high half: the opcode's id, the selector and the default's label, then a literal and a
+       label for each case */
+    u32 words = sw[0] >> 16, pairs = words >= 3 ? (words - 3) / 2 : 0;
+    for (u32 k = 0; k < pairs && k < max; k++) values[k] = sw[3 + 2 * k];
+    return pairs < max ? pairs : max;
+}
+/* The table that a BRX loads 40 instructions before it: the scan of the 32 instructions before the BRX misses it, and
+   the load's writer reaches the branch on every path. Color 0 is R0, 1.0 from the table's first word */
+static void test_brx_far(const char* dir) {
+    enum { BRX = 41, CASE0 = 43, CASE1 = 45, END = 47 };
+    static const u32 table[3] = {CASE0 * 16, CASE1 * 16, 0xffffffffu};
+    u8 code[16 * 48] = {0};
+    Word x = fix(0xb82); /* LDC R2, c[1][R1 + 0x10] */
+    set(&x, 16, 8, 2);
+    set(&x, 24, 8, 1);
+    cbuf(&x, 1, 0x10);
+    set(&x, 73, 3, 4);
+    put(code, 0, x);
+    for (u32 k = 1; k < BRX; k++) put(code, k, mov_imm(20, 0));
+    put(code, BRX, brx_at(BRX, 2, 0));
+    put(code, BRX + 1, exit_insn());
+    for (u32 k = 0; k < 2; k++) {
+        put(code, CASE0 + 2 * k, mov_imm(0, f2u(k ? 2.0f : 1.0f)));
+        put(code, CASE0 + 2 * k + 1, exit_insn());
+    }
+    put(code, END, bra(END, END, 7, 0));
+    u32 fsph[32] = {0};
+    fsph[0] = sph0(2, 5);
+    fsph[18] = 0xf;
+    ShaderInfo si = {0};
+    size_t count = 0;
+    brx_far_table = table, brx_far_words = 3;
+    g_shader_cb_read = brx_far_read;
+    u32* spv = sm86_to_spirv(code, (END + 1) * 16, ST_FS, fsph, &si, &count);
+    g_shader_cb_read = NULL;
+    CHECK(spv != NULL);
+    if (!spv) fprintf(stderr, "far brx: %s\n", si.first_unsupported);
+    if (spv) {
+        u32 cases[4], n = switch_cases(spv, count, cases, 4);
+        CHECK(n == 2 && ((cases[0] == CASE0 && cases[1] == CASE1) || (cases[0] == CASE1 && cases[1] == CASE0)));
+        CHECK(keep_module(dir, "fs_brx_far", spv, count));
+    }
+    free(spv);
+    /* the same on the CPU: R1 is 0, so the load reads the table's first word, the first case */
+    static const u32 cb1[0x14 / 4 + 3] = {0, 0, 0, 0, CASE0 * 16, CASE1 * 16, 0xffffffffu};
+    g_shader_cb_read = brx_far_read;
+    u32 out[4];
+    int ran = run_fs_at(code, END + 1, 0, cb1, sizeof cb1 / 4, out);
+    g_shader_cb_read = NULL;
+    CHECK(ran && out[0] == f2u(1.0f));
+}
+
+/* The same table loaded before a branch, and the BRX after it: the load dominates the branch, and the scan of the
+   BRX's block stops at the branch (an EXIT in the other arm) before it reaches the load */
+static void test_brx_far_branch(const char* dir) {
+    enum { BRX = 5, CASE0 = 7, CASE1 = 9, END = 11 };
+    static const u32 table[3] = {CASE0 * 16, CASE1 * 16, 0xffffffffu};
+    u8 code[16 * 12] = {0};
+    Word x = fix(0xb82); /* LDC R2, c[1][R1 + 0x10] */
+    set(&x, 16, 8, 2);
+    set(&x, 24, 8, 1);
+    cbuf(&x, 1, 0x10);
+    set(&x, 73, 3, 4);
+    put(code, 0, x);
+    put(code, 1, setp_const(0, 1)); /* P0 true */
+    put(code, 2, bra(2, BRX, 0, 0));
+    put(code, 3, exit_insn());
+    put(code, 4, exit_insn());
+    put(code, BRX, brx_at(BRX, 2, 0));
+    put(code, BRX + 1, exit_insn());
+    for (u32 k = 0; k < 2; k++) {
+        put(code, CASE0 + 2 * k, mov_imm(0, f2u(k ? 2.0f : 1.0f)));
+        put(code, CASE0 + 2 * k + 1, exit_insn());
+    }
+    put(code, END, bra(END, END, 7, 0));
+    u32 fsph[32] = {0};
+    fsph[0] = sph0(2, 5);
+    fsph[18] = 0xf;
+    ShaderInfo si = {0};
+    size_t count = 0;
+    brx_far_table = table, brx_far_words = 3;
+    g_shader_cb_read = brx_far_read;
+    u32* spv = sm86_to_spirv(code, (END + 1) * 16, ST_FS, fsph, &si, &count);
+    g_shader_cb_read = NULL;
+    CHECK(spv != NULL);
+    if (!spv) fprintf(stderr, "far brx across a branch: %s\n", si.first_unsupported);
+    if (spv) {
+        u32 cases[4], n = switch_cases(spv, count, cases, 4);
+        CHECK(n == 2 && ((cases[0] == CASE0 && cases[1] == CASE1) || (cases[0] == CASE1 && cases[1] == CASE0)));
+        CHECK(keep_module(dir, "fs_brx_far_branch", spv, count));
+    }
+    free(spv);
+}
+
+/* A move of the loaded value between the table and the branch: the BRX reads R3, which the MOV at 31 copies from R2,
+   the LDC at 0's register. The scan of the BRX's block finds the MOV and stops there */
+static void test_brx_far_move(const char* dir) {
+    enum { MOV_AT = 31, BRX = 41, CASE0 = 43, CASE1 = 45, END = 47 };
+    static const u32 table[3] = {CASE0 * 16, CASE1 * 16, 0xffffffffu};
+    u8 code[16 * 48] = {0};
+    Word x = fix(0xb82); /* LDC R2, c[1][R1 + 0x10] */
+    set(&x, 16, 8, 2);
+    set(&x, 24, 8, 1);
+    cbuf(&x, 1, 0x10);
+    set(&x, 73, 3, 4);
+    put(code, 0, x);
+    for (u32 k = 1; k < BRX; k++) put(code, k, mov_imm(20, 0));
+    put(code, MOV_AT, mov_if(3, 2, 7, 0)); /* MOV R3, R2 */
+    put(code, BRX, brx_at(BRX, 3, 0));
+    put(code, BRX + 1, exit_insn());
+    for (u32 k = 0; k < 2; k++) {
+        put(code, CASE0 + 2 * k, mov_imm(0, f2u(k ? 2.0f : 1.0f)));
+        put(code, CASE0 + 2 * k + 1, exit_insn());
+    }
+    put(code, END, bra(END, END, 7, 0));
+    u32 fsph[32] = {0};
+    fsph[0] = sph0(2, 5);
+    fsph[18] = 0xf;
+    ShaderInfo si = {0};
+    size_t count = 0;
+    brx_far_table = table, brx_far_words = 3;
+    g_shader_cb_read = brx_far_read;
+    u32* spv = sm86_to_spirv(code, (END + 1) * 16, ST_FS, fsph, &si, &count);
+    g_shader_cb_read = NULL;
+    CHECK(spv != NULL);
+    if (!spv) fprintf(stderr, "far brx behind a move: %s\n", si.first_unsupported);
+    if (spv) {
+        u32 cases[4], n = switch_cases(spv, count, cases, 4);
+        CHECK(n == 2 && ((cases[0] == CASE0 && cases[1] == CASE1) || (cases[0] == CASE1 && cases[1] == CASE0)));
+        CHECK(keep_module(dir, "fs_brx_far_move", spv, count));
+    }
+    free(spv);
+}
+
+/* Two far tables: the second BRX is only reached through the first's second case, so its flow has the first's edges */
+static int brx_chain_read(u32 idx, u32 off, u32* out) {
+    static const u32 first[3] = {43 * 16, 45 * 16, 0xffffffffu};
+    static const u32 second[3] = {82 * 16, 84 * 16, 0xffffffffu};
+    const u32* table;
+    if (idx != 1) return 0;
+    if (off >= 0x10 && off < 0x10 + sizeof first)
+        table = first, off -= 0x10;
+    else if (off >= 0x20 && off < 0x20 + sizeof second)
+        table = second, off -= 0x20;
+    else
+        return 0;
+    if (off % 4) return 0;
+    *out = table[off / 4];
+    return 1;
+}
+/* Two far BRXs one after the other: the first at 41, loaded at 0, and the second at 80, loaded at 45, which only the
+   first's second case reaches. brx_resolve finds the first's table, then walks the second over the flow that table
+   makes, so both become switches */
+static void test_brx_far_chain(const char* dir) {
+    enum { BRX1 = 41, CASE1 = 43, LOAD2 = 45, BRX2 = 80, CASE2 = 82, CASE3 = 84, END = 86 };
+    u8 code[16 * 87] = {0};
+    Word x = fix(0xb82); /* LDC R2, c[1][R1 + 0x10] */
+    set(&x, 16, 8, 2);
+    set(&x, 24, 8, 1);
+    cbuf(&x, 1, 0x10);
+    set(&x, 73, 3, 4);
+    put(code, 0, x);
+    for (u32 k = 1; k < BRX1; k++) put(code, k, mov_imm(20, 0));
+    put(code, BRX1, brx_at(BRX1, 2, 0));
+    put(code, BRX1 + 1, exit_insn());
+    put(code, CASE1, mov_imm(0, f2u(1.0f)));
+    put(code, CASE1 + 1, exit_insn());
+    x = fix(0xb82); /* LDC R4, c[1][R1 + 0x20] */
+    set(&x, 16, 8, 4);
+    set(&x, 24, 8, 1);
+    cbuf(&x, 1, 0x20);
+    set(&x, 73, 3, 4);
+    put(code, LOAD2, x);
+    for (u32 k = LOAD2 + 1; k < BRX2; k++) put(code, k, mov_imm(20, 0));
+    put(code, BRX2, brx_at(BRX2, 4, 0));
+    put(code, BRX2 + 1, exit_insn());
+    for (u32 k = 0; k < 2; k++) {
+        put(code, CASE2 + 2 * k, mov_imm(0, f2u(k ? 3.0f : 2.0f)));
+        put(code, CASE2 + 2 * k + 1, exit_insn());
+    }
+    put(code, END, bra(END, END, 7, 0));
+    u32 fsph[32] = {0};
+    fsph[0] = sph0(2, 5);
+    fsph[18] = 0xf;
+    ShaderInfo si = {0};
+    size_t count = 0;
+    g_shader_cb_read = brx_chain_read;
+    u32* spv = sm86_to_spirv(code, (END + 1) * 16, ST_FS, fsph, &si, &count);
+    g_shader_cb_read = NULL;
+    CHECK(spv != NULL);
+    if (!spv) fprintf(stderr, "far brx chain: %s\n", si.first_unsupported);
+    if (spv) {
+        u32 at[4];
+        CHECK(spv_find(spv, count, 251 /* OpSwitch */, at, 4) == 2);
+        CHECK(keep_module(dir, "fs_brx_far_chain", spv, count));
+    }
+    free(spv);
+}
+
+/* c[1][0x10]: the far bounded test's two entries, then a word that names instruction 0, which the bound leaves out */
+static int brx_bound_read(u32 idx, u32 off, u32* out) {
+    static const u32 table[3] = {82 * 16, 84 * 16, 0};
+    if (idx != 1 || off < 0x10 || off >= 0x10 + sizeof table || (off - 0x10) % 4) return 0;
+    *out = table[(off - 0x10) / 4];
+    return 1;
+}
+/* The far load of test_brx_far, with ptxas's bound beside it: IMNMX.U32 R1, R0, 1; IMAD R2, R1, 4, RZ; LDC R2,
+   c[1][R2 + 0x10], then 40 instructions later the BRX. The bound is two entries, so the word after them, which names
+   instruction 0, is not a third case (as in test_brx_bounded) */
+static void test_brx_far_bounded(const char* dir) {
+    enum { LOAD = 39, BRX = 80, CASE0 = 82, CASE1 = 84, END = 86 };
+    u8 code[16 * 87] = {0};
+    for (u32 k = 0; k < LOAD; k++) put(code, k, mov_imm(20, 0));
+    Word x = alu(0x017, 4, 1, 0); /* IMNMX.U32 R1, R0, 1 */
+    set(&x, 32, 32, 1);
+    set(&x, 87, 3, 7);
+    put(code, LOAD - 2, x);
+    x = alu(0x024, 4, 2, 1); /* IMAD R2, R1, 4, RZ */
+    set(&x, 32, 32, 4);
+    set(&x, 64, 8, 255);
+    put(code, LOAD - 1, x);
+    x = fix(0xb82); /* LDC R2, c[1][R2 + 0x10] */
+    set(&x, 16, 8, 2);
+    set(&x, 24, 8, 2);
+    cbuf(&x, 1, 0x10);
+    set(&x, 73, 3, 4);
+    put(code, LOAD, x);
+    for (u32 k = LOAD + 1; k < BRX; k++) put(code, k, mov_imm(20, 0));
+    put(code, BRX, brx_at(BRX, 2, 0));
+    put(code, BRX + 1, exit_insn());
+    for (u32 k = 0; k < 2; k++) {
+        put(code, CASE0 + 2 * k, mov_imm(0, f2u(k ? 2.0f : 1.0f)));
+        put(code, CASE0 + 2 * k + 1, exit_insn());
+    }
+    put(code, END, bra(END, END, 7, 0));
+    u32 fsph[32] = {0};
+    fsph[0] = sph0(2, 5);
+    fsph[18] = 0xf;
+    ShaderInfo si = {0};
+    size_t count = 0;
+    g_shader_cb_read = brx_bound_read;
+    u32* spv = sm86_to_spirv(code, (END + 1) * 16, ST_FS, fsph, &si, &count);
+    g_shader_cb_read = NULL;
+    CHECK(spv != NULL);
+    if (!spv) fprintf(stderr, "far bounded brx: %s\n", si.first_unsupported);
+    if (spv) {
+        u32 cases[4], n = switch_cases(spv, count, cases, 4);
+        CHECK(n == 2 && ((cases[0] == CASE0 && cases[1] == CASE1) || (cases[0] == CASE1 && cases[1] == CASE0)));
+        u32 at[4];
+        CHECK(spv_find(spv, count, 246 /* OpLoopMerge */, at, 4) == 0);
+        CHECK(keep_module(dir, "fs_brx_far_bounded", spv, count));
+    }
+    free(spv);
+}
+
+/* c[1][0x10]: three entries, then a word that names instruction 0, which the bound leaves out */
+static int brx_flow_bound_read(u32 idx, u32 off, u32* out) {
+    static const u32 table[5] = {102 * 16, 104 * 16, 106 * 16, 0, 0xffffffffu};
+    if (idx != 1 || off < 0x10 || off >= 0x10 + sizeof table || (off - 0x10) % 4) return 0;
+    *out = table[(off - 0x10) / 4];
+    return 1;
+}
+/* The ptxas bound is 20 instructions before the times-4, which is 20 before the load: all three are outside the 16
+   instructions that a scan of the load's block reads, so only the flow finds the bound of three entries. The table
+   has a fourth word that names instruction 0, which the bound leaves out */
+static void test_brx_far_bound_flow(const char* dir) {
+    enum { BOUND = 20, TIMES4 = 40, LOAD = 60, BRX = 100, CASE0 = 102, CASE1 = 104, CASE2 = 106, END = 108 };
+    u8 code[16 * 109] = {0};
+    for (u32 k = 0; k < END; k++) put(code, k, mov_imm(20, 0));
+    Word x = alu(0x017, 4, 1, 0); /* IMNMX.U32 R1, R0, 2 */
+    set(&x, 32, 32, 2);
+    set(&x, 87, 3, 7);
+    put(code, BOUND, x);
+    x = alu(0x019, 4, 2, 1); /* SHF.L.U32 R2, R1, 2, RZ */
+    set(&x, 32, 32, 2);
+    set(&x, 64, 8, 255);
+    set(&x, 73, 2, 3);
+    put(code, TIMES4, x);
+    x = fix(0xb82); /* LDC R2, c[1][R2 + 0x10] */
+    set(&x, 16, 8, 2);
+    set(&x, 24, 8, 2);
+    cbuf(&x, 1, 0x10);
+    set(&x, 73, 3, 4);
+    put(code, LOAD, x);
+    put(code, BRX, brx_at(BRX, 2, 0));
+    put(code, BRX + 1, exit_insn());
+    for (u32 k = 0; k < 3; k++) {
+        put(code, CASE0 + 2 * k, mov_imm(0, f2u((float)k + 1.0f)));
+        put(code, CASE0 + 2 * k + 1, exit_insn());
+    }
+    put(code, END, bra(END, END, 7, 0));
+    u32 fsph[32] = {0};
+    fsph[0] = sph0(2, 5);
+    fsph[18] = 0xf;
+    ShaderInfo si = {0};
+    size_t count = 0;
+    g_shader_cb_read = brx_flow_bound_read;
+    u32* spv = sm86_to_spirv(code, (END + 1) * 16, ST_FS, fsph, &si, &count);
+    g_shader_cb_read = NULL;
+    CHECK(spv != NULL);
+    if (!spv) fprintf(stderr, "far flow bound brx: %s\n", si.first_unsupported);
+    if (spv) {
+        u32 cases[4], n = switch_cases(spv, count, cases, 4), mask = 0;
+        for (u32 k = 0; k < n; k++)
+            mask |= cases[k] == CASE0 ? 1 : cases[k] == CASE1 ? 2 : cases[k] == CASE2 ? 4 : 0;
+        CHECK(n == 3 && mask == 7);
+        CHECK(keep_module(dir, "fs_brx_far_bound_flow", spv, count));
+    }
+    free(spv);
+}
+
+/* Two tables one after the other in c[1], neither with a bound: the first starts at 0x10 and the second at 0x18. The
+   first BRX must read its two entries and stop where the second table starts, not take the second's two as its own */
+static int brx_adjacent_read(u32 idx, u32 off, u32* out) {
+    static const u32 first[4] = {3 * 16, 5 * 16, 8 * 16, 10 * 16};
+    static const u32 second[2] = {8 * 16, 10 * 16};
+    if (idx != 1 || (off & 3)) return 0;
+    if (off >= 0x10 && off < 0x10 + sizeof first)
+        *out = first[(off - 0x10) / 4];
+    else if (off >= 0x18 && off < 0x18 + sizeof second)
+        *out = second[(off - 0x18) / 4];
+    else
+        return 0;
+    return 1;
+}
+static void test_brx_adjacent_tables(const char* dir) {
+    /* the first switch's second case falls into the second table's load and BRX, so both switches are reachable */
+    u8 code[16 * 13] = {0};
+    Word x = fix(0xb82); /* LDC R2, c[1][R1 + 0x10] */
+    set(&x, 16, 8, 2);
+    set(&x, 24, 8, 1);
+    cbuf(&x, 1, 0x10);
+    set(&x, 73, 3, 4);
+    put(code, 0, x);
+    put(code, 1, brx_at(1, 2, 0));
+    put(code, 2, exit_insn());
+    put(code, 3, mov_imm(0, f2u(1.0f)));
+    put(code, 4, exit_insn());
+    x = fix(0xb82); /* LDC R4, c[1][R1 + 0x18], the first switch's second case */
+    set(&x, 16, 8, 4);
+    set(&x, 24, 8, 1);
+    cbuf(&x, 1, 0x18);
+    set(&x, 73, 3, 4);
+    put(code, 5, x);
+    put(code, 6, brx_at(6, 4, 0));
+    put(code, 7, exit_insn());
+    put(code, 8, mov_imm(0, f2u(3.0f)));
+    put(code, 9, exit_insn());
+    put(code, 10, mov_imm(0, f2u(4.0f)));
+    put(code, 11, exit_insn());
+    put(code, 12, bra(12, 12, 7, 0));
+    u32 fsph[32] = {0};
+    fsph[0] = sph0(2, 5);
+    fsph[18] = 0xf;
+    ShaderInfo si = {0};
+    size_t count = 0;
+    g_shader_cb_read = brx_adjacent_read;
+    u32* spv = sm86_to_spirv(code, 13 * 16, ST_FS, fsph, &si, &count);
+    g_shader_cb_read = NULL;
+    CHECK(spv != NULL);
+    if (!spv) fprintf(stderr, "adjacent brx tables: %s\n", si.first_unsupported);
+    if (spv) {
+        u32 cases[4], n = switch_cases(spv, count, cases, 4);
+        CHECK(n == 2 && ((cases[0] == 3 && cases[1] == 5) || (cases[0] == 5 && cases[1] == 3)));
+        CHECK(cases[0] != 8 && cases[0] != 10 && cases[1] != 8 && cases[1] != 10);
+        u32 at[4];
+        CHECK(spv_find(spv, count, 251 /* OpSwitch */, at, 4) == 2);
+        CHECK(keep_module(dir, "fs_brx_adjacent", spv, count));
+    }
+    free(spv);
+}
+
+/* BRXU, whose ULDC.IDX is 40 instructions before it: the ptxas bound of its index is beside the load, and the table
+   that the uniform register reads is the same two entries */
+static void test_brxu_far(const char* dir) {
+    enum { LOAD = 4, BRX = 45, CASE0 = 47, CASE1 = 49, END = 51 };
+    static const u32 table[3] = {CASE0 * 16, CASE1 * 16, 0xffffffffu};
+    u8 code[16 * 53] = {0};
+    put(code, 0, ualu(0x082, 1, 0, 1)); /* UMOV UR1, 1 */
+    Word x = ualu(0x08c, 0, 1, 1);      /* UISETP.LT.U32.AND UP0, PT, UR1, 1, PT */
+    set(&x, 76, 3, 1);
+    set(&x, 81, 3, 0);
+    set(&x, 84, 3, 7);
+    set(&x, 87, 3, 7);
+    put(code, 1, x);
+    x = ualu(0x087, 2, 1, 1); /* USEL UR2, UR1, 1, UP0 */
+    set(&x, 87, 3, 0);
+    put(code, 2, x);
+    x = ualu(0x099, 3, 2, 2); /* USHF.L.U32 UR3, UR2, 2, URZ */
+    set(&x, 73, 2, 3);
+    put(code, 3, x);
+    x = fix(0xabb); /* ULDC.IDX UR3, c[1][UR3 + 0x10] */
+    set(&x, 16, 6, 3);
+    set(&x, 24, 6, 3);
+    cbuf(&x, 1, 0x10);
+    set(&x, 73, 3, 4);
+    put(code, LOAD, x);
+    for (u32 k = LOAD + 1; k < BRX; k++) put(code, k, mov_imm(20, 0));
+    put(code, BRX, brx_at(BRX, 3, 1));
+    put(code, BRX + 1, exit_insn());
+    for (u32 k = 0; k < 2; k++) {
+        put(code, CASE0 + 2 * k, mov_imm(0, f2u(k ? 2.0f : 1.0f)));
+        put(code, CASE0 + 2 * k + 1, exit_insn());
+    }
+    put(code, END, bra(END, END, 7, 0));
+    u32 fsph[32] = {0};
+    fsph[0] = sph0(2, 5);
+    fsph[18] = 0xf;
+    ShaderInfo si = {0};
+    size_t count = 0;
+    brx_far_table = table, brx_far_words = 3;
+    g_shader_cb_read = brx_far_read;
+    u32* spv = sm86_to_spirv(code, (END + 1) * 16, ST_FS, fsph, &si, &count);
+    g_shader_cb_read = NULL;
+    CHECK(spv != NULL);
+    if (!spv) fprintf(stderr, "far brxu: %s\n", si.first_unsupported);
+    if (spv) {
+        u32 cases[4], n = switch_cases(spv, count, cases, 4);
+        CHECK(n == 2 && ((cases[0] == CASE0 && cases[1] == CASE1) || (cases[0] == CASE1 && cases[1] == CASE0)));
+        CHECK(keep_module(dir, "fs_brxu_far", spv, count));
+    }
+    free(spv);
+    /* UR1 is 1: the bound leaves one entry, the second case, R0 = 2.0 */
+    static const u32 cb1[0x14 / 4 + 3] = {0, 0, 0, 0, CASE0 * 16, CASE1 * 16, 0xffffffffu};
+    g_shader_cb_read = brx_far_read;
+    u32 out[4];
+    int ran = run_fs_at(code, END + 1, 0, cb1, sizeof cb1 / 4, out);
+    g_shader_cb_read = NULL;
+    CHECK(ran && out[0] == f2u(2.0f));
+}
+
+/* c[1][0x10] and c[1][0x20]: the two tables of the arms of the merge test, the second the first's entries reversed */
+static int brx_two_read(u32 idx, u32 off, u32* out) {
+    static const u32 first[3] = {4 * 16, 7 * 16, 0xffffffffu};
+    static const u32 second[3] = {7 * 16, 4 * 16, 0xffffffffu};
+    const u32* table;
+    if (idx != 1) return 0;
+    if (off >= 0x10 && off < 0x10 + sizeof first)
+        table = first, off -= 0x10;
+    else if (off >= 0x20 && off < 0x20 + sizeof second)
+        table = second, off -= 0x20;
+    else
+        return 0;
+    if (off % 4) return 0;
+    *out = table[off / 4];
+    return 1;
+}
+/* A table load in one arm only, and the BRX after the merge: the other path reaches the branch with the register's
+   initial value, so no single load is the table. The program is refused, never given the arm's table */
+static void test_brx_not_dominating(const char* dir) {
+    u8 code[16 * 8] = {0};
+    put(code, 0, setp_const(0, 1)); /* P0 true */
+    put(code, 1, bra(1, 5, 0, 0));
+    Word x = fix(0xb82); /* LDC R2, c[1][R1 + 0x10], in the arm that the branch skips */
+    set(&x, 16, 8, 2);
+    set(&x, 24, 8, 1);
+    cbuf(&x, 1, 0x10);
+    set(&x, 73, 3, 4);
+    put(code, 2, x);
+    put(code, 3, bra(3, 6, 7, 0));
+    put(code, 4, exit_insn());
+    put(code, 5, mov_imm(20, 0));
+    put(code, 6, brx_at(6, 2, 0));
+    put(code, 7, bra(7, 7, 7, 0));
+    u32 fsph[32] = {0};
+    fsph[0] = sph0(2, 5);
+    fsph[18] = 0xf;
+    static const u32 table[3] = {7 * 16, 7 * 16, 0xffffffffu};
+    ShaderInfo si = {0};
+    size_t count = 0;
+    brx_far_table = table, brx_far_words = 3;
+    g_shader_cb_read = brx_far_read;
+    u32* spv = sm86_to_spirv(code, 8 * 16, ST_FS, fsph, &si, &count);
+    g_shader_cb_read = NULL;
+    CHECK(spv == NULL && si.unsupported);
+    free(spv);
+    (void)dir;
+}
+
+/* Two arm loads of different tables, and the BRX after their merge: each path has its own table, so neither is the
+   branch's. Refused, with no table of one arm taken for the other */
+static void test_brx_two_tables(const char* dir) {
+    u8 code[16 * 8] = {0};
+    put(code, 0, setp_const(0, 1));
+    put(code, 1, bra(1, 5, 0, 0));
+    Word x = fix(0xb82); /* LDC R2, c[1][R1 + 0x10] */
+    set(&x, 16, 8, 2);
+    set(&x, 24, 8, 1);
+    cbuf(&x, 1, 0x10);
+    set(&x, 73, 3, 4);
+    put(code, 2, x);
+    put(code, 3, bra(3, 6, 7, 0));
+    put(code, 4, exit_insn());
+    x = fix(0xb82); /* LDC R2, c[1][R1 + 0x20] */
+    set(&x, 16, 8, 2);
+    set(&x, 24, 8, 1);
+    cbuf(&x, 1, 0x20);
+    set(&x, 73, 3, 4);
+    put(code, 5, x);
+    put(code, 6, brx_at(6, 2, 0));
+    put(code, 7, bra(7, 7, 7, 0));
+    u32 fsph[32] = {0};
+    fsph[0] = sph0(2, 5);
+    fsph[18] = 0xf;
+    ShaderInfo si = {0};
+    size_t count = 0;
+    g_shader_cb_read = brx_two_read;
+    u32* spv = sm86_to_spirv(code, 8 * 16, ST_FS, fsph, &si, &count);
+    g_shader_cb_read = NULL;
+    CHECK(spv == NULL && si.unsupported && strstr(si.first_unsupported, "doesn't reach it on every path"));
+    free(spv);
+    (void)dir;
+}
+
 int main(int argc, char** argv) {
     const char* dir = argc > 1 ? argv[1] : ".";
     test_alu_forms();
@@ -5600,6 +6159,16 @@ int main(int argc, char** argv) {
     test_debug_prologue(dir);
     test_legacy_varyings(dir);
     test_brxu(dir);
+    test_brx_far(dir);
+    test_brx_far_branch(dir);
+    test_brx_far_move(dir);
+    test_brx_far_bounded(dir);
+    test_brx_far_bound_flow(dir);
+    test_brx_adjacent_tables(dir);
+    test_brx_far_chain(dir);
+    test_brxu_far(dir);
+    test_brx_not_dominating(dir);
+    test_brx_two_tables(dir);
     test_ipa_uniform(dir);
     test_tld_multisample(dir);
     test_resolution_scale(dir);

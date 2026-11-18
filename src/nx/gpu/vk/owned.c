@@ -367,7 +367,7 @@ VkOwnRes* vk_own_res_new(u64 size, u32 by) {
                                                ? VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT
                                                : 0),
                                  .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
-        DevMemWant ai = {.at = DM_DEVICE};
+        DevMemWant ai = {.at = DM_DEVICE, .brief = 1}; /* results come and go by the hundred MB (DM_KIND_BRIEF) */
         land_sharing(&bi, fam);
         if (size > g_vk.alloc_cap) {
             free(r);

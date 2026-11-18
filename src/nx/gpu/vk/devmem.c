@@ -30,14 +30,21 @@
 #define DM_MARGIN    (256ull << 20)
 /* A block's kind besides its memory type, which a request takes only from blocks of its own: bits of these. IMAGE:
    for images only, where they cannot share a block with buffers (g_devmem.apart). FIXED: allocations that no owner
-   moves, in the capped heap where blocks are emptied (DevMemWant.moves) */
+   moves, in the capped heap where blocks are emptied (DevMemWant.moves). BRIEF, with FIXED only: those of them that
+   come and go by the hundred MB (DevMemWant.brief). In one game's race under a budget of 2 GB, the mirror's granules
+   went from 196 to 38 MB and the kept results from 182 to 18 MB, and the blocks that do not move held 680 MB with
+   155 MB handed out: rings, encoders, write logs and written textures, which stay, were in each of the 12 blocks, so
+   none was emptied and given back */
 /* Memory of its own that the driver only preferred (DM_OWN_RATHER) is kept when let go, for a later request it fits:
-   DM_KEEP_BYTES of it at most, each DM_KEEP_PRESENTS presents at most (own_keep, own_take) */
+   DM_KEEP_BYTES at most in the other heaps together, and in the GPU's own heap a DM_KEEP_SHARE of its budget where
+   that is more (keep_cap), each DM_KEEP_PRESENTS presents at most (own_keep, own_take) */
 #define DM_KEEP_BYTES    (256ull << 20)
+#define DM_KEEP_SHARE    16u
 #define DM_KEEP_PRESENTS 120u
 #define DM_KIND_IMAGE 1
 #define DM_KIND_FIXED 2
-#define DM_KINDS      4
+#define DM_KIND_BRIEF 4
+#define DM_KINDS      8
 /* why an allocation has memory of its own (alloc_in's alone, but for the first) */
 enum {
     DM_OWN_SIZE,   /* more than a block's share, and no block had a run for it */
@@ -97,6 +104,7 @@ static struct {
     u64 full_frame[VK_MAX_MEMORY_TYPES], full_gave[VK_MAX_MEMORY_TYPES];
     u64 gave[VK_MAX_MEMORY_HEAPS];
     int main_heap; /* the largest heap of the GPU's own memory: the one DM_MARGIN is kept free of */
+    u64 cache_cap; /* the caches' budget in the main heap where it is less than the driver's (vk_budget_mb), 0 none */
     int use_reserve; /* requests may take the reserve's memory now (vk_devmem_reserve_use) */
     /* The thread that makes the next block ahead of its first request, and gives memory back to the driver. A call
        to the driver for a block took 1 to 48 ms in one game's race and up to 600 ms while it loaded, on the thread
@@ -165,6 +173,18 @@ static u64 heap_budget(u32 h) {
     u64 budget = g_vk.has_budget ? g_devmem.drv_budget[h] : g_devmem.mp.memoryHeaps[h].size / 5 * 4;
     if (heap_capped(h)) budget = budget > 2 * DM_MARGIN ? budget - DM_MARGIN : budget / 2;
     return budget;
+}
+/* the budget that kept memory keeps within: the heap's, or in the main heap the caches' where that is less. Kept memory
+   counts as handed out for the caches (vk_devmem_budgets), so a cap from the driver's budget alone let it reach 1.3 GB
+   under a caches' budget of 2,000 MB (lock held) */
+static u64 keep_budget(u32 h) {
+    const u64 b = heap_budget(h);
+    return heap_capped(h) && g_devmem.cache_cap && g_devmem.cache_cap < b ? g_devmem.cache_cap : b;
+}
+void vk_devmem_cache_budget(u64 bytes) {
+    pm_lock(&g_devmem.lk);
+    g_devmem.cache_cap = bytes;
+    pm_unlock(&g_devmem.lk);
 }
 /* a heap's use by every process: the driver's count then, and what this process took and gave back since (lock
    held) */
@@ -632,16 +652,36 @@ static u32 block_adopt(u32 type, int image, int low, u32 units, u32 align_units,
    was a call to the driver's allocate on the thread that asked, and its free on the thread ahead: under a budget of 2
    GB one game's race made 621 in 191 s, the most costly of the calls left. Such memory is made with no resource named,
    which the driver preferred but did not require, and when let go it is kept, unused, for a later request of its size
-   (up to an eighth less), with no call. Kept memory goes after DM_KEEP_PRESENTS presents, the oldest first past
-   DM_KEEP_BYTES, and all of it past own_full's limit (lock held).
+   (up to an eighth less), with no call. Kept memory goes after DM_KEEP_PRESENTS presents, the oldest of its heap first
+   past keep_cap, and all of it past own_full's limit (lock held).
+
+   A cap of 256 MiB for every heap was too small. In that race at 2 GB on a GPU of 24 GB, the requests that found no
+   kept memory were 16 to 24 MB (65) and 32 to 48 MB (150), the cap gave kept memory back 189 times and age 15
+   times, and 162 of 234 requests found kept memory of no size that fit them. In the GPU's own heap the cap now grows
+   with the heap's budget. A small heap is held to own_full's limit, as before. The other heaps keep DM_KEEP_BYTES:
+   with the share there too (950 MB of a host heap of 15 GB), two of five runs of that race failed, a lost GPU and
+   a crash where the mirror read a page number of no page from its output in host memory, and three runs with the
+   share in the GPU's heap alone had neither
 
    Memory made for an image alone, kept for another image (VK_NV_dedicated_allocation_image_aliasing, which allows
    that for the same create info and an extent and layers no greater), lost the GPU on an RTX 4090 (driver 621.01): a
    page fault in 2 of 3 runs of that race with it, and none in the run without it. The spec does not say whether an
    image may take that memory after the image it was made for is gone */
-/* past this, a heap keeps no memory: the driver's preference for memory of its own no longer holds there (alloc),
-   so no request would take it */
-static int own_full(u32 heap) { return g_devmem.block_bytes[heap] > heap_budget(heap) / 5 * 4; }
+/* past this, a heap keeps no memory: the driver's preference for memory of its own no longer holds there (alloc, with
+   the same budget), so no request would take it */
+static int own_full(u32 heap) { return g_devmem.block_bytes[heap] > keep_budget(heap) / 5 * 4; }
+/* the cap of the kept memory that heap's counts with: the GPU's own heap alone, or the other heaps together */
+static u64 keep_cap(u32 heap) {
+    if (!heap_capped(heap)) return DM_KEEP_BYTES;
+    const u64 share = keep_budget(heap) / DM_KEEP_SHARE;
+    return share > DM_KEEP_BYTES ? share : DM_KEEP_BYTES;
+}
+static u64 kept_with(u32 heap) {
+    u64 n = 0;
+    for (u32 h = 0; h < g_devmem.mp.memoryHeapCount; h++)
+        if (heap_capped(h) == heap_capped(heap)) n += g_devmem.kept_heap[h];
+    return n;
+}
 static void own_give(Block* k) {
     g_devmem.kept_bytes -= k->size;
     g_devmem.kept_heap[g_devmem.mp.memoryTypes[k->type].heapIndex] -= k->size;
@@ -662,15 +702,18 @@ static int own_give_all(void) {
    the GPU's memory first where that is short */
 static void own_keep(Block* k) {
     u32 heap = g_devmem.mp.memoryTypes[k->type].heapIndex;
-    if (!k->reuse || k->size > DM_KEEP_BYTES || own_full(heap)) {
+    const u64 cap = keep_cap(heap);
+    if (!k->reuse || k->size > cap || own_full(heap)) {
         block_gone(k);
         return;
     }
-    while (g_devmem.kept_bytes + k->size > DM_KEEP_BYTES) { /* room for it: the oldest kept goes */
+    while (kept_with(heap) + k->size > cap) { /* room for it: the oldest kept that counts with it goes */
         Block* old = NULL;
         for (u32 i = 0; i < g_devmem.nblock; i++) {
             Block* o = &g_devmem.block[i];
-            if (o->mem && o->idle && (!old || o->idle < old->idle)) old = o;
+            if (o->mem && o->idle && heap_capped(g_devmem.mp.memoryTypes[o->type].heapIndex) == heap_capped(heap) &&
+                (!old || o->idle < old->idle))
+                old = o;
         }
         own_give(old);
     }
@@ -732,7 +775,7 @@ static DevMem alloc_in(u32 type, const VkMemoryRequirements* req, const DevMemWa
     /* where blocks are emptied, what no owner moves goes in blocks of its own: one such allocation keeps a block from
        being emptied (drain_can). A move goes to the blocks of what moves */
     if (g_devmem.drain.on && heap_capped(g_devmem.mp.memoryTypes[type].heapIndex) && !want->moves && !want->existing)
-        image |= DM_KIND_FIXED;
+        image |= DM_KIND_FIXED | (want->brief ? DM_KIND_BRIEF : 0);
     /* a request that a block holds takes a free run of one, whatever its size: one of more than a block's share went
        to the driver each time, on the thread that asked, and failed at the heap's cap while the blocks had room. Only
        a request of a block's share or less opens a new block */
@@ -772,11 +815,19 @@ static DevMem alloc_in(u32 type, const VkMemoryRequirements* req, const DevMemWa
            order what the driver moves, and must not make a request fail that would have found room */
         if (!slot && !(want->existing && g_vk.has_pageable))
             slot = block_find(type, image, -1, units, (u32)align_units, &at);
-        /* then a block of the other side of DM_KIND_FIXED, for the same reason. What no owner moves keeps the block
-           it goes into from being emptied, but the request does not fail where it found room before the kinds. A
-           move goes only to the blocks of what moves */
-        if (!slot && !want->existing && g_devmem.drain.on && heap_capped(heap))
-            slot = block_find(type, image ^ DM_KIND_FIXED, -1, units, (u32)align_units, &at);
+        /* then a block of the other kinds of the same side of DM_KIND_IMAGE, for the same reason. What no owner
+           moves keeps the block it goes into from being emptied, but the request does not fail where it found room
+           before the kinds. What stays goes to the blocks of what moves before the brief ones, which it would keep
+           from being emptied when what comes and goes leaves them. What comes and goes takes the blocks of what stays
+           first, and what moves those of what does not, the brief ones last. A move goes only to the blocks of what
+           moves */
+        if (!slot && !want->existing && g_devmem.drain.on && heap_capped(heap)) {
+            const int side = image & DM_KIND_IMAGE, fixed = side | DM_KIND_FIXED, brief = fixed | DM_KIND_BRIEF;
+            const int other[3] = {image == brief ? fixed : image == fixed ? side : fixed,
+                                  image == brief ? side : brief, -1};
+            for (u32 o = 0; !slot && other[o] >= 0; o++)
+                slot = block_find(type, other[o], -1, units, (u32)align_units, &at);
+        }
     }
     if (!slot && !shared && !want->existing) { /* memory of its own: by its size, or by the request */
         units = 0;
@@ -868,7 +919,10 @@ static VkResult alloc(const VkMemoryRequirements* req, const DevMemWant* want, i
                minutes, for 0.85 to 1.2 s of the renderer's thread in the driver's allocate and calls of 50 to 164
                ms. In a block, the defrag can move it too */
             u32 heap = g_devmem.mp.memoryTypes[type].heapIndex, n = 0;
-            u64 budget = heap_budget(heap);
+            /* the budget own_full keeps kept memory within: with the driver's here and the caches' there, under
+               vk_budget_mb=2000 each such request got memory of its own that own_keep gave straight back, 209 of
+               them in a window of one game's race */
+            u64 budget = keep_budget(heap);
             for (u32 h = 0; h < g_devmem.mp.memoryHeapCount; h++) n += g_devmem.blocks[h];
             small = req->size <= block_cap((u32)type) / DM_OWN_SHARE;
             if (!small && g_devmem.block_bytes[heap] + req->size <= budget / 5 * 4 &&
@@ -1379,7 +1433,9 @@ void vk_devmem_log(void) {
                 f & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT ? ", mapped" : "",
                 f & VK_MEMORY_PROPERTY_HOST_CACHED_BIT ? ", cached" : "",
                 !g_devmem.apart ? "buffers and images" : image & DM_KIND_IMAGE ? "images" : "buffers",
-                image & DM_KIND_FIXED ? " that do not move" : "",
+                image & DM_KIND_BRIEF ? " that do not move and come and go"
+                : image & DM_KIND_FIXED ? " that do not move"
+                                        : "",
                 k[t][image].blocks, (double)k[t][image].bytes / 1048576.0, (double)k[t][image].used / 1048576.0,
                 k[t][image].empty, (double)k[t][image].largest / 1048576.0, k[t][image].own,
                 (double)k[t][image].own_bytes / 1048576.0);

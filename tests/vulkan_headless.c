@@ -2983,16 +2983,24 @@ static int dma_case(GpuDmaOp o) {
 static int dma_snap_case(GpuDmaOp o) {
     GpuDmaOp g = o, c = o;
     u64 span = gpu_dma_span(&o.src, o.lines, o.line_in), id = 0, held = vk_snap_bytes();
-    u64 low = o.src.addr + (u64)gpu_dma_low(&o.src, o.lines); /* the snapshot holds the span from its lowest byte */
+    u64 low = o.src.addr + (u64)gpu_dma_low(&o.src, o.lines);
+    /* the snapshot holds the span from its lowest byte, or the lines alone where they are far apart */
+    const int sparse = gpu_dma_sparse(&o.src, o.lines, o.line_in);
+    const u64 bytes = gpu_dma_read_bytes(&o.src, o.lines, o.line_in);
     for (int k = 0; k < 2; k++) {
         u8* t = GP(k ? DMA_B : DMA_A);
         for (u32 i = 0; i < DMA_SPAN; i++) t[i] = (u8)(i * 31 + (i >> 9) * 5 + 1);
     }
     g.src.addr += DMA_GA, g.dst.addr += DMA_GA;
     c.src.addr += DMA_GB, c.dst.addr += DMA_GB;
-    u8* snap = g_renderer->snap_alloc(span, &id);
-    CHECK(snap && id && vk_snap_bytes() == held + span);
-    memcpy(snap, GP(DMA_A) + low, span);
+    u8* snap = g_renderer->snap_alloc(bytes, &id);
+    CHECK(snap && id && vk_snap_bytes() == held + bytes);
+    if (sparse)
+        for (u32 k = 0; k < o.lines; k++)
+            memcpy(snap + (u64)k * o.line_in, GP(DMA_A) + o.src.addr + (u64)((i64)k * gpu_dma_pitch(&o.src)),
+                   o.line_in);
+    else
+        memcpy(snap, GP(DMA_A) + low, span);
     for (u64 i = 0; i < span; i++) GP(DMA_A)[low + i] ^= 0x5A; /* guest memory changes after the read */
     g.snap = snap;
     g.snap_id = id;
@@ -5369,6 +5377,50 @@ static int check_dma_flip(void) {
     return 0;
 }
 
+/* A copy of a region of a wide pitch linear surface, as a texture's 256x256 region copied out to a buffer: lines far
+   apart (gpu_dma_sparse) are read one by one and only their bytes staged, from guest memory and from the copy made at
+   submission, stepping down too, into block linear, and in bands of lines under a lowered cap. Their span was staged
+   whole before: 8 MiB for that region's 256 KiB of lines, 1.55 ms against Eden's 0.11 */
+static int check_dma_sparse(void) {
+    GpuDmaOp o = {0};
+    u64 copies, bands, moved0, moved1, bands1;
+    o.multi = 1;
+    o.width = o.line_in = o.line_out = 64;
+    o.lines = 32;
+    o.src = pitch_side(0x100, 4096); /* 32 lines 4 KiB apart: 2 KiB of them in 124 KiB */
+    o.dst = pitch_side(0x90000, 64);
+    CHECK(gpu_dma_sparse(&o.src, o.lines, o.line_in));
+    vk_dma_stats(&copies, &bands, &moved0);
+    CHECK(!dma_case(o));
+    vk_dma_stats(&copies, &bands, &moved1);
+    if (moved1 - moved0 != 2ull * o.lines * o.line_in)
+        fprintf(stderr, "dma sparse: %llu bytes moved for %u lines of %u bytes in and out, not %llu\n",
+                (unsigned long long)(moved1 - moved0), o.lines, o.line_in, 2ull * o.lines * o.line_in);
+    CHECK(moved1 - moved0 == 2ull * o.lines * o.line_in);
+    CHECK(!dma_snap_case(o));
+    o.src = pitch_side(0x100 + 31 * 4096, (u32)-4096); /* the same lines, the last first (FlipY) */
+    CHECK(!dma_case(o));
+    CHECK(!dma_snap_case(o));
+    o.dst = bl_side(0xA0000, 64, 32, 1, 0, 0); /* into block linear */
+    CHECK(!dma_case(o));
+    CHECK(!dma_snap_case(o));
+    o.width = o.line_in = o.line_out = 1024; /* 48 lines of 1 KiB, 8 KiB apart, in bands */
+    o.lines = 48;
+    o.src = pitch_side(0x1000, 8192);
+    o.dst = pitch_side(0x80000, 1024);
+    const u64 cap = g_vk.alloc_cap;
+    g_vk.alloc_cap = 16 << 10;
+    vk_dma_stats(&copies, &bands, &moved0);
+    int failed = dma_case(o) || dma_snap_case(o);
+    vk_dma_stats(&copies, &bands1, &moved1);
+    g_vk.alloc_cap = cap;
+    CHECK(!failed && bands1 > bands);
+    printf("DMA copies of lines far apart stage their lines alone: %u bytes moved for a copy of 32 lines of 64 bytes "
+           "4 KiB apart\n",
+           2u * 32u * 64u);
+    return 0;
+}
+
 /* A copy over more GPU-owned ranges than a read of guest memory notes at once: 20 lines of 64 bytes, 128 apart, each
    its own owner, then one line over them all from byte 32 of the first. Their bytes are copied on the GPU a batch at a
    time and nothing lands; landing them waited for the GPU and read its results back */
@@ -7283,6 +7335,7 @@ static int check_pipeline_stats_compute(void) {
 #include "vulkan_uma_pages.inc"
 #include "vulkan_uma_region_reads.inc"
 #include "vulkan_write_tracking.inc"
+#include "vulkan_poll_kick.inc"
 #include "vulkan_tex_partial.inc"
 #include "vulkan_texture_quiet.inc"
 #include "vulkan_cube_take.inc"
@@ -8010,6 +8063,8 @@ static int run_headless(int argc, char** argv) {
             result = check_descriptor_memo();
         else if (!strcmp(name, "wlog_clear"))
             result = check_wlog_clear();
+        else if (!strcmp(name, "poll_kick"))
+            result = check_poll_kick();
         else if (!strcmp(name, "descriptor_heaps"))
             result = check_descriptor_heaps();
         else if (!strcmp(name, "indirect_dispatch"))
@@ -8052,6 +8107,13 @@ static int run_headless(int argc, char** argv) {
         vk_finish();
         vk_pipeline_quiesce();
         printf("PASS headless Vulkan watched targets only: %u validation messages\n", g_vk_validation_messages);
+        return 0;
+    }
+    if (getenv("SNX_TEST_STORAGE_IMAGES_ONLY")) { /* the storage image formats' check alone, for its mutants */
+        CHECK(!check_storage_image_formats());
+        vk_finish();
+        vk_pipeline_quiesce();
+        printf("PASS headless Vulkan storage image formats only: %u validation messages\n", g_vk_validation_messages);
         return 0;
     }
     if (tex_array) { /* the texture arrays at the size asked: their layouts, pools and indexed draws */
@@ -8340,6 +8402,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_own_trim());
     CHECK(!check_wlog_again());
     CHECK(!check_wlog_clear());
+    CHECK(!check_poll_kick());
     CHECK(!check_owned_in_place_write());
     CHECK(!check_owned_read_device());
     CHECK(!check_owned_peek_identity());
@@ -8470,6 +8533,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_nvdec_vic());
     CHECK(!check_dma());
     CHECK(!check_dma_flip());
+    CHECK(!check_dma_sparse());
     CHECK(!check_dma_owners());
     CHECK(!check_dma_bands());
     CHECK(!check_rt_superseded());
