@@ -47,6 +47,8 @@ typedef struct {
         int32_t alignment, row_length, skip_rows, skip_pixels, image_height, skip_images;
     } pixel[2]; /* glPixelStorei's pack [0] and unpack [1] */
     uint32_t sample_mask;
+    float point_size;      /* glPointSize's */
+    uint32_t polygon_mode; /* glPolygonMode's of both faces, a desktop context's */
 } SnxGlFixed;
 
 /* a context's API */
@@ -102,6 +104,9 @@ void snx_gl_clear_stencil(uint32_t ctx, int32_t s);
 void snx_gl_viewport(uint32_t ctx, int32_t x, int32_t y, int32_t width, int32_t height);
 void snx_gl_scissor(uint32_t ctx, int32_t x, int32_t y, int32_t width, int32_t height);
 void snx_gl_line_width(uint32_t ctx, float width);
+void snx_gl_point_size(uint32_t ctx, float size);
+/* glPolygonMode: GL_FRONT_AND_BACK alone, a core profile's only face */
+void snx_gl_polygon_mode(uint32_t ctx, uint32_t face, uint32_t mode);
 void snx_gl_polygon_offset(uint32_t ctx, float factor, float units);
 void snx_gl_sample_coverage(uint32_t ctx, float value, int invert);
 void snx_gl_hint(uint32_t ctx, uint32_t target, uint32_t mode);
@@ -123,7 +128,7 @@ uint32_t snx_gl_clear(uint32_t ctx, uint32_t mask);
    naming the field and its value; load puts a checked copy in place of the running state: 0, or -1 when there is no
    memory for it (the running state left as it was) */
 #define SNX_GL_STATE_MAGIC   0x4c47584eu /* "NXGL" */
-#define SNX_GL_STATE_VERSION 6u
+#define SNX_GL_STATE_VERSION 7u
 size_t snx_gl_state_bytes(void);
 void snx_gl_state_save(void* out);
 int snx_gl_state_check(const void* in, size_t size, char* why, size_t whysize);

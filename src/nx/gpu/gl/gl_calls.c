@@ -135,6 +135,14 @@ void gl_line_width(CPU* c, f32 width) {
     CTX;
     snx_gl_line_width(ctx, width);
 }
+void gl_point_size(CPU* c, f32 size) {
+    CTX;
+    snx_gl_point_size(ctx, size);
+}
+void gl_polygon_mode(CPU* c, u32 face, u32 mode) {
+    CTX;
+    snx_gl_polygon_mode(ctx, face, mode);
+}
 void gl_polygon_offset(CPU* c, f32 factor, f32 units) {
     CTX;
     snx_gl_polygon_offset(ctx, factor, units);

@@ -20,6 +20,8 @@ enum {
     GL_ONE_ = 1,
     GL_FUNC_ADD_ = 0x8006,
     GL_DONT_CARE_ = 0x1100,
+    GL_POINT_ = 0x1b00,
+    GL_FILL_ = 0x1b02,
 };
 
 /* the layer's state: what a save state holds */
@@ -57,6 +59,8 @@ uint32_t snx_gl_context_new(uint32_t api, uint32_t version, uint32_t debug) {
         f->clear_depth = 1;
         f->sample_mask = 0xffffffffu;
         f->line_width = 1;
+        f->point_size = 1;
+        f->polygon_mode = GL_FILL_;
         f->coverage_value = 1;
         f->dither = 1;
         f->hints[0] = f->hints[1] = GL_DONT_CARE_;
@@ -216,6 +220,18 @@ void snx_gl_line_width(uint32_t ctx, float width) {
     else
         fixed(ctx)->line_width = width;
 }
+void snx_gl_point_size(uint32_t ctx, float size) {
+    if (!(size > 0))
+        snx_gl_error(ctx, SNX_GL_INVALID_VALUE);
+    else
+        fixed(ctx)->point_size = size;
+}
+void snx_gl_polygon_mode(uint32_t ctx, uint32_t face, uint32_t mode) {
+    if (face != GL_FRONT_AND_BACK_ || mode < GL_POINT_ || mode > GL_FILL_)
+        snx_gl_error(ctx, SNX_GL_INVALID_ENUM);
+    else
+        fixed(ctx)->polygon_mode = mode;
+}
 void snx_gl_polygon_offset(uint32_t ctx, float factor, float units) {
     fixed(ctx)->offset_factor = factor;
     fixed(ctx)->offset_units = units;
@@ -257,6 +273,11 @@ void snx_gl_pixel_store(uint32_t ctx, uint32_t pname, int32_t value) {
 /* the limits a context answers: a desktop GPU's, as the games' own driver answers on the console's */
 enum {
     MAX_TEXTURE_SIZE = 16384,
+    MAX_3D_TEXTURE_SIZE = 2048,
+    MAX_ARRAY_TEXTURE_LAYERS = 2048, /* desktop GL 4.5's least */
+    MAX_SAMPLES = 4,                 /* the counts the layer makes: 1, 2 and 4 */
+    MAX_POINT_SIZE = 64,
+    MAX_TEXTURE_LOD_BIAS = 15,
     MAX_VERTEX_ATTRIBS = 16,
     MAX_TEXTURE_UNITS = 32,
     MAX_COMBINED_TEXTURE_UNITS = 160,
@@ -297,6 +318,8 @@ int snx_gl_get(uint32_t ctx, uint32_t pname, double v[4]) {
         case 0x0b45: v[0] = f->cull_face; return 1;          /* GL_CULL_FACE_MODE */
         case 0x0b46: v[0] = f->front_face; return 1;         /* GL_FRONT_FACE */
         case 0x0b21: v[0] = f->line_width; return 1;         /* GL_LINE_WIDTH */
+        case 0x0b11: v[0] = f->point_size; return 1;         /* GL_POINT_SIZE */
+        case 0x0b40: v[0] = v[1] = f->polygon_mode; return 2; /* GL_POLYGON_MODE: front and back */
         case 0x80c9: v[0] = f->blend_src[0]; return 1;       /* GL_BLEND_SRC_RGB */
         case 0x80c8: v[0] = f->blend_dst[0]; return 1;       /* GL_BLEND_DST_RGB */
         case 0x80cb: v[0] = f->blend_src[1]; return 1;       /* GL_BLEND_SRC_ALPHA */
@@ -314,7 +337,17 @@ int snx_gl_get(uint32_t ctx, uint32_t pname, double v[4]) {
             v[0] = 1;
             return 1;
         case 0x0d33: /* GL_MAX_TEXTURE_SIZE */
+        case 0x851c: /* GL_MAX_CUBE_MAP_TEXTURE_SIZE */
         case 0x84e8: /* GL_MAX_RENDERBUFFER_SIZE */ v[0] = MAX_TEXTURE_SIZE; return 1;
+        case 0x8073: v[0] = MAX_3D_TEXTURE_SIZE; return 1;      /* GL_MAX_3D_TEXTURE_SIZE */
+        case 0x88ff: v[0] = MAX_ARRAY_TEXTURE_LAYERS; return 1; /* GL_MAX_ARRAY_TEXTURE_LAYERS */
+        case 0x8d57: v[0] = MAX_SAMPLES; return 1;              /* GL_MAX_SAMPLES */
+        case 0x80a8:                                            /* GL_SAMPLE_BUFFERS */
+        case 0x80a9: v[0] = 0; return 1;                        /* GL_SAMPLES: the window's surface has one */
+        case 0x0b12:                                            /* GL_POINT_SIZE_RANGE */
+        case 0x846d: /* GL_ALIASED_POINT_SIZE_RANGE */ v[0] = 1, v[1] = MAX_POINT_SIZE; return 2;
+        case 0x84fd: v[0] = MAX_TEXTURE_LOD_BIAS; return 1; /* GL_MAX_TEXTURE_LOD_BIAS */
+        case 0x91b0: v[0] = 0xffffffffu; return 1;          /* GL_MAX_SHADER_COMPILER_THREADS: as many as it likes */
         case 0x0d3a: /* GL_MAX_VIEWPORT_DIMS */ v[0] = v[1] = MAX_TEXTURE_SIZE; return 2;
         case 0x8869: v[0] = MAX_VERTEX_ATTRIBS; return 1;         /* GL_MAX_VERTEX_ATTRIBS */
         case 0x8872: v[0] = MAX_TEXTURE_UNITS; return 1;          /* GL_MAX_TEXTURE_IMAGE_UNITS */
