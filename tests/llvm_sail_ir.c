@@ -1,7 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* The integer, hint and barrier emitters and the branch operands tools/sailgen generates from the Sail (ir_sail.c)
-   against the hand-written ones they replaced (support/ir_int_reference.c), word by word: the same IR, and the same results.
+   against the hand-written ones they replaced (support/ir_int_reference.c), word by word: the same IR, and the same
+   results.
      snx-test-llvm-sail-ir [--report FILE] [--samples N] [--states N]
    The words: samples of every decoder row the generated subset covers (llvm_qemu_words.c), decoded for the ounce target
    (TARGET: the Switch's features with PAuth and FlagM), each again with its register fields 31 (the zero register or
@@ -9,16 +10,17 @@
    whose target this LLVM lacks is said and skipped) each word becomes a step (snx_ir_static_step) in two modules, one
    emitted by each, optimized as a game's module is (snx_ir_module_optimize, O2, the SLP vectorizer off as the setting's
    default), and the two functions are compared. Then both sets of steps run on this host from random states, and every
-   register, the flags, the next pc and UNDEF must match. Sequences that hand flags or a register from one instruction
-   to the next (SUBS then CSEL, CMP then CCMP then CSEL, ADDS then ADC, SUBS then B.HI, a load from a register an ADD
-   just wrote, FCMP then CSEL) are emitted as functions (snx_ir_emit) and must give the hand-written emitters' IR, so a
-   compare's flags still reach the condition as the compare, and a value one emitter writes is the one the other reads
-   back, whichever of the two (generated or written by hand) wrote it. Both keep their state in one per-block cache (the
-   back end's), so in a sequence the hand-written integer emitters run with no value carried through it from one
-   instruction to the next (reference_uncached): a cache that kept a stale one shows in the generated side only. Two IRs
-   that differ only in the order of their instructions and their names count as the same; a step's that differs
-   otherwise may not have more instructions than the hand-written one, and is listed. --report writes each difference's
-   two IR texts; --time ROUNDS only times the two emitters (time_emitters) */
+   register, the flags, the exclusive monitor, the next pc, UNDEF and the runtime's calls for SEV and WFE must match.
+   Sequences that hand flags or a register from one instruction to the next (SUBS then CSEL, CMP then CCMP then CSEL,
+   ADDS then ADC, SUBS then B.HI, a load from a register an ADD just wrote, FCMP then CSEL) are emitted as functions
+   (snx_ir_emit) and must give the hand-written emitters' IR, so a compare's flags still reach the condition as the
+   compare, and a value one emitter writes is the one the other reads back, whichever of the two (generated or written
+   by hand) wrote it. Both keep their state in one per-block cache (the back end's), so in a sequence the hand-written
+   integer emitters run with no value carried through it from one instruction to the next (reference_uncached): a cache
+   that kept a stale one shows in the generated side only. Two IRs that differ only in the order of their instructions
+   and their names count as the same; a step's that differs otherwise may not have more instructions than the
+   hand-written one, and is listed. --report writes each difference's two IR texts; --time ROUNDS only times the two
+   emitters (time_emitters) */
 #include "llvm_steps.h"
 #include "llvm_qemu_words.h"
 #include "support/ir_int_reference.h"
@@ -93,7 +95,7 @@ static struct {
     u64 seed;
     FILE* report;
     unsigned failures;
-    unsigned undef; /* the UNDEFs a step raised */
+    unsigned undef, sev, wfe; /* the UNDEFs a step raised, its runtime calls for SEV and WFE */
     size_t outcomes[4];
 } g_test;
 
@@ -437,11 +439,16 @@ static void on_undef(CPU* c, u64 pc, u32 word) {
     (void)word;
     ++g_test.undef;
 }
+static void on_sev(void) { ++g_test.sev; }
+static void on_wfe(CPU* c) {
+    (void)c;
+    ++g_test.wfe;
+}
 
 static int run_compare(const u32* words, size_t count, unsigned states) {
     char error[1024];
     LlvmSteps set[2];
-    RtAPI rt = {.undef = on_undef, .cas128 = snx_runtime_cas128};
+    RtAPI rt = {.undef = on_undef, .sev = on_sev, .wfe = on_wfe, .cas128 = snx_runtime_cas128};
     for (int k = 0; k < 2; ++k) {
         if (llvm_steps_begin(&set[k], 0, LLVM_STEPS_HOST, error, sizeof error)) return snx_error("%s", error);
         if (k == 0) {
@@ -455,7 +462,7 @@ static int run_compare(const u32* words, size_t count, unsigned states) {
         for (unsigned s = 0; s < states; ++s) {
             CPU start = {0}, end[2];
             u64 next[2];
-            unsigned undef[2];
+            unsigned undef[2], sev[2], wfe[2];
             for (unsigned r = 0; r < 32; ++r) start.x[r] = rnd();
             if (s & 1) start.x[(rnd() & 31)] = 0; /* zeros and edges reach the divisions and the shifts */
             if (s & 2) start.x[(rnd() & 31)] = 0x8000000000000000ull;
@@ -464,17 +471,21 @@ static int run_compare(const u32* words, size_t count, unsigned states) {
             start.z = rnd() & 1;
             start.cf = rnd() & 1;
             start.vf = rnd() & 1;
+            start.excl_on = (u32)(rnd() & 1); /* CLREX clears it */
             start.rt = &rt;
             start.pc = 0x1000;
             for (int k = 0; k < 2; ++k) {
                 end[k] = start;
-                g_test.undef = 0;
+                g_test.undef = g_test.sev = g_test.wfe = 0;
                 next[k] = set[k].steps[i](&end[k]);
                 undef[k] = g_test.undef;
+                sev[k] = g_test.sev;
+                wfe[k] = g_test.wfe;
             }
-            if (next[0] != next[1] || undef[0] != undef[1] || memcmp(end[0].x, end[1].x, sizeof end[0].x) ||
-                end[0].n != end[1].n || end[0].z != end[1].z || end[0].cf != end[1].cf || end[0].vf != end[1].vf ||
-                end[0].pc != end[1].pc) {
+            if (next[0] != next[1] || undef[0] != undef[1] || sev[0] != sev[1] || wfe[0] != wfe[1] ||
+                memcmp(end[0].x, end[1].x, sizeof end[0].x) || end[0].n != end[1].n || end[0].z != end[1].z ||
+                end[0].cf != end[1].cf || end[0].vf != end[1].vf || end[0].pc != end[1].pc ||
+                end[0].excl_on != end[1].excl_on) {
                 ++g_test.failures;
                 fprintf(stderr, "FAIL: %s %08x state %u: the generated emitter's result differs\n", op_name(words[i]),
                         (unsigned)words[i], s);
