@@ -2851,6 +2851,7 @@ setting @VK_EXT_external_memory_host
 setting @VK_EXT_fragment_shader_interlock
 setting @VK_EXT_graphics_pipeline_library
 setting @VK_EXT_hdr_metadata
+setting @VK_EXT_image_drm_format_modifier
 setting @VK_EXT_image_view_min_lod
 setting @VK_EXT_index_type_uint8
 setting @VK_EXT_legacy_vertex_attributes

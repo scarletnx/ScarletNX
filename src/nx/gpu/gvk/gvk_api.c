@@ -7,8 +7,9 @@
      renderer's, and destroying it does nothing. The features the game is told of are those the renderer's device has
      on.
    - Memory: the game sees one heap with three types. Type 0 is device-local memory alone. Types 1 and 2 are memory
-     the CPU maps: guest pages in the alias region, imported as host memory (VK_EXT_external_memory_host), so a mapping
-     is the guest's own address and the GPU reads and writes the guest's pages. The game's memoryTypeBits are the host's
+     the CPU maps, at guest addresses in the alias region, so a mapping is the guest's own address. The host imports
+     the guest pages as host memory (VK_EXT_external_memory_host), or where it can't (RenderDoc takes no host memory)
+     its own memory is exported as a dma-buf and mapped over the guest pages. The game's memoryTypeBits are the host's
      translated to these three.
    - The window: the surface is the vi layer's, and the swapchain's images are the host's own, which a present blits
      into the renderer's window (renderer.h present_image). An acquire waits for the game's pace (present_pace), as vi's
@@ -20,6 +21,7 @@
 #include "nx/runtime/main.h"
 #include "nx/runtime/options.h"
 #include "nx/runtime/platform/log.h"
+#include "nx/runtime/platform/plat.h"
 #include <string.h>
 
 #define GVK_MEMS       (1u << 16) /* the memory allocations the game holds at once, at most */
@@ -85,7 +87,8 @@ static struct {
     PMutex lock;
     int ready;                   /* the memory types are chosen */
     u32 local, coherent, cached; /* the host's memory types behind the game's 0, 1 and 2 */
-    u64 import_align;            /* minImportedHostPointerAlignment */
+    u64 import_align;            /* minImportedHostPointerAlignment, or a host page for dma-bufs */
+    VkExternalMemoryHandleTypeFlagBits handle_type; /* how the host imports guest pages: host memory or a dma-buf */
     u32 nmem, nimportable, nrpass, npass, nscaled, nsview, nsfb, ndyn;
     GvkMem mem[GVK_MEMS];       /* open addressing by handle */
     u64 importable[GVK_IMAGES]; /* the images the host imports guest memory for, open addressing */
@@ -320,42 +323,80 @@ static u32 first_type(u32 bits, VkMemoryPropertyFlags want, VkMemoryPropertyFlag
     return ~0u;
 }
 
-/* once: the host's types behind the game's three, the import's from a page of guest memory */
+/* the memory types the host imports guest pages as host memory in, read from a page of guest memory: 0 for none */
+static u32 host_import_bits(void) {
+    VkPhysicalDeviceExternalMemoryHostPropertiesEXT hp = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_MEMORY_HOST_PROPERTIES_EXT};
+    VkPhysicalDeviceProperties2 p2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &hp};
+    vkGetPhysicalDeviceProperties2(g_vk.phys, &p2);
+    g_gvk_api.import_align =
+        hp.minImportedHostPointerAlignment > 0x10000 ? hp.minImportedHostPointerAlignment : 0x10000;
+    u64 page = guest_pages(g_gvk_api.import_align, g_gvk_api.import_align);
+    if (!page) fatal("gvk: no guest memory for a page to import");
+    VkMemoryHostPointerPropertiesEXT pp = {.sType = VK_STRUCTURE_TYPE_MEMORY_HOST_POINTER_PROPERTIES_EXT};
+    VkResult r = vkGetMemoryHostPointerPropertiesEXT(g_vk.dev, VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT,
+                                                     GP(page), &pp);
+    mem_unmap(page, g_gvk_api.import_align);
+    if (r != VK_SUCCESS) WARN("gvk: the host can't import guest memory as host memory (%d)\n", (int)r);
+    return r == VK_SUCCESS ? pp.memoryTypeBits : 0;
+}
+/* the memory types the host exports as dma-bufs that the CPU maps over guest pages: its host-visible system memory,
+   where buffers can be exported as dma-bufs. 0 for none */
+static u32 dmabuf_export_bits(void) {
+    g_gvk_api.import_align = 0x10000;
+    if (!vkGetMemoryFdKHR) return 0;
+    VkPhysicalDeviceExternalBufferInfo bi = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_BUFFER_INFO,
+                                             .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+                                                      VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                                                      VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                                             .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT};
+    VkExternalBufferProperties ep = {.sType = VK_STRUCTURE_TYPE_EXTERNAL_BUFFER_PROPERTIES};
+    vkGetPhysicalDeviceExternalBufferProperties(g_vk.phys, &bi, &ep);
+    if (!(ep.externalMemoryProperties.externalMemoryFeatures & VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT)) {
+        WARN("gvk: the host can't export its memory as a dma-buf\n");
+        return 0;
+    }
+    const VkPhysicalDeviceMemoryProperties* mp = vk_devmem_props();
+    u32 bits = 0;
+    for (u32 i = 0; i < mp->memoryTypeCount; i++)
+        if ((mp->memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) &&
+            !(mp->memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT))
+            bits |= 1u << i;
+    return bits;
+}
+
+/* once: how the host imports guest pages, and its types behind the game's three */
 static void types_ready(void) {
     if (__atomic_load_n(&g_gvk_api.ready, __ATOMIC_ACQUIRE)) return;
     pm_lock(&g_gvk_api.lock);
     if (!g_gvk_api.ready) {
-        if (!vkGetMemoryHostPointerPropertiesEXT)
-            fatal(
-                "gvk: the renderer's device has no VK_EXT_external_memory_host, which the game's mapped memory needs");
-        VkPhysicalDeviceExternalMemoryHostPropertiesEXT hp = {
-            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_MEMORY_HOST_PROPERTIES_EXT};
-        VkPhysicalDeviceProperties2 p2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &hp};
-        vkGetPhysicalDeviceProperties2(g_vk.phys, &p2);
-        g_gvk_api.import_align =
-            hp.minImportedHostPointerAlignment > 0x10000 ? hp.minImportedHostPointerAlignment : 0x10000;
-        u64 page = guest_pages(g_gvk_api.import_align, g_gvk_api.import_align);
-        if (!page) fatal("gvk: no guest memory for a page to import");
-        VkMemoryHostPointerPropertiesEXT pp = {.sType = VK_STRUCTURE_TYPE_MEMORY_HOST_POINTER_PROPERTIES_EXT};
-        VkResult r = vkGetMemoryHostPointerPropertiesEXT(
-            g_vk.dev, VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT, GP(page), &pp);
-        mem_unmap(page, g_gvk_api.import_align);
-        if (r != VK_SUCCESS || !pp.memoryTypeBits)
-            fatal("gvk: the host can't import guest memory (%d, memory types %#x)", (int)r, pp.memoryTypeBits);
+        u32 bits = 0;
+        g_gvk_api.handle_type = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT;
+        if (vkGetMemoryHostPointerPropertiesEXT) bits = host_import_bits();
+        if (!bits) {
+            g_gvk_api.handle_type = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
+            bits = dmabuf_export_bits();
+        }
+        if (!bits)
+            fatal("gvk: the renderer's device neither imports guest memory as host memory "
+                  "(VK_EXT_external_memory_host) nor exports its own as a dma-buf (VK_EXT_external_memory_dma_buf), "
+                  "which the game's mapped memory needs");
         const VkMemoryPropertyFlags hv = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
         g_gvk_api.local = first_type(~0u, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
         if (g_gvk_api.local == ~0u) g_gvk_api.local = first_type(~0u, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0);
-        g_gvk_api.coherent = first_type(pp.memoryTypeBits, hv, VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
-        g_gvk_api.cached = first_type(pp.memoryTypeBits, hv | VK_MEMORY_PROPERTY_HOST_CACHED_BIT, 0);
+        g_gvk_api.coherent = first_type(bits, hv, VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
+        g_gvk_api.cached = first_type(bits, hv | VK_MEMORY_PROPERTY_HOST_CACHED_BIT, 0);
         if (g_gvk_api.coherent == ~0u) g_gvk_api.coherent = g_gvk_api.cached;
         if (g_gvk_api.cached == ~0u) g_gvk_api.cached = g_gvk_api.coherent;
         if (g_gvk_api.local == ~0u || g_gvk_api.coherent == ~0u)
-            fatal("gvk: no memory type for the game's (device-local %d, imported %#x)", (int)g_gvk_api.local,
-                  pp.memoryTypeBits);
-        LOG("gvk: the game's memory types are the host's %u (device-local), %u and %u (guest pages, imported; "
-            "the host's import types %#x, aligned to %llu bytes)\n",
-            g_gvk_api.local, g_gvk_api.coherent, g_gvk_api.cached, pp.memoryTypeBits,
-            (unsigned long long)g_gvk_api.import_align);
+            fatal("gvk: no memory type for the game's (device-local %d, imported %#x)", (int)g_gvk_api.local, bits);
+        LOG("gvk: the game's memory types are the host's %u (device-local), %u and %u (%s; the host's types for "
+            "them %#x, aligned to %llu bytes)\n",
+            g_gvk_api.local, g_gvk_api.coherent, g_gvk_api.cached,
+            g_gvk_api.handle_type == VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT
+                ? "the host's memory, as dma-bufs mapped over guest pages"
+                : "guest pages, imported as host memory",
+            bits, (unsigned long long)g_gvk_api.import_align);
         __atomic_store_n(&g_gvk_api.ready, 1, __ATOMIC_RELEASE);
     }
     pm_unlock(&g_gvk_api.lock);
@@ -657,6 +698,9 @@ static void gvk_AllocateMemory(CPU* RESTRICT c, u64 entry) {
     VkMemoryAllocateInfo hi = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = size};
     VkImportMemoryHostPointerInfoEXT imp = {.sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_HOST_POINTER_INFO_EXT,
                                             .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT};
+    VkExportMemoryAllocateInfo exp = {.sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO,
+                                      .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT};
+    int dmabuf = g_gvk_api.handle_type == VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
     GvkMem m = {0};
     if (type == 0) {
         hi.memoryTypeIndex = g_gvk_api.local;
@@ -671,14 +715,40 @@ static void gvk_AllocateMemory(CPU* RESTRICT c, u64 entry) {
         }
         hi.allocationSize = m.size;
         hi.memoryTypeIndex = type == 1 ? g_gvk_api.coherent : g_gvk_api.cached;
-        imp.pHostPointer = GP(m.va);
-        hi.pNext = &imp;
+        if (dmabuf) {
+            hi.pNext = &exp;
+        } else {
+            imp.pHostPointer = GP(m.va);
+            hi.pNext = &imp;
+        }
     } else {
         ret_vk(c, VK_ERROR_OUT_OF_DEVICE_MEMORY);
         return;
     }
     VkDeviceMemory mem = VK_NULL_HANDLE;
     VkResult r = vkAllocateMemory(g_vk.dev, &hi, NULL, &mem);
+    if (r == VK_SUCCESS && dmabuf && m.va) {
+        /* the dma-buf way: the host's memory, exported as a dma-buf that is mapped over the guest pages, so the game's
+           address is the memory's. It stays mapped as the host's too: a capture layer (RenderDoc) reads what the CPU
+           wrote to coherent memory through that mapping at each submit */
+        VkMemoryGetFdInfoKHR gi = {.sType = VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR,
+                                   .memory = mem,
+                                   .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT};
+        int fd = -1, moved = -1;
+        void* host_map = NULL;
+        r = vkGetMemoryFdKHR(g_vk.dev, &gi, &fd);
+        if (r == VK_SUCCESS) {
+            moved = mem_migrate(m.va, m.size, fd);
+            plat_vm_fd_close(fd); /* the mapping holds the dma-buf */
+        }
+        if (r == VK_SUCCESS && !moved) r = vkMapMemory(g_vk.dev, mem, 0, VK_WHOLE_SIZE, 0, &host_map);
+        if (r != VK_SUCCESS || moved) {
+            WARN_LIMIT(8, "gvk: an allocation of %llu bytes can't be a dma-buf over guest memory (%d, move %d)\n",
+                       (unsigned long long)size, (int)r, moved);
+            vkFreeMemory(g_vk.dev, mem, NULL);
+            r = VK_ERROR_OUT_OF_HOST_MEMORY;
+        }
+    }
     if (r != VK_SUCCESS) {
         WARN_LIMIT(16, "gvk: an allocation of %llu bytes of type %u failed (%d)\n", (unsigned long long)size, type,
                    (int)r);
@@ -911,7 +981,7 @@ static void gvk_CreateBuffer(CPU* RESTRICT c, u64 entry) {
     if (ci) {
         VkExternalMemoryBufferCreateInfo ext = {.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO,
                                                 .pNext = ci->pNext,
-                                                .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT};
+                                                .handleTypes = g_gvk_api.handle_type};
         ci->pNext = &ext;
         ci->sharingMode = VK_SHARING_MODE_EXCLUSIVE;
         ci->queueFamilyIndexCount = 0;
@@ -924,15 +994,29 @@ static void gvk_CreateBuffer(CPU* RESTRICT c, u64 entry) {
     put_handle(c->x[3], U(h));
     ret_vk(c, r);
 }
+/* the dma-buf way: a dma-buf takes an image only with a DRM format modifier, so a linear image is made with the
+   linear one (DRM_FORMAT_MOD_LINEAR), where the device has the extension */
+static int image_modifier(void) {
+    return g_gvk_api.handle_type == VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT &&
+           vkGetImageDrmFormatModifierPropertiesEXT != NULL;
+}
+static const u64 g_mod_linear = 0; /* DRM_FORMAT_MOD_LINEAR */
 static int image_importable(const VkImageCreateInfo* ci) {
+    if (g_gvk_api.handle_type == VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT && !image_modifier()) return 0;
+    VkPhysicalDeviceImageDrmFormatModifierInfoEXT mod = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_DRM_FORMAT_MODIFIER_INFO_EXT,
+        .drmFormatModifier = g_mod_linear,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
     VkPhysicalDeviceExternalImageFormatInfo ext = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_IMAGE_FORMAT_INFO,
-        .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT};
+        .pNext = image_modifier() ? &mod : NULL,
+        .handleType = g_gvk_api.handle_type};
     VkPhysicalDeviceImageFormatInfo2 info = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_FORMAT_INFO_2,
                                              .pNext = &ext,
                                              .format = ci->format,
                                              .type = ci->imageType,
-                                             .tiling = ci->tiling,
+                                             .tiling = image_modifier() ? VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT
+                                                                        : ci->tiling,
                                              .usage = ci->usage,
                                              .flags = ci->flags};
     VkExternalImageFormatProperties ep = {.sType = VK_STRUCTURE_TYPE_EXTERNAL_IMAGE_FORMAT_PROPERTIES};
@@ -951,12 +1035,21 @@ static void gvk_CreateImage(CPU* RESTRICT c, u64 entry) {
         ci->pQueueFamilyIndices = NULL;
         ci->format = host_format(ci->format);
         int importable = ci->tiling == VK_IMAGE_TILING_LINEAR && image_importable(ci);
+        VkImageDrmFormatModifierListCreateInfoEXT mods = {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_DRM_FORMAT_MODIFIER_LIST_CREATE_INFO_EXT,
+            .pNext = ci->pNext,
+            .drmFormatModifierCount = 1,
+            .pDrmFormatModifiers = &g_mod_linear};
         VkExternalMemoryImageCreateInfo ext = {.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO,
                                                .pNext = ci->pNext,
-                                               .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT};
+                                               .handleTypes = g_gvk_api.handle_type};
         if (importable) {
             /* an external image starts undefined, which a linear one's texels outlive: the game's preinitialized
                ones keep what it writes before their first barrier */
+            if (image_modifier()) {
+                ext.pNext = &mods;
+                ci->tiling = VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT;
+            }
             ci->pNext = &ext;
             ci->initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
         }
@@ -989,10 +1082,15 @@ static void gvk_DestroyImage(CPU* RESTRICT c, u64 entry) {
     vkDestroyImage(g_vk.dev, H(VkImage, c->x[1]), NULL);
     ret(c, 0);
 }
+/* an image of the linear DRM format modifier tells its layout by its memory plane, not its color aspect */
 static void gvk_GetImageSubresourceLayout(CPU* RESTRICT c, u64 entry) {
     VkSubresourceLayout l = {0};
-    if (c->x[2] && mem_user_mapped(c->x[2], sizeof(VkImageSubresource)))
-        vkGetImageSubresourceLayout(g_vk.dev, H(VkImage, c->x[1]), gvk_ptr(c->x[2]), &l);
+    if (c->x[2] && mem_user_mapped(c->x[2], sizeof(VkImageSubresource))) {
+        VkImageSubresource s;
+        memcpy(&s, GP(c->x[2]), sizeof s);
+        if (image_modifier() && importable_has(c->x[1])) s.aspectMask = VK_IMAGE_ASPECT_MEMORY_PLANE_0_BIT_EXT;
+        vkGetImageSubresourceLayout(g_vk.dev, H(VkImage, c->x[1]), &s, &l);
+    }
     put(c->x[3], &l, sizeof l);
     ret(c, 0);
 }
