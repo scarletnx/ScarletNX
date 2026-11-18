@@ -50,7 +50,7 @@ env:
   SNX_HEADLESS_OPTIONS: -DSNX_BUILD_GUI=OFF -DSNX_DEPLOY=OFF -DSNX_TEST_VULKAN=ON -DSNX_TEST_AV1_VECTORS=ON
   # the jobs that may fail without failing the run (continue-on-error), whose failure cancels nothing
   # (scripts/fail-fast.py; tests/fail_fast_test.py holds the two to each other)
-  SNX_OPTIONAL_JOBS: '^(macOS and iOS \(arm64\)|Linux AppImage \((ppc64le|ppc64|riscv64|loongarch64)\))$'
+  SNX_OPTIONAL_JOBS: '^(macOS and iOS \(arm64\)|Windows \(Clang \+ LLVM, aarch64\)|Linux AppImage \((ppc64le|ppc64|riscv64|loongarch64)\))$'
 
 # Linux jobs run in Arch Linux, which has the same Clang 23 and clang-format 23 as development, and its LLVM 23 for the
 # recompiler's code generator (required, cmake/llvm.cmake). Windows uses MSYS2 CLANG64 (CLANGARM64 on Arm) so Clang, the
@@ -1174,6 +1174,9 @@ jobs:
     name: Windows (Clang + LLVM${{ matrix.arch == 'aarch64' && ', aarch64' || '' }})
     runs-on: ${{ matrix.arch == 'aarch64' && 'windows-11-arm' || 'windows-2025-vs2026' }}
     timeout-minutes: 90
+    # the Windows on Arm leg may fail without failing the run (SNX_OPTIONAL_JOBS): its failure mark is read and passed
+    # over by name, and the nightly publishes its zip only when it built
+    continue-on-error: ${{ matrix.arch == 'aarch64' }}
     strategy:
       fail-fast: false
       matrix:
