@@ -216,9 +216,11 @@ int mem_pool_active(void);
 /* Pages with two addresses (a view and its source, shared memory mapped twice, on a host with the pool): fn(user, at,
    n) for each other guest range [at, at + n) that maps the pool pages behind [a, a + size), under the memory lock
    (fn takes no lock of mem.c's). Nothing for a range no other address maps, and no lock for one whose 4 MiB grains
-   no such page is on. mem_alias_any: whether any page may have two addresses now, without the lock */
+   no such page is on. mem_alias_any: whether any page may have two addresses now, without the lock. mem_alias_clear:
+   whether no page of [a, a + size) has another address now, without the lock (0 where one may) */
 void mem_alias_peers(u64 a, u64 size, void (*fn)(void* user, u64 at, u64 n), void* user);
 int mem_alias_any(void);
+int mem_alias_clear(u64 a, u64 size);
 /* Pool pages of their own (shared memory): size bytes mapped outside the reservation at the pointer returned, with
    their pool offset in off; NULL without a pool or when it is full */
 u8* mem_pool_host(u64 size, u64* off);
