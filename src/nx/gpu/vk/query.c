@@ -596,7 +596,8 @@ int vk_query_pred_compare(u64 a, u32* slot) {
     }
     if (k == PN) return 0;
     at = (g_pnext + k) % PN;
-    if (!vk_buf_get(a, 24, &buf, &off)) return 0;
+    /* at any 4 bytes: the binding starts at the storage alignment below and the program reads from (off - base) / 4 */
+    if (!vk_buf_get_at(a, 24, 4, &buf, &off)) return 0;
     VkDescriptorSet set = vk_desc_alloc(g_cds);
     if (!set) return 0;
     base = align ? off / align * align : off; /* a storage binding's offset is a multiple of the device's alignment */
