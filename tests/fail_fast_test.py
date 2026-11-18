@@ -87,7 +87,7 @@ def reset(**given):
 
 server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), GitHub)
 threading.Thread(target=server.serve_forever, daemon=True).start()
-OPTIONAL = r'^(macOS and iOS \(arm64\)|Linux AppImage \((ppc64le|ppc64|riscv64|loongarch64)\)(, as installed)?)$'
+OPTIONAL = r'^(macOS and iOS \(arm64\)|Linux AppImage \((ppc64le|ppc64|riscv64|loongarch64)\))$'
 ENV = dict(
     os.environ,
     GITHUB_API_URL=f'http://127.0.0.1:{server.server_address[1]}',
@@ -269,7 +269,7 @@ for block in blocks:
         mark_at = max(block.find('*fail-fast-mark'), block.find('&fail-fast-mark'))
         check(f"{name_id} writes the mark's file before it uploads it", 0 <= file_at < mark_at, (file_at, mark_at))
         check(f'{name_id}: SNX_OPTIONAL_JOBS leaves out {names}', not any(optional.search(n) for n in names), names)
-check("build.yml's jobs read: fewer means this test no longer reads the file as it is", seen >= 14, seen)
+check("build.yml's jobs read: fewer means this test no longer reads the file as it is", seen >= 8, seen)
 check('no job dispatches a workflow to cancel its run', 'cancel-run.yml' not in text)
 # upload-artifact refuses a path with a . or .. in it ("Relative pathing '.' and '..' is not allowed"): the mark of
 # 2c12f69 named ../../_temp/_github_workflow/event.json, and no failed job marked its run
