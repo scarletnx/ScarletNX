@@ -40,6 +40,7 @@ typedef struct {
     validity_t hash_table_validity;
     int is_exefs;
     npdm_t *npdm;
+    uint64_t npdm_size; /* ScarletNX: the bytes npdm holds, which its offsets must stay in */
     pfs0_header_t *header;
 } pfs0_ctx_t;
 
