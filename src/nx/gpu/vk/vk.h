@@ -1462,7 +1462,7 @@ u64 vk_rt_take_gen(void);
 void vk_rt_reload(u64 gva);
 /* textures share the surface table. g_vk_surf_epoch changes whenever a surface enters it, leaves it or moves (a
    target parked or taken back), so what was found there can be kept until it changes */
-extern u32 g_vk_surf_epoch;
+extern _Atomic u32 g_vk_surf_epoch;
 u32 vk_surf_epoch_at(u64 gva); /* the same, for the surfaces of gva's bucket of the table only */
 /* the surfaces of gva's bucket of the table: vk_surf_first, then vk_surf_next until NULL */
 Surf* vk_surf_first(u64 gva);

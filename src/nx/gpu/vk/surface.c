@@ -244,12 +244,12 @@ void vk_surf_textures(void (*fn)(Surf* t, void* ctx), void* ctx) {
         for (u32 r = g_rows.lists[list].head; r; r = g_rows.lru[r].next) fn(g_rows.surf[r], ctx);
 }
 static _Thread_local int g_rt_flushing;
-u32 g_vk_surf_epoch;
+_Atomic u32 g_vk_surf_epoch;
 static u32 g_surf_bucket_epoch[SURFH];
 u32 vk_surf_epoch_at(u64 gva) { return g_surf_bucket_epoch[hkey(gva)]; }
 /* a change of the surface table at gva: of its own bucket (a parked target's high bit leaves it in the same one) */
 static void surf_changed(u64 gva) {
-    g_vk_surf_epoch++;
+    atomic_fetch_add_explicit(&g_vk_surf_epoch, 1, memory_order_relaxed);
     g_surf_bucket_epoch[hkey(gva)]++;
 }
 
