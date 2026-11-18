@@ -193,6 +193,25 @@ static inline SgD sg_d_from_s(SgS s) {
     for (i = 0; i < s.w; ++i) d.sel[i] = (unsigned char)((s.v >> i) & 1);
     return d;
 }
+/* w bits all 0 or all 1, or integer v's bits hi..lo (two's complement), known when it recompiles but over the 64 bits
+   an SgS keeps (a SIMD&FP register's Zeros(128)): a map of constant bits */
+static inline SgD sg_d_fill(long long w, int one) {
+    SgD d = sg_d_empty((unsigned)w);
+    unsigned i;
+    for (i = 0; i < d.w; ++i) d.sel[i] = (unsigned char)(one != 0);
+    return d;
+}
+static inline SgD sg_d_of_int(long long v, long long hi, long long lo) {
+    SgD d;
+    unsigned i;
+    if (lo < 0 || hi < lo) sg_fail("bits of an integer out of it", hi, lo);
+    d = sg_d_empty((unsigned)(hi - lo + 1));
+    for (i = 0; i < d.w; ++i) {
+        long long b = lo + (long long)i;
+        d.sel[i] = (unsigned char)(b >= 63 ? v < 0 : (v >> b) & 1);
+    }
+    return d;
+}
 /* the bits of an LLVM integer value: a map of one source, already made */
 static inline SgD sg_d_from(SgCtx* g, LLVMValueRef v) {
     unsigned w = LLVMGetIntTypeWidth(LLVMTypeOf(v)), i;

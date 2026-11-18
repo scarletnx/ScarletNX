@@ -1329,14 +1329,33 @@ add_test(NAME sailgen_refused_struct
                  "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/refused_struct.sail")
 set_tests_properties(sailgen_refused_struct PROPERTIES PASS_REGULAR_EXPRESSION
     "refused_struct.sail:17: error: the field flag assigned a value known only at run time")
-# an action of the back end gives bits, a bool or nothing: one whose val gives an integer is refused where it is called
+# the back end's function gives nothing, bits, a bool, an enum or a tuple of bits: one whose val gives an integer is
+# refused where it is called
 add_test(NAME sailgen_refused_action
          COMMAND snx-sailgen --generate "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/refused_action.roots"
                  --backend "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/action_backend.h"
                  -o "${CMAKE_CURRENT_BINARY_DIR}/sailgen/refused_action.inc"
                  "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/refused_action.sail")
 set_tests_properties(sailgen_refused_action PROPERTIES PASS_REGULAR_EXPRESSION
-    "refused_action.sail:8: error: Peek, the back end's action, gives a value of kind 2: bits, a bool or none")
+    "refused_action.sail:8: error: Peek gives an integer: the back end's functions give nothing, bits, a bool, an enum or a tuple of bits")
+# a function the back end lowers: --extract copies its val and the types it names, not its Sail; called under a
+# run-time condition by a back end function that takes none, it is refused with its line
+add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/sailgen/lower.sail"
+    COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/sailgen"
+    COMMAND snx-sailgen --extract "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/lower.roots"
+            -o "${CMAKE_CURRENT_BINARY_DIR}/sailgen/lower.sail" "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/lower.sail"
+    DEPENDS snx-sailgen "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/lower.roots" "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/lower.sail"
+    VERBATIM)
+add_custom_target(snx_sailgen_lower_test ALL DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/sailgen/lower.sail")
+add_test(NAME sailgen_extract_lower COMMAND "${CMAKE_COMMAND}" -E compare_files --ignore-eol
+         "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/lower_expected.sail" "${CMAKE_CURRENT_BINARY_DIR}/sailgen/lower.sail")
+add_test(NAME sailgen_refused_path
+         COMMAND snx-sailgen --generate "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/refused_path.roots"
+                 --backend "${PROJECT_SOURCE_DIR}/tools/sailgen/llvm.h"
+                 -o "${CMAKE_CURRENT_BINARY_DIR}/sailgen/refused_path.inc"
+                 "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/refused_path.sail")
+set_tests_properties(sailgen_refused_path PROPERTIES PASS_REGULAR_EXPRESSION
+    "refused_path.sail:9: error: InstructionSynchronizationBarrier, the back end's action, under a condition known only at run time")
 # and the A64 subsets of src/common/cpu/aarch64/sail/ generate whole, with the NX's fixups
 add_test(NAME sailgen_a64
          COMMAND snx-sailgen --generate "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/sail/a64.roots"

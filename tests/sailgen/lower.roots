@@ -1,0 +1,4 @@
+# sailgen's tests (tests/CMakeLists.txt): a function the back end lowers (lower) is copied as its val alone, with the
+# types the val names; its Sail and what that calls are left out
+root decode_sum_aarch64_instrs_test
+lower Sum

@@ -424,6 +424,8 @@ static unsigned through_let(unsigned n) {
 /* does a function reach state (a register, a feature, the pc), or call one that does? A call of an overload may run
    any of its functions */
 static int reaches_state(unsigned def, unsigned depth);
+/* what the back end's sg_NAME of a function with no Sail definition takes after the context (backend_action) */
+enum { BACKEND_ARGS = 1, BACKEND_PATH = 2 };
 static int backend_action(const char* name);
 static int node_reaches_state(unsigned n, unsigned depth) {
     if (!n) return 0;
@@ -479,6 +481,8 @@ static unsigned function_def(const char* name, unsigned count) {
     return 0;
 }
 
+static void bind_widths(unsigned def, const Val* args, unsigned count);
+
 /* a function whose arguments are all known when the recompiler runs, and that reaches no state, as a C function
    (int: 1 when it throws; its results through pointers) */
 static Val helper_call(unsigned n, unsigned def, Val* args, unsigned count) {
@@ -517,6 +521,11 @@ static Val helper_call(unsigned n, unsigned def, Val* args, unsigned count) {
         g_gen.dynamic_branch = 0;
         for (k = 0; k < count; ++k) bind(names[k], val_c(args[k].kind, BT_STATIC, "a_%s", sg_str(names[k])), -1, 0);
         g_gen.frame = saved_depth;
+        {
+            Val bound[16];
+            for (k = 0; k < count; ++k) bound[k] = val_c(args[k].kind, BT_STATIC, "a_%s", sg_str(names[k]));
+            bind_widths(def, bound, count);
+        }
         ret = eval(g_parse.defs[def].body, 1);
         if (ret.kind == K_TUPLE) {
             h->tuple = 1;
@@ -579,6 +588,58 @@ static Val helper_call(unsigned n, unsigned def, Val* args, unsigned count) {
     return outs[0];
 }
 
+/* the type variables a function's val gives its bits parameters' widths by and no parameter names (FPAbs : forall
+   'N. bits('N) -> bits('N) reads 'N), bound in the frame to those arguments' widths, known when it recompiles */
+static void bind_widths(unsigned def, const Val* args, unsigned count) {
+    unsigned val = sg_find(sg_str(g_parse.defs[def].name), D_VAL), k = 0;
+    const char *text, *s, *e, *arrow = NULL, *open;
+    int depth = 0;
+    if (!val) return;
+    text = g_parse.files[g_parse.defs[val].source].text;
+    e = text + g_parse.defs[val].text_end;
+    for (s = text + g_parse.defs[val].text_start; s < e; ++s) {
+        if (s[0] == '/' && s + 1 < e && s[1] == '/') { /* a comment before the val */
+            while (s < e && *s != '\n') ++s;
+            continue;
+        }
+        if (*s == '(' || *s == '{') ++depth;
+        if (*s == ')' || *s == '}') --depth;
+        if (!depth && *s == '-' && s + 1 < e && s[1] == '>') arrow = s;
+    }
+    if (!arrow) return;
+    for (s = arrow; s > text && isspace((unsigned char)s[-1]); --s) {}
+    if (s == text || s[-1] != ')') return; /* one parameter of a type with no width (unit -> ...) */
+    for (open = s - 1, depth = 0; open > text; --open) {
+        if (*open == ')') ++depth;
+        if (*open == '(' && --depth == 0) break;
+    }
+    if (open > text && (isalnum((unsigned char)open[-1]) || open[-1] == '_')) /* one parameter: bits('N) -> ... */
+        while (open > text && (isalnum((unsigned char)open[-1]) || open[-1] == '_')) --open;
+    else
+        ++open; /* the list's parameters */
+    for (s = open, depth = 0; s < arrow && k < count; ++k) {
+        const char* t = s;
+        while (t < arrow && isspace((unsigned char)*t)) ++t;
+        if (!strncmp(t, "bits('", 6) && args[k].kind == K_BITS) {
+            const char* name = t + 6;
+            size_t length = 0;
+            while (isalnum((unsigned char)name[length]) || name[length] == '_') ++length;
+            if (name[length] == ')') {
+                unsigned id = sg_intern(name, length);
+                if (!lookup(sg_str(id))) bind(id, val_c(K_INT, BT_STATIC, "(long long)(%s).w", args[k].c), -1, 0);
+            }
+        }
+        for (; s < arrow; ++s) { /* to the next parameter */
+            if (*s == '(' || *s == '{') ++depth;
+            if ((*s == ')' || *s == '}') && --depth < 0) break;
+            if (*s == ',' && !depth) {
+                ++s;
+                break;
+            }
+        }
+    }
+}
+
 /* an inlined function: its parameters bound to the arguments in a frame of its own, the value of its body */
 static Val inline_call(unsigned n, unsigned def, Val* args, unsigned count) {
     unsigned names[16], name_count, k, saved_frame = g_gen.frame, base = g_gen.depth;
@@ -589,6 +650,7 @@ static Val inline_call(unsigned n, unsigned def, Val* args, unsigned count) {
     if (++g_gen.call_depth > 48) sg_fail(n, "calls nested over 48 deep inlining %s", sg_str(g_parse.defs[def].name));
     for (k = 0; k < count; ++k) bind(names[k], args[k], -1, args[k].node);
     g_gen.frame = base;
+    bind_widths(def, args, count);
     emit("/* %s */\n", sg_str(g_parse.defs[def].name));
     r = eval(g_parse.defs[def].body, 1);
     if (r.kind != K_UNIT && r.kind != K_TUPLE) r = keep(r);
@@ -599,6 +661,10 @@ static Val inline_call(unsigned n, unsigned def, Val* args, unsigned count) {
 }
 
 /* ---- builtins: Sail's library and the shared functions sailgen lowers itself (README.md, "Builtins") ---- */
+
+/* a width known here over the 64 bits a value known when it recompiles keeps (SgS): such bits (a SIMD&FP register's
+   Zeros(128)) are a map of constant bits instead, which costs no IR */
+static int wide(Val width) { return width.bt == BT_CONST && width.value > 64; }
 
 static Val arg(unsigned n, unsigned i) { return eval(arg_at(n, i), 0); }
 static void need_args(unsigned n, unsigned count) {
@@ -673,6 +739,7 @@ static int builtin(unsigned n, const char* name, Val* r) {
         need_args(n, 2);
         a = need_bits(n, arg(n, 0), name);
         b = need_static_int(n, arg(n, 1), "an extension's width");
+        if (a.bt != BT_DYN && wide(b)) a = raise(a, BT_DYN);
         *r = a.bt == BT_DYN ? val_c(K_BITS, BT_DYN, "sg_d_%s(g, %s, %s)", s ? "sext" : "zext", a.c, b.c)
                             : val_c(K_BITS, BT_STATIC, "sg_s_%s(%s, %s)", s ? "sext" : "zext", a.c, b.c);
         return 1;
@@ -692,7 +759,10 @@ static int builtin(unsigned n, const char* name, Val* r) {
     if (!strcmp(name, "Zeros") || !strcmp(name, "Ones")) {
         need_args(n, 1);
         a = need_static_int(n, arg(n, 0), "a width");
-        *r = val_c(K_BITS, BT_STATIC, "sg_s_%s(%s)", name[0] == 'Z' ? "zeros" : "ones", a.c);
+        if (wide(a)) /* a SIMD&FP register's 128 bits: a map of constant bits */
+            *r = val_c(K_BITS, BT_DYN, "sg_d_fill(%s, %d)", a.c, name[0] == 'O');
+        else
+            *r = val_c(K_BITS, BT_STATIC, "sg_s_%s(%s)", name[0] == 'Z' ? "zeros" : "ones", a.c);
         return 1;
     }
     if (!strcmp(name, "Replicate")) {
@@ -902,6 +972,26 @@ static int builtin(unsigned n, const char* name, Val* r) {
         *r = unit();
         return 1;
     }
+    if (!strcmp(name, "Elem_set")) { /* Elem_set(x, e, size, v): x with its element e of size bits made v */
+        Val e, size, v;
+        char t[16];
+        need_args(n, 4);
+        a = need_bits(n, arg(n, 0), name);
+        e = need_static_int(n, arg(n, 1), "an element's number");
+        size = need_static_int(n, arg(n, 2), "an element's size");
+        v = need_bits(n, arg(n, 3), name);
+        if (a.bt != BT_DYN && v.bt != BT_DYN) {
+            *r = val_c(K_BITS, BT_STATIC, "sg_s_set_slice(%s, ((%s) + 1) * (%s) - 1, (%s) * (%s), %s)", a.c, e.c,
+                       size.c, e.c, size.c, v.c);
+            return 1;
+        }
+        temp(t, sizeof t);
+        emit("SgD %s = %s;\n", t, raise(a, BT_DYN).c);
+        emit("sg_d_set_slice(g, &%s, ((%s) + 1) * (%s) - 1, (%s) * (%s), %s);\n", t, e.c, size.c, e.c, size.c,
+             raise(v, BT_DYN).c);
+        *r = val_c(K_BITS, BT_DYN, "%s", t);
+        return 1;
+    }
     if (!strcmp(name, "Unreachable")) {
         need_args(n, 0);
         emit("sg_fail(\"Unreachable() reached at %s:%u\", 0, 0);\n", sg_str(N(n).file), N(n).line);
@@ -911,31 +1001,86 @@ static int builtin(unsigned n, const char* name, Val* r) {
     return 0;
 }
 
-/* NAME(args), a function with no Sail definition (the machine's action: a barrier, an event, a guest memory access)
-   that the back end lowers as sg_NAME: given the arguments when takes is 1 (bits and DYN ones as the back end's values,
-   the others as C integers) and none when 0 (the back end's sg_NAME takes the context alone: they mean nothing to
-   it); a statement, or a DYN value of the result its val gives (nx.sail's GuestMemRead) */
+/* the parts of a tuple a lowered function gives, as its val spells it ((bits('N), bits(1))): how many, each bits */
+static unsigned tuple_parts(unsigned n, unsigned val) {
+    const SgDef* d = &g_parse.defs[val];
+    const char *text = g_parse.files[d->source].text, *s = text + d->text_start, *e = text + d->text_end, *arrow = NULL;
+    unsigned parts = 1;
+    int depth = 0;
+    for (; s < e; ++s) {
+        if (s[0] == '/' && s + 1 < e && s[1] == '/') { /* a comment before the val */
+            while (s < e && *s != '\n') ++s;
+            continue;
+        }
+        if (*s == '(' || *s == '{') ++depth;
+        if (*s == ')' || *s == '}') --depth;
+        if (!depth && *s == '-' && s + 1 < e && s[1] == '>') arrow = s;
+    }
+    for (s = arrow ? arrow + 2 : e; s < e && isspace((unsigned char)*s); ++s) {}
+    if (s == e || *s != '(') sg_fail(n, "%s's result is a tuple its val does not spell as (T, ...)", sg_str(d->name));
+    for (depth = 0; s < e; ++s) {
+        if (*s == '(' || *s == ',') {
+            const char* t = s + 1;
+            if (*s == '(') ++depth;
+            if (depth != 1) continue;
+            while (t < e && isspace((unsigned char)*t)) ++t;
+            if (strncmp(t, "bit", 3)) sg_fail(n, "%s's result has a part other than bits", sg_str(d->name));
+            parts += *s == ',';
+        } else if (*s == ')' && --depth == 0)
+            break;
+    }
+    if (parts > 4) sg_fail(n, "%s's result has over 4 parts", sg_str(d->name));
+    return parts;
+}
+
+/* NAME(args), a function with no Sail definition that the back end lowers as sg_NAME: the machine's action (a barrier,
+   an event, a guest memory access), or a function whose Sail a64.roots' lower leaves out, its val kept (the
+   floating-point arithmetic, on real numbers). sg_NAME takes the context, then (BACKEND_PATH) the run-time condition the
+   call is under, NULL for none, so what it changes it changes only there (FCCMP's compare), then (BACKEND_ARGS) the
+   arguments: bits as the back end's values whatever their time, the rest as C values or IR as they come. A call under
+   a run-time condition needs the path. Its result is its val's: none, bits or a bool (IR: nx.sail's GuestMemRead), an
+   enum (known when it recompiles: a member, or a value of the back end's own, FPRoundingMode's "the mode FPCR holds
+   when the guest runs") or a tuple of bits, whose parts come out through pointers after the arguments */
 static Val action_call(unsigned n, const char* name, int takes) {
-    unsigned count = arg_count(n), i, d = sg_find(name, D_VAL);
-    int result = d ? (int)g_parse.defs[d].ret_kind : K_UNIT;
-    char text[600];
-    int at;
-    if (g_gen.dynamic_branch) sg_fail(n, "%s, the back end's action, under a condition known only at run time", name);
+    unsigned count = arg_count(n), i, parts = 0, val = sg_find(name, D_VAL);
+    int kind = val ? (int)g_parse.defs[val].ret_kind : K_UNIT, at;
+    char text[1024], t[16];
+    Val outs[4];
+    if (g_gen.dynamic_branch && !(takes & BACKEND_PATH))
+        sg_fail(n, "%s, the back end's action, under a condition known only at run time", name);
     if (g_gen.in_helper) sg_fail(n, "%s, the back end's action, in a function of what the recompiler knows", name);
+    if (kind == K_BIT) kind = K_BITS;
+    if (kind == K_TUPLE) parts = tuple_parts(n, val);
+    if (kind != K_UNIT && kind != K_NONE && kind != K_BITS && kind != K_BOOL && kind != K_ENUM && kind != K_TUPLE)
+        sg_fail(n, "%s gives %s: the back end's functions give nothing, bits, a bool, an enum or a tuple of bits", name,
+                kind == K_INT    ? "an integer"
+                : kind == K_REAL ? "a real"
+                                 : "a value of a kind sailgen does not keep");
     at = snprintf(text, sizeof text, "sg_%s(g", name);
-    for (i = 0; takes && i < count; ++i) {
+    if (takes & BACKEND_PATH)
+        at += snprintf(text + at, sizeof text - (size_t)at, ", %s", g_gen.path[0] ? g_gen.path : "NULL");
+    for (i = 0; (takes & BACKEND_ARGS) && i < count; ++i) {
         Val a = eval(arg_at(n, i), 0);
         if (a.kind == K_UNIT || a.kind == K_TUPLE) sg_fail(n, "%s's argument %u is no value", name, i + 1);
-        if (a.kind == K_BITS) a = keep(raise(a, BT_DYN));
+        if (a.kind == K_BITS) a = raise(a, BT_DYN);
+        a = keep(a);
         at += snprintf(text + at, sizeof text - (size_t)at, ", %s", a.c);
         if (at >= (int)sizeof text) sg_fail(n, "%s's arguments over %zu characters", name, sizeof text);
     }
-    if (result == K_BITS || result == K_BIT) return keep(val_c(K_BITS, BT_DYN, "%s)", text));
-    if (result == K_BOOL) return keep(val_c(K_BOOL, BT_DYN, "%s)", text));
-    if (result != K_UNIT && result != K_NONE)
-        sg_fail(n, "%s, the back end's action, gives a value of kind %d: bits, a bool or none", name, result);
-    emit("%s);\n", text);
-    return unit();
+    for (i = 0; i < parts; ++i) {
+        temp(t, sizeof t);
+        emit("SgD %s;\n", t);
+        outs[i] = val_c(K_BITS, BT_DYN, "%s", t);
+        at += snprintf(text + at, sizeof text - (size_t)at, ", &%s", t);
+        if (at >= (int)sizeof text) sg_fail(n, "%s's arguments over %zu characters", name, sizeof text);
+    }
+    if (kind == K_UNIT || kind == K_NONE || kind == K_TUPLE) {
+        emit("%s);\n", text);
+        return kind == K_TUPLE ? tuple_of(outs, parts, n) : unit();
+    }
+    temp(t, sizeof t);
+    emit("%s %s = %s);\n", kind == K_BITS ? "SgD" : kind == K_BOOL ? "LLVMValueRef" : "int", t, text);
+    return val_c(kind, kind == K_ENUM ? BT_STATIC : BT_DYN, "%s", t);
 }
 
 static Val call(unsigned n) {
@@ -1052,8 +1197,10 @@ static int backend_defines_function(const char* name) {
     }
     return 0;
 }
-/* the back end lowers name, a function with no Sail definition, as sg_NAME (action_call): -1 when it does not, 1 when
-   sg_NAME takes the call's arguments after the context, 0 when it takes the context alone */
+/* the back end lowers name, a function with no Sail definition, as sg_NAME (action_call): -1 when it does not, else
+   what sg_NAME takes after the context: BACKEND_PATH when its next parameter is named path, BACKEND_ARGS when the call's
+   arguments follow (none: they mean nothing to it) */
+static const char* word_before(const char* s, size_t* n);
 static int backend_action(const char* name) {
     char fn[160];
     const char* s = NULL;
@@ -1061,10 +1208,19 @@ static int backend_action(const char* name) {
     snprintf(fn, sizeof fn, "sg_%s", name);
     if (!backend_defines_function(fn)) return -1;
     while ((s = backend_word(fn, s)) != NULL) {
-        const char* p = skip_blank(s + strlen(fn));
+        const char *p = skip_blank(s + strlen(fn)), *e, *w;
+        int takes = 0;
+        size_t length;
         if (strncmp(line_start(s), "static", 6) || *p != '(') continue;
         for (; *p && *p != ')' && *p != ','; ++p) {}
-        return *p == ',';
+        if (*p != ',') return 0;
+        for (e = p + 1; *e && *e != ')' && *e != ','; ++e) {} /* the parameter after the context, its name last */
+        w = word_before(e, &length);
+        if (length == 4 && !strncmp(w, "path", 4)) {
+            takes |= BACKEND_PATH;
+            p = e;
+        }
+        return takes | (*p == ',' ? BACKEND_ARGS : 0);
     }
     return -1;
 }
@@ -1415,9 +1571,22 @@ static Val slice(unsigned n) {
     unsigned reg = N(n).kind == N_INDEX ? register_def(N(n).a) : 0;
     Val x, hi, lo;
     if (reg) return element_read(n, reg);
+    if (N(n).kind == N_SLICE && N(N(n).a).kind == N_INDEX && (reg = register_def(N(N(n).a).a)) != 0 &&
+        reg_kind(reg) == K_VECTOR) { /* REG[i][hi .. lo]: only those bits, where the back end reads them alone */
+        char fn[160];
+        snprintf(fn, sizeof fn, "sg_%s_read_bits", reg_name(reg));
+        if (backend_defines_function(fn)) {
+            Val i = need_static_int(n, eval(N(N(n).a).b, 0), "a register's element number");
+            hi = need_static_int(n, eval(N(n).b, 0), "a slice's bound");
+            lo = need_static_int(n, eval(N(n).c, 0), "a slice's bound");
+            return val_c(K_BITS, BT_DYN, "%s(g, %s, %s, %s)", fn, i.c, hi.c, lo.c);
+        }
+    }
     x = eval(N(n).a, 0);
     hi = need_static_int(n, eval(N(n).b, 0), "a slice's bound");
     lo = N(n).kind == N_SLICE ? need_static_int(n, eval(N(n).c, 0), "a slice's bound") : hi;
+    if (x.kind == K_INT && x.bt != BT_DYN && hi.bt == BT_CONST && lo.bt == BT_CONST && hi.value - lo.value >= 64)
+        return val_c(K_BITS, BT_DYN, "sg_d_of_int(%s, %s, %s)", x.c, hi.c, lo.c); /* 0[127 .. 0]: constant bits */
     if (x.kind == K_INT) {
         if (x.bt == BT_DYN) return val_c(K_BITS, BT_DYN, "sg_i_slice(g, %s, %s, %s)", x.c, hi.c, lo.c);
         return val_c(K_BITS, BT_STATIC, "sg_s_of_int(%s, %s, %s)", x.c, hi.c, lo.c);
