@@ -2397,9 +2397,11 @@ rebind:
            once, the GPU runs it while the stream goes on, and a reader of its results waits for that submit alone,
            not for the draws recorded after it: Pokemon Legends Z-A writes command lists with a dispatch and fetches
            them a little later (a GPFIFO entry with SYNC), once a frame */
+        const u64 staged_before = vk_buf_commits_staged();
         vk_uma_writer(p->key);
         vk_buf_writable_commit();
         vk_uma_writer(0);
+        const int staged = vk_buf_commits_staged() != staged_before;
         for (i = 0; i < p->si.nimg && i < 8; i++)
             if (bufimg_view[i]) vk_defer_buffer_view(bufimg_view[i]);
         /* the storage images' texels over their guest bytes, after the dispatch on the GPU */
@@ -2424,8 +2426,12 @@ rebind:
            by the GPU profiler, and 22 to 24 so. A program a CPU reader waited for while its writes were still
            unsubmitted (vk_uma_read_soon) is submitted at once, as above. A draw's result pending in that submission
            is no reason to submit: what reads one on the GPU copies it there (owned.c's pending_gpu_read). Submitted
-           for them, another game's battle made about 70 submissions a present, with the GPU idle between them */
-        if (vk_uma() && !vk_uma_read_soon(p->key)) {
+           for them, another game's battle made about 70 submissions a present, with the GPU idle between them.
+           Where guest memory is copied, a dispatch that staged no result for the host waits the same way: its storage
+           images are published over their guest bytes, GPU-owned, and a CPU access to them submits what is open
+           first (owned.c's own_wait). Submitted each, a scene that fills its compute textures a level a dispatch made
+           129 submissions a present on a discrete GPU, the graphics queue idle 2.4 ms a present between them */
+        if ((vk_uma() || !staged) && !vk_uma_read_soon(p->key)) {
             g_vk_cs_open = vk_submit_number();
             g_vk_cs_left++;
             return;
