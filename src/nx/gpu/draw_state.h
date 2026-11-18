@@ -148,6 +148,11 @@ typedef struct {
     u32 prim_sph;
 } DsMeshKey;
 
+/* DsPrograms.code[] of a program the front end gave the renderer as SPIR-V (Renderer.host_program) instead of at a
+   guest address: its id in the low 32 bits. A draw of host programs has a vertex program in slot 1 and a fragment
+   program in slot 5 (when its bit is on), and no other stage */
+#define DS_HOST_PROGRAM (1ull << 63)
+
 /* The programs and what keys their translation */
 typedef struct {
     u64 code[DS_PROGRAM_SLOTS]; /* each slot's program address */

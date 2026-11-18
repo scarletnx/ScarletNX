@@ -7,7 +7,9 @@
 #include "nx/runtime/cli.h"
 #include "nx/runtime/ini.h"
 #include "nx/runtime/options.h"
+#include "glslc/glslc.h"
 #include "nx/gpu/maxwell/draw_state.h"
+#include "nx/gpu/vk/host_program.h"
 #include "nx/gpu/guest_textures.h"
 #include "nx/gpu/renderer.h"
 #include "common/gpu/vk/vk_common.h"
@@ -7395,6 +7397,7 @@ static int check_hmma_file_key(void) {
 #include "vulkan_nvn_copy_conversions.inc"
 #include "vulkan_nvn_xfb.inc"
 #include "vulkan_nvn_state.inc"
+#include "vulkan_host_program.inc"
 #include "vulkan_maxwell_fixed.inc"
 #include "vulkan_nvn_events.inc"
 #include "vulkan_nvn_subroutines.inc"
@@ -8426,6 +8429,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_nvn_stencil_masks());
     CHECK(!check_nvn_xfb());
     CHECK(!check_nvn_fixed_state());
+    CHECK(!check_host_program());
     CHECK(!check_maxwell_point_size());
     CHECK(!check_maxwell_depth_bounds());
     CHECK(!check_maxwell_depth_range());
