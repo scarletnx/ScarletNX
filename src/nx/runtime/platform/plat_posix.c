@@ -464,7 +464,8 @@ static void ww_remapped(u8* p, u64 size) {
 #define WP_LOCK   8u
 #define WP_ARMED  16u
 #define WP_TRAP   32u /* inaccessible for a trap by protection (plat_trap_arm): a fault waits for its landing */
-static _Atomic u8* _Atomic g_wp; /* the states, a byte per host page of the reservation; NULL without this tracking or the traps' */
+/* the states, a byte per host page of the reservation; NULL without this tracking or the traps' */
+static _Atomic u8* _Atomic g_wp;
 static int g_wp_track; /* scans are the states' (written-page tracking by protection) */
 static u8* g_wp_base;
 static u64 g_wp_pages;

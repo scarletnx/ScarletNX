@@ -128,8 +128,8 @@ static size_t index_of(const SnxFunction* function, SnxU64 address) {
     return lo;
 }
 
-/* if(UNLIKELY(atomic_load_explicit(&c->poll, memory_order_relaxed))){ c->rt->poll(c); } (codegen.c): a loop that makes no SVC
-   can still be taken off its core, for a waiter of higher priority.
+/* if(UNLIKELY(atomic_load_explicit(&c->poll,memory_order_relaxed))){ c->rt->poll(c); } (codegen.c): a loop that makes
+   no SVC can still be taken off its core, for a waiter of higher priority.
    On a backward branch (resume, its target) the poll then leaves the function: { c->pc=resume; c->rt->poll(c);
    F_start(c,resume); return; }. The call of the function itself goes to the target's label through the entry mismatch
    and D_, with the registers that the poll's site stored. A poll that returned into the loop was a call in every loop
@@ -294,8 +294,8 @@ void snx_ir_stale_checks(SnxIr* ir) {
     ir->stale = g;
 }
 
-/* if(UNLIKELY(atomic_load_explicit(&snx_stale[index], memory_order_relaxed))){ c->pc=e; return; }: the guest changed code
-   this function was compiled from (RtAPI.code_changed), and the runtime has taken its entries out of dispatch. A
+/* if(UNLIKELY(atomic_load_explicit(&snx_stale[index],memory_order_relaxed))){ c->pc=e; return; }: the guest changed
+   code this function was compiled from (RtAPI.code_changed), and the runtime has taken its entries out of dispatch. A
    caller's return check finds CPU.pc not its own return address and returns too, each function on the way storing
    its registers at its return, up to the runtime's dispatch loop, which looks e up and compiles the code there now
    from the CPU structure. A direct caller relies on it: it stores only what this function's summary reads

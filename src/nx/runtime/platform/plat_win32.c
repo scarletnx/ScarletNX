@@ -372,7 +372,8 @@ u8* plat_alias_mirror(void) { return NULL; }
    no mirror) and calls plat_trap_continue, which opens the pages and wakes the waiters. A system call given an armed
    page fails (ERROR_NOACCESS, WSAEFAULT) rather than faulting: the runtime lands what it hands the kernel first
    (own_acquire). The handler runs nothing but atomics and the waits */
-static _Atomic u64* _Atomic g_trap_bits; /* atomic: a bit per 4 KiB page of [g_vm_base, g_vm_base + g_vm_size), set while armed */
+/* a bit per 4 KiB page of [g_vm_base, g_vm_base + g_vm_size), set while armed */
+static _Atomic u64* _Atomic g_trap_bits;
 static void (*g_trap_cb)(u8* p, int write, u32 tid);
 static void (*_Atomic g_trap_told)(u32 tid); /* plat_trap_waiting's */
 static _Atomic u32 g_trap_thread;            /* atomic: the trap thread's id, which never waits on a trap */
