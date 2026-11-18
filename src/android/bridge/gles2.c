@@ -65,8 +65,8 @@ Gles2Context* gles2_context_new(int version) {
     gles2_programs_init();
     gles2_buffers_init();
     gles2_textures_init();
+    gles2_framebuffers_init();
     gl->version = version;
-    gl->draw_fbo = gl->read_fbo = 0;
     return gl;
 }
 
@@ -269,8 +269,8 @@ static unsigned binding_of(Gles2Context* gl, unsigned target) {
 
 /* the bits of each channel of the draw framebuffer's color, depth and stencil */
 static int channel_bits(Gles2Context* gl, unsigned pname) {
-    G2Framebuffer* fb = gles2_framebuffer(gl->draw_fbo);
-    if (!gl->draw_fbo || !fb) {
+    G2Framebuffer* fb = gles2_framebuffer(gles2_fbos(gl)->draw);
+    if (!gles2_fbos(gl)->draw || !fb) {
         if (pname == 0x0d56) return gl->draw ? gl->draw->depth_bits : 0;
         if (pname == 0x0d57) return gl->draw ? gl->draw->stencil_bits : 0;
         return 8;
@@ -458,9 +458,9 @@ static int state(Gles2Context* gl, unsigned pname, double* v) {
     case 0x8894: v[0] = gles2_objects(gl)->array; return 1;
     case 0x8895: v[0] = vao ? vao->elements : 0; return 1;
     case 0x8b8d: v[0] = snx_gl_current_program(gl->ctx); return 1;
-    case 0x8ca6: v[0] = gl->draw_fbo; return 1;
-    case 0x8caa: v[0] = gl->read_fbo; return 1;
-    case 0x8ca7: v[0] = gl->renderbuffer; return 1;
+    case 0x8ca6: v[0] = gles2_fbos(gl)->draw; return 1;
+    case 0x8caa: v[0] = gles2_fbos(gl)->read; return 1;
+    case 0x8ca7: v[0] = gles2_fbos(gl)->renderbuffer; return 1;
     case 0x85b5: v[0] = gles2_objects(gl)->vertex_array; return 1;
     case 0x8f36: v[0] = gles2_objects(gl)->copy_read; return 1;
     case 0x8f37: v[0] = gles2_objects(gl)->copy_write; return 1;
@@ -481,16 +481,16 @@ static int state(Gles2Context* gl, unsigned pname, double* v) {
     case 0x8192: v[0] = fs->hints[0]; return 1;
     case 0x8b8b: v[0] = fs->hints[1]; return 1;
     case 0x0c02: {
-        G2Framebuffer* fb = gles2_framebuffer(gl->read_fbo);
-        v[0] = gl->read_fbo && fb ? fb->read : GL_BACK_;
+        G2Framebuffer* fb = gles2_framebuffer(gles2_fbos(gl)->read);
+        v[0] = gles2_fbos(gl)->read && fb ? fb->read : GL_BACK_;
         return 1;
     }
     default: break;
     }
     if (pname >= 0x8825 && pname < 0x8825 + G2_COLORS) { /* GL_DRAW_BUFFERi */
-        G2Framebuffer* fb = gles2_framebuffer(gl->draw_fbo);
+        G2Framebuffer* fb = gles2_framebuffer(gles2_fbos(gl)->draw);
         unsigned i = pname - 0x8825;
-        v[0] = gl->draw_fbo && fb ? fb->draw[i] : i == 0 ? GL_BACK_ : 0;
+        v[0] = gles2_fbos(gl)->draw && fb ? fb->draw[i] : i == 0 ? GL_BACK_ : 0;
         return 1;
     }
     int on = snx_gl_capability(gl->ctx, pname);

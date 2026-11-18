@@ -4,6 +4,7 @@
 #include "common/gpu/gl/gl_state.h"
 #include "common/gpu/gl/gl_object.h"
 #include "common/gpu/gl/gl_program.h"
+#include "common/gpu/gl/gl_framebuffer.h"
 #include "common/gpu/gl/gl_texture.h"
 #include <stdio.h>
 #include <string.h>
@@ -62,6 +63,7 @@ uint32_t snx_gl_context_new(uint32_t api, uint32_t version, uint32_t debug) {
         f->pixel[0].alignment = f->pixel[1].alignment = 4;
         snx_gl_object_context_reset(i + 1);
         snx_gl_texture_context_reset(i + 1);
+        snx_gl_framebuffer_context_reset(i + 1);
         return i + 1;
     }
     return 0;
@@ -270,7 +272,8 @@ int snx_gl_get(uint32_t ctx, uint32_t pname, double v[4]) {
         v[0] = on;
         return 1;
     }
-    if (snx_gl_object_get(ctx, pname, v) || snx_gl_texture_get(ctx, pname, v)) return 1;
+    if (snx_gl_object_get(ctx, pname, v) || snx_gl_texture_get(ctx, pname, v) || snx_gl_framebuffer_get(ctx, pname, v))
+        return 1;
     switch (pname) {
         case 0x0ba2: /* GL_VIEWPORT */
             for (i = 0; i < 4; i++) v[i] = f->viewport[i];
@@ -386,7 +389,7 @@ uint32_t snx_gl_clear(uint32_t ctx, uint32_t mask) {
 
 size_t snx_gl_state_bytes(void) {
     return sizeof(SnxGlStateHeader) + sizeof g_gl + snx_gl_program_state_bytes() + snx_gl_object_state_bytes() +
-           snx_gl_texture_state_bytes();
+           snx_gl_texture_state_bytes() + snx_gl_framebuffer_state_bytes();
 }
 
 void snx_gl_state_save(void* out) {
@@ -397,6 +400,8 @@ void snx_gl_state_save(void* out) {
     snx_gl_object_state_save((unsigned char*)out + sizeof h + sizeof g_gl + snx_gl_program_state_bytes());
     snx_gl_texture_state_save((unsigned char*)out + sizeof h + sizeof g_gl + snx_gl_program_state_bytes() +
                               snx_gl_object_state_bytes());
+    snx_gl_framebuffer_state_save((unsigned char*)out + sizeof h + sizeof g_gl + snx_gl_program_state_bytes() +
+                                  snx_gl_object_state_bytes() + snx_gl_texture_state_bytes());
 }
 /* the bytes of the programs' part at programs, of the left bytes there: 0 when its header says more than that */
 static size_t program_part(const unsigned char* programs, size_t left) {
@@ -459,15 +464,18 @@ int snx_gl_state_check(const void* in, size_t size, char* why, size_t whysize) {
                      "the GL layer's programs say more bytes than the %zu its state has after the contexts", left);
             return -1;
         }
-        size_t objects = snx_gl_object_state_bytes();
+        size_t objects = snx_gl_object_state_bytes(), textures = snx_gl_texture_state_bytes();
         if (snx_gl_program_state_check(programs, part, why, whysize)) return -1;
-        if (left - part < objects) {
-            snprintf(why, whysize, "the GL layer's state has %zu bytes after its programs, less than its buffers' %zu",
-                     left - part, objects);
+        if (left - part < objects + textures) {
+            snprintf(why, whysize,
+                     "the GL layer's state has %zu bytes after its programs, less than its buffers' and textures' %zu",
+                     left - part, objects + textures);
             return -1;
         }
         if (snx_gl_object_state_check(programs + part, objects, why, whysize) ||
-            snx_gl_texture_state_check(programs + part + objects, left - part - objects, why, whysize))
+            snx_gl_texture_state_check(programs + part + objects, textures, why, whysize) ||
+            snx_gl_framebuffer_state_check(programs + part + objects + textures, left - part - objects - textures, why,
+                                           whysize))
             return -1;
     }
     for (uint32_t i = 0; i < SNX_GL_CONTEXTS; i++) {
@@ -490,6 +498,7 @@ int snx_gl_state_load(const void* in, size_t size) {
     if (snx_gl_program_state_load(i + at, part)) return -1;
     snx_gl_object_state_load(i + at + part);
     snx_gl_texture_state_load(i + at + part + snx_gl_object_state_bytes());
+    snx_gl_framebuffer_state_load(i + at + part + snx_gl_object_state_bytes() + snx_gl_texture_state_bytes());
     memcpy(&g_gl, i + sizeof(SnxGlStateHeader), sizeof g_gl);
     return 0;
 }
