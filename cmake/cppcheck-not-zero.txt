@@ -67,10 +67,6 @@ sizeofDivisionMemfunc
 funcArgOrderDifferent
 constStatement
 
-# C23 code in targets and tests that build as C11 (the GUI, tests that include the runtime's files): cppcheck
-# parses them by the target's -std.
-syntaxError
-
 # cppcheck reads the GLSL the C++ tests include (src/nx/gpu/texture, video): its shifts by 32 happen only with a
 # count past 32, and GLSL has no references to pass by.
 shiftTooManyBits
