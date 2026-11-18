@@ -1768,7 +1768,18 @@ static int handle_candidates_pair(const ShFlow* f, u32 index, u32 reg, u32* bank
     int predicated = 0, joined = 0;
     if (reg == 255) return count;
     reach = direct_reaching_writes(f, index, reg, defs, &ndefs);
-    if (!reach) return count;
+    if (!reach) {
+        /* Unknown CFG gives a superset within this block: every write before the use, plus a loop write reaching back. */
+        u32 back = direct_back_end(f, index);
+        ndefs = 0;
+        for (u32 k = 11; k <= back && ndefs < 63; k++)
+            if (IDX_OK(k) && k != index && f->op[k] && f->block_start[k] == f->block_start[index] &&
+                shader_writes_reg(f->insn[k], f->op[k]->id, reg) &&
+                (k > index || direct_can_reach(f, k + 1, index) != 0))
+                defs[ndefs++] = k;
+        if (ndefs == 63) return -1;
+        reach = ndefs ? (1ull << ndefs) - 1 : 0;
+    }
     for (u32 d = 0; d < ndefs; d++) {
         u32 k = defs[d], bank, off, bank2, off2;
         const Op* op;
@@ -1802,8 +1813,10 @@ static int handle_candidates_pair(const ShFlow* f, u32 index, u32 reg, u32* bank
 }
 int shader_direct_handle_candidates_pair(const ShFlow* f, u32 index, u32 reg, u32* banks, u32* offs, u32* bank2s,
                                          u32* off2s, u8* words, int max) {
+    /* One split candidate is enough when every other reaching write is a non-handle value: the complete runtime word
+       still has to match texture|sampler, so the false path keeps the existing no-match zero sample. */
     int count = handle_candidates_pair(f, index, reg, banks, offs, bank2s, off2s, words, 0, max);
-    return count > 1 ? count : 0;
+    return count > 0 ? count : 0;
 }
 
 /* AL2P's predicate (bits 44-46) is a range check no source describes. The NVN compiler gives every AL2P one, P0 to P6
