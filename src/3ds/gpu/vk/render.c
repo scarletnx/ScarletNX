@@ -1470,6 +1470,41 @@ static bool object_pending(ShaderObject* o, const char** why) {
     if (done && !o->object) *why = "the device refuses a shader object";
     return !done;
 }
+/* pipeline_wait's Auto: o, still to be made, waited for while the frame's budget lasts, or whole for a small draw, as
+   pipe_job_wait waits for a pipeline, and collected once made (object_pending). With the budget spent it is not
+   waited for: its draw is skipped at once, as Skip's, so the same draws skip on every run. Words still waiting for a
+   job are handed one first, and compiled here for a whole wait where every job is in hand. Whether o is still to be
+   made */
+static bool object_wait(ShaderObject* o, bool whole, const char** why) {
+    if (!whole && g.budget <= 0) return true;
+    if (o->words && !object_queue(o)) {
+        if (!whole) return true;
+        VkShaderCreateInfoEXT info = object_info(o->stage, o->words, o->count);
+        bool compiled = false;
+        if (snx_vk_shader_object(device(), g.binaries_open ? &g.binaries : NULL, o->key, &info, &o->object,
+                                 &compiled) != VK_SUCCESS)
+            *why = "the device refuses a shader object";
+        if (compiled) compiled_now();
+        free(o->words);
+        o->words = NULL;
+        return false;
+    }
+    if (!o->job) return false;
+    PipeJob* j = &g.jobs[o->job - 1];
+    uint64_t t0 = SDL_GetTicksNS();
+    SDL_LockMutex(g.job_lock);
+    while (j->state != JOB_DONE) {
+        int64_t left = g.budget - (int64_t)(SDL_GetTicksNS() - t0);
+        if (!whole && left <= 0) break;
+        if (whole)
+            SDL_WaitCondition(g.job_done, g.job_lock);
+        else
+            SDL_WaitConditionTimeout(g.job_done, g.job_lock, (Sint32)((left + 999999) / 1000000));
+    }
+    SDL_UnlockMutex(g.job_lock);
+    g.budget -= (int64_t)(SDL_GetTicksNS() - t0);
+    return object_pending(o, why);
+}
 /* whether a shader object is made or on its way */
 static bool object_usable(const ShaderObject* o) { return o->object || o->job || o->words; }
 static bool vs_shader(const SnxCtrPica* p, const SnxCtrVsConfig* c, uint32_t* index, const char** why) {
@@ -2427,15 +2462,21 @@ static SnxCtrPicaResult record(SnxCtrPica* p, Source source, bool indexed) {
     bool objects = snx_ctr_vk()->shader_object, stand_in = false, stand_in_vertex = false;
     VkPipeline pipe = VK_NULL_HANDLE;
     if (objects) {
-        /* pipeline_wait Auto and Skip: drawn once the workers have made both shaders */
+        /* pipeline_wait Auto and Skip: a shader still being made is drawn by a stand-in where it draws it as the
+           shader would (ctr_stand_in=2: in place of every shader it draws). Else Auto waits for it within the frame's
+           budget, a draw of SNX_VK_SMALL_DRAW vertices or fewer whole; past the budget, and under Skip, the draw is
+           skipped until the workers have made both shaders */
         VsShader* vsh = &g.vs[k.vs];
         FsShader* fsh = &g.fs[k.fs];
         bool vs_pending = object_pending(&vsh->so, &vsh->why), fs_pending = object_pending(&fsh->so, &fsh->why);
-        /* a shader still being made: a stand-in draws in its place, where it draws it as it would (ctr_stand_in=2: in
-           place of every shader it draws) */
         bool every = g_settings.ctr_stand_in == 2;
         stand_in_vertex = g.stand_in_vertex && (vs_pending || every);
         stand_in = g.stand_in && (fs_pending || every) && stand_in_draws(&fs);
+        if (g_settings.pipeline_wait == 0 && ((vs_pending && !stand_in_vertex) || (fs_pending && !stand_in))) {
+            bool whole = count <= SNX_VK_SMALL_DRAW;
+            if (vs_pending && !stand_in_vertex) vs_pending = object_wait(&vsh->so, whole, &vsh->why);
+            if (fs_pending && !stand_in) fs_pending = object_wait(&fsh->so, whole, &fsh->why);
+        }
         if ((vs_pending && !stand_in_vertex) || (fs_pending && !stand_in)) {
             ++g.skipped;
             return SNX_CTR_PICA_OK;

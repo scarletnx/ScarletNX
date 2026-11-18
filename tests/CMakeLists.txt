@@ -428,12 +428,20 @@ if(TARGET snx_ctr_board)
     snx_test_target(snx-test-3ds-vk-draw gnu23)
     target_link_libraries(snx-test-3ds-vk-draw PRIVATE snx_ctr_gpu_reference)
     add_test(NAME 3ds_vk_draw COMMAND snx-test-3ds-vk-draw)
-    # pipeline_wait: Skip's draw skipped while its pipeline is made on a worker, then drawn; Auto's skipped past the
-    # frame's budget but for a draw of 6 vertices or fewer, which waits, and drawn when made within it
+    # pipeline_wait with shader objects (VK_EXT_shader_object): Wait's shaders made on the recording thread; with the
+    # stand-ins, Skip's and Auto's draw drawn by them at once, Auto waiting for nothing; without them (ctr_stand_in=0),
+    # Skip's draw skipped, Auto's drawn once the shader is made within the frame's budget, skipped with none left but
+    # for a draw of 6 vertices or fewer, which waits whole. A device without them runs the pipelines' cases
     add_test(NAME 3ds_vk_draw_async COMMAND snx-test-3ds-vk-draw --async)
-    # the same two through pipelines, where the device would draw with shader objects (VK_EXT_shader_object)
+    add_test(NAME 3ds_vk_draw_async_no_stand_in COMMAND snx-test-3ds-vk-draw --async --ctr_stand_in=0)
+    # every scene, and pipeline_wait's cases, through pipelines where the device would draw with shader objects: Skip's
+    # draw skipped while its pipeline is made on a worker, then drawn; Auto's skipped past the frame's budget but for a
+    # draw of 6 vertices or fewer, which waits, and drawn when made within it
     add_test(NAME 3ds_vk_draw_pipelines COMMAND snx-test-3ds-vk-draw --vk_ext_shader_object=off)
     add_test(NAME 3ds_vk_draw_async_pipelines COMMAND snx-test-3ds-vk-draw --async --vk_ext_shader_object=off)
+    # a wait that never ends (the workers held) fails in two minutes, not in ctest's default
+    set_tests_properties(3ds_vk_draw_async 3ds_vk_draw_async_no_stand_in 3ds_vk_draw_async_pipelines PROPERTIES
+                         TIMEOUT 120)
     # the pipeline cache kept between runs: the file named for the driver, and a failed write made again by the next.
     # Through pipelines, as a device with shader objects makes none (3ds_vk_shader_object checks their binaries)
     add_test(NAME 3ds_vk_draw_pipeline_cache COMMAND snx-test-3ds-vk-draw --pipeline-cache --vk_ext_shader_object=off)
@@ -508,9 +516,9 @@ if(TARGET snx_ctr_board)
         endforeach()
         set_tests_properties(${snx_tests} PROPERTIES SKIP_RETURN_CODE 77)
     endforeach()
-    set_tests_properties(3ds_vk_draw 3ds_vk_draw_async 3ds_vk_draw_pipelines 3ds_vk_draw_async_pipelines
-                         3ds_vk_draw_pipeline_cache 3ds_vk_draw_stand_in 3ds_vk_draw_present 3ds_vk_draw_scaled_present
-                         PROPERTIES SKIP_RETURN_CODE 77)
+    set_tests_properties(3ds_vk_draw 3ds_vk_draw_async 3ds_vk_draw_async_no_stand_in 3ds_vk_draw_pipelines
+                         3ds_vk_draw_async_pipelines 3ds_vk_draw_pipeline_cache 3ds_vk_draw_stand_in
+                         3ds_vk_draw_present 3ds_vk_draw_scaled_present PROPERTIES SKIP_RETURN_CODE 77)
     # the GPU's copy of the RAM, page by page: what is copied in and back, and when, and every byte where it belongs
     add_executable(snx-test-3ds-vk-copies 3ds_vk_copies.c)
     snx_test_target(snx-test-3ds-vk-copies gnu23)
