@@ -1380,6 +1380,14 @@ add_test(NAME sailgen_refused_action
                  "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/refused_action.sail")
 set_tests_properties(sailgen_refused_action PROPERTIES PASS_REGULAR_EXPRESSION
     "refused_action.sail:8: error: Peek gives an integer: the back end's functions give nothing, bits, a bool, an enum or a tuple of bits")
+# Reduce is lowered for ReduceOp_ADD alone: a floating-point op's pairwise order is refused, naming the op
+add_test(NAME sailgen_refused_reduce
+         COMMAND snx-sailgen --generate "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/refused_reduce.roots"
+                 --backend "${PROJECT_SOURCE_DIR}/tools/sailgen/llvm.h"
+                 -o "${CMAKE_CURRENT_BINARY_DIR}/sailgen/refused_reduce.inc"
+                 "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/refused_reduce.sail")
+set_tests_properties(sailgen_refused_reduce PROPERTIES PASS_REGULAR_EXPRESSION
+    "refused_reduce.sail:9: error: Reduce of ReduceOp_FADD: sailgen lowers ReduceOp_ADD alone")
 # a function the back end lowers: --extract copies its val and the types it names, not its Sail; called under a
 # run-time condition by a back end function that takes none, it is refused with its line
 add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/sailgen/lower.sail"
@@ -1406,7 +1414,7 @@ add_test(NAME sailgen_lanes
                  "-DOUT=${CMAKE_CURRENT_BINARY_DIR}/sailgen/lanes.inc"
                  -P "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/lanes_check.cmake")
 set_tests_properties(sailgen_lanes PROPERTIES PASS_REGULAR_EXPRESSION
-    "sailgen_lanes: lanes=lanes carried=loop last=loop pairs=lanes fixed=lanes free=loop")
+    "sailgen_lanes: lanes=lanes carried=loop last=loop pairs=lanes fold=lanes start=loop fixed=lanes free=loop")
 # and the A64 subsets of src/common/cpu/aarch64/sail/ generate whole, with the NX's fixups
 add_test(NAME sailgen_a64
          COMMAND snx-sailgen --generate "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/sail/a64.roots"
