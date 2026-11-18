@@ -226,8 +226,9 @@ static Surf* target(u64 gva, u64 size, u32 wseq) {
 static void drawn_over(Surf* s) {
     if (g_ndrawn == g_capdrawn) {
         g_capdrawn = g_capdrawn ? g_capdrawn * 2 : 8;
-        g_drawn = realloc(g_drawn, (size_t)g_capdrawn * sizeof *g_drawn);
-        CHECK(g_drawn);
+        Surf** n = realloc(g_drawn, (size_t)g_capdrawn * sizeof *n);
+        CHECK(n);
+        g_drawn = n;
     }
     s->draw_wseq = s->wseq;
     s->drawn_from = s->gva;
