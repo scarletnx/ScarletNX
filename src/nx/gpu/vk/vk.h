@@ -1988,7 +1988,7 @@ void vk_bc7_cache_close(void);
 int vk_bc7_cache_cold(void);
 u64 vk_bc7_cache_find(const u64 key[2]); /* the bytes of key's blocks, 0 when they aren't there */
 /* key's blocks, size bytes of them, into dst: 0 when they aren't there or don't check out (then dropped), or the
-   cache's I/O thread has not read them in 50 ms (a slow disk: the record kept) */
+   cache's I/O thread is held 250 ms in a read (a slow disk: the record kept) */
 int vk_bc7_cache_read(const u64 key[2], u8* dst, u64 size);
 /* key's blocks, size bytes of them, read on the cache's I/O thread and put into dst on the recording thread, then
    copied from buf (dst is at off in mem and buf) into img, in layout, by copy there when they check out (none when img
