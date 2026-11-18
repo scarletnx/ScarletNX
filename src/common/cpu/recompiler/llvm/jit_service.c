@@ -462,7 +462,8 @@ static SnxU64 resolve_aot(void* user, const char* name) {
    for the arena's own (the first function's: the loader's veneers reach the others from it) */
 static uint64_t aot_toc(const SnxJitConfig* config) {
     for (size_t i = 0; i < config->aot_count; ++i) {
-        const unsigned char* f = (const unsigned char*)(size_t)config->aot_functions[i];
+        const unsigned char* f =
+            (const unsigned char*)(size_t)atomic_load_explicit(&config->aot_functions[i], memory_order_acquire);
         uint64_t toc;
         if (!f) continue;
 #if defined(_CALL_ELF) && _CALL_ELF == 2
@@ -479,8 +480,10 @@ static uint64_t aot_toc(const SnxJitConfig* config) {
 #endif
         if (toc) return toc;
     }
-    for (size_t i = 0; i < config->aot_count; ++i)
-        if (config->aot_functions[i]) return (uint64_t)(size_t)config->aot_functions[i];
+    for (size_t i = 0; i < config->aot_count; ++i) {
+        GuestFn function = atomic_load_explicit(&config->aot_functions[i], memory_order_acquire);
+        if (function) return (uint64_t)(size_t)function;
+    }
     return 0;
 }
 #endif
