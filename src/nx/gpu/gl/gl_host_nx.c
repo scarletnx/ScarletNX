@@ -13,6 +13,7 @@
 #include "nx/memory/mem.h"
 #include "nx/runtime/main.h"
 #include "nx/runtime/platform/log.h"
+#include <stdatomic.h>
 #include <string.h>
 
 #define GL_HOST_STRINGS      32
@@ -101,7 +102,7 @@ static void present_on_gpu(void* arg) {
     if (g_renderer_up)
         g_renderer->present_buffer(p->image, p->w, p->h, p->w * 4, 0 /* pitch linear */, 0, 1 /* RGBA8888 */, crop, 0,
                                    0, 0, 0);
-    __atomic_add_fetch(&g_frames, 1, __ATOMIC_RELAXED);
+    atomic_fetch_add_explicit(&g_frames, 1, memory_order_relaxed);
 }
 void gl_host_present(u32 s, u32 interval) {
     GlSurface* g = &g_gl_host.surfaces[s - 1];
