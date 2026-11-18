@@ -658,11 +658,12 @@ static void resource_plots(const VkResourceStats* is, const VkResourceStats* was
 static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transform, int game, u64 released_ns,
                  u64 period_ns, u32 shown_syncpt) {
     SNX_ZONE(z_show, "vk show");
-    /* a target dropped for a guest write over it holds nothing to show, as surf_read says: the frame is the layer's */
+    /* a target dropped for a guest write over it holds nothing to show, as surf_read says: the frame is the layer's,
+       and of the kind the frame had, so that a refresh of an HDR frame keeps the swapchain it needs */
     if (src && src->layout == VK_IMAGE_LAYOUT_UNDEFINED) src = NULL;
     if (transform & 4) { u32 w = fw; fw = fh; fh = w; }
     /* the size the swapchain was made for, not the extent the surface clamped it to: that can stay different */
-    int ww, wh, kind = src ? frame_kind(hdr) : g_sc_kind, shown = backend_window_shown();
+    int ww, wh, kind = src || hdr ? frame_kind(hdr) : g_sc_kind, shown = backend_window_shown();
     backend_window_size(&ww, &wh);
     if (shown && (g_lost || backend_window_generation() != g_generation)) {
         vk_finish();
