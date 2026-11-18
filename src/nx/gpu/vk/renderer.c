@@ -661,11 +661,11 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
     /* a target dropped for a guest write over it holds nothing to show, as surf_read says: the frame is the layer's,
        and of the kind this frame had, so that a refresh of an HDR frame keeps the swapchain it needs. A frame with no
        source of its own (none yet, or none of the size asked) keeps the layer's kind */
-    int dropped = src && src->layout == VK_IMAGE_LAYOUT_UNDEFINED;
-    if (dropped) src = NULL;
+    int void_frame = src && src->layout == VK_IMAGE_LAYOUT_UNDEFINED;
+    if (void_frame) src = NULL;
     if (transform & 4) { u32 w = fw; fw = fh; fh = w; }
     /* the size the swapchain was made for, not the extent the surface clamped it to: that can stay different */
-    int ww, wh, kind = src || dropped ? frame_kind(hdr) : g_sc_kind, shown = backend_window_shown();
+    int ww, wh, kind = (src || void_frame) && hdr ? frame_kind(hdr) : g_sc_kind, shown = backend_window_shown();
     backend_window_size(&ww, &wh);
     if (shown && (g_lost || backend_window_generation() != g_generation)) {
         vk_finish();
