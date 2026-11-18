@@ -97,7 +97,7 @@ static void callback(CPU* c, u64 entry);
 static struct {
     int calls;
     u64 event, size, ctl_used;
-    GuestFn disp[1];
+    _Atomic GuestFn disp[1];
 } g_cb = {0, 0, 0, 0, {callback}};
 static void callback(CPU* c, u64 entry) {
     (void)entry;

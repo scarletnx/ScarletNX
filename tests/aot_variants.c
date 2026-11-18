@@ -45,8 +45,8 @@ static void aot_stub(CPU* c, u64 entry) {
 
 static SnxJitService* profile(const char* path, char opt) {
     static const u64 aot_addresses[] = {SNX_CODE_BASE + STATIC_OFF};
-    static const GuestFn aot_functions[] = {aot_stub};
-    static GuestFn dispatch[TEXT_SIZE / 4];
+    static const _Atomic GuestFn aot_functions[] = {aot_stub};
+    static _Atomic GuestFn dispatch[TEXT_SIZE / 4];
     static SnxJitConfig config;
     static SnxCodeImage image;
     char error[512];

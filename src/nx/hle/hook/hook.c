@@ -20,6 +20,7 @@
 #include "common/platform/thread.h"
 #include "hle/hook/hooks.hook.h"
 #include "hle/hook/hooks.hook.inc"
+#include <stdatomic.h>
 
 /* a site for every hook of either table, so that no family is left half native (hook.h) */
 typedef char hook_sites_hold_the_tables[HOOK_COUNT <= HOOK_SITES && HOOK32_COUNT <= HOOK_SITES ? 1 : -1];
@@ -153,14 +154,16 @@ static int trampoline_of(u32 i, u64 pc, u64 end) {
 
 /* a scratch slot of verify mode's, -1 when every one is taken */
 static int verify_claim(void) {
-    u32* taken = &g_host.hook.verify_taken;
-    u32 seen = __atomic_load_n(taken, __ATOMIC_RELAXED);
+    _Atomic u32* taken = &g_host.hook.verify_taken;
+    u32 seen = atomic_load_explicit(taken, memory_order_relaxed);
     for (;;) {
         int i;
         if (seen == ~0u >> (32 - HOOK_VERIFY_SLOTS)) return -1;
         for (i = 0; seen & (1u << i); i++) {
         }
-        if (__atomic_compare_exchange_n(taken, &seen, seen | (1u << i), 0, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) return i;
+        if (atomic_compare_exchange_strong_explicit(taken, &seen, seen | (1u << i), memory_order_acquire,
+                                                    memory_order_relaxed))
+            return i;
     }
 }
 
@@ -179,7 +182,7 @@ static void verify_fn(CPU* RESTRICT c, u64 entry) {
     if (i < 0) { /* not a site: cannot happen, as only hook_install puts this in a slot */
         fatal("hook verify: no hook at %llx", (unsigned long long)entry);
     }
-    if (__atomic_load_n(&h->invalid[i], __ATOMIC_ACQUIRE)) { /* the handler is the game's code now */
+    if (atomic_load_explicit(&h->invalid[i], memory_order_acquire)) { /* the handler is the game's code now */
         hook_invalidated(c, entry);
         return;
     }
@@ -189,9 +192,9 @@ static void verify_fn(CPU* RESTRICT c, u64 entry) {
     what = slot < 0 ? HOOK_SKIP_SIZE
                     : hook_verify_call(c, entry, h->orig[i], hook_fn[k], &hook_verify[k],
                                        base + (u64)slot * HOOK_VERIFY_SLOT, HOOK_VERIFY_SLOT, &r);
-    if (slot >= 0) __atomic_and_fetch(&h->verify_taken, ~(1u << slot), __ATOMIC_RELEASE);
+    if (slot >= 0) atomic_fetch_and_explicit(&h->verify_taken, ~(1u << slot), memory_order_release);
     if (what >= HOOK_SKIP_SIZE) { /* nothing ran: the handler does the call */
-        u64 n = __atomic_add_fetch(&h->skipped[i], 1, __ATOMIC_RELAXED);
+        u64 n = (atomic_fetch_add_explicit(&h->skipped[i], 1, memory_order_relaxed) + 1);
         hook_fn[k](c, entry);
         if (verify_milestone(n))
             LOG("hook verify: %s, %llu calls skipped (%s), the last of %llu bytes\n", hook_symbol[k],
@@ -203,15 +206,15 @@ static void verify_fn(CPU* RESTRICT c, u64 entry) {
         return;
     }
     if (what == HOOK_AGREE) {
-        u64 n = __atomic_add_fetch(&h->agreed[i], 1, __ATOMIC_RELAXED);
+        u64 n = (atomic_fetch_add_explicit(&h->agreed[i], 1, memory_order_relaxed) + 1);
         if (verify_milestone(n))
             LOG("hook verify: %s at %llx, %llu calls agree with its own code (%llu differ, %llu skipped)\n",
                 hook_symbol[k], (unsigned long long)entry, (unsigned long long)n,
-                (unsigned long long)__atomic_load_n(&h->differed[i], __ATOMIC_RELAXED),
-                (unsigned long long)__atomic_load_n(&h->skipped[i], __ATOMIC_RELAXED));
+                (unsigned long long)atomic_load_explicit(&h->differed[i], memory_order_relaxed),
+                (unsigned long long)atomic_load_explicit(&h->skipped[i], memory_order_relaxed));
         return;
     }
-    if (__atomic_add_fetch(&h->differed[i], 1, __ATOMIC_RELAXED) <= 16)
+    if ((atomic_fetch_add_explicit(&h->differed[i], 1, memory_order_relaxed) + 1) <= 16)
         WARN("hook verify: %s at %llx, called from %llx with %llx %llx %llx %llx, %s: the handler's %llx, its own "
              "code's %llx (register %d, buffer %d at +%llx)\n",
              hook_symbol[k], (unsigned long long)entry, (unsigned long long)lr, (unsigned long long)args[0],
@@ -244,7 +247,7 @@ int hook_states_refused(char* why, size_t whysize) {
     u32 i;
     for (i = 0; i < h->count; i++) {
         const char* f = hook_family_name[hook_family[h->hook[i]]];
-        if (__atomic_load_n(&h->invalid[i], __ATOMIC_ACQUIRE)) continue;
+        if (atomic_load_explicit(&h->invalid[i], memory_order_acquire)) continue;
         if (!strcmp(f, "cond_var")) {
             snprintf(why, whysize, "save states need native_cond_var=0 (it is %d)", g_settings.native_cond_var);
             return -1;
@@ -280,7 +283,7 @@ static void routes_say(void) {
    family, which keep the family's state natively */
 static void hook_put(int k, u64 addr, u32 sdk, u64 end, const char* name, const unsigned char verify[]) {
     HostHook* h = &g_host.hook;
-    GuestFn* slot;
+    _Atomic GuestFn* slot;
     int i;
     u32 s;
     if (h->count == HOOK_SITES)
@@ -290,17 +293,17 @@ static void hook_put(int k, u64 addr, u32 sdk, u64 end, const char* name, const 
     slot = &g_disp[(addr - g_code_lo) >> 2];
     h->hook[h->count] = (u16)k;
     h->addr[h->count] = addr;
-    h->orig[h->count] = nce_slot(*slot);
+    h->orig[h->count] = nce_slot(atomic_load_explicit(&(*slot), memory_order_relaxed));
     h->fn[h->count] = verify[hook_family[k]] && hook_verify[k].pure ? verify_fn : hook_fn[k];
     /* within its module: a function at the end of the last one has no mapped bytes after it */
     for (i = 0; i < 5; i++) h->head[h->count][i] = addr + 4 * i + 4 <= end ? first_word(addr + 4 * i) : 0;
-    h->invalid[h->count] = 0;
+    atomic_store_explicit(&h->invalid[h->count], 0, memory_order_relaxed);
     h->sdk[h->count] = sdk;
-    h->ext[h->count] = NULL;
-    h->tramp[h->count] = 0;
+    atomic_store_explicit(&h->ext[h->count], NULL, memory_order_relaxed);
+    atomic_store_explicit(&h->tramp[h->count], 0, memory_order_relaxed);
     for (s = index_slot(addr); h->index[s]; s = (s + 1) & ((1u << HOOK_INDEX_BITS) - 1)) {}
     h->index[s] = (u16)(h->count + 1);
-    __atomic_store_n(slot, h->fn[h->count], __ATOMIC_RELEASE);
+    atomic_store_explicit(slot, h->fn[h->count], memory_order_release);
     nce_slot_taken(addr, hook_family_name[hook_family[k]]);
     jit_slot_taken(addr, h->fn[h->count]);
     h->count++;
@@ -362,7 +365,7 @@ static void install_a32(void) {
     module_versions(mods, nmods, sdk);
     for (i = 0; kernel_symbol(i, &addr, &name); i++) {
         u32 versions[HOOK_KEYS] = {0};
-        SnxArmBlock* slot;
+        _Atomic SnxArmBlock* slot;
         int m, first, k;
         char range[96];
         if (!name || addr >> 32 || hook_select(&hook32_table, name, versions, &first) == -1 ||
@@ -380,7 +383,7 @@ static void install_a32(void) {
         }
         if (k < 0 || off[hook32_family[k]]) continue;
         slot = arm_slot((u32)addr & ~1u, (int)(addr & 1));
-        if (!slot || *slot == hook32_fn[k]) continue;
+        if (!slot || atomic_load_explicit(&(*slot), memory_order_relaxed) == hook32_fn[k]) continue;
         if (g_host.hook.a32_count == HOOK_SITES)
             fatal("hooks: no site left for %s at %llx: the runtime holds %d, one for each hook, and the game's "
                   "modules export the functions of the hooks more than once",
@@ -388,7 +391,7 @@ static void install_a32(void) {
         /* the function's own block first: once the hook has its slot, the slot is all that names the address */
         g_host.hook.a32_orig[g_host.hook.a32_count] = arm_block((u32)addr & ~1u, (int)(addr & 1));
         g_host.hook.a32_addr[g_host.hook.a32_count++] = (u32)addr;
-        __atomic_store_n(slot, hook32_fn[k], __ATOMIC_RELEASE);
+        atomic_store_explicit(slot, hook32_fn[k], memory_order_release);
         count++;
         if (hook32_key[k] == HOOK_ANY || said[k]) {
             LOG("hook: %s at %llx runs %s (32-bit)\n", name, (unsigned long long)addr, hook32_handler[k]);
@@ -499,10 +502,11 @@ static void hook_invalidate(u32 i) {
     GuestFn ext = hook_ext_skyline(hook_symbol[h->hook[i]], h->sdk[i], &ext_handler);
     u32 j;
     int r, k;
-    __atomic_store_n(&h->stale[i], 1, __ATOMIC_RELEASE); /* its own code is what the game put there */
-    __atomic_store_n(&h->invalid[i], 1, __ATOMIC_RELEASE);
+    atomic_store_explicit(&h->stale[i], 1, memory_order_release); /* its own code is what the game put there */
+    atomic_store_explicit(&h->invalid[i], 1, memory_order_release);
     for (j = 0; j < h->count; j++) /* an adapter another site's invalidation already rewrote */
-        if (j != i && hook_fn[h->hook[j]] == adapter && __atomic_load_n(&h->invalid[j], __ATOMIC_ACQUIRE)) break;
+        if (j != i && hook_fn[h->hook[j]] == adapter && atomic_load_explicit(&h->invalid[j], memory_order_acquire))
+            break;
     if (j == h->count && (r = snx_hook_jump_patch(adapter, hook_invalidated, why, sizeof why)) != 0) {
         if (r < 0)
             fatal("hooks: the game changed the first instruction of %s at %llx, which %s answers natively (a mod's "
@@ -519,14 +523,14 @@ static void hook_invalidate(u32 i) {
          ext ? " once its trampoline runs (ext_skyline.hooks)" : "");
     if (ext) {
         h->ext_handler[i] = ext_handler;
-        __atomic_store_n(&h->ext[i], ext, __ATOMIC_RELEASE);
-        __atomic_add_fetch(&h->ext_count, 1, __ATOMIC_RELEASE);
+        atomic_store_explicit(&h->ext[i], ext, memory_order_release);
+        atomic_fetch_add_explicit(&h->ext_count, 1, memory_order_release);
     }
     /* the other sites of its adapter: their code did not change, so their slots run it, their own */
     for (j = 0; j < h->count; j++)
-        if (j != i && hook_fn[h->hook[j]] == adapter && !__atomic_load_n(&h->invalid[j], __ATOMIC_ACQUIRE)) {
-            __atomic_store_n(&h->invalid[j], 1, __ATOMIC_RELEASE);
-            __atomic_store_n(&g_disp[(h->addr[j] - g_code_lo) >> 2], h->orig[j], __ATOMIC_RELEASE);
+        if (j != i && hook_fn[h->hook[j]] == adapter && !atomic_load_explicit(&h->invalid[j], memory_order_acquire)) {
+            atomic_store_explicit(&h->invalid[j], 1, memory_order_release);
+            atomic_store_explicit(&g_disp[(h->addr[j] - g_code_lo) >> 2], h->orig[j], memory_order_release);
             WARN("hooks: %s at %llx shares that native hook's code, so it runs its own code from here too\n",
                  hook_symbol[h->hook[j]], (unsigned long long)h->addr[j]);
         }
@@ -543,7 +547,7 @@ void hook_invalidated(CPU* RESTRICT c, u64 entry) {
         fatal("hooks: an invalidated native hook was called for %llx, where no hook was installed",
               (unsigned long long)entry);
     /* the game's code at entry (the mod's detour), or the own code of a site whose adapter is the same code */
-    own = __atomic_load_n(&g_host.hook.stale[i], __ATOMIC_ACQUIRE) ? jit_code_now(entry) : g_host.hook.orig[i];
+    own = atomic_load_explicit(&g_host.hook.stale[i], memory_order_acquire) ? jit_code_now(entry) : g_host.hook.orig[i];
     if (!own)
         fatal("hooks: the native hook at %llx is off, and nothing compiles the game's code there: the JIT is off",
               (unsigned long long)entry);
@@ -561,13 +565,13 @@ void hook_restore(u64 addr, u64 size) {
         mem_query(a, &block);
         if (block.state == MS_FREE || !(block.perm & PERM_X)) continue; /* no longer code: the hook goes with it */
         /* its first 4 bytes alone, which every mod's hook writes over: a change further in is not looked at */
-        if (!__atomic_load_n(&h->invalid[i], __ATOMIC_ACQUIRE) && first_word(a) != h->head[i][0]) {
+        if (!atomic_load_explicit(&h->invalid[i], memory_order_acquire) && first_word(a) != h->head[i][0]) {
             pm_lock(&g_invalidate_lock);
-            if (!__atomic_load_n(&h->invalid[i], __ATOMIC_ACQUIRE)) hook_invalidate(i);
+            if (!atomic_load_explicit(&h->invalid[i], memory_order_acquire)) hook_invalidate(i);
             pm_unlock(&g_invalidate_lock);
         }
-        if (__atomic_load_n(&h->invalid[i], __ATOMIC_ACQUIRE)) continue; /* its slot is the game's code's */
-        __atomic_store_n(&g_disp[(a - g_code_lo) >> 2], h->fn[i], __ATOMIC_RELEASE);
+        if (atomic_load_explicit(&h->invalid[i], memory_order_acquire)) continue; /* its slot is the game's code's */
+        atomic_store_explicit(&g_disp[(a - g_code_lo) >> 2], h->fn[i], memory_order_release);
     }
 }
 
@@ -576,47 +580,51 @@ GuestFn hook_trampoline(u64 pc) {
     GuestFn fn = NULL;
     MemBlock block;
     u32 i;
-    if (!__atomic_load_n(&h->ext_count, __ATOMIC_ACQUIRE) || (pc & 3)) return NULL;
+    if (!atomic_load_explicit(&h->ext_count, memory_order_acquire) || (pc & 3)) return NULL;
     mem_query(pc, &block);
     if (block.state == MS_FREE || !(block.perm & PERM_X) || pc < block.addr || pc - block.addr >= block.size)
         return NULL;
     pm_lock(&g_invalidate_lock);
     for (i = 0; i < h->count && !fn; i++) {
-        if (!h->ext[i] || (h->tramp[i] && h->tramp[i] != pc)) continue;
+        if (!atomic_load_explicit(&h->ext[i], memory_order_relaxed) ||
+            (atomic_load_explicit(&h->tramp[i], memory_order_relaxed) &&
+             atomic_load_explicit(&h->tramp[i], memory_order_relaxed) != pc))
+            continue;
         if (!trampoline_of(i, pc, block.addr + block.size)) { /* no longer the trampoline: the mod rewrote it */
-            __atomic_store_n(&h->tramp[i], 0, __ATOMIC_RELEASE);
+            atomic_store_explicit(&h->tramp[i], 0, memory_order_release);
             continue;
         }
-        if (!h->tramp[i])
+        if (!atomic_load_explicit(&h->tramp[i], memory_order_relaxed))
             LOG("hooks: the mod's trampoline of %s at %llx ran: its call of the original runs %s natively "
                 "(ext_skyline.hooks)\n",
                 hook_symbol[h->hook[i]], (unsigned long long)pc, h->ext_handler[i]);
         /* atomic: own_entry reads it without the lock, on every thread that calls the function's original */
-        __atomic_store_n(&h->tramp[i], pc, __ATOMIC_RELEASE);
-        fn = h->ext[i];
+        atomic_store_explicit(&h->tramp[i], pc, memory_order_release);
+        fn = atomic_load_explicit(&h->ext[i], memory_order_relaxed);
     }
     pm_unlock(&g_invalidate_lock);
-    if (fn && pc >= g_code_lo && pc < g_code_hi) __atomic_store_n(&g_disp[(pc - g_code_lo) >> 2], fn, __ATOMIC_RELEASE);
+    if (fn && pc >= g_code_lo && pc < g_code_hi)
+        atomic_store_explicit(&g_disp[(pc - g_code_lo) >> 2], fn, memory_order_release);
     return fn;
 }
 
 GuestFn hook_function(u64 addr) {
     int i = site_of(addr);
-    return i < 0 || __atomic_load_n(&g_host.hook.invalid[i], __ATOMIC_ACQUIRE) ? NULL : g_host.hook.fn[i];
+    return i < 0 || atomic_load_explicit(&g_host.hook.invalid[i], memory_order_acquire) ? NULL : g_host.hook.fn[i];
 }
 
 /* where the own code of site i is entered: the mod's trampoline once one took its ext_skyline hook, else the
    function's address */
 static u64 own_entry(int i) {
-    u64 t = __atomic_load_n(&g_host.hook.invalid[i], __ATOMIC_ACQUIRE)
-                ? __atomic_load_n(&g_host.hook.tramp[i], __ATOMIC_ACQUIRE)
+    u64 t = atomic_load_explicit(&g_host.hook.invalid[i], memory_order_acquire)
+                ? atomic_load_explicit(&g_host.hook.tramp[i], memory_order_acquire)
                 : 0;
     return t ? t : g_host.hook.addr[i];
 }
 
 /* the own code of site i: what its slot held, or once the game changed it what the JIT makes of it now */
 static GuestFn original_of(int i) {
-    if (!__atomic_load_n(&g_host.hook.stale[i], __ATOMIC_ACQUIRE)) return g_host.hook.orig[i];
+    if (!atomic_load_explicit(&g_host.hook.stale[i], memory_order_acquire)) return g_host.hook.orig[i];
     return jit_code_now(own_entry(i));
 }
 
@@ -629,7 +637,7 @@ void hook_orig_stale(GuestFn f) {
     HostHook* h = &g_host.hook;
     u32 i;
     for (i = 0; i < h->count; i++)
-        if (h->orig[i] == f) __atomic_store_n(&h->stale[i], 1, __ATOMIC_RELEASE);
+        if (h->orig[i] == f) atomic_store_explicit(&h->stale[i], 1, memory_order_release);
 }
 
 const char* hook_at(u64 addr, const char** handler) {

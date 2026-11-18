@@ -3,8 +3,8 @@
 /* Driver pipeline cache activity and deferred snapshots. The owner in pipeline.c defines g_pipeline, with the cache
    state, the saver's lock, worker status and shader-preparation progress, before including this implementation. */
 static void pcache_note(void) {
-    __atomic_store_n(&g_pipeline.pcache_used, plat_ns(), __ATOMIC_RELAXED);
-    __atomic_store_n(&g_pipeline.pcache_dirty, 1, __ATOMIC_RELAXED);
+    atomic_store_explicit(&g_pipeline.pcache_used, plat_ns(), memory_order_relaxed);
+    atomic_store_explicit(&g_pipeline.pcache_dirty, 1, memory_order_relaxed);
 }
 
 VkPipelineCache vk_pipeline_cache(void) {
@@ -24,7 +24,7 @@ static int pcache_periodic_ready(void) {
     int idle = !g_pipeline.pj_head && !g_pipeline.pw_head && !g_pipeline.pj_busy;
     /* A worker notes completion before dropping busy under this mutex. Read the clock after observing busy, so a
        compile that finished while the saver took the lock cannot leave an older quiet-period decision in force. */
-    u64 quiet = plat_ns() - __atomic_load_n(&g_pipeline.pcache_used, __ATOMIC_RELAXED);
+    u64 quiet = plat_ns() - atomic_load_explicit(&g_pipeline.pcache_used, memory_order_relaxed);
     pm_unlock(&g_pipeline.pj_lock);
     return idle && quiet >= PCACHE_QUIET_NS;
 }
@@ -38,8 +38,8 @@ void vk_pipeline_save(int at_exit) {
         return;
     }
     /* the shipped file's shaders the draws found, when that changed: nidx is settled once ship_ready */
-    if (__atomic_load_n(&g_pipeline.pf.ship_ready, __ATOMIC_ACQUIRE) && g_pipeline.pf.nidx) {
-        u32 used = __atomic_load_n(&g_pipeline.pf.ship_used, __ATOMIC_RELAXED);
+    if (atomic_load_explicit(&g_pipeline.pf.ship_ready, memory_order_acquire) && g_pipeline.pf.nidx) {
+        u32 used = atomic_load_explicit(&g_pipeline.pf.ship_used, memory_order_relaxed);
         if (used != g_pipeline.pf.ship_said) {
             g_pipeline.pf.ship_said = used;
             LOG("vulkan: %u of the %u shaders translated from the game's files found by its draws so far\n", used,
@@ -54,7 +54,7 @@ void vk_pipeline_save(int at_exit) {
             LOG("vulkan: the pipeline cache of this run holds %zu KB (vk_pipeline_cache=0: not written)\n", n >> 10);
     }
     if (!g_pipeline.pcache || !g_settings.vulkan_pipeline_cache ||
-        !__atomic_exchange_n(&g_pipeline.pcache_dirty, 0, __ATOMIC_RELAXED)) {
+        !atomic_exchange_explicit(&g_pipeline.pcache_dirty, 0, memory_order_relaxed)) {
         pm_unlock(&g_pipeline.psave);
         return;
     }

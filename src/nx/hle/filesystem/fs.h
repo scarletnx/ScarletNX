@@ -22,7 +22,7 @@ int fs_user_saves_take(const u64 uid[2], char (*paths)[FS_TREE_PATH_MAX], int ma
 /* the line said when a save opened this run was last written by a newer version of the program (fs.c's save_note), for
    a crash report to say again: nothing when none was. Takes no lock, as a crash's handler may run while one is held */
 void fs_save_report(void);
-extern u64 g_fs_bytes_read, g_fs_bytes_written; /* the game's file I/O, for the rate plot */
+extern _Atomic u64 g_fs_bytes_read, g_fs_bytes_written; /* the game's file I/O, for the rate plot */
 /* Lookups by a path in the index. *size is 0 when the file isn't there */
 FILE* fs_open_read(const char* path, u64* size);
 /* save states (runtime/state.c): the open file systems, files and folders by path into the state, and what is open
@@ -86,9 +86,10 @@ typedef struct {
     u64 base;     /* where that one's data is in that image */
     u64 size;
     u64 off;    /* where its data starts in the image */
-    int logged; /* the game's first read of it was logged, and its first failure warned (atomics: game threads read
+    _Atomic int
+        logged; /* the game's first read of it was logged, and its first failure warned (atomics: game threads read
                    at once). romfs_peek's reads don't count */
-    int warned;
+    _Atomic int warned;
 } RFile;
 /* unmapped RomFS files open on the host, least recently used closed first */
 #define NOPEN 48
@@ -246,7 +247,7 @@ typedef struct {
     unsigned save_flat_told;          /* and those whose save an older version kept, played where it is, was */
     unsigned save_stray_told; /* and those whose folder holds more than the save, which the game does not read */
     char save_newer[FS_TREE_PATH_MAX + 256]; /* the last save opened that a newer version wrote, said (save_note) */
-    int pace_told;                           /* the first paced read was said (fs.c's fs_pace_ns) */
+    _Atomic int pace_told;                   /* the first paced read was said (fs.c's fs_pace_ns) */
 } HostFs;
 /* fs's thread state (hle.h's t_hle.fs): where this thread's last storage read ended, which the next one continues as
    a stream when it starts there (fs.c's fs_pace_ns) */

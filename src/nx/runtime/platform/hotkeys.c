@@ -9,6 +9,7 @@
 #include <SDL3/SDL_stdinc.h>
 #include <stdio.h>
 #include <string.h>
+#include <stdatomic.h>
 
 /* each action's setting, in HOTKEY_'s order */
 static const char* const KEYS[HOTKEY_COUNT] = {
@@ -29,10 +30,10 @@ static struct {
     unsigned key[HOTKEY_COUNT], mods[HOTKEY_COUNT];
     int started;
     uint64_t quit_by; /* a second press of the quit key before this quits */
-    uint32_t version; /* the changes to a key's text */
+    _Atomic uint32_t version; /* the changes to a key's text */
 } g_hotkeys;
 
-uint32_t hotkeys_version(void) { return __atomic_load_n(&g_hotkeys.version, __ATOMIC_ACQUIRE); }
+uint32_t hotkeys_version(void) { return atomic_load_explicit(&g_hotkeys.version, memory_order_acquire); }
 
 const IniOpt* hotkey_row(int action) {
     const IniOpt* o = action >= 0 && action < HOTKEY_COUNT ? ini_find(g_hotkeys_ini, KEYS[action]) : NULL;
@@ -142,7 +143,7 @@ void hotkey_set(const IniOpt* o, const char* v) {
         WARN("settings: %s=%s: %s: it keeps %s\n", o->key, v, why, now[0] ? now : "\"\" (no key)");
     }
     hotkey_name(g_hotkeys.key[a], g_hotkeys.mods[a], (char*)o->var, o->size);
-    __atomic_add_fetch(&g_hotkeys.version, 1, __ATOMIC_RELEASE);
+    atomic_fetch_add_explicit(&g_hotkeys.version, 1, memory_order_release);
 }
 
 int hotkey_assign(int action, unsigned key, unsigned mods, int* owner) {
@@ -159,7 +160,7 @@ int hotkey_assign(int action, unsigned key, unsigned mods, int* owner) {
     g_hotkeys.key[action] = key;
     g_hotkeys.mods[action] = mods;
     hotkey_name(key, mods, (char*)o->var, o->size);
-    __atomic_add_fetch(&g_hotkeys.version, 1, __ATOMIC_RELEASE);
+    atomic_fetch_add_explicit(&g_hotkeys.version, 1, memory_order_release);
     return 0;
 }
 

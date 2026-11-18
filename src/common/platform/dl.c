@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 #if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -16,7 +17,7 @@
 #endif
 
 static struct {
-    void* (*fallback)(const char* path); /* plat_dl_fallback's */
+    void* (*_Atomic fallback)(const char* path); /* plat_dl_fallback's */
 } g_dl;
 static _Thread_local struct {
     char error[512]; /* plat_dl_error's */
@@ -50,7 +51,7 @@ void* plat_dl_open(const char* path) {
     void* h = dlopen(path, RTLD_NOW | RTLD_LOCAL);
 #endif
     if (!h) failed("cannot load", path);
-    void* (*fallback)(const char*) = __atomic_load_n(&g_dl.fallback, __ATOMIC_ACQUIRE);
+    void* (*fallback)(const char*) = atomic_load_explicit(&g_dl.fallback, memory_order_acquire);
     if (!h && fallback) h = fallback(path); /* the first reason stays */
     return h;
 }
@@ -82,4 +83,6 @@ void* plat_dl_loaded(const char* name) {
     return NULL;
 #endif
 }
-void plat_dl_fallback(void* (*open)(const char* path)) { __atomic_store_n(&g_dl.fallback, open, __ATOMIC_RELEASE); }
+void plat_dl_fallback(void* (*open)(const char* path)) {
+    atomic_store_explicit(&g_dl.fallback, open, memory_order_release);
+}

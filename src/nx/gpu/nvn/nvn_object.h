@@ -69,13 +69,14 @@ typedef struct {
    once read from the game's driver (driver: 1; read_api: its API version among them); the transform feedback layouts
    of the programs that capture, by serial, under their lock: programs that capture are few, and their entries stay */
 typedef struct {
-    u64 serial;
+    _Atomic u64 serial;
     i32 info[NVN_DEVICE_INFO_ITEMS];
-    int driver, read_api;
-    u32 formats[8];   /* bit f: a texture of NVN format f was initialized (logged once) */
-    u64 device;       /* the device the game made last (atomic): the runtime has one */
-    u32 debug_domain; /* the debug domains generated (atomic) */
-    u32 device_flags; /* the flags of that device (atomic) */
+    _Atomic int driver;
+    int read_api;
+    _Atomic u32 formats[8];   /* bit f: a texture of NVN format f was initialized (logged once) */
+    _Atomic u64 device;       /* the device the game made last (atomic): the runtime has one */
+    _Atomic u32 debug_domain; /* the debug domains generated (atomic) */
+    _Atomic u32 device_flags; /* the flags of that device (atomic) */
     PMutex xfb_lock;
     NvnXfbEntry* xfb; /* immutable layouts, sorted by serial and copied out under xfb_lock */
     u32 nxfb, xfb_capacity;

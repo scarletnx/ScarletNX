@@ -19,14 +19,14 @@
 /* A mutex with a static initializer on both hosts; the member is l on both */
 typedef struct {
     SRWLOCK l;
-    void* tracy; /* the profiler's context for a named lock (pm_lock_announce), null otherwise */
+    void* _Atomic tracy; /* the profiler's context for a named lock (pm_lock_announce), null otherwise */
 } PMutex;
 #define PMUTEX_INIT {SRWLOCK_INIT, NULL}
 #else
 #include <pthread.h>
 typedef struct {
     pthread_mutex_t l;
-    void* tracy; /* the profiler's context for a named lock (pm_lock_announce), null otherwise */
+    void* _Atomic tracy; /* the profiler's context for a named lock (pm_lock_announce), null otherwise */
 } PMutex;
 #define PMUTEX_INIT {PTHREAD_MUTEX_INITIALIZER, NULL}
 #endif
@@ -80,9 +80,9 @@ int pc_wait(PCond* c, PMutex* m, int64_t timeout_ns);
    timeout_ns (negative: no limit), and may also return early for no reason; plat_wake_word wakes every thread waiting
    on w, plat_wake_word_one one of them (a lock's next owner, where waking them all has the rest wait again). The waker
    changes *w before it wakes them */
-void plat_wait_word(uint32_t* w, uint32_t v, int64_t timeout_ns);
-void plat_wake_word(uint32_t* w);
-void plat_wake_word_one(uint32_t* w);
+void plat_wait_word(_Atomic uint32_t* w, uint32_t v, int64_t timeout_ns);
+void plat_wake_word(_Atomic uint32_t* w);
+void plat_wake_word_one(_Atomic uint32_t* w);
 
 /* ---- threads */
 typedef void (*PThreadFn)(void* arg);

@@ -13,6 +13,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 #ifndef _WIN32
 #include <unistd.h>
 #endif
@@ -82,12 +83,12 @@ void gui_games_free(GuiGames* games) {
     games->sets = NULL;
     games->count = games->room = games->set_count = 0;
 }
-uint64_t gui_tree_size(const char* path, const int* stop) {
+uint64_t gui_tree_size(const char* path, const _Atomic int* stop) {
     char** names = NULL;
     size_t count = 0, i;
     uint64_t total = 0;
     if (!*path || snx_list_dir(path, &names, &count)) return 0; /* "" is none: Windows would list the working folder */
-    for (i = 0; i < count && !__atomic_load_n(stop, __ATOMIC_RELAXED); ++i) {
+    for (i = 0; i < count && !atomic_load_explicit(stop, memory_order_relaxed); ++i) {
         char* entry = snx_path_join(path, names[i]);
         if (entry && !snx_is_link(entry))
             total += snx_is_dir(entry) ? gui_tree_size(entry, stop) : snx_file_size(entry);

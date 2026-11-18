@@ -18,6 +18,7 @@
  *
  * The images are freestanding (no libc, no libgcc) for aarch64-linux-gnu, as tests/gnuabi/threads.c is. */
 #include "threading.h"
+#include <stdatomic.h>
 
 #define T_SB     1 /* store buffering, DMB ISH between each store and the other thread's load */
 #define T_MP     2 /* message passing, DMB ISH between the stores and between the loads */
@@ -93,11 +94,11 @@ RETAIN static inline void release_store(u32* p, u32 v) {
 static void sync_point(u32 tid) {
     u32 mine = phase[tid] ^ 1u;
     phase[tid] = mine;
-    if (__atomic_add_fetch(&arrive, 1, __ATOMIC_SEQ_CST) == THREADS) {
-        __atomic_store_n(&arrive, 0, __ATOMIC_RELAXED);
-        __atomic_store_n(&sense, mine, __ATOMIC_SEQ_CST);
+    if ((atomic_fetch_add_explicit(&arrive, 1, memory_order_seq_cst) + 1) == THREADS) {
+        atomic_store_explicit(&arrive, 0, memory_order_relaxed);
+        atomic_store_explicit(&sense, mine, memory_order_seq_cst);
     } else {
-        while (__atomic_load_n(&sense, __ATOMIC_SEQ_CST) != mine) {}
+        while (atomic_load_explicit(&sense, memory_order_seq_cst) != mine) {}
     }
 }
 

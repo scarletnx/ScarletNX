@@ -6,6 +6,7 @@
 #include "nx/hle/kernel/kernel_int.h"
 #include <errno.h>
 #include <string.h>
+#include <stdatomic.h>
 #include "nx/runtime/arm.h"
 #include "nx/runtime/loader.h"
 #include "nx/runtime/main.h"
@@ -31,7 +32,9 @@ static int core_of(const KThread* t) { return t->core >= 0 && t->core < NCORES ?
 static int core_idle_nl(const KThread* t) {
     int j;
     for (j = 0; j < NCORES; j++)
-        if (((t->affinity >> j) & 1) && !g_hle.thread.core_owner[j]) return j;
+        if (((atomic_load_explicit(&t->affinity, memory_order_relaxed) >> j) & 1) &&
+            !atomic_load_explicit(&g_hle.thread.core_owner[j], memory_order_relaxed))
+            return j;
     return -1;
 }
 /* the holder of core k is asked to let go (CPU.poll, read by generated code) when a waiter would preempt it, and while
@@ -40,34 +43,39 @@ static int core_idle_nl(const KThread* t) {
 /* stored only when it changes: the holder's code reads poll at each backward branch, and a store of the same value
    still takes its cache line away from the holder's core */
 static void core_flag_nl(int k) {
-    KThread* o = kt_at(g_hle.thread.core_owner[k]);
+    KThread* o = kt_at(atomic_load_explicit(&g_hle.thread.core_owner[k], memory_order_relaxed));
     u32 v;
     if (!o) return;
-    v = __atomic_load_n(&g_hle.thread.hold, __ATOMIC_RELAXED) || g_hle.thread.core_best[k] < o->prio ||
-                (g_hle.thread.core_wait[k] && core_idle_nl(o) >= 0)
+    v = atomic_load_explicit(&g_hle.thread.hold, memory_order_relaxed) || g_hle.thread.core_best[k] < o->prio ||
+                (atomic_load_explicit(&g_hle.thread.core_wait[k], memory_order_relaxed) && core_idle_nl(o) >= 0)
             ? 1u
             : 0u;
     if (g_hle.thread.core_best[k] < o->prio) {
-        if (!g_host.thread.preempt_since[k]) __atomic_store_n(&g_host.thread.preempt_since[k], plat_ns(), __ATOMIC_RELAXED);
+        if (!atomic_load_explicit(&g_host.thread.preempt_since[k], memory_order_relaxed))
+            atomic_store_explicit(&g_host.thread.preempt_since[k], plat_ns(), memory_order_relaxed);
     } else
-        __atomic_store_n(&g_host.thread.preempt_since[k], 0, __ATOMIC_RELAXED);
-    if (__atomic_load_n(&o->cpu.poll, __ATOMIC_RELAXED) == v) return;
-    __atomic_store_n(&o->cpu.poll, v, __ATOMIC_RELAXED);
+        atomic_store_explicit(&g_host.thread.preempt_since[k], 0, memory_order_relaxed);
+    if (atomic_load_explicit(&o->cpu.poll, memory_order_relaxed) == v) return;
+    atomic_store_explicit(&o->cpu.poll, v, memory_order_relaxed);
     if (v) nce_kick(o); /* native code reads no poll: it is stopped */
 }
 static void core_rebest_nl(int k) {
     KThread* w;
     int best = 64;
-    for (w = kt_at(g_hle.thread.core_wait[k]); w; w = kt_at(w->core_next))
+    for (w = kt_at(atomic_load_explicit(&g_hle.thread.core_wait[k], memory_order_relaxed)); w;
+         w = kt_at(atomic_load_explicit(&w->core_next, memory_order_relaxed)))
         if (w->prio < best) best = w->prio;
     g_hle.thread.core_best[k] = best;
 }
 static void core_unlink_nl(int k, KThread* t) {
-    u32* l = &g_hle.thread.core_wait[k];
+    _Atomic u32* l = &g_hle.thread.core_wait[k];
     u32 i = kt_ix(t);
-    while (*l && *l != i) l = &kt_at(*l)->core_next;
-    if (*l) __atomic_store_n(l, t->core_next, __ATOMIC_RELAXED); /* core_yield reads the heads without the lock */
-    t->core_next = 0;
+    while (atomic_load_explicit(&(*l), memory_order_relaxed) && atomic_load_explicit(&(*l), memory_order_relaxed) != i)
+        l = &kt_at(atomic_load_explicit(&(*l), memory_order_relaxed))->core_next;
+    if (atomic_load_explicit(&(*l), memory_order_relaxed))
+        atomic_store_explicit(l, atomic_load_explicit(&t->core_next, memory_order_relaxed),
+                              memory_order_relaxed); /* core_yield reads the heads without the lock */
+    atomic_store_explicit(&t->core_next, 0, memory_order_relaxed);
     core_rebest_nl(k);
 }
 /* whether a waits ahead of b */
@@ -76,7 +84,8 @@ static int core_before(const KThread* a, const KThread* b) {
 }
 /* t, which held core k since core_give_nl, lets go of it: the time goes to the report at exit (kernel_core_report) */
 static void core_held_nl(int k, KThread* t) {
-    u64 now = plat_ns(), held = now - g_host.thread.core_since[k], flagged = g_host.thread.preempt_since[k];
+    u64 now = plat_ns(), held = now - g_host.thread.core_since[k],
+        flagged = atomic_load_explicit(&g_host.thread.preempt_since[k], memory_order_relaxed);
     g_host.thread.core_held_ns[k] += held;
     t->core_held_ns += held;
     if (!flagged) return;
@@ -86,18 +95,18 @@ static void core_held_nl(int k, KThread* t) {
         g_host.thread.preempt_max_ns[k] = now - flagged;
         g_host.thread.preempt_max_by[k] = kt_ix(t);
     }
-    __atomic_store_n(&g_host.thread.preempt_since[k], 0, __ATOMIC_RELAXED);
+    atomic_store_explicit(&g_host.thread.preempt_since[k], 0, memory_order_relaxed);
 }
 /* t holds core k from now on. A thread that waited for it in line is woken (its wait is counted for the report), when
    its waker lets go of the lock */
 static void core_give_nl(int k, KThread* t) {
     u64 now = plat_ns();
-    int waited = t->on_core == -2;
-    g_hle.thread.core_owner[k] = kt_ix(t);
+    int waited = atomic_load_explicit(&t->on_core, memory_order_relaxed) == -2;
+    atomic_store_explicit(&g_hle.thread.core_owner[k], kt_ix(t), memory_order_relaxed);
     g_host.thread.core_since[k] = now;
     t->core = k;
-    __atomic_store_n(&t->on_core, k, __ATOMIC_RELEASE);
-    __atomic_store_n(&t->cpu.poll, 0u, __ATOMIC_RELAXED);
+    atomic_store_explicit(&t->on_core, k, memory_order_release);
+    atomic_store_explicit(&t->cpu.poll, 0u, memory_order_relaxed);
     core_flag_nl(k);
     if (!waited) return;
     t->core_wait_ns += now - t->core_queued;
@@ -112,13 +121,16 @@ static void core_handoff_nl(int k) {
     KThread* best = NULL;
     KThread* w;
     int j, from = k;
-    for (w = kt_at(g_hle.thread.core_wait[k]); w; w = kt_at(w->core_next))
+    for (w = kt_at(atomic_load_explicit(&g_hle.thread.core_wait[k], memory_order_relaxed)); w;
+         w = kt_at(atomic_load_explicit(&w->core_next, memory_order_relaxed)))
         if (!best || core_before(w, best)) best = w;
     if (!best)
         for (j = 0; j < NCORES; j++) {
-            if (j == k || !g_hle.thread.core_owner[j]) continue;
-            for (w = kt_at(g_hle.thread.core_wait[j]); w; w = kt_at(w->core_next))
-                if (((w->affinity >> k) & 1) && w->prio >= kt_at(g_hle.thread.core_owner[j])->prio &&
+            if (j == k || !atomic_load_explicit(&g_hle.thread.core_owner[j], memory_order_relaxed)) continue;
+            for (w = kt_at(atomic_load_explicit(&g_hle.thread.core_wait[j], memory_order_relaxed)); w;
+                 w = kt_at(atomic_load_explicit(&w->core_next, memory_order_relaxed)))
+                if (((atomic_load_explicit(&w->affinity, memory_order_relaxed) >> k) & 1) &&
+                    w->prio >= kt_at(atomic_load_explicit(&g_hle.thread.core_owner[j], memory_order_relaxed))->prio &&
                     (!best || core_before(w, best))) {
                     best = w;
                     from = j;
@@ -126,7 +138,7 @@ static void core_handoff_nl(int k) {
         }
     if (!best) { /* a holder with a waiter elsewhere may move here */
         for (j = 0; j < NCORES; j++)
-            if (j != k && g_hle.thread.core_wait[j]) core_flag_nl(j);
+            if (j != k && atomic_load_explicit(&g_hle.thread.core_wait[j], memory_order_relaxed)) core_flag_nl(j);
         return;
     }
     core_unlink_nl(from, best);
@@ -136,11 +148,12 @@ static void core_handoff_nl(int k) {
 /* t lines up on core k's list, where a holder hands it the core (it may be another core by then) */
 static void core_queue_nl(KThread* t, int k) {
     t->core = k;
-    __atomic_store_n(&t->on_core, -2, __ATOMIC_RELAXED);
+    atomic_store_explicit(&t->on_core, -2, memory_order_relaxed);
     t->core_queued = plat_ns();
     t->core_ticket = ++g_hle.thread.core_ticket;
-    t->core_next = g_hle.thread.core_wait[k];
-    __atomic_store_n(&g_hle.thread.core_wait[k], kt_ix(t), __ATOMIC_RELAXED);
+    atomic_store_explicit(&t->core_next, atomic_load_explicit(&g_hle.thread.core_wait[k], memory_order_relaxed),
+                          memory_order_relaxed);
+    atomic_store_explicit(&g_hle.thread.core_wait[k], kt_ix(t), memory_order_relaxed);
     if (t->prio < g_hle.thread.core_best[k]) g_hle.thread.core_best[k] = t->prio;
     core_flag_nl(k);
 }
@@ -162,14 +175,14 @@ static void core_await(KThread* t) {
     if (g_hle.thread.host_ncpu >= 2 * NCORES) {
         u64 until = plat_ns() + CORE_SPIN_NS;
         for (u32 i = 1;; i++) {
-            if (__atomic_load_n(&t->on_core, __ATOMIC_ACQUIRE) != -2) return;
+            if (atomic_load_explicit(&t->on_core, memory_order_acquire) != -2) return;
             if (!(i & 31) && plat_ns() >= until) break;
             spin_hint();
         }
     }
     for (;;) {
         u32 seq = kt_seq(t);
-        if (__atomic_load_n(&t->on_core, __ATOMIC_ACQUIRE) != -2) break;
+        if (atomic_load_explicit(&t->on_core, memory_order_acquire) != -2) break;
         kt_wait(t, seq, NULL, -1);
     }
 }
@@ -177,11 +190,12 @@ static void core_await(KThread* t) {
    holder; otherwise an idle core of its mask, or a place in its own core's line. 1 when it holds one now */
 static int core_take_nl(KThread* t) {
     int k = core_of(t), j;
-    if (!g_hle.thread.core_owner[k]) {
+    if (!atomic_load_explicit(&g_hle.thread.core_owner[k], memory_order_relaxed)) {
         core_give_nl(k, t);
         return 1;
     }
-    if (t->prio >= kt_at(g_hle.thread.core_owner[k])->prio && (j = core_idle_nl(t)) >= 0) {
+    if (t->prio >= kt_at(atomic_load_explicit(&g_hle.thread.core_owner[k], memory_order_relaxed))->prio &&
+        (j = core_idle_nl(t)) >= 0) {
         core_give_nl(j, t);
         return 1;
     }
@@ -190,11 +204,11 @@ static int core_take_nl(KThread* t) {
 }
 /* t lets go of the core it holds, which goes to the next thread */
 static void core_release_nl(KThread* t) {
-    int k = t->on_core;
-    __atomic_store_n(&t->on_core, -1, __ATOMIC_RELAXED);
-    __atomic_store_n(&t->cpu.poll, 0u, __ATOMIC_RELAXED);
-    if (g_hle.thread.core_owner[k] == kt_ix(t)) {
-        g_hle.thread.core_owner[k] = 0;
+    int k = atomic_load_explicit(&t->on_core, memory_order_relaxed);
+    atomic_store_explicit(&t->on_core, -1, memory_order_relaxed);
+    atomic_store_explicit(&t->cpu.poll, 0u, memory_order_relaxed);
+    if (atomic_load_explicit(&g_hle.thread.core_owner[k], memory_order_relaxed) == kt_ix(t)) {
+        atomic_store_explicit(&g_hle.thread.core_owner[k], 0, memory_order_relaxed);
         core_held_nl(k, t);
     }
     core_handoff_nl(k);
@@ -202,7 +216,8 @@ static void core_release_nl(KThread* t) {
 /* after t took a core: its host thread moves to the core's share of the host CPUs, if it was on another one. Fewer
    host CPUs than cores leave nothing to share out */
 static void core_pin(KThread* t) {
-    int k = t->on_core, n = snx_popcount64(g_hle.svcmem.core_mask), cpus[256], m = 0, len = 0;
+    int k = atomic_load_explicit(&t->on_core, memory_order_relaxed), n = snx_popcount64(g_hle.svcmem.core_mask),
+        cpus[256], m = 0, len = 0;
     char list[256] = "";
     if (k == t->pinned) return;
     t->pinned = k;
@@ -210,7 +225,7 @@ static void core_pin(KThread* t) {
     for (int i = snx_popcount64(g_hle.svcmem.core_mask & ((1ull << k) - 1)); i < g_hle.thread.host_ncpu; i += n)
         cpus[m++] = g_hle.thread.host_cpu[i];
     if (plat_thread_cpus(cpus, m)) WARN_LIMIT(1, "Could not move a game thread to its CPUs: %s\n", strerror(errno));
-    if (__atomic_exchange_n(&g_hle.thread.pin_said[k], 1, __ATOMIC_RELAXED)) return;
+    if (atomic_exchange_explicit(&g_hle.thread.pin_said[k], 1, memory_order_relaxed)) return;
     for (int i = 0; i < m && len < (int)sizeof list - 8; i++)
         len += snprintf(list + len, sizeof list - len, " %d", cpus[i]);
     LOG("kernel: core %d runs on host CPUs%s\n", k, list);
@@ -228,9 +243,9 @@ static void core_unlock(void) {
 void core_enter(KThread* t) {
     int got = 1;
     if (!t || !g_settings.emulated_cores) return;
-    if (__atomic_load_n(&t->on_core, __ATOMIC_ACQUIRE) < 0) {
+    if (atomic_load_explicit(&t->on_core, memory_order_acquire) < 0) {
         pm_lock(&g_host.thread.core_lk);
-        if (t->on_core < 0) got = core_take_nl(t);
+        if (atomic_load_explicit(&t->on_core, memory_order_relaxed) < 0) got = core_take_nl(t);
         core_unlock();
         if (!got) core_await(t);
     }
@@ -239,7 +254,7 @@ void core_enter(KThread* t) {
 void core_leave(KThread* t) {
     if (!t || !g_settings.emulated_cores) return;
     pm_lock(&g_host.thread.core_lk);
-    if (t->on_core >= 0) core_release_nl(t);
+    if (atomic_load_explicit(&t->on_core, memory_order_relaxed) >= 0) core_release_nl(t);
     core_unlock();
 }
 /* A change of guest memory is about to wait for the renderer (g_gpu_mapping_waits). On the console an SVC that changes
@@ -250,10 +265,10 @@ void core_leave(KThread* t) {
 void core_leave_waiting(void) {
     KThread* t = kthread_cur();
     int k = -1;
-    if (!t || !g_settings.emulated_cores || !__atomic_load_n(&t->in_svc, __ATOMIC_SEQ_CST)) return;
+    if (!t || !g_settings.emulated_cores || !atomic_load_explicit(&t->in_svc, memory_order_seq_cst)) return;
     pm_lock(&g_host.thread.core_lk);
-    if (t->on_core >= 0) {
-        k = t->on_core;
+    if (atomic_load_explicit(&t->on_core, memory_order_relaxed) >= 0) {
+        k = atomic_load_explicit(&t->on_core, memory_order_relaxed);
         core_release_nl(t);
         g_host.thread.waits_off_core++;
     }
@@ -276,16 +291,16 @@ void core_leave_waiting(void) {
 static void core_switch(KThread* t, int stopped) {
     int k, j, got = 1, kept = 0, best = 64;
     u16 count = 0;
-    if (!t || !__atomic_load_n(&t->cpu.poll, __ATOMIC_RELAXED)) return;
+    if (!t || !atomic_load_explicit(&t->cpu.poll, memory_order_relaxed)) return;
     if (stopped && t->tls) count = gr16(t->tls + SNX_TLS_DISABLE_COUNT); /* its own TLS: only t's thread is here */
     pm_lock(&g_host.thread.core_lk);
     if (!g_settings.emulated_cores) { /* only a game pause sets poll: kernel_hold, under core_lk */
-        if (!__atomic_load_n(&g_hle.thread.hold, __ATOMIC_RELAXED))
-            __atomic_store_n(&t->cpu.poll, 0u, __ATOMIC_RELAXED);
+        if (!atomic_load_explicit(&g_hle.thread.hold, memory_order_relaxed))
+            atomic_store_explicit(&t->cpu.poll, 0u, memory_order_relaxed);
         pm_unlock(&g_host.thread.core_lk);
         return;
     }
-    k = t->on_core;
+    k = atomic_load_explicit(&t->on_core, memory_order_relaxed);
     if (count && (k == -1 || (k >= 0 && g_hle.thread.core_best[k] < t->prio))) {
         /* either way it would line up for a core here, behind the thread that may want its lock */
         gw16(t->tls + SNX_TLS_INTERRUPT_FLAG, 1);
@@ -293,16 +308,17 @@ static void core_switch(KThread* t, int stopped) {
         if (k >= 0) best = g_hle.thread.core_best[k];
         g_host.thread.kept++;
     } else if (k == -1) { /* its core was let go while it waited in a fault (kthread_fault_lend): it takes one again */
-        __atomic_store_n(&t->cpu.poll, 0u, __ATOMIC_RELAXED);
+        atomic_store_explicit(&t->cpu.poll, 0u, memory_order_relaxed);
         got = core_take_nl(t);
     } else if (k >= 0 && g_hle.thread.core_best[k] < t->prio) {
         core_release_nl(t);
         got = core_take_nl(t);
-    } else if (k >= 0 && g_hle.thread.core_wait[k] && (j = core_idle_nl(t)) >= 0) {
+    } else if (k >= 0 && atomic_load_explicit(&g_hle.thread.core_wait[k], memory_order_relaxed) &&
+               (j = core_idle_nl(t)) >= 0) {
         core_release_nl(t); /* the waiter takes k, t the idle core */
         core_give_nl(j, t);
     } else
-        __atomic_store_n(&t->cpu.poll, 0u, __ATOMIC_RELAXED);
+        atomic_store_explicit(&t->cpu.poll, 0u, memory_order_relaxed);
     core_unlock();
     if (kept) { /* it holds the core it held, or none still: nothing moved */
         if (k >= 0)
@@ -323,8 +339,8 @@ static void core_switch(KThread* t, int stopped) {
 void core_preempt(KThread* t) { core_switch(t, 0); }
 void core_poll(KThread* t) {
     if (t) { /* for the thread dump: only t's own thread writes its count */
-        u32* polls = &g_host.thread.polls[kt_ix(t) - 1];
-        __atomic_store_n(polls, __atomic_load_n(polls, __ATOMIC_RELAXED) + 1, __ATOMIC_RELAXED);
+        _Atomic u32* polls = &g_host.thread.polls[kt_ix(t) - 1];
+        atomic_store_explicit(polls, atomic_load_explicit(polls, memory_order_relaxed) + 1, memory_order_relaxed);
     }
     core_switch(t, 1);
     if (kthread_hold_point(t, PARK_RUN)) core_enter(t);
@@ -346,15 +362,15 @@ void kthread_fault_lend(u32 tid) {
     /* a slot keeps the host thread of a thread that exited, whose number the system may give another thread: only a
        live one holds a core */
     for (int i = 0; i < KTHREAD_MAX && !t; i++)
-        if (__atomic_load_n(&g_host.thread.host_tid[i], __ATOMIC_RELAXED) == tid &&
+        if (atomic_load_explicit(&g_host.thread.host_tid[i], memory_order_relaxed) == tid &&
             g_hle.thread.threads[i].o.type == KO_THREAD && g_hle.thread.threads[i].state == 1)
             t = &g_hle.thread.threads[i];
     if (!t) return; /* a thread of the runtime's own */
     pm_lock(&g_host.thread.core_lk);
-    int k = t->on_core;
-    if (k >= 0 && g_hle.thread.core_owner[k] == kt_ix(t)) {
+    int k = atomic_load_explicit(&t->on_core, memory_order_relaxed);
+    if (k >= 0 && atomic_load_explicit(&g_hle.thread.core_owner[k], memory_order_relaxed) == kt_ix(t)) {
         core_release_nl(t);
-        __atomic_store_n(&t->cpu.poll, 1u, __ATOMIC_RELAXED);
+        atomic_store_explicit(&t->cpu.poll, 1u, memory_order_relaxed);
     }
     core_unlock();
 }
@@ -366,21 +382,23 @@ void kernel_core_watch(void) {
     if (!g_settings.emulated_cores || g_host.thread.preempt_lines >= CORE_WATCH_LINES) return;
     u64 now = plat_ns();
     for (int k = 0; k < NCORES; k++) {
-        u64 since = __atomic_load_n(&g_host.thread.preempt_since[k], __ATOMIC_RELAXED);
-        const KThread* o = kt_at(__atomic_load_n(&g_hle.thread.core_owner[k], __ATOMIC_RELAXED));
+        u64 since = atomic_load_explicit(&g_host.thread.preempt_since[k], memory_order_relaxed);
+        const KThread* o = kt_at(atomic_load_explicit(&g_hle.thread.core_owner[k], memory_order_relaxed));
         if (!since || !o || since > now || now - since < CORE_WATCH_NS || g_host.thread.preempt_said[k] == since)
             continue;
         g_host.thread.preempt_said[k] = since;
         g_host.thread.preempt_lines++;
-        u32 ix = kt_ix(o) - 1, tid = __atomic_load_n(&g_host.thread.host_tid[ix], __ATOMIC_RELAXED);
-        u64 left = __atomic_load_n(&g_host.thread.svc_ns[ix], __ATOMIC_RELAXED);
+        u32 ix = kt_ix(o) - 1, tid = atomic_load_explicit(&g_host.thread.host_tid[ix], memory_order_relaxed);
+        u64 left = atomic_load_explicit(&g_host.thread.svc_ns[ix], memory_order_relaxed);
         char where[96] = "?";
         if (tid) plat_thread_where(tid, where, sizeof where);
         LOG("kernel: thread %llu (prio %d) keeps core %d %llu ms after a waiter of priority %d came: %s, host thread %s, "
             "poll %u, %u polls, out of an SVC for %llu ms, pc %llx lr %llx\n",
-            (unsigned long long)o->id, o->prio, k, (unsigned long long)((now - since) / 1000000u), g_hle.thread.core_best[k],
-            __atomic_load_n(&o->in_svc, __ATOMIC_RELAXED) ? "in an SVC" : "in game code", where,
-            __atomic_load_n(&o->cpu.poll, __ATOMIC_RELAXED), __atomic_load_n(&g_host.thread.polls[ix], __ATOMIC_RELAXED),
+            (unsigned long long)o->id, o->prio, k, (unsigned long long)((now - since) / 1000000u),
+            g_hle.thread.core_best[k],
+            atomic_load_explicit(&o->in_svc, memory_order_relaxed) ? "in an SVC" : "in game code", where,
+            atomic_load_explicit(&o->cpu.poll, memory_order_relaxed),
+            atomic_load_explicit(&g_host.thread.polls[ix], memory_order_relaxed),
             (unsigned long long)(left && now > left ? (now - left) / 1000000u : 0), (unsigned long long)o->cpu.pc,
             (unsigned long long)o->cpu.x[30]);
     }
@@ -393,9 +411,13 @@ static KThread* core_suggested_nl(const KThread* t, int k, int* from) {
     KThread *best = NULL, *w;
     int j;
     for (j = 0; j < NCORES; j++) {
-        if (j == k || (g_hle.thread.core_owner[j] && kt_at(g_hle.thread.core_owner[j])->prio < 2)) continue;
-        for (w = kt_at(g_hle.thread.core_wait[j]); w; w = kt_at(w->core_next))
-            if (((w->affinity >> k) & 1) && w->prio <= t->prio && (!best || core_before(w, best))) {
+        if (j == k || (atomic_load_explicit(&g_hle.thread.core_owner[j], memory_order_relaxed) &&
+                       kt_at(atomic_load_explicit(&g_hle.thread.core_owner[j], memory_order_relaxed))->prio < 2))
+            continue;
+        for (w = kt_at(atomic_load_explicit(&g_hle.thread.core_wait[j], memory_order_relaxed)); w;
+             w = kt_at(atomic_load_explicit(&w->core_next, memory_order_relaxed)))
+            if (((atomic_load_explicit(&w->affinity, memory_order_relaxed) >> k) & 1) && w->prio <= t->prio &&
+                (!best || core_before(w, best))) {
                 best = w;
                 *from = j;
             }
@@ -422,11 +444,12 @@ void core_yield(KThread* t, int migrate) {
     }
     /* nobody waits for any core: nothing to hand over or take in, so no lock. One that lines up meanwhile has
        flagged t if it would preempt it, and otherwise comes after this yield, as if it had arrived a moment later */
-    for (k = 0; k < NCORES && !__atomic_load_n(&g_hle.thread.core_wait[k], __ATOMIC_RELAXED); k++) {}
+    for (k = 0; k < NCORES && !atomic_load_explicit(&g_hle.thread.core_wait[k], memory_order_relaxed); k++) {}
     if (k == NCORES) return;
     pm_lock(&g_host.thread.core_lk);
-    k = t->on_core;
-    if (k >= 0 && g_hle.thread.core_wait[k] && (migrate || g_hle.thread.core_best[k] <= t->prio)) {
+    k = atomic_load_explicit(&t->on_core, memory_order_relaxed);
+    if (k >= 0 && atomic_load_explicit(&g_hle.thread.core_wait[k], memory_order_relaxed) &&
+        (migrate || g_hle.thread.core_best[k] <= t->prio)) {
         core_release_nl(t);
         if (migrate && (j = core_idle_nl(t)) >= 0)
             core_give_nl(j, t);
@@ -437,8 +460,8 @@ void core_yield(KThread* t, int migrate) {
     } else if (k >= 0 && migrate && (w = core_suggested_nl(t, k, &j))) {
         core_unlink_nl(j, w);
         core_flag_nl(j);
-        __atomic_store_n(&t->on_core, -1, __ATOMIC_RELAXED);
-        __atomic_store_n(&t->cpu.poll, 0u, __ATOMIC_RELAXED);
+        atomic_store_explicit(&t->on_core, -1, memory_order_relaxed);
+        atomic_store_explicit(&t->cpu.poll, 0u, memory_order_relaxed);
         core_held_nl(k, t);
         core_give_nl(k, w); /* not core_release_nl: its hand-off could pick another thread */
         core_queue_nl(t, k);
@@ -453,20 +476,20 @@ void core_yield(KThread* t, int migrate) {
 void core_set_prio(KThread* t, int prio) {
     pm_lock(&g_host.thread.core_lk);
     t->prio = prio;
-    if (t->on_core == -2) {
+    if (atomic_load_explicit(&t->on_core, memory_order_relaxed) == -2) {
         int k = core_of(t);
         t->core_ticket = ++g_hle.thread.core_ticket;
         core_rebest_nl(k);
         core_flag_nl(k);
-    } else if (t->on_core >= 0)
-        core_flag_nl(t->on_core);
+    } else if (atomic_load_explicit(&t->on_core, memory_order_relaxed) >= 0)
+        core_flag_nl(atomic_load_explicit(&t->on_core, memory_order_relaxed));
     pm_unlock(&g_host.thread.core_lk);
 }
 
 /* ============================================================ waiting and waking a thread */
-u32 kt_seq(const KThread* t) { return __atomic_load_n(kt_word(t), __ATOMIC_ACQUIRE); }
+u32 kt_seq(const KThread* t) { return atomic_load_explicit(kt_word(t), memory_order_acquire); }
 void kt_notify(KThread* t) {
-    __atomic_add_fetch(kt_word(t), 1u, __ATOMIC_RELEASE);
+    atomic_fetch_add_explicit(kt_word(t), 1u, memory_order_release);
     plat_wake_word(kt_word(t));
 }
 void kt_notify_later(KThread* t) {
@@ -474,7 +497,7 @@ void kt_notify_later(KThread* t) {
         kt_notify(t);
         return;
     }
-    __atomic_add_fetch(kt_word(t), 1u, __ATOMIC_RELEASE);
+    atomic_fetch_add_explicit(kt_word(t), 1u, memory_order_release);
     t_hle.thread.later.ix[t_hle.thread.later.n++] = kt_ix(t);
 }
 void kt_flush(void) {
@@ -565,12 +588,13 @@ u32 kthread_create(u64 entry, u64 arg, u64 stack_top, int prio, int core, KThrea
                    "limit isn't known here, so it is made\n",
                    live + 1, THREAD_MAX);
     /* a slot's earlier thread may have ended inside an SVC, as a save state's load ends them where they stopped */
-    __atomic_store_n(&g_host.thread.handed[kt_ix(t) - 1], 0, __ATOMIC_RELAXED);
+    atomic_store_explicit(&g_host.thread.handed[kt_ix(t) - 1], 0, memory_order_relaxed);
     kobj_set_name(&t->o, "thread");
     t->prio = t->base_prio = prio;
-    t->core = t->ideal_core = core;
-    t->affinity = 1ull << core;
-    t->on_core = -1;
+    t->core = core;
+    atomic_store_explicit(&t->ideal_core, core, memory_order_relaxed);
+    atomic_store_explicit(&t->affinity, 1ull << core, memory_order_relaxed);
+    atomic_store_explicit(&t->on_core, -1, memory_order_relaxed);
     t->pinned = -1;
     t->entry = entry;
     t->arg = arg;
@@ -639,10 +663,10 @@ typedef char snx_check_guest_stats_slots[KTHREAD_MAX < GSTAT_SLOTS ? 1 : -1];
 static void thread_main(void* p) {
     KThread* t = (KThread*)p;
     t_hle.thread.cur = t;
-    __atomic_store_n(&g_host.thread.host_tid[kt_ix(t) - 1], plat_tid(), __ATOMIC_RELAXED);
+    atomic_store_explicit(&g_host.thread.host_tid[kt_ix(t) - 1], plat_tid(), memory_order_relaxed);
     guest_stats_thread_start(kt_ix(t));
     SNX_THREAD_NAME(t->name[0] ? t->name : "guest");
-    __atomic_add_fetch(&g_host.thread.nhost, 1, __ATOMIC_ACQ_REL);
+    atomic_fetch_add_explicit(&g_host.thread.nhost, 1, memory_order_acq_rel);
     thread_run(t, t->entry);
 }
 /* the host thread holds a reference from here until svc_exit_thread. The state is read and set in one hold of the
@@ -684,7 +708,7 @@ void svc_exit_thread(KThread* t) {
     core_leave(t);
     guest_stats_thread_end(kt_ix(t));
     kobj_unref(&t->o);
-    __atomic_sub_fetch(&g_host.thread.nhost, 1, __ATOMIC_ACQ_REL);
+    atomic_fetch_sub_explicit(&g_host.thread.nhost, 1, memory_order_acq_rel);
     plat_thread_exit();
 }
 
@@ -697,21 +721,21 @@ void svc_exit_thread(KThread* t) {
    stopped is stored before hold is read on the thread's side, and hold before stopped is read on the pauser's (all
    sequentially consistent), so a thread whose wait ends as the pause begins is never counted stopped while it goes on */
 int kthread_hold_point(KThread* t, int park) {
-    if (!t || !__atomic_load_n(&g_hle.thread.hold, __ATOMIC_SEQ_CST)) return 0;
+    if (!t || !atomic_load_explicit(&g_hle.thread.hold, memory_order_seq_cst)) return 0;
     core_leave(t);
     pm_lock(&g_host.kernel.klock);
     t->park = park;
-    __atomic_store_n(&t->stopped, 2, __ATOMIC_SEQ_CST);
+    atomic_store_explicit(&t->stopped, 2, memory_order_seq_cst);
 #if defined(SNX_TRACY)
     SNX_FIBER_ENTER(kt_ix(t) - 1, 7, "the game is paused");
 #endif
     for (;;) {
         u32 seq = kt_seq(t);
         kthread_retire_check(&g_host.kernel.klock);
-        if (!g_hle.thread.hold) break;
+        if (!atomic_load_explicit(&g_hle.thread.hold, memory_order_relaxed)) break;
         kt_wait(t, seq, &g_host.kernel.klock, -1);
     }
-    __atomic_store_n(&t->stopped, 0, __ATOMIC_SEQ_CST);
+    atomic_store_explicit(&t->stopped, 0, memory_order_seq_cst);
     SNX_FIBER_LEAVE();
     klock_unlock();
     return 1;
@@ -719,10 +743,10 @@ int kthread_hold_point(KThread* t, int park) {
 void kthread_block(KThread* t) {
     if (!t) return;
     t->park = PARK_RUN; /* at the pc the caller set: a thread a save state restarts goes on there */
-    __atomic_store_n(&t->stopped, 1, __ATOMIC_SEQ_CST);
+    atomic_store_explicit(&t->stopped, 1, memory_order_seq_cst);
     /* runs no game code now: a svcSetThreadActivity waiting for it to pause has its answer (stopped is set before
        suspended is read, and the pause sets suspended before it reads stopped) */
-    if (__atomic_load_n(&t->suspended, __ATOMIC_SEQ_CST)) {
+    if (atomic_load_explicit(&t->suspended, memory_order_seq_cst)) {
         pm_lock(&g_host.kernel.klock);
         kobj_wake_nl(&t->o, 5);
         klock_unlock();
@@ -730,8 +754,8 @@ void kthread_block(KThread* t) {
 }
 void kthread_unblock(KThread* t) {
     if (!t) return;
-    __atomic_store_n(&t->stopped, 0, __ATOMIC_SEQ_CST);
-    if (__atomic_load_n(&t->suspended, __ATOMIC_SEQ_CST)) svc_pause_point(t); /* paused during the wait */
+    atomic_store_explicit(&t->stopped, 0, memory_order_seq_cst);
+    if (atomic_load_explicit(&t->suspended, memory_order_seq_cst)) svc_pause_point(t); /* paused during the wait */
     kthread_hold_point(t, PARK_RUN); /* rt_miss set the pc it goes on at */
 }
 void kthread_commit(void) {
@@ -746,20 +770,20 @@ int kthread_wait(PCond* c, PMutex* m, i64 timeout_ns) {
     slot = kt_ix(t) - 1;
     /* not stopped, and a pause waits for it: a request that changed a service, or a wait outside an SVC (a function of
        the game's that the runtime runs natively, NVN's syncpoint waits), which no svc instruction makes again */
-    if (g_host.thread.committed[slot] || !__atomic_load_n(&t->in_svc, __ATOMIC_SEQ_CST))
+    if (g_host.thread.committed[slot] || !atomic_load_explicit(&t->in_svc, memory_order_seq_cst))
         return pc_wait(c, m, timeout_ns);
     g_host.thread.waiting_on[slot].c = c; /* where kernel_retire wakes it */
     g_host.thread.waiting_on[slot].m = m;
     t->park = PARK_SERVICE;
-    __atomic_store_n(&t->stopped, 1, __ATOMIC_SEQ_CST);
+    atomic_store_explicit(&t->stopped, 1, memory_order_seq_cst);
 #if defined(SNX_TRACY)
     SNX_FIBER_ENTER(kt_ix(t) - 1, 6, "in a service wait");
 #endif
     r = pc_wait(c, m, timeout_ns);
     SNX_FIBER_LEAVE();
-    __atomic_store_n(&t->stopped, 0, __ATOMIC_SEQ_CST);
+    atomic_store_explicit(&t->stopped, 0, memory_order_seq_cst);
     kthread_retire_check(m);
-    if (__atomic_load_n(&g_hle.thread.hold, __ATOMIC_SEQ_CST)) {
+    if (atomic_load_explicit(&g_hle.thread.hold, memory_order_seq_cst)) {
         pm_unlock(m);
         kthread_hold_point(t, PARK_SERVICE);
         pm_lock(m);
@@ -775,10 +799,10 @@ int kthread_wait(PCond* c, PMutex* m, i64 timeout_ns) {
    them): the load raises retire, wakes every one, and counts them gone (nhost). What a thread held of g_hle (references,
    a pool slot) goes with the g_hle the load writes over, so a thread only lets go of the host lock it holds */
 void kthread_retire_check(PMutex* held) {
-    if (!__atomic_load_n(&g_host.thread.retire, __ATOMIC_ACQUIRE)) return;
+    if (!atomic_load_explicit(&g_host.thread.retire, memory_order_acquire)) return;
     if (held) pm_unlock(held);
     guest_stats_thread_end(kt_ix(kthread_cur()));
-    __atomic_sub_fetch(&g_host.thread.nhost, 1, __ATOMIC_ACQ_REL);
+    atomic_fetch_sub_explicit(&g_host.thread.nhost, 1, memory_order_acq_rel);
     SNX_FIBER_LEAVE_ALL(); /* this host thread ends inside its guest's wait */
     plat_thread_exit();
 }
@@ -786,7 +810,7 @@ int kernel_retire(int timeout_ms) {
     u64 t0 = plat_ns();
     u32 i;
     pm_lock(&g_host.kernel.klock);
-    __atomic_store_n(&g_host.thread.retire, 1, __ATOMIC_RELEASE);
+    atomic_store_explicit(&g_host.thread.retire, 1, memory_order_release);
     for (i = 0; i < KTHREAD_MAX; i++) kt_notify(&g_hle.thread.threads[i]);
     klock_unlock();
     for (i = 0; i < KTHREAD_MAX; i++) {
@@ -797,15 +821,15 @@ int kernel_retire(int timeout_ms) {
         pc_broadcast(c);
         pm_unlock(m);
     }
-    while (__atomic_load_n(&g_host.thread.nhost, __ATOMIC_ACQUIRE) > 0) {
+    while (atomic_load_explicit(&g_host.thread.nhost, memory_order_acquire) > 0) {
         if (plat_ns() - t0 >= (u64)timeout_ms * 1000000u) {
             WARN("state: %d guest threads didn't end within %d ms\n",
-                 __atomic_load_n(&g_host.thread.nhost, __ATOMIC_ACQUIRE), timeout_ms);
+                 atomic_load_explicit(&g_host.thread.nhost, memory_order_acquire), timeout_ms);
             return -1;
         }
         plat_sleep_ns(1000000);
     }
-    __atomic_store_n(&g_host.thread.retire, 0, __ATOMIC_RELEASE);
+    atomic_store_explicit(&g_host.thread.retire, 0, memory_order_release);
     memset(g_host.thread.waiting_on, 0, sizeof g_host.thread.waiting_on);
     return 0;
 }
@@ -818,8 +842,8 @@ static void thread_resume_main(void* p) {
     int park = t->park;
     SNX_THREAD_NAME(t->name[0] ? t->name : "guest");
     t_hle.thread.cur = t;
-    __atomic_store_n(&g_host.thread.host_tid[kt_ix(t) - 1], plat_tid(), __ATOMIC_RELAXED);
-    __atomic_add_fetch(&g_host.thread.nhost, 1, __ATOMIC_ACQ_REL);
+    atomic_store_explicit(&g_host.thread.host_tid[kt_ix(t) - 1], plat_tid(), memory_order_relaxed);
+    atomic_fetch_add_explicit(&g_host.thread.nhost, 1, memory_order_acq_rel);
     kthread_hold_point(t, park);
     if (park == PARK_ENTER || park == PARK_SERVICE) {
         if (g_arm_mod)
@@ -827,10 +851,10 @@ static void thread_resume_main(void* p) {
         else
             t->cpu.pc -= 4;
         if (park == PARK_SERVICE) svc_service_retry(t);
-        __atomic_store_n(&t->in_svc, 0, __ATOMIC_SEQ_CST);
+        atomic_store_explicit(&t->in_svc, 0, memory_order_seq_cst);
     } else if (park == PARK_WAIT)
         svc_resume(t);
-    else if (__atomic_load_n(&t->in_svc, __ATOMIC_SEQ_CST))
+    else if (atomic_load_explicit(&t->in_svc, memory_order_seq_cst))
         svc_resume_leave(t); /* stopped on its way out of an SVC, its outputs written */
     thread_run(t, g_arm_mod ? t->arm.r[15] : t->cpu.pc);
 }
@@ -841,17 +865,17 @@ void kthread_resume(KThread* t) {
     t->cpu.code_hi = g_code_hi;
     t->cpu.rt = &g_rtapi;
     t->cpu.thread = t;
-    t->cpu.poll = 0;
+    atomic_store_explicit(&t->cpu.poll, 0, memory_order_relaxed);
     t->cpu.excl_on = 0; /* the monitor the old thread armed: its store-exclusive fails, and the game tries again */
     if (g_arm_mod) {
         t->arm.mem = g_mem;
         t->arm.mem_size = 1ull << 32;
         t->arm.rt = &g_arm_rt;
     }
-    t->on_core = -1;
+    atomic_store_explicit(&t->on_core, -1, memory_order_relaxed);
     t->pinned = -1;
-    t->core_next = 0;
-    t->stopped = 0;
+    atomic_store_explicit(&t->core_next, 0, memory_order_relaxed);
+    atomic_store_explicit(&t->stopped, 0, memory_order_relaxed);
     t->pause_at = 0;
     if (plat_thread(thread_resume_main, t, (size_t)g_settings.thread_stack_mb << 20))
         fatal("Could not start a host thread for guest thread %llu", (unsigned long long)t->id);
@@ -865,14 +889,14 @@ int kernel_hold(int timeout_ms) {
     u64 t0 = plat_ns();
     int k;
     pm_lock(&g_host.kernel.klock);
-    __atomic_store_n(&g_hle.thread.hold, 1, __ATOMIC_SEQ_CST);
+    atomic_store_explicit(&g_hle.thread.hold, 1, memory_order_seq_cst);
     /* under the cores' lock, so that no core_flag_nl that read hold before it was set clears a flag after this */
     pm_lock(&g_host.thread.core_lk);
     for (k = 0; k < NCORES; k++) core_flag_nl(k);
     if (!g_settings.emulated_cores) { /* no thread holds a core: each one running game code is asked itself */
         pm_lock(&g_host.kernel.pool_lk);
         FOR_LIVE_THREADS(t) {
-            __atomic_store_n(&t->cpu.poll, 1u, __ATOMIC_RELAXED);
+            atomic_store_explicit(&t->cpu.poll, 1u, memory_order_relaxed);
             nce_kick(t);
         }
         pm_unlock(&g_host.kernel.pool_lk);
@@ -886,7 +910,9 @@ int kernel_hold(int timeout_ms) {
         pm_lock(&g_host.kernel.klock);
         pm_lock(&g_host.kernel.pool_lk);
         FOR_LIVE_THREADS(t) {
-            if (__atomic_load_n(&t->stopped, __ATOMIC_SEQ_CST) || (t->suspended && t->pause_at)) continue;
+            if (atomic_load_explicit(&t->stopped, memory_order_seq_cst) ||
+                (atomic_load_explicit(&t->suspended, memory_order_relaxed) && t->pause_at))
+                continue;
             late = 1;
             id = t->id;
             memcpy(name, t->name, sizeof name);
@@ -908,7 +934,7 @@ int kernel_hold(int timeout_ms) {
 }
 void kernel_release(void) {
     pm_lock(&g_host.kernel.klock);
-    __atomic_store_n(&g_hle.thread.hold, 0, __ATOMIC_SEQ_CST);
+    atomic_store_explicit(&g_hle.thread.hold, 0, memory_order_seq_cst);
     pm_lock(&g_host.kernel.pool_lk);
     FOR_LIVE_THREADS(t) kt_notify(t);
     pm_unlock(&g_host.kernel.pool_lk);

@@ -222,10 +222,10 @@ static int owned_astc_key(void) {
 /* An NVN recording on a page an owner takes 16 bytes of after the submission and before the GPU thread replays it (a
    copy's result beside the game's command memory). The replay reads the record there without the renderer's lock, so
    the trap lands the owner and the record runs: its event is written, the owner's bytes are in guest memory */
-static int g_opr_go; /* atomic: the replay's lane waits behind opr_gate while it is 0 */
+static _Atomic int g_opr_go; /* atomic: the replay's lane waits behind opr_gate while it is 0 */
 static int opr_gate(void* arg) {
     (void)arg;
-    return __atomic_load_n(&g_opr_go, __ATOMIC_ACQUIRE);
+    return atomic_load_explicit(&g_opr_go, memory_order_acquire);
 }
 static int owned_nvn_record(void) {
     const u64 rec = OPR_CPU + 0xa000, handles = OPR_CPU + 0xb000, own = rec + 0x800, event = OPR_GVA + 0xc000;
@@ -240,7 +240,7 @@ static int owned_nvn_record(void) {
     memcpy(GP(handles), &rec, sizeof rec);
     u32 q = nvn_replay_queue(), shown = 0;
     u64 ready = 0;
-    __atomic_store_n(&g_opr_go, 0, __ATOMIC_RELEASE);
+    atomic_store_explicit(&g_opr_go, 0, memory_order_release);
     gpu_call_poll(opr_gate, NULL, q - 1); /* the queue's lane (nvn_replay.c): its submission waits behind it */
     nvn_replay_submit(q, 1, handles, &ready, &shown);
     vk_lock();
@@ -250,7 +250,7 @@ static int owned_nvn_record(void) {
     CHECK(own_lookup(own, 16, NULL, 0) == 1);
     vk_unlock();
     u64 lands = own_landings();
-    __atomic_store_n(&g_opr_go, 1, __ATOMIC_RELEASE);
+    atomic_store_explicit(&g_opr_go, 1, memory_order_release);
     gpu_kick();
     nvn_replay_finish(q);
     int kept = own_lookup(own, 16, NULL, 0) != 0, landed = own_landings() != lands;

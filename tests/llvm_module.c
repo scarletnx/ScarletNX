@@ -212,11 +212,11 @@ static int run(const char* path, const unsigned char* image, u64 watch_at, u64 s
     calls = &out->calls;
     current = out;
     memory = (unsigned char*)calloc(1, (size_t)mod->mods[0].base + MEMORY);
-    out->cpu.disp = (GuestFn*)calloc((size_t)(mod->code_hi - mod->code_lo) / 4, sizeof(GuestFn));
+    out->cpu.disp = (_Atomic GuestFn*)calloc((size_t)(mod->code_hi - mod->code_lo) / 4, sizeof(GuestFn));
     memcpy(memory + mod->mods[0].base, image, IMAGE);
     for (i = 0; i < mod->nentries; ++i) out->cpu.disp[(mod->entry_addr[i] - mod->code_lo) / 4] = mod->entry_fn[i];
     if (watch_at) {
-        GuestFn* slot = &out->cpu.disp[(mod->mods[0].base + watch_at - mod->code_lo) / 4];
+        _Atomic GuestFn* slot = &out->cpu.disp[(mod->mods[0].base + watch_at - mod->code_lo) / 4];
         watched_entry = *slot;
         if (watched_entry) *slot = watch;
     }

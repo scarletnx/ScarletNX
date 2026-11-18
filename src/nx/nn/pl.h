@@ -10,7 +10,7 @@
 typedef struct {
     u32 shm;
     u32 font_off[PL_FONTS], font_size[PL_FONTS]; /* where each font starts (past its header), and its size */
-    u64 base; /* the guest address of the memory, mapped read only at the first ask; 0 before */
+    _Atomic u64 base; /* the guest address of the memory, mapped read only at the first ask; 0 before */
 } HlePl;
 
 /* the fonts, read from the game folder or the stand-ins: after the file system, before the game's first thread */

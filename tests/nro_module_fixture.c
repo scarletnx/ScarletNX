@@ -25,10 +25,10 @@ static void second(CPU* c, u64 pc) {
 
 static SnxModInfo g_info;
 static u64 g_entry_addr[2], g_fn_lo[2];
-static GuestFn g_entry_fn[2];
+static _Atomic GuestFn g_entry_fn[2];
 static const GuestFn g_fns[2] = {first, second};
 static const u32 g_fn_len[2] = {0x40, 0x40};
-static u8 g_stale[2];
+static _Atomic u8 g_stale[2];
 static SnxModule g_module;
 
 /* its imports: two functions of the game's, at 0x2400 and 0x2500, each called through its pointer, which starts as

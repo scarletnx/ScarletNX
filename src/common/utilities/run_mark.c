@@ -12,6 +12,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <stdatomic.h>
 #ifdef _WIN32
 #include <process.h> /* _getpid */
 #else
@@ -23,7 +24,7 @@
 /* this process's mark, from snx_run_mark_start to snx_run_mark_end: its path, NULL while there is none (taken at once
    by the end, so that a second end on another thread finds none), its lock, and whether atexit has the end */
 static struct {
-    char* path;
+    char* _Atomic path;
     intptr_t lock;
     int at_exit;
 } g_run_mark;
@@ -162,13 +163,13 @@ int snx_run_mark_start(const char* folder, void (*seen)(void* data, const SnxRun
     }
     free(fresh);
     g_run_mark.lock = lock;
-    __atomic_store_n(&g_run_mark.path, path, __ATOMIC_RELEASE);
+    atomic_store_explicit(&g_run_mark.path, path, memory_order_release);
     if (!g_run_mark.at_exit) g_run_mark.at_exit = !atexit(snx_run_mark_end);
     return 0;
 }
-int snx_run_mark_held(void) { return __atomic_load_n(&g_run_mark.path, __ATOMIC_ACQUIRE) != NULL; }
+int snx_run_mark_held(void) { return atomic_load_explicit(&g_run_mark.path, memory_order_acquire) != NULL; }
 void snx_run_mark_end(void) {
-    char reason[256], *path = __atomic_exchange_n(&g_run_mark.path, NULL, __ATOMIC_ACQ_REL);
+    char reason[256], *path = atomic_exchange_explicit(&g_run_mark.path, NULL, memory_order_acq_rel);
     if (!path) return;
     /* before the lock goes: a start in between would find it held by no one */
     if (remove(path) && errno != ENOENT)

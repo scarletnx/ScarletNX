@@ -12,6 +12,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 #if !defined(_WIN32)
 #include <time.h>
 #include <unistd.h>
@@ -34,13 +35,13 @@
    hang report while the threads run (each field alone is atomic; a report may catch a wait as it changes) */
 #define PM_WAITS 512 /* a game's guest threads and the runtime's own: one large game has over 200 */
 static struct {
-    uint64_t tid;
-    const void* m;
-    const void* at;
-    int cond;
+    _Atomic uint64_t tid;
+    const void* _Atomic m;
+    const void* _Atomic at;
+    _Atomic int cond;
 } g_pm_wait[PM_WAITS];
 /* Written once per thread, on its first wait, and read by the hang report. */
-static unsigned g_pm_nwait;
+static _Atomic unsigned g_pm_nwait;
 /* This thread's own state in the host's lock bookkeeping: the hang report's slot, its id, and the note the crash
    report prints (plat_thread_note). One struct, so the thread takes a single TLS slot for all of it. On Darwin the
    first access may allocate, which a signal handler must not, so each thread touches it (plat_tid) before it can
@@ -62,26 +63,26 @@ const char* plat_thread_note_get(void) { return t_pm.note; }
 void pm_wait_note(const void* m, const void* at, int cond) {
     int i = t_pm.slot;
     if (i < 0) {
-        unsigned n = __atomic_fetch_add(&g_pm_nwait, 1, __ATOMIC_RELAXED);
+        unsigned n = atomic_fetch_add_explicit(&g_pm_nwait, 1, memory_order_relaxed);
         i = t_pm.slot = n < PM_WAITS ? (int)n : PM_WAITS;
-        if (i < PM_WAITS) __atomic_store_n(&g_pm_wait[i].tid, plat_tid(), __ATOMIC_RELAXED);
+        if (i < PM_WAITS) atomic_store_explicit(&g_pm_wait[i].tid, plat_tid(), memory_order_relaxed);
     }
     if (i >= PM_WAITS) return;
-    __atomic_store_n(&g_pm_wait[i].at, at, __ATOMIC_RELAXED);
-    __atomic_store_n(&g_pm_wait[i].cond, cond, __ATOMIC_RELAXED);
-    __atomic_store_n(&g_pm_wait[i].m, m, __ATOMIC_RELEASE);
+    atomic_store_explicit(&g_pm_wait[i].at, at, memory_order_relaxed);
+    atomic_store_explicit(&g_pm_wait[i].cond, cond, memory_order_relaxed);
+    atomic_store_explicit(&g_pm_wait[i].m, m, memory_order_release);
 }
 int pm_waits(PmWait* out, int max) {
-    unsigned n = __atomic_load_n(&g_pm_nwait, __ATOMIC_RELAXED);
+    unsigned n = atomic_load_explicit(&g_pm_nwait, memory_order_relaxed);
     int k = 0;
     if (n > PM_WAITS) n = PM_WAITS;
     for (unsigned i = 0; i < n && k < max; i++) {
-        const void* m = __atomic_load_n(&g_pm_wait[i].m, __ATOMIC_ACQUIRE);
+        const void* m = atomic_load_explicit(&g_pm_wait[i].m, memory_order_acquire);
         if (!m) continue;
-        out[k].tid = __atomic_load_n(&g_pm_wait[i].tid, __ATOMIC_RELAXED);
+        out[k].tid = atomic_load_explicit(&g_pm_wait[i].tid, memory_order_relaxed);
         out[k].m = m;
-        out[k].at = __atomic_load_n(&g_pm_wait[i].at, __ATOMIC_RELAXED);
-        out[k].cond = __atomic_load_n(&g_pm_wait[i].cond, __ATOMIC_RELAXED);
+        out[k].at = atomic_load_explicit(&g_pm_wait[i].at, memory_order_relaxed);
+        out[k].cond = atomic_load_explicit(&g_pm_wait[i].cond, memory_order_relaxed);
         k++;
     }
     return k;
@@ -95,32 +96,32 @@ const void* pm_wait_base(void) { return g_pm_wait; }
 #define PM_TRACY_THREADS 64
 typedef struct {
     void* l; /* the profiler's lock context, from make */
-    uint32_t nthreads;
-    uint64_t tid[PM_TRACY_THREADS];
+    _Atomic uint32_t nthreads;
+    _Atomic uint64_t tid[PM_TRACY_THREADS];
 } PmNamed;
-static const PmTracy* g_pm_tracy;
-static int g_pm_tracy_on; /* the one flag pm_lock reads; set once, never cleared */
+static const PmTracy* _Atomic g_pm_tracy;
+static _Atomic int g_pm_tracy_on; /* the one flag pm_lock reads; set once, never cleared */
 /* locks named before a reporter registered (a client started later, F10's): attached when one registers */
 #define PM_PENDING 16
 static struct {
     PMutex* m;
     const char* name;
 } g_pm_pending[PM_PENDING];
-static unsigned g_pm_npending;
+static _Atomic unsigned g_pm_npending;
 
 /* 1 when this thread may report on the lock: its id is in the table, or a slot took it. The table is read and
    filled without a lock (each slot alone is atomic; a duplicate of one thread's id only wastes a slot). */
 static int pm_named_admit(PmNamed* c) {
     uint64_t t = plat_tid(), none;
-    uint32_t i, n = __atomic_load_n(&c->nthreads, __ATOMIC_ACQUIRE);
+    uint32_t i, n = atomic_load_explicit(&c->nthreads, memory_order_acquire);
     if (n > PM_TRACY_THREADS) n = PM_TRACY_THREADS;
     for (i = 0; i < n; i++)
-        if (__atomic_load_n(&c->tid[i], __ATOMIC_RELAXED) == t) return 1;
+        if (atomic_load_explicit(&c->tid[i], memory_order_relaxed) == t) return 1;
     if (n >= PM_TRACY_THREADS) return 0; /* the pane's cap */
     for (; i < PM_TRACY_THREADS; i++) {
         none = 0;
-        if (__atomic_compare_exchange_n(&c->tid[i], &none, t, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
-            if (i >= n) __atomic_store_n(&c->nthreads, i + 1, __ATOMIC_RELEASE);
+        if (atomic_compare_exchange_strong_explicit(&c->tid[i], &none, t, memory_order_acq_rel, memory_order_acquire)) {
+            if (i >= n) atomic_store_explicit(&c->nthreads, i + 1, memory_order_release);
             return 1;
         }
         if (none == t) return 1; /* a racing insert of this thread's own id took the slot first */
@@ -129,55 +130,55 @@ static int pm_named_admit(PmNamed* c) {
 }
 static void pm_named_attach(PMutex* m, const char* name, const PmTracy* t) {
     PmNamed* c;
-    if (__atomic_load_n(&m->tracy, __ATOMIC_ACQUIRE)) return;
+    if (atomic_load_explicit(&m->tracy, memory_order_acquire)) return;
     c = malloc(sizeof *c);
     if (!c) return;
     c->l = t->make(name);
-    c->nthreads = 0;
+    atomic_store_explicit(&c->nthreads, 0, memory_order_relaxed);
     memset(c->tid, 0, sizeof c->tid);
-    __atomic_store_n(&m->tracy, c, __ATOMIC_RELEASE);
+    atomic_store_explicit(&m->tracy, c, memory_order_release);
 }
 void pm_tracy_register(const PmTracy* t) {
-    __atomic_store_n(&g_pm_tracy, t, __ATOMIC_RELEASE);
-    unsigned n = __atomic_load_n(&g_pm_npending, __ATOMIC_ACQUIRE);
+    atomic_store_explicit(&g_pm_tracy, t, memory_order_release);
+    unsigned n = atomic_load_explicit(&g_pm_npending, memory_order_acquire);
     for (unsigned i = 0; i < n && i < PM_PENDING; i++)
         pm_named_attach(g_pm_pending[i].m, g_pm_pending[i].name, t);
-    __atomic_store_n(&g_pm_npending, 0, __ATOMIC_RELEASE);
+    atomic_store_explicit(&g_pm_npending, 0, memory_order_release);
     /* last, so a pm_lock that finds the flag open sees a reporter and every lock already attached */
-    __atomic_store_n(&g_pm_tracy_on, 1, __ATOMIC_RELEASE);
+    atomic_store_explicit(&g_pm_tracy_on, 1, memory_order_release);
 }
 void pm_lock_announce(PMutex* m, const char* name) {
-    const PmTracy* t = __atomic_load_n(&g_pm_tracy, __ATOMIC_ACQUIRE);
+    const PmTracy* t = atomic_load_explicit(&g_pm_tracy, memory_order_acquire);
     unsigned n;
-    if (__atomic_load_n(&m->tracy, __ATOMIC_ACQUIRE)) return; /* once-only: one context a lock */
+    if (atomic_load_explicit(&m->tracy, memory_order_acquire)) return; /* once-only: one context a lock */
     if (t) {
         pm_named_attach(m, name, t);
         return;
     }
     /* claimed by the count the add returns, never a re-read: two threads announcing at once each keep their
        own slot, and no slot is written that the register would then walk past */
-    n = __atomic_fetch_add(&g_pm_npending, 1, __ATOMIC_ACQ_REL);
+    n = atomic_fetch_add_explicit(&g_pm_npending, 1, memory_order_acq_rel);
     if (n < PM_PENDING) {
         g_pm_pending[n].m = m;
         g_pm_pending[n].name = name;
         return;
     }
     /* the runtime names five locks in all; the count is clamped so the register stops with the table's own */
-    __atomic_store_n(&g_pm_npending, PM_PENDING, __ATOMIC_RELEASE);
+    atomic_store_explicit(&g_pm_npending, PM_PENDING, memory_order_release);
 }
-static PmNamed* pm_named(const PMutex* m) { return __atomic_load_n(&m->tracy, __ATOMIC_ACQUIRE); }
+static PmNamed* pm_named(const PMutex* m) { return atomic_load_explicit(&m->tracy, memory_order_acquire); }
 
 #if defined(_WIN32)
 /* ================================================================ mutexes */
 void pm_init(PMutex* m) {
-    m->tracy = NULL;
+    atomic_store_explicit(&m->tracy, NULL, memory_order_relaxed);
     InitializeSRWLock(&m->l);
 }
 /* The mutex must be quiescent when this runs (see pm_destroy below). */
 void pm_destroy(PMutex* m) {
-    PmNamed* c = __atomic_exchange_n(&m->tracy, NULL, __ATOMIC_ACQ_REL);
+    PmNamed* c = atomic_exchange_explicit(&m->tracy, NULL, memory_order_acq_rel);
     if (c) {
-        const PmTracy* t = __atomic_load_n(&g_pm_tracy, __ATOMIC_ACQUIRE);
+        const PmTracy* t = atomic_load_explicit(&g_pm_tracy, memory_order_acquire);
         if (t) t->free(c->l);
         free(c); /* the wrapper is this module's, the lock context the profiler's */
     }
@@ -186,44 +187,47 @@ void pm_destroy(PMutex* m) {
    while a lock is being taken is read again after it is held, so the release never finds no obtain to pair
    with. */
 void pm_lock(PMutex* m) {
-    if (!__atomic_load_n(&g_pm_tracy_on, __ATOMIC_RELAXED)) {
+    if (!atomic_load_explicit(&g_pm_tracy_on, memory_order_relaxed)) {
         AcquireSRWLockExclusive(&m->l);
         return;
     }
     PmNamed* c = pm_named(m);
     if (TryAcquireSRWLockExclusive(&m->l)) {
         if (!c) c = pm_named(m);
-        if (c && pm_named_admit(c)) g_pm_tracy->try_lock(c->l, 1); /* the count the release balances */
+        if (c && pm_named_admit(c))
+            atomic_load_explicit(&g_pm_tracy, memory_order_relaxed)
+                ->try_lock(c->l, 1); /* the count the release balances */
         return;
     }
-    if (c && pm_named_admit(c)) g_pm_tracy->wait(c->l);
+    if (c && pm_named_admit(c)) atomic_load_explicit(&g_pm_tracy, memory_order_relaxed)->wait(c->l);
     pm_wait_note(m, __builtin_return_address(0), 0);
     AcquireSRWLockExclusive(&m->l);
-    if (c && pm_named_admit(c)) g_pm_tracy->lock(c->l);
+    if (c && pm_named_admit(c)) atomic_load_explicit(&g_pm_tracy, memory_order_relaxed)->lock(c->l);
     pm_wait_note(NULL, NULL, 0);
 }
 void pm_unlock(PMutex* m) {
-    PmNamed* c = __atomic_load_n(&g_pm_tracy_on, __ATOMIC_RELAXED) ? pm_named(m) : NULL;
+    PmNamed* c = atomic_load_explicit(&g_pm_tracy_on, memory_order_relaxed) ? pm_named(m) : NULL;
     /* reported while it is held, as Tracy's own Lockable does (BeforeUnlock): another thread's lock of it,
        once it is let go, reaches the profiler after this release */
-    if (c && pm_named_admit(c)) g_pm_tracy->unlock(c->l);
+    if (c && pm_named_admit(c)) atomic_load_explicit(&g_pm_tracy, memory_order_relaxed)->unlock(c->l);
     ReleaseSRWLockExclusive(&m->l);
 }
 int pm_trylock(PMutex* m) {
     int got = TryAcquireSRWLockExclusive(&m->l) != 0;
-    if (!got || !__atomic_load_n(&g_pm_tracy_on, __ATOMIC_RELAXED)) return got;
+    if (!got || !atomic_load_explicit(&g_pm_tracy_on, memory_order_relaxed)) return got;
     PmNamed* c = pm_named(m);
-    if (c && pm_named_admit(c)) g_pm_tracy->try_lock(c->l, 1);
+    if (c && pm_named_admit(c)) atomic_load_explicit(&g_pm_tracy, memory_order_relaxed)->try_lock(c->l, 1);
     return got;
 }
 
 /* ================================================================ timer resolution */
 /* The scheduler's default tick is 15.6 ms: asked once for 1 ms before the first timed wait (plat_sleep_ns's
    high-resolution timer needs none). winmm is loaded here so the runtime doesn't link it */
-static int g_period_asked;
+static _Atomic int g_period_asked;
 void plat_timer_1ms(void) {
     HMODULE winmm;
-    if (__atomic_load_n(&g_period_asked, __ATOMIC_ACQUIRE) || __atomic_exchange_n(&g_period_asked, 1, __ATOMIC_ACQ_REL))
+    if (atomic_load_explicit(&g_period_asked, memory_order_acquire) ||
+        atomic_exchange_explicit(&g_period_asked, 1, memory_order_acq_rel))
         return;
     winmm = LoadLibraryW(L"winmm.dll");
     if (winmm) {
@@ -261,7 +265,7 @@ int pc_wait(PCond* c, PMutex* m, int64_t timeout_ns) {
     return r;
 }
 
-void plat_wait_word(uint32_t* w, uint32_t v, int64_t timeout_ns) {
+void plat_wait_word(_Atomic uint32_t* w, uint32_t v, int64_t timeout_ns) {
     DWORD ms = INFINITE;
     if (timeout_ns >= 0) {
         uint64_t r = (uint64_t)timeout_ns / 1000000u + ((uint64_t)timeout_ns % 1000000u != 0); /* as cond_wait rounds it */
@@ -270,56 +274,58 @@ void plat_wait_word(uint32_t* w, uint32_t v, int64_t timeout_ns) {
     }
     WaitOnAddress(w, &v, sizeof v, ms);
 }
-void plat_wake_word(uint32_t* w) { WakeByAddressAll(w); }
-void plat_wake_word_one(uint32_t* w) { WakeByAddressSingle(w); }
+void plat_wake_word(_Atomic uint32_t* w) { WakeByAddressAll(w); }
+void plat_wake_word_one(_Atomic uint32_t* w) { WakeByAddressSingle(w); }
 
 uint32_t plat_tid(void) { return (uint32_t)GetCurrentThreadId(); }
 #else
 /* ================================================================ mutexes */
 void pm_init(PMutex* m) {
-    m->tracy = NULL;
+    atomic_store_explicit(&m->tracy, NULL, memory_order_relaxed);
     pthread_mutex_init(&m->l, NULL);
 }
 /* The mutex must be quiescent when this runs: a thread inside pm_lock reads m->tracy and the context it points
    at, and this frees both. Every lock is destroyed at exit, after the threads that used it have joined. */
 void pm_destroy(PMutex* m) {
-    PmNamed* c = __atomic_exchange_n(&m->tracy, NULL, __ATOMIC_ACQ_REL);
+    PmNamed* c = atomic_exchange_explicit(&m->tracy, NULL, memory_order_acq_rel);
     if (c) {
-        const PmTracy* t = __atomic_load_n(&g_pm_tracy, __ATOMIC_ACQUIRE);
+        const PmTracy* t = atomic_load_explicit(&g_pm_tracy, memory_order_acquire);
         if (t) t->free(c->l);
         free(c);
     }
     pthread_mutex_destroy(&m->l);
 }
 void pm_lock(PMutex* m) {
-    if (!__atomic_load_n(&g_pm_tracy_on, __ATOMIC_RELAXED)) {
+    if (!atomic_load_explicit(&g_pm_tracy_on, memory_order_relaxed)) {
         pthread_mutex_lock(&m->l);
         return;
     }
     PmNamed* c = pm_named(m);
     if (pthread_mutex_trylock(&m->l) == 0) {
         if (!c) c = pm_named(m);
-        if (c && pm_named_admit(c)) g_pm_tracy->try_lock(c->l, 1); /* the count the release balances */
+        if (c && pm_named_admit(c))
+            atomic_load_explicit(&g_pm_tracy, memory_order_relaxed)
+                ->try_lock(c->l, 1); /* the count the release balances */
         return;
     }
-    if (c && pm_named_admit(c)) g_pm_tracy->wait(c->l);
+    if (c && pm_named_admit(c)) atomic_load_explicit(&g_pm_tracy, memory_order_relaxed)->wait(c->l);
     pm_wait_note(m, __builtin_return_address(0), 0);
     pthread_mutex_lock(&m->l);
-    if (c && pm_named_admit(c)) g_pm_tracy->lock(c->l);
+    if (c && pm_named_admit(c)) atomic_load_explicit(&g_pm_tracy, memory_order_relaxed)->lock(c->l);
     pm_wait_note(NULL, NULL, 0);
 }
 void pm_unlock(PMutex* m) {
-    PmNamed* c = __atomic_load_n(&g_pm_tracy_on, __ATOMIC_RELAXED) ? pm_named(m) : NULL;
+    PmNamed* c = atomic_load_explicit(&g_pm_tracy_on, memory_order_relaxed) ? pm_named(m) : NULL;
     /* reported while it is held, as Tracy's own Lockable does (BeforeUnlock): another thread's lock of it,
        once it is let go, reaches the profiler after this release */
-    if (c && pm_named_admit(c)) g_pm_tracy->unlock(c->l);
+    if (c && pm_named_admit(c)) atomic_load_explicit(&g_pm_tracy, memory_order_relaxed)->unlock(c->l);
     pthread_mutex_unlock(&m->l);
 }
 int pm_trylock(PMutex* m) {
     int got = pthread_mutex_trylock(&m->l) == 0;
-    if (!got || !__atomic_load_n(&g_pm_tracy_on, __ATOMIC_RELAXED)) return got;
+    if (!got || !atomic_load_explicit(&g_pm_tracy_on, memory_order_relaxed)) return got;
     PmNamed* c = pm_named(m);
-    if (c && pm_named_admit(c)) g_pm_tracy->try_lock(c->l, 1);
+    if (c && pm_named_admit(c)) atomic_load_explicit(&g_pm_tracy, memory_order_relaxed)->try_lock(c->l, 1);
     return got;
 }
 
@@ -381,7 +387,7 @@ extern int __ulock_wake(uint32_t operation, void* addr, uint64_t wake_value);
 #define SNX_ULF_WAKE_ALL        0x100u
 #define SNX_ULF_NO_ERRNO        0x1000000u
 #endif
-void plat_wait_word(uint32_t* w, uint32_t v, int64_t timeout_ns) {
+void plat_wait_word(_Atomic uint32_t* w, uint32_t v, int64_t timeout_ns) {
 #if defined(__linux__)
     struct timespec ts;
     if (timeout_ns >= 0) {
@@ -413,7 +419,7 @@ void plat_wait_word(uint32_t* w, uint32_t v, int64_t timeout_ns) {
     __ulock_wait(SNX_UL_COMPARE_AND_WAIT | SNX_ULF_NO_ERRNO, w, v, us > 0xFFFFFFFFu ? 0xFFFFFFFFu : (uint32_t)us);
 #endif
 }
-void plat_wake_word(uint32_t* w) {
+void plat_wake_word(_Atomic uint32_t* w) {
 #if defined(__linux__)
     syscall(SYS_futex, w, FUTEX_WAKE_PRIVATE, INT_MAX, NULL, NULL, 0);
 #elif defined(__FreeBSD__)
@@ -424,7 +430,7 @@ void plat_wake_word(uint32_t* w) {
     __ulock_wake(SNX_UL_COMPARE_AND_WAIT | SNX_ULF_WAKE_ALL | SNX_ULF_NO_ERRNO, w, 0);
 #endif
 }
-void plat_wake_word_one(uint32_t* w) {
+void plat_wake_word_one(_Atomic uint32_t* w) {
 #if defined(__linux__)
     syscall(SYS_futex, w, FUTEX_WAKE_PRIVATE, 1, NULL, NULL, 0);
 #elif defined(__FreeBSD__)

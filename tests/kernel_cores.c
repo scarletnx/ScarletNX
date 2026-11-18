@@ -16,11 +16,12 @@
 #include <unistd.h>
 #endif
 #include <time.h>
+#include <stdatomic.h>
 
 u8* g_mem;
 MemLayout g_layout = {0x08000000ull,   0x2000000000ull, 0x100000000ull, 0x200000000ull,  0x300000000ull,
                       0x1000000000ull, 0x1300000000ull, 0x100000000ull, 0x1400000000ull, 0x1800000000ull};
-GuestFn* g_disp;
+_Atomic GuestFn* g_disp;
 u64 g_code_lo, g_code_hi, g_code_memory, g_main_stack_size;
 const RtAPI g_rtapi = {.cas128 = snx_runtime_cas128};
 const SnxArmModule* g_arm_mod; /* a 64-bit game */
@@ -171,14 +172,16 @@ int pc_wait(PCond* c, PMutex* m, i64 ns) {
 }
 /* a thread waits on its word, polled here until the word moves: a wait the word never ends fails the test after 2 s
    instead of hanging it, and each wake of a word is counted (snx_kct_woken, by the word's thread) */
-static unsigned snx_kct_woken[KTHREAD_MAX];
-void plat_wait_word(u32* w, u32 v, i64 ns) {
+static _Atomic unsigned snx_kct_woken[KTHREAD_MAX];
+void plat_wait_word(_Atomic u32* w, u32 v, i64 ns) {
     struct timespec pause = {0, 100000};
     (void)ns; /* the waits here have no timeout */
-    for (int i = 0; i < 20000 && __atomic_load_n(w, __ATOMIC_ACQUIRE) == v; i++) nanosleep(&pause, NULL);
-    if (__atomic_load_n(w, __ATOMIC_ACQUIRE) == v) fatal("a wait on a thread's word was never ended\n");
+    for (int i = 0; i < 20000 && atomic_load_explicit(w, memory_order_acquire) == v; i++) nanosleep(&pause, NULL);
+    if (atomic_load_explicit(w, memory_order_acquire) == v) fatal("a wait on a thread's word was never ended\n");
 }
-void plat_wake_word(u32* w) { __atomic_add_fetch(&snx_kct_woken[w - g_host.thread.wword], 1u, __ATOMIC_SEQ_CST); }
+void plat_wake_word(_Atomic u32* w) {
+    atomic_fetch_add_explicit(&snx_kct_woken[w - g_host.thread.wword], 1u, memory_order_seq_cst);
+}
 void pm_wait_note(const void* m, const void* at, int cond) {
     (void)m;
     (void)at;
@@ -291,8 +294,11 @@ static void* enter_body(void* p) {
    call's syncpoint wait) */
 typedef struct {
     KThread* t;
-    int mode, stop, signaled, waiting;
-    u64 steps;
+    int mode;
+    _Atomic int stop;
+    int signaled;
+    _Atomic int waiting;
+    _Atomic u64 steps;
     PMutex m;
     PCond cv;
 } SnxKctGame;
@@ -300,19 +306,19 @@ static void* game_body(void* p) {
     SnxKctGame* g = (SnxKctGame*)p;
     t_hle.thread.cur = g->t;
     if (g->mode == 2 || g->mode == 3) {
-        __atomic_store_n(&g->t->in_svc, g->mode == 2, __ATOMIC_SEQ_CST); /* svc_enter's */
+        atomic_store_explicit(&g->t->in_svc, g->mode == 2, memory_order_seq_cst); /* svc_enter's */
         pm_lock(&g->m);
-        __atomic_store_n(&g->waiting, 1, __ATOMIC_SEQ_CST); /* under m, which the wait lets go of */
+        atomic_store_explicit(&g->waiting, 1, memory_order_seq_cst); /* under m, which the wait lets go of */
         while (!g->signaled) kthread_wait(&g->cv, &g->m, -1);
         pm_unlock(&g->m);
-        __atomic_store_n(&g->t->in_svc, 0, __ATOMIC_SEQ_CST);
-        __atomic_add_fetch(&g->steps, 1, __ATOMIC_SEQ_CST);
+        atomic_store_explicit(&g->t->in_svc, 0, memory_order_seq_cst);
+        atomic_fetch_add_explicit(&g->steps, 1, memory_order_seq_cst);
         return NULL;
     }
     core_enter(g->t);
-    while (!__atomic_load_n(&g->stop, __ATOMIC_SEQ_CST)) {
-        __atomic_add_fetch(&g->steps, 1, __ATOMIC_SEQ_CST);
-        if (g->mode == 0 && __atomic_load_n(&g->t->cpu.poll, __ATOMIC_RELAXED)) core_poll(g->t);
+    while (!atomic_load_explicit(&g->stop, memory_order_seq_cst)) {
+        atomic_fetch_add_explicit(&g->steps, 1, memory_order_seq_cst);
+        if (g->mode == 0 && atomic_load_explicit(&g->t->cpu.poll, memory_order_relaxed)) core_poll(g->t);
     }
     core_leave(g->t);
     return NULL;
@@ -332,20 +338,21 @@ static void* svc_body(void* p) {
 }
 typedef struct {
     KThread* t;
-    int migrate, done;
+    int migrate;
+    _Atomic int done;
 } SnxKctYield;
 static void* yield_body(void* p) {
     SnxKctYield* y = (SnxKctYield*)p;
     snx_kct_who = (int)(y->t - snx_kct_thread);
     core_yield(y->t, y->migrate);
-    __atomic_store_n(&y->done, 1, __ATOMIC_SEQ_CST);
+    atomic_store_explicit(&y->done, 1, memory_order_seq_cst);
     return NULL;
 }
 /* until the yield returns, for up to 2 s: 1 if it did */
 static int yield_done(SnxKctYield* y) {
     struct timespec pause = {0, 1000000};
-    for (int i = 0; i < 2000 && !__atomic_load_n(&y->done, __ATOMIC_SEQ_CST); i++) nanosleep(&pause, NULL);
-    return __atomic_load_n(&y->done, __ATOMIC_SEQ_CST);
+    for (int i = 0; i < 2000 && !atomic_load_explicit(&y->done, memory_order_seq_cst); i++) nanosleep(&pause, NULL);
+    return atomic_load_explicit(&y->done, memory_order_seq_cst);
 }
 
 void kobj_ref(KObj* o) {
@@ -397,7 +404,7 @@ int main(void) {
     core_enter(a);
     pthread_create(&h, NULL, enter_body, b);
     CHECK(settle(b, -2) == -2 && b->core == 0, "43 behind 45: on core %d, waiting for %d", b->on_core, b->core);
-    CHECK(__atomic_load_n(&a->cpu.poll, __ATOMIC_RELAXED) == 1, "the holder is not asked to let go");
+    CHECK(atomic_load_explicit(&a->cpu.poll, memory_order_relaxed) == 1, "the holder is not asked to let go");
     core_leave(a);
     pthread_join(h, NULL);
     CHECK(b->on_core == 0, "43 got core %d after the holder let go", b->on_core);
@@ -494,7 +501,8 @@ int main(void) {
     CHECK(settle(w, -2) == -2, "50 with mask 1 waits: on core %d", w->on_core);
     SnxKctYield y = {a, 0, 0};
     pthread_create(&h2, NULL, yield_body, &y);
-    CHECK(yield_done(&y) && on_core(a) == 0 && on_core(w) == -2 && !__atomic_load_n(&a->cpu.poll, __ATOMIC_RELAXED),
+    CHECK(yield_done(&y) && on_core(a) == 0 && on_core(w) == -2 &&
+              !atomic_load_explicit(&a->cpu.poll, memory_order_relaxed),
           "yield 0 behind 50: returned %d, 44 on %d, 50 on %d, poll %u", y.done, on_core(a), on_core(w), a->cpu.poll);
     if (!y.done) core_leave(w); /* 50 took the core: it gives it back, so the yield returns */
     pthread_join(h2, NULL);
@@ -767,19 +775,19 @@ int main(void) {
         pthread_create(&gh[1], NULL, game_body, &g[1]);
         CHECK(settle(g[1].t, -2) == -2, "the second waits for core 0: %d", on_core(g[1].t));
         pthread_create(&gh[2], NULL, game_body, &g[2]);
-        while (!__atomic_load_n(&g[2].t->stopped, __ATOMIC_SEQ_CST)) sched_yield();
+        while (!atomic_load_explicit(&g[2].t->stopped, memory_order_seq_cst)) sched_yield();
         g[3].t->state = 0; /* the fourth isn't started yet */
         CHECK(kernel_hold(2000) == 0, "the pause holds");
         CHECK(g[0].t->stopped == 2 && g[1].t->stopped == 2 && g[2].t->stopped == 1,
               "stopped at a poll, at a poll, blocked: %d %d %d", g[0].t->stopped, g[1].t->stopped, g[2].t->stopped);
-        for (int i = 0; i < 3; i++) seen[i] = __atomic_load_n(&g[i].steps, __ATOMIC_SEQ_CST);
+        for (int i = 0; i < 3; i++) seen[i] = atomic_load_explicit(&g[i].steps, memory_order_seq_cst);
         pm_lock(&g[2].m); /* the blocked one's wait ends */
         g[2].signaled = 1;
         pc_broadcast(&g[2].cv);
         pm_unlock(&g[2].m);
         /* its host thread gets to the hold point once the host runs it, which a loaded host may put off past any fixed
            wait: it has 2 s. Then 30 ms more for a thread that ran on to show its steps */
-        for (int i = 0; i < 2000 && __atomic_load_n(&g[2].t->stopped, __ATOMIC_SEQ_CST) != 2; i++) {
+        for (int i = 0; i < 2000 && atomic_load_explicit(&g[2].t->stopped, memory_order_seq_cst) != 2; i++) {
             struct timespec pause = {0, 1000000};
             nanosleep(&pause, NULL);
         }
@@ -792,16 +800,16 @@ int main(void) {
               (unsigned long long)g[1].steps, (unsigned long long)g[2].steps);
         CHECK(g[2].t->stopped == 2, "the woken one waits at a hold point: %d", g[2].t->stopped);
         kernel_release();
-        for (int i = 0; i < 2000 && !(__atomic_load_n(&g[2].steps, __ATOMIC_SEQ_CST) &&
-                                      __atomic_load_n(&g[0].steps, __ATOMIC_SEQ_CST) +
-                                              __atomic_load_n(&g[1].steps, __ATOMIC_SEQ_CST) >
+        for (int i = 0; i < 2000 && !(atomic_load_explicit(&g[2].steps, memory_order_seq_cst) &&
+                                      atomic_load_explicit(&g[0].steps, memory_order_seq_cst) +
+                                              atomic_load_explicit(&g[1].steps, memory_order_seq_cst) >
                                           seen[0] + seen[1]);
              i++) {
             struct timespec pause = {0, 1000000};
             nanosleep(&pause, NULL);
         }
         CHECK(g[2].steps == 1 && g[0].steps + g[1].steps > seen[0] + seen[1], "everything goes on after the pause");
-        for (int i = 0; i < 3; i++) __atomic_store_n(&g[i].stop, 1, __ATOMIC_SEQ_CST);
+        for (int i = 0; i < 3; i++) atomic_store_explicit(&g[i].stop, 1, memory_order_seq_cst);
         for (int i = 0; i < 3; i++) pthread_join(gh[i], NULL);
         for (int i = 0; i < 3; i++) g[i].t->state = 2;
 
@@ -811,14 +819,14 @@ int main(void) {
         pthread_create(&gh[3], NULL, game_body, &g[3]);
         CHECK(settle(g[3].t, 0) == 0, "it runs on core 0: %d", on_core(g[3].t));
         CHECK(kernel_hold(50) == -1 && !g_hle.thread.hold, "the pause gives up and lets go");
-        seen[0] = __atomic_load_n(&g[3].steps, __ATOMIC_SEQ_CST);
+        seen[0] = atomic_load_explicit(&g[3].steps, memory_order_seq_cst);
         /* a loaded host may not run it within any fixed wait: it has 2 s to take a step */
-        for (int i = 0; i < 2000 && __atomic_load_n(&g[3].steps, __ATOMIC_SEQ_CST) == seen[0]; i++) {
+        for (int i = 0; i < 2000 && atomic_load_explicit(&g[3].steps, memory_order_seq_cst) == seen[0]; i++) {
             struct timespec pause = {0, 1000000};
             nanosleep(&pause, NULL);
         }
-        CHECK(__atomic_load_n(&g[3].steps, __ATOMIC_SEQ_CST) > seen[0], "it goes on");
-        __atomic_store_n(&g[3].stop, 1, __ATOMIC_SEQ_CST);
+        CHECK(atomic_load_explicit(&g[3].steps, memory_order_seq_cst) > seen[0], "it goes on");
+        atomic_store_explicit(&g[3].stop, 1, memory_order_seq_cst);
         pthread_join(gh[3], NULL);
         g[3].t->state = 2;
 
@@ -833,7 +841,7 @@ int main(void) {
             pm_init(&h.m);
             pc_init(&h.cv);
             pthread_create(&hh, NULL, game_body, &h);
-            while (!__atomic_load_n(&h.waiting, __ATOMIC_SEQ_CST)) sched_yield();
+            while (!atomic_load_explicit(&h.waiting, memory_order_seq_cst)) sched_yield();
             pm_lock(&h.m); /* it has let go of m: it waits */
             pm_unlock(&h.m);
             CHECK(kernel_hold(50) == -1 && !g_hle.thread.hold && !h.t->stopped,
@@ -863,8 +871,8 @@ int main(void) {
             g[i].t->cpu.poll = 0;
             pthread_create(&gh[i], NULL, game_body, &g[i]);
         }
-        for (int i = 0; i < 2000 && !(__atomic_load_n(&g[0].steps, __ATOMIC_SEQ_CST) &&
-                                      __atomic_load_n(&g[1].steps, __ATOMIC_SEQ_CST));
+        for (int i = 0; i < 2000 && !(atomic_load_explicit(&g[0].steps, memory_order_seq_cst) &&
+                                      atomic_load_explicit(&g[1].steps, memory_order_seq_cst));
              i++) {
             struct timespec pause = {0, 1000000};
             nanosleep(&pause, NULL);
@@ -874,22 +882,22 @@ int main(void) {
         CHECK(kernel_hold(2000) == 0, "the pause holds without cores");
         CHECK(g[0].t->stopped == 2 && g[1].t->stopped == 2, "both stopped at a poll: %d %d", g[0].t->stopped,
               g[1].t->stopped);
-        for (int i = 0; i < 2; i++) seen[i] = __atomic_load_n(&g[i].steps, __ATOMIC_SEQ_CST);
+        for (int i = 0; i < 2; i++) seen[i] = atomic_load_explicit(&g[i].steps, memory_order_seq_cst);
         {
             struct timespec pause = {0, 10000000};
             nanosleep(&pause, NULL);
         }
         CHECK(seen[0] == g[0].steps && seen[1] == g[1].steps, "nothing ran while paused without cores");
         kernel_release();
-        for (int i = 0; i < 2000 && (__atomic_load_n(&g[0].t->cpu.poll, __ATOMIC_RELAXED) ||
-                                     __atomic_load_n(&g[1].t->cpu.poll, __ATOMIC_RELAXED));
+        for (int i = 0; i < 2000 && (atomic_load_explicit(&g[0].t->cpu.poll, memory_order_relaxed) ||
+                                     atomic_load_explicit(&g[1].t->cpu.poll, memory_order_relaxed));
              i++) {
             struct timespec pause = {0, 1000000};
             nanosleep(&pause, NULL);
         }
         CHECK(!g[0].t->cpu.poll && !g[1].t->cpu.poll, "their polls are cleared after the pause: %u %u",
               g[0].t->cpu.poll, g[1].t->cpu.poll);
-        for (int i = 0; i < 2; i++) __atomic_store_n(&g[i].stop, 1, __ATOMIC_SEQ_CST);
+        for (int i = 0; i < 2; i++) atomic_store_explicit(&g[i].stop, 1, memory_order_seq_cst);
         for (int i = 0; i < 2; i++) pthread_join(gh[i], NULL);
         CHECK(g[0].steps > seen[0] && g[1].steps > seen[1], "both went on after the pause");
         for (int i = 0; i < 2; i++) g[i].t->state = 2;
@@ -937,7 +945,7 @@ int main(void) {
     CHECK(settle(w, -2) == -2, "31 waits for core 0 behind 44: on core %d", on_core(w));
     kthread_fault_lend(4242);
     pthread_join(h, NULL);
-    CHECK(on_core(w) == 0 && on_core(a) == -1 && __atomic_load_n(&a->cpu.poll, __ATOMIC_RELAXED) == 1,
+    CHECK(on_core(w) == 0 && on_core(a) == -1 && atomic_load_explicit(&a->cpu.poll, memory_order_relaxed) == 1,
           "the fault let core 0 go: 31 on %d, 44 on %d with poll %u", on_core(w), on_core(a), a->cpu.poll);
     pthread_create(&h, NULL, poll_body, a);
     CHECK(settle(a, -2) == -2 && a->core == 0, "44's poll waits behind 31: on core %d", on_core(a));
@@ -983,12 +991,12 @@ int main(void) {
     gw16(a->tls + SNX_TLS_DISABLE_COUNT, 3);
     core_enter(a);
     pthread_create(&h, NULL, enter_body, b);
-    CHECK(settle(b, -2) == -2 && __atomic_load_n(&a->cpu.poll, __ATOMIC_RELAXED) == 1,
+    CHECK(settle(b, -2) == -2 && atomic_load_explicit(&a->cpu.poll, memory_order_relaxed) == 1,
           "43 waits for core 0 behind 45: on core %d, the holder's poll %u", on_core(b), a->cpu.poll);
     logged[0] = 0;
     pthread_create(&h2, NULL, poll_body, a);
     CHECK(settle16(a->tls + SNX_TLS_INTERRUPT_FLAG, 1) == 1 && on_core(a) == 0 && on_core(b) == -2 &&
-              __atomic_load_n(&a->cpu.poll, __ATOMIC_RELAXED) == 1,
+              atomic_load_explicit(&a->cpu.poll, memory_order_relaxed) == 1,
           "stopped with a disable count of 3: interrupt flag %u, 45 on %d, 43 on %d, poll %u",
           gr16(a->tls + SNX_TLS_INTERRUPT_FLAG), on_core(a), on_core(b), a->cpu.poll);
     if (on_core(a) != 0) { /* a scheduler that took the core: its waiter lets the poll through */
@@ -1044,7 +1052,7 @@ int main(void) {
     pthread_join(h, NULL);
     pthread_create(&h2, NULL, poll_body, a);
     CHECK(settle16(a->tls + SNX_TLS_INTERRUPT_FLAG, 1) == 1 && on_core(a) == -1 && on_core(w) == 0 &&
-              __atomic_load_n(&a->cpu.poll, __ATOMIC_RELAXED) == 1,
+              atomic_load_explicit(&a->cpu.poll, memory_order_relaxed) == 1,
           "off its core with a disable count of 2: interrupt flag %u, 44 on %d, 31 on %d, poll %u",
           gr16(a->tls + SNX_TLS_INTERRUPT_FLAG), on_core(a), on_core(w), a->cpu.poll);
     if (on_core(a) == -1) {

@@ -10,7 +10,7 @@
 #include <stdarg.h>
 #include <stdio.h>
 
-int g_opt_fps = SNX_FPS_GAME;
+_Atomic int g_opt_fps = SNX_FPS_GAME;
 static u64 now_ns, slept_ns;
 static unsigned checks, failures;
 #define CHECK(c, ...)                                                                                                  \

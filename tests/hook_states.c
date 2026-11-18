@@ -27,7 +27,7 @@ static void own_code(CPU* RESTRICT c, u64 entry) {
     (void)entry;
     c->pc = c->x[30];
 }
-static GuestFn slots[0x400];
+static _Atomic GuestFn slots[0x400];
 static const struct {
     const char* name;
     u64 addr;
@@ -41,7 +41,7 @@ static const SnxModInfo modules[1] = {{.name = "sdk", .base = CODE, .size = 0x10
 static SnxModule module = {.nmods = 1, .mods = modules};
 const SnxModule* g_mod = &module;
 const SnxArmModule* g_arm_mod;
-GuestFn* g_disp = slots;
+_Atomic GuestFn* g_disp = slots;
 u64 g_code_lo = CODE, g_code_hi = CODE + 0x1000;
 static u8 guest[0x2000];
 u8* g_mem = guest;
@@ -60,7 +60,7 @@ GuestFn nce_slot(GuestFn f) { return f; }
 void nce_slot_taken(u64 addr, const char* what) { (void)addr, (void)what; }
 void jit_slot_taken(u64 addr, GuestFn fn) { (void)addr, (void)fn; }
 GuestFn jit_code_now(u64 pc) { return (void)pc, (GuestFn)0; }
-SnxArmBlock* arm_slot(u32 addr, int thumb) { return (void)addr, (void)thumb, NULL; }
+_Atomic SnxArmBlock* arm_slot(u32 addr, int thumb) { return (void)addr, (void)thumb, NULL; }
 SnxArmBlock arm_block(u32 addr, int thumb) { return (void)addr, (void)thumb, (SnxArmBlock)0; }
 SnxArmCPU* arm_cpu(CPU* c) { return (void)c, NULL; }
 void arm_run(SnxArmCPU* c, SnxArmBlock first, u32 stop_at) { (void)c, (void)first, (void)stop_at; }

@@ -42,14 +42,14 @@ enum { WAIT_SVC_SLEEP, WAIT_SVC_SYNC, WAIT_SVC_LOCK, WAIT_SVC_CV, WAIT_SVC_ADDR,
    kobj_destroy and kobj_signaled). The threads waiting on it name it in their waits (KThread.waits) */
 typedef struct KObj {
     int type;
-    int refs;      /* changed with __atomic operations; the object is destroyed as it reaches 0 */
+    _Atomic int refs; /* changed with __atomic operations; the object is destroyed as it reaches 0 */
     int nwait;     /* the waits that name it now, under g_klock: none, and a signal looks for no waiter */
     char name[24]; /* for the logs and the thread dump */
 } KObj;
 
 typedef struct KEvent {
     KObj o;
-    int signaled; /* stays set until cleared: Horizon's events don't clear themselves */
+    _Atomic int signaled; /* stays set until cleared: Horizon's events don't clear themselves */
 } KEvent;
 
 /* A guest thread. It holds a guest core while it runs game code and lets go of it only where a console thread would
@@ -63,18 +63,18 @@ struct KThread {
     int prio;       /* effective: base_prio raised by the waiters on the mutexes it owns */
     int base_prio;  /* as the game set it */
     int core;       /* the core it is scheduled on, 0 to NCORES - 1 */
-    int ideal_core; /* as set, -1 for none */
+    _Atomic int ideal_core; /* as set, -1 for none */
     u32 yields;     /* consecutive yields, of which only some reach the host */
-    int on_core;    /* the core it holds, -2 while waiting for one, -1 for none */
+    _Atomic int on_core; /* the core it holds, -2 while waiting for one, -1 for none */
     int pinned;     /* the core whose host CPUs its host thread runs on (core_pin), -1 before it first ran */
-    u32 core_next;  /* the core's wait list (kt_at) */
+    _Atomic u32 core_next; /* the core's wait list (kt_at) */
     u64 core_ticket;    /* arrival order there, which breaks priority ties */
     u64 core_queued;    /* when it lined up there (plat_ns), for the report */
     /* for the report at exit (kernel_core_report), under core_lk: the time it waited for a core, and how often, and
        the time it held one */
     u64 core_wait_ns, core_held_ns;
     u32 core_waits;
-    u64 affinity;
+    _Atomic u64 affinity;
     u64 tls;
     u32 own_handle; /* the handle the game got for it (kthread_set_own_handle), which its SDK tags the locks it holds with */
     u64 entry, arg, stack_top;
@@ -83,10 +83,11 @@ struct KThread {
     /* svcSetThreadActivity: suspended and in_svc (inside an SVC, running no game code) are read with __atomic loads
        without the lock. pause_at is where a paused thread waits: 0 blocked inside the SVC or not paused, 1 before
        the SVC, 2 after it */
-    int suspended, in_svc, pause_at;
+    _Atomic int suspended, in_svc;
+    int pause_at;
     /* what a game pause (kernel_hold) counts on, with __atomic stores: 1 blocked in a wait that runs nothing until it
        ends (sleep_nl, kthread_wait, a JIT compile), 2 stopped at a hold point, 0 neither */
-    int stopped;
+    _Atomic int stopped;
     /* where it stopped, which is how a thread a save state restarts goes on (thread_resume): PARK_RUN at its pc,
        PARK_ENTER the SVC before its pc again (it hadn't begun), PARK_WAIT the rest of its SVC's wait (wait_svc), and
        PARK_SERVICE the SVC again, as its request (a service's wait, kthread_wait) never got its answer */
@@ -118,7 +119,8 @@ typedef struct KShmem {
     u64 size;
     u8* host;
     u64 pool;         /* the alias pool's offset of its pages plus 1 (host maps them), 0 when host is a copy */
-    u64 gaddr, gsize; /* without the pool: where the game mapped it and how much; gaddr is 0 when unmapped and read
+    _Atomic u64 gaddr,
+        gsize; /* without the pool: where the game mapped it and how much; gaddr is 0 when unmapped and read
                          atomically */
     u32 perm;
 } KShmem;

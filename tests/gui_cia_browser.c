@@ -527,7 +527,7 @@ int main(void) {
     assert(!snx_mkdirs(subdir));
     /* the space a folder takes: its files' bytes, its folders' too; a link is not followed; a stop ends the count */
     {
-        int stop = 0;
+        _Atomic int stop = 0;
         char* deep = snx_path_join(subdir, "deep.bin");
         char* elsewhere = snx_temp_dir(NULL);
         char* big = snx_path_join(elsewhere, "big.bin");

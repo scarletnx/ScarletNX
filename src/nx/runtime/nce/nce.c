@@ -24,6 +24,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 
 /* the functions whose entries branch to an outcall: a hook's, and NVN's, which take one function each */
 #define NCE_DIVERTS 4096
@@ -141,11 +142,13 @@ int nce_wanted(void) {
     return g_nce.wanted;
 }
 
-static void set_guest(const CPU* c, u8 v) { __atomic_store_n(&g_nce.guest[kt_ix((KThread*)c->thread)], v, __ATOMIC_RELEASE); }
+static void set_guest(const CPU* c, u8 v) {
+    atomic_store_explicit(&g_nce.guest[kt_ix((KThread*)c->thread)], v, memory_order_release);
+}
 
 /* a word of the game's code, written where the host's CPU fetches it */
 static void code_write(u64 a, u32 word) {
-    __atomic_store_n((u32*)(void*)GP(a), snx_le32(word), __ATOMIC_RELEASE);
+    atomic_store_explicit((u32*)(void*)GP(a), snx_le32(word), memory_order_release);
     __builtin___clear_cache((char*)GP(a), (char*)GP(a + 4));
 }
 
@@ -155,7 +158,7 @@ static void code_write(u64 a, u32 word) {
    divert moved to its stub. It returns to the trap, which ends the run */
 static void nce_native(CPU* c, u64 entry) {
     u64 back = c->x[30], pc = entry;
-    for (u32 i = 0, n = __atomic_load_n(&g_nce.diverts, __ATOMIC_ACQUIRE); i < n; i++)
+    for (u32 i = 0, n = atomic_load_explicit(&g_nce.diverts, memory_order_acquire); i < n; i++)
         if (g_nce.entry[i] == entry) pc = g_nce.original[i];
     c->x[30] = g_nce.trap;
     c->pc = pc;
@@ -177,13 +180,13 @@ static void hook(CPU* c, u32 ix, unsigned index) {
         guest_stats_add(ix, GSTAT_NCE_TRAP);
         nce_host_leave();
     }
-    if (index >= __atomic_load_n(&g_nce.diverts, __ATOMIC_ACQUIRE))
+    if (index >= atomic_load_explicit(&g_nce.diverts, memory_order_acquire))
         fatal("NCE: an outcall of hook %u, which no function has", index);
     guest_stats_hook(ix, g_nce.family[index]);
     /* the outcall a hook makes, named by its family */
     SNX_ZONE_T(z_hook, "nce hook", "%s", guest_stats_family_name(g_nce.family[index]));
     entry = g_nce.entry[index];
-    f = __atomic_load_n(&g_disp[(entry - g_code_lo) >> 2], __ATOMIC_ACQUIRE);
+    f = atomic_load_explicit(&g_disp[(entry - g_code_lo) >> 2], memory_order_acquire);
     if (!f || f == nce_native) {
         c->pc = g_nce.original[index];
         SNX_ZONE_END(z_hook); /* no handler: the hook's own code is the outcall */
@@ -209,7 +212,7 @@ static void dispatch(CPU* c, u64 code) {
     case NCE_HOOK: hook(c, ix, imm); break;
     default: fatal("NCE: an outcall of kind %u, which no stub makes", kind);
     }
-    if (__atomic_load_n(&c->poll, __ATOMIC_RELAXED)) c->rt->poll(c);
+    if (atomic_load_explicit(&c->poll, memory_order_relaxed)) c->rt->poll(c);
     set_guest(c, 1);
 }
 
@@ -241,7 +244,8 @@ static void trapped(CPU* c, int sig) {
 /* ---- the kicks ---- */
 
 static void kick_tid(u32 ix) {
-    if (__atomic_load_n(&g_nce.guest[ix], __ATOMIC_ACQUIRE)) nce_host_kick(__atomic_load_n(&g_nce.tid[ix], __ATOMIC_ACQUIRE));
+    if (atomic_load_explicit(&g_nce.guest[ix], memory_order_acquire))
+        nce_host_kick(atomic_load_explicit(&g_nce.tid[ix], memory_order_acquire));
 }
 
 void nce_kick(struct KThread* t) {
@@ -258,8 +262,8 @@ static void kicker(void* arg) {
         plat_sleep_ns(NCE_KICK_AGAIN_NS);
         nce_foreign_look(round);
         for (u32 ix = 1; ix <= KTHREAD_MAX; ix++)
-            if (__atomic_load_n(&g_nce.guest[ix], __ATOMIC_ACQUIRE) &&
-                __atomic_load_n(&kt_at(ix)->cpu.poll, __ATOMIC_RELAXED))
+            if (atomic_load_explicit(&g_nce.guest[ix], memory_order_acquire) &&
+                atomic_load_explicit(&kt_at(ix)->cpu.poll, memory_order_relaxed))
                 kick_tid(ix);
     }
 }
@@ -291,12 +295,12 @@ static void guest_foreign(void) {
 static void thread_net(u32 ix) {
     char why[240];
     int none = 0;
-    if (__atomic_load_n(&g_nce.net, __ATOMIC_ACQUIRE) < 0) return;
+    if (atomic_load_explicit(&g_nce.net, memory_order_acquire) < 0) return;
     if (!nce_host_net(why, sizeof why)) {
-        __atomic_store_n(&g_nce.net, 1, __ATOMIC_RELEASE);
+        atomic_store_explicit(&g_nce.net, 1, memory_order_release);
         return;
     }
-    if (__atomic_compare_exchange_n(&g_nce.net, &none, -1, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+    if (atomic_compare_exchange_strong_explicit(&g_nce.net, &none, -1, memory_order_acq_rel, memory_order_acquire)) {
         WARN("nce: %s, so an SVC that the recompile did not find as code would run as a system call of the host\n",
              why);
         return;
@@ -311,7 +315,7 @@ void nce_thread_run(struct KThread* t, u64 pc) {
     CPU* c = &t->cpu;
     u32 ix = kt_ix(t);
     char why[240];
-    __atomic_store_n(&g_nce.tid[ix], nce_host_tid(), __ATOMIC_RELEASE);
+    atomic_store_explicit(&g_nce.tid[ix], nce_host_tid(), memory_order_release);
     if (nce_host_attach(c, guest_stats_counter(ix, GSTAT_NCE_TICKS), why, sizeof why))
         fatal("NCE: thread %u cannot run the game's code natively: %s", ix, why);
     thread_net(ix);
@@ -320,7 +324,7 @@ void nce_thread_run(struct KThread* t, u64 pc) {
     set_guest(c, 1);
     nce_host_run(c);
     set_guest(c, 0);
-    __atomic_store_n(&g_nce.tid[ix], 0, __ATOMIC_RELEASE);
+    atomic_store_explicit(&g_nce.tid[ix], 0, memory_order_release);
 }
 
 void nce_crash_context(const void* context, const void* fault) {
@@ -456,7 +460,7 @@ void nce_slot_taken(u64 addr, const char* family) {
     g_nce.family[i] = (u8)guest_stats_family(family);
     for (size_t k = 0; k < g_nce.pools; k++)
         __builtin___clear_cache((char*)g_nce.pool[k].buf, (char*)g_nce.pool[k].buf + g_nce.pool[k].used);
-    __atomic_store_n(&g_nce.diverts, i + 1, __ATOMIC_RELEASE); /* before the entry branches to it */
+    atomic_store_explicit(&g_nce.diverts, i + 1, memory_order_release); /* before the entry branches to it */
     code_write(addr, word);
     pm_unlock(&g_nce.lock);
 }

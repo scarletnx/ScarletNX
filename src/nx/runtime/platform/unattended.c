@@ -19,6 +19,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 
 /* one press of the script: at a time in ms, or at a present ("Nf") */
 typedef struct {
@@ -119,7 +120,7 @@ void unattended_start(void) {
 u64 unattended_ms(void) { return (plat_ns() - g_unattended.t0) / 1000000ull; }
 int unattended_active(void) { return g_settings.seconds > 0 || g_settings.frames >= 0; }
 
-static int frames_now(void) { return __atomic_load_n(&g_frames, __ATOMIC_RELAXED); }
+static int frames_now(void) { return atomic_load_explicit(&g_frames, memory_order_relaxed); }
 
 /* ---- input_record and input_replay: player 1's input in the game's slots, a line "frame:buttons:lx,ly,rx,ry" a
    present it changed */

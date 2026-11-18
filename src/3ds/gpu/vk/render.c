@@ -31,6 +31,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 
 #define RING_SIZE (32u << 20) /* the uploads, a part for each submission slot: uniforms, LUTs, default and immediate
                                  vertices */
@@ -344,14 +345,14 @@ static struct {
     bool program_uploaded;
     uint64_t program_uploaded_hash;
     VkDeviceSize program_at;
-    int low_refused;  /* a worker's low priority was refused, which the first one refused says (atomic) */
+    _Atomic int low_refused; /* a worker's low priority was refused, which the first one refused says (atomic) */
     /* the driver's pipelines kept between runs (snx_ctr_vk_pipeline_cache_open): the cache every pipeline is made
        with, its file, whether a pipeline went into it since it was written and when the last one did (atomic: the
        workers make pipelines too) */
     VkPipelineCache cache;
     char cache_path[1200];
-    int cache_dirty;
-    uint64_t cache_used_ms;
+    _Atomic int cache_dirty;
+    _Atomic uint64_t cache_used_ms;
     /* with shader objects: the driver's binaries of the shaders kept between runs, and their file (binaries_open once
        read); and in the open recording, the shaders bound, the state set (object_state, once object_set) */
     SnxVkShaderBinaries binaries;
@@ -1409,7 +1410,7 @@ static VkShaderCreateInfoEXT object_info(VkShaderStageFlagBits stage, const uint
 }
 /* a shader object made: when the cache was last used, for its write (snx_ctr_vk_pipeline_cache_save) */
 static void compiled_now(void) {
-    __atomic_store_n(&g.cache_used_ms, (uint64_t)(snx_seconds() * 1000), __ATOMIC_RELAXED);
+    atomic_store_explicit(&g.cache_used_ms, (uint64_t)(snx_seconds() * 1000), memory_order_relaxed);
 }
 /* o's words handed to a free job of the workers, which then owns them: whether one was free */
 static bool object_queue(ShaderObject* o) {
@@ -1688,8 +1689,8 @@ static VkPipeline make_pipeline(const PipeKey* k, VkShaderModule vs, VkShaderMod
     VkPipeline pipeline = VK_NULL_HANDLE;
     if (vkCreateGraphicsPipelines(v->device, g.cache, 1, &pi, NULL, &pipeline) != VK_SUCCESS) return VK_NULL_HANDLE;
     if (g.cache) {
-        __atomic_store_n(&g.cache_used_ms, (uint64_t)(snx_seconds() * 1000), __ATOMIC_RELAXED);
-        __atomic_store_n(&g.cache_dirty, 1, __ATOMIC_RELAXED);
+        atomic_store_explicit(&g.cache_used_ms, (uint64_t)(snx_seconds() * 1000), memory_order_relaxed);
+        atomic_store_explicit(&g.cache_dirty, 1, memory_order_relaxed);
     }
     return pipeline;
 }
@@ -1697,7 +1698,8 @@ static VkPipeline make_pipeline(const PipeKey* k, VkShaderModule vs, VkShaderMod
    system's low priority (low, snx_vk_pipeline_low_workers) */
 static int SDLCALL pipe_worker(void* low) {
     char why[256];
-    if (low && snx_thread_priority_low(why, sizeof why) && !__atomic_exchange_n(&g.low_refused, 1, __ATOMIC_RELAXED))
+    if (low && snx_thread_priority_low(why, sizeof why) &&
+        !atomic_exchange_explicit(&g.low_refused, 1, memory_order_relaxed))
         fprintf(
             stderr,
             "3ds gpu: a pipeline worker asked for %s, the system's low priority: %s (said for the first one refused)\n",
@@ -2732,12 +2734,12 @@ void snx_ctr_vk_pipeline_cache_open(const char* directory) {
    once waited 3.2 s so) */
 #define CACHE_QUIET_MS 20000u
 void snx_ctr_vk_pipeline_cache_save(bool at_exit) {
-    bool pipelines = g.cache && __atomic_load_n(&g.cache_dirty, __ATOMIC_RELAXED);
+    bool pipelines = g.cache && atomic_load_explicit(&g.cache_dirty, memory_order_relaxed);
     bool shaders = g.binaries_open && g.binaries.dirty;
     if (!pipelines && !shaders) return;
     if (!at_exit) {
         uint64_t now = (uint64_t)(snx_seconds() * 1000);
-        if (now - __atomic_load_n(&g.cache_used_ms, __ATOMIC_RELAXED) < CACHE_QUIET_MS) return;
+        if (now - atomic_load_explicit(&g.cache_used_ms, memory_order_relaxed) < CACHE_QUIET_MS) return;
         bool busy = false;
         if (g.job_lock) {
             SDL_LockMutex(g.job_lock);
@@ -2756,12 +2758,12 @@ void snx_ctr_vk_pipeline_cache_save(bool at_exit) {
             fprintf(stderr, "3ds gpu: the binaries of %zu shaders written (%zu KB)\n", g.binaries.count, saved >> 10);
     }
     if (!pipelines) return;
-    __atomic_store_n(&g.cache_dirty, 0, __ATOMIC_RELAXED);
+    atomic_store_explicit(&g.cache_dirty, 0, memory_order_relaxed);
     if (snx_vk_pipeline_cache_save(device(), g.cache, g.cache_path, &saved, why, sizeof why)) {
         fprintf(stderr, "3ds gpu: the pipeline cache could not be written to %s: %s\n", g.cache_path, why);
         /* written again after another quiet time, or at the end */
-        __atomic_store_n(&g.cache_used_ms, (uint64_t)(snx_seconds() * 1000), __ATOMIC_RELAXED);
-        __atomic_store_n(&g.cache_dirty, 1, __ATOMIC_RELAXED);
+        atomic_store_explicit(&g.cache_used_ms, (uint64_t)(snx_seconds() * 1000), memory_order_relaxed);
+        atomic_store_explicit(&g.cache_dirty, 1, memory_order_relaxed);
     } else if (at_exit)
         fprintf(stderr, "3ds gpu: the pipeline cache written (%zu KB)\n", saved >> 10);
 }

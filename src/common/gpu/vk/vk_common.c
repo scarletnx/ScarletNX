@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h> /* GetCurrentProcessId */
@@ -356,10 +357,10 @@ VkResult snx_vk_shader_module(VkDevice dev, const uint32_t* words, size_t size, 
     return vkCreateShaderModule(dev, &info, NULL, out);
 }
 static PMutex g_compile = PMUTEX_INIT;
-static int g_compile_serial;
-void snx_vk_compile_serial(int on) { __atomic_store_n(&g_compile_serial, on != 0, __ATOMIC_RELEASE); }
+static _Atomic int g_compile_serial;
+void snx_vk_compile_serial(int on) { atomic_store_explicit(&g_compile_serial, on != 0, memory_order_release); }
 int snx_vk_compile_enter(void) {
-    if (!__atomic_load_n(&g_compile_serial, __ATOMIC_ACQUIRE)) return 0;
+    if (!atomic_load_explicit(&g_compile_serial, memory_order_acquire)) return 0;
     pm_lock(&g_compile);
     return 1;
 }

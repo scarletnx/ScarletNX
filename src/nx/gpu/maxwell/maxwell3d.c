@@ -12,6 +12,7 @@
 #include "nx/gpu/maxwell/draw_state.h"
 #include "nx/gpu/maxwell/maxwell_3d_regs.h"
 #include "nx/hle/services/nvdrv.h"
+#include <stdatomic.h>
 
 /* ------------------------------------------------------------ the record of GPU-side writes */
 /* Each write stamps a new generation on every 4 KiB page it covers, by GPU address: the pages written and every other
@@ -26,13 +27,13 @@
    translating the range, warning when only that way finds a write */
 static PMutex g_wlk = PMUTEX_INIT;
 static WritePages g_wgpu, g_wcpu;
-static u64 g_wgen;
-static int g_wcheck = -1; /* gpu_page_check, -1 until read */
+static _Atomic u64 g_wgen;
+static _Atomic int g_wcheck = -1; /* gpu_page_check, -1 until read */
 static int wcheck_on(void) {
-    int c = __atomic_load_n(&g_wcheck, __ATOMIC_RELAXED);
+    int c = atomic_load_explicit(&g_wcheck, memory_order_relaxed);
     if (c < 0) { /* threads reading it at once all read the same */
         c = g_settings.gpu_page_check != 0;
-        if (__atomic_exchange_n(&g_wcheck, c, __ATOMIC_RELAXED) < 0 && c)
+        if (atomic_exchange_explicit(&g_wcheck, c, memory_order_relaxed) < 0 && c)
             LOG("gpu: gpu_page_check=1: GPU-side writes are checked through the GMMU too\n");
     }
     return c;
@@ -59,14 +60,14 @@ static void guest_runs(u64 gva, u64 size, int (*fn)(u64 cpu, u64 n, void* ctx), 
    tables, and gpu_mem_dirty_since past its quick answer for them */
 #define WW_SHIFT 21u
 #define WW_BITS  (1ull << (40 - WW_SHIFT)) /* GPU addresses have 40 bits */
-static u64 g_wwbits[WW_BITS / 64];         /* atomic, set under g_wlk */
+static _Atomic u64 g_wwbits[WW_BITS / 64]; /* atomic, set under g_wlk */
 /* whether [gva, gva + n) has a watched granule (all: whether each of them is one) */
 static int watched_in(u64 gva, u64 n, int all) {
     if (!n) return 0;
     u64 last = gva + n - 1 < gva ? ~(u64)0 : gva + n - 1;
     if (last >> WW_SHIFT >= WW_BITS) return !all;
     for (u64 g = gva >> WW_SHIFT, e = last >> WW_SHIFT; g <= e; g++)
-        if ((int)(__atomic_load_n(&g_wwbits[g >> 6], __ATOMIC_ACQUIRE) >> (g & 63) & 1) != all) return !all;
+        if ((int)(atomic_load_explicit(&g_wwbits[g >> 6], memory_order_acquire) >> (g & 63) & 1) != all) return !all;
     return all;
 }
 /* Each watched granule's newest write (gpu_mem_granules_generation): a texture asks its own granules, so a write on
@@ -74,15 +75,15 @@ static int watched_in(u64 gva, u64 n, int all) {
    freed. A write's granules are noted while it is stamped and their generations stored once it is published; past
    WHITS of them, or at the tables' overflow, every granule reads as written then (g_wgran_all) */
 #define WGRAN_LEAF 4096u
-static u64* g_wgran[WW_BITS / WGRAN_LEAF]; /* atomic pointers, made under g_wlk */
-static u64 g_wgran_all;                    /* atomic, stored under g_wlk */
+static _Atomic u64* _Atomic g_wgran[WW_BITS / WGRAN_LEAF]; /* atomic pointers, made under g_wlk */
+static _Atomic u64 g_wgran_all;                            /* atomic, stored under g_wlk */
 #define WHITS 16u
 static u64 g_whits[WHITS]; /* under g_wlk: the watched granules of the write being stamped */
 static u32 g_nhits;
 static int g_whits_over;
 static void stamp_gpu(u64 gva, u64 n, u64 gen) {
     write_pages_stamp(&g_wgpu, gva, n, gen);
-    if (__atomic_load_n(&g_wgpu.overflow, __ATOMIC_RELAXED) == gen) g_whits_over = 1;
+    if (atomic_load_explicit(&g_wgpu.overflow, memory_order_relaxed) == gen) g_whits_over = 1;
     if (!n || g_whits_over) return;
     u64 last = gva + n - 1 < gva ? ~(u64)0 : gva + n - 1;
     if (last >> WW_SHIFT >= WW_BITS) {
@@ -90,7 +91,7 @@ static void stamp_gpu(u64 gva, u64 n, u64 gen) {
         return;
     }
     for (u64 g = gva >> WW_SHIFT, e = last >> WW_SHIFT; g <= e; g++) {
-        if (!(__atomic_load_n(&g_wwbits[g >> 6], __ATOMIC_RELAXED) >> (g & 63) & 1)) continue;
+        if (!(atomic_load_explicit(&g_wwbits[g >> 6], memory_order_relaxed) >> (g & 63) & 1)) continue;
         if (g_nhits && g_whits[g_nhits - 1] == g) continue;
         if (g_nhits == WHITS) {
             g_whits_over = 1;
@@ -102,33 +103,33 @@ static void stamp_gpu(u64 gva, u64 n, u64 gen) {
 /* the kind of write (GPU_WRITE_*) of each of the last WKINDS generations, by the generation's low bits: what wrote a
    texture's pages, for the log's counts of loads of pieces (gpu_mem_newest_kind) */
 #define WKINDS 4096u
-static u8 g_wkind[WKINDS]; /* atomic, stored under g_wlk */
+static _Atomic u8 g_wkind[WKINDS]; /* atomic, stored under g_wlk */
 /* the format and address of the surface whose write each generation was (gpu_mem_written_by), for the kinds of a
    surface's write alone: atomic, stored under g_wlk */
-static u32 g_wformat[WKINDS];
-static u64 g_wsurface[WKINDS];
+static _Atomic u32 g_wformat[WKINDS];
+static _Atomic u64 g_wsurface[WKINDS];
 /* the write's generation published, under g_wlk: its kind, g_wgen, then the generations of the watched granules it
    touched */
 static void publish(u64 gen, int kind) {
-    __atomic_store_n(&g_wkind[gen % WKINDS], (u8)kind, __ATOMIC_RELAXED);
-    __atomic_store_n(&g_wgen, gen, __ATOMIC_RELEASE);
+    atomic_store_explicit(&g_wkind[gen % WKINDS], (u8)kind, memory_order_relaxed);
+    atomic_store_explicit(&g_wgen, gen, memory_order_release);
     if (g_whits_over)
-        __atomic_store_n(&g_wgran_all, gen, __ATOMIC_RELEASE);
+        atomic_store_explicit(&g_wgran_all, gen, memory_order_release);
     else
         for (u32 i = 0; i < g_nhits; i++) {
-            u64* leaf = __atomic_load_n(&g_wgran[g_whits[i] / WGRAN_LEAF], __ATOMIC_RELAXED);
-            if (leaf) __atomic_store_n(&leaf[g_whits[i] % WGRAN_LEAF], gen, __ATOMIC_RELEASE);
+            _Atomic u64* leaf = atomic_load_explicit(&g_wgran[g_whits[i] / WGRAN_LEAF], memory_order_relaxed);
+            if (leaf) atomic_store_explicit(&leaf[g_whits[i] % WGRAN_LEAF], gen, memory_order_release);
         }
     g_nhits = 0;
     g_whits_over = 0;
 }
 static void stamp_alias(void* ctx, u64 gva, u64 n) { stamp_gpu(gva, n, *(const u64*)ctx); }
 /* the renderer's watch on GPU-side writes (gpu_set_write_watch): any thread, under g_wlk */
-static void (*g_wwatch)(u64 cpu, u64 n);
-void gpu_set_write_watch(void (*fn)(u64 cpu, u64 n)) { __atomic_store_n(&g_wwatch, fn, __ATOMIC_RELEASE); }
+static void (*_Atomic g_wwatch)(u64 cpu, u64 n);
+void gpu_set_write_watch(void (*fn)(u64 cpu, u64 n)) { atomic_store_explicit(&g_wwatch, fn, memory_order_release); }
 /* guest memory written: the GPU pages showing it */
 static void stamp_cpu(u64 cpu, u64 n, u64 gen) {
-    void (*watch)(u64, u64) = __atomic_load_n(&g_wwatch, __ATOMIC_ACQUIRE);
+    void (*watch)(u64, u64) = atomic_load_explicit(&g_wwatch, memory_order_acquire);
     if (watch) watch(cpu, n);
     gmmu_aliases(cpu, n, stamp_alias, &gen);
     if (wcheck_on()) write_pages_stamp(&g_wcpu, cpu, n, gen);
@@ -147,21 +148,21 @@ static int stamp_run(u64 cpu, u64 n, void* ctx) {
    One box over all the uploads' pages spanned 9.6 GB of GPU addresses in that town, and answered 2% of the questions */
 #define WCB_SHIFT 21u
 #define WCB_BITS  (1ull << (40 - WCB_SHIFT)) /* GPU addresses have 40 bits */
-static u64 g_wcb[WCB_BITS / 64]; /* atomic, set under g_wlk */
-static u64 g_wlast;              /* atomic, stored under g_wlk */
+static _Atomic u64 g_wcb[WCB_BITS / 64];     /* atomic, set under g_wlk */
+static _Atomic u64 g_wlast;                  /* atomic, stored under g_wlk */
 static void cb_box(u64 gva, u64 n) {
     if (!n) return;
     u64 last = gva + n - 1 < gva ? ~(u64)0 : gva + n - 1;
     for (u64 g = gva >> WCB_SHIFT, e = last >> WCB_SHIFT; g <= e && g < WCB_BITS; g++)
-        if (!(__atomic_load_n(&g_wcb[g >> 6], __ATOMIC_RELAXED) >> (g & 63) & 1))
-            __atomic_fetch_or(&g_wcb[g >> 6], 1ull << (g & 63), __ATOMIC_RELAXED);
+        if (!(atomic_load_explicit(&g_wcb[g >> 6], memory_order_relaxed) >> (g & 63) & 1))
+            atomic_fetch_or_explicit(&g_wcb[g >> 6], 1ull << (g & 63), memory_order_relaxed);
 }
 /* whether no upload touched a granule of [a, a + sz) */
 static int cb_clear(u64 a, u64 sz) {
     u64 last = a + sz - 1 < a ? ~(u64)0 : a + sz - 1;
     if (last >> WCB_SHIFT >= WCB_BITS) return 0;
     for (u64 g = a >> WCB_SHIFT, e = last >> WCB_SHIFT; g <= e; g++)
-        if (__atomic_load_n(&g_wcb[g >> 6], __ATOMIC_RELAXED) >> (g & 63) & 1) return 0;
+        if (atomic_load_explicit(&g_wcb[g >> 6], memory_order_relaxed) >> (g & 63) & 1) return 0;
     return 1;
 }
 static void stamp_alias_cb(void* ctx, u64 gva, u64 n) {
@@ -170,7 +171,7 @@ static void stamp_alias_cb(void* ctx, u64 gva, u64 n) {
 }
 static int stamp_run_cb(u64 cpu, u64 n, void* ctx) {
     u64 gen = *(const u64*)ctx;
-    void (*watch)(u64, u64) = __atomic_load_n(&g_wwatch, __ATOMIC_ACQUIRE);
+    void (*watch)(u64, u64) = atomic_load_explicit(&g_wwatch, memory_order_acquire);
     if (watch) watch(cpu, n);
     gmmu_aliases(cpu, n, stamp_alias_cb, &gen);
     if (wcheck_on()) write_pages_stamp(&g_wcpu, cpu, n, gen);
@@ -180,7 +181,7 @@ void gpu_mem_written_cb(u64 gva, u64 size) {
     u64 gen;
     if (!size) return;
     pm_lock(&g_wlk);
-    gen = g_wgen + 1;
+    gen = atomic_load_explicit(&g_wgen, memory_order_relaxed) + 1;
     stamp_gpu(gva, size, gen);
     cb_box(gva, size);
     guest_runs(gva, size, stamp_run_cb, &gen);
@@ -191,12 +192,12 @@ static void written(u64 gva, u64 size, int kind, u32 format, u64 surface) {
     u64 gen;
     if (!size) return;
     pm_lock(&g_wlk);
-    gen = g_wgen + 1;
+    gen = atomic_load_explicit(&g_wgen, memory_order_relaxed) + 1;
     stamp_gpu(gva, size, gen);
     guest_runs(gva, size, stamp_run, &gen);
-    __atomic_store_n(&g_wlast, gen, __ATOMIC_RELAXED);
-    __atomic_store_n(&g_wformat[gen % WKINDS], format, __ATOMIC_RELAXED);
-    __atomic_store_n(&g_wsurface[gen % WKINDS], surface, __ATOMIC_RELAXED);
+    atomic_store_explicit(&g_wlast, gen, memory_order_relaxed);
+    atomic_store_explicit(&g_wformat[gen % WKINDS], format, memory_order_relaxed);
+    atomic_store_explicit(&g_wsurface[gen % WKINDS], surface, memory_order_relaxed);
     publish(gen, kind);
     pm_unlock(&g_wlk);
 }
@@ -212,9 +213,9 @@ void gpu_mem_remapped(u64 gva, u64 size) {
     u64 gen;
     if (!size) return;
     pm_lock(&g_wlk);
-    gen = g_wgen + 1;
+    gen = atomic_load_explicit(&g_wgen, memory_order_relaxed) + 1;
     stamp_gpu(gva, size, gen);
-    __atomic_store_n(&g_wlast, gen, __ATOMIC_RELAXED);
+    atomic_store_explicit(&g_wlast, gen, memory_order_relaxed);
     publish(gen, GPU_WRITE_REMAP);
     pm_unlock(&g_wlk);
 }
@@ -223,13 +224,13 @@ void gpu_mem_written_cpu(u64 cpu, u64 size) {
     u64 gen;
     if (!size) return;
     pm_lock(&g_wlk);
-    gen = g_wgen + 1;
+    gen = atomic_load_explicit(&g_wgen, memory_order_relaxed) + 1;
     stamp_cpu(cpu, size, gen);
-    __atomic_store_n(&g_wlast, gen, __ATOMIC_RELAXED);
+    atomic_store_explicit(&g_wlast, gen, memory_order_relaxed);
     publish(gen, GPU_WRITE_RESULT);
     pm_unlock(&g_wlk);
 }
-u64 gpu_mem_generation(void) { return __atomic_load_n(&g_wgen, __ATOMIC_ACQUIRE); }
+u64 gpu_mem_generation(void) { return atomic_load_explicit(&g_wgen, memory_order_acquire); }
 int gpu_mem_watch(u64 gva, u64 size) {
     if (!size || wcheck_on()) return 0; /* gpu_page_check's answers by guest address: no quick answer past them */
     if (gva + size - 1 < gva || (gva + size - 1) >> WW_SHIFT >= WW_BITS) return 0;
@@ -237,38 +238,38 @@ int gpu_mem_watch(u64 gva, u64 size) {
     pm_lock(&g_wlk);
     int made = 1;
     for (u64 g = gva >> WW_SHIFT, e = (gva + size - 1) >> WW_SHIFT; g <= e && made; g++) {
-        u64** slot = &g_wgran[g / WGRAN_LEAF];
-        if (!*slot) {
-            u64* leaf = calloc(WGRAN_LEAF, sizeof *leaf);
-            if (leaf) __atomic_store_n(slot, leaf, __ATOMIC_RELEASE);
+        _Atomic u64* _Atomic* slot = &g_wgran[g / WGRAN_LEAF];
+        if (!atomic_load_explicit(&(*slot), memory_order_relaxed)) {
+            _Atomic u64* leaf = calloc(WGRAN_LEAF, sizeof *leaf);
+            if (leaf) atomic_store_explicit(slot, leaf, memory_order_release);
             made = leaf != NULL;
         }
         /* the leaf before the bit: a writer that sees the bit finds the leaf */
-        if (made) __atomic_fetch_or(&g_wwbits[g >> 6], 1ull << (g & 63), __ATOMIC_RELEASE);
+        if (made) atomic_fetch_or_explicit(&g_wwbits[g >> 6], 1ull << (g & 63), memory_order_release);
     }
     pm_unlock(&g_wlk);
     return made;
 }
 u64 gpu_mem_granules_generation(u64 gva, u64 size) {
-    u64 newest = __atomic_load_n(&g_wgran_all, __ATOMIC_ACQUIRE);
+    u64 newest = atomic_load_explicit(&g_wgran_all, memory_order_acquire);
     if (!size || gva + size - 1 < gva || (gva + size - 1) >> WW_SHIFT >= WW_BITS) return ~(u64)0;
     for (u64 g = gva >> WW_SHIFT, e = (gva + size - 1) >> WW_SHIFT; g <= e; g++) {
-        const u64* leaf = __atomic_load_n(&g_wgran[g / WGRAN_LEAF], __ATOMIC_ACQUIRE);
+        const _Atomic u64* leaf = atomic_load_explicit(&g_wgran[g / WGRAN_LEAF], memory_order_acquire);
         if (!leaf) return ~(u64)0; /* not watched: no answer */
-        u64 gen = __atomic_load_n(&leaf[g % WGRAN_LEAF], __ATOMIC_ACQUIRE);
+        u64 gen = atomic_load_explicit(&leaf[g % WGRAN_LEAF], memory_order_acquire);
         if (gen > newest) newest = gen;
     }
     return newest;
 }
 int gpu_mem_newest_write(u64 a, u64 sz, u32* format, u64* surface) {
-    const u64 gen = write_pages_newest(&g_wgpu, a, sz), now = __atomic_load_n(&g_wgen, __ATOMIC_ACQUIRE);
+    const u64 gen = write_pages_newest(&g_wgpu, a, sz), now = atomic_load_explicit(&g_wgen, memory_order_acquire);
     *format = 0;
     *surface = 0;
     if (!gen || gen > now || now - gen >= WKINDS) return 0; /* none, or its kind written over since */
-    const int kind = __atomic_load_n(&g_wkind[gen % WKINDS], __ATOMIC_RELAXED);
+    const int kind = atomic_load_explicit(&g_wkind[gen % WKINDS], memory_order_relaxed);
     if (kind == GPU_WRITE_TARGET || kind == GPU_WRITE_IMAGE) { /* the others leave a surface of an older generation */
-        *format = __atomic_load_n(&g_wformat[gen % WKINDS], __ATOMIC_RELAXED);
-        *surface = __atomic_load_n(&g_wsurface[gen % WKINDS], __ATOMIC_RELAXED);
+        *format = atomic_load_explicit(&g_wformat[gen % WKINDS], memory_order_relaxed);
+        *surface = atomic_load_explicit(&g_wsurface[gen % WKINDS], memory_order_relaxed);
     }
     return kind;
 }
@@ -282,10 +283,10 @@ int gpu_mem_newest_kind(u64 a, u64 sz) {
 void gpu_mem_written_all(void) {
     u64 gen;
     pm_lock(&g_wlk);
-    gen = g_wgen + 1;
-    __atomic_store_n(&g_wgpu.overflow, gen, __ATOMIC_RELEASE);
-    __atomic_store_n(&g_wcpu.overflow, gen, __ATOMIC_RELEASE);
-    __atomic_store_n(&g_wlast, gen, __ATOMIC_RELAXED);
+    gen = atomic_load_explicit(&g_wgen, memory_order_relaxed) + 1;
+    atomic_store_explicit(&g_wgpu.overflow, gen, memory_order_release);
+    atomic_store_explicit(&g_wcpu.overflow, gen, memory_order_release);
+    atomic_store_explicit(&g_wlast, gen, memory_order_relaxed);
     g_whits_over = 1; /* every page, the watched ones too */
     publish(gen, GPU_WRITE_ALL);
     pm_unlock(&g_wlk);
@@ -305,9 +306,9 @@ static int dirty_run(u64 cpu, u64 n, void* ctx) {
    one game */
 int gpu_mem_dirty_since(u64 since, u64 a, u64 sz) {
     DirtyAsk q;
-    if (!sz || since >= __atomic_load_n(&g_wgen, __ATOMIC_ACQUIRE)) return 0;
+    if (!sz || since >= atomic_load_explicit(&g_wgen, memory_order_acquire)) return 0;
     /* only constant buffer uploads since, none in the range (g_wcb): read after g_wgen, so as new as it at least */
-    if (since >= __atomic_load_n(&g_wlast, __ATOMIC_RELAXED) && !wcheck_on() && cb_clear(a, sz)) return 0;
+    if (since >= atomic_load_explicit(&g_wlast, memory_order_relaxed) && !wcheck_on() && cb_clear(a, sz)) return 0;
     if (write_pages_since(&g_wgpu, since, a, sz)) return 1;
     if (!wcheck_on()) return 0;
     q.since = since;
@@ -320,7 +321,8 @@ int gpu_mem_dirty_since(u64 since, u64 a, u64 sz) {
 }
 
 void gpu_mem_dirty_runs(u64 since, u64 a, u64 sz, void (*fn)(void* ctx, u64 at, u64 n), void* ctx) {
-    if (sz && since < __atomic_load_n(&g_wgen, __ATOMIC_ACQUIRE)) write_pages_runs(&g_wgpu, since, a, sz, fn, ctx);
+    if (sz && since < atomic_load_explicit(&g_wgen, memory_order_acquire))
+        write_pages_runs(&g_wgpu, since, a, sz, fn, ctx);
 }
 
 /* ------------------------------------------------------------ draws and clears */

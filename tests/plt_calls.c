@@ -253,7 +253,7 @@ static void module_runs(const char* path, const unsigned char* main_bytes, const
         rt.miss = miss;
         c.rt = &rt;
         c.mem = memory;
-        c.disp = (GuestFn*)calloc((size_t)(m->code_hi - m->code_lo) / 4, sizeof(GuestFn));
+        c.disp = (_Atomic GuestFn*)calloc((size_t)(m->code_hi - m->code_lo) / 4, sizeof(GuestFn));
         c.code_lo = m->code_lo;
         c.code_hi = m->code_hi;
         for (i = 0; i < m->nentries; ++i) c.disp[(m->entry_addr[i] - m->code_lo) / 4] = m->entry_fn[i];
@@ -316,7 +316,7 @@ static void module_runs(const char* path, const unsigned char* main_bytes, const
         rt.miss = miss;
         c.rt = &rt;
         c.mem = memory;
-        c.disp = (GuestFn*)calloc((size_t)(m->code_hi - m->code_lo) / 4, sizeof(GuestFn));
+        c.disp = (_Atomic GuestFn*)calloc((size_t)(m->code_hi - m->code_lo) / 4, sizeof(GuestFn));
         c.code_lo = m->code_lo;
         c.code_hi = m->code_hi;
         for (i = 0; i < m->nentries; ++i) c.disp[(m->entry_addr[i] - m->code_lo) / 4] = m->entry_fn[i];
@@ -354,7 +354,7 @@ static void module_runs(const char* path, const unsigned char* main_bytes, const
         rt.miss = miss;
         c.rt = &rt;
         c.mem = memory;
-        c.disp = (GuestFn*)calloc((size_t)(m->code_hi - m->code_lo) / 4, sizeof(GuestFn));
+        c.disp = (_Atomic GuestFn*)calloc((size_t)(m->code_hi - m->code_lo) / 4, sizeof(GuestFn));
         c.code_lo = m->code_lo;
         c.code_hi = m->code_hi;
         for (i = 0; i < m->nentries; ++i) c.disp[(m->entry_addr[i] - m->code_lo) / 4] = m->entry_fn[i];

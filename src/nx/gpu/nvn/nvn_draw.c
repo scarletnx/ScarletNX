@@ -30,6 +30,7 @@
 #include "nx/runtime/platform/log.h"
 #include <math.h>
 #include <string.h>
+#include <stdatomic.h>
 
 /* the inline banks' layout (above) */
 enum {
@@ -58,8 +59,8 @@ enum {
 };
 
 void nvn_draw_device(u32 origin, u32 depth_mode) {
-    __atomic_store_n(&g_nvn.draw.origin, origin, __ATOMIC_RELAXED);
-    __atomic_store_n(&g_nvn.draw.depth_mode, depth_mode, __ATOMIC_RELAXED);
+    atomic_store_explicit(&g_nvn.draw.origin, origin, memory_order_relaxed);
+    atomic_store_explicit(&g_nvn.draw.depth_mode, depth_mode, memory_order_relaxed);
 }
 
 /* DsState.gen: a new generation of group *gen, from the sequence every front end shares */
@@ -115,7 +116,7 @@ void nvn_draw_init(NvnDraw* d, u32 owner) {
     d->ds.owner = owner;
     /* the game's driver writes the window origin register once, as it initializes the queue: the flip when the
        device's origin is lower left then. A game that sets an upper left origin after it keeps the flip */
-    d->flip = __atomic_load_n(&g_nvn.draw.origin, __ATOMIC_RELAXED) == NVN_WINDOW_ORIGIN_MODE_LOWER_LEFT;
+    d->flip = atomic_load_explicit(&g_nvn.draw.origin, memory_order_relaxed) == NVN_WINDOW_ORIGIN_MODE_LOWER_LEFT;
     /* NVN's state before anything is bound: the state objects' defaults (nvn_object.c's SetDefaults) */
     for (i = 0; i < DS_TARGETS_MAX; i++) {
         u64 w = 0;
@@ -173,7 +174,7 @@ void nvn_draw_init(NvnDraw* d, u32 owner) {
     d->dirty = ~0u;
     d->vp_dirty = (1u << DS_VIEWPORTS_MAX) - 1;
     d->viewport_upper_left =
-        __atomic_load_n(&g_nvn.draw.origin, __ATOMIC_RELAXED) == NVN_WINDOW_ORIGIN_MODE_UPPER_LEFT;
+        atomic_load_explicit(&g_nvn.draw.origin, memory_order_relaxed) == NVN_WINDOW_ORIGIN_MODE_UPPER_LEFT;
     for (s = 0; s < DS_GFX_STAGES; s++) {
         d->inl_lo[0][s] = d->inl_lo[1][s] = 0;
         d->inl_hi[0][s] = DS_INLINE_BANK0;
@@ -553,7 +554,7 @@ static void make_dynamic(NvnDraw* d, u32 base_instance) {
     y.alpha_ref = d->alpha_ref;
     /* the window origin register as the game's driver writes it: the flip the queue took when it was initialized
        (nvn_draw_init), and never the lower left bit, so y counts from the top of the targets as on the driver's */
-    u32 depth_mode = __atomic_load_n(&g_nvn.draw.depth_mode, __ATOMIC_RELAXED);
+    u32 depth_mode = atomic_load_explicit(&g_nvn.draw.depth_mode, memory_order_relaxed);
     y.window_origin = d->flip ? DS_ORIGIN_FLIP_Y : 0;
     y.depth_mode = depth_mode == NVN_DEPTH_MODE_NEAR_IS_ZERO;
     y.sprite_origin = 1; /* the game's driver's sprite origin bit, set whatever the window origin */
@@ -604,9 +605,10 @@ static u32 scissor_clip(i32 origin, i32 extent) {
     return end > start ? start | end << 16 : 0;
 }
 static void make_viewports(NvnDraw* d) {
-    int near_zero = __atomic_load_n(&g_nvn.draw.depth_mode, __ATOMIC_RELAXED) == NVN_DEPTH_MODE_NEAR_IS_ZERO;
+    int near_zero = atomic_load_explicit(&g_nvn.draw.depth_mode, memory_order_relaxed) == NVN_DEPTH_MODE_NEAR_IS_ZERO;
     /* clip space's y points up in both origins: an upper-left window's rows count down, so its scale is negative */
-    int upper_left = __atomic_load_n(&g_nvn.draw.origin, __ATOMIC_RELAXED) == NVN_WINDOW_ORIGIN_MODE_UPPER_LEFT;
+    int upper_left =
+        atomic_load_explicit(&g_nvn.draw.origin, memory_order_relaxed) == NVN_WINDOW_ORIGIN_MODE_UPPER_LEFT;
     DsViewports v;
     memcpy(&v, &d->ds.vp, sizeof v); /* retain unchanged viewports and their padding for keep */
     /* NVN has no call that turns the viewport transform off */
@@ -663,12 +665,13 @@ static void sync(NvnDraw* d, i32 base_vertex, u32 base_instance) {
     if (d->ds.dyn.depth_word != base_instance) d->dirty |= D_DYNAMIC;
     /* Device state can change without changing a packed depth/stencil object. Equal binds no longer rebuild
        dynamic state incidentally, so refresh the depth convention at the draw that observes it. */
-    u32 near_zero = __atomic_load_n(&g_nvn.draw.depth_mode, __ATOMIC_RELAXED) == NVN_DEPTH_MODE_NEAR_IS_ZERO;
+    u32 near_zero = atomic_load_explicit(&g_nvn.draw.depth_mode, memory_order_relaxed) == NVN_DEPTH_MODE_NEAR_IS_ZERO;
     if (d->ds.dyn.depth_mode != near_zero) {
         d->dirty |= D_DYNAMIC;
         viewports_dirty(d, 0, DS_VIEWPORTS_MAX);
     }
-    u32 upper_left = __atomic_load_n(&g_nvn.draw.origin, __ATOMIC_RELAXED) == NVN_WINDOW_ORIGIN_MODE_UPPER_LEFT;
+    u32 upper_left =
+        atomic_load_explicit(&g_nvn.draw.origin, memory_order_relaxed) == NVN_WINDOW_ORIGIN_MODE_UPPER_LEFT;
     if (d->viewport_upper_left != upper_left) viewports_dirty(d, 0, DS_VIEWPORTS_MAX);
     if (!d->dirty) return;
     if (d->dirty & D_PROGRAMS) make_programs(d);

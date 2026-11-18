@@ -23,7 +23,7 @@ struct PendPages {
     PendLeaf* leaf[1u << 16];
     PendLeaf* gpu[1u << 16]; /* by GPU page: each one's count is that of the guest page the GMMU maps it to */
     u64 total;    /* every page's count added up */
-    u64 adds;     /* results added so far: unchanged, no result covers what was checked without a hit since */
+    _Atomic u64 adds; /* results added so far: unchanged, no result covers what was checked without a hit since */
     u64 overflow; /* pages past 2^40 results cover, read as covering every page */
     /* a table every page this one gains or loses is counted in as well, NULL for none: one table then answers whether
        anything at all is pending on a page (g_pend_any) */

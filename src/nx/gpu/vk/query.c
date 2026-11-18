@@ -36,6 +36,7 @@
    Everything here runs with vk_lock held. */
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/ledger.h"
@@ -650,7 +651,7 @@ int vk_query_pred_compare(u64 a, u32* slot) {
    copies the report recorded (vk_query_flush), as Eden's query cache writes its reports' values into its buffers on
    the GPU (SyncValues, 4dc69c06). Not when the targets are scaled: vk_query_value rounds the count to the guest's size
    on the CPU */
-u64 g_vk_counts_on_gpu;
+_Atomic u64 g_vk_counts_on_gpu;
 static VkDescriptorSetLayout g_kds;
 static VkPipelineLayout g_klayout;
 static VkPipeline g_kpipe;
@@ -766,7 +767,7 @@ int vk_query_counts(VkBuffer buf, u64 off, const SamplesCount* counts, u32 n) {
     rec_CmdDispatch(cb, (n + 63) / 64, 1, 1);
     d.pMemoryBarriers = &after;
     rec_CmdPipelineBarrier2(cb, &d);
-    __atomic_add_fetch(&g_vk_counts_on_gpu, n, __ATOMIC_RELAXED);
+    atomic_fetch_add_explicit(&g_vk_counts_on_gpu, n, memory_order_relaxed);
     return 1;
 }
 

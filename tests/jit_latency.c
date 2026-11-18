@@ -62,7 +62,7 @@ int main(int argc, char** argv) {
     if (!addresses || aot_size % sizeof *addresses) return 2;
     size_t aot_count = aot_size / sizeof *addresses;
     for (size_t i = 1; i < aot_count; i++) if (addresses[i] < addresses[i - 1]) return 2;
-    GuestFn* functions = calloc(aot_count, sizeof *functions);
+    _Atomic GuestFn* functions = calloc(aot_count, sizeof *functions);
     if (!functions) return 2;
     /* Include the complete AOT address range even when a live snapshot omitted a writable image. */
     u64 lo = aot_count ? addresses[0] & ~0xfffull : images[0].base;
@@ -73,7 +73,7 @@ int main(int argc, char** argv) {
         if (end > hi) hi = (end + 0xfff) & ~0xfffull;
     }
     if (hi <= lo || hi - lo > (1ull << 30)) return 2;
-    GuestFn* dispatch = calloc((size_t)(hi - lo) / 4, sizeof *dispatch);
+    _Atomic GuestFn* dispatch = calloc((size_t)(hi - lo) / 4, sizeof *dispatch);
     if (!dispatch) return 2;
     for (size_t i = 0; i < aot_count; i++) {
         functions[i] = aot;

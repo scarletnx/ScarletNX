@@ -12,6 +12,7 @@
 #include "nx/hle/hle.h"
 #include "nx/runtime/clock.h"
 #include "nx/runtime/main.h"
+#include <stdatomic.h>
 
 #define MIB          (1ull << 20)
 
@@ -192,8 +193,8 @@ int mem_short_hint(char* out, size_t size) {
 }
 /* the loaded images, the main thread's stack, the heap, physical memory and the system resource, charged once */
 u64 used_memory(void) {
-    return g_code_memory + g_main_stack_size + __atomic_load_n(&g_heap_size, __ATOMIC_ACQUIRE) +
-           __atomic_load_n(&g_phys_mapped, __ATOMIC_ACQUIRE) + g_hle.kernel.sysres_size;
+    return g_code_memory + g_main_stack_size + atomic_load_explicit(&g_heap_size, memory_order_acquire) +
+           atomic_load_explicit(&g_phys_mapped, memory_order_acquire) + g_hle.kernel.sysres_size;
 }
 /* what the heap and physical memory may use between them */
 static u64 heap_budget(void) {
@@ -209,8 +210,8 @@ static u32 mem_result(int r) {
 /* for the crash report: read without the memory lock, which the crashed thread may hold */
 void mem_report(char* out, int n) {
     snprintf(out, (size_t)n, "heap %llu MiB, physical %llu MiB, code %llu MiB, %llu of %llu MiB used",
-             (unsigned long long)(__atomic_load_n(&g_heap_size, __ATOMIC_RELAXED) >> 20),
-             (unsigned long long)(__atomic_load_n(&g_phys_mapped, __ATOMIC_RELAXED) >> 20),
+             (unsigned long long)(atomic_load_explicit(&g_heap_size, memory_order_relaxed) >> 20),
+             (unsigned long long)(atomic_load_explicit(&g_phys_mapped, memory_order_relaxed) >> 20),
              (unsigned long long)(g_code_memory >> 20), (unsigned long long)(used_memory() >> 20),
              (unsigned long long)(mem_total() >> 20));
 }
@@ -686,7 +687,7 @@ KShmem* kshmem_new(u64 size, const char* name) {
 u8* kshmem_ptr(KShmem* s) {
     u64 a;
     if (s->pool) return s->host;
-    a = __atomic_load_n(&s->gaddr, __ATOMIC_ACQUIRE);
+    a = atomic_load_explicit(&s->gaddr, memory_order_acquire);
     return a ? GP(a) : s->host;
 }
 /* a mapping of the pool's pages, and of plain shared pages past the object for a larger size; the reference it
@@ -729,15 +730,16 @@ u32 svc_map_shm(u32 h, u64 addr, u64 size, u32 perm) {
     else if (s->pool) {
         r = shm_map_pool(s, addr, size, perm);
         if (R_SUCCEEDED(r)) return r; /* the mapping keeps the reference */
-    } else if (!__atomic_compare_exchange_n(&s->gsize, &none, size, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
+    } else if (!atomic_compare_exchange_strong_explicit(&s->gsize, &none, size, memory_order_acq_rel,
+                                                        memory_order_acquire))
         r = SNX_RC_SVC_INVALID_STATE;
     else if ((m = mem_map(addr, size, MS_SHARED, perm)) != 0) {
         r = m == -2 ? SNX_RC_SVC_OUT_OF_MEMORY : SNX_RC_SVC_INVALID_CURRENT_MEMORY;
-        __atomic_store_n(&s->gsize, 0, __ATOMIC_RELEASE);
+        atomic_store_explicit(&s->gsize, 0, memory_order_release);
     } else {
         pm_lock(&g_host.kernel.klock);
         memcpy(GP(addr), s->host, (size_t)s->size);
-        __atomic_store_n(&s->gaddr, addr, __ATOMIC_RELEASE);
+        atomic_store_explicit(&s->gaddr, addr, memory_order_release);
         pm_unlock(&g_host.kernel.klock);
     }
     kobj_unref(&s->o);
@@ -787,15 +789,15 @@ u32 svc_unmap_shm(u32 h, u64 addr, u64 size) {
             if (n > whole) mem_unmap(addr + whole, n - whole);
             kobj_unref(&s->o); /* the mapping's */
         }
-    } else if (__atomic_load_n(&s->gaddr, __ATOMIC_ACQUIRE) != addr)
+    } else if (atomic_load_explicit(&s->gaddr, memory_order_acquire) != addr)
         r = SNX_RC_SVC_INVALID_CURRENT_MEMORY;
     else {
         pm_lock(&g_host.kernel.klock);
         memcpy(s->host, GP(addr), (size_t)s->size);
-        __atomic_store_n(&s->gaddr, 0, __ATOMIC_RELEASE);
+        atomic_store_explicit(&s->gaddr, 0, memory_order_release);
         pm_unlock(&g_host.kernel.klock);
-        mem_unmap(addr, __atomic_load_n(&s->gsize, __ATOMIC_ACQUIRE));
-        __atomic_store_n(&s->gsize, 0, __ATOMIC_RELEASE);
+        mem_unmap(addr, atomic_load_explicit(&s->gsize, memory_order_acquire));
+        atomic_store_explicit(&s->gsize, 0, memory_order_release);
     }
     kobj_unref(&s->o);
     return r;
@@ -914,8 +916,8 @@ u32 svc_codemem_control(KObj* o, u32 op, u64 addr, u64 size, u32 perm) {
 /* RandomEntropy: four words fixed for the run, from the clock at their first use (splitmix64) */
 static u64 entropy(u32 i) {
     u64* e = g_hle.svcmem.entropy;
-    int* made = &g_hle.svcmem.entropy_made;
-    if (!__atomic_load_n(made, __ATOMIC_ACQUIRE)) {
+    _Atomic int* made = &g_hle.svcmem.entropy_made;
+    if (!atomic_load_explicit(made, memory_order_acquire)) {
         u64 s = plat_ns() ^ 0x9E3779B97F4A7C15ull, v[4];
         int k;
         for (k = 0; k < 4; k++) {
@@ -925,9 +927,9 @@ static u64 entropy(u32 i) {
             v[k] = (z ^ (z >> 31)) | 1;
         }
         pm_lock(&g_host.kernel.klock);
-        if (!*made) {
+        if (!atomic_load_explicit(&(*made), memory_order_relaxed)) {
             memcpy(e, v, sizeof v);
-            __atomic_store_n(made, 1, __ATOMIC_RELEASE);
+            atomic_store_explicit(made, 1, memory_order_release);
         }
         pm_unlock(&g_host.kernel.klock);
     }
@@ -935,11 +937,11 @@ static u64 entropy(u32 i) {
 }
 /* UserExceptionContextAddress: the process's local region, a kernel page of its own, made on first use */
 static u64 process_local_region(void) {
-    u64* a = &g_hle.svcmem.local_region;
-    u64 v = __atomic_load_n(a, __ATOMIC_ACQUIRE), none = 0;
+    _Atomic u64* a = &g_hle.svcmem.local_region;
+    u64 v = atomic_load_explicit(a, memory_order_acquire), none = 0;
     if (v) return v;
     v = kmem_alloc(0x1000, MS_TLS, PERM_RW);
-    if (!__atomic_compare_exchange_n(a, &none, v, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+    if (!atomic_compare_exchange_strong_explicit(a, &none, v, memory_order_acq_rel, memory_order_acquire)) {
         mem_unmap(v, 0x1000);
         v = none;
     }

@@ -59,7 +59,7 @@ typedef char nce_check_host[offsetof(NceHost, sp) == 96 && offsetof(NceHost, d) 
 typedef struct {
     CPU* cpu;
     NceHost* host;
-    u64* reads;
+    _Atomic u64* reads;
 } NceTls;
 typedef char nce_check_tls[offsetof(NceTls, reads) == NCE_TLS_READS ? 1 : -1];
 /* Where the stubs and the outcall find the thread's NceTls: the word g_nce_tls bytes from TPIDR_EL0, the same in each
@@ -504,7 +504,7 @@ int nce_host_init(const NceHostConfig* config, u64* tls, int* indirect, u64* out
     return 0;
 }
 
-int nce_host_attach(CPU* c, u64* reads, char* why, size_t size) {
+int nce_host_attach(CPU* c, _Atomic u64* reads, char* why, size_t size) {
 #if NCE_INDIRECT
     NceTls** word = word_at(g_nce_tls);
     if (nce_host_check(why, size)) return -1; /* another library took the word in this thread */

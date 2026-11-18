@@ -68,7 +68,7 @@ int vk_written_since(const u8* host, u64 len, u32 since) { /* no write tracking 
     return -1;
 }
 
-int g_gpu_releases;
+_Atomic int g_gpu_releases;
 static unsigned lock_depth, landing_calls, payload_writes, submits, query_reads, events_signaled;
 static int events_due;
 static u64 next_compute, next_graphics = 1, waited_compute, waited_graphics;

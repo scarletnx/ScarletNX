@@ -28,11 +28,12 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
+#include <stdatomic.h>
 
-u64 nvn_now(void) { return plat_ns() + (u64)__atomic_load_n(&g_nvn.queue.clock, __ATOMIC_RELAXED); }
+u64 nvn_now(void) { return plat_ns() + (u64)atomic_load_explicit(&g_nvn.queue.clock, memory_order_relaxed); }
 /* a time on the pacer's clock as plat_ns tells it, for the renderer: 0 (unknown) for 0, or one before the process */
 static u64 host_ns(u64 t) {
-    i64 h = (i64)(t - (u64)__atomic_load_n(&g_nvn.queue.clock, __ATOMIC_RELAXED));
+    i64 h = (i64)(t - (u64)atomic_load_explicit(&g_nvn.queue.clock, memory_order_relaxed));
     return t && h > 0 ? (u64)h : 0;
 }
 
@@ -48,7 +49,7 @@ static void fence_at(NvnSync* s, u32 syncpt, u32 value, u32 shown, u64 ready) {
     s->value = value;
     s->shown = shown;
     s->ready = ready;
-    __atomic_store_n(&s->fenced, 1, __ATOMIC_RELEASE);
+    atomic_store_explicit(&s->fenced, 1, memory_order_release);
 }
 
 /* A message on the trace's timeline when a profiler is attached: the fences and presents a queue promises, by
@@ -250,7 +251,7 @@ int nvn_QueueWaitSync(CPU* c, u64 q, u64 sync) {
 void nvn_QueueSubmitCommands(CPU* c, u64 q, i32 n, u64 handles) {
     NvnQueue* o = NVN_OBJ(NvnQueue, q);
     (void)c;
-    __atomic_add_fetch(&g_nvn.queue.submits, 1, __ATOMIC_RELAXED);
+    atomic_fetch_add_explicit(&g_nvn.queue.submits, 1, memory_order_relaxed);
     o->submits++;
     SNX_ZONE_V(z, "nvn submit", n > 0 ? (u64)n : 0);
     if (n > 0) {
@@ -278,12 +279,12 @@ static int shown_wait(const NvnSync* s, u64 start, i64 left, int* waited) {
     u64 now, bound, until;
     i64 wait;
     if (syncpt_wait(id, s->shown, 0)) {
-        __atomic_store_n(&g_nvn.queue.stuck, 0, __ATOMIC_RELAXED);
+        atomic_store_explicit(&g_nvn.queue.stuck, 0, memory_order_relaxed);
         return 1;
     }
-    if (__atomic_load_n(&g_nvn.queue.stuck, __ATOMIC_RELAXED)) return 1;
+    if (atomic_load_explicit(&g_nvn.queue.stuck, memory_order_relaxed)) return 1;
     now = nvn_now();
-    bound = (s->ready > now ? s->ready : now) + 2 * __atomic_load_n(&g_nvn.queue.period, __ATOMIC_RELAXED);
+    bound = (s->ready > now ? s->ready : now) + 2 * atomic_load_explicit(&g_nvn.queue.period, memory_order_relaxed);
     until = left >= 0 && start + (u64)left < bound ? start + (u64)left : bound;
     wait = until > now ? (i64)(until - now) : 0;
     if (wait && syncpt_wait(id, s->shown, wait)) {
@@ -291,7 +292,7 @@ static int shown_wait(const NvnSync* s, u64 start, i64 left, int* waited) {
         return 1;
     }
     if (until < bound) return 0;
-    __atomic_store_n(&g_nvn.queue.stuck, 1, __ATOMIC_RELAXED);
+    atomic_store_explicit(&g_nvn.queue.stuck, 1, memory_order_relaxed);
     LOG_LIMIT(8, "nvn: the display didn't show a frame in two periods: frames don't wait for it until it does\n");
     return 1;
 }
@@ -304,7 +305,7 @@ static i32 sync_wait(CPU* c, u64 sync, u64 timeout) {
     u64 start = nvn_now(), now, ready;
     i64 left = timeout > (u64)INT64_MAX ? -1 : (i64)timeout;
     int waited = 0;
-    if (!__atomic_load_n(&s->fenced, __ATOMIC_ACQUIRE)) {
+    if (!atomic_load_explicit(&s->fenced, memory_order_acquire)) {
         LOG_LIMIT(8,
                   "nvn: sync %llx waited on before anything fenced it (timeout %llx, called from %llx): the wait "
                   "fails at once\n",
@@ -371,7 +372,7 @@ void nvn_WindowBuilderSetDevice(CPU* c, u64 b, u64 d) {
 void nvn_WindowBuilderSetNativeWindow(CPU* c, u64 b, u64 w) {
     (void)c;
     (void)b;
-    __atomic_store_n(&g_nvn.queue.native_window, w, __ATOMIC_RELAXED);
+    atomic_store_explicit(&g_nvn.queue.native_window, w, memory_order_relaxed);
 }
 u64 nvn_WindowBuilderGetDevice(CPU* c, u64 b) {
     (void)c;
@@ -381,7 +382,7 @@ u64 nvn_WindowBuilderGetDevice(CPU* c, u64 b) {
 u64 nvn_WindowBuilderGetNativeWindow(CPU* c, u64 b) {
     (void)c;
     (void)b;
-    return __atomic_load_n(&g_nvn.queue.native_window, __ATOMIC_RELAXED);
+    return atomic_load_explicit(&g_nvn.queue.native_window, memory_order_relaxed);
 }
 void nvn_WindowBuilderSetTextures(CPU* c, u64 b, i32 n, u64 textures) {
     NvnWindowBuilder* o = WB(b);
@@ -444,7 +445,7 @@ int nvn_WindowInitialize(CPU* c, u64 w, u64 b) {
     o.count = s->count;
     o.interval = s->interval;
     o.active = s->active;
-    o.native = __atomic_load_n(&g_nvn.queue.native_window, __ATOMIC_RELAXED);
+    o.native = atomic_load_explicit(&g_nvn.queue.native_window, memory_order_relaxed);
     memcpy(o.texture, s->texture, sizeof o.texture);
     memcpy(GP(w), &o, sizeof o);
     if (g_nvn.loader.api >= 231u << 16) *NVN_WIN_HDR(w) = *NVN_WB_HDR(b);
@@ -541,7 +542,7 @@ void nvn_WindowGetHdrContentMetadata(CPU* c, u64 w, u64 max_cll, u64 max_fall) {
    FIFO, frame_pacing on), the period goes onto the display's refresh as vi's does (present_display_period), and
    *paced says the window's textures also wait for the display to show the present after them */
 static u64 present_period(const NvnWindow* o, int* paced) {
-    int fps = __atomic_load_n(&g_opt_fps, __ATOMIC_RELAXED);
+    int fps = atomic_load_explicit(&g_opt_fps, memory_order_relaxed);
     u64 period, refresh = 0;
     *paced = 0;
     if (!fps) return 0;
@@ -671,7 +672,8 @@ void nvn_QueuePresentTexture(CPU* c, u64 q, u64 w, i32 index) {
     }
     /* a lower left window's rows count up, so the game's driver queues its texture flipped (vi's FlipV, 2; NVN 55.12)
        and an upper left one's as it is */
-    p.transform = __atomic_load_n(&g_nvn.draw.origin, __ATOMIC_RELAXED) == NVN_WINDOW_ORIGIN_MODE_LOWER_LEFT ? 2 : 0;
+    p.transform =
+        atomic_load_explicit(&g_nvn.draw.origin, memory_order_relaxed) == NVN_WINDOW_ORIGIN_MODE_LOWER_LEFT ? 2 : 0;
     if (tex) memcpy(&t, GP(tex), sizeof t);
     if (tex && t.magic == NVN_MAGIC('T', 'E', 'X', 0)) {
         p.fmt = vi_format(t.d.format);
@@ -690,7 +692,7 @@ void nvn_QueuePresentTexture(CPU* c, u64 q, u64 w, i32 index) {
         p.pitch = t.d.stride ? t.d.stride : t.d.width * 4;
     }
     /* the game's pace for the renderer's holds, with interval 0 or fps_limit none, as vi's present_pace gives it */
-    p.period_ns = __atomic_load_n(&g_opt_fps, __ATOMIC_RELAXED) == SNX_FPS_GAME ? period : 0;
+    p.period_ns = atomic_load_explicit(&g_opt_fps, memory_order_relaxed) == SNX_FPS_GAME ? period : 0;
     p.released_ns = index >= 0 && index < 4 ? host_ns(o->released[index]) : 0;
     value = nvn_replay_present(queue->replay, &p, &shown);
     trace_msg("nvn present %u=%u texture %d from %llx", nvn_replay_syncpt(queue->replay), value, index, caller(c));
@@ -712,14 +714,14 @@ void nvn_QueuePresentTexture(CPU* c, u64 q, u64 w, i32 index) {
     if (!o->presents++) LOG("nvn: first present, texture %d of window %llx\n", index, (unsigned long long)w);
     if (!(o->presents % 1800))
         LOG("nvn: %llu presents, %llu submissions\n", (unsigned long long)o->presents,
-            (unsigned long long)__atomic_load_n(&g_nvn.queue.submits, __ATOMIC_RELAXED));
-    __atomic_store_n(&g_nvn.queue.period, period, __ATOMIC_RELAXED);
+            (unsigned long long)atomic_load_explicit(&g_nvn.queue.submits, memory_order_relaxed));
+    atomic_store_explicit(&g_nvn.queue.period, period, memory_order_relaxed);
     slot = pace(o, queue_ready(queue), period);
     if (index >= 0 && index < 4) {
         o->available[index] = period ? slot + period : 0;
         o->shown_at[index] = period ? slot : 0;
     }
-    __atomic_add_fetch(&g_frames, 1, __ATOMIC_RELAXED);
+    atomic_fetch_add_explicit(&g_frames, 1, memory_order_relaxed);
     /* the frame on the trace's timeline: a game that presents through the queue (every NVN game) has no other
        frame marked, so the "Frames" set would hold only vi's few */
     SNX_FRAME_MARK();

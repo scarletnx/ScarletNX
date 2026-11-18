@@ -25,6 +25,7 @@
 #include <string.h>
 #include <volk.h>
 #include <SDL3/SDL_vulkan.h>
+#include <stdatomic.h>
 #if defined(_WIN32)
 #include <windows.h>
 #include <vulkan/vulkan_win32.h>
@@ -45,7 +46,7 @@ void hle_vulkan_set_host(const HleWindowHost* host) {
 
 typedef struct {
     char* name;
-    void* host;          /* the loader's command, resolved at the first call */
+    void* _Atomic host;  /* the loader's command, resolved at the first call */
     int allocator;       /* the parameter that is a VkAllocationCallbacks*, -1 for none */
     char kind;           /* hle_call's result kind */
     const char* params;  /* hle_call's parameters, NULL for integers and pointers alone */
@@ -136,11 +137,11 @@ static void drop_allocator(CPU* c, int at) {
 /* a command the guest calls: the host's, with the guest's arguments as they are */
 static void command(CPU* c, void* data) {
     Command* cmd = data;
-    void* fn = __atomic_load_n(&cmd->host, __ATOMIC_ACQUIRE);
+    void* fn = atomic_load_explicit(&cmd->host, memory_order_acquire);
     if (!fn) {
         pthread_mutex_lock(&v.lock);
         fn = host_command(cmd->name);
-        __atomic_store_n(&cmd->host, fn, __ATOMIC_RELEASE);
+        atomic_store_explicit(&cmd->host, fn, memory_order_release);
         pthread_mutex_unlock(&v.lock);
     }
     if (!fn) {
@@ -234,7 +235,7 @@ uint64_t hle_vulkan_symbol(const char* name) {
         }
         cmd = snx_alloc(sizeof *cmd);
         cmd->name = snx_format("%s", name);
-        cmd->host = NULL;
+        atomic_store_explicit(&cmd->host, NULL, memory_order_relaxed);
         cmd->allocator = allocator_of(name);
         cmd->kind = 'I'; /* no Vulkan command returns a floating value */
         cmd->params = params_of(name);
@@ -338,7 +339,7 @@ VkResult hle_vulkan_create_instance(const VkInstanceCreateInfo* in, VkInstance* 
         v.instance = instance;
         if (v.live_count < sizeof v.live / sizeof *v.live) v.live[v.live_count++] = instance;
         /* the commands resolved for another instance resolve again for this one */
-        for (size_t i = 0; i < v.count; ++i) __atomic_store_n(&v.commands[i]->host, NULL, __ATOMIC_RELEASE);
+        for (size_t i = 0; i < v.count; ++i) atomic_store_explicit(&v.commands[i]->host, NULL, memory_order_release);
         pthread_mutex_unlock(&v.lock);
         memcpy(out, &instance, sizeof instance);
     }
@@ -1300,7 +1301,7 @@ void hle_vulkan_destroy_instance(VkInstance instance) {
         }
     if (v.instance == instance) {
         v.instance = v.live_count ? v.live[v.live_count - 1] : VK_NULL_HANDLE;
-        for (size_t i = 0; i < v.count; ++i) __atomic_store_n(&v.commands[i]->host, NULL, __ATOMIC_RELEASE);
+        for (size_t i = 0; i < v.count; ++i) atomic_store_explicit(&v.commands[i]->host, NULL, memory_order_release);
     }
     pthread_mutex_unlock(&v.lock);
     if (destroy) destroy(instance, NULL);
@@ -1472,16 +1473,14 @@ static void shot_finish(ShotJob* j) {
 }
 
 /* vkQueuePresentKHR, counted for --sample's lines (hle_vulkan_presents), and saved at the --shot presents */
-static uint64_t presents;
-uint64_t hle_vulkan_presents(void) {
-    return __atomic_load_n(&presents, __ATOMIC_RELAXED);
-}
+static _Atomic uint64_t presents;
+uint64_t hle_vulkan_presents(void) { return atomic_load_explicit(&presents, memory_order_relaxed); }
 /* At a present: the renderer's windows blended over the image first when one shows (compose_begin), then the shot's
    copy of what goes to the screen, each after the semaphores of what came before it */
 VkResult hle_vulkan_present(VkQueue queue, const VkPresentInfoKHR* info) {
-    static bool blending; /* the last present's, to say when it changes */
+    static _Atomic bool blending; /* the last present's, to say when it changes */
     PFN_vkQueuePresentKHR present = VKF(vkQueuePresentKHR);
-    long number = (long)__atomic_add_fetch(&presents, 1, __ATOMIC_RELAXED);
+    long number = (long)atomic_fetch_add_explicit(&presents, 1, memory_order_relaxed);
     VkPresentInfoKHR waited = *info;
     VkSemaphore composed = VK_NULL_HANDLE;
     bool blend = present && compose_begin(queue, info, &composed);
@@ -1489,7 +1488,7 @@ VkResult hle_vulkan_present(VkQueue queue, const VkPresentInfoKHR* info) {
         waited.waitSemaphoreCount = 1;
         waited.pWaitSemaphores = &composed;
     }
-    if (blend != __atomic_exchange_n(&blending, blend, __ATOMIC_RELAXED))
+    if (blend != atomic_exchange_explicit(&blending, blend, memory_order_relaxed))
         fprintf(stderr, "scarletnx-android: Vulkan present %ld: %s\n", number,
                 blend ? "the app's windows blended over it" : "the app's own, no window over it");
     ShotJob job;
@@ -1518,8 +1517,9 @@ static void* device_command(const char* name) {
 
 /* a repair, said the first few times */
 static void repaired(const char* what) {
-    static unsigned said;
-    if (__atomic_fetch_add(&said, 1, __ATOMIC_RELAXED) < 8) fprintf(stderr, "scarletnx-android: Vulkan: %s\n", what);
+    static _Atomic unsigned said;
+    if (atomic_fetch_add_explicit(&said, 1, memory_order_relaxed) < 8)
+        fprintf(stderr, "scarletnx-android: Vulkan: %s\n", what);
 }
 
 /* SPIR-V that reads or writes a Buffer image without the capability it needs (ImageBuffer for a storage image,
@@ -1703,8 +1703,8 @@ static void debug_messenger_destroy(CPU* c, void* data) {
 /* a debug messenger without its callback (the guest's code): a handle the destroy takes back */
 static void debug_messenger(CPU* c, void* data) {
     (void)data;
-    static uint64_t next = 0x5c00000000000001ull;
-    uint64_t handle = __atomic_fetch_add(&next, 1, __ATOMIC_RELAXED);
+    static _Atomic uint64_t next = 0x5c00000000000001ull;
+    uint64_t handle = atomic_fetch_add_explicit(&next, 1, memory_order_relaxed);
     memcpy(PTR(3), &handle, sizeof handle);
     X(0) = VK_SUCCESS;
 }

@@ -20,6 +20,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 
 /* HD rumble (hd_play): each pad's last report and when it went. SDL's HIDAPI driver writes a raw effect at once. Over
    Bluetooth, a controller that gets a report less than 30 ms after the last one can turn off, and its actuators stop
@@ -48,7 +49,7 @@ static struct {
     char names[SNX_GAMEPADS][64]; /* theirs, for the game's menu, which the renderer draws on its thread */
     u32 names_version;            /* their changes, under ui_lock */
     int labels[SNX_GAMEPADS][4], symmetric[SNX_GAMEPADS]; /* and how its button map screen draws them */
-    unsigned held[SNX_GAMEPADS];                          /* the controls each holds, a bit each, as last polled */
+    _Atomic unsigned held[SNX_GAMEPADS];                  /* the controls each holds, a bit each, as last polled */
     int left_type[SNX_GAMEPADS]; /* gamepad_assign=1: the type of the pad a player is kept for (connect.h) */
     int console_paused;          /* gamepad_assign=1: the game paused for a controller that left */
     int console_was;             /* gamepad_assign at gamepad_console's last poll */
@@ -167,9 +168,9 @@ unsigned gamepad_held(int i) {
     int k;
     for (k = 0; k < SNX_GAMEPADS; k++)
         if (i < 0)
-            held |= __atomic_load_n(&g_gamepad.held[k], __ATOMIC_RELAXED);
+            held |= atomic_load_explicit(&g_gamepad.held[k], memory_order_relaxed);
         else if (g_gamepad.names[k][0] && !i--)
-            return __atomic_load_n(&g_gamepad.held[k], __ATOMIC_RELAXED);
+            return atomic_load_explicit(&g_gamepad.held[k], memory_order_relaxed);
     return held;
 }
 u32 gamepad_names_version(void) { return g_gamepad.names_version; }
@@ -601,7 +602,7 @@ void gamepad_state(u64* buttons, i32 sticks[4]) {
         if (g)
             for (c = 0; c < SNX_PAD_CONTROLS; c++)
                 if (snx_pad_held(g, c)) held |= 1u << c;
-        __atomic_store_n(&g_gamepad.held[i], held, __ATOMIC_RELAXED); /* the renderer's thread draws them */
+        atomic_store_explicit(&g_gamepad.held[i], held, memory_order_relaxed); /* the renderer's thread draws them */
         if (!g) continue;
         gamepad_state_slot(i, &one, axes);
         b |= one;

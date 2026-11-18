@@ -16,6 +16,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 #ifndef _WIN32
 #include <signal.h>
 #include <unistd.h>
@@ -117,7 +118,7 @@ int64_t gnu_thread_clone(GnuThread* parent, uint64_t flags, uint64_t stack, uint
     if (!t) return -GNU_EAGAIN;
     t->cpu = parent->cpu; /* the registers of the clone call, which returns 0 in the child */
     t->cpu.thread = t;
-    t->cpu.poll = 0;
+    atomic_store_explicit(&t->cpu.poll, 0, memory_order_relaxed);
     t->cpu.excl_on = 0;
     t->cpu.x[0] = 0;
     if (stack) t->cpu.x[31] = stack;

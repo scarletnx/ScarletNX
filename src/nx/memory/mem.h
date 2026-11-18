@@ -282,7 +282,7 @@ int mem_restore_check(const MemBlock* blk, u32 n);
 extern MemLayout g_layout;
 extern u8* g_mem;
 /* changed under the memory lock, read with __atomic loads without it */
-extern u64 g_heap_size, g_phys_mapped;
+extern _Atomic u64 g_heap_size, g_phys_mapped;
 extern u64 g_heap_max; /* the heap's cap in bytes, 0 for none */
 /* the alias pool's size in bytes, read by mem_init; a test lowers it after to fill the pool */
 extern u64 g_pool_size;

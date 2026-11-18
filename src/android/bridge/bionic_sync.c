@@ -16,15 +16,16 @@
 #include "gnuabi/abi/errno.inc"
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdatomic.h>
 
-#define W(object, i) ((uint32_t*)(object) + (i))
-static uint32_t load(uint32_t* w) { return __atomic_load_n(w, __ATOMIC_ACQUIRE); }
-static void store(uint32_t* w, uint32_t v) { __atomic_store_n(w, v, __ATOMIC_RELEASE); }
-static bool cas(uint32_t* w, uint32_t* expected, uint32_t v) {
-    return __atomic_compare_exchange_n(w, expected, v, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
+#define W(object, i) ((_Atomic uint32_t*)(object) + (i))
+static uint32_t load(_Atomic uint32_t* w) { return atomic_load_explicit(w, memory_order_acquire); }
+static void store(_Atomic uint32_t* w, uint32_t v) { atomic_store_explicit(w, v, memory_order_release); }
+static bool cas(_Atomic uint32_t* w, uint32_t* expected, uint32_t v) {
+    return atomic_compare_exchange_strong_explicit(w, expected, v, memory_order_acq_rel, memory_order_acquire);
 }
-static void add(uint32_t* w, uint32_t v) { __atomic_fetch_add(w, v, __ATOMIC_ACQ_REL); }
-static void sub(uint32_t* w, uint32_t v) { __atomic_fetch_sub(w, v, __ATOMIC_ACQ_REL); }
+static void add(_Atomic uint32_t* w, uint32_t v) { atomic_fetch_add_explicit(w, v, memory_order_acq_rel); }
+static void sub(_Atomic uint32_t* w, uint32_t v) { atomic_fetch_sub_explicit(w, v, memory_order_acq_rel); }
 
 static bool valid_time(const BionicTime* t) {
     return !t || (t->nanoseconds >= 0 && t->nanoseconds < 1000000000 && t->seconds >= 0);
@@ -113,18 +114,18 @@ int bionic_mutex_destroy(void* mutex) {
 }
 
 /* the state word taken (Drepper's mutex, with the type bits kept): 0, or ETIMEDOUT */
-static int take(const BionicFutex* f, uint32_t* w, const BionicTime* deadline) {
+static int take(const BionicFutex* f, _Atomic uint32_t* w, const BionicTime* deadline) {
     uint32_t bits = load(w) & ~M_HELD, c = bits;
     if (cas(w, &c, bits | 1)) return 0;
-    if ((c & M_HELD) != 2) c = __atomic_exchange_n(w, bits | 2, __ATOMIC_ACQ_REL);
+    if ((c & M_HELD) != 2) c = atomic_exchange_explicit(w, bits | 2, memory_order_acq_rel);
     while (c & M_HELD) {
         if (f->wait(f->context, w, bits | 2, deadline) == -GNU_ETIMEDOUT) return GNU_ETIMEDOUT;
-        c = __atomic_exchange_n(w, bits | 2, __ATOMIC_ACQ_REL);
+        c = atomic_exchange_explicit(w, bits | 2, memory_order_acq_rel);
     }
     return 0;
 }
-static void give(const BionicFutex* f, uint32_t* w) {
-    uint32_t old = __atomic_fetch_and(w, ~M_HELD, __ATOMIC_ACQ_REL);
+static void give(const BionicFutex* f, _Atomic uint32_t* w) {
+    uint32_t old = atomic_fetch_and_explicit(w, ~M_HELD, memory_order_acq_rel);
     if ((old & M_HELD) == 2) f->wake(f->context, w, 1);
 }
 
@@ -138,7 +139,7 @@ static int lock(const BionicFutex* f, void* mutex, const BionicTime* deadline, b
         add(W(mutex, M_COUNT), 1);
         return 0;
     }
-    uint32_t* w = W(mutex, M_STATE);
+    _Atomic uint32_t* w = W(mutex, M_STATE);
     uint32_t free_state = load(w) & ~M_HELD;
     if (!cas(w, &free_state, free_state | 1)) {
         if (once) return GNU_EBUSY;
@@ -237,7 +238,7 @@ static int rw_wait(const BionicFutex* f, void* rwlock, uint32_t seq, const Bioni
     return r == -GNU_ETIMEDOUT ? GNU_ETIMEDOUT : 0;
 }
 static int rdlock(const BionicFutex* f, void* rwlock, const BionicTime* deadline, bool once) {
-    uint32_t* w = W(rwlock, R_STATE);
+    _Atomic uint32_t* w = W(rwlock, R_STATE);
     bool writers_first = load(W(rwlock, R_FLAGS)) & 2;
     for (;;) {
         uint32_t seq = load(W(rwlock, R_SEQ)), s = load(w);
@@ -255,7 +256,7 @@ static int rdlock(const BionicFutex* f, void* rwlock, const BionicTime* deadline
     }
 }
 static int wrlock(const BionicFutex* f, void* rwlock, const BionicTime* deadline, bool once) {
-    uint32_t* w = W(rwlock, R_STATE);
+    _Atomic uint32_t* w = W(rwlock, R_STATE);
     uint32_t self = f->tid(f->context);
     for (;;) {
         uint32_t seq = load(W(rwlock, R_SEQ)), s = 0;
@@ -281,7 +282,7 @@ int bionic_rwlock_wrlock(const BionicFutex* f, void* rwlock, const BionicTime* d
 }
 int bionic_rwlock_trywrlock(const BionicFutex* f, void* rwlock) { return wrlock(f, rwlock, NULL, true); }
 int bionic_rwlock_unlock(const BionicFutex* f, void* rwlock) {
-    uint32_t* w = W(rwlock, R_STATE);
+    _Atomic uint32_t* w = W(rwlock, R_STATE);
     uint32_t s = load(w);
     for (;;) {
         if (s & R_WRITE) {
@@ -312,11 +313,13 @@ int bionic_spin_init(void* lock, int pshared) {
 }
 int bionic_spin_destroy(void* lock) { return load(W(lock, 0)) ? GNU_EBUSY : 0; }
 int bionic_spin_lock(void* lock) {
-    while (__atomic_exchange_n(W(lock, 0), 1, __ATOMIC_ACQUIRE))
-        while (__atomic_load_n(W(lock, 0), __ATOMIC_RELAXED)) {}
+    while (atomic_exchange_explicit(W(lock, 0), 1, memory_order_acquire))
+        while (atomic_load_explicit(W(lock, 0), memory_order_relaxed)) {}
     return 0;
 }
-int bionic_spin_trylock(void* lock) { return __atomic_exchange_n(W(lock, 0), 1, __ATOMIC_ACQUIRE) ? GNU_EBUSY : 0; }
+int bionic_spin_trylock(void* lock) {
+    return atomic_exchange_explicit(W(lock, 0), 1, memory_order_acquire) ? GNU_EBUSY : 0;
+}
 int bionic_spin_unlock(void* lock) {
     store(W(lock, 0), 0);
     return 0;
@@ -335,7 +338,7 @@ int bionic_barrier_init(void* barrier, const void* attr, unsigned count) {
 int bionic_barrier_destroy(void* barrier) { return load(W(barrier, B_ARRIVED)) ? GNU_EBUSY : 0; }
 int bionic_barrier_wait(const BionicFutex* f, void* barrier) {
     uint32_t round = load(W(barrier, B_ROUND));
-    uint32_t arrived = __atomic_add_fetch(W(barrier, B_ARRIVED), 1, __ATOMIC_ACQ_REL);
+    uint32_t arrived = (atomic_fetch_add_explicit(W(barrier, B_ARRIVED), 1, memory_order_acq_rel) + 1);
     if (arrived == load(W(barrier, B_COUNT))) {
         /* the last of the round: the next round starts, and the others go */
         store(W(barrier, B_ARRIVED), 0);
@@ -367,7 +370,7 @@ int bionic_sem_destroy(void* sem, int* error) {
     return 0; /* POSIX: undefined with waiters; bionic gives 0 */
 }
 int bionic_sem_post(const BionicFutex* f, void* sem, int* error) {
-    uint32_t* w = W(sem, S_VALUE);
+    _Atomic uint32_t* w = W(sem, S_VALUE);
     uint32_t v = load(w);
     do {
         if (v >= BIONIC_SEM_VALUE_MAX) return fail(error, GNU_EOVERFLOW);
@@ -376,14 +379,14 @@ int bionic_sem_post(const BionicFutex* f, void* sem, int* error) {
     return 0;
 }
 int bionic_sem_trywait(void* sem, int* error) {
-    uint32_t* w = W(sem, S_VALUE);
+    _Atomic uint32_t* w = W(sem, S_VALUE);
     uint32_t v = load(w);
     while (v)
         if (cas(w, &v, v - 1)) return 0;
     return fail(error, GNU_EAGAIN);
 }
 int bionic_sem_wait(const BionicFutex* f, void* sem, const BionicTime* deadline, int* error) {
-    uint32_t* w = W(sem, S_VALUE);
+    _Atomic uint32_t* w = W(sem, S_VALUE);
     for (;;) {
         uint32_t v = load(w);
         while (v)

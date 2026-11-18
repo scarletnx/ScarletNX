@@ -12,7 +12,7 @@ struct snx_recompiler;
 struct snx_recompiled;
 typedef struct GnuJit {
     struct snx_recompiler* recompiler;
-    GuestFn* table; /* guest address >> 2 -> function, reserved for the whole guest address space */
+    _Atomic GuestFn* table; /* guest address >> 2 -> function, reserved for the whole guest address space */
     struct snx_recompiled** modules;
     size_t module_count, module_capacity;
     int verbose;

@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 
 const IniOpt* ini_find(const IniOpt* table, const char* key) {
     for (; table->key; ++table)
@@ -116,10 +117,10 @@ void ini_read(const IniOpt* o, const char* v) {
     if (d > o->hi) d = o->hi;
     /* atomic: other threads read some of the settings while a reload writes them (the GPU thread's vsync) */
     if (o->type == INI_INT)
-        __atomic_store_n((int*)o->var, (int)d, __ATOMIC_RELAXED);
+        atomic_store_explicit((_Atomic int*)o->var, (int)d, memory_order_relaxed);
     else {
         float f = (float)d;
-        __atomic_store((float*)o->var, &f, __ATOMIC_RELAXED);
+        atomic_store_explicit((_Atomic float*)o->var, f, memory_order_relaxed);
     }
     /* clamped, an int's whole part, or a number with something after it */
     if (ini_check(o, v, why, sizeof why)) say(o, v);
@@ -168,10 +169,10 @@ int ini_changed(const IniOpt* table, int flags, char* out, size_t n) {
         } else {
             double def = strtod(table->def, NULL);
             if (table->type == INI_INT)
-                same = __atomic_load_n((const int*)table->var, __ATOMIC_RELAXED) == (int)def;
+                same = atomic_load_explicit((_Atomic const int*)table->var, memory_order_relaxed) == (int)def;
             else {
                 float f;
-                __atomic_load((const float*)table->var, &f, __ATOMIC_RELAXED);
+                f = atomic_load_explicit((_Atomic const float*)table->var, memory_order_relaxed);
                 same = f == (float)def;
             }
             ini_format(table, value, sizeof value);

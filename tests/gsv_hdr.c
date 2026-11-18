@@ -29,10 +29,10 @@ u8* g_mem;
 MemLayout g_layout;
 HleHost g_host;
 Settings g_settings;
-int g_frames;
+_Atomic int g_frames;
 u64 g_sync_shim_cpu;
 const Renderer* g_renderer;
-int g_vi_refresh_hz = VI_REFRESH_HZ; /* present.c's, which the session sets */
+_Atomic int g_vi_refresh_hz = VI_REFRESH_HZ; /* present.c's, which the session sets */
 static u64 g_refresh_ns;             /* the window's display's refresh period, 0 not known (headless) */
 u64 backend_display_refresh_ns(void) { return g_refresh_ns; }
 void pm_lock(PMutex* m) { (void)m; }

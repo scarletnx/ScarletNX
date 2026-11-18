@@ -79,7 +79,7 @@ u64 g_as_size;
 _Atomic(int) g_cs_any;
 _Atomic(int) g_gfx_any;
 _Atomic(int) g_gfx_img_any;
-int g_gpu_releases;
+_Atomic int g_gpu_releases;
 u8* g_mem;
 OwnState g_own;
 PendPages g_pend_any;

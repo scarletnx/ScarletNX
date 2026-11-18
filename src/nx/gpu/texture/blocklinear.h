@@ -16,7 +16,11 @@
    and a slab of 2^bd slices after another */
 #ifndef SNX_TEXTURE_BLOCKLINEAR_H
 #define SNX_TEXTURE_BLOCKLINEAR_H
-#include "common/cpu/aarch64/cpu.h"
+#include <stdint.h>
+
+typedef uint8_t u8;
+typedef uint32_t u32;
+typedef uint64_t u64;
 
 /* a GOB's geometry (Eden's GOB_SIZE_X, GOB_SIZE_Y and GOB_SIZE, and their shifts) */
 #define GOB_SIZE_X 64u /* bytes in a GOB's row */

@@ -43,7 +43,7 @@ struct SnxSocket {
     int domain, type, protocol;
     int nonblocking;
     int64_t rcvtimeo_us, sndtimeo_us; /* 0: wait forever */
-    int refs;
+    _Atomic int refs;
     void* impl;
 };
 

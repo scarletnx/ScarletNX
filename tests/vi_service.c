@@ -4,6 +4,7 @@
    queue transactions as byte-exact parcels, with the GPU thread and the renderer stood in for */
 #include "nx/hle/services/services_int.h"
 #include <stdarg.h>
+#include <stdatomic.h>
 
 #include "nx/hle/services/vi.c"
 #include "nx/hle/hle.c"
@@ -137,7 +138,8 @@ void present_pace(u32 interval, int slot) {
     (void)slot;
     paced = interval;
 }
-int g_opt_fps = SNX_FPS_GAME; /* options.c's fps_limit, which vi_vsync_period reads: game, unless a check sets it */
+_Atomic int g_opt_fps =
+    SNX_FPS_GAME; /* options.c's fps_limit, which vi_vsync_period reads: game, unless a check sets it */
 
 static u32 rd32(u64 a) { return snx_ld_le32(g_mem + a); } /* the parcels' words are the guest's, little-endian */
 /* a request parcel at 0x2000: the header, the interface token, then the payload */
@@ -337,7 +339,7 @@ int main(void) {
     snx_st_le32(q + 12 + 44, 0x80000000u); /* the least i32: clamped, not an overflow in 1 - interval */
     CHECK(transact(BQ_QUEUE_BUFFER, q, sizeof q) == 20 && g_hle.vi.layer[0].interval == VI_INTERVAL_MIN);
     CHECK(vi_vsync_period() == 1000000000u / (VI_UNLOCKED_HZ * (1 - VI_INTERVAL_MIN)));
-    __atomic_store_n(&g_hle.vi.layer[0].interval, INT32_MIN, __ATOMIC_RELAXED); /* the period clamps it too */
+    atomic_store_explicit(&g_hle.vi.layer[0].interval, INT32_MIN, memory_order_relaxed); /* the period clamps it too */
     CHECK(vi_vsync_period() == 1000000000u / (VI_UNLOCKED_HZ * (1 - VI_INTERVAL_MIN)));
     snx_st_le32(q + 12 + 44, 0);
     CHECK(transact(BQ_DEQUEUE_BUFFER, "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0", 20) == 56);

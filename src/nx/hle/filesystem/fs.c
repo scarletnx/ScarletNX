@@ -29,6 +29,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 #if defined(_WIN32)
 #include <io.h>
 #else
@@ -847,7 +848,8 @@ static void romfs_build(const RNode* dir, const char* what) {
                 g_hle.fs.rfiles[nf].base = c->base;
                 g_hle.fs.rfiles[nf].size = c->size;
                 g_hle.fs.rfiles[nf].off = data; /* relative for now */
-                g_hle.fs.rfiles[nf].logged = g_hle.fs.rfiles[nf].warned = 0;
+                atomic_store_explicit(&g_hle.fs.rfiles[nf].warned, 0, memory_order_relaxed);
+                atomic_store_explicit(&g_hle.fs.rfiles[nf].logged, 0, memory_order_relaxed);
                 if (c->node) fs_tree_retain(c->node);
                 nf++;
                 data += c->size;
@@ -1070,7 +1072,7 @@ void romfs_init(void) {
               "Extract dump, it is extracted again from the game's dump");
     }
     if (!fs_tree_lookup(&g_hle.fs.tree, NULL, "romfs.bin", &node) && !node->is_dir) {
-        if (node->fd >= 0)
+        if (atomic_load_explicit(&node->fd, memory_order_relaxed) >= 0)
             g_hle.fs.rimage = node;
         else if (!(g_hle.fs.rraw = node_open(node, "rb"))) {
             char path[FS_TREE_PATH_MAX], why[256];
@@ -1165,7 +1167,7 @@ static int rfile_read(RFile* rf, u64 rel, u8* dst, u64 size, int quiet) {
     FsNode* node = rf->node;
     i64 got = (i64)size;
     if (!node) return image_read(rf->base + rel, dst, size, 0, quiet); /* the game's image's, under the mods' */
-    if (!quiet && !__atomic_exchange_n(&rf->logged, 1, __ATOMIC_RELAXED))
+    if (!quiet && !atomic_exchange_explicit(&rf->logged, 1, memory_order_relaxed))
         LOG("RomFS: reading %s (%.1f KB)\n", node->name, (double)node->size / 1024.0);
     if (fs_tree_mapped(node)) { /* mapped for the rest of the run, and never changes */
         memcpy(dst, node->map + rel, (size_t)size);
@@ -1197,7 +1199,7 @@ static int rfile_read(RFile* rf, u64 rel, u8* dst, u64 size, int quiet) {
     if (got < 0) got = 0;
     memset(dst + got, 0, (size_t)(size - (u64)got));
     if (quiet) return -1; /* the runtime's own read says nothing: the game gets no zeros from it */
-    if (!__atomic_exchange_n(&rf->warned, 1, __ATOMIC_RELAXED))
+    if (!atomic_exchange_explicit(&rf->warned, 1, memory_order_relaxed))
         WARN("RomFS: could not read %s at %llx (%llx bytes): the game gets zeros\n", node->name,
              (unsigned long long)rel, (unsigned long long)size);
     return -1;
@@ -1451,7 +1453,7 @@ static u64 fs_pace_ns(TlsFs* t, const void* storage, u64 off, u64 sz) {
 }
 u64 fs_pace_read(const void* storage, u64 off, u64 sz) {
     u64 ns = fs_pace_ns(&t_hle.fs, storage, off, sz);
-    if (ns && !__atomic_exchange_n(&g_host.fs.pace_told, 1, __ATOMIC_RELAXED))
+    if (ns && !atomic_exchange_explicit(&g_host.fs.pace_told, 1, memory_order_relaxed))
         LOG("fs: storage reads of up to %u bytes that go on where the thread's last one ended take a console's time "
             "from here, %u bytes a second (this one %llu bytes, %llu us)\n",
             FS_PACE_MAX_BYTES, FS_PACE_BYTES_PER_S, (unsigned long long)sz, (unsigned long long)(ns / 1000));
@@ -1480,7 +1482,7 @@ static int file_truncate(FILE* f, u64 n, u64* actual) {
 
 /* Every operation on the tree takes tree.lock (fs_lock), file size updates across different handles included */
 /* the game's own file I/O: the file and the bytes, as a zone, and the bytes as a counter for the rate */
-u64 g_fs_bytes_read, g_fs_bytes_written;
+_Atomic u64 g_fs_bytes_read, g_fs_bytes_written;
 
 u32 fs_file_read(FileData* f, u64 off, u64 a, u64 sz, u64* bytes_read) {
     *bytes_read = 0;
@@ -1508,7 +1510,7 @@ u32 fs_file_read(FileData* f, u64 off, u64 a, u64 sz, u64* bytes_read) {
     }
     plat_ww_close(GP(a), sz);
     if (rc) return (u32)rc;
-    __atomic_add_fetch(&g_fs_bytes_read, n, __ATOMIC_RELAXED);
+    atomic_fetch_add_explicit(&g_fs_bytes_read, n, memory_order_relaxed);
     *bytes_read = n;
     R_SUCCEED();
 }
@@ -1523,7 +1525,7 @@ u32 fs_file_write(FileData* f, u32 option, u64 off, u64 a, u64 sz) {
     own_acquire(a, sz); /* write() can't wait on memory the GPU holds: it lands first */
     SNX_ZONE_TV(z, "fs write", sz, "%s", f->node->name);
     size_t n = fwrite(GP(a), 1, (size_t)sz, f->f);
-    __atomic_add_fetch(&g_fs_bytes_written, n, __ATOMIC_RELAXED);
+    atomic_fetch_add_explicit(&g_fs_bytes_written, n, memory_order_relaxed);
     if (n && off + n > f->node->size) f->node->size = off + n;
     R_UNLESS(n == sz && !fflush(f->f), SNX_RC_FS_USABLE_SPACE_NOT_ENOUGH);
     R_SUCCEED();

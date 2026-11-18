@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -76,7 +77,8 @@ static void table_set(GnuJit* jit, uint64_t pc, GuestFn function) {
 #ifdef _WIN32
     if (!VirtualAlloc(jit->table + (pc >> 2), sizeof(GuestFn), MEM_COMMIT, PAGE_READWRITE)) return;
 #endif
-    __atomic_store_n(&jit->table[pc >> 2], function, __ATOMIC_RELEASE); /* the module's code is loaded before */
+    atomic_store_explicit(&jit->table[pc >> 2], function,
+                          memory_order_release); /* the module's code is loaded before */
 }
 
 int gnu_jit_commit(GnuJit* jit, uintptr_t address) {
@@ -101,7 +103,7 @@ static void add_module(GnuJit* jit, struct snx_recompiled* m) {
 
 static int compiled(void* context, uint64_t address) {
     GnuJit* jit = context;
-    return address < GNU_ADDRESS_LIMIT && __atomic_load_n(&jit->table[address >> 2], __ATOMIC_RELAXED) != NULL;
+    return address < GNU_ADDRESS_LIMIT && atomic_load_explicit(&jit->table[address >> 2], memory_order_relaxed) != NULL;
 }
 
 /* compiles the code at pc, from the executable mapping around it; 0 when pc has a function then */
@@ -115,15 +117,18 @@ static int compile(GnuProcess* p, uint64_t pc, char* diagnostic, size_t capacity
     double started = snx_seconds();
     int writable;
     /* the library's tables cover at most 1 GiB of guest addresses */
-    while (first > 0 && (memory->pages[first - 1] & want) == want && last - first < 0x20000) first--;
-    while (last < GNU_ADDRESS_LIMIT / GNU_PAGE_SIZE && (memory->pages[last] & want) == want && last - first < 0x40000)
+    while (first > 0 && (atomic_load_explicit(&memory->pages[first - 1], memory_order_relaxed) & want) == want &&
+           last - first < 0x20000)
+        first--;
+    while (last < GNU_ADDRESS_LIMIT / GNU_PAGE_SIZE &&
+           (atomic_load_explicit(&memory->pages[last], memory_order_relaxed) & want) == want && last - first < 0x40000)
         last++;
     range.address = first * GNU_PAGE_SIZE;
     range.size = (size_t)((last - first) * GNU_PAGE_SIZE);
     range.code = memory->base + range.address; /* executable guest pages are host-readable */
     /* Code the guest may write (a writable and executable page) is compiled a function at a time: its calls then go
        through the table, which a write empties (gnu_memory_watch_code), instead of straight to the old callee */
-    writable = (memory->pages[pc / GNU_PAGE_SIZE] & GNU_PROT_WRITE) != 0;
+    writable = (atomic_load_explicit(&memory->pages[pc / GNU_PAGE_SIZE], memory_order_relaxed) & GNU_PROT_WRITE) != 0;
     m = snx_recompile_from(jit->recompiler, &range, 1, &pc, 1, writable ? 1 : jit->step, compiled, jit);
     if (!m) {
         snprintf(diagnostic, capacity, "Cannot compile guest code at 0x%llx: %s", (unsigned long long)pc,
@@ -141,7 +146,7 @@ static int compile(GnuProcess* p, uint64_t pc, char* diagnostic, size_t capacity
         fprintf(stderr, "scarletnx-gnuabi: JIT 0x%llx: %lu functions, 0x%llx-0x%llx, %.2f s\n", (unsigned long long)pc,
                 (unsigned long)snx_recompiled_functions(m), (unsigned long long)lo, (unsigned long long)hi,
                 snx_seconds() - started);
-    return __atomic_load_n(&jit->table[pc >> 2], __ATOMIC_RELAXED) ? 0 : -1;
+    return atomic_load_explicit(&jit->table[pc >> 2], memory_order_relaxed) ? 0 : -1;
 }
 
 /* gnu_rtapi's RtAPI.miss: a pc the table has no function for. Threads that miss the same code wait for one compile */
@@ -153,11 +158,11 @@ void gnu_jit_miss(CPU* c, u64 pc) {
         gnu_process_fault(t, 11, "Guest instruction fetch violated mapped execution permissions");
         return;
     }
-    GuestFn f = __atomic_load_n(&p->jit.table[pc >> 2], __ATOMIC_ACQUIRE);
+    GuestFn f = atomic_load_explicit(&p->jit.table[pc >> 2], memory_order_acquire);
     if (!f) {
         char reason[sizeof p->diagnostic];
         gnu_mutex_lock(&p->jit.lock);
-        int failed = !__atomic_load_n(&p->jit.table[pc >> 2], __ATOMIC_RELAXED) &&
+        int failed = !atomic_load_explicit(&p->jit.table[pc >> 2], memory_order_relaxed) &&
                      compile(p, pc, reason, sizeof reason);
         gnu_mutex_unlock(&p->jit.lock);
         if (failed) {
@@ -165,7 +170,7 @@ void gnu_jit_miss(CPU* c, u64 pc) {
             gnu_process_fault(t, 4, reason);
             return;
         }
-        f = __atomic_load_n(&p->jit.table[pc >> 2], __ATOMIC_ACQUIRE);
+        f = atomic_load_explicit(&p->jit.table[pc >> 2], memory_order_acquire);
         if (!f) { /* another thread's system call took the code again: a fetch from it now faults or compiles */
             gnu_jit_miss(c, pc);
             return;
@@ -234,7 +239,8 @@ void gnu_jit_bind(GnuJit* jit, CPU* cpu) {
 }
 
 void gnu_jit_call(GnuJit* jit, CPU* cpu, uint64_t pc) {
-    GuestFn f = pc < GNU_ADDRESS_LIMIT && !(pc & 3) ? __atomic_load_n(&jit->table[pc >> 2], __ATOMIC_ACQUIRE) : NULL;
+    GuestFn f =
+        pc < GNU_ADDRESS_LIMIT && !(pc & 3) ? atomic_load_explicit(&jit->table[pc >> 2], memory_order_acquire) : NULL;
     (f ? f : gnu_jit_miss)(cpu, pc);
 }
 
