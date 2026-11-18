@@ -206,6 +206,15 @@ int main(void) {
         }
     }
 
+    /* the platform's memory at an alignment: the bytes before it stay free for the next take; one not a power of 2 is
+       refused */
+    {
+        uint64_t a = snx_gl_memory_take(300, 256), b = snx_gl_memory_take(1000, 4096), c = snx_gl_memory_take(100, 256);
+        assert(a && b && !(b % 4096) && c && c < b && c > a);
+        assert(!snx_gl_memory_take(100, 768));
+        snx_gl_memory_give(a, 300), snx_gl_memory_give(b, 1000), snx_gl_memory_give(c, 100);
+    }
+
     /* a save state's copy: loaded back whole, the platform told every buffer's copy is stale */
     size_t total = snx_gl_state_bytes();
     unsigned char *saved = malloc(total), *copy = malloc(total), *after = malloc(total);

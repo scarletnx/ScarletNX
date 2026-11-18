@@ -11,6 +11,7 @@
    nvn_loader.c does for NVN */
 #ifndef SNX_NX_GL_LAYER_H
 #define SNX_NX_GL_LAYER_H
+#include "nx/gpu/nvn/nvn_obj.h"
 #include "common/cpu/aarch64/cpu.h"
 
 /* ---- gl_loader.c */
@@ -33,11 +34,17 @@ void gl_program_calls_init(void);
 /* ---- gl_object_calls.c */
 /* the shared layer's buffers take their bytes from guest memory */
 void gl_object_calls_init(void);
+/* the GPU address of guest address guest in the layer's memory (its chunks are mapped in the GPU's address space), 0
+   for one outside it */
+u64 gl_gpu_address(u64 guest);
 /* the lock of the layer's buffers and vertex arrays, and of its textures, which keep their texels in that memory */
 void gl_object_calls_lock(void);
 void gl_object_calls_unlock(void);
 
 /* ---- gl_texture_calls.c */
+/* texture name as NVN describes the same storage (the GL layer lays its textures out as NVN does, at gl_gpu_address of
+   their memory): 1, or 0 (out zeroed) for a texture of none or of a format NVN has no form of */
+int gl_nvn_texture(u32 name, NvnTexture* out);
 /* the shared layer's textures keep their texels in guest memory, and say in the log what they leave out */
 void gl_texture_calls_init(void);
 

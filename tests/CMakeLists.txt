@@ -1498,7 +1498,7 @@ add_test(NAME gl_host_program COMMAND snx-test-gl-host-program)
 add_executable(snx-test-gl-layer gl_layer.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/gl/gl_loader.c"
                "${PROJECT_SOURCE_DIR}/src/nx/gpu/gl/gl_egl.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/gl/gl_calls.c"
                "${PROJECT_SOURCE_DIR}/src/nx/gpu/gl/gl_program_calls.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/gl/gl_object_calls.c"
-               "${PROJECT_SOURCE_DIR}/src/nx/gpu/gl/gl_host_program.c"
+               "${PROJECT_SOURCE_DIR}/src/nx/gpu/gl/gl_host_program.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_tex.c"
                "${PROJECT_SOURCE_DIR}/src/nx/gpu/gl/gl_texture_calls.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/gl/gl_framebuffer_calls.c"
                "${PROJECT_SOURCE_DIR}/src/nx/gpu/gl/gl_sync_calls.c"
                "${PROJECT_SOURCE_DIR}/src/nx/gpu/gl/gl_host_nx.c" "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/version.c")

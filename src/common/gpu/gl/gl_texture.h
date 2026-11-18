@@ -94,6 +94,11 @@ typedef struct {
     void (*say)(const char* line);
     uint32_t (*max_size)(void); /* the largest width and height the platform makes now; without it 16384 */
     int keeps_texels;           /* the layer keeps each texture's texels in platform memory, for the platform to read */
+    /* With keeps_texels: the bytes the texture's storage takes in the platform's own layout (the console's: the GPU's
+       block-linear one), and in *align their alignment, the record's sizes just set; the layer takes that memory and
+       the platform's upload writes the texels there. Without it, the layer keeps them itself as tight rows, level
+       after level */
+    uint64_t (*storage_bytes)(uint32_t texture, uint64_t* align);
 } SnxGlTextureHost;
 void snx_gl_texture_host(const SnxGlTextureHost* host);
 

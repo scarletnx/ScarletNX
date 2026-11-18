@@ -95,14 +95,26 @@ static uint8_t* bytes(uint64_t at) { return at && H.bytes ? H.bytes(at) : NULL; 
 
 /* ---- the platform's memory ---- */
 
-/* a free range of size bytes, taken: its address, 0 when no chunk has room and the platform gives none */
-static uint64_t memory_take(uint64_t size) {
+/* size bytes of a free range, at a multiple of align (a power of 2, ALIGN or more), taken: their address, 0 when no
+   chunk has room and the platform gives none. The bytes before them in the range stay free */
+static uint64_t memory_take(uint64_t size, uint64_t align) {
     size = (size + ALIGN - 1) & ~(uint64_t)(ALIGN - 1);
     for (int pass = 0; pass < 2; pass++) {
         for (uint32_t i = 0; i < S.free_count; i++) {
             SnxGlRange* r = &S.free[i];
-            uint64_t at = r->at;
-            if (r->size < size) continue;
+            uint64_t at = (r->at + align - 1) & ~(align - 1), pad = at - r->at;
+            if (r->size < pad || r->size - pad < size) continue;
+            if (pad) { /* the range keeps its bytes before at, and those after the taken ones follow it */
+                uint64_t rest = r->size - pad - size;
+                if (rest && S.free_count == SNX_GL_FREE_RANGES) continue;
+                r->size = pad;
+                if (rest) {
+                    memmove(&S.free[i + 2], &S.free[i + 1], (S.free_count - i - 1) * sizeof S.free[0]);
+                    S.free[i + 1] = (SnxGlRange){at + size, rest};
+                    S.free_count++;
+                }
+                return at;
+            }
             r->at += size, r->size -= size;
             if (!r->size) {
                 memmove(r, r + 1, (S.free_count - i - 1) * sizeof *r);
@@ -112,9 +124,10 @@ static uint64_t memory_take(uint64_t size) {
         }
         if (pass || !H.chunk || S.chunk_count == SNX_GL_CHUNKS || S.free_count == SNX_GL_FREE_RANGES) return 0;
         {
-            uint64_t got = 0, at = H.chunk(size > CHUNK ? size : CHUNK, &got), end;
+            uint64_t want = size + align - ALIGN; /* room for the alignment in a chunk ALIGN-aligned */
+            uint64_t got = 0, at = H.chunk(want > CHUNK ? want : CHUNK, &got), end;
             uint32_t i = 0;
-            if (!at || got < size) return 0;
+            if (!at || got < want) return 0;
             at = (at + ALIGN - 1) & ~(uint64_t)(ALIGN - 1);
             end = (at + got) & ~(uint64_t)(ALIGN - 1);
             S.chunks[S.chunk_count++] = (SnxGlRange){at, end - at};
@@ -154,7 +167,9 @@ static int memory_give(uint64_t at, uint64_t size) {
 }
 
 uint8_t* snx_gl_client_bytes(uint64_t at) { return bytes(at); }
-uint64_t snx_gl_memory_take(uint64_t size) { return memory_take(size); }
+uint64_t snx_gl_memory_take(uint64_t size, uint64_t align) {
+    return align & (align - 1) ? 0 : memory_take(size, align < ALIGN ? ALIGN : align);
+}
 void snx_gl_memory_give(uint64_t at, uint64_t size) { memory_give(at, size); }
 
 /* ---- the objects ---- */
@@ -329,8 +344,8 @@ static int buffer_place(uint32_t ctx, uint32_t name, uint64_t size) {
         return 0;
     }
     want = size < ALIGN ? ALIGN : size * 2;
-    at = memory_take(want);
-    if (!at && want > size) at = memory_take(want = size);
+    at = memory_take(want, ALIGN);
+    if (!at && want > size) at = memory_take(want = size, ALIGN);
     if (!at) {
         error(ctx, GL_OUT_OF_MEMORY_);
         return -1;

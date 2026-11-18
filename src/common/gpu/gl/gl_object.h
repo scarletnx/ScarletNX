@@ -108,7 +108,7 @@ SnxGlVertexArray* snx_gl_vertex_array(uint32_t ctx);
 uint8_t* snx_gl_client_bytes(uint64_t at);
 /* size bytes of the platform's memory the layer places things in (buffers' bytes, textures' kept texels): their
    address, 0 when there is none; and given back */
-uint64_t snx_gl_memory_take(uint64_t size);
+uint64_t snx_gl_memory_take(uint64_t size, uint64_t align); /* at a multiple of align, a power of 2 (0 otherwise) */
 void snx_gl_memory_give(uint64_t at, uint64_t size);
 /* after snx_gl_object_state_check passed on a copy: whether that copy's memory holds [at, at + size) in a chunk */
 int snx_gl_object_checked_holds(uint64_t at, uint64_t size);
