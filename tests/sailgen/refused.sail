@@ -1,7 +1,7 @@
 val decode_bad_aarch64_instrs_test : bits(4) -> unit
 
 function decode_bad_aarch64_instrs_test Rd = {
-    throw(Error_See("another encoding"))
+    throw(Error_ExceptionTaken())
 }
 
 function clause __DecodeA64_DataProcImm ((pc, ([bitone, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 1) = {

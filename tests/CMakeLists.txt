@@ -1277,7 +1277,7 @@ add_test(NAME sailgen_refused
                  --backend "${PROJECT_SOURCE_DIR}/tools/sailgen/llvm.h" -o "${CMAKE_CURRENT_BINARY_DIR}/sailgen/refused.inc"
                  "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/refused.sail")
 set_tests_properties(sailgen_refused PROPERTIES PASS_REGULAR_EXPRESSION
-    "refused.sail:4: error: a throw of other than Error_Undefined\\(\\) or Error_ConstrainedUnpredictable\\(\\)")
+    "refused.sail:4: error: a throw of other than Error_Undefined\\(\\), Error_See\\(\\) or Error_ConstrainedUnpredictable\\(\\)")
 # a register, or a struct register's field, the back end does not keep: refused at the line that reads it, naming
 # what the back end lacks
 foreach(case IN ITEMS register field)
@@ -1304,10 +1304,24 @@ set_tests_properties(sailgen_refused_mention_register PROPERTIES PASS_REGULAR_EX
     "refused_register.sail:6: error: the register FPCR: the back end mention_backend.h defines no sg_FPCR_read")
 set_tests_properties(sailgen_refused_mention_field PROPERTIES PASS_REGULAR_EXPRESSION
     "refused_field.sail:12: error: PSTATE.D: the back end mention_backend.h defines no SG_PSTATE_D")
+# a word handed on to the next clause (Error_See) under a run-time condition, and a write to a field a let holds fixed
+foreach(case IN ITEMS see pin)
+    add_test(NAME sailgen_refused_${case}
+             COMMAND snx-sailgen --generate "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/refused_${case}.roots"
+                     --backend "${PROJECT_SOURCE_DIR}/tools/sailgen/llvm.h"
+                     -o "${CMAKE_CURRENT_BINARY_DIR}/sailgen/refused_${case}.inc"
+                     "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/refused_${case}.sail")
+endforeach()
+set_tests_properties(sailgen_refused_see PROPERTIES PASS_REGULAR_EXPRESSION
+    "refused_see.sail:7: error: a throw of Error_See under a condition known only at run time")
+set_tests_properties(sailgen_refused_pin PROPERTIES PASS_REGULAR_EXPRESSION
+    "refused_pin.sail:14: error: PSTATE.EL written, which the let PSTATE_EL holds fixed")
 # and the A64 subsets of src/common/cpu/aarch64/sail/ generate whole, with the NX's fixups
 add_test(NAME sailgen_a64
          COMMAND snx-sailgen --generate "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/sail/a64.roots"
-                 --backend "${PROJECT_SOURCE_DIR}/tools/sailgen/llvm.h" -o "${CMAKE_CURRENT_BINARY_DIR}/sailgen/a64_sail.inc"
+                 --backend "${PROJECT_SOURCE_DIR}/tools/sailgen/llvm.h"
+                 --profile "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/decode/a64.profile"
+                 -o "${CMAKE_CURRENT_BINARY_DIR}/sailgen/a64_sail.inc"
                  "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/sail/a64.sail"
                  --overlay "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/sail/nx.sail")
 

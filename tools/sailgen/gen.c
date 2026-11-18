@@ -25,8 +25,9 @@ enum { BT_CONST, BT_STATIC, BT_DYN };
 
 typedef struct {
     unsigned char kind, bt, ntuple;
-    long long value;   /* CONST bool, int or enum member */
-    char c[512];       /* the C expression of the value */
+    long long value;    /* CONST bool, int or enum member */
+    unsigned char huge; /* a CONST integer past 62 bits (WFE's timeout, 1 << 64): bound, never computed with */
+    char c[512];        /* the C expression of the value */
     unsigned tuple[4]; /* K_TUPLE: the components, in the value pool */
     unsigned node;
 } Val;
@@ -61,7 +62,8 @@ typedef struct {
     unsigned clause; /* its definition */
     unsigned decode; /* the decode function it calls (a root) */
     SgU64 mask, value;
-    unsigned shadowed; /* the earlier clause that covers it, plus 1 */
+    unsigned shadowed; /* the earlier clause that covers it and hands no word on, plus 1 */
+    int sees;          /* it hands some words on to the next clause (a throw of Error_See) */
 } Clause;
 
 static struct {
@@ -81,8 +83,10 @@ static struct {
     int dynamic_branch; /* inside a branch of a DYN if: no state may change */
     char path[400];     /* the run-time condition (an i1's C expression) the code walked is under, "" for none */
     unsigned call_depth;
+    int sees; /* the decode function walked has thrown Error_See */
     unsigned roots[1024];
     Clause clauses[1024];
+    char* features;           /* --profile's features, " FEAT_A FEAT_B ", in capitals; NULL without one */
     char* backend_code;       /* the back end's text (--backend) with its comments and strings blanked */
     const char* backend_name; /* its file's name, for the errors */
 } g_gen;
@@ -281,8 +285,20 @@ static void throw_undefined(unsigned n) {
         emit("return 1;\n");
     else {
         emit("sg_undefined(g);\n");
-        emit("return;\n");
+        emit("return 1;\n");
     }
+}
+/* the decode function ends here, its word decoded: UNDEF (above), done (EndOfInstruction: a hint the guest's features
+   make a NOP), or handed on to the next clause that matches it (Error_See: sg_see checks that nothing was emitted yet).
+   Each is a return from the decode function, so none may be in a helper or under a run-time condition */
+static void end_decode(unsigned n, const char* what, int see) {
+    if (g_gen.dynamic_branch) sg_fail(n, "%s under a condition known only at run time", what);
+    if (g_gen.in_helper) sg_fail(n, "%s in a function of what the recompiler knows", what);
+    if (see) {
+        emit("return sg_see(g);\n");
+        g_gen.sees = 1;
+    } else
+        emit("return 1;\n");
 }
 
 static int top_bt(int a, int b) { return a > b ? a : b; }
@@ -303,6 +319,7 @@ static const char* cond_text(const char* c, char* out, size_t size) {
 static Val need_static_int(unsigned n, Val v, const char* what) {
     if (v.kind != K_INT && v.kind != K_ENUM && v.kind != K_BOOL)
         sg_fail(n, "%s must be an integer, found kind %d", what, v.kind);
+    if (v.huge) sg_fail(n, "%s is an integer over 62 bits", what);
     if (v.bt == BT_DYN) sg_fail(n, "%s must be known when the recompiler runs", what);
     return v;
 }
@@ -339,6 +356,7 @@ static unsigned through_let(unsigned n) {
 /* does a function reach state (a register, a feature, the pc), or call one that does? A call of an overload may run
    any of its functions */
 static int reaches_state(unsigned def, unsigned depth);
+static int backend_action(const char* name);
 static int node_reaches_state(unsigned n, unsigned depth) {
     if (!n) return 0;
     if (N(n).kind == N_ID) {
@@ -350,9 +368,10 @@ static int node_reaches_state(unsigned n, unsigned depth) {
         const char* s = name_of(n);
         unsigned d = sg_find(s, D_FUNCTION), o = d ? 0 : sg_find(s, D_OVERLOAD), m;
         if (!strcmp(s, "IsFeatureImplemented") || !strcmp(s, "AddWithCarry") || !strcmp(s, "ConditionHolds") ||
-            !strcmp(s, "BranchTo") || !strcmp(s, "BranchNotTaken"))
+            !strcmp(s, "BranchTo") || !strcmp(s, "BranchNotTaken") || !strcmp(s, "EndOfInstruction"))
             return 1;
         if (d && reaches_state(d, depth + 1)) return 1;
+        if (!d && !o && backend_action(s) >= 0) return 1;
         for (m = o ? g_parse.defs[o].params : 0; m; m = N(m).next)
             if ((d = sg_find(name_of(m), D_FUNCTION)) != 0 && reaches_state(d, depth + 1)) return 1;
     }
@@ -751,14 +770,18 @@ static int builtin(unsigned n, const char* name, Val* r) {
         need_args(n, 1);
         if (N(f).kind != N_ID || strncmp(name_of(f), "FEAT_", 5))
             sg_fail(n, "IsFeatureImplemented of other than a FEAT_");
-        /* the feature's bit from a64.profile (a64_decode.h, its names in capitals): one the profile lacks is a
-           compile error there */
+        /* the feature's bit from a64.profile (a64_decode.h, its names in capitals); one the profile names in no
+           feature line no guest has, so its ifs fold (TME, BRBE, BTI) */
         {
-            char upper[64];
+            char upper[64], word[68];
             size_t k;
             snprintf(upper, sizeof upper, "%s", name_of(f));
             for (k = 0; upper[k]; ++k) upper[k] = (char)toupper((unsigned char)upper[k]);
-            *r = val_c(K_BOOL, BT_STATIC, "sg_feature(g, SNX_A64_%s)", upper);
+            snprintf(word, sizeof word, " %s ", upper);
+            if (g_gen.features && !strstr(g_gen.features, word))
+                *r = val_const(K_BOOL, 0);
+            else
+                *r = val_c(K_BOOL, BT_STATIC, "sg_feature(g, SNX_A64_%s)", upper);
         }
         return 1;
     }
@@ -800,6 +823,12 @@ static int builtin(unsigned n, const char* name, Val* r) {
         *r = unit();
         return 1;
     }
+    if (!strcmp(name, "EndOfInstruction")) { /* the instruction ends here: a hint without its feature is a NOP */
+        need_args(n, 0);
+        end_decode(n, "EndOfInstruction()", 0);
+        *r = unit();
+        return 1;
+    }
     if (!strcmp(name, "Unreachable")) {
         need_args(n, 0);
         emit("sg_fail(\"Unreachable() reached at %s:%u\", 0, 0);\n", sg_str(N(n).file), N(n).line);
@@ -809,6 +838,26 @@ static int builtin(unsigned n, const char* name, Val* r) {
     return 0;
 }
 
+/* NAME(args), a function with no Sail definition (the machine's action: a barrier, an event) that the back end lowers
+   as sg_NAME: a statement, given the arguments when takes is 1 (DYN ones as the back end's values, the others as C
+   integers) and none when 0 (the back end's sg_NAME takes the context alone: they mean nothing to it) */
+static Val action_call(unsigned n, const char* name, int takes) {
+    unsigned count = arg_count(n), i;
+    char text[600];
+    int at;
+    if (g_gen.dynamic_branch) sg_fail(n, "%s, the back end's action, under a condition known only at run time", name);
+    if (g_gen.in_helper) sg_fail(n, "%s, the back end's action, in a function of what the recompiler knows", name);
+    at = snprintf(text, sizeof text, "sg_%s(g", name);
+    for (i = 0; takes && i < count; ++i) {
+        Val a = eval(arg_at(n, i), 0);
+        if (a.kind == K_UNIT || a.kind == K_TUPLE) sg_fail(n, "%s's argument %u is no value", name, i + 1);
+        at += snprintf(text + at, sizeof text - (size_t)at, ", %s", a.c);
+        if (at >= (int)sizeof text) sg_fail(n, "%s's arguments over %zu characters", name, sizeof text);
+    }
+    emit("%s);\n", text);
+    return unit();
+}
+
 static Val call(unsigned n) {
     const char* name = name_of(n);
     unsigned count = arg_count(n), def, i;
@@ -816,6 +865,10 @@ static Val call(unsigned n) {
     int all_static = 1, all_const = 1;
     if (builtin(n, name, &r)) return r;
     def = function_def(name, count);
+    if (!def && !sg_find(name, D_FUNCTION) && !sg_find(name, D_OVERLOAD)) {
+        int takes = backend_action(name);
+        if (takes >= 0) return action_call(n, name, takes);
+    }
     if (!def) sg_fail(n, "%s has no definition of %u arguments and is not one of sailgen's builtins", name, count);
     if (count > 16) sg_fail(n, "%s called with over 16 arguments", name);
     for (i = 0; i < count; ++i) {
@@ -918,6 +971,22 @@ static int backend_defines_function(const char* name) {
     }
     return 0;
 }
+/* the back end lowers name, a function with no Sail definition, as sg_NAME (action_call): -1 when it does not, 1 when
+   sg_NAME takes the call's arguments after the context, 0 when it takes the context alone */
+static int backend_action(const char* name) {
+    char fn[160];
+    const char* s = NULL;
+    if (!g_gen.backend_code) return -1;
+    snprintf(fn, sizeof fn, "sg_%s", name);
+    if (!backend_defines_function(fn)) return -1;
+    while ((s = backend_word(fn, s)) != NULL) {
+        const char* p = skip_blank(s + strlen(fn));
+        if (strncmp(line_start(s), "static", 6) || *p != '(') continue;
+        for (; *p && *p != ')' && *p != ','; ++p) {}
+        return *p == ',';
+    }
+    return -1;
+}
 /* the word that ends right before s, blanks skipped: where it starts, and its length in *n (0: none, at the start
    or after other than a name) */
 static const char* word_before(const char* s, size_t* n) {
@@ -1013,12 +1082,23 @@ static Val element_read(unsigned n, unsigned reg) {
     i = need_static_int(n, eval(N(n).b, 0), "a register's element number");
     return val_c(K_BITS, BT_DYN, "%s(g, %s)", reg_access(n, reg, "read"), i.c);
 }
+/* the top-level let REG_FIELD (an overlay's) that pins the field FIELD of the struct register REG to a constant, else 0 */
+static unsigned field_pin(unsigned reg, const char* field) {
+    char name[160];
+    snprintf(name, sizeof name, "%s_%s", reg_name(reg), field);
+    return sg_find(name, D_LET);
+}
 /* REG.FIELD, a field of a struct register */
 static Val field_read(unsigned n) {
-    unsigned index, reg = field_of(n, &index);
+    unsigned index, reg = field_of(n, &index), pin;
     const char* field;
     char fn[160];
     if (!reg) sg_fail(n, "the field %s of other than a register", name_of(n));
+    if ((pin = field_pin(reg, name_of(n))) != 0) { /* the machine holds it fixed: nx.sail's PSTATE_EL */
+        Val v = eval(g_parse.defs[pin].body, 0);
+        if (v.bt == BT_DYN) sg_fail(n, "the top-level let %s_%s is not a constant", reg_name(reg), name_of(n));
+        return v;
+    }
     snprintf(fn, sizeof fn, "%s", reg_access(n, reg, "read"));
     field = reg_field(n, reg, name_of(n));
     return val_c(K_BITS, BT_DYN, "%s(g, %s)", fn, field);
@@ -1049,6 +1129,9 @@ static void fields_write(unsigned t, Val v) {
     for (k = 0; k < count; ++k) {
         unsigned index = 0, r = field_of(leaves[k], &index);
         if (!r) sg_fail(leaves[k], "assigned other than a register's field");
+        if (field_pin(r, name_of(leaves[k])))
+            sg_fail(leaves[k], "%s.%s written, which the let %s_%s holds fixed", reg_name(r), name_of(leaves[k]),
+                    reg_name(r), name_of(leaves[k]));
         if (!k) {
             reg = r;
             first = index;
@@ -1105,9 +1188,9 @@ static Val ident(unsigned n) {
     }
     if (!strcmp(s, "_PC")) return val_c(K_BITS, BT_STATIC, "sg_s(g->pc, 64)");
     if ((d = register_def(n)) != 0) return register_read(n, d);
-    if ((d = sg_find(s, D_LET)) != 0) { /* a top-level constant: an overlay's fixup */
+    if ((d = sg_find(s, D_LET)) != 0) { /* a top-level constant (EL0, a bits literal, is STATIC): an overlay's fixup */
         Val v = eval(g_parse.defs[d].body, 0);
-        if (v.bt != BT_CONST) sg_fail(n, "the top-level let %s is not a constant", s);
+        if (v.bt == BT_DYN) sg_fail(n, "the top-level let %s is not a constant", s);
         return v;
     }
     if ((m = enum_member(s)) >= 0) {
@@ -1140,6 +1223,7 @@ static Val binop(unsigned n) {
     }
     b = eval(N(n).b, 0);
     bt = top_bt(a.bt, b.bt);
+    if (a.huge || b.huge) sg_fail(n, "%s of an integer over 62 bits", op);
     if (!strcmp(op, "==") || !strcmp(op, "!=")) {
         int ne = op[0] == '!';
         if (a.kind == K_BITS && b.kind == K_BITS) {
@@ -1210,6 +1294,11 @@ static Val binop(unsigned n) {
         if (op[0] == '^' && !(a.bt == BT_CONST && a.value == 2)) sg_fail(n, "a power of other than 2");
         if (bt == BT_CONST && b.value >= 0 && b.value < 62)
             return val_const(K_INT, op[0] == '^' ? 1ll << b.value : a.value * (1ll << b.value));
+        if (bt == BT_CONST && b.value >= 62) { /* past a long long: C that names it does not compile */
+            Val v = val_c(K_INT, BT_CONST, "sg_integer_over_62_bits");
+            v.huge = 1;
+            return v;
+        }
         if (op[0] == '^') return val_c(K_INT, BT_STATIC, "sg_pow2(%s)", b.c);
         return val_c(K_INT, BT_STATIC, "((%s) * sg_pow2(%s))", a.c, b.c);
     }
@@ -1380,16 +1469,20 @@ static void assign(unsigned target, Val v) {
     if (N(t).kind == N_ID) {
         const char* s = name_of(t);
         Binding* b = lookup(s);
-        if (!b && (reg = register_def(t)) != 0) { /* a register of bits, whole */
+        if (!b && (reg = register_def(t)) != 0) { /* a register of bits or a bool, whole */
             char fn[160];
-            if (reg_kind(reg) != K_BITS)
+            if (reg_kind(reg) != K_BITS && reg_kind(reg) != K_BOOL)
                 sg_fail(t,
                         "the register %s assigned whole: sailgen writes a vector one by element and a struct one by "
                         "field",
                         reg_name(reg));
             need_static_write(t, reg);
             snprintf(fn, sizeof fn, "%s", reg_access(t, reg, "write"));
-            v = raise(need_bits(t, v, "a register's value"), BT_DYN);
+            if (reg_kind(reg) == K_BOOL) {
+                if (v.kind != K_BOOL) sg_fail(t, "the bool register %s assigned other than a bool", reg_name(reg));
+                v = raise(v, BT_DYN);
+            } else
+                v = raise(need_bits(t, v, "a register's value"), BT_DYN);
             emit("%s(g, %s);\n", fn, v.c);
             return;
         }
@@ -1589,6 +1682,24 @@ static int pattern_test(unsigned p, Val s, char* out, size_t size) {
         snprintf(out, size, "(%s) == %lldll", s.c, (long long)N(p).value);
         return 1;
     }
+    if (N(p).kind == N_VEC) { /* [bitzero, bitone, _, ...]: the bits it fixes, the first the top */
+        unsigned e, count = 0, i = 0;
+        SgU64 mask = 0, value = 0;
+        for (e = N(p).a; e; e = N(e).next) ++count;
+        if (count > 64) sg_fail(p, "a bit pattern of over 64 bits");
+        for (e = N(p).a; e; e = N(e).next, ++i) {
+            SgU64 bit = 1ull << (count - 1 - i);
+            if (N(e).kind == N_WILD) continue;
+            if (N(e).kind != N_ID || (strcmp(name_of(e), "bitone") && strcmp(name_of(e), "bitzero")))
+                sg_fail(e, "a bit pattern's bit that is not bitzero, bitone or _");
+            mask |= bit;
+            if (!strcmp(name_of(e), "bitone")) value |= bit;
+        }
+        if (!mask) return 0;
+        snprintf(out, size, "((%s).v & 0x%llxull) == 0x%llxull", s.c, (unsigned long long)mask,
+                 (unsigned long long)value);
+        return 1;
+    }
     if (N(p).kind == N_ID) {
         long long m = enum_member(name_of(p));
         if (m < 0) sg_fail(p, "a pattern binding a name (%s): sailgen reads literals, enum members and _", name_of(p));
@@ -1631,7 +1742,7 @@ static Val match_expr(unsigned n, int tail) {
             Val v = eval(N(c).b, tail);
             emit("%s = %s;\n", t, raise(v, r.bt).c);
         } else
-            stmt(N(c).b);
+            (void)eval(N(c).b, tail); /* a case at the function's end may return() */
         --g_gen.indent;
         if (!conditional) {
             total = 1;
@@ -1749,9 +1860,14 @@ static Val eval(unsigned n, int tail) {
             if (!tail) sg_fail(n, "a return before the end of an inlined function");
             return eval(N(n).a, 1);
         case N_THROW:
-            /* CONSTRAINED UNPREDICTABLE: the decoder routes no such word here; were one, UNDEF is one of its choices */
+            /* Error_See: the word is another clause's, the next of those it matches (the hint space's PAuth hints).
+               CONSTRAINED UNPREDICTABLE: the decoder routes no such word here; were one, UNDEF is one of its choices */
+            if (is_call(N(n).a, "Error_See")) {
+                end_decode(n, "a throw of Error_See", 1);
+                return unit();
+            }
             if (!is_call(N(n).a, "Error_Undefined") && !is_call(N(n).a, "Error_ConstrainedUnpredictable"))
-                sg_fail(n, "a throw of other than Error_Undefined() or Error_ConstrainedUnpredictable()");
+                sg_fail(n, "a throw of other than Error_Undefined(), Error_See() or Error_ConstrainedUnpredictable()");
             throw_undefined(n);
             return unit();
         case N_ASSERT: return unit(); /* what the decode guarantees: nothing to generate */
@@ -1791,7 +1907,7 @@ static void clause_bits(unsigned def, SgU64* mask, SgU64* value) {
     if (i != 32) sg_fail(p, "a decode pattern of %u bits", i);
 }
 
-static void generate_decode(const Clause* c) {
+static void generate_decode(Clause* c) {
     unsigned body = g_parse.defs[c->clause].body;
     const char* decode_name = sg_str(g_parse.defs[c->decode].name);
     int pass;
@@ -1806,6 +1922,7 @@ static void generate_decode(const Clause* c) {
         g_gen.frame = 0;
         g_gen.temp = 0;
         g_gen.call_depth = 0;
+        g_gen.sees = 0;
         g_gen.dynamic_branch = 0;
         g_gen.path[0] = 0;
         g_gen.in_helper = 0;
@@ -1818,9 +1935,10 @@ static void generate_decode(const Clause* c) {
             Buffer* out = &g_gen.body;
             g_gen.out = out;
             g_gen.indent = 0;
-            emit("/* %s */\nstatic void sg_%s(SgCtx* g) {\n", decode_name, decode_name);
+            emit("/* %s */\nstatic int sg_%s(SgCtx* g) {\n", decode_name, decode_name);
             buf_add(out, scratch.text ? scratch.text : "", scratch.length);
-            emit("}\n\n");
+            emit("    return 1;\n}\n\n");
+            c->sees = g_gen.sees;
             free(scratch.text);
             return;
         }
@@ -1867,7 +1985,36 @@ static unsigned read_roots(const char* path, unsigned* roots, unsigned cap) {
     return count;
 }
 
-int sg_generate(const char* roots_path, const char* backend_path, const char* out_path) {
+/* the FEAT_ words of the profile's feature lines (a64.profile: "feature v8.0 FEAT_CRC32 ..."), " A B ", in capitals */
+static char* profile_features(const char* path) {
+    size_t size, i, at = 0;
+    char* text = sg_read(path, &size);
+    char* out = (char*)malloc(size + 2);
+    if (!out) sg_fail(0, "out of memory for %s", path);
+    out[at++] = ' ';
+    for (i = 0; i < size;) {
+        size_t e = i;
+        while (e < size && text[e] != '\n') ++e;
+        if (e - i > 8 && !strncmp(text + i, "feature", 7) && isspace((unsigned char)text[i + 7]))
+            for (i += 7; i < e;) {
+                size_t w;
+                while (i < e && isspace((unsigned char)text[i])) ++i;
+                for (w = 0; i + w < e && !isspace((unsigned char)text[i + w]) && text[i + w] != '#'; ++w) {}
+                if (w > 5 && !strncmp(text + i, "FEAT_", 5)) {
+                    for (size_t k = 0; k < w; ++k) out[at++] = (char)toupper((unsigned char)text[i + k]);
+                    out[at++] = ' ';
+                }
+                if (i + w < e && text[i + w] == '#') break;
+                i += w;
+            }
+        i = e + 1;
+    }
+    out[at] = 0;
+    free(text);
+    return out;
+}
+
+int sg_generate(const char* roots_path, const char* backend_path, const char* profile_path, const char* out_path) {
     unsigned* roots = g_gen.roots;
     Clause* clauses = g_gen.clauses;
     unsigned root_count = read_roots(roots_path, roots, 1024), clause_count = 0, i, k, d;
@@ -1875,6 +2022,7 @@ int sg_generate(const char* roots_path, const char* backend_path, const char* ou
     char* backend = sg_read(backend_path, &backend_size);
     const char* base = strrchr(backend_path, '/');
     g_gen.backend_code = backend_code(backend, backend_size);
+    g_gen.features = profile_path ? profile_features(profile_path) : NULL;
     g_gen.backend_name = base ? base + 1 : backend_path;
     for (d = 1; d < g_parse.def_count; ++d) { /* each root's clause: the one that calls it */
         const SgDef* def = &g_parse.defs[d];
@@ -1892,15 +2040,16 @@ int sg_generate(const char* roots_path, const char* backend_path, const char* ou
         for (k = 0; k < clause_count && strcmp(sg_str(g_parse.defs[clauses[k].decode].name), sg_str(roots[i])); ++k) {}
         if (k == clause_count) sg_fail(0, "%s: no decode clause calls the root %s", roots_path, sg_str(roots[i]));
     }
-    /* the clauses are tried in their order, as Sail's scattered decode tries them: one an earlier clause covers
-       whole is never reached (REV16 and REV32 go to REV's clause, which runs the same execute) */
-    for (k = 0; k < clause_count; ++k)
+    /* the clauses are tried in their order, as Sail's scattered decode tries them, each after the one that handed the
+       word on (Error_See): one an earlier clause covers whole and hands nothing on is never reached (REV16 and REV32
+       go to REV's clause, which runs the same execute) */
+    for (k = 0; k < clause_count; ++k) {
         for (i = 0; i < k && !clauses[k].shadowed; ++i)
-            if ((clauses[i].mask & clauses[k].mask) == clauses[i].mask &&
+            if (!clauses[i].shadowed && !clauses[i].sees && (clauses[i].mask & clauses[k].mask) == clauses[i].mask &&
                 (clauses[k].value & clauses[i].mask) == clauses[i].value)
                 clauses[k].shadowed = i + 1;
-    for (i = 0; i < clause_count; ++i)
-        if (!clauses[i].shadowed) generate_decode(&clauses[i]);
+        if (!clauses[k].shadowed) generate_decode(&clauses[k]);
+    }
     sg_out("/* Generated by tools/sailgen (--generate %s) from", roots_path);
     for (i = 0; i < g_parse.file_count; ++i) sg_out(" %s", g_parse.files[i].path);
     sg_out(": do not edit */\n\n");
@@ -1908,23 +2057,27 @@ int sg_generate(const char* roots_path, const char* backend_path, const char* ou
     free(backend);
     free(g_gen.backend_code);
     g_gen.backend_code = NULL;
+    free(g_gen.features);
+    g_gen.features = NULL;
     sg_out("/* ---- helpers: functions of what the recompiler knows ---- */\n\n");
     if (g_gen.helpers.length) sg_out("%s", g_gen.helpers.text);
     sg_out("/* ---- the decode functions ---- */\n\n");
     if (g_gen.body.length) sg_out("%s", g_gen.body.text);
     sg_out(
-        "/* the word's instruction emitted at pc, when it is one of these: 1, else 0. A branch's condition (an i1) and target\n"
-        "   (an i64) in *taken and *target when they are not NULL (sg_branch_to) */\n");
+        "/* the word's instruction emitted at pc, when it is one of these: 1, else 0. Each decode function answers 1 when\n"
+        "   the word is its (emitted, or UNDEF), 0 when it hands it on to the next clause that matches it. A branch's\n"
+        "   condition (an i1) and target (an i64) in *taken and *target when they are not NULL (sg_branch_to) */\n");
     sg_out("static int sg_emit(SnxIr* ir, SnxU32 word, SnxU64 pc, LLVMValueRef* taken, LLVMValueRef* target) {\n");
     sg_out("    SgCtx context, *g = &context;\n");
-    sg_out("    memset(g, 0, sizeof *g);\n    g->ir = ir;\n    g->word = word;\n    g->pc = pc;\n   ");
+    sg_out("    memset(g, 0, sizeof *g);\n    g->ir = ir;\n    g->word = word;\n    g->pc = pc;\n");
+    sg_out("    g->start = LLVMGetLastInstruction(LLVMGetInsertBlock(ir->b));\n   ");
     for (i = 0; i < clause_count; ++i) {
         if (clauses[i].shadowed) {
             sg_out(" /* %s: its words are %s's */\n   ", sg_str(g_parse.defs[clauses[i].decode].name),
                    sg_str(g_parse.defs[clauses[clauses[i].shadowed - 1].decode].name));
             continue;
         }
-        sg_out(" if ((word & 0x%08llxu) == 0x%08llxu)\n        sg_%s(g);\n    else", clauses[i].mask, clauses[i].value,
+        sg_out(" if ((word & 0x%08llxu) == 0x%08llxu && sg_%s(g)) {\n    } else", clauses[i].mask, clauses[i].value,
                sg_str(g_parse.defs[clauses[i].decode].name));
     }
     sg_out("\n        return 0;\n    sg_flags_flush(g);\n    sg_branch_result(g, taken, target);\n    return 1;\n}\n");
