@@ -13,11 +13,12 @@
      translated to these three.
    - The window: the surface is the vi layer's, and the swapchain's images are the host's own, which a present blits
      into the renderer's window (renderer.h present_image). An acquire waits for the game's pace (present_pace), as vi's
-     dequeue does. */
+     dequeue does, and for the display to let the image go, as the console's buffer queue does. */
 #include "nx/gpu/gvk/gvk.h"
 #include "nx/gpu/renderer.h"
 #include "nx/gpu/vk/vk.h"
 #include "nx/hle/kernel/kernel.h"
+#include "nx/hle/services/vi.h"
 #include "nx/runtime/main.h"
 #include "nx/runtime/options.h"
 #include "nx/runtime/platform/log.h"
@@ -82,6 +83,7 @@ typedef struct {
     u32 w, h;
     VkImage img[GVK_SC_IMAGES];
     VkDeviceMemory mem[GVK_SC_IMAGES];
+    u64 shown[GVK_SC_IMAGES]; /* the display's number for each image's last present (vk_display_frames), 0 none */
 } GvkSwapchain;
 
 /* a fragment module of the game, and its twin with the second color where dual-source blending reads it
@@ -2067,9 +2069,14 @@ static void gvk_GetSwapchainImagesKHR(CPU* RESTRICT c, u64 entry) {
     for (u32 i = 0; i < s->n; i++) img[i] = U(s->img[i]);
     ret_vk(c, put_list(c->x[2], c->x[3], img, s->n, sizeof *img));
 }
-/* the next image in turn that the game doesn't hold, once the game's pace lets it have it (vi's dequeue waits the
-   same): the semaphore and the fence signaled after the work before on the queue, the renderer's copy of the image's
-   last present among it. With every image held, none comes: VK_NOT_READY, or VK_TIMEOUT for a wait */
+/* The next image in turn that the game doesn't hold, once the game's pace lets it have it (vi's dequeue waits the
+   same), and once the display has let it go: the console's driver dequeues it from vi's buffer queue, which hands an
+   image back only when the present after it is displayed. The renderer copies the image as it presents it, so here
+   the display holds none, and the wait is for that present's display (two refreshes at most). Without it one game's
+   thread that draws and presents (it presents, then acquires) went straight on, and its emulator's other threads ran
+   on another schedule: the left channel of its music went silent for good in a third of the runs. Then the
+   semaphore and the fence, signaled after the work before on the queue, the renderer's copy of the image's last
+   present among it. With every image held, none comes: VK_NOT_READY, or VK_TIMEOUT for a wait */
 static void gvk_AcquireNextImageKHR(CPU* RESTRICT c, u64 entry) {
     GvkSwapchain* s = swapchain_of(c->x[1]);
     if (!s) {
@@ -2087,6 +2094,8 @@ static void gvk_AcquireNextImageKHR(CPU* RESTRICT c, u64 entry) {
     }
     kthread_host_wait_begin();
     present_pace(1, -1);
+    if (s->shown[idx] && vk_display_frames() > s->shown[idx])
+        vk_display_wait_frame(s->shown[idx] + 1, plat_ns() + 2000000000ull / vi_refresh_hz());
     kthread_host_wait_end();
     s->acquired |= 1u << idx;
     s->next = (idx + 1) % s->n;
@@ -2132,6 +2141,7 @@ static void gvk_QueuePresentKHR(CPU* RESTRICT c, u64 entry) {
         if (one == VK_SUCCESS) {
             if (!g_gvk_api.presents++) LOG("gvk: the game's first present\n");
             present_image(U(s->img[idx]), (u32)s->fmt, s->w, s->h);
+            s->shown[idx] = vk_display_frames();
             s->acquired &= ~(1u << idx);
         }
         if (results && mem_user_mapped(results + 4ull * i, 4)) gw32(results + 4ull * i, (u32)one);

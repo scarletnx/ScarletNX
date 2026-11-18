@@ -3330,6 +3330,11 @@ void vk_display_presented(VkSwapchainKHR sc, u64 id, int game, u64 released_ns, 
 void vk_display_made(u64 id, VkResult r);
 void vk_display_fifo(int fifo);
 int vk_display_wait(u64 deadline_ns, u64* refresh_ns);
+/* the game frames presented so far: the last one's number, which vk_display_wait_frame takes (any thread) */
+u64 vk_display_frames(void);
+/* until game frame number frame is displayed or let go: 1, 0 at deadline_ns, -1 at once where the display doesn't
+   pace the game (no FIFO, frame_pacing off), as vk_display_wait */
+int vk_display_wait_frame(u64 frame, u64 deadline_ns);
 
 /* compute.c */
 void vk_dispatch(const DispatchState* d);
