@@ -79,7 +79,7 @@ typedef struct {
 
 static inline SnxU64 sg_ones(unsigned n) { return n >= 64 ? ~0ull : (1ull << n) - 1; }
 
-static inline void sg_fail(const char* what, long long a, long long b) {
+[[noreturn]] static inline void sg_fail(const char* what, long long a, long long b) {
     fprintf(stderr, "sailgen back end: %s (%lld, %lld)\n", what, a, b);
     abort();
 }
