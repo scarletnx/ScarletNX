@@ -12,7 +12,8 @@
    guest's pointers, and a shader refused with its line in the log; a buffer of immutable storage mapped persistently
    at an address of guest memory, written through it and read back, a vertex array's attribute reading the array
    buffer bound; a texture given texels from a pointer passed on the stack, kept in guest memory, and a parameter of
-   it read back, and a framebuffer complete once that texture is attached; the point size and polygon mode set; a GL and an EGL function without a handler stopping the game, the message naming the function and
+   it read back, and a framebuffer complete once that texture is attached; the point size and polygon mode set; a
+   fence signaled at once; a GL and an EGL function without a handler stopping the game, the message naming the function and
    gl_layer's value */
 #include "common/gpu/gl/gl_state.h"
 #include "common/gpu/gl/gl_texture.h"
@@ -110,7 +111,9 @@ static const char* const exports[] = {"eglGetDisplay",
                                       "_glFramebufferTexture2D",
                                       "_glCheckFramebufferStatus",
                                       "_glPointSize",
-                                      "_glPolygonMode"};
+                                      "_glPolygonMode",
+                                      "_glFenceSync",
+                                      "_glClientWaitSync"};
 #define EXPORTS (sizeof exports / sizeof *exports)
 static u64 export_name[EXPORTS];
 static u64 at(const char* name) {
@@ -472,6 +475,11 @@ int main(void) {
         call("_glGetIntegerv", 0x0b40, out, 0, 0, 0);
         assert(gr32(out) == 0x1b01 && gr32(out + 4) == 0x1b01);
         call("_glPolygonMode", 0x0408, 0x1b02, 0, 0, 0);
+    }
+    /* a fence: signaled at once, the layer records no GPU work yet */
+    {
+        u64 sync = call("_glFenceSync", 0x9117, 0, 0, 0, 0);                         /* GL_SYNC_GPU_COMMANDS_COMPLETE */
+        assert(sync && call("_glClientWaitSync", sync, 1, 1000000, 0, 0) == 0x911a); /* GL_ALREADY_SIGNALED */
     }
 
     /* a function without a handler stops the game, naming it and gl_layer's value; the driver never ran */
