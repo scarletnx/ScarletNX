@@ -21,7 +21,7 @@
    next (reference_uncached): a cache that kept a stale one shows in the generated side only. Two IRs that differ only
    in the order of their instructions and their names count as the same; a step's that differs otherwise may not have
    more instructions than the hand-written one, nor be another IR for an op whose effect running can't see (strict_ops)
-   or a load or store (unless ldst_other names its op, with why), so a dropped fence, ordering or atomicity shows, and
+   or a load or store (unless ldst_other names its form, with why), so a dropped fence, ordering or atomicity shows, and
    is listed. --report writes each difference's two IR texts; --time ROUNDS only times the two emitters
    (time_emitters); --part K/N compares and runs only every Nth word from the Kth, and the sequences in part 1, so N
    ctest runs share the words */
@@ -151,23 +151,30 @@ static int is_ldst(u32 word) {
     return 0;
 }
 
-/* the loads and stores whose generated IR may be another than the hand-written one (not longer), and why: any other
-   must give the same instructions, so an access that lost its ordering, its width or its atomicity shows */
+/* the loads and stores whose generated IR may be another than the hand-written one (not longer), and why, for the words
+   whose bits under mask are value (and with one_register, whose Rt and Rt2 are one): any other must give the same
+   instructions, so an access that lost its ordering, its width or its atomicity shows */
 static const struct {
     const char* op;
+    u32 mask, value;
+    int one_register;
     const char* why;
 } ldst_other[] = {
-    {"STP", "a pair of words of one register (Rt == Rt2): the value stored is its low word times 0x100000001, one "
-            "instruction fewer"},
-    {"LDXP", "a pair of words is one 8-byte load-exclusive (ldx), the hand-written one ldxp of words"},
-    {"STXP", "a pair of words is one 8-byte store-exclusive (stx), which an 8-byte ldx arms, the hand-written one stxp "
-             "of words, which ldxp of words arms"},
-    {NULL, NULL},
+    {"STP", 1u << 31, 0, 1,
+     "a pair of words of one register (Rt == Rt2): the value stored is its low word times 0x100000001, one instruction "
+     "fewer"},
+    {"LDXP", 1u << 30, 0, 0, "a pair of words is one 8-byte load-exclusive (ldx), the hand-written one ldxp of words"},
+    {"STXP", 1u << 30, 0, 0,
+     "a pair of words is one 8-byte store-exclusive (stx), which an 8-byte ldx arms, the hand-written one stxp of words, "
+     "which ldxp of words arms"},
+    {NULL, 0, 0, 0, NULL},
 };
 static const char* ldst_other_why(u32 word) {
     const char* name = op_name(word);
     for (size_t i = 0; name && ldst_other[i].op; ++i)
-        if (!strcmp(name, ldst_other[i].op)) return ldst_other[i].why;
+        if (!strcmp(name, ldst_other[i].op) && (word & ldst_other[i].mask) == ldst_other[i].value &&
+            (!ldst_other[i].one_register || (word & 0x1fu) == (word >> 10 & 0x1fu)))
+            return ldst_other[i].why;
     return NULL;
 }
 
