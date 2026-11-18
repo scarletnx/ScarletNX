@@ -437,8 +437,9 @@ static void test_failed_initialization(const char* scratch) {
     CHECK(fs_tree_why(&invalid, FS_TREE_INVALID) == invalid.why);
     /* skipped, the file's names are not read: each by its name, or both by their ending in any case (the 3DS mount's
        "*.dll", a package's DLLs linked into a game's folder). An ending that one name alone has leaves the other */
-    static const char* const by_name[] = {"alias.bin", "original.bin", NULL}, *const by_ending[] = {"*.BIN", NULL},
-                             *const one[] = {"*riginal.bin", NULL}, *const longer[] = {"*xoriginal.bin", NULL};
+    static const char *const by_name[] = {"alias.bin", "original.bin", NULL}, *const by_ending[] = {"*.BIN", NULL},
+                             *const one[] = {"*riginal.bin", NULL}, *const longer[] = {"*xoriginal.bin", NULL},
+                             *const star[] = {"*.bin", "*", NULL};
     const char* const* const skips[] = {by_name, by_ending};
     CHECK(snprintf(path, sizeof path, "%s/hardlinks", scratch) < (int)sizeof path);
     for (size_t i = 0; i < 2; i++) {
@@ -456,6 +457,11 @@ static void test_failed_initialization(const char* scratch) {
     scans_allowed = 1;
     CHECK(fs_tree_init_skipping(&invalid, path, one) == FS_TREE_INVALID && strstr(invalid.refused, "/alias.bin"));
     CHECK(fs_tree_init_skipping(&invalid, path, longer) == FS_TREE_INVALID);
+    /* a '*' alone would skip every entry: refused, named, before anything is read */
+    scans_allowed = 0;
+    CHECK(fs_tree_init_skipping(&invalid, path, star) == FS_TREE_INVALID && invalid.root == NULL &&
+          strstr(invalid.why, "skipping '*': a '*' with nothing after it leaves out every entry"));
+    scans_allowed = 1;
     scans_allowed = 0;
     CHECK(snprintf(path, sizeof path, "%s/no-such-directory", scratch) < (int)sizeof path);
     scans_allowed = 1;

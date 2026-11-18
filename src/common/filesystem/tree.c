@@ -1193,6 +1193,12 @@ FsTreeResult fs_tree_init_skipping(FsTree* tree, const char* directory, const ch
     if (!tree || !directory || !*directory) return FS_TREE_INVALID;
     *tree = (FsTree){0};
     pm_init(&tree->lock);
+    /* a '*' with nothing after it is an ending every name has: the whole directory would be left out */
+    for (size_t i = 0; skipped && skipped[i]; i++)
+        if (skipped[i][0] == '*' && !skipped[i][1])
+            return refuse(tree, FS_TREE_INVALID, directory, NULL,
+                          "can't be indexed skipping '%s': a '*' with nothing after it leaves out every entry",
+                          skipped[i]);
     char absolute[FS_TREE_PATH_MAX];
     FsTreeResult rc = host_directory(tree, directory, absolute);
     if (rc) return rc;
