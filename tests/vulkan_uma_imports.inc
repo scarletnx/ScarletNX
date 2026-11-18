@@ -770,6 +770,108 @@ static int check_uma_dispatch(void) {
     return 0;
 }
 
+/* With unified memory, each dispatch records on the graphics queue (compute.c's gfx), so a dispatch's write in place
+   is in stream order with the draws. The compute queue has its own submissions, and only a semaphore puts a draw after
+   them: a pipeline barrier does not. An aliasing draw's atlas (check_uma_atlas_pending's) copies the page after a
+   dispatch's store in place, recorded and not run yet, with no such semaphore. The atlas must have the store, and the
+   compute queue must submit nothing. The program is check_uma_dispatch's, at an address of its own */
+#define UMA_DA  (HEAP_BASE + 0x5200000)
+#define UMA_GDA 0x4fa000000ull
+static int check_uma_dispatch_atlas(void) {
+    const u64 code = 0x4e1000000ull + 0x800, code_cpu = HEAP_BASE + 0x780000;
+    const u64 cbuf = UMA_GDA + 0x1000, stored = UMA_GDA + 0x100;
+    const u64 program[] = {
+        0x001f8000fc0007e0ull,  0x4c98078004470000ull, /* MOV R0, c[0][0x110]: the buffer's address, NVN's descriptor */
+        0x4c98078004570001ull,                         /* MOV R1, c[0][0x114] */
+        storage_mov(2, 0x5eed),                        /* MOV32I R2, 0x5eed */
+        0x001f8000fc0007e0ull,  0xeedc200000070002ull, /* STG.E [R0], R2 */
+        0xe30000000007000full};
+    const u32 descriptor[3] = {(u32)stored, (u32)(stored >> 32), 16};
+    const u8 store[4] = {0xed, 0x5e, 0, 0};
+    u32 qmd[64] = {0};
+    DispatchState d;
+    VkBuffer rb;
+    if (!vk_uma()) {
+        printf("skip: guest memory is copied on this device (vk_memory)\n");
+        return 0;
+    }
+    GpuChannel* channel = calloc(1, sizeof *channel);
+    CHECK(channel);
+    const int was = g_settings.guest_buffers_copied;
+    g_settings.guest_buffers_copied = 2; /* the atlas: in place is check_uma_alias_in_place's */
+    CHECK(mem_map(UMA_DA, 0x200000, MS_NORMAL, PERM_RW) == 0);
+    gmmu_map(UMA_GDA, UMA_DA, 0x200000);
+    gmmu_map(0x4e1000000ull, code_cpu, 0x10000);
+    memset(GP(UMA_DA), 0x31, 0x1000);
+    memset(GP(UMA_DA) + 0x1000, 0, 0x1000);
+    memcpy(GP(UMA_DA) + 0x1110, descriptor, sizeof descriptor);
+    CHECK(invalidate_write_code(code, program, sizeof program / sizeof *program));
+    qmd[QMD_GRID_DIM_X] = 1;
+    qmd[QMD_GRID_DIM_YZ] = 1 | 1u << 16;
+    qmd[QMD_BLOCK_DIM_X] = 1u << 16;
+    qmd[QMD_BLOCK_DIM_YZ] = 1 | 1u << 16;
+    qmd[QMD_CONST_BUFFER_ENABLE] = 1u;
+    qmd[QMD_CONST_BUFFER_CONFIG] = (u32)cbuf;
+    qmd[QMD_CONST_BUFFER_CONFIG + 1] = (u32)(cbuf >> 32) | 0x200u << 15;
+    const u64 dispatches = g_vk_dispatches, batches = vk_compute_submitted();
+    vk_lock();
+    u8* result = vk_readback_buffer(0x1000, &rb);
+    CHECK(result);
+    mx_dispatch_state(qmd, channel->rcomp, code, &d);
+    vk_dispatch(&d);
+    const int ran = g_vk_dispatches == dispatches + 1;
+    const int inplace = !vk_compute_pending(stored, 4) && vk_uma_imports(UMA_DA, 0x200000) == 1;
+    const int pending = vk_uma_pending(stored, 4);
+    VkDrawStorage draw = {0};
+    draw.n[ST_VS] = 1;
+    draw.b[ST_VS][0] = (VkDrawGbuf){.addr = UMA_GDA + 0x100, .size = 256};
+    draw.n[ST_FS] = 1;
+    draw.b[ST_FS][0] = (VkDrawGbuf){.addr = UMA_GDA + 0x800, .size = 256, .writable = 1};
+    CHECK(vk_buf_draw_has_alias(&draw) == 1);
+    CHECK(vk_buf_draw_prepare(&draw));
+    const VkDrawGbuf* in = &draw.b[ST_VS][0];
+    const VkDrawGbuf* out = &draw.b[ST_FS][0];
+    CHECK(in->aliased && out->aliased && in->buf == out->buf && in->off == out->off);
+    /* the atlas's one page, as the draw finds it; then the draw's write into it */
+    VkMemoryBarrier2 b = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+                          .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                          .srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT,
+                          .dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+                          .dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT};
+    VkDependencyInfo dep = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &b};
+    rec_CmdPipelineBarrier2(vk_cmd(), &dep);
+    VkBufferCopy page = {in->off, 0, 0x1000};
+    rec_CmdCopyBuffer(vk_cmd(), in->buf, rb, 1, &page);
+    CHECK(!owned_test_fill(out->buf, out->off + 0x800, 256, 0x33));
+    vk_buf_writable_commit();
+    vk_finish();
+    vk_readback_ready();
+    u32 stale = 0;
+    for (u32 i = 0; i < 0x1000; i++)
+        if (result[i] != (i >= 0x100 && i < 0x104 ? store[i - 0x100] : 0x31)) stale++;
+    const u8 first = result[0x100];
+    vk_unlock();
+    const int compute = vk_compute_submitted() != batches;
+    u32 wrong = 0;
+    for (u32 i = 0; i < 0x1000; i++)
+        if (GP(UMA_DA)[i] != (i >= 0x100 && i < 0x104 ? store[i - 0x100] : i >= 0x800 && i < 0x900 ? 0x33 : 0x31))
+            wrong++;
+    free(channel);
+    CHECK(mem_unmap(UMA_DA, 0x200000) == 0);
+    g_renderer->mem_may_have_changed();
+    g_settings.guest_buffers_copied = was;
+    if (!ran || !inplace || !pending || compute || stale || wrong)
+        fprintf(stderr,
+                "dispatch and aliased draw: ran %d, the store in place %d and pending %d, a compute queue batch %d; the "
+                "atlas had %u bytes from before the store (atlas[0x100] %02x), guest memory %u wrong bytes after the "
+                "landing\n",
+                ran, inplace, pending, compute, stale, first, wrong);
+    CHECK(ran && inplace && pending && !compute && !stale && !wrong);
+    printf("in place: a dispatch's store in place goes before an aliasing draw's atlas on the graphics queue, and the "
+           "compute queue submits nothing\n");
+    return 0;
+}
+
 /* A dispatch with nothing staged for the host stays in the submission being recorded, and the end of the game's GPU
    submission (stream_end) submits it. A CPU read of its store while it is still unsubmitted waits for all that was
    recorded (a finish), and the program's dispatches go to the GPU at once from then on. The program stores 0x5eef
