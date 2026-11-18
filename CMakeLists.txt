@@ -58,6 +58,10 @@ set(CMAKE_C_EXTENSIONS ON)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS ON)
+# No C++ here or in a package uses modules. A package whose own policies scan for them (SDL3's Android hidapi) would
+# otherwise build `import std` where the host's libstdc++ ships the std module, and on Android from the host's
+# headers: the NDK's scan then stops on stdbit.h
+set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 # The strict ISO C (RFC #142: the driver, swipc, the build info and their tests) builds as C23 with -pedantic-errors
 # and without extensions (C_EXTENSIONS OFF on those targets)
 
