@@ -75,6 +75,7 @@ typedef struct {
     int has_copy_indirect;
     int has_inplace_loads; /* block linear loads read GPU results by device address (vk_bl_move_src) */
     int has_descriptor_heaps;
+    int cb_address; /* the vk_cb_address setting: with heaps, constant buffers by address (vk_cb_addr_mask) */
     int has_descriptor_heap_support; /* enabled device feature, retained during a draw's buffer fallback */
     VkPhysicalDeviceDescriptorBufferPropertiesEXT descriptor_props;
     VkPhysicalDeviceDescriptorHeapPropertiesEXT descriptor_heap_props;
@@ -857,6 +858,21 @@ void vk_pool_sizes(VkDescriptorPoolSize* sz, u32 sets, u32 array_sets);
 extern u32 g_vk_buffer_image_slots; /* storage texel buffer bindings in a set, from SNX_VKB_IMGBUF */
 VkDescriptorType
 vk_cbuf_type(u32 slot); /* the descriptor type of a constant buffer slot (g_spirv_translate.uniform_cbufs) */
+/* The constant buffer slots of a stage that descriptor heaps map by address (VK_DESCRIPTOR_MAPPING_SOURCE_INDIRECT_
+   ADDRESS_EXT), with no descriptor: uniform buffers the shader reads only at constant offsets (cbuf_max under 64 KiB),
+   whose binding then covers every byte it reads (render.c's stage_set_). An address has no range: a read at an offset
+   from a register, which the translator doesn't bound, keeps the descriptor and its robust range. The pipeline's
+   mappings (PipeKey.cb_addr) and the draw's table take the mask from the same ShaderInfo */
+static inline u32 vk_cb_addr_mask(const ShaderInfo* si) {
+    u32 m = 0;
+    if (!g_vk.has_descriptor_heaps || !g_vk.cb_address) return 0;
+    for (u32 b = si->cbuf_mask & 0x3FFFFu; b; b &= b - 1) {
+        u32 i = snx_ctz32(b);
+        if (si->cbuf_max[i] && si->cbuf_max[i] < 0x10000 && vk_cbuf_type(i) == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER)
+            m |= 1u << i;
+    }
+    return m;
+}
 /* A buffer image: the texels a buffer header describes, bound as a storage texel buffer over their copy. Raw loads
    and atomics view it as R32_UINT, as the console reads it for them whatever its format. Formatted loads and stores
    see the format itself, of the number type the program was keyed on (kind 0 float, 2 unsigned, 3 signed); unkeyed,
@@ -2837,6 +2853,7 @@ typedef struct {
     u32 logic_op;        /* 0, or the VkLogicOp the color targets take in place of blending, plus 1 */
     u32 arrays;          /* the sets with texture arrays: its layout, vk_playout(arrays) */
     u32 heaps;           /* graphics descriptor heap mappings instead of descriptor-set layouts */
+    u32 cb_addr[5];      /* with heaps, by set: the constant buffer slots mapped by address (vk_cb_addr_mask) */
     u32 samples;         /* the targets' VkSampleCountFlagBits (0 taken as 1) */
     VkCoverage coverage; /* color-only target-independent rasterization, all zero for ordinary multisampling */
     VkSampleLocations sample_locations;

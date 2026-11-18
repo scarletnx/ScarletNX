@@ -92,7 +92,7 @@ static int bench_descriptor_pattern(u32 sets, u32 count, u32 images, u32 indexed
             for (u32 j = 0; j < count; j++)
                 info[j].offset = offset + (unique ? (u64)i * count + j : (i + j) % count) * align;
             VkDescriptorSet set = (g_vk.has_descriptor_buffers || g_vk.has_descriptor_heaps)
-                ? vk_descriptors_write(g_vk_dslayout[indexed != 0][0], count + images + (indexed ? 2 : 0), writes)
+                ? vk_descriptors_write(g_vk_dslayout[indexed != 0][0], count + images + (indexed ? 2 : 0), writes, 0)
                 : vk_rec_new_set(g_vk_dslayout[indexed != 0][0], count + images + (indexed ? 2 : 0), writes);
             CHECK(set);
             cb = vk_cmd();

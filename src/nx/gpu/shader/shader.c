@@ -36,7 +36,7 @@ const u64* shader_words(const u8* code, u32 bytes, u64** copy) {
    are, and the fragment program keeps set 1 in a mesh pipeline too */
 int shader_vk_set(int stage) {
     switch (stage) {
-        case ST_FS: return 1;
+        case ST_FS: return SHADER_VK_SET_FS;
         case ST_TCS:
         case ST_TS: return 2;
         case ST_TES: return 3;

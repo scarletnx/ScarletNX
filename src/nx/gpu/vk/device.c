@@ -1643,6 +1643,7 @@ static bool choose_device(SnxVkChoice* c, void* user) {
             "descriptors use %s\n",
             g_settings.descriptor_buffers, heaps_missing, g_vk.has_descriptor_buffers ? "buffers" : "sets");
     g_vk.has_descriptor_heaps = g_vk.has_descriptor_heap_support;
+    g_vk.cb_address = g_settings.constant_buffers_by_address;
     /* the copies name device addresses: the device's memory gets them for these too (bufferDeviceAddress) */
     g_vk.has_copy_indirect =
         g_settings.indirect_copies && has_copy_indirect && qcopy.indirectMemoryCopy && q12.bufferDeviceAddress;

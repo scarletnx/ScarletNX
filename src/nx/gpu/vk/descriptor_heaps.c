@@ -91,6 +91,7 @@ typedef struct {
 typedef struct {
     VkDescriptorSetLayout layout;
     u32 offset[SNX_VKB_END], sampler_offset[SNX_VKB_END], count[SNX_VKB_END], words;
+    u32 pairs; /* the constant buffer slots whose binding has two words, 8-byte aligned: an index or an address */
     VkDeviceSize full_size;
     VkDescriptorType type[SNX_VKB_END];
     DescMemo* memo; /* one for each word of the table: the stage's last table */
@@ -747,8 +748,16 @@ void vk_descriptor_heaps_layout(VkDescriptorSetLayout layout, const VkDescriptor
         const VkDescriptorSetLayoutBinding* b = &bindings[i];
         int k = kind(b->descriptorType);
         if (b->binding >= SNX_VKB_END || !b->descriptorCount || k < 0 || l->count[b->binding] ||
-            b->descriptorCount > UINT32_MAX - l->words) fatal("vulkan: invalid descriptor heap binding");
-        if (!vk_descriptor_heap_table_append(&l->words, b->descriptorCount,
+            b->descriptorCount > UINT32_MAX - l->words - 2) fatal("vulkan: invalid descriptor heap binding");
+        /* a constant buffer: two words at an even word, which hold its heap index (the first) or the address that
+           vk_descriptor_heap_address_mapping reads (both), as the pipeline maps it */
+        const int pair = b->binding >= SNX_VKB_CB && b->binding < SNX_VKB_CB + 18 && b->descriptorCount == 1 &&
+                         b->descriptorType == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        if (pair) {
+            l->words += l->words & 1;
+            l->pairs |= 1u << (b->binding - SNX_VKB_CB);
+        }
+        if (!vk_descriptor_heap_table_append(&l->words, pair ? 2 : b->descriptorCount,
                 b->descriptorType == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                 &l->offset[b->binding], &l->sampler_offset[b->binding])) fatal("vulkan: descriptor heap table overflow");
         l->count[b->binding] = b->descriptorCount;
@@ -764,16 +773,24 @@ void vk_descriptor_heaps_layout(VkDescriptorSetLayout layout, const VkDescriptor
     l->memo = calloc(l->words ? l->words : 1, sizeof *l->memo);
     if (!l->memo) fatal("vulkan: no memory for a descriptor heap layout's last table");
 }
-uint32_t vk_descriptor_heaps_mapping(VkDescriptorSetLayout layout, u32 set,
-                                      VkDescriptorSetAndBindingMappingEXT* maps, u32 capacity) {
+/* whether write w is of a constant buffer slot in cb_addr whose two words take its address */
+static int by_address(const HeapLayout* l, const VkWriteDescriptorSet* w, u32 cb_addr) {
+    u32 slot = w->dstBinding - SNX_VKB_CB;
+    return w->dstBinding >= SNX_VKB_CB && slot < 18 && (cb_addr & l->pairs) >> slot & 1;
+}
+uint32_t vk_descriptor_heaps_mapping(VkDescriptorSetLayout layout, u32 set, VkDescriptorSetAndBindingMappingEXT* maps,
+                                      u32 capacity, u32 cb_addr) {
     HeapLayout* l = find_layout(layout);
     if (!l || !maps || set >= 5) return 0;
     u32 count = 0;
     for (u32 binding = 0; binding < SNX_VKB_END; binding++) {
         if (!l->count[binding]) continue;
         if (count == capacity) return 0;
-        if (!vk_descriptor_heap_binding_mapping(&maps[count], set, binding, l->offset[binding],
-                                                  l->sampler_offset[binding], l->type[binding])) return 0;
+        const VkWriteDescriptorSet w = {.dstBinding = binding};
+        if (by_address(l, &w, cb_addr) ? !vk_descriptor_heap_address_mapping(&maps[count], set, binding, l->offset[binding])
+                                       : !vk_descriptor_heap_binding_mapping(&maps[count], set, binding, l->offset[binding],
+                                                                             l->sampler_offset[binding], l->type[binding]))
+            return 0;
         count++;
     }
     return count;
@@ -1220,18 +1237,30 @@ static int batchable_buffer(const VkWriteDescriptorSet* write) {
     }
     return 1;
 }
-VkDescriptorSet vk_descriptor_heaps_write(VkDescriptorSetLayout layout, u32 count, const VkWriteDescriptorSet* writes) {
+VkDescriptorSet vk_descriptor_heaps_write(VkDescriptorSetLayout layout, u32 count, const VkWriteDescriptorSet* writes,
+                                          u32 cb_addr) {
     HeapLayout* l = find_layout(layout);
-    if (!l || !g_heaps.ready || (count && !writes)) return VK_NULL_HANDLE;
+    if (!l || !g_heaps.ready || (count && !writes) || count > SNX_VKB_END) return VK_NULL_HANDLE;
     VkDeviceSize words = 1;
     int image_arrays = 0, buffer_batches = 0;
-    u32 buffer_run = 0;
+    u32 buffer_run = 0, nrest = 0, naddr = 0;
+    /* the writes of descriptors, and apart from them those of the constant buffers mapped by address */
+    VkWriteDescriptorSet rest[SNX_VKB_END];
+    const VkWriteDescriptorSet* addr[18];
     for (u32 i = 0; i < count; i++) {
         const VkWriteDescriptorSet* w = &writes[i];
         if (w->dstBinding >= SNX_VKB_END || w->descriptorType != l->type[w->dstBinding] ||
             !l->count[w->dstBinding] || w->dstArrayElement > l->count[w->dstBinding] ||
             w->descriptorCount > l->count[w->dstBinding] - w->dstArrayElement) return VK_NULL_HANDLE;
         VkDeviceSize end = l->offset[w->dstBinding] + w->dstArrayElement + w->descriptorCount;
+        if (by_address(l, w, l->pairs)) end = l->offset[w->dstBinding] + 2;
+        if (by_address(l, w, cb_addr)) {
+            if (!w->pBufferInfo || !w->pBufferInfo->buffer || naddr == 18) return VK_NULL_HANDLE;
+            addr[naddr++] = w;
+            if (end > words) words = end;
+            continue;
+        }
+        rest[nrest++] = *w;
         if (w->descriptorType == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
             end = l->sampler_offset[w->dstBinding] + w->dstArrayElement + w->descriptorCount;
         if (end > words) words = end;
@@ -1241,6 +1270,8 @@ VkDescriptorSet vk_descriptor_heaps_write(VkDescriptorSetLayout layout, u32 coun
         buffer_run = batchable_buffer(w) ? buffer_run + 1 : 0;
         buffer_batches |= buffer_run >= 2;
     }
+    count = nrest;
+    writes = rest;
     vk_cmd();
     u32 slot = vk_frame_slot(), table;
     /* Recording workers and the GPU retain copied addresses and immutable heap bytes, never this CPU metadata.
@@ -1252,6 +1283,19 @@ VkDescriptorSet vk_descriptor_heaps_write(VkDescriptorSetLayout layout, u32 coun
     lasting_begin();
     if (g_heaps.exhausted[slot]) return VK_NULL_HANDLE;
     if (!allocate(&g_heaps.resource, slot, words * 4, 8, &table)) return VK_NULL_HANDLE;
+    /* the addresses: no lookup, no memo and no call of the driver for a descriptor */
+    VkBuffer previous = VK_NULL_HANDLE;
+    VkDeviceAddress base = 0;
+    for (u32 i = 0; i < naddr; i++) {
+        const VkDescriptorBufferInfo* b = addr[i]->pBufferInfo;
+        if (b->buffer != previous) {
+            previous = b->buffer;
+            base = buffer_address(b->buffer);
+        }
+        if (!base) return VK_NULL_HANDLE;
+        snx_st_le64(g_heaps.resource.mapped + table + 4ull * l->offset[addr[i]->dstBinding], base + b->offset);
+        g_heaps.stats.cb_addresses++;
+    }
     if (buffer_batches) {
         if (!write_batched_table(slot, l, table, count, writes)) return VK_NULL_HANDLE;
     } else if (image_arrays) {

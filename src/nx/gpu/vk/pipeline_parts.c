@@ -121,6 +121,7 @@ void vk_pipe_part_src(u32 part, const void* key, PipeKey* out) {
         out->depth_clip = pr->depth_clip;
         out->provoking_last = pr->provoking_last;
         out->conservative = pr->conservative;
+        for (u32 s = 0; s < 5; s++) out->cb_addr[s] = pr->cb_addr[s];
         out->heaps = pr->heaps;
     } else if (part == VK_PART_FS) {
         const PipeFsKey* f = key;
@@ -134,6 +135,7 @@ void vk_pipe_part_src(u32 part, const void* key, PipeKey* out) {
         out->alpha_to_coverage = f->alpha_to_coverage;
         out->alpha_to_one = f->alpha_to_one;
         out->coverage = f->coverage;
+        for (u32 s = 0; s < 5; s++) out->cb_addr[s] = f->cb_addr[s];
         out->heaps = f->heaps;
     } else {
         const PipeFoKey* fo = key;
@@ -258,6 +260,8 @@ void vk_pipe_split(const PipeKey* k, VkShaderModule fs, const PipeSplitDevice* d
     pr->gs = k->gs;
     pr->arrays = k->arrays & VK_ARRAYS_PR;
     pr->heaps = k->heaps;
+    const u32 fs_set = SHADER_VK_SET_FS; /* the set of pipe_info's fifth module, the fragment program */
+    for (u32 s = 0; s < 5; s++) pr->cb_addr[s] = s == fs_set ? 0 : k->cb_addr[s];
     if (!(d->dyn_pr & VK_DYN_PR_PATCH)) pr->patch = k->patch;
     if (!(d->dyn_pr & VK_DYN_PR_POLYGON)) pr->polygon = k->polygon;
     if (!(d->dyn_pr & VK_DYN_PR_DEPTH_CLAMP)) pr->depth_clamp = k->depth_clamp;
@@ -270,6 +274,7 @@ void vk_pipe_split(const PipeKey* k, VkShaderModule fs, const PipeSplitDevice* d
     f->arrays = k->arrays & VK_ARRAYS_FS;
     f->spec = k->fs_spec;
     f->heaps = k->heaps;
+    f->cb_addr[fs_set] = k->cb_addr[fs_set];
     if (!d->feedback_dynamic) f->feedback = k->feedback;
     if (k->sample_shading) {
         f->sample_shading = k->sample_shading;

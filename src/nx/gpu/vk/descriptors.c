@@ -200,8 +200,9 @@ static void buffer_descriptor(const VkDescriptorGetInfoEXT* info, const VkDescri
     }
     memcpy(destination, encoding, size);
 }
-VkDescriptorSet vk_descriptors_write(VkDescriptorSetLayout layout, u32 count, const VkWriteDescriptorSet* writes) {
-    if (g_vk.has_descriptor_heaps) return vk_descriptor_heaps_write(layout, count, writes);
+VkDescriptorSet vk_descriptors_write(VkDescriptorSetLayout layout, u32 count, const VkWriteDescriptorSet* writes,
+                                     u32 cb_addr) {
+    if (g_vk.has_descriptor_heaps) return vk_descriptor_heaps_write(layout, count, writes, cb_addr);
     u32 index = 0;
     while (index < g_descriptors.nlayouts && g_descriptors.layouts[index].layout != layout) index++;
     if (index == g_descriptors.nlayouts) fatal("vulkan: unknown graphics descriptor layout");

@@ -259,7 +259,7 @@ static void lasting_reap_case(const VkPhysicalDeviceDescriptorHeapPropertiesEXT*
                                         .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                                         .pBufferInfo = &range};
     VkDescriptorHeapStats s;
-    check(vk_descriptor_heaps_write(layout, 1, &write) != VK_NULL_HANDLE,
+    check(vk_descriptor_heaps_write(layout, 1, &write, 0) != VK_NULL_HANDLE,
           "a named buffer's descriptor made in the lasting part");
     vk_descriptor_heaps_get_stats(&s);
     check(s.lasting_made == 1, "a named buffer's descriptor made in the lasting part");
@@ -271,7 +271,7 @@ static void lasting_reap_case(const VkPhysicalDeviceDescriptorHeapPropertiesEXT*
         g_test.submit = steps[i][1];
         g_test.last = steps[i][2];
         g_test.done = steps[i][3];
-        check(vk_descriptor_heaps_write(layout, 0, NULL) != VK_NULL_HANDLE, "an empty table of a new frame");
+        check(vk_descriptor_heaps_write(layout, 0, NULL, 0) != VK_NULL_HANDLE, "an empty table of a new frame");
         vk_descriptor_heaps_get_stats(&s);
         snprintf(what, sizeof what, "frame %llu, GPU done %llu: the slot %s", (unsigned long long)g_test.frame,
                  (unsigned long long)g_test.done, i < 2 ? "stays" : "is freed");
