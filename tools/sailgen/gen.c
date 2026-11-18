@@ -82,6 +82,9 @@ static struct {
     unsigned pool_count, pool_cap;
     unsigned temp;
     Buffer types, helpers, body, *out;
+    unsigned structs[64];      /* the structs whose C types the types hold (struct_ctype) */
+    char struct_names[64][96]; /* and those types' names */
+    unsigned struct_count;
     Helper helper[64];
     unsigned helper_count;
     int indent;
@@ -182,27 +185,24 @@ static const char* field_ctype(unsigned type) {
 
 /* the C type of a Sail struct's values: sgt_NAME, its fields in order, written to the types once */
 static const char* struct_ctype(unsigned sdef) {
-    static unsigned done[64];
-    static char names[64][96];
-    static unsigned count;
     unsigned i, f;
     Buffer* saved = g_gen.out;
     int saved_indent = g_gen.indent;
-    for (i = 0; i < count; ++i)
-        if (done[i] == sdef) return names[i];
-    if (count == sizeof done / sizeof *done) sg_fail(0, "more than 64 structs");
+    for (i = 0; i < g_gen.struct_count; ++i)
+        if (g_gen.structs[i] == sdef) return g_gen.struct_names[i];
+    if (g_gen.struct_count == sizeof g_gen.structs / sizeof *g_gen.structs) sg_fail(0, "more than 64 structs");
     for (f = g_parse.defs[sdef].params; f; f = N(f).next) (void)field_ctype(N(f).b); /* the structs inside first */
-    i = count++;
-    done[i] = sdef;
-    snprintf(names[i], sizeof names[i], "sgt_%s", sg_str(g_parse.defs[sdef].name));
+    i = g_gen.struct_count++;
+    g_gen.structs[i] = sdef;
+    snprintf(g_gen.struct_names[i], sizeof g_gen.struct_names[i], "sgt_%s", sg_str(g_parse.defs[sdef].name));
     g_gen.out = &g_gen.types;
     g_gen.indent = 0;
     emit("typedef struct {\n");
     for (f = g_parse.defs[sdef].params; f; f = N(f).next) emit("    %s %s;\n", field_ctype(N(f).b), name_of(N(f).a));
-    emit("} %s;\n\n", names[i]);
+    emit("} %s;\n\n", g_gen.struct_names[i]);
     g_gen.out = saved;
     g_gen.indent = saved_indent;
-    return names[i];
+    return g_gen.struct_names[i];
 }
 
 /* the C type of a value of this kind, time and struct */
