@@ -4042,11 +4042,15 @@ static int buf_get_(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 a
        them took a submit and a wait for the GPU, 150 a second in one game's menus */
     /* So with those it owns, landed only where the CPU touched them: read elsewhere, the CPU's bytes between them were
        copied again for every draw, 16 MiB a binding, about half of one game's GPU thread */
-    if (vk_mirror_pending(gva, len) || vk_mirror_holds(gva, len)) {
-        u64 cpu = 0, a = align ? align : 1;
+    /* the range's one run of guest memory, walked once for the hold check and the slice: three walks of the page table
+       for each binding were most of the mirror's part of a draw */
+    u64 cpu = 0;
+    const int run = vk_mirror_on() && gmmu_run(gva, len, &cpu) == len;
+    if (vk_mirror_pending(gva, len) || (run && vk_mirror_holds_at(cpu, len))) {
+        u64 a = align ? align : 1;
         VkBuffer mb;
         u64 mo;
-        if (gmmu_run(gva, len, &cpu) == len && vk_mirror_slice(gva, len, &mb, &mo)) {
+        if (run && vk_mirror_slice_at(gva, cpu, len, &mb, &mo)) {
             if (!(cpu & (a - 1))) {
                 /* the programs' writes before it, once for all the reads after them: a barrier for each binding
                    ended the rendering pass at nearly every draw, about 470 passes a frame of one game's race, and

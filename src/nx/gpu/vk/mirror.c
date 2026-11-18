@@ -370,7 +370,11 @@ static void landed_run(void* user, u64 at, u64 n) {
    are looked at by the 64 of a mask word, as a loop over each page's bit was a fourteenth of one game's GPU thread */
 int vk_mirror_slice(u64 gva, u64 len, VkBuffer* buf, u64* off) {
     u64 cpu = 0;
-    if (!vk_mirror_on() || !len || gmmu_run(gva, len, &cpu) != len || cpu + len > AS_SIZE) return 0;
+    if (!vk_mirror_on() || !len || gmmu_run(gva, len, &cpu) != len) return 0;
+    return vk_mirror_slice_at(gva, cpu, len, buf, off);
+}
+int vk_mirror_slice_at(u64 gva, u64 cpu, u64 len, VkBuffer* buf, u64* off) {
+    if (!vk_mirror_on() || !len || cpu + len > AS_SIZE) return 0;
     u32 now = vk_ww_now(), epoch = vk_ww_epoch(); /* before any byte is read */
     u64 gen = gpu_mem_generation();
     u64 g0 = cpu / MIR_G, g1 = (cpu + len - 1) / MIR_G;
@@ -568,6 +572,7 @@ int vk_mirror_holds(u64 gva, u64 len) {
     u64 cpu = 0;
     return g_mir.on > 0 && len && own_any() && gmmu_run(gva, len, &cpu) == len && mirror_owns(cpu, len);
 }
+int vk_mirror_holds_at(u64 cpu, u64 len) { return g_mir.on > 0 && len && own_any() && mirror_owns(cpu, len); }
 
 static int range_cmp(const void* a, const void* b) {
     u64 x = ((const MirRange*)a)->first, y = ((const MirRange*)b)->first;
