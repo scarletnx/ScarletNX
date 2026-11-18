@@ -4,8 +4,8 @@
 # The EGL and OpenGL functions the GL layer implements for a game that draws through its own GL driver
 # (gpu/gl/gl_loader.c, with gl_layer=1), for tools/hookgen with --prefix gl: hooks.hook's grammar, each function by the
 # symbol the driver exports it as (eglInitialize, _glClearColor; eglGetProcAddress answers glClearColor with that
-# export's address). Every other egl and _gl export of the driver takes the handler that says its name once and
-# returns 0. The handlers: gpu/gl/gl_egl.c (EGL), gpu/gl/gl_calls.c (GL, over common/gpu/gl/gl_state.h).
+# export's address). Every other egl and _gl export of the driver takes the handler that stops the game, naming
+# it. The handlers: gpu/gl/gl_egl.c (EGL), gpu/gl/gl_calls.c (GL, over common/gpu/gl/gl_state.h).
 
 # EGL functions no hook implements yet, which a game's main calls directly: through their slots, to that handler
 route eglBindTexImage
