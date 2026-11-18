@@ -2515,6 +2515,19 @@ static void issue126_shader_modes(void) {
         if (code) check(count_opcode(code, words, 195, 0xffffffffu) == 0, "a 2D texel fetch keeps its coordinates");
         free(code);
     }
+    /* An unconditional branch jumps over a write to the handle register. The skipped MOV32I is not a source: the
+       handle loaded before the branch is. */
+    {
+        const u64 tld_b = (0xdd3a0007a0070200ull & ~(0xffull << 20)) | (6ull << 20); /* TLD.B R0, R2, R6, 2D */
+        const u64 skip_one = 0xe24000000000000full | (16ull << 20) | (7ull << 16);  /* BRA over one instruction */
+        const u64 vertex_skip[] = {0x4c98078800070006ull, skip_one, mov32i(6, 0x3f800000), tld_b};
+        ShaderInfo info;
+        size_t words = 0;
+        u32* code = translate(vertex_skip, 4, ST_VS, &info, &words, 1);
+        if (!code) fprintf(stderr, "vertex skipped write: '%s'\n", info.first_unsupported);
+        check_translated(code, &info, "a vertex handle survives an unconditional branch over a write");
+        free(code);
+    }
     /* One game's histogram: SURED.ADD into a buffer surface, U32 and then S32 (bit 20), on the handle
        MOV R5, c[0x2][0x128] */
     {
@@ -2618,6 +2631,32 @@ static void issue126_shader_modes(void) {
     check_refused(code, &info, "untracked texture handle",
                   "a handle written in code a branch skips doesn't reach the target");
     free(code);
+    /* A vertex program branches to its sample before a loop. The loop's BRK
+       reaches a constant write, but the branch after that write leaves before
+       the sample. Neither write reaches the sample; the load before the first
+       branch does. Scheduling words put these instructions at 11, 12, 13, 15,
+       16, 17, 18, 20 and 21. */
+    const u64 pbk_to_constant = 0xe2a0000000000000ull | (32ull << 20);
+    const u64 brk = 0xe34000000007000full;
+    u64 after_loop[] = {0x4c98078800070006ull,
+                        0xe24000000000000full | (64ull << 20),
+                        pbk_to_constant,
+                        FMUL_KEEP | 6,
+                        brk,
+                        FMUL_KEEP | 5,
+                        mov32i(6, 0x3f800000u),
+                        0xe24000000007000full | (8ull << 20),
+                        tex_b};
+    code = translate(after_loop, 9, ST_VS, &info, &words, 1);
+    check_translated(code, &info, "a vertex handle load reaches a sample past a loop's non-reaching writes");
+    check(code && info.ntex == 1 && info.tex[0].bindless && info.tex[0].bl_cbuf == 2 && info.tex[0].cbuf_off == 0,
+          "the sample past a loop keeps the handle loaded on the branch path");
+    free(code);
+    after_loop[7] = FMUL_KEEP | 5;
+    code = translate(after_loop, 9, ST_VS, &info, &words, 1);
+    check_refused(code, &info, "untracked texture handle",
+                  "a constant handle reached by a loop break remains unsupported");
+    free(code);
     /* Both sides of a forward branch may independently assemble the same
        split descriptor. The merge is safe only when every source agrees. */
     const u64 choose = 0xe24000000000000full | (32ull << 20);
@@ -2629,6 +2668,16 @@ static void issue126_shader_modes(void) {
     check(code && info.ntex == 1 && info.tex[0].bl2 && info.tex[0].bl_cbuf == 2 && info.tex[0].cbuf_off == 0 &&
               info.tex[0].bl2_cbuf == 2 && info.tex[0].bl2_off == 0x100,
           "a merged split handle retains both descriptor sources");
+    free(code);
+    /* A predicated LOP in the sample's own block leaves a split handle on one path and another split handle on the
+       other. Both are bound, and the pair of words selects the sample per path. */
+    const u64 pair_or_alt = (pair_or & ~((0x1full << 34) | (0xfull << 16))) | (3ull << 34) | (1ull << 16);
+    const u64 predicated_choice[] = {0x4c98078800070006ull, pair_or, pair_or_alt, tex_b};
+    code = translate(predicated_choice, 4, ST_FS, &info, &words, 1);
+    check_translated(code, &info, "a predicated split handle in one block samples per path");
+    check(code && info.ntex == 2 && info.tex[0].bl2 && info.tex[1].bl2 && info.tex[0].bl2_cbuf == 2 &&
+              info.tex[1].bl2_cbuf == 3 && info.tex[0].bl2_off == 0x100 && info.tex[1].bl2_off == 0x100,
+          "both predicated split handles bind their sampler");
     free(code);
     u64 disagree[7];
     memcpy(disagree, joined, sizeof disagree);
