@@ -1462,6 +1462,12 @@ add_executable(snx-test-gl-program gl_program.c)
 snx_test_target(snx-test-gl-program c23)
 target_link_libraries(snx-test-gl-program PRIVATE snx_gl)
 add_test(NAME gl_program COMMAND snx-test-gl-program)
+# the shared GL layer's buffers and vertex arrays (src/common/gpu/gl/gl_object.c), with no GPU: their bytes in the
+# platform's memory, maps, what the platform hears, vertex arrays, and a save state's copy loaded and refused
+add_executable(snx-test-gl-object gl_object.c)
+snx_test_target(snx-test-gl-object c23)
+target_link_libraries(snx-test-gl-object PRIVATE snx_gl)
+add_test(NAME gl_object COMMAND snx-test-gl-object)
 # the console's GL layer (src/nx/gpu/gl/) over a stubbed GL driver module, guest memory and renderer: the slots taken
 # with gl_layer=1, EGL, glClear's color in the surface's image, eglSwapBuffers's present, a function without a handler
 add_executable(snx-test-gl-layer gl_layer.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/gl/gl_loader.c"

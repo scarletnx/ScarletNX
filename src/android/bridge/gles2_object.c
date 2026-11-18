@@ -2,9 +2,9 @@
    Copyright 2026 the ScarletNX contributors */
 /* GLES 2 and 3's objects (gles2.h) as Vulkan's.
 
-   A buffer keeps the guest's bytes in memory of its own (data), which the CPU writes and reads. A draw reads its
-   Vulkan copy, which the bytes written since go into first: in place when no submission in flight reads it, else as
-   a copy in the frame's arena. Only a buffer the GPU writes (glReadPixels into a pack buffer) moves to host-cached
+   A buffer is the shared GL layer's (common/gpu/gl/gl_object.h), its bytes in chunks of host memory the layer places
+   them in, which the CPU writes and reads. A draw reads its Vulkan copy here, which the bytes written since go into
+   first: in place when no submission in flight reads it, else as a copy in the frame's arena. Only a buffer the GPU writes (glReadPixels into a pack buffer) moves to host-cached
    memory, which the CPU then reads back.
 
    A texture is one image with the whole chain of levels of its base level, made when its base level gets a size and
@@ -189,23 +189,14 @@ static void sampler_init(G2Sampler* s) {
     texture_init(&t);
     s->state = t.sampler;
 }
-static void vao_init(G2VertexArray* a) {
-    for (int i = 0; i < G2_ATTRIBS; ++i)
-        a->attribs[i].size = 4, a->attribs[i].type = GL_FLOAT_, a->attribs[i].binding = (uint8_t)i;
-}
-GEN(buffers, buffer_count, buffers, G2Buffer, (void)0)
 GEN(textures, texture_count, textures, G2Texture, texture_init(x))
 GEN(samplers, sampler_count, samplers, G2Sampler, sampler_init(x))
 GEN(renderbuffers, renderbuffer_count, renderbuffers, G2Renderbuffer, (void)0)
 GEN(framebuffers, framebuffer_count, framebuffers, G2Framebuffer, x->draw[0] = GL_COLOR_ATTACHMENT0_;
     x->read = GL_COLOR_ATTACHMENT0_)
-GEN(vertex_arrays, vertex_array_count, vertex_arrays, G2VertexArray, vao_init(x))
 GEN(queries, query_count, queries, G2Query, (void)0)
 #undef GEN
 
-G2Buffer* gles2_buffer(unsigned name) {
-    return name && name < g_gles2.buffer_count && g_gles2.buffers[name].used ? &g_gles2.buffers[name] : NULL;
-}
 G2Texture* gles2_texture(unsigned name) {
     return name && name < g_gles2.texture_count && g_gles2.textures[name].used ? &g_gles2.textures[name] : NULL;
 }
@@ -222,11 +213,6 @@ static G2Sampler* sampler_object(unsigned name) {
 }
 static G2Query* query_object(unsigned name) {
     return name && name < g_gles2.query_count && g_gles2.queries[name].used ? &g_gles2.queries[name] : NULL;
-}
-G2VertexArray* gles2_vertex_array(Gles2Context* gl) {
-    if (!gl->vertex_array) return &gl->default_vao;
-    G2VertexArray* a = gl->vertex_array < g_gles2.vertex_array_count ? &g_gles2.vertex_arrays[gl->vertex_array] : NULL;
-    return a && a->used ? a : &gl->default_vao;
 }
 
 GlesSlot* gles2_transfer_slot(Gles2Context* gl) {
@@ -254,43 +240,14 @@ static void each_name(CPU* c, Gles2Context* gl, void (*forget)(Gles2Context*, un
     }
 }
 
-/* ---- buffers ---- */
+/* ---- buffers: the shared layer's (common/gpu/gl/gl_object.h), and each one's Vulkan copy here ---- */
 
-static unsigned* buffer_binding(Gles2Context* gl, unsigned target) {
-    switch (target) {
-    case GL_ARRAY_BUFFER_: return &gl->array_buffer;
-    case GL_ELEMENT_ARRAY_BUFFER_: return &gles2_vertex_array(gl)->elements;
-    case GL_PIXEL_PACK_BUFFER_: return &gl->pixel_pack;
-    case GL_PIXEL_UNPACK_BUFFER_: return &gl->pixel_unpack;
-    case GL_COPY_READ_BUFFER_: return &gl->copy_read;
-    case GL_COPY_WRITE_BUFFER_: return &gl->copy_write;
-    case GL_UNIFORM_BUFFER_: return &gl->uniform_buffer;
-    case GL_TRANSFORM_FEEDBACK_BUFFER_: return &gl->tf_buffer;
-    case 0x90d2: return &gl->storage_buffer;    /* GL_SHADER_STORAGE_BUFFER */
-    case 0x8f3f: return &gl->draw_indirect;     /* GL_DRAW_INDIRECT_BUFFER */
-    case 0x90ee: return &gl->dispatch_indirect; /* GL_DISPATCH_INDIRECT_BUFFER */
-    default: return NULL;
-    }
-}
-static G2Buffer* bound_buffer(Gles2Context* gl, unsigned target) {
-    unsigned* b = buffer_binding(gl, target);
-    if (!b) {
-        gles2_error(gl, GL_INVALID_ENUM_);
-        return NULL;
-    }
-    G2Buffer* x = gles2_buffer(*b);
-    if (!x) gles2_error(gl, GL_INVALID_OPERATION_);
-    return x;
-}
-/* the buffer of name, made when a bind names it first (GLES 2 lets a bind make it) */
-static G2Buffer* buffer_made(unsigned name) {
-    G2Buffer* b = gles2_buffer(name);
-    if (b || !name) return b;
-    b = entry((void**)&g_gles2.buffers, &g_gles2.buffer_count, sizeof *b, name);
-    if (b) {
-        *b = (G2Buffer){0};
-        b->used = true;
-    }
+G2Buffer* gles2_buffer(unsigned name) {
+    const SnxGlBuffer* x = snx_gl_buffer(name);
+    if (!x) return NULL;
+    G2Buffer* b = &g_gles2.buffer_vk[name - 1];
+    b->data = (unsigned char*)(uintptr_t)x->data;
+    b->size = (size_t)x->size;
     return b;
 }
 
@@ -300,83 +257,6 @@ static void buffer_vk_free(G2Buffer* b) {
     b->memory = VK_NULL_HANDLE;
     b->map = NULL;
     b->capacity = 0;
-}
-
-static void g_bind_buffer(CPU* c, Gles2Context* gl) {
-    unsigned* at = buffer_binding(gl, (unsigned)X(0));
-    if (!at) {
-        gles2_error(gl, GL_INVALID_ENUM_);
-        return;
-    }
-    unsigned name = (unsigned)X(1);
-    if (name && !buffer_made(name)) {
-        gles2_error(gl, GL_OUT_OF_MEMORY_);
-        return;
-    }
-    *at = name;
-}
-static void bind_indexed(Gles2Context* gl, unsigned target, unsigned index, unsigned name, int64_t offset,
-                         int64_t size) {
-    if (target != GL_UNIFORM_BUFFER_ && target != GL_TRANSFORM_FEEDBACK_BUFFER_ && target != 0x90d2) {
-        gles2_error(gl, GL_INVALID_ENUM_);
-        return;
-    }
-    if (name && !buffer_made(name)) return;
-    if (target == 0x90d2) { /* GL_SHADER_STORAGE_BUFFER */
-        if (index >= G2_SSBO_BINDINGS) {
-            gles2_error(gl, GL_INVALID_VALUE_);
-            return;
-        }
-        gl->storage_buffer = name;
-        gl->storage_buffers[index] = (G2IndexedBuffer){name, offset, size};
-        return;
-    }
-    if (target == GL_TRANSFORM_FEEDBACK_BUFFER_) {
-        gl->tf_buffer = name;
-        return;
-    }
-    if (index >= G2_UBO_BINDINGS) {
-        gles2_error(gl, GL_INVALID_VALUE_);
-        return;
-    }
-    gl->uniform_buffer = name;
-    gl->uniform_buffers[index] = (G2IndexedBuffer){name, offset, size};
-}
-static void g_bind_buffer_base(CPU* c, Gles2Context* gl) {
-    bind_indexed(gl, (unsigned)X(0), (unsigned)X(1), (unsigned)X(2), 0, -1);
-}
-static void g_bind_buffer_range(CPU* c, Gles2Context* gl) {
-    bind_indexed(gl, (unsigned)X(0), (unsigned)X(1), (unsigned)X(2), (int64_t)X(3), (int64_t)X(4));
-}
-static void g_gen_buffers(CPU* c, Gles2Context* gl) {
-    gen_call(c, gl, gen_buffers);
-}
-static void forget_buffer(Gles2Context* gl, unsigned name) {
-    G2Buffer* b = gles2_buffer(name);
-    if (!b) return;
-    buffer_vk_free(b);
-    free(b->data);
-    *b = (G2Buffer){0};
-    unsigned* bindings[] = {&gl->array_buffer, &gl->copy_read, &gl->copy_write, &gl->pixel_pack,
-                            &gl->pixel_unpack, &gl->uniform_buffer, &gl->tf_buffer,
-                            &gles2_vertex_array(gl)->elements, &gl->storage_buffer, &gl->draw_indirect,
-                            &gl->dispatch_indirect};
-    for (size_t i = 0; i < sizeof bindings / sizeof *bindings; ++i)
-        if (*bindings[i] == name) *bindings[i] = 0;
-    for (int i = 0; i < G2_UBO_BINDINGS; ++i)
-        if (gl->uniform_buffers[i].buffer == name) gl->uniform_buffers[i] = (G2IndexedBuffer){0};
-    for (int i = 0; i < G2_SSBO_BINDINGS; ++i)
-        if (gl->storage_buffers[i].buffer == name) gl->storage_buffers[i] = (G2IndexedBuffer){0};
-    G2VertexArray* a = gles2_vertex_array(gl);
-    for (int i = 0; i < G2_ATTRIBS; ++i)
-        if (a->bindings[i].buffer == name) a->bindings[i].buffer = 0;
-}
-static void g_delete_buffers(CPU* c, Gles2Context* gl) {
-    each_name(c, gl, forget_buffer);
-}
-static void g_is_buffer(CPU* c, Gles2Context* gl) {
-    (void)gl;
-    X(0) = gles2_buffer((unsigned)X(0)) != NULL;
 }
 
 /* data[lo, hi) newer than the Vulkan copy */
@@ -389,32 +269,6 @@ static void buffer_dirty(G2Buffer* b, size_t lo, size_t hi) {
     }
 }
 
-/* glBufferData(target, size, data, usage) */
-static void g_buffer_data(CPU* c, Gles2Context* gl) {
-    G2Buffer* b = bound_buffer(gl, (unsigned)X(0));
-    int64_t size = (int64_t)X(1);
-    if (!b) return;
-    if (size < 0) {
-        gles2_error(gl, GL_INVALID_VALUE_);
-        return;
-    }
-    if ((size_t)size != b->size) {
-        unsigned char* grown = realloc(b->data, size ? (size_t)size : 1);
-        if (!grown) {
-            gles2_error(gl, GL_OUT_OF_MEMORY_);
-            return;
-        }
-        b->data = grown;
-        b->size = (size_t)size;
-    }
-    if (X(2)) memcpy(b->data, PTR(2), (size_t)size);
-    else memset(b->data, 0, (size_t)size);
-    b->usage = (unsigned)X(3);
-    b->stale = true;
-    b->lo = b->hi = 0;
-    b->gpu_newer = false;
-    b->arena_serial = 0;
-}
 /* the bytes the GPU wrote into the Vulkan copy, brought into data */
 static void buffer_read_back(G2Buffer* b) {
     if (!b->gpu_newer) return;
@@ -435,22 +289,10 @@ static void buffer_read_back(G2Buffer* b) {
     b->stale = false;
     b->lo = b->hi = 0;
 }
+
 const unsigned char* gles2_buffer_bytes(G2Buffer* b) {
     buffer_read_back(b);
     return b->data;
-}
-static void g_buffer_sub_data(CPU* c, Gles2Context* gl) {
-    G2Buffer* b = bound_buffer(gl, (unsigned)X(0));
-    int64_t offset = (int64_t)X(1), size = (int64_t)X(2);
-    if (!b) return;
-    if (offset < 0 || size < 0 || (uint64_t)(offset + size) > b->size) {
-        gles2_error(gl, GL_INVALID_VALUE_);
-        return;
-    }
-    buffer_read_back(b);
-    if (size) memcpy(b->data + offset, PTR(3), (size_t)size);
-    buffer_dirty(b, (size_t)offset, (size_t)(offset + size));
-    b->arena_serial = 0;
 }
 
 /* the Vulkan copy of size bytes: host-visible, host-cached when cached, device-local where it can be too */
@@ -529,100 +371,106 @@ bool gles2_buffer_ref(GlesSlot* slot, G2Buffer* b, bool writes, G2Ref* out) {
     return true;
 }
 
-/* glMapBufferRange(target, offset, length, access): data itself, which the guest's pointers reach */
-static void g_map_buffer_range(CPU* c, Gles2Context* gl) {
-    G2Buffer* b = bound_buffer(gl, (unsigned)X(0));
-    int64_t offset = (int64_t)X(1), length = (int64_t)X(2);
-    unsigned access = (unsigned)X(3);
-    X(0) = 0;
+/* what the shared layer asks and tells of its buffers: their bytes live in chunks of host memory, as the guest's
+   memory is the host's */
+static uint64_t buffer_chunk(uint64_t size, uint64_t* got) {
+    void* p = malloc((size_t)size);
+    *got = p ? size : 0;
+    return (uint64_t)(uintptr_t)p;
+}
+static uint8_t* buffer_host(uint64_t at) { return (uint8_t*)(uintptr_t)at; }
+static void buffer_read_back_name(uint32_t name) {
+    G2Buffer* b = gles2_buffer(name);
+    if (b) buffer_read_back(b);
+}
+static void buffer_written(uint32_t name, uint64_t lo, uint64_t hi) {
+    G2Buffer* b = gles2_buffer(name);
     if (!b) return;
-    if (offset < 0 || length < 0 || (uint64_t)(offset + length) > b->size || b->mapped ||
-        !(access & (GL_MAP_READ_BIT_ | GL_MAP_WRITE_BIT_))) {
-        gles2_error(gl, b->mapped ? GL_INVALID_OPERATION_ : GL_INVALID_VALUE_);
-        return;
+    if (!lo && hi >= b->size) { /* all of it, as glBufferData writes: newer than the GPU's writes too */
+        b->stale = true;
+        b->lo = b->hi = 0;
+        b->gpu_newer = false;
+    } else {
+        buffer_dirty(b, (size_t)lo, (size_t)hi);
     }
-    buffer_read_back(b);
-    b->mapped = true;
-    b->map_offset = (size_t)offset;
-    b->map_length = (size_t)length;
-    b->map_access = access;
-    X(0) = (uint64_t)(uintptr_t)(b->data + offset);
-}
-/* glMapBufferOES(target, access): the whole buffer */
-static void g_map_buffer(CPU* c, Gles2Context* gl) {
-    G2Buffer* b = bound_buffer(gl, (unsigned)X(0));
-    X(0) = 0;
-    if (!b || b->mapped) return;
-    buffer_read_back(b);
-    b->mapped = true;
-    b->map_offset = 0;
-    b->map_length = b->size;
-    b->map_access = GL_MAP_WRITE_BIT_;
-    X(0) = (uint64_t)(uintptr_t)b->data;
-}
-static void g_unmap_buffer(CPU* c, Gles2Context* gl) {
-    G2Buffer* b = bound_buffer(gl, (unsigned)X(0));
-    X(0) = 0;
-    if (!b || !b->mapped) return;
-    if ((b->map_access & GL_MAP_WRITE_BIT_) && !(b->map_access & GL_MAP_FLUSH_EXPLICIT_BIT_)) {
-        buffer_dirty(b, b->map_offset, b->map_offset + b->map_length);
-        b->arena_serial = 0;
-    }
-    b->mapped = false;
-    X(0) = 1;
-}
-static void g_flush_mapped_range(CPU* c, Gles2Context* gl) {
-    G2Buffer* b = bound_buffer(gl, (unsigned)X(0));
-    int64_t offset = (int64_t)X(1), length = (int64_t)X(2);
-    if (!b || !b->mapped || offset < 0 || length < 0 || (uint64_t)(offset + length) > b->map_length) return;
-    buffer_dirty(b, b->map_offset + (size_t)offset, b->map_offset + (size_t)(offset + length));
     b->arena_serial = 0;
 }
+static void buffer_gone(uint32_t name) {
+    G2Buffer* b = &g_gles2.buffer_vk[name - 1];
+    buffer_vk_free(b);
+    *b = (G2Buffer){0};
+}
+void gles2_buffers_init(void) {
+    snx_gl_object_host(
+        &(SnxGlObjectHost){buffer_chunk, buffer_host, buffer_read_back_name, buffer_written, buffer_gone});
+}
+
+/* the buffer bound to target: 0 with GL's error recorded */
+static uint32_t bound(Gles2Context* gl, uint64_t target) { return snx_gl_bound_buffer(gl->ctx, (uint32_t)target); }
+static void g_gen_buffers(CPU* c, Gles2Context* gl) { snx_gl_gen_buffers(gl->ctx, (int32_t)X(0), PTR(1)); }
+static void g_delete_buffers(CPU* c, Gles2Context* gl) { snx_gl_delete_buffers(gl->ctx, (int32_t)X(0), PTR(1)); }
+static void g_is_buffer(CPU* c, Gles2Context* gl) {
+    (void)gl;
+    X(0) = (uint64_t)snx_gl_is_buffer((uint32_t)X(0));
+}
+static void g_bind_buffer(CPU* c, Gles2Context* gl) { snx_gl_bind_buffer(gl->ctx, (uint32_t)X(0), (uint32_t)X(1)); }
+static void g_bind_buffer_base(CPU* c, Gles2Context* gl) {
+    snx_gl_bind_buffer_range(gl->ctx, (uint32_t)X(0), (uint32_t)X(1), (uint32_t)X(2), 0, -1);
+}
+static void g_bind_buffer_range(CPU* c, Gles2Context* gl) {
+    snx_gl_bind_buffer_range(gl->ctx, (uint32_t)X(0), (uint32_t)X(1), (uint32_t)X(2), (int64_t)X(3), (int64_t)X(4));
+}
+/* glBufferData(target, size, data, usage) */
+static void g_buffer_data(CPU* c, Gles2Context* gl) {
+    uint32_t b = bound(gl, X(0));
+    if (b) snx_gl_buffer_data(gl->ctx, b, (int64_t)X(1), PTR(2), (uint32_t)X(3));
+}
+static void g_buffer_sub_data(CPU* c, Gles2Context* gl) {
+    uint32_t b = bound(gl, X(0));
+    if (b) snx_gl_buffer_sub_data(gl->ctx, b, (int64_t)X(1), (int64_t)X(2), PTR(3));
+}
+/* glMapBufferRange(target, offset, length, access): the bytes themselves, which the guest's pointers reach */
+static void g_map_buffer_range(CPU* c, Gles2Context* gl) {
+    uint32_t b = bound(gl, X(0));
+    X(0) = b ? snx_gl_map_buffer_range(gl->ctx, b, (int64_t)X(1), (int64_t)X(2), (uint32_t)X(3)) : 0;
+}
+/* glMapBufferOES(target, access): the whole buffer, for writing */
+static void g_map_buffer(CPU* c, Gles2Context* gl) {
+    uint32_t b = bound(gl, X(0));
+    const SnxGlBuffer* x = snx_gl_buffer(b);
+    X(0) = x ? snx_gl_map_buffer_range(gl->ctx, b, 0, (int64_t)x->size, GL_MAP_WRITE_BIT_) : 0;
+}
+static void g_unmap_buffer(CPU* c, Gles2Context* gl) {
+    uint32_t b = bound(gl, X(0));
+    X(0) = b ? (uint64_t)snx_gl_unmap_buffer(gl->ctx, b) : 0;
+}
+static void g_flush_mapped_range(CPU* c, Gles2Context* gl) {
+    uint32_t b = bound(gl, X(0));
+    if (b) snx_gl_flush_mapped_range(gl->ctx, b, (int64_t)X(1), (int64_t)X(2));
+}
 static void g_get_buffer_pointerv(CPU* c, Gles2Context* gl) {
-    G2Buffer* b = bound_buffer(gl, (unsigned)X(0));
-    uint64_t p = b && b->mapped ? (uint64_t)(uintptr_t)(b->data + b->map_offset) : 0;
+    uint32_t b = bound(gl, X(0));
+    uint64_t p = b ? snx_gl_buffer_pointer(gl->ctx, b) : 0;
     memcpy(PTR(2), &p, 8);
 }
 /* glCopyBufferSubData(read, write, read offset, write offset, size): the bytes the CPU has */
 static void g_copy_buffer_sub_data(CPU* c, Gles2Context* gl) {
-    G2Buffer* r = bound_buffer(gl, (unsigned)X(0));
-    G2Buffer* w = bound_buffer(gl, (unsigned)X(1));
-    int64_t ro = (int64_t)X(2), wo = (int64_t)X(3), size = (int64_t)X(4);
-    if (!r || !w) return;
-    if (ro < 0 || wo < 0 || size < 0 || (uint64_t)(ro + size) > r->size || (uint64_t)(wo + size) > w->size) {
-        gles2_error(gl, GL_INVALID_VALUE_);
-        return;
-    }
-    buffer_read_back(r);
-    buffer_read_back(w);
-    memmove(w->data + wo, r->data + ro, (size_t)size);
-    buffer_dirty(w, (size_t)wo, (size_t)(wo + size));
-    w->arena_serial = 0;
-}
-static bool buffer_parameter(G2Buffer* b, unsigned pname, int64_t* v) {
-    switch (pname) {
-    case GL_BUFFER_SIZE_: *v = (int64_t)b->size; return true;
-    case GL_BUFFER_USAGE_: *v = b->usage ? b->usage : 0x88e4; return true;
-    case GL_BUFFER_MAPPED_: *v = b->mapped; return true;
-    case GL_BUFFER_ACCESS_FLAGS_: *v = b->mapped ? b->map_access : 0; return true;
-    case GL_BUFFER_MAP_LENGTH_: *v = b->mapped ? (int64_t)b->map_length : 0; return true;
-    case GL_BUFFER_MAP_OFFSET_: *v = b->mapped ? (int64_t)b->map_offset : 0; return true;
-    default: return false;
-    }
+    uint32_t r = bound(gl, X(0)), w = bound(gl, X(1));
+    if (r && w) snx_gl_copy_buffer_sub_data(gl->ctx, r, w, (int64_t)X(2), (int64_t)X(3), (int64_t)X(4));
 }
 static void g_get_buffer_parameteriv(CPU* c, Gles2Context* gl) {
-    G2Buffer* b = bound_buffer(gl, (unsigned)X(0));
+    uint32_t b = bound(gl, X(0));
     int64_t v = 0;
     if (!b) return;
-    if (!buffer_parameter(b, (unsigned)X(1), &v)) gles2_error(gl, GL_INVALID_ENUM_);
+    snx_gl_buffer_parameter(gl->ctx, b, (uint32_t)X(1), &v);
     int32_t x = (int32_t)v;
     memcpy(PTR(2), &x, 4);
 }
 static void g_get_buffer_parameteri64v(CPU* c, Gles2Context* gl) {
-    G2Buffer* b = bound_buffer(gl, (unsigned)X(0));
+    uint32_t b = bound(gl, X(0));
     int64_t v = 0;
     if (!b) return;
-    if (!buffer_parameter(b, (unsigned)X(1), &v)) gles2_error(gl, GL_INVALID_ENUM_);
+    snx_gl_buffer_parameter(gl->ctx, b, (uint32_t)X(1), &v);
     memcpy(PTR(2), &v, 8);
 }
 
@@ -1027,7 +875,7 @@ static void upload(Gles2Context* gl, G2Texture* t, int level, int x, int y, int 
     if (!t->image.image || w <= 0 || h <= 0 || d <= 0) return;
     const G2Format* f = t->format;
     const unsigned char* src = (const unsigned char*)(uintptr_t)pixels;
-    G2Buffer* unpack = gles2_buffer(gl->pixel_unpack);
+    G2Buffer* unpack = gles2_buffer(gles2_objects(gl)->pixel_unpack);
     if (unpack) src = gles2_buffer_bytes(unpack) + pixels;
     if (!src && !unpack) return;
     GlesSlot* slot = gles2_transfer_slot(gl);
@@ -1147,7 +995,7 @@ static void tex_image(Gles2Context* gl, unsigned target, int level, unsigned int
         if (!gles2_texture_storage(gl, t, f, bw, bh, bd, full_levels(bw, bh, t->target == G2_T3D ? bd : 1))) return;
     }
     t->defined |= 1u << level;
-    if (pixels || gles2_buffer(gl->pixel_unpack))
+    if (pixels || gles2_buffer(gles2_objects(gl)->pixel_unpack))
         upload(gl, t, level, 0, 0, t->target == G2_TCUBE ? face : 0, w, h, t->target == G2_TCUBE ? 1 : d, pixels,
                compressed, csize);
 }
@@ -1746,7 +1594,7 @@ static void forget_renderbuffer(Gles2Context* gl, unsigned name) {
     gles2_target_forget();
 }
 void gles2_objects_vk_free(void) {
-    for (size_t i = 0; i < g_gles2.buffer_count; ++i) buffer_vk_free(&g_gles2.buffers[i]);
+    for (size_t i = 0; i < SNX_GL_BUFFERS; ++i) buffer_vk_free(&g_gles2.buffer_vk[i]);
     for (size_t i = 0; i < g_gles2.texture_count; ++i) texture_free(&g_gles2.textures[i]);
     for (size_t i = 0; i < g_gles2.renderbuffer_count; ++i) renderbuffer_free(&g_gles2.renderbuffers[i]);
     for (size_t i = 0; i < g_gles2.query_count; ++i) {
@@ -2070,222 +1918,87 @@ static void g_invalidate_framebuffer(CPU* c, Gles2Context* gl) {
 
 /* ---- vertex arrays and attributes ---- */
 
-static void g_gen_vertex_arrays(CPU* c, Gles2Context* gl) {
-    gen_call(c, gl, gen_vertex_arrays);
-}
-static void g_bind_vertex_array(CPU* c, Gles2Context* gl) {
-    unsigned name = (unsigned)X(0);
-    if (name && (name >= g_gles2.vertex_array_count || !g_gles2.vertex_arrays[name].used)) {
-        gles2_error(gl, GL_INVALID_OPERATION_);
-        return;
-    }
-    gl->vertex_array = name;
-}
-static void forget_vertex_array(Gles2Context* gl, unsigned name) {
-    if (name >= g_gles2.vertex_array_count || !g_gles2.vertex_arrays[name].used) return;
-    g_gles2.vertex_arrays[name] = (G2VertexArray){0};
-    if (gl->vertex_array == name) gl->vertex_array = 0;
-}
+static void g_gen_vertex_arrays(CPU* c, Gles2Context* gl) { snx_gl_gen_vertex_arrays(gl->ctx, (int32_t)X(0), PTR(1)); }
+static void g_bind_vertex_array(CPU* c, Gles2Context* gl) { snx_gl_bind_vertex_array(gl->ctx, (uint32_t)X(0)); }
 static void g_delete_vertex_arrays(CPU* c, Gles2Context* gl) {
-    each_name(c, gl, forget_vertex_array);
+    snx_gl_delete_vertex_arrays(gl->ctx, (int32_t)X(0), PTR(1));
 }
 static void g_is_vertex_array(CPU* c, Gles2Context* gl) {
     (void)gl;
-    unsigned name = (unsigned)X(0);
-    X(0) = name && name < g_gles2.vertex_array_count && g_gles2.vertex_arrays[name].used;
-}
-static G2Attrib* attrib(Gles2Context* gl, unsigned index) {
-    if (index >= G2_ATTRIBS) {
-        gles2_error(gl, GL_INVALID_VALUE_);
-        return NULL;
-    }
-    return &gles2_vertex_array(gl)->attribs[index];
-}
-uint32_t gles2_vertex_bytes(unsigned type, int size) {
-    switch (type) {
-    case GL_BYTE_:
-    case GL_UNSIGNED_BYTE_: return (uint32_t)size;
-    case GL_SHORT_:
-    case GL_UNSIGNED_SHORT_:
-    case GL_HALF_FLOAT_:
-    case GL_HALF_FLOAT_OES_: return 2u * (uint32_t)size;
-    case 0x8d9f:
-    case GL_UI_2101010_: return 4;
-    default: return 4u * (uint32_t)size;
-    }
-}
-static void attrib_pointer(Gles2Context* gl, unsigned index, int size, unsigned type, bool normalized, bool integer,
-                           int stride, uint64_t pointer) {
-    G2Attrib* a = attrib(gl, index);
-    if (!a) return;
-    if (size < 1 || size > 4 || stride < 0) {
-        gles2_error(gl, GL_INVALID_VALUE_);
-        return;
-    }
-    a->size = size;
-    a->type = type;
-    a->normalized = normalized;
-    a->integer = integer;
-    a->stride = stride;
-    a->relative = 0;
-    a->binding = (uint8_t)index;
-    G2VertexBinding* b = &gles2_vertex_array(gl)->bindings[index];
-    b->offset = pointer;
-    b->buffer = gl->array_buffer;
-    b->stride = stride ? (uint32_t)stride : gles2_vertex_bytes(type, size);
+    X(0) = (uint64_t)snx_gl_is_vertex_array((uint32_t)X(0));
 }
 static void g_vertex_attrib_pointer(CPU* c, Gles2Context* gl) {
-    attrib_pointer(gl, (unsigned)X(0), (int)X(1), (unsigned)X(2), (X(3) & 0xff) != 0, false, (int)X(4), X(5));
+    snx_gl_vertex_attrib_pointer(gl->ctx, (uint32_t)X(0), (int32_t)X(1), (uint32_t)X(2), (X(3) & 0xff) != 0, 0,
+                                 (int32_t)X(4), X(5));
 }
 static void g_vertex_attrib_ipointer(CPU* c, Gles2Context* gl) {
-    attrib_pointer(gl, (unsigned)X(0), (int)X(1), (unsigned)X(2), false, true, (int)X(3), X(4));
+    snx_gl_vertex_attrib_pointer(gl->ctx, (uint32_t)X(0), (int32_t)X(1), (uint32_t)X(2), 0, 1, (int32_t)X(3), X(4));
 }
 /* GLES 3.1's vertex attribute bindings */
-static void attrib_format(Gles2Context* gl, unsigned index, int size, unsigned type, bool normalized, bool integer,
-                          uint32_t relative) {
-    G2Attrib* a = attrib(gl, index);
-    if (!a) return;
-    if (size < 1 || size > 4 || relative > 2047) {
-        gles2_error(gl, GL_INVALID_VALUE_);
-        return;
-    }
-    a->size = size;
-    a->type = type;
-    a->normalized = normalized;
-    a->integer = integer;
-    a->relative = relative;
-}
 static void g_vertex_attrib_format(CPU* c, Gles2Context* gl) {
-    attrib_format(gl, (unsigned)X(0), (int)X(1), (unsigned)X(2), (X(3) & 0xff) != 0, false, (uint32_t)X(4));
+    snx_gl_vertex_attrib_format(gl->ctx, (uint32_t)X(0), (int32_t)X(1), (uint32_t)X(2), (X(3) & 0xff) != 0, 0,
+                                (uint32_t)X(4));
 }
 static void g_vertex_attrib_iformat(CPU* c, Gles2Context* gl) {
-    attrib_format(gl, (unsigned)X(0), (int)X(1), (unsigned)X(2), false, true, (uint32_t)X(3));
+    snx_gl_vertex_attrib_format(gl->ctx, (uint32_t)X(0), (int32_t)X(1), (uint32_t)X(2), 0, 1, (uint32_t)X(3));
 }
 static void g_vertex_attrib_binding(CPU* c, Gles2Context* gl) {
-    G2Attrib* a = attrib(gl, (unsigned)X(0));
-    if (a && X(1) < G2_ATTRIBS) a->binding = (uint8_t)X(1);
-    else if (a) gles2_error(gl, GL_INVALID_VALUE_);
+    snx_gl_vertex_attrib_binding(gl->ctx, (uint32_t)X(0), (uint32_t)X(1));
 }
 /* glBindVertexBuffer(binding, buffer, offset, stride) */
 static void g_bind_vertex_buffer(CPU* c, Gles2Context* gl) {
-    unsigned i = (unsigned)X(0), name = (unsigned)X(1);
-    if (i >= G2_ATTRIBS || (int64_t)X(2) < 0 || (int32_t)X(3) < 0 || (uint32_t)X(3) > 2048) {
-        gles2_error(gl, GL_INVALID_VALUE_);
-        return;
-    }
-    if (name && !buffer_made(name)) return;
-    G2VertexBinding* b = &gles2_vertex_array(gl)->bindings[i];
-    b->buffer = name;
-    b->offset = X(2);
-    b->stride = (uint32_t)X(3);
+    snx_gl_bind_vertex_buffer(gl->ctx, (uint32_t)X(0), (uint32_t)X(1), (int64_t)X(2), (int32_t)X(3));
 }
 static void g_vertex_binding_divisor(CPU* c, Gles2Context* gl) {
-    if ((unsigned)X(0) >= G2_ATTRIBS) gles2_error(gl, GL_INVALID_VALUE_);
-    else gles2_vertex_array(gl)->bindings[X(0)].divisor = (uint32_t)X(1);
+    snx_gl_vertex_binding_divisor(gl->ctx, (uint32_t)X(0), (uint32_t)X(1));
 }
-
 static void g_enable_vertex_attrib_array(CPU* c, Gles2Context* gl) {
-    G2Attrib* a = attrib(gl, (unsigned)X(0));
-    if (a) a->enabled = true;
+    snx_gl_enable_vertex_attrib(gl->ctx, (uint32_t)X(0), 1);
 }
 static void g_disable_vertex_attrib_array(CPU* c, Gles2Context* gl) {
-    G2Attrib* a = attrib(gl, (unsigned)X(0));
-    if (a) a->enabled = false;
+    snx_gl_enable_vertex_attrib(gl->ctx, (uint32_t)X(0), 0);
 }
 static void g_vertex_attrib_divisor(CPU* c, Gles2Context* gl) {
-    G2Attrib* a = attrib(gl, (unsigned)X(0));
-    if (!a) return;
-    a->binding = (uint8_t)X(0);
-    gles2_vertex_array(gl)->bindings[X(0)].divisor = (uint32_t)X(1);
-}
-static void generic(Gles2Context* gl, unsigned index, const void* v, int n, uint8_t base) {
-    if (index >= G2_ATTRIBS) {
-        gles2_error(gl, GL_INVALID_VALUE_);
-        return;
-    }
-    G2Generic* g = &gl->generic[index];
-    float one = 1;
-    uint32_t defaults[4] = {0, 0, 0, 0};
-    if (base == SNX_GLSLC_BASE_FLOAT) memcpy(&defaults[3], &one, 4);
-    else defaults[3] = 1;
-    memcpy(g->bits, defaults, sizeof defaults);
-    memcpy(g->bits, v, (size_t)n * 4);
-    g->base = base;
+    snx_gl_vertex_attrib_divisor(gl->ctx, (uint32_t)X(0), (uint32_t)X(1));
 }
 static void attrib_f(CPU* c, Gles2Context* gl, int n) {
     float v[4];
     for (int i = 0; i < n; ++i) v[i] = hle_f(c, (unsigned)i);
-    generic(gl, (unsigned)X(0), v, n, SNX_GLSLC_BASE_FLOAT);
+    snx_gl_vertex_attrib(gl->ctx, (uint32_t)X(0), v, n, SNX_GLSLC_BASE_FLOAT);
 }
-static void g_vertex_attrib1f(CPU* c, Gles2Context* gl) {
-    attrib_f(c, gl, 1);
-}
-static void g_vertex_attrib2f(CPU* c, Gles2Context* gl) {
-    attrib_f(c, gl, 2);
-}
-static void g_vertex_attrib3f(CPU* c, Gles2Context* gl) {
-    attrib_f(c, gl, 3);
-}
-static void g_vertex_attrib4f(CPU* c, Gles2Context* gl) {
-    attrib_f(c, gl, 4);
-}
+static void g_vertex_attrib1f(CPU* c, Gles2Context* gl) { attrib_f(c, gl, 1); }
+static void g_vertex_attrib2f(CPU* c, Gles2Context* gl) { attrib_f(c, gl, 2); }
+static void g_vertex_attrib3f(CPU* c, Gles2Context* gl) { attrib_f(c, gl, 3); }
+static void g_vertex_attrib4f(CPU* c, Gles2Context* gl) { attrib_f(c, gl, 4); }
 static void g_vertex_attrib1fv(CPU* c, Gles2Context* gl) {
-    generic(gl, (unsigned)X(0), PTR(1), 1, SNX_GLSLC_BASE_FLOAT);
+    snx_gl_vertex_attrib(gl->ctx, (uint32_t)X(0), PTR(1), 1, SNX_GLSLC_BASE_FLOAT);
 }
 static void g_vertex_attrib2fv(CPU* c, Gles2Context* gl) {
-    generic(gl, (unsigned)X(0), PTR(1), 2, SNX_GLSLC_BASE_FLOAT);
+    snx_gl_vertex_attrib(gl->ctx, (uint32_t)X(0), PTR(1), 2, SNX_GLSLC_BASE_FLOAT);
 }
 static void g_vertex_attrib3fv(CPU* c, Gles2Context* gl) {
-    generic(gl, (unsigned)X(0), PTR(1), 3, SNX_GLSLC_BASE_FLOAT);
+    snx_gl_vertex_attrib(gl->ctx, (uint32_t)X(0), PTR(1), 3, SNX_GLSLC_BASE_FLOAT);
 }
 static void g_vertex_attrib4fv(CPU* c, Gles2Context* gl) {
-    generic(gl, (unsigned)X(0), PTR(1), 4, SNX_GLSLC_BASE_FLOAT);
+    snx_gl_vertex_attrib(gl->ctx, (uint32_t)X(0), PTR(1), 4, SNX_GLSLC_BASE_FLOAT);
 }
 static void g_vertex_attrib_i4i(CPU* c, Gles2Context* gl) {
     int32_t v[4] = {(int32_t)X(1), (int32_t)X(2), (int32_t)X(3), (int32_t)X(4)};
-    generic(gl, (unsigned)X(0), v, 4, SNX_GLSLC_BASE_INT);
+    snx_gl_vertex_attrib(gl->ctx, (uint32_t)X(0), v, 4, SNX_GLSLC_BASE_INT);
 }
 static void g_vertex_attrib_i4ui(CPU* c, Gles2Context* gl) {
     uint32_t v[4] = {(uint32_t)X(1), (uint32_t)X(2), (uint32_t)X(3), (uint32_t)X(4)};
-    generic(gl, (unsigned)X(0), v, 4, SNX_GLSLC_BASE_UINT);
+    snx_gl_vertex_attrib(gl->ctx, (uint32_t)X(0), v, 4, SNX_GLSLC_BASE_UINT);
 }
 static void g_vertex_attrib_i4iv(CPU* c, Gles2Context* gl) {
-    generic(gl, (unsigned)X(0), PTR(1), 4, SNX_GLSLC_BASE_INT);
+    snx_gl_vertex_attrib(gl->ctx, (uint32_t)X(0), PTR(1), 4, SNX_GLSLC_BASE_INT);
 }
 static void g_vertex_attrib_i4uiv(CPU* c, Gles2Context* gl) {
-    generic(gl, (unsigned)X(0), PTR(1), 4, SNX_GLSLC_BASE_UINT);
-}
-/* glGetVertexAttrib*: an attribute's state, or GL_CURRENT_VERTEX_ATTRIB's 4 values */
-static int vertex_attrib(Gles2Context* gl, unsigned index, unsigned pname, double v[4]) {
-    G2Attrib* a = attrib(gl, index);
-    if (!a) return 0;
-    switch (pname) {
-    case 0x8622: v[0] = a->enabled; return 1;
-    case 0x8623: v[0] = a->size; return 1;
-    case 0x8624: v[0] = a->stride; return 1;
-    case 0x8625: v[0] = a->type; return 1;
-    case 0x886a: v[0] = a->normalized; return 1;
-    case 0x889f: v[0] = gles2_vertex_array(gl)->bindings[a->binding].buffer; return 1;
-    case 0x82d4: v[0] = a->binding; return 1;  /* GL_VERTEX_ATTRIB_BINDING */
-    case 0x82d5: v[0] = a->relative; return 1; /* GL_VERTEX_ATTRIB_RELATIVE_OFFSET */
-    case 0x88fd: v[0] = a->integer; return 1;
-    case 0x88fe: v[0] = gles2_vertex_array(gl)->bindings[a->binding].divisor; return 1;
-    case 0x8626: {
-        const G2Generic* g = &gl->generic[index];
-        for (int i = 0; i < 4; ++i) {
-            float f;
-            memcpy(&f, &g->bits[i], 4);
-            v[i] = g->base == SNX_GLSLC_BASE_FLOAT ? f : g->base == SNX_GLSLC_BASE_INT ? (double)(int32_t)g->bits[i]
-                                                                                      : g->bits[i];
-        }
-        return 4;
-    }
-    default: gles2_error(gl, GL_INVALID_ENUM_); return 0;
-    }
+    snx_gl_vertex_attrib(gl->ctx, (uint32_t)X(0), PTR(1), 4, SNX_GLSLC_BASE_UINT);
 }
 static void g_get_vertex_attribiv(CPU* c, Gles2Context* gl) {
     double v[4];
-    int n = vertex_attrib(gl, (unsigned)X(0), (unsigned)X(1), v);
+    int n = snx_gl_get_vertex_attrib(gl->ctx, (uint32_t)X(0), (uint32_t)X(1), v);
     for (int i = 0; i < n; ++i) {
         int32_t x = (int32_t)v[i];
         memcpy((unsigned char*)PTR(2) + 4 * i, &x, 4);
@@ -2293,15 +2006,20 @@ static void g_get_vertex_attribiv(CPU* c, Gles2Context* gl) {
 }
 static void g_get_vertex_attribfv(CPU* c, Gles2Context* gl) {
     double v[4];
-    int n = vertex_attrib(gl, (unsigned)X(0), (unsigned)X(1), v);
+    int n = snx_gl_get_vertex_attrib(gl->ctx, (uint32_t)X(0), (uint32_t)X(1), v);
     for (int i = 0; i < n; ++i) {
         float x = (float)v[i];
         memcpy((unsigned char*)PTR(2) + 4 * i, &x, 4);
     }
 }
 static void g_get_vertex_attrib_pointerv(CPU* c, Gles2Context* gl) {
-    G2Attrib* a = attrib(gl, (unsigned)X(0));
-    if (a) memcpy(PTR(2), &gles2_vertex_array(gl)->bindings[a->binding].offset, 8);
+    uint32_t i = (uint32_t)X(0);
+    const SnxGlVertexArray* a = snx_gl_vertex_array(gl->ctx);
+    if (i >= SNX_GL_VERTEX_ATTRIBS) {
+        gles2_error(gl, GL_INVALID_VALUE_);
+        return;
+    }
+    memcpy(PTR(2), &a->bindings[a->attribs[i].binding].offset, 8);
 }
 
 /* ---- queries ---- */

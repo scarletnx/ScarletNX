@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 /* The GL layer's state machine (gl_state.h): the contexts and their fixed state, in one block of flat records */
 #include "common/gpu/gl/gl_state.h"
+#include "common/gpu/gl/gl_object.h"
 #include "common/gpu/gl/gl_program.h"
 #include <stdio.h>
 #include <string.h>
@@ -58,6 +59,7 @@ uint32_t snx_gl_context_new(uint32_t api, uint32_t version, uint32_t debug) {
         f->dither = 1;
         f->hints[0] = f->hints[1] = GL_DONT_CARE_;
         f->pixel[0].alignment = f->pixel[1].alignment = 4;
+        snx_gl_object_context_reset(i + 1);
         return i + 1;
     }
     return 0;
@@ -266,6 +268,7 @@ int snx_gl_get(uint32_t ctx, uint32_t pname, double v[4]) {
         v[0] = on;
         return 1;
     }
+    if (snx_gl_object_get(ctx, pname, v)) return 1;
     switch (pname) {
         case 0x0ba2: /* GL_VIEWPORT */
             for (i = 0; i < 4; i++) v[i] = f->viewport[i];
@@ -273,6 +276,8 @@ int snx_gl_get(uint32_t ctx, uint32_t pname, double v[4]) {
         case 0x0c10: /* GL_SCISSOR_BOX */
             for (i = 0; i < 4; i++) v[i] = f->scissor[i];
             return 4;
+        case 0x8b8d: v[0] = c->program; return 1;  /* GL_CURRENT_PROGRAM */
+        case 0x825a: v[0] = c->pipeline; return 1; /* GL_PROGRAM_PIPELINE_BINDING */
         case 0x0c22: /* GL_COLOR_CLEAR_VALUE */
             for (i = 0; i < 4; i++) v[i] = f->clear_color[i];
             return 4;
@@ -377,13 +382,23 @@ uint32_t snx_gl_clear(uint32_t ctx, uint32_t mask) {
     return mask;
 }
 
-size_t snx_gl_state_bytes(void) { return sizeof(SnxGlStateHeader) + sizeof g_gl + snx_gl_program_state_bytes(); }
+size_t snx_gl_state_bytes(void) {
+    return sizeof(SnxGlStateHeader) + sizeof g_gl + snx_gl_program_state_bytes() + snx_gl_object_state_bytes();
+}
 
 void snx_gl_state_save(void* out) {
     const SnxGlStateHeader h = {SNX_GL_STATE_MAGIC, SNX_GL_STATE_VERSION, (uint32_t)sizeof g_gl, 0};
     memcpy(out, &h, sizeof h);
     memcpy((unsigned char*)out + sizeof h, &g_gl, sizeof g_gl);
     snx_gl_program_state_save((unsigned char*)out + sizeof h + sizeof g_gl);
+    snx_gl_object_state_save((unsigned char*)out + sizeof h + sizeof g_gl + snx_gl_program_state_bytes());
+}
+/* the bytes of the programs' part at programs, of the left bytes there: 0 when its header says more than that */
+static size_t program_part(const unsigned char* programs, size_t left) {
+    uint32_t h[2];
+    if (left < sizeof h) return 0;
+    memcpy(h, programs, sizeof h);
+    return (uint64_t)sizeof h + h[0] + h[1] <= left ? sizeof h + (size_t)h[0] + h[1] : 0;
 }
 
 /* an error of a context's record, by what GL can leave there */
@@ -431,9 +446,18 @@ int snx_gl_state_check(const void* in, size_t size, char* why, size_t whysize) {
             }
         }
     }
-    if (snx_gl_program_state_check((const unsigned char*)in + sizeof h + sizeof g_gl, size - sizeof h - sizeof g_gl,
-                                   why, whysize))
-        return -1;
+    {
+        const unsigned char* programs = (const unsigned char*)in + sizeof h + sizeof g_gl;
+        size_t left = size - sizeof h - sizeof g_gl, part = program_part(programs, left);
+        if (!part) {
+            snprintf(why, whysize,
+                     "the GL layer's programs say more bytes than the %zu its state has after the contexts", left);
+            return -1;
+        }
+        if (snx_gl_program_state_check(programs, part, why, whysize) ||
+            snx_gl_object_state_check(programs + part, left - part, why, whysize))
+            return -1;
+    }
     for (uint32_t i = 0; i < SNX_GL_CONTEXTS; i++) {
         SnxGlContext c;
         memcpy(&c, (const unsigned char*)in + sizeof h + i * sizeof c, sizeof c);
@@ -450,8 +474,9 @@ int snx_gl_state_check(const void* in, size_t size, char* why, size_t whysize) {
 
 int snx_gl_state_load(const void* in, size_t size) {
     const unsigned char* i = in;
-    size_t part = sizeof(SnxGlStateHeader) + sizeof g_gl;
-    if (snx_gl_program_state_load(i + part, size - part)) return -1;
+    size_t at = sizeof(SnxGlStateHeader) + sizeof g_gl, part = program_part(i + at, size - at);
+    if (snx_gl_program_state_load(i + at, part)) return -1;
+    snx_gl_object_state_load(i + at + part);
     memcpy(&g_gl, i + sizeof(SnxGlStateHeader), sizeof g_gl);
     return 0;
 }
