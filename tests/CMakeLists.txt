@@ -3212,6 +3212,13 @@ if(NOT WIN32)
     add_test(NAME elf_relocate COMMAND snx-test-elf-relocate)
     set_tests_properties(elf_relocate PROPERTIES TIMEOUT 120)
 endif()
+# Windows on Arm's COFF objects (code_loader_coff.c, link_coff.c): relocations, veneers, a module and a JIT load, read
+# back on any host
+add_executable(snx-test-coff-arm64 coff_arm64.c)
+snx_test_target(snx-test-coff-arm64 gnu23)
+target_link_libraries(snx-test-coff-arm64 PRIVATE snx_llvm)
+add_test(NAME coff_arm64 COMMAND snx-test-coff-arm64)
+set_tests_properties(coff_arm64 PROPERTIES TIMEOUT 120)
 # not a test: timings of the generated code (llvm_bench SCARLETNX REPO CLANG)
 add_executable(snx-llvm-bench llvm_bench.c)
 snx_test_target(snx-llvm-bench gnu23)
