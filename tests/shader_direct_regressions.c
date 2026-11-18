@@ -1890,6 +1890,80 @@ static void structured_flow(void) {
     free(spv);
 }
 
+/* a relative flow instruction (its opcode the top 12 bits) at word at to word to, under PT with condition T; the
+   pushes, which UAM writes with no predicate, as zeros in bits 0 to 19 */
+static u64 flow_to(u64 top12, u32 at, u32 to) {
+    return top12 << 52 | (u64)(((to - (at + 1)) * 8) & 0xFFFFFF) << 20 | 0x7000Full;
+}
+static u64 push_to(u64 top12, u32 at, u32 to) { return flow_to(top12, at, to) & ~0xFFFFFull; }
+/* the word guest_program puts instruction k at */
+static u32 word_of(u32 k) { return 11 + k + k / 3; }
+
+#define MOV_R4_C0 0x4C98078000070004ull /* MOV R4, c[0x0][0x0] */
+#define P0_R4_0   0x5B6503800FF70407ull /* ISETP.EQ.U32.AND P0, PT, R4, RZ, PT */
+#define RET_T     0xE32000000007000Full /* RET */
+
+/* A fragment program's returns run on the CPU with c[0][0] and c[0][4] (P0 and P1 when zero): its color 0, R0 to R3
+   as an integer target's bits, in out, and in *dispatch whether its module has the dispatch loop's switch; 0 when it
+   ran to its outputs */
+static int returns_run(const u64* instructions, int count, u32 c0, u32 c1, u32 out[4], ShaderInfo* info,
+                       int* dispatch) {
+    size_t words = 0, slots;
+    u64* code = guest_program(instructions, count, NULL, &slots);
+    if (!code) return -1;
+    set_sph(code, 18, 0xf);
+    memset(info, 0, sizeof *info);
+    info->rt_int_mask = 1;
+    u32* spv = spirv_of(code, slots * sizeof *code, ST_FS, info, &words, 1, 1, 1, 1);
+    free(code);
+    check_translated(spv, info, "a program with returns translates");
+    if (!spv) return -1;
+    SpvEvalEnv env = {0};
+    float one[4] = {1.0f, 1.0f, 1.0f, 0.0f};
+    u32 scale[4], constants[4] = {c0, c1, 0, 0};
+    memcpy(scale, one, sizeof one);
+    env.ubo[SNX_VKB_RS] = scale;
+    env.ubo_words[SNX_VKB_RS] = 4;
+    env.ubo[SNX_VKB_CB] = constants;
+    env.ubo_words[SNX_VKB_CB] = 4;
+    const char* why = spv_eval(spv, words, &env);
+    if (why) fprintf(stderr, "a program with returns stops: %s\n", why);
+    memcpy(out, env.out[0], 4 * sizeof *out);
+    int switches;
+    *dispatch = switch_cases(spv, words, &switches) || switches;
+    free(spv);
+    return why || !env.out_written[0];
+}
+
+/* a RET whose return point depends on the path: @P0 to a PRET of its own, else another, then one RET. It keeps the
+   dispatch loop with a stack of returns, where a PRET pushes whatever P0 holds: its bits 16 to 19 are zero, not P0 */
+static void pret_by_path(void) {
+    const u32 l1 = word_of(5), l2 = word_of(6), a = word_of(8), b = word_of(10);
+    const u64 program[] = {
+        MOV_R4_C0,                                    /* R4 = c[0][0] */
+        P0_R4_0,                                      /* P0 = R4 == 0 */
+        flow_to(0xE24, word_of(2), l1) & ~0xF0000ull, /* @P0 BRA l1 */
+        push_to(0xE27, word_of(3), a),                /* PRET a */
+        flow_to(0xE24, word_of(4), l2),               /* BRA l2 */
+        push_to(0xE27, word_of(5), b),                /* l1: PRET b */
+        mov32i(1, 5),                                 /* l2: R1 = 5 */
+        RET_T,                                        /* RET, to a or b */
+        mov32i(0, 1),                                 /* a: R0 = 1 */
+        EXIT,                                         /* EXIT */
+        mov32i(0, 2),                                 /* b: R0 = 2, and the EXIT guest_program ends with */
+    };
+    for (u32 p = 0; p < 2; p++) {
+        ShaderInfo info;
+        u32 out[4];
+        int dispatch = 0, ran = returns_run(program, 11, p ? 0 : 1, 0, out, &info, &dispatch);
+        if (ran || out[0] != (p ? 2u : 1u) || out[1] != 5)
+            fprintf(stderr, "a return by path, P0 %u: %s, R0 %u R1 %u (%u 5 expected)\n", p, ran ? "stopped" : "ran",
+                    out[0], out[1], p ? 2u : 1u);
+        check(!ran && out[0] == (p ? 2u : 1u) && out[1] == 5, "a RET returns to the PRET its path pushed");
+        check(dispatch, "a return by path keeps the dispatch loop");
+    }
+}
+
 /* Indirect calls read compiler constants at execution time, so a changed selection can reuse the same module.
    Absolute calls include their shader-pool base in the key. Hashing must retain functions past the main EXIT. */
 static void subroutine_calls(void) {
@@ -6638,6 +6712,7 @@ int main(int argc, char** argv) {
     viewport_mask();
     indexed_attribute_load();
     structured_flow();
+    pret_by_path();
     fswzadd_forms();
     shfl_quad_forms();
     shfl_predicate();
