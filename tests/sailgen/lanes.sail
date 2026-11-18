@@ -35,6 +35,19 @@ function decode_last_aarch64_instrs_test Rd = {
     GPR[UInt(Rd)] = ZeroExtend(element, 64)
 }
 
+val decode_pairs_aarch64_instrs_test : bits(4) -> unit
+
+function decode_pairs_aarch64_instrs_test Rd = {
+    let operand1 : bits(64) = GPR[0];
+    let operand2 : bits(64) = GPR[1];
+    let concat : bits(128) = operand2 @ operand1;
+    result : bits(64) = undefined;
+    foreach (e from 0 to 7 by 1 in inc) {
+        result = Elem_set(result, e, 8, Elem_read(concat, 2 * e, 8) + Elem_read(concat, 2 * e + 1, 8))
+    };
+    GPR[UInt(Rd)] = result
+}
+
 val decode_fixed_aarch64_instrs_test : (bits(4), bits(1)) -> unit
 
 function decode_fixed_aarch64_instrs_test (Rd, U) = {
@@ -89,6 +102,11 @@ function clause __DecodeA64_DataProcImm ((pc, ([bitone, bitone, bitone, bitone, 
     decode_last_aarch64_instrs_test(Rd)
 }
 
+function clause __DecodeA64_DataProcImm ((pc, ([bitone, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, bitone, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 4) = {
+    SEE = 4;
+    let Rd = Slice(__opcode, 0, 4);
+    decode_pairs_aarch64_instrs_test(Rd)
+}
 
 
 

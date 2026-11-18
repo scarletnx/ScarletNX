@@ -52,12 +52,17 @@ with `e` standing for every lane, so each value it makes per element is a **LANE
 (`llvm.h`'s `SgL`), and an operation on lanes is that operation on the vector (`sg_l_add`, `sg_l_cmp`, a select for an
 `if` per lane). Integers per lane keep their signedness and widen as an exact result needs, and the slice back to
 bits narrows them, which LLVM folds to the element's own width. A register the instruction read whole becomes its
-lanes as one load, and lanes written to a register one store (`ir_vec_read`, `ir_vec_write`). The body may only set
-locals per lane: one that sets state (a register, an action), carries a local from one element to the next (REV's
-container loop), holds another loop (PMUL's polynomial product), reads an element other than `e`, uses a value per
-lane where one is wanted, or leaves the loop with an element's value rather than the vector `Elem_set` built, is walked
-again as the loop it is, every element its own IR, which `tests/llvm_sail_ir.c` shows as longer than the hand-written
-emitter's (`sailgen_lanes` holds each outcome).
+lanes as one load, and lanes written to a register one store (`ir_vec_read`, `ir_vec_write`).
+
+An element other than `e` of a `let` that concatenates two values, `Elem_read(concat, 2 * e + 1, esize)` of the pairwise
+ops' `operand2 @ operand1`, is a shuffle of the two values' lanes (`sg_l_permute`) whose mask is that index for each
+lane, made when the recompiler runs; the concatenation, wider than the back end's 128 bits, is never made whole.
+
+The body may only set locals per lane: one that sets state (a register, an action), carries a local from one element to
+the next (REV's container loop), holds another loop (PMUL's polynomial product), reads an element other than `e` but
+of a concatenation, uses a value per lane where one is wanted, or leaves the loop with an element's value rather than
+the vector `Elem_set` built, is walked again as the loop it is, every element its own IR, which `tests/llvm_sail_ir.c`
+shows as longer than the hand-written emitter's (`sailgen_lanes` holds each outcome).
 
 ## The back end (`llvm.h`)
 

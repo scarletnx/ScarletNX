@@ -104,6 +104,7 @@ static struct {
     unsigned lane_loop;
     int lane, lane_fail, lane_restart;
     char lane_count[160];
+    int lane_raw; /* a line the walk emits may name the lane: a permuted index's mask (permuted) */
     /* the bits of the instruction's word the clause walked fixes, and their values */
     SgU64 word_mask, word_value;
     unsigned refused[64], refused_count;
@@ -139,7 +140,8 @@ static void emit(const char* fmt, ...) {
     n = vsnprintf(line, sizeof line, fmt, ap);
     va_end(ap);
     if (n < 0 || (size_t)n >= sizeof line) sg_fail(0, "a generated line over %zu characters", sizeof line);
-    if (g_gen.lane && strstr(line, "sg_lane")) lane_refuse("the lane's number used other than as an element's");
+    if (g_gen.lane && !g_gen.lane_raw && strstr(line, "sg_lane"))
+        lane_refuse("the lane's number used other than as an element's");
     buf_add(g_gen.out, line, (size_t)n);
 }
 
@@ -508,6 +510,9 @@ static unsigned through_let(unsigned n) {
     return n;
 }
 
+/* do two names (string offsets, which the parse does not share between equal names) read the same? */
+static int same_name(unsigned a, unsigned b) { return a == b || !strcmp(sg_str(a), sg_str(b)); }
+
 /* does a function reach state (a register, a feature, the pc), or call one that does? A call of an overload may run
    any of its functions */
 static int reaches_state(unsigned def, unsigned depth);
@@ -803,6 +808,39 @@ static Val shift(unsigned n, int kind) {
     return val_c(K_BITS, BT_DYN, "%s(g, %s, %s)", d_fn[kind], x.c, amount.c);
 }
 
+/* Elem_read(x, f(e), size) in an element loop, f(e) an element other than the lane's own (the pairwise ops' 2 * e and
+   2 * e + 1), of x a let of hi @ lo (Vm:Vn, wider than the back end's bits, so never made whole: lazy_let): the
+   lanes picked from lo's then hi's, a shufflevector whose mask is f of each lane, made when it recompiles */
+static Val permuted(unsigned n, Val index, Val size) {
+    unsigned x = through_let(arg_at(n, 0));
+    Val hi, lo;
+    char mask[16];
+    if (N(x).kind != N_BINOP || strcmp(name_of(x), "@")) {
+        lane_refuse("an element other than the lane's own of other than a concatenation");
+        return index;
+    }
+    hi = need_bits(x, eval(N(x).a, 0), "a concatenation's side");
+    lo = need_bits(x, eval(N(x).b, 0), "a concatenation's side");
+    if (hi.bt == BT_LANE || lo.bt == BT_LANE) {
+        lane_refuse("a concatenation of lanes");
+        return index;
+    }
+    hi = keep(raise(hi, BT_DYN));
+    lo = keep(raise(lo, BT_DYN));
+    temp(mask, sizeof mask);
+    g_gen.lane_raw = 1; /* the one line that names the lane: f of each */
+    emit("unsigned %s[64];\n", mask);
+    emit(
+        "for (long long sg_lane = 0; sg_lane < (long long)(%s) && sg_lane < 64; ++sg_lane) %s[sg_lane] = (unsigned)(%s);\n",
+        g_gen.lane_count, mask, index.c);
+    g_gen.lane_raw = 0;
+    return val_c(
+        K_BITS, BT_LANE,
+        "sg_l_permute(g, sg_l_elem(g, %s, %s, (unsigned)((%s).w / (%s))), sg_l_elem(g, %s, %s, (unsigned)((%s).w "
+        "/ (%s))), %s, %s)",
+        lo.c, size.c, lo.c, size.c, hi.c, size.c, hi.c, size.c, mask, g_gen.lane_count);
+}
+
 /* the builtins an element loop's lanes can go through: their arguments are evaluated here, and one per lane makes the
    result one per lane; else they stay in g_gen.memo for builtin_body. 1 when *r is the result */
 static int lane_builtin(unsigned n, const char* name, Val* r) {
@@ -821,9 +859,13 @@ static int lane_builtin(unsigned n, const char* name, Val* r) {
     g_gen.memo_count = count;
     if (!strcmp(name, "Elem_read") && count == 3 && strstr(a[1].c, "sg_lane")) { /* element e: the lanes */
         Val size = need_static_int(n, a[2], "an element's size");
-        if (strcmp(a[1].c, "sg_lane") || a[0].bt == BT_LANE || a[0].kind != K_BITS) {
-            lane_refuse("an element other than the lane's own");
+        if (a[0].bt == BT_LANE || a[0].kind != K_BITS) {
+            lane_refuse("an element of other than bits");
             *r = a[0];
+            return 1;
+        }
+        if (strcmp(a[1].c, "sg_lane")) { /* element f(e): a shuffle of the lanes */
+            *r = permuted(n, a[1], size);
             return 1;
         }
         *r = val_c(K_BITS, BT_LANE, "sg_l_elem(g, %s, %s, %s)", raise(a[0], BT_DYN).c, size.c, g_gen.lane_count);
@@ -1912,13 +1954,38 @@ static void declare_var(unsigned name, unsigned type, unsigned init_node) {
     bind(name, local, var, 0);
 }
 
-/* let pattern = value: the names bound to copies (the value may come from a local assigned later) */
-static void let_bind(unsigned pattern, Val v, unsigned value_node) {
+/* does the name occur in n (and the items after it) only as what Elem_read reads? */
+static int only_elements(unsigned n, unsigned name) {
+    for (; n; n = N(n).next) {
+        if (N(n).kind == N_ID && same_name(N(n).name, name)) return 0;
+        if (N(n).kind == N_CALL && !strcmp(name_of(n), "Elem_read") && N(n).a && N(N(n).a).kind == N_ID &&
+            same_name(N(N(n).a).name, name)) {
+            if (!only_elements(N(N(n).a).next, name)) return 0;
+            continue;
+        }
+        if (!only_elements(N(n).a, name) || !only_elements(N(n).b, name) || !only_elements(N(n).c, name) ||
+            !only_elements(N(n).d, name))
+            return 0;
+    }
+    return 1;
+}
+/* let x = hi @ lo, x only read by element in what follows (scope): x's C is left unmade, the concatenation of the
+   pairwise ops' Vm:Vn being wider than the back end's bits, and an element loop's lanes read its two sides
+   (permuted) */
+static int lazy_let(unsigned pattern, unsigned value_node, unsigned scope) {
+    unsigned p = pattern;
+    if (N(p).kind == N_TYPED) p = N(p).a;
+    return N(p).kind == N_ID && N(value_node).kind == N_BINOP && !strcmp(name_of(value_node), "@") &&
+           only_elements(scope, N(p).name);
+}
+
+/* let pattern = value: the names bound to copies (the value may come from a local assigned later), but a lazy_let's */
+static void let_bind(unsigned pattern, Val v, unsigned value_node, int lazy) {
     unsigned p = pattern;
     if (N(p).kind == N_TYPED) p = N(p).a;
     if (N(p).kind == N_WILD) return;
     if (N(p).kind == N_ID) {
-        v = keep(v);
+        if (!lazy) v = keep(v);
         bind(N(p).name, v, -1, value_node);
         return;
     }
@@ -1927,7 +1994,7 @@ static void let_bind(unsigned pattern, Val v, unsigned value_node) {
         if (v.kind != K_TUPLE) sg_fail(pattern, "a tuple pattern for a value that is not one");
         for (q = N(p).a; q; q = N(q).next, ++k) {
             if (k >= v.ntuple) sg_fail(q, "more names than the tuple has values");
-            let_bind(q, g_gen.pool[v.tuple[k]], 0);
+            let_bind(q, g_gen.pool[v.tuple[k]], 0, 0);
         }
         return;
     }
@@ -2337,7 +2404,7 @@ static Val block(unsigned n, int tail) {
         int last = !N(item).next;
         if (N(item).kind == N_LET && !N(item).c) {
             Val value = eval(N(item).b, 0);
-            let_bind(N(item).a, value, N(item).b);
+            let_bind(N(item).a, value, N(item).b, lazy_let(N(item).a, N(item).b, N(item).next));
             v = unit();
             continue;
         }
@@ -2441,7 +2508,7 @@ static Val eval(unsigned n, int tail) {
         case N_LET: { /* let p = e in body */
             unsigned saved = g_gen.depth;
             Val value = eval(N(n).b, 0);
-            let_bind(N(n).a, value, N(n).b);
+            let_bind(N(n).a, value, N(n).b, lazy_let(N(n).a, N(n).b, N(n).c));
             v = eval(N(n).c, tail);
             g_gen.depth = saved;
             return v;

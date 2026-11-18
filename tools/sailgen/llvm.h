@@ -2137,6 +2137,17 @@ static inline SgL sg_l_ext(SgCtx* g, SgL a, long long w, int is_signed) {
     a.is_signed = 0;
     return a;
 }
+/* lanes picked from lo's, then hi's, by mask (count of them): a shufflevector, its mask made when it recompiles
+   (ir_vec.c's unzip of the pairwise ops' Vm:Vn) */
+static inline SgL sg_l_permute(SgCtx* g, SgL lo, SgL hi, const unsigned* mask, unsigned count) {
+    unsigned i;
+    if (count > 64) sg_fail("over 64 lanes picked", count, 64);
+    if (lo.count != hi.count || lo.w != hi.w)
+        sg_fail("lanes picked from two vectors of other shapes", lo.count, hi.count);
+    for (i = 0; i < count; ++i)
+        if (mask[i] >= 2 * lo.count) sg_fail("a lane picked past the two vectors' lanes", mask[i], 2 * lo.count);
+    return sg_l_of(ir_vec_shuffle(g->ir, lo.v, hi.v, mask, count), 0);
+}
 
 /* FPCR, as the CPU keeps it: 32 bits, the rest 0 */
 static inline SgD sg_FPCR_read(SgCtx* g) {
