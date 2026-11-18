@@ -24,6 +24,7 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
+#include <stdatomic.h>
 
 #define R(n)        (c->r[n])
 #define HANDLER(n)  static void n(SnxArmCPU* c, void* data)
@@ -42,7 +43,7 @@ enum { L_EINTR = 4, L_EAGAIN = 11, L_ENOMEM = 12, L_EBUSY = 16, L_EINVAL = 22, L
 typedef struct ThreadInfo {
     uint32_t self, tid;
     uint32_t stack_base, stack_size;
-    uint32_t* pending;      /* the thread's arm32_pending_signals: the signals it runs, those not blocked */
+    _Atomic uint32_t* pending; /* the thread's arm32_pending_signals: the signals it runs, those not blocked */
     uint64_t sent, blocked; /* the signals sent and not run, and its mask, a bit for each (1 << (sig - 1)) */
     uint32_t keys[128];     /* pthread_getspecific's values */
     uint32_t cleanup;       /* __pthread_cleanup_push's list, the newest first */
@@ -104,7 +105,7 @@ static void forget(ThreadInfo* t) {
 
 /* ---- the waits ---- */
 
-static bool deliverable(void) { return __atomic_load_n(&arm32_pending_signals, __ATOMIC_RELAXED) != 0; }
+static bool deliverable(void) { return atomic_load_explicit(&arm32_pending_signals, memory_order_relaxed) != 0; }
 
 /* the signals due run now, from a wait: true when one ran (the wait then ends with EINTR or a spurious wake) */
 static bool run_signals(void) {
@@ -431,7 +432,7 @@ static pthread_cond_t guard_done = PTHREAD_COND_INITIALIZER;
 HANDLER(cxa_guard_acquire) {
     UNUSED;
     uint32_t g = R(0);
-    if (__atomic_load_n(arm32_mem + g, __ATOMIC_ACQUIRE) & 1) {
+    if (atomic_load_explicit((_Atomic uint8_t*)(arm32_mem + g), memory_order_acquire) & 1) {
         R(0) = 0;
         return;
     }
@@ -449,7 +450,7 @@ HANDLER(cxa_guard_release) {
     UNUSED;
     pthread_mutex_lock(&guard_lock);
     arm32_mem[R(0) + 1] = 0;
-    __atomic_store_n(arm32_mem + R(0), 1, __ATOMIC_RELEASE);
+    atomic_store_explicit((_Atomic uint8_t*)(arm32_mem + R(0)), 1, memory_order_release);
     pthread_cond_broadcast(&guard_done);
     pthread_mutex_unlock(&guard_lock);
 }
@@ -819,7 +820,7 @@ static void update_deliverable(ThreadInfo* t) {
     uint64_t due = t->sent & ~t->blocked;
     /* SIGKILL and SIGSTOP are never blocked */
     due |= t->sent & (bit(9) | bit(19));
-    __atomic_store_n(t->pending, (uint32_t)(due != 0), __ATOMIC_RELEASE);
+    atomic_store_explicit(t->pending, (uint32_t)(due != 0), memory_order_release);
 }
 static void send_to(ThreadInfo* t, unsigned sig) {
     t->sent |= bit(sig);
@@ -1189,7 +1190,7 @@ static int32_t futex(uint32_t address, uint32_t op, uint32_t value, uint32_t tim
                                                  CLOCK_REALTIME)
                                       : (struct timespec){0, 0};
         pthread_mutex_lock(&f->mutex);
-        if (__atomic_load_n((uint32_t*)(void*)(arm32_mem + address), __ATOMIC_SEQ_CST) != value) {
+        if (atomic_load_explicit((_Atomic uint32_t*)(void*)(arm32_mem + address), memory_order_seq_cst) != value) {
             pthread_mutex_unlock(&f->mutex);
             return -L_EAGAIN;
         }

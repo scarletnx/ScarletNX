@@ -10,6 +10,7 @@
 #include "nx/gpu/maxwell/engines_int.h"
 #include "nx/runtime/options.h"
 #include "nx/runtime/platform/tracy.h"
+#include <stdatomic.h>
 
 static u32 fetch_param(GpuChannel* ch) {
     GpuMme* m = &ch->mme;
@@ -149,7 +150,7 @@ static void step(GpuChannel* ch) {
 /* runs the macro until it ends or a method it sent makes the stream wait */
 static void mme_go(GpuChannel* ch) {
     GpuMme* m = &ch->mme;
-    while (m->running && !ch->park) {
+    while (m->running && !atomic_load_explicit(&ch->park, memory_order_relaxed)) {
         if (++m->steps > MME_STEPS) {
             WARN_LIMIT(4, "gpu: macro on channel %u ran %u instructions and is cut off\n", ch->id, MME_STEPS);
             m->running = 0;

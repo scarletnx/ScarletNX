@@ -239,7 +239,7 @@ static void module_runs(const char* path, u64 base, u64 size, unsigned char id, 
         rt.miss = miss;
         c.rt = &rt;
         c.mem = memory;
-        c.disp = (GuestFn*)calloc(0x1000 / 4, sizeof(GuestFn));
+        c.disp = (_Atomic GuestFn*)calloc(0x1000 / 4, sizeof(GuestFn));
         c.code_lo = base;
         c.code_hi = base + 0x1000;
         for (i = 0; i < m->nentries; ++i) c.disp[(m->entry_addr[i] - base) / 4] = m->entry_fn[i];

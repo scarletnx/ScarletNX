@@ -11,6 +11,7 @@
 #include "common/utilities/endian.h"
 #include <errno.h>
 #include <string.h>
+#include <stdatomic.h>
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -27,8 +28,8 @@
 
 #if defined(__linux__) && defined(SYS_membarrier)
 static struct {
-    int barrier;   /* the host's membarrier: 1 there, -1 not (atomic) */
-    int expedited; /* 1 registered for its private expedited barrier, -1 refused (atomic) */
+    _Atomic int barrier;   /* the host's membarrier: 1 there, -1 not (atomic) */
+    _Atomic int expedited; /* 1 registered for its private expedited barrier, -1 refused (atomic) */
 } g_system;
 #endif
 
@@ -111,10 +112,10 @@ static int64_t prctl_call(GnuKernelThread* t, const uint64_t a[6]) {
             uint8_t zero[4] = {0};
             return put(k, a[1], zero, 4);
         }
-        case GNU_PR_GET_DUMPABLE: return __atomic_load_n(&k->dumpable, __ATOMIC_RELAXED);
+        case GNU_PR_GET_DUMPABLE: return atomic_load_explicit(&k->dumpable, memory_order_relaxed);
         case GNU_PR_SET_DUMPABLE:
             if (a[1] > 1) return -GNU_EINVAL;
-            __atomic_store_n(&k->dumpable, (uint32_t)a[1], __ATOMIC_RELAXED);
+            atomic_store_explicit(&k->dumpable, (uint32_t)a[1], memory_order_relaxed);
             return 0;
         case GNU_PR_GET_KEEPCAPS: return 0;
         case GNU_PR_SET_KEEPCAPS: return a[1] > 1 ? -GNU_EINVAL : 0;
@@ -134,18 +135,21 @@ static int64_t prctl_call(GnuKernelThread* t, const uint64_t a[6]) {
         case GNU_PR_CAPBSET_DROP: return a[1] > CAP_LAST_CAP ? -GNU_EINVAL : -GNU_EPERM;
         case GNU_PR_SET_TIMERSLACK: t->timer_slack = a[1] ? a[1] : 50000; return 0;
         case GNU_PR_GET_TIMERSLACK: return (int64_t)t->timer_slack;
-        case GNU_PR_SET_CHILD_SUBREAPER: __atomic_store_n(&k->subreaper, a[1] != 0, __ATOMIC_RELAXED); return 0;
+        case GNU_PR_SET_CHILD_SUBREAPER:
+            atomic_store_explicit(&k->subreaper, a[1] != 0, memory_order_relaxed);
+            return 0;
         case GNU_PR_GET_CHILD_SUBREAPER: {
             uint8_t out[4];
-            snx_st_le32(out, __atomic_load_n(&k->subreaper, __ATOMIC_RELAXED));
+            snx_st_le32(out, atomic_load_explicit(&k->subreaper, memory_order_relaxed));
             return put(k, a[1], out, 4);
         }
         case GNU_PR_SET_NO_NEW_PRIVS:
             if (a[1] != 1 || a[2] || a[3] || a[4]) return -GNU_EINVAL;
-            __atomic_store_n(&k->no_new_privs, 1, __ATOMIC_RELAXED);
+            atomic_store_explicit(&k->no_new_privs, 1, memory_order_relaxed);
             return 0;
         case GNU_PR_GET_NO_NEW_PRIVS:
-            return a[1] || a[2] || a[3] || a[4] ? -GNU_EINVAL : __atomic_load_n(&k->no_new_privs, __ATOMIC_RELAXED);
+            return a[1] || a[2] || a[3] || a[4] ? -GNU_EINVAL
+                                                : atomic_load_explicit(&k->no_new_privs, memory_order_relaxed);
         case GNU_PR_GET_TID_ADDRESS: {
             uint8_t out[8];
             snx_st_le64(out, t->clear_tid);
@@ -153,10 +157,11 @@ static int64_t prctl_call(GnuKernelThread* t, const uint64_t a[6]) {
         }
         case GNU_PR_SET_THP_DISABLE:
             if (a[2] || a[3] || a[4]) return -GNU_EINVAL;
-            __atomic_store_n(&k->thp_disable, a[1] != 0, __ATOMIC_RELAXED);
+            atomic_store_explicit(&k->thp_disable, a[1] != 0, memory_order_relaxed);
             return 0;
         case GNU_PR_GET_THP_DISABLE:
-            return a[1] || a[2] || a[3] || a[4] ? -GNU_EINVAL : __atomic_load_n(&k->thp_disable, __ATOMIC_RELAXED);
+            return a[1] || a[2] || a[3] || a[4] ? -GNU_EINVAL
+                                                : atomic_load_explicit(&k->thp_disable, memory_order_relaxed);
         case GNU_PR_CAP_AMBIENT: return a[1] == 1 /* IS_SET */ ? 0 : a[1] == 4 /* CLEAR_ALL */ ? 0 : -GNU_EPERM;
         case GNU_PR_GET_SPECULATION_CTRL: return a[1] > 2 ? -GNU_ENODEV : 0; /* GNU_PR_SPEC_NOT_AFFECTED */
         case GNU_PR_SET_VMA: /* PR_SET_VMA_ANON_NAME (0): a name for /proc/self/maps, which nothing here shows */
@@ -186,11 +191,11 @@ bool gnu_host_barrier(void) {
 #if defined(_WIN32)
     return true; /* FlushProcessWriteBuffers */
 #elif defined(__linux__) && defined(SYS_membarrier)
-    int barrier = __atomic_load_n(&g_system.barrier, __ATOMIC_ACQUIRE);
+    int barrier = atomic_load_explicit(&g_system.barrier, memory_order_acquire);
     if (!barrier) { /* asked once: a kernel without it, or a seccomp filter that refuses it, has none */
         long commands = syscall(SYS_membarrier, MB_QUERY, 0, 0);
         barrier = commands > 0 && (commands & (MB_GLOBAL | MB_REGISTER_PRIVATE_EXPEDITED)) ? 1 : -1;
-        __atomic_store_n(&g_system.barrier, barrier, __ATOMIC_RELEASE);
+        atomic_store_explicit(&g_system.barrier, barrier, memory_order_release);
     }
     return barrier > 0;
 #else
@@ -205,10 +210,10 @@ static int64_t barrier_everywhere(void) {
     return 0;
 #elif defined(__linux__) && defined(SYS_membarrier)
     /* registered once; a host that refuses it gets the slow global barrier */
-    int expedited = __atomic_load_n(&g_system.expedited, __ATOMIC_ACQUIRE);
+    int expedited = atomic_load_explicit(&g_system.expedited, memory_order_acquire);
     if (!expedited) {
         expedited = syscall(SYS_membarrier, MB_REGISTER_PRIVATE_EXPEDITED, 0, 0) ? -1 : 1;
-        __atomic_store_n(&g_system.expedited, expedited, __ATOMIC_RELEASE);
+        atomic_store_explicit(&g_system.expedited, expedited, memory_order_release);
     }
     return syscall(SYS_membarrier, expedited > 0 ? MB_PRIVATE_EXPEDITED : MB_GLOBAL, 0, 0) ? gnu_host_errno(errno) : 0;
 #else
@@ -218,14 +223,14 @@ static int64_t barrier_everywhere(void) {
 int64_t gnu_kernel_membarrier(GnuKernel* k, bool host, uint64_t command, uint64_t flags) {
     if (!host) return -GNU_ENOSYS;
     if (flags) return -GNU_EINVAL; /* only the RSEQ commands take a flag, and they are not here */
-    uint32_t registered = __atomic_load_n(&k->membarrier_registered, __ATOMIC_ACQUIRE);
+    uint32_t registered = atomic_load_explicit(&k->membarrier_registered, memory_order_acquire);
     switch (command) {
         case MB_QUERY: return MB_SUPPORTED;
         case MB_GET_REGISTRATIONS: return registered;
         case MB_REGISTER_GLOBAL_EXPEDITED:
         case MB_REGISTER_PRIVATE_EXPEDITED:
         case MB_REGISTER_PRIVATE_EXPEDITED_SYNC_CORE:
-            __atomic_fetch_or(&k->membarrier_registered, (uint32_t)command, __ATOMIC_ACQ_REL);
+            atomic_fetch_or_explicit(&k->membarrier_registered, (uint32_t)command, memory_order_acq_rel);
             return 0;
         case MB_PRIVATE_EXPEDITED:
         case MB_PRIVATE_EXPEDITED_SYNC_CORE:

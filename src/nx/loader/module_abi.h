@@ -28,7 +28,7 @@ typedef struct SnxModule {
     const SnxModInfo* mods;
     u32 nentries;
     const u64* entry_addr; /* the dispatch entries' guest addresses, and their functions */
-    const GuestFn* entry_fn;
+    const _Atomic GuestFn* entry_fn;
     GuestFn interp; /* runs code nothing was compiled for */
     u64 code_lo, code_hi;
     const char* title;
@@ -41,7 +41,7 @@ typedef struct SnxModule {
     const GuestFn* fn;
     const u64* fn_lo;
     const u32* fn_len;
-    u8* stale;
+    _Atomic u8* stale;
 } SnxModule;
 
 /* What snx_routes() of a module returns: the route list it was recompiled with (nx/loader/hook_routes.h), the symbols

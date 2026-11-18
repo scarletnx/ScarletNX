@@ -15,6 +15,7 @@
    Each case runs in a 4 MiB leaf of the tracking's table of its own. SNX_TEST_WW_ONLY=1 runs them alone */
 #if !defined(_WIN32)
 #include <unistd.h>
+#include <stdatomic.h>
 #endif
 #define WT_CPU  (HEAP_BASE + 0x6000000)
 #define WT_GVA  0x910000000ull
@@ -219,7 +220,7 @@ static int check_wt_shared(void) {
    consumer took (seen). The writer writes held and writes; the main thread the rest, twice a round at most, so they
    share a cache line */
 static struct {
-    u32 hold, held, stop, writes; /* atomic */
+    _Atomic u32 hold, held, stop, writes; /* atomic */
     u64 race_cpu;
     u32 race_pages; /* the writer's pages from race_cpu on */
     u8 seen[WT_RACE_PAGES * 0x1000];
@@ -227,16 +228,17 @@ static struct {
 static void wt_writer(void* arg) {
     u32 x = 0x9e3779b9u;
     (void)arg;
-    while (!__atomic_load_n(&g_wt.stop, __ATOMIC_ACQUIRE)) {
-        if (__atomic_load_n(&g_wt.hold, __ATOMIC_ACQUIRE)) {
-            __atomic_store_n(&g_wt.held, 1, __ATOMIC_RELEASE);
-            while (__atomic_load_n(&g_wt.hold, __ATOMIC_ACQUIRE) && !__atomic_load_n(&g_wt.stop, __ATOMIC_ACQUIRE))
+    while (!atomic_load_explicit(&g_wt.stop, memory_order_acquire)) {
+        if (atomic_load_explicit(&g_wt.hold, memory_order_acquire)) {
+            atomic_store_explicit(&g_wt.held, 1, memory_order_release);
+            while (atomic_load_explicit(&g_wt.hold, memory_order_acquire) &&
+                   !atomic_load_explicit(&g_wt.stop, memory_order_acquire))
                 plat_yield();
-            __atomic_store_n(&g_wt.held, 0, __ATOMIC_RELEASE);
+            atomic_store_explicit(&g_wt.held, 0, memory_order_release);
             continue;
         }
         x ^= x << 13, x ^= x >> 17, x ^= x << 5;
-        u32 n = __atomic_add_fetch(&g_wt.writes, 1, __ATOMIC_RELAXED);
+        u32 n = (atomic_fetch_add_explicit(&g_wt.writes, 1, memory_order_relaxed) + 1);
         snx_st_le32(GP(g_wt.race_cpu) + (u64)(x % g_wt.race_pages) * 0x1000 + (x >> 20) % 1024 * 4, n);
     }
 }
@@ -258,14 +260,15 @@ static int check_wt_concurrent(void) {
     vk_unlock();
     g_wt.race_cpu = cpu;
     g_wt.race_pages = WT_RACE_PAGES;
-    __atomic_store_n(&g_wt.stop, 0, __ATOMIC_RELEASE);
-    __atomic_store_n(&g_wt.hold, 0, __ATOMIC_RELEASE);
+    atomic_store_explicit(&g_wt.stop, 0, memory_order_release);
+    atomic_store_explicit(&g_wt.hold, 0, memory_order_release);
     CHECK(plat_thread(wt_writer, NULL, 0) == 0);
     for (u32 r = 0; r < rounds; r++) {
         /* questions while it writes (at least 4, and until it wrote 64 times, which protection's faults slow): each
            answer the scans give is taken as a texture takes it */
-        u32 from = __atomic_load_n(&g_wt.writes, __ATOMIC_RELAXED);
-        for (u32 k = 0; k < 4 || (__atomic_load_n(&g_wt.writes, __ATOMIC_RELAXED) - from < 64 && k < 100000); k++) {
+        u32 from = atomic_load_explicit(&g_wt.writes, memory_order_relaxed);
+        for (u32 k = 0; k < 4 || (atomic_load_explicit(&g_wt.writes, memory_order_relaxed) - from < 64 && k < 100000);
+             k++) {
             g_renderer->mem_may_have_changed();
             vk_lock();
             u32 now = vk_ww_now();
@@ -276,8 +279,8 @@ static int check_wt_concurrent(void) {
             vk_unlock();
         }
         /* held: told nothing changed, the bytes must be the ones taken */
-        __atomic_store_n(&g_wt.hold, 1, __ATOMIC_RELEASE);
-        while (!__atomic_load_n(&g_wt.held, __ATOMIC_ACQUIRE)) plat_yield();
+        atomic_store_explicit(&g_wt.hold, 1, memory_order_release);
+        while (!atomic_load_explicit(&g_wt.held, memory_order_acquire)) plat_yield();
         g_renderer->mem_may_have_changed();
         vk_lock();
         u32 now = vk_ww_now();
@@ -289,13 +292,13 @@ static int check_wt_concurrent(void) {
             memcpy(g_wt.seen, GP(cpu), size);
         }
         vk_unlock();
-        __atomic_store_n(&g_wt.hold, 0, __ATOMIC_RELEASE);
-        while (__atomic_load_n(&g_wt.held, __ATOMIC_ACQUIRE)) plat_yield();
+        atomic_store_explicit(&g_wt.hold, 0, memory_order_release);
+        while (atomic_load_explicit(&g_wt.held, memory_order_acquire)) plat_yield();
     }
-    __atomic_store_n(&g_wt.stop, 1, __ATOMIC_RELEASE);
-    __atomic_store_n(&g_wt.hold, 0, __ATOMIC_RELEASE);
+    atomic_store_explicit(&g_wt.stop, 1, memory_order_release);
+    atomic_store_explicit(&g_wt.hold, 0, memory_order_release);
     plat_sleep_ns(20000000);
-    u32 writes = __atomic_load_n(&g_wt.writes, __ATOMIC_RELAXED);
+    u32 writes = atomic_load_explicit(&g_wt.writes, memory_order_relaxed);
     if (lost)
         fprintf(stderr, "concurrent writes: %u of %u rounds told nothing changed over changed bytes\n", lost, rounds);
     CHECK(!lost && told && writes >= 64 * rounds);
@@ -885,24 +888,25 @@ static int check_wt_hot_same_frame(void) {
     for (u32 pg = 0; pg < 16; pg++) want[pg] = pg == 4 || pg == 5 ? WT_KEPT : WT_BLUE;
     g_wt.race_cpu = cpu + 4 * 0x1000;
     g_wt.race_pages = 2;
-    __atomic_store_n(&g_wt.stop, 0, __ATOMIC_RELEASE);
-    __atomic_store_n(&g_wt.hold, 1, __ATOMIC_RELEASE);
+    atomic_store_explicit(&g_wt.stop, 0, memory_order_release);
+    atomic_store_explicit(&g_wt.hold, 1, memory_order_release);
     CHECK(plat_thread(wt_writer, NULL, 0) == 0);
-    while (!__atomic_load_n(&g_wt.held, __ATOMIC_ACQUIRE)) plat_yield();
+    while (!atomic_load_explicit(&g_wt.held, memory_order_acquire)) plat_yield();
     for (u32 f = 0; f < frames; f++) {
         wt_heat(cpu, size, hot, 4, 0x20, 4); /* the writer held */
-        u32 from = __atomic_load_n(&g_wt.writes, __ATOMIC_RELAXED);
-        __atomic_store_n(&g_wt.hold, 0, __ATOMIC_RELEASE);
-        while (__atomic_load_n(&g_wt.writes, __ATOMIC_RELAXED) - from < 16) plat_yield();
+        u32 from = atomic_load_explicit(&g_wt.writes, memory_order_relaxed);
+        atomic_store_explicit(&g_wt.hold, 0, memory_order_release);
+        while (atomic_load_explicit(&g_wt.writes, memory_order_relaxed) - from < 16) plat_yield();
         rt_clear(ch, gva, 128, 128, 0, 1);
-        from = __atomic_load_n(&g_wt.writes, __ATOMIC_RELAXED);
+        from = atomic_load_explicit(&g_wt.writes, memory_order_relaxed);
         for (int k = 0; k < 4; k++) {
             wt_scans(cpu, size, 1);
             if (k == 1) rt_clear_rows(ch, gva, 128, 128, 0, 48); /* pages 0 to 5 drawn again */
         }
-        while (__atomic_load_n(&g_wt.writes, __ATOMIC_RELAXED) - from < 64) plat_yield(); /* both pages, surely */
-        __atomic_store_n(&g_wt.hold, 1, __ATOMIC_RELEASE);
-        while (!__atomic_load_n(&g_wt.held, __ATOMIC_ACQUIRE)) plat_yield();
+        while (atomic_load_explicit(&g_wt.writes, memory_order_relaxed) - from < 64)
+            plat_yield(); /* both pages, surely */
+        atomic_store_explicit(&g_wt.hold, 1, memory_order_release);
+        while (!atomic_load_explicit(&g_wt.held, memory_order_acquire)) plat_yield();
         memcpy(kept, GP(cpu), size);
         g_renderer->mem_may_have_changed();
         g_renderer->rt_flush(gva);
@@ -911,8 +915,8 @@ static int check_wt_hot_same_frame(void) {
             !failed++)
             fprintf(stderr, "the CPU and the GPU on one target's hot pages: that was frame %u\n", f);
     }
-    __atomic_store_n(&g_wt.stop, 1, __ATOMIC_RELEASE);
-    __atomic_store_n(&g_wt.hold, 0, __ATOMIC_RELEASE);
+    atomic_store_explicit(&g_wt.stop, 1, memory_order_release);
+    atomic_store_explicit(&g_wt.hold, 0, memory_order_release);
     plat_sleep_ns(20000000);
     if (failed)
         fprintf(stderr, "the CPU and the GPU on one target's hot pages: %u of %u frames wrong\n", failed, frames);

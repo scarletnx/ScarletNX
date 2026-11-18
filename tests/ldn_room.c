@@ -14,6 +14,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 
 static unsigned checks;
 #define CHECK(x)                                                                                                       \
@@ -193,19 +194,19 @@ static void joining(void) {
 }
 
 /* ============================================================ ldn through the room */
-static int changes_a, changes_b;
+static _Atomic int changes_a, changes_b;
 static void changed_a(void* arg) {
     (void)arg;
-    __atomic_add_fetch(&changes_a, 1, __ATOMIC_SEQ_CST);
+    atomic_fetch_add_explicit(&changes_a, 1, memory_order_seq_cst);
 }
 static void changed_b(void* arg) {
     (void)arg;
-    __atomic_add_fetch(&changes_b, 1, __ATOMIC_SEQ_CST);
+    atomic_fetch_add_explicit(&changes_b, 1, memory_order_seq_cst);
 }
-static int wait_for(int* counter, int at_least, int ms) {
+static int wait_for(_Atomic int* counter, int at_least, int ms) {
     int i;
-    for (i = 0; i < ms && __atomic_load_n(counter, __ATOMIC_SEQ_CST) < at_least; i++) sleep_ms(1);
-    return __atomic_load_n(counter, __ATOMIC_SEQ_CST) >= at_least;
+    for (i = 0; i < ms && atomic_load_explicit(counter, memory_order_seq_cst) < at_least; i++) sleep_ms(1);
+    return atomic_load_explicit(counter, memory_order_seq_cst) >= at_least;
 }
 /* what a change made, waited for itself: a change counted may be a sync from before it, still on its way */
 static int advertises(SnxLdn* l, const char* data, int ms) {
@@ -543,13 +544,13 @@ static void goodbyes(void) {
 
 /* ============================================================ the handler */
 /* a handler that takes its time on the members' change: the one set after it is set only once it has returned */
-static int g_slow_in, g_slow_done;
+static _Atomic int g_slow_in, g_slow_done;
 static void slow(void* arg, const SnxRoomLdn* p) {
     (void)arg;
     if (p) return;
-    __atomic_store_n(&g_slow_in, 1, __ATOMIC_SEQ_CST);
+    atomic_store_explicit(&g_slow_in, 1, memory_order_seq_cst);
     sleep_ms(200);
-    __atomic_store_n(&g_slow_done, 1, __ATOMIC_SEQ_CST);
+    atomic_store_explicit(&g_slow_done, 1, memory_order_seq_cst);
 }
 static void handler(void) {
     SnxRoom *ra, *rb;
@@ -558,11 +559,11 @@ static void handler(void) {
     CHECK(snx_room_set_ldn(ra, slow, &g_slow_in) == 0);
     CHECK(snx_room_set_ldn(ra, slow, &g_slow_done) == -SNX_EBUSY); /* one handler per member */
     CHECK(join(&rb, "Xuji", "secret", &why) == 0);                 /* the members change: slow runs on ra's thread */
-    for (i = 0; i < 400 && !__atomic_load_n(&g_slow_in, __ATOMIC_SEQ_CST); i++) sleep_ms(5);
-    CHECK(__atomic_load_n(&g_slow_in, __ATOMIC_SEQ_CST));
+    for (i = 0; i < 400 && !atomic_load_explicit(&g_slow_in, memory_order_seq_cst); i++) sleep_ms(5);
+    CHECK(atomic_load_explicit(&g_slow_in, memory_order_seq_cst));
     snx_room_clear_ldn(ra, &g_slow_done); /* another's: stays */
     snx_room_clear_ldn(ra, &g_slow_in);
-    CHECK(__atomic_load_n(&g_slow_done, __ATOMIC_SEQ_CST)); /* what slow's arg is may go now */
+    CHECK(atomic_load_explicit(&g_slow_done, memory_order_seq_cst)); /* what slow's arg is may go now */
     CHECK(snx_room_set_ldn(ra, slow, &g_slow_done) == 0);   /* and the member takes another */
     snx_room_clear_ldn(ra, &g_slow_done);
     snx_room_leave(rb);

@@ -8,6 +8,7 @@
 #include "gnuabi/kernel/futex.h"
 #include "gnuabi/kernel/signals.h"
 #include "common/utilities/endian.h"
+#include <stdatomic.h>
 
 enum {
     FUTEX_WAIT = 0,
@@ -52,7 +53,7 @@ static void wake_waiter(GnuFutexTable* f, GnuFutexWaiter* w) {
     unlink_waiter(f, w);
     GnuKernelThread* t = w->thread;
     gnu_mutex_lock(&t->wait_lock);
-    __atomic_store_n(&w->woken, 1, __ATOMIC_SEQ_CST);
+    atomic_store_explicit(&w->woken, 1, memory_order_seq_cst);
     gnu_cond_broadcast(&t->wake);
     gnu_mutex_unlock(&t->wait_lock);
 }
@@ -77,11 +78,11 @@ int gnu_futex_wake(GnuKernel* p, uint64_t address, int count) {
 }
 
 /* the word at a guest address for an atomic access, NULL when it isn't readable (and writable, for write) */
-static uint32_t* word_at(GnuKernel* p, uint64_t address, int write) {
+static _Atomic uint32_t* word_at(GnuKernel* p, uint64_t address, int write) {
     uint32_t probe;
     if (address & 3) return NULL;
     int bad = p->ops->check ? p->ops->check(p->context, address, 4, write) : gnu_kernel_read(p, address, &probe, 4);
-    return bad ? NULL : (uint32_t*)(uintptr_t)((uintptr_t)p->base + address);
+    return bad ? NULL : (_Atomic uint32_t*)(uintptr_t)((uintptr_t)p->base + address);
 }
 
 /* a timespec {s64, s64} in guest memory, as nanoseconds */
@@ -113,11 +114,11 @@ static int64_t futex_wait(GnuKernelThread* t, const uint64_t a[6], unsigned oper
         } else
             deadline = ns; /* CLOCK_MONOTONIC's absolute time is the host's, gnu_monotonic_ns's */
     }
-    uint32_t* word = word_at(p, a[0], 0);
+    _Atomic uint32_t* word = word_at(p, a[0], 0);
     if (!word) return a[0] & 3 ? -GNU_EINVAL : -GNU_EFAULT;
     GnuFutexWaiter w = {NULL, NULL, a[0], bitset, 0, t};
     gnu_mutex_lock(&p->futex.lock);
-    if (snx_le32(__atomic_load_n(word, __ATOMIC_SEQ_CST)) != (uint32_t)a[2]) {
+    if (snx_le32(atomic_load_explicit(word, memory_order_seq_cst)) != (uint32_t)a[2]) {
         gnu_mutex_unlock(&p->futex.lock);
         return -GNU_EAGAIN;
     }
@@ -126,8 +127,8 @@ static int64_t futex_wait(GnuKernelThread* t, const uint64_t a[6], unsigned oper
     int64_t result = 0;
     gnu_mutex_lock(&t->wait_lock);
     for (;;) {
-        if (__atomic_load_n(&w.woken, __ATOMIC_SEQ_CST)) break;
-        if (__atomic_load_n(&t->interrupt, __ATOMIC_SEQ_CST)) {
+        if (atomic_load_explicit(&w.woken, memory_order_seq_cst)) break;
+        if (atomic_load_explicit(&t->interrupt, memory_order_seq_cst)) {
             gnu_mutex_unlock(&t->wait_lock);
             int wanted = gnu_signal_wanted(t);
             gnu_mutex_lock(&t->wait_lock);
@@ -146,7 +147,7 @@ static int64_t futex_wait(GnuKernelThread* t, const uint64_t a[6], unsigned oper
     }
     gnu_mutex_unlock(&t->wait_lock);
     gnu_mutex_lock(&p->futex.lock);
-    if (__atomic_load_n(&w.woken, __ATOMIC_SEQ_CST))
+    if (atomic_load_explicit(&w.woken, memory_order_seq_cst))
         result = 0; /* a wake that came with the timeout or the signal wins, as Linux reports it */
     else
         unlink_waiter(&p->futex, &w);
@@ -156,7 +157,7 @@ static int64_t futex_wait(GnuKernelThread* t, const uint64_t a[6], unsigned oper
 
 /* FUTEX_WAKE_OP's operation on oldval, and its comparison (FUTEX_OP_* in the UAPI) */
 static int wake_op(GnuKernel* p, uint64_t address, uint32_t encoded, int* compared) {
-    uint32_t* word = word_at(p, address, 1);
+    _Atomic uint32_t* word = word_at(p, address, 1);
     if (!word) return address & 3 ? -GNU_EINVAL : -GNU_EFAULT;
     unsigned op = (encoded >> 28) & 7, cmp = (encoded >> 24) & 15;
     int32_t oparg = (int32_t)((encoded >> 12) & 0xfff), cmparg = (int32_t)(encoded & 0xfff);
@@ -164,7 +165,7 @@ static int wake_op(GnuKernel* p, uint64_t address, uint32_t encoded, int* compar
     if (cmparg & 0x800) cmparg -= 0x1000;
     if (encoded & 0x80000000u) oparg = (int32_t)(1u << (oparg & 31)); /* FUTEX_OP_OPARG_SHIFT */
     if (op > 4 || cmp > 5) return -GNU_ENOSYS;
-    uint32_t raw = __atomic_load_n(word, __ATOMIC_SEQ_CST), old, next;
+    uint32_t raw = atomic_load_explicit(word, memory_order_seq_cst), old, next;
     do {
         old = snx_le32(raw);
         switch (op) {
@@ -174,7 +175,8 @@ static int wake_op(GnuKernel* p, uint64_t address, uint32_t encoded, int* compar
             case 3: next = old & ~(uint32_t)oparg; break;
             default: next = old ^ (uint32_t)oparg; break;
         }
-    } while (!__atomic_compare_exchange_n(word, &raw, snx_le32(next), 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST));
+    } while (!atomic_compare_exchange_strong_explicit(word, &raw, snx_le32(next), memory_order_seq_cst,
+                                                      memory_order_seq_cst));
     int32_t value = (int32_t)old;
     switch (cmp) {
         case 0: *compared = value == cmparg; break;
@@ -212,10 +214,11 @@ int64_t gnu_futex(GnuKernelThread* t, const uint64_t a[6]) {
             int requeue = (int)(uint32_t)a[3]; /* the timeout argument carries val2 */
             if (count < 0 || requeue < 0) return -GNU_EINVAL;
             if ((a[0] | a[4]) & 3) return -GNU_EINVAL;
-            uint32_t* word = word_at(p, a[0], 0);
+            _Atomic uint32_t* word = word_at(p, a[0], 0);
             if (!word) return -GNU_EFAULT;
             gnu_mutex_lock(&p->futex.lock);
-            if (operation == FUTEX_CMP_REQUEUE && snx_le32(__atomic_load_n(word, __ATOMIC_SEQ_CST)) != (uint32_t)a[5]) {
+            if (operation == FUTEX_CMP_REQUEUE &&
+                snx_le32(atomic_load_explicit(word, memory_order_seq_cst)) != (uint32_t)a[5]) {
                 gnu_mutex_unlock(&p->futex.lock);
                 return -GNU_EAGAIN;
             }

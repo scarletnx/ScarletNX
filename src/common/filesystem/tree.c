@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 #if defined(_WIN32)
 #include <fcntl.h>
 #include <io.h>
@@ -34,12 +35,13 @@ static FsNode* node_new(const char* name, int is_dir) {
         return NULL;
     }
     n->is_dir = is_dir;
-    n->fd = -1;
+    atomic_store_explicit(&n->fd, -1, memory_order_relaxed);
     return n;
 }
 
 static void node_free(FsNode* n) {
-    if (n->fd >= 0) plat_file_unshare(n->fd, n->map, n->size);
+    if (atomic_load_explicit(&n->fd, memory_order_relaxed) >= 0)
+        plat_file_unshare(atomic_load_explicit(&n->fd, memory_order_relaxed), n->map, n->size);
     free(n->virtual_data);
     free(n->host);
     free(n->name);
@@ -694,7 +696,7 @@ static FsTreeResult share_file(FsTree* tree, FsNode* node, FsShare* share) {
         share->failed++;
     else {
         node->map = map;
-        __atomic_store_n(&node->fd, fd, __ATOMIC_RELEASE);
+        atomic_store_explicit(&node->fd, fd, memory_order_release);
         share->shared++;
         share->mapped_bytes += node->size;
     }
@@ -710,15 +712,16 @@ FsTreeResult fs_tree_share(FsTree* tree, FsNode* node, FsShare* share) {
         }
         return FS_TREE_OK;
     }
-    if (node->is_virtual || node->fd >= 0 || share->lazy) return FS_TREE_OK;
+    if (node->is_virtual || atomic_load_explicit(&node->fd, memory_order_relaxed) >= 0 || share->lazy)
+        return FS_TREE_OK;
     return share_file(tree, node, share);
 }
 int fs_tree_map(FsTree* tree, FsNode* node, FsShare* share) {
-    if (node->fd >= 0) return 0;
+    if (atomic_load_explicit(&node->fd, memory_order_relaxed) >= 0) return 0;
     if (node->is_dir || node->is_virtual || !node->readonly || !node->attached || !belongs_to(tree, node)) return -1;
-    return share_file(tree, node, share) || node->fd < 0 ? -1 : 0;
+    return share_file(tree, node, share) || atomic_load_explicit(&node->fd, memory_order_relaxed) < 0 ? -1 : 0;
 }
-int fs_tree_mapped(const FsNode* node) { return __atomic_load_n(&node->fd, __ATOMIC_ACQUIRE) >= 0; }
+int fs_tree_mapped(const FsNode* node) { return atomic_load_explicit(&node->fd, memory_order_acquire) >= 0; }
 
 /* rc, with what the caller says (fs_tree_why): the host path where the index stopped, directory and name (NULL when the
    path is directory alone), and why, a phrase after it ("is a symbolic link, which the index doesn't follow") */

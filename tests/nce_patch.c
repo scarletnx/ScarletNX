@@ -19,6 +19,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 #if defined(__linux__) && (defined(__x86_64__) || defined(__aarch64__))
 #include <linux/audit.h>
 #include <linux/filter.h>
@@ -782,12 +783,13 @@ static const unsigned char net_code[] = {0x88, 0x15, 0x80, 0xD2,  /* MOV X8, #17
 #define NET_CODE_AT 64
 static uintptr_t g_net_page;
 static long (*g_net_fn)(void);
-static long g_trapped; /* the thread whose call from the watched page trapped there, by its id */
+static _Atomic long g_trapped; /* the thread whose call from the watched page trapped there, by its id */
 static void net_sigsys(int sig, siginfo_t* si, void* ctx) {
     (void)sig;
     (void)ctx;
     if (si->si_code != 1 || (uintptr_t)si->si_call_addr - g_net_page >= 4096) _exit(43);
-    __atomic_store_n(&g_trapped, syscall(SYS_gettid), __ATOMIC_RELEASE); /* the call is not made: it goes on past */
+    atomic_store_explicit(&g_trapped, syscall(SYS_gettid),
+                          memory_order_release); /* the call is not made: it goes on past */
 }
 /* a thread of the child: what nce_net_install said, its filters and no_new_privs after, and its call from the page */
 typedef struct {
@@ -797,9 +799,9 @@ typedef struct {
 } NetThread;
 static void net_call(NetThread* t) {
     long tid = syscall(SYS_gettid);
-    __atomic_store_n(&g_trapped, 0, __ATOMIC_RELEASE);
+    atomic_store_explicit(&g_trapped, 0, memory_order_release);
     t->got = g_net_fn();
-    t->trapped = __atomic_load_n(&g_trapped, __ATOMIC_ACQUIRE) == tid;
+    t->trapped = atomic_load_explicit(&g_trapped, memory_order_acquire) == tid;
 }
 static void net_take(NetThread* t) {
     char why[160];

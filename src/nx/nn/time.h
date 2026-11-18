@@ -29,7 +29,7 @@ typedef struct {
     i64 context_offset, context_start;
     TimeRule rule; /* the device's */
     char location[0x24];
-    u32 count;    /* Initialize* calls less Finalize calls */
+    _Atomic u32 count; /* Initialize* calls less Finalize calls */
     u32 mode;     /* the Initialize* of the first of them: 1 Initialize, 2 ForMenu, 3 ForSystem, 4 ForRepair, 5
                      ForSystemUser */
     u32 adjusted; /* the first Initialize took the adjustable clocks' contexts, which nothing clears */

@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 #ifndef _WIN32
 #include <pthread.h>
 #include <time.h>
@@ -285,7 +286,8 @@ static const uint32_t spin_words[] = {0xd2920008, 0xb9400101, 0x34ffffc1, 0xd65f
 typedef struct {
     uint8_t* mem;
     CPU* cpu;
-    int done, flagged;
+    _Atomic int done;
+    int flagged;
 } Spin;
 static void nap(long ms) {
     struct timespec t;
@@ -298,11 +300,11 @@ static void* spin_writer(void* arg) {
     Spin* s = (Spin*)arg;
     long ms;
     nap(50);
-    __atomic_store_n((uint32_t*)(s->mem + SPIN_FLAG), 1u, __ATOMIC_RELEASE);
-    for (ms = 0; ms < 2000 && !__atomic_load_n(&s->done, __ATOMIC_ACQUIRE); ms += 10) nap(10);
-    if (!__atomic_load_n(&s->done, __ATOMIC_ACQUIRE)) {
+    atomic_store_explicit((_Atomic uint32_t*)(s->mem + SPIN_FLAG), 1u, memory_order_release);
+    for (ms = 0; ms < 2000 && !atomic_load_explicit(&s->done, memory_order_acquire); ms += 10) nap(10);
+    if (!atomic_load_explicit(&s->done, memory_order_acquire)) {
         s->flagged = 1;
-        __atomic_store_n(&s->cpu->poll, 1u, __ATOMIC_RELEASE);
+        atomic_store_explicit(&s->cpu->poll, 1u, memory_order_release);
     }
     return NULL;
 }
@@ -331,7 +333,7 @@ static void spin64(struct snx_recompiler* r, uint8_t* mem) {
     s.done = s.flagged = 0;
     check(pthread_create(&writer, NULL, spin_writer, &s) == 0, "spin: the writer thread");
     snx_recompiled_run(m, &cpu, SPIN, STOP);
-    __atomic_store_n(&s.done, 1, __ATOMIC_RELEASE);
+    atomic_store_explicit(&s.done, 1, memory_order_release);
     pthread_join(writer, NULL);
     check(!s.flagged && cpu.x[1] == 1, "spin: a loop sees another thread's store without being polled");
     snx_recompiled_free(m);

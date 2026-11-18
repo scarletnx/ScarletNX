@@ -23,6 +23,7 @@
 #include "nx/runtime/clock.h"
 #include "nx/runtime/platform/log.h"
 #include <stdlib.h>
+#include <stdatomic.h>
 
 /* off the core while the thread waits, counted as stopped for a pause, as nvn_object.c's nvn_wait_begin */
 void hook_wait_begin(void) {
@@ -42,7 +43,8 @@ typedef struct SyncObj {
     u64 addr; /* the guest object's address */
     PMutex m;
     PCond c;
-    u32 owner, depth; /* a recursive mutex's holder (plat_tid) and how often it holds it */
+    _Atomic u32 owner;
+    u32 depth; /* a recursive mutex's holder (plat_tid) and how often it holds it */
 } SyncObj;
 #define SYNC_BUCKETS 4096
 static struct {
@@ -120,24 +122,24 @@ void sync_recursive_lock(CPU* c, u64 m) {
     (void)c;
     SyncObj* o = obj(m);
     u32 me = plat_tid();
-    if (__atomic_load_n(&o->owner, __ATOMIC_RELAXED) == me) {
+    if (atomic_load_explicit(&o->owner, memory_order_relaxed) == me) {
         o->depth++;
         return;
     }
     lock(o);
-    __atomic_store_n(&o->owner, me, __ATOMIC_RELAXED);
+    atomic_store_explicit(&o->owner, me, memory_order_relaxed);
     o->depth = 1;
 }
 int sync_recursive_try_lock(CPU* c, u64 m) {
     (void)c;
     SyncObj* o = obj(m);
     u32 me = plat_tid();
-    if (__atomic_load_n(&o->owner, __ATOMIC_RELAXED) == me) {
+    if (atomic_load_explicit(&o->owner, memory_order_relaxed) == me) {
         o->depth++;
         return 1;
     }
     if (!pm_trylock(&o->m)) return 0;
-    __atomic_store_n(&o->owner, me, __ATOMIC_RELAXED);
+    atomic_store_explicit(&o->owner, me, memory_order_relaxed);
     o->depth = 1;
     return 1;
 }
@@ -145,7 +147,7 @@ void sync_recursive_unlock(CPU* c, u64 m) {
     (void)c;
     SyncObj* o = obj(m);
     if (--o->depth) return;
-    __atomic_store_n(&o->owner, 0, __ATOMIC_RELAXED);
+    atomic_store_explicit(&o->owner, 0, memory_order_relaxed);
     pm_unlock(&o->m);
 }
 

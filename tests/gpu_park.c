@@ -22,6 +22,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <stdatomic.h>
 
 /* ------------------------------------------------ what the files under test reach outside themselves */
 /* guest memory, aligned as the console's (the semaphores are written as u32s, the pushbuffers read as u32s) */
@@ -110,34 +111,34 @@ static void record_clear(const DsState* ds, const DrawClear* c, const DrawOwner*
     see(v);
 }
 static void no_draw(const DsState* ds, const DrawCall* dc, DrawOwner* o) { (void)ds, (void)dc, (void)o; }
-static int epochs; /* mem_may_have_changed calls */
-static void new_epoch(void) { __atomic_add_fetch(&epochs, 1, __ATOMIC_SEQ_CST); }
+static _Atomic int epochs; /* mem_may_have_changed calls */
+static void new_epoch(void) { atomic_fetch_add_explicit(&epochs, 1, memory_order_seq_cst); }
 static void nothing(void) {}
 static void no_surface(u64 addr) { (void)addr; }
 
-static u32 syncpt[SYNCPT_IDS];
-u32 syncpt_read(u32 id) { return id < SYNCPT_IDS ? __atomic_load_n(&syncpt[id], __ATOMIC_SEQ_CST) : 0; }
+static _Atomic u32 syncpt[SYNCPT_IDS];
+u32 syncpt_read(u32 id) { return id < SYNCPT_IDS ? atomic_load_explicit(&syncpt[id], memory_order_seq_cst) : 0; }
 void syncpt_add(u32 id, u32 n) {
     if (id >= SYNCPT_IDS) return;
-    __atomic_add_fetch(&syncpt[id], n, __ATOMIC_SEQ_CST);
+    atomic_fetch_add_explicit(&syncpt[id], n, memory_order_seq_cst);
     gpu_kick();
 }
 void syncpt_incr(u32 id) { syncpt_add(id, 1); }
 /* the renderer's memory for submission-time copies of DMA sources: malloc's here, counted, so that every copy is let
    go of once, by the launch that takes it or where it is dropped */
-static int snaps_live, snaps_made;
+static _Atomic int snaps_live, snaps_made;
 static u8* snap_alloc(u64 len, u64* id) {
     u8* p = (u8*)malloc(len ? (size_t)len : 1);
     if (!p) return NULL;
-    __atomic_add_fetch(&snaps_live, 1, __ATOMIC_SEQ_CST);
-    __atomic_add_fetch(&snaps_made, 1, __ATOMIC_SEQ_CST);
+    atomic_fetch_add_explicit(&snaps_live, 1, memory_order_seq_cst);
+    atomic_fetch_add_explicit(&snaps_made, 1, memory_order_seq_cst);
     *id = (u64)(uintptr_t)p;
     return p;
 }
 static void snap_free(u64 id) {
     if (!id) return;
     free((void*)(uintptr_t)id);
-    __atomic_sub_fetch(&snaps_live, 1, __ATOMIC_SEQ_CST);
+    atomic_fetch_sub_explicit(&snaps_live, 1, memory_order_seq_cst);
 }
 static int dma_on_cpu(const GpuDmaOp* o) { /* the renderer's copy as its CPU reference does it */
     dma_copy_ref(o);
@@ -173,12 +174,12 @@ static const Renderer stand_in = {.name = "stand-in",
                                   .stream_incr = syncpt_incr};
 const Renderer* g_renderer = &stand_in;
 
-static int warned;
+static _Atomic int warned;
 void logf_(int lvl, const char* fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
     if (!lvl) {
-        __atomic_add_fetch(&warned, 1, __ATOMIC_SEQ_CST);
+        atomic_fetch_add_explicit(&warned, 1, memory_order_seq_cst);
         vfprintf(stderr, fmt, ap);
     }
     va_end(ap);
@@ -292,10 +293,10 @@ static u64 wait_marks(u32 n) {
     return plat_ns() - t0;
 }
 static void called(void* arg) { see((u32)(uintptr_t)arg); }
-static u32 poll_ready, poll_visits;
+static _Atomic u32 poll_ready, poll_visits;
 static int poll_wait(void* arg) {
-    __atomic_add_fetch(&poll_visits, 1, __ATOMIC_RELAXED);
-    if (!__atomic_load_n(&poll_ready, __ATOMIC_ACQUIRE)) return 0;
+    atomic_fetch_add_explicit(&poll_visits, 1, memory_order_relaxed);
+    if (!atomic_load_explicit(&poll_ready, memory_order_acquire)) return 0;
     see((u32)(uintptr_t)arg);
     return 1;
 }
@@ -305,7 +306,7 @@ static int poll_mark(void* arg) {
 }
 static int poll_signal(void* arg) {
     see((u32)(uintptr_t)arg);
-    __atomic_store_n(&poll_ready, 1, __ATOMIC_RELEASE);
+    atomic_store_explicit(&poll_ready, 1, memory_order_release);
     return 1;
 }
 static pthread_mutex_t gate_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -321,7 +322,9 @@ static void held_call(void* arg) {
 }
 /* a release the game's CPU code writes: it stands in for the guest's plain store, which the GPU thread reads with a
    plain read, racing as it does on the console */
-static void cpu_store(u64 addr, u32 v) { __atomic_store_n((u32*)guest + addr / 4, snx_le32(v), __ATOMIC_SEQ_CST); }
+static void cpu_store(u64 addr, u32 v) {
+    atomic_store_explicit((_Atomic u32*)guest + addr / 4, snx_le32(v), memory_order_seq_cst);
+}
 
 static int failures;
 static void expect(int ok, const char* what) {
@@ -339,15 +342,15 @@ int main(void) {
     gpu_call_poll(poll_signal, (void*)(uintptr_t)0x972, 1);
     wait_marks(3);
     expect(marks_are((u32[]){0x972, 0x970, 0x971}, 3), "cooperative lanes retain order and allow a later signal");
-    expect(__atomic_load_n(&poll_visits, __ATOMIC_RELAXED) >= 2, "an unmet cooperative wait resumes");
+    expect(atomic_load_explicit(&poll_visits, memory_order_relaxed) >= 2, "an unmet cooperative wait resumes");
     forget_marks();
-    __atomic_store_n(&poll_ready, 0, __ATOMIC_RELEASE);
+    atomic_store_explicit(&poll_ready, 0, memory_order_release);
     gpu_call_poll(poll_wait, (void*)(uintptr_t)0x973, 0);
     gpu_call_poll(poll_mark, (void*)(uintptr_t)0x974, 0);
     gpu_call(called, (void*)(uintptr_t)0x975, NULL, 0);
     wait_marks(1);
     expect(marks_are((u32[]){0x975}, 1), "ordinary work runs while a cooperative lane waits");
-    __atomic_store_n(&poll_ready, 1, __ATOMIC_RELEASE);
+    atomic_store_explicit(&poll_ready, 1, memory_order_release);
     gpu_kick();
     wait_marks(3);
     expect(marks_are((u32[]){0x975, 0x973, 0x974}, 3), "CPU signal resumes the lane and its later work");
@@ -538,23 +541,23 @@ int main(void) {
     nanosleep(&ms20, NULL);
     const u32 order2a[1] = {0xD2};
     expect(marks_are(order2a, 1), "an equal acquire waits while the value differs, and a call naming another runs");
-    int epochs_before = __atomic_load_n(&epochs, __ATOMIC_SEQ_CST);
+    int epochs_before = atomic_load_explicit(&epochs, memory_order_seq_cst);
     cpu_store(SEM + 16, 7);
     took = wait_marks(4);
     const u32 order2[4] = {0xD2, 0xD1, 0xD3, 0xD4};
     expect(marks_are(order2, 4), "a release the CPU wrote ended the wait, then the calls in order");
     expect(took < FAST, "the CPU's release was seen soon after");
-    expect(__atomic_load_n(&epochs, __ATOMIC_SEQ_CST) > epochs_before,
+    expect(atomic_load_explicit(&epochs, memory_order_seq_cst) > epochs_before,
            "the end of a wait tells the renderer memory may have changed");
 
     /* an acquire already met: the stream goes on, and the renderer is told memory may have changed (what the CPU
        wrote before releasing it is for the stream to see), on top of the submission's own */
     forget_marks();
-    epochs_before = __atomic_load_n(&epochs, __ATOMIC_SEQ_CST);
+    epochs_before = atomic_load_explicit(&epochs, memory_order_seq_cst);
     submit1(sem_then(SEM + 16, 7, 1, 0xDD), 22);
     took = wait_marks(1);
     expect(marks() == 1 && took < FAST, "an acquire already met doesn't wait");
-    expect(__atomic_load_n(&epochs, __ATOMIC_SEQ_CST) >= epochs_before + 2,
+    expect(atomic_load_explicit(&epochs, memory_order_seq_cst) >= epochs_before + 2,
            "a wait already met tells the renderer too, as the submission does");
 
     /* a submission waiting for a syncpoint's fence, incremented off the GPU thread */
@@ -684,7 +687,8 @@ int main(void) {
                "DMA keeps CPU staging bytes but discards a snapshot after a GPU write");
         forget_marks();
     }
-    expect(__atomic_load_n(&snaps_made, __ATOMIC_SEQ_CST) > 0 && !__atomic_load_n(&snaps_live, __ATOMIC_SEQ_CST),
+    expect(atomic_load_explicit(&snaps_made, memory_order_seq_cst) > 0 &&
+               !atomic_load_explicit(&snaps_live, memory_order_seq_cst),
            "the renderer's snapshot memory is let go of, used or discarded");
     /* Both report engines can wait for CPU-produced DMA input. Use fresh channels so a previous wait cannot
        already have disabled their submission scanner. */

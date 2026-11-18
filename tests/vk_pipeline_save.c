@@ -21,15 +21,17 @@ VkState g_vk;
 static struct {
     VkPipelineCache pcache;
     char pcache_path[1200];
-    int pcache_dirty;
-    u64 pcache_used;
+    _Atomic int pcache_dirty;
+    _Atomic u64 pcache_used;
     PMutex psave;
     PMutex pj_lock;
     void *pj_head, *pw_head;
     int pj_busy;
     struct {
-        int ship_ready;
-        u32 nidx, ship_used, ship_said;
+        _Atomic int ship_ready;
+        u32 nidx;
+        _Atomic u32 ship_used;
+        u32 ship_said;
     } pf;
 } g_pipeline = {.psave = PMUTEX_INIT, .pj_lock = PMUTEX_INIT};
 /* the shader objects' binaries, which the saver writes beside the cache (shader_objects.c): none in this fixture */

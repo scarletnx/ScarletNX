@@ -44,6 +44,7 @@
 #include "common/utilities/bits.h"
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 #include "nx/memory/own.h"
 #include "nx/memory/mem.h"
 #include "nx/runtime/platform/log.h"
@@ -58,14 +59,14 @@ static _Thread_local int t_own_window;
 static void cover_nl(const Own* o, u32 d) {
     if (!g_own.region || o->hi <= o->lo) return;
     for (u64 r = o->lo >> OWN_REGION_SHIFT, e = (o->hi - 1) >> OWN_REGION_SHIFT; r <= e && r < g_own.nregion; r++)
-        __atomic_add_fetch(&g_own.region[r], d, __ATOMIC_RELEASE);
+        atomic_fetch_add_explicit(&g_own.region[r], d, memory_order_release);
 }
 /* whether an entry may be on [lo, hi): 0 only when none is */
 static int region_owned(u64 lo, u64 hi) {
     if (!g_own.region) return 1;
     if (hi <= lo) return 0;
     for (u64 r = lo >> OWN_REGION_SHIFT, e = (hi - 1) >> OWN_REGION_SHIFT; r <= e; r++)
-        if (r >= g_own.nregion || __atomic_load_n(&g_own.region[r], __ATOMIC_ACQUIRE)) return 1;
+        if (r >= g_own.nregion || atomic_load_explicit(&g_own.region[r], memory_order_acquire)) return 1;
     return 0;
 }
 
@@ -155,21 +156,22 @@ static void shadow_drop_nl(u64 lo, u64 hi) {
 /* a Scratch buffer (own.h) of size bytes, kept for the next use up to keep bytes */
 static u8* scratch_get(Scratch* s, u64 size, u64 keep) {
     int none = 0;
-    if (size <= keep && __atomic_compare_exchange_n(&s->busy, &none, 1, 0, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) {
+    if (size <= keep &&
+        atomic_compare_exchange_strong_explicit(&s->busy, &none, 1, memory_order_acquire, memory_order_relaxed)) {
         if (size <= s->cap) return s->p;
         free(s->p);
         s->p = (u8*)malloc((size_t)size);
         s->cap = s->p ? size : 0;
         if (s->p) return s->p;
-        __atomic_store_n(&s->busy, 0, __ATOMIC_RELEASE);
+        atomic_store_explicit(&s->busy, 0, memory_order_release);
     }
     u8* p = (u8*)malloc((size_t)(size ? size : 1));
     if (!p) fatal("Out of memory for GPU-owned memory (%llu KiB)", (unsigned long long)(size >> 10));
     return p;
 }
 static void scratch_put(Scratch* s, u8* p) {
-    if (p && p == s->p && __atomic_load_n(&s->busy, __ATOMIC_RELAXED))
-        __atomic_store_n(&s->busy, 0, __ATOMIC_RELEASE);
+    if (p && p == s->p && atomic_load_explicit(&s->busy, memory_order_relaxed))
+        atomic_store_explicit(&s->busy, 0, memory_order_release);
     else
         free(p);
 }
@@ -180,7 +182,7 @@ static void scratch_put(Scratch* s, u8* p) {
 /* ---------------------------------------------------------------- the entries, under g_own.lk */
 /* the first entry ending after a */
 static u32 first_after_nl(u64 a) {
-    u32 lo = 0, hi = g_own.nown;
+    u32 lo = 0, hi = atomic_load_explicit(&g_own.nown, memory_order_relaxed);
     while (lo < hi) {
         u32 mid = (lo + hi) / 2;
         if (g_own.ent[mid].hi <= a)
@@ -191,33 +193,36 @@ static u32 first_after_nl(u64 a) {
     return lo;
 }
 static void insert_nl(u32 i, const Own* o) {
-    if (g_own.nown == g_own.capown) {
+    if (atomic_load_explicit(&g_own.nown, memory_order_relaxed) == g_own.capown) {
         u32 cap = g_own.capown ? g_own.capown * 2 : 64;
         Own* n = (Own*)realloc(g_own.ent, sizeof *n * (size_t)cap);
         if (!n) fatal("Out of memory for the map of GPU-owned memory");
         g_own.ent = n;
         g_own.capown = cap;
     }
-    memmove(&g_own.ent[i + 1], &g_own.ent[i], sizeof *g_own.ent * (size_t)(g_own.nown - i));
+    memmove(&g_own.ent[i + 1], &g_own.ent[i],
+            sizeof *g_own.ent * (size_t)(atomic_load_explicit(&g_own.nown, memory_order_relaxed) - i));
     g_own.ent[i] = *o;
     cover_nl(o, 1);
-    __atomic_store_n(&g_own.nown, g_own.nown + 1, __ATOMIC_RELEASE);
+    atomic_store_explicit(&g_own.nown, atomic_load_explicit(&g_own.nown, memory_order_relaxed) + 1,
+                          memory_order_release);
 }
 static int page_owned_nl(u64 page) {
     u32 i = first_after_nl(page);
-    return i < g_own.nown && g_own.ent[i].lo < page + g_own.page;
+    return i < atomic_load_explicit(&g_own.nown, memory_order_relaxed) && g_own.ent[i].lo < page + g_own.page;
 }
 /* whether an entry overlapping [lo, hi) is being landed */
 static int landing_nl(u64 lo, u64 hi) {
     u32 i;
-    for (i = first_after_nl(lo); i < g_own.nown && g_own.ent[i].lo < hi; i++)
+    for (i = first_after_nl(lo); i < atomic_load_explicit(&g_own.nown, memory_order_relaxed) && g_own.ent[i].lo < hi;
+         i++)
         if (g_own.ent[i].landing) return 1;
     return 0;
 }
 /* whether a landing that let go of the producer's lock is on a host page of [lo, hi) (OwnState's inflight) */
 static int inflight_nl(u64 lo, u64 hi) {
     u64 plo = lo & ~(g_own.page - 1), phi = (hi + g_own.page - 1) & ~(g_own.page - 1);
-    for (u32 i = 0; i < g_own.ninflight; i++)
+    for (u32 i = 0; i < atomic_load_explicit(&g_own.ninflight, memory_order_relaxed); i++)
         if (g_own.inflight[i][0] < phi && plo < g_own.inflight[i][1]) return 1;
     return 0;
 }
@@ -226,7 +231,7 @@ static int inflight_nl(u64 lo, u64 hi) {
    no copy of them. No new landing comes meanwhile, as the caller holds the producer's lock, which a landing takes
    first */
 static void inflight_wait(u64 lo, u64 hi) {
-    if (!__atomic_load_n(&g_own.ninflight, __ATOMIC_ACQUIRE)) return;
+    if (!atomic_load_explicit(&g_own.ninflight, memory_order_acquire)) return;
     pm_lock(&g_own.lk);
     while (inflight_nl(lo, hi)) pc_wait(&g_own.cv, &g_own.lk, -1);
     pm_unlock(&g_own.lk);
@@ -257,14 +262,15 @@ static void res_release(ResList* l) {
 static void own_bytes_plot_nl(void) { /* under g_own.lk */
     [[maybe_unused]] double bytes = 0;
     if (!snx_tracy_attached()) return;
-    for (u32 i = 0; i < g_own.nown; i++) bytes += (double)(g_own.ent[i].hi - g_own.ent[i].lo);
+    for (u32 i = 0; i < atomic_load_explicit(&g_own.nown, memory_order_relaxed); i++)
+        bytes += (double)(g_own.ent[i].hi - g_own.ent[i].lo);
     SNX_PLOT("own bytes", bytes);
 }
 
 /* the bytes [lo, hi) owned by nobody any more: entries cut back or split, their resources to release in rel */
 static void cut_nl(u64 lo, u64 hi, ResList* rel) {
     u32 i = first_after_nl(lo);
-    while (i < g_own.nown && g_own.ent[i].lo < hi) {
+    while (i < atomic_load_explicit(&g_own.nown, memory_order_relaxed) && g_own.ent[i].lo < hi) {
         Own* o = &g_own.ent[i];
         if (o->lo < lo && o->hi > hi) { /* the middle goes: two entries */
             Own right = *o;
@@ -298,9 +304,12 @@ static void cut_nl(u64 lo, u64 hi, ResList* rel) {
                 res_push(rel, g_own.ent[past].res);
                 cover_nl(&g_own.ent[past], (u32)-1);
                 past++;
-            } while (past < g_own.nown && g_own.ent[past].lo < hi && g_own.ent[past].hi <= hi);
-            memmove(&g_own.ent[i], &g_own.ent[past], sizeof *g_own.ent * (size_t)(g_own.nown - past));
-            __atomic_store_n(&g_own.nown, g_own.nown - (past - i), __ATOMIC_RELEASE);
+            } while (past < atomic_load_explicit(&g_own.nown, memory_order_relaxed) && g_own.ent[past].lo < hi &&
+                     g_own.ent[past].hi <= hi);
+            memmove(&g_own.ent[i], &g_own.ent[past],
+                    sizeof *g_own.ent * (size_t)(atomic_load_explicit(&g_own.nown, memory_order_relaxed) - past));
+            atomic_store_explicit(&g_own.nown, atomic_load_explicit(&g_own.nown, memory_order_relaxed) - (past - i),
+                                  memory_order_release);
         }
     }
     own_bytes_plot_nl();
@@ -312,7 +321,7 @@ static void cut_nl(u64 lo, u64 hi, ResList* rel) {
    began. Here it moves once, and not at all when n is the count it replaces */
 static void own_replace(u64 lo, u64 hi, const Own* nw, u32 n, ResList* rel) {
     u32 i = first_after_nl(lo), past = i;
-    while (past < g_own.nown && g_own.ent[past].lo < hi) past++;
+    while (past < atomic_load_explicit(&g_own.nown, memory_order_relaxed) && g_own.ent[past].lo < hi) past++;
     int left = i < past && g_own.ent[i].lo < lo;         /* the first sticks out below lo */
     int right = past > i && g_own.ent[past - 1].hi > hi; /* the last sticks out above hi */
     u32 from = i, to = past, added = n;
@@ -348,7 +357,7 @@ static void own_replace(u64 lo, u64 hi, const Own* nw, u32 n, ResList* rel) {
         }
     }
     u32 removed = to - from;
-    u32 total = g_own.nown - removed + added;
+    u32 total = atomic_load_explicit(&g_own.nown, memory_order_relaxed) - removed + added;
     if (total > g_own.capown) {
         u32 cap = g_own.capown ? g_own.capown : 64;
         while (cap < total) cap *= 2;
@@ -362,9 +371,11 @@ static void own_replace(u64 lo, u64 hi, const Own* nw, u32 n, ResList* rel) {
         cover_nl(&g_own.ent[k], (u32)-1);
     }
     /* one move for the net change (none when the count is replaced), then the new entries fill the gap */
-    if (added != removed && g_own.nown > to)
-        memmove(&g_own.ent[from + added], &g_own.ent[to], sizeof *g_own.ent * (size_t)(g_own.nown - to));
-    __atomic_store_n(&g_own.nown, g_own.nown - removed + added, __ATOMIC_RELEASE);
+    if (added != removed && atomic_load_explicit(&g_own.nown, memory_order_relaxed) > to)
+        memmove(&g_own.ent[from + added], &g_own.ent[to],
+                sizeof *g_own.ent * (size_t)(atomic_load_explicit(&g_own.nown, memory_order_relaxed) - to));
+    atomic_store_explicit(&g_own.nown, atomic_load_explicit(&g_own.nown, memory_order_relaxed) - removed + added,
+                          memory_order_release);
     for (u32 k = 0; k < n; k++) {
         g_own.ent[from + k] = nw[k];
         cover_nl(&nw[k], 1);
@@ -409,7 +420,7 @@ static void let_go(u64 lo, u64 hi) {
 /* whether an entry is on [lo, hi) */
 static int owned_nl(u64 lo, u64 hi) {
     u32 i = first_after_nl(lo);
-    return i < g_own.nown && g_own.ent[i].lo < hi;
+    return i < atomic_load_explicit(&g_own.nown, memory_order_relaxed) && g_own.ent[i].lo < hi;
 }
 static void producer_lock(void) {
     if (g_own.hooks.lock) g_own.hooks.lock();
@@ -424,12 +435,14 @@ static void producer_unlock(void) {
    the next owner: with about 1,000 render targets watched, that walk took half of the GPU thread's time while one game
    loaded an area */
 static u32 next_real_nl(u32 i, u64 end) {
-    while (i < g_own.nown && !g_own.ent[i].res && g_own.ent[i].lo < end) i++;
+    while (i < atomic_load_explicit(&g_own.nown, memory_order_relaxed) && !g_own.ent[i].res && g_own.ent[i].lo < end)
+        i++;
     return i;
 }
 /* whether a watch is on [lo, hi) */
 static int watched_nl(u64 lo, u64 hi) {
-    for (u32 i = first_after_nl(lo); i < g_own.nown && g_own.ent[i].lo < hi; i++)
+    for (u32 i = first_after_nl(lo);
+         i < atomic_load_explicit(&g_own.nown, memory_order_relaxed) && g_own.ent[i].lo < hi; i++)
         if (!g_own.ent[i].res) return 1;
     return 0;
 }
@@ -442,8 +455,9 @@ static void unwatch(u64 lo, u64 hi, int whole, u64* keep) {
         ResList rel = {0};
         pm_lock(&g_own.lk);
         u32 i = first_after_nl(c);
-        while (i < g_own.nown && g_own.ent[i].lo < hi && g_own.ent[i].res) i++;
-        if (i >= g_own.nown || g_own.ent[i].lo >= hi) {
+        while (i < atomic_load_explicit(&g_own.nown, memory_order_relaxed) && g_own.ent[i].lo < hi && g_own.ent[i].res)
+            i++;
+        if (i >= atomic_load_explicit(&g_own.nown, memory_order_relaxed) || g_own.ent[i].lo >= hi) {
             pm_unlock(&g_own.lk);
             return;
         }
@@ -469,15 +483,17 @@ static void unwatch(u64 lo, u64 hi, int whole, u64* keep) {
    the pool at different times (an owner's own_begin moves its own first): the watch entries that continue the ones on
    [lo, hi) are the same watch. Under g_own.lk */
 static void watch_span_nl(u64* lo, u64* hi) {
-    u32 i = first_after_nl(*lo), first = g_own.nown, last = 0;
-    for (; i < g_own.nown && g_own.ent[i].lo < *hi; i++)
+    u32 i = first_after_nl(*lo), first = atomic_load_explicit(&g_own.nown, memory_order_relaxed), last = 0;
+    for (; i < atomic_load_explicit(&g_own.nown, memory_order_relaxed) && g_own.ent[i].lo < *hi; i++)
         if (!g_own.ent[i].res) {
-            if (first == g_own.nown) first = i;
+            if (first == atomic_load_explicit(&g_own.nown, memory_order_relaxed)) first = i;
             last = i;
         }
-    if (first == g_own.nown) return;
+    if (first == atomic_load_explicit(&g_own.nown, memory_order_relaxed)) return;
     while (first && !g_own.ent[first - 1].res && g_own.ent[first - 1].hi == g_own.ent[first].lo) first--;
-    while (last + 1 < g_own.nown && !g_own.ent[last + 1].res && g_own.ent[last + 1].lo == g_own.ent[last].hi) last++;
+    while (last + 1 < atomic_load_explicit(&g_own.nown, memory_order_relaxed) && !g_own.ent[last + 1].res &&
+           g_own.ent[last + 1].lo == g_own.ent[last].hi)
+        last++;
     if (g_own.ent[first].lo < *lo) *lo = g_own.ent[first].lo;
     if (g_own.ent[last].hi > *hi) *hi = g_own.ent[last].hi;
 }
@@ -486,12 +502,12 @@ static void watch_span_nl(u64* lo, u64* hi) {
    joins it. When the list is full, the last span grows to take it in: that watches more targets, never fewer */
 static void owe(u64 lo, u64 hi) {
     pm_lock(&g_own.lk);
-    u32 i = 0, n = g_own.nowed;
+    u32 i = 0, n = atomic_load_explicit(&g_own.nowed, memory_order_relaxed);
     while (i < n && (g_own.owed[i][1] < lo || g_own.owed[i][0] > hi)) i++;
     if (i == n && n < OWN_OWED_MAX) {
         g_own.owed[n][0] = lo;
         g_own.owed[n][1] = hi;
-        __atomic_store_n(&g_own.nowed, n + 1, __ATOMIC_RELEASE);
+        atomic_store_explicit(&g_own.nowed, n + 1, memory_order_release);
     } else {
         if (i == n) i = n - 1;
         if (lo < g_own.owed[i][0]) g_own.owed[i][0] = lo;
@@ -523,7 +539,7 @@ static int close_pages_nl(u32* first, u32* n) {
     for (;;) {
         u64 plo = g_own.ent[*first].lo & ~(g_own.page - 1), phi = (g_own.ent[*first + *n - 1].hi + g_own.page - 1) & ~(g_own.page - 1);
         u32 f = first_after_nl(plo), e = f, i;
-        while (e < g_own.nown && g_own.ent[e].lo < phi) e++;
+        while (e < atomic_load_explicit(&g_own.nown, memory_order_relaxed) && g_own.ent[e].lo < phi) e++;
         for (i = f; i < e; i++)
             if ((i < *first || i >= *first + *n) && g_own.ent[i].landing) return 0;
         if (f == *first && e == *first + *n) return 1;
@@ -552,7 +568,8 @@ static void land_pages(u64 lo, u64 hi, int by) {
     int busy = g_own.hooks.busy_tid && g_own.hooks.busy_tid() == plat_tid();
     pm_lock(&g_own.lk);
     any = owned_nl(lo, hi);
-    for (i = first_after_nl(lo); any && i < g_own.nown && g_own.ent[i].lo < hi; i++) {
+    for (i = first_after_nl(lo);
+         any && i < atomic_load_explicit(&g_own.nown, memory_order_relaxed) && g_own.ent[i].lo < hi; i++) {
         if (!g_own.ent[i].res) continue; /* a watch: no GPU work of its own */
         real = 1;
         if (!g_own.hooks.writer) break;
@@ -589,7 +606,8 @@ static void land_pages(u64 lo, u64 hi, int by) {
             continue;
         }
         first = first_after_nl(lo);
-        for (n = 0, i = first; i < g_own.nown && g_own.ent[i].lo < hi; i++) n++;
+        for (n = 0, i = first; i < atomic_load_explicit(&g_own.nown, memory_order_relaxed) && g_own.ent[i].lo < hi; i++)
+            n++;
         if (!n) {
             pm_unlock(&g_own.lk);
             if (kept[1]) let_go(kept[0], kept[1]);
@@ -601,7 +619,8 @@ static void land_pages(u64 lo, u64 hi, int by) {
         while (first && g_own.ent[first - 1].res == g_own.ent[first].res && g_own.ent[first - 1].hi == g_own.ent[first].lo &&
                !g_own.ent[first - 1].landing)
             first--, n++;
-        while (first + n < g_own.nown && g_own.ent[first + n].res == g_own.ent[first + n - 1].res &&
+        while (first + n < atomic_load_explicit(&g_own.nown, memory_order_relaxed) &&
+               g_own.ent[first + n].res == g_own.ent[first + n - 1].res &&
                g_own.ent[first + n].lo == g_own.ent[first + n - 1].hi && !g_own.ent[first + n].landing)
             n++;
         /* no mirror (Windows): every entry on the pages being opened lands with them */
@@ -642,14 +661,17 @@ static void land_pages(u64 lo, u64 hi, int by) {
        it, and only while there is room to note its pages. Until this landing is done, no owner or watch comes on its
        pages (own_begin, own_watch): the producer's lock kept them away before */
     u64 plo = elo & ~(g_own.page - 1), phi = (ehi + g_own.page - 1) & ~(g_own.page - 1);
-    int two = !busy && g_own.hooks.land_start && g_own.hooks.land_end && g_own.ninflight < OWN_INFLIGHT_MAX, let = 0;
+    int two = !busy && g_own.hooks.land_start && g_own.hooks.land_end &&
+              atomic_load_explicit(&g_own.ninflight, memory_order_relaxed) < OWN_INFLIGHT_MAX,
+        let = 0;
     if (two) {
-        g_own.inflight[g_own.ninflight][0] = plo;
-        g_own.inflight[g_own.ninflight][1] = phi;
-        __atomic_store_n(&g_own.ninflight, g_own.ninflight + 1, __ATOMIC_RELEASE);
+        g_own.inflight[atomic_load_explicit(&g_own.ninflight, memory_order_relaxed)][0] = plo;
+        g_own.inflight[atomic_load_explicit(&g_own.ninflight, memory_order_relaxed)][1] = phi;
+        atomic_store_explicit(&g_own.ninflight, atomic_load_explicit(&g_own.ninflight, memory_order_relaxed) + 1,
+                              memory_order_release);
     }
     pm_unlock(&g_own.lk);
-    __atomic_add_fetch(&g_own.land_bytes, total, __ATOMIC_RELAXED);
+    atomic_fetch_add_explicit(&g_own.land_bytes, total, memory_order_relaxed);
     SNX_ZONE_TV(z_land, "own land", total, "%u ranges", n);
     if (two) {
         void* handle = g_own.hooks.land_start(r, dst, n, by);
@@ -662,8 +684,8 @@ static void land_pages(u64 lo, u64 hi, int by) {
         }
     } else
         g_own.hooks.land(r, dst, n, by);
-    __atomic_add_fetch(&g_own.lands, 1, __ATOMIC_RELAXED);
-    __atomic_add_fetch(&g_own.lands_by[by], 1, __ATOMIC_RELAXED);
+    atomic_fetch_add_explicit(&g_own.lands, 1, memory_order_relaxed);
+    atomic_fetch_add_explicit(&g_own.lands_by[by], 1, memory_order_relaxed);
     if (!mirror)
         for (i = 0; i < n; i++)
             if (plat_trap_fill(GP(r[i].addr), dst[i], r[i].size))
@@ -697,11 +719,15 @@ static void land_pages(u64 lo, u64 hi, int by) {
     res_release(&rel);
     if (two) { /* its pages take owners and watches again */
         pm_lock(&g_own.lk);
-        for (i = 0; i < g_own.ninflight; i++)
+        for (i = 0; i < atomic_load_explicit(&g_own.ninflight, memory_order_relaxed); i++)
             if (g_own.inflight[i][0] == plo && g_own.inflight[i][1] == phi) {
-                g_own.inflight[i][0] = g_own.inflight[g_own.ninflight - 1][0];
-                g_own.inflight[i][1] = g_own.inflight[g_own.ninflight - 1][1];
-                __atomic_store_n(&g_own.ninflight, g_own.ninflight - 1, __ATOMIC_RELEASE);
+                g_own.inflight[i][0] =
+                    g_own.inflight[atomic_load_explicit(&g_own.ninflight, memory_order_relaxed) - 1][0];
+                g_own.inflight[i][1] =
+                    g_own.inflight[atomic_load_explicit(&g_own.ninflight, memory_order_relaxed) - 1][1];
+                atomic_store_explicit(&g_own.ninflight,
+                                      atomic_load_explicit(&g_own.ninflight, memory_order_relaxed) - 1,
+                                      memory_order_release);
                 break;
             }
         pc_broadcast(&g_own.cv);
@@ -715,10 +741,11 @@ static void report_owned_fault(u64 a, int write, u32 tid, int fault_state) {
     Own owners[16];
     u64 page = a & ~(g_own.page - 1);
     u32 i, n = 0, total = 0;
-    __atomic_add_fetch(&g_own.faults, 1, __ATOMIC_RELAXED);
+    atomic_fetch_add_explicit(&g_own.faults, 1, memory_order_relaxed);
     /* Snapshot metadata only: no guest reads, renderer lock, or logging under the map lock. */
     pm_lock(&g_own.lk);
-    for (i = first_after_nl(page); i < g_own.nown && g_own.ent[i].lo < page + g_own.page; i++) {
+    for (i = first_after_nl(page);
+         i < atomic_load_explicit(&g_own.nown, memory_order_relaxed) && g_own.ent[i].lo < page + g_own.page; i++) {
         if (n < sizeof owners / sizeof *owners) owners[n++] = g_own.ent[i];
         total++;
     }
@@ -768,7 +795,8 @@ static void own_fault(u8* p, int write, u32 tid) {
                the holder watches the targets over it again when it lets go of its lock (own_watch) */
             pm_lock(&g_own.lk);
             u32 i = next_real_nl(first_after_nl(page), page + g_own.page);
-            int real = i < g_own.nown && g_own.ent[i].lo < page + g_own.page;
+            int real =
+                i < atomic_load_explicit(&g_own.nown, memory_order_relaxed) && g_own.ent[i].lo < page + g_own.page;
             pm_unlock(&g_own.lk);
             if (!real) {
                 if (g_own.hooks.resolve) owe(page, page + g_own.page);
@@ -784,7 +812,7 @@ static void own_fault(u8* p, int write, u32 tid) {
     /* never under g_own.trap_lk: the landing takes the producer's lock. Its let_go wakes the faulting thread, which may
        publish over the page again before this returns: that owner lands when an access faults on it, not here (a VIC
        job's picture, written over the one just read, stays on the GPU for the display) */
-    __atomic_add_fetch(&g_own.faults, 1, __ATOMIC_RELAXED);
+    atomic_fetch_add_explicit(&g_own.faults, 1, memory_order_relaxed);
     land_pages(page, page + g_own.page, write ? OWN_BY_WRITE : OWN_BY_READ);
 }
 
@@ -805,7 +833,7 @@ int own_init(const OwnHooks* h) {
     }
     g_own.traps = 1;
     g_own.nregion = (AS_SIZE + (1ull << OWN_REGION_SHIFT) - 1) >> OWN_REGION_SHIFT;
-    g_own.region = (u32*)calloc((size_t)g_own.nregion, sizeof *g_own.region);
+    g_own.region = (_Atomic u32*)calloc((size_t)g_own.nregion, sizeof *g_own.region);
     LOG("memory: GPU engines keep their results, guest memory is trapped until the CPU needs it%s\n",
         g_own.mirror ? "" : " (page protection and an exception handler, landing in place)");
     return 0;
@@ -911,7 +939,8 @@ u32 own_lookup(u64 addr, u64 size, OwnRange* out, u32 max) {
     u32 i, n = 0;
     if (!own_any() || !region_owned(addr, end)) return 0;
     pm_lock(&g_own.lk);
-    for (i = next_real_nl(first_after_nl(addr), end); i < g_own.nown && g_own.ent[i].lo < end;
+    for (i = next_real_nl(first_after_nl(addr), end);
+         i < atomic_load_explicit(&g_own.nown, memory_order_relaxed) && g_own.ent[i].lo < end;
          i = next_real_nl(i + 1, end), n++)
         if (n < max) {
             const Own* o = &g_own.ent[i];
@@ -952,7 +981,7 @@ static void stage_cpu(u64 addr, u64 a, u64 b, u8* dst, const u8* mirror) {
             }
             if (!sh) {
                 memset(dst + (a - addr), 0, (size_t)(end - a));
-                if (!__atomic_exchange_n(&g_own.said_unshadowed, 1, __ATOMIC_RELAXED))
+                if (!atomic_exchange_explicit(&g_own.said_unshadowed, 1, memory_order_relaxed))
                     WARN("memory: the CPU's bytes of trapped page %llx have no copy: read as zero\n",
                          (unsigned long long)page);
             }
@@ -970,7 +999,9 @@ static int unshadowed_nl(u64 addr, u64 end, u64* at) {
     u64 c = addr;
     u32 i = next_real_nl(first_after_nl(addr), end); /* a watch's bytes are the CPU's: a gap's */
     for (;;) {
-        u64 next = i < g_own.nown && g_own.ent[i].lo < end ? (g_own.ent[i].lo > addr ? g_own.ent[i].lo : addr) : end;
+        u64 next = i < atomic_load_explicit(&g_own.nown, memory_order_relaxed) && g_own.ent[i].lo < end
+                       ? (g_own.ent[i].lo > addr ? g_own.ent[i].lo : addr)
+                       : end;
         if (next > c) {
             u64 p0 = c & ~(g_own.page - 1), p1 = (next - 1) & ~(g_own.page - 1);
             if (page_owned_nl(p0) && !shadow_get_nl(p0)) {
@@ -998,7 +1029,7 @@ u32 own_stage(u64 addr, u64 size, u8* dst, OwnRange* out, u32 max) {
     if (own_any() && region_owned(lo, hi)) {
         pm_lock(&g_own.lk);
         u32 f = first_after_nl(lo);
-        trapped = f < g_own.nown && g_own.ent[f].lo < hi;
+        trapped = f < atomic_load_explicit(&g_own.nown, memory_order_relaxed) && g_own.ent[f].lo < hi;
         pm_unlock(&g_own.lk);
         if (!trapped) {
             memcpy(dst, GP(addr), (size_t)size);
@@ -1026,7 +1057,8 @@ u32 own_stage(u64 addr, u64 size, u8* dst, OwnRange* out, u32 max) {
     trapped = region_owned(lo, hi);
     if (trapped) {
         pm_lock(&g_own.lk);
-        trapped = first_after_nl(lo) < g_own.nown && g_own.ent[first_after_nl(lo)].lo < hi;
+        trapped = first_after_nl(lo) < atomic_load_explicit(&g_own.nown, memory_order_relaxed) &&
+                  g_own.ent[first_after_nl(lo)].lo < hi;
         pm_unlock(&g_own.lk);
     }
     /* No owner on its pages: read as they are. One just landed may still be armed until its landing lets it go; the
@@ -1052,7 +1084,8 @@ int own_hash(u64 addr, u64 size, u64* h) {
     int any = 0;
     if (!size || !own_any() || !region_owned(lo, hi)) return 0;
     pm_lock(&g_own.lk);
-    for (i = first_after_nl(lo); i < g_own.nown && g_own.ent[i].lo < hi; i++) {
+    for (i = first_after_nl(lo); i < atomic_load_explicit(&g_own.nown, memory_order_relaxed) && g_own.ent[i].lo < hi;
+         i++) {
         const Own* o = &g_own.ent[i];
         u64 v[4];
         v[0] = o->lo;
@@ -1095,7 +1128,9 @@ int own_watch(u64 addr, u64 size) {
         u64 rhi = runs[i].addr + runs[i].size < end ? runs[i].addr + runs[i].size : end;
         for (u64 c = rlo; c < rhi;) {
             u32 j = next_real_nl(first_after_nl(c), rhi);
-            u64 gap = j < g_own.nown && g_own.ent[j].lo < rhi ? g_own.ent[j].lo : rhi;
+            u64 gap = j < atomic_load_explicit(&g_own.nown, memory_order_relaxed) && g_own.ent[j].lo < rhi
+                          ? g_own.ent[j].lo
+                          : rhi;
             u64 next = gap < rhi ? g_own.ent[j].hi : rhi; /* before the replace moves the entries */
             if (gap > c) {
                 Own w = {.lo = c, .hi = gap, .pool = runs[i].pool + (c - runs[i].addr), .res = NULL};
@@ -1121,7 +1156,7 @@ int own_watched(u64 addr, u64 size) {
     if (!size || !own_any() || !region_owned(addr, end)) return 0;
     pm_lock(&g_own.lk);
     for (u32 i = first_after_nl(addr); c < end; i++) {
-        if (i >= g_own.nown || g_own.ent[i].lo > c || g_own.ent[i].res) {
+        if (i >= atomic_load_explicit(&g_own.nown, memory_order_relaxed) || g_own.ent[i].lo > c || g_own.ent[i].res) {
             all = 0;
             break;
         }
@@ -1137,7 +1172,8 @@ int own_covered(u64 addr, u64 size) {
     if (!size || !own_any() || !region_owned(addr, end)) return 0;
     pm_lock(&g_own.lk);
     for (u32 i = first_after_nl(addr); c < end; i++) {
-        if (i >= g_own.nown || g_own.ent[i].lo > c || g_own.ent[i].landing) {
+        if (i >= atomic_load_explicit(&g_own.nown, memory_order_relaxed) || g_own.ent[i].lo > c ||
+            g_own.ent[i].landing) {
             all = 0;
             break;
         }
@@ -1151,13 +1187,13 @@ int own_owed_take(u64* addr, u64* size) {
     int any = 0;
     /* not in a landing's own let go of the producer's lock: a watch there could wait for that landing's pages
        (own_watch). The spans stay for the next thread that lets go of the lock */
-    if (t_own_window || !__atomic_load_n(&g_own.nowed, __ATOMIC_ACQUIRE)) return 0;
+    if (t_own_window || !atomic_load_explicit(&g_own.nowed, memory_order_acquire)) return 0;
     pm_lock(&g_own.lk);
-    u32 n = g_own.nowed;
+    u32 n = atomic_load_explicit(&g_own.nowed, memory_order_relaxed);
     if (n) {
         *addr = g_own.owed[n - 1][0];
         *size = g_own.owed[n - 1][1] - g_own.owed[n - 1][0];
-        __atomic_store_n(&g_own.nowed, n - 1, __ATOMIC_RELEASE);
+        atomic_store_explicit(&g_own.nowed, n - 1, memory_order_release);
         any = 1;
     }
     pm_unlock(&g_own.lk);
@@ -1174,7 +1210,7 @@ int own_trapped(u64 addr, u64 size) {
     if (!size) return 0;
     /* a landing in two steps: its entries go before its traps do (let_go), so its pages count until its inflight
        entry goes. A move of them meanwhile (mem_migrate) would map other pages over a trap */
-    int inflight = __atomic_load_n(&g_own.ninflight, __ATOMIC_ACQUIRE) != 0;
+    int inflight = atomic_load_explicit(&g_own.ninflight, memory_order_acquire) != 0;
     if (!inflight && (!own_any() || !region_owned(lo, hi))) return 0;
     pm_lock(&g_own.lk);
     any = owned_nl(lo, hi) || inflight_nl(lo, hi);
@@ -1187,7 +1223,8 @@ u64 own_first_trapped(u64 addr, u64 size) {
     if (!size || !own_any() || !region_owned(lo, hi)) return at;
     pm_lock(&g_own.lk);
     u32 i = first_after_nl(lo);
-    if (i < g_own.nown && g_own.ent[i].lo < hi) { /* the entries are in address order: the first is the lowest */
+    if (i < atomic_load_explicit(&g_own.nown, memory_order_relaxed) &&
+        g_own.ent[i].lo < hi) { /* the entries are in address order: the first is the lowest */
         u64 page = g_own.ent[i].lo & ~(g_own.page - 1);
         at = page > addr ? page : addr;
     }
@@ -1206,7 +1243,7 @@ void own_drop(u64 addr, u64 size) {
     pm_lock(&g_own.lk);
     while (landing_nl(addr, addr + size)) pc_wait(&g_own.cv, &g_own.lk, -1);
     u32 first = first_after_nl(addr);
-    if (first == g_own.nown || g_own.ent[first].lo >= addr + size) {
+    if (first == atomic_load_explicit(&g_own.nown, memory_order_relaxed) || g_own.ent[first].lo >= addr + size) {
         pm_unlock(&g_own.lk);
         return;
     }
@@ -1215,17 +1252,19 @@ void own_drop(u64 addr, u64 size) {
        Only pages of entries cut here can need opening. Continuing an unrelated unmap faults its whole range into
        userfaultfd's mappings just before mem.c releases those pages again. */
     u64 lo = g_own.ent[first].lo > addr ? g_own.ent[first].lo : addr, hi = g_own.ent[first].hi;
-    for (u32 i = first + 1; i < g_own.nown && g_own.ent[i].lo < addr + size; i++) hi = g_own.ent[i].hi;
+    for (u32 i = first + 1;
+         i < atomic_load_explicit(&g_own.nown, memory_order_relaxed) && g_own.ent[i].lo < addr + size; i++)
+        hi = g_own.ent[i].hi;
     if (hi > addr + size) hi = addr + size;
     cut_nl(addr, addr + size, &rel);
     pm_unlock(&g_own.lk);
     let_go(lo & ~(g_own.page - 1), (hi + g_own.page - 1) & ~(g_own.page - 1)); /* before the release, as land_pages */
     res_release(&rel);
 }
-u64 own_landings(void) { return __atomic_load_n(&g_own.lands, __ATOMIC_RELAXED); }
-u64 own_faults(void) { return __atomic_load_n(&g_own.faults, __ATOMIC_RELAXED); }
-u64 own_land_bytes(void) { return __atomic_load_n(&g_own.land_bytes, __ATOMIC_RELAXED); }
+u64 own_landings(void) { return atomic_load_explicit(&g_own.lands, memory_order_relaxed); }
+u64 own_faults(void) { return atomic_load_explicit(&g_own.faults, memory_order_relaxed); }
+u64 own_land_bytes(void) { return atomic_load_explicit(&g_own.land_bytes, memory_order_relaxed); }
 void own_landings_by(u64 by[OWN_BY_N]) {
-    for (int i = 0; i < OWN_BY_N; i++) by[i] = __atomic_load_n(&g_own.lands_by[i], __ATOMIC_RELAXED);
+    for (int i = 0; i < OWN_BY_N; i++) by[i] = atomic_load_explicit(&g_own.lands_by[i], memory_order_relaxed);
 }
 int own_traps(void) { return g_own.traps; }

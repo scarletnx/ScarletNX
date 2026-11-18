@@ -4,6 +4,7 @@
 #ifndef SNX_LOG_H
 #define SNX_LOG_H
 #include <stdio.h>
+#include <stdatomic.h>
 
 /* the .ini's log key: 1 normal, 2 also the LOGV lines (and every line on stderr) */
 #include "snx_settings.h" /* g_settings.log_level, the .ini's log */
@@ -21,8 +22,9 @@
    counts in its own static int (relaxed: only the count matters), and stops adding once past the limit */
 #define SNX_LOG_AT_MOST_(said, n, lvl, ...)                                                                            \
     do {                                                                                                               \
-        static int said;                                                                                               \
-        if (__atomic_load_n(&said, __ATOMIC_RELAXED) < (n) && __atomic_fetch_add(&said, 1, __ATOMIC_RELAXED) < (n))    \
+        static _Atomic int said;                                                                                       \
+        if (atomic_load_explicit(&said, memory_order_relaxed) < (n) &&                                                 \
+            atomic_fetch_add_explicit(&said, 1, memory_order_relaxed) < (n))                                           \
             logf_(lvl, __VA_ARGS__);                                                                                   \
     } while (0)
 #define LOG_LIMIT(n, ...)  SNX_LOG_AT_MOST_(log_limit_said_, n, 1, __VA_ARGS__)

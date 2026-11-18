@@ -54,6 +54,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 
 #define CHECK(x)                                                                                                       \
     do {                                                                                                               \
@@ -121,21 +122,21 @@ static int check_recorder_self_sync(void) {
    (sdl3.c's fatal_screen), waited for that ring to drain with no end: the window froze, no error showed and the process
    stayed. The release has to return in its own while: the window let go when the packet holds nothing, and kept (the
    system's box shows the error) when it holds the queue's lock */
-static u32 g_rec_stop; /* 0 not reached, 1 the packet stopped there, 2 let go */
+static _Atomic u32 g_rec_stop; /* 0 not reached, 1 the packet stopped there, 2 let go */
 static void recorder_stops(const void* arg) {
     int hold_queue = *(const int*)arg;
     if (hold_queue) vk_queue_lock(g_vk.gfx);
-    __atomic_store_n(&g_rec_stop, 1, __ATOMIC_RELEASE);
+    atomic_store_explicit(&g_rec_stop, 1, memory_order_release);
     plat_wake_word(&g_rec_stop);
-    while (__atomic_load_n(&g_rec_stop, __ATOMIC_ACQUIRE) != 2) plat_wait_word(&g_rec_stop, 1, -1);
+    while (atomic_load_explicit(&g_rec_stop, memory_order_acquire) != 2) plat_wait_word(&g_rec_stop, 1, -1);
     if (hold_queue) vk_queue_unlock(g_vk.gfx);
 }
-static u32 g_release_done; /* 0 running, 1 returned */
+static _Atomic u32 g_release_done; /* 0 running, 1 returned */
 static int g_released;
 static void release_on_thread(void* arg) {
     (void)arg;
     g_released = vk_window_release();
-    __atomic_store_n(&g_release_done, 1, __ATOMIC_RELEASE);
+    atomic_store_explicit(&g_release_done, 1, memory_order_release);
     plat_wake_word(&g_release_done);
 }
 static int check_release_stopped_recorder(void) {
@@ -147,23 +148,23 @@ static int check_release_stopped_recorder(void) {
         u64 until = plat_ns() + 8000000000ull; /* the release's two waits of 2 s, with room to spare */
         int returned;
         u32 stop;
-        __atomic_store_n(&g_rec_stop, 0, __ATOMIC_RELEASE);
-        __atomic_store_n(&g_release_done, 0, __ATOMIC_RELEASE);
+        atomic_store_explicit(&g_rec_stop, 0, memory_order_release);
+        atomic_store_explicit(&g_release_done, 0, memory_order_release);
         vk_lock();
         vk_rec_call(recorder_stops, &hold_queue, sizeof hold_queue); /* the release's own drain publishes it */
         vk_unlock();
         CHECK(plat_thread(release_on_thread, NULL, 0) == 0);
         for (;;) {
             u64 now = plat_ns();
-            if (__atomic_load_n(&g_release_done, __ATOMIC_ACQUIRE) || now >= until) break;
+            if (atomic_load_explicit(&g_release_done, memory_order_acquire) || now >= until) break;
             plat_wait_word(&g_release_done, 0, (i64)(until - now));
         }
-        returned = (int)__atomic_load_n(&g_release_done, __ATOMIC_ACQUIRE);
-        stop = __atomic_load_n(&g_rec_stop, __ATOMIC_ACQUIRE);
+        returned = (int)atomic_load_explicit(&g_release_done, memory_order_acquire);
+        stop = atomic_load_explicit(&g_rec_stop, memory_order_acquire);
         /* the packet let go: a release still waiting returns, and the ring drains for the checks after this one */
-        __atomic_store_n(&g_rec_stop, 2, __ATOMIC_RELEASE);
+        atomic_store_explicit(&g_rec_stop, 2, memory_order_release);
         plat_wake_word(&g_rec_stop);
-        while (!__atomic_load_n(&g_release_done, __ATOMIC_ACQUIRE)) plat_wait_word(&g_release_done, 0, -1);
+        while (!atomic_load_explicit(&g_release_done, memory_order_acquire)) plat_wait_word(&g_release_done, 0, -1);
         vk_rec_sync();
         if (!returned)
             fprintf(stderr, "the window's release waited past 8 s for the recording thread stopped in a packet%s\n",
@@ -3954,7 +3955,7 @@ static int check_resident_volume(void) {
    binds' own, what it signals, and whether that submission waits for it. Some drivers order binds with the work
    around them anyway (RADV's queue takes its batches in order), so a missing wait shows only here there */
 typedef struct {
-    u64 binds, waits, wait_ns;
+    _Atomic u64 binds, waits, wait_ns;
 } ScCount;
 typedef struct {
     u64 gfx;         /* its wait on the graphics timeline, 0 none */
@@ -3988,7 +3989,7 @@ static VKAPI_ATTR VkResult VKAPI_CALL sc_bind(VkQueue q, u32 n, const VkBindSpar
     }
     g_sc.prev = g_sc.last;
     g_sc.last = x;
-    __atomic_add_fetch(&g_sc.n.binds, 1, __ATOMIC_RELAXED);
+    atomic_fetch_add_explicit(&g_sc.n.binds, 1, memory_order_relaxed);
     return g_sc.bind(q, n, b, f);
 }
 static VKAPI_ATTR VkResult VKAPI_CALL sc_submit(VkQueue q, u32 n, const VkSubmitInfo2* s, VkFence f) {
@@ -4005,8 +4006,8 @@ static VKAPI_ATTR VkResult VKAPI_CALL sc_submit(VkQueue q, u32 n, const VkSubmit
 static void sc_waited(u64 t0, u64 timeout) {
     if (!timeout) return; /* a look, no wait */
     if (plat_tid() == vk_timeline_tid()) return; /* the thread that follows the timeline waits on it by design */
-    __atomic_add_fetch(&g_sc.n.waits, 1, __ATOMIC_RELAXED);
-    __atomic_add_fetch(&g_sc.n.wait_ns, plat_ns() - t0, __ATOMIC_RELAXED);
+    atomic_fetch_add_explicit(&g_sc.n.waits, 1, memory_order_relaxed);
+    atomic_fetch_add_explicit(&g_sc.n.wait_ns, plat_ns() - t0, memory_order_relaxed);
 }
 static VKAPI_ATTR VkResult VKAPI_CALL sc_fences(VkDevice d, u32 n, const VkFence* f, VkBool32 all, u64 timeout) {
     u64 t0 = plat_ns();
@@ -4022,8 +4023,9 @@ static VKAPI_ATTR VkResult VKAPI_CALL sc_sems(VkDevice d, const VkSemaphoreWaitI
 }
 static ScCount sc_now(void) {
     vk_rec_sync(); /* the recording thread's calls so far */
-    return (ScCount){__atomic_load_n(&g_sc.n.binds, __ATOMIC_RELAXED), __atomic_load_n(&g_sc.n.waits, __ATOMIC_RELAXED),
-                     __atomic_load_n(&g_sc.n.wait_ns, __ATOMIC_RELAXED)};
+    return (ScCount){atomic_load_explicit(&g_sc.n.binds, memory_order_relaxed),
+                     atomic_load_explicit(&g_sc.n.waits, memory_order_relaxed),
+                     atomic_load_explicit(&g_sc.n.wait_ns, memory_order_relaxed)};
 }
 static void sc_install(void) {
     if (g_sc.bind) return;
@@ -4042,23 +4044,23 @@ static void sc_install(void) {
 typedef struct {
     VkSemaphore sem;
     u64 value;
-    int opened, ended;
+    _Atomic int opened, ended;
 } Gate;
 static void gate_open(Gate* g) {
     VkSemaphoreSignalInfo si = {
         .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SIGNAL_INFO, .semaphore = g->sem, .value = g->value};
-    if (!__atomic_exchange_n(&g->opened, 1, __ATOMIC_SEQ_CST)) VK_OK(vkSignalSemaphore(g_vk.dev, &si));
+    if (!atomic_exchange_explicit(&g->opened, 1, memory_order_seq_cst)) VK_OK(vkSignalSemaphore(g_vk.dev, &si));
 }
 static void gate_watch(void* arg) {
     Gate* g = arg;
-    for (int i = 0; i < 40 && !__atomic_load_n(&g->opened, __ATOMIC_SEQ_CST); i++) plat_sleep_ns(10000000);
+    for (int i = 0; i < 40 && !atomic_load_explicit(&g->opened, memory_order_seq_cst); i++) plat_sleep_ns(10000000);
     gate_open(g);
-    __atomic_store_n(&g->ended, 1, __ATOMIC_SEQ_CST);
+    atomic_store_explicit(&g->ended, 1, memory_order_seq_cst);
 }
 /* the gate opened, and its watchdog gone */
 static void gate_end(Gate* g) {
     gate_open(g);
-    while (!__atomic_load_n(&g->ended, __ATOMIC_SEQ_CST)) plat_sleep_ns(1000000);
+    while (!atomic_load_explicit(&g->ended, memory_order_seq_cst)) plat_sleep_ns(1000000);
 }
 static VkSemaphore gate_semaphore(void) {
     VkSemaphoreTypeCreateInfo tci = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,
@@ -6191,13 +6193,13 @@ static int check_dma_source_kept_when_stable(void) {
    second must take the new bytes. Stamped with the newest epoch, the first job's check vouched for writes it never
    looked for, and the second reused its copy unchecked (one game's compute inputs, with the tracking's own scans
    saying nothing was written since the copy) */
-static u32 g_later_done;
+static _Atomic u32 g_later_done;
 static u64 g_later_cpu, g_later_size;
 static void later_submission(void* arg) { /* the program's thread: its writes, then its submission */
     (void)arg;
     memset(GP(g_later_cpu), 0x22, g_later_size);
     g_renderer->mem_may_have_changed();
-    __atomic_store_n(&g_later_done, 1, __ATOMIC_RELEASE);
+    atomic_store_explicit(&g_later_done, 1, memory_order_release);
     plat_wake_word(&g_later_done);
 }
 /* whether the strict buffer of [gva, gva + size) holds want in every byte, read back from the GPU into *got (vk_lock
@@ -6243,9 +6245,9 @@ static int check_stream_epoch(void) {
     /* the program writes it and submits the second job, while the first runs */
     g_later_cpu = cpu;
     g_later_size = size;
-    __atomic_store_n(&g_later_done, 0, __ATOMIC_RELAXED);
+    atomic_store_explicit(&g_later_done, 0, memory_order_relaxed);
     CHECK(plat_thread(later_submission, NULL, 0) == 0);
-    while (!__atomic_load_n(&g_later_done, __ATOMIC_ACQUIRE)) plat_wait_word(&g_later_done, 0, -1);
+    while (!atomic_load_explicit(&g_later_done, memory_order_acquire)) plat_wait_word(&g_later_done, 0, -1);
     /* the first job reads the range again */
     vk_lock();
     CHECK(vk_buf_get_strict(gva, size, &b, &off));
@@ -6672,7 +6674,7 @@ static int check_rt_watch_holder(void) {
         /* this thread holds no lock now: its read faults, publishes the target and lands the GPU's pixels. The trap
            thread does that work while the copy waits, so the compiler must not read the counters before the copy */
         memcpy(got, GP(HOLD_A + t), sizeof got);
-        __atomic_signal_fence(__ATOMIC_SEQ_CST);
+        atomic_signal_fence(memory_order_seq_cst);
         if (!(g_vk_rt_watch.hits == w0.hits + 1 && own_landings() > lands && !own_trapped(HOLD_A + t, 0x1000)))
             fprintf(stderr,
                     "render target watch, target %d: %llu faults, %llu hits, %llu landings, %llu publishes and %llu "
@@ -7465,23 +7467,24 @@ static int check_map_lands_covered(void) {
    holds it through an SVC that waits for nothing, as on the console. Nothing waits where the renderer holds nothing
    over the pages and its lock is free; a lock another thread holds is a wait, told while that thread still holds it,
    and so is a result pending on the pages, which lands */
-static u32 g_map_waits, g_map_holder, g_map_told; /* the holder: 1 holds vk_lock, 2 let go of it */
+static _Atomic u32 g_map_waits, g_map_holder, g_map_told; /* the holder: 1 holds vk_lock, 2 let go of it */
 static void map_waits(void) {
-    __atomic_add_fetch(&g_map_waits, 1, __ATOMIC_SEQ_CST);
-    if (__atomic_load_n(&g_map_holder, __ATOMIC_SEQ_CST) != 1) return;
-    __atomic_store_n(&g_map_told, 1, __ATOMIC_SEQ_CST); /* the holder lets go now, and the change gets the lock */
+    atomic_fetch_add_explicit(&g_map_waits, 1, memory_order_seq_cst);
+    if (atomic_load_explicit(&g_map_holder, memory_order_seq_cst) != 1) return;
+    atomic_store_explicit(&g_map_told, 1,
+                          memory_order_seq_cst); /* the holder lets go now, and the change gets the lock */
     plat_wake_word(&g_map_told);
 }
 static void map_holder(void* arg) {
     u64 until = plat_ns() + 5000000000ull; /* a change that never tells gets the lock then, and fails its counts */
     (void)arg;
     vk_lock();
-    __atomic_store_n(&g_map_holder, 1, __ATOMIC_SEQ_CST);
+    atomic_store_explicit(&g_map_holder, 1, memory_order_seq_cst);
     plat_wake_word(&g_map_holder);
-    while (!__atomic_load_n(&g_map_told, __ATOMIC_SEQ_CST) && plat_ns() < until)
+    while (!atomic_load_explicit(&g_map_told, memory_order_seq_cst) && plat_ns() < until)
         plat_wait_word(&g_map_told, 0, 10000000);
     vk_unlock();
-    __atomic_store_n(&g_map_holder, 2, __ATOMIC_SEQ_CST);
+    atomic_store_explicit(&g_map_holder, 2, memory_order_seq_cst);
     plat_wake_word(&g_map_holder);
 }
 static int check_map_waits(void) {
@@ -7504,11 +7507,11 @@ static int check_map_waits(void) {
     vk_unlock();
     CHECK(!g_map_waits);
     CHECK(plat_thread(map_holder, NULL, 0) == 0);
-    while (!__atomic_load_n(&g_map_holder, __ATOMIC_SEQ_CST)) plat_wait_word(&g_map_holder, 0, -1);
+    while (!atomic_load_explicit(&g_map_holder, memory_order_seq_cst)) plat_wait_word(&g_map_holder, 0, -1);
     g_gpu_mapping_begin(gva + 0x100000, 0x1000, GPU_MAPPING_GMMU); /* the same change, another thread's hold */
     g_gpu_mapping_end();
     CHECK(g_map_waits == 1 && g_map_told);
-    while (__atomic_load_n(&g_map_holder, __ATOMIC_SEQ_CST) != 2) plat_wait_word(&g_map_holder, 1, -1);
+    while (atomic_load_explicit(&g_map_holder, memory_order_seq_cst) != 2) plat_wait_word(&g_map_holder, 1, -1);
     if (!vk_uma()) { /* a result pending on the page, as check_map_lands_covered's */
         CHECK(mem_map(cpu, 0x1000, MS_NORMAL, PERM_RW) == 0);
         gmmu_map(gva, cpu, 0x1000);

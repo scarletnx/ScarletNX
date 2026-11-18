@@ -31,6 +31,7 @@
 #include <libavutil/error.h>
 #include <libavutil/frame.h>
 #include <libavutil/log.h>
+#include <stdatomic.h>
 
 #define CTX_MAGIC  0x534E5856u /* "SNXV": what the VP9 patch (.patch/ffmpeg) looks for at the context's start */
 #define HDR_CAP    1024u       /* an SPS and a PPS with full scaling lists and emulation prevention take ~800 */
@@ -70,17 +71,17 @@ typedef struct {
 /* ---- FFmpeg's log */
 /* the lines logged, by any decoding thread, and whether the callback is set, each on a cache line of its own */
 static struct {
-    u32 logged;
+    _Atomic u32 logged;
     char pad[60];
-    int init;
+    _Atomic int init;
 } g_ff;
 static void ff_log(void* avcl, int level, const char* fmt, va_list vl) {
     char line[512];
     int prefix = 1;
     size_t len;
     u32 n;
-    if (level > AV_LOG_WARNING || __atomic_load_n(&g_ff.logged, __ATOMIC_RELAXED) > FF_LOG_MAX) return;
-    n = __atomic_fetch_add(&g_ff.logged, 1, __ATOMIC_RELAXED);
+    if (level > AV_LOG_WARNING || atomic_load_explicit(&g_ff.logged, memory_order_relaxed) > FF_LOG_MAX) return;
+    n = atomic_fetch_add_explicit(&g_ff.logged, 1, memory_order_relaxed);
     if (n > FF_LOG_MAX) return;
     if (n == FF_LOG_MAX) {
         WARN("ffmpeg: more messages not shown\n");
@@ -93,7 +94,7 @@ static void ff_log(void* avcl, int level, const char* fmt, va_list vl) {
     WARN("ffmpeg: %s\n", line);
 }
 void ffmpeg_log_init(void) {
-    if (__atomic_exchange_n(&g_ff.init, 1, __ATOMIC_ACQ_REL)) return;
+    if (atomic_exchange_explicit(&g_ff.init, 1, memory_order_acq_rel)) return;
     av_log_set_level(AV_LOG_WARNING);
     av_log_set_callback(ff_log);
 }

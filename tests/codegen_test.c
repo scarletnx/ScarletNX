@@ -11,6 +11,7 @@
 #include <llvm/Config/llvm-config.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 
 static int failures;
 
@@ -1035,7 +1036,7 @@ static void semantics_test(void) {
    dispatch block), and the loop still runs to its end with the registers it had; without the flag it never polls */
 static void on_poll(CPU* c) {
     ++g_polls;
-    __atomic_store_n(&c->poll, 0, __ATOMIC_RELAXED);
+    atomic_store_explicit(&c->poll, 0, memory_order_relaxed);
 }
 static int run_loop(GuestFn f, u64 count, u32 flag) {
     CPU c;

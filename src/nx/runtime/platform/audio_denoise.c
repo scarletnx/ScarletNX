@@ -15,6 +15,7 @@
 #include <math.h>
 #include <rnnoise.h>
 #include <stdlib.h>
+#include <stdatomic.h>
 
 #define RNNOISE_FRAME (SNX_DENOISE_NEURAL_RATE / 100)
 
@@ -31,7 +32,7 @@ typedef void (*SpeexDestroy)(void* state);
 
 /* a library, loaded once: state 0 not tried, 1 being loaded, 2 loaded, 3 not there */
 static struct {
-    int state;
+    _Atomic int state;
     SpeexInit init;
     SpeexCtl ctl;
     SpeexRun run;
@@ -64,11 +65,12 @@ static int speex_load(void) {
     return 1;
 }
 /* 1 when a library is loaded: the first caller loads it, any other waits for that */
-static int ready(int* state, int (*load)(void)) {
-    int now = __atomic_load_n(state, __ATOMIC_ACQUIRE), expected = 0;
-    if (now == 0 && __atomic_compare_exchange_n(state, &expected, 1, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
-        __atomic_store_n(state, load() ? 2 : 3, __ATOMIC_RELEASE);
-    while ((now = __atomic_load_n(state, __ATOMIC_ACQUIRE)) < 2) {}
+static int ready(_Atomic int* state, int (*load)(void)) {
+    int now = atomic_load_explicit(state, memory_order_acquire), expected = 0;
+    if (now == 0 &&
+        atomic_compare_exchange_strong_explicit(state, &expected, 1, memory_order_acq_rel, memory_order_acquire))
+        atomic_store_explicit(state, load() ? 2 : 3, memory_order_release);
+    while ((now = atomic_load_explicit(state, memory_order_acquire)) < 2) {}
     return now == 2;
 }
 

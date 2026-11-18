@@ -25,6 +25,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -280,7 +281,7 @@ int gnu_spawn_finish_exec(GnuThread* t) {
     p->exec = NULL;
     gnu_mutex_lock(&p->kernel.lock);
     t->k.tid = p->kernel.pid; /* the thread that execs takes the process's id, as on Linux */
-    __atomic_store_n(&p->kernel.stopping, 0, __ATOMIC_SEQ_CST);
+    atomic_store_explicit(&p->kernel.stopping, 0, memory_order_seq_cst);
     p->kernel.stopper = NULL;
     gnu_mutex_unlock(&p->kernel.lock);
     gnu_vfs_close_on_exec(&p->vfs);

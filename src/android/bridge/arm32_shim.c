@@ -16,6 +16,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <stdatomic.h>
 
 #define R(n) (c->r[n])
 static uint32_t rd32(uint32_t a) { return snx_ld_le32(arm32_mem + a); }
@@ -83,7 +84,7 @@ typedef struct {
     const char* name;
     const char* kinds;
     const HleSymbol* fn; /* hle_find's, at the first call */
-    bool looked;
+    _Atomic bool looked;
 } Shim;
 
 static _Thread_local CPU* t_cpu;
@@ -112,14 +113,14 @@ static uint64_t call64(const HleSymbol* fn, const uint64_t* x, unsigned nx, cons
 /* a shim's 64-bit handler, hle_find's at its first call: NULL when the 64-bit bridge has none, which that first call
    says with the name (the call fails; arm32_shim_unresolved lists them all) */
 static const HleSymbol* find(Shim* s) {
-    if (!__atomic_load_n(&s->looked, __ATOMIC_ACQUIRE)) {
+    if (!atomic_load_explicit(&s->looked, memory_order_acquire)) {
         const HleSymbol* fn = hle_find(s->name);
         s->fn = fn && fn->handler ? fn : NULL;
         if (!s->fn)
             fprintf(stderr,
                     "scarletnx-android: arm32: the 64-bit bridge has no handler for %s: the 32-bit call fails\n",
                     s->name);
-        __atomic_store_n(&s->looked, true, __ATOMIC_RELEASE);
+        atomic_store_explicit(&s->looked, true, memory_order_release);
     }
     return s->fn;
 }
@@ -541,7 +542,7 @@ static void looper_poll(SnxArmCPU* c, void* data) {
             R(0) = (uint32_t)-1;
             return;
         }
-        if (__atomic_load_n(&arm32_pending_signals, __ATOMIC_RELAXED)) arm32_signals_run(c);
+        if (atomic_load_explicit(&arm32_pending_signals, memory_order_relaxed)) arm32_signals_run(c);
         clock_gettime(CLOCK_MONOTONIC, &now);
         spent = (int64_t)(now.tv_sec - start.tv_sec) * 1000 + (now.tv_nsec - start.tv_nsec) / 1000000;
         if (timeout == 0 || (timeout > 0 && spent >= timeout)) {

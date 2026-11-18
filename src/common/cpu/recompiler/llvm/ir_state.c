@@ -361,7 +361,7 @@ void ir_wr(SnxIr* ir, LLVMValueRef address, unsigned bits, LLVMValueRef value) {
     LLVMSetVolatile(store, snx_ir_volatile());
     ir_tag_guest(ir, store);
 }
-/* __atomic_load_n/__atomic_store_n on T* (cpu.h LDACQ/STREL): seq_cst, naturally aligned as the C type says */
+/* atomic_load_explicit and atomic_store_explicit on _Atomic T* (cpu.h LDACQ/STREL): seq_cst, naturally aligned as the C type says */
 LLVMValueRef ir_ldacq(SnxIr* ir, LLVMValueRef address, unsigned bits) {
     LLVMValueRef load = LLVMBuildLoad2(ir->b, ir_int_type(ir, bits), ir_mp(ir, address), "");
     LLVMSetOrdering(load, LLVMAtomicOrderingSequentiallyConsistent);

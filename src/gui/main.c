@@ -82,6 +82,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <stdatomic.h>
 /* last: from here the renderer's draws, by SDL's names, are a frame's list (drawn.h) */
 #include "gui/drawn.h"
 /* the checkout the drivers were built from and its build tree, where an older version kept games/ and work/ */
@@ -98,7 +99,8 @@
 #define GUI_SPACE_DIRS                                                                                                 \
     7 /* the data folder's recompiled/, work/, themes/; the XDG folders or the menu's; a picked work/ */
 typedef struct {
-    int count, counted, done, stop;
+    int count;
+    _Atomic int counted, done, stop;
     bool games;    /* a file is a game an older version laid out beside the others: its _code.so, _data/... count */
     uint64_t used; /* all of them */
     uint64_t* bytes;
@@ -224,7 +226,8 @@ typedef struct {
     SDL_Thread* thread;
     char* dirs[GUI_WATCH_DIRS]; /* as the menu last handed them, NULL none; each one's depth beside it */
     int depths[GUI_WATCH_DIRS];
-    int count, stop;
+    int count;
+    _Atomic int stop;
     unsigned set;     /* how many times the folders were handed: a hash of older ones is not taken */
     unsigned stamped; /* the set the hash is of, 0 none */
     uint64_t stamp;
@@ -270,7 +273,8 @@ typedef struct {
     char* repo;
     char* dumps[GUI_DUMP_ASKS]; /* each owned, with its folder in the cache beside it */
     char* dirs[GUI_DUMP_ASKS];
-    int count, stop;
+    int count;
+    _Atomic int stop;
     unsigned answered; /* how many the driver answered, said or not */
     bool live;         /* the program's: a thread answers (the tests answer with dump_icons_pass) */
     int wait_ms;       /* GUI_ICON_WAIT, a test's own less */
@@ -1508,7 +1512,7 @@ static void disk_text(const App* app, char* out, size_t size) {
     out[0] = 0;
     if (!app->space) return;
     gui_size_text(left, sizeof left, app->free_bytes);
-    if (__atomic_load_n(&app->space->done, __ATOMIC_ACQUIRE)) {
+    if (atomic_load_explicit(&app->space->done, memory_order_acquire)) {
         gui_size_text(used, sizeof used, app->space->used);
         snprintf(out, size, snx_tr("Disk: %s, %s free"), used, left);
     } else
@@ -4588,7 +4592,7 @@ static void dump_icons_pass(GuiDumpIcons* d) {
     if (!d->lock) return;
     for (;;) {
         SDL_LockMutex(d->lock);
-        if (!d->count || __atomic_load_n(&d->stop, __ATOMIC_RELAXED)) {
+        if (!d->count || atomic_load_explicit(&d->stop, memory_order_relaxed)) {
             SDL_UnlockMutex(d->lock);
             return;
         }
@@ -4607,10 +4611,10 @@ static void dump_icons_pass(GuiDumpIcons* d) {
 }
 static int SDLCALL dump_icons_run(void* data) {
     GuiDumpIcons* d = (GuiDumpIcons*)data;
-    while (!__atomic_load_n(&d->stop, __ATOMIC_RELAXED)) {
+    while (!atomic_load_explicit(&d->stop, memory_order_relaxed)) {
         dump_icons_pass(d);
         SDL_LockMutex(d->lock);
-        if (!d->count && !__atomic_load_n(&d->stop, __ATOMIC_RELAXED)) SDL_WaitCondition(d->wake, d->lock);
+        if (!d->count && !atomic_load_explicit(&d->stop, memory_order_relaxed)) SDL_WaitCondition(d->wake, d->lock);
         SDL_UnlockMutex(d->lock);
     }
     return 0;
@@ -4730,7 +4734,7 @@ static void icons_wait(App* app) {
 static void dump_icons_stop(App* app) {
     GuiDumpIcons* d = &app->dump_icons;
     int i;
-    __atomic_store_n(&d->stop, 1, __ATOMIC_RELAXED);
+    atomic_store_explicit(&d->stop, 1, memory_order_relaxed);
     if (d->lock) {
         SDL_LockMutex(d->lock);
         SDL_SignalCondition(d->wake);
@@ -8590,7 +8594,7 @@ static void open_editor(App* app) {
     app->preview_since = 0;
 }
 /* the bytes of path, a folder or a file; for a game laid out beside the others its files beside it too */
-static uint64_t space_of(const char* path, bool games, const int* stop) {
+static uint64_t space_of(const char* path, bool games, const _Atomic int* stop) {
     static const char* const beside[] = {"_code.so", "_code.dll", ".exe", ".abi", ".hints", ".ini", ".log", "_data"};
     uint64_t bytes = snx_is_dir(path) ? gui_tree_size(path, stop) : snx_file_size(path);
     size_t i;
@@ -8606,14 +8610,14 @@ static int SDLCALL count_space(void* data) {
     for (int i = 0; i < space->count; ++i) {
         space->bytes[i] = space->dirs[i][0] ? space_of(space->dirs[i], space->games, &space->stop) : 0;
         space->used += space->bytes[i];
-        __atomic_store_n(&space->counted, i + 1, __ATOMIC_RELEASE);
+        atomic_store_explicit(&space->counted, i + 1, memory_order_release);
     }
-    __atomic_store_n(&space->done, 1, __ATOMIC_RELEASE);
+    atomic_store_explicit(&space->done, 1, memory_order_release);
     return 0;
 }
 static void space_end(GuiSpace** space, SDL_Thread** counter) {
     if (*counter) {
-        __atomic_store_n(&(*space)->stop, 1, __ATOMIC_RELAXED);
+        atomic_store_explicit(&(*space)->stop, 1, memory_order_relaxed);
         SDL_WaitThread(*counter, NULL);
         *counter = NULL;
     }
@@ -15043,7 +15047,8 @@ static void setup_saves_box(App* app, GuiRect r, int page, int first) {
     const char** list = NULL;
     const GuiSpace* space = app->left_space;
     const char* at;
-    int cols = setup_cols(said, 4, 2), counted = space ? __atomic_load_n(&space->counted, __ATOMIC_ACQUIRE) : 0;
+    int cols = setup_cols(said, 4, 2),
+        counted = space ? atomic_load_explicit(&space->counted, memory_order_acquire) : 0;
     int games = 0, i, k = 0, head_rows = 0, ch = cell_h(app);
     uint64_t all = 0, one = 0;
     bool ok, counting = false, game_counting = false;
@@ -15137,7 +15142,8 @@ static void setup_left_box(App* app, GuiRect r) {
     const char* at;
     const GuiSpace* space = app->left_space;
     int n = left_groups(app), page = SDL_min(app->setup_top, n - 1), first, k = 0, i, pass, unlisted = 0;
-    int cols = setup_cols(said, 4, 2), counted = space ? __atomic_load_n(&space->counted, __ATOMIC_ACQUIRE) : 0;
+    int cols = setup_cols(said, 4, 2),
+        counted = space ? atomic_load_explicit(&space->counted, memory_order_acquire) : 0;
     uint64_t bytes = 0;
     bool ok, counting = false, out_of_reach = false;
     if (app->left_did) {
@@ -20925,12 +20931,12 @@ static size_t games_listed(const App* app) {
 }
 /* the names dir holds into h, and with depth those of its folders, down that many levels, hidden ones left alone; it
    ends where it is once *stop is set */
-static uint64_t stamp_dir(uint64_t h, const char* dir, int depth, const int* stop) {
+static uint64_t stamp_dir(uint64_t h, const char* dir, int depth, const _Atomic int* stop) {
     char** names = NULL;
     size_t count = 0, k;
     const char* c;
     if (!dir || snx_list_dir(dir, &names, &count)) count = (size_t)-1; /* none: not the same as an empty one */
-    for (k = 0; k < count && names && !(stop && __atomic_load_n(stop, __ATOMIC_RELAXED)); ++k) {
+    for (k = 0; k < count && names && !(stop && atomic_load_explicit(stop, memory_order_relaxed)); ++k) {
         for (c = names[k];; ++c) {
             h = (h ^ (unsigned char)*c) * 1099511628211ull;
             if (!*c) break;
@@ -20947,7 +20953,7 @@ static uint64_t stamp_dir(uint64_t h, const char* dir, int depth, const int* sto
 }
 /* the names the folders hold (each down its depth), hashed: a game put in, taken out or renamed changes it, and so
    does a folder that comes or goes */
-static uint64_t stamp_dirs(char* const* dirs, const int* depths, int count, const int* stop) {
+static uint64_t stamp_dirs(char* const* dirs, const int* depths, int count, const _Atomic int* stop) {
     uint64_t h = 1469598103934665603ull; /* FNV-1a */
     int i;
     for (i = 0; i < count; ++i) h = stamp_dir(h, dirs[i], depths[i], stop);
@@ -21005,7 +21011,7 @@ static void watch_pass(GuiWatch* w) {
     h = stamp_dirs(dirs, depths, n, &w->stop);
     for (i = 0; i < n; ++i) free(dirs[i]);
     SDL_LockMutex(w->lock);
-    if (w->set == set && !__atomic_load_n(&w->stop, __ATOMIC_RELAXED)) {
+    if (w->set == set && !atomic_load_explicit(&w->stop, memory_order_relaxed)) {
         w->stamp = h;
         w->stamped = set;
     }
@@ -21014,9 +21020,9 @@ static void watch_pass(GuiWatch* w) {
 static int SDLCALL watch_run(void* data) {
     GuiWatch* w = (GuiWatch*)data;
     int i;
-    while (!__atomic_load_n(&w->stop, __ATOMIC_RELAXED)) {
+    while (!atomic_load_explicit(&w->stop, memory_order_relaxed)) {
         watch_pass(w);
-        for (i = 0; i < 20 && !__atomic_load_n(&w->stop, __ATOMIC_RELAXED); ++i) SDL_Delay(50); /* a second */
+        for (i = 0; i < 20 && !atomic_load_explicit(&w->stop, memory_order_relaxed); ++i) SDL_Delay(50); /* a second */
     }
     return 0;
 }
@@ -21041,7 +21047,7 @@ static void watch_start(App* app) {
 static void watch_stop(App* app) {
     GuiWatch* w = &app->watch;
     int i;
-    __atomic_store_n(&w->stop, 1, __ATOMIC_RELAXED);
+    atomic_store_explicit(&w->stop, 1, memory_order_relaxed);
     if (w->thread) SDL_WaitThread(w->thread, NULL);
     for (i = 0; i < w->count; ++i) free(w->dirs[i]);
     if (w->lock) SDL_DestroyMutex(w->lock);

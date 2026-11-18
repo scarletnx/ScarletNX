@@ -37,6 +37,7 @@
 #include "nx/runtime/arm.h"
 #include "nx/runtime/platform/log.h"
 #include "common/utilities/bits.h"
+#include <stdatomic.h>
 
 /* the newest renderer revision understood: Eden's CurrentRevision, 15, and the Ounce's 16 (REV@, and REv@ with its
    lowercase v), which an SDK 22 game asks for. No feature of 16's is known: Eglantine (Eden's Ounce fork) takes its
@@ -238,18 +239,18 @@ u32 nnaudio_start_renderer(CPU* c, u64 id, u64 context) {
     ARRen* r = renderer(id, "StartAudioRenderer");
     (void)c, (void)context;
     if (!r) return SNX_RC_AUDIO_INVALID_HANDLE;
-    __atomic_store_n(&r->state, SNX_AUDREN_STARTED, __ATOMIC_RELEASE);
+    atomic_store_explicit(&r->state, SNX_AUDREN_STARTED, memory_order_release);
     return 0;
 }
 void nnaudio_stop_renderer(CPU* c, u64 id, u64 context) {
     ARRen* r = renderer(id, "StopAudioRenderer");
     (void)c, (void)context;
-    if (r) __atomic_store_n(&r->state, SNX_AUDREN_STOPPED, __ATOMIC_RELEASE);
+    if (r) atomic_store_explicit(&r->state, SNX_AUDREN_STOPPED, memory_order_release);
 }
 u32 nnaudio_get_renderer_state(CPU* c, u64 id, u64 context) {
     ARRen* r = renderer(id, "GetAudioRendererState");
     (void)c, (void)context;
-    return r && __atomic_load_n(&r->state, __ATOMIC_ACQUIRE) == SNX_AUDREN_STARTED ? REN_STARTED : REN_STOPPED;
+    return r && atomic_load_explicit(&r->state, memory_order_acquire) == SNX_AUDREN_STARTED ? REN_STARTED : REN_STOPPED;
 }
 i32 nnaudio_get_renderer_sample_rate(CPU* c, u64 id, u64 context) {
     ARRen* r = renderer(id, "GetAudioRendererSampleRate");
@@ -269,7 +270,7 @@ i32 nnaudio_get_renderer_mix_buffer_count(CPU* c, u64 id, u64 context) {
 void nnaudio_set_renderer_time_limit(CPU* c, u64 id, u64 context, i32 percent) {
     ARRen* r = renderer(id, "SetAudioRendererRenderingTimeLimit");
     (void)c, (void)context;
-    if (r) __atomic_store_n(&r->limit, (u32)percent, __ATOMIC_RELAXED);
+    if (r) atomic_store_explicit(&r->limit, (u32)percent, memory_order_relaxed);
 }
 /* a one-word handle's: the limit is the second argument */
 void nnaudio_set_renderer_time_limit_word(CPU* c, u64 id, i32 percent) {
@@ -278,19 +279,19 @@ void nnaudio_set_renderer_time_limit_word(CPU* c, u64 id, i32 percent) {
 i32 nnaudio_get_renderer_time_limit(CPU* c, u64 id, u64 context) {
     ARRen* r = renderer(id, "GetAudioRendererRenderingTimeLimit");
     (void)c, (void)context;
-    return r ? (i32)__atomic_load_n(&r->limit, __ATOMIC_RELAXED) : 0;
+    return r ? (i32)atomic_load_explicit(&r->limit, memory_order_relaxed) : 0;
 }
 /* the voice drop parameter reads back as set: no voice is dropped here */
 void nnaudio_set_renderer_voice_drop(CPU* c, u64 id, u64 context, f32 parameter) {
     ARRen* r = renderer(id, "SetAudioRendererVoiceDropParameter");
     (void)c, (void)context;
-    if (r) __atomic_store(&r->voice_drop, &parameter, __ATOMIC_RELAXED);
+    if (r) atomic_store_explicit(&r->voice_drop, parameter, memory_order_relaxed);
 }
 f32 nnaudio_get_renderer_voice_drop(CPU* c, u64 id, u64 context) {
     ARRen* r = renderer(id, "GetAudioRendererVoiceDropParameter");
     f32 parameter = 1.0f;
     (void)c, (void)context;
-    if (r) __atomic_load(&r->voice_drop, &parameter, __ATOMIC_RELAXED);
+    if (r) parameter = atomic_load_explicit(&r->voice_drop, memory_order_relaxed);
     return parameter;
 }
 i32 nnaudio_get_renderer_execution_mode(CPU* c, u64 id, u64 context) {

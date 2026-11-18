@@ -22,6 +22,7 @@
 #include "common/utilities/endian.h"
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 #ifdef _WIN32
 #include <iphlpapi.h>
 #include <icmpapi.h>
@@ -191,8 +192,8 @@ static int run_echo(Request* q, uint8_t** data, size_t* size) {
     int r = posix_spawnp(&pid, argv[0], &fa, NULL, (char* const*)argv, environ);
     posix_spawn_file_actions_destroy(&fa);
     if (r) {
-        static int warned;
-        if (!__atomic_exchange_n(&warned, 1, __ATOMIC_RELAXED))
+        static _Atomic int warned;
+        if (!atomic_exchange_explicit(&warned, 1, memory_order_relaxed))
             snx_net_log("net: emulated ICMP has neither a ping socket nor a ping program (%s), echoes go unanswered",
                         strerror(r));
         return 0;
@@ -303,8 +304,8 @@ static int64_t icmp_send(SnxSocket* s, const void* data, size_t size, int flags,
     if (size < 8) return -SNX_EINVAL;
     if (size > 65507) return -SNX_EMSGSIZE;
     if (msg[0] != echo_request(s) || msg[1]) {
-        static int warned;
-        if (!__atomic_exchange_n(&warned, 1, __ATOMIC_RELAXED))
+        static _Atomic int warned;
+        if (!atomic_exchange_explicit(&warned, 1, memory_order_relaxed))
             snx_net_log("net: emulated ICMP sends echo requests only, dropping type %u", msg[0]);
         return (int64_t)size;
     }
@@ -601,8 +602,8 @@ int snx_net_icmp_open(SnxSocket** out, int domain, int type, int protocol) {
         return -SNX_ENOMEM;
     }
     s->impl = m;
-    static int told;
-    if (!__atomic_exchange_n(&told, 1, __ATOMIC_RELAXED))
+    static _Atomic int told;
+    if (!atomic_exchange_explicit(&told, 1, memory_order_relaxed))
         snx_net_log("net: the host refused an ICMP socket, emulating it with %s",
                     m->backend == BACKEND_PING_SOCKET ? "a ping socket" : "the host's ping");
     *out = s;

@@ -20,6 +20,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 
 #define GIB  (1ull << 30)
 #define PAGE 0x1000ull
@@ -36,7 +37,8 @@
 MemLayout g_layout = LAYOUT39;
 u64 g_as_size = AS_MAX;
 u8* g_mem;
-u64 g_heap_size, g_phys_mapped, g_heap_max, g_code_memory, g_main_stack_size;
+_Atomic u64 g_heap_size, g_phys_mapped;
+u64 g_heap_max, g_code_memory, g_main_stack_size;
 u64 g_pool_size = 64 * GIB; /* sparse: only the pages in use take memory */
 
 #if defined(SNX_TRACY)
@@ -222,7 +224,7 @@ static u32 g_nblk, g_capblk;
    megabyte granule of the address they were found for (direct mapped). The GPU thread asks this of every buffer and
    page run it touches, about two million times a second in one game, across more blocks than a few kept runs held:
    with one run kept, or a handful searched, it took g_mem_lk and searched the blocks for most of them */
-static u64 g_unmap_gen = 1;
+static _Atomic u64 g_unmap_gen = 1;
 #define MEM_RUNS 64
 #define MEM_RUN_SLOT(a) (((a) >> 20) & (MEM_RUNS - 1))
 /* this thread's state */
@@ -234,7 +236,7 @@ static _Thread_local struct {
         u64 lo[MEM_RUNS], hi[MEM_RUNS], gen;
     } runs;
 } t_mem;
-static void runs_stale_nl(void) { __atomic_add_fetch(&g_unmap_gen, 1, __ATOMIC_RELEASE); }
+static void runs_stale_nl(void) { atomic_fetch_add_explicit(&g_unmap_gen, 1, memory_order_release); }
 static void mem_lock(void) {
     pm_lock(&g_mem_lk);
     t_mem.held = 1;
@@ -254,10 +256,12 @@ static void code_invalidate(u64 addr, u64 size) {
 
 /* the renderer's: host pages under guest memory [a, a + size) are other pages now, or none (its imports of guest memory,
    gpu/vk/uma.c, hold the old ones). Called under g_mem_lk */
-static void (*g_pages_replaced)(u64, u64);
-void mem_set_pages_replaced(void (*fn)(u64, u64)) { __atomic_store_n(&g_pages_replaced, fn, __ATOMIC_RELEASE); }
+static void (*_Atomic g_pages_replaced)(u64, u64);
+void mem_set_pages_replaced(void (*fn)(u64, u64)) {
+    atomic_store_explicit(&g_pages_replaced, fn, memory_order_release);
+}
 static void pages_replaced_nl(u64 a, u64 size) {
-    void (*fn)(u64, u64) = __atomic_load_n(&g_pages_replaced, __ATOMIC_ACQUIRE);
+    void (*fn)(u64, u64) = atomic_load_explicit(&g_pages_replaced, memory_order_acquire);
     if (fn) fn(a, size);
 }
 /* the renderer's GPU memory under the heap (mem_set_placed): set once, as the device is made, before the game's
@@ -571,12 +575,12 @@ typedef struct {
 static struct {
     AliasRange* r;
     u32 cap;
-    u32 n;                     /* atomic: the last build's ranges */
-    u64 gen;                   /* atomic: moves with every change of the pool pages behind an address */
-    u64 built;                 /* atomic: gen at the last build */
-    u64 at[ALIAS_GRAINS / 64]; /* atomic: a bit a grain, set where a range of the last build is */
+    _Atomic u32 n;                     /* atomic: the last build's ranges */
+    _Atomic u64 gen;                   /* atomic: moves with every change of the pool pages behind an address */
+    _Atomic u64 built;                 /* atomic: gen at the last build */
+    _Atomic u64 at[ALIAS_GRAINS / 64]; /* atomic: a bit a grain, set where a range of the last build is */
 } g_alias = {.gen = 1};
-static void aliases_stale_nl(void) { __atomic_add_fetch(&g_alias.gen, 1, __ATOMIC_RELEASE); }
+static void aliases_stale_nl(void) { atomic_fetch_add_explicit(&g_alias.gen, 1, memory_order_release); }
 static int alias_by_off(const void* x, const void* y) {
     const AliasRange *a = (const AliasRange*)x, *b = (const AliasRange*)y;
     return a->off < b->off ? -1 : a->off > b->off;
@@ -596,9 +600,9 @@ static void alias_grains(u64 a, u64 end, u64* g, u64* last) {
    has two addresses. The release fence first: a reader that sees a grain this build changed sees g_alias.gen past
    g_alias.built too (alias_clear) */
 static void aliases_build_nl(void) {
-    u64 gen = __atomic_load_n(&g_alias.gen, __ATOMIC_ACQUIRE), g, last;
+    u64 gen = atomic_load_explicit(&g_alias.gen, memory_order_acquire), g, last;
     u32 n = 0, i, j, k = 0;
-    __atomic_thread_fence(__ATOMIC_RELEASE);
+    atomic_thread_fence(memory_order_release);
     for (i = 0; i < g_nblk; i++) n += g_blk[i].pool && g_blk[i].state != MS_FREE;
     if (n > g_alias.cap) {
         AliasRange* r = (AliasRange*)realloc(g_alias.r, sizeof *r * (size_t)n);
@@ -606,9 +610,9 @@ static void aliases_build_nl(void) {
         g_alias.r = r;
         g_alias.cap = n;
     }
-    for (i = 0; i < g_alias.n; i++) /* the last build's grains */
+    for (i = 0; i < atomic_load_explicit(&g_alias.n, memory_order_relaxed); i++) /* the last build's grains */
         for (alias_grains(g_alias.r[i].addr, g_alias.r[i].addr + g_alias.r[i].size, &g, &last); g <= last; g++)
-            __atomic_store_n(&g_alias.at[g >> 6], 0, __ATOMIC_RELAXED);
+            atomic_store_explicit(&g_alias.at[g >> 6], 0, memory_order_relaxed);
     n = 0;
     for (i = 0; i < g_nblk; i++)
         if (g_blk[i].pool && g_blk[i].state != MS_FREE)
@@ -624,21 +628,23 @@ static void aliases_build_nl(void) {
         if (g_alias.r[i].size >> 63) {
             g_alias.r[k] = (AliasRange){g_alias.r[i].addr, g_alias.r[i].size & ~(1ull << 63), g_alias.r[i].off};
             for (alias_grains(g_alias.r[k].addr, g_alias.r[k].addr + g_alias.r[k].size, &g, &last); g <= last; g++)
-                __atomic_store_n(&g_alias.at[g >> 6],
-                                 __atomic_load_n(&g_alias.at[g >> 6], __ATOMIC_RELAXED) | 1ull << (g & 63),
-                                 __ATOMIC_RELAXED);
+                atomic_store_explicit(&g_alias.at[g >> 6],
+                                      atomic_load_explicit(&g_alias.at[g >> 6], memory_order_relaxed) | 1ull
+                                                                                                            << (g & 63),
+                                      memory_order_relaxed);
             k++;
         }
     if (k) qsort(g_alias.r, k, sizeof *g_alias.r, alias_by_addr);
-    __atomic_store_n(&g_alias.n, k, __ATOMIC_RELAXED);
-    __atomic_store_n(&g_alias.built, gen, __ATOMIC_RELEASE);
+    atomic_store_explicit(&g_alias.n, k, memory_order_relaxed);
+    atomic_store_explicit(&g_alias.built, gen, memory_order_release);
 }
 /* whether a page of [a, end) has another address too (a view's, its source's): g_alias built again first where the
    pool pages behind an address moved since, then searched by address, not a scan of every block for each block */
 static int aliased_nl(u64 a, u64 end) {
-    if (__atomic_load_n(&g_alias.built, __ATOMIC_RELAXED) != __atomic_load_n(&g_alias.gen, __ATOMIC_RELAXED))
+    if (atomic_load_explicit(&g_alias.built, memory_order_relaxed) !=
+        atomic_load_explicit(&g_alias.gen, memory_order_relaxed))
         aliases_build_nl();
-    u32 lo = 0, hi = g_alias.n;
+    u32 lo = 0, hi = atomic_load_explicit(&g_alias.n, memory_order_relaxed);
     while (lo < hi) { /* the first aliased range ending past a */
         u32 mid = lo + (hi - lo) / 2;
         if (g_alias.r[mid].addr + g_alias.r[mid].size <= a)
@@ -646,26 +652,27 @@ static int aliased_nl(u64 a, u64 end) {
         else
             hi = mid;
     }
-    return lo < g_alias.n && g_alias.r[lo].addr < end;
+    return lo < atomic_load_explicit(&g_alias.n, memory_order_relaxed) && g_alias.r[lo].addr < end;
 }
 /* whether no other address maps a page of [a, end), known without the lock: the last build is current, and none of
    its ranges is on the grains of [a, end). Read as a sequence lock: the build is checked current again after */
 static int alias_clear(u64 a, u64 end) {
-    u64 built = __atomic_load_n(&g_alias.built, __ATOMIC_ACQUIRE), g, last;
-    if (built != __atomic_load_n(&g_alias.gen, __ATOMIC_ACQUIRE)) return 0;
-    if (__atomic_load_n(&g_alias.n, __ATOMIC_RELAXED))
+    u64 built = atomic_load_explicit(&g_alias.built, memory_order_acquire), g, last;
+    if (built != atomic_load_explicit(&g_alias.gen, memory_order_acquire)) return 0;
+    if (atomic_load_explicit(&g_alias.n, memory_order_relaxed))
         for (alias_grains(a, end, &g, &last); g <= last; g++) {
-            u64 w = __atomic_load_n(&g_alias.at[g >> 6], __ATOMIC_RELAXED);
+            u64 w = atomic_load_explicit(&g_alias.at[g >> 6], memory_order_relaxed);
             if (w >> (g & 63) & 1) return 0;
             if (!w) g |= 63; /* the word's other grains */
         }
-    __atomic_thread_fence(__ATOMIC_ACQUIRE);
-    return __atomic_load_n(&g_alias.gen, __ATOMIC_RELAXED) == built;
+    atomic_thread_fence(memory_order_acquire);
+    return atomic_load_explicit(&g_alias.gen, memory_order_relaxed) == built;
 }
 int mem_alias_clear(u64 a, u64 size) { return size && a + size > a && alias_clear(a, a + size); }
 int mem_alias_any(void) {
-    return __atomic_load_n(&g_alias.built, __ATOMIC_ACQUIRE) != __atomic_load_n(&g_alias.gen, __ATOMIC_ACQUIRE) ||
-           __atomic_load_n(&g_alias.n, __ATOMIC_RELAXED);
+    return atomic_load_explicit(&g_alias.built, memory_order_acquire) !=
+               atomic_load_explicit(&g_alias.gen, memory_order_acquire) ||
+           atomic_load_explicit(&g_alias.n, memory_order_relaxed);
 }
 void mem_alias_peers(u64 a, u64 size, void (*fn)(void* user, u64 at, u64 n), void* user) {
     u64 end = a + size;
@@ -673,9 +680,10 @@ void mem_alias_peers(u64 a, u64 size, void (*fn)(void* user, u64 at, u64 n), voi
     int held = t_mem.held;
     if (!size || end < a || alias_clear(a, end)) return;
     if (!held) mem_lock();
-    if (__atomic_load_n(&g_alias.built, __ATOMIC_RELAXED) != __atomic_load_n(&g_alias.gen, __ATOMIC_RELAXED))
+    if (atomic_load_explicit(&g_alias.built, memory_order_relaxed) !=
+        atomic_load_explicit(&g_alias.gen, memory_order_relaxed))
         aliases_build_nl();
-    hi = g_alias.n;
+    hi = atomic_load_explicit(&g_alias.n, memory_order_relaxed);
     while (lo < hi) { /* the first range ending past a */
         u32 mid = lo + (hi - lo) / 2;
         if (g_alias.r[mid].addr + g_alias.r[mid].size <= a)
@@ -683,11 +691,12 @@ void mem_alias_peers(u64 a, u64 size, void (*fn)(void* user, u64 at, u64 n), voi
         else
             hi = mid;
     }
-    for (i = lo; i < g_alias.n && g_alias.r[i].addr < end; i++) {
+    for (i = lo; i < atomic_load_explicit(&g_alias.n, memory_order_relaxed) && g_alias.r[i].addr < end; i++) {
         const AliasRange* r = &g_alias.r[i];
         u64 at = r->addr > a ? r->addr : a, to = r->addr + r->size < end ? r->addr + r->size : end;
         u64 plo = r->off + (at - r->addr), phi = plo + (to - at);
-        for (j = 0; j < g_alias.n; j++) { /* every other range over those pool pages */
+        for (j = 0; j < atomic_load_explicit(&g_alias.n, memory_order_relaxed);
+             j++) { /* every other range over those pool pages */
             const AliasRange* q = &g_alias.r[j];
             u64 olo = q->off > plo ? q->off : plo, ohi = q->off + q->size < phi ? q->off + q->size : phi;
             if (j == i || olo >= ohi) continue;
@@ -1249,11 +1258,11 @@ u64 mem_mapped_run(u64 addr, u64 size) {
     int mine = !t_mem.held; /* a crash report's queries come from the thread that holds the lock */
     if (!size) return 0;
     i = MEM_RUN_SLOT(addr);
-    if (__atomic_load_n(&g_unmap_gen, __ATOMIC_ACQUIRE) == t_mem.runs.gen && addr >= t_mem.runs.lo[i] &&
+    if (atomic_load_explicit(&g_unmap_gen, memory_order_acquire) == t_mem.runs.gen && addr >= t_mem.runs.lo[i] &&
         addr < t_mem.runs.hi[i] && size <= t_mem.runs.hi[i] - addr)
         return size;
     if (mine) mem_lock();
-    gen = __atomic_load_n(&g_unmap_gen, __ATOMIC_RELAXED);
+    gen = atomic_load_explicit(&g_unmap_gen, memory_order_relaxed);
     if (!g_nblk)
         run = size;
     else if (addr >= AS_END)
@@ -1722,14 +1731,14 @@ int mem_unmap_pool(u64 addr, u64 off, u64 size, u32 state) {
 int mem_heap_set(u64 size, u64 budget) {
     u64 cur, lo = 0, n = 0;
     int r = 0;
-    if (size == __atomic_load_n(&g_heap_size, __ATOMIC_ACQUIRE)) return 0;
+    if (size == atomic_load_explicit(&g_heap_size, memory_order_acquire)) return 0;
     if (size > HEAP_SIZE) return MEM_NOMEM;
     mapping_begin(0, ~0ull, 0);
     mem_lock();
-    cur = g_heap_size;
+    cur = atomic_load_explicit(&g_heap_size, memory_order_relaxed);
     if (size > cur) {
         u64 a = HEAP_BASE + cur, grow = size - cur;
-        if (size > budget || g_phys_mapped > budget - size)
+        if (size > budget || atomic_load_explicit(&g_phys_mapped, memory_order_relaxed) > budget - size)
             r = MEM_LIMIT;
         else if (!range_is_nl(a, grow, MS_FREE, ANY, ANY))
             r = MEM_BADSTATE;
@@ -1749,7 +1758,7 @@ int mem_heap_set(u64 size, u64 budget) {
             ev_remove(lo, n);
         }
     }
-    if (!r) __atomic_store_n(&g_heap_size, size, __ATOMIC_RELEASE);
+    if (!r) atomic_store_explicit(&g_heap_size, size, memory_order_release);
     mem_unlock();
     mapping_end();
     if (!r && n) gpu_mem_changed(lo, n);
@@ -1772,7 +1781,10 @@ int mem_map_physical(u64 addr, u64 size, u64 budget) {
         else if (b->state != MS_NORMAL)
             r = MEM_BADSTATE;
     }
-    if (!r && add && (add > budget || g_heap_size > budget - add || g_phys_mapped > budget - add - g_heap_size))
+    if (!r && add &&
+        (add > budget || atomic_load_explicit(&g_heap_size, memory_order_relaxed) > budget - add ||
+         atomic_load_explicit(&g_phys_mapped, memory_order_relaxed) >
+             budget - add - atomic_load_explicit(&g_heap_size, memory_order_relaxed)))
         r = MEM_LIMIT;
     if (!r && add) {
         u64 a = addr, done = addr;
@@ -1797,7 +1809,9 @@ int mem_map_physical(u64 addr, u64 size, u64 budget) {
             }
             a = hi;
         }
-        if (!r) __atomic_store_n(&g_phys_mapped, g_phys_mapped + add, __ATOMIC_RELEASE);
+        if (!r)
+            atomic_store_explicit(&g_phys_mapped, atomic_load_explicit(&g_phys_mapped, memory_order_relaxed) + add,
+                                  memory_order_release);
         if (r && done > addr) rolled = done;
     }
     mem_unlock();
@@ -1836,7 +1850,11 @@ int mem_unmap_physical(u64 addr, u64 size) {
         }
         unmap_nl(addr, size);
         ev_remove(addr, size);
-        __atomic_store_n(&g_phys_mapped, freed < g_phys_mapped ? g_phys_mapped - freed : 0, __ATOMIC_RELEASE);
+        atomic_store_explicit(&g_phys_mapped,
+                              freed < atomic_load_explicit(&g_phys_mapped, memory_order_relaxed)
+                                  ? atomic_load_explicit(&g_phys_mapped, memory_order_relaxed) - freed
+                                  : 0,
+                              memory_order_release);
     }
     mem_unlock();
     mapping_end();
@@ -2133,8 +2151,8 @@ int mem_restore_blocks(const MemBlock* blk, u32 n) {
 void mem_restore_end(u64 heap_size, u64 phys_mapped) {
     MemBlock* b;
     u32 i, n;
-    __atomic_store_n(&g_heap_size, heap_size, __ATOMIC_RELEASE);
-    __atomic_store_n(&g_phys_mapped, phys_mapped, __ATOMIC_RELEASE);
+    atomic_store_explicit(&g_heap_size, heap_size, memory_order_release);
+    atomic_store_explicit(&g_phys_mapped, phys_mapped, memory_order_release);
     runs_stale_nl();
     n = g_nblk;
     b = (MemBlock*)malloc(sizeof *b * (size_t)n);

@@ -29,6 +29,7 @@
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 
 #define DQ         64           /* presents not known displayed yet: one more is let go unwatched */
 #define POLL_NS    250000ull    /* the polling step */
@@ -59,15 +60,16 @@ static struct {
     u64 next_id; /* ids grow across swapchains, as each swapchain only needs them to grow */
     u64 handed;  /* game frames presented with an id */
     u64 done;    /* of those, displayed or let go */
-    int started; /* atomic: the thread runs */
-    int fifo;    /* atomic: the swapchain presents in FIFO order, a frame each refresh */
+    _Atomic int started; /* atomic: the thread runs */
+    _Atomic int fifo;    /* atomic: the swapchain presents in FIFO order, a frame each refresh */
     /* the last game frame displayed with its time known to a step, and its number (under lock): the grid of
        refreshes the targets keep to, and where the frames after it can be displayed at the earliest */
     u64 grid_ns, grid_seq;
     /* under lock: game frames presented, and the refresh the last was due at (0 none) */
     u64 seq, due_last;
     u64 due_next;      /* the GPU thread's: the refresh the game frame being presented is held for, 0 none */
-    u64 dropped, late; /* atomic: game frames not shown, and held for a later refresh than their period's, since the
+    _Atomic u64 dropped,
+        late;          /* atomic: game frames not shown, and held for a later refresh than their period's, since the
                           stats line before */
     int held;          /* under lock: the last game frame presented was held until its refresh */
     /* the thread's own: the last game frame's display time (0 none, or not known to a step), the stats */
@@ -141,8 +143,8 @@ static void stats_line(void) {
         held, ms(drawn[0]), ms(drawn[1]), ms(drawn[2]), ms(pres[0]), ms(pres[1]), ms(pres[2]), ms(lat[0]), ms(lat[1]),
         ms(lat[2]));
     LOG("vulkan: display: %llu frames not shown (no image free), %llu held for a later refresh than their period's\n",
-        (unsigned long long)__atomic_exchange_n(&g_dc.dropped, 0, __ATOMIC_RELAXED),
-        (unsigned long long)__atomic_exchange_n(&g_dc.late, 0, __ATOMIC_RELAXED));
+        (unsigned long long)atomic_exchange_explicit(&g_dc.dropped, 0, memory_order_relaxed),
+        (unsigned long long)atomic_exchange_explicit(&g_dc.late, 0, memory_order_relaxed));
     g_dc.n = g_dc.nlat = g_dc.npres = g_dc.ndrawn = 0;
 }
 
@@ -277,7 +279,8 @@ void vk_display_presented(VkSwapchainKHR sc, u64 id, int game, u64 released_ns, 
     if (!id) { /* not watched: its syncpoint after those of the frames still watched */
         if (!syncpt) return;
         pm_lock(&g_dc.lock);
-        if (g_dc.started && g_dc.head != g_dc.tail && g_dc.head - g_dc.tail < DQ) {
+        if (atomic_load_explicit(&g_dc.started, memory_order_relaxed) && g_dc.head != g_dc.tail &&
+            g_dc.head - g_dc.tail < DQ) {
             g_dc.q[g_dc.head++ % DQ] = (DPresent){.syncpt = syncpt};
             pc_signal(&g_dc.work);
             syncpt = 0;
@@ -287,7 +290,7 @@ void vk_display_presented(VkSwapchainKHR sc, u64 id, int game, u64 released_ns, 
         return;
     }
     pm_lock(&g_dc.lock);
-    if (!g_dc.started) {
+    if (!atomic_load_explicit(&g_dc.started, memory_order_relaxed)) {
         pc_init(&g_dc.work);
         pc_init(&g_dc.shown);
         if (plat_thread(display_thread, NULL, (size_t)1 << 20)) {
@@ -296,7 +299,7 @@ void vk_display_presented(VkSwapchainKHR sc, u64 id, int game, u64 released_ns, 
             if (syncpt) syncpt_add_quiet(syncpt, 1); /* nothing watched: done with now */
             return;
         }
-        __atomic_store_n(&g_dc.started, 1, __ATOMIC_RELEASE);
+        atomic_store_explicit(&g_dc.started, 1, memory_order_release);
     }
     if (g_dc.head - g_dc.tail < DQ) { /* else unwatched: the queue is a refresh's worth of presents many times over */
         g_dc.q[g_dc.head++ % DQ] = (DPresent){.sc = sc,
@@ -362,14 +365,14 @@ static u64 due_at(u64 seq, u64 period_ns, u64 refresh, u64 now, int* late) {
    grid */
 u64 vk_display_target(u64 period_ns) {
     u64 refresh = backend_display_refresh_ns(), now = plat_ns(), due = 0;
-    int pacing = __atomic_load_n(&g_settings.frame_pacing, __ATOMIC_RELAXED), late = 0;
+    int pacing = atomic_load_explicit((_Atomic int*)&g_settings.frame_pacing, memory_order_relaxed), late = 0;
     pm_lock(&g_dc.lock);
     g_dc.seq++;
-    if (pacing >= 2 && g_vk.sc_hold && __atomic_load_n(&g_dc.fifo, __ATOMIC_RELAXED))
+    if (pacing >= 2 && g_vk.sc_hold && atomic_load_explicit(&g_dc.fifo, memory_order_relaxed))
         due = due_at(g_dc.seq, period_ns, refresh, now, &late);
     g_dc.due_last = due;
     pm_unlock(&g_dc.lock);
-    if (late) __atomic_add_fetch(&g_dc.late, 1, __ATOMIC_RELAXED);
+    if (late) atomic_fetch_add_explicit(&g_dc.late, 1, memory_order_relaxed);
     g_dc.due_next = due;
     if (!due) return 0;
     u64 mono = plat_monotonic_ns() + (due - refresh / 2 - now);
@@ -392,14 +395,16 @@ u64 vk_display_target(u64 period_ns) {
     return ts[0] + (mono - ts[1]);
 }
 
-void vk_display_dropped(void) { __atomic_add_fetch(&g_dc.dropped, 1, __ATOMIC_RELAXED); }
+void vk_display_dropped(void) { atomic_fetch_add_explicit(&g_dc.dropped, 1, memory_order_relaxed); }
 
-void vk_display_fifo(int fifo) { __atomic_store_n(&g_dc.fifo, fifo, __ATOMIC_RELAXED); }
+void vk_display_fifo(int fifo) { atomic_store_explicit(&g_dc.fifo, fifo, memory_order_relaxed); }
 
 int vk_display_wait(u64 deadline_ns, u64* refresh_ns) {
     int r = 1;
-    if (!__atomic_load_n(&g_dc.started, __ATOMIC_ACQUIRE) || !__atomic_load_n(&g_dc.fifo, __ATOMIC_RELAXED)) return -1;
-    if (!__atomic_load_n(&g_settings.frame_pacing, __ATOMIC_RELAXED)) return -1;
+    if (!atomic_load_explicit(&g_dc.started, memory_order_acquire) ||
+        !atomic_load_explicit(&g_dc.fifo, memory_order_relaxed))
+        return -1;
+    if (!atomic_load_explicit((_Atomic int*)&g_settings.frame_pacing, memory_order_relaxed)) return -1;
     *refresh_ns = backend_display_refresh_ns();
     pm_lock(&g_dc.lock);
     /* the game's frames presented, all displayed where they are held until their refresh: a frame released then has

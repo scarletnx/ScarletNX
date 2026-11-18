@@ -247,7 +247,8 @@ int main(void) {
     for (int i = 0; i < 3; i++) guest_stats_add(1, GSTAT_NCE_SVC);
     for (int i = 0; i < 5; i++) guest_stats_add(2, GSTAT_NCE_TICKS);
     {
-        u64* reads = guest_stats_counter(2, GSTAT_NCE_TICKS); /* as the counter's stubs add, through a pointer */
+        _Atomic u64* reads =
+            guest_stats_counter(2, GSTAT_NCE_TICKS); /* as the counter's stubs add, through a pointer */
         *reads += 2;
     }
     guest_stats_add(1, GSTAT_NCE_TRAP);

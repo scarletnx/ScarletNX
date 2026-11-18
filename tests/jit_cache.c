@@ -24,7 +24,7 @@ static int failures;
     } while (0)
 
 static unsigned char memory[0x4000];
-static GuestFn dispatch[(CODE_HI - CODE_LO) / 4];
+static _Atomic GuestFn dispatch[(CODE_HI - CODE_LO) / 4];
 
 static SnxJitService* profile(const char* path) {
     static const SnxU32 words[] = {0x91000400u, 0xD65F03C0u}; /* add x0, x0, #1; ret */

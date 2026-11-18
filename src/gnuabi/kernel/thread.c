@@ -7,6 +7,7 @@
 #include "common/utilities/endian.h"
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 
 static _Thread_local struct {
     GnuKernelThread* self;
@@ -21,7 +22,7 @@ void gnu_kernel_init(GnuKernel* k, const GnuKernelOps* ops, void* context, unsig
     k->context = context;
     k->base = base;
     k->pid = pid;
-    k->dumpable = 1;
+    atomic_store_explicit(&k->dumpable, 1, memory_order_relaxed);
     gnu_mutex_init(&k->lock, 1); /* a sender of a signal holds it around gnu_signal_send */
     gnu_cond_init(&k->changed);
     gnu_futex_init(&k->futex);
@@ -97,11 +98,12 @@ static void robust_one(GnuKernelThread* t, uint64_t entry, int64_t offset) {
     if (!(entry & ~1ull) || (at & 3)) return;
     int bad = k->ops->check ? k->ops->check(k->context, at, 4, 1) : gnu_kernel_read(k, at, &probe, 4);
     if (bad) return;
-    uint32_t* word = (uint32_t*)(uintptr_t)((uintptr_t)k->base + at);
-    uint32_t raw = __atomic_load_n(word, __ATOMIC_SEQ_CST);
+    _Atomic uint32_t* word = (_Atomic uint32_t*)(uintptr_t)((uintptr_t)k->base + at);
+    uint32_t raw = atomic_load_explicit(word, memory_order_seq_cst);
     while ((snx_le32(raw) & 0x3fffffffu) == t->tid) {
         uint32_t old = snx_le32(raw), next = (old & 0x80000000u) | 0x40000000u; /* FUTEX_WAITERS kept, OWNER_DIED */
-        if (__atomic_compare_exchange_n(word, &raw, snx_le32(next), 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST)) {
+        if (atomic_compare_exchange_strong_explicit(word, &raw, snx_le32(next), memory_order_seq_cst,
+                                                    memory_order_seq_cst)) {
             if (old & 0x80000000u) gnu_futex_wake(k, at, 1);
             return;
         }
@@ -131,7 +133,7 @@ void gnu_kernel_thread_exit(GnuKernelThread* t, int status) {
     }
     gnu_mutex_lock(&k->lock);
     /* the decision and the removal at once: two last threads that exit together end the process once */
-    int last = k->thread_count == 1 && !__atomic_load_n(&k->stopping, __ATOMIC_SEQ_CST);
+    int last = k->thread_count == 1 && !atomic_load_explicit(&k->stopping, memory_order_seq_cst);
     if (!last) gnu_kernel_thread_remove(t);
     gnu_mutex_unlock(&k->lock);
     if (last)
@@ -141,22 +143,22 @@ void gnu_kernel_thread_exit(GnuKernelThread* t, int status) {
 }
 
 void gnu_kernel_kick(GnuKernelThread* t) {
-    __atomic_store_n(&t->interrupt, 1, __ATOMIC_SEQ_CST);
-    if (t->regs) __atomic_store_n(&t->regs->poll, 1, __ATOMIC_RELAXED);
+    atomic_store_explicit(&t->interrupt, 1, memory_order_seq_cst);
+    if (t->regs) atomic_store_explicit(&t->regs->poll, 1, memory_order_relaxed);
     gnu_mutex_lock(&t->wait_lock);
     gnu_cond_broadcast(&t->wake);
     gnu_mutex_unlock(&t->wait_lock);
     GnuKernel* k = t->kernel;
-    if (k->ops->kick && __atomic_load_n(&t->blocking, __ATOMIC_SEQ_CST)) k->ops->kick(k->context, t);
+    if (k->ops->kick && atomic_load_explicit(&t->blocking, memory_order_seq_cst)) k->ops->kick(k->context, t);
 }
 
 int gnu_kernel_claim_stop(GnuKernelThread* t, uint32_t kind) {
     GnuKernel* k = t->kernel;
     gnu_mutex_lock(&k->lock);
-    int other = __atomic_load_n(&k->stopping, __ATOMIC_SEQ_CST) && k->stopper != t;
+    int other = atomic_load_explicit(&k->stopping, memory_order_seq_cst) && k->stopper != t;
     if (!other) {
         k->stopper = t;
-        __atomic_store_n(&k->stopping, kind, __ATOMIC_SEQ_CST);
+        atomic_store_explicit(&k->stopping, kind, memory_order_seq_cst);
     }
     gnu_mutex_unlock(&k->lock);
     return !other;
@@ -171,7 +173,7 @@ void gnu_kernel_stop_others(GnuKernelThread* t, int all) {
         int waiting = 0;
         for (size_t i = 0; i < k->thread_count && !waiting; i++) {
             GnuKernelThread* o = k->threads[i];
-            waiting = o != t && (all || !__atomic_load_n(&o->blocking, __ATOMIC_SEQ_CST));
+            waiting = o != t && (all || !atomic_load_explicit(&o->blocking, memory_order_seq_cst));
         }
         if (!waiting) break;
         gnu_cond_wait(&k->changed, &k->lock, -1);
@@ -182,14 +184,14 @@ void gnu_kernel_stop_others(GnuKernelThread* t, int all) {
 void gnu_kernel_stop_done(GnuKernelThread* t) {
     GnuKernel* k = t->kernel;
     gnu_mutex_lock(&k->lock);
-    __atomic_store_n(&k->stopping, 0, __ATOMIC_SEQ_CST);
+    atomic_store_explicit(&k->stopping, 0, memory_order_seq_cst);
     k->stopper = NULL;
     gnu_mutex_unlock(&k->lock);
 }
 
 void gnu_kernel_check_stop(GnuKernelThread* t) {
     GnuKernel* k = t->kernel;
-    if (!__atomic_load_n(&k->stopping, __ATOMIC_SEQ_CST)) return;
+    if (!atomic_load_explicit(&k->stopping, memory_order_seq_cst)) return;
     gnu_mutex_lock(&k->lock);
     int other = k->stopper != t;
     gnu_mutex_unlock(&k->lock);
@@ -197,11 +199,11 @@ void gnu_kernel_check_stop(GnuKernelThread* t) {
 }
 
 void gnu_kernel_enter_call(GnuKernelThread* t) {
-    __atomic_store_n(&t->blocking, 1, __ATOMIC_SEQ_CST);
+    atomic_store_explicit(&t->blocking, 1, memory_order_seq_cst);
     gnu_kernel_check_stop(t); /* seq_cst both ways with gnu_kernel_stop_others: one of them sees the other */
 }
 void gnu_kernel_leave_call(GnuKernelThread* t) {
-    __atomic_store_n(&t->blocking, 0, __ATOMIC_SEQ_CST);
+    atomic_store_explicit(&t->blocking, 0, memory_order_seq_cst);
     gnu_kernel_check_stop(t);
 }
 
@@ -218,12 +220,12 @@ void gnu_kernel_fork_child(GnuKernelThread* t, uint32_t pid) {
     /* the other threads' host threads are not in the child: the runtime has freed their records */
     k->threads[0] = t;
     k->thread_count = 1;
-    __atomic_store_n(&k->stopping, 0, __ATOMIC_SEQ_CST);
+    atomic_store_explicit(&k->stopping, 0, memory_order_seq_cst);
     k->stopper = NULL;
     /* a child starts with no pending signals */
-    k->queue.pending = k->queue.count = 0;
-    t->queue.pending = t->queue.count = 0;
-    t->interrupt = 0;
+    atomic_store_explicit(&k->queue.pending, k->queue.count = 0, memory_order_relaxed);
+    atomic_store_explicit(&t->queue.pending, t->queue.count = 0, memory_order_relaxed);
+    atomic_store_explicit(&t->interrupt, 0, memory_order_relaxed);
     k->pid = t->tid = pid;
     gnu_futex_forked(&k->futex);
     /* the locks again, not unlocked: a recursive one knows its owner by the thread's id, which the child changed */

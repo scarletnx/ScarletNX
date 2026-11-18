@@ -25,6 +25,7 @@
 #include <openssl/rand.h>
 #include <stdio.h>
 #include <time.h>
+#include <stdatomic.h>
 
 #include "hle/services/misc.swipc.inc"
 
@@ -236,16 +237,18 @@ static int nn_streamplay_IUserShimScopedObject_GetHidSharedMemory(SvcObj* self,
    event with command 0, send their one request from a thread of theirs, keep its result, and the game waits on the
    event, or polls AsyncContext::HasDone, which reads it, for the request to end. Every request here ends as it is
    answered, so each one but command 0 signals the event as it returns */
-static void friend_service_destroy(SvcObj* o) { kobj_unref(kobj_at((u32)o->u[0])); }
+static void friend_service_destroy(SvcObj* o) {
+    kobj_unref(kobj_at((u32)atomic_load_explicit(&o->u[0], memory_order_relaxed)));
+}
 static int friend_service_dispatch(SvcObj* o, IpcCtx* c) {
     int r = nn_friends_detail_ipc_IFriendService_dispatch(o, c);
-    if (c->cmd != 0) ev_signal((u32)o->u[0]);
+    if (c->cmd != 0) ev_signal((u32)atomic_load_explicit(&o->u[0], memory_order_relaxed));
     return r;
 }
 static int nn_friends_detail_ipc_IServiceCreator_CreateFriendService(SvcObj* self, SvcObj** service) {
     (void)self;
     SvcObj* o = nn_friends_detail_ipc_IFriendService_new();
-    o->u[0] = owned_event("friend completion");
+    atomic_store_explicit(&o->u[0], owned_event("friend completion"), memory_order_relaxed);
     o->destroy = friend_service_destroy;
     o->dispatch = friend_service_dispatch;
     *service = o;
@@ -263,7 +266,7 @@ static int nn_friends_detail_ipc_IServiceCreator_CreateDaemonSuspendSessionServi
     R_SUCCEED();
 }
 static int nn_friends_detail_ipc_IFriendService_GetCompletionEvent(SvcObj* self, u32* event) {
-    *event = ev_handle((u32)self->u[0]);
+    *event = ev_handle((u32)atomic_load_explicit(&self->u[0], memory_order_relaxed));
     R_UNLESS(*event, SNX_RC_SVC_OUT_OF_HANDLES);
     R_SUCCEED();
 }
@@ -682,9 +685,11 @@ static int nn_mmnv_IRequest_Get(SvcObj* self, u32 request_id, nn_mmnv_Setting* c
 #define NFC_FINALIZED        6 /* nn::nfp::DeviceState of a device that isn't there */
 
 /* an IUser's NfcUser (services_int.h): its nn::nfc::State, and the one availability-change event it hands out */
-static u32 nfc_state(SvcObj* self) { return __atomic_load_n(&((NfcUser*)self->data)->state, __ATOMIC_ACQUIRE); }
+static u32 nfc_state(SvcObj* self) {
+    return atomic_load_explicit(&((NfcUser*)self->data)->state, memory_order_acquire);
+}
 static void nfc_set_state(SvcObj* self, u32 state) {
-    __atomic_store_n(&((NfcUser*)self->data)->state, state, __ATOMIC_RELEASE);
+    atomic_store_explicit(&((NfcUser*)self->data)->state, state, memory_order_release);
 }
 static void nfc_user_destroy(SvcObj* o) { kobj_unref(kobj_at(((NfcUser*)o->data)->availability)); }
 static SvcObj* nfc_user(SvcObj* o, const char* name) {
@@ -1472,13 +1477,13 @@ static int nn_btm_IBtmUserCore_AcquireBleMtuConfigEvent(SvcObj* self, u8* succes
 /* a command for a user, on a session Initialize was called on (u[0]) */
 static int olsc_check(const SvcObj* self, const nn_account_Uid* uid) {
     static const u8 none[sizeof uid->v] = {0};
-    R_UNLESS(self->u[0], SNX_RC_OLSC_NOT_INITIALIZED);
+    R_UNLESS(atomic_load_explicit(&self->u[0], memory_order_relaxed), SNX_RC_OLSC_NOT_INITIALIZED);
     R_UNLESS(memcmp(uid->v, none, sizeof none), SNX_RC_OLSC_NULL_ARGUMENT);
     R_SUCCEED();
 }
 static int nn_olsc_srv_IOlscServiceForApplication_Initialize(SvcObj* self, u64 pid) {
     (void)pid;
-    self->u[0] = 1;
+    atomic_store_explicit(&self->u[0], 1, memory_order_relaxed);
     R_SUCCEED();
 }
 /* done when it is made, with no license found: its result (u[0]) is what GetResult answers, account's
@@ -1493,7 +1498,7 @@ static int nn_olsc_srv_IOlscServiceForApplication_VerifySaveDataBackupLicenseAsy
     WARN_LIMIT(4, "olsc: the game checks the license for save data backups, which no online service gives here: it "
                   "ends with 2124-5113, membership required\n");
     *result = nn_olsc_srv_IAsyncResult_new();
-    (*result)->u[0] = SNX_RC_ACCOUNT_MEMBERSHIP_REQUIRED;
+    atomic_store_explicit(&((*result)->u[0]), SNX_RC_ACCOUNT_MEMBERSHIP_REQUIRED, memory_order_relaxed);
     R_SUCCEED();
 }
 /* 0 whatever the game set: no backup runs here, and how the console encodes the setting is not public (0 is Eden's
@@ -1509,7 +1514,9 @@ static int nn_olsc_srv_IOlscServiceForApplication_SetSaveDataBackupSettingEnable
     (void)enabled;
     return olsc_check(self, uid);
 }
-static int nn_olsc_srv_IAsyncResult_GetResult(SvcObj* self) { return (int)self->u[0]; }
+static int nn_olsc_srv_IAsyncResult_GetResult(SvcObj* self) {
+    return (int)atomic_load_explicit(&self->u[0], memory_order_relaxed);
+}
 /* nothing left to stop: the operation ended when it was made */
 static int nn_olsc_srv_IAsyncResult_Cancel(SvcObj* self) {
     (void)self;

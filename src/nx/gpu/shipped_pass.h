@@ -37,7 +37,7 @@ typedef struct {
 /* how far the walk is (atomics): the files and segments, those it looked at, the programs found (once counted) and
    those handed to the sink */
 typedef struct {
-    u32 files, files_seen, programs, programs_done;
+    _Atomic u32 files, files_seen, programs, programs_done;
 } ShipProgress;
 
 /* what the walk finds in a file's bytes, as a version: the hash of its sources (shipped.c, shipped_pass.c and their

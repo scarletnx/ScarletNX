@@ -17,6 +17,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 #ifdef _WIN32
 #include <mstcpip.h>
 #else
@@ -486,7 +487,7 @@ SnxSocket* snx_net_socket_new(const SnxSocketOps* ops, SnxHostFd fd, int domain,
     s->domain = domain;
     s->type = type;
     s->protocol = protocol;
-    s->refs = 1;
+    atomic_store_explicit(&s->refs, 1, memory_order_relaxed);
     return s;
 }
 static int prepare_host_fd(SnxHostFd fd) {
@@ -980,11 +981,11 @@ int snx_socket_eventfd(SnxSocket** out, uint64_t initial, int semaphore) {
     return r ? r : snx_net_event_open(out, initial, semaphore);
 }
 SnxSocket* snx_socket_ref(SnxSocket* s) {
-    __atomic_add_fetch(&s->refs, 1, __ATOMIC_SEQ_CST);
+    atomic_fetch_add_explicit(&s->refs, 1, memory_order_seq_cst);
     return s;
 }
 void snx_socket_unref(SnxSocket* s) {
-    if (!s || __atomic_sub_fetch(&s->refs, 1, __ATOMIC_SEQ_CST)) return;
+    if (!s || (atomic_fetch_sub_explicit(&s->refs, 1, memory_order_seq_cst) - 1)) return;
     if (s->ops->destroy) s->ops->destroy(s);
     free(s);
 }

@@ -12,9 +12,11 @@ beside it, which hold the one use with no ISO form or the reference a test compa
 - __builtin_bswap, clz, ctz, popcount and memcpy: bits.h's helpers, and memcpy;
 - __attribute__((...)): C23's [[...]], gnu:: or clang:: where the attribute is the compiler's own, and alignas;
 - _Noreturn: [[noreturn]];
+- __atomic_* and __sync_*: <stdatomic.h>'s functions on _Atomic objects; tests/glsl/glsl.hpp, the C++ of the GLSL
+  tests, keeps them, as the Android NDK's libc++ (NDK 28) has no std::atomic_ref;
 - range designators ([a ... b] =) and case ranges (case a ... b:): one designator or label each.
-GNU's atomics (__atomic_*) and inline assembly are not in this list. Third-party code (hactool's lz4.h) and the guest
-programs the tests compile for the console (tests/gnuabi, tests/qemu_ref) are left out.
+Inline assembly is not in this list. Third-party code (hactool's lz4.h) and the guest programs the tests compile for
+the console (tests/gnuabi, tests/qemu_ref) are left out.
 
     gnu_extensions.py [--repo DIR]
 """
@@ -44,6 +46,7 @@ RULES = [
     ),
     ('__attribute__', r'\b__attribute__\b', set()),
     ('_Noreturn', r'\b_Noreturn\b', set()),
+    ('a GNU atomic builtin', r'\b__(atomic|sync)_\w+\s*\(', {'tests/glsl/glsl.hpp'}),
     ('a range designator', r'\[[^\]\n]*\.\.\.[^\]\n]*\]\s*=', set()),
     ('a case range', r'\bcase\b[^:\n]*\.\.\.', set()),
 ]
@@ -95,6 +98,7 @@ def self_test():
         'int c = __builtin_ctz(1);\n'
         'void d(void) __attribute__((noreturn));\n'
         '_Noreturn void h(void);\n'
+        'int i(int* p) { return __atomic_load_n(p, 0); }\n'
         'int e[4] = {[0 ... 3] = 1};\n'
         'void g(int x) { switch (x) { case 1 ... 2: break; } }\n'
         '/* __thread __int128 [0 ... 3] = */ const char* f = "__builtin_bswap32( case 1 ... 2:";\n'

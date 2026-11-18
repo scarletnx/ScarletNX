@@ -9,6 +9,7 @@
 #ifndef SNX_OPTIONS_H
 #define SNX_OPTIONS_H
 #include <stddef.h>
+#include <stdatomic.h>
 
 #include "nx/runtime/startup.h"
 #include "snx_settings.h"
@@ -40,7 +41,7 @@ int ini_picked(const char* k);
    the start shows it */
 int ini_next_start(const char* k, char* out, size_t n);
 /* a count of the changes to the game's picks and to ini_old_settings, which the menu watches to show them again */
-const int* ini_picks_changes(void);
+const _Atomic int* ini_picks_changes(void);
 /* 1 once after ini_unpick or ini_clean_old: the frontend's loop polls at once (ini_poll) */
 int ini_poll_due(void);
 /* the keys Clean Old Settings takes out, as the files were last read or written: the .ini's under [Deprecated] and
@@ -86,7 +87,7 @@ const char* ini_file(void);
 void ini_poll(int final);
 /* fps_limit: 0 = no limit, SNX_FPS_GAME = the game's own pace (its swap interval), else frames a second (10 to 1000) */
 #define SNX_FPS_GAME (-1)
-extern int g_opt_fps;                              /* atomic: the game's threads read it */
+extern _Atomic int g_opt_fps;                      /* atomic: the game's threads read it */
 void fps_limit_text(int fps, char* out, size_t n); /* g_opt_fps as fps_limit's value: "game", "0", "30"... */
 /* hotkey_fps_limit's, on the frontend's thread: the limit off, *was the one it took off, or back from off to *was (0
    for none yet: the game's pace), written to the .ini. Its line in the log, the limit now and before it, the same words
@@ -101,7 +102,9 @@ int options_stats_step(char* text, size_t size);
 /* The TV mode in effect now: 0 handheld, 1 TV (docked). docked's Auto asks the host's power state, and
    options_tv_mode_update keeps g_settings.tv_mode at the mode it picks from the frontend's thread, while the game's
    threads read it */
-static inline int snx_tv_mode(void) { return __atomic_load_n(&g_settings.tv_mode, __ATOMIC_RELAXED); }
+static inline int snx_tv_mode(void) {
+    return atomic_load_explicit((_Atomic int*)&g_settings.tv_mode, memory_order_relaxed);
+}
 /* docked's set function: 0 Off, 1 On, 2 Auto, which picks the mode in effect now */
 void options_tv_mode_set(const IniOpt* o, const char* v);
 /* starts the host's power watcher and logs the mode Auto picks, once the window backend is up */

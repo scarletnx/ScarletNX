@@ -218,6 +218,13 @@ static int scalar(const char* t) {
         "uint32_t", "uint64_t", "int8_t", "int16_t", "int32_t", "int64_t", "char", "int",  "unsigned", "short",
         "long",     "float",    "double", "size_t",  "_Bool",   "signed",  "bool", "V128", NULL};
     int i;
+    if (!strncmp(t, "_Atomic(", 8)) { /* an atomic scalar is one too: _Atomic(u32)[6] as u32[6] */
+        const char* close = strchr(t, ')');
+        char plain[128];
+        if (!close) return 0;
+        snprintf(plain, sizeof plain, "%.*s%s", (int)(close - (t + 8)), t + 8, close + 1);
+        return scalar(plain);
+    }
     for (i = 0; S[i]; i++)
         if (!strncmp(t, S[i], strlen(S[i])) && (t[strlen(S[i])] == '[' || t[strlen(S[i])] == ' ')) return 1;
     return 0;

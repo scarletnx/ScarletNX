@@ -174,7 +174,7 @@ typedef struct {
     u64 next_tid;    /* the next thread's id, under g_klock */
     /* the crash report's ring of the last 64 SVCs: svc_ring_n counts every one recorded */
     SvcRec svc_ring[64];
-    u32 svc_ring_n;
+    _Atomic u32 svc_ring_n;
     /* The handle table: a handle is (linear id << 15) | index, as the console's: the linear id (1 to 0x7FFF, counting
        up and wrapping) tells a stale handle from the one now in its slot, and bits 30 and 31 stay clear, so a handle
        fits the owner field of a mutex word beside its waiters bit. Free entries are a list through next, with -1 at
@@ -211,16 +211,16 @@ typedef struct {
        go of its core with g_klock held), and never the other way round. Two are read without it, with __atomic loads:
        a thread's on_core by the thread itself (only it lets go of a core it holds, and it waits for one handed to it
        on its word), and the heads of core_wait by core_yield */
-    u32 core_owner[NCORES];      /* the thread holding each core (kt_at), or 0 */
-    u32 core_wait[NCORES];       /* the threads waiting for it, through core_next, in no order */
+    _Atomic u32 core_owner[NCORES]; /* the thread holding each core (kt_at), or 0 */
+    _Atomic u32 core_wait[NCORES];  /* the threads waiting for it, through core_next, in no order */
     int core_best[NCORES];       /* the best priority among them, 64 with none */
     u64 core_ticket;             /* arrival order, for waiters of one priority */
     /* each core's share of the host CPUs (thread.c's core_pin), and whether it was logged */
     int host_cpu[256], host_ncpu;
-    int pin_said[NCORES];
+    _Atomic int pin_said[NCORES];
     /* a game pause is in force (kernel_hold): set and cleared under g_klock, read with __atomic loads, and every
        holder's poll stays set meanwhile so that its game code reaches a hold point */
-    int hold;
+    _Atomic int hold;
     /* the TLS page being handed out, eight threads to a page, and how many have it. Under g_klock */
     u64 tls_page;
     int tls_used;
@@ -229,14 +229,15 @@ typedef struct {
 typedef struct {
     /* each thread's wait word (kt_word), which it blocks on in the kernel's waits: whoever ends the wait changes the
        word, then wakes it (kt_notify) */
-    u32 wword[KTHREAD_MAX];
+    _Atomic u32 wword[KTHREAD_MAX];
     PMutex core_lk;
     /* for kernel_core_report, under core_lk: when each core's holder took it (plat_ns), and per core the time it was
        held and the time threads waited for it */
     u64 core_since[NCORES], core_held_ns[NCORES], core_wait_ns[NCORES];
     /* how late holders let go for a waiter of better priority, under core_lk: when the waiter flagged core k's holder
        (plat_ns, 0 for none), and per core the hand-offs over 10 ms late, the latest one and its holder (kt_ix) */
-    u64 preempt_since[NCORES], preempt_late[NCORES], preempt_max_ns[NCORES];
+    _Atomic u64 preempt_since[NCORES];
+    u64 preempt_late[NCORES], preempt_max_ns[NCORES];
     u32 preempt_max_by[NCORES];
     /* how often a thread stopped with its disable count raised ran on (core_switch), under core_lk */
     u64 kept;
@@ -248,7 +249,7 @@ typedef struct {
     u32 preempt_lines;
     /* a save state's load (thread.c): the guest threads' host threads running, retire asking them to end, and the
        service wait each is in (kthread_wait), where it is woken to */
-    int nhost, retire;
+    _Atomic int nhost, retire;
     struct {
         PCond* c;
         PMutex* m;
@@ -258,13 +259,13 @@ typedef struct {
     /* sync.c's mutex hand-offs, per thread slot, under g_klock: handed, the kernel made the thread a mutex's owner and
        it has yet to leave the SVC it waited in (svc_leave clears it, without the lock); mwait_how, how a thread waiting
        on a mutex came to it (MWAIT_*) */
-    u8 handed[KTHREAD_MAX];
+    _Atomic u8 handed[KTHREAD_MAX];
     u8 mwait_how[KTHREAD_MAX];
     /* for the thread dump, each written by its own thread with relaxed stores: when it last left an SVC (plat_ns),
        how often its game code called the poll (a waiter flagged its core), and its host thread */
-    u64 svc_ns[KTHREAD_MAX];
-    u32 polls[KTHREAD_MAX];
-    u32 host_tid[KTHREAD_MAX]; /* its host thread (plat_tid), to find it in a debugger */
+    _Atomic u64 svc_ns[KTHREAD_MAX];
+    _Atomic u32 polls[KTHREAD_MAX];
+    _Atomic u32 host_tid[KTHREAD_MAX]; /* its host thread (plat_tid), to find it in a debugger */
 } HostThread;
 /* thread's thread state, t_hle.thread (hle.h's) */
 enum { KT_LATER = 16 };
@@ -327,8 +328,8 @@ typedef struct {
     u32 shmem_next, tmem_next, codemem_next;
     /* RandomEntropy's four words, and whether they are made */
     u64 entropy[4];
-    int entropy_made;
-    u64 local_region; /* UserExceptionContextAddress's page, 0 until made */
+    _Atomic int entropy_made;
+    _Atomic u64 local_region;       /* UserExceptionContextAddress's page, 0 until made */
     KCodeView views[KCODEVIEW_MAX]; /* under g_host.svcmem.views_lk: a free one has size 0 */
     KMapView maps[KMAPVIEW_MAX]; /* under g_host.svcmem.map_lk: a free one has size 0 */
     u64 fit; /* memory_fit_mode's: the most the game is told, measured as it starts (mem_fit); 0 for the console's */

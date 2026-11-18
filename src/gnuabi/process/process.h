@@ -35,7 +35,7 @@ typedef struct GnuThread {
     pthread_t host; /* for the host signal that stops its host call (Windows has none) */
 #endif
     struct SnxNetWake* wake; /* ends its waits in the network stack (ppoll, sockets) at once, for a signal */
-    uint32_t sample;         /* atomic: --sample-pc wants its pc */
+    _Atomic uint32_t sample; /* atomic: --sample-pc wants its pc */
 } GnuThread;
 
 typedef struct GnuProcess {

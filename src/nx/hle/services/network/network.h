@@ -170,7 +170,7 @@ typedef struct SslConn {
 #define SSL_CONTEXT_CONNECTIONS 8 /* per context: Switchbrew, from ISslContextForSystem's CreateConnectionEx allowing 10 */
 #define SSL_CONN_MAX (SSL_CONTEXT_MAX * SSL_CONTEXT_CONNECTIONS) /* ISslConnections: as many as the contexts take */
 typedef struct {
-    int contexts; /* GetContextCount */
+    _Atomic int contexts; /* GetContextCount */
     int init_done;
     struct stack_st_X509* roots; /* from a bundle file or the Windows store */
     char roots_dir[4096];        /* a hashed directory (or a list), which OpenSSL reads as it needs */

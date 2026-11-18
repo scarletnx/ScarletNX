@@ -161,20 +161,21 @@ static int check_storage_logged(void) {
 
 /* Whether results are pending over guest memory is asked without vk_lock first: a dispatch on the GPU thread asks it of
    each of its buffers, and waited for the lock another thread held, to find none there (45 us a buffer in one game) */
-static int g_lock_holder; /* 1 holding vk_lock, 2 asked to let go, 3 let go */
+static _Atomic int g_lock_holder; /* 1 holding vk_lock, 2 asked to let go, 3 let go */
 static void hold_vk_lock(void* arg) {
     (void)arg;
     vk_lock();
-    __atomic_store_n(&g_lock_holder, 1, __ATOMIC_SEQ_CST);
+    atomic_store_explicit(&g_lock_holder, 1, memory_order_seq_cst);
     u64 t0 = plat_ns();
-    while (__atomic_load_n(&g_lock_holder, __ATOMIC_SEQ_CST) != 2 && plat_ns() - t0 < 2000000000ull) plat_yield();
+    while (atomic_load_explicit(&g_lock_holder, memory_order_seq_cst) != 2 && plat_ns() - t0 < 2000000000ull)
+        plat_yield();
     vk_unlock();
-    __atomic_store_n(&g_lock_holder, 3, __ATOMIC_SEQ_CST);
+    atomic_store_explicit(&g_lock_holder, 3, memory_order_seq_cst);
 }
-static int g_asked; /* the asking thread's answer came */
+static _Atomic int g_asked; /* the asking thread's answer came */
 static void ask_unpending(void* arg) {
     vk_buf_mem_need(*(const u64*)arg, 0x1000);
-    __atomic_store_n(&g_asked, 1, __ATOMIC_SEQ_CST);
+    atomic_store_explicit(&g_asked, 1, memory_order_seq_cst);
 }
 static int check_need_unlocked(void) {
     const u64 cpu = HEAP_BASE + 0x7e0000, gva = 0xa800000;
@@ -189,16 +190,16 @@ static int check_need_unlocked(void) {
     CHECK(vk_buf_pending(gva, 0x1000) && !vk_buf_pending(gva + 0x2000, 0x1000));
     vk_unlock();
     CHECK(!plat_thread(hold_vk_lock, NULL, 0));
-    while (__atomic_load_n(&g_lock_holder, __ATOMIC_SEQ_CST) != 1) plat_yield();
+    while (atomic_load_explicit(&g_lock_holder, memory_order_seq_cst) != 1) plat_yield();
     /* another thread asks about the third page, where nothing is: answered while the lock is held */
     other = gva + 0x2000;
     CHECK(!plat_thread(ask_unpending, &other, 0));
     u64 t0 = plat_ns();
-    while (!__atomic_load_n(&g_asked, __ATOMIC_SEQ_CST) && plat_ns() - t0 < 1000000000ull) plat_yield();
-    int in_time = __atomic_load_n(&g_asked, __ATOMIC_SEQ_CST);
-    __atomic_store_n(&g_lock_holder, 2, __ATOMIC_SEQ_CST);
-    while (__atomic_load_n(&g_lock_holder, __ATOMIC_SEQ_CST) != 3) plat_yield();
-    while (!__atomic_load_n(&g_asked, __ATOMIC_SEQ_CST)) plat_yield();
+    while (!atomic_load_explicit(&g_asked, memory_order_seq_cst) && plat_ns() - t0 < 1000000000ull) plat_yield();
+    int in_time = atomic_load_explicit(&g_asked, memory_order_seq_cst);
+    atomic_store_explicit(&g_lock_holder, 2, memory_order_seq_cst);
+    while (atomic_load_explicit(&g_lock_holder, memory_order_seq_cst) != 3) plat_yield();
+    while (!atomic_load_explicit(&g_asked, memory_order_seq_cst)) plat_yield();
     CHECK(in_time);
     vk_buf_mem_need(gva, 0x1000); /* the pending one lands */
     CHECK(!vk_buf_pending(gva, 0x1000));

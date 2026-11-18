@@ -53,8 +53,8 @@ static SnxModInfo g_mods[3] = {
 static SnxModule g_module = {.abi = SNX_ABI, .nmods = 2, .mods = g_mods};
 const SnxModule* g_mod = &g_module;
 const SnxArmModule* g_arm_mod;
-static GuestFn g_dispatch[0x40000 / 4];
-GuestFn* g_disp = g_dispatch;
+static _Atomic GuestFn g_dispatch[0x40000 / 4];
+_Atomic GuestFn* g_disp = g_dispatch;
 u64 g_code_lo = RTLD, g_code_hi = RTLD + 0x40000;
 
 static int failures, g_nce, g_routed, g_ro_routed, g_exported, g_started, g_family_off, g_ran;
@@ -267,7 +267,7 @@ static void game(void) {
 
 /* the runtime links the game itself */
 static void switched(void) {
-    GuestFn* slot = &g_disp[(START - g_code_lo) / 4];
+    _Atomic GuestFn* slot = &g_disp[(START - g_code_lo) / 4];
     RtAPI rt = {.cas128 = snx_runtime_cas128};
     CPU c = {0};
     u64 at = 0, args[4] = {0};
@@ -324,7 +324,7 @@ int main(int argc, char** argv) {
     SnxRelocModule place[2] = {{"rtld", GP(RTLD), RTLD, MODULE_BYTES, GP(RTLD) + DATA, DATA, DATA_SIZE, 0, 0, 0, 0},
                                {"sdk", GP(SDK), SDK, MODULE_BYTES, GP(SDK) + DATA, DATA, DATA_SIZE, 0, 0, 0, 0}};
     SnxRelocCounts counts;
-    GuestFn* slot = &g_disp[(START - g_code_lo) / 4];
+    _Atomic GuestFn* slot = &g_disp[(START - g_code_lo) / 4];
     char error[256];
     CPU c = {0};
     if (argc > 1 && !strcmp(argv[1], "switch")) {

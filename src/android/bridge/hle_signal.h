@@ -25,10 +25,10 @@ typedef struct GuestSignals {
     GnuKernelThread k; /* k.runtime points back here */
     CPU* cpu;
     pthread_t host;
-    int parked;          /* atomic: in an HLE call that waits */
-    int busy;            /* atomic: the depth of guest calls and deliveries on this thread */
-    unsigned delivered;  /* atomic: the handlers this thread ran */
-    uint64_t in_export;  /* atomic: the export it is in, for --sample */
+    _Atomic int parked;         /* atomic: in an HLE call that waits */
+    _Atomic int busy;           /* atomic: the depth of guest calls and deliveries on this thread */
+    _Atomic unsigned delivered; /* atomic: the handlers this thread ran */
+    _Atomic uint64_t in_export; /* atomic: the export it is in, for --sample */
 } GuestSignals;
 
 /* each action, send and delivery on stderr (--log-signals), and each guest thread's pc, x30 and HLE call every 5

@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <zstd.h>
+#include <stdatomic.h>
 #include "common/utilities/common.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/gpu/vk/vk.h"
@@ -78,12 +79,13 @@ static u64 pf_get64(const u8* p) {
 typedef struct {
     const u8* bytes;
     size_t at[65], bad[64];
-    u32 count, next;
+    u32 count;
+    _Atomic u32 next;
 } PfChecks;
 static void* pf_check_worker(void* arg) {
     PfChecks* c = arg;
     for (;;) {
-        u32 job = __atomic_fetch_add(&c->next, 1, __ATOMIC_RELAXED);
+        u32 job = atomic_fetch_add_explicit(&c->next, 1, memory_order_relaxed);
         if (job >= c->count) break;
         size_t at = c->at[job], end = c->at[job + 1];
         while (at < end) {
@@ -458,7 +460,8 @@ typedef struct {
     u32 cap, n;
     u64 source;
     PfSlot slot[PF_AHEAD];
-    u32 nslot, islot, workers, job;
+    u32 nslot, islot, workers;
+    _Atomic u32 job;
     int checked;
     u64 open;
 } PfReader;
@@ -610,7 +613,7 @@ static void pf_unit_job(PfSlot* s, int checked) {
 static void* pf_unit_worker(void* arg) {
     PfReader* r = arg;
     for (;;) {
-        u32 job = __atomic_fetch_add(&r->job, 1, __ATOMIC_RELAXED);
+        u32 job = atomic_fetch_add_explicit(&r->job, 1, memory_order_relaxed);
         if (job >= r->nslot) break;
         pf_unit_job(&r->slot[job], r->checked);
     }
@@ -628,7 +631,7 @@ static void pf_unpack_ahead(PfReader* r, const u8* buf, size_t at, size_t size, 
     }
     r->nslot = n;
     r->islot = 0;
-    r->job = 0;
+    atomic_store_explicit(&r->job, 0, memory_order_relaxed);
     r->checked = checked;
 #if defined(__linux__)
     if (n > 1) {

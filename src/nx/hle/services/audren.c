@@ -12,6 +12,7 @@
 #include "nx/hle/services/audren_dsp.h"
 #include "nx/hle/services/services.h"
 #include "nx/hle/hle.h"
+#include <stdatomic.h>
 
 /* the open renderers (ARRen, services_int.h), each named by its slot in g_hle.audren.rens plus 1, with its play state
    and the parameters it reads back (nn/audio_renderer.c sets them). g_host.audren.lk guards the renderers and every
@@ -39,23 +40,24 @@ void audren_close(u32 id) {
 }
 
 u32 audren_open(const u8* params, int manual) {
-    static int announced;
+    static _Atomic int announced;
     ARState* s = audren_state_new(params);
     ARRen* r;
     u32 id;
-    if (!announced && __atomic_exchange_n(&announced, 1, __ATOMIC_ACQ_REL) == 0)
+    if (!atomic_load_explicit(&announced, memory_order_relaxed) &&
+        atomic_exchange_explicit(&announced, 1, memory_order_acq_rel) == 0)
         pm_lock_announce(&g_host.audren.lk, "audren"); /* the renderers' table, the game's threads and the audio's */
     if (!s) return 0;
     pm_lock(&g_host.audren.lk);
     r = POOL_TRY(g_hle.audren.rens, g_hle.audren.ren_next);
     if (r) {
         r->used = 1;
-        r->state = SNX_AUDREN_STOPPED;
+        atomic_store_explicit(&r->state, SNX_AUDREN_STOPPED, memory_order_relaxed);
         r->sample_rate = snx_ld_le32(params);
         r->sample_count = snx_ld_le32(params + 4);
         r->mix_buffer_count = snx_ld_le32(params + 8);
-        r->limit = 100;
-        r->voice_drop = 1.0f;
+        atomic_store_explicit(&r->limit, 100, memory_order_relaxed);
+        atomic_store_explicit(&r->voice_drop, 1.0f, memory_order_relaxed);
         r->manual = (u32)manual;
         r->rendering_device = params[0x22];
         r->s = s;
@@ -102,7 +104,7 @@ void audren_tick(void) {
         ARRen* r = &g_hle.audren.rens[i];
         u32 bytes;
         if (!r->used) continue; /* a free slot */
-        if (__atomic_load_n(&r->state, __ATOMIC_ACQUIRE) != SNX_AUDREN_STARTED) continue;
+        if (atomic_load_explicit(&r->state, memory_order_acquire) != SNX_AUDREN_STARTED) continue;
         if (!audren_frame(r->s, stereo)) continue;
         if (!r->out && !r->out_failed) { /* the device sink's first frame: stereo at the renderer's rate */
             r->out = plat_audio_open(r->s->rate, 2);

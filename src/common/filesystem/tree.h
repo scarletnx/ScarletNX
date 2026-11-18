@@ -34,7 +34,7 @@ typedef struct FsNode {
        its contents at map (NULL when empty): at startup, or by fs_tree_map when it is first read. Such nodes are
        readonly, so map and size never change, and fd is set once, after map (read it with fs_tree_mapped without
        the tree's lock) */
-    int fd;
+    _Atomic int fd;
     const uint8_t* map;
     unsigned refs; /* open handles; attached nodes are additionally owned by the tree */
     char* host;    /* a graft's top (fs_tree_graft, a followed link): the host folder its subtree is in, else NULL */

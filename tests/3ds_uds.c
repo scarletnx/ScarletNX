@@ -205,9 +205,9 @@ static SnxCtrProcess* process(uint32_t* handle, const char* nickname) {
 }
 typedef struct {
     SnxCtrProcess* p;
-    atomic_int stop;
+    _Atomic atomic_int stop;
     char pad[64];
-    atomic_int done;
+    _Atomic atomic_int done;
 } Pump;
 static void pump(void* context) {
     Pump* task = context;

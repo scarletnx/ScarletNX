@@ -21,6 +21,7 @@
 #include <errno.h>
 #include <string.h>
 #include <time.h>
+#include <stdatomic.h>
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -85,9 +86,9 @@ typedef struct {
    It also tells discovery, without the lock, which pcs other batches have or will have, so a batch doesn't compile them
    too */
 typedef struct {
-    SnxU64 lo, hi;
-    GuestFn* slots;
-    unsigned char* pending;
+    _Atomic SnxU64 lo, hi;
+    _Atomic GuestFn* slots;
+    _Atomic unsigned char* pending;
     SnxCodeImage image; /* an added region's */
     unsigned users;     /* under lock: batches compiling with its image */
     /* an added image inside the main table (snx_jit_add_image): it has no arrays, its pcs' slots and pending bits are
@@ -106,7 +107,7 @@ typedef struct {
 typedef struct RegionTop {
     size_t count; /* entries in leaves */
     struct RegionTop* older;
-    unsigned short* leaves[];
+    _Atomic unsigned short* _Atomic leaves[];
 } RegionTop;
 
 /* The cache file (SnxJitConfig.cache_path) as this run read it: its records, and the leaders of their functions by pc
@@ -142,7 +143,7 @@ struct SnxJitService {
     SnxJitConfig config;
     SnxCodeLoader* loader;
     Region regions[1 + SNX_JIT_IMAGES];
-    RegionTop* region_top; /* under lock for writes, read without it (acquire): the added regions' pages */
+    RegionTop* _Atomic region_top; /* under lock for writes, read without it (acquire): the added regions' pages */
     /* the pcs: the misses and warm pcs queued, compiling or failed, and every leader of every compiled function, for
        a pc outside the dispatch table or one whose slot holds something else (a wrapper). An open-addressing table,
        at most half full, under lock */
@@ -317,11 +318,14 @@ static int in_text(const SnxJitService* s, SnxU64 pc) {
         const SnxCodeImage* m = &s->config.images[i];
         if (pc >= m->base + m->text_off && pc - (m->base + m->text_off) < m->text_size) return 1;
     }
-    if ((pc & 3) || pc - s->regions[0].lo >= s->regions[0].hi - s->regions[0].lo) return 0;
+    if ((pc & 3) || pc - atomic_load_explicit(&s->regions[0].lo, memory_order_relaxed) >=
+                        atomic_load_explicit(&s->regions[0].hi, memory_order_relaxed) -
+                            atomic_load_explicit(&s->regions[0].lo, memory_order_relaxed))
+        return 0;
     for (size_t i = 1; i <= SNX_JIT_IMAGES; ++i) {
         const Region* r = &s->regions[i];
-        SnxU64 hi = __atomic_load_n(&r->hi, __ATOMIC_ACQUIRE);
-        if (hi && r->inner && pc >= __atomic_load_n(&r->lo, __ATOMIC_RELAXED) && pc < hi) return 1;
+        SnxU64 hi = atomic_load_explicit(&r->hi, memory_order_acquire);
+        if (hi && r->inner && pc >= atomic_load_explicit(&r->lo, memory_order_relaxed) && pc < hi) return 1;
     }
     return 0;
 }
@@ -330,30 +334,34 @@ static int in_text(const SnxJitService* s, SnxU64 pc) {
 static Region* region_of(const SnxJitService* s, SnxU64 pc) {
     Region* r = (Region*)&s->regions[0];
     if (pc & 3) return NULL;
-    if (pc - r->lo < r->hi - r->lo) return r;
-    RegionTop* top = __atomic_load_n(&s->region_top, __ATOMIC_ACQUIRE);
+    if (pc - atomic_load_explicit(&r->lo, memory_order_relaxed) <
+        atomic_load_explicit(&r->hi, memory_order_relaxed) - atomic_load_explicit(&r->lo, memory_order_relaxed))
+        return r;
+    RegionTop* top = atomic_load_explicit(&s->region_top, memory_order_acquire);
     if (top && (size_t)(pc >> REGION_TOP_SHIFT) < top->count) {
-        unsigned short* leaf = __atomic_load_n(&top->leaves[pc >> REGION_TOP_SHIFT], __ATOMIC_ACQUIRE);
+        _Atomic unsigned short* leaf = atomic_load_explicit(&top->leaves[pc >> REGION_TOP_SHIFT], memory_order_acquire);
         if (leaf) {
-            unsigned short index = __atomic_load_n(&leaf[(pc >> REGION_PAGE_SHIFT) & (REGION_LEAF_ENTRIES - 1)],
-                                                   __ATOMIC_ACQUIRE);
+            unsigned short index = atomic_load_explicit(&leaf[(pc >> REGION_PAGE_SHIFT) & (REGION_LEAF_ENTRIES - 1)],
+                                                        memory_order_acquire);
             if (index) return (Region*)&s->regions[index]; /* 1-based; regions[0] is never an image */
         }
     }
     /* a pc outside the map's coverage, or under a leaf whose entry isn't set: the regions themselves */
     for (size_t i = 1; i <= SNX_JIT_IMAGES; ++i) {
         r = (Region*)&s->regions[i];
-        SnxU64 hi = __atomic_load_n(&r->hi, __ATOMIC_ACQUIRE);
-        if (hi && !r->inner && pc >= __atomic_load_n(&r->lo, __ATOMIC_RELAXED) && pc < hi) return r;
+        SnxU64 hi = atomic_load_explicit(&r->hi, memory_order_acquire);
+        if (hi && !r->inner && pc >= atomic_load_explicit(&r->lo, memory_order_relaxed) && pc < hi) return r;
     }
     return NULL;
 }
 
-static GuestFn* slot(const Region* r, SnxU64 pc) { return &r->slots[(pc - r->lo) >> 2]; }
+static _Atomic GuestFn* slot(const Region* r, SnxU64 pc) {
+    return &r->slots[(pc - atomic_load_explicit(&r->lo, memory_order_relaxed)) >> 2];
+}
 
 static int is_pending(const Region* r, SnxU64 pc) {
-    size_t i = (size_t)((pc - r->lo) >> 2);
-    return __atomic_load_n(&r->pending[i >> 3], __ATOMIC_RELAXED) >> (i & 7) & 1;
+    size_t i = (size_t)((pc - atomic_load_explicit(&r->lo, memory_order_relaxed)) >> 2);
+    return atomic_load_explicit(&r->pending[i >> 3], memory_order_relaxed) >> (i & 7) & 1;
 }
 
 /* under lock, with the entry that says so in place: a thread that reads the bit without the lock gets NULL, which is
@@ -361,14 +369,14 @@ static int is_pending(const Region* r, SnxU64 pc) {
 static void set_pending(SnxJitService* s, SnxU64 pc) {
     Region* r = region_of(s, pc);
     if (!r) return;
-    size_t i = (size_t)((pc - r->lo) >> 2);
-    __atomic_fetch_or(&r->pending[i >> 3], (unsigned char)(1u << (i & 7)), __ATOMIC_RELAXED);
+    size_t i = (size_t)((pc - atomic_load_explicit(&r->lo, memory_order_relaxed)) >> 2);
+    atomic_fetch_or_explicit(&r->pending[i >> 3], (unsigned char)(1u << (i & 7)), memory_order_relaxed);
 }
 
 /* under lock: pc is new to the service again, so discovery isn't told another batch has it */
 static void clear_pending(Region* r, SnxU64 pc) {
-    size_t i = (size_t)((pc - r->lo) >> 2);
-    __atomic_fetch_and(&r->pending[i >> 3], (unsigned char)~(1u << (i & 7)), __ATOMIC_RELAXED);
+    size_t i = (size_t)((pc - atomic_load_explicit(&r->lo, memory_order_relaxed)) >> 2);
+    atomic_fetch_and_explicit(&r->pending[i >> 3], (unsigned char)~(1u << (i & 7)), memory_order_relaxed);
 }
 
 /* ---- the compile ---- */
@@ -399,7 +407,7 @@ static int known(void* user, SnxU64 address) {
     SnxJitService* s = b->service;
     Region* r = region_of(s, address);
     if (r) {
-        if (__atomic_load_n(slot(r, address), __ATOMIC_RELAXED)) return 1;
+        if (atomic_load_explicit(slot(r, address), memory_order_relaxed)) return 1;
         return is_pending(r, address) && !in_batch(b, address);
     }
     lock(&s->lock);
@@ -425,10 +433,10 @@ static SnxU64 direct(void* user, SnxU64 target) {
     }
     if (lo == s->config.aot_count || s->config.aot_addresses[lo] != target) return 0;
     /* a function the runtime found stale (its code changed: SNX_ABI 14) leaves the table while the JIT runs */
-    GuestFn function = __atomic_load_n(&s->config.aot_functions[lo], __ATOMIC_ACQUIRE);
+    GuestFn function = atomic_load_explicit(&s->config.aot_functions[lo], memory_order_acquire);
     /* and a hooked one is called through its slot, which holds the hook (SNX_ABI 15) */
     if (function && s->config.dispatch && target >= s->config.code_lo && target < s->config.code_hi &&
-        __atomic_load_n(&s->config.dispatch[(target - s->config.code_lo) >> 2], __ATOMIC_RELAXED) != function)
+        atomic_load_explicit(&s->config.dispatch[(target - s->config.code_lo) >> 2], memory_order_relaxed) != function)
         return 0;
     return (SnxU64)(size_t)function;
 }
@@ -965,8 +973,8 @@ static int cache_load(SnxJitService* s, CacheRecord* r, const SnxCodeImage* imag
                found the record's code still there: published again, as a load after an invalidation is for */
             Region* region = region_of(s, address);
             if (region)
-                __atomic_compare_exchange_n(slot(region, address), &expected, code, 0, __ATOMIC_RELEASE,
-                                            __ATOMIC_RELAXED);
+                atomic_compare_exchange_strong_explicit(slot(region, address), &expected, code, memory_order_release,
+                                                        memory_order_relaxed);
             if (!e || e->state == FAILED || (e->state == DONE && e->code)) continue;
             e->state = DONE; /* a pc queued or compiling elsewhere is done: its batch's end leaves it so */
             e->code = code;
@@ -1007,7 +1015,7 @@ static SnxCodeImage* images_take(SnxJitService* s, size_t* count, unsigned char*
     if (!images) return NULL;
     memcpy(images, s->config.images, s->config.image_count * sizeof(*images));
     for (size_t i = 1; i <= SNX_JIT_IMAGES; ++i) {
-        taken[i] = s->regions[i].hi != 0;
+        taken[i] = atomic_load_explicit(&s->regions[i].hi, memory_order_relaxed) != 0;
         if (!taken[i]) continue;
         images[n++] = s->regions[i].image;
         ++s->regions[i].users;
@@ -1152,7 +1160,8 @@ static void compile(SnxJitService* s, const SnxU64* pcs, size_t count, SnxU64 st
                    would take it for code nobody compiled, and every later batch that calls it would compile it again */
                 Entry* e = add(s, address, DONE);
                 GuestFn expected = NULL;
-                __atomic_compare_exchange_n(slot(r, address), &expected, code, 0, __ATOMIC_RELEASE, __ATOMIC_RELAXED);
+                atomic_compare_exchange_strong_explicit(slot(r, address), &expected, code, memory_order_release,
+                                                        memory_order_relaxed);
                 /* a queued pc this batch compiled is done (its queue skips it); one another batch compiles is that
                    batch's to end, as this batch's own pcs are below, and an earlier batch's keeps its code */
                 if (!e || e->state == IN_FLIGHT || e->state == FAILED || (e->state == DONE && e->code)) continue;
@@ -1377,9 +1386,10 @@ static GuestFn resolve(SnxJitService* s, SnxU64 pc, int* waits) {
     Region* r = region_of(s, pc);
     /* an added image's table is the service's alone: its code is found here, without the lock (the main table's slot
        is empty, or the caller's lookup would not have missed) */
-    if (r && r != &s->regions[0] && (code = __atomic_load_n(slot(r, pc), __ATOMIC_ACQUIRE)) != NULL) return code;
+    if (r && r != &s->regions[0] && (code = atomic_load_explicit(slot(r, pc), memory_order_acquire)) != NULL)
+        return code;
     if (!in_text(s, pc) && !(r && r != &s->regions[0])) return NULL;
-    if (r && is_pending(r, pc) && !__atomic_load_n(slot(r, pc), __ATOMIC_ACQUIRE)) return NULL;
+    if (r && is_pending(r, pc) && !atomic_load_explicit(slot(r, pc), memory_order_acquire)) return NULL;
     lock(&s->lock);
     Entry* e = find(s, pc);
     if (!e || e->state == QUEUED_WARM || e->state == GONE) {
@@ -1410,7 +1420,7 @@ size_t snx_jit_warm(SnxJitService* s, const SnxU64* pcs, size_t count) {
     for (size_t i = 0; i < count; ++i) {
         if (!in_text(s, pcs[i]) || find(s, pcs[i])) continue;
         Region* r = region_of(s, pcs[i]);
-        if (r && __atomic_load_n(slot(r, pcs[i]), __ATOMIC_RELAXED)) continue;
+        if (r && atomic_load_explicit(slot(r, pcs[i]), memory_order_relaxed)) continue;
         Entry* e = add(s, pcs[i], QUEUED_WARM);
         if (!e) break;
         if (push(&s->queues[WARM], pcs[i])) {
@@ -1472,7 +1482,7 @@ static void region_chunk_range(SnxU64 lo, SnxU64 hi, size_t i, SnxU64* from, Snx
 
 /* under lock: the top has an entry for chunk last */
 static int region_top_cover(SnxJitService* s, size_t last) {
-    RegionTop* top = s->region_top;
+    RegionTop* top = atomic_load_explicit(&s->region_top, memory_order_relaxed);
     size_t count = top ? top->count : 0;
     if (last < count) return 0;
     size_t n = count ? count : 16;
@@ -1482,7 +1492,7 @@ static int region_top_cover(SnxJitService* s, size_t last) {
     if (top) memcpy(grown->leaves, top->leaves, count * sizeof(*grown->leaves));
     grown->count = n;
     grown->older = top;
-    __atomic_store_n(&s->region_top, grown, __ATOMIC_RELEASE); /* readers may hold the old top until free */
+    atomic_store_explicit(&s->region_top, grown, memory_order_release); /* readers may hold the old top until free */
     return 0;
 }
 
@@ -1492,37 +1502,37 @@ static void region_map_add(SnxJitService* s, SnxU64 lo, SnxU64 hi, unsigned inde
     size_t first = (size_t)(lo >> REGION_TOP_SHIFT), last = (size_t)((hi - 1) >> REGION_TOP_SHIFT);
     if (region_top_cover(s, last)) return;
     for (size_t i = first; i <= last; ++i) {
-        RegionTop* top = s->region_top;
-        unsigned short* leaf = __atomic_load_n(&top->leaves[i], __ATOMIC_RELAXED);
+        RegionTop* top = atomic_load_explicit(&s->region_top, memory_order_relaxed);
+        _Atomic unsigned short* leaf = atomic_load_explicit(&top->leaves[i], memory_order_relaxed);
         if (!leaf) {
-            leaf = (unsigned short*)calloc(REGION_LEAF_ENTRIES, sizeof(*leaf));
+            leaf = (_Atomic unsigned short*)calloc(REGION_LEAF_ENTRIES, sizeof(*leaf));
             if (!leaf) continue; /* region_of scans for them */
-            __atomic_store_n(&top->leaves[i], leaf, __ATOMIC_RELEASE);
+            atomic_store_explicit(&top->leaves[i], leaf, memory_order_release);
         }
         SnxU64 from, to;
         region_chunk_range(lo, hi, i, &from, &to);
         for (SnxU64 pc = from; pc < to; pc += 0x1000)
-            __atomic_store_n(&leaf[(pc >> REGION_PAGE_SHIFT) & (REGION_LEAF_ENTRIES - 1)], (unsigned short)index,
-                             __ATOMIC_RELEASE);
+            atomic_store_explicit(&leaf[(pc >> REGION_PAGE_SHIFT) & (REGION_LEAF_ENTRIES - 1)], (unsigned short)index,
+                                  memory_order_release);
     }
 }
 
 /* under lock: the pages of [lo, hi) read as no added region again */
 static void region_map_remove(SnxJitService* s, SnxU64 lo, SnxU64 hi) {
-    RegionTop* top = s->region_top;
+    RegionTop* top = atomic_load_explicit(&s->region_top, memory_order_relaxed);
     if (!top) return;
     size_t first = (size_t)(lo >> REGION_TOP_SHIFT);
     size_t last = (size_t)((hi - 1) >> REGION_TOP_SHIFT);
     if (first >= top->count) return;
     if (last >= top->count) last = top->count - 1;
     for (size_t i = first; i <= last; ++i) {
-        unsigned short* leaf = __atomic_load_n(&top->leaves[i], __ATOMIC_RELAXED);
+        _Atomic unsigned short* leaf = atomic_load_explicit(&top->leaves[i], memory_order_relaxed);
         if (!leaf) continue;
         SnxU64 from, to;
         region_chunk_range(lo, hi, i, &from, &to);
         for (SnxU64 pc = from; pc < to; pc += 0x1000)
-            __atomic_store_n(&leaf[(pc >> REGION_PAGE_SHIFT) & (REGION_LEAF_ENTRIES - 1)], (unsigned short)0,
-                             __ATOMIC_RELEASE);
+            atomic_store_explicit(&leaf[(pc >> REGION_PAGE_SHIFT) & (REGION_LEAF_ENTRIES - 1)], (unsigned short)0,
+                                  memory_order_release);
     }
 }
 
@@ -1532,9 +1542,10 @@ int snx_jit_add_image(SnxJitService* s, const SnxCodeImage* image) {
     Region* r = NULL;
     if (!image->text_size || (lo & 3) || hi < lo || n > SIZE_MAX / sizeof(GuestFn)) return -1;
     /* wholly inside the main table, whose bounds never change: its slots are there already */
-    int inner = lo >= s->regions[0].lo && hi <= s->regions[0].hi;
-    GuestFn* slots = inner ? NULL : (GuestFn*)calloc(n, sizeof(*slots));
-    unsigned char* pending = inner ? NULL : (unsigned char*)calloc(n / 8 + 1, 1);
+    int inner = lo >= atomic_load_explicit(&s->regions[0].lo, memory_order_relaxed) &&
+                hi <= atomic_load_explicit(&s->regions[0].hi, memory_order_relaxed);
+    _Atomic GuestFn* slots = inner ? NULL : (_Atomic GuestFn*)calloc(n, sizeof(*slots));
+    _Atomic unsigned char* pending = inner ? NULL : (_Atomic unsigned char*)calloc(n / 8 + 1, 1);
     if (!inner && (!slots || !pending)) {
         free(slots);
         free(pending);
@@ -1542,15 +1553,18 @@ int snx_jit_add_image(SnxJitService* s, const SnxCodeImage* image) {
     }
     lock(&s->lock);
     /* across an end of the main table, or over the text of one of its own images: refused */
-    if (!inner && lo < s->regions[0].hi && s->regions[0].lo < hi) r = &s->regions[0];
+    if (!inner && lo < atomic_load_explicit(&s->regions[0].hi, memory_order_relaxed) &&
+        atomic_load_explicit(&s->regions[0].lo, memory_order_relaxed) < hi)
+        r = &s->regions[0];
     for (size_t i = 0; inner && i < s->config.image_count; ++i) {
         const SnxCodeImage* m = &s->config.images[i];
         if (lo < m->base + m->text_off + m->text_size && m->base + m->text_off < hi) r = &s->regions[0];
     }
     for (size_t i = 1; r != &s->regions[0] && i <= SNX_JIT_IMAGES; ++i)
-        if (!s->regions[i].hi) {
+        if (!atomic_load_explicit(&s->regions[i].hi, memory_order_relaxed)) {
             if (!r) r = &s->regions[i];
-        } else if (lo < s->regions[i].hi && s->regions[i].lo < hi)
+        } else if (lo < atomic_load_explicit(&s->regions[i].hi, memory_order_relaxed) &&
+                   atomic_load_explicit(&s->regions[i].lo, memory_order_relaxed) < hi)
             r = &s->regions[0];
     if (!r || r == &s->regions[0]) {
         unlock(&s->lock);
@@ -1562,8 +1576,8 @@ int snx_jit_add_image(SnxJitService* s, const SnxCodeImage* image) {
     r->pending = pending;
     r->image = *image;
     r->inner = inner;
-    __atomic_store_n(&r->lo, lo, __ATOMIC_RELAXED);
-    __atomic_store_n(&r->hi, hi, __ATOMIC_RELEASE); /* last: region_of finds the region complete */
+    atomic_store_explicit(&r->lo, lo, memory_order_relaxed);
+    atomic_store_explicit(&r->hi, hi, memory_order_release); /* last: region_of finds the region complete */
     if (!inner) region_map_add(s, lo, hi, (unsigned)(r - s->regions));
     unlock(&s->lock);
     return 0;
@@ -1580,8 +1594,8 @@ static void span_drop(SnxJitService* s, size_t i) {
             e->code = NULL;
         }
         Region* r = region_of(s, u->leaders[j].pc);
-        if (r && __atomic_compare_exchange_n(slot(r, u->leaders[j].pc), &expected, NULL, 0, __ATOMIC_RELEASE,
-                                             __ATOMIC_RELAXED))
+        if (r && atomic_compare_exchange_strong_explicit(slot(r, u->leaders[j].pc), &expected, NULL,
+                                                         memory_order_release, memory_order_relaxed))
             clear_pending(r, u->leaders[j].pc);
     }
     free(u->leaders);
@@ -1592,16 +1606,17 @@ void snx_jit_remove_image(SnxJitService* s, SnxU64 base) {
     Region* r = NULL;
     lock(&s->lock);
     for (size_t i = 1; i <= SNX_JIT_IMAGES && !r; ++i)
-        if (s->regions[i].hi && s->regions[i].image.base == base) r = &s->regions[i];
+        if (atomic_load_explicit(&s->regions[i].hi, memory_order_relaxed) && s->regions[i].image.base == base)
+            r = &s->regions[i];
     if (!r) {
         unlock(&s->lock);
         return;
     }
-    SnxU64 lo = r->lo;
-    SnxU64 hi = r->hi;
+    SnxU64 lo = atomic_load_explicit(&r->lo, memory_order_relaxed);
+    SnxU64 hi = atomic_load_explicit(&r->hi, memory_order_relaxed);
     int inner = r->inner;
     if (!inner) region_map_remove(s, lo, hi);      /* its pages read as no region again */
-    __atomic_store_n(&r->hi, 0, __ATOMIC_RELEASE); /* no batch takes the image, no publish finds the table */
+    atomic_store_explicit(&r->hi, 0, memory_order_release); /* no batch takes the image, no publish finds the table */
     while (r->users) cond_wait(&s->released, &s->lock);
     /* its pcs are new to the service again: queued ones are skipped when taken, compiled ones forgotten */
     for (size_t i = 0; i < s->entry_capacity; ++i) {
@@ -1615,7 +1630,7 @@ void snx_jit_remove_image(SnxJitService* s, SnxU64 base) {
            with the image), with the units that reach into its text, and a batch still compiling publishes nothing */
         ++s->epoch;
         for (SnxU64 pc = lo; pc < hi; pc += 4) {
-            __atomic_store_n(slot(&s->regions[0], pc), NULL, __ATOMIC_RELEASE);
+            atomic_store_explicit(slot(&s->regions[0], pc), NULL, memory_order_release);
             clear_pending(&s->regions[0], pc);
         }
         for (size_t i = 0; i < s->span_count;)
@@ -1625,8 +1640,8 @@ void snx_jit_remove_image(SnxJitService* s, SnxU64 base) {
                 span_drop(s, i);
     }
     cond_broadcast(&s->done); /* a thread waiting for one of them gets NULL */
-    GuestFn* slots = r->slots;
-    unsigned char* pending = r->pending;
+    _Atomic GuestFn* slots = r->slots;
+    _Atomic unsigned char* pending = r->pending;
     r->slots = NULL;
     r->pending = NULL;
     r->image = (SnxCodeImage){0};
@@ -1670,11 +1685,20 @@ void snx_jit_invalidate_ranges(SnxJitService* s, SnxU64 addr, SnxU64 size, SnxJi
     for (size_t j = 0; j <= SNX_JIT_IMAGES; ++j) {
         Region* r = &s->regions[j];
         /* free, outside the range, or an image inside the main table, whose slots regions[0] has */
-        if (!r->hi || r->inner || r->hi <= addr || r->lo >= end) continue;
-        SnxU64 from = ((addr > r->lo ? addr : r->lo) + 3) & ~(SnxU64)3;
-        SnxU64 to = end < r->hi ? end : r->hi;
+        if (!atomic_load_explicit(&r->hi, memory_order_relaxed) || r->inner ||
+            atomic_load_explicit(&r->hi, memory_order_relaxed) <= addr ||
+            atomic_load_explicit(&r->lo, memory_order_relaxed) >= end)
+            continue;
+        SnxU64 from = ((addr > atomic_load_explicit(&r->lo, memory_order_relaxed)
+                            ? addr
+                            : atomic_load_explicit(&r->lo, memory_order_relaxed)) +
+                       3) &
+                      ~(SnxU64)3;
+        SnxU64 to = end < atomic_load_explicit(&r->hi, memory_order_relaxed)
+                        ? end
+                        : atomic_load_explicit(&r->hi, memory_order_relaxed);
         for (SnxU64 pc = from; pc < to; pc += 4) {
-            __atomic_store_n(slot(r, pc), NULL, __ATOMIC_RELEASE);
+            atomic_store_explicit(slot(r, pc), NULL, memory_order_release);
             clear_pending(r, pc); /* its pc is new to the service again: discovery isn't told a batch has it */
         }
     }
@@ -1751,10 +1775,12 @@ SnxJitService* snx_jit_service_new(const SnxJitConfig* config, char* error, size
     if (!s->config.threads) s->config.threads = default_threads();
     if (s->config.threads > SNX_JIT_THREADS) s->config.threads = SNX_JIT_THREADS;
     size_t bits = s->config.code_hi > s->config.code_lo ? (size_t)((s->config.code_hi - s->config.code_lo) >> 2) : 0;
-    s->regions[0].lo = s->config.code_lo;
-    s->regions[0].hi = s->config.code_hi > s->config.code_lo ? s->config.code_hi : s->config.code_lo;
+    atomic_store_explicit(&s->regions[0].lo, s->config.code_lo, memory_order_relaxed);
+    atomic_store_explicit(&s->regions[0].hi,
+                          s->config.code_hi > s->config.code_lo ? s->config.code_hi : s->config.code_lo,
+                          memory_order_relaxed);
     s->regions[0].slots = s->config.dispatch;
-    s->regions[0].pending = (unsigned char*)calloc(bits / 8 + 1, 1);
+    s->regions[0].pending = (_Atomic unsigned char*)calloc(bits / 8 + 1, 1);
 #if defined(__powerpc64__)
     if (s->regions[0].pending && s->config.aot_count)
         s->loader = snx_code_loader_new_toc(0, aot_toc(&s->config), error, error_size);
@@ -1839,9 +1865,9 @@ void snx_jit_service_free(SnxJitService* s) {
     }
     /* the map's leaves are shared by the tops it grew through: free them from the newest, then the tops themselves */
     {
-        RegionTop* top = s->region_top;
+        RegionTop* top = atomic_load_explicit(&s->region_top, memory_order_relaxed);
         if (top)
-            for (size_t j = 0; j < top->count; ++j) free(top->leaves[j]);
+            for (size_t j = 0; j < top->count; ++j) free(atomic_load_explicit(&top->leaves[j], memory_order_relaxed));
         while (top) {
             RegionTop* older = top->older;
             free(top);

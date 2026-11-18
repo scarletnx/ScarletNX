@@ -12,6 +12,7 @@
 #include "nx/runtime/arm.h"
 #include "nx/runtime/clock.h"
 #include "nx/runtime/loader.h"
+#include <stdatomic.h>
 
 /* ============================================================ guest memory */
 /* whether [a, a + n) can be read for a dump: inside the address space, with no page of it free or inaccessible. The
@@ -187,7 +188,7 @@ static void dump_pointees(int lvl, const char* reg, const u64* r, int nr, int wo
     for (i = 0; i < nr; i++) {
         char line[8 * 9 + 1];
         size_t l = 0;
-        u64 a = __atomic_load_n(&r[i], __ATOMIC_RELAXED);
+        u64 a = atomic_load_explicit((const _Atomic u64*)&r[i], memory_order_relaxed);
         if (a < 0x10000 || (a & 3) || !readable(a, 4 * (u64)words)) continue;
         for (k = 0; k < words && k < 8; k++) l += (size_t)sprintf(line + l, " %08x", gr32(a + 4 * (u64)k));
         logf_(lvl, "  mem %s%d %llx:%s\n", reg, i, (unsigned long long)a, line);
@@ -196,7 +197,7 @@ static void dump_pointees(int lvl, const char* reg, const u64* r, int nr, int wo
 /* the last 40 SVCs (the ring svc.c's dispatch fills), each with its thread, and 32 IPC requests, oldest first. Each
    ring's count is read once: other threads go on filling them */
 static void dump_rings(int lvl) {
-    u32 n = __atomic_load_n(&g_hle.kernel.svc_ring_n, __ATOMIC_RELAXED), i, first;
+    u32 n = atomic_load_explicit(&g_hle.kernel.svc_ring_n, memory_order_relaxed), i, first;
     first = n > 40 ? n - 40 : 0;
     logf_(lvl, "  last SVCs:\n");
     for (i = first; i < n; i++) {
@@ -376,10 +377,13 @@ static const char* thread_state(const KThread* t, char* s, size_t n) {
             break;
         case 5: snprintf(s, n, "pausing a thread"); break;
         default:
-            if (t->on_core >= 0)
-                snprintf(s, n, "running on core %d", t->on_core);
+            if (atomic_load_explicit(&t->on_core, memory_order_relaxed) >= 0)
+                snprintf(s, n, "running on core %d", atomic_load_explicit(&t->on_core, memory_order_relaxed));
             else
-                snprintf(s, n, "%s", t->in_svc ? "in an SVC off its core (a sleep or an IPC request)" : "off its core");
+                snprintf(s, n, "%s",
+                         atomic_load_explicit(&t->in_svc, memory_order_relaxed)
+                             ? "in an SVC off its core (a sleep or an IPC request)"
+                             : "off its core");
             return s;
     }
     if (t->wait_timeout >= 0) {
@@ -422,7 +426,10 @@ void kernel_core_report(void) {
     if (!run) return;
     pm_lock(&g_host.thread.core_lk);
     for (k = 0; k < NCORES; k++)
-        held[k] = g_host.thread.core_held_ns[k] + (g_hle.thread.core_owner[k] ? now - g_host.thread.core_since[k] : 0);
+        held[k] =
+            g_host.thread.core_held_ns[k] + (atomic_load_explicit(&g_hle.thread.core_owner[k], memory_order_relaxed)
+                                                 ? now - g_host.thread.core_since[k]
+                                                 : 0);
     for (k = 0; k < NCORES; k++)
         len += snprintf(line + len, sizeof line - (size_t)len, " %d: %llu%% held, %.1f s waited for;", k,
                         (unsigned long long)(held[k] * 100 / run), (double)g_host.thread.core_wait_ns[k] / 1e9);
@@ -468,8 +475,9 @@ void kernel_core_report(void) {
         const KThread* t = top[j];
         if (!sdk_name(t, name, sizeof name)) snprintf(name, sizeof name, "%s", t->name);
         LOG("kernel:   thread %llu '%s' prio %d core %d mask %llx waited %.2f s for its core in %u waits\n",
-            (unsigned long long)t->id, name, t->prio, t->core, (unsigned long long)t->affinity,
-            (double)t->core_wait_ns / 1e9, t->core_waits);
+            (unsigned long long)t->id, name, t->prio, t->core,
+            (unsigned long long)atomic_load_explicit(&t->affinity, memory_order_relaxed), (double)t->core_wait_ns / 1e9,
+            t->core_waits);
     }
     pm_unlock(&g_host.thread.core_lk);
 }
@@ -486,22 +494,24 @@ static void dump_cores(void) {
     if (!g_settings.emulated_cores) return;
     u64 now = plat_ns();
     for (int k = 0; k < NCORES; k++) {
-        u32 h = __atomic_load_n(&g_hle.thread.core_owner[k], __ATOMIC_RELAXED);
+        u32 h = atomic_load_explicit(&g_hle.thread.core_owner[k], memory_order_relaxed);
         const KThread* o = kt_at(h);
         char line[400];
         int len = 0;
         if (o) {
             u64 since = g_host.thread.core_since[k];
-            len = snprintf(line, sizeof line, "  core %d: held by thread %llu (prio %d, on_core %d, poll %u) for %llu ms",
-                           k, (unsigned long long)o->id, o->prio, o->on_core,
-                           __atomic_load_n(&o->cpu.poll, __ATOMIC_RELAXED),
-                           (unsigned long long)(now > since ? (now - since) / 1000000u : 0));
+            len =
+                snprintf(line, sizeof line, "  core %d: held by thread %llu (prio %d, on_core %d, poll %u) for %llu ms",
+                         k, (unsigned long long)o->id, o->prio, atomic_load_explicit(&o->on_core, memory_order_relaxed),
+                         atomic_load_explicit(&o->cpu.poll, memory_order_relaxed),
+                         (unsigned long long)(now > since ? (now - since) / 1000000u : 0));
         } else
             len = snprintf(line, sizeof line, "  core %d: free", k);
         len += snprintf(line + len, sizeof line - (size_t)len, ", best waiter prio %d, waiters:", g_hle.thread.core_best[k]);
         int n = 0;
-        for (const KThread* w = kt_at(__atomic_load_n(&g_hle.thread.core_wait[k], __ATOMIC_RELAXED));
-             w && n < KTHREAD_MAX && len < (int)sizeof line - 24; w = kt_at(w->core_next), n++)
+        for (const KThread* w = kt_at(atomic_load_explicit(&g_hle.thread.core_wait[k], memory_order_relaxed));
+             w && n < KTHREAD_MAX && len < (int)sizeof line - 24;
+             w = kt_at(atomic_load_explicit(&w->core_next, memory_order_relaxed)), n++)
             len += snprintf(line + len, sizeof line - (size_t)len, " %llu", (unsigned long long)w->id);
         LOG("%s%s\n", line, n ? "" : " none");
     }
@@ -522,22 +532,28 @@ void kernel_dump_threads(void) {
         if (t->o.type != KO_THREAD || t->state == 2) continue;
         if (!sdk_name(t, name, sizeof name)) snprintf(name, sizeof name, "%s", t->name);
         mask[0] = 0;
-        if (t->affinity != 1ull << t->core)
-            snprintf(mask, sizeof mask, " (ideal %d, mask %llx)", t->ideal_core, (unsigned long long)t->affinity);
+        if (atomic_load_explicit(&t->affinity, memory_order_relaxed) != 1ull << t->core)
+            snprintf(mask, sizeof mask, " (ideal %d, mask %llx)",
+                     atomic_load_explicit(&t->ideal_core, memory_order_relaxed),
+                     (unsigned long long)atomic_load_explicit(&t->affinity, memory_order_relaxed));
         LOG("  thread %llu '%s' prio %d (base %d) core %d%s: %s%s%s\n", (unsigned long long)t->id, name, t->prio,
             t->base_prio, t->core, mask, thread_state(t, st, sizeof st),
-            t->on_core == -2 ? " (waiting for its core)" : "", t->suspended ? " (paused by svcSetThreadActivity)" : "");
+            atomic_load_explicit(&t->on_core, memory_order_relaxed) == -2 ? " (waiting for its core)" : "",
+            atomic_load_explicit(&t->suspended, memory_order_relaxed) ? " (paused by svcSetThreadActivity)" : "");
         if (g_hle.debug.sleeps[i].tid != t->id) {
             g_hle.debug.sleeps[i].tid = t->id;
             g_hle.debug.sleeps[i].n = 0;
         }
         if (t->state == 0) continue;
-        if (t->on_core >= 0 && !t->in_svc) { /* in game code: how long since it last let the kernel see it */
-            u64 now = plat_ns(), left = __atomic_load_n(&g_host.thread.svc_ns[i], __ATOMIC_RELAXED);
+        if (atomic_load_explicit(&t->on_core, memory_order_relaxed) >= 0 &&
+            !atomic_load_explicit(
+                &t->in_svc, memory_order_relaxed)) { /* in game code: how long since it last let the kernel see it */
+            u64 now = plat_ns(), left = atomic_load_explicit(&g_host.thread.svc_ns[i], memory_order_relaxed);
             LOG("    out of an SVC for %llu ms, poll %u, %u polls, host thread %u\n",
                 (unsigned long long)(left && now > left ? (now - left) / 1000000u : 0),
-                __atomic_load_n(&t->cpu.poll, __ATOMIC_RELAXED), __atomic_load_n(&g_host.thread.polls[i], __ATOMIC_RELAXED),
-                __atomic_load_n(&g_host.thread.host_tid[i], __ATOMIC_RELAXED));
+                atomic_load_explicit(&t->cpu.poll, memory_order_relaxed),
+                atomic_load_explicit(&g_host.thread.polls[i], memory_order_relaxed),
+                atomic_load_explicit(&g_host.thread.host_tid[i], memory_order_relaxed));
         }
         pc = wide ? t->cpu.pc : t->arm.r[15];
         lr = wide ? t->cpu.x[30] : t->arm.r[14];

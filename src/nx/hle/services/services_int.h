@@ -358,10 +358,10 @@ typedef struct {
 /* an open renderer, named by its slot plus 1 */
 typedef struct ARRen {
     u32 used;  /* set while the slot is taken */
-    u32 state; /* atomic: SNX_AUDREN_STARTED or SNX_AUDREN_STOPPED, which the clock reads in audren_tick */
+    _Atomic u32 state; /* atomic: SNX_AUDREN_STARTED or SNX_AUDREN_STOPPED, which the clock reads in audren_tick */
     u32 sample_rate, sample_count, mix_buffer_count; /* the parameters it was opened with, read back */
-    u32 limit;                                       /* atomic: the rendering time limit, percent, as set */
-    float voice_drop; /* atomic: as the game set it, read back: no voice is dropped here */
+    _Atomic u32 limit;                               /* atomic: the rendering time limit, percent, as set */
+    _Atomic float voice_drop; /* atomic: as the game set it, read back: no voice is dropped here */
     u32 manual;       /* opened for the game's own execution: no system event */
     u32 rendering_device; /* as asked for, read back */
     u64 manual_event; /* the game's SystemEvent the SDK signals after a manual renderer's frame, 0 for none */
@@ -434,7 +434,7 @@ typedef struct {
    out every time, never signaled since no device comes or goes */
 typedef struct {
     u32 obj;
-    u32 state;
+    _Atomic u32 state;
     u32 availability;
 } NfcUser;
 typedef struct {

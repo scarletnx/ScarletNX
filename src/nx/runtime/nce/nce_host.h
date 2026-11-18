@@ -55,7 +55,7 @@ int nce_host_check(char* why, size_t size);
 /* this host thread runs c's guest code from here: before its first nce_host_run. reads: the thread's count of counter
    reads, which the stubs of NCE_TICKS add to. 0, or -1 with the reason in why when another library of the process
    holds the thread's word that the stubs read */
-int nce_host_attach(CPU* c, u64* reads, char* why, size_t size);
+int nce_host_attach(CPU* c, _Atomic u64* reads, char* why, size_t size);
 /* the net under this guest thread: from here a system call it makes from the guest's addresses (an SVC that no stub
    holds) is not made, and trapped gets SIGSYS at the SVC. Its system calls then run a seccomp filter of NCE_NET_WORDS
    words, and those of the threads it starts; the runtime's own threads run none (nce_net_install). After

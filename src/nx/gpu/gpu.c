@@ -27,6 +27,7 @@
 #include "nx/runtime/state_io.h"
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 #include "common/utilities/common.h"
 #include "common/utilities/endian.h"
 #include "nx/gpu/gpu.h"
@@ -49,7 +50,7 @@ GpuState g_gpu;
 volatile u64 g_gpu_submits;
 void (*g_gpu_mem_changed)(u64 cpu_addr, u64 len);
 void (*g_gpu_before_write)(u64 gva, u64 size);
-int g_gpu_releases;
+_Atomic int g_gpu_releases;
 void (*g_gpu_mapping_begin)(u64 gva, u64 size, int kind);
 void (*g_gpu_mapping_end)(void);
 void (*g_gpu_mapping_waits)(void);
@@ -99,15 +100,24 @@ void gmem_write_raw(u64 gva, const void* src, u64 size) { copy_runs(gva, NULL, (
 /* whether anything the renderer holds may cover [gva, gva + size): one lookup where each hook below makes its own */
 static int mem_pending(u64 gva, u64 size) { return !g_renderer->mem_pending || g_renderer->mem_pending(gva, size); }
 void gmem_need(u64 gva, u64 size) {
-    if ((__atomic_load_n(&g_gpu_releases, __ATOMIC_ACQUIRE) || g_cs_any || g_gfx_any || g_gfx_img_any || g_uma_any ||
-         g_mir_any) &&
+    if ((atomic_load_explicit(&g_gpu_releases, memory_order_acquire) ||
+         atomic_load_explicit(&g_cs_any, memory_order_relaxed) ||
+         atomic_load_explicit(&g_gfx_any, memory_order_relaxed) ||
+         atomic_load_explicit(&g_gfx_img_any, memory_order_relaxed) ||
+         atomic_load_explicit(&g_uma_any, memory_order_relaxed) ||
+         atomic_load_explicit(&g_mir_any, memory_order_relaxed)) &&
         !mem_pending(gva, size))
         return;
     if (!size) return;
-    if (g_cs_any && g_renderer->cs_mem_need) g_renderer->cs_mem_need(gva, size);
-    if ((g_gfx_any || g_gfx_img_any || g_uma_any || g_mir_any) && g_renderer->gfx_mem_need)
+    if (atomic_load_explicit(&g_cs_any, memory_order_relaxed) && g_renderer->cs_mem_need)
+        g_renderer->cs_mem_need(gva, size);
+    if ((atomic_load_explicit(&g_gfx_any, memory_order_relaxed) ||
+         atomic_load_explicit(&g_gfx_img_any, memory_order_relaxed) ||
+         atomic_load_explicit(&g_uma_any, memory_order_relaxed) ||
+         atomic_load_explicit(&g_mir_any, memory_order_relaxed)) &&
+        g_renderer->gfx_mem_need)
         g_renderer->gfx_mem_need(gva, size);
-    if (__atomic_load_n(&g_gpu_releases, __ATOMIC_ACQUIRE) && g_renderer->release_need)
+    if (atomic_load_explicit(&g_gpu_releases, memory_order_acquire) && g_renderer->release_need)
         g_renderer->release_need(gva, size);
 }
 /* the renderer's hook (vkr_before_write) makes a release queued over the bytes happen first, with everything else
@@ -116,19 +126,27 @@ void gmem_before_write(u64 gva, u64 size) {
     if (size && g_gpu_before_write) g_gpu_before_write(gva, size);
 }
 int gmem_read(u64 gva, void* dst, u64 size) {
-    if ((__atomic_load_n(&g_gpu_releases, __ATOMIC_ACQUIRE) || g_cs_any || g_gfx_any || g_gfx_img_any || g_uma_any ||
-         g_mir_any) &&
+    if ((atomic_load_explicit(&g_gpu_releases, memory_order_acquire) ||
+         atomic_load_explicit(&g_cs_any, memory_order_relaxed) ||
+         atomic_load_explicit(&g_gfx_any, memory_order_relaxed) ||
+         atomic_load_explicit(&g_gfx_img_any, memory_order_relaxed) ||
+         atomic_load_explicit(&g_uma_any, memory_order_relaxed) ||
+         atomic_load_explicit(&g_mir_any, memory_order_relaxed)) &&
         !mem_pending(gva, size))
         return copy_runs(gva, (u8*)dst, NULL, size) ? 0 : -1;
     /* a queued release's payload is known: the stream reads it without waiting for the work before it, as the console's
        GPU, in order, would find it there (one game's conditional rendering read report pairs this way, waiting for the
        GPU 60 times a second) */
-    if (__atomic_load_n(&g_gpu_releases, __ATOMIC_ACQUIRE) && g_renderer->release_read) {
+    if (atomic_load_explicit(&g_gpu_releases, memory_order_acquire) && g_renderer->release_read) {
         int r = g_renderer->release_read(gva, dst, size);
         if (r > 0) return 0;
         if (r < 0) g_renderer->release_need(gva, size);
-        if (g_cs_any) g_renderer->cs_mem_need(gva, size);
-        if (g_gfx_any || g_gfx_img_any || g_uma_any || g_mir_any) g_renderer->gfx_mem_need(gva, size);
+        if (atomic_load_explicit(&g_cs_any, memory_order_relaxed)) g_renderer->cs_mem_need(gva, size);
+        if (atomic_load_explicit(&g_gfx_any, memory_order_relaxed) ||
+            atomic_load_explicit(&g_gfx_img_any, memory_order_relaxed) ||
+            atomic_load_explicit(&g_uma_any, memory_order_relaxed) ||
+            atomic_load_explicit(&g_mir_any, memory_order_relaxed))
+            g_renderer->gfx_mem_need(gva, size);
         gmem_read_raw(gva, dst, size);
         return 0;
     }
@@ -181,8 +199,12 @@ u32 gmem_r32(u64 gva) {
        result, over any guest memory, take the general path below, and so does a word on a host page the GPU owns
        bytes of: the page is trapped, and the caller may hold the renderer's lock, which its landing needs */
     u64 cpu = 0, owners = 0;
-    if (!g_cs_any && !g_gfx_any && !g_gfx_img_any && !g_uma_any && !g_mir_any &&
-        !__atomic_load_n(&g_gpu_releases, __ATOMIC_ACQUIRE) && gmmu_run(gva, 4, &cpu) == 4 &&
+    if (!atomic_load_explicit(&g_cs_any, memory_order_relaxed) &&
+        !atomic_load_explicit(&g_gfx_any, memory_order_relaxed) &&
+        !atomic_load_explicit(&g_gfx_img_any, memory_order_relaxed) &&
+        !atomic_load_explicit(&g_uma_any, memory_order_relaxed) &&
+        !atomic_load_explicit(&g_mir_any, memory_order_relaxed) &&
+        !atomic_load_explicit(&g_gpu_releases, memory_order_acquire) && gmmu_run(gva, 4, &cpu) == 4 &&
         !own_hash(cpu, 4, &owners))
         return snx_ld_le32(GP(cpu));
     u8 b[4] = {0};
@@ -191,8 +213,12 @@ u32 gmem_r32(u64 gva) {
 }
 const u8* gmem_cpu_bytes(u64 gva, u64 size) {
     u64 cpu = 0, owners = 0;
-    if ((__atomic_load_n(&g_gpu_releases, __ATOMIC_ACQUIRE) || g_cs_any || g_gfx_any || g_gfx_img_any || g_uma_any ||
-         g_mir_any) &&
+    if ((atomic_load_explicit(&g_gpu_releases, memory_order_acquire) ||
+         atomic_load_explicit(&g_cs_any, memory_order_relaxed) ||
+         atomic_load_explicit(&g_gfx_any, memory_order_relaxed) ||
+         atomic_load_explicit(&g_gfx_img_any, memory_order_relaxed) ||
+         atomic_load_explicit(&g_uma_any, memory_order_relaxed) ||
+         atomic_load_explicit(&g_mir_any, memory_order_relaxed)) &&
         mem_pending(gva, size))
         return NULL;
     if (!size || gmmu_run(gva, size, &cpu) != size || own_hash(cpu, size, &owners)) return NULL;
@@ -609,7 +635,8 @@ static void process_fence_action(GpuChannel* ch, u32 v) {
     /* results in flight land before the stream waits on something else (the CPU may read them before it increments
        the syncpoint): a wait already met is none, and stalls nothing */
     gpu_park(ch, GPU_PARK_SYNCPOINT, id, ch->puller[PULLER_SYNCPOINT_PAYLOAD], 1);
-    if (ch->park && g_renderer->before_syncwait) g_renderer->before_syncwait();
+    if (atomic_load_explicit(&ch->park, memory_order_relaxed) && g_renderer->before_syncwait)
+        g_renderer->before_syncwait();
 }
 /* Eden's CallPullerMethod: a method below NonPullerMethods, kept in the puller's registers */
 static void puller_method(GpuChannel* ch, u32 sub, u32 m, u32 v) {
@@ -681,11 +708,15 @@ void gpu_verify_word(GpuChannel* ch, u32 w) {
 #define WAIT_LIMIT_REPORT_NS 1000000000ull
 #define WAIT_LIMIT_NS        2000000000ull
 static int park_met(const GpuChannel* ch) {
-    if (ch->park == GPU_PARK_SYNCPOINT || ch->park == GPU_PARK_FENCE)
-        return (i32)(syncpt_read((u32)ch->park_addr) - ch->park_val) >= 0;
+    if (atomic_load_explicit(&ch->park, memory_order_relaxed) == GPU_PARK_SYNCPOINT ||
+        atomic_load_explicit(&ch->park, memory_order_relaxed) == GPU_PARK_FENCE)
+        return (i32)(syncpt_read((u32)atomic_load_explicit(&ch->park_addr, memory_order_relaxed)) -
+                     atomic_load_explicit(&ch->park_val, memory_order_relaxed)) >= 0;
     {
-        u32 cur = gmem_r32(ch->park_addr);
-        return ch->park_geq ? (i32)(cur - ch->park_val) >= 0 : cur == ch->park_val;
+        u32 cur = gmem_r32(atomic_load_explicit(&ch->park_addr, memory_order_relaxed));
+        return atomic_load_explicit(&ch->park_geq, memory_order_relaxed)
+                   ? (i32)(cur - atomic_load_explicit(&ch->park_val, memory_order_relaxed)) >= 0
+                   : cur == atomic_load_explicit(&ch->park_val, memory_order_relaxed);
     }
 }
 void gpu_park(GpuChannel* ch, u32 kind, u64 addr, u32 val, int geq) {
@@ -694,13 +725,13 @@ void gpu_park(GpuChannel* ch, u32 kind, u64 addr, u32 val, int geq) {
                    SYNCPT_IDS);
         return;
     }
-    ch->park = kind;
-    ch->park_addr = addr;
-    ch->park_val = val;
-    ch->park_geq = geq;
+    atomic_store_explicit(&ch->park, kind, memory_order_relaxed);
+    atomic_store_explicit(&ch->park_addr, addr, memory_order_relaxed);
+    atomic_store_explicit(&ch->park_val, val, memory_order_relaxed);
+    atomic_store_explicit(&ch->park_geq, geq, memory_order_relaxed);
     /* what the CPU wrote before releasing the wait is for the stream to see, met already or not */
     if (park_met(ch))
-        ch->park = 0;
+        atomic_store_explicit(&ch->park, 0, memory_order_relaxed);
     else /* the console raises an interrupt for a wait nothing ends; here the stream goes on after a while */
         ch->park_end = plat_ns() + (kind == GPU_PARK_REPORT ? WAIT_LIMIT_REPORT_NS : WAIT_LIMIT_NS);
     may_have_changed();
@@ -717,23 +748,33 @@ static const char* park_name(u32 kind) {
 static int park_over(GpuChannel* ch, i64* again) {
     u64 now;
     if (park_met(ch)) {
-        ch->park = 0;
+        atomic_store_explicit(&ch->park, 0, memory_order_relaxed);
         may_have_changed();
         return 1;
     }
     now = plat_ns();
     if (now >= ch->park_end) {
-        WARN_LIMIT(16, "gpu: channel %u waited %u s for %s %llx to %s %u (it is %u), and goes on\n", ch->id,
-                   (u32)((ch->park == GPU_PARK_REPORT ? WAIT_LIMIT_REPORT_NS : WAIT_LIMIT_NS) / 1000000000ull),
-                   park_name(ch->park), (unsigned long long)ch->park_addr, ch->park_geq ? "reach" : "be", ch->park_val,
-                   ch->park == GPU_PARK_SYNCPOINT || ch->park == GPU_PARK_FENCE ? syncpt_read((u32)ch->park_addr)
-                                                                                : gmem_r32(ch->park_addr));
-        ch->park = 0;
+        WARN_LIMIT(
+            16, "gpu: channel %u waited %u s for %s %llx to %s %u (it is %u), and goes on\n", ch->id,
+            (u32)((atomic_load_explicit(&ch->park, memory_order_relaxed) == GPU_PARK_REPORT ? WAIT_LIMIT_REPORT_NS
+                                                                                            : WAIT_LIMIT_NS) /
+                  1000000000ull),
+            park_name(atomic_load_explicit(&ch->park, memory_order_relaxed)),
+            (unsigned long long)atomic_load_explicit(&ch->park_addr, memory_order_relaxed),
+            atomic_load_explicit(&ch->park_geq, memory_order_relaxed) ? "reach" : "be",
+            atomic_load_explicit(&ch->park_val, memory_order_relaxed),
+            atomic_load_explicit(&ch->park, memory_order_relaxed) == GPU_PARK_SYNCPOINT ||
+                    atomic_load_explicit(&ch->park, memory_order_relaxed) == GPU_PARK_FENCE
+                ? syncpt_read((u32)atomic_load_explicit(&ch->park_addr, memory_order_relaxed))
+                : gmem_r32(atomic_load_explicit(&ch->park_addr, memory_order_relaxed)));
+        atomic_store_explicit(&ch->park, 0, memory_order_relaxed);
         may_have_changed();
         return 1;
     }
     *again = (i64)(ch->park_end - now);
-    if ((ch->park == GPU_PARK_SEMAPHORE || ch->park == GPU_PARK_REPORT) && *again > (i64)WAIT_POLL_NS)
+    if ((atomic_load_explicit(&ch->park, memory_order_relaxed) == GPU_PARK_SEMAPHORE ||
+         atomic_load_explicit(&ch->park, memory_order_relaxed) == GPU_PARK_REPORT) &&
+        *again > (i64)WAIT_POLL_NS)
         *again = (i64)WAIT_POLL_NS;
     return 0;
 }
@@ -762,7 +803,8 @@ struct GpuItem {
 #define GPU_THREAD_STACK ((size_t)16 << 20) /* the GPU thread's stack: 16 MiB */
 static PMutex g_qlk = PMUTEX_INIT;
 static PCond g_qcv;
-static int g_qcv_ready, g_qthread;
+static int g_qcv_ready;
+static _Atomic int g_qthread;
 static GpuItem *g_qhead, *g_qtail;
 static u64 g_qgen;                /* bumped by each new item and kick: a pass that saw an older one looks again */
 static u64 g_qkicks;              /* the kicks among them */
@@ -770,27 +812,27 @@ static u64 g_qkicks;              /* the kicks among them */
    about 7 of these sleeps a frame, 5 ms, at the start of each frame. g_qpolls (atomic) is 1 while a poll waits: the
    GPU thread sets it before the pass that polls again, so a write that gpu_kick_polls finds it 0 for came before that
    pass's look (both seq_cst), and one that finds it 1 kicks */
-static int g_qpolls;
+static _Atomic int g_qpolls;
 static u32 g_qwhy;                /* GPU thread: the last poll's gpu_poll_why */
 static GpuPollStats g_qpstat;     /* under g_qlk */
-static u32 g_qjobs[GPU_CHANNELS]; /* each channel's queued jobs */
+static _Atomic u32 g_qjobs[GPU_CHANNELS]; /* each channel's queued jobs */
 static u32 g_qtotal;
-static u8 g_qparked[GPU_CHANNELS];    /* the channel's oldest job waits (gpu_park) */
+static _Atomic u8 g_qparked[GPU_CHANNELS]; /* the channel's oldest job waits (gpu_park) */
 static u8 g_scan_stale[GPU_CHANNELS]; /* the channel closed: its submission scan starts again from reset */
 static u64 g_job_ids;
 static int g_hold_want, g_hold_at; /* a game pause asked the GPU thread to hold, and it holds (gpu_hold) */
 /* for the stall report: whether this is the GPU thread, the channel whose job runs (its id + 1, 0 between jobs) and
    since when, and the blocking wait it is in (gpu_wait_note) */
 static _Thread_local int t_gpu;
-static u32 g_run_chan;
-static u64 g_run_since;
-static const char* g_wait_what;
+static _Atomic u32 g_run_chan;
+static _Atomic u64 g_run_since;
+static const char* _Atomic g_wait_what;
 /* where the running job's stream is, for the stall report: the phase between methods, and the method begun last.
    Read unlocked, each field on its own; the values stay at the last job's when between jobs */
 enum { GPU_AT_BETWEEN, GPU_AT_METHOD, GPU_AT_FETCH, GPU_AT_JOB_END, GPU_AT_STREAM_STOP, GPU_AT_SYNCWAIT };
-static u32 g_run_at;
-static u32 g_run_sub, g_run_method, g_run_class, g_run_entry, g_run_word;
-static u64 g_wait_value, g_wait_since;
+static _Atomic u32 g_run_at;
+static _Atomic u32 g_run_sub, g_run_method, g_run_class, g_run_entry, g_run_word;
+static _Atomic u64 g_wait_value, g_wait_since;
 
 /* a job's block after the item: its entries, each fetched entry's first word (in the words fetched at submission,
    or in late), then the words */
@@ -876,12 +918,12 @@ static int run_job(GpuItem* j) {
         ch->dma_launch_index = 0;
         if (j->wait_id != ~0u) { /* the fence is the stream's first wait, as nvgpu puts a syncpoint wait first */
             gpu_park(ch, GPU_PARK_FENCE, j->wait_id, j->wait_val, 1);
-            if (ch->park) {
-                __atomic_store_n(&g_run_at, GPU_AT_SYNCWAIT, __ATOMIC_RELAXED);
+            if (atomic_load_explicit(&ch->park, memory_order_relaxed)) {
+                atomic_store_explicit(&g_run_at, GPU_AT_SYNCWAIT, memory_order_relaxed);
                 if (g_renderer->before_syncwait) g_renderer->before_syncwait(); /* as at SYNCPOINTB */
-                __atomic_store_n(&g_run_at, GPU_AT_BETWEEN, __ATOMIC_RELAXED);
+                atomic_store_explicit(&g_run_at, GPU_AT_BETWEEN, memory_order_relaxed);
             }
-            if (ch->park) {
+            if (atomic_load_explicit(&ch->park, memory_order_relaxed)) {
                 stream_stop(ch);
                 return 0;
             }
@@ -889,7 +931,7 @@ static int run_job(GpuItem* j) {
     }
     if (ch->mme.running) {
         mme_resume(ch);
-        if (ch->park) {
+        if (atomic_load_explicit(&ch->park, memory_order_relaxed)) {
             stream_stop(ch);
             return 0;
         }
@@ -899,9 +941,9 @@ static int run_job(GpuItem* j) {
         u32* w;
         u32 inline_end = 0;
         if (e >= j->pf && (e < j->late_first || e >= j->late_end)) {
-            __atomic_store_n(&g_run_at, GPU_AT_FETCH, __ATOMIC_RELAXED);
+            atomic_store_explicit(&g_run_at, GPU_AT_FETCH, memory_order_relaxed);
             int got = fetch_late(j, e);
-            __atomic_store_n(&g_run_at, GPU_AT_BETWEEN, __ATOMIC_RELAXED);
+            atomic_store_explicit(&g_run_at, GPU_AT_BETWEEN, memory_order_relaxed);
             if (!got) len = 0;
         }
         w = len ? job_words(j, e) : NULL;
@@ -912,15 +954,18 @@ static int run_job(GpuItem* j) {
                 engine_of(ch->sub_class[ch->pb.subchannel]) == ENG_COMPUTE)
                 inline_end = fetch_compute_inline(j, ch, e, w);
             if (pb_decode(&ch->pb, w[j->word++], &sub, &m, &v, &last)) {
-                __atomic_store_n(&g_run_sub, sub, __ATOMIC_RELAXED);
-                __atomic_store_n(&g_run_method, m, __ATOMIC_RELAXED);
-                __atomic_store_n(&g_run_class, ch->sub_class[sub], __ATOMIC_RELAXED);
-                __atomic_store_n(&g_run_entry, e, __ATOMIC_RELAXED);
-                __atomic_store_n(&g_run_word, j->word, __ATOMIC_RELAXED);
-                __atomic_store_n(&g_run_at, GPU_AT_METHOD, __ATOMIC_RELAXED);
+                atomic_store_explicit(&g_run_sub, sub, memory_order_relaxed);
+                atomic_store_explicit(&g_run_method, m, memory_order_relaxed);
+                atomic_store_explicit(&g_run_class, ch->sub_class[sub], memory_order_relaxed);
+                atomic_store_explicit(&g_run_entry, e, memory_order_relaxed);
+                atomic_store_explicit(&g_run_word, j->word, memory_order_relaxed);
+                atomic_store_explicit(&g_run_at, GPU_AT_METHOD, memory_order_relaxed);
                 method_call(ch, sub, m, v, last);
-                __atomic_store_n(&g_run_at, ch->park ? GPU_AT_STREAM_STOP : GPU_AT_BETWEEN, __ATOMIC_RELAXED);
-                if (ch->park) {
+                atomic_store_explicit(&g_run_at,
+                                      atomic_load_explicit(&ch->park, memory_order_relaxed) ? GPU_AT_STREAM_STOP
+                                                                                            : GPU_AT_BETWEEN,
+                                      memory_order_relaxed);
+                if (atomic_load_explicit(&ch->park, memory_order_relaxed)) {
                     stream_stop(ch);
                     return 0;
                 }
@@ -929,9 +974,9 @@ static int run_job(GpuItem* j) {
         j->entry++;
         j->word = 0;
     }
-    __atomic_store_n(&g_run_at, GPU_AT_JOB_END, __ATOMIC_RELAXED);
+    atomic_store_explicit(&g_run_at, GPU_AT_JOB_END, memory_order_relaxed);
     job_end(j, ch);
-    __atomic_store_n(&g_run_at, GPU_AT_BETWEEN, __ATOMIC_RELAXED);
+    atomic_store_explicit(&g_run_at, GPU_AT_BETWEEN, memory_order_relaxed);
     return 1;
 }
 static void item_free(GpuItem* it) {
@@ -942,7 +987,8 @@ static void item_free(GpuItem* it) {
 static u32 runnable(void) {
     u32 n = g_qtotal, c;
     for (c = 0; c < GPU_CHANNELS; c++)
-        if (g_qparked[c]) n -= g_qjobs[c];
+        if (atomic_load_explicit(&g_qparked[c], memory_order_relaxed))
+            n -= atomic_load_explicit(&g_qjobs[c], memory_order_relaxed);
     return n;
 }
 static int g_qmissed; /* under g_qlk: a poll of the pass running returned 0 */
@@ -1006,7 +1052,7 @@ static int run_pass(i64* wake) {
         if (blocked[it->chan]) continue;
         blocked[it->chan] = 1;
         ch = g_gpu.chan[it->chan];
-        if (g_qparked[it->chan]) {
+        if (atomic_load_explicit(&g_qparked[it->chan], memory_order_relaxed)) {
             i64 again = -1;
             int over;
             pm_unlock(&g_qlk);
@@ -1016,12 +1062,12 @@ static int run_pass(i64* wake) {
                 if (again >= 0 && (*wake < 0 || again < *wake)) *wake = again;
                 continue;
             }
-            g_qparked[it->chan] = 0;
+            atomic_store_explicit(&g_qparked[it->chan], 0, memory_order_relaxed);
         }
         pm_unlock(&g_qlk);
         if (g_renderer->ready) g_renderer->ready();
-        __atomic_store_n(&g_run_since, plat_ns(), __ATOMIC_RELAXED);
-        __atomic_store_n(&g_run_chan, it->chan + 1, __ATOMIC_RELEASE);
+        atomic_store_explicit(&g_run_since, plat_ns(), memory_order_relaxed);
+        atomic_store_explicit(&g_run_chan, it->chan + 1, memory_order_release);
         {
             SNX_ZONE_C(z, "gpu job", 0x4a7fb5);
             SNX_ZONE_VALUE(z, it->chan);
@@ -1032,17 +1078,19 @@ static int run_pass(i64* wake) {
             SNX_ZONE_END(z);
         }
 
-        __atomic_store_n(&g_run_chan, 0, __ATOMIC_RELEASE);
+        atomic_store_explicit(&g_run_chan, 0, memory_order_release);
         pm_lock(&g_qlk);
         if (!done)
-            g_qparked[it->chan] = 1; /* its jobs make room for others */
+            atomic_store_explicit(&g_qparked[it->chan], 1, memory_order_relaxed); /* its jobs make room for others */
         else {
             if (prev)
                 prev->next = it->next;
             else
                 g_qhead = it->next;
             if (g_qtail == it) g_qtail = prev;
-            g_qjobs[it->chan]--;
+            atomic_store_explicit(&g_qjobs[it->chan],
+                                  atomic_load_explicit(&g_qjobs[it->chan], memory_order_relaxed) - 1,
+                                  memory_order_relaxed);
             g_qtotal--;
             item_free(it);
         }
@@ -1055,24 +1103,24 @@ int gpu_on_thread(void) { return t_gpu; }
 int gpu_wait_note(const char* what, u64 value) {
     if (!t_gpu) return 0;
     if (what) {
-        __atomic_store_n(&g_wait_value, value, __ATOMIC_RELAXED);
-        __atomic_store_n(&g_wait_since, plat_ns(), __ATOMIC_RELAXED);
+        atomic_store_explicit(&g_wait_value, value, memory_order_relaxed);
+        atomic_store_explicit(&g_wait_since, plat_ns(), memory_order_relaxed);
     }
-    __atomic_store_n(&g_wait_what, what, __ATOMIC_RELEASE);
+    atomic_store_explicit(&g_wait_what, what, memory_order_release);
     return 1;
 }
 /* read unlocked from the watchdog's thread: each value on its own, which is enough to say where the GPU thread is */
 void gpu_report_stall(void) {
     u64 now = plat_ns();
-    const char* what = __atomic_load_n(&g_wait_what, __ATOMIC_ACQUIRE);
-    u32 run = __atomic_load_n(&g_run_chan, __ATOMIC_ACQUIRE), c;
-    if (!__atomic_load_n(&g_qthread, __ATOMIC_RELAXED)) {
+    const char* what = atomic_load_explicit(&g_wait_what, memory_order_acquire);
+    u32 run = atomic_load_explicit(&g_run_chan, memory_order_acquire), c;
+    if (!atomic_load_explicit(&g_qthread, memory_order_relaxed)) {
         WARN("gpu: nothing was submitted yet\n");
         return;
     }
     if (run)
         WARN("gpu: the GPU thread runs a job of channel %u, for %llu ms\n", run - 1,
-             (unsigned long long)((now - __atomic_load_n(&g_run_since, __ATOMIC_RELAXED)) / 1000000u));
+             (unsigned long long)((now - atomic_load_explicit(&g_run_since, memory_order_relaxed)) / 1000000u));
     else
         WARN("gpu: the GPU thread is between jobs\n");
     if (run) {
@@ -1082,40 +1130,42 @@ void gpu_report_stall(void) {
                                          "ending the submission",
                                          "stopping the stream at a wait",
                                          "before a stream's wait"};
-        u32 ati = __atomic_load_n(&g_run_at, __ATOMIC_RELAXED);
+        u32 ati = atomic_load_explicit(&g_run_at, memory_order_relaxed);
         WARN("gpu: the job is at entry %u word %u, %s; its last method %x on subchannel %u (class %x)\n",
-             __atomic_load_n(&g_run_entry, __ATOMIC_RELAXED), __atomic_load_n(&g_run_word, __ATOMIC_RELAXED),
-             ati < sizeof at / sizeof *at ? at[ati] : "?", __atomic_load_n(&g_run_method, __ATOMIC_RELAXED),
-             __atomic_load_n(&g_run_sub, __ATOMIC_RELAXED), __atomic_load_n(&g_run_class, __ATOMIC_RELAXED));
+             atomic_load_explicit(&g_run_entry, memory_order_relaxed),
+             atomic_load_explicit(&g_run_word, memory_order_relaxed), ati < sizeof at / sizeof *at ? at[ati] : "?",
+             atomic_load_explicit(&g_run_method, memory_order_relaxed),
+             atomic_load_explicit(&g_run_sub, memory_order_relaxed),
+             atomic_load_explicit(&g_run_class, memory_order_relaxed));
     }
     if (what)
         WARN("gpu: it has waited %llu ms for %s (%llx)\n",
-             (unsigned long long)((now - __atomic_load_n(&g_wait_since, __ATOMIC_RELAXED)) / 1000000u), what,
-             (unsigned long long)__atomic_load_n(&g_wait_value, __ATOMIC_RELAXED));
+             (unsigned long long)((now - atomic_load_explicit(&g_wait_since, memory_order_relaxed)) / 1000000u), what,
+             (unsigned long long)atomic_load_explicit(&g_wait_value, memory_order_relaxed));
     for (c = 0; c < GPU_CHANNELS; c++) {
-        u32 jobs = __atomic_load_n(&g_qjobs[c], __ATOMIC_RELAXED), park;
+        u32 jobs = atomic_load_explicit(&g_qjobs[c], memory_order_relaxed), park;
         const GpuChannel* ch = g_gpu.chan[c];
         if (!jobs || !ch) continue;
-        park = __atomic_load_n(&ch->park, __ATOMIC_RELAXED);
-        if (!park || !__atomic_load_n(&g_qparked[c], __ATOMIC_RELAXED)) {
+        park = atomic_load_explicit(&ch->park, memory_order_relaxed);
+        if (!park || !atomic_load_explicit(&g_qparked[c], memory_order_relaxed)) {
             WARN("gpu: channel %u has %u jobs queued\n", c, jobs);
             continue;
         }
         {
-            u64 addr = __atomic_load_n(&ch->park_addr, __ATOMIC_RELAXED);
-            u32 val = __atomic_load_n(&ch->park_val, __ATOMIC_RELAXED);
+            u64 addr = atomic_load_explicit(&ch->park_addr, memory_order_relaxed);
+            u32 val = atomic_load_explicit(&ch->park_val, memory_order_relaxed);
             int sp = park == GPU_PARK_SYNCPOINT || park == GPU_PARK_FENCE;
             WARN("gpu: channel %u has %u jobs queued, and waits for %s %llx to %s %u (it is %u)\n", c, jobs,
                  park_name(park), (unsigned long long)addr,
-                 sp || __atomic_load_n(&ch->park_geq, __ATOMIC_RELAXED) ? "reach" : "be", val,
+                 sp || atomic_load_explicit(&ch->park_geq, memory_order_relaxed) ? "reach" : "be", val,
                  sp ? syncpt_read((u32)addr) : gmem_r32(addr));
         }
     }
     if (g_renderer && g_renderer->report_stall) g_renderer->report_stall();
 }
 /* the GPU thread's time outside its wait for work (gpu_thread_busy_ns), atomic */
-static u64 g_busy_ns;
-u64 gpu_thread_busy_ns(void) { return __atomic_load_n(&g_busy_ns, __ATOMIC_RELAXED); }
+static _Atomic u64 g_busy_ns;
+u64 gpu_thread_busy_ns(void) { return atomic_load_explicit(&g_busy_ns, memory_order_relaxed); }
 static void gpu_thread(void* arg) {
     (void)arg;
     t_gpu = 1;
@@ -1127,12 +1177,12 @@ static void gpu_thread(void* arg) {
         const u64 t0 = plat_ns();
         g_qmissed = 0;
         const int ran = run_pass(&wake);
-        __atomic_add_fetch(&g_busy_ns, plat_ns() - t0, __ATOMIC_RELAXED);
+        atomic_fetch_add_explicit(&g_busy_ns, plat_ns() - t0, memory_order_relaxed);
         if (ran) continue;
         /* a poll waits: set before the pass that looks again, at once where it was not, as gpu_kick_polls asks */
         const int polls = g_qmissed;
-        if (polls != __atomic_load_n(&g_qpolls, __ATOMIC_RELAXED)) {
-            __atomic_store_n(&g_qpolls, polls, __ATOMIC_SEQ_CST);
+        if (polls != atomic_load_explicit(&g_qpolls, memory_order_relaxed)) {
+            atomic_store_explicit(&g_qpolls, polls, memory_order_seq_cst);
             if (polls) continue;
         }
         /* A whole pass ran nothing: sleep until a new item, a kick, or the next look at a wait. A plot, not a zone:
@@ -1165,8 +1215,8 @@ static void queue_append(GpuItem* it) {
         g_qhead = it;
     g_qtail = it;
     g_qgen++;
-    if (!g_qthread) {
-        g_qthread = 1;
+    if (!atomic_load_explicit(&g_qthread, memory_order_relaxed)) {
+        atomic_store_explicit(&g_qthread, 1, memory_order_relaxed);
         if (plat_thread(gpu_thread, NULL, GPU_THREAD_STACK)) {
             char why[256];
             fatal("gpu: could not start the GPU thread: %s\n", snx_os_error(why, sizeof why));
@@ -1188,8 +1238,8 @@ void gpu_kick(void) {
     pm_unlock(&g_qlk);
 }
 void gpu_kick_polls(void) {
-    __atomic_thread_fence(__ATOMIC_SEQ_CST); /* the write before the look, as the GPU thread's flag before its poll */
-    if (__atomic_load_n(&g_qpolls, __ATOMIC_SEQ_CST)) gpu_kick();
+    atomic_thread_fence(memory_order_seq_cst); /* the write before the look, as the GPU thread's flag before its poll */
+    if (atomic_load_explicit(&g_qpolls, memory_order_seq_cst)) gpu_kick();
 }
 void gpu_poll_why(u32 why) { g_qwhy = why; }
 void gpu_poll_stats(GpuPollStats* s) {
@@ -1240,7 +1290,8 @@ static void hold_here(void* arg) {
         g_hold_at = 0;
         held = plat_ns() - held;
         for (c = 0; c < 128; c++)
-            if (g_qparked[c] && g_gpu.chan[c]) g_gpu.chan[c]->park_end += held;
+            if (atomic_load_explicit(&g_qparked[c], memory_order_relaxed) && g_gpu.chan[c])
+                g_gpu.chan[c]->park_end += held;
     }
     pm_unlock(&g_qlk);
 }
@@ -1248,7 +1299,8 @@ int gpu_hold(int timeout_ms) {
     u64 end = plat_ns() + (u64)timeout_ms * 1000000u;
     int r = 0;
     pm_lock(&g_qlk);
-    if (!g_qthread) { /* nothing was ever submitted: there is no GPU thread to hold */
+    if (!atomic_load_explicit(&g_qthread,
+                              memory_order_relaxed)) { /* nothing was ever submitted: there is no GPU thread to hold */
         pm_unlock(&g_qlk);
         return 0;
     }
@@ -1391,7 +1443,9 @@ void gpu_submit(const void* entries, u32 n, u32 channel, u32 incs, u32 wait_id, 
     stale = !g_gpu.chan[channel] || g_scan_stale[channel];
     ch = channel_get(channel);
     g_scan_stale[channel] = 0;
-    idle = !g_qjobs[channel]; /* nothing of the channel is queued or running: its state stands still */
+    idle = !atomic_load_explicit(
+        &g_qjobs[channel],
+        memory_order_relaxed); /* nothing of the channel is queued or running: its state stands still */
     j->id = ++g_job_ids;
     pm_unlock(&g_qlk);
     s = &g_scan[channel];
@@ -1405,7 +1459,8 @@ void gpu_submit(const void* entries, u32 n, u32 channel, u32 incs, u32 wait_id, 
     may_have_changed(); /* before the job can run: what the CPU wrote is for it to see */
     pm_lock(&g_qlk);
     while (runnable() >= QUEUE_ROOM) pc_wait(&g_qcv, &g_qlk, -1);
-    g_qjobs[channel]++;
+    atomic_store_explicit(&g_qjobs[channel], atomic_load_explicit(&g_qjobs[channel], memory_order_relaxed) + 1,
+                          memory_order_relaxed);
     g_qtotal++;
     queue_append(j);
     pm_unlock(&g_qlk);
@@ -1420,7 +1475,7 @@ void gpu_channel_close(u32 channel) {
     ch = g_gpu.chan[channel];
     g_gpu.chan[channel] = NULL;
     if (ch) g_gpu.nchan--;
-    g_qparked[channel] = 0;
+    atomic_store_explicit(&g_qparked[channel], 0, memory_order_relaxed);
     g_scan_stale[channel] = 1;
     pm_unlock(&g_qlk);
     dma_snap_reset(channel);
@@ -1463,7 +1518,9 @@ int gpu_state_save(StateIo* io) {
         *copy = *ch;
         copy->i2m.inner_buffer = NULL;
         copy->inline_indices = NULL;
-        copy->park_end = ch->park && ch->park_end > now ? ch->park_end - now : 0; /* what is left of the wait */
+        copy->park_end = atomic_load_explicit(&ch->park, memory_order_relaxed) && ch->park_end > now
+                             ? ch->park_end - now
+                             : 0; /* what is left of the wait */
         r |= io_put32(io, c + 1) | io_put(io, copy, sizeof *copy);
         if (ch->i2m.inner_buffer) r |= io_put(io, ch->i2m.inner_buffer, ch->i2m.write_offset);
         if (ch->inline_indices) r |= io_put(io, ch->inline_indices, (u64)ch->inline_n * 4);
@@ -1684,10 +1741,14 @@ void gpu_state_install(GpuStaged* s) {
         }
     for (it = s->head; it; it = it->next)
         if (!it->fn) {
-            g_qjobs[it->chan]++;
+            atomic_store_explicit(&g_qjobs[it->chan],
+                                  atomic_load_explicit(&g_qjobs[it->chan], memory_order_relaxed) + 1,
+                                  memory_order_relaxed);
             g_qtotal++;
             /* the channel's oldest job, stopped at a wait: it waits again */
-            if (it->started && g_gpu.chan[it->chan] && g_gpu.chan[it->chan]->park) g_qparked[it->chan] = 1;
+            if (it->started && g_gpu.chan[it->chan] &&
+                atomic_load_explicit(&g_gpu.chan[it->chan]->park, memory_order_relaxed))
+                atomic_store_explicit(&g_qparked[it->chan], 1, memory_order_relaxed);
         }
     g_qhead = s->head;
     g_qtail = s->tail;

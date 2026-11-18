@@ -17,6 +17,7 @@
 #include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 
 static const AndroidAssets* assets;
 
@@ -33,7 +34,7 @@ void hle_android_set_assets(const AndroidAssets* a) {
 
 typedef struct {
     uint32_t magic; /* '_wnd', as the platform's */
-    int32_t refs;
+    _Atomic int32_t refs;
     int32_t width, height;            /* the view's */
     int32_t buffer_width, buffer_height, format; /* setBuffersGeometry's, 0 for the window's */
 } NativeWindow;
@@ -62,7 +63,7 @@ void* hle_android_window_from_surface(JNIEnv* env, jobject surface) {
         bool texture = is_texture && (*env)->CallBooleanMethod(env, surface, is_texture);
         (*env)->ExceptionClear(env);
         if (!texture) return NULL;
-        __atomic_add_fetch(&texture_window.refs, 1, __ATOMIC_RELAXED);
+        atomic_fetch_add_explicit(&texture_window.refs, 1, memory_order_relaxed);
         return &texture_window;
     }
     jint w = (*env)->CallIntMethod(env, surface, (*env)->GetMethodID(env, cls, "width", "()I"));
@@ -70,7 +71,8 @@ void* hle_android_window_from_surface(JNIEnv* env, jobject surface) {
     pthread_mutex_lock(&window_lock);
     window.width = w;
     window.height = h;
-    ++window.refs;
+    atomic_store_explicit(&window.refs, atomic_load_explicit(&window.refs, memory_order_relaxed) + 1,
+                          memory_order_relaxed);
     pthread_mutex_unlock(&window_lock);
     return &window;
 }
@@ -80,11 +82,11 @@ static void window_from_surface(CPU* c, void* data) {
 }
 static void window_acquire(CPU* c, void* data) {
     (void)data;
-    __atomic_add_fetch(&window_of(X(0))->refs, 1, __ATOMIC_RELAXED);
+    atomic_fetch_add_explicit(&window_of(X(0))->refs, 1, memory_order_relaxed);
 }
 static void window_release(CPU* c, void* data) {
     (void)data;
-    __atomic_sub_fetch(&window_of(X(0))->refs, 1, __ATOMIC_RELAXED);
+    atomic_fetch_sub_explicit(&window_of(X(0))->refs, 1, memory_order_relaxed);
 }
 /* a window's size: its buffers', else its own */
 static void window_size(uint64_t handle, int* w, int* h) {

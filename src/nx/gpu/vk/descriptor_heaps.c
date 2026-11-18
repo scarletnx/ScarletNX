@@ -17,6 +17,7 @@
 #include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 
 #define HEAP_SAMPLER_FRAME (128ull << 10)
 #define HEAP_RESOURCE_CACHE 4096u
@@ -72,9 +73,9 @@ typedef struct {
    own */
 typedef struct {
     char pad0[64];
-    char lock;
+    _Atomic char lock;
     int lost; /* the queue was full: the next lookup forgets everything */
-    u32 n;
+    _Atomic u32 n;
     u64 handle[LASTING_QUEUE];
     char pad1[64];
 } LastingQueue;
@@ -118,7 +119,7 @@ typedef struct {
     VkDescriptorPool transition_pool;
     VkDescriptorSet transition_set;
     LastingState lasting;
-    int lasting_ready; /* read by the forgets of every thread */
+    _Atomic int lasting_ready; /* read by the forgets of every thread */
     LastingQueue queue;
     u64 memo_gen; /* the generation of the DescMemo entries that hold: a new one empties them all */
 } HeapState;
@@ -303,10 +304,10 @@ static void lasting_init(void) {
         }
     }
     g_heaps.stats.lasting_bytes = plan->lasting_size;
-    __atomic_store_n(&g_heaps.lasting_ready, 1, __ATOMIC_RELEASE);
+    atomic_store_explicit(&g_heaps.lasting_ready, 1, memory_order_release);
 }
 static void lasting_destroy(void) {
-    __atomic_store_n(&g_heaps.lasting_ready, 0, __ATOMIC_RELEASE);
+    atomic_store_explicit(&g_heaps.lasting_ready, 0, memory_order_release);
     free(g_heaps.lasting.slot);
     free(g_heaps.lasting.buffers);
 }
@@ -481,20 +482,19 @@ static void lasting_forget_all(void) {
     memo_clear();
 }
 static void queue_lock(void) {
-    while (__atomic_test_and_set(&g_heaps.queue.lock, __ATOMIC_ACQUIRE)) {
-    }
+    while (atomic_exchange_explicit(&g_heaps.queue.lock, 1, memory_order_acquire)) {}
 }
-static void queue_unlock(void) { __atomic_clear(&g_heaps.queue.lock, __ATOMIC_RELEASE); }
+static void queue_unlock(void) { atomic_store_explicit(&g_heaps.queue.lock, 0, memory_order_release); }
 /* the forgets other threads queued, done (vk_lock held) */
 static void lasting_drain(void) {
-    if (!__atomic_load_n(&g_heaps.queue.n, __ATOMIC_ACQUIRE)) return;
+    if (!atomic_load_explicit(&g_heaps.queue.n, memory_order_acquire)) return;
     u64 handles[LASTING_QUEUE];
     queue_lock();
-    u32 n = g_heaps.queue.n;
+    u32 n = atomic_load_explicit(&g_heaps.queue.n, memory_order_relaxed);
     int lost = g_heaps.queue.lost;
     memcpy(handles, g_heaps.queue.handle, sizeof *handles * n);
     g_heaps.queue.lost = 0;
-    __atomic_store_n(&g_heaps.queue.n, 0, __ATOMIC_RELEASE);
+    atomic_store_explicit(&g_heaps.queue.n, 0, memory_order_release);
     queue_unlock();
     if (lost) {
         lasting_forget_all();
@@ -503,30 +503,30 @@ static void lasting_drain(void) {
     for (u32 i = 0; i < n; i++) lasting_forget_now(handles[i]);
 }
 static void lasting_forget(u64 object) {
-    if (!object || !__atomic_load_n(&g_heaps.lasting_ready, __ATOMIC_ACQUIRE)) return;
+    if (!object || !atomic_load_explicit(&g_heaps.lasting_ready, memory_order_acquire)) return;
     if (vk_lock_held()) { /* vk_lock orders it with every lookup: they run under it */
         lasting_drain();
         lasting_forget_now(object);
         return;
     }
     queue_lock();
-    u32 n = g_heaps.queue.n;
+    u32 n = atomic_load_explicit(&g_heaps.queue.n, memory_order_relaxed);
     if (n < LASTING_QUEUE) {
         g_heaps.queue.handle[n] = object;
-        __atomic_store_n(&g_heaps.queue.n, n + 1, __ATOMIC_RELEASE);
+        atomic_store_explicit(&g_heaps.queue.n, n + 1, memory_order_release);
     } else
         g_heaps.queue.lost = 1;
     queue_unlock();
 }
 /* the forgets so far, of any mode's objects: render.c's descriptor sets of the frame name the objects by handle too */
-static u64 g_forgets;
-u64 vk_descriptor_heaps_forgets(void) { return __atomic_load_n(&g_forgets, __ATOMIC_ACQUIRE); }
+static _Atomic u64 g_forgets;
+u64 vk_descriptor_heaps_forgets(void) { return atomic_load_explicit(&g_forgets, memory_order_acquire); }
 void vk_descriptor_heaps_forget_buffer(VkBuffer buffer) {
-    __atomic_add_fetch(&g_forgets, 1, __ATOMIC_RELEASE);
+    atomic_fetch_add_explicit(&g_forgets, 1, memory_order_release);
     lasting_forget(handle_key(buffer));
 }
 void vk_descriptor_heaps_forget_view(VkImageView view) {
-    __atomic_add_fetch(&g_forgets, 1, __ATOMIC_RELEASE);
+    atomic_fetch_add_explicit(&g_forgets, 1, memory_order_release);
 #if VK_USE_64_BIT_PTR_DEFINES
     lasting_forget((u64)(uintptr_t)view);
 #else
@@ -535,7 +535,7 @@ void vk_descriptor_heaps_forget_view(VkImageView view) {
 }
 /* without vk_lock the buffer is not named: its descriptors are then made in each frame */
 void vk_descriptor_heaps_lasting(VkBuffer buffer) {
-    if (!buffer || !__atomic_load_n(&g_heaps.lasting_ready, __ATOMIC_ACQUIRE) || !vk_lock_held()) return;
+    if (!buffer || !atomic_load_explicit(&g_heaps.lasting_ready, memory_order_acquire) || !vk_lock_held()) return;
     lasting_drain();
     lasting_name(handle_key(buffer));
 }

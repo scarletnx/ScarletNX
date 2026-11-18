@@ -275,7 +275,7 @@ typedef struct {
     /* A game is told the display is HDR, and its HDR frames get a swapchain of their own space: the hdr_game setting
        with both extensions on a surface that lists both HDR spaces (hdr_swapchain.h vk_hdr_display), as the last
        vk_swapchain_create found it. Atomic: the display session's thread reads it */
-    int hdr_display;
+    _Atomic int hdr_display;
     u32 gfx_timestamp_bits;  /* the graphics queue family's timestampValidBits: 0 where it writes no timestamps */
     /* VK_EXT_memory_budget: the driver tells each heap's use and budget (devmem.c reads them, and guesses without) */
     int has_budget;
@@ -1611,10 +1611,12 @@ typedef struct VkOwnRes {
     VkBuffer buf;
     DevMem mem;
     u64 size;
-    u64 written; /* the graphics submission its last publish's writes were recorded in: a landing waits for that one */
-    u64 serial;  /* new with each write: what its bytes hash as (vk_guest_peek), never its address, a freed one's */
+    _Atomic u64
+        written; /* the graphics submission its last publish's writes were recorded in: a landing waits for that one */
+    _Atomic u64
+        serial;  /* new with each write: what its bytes hash as (vk_guest_peek), never its address, a freed one's */
     u64 read;    /* buffer.c's count of reads where it is when a draw or dispatch last read it there (buf_get_owned) */
-    u32 refs;    /* the creator's, and one an owned range */
+    _Atomic u32 refs; /* the creator's, and one an owned range */
     u32 born;    /* the present it was made at, for the statistics of how long results are kept */
     u32 used;    /* the present it was last written or read at: one left alone for long lands when memory is short
                     (vk_own_trim) */
@@ -2449,7 +2451,7 @@ void vk_release_submit(void); /* the GPFIFO submission ended or waits: a release
    the end or a wait of a GPFIFO submission, and each present.
    Between two of them the console's texture caches may still hold what was there before, so a snapshot of a target a
    draw samples while rendering to it (vk_rt_snapshot) is reused. Atomic */
-extern u64 g_vk_texture_epoch;
+extern _Atomic u64 g_vk_texture_epoch;
 void vk_release_need(u64 gva, u64 len);
 int vk_release_read(u64 gva, void* dst, u64 len);
 int vk_release_pending(u64 gva, u64 len); /* a queued release's payload covers GPU range [gva, gva + len) (vk_lock) */
@@ -2462,7 +2464,7 @@ typedef struct {
 /* vk_release_read's, with the samples-passed reports queued over the range that the GPU can write there left out of dst
    (zeros) and listed in counts, at most max of them, *n set: no wait for those */
 int vk_release_read_counts(u64 gva, void* dst, u64 len, SamplesCount* counts, u32 max, u32* n);
-extern u64 g_vk_release_forwards;           /* statistics: reads vk_release_read answered */
+extern _Atomic u64 g_vk_release_forwards;   /* statistics: reads vk_release_read answered */
 extern u64 g_vk_dset_new, g_vk_dset_reused; /* statistics: descriptor sets written, reused for the same contents */
 extern u64 g_vk_itable_uploads, g_vk_itable_reused, g_vk_itable_bytes; /* indexed uniform staging statistics */
 void vk_render_upload_cache_reset(void); /* renderer start: invalidate staging addresses from an earlier device */
@@ -2494,7 +2496,7 @@ u64 vk_query_peek(u32 counter, u64 first, u64 end); /* the same, out of order, c
 /* writes the n counts of reports not performed yet into buf, whose bytes from off on were read at their at: 1, or 0
    when they can't be counted on the GPU (the caller then reads the reports performed) */
 int vk_query_counts(VkBuffer buf, u64 off, const SamplesCount* counts, u32 n);
-extern u64 g_vk_counts_on_gpu; /* statistics: the counts vk_query_counts wrote */
+extern _Atomic u64 g_vk_counts_on_gpu; /* statistics: the counts vk_query_counts wrote */
 #define VK_QUERY_COUNTERS 8    /* query.c's samples-passed counters, a draw owner's each */
 /* render enable predicates (release.c's vk_render_predicate): a queued report of counter's segments [first, end) gets
    a predicate slot, held once, that the next vk_query_pred_flush writes (2, *slot set), or its count is known now: 1
@@ -2880,7 +2882,8 @@ extern VkSemaphore g_vk_csem;  /* timeline semaphore the compute queue signals *
 u64 vk_compute_submitted(void);
 void vk_compute_after_gfx(u64 value);
 extern u64 g_vk_cs_wait_value; /* the value graphics work waits for before reading compute results */
-extern u64 g_vk_dispatches, g_vk_cs_batches, g_vk_cs_wait_ns; /* statistics */
+extern u64 g_vk_dispatches, g_vk_cs_batches;
+extern _Atomic u64 g_vk_cs_wait_ns; /* statistics */
 extern u64 g_vk_cs_cpu_reads; /* dispatches kept on the compute queue because the CPU reads what they write */
 /* the submission a unified memory dispatch was left in for the stream's end to submit (vk_release_submit), and how many
    were left so (statistics) */

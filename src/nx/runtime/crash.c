@@ -15,6 +15,7 @@
 #include "nx/runtime/platform/plat.h"
 #include "common/platform/thread.h"  /* plat_thread_note_get */
 #include "common/utilities/common.h" /* snx_thread_name_get */
+#include <stdatomic.h>
 #if !defined(_WIN32)
 #include <dlfcn.h>
 #include <signal.h>
@@ -78,7 +79,7 @@ static int game_function_at(u64 pc, u64* guest, u64* offset) {
     u32 i;
     if (!g_mod || !g_mod->entry_fn) return 0;
     for (i = 0; i < g_mod->nentries; i++) {
-        u64 fn = (u64)(size_t)g_mod->entry_fn[i];
+        u64 fn = (u64)(size_t)atomic_load_explicit(&g_mod->entry_fn[i], memory_order_relaxed);
         if (fn <= pc && fn > best) {
             best = fn;
             *guest = g_mod->entry_addr[i];

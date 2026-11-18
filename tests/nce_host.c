@@ -122,7 +122,7 @@ u64 plat_ns(void) {
 
 static _Alignas(16) u8 g_exit_stack[0x2000];
 static int g_exit_after;
-static u64 g_exit_reads;
+static _Atomic u64 g_exit_reads;
 static void* exit_thread(void* p) {
     CPU* c = (CPU*)p;
     char why[240];

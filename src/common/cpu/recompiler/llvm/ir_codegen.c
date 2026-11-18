@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 
 #define B ir->b
 
@@ -127,7 +128,7 @@ static size_t index_of(const SnxFunction* function, SnxU64 address) {
     return lo;
 }
 
-/* if(UNLIKELY(__atomic_load_n(&c->poll,__ATOMIC_RELAXED))){ c->rt->poll(c); } (codegen.c): a loop that makes no SVC
+/* if(UNLIKELY(atomic_load_explicit(&c->poll, memory_order_relaxed))){ c->rt->poll(c); } (codegen.c): a loop that makes no SVC
    can still be taken off its core, for a waiter of higher priority.
    On a backward branch (resume, its target) the poll then leaves the function: { c->pc=resume; c->rt->poll(c);
    F_start(c,resume); return; }. The call of the function itself goes to the target's label through the entry mismatch
@@ -293,7 +294,7 @@ void snx_ir_stale_checks(SnxIr* ir) {
     ir->stale = g;
 }
 
-/* if(UNLIKELY(__atomic_load_n(&snx_stale[index],__ATOMIC_RELAXED))){ c->pc=e; return; }: the guest changed code
+/* if(UNLIKELY(atomic_load_explicit(&snx_stale[index], memory_order_relaxed))){ c->pc=e; return; }: the guest changed code
    this function was compiled from (RtAPI.code_changed), and the runtime has taken its entries out of dispatch. A
    caller's return check finds CPU.pc not its own return address and returns too, each function on the way storing
    its registers at its return, up to the runtime's dispatch loop, which looks e up and compiles the code there now

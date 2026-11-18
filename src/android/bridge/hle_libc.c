@@ -42,6 +42,7 @@
 #include <time.h>
 #include <wchar.h>
 #include <wctype.h>
+#include <stdatomic.h>
 
 /* ---- the generic adapters ---- */
 
@@ -900,7 +901,7 @@ typedef struct {
     uint64_t mb_cur_max; /* bionic's struct __locale_t: a size_t */
 } BionicLocale;
 static struct {
-    int ascii; /* setlocale's last name was not UTF-8's: MB_CUR_MAX 1. bionic starts in C.UTF-8 */
+    _Atomic int ascii; /* setlocale's last name was not UTF-8's: MB_CUR_MAX 1. bionic starts in C.UTF-8 */
 #ifndef _WIN32
     /* the host's C locale that the guest's calls run in (hle_locale_enter), made once */
     pthread_once_t once;
@@ -919,7 +920,7 @@ static bool locale_known(const char* name) {
 }
 static bool locale_utf8(const char* name) { return !name[0] || strstr(name, "UTF-8"); }
 static uint64_t mb_cur_max_of(uint64_t locale) {
-    if (locale == BIONIC_GLOBAL_LOCALE) return __atomic_load_n(&g_locale.ascii, __ATOMIC_RELAXED) ? 1 : 4;
+    if (locale == BIONIC_GLOBAL_LOCALE) return atomic_load_explicit(&g_locale.ascii, memory_order_relaxed) ? 1 : 4;
     return ((const BionicLocale*)(uintptr_t)locale)->mb_cur_max;
 }
 static uint64_t current_locale(void) { return t_hle_libc.locale ? t_hle_libc.locale : BIONIC_GLOBAL_LOCALE; }
@@ -946,8 +947,8 @@ static void g_setlocale(CPU* c, void* data) {
         X(0) = 0;
         return;
     }
-    if (X(1)) __atomic_store_n(&g_locale.ascii, !locale_utf8(STR(1)), __ATOMIC_RELAXED);
-    X(0) = (uint64_t)(uintptr_t)(__atomic_load_n(&g_locale.ascii, __ATOMIC_RELAXED) ? "C" : "C.UTF-8");
+    if (X(1)) atomic_store_explicit(&g_locale.ascii, !locale_utf8(STR(1)), memory_order_relaxed);
+    X(0) = (uint64_t)(uintptr_t)(atomic_load_explicit(&g_locale.ascii, memory_order_relaxed) ? "C" : "C.UTF-8");
 }
 /* newlocale(mask, name, base): base is left as it is, as bionic's leaves it */
 static void g_newlocale(CPU* c, void* data) {

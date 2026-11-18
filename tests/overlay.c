@@ -95,7 +95,7 @@ static struct {
     char value[64];  /* its value, and the one the Settings page saved last (ini_set_apply) */
     char unpicked[32];
     char applied[128]; /* key=value, as the Settings page gave it */
-    int changes;
+    _Atomic int changes;
 } picks;
 int ini_picked(const char* k) { return picks.key && !strcmp(picks.key, k); }
 void ini_unpick(const char* k) {
@@ -103,7 +103,7 @@ void ini_unpick(const char* k) {
     if (ini_picked(k)) picks.key = NULL;
     ++picks.changes;
 }
-const int* ini_picks_changes(void) { return &picks.changes; }
+const _Atomic int* ini_picks_changes(void) { return &picks.changes; }
 int ini_next_start(const char* k, char* out, size_t n) {
     if (n) out[0] = 0;
     if (!ini_picked(k)) return 0;

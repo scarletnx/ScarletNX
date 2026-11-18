@@ -12,6 +12,7 @@
 #include "common/utilities/bits.h"
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 #include "nx/gpu/gpu.h"
 #include "nx/hle/services/nvdrv.h"
 #include "nx/memory/mem.h"
@@ -1943,7 +1944,7 @@ int vk_surf_publish(Surf* s) {
     publish_own(s, r, size);
     keep_fresh_after(&keep);
     g_rt_publishing = publishing;
-    s->pub_serial = __atomic_load_n(&r->serial, __ATOMIC_ACQUIRE);
+    s->pub_serial = atomic_load_explicit(&r->serial, memory_order_acquire);
     vk_own_res_unref(r);
     /* guest memory (its owner) has the image's pixels now: the texture cache finds them current, by their owner */
     flush_rebase(s, size, kept != 0, gw0);

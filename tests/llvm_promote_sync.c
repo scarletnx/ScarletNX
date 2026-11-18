@@ -66,7 +66,7 @@ typedef struct {
     unsigned char* ref_stale; /* the reference module's */
     GuestFn reference[FUNCS]; /* what a miss runs: the code at the pc compiled again (the O0 module's) */
     u64 starts[FUNCS], ends[FUNCS];
-    GuestFn* disp; /* CPU.disp: a function made stale leaves it, as the runtime's fn_stale has it */
+    _Atomic GuestFn* disp; /* CPU.disp: a function made stale leaves it, as the runtime's fn_stale has it */
     u64 patched;   /* a miss here runs patch: the guest's new code for a stale leaf (0: none) */
     void (*patch)(CPU* c);
     size_t functions, stale_caller; /* an SVC with STALE makes this function stale */
@@ -609,7 +609,7 @@ static void run(const Program* p, Module* mod, Module* ref, SnxCodegen* codegen,
                              .poll = on_poll,
                              .miss = on_miss,
                              .cas128 = snx_runtime_cas128};
-    GuestFn disp[WORDS] = {0};
+    _Atomic GuestFn disp[WORDS] = {0};
     CPU c;
     size_t i;
     memset(r, 0, sizeof(*r));
