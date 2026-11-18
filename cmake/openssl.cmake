@@ -18,9 +18,9 @@ if(NOT PERL_FOUND OR NOT SNX_OPENSSL_MAKE)
 endif()
 
 # Configure guesses the platform from the machine doing the build, which is right for a native build. A Windows build
-# (native with llvm-mingw, or cross) names it: mingw64 is OpenSSL's target for 64-bit MinGW, x86-64 or ARM64. Android's
-# targets find the NDK's Clang on PATH and name the compiler themselves (<triple><API>-clang), from ANDROID_NDK_ROOT
-# and the API level, so that build passes those instead of CC, AR and RANLIB
+# (native with llvm-mingw, or cross) names it: mingw64 is OpenSSL's target for x86-64 MinGW, mingwarm64 for ARM64.
+# Android's targets find the NDK's Clang on PATH and name the compiler themselves (<triple><API>-clang), from
+# ANDROID_NDK_ROOT and the API level, so that build passes those instead of CC, AR and RANLIB
 set(snx_openssl_target "")
 set(snx_openssl_env "")
 if(ANDROID)
@@ -37,7 +37,7 @@ if(ANDROID)
                         "PATH=${ANDROID_TOOLCHAIN_ROOT}/bin:$ENV{PATH}")
 elseif(WIN32)
     if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|ARM64)$")
-        set(snx_openssl_target mingw-arm64)
+        set(snx_openssl_target mingwarm64)
     else()
         set(snx_openssl_target mingw64)
     endif()
