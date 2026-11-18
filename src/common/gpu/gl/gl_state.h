@@ -49,14 +49,24 @@ typedef struct {
     uint32_t sample_mask;
 } SnxGlFixed;
 
-/* a context: used, the GL version it was made for (2 or 3 for GLES, 4 for desktop GL), its fixed state */
+/* a context's API */
+#define SNX_GL_API_ES      0u /* OpenGL ES */
+#define SNX_GL_API_DESKTOP 1u /* OpenGL's core profile */
+/* a context: used, its API and version (major * 10 + minor: 31, 45), debug (EGL_CONTEXT_OPENGL_DEBUG), its fixed
+   state */
 typedef struct {
-    uint32_t used, version;
+    uint32_t used, api, version, debug;
     SnxGlFixed fixed;
 } SnxGlContext;
 
-/* a context of version, its fixed state GL's initial one: its name, 0 when every one of SNX_GL_CONTEXTS is used */
-uint32_t snx_gl_context_new(uint32_t version);
+/* a context of api and version, its fixed state GL's initial one: its name, 0 when every one of SNX_GL_CONTEXTS is
+   used */
+uint32_t snx_gl_context_new(uint32_t api, uint32_t version, uint32_t debug);
+/* whether the layer makes contexts of api and version (desktop 3.0 to 4.5, ES 2.0, 3.0 to 3.2) */
+int snx_gl_version_made(uint32_t api, uint32_t version);
+/* a context's api and version (0 for a name not made) */
+uint32_t snx_gl_context_api(uint32_t ctx);
+uint32_t snx_gl_context_version(uint32_t ctx);
 void snx_gl_context_free(uint32_t ctx);
 /* the fixed state of a context made, for a platform's draws to read */
 SnxGlFixed* snx_gl_fixed(uint32_t ctx);
@@ -94,11 +104,21 @@ void snx_gl_sample_coverage(uint32_t ctx, float value, int invert);
 void snx_gl_hint(uint32_t ctx, uint32_t target, uint32_t mode);
 void snx_gl_pixel_store(uint32_t ctx, uint32_t pname, int32_t value);
 
+/* glGet*'s values of pname, as numbers: how many it has (1 to 4), 0 for a pname the layer doesn't answer (the caller
+   records GL_INVALID_ENUM and says it) */
+int snx_gl_get(uint32_t ctx, uint32_t pname, double v[4]);
+/* glGetString(name): the string, NULL for a name GL has not (GL_INVALID_ENUM recorded). glGetStringi(GL_EXTENSIONS,
+   index) with stringi: NULL past the last (GL_INVALID_VALUE). The renderer names the GPU the game sees */
+const char* snx_gl_string(uint32_t ctx, uint32_t name, int stringi, uint32_t index);
+/* glClear(mask): the buffers to clear (GL_COLOR_BUFFER_BIT, GL_DEPTH_BUFFER_BIT, GL_STENCIL_BUFFER_BIT), 0 with
+   GL_INVALID_VALUE recorded for a bit GL has not */
+uint32_t snx_gl_clear(uint32_t ctx, uint32_t mask);
+
 /* A save state's copy of the layer: SNX_GL_STATE_BYTES bytes, a header (magic, layout version, the block's size) and
    the block. Check refuses a copy this build cannot load, with why naming the field and its value; load puts a
    checked copy in place of the running state */
 #define SNX_GL_STATE_MAGIC   0x4c47584eu /* "NXGL" */
-#define SNX_GL_STATE_VERSION 1u
+#define SNX_GL_STATE_VERSION 2u
 size_t snx_gl_state_bytes(void);
 void snx_gl_state_save(void* out);
 int snx_gl_state_check(const void* in, size_t size, char* why, size_t whysize);
