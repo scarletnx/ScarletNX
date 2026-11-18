@@ -305,6 +305,9 @@ typedef struct {
     u32 spec;          /* the specialization constants the module declares: bit SH_SPEC_ of each */
     /* the program adds each bank's window offset from push constants to its constant buffer reads (cb_windows) */
     u32 cb_window;
+    /* the program reads its plain texture slots through the texture table (ShCaps.tex_table): slot i's word,
+       view slot | sampler slot << SNX_TABLE_SAMPLER_SHIFT, is word i of its words (SNX_VKB_TEXWORDS) */
+    u32 tex_table;
 } ShaderInfo;
 /* A fragment module's specialization constants, by SpecId: state a draw has before its program runs, which the
    pipeline gives the module (vk/pipeline.c, PipeKey.fs_spec) so that the driver compiles the program for it. As a
@@ -460,6 +463,17 @@ static inline void shader_query_hint_unpack(const u32 words[SH_QUERY_WORDS], u8 
 #define SH_PUSH_CB_WINDOW    128
 #define SH_PUSH_CB_WINDOW_FS 176
 #define SH_PUSH_BYTES_WINDOWS 224
+/* With tex_table: the window offsets (16-byte units) of the vertex and fragment programs' texture words, x and y of the
+   uvec4 at this byte, and the push block's size */
+#define SH_PUSH_TEX_WORDS       224
+#define SH_PUSH_BYTES_TABLE     240
+/* The texture table (ShCaps.tex_table): one descriptor set after the stages' (table_set), images at binding 0 and
+   samplers at binding 1. A vertex or fragment program reads its words, one for each plain texture slot, from a window
+   of the staging ring at SNX_VKB_TEXWORDS, the binding only compute programs use otherwise */
+#define SNX_VKB_TEXWORDS        SNX_VKB_FMT
+#define SNX_TABLE_IMAGES        65536u
+#define SNX_TABLE_SAMPLERS      4096u
+#define SNX_TABLE_SAMPLER_SHIFT 20
 /* Device capabilities the renderer sets before translating, and the values offline translation takes. A 1-bit
    field holds 0 or 1: a mask goes in through a test (!= 0), or its bit is lost */
 typedef struct {
@@ -478,6 +492,10 @@ typedef struct {
        each bank's offset into its window comes from push constants (SH_PUSH_CB_WINDOW), so a draw that writes new
        constants keeps its buffer set (vk/render.c stage_set_) */
     unsigned cb_windows : 1;
+    /* with cb_windows, an SM86 vertex or fragment program's plain textures come from the texture table at set
+       table_set, by the words the renderer gives each draw (SH_PUSH_TEX_WORDS), not from its stage's set */
+    unsigned tex_table : 1;
+    u32 table_set;
     /* tessellation and geometry programs may write the point size (shaderTessellationAndGeometryPointSize) */
     unsigned stage_point_size : 1;
     /* vertex and tessellation programs may write the layer (shaderOutputLayer, the ShaderLayer capability); without it

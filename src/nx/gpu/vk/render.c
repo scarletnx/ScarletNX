@@ -3340,8 +3340,10 @@ typedef struct {
     VkBuffer b;
     u64 base, range, frame;
 } CbWindow;
-static CbWindow g_cb_windows[2][18];
-static u16 g_cb_offsets[2][18]; /* the draw's offsets, by the stage's set (0 vertex, 1 fragment) and bank */
+/* bank 18: the texture words of a program that reads the texture table (ShCaps.tex_table, table_words) */
+#define CB_WINDOW_WORDS 18
+static CbWindow g_cb_windows[2][19];
+static u16 g_cb_offsets[2][19]; /* the draw's offsets, by the stage's set (0 vertex, 1 fragment) and bank */
 static int cb_window_place(int vs_fs, int bank, VkBuffer b, u64 o, u32 sz, u64* base, u64* range) {
     CbWindow* w = &g_cb_windows[vs_fs][bank];
     const u64 frame = vk_frame_id() + 1;
@@ -3357,6 +3359,55 @@ static int cb_window_place(int vs_fs, int bank, VkBuffer b, u64 o, u32 sz, u64* 
     }
     *base = w->base;
     *range = w->range;
+    return 1;
+}
+/* A program of the texture table (ShaderInfo.tex_table): its words, one for each plain texture slot, in a window of
+   the staging ring at SNX_VKB_TEXWORDS (bank CB_WINDOW_WORDS of cb_window_place), the window's offset pushed at
+   SH_PUSH_TEX_WORDS. The same words as the stage's last draw in this frame take the same bytes: the set and the push
+   stay */
+static struct {
+    u32 words[SH_MAXTEX], n;
+    u64 frame;
+    VkBuffer b;
+    u64 o;
+} g_table_words[2];
+static int table_words(DescWrites* d, VkDescriptorSet set, int vs_fs, const u32* words, u32 n) {
+    const u32 bytes = (n * 4 + 15) & ~15u;
+    const u64 frame = vk_frame_id() + 1;
+    VkBuffer b;
+    u64 o, base, range;
+    if (g_table_words[vs_fs].frame == frame && g_table_words[vs_fs].n == n &&
+        !memcmp(g_table_words[vs_fs].words, words, n * 4)) {
+        b = g_table_words[vs_fs].b;
+        o = g_table_words[vs_fs].o;
+    } else {
+        u8* data = vk_stage(bytes, 16, &b, &o);
+        if (!data) return 0;
+        memset(data, 0, bytes);
+        memcpy(data, words, n * 4);
+        snx_le32_array(data, n);
+        g_table_words[vs_fs].frame = frame;
+        g_table_words[vs_fs].n = n;
+        memcpy(g_table_words[vs_fs].words, words, n * 4);
+        g_table_words[vs_fs].b = b;
+        g_table_words[vs_fs].o = o;
+    }
+    if (cb_window_place(vs_fs, CB_WINDOW_WORDS, b, o, bytes, &base, &range)) {
+        g_cb_offsets[vs_fs][CB_WINDOW_WORDS] = (u16)((o - base) >> 4);
+        dw_buffer(d, set, SNX_VKB_TEXWORDS, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, b, base, (u32)range);
+        return 1;
+    }
+    /* no window from it: bound alone, at the descriptor's alignment */
+    if (o % vk_stage_align()) {
+        u8* data = vk_stage(bytes, vk_stage_align(), &b, &o);
+        if (!data) return 0;
+        memset(data, 0, bytes);
+        memcpy(data, words, n * 4);
+        snx_le32_array(data, n);
+        g_table_words[vs_fs].frame = 0;
+    }
+    g_cb_offsets[vs_fs][CB_WINDOW_WORDS] = 0;
+    dw_buffer(d, set, SNX_VKB_TEXWORDS, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, b, o, bytes);
     return 1;
 }
 /* with split sets (ShCaps.split_sets): the texture set stage_set_ made last for each stage's buffer set number (0 to 4) */
@@ -3523,6 +3574,12 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
         return VK_NULL_HANDLE;
     /* a stage fs_key didn't key: its handles in one read (tex_handles) */
     u32 handles[SH_MAXTEX];
+    /* a program of the texture table: each plain slot's word, in place of its descriptor */
+    const int table = s->si.tex_table && g_spirv_translate.tex_table && shader_vk_set(s->stage) < 2;
+    u32 words[SH_MAXTEX];
+    VkImageView tviews[SH_MAXTEX];
+    VkImageLayout tlayouts[SH_MAXTEX];
+    VkSampler tsamplers[SH_MAXTEX];
     if (!res && nt) tex_handles(ds, stage, tcb, &s->si, nt, handles);
     for (int i = 0; i < nt; i++) {
         ShTex* st = &s->si.tex[i];
@@ -3680,6 +3737,10 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
         if (!view) return VK_NULL_HANDLE;
         VkSampler smp = tex_bind_sampler(x, st, num, sampled, want, (int)(s->si.tex_minmax_mask >> i & 1));
         if (!smp) return VK_NULL_HANDLE;
+        if (table) {
+            tviews[i] = view, tlayouts[i] = layout, tsamplers[i] = smp; /* their words after the loop */
+            continue;
+        }
         u32 b = SNX_VKB_TEX + i;
         d.ii[b] = (VkDescriptorImageInfo){smp, view, layout};
         d.w[d.n++] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
@@ -3688,6 +3749,12 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
                                             .descriptorCount = 1,
                                             .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                                             .pImageInfo = &d.ii[b]};
+    }
+    if (table && nt) {
+        for (int i = 0; i < nt; i++)
+            if (s->si.tex[i].flags & SNX_TEX_INDEXED) tviews[i] = VK_NULL_HANDLE; /* in the stage's set: word 0 */
+        if (!vk_table_words(tviews, tlayouts, tsamplers, (u32)nt, words)) return VK_NULL_HANDLE;
+        if (!table_words(&d, set, shader_vk_set(s->stage), words, (u32)nt)) return VK_NULL_HANDLE;
     }
     SNX_ZONE_END(ztex);
     /* by the bindings' stage (DsBindings): an Ounce's task and mesh programs' last */
@@ -3797,10 +3864,12 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
             d.w[kept++] = d.w[k];
     d.n = kept;
     const int stage_set_no = shader_vk_set(s->stage);
-    /* each set kept as its stage's last apart (desc_set_cached): the textures' past the buffers' */
+    /* each set kept as its stage's last apart (desc_set_cached): the textures' past the buffers'. A program of the
+       texture table with no indexed textures reads nothing of the set: none is bound */
     VkDescriptorSet textures =
-        desc_set_cached(g_vk_dslayout[s->indexed][stage_set_no + 5], &tex, stage + DS_GFX_STAGES);
-    if (!textures) return VK_NULL_HANDLE;
+        table && !tex.n ? VK_NULL_HANDLE
+                        : desc_set_cached(g_vk_dslayout[s->indexed][stage_set_no + 5], &tex, stage + DS_GFX_STAGES);
+    if (!textures && !(table && !tex.n)) return VK_NULL_HANDLE;
     g_stage_tex_set[stage_set_no] = textures;
     return desc_set_cached(layout, &d, stage);
 }
@@ -3821,7 +3890,7 @@ static struct {
     int heaps;
     VkPipeline pipe;
     VkPipelineLayout layout; /* the one sets were bound through: another may disturb them */
-    VkDescriptorSet sets[10]; /* 5 to 9: the stages' texture sets with split sets */
+    VkDescriptorSet sets[11]; /* 5 to 9: the stages' texture sets with split sets; the texture table at table_set */
     u64 set_binds; /* vk_rec_set_binds when sets were: a set bound the old way since unbinds descriptor buffers */
     u32 fb, cull, front, topo, restart, discard, bias_on, dt, dw, dcmp, dbounds, st;
     u32 polygon, clamp, clip, provoking, conservative, patch; /* g_vk.dyn_pr's, as PipeKey holds them */
@@ -6566,9 +6635,18 @@ retry:
     /* split sets: each present stage's texture set, five after its buffers' (shader_vk_tex_set) */
     for (u32 t = 0; t < 5 && g_spirv_translate.split_sets; t++) {
         const int present = t == 0 || (t == 1 ? fs != NULL : bset[t - 2] != VK_NULL_HANDLE);
-        if (present && (fresh || g_dyn.sets[5 + t] != g_stage_tex_set[t])) {
+        if (present && g_stage_tex_set[t] && (fresh || g_dyn.sets[5 + t] != g_stage_tex_set[t])) {
             g_dyn.sets[5 + t] = g_stage_tex_set[t];
             vk_descriptors_bind(cb, layout, 5 + t, 1, &g_stage_tex_set[t]);
+        }
+    }
+    /* the texture table, after the stages' sets (table.c) */
+    if (g_spirv_translate.tex_table) {
+        VkDescriptorSet table = vk_table_set();
+        const u32 at = g_spirv_translate.table_set;
+        if (fresh || g_dyn.sets[at] != table) {
+            g_dyn.sets[at] = table;
+            vk_descriptors_bind(cb, layout, at, 1, &table);
         }
     }
     if (g_vk.vertex_input_dynamic && !mesh) vertex_input_set(cb, pl, fresh);
@@ -6762,8 +6840,8 @@ retry:
        scaled textures (stage_set) and the surface clip's height, which the fragment's y counts up from in a lower-left
        window (shader/emit_io.c's shader_frag_y_origin). The test's function, the window's origin and the point
        sprite's T flip are the pipeline's (vk_pipe_fs_spec) */
-    float pc[SH_PUSH_BYTES_WINDOWS / 4] = {0, ds->dyn.depth_mode || (g_vk.dyn_pr & VK_DYN_PR_DEPTH_RANGE) ? 0.0f : 1.0f,
-                                           0, 0};
+    float pc[SH_PUSH_BYTES_TABLE / 4] = {0, ds->dyn.depth_mode || (g_vk.dyn_pr & VK_DYN_PR_DEPTH_RANGE) ? 0.0f : 1.0f,
+                                         0, 0};
     /* with the viewport transform off, the viewport's width and height (window_size), which the last stage before
        rasterization takes the position's pixels to clip space by (SNX_SH_WINDOW_XY) */
     u32 window_w = 0, window_h = 0;
@@ -6821,7 +6899,13 @@ retry:
                 const u32 packed = (u32)g_cb_offsets[st][2 * w] | (u32)g_cb_offsets[st][2 * w + 1] << 16;
                 memcpy(&pc[(st ? SH_PUSH_CB_WINDOW_FS : SH_PUSH_CB_WINDOW) / 4 + w], &packed, sizeof packed);
             }
-    rec_CmdPushConstants(cb, g_vk_playout, VK_PUSH_STAGES, 0, g_spirv_translate.cb_windows ? (u32)sizeof pc : 128, pc);
+    /* the vertex and fragment programs' texture words (table_words) */
+    if (g_spirv_translate.tex_table)
+        for (u32 st = 0; st < 2; st++) {
+            const u32 at = g_cb_offsets[st][CB_WINDOW_WORDS];
+            memcpy(&pc[SH_PUSH_TEX_WORDS / 4 + st], &at, sizeof at);
+        }
+    rec_CmdPushConstants(cb, g_vk_playout, VK_PUSH_STAGES, 0, vk_push_bytes(), pc);
     if (texture) {
         Surf* source = fres[0].t;
         if (!source || !rt[0]) {

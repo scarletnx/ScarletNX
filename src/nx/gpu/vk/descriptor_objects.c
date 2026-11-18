@@ -5,6 +5,8 @@
    Hash buckets hold slot indices; snapshots hold no pointers to the caller's create infos. */
 #include "nx/gpu/vk/descriptor_objects.h"
 #include "nx/gpu/vk/descriptor_heaps.h"
+#include "nx/gpu/vk/vk.h"
+#include "nx/gpu/shader/shader.h"
 #include "common/utilities/bits.h"
 #include <stdlib.h>
 #include <string.h>
@@ -289,6 +291,7 @@ VkResult vk_image_view_create(VkDevice device, const VkImageViewCreateInfo* info
 }
 void vk_image_view_destroy(VkDevice device, VkImageView view, const VkAllocationCallbacks* allocation) {
     if (view) vk_descriptor_heaps_forget_view(view); /* before a new view can get its handle */
+    if (view && g_spirv_translate.tex_table) vk_table_forget_view(view);
     vkDestroyImageView(device, view, allocation);
     if (g_vk.has_descriptor_heap_support && view) object_remove(device, view_handle(view), OBJECT_VIEW);
 }

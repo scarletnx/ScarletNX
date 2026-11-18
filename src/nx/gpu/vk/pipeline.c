@@ -580,6 +580,13 @@ static void cbufs_fit_limits(void) {
         fit);
 }
 
+/* the push constant bytes of a draw's layouts: the window offsets (cb_windows) and the texture words' offsets
+   (tex_table) past the 128 bytes that every layout has */
+u32 vk_push_bytes(void) {
+    return g_spirv_translate.tex_table    ? SH_PUSH_BYTES_TABLE
+           : g_spirv_translate.cb_windows ? SH_PUSH_BYTES_WINDOWS
+                                          : 128;
+}
 /* the bindings of a stage's textures, which split sets (ShCaps.split_sets) put in a set of their own (shader_vk_tex_set) */
 int vk_binding_is_texture(u32 i) {
     return (i >= SNX_VKB_TEX && i < SNX_VKB_TEX + SH_MAXTEX) || i == SNX_VKB_TEXARRAY || i == SNX_VKB_TEXFUNCS ||
@@ -657,12 +664,13 @@ static VkPipelineLayout playout(u32 arrays, int independent) {
     if (made) return made;
     pm_lock(&g_pipeline.playout_lock);
     if (!atomic_load_explicit(&(*l), memory_order_relaxed)) {
-        VkDescriptorSetLayout sets[10];
-        const u32 nsets = g_spirv_translate.split_sets ? 10 : g_vk_stage_sets;
+        VkDescriptorSetLayout sets[11];
+        u32 nsets = g_spirv_translate.split_sets ? 10 : g_vk_stage_sets;
         for (u32 s = 0; s < nsets; s++) sets[s] = g_vk_dslayout[(arrays >> (s % 5)) & 1][s];
+        if (g_spirv_translate.tex_table) sets[nsets++] = vk_table_layout(); /* at table_set, after the stages' */
         /* push constants: viewport/depth pc[0..3], fragment alpha test pc[4..6], sprite T flip pc[7], scaled textures
            pc[8..9], and of those the ones of the draw's size pc[24..25] */
-        VkPushConstantRange pc = {VK_PUSH_STAGES, 0, g_spirv_translate.cb_windows ? SH_PUSH_BYTES_WINDOWS : 128};
+        VkPushConstantRange pc = {VK_PUSH_STAGES, 0, vk_push_bytes()};
         /* with pipeline libraries, a link of parts whose layouts have only their own sets (part_layout) */
         VkPipelineLayoutCreateInfo pl = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
                                          .flags = independent ? VK_PIPELINE_LAYOUT_CREATE_INDEPENDENT_SETS_BIT_EXT : 0,
@@ -718,6 +726,31 @@ void vk_pipeline_init(void) {
     LOG("vulkan: %s\n", g_spirv_translate.cb_windows
                                 ? "constant buffers bound as windows of the staging ring, their offsets pushed"
                                 : "constant buffers bound one by one");
+    /* SM86 programs' plain textures through the texture table (table.c), a set after the stages' sets: where the
+       constant buffers are in windows (the words take one), the sets are plain ones, and the device pushes the
+       words' offsets and binds one more set */
+    g_spirv_translate.tex_table = 0;
+    if (g_shader_sm86) {
+        const u32 table_set = g_spirv_translate.split_sets ? 10 : g_vk_stage_sets;
+        char why[160] = "";
+        const char* no = !g_spirv_translate.cb_windows ? "constant buffers are not bound as windows"
+                         : g_vk.has_descriptor_buffers || g_vk.has_descriptor_heap_support
+                             ? "descriptor buffers or heaps hold the sets"
+                         : g_vk.props.limits.maxPushConstantsSize < SH_PUSH_BYTES_TABLE
+                             ? "the device pushes fewer than 240 bytes"
+                         : g_vk.props.limits.maxBoundDescriptorSets <= table_set ? "the device binds fewer sets"
+                                                                                 : NULL;
+        if (!no && vk_table_init(why, sizeof why)) {
+            g_spirv_translate.tex_table = 1;
+            g_spirv_translate.table_set = table_set;
+        }
+        LOG("vulkan: SM86 textures %s%s\n",
+            g_spirv_translate.tex_table ? "through the texture table, one word a texture"
+                                        : "in descriptor sets of their own: no texture table, as ",
+            g_spirv_translate.tex_table ? ""
+            : no                        ? no
+                                        : why);
+    }
     for (int s = 0; s < 5; s++) {
         VkDescriptorSetLayoutBinding b[SNX_VKB_END];
         u32 count = 0;
@@ -793,6 +826,9 @@ void vk_pipeline_init(void) {
             }
         }
     }
+    /* a layout with the table is another program to the driver (shader_objects.c) */
+    if (g_spirv_translate.tex_table)
+        g_vk_dslayout_hash = snx_fnv_step(snx_fnv_step(g_vk_dslayout_hash, 0x7AB1Eu), g_spirv_translate.table_set);
     /* A compute dispatch does not bind the five graphics sets. Give it the full per-stage image budget instead
        of reusing the vertex layout's share of the whole graphics pipeline budget. */
     {
@@ -1864,12 +1900,17 @@ static VkPipelineLayout part_layout(u32 part, u32 arrays) {
     if (made) return made;
     pm_lock(&g_pipeline.playout_lock);
     if (!atomic_load_explicit(&(*l), memory_order_relaxed)) {
-        VkDescriptorSetLayout sets[10] = {0};
+        VkDescriptorSetLayout sets[11] = {0};
         u32 n = g_spirv_translate.split_sets ? (fs ? 7 : 10) : fs ? 2 : g_vk_stage_sets;
         for (u32 s = 0; s < n; s++)
             if ((s % 5 == 1) == fs) sets[s] = g_vk_dslayout[(arrays >> (s % 5)) & 1][s];
+        /* the table: both parts read it (table_set, after every stage's set) */
+        if (g_spirv_translate.tex_table) {
+            n = g_spirv_translate.table_set + 1;
+            sets[g_spirv_translate.table_set] = vk_table_layout();
+        }
         /* vk_playout's: a link's parts take its push constants */
-        VkPushConstantRange pc = {VK_PUSH_STAGES, 0, g_spirv_translate.cb_windows ? SH_PUSH_BYTES_WINDOWS : 128};
+        VkPushConstantRange pc = {VK_PUSH_STAGES, 0, vk_push_bytes()};
         VkPipelineLayoutCreateInfo pl = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
                                          .flags = VK_PIPELINE_LAYOUT_CREATE_INDEPENDENT_SETS_BIT_EXT,
                                          .setLayoutCount = n,
@@ -3010,6 +3051,7 @@ static void pf_key(char* out, size_t n, size_t* guest) {
                   arrays,
                   (u32)g_spirv_translate.split_sets,
                   (u32)g_spirv_translate.cb_windows,
+                  (u32)g_spirv_translate.tex_table,
                   (u32)g_spirv_translate.stage_point_size,
                   (u32)g_spirv_translate.output_layer,
                   (u32)g_spirv_translate.geometry,
