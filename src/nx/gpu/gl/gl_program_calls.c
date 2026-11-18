@@ -8,6 +8,7 @@
 #include "common/gpu/gl/gl_state.h"
 #include "common/platform/thread.h"
 #include "gpu/gl/gl.hook.h"
+#include "nx/gpu/gl/gl_host_program.h"
 #include "nx/gpu/gl/gl_layer.h"
 #include "nx/memory/mem.h"
 #include "nx/runtime/platform/log.h"
@@ -23,7 +24,10 @@ static void* host(u64 a) { return a ? GP(a) : NULL; }
 static const char* text(u64 a) { return (const char*)host(a); }
 
 static void say(const char* line) { LOG("gl layer: %s\n", line); }
-void gl_program_calls_init(void) { snx_gl_program_host(&(SnxGlProgramHost){NULL, say}); }
+/* the renderer's draws bind each stage's resources in the stage's own set (gl_host_program.h) */
+void gl_program_calls_init(void) {
+    snx_gl_program_host(&(SnxGlProgramHost){.say = say, .stage_sets = 1, .layout = gl_host_program_layout()});
+}
 
 /* the calling thread's context, the lock held: the body runs with ctx; without a context, none and fallback */
 #define LOCKED(fallback, ...)                                                                                          \

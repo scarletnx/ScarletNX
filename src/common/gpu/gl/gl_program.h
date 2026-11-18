@@ -56,7 +56,8 @@ typedef struct {
     uint16_t count; /* descriptors */
     uint16_t binding;
     uint16_t first; /* a sampler's first unit in the program's units; a block's index */
-    uint16_t pad;
+    uint8_t stages; /* the stages that read it, a bit each (0 vertex, 1 fragment, 2 compute) */
+    uint8_t pad;
     uint32_t size; /* a block's bytes */
 } SnxGlBinding;
 
@@ -109,12 +110,27 @@ typedef struct {
     uint32_t names[2];
 } SnxGlPipeline;
 
+/* Where a platform whose draws bind each stage's resources in a set of the stage's own (the console's renderer) wants
+   a program's resources: each stage's set; from block_base, the stage's default block and then the program's uniform
+   blocks in the order the stages declare them, blocks bindings in all; from sampler_base, the program's samplers in
+   that order, samplers bindings in all. A sampler array, an image or a storage block has no place in it: the link
+   refuses the program, naming it */
+typedef struct {
+    uint32_t set[3]; /* the vertex, fragment and compute stages' */
+    uint32_t block_base, blocks;
+    uint32_t sampler_base, samplers;
+} SnxGlLayout;
+
 /* What a platform hears from the programs: a program's link is gone (linked again, deleted), so its objects made from
    the old one go too; and a shader that does not compile or a program that does not link, for its log. Either may be
-   NULL. Not part of a save state: a platform gives it again after a load */
+   NULL. And where its draws want the resources: stage_sets 0, the program's one set (binding 0 to 2 the stages'
+   default blocks, then the resources), with gl_FragCoord through a flip in a push constant; 1, layout's sets, with
+   no push constant. Not part of a save state: a platform gives it again after a load */
 typedef struct {
     void (*program_changed)(uint32_t program);
     void (*say)(const char* line);
+    int stage_sets;
+    SnxGlLayout layout;
 } SnxGlProgramHost;
 void snx_gl_program_host(const SnxGlProgramHost* host);
 
@@ -136,6 +152,9 @@ static inline int32_t* snx_gl_program_units(const SnxGlProgram* p) {
 }
 static inline const SnxGlInput* snx_gl_program_inputs(const SnxGlProgram* p) {
     return (const SnxGlInput*)(snx_gl_bytes(p->link) + p->inputs);
+}
+static inline const SnxGlInput* snx_gl_program_outputs(const SnxGlProgram* p) {
+    return (const SnxGlInput*)(snx_gl_bytes(p->link) + p->outputs);
 }
 static inline const char* snx_gl_program_names(const SnxGlProgram* p) {
     return (const char*)(snx_gl_bytes(p->link) + p->names);
