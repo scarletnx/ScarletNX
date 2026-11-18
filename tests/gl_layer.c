@@ -19,6 +19,7 @@
 #include "common/gpu/gl/gl_texture.h"
 #include "common/platform/thread.h"
 #include "nx/gpu/gl/gl_layer.h"
+#include "nx/gpu/nvn/nvn_tex.h"
 #include "nx/gpu/renderer.h"
 #include "nx/hle/hook/hook.h"
 #include "nx/memory/mem.h"
@@ -106,6 +107,7 @@ static const char* const exports[] = {"eglGetDisplay",
                                       "_glTexImage2D",
                                       "_glTexParameteri",
                                       "_glGetTexParameteriv",
+                                      "_glGenerateMipmap",
                                       "_glGenFramebuffers",
                                       "_glBindFramebuffer",
                                       "_glFramebufferTexture2D",
@@ -148,6 +150,38 @@ void nce_slot_taken(u64 addr, const char* what) { (void)addr, (void)what; }
 void jit_slot_taken(u64 addr, GuestFn fn) { (void)addr, (void)fn; }
 int hook_routed(const char* name) { return (void)name, 1; }
 int shader_vk_set(int stage) { return stage == 4; } /* shader.c's: the fragment stage's set 1 */
+/* nvdrv's GPU address space: the layer's chunks at addresses of their own, mapped one to one here */
+static u64 g_gpu_next = 0x4000000000ull;
+u64 gmmu_space_alloc(u64 size, u64 align) {
+    u64 a = g_gpu_next;
+    (void)align;
+    g_gpu_next += (size + 0xffff) & ~0xffffull;
+    return a;
+}
+void gmmu_space_map(u64 gva, u64 cpu, u64 size) { (void)gva, (void)cpu, (void)size; }
+/* nvn_copy.c's upload into an NVN-laid-out texture, on the GPU thread: what the layer asked for, the bytes kept */
+static struct {
+    NvnTexture t;
+    NvnView v;
+    NVNcopyRegion r;
+    u8 bytes[64];
+    i64 row, image;
+    int count;
+} g_upload;
+static struct {
+    u32 base, top, count;
+} g_levels;
+void nvn_copy_levels(const NvnTexture* t, unsigned from, unsigned to) {
+    (void)t;
+    g_levels.base = from, g_levels.top = to, g_levels.count++;
+}
+int nvn_copy_texels_in(const NvnTexture* t, const NvnView* v, const NVNcopyRegion* region, const u8* bytes, i64 row,
+                       i64 image) {
+    g_upload.t = *t, g_upload.v = *v, g_upload.r = *region, g_upload.row = row, g_upload.image = image;
+    memcpy(g_upload.bytes, bytes, sizeof g_upload.bytes);
+    g_upload.count++;
+    return 1;
+}
 void pm_lock(PMutex* m) { (void)m; }
 void pm_unlock(PMutex* m) { (void)m; }
 void present_pace(u32 interval, int slot) { (void)interval, (void)slot; }
@@ -446,7 +480,29 @@ int main(void) {
         call("_glTexImage2D", 0x0de1, 0, 0x8058, 2, 2); /* GL_RGBA8, 2x2 */
         x = snx_gl_texture(t);
         assert(x && x->levels == 2 && x->texels >= HEAP && x->texels + x->texels_size <= GUEST);
-        assert(!memcmp(GP(x->texels), GP(pixels), 16));
+        /* its storage NVN's layout of the same texture, the texels sent to the GPU's copy into it */
+        {
+            NvnTexture n;
+            NvnTexStorage st;
+            assert(gl_nvn_texture(t, &n) && n.d.format == NVN_FORMAT_RGBA8 && n.d.target == NVN_TEXTURE_TARGET_2D);
+            assert(n.d.width == 2 && n.d.height == 2 && n.d.levels == 2 && n.gpu == gl_gpu_address(x->texels));
+            assert(n.gpu && gl_gpu_address(x->texels + 16) == n.gpu + 16 && !gl_gpu_address(0x10));
+            nvn_tex_storage(&n.d, &st);
+            assert(x->texels_size == st.size && !(x->texels % st.align));
+            assert(g_upload.count == 1 && g_upload.t.gpu == n.gpu && g_upload.v.base_level == 0);
+            assert(g_upload.r.width == 2 && g_upload.r.height == 2 && g_upload.r.depth == 1 && g_upload.row == 8);
+            assert(!memcmp(g_upload.bytes, GP(pixels), 16));
+        }
+        /* 3-byte texels whose client rows are 4-aligned: the GPU's copy takes them as tight rows */
+        call("_glGenTextures", 1, names + 4, 0, 0, 0);
+        call("_glBindTexture", 0x0de1, gr32(names + 4), 0, 0, 0);
+        cpu.x[5] = 0, cpu.x[6] = 0x1907, cpu.x[7] = 0x1401; /* border, GL_RGB, GL_UNSIGNED_BYTE */
+        call("_glTexImage2D", 0x0de1, 0, 0x8051, 2, 2);     /* GL_RGB8 */
+        assert(g_upload.count == 2 && g_upload.row == 6 && g_upload.t.d.format == NVN_FORMAT_RGB8);
+        assert(!memcmp(g_upload.bytes, GP(pixels), 6) && !memcmp(g_upload.bytes + 6, GP(pixels + 8), 6));
+        call("_glBindTexture", 0x0de1, t, 0, 0, 0);
+        call("_glGenerateMipmap", 0x0de1, 0, 0, 0, 0); /* level 1 from level 0, by the GPU */
+        assert(g_levels.count == 1 && g_levels.base == 0 && g_levels.top == 1 && snx_gl_texture(t)->defined == 3);
         call("_glTexParameteri", 0x0de1, 0x2801, 0x2600, 0, 0); /* GL_TEXTURE_MIN_FILTER, GL_NEAREST */
         call("_glGetTexParameteriv", 0x0de1, 0x2801, out, 0, 0);
         assert(gr32(out) == 0x2600);

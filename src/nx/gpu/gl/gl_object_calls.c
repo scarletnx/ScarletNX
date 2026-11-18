@@ -11,6 +11,7 @@
 #include "gpu/gl/gl.hook.h"
 #include "nx/gpu/gl/gl_layer.h"
 #include "nx/hle/kernel/kernel.h"
+#include "nx/hle/services/nvdrv.h"
 #include "nx/memory/mem.h"
 #include "nx/runtime/platform/log.h"
 #include <string.h>
@@ -26,17 +27,43 @@ enum {
     BASE_FLOAT = 3,
 };
 
+#define GPU_CHUNKS 64 /* the layer's chunks of guest memory, each mapped in the GPU's address space */
+
+/* a chunk of the layer's memory: its guest address, bytes and GPU address */
+typedef struct {
+    u64 at, size, gpu;
+} GpuChunk;
+
 static struct {
     PMutex lock;
+    GpuChunk chunks[GPU_CHUNKS];
+    u32 chunk_count;
 } g_gl_object_calls = {.lock = PMUTEX_INIT};
 
 static void* host(u64 a) { return a ? GP(a) : NULL; }
 
-/* the layer's buffers in chunks of guest memory; the GPU's copies are the renderer's, none yet */
+/* the layer's buffers and textures in chunks of guest memory, each mapped in the GPU's address space too, where the
+   renderer's draws read them */
 static u64 chunk(u64 size, u64* got) {
-    u64 at = kmem_alloc(size, MS_KERNEL, PERM_RW); /* stops the game, saying the size, when guest memory has none */
-    *got = at ? (size + 0xfff) & ~0xfffull : 0;
+    u64 at, gpu, pages = (size + 0xffff) & ~0xffffull;
+    if (g_gl_object_calls.chunk_count == GPU_CHUNKS)
+        fatal("gl layer: its memory takes a chunk of %llu bytes past the %d it maps for the GPU",
+              (unsigned long long)size, GPU_CHUNKS);
+    at = kmem_alloc(pages, MS_KERNEL, PERM_RW); /* stops the game, saying the size, when guest memory has none */
+    gpu = at ? gmmu_space_alloc(pages, 0) : 0;
+    if (at && !gpu)
+        fatal("gl layer: no GPU address space left for %llu bytes of its memory", (unsigned long long)pages);
+    if (!at) return *got = 0, 0;
+    gmmu_space_map(gpu, at, pages);
+    g_gl_object_calls.chunks[g_gl_object_calls.chunk_count++] = (GpuChunk){at, pages, gpu};
+    *got = pages;
     return at;
+}
+u64 gl_gpu_address(u64 guest) {
+    for (u32 i = 0; i < g_gl_object_calls.chunk_count; i++)
+        if (guest - g_gl_object_calls.chunks[i].at < g_gl_object_calls.chunks[i].size)
+            return g_gl_object_calls.chunks[i].gpu + (guest - g_gl_object_calls.chunks[i].at);
+    return 0;
 }
 static u8* bytes(u64 at) { return GP(at); }
 void gl_object_calls_init(void) { snx_gl_object_host(&(SnxGlObjectHost){chunk, bytes, NULL, NULL, NULL}); }

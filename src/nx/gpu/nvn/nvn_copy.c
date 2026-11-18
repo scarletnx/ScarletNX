@@ -735,6 +735,33 @@ void nvn_write_texels(u64 t, u64 v, u64 region, u64 src, i64 row, i64 image) {
     gpu_call(texel_write, w, NULL, 0);
 }
 
+void nvn_copy_levels(const NvnTexture* t, unsigned from, unsigned to) {
+    u32 layers = t->d.target == NVN_TEXTURE_TARGET_CUBEMAP    ? 6u
+                 : t->d.target == NVN_TEXTURE_TARGET_2D_ARRAY ? t->d.depth
+                                                              : 1u;
+    for (unsigned l = from + 1; l <= to && l < t->d.levels; l++) {
+        u32 sw = t->d.width >> (l - 1), sh = t->d.height >> (l - 1), dw = t->d.width >> l, dh = t->d.height >> l;
+        NvnPCopyT2T r = {.has_sv = 1, .has_dv = 1, .flags = NVN_COPY_FLAGS_LINEAR_FILTER_BIT};
+        r.sv = (NvnView){.set = NVN_VIEW_LEVELS, .base_level = (u8)(l - 1), .levels = 1};
+        r.dv = (NvnView){.set = NVN_VIEW_LEVELS, .base_level = (u8)l, .levels = 1};
+        r.sr = (NVNcopyRegion){0, 0, 0, sw ? (int)sw : 1, sh ? (int)sh : 1, 1};
+        r.dr = (NVNcopyRegion){0, 0, 0, dw ? (int)dw : 1, dh ? (int)dh : 1, 1};
+        for (u32 z = 0; z < layers; z++) {
+            r.sr.zoffset = r.dr.zoffset = (int)z;
+            copy_texture_texture(&r, t, t);
+        }
+    }
+}
+int nvn_copy_texels_in(const NvnTexture* t, const NvnView* v, const NVNcopyRegion* region, const u8* bytes, i64 row,
+                       i64 image) {
+    NvnPCopyB2T r = {.r = *region};
+    TexPlane p;
+    if (v) r.view = *v, r.has_view = 1;
+    if (!tex_plane(t, v, &p)) return 0;
+    copy_buffer_texture(&r, t, 1, (const i64[2]){row, image}, bytes);
+    return 1;
+}
+
 /* A texel read: the copy, on the stack of the game's thread, which waits for the GPU thread's increment of syncpt
    after it */
 typedef struct {
