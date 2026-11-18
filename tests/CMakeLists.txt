@@ -1557,7 +1557,7 @@ add_test(NAME gl_framebuffer COMMAND snx-test-gl-framebuffer)
 add_executable(snx-test-gl-layer gl_layer.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/gl/gl_loader.c"
                "${PROJECT_SOURCE_DIR}/src/nx/gpu/gl/gl_egl.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/gl/gl_calls.c"
                "${PROJECT_SOURCE_DIR}/src/nx/gpu/gl/gl_program_calls.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/gl/gl_object_calls.c"
-               "${PROJECT_SOURCE_DIR}/src/nx/gpu/gl/gl_texture_calls.c"
+               "${PROJECT_SOURCE_DIR}/src/nx/gpu/gl/gl_texture_calls.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/gl/gl_framebuffer_calls.c"
                "${PROJECT_SOURCE_DIR}/src/nx/gpu/gl/gl_host_nx.c" "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/version.c")
 snx_test_target(snx-test-gl-layer gnu23)
 target_link_libraries(snx-test-gl-layer PRIVATE snx_gl scarletnx-common)
