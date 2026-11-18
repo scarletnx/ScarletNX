@@ -23,6 +23,9 @@
 #if defined(_WIN32) && defined(__clang__)
 #pragma clang diagnostic pop
 #endif
+#ifdef _WIN32
+#include "win32_crash.h"
+#endif
 
 /* the checks made, and the last error line said, which snx_error_sink sends to said_line */
 static struct {
@@ -632,6 +635,9 @@ static int scenario(const char* scratch, const char* mode) {
 }
 
 int main(int argc, char** argv) {
+#ifdef _WIN32
+    snx_test_crash_said(); /* a scenario's crash says where it was, in the output its failure prints */
+#endif
     /* name, whether it extracts, and what it must say */
     static const struct {
         const char *mode, *says;
