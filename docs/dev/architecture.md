@@ -381,28 +381,36 @@ recompiled code by default: it writes Maxwell command buffers into the GPFIFO ab
 `guest_vulkan` setting the driver never runs. `gpu/gvk/gvk.c` puts a function of its own into the dispatch slot of
 each entry point the driver's module exports (the module that exports `vkGetInstanceProcAddr`; `gpu/gvk/gvk.hook`
 routes the game's direct calls to them, and a module recompiled before it stops the game), and `gpu/gvk/gvk_api.c`
-calls the host's Vulkan on the renderer's device and graphics queue with the game's arguments: its SPIR-V, pipelines
-and command buffers go to the host's driver as they are. Vulkan's structures have one layout on AArch64 and on every
-64-bit little-endian host, so only their pointers are made host ones (`gvk_in`, by a table of each structure's pointer
-fields). A big-endian host would need each number converted, so there the setting is refused. The game sees one heap
+executes the Vulkan calls on the renderer's device and graphics queue after compatibility fixes. Vulkan's structures
+have the same layout on AArch64 and on 64-bit little-endian hosts. `gvk_in` translates their pointers from a table of
+structure fields. A 32-bit game or a big-endian host uses the game's own driver. Save states cannot hold GVK objects.
+The game sees one heap
 with three memory types: device-local memory, and memory the CPU maps at guest addresses in the alias region, so a
 mapping is the game's own address: guest pages the host imports (`VK_EXT_external_memory_host`), or where it can't
 (RenderDoc takes no host memory) the host's own memory exported as a dma-buf and mapped over the guest pages, with
 linear images in it made with the linear DRM format modifier. The swapchain's images are host images, and a present
-blits one into the renderer's window (`present_image`). An acquire returns an image only once the display has shown
-the present after it, as the console's buffer queue does. What the console's driver accepts and Vulkan doesn't is mended
-there: a transfer command inside a render pass ends the pass and begins a twin that loads what it stored, a depth
-format the host lacks (24-bit depth on AMD) is the nearest one it has, each image layout the game names (but
-`UNDEFINED` and `PREINITIALIZED`) is `GENERAL`, as the console's driver ignores layouts and the game names ones its
-images aren't in, a barrier gets the stages its access flags need, and the SPIR-V is given what Vulkan reads
-(`gpu/gvk/gvk_spirv.c`: an ArrayStride on a structure's member goes on its array type, a matrix with no order is
-column-major, a pointer into an array of buffers by an index that differs between invocations is NonUniform, and a
-pipeline that blends with the second color takes a twin of its fragment module with that output at `Location 0,
-Index 1`). A pipeline's compile leaves the guest core to the game's other threads.
-The `resolution` setting scales the game's color and depth targets of one level that are
-at least the console's screen in size (a game can make every texture a color target), with the swapchain. The
-commands that name their pixels scale with them: render areas, viewports, scissors, clear rectangles, copies and
-blits. A copy between a scaled image and one at the game's size is a blit.
+blits one into the renderer's window (`present_image`). If the next present has reached the display queue, acquire
+waits for it within the application's timeout. Otherwise the renderer's copy already releases the guest image from
+the display. A transfer command inside a primary single-subpass render pass can end the pass and begin a twin that
+loads what it stored. A depth format the host lacks (24-bit depth on AMD) is replaced with the nearest supported one.
+The console's driver ignores image layouts. GVK uses `GENERAL` for most layouts, retains discard transitions, and
+adds stages required by barrier access masks. GVK also adjusts SPIR-V (`gpu/gvk/gvk_spirv.c`): a member's ArrayStride
+moves to its array type, a matrix with no order becomes column-major, an index that can vary by invocation is
+marked NonUniform for buffer arrays. A pipeline that blends with the second color can use a twin of its fragment
+module with that output at `Location 0, Index 1`. Pipeline compilation releases the guest core.
+For recompiled code, GVK can provide `VK_EXT_debug_report` entry points that the guest driver does not export.
+Guest debug messages reach guest callbacks. Host Vulkan validation messages stay in the runtime log.
+GVK defers destruction of guest images and release of their backing memory until earlier work on the graphics queue
+completes. Multiple releases between submissions share one completion signal.
+Where the device has host-only descriptor pools (`VK_EXT_mutable_descriptor_type`), each guest descriptor pool has a
+twin in host memory, and each set a twin in it. A write goes to the set and to its twin, and a copy reads the source's
+twin: RADV keeps descriptors in write-combined device memory, where a copy's reads are uncached.
+[GVK is not a security boundary](../user/settings.md). It forwards some guest-provided Vulkan handles and data to
+the host driver.
+The experimental resolution heuristic uses native size below 1.5× and otherwise rounds to the nearest integer scale.
+It scales the swapchain and single-level color and depth targets that meet a size threshold. Render areas, dynamic
+viewports, scissors, clear rectangles, copies and blits adapt to scaled targets. Viewports baked into a pipeline do
+not scale.
 
 The shader programs a game ships are translated at startup, on the renderer's shader file thread rather than the GPU
 thread, into `<id>.<driver>.vkshipped` (`prepare_shaders`: before the game's first thread runs, behind main.c's loading screen,

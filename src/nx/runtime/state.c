@@ -215,9 +215,15 @@ static void header_make(SnxStateHeader* h) {
     game_stamp(h->stamp, sizeof h->stamp);
     snprintf(h->game, sizeof h->game, "%s", g_gamename);
 }
+static int state_gvk_refused(char* why, size_t whysize) {
+    if (!gvk_active()) return 0;
+    snprintf(why, whysize, "the game draws with the host's Vulkan (guest_vulkan), whose objects states don't hold");
+    return 1;
+}
 int state_check(const SnxStateHeader* h, char* why, size_t whysize) {
     char stamp[sizeof h->stamp];
     if (hook_states_refused(why, whysize)) return -1;
+    if (state_gvk_refused(why, whysize)) return -1;
     game_stamp(stamp, sizeof stamp);
     return snx_state_fits(h, g_hle.kernel.title_id, stamp, why, whysize);
 }
@@ -702,10 +708,6 @@ static int savable(char* why, size_t whysize) {
             }
     if (native_video_busy()) {
         snprintf(why, whysize, "the game is playing a movie, whose decoder states don't hold");
-        return -1;
-    }
-    if (gvk_active()) {
-        snprintf(why, whysize, "the game draws with the host's Vulkan (guest_vulkan), whose objects states don't hold");
         return -1;
     }
     return 0;
@@ -1278,6 +1280,7 @@ int state_save(const char* path, char* why, size_t whysize) {
     SNX_SECTION_SCOPED_C(snx_save_state, "save state", 3);
     SNX_FRAME_SCOPED(f_state, "state"); /* save and load each frame one discontinuous set */
     why[0] = 0;
+    if (state_gvk_refused(why, whysize)) return -1;
     if (game_pause()) {
         snprintf(why, whysize, "the game didn't stop to be saved");
         return -1;
@@ -1379,10 +1382,6 @@ int state_load(const char* path, char* why, size_t whysize) {
        its frames' checksums checked, the state's g_hle made whole and checked, its GPU and video state read, the files
        it had open found and opened, and its guest memory read through once */
     if (state_check(&h, why, whysize)) goto refuse;
-    if (gvk_active()) {
-        snprintf(why, whysize, "the game draws with the host's Vulkan (guest_vulkan), whose objects states don't hold");
-        goto refuse;
-    }
     /* load_memory puts the state's pages in the alias pool, and its blocks map them from there */
     if (!mem_pool_active()) {
         snprintf(why, whysize,
@@ -1553,6 +1552,10 @@ static void row_path(char* out, size_t size, const char* slot) {
 static void state_roundtrip(void) {
     char path[sizeof g_exedir + sizeof g_exename + 64], why[256];
     u64 before, after, bytes0, bytes1, t0, t1;
+    if (state_gvk_refused(why, sizeof why)) {
+        WARN("state: check: not saved: %s\n", why);
+        return;
+    }
     state_path(path, sizeof path, "check");
     if (game_pause()) {
         WARN("state: check: the game didn't stop\n");

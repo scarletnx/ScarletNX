@@ -13,11 +13,23 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* gvk.c's scratch: here, memory the test never frees */
+typedef union Scratch Scratch;
+union Scratch {
+    Scratch* next;
+    long double alignment;
+};
+static Scratch* g_scratch;
+
 void* gvk_scratch(size_t n) {
-    void* p = calloc(1, n ? n : 1);
+    Scratch* p = malloc(sizeof *p + n);
     assert(p);
-    return p;
+    p->next = g_scratch;
+    g_scratch = p;
+    return p + 1;
+}
+
+static const u32* mend(const u32* w, size_t bytes, size_t* out_bytes) {
+    return gvk_spirv_mend(w, bytes, out_bytes, GVK_SPIRV_UBO_NONUNIFORM | GVK_SPIRV_SSBO_NONUNIFORM);
 }
 
 enum {
@@ -31,10 +43,15 @@ enum {
     OP_TYPE_STRUCT = 30,
     OP_TYPE_POINTER = 32,
     OP_CONSTANT = 43,
+    OP_CONSTANT_NULL = 46,
+    OP_SPEC_CONSTANT_OP = 52,
     OP_VARIABLE = 59,
     OP_ACCESS_CHAIN = 65,
     OP_DECORATE = 71,
     OP_MEMBER_DECORATE = 72,
+    OP_DECORATION_GROUP = 73,
+    OP_GROUP_DECORATE = 74,
+    OP_GROUP_MEMBER_DECORATE = 75,
     BLOCK_DECORATION = 2,
     BUFFER_BLOCK = 3,
     ROW_MAJOR = 4,
@@ -66,6 +83,11 @@ enum {
     BY_INDEX,
     BY_CONSTANT,
     FROM_INDEXED,
+    GROUP,
+    NULL_INDEX,
+    SPEC_INDEX,
+    BY_NULL,
+    BY_SPEC,
     BOUND
 };
 
@@ -119,7 +141,7 @@ int main(void) {
     PUT(&m, OP_MEMBER_DECORATE, BLOCK, 1, MATRIX_STRIDE, 16);
     PUT(&m, OP_MEMBER_DECORATE, BLOCK, 2, MATRIX_STRIDE, 16);
     types(&m, 0);
-    const u32* out = gvk_spirv_mend(m.w, m.n * 4, &bytes);
+    const u32* out = mend(m.w, m.n * 4, &bytes);
     assert(out && bytes == (m.n + 4 + 4 + 4 - 5) * 4);
     assert(!memcmp(out, m.w, 5 * 4));
     assert(COUNT(out, bytes, OP_MEMBER_DECORATE, BLOCK, 0, ARRAY_STRIDE, 4) == 0);
@@ -132,7 +154,7 @@ int main(void) {
     header(&m);
     PUT(&m, OP_MEMBER_DECORATE, BLOCK, 0, ARRAY_STRIDE, 4);
     types(&m, 1);
-    out = gvk_spirv_mend(m.w, m.n * 4, &bytes);
+    out = mend(m.w, m.n * 4, &bytes);
     assert(out && bytes == (m.n - 5) * 4);
     assert(COUNT(out, bytes, OP_DECORATE, INTS, ARRAY_STRIDE, 16) == 1);
     assert(COUNT(out, bytes, OP_DECORATE, INTS, ARRAY_STRIDE, 4) == 0);
@@ -145,13 +167,21 @@ int main(void) {
     PUT(&m, OP_MEMBER_DECORATE, BLOCK, 2, COL_MAJOR);
     PUT(&m, OP_MEMBER_DECORATE, BLOCK, 2, MATRIX_STRIDE, 16);
     types(&m, 0);
-    assert(!gvk_spirv_mend(m.w, m.n * 4, &bytes));
+    assert(mend(m.w, m.n * 4, &bytes) == m.w);
+
+    header(&m);
+    PUT(&m, OP_DECORATION_GROUP, GROUP);
+    PUT(&m, OP_DECORATE, GROUP, ROW_MAJOR);
+    PUT(&m, OP_GROUP_MEMBER_DECORATE, GROUP, BLOCK, 1);
+    PUT(&m, OP_MEMBER_DECORATE, BLOCK, 1, MATRIX_STRIDE, 16);
+    types(&m, 0);
+    assert(mend(m.w, m.n * 4, &bytes) == m.w);
 
     /* a MatrixStride on a member that is no matrix isn't given an order */
     header(&m);
     PUT(&m, OP_MEMBER_DECORATE, BLOCK, 0, MATRIX_STRIDE, 16);
     types(&m, 0);
-    assert(!gvk_spirv_mend(m.w, m.n * 4, &bytes));
+    assert(mend(m.w, m.n * 4, &bytes) == m.w);
 
     /* not SPIR-V, a size that isn't whole words, an instruction past the end, or an instruction of no words */
     header(&m);
@@ -159,15 +189,15 @@ int main(void) {
     types(&m, 0);
     u32 magic = m.w[0];
     m.w[0] = 0x03022307u;
-    assert(!gvk_spirv_mend(m.w, m.n * 4, &bytes));
+    assert(!mend(m.w, m.n * 4, &bytes));
     m.w[0] = magic;
-    assert(!gvk_spirv_mend(m.w, m.n * 4 - 2, &bytes));
-    assert(!gvk_spirv_mend(m.w, (m.n - 1) * 4, &bytes));
+    assert(!mend(m.w, m.n * 4 - 2, &bytes));
+    assert(!mend(m.w, (m.n - 1) * 4, &bytes));
     u32 first = m.w[5];
     m.w[5] = OP_MEMBER_DECORATE;
-    assert(!gvk_spirv_mend(m.w, m.n * 4, &bytes));
+    assert(!mend(m.w, m.n * 4, &bytes));
     m.w[5] = first;
-    assert(gvk_spirv_mend(m.w, m.n * 4, &bytes));
+    assert(mend(m.w, m.n * 4, &bytes) != m.w);
 
     /* the buffer an index picks in an array of uniform buffers: NonUniform, when the index isn't a constant */
     for (int storage = 0; storage < 2; storage++) {
@@ -178,11 +208,16 @@ int main(void) {
         PUT(&m, OP_TYPE_ARRAY, BUFS, BLOCK, EIGHT);
         PUT(&m, OP_TYPE_POINTER, PTR_BUFS, UNIFORM, BUFS);
         PUT(&m, OP_TYPE_POINTER, PTR_INT, UNIFORM, INT);
+        PUT(&m, OP_CONSTANT_NULL, INT, NULL_INDEX);
+        PUT(&m, OP_SPEC_CONSTANT_OP, INT, SPEC_INDEX, 128, EIGHT, EIGHT);
         PUT(&m, OP_VARIABLE, PTR_BUFS, VAR, UNIFORM);
         PUT(&m, OP_ACCESS_CHAIN, PTR_INT, BY_INDEX, VAR, INDEX, EIGHT, EIGHT);
         PUT(&m, OP_ACCESS_CHAIN, PTR_INT, BY_CONSTANT, VAR, EIGHT, EIGHT, EIGHT);
+        PUT(&m, OP_ACCESS_CHAIN, PTR_INT, BY_NULL, VAR, NULL_INDEX, EIGHT, EIGHT);
+        PUT(&m, OP_ACCESS_CHAIN, PTR_INT, BY_SPEC, VAR, SPEC_INDEX, EIGHT, EIGHT);
         PUT(&m, OP_ACCESS_CHAIN, PTR_INT, FROM_INDEXED, BY_INDEX, EIGHT);
-        out = gvk_spirv_mend(m.w, m.n * 4, &bytes);
+        assert(!gvk_spirv_mend(m.w, m.n * 4, &bytes, 0));
+        out = mend(m.w, m.n * 4, &bytes);
         assert(out && bytes == (m.n + 3 * 2 + 2 * 2 + 8) * 4);
         assert(COUNT(out, bytes, OP_CAPABILITY, CAP_NON_UNIFORM) == 1);
         assert(COUNT(out, bytes, OP_CAPABILITY, storage ? CAP_SSBO_NON_UNIFORM : CAP_UBO_NON_UNIFORM) == 1);
@@ -191,6 +226,8 @@ int main(void) {
         assert(COUNT(out, bytes, OP_DECORATE, BY_INDEX, NON_UNIFORM) == 1);
         assert(COUNT(out, bytes, OP_DECORATE, FROM_INDEXED, NON_UNIFORM) == 1);
         assert(COUNT(out, bytes, OP_DECORATE, BY_CONSTANT, NON_UNIFORM) == 0);
+        assert(COUNT(out, bytes, OP_DECORATE, BY_NULL, NON_UNIFORM) == 0);
+        assert(COUNT(out, bytes, OP_DECORATE, BY_SPEC, NON_UNIFORM) == 0);
         /* the extension right after the capabilities, before the decorations */
         u32 at = 5, ext = 0, first_decoration = 0;
         for (; at < bytes / 4; at += out[at] >> 16) {
@@ -198,23 +235,29 @@ int main(void) {
             if ((out[at] & 0xffff) == OP_DECORATE && !first_decoration) first_decoration = at;
         }
         assert(ext && ext < first_decoration && !memcmp(out + ext + 1, "SPV_EXT_descriptor_indexing", 28));
+        assert(mend(out, bytes, &bytes) == out);
     }
 
     /* a fragment module's outputs at Location 1 go to Location 0, Index 1; an input at Location 1 stays */
     enum { OP_ENTRY_POINT = 15, FRAGMENT = 4, VERTEX = 0, LOCATION = 30, INDEX_DECORATION = 32, OUTPUT = 3, INPUT = 1 };
-    for (int kind = 0; kind < 4; kind++) { /* 0 fragment, 1 vertex, 2 an Index given, 3 an input only */
+    for (int kind = 0; kind < 5; kind++) {
         header(&m);
         PUT(&m, OP_CAPABILITY, CAP_SHADER);
         PUT(&m, OP_ENTRY_POINT, kind == 1 ? VERTEX : FRAGMENT, VAR, 0);
         PUT(&m, OP_DECORATE, VAR, LOCATION, 1);
         if (kind == 2) PUT(&m, OP_DECORATE, VAR, INDEX_DECORATION, 0);
         PUT(&m, OP_DECORATE, INDEX, LOCATION, 1);
+        if (kind == 4) {
+            PUT(&m, OP_DECORATE, GROUP, LOCATION, 0);
+            PUT(&m, OP_DECORATE, GROUP, INDEX_DECORATION, 1);
+        }
         PUT(&m, OP_TYPE_FLOAT, FLOAT, 32);
         PUT(&m, OP_TYPE_VECTOR, VEC4, FLOAT, 4);
         PUT(&m, OP_TYPE_POINTER, PTR_INT, OUTPUT, VEC4);
         PUT(&m, OP_TYPE_POINTER, PTR_BUFS, INPUT, VEC4);
         PUT(&m, OP_VARIABLE, kind == 3 ? PTR_BUFS : PTR_INT, VAR, kind == 3 ? INPUT : OUTPUT);
         PUT(&m, OP_VARIABLE, PTR_BUFS, INDEX, INPUT);
+        if (kind == 4) PUT(&m, OP_VARIABLE, PTR_INT, GROUP, OUTPUT);
         out = gvk_spirv_dual_source(m.w, m.n * 4, &bytes);
         if (kind) {
             assert(!out);
@@ -226,6 +269,11 @@ int main(void) {
         assert(COUNT(out, bytes, OP_DECORATE, VAR, INDEX_DECORATION, 1) == 1);
         assert(COUNT(out, bytes, OP_DECORATE, INDEX, LOCATION, 1) == 1);
         assert(COUNT(out, bytes, OP_DECORATE, INDEX, INDEX_DECORATION, 1) == 0);
+    }
+    while (g_scratch) {
+        Scratch* p = g_scratch;
+        g_scratch = p->next;
+        free(p);
     }
     return 0;
 }

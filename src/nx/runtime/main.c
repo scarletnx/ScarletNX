@@ -365,6 +365,7 @@ static void dispatch_init(void) {
             (unsigned long long)g_nros->lo, (unsigned long long)g_nros->hi);
     }
     if (g_code_hi <= g_code_lo) return;
+    g_code_hi = gvk_proc_space(g_code_hi);
     words = (g_code_hi - g_code_lo) / 4;
     if (words > SIZE_MAX / sizeof *g_disp) fatal("The game's code range is too large");
     g_disp = (_Atomic GuestFn*)calloc((size_t)words, sizeof *g_disp);

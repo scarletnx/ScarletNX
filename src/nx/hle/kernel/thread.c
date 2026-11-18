@@ -13,6 +13,7 @@
 #include "nx/runtime/platform/tracy.h"
 #include "nx/hle/hle.h"
 #include "nx/gpu/gpu.h"
+#include "nx/gpu/gvk/gvk.h"
 #include "nx/runtime/nce/nce.h"
 #include "nx/runtime/guest_stats.h"
 
@@ -874,6 +875,7 @@ void svc_exit_thread(KThread* t) {
     core_leave(t);
     guest_stats_thread_end(kt_ix(t));
     kobj_unref(&t->o);
+    gvk_scratch_free();
     atomic_fetch_sub_explicit(&g_host.thread.nhost, 1, memory_order_acq_rel);
     plat_thread_exit();
 }
@@ -976,6 +978,7 @@ void kthread_retire_check(PMutex* held) {
     if (!atomic_load_explicit(&g_host.thread.retire, memory_order_acquire)) return;
     if (held) pm_unlock(held);
     guest_stats_thread_end(kt_ix(kthread_cur()));
+    gvk_scratch_free();
     atomic_fetch_sub_explicit(&g_host.thread.nhost, 1, memory_order_acq_rel);
     SNX_FIBER_LEAVE_ALL(); /* this host thread ends inside its guest's wait */
     plat_thread_exit();

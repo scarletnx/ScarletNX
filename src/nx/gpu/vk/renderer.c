@@ -1593,18 +1593,15 @@ static void vkr_present_image(u64 image, u32 fmt, u32 w, u32 h) {
         VkImage img = (VkImage)(uintptr_t)image;
         vk_barrier(cb, img, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                    VK_ACCESS_2_MEMORY_WRITE_BIT, VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_2_BLIT_BIT,
-                   VK_ACCESS_2_TRANSFER_READ_BIT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+                   VK_ACCESS_2_TRANSFER_READ_BIT, VK_IMAGE_LAYOUT_GENERAL);
         vk_surf_use(cb, src, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_BLIT_BIT,
                     VK_ACCESS_2_TRANSFER_WRITE_BIT);
         VkImageBlit b = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
                          .srcOffsets = {{0, 0, 0}, {(i32)w, (i32)h, 1}},
                          .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
                          .dstOffsets = {{0, 0, 0}, {(i32)w, (i32)h, 1}}};
-        rec_CmdBlitImage(cb, img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, src->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                         1, &b, VK_FILTER_NEAREST);
-        vk_barrier(cb, img, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_BLIT_BIT, 0,
-                   VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, 0,
-                   VK_IMAGE_LAYOUT_GENERAL);
+        rec_CmdBlitImage(cb, img, VK_IMAGE_LAYOUT_GENERAL, src->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &b,
+                         VK_FILTER_NEAREST);
         g_last = src;
         g_last_hdr = (SnxHdrFrame){0};
         g_last_transform = 0;
