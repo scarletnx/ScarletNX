@@ -963,8 +963,13 @@ static void texture_say(const char* line) { fprintf(stderr, "scarletnx-android: 
 /* the device's, once it is made (gles_vk.c) */
 static uint32_t texture_max_size(void) { return V.max_texture ? V.max_texture : 4096; }
 void gles2_textures_init(void) {
-    snx_gl_texture_host(&(SnxGlTextureHost){texture_storage, texture_upload, texture_mipmaps, texture_image_bound,
-                                            texture_gone, texture_say, texture_max_size, 0});
+    snx_gl_texture_host(&(SnxGlTextureHost){.storage = texture_storage,
+                                            .upload = texture_upload,
+                                            .mipmaps = texture_mipmaps,
+                                            .image_bound = texture_image_bound,
+                                            .gone = texture_gone,
+                                            .say = texture_say,
+                                            .max_size = texture_max_size});
 }
 
 VkImageView gles2_image_unit(Gles2Context* gl, unsigned unit, uint8_t dim) {

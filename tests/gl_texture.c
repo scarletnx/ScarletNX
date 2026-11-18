@@ -62,7 +62,13 @@ static struct {
     int refuse_storage, make_mipmaps;
     SnxGlUpload last;
     char said[300];
+    uint64_t layout_bytes, layout_align;
 } heard;
+static uint64_t layout_bytes(uint32_t texture, uint64_t* align) {
+    (void)texture;
+    *align = heard.layout_align;
+    return heard.layout_bytes;
+}
 static uint64_t chunk(uint64_t size, uint64_t* got) {
     void* p = calloc(1, (size_t)size);
     *got = p ? size : 0;
@@ -128,7 +134,14 @@ int main(void) {
     double v[4];
     assert(ctx && desktop);
     snx_gl_object_host(&(SnxGlObjectHost){chunk, bytes, NULL, NULL, NULL});
-    snx_gl_texture_host(&(SnxGlTextureHost){storage, upload, mipmaps, image_bound, gone, say, max_size, 1});
+    snx_gl_texture_host(&(SnxGlTextureHost){.storage = storage,
+                                            .upload = upload,
+                                            .mipmaps = mipmaps,
+                                            .image_bound = image_bound,
+                                            .gone = gone,
+                                            .say = say,
+                                            .max_size = max_size,
+                                            .keeps_texels = 1});
     for (int i = 0; i < 512; i++) pattern[i] = (uint8_t)(i * 7 + 1);
 
     /* names: a texture is one once bound; a target it was not bound to, a target GL has not, a name past the table */
@@ -441,6 +454,43 @@ int main(void) {
         snx_gl_bind_texture(ctx, T2D, n);
         snx_gl_tex_image(ctx, T2D, 0, RGB8, 3, 2, 1, RGB, UBYTE, 0, 0, 0);
         assert(snx_gl_texture(n)->texels == was);
+        snx_gl_bind_texture(ctx, T2D, 1);
+    }
+
+    /* a platform that lays the storage out itself: the bytes and alignment it says, its upload writes the texels, the
+       layer keeps no tight rows; a layout of 0 bytes (a format the platform has none of) keeps no texels */
+    {
+        uint32_t p[2] = {0};
+        uint64_t at;
+        heard.layout_bytes = 4096, heard.layout_align = 2048;
+        snx_gl_texture_host(&(SnxGlTextureHost){.storage = storage,
+                                                .upload = upload,
+                                                .mipmaps = mipmaps,
+                                                .image_bound = image_bound,
+                                                .gone = gone,
+                                                .say = say,
+                                                .max_size = max_size,
+                                                .keeps_texels = 1,
+                                                .storage_bytes = layout_bytes});
+        snx_gl_gen_textures(ctx, 2, p);
+        snx_gl_bind_texture(ctx, T2D, p[0]);
+        snx_gl_tex_image(ctx, T2D, 0, RGBA8, 4, 4, 1, RGBA, UBYTE, (uint64_t)(uintptr_t)pattern, 0, 0);
+        at = snx_gl_texture(p[0])->texels;
+        assert(at && !(at % 2048) && snx_gl_texture(p[0])->texels_size == 4096 && heard.last.src == pattern);
+        assert(texels(p[0])[0] == 0); /* the platform's to write: zeros, not the client's tight rows */
+        heard.layout_bytes = 0;
+        snx_gl_bind_texture(ctx, T2D, p[1]);
+        snx_gl_tex_image(ctx, T2D, 0, RGBA8, 4, 4, 1, RGBA, UBYTE, 0, 0, 0);
+        assert(!snx_gl_texture(p[1])->texels && snx_gl_texture(p[1])->format >= 0 && !snx_gl_get_error(ctx));
+        snx_gl_delete_textures(ctx, 2, p);
+        snx_gl_texture_host(&(SnxGlTextureHost){.storage = storage,
+                                                .upload = upload,
+                                                .mipmaps = mipmaps,
+                                                .image_bound = image_bound,
+                                                .gone = gone,
+                                                .say = say,
+                                                .max_size = max_size,
+                                                .keeps_texels = 1});
         snx_gl_bind_texture(ctx, T2D, 1);
     }
 

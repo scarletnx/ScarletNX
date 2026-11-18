@@ -207,15 +207,20 @@ static int storage(uint32_t ctx, uint32_t name, int32_t format, int32_t w, int32
     t->samples = samples, t->defined = 0;
     t->generation++;
     if (H.keeps_texels && samples <= 1) {
-        uint64_t size = 0;
-        for (int32_t l = 0; l < levels; l++) size += level_bytes(t, f, l);
-        t->texels = snx_gl_memory_take(size);
-        if (!t->texels) {
+        uint64_t size = 0, align = 256;
+        if (H.storage_bytes)
+            size = H.storage_bytes(name, &align);
+        else
+            for (int32_t l = 0; l < levels; l++) size += level_bytes(t, f, l);
+        /* a platform layout of 0 bytes: one the platform has none of (it said so), and the texture keeps no texels */
+        t->texels = size ? snx_gl_memory_take(size, align) : 0;
+        if (size && !t->texels) {
+            t->format = -1, t->levels = 0;
             error(ctx, GL_OUT_OF_MEMORY_);
             return -1;
         }
-        t->texels_size = size;
-        memset(snx_gl_client_bytes(t->texels), 0, size); /* GL leaves them undefined: zeros */
+        t->texels_size = t->texels ? size : 0;
+        if (t->texels) memset(snx_gl_client_bytes(t->texels), 0, size); /* GL leaves them undefined: zeros */
     }
     if (H.storage && !H.storage(ctx, name)) { /* none: the next call that gives a storage tries again */
         if (t->texels) snx_gl_memory_give(t->texels, t->texels_size);
@@ -280,7 +285,7 @@ static void upload(uint32_t ctx, uint32_t name, int32_t level, int32_t x, int32_
     }
     if (!src) return;
     u.src = src + skip;
-    if (t->texels) { /* the kept texels: the level's images after the levels before it, each its tight rows */
+    if (t->texels && !H.storage_bytes) { /* the layer's own: the level's images after the levels before, tight rows */
         uint64_t at = 0, level_row, level_image, x_bytes, y_rows;
         int32_t lw = snx_gl_level_size(t->width, level), lh = snx_gl_level_size(t->height, level);
         uint8_t* to = snx_gl_client_bytes(t->texels);
