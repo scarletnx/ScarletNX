@@ -499,12 +499,12 @@ setting BC7 queue
 setting ASTC compute queue
     key astc_compute_queue
     int 0 1
-    default 0
+    default 1
     startup
     words Off|On
     help On = a new ASTC texture is decoded and encoded on the GPU's compute queue, where it has one of its own,
     help beside the drawing, and a load waits only for those encodes. Off = on the graphics queue, after the drawing
-    help before it. The textures are the same either way. Off by default for now: on, a game's race can freeze for good
+    help before it. The textures are the same either way
 setting ASTC quick Mtexels
     label Very large ASTC textures from (megatexels)
     key astc_quick_mtexels
