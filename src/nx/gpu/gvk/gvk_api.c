@@ -29,6 +29,7 @@
 #define GVK_RPASSES    (1u << 12) /* its render passes */
 #define GVK_CBS        (1u << 12) /* its command buffers inside a render pass at once */
 #define GVK_SCALED     (1u << 14) /* its images, views and framebuffers drawn at the resolution scale */
+#define GVK_DUALS      (1u << 14) /* its fragment modules with a second color at Location 1 */
 #define GVK_SWAPCHAINS 4
 #define GVK_SC_IMAGES  4
 #define GVK_SURFACE    0x5653000000000001ull /* the vi layer's surface: the game's only one */
@@ -83,13 +84,19 @@ typedef struct {
     VkDeviceMemory mem[GVK_SC_IMAGES];
 } GvkSwapchain;
 
+/* a fragment module of the game, and its twin with the second color where dual-source blending reads it
+   (gvk_spirv_dual_source): what a pipeline that blends with it takes */
+typedef struct {
+    u64 module, dual;
+} GvkDual;
+
 static struct {
     PMutex lock;
     int ready;                   /* the memory types are chosen */
     u32 local, coherent, cached; /* the host's memory types behind the game's 0, 1 and 2 */
     u64 import_align;            /* minImportedHostPointerAlignment, or a host page for dma-bufs */
     VkExternalMemoryHandleTypeFlagBits handle_type; /* how the host imports guest pages: host memory or a dma-buf */
-    u32 nmem, nimportable, nrpass, npass, nscaled, nsview, nsfb, ndyn;
+    u32 nmem, nimportable, nrpass, npass, nscaled, nsview, nsfb, ndyn, ndual;
     GvkMem mem[GVK_MEMS];       /* open addressing by handle */
     u64 importable[GVK_IMAGES]; /* the images the host imports guest memory for, open addressing */
     GvkRpass rpass[GVK_RPASSES];
@@ -97,6 +104,7 @@ static struct {
     GvkScaled scaled[GVK_SCALED];
     u64 sview[GVK_SCALED], sfb[GVK_SCALED];
     GvkDyn dyn[GVK_CBS];
+    GvkDual dual[GVK_DUALS];
     GvkSwapchain sc[GVK_SWAPCHAINS];
     u64 presents;
 } g_gvk_api = {.lock = PMUTEX_INIT};
@@ -861,10 +869,22 @@ static void gvk_CreateImageView(CPU* RESTRICT c, u64 entry) {
     put_handle(c->x[3], U(h));
     ret_vk(c, r);
 }
-/* The swapchain's images are the host's own, which can't be in the present layout: GENERAL takes its place, in the
-   game's render passes and barriers and in the renderer's copy (renderer.h present_image) */
+/* The console's driver ignores image layouts, and a game made on it names ones its images aren't in: a render pass
+   that starts from SHADER_READ_ONLY on an image last drawn in COLOR_ATTACHMENT, or on a swapchain image made without
+   SAMPLED. Each layout the game names but UNDEFINED and PREINITIALIZED is GENERAL for the host, which holds each
+   image in it: in render passes, barriers, descriptors and copies, and in the renderer's copy of a swapchain image
+   (renderer.h present_image) */
 static VkImageLayout host_layout(VkImageLayout l) {
-    return l == VK_IMAGE_LAYOUT_PRESENT_SRC_KHR ? VK_IMAGE_LAYOUT_GENERAL : l;
+    return l == VK_IMAGE_LAYOUT_UNDEFINED || l == VK_IMAGE_LAYOUT_PREINITIALIZED ? l : VK_IMAGE_LAYOUT_GENERAL;
+}
+/* a layout argument of a command, in host_layout */
+static VkImageLayout arg_layout(u64 x) { return host_layout((VkImageLayout)(u32)x); }
+/* a copy of n of a subpass's attachment references, in host_layout */
+static const VkAttachmentReference* refs_in(const VkAttachmentReference* r, u32 n) {
+    if (!r || !n) return r;
+    VkAttachmentReference* s = gvk_scratch(sizeof *s * n);
+    for (u32 i = 0; i < n; i++) s[i] = (VkAttachmentReference){r[i].attachment, host_layout(r[i].layout)};
+    return s;
 }
 /* A render pass of one subpass stores every attachment, and has a twin made beside it that loads them, from the layout
    the first one leaves them in: what pass_out ends early and pass_back goes on with. Its attachments are a copy of the
@@ -888,6 +908,13 @@ static void gvk_CreateRenderPass(CPU* RESTRICT c, u64 entry) {
             a[i].initialLayout = host_layout(a[i].initialLayout);
             a[i].finalLayout = host_layout(a[i].finalLayout);
             if (split) a[i].storeOp = a[i].stencilStoreOp = VK_ATTACHMENT_STORE_OP_STORE;
+        }
+        VkSubpassDescription* sp = (VkSubpassDescription*)ci->pSubpasses;
+        for (u32 i = 0; sp && i < ci->subpassCount; i++) {
+            sp[i].pInputAttachments = refs_in(sp[i].pInputAttachments, sp[i].inputAttachmentCount);
+            sp[i].pColorAttachments = refs_in(sp[i].pColorAttachments, sp[i].colorAttachmentCount);
+            sp[i].pResolveAttachments = refs_in(sp[i].pResolveAttachments, sp[i].colorAttachmentCount);
+            sp[i].pDepthStencilAttachment = refs_in(sp[i].pDepthStencilAttachment, 1);
         }
         for (u32 i = 0; ci->pDependencies && i < ci->dependencyCount; i++)
             self |= ci->pDependencies[i].srcSubpass == ci->pDependencies[i].dstSubpass;
@@ -952,7 +979,13 @@ static void gvk_DestroyImageView(CPU* RESTRICT c, u64 entry) {
 }
 DESTROY(DestroyBufferView, VkBufferView)
 DESTROY(DestroySampler, VkSampler)
-DESTROY(DestroyShaderModule, VkShaderModule)
+static void gvk_DestroyShaderModule(CPU* RESTRICT c, u64 entry) {
+    GvkDual e;
+    if (tab_take(TAB(dual), &g_gvk_api.ndual, c->x[1], &e))
+        vkDestroyShaderModule(g_vk.dev, H(VkShaderModule, e.dual), NULL);
+    vkDestroyShaderModule(g_vk.dev, H(VkShaderModule, c->x[1]), NULL);
+    ret(c, 0);
+}
 DESTROY(DestroyPipelineCache, VkPipelineCache)
 DESTROY(DestroyPipelineLayout, VkPipelineLayout)
 DESTROY(DestroyDescriptorSetLayout, VkDescriptorSetLayout)
@@ -1095,6 +1128,7 @@ static void gvk_GetImageSubresourceLayout(CPU* RESTRICT c, u64 entry) {
     ret(c, 0);
 }
 
+/* a fragment module with a second color at Location 1 has its twin made beside it (GvkDual) */
 static void gvk_CreateShaderModule(CPU* RESTRICT c, u64 entry) {
     gvk_scratch_reset();
     VkShaderModuleCreateInfo* ci = gvk_in(&gvk_t_shader, c->x[1], 1);
@@ -1113,6 +1147,18 @@ static void gvk_CreateShaderModule(CPU* RESTRICT c, u64 entry) {
             ci->codeSize = bytes;
         }
         r = vkCreateShaderModule(g_vk.dev, ci, NULL, &h);
+        const u32* dual = r == VK_SUCCESS && !((uintptr_t)ci->pCode & 3)
+                              ? gvk_spirv_dual_source(ci->pCode, ci->codeSize, &bytes)
+                              : NULL;
+        VkShaderModule twin = VK_NULL_HANDLE;
+        if (dual) {
+            ci->pCode = dual;
+            ci->codeSize = bytes;
+            if (vkCreateShaderModule(g_vk.dev, ci, NULL, &twin) == VK_SUCCESS) {
+                GvkDual e = {U(h), U(twin)};
+                tab_put(TAB(dual), &g_gvk_api.ndual, &e);
+            }
+        }
     }
     if (r != VK_SUCCESS) WARN_LIMIT(16, "gvk: vkCreateShaderModule failed (%d)\n", (int)r);
     put_handle(c->x[3], U(h));
@@ -1182,7 +1228,7 @@ static void gvk_FreeDescriptorSets(CPU* RESTRICT c, u64 entry) {
     GUEST(sets, VkDescriptorSet, c->x[3], (u32)c->x[2]);
     ret_vk(c, vkFreeDescriptorSets(g_vk.dev, H(VkDescriptorPool, c->x[1]), (u32)c->x[2], sets));
 }
-/* a write reads the one of its three arrays its type names */
+/* a write reads the one of its three arrays its type names, its images in host_layout */
 static void gvk_UpdateDescriptorSets(CPU* RESTRICT c, u64 entry) {
     gvk_scratch_reset();
     u32 nw = (u32)c->x[1], nc = (u32)c->x[3];
@@ -1197,6 +1243,14 @@ static void gvk_UpdateDescriptorSets(CPU* RESTRICT c, u64 entry) {
             case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT:
                 w[i].pBufferInfo = NULL;
                 w[i].pTexelBufferView = NULL;
+                if (w[i].pImageInfo && w[i].descriptorType != VK_DESCRIPTOR_TYPE_SAMPLER) {
+                    VkDescriptorImageInfo* im = gvk_scratch(sizeof *im * w[i].descriptorCount);
+                    for (u32 k = 0; k < w[i].descriptorCount; k++) {
+                        im[k] = w[i].pImageInfo[k];
+                        im[k].imageLayout = host_layout(im[k].imageLayout);
+                    }
+                    w[i].pImageInfo = im;
+                }
                 break;
             case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
             case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
@@ -1213,6 +1267,9 @@ static void gvk_UpdateDescriptorSets(CPU* RESTRICT c, u64 entry) {
     ret(c, 0);
 }
 
+static int blends_src1(VkBlendFactor f) { return f >= VK_BLEND_FACTOR_SRC1_COLOR && f <= VK_BLEND_FACTOR_ONE_MINUS_SRC1_ALPHA; }
+/* A pipeline that blends with the second color takes its fragment module's twin (GvkDual). The host's compiles leave
+   the game's core to its other threads (kthread_host_wait_begin): the game makes thousands of pipelines as it starts */
 static void gvk_CreateGraphicsPipelines(CPU* RESTRICT c, u64 entry) {
     gvk_scratch_reset();
     u32 n = (u32)c->x[2];
@@ -1220,10 +1277,23 @@ static void gvk_CreateGraphicsPipelines(CPU* RESTRICT c, u64 entry) {
     VkResult r = VK_ERROR_INITIALIZATION_FAILED;
     if (ci && c->x[5] && mem_user_mapped(c->x[5], 8ull * n)) {
         for (u32 i = 0; i < n; i++) { /* the tessellation state is read only with its stages */
-            int tess = 0;
+            int tess = 0, src1 = 0;
             for (u32 s = 0; ci[i].pStages && s < ci[i].stageCount; s++)
                 tess |= (ci[i].pStages[s].stage & VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT) != 0;
             if (!tess) ci[i].pTessellationState = NULL;
+            const VkPipelineColorBlendStateCreateInfo* b = ci[i].pColorBlendState;
+            for (u32 a = 0; b && b->pAttachments && a < b->attachmentCount; a++) {
+                const VkPipelineColorBlendAttachmentState* at = &b->pAttachments[a];
+                src1 |= at->blendEnable && (blends_src1(at->srcColorBlendFactor) ||
+                                            blends_src1(at->dstColorBlendFactor) ||
+                                            blends_src1(at->srcAlphaBlendFactor) ||
+                                            blends_src1(at->dstAlphaBlendFactor));
+            }
+            VkPipelineShaderStageCreateInfo* st = (VkPipelineShaderStageCreateInfo*)ci[i].pStages;
+            GvkDual d;
+            for (u32 s = 0; src1 && st && s < ci[i].stageCount; s++)
+                if (st[s].stage == VK_SHADER_STAGE_FRAGMENT_BIT && tab_get(TAB(dual), U(st[s].module), &d))
+                    st[s].module = H(VkShaderModule, d.dual);
             /* a viewport baked into the pipeline isn't scaled: which target it draws to is the render pass's */
             if (scale_factor() > 1 && ci[i].pViewportState && ci[i].pViewportState->pViewports) {
                 int dynamic = 0;
@@ -1232,7 +1302,9 @@ static void gvk_CreateGraphicsPipelines(CPU* RESTRICT c, u64 entry) {
                 if (!dynamic) LOG_LIMIT(4, "gvk: a pipeline's own viewport isn't scaled\n");
             }
         }
+        kthread_host_wait_begin();
         r = vkCreateGraphicsPipelines(g_vk.dev, H(VkPipelineCache, c->x[1]), n, ci, NULL, gvk_ptr(c->x[5]));
+        kthread_host_wait_end();
     }
     if (r != VK_SUCCESS) WARN_LIMIT(16, "gvk: vkCreateGraphicsPipelines failed (%d)\n", (int)r);
     ret_vk(c, r);
@@ -1242,8 +1314,11 @@ static void gvk_CreateComputePipelines(CPU* RESTRICT c, u64 entry) {
     u32 n = (u32)c->x[2];
     const VkComputePipelineCreateInfo* ci = gvk_in(&gvk_t_cpipe, c->x[3], n);
     VkResult r = VK_ERROR_INITIALIZATION_FAILED;
-    if (ci && c->x[5] && mem_user_mapped(c->x[5], 8ull * n))
+    if (ci && c->x[5] && mem_user_mapped(c->x[5], 8ull * n)) {
+        kthread_host_wait_begin();
         r = vkCreateComputePipelines(g_vk.dev, H(VkPipelineCache, c->x[1]), n, ci, NULL, gvk_ptr(c->x[5]));
+        kthread_host_wait_end();
+    }
     if (r != VK_SUCCESS) WARN_LIMIT(16, "gvk: vkCreateComputePipelines failed (%d)\n", (int)r);
     ret_vk(c, r);
 }
@@ -1531,9 +1606,50 @@ static void gvk_CmdExecuteCommands(CPU* RESTRICT c, u64 entry) {
     vkCmdExecuteCommands(CB, (u32)c->x[1], cbs);
     ret(c, 0);
 }
+/* The stages to add to have for each access in access that none of its stages supports, as the console's driver
+   takes a barrier without them: one game's uploads give TRANSFER_WRITE from the HOST stage, and SHADER_READ for the
+   TRANSFER stage */
+static VkPipelineStageFlags stages_for(VkAccessFlags access, VkPipelineStageFlags have) {
+    enum {
+        SHADERS = VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_TESSELLATION_CONTROL_SHADER_BIT |
+                  VK_PIPELINE_STAGE_TESSELLATION_EVALUATION_SHADER_BIT | VK_PIPELINE_STAGE_GEOMETRY_SHADER_BIT |
+                  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        /* the shader stages added: those every device has */
+        ADD_SHADERS = VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
+                      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        TESTS = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+    };
+    static const struct {
+        VkAccessFlags access;
+        VkPipelineStageFlags supported, add;
+    } k[] = {
+        {VK_ACCESS_INDIRECT_COMMAND_READ_BIT, VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT, VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT},
+        {VK_ACCESS_INDEX_READ_BIT | VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT, VK_PIPELINE_STAGE_VERTEX_INPUT_BIT,
+         VK_PIPELINE_STAGE_VERTEX_INPUT_BIT},
+        {VK_ACCESS_UNIFORM_READ_BIT | VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT, SHADERS, ADD_SHADERS},
+        {VK_ACCESS_INPUT_ATTACHMENT_READ_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT},
+        {VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+         VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT},
+        {VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT, TESTS, TESTS},
+        {VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+         VK_PIPELINE_STAGE_TRANSFER_BIT},
+        {VK_ACCESS_HOST_READ_BIT | VK_ACCESS_HOST_WRITE_BIT, VK_PIPELINE_STAGE_HOST_BIT, VK_PIPELINE_STAGE_HOST_BIT},
+    };
+    if (have & VK_PIPELINE_STAGE_ALL_COMMANDS_BIT) return 0;
+    if (have & VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT) /* every stage of a draw */
+        have |= (SHADERS & ~(VkPipelineStageFlags)VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT) | TESTS |
+                VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_VERTEX_INPUT_BIT |
+                VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    VkPipelineStageFlags add = 0;
+    for (u32 e = 0; e < sizeof k / sizeof *k; e++)
+        if ((access & k[e].access) && !(have & k[e].supported)) add |= k[e].add;
+    return add;
+}
 /* vkCmdPipelineBarrier(cb, src, dst, flags, nm, pm, nb, pb, ni, pi): the last two on the stack. Inside a render pass
-   whose subpass depends on itself it is legal and stays there; inside another it goes outside (pass_out). An image's
-   present layout is GENERAL (host_layout), and a guest-mapped linear image, made undefined, leaves undefined */
+   whose subpass depends on itself it is legal and stays there, as the game gave it; inside another it goes outside
+   (pass_out), its stages with those its accesses need (stages_for). Its layouts are host_layout's, and a
+   guest-mapped linear image, made undefined, leaves undefined */
 static void gvk_CmdPipelineBarrier(CPU* RESTRICT c, u64 entry) {
     gvk_scratch_reset();
     u32 nm = (u32)c->x[4], nb = (u32)c->x[6], ni = (u32)stack_arg(c, 0);
@@ -1551,9 +1667,17 @@ static void gvk_CmdPipelineBarrier(CPU* RESTRICT c, u64 entry) {
     if (tab_get(TAB(pass), c->x[0], &p) && tab_get(TAB(rpass), p.rp, &rp) && rp.self)
         vkCmdPipelineBarrier(CB, (VkPipelineStageFlags)c->x[1], (VkPipelineStageFlags)c->x[2],
                              (VkDependencyFlags)c->x[3], m ? nm : 0, m, b ? nb : 0, b, i ? ni : 0, i);
-    else
-        OUTSIDE(CB, vkCmdPipelineBarrier(CB, (VkPipelineStageFlags)c->x[1], (VkPipelineStageFlags)c->x[2],
-                                         (VkDependencyFlags)c->x[3], m ? nm : 0, m, b ? nb : 0, b, i ? ni : 0, i));
+    else {
+        VkAccessFlags sa = 0, da = 0;
+        for (u32 k = 0; m && k < nm; k++) sa |= m[k].srcAccessMask, da |= m[k].dstAccessMask;
+        for (u32 k = 0; b && k < nb; k++) sa |= b[k].srcAccessMask, da |= b[k].dstAccessMask;
+        for (u32 k = 0; i && k < ni; k++) sa |= i[k].srcAccessMask, da |= i[k].dstAccessMask;
+        VkPipelineStageFlags src = (VkPipelineStageFlags)c->x[1], dst = (VkPipelineStageFlags)c->x[2];
+        src |= stages_for(sa, src);
+        dst |= stages_for(da, dst);
+        OUTSIDE(CB, vkCmdPipelineBarrier(CB, src, dst, (VkDependencyFlags)c->x[3], m ? nm : 0, m, b ? nb : 0, b,
+                                         i ? ni : 0, i));
+    }
     ret(c, 0);
 }
 static void gvk_CmdCopyBuffer(CPU* RESTRICT c, u64 entry) {
@@ -1568,7 +1692,7 @@ static void gvk_CmdCopyImage(CPU* RESTRICT c, u64 entry) {
     u32 n = (u32)c->x[5], fs = image_scale(c->x[1]), fd = image_scale(c->x[3]);
     const VkImageCopy* r = n && mem_user_mapped(c->x[6], sizeof *r * n) ? gvk_ptr(c->x[6]) : NULL;
     VkImage src = H(VkImage, c->x[1]), dst = H(VkImage, c->x[3]);
-    VkImageLayout sl = (VkImageLayout)(u32)c->x[2], dl = (VkImageLayout)(u32)c->x[4];
+    VkImageLayout sl = arg_layout(c->x[2]), dl = arg_layout(c->x[4]);
     if (!r || (fs == 1 && fd == 1)) {
         OUTSIDE(CB, vkCmdCopyImage(CB, src, sl, dst, dl, r ? n : 0, r));
     } else if (fs == fd) {
@@ -1611,8 +1735,8 @@ static void gvk_CmdBlitImage(CPU* RESTRICT c, u64 entry) {
             s[i].dstOffsets[k] = offset_at(r[i].dstOffsets[k], fd);
         }
     }
-    OUTSIDE(CB, vkCmdBlitImage(CB, H(VkImage, c->x[1]), (VkImageLayout)(u32)c->x[2], H(VkImage, c->x[3]),
-                               (VkImageLayout)(u32)c->x[4], r ? n : 0, s ? s : r, (VkFilter)(u32)c->x[7]));
+    OUTSIDE(CB, vkCmdBlitImage(CB, H(VkImage, c->x[1]), arg_layout(c->x[2]), H(VkImage, c->x[3]), arg_layout(c->x[4]),
+                               r ? n : 0, s ? s : r, (VkFilter)(u32)c->x[7]));
     ret(c, 0);
 }
 static void gvk_CmdResolveImage(CPU* RESTRICT c, u64 entry) {
@@ -1628,22 +1752,22 @@ static void gvk_CmdResolveImage(CPU* RESTRICT c, u64 entry) {
         s[i].extent.width *= fs;
         s[i].extent.height *= fs;
     }
-    OUTSIDE(CB, vkCmdResolveImage(CB, H(VkImage, c->x[1]), (VkImageLayout)(u32)c->x[2], H(VkImage, c->x[3]),
-                                  (VkImageLayout)(u32)c->x[4], r ? n : 0, s ? s : r));
+    OUTSIDE(CB, vkCmdResolveImage(CB, H(VkImage, c->x[1]), arg_layout(c->x[2]), H(VkImage, c->x[3]),
+                                  arg_layout(c->x[4]), r ? n : 0, s ? s : r));
     ret(c, 0);
 }
 /* A buffer holds the game's pixels: a copy of a scaled image to or from one moves its top-left part alone */
 static void gvk_CmdCopyBufferToImage(CPU* RESTRICT c, u64 entry) {
     GUEST(r, VkBufferImageCopy, c->x[5], (u32)c->x[4]);
     if (image_scale(c->x[2]) > 1) LOG_LIMIT(4, "gvk: a copy from a buffer into a scaled image fills a part of it\n");
-    OUTSIDE(CB, vkCmdCopyBufferToImage(CB, H(VkBuffer, c->x[1]), H(VkImage, c->x[2]), (VkImageLayout)(u32)c->x[3],
+    OUTSIDE(CB, vkCmdCopyBufferToImage(CB, H(VkBuffer, c->x[1]), H(VkImage, c->x[2]), arg_layout(c->x[3]),
                                        (u32)c->x[4], r));
     ret(c, 0);
 }
 static void gvk_CmdCopyImageToBuffer(CPU* RESTRICT c, u64 entry) {
     GUEST(r, VkBufferImageCopy, c->x[5], (u32)c->x[4]);
     if (image_scale(c->x[1]) > 1) LOG_LIMIT(4, "gvk: a copy of a scaled image into a buffer reads a part of it\n");
-    OUTSIDE(CB, vkCmdCopyImageToBuffer(CB, H(VkImage, c->x[1]), (VkImageLayout)(u32)c->x[2], H(VkBuffer, c->x[3]),
+    OUTSIDE(CB, vkCmdCopyImageToBuffer(CB, H(VkImage, c->x[1]), arg_layout(c->x[2]), H(VkBuffer, c->x[3]),
                                        (u32)c->x[4], r));
     ret(c, 0);
 }
@@ -1659,14 +1783,13 @@ static void gvk_CmdFillBuffer(CPU* RESTRICT c, u64 entry) {
 static void gvk_CmdClearColorImage(CPU* RESTRICT c, u64 entry) {
     GUEST(color, VkClearColorValue, c->x[3], 1);
     GUEST(ranges, VkImageSubresourceRange, c->x[5], (u32)c->x[4]);
-    OUTSIDE(CB,
-            vkCmdClearColorImage(CB, H(VkImage, c->x[1]), (VkImageLayout)(u32)c->x[2], color, (u32)c->x[4], ranges));
+    OUTSIDE(CB, vkCmdClearColorImage(CB, H(VkImage, c->x[1]), arg_layout(c->x[2]), color, (u32)c->x[4], ranges));
     ret(c, 0);
 }
 static void gvk_CmdClearDepthStencilImage(CPU* RESTRICT c, u64 entry) {
     GUEST(value, VkClearDepthStencilValue, c->x[3], 1);
     GUEST(ranges, VkImageSubresourceRange, c->x[5], (u32)c->x[4]);
-    OUTSIDE(CB, vkCmdClearDepthStencilImage(CB, H(VkImage, c->x[1]), (VkImageLayout)(u32)c->x[2], value, (u32)c->x[4],
+    OUTSIDE(CB, vkCmdClearDepthStencilImage(CB, H(VkImage, c->x[1]), arg_layout(c->x[2]), value, (u32)c->x[4],
                                             ranges));
     ret(c, 0);
 }
@@ -1821,6 +1944,52 @@ static void swapchain_free(GvkSwapchain* s) {
     }
     *s = (GvkSwapchain){0};
 }
+/* a swapchain's new images put in GENERAL, the one layout the game's render passes take them in (host_layout), ahead
+   of the game's work on the queue */
+static VkResult images_general(const VkImage* img, u32 n) {
+    VkCommandPoolCreateInfo pi = {.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+                                  .flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT,
+                                  .queueFamilyIndex = g_vk.gfx_family};
+    VkCommandPool pool = VK_NULL_HANDLE;
+    VkCommandBuffer cb = VK_NULL_HANDLE;
+    VkFence fence = VK_NULL_HANDLE;
+    VkResult r = vkCreateCommandPool(g_vk.dev, &pi, NULL, &pool);
+    VkCommandBufferAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+                                      .commandPool = pool,
+                                      .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+                                      .commandBufferCount = 1};
+    if (r == VK_SUCCESS) r = vkAllocateCommandBuffers(g_vk.dev, &ai, &cb);
+    VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+    if (r == VK_SUCCESS) r = vkCreateFence(g_vk.dev, &fi, NULL, &fence);
+    VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+                                   .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
+    if (r == VK_SUCCESS) r = vkBeginCommandBuffer(cb, &bi);
+    if (r == VK_SUCCESS) {
+        VkImageMemoryBarrier b[GVK_SC_IMAGES];
+        for (u32 i = 0; i < n; i++)
+            b[i] = (VkImageMemoryBarrier){.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                                          .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
+                                          .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                                          .newLayout = VK_IMAGE_LAYOUT_GENERAL,
+                                          .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                          .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                          .image = img[i],
+                                          .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+        vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, NULL, 0,
+                             NULL, n, b);
+        r = vkEndCommandBuffer(cb);
+    }
+    VkSubmitInfo si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &cb};
+    if (r == VK_SUCCESS) r = queue_submit(1, &si, fence);
+    if (r == VK_SUCCESS) {
+        kthread_host_wait_begin();
+        r = vkWaitForFences(g_vk.dev, 1, &fence, VK_TRUE, UINT64_MAX);
+        kthread_host_wait_end();
+    }
+    if (fence) vkDestroyFence(g_vk.dev, fence, NULL);
+    if (pool) vkDestroyCommandPool(g_vk.dev, pool, NULL);
+    return r;
+}
 static void gvk_CreateSwapchainKHR(CPU* RESTRICT c, u64 entry) {
     u64 ci = c->x[1];
     if (!ci || !mem_user_mapped(ci, sizeof(VkSwapchainCreateInfoKHR))) {
@@ -1870,6 +2039,7 @@ static void gvk_CreateSwapchainKHR(CPU* RESTRICT c, u64 entry) {
         if (r == VK_SUCCESS) r = vkBindImageMemory(g_vk.dev, s->img[i], s->mem[i], 0);
         if (r == VK_SUCCESS && f > 1) scaled_put(U(s->img[i]), w, h);
     }
+    if (r == VK_SUCCESS) r = images_general(s->img, s->n);
     if (r != VK_SUCCESS) {
         WARN("gvk: a swapchain of %u images of format %d, %ux%u, usage %#x, failed (%d)\n", s->n, (int)fmt, w, h, usage,
              (int)r);

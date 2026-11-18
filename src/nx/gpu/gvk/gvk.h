@@ -78,6 +78,11 @@ u64 gvk_export(const char* name);
      buffers by the vertex's matrix index. The console's GPU takes each vertex's own buffer, and AMD's and lavapipe
      take the first vertex's of the group unless told: that game's planets drew as long thin triangles */
 const u32* gvk_spirv_mend(const u32* w, size_t bytes, size_t* out_bytes);
+/* A fragment module (as gvk_spirv_mend takes one) whose outputs at Location 1 are at Location 0, Index 1: the
+   second color of dual-source blending, where Vulkan reads it. The console's driver takes it at Location 1 (one
+   game's blends of SRC1_ALPHA). NULL for a module with no such output, for one with an entry point of another stage,
+   and for one that gives an output at Location 1 an Index itself */
+const u32* gvk_spirv_dual_source(const u32* w, size_t bytes, size_t* out_bytes);
 
 /* the structures gvk_api.c copies (gvk.c's tables) */
 extern const GvkType gvk_t_submit, gvk_t_buffer, gvk_t_image, gvk_t_image_view, gvk_t_buffer_view, gvk_t_sampler,

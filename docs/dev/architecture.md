@@ -391,9 +391,13 @@ mapping is the game's own address: guest pages the host imports (`VK_EXT_externa
 linear images in it made with the linear DRM format modifier. The swapchain's images are host images, and a present
 blits one into the renderer's window (`present_image`). What the console's driver accepts and Vulkan doesn't is mended
 there: a transfer command inside a render pass ends the pass and begins a twin that loads what it stored, a depth
-format the host lacks (24-bit depth on AMD) is the nearest one it has, and the SPIR-V is given what Vulkan reads
+format the host lacks (24-bit depth on AMD) is the nearest one it has, each image layout the game names (but
+`UNDEFINED` and `PREINITIALIZED`) is `GENERAL`, as the console's driver ignores layouts and the game names ones its
+images aren't in, a barrier gets the stages its access flags need, and the SPIR-V is given what Vulkan reads
 (`gpu/gvk/gvk_spirv.c`: an ArrayStride on a structure's member goes on its array type, a matrix with no order is
-column-major, and a pointer into an array of buffers by an index that differs between invocations is NonUniform).
+column-major, a pointer into an array of buffers by an index that differs between invocations is NonUniform, and a
+pipeline that blends with the second color takes a twin of its fragment module with that output at `Location 0,
+Index 1`). A pipeline's compile leaves the guest core to the game's other threads.
 The `resolution` setting scales the game's color and depth targets of one level that are
 at least the console's screen in size (a game can make every texture a color target), with the swapchain. The
 commands that name their pixels scale with them: render areas, viewports, scissors, clear rectangles, copies and
