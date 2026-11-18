@@ -112,7 +112,7 @@ commit or file at a commit (the table's head names the hashes they were read at)
 
 | What breaks | Source | What the renderer does, where | Kept by |
 |---|---|---|---|
-| The push constants of every stage a draw binds go to the linear rasterizer as one buffer, their ranges added up (a shader object's, or a pipeline library's layout each), and `lp_fs_linear_run` copies that buffer into a stack array of 256 bytes' worth: two stages of 224 bytes smashed the stack (Mesa 26.2.6) | #2461 | constant buffers are bound one by one, without windows of the staging ring, on lavapipe (`cb_windows.h`) | vk_cb_windows |
+| The push constants of every stage a draw binds go to the linear rasterizer as one buffer, their ranges added up (a shader object's, or a pipeline library's layout each), and `lp_fs_linear_run` copies that buffer into a stack array of 256 bytes' worth: two stages of 224 bytes smashed the stack (Mesa 26.2.6) | #2461 | constant buffers are bound one by one, without windows of the staging ring, on lavapipe (`cb_windows.h`); `vk_cb_windows=1` takes them there with `LP_PERF=no_rast_linear` | vk_cb_windows, vulkan_headless_cb_windows |
 
 ### Every driver but NVIDIA's
 
