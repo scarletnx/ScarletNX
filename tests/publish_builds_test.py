@@ -745,8 +745,7 @@ for what, copy in {
     ),
     "on main's pushes alone": workflow.replace(
         "    needs: windows\n    if: github.event_name != 'pull_request'\n",
-        '    needs: windows\n'
-        "    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'\n",
+        "    needs: windows\n    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'\n",
     ),
     'without the tags': workflow.replace("tags: ['v*']", 'tags: []'),
 }.items():
