@@ -127,6 +127,11 @@ typedef struct {
        flip.w, flip a vec4 at offset 0 of a push constant block. A backend that draws a framebuffer with a negative
        viewport height (GL's origin) gives (-1, height, 1, 0) there, and (1, 0, -1, 1) for one drawn upright */
     int flip_y;
+    /* nonzero: the shader is a desktop OpenGL context's, so it may also be desktop GLSL: #version 110 and 120 compile
+       as GLSL ES 1.00 (120 with the f suffix), 330 and 330 core as GLSL ES 3.00, and no #version as 110. Such a
+       shader has no GL_ES macro, __VERSION__ is its own version, and every type is highp by default in every stage,
+       as desktop GLSL has no precision of its own. GLSL ES versions compile as they are */
+    int desktop;
 } GlslcOptions;
 
 /* The scratch memory of compilations: every array of the bounds above, carved anew by each compilation, so nothing
