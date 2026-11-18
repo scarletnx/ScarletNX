@@ -271,8 +271,8 @@ typedef struct NvdecPic {
    oy rows down; rows from h on read as zero and take no writes). With remap, an element is ns components of cs bytes
    in and nd out, component k of it from sel[k] (0-3 a source component, 4 constant A, 5 constant B, 6 and 7 the
    destination's own bytes); fill: nothing is read. snap: the source's bytes as read at submission (pitch linear, its
-   span from its lowest byte, gpu_dma_low), or NULL; snap_id: nonzero when they are the renderer's
-   (Renderer.snap_alloc), which dma_copy takes over */
+   span from its lowest byte, gpu_dma_low, or its lines alone, line k at k * line_in, when gpu_dma_sparse), or NULL;
+   snap_id: nonzero when they are the renderer's (Renderer.snap_alloc), which dma_copy takes over */
 typedef struct {
     u64 addr;
     int bl;
@@ -289,6 +289,16 @@ static inline i64 gpu_dma_low(const GpuDmaSide* s, u32 lines) {
 static inline u64 gpu_dma_span(const GpuDmaSide* s, u32 lines, u32 line) {
     i64 p = gpu_dma_pitch(s);
     return lines ? (u64)(p < 0 ? -p : p) * (lines - 1) + line : 0;
+}
+/* whether a pitch linear source's lines are read one by one, packed (line k at k * line), and not as their span: when
+   the span is more than twice their bytes. A 256x256 region of an 8192 texel wide RGBA8 surface is 256 lines of
+   1 KiB, 32 KiB apart: 256 KiB read for its lines, 8 MiB for its span */
+static inline int gpu_dma_sparse(const GpuDmaSide* s, u32 lines, u32 line) {
+    return lines > 1 && gpu_dma_span(s, lines, line) / 2 > (u64)lines * line;
+}
+/* the bytes a pitch linear source's read holds: its lines packed when sparse, else its span */
+static inline u64 gpu_dma_read_bytes(const GpuDmaSide* s, u32 lines, u32 line) {
+    return gpu_dma_sparse(s, lines, line) ? (u64)lines * line : gpu_dma_span(s, lines, line);
 }
 typedef struct {
     int multi, remap, fill, shuffle, keep;
