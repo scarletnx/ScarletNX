@@ -1,12 +1,12 @@
 ---
 name: snx-profile
-description: "Find where a frame's time actually goes, before changing code, on Windows, Linux, macOS and iOS. It covers the runtime's own counters (--stats: finishes by call site, dispatches, texture uploads, waits by caller), plat_ns timers around a phase, the GPU's own timestamps (vk_gpu_profile) and what replaces them on Metal, and each host's sampler. Use it before any change made for speed, and to prove that one worked."
+description: "Find where a frame's time actually goes, before you change code, on Windows, Linux, macOS and iOS. It covers the runtime's own counters (--stats: finishes by call site, dispatches, texture uploads, waits by caller) and plat_ns timers around a phase. It also covers the GPU's own timestamps (vk_gpu_profile), what replaces them on Metal, and each host's sampler. Use it before any change made for speed, and to prove that one worked."
 ---
 
 # Profile
 
-A mechanism that sounds right is wrong often enough to cost whole sessions: five changes here were written from a
-plausible cause, and each was disproved by its own instrumentation. Measure first, then cut.
+A mechanism that sounds right is wrong often enough to cost whole sessions. Five changes here came from a plausible
+cause, and their own instrumentation disproved each one. Measure first, then cut.
 
 ## 1. The runtime's counters, on every platform, with no rebuild
 
@@ -14,9 +14,9 @@ plausible cause, and each was disproved by its own instrumentation. Measure firs
 
 - `N finishes (P%, M ms) at file:line` — each submit-and-wait, attributed to the call site that made it. Read this
   first: a frame that waits for the GPU names its own file and line here.
-- `N dispatches in N batches (M ms waiting), N skipped <why>` — the dispatches whose bindings could not be made,
-  with the reason the last one gives (`past the GPU's limits`, `a storage image not bound`, and the rest of the
-  `cs_skip_names` list in `gpu/vk/compute.c`).
+- `N dispatches in N batches (M ms waiting), N skipped <why>` — the dispatches that the runtime skipped, with a count
+  for each reason (`past the GPU's limits`, `a storage image not bound`, and the rest of the `g_cs_skip_names` list in
+  `gpu/vk/compute.c`).
 - `N texture uploads (M MB)` — bytes moved into images, the usual cost of a scene that reloads its pictures.
 - `... waits for it`, then `those waits by who asked: ...` — the same waits split by caller.
 - `a N ms frame: ... M ms in finishes` — the slow frames, with what they held.
@@ -24,8 +24,8 @@ plausible cause, and each was disproved by its own instrumentation. Measure firs
 ## 2. A timer around the phase you suspect
 
 `plat_ns()` is the clock (`nx/runtime/platform/plat.h`). Sum the phase into a global and print it in the stats block
-of `gpu/vk/renderer.c`, under `g_vk_present % 600 == 0`. Wrap the function rather than editing its body, so every
-return is covered:
+of `gpu/vk/renderer.c`, under `g_vk_present % 600 == 0`. Wrap the function and do not edit its body, so that the timer
+covers every return:
 
 ```c
 static int tex_rehash_inner(Surf* t) { ... }
@@ -37,8 +37,8 @@ static int tex_rehash(Surf* t) {
 }
 ```
 
-A timer variable must be set before every path that reads it: an uninitialised one printed 121 million milliseconds
-and cost a round. A counter declared in a header must not take a name another module already has (`g_sub_ns`, `g_bg`
+Set a timer variable before every path that reads it. An uninitialised one printed 121 million milliseconds and
+cost a round. A counter declared in a header must not take a name another module already has (`g_sub_ns`, `g_bg`
 and `g_tx_ns` were each taken once).
 
 ## 3. The GPU's time
@@ -46,8 +46,9 @@ and `g_tx_ns` were each taken once).
 `vk_gpu_profile=1` (`gpuprof.c`) timestamps each rendering pass and dispatch, and logs the frame's span, its passes
 and its targets every 10 s.
 
-**It is forced off on a portability driver, by design.** Each timestamp there takes a Metal encoder of its own that
-waits for the work before it, and reads unreliably (MoltenVK issues 1585 and 2378). The log says which host it is.
+**The runtime forces it off on a portability driver, by design.** Each timestamp there takes a Metal encoder of its
+own that waits for the work before it, and reads unreliably (MoltenVK issues 1585 and 2378). The log says which host
+it is.
 
 | host | GPU time |
 |---|---|
@@ -60,12 +61,12 @@ With no GPU profiler, take the GPU's cost by difference: the same scene at two `
 ## 4. The CPU's time
 
 - **Windows**: `profile=1` (the `--profile` setting) writes `profile.txt` beside the game every 10 s, by thread,
-  with waiting threads counted as waiting (`platform/profiler_win32.c`).
+  and a thread that waits gives no sample (`platform/profiler_win32.c`).
 - **Linux**: launch the game under perf with its events off, and turn them on for the scene: `mkfifo ctl ack`,
   `perf record -F 199 --call-graph dwarf,8192 -D -1 --control fifo:ctl,ack -- <the game's command>`, then
   `echo enable > ctl` and `echo disable > ctl`, and `perf report`. Attached with `-p <pid>`, perf runs out of time
-  reading the game's memory maps and the game's own frames come out `[unknown]`. The `dwarf,65528` setting slowed a
-  game three times over.
+  while it reads the game's memory maps, and the game's own frames come out `[unknown]`. The `dwarf,65528` setting
+  slowed a game three times over.
 - **macOS**: `sample <pid> 5 -file out.txt`. It samples every thread, so a busy process can look idle. Check
   `ps -o time` as well. Read CPU **seconds per frame**, not samples.
 - **iOS**: Instruments, Time Profiler, on a device.
