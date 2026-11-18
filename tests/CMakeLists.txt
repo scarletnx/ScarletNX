@@ -2620,6 +2620,9 @@ add_executable(snx-test-extract extract.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/
     "${PROJECT_SOURCE_DIR}/src/nx/loader/match.c" "${PROJECT_SOURCE_DIR}/src/nx/runtime/driver/game_name.c")
 snx_test_target(snx-test-extract gnu23)
 target_link_libraries(snx-test-extract PRIVATE snx_test_common hactool_internals snx_lz4 OpenSSL::Crypto snx_nx_module)
+if(WIN32) # a scenario's crash says where it was (one ended 0xC0000005 on Windows on Arm, saying nothing)
+    target_sources(snx-test-extract PRIVATE win32_crash.c)
+endif()
 add_test(NAME extraction_native COMMAND snx-test-extract)
 
 add_executable(snx-test-loader loader_test.c "${PROJECT_SOURCE_DIR}/src/nx/loader/loader.c"
