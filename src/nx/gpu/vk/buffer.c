@@ -369,6 +369,7 @@ static struct {
 static u32 g_npw;
 static VkWriteLog* g_bind_log; /* the log of the writer vk_buf_copy_writable is binding, NULL when it logs nothing */
 static int g_bind_no_read; /* the writer binds a buffer the program writes but never reads: its input is not copied */
+static int g_bind_any_word; /* the binding is read by device address: an earlier result is taken at any word */
 static u32 g_bind_part;
 /* the dispatches' own references to their logs, dropped once the submit that recorded them is done */
 static struct {
@@ -3010,7 +3011,7 @@ static int copy_writable(u64 gva, u32 len, VkBuffer* buf, u64* off, int ordered)
     u64 bind_align = g_vk.props.limits.minStorageBufferOffsetAlignment;
     if (bind_align < g_vk.props.limits.minTexelBufferOffsetAlignment)
         bind_align = g_vk.props.limits.minTexelBufferOffsetAlignment;
-    if (bind_align < 4) bind_align = 4;
+    if (bind_align < 4 || g_bind_any_word) bind_align = 4; /* by device address: any word (vk_buf_copy_writable_word) */
     g_src_match = NULL;
     int pending = gfx_gpu_src(gva, len, buf, off, 1, bind_align, ordered);
     if (pending == 1) {
@@ -3128,6 +3129,12 @@ int vk_buf_copy_writable(u64 gva, u32 len, VkBuffer* buf, u64* off, int ordered)
     g_bind_log = NULL;
     g_bind_no_read = 0;
     return copy_writable(gva, len, buf, off, ordered);
+}
+int vk_buf_copy_writable_word(u64 gva, u32 len, VkBuffer* buf, u64* off, int ordered) {
+    g_bind_any_word = 1;
+    const int got = vk_buf_copy_writable(gva, len, buf, off, ordered);
+    g_bind_any_word = 0;
+    return got;
 }
 int vk_buf_copy_writable_logged(u64 gva, u32 len, VkBuffer* buf, u64* off, int ordered, VkWriteLog* l, u32 part,
                                 int no_read) {
@@ -4522,8 +4529,8 @@ static int win_get(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off) {
     return 1;
 }
 /* a draw's bare read-only storage buffer: in place as vk_buf_get_storage's, else in a window */
-int vk_buf_get_window(u64 gva, u64 len, VkBuffer* buf, u64* off) {
-    u64 align = g_vk.props.limits.minStorageBufferOffsetAlignment;
+int vk_buf_get_window(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off) {
+    if (!align) align = g_vk.props.limits.minStorageBufferOffsetAlignment;
     g_buffer.lk = LK_STORAGE;
     g_buffer.nf = NF_OFF;
     int got = vk_uma() && buf_get(gva, len, buf, off, 0, align, IN_ONLY | IN_DEAR | IN_FAST); /* no window needed */

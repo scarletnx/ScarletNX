@@ -209,6 +209,9 @@ typedef struct {
     /* the features of the texture table (table.c) that an SM86 game asked of the device: partially bound sets, sampled
        image updates after bind and while unused descriptors are pending, and arrays indexed by a uniform value */
     int has_table_features;
+    /* bufferDeviceAddress and shaderInt64 for an SM86 game: global memory by device address (ShCaps.gbuf_address)
+       may be on, and the buffers its bindings come from get device addresses */
+    int has_gbuf_address;
     int feedback_mode; /* VK_FEEDBACK_*: how a draw reads a color target it writes, at its own pixel (device.c) */
     /* VK_EXT_conditional_rendering: a render enable comparing a samples-passed count not known yet with zero
        predicates its draws on the GPU (gpu/vk/query.c) instead of waiting for the count */
@@ -2131,6 +2134,11 @@ VkImageView vk_null_view(VkImageViewType type, int num, int ms);
 int vk_table_init(char* why, size_t size);
 /* the push constant bytes of a draw's pipeline layouts (pipeline.c) */
 u32 vk_push_bytes(void);
+/* With ShCaps.gbuf_address (table.c): the scratch words that an access past a global buffer's length goes to, made
+   by vk_table_scratch_init, and a buffer's device address */
+int vk_table_scratch_init(void);
+u64 vk_table_scratch(void);
+u64 vk_buffer_address(VkBuffer b);
 VkDescriptorSetLayout vk_table_layout(void);
 VkDescriptorSet vk_table_set(void);
 /* each texture's word, view slot | sampler slot << SNX_TABLE_SAMPLER_SHIFT, under one lock: 0 where views[i] is 0. 0
@@ -2255,7 +2263,8 @@ int vk_buf_get_at(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off);
 int vk_buf_get_input(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off);
 /* the same inside a window shared with the ranges it overlaps (a storage buffer with no size of its own): *off is the
    range's offset in it, a multiple of minStorageBufferOffsetAlignment */
-int vk_buf_get_window(u64 gva, u64 len, VkBuffer* buf, u64* off);
+/* align: the binding's offset alignment, 0 for a storage buffer descriptor's (4 for one read by device address) */
+int vk_buf_get_window(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off);
 int vk_buf_get_window_input(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off);
 /* the cache lines vk_buf_get(gva, len) will read, fetched ahead: step 0 its index slot, step 1 (after step 0 for every
    range) its entry. For a caller with several ranges to look up, so their misses overlap */
@@ -2378,6 +2387,8 @@ int vk_buf_copy_writable_logged(u64 gva, u32 len, VkBuffer* buf, u64* off, int o
 /* the dispatch's own reference to l, dropped once the submit being recorded is done */
 void vk_buf_log_retire(VkWriteLog* l);
 int vk_buf_copy_writable(u64 gva, u32 len, VkBuffer* buf, u64* off, int ordered);
+/* the same for a binding read by device address: an earlier result is taken in place at any word */
+int vk_buf_copy_writable_word(u64 gva, u32 len, VkBuffer* buf, u64* off, int ordered);
 /* Shader-data invalidation needs writes only. Execution order also covers reads before an in-place writer. */
 int vk_buf_order_pending(int writes_only);
 void vk_buf_order_request(int writes_only);

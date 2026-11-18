@@ -16,6 +16,7 @@
 #include "common/utilities/bits.h"
 #include "nx/gpu/shader/shader.h"
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/vk/descriptors.h"
 #include "nx/runtime/platform/log.h"
 
 /* a view in a layout and its slot. view 0 is a free entry */
@@ -36,6 +37,9 @@ static struct {
     VkDescriptorSetLayout layout;
     VkDescriptorPool pool;
     VkDescriptorSet set;
+    VkBuffer scratch; /* gbuf_address's scratch words */
+    DevMem scratch_mem;
+    u64 scratch_address;
     PMutex lock;
     TableView views[TABLE_VIEWS];
     TableSampler samplers[TABLE_SAMPLERS];
@@ -120,6 +124,21 @@ int vk_table_init(char* why, size_t size) {
     return 1;
 }
 VkDescriptorSetLayout vk_table_layout(void) { return g_table.layout; }
+u64 vk_buffer_address(VkBuffer b) {
+    const VkBufferDeviceAddressInfo info = {.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .buffer = b};
+    return (u64)vkGetBufferDeviceAddress(g_vk.dev, &info);
+}
+int vk_table_scratch_init(void) {
+    const VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                                   .size = 256,
+                                   .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                                   .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
+    const DevMemWant want = {.at = DM_DEVICE};
+    if (!VK_OK(vk_buffer_create(&bi, &want, &g_table.scratch, &g_table.scratch_mem, NULL))) return 0;
+    g_table.scratch_address = vk_buffer_address(g_table.scratch);
+    return g_table.scratch_address != 0;
+}
+u64 vk_table_scratch(void) { return g_table.scratch_address; }
 VkDescriptorSet vk_table_set(void) { return g_table.set; }
 
 /* the slot of view in layout, new where it has none: under the lock */

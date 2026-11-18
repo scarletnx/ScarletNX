@@ -308,6 +308,9 @@ typedef struct {
     /* the program reads its plain texture slots through the texture table (ShCaps.tex_table): slot i's word,
        view slot | sampler slot << SNX_TABLE_SAMPLER_SHIFT, is word i of its words (SNX_VKB_TEXWORDS) */
     u32 tex_table;
+    /* the program reads its global buffers by device address (ShCaps.gbuf_address): each slot's address and length
+       are words of its record, and no storage buffer descriptor is bound for them */
+    u32 gbuf_address;
 } ShaderInfo;
 /* A fragment module's specialization constants, by SpecId: state a draw has before its program runs, which the
    pipeline gives the module (vk/pipeline.c, PipeKey.fs_spec) so that the driver compiles the program for it. As a
@@ -474,6 +477,11 @@ static inline void shader_query_hint_unpack(const u32 words[SH_QUERY_WORDS], u8 
 #define SNX_TABLE_IMAGES        65536u
 #define SNX_TABLE_SAMPLERS      4096u
 #define SNX_TABLE_SAMPLER_SHIFT 20
+/* With gbuf_address, a stage's record in the words' window: for each of 16 global buffer slots its address (low,
+   high) and length in bytes and a word unused, then a scratch word's address, where an access past a slot's length
+   goes. The texture words follow */
+#define SH_RECORD_GBUF          68u
+#define SH_RECORD_SCRATCH       64u
 /* Device capabilities the renderer sets before translating, and the values offline translation takes. A 1-bit
    field holds 0 or 1: a mask goes in through a test (!= 0), or its bit is lost */
 typedef struct {
@@ -496,6 +504,9 @@ typedef struct {
        table_set, by the words the renderer gives each draw (SH_PUSH_TEX_WORDS), not from its stage's set */
     unsigned tex_table : 1;
     u32 table_set;
+    /* with tex_table, an SM86 vertex or fragment program reads its global memory by device address: each slot's
+       address and length are words of the draw's record (SH_RECORD_GBUF), not a storage buffer descriptor */
+    unsigned gbuf_address : 1;
     /* tessellation and geometry programs may write the point size (shaderTessellationAndGeometryPointSize) */
     unsigned stage_point_size : 1;
     /* vertex and tessellation programs may write the layer (shaderOutputLayer, the ShaderLayer capability); without it
