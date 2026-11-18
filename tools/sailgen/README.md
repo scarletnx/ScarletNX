@@ -3,7 +3,7 @@
 # sailgen
 
 Generates the recompiler's A64 instruction emitters from the Sail of the Arm architecture: sail-arm's translation of
-Arm's ASL, kept in `src/common/cpu/aarch64/sail/` (its README says where from and how to update it). Strict C99 with
+Arm's ASL, kept in `src/common/cpu/aarch64/sail/` (its README says where from and how to update it). Strict C23 with
 no dependency, built and run during the build as `tools/decodetree` is (`cmake/sailgen.cmake`).
 
 ```sh
