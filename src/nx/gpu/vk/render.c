@@ -37,6 +37,7 @@
 #include "nx/gpu/texture/descriptor.h"
 #include "nx/gpu/vk/draw_texture.h"
 #include "nx/gpu/vk/draw_texture_shader.h"
+#include "nx/gpu/vk/host_program.h"
 #include "nx/gpu/vk/lookup_ways.h"
 #include "nx/gpu/vk/pending_pages.h"
 #include "nx/gpu/vk/tess_passthrough.h"
@@ -4694,11 +4695,38 @@ static int mesh_shaders(const DsState* ds, DrawShaders* o) {
     rt_int_targets(&ds->tgt, &o->rt_int, &o->rt_sint);
     return 1;
 }
+/* the shaders of a draw of host programs (DS_HOST_PROGRAM): the vertex and fragment modules as they were given,
+   nothing between them and no variant of either, which their GLSL decided. 0 when the draw is skipped (said once) */
+static int host_shaders(const DsState* ds, u32 topology, DrawShaders* o) {
+    const DsPrograms* p = &ds->prog;
+    int fs_on = p->on >> 5 & 1;
+    *o = (DrawShaders){.topology = topology,
+                       .window_xy = !ds->vp.transform_on,
+                       .attr_int = ds->vfmt.is_int,
+                       .attr_sint = ds->vfmt.is_sint};
+    if ((p->on & 0x1d) || p->xfb_on || vk_viewport_swizzle_key(&ds->vp)) {
+        LOG_LIMIT(4,
+                  "vulkan: a draw of host programs with program slots %#x on, capture %u and a viewport swizzle "
+                  "(%#x) skipped: host programs take a vertex and a fragment stage, nothing more\n",
+                  (unsigned)p->on, (unsigned)p->xfb_on, (unsigned)vk_viewport_swizzle_key(&ds->vp));
+        return 0;
+    }
+    o->vs = vk_host_shader(p->code[1], ST_VS);
+    o->fs0 = fs_on ? vk_host_shader(p->code[5], ST_FS) : NULL;
+    if (!o->vs || (fs_on && !o->fs0)) {
+        LOG_LIMIT(4, "vulkan: a draw skipped: its programs %llx and %llx aren't host programs the renderer was given\n",
+                  (unsigned long long)p->code[1], (unsigned long long)p->code[5]);
+        return 0;
+    }
+    rt_int_targets(&ds->tgt, &o->rt_int, &o->rt_sint);
+    return 1;
+}
 /* the shaders of the programs, the vertex format and the targets of ds for a draw of topology: 0 when the draw is
    skipped */
 static int draw_shaders(const DsState* ds, u32 topology, int mesh, DrawShaders* o) {
     const DsPrograms* p = &ds->prog;
     if (mesh) return mesh_shaders(ds, o);
+    if (vk_host_programs(p)) return host_shaders(ds, topology, o);
     o->mesh = 0;
     o->prim = 0;
     const DsVertexFormat* vf = &ds->vfmt;
@@ -4826,7 +4854,9 @@ static int draw_shaders(const DsState* ds, u32 topology, int mesh, DrawShaders* 
    draw takes the position pass, and so does a quad draw the device can do no better for */
 static u32 draw_varying(const DsState* ds, const DrawShaders* sh, int per_vertex) {
     const VkSh *vs = sh->vs, *fs = sh->fs0;
-    if (g_vk.driver_id == VK_DRIVER_ID_NVIDIA_PROPRIETARY || sh->mesh || sh->tcs || sh->tes || sh->gs || !fs) return 0;
+    if (g_vk.driver_id == VK_DRIVER_ID_NVIDIA_PROPRIETARY || sh->mesh || sh->tcs || sh->tes || sh->gs || !fs ||
+        vk_host_programs(&ds->prog)) /* a host program interpolates as its GLSL asks, as the device does */
+        return 0;
     if (vs->si.writes_viewport || sh->window_xy || sh->swizzle || sh->topology < 4 || sh->topology > 9 ||
         ds->rkey.polygon != DS_POLYGON_FILL)
         return 0;
@@ -6155,9 +6185,10 @@ retry:
         if (kept && memcmp(&fk, &ke->fkey, sizeof fk)) kept = 0;
         if (kept) fs = ke->fs;
         if (!kept || check) {
-            VkSh* made = texture ? vk_draw_texture_fragment((u32)fk.tm, (u32)fk.ts, fk.rm, fk.rs,
-                                                            fk.advanced_blend, fk.advanced_mask)
-                                 : fs_variant(ds, ds->prog.code[5], sh.fs0, &fk);
+            VkSh* made = texture ? vk_draw_texture_fragment((u32)fk.tm, (u32)fk.ts, fk.rm, fk.rs, fk.advanced_blend,
+                                                            fk.advanced_mask)
+                         : vk_host_programs(&ds->prog) ? sh.fs0 /* its GLSL decided what it does */
+                                                       : fs_variant(ds, ds->prog.code[5], sh.fs0, &fk);
             if (kept && made != fs) {
                 draw_differs("fragment shader");
                 kept = 0;

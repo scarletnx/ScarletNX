@@ -168,8 +168,8 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
         "${PROJECT_SOURCE_DIR}/tests/support/bcn.c"
         "${PROJECT_SOURCE_DIR}/tests/support/ui_shape_ref.c")
     target_include_directories(snx-test-vulkan PRIVATE "${PROJECT_SOURCE_DIR}/tests")
-    target_link_libraries(snx-test-vulkan PRIVATE snx_nx_flags ${components} snx_driver FFmpeg::avutil Threads::Threads
-                                                  ${CMAKE_DL_LIBS})
+    target_link_libraries(snx-test-vulkan PRIVATE snx_nx_flags ${components} snx_driver snx_glslc FFmpeg::avutil
+                                                  Threads::Threads ${CMAKE_DL_LIBS})
     target_include_directories(snx-test-vulkan PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/hookgen/snx_gpu"
                                                        "${PROJECT_SOURCE_DIR}/tests/glsl")
     set_target_properties(snx-test-vulkan PROPERTIES LINKER_LANGUAGE CXX)
