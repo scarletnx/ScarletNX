@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
 """scripts/pr-builds.sh --print against a fake gh that has a run's artifacts and jobs: the builds linked, the APK's
-halves and edenprobe's report left out, the jobs that did not succeed named by their id in build.yml, the A64
+halves, the A64 differential's QEMU reference and edenprobe's report left out, the jobs that did not succeed named by their id in build.yml, the A64
 differential's QEMU reference and Nightly due never among them, and edenprobe's line, its notice linked to the run:
 Amberlith's step in the Linux x86-64 job, whose failure alone leaves that job out of the jobs not built, and an older
 build.yml's runs, with a job of its own, the checks as installed, the sanitizers' build and the linux job a pull
@@ -32,6 +32,8 @@ ARTIFACTS = {
          'expires_at': '2026-11-01T00:00:00Z'},
         {'id': 5, 'name': 'ScarletNX-linux-x86_64-abc1234-install', 'size_in_bytes': 600 << 20, 'expired': False,
          'expires_at': '2026-10-20T00:00:00Z'},
+        {'id': 6, 'name': 'ScarletNX-llvm-qemu-reference-abc1234', 'size_in_bytes': 15 << 20, 'expired': False,
+         'expires_at': '2026-10-25T00:00:00Z'},
     ]
 }  # fmt: skip
 RUN = 'https://github.com/owner/repo/actions/runs/7'
@@ -141,17 +143,18 @@ with tempfile.TemporaryDirectory() as temporary:
     built = {'linux': {'result': 'success', 'outputs': {}}, 'windows': {'result': 'success', 'outputs': {}}}
     text = comment(built | {'edenprobe': {'result': 'success', 'outputs': {'result': TITLE}}})
     check(
-        "the builds linked, the halves of the APK, an older build.yml's install tree, edenprobe's report and a failed job's"
-        ' mark left out',
+        "the builds linked, the halves of the APK, an older build.yml's install tree, the A64 differential's QEMU"
+        " reference, edenprobe's report and a failed job's mark left out",
         f'- [ScarletNX-windows-x86_64-abc1234]({RUN}/artifacts/2), 3 MiB' in text
         and '-stage' not in text
         and '-install' not in text
+        and 'qemu-reference' not in text
         and 'edenprobe-abc1234' not in text
         and 'fail-fast' not in text,
         text,
     )
     check(
-        "kept until the first listed to expire, not an older build.yml's install tree, kept a day",
+        "kept until the first listed to expire, not an older build.yml's install tree, kept a day, nor the QEMU reference",
         'Builds of abc1234, kept until 2026-11-01:' in text,
         text,
     )
