@@ -121,7 +121,7 @@ static void census_write(void) {
         n++;
     }
     snprintf(part, sizeof part, "%s.part", g_settings.gl_call_census);
-    f = snx_fopen(part, "w");
+    f = snx_fopen(part, "wb"); /* the same bytes on every host: a tab-separated table read by tools */
     if (!f) {
         if (!g_gl_census.failed) WARN("gl census: %s can't be written: no table\n", part);
         g_gl_census.failed = 1;
