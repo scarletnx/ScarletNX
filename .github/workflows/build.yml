@@ -1179,7 +1179,7 @@ jobs:
   windows:
     name: Windows (Clang + LLVM${{ matrix.arch == 'aarch64' && ', aarch64' || '' }})
     runs-on: ${{ matrix.arch == 'aarch64' && 'windows-11-arm' || 'windows-2025-vs2026' }}
-    timeout-minutes: ${{ matrix.arch == 'aarch64' && 180 || 90 }}
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
