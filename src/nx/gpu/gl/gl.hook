@@ -7,7 +7,8 @@
 # export's address). Every other egl and _gl export of the driver takes the handler that stops the game, naming
 # it. The handlers: gpu/gl/gl_egl.c (EGL), gpu/gl/gl_calls.c (GL, over common/gpu/gl/gl_state.h),
 # gpu/gl/gl_program_calls.c (shaders and programs, over common/gpu/gl/gl_program.h), gpu/gl/gl_object_calls.c
-# (buffers and vertex arrays, over common/gpu/gl/gl_object.h).
+# (buffers and vertex arrays, over common/gpu/gl/gl_object.h), gpu/gl/gl_texture_calls.c (textures and samplers, over
+# common/gpu/gl/gl_texture.h).
 
 # EGL functions no hook implements yet, which a game's main calls directly: through their slots, to that handler
 route eglBindTexImage
@@ -285,3 +286,41 @@ hook _glGetVertexAttribIiv(u32 index, u32 pname, addr params) = gl_get_vertex_at
 hook _glGetVertexAttribIuiv(u32 index, u32 pname, addr params) = gl_get_vertex_attribiv
 hook _glGetVertexAttribfv(u32 index, u32 pname, addr params) = gl_get_vertex_attribfv
 hook _glGetVertexAttribPointerv(u32 index, u32 pname, addr params) = gl_get_vertex_attrib_pointerv
+
+family texture
+hook _glGenTextures(i32 n, addr textures) = gl_gen_textures
+hook _glDeleteTextures(i32 n, addr textures) = gl_delete_textures
+hook _glIsTexture(u32 texture) -> u8 = gl_is_texture
+hook _glBindTexture(u32 target, u32 texture) = gl_bind_texture
+hook _glActiveTexture(u32 texture) = gl_active_texture
+hook _glTexImage2D(u32 target, i32 level, u32 internal, i32 width, i32 height, i32 border, u32 format, u32 type, addr pixels) = gl_tex_image_2d
+hook _glTexImage3D(u32 target, i32 level, u32 internal, i32 width, i32 height, i32 depth, i32 border, u32 format, u32 type, addr pixels) = gl_tex_image_3d
+hook _glTexSubImage2D(u32 target, i32 level, i32 x, i32 y, i32 width, i32 height, u32 format, u32 type, addr pixels) = gl_tex_sub_image_2d
+hook _glTexSubImage3D(u32 target, i32 level, i32 x, i32 y, i32 z, i32 width, i32 height, i32 depth, u32 format, u32 type, addr pixels) = gl_tex_sub_image_3d
+hook _glCompressedTexImage2D(u32 target, i32 level, u32 internal, i32 width, i32 height, i32 border, i32 size, addr data) = gl_compressed_tex_image_2d
+hook _glCompressedTexImage3D(u32 target, i32 level, u32 internal, i32 width, i32 height, i32 depth, i32 border, i32 size, addr data) = gl_compressed_tex_image_3d
+hook _glCompressedTexSubImage2D(u32 target, i32 level, i32 x, i32 y, i32 width, i32 height, u32 format, i32 size, addr data) = gl_compressed_tex_sub_image_2d
+hook _glCompressedTexSubImage3D(u32 target, i32 level, i32 x, i32 y, i32 z, i32 width, i32 height, i32 depth, u32 format, i32 size, addr data) = gl_compressed_tex_sub_image_3d
+hook _glTexStorage2D(u32 target, i32 levels, u32 internal, i32 width, i32 height) = gl_tex_storage_2d
+hook _glTexStorage3D(u32 target, i32 levels, u32 internal, i32 width, i32 height, i32 depth) = gl_tex_storage_3d
+hook _glTexStorage2DMultisample(u32 target, i32 samples, u32 internal, i32 width, i32 height, u8 fixed) = gl_tex_storage_2d_multisample
+hook _glTexParameteri(u32 target, u32 pname, i32 param) = gl_tex_parameteri
+hook _glTexParameterf(u32 target, u32 pname, f32 param) = gl_tex_parameterf
+hook _glTexParameteriv(u32 target, u32 pname, addr params) = gl_tex_parameteriv
+hook _glTexParameterfv(u32 target, u32 pname, addr params) = gl_tex_parameterfv
+hook _glGetTexParameteriv(u32 target, u32 pname, addr params) = gl_get_tex_parameteriv
+hook _glGetTexParameterfv(u32 target, u32 pname, addr params) = gl_get_tex_parameterfv
+hook _glGetTexLevelParameteriv(u32 target, i32 level, u32 pname, addr params) = gl_get_tex_level_parameteriv
+hook _glGetTexLevelParameterfv(u32 target, i32 level, u32 pname, addr params) = gl_get_tex_level_parameterfv
+hook _glGenerateMipmap(u32 target) = gl_generate_mipmap
+hook _glBindImageTexture(u32 unit, u32 texture, i32 level, u8 layered, i32 layer, u32 access, u32 format) = gl_bind_image_texture
+hook _glGenSamplers(i32 n, addr samplers) = gl_gen_samplers
+hook _glDeleteSamplers(i32 n, addr samplers) = gl_delete_samplers
+hook _glIsSampler(u32 sampler) -> u8 = gl_is_sampler
+hook _glBindSampler(u32 unit, u32 sampler) = gl_bind_sampler
+hook _glSamplerParameteri(u32 sampler, u32 pname, i32 param) = gl_sampler_parameteri
+hook _glSamplerParameterf(u32 sampler, u32 pname, f32 param) = gl_sampler_parameterf
+hook _glSamplerParameteriv(u32 sampler, u32 pname, addr params) = gl_sampler_parameteriv
+hook _glSamplerParameterfv(u32 sampler, u32 pname, addr params) = gl_sampler_parameterfv
+hook _glGetSamplerParameteriv(u32 sampler, u32 pname, addr params) = gl_get_sampler_parameteriv
+hook _glGetSamplerParameterfv(u32 sampler, u32 pname, addr params) = gl_get_sampler_parameterfv
