@@ -58,11 +58,11 @@ env:
 # and SPIRV-Tools' spirv-opt and spirv-val (cmake/spirv_tools.cmake) are built from the sources cpmfile.json pins, with
 # MSYS2 providing the shell, GNU make and NASM needed by FFmpeg and the Perl OpenSSL's Configure runs on. Downloads are
 # cached in .cache/cpm: one cache for the jobs that fetch the same sources (a Linux architecture's jobs, the four cross
-# builds, a Windows architecture's, Apple, Android), named by cpmfile.json's hash, with the name before the hash as a restore key, so a bump
-# downloads only the packages it changed. Compiles go through ccache, whose .cache/ccache each compiling job restores
-# from the newest one a push saved; a push saves it again, trimmed to what the run used, and a pull request's run saves
-# none: it reads main's (the linux job says why). The artifacts are what `cmake --install` puts in place: the binaries
-# with the licenses that go with them.
+# builds, a Windows architecture's, Apple, Android), named by cpmfile.json's hash, with the name before the hash as a
+# restore key, so a bump downloads only the packages it changed. Compiles go through ccache, whose .cache/ccache each
+# compiling job restores from the newest one a push saved; a push saves it again, trimmed to what the run used, and a
+# pull request's run saves none: it reads main's (the linux job says why). The artifacts are what `cmake --install` puts
+# in place: the binaries with the licenses that go with them.
 jobs:
   # A scheduled run of a commit that has its nightly already: the run cancels itself, this job with it, which fails
   # nothing
