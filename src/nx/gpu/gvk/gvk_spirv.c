@@ -19,6 +19,9 @@ enum {
     SPV_DECORATE = 71,
     SPV_MEMBER_DECORATE = 72,
     SPV_EXTENSION = 10,
+    SPV_ENTRY_POINT = 15,
+    /* execution models */
+    SPV_MODEL_FRAGMENT = 4,
     /* decorations */
     SPV_BUFFER_BLOCK = 3,
     SPV_ROW_MAJOR = 4,
@@ -26,9 +29,12 @@ enum {
     SPV_ARRAY_STRIDE = 6,
     SPV_MATRIX_STRIDE = 7,
     SPV_NON_UNIFORM = 5300,
+    SPV_LOCATION = 30,
+    SPV_INDEX = 32,
     /* storage classes */
     SPV_UNIFORM = 2,
     SPV_STORAGE_BUFFER = 12,
+    SPV_OUTPUT = 3,
     /* capabilities */
     SPV_CAP_NON_UNIFORM = 5301,
     SPV_CAP_UBO_NON_UNIFORM = 5306,
@@ -195,6 +201,54 @@ const u32* gvk_spirv_mend(const u32* w, size_t bytes, size_t* out_bytes) {
         }
     }
     if (!mended || !decorated) return NULL;
+    *out_bytes = (size_t)o * 4;
+    return out;
+}
+
+/* the outputs at Location 1 of a module of fragment entry points alone, which no Index decorates */
+const u32* gvk_spirv_dual_source(const u32* w, size_t bytes, size_t* out_bytes) {
+    if (bytes % 4 || bytes / 4 > UINT32_MAX || bytes / 4 < 5 || w[0] != 0x07230203u) return NULL;
+    u32 n = (u32)(bytes / 4), at[8], nat = 0, fragment = 0, keep[8] = {0}, indexed[8], nindexed = 0;
+    for (u32 i = 5; i < n;) {
+        u32 len = w[i] >> 16, op = w[i] & 0xffff;
+        if (!len || len > n - i) return NULL;
+        if (op == SPV_ENTRY_POINT && len >= 2) {
+            if (w[i + 1] != SPV_MODEL_FRAGMENT) return NULL;
+            fragment = 1;
+        } else if (op == SPV_DECORATE && len >= 3 && w[i + 2] == SPV_INDEX) {
+            if (nindexed == 8) return NULL;
+            indexed[nindexed++] = w[i + 1];
+        } else if (op == SPV_DECORATE && len == 4 && w[i + 2] == SPV_LOCATION && w[i + 3] == 1) {
+            if (nat == 8) return NULL;
+            at[nat++] = i;
+        } else if (op == SPV_VARIABLE && len >= 4 && w[i + 3] == SPV_OUTPUT) {
+            for (u32 k = 0; k < nat; k++) keep[k] |= w[at[k] + 1] == w[i + 2];
+        }
+        i += len;
+    }
+    u32 m = 0; /* the outputs among them that the game didn't give an Index, in order */
+    for (u32 k = 0; k < nat; k++) {
+        for (u32 j = 0; j < nindexed; j++) keep[k] &= indexed[j] != w[at[k] + 1];
+        if (keep[k]) at[m++] = at[k];
+    }
+    nat = m;
+    if (!fragment || !nat) return NULL;
+    u32* out = gvk_scratch((size_t)(n + 4 * nat) * 4);
+    u32 o = 0, next = 0;
+    for (u32 i = 0; i < n;) {
+        u32 len = i < 5 ? 1 : w[i] >> 16;
+        memcpy(out + o, w + i, (size_t)len * 4);
+        o += len;
+        if (next < nat && i == at[next]) {
+            out[o - 1] = 0;
+            out[o++] = 4u << 16 | SPV_DECORATE;
+            out[o++] = w[i + 1];
+            out[o++] = SPV_INDEX;
+            out[o++] = 1;
+            next++;
+        }
+        i += len;
+    }
     *out_bytes = (size_t)o * 4;
     return out;
 }
