@@ -2363,6 +2363,11 @@ add_test(NAME system_sdl3 COMMAND "${CMAKE_COMMAND}" "-DSRC=${PROJECT_SOURCE_DIR
 # where cmake/cross.cmake puts -mabi=elfv2: PowerPC64's compiles and links, no other processor's
 add_test(NAME cross_flags COMMAND "${CMAKE_COMMAND}" "-DSRC=${PROJECT_SOURCE_DIR}" -P
          "${CMAKE_CURRENT_SOURCE_DIR}/cross_flags_test.cmake")
+# every Configure target cmake/openssl.cmake names is one the pinned OpenSSL defines
+if(EXISTS "${snx_openssl_src}/Configure")
+    add_test(NAME openssl_targets COMMAND "${CMAKE_COMMAND}" "-DSRC=${PROJECT_SOURCE_DIR}" "-DOPENSSL=${snx_openssl_src}" -P
+             "${CMAKE_CURRENT_SOURCE_DIR}/openssl_targets_test.cmake")
+endif()
 # the meson machine file dav1d's build gets for each target (cmake/meson_machine.cmake), read back by meson where the
 # configure found one
 add_test(NAME meson_machine COMMAND "${CMAKE_COMMAND}" "-DSRC=${PROJECT_SOURCE_DIR}"
