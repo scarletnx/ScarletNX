@@ -15,6 +15,7 @@ breaks, where that is known from, what the renderer does about it and where, and
   * [Adreno](#adreno)
   * [PanVK](#panvk)
   * [MoltenVK](#moltenvk)
+  * [lavapipe](#lavapipe)
   * [Every driver but NVIDIA's](#every-driver-but-nvidias)
 * [The ban table](#the-ban-table)
 * [Known elsewhere, not hit here](#known-elsewhere-not-hit-here)
@@ -106,6 +107,12 @@ commit or file at a commit (the table's head names the hashes they were read at)
 | What breaks | Source | What the renderer does, where | Kept by |
 |---|---|---|---|
 | Each timestamp gets a Metal encoder of its own that waits for the work before it: a scene ran 10 times slower, and the timestamps are unreliable on Apple GPUs | MoltenVK issues 1585 and 2378; 1e2067249 | `vk_gpu_profile` runs as 0 on a portability driver (`gpuprof_setting.h`) | vk_gpuprof_setting |
+
+### lavapipe
+
+| What breaks | Source | What the renderer does, where | Kept by |
+|---|---|---|---|
+| The push constants of every stage a draw binds go to the linear rasterizer as one buffer, their ranges added up (a shader object's, or a pipeline library's layout each), and `lp_fs_linear_run` copies that buffer into a stack array of 256 bytes' worth: two stages of 224 bytes smashed the stack (Mesa 26.2.6) | #2461 | constant buffers are bound one by one, without windows of the staging ring, on lavapipe (`cb_windows.h`) | vk_cb_windows |
 
 ### Every driver but NVIDIA's
 

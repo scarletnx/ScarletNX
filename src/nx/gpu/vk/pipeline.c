@@ -29,6 +29,7 @@
 #include "nx/gpu/vk/pipeline_stats.h"
 #include "nx/gpu/vk/shader_objects.h"
 #include "nx/gpu/vk/cb_fold.h"
+#include "nx/gpu/vk/cb_windows.h"
 #include "nx/gpu/vk/internal_spv.h"
 #include "nx/gpu/vk/tess_passthrough.h"
 #include "nx/gpu/vk/texture_arrays.h"
@@ -718,14 +719,15 @@ void vk_pipeline_init(void) {
     LOG("vulkan: %s\n", g_spirv_translate.split_sets ? "each stage's textures are in a descriptor set of their own"
                                                        : "one descriptor set a stage, its textures with its buffers");
     /* the vertex and fragment programs' constant buffers through windows of the staging ring, their offsets in push
-       constants past the 128 bytes every layout had: where the device takes those bytes and a whole bank's window.
-       Not with descriptor heaps, whose set addresses are pushed from byte 128 (VK_DESCRIPTOR_HEAP_PUSH_OFFSET) */
-    g_spirv_translate.cb_windows = g_vk.props.limits.maxPushConstantsSize >= SH_PUSH_BYTES_WINDOWS &&
-                                   g_vk.props.limits.maxUniformBufferRange >= 65536 &&
-                                   g_spirv_translate.uniform_cbufs > 0 && !g_vk.has_descriptor_heap_support;
-    LOG("vulkan: %s\n", g_spirv_translate.cb_windows
-                                ? "constant buffers bound as windows of the staging ring, their offsets pushed"
-                                : "constant buffers bound one by one");
+       constants past the 128 bytes every layout had (cb_windows.h) */
+    {
+        const SnxVkCbWindowDevice wd = {g_vk.props.limits.maxPushConstantsSize, g_vk.props.limits.maxUniformBufferRange,
+                                        g_spirv_translate.uniform_cbufs, g_vk.has_descriptor_heap_support,
+                                        g_vk.driver_id == VK_DRIVER_ID_MESA_LLVMPIPE};
+        char line[512];
+        g_spirv_translate.cb_windows = snx_vk_cb_windows_say(line, sizeof line, &wd, SH_PUSH_BYTES_WINDOWS);
+        LOG("%s\n", line);
+    }
     /* SM86 programs' plain textures through the texture table (table.c), a set after the stages' sets: where the
        constant buffers are in windows (the words take one), the sets are plain ones, and the device pushes the
        words' offsets and binds one more set */
