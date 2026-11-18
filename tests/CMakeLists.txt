@@ -1356,6 +1356,15 @@ add_test(NAME sailgen_refused_path
                  "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/refused_path.sail")
 set_tests_properties(sailgen_refused_path PROPERTIES PASS_REGULAR_EXPRESSION
     "refused_path.sail:9: error: InstructionSynchronizationBarrier, the back end's action, under a condition known only at run time")
+# an element loop is one vector operation only when its body sets locals per lane: one that carries a local from one
+# element to the next, or whose element is read after it, stays a loop of elements
+add_test(NAME sailgen_lanes
+         COMMAND "${CMAKE_COMMAND}" "-DSAILGEN=$<TARGET_FILE:snx-sailgen>"
+                 "-DBACKEND=${PROJECT_SOURCE_DIR}/tools/sailgen/llvm.h" "-DDIR=${CMAKE_CURRENT_SOURCE_DIR}/sailgen"
+                 "-DOUT=${CMAKE_CURRENT_BINARY_DIR}/sailgen/lanes.inc"
+                 -P "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/lanes_check.cmake")
+set_tests_properties(sailgen_lanes PROPERTIES PASS_REGULAR_EXPRESSION
+    "sailgen_lanes: lanes=lanes carried=loop last=loop")
 # and the A64 subsets of src/common/cpu/aarch64/sail/ generate whole, with the NX's fixups
 add_test(NAME sailgen_a64
          COMMAND snx-sailgen --generate "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/sail/a64.roots"

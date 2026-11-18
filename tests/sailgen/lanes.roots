@@ -1,0 +1,5 @@
+# three element loops: one that sets per-lane locals alone (one vector operation), one that carries a local from one
+# element to the next and one whose element is read after it (each stays a loop of elements)
+root decode_lanes_aarch64_instrs_test
+root decode_carried_aarch64_instrs_test
+root decode_last_aarch64_instrs_test
