@@ -28,6 +28,7 @@
 #include "nx/memory/mem.h"
 #include "nx/memory/own.h"
 #include "nx/runtime/clock.h"
+#include "nx/gpu/gvk/gvk.h"
 #include "nx/runtime/main.h"
 #include "nx/runtime/pause.h"
 #include "nx/runtime/platform/log.h"
@@ -690,6 +691,10 @@ static int savable(char* why, size_t whysize) {
         snprintf(why, whysize, "the game is playing a movie, whose decoder states don't hold");
         return -1;
     }
+    if (gvk_active()) {
+        snprintf(why, whysize, "the game draws with the host's Vulkan (guest_vulkan), whose objects states don't hold");
+        return -1;
+    }
     return 0;
 }
 
@@ -1339,6 +1344,10 @@ int state_load(const char* path, char* why, size_t whysize) {
        its frames' checksums checked, the state's g_hle made whole and checked, its GPU and video state read, the files
        it had open found and opened, and its guest memory read through once */
     if (state_check(&h, why, whysize)) goto refuse;
+    if (gvk_active()) {
+        snprintf(why, whysize, "the game draws with the host's Vulkan (guest_vulkan), whose objects states don't hold");
+        goto refuse;
+    }
     /* load_memory puts the state's pages in the alias pool, and its blocks map them from there */
     if (!mem_pool_active()) {
         snprintf(why, whysize,

@@ -95,13 +95,14 @@ endfunction()
 
 # snx_hook_routes(<target> [SPECS <file>...]): generates nx/loader/hook_routes.inc, the symbols that the specs name
 # (hookgen --routes), which nx/loader/hook_routes.c includes, and gives <target> its include root. The specs are
-# hle/hook/hooks.hook, the native SDK's, gpu/nvn/nvn.hook and the game patches unless a test names its own
+# hle/hook/hooks.hook, the native SDK's, gpu/nvn/nvn.hook, gpu/gvk/gvk.hook and the game patches unless a test names
+# its own
 function(snx_hook_routes target)
     cmake_parse_arguments(PARSE_ARGV 1 arg "" "" "SPECS")
     snx_hook_patches(patches)
     snx_hook_sdk(sdk)
     set(specs "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/hooks.hook" ${sdk} "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn.hook"
-              ${patches})
+              "${PROJECT_SOURCE_DIR}/src/nx/gpu/gvk/gvk.hook" ${patches})
     if(arg_SPECS)
         set(specs ${arg_SPECS})
     endif()

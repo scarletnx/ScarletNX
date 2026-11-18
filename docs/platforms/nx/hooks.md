@@ -38,8 +38,9 @@ Every call to a hooked function goes through its slot in the dispatch table, `g_
 The recompiler routes only the symbols of the route list (`src/nx/loader/hook_routes.c`): each symbol that
 `hooks.hook` and `gpu/nvn/nvn.hook` name in any version, and the `route` lines of the functions the runtime wraps with
 code of its own (`nvnBootstrapLoader` and `nvnDeviceGetProcAddress`, `nvn_loader.c`; a GL driver's
-`eglGetProcAddress`, `gl_census.c`). `hookgen --routes` generates
-the list. A direct call to any other function stays a direct call. `SNX_ABI` 15 and 16 first routed every function
+`eglGetProcAddress`, `gl_census.c`; the Vulkan loader's entry points, `gpu/gvk/gvk.hook`). `hookgen --routes`
+generates the list. A direct call to any other function stays a direct call. `SNX_ABI` 15 and 16 first routed every
+function
 that a module exports, but some games export nearly all of their main executable: 88% to 98% of its functions in
 three games, so that 51% to 64% of all their direct calls became indirect calls (`tools/hook_census.py`). On one of
 them, in a gameplay scene, routing only the list's symbols took 9% of the cycles and 3.6% of the instructions that the
