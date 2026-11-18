@@ -3,7 +3,9 @@
 /* src/nx/gpu/gvk/gvk_spirv.c: the SPIR-V that the console's Vulkan driver takes and Vulkan doesn't, mended for the
    host. An ArrayStride on a structure's member moves to the member's array type when the type has none, and goes when
    it has one. A matrix member with a MatrixStride and no RowMajor or ColMajor gets ColMajor, also through an array of
-   matrices; one with RowMajor keeps it. A module that needs nothing, or that gvk can't read, is NULL */
+   matrices; one with RowMajor keeps it. A pointer into an array of uniform or storage buffers by an index that isn't
+   a constant, and one made from it, is NonUniform, with the capabilities and the extension that needs; one by a
+   constant isn't. A module that needs nothing, or that gvk can't read, is NULL */
 #include "nx/gpu/gvk/gvk.h"
 #include <assert.h>
 #include <stdlib.h>
@@ -17,22 +19,53 @@ void* gvk_scratch(size_t n) {
 }
 
 enum {
+    OP_CAPABILITY = 17,
+    OP_EXTENSION = 10,
     OP_TYPE_INT = 21,
     OP_TYPE_FLOAT = 22,
     OP_TYPE_VECTOR = 23,
     OP_TYPE_MATRIX = 24,
     OP_TYPE_ARRAY = 28,
     OP_TYPE_STRUCT = 30,
+    OP_TYPE_POINTER = 32,
     OP_CONSTANT = 43,
+    OP_VARIABLE = 59,
+    OP_ACCESS_CHAIN = 65,
     OP_DECORATE = 71,
     OP_MEMBER_DECORATE = 72,
+    BLOCK_DECORATION = 2,
+    BUFFER_BLOCK = 3,
     ROW_MAJOR = 4,
     COL_MAJOR = 5,
     ARRAY_STRIDE = 6,
     MATRIX_STRIDE = 7,
+    NON_UNIFORM = 5300,
+    CAP_SHADER = 1,
+    CAP_NON_UNIFORM = 5301,
+    CAP_UBO_NON_UNIFORM = 5306,
+    CAP_SSBO_NON_UNIFORM = 5308,
+    UNIFORM = 2,
 };
-/* the ids of the module */
-enum { INT = 1, FLOAT, VEC4, MAT4, EIGHT, INTS, MATS, BLOCK, BOUND };
+/* the ids of the module: its types, then an array of buffers of the block and pointers into it */
+enum {
+    INT = 1,
+    FLOAT,
+    VEC4,
+    MAT4,
+    EIGHT,
+    INTS,
+    MATS,
+    BLOCK,
+    BUFS,
+    PTR_BUFS,
+    PTR_INT,
+    VAR,
+    INDEX, /* no constant: an input's value */
+    BY_INDEX,
+    BY_CONSTANT,
+    FROM_INDEXED,
+    BOUND
+};
 
 typedef struct {
     u32 w[128];
@@ -133,5 +166,36 @@ int main(void) {
     assert(!gvk_spirv_mend(m.w, m.n * 4, &bytes));
     m.w[5] = first;
     assert(gvk_spirv_mend(m.w, m.n * 4, &bytes));
+
+    /* the buffer an index picks in an array of uniform buffers: NonUniform, when the index isn't a constant */
+    for (int storage = 0; storage < 2; storage++) {
+        header(&m);
+        PUT(&m, OP_CAPABILITY, CAP_SHADER);
+        PUT(&m, OP_DECORATE, BLOCK, storage ? BUFFER_BLOCK : BLOCK_DECORATION);
+        types(&m, 1);
+        PUT(&m, OP_TYPE_ARRAY, BUFS, BLOCK, EIGHT);
+        PUT(&m, OP_TYPE_POINTER, PTR_BUFS, UNIFORM, BUFS);
+        PUT(&m, OP_TYPE_POINTER, PTR_INT, UNIFORM, INT);
+        PUT(&m, OP_VARIABLE, PTR_BUFS, VAR, UNIFORM);
+        PUT(&m, OP_ACCESS_CHAIN, PTR_INT, BY_INDEX, VAR, INDEX, EIGHT, EIGHT);
+        PUT(&m, OP_ACCESS_CHAIN, PTR_INT, BY_CONSTANT, VAR, EIGHT, EIGHT, EIGHT);
+        PUT(&m, OP_ACCESS_CHAIN, PTR_INT, FROM_INDEXED, BY_INDEX, EIGHT);
+        out = gvk_spirv_mend(m.w, m.n * 4, &bytes);
+        assert(out && bytes == (m.n + 3 * 2 + 2 * 2 + 8) * 4);
+        assert(COUNT(out, bytes, OP_CAPABILITY, CAP_NON_UNIFORM) == 1);
+        assert(COUNT(out, bytes, OP_CAPABILITY, storage ? CAP_SSBO_NON_UNIFORM : CAP_UBO_NON_UNIFORM) == 1);
+        assert(COUNT(out, bytes, OP_CAPABILITY, storage ? CAP_UBO_NON_UNIFORM : CAP_SSBO_NON_UNIFORM) == 0);
+        assert(out[7] == (2u << 16 | OP_CAPABILITY)); /* the first added capability, right after the module's */
+        assert(COUNT(out, bytes, OP_DECORATE, BY_INDEX, NON_UNIFORM) == 1);
+        assert(COUNT(out, bytes, OP_DECORATE, FROM_INDEXED, NON_UNIFORM) == 1);
+        assert(COUNT(out, bytes, OP_DECORATE, BY_CONSTANT, NON_UNIFORM) == 0);
+        /* the extension right after the capabilities, before the decorations */
+        u32 at = 5, ext = 0, first_decoration = 0;
+        for (; at < bytes / 4; at += out[at] >> 16) {
+            if ((out[at] & 0xffff) == OP_EXTENSION && !ext) ext = at;
+            if ((out[at] & 0xffff) == OP_DECORATE && !first_decoration) first_decoration = at;
+        }
+        assert(ext && ext < first_decoration && !memcmp(out + ext + 1, "SPV_EXT_descriptor_indexing", 28));
+    }
     return 0;
 }

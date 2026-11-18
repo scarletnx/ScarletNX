@@ -388,13 +388,16 @@ calls the host's Vulkan on the renderer's device and graphics queue with the gam
 and command buffers go to the host's driver as they are. Vulkan's structures have one layout on AArch64 and on every
 64-bit little-endian host, so only their pointers are made host ones (`gvk_in`, by a table of each structure's pointer
 fields). A big-endian host would need each number converted, so there the setting is refused. The game sees one heap
-with three memory types: device-local memory, and guest pages in the alias region that the host imports
-(`VK_EXT_external_memory_host`), so a mapping is the game's own address. The swapchain's images are host images, and a
-present blits one into the renderer's window (`present_image`). What the console's driver accepts and Vulkan doesn't
-is mended there: a transfer command inside a render pass ends the pass and begins a twin that loads what it stored, a
-depth format the host lacks (24-bit depth on AMD) is the nearest one it has, and the SPIR-V's layouts are given what
-Vulkan reads (`gpu/gvk/gvk_spirv.c`: an ArrayStride on a structure's member goes on its array type, and a matrix with
-no order is column-major). The `resolution` setting scales the game's color and depth targets of one level that are
+with three memory types: device-local memory, and memory the CPU maps at guest addresses in the alias region, so a
+mapping is the game's own address: guest pages the host imports (`VK_EXT_external_memory_host`), or where it can't
+(RenderDoc takes no host memory) the host's own memory exported as a dma-buf and mapped over the guest pages, with
+linear images in it made with the linear DRM format modifier. The swapchain's images are host images, and a present
+blits one into the renderer's window (`present_image`). What the console's driver accepts and Vulkan doesn't is mended
+there: a transfer command inside a render pass ends the pass and begins a twin that loads what it stored, a depth
+format the host lacks (24-bit depth on AMD) is the nearest one it has, and the SPIR-V is given what Vulkan reads
+(`gpu/gvk/gvk_spirv.c`: an ArrayStride on a structure's member goes on its array type, a matrix with no order is
+column-major, and a pointer into an array of buffers by an index that differs between invocations is NonUniform).
+The `resolution` setting scales the game's color and depth targets of one level that are
 at least the console's screen in size (a game can make every texture a color target), with the swapchain. The
 commands that name their pixels scale with them: render areas, viewports, scissors, clear rectangles, copies and
 blits. A copy between a scaled image and one at the game's size is a blit.
