@@ -23,6 +23,7 @@
 #include "nx/memory/mem.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/vk/pagespace.h"
 #include "nx/gpu/vk/ledger.h"
 #include "nx/gpu/vk/pipeline_parts.h"
 #include "nx/gpu/vk/descriptors.h"
@@ -3427,6 +3428,23 @@ static int table_words(DescWrites* d, VkDescriptorSet set, int vs_fs, const u32*
     dw_buffer(d, set, SNX_VKB_TEXWORDS, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, b, o, bytes);
     return 1;
 }
+/* A draw's read-only storage buffer as the last lookup of its slot found it (vk_buf_get_storage), while nothing that
+   lookup's checks read moved: in the same submission, no GPU-side write anywhere (gw), no write tracking epoch, no
+   result added, no storage image, no surface and no write of the GPU mirror's programs since. The lookup would bind
+   the same buffer and offset then. It found the guest run, checked the mirror's and the page cache's state and walked
+   the granules of a range of about 6.5 MB, about 120 to 240 ns, once or twice a draw in one game */
+typedef struct {
+    u64 addr, align, sub, gw, adds, cs_adds, gfx_adds, img_adds, mirror_gen;
+    u32 size, epoch, surf_epoch;
+    VkBuffer b;
+    u64 o;
+} StorageRecent;
+static StorageRecent g_storage_recent[DS_GFX_STAGES][16];
+static int storage_recent_same(const StorageRecent* a, const StorageRecent* b) {
+    return a->addr == b->addr && a->size == b->size && a->align == b->align && a->sub == b->sub && a->gw == b->gw &&
+           a->adds == b->adds && a->cs_adds == b->cs_adds && a->gfx_adds == b->gfx_adds && a->img_adds == b->img_adds &&
+           a->mirror_gen == b->mirror_gen && a->epoch == b->epoch && a->surf_epoch == b->surf_epoch;
+}
 /* with split sets (ShCaps.split_sets): the texture set stage_set_ made last for each stage's buffer set number (0 to 4) */
 static VkDescriptorSet g_stage_tex_set[5];
 /* an indirect mesh draw's first group, which mesh_indirect copied for the draw: the uniform buffer stage_set binds */
@@ -3502,7 +3520,35 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
         VkBuffer b;
         u64 o;
         /* no address: a null buffer where the device has them, which reads zero, else a staging copy of zeros */
-        int ok = gb->aliased                         ? (b = gb->buf, o = gb->off, 1)
+        /* the in-place storage path, as its last lookup found it while nothing it asks about moved */
+        StorageRecent* sr = !gb->aliased && addr && !gb->writable && !gb->bare && (u32)stage < DS_GFX_STAGES &&
+                                    !g_settings.draw_state_check
+                                ? &g_storage_recent[stage][i]
+                                : NULL;
+        StorageRecent now = {0};
+        int hit = 0;
+        if (sr) {
+            now = (StorageRecent){.addr = addr,
+                                  .align = sa,
+                                  .sub = vk_submit_number(),
+                                  .gw = gpu_mem_generation(),
+                                  .adds = cb_adds(),
+                                  .cs_adds = vk_compute_adds(),
+                                  .gfx_adds = vk_buf_adds(),
+                                  .img_adds = vk_gfx_image_adds(),
+                                  .mirror_gen = vk_mirror_write_gen(),
+                                  .size = size,
+                                  .epoch = vk_ww_epoch(),
+                                  .surf_epoch = atomic_load_explicit(&g_vk_surf_epoch, memory_order_relaxed)};
+            hit = sr->b && storage_recent_same(sr, &now);
+        }
+        if (hit) {
+            b = sr->b;
+            o = sr->o;
+            vk_pages_read(addr, size); /* the page cache's order of this read before a later write */
+        }
+        int ok = hit                                 ? 1
+                 : gb->aliased                       ? (b = gb->buf, o = gb->off, 1)
                  : addr && gb->writable && addressed ? vk_buf_copy_writable_word(addr, size, &b, &o, ordered)
                  : addr && gb->writable              ? vk_buf_copy_writable(addr, size, &b, &o, ordered)
                  : addr && gb->bare                  ? vk_buf_get_window(addr, size, addressed ? 4 : 0, &b, &o)
@@ -3510,6 +3556,12 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
                  : vk_null_descriptors()             ? (b = VK_NULL_HANDLE, o = 0, 1)
                                                      : vk_buf_copy(0, size, &b, &o);
         if (!ok) return VK_NULL_HANDLE;
+        if (sr &&
+            !hit) { /* the stamps read before the lookup: a write during it moves them, and the next looks again */
+            *sr = now;
+            sr->b = b;
+            sr->o = o;
+        }
         u64 range = !b ? VK_WHOLE_SIZE : gb->aliased ? gb->range : size;
         if (addressed) { /* no buffer: length 0, each access takes the scratch words */
             const u64 at = b ? vk_buffer_address(b) + o : 0;
