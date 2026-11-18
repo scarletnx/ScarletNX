@@ -352,6 +352,9 @@ void vk_surf_use(VkCommandBuffer cb, Surf* s, VkImageLayout layout, VkPipelineSt
                  VkAccessFlags2 access) {
     (void)cb, (void)s, (void)layout, (void)stage_, (void)access;
 }
+/* surface.c's batch of a copy's two barriers: vk_surf_use records nothing here */
+void vk_surf_batch_begin(void) {}
+void vk_surf_batch_end(void) {}
 VkImageAspectFlags vk_aspect(const VkFmt* f) {
     return f->depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
 }
