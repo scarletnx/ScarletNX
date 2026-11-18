@@ -95,6 +95,11 @@ typedef struct {
     /* with cb_windows, a vertex or fragment program's one push block (unified_push): the members of push and
        scaled_push, then the three uvec4 of its constant buffers' window offsets from member cbw_member */
     u32 cbw_member, cbw_u32_ptr;
+    /* with tex_table: the push member of the words' window offsets (SH_PUSH_TEX_WORDS), the words' uniform buffer,
+       the samplers' table, and each kind of image's table (table_kind) */
+    u32 tw_member, tex_words, tex_words_ptr, table_samplers;
+    u32 table_kinds, table_kind_key[32], table_kind_var[32], table_kind_sampled[32];
+    u32 tex_images[SH_MAXTEX]; /* a table slot's image table, 0 for a slot of its own variable */
     u32 centroid_mask;  /* the inputs decorated Centroid */
     u32 legacy_fs;      /* a fragment program's legacy varying groups (shader_legacy_group), read as generics 17-31 */
     u32 point_coord, front_facing, primitive_id;
@@ -649,7 +654,7 @@ static int cb_windowed(const Ctx* c) {
 static void unified_push(Ctx* c) {
     if (c->push) return;
     const int fs = c->stage == ST_FS;
-    u32 members[7], offsets[7], n = 0;
+    u32 members[8], offsets[8], n = 0;
     members[n] = c->t_v4f, offsets[n++] = 0;
     if (fs) {
         members[n] = c->t_v4f, offsets[n++] = 16;
@@ -659,6 +664,10 @@ static void unified_push(Ctx* c) {
     c->cbw_member = n;
     for (u32 k = 0; k < 3; k++)
         members[n] = c->t_v4u, offsets[n++] = (fs ? SH_PUSH_CB_WINDOW_FS : SH_PUSH_CB_WINDOW) + 16 * k;
+    if (g_spirv_translate.tex_table) {
+        c->tw_member = n;
+        members[n] = c->t_v4u, offsets[n++] = SH_PUSH_TEX_WORDS;
+    }
     u32 block = spv_emit_type_struct(&c->e, members, offsets, n);
     spv_emit_decorate(&c->e, block, SPV_DECORATION_BLOCK, NULL, 0);
     c->push = c->scaled_push = spv_emit_variable(&c->e, SPV_STORAGE_PUSH_CONSTANT, block);
@@ -2512,6 +2521,61 @@ static u32 offset_vector(Ctx* c, int known, u32 value, u32 x, u32 dims, u32 used
                      : spv_emit_vec3_construct(&c->e, type, v[0], v[1], v[2]);
 }
 
+/* ---- the texture table (ShCaps.tex_table) ---- */
+
+static u32 uniform_word(Ctx* c, u32 pointer, u32 buffer, u32 index);
+/* the image table of a kind of texture, declared once a kind: all at binding 0 of the table's set */
+static u32 table_kind(Ctx* c, u32 type, u32 array, u32 shadow, u32 ms, u32* sampled) {
+    const u32 key = type | array << 4 | shadow << 5 | ms << 6;
+    for (u32 k = 0; k < c->table_kinds; k++)
+        if (c->table_kind_key[k] == key) {
+            *sampled = c->table_kind_sampled[k];
+            return c->table_kind_var[k];
+        }
+    if (c->table_kinds == 32) return 0; /* never: 3 types, array, shadow and ms make 24 kinds */
+    u32 var = spv_emit_image_table(&c->e, c->t_f32, c->t_u32, g_spirv_translate.table_set, 0, type, (int)array,
+                                   (int)shadow, ms ? 1 : 0, SNX_TABLE_IMAGES, sampled);
+    add_interface(c, var);
+    c->table_kind_key[c->table_kinds] = key;
+    c->table_kind_var[c->table_kinds] = var;
+    c->table_kind_sampled[c->table_kinds++] = *sampled;
+    return var;
+}
+/* Slot i reads its texture through the table where the program's stage has it: its tex[] is made at each instruction
+   that samples it (table_element). 0 where the slot keeps a variable of its own */
+static int tex_table_slot(Ctx* c, int i, u32 type, u32 array, u32 shadow, u32 ms) {
+    c->tex_images[i] = 0;
+    if (!g_spirv_translate.tex_table || !cb_windowed(c)) return 0;
+    /* a 1D texture is bound as a 2D one (shader.h) */
+    c->tex_images[i] = table_kind(c, type == 0 ? 1 : type, array, shadow, ms ? 1 : 0, &c->tex_sampled[i]);
+    if (!c->tex_images[i]) return 0;
+    c->si->tex_table = 1;
+    c->tex[i] = 0;
+    return 1;
+}
+/* For this instruction, a table slot's tex[]: its word from the draw's words (the window offset at SH_PUSH_TEX_WORDS,
+   x the vertex stage's, y the fragment stage's, in 16-byte units, plus the slot), and the image and the sampler that
+   the word names */
+static void table_element(Ctx* c, int slot) {
+    if (!c->tex_images[slot]) return;
+    if (!c->tex_words) {
+        c->tex_words = spv_emit_uniform_vec4_array(&c->e, c->t_v4u, c->t_u32, c->t_u32, (u32)shader_vk_set(c->stage),
+                                                   SNX_VKB_TEXWORDS, 4096, &c->tex_words_ptr);
+        add_interface(c, c->tex_words);
+        c->table_samplers = spv_emit_sampler_table(&c->e, c->t_u32, g_spirv_translate.table_set, 1, SNX_TABLE_SAMPLERS);
+        add_interface(c, c->table_samplers);
+    }
+    unified_push(c);
+    u32 base = spv_emit_push_component_f32(&c->e, c->cbw_u32_ptr, c->push, cu(c, c->tw_member),
+                                           cu(c, c->stage == ST_FS), c->t_u32);
+    u32 index = spv_emit_iadd_u32(
+        &c->e, c->t_u32, spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, base, cu(c, 2)), cu(c, (u32)slot));
+    u32 word = uniform_word(c, c->tex_words_ptr, c->tex_words, index);
+    u32 image = spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, word, cu(c, (1u << SNX_TABLE_SAMPLER_SHIFT) - 1));
+    u32 sampler = spv_emit_binary(&c->e, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, word, cu(c, SNX_TABLE_SAMPLER_SHIFT));
+    c->tex[slot] =
+        spv_emit_table_element(&c->e, c->tex_sampled[slot], c->tex_images[slot], image, c->table_samplers, sampler);
+}
 /* the texture slot of a handle at byte offset off of a bank */
 /* the texture slot of the handle at c[bank][off] with that view: ms for a multisampled 2D texture (ShTex.flags bit 1,
    which the renderer binds a multisampled view for) */
@@ -2537,6 +2601,7 @@ static int tex_slot(Ctx* c, u32 bank, u32 off, u32 type, u32 array, u32 shadow, 
     t.bl_cbuf = (u8)bank;
     t.flags = ms ? 2 : 0;
     si->tex[i] = t;
+    if (tex_table_slot(c, i, type, array, shadow, ms)) return i;
     /* a 1D texture is bound as a 2D one (shader.h) */
     c->tex[i] = spv_emit_sampler_image(&c->e, c->t_f32, (u32)shader_vk_tex_set(c->stage), SNX_VKB_TEX + (u32)i,
                                        type == 0 ? 1 : type, (int)array, (int)shadow, ms ? 1 : 0, &c->tex_sampled[i]);
@@ -2758,6 +2823,7 @@ static void texture(Ctx* c, const Sm86Insn* in) {
     int slot = bindless || memory ? (int)c->handle[c->cur].slot - 1
                                   : tex_slot(c, (handle >> 14) & 31, (handle & 0x3fff) * 4, type, array, shadow, 0);
     if (slot < 0) return;
+    table_element(c, slot);
     /* list1: a TEX.B's handle (prepare_handles), the LOD or bias, the offset, the depth reference
        (nak_nir_lower_tex.c) */
     u32 n0 = array + coords, n1 = (u32)bindless + (lod_mode == 2 || lod_mode == 3) + offset + shadow, regs[8];
@@ -2931,6 +2997,7 @@ static void texture_grad(Ctx* c, const Sm86Insn* in) {
     int slot = in->op == SM86_TXD_U ? (int)c->handle[c->cur].slot - 1 /* memory_handles' */
                                     : tex_slot(c, (handle >> 14) & 31, (handle & 0x3fff) * 4, type, array, 0, 0);
     if (slot < 0) return;
+    table_element(c, slot);
     u32 a = sm86_field(in, 24, 8), b = sm86_field(in, 32, 8), f[4], dx[3], dy[3], count = 0;
 #define TXD_REG(base, k) ((base) < SM86_RZ ? (base) + (k) : SM86_RZ)
     for (u32 k = 0; k < coords; k++, count++) {
@@ -2974,6 +3041,7 @@ static void texel_fetch(Ctx* c, const Sm86Insn* in) {
     int slot = in->op == SM86_TLD_U ? (int)c->handle[c->cur].slot - 1 /* memory_handles' */
                                     : tex_slot(c, (handle >> 14) & 31, (handle & 0x3fff) * 4, type, array, 0, ms);
     if (slot < 0) return;
+    table_element(c, slot);
     /* list1: the level, the offset (four bits a component), then the sample, as Maxwell's TLD orders them */
     u32 n0 = array + coords, n1 = (lod_mode == 3) + offset + ms, regs[8];
     if (!tex_operands(in, n0, n1, regs)) {
@@ -3028,6 +3096,7 @@ static void texture_query(Ctx* c, const Sm86Insn* in) {
         ms = c->in[k].op == SM86_TLD && sm86_field(&c->in[k], 78, 1) && sm86_field(&c->in[k], 40, 19) == handle;
     if (slot < 0 && !mem) slot = tex_slot(c, bank, off * 4, 1, 0, 0, ms);
     if (slot < 0) return;
+    table_element(c, slot);
     const ShTex* t = &c->si->tex[slot];
     ms = t->flags & 2;
     u32 dims = (t->type == 2 ? 3 : 2) + t->array; /* a 1D texture is a 2D one, a cube's size is its face's */
@@ -6901,9 +6970,12 @@ static int tex_slot_memory(Ctx* c, u32 tex_probe, int smp, u32 smp_probe, u32 ty
     t.bl2_off = smp ? smp_probe : 0;
     t.flags = (u8)(SNX_TEX_MEMORY | (ms ? 2 : 0));
     si->tex[i] = t;
-    c->tex[i] = spv_emit_sampler_image(&c->e, c->t_f32, (u32)shader_vk_tex_set(c->stage), SNX_VKB_TEX + (u32)i,
-                                       type == 0 ? 1 : type, (int)array, (int)shadow, ms ? 1 : 0, &c->tex_sampled[i]);
-    add_interface(c, c->tex[i]);
+    if (!tex_table_slot(c, i, type, array, shadow, ms)) {
+        c->tex[i] =
+            spv_emit_sampler_image(&c->e, c->t_f32, (u32)shader_vk_tex_set(c->stage), SNX_VKB_TEX + (u32)i,
+                                   type == 0 ? 1 : type, (int)array, (int)shadow, ms ? 1 : 0, &c->tex_sampled[i]);
+        add_interface(c, c->tex[i]);
+    }
     return i;
 }
 static int tex_operands(const Sm86Insn* in, u32 n0, u32 n1, u32* regs);

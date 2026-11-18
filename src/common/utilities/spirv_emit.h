@@ -73,6 +73,10 @@ typedef struct {
     /* the masks of known_slots, the constants' tables and the NonUniform set: each one's size less one, set as it
        grows (its count decides when), read only while its count is not 0 */
     size_t known_mask, constant_mask, nonuniform_mask;
+    /* the elements of texture tables (spv_emit_table_element): open addressing by id on a power of two, id 0 a free
+       entry, at most half full, so its size follows from split_count */
+    struct SpvSplit* splits;
+    size_t split_count, split_mask;
 } SpvEmitter;
 
 typedef enum {
@@ -103,6 +107,7 @@ enum {
     SPV_OP_TYPE_FLOAT = 22,
     SPV_OP_TYPE_VECTOR = 23,
     SPV_OP_TYPE_IMAGE = 25,
+    SPV_OP_TYPE_SAMPLER = 26,
     SPV_OP_TYPE_SAMPLED_IMAGE = 27,
     SPV_OP_TYPE_ARRAY = 28,
     SPV_OP_TYPE_RUNTIME_ARRAY = 29,
@@ -646,6 +651,18 @@ uint32_t spv_emit_sampler_image_array_ex(SpvEmitter* e, uint32_t scalar_type, ui
                                          uint32_t binding, uint32_t type, int array, int shadow, int multisample,
                                          uint32_t count, uint32_t* sampled_type);
 uint32_t spv_emit_sampler_array_element(SpvEmitter* e, uint32_t sampled_type, uint32_t array_variable, uint32_t index);
+/* A texture table (bindless): count images of one kind at a binding, and count samplers at another. Tables of other
+   kinds of image can share one binding (descriptor aliasing): a program reads each element through the kind its
+   descriptor holds. Returns the variable; *sampled_type is the sampled image type of the kind */
+uint32_t spv_emit_image_table(SpvEmitter* e, uint32_t scalar_type, uint32_t u32_type, uint32_t set, uint32_t binding,
+                              uint32_t type, int array, int shadow, int multisample, uint32_t count,
+                              uint32_t* sampled_type);
+uint32_t spv_emit_sampler_table(SpvEmitter* e, uint32_t u32_type, uint32_t set, uint32_t binding, uint32_t count);
+/* image element image_index of images and sampler element sampler_index of samplers, as an id that the sampling
+   functions take in place of a texture variable: spv_emit_load makes the sampled image where it is loaded, in the
+   block that uses it, as SPIR-V wants of OpSampledImage. Both indices are dynamically uniform */
+uint32_t spv_emit_table_element(SpvEmitter* e, uint32_t sampled_type, uint32_t images, uint32_t image_index,
+                                uint32_t samplers, uint32_t sampler_index);
 static inline uint32_t spv_emit_sampler2d(SpvEmitter* e, uint32_t f32_type, uint32_t set, uint32_t binding, int shadow,
                                           uint32_t* sampled_type);
 uint32_t spv_emit_sampler_image(SpvEmitter* e, uint32_t f32_type, uint32_t set, uint32_t binding, uint32_t type,

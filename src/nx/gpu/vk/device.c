@@ -831,6 +831,8 @@ static bool choose_device(SnxVkChoice* c, void* user) {
     WANT(shaderStorageImageReadWithoutFormat);
     WANT(shaderStorageImageMultisample);
     WANT(shaderResourceMinLod);
+    /* the texture table's (table.c) images and samplers, indexed by a word that is the same for the whole draw */
+    WANT(shaderSampledImageArrayDynamicIndexing);
     g_spirv_translate.resource_min_lod = want->shaderResourceMinLod != 0;
     WANT(shaderClipDistance);
     WANT(shaderCullDistance);
@@ -1681,21 +1683,27 @@ static bool choose_device(SnxVkChoice* c, void* user) {
     g_vk.has_draw_indirect_count = q12.drawIndirectCount != 0;
     /* Enable mirror clamp and vertex shader Layer output when the device supports them. */
     g_vk.has_mirror_clamp = q12.samplerMirrorClampToEdge;
-    VkPhysicalDeviceVulkan12Features f12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
-                                            .pNext = &f11,
-                                            .samplerMirrorClampToEdge = q12.samplerMirrorClampToEdge,
-                                            .samplerFilterMinmax = q12.samplerFilterMinmax,
-                                            .timelineSemaphore = VK_TRUE,
-                                            .bufferDeviceAddress = g_vk.has_descriptor_buffers ||
-                                                                   g_vk.has_descriptor_heap_support ||
-                                                                   g_vk.has_copy_indirect ||
-                                                                   g_vk.has_inplace_loads,
-                                            .shaderFloat16 = q12.shaderFloat16,
-                                            .shaderOutputViewportIndex = q12.shaderOutputViewportIndex,
-                                            .shaderOutputLayer = q12.shaderOutputLayer,
-                                            .drawIndirectCount = q12.drawIndirectCount,
-                                            .shaderSampledImageArrayNonUniformIndexing =
-                                                q12.shaderSampledImageArrayNonUniformIndexing};
+    /* the texture table of SM86 programs (table.c): one set that the renderer writes while draws that bind it are
+       pending, with slots that hold nothing yet. vk_pipeline_init decides with the limits and the other caps */
+    g_vk.has_table_features =
+        g_shader_sm86 && q12.descriptorBindingPartiallyBound && q12.descriptorBindingSampledImageUpdateAfterBind &&
+        q12.descriptorBindingUpdateUnusedWhilePending && g_vk.feat.shaderSampledImageArrayDynamicIndexing;
+    VkPhysicalDeviceVulkan12Features f12 = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
+        .pNext = &f11,
+        .samplerMirrorClampToEdge = q12.samplerMirrorClampToEdge,
+        .samplerFilterMinmax = q12.samplerFilterMinmax,
+        .timelineSemaphore = VK_TRUE,
+        .bufferDeviceAddress = g_vk.has_descriptor_buffers || g_vk.has_descriptor_heap_support ||
+                               g_vk.has_copy_indirect || g_vk.has_inplace_loads,
+        .shaderFloat16 = q12.shaderFloat16,
+        .shaderOutputViewportIndex = q12.shaderOutputViewportIndex,
+        .shaderOutputLayer = q12.shaderOutputLayer,
+        .drawIndirectCount = q12.drawIndirectCount,
+        .shaderSampledImageArrayNonUniformIndexing = q12.shaderSampledImageArrayNonUniformIndexing,
+        .descriptorBindingPartiallyBound = g_vk.has_table_features,
+        .descriptorBindingSampledImageUpdateAfterBind = g_vk.has_table_features,
+        .descriptorBindingUpdateUnusedWhilePending = g_vk.has_table_features};
     /* shaders pick an indexed texture per invocation from an array (SNX_VKB_TEXARRAY) */
     g_spirv_translate.texture_arrays = q12.shaderSampledImageArrayNonUniformIndexing != 0;
     g_spirv_translate.float16 = q12.shaderFloat16 != 0;

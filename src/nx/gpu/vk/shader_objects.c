@@ -172,11 +172,11 @@ static VkShaderStageFlags next_stages(VkShaderStageFlagBits stage) {
    from words and its binary kept. VK_NULL_HANDLE when the device refuses it */
 static VkShaderEXT stage_create(const SoStage* st, const u32* words, size_t count) {
     /* vk_playout's sets: with split sets, each stage's textures five after its buffers */
-    VkDescriptorSetLayout sets[10];
-    const u32 nsets = g_spirv_translate.split_sets ? 10 : g_vk_stage_sets;
+    VkDescriptorSetLayout sets[11];
+    u32 nsets = g_spirv_translate.split_sets ? 10 : g_vk_stage_sets;
     for (u32 s = 0; s < nsets; s++) sets[s] = g_vk_dslayout[(st->arrays >> (s % 5)) & 1][s];
-    VkPushConstantRange pc = {VK_PUSH_STAGES, 0,
-                              g_spirv_translate.cb_windows ? SH_PUSH_BYTES_WINDOWS : 128}; /* vk_playout's */
+    if (g_spirv_translate.tex_table) sets[nsets++] = vk_table_layout(); /* at table_set */
+    VkPushConstantRange pc = {VK_PUSH_STAGES, 0, vk_push_bytes()};      /* vk_playout's */
     u32 values[SH_SPEC_COUNT];
     VkSpecializationMapEntry entries[SH_SPEC_COUNT];
     VkSpecializationInfo spec = {0};

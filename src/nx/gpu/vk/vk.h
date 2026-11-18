@@ -206,6 +206,9 @@ typedef struct {
     /* VK_KHR_unified_image_layouts: GENERAL serves each use as well as its own layout, so the renderer keeps its images
        in GENERAL (VK_LAYOUT), and a read after a read of another kind takes no layout change */
     int has_unified_layouts;
+    /* the features of the texture table (table.c) that an SM86 game asked of the device: partially bound sets, sampled
+       image updates after bind and while unused descriptors are pending, and arrays indexed by a uniform value */
+    int has_table_features;
     int feedback_mode; /* VK_FEEDBACK_*: how a draw reads a color target it writes, at its own pixel (device.c) */
     /* VK_EXT_conditional_rendering: a render enable comparing a samples-passed count not known yet with zero
        predicates its draws on the GPU (gpu/vk/query.c) instead of waiting for the count */
@@ -2123,6 +2126,19 @@ VkImageView vk_tex_storage_view(Surf* s, VkImageViewType type);
 /* an empty texture of a view type: num 0 float, 1 unsigned, 2 signed integer, 3 depth at 1.0 (shadow samplers);
    ms: a multisampled one (2D and 2D array views, not depth) */
 VkImageView vk_null_view(VkImageViewType type, int num, int ms);
+/* The texture table (table.c): the set of ShCaps.tex_table, with a slot for each sampled view in a layout and for each
+   sampler. vk_table_init says if the device can hold it (and why not, in why), and makes it */
+int vk_table_init(char* why, size_t size);
+/* the push constant bytes of a draw's pipeline layouts (pipeline.c) */
+u32 vk_push_bytes(void);
+VkDescriptorSetLayout vk_table_layout(void);
+VkDescriptorSet vk_table_set(void);
+/* each texture's word, view slot | sampler slot << SNX_TABLE_SAMPLER_SHIFT, under one lock: 0 where views[i] is 0. 0
+   when the table is full */
+int vk_table_words(const VkImageView* views, const VkImageLayout* layouts, const VkSampler* samplers, u32 n,
+                   u32* words);
+/* a view that is destroyed now (vk_image_view_destroy): its slots are free again */
+void vk_table_forget_view(VkImageView view);
 /* An image slot a program declares whose header is empty (word 0 zero: no format, nothing bound there): a 1x1 storage
    image of zeros, its format by the slot's kind (ShaderInfo.img[].kind), viewed as type (2D, 2D array or 3D) in
    *view. The caller makes it ready for its stage (vk_surf_use, layout GENERAL) and writes nothing of it back. NULL
