@@ -1,0 +1,3 @@
+# an action (a function with no Sail definition the back end defines) whose val gives an integer: refused at the line
+# that calls it; an action gives bits, a bool or nothing
+root decode_peek_aarch64_instrs_test

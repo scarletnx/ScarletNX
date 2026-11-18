@@ -38,7 +38,9 @@ A function whose arguments are all STATIC and that reaches no state becomes a C 
 branches may not change state; a `BranchTo` in one is taken under that condition (B.cond's `if ConditionHolds(cond)`,
 CBZ's `if IsZero(operand1) == iszero`). A throw of `Error_Undefined`, an `EndOfInstruction()` (a hint whose feature
 the guest lacks: a NOP) and a throw of `Error_See` end the decode function, so they may not be under a DYN condition.
-Anything outside this part of Sail stops sailgen with the file, the line and why.
+A value of a Sail struct (a load's `AccessDescriptor`) is STATIC: a C struct of its fields (`sgt_NAME`, written before
+the helpers), which a field's assignment and read reach as C. Anything outside this part of Sail stops sailgen with the
+file, the line and why.
 
 ## The back end (`llvm.h`)
 
@@ -66,9 +68,10 @@ Builtins, lowered by the back end rather than from Sail:
 | `BranchTo(target, type, conditional)`, `BranchNotTaken(type, conditional)` | the branch's operand for the recompiler's flow (`ir_codegen.c`): the target, and the run-time condition it is under; their profiling, branch records and address tagging do nothing at the NX's EL0 |
 
 A function with no Sail definition that the back end defines as `sg_NAME` is one of the machine's actions: a
-statement, given the call's arguments (DYN ones as the back end's values, the others as C integers), or the context
-alone when `sg_NAME` takes nothing else. `llvm.h` gives the hints (`Hint_Yield` the host's spin-wait hint, `Hint_WFE`
-the runtime's `rt_wfe`, `SendEvent` its `rt_sev`), the barriers (`DataMemoryBarrier` and `DataSynchronizationBarrier`
+statement, given the call's arguments (bits and DYN ones as the back end's values, the others as C integers), or the
+context alone when `sg_NAME` takes nothing else; one whose `val` gives a result is a DYN value of it. `llvm.h` gives
+the hints (`Hint_Yield` the host's spin-wait hint, `Hint_WFE` the runtime's `rt_wfe`, `SendEvent` its `rt_sev`), the
+barriers (`DataMemoryBarrier` and `DataSynchronizationBarrier`
 a fence by the accesses they order, `InstructionSynchronizationBarrier` a full one) and the exclusive monitor
 (`ClearExclusiveLocal`), each with why, and those that do nothing here (`Hint_WFI`, `SynchronizeErrors`, `Hint_DGH`).
 
