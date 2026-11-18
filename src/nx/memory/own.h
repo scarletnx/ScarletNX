@@ -91,8 +91,9 @@ int own_covered(u64 addr, u64 size);
 /* the watches over [addr, addr + size) go (clipped to it), and their pages open where no entry is left. Nothing lands.
    The caller holds the producer's lock */
 void own_unwatch(u64 addr, u64 size);
-/* 1 when an owner or a watch is on a host page of [addr, addr + size): the pages are trapped, and a direct read of
-   them faults. own_lookup counts only owners, and only their bytes */
+/* 1 when an owner or a watch is on a host page of [addr, addr + size), or a landing in two steps that has not let go
+   of its traps yet: the pages are trapped, and a direct read of them faults. own_lookup counts only owners, and only
+   their bytes */
 int own_trapped(u64 addr, u64 size);
 /* the first byte of [addr, addr + size) on a host page that an owner or a watch is on (own_trapped), or addr + size
    when there is none */
