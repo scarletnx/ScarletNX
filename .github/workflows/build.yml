@@ -53,12 +53,12 @@ env:
   SNX_OPTIONAL_JOBS: '^(macOS and iOS \(arm64\)|Linux AppImage \((ppc64le|ppc64|riscv64|loongarch64)\)(, as installed)?)$'
 
 # Linux jobs run in Arch Linux, which has the same Clang 23 and clang-format 23 as development, and its LLVM 23 for the
-# recompiler's code generator (required, cmake/llvm.cmake). Windows uses MSYS2 CLANG64 so Clang, the MinGW/UCRT runtime
-# and LLVM's development libraries come from one compatible toolchain. FFmpeg, OpenSSL, Vulkan, SDL3 and SPIRV-Tools'
-# spirv-opt and spirv-val (cmake/spirv_tools.cmake) are built from the sources cpmfile.json pins, with MSYS2 providing
-# the shell, GNU make and NASM needed by FFmpeg and the Perl OpenSSL's Configure runs on. Downloads are cached in
-# .cache/cpm: one cache for the jobs that fetch the same sources (a Linux architecture's jobs, the four cross builds,
-# Windows, Apple, Android), named by cpmfile.json's hash, with the name before the hash as a restore key, so a bump
+# recompiler's code generator (required, cmake/llvm.cmake). Windows uses MSYS2 CLANG64 (CLANGARM64 on Arm) so Clang, the
+# MinGW/UCRT runtime and LLVM's development libraries come from one compatible toolchain. FFmpeg, OpenSSL, Vulkan, SDL3
+# and SPIRV-Tools' spirv-opt and spirv-val (cmake/spirv_tools.cmake) are built from the sources cpmfile.json pins, with
+# MSYS2 providing the shell, GNU make and NASM needed by FFmpeg and the Perl OpenSSL's Configure runs on. Downloads are
+# cached in .cache/cpm: one cache for the jobs that fetch the same sources (a Linux architecture's jobs, the four cross
+# builds, a Windows architecture's, Apple, Android), named by cpmfile.json's hash, with the name before the hash as a restore key, so a bump
 # downloads only the packages it changed. Compiles go through ccache, whose .cache/ccache each compiling job restores
 # from the newest one a push saved; a push saves it again, trimmed to what the run used, and a pull request's run saves
 # none: it reads main's (the linux job says why). The artifacts are what `cmake --install` puts in place: the binaries
@@ -1174,10 +1174,16 @@ jobs:
           unreadable=$(find .cache/cpm ! -type l ! -readable)
           [ -z "$unreadable" ] || { printf 'actions/cache cannot read:\n%s\n' "$unreadable" >&2; exit 1; }
 
+  # x86-64 and AArch64 (Windows on Arm, in MSYS2's CLANGARM64): the same steps, each with its own caches. The x86-64
+  # leg keeps the name the branch rules require
   windows:
-    name: Windows (Clang + LLVM)
-    runs-on: windows-2025-vs2026
-    timeout-minutes: 90
+    name: Windows (Clang + LLVM${{ matrix.arch == 'aarch64' && ', aarch64' || '' }})
+    runs-on: ${{ matrix.arch == 'aarch64' && 'windows-11-arm' || 'windows-2025-vs2026' }}
+    timeout-minutes: ${{ matrix.arch == 'aarch64' && 180 || 90 }}
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86_64, aarch64]
     defaults:
       run:
         shell: msys2 {0}
@@ -1201,26 +1207,27 @@ jobs:
       - name: Keep the checkout's line ends for MSYS2's git
         shell: bash
         run: git config --local core.autocrlf "$(git config core.autocrlf || echo false)"
-      # Windows fetches SDL3's source, which Linux takes from its package, so this job's set is its own: one cache,
-      # and the restore key carries a cpmfile.json bump over
+      # Windows fetches SDL3's source, which Linux takes from its package, so this job's set is its own, one for each
+      # architecture (x86-64 fetches glslang-tools, AArch64 uses MSYS2's glslang: cmake/glsl.cmake), and the restore
+      # key carries a cpmfile.json bump over
       - uses: actions/cache@v5
         with:
           path: .cache/cpm
-          key: cpmutil-windows-${{ hashFiles('cpmfile.json') }}
-          restore-keys: cpmutil-windows-
+          key: cpmutil-windows-${{ matrix.arch }}-${{ hashFiles('cpmfile.json') }}
+          restore-keys: cpmutil-windows-${{ matrix.arch }}-
       # ccache, set up as in the linux job
       - uses: actions/cache/restore@v5
         with:
           path: .cache/ccache
-          key: ccache-${{ github.job }}-${{ github.run_id }}-${{ github.run_attempt }}
-          restore-keys: ccache-${{ github.job }}-
+          key: ccache-${{ github.job }}-${{ matrix.arch }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: ccache-${{ github.job }}-${{ matrix.arch }}-
       # the dependency builds, as in the linux job
       - uses: actions/cache/restore@v5
         id: deps
         with:
           path: .cache/deps
-          key: deps-${{ github.job }}-${{ github.run_id }}
-          restore-keys: deps-${{ github.job }}-
+          key: deps-${{ github.job }}-${{ matrix.arch }}-${{ github.run_id }}
+          restore-keys: deps-${{ github.job }}-${{ matrix.arch }}-
       - name: Set up the caches
         shell: bash
         run: |
@@ -1237,7 +1244,7 @@ jobs:
       - name: Install Clang, LLVM development files and FFmpeg build tools
         uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # v2
         with:
-          msystem: CLANG64
+          msystem: ${{ matrix.arch == 'aarch64' && 'CLANGARM64' || 'CLANG64' }}
           update: true
           path-type: strict
           install: >-
@@ -1246,17 +1253,17 @@ jobs:
             patch
             perl
             patchutils
-            mingw-w64-clang-x86_64-glslang
-            mingw-w64-clang-x86_64-clang
-            mingw-w64-clang-x86_64-llvm
-            mingw-w64-clang-x86_64-lld
-            mingw-w64-clang-x86_64-cmake
-            mingw-w64-clang-x86_64-ninja
-            mingw-w64-clang-x86_64-meson
-            mingw-w64-clang-x86_64-nasm
-            mingw-w64-clang-x86_64-pkgconf
-            mingw-w64-clang-x86_64-python
-            mingw-w64-clang-x86_64-ccache
+            mingw-w64-clang-${{ matrix.arch }}-glslang
+            mingw-w64-clang-${{ matrix.arch }}-clang
+            mingw-w64-clang-${{ matrix.arch }}-llvm
+            mingw-w64-clang-${{ matrix.arch }}-lld
+            mingw-w64-clang-${{ matrix.arch }}-cmake
+            mingw-w64-clang-${{ matrix.arch }}-ninja
+            mingw-w64-clang-${{ matrix.arch }}-meson
+            mingw-w64-clang-${{ matrix.arch }}-nasm
+            mingw-w64-clang-${{ matrix.arch }}-pkgconf
+            mingw-w64-clang-${{ matrix.arch }}-python
+            mingw-w64-clang-${{ matrix.arch }}-ccache
       - name: Check required dependencies
         run: |
           set -euo pipefail
@@ -1273,7 +1280,8 @@ jobs:
         run: |
           set -euo pipefail
           # the JDK the Android app driver (src/android) builds with: the runner's 21, as the android job's Gradle takes
-          export JAVA_HOME="${JAVA_HOME_21_X64:?the runner has no JDK 21}"
+          jdk=JAVA_HOME_21_${{ matrix.arch == 'aarch64' && 'AARCH64' || 'X64' }}
+          export JAVA_HOME="${!jdk:?the runner has no JDK 21 in $jdk}"
           cmake --preset default \
             -DSNX_LLVM_CONFIG="$(cygpath -m "$(command -v llvm-config)")" \
             -DSNX_FFMPEG_SH="$(cygpath -m /usr/bin/sh.exe)" \
@@ -1324,13 +1332,13 @@ jobs:
         uses: actions/cache/save@v5
         with:
           path: .cache/ccache
-          key: ccache-${{ github.job }}-${{ github.run_id }}-${{ github.run_attempt }}
+          key: ccache-${{ github.job }}-${{ matrix.arch }}-${{ github.run_id }}-${{ github.run_attempt }}
       - name: Name the dependency builds
         id: deps-used
         run: |
           used=$(find build -path '*/snx-deps/*.dir' -exec cat {} + | sort -u)
           for d in .cache/deps/*; do grep -qxF "${d##*/}" <<<"$used" || rm -rf "$d"; done
-          echo "key=deps-${{ github.job }}-$(sha256sum <<<"$used" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "key=deps-${{ github.job }}-${{ matrix.arch }}-$(sha256sum <<<"$used" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
       - if: steps.deps-used.outputs.key != steps.deps.outputs.cache-matched-key
         uses: actions/cache/save@v5
         with:
@@ -1394,7 +1402,7 @@ jobs:
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
       - uses: actions/upload-artifact@v7
         with:
-          name: ScarletNX-windows-x86_64-${{ steps.commit.outputs.short }}
+          name: ScarletNX-windows-${{ matrix.arch }}-${{ steps.commit.outputs.short }}
           path: stage
           if-no-files-found: error
       - *fail-fast-file
@@ -1943,11 +1951,15 @@ jobs:
           scripts/check-package.sh dist/*.AppImage
 
   windows-check:
-    name: Windows zip, as installed
+    name: Windows zip${{ matrix.arch == 'aarch64' && ' (aarch64)' || '' }}, as installed
     needs: windows
     if: github.event_name != 'pull_request'
-    runs-on: windows-2025-vs2026
+    runs-on: ${{ matrix.arch == 'aarch64' && 'windows-11-arm' || 'windows-2025-vs2026' }}
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86_64, aarch64]
     defaults:
       run:
         shell: bash
@@ -1965,7 +1977,7 @@ jobs:
           path: source
       - uses: actions/download-artifact@v8
         with:
-          name: ScarletNX-windows-x86_64-${{ steps.commit.outputs.short }}
+          name: ScarletNX-windows-${{ matrix.arch }}-${{ steps.commit.outputs.short }}
           path: package
       - name: Run the zip's scarletnx.exe as a user would
         run: bash source/scripts/check-package.sh package/bin/scarletnx.exe

@@ -744,9 +744,9 @@ for what, copy in {
         "    needs: appimage\n    if: github.event_name != 'pull_request'\n", '    needs: appimage\n'
     ),
     "on main's pushes alone": workflow.replace(
-        "  windows-check:\n    name: Windows zip, as installed\n    needs: windows\n    if: github.event_name != 'pull_request'",
-        '  windows-check:\n    name: Windows zip, as installed\n    needs: windows\n'
-        "    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'",
+        "    needs: windows\n    if: github.event_name != 'pull_request'\n",
+        '    needs: windows\n'
+        "    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'\n",
     ),
     'without the tags': workflow.replace("tags: ['v*']", 'tags: []'),
 }.items():
