@@ -13,9 +13,9 @@
 # (docs/dev/edenprobe.md). They are the step "Run Amberlith" of the job that builds Linux x86-64, which fails with them
 # alone and still built its package, so it gets no line then; a run of an older build.yml had them in a job of their
 # own. The A64 differential's QEMU reference, the job that says whether a pull request needs it and the scheduled run's
-# Nightly due make no package, so they get none, and neither do an older build.yml's checks of a package as installed,
-# sanitizers' build and linux job, which a pull request's run skipped. NEEDS, when set, stands for the run's jobs, in
-# the shape of toJSON(needs). --print writes the comment to stdout and posts nothing.
+# Nightly due make no package, so they get none, and neither do an older build.yml's sanitizers' build, its checks of a
+# package as installed and its linux job, the last two skipped on a pull request. NEEDS, when set, stands for the run's
+# jobs, in the shape of toJSON(needs). --print writes the comment to stdout and posts nothing.
 # gh needs a token that may read the run's artifacts, jobs and checks, and write on pull requests.
 set -euo pipefail
 
