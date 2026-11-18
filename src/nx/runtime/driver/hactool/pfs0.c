@@ -45,6 +45,7 @@ void pfs0_process(pfs0_ctx_t *ctx) {
             /* We might have found the exefs... */
 
             ctx->npdm = malloc(cur_file->size);
+            ctx->npdm_size = cur_file->size;
             if (ctx->npdm == NULL) {
                 fprintf(stderr, "Failed to allocate NPDM!\n");
                 exit(EXIT_FAILURE);

@@ -133,6 +133,13 @@ static inline npdm_aci0_t *npdm_get_aci0(npdm_t *npdm) {
     return (npdm_aci0_t *)((char *)npdm + snx_le32(npdm->aci0_offset));
 }
 
+/* ScarletNX: whether the ACID the header's offset names lies whole in the size bytes of the NPDM, which a damaged or a
+   synthetic one's may point past */
+static inline int npdm_acid_inside(npdm_t *npdm, uint64_t size) {
+    uint64_t at = snx_le32(npdm->acid_offset);
+    return size >= sizeof(npdm_t) && at <= size && size - at >= sizeof(npdm_acid_t);
+}
+
 void npdm_process(npdm_t *npdm, hactool_ctx_t *tool_ctx);
 void npdm_print(npdm_t *npdm, hactool_ctx_t *tool_ctx);
 
