@@ -36,7 +36,12 @@ typedef struct {
     unsigned node;
     unsigned sdef;      /* K_STRUCT: the struct's definition */
     unsigned char word; /* the instruction's word (__opcode), whose bits the clause walked fixes (word_bits) */
+    /* an accumulation loop's (foreach_loop): ACC_READ the accumulator as the body reads it, which only a fold of an
+       element into it may take; ACC_FOLD that fold of every lane, one value (accumulate). acc_var: its local */
+    unsigned char acc;
+    int acc_var;
 } Val;
+enum { ACC_NONE, ACC_READ, ACC_FOLD };
 
 typedef struct {
     unsigned name;
@@ -52,6 +57,9 @@ typedef struct {
     /* BT_LANE: set in the loop to an element's value rather than to the vector Elem_set builds, so after the loop it
        is no value of the Sail's (the last element's) */
     unsigned char lane_elem;
+    /* an accumulator: the loop that folds every lane into it, a vector of one lane (accumulate); its start's node, its
+       binding's place on the stack and the assignments it had outside a loop's lanes since it was declared */
+    unsigned acc_loop, init_node, decl_depth, sets;
 } Var;
 
 typedef struct {
@@ -105,6 +113,14 @@ static struct {
     int lane, lane_fail, lane_restart;
     char lane_count[160];
     int lane_raw; /* a line the walk emits may name the lane: a permuted index's mask (permuted) */
+    /* that loop's first element (1: an accumulation loop, accumulate), its body, its variable's name, the first local
+       and the first binding of its walk, the indent its body is walked at, the accumulators it has set, and whether a
+       line the walk emits may hold a fold (an accumulator's new value) */
+    long long lane_from;
+    unsigned lane_body, lane_e, lane_var_base, lane_depth;
+    int lane_indent, fold_ok;
+    int acc_set[8];
+    unsigned acc_set_count;
     /* the bits of the instruction's word the clause walked fixes, and their values */
     SgU64 word_mask, word_value;
     unsigned refused[64], refused_count;
@@ -140,8 +156,12 @@ static void emit(const char* fmt, ...) {
     n = vsnprintf(line, sizeof line, fmt, ap);
     va_end(ap);
     if (n < 0 || (size_t)n >= sizeof line) sg_fail(0, "a generated line over %zu characters", sizeof line);
-    if (g_gen.lane && !g_gen.lane_raw && strstr(line, "sg_lane"))
-        lane_refuse("the lane's number used other than as an element's");
+    if (g_gen.lane) {
+        if (!g_gen.lane_raw && strstr(line, "sg_lane"))
+            lane_refuse("the lane's number used other than as an element's");
+        if (strstr(line, "sg_acc")) lane_refuse("an accumulator read other than to fold an element into it");
+        if (!g_gen.fold_ok && strstr(line, "sg_l_reduce_")) lane_refuse("a fold used other than as its accumulator");
+    }
     buf_add(g_gen.out, line, (size_t)n);
 }
 
@@ -358,6 +378,7 @@ static int new_var(int kind, int bt) {
         g_gen.vars[i].bt = (unsigned char)(bt < BT_STATIC ? BT_STATIC : bt);
         g_gen.vars[i].lane_loop = 0;
         g_gen.vars[i].lane_elem = 0;
+        g_gen.vars[i].acc_loop = 0;
         g_gen.var_count = i + 1;
         g_gen.changed = 1;
     } else if (bt > g_gen.vars[i].bt) {
@@ -410,6 +431,22 @@ static long long enum_member(const char* name) {
             if (!strcmp(name_of(m), name)) return k;
     }
     return -1;
+}
+
+/* the name of member k of the enum that has the member named like, "" when there is none such */
+static const char* enum_name(const char* like, long long k) {
+    unsigned i, m;
+    for (i = 1; i < g_parse.def_count; ++i) {
+        const SgDef* d = &g_parse.defs[i];
+        long long j = 0;
+        if (d->kind != D_ENUM) continue;
+        for (m = d->params; m; m = N(m).next)
+            if (!strcmp(name_of(m), like)) break;
+        if (!m) continue;
+        for (m = d->params; m; m = N(m).next, ++j)
+            if (j == k) return name_of(m);
+    }
+    return "";
 }
 
 static Val eval(unsigned n, int tail);
@@ -512,6 +549,143 @@ static unsigned through_let(unsigned n) {
 
 /* do two names (string offsets, which the parse does not share between equal names) read the same? */
 static int same_name(unsigned a, unsigned b) { return a == b || !strcmp(sg_str(a), sg_str(b)); }
+
+/* ---- accumulators: an element loop from 1 that folds each element into a local ----
+   foreach (e from 1 to elements - 1) { acc = op(acc, x) } with acc declared before it as x is for e 0 (SMAXV's maxmin,
+   SADDLV's sum) is acc folded over every lane from 0: llvm.vector.reduce of x's lanes, by + (an integer's exact sum,
+   bits' modular one), Min or Max, one value as a vector of one lane (llvm.h's sg_l_reduce_*). Walked as lanes, the body
+   reads acc as ACC_READ, which only such a fold may take, and the fold (ACC_FOLD) may only be acc's new value, set
+   once at the body's top; anything else refuses the loop (emit's check) */
+
+/* the assignments to the local named name in n and what it holds (not n's next) */
+static unsigned sets_in(unsigned n, unsigned name);
+static unsigned sets_list(unsigned n, unsigned name) {
+    unsigned k = 0;
+    for (; n; n = N(n).next) k += sets_in(n, name);
+    return k;
+}
+static unsigned sets_in(unsigned n, unsigned name) {
+    unsigned k = 0, t, q;
+    if (!n) return 0;
+    if (N(n).kind == N_ASSIGN) {
+        t = N(n).a;
+        while (N(t).kind == N_SLICE || N(t).kind == N_INDEX || N(t).kind == N_TYPED || N(t).kind == N_FIELD) t = N(t).a;
+        if (N(t).kind == N_ID && same_name(N(t).name, name)) ++k;
+        if (N(t).kind == N_TUPLE)
+            for (q = N(t).a; q; q = N(q).next) {
+                unsigned i = q;
+                while (N(i).kind == N_TYPED) i = N(i).a;
+                k += N(i).kind == N_ID && same_name(N(i).name, name);
+            }
+    }
+    return k + sets_list(N(n).a, name) + sets_list(N(n).b, name) + sets_list(N(n).c, name) + sets_list(N(n).d, name);
+}
+/* the place among the loop body's top-level items (from 1) of the one that sets the local named name, the body's only
+   set of it; 0 when there is none such */
+static unsigned body_set(unsigned name, unsigned* value) {
+    unsigned body = g_gen.lane_body, item, t, place = 1;
+    if (sets_in(body, name) != 1) return 0;
+    for (item = N(body).kind == N_BLOCK ? N(body).a : body; item; item = N(body).kind == N_BLOCK ? N(item).next : 0) {
+        if (N(item).kind == N_ASSIGN) {
+            for (t = N(item).a; N(t).kind == N_TYPED; t = N(t).a) {}
+            if (N(t).kind == N_ID && same_name(N(t).name, name)) {
+                *value = N(item).b;
+                return place;
+            }
+        }
+        ++place;
+    }
+    return 0;
+}
+/* is name a builtin an element loop's lanes can go through (lane_builtin)? None of them reads state */
+static int lane_has(const char* name) {
+    static const char* const names[] = {"UInt", "SInt",       "asl_Int",    "Min",       "Max",
+                                        "Abs",  "negate",     "IsZero",     "not_vec",   "not_bool",
+                                        "EOR",  "ZeroExtend", "SignExtend", "Elem_read", "Elem_set"};
+    unsigned i;
+    for (i = 0; i < sizeof names / sizeof *names; ++i)
+        if (!strcmp(name, names[i])) return 1;
+    return 0;
+}
+static int first_lane(unsigned a, unsigned x, int acc, unsigned depth);
+static int first_lanes(unsigned a, unsigned x, int acc, unsigned depth) {
+    for (; a && x; a = N(a).next, x = N(x).next)
+        if (!first_lane(a, x, acc, depth)) return 0;
+    return !a && !x;
+}
+/* is x, what the loop folds into the accumulator acc, acc's start a when the loop's variable is 0: the same tree but
+   for the variable where a has 0; a local the body sets once, at its top before acc, read through what it is set to
+   (SMAXV's element), and a let of the body through its value; every other name a constant, or bound before acc was to
+   a value nothing sets; no call but of a builtin that reads no state */
+static int first_lane(unsigned a, unsigned x, int acc, unsigned depth) {
+    unsigned value = 0, place, acc_place, acc_value;
+    Binding* b;
+    if (!a || !x) return a == x;
+    if (depth > 32) return 0;
+    if (N(x).kind == N_ID) {
+        if (same_name(N(x).name, g_gen.lane_e)) return N(a).kind == N_NUM && N(a).value == 0;
+        b = lookup(name_of(x));
+        if (b && b->var >= 0 && (unsigned)(b - g_gen.stack) != g_gen.vars[acc].decl_depth) { /* set in the body */
+            place = body_set(N(x).name, &value);
+            acc_place = body_set(g_gen.stack[g_gen.vars[acc].decl_depth].name, &acc_value);
+            return place && acc_place && place < acc_place && first_lane(a, value, acc, depth + 1);
+        }
+        if (b && (unsigned)(b - g_gen.stack) >= g_gen.lane_depth && b->def)
+            return first_lane(a, b->def, acc, depth + 1);
+        if (N(a).kind != N_ID || !same_name(N(a).name, N(x).name)) return 0;
+        if (b) return b->var < 0 && (unsigned)(b - g_gen.stack) < g_gen.vars[acc].decl_depth;
+        return enum_member(name_of(x)) >= 0 || sg_find(name_of(x), D_LET);
+    }
+    if (N(a).kind != N(x).kind || !same_name(N(a).name, N(x).name) || N(a).value != N(x).value ||
+        N(a).width != N(x).width)
+        return 0;
+    switch (N(x).kind) {
+        case N_NUM:
+        case N_BITS:
+        case N_BOOL:
+        case N_UNIT:
+        case N_TYPE: return 1;
+        case N_CALL: return lane_has(name_of(x)) && first_lanes(N(a).a, N(x).a, acc, depth + 1);
+        case N_VEC:
+        case N_TUPLE: return first_lanes(N(a).a, N(x).a, acc, depth + 1);
+        case N_BINOP:
+        case N_NOT:
+        case N_NEG:
+        case N_SLICE:
+        case N_INDEX:
+        case N_FIELD:
+        case N_TYPED:
+            return first_lane(N(a).a, N(x).a, acc, depth + 1) && first_lane(N(a).b, N(x).b, acc, depth + 1) &&
+                   first_lane(N(a).c, N(x).c, acc, depth + 1);
+        default: return 0;
+    }
+}
+/* acc = op(acc, x) in an accumulation loop's body: x folded over every lane (ACC_FOLD), when acc starts at x's first
+   lane; else the loop is refused. op "add" (+), "min" or "max" */
+static Val accumulate(Val acc, Val x, unsigned x_node, const char* op) {
+    Val r;
+    int add = !strcmp(op, "add");
+    if (x.acc || x.kind != acc.kind || (x.kind != K_INT && (x.kind != K_BITS || !add))) {
+        lane_refuse("a fold into an accumulator of other than an element of its kind");
+        return acc;
+    }
+    if (!first_lane(g_gen.vars[acc.acc_var].init_node, x_node, acc.acc_var, 0)) {
+        lane_refuse("an accumulator that starts at other than the first element's value");
+        return acc;
+    }
+    x = raise(x, BT_LANE);
+    r = add ? val_c(acc.kind, BT_LANE, "sg_l_reduce_add(g, %s, %d)", x.c, x.kind == K_INT)
+            : val_c(K_INT, BT_LANE, "sg_l_reduce_minmax(g, %s, %d)", x.c, op[1] == 'i');
+    r.acc = ACC_FOLD;
+    r.acc_var = acc.acc_var;
+    return r;
+}
+static int acc_was_set(int var) {
+    unsigned i;
+    for (i = 0; i < g_gen.acc_set_count; ++i)
+        if (g_gen.acc_set[i] == var) return 1;
+    return 0;
+}
 
 /* does a function reach state (a register, a feature, the pc), or call one that does? A call of an overload may run
    any of its functions */
@@ -759,8 +933,11 @@ static Val inline_call(unsigned n, unsigned def, Val* args, unsigned count) {
 static int wide(Val width) { return width.bt == BT_CONST && width.value > 64; }
 
 static Val arg(unsigned n, unsigned i) {
+    Val v;
     if (g_gen.memo_node == n && i < g_gen.memo_count) return g_gen.memo[i]; /* lane_builtin evaluated it */
-    return eval(arg_at(n, i), 0);
+    v = eval(arg_at(n, i), 0);
+    if (!g_gen.lane && v.bt == BT_LANE && v.kind == K_BITS) v = raise(v, BT_DYN); /* a loop's lanes after it: bits */
+    return v;
 }
 static void need_args(unsigned n, unsigned count) {
     if (arg_count(n) != count) sg_fail(n, "%s takes %u arguments, given %u", name_of(n), count, arg_count(n));
@@ -844,13 +1021,9 @@ static Val permuted(unsigned n, Val index, Val size) {
 /* the builtins an element loop's lanes can go through: their arguments are evaluated here, and one per lane makes the
    result one per lane; else they stay in g_gen.memo for builtin_body. 1 when *r is the result */
 static int lane_builtin(unsigned n, const char* name, Val* r) {
-    static const char* const names[] = {"UInt", "SInt",       "asl_Int",    "Min",       "Max",
-                                        "Abs",  "negate",     "IsZero",     "not_vec",   "not_bool",
-                                        "EOR",  "ZeroExtend", "SignExtend", "Elem_read", "Elem_set"};
     unsigned count = arg_count(n), i, lanes = 0;
     Val* a = g_gen.memo;
-    for (i = 0; i < sizeof names / sizeof *names && strcmp(name, names[i]); ++i) {}
-    if (i == sizeof names / sizeof *names || count > 8) return 0;
+    if (!lane_has(name) || count > 8) return 0;
     for (i = 0; i < count; ++i) {
         a[i] = eval(arg_at(n, i), 0);
         lanes += a[i].bt == BT_LANE;
@@ -873,8 +1046,8 @@ static int lane_builtin(unsigned n, const char* name, Val* r) {
     }
     if (!strcmp(name, "Elem_set") && count == 4 && strstr(a[1].c, "sg_lane")) { /* element e set: the lanes */
         Val size = need_static_int(n, a[2], "an element's size");
-        if (strcmp(a[1].c, "sg_lane") || a[3].kind != K_BITS) {
-            lane_refuse("an element set other than the lane's own");
+        if (strcmp(a[1].c, "sg_lane") || a[3].kind != K_BITS || g_gen.lane_from) {
+            lane_refuse("an element set other than the lane's own, or in a loop from 1 (which keeps element 0)");
             *r = a[0];
             return 1;
         }
@@ -882,6 +1055,12 @@ static int lane_builtin(unsigned n, const char* name, Val* r) {
         return 1;
     }
     if (!lanes) return 0;
+    if ((!strcmp(name, "Min") || !strcmp(name, "Max")) && count == 2 &&
+        (a[0].acc == ACC_READ || a[1].acc == ACC_READ)) {
+        int i = a[0].acc == ACC_READ ? 0 : 1; /* Min(acc, x): x folded into it (accumulate) */
+        *r = accumulate(a[i], a[1 - i], arg_at(n, (unsigned)(1 - i)), name[1] == 'i' ? "min" : "max");
+        return 1;
+    }
     if ((!strcmp(name, "UInt") || !strcmp(name, "SInt")) && count == 1 && a[0].kind == K_BITS)
         *r = val_c(K_INT, BT_LANE, "sg_l_int(g, %s, %d)", a[0].c, name[0] == 'S');
     else if (!strcmp(name, "asl_Int") && count == 2 && a[0].kind == K_BITS && a[1].bt <= BT_STATIC)
@@ -925,6 +1104,24 @@ static int builtin(unsigned n, const char* name, Val* r) {
 
 static int builtin_body(unsigned n, const char* name, Val* r) {
     Val a, b, c;
+    if (!strcmp(name, "Reduce")) { /* Reduce(ReduceOp_ADD, x, size): the sum of x's elements of size bits, modular */
+        need_args(n, 3);
+        a = arg(n, 0);
+        b = need_bits(n, arg(n, 1), name);
+        c = need_static_int(n, arg(n, 2), "an element's size");
+        if (a.kind != K_ENUM || a.bt != BT_CONST || a.value != enum_member("ReduceOp_ADD"))
+            sg_fail(
+                n,
+                "Reduce of %s: sailgen lowers ReduceOp_ADD alone (the floating-point ops fold pairwise, in Reduce's "
+                "order)",
+                a.kind == K_ENUM && a.bt == BT_CONST ? enum_name("ReduceOp_ADD", a.value)
+                                                     : "an op known only when it recompiles");
+        b = keep(raise(b, BT_DYN));
+        *r = val_c(K_BITS, BT_DYN,
+                   "sg_d_from_l(g, sg_l_reduce_add(g, sg_l_elem(g, %s, %s, (unsigned)((%s).w / (%s))), 0))", b.c, c.c,
+                   b.c, c.c);
+        return 1;
+    }
     if (!strcmp(name, "Elem_read")) { /* Elem_read(x, e, size): element e of size bits of x */
         Val e, size;
         need_args(n, 3);
@@ -1658,9 +1855,20 @@ static Val ident(unsigned n) {
     if (b) {
         Val v = b->val;
         if (b->var >= 0) {
-            v.bt = g_gen.vars[b->var].bt;
-            v.kind = g_gen.vars[b->var].kind;
-            if (v.bt == BT_LANE && !g_gen.lane && (v.kind != K_BITS || g_gen.vars[b->var].lane_elem)) {
+            const Var* a = &g_gen.vars[b->var];
+            v.bt = a->bt;
+            v.kind = a->kind;
+            if (g_gen.lane && g_gen.lane_from == 1 && (unsigned)b->var < g_gen.lane_var_base &&
+                (a->kind == K_INT || a->kind == K_BITS) && a->init_node && N(a->init_node).kind != N_UNDEF &&
+                !a->sets && (a->bt != BT_LANE || a->acc_loop == g_gen.lane_loop)) { /* an accumulator (accumulate) */
+                if (acc_was_set(b->var)) lane_refuse("an accumulator read after the fold into it");
+                v = val_c(a->kind, BT_LANE, "sg_acc");
+                v.acc = ACC_READ;
+                v.acc_var = b->var;
+                v.node = n;
+                return v;
+            }
+            if (v.bt == BT_LANE && !g_gen.lane && (v.kind != K_BITS || a->lane_elem) && !a->acc_loop) {
                 /* only the vector Elem_set built leaves the loop */
                 refuse_loop(g_gen.vars[b->var].lane_loop); /* the walk starts over: any value of its kind */
                 return v.kind == K_INT    ? val_c(K_INT, BT_DYN, "sg_i_const(g, 0)")
@@ -1700,7 +1908,14 @@ enum { L_EQ, L_NE, L_LT, L_LE, L_GT, L_GE };
 static Val lane_binop(unsigned n, const char* op, Val a, Val b) {
     static const char* const cmps[] = {"==", "!=", "<", "<=", ">", ">="};
     unsigned i;
-    (void)n;
+    if (a.acc == ACC_READ || b.acc == ACC_READ) { /* acc + x: x folded into it (accumulate) */
+        int left = a.acc == ACC_READ;
+        if (strcmp(op, "+")) {
+            lane_refuse("an accumulator folded by other than +, Min or Max");
+            return a;
+        }
+        return accumulate(left ? a : b, left ? b : a, left ? N(n).b : N(n).a, "add");
+    }
     if ((a.kind == K_BITS) != (b.kind == K_BITS) || (a.kind == K_BOOL) != (b.kind == K_BOOL)) {
         lane_refuse("an operation on lanes of two kinds");
         return a;
@@ -1931,10 +2146,13 @@ static Val undefined_of(unsigned type, int bt) {
 
 /* name : type = init, a mutable local, declared at the time its assignments reach */
 static void declare_var(unsigned name, unsigned type, unsigned init_node) {
-    Val init = N(init_node).kind == N_UNDEF ? unit() : eval(init_node, 0), local;
+    /* an accumulator a loop folds every lane into (accumulate): its start, the first lane's value, is the fold's */
+    int folded = !g_gen.lane && g_gen.var_next < g_gen.var_count && g_gen.vars[g_gen.var_next].acc_loop;
+    Val init = N(init_node).kind == N_UNDEF || folded ? unit() : eval(init_node, 0), local;
     unsigned sdef = init.kind != K_UNIT ? init.sdef : type_struct(type);
     int kind = init.kind != K_UNIT ? init.kind : sdef ? K_STRUCT : type_kind(type), var, bt;
     char cname[96];
+    if (folded) kind = g_gen.vars[g_gen.var_next].kind; /* its start not walked: the kind the walks before found */
     if (kind == K_BIT) kind = K_BITS;
     if (kind == K_NONE || kind == K_OTHER || kind == K_TUPLE)
         sg_fail(init_node, "a local of a type sailgen does not keep");
@@ -1952,6 +2170,9 @@ static void declare_var(unsigned name, unsigned type, unsigned init_node) {
     local = val_c(kind, bt, "%s", cname);
     local.sdef = sdef;
     bind(name, local, var, 0);
+    g_gen.vars[var].init_node = init_node;
+    g_gen.vars[var].decl_depth = g_gen.depth - 1;
+    g_gen.vars[var].sets = 0;
 }
 
 /* does the name occur in n (and the items after it) only as what Elem_read reads? */
@@ -2101,6 +2322,26 @@ static void assign(unsigned target, Val v) {
         if (!strcmp(s, "SEE")) return; /* the decoder's own bookkeeping */
         if (!b) sg_fail(t, "%s assigned but not declared", s);
         if (b->var < 0) sg_fail(t, "%s assigned but bound by let", s);
+        if (g_gen.lane && v.acc == ACC_FOLD) { /* the accumulator's new value: every lane folded into it */
+            if (b->var != v.acc_var || g_gen.indent != g_gen.lane_indent || acc_was_set(b->var) ||
+                g_gen.acc_set_count == sizeof g_gen.acc_set / sizeof *g_gen.acc_set) {
+                lane_refuse("a fold set other than once as its accumulator, at the top of the loop's body");
+                return;
+            }
+            g_gen.acc_set[g_gen.acc_set_count++] = b->var;
+            var_raise(b->var, BT_LANE);
+            g_gen.vars[b->var].acc_loop = g_gen.lane_loop;
+            g_gen.vars[b->var].lane_loop = g_gen.lane_loop;
+            g_gen.fold_ok = 1;
+            emit("%s = %s;\n", b->val.c, v.c);
+            g_gen.fold_ok = 0;
+            return;
+        }
+        if (g_gen.lane && acc_was_set(b->var)) {
+            lane_refuse("an accumulator set again after the fold into it");
+            return;
+        }
+        if (!g_gen.lane) ++g_gen.vars[b->var].sets;
         var_raise(b->var, v.bt);
         if (g_gen.lane) { /* a local set in the loop holds a value per lane, or the loop is no vector operation */
             if (g_gen.vars[b->var].bt != BT_LANE) {
@@ -2287,18 +2528,26 @@ static Val if_expr(unsigned n, int tail) {
     }
     r = val_c(a.kind, top_bt(top_bt(a.bt, b.bt), BT_STATIC), "");
     r.sdef = a.sdef;
+    if (a.acc == ACC_FOLD && b.acc == ACC_FOLD && a.acc_var == b.acc_var) { /* SMAXV's Min or Max: a fold either way */
+        r.acc = ACC_FOLD;
+        r.acc_var = a.acc_var;
+    }
     temp(t, sizeof t);
     snprintf(r.c, sizeof r.c, "%s", t);
     emit("%s %s;\n", ctype_of(r.kind, r.bt, r.sdef), t);
     emit("if (%s) {\n", cond_text(c.c, buffer, sizeof buffer));
     ++g_gen.indent;
     a = eval(N(n).b, tail);
+    g_gen.fold_ok = r.acc == ACC_FOLD;
     emit("%s = %s;\n", t, raise(a, r.bt).c);
+    g_gen.fold_ok = 0;
     --g_gen.indent;
     emit("} else {\n");
     ++g_gen.indent;
     b = eval(N(n).c, tail);
+    g_gen.fold_ok = r.acc == ACC_FOLD;
     emit("%s = %s;\n", t, raise(b, r.bt).c);
+    g_gen.fold_ok = 0;
     --g_gen.indent;
     emit("}\n");
     return r;
@@ -2426,14 +2675,22 @@ static Val foreach_loop(unsigned n) {
         lane_refuse("a loop inside an element loop");
         return unit();
     }
-    /* from 0 by 1 up: tried as one vector operation, the lanes from 0 to `to` (lanes, above) */
-    if (!g_gen.lane && !g_gen.in_helper && from.bt == BT_CONST && !from.value && by.bt == BT_CONST && by.value == 1 &&
-        !N(n).dec && !lane_refused(n)) {
+    /* from 0 by 1 up: tried as one vector operation, the lanes from 0 to `to` (lanes, above); from 1, as the fold of
+       the lanes from 0 into accumulators that start at the first lane's value (accumulate) */
+    if (!g_gen.lane && !g_gen.in_helper && from.bt == BT_CONST && (from.value == 0 || from.value == 1) &&
+        by.bt == BT_CONST && by.value == 1 && !N(n).dec && !lane_refused(n)) {
         Buffer scratch = {0, 0, 0}, *out = g_gen.out;
         int indent = g_gen.indent;
         g_gen.lane = 1;
         g_gen.lane_fail = 0;
         g_gen.lane_loop = n;
+        g_gen.lane_from = from.value;
+        g_gen.lane_body = N(n).d;
+        g_gen.lane_e = N(n).name;
+        g_gen.lane_var_base = g_gen.var_next;
+        g_gen.lane_depth = g_gen.depth;
+        g_gen.lane_indent = indent + 1;
+        g_gen.acc_set_count = 0;
         snprintf(g_gen.lane_count, sizeof g_gen.lane_count, "(unsigned)((%s) + 1)", to.c);
         g_gen.out = &scratch;
         g_gen.indent = indent + 1;

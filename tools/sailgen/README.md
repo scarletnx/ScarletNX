@@ -56,13 +56,18 @@ lanes as one load, and lanes written to a register one store (`ir_vec_read`, `ir
 
 An element other than `e` of a `let` that concatenates two values, `Elem_read(concat, 2 * e + 1, esize)` of the pairwise
 ops' `operand2 @ operand1`, is a shuffle of the two values' lanes (`sg_l_permute`) whose mask is that index for each
-lane, made when the recompiler runs; the concatenation, wider than the back end's 128 bits, is never made whole.
+lane, made when the recompiler runs; the concatenation, wider than the back end's 128 bits, is never made whole. A loop
+from 1 that folds each element into a local, `sum = sum + x` or `maxmin = Max(maxmin, x)`, the local declared as `x`
+for `e` 0 (the same tree with 0 for `e`, every other name bound before it to a value nothing sets), is that fold of
+every lane from 0: `llvm.vector.reduce` of `x`'s lanes, an integer's sum exact at the narrowest power of two of bits
+that holds it, the result one lane (`sg_l_reduce_add`, `sg_l_reduce_minmax`).
 
 The body may only set locals per lane: one that sets state (a register, an action), carries a local from one element to
 the next (REV's container loop), holds another loop (PMUL's polynomial product), reads an element other than `e` but
-of a concatenation, uses a value per lane where one is wanted, or leaves the loop with an element's value rather than
-the vector `Elem_set` built, is walked again as the loop it is, every element its own IR, which `tests/llvm_sail_ir.c`
-shows as longer than the hand-written emitter's (`sailgen_lanes` holds each outcome).
+of a concatenation, uses a value per lane where one is wanted, folds into a local other than as above, sets an element
+in a loop from 1, or leaves the loop with an element's value rather than the vector `Elem_set` built, is walked again
+as the loop it is, every element its own IR, which `tests/llvm_sail_ir.c` shows as longer than the hand-written
+emitter's (`sailgen_lanes` holds each outcome).
 
 ## The back end (`llvm.h`)
 
@@ -83,6 +88,7 @@ Builtins, lowered by the back end rather than from Sail:
 | `ConditionHolds(cond)` | the compare the flags came from, when one made them in this block; else its own Sail |
 | `RoundTowardsZero(Real(a) / Real(b))` | `udiv`/`sdiv` with the divisor 1 where it is 0 or -1 under the most negative value (the caller's select gives 0 for the first) |
 | `CountLeadingZeroBits`, `CountLeadingSignBits` | `llvm.ctlz` |
+| `Reduce(ReduceOp_ADD, x, esize)` (ADDV) | `llvm.vector.reduce.add` of x's lanes; the floating-point ops, whose order is Reduce's pairwise one, are not lowered |
 | `BitReverse(Poly32Mod2(BitReverse(acc) @ Zeros(n) EOR BitReverse(val) @ Zeros(32), poly))` | the reflected CRC update: SSE4.2's CRC32C, AArch64's CRC32, or the sliced tables |
 | `LSL`, `LSR`, `ASR`, `ROR`, `Extend`, `ZeroExtend`, `SignExtend`, `Replicate`, `Zeros`, `Ones`, `IsZero`, `IsZeroBit`, `Bit`, `EOR`, `MOD`, `DIV`, `Min`, `Max`, `HighestSetBit`, `Slice`, `Elem_set` | the map, or C when the value is STATIC |
 | `IsFeatureImplemented(FEAT_X)` | the guest's feature bit (`SNX_A64_FEAT_X` of `a64.profile`); false, a CONST, for a feature `--profile` names nowhere |
@@ -162,8 +168,9 @@ The front (the parse, the inlining, the times) and the Sail don't depend on LLVM
 `tests/sailgen/`: `--extract` of a small file copies the closure of its root and nothing else, and of a function it
 lowers the `val` and the types it names alone; `--generate` refuses a throw it has no meaning for, an `Error_See` under a
 run-time condition, a write to a field a `let` holds fixed, a register or a field the back end does not keep, the back
-end's function that takes no `path` under a run-time condition and one whose `val` gives an integer, naming its line;
-`sailgen_lanes` says which element loops become lanes; `sailgen_a64` generates the in-tree A64 subsets whole.
+end's function that takes no `path` under a run-time condition, one whose `val` gives an integer and a `Reduce` of a
+floating-point op, naming its line; `sailgen_lanes` says which element loops become lanes; `sailgen_a64` generates the
+in-tree A64 subsets whole.
 
 `tests/llvm_sail_ir.c` holds the generated emitters to the hand-written ones they replaced
 (`tests/support/ir_int_reference.c`, `tests/support/ir_fpu_reference.c`), word by word on three paths: the same

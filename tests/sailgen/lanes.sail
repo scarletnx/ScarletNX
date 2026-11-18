@@ -48,6 +48,32 @@ function decode_pairs_aarch64_instrs_test Rd = {
     GPR[UInt(Rd)] = result
 }
 
+val decode_fold_aarch64_instrs_test : bits(4) -> unit
+
+function decode_fold_aarch64_instrs_test Rd = {
+    let operand : bits(64) = GPR[0];
+    element : int = undefined;
+    sum : int = UInt(Elem_read(operand, 0, 8));
+    foreach (e from 1 to 7 by 1 in inc) {
+        element = UInt(Elem_read(operand, e, 8));
+        sum = sum + element
+    };
+    GPR[UInt(Rd)] = ZeroExtend(sum[15 .. 0], 64)
+}
+
+val decode_start_aarch64_instrs_test : bits(4) -> unit
+
+function decode_start_aarch64_instrs_test Rd = {
+    let operand : bits(64) = GPR[0];
+    element : int = undefined;
+    sum : int = UInt(Elem_read(operand, 1, 8));
+    foreach (e from 1 to 7 by 1 in inc) {
+        element = UInt(Elem_read(operand, e, 8));
+        sum = sum + element
+    };
+    GPR[UInt(Rd)] = ZeroExtend(sum[15 .. 0], 64)
+}
+
 val decode_fixed_aarch64_instrs_test : (bits(4), bits(1)) -> unit
 
 function decode_fixed_aarch64_instrs_test (Rd, U) = {
@@ -108,7 +134,17 @@ function clause __DecodeA64_DataProcImm ((pc, ([bitone, bitone, bitone, bitone, 
     decode_pairs_aarch64_instrs_test(Rd)
 }
 
+function clause __DecodeA64_DataProcImm ((pc, ([bitone, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 5) = {
+    SEE = 5;
+    let Rd = Slice(__opcode, 0, 4);
+    decode_fold_aarch64_instrs_test(Rd)
+}
 
+function clause __DecodeA64_DataProcImm ((pc, ([bitone, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 6) = {
+    SEE = 6;
+    let Rd = Slice(__opcode, 0, 4);
+    decode_start_aarch64_instrs_test(Rd)
+}
 
 function clause __DecodeA64_DataProcImm ((pc, ([bitone, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 7) = {
     SEE = 7;

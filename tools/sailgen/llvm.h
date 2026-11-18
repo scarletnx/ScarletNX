@@ -2148,6 +2148,27 @@ static inline SgL sg_l_permute(SgCtx* g, SgL lo, SgL hi, const unsigned* mask, u
         if (mask[i] >= 2 * lo.count) sg_fail("a lane picked past the two vectors' lanes", mask[i], 2 * lo.count);
     return sg_l_of(ir_vec_shuffle(g->ir, lo.v, hi.v, mask, count), 0);
 }
+/* every lane folded into one value, a vector of one lane as ir_vec.c's across() writes it: llvm.vector.reduce.add of
+   an integer's lanes (exact: at the narrowest power of two of bits that holds the sum of them all, which a slice of
+   twice a lane's width then leaves as it is) or of bits (modular, as wide as a lane) */
+static inline SgL sg_l_reduce_add(SgCtx* g, SgL a, int exact) {
+    LLVMValueRef sum;
+    if (exact) {
+        unsigned need = a.w, w = 8, k;
+        for (k = 1; k < a.count; k *= 2) ++need;
+        while (w < need) w *= 2;
+        a = sg_l_width(g, a, w);
+    }
+    sum = sg_intrinsic(g, "llvm.vector.reduce.add", LLVMTypeOf(a.v), &a.v, 1);
+    return sg_l_of(ir_vec_splat(g->ir, sum, 1), exact && a.is_signed);
+}
+/* every lane folded by Min or Max, by the lanes' signedness: llvm.vector.reduce.[su]{min,max}, as one lane */
+static inline SgL sg_l_reduce_minmax(SgCtx* g, SgL a, int minimum) {
+    static const char* const names[2][2] = {{"llvm.vector.reduce.umax", "llvm.vector.reduce.smax"},
+                                            {"llvm.vector.reduce.umin", "llvm.vector.reduce.smin"}};
+    LLVMValueRef r = sg_intrinsic(g, names[minimum != 0][a.is_signed != 0], LLVMTypeOf(a.v), &a.v, 1);
+    return sg_l_of(ir_vec_splat(g->ir, r, 1), a.is_signed);
+}
 
 /* FPCR, as the CPU keeps it: 32 bits, the rest 0 */
 static inline SgD sg_FPCR_read(SgCtx* g) {
