@@ -9,8 +9,10 @@
    answering a GL name with its export; glClear's color in the image, then in the scissor alone, rows from GL's bottom;
    eglSwapBuffers presenting that image (RGBA8888, pitch-linear) and drawing into the other next; a program of
    desktop GLSL 3.30 core and 1.20 compiled, linked and its uniforms written and read through the slots with the
-   guest's pointers, and a shader refused with its line in the log; a GL and an EGL function without a handler stopping
-   the game, the message naming the function and gl_layer's value */
+   guest's pointers, and a shader refused with its line in the log; a buffer of immutable storage mapped persistently
+   at an address of guest memory, written through it and read back, a vertex array's attribute reading the array
+   buffer bound; a GL and an EGL function without a handler stopping the game, the message naming the function and
+   gl_layer's value */
 #include "common/gpu/gl/gl_state.h"
 #include "common/platform/thread.h"
 #include "nx/gpu/gl/gl_layer.h"
@@ -34,7 +36,7 @@
 #define NAMES   0x40000u  /* the driver's string table */
 #define SCRATCH 0x50000u  /* where the game keeps its arguments */
 #define HEAP    0x100000u /* kmem_alloc's */
-#define GUEST   (24u << 20)
+#define GUEST   (48u << 20)
 
 static _Atomic GuestFn slots[(END - MAIN) / 4];
 static u8 guest[GUEST];
@@ -83,7 +85,19 @@ static const char* const exports[] = {"eglGetDisplay",
                                       "_glUniform4f",
                                       "_glUniformMatrix4fv",
                                       "_glGetUniformfv",
-                                      "_glGetAttribLocation"};
+                                      "_glGetAttribLocation",
+                                      "_glCreateBuffers",
+                                      "_glNamedBufferStorage",
+                                      "_glMapNamedBufferRange",
+                                      "_glUnmapNamedBuffer",
+                                      "_glGetNamedBufferSubData",
+                                      "_glGenVertexArrays",
+                                      "_glBindVertexArray",
+                                      "_glBindBuffer",
+                                      "_glBufferData",
+                                      "_glVertexAttribPointer",
+                                      "_glEnableVertexAttribArray",
+                                      "_glGetVertexAttribiv"};
 #define EXPORTS (sizeof exports / sizeof *exports)
 static u64 export_name[EXPORTS];
 static u64 at(const char* name) {
@@ -368,6 +382,36 @@ int main(void) {
         call("_glGetShaderInfoLog", v, 64, status, out, 0);
         assert(!strncmp((const char*)GP(out), "ERROR: 2:", 9) && gr32(status) == strlen((const char*)GP(out)));
         assert(!strncmp(logged, "gl layer: a shader does not compile: ERROR: 2:", 46));
+    }
+
+    /* a buffer of immutable storage in guest memory: mapped persistently, written through the map's address, read
+       back; a vertex array whose attribute reads the array buffer bound */
+    {
+        const u64 names = SCRATCH + 0x3000, out = SCRATCH + 0x3100;
+        u64 at, b, vao, ab;
+        call("_glCreateBuffers", 1, names, 0, 0, 0);
+        b = gr32(names);
+        call("_glNamedBufferStorage", b, 4096, 0, 0x2 | 0x40 | 0x80, 0); /* write, persistent, coherent */
+        at = call("_glMapNamedBufferRange", b, 0, 4096, 0x2 | 0x40 | 0x80, 0);
+        assert(b && at >= HEAP && at + 4096 <= GUEST);
+        memcpy(GP(at + 100), "in guest memory", 16);
+        call("_glGetNamedBufferSubData", b, 100, 16, out, 0);
+        assert(!strcmp((const char*)GP(out), "in guest memory"));
+        assert(call("_glUnmapNamedBuffer", b, 0, 0, 0, 0) == 1 && call("_glUnmapNamedBuffer", b, 0, 0, 0, 0) == 0);
+        call("_glGenVertexArrays", 1, names, 0, 0, 0);
+        vao = gr32(names);
+        call("_glBindVertexArray", vao, 0, 0, 0, 0);
+        call("_glCreateBuffers", 1, names, 0, 0, 0);
+        ab = gr32(names);
+        call("_glBindBuffer", 0x8892, ab, 0, 0, 0);
+        call("_glBufferData", 0x8892, 64, 0, 0x88e8, 0); /* GL_DYNAMIC_DRAW */
+        cpu.x[5] = 32;                                   /* the pointer: an offset in the array buffer */
+        call("_glVertexAttribPointer", 2, 3, 0x1406, 0, 12);
+        call("_glEnableVertexAttribArray", 2, 0, 0, 0, 0);
+        call("_glGetVertexAttribiv", 2, 0x889f, out, 0, 0); /* GL_VERTEX_ATTRIB_ARRAY_BUFFER_BINDING */
+        assert(vao && gr32(out) == ab);
+        call("_glGetVertexAttribiv", 2, 0x8622, out, 0, 0); /* _ENABLED */
+        assert(gr32(out) == 1);
     }
 
     /* a function without a handler stops the game, naming it and gl_layer's value; the driver never ran */
