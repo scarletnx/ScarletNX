@@ -2595,7 +2595,8 @@ void glslc_emit(Glslc* g, uint32_t* words, size_t capacity) {
     e->glsl_ext = id(g);
     static const char glsl[] = "GLSL.std.450";
     inst_string(g, &e->imports, OP_EXT_INST_IMPORT, &e->glsl_ext, 1, glsl, (uint32_t)sizeof glsl - 1, NULL, 0);
-    EMIT(g, &e->names, 3, 1, g->version); /* OpSource ESSL version */
+    /* OpSource: ESSL (1) and its version, or GLSL (2) and a desktop shader's */
+    EMIT(g, &e->names, 3, g->desktop_version ? 2u : 1u, g->desktop_version ? g->desktop_version : g->version);
     global_variables(g);
     for (uint32_t d = g->first_decl; d; d = nd(g, d)->next) {
         if (nd(g, d)->kind != GLSLC_N_FUNCTION) continue;
