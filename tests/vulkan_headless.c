@@ -177,6 +177,71 @@ static int check_release_stopped_recorder(void) {
     return 0;
 }
 
+/* A full ring sleeps: with the recording thread held in a packet (a read of a slow disk held it 184 s in a race, #2487),
+   the producer that finds no room waits on a condition, where it spun on sched_yield and took a whole core. The
+   producer here, with vk_lock as the GPU thread has it, adds 5 MiB to the 4 MiB ring past a held packet: its own CPU
+   time over the 1.5 s it waits stays far under that while, and its packets all run once the packet lets go */
+#if !defined(_WIN32) && defined(CLOCK_THREAD_CPUTIME_ID)
+#define FULL_RING_PACKET (64u << 10)
+static _Atomic u32 g_full_ring_done; /* 0 adding, 1 all added */
+static _Atomic u32 g_full_ring_ran;  /* the producer's packets the recording thread ran */
+static u64 g_full_ring_cpu_ns;       /* the producer's CPU time while it added them */
+static u64 thread_cpu_ns(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts);
+    return (u64)ts.tv_sec * 1000000000ull + (u64)ts.tv_nsec;
+}
+static void full_ring_packet(const void* arg) {
+    (void)arg;
+    atomic_fetch_add_explicit(&g_full_ring_ran, 1, memory_order_relaxed);
+}
+static void full_ring_producer(void* arg) {
+    static u8 bytes[FULL_RING_PACKET];
+    const u32 n = *(const u32*)arg;
+    const u64 t0 = thread_cpu_ns();
+    vk_lock();
+    for (u32 i = 0; i < n; i++) vk_rec_call(full_ring_packet, bytes, sizeof bytes);
+    vk_unlock();
+    g_full_ring_cpu_ns = thread_cpu_ns() - t0;
+    atomic_store_explicit(&g_full_ring_done, 1, memory_order_release);
+    plat_wake_word(&g_full_ring_done);
+}
+static int check_full_ring_sleeps(void) {
+    static const int no_queue = 0;
+    static const u32 packets = (5u << 20) / FULL_RING_PACKET;
+    if (!vk_rec_threaded()) {
+        puts("SKIP the full ring's wait: vk_record=0 has no ring");
+        return 0;
+    }
+    atomic_store_explicit(&g_rec_stop, 0, memory_order_release);
+    atomic_store_explicit(&g_full_ring_done, 0, memory_order_release);
+    atomic_store_explicit(&g_full_ring_ran, 0, memory_order_release);
+    vk_lock();
+    vk_rec_call(recorder_stops, &no_queue, sizeof no_queue); /* the producer's packets publish it */
+    vk_unlock();
+    CHECK(plat_thread(full_ring_producer, (void*)&packets, 0) == 0);
+    plat_sleep_ns(1500000000ull);
+    const u32 added_early = atomic_load_explicit(&g_full_ring_done, memory_order_acquire);
+    const u32 stop = atomic_load_explicit(&g_rec_stop, memory_order_acquire);
+    atomic_store_explicit(&g_rec_stop, 2, memory_order_release);
+    plat_wake_word(&g_rec_stop);
+    while (!atomic_load_explicit(&g_full_ring_done, memory_order_acquire)) plat_wait_word(&g_full_ring_done, 0, -1);
+    vk_rec_sync();
+    printf("The full ring's producer used %.1f ms of CPU while it waited 1.5 s for room\n",
+           (double)g_full_ring_cpu_ns / 1e6);
+    CHECK(stop == 1);                         /* the recording thread was held in the packet */
+    CHECK(!added_early);                      /* the ring had no room for 5 MiB past it */
+    CHECK(g_full_ring_cpu_ns < 300000000ull); /* asleep: spinning on sched_yield took the whole 1.5 s */
+    CHECK(atomic_load_explicit(&g_full_ring_ran, memory_order_relaxed) == packets);
+    return 0;
+}
+#else
+static int check_full_ring_sleeps(void) {
+    puts("SKIP the full ring's wait: no CPU clock for a thread here");
+    return 0;
+}
+#endif
+
 /* A frame's descriptor pool holds VK_POOL_ARRAY_SETS sets of the arrays layouts, not 1024: a driver may make a pool's
    memory for all it can hold as the pool is made (Qualcomm's: 470 MiB for 1024 sets that all could hold the arrays).
    Its 1024 sets are for the layouts without them; a pool made because a set with the arrays didn't fit holds
@@ -7851,6 +7916,7 @@ static int run_headless(int argc, char** argv) {
     if (getenv("SNX_TEST_RECORDER_ONLY")) { /* the recording thread's own sync alone, on the driver the loader picks */
         CHECK(!check_recorder_self_sync());
         CHECK(!check_release_stopped_recorder());
+        CHECK(!check_full_ring_sleeps());
         vk_finish();
         vk_pipeline_quiesce();
         printf("PASS headless Vulkan recorder only: %u validation messages\n", g_vk_validation_messages);
@@ -7858,6 +7924,7 @@ static int run_headless(int argc, char** argv) {
     }
     CHECK(!check_recorder_self_sync());
     CHECK(!check_release_stopped_recorder());
+    CHECK(!check_full_ring_sleeps());
     viw_install();
     /* every check with each draw binding the pipeline linked from its parts and never the one made whole
        (SNX_TEST_GPL=linked), or with each pipeline made whole, with the dynamic state the libraries gave (whole) */
