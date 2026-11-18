@@ -1169,8 +1169,8 @@ static int gbuf_slot_of(const Ctx* c, u32 buffer) {
 }
 static int gbuf_is_address(const Ctx* c, u32 buffer) { return c->gbuf_addressed && buffer && buffer != MEM_LOCAL; }
 /* a pointer of pointee type to word index of the slot of buffer. Robustness doesn't cover addresses: an index at or past
-   the slot's length takes the record's scratch word, which reads what a dropped store left, where a descriptor read
-   zero */
+   the slot's length takes the record's scratch word, where a store is dropped. A load through it reads 0, as a
+   descriptor's did (mem_word_load) */
 static u32 gbuf_pointer(Ctx* c, u32 buffer, u32 index, u32 type) {
     const u32 rec = 4u * (u32)gbuf_slot_of(c, buffer);
     u32 address = pair64(c, record_word(c, rec), record_word(c, rec + 1));
@@ -1204,13 +1204,14 @@ static u32 u_select(Ctx* c, u32 cond, u32 a, u32 b) {
 static u32 f_select(Ctx* c, u32 cond, u32 a, u32 b) {
     return spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_f32, cond, a, b);
 }
-/* the n aligned words from address al on, each 0 where its bytes end past lim: robustness doesn't cover addresses,
-   so such a word's load reads the record's scratch word */
+/* the n aligned words from address al on, each 0 where it starts at or past lim, the stream's end: robustness doesn't
+   cover addresses, so such a word's load reads the record's scratch word. The word with the stream's last bytes ends
+   past lim where the stream ends inside a word, and the renderer binds that word whole (render_draw_main) */
 static void fetch_words(Ctx* c, u32 al, u32 lim, u32 scratch, u32 n, u32* w) {
     const u32 t64 = u64_type(c);
     for (u32 j = 0; j < n; j++) {
         u32 at = j ? op2(c, SPV_OP_I_ADD, t64, al, c64(c, 4u * j)) : al;
-        u32 inside = op2(c, SPV_OP_U_LESS_THAN_EQUAL, c->t_bool, op2(c, SPV_OP_I_ADD, t64, at, c64(c, 4)), lim);
+        u32 inside = op2(c, SPV_OP_U_LESS_THAN, c->t_bool, at, lim);
         u32 pointer =
             spv_emit_address_pointer(&c->e, c->t_u32, spv_emit_ternary(&c->e, SPV_OP_SELECT, t64, inside, at, scratch));
         w[j] = u_select(c, inside, spv_emit_load_aligned(&c->e, c->t_u32, pointer, 4, 0), c->zero);
@@ -1260,13 +1261,18 @@ static u32 fetch_decode(Ctx* c, u32 r, u32 wd, u32 type, u32 k, int integer) {
         u32 fu = spv_emit_unary(&c->e, SPV_OP_CONVERT_U_TO_F, c->t_f32, r);
         u32 fs =
             spv_emit_unary(&c->e, SPV_OP_CONVERT_S_TO_F, c->t_f32, spv_emit_unary(&c->e, SPV_OP_BITCAST, c->t_i32, s));
-        u32 unorm = op2(c, SPV_OP_F_DIV, c->t_f32, fu, spv_emit_unary(&c->e, SPV_OP_CONVERT_U_TO_F, c->t_f32, most));
+        /* the largest value is exactly 1, as Vulkan's fixed-function conversion makes it: OpFDiv may be 2.5 ulp off */
+        const u32 smost = op2(c, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, most, cu(c, 1));
+        u32 unorm =
+            f_select(c, u_equal(c, r, most), cf(c, 1.0f),
+                     op2(c, SPV_OP_F_DIV, c->t_f32, fu, spv_emit_unary(&c->e, SPV_OP_CONVERT_U_TO_F, c->t_f32, most)));
         u32 snorm =
-            spv_emit_glsl_binary(&c->e, c->t_f32, c->glsl, SPV_GLSL_F_MAX,
-                                 op2(c, SPV_OP_F_DIV, c->t_f32, fs,
-                                     spv_emit_unary(&c->e, SPV_OP_CONVERT_U_TO_F, c->t_f32,
-                                                    op2(c, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, most, cu(c, 1)))),
-                                 cf(c, -1.0f));
+            f_select(c, u_equal(c, s, smost), cf(c, 1.0f),
+                     f_select(c, u_equal(c, s, op2(c, SPV_OP_I_SUB, c->t_u32, c->zero, smost)), cf(c, -1.0f),
+                              spv_emit_glsl_binary(&c->e, c->t_f32, c->glsl, SPV_GLSL_F_MAX,
+                                                   op2(c, SPV_OP_F_DIV, c->t_f32, fs,
+                                                       spv_emit_unary(&c->e, SPV_OP_CONVERT_U_TO_F, c->t_f32, smost)),
+                                                   cf(c, -1.0f))));
         u32 half = spv_emit_vec4_extract(&c->e, c->t_f32, SPV_EXT(&c->e, c->t_v2f, SPV_GLSL_UNPACK_HALF2X16, r), 0);
         /* float: 32 bits as they are, 16 a half, and the 8-bit and packed formats unorm (the renderer gives those
            type 2) */
@@ -1332,7 +1338,7 @@ static void vertex_fetch_prologue(Ctx* c) {
         for (u32 f = 0; f < 3; f++)
             flag[f] = spv_emit_binary(&c->e, SPV_OP_I_NOT_EQUAL, c->t_bool,
                                       op2(c, SPV_OP_BITWISE_AND, c->t_u32, info, cu(c, bits[f])), c->zero);
-        u32 divisor = op2(c, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, info, cu(c, SH_ATTR_DIVISOR_SHIFT));
+        u32 divisor = record_word(c, SH_RECORD_DIVISOR + i);
         divisor = u_select(c, u_equal(c, divisor, c->zero), cu(c, 1), divisor);
         u32 element =
             u_select(c, flag[0],
@@ -2220,8 +2226,16 @@ static u32 atomic_opcode(u32 type, u32 how) {
    barriers order for the workgroup's other invocations) */
 static u32 mem_word_load(Ctx* c, u32 buffer, u32 ptr) {
     if (buffer && buffer != MEM_LOCAL && c->coop) return spv_emit_atomic_load_u32(&c->e, c->t_u32, ptr);
-    /* by address: Volatile for what Coherent gave the descriptor's (gbuf_slot), and the alignment it must name */
-    if (gbuf_is_address(c, buffer)) return spv_emit_load_aligned(&c->e, c->t_u32, ptr, 4, 1);
+    /* by address: Volatile for what Coherent gave the descriptor's (gbuf_slot), and the alignment it must name. A
+       word past the slot's length (gbuf_pointer's scratch word) reads 0, as robustness gave the descriptor's: the
+       scratch word holds what the last dropped store left */
+    if (gbuf_is_address(c, buffer)) {
+        const u32 t64 = u64_type(c);
+        u32 scratch = pair64(c, record_word(c, SH_RECORD_SCRATCH), record_word(c, SH_RECORD_SCRATCH + 1));
+        u32 past =
+            spv_emit_binary(&c->e, SPV_OP_I_EQUAL, c->t_bool, spv_emit_pointer_address(&c->e, t64, ptr), scratch);
+        return u_select(c, past, c->zero, spv_emit_load_aligned(&c->e, c->t_u32, ptr, 4, 1));
+    }
     return buffer ? spv_emit_load(&c->e, c->t_u32, ptr) : spv_emit_load_nonprivate(&c->e, c->t_u32, ptr);
 }
 static void mem_word_store(Ctx* c, u32 buffer, u32 ptr, u32 value) {
@@ -2847,10 +2861,16 @@ static void table_element(Ctx* c, int slot) {
         c->table_samplers = spv_emit_sampler_table(&c->e, c->t_u32, g_spirv_translate.table_set, 1, SNX_TABLE_SAMPLERS);
         add_interface(c, c->table_samplers);
     }
-    /* after the attributes in a vertex program that fetches them, else after the global buffers */
-    const u32 at = c->si->vertex_fetch ? SH_RECORD_TEX_FETCH : g_spirv_translate.gbuf_address ? SH_RECORD_GBUF : 0;
+    /* after the attributes in a vertex program that fetches them, else after the global buffers, as render.c's
+       stage_set_ writes them: by the stage too, as a ShaderInfo that a vertex program's translation set vertex_fetch on
+       keeps it */
+    const u32 at = c->stage == ST_VS && c->si->vertex_fetch ? SH_RECORD_TEX_FETCH
+                   : g_spirv_translate.gbuf_address         ? SH_RECORD_GBUF
+                                                            : 0;
     u32 word = record_word(c, at + (u32)slot);
-    u32 image = spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, word, cu(c, (1u << SNX_TABLE_SAMPLER_SHIFT) - 1));
+    /* the image index within the table's array whatever the word holds: an index past an array is undefined, where
+       robustness doesn't reach */
+    u32 image = spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, word, cu(c, SNX_TABLE_IMAGES - 1));
     u32 sampler = spv_emit_binary(&c->e, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, word, cu(c, SNX_TABLE_SAMPLER_SHIFT));
     c->tex[slot] =
         spv_emit_table_element(&c->e, c->tex_sampled[slot], c->tex_images[slot], image, c->table_samplers, sampler);

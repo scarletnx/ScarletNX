@@ -4035,6 +4035,7 @@ static u64 copy_src_at_once(void) {
    cache, 64 a buffer of the cache's own or the ring. A stopped GPU's report names them for the draw it stopped in
    (record.c) */
 static u32 g_buf_sources, g_buf_kind; /* g_buf_kind: the bit of the range buf_get is at, 0 for the last one */
+u32 vk_buf_kind(void) { return g_buf_kind ? g_buf_kind : 64; }
 u32 vk_buf_sources(void) {
     u32 s = g_buf_sources;
     g_buf_sources = 0;
@@ -4114,9 +4115,12 @@ static int buf_get_(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 a
        copied again for every draw, 16 MiB a binding, about half of one game's GPU thread */
     /* the range's one run of guest memory, walked once for the hold check and the slice: three walks of the page table
        for each binding were most of the mirror's part of a draw */
+    /* walked only where the mirror is made and owns pages: vk_mirror_on() would make it (a sparse buffer as big as
+       the guest's address space) at a game's first lookup, also where no program logs its writes */
     u64 cpu = 0;
-    const int run = vk_mirror_on() && gmmu_run(gva, len, &cpu) == len;
-    if (vk_mirror_pending(gva, len) || (run && vk_mirror_holds_at(cpu, len))) {
+    const int mirror_pending = vk_mirror_pending(gva, len);
+    const int run = (mirror_pending || vk_mirror_owns_any()) && gmmu_run(gva, len, &cpu) == len;
+    if (mirror_pending || (run && vk_mirror_holds_at(cpu, len))) {
         u64 a = (inplace & IN_WINDOW) ? 16 : align ? align : 1;
         VkBuffer mb;
         u64 mo;
@@ -4243,6 +4247,9 @@ static int buf_get_(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 a
     /* valid: the data is where draws can read it this frame */
     /* not while an in-place write is pending over it: a copy from before the write would be read */
     int valid = e && e->buf && (e->own || e->frame == vk_submit_number()) && !vk_uma_pending(gva, len);
+    /* and at an offset this use takes: an entry an earlier lookup of a lesser alignment kept (a word read by address or
+       an indirect record, at any 4 bytes) is no descriptor's offset, which a driver may round down */
+    if (valid && e->off % (align ? align : 1)) valid = 0;
     /* a copy of this submission's over bytes the page cache owns: a draw may have written them in place since, which
        stamps nothing before the submission goes (vk_pages_submit) */
     if (valid && !e->own && e->pg_written != vk_pages_written() && range_owned(gva, len)) valid = 0;

@@ -578,6 +578,7 @@ int vk_mirror_holds(u64 gva, u64 len) {
     return g_mir.on > 0 && len && own_any() && gmmu_run(gva, len, &cpu) == len && mirror_owns(cpu, len);
 }
 int vk_mirror_holds_at(u64 cpu, u64 len) { return g_mir.on > 0 && len && own_any() && mirror_owns(cpu, len); }
+int vk_mirror_owns_any(void) { return g_mir.on > 0 && own_any(); }
 
 static int range_cmp(const void* a, const void* b) {
     u64 x = ((const MirRange*)a)->first, y = ((const MirRange*)b)->first;

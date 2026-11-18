@@ -485,17 +485,18 @@ static inline void shader_query_hint_unpack(const u32 words[SH_QUERY_WORDS], u8 
 #define SH_RECORD_SCRATCH       64u
 /* With vertex_fetch, a vertex program's record holds the 32 generic attributes after the global buffers, 4 words an
    attribute: the address of its first element (low, high), the bytes from there to the end of its stream (0: no data),
-   and its format, packed with the SH_ATTR_ fields. The texture words follow at SH_RECORD_TEX_FETCH. A fragment
+   and its format, packed with the SH_ATTR_ fields. Each attribute's instance divisor follows in a word of its own at
+   SH_RECORD_DIVISOR (the 3D engine's divisor has 32 bits), then the texture words at SH_RECORD_TEX_FETCH. A fragment
    program's texture words stay at SH_RECORD_GBUF */
 #define SH_RECORD_ATTR          68u
-#define SH_RECORD_TEX_FETCH     (SH_RECORD_ATTR + 32u * 4u)
+#define SH_RECORD_DIVISOR       (SH_RECORD_ATTR + 32u * 4u)
+#define SH_RECORD_TEX_FETCH     (SH_RECORD_DIVISOR + 32u)
 #define SH_ATTR_STRIDE_MASK     0xFFFu /* bits 0-11: the stream's stride in bytes */
 #define SH_ATTR_SIZE_SHIFT      12     /* bits 12-17: the 3D engine's size code */
 #define SH_ATTR_TYPE_SHIFT      18     /* bits 18-20: 1 snorm, 2 unorm, 3 sint, 4 uint, 5 uscaled, 6 sscaled, 7 float */
 #define SH_ATTR_BGRA            (1u << 21) /* the first and third components swap */
 #define SH_ATTR_CONSTANT        (1u << 22) /* no data: 0, 0, 0, 1 */
-#define SH_ATTR_INSTANCED       (1u << 23) /* an element each divisor instances, not each vertex */
-#define SH_ATTR_DIVISOR_SHIFT   24         /* bits 24-31: the divisor, 0 taken as 1 */
+#define SH_ATTR_INSTANCED       (1u << 23) /* an element each divisor (SH_RECORD_DIVISOR) instances, not each vertex */
 /* Device capabilities the renderer sets before translating, and the values offline translation takes. A 1-bit
    field holds 0 or 1: a mask goes in through a test (!= 0), or its bit is lost */
 typedef struct {

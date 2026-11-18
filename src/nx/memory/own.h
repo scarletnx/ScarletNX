@@ -46,6 +46,9 @@ typedef struct {
        or mark of own.c's, on a thread that did not hold the producer's lock before. The watches left over the bytes
        after it go. Optional: without it, a watch only goes */
     void (*resolve)(u64 addr, u64 size);
+    /* [addr, addr + size) of an own_drop, its owners cut with no landing: what the producer keeps of those bytes
+       beside guest memory is stale. Called with the producer's lock held and none of own.c's. Optional */
+    void (*dropped)(u64 addr, u64 size);
     /* a CPU access of pages [addr, addr + size) that owners are on: the producer publishes what it holds of those
        bytes that is newer than their owners (own_begin), and the access then lands that. A render target drawn
        again since its publish is such a holder: it is not published at each release (vk/surface.c's rt_watch).

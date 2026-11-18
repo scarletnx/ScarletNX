@@ -1530,6 +1530,11 @@ uint32_t spv_emit_address_pointer(SpvEmitter* e, uint32_t pointee_type, uint32_t
          spv_emit_type_pointer(e, SPV_STORAGE_PHYSICAL_STORAGE_BUFFER, pointee_type), id, address);
     return id;
 }
+uint32_t spv_emit_pointer_address(SpvEmitter* e, uint32_t u64_type, uint32_t pointer) {
+    uint32_t id = spv_emit_id(e);
+    EMIT(&e->functions, SPV_OP_CONVERT_PTR_TO_U, u64_type, id, pointer);
+    return id;
+}
 uint32_t spv_emit_load_aligned(SpvEmitter* e, uint32_t result_type, uint32_t pointer, uint32_t alignment,
                                int volatile_access) {
     uint32_t id = spv_emit_id(e);
