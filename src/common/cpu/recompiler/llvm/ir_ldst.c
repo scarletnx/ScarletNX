@@ -312,12 +312,24 @@ int snx_ir_ldst_handles(SnxA64Op op) {
     }
 }
 
+/* the word as the Sail's decode takes it: the fields an exclusive leaves unused (STXR's Rt2, LDXR's Rs and Rt2, LDXP's
+   Rs) are ones in its decode clauses, which the Arm ARM asks of them, while QEMU's Cortex-A57, which qemu_ref_selftest
+   holds the decoder to, runs the word whatever they hold */
+static SnxU32 sail_word(SnxA64Op op, SnxU32 word) {
+    switch (op) {
+        case SNX_A64_OP_STXR: return word | 0x1fu << 10;
+        case SNX_A64_OP_LDXR: return word | 0x1fu << 16 | 0x1fu << 10;
+        case SNX_A64_OP_LDXP: return word | 0x1fu << 16;
+        default: return word;
+    }
+}
+
 void snx_ir_ldst(SnxIr* ir, const SnxA64Insn* insn, SnxU32 word, SnxU64 pc) {
     const SnxA64Args* a = &insn->args;
     if (generated(insn->op)) {
         if (ir->ldst_reference)
             ir->ldst_reference(ir, insn, word, pc);
-        else if (!snx_ir_sail(ir, word, pc) && !ir->fallbacks++) {
+        else if (!snx_ir_sail(ir, sail_word(insn->op, word), pc) && !ir->fallbacks++) {
             /* the decoder's op and the Sail's decode clauses disagree on the word: the module is refused, naming it */
             ir->fallback_word = word;
             ir->fallback_pc = pc;
