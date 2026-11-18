@@ -226,6 +226,8 @@ typedef struct SnxIr {
     void (*ldst_reference)(struct SnxIr* ir, const void* decoded, SnxU32 word, SnxU64 pc);
     /* and the hand-written scalar floating-point emitters (tests/support/ir_fpu_reference.c), the same way */
     void (*fpu_reference)(struct SnxIr* ir, const void* decoded, SnxU32 word, SnxU64 pc);
+    /* and the hand-written SIMD emitters of the ops generated from their Sail (tests/support/ir_vec_reference.c) */
+    void (*vec_reference)(struct SnxIr* ir, const void* decoded, SnxU32 word, SnxU64 pc);
 } SnxIr;
 
 void ir_state_invalidate(SnxIr* ir);

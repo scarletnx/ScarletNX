@@ -3,6 +3,77 @@
      v8_base.sail
    BSD 3-Clause Clear License: LICENSE beside this file. Do not edit: an NX fixup goes in nx.sail */
 
+val execute_aarch64_instrs_vector_arithmetic_unary_diff_neg_int_sisd : forall 'd 'datasize 'elements 'esize 'n ('neg : Bool),
+  (0 <= 'n & 'n <= 31 & 'esize in {8, 16, 32, 64} & 'datasize in {8, 16, 32, 64, 128} & 0 <= 'd & 'd <= 31).
+  (int('d), int('datasize), int('elements), int('esize), int('n), bool('neg)) -> unit
+
+function execute_aarch64_instrs_vector_arithmetic_unary_diff_neg_int_sisd (d, datasize, elements, esize, n, neg) = {
+    CheckFPAdvSIMDEnabled64();
+    let operand : bits('datasize) = V_read(n, datasize);
+    result : bits('datasize) = undefined;
+    element : int = undefined;
+    foreach (e from 0 to (elements - 1) by 1 in inc) {
+        element = SInt(Elem_read(operand, e, esize));
+        if neg then {
+            element = negate(element)
+        } else {
+            element = Abs(element)
+        };
+        result = Elem_set(result, e, esize, element[esize - 1 .. 0])
+    };
+    V_set(d, datasize) = result
+}
+
+val decode_abs_advsimd_aarch64_instrs_vector_arithmetic_unary_diff_neg_int_simd : (bits(5), bits(5), bits(2), bits(1), bits(1)) -> unit
+
+function decode_abs_advsimd_aarch64_instrs_vector_arithmetic_unary_diff_neg_int_simd (Rd, Rn, size, U, Q) = {
+    let 'd = UInt(Rd);
+    let 'n = UInt(Rn);
+    if (size @ Q) == 0b110 then {
+        throw(Error_Undefined())
+    };
+    let 'esize = (8 << UInt(size));
+    let 'datasize = if Q == 0b1 then 128 else 64;
+    let 'elements = DIV(datasize, esize);
+    let neg : bool = U == 0b1;
+    execute_aarch64_instrs_vector_arithmetic_unary_diff_neg_int_sisd(d, datasize, elements, esize, n, neg)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, _, _, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, bitzero, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 3) = {
+    SEE = 3;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_abs_advsimd_aarch64_instrs_vector_arithmetic_unary_diff_neg_int_simd(Rd, Rn, size, U, Q)
+}
+
+val decode_neg_advsimd_aarch64_instrs_vector_arithmetic_unary_diff_neg_int_simd : (bits(5), bits(5), bits(2), bits(1), bits(1)) -> unit
+
+function decode_neg_advsimd_aarch64_instrs_vector_arithmetic_unary_diff_neg_int_simd (Rd, Rn, size, U, Q) = {
+    let 'd = UInt(Rd);
+    let 'n = UInt(Rn);
+    if (size @ Q) == 0b110 then {
+        throw(Error_Undefined())
+    };
+    let 'esize = (8 << UInt(size));
+    let 'datasize = if Q == 0b1 then 128 else 64;
+    let 'elements = DIV(datasize, esize);
+    let neg : bool = U == 0b1;
+    execute_aarch64_instrs_vector_arithmetic_unary_diff_neg_int_sisd(d, datasize, elements, esize, n, neg)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, _, _, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, bitzero, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 5) = {
+    SEE = 5;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_neg_advsimd_aarch64_instrs_vector_arithmetic_unary_diff_neg_int_simd(Rd, Rn, size, U, Q)
+}
+
 val execute_aarch64_instrs_integer_arithmetic_add_sub_carry : forall 'd 'datasize 'm 'n ('setflags : Bool) ('sub_op : Bool),
   (0 <= 'n & 'n <= 31 & 0 <= 'm & 'm <= 31 & 'datasize in {32, 64} & 0 <= 'd & 'd <= 31).
   (int('d), int('datasize), int('m), int('n), bool('setflags), bool('sub_op)) -> unit
@@ -112,6 +183,83 @@ function clause __DecodeA64_DataProcReg ((pc, ([_, bitone, bitone, bitone, biton
     let op = Slice(__opcode, 30, 1);
     let sf = Slice(__opcode, 31, 1);
     decode_sbcs_aarch64_instrs_integer_arithmetic_add_sub_carry(Rd, Rn, Rm, S, op, sf)
+}
+
+val execute_aarch64_instrs_vector_arithmetic_binary_uniform_add_wrapping_single_sisd : forall 'd 'datasize 'elements 'esize 'm 'n ('sub_op : Bool),
+  (0 <= 'n & 'n <= 31 & 0 <= 'm & 'm <= 31 & 'esize in {8, 16, 32, 64} & 'datasize in {8, 16, 32, 64, 128} & 0 <= 'd & 'd <= 31).
+  (int('d), int('datasize), int('elements), int('esize), int('m), int('n), bool('sub_op)) -> unit
+
+function execute_aarch64_instrs_vector_arithmetic_binary_uniform_add_wrapping_single_sisd (d, datasize, elements, esize, m, n, sub_op) = {
+    CheckFPAdvSIMDEnabled64();
+    let operand1 : bits('datasize) = V_read(n, datasize);
+    let operand2 : bits('datasize) = V_read(m, datasize);
+    result : bits('datasize) = undefined;
+    element1 : bits('esize) = undefined;
+    element2 : bits('esize) = undefined;
+    foreach (e from 0 to (elements - 1) by 1 in inc) {
+        element1 = Elem_read(operand1, e, esize);
+        element2 = Elem_read(operand2, e, esize);
+        if sub_op then {
+            result = Elem_set(result, e, esize, element1 - element2)
+        } else {
+            result = Elem_set(result, e, esize, element1 + element2)
+        }
+    };
+    V_set(d, datasize) = result
+}
+
+val decode_add_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_add_wrapping_single_simd : (bits(5), bits(5), bits(5), bits(2), bits(1), bits(1)) -> unit
+
+function decode_add_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_add_wrapping_single_simd (Rd, Rn, Rm, size, U, Q) = {
+    let 'd = UInt(Rd);
+    let 'n = UInt(Rn);
+    let 'm = UInt(Rm);
+    if (size @ Q) == 0b110 then {
+        throw(Error_Undefined())
+    };
+    let 'esize = (8 << UInt(size));
+    let 'datasize = if Q == 0b1 then 128 else 64;
+    let 'elements = DIV(datasize, esize);
+    let sub_op : bool = U == 0b1;
+    execute_aarch64_instrs_vector_arithmetic_binary_uniform_add_wrapping_single_sisd(d, datasize, elements, esize, m, n, sub_op)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitone, bitzero, bitzero, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 11) = {
+    SEE = 11;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_add_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_add_wrapping_single_simd(Rd, Rn, Rm, size, U, Q)
+}
+
+val decode_sub_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_add_wrapping_single_simd : (bits(5), bits(5), bits(5), bits(2), bits(1), bits(1)) -> unit
+
+function decode_sub_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_add_wrapping_single_simd (Rd, Rn, Rm, size, U, Q) = {
+    let 'd = UInt(Rd);
+    let 'n = UInt(Rn);
+    let 'm = UInt(Rm);
+    if (size @ Q) == 0b110 then {
+        throw(Error_Undefined())
+    };
+    let 'esize = (8 << UInt(size));
+    let 'datasize = if Q == 0b1 then 128 else 64;
+    let 'elements = DIV(datasize, esize);
+    let sub_op : bool = U == 0b1;
+    execute_aarch64_instrs_vector_arithmetic_binary_uniform_add_wrapping_single_sisd(d, datasize, elements, esize, m, n, sub_op)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitone, bitzero, bitzero, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 13) = {
+    SEE = 13;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_sub_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_add_wrapping_single_simd(Rd, Rn, Rm, size, U, Q)
 }
 
 val execute_aarch64_instrs_integer_arithmetic_add_sub_shiftedreg : forall 'd 'datasize 'm 'n ('setflags : Bool) 'shift_amount ('sub_op : Bool),
@@ -4019,6 +4167,225 @@ function clause __DecodeA64_DataProcReg ((pc, ([_, bitone, bitzero, bitone, bito
     let op = Slice(__opcode, 10, 1);
     let sf = Slice(__opcode, 31, 1);
     decode_clz_int_aarch64_instrs_integer_arithmetic_cnt(Rd, Rn, op, sf)
+}
+
+val execute_aarch64_instrs_vector_arithmetic_binary_uniform_cmp_bitwise_sisd : forall ('and_test : Bool) 'd 'datasize 'elements 'esize 'm 'n,
+  (0 <= 'n & 'n <= 31 & 0 <= 'm & 'm <= 31 & 'esize in {8, 16, 32, 64} & 'datasize in {8, 16, 32, 64, 128} & 0 <= 'd & 'd <= 31).
+  (bool('and_test), int('d), int('datasize), int('elements), int('esize), int('m), int('n)) -> unit
+
+function execute_aarch64_instrs_vector_arithmetic_binary_uniform_cmp_bitwise_sisd (and_test, d, datasize, elements, esize, m, n) = {
+    CheckFPAdvSIMDEnabled64();
+    let operand1 : bits('datasize) = V_read(n, datasize);
+    let operand2 : bits('datasize) = V_read(m, datasize);
+    result : bits('datasize) = undefined;
+    element1 : bits('esize) = undefined;
+    element2 : bits('esize) = undefined;
+    test_passed : bool = undefined;
+    foreach (e from 0 to (elements - 1) by 1 in inc) {
+        element1 = Elem_read(operand1, e, esize);
+        element2 = Elem_read(operand2, e, esize);
+        if and_test then {
+            test_passed = not_bool(IsZero(element1 & element2))
+        } else {
+            test_passed = element1 == element2
+        };
+        result = Elem_set(result, e, esize, if test_passed then Ones(esize) else
+          Zeros(esize))
+    };
+    V_set(d, datasize) = result
+}
+
+val decode_cmeq_advsimd_reg_aarch64_instrs_vector_arithmetic_binary_uniform_cmp_bitwise_simd : (bits(5), bits(5), bits(5), bits(2), bits(1), bits(1)) -> unit
+
+function decode_cmeq_advsimd_reg_aarch64_instrs_vector_arithmetic_binary_uniform_cmp_bitwise_simd (Rd, Rn, Rm, size, U, Q) = {
+    let 'd = UInt(Rd);
+    let 'n = UInt(Rn);
+    let 'm = UInt(Rm);
+    if (size @ Q) == 0b110 then {
+        throw(Error_Undefined())
+    };
+    let 'esize = (8 << UInt(size));
+    let 'datasize = if Q == 0b1 then 128 else 64;
+    let 'elements = DIV(datasize, esize);
+    let and_test : bool = U == 0b0;
+    execute_aarch64_instrs_vector_arithmetic_binary_uniform_cmp_bitwise_sisd(and_test, d, datasize, elements, esize, m, n)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitone, bitzero, bitzero, bitzero, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 138) = {
+    SEE = 138;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_cmeq_advsimd_reg_aarch64_instrs_vector_arithmetic_binary_uniform_cmp_bitwise_simd(Rd, Rn, Rm, size, U, Q)
+}
+
+val decode_cmtst_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_cmp_bitwise_simd : (bits(5), bits(5), bits(5), bits(2), bits(1), bits(1)) -> unit
+
+function decode_cmtst_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_cmp_bitwise_simd (Rd, Rn, Rm, size, U, Q) = {
+    let 'd = UInt(Rd);
+    let 'n = UInt(Rn);
+    let 'm = UInt(Rm);
+    if (size @ Q) == 0b110 then {
+        throw(Error_Undefined())
+    };
+    let 'esize = (8 << UInt(size));
+    let 'datasize = if Q == 0b1 then 128 else 64;
+    let 'elements = DIV(datasize, esize);
+    let and_test : bool = U == 0b0;
+    execute_aarch64_instrs_vector_arithmetic_binary_uniform_cmp_bitwise_sisd(and_test, d, datasize, elements, esize, m, n)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitone, bitzero, bitzero, bitzero, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 140) = {
+    SEE = 140;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_cmtst_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_cmp_bitwise_simd(Rd, Rn, Rm, size, U, Q)
+}
+
+val execute_aarch64_instrs_vector_arithmetic_binary_uniform_cmp_int_sisd : forall ('cmp_eq : Bool) 'd 'datasize 'elements 'esize ('is_unsigned : Bool) 'm 'n,
+  (0 <= 'n & 'n <= 31 & 0 <= 'm & 'm <= 31 & 'esize in {8, 16, 32, 64} & 'datasize in {8, 16, 32, 64, 128} & 0 <= 'd & 'd <= 31).
+  (bool('cmp_eq), int('d), int('datasize), int('elements), int('esize), int('m), int('n), bool('is_unsigned)) -> unit
+
+function execute_aarch64_instrs_vector_arithmetic_binary_uniform_cmp_int_sisd (cmp_eq, d, datasize, elements, esize, m, n, is_unsigned) = {
+    CheckFPAdvSIMDEnabled64();
+    let operand1 : bits('datasize) = V_read(n, datasize);
+    let operand2 : bits('datasize) = V_read(m, datasize);
+    result : bits('datasize) = undefined;
+    element1 : int = undefined;
+    element2 : int = undefined;
+    test_passed : bool = undefined;
+    foreach (e from 0 to (elements - 1) by 1 in inc) {
+        element1 = asl_Int(Elem_read(operand1, e, esize), is_unsigned);
+        element2 = asl_Int(Elem_read(operand2, e, esize), is_unsigned);
+        test_passed = if cmp_eq then element1 >= element2 else
+          element1 > element2;
+        result = Elem_set(result, e, esize, if test_passed then Ones(esize) else
+          Zeros(esize))
+    };
+    V_set(d, datasize) = result
+}
+
+val decode_cmge_advsimd_reg_aarch64_instrs_vector_arithmetic_binary_uniform_cmp_int_simd : (bits(5), bits(5), bits(1), bits(5), bits(2), bits(1), bits(1)) -> unit
+
+function decode_cmge_advsimd_reg_aarch64_instrs_vector_arithmetic_binary_uniform_cmp_int_simd (Rd, Rn, eq, Rm, size, U, Q) = {
+    let 'd = UInt(Rd);
+    let 'n = UInt(Rn);
+    let 'm = UInt(Rm);
+    if (size @ Q) == 0b110 then {
+        throw(Error_Undefined())
+    };
+    let 'esize = (8 << UInt(size));
+    let 'datasize = if Q == 0b1 then 128 else 64;
+    let 'elements = DIV(datasize, esize);
+    let is_unsigned : bool = U == 0b1;
+    let cmp_eq : bool = eq == 0b1;
+    execute_aarch64_instrs_vector_arithmetic_binary_uniform_cmp_int_sisd(cmp_eq, d, datasize, elements, esize, m, n, is_unsigned)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitzero, bitone, bitone, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 142) = {
+    SEE = 142;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let eq = Slice(__opcode, 11, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_cmge_advsimd_reg_aarch64_instrs_vector_arithmetic_binary_uniform_cmp_int_simd(Rd, Rn, eq, Rm, size, U, Q)
+}
+
+val decode_cmgt_advsimd_reg_aarch64_instrs_vector_arithmetic_binary_uniform_cmp_int_simd : (bits(5), bits(5), bits(1), bits(5), bits(2), bits(1), bits(1)) -> unit
+
+function decode_cmgt_advsimd_reg_aarch64_instrs_vector_arithmetic_binary_uniform_cmp_int_simd (Rd, Rn, eq, Rm, size, U, Q) = {
+    let 'd = UInt(Rd);
+    let 'n = UInt(Rn);
+    let 'm = UInt(Rm);
+    if (size @ Q) == 0b110 then {
+        throw(Error_Undefined())
+    };
+    let 'esize = (8 << UInt(size));
+    let 'datasize = if Q == 0b1 then 128 else 64;
+    let 'elements = DIV(datasize, esize);
+    let is_unsigned : bool = U == 0b1;
+    let cmp_eq : bool = eq == 0b1;
+    execute_aarch64_instrs_vector_arithmetic_binary_uniform_cmp_int_sisd(cmp_eq, d, datasize, elements, esize, m, n, is_unsigned)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitzero, bitone, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 144) = {
+    SEE = 144;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let eq = Slice(__opcode, 11, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_cmgt_advsimd_reg_aarch64_instrs_vector_arithmetic_binary_uniform_cmp_int_simd(Rd, Rn, eq, Rm, size, U, Q)
+}
+
+val decode_cmhi_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_cmp_int_simd : (bits(5), bits(5), bits(1), bits(5), bits(2), bits(1), bits(1)) -> unit
+
+function decode_cmhi_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_cmp_int_simd (Rd, Rn, eq, Rm, size, U, Q) = {
+    let 'd = UInt(Rd);
+    let 'n = UInt(Rn);
+    let 'm = UInt(Rm);
+    if (size @ Q) == 0b110 then {
+        throw(Error_Undefined())
+    };
+    let 'esize = (8 << UInt(size));
+    let 'datasize = if Q == 0b1 then 128 else 64;
+    let 'elements = DIV(datasize, esize);
+    let is_unsigned : bool = U == 0b1;
+    let cmp_eq : bool = eq == 0b1;
+    execute_aarch64_instrs_vector_arithmetic_binary_uniform_cmp_int_sisd(cmp_eq, d, datasize, elements, esize, m, n, is_unsigned)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitzero, bitone, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 146) = {
+    SEE = 146;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let eq = Slice(__opcode, 11, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_cmhi_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_cmp_int_simd(Rd, Rn, eq, Rm, size, U, Q)
+}
+
+val decode_cmhs_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_cmp_int_simd : (bits(5), bits(5), bits(1), bits(5), bits(2), bits(1), bits(1)) -> unit
+
+function decode_cmhs_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_cmp_int_simd (Rd, Rn, eq, Rm, size, U, Q) = {
+    let 'd = UInt(Rd);
+    let 'n = UInt(Rn);
+    let 'm = UInt(Rm);
+    if (size @ Q) == 0b110 then {
+        throw(Error_Undefined())
+    };
+    let 'esize = (8 << UInt(size));
+    let 'datasize = if Q == 0b1 then 128 else 64;
+    let 'elements = DIV(datasize, esize);
+    let is_unsigned : bool = U == 0b1;
+    let cmp_eq : bool = eq == 0b1;
+    execute_aarch64_instrs_vector_arithmetic_binary_uniform_cmp_int_sisd(cmp_eq, d, datasize, elements, esize, m, n, is_unsigned)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitzero, bitone, bitone, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 148) = {
+    SEE = 148;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let eq = Slice(__opcode, 11, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_cmhs_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_cmp_int_simd(Rd, Rn, eq, Rm, size, U, Q)
 }
 
 val execute_aarch64_instrs_integer_crc : forall ('crc32c : Bool) 'd 'm 'n 'size,
@@ -20132,6 +20499,144 @@ function clause __DecodeA64_DataProcReg ((pc, ([bitone, bitzero, bitzero, bitone
     let Rm = Slice(__opcode, 16, 5);
     let U = Slice(__opcode, 23, 1);
     decode_umsubl_aarch64_instrs_integer_arithmetic_mul_widening_32_64(Rd, Rn, Ra, o0, Rm, U)
+}
+
+val execute_aarch64_instrs_vector_arithmetic_binary_uniform_max_min_single : forall 'd 'datasize 'elements 'esize ('is_unsigned : Bool) 'm ('minimum : Bool) 'n,
+  (0 <= 'n & 'n <= 31 & 0 <= 'm & 'm <= 31 & 'esize in {8, 16, 32, 64} & 'datasize in {64, 128} & 0 <= 'd & 'd <= 31).
+  (int('d), int('datasize), int('elements), int('esize), int('m), bool('minimum), int('n), bool('is_unsigned)) -> unit
+
+function execute_aarch64_instrs_vector_arithmetic_binary_uniform_max_min_single (d, datasize, elements, esize, m, minimum, n, is_unsigned) = {
+    CheckFPAdvSIMDEnabled64();
+    let operand1 : bits('datasize) = V_read(n, datasize);
+    let operand2 : bits('datasize) = V_read(m, datasize);
+    result : bits('datasize) = undefined;
+    element1 : int = undefined;
+    element2 : int = undefined;
+    maxmin : int = undefined;
+    foreach (e from 0 to (elements - 1) by 1 in inc) {
+        element1 = asl_Int(Elem_read(operand1, e, esize), is_unsigned);
+        element2 = asl_Int(Elem_read(operand2, e, esize), is_unsigned);
+        maxmin = if minimum then Min(element1, element2) else
+          Max(element1, element2);
+        result = Elem_set(result, e, esize, maxmin[esize - 1 .. 0])
+    };
+    V_set(d, datasize) = result
+}
+
+val decode_smax_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_max_min_single : (bits(5), bits(5), bits(1), bits(5), bits(2), bits(1), bits(1)) -> unit
+
+function decode_smax_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_max_min_single (Rd, Rn, o1, Rm, size, U, Q) = {
+    let 'd = UInt(Rd);
+    let 'n = UInt(Rn);
+    let 'm = UInt(Rm);
+    if size == 0b11 then {
+        throw(Error_Undefined())
+    };
+    let 'esize = (8 << UInt(size));
+    let 'datasize = if Q == 0b1 then 128 else 64;
+    let 'elements = DIV(datasize, esize);
+    let is_unsigned : bool = U == 0b1;
+    let minimum : bool = o1 == 0b1;
+    execute_aarch64_instrs_vector_arithmetic_binary_uniform_max_min_single(d, datasize, elements, esize, m, minimum, n, is_unsigned)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitone, bitone, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 834) = {
+    SEE = 834;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o1 = Slice(__opcode, 11, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_smax_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_max_min_single(Rd, Rn, o1, Rm, size, U, Q)
+}
+
+val decode_smin_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_max_min_single : (bits(5), bits(5), bits(1), bits(5), bits(2), bits(1), bits(1)) -> unit
+
+function decode_smin_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_max_min_single (Rd, Rn, o1, Rm, size, U, Q) = {
+    let 'd = UInt(Rd);
+    let 'n = UInt(Rn);
+    let 'm = UInt(Rm);
+    if size == 0b11 then {
+        throw(Error_Undefined())
+    };
+    let 'esize = (8 << UInt(size));
+    let 'datasize = if Q == 0b1 then 128 else 64;
+    let 'elements = DIV(datasize, esize);
+    let is_unsigned : bool = U == 0b1;
+    let minimum : bool = o1 == 0b1;
+    execute_aarch64_instrs_vector_arithmetic_binary_uniform_max_min_single(d, datasize, elements, esize, m, minimum, n, is_unsigned)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitone, bitone, bitzero, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 835) = {
+    SEE = 835;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o1 = Slice(__opcode, 11, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_smin_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_max_min_single(Rd, Rn, o1, Rm, size, U, Q)
+}
+
+val decode_umax_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_max_min_single : (bits(5), bits(5), bits(1), bits(5), bits(2), bits(1), bits(1)) -> unit
+
+function decode_umax_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_max_min_single (Rd, Rn, o1, Rm, size, U, Q) = {
+    let 'd = UInt(Rd);
+    let 'n = UInt(Rn);
+    let 'm = UInt(Rm);
+    if size == 0b11 then {
+        throw(Error_Undefined())
+    };
+    let 'esize = (8 << UInt(size));
+    let 'datasize = if Q == 0b1 then 128 else 64;
+    let 'elements = DIV(datasize, esize);
+    let is_unsigned : bool = U == 0b1;
+    let minimum : bool = o1 == 0b1;
+    execute_aarch64_instrs_vector_arithmetic_binary_uniform_max_min_single(d, datasize, elements, esize, m, minimum, n, is_unsigned)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitone, bitone, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 836) = {
+    SEE = 836;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o1 = Slice(__opcode, 11, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_umax_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_max_min_single(Rd, Rn, o1, Rm, size, U, Q)
+}
+
+val decode_umin_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_max_min_single : (bits(5), bits(5), bits(1), bits(5), bits(2), bits(1), bits(1)) -> unit
+
+function decode_umin_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_max_min_single (Rd, Rn, o1, Rm, size, U, Q) = {
+    let 'd = UInt(Rd);
+    let 'n = UInt(Rn);
+    let 'm = UInt(Rm);
+    if size == 0b11 then {
+        throw(Error_Undefined())
+    };
+    let 'esize = (8 << UInt(size));
+    let 'datasize = if Q == 0b1 then 128 else 64;
+    let 'elements = DIV(datasize, esize);
+    let is_unsigned : bool = U == 0b1;
+    let minimum : bool = o1 == 0b1;
+    execute_aarch64_instrs_vector_arithmetic_binary_uniform_max_min_single(d, datasize, elements, esize, m, minimum, n, is_unsigned)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitone, bitone, bitzero, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 837) = {
+    SEE = 837;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o1 = Slice(__opcode, 11, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_umin_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_max_min_single(Rd, Rn, o1, Rm, size, U, Q)
 }
 
 val execute_aarch64_instrs_integer_arithmetic_mul_widening_64_128hi : forall 'd 'datasize ('is_unsigned : Bool) 'm 'n,
