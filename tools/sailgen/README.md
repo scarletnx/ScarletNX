@@ -117,7 +117,9 @@ four flags are written from `AddWithCarry(x, NOT(y), '1')` they keep the compare
 `AddWithCarry(x, y, '0')` the sum, and from `[r[N-1]] @ IsZeroBit(r) @ 0b00` the logical result `r`; `ConditionHolds`
 then reads a condition on them as one `icmp` of the operands, by the laws of `sg_origin_cond`, which `ir_state.c`'s
 `ir_flags_cond` uses too for B.cond and the other emitters written by hand. Flags written alone (CFINV, RMIF, SETF8) are
-stored with the others at the end of the instruction.
+stored with the others at the end of the instruction. FCCMP's four come from both ways of its condition, the compare
+where it holds and the immediate where it does not: each is a phi of the two, stored at the end of each way, as the
+emitter written by hand stored them, and cached as the phi (`sg_flags_on_each_way`).
 
 Guest memory is nx.sail's actions (above), on which its `Mem_read`, `Mem_set`, `MemAtomic` and the exclusive monitor's
 functions are written: `llvm.h` makes them with `ir.h`'s accessors, as the emitters written by hand did: a plain access
