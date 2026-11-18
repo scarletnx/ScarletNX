@@ -1756,6 +1756,10 @@ typedef struct {
     u32 surf_epoch, ww_epoch;
     u32 tex_max, smp_max;
     int kind; /* TEX_RECENT_*: x.t the render target itself read whole, a texture the memo keeps, or headers only */
+    /* a texture's: the present and the targets' take count of its last check (vk_tex_recheck), which gives the same
+       answer while they and the stamps above are the same */
+    u32 present;
+    u64 take;
 } TexRecent;
 static TexRecent g_tex_recent[1u << TEX_RECENT_BITS];
 static void tex_resolve(const DsState* ds, u32 handle, TexRes* x) {
@@ -1766,6 +1770,7 @@ static void tex_resolve(const DsState* ds, u32 handle, TexRes* x) {
               adds = atomic_load_explicit(&g_pend_any.adds, memory_order_relaxed) + vk_uma_writes(),
               img_adds = vk_gfx_image_adds();
     const u32 surf_epoch = atomic_load_explicit(&g_vk_surf_epoch, memory_order_relaxed), ww_epoch = vk_ww_epoch();
+    const u64 take = vk_rt_take_gen();
     if (r->kind && r->x.handle == handle && r->ds == ds && r->tic_base == b->tex_pool && r->tsc_base == b->smp_pool &&
         r->tex_max == b->tex_max && r->smp_max == b->smp_max && r->gw == gw && r->adds == adds &&
         r->img_adds == img_adds && r->surf_epoch == surf_epoch && r->ww_epoch == ww_epoch && !b->smp_mode &&
@@ -1784,9 +1789,19 @@ static void tex_resolve(const DsState* ds, u32 handle, TexRes* x) {
                 g_stats.n.tex[VK_TEX_KEPT]++;
                 return;
             }
+        } else if (r->present == g_vk_present && r->take == take) {
+            /* checked in this present, and since then no GPU-side write (gw), no CPU write epoch, no surface, result
+               or target taken: the check (tex_check) would read the texture's own state to give the same answer.
+               About six of a draw's textures, at about 200 ns each, spent mostly in cache misses on the Surf */
+            *x = r->x;
+            g_stats.n.tex[VK_TEX_KEPT]++;
+            return;
         } else if ((t = vk_tex_recheck(t))) {
             *x = r->x;
             x->t = t;
+            r->x.t = t;
+            r->present = g_vk_present;
+            r->take = take;
             g_stats.n.tex[VK_TEX_KEPT]++;
             return;
         }
@@ -1807,6 +1822,8 @@ static void tex_resolve(const DsState* ds, u32 handle, TexRes* x) {
                      .ww_epoch = ww_epoch,
                      .tex_max = b->tex_max,
                      .smp_max = b->smp_max,
+                     .present = g_vk_present,
+                     .take = take,
                      .kind = memo < 0      ? TEX_RECENT_HEADERS
                              : x->t->is_rt ? TEX_RECENT_TARGET
                                            : TEX_RECENT_TEXTURE};
