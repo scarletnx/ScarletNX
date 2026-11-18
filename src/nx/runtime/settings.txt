@@ -1497,7 +1497,8 @@ setting GL layer
     words Driver|Layer
     help For a game that draws through its own OpenGL driver: 0 = the driver runs and the GPU's front end reads what
     help it submits; 1 = the runtime's GL layer takes the game's EGL and GL calls and the driver never runs (in progress:
-    help it draws glClear's color, and a function it doesn't implement yet stops the game, naming it).
+    help it compiles and links the game's shaders and draws glClear's color, and a function it doesn't implement yet
+    help stops the game, naming it).
     help The game must be recompiled with this runtime for its EGL calls
 setting GPU trace target
     key gpu_trace_target
