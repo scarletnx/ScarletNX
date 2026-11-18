@@ -4,9 +4,10 @@
    them, checked on any host: every relocation type snx_coff_a64_relocate writes and both veneers, against encodings
    worked out by hand from the Arm ARM, each with the addend COFF keeps in the field; then objects of the LLVM backend
    for aarch64-w64-windows-gnu (when its LLVM has the AArch64 target) linked into a DLL whose header, function table,
-   base relocations and calls are read back, again with more code between a call and its target than B and BL reach
-   (the call then takes the veneer after its object's code), and loaded into an ARM64 arena whose code is only read,
-   never run: a call to a table symbol lands on it directly when in reach, else on a stub through its slot */
+   base relocations and calls are read back, again with more code between a call and its target than B and BL reach (the
+   call then takes the veneer after its object's code, and a branch with an addend is refused), and loaded into an ARM64
+   arena whose code is only read, never run: a call to a table symbol lands on it directly when in reach, else on a stub
+   through its slot */
 #include "common/utilities/common.h"
 #include "common/cpu/recompiler/llvm/code_loader.h"
 #include "common/cpu/recompiler/llvm/coff_defs.h"
@@ -38,6 +39,10 @@ static uint32_t get32(const unsigned char* p) {
 static uint64_t get64(const unsigned char* p) { return get32(p) | (uint64_t)get32(p + 4) << 32; }
 static void put32(unsigned char* p, uint32_t v) {
     for (int i = 0; i < 4; ++i) p[i] = (unsigned char)(v >> 8 * i);
+}
+static void put16(unsigned char* p, unsigned v) {
+    p[0] = (unsigned char)v;
+    p[1] = (unsigned char)(v >> 8);
 }
 
 /* insn relocated as type: whether snx_coff_a64_relocate gave rc and, when it wrote, want */
@@ -308,7 +313,42 @@ static void module(const unsigned char* caller, size_t caller_size, const unsign
     free(linked.data);
 }
 
-/* AOT: more code between caller and ext_fn than BL reaches: the call takes the veneer after caller's code */
+/* An ARM64 object written by hand, as LLVM writes none: two_call() is BL ext_fn, then BL ext_fn+8, its addend in the
+   field as COFF keeps it. The header, .text's section header, its 8 bytes and 2 relocations, 2 symbols and an empty
+   string table */
+#define TWO_CALLS_SIZE 128
+static void two_calls_object(unsigned char* o) {
+    memset(o, 0, TWO_CALLS_SIZE);
+    put16(o, COFF_ARM64);
+    put16(o + 2, 1);  /* sections */
+    put32(o + 8, 88); /* the symbol table */
+    put32(o + 12, 2); /* symbols */
+    memcpy(o + 20, ".text", 5);
+    put32(o + 36, 8);  /* its raw data's size */
+    put32(o + 40, 60); /* where it is */
+    put32(o + 44, 68); /* its relocations */
+    put16(o + 52, 2);
+    put32(o + 56, 0x60500020u); /* code, executable, readable, 16-byte aligned */
+    put32(o + 60, 0x94000000u); /* BL ext_fn */
+    put32(o + 64, 0x94000002u); /* BL ext_fn+8 */
+    /* BRANCH26 to symbol 1, at 0 and 4 */
+    for (unsigned i = 0; i < 2; ++i) {
+        put32(o + 68 + 10 * i, 4 * i);
+        put32(o + 72 + 10 * i, 1);
+        put16(o + 76 + 10 * i, REL_A64_BRANCH26);
+    }
+    memcpy(o + 88, "two_call", 8); /* defined in .text, external, a function */
+    put16(o + 100, 1);
+    put16(o + 102, 0x20);
+    o[104] = 2;
+    memcpy(o + 106, "ext_fn", 6); /* undefined, external */
+    put16(o + 120, 0x20);
+    o[122] = 2;
+    put32(o + 124, 4); /* the string table: its size alone */
+}
+
+/* AOT: more code between caller and ext_fn than BL reaches: the call takes the veneer after caller's code. A branch
+   whose field holds an addend is refused: the one veneer of its symbol is the other branches' too */
 static void large_module(const unsigned char* caller, size_t caller_size, const unsigned char* defs, size_t defs_size,
                          const char* triple) {
     static const char* const exports[] = {"caller", "ext_fn"};
@@ -342,6 +382,17 @@ static void large_module(const unsigned char* caller, size_t caller_size, const 
               "caller's BL takes the veneer after its code, which goes to ext_fn");
     }
     free(linked.data);
+    unsigned char two[TWO_CALLS_SIZE];
+    static const char* const two_exports[] = {"two_call", "ext_fn"};
+    two_calls_object(two);
+    inputs[0] = (SnxLinkInput){two, sizeof two, "two_calls"};
+    if (!snx_link(inputs, 3, two_exports, 2, "two.dll", &linked, error, sizeof(error))) {
+        check(0, "BL ext_fn+8 beyond BL's reach linked, through the veneer BL ext_fn takes");
+        free(linked.data);
+    } else
+        check(strstr(error, "two_calls: ARM64 relocation 3 at .text+0x4 to RVA") &&
+                  strstr(error, "out of the instruction's reach, and a branch with an addend takes no veneer"),
+              error);
     free(filler);
 }
 
