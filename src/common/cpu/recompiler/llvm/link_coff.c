@@ -4,7 +4,8 @@
    Sections: .text, .rdata (read-only data, unwind data, the export directory), .data, .bss, .pdata (function table,
    sorted), .reloc (DIR64 base relocations for absolute addresses). COMDAT sections keep their first copy. An ARM64
    module of more code than B and BL reach (VENEER_TEXT) gives each object an island after its last code section,
-   with a veneer for each symbol it branches to that another object defines, which a branch out of reach goes through.
+   with a veneer for each symbol it branches to that another object defines, which a branch out of reach goes through
+   when its field holds no addend: one veneer serves every branch of the object to the symbol.
    The structures are read and written byte by byte, so this builds anywhere (no <windows.h>). */
 #include "common/cpu/recompiler/llvm/coff_defs.h"
 #include "common/cpu/recompiler/llvm/link_internal.h"
@@ -407,7 +408,7 @@ static void count_veneers(Link* l) {
     }
 }
 
-/* An ARM64 B or BL at p (RVA P) in object caller, to S plus the addend in its field, which it does not reach: through
+/* An ARM64 B or BL at p (RVA P) in object caller, to S with no addend in its field, which it does not reach: through
    the caller's veneer for its symbol index, written into text (the .text image, at text_rva) to jump there. 0, or
    SNX_LINK_RANGE when the caller has no veneer for the symbol or does not reach its own */
 static int veneer_branch(Link* l, size_t caller, uint32_t index, unsigned char* text, uint32_t text_rva,
@@ -420,9 +421,8 @@ static int veneer_branch(Link* l, size_t caller, uint32_t index, unsigned char* 
     snprintf(key, sizeof(key), "%zu:%s", caller, name);
     if (!snx_link_find(&l->veneer, key, &slot)) return SNX_LINK_RANGE;
     uint64_t at = o->island + (uint64_t)SNX_COFF_A64_VENEER_SIZE * slot;
-    int rc = snx_coff_a64_veneer(text + (at - text_rva), at, S + (sign_extend(snx_ld_le32(p), 26) << 2), 0);
+    int rc = snx_coff_a64_veneer(text + (at - text_rva), at, S, 0);
     if (rc) return rc;
-    snx_link_field(p, 0, 0, 26); /* the addend went to the veneer */
     return snx_coff_a64_relocate(p, 4, REL_A64_BRANCH26, at, P, 0, 0);
 }
 
@@ -600,13 +600,16 @@ int snx_link_coff(const SnxLinkInput* inputs, size_t count, const char* const* e
             if (type & A64_CODE) {
                 uint64_t start = target_section >= 0 ? l.out_rva[target_section] : 0;
                 type &= ~A64_CODE;
+                /* the branch's addend, which its symbol's one veneer cannot hold for each branch */
+                int addend = type == REL_A64_BRANCH26 && (snx_ld_le32(p) & 0x3FFFFFFu);
                 int rc = snx_coff_a64_relocate(p, s->size - at, type, S, P, 0, start);
-                if (rc == SNX_LINK_RANGE && type == REL_A64_BRANCH26 && last_text)
+                if (rc == SNX_LINK_RANGE && type == REL_A64_BRANCH26 && last_text && !addend)
                     rc = veneer_branch(&l, order[k].object, snx_ld_le32(r + 4), image[O_TEXT].data, l.out_rva[O_TEXT],
                                        p, P, S);
                 if (rc) {
-                    snprintf(error, error_size, "%s: ARM64 relocation %u at %s+%#x to RVA %#llx: %s", o->input->name,
-                             (unsigned)type, s->name, (unsigned)at, (unsigned long long)S, a64_refusal(rc));
+                    snprintf(error, error_size, "%s: ARM64 relocation %u at %s+%#x to RVA %#llx: %s%s", o->input->name,
+                             (unsigned)type, s->name, (unsigned)at, (unsigned long long)S, a64_refusal(rc),
+                             rc == SNX_LINK_RANGE && addend ? ", and a branch with an addend takes no veneer" : "");
                     goto done;
                 }
                 continue;
