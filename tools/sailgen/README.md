@@ -24,8 +24,10 @@ has. `src/common/cpu/recompiler/llvm/ir_sail.c` includes the output.
 
 Each decode function is walked with everything it calls inlined, and each value gets the time it is known at:
 
-- **CONST**, when sailgen runs: literals, an overlay's top-level `let`, a feature no guest has, and what only they
-  make. An `if` on one keeps one branch, so a fixup such as `let SPESampleInFlight : bool = false` leaves no trace. An
+- **CONST**, when sailgen runs: literals, an overlay's top-level `let`, a feature no guest has, the bits of the word
+  that the decode clause walked fixes, and what only they make. An `if` on one keeps one branch, so a fixup such as
+  `let SPESampleInFlight : bool = false` leaves no trace, and MUL's decode, whose clause fixes U at 0, never reaches
+  PMUL's polynomial product. Bits known here are compared here (`==`, `!=`) and are STATIC C everywhere else. An
   integer past 62 bits (WFE's timeout, `1 << 64`) may be bound and passed on, never computed with.
 - **STATIC**, when the recompiler runs: the word's fields, the pc, the guest's features, and all that only they make:
   `datasize`, the immediates, `DecodeBitMasks`, the `if`s and `match`es on fields, the width a `forall 'N` takes from
@@ -52,10 +54,10 @@ with `e` standing for every lane, so each value it makes per element is a **LANE
 bits narrows them, which LLVM folds to the element's own width. A register the instruction read whole becomes its
 lanes as one load, and lanes written to a register one store (`ir_vec_read`, `ir_vec_write`). The body may only set
 locals per lane: one that sets state (a register, an action), carries a local from one element to the next (REV's
-container loop), holds another loop (MUL's, which PMUL's polynomial product shares), reads an element other than `e`,
-uses a value per lane where one is wanted, or leaves the loop with an element's value rather than the vector `Elem_set`
-built, is walked again as the loop it is, every element its own IR, which `tests/llvm_sail_ir.c` shows as longer than
-the hand-written emitter's (`sailgen_lanes` holds both outcomes).
+container loop), holds another loop (PMUL's polynomial product), reads an element other than `e`, uses a value per
+lane where one is wanted, or leaves the loop with an element's value rather than the vector `Elem_set` built, is walked
+again as the loop it is, every element its own IR, which `tests/llvm_sail_ir.c` shows as longer than the hand-written
+emitter's (`sailgen_lanes` holds each outcome).
 
 ## The back end (`llvm.h`)
 
@@ -156,7 +158,7 @@ The front (the parse, the inlining, the times) and the Sail don't depend on LLVM
 lowers the `val` and the types it names alone; `--generate` refuses a throw it has no meaning for, an `Error_See` under a
 run-time condition, a write to a field a `let` holds fixed, a register or a field the back end does not keep, the back
 end's function that takes no `path` under a run-time condition and one whose `val` gives an integer, naming its line;
-`sailgen_a64` generates the in-tree A64 subsets whole.
+`sailgen_lanes` says which element loops become lanes; `sailgen_a64` generates the in-tree A64 subsets whole.
 
 `tests/llvm_sail_ir.c` holds the generated emitters to the hand-written ones they replaced
 (`tests/support/ir_int_reference.c`, `tests/support/ir_fpu_reference.c`), word by word on three paths: the same
