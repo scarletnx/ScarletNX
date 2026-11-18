@@ -16,6 +16,7 @@
 #include "nx/runtime/nce/nce.h"
 #include "nx/runtime/options.h"
 #include "nx/runtime/platform/log.h"
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -77,8 +78,7 @@ static void missing(CPU* RESTRICT c, u64 entry) {
 
 /* the export at addr takes fn in its slot */
 static void take(u64 addr, GuestFn fn) {
-    GuestFn* slot = &g_disp[(addr - g_code_lo) / 4];
-    __atomic_store_n(slot, fn, __ATOMIC_RELEASE);
+    atomic_store_explicit(&g_disp[(addr - g_code_lo) / 4], fn, memory_order_release);
     nce_slot_taken(addr, "gl layer");
     jit_slot_taken(addr, fn);
 }
