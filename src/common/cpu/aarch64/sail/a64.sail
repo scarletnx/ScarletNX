@@ -3498,6 +3498,196 @@ function clause __DecodeA64_BranchExcSys ((pc, ([bitone, bitone, bitzero, bitone
     decode_hint_aarch64_instrs_system_hints(op2, CRm)
 }
 
+val execute_aarch64_instrs_memory_atomicops_cas_single : forall ('acquire : Bool) 'datasize 'n 'regsize ('release : Bool) 's 't ('tagchecked : Bool),
+  (0 <= 't & 't <= 31 & 0 <= 's & 's <= 31 & 'regsize in {32, 64} & 0 <= 'n & 'n <= 31 & 'datasize in {8, 16, 32, 64}).
+  (bool('acquire), int('datasize), int('n), int('regsize), bool('release), int('s), int('t), bool('tagchecked)) -> unit
+
+function execute_aarch64_instrs_memory_atomicops_cas_single (acquire, datasize, n, regsize, release, s, t, tagchecked) = {
+    address : bits(64) = undefined;
+    let accdesc : AccessDescriptor = CreateAccDescAtomicOp(MemAtomicOp_CAS, acquire, release, tagchecked);
+    let comparevalue : bits('datasize) = X_read(s, datasize);
+    let newvalue : bits('datasize) = X_read(t, datasize);
+    if n == 31 then {
+        CheckSPAlignment();
+        address = SP_read()
+    } else {
+        address = X_read(n, 64)
+    };
+    let data : bits('datasize) = MemAtomic(address, comparevalue, newvalue, accdesc);
+    assert(constraint('regsize >= 'datasize));
+    X_set(s, regsize) = ZeroExtend(data, regsize);
+    if SPESampleInFlight then {
+        let ar : bits(1) = if acquire | release then 0b1 else 0b0;
+        let excl : bits(1) = 0b0;
+        let at : bits(1) = 0b1;
+        let is_load : bool = true;
+        SPESampleExtendedLoadStore(ar, excl, at, is_load)
+    };
+    ()
+}
+
+val decode_cas_aarch64_instrs_memory_atomicops_cas_single : (bits(5), bits(5), bits(1), bits(5), bits(1), bits(2)) -> unit
+
+function decode_cas_aarch64_instrs_memory_atomicops_cas_single (Rt, Rn, o0, Rs, L, size) = {
+    if not_bool(HaveAtomicExt()) then {
+        throw(Error_Undefined())
+    };
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let 's = UInt(Rs);
+    let 'datasize = (8 << UInt(size));
+    let 'regsize = if datasize == 64 then 64 else 32;
+    let acquire : bool = L == 0b1;
+    let release : bool = o0 == 0b1;
+    let tagchecked : bool = n != 31;
+    execute_aarch64_instrs_memory_atomicops_cas_single(acquire, datasize, n, regsize, release, s, t, tagchecked)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitone, _, bitzero, bitzero, bitone, bitzero, bitzero, bitzero, bitone, _, bitone, _, _, _, _, _, _, bitone, bitone, bitone, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 113) = {
+    SEE = 113;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o0 = Slice(__opcode, 15, 1);
+    let Rs = Slice(__opcode, 16, 5);
+    let L = Slice(__opcode, 22, 1);
+    let size = Slice(__opcode, 30, 2);
+    decode_cas_aarch64_instrs_memory_atomicops_cas_single(Rt, Rn, o0, Rs, L, size)
+}
+
+val decode_casb_aarch64_instrs_memory_atomicops_cas_single : (bits(5), bits(5), bits(1), bits(5), bits(1), bits(2)) -> unit
+
+function decode_casb_aarch64_instrs_memory_atomicops_cas_single (Rt, Rn, o0, Rs, L, size) = {
+    if not_bool(HaveAtomicExt()) then {
+        throw(Error_Undefined())
+    };
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let 's = UInt(Rs);
+    let 'datasize = (8 << UInt(size));
+    let 'regsize = if datasize == 64 then 64 else 32;
+    let acquire : bool = L == 0b1;
+    let release : bool = o0 == 0b1;
+    let tagchecked : bool = n != 31;
+    execute_aarch64_instrs_memory_atomicops_cas_single(acquire, datasize, n, regsize, release, s, t, tagchecked)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitzero, bitzero, bitzero, bitone, bitzero, bitzero, bitzero, bitone, _, bitone, _, _, _, _, _, _, bitone, bitone, bitone, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 114) = {
+    SEE = 114;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o0 = Slice(__opcode, 15, 1);
+    let Rs = Slice(__opcode, 16, 5);
+    let L = Slice(__opcode, 22, 1);
+    let size = Slice(__opcode, 30, 2);
+    decode_casb_aarch64_instrs_memory_atomicops_cas_single(Rt, Rn, o0, Rs, L, size)
+}
+
+val decode_cash_aarch64_instrs_memory_atomicops_cas_single : (bits(5), bits(5), bits(1), bits(5), bits(1), bits(2)) -> unit
+
+function decode_cash_aarch64_instrs_memory_atomicops_cas_single (Rt, Rn, o0, Rs, L, size) = {
+    if not_bool(HaveAtomicExt()) then {
+        throw(Error_Undefined())
+    };
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let 's = UInt(Rs);
+    let 'datasize = (8 << UInt(size));
+    let 'regsize = if datasize == 64 then 64 else 32;
+    let acquire : bool = L == 0b1;
+    let release : bool = o0 == 0b1;
+    let tagchecked : bool = n != 31;
+    execute_aarch64_instrs_memory_atomicops_cas_single(acquire, datasize, n, regsize, release, s, t, tagchecked)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitone, bitzero, bitzero, bitone, bitzero, bitzero, bitzero, bitone, _, bitone, _, _, _, _, _, _, bitone, bitone, bitone, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 115) = {
+    SEE = 115;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o0 = Slice(__opcode, 15, 1);
+    let Rs = Slice(__opcode, 16, 5);
+    let L = Slice(__opcode, 22, 1);
+    let size = Slice(__opcode, 30, 2);
+    decode_cash_aarch64_instrs_memory_atomicops_cas_single(Rt, Rn, o0, Rs, L, size)
+}
+
+val execute_aarch64_instrs_memory_atomicops_cas_pair : forall ('acquire : Bool) 'datasize 'n ('release : Bool) 's 't ('tagchecked : Bool),
+  (0 <= 't & 't <= 31 & 0 <= 's & 's <= 31 & 0 <= 'n & 'n <= 31 & 'datasize in {32, 64}).
+  (bool('acquire), int('datasize), int('n), bool('release), int('s), int('t), bool('tagchecked)) -> unit
+
+function execute_aarch64_instrs_memory_atomicops_cas_pair (acquire, datasize, n, release, s, t, tagchecked) = {
+    address : bits(64) = undefined;
+    let s1 : bits('datasize) = X_read(s, datasize);
+    let s2 : bits('datasize) = X_read(s + 1, datasize);
+    let t1 : bits('datasize) = X_read(t, datasize);
+    let t2 : bits('datasize) = X_read(t + 1, datasize);
+    let accdesc : AccessDescriptor = CreateAccDescAtomicOp(MemAtomicOp_CAS, acquire, release, tagchecked);
+    let comparevalue : bits(2 * 'datasize) = if BigEndian(accdesc.acctype) then
+      s1 @ s2
+    else
+      s2 @ s1;
+    let newvalue : bits(2 * 'datasize) = if BigEndian(accdesc.acctype) then
+      t1 @ t2
+    else
+      t2 @ t1;
+    if n == 31 then {
+        CheckSPAlignment();
+        address = SP_read()
+    } else {
+        address = X_read(n, 64)
+    };
+    let data : bits(2 * 'datasize) = MemAtomic(address, comparevalue, newvalue, accdesc);
+    if BigEndian(accdesc.acctype) then {
+        X_set(s, datasize) = data[2 * datasize - 1 .. datasize];
+        X_set(s + 1, datasize) = data[datasize - 1 .. 0]
+    } else {
+        X_set(s, datasize) = data[datasize - 1 .. 0];
+        X_set(s + 1, datasize) = data[2 * datasize - 1 .. datasize]
+    };
+    if SPESampleInFlight then {
+        let ar : bits(1) = if acquire | release then 0b1 else 0b0;
+        let excl : bits(1) = 0b0;
+        let at : bits(1) = 0b1;
+        let is_load : bool = true;
+        SPESampleExtendedLoadStore(ar, excl, at, is_load)
+    };
+    ()
+}
+
+val decode_casp_aarch64_instrs_memory_atomicops_cas_pair : (bits(5), bits(5), bits(5), bits(1), bits(5), bits(1), bits(1)) -> unit
+
+function decode_casp_aarch64_instrs_memory_atomicops_cas_pair (Rt, Rn, Rt2, o0, Rs, L, sz) = {
+    if not_bool(HaveAtomicExt()) then {
+        throw(Error_Undefined())
+    };
+    if [Rs[0]] == 0b1 then {
+        throw(Error_Undefined())
+    };
+    if [Rt[0]] == 0b1 then {
+        throw(Error_Undefined())
+    };
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let 's = UInt(Rs);
+    let 'datasize = (32 << UInt(sz));
+    let 'regsize = datasize;
+    let acquire : bool = L == 0b1;
+    let release : bool = o0 == 0b1;
+    let tagchecked : bool = n != 31;
+    execute_aarch64_instrs_memory_atomicops_cas_pair(acquire, datasize, n, release, s, t, tagchecked)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitzero, bitzero, bitzero, bitzero, _, bitone, _, _, _, _, _, _, bitone, bitone, bitone, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 116) = {
+    SEE = 116;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rt2 = Slice(__opcode, 10, 5);
+    let o0 = Slice(__opcode, 15, 1);
+    let Rs = Slice(__opcode, 16, 5);
+    let L = Slice(__opcode, 22, 1);
+    let sz = Slice(__opcode, 30, 1);
+    decode_casp_aarch64_instrs_memory_atomicops_cas_pair(Rt, Rn, Rt2, o0, Rs, L, sz)
+}
+
 val execute_aarch64_instrs_branch_conditional_compare : forall 'datasize ('iszero : Bool) 't,
   (0 <= 't & 't <= 31 & 'datasize in {32, 64}).
   (int('datasize), bool('iszero), bits(64), int('t)) -> unit
@@ -4205,6 +4395,10849 @@ function clause __DecodeA64_BranchExcSys ((pc, ([bitone, bitone, bitzero, bitone
     decode_isb_aarch64_instrs_system_barriers_isb(opc, CRm)
 }
 
+val execute_aarch64_instrs_memory_atomicops_ld : forall ('acquire : Bool) 'datasize ('is_load : Bool) 'n 'regsize ('release : Bool) 's 't ('tagchecked : Bool),
+  (0 <= 't & 't <= 31 & 0 <= 's & 's <= 31 & 'regsize in {32, 64} & 0 <= 'n & 'n <= 31 & 'datasize in {8, 16, 32, 64}).
+  (bool('acquire), int('datasize), bool('is_load), int('n), MemAtomicOp, int('regsize), bool('release), int('s), int('t), bool('tagchecked)) -> unit
+
+function execute_aarch64_instrs_memory_atomicops_ld (acquire, datasize, is_load, n, op, regsize, release, s, t, tagchecked) = {
+    address : bits(64) = undefined;
+    let accdesc : AccessDescriptor = CreateAccDescAtomicOp(op, acquire, release, tagchecked);
+    let value_name : bits('datasize) = X_read(s, datasize);
+    if n == 31 then {
+        CheckSPAlignment();
+        address = SP_read()
+    } else {
+        address = X_read(n, 64)
+    };
+    let comparevalue : bits('datasize) = __UNKNOWN_bits(datasize);
+    let data : bits('datasize) = MemAtomic(address, comparevalue, value_name, accdesc);
+    if t != 31 then {
+        assert(constraint(('datasize >= 0 & 'regsize >= 'datasize)));
+        X_set(t, regsize) = ZeroExtend(data, regsize)
+    };
+    if SPESampleInFlight then {
+        let ar : bits(1) = if acquire | release then 0b1 else 0b0;
+        let excl : bits(1) = 0b0;
+        let at : bits(1) = 0b1;
+        SPESampleExtendedLoadStore(ar, excl, at, is_load)
+    };
+    ()
+}
+
+val decode_ldadd_aarch64_instrs_memory_atomicops_ld : (bits(5), bits(5), bits(3), bits(5), bits(1), bits(1), bits(2)) -> unit
+
+function decode_ldadd_aarch64_instrs_memory_atomicops_ld (Rt, Rn, opc, Rs, R, A, size) = {
+    if not_bool(HaveAtomicExt()) then {
+        throw(Error_Undefined())
+    };
+    let 't = UInt(Rt);
+    let 'n = UInt(Rn);
+    let 's = UInt(Rs);
+    let 'datasize = (8 << UInt(size));
+    let 'regsize = if datasize == 64 then 64 else 32;
+    let acquire : bool = A == 0b1 & Rt != 0b11111;
+    let is_load : bool = Rt != 0b11111;
+    let release : bool = R == 0b1;
+    op : MemAtomicOp = undefined;
+    match opc {
+      0b000 => {
+          op = MemAtomicOp_ADD
+      },
+      0b001 => {
+          op = MemAtomicOp_BIC
+      },
+      0b010 => {
+          op = MemAtomicOp_EOR
+      },
+      0b011 => {
+          op = MemAtomicOp_ORR
+      },
+      0b100 => {
+          op = MemAtomicOp_SMAX
+      },
+      0b101 => {
+          op = MemAtomicOp_SMIN
+      },
+      0b110 => {
+          op = MemAtomicOp_UMAX
+      },
+      0b111 => {
+          op = MemAtomicOp_UMIN
+      }
+    };
+    let op = op;
+    let tagchecked : bool = n != 31;
+    execute_aarch64_instrs_memory_atomicops_ld(acquire, datasize, is_load, n, op, regsize, release, s, t, tagchecked)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitone, _, bitone, bitone, bitone, bitzero, bitzero, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 525) = {
+    SEE = 525;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let opc = Slice(__opcode, 12, 3);
+    let Rs = Slice(__opcode, 16, 5);
+    let R = Slice(__opcode, 22, 1);
+    let A = Slice(__opcode, 23, 1);
+    let size = Slice(__opcode, 30, 2);
+    decode_ldadd_aarch64_instrs_memory_atomicops_ld(Rt, Rn, opc, Rs, R, A, size)
+}
+
+val decode_ldaddb_aarch64_instrs_memory_atomicops_ld : (bits(5), bits(5), bits(3), bits(5), bits(1), bits(1), bits(2)) -> unit
+
+function decode_ldaddb_aarch64_instrs_memory_atomicops_ld (Rt, Rn, opc, Rs, R, A, size) = {
+    if not_bool(HaveAtomicExt()) then {
+        throw(Error_Undefined())
+    };
+    let 't = UInt(Rt);
+    let 'n = UInt(Rn);
+    let 's = UInt(Rs);
+    let 'datasize = (8 << UInt(size));
+    let 'regsize = if datasize == 64 then 64 else 32;
+    let acquire : bool = A == 0b1 & Rt != 0b11111;
+    let is_load : bool = Rt != 0b11111;
+    let release : bool = R == 0b1;
+    op : MemAtomicOp = undefined;
+    match opc {
+      0b000 => {
+          op = MemAtomicOp_ADD
+      },
+      0b001 => {
+          op = MemAtomicOp_BIC
+      },
+      0b010 => {
+          op = MemAtomicOp_EOR
+      },
+      0b011 => {
+          op = MemAtomicOp_ORR
+      },
+      0b100 => {
+          op = MemAtomicOp_SMAX
+      },
+      0b101 => {
+          op = MemAtomicOp_SMIN
+      },
+      0b110 => {
+          op = MemAtomicOp_UMAX
+      },
+      0b111 => {
+          op = MemAtomicOp_UMIN
+      }
+    };
+    let op = op;
+    let tagchecked : bool = n != 31;
+    execute_aarch64_instrs_memory_atomicops_ld(acquire, datasize, is_load, n, op, regsize, release, s, t, tagchecked)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 526) = {
+    SEE = 526;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let opc = Slice(__opcode, 12, 3);
+    let Rs = Slice(__opcode, 16, 5);
+    let R = Slice(__opcode, 22, 1);
+    let A = Slice(__opcode, 23, 1);
+    let size = Slice(__opcode, 30, 2);
+    decode_ldaddb_aarch64_instrs_memory_atomicops_ld(Rt, Rn, opc, Rs, R, A, size)
+}
+
+val decode_ldaddh_aarch64_instrs_memory_atomicops_ld : (bits(5), bits(5), bits(3), bits(5), bits(1), bits(1), bits(2)) -> unit
+
+function decode_ldaddh_aarch64_instrs_memory_atomicops_ld (Rt, Rn, opc, Rs, R, A, size) = {
+    if not_bool(HaveAtomicExt()) then {
+        throw(Error_Undefined())
+    };
+    let 't = UInt(Rt);
+    let 'n = UInt(Rn);
+    let 's = UInt(Rs);
+    let 'datasize = (8 << UInt(size));
+    let 'regsize = if datasize == 64 then 64 else 32;
+    let acquire : bool = A == 0b1 & Rt != 0b11111;
+    let is_load : bool = Rt != 0b11111;
+    let release : bool = R == 0b1;
+    op : MemAtomicOp = undefined;
+    match opc {
+      0b000 => {
+          op = MemAtomicOp_ADD
+      },
+      0b001 => {
+          op = MemAtomicOp_BIC
+      },
+      0b010 => {
+          op = MemAtomicOp_EOR
+      },
+      0b011 => {
+          op = MemAtomicOp_ORR
+      },
+      0b100 => {
+          op = MemAtomicOp_SMAX
+      },
+      0b101 => {
+          op = MemAtomicOp_SMIN
+      },
+      0b110 => {
+          op = MemAtomicOp_UMAX
+      },
+      0b111 => {
+          op = MemAtomicOp_UMIN
+      }
+    };
+    let op = op;
+    let tagchecked : bool = n != 31;
+    execute_aarch64_instrs_memory_atomicops_ld(acquire, datasize, is_load, n, op, regsize, release, s, t, tagchecked)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 527) = {
+    SEE = 527;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let opc = Slice(__opcode, 12, 3);
+    let Rs = Slice(__opcode, 16, 5);
+    let R = Slice(__opcode, 22, 1);
+    let A = Slice(__opcode, 23, 1);
+    let size = Slice(__opcode, 30, 2);
+    decode_ldaddh_aarch64_instrs_memory_atomicops_ld(Rt, Rn, opc, Rs, R, A, size)
+}
+
+val decode_ldclr_aarch64_instrs_memory_atomicops_ld : (bits(5), bits(5), bits(3), bits(5), bits(1), bits(1), bits(2)) -> unit
+
+function decode_ldclr_aarch64_instrs_memory_atomicops_ld (Rt, Rn, opc, Rs, R, A, size) = {
+    if not_bool(HaveAtomicExt()) then {
+        throw(Error_Undefined())
+    };
+    let 't = UInt(Rt);
+    let 'n = UInt(Rn);
+    let 's = UInt(Rs);
+    let 'datasize = (8 << UInt(size));
+    let 'regsize = if datasize == 64 then 64 else 32;
+    let acquire : bool = A == 0b1 & Rt != 0b11111;
+    let is_load : bool = Rt != 0b11111;
+    let release : bool = R == 0b1;
+    op : MemAtomicOp = undefined;
+    match opc {
+      0b000 => {
+          op = MemAtomicOp_ADD
+      },
+      0b001 => {
+          op = MemAtomicOp_BIC
+      },
+      0b010 => {
+          op = MemAtomicOp_EOR
+      },
+      0b011 => {
+          op = MemAtomicOp_ORR
+      },
+      0b100 => {
+          op = MemAtomicOp_SMAX
+      },
+      0b101 => {
+          op = MemAtomicOp_SMIN
+      },
+      0b110 => {
+          op = MemAtomicOp_UMAX
+      },
+      0b111 => {
+          op = MemAtomicOp_UMIN
+      }
+    };
+    let op = op;
+    let tagchecked : bool = n != 31;
+    execute_aarch64_instrs_memory_atomicops_ld(acquire, datasize, is_load, n, op, regsize, release, s, t, tagchecked)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitone, _, bitone, bitone, bitone, bitzero, bitzero, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitzero, bitzero, bitone, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 528) = {
+    SEE = 528;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let opc = Slice(__opcode, 12, 3);
+    let Rs = Slice(__opcode, 16, 5);
+    let R = Slice(__opcode, 22, 1);
+    let A = Slice(__opcode, 23, 1);
+    let size = Slice(__opcode, 30, 2);
+    decode_ldclr_aarch64_instrs_memory_atomicops_ld(Rt, Rn, opc, Rs, R, A, size)
+}
+
+val decode_ldclrb_aarch64_instrs_memory_atomicops_ld : (bits(5), bits(5), bits(3), bits(5), bits(1), bits(1), bits(2)) -> unit
+
+function decode_ldclrb_aarch64_instrs_memory_atomicops_ld (Rt, Rn, opc, Rs, R, A, size) = {
+    if not_bool(HaveAtomicExt()) then {
+        throw(Error_Undefined())
+    };
+    let 't = UInt(Rt);
+    let 'n = UInt(Rn);
+    let 's = UInt(Rs);
+    let 'datasize = (8 << UInt(size));
+    let 'regsize = if datasize == 64 then 64 else 32;
+    let acquire : bool = A == 0b1 & Rt != 0b11111;
+    let is_load : bool = Rt != 0b11111;
+    let release : bool = R == 0b1;
+    op : MemAtomicOp = undefined;
+    match opc {
+      0b000 => {
+          op = MemAtomicOp_ADD
+      },
+      0b001 => {
+          op = MemAtomicOp_BIC
+      },
+      0b010 => {
+          op = MemAtomicOp_EOR
+      },
+      0b011 => {
+          op = MemAtomicOp_ORR
+      },
+      0b100 => {
+          op = MemAtomicOp_SMAX
+      },
+      0b101 => {
+          op = MemAtomicOp_SMIN
+      },
+      0b110 => {
+          op = MemAtomicOp_UMAX
+      },
+      0b111 => {
+          op = MemAtomicOp_UMIN
+      }
+    };
+    let op = op;
+    let tagchecked : bool = n != 31;
+    execute_aarch64_instrs_memory_atomicops_ld(acquire, datasize, is_load, n, op, regsize, release, s, t, tagchecked)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitzero, bitzero, bitone, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 529) = {
+    SEE = 529;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let opc = Slice(__opcode, 12, 3);
+    let Rs = Slice(__opcode, 16, 5);
+    let R = Slice(__opcode, 22, 1);
+    let A = Slice(__opcode, 23, 1);
+    let size = Slice(__opcode, 30, 2);
+    decode_ldclrb_aarch64_instrs_memory_atomicops_ld(Rt, Rn, opc, Rs, R, A, size)
+}
+
+val decode_ldclrh_aarch64_instrs_memory_atomicops_ld : (bits(5), bits(5), bits(3), bits(5), bits(1), bits(1), bits(2)) -> unit
+
+function decode_ldclrh_aarch64_instrs_memory_atomicops_ld (Rt, Rn, opc, Rs, R, A, size) = {
+    if not_bool(HaveAtomicExt()) then {
+        throw(Error_Undefined())
+    };
+    let 't = UInt(Rt);
+    let 'n = UInt(Rn);
+    let 's = UInt(Rs);
+    let 'datasize = (8 << UInt(size));
+    let 'regsize = if datasize == 64 then 64 else 32;
+    let acquire : bool = A == 0b1 & Rt != 0b11111;
+    let is_load : bool = Rt != 0b11111;
+    let release : bool = R == 0b1;
+    op : MemAtomicOp = undefined;
+    match opc {
+      0b000 => {
+          op = MemAtomicOp_ADD
+      },
+      0b001 => {
+          op = MemAtomicOp_BIC
+      },
+      0b010 => {
+          op = MemAtomicOp_EOR
+      },
+      0b011 => {
+          op = MemAtomicOp_ORR
+      },
+      0b100 => {
+          op = MemAtomicOp_SMAX
+      },
+      0b101 => {
+          op = MemAtomicOp_SMIN
+      },
+      0b110 => {
+          op = MemAtomicOp_UMAX
+      },
+      0b111 => {
+          op = MemAtomicOp_UMIN
+      }
+    };
+    let op = op;
+    let tagchecked : bool = n != 31;
+    execute_aarch64_instrs_memory_atomicops_ld(acquire, datasize, is_load, n, op, regsize, release, s, t, tagchecked)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitzero, bitzero, bitone, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 530) = {
+    SEE = 530;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let opc = Slice(__opcode, 12, 3);
+    let Rs = Slice(__opcode, 16, 5);
+    let R = Slice(__opcode, 22, 1);
+    let A = Slice(__opcode, 23, 1);
+    let size = Slice(__opcode, 30, 2);
+    decode_ldclrh_aarch64_instrs_memory_atomicops_ld(Rt, Rn, opc, Rs, R, A, size)
+}
+
+val decode_ldeor_aarch64_instrs_memory_atomicops_ld : (bits(5), bits(5), bits(3), bits(5), bits(1), bits(1), bits(2)) -> unit
+
+function decode_ldeor_aarch64_instrs_memory_atomicops_ld (Rt, Rn, opc, Rs, R, A, size) = {
+    if not_bool(HaveAtomicExt()) then {
+        throw(Error_Undefined())
+    };
+    let 't = UInt(Rt);
+    let 'n = UInt(Rn);
+    let 's = UInt(Rs);
+    let 'datasize = (8 << UInt(size));
+    let 'regsize = if datasize == 64 then 64 else 32;
+    let acquire : bool = A == 0b1 & Rt != 0b11111;
+    let is_load : bool = Rt != 0b11111;
+    let release : bool = R == 0b1;
+    op : MemAtomicOp = undefined;
+    match opc {
+      0b000 => {
+          op = MemAtomicOp_ADD
+      },
+      0b001 => {
+          op = MemAtomicOp_BIC
+      },
+      0b010 => {
+          op = MemAtomicOp_EOR
+      },
+      0b011 => {
+          op = MemAtomicOp_ORR
+      },
+      0b100 => {
+          op = MemAtomicOp_SMAX
+      },
+      0b101 => {
+          op = MemAtomicOp_SMIN
+      },
+      0b110 => {
+          op = MemAtomicOp_UMAX
+      },
+      0b111 => {
+          op = MemAtomicOp_UMIN
+      }
+    };
+    let op = op;
+    let tagchecked : bool = n != 31;
+    execute_aarch64_instrs_memory_atomicops_ld(acquire, datasize, is_load, n, op, regsize, release, s, t, tagchecked)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitone, _, bitone, bitone, bitone, bitzero, bitzero, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitzero, bitone, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 531) = {
+    SEE = 531;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let opc = Slice(__opcode, 12, 3);
+    let Rs = Slice(__opcode, 16, 5);
+    let R = Slice(__opcode, 22, 1);
+    let A = Slice(__opcode, 23, 1);
+    let size = Slice(__opcode, 30, 2);
+    decode_ldeor_aarch64_instrs_memory_atomicops_ld(Rt, Rn, opc, Rs, R, A, size)
+}
+
+val decode_ldeorb_aarch64_instrs_memory_atomicops_ld : (bits(5), bits(5), bits(3), bits(5), bits(1), bits(1), bits(2)) -> unit
+
+function decode_ldeorb_aarch64_instrs_memory_atomicops_ld (Rt, Rn, opc, Rs, R, A, size) = {
+    if not_bool(HaveAtomicExt()) then {
+        throw(Error_Undefined())
+    };
+    let 't = UInt(Rt);
+    let 'n = UInt(Rn);
+    let 's = UInt(Rs);
+    let 'datasize = (8 << UInt(size));
+    let 'regsize = if datasize == 64 then 64 else 32;
+    let acquire : bool = A == 0b1 & Rt != 0b11111;
+    let is_load : bool = Rt != 0b11111;
+    let release : bool = R == 0b1;
+    op : MemAtomicOp = undefined;
+    match opc {
+      0b000 => {
+          op = MemAtomicOp_ADD
+      },
+      0b001 => {
+          op = MemAtomicOp_BIC
+      },
+      0b010 => {
+          op = MemAtomicOp_EOR
+      },
+      0b011 => {
+          op = MemAtomicOp_ORR
+      },
+      0b100 => {
+          op = MemAtomicOp_SMAX
+      },
+      0b101 => {
+          op = MemAtomicOp_SMIN
+      },
+      0b110 => {
+          op = MemAtomicOp_UMAX
+      },
+      0b111 => {
+          op = MemAtomicOp_UMIN
+      }
+    };
+    let op = op;
+    let tagchecked : bool = n != 31;
+    execute_aarch64_instrs_memory_atomicops_ld(acquire, datasize, is_load, n, op, regsize, release, s, t, tagchecked)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitzero, bitone, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 532) = {
+    SEE = 532;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let opc = Slice(__opcode, 12, 3);
+    let Rs = Slice(__opcode, 16, 5);
+    let R = Slice(__opcode, 22, 1);
+    let A = Slice(__opcode, 23, 1);
+    let size = Slice(__opcode, 30, 2);
+    decode_ldeorb_aarch64_instrs_memory_atomicops_ld(Rt, Rn, opc, Rs, R, A, size)
+}
+
+val decode_ldeorh_aarch64_instrs_memory_atomicops_ld : (bits(5), bits(5), bits(3), bits(5), bits(1), bits(1), bits(2)) -> unit
+
+function decode_ldeorh_aarch64_instrs_memory_atomicops_ld (Rt, Rn, opc, Rs, R, A, size) = {
+    if not_bool(HaveAtomicExt()) then {
+        throw(Error_Undefined())
+    };
+    let 't = UInt(Rt);
+    let 'n = UInt(Rn);
+    let 's = UInt(Rs);
+    let 'datasize = (8 << UInt(size));
+    let 'regsize = if datasize == 64 then 64 else 32;
+    let acquire : bool = A == 0b1 & Rt != 0b11111;
+    let is_load : bool = Rt != 0b11111;
+    let release : bool = R == 0b1;
+    op : MemAtomicOp = undefined;
+    match opc {
+      0b000 => {
+          op = MemAtomicOp_ADD
+      },
+      0b001 => {
+          op = MemAtomicOp_BIC
+      },
+      0b010 => {
+          op = MemAtomicOp_EOR
+      },
+      0b011 => {
+          op = MemAtomicOp_ORR
+      },
+      0b100 => {
+          op = MemAtomicOp_SMAX
+      },
+      0b101 => {
+          op = MemAtomicOp_SMIN
+      },
+      0b110 => {
+          op = MemAtomicOp_UMAX
+      },
+      0b111 => {
+          op = MemAtomicOp_UMIN
+      }
+    };
+    let op = op;
+    let tagchecked : bool = n != 31;
+    execute_aarch64_instrs_memory_atomicops_ld(acquire, datasize, is_load, n, op, regsize, release, s, t, tagchecked)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitzero, bitone, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 533) = {
+    SEE = 533;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let opc = Slice(__opcode, 12, 3);
+    let Rs = Slice(__opcode, 16, 5);
+    let R = Slice(__opcode, 22, 1);
+    let A = Slice(__opcode, 23, 1);
+    let size = Slice(__opcode, 30, 2);
+    decode_ldeorh_aarch64_instrs_memory_atomicops_ld(Rt, Rn, opc, Rs, R, A, size)
+}
+
+val decode_ldset_aarch64_instrs_memory_atomicops_ld : (bits(5), bits(5), bits(3), bits(5), bits(1), bits(1), bits(2)) -> unit
+
+function decode_ldset_aarch64_instrs_memory_atomicops_ld (Rt, Rn, opc, Rs, R, A, size) = {
+    if not_bool(HaveAtomicExt()) then {
+        throw(Error_Undefined())
+    };
+    let 't = UInt(Rt);
+    let 'n = UInt(Rn);
+    let 's = UInt(Rs);
+    let 'datasize = (8 << UInt(size));
+    let 'regsize = if datasize == 64 then 64 else 32;
+    let acquire : bool = A == 0b1 & Rt != 0b11111;
+    let is_load : bool = Rt != 0b11111;
+    let release : bool = R == 0b1;
+    op : MemAtomicOp = undefined;
+    match opc {
+      0b000 => {
+          op = MemAtomicOp_ADD
+      },
+      0b001 => {
+          op = MemAtomicOp_BIC
+      },
+      0b010 => {
+          op = MemAtomicOp_EOR
+      },
+      0b011 => {
+          op = MemAtomicOp_ORR
+      },
+      0b100 => {
+          op = MemAtomicOp_SMAX
+      },
+      0b101 => {
+          op = MemAtomicOp_SMIN
+      },
+      0b110 => {
+          op = MemAtomicOp_UMAX
+      },
+      0b111 => {
+          op = MemAtomicOp_UMIN
+      }
+    };
+    let op = op;
+    let tagchecked : bool = n != 31;
+    execute_aarch64_instrs_memory_atomicops_ld(acquire, datasize, is_load, n, op, regsize, release, s, t, tagchecked)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitone, _, bitone, bitone, bitone, bitzero, bitzero, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitzero, bitone, bitone, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 534) = {
+    SEE = 534;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let opc = Slice(__opcode, 12, 3);
+    let Rs = Slice(__opcode, 16, 5);
+    let R = Slice(__opcode, 22, 1);
+    let A = Slice(__opcode, 23, 1);
+    let size = Slice(__opcode, 30, 2);
+    decode_ldset_aarch64_instrs_memory_atomicops_ld(Rt, Rn, opc, Rs, R, A, size)
+}
+
+val decode_ldsetb_aarch64_instrs_memory_atomicops_ld : (bits(5), bits(5), bits(3), bits(5), bits(1), bits(1), bits(2)) -> unit
+
+function decode_ldsetb_aarch64_instrs_memory_atomicops_ld (Rt, Rn, opc, Rs, R, A, size) = {
+    if not_bool(HaveAtomicExt()) then {
+        throw(Error_Undefined())
+    };
+    let 't = UInt(Rt);
+    let 'n = UInt(Rn);
+    let 's = UInt(Rs);
+    let 'datasize = (8 << UInt(size));
+    let 'regsize = if datasize == 64 then 64 else 32;
+    let acquire : bool = A == 0b1 & Rt != 0b11111;
+    let is_load : bool = Rt != 0b11111;
+    let release : bool = R == 0b1;
+    op : MemAtomicOp = undefined;
+    match opc {
+      0b000 => {
+          op = MemAtomicOp_ADD
+      },
+      0b001 => {
+          op = MemAtomicOp_BIC
+      },
+      0b010 => {
+          op = MemAtomicOp_EOR
+      },
+      0b011 => {
+          op = MemAtomicOp_ORR
+      },
+      0b100 => {
+          op = MemAtomicOp_SMAX
+      },
+      0b101 => {
+          op = MemAtomicOp_SMIN
+      },
+      0b110 => {
+          op = MemAtomicOp_UMAX
+      },
+      0b111 => {
+          op = MemAtomicOp_UMIN
+      }
+    };
+    let op = op;
+    let tagchecked : bool = n != 31;
+    execute_aarch64_instrs_memory_atomicops_ld(acquire, datasize, is_load, n, op, regsize, release, s, t, tagchecked)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitzero, bitone, bitone, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 535) = {
+    SEE = 535;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let opc = Slice(__opcode, 12, 3);
+    let Rs = Slice(__opcode, 16, 5);
+    let R = Slice(__opcode, 22, 1);
+    let A = Slice(__opcode, 23, 1);
+    let size = Slice(__opcode, 30, 2);
+    decode_ldsetb_aarch64_instrs_memory_atomicops_ld(Rt, Rn, opc, Rs, R, A, size)
+}
+
+val decode_ldseth_aarch64_instrs_memory_atomicops_ld : (bits(5), bits(5), bits(3), bits(5), bits(1), bits(1), bits(2)) -> unit
+
+function decode_ldseth_aarch64_instrs_memory_atomicops_ld (Rt, Rn, opc, Rs, R, A, size) = {
+    if not_bool(HaveAtomicExt()) then {
+        throw(Error_Undefined())
+    };
+    let 't = UInt(Rt);
+    let 'n = UInt(Rn);
+    let 's = UInt(Rs);
+    let 'datasize = (8 << UInt(size));
+    let 'regsize = if datasize == 64 then 64 else 32;
+    let acquire : bool = A == 0b1 & Rt != 0b11111;
+    let is_load : bool = Rt != 0b11111;
+    let release : bool = R == 0b1;
+    op : MemAtomicOp = undefined;
+    match opc {
+      0b000 => {
+          op = MemAtomicOp_ADD
+      },
+      0b001 => {
+          op = MemAtomicOp_BIC
+      },
+      0b010 => {
+          op = MemAtomicOp_EOR
+      },
+      0b011 => {
+          op = MemAtomicOp_ORR
+      },
+      0b100 => {
+          op = MemAtomicOp_SMAX
+      },
+      0b101 => {
+          op = MemAtomicOp_SMIN
+      },
+      0b110 => {
+          op = MemAtomicOp_UMAX
+      },
+      0b111 => {
+          op = MemAtomicOp_UMIN
+      }
+    };
+    let op = op;
+    let tagchecked : bool = n != 31;
+    execute_aarch64_instrs_memory_atomicops_ld(acquire, datasize, is_load, n, op, regsize, release, s, t, tagchecked)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitzero, bitone, bitone, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 536) = {
+    SEE = 536;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let opc = Slice(__opcode, 12, 3);
+    let Rs = Slice(__opcode, 16, 5);
+    let R = Slice(__opcode, 22, 1);
+    let A = Slice(__opcode, 23, 1);
+    let size = Slice(__opcode, 30, 2);
+    decode_ldseth_aarch64_instrs_memory_atomicops_ld(Rt, Rn, opc, Rs, R, A, size)
+}
+
+val decode_ldsmax_aarch64_instrs_memory_atomicops_ld : (bits(5), bits(5), bits(3), bits(5), bits(1), bits(1), bits(2)) -> unit
+
+function decode_ldsmax_aarch64_instrs_memory_atomicops_ld (Rt, Rn, opc, Rs, R, A, size) = {
+    if not_bool(HaveAtomicExt()) then {
+        throw(Error_Undefined())
+    };
+    let 't = UInt(Rt);
+    let 'n = UInt(Rn);
+    let 's = UInt(Rs);
+    let 'datasize = (8 << UInt(size));
+    let 'regsize = if datasize == 64 then 64 else 32;
+    let acquire : bool = A == 0b1 & Rt != 0b11111;
+    let is_load : bool = Rt != 0b11111;
+    let release : bool = R == 0b1;
+    op : MemAtomicOp = undefined;
+    match opc {
+      0b000 => {
+          op = MemAtomicOp_ADD
+      },
+      0b001 => {
+          op = MemAtomicOp_BIC
+      },
+      0b010 => {
+          op = MemAtomicOp_EOR
+      },
+      0b011 => {
+          op = MemAtomicOp_ORR
+      },
+      0b100 => {
+          op = MemAtomicOp_SMAX
+      },
+      0b101 => {
+          op = MemAtomicOp_SMIN
+      },
+      0b110 => {
+          op = MemAtomicOp_UMAX
+      },
+      0b111 => {
+          op = MemAtomicOp_UMIN
+      }
+    };
+    let op = op;
+    let tagchecked : bool = n != 31;
+    execute_aarch64_instrs_memory_atomicops_ld(acquire, datasize, is_load, n, op, regsize, release, s, t, tagchecked)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitone, _, bitone, bitone, bitone, bitzero, bitzero, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitone, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 537) = {
+    SEE = 537;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let opc = Slice(__opcode, 12, 3);
+    let Rs = Slice(__opcode, 16, 5);
+    let R = Slice(__opcode, 22, 1);
+    let A = Slice(__opcode, 23, 1);
+    let size = Slice(__opcode, 30, 2);
+    decode_ldsmax_aarch64_instrs_memory_atomicops_ld(Rt, Rn, opc, Rs, R, A, size)
+}
+
+val decode_ldsmaxb_aarch64_instrs_memory_atomicops_ld : (bits(5), bits(5), bits(3), bits(5), bits(1), bits(1), bits(2)) -> unit
+
+function decode_ldsmaxb_aarch64_instrs_memory_atomicops_ld (Rt, Rn, opc, Rs, R, A, size) = {
+    if not_bool(HaveAtomicExt()) then {
+        throw(Error_Undefined())
+    };
+    let 't = UInt(Rt);
+    let 'n = UInt(Rn);
+    let 's = UInt(Rs);
+    let 'datasize = (8 << UInt(size));
+    let 'regsize = if datasize == 64 then 64 else 32;
+    let acquire : bool = A == 0b1 & Rt != 0b11111;
+    let is_load : bool = Rt != 0b11111;
+    let release : bool = R == 0b1;
+    op : MemAtomicOp = undefined;
+    match opc {
+      0b000 => {
+          op = MemAtomicOp_ADD
+      },
+      0b001 => {
+          op = MemAtomicOp_BIC
+      },
+      0b010 => {
+          op = MemAtomicOp_EOR
+      },
+      0b011 => {
+          op = MemAtomicOp_ORR
+      },
+      0b100 => {
+          op = MemAtomicOp_SMAX
+      },
+      0b101 => {
+          op = MemAtomicOp_SMIN
+      },
+      0b110 => {
+          op = MemAtomicOp_UMAX
+      },
+      0b111 => {
+          op = MemAtomicOp_UMIN
+      }
+    };
+    let op = op;
+    let tagchecked : bool = n != 31;
+    execute_aarch64_instrs_memory_atomicops_ld(acquire, datasize, is_load, n, op, regsize, release, s, t, tagchecked)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitone, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 538) = {
+    SEE = 538;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let opc = Slice(__opcode, 12, 3);
+    let Rs = Slice(__opcode, 16, 5);
+    let R = Slice(__opcode, 22, 1);
+    let A = Slice(__opcode, 23, 1);
+    let size = Slice(__opcode, 30, 2);
+    decode_ldsmaxb_aarch64_instrs_memory_atomicops_ld(Rt, Rn, opc, Rs, R, A, size)
+}
+
+val decode_ldsmaxh_aarch64_instrs_memory_atomicops_ld : (bits(5), bits(5), bits(3), bits(5), bits(1), bits(1), bits(2)) -> unit
+
+function decode_ldsmaxh_aarch64_instrs_memory_atomicops_ld (Rt, Rn, opc, Rs, R, A, size) = {
+    if not_bool(HaveAtomicExt()) then {
+        throw(Error_Undefined())
+    };
+    let 't = UInt(Rt);
+    let 'n = UInt(Rn);
+    let 's = UInt(Rs);
+    let 'datasize = (8 << UInt(size));
+    let 'regsize = if datasize == 64 then 64 else 32;
+    let acquire : bool = A == 0b1 & Rt != 0b11111;
+    let is_load : bool = Rt != 0b11111;
+    let release : bool = R == 0b1;
+    op : MemAtomicOp = undefined;
+    match opc {
+      0b000 => {
+          op = MemAtomicOp_ADD
+      },
+      0b001 => {
+          op = MemAtomicOp_BIC
+      },
+      0b010 => {
+          op = MemAtomicOp_EOR
+      },
+      0b011 => {
+          op = MemAtomicOp_ORR
+      },
+      0b100 => {
+          op = MemAtomicOp_SMAX
+      },
+      0b101 => {
+          op = MemAtomicOp_SMIN
+      },
+      0b110 => {
+          op = MemAtomicOp_UMAX
+      },
+      0b111 => {
+          op = MemAtomicOp_UMIN
+      }
+    };
+    let op = op;
+    let tagchecked : bool = n != 31;
+    execute_aarch64_instrs_memory_atomicops_ld(acquire, datasize, is_load, n, op, regsize, release, s, t, tagchecked)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitone, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 539) = {
+    SEE = 539;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let opc = Slice(__opcode, 12, 3);
+    let Rs = Slice(__opcode, 16, 5);
+    let R = Slice(__opcode, 22, 1);
+    let A = Slice(__opcode, 23, 1);
+    let size = Slice(__opcode, 30, 2);
+    decode_ldsmaxh_aarch64_instrs_memory_atomicops_ld(Rt, Rn, opc, Rs, R, A, size)
+}
+
+val decode_ldsmin_aarch64_instrs_memory_atomicops_ld : (bits(5), bits(5), bits(3), bits(5), bits(1), bits(1), bits(2)) -> unit
+
+function decode_ldsmin_aarch64_instrs_memory_atomicops_ld (Rt, Rn, opc, Rs, R, A, size) = {
+    if not_bool(HaveAtomicExt()) then {
+        throw(Error_Undefined())
+    };
+    let 't = UInt(Rt);
+    let 'n = UInt(Rn);
+    let 's = UInt(Rs);
+    let 'datasize = (8 << UInt(size));
+    let 'regsize = if datasize == 64 then 64 else 32;
+    let acquire : bool = A == 0b1 & Rt != 0b11111;
+    let is_load : bool = Rt != 0b11111;
+    let release : bool = R == 0b1;
+    op : MemAtomicOp = undefined;
+    match opc {
+      0b000 => {
+          op = MemAtomicOp_ADD
+      },
+      0b001 => {
+          op = MemAtomicOp_BIC
+      },
+      0b010 => {
+          op = MemAtomicOp_EOR
+      },
+      0b011 => {
+          op = MemAtomicOp_ORR
+      },
+      0b100 => {
+          op = MemAtomicOp_SMAX
+      },
+      0b101 => {
+          op = MemAtomicOp_SMIN
+      },
+      0b110 => {
+          op = MemAtomicOp_UMAX
+      },
+      0b111 => {
+          op = MemAtomicOp_UMIN
+      }
+    };
+    let op = op;
+    let tagchecked : bool = n != 31;
+    execute_aarch64_instrs_memory_atomicops_ld(acquire, datasize, is_load, n, op, regsize, release, s, t, tagchecked)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitone, _, bitone, bitone, bitone, bitzero, bitzero, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitone, bitzero, bitone, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 540) = {
+    SEE = 540;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let opc = Slice(__opcode, 12, 3);
+    let Rs = Slice(__opcode, 16, 5);
+    let R = Slice(__opcode, 22, 1);
+    let A = Slice(__opcode, 23, 1);
+    let size = Slice(__opcode, 30, 2);
+    decode_ldsmin_aarch64_instrs_memory_atomicops_ld(Rt, Rn, opc, Rs, R, A, size)
+}
+
+val decode_ldsminb_aarch64_instrs_memory_atomicops_ld : (bits(5), bits(5), bits(3), bits(5), bits(1), bits(1), bits(2)) -> unit
+
+function decode_ldsminb_aarch64_instrs_memory_atomicops_ld (Rt, Rn, opc, Rs, R, A, size) = {
+    if not_bool(HaveAtomicExt()) then {
+        throw(Error_Undefined())
+    };
+    let 't = UInt(Rt);
+    let 'n = UInt(Rn);
+    let 's = UInt(Rs);
+    let 'datasize = (8 << UInt(size));
+    let 'regsize = if datasize == 64 then 64 else 32;
+    let acquire : bool = A == 0b1 & Rt != 0b11111;
+    let is_load : bool = Rt != 0b11111;
+    let release : bool = R == 0b1;
+    op : MemAtomicOp = undefined;
+    match opc {
+      0b000 => {
+          op = MemAtomicOp_ADD
+      },
+      0b001 => {
+          op = MemAtomicOp_BIC
+      },
+      0b010 => {
+          op = MemAtomicOp_EOR
+      },
+      0b011 => {
+          op = MemAtomicOp_ORR
+      },
+      0b100 => {
+          op = MemAtomicOp_SMAX
+      },
+      0b101 => {
+          op = MemAtomicOp_SMIN
+      },
+      0b110 => {
+          op = MemAtomicOp_UMAX
+      },
+      0b111 => {
+          op = MemAtomicOp_UMIN
+      }
+    };
+    let op = op;
+    let tagchecked : bool = n != 31;
+    execute_aarch64_instrs_memory_atomicops_ld(acquire, datasize, is_load, n, op, regsize, release, s, t, tagchecked)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitone, bitzero, bitone, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 541) = {
+    SEE = 541;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let opc = Slice(__opcode, 12, 3);
+    let Rs = Slice(__opcode, 16, 5);
+    let R = Slice(__opcode, 22, 1);
+    let A = Slice(__opcode, 23, 1);
+    let size = Slice(__opcode, 30, 2);
+    decode_ldsminb_aarch64_instrs_memory_atomicops_ld(Rt, Rn, opc, Rs, R, A, size)
+}
+
+val decode_ldsminh_aarch64_instrs_memory_atomicops_ld : (bits(5), bits(5), bits(3), bits(5), bits(1), bits(1), bits(2)) -> unit
+
+function decode_ldsminh_aarch64_instrs_memory_atomicops_ld (Rt, Rn, opc, Rs, R, A, size) = {
+    if not_bool(HaveAtomicExt()) then {
+        throw(Error_Undefined())
+    };
+    let 't = UInt(Rt);
+    let 'n = UInt(Rn);
+    let 's = UInt(Rs);
+    let 'datasize = (8 << UInt(size));
+    let 'regsize = if datasize == 64 then 64 else 32;
+    let acquire : bool = A == 0b1 & Rt != 0b11111;
+    let is_load : bool = Rt != 0b11111;
+    let release : bool = R == 0b1;
+    op : MemAtomicOp = undefined;
+    match opc {
+      0b000 => {
+          op = MemAtomicOp_ADD
+      },
+      0b001 => {
+          op = MemAtomicOp_BIC
+      },
+      0b010 => {
+          op = MemAtomicOp_EOR
+      },
+      0b011 => {
+          op = MemAtomicOp_ORR
+      },
+      0b100 => {
+          op = MemAtomicOp_SMAX
+      },
+      0b101 => {
+          op = MemAtomicOp_SMIN
+      },
+      0b110 => {
+          op = MemAtomicOp_UMAX
+      },
+      0b111 => {
+          op = MemAtomicOp_UMIN
+      }
+    };
+    let op = op;
+    let tagchecked : bool = n != 31;
+    execute_aarch64_instrs_memory_atomicops_ld(acquire, datasize, is_load, n, op, regsize, release, s, t, tagchecked)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitone, bitzero, bitone, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 542) = {
+    SEE = 542;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let opc = Slice(__opcode, 12, 3);
+    let Rs = Slice(__opcode, 16, 5);
+    let R = Slice(__opcode, 22, 1);
+    let A = Slice(__opcode, 23, 1);
+    let size = Slice(__opcode, 30, 2);
+    decode_ldsminh_aarch64_instrs_memory_atomicops_ld(Rt, Rn, opc, Rs, R, A, size)
+}
+
+val decode_ldumax_aarch64_instrs_memory_atomicops_ld : (bits(5), bits(5), bits(3), bits(5), bits(1), bits(1), bits(2)) -> unit
+
+function decode_ldumax_aarch64_instrs_memory_atomicops_ld (Rt, Rn, opc, Rs, R, A, size) = {
+    if not_bool(HaveAtomicExt()) then {
+        throw(Error_Undefined())
+    };
+    let 't = UInt(Rt);
+    let 'n = UInt(Rn);
+    let 's = UInt(Rs);
+    let 'datasize = (8 << UInt(size));
+    let 'regsize = if datasize == 64 then 64 else 32;
+    let acquire : bool = A == 0b1 & Rt != 0b11111;
+    let is_load : bool = Rt != 0b11111;
+    let release : bool = R == 0b1;
+    op : MemAtomicOp = undefined;
+    match opc {
+      0b000 => {
+          op = MemAtomicOp_ADD
+      },
+      0b001 => {
+          op = MemAtomicOp_BIC
+      },
+      0b010 => {
+          op = MemAtomicOp_EOR
+      },
+      0b011 => {
+          op = MemAtomicOp_ORR
+      },
+      0b100 => {
+          op = MemAtomicOp_SMAX
+      },
+      0b101 => {
+          op = MemAtomicOp_SMIN
+      },
+      0b110 => {
+          op = MemAtomicOp_UMAX
+      },
+      0b111 => {
+          op = MemAtomicOp_UMIN
+      }
+    };
+    let op = op;
+    let tagchecked : bool = n != 31;
+    execute_aarch64_instrs_memory_atomicops_ld(acquire, datasize, is_load, n, op, regsize, release, s, t, tagchecked)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitone, _, bitone, bitone, bitone, bitzero, bitzero, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitone, bitone, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 543) = {
+    SEE = 543;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let opc = Slice(__opcode, 12, 3);
+    let Rs = Slice(__opcode, 16, 5);
+    let R = Slice(__opcode, 22, 1);
+    let A = Slice(__opcode, 23, 1);
+    let size = Slice(__opcode, 30, 2);
+    decode_ldumax_aarch64_instrs_memory_atomicops_ld(Rt, Rn, opc, Rs, R, A, size)
+}
+
+val decode_ldumaxb_aarch64_instrs_memory_atomicops_ld : (bits(5), bits(5), bits(3), bits(5), bits(1), bits(1), bits(2)) -> unit
+
+function decode_ldumaxb_aarch64_instrs_memory_atomicops_ld (Rt, Rn, opc, Rs, R, A, size) = {
+    if not_bool(HaveAtomicExt()) then {
+        throw(Error_Undefined())
+    };
+    let 't = UInt(Rt);
+    let 'n = UInt(Rn);
+    let 's = UInt(Rs);
+    let 'datasize = (8 << UInt(size));
+    let 'regsize = if datasize == 64 then 64 else 32;
+    let acquire : bool = A == 0b1 & Rt != 0b11111;
+    let is_load : bool = Rt != 0b11111;
+    let release : bool = R == 0b1;
+    op : MemAtomicOp = undefined;
+    match opc {
+      0b000 => {
+          op = MemAtomicOp_ADD
+      },
+      0b001 => {
+          op = MemAtomicOp_BIC
+      },
+      0b010 => {
+          op = MemAtomicOp_EOR
+      },
+      0b011 => {
+          op = MemAtomicOp_ORR
+      },
+      0b100 => {
+          op = MemAtomicOp_SMAX
+      },
+      0b101 => {
+          op = MemAtomicOp_SMIN
+      },
+      0b110 => {
+          op = MemAtomicOp_UMAX
+      },
+      0b111 => {
+          op = MemAtomicOp_UMIN
+      }
+    };
+    let op = op;
+    let tagchecked : bool = n != 31;
+    execute_aarch64_instrs_memory_atomicops_ld(acquire, datasize, is_load, n, op, regsize, release, s, t, tagchecked)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitone, bitone, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 544) = {
+    SEE = 544;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let opc = Slice(__opcode, 12, 3);
+    let Rs = Slice(__opcode, 16, 5);
+    let R = Slice(__opcode, 22, 1);
+    let A = Slice(__opcode, 23, 1);
+    let size = Slice(__opcode, 30, 2);
+    decode_ldumaxb_aarch64_instrs_memory_atomicops_ld(Rt, Rn, opc, Rs, R, A, size)
+}
+
+val decode_ldumaxh_aarch64_instrs_memory_atomicops_ld : (bits(5), bits(5), bits(3), bits(5), bits(1), bits(1), bits(2)) -> unit
+
+function decode_ldumaxh_aarch64_instrs_memory_atomicops_ld (Rt, Rn, opc, Rs, R, A, size) = {
+    if not_bool(HaveAtomicExt()) then {
+        throw(Error_Undefined())
+    };
+    let 't = UInt(Rt);
+    let 'n = UInt(Rn);
+    let 's = UInt(Rs);
+    let 'datasize = (8 << UInt(size));
+    let 'regsize = if datasize == 64 then 64 else 32;
+    let acquire : bool = A == 0b1 & Rt != 0b11111;
+    let is_load : bool = Rt != 0b11111;
+    let release : bool = R == 0b1;
+    op : MemAtomicOp = undefined;
+    match opc {
+      0b000 => {
+          op = MemAtomicOp_ADD
+      },
+      0b001 => {
+          op = MemAtomicOp_BIC
+      },
+      0b010 => {
+          op = MemAtomicOp_EOR
+      },
+      0b011 => {
+          op = MemAtomicOp_ORR
+      },
+      0b100 => {
+          op = MemAtomicOp_SMAX
+      },
+      0b101 => {
+          op = MemAtomicOp_SMIN
+      },
+      0b110 => {
+          op = MemAtomicOp_UMAX
+      },
+      0b111 => {
+          op = MemAtomicOp_UMIN
+      }
+    };
+    let op = op;
+    let tagchecked : bool = n != 31;
+    execute_aarch64_instrs_memory_atomicops_ld(acquire, datasize, is_load, n, op, regsize, release, s, t, tagchecked)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitone, bitone, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 545) = {
+    SEE = 545;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let opc = Slice(__opcode, 12, 3);
+    let Rs = Slice(__opcode, 16, 5);
+    let R = Slice(__opcode, 22, 1);
+    let A = Slice(__opcode, 23, 1);
+    let size = Slice(__opcode, 30, 2);
+    decode_ldumaxh_aarch64_instrs_memory_atomicops_ld(Rt, Rn, opc, Rs, R, A, size)
+}
+
+val decode_ldumin_aarch64_instrs_memory_atomicops_ld : (bits(5), bits(5), bits(3), bits(5), bits(1), bits(1), bits(2)) -> unit
+
+function decode_ldumin_aarch64_instrs_memory_atomicops_ld (Rt, Rn, opc, Rs, R, A, size) = {
+    if not_bool(HaveAtomicExt()) then {
+        throw(Error_Undefined())
+    };
+    let 't = UInt(Rt);
+    let 'n = UInt(Rn);
+    let 's = UInt(Rs);
+    let 'datasize = (8 << UInt(size));
+    let 'regsize = if datasize == 64 then 64 else 32;
+    let acquire : bool = A == 0b1 & Rt != 0b11111;
+    let is_load : bool = Rt != 0b11111;
+    let release : bool = R == 0b1;
+    op : MemAtomicOp = undefined;
+    match opc {
+      0b000 => {
+          op = MemAtomicOp_ADD
+      },
+      0b001 => {
+          op = MemAtomicOp_BIC
+      },
+      0b010 => {
+          op = MemAtomicOp_EOR
+      },
+      0b011 => {
+          op = MemAtomicOp_ORR
+      },
+      0b100 => {
+          op = MemAtomicOp_SMAX
+      },
+      0b101 => {
+          op = MemAtomicOp_SMIN
+      },
+      0b110 => {
+          op = MemAtomicOp_UMAX
+      },
+      0b111 => {
+          op = MemAtomicOp_UMIN
+      }
+    };
+    let op = op;
+    let tagchecked : bool = n != 31;
+    execute_aarch64_instrs_memory_atomicops_ld(acquire, datasize, is_load, n, op, regsize, release, s, t, tagchecked)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitone, _, bitone, bitone, bitone, bitzero, bitzero, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitone, bitone, bitone, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 546) = {
+    SEE = 546;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let opc = Slice(__opcode, 12, 3);
+    let Rs = Slice(__opcode, 16, 5);
+    let R = Slice(__opcode, 22, 1);
+    let A = Slice(__opcode, 23, 1);
+    let size = Slice(__opcode, 30, 2);
+    decode_ldumin_aarch64_instrs_memory_atomicops_ld(Rt, Rn, opc, Rs, R, A, size)
+}
+
+val decode_lduminb_aarch64_instrs_memory_atomicops_ld : (bits(5), bits(5), bits(3), bits(5), bits(1), bits(1), bits(2)) -> unit
+
+function decode_lduminb_aarch64_instrs_memory_atomicops_ld (Rt, Rn, opc, Rs, R, A, size) = {
+    if not_bool(HaveAtomicExt()) then {
+        throw(Error_Undefined())
+    };
+    let 't = UInt(Rt);
+    let 'n = UInt(Rn);
+    let 's = UInt(Rs);
+    let 'datasize = (8 << UInt(size));
+    let 'regsize = if datasize == 64 then 64 else 32;
+    let acquire : bool = A == 0b1 & Rt != 0b11111;
+    let is_load : bool = Rt != 0b11111;
+    let release : bool = R == 0b1;
+    op : MemAtomicOp = undefined;
+    match opc {
+      0b000 => {
+          op = MemAtomicOp_ADD
+      },
+      0b001 => {
+          op = MemAtomicOp_BIC
+      },
+      0b010 => {
+          op = MemAtomicOp_EOR
+      },
+      0b011 => {
+          op = MemAtomicOp_ORR
+      },
+      0b100 => {
+          op = MemAtomicOp_SMAX
+      },
+      0b101 => {
+          op = MemAtomicOp_SMIN
+      },
+      0b110 => {
+          op = MemAtomicOp_UMAX
+      },
+      0b111 => {
+          op = MemAtomicOp_UMIN
+      }
+    };
+    let op = op;
+    let tagchecked : bool = n != 31;
+    execute_aarch64_instrs_memory_atomicops_ld(acquire, datasize, is_load, n, op, regsize, release, s, t, tagchecked)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitone, bitone, bitone, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 547) = {
+    SEE = 547;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let opc = Slice(__opcode, 12, 3);
+    let Rs = Slice(__opcode, 16, 5);
+    let R = Slice(__opcode, 22, 1);
+    let A = Slice(__opcode, 23, 1);
+    let size = Slice(__opcode, 30, 2);
+    decode_lduminb_aarch64_instrs_memory_atomicops_ld(Rt, Rn, opc, Rs, R, A, size)
+}
+
+val decode_lduminh_aarch64_instrs_memory_atomicops_ld : (bits(5), bits(5), bits(3), bits(5), bits(1), bits(1), bits(2)) -> unit
+
+function decode_lduminh_aarch64_instrs_memory_atomicops_ld (Rt, Rn, opc, Rs, R, A, size) = {
+    if not_bool(HaveAtomicExt()) then {
+        throw(Error_Undefined())
+    };
+    let 't = UInt(Rt);
+    let 'n = UInt(Rn);
+    let 's = UInt(Rs);
+    let 'datasize = (8 << UInt(size));
+    let 'regsize = if datasize == 64 then 64 else 32;
+    let acquire : bool = A == 0b1 & Rt != 0b11111;
+    let is_load : bool = Rt != 0b11111;
+    let release : bool = R == 0b1;
+    op : MemAtomicOp = undefined;
+    match opc {
+      0b000 => {
+          op = MemAtomicOp_ADD
+      },
+      0b001 => {
+          op = MemAtomicOp_BIC
+      },
+      0b010 => {
+          op = MemAtomicOp_EOR
+      },
+      0b011 => {
+          op = MemAtomicOp_ORR
+      },
+      0b100 => {
+          op = MemAtomicOp_SMAX
+      },
+      0b101 => {
+          op = MemAtomicOp_SMIN
+      },
+      0b110 => {
+          op = MemAtomicOp_UMAX
+      },
+      0b111 => {
+          op = MemAtomicOp_UMIN
+      }
+    };
+    let op = op;
+    let tagchecked : bool = n != 31;
+    execute_aarch64_instrs_memory_atomicops_ld(acquire, datasize, is_load, n, op, regsize, release, s, t, tagchecked)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitone, bitone, bitone, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 548) = {
+    SEE = 548;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let opc = Slice(__opcode, 12, 3);
+    let Rs = Slice(__opcode, 16, 5);
+    let R = Slice(__opcode, 22, 1);
+    let A = Slice(__opcode, 23, 1);
+    let size = Slice(__opcode, 30, 2);
+    decode_lduminh_aarch64_instrs_memory_atomicops_ld(Rt, Rn, opc, Rs, R, A, size)
+}
+
+val execute_aarch64_instrs_memory_ordered_rcpc : forall 'datasize 'n 'offset 'regsize 't ('tagchecked : Bool) ('wb_unknown : Bool) ('wback : Bool),
+  (0 <= 't & 't <= 31 & 'regsize in {32, 64} & 'offset in {0, 1, 2, 4, 8} & 0 <= 'n & 'n <= 31 & 'datasize in {8, 16, 32, 64}).
+  (int('datasize), int('n), int('offset), int('regsize), int('t), bool('tagchecked), bool('wb_unknown), bool('wback)) -> unit
+
+function execute_aarch64_instrs_memory_ordered_rcpc (datasize, n, offset, regsize, t, tagchecked, wb_unknown, wback) = {
+    address : bits(64) = undefined;
+    let 'dbytes = DIV(datasize, 8);
+    let accdesc : AccessDescriptor = CreateAccDescLDAcqPC(tagchecked);
+    if n == 31 then {
+        CheckSPAlignment();
+        address = SP_read()
+    } else {
+        address = X_read(n, 64)
+    };
+    let data : bits('datasize) = Mem_read(address, dbytes, accdesc);
+    assert(constraint('regsize >= 'datasize));
+    X_set(t, regsize) = ZeroExtend(data, regsize);
+    if wback then {
+        if wb_unknown then {
+            address = __UNKNOWN_bits(64)
+        } else {
+            address = address + offset
+        };
+        if n == 31 then {
+            SP_set() = address
+        } else {
+            X_set(n, 64) = address
+        }
+    };
+    if SPESampleInFlight then {
+        let ar : bits(1) = 0b1;
+        let excl : bits(1) = 0b0;
+        let at : bits(1) = 0b0;
+        let is_load : bool = true;
+        SPESampleExtendedLoadStore(ar, excl, at, is_load)
+    };
+    ()
+}
+
+val decode_ldapr_aarch64_instrs_memory_ordered_rcpc : (bits(5), bits(5), bits(5), bits(2)) -> unit
+
+function decode_ldapr_aarch64_instrs_memory_ordered_rcpc (Rt, Rn, Rs, size) = {
+    let wback : bool = false;
+    let 'offset = 0;
+    let wb_unknown : bool = false;
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let 's = UInt(Rs);
+    let 'elsize = (8 << UInt(size));
+    let 'regsize = if elsize == 64 then 64 else 32;
+    let 'datasize = elsize;
+    let tagchecked : bool = n != 31;
+    execute_aarch64_instrs_memory_ordered_rcpc(datasize, n, offset, regsize, t, tagchecked, wb_unknown, wback)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitone, _, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 551) = {
+    SEE = 551;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rs = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 30, 2);
+    if ((([__opcode[16]] != 0b1 | [__opcode[17]] != 0b1) | [__opcode[18]] != 0b1) | [__opcode[19]] != 0b1) | [__opcode[20]] != 0b1 then {
+        throw(Error_ConstrainedUnpredictable())
+    } else {
+        decode_ldapr_aarch64_instrs_memory_ordered_rcpc(Rt, Rn, Rs, size)
+    }
+}
+
+val decode_ldaprb_aarch64_instrs_memory_ordered_rcpc : (bits(5), bits(5), bits(5), bits(2)) -> unit
+
+function decode_ldaprb_aarch64_instrs_memory_ordered_rcpc (Rt, Rn, Rs, size) = {
+    let wback : bool = false;
+    let 'offset = 0;
+    let wb_unknown : bool = false;
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let 's = UInt(Rs);
+    let 'elsize = (8 << UInt(size));
+    let 'regsize = if elsize == 64 then 64 else 32;
+    let 'datasize = elsize;
+    let tagchecked : bool = n != 31;
+    execute_aarch64_instrs_memory_ordered_rcpc(datasize, n, offset, regsize, t, tagchecked, wb_unknown, wback)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 553) = {
+    SEE = 553;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rs = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 30, 2);
+    if ((([__opcode[16]] != 0b1 | [__opcode[17]] != 0b1) | [__opcode[18]] != 0b1) | [__opcode[19]] != 0b1) | [__opcode[20]] != 0b1 then {
+        throw(Error_ConstrainedUnpredictable())
+    } else {
+        decode_ldaprb_aarch64_instrs_memory_ordered_rcpc(Rt, Rn, Rs, size)
+    }
+}
+
+val decode_ldaprh_aarch64_instrs_memory_ordered_rcpc : (bits(5), bits(5), bits(5), bits(2)) -> unit
+
+function decode_ldaprh_aarch64_instrs_memory_ordered_rcpc (Rt, Rn, Rs, size) = {
+    let wback : bool = false;
+    let 'offset = 0;
+    let wb_unknown : bool = false;
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let 's = UInt(Rs);
+    let 'elsize = (8 << UInt(size));
+    let 'regsize = if elsize == 64 then 64 else 32;
+    let 'datasize = elsize;
+    let tagchecked : bool = n != 31;
+    execute_aarch64_instrs_memory_ordered_rcpc(datasize, n, offset, regsize, t, tagchecked, wb_unknown, wback)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 554) = {
+    SEE = 554;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rs = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 30, 2);
+    if ((([__opcode[16]] != 0b1 | [__opcode[17]] != 0b1) | [__opcode[18]] != 0b1) | [__opcode[19]] != 0b1) | [__opcode[20]] != 0b1 then {
+        throw(Error_ConstrainedUnpredictable())
+    } else {
+        decode_ldaprh_aarch64_instrs_memory_ordered_rcpc(Rt, Rn, Rs, size)
+    }
+}
+
+val execute_aarch64_instrs_memory_single_general_immediate_signed_offset_lda_stl : forall 'datasize ('is_signed : Bool) 'n ('postindex : Bool) 'regsize ('rt_unknown : Bool) 't ('tagchecked : Bool) ('wb_unknown : Bool) ('wback : Bool),
+  (0 <= 't & 't <= 31 & 'regsize in {32, 64} & 0 <= 'n & 'n <= 31 & 'datasize in {8, 16, 32, 64}).
+  (int('datasize), MemOp, int('n), bits(64), bool('postindex), int('regsize), bool('rt_unknown), bool('is_signed), int('t), bool('tagchecked), bool('wb_unknown), bool('wback)) -> unit
+
+function execute_aarch64_instrs_memory_single_general_immediate_signed_offset_lda_stl (datasize, memop, n, offset, postindex, regsize, rt_unknown, is_signed, t, tagchecked, wb_unknown, wback) = {
+    address : bits(64) = undefined;
+    data : bits('datasize) = undefined;
+    accdesc : AccessDescriptor = undefined;
+    if memop == MemOp_LOAD then {
+        accdesc = CreateAccDescLDAcqPC(tagchecked)
+    } else if memop == MemOp_STORE then {
+        accdesc = CreateAccDescAcqRel(memop, tagchecked)
+    } else ();
+    if n == 31 then {
+        if memop != MemOp_PREFETCH then {
+            CheckSPAlignment()
+        };
+        address = SP_read()
+    } else {
+        address = X_read(n, 64)
+    };
+    if not_bool(postindex) then {
+        address = address + offset
+    };
+    match memop {
+      MemOp_STORE => {
+          if rt_unknown then {
+              data = __UNKNOWN_bits(datasize)
+          } else {
+              data = X_read(t, datasize)
+          };
+          if not_bool(wback) then {
+              AArch64_SetLSInstructionSyndrome(DIV(datasize, 8), false, t, regsize == 64, false)
+          };
+          Mem_set(address, DIV(datasize, 8), accdesc) = data
+      },
+      MemOp_LOAD => {
+          if not_bool(wback) then {
+              AArch64_SetLSInstructionSyndrome(DIV(datasize, 8), is_signed, t, regsize == 64, false)
+          };
+          let data : bits('datasize) = Mem_read(address, DIV(datasize, 8), accdesc);
+          if is_signed then {
+              assert(constraint(('datasize > 0 & 'regsize >= 'datasize)));
+              X_set(t, regsize) = SignExtend(data, regsize)
+          } else {
+              assert(constraint(('datasize >= 0 & 'regsize >= 'datasize)));
+              X_set(t, regsize) = ZeroExtend(data, regsize)
+          }
+      },
+      MemOp_PREFETCH => {
+          Prefetch(address, t[4 .. 0])
+      }
+    };
+    if wback then {
+        if wb_unknown then {
+            address = __UNKNOWN_bits(64)
+        } else if postindex then {
+            address = address + offset
+        } else ();
+        if n == 31 then {
+            SP_set() = address
+        } else {
+            X_set(n, 64) = address
+        }
+    };
+    if SPESampleInFlight then {
+        SPESampleGeneralPurposeLoadStore()
+    };
+    ()
+}
+
+val decode_ldapur_gen_aarch64_instrs_memory_single_general_immediate_signed_offset_lda_stl : (bits(5), bits(5), bits(9), bits(2), bits(2)) -> unit
+
+function decode_ldapur_gen_aarch64_instrs_memory_single_general_immediate_signed_offset_lda_stl (Rt, Rn, imm9, opc, size) = {
+    wback : bool = false;
+    let postindex : bool = false;
+    let 'scale = UInt(size);
+    let offset : bits(64) = SignExtend(imm9, 64);
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    memop : MemOp = undefined;
+    is_signed : bool = undefined;
+    regsize : {32, 64} = 32;
+    if [opc[1]] == 0b0 then {
+        memop = if [opc[0]] == 0b1 then MemOp_LOAD else MemOp_STORE;
+        regsize = if size == 0b11 then 64 else 32;
+        is_signed = false
+    } else {
+        if size == 0b11 then {
+            throw(Error_Undefined())
+        } else {
+            memop = MemOp_LOAD;
+            if size == 0b10 & [opc[0]] == 0b1 then {
+                throw(Error_Undefined())
+            };
+            regsize = if [opc[0]] == 0b1 then 32 else 64;
+            is_signed = true
+        }
+    };
+    let 'regsize = regsize;
+    let 'datasize = (8 << scale);
+    let tagchecked : bool = memop != MemOp_PREFETCH & (wback | n != 31);
+    wb_unknown : bool = false;
+    rt_unknown : bool = false;
+    c : Constraint = undefined;
+    if ((memop == MemOp_LOAD & wback) & n == t) & n != 31 then {
+        c = ConstrainUnpredictable(Unpredictable_WBOVERLAPLD);
+        assert(c == Constraint_WBSUPPRESS | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_WBSUPPRESS => {
+              wback = false
+          },
+          Constraint_UNKNOWN => {
+              wb_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if ((memop == MemOp_STORE & wback) & n == t) & n != 31 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_WBOVERLAPST);
+        assert(c == Constraint_NONE | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_NONE => {
+              rt_unknown = false
+          },
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    execute_aarch64_instrs_memory_single_general_immediate_signed_offset_lda_stl(datasize, memop, n, offset, postindex, regsize, rt_unknown, is_signed, t, tagchecked, wb_unknown, wback)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitone, _, bitzero, bitone, bitone, bitzero, bitzero, bitone, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 555) = {
+    SEE = 555;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let imm9 = Slice(__opcode, 12, 9);
+    let opc = Slice(__opcode, 22, 2);
+    let size = Slice(__opcode, 30, 2);
+    decode_ldapur_gen_aarch64_instrs_memory_single_general_immediate_signed_offset_lda_stl(Rt, Rn, imm9, opc, size)
+}
+
+val decode_ldapurb_aarch64_instrs_memory_single_general_immediate_signed_offset_lda_stl : (bits(5), bits(5), bits(9), bits(2), bits(2)) -> unit
+
+function decode_ldapurb_aarch64_instrs_memory_single_general_immediate_signed_offset_lda_stl (Rt, Rn, imm9, opc, size) = {
+    wback : bool = false;
+    let postindex : bool = false;
+    let 'scale = UInt(size);
+    let offset : bits(64) = SignExtend(imm9, 64);
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    memop : MemOp = undefined;
+    is_signed : bool = undefined;
+    regsize : {32, 64} = 32;
+    if [opc[1]] == 0b0 then {
+        memop = if [opc[0]] == 0b1 then MemOp_LOAD else MemOp_STORE;
+        regsize = if size == 0b11 then 64 else 32;
+        is_signed = false
+    } else {
+        if size == 0b11 then {
+            throw(Error_Undefined())
+        } else {
+            memop = MemOp_LOAD;
+            if size == 0b10 & [opc[0]] == 0b1 then {
+                throw(Error_Undefined())
+            };
+            regsize = if [opc[0]] == 0b1 then 32 else 64;
+            is_signed = true
+        }
+    };
+    let 'regsize = regsize;
+    let 'datasize = (8 << scale);
+    let tagchecked : bool = memop != MemOp_PREFETCH & (wback | n != 31);
+    wb_unknown : bool = false;
+    rt_unknown : bool = false;
+    c : Constraint = undefined;
+    if ((memop == MemOp_LOAD & wback) & n == t) & n != 31 then {
+        c = ConstrainUnpredictable(Unpredictable_WBOVERLAPLD);
+        assert(c == Constraint_WBSUPPRESS | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_WBSUPPRESS => {
+              wback = false
+          },
+          Constraint_UNKNOWN => {
+              wb_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if ((memop == MemOp_STORE & wback) & n == t) & n != 31 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_WBOVERLAPST);
+        assert(c == Constraint_NONE | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_NONE => {
+              rt_unknown = false
+          },
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    execute_aarch64_instrs_memory_single_general_immediate_signed_offset_lda_stl(datasize, memop, n, offset, postindex, regsize, rt_unknown, is_signed, t, tagchecked, wb_unknown, wback)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitzero, bitone, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 556) = {
+    SEE = 556;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let imm9 = Slice(__opcode, 12, 9);
+    let opc = Slice(__opcode, 22, 2);
+    let size = Slice(__opcode, 30, 2);
+    decode_ldapurb_aarch64_instrs_memory_single_general_immediate_signed_offset_lda_stl(Rt, Rn, imm9, opc, size)
+}
+
+val decode_ldapurh_aarch64_instrs_memory_single_general_immediate_signed_offset_lda_stl : (bits(5), bits(5), bits(9), bits(2), bits(2)) -> unit
+
+function decode_ldapurh_aarch64_instrs_memory_single_general_immediate_signed_offset_lda_stl (Rt, Rn, imm9, opc, size) = {
+    wback : bool = false;
+    let postindex : bool = false;
+    let 'scale = UInt(size);
+    let offset : bits(64) = SignExtend(imm9, 64);
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    memop : MemOp = undefined;
+    is_signed : bool = undefined;
+    regsize : {32, 64} = 32;
+    if [opc[1]] == 0b0 then {
+        memop = if [opc[0]] == 0b1 then MemOp_LOAD else MemOp_STORE;
+        regsize = if size == 0b11 then 64 else 32;
+        is_signed = false
+    } else {
+        if size == 0b11 then {
+            throw(Error_Undefined())
+        } else {
+            memop = MemOp_LOAD;
+            if size == 0b10 & [opc[0]] == 0b1 then {
+                throw(Error_Undefined())
+            };
+            regsize = if [opc[0]] == 0b1 then 32 else 64;
+            is_signed = true
+        }
+    };
+    let 'regsize = regsize;
+    let 'datasize = (8 << scale);
+    let tagchecked : bool = memop != MemOp_PREFETCH & (wback | n != 31);
+    wb_unknown : bool = false;
+    rt_unknown : bool = false;
+    c : Constraint = undefined;
+    if ((memop == MemOp_LOAD & wback) & n == t) & n != 31 then {
+        c = ConstrainUnpredictable(Unpredictable_WBOVERLAPLD);
+        assert(c == Constraint_WBSUPPRESS | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_WBSUPPRESS => {
+              wback = false
+          },
+          Constraint_UNKNOWN => {
+              wb_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if ((memop == MemOp_STORE & wback) & n == t) & n != 31 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_WBOVERLAPST);
+        assert(c == Constraint_NONE | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_NONE => {
+              rt_unknown = false
+          },
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    execute_aarch64_instrs_memory_single_general_immediate_signed_offset_lda_stl(datasize, memop, n, offset, postindex, regsize, rt_unknown, is_signed, t, tagchecked, wb_unknown, wback)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitzero, bitzero, bitone, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 557) = {
+    SEE = 557;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let imm9 = Slice(__opcode, 12, 9);
+    let opc = Slice(__opcode, 22, 2);
+    let size = Slice(__opcode, 30, 2);
+    decode_ldapurh_aarch64_instrs_memory_single_general_immediate_signed_offset_lda_stl(Rt, Rn, imm9, opc, size)
+}
+
+val decode_ldapursb_aarch64_instrs_memory_single_general_immediate_signed_offset_lda_stl : (bits(5), bits(5), bits(9), bits(2), bits(2)) -> unit
+
+function decode_ldapursb_aarch64_instrs_memory_single_general_immediate_signed_offset_lda_stl (Rt, Rn, imm9, opc, size) = {
+    wback : bool = false;
+    let postindex : bool = false;
+    let 'scale = UInt(size);
+    let offset : bits(64) = SignExtend(imm9, 64);
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    memop : MemOp = undefined;
+    is_signed : bool = undefined;
+    regsize : {32, 64} = 32;
+    if [opc[1]] == 0b0 then {
+        memop = if [opc[0]] == 0b1 then MemOp_LOAD else MemOp_STORE;
+        regsize = if size == 0b11 then 64 else 32;
+        is_signed = false
+    } else {
+        if size == 0b11 then {
+            throw(Error_Undefined())
+        } else {
+            memop = MemOp_LOAD;
+            if size == 0b10 & [opc[0]] == 0b1 then {
+                throw(Error_Undefined())
+            };
+            regsize = if [opc[0]] == 0b1 then 32 else 64;
+            is_signed = true
+        }
+    };
+    let 'regsize = regsize;
+    let 'datasize = (8 << scale);
+    let tagchecked : bool = memop != MemOp_PREFETCH & (wback | n != 31);
+    wb_unknown : bool = false;
+    rt_unknown : bool = false;
+    c : Constraint = undefined;
+    if ((memop == MemOp_LOAD & wback) & n == t) & n != 31 then {
+        c = ConstrainUnpredictable(Unpredictable_WBOVERLAPLD);
+        assert(c == Constraint_WBSUPPRESS | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_WBSUPPRESS => {
+              wback = false
+          },
+          Constraint_UNKNOWN => {
+              wb_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if ((memop == MemOp_STORE & wback) & n == t) & n != 31 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_WBOVERLAPST);
+        assert(c == Constraint_NONE | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_NONE => {
+              rt_unknown = false
+          },
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    execute_aarch64_instrs_memory_single_general_immediate_signed_offset_lda_stl(datasize, memop, n, offset, postindex, regsize, rt_unknown, is_signed, t, tagchecked, wb_unknown, wback)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitzero, bitone, bitone, _, bitzero, _, _, _, _, _, _, _, _, _, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 558) = {
+    SEE = 558;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let imm9 = Slice(__opcode, 12, 9);
+    let opc = Slice(__opcode, 22, 2);
+    let size = Slice(__opcode, 30, 2);
+    decode_ldapursb_aarch64_instrs_memory_single_general_immediate_signed_offset_lda_stl(Rt, Rn, imm9, opc, size)
+}
+
+val decode_ldapursh_aarch64_instrs_memory_single_general_immediate_signed_offset_lda_stl : (bits(5), bits(5), bits(9), bits(2), bits(2)) -> unit
+
+function decode_ldapursh_aarch64_instrs_memory_single_general_immediate_signed_offset_lda_stl (Rt, Rn, imm9, opc, size) = {
+    wback : bool = false;
+    let postindex : bool = false;
+    let 'scale = UInt(size);
+    let offset : bits(64) = SignExtend(imm9, 64);
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    memop : MemOp = undefined;
+    is_signed : bool = undefined;
+    regsize : {32, 64} = 32;
+    if [opc[1]] == 0b0 then {
+        memop = if [opc[0]] == 0b1 then MemOp_LOAD else MemOp_STORE;
+        regsize = if size == 0b11 then 64 else 32;
+        is_signed = false
+    } else {
+        if size == 0b11 then {
+            throw(Error_Undefined())
+        } else {
+            memop = MemOp_LOAD;
+            if size == 0b10 & [opc[0]] == 0b1 then {
+                throw(Error_Undefined())
+            };
+            regsize = if [opc[0]] == 0b1 then 32 else 64;
+            is_signed = true
+        }
+    };
+    let 'regsize = regsize;
+    let 'datasize = (8 << scale);
+    let tagchecked : bool = memop != MemOp_PREFETCH & (wback | n != 31);
+    wb_unknown : bool = false;
+    rt_unknown : bool = false;
+    c : Constraint = undefined;
+    if ((memop == MemOp_LOAD & wback) & n == t) & n != 31 then {
+        c = ConstrainUnpredictable(Unpredictable_WBOVERLAPLD);
+        assert(c == Constraint_WBSUPPRESS | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_WBSUPPRESS => {
+              wback = false
+          },
+          Constraint_UNKNOWN => {
+              wb_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if ((memop == MemOp_STORE & wback) & n == t) & n != 31 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_WBOVERLAPST);
+        assert(c == Constraint_NONE | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_NONE => {
+              rt_unknown = false
+          },
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    execute_aarch64_instrs_memory_single_general_immediate_signed_offset_lda_stl(datasize, memop, n, offset, postindex, regsize, rt_unknown, is_signed, t, tagchecked, wb_unknown, wback)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitzero, bitzero, bitone, bitone, _, bitzero, _, _, _, _, _, _, _, _, _, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 559) = {
+    SEE = 559;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let imm9 = Slice(__opcode, 12, 9);
+    let opc = Slice(__opcode, 22, 2);
+    let size = Slice(__opcode, 30, 2);
+    decode_ldapursh_aarch64_instrs_memory_single_general_immediate_signed_offset_lda_stl(Rt, Rn, imm9, opc, size)
+}
+
+val decode_ldapursw_aarch64_instrs_memory_single_general_immediate_signed_offset_lda_stl : (bits(5), bits(5), bits(9), bits(2), bits(2)) -> unit
+
+function decode_ldapursw_aarch64_instrs_memory_single_general_immediate_signed_offset_lda_stl (Rt, Rn, imm9, opc, size) = {
+    wback : bool = false;
+    let postindex : bool = false;
+    let 'scale = UInt(size);
+    let offset : bits(64) = SignExtend(imm9, 64);
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    memop : MemOp = undefined;
+    is_signed : bool = undefined;
+    regsize : {32, 64} = 32;
+    if [opc[1]] == 0b0 then {
+        memop = if [opc[0]] == 0b1 then MemOp_LOAD else MemOp_STORE;
+        regsize = if size == 0b11 then 64 else 32;
+        is_signed = false
+    } else {
+        if size == 0b11 then {
+            throw(Error_Undefined())
+        } else {
+            memop = MemOp_LOAD;
+            if size == 0b10 & [opc[0]] == 0b1 then {
+                throw(Error_Undefined())
+            };
+            regsize = if [opc[0]] == 0b1 then 32 else 64;
+            is_signed = true
+        }
+    };
+    let 'regsize = regsize;
+    let 'datasize = (8 << scale);
+    let tagchecked : bool = memop != MemOp_PREFETCH & (wback | n != 31);
+    wb_unknown : bool = false;
+    rt_unknown : bool = false;
+    c : Constraint = undefined;
+    if ((memop == MemOp_LOAD & wback) & n == t) & n != 31 then {
+        c = ConstrainUnpredictable(Unpredictable_WBOVERLAPLD);
+        assert(c == Constraint_WBSUPPRESS | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_WBSUPPRESS => {
+              wback = false
+          },
+          Constraint_UNKNOWN => {
+              wb_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if ((memop == MemOp_STORE & wback) & n == t) & n != 31 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_WBOVERLAPST);
+        assert(c == Constraint_NONE | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_NONE => {
+              rt_unknown = false
+          },
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    execute_aarch64_instrs_memory_single_general_immediate_signed_offset_lda_stl(datasize, memop, n, offset, postindex, regsize, rt_unknown, is_signed, t, tagchecked, wb_unknown, wback)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitone, bitzero, bitzero, bitone, bitone, bitzero, bitzero, bitone, bitone, bitzero, bitzero, _, _, _, _, _, _, _, _, _, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 560) = {
+    SEE = 560;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let imm9 = Slice(__opcode, 12, 9);
+    let opc = Slice(__opcode, 22, 2);
+    let size = Slice(__opcode, 30, 2);
+    decode_ldapursw_aarch64_instrs_memory_single_general_immediate_signed_offset_lda_stl(Rt, Rn, imm9, opc, size)
+}
+
+val decode_stlur_gen_aarch64_instrs_memory_single_general_immediate_signed_offset_lda_stl : (bits(5), bits(5), bits(9), bits(2), bits(2)) -> unit
+
+function decode_stlur_gen_aarch64_instrs_memory_single_general_immediate_signed_offset_lda_stl (Rt, Rn, imm9, opc, size) = {
+    wback : bool = false;
+    let postindex : bool = false;
+    let 'scale = UInt(size);
+    let offset : bits(64) = SignExtend(imm9, 64);
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    memop : MemOp = undefined;
+    is_signed : bool = undefined;
+    regsize : {32, 64} = 32;
+    if [opc[1]] == 0b0 then {
+        memop = if [opc[0]] == 0b1 then MemOp_LOAD else MemOp_STORE;
+        regsize = if size == 0b11 then 64 else 32;
+        is_signed = false
+    } else {
+        if size == 0b11 then {
+            throw(Error_Undefined())
+        } else {
+            memop = MemOp_LOAD;
+            if size == 0b10 & [opc[0]] == 0b1 then {
+                throw(Error_Undefined())
+            };
+            regsize = if [opc[0]] == 0b1 then 32 else 64;
+            is_signed = true
+        }
+    };
+    let 'regsize = regsize;
+    let 'datasize = (8 << scale);
+    let tagchecked : bool = memop != MemOp_PREFETCH & (wback | n != 31);
+    wb_unknown : bool = false;
+    rt_unknown : bool = false;
+    c : Constraint = undefined;
+    if ((memop == MemOp_LOAD & wback) & n == t) & n != 31 then {
+        c = ConstrainUnpredictable(Unpredictable_WBOVERLAPLD);
+        assert(c == Constraint_WBSUPPRESS | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_WBSUPPRESS => {
+              wback = false
+          },
+          Constraint_UNKNOWN => {
+              wb_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if ((memop == MemOp_STORE & wback) & n == t) & n != 31 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_WBOVERLAPST);
+        assert(c == Constraint_NONE | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_NONE => {
+              rt_unknown = false
+          },
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    execute_aarch64_instrs_memory_single_general_immediate_signed_offset_lda_stl(datasize, memop, n, offset, postindex, regsize, rt_unknown, is_signed, t, tagchecked, wb_unknown, wback)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitone, _, bitzero, bitone, bitone, bitzero, bitzero, bitone, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 561) = {
+    SEE = 561;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let imm9 = Slice(__opcode, 12, 9);
+    let opc = Slice(__opcode, 22, 2);
+    let size = Slice(__opcode, 30, 2);
+    decode_stlur_gen_aarch64_instrs_memory_single_general_immediate_signed_offset_lda_stl(Rt, Rn, imm9, opc, size)
+}
+
+val decode_stlurb_aarch64_instrs_memory_single_general_immediate_signed_offset_lda_stl : (bits(5), bits(5), bits(9), bits(2), bits(2)) -> unit
+
+function decode_stlurb_aarch64_instrs_memory_single_general_immediate_signed_offset_lda_stl (Rt, Rn, imm9, opc, size) = {
+    wback : bool = false;
+    let postindex : bool = false;
+    let 'scale = UInt(size);
+    let offset : bits(64) = SignExtend(imm9, 64);
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    memop : MemOp = undefined;
+    is_signed : bool = undefined;
+    regsize : {32, 64} = 32;
+    if [opc[1]] == 0b0 then {
+        memop = if [opc[0]] == 0b1 then MemOp_LOAD else MemOp_STORE;
+        regsize = if size == 0b11 then 64 else 32;
+        is_signed = false
+    } else {
+        if size == 0b11 then {
+            throw(Error_Undefined())
+        } else {
+            memop = MemOp_LOAD;
+            if size == 0b10 & [opc[0]] == 0b1 then {
+                throw(Error_Undefined())
+            };
+            regsize = if [opc[0]] == 0b1 then 32 else 64;
+            is_signed = true
+        }
+    };
+    let 'regsize = regsize;
+    let 'datasize = (8 << scale);
+    let tagchecked : bool = memop != MemOp_PREFETCH & (wback | n != 31);
+    wb_unknown : bool = false;
+    rt_unknown : bool = false;
+    c : Constraint = undefined;
+    if ((memop == MemOp_LOAD & wback) & n == t) & n != 31 then {
+        c = ConstrainUnpredictable(Unpredictable_WBOVERLAPLD);
+        assert(c == Constraint_WBSUPPRESS | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_WBSUPPRESS => {
+              wback = false
+          },
+          Constraint_UNKNOWN => {
+              wb_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if ((memop == MemOp_STORE & wback) & n == t) & n != 31 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_WBOVERLAPST);
+        assert(c == Constraint_NONE | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_NONE => {
+              rt_unknown = false
+          },
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    execute_aarch64_instrs_memory_single_general_immediate_signed_offset_lda_stl(datasize, memop, n, offset, postindex, regsize, rt_unknown, is_signed, t, tagchecked, wb_unknown, wback)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitzero, bitone, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 562) = {
+    SEE = 562;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let imm9 = Slice(__opcode, 12, 9);
+    let opc = Slice(__opcode, 22, 2);
+    let size = Slice(__opcode, 30, 2);
+    decode_stlurb_aarch64_instrs_memory_single_general_immediate_signed_offset_lda_stl(Rt, Rn, imm9, opc, size)
+}
+
+val decode_stlurh_aarch64_instrs_memory_single_general_immediate_signed_offset_lda_stl : (bits(5), bits(5), bits(9), bits(2), bits(2)) -> unit
+
+function decode_stlurh_aarch64_instrs_memory_single_general_immediate_signed_offset_lda_stl (Rt, Rn, imm9, opc, size) = {
+    wback : bool = false;
+    let postindex : bool = false;
+    let 'scale = UInt(size);
+    let offset : bits(64) = SignExtend(imm9, 64);
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    memop : MemOp = undefined;
+    is_signed : bool = undefined;
+    regsize : {32, 64} = 32;
+    if [opc[1]] == 0b0 then {
+        memop = if [opc[0]] == 0b1 then MemOp_LOAD else MemOp_STORE;
+        regsize = if size == 0b11 then 64 else 32;
+        is_signed = false
+    } else {
+        if size == 0b11 then {
+            throw(Error_Undefined())
+        } else {
+            memop = MemOp_LOAD;
+            if size == 0b10 & [opc[0]] == 0b1 then {
+                throw(Error_Undefined())
+            };
+            regsize = if [opc[0]] == 0b1 then 32 else 64;
+            is_signed = true
+        }
+    };
+    let 'regsize = regsize;
+    let 'datasize = (8 << scale);
+    let tagchecked : bool = memop != MemOp_PREFETCH & (wback | n != 31);
+    wb_unknown : bool = false;
+    rt_unknown : bool = false;
+    c : Constraint = undefined;
+    if ((memop == MemOp_LOAD & wback) & n == t) & n != 31 then {
+        c = ConstrainUnpredictable(Unpredictable_WBOVERLAPLD);
+        assert(c == Constraint_WBSUPPRESS | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_WBSUPPRESS => {
+              wback = false
+          },
+          Constraint_UNKNOWN => {
+              wb_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if ((memop == MemOp_STORE & wback) & n == t) & n != 31 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_WBOVERLAPST);
+        assert(c == Constraint_NONE | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_NONE => {
+              rt_unknown = false
+          },
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    execute_aarch64_instrs_memory_single_general_immediate_signed_offset_lda_stl(datasize, memop, n, offset, postindex, regsize, rt_unknown, is_signed, t, tagchecked, wb_unknown, wback)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitzero, bitzero, bitone, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 563) = {
+    SEE = 563;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let imm9 = Slice(__opcode, 12, 9);
+    let opc = Slice(__opcode, 22, 2);
+    let size = Slice(__opcode, 30, 2);
+    decode_stlurh_aarch64_instrs_memory_single_general_immediate_signed_offset_lda_stl(Rt, Rn, imm9, opc, size)
+}
+
+val execute_aarch64_instrs_memory_ordered : forall 'datasize ('limitedordered : Bool) 'n 'offset 'regsize ('rt_unknown : Bool) 't ('tagchecked : Bool) ('wback : Bool),
+  (0 <= 't & 't <= 31 & 'regsize in {32, 64} & 0 <= 'n & 'n <= 31 & 'datasize in {8, 16, 32, 64}).
+  (int('datasize), bool('limitedordered), MemOp, int('n), int('offset), int('regsize), bool('rt_unknown), int('t), bool('tagchecked), bool('wback)) -> unit
+
+function execute_aarch64_instrs_memory_ordered (datasize, limitedordered, memop, n, offset, regsize, rt_unknown, t, tagchecked, wback) = {
+    address : bits(64) = undefined;
+    data : bits('datasize) = undefined;
+    let 'dbytes = DIV(datasize, 8);
+    accdesc : AccessDescriptor = undefined;
+    if limitedordered then {
+        accdesc = CreateAccDescLOR(memop, tagchecked)
+    } else {
+        accdesc = CreateAccDescAcqRel(memop, tagchecked)
+    };
+    if n == 31 then {
+        CheckSPAlignment();
+        address = SP_read()
+    } else {
+        address = X_read(n, 64)
+    };
+    match memop {
+      MemOp_STORE => {
+          let address : bits(64) = address + offset;
+          if rt_unknown then {
+              data = __UNKNOWN_bits(datasize)
+          } else {
+              data = X_read(t, datasize)
+          };
+          AArch64_SetLSInstructionSyndrome(dbytes, false, t, regsize == 64, true);
+          Mem_set(address, dbytes, accdesc) = data;
+          if wback then {
+              if n == 31 then {
+                  SP_set() = address
+              } else {
+                  X_set(n, 64) = address
+              }
+          };
+          ()
+      },
+      MemOp_LOAD => {
+          AArch64_SetLSInstructionSyndrome(dbytes, false, t, regsize == 64, true);
+          let data : bits('datasize) = Mem_read(address, dbytes, accdesc);
+          assert(constraint(('datasize >= 0 & 'regsize >= 'datasize)));
+          X_set(t, regsize) = ZeroExtend(data, regsize)
+      },
+      _ => ()
+    };
+    if SPESampleInFlight then {
+        let ar : bits(1) = 0b1;
+        let excl : bits(1) = 0b0;
+        let at : bits(1) = 0b0;
+        let is_load : bool = memop == MemOp_LOAD;
+        SPESampleExtendedLoadStore(ar, excl, at, is_load)
+    };
+    ()
+}
+
+val decode_ldar_aarch64_instrs_memory_ordered : (bits(5), bits(5), bits(5), bits(1), bits(5), bits(1), bits(2)) -> unit
+
+function decode_ldar_aarch64_instrs_memory_ordered (Rt, Rn, Rt2, o0, Rs, L, size) = {
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let 't2 = UInt(Rt2);
+    let 's = UInt(Rs);
+    let wback : bool = false;
+    let 'offset = 0;
+    let rt_unknown : bool = false;
+    let limitedordered : bool = o0 == 0b0;
+    let memop : MemOp = if L == 0b1 then MemOp_LOAD else MemOp_STORE;
+    let 'elsize = (8 << UInt(size));
+    let 'regsize = if elsize == 64 then 64 else 32;
+    let 'datasize = elsize;
+    let tagchecked : bool = n != 31;
+    execute_aarch64_instrs_memory_ordered(datasize, limitedordered, memop, n, offset, regsize, rt_unknown, t, tagchecked, wback)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitone, _, bitzero, bitzero, bitone, bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitone, bitone, bitone, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 566) = {
+    SEE = 566;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rt2 = Slice(__opcode, 10, 5);
+    let o0 = Slice(__opcode, 15, 1);
+    let Rs = Slice(__opcode, 16, 5);
+    let L = Slice(__opcode, 22, 1);
+    let size = Slice(__opcode, 30, 2);
+    if (((((((([__opcode[10]] != 0b1 | [__opcode[11]] != 0b1) | [__opcode[12]] != 0b1) | [__opcode[13]] != 0b1) | [__opcode[14]] != 0b1) | [__opcode[16]] != 0b1) | [__opcode[17]] != 0b1) | [__opcode[18]] != 0b1) | [__opcode[19]] != 0b1) | [__opcode[20]] != 0b1 then {
+        throw(Error_ConstrainedUnpredictable())
+    } else {
+        decode_ldar_aarch64_instrs_memory_ordered(Rt, Rn, Rt2, o0, Rs, L, size)
+    }
+}
+
+val decode_ldarb_aarch64_instrs_memory_ordered : (bits(5), bits(5), bits(5), bits(1), bits(5), bits(1), bits(2)) -> unit
+
+function decode_ldarb_aarch64_instrs_memory_ordered (Rt, Rn, Rt2, o0, Rs, L, size) = {
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let 't2 = UInt(Rt2);
+    let 's = UInt(Rs);
+    let wback : bool = false;
+    let 'offset = 0;
+    let rt_unknown : bool = false;
+    let limitedordered : bool = o0 == 0b0;
+    let memop : MemOp = if L == 0b1 then MemOp_LOAD else MemOp_STORE;
+    let 'elsize = (8 << UInt(size));
+    let 'regsize = if elsize == 64 then 64 else 32;
+    let 'datasize = elsize;
+    let tagchecked : bool = n != 31;
+    execute_aarch64_instrs_memory_ordered(datasize, limitedordered, memop, n, offset, regsize, rt_unknown, t, tagchecked, wback)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitzero, bitzero, bitzero, bitone, bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitone, bitone, bitone, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 567) = {
+    SEE = 567;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rt2 = Slice(__opcode, 10, 5);
+    let o0 = Slice(__opcode, 15, 1);
+    let Rs = Slice(__opcode, 16, 5);
+    let L = Slice(__opcode, 22, 1);
+    let size = Slice(__opcode, 30, 2);
+    if (((((((([__opcode[10]] != 0b1 | [__opcode[11]] != 0b1) | [__opcode[12]] != 0b1) | [__opcode[13]] != 0b1) | [__opcode[14]] != 0b1) | [__opcode[16]] != 0b1) | [__opcode[17]] != 0b1) | [__opcode[18]] != 0b1) | [__opcode[19]] != 0b1) | [__opcode[20]] != 0b1 then {
+        throw(Error_ConstrainedUnpredictable())
+    } else {
+        decode_ldarb_aarch64_instrs_memory_ordered(Rt, Rn, Rt2, o0, Rs, L, size)
+    }
+}
+
+val decode_ldarh_aarch64_instrs_memory_ordered : (bits(5), bits(5), bits(5), bits(1), bits(5), bits(1), bits(2)) -> unit
+
+function decode_ldarh_aarch64_instrs_memory_ordered (Rt, Rn, Rt2, o0, Rs, L, size) = {
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let 't2 = UInt(Rt2);
+    let 's = UInt(Rs);
+    let wback : bool = false;
+    let 'offset = 0;
+    let rt_unknown : bool = false;
+    let limitedordered : bool = o0 == 0b0;
+    let memop : MemOp = if L == 0b1 then MemOp_LOAD else MemOp_STORE;
+    let 'elsize = (8 << UInt(size));
+    let 'regsize = if elsize == 64 then 64 else 32;
+    let 'datasize = elsize;
+    let tagchecked : bool = n != 31;
+    execute_aarch64_instrs_memory_ordered(datasize, limitedordered, memop, n, offset, regsize, rt_unknown, t, tagchecked, wback)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitone, bitzero, bitzero, bitone, bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitone, bitone, bitone, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 568) = {
+    SEE = 568;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rt2 = Slice(__opcode, 10, 5);
+    let o0 = Slice(__opcode, 15, 1);
+    let Rs = Slice(__opcode, 16, 5);
+    let L = Slice(__opcode, 22, 1);
+    let size = Slice(__opcode, 30, 2);
+    if (((((((([__opcode[10]] != 0b1 | [__opcode[11]] != 0b1) | [__opcode[12]] != 0b1) | [__opcode[13]] != 0b1) | [__opcode[14]] != 0b1) | [__opcode[16]] != 0b1) | [__opcode[17]] != 0b1) | [__opcode[18]] != 0b1) | [__opcode[19]] != 0b1) | [__opcode[20]] != 0b1 then {
+        throw(Error_ConstrainedUnpredictable())
+    } else {
+        decode_ldarh_aarch64_instrs_memory_ordered(Rt, Rn, Rt2, o0, Rs, L, size)
+    }
+}
+
+val decode_ldlar_aarch64_instrs_memory_ordered : (bits(5), bits(5), bits(5), bits(1), bits(5), bits(1), bits(2)) -> unit
+
+function decode_ldlar_aarch64_instrs_memory_ordered (Rt, Rn, Rt2, o0, Rs, L, size) = {
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let 't2 = UInt(Rt2);
+    let 's = UInt(Rs);
+    let wback : bool = false;
+    let 'offset = 0;
+    let rt_unknown : bool = false;
+    let limitedordered : bool = o0 == 0b0;
+    let memop : MemOp = if L == 0b1 then MemOp_LOAD else MemOp_STORE;
+    let 'elsize = (8 << UInt(size));
+    let 'regsize = if elsize == 64 then 64 else 32;
+    let 'datasize = elsize;
+    let tagchecked : bool = n != 31;
+    execute_aarch64_instrs_memory_ordered(datasize, limitedordered, memop, n, offset, regsize, rt_unknown, t, tagchecked, wback)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitone, _, bitzero, bitzero, bitone, bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitone, bitone, bitone, bitone, bitone, bitzero, bitone, bitone, bitone, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 569) = {
+    SEE = 569;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rt2 = Slice(__opcode, 10, 5);
+    let o0 = Slice(__opcode, 15, 1);
+    let Rs = Slice(__opcode, 16, 5);
+    let L = Slice(__opcode, 22, 1);
+    let size = Slice(__opcode, 30, 2);
+    if (((((((([__opcode[10]] != 0b1 | [__opcode[11]] != 0b1) | [__opcode[12]] != 0b1) | [__opcode[13]] != 0b1) | [__opcode[14]] != 0b1) | [__opcode[16]] != 0b1) | [__opcode[17]] != 0b1) | [__opcode[18]] != 0b1) | [__opcode[19]] != 0b1) | [__opcode[20]] != 0b1 then {
+        throw(Error_ConstrainedUnpredictable())
+    } else {
+        decode_ldlar_aarch64_instrs_memory_ordered(Rt, Rn, Rt2, o0, Rs, L, size)
+    }
+}
+
+val decode_ldlarb_aarch64_instrs_memory_ordered : (bits(5), bits(5), bits(5), bits(1), bits(5), bits(1), bits(2)) -> unit
+
+function decode_ldlarb_aarch64_instrs_memory_ordered (Rt, Rn, Rt2, o0, Rs, L, size) = {
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let 't2 = UInt(Rt2);
+    let 's = UInt(Rs);
+    let wback : bool = false;
+    let 'offset = 0;
+    let rt_unknown : bool = false;
+    let limitedordered : bool = o0 == 0b0;
+    let memop : MemOp = if L == 0b1 then MemOp_LOAD else MemOp_STORE;
+    let 'elsize = (8 << UInt(size));
+    let 'regsize = if elsize == 64 then 64 else 32;
+    let 'datasize = elsize;
+    let tagchecked : bool = n != 31;
+    execute_aarch64_instrs_memory_ordered(datasize, limitedordered, memop, n, offset, regsize, rt_unknown, t, tagchecked, wback)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitzero, bitzero, bitzero, bitone, bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitone, bitone, bitone, bitone, bitone, bitzero, bitone, bitone, bitone, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 570) = {
+    SEE = 570;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rt2 = Slice(__opcode, 10, 5);
+    let o0 = Slice(__opcode, 15, 1);
+    let Rs = Slice(__opcode, 16, 5);
+    let L = Slice(__opcode, 22, 1);
+    let size = Slice(__opcode, 30, 2);
+    if (((((((([__opcode[10]] != 0b1 | [__opcode[11]] != 0b1) | [__opcode[12]] != 0b1) | [__opcode[13]] != 0b1) | [__opcode[14]] != 0b1) | [__opcode[16]] != 0b1) | [__opcode[17]] != 0b1) | [__opcode[18]] != 0b1) | [__opcode[19]] != 0b1) | [__opcode[20]] != 0b1 then {
+        throw(Error_ConstrainedUnpredictable())
+    } else {
+        decode_ldlarb_aarch64_instrs_memory_ordered(Rt, Rn, Rt2, o0, Rs, L, size)
+    }
+}
+
+val decode_ldlarh_aarch64_instrs_memory_ordered : (bits(5), bits(5), bits(5), bits(1), bits(5), bits(1), bits(2)) -> unit
+
+function decode_ldlarh_aarch64_instrs_memory_ordered (Rt, Rn, Rt2, o0, Rs, L, size) = {
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let 't2 = UInt(Rt2);
+    let 's = UInt(Rs);
+    let wback : bool = false;
+    let 'offset = 0;
+    let rt_unknown : bool = false;
+    let limitedordered : bool = o0 == 0b0;
+    let memop : MemOp = if L == 0b1 then MemOp_LOAD else MemOp_STORE;
+    let 'elsize = (8 << UInt(size));
+    let 'regsize = if elsize == 64 then 64 else 32;
+    let 'datasize = elsize;
+    let tagchecked : bool = n != 31;
+    execute_aarch64_instrs_memory_ordered(datasize, limitedordered, memop, n, offset, regsize, rt_unknown, t, tagchecked, wback)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitone, bitzero, bitzero, bitone, bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitone, bitone, bitone, bitone, bitone, bitzero, bitone, bitone, bitone, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 571) = {
+    SEE = 571;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rt2 = Slice(__opcode, 10, 5);
+    let o0 = Slice(__opcode, 15, 1);
+    let Rs = Slice(__opcode, 16, 5);
+    let L = Slice(__opcode, 22, 1);
+    let size = Slice(__opcode, 30, 2);
+    if (((((((([__opcode[10]] != 0b1 | [__opcode[11]] != 0b1) | [__opcode[12]] != 0b1) | [__opcode[13]] != 0b1) | [__opcode[14]] != 0b1) | [__opcode[16]] != 0b1) | [__opcode[17]] != 0b1) | [__opcode[18]] != 0b1) | [__opcode[19]] != 0b1) | [__opcode[20]] != 0b1 then {
+        throw(Error_ConstrainedUnpredictable())
+    } else {
+        decode_ldlarh_aarch64_instrs_memory_ordered(Rt, Rn, Rt2, o0, Rs, L, size)
+    }
+}
+
+val decode_stllr_aarch64_instrs_memory_ordered : (bits(5), bits(5), bits(5), bits(1), bits(5), bits(1), bits(2)) -> unit
+
+function decode_stllr_aarch64_instrs_memory_ordered (Rt, Rn, Rt2, o0, Rs, L, size) = {
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let 't2 = UInt(Rt2);
+    let 's = UInt(Rs);
+    let wback : bool = false;
+    let 'offset = 0;
+    let rt_unknown : bool = false;
+    let limitedordered : bool = o0 == 0b0;
+    let memop : MemOp = if L == 0b1 then MemOp_LOAD else MemOp_STORE;
+    let 'elsize = (8 << UInt(size));
+    let 'regsize = if elsize == 64 then 64 else 32;
+    let 'datasize = elsize;
+    let tagchecked : bool = n != 31;
+    execute_aarch64_instrs_memory_ordered(datasize, limitedordered, memop, n, offset, regsize, rt_unknown, t, tagchecked, wback)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitone, _, bitzero, bitzero, bitone, bitzero, bitzero, bitzero, bitone, bitzero, bitzero, bitone, bitone, bitone, bitone, bitone, bitzero, bitone, bitone, bitone, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 572) = {
+    SEE = 572;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rt2 = Slice(__opcode, 10, 5);
+    let o0 = Slice(__opcode, 15, 1);
+    let Rs = Slice(__opcode, 16, 5);
+    let L = Slice(__opcode, 22, 1);
+    let size = Slice(__opcode, 30, 2);
+    if (((((((([__opcode[10]] != 0b1 | [__opcode[11]] != 0b1) | [__opcode[12]] != 0b1) | [__opcode[13]] != 0b1) | [__opcode[14]] != 0b1) | [__opcode[16]] != 0b1) | [__opcode[17]] != 0b1) | [__opcode[18]] != 0b1) | [__opcode[19]] != 0b1) | [__opcode[20]] != 0b1 then {
+        throw(Error_ConstrainedUnpredictable())
+    } else {
+        decode_stllr_aarch64_instrs_memory_ordered(Rt, Rn, Rt2, o0, Rs, L, size)
+    }
+}
+
+val decode_stllrb_aarch64_instrs_memory_ordered : (bits(5), bits(5), bits(5), bits(1), bits(5), bits(1), bits(2)) -> unit
+
+function decode_stllrb_aarch64_instrs_memory_ordered (Rt, Rn, Rt2, o0, Rs, L, size) = {
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let 't2 = UInt(Rt2);
+    let 's = UInt(Rs);
+    let wback : bool = false;
+    let 'offset = 0;
+    let rt_unknown : bool = false;
+    let limitedordered : bool = o0 == 0b0;
+    let memop : MemOp = if L == 0b1 then MemOp_LOAD else MemOp_STORE;
+    let 'elsize = (8 << UInt(size));
+    let 'regsize = if elsize == 64 then 64 else 32;
+    let 'datasize = elsize;
+    let tagchecked : bool = n != 31;
+    execute_aarch64_instrs_memory_ordered(datasize, limitedordered, memop, n, offset, regsize, rt_unknown, t, tagchecked, wback)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitzero, bitzero, bitzero, bitone, bitzero, bitzero, bitzero, bitone, bitzero, bitzero, bitone, bitone, bitone, bitone, bitone, bitzero, bitone, bitone, bitone, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 573) = {
+    SEE = 573;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rt2 = Slice(__opcode, 10, 5);
+    let o0 = Slice(__opcode, 15, 1);
+    let Rs = Slice(__opcode, 16, 5);
+    let L = Slice(__opcode, 22, 1);
+    let size = Slice(__opcode, 30, 2);
+    if (((((((([__opcode[10]] != 0b1 | [__opcode[11]] != 0b1) | [__opcode[12]] != 0b1) | [__opcode[13]] != 0b1) | [__opcode[14]] != 0b1) | [__opcode[16]] != 0b1) | [__opcode[17]] != 0b1) | [__opcode[18]] != 0b1) | [__opcode[19]] != 0b1) | [__opcode[20]] != 0b1 then {
+        throw(Error_ConstrainedUnpredictable())
+    } else {
+        decode_stllrb_aarch64_instrs_memory_ordered(Rt, Rn, Rt2, o0, Rs, L, size)
+    }
+}
+
+val decode_stllrh_aarch64_instrs_memory_ordered : (bits(5), bits(5), bits(5), bits(1), bits(5), bits(1), bits(2)) -> unit
+
+function decode_stllrh_aarch64_instrs_memory_ordered (Rt, Rn, Rt2, o0, Rs, L, size) = {
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let 't2 = UInt(Rt2);
+    let 's = UInt(Rs);
+    let wback : bool = false;
+    let 'offset = 0;
+    let rt_unknown : bool = false;
+    let limitedordered : bool = o0 == 0b0;
+    let memop : MemOp = if L == 0b1 then MemOp_LOAD else MemOp_STORE;
+    let 'elsize = (8 << UInt(size));
+    let 'regsize = if elsize == 64 then 64 else 32;
+    let 'datasize = elsize;
+    let tagchecked : bool = n != 31;
+    execute_aarch64_instrs_memory_ordered(datasize, limitedordered, memop, n, offset, regsize, rt_unknown, t, tagchecked, wback)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitone, bitzero, bitzero, bitone, bitzero, bitzero, bitzero, bitone, bitzero, bitzero, bitone, bitone, bitone, bitone, bitone, bitzero, bitone, bitone, bitone, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 574) = {
+    SEE = 574;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rt2 = Slice(__opcode, 10, 5);
+    let o0 = Slice(__opcode, 15, 1);
+    let Rs = Slice(__opcode, 16, 5);
+    let L = Slice(__opcode, 22, 1);
+    let size = Slice(__opcode, 30, 2);
+    if (((((((([__opcode[10]] != 0b1 | [__opcode[11]] != 0b1) | [__opcode[12]] != 0b1) | [__opcode[13]] != 0b1) | [__opcode[14]] != 0b1) | [__opcode[16]] != 0b1) | [__opcode[17]] != 0b1) | [__opcode[18]] != 0b1) | [__opcode[19]] != 0b1) | [__opcode[20]] != 0b1 then {
+        throw(Error_ConstrainedUnpredictable())
+    } else {
+        decode_stllrh_aarch64_instrs_memory_ordered(Rt, Rn, Rt2, o0, Rs, L, size)
+    }
+}
+
+val decode_stlr_aarch64_instrs_memory_ordered : (bits(5), bits(5), bits(5), bits(1), bits(5), bits(1), bits(2)) -> unit
+
+function decode_stlr_aarch64_instrs_memory_ordered (Rt, Rn, Rt2, o0, Rs, L, size) = {
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let 't2 = UInt(Rt2);
+    let 's = UInt(Rs);
+    let wback : bool = false;
+    let 'offset = 0;
+    let rt_unknown : bool = false;
+    let limitedordered : bool = o0 == 0b0;
+    let memop : MemOp = if L == 0b1 then MemOp_LOAD else MemOp_STORE;
+    let 'elsize = (8 << UInt(size));
+    let 'regsize = if elsize == 64 then 64 else 32;
+    let 'datasize = elsize;
+    let tagchecked : bool = n != 31;
+    execute_aarch64_instrs_memory_ordered(datasize, limitedordered, memop, n, offset, regsize, rt_unknown, t, tagchecked, wback)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitone, _, bitzero, bitzero, bitone, bitzero, bitzero, bitzero, bitone, bitzero, bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitone, bitone, bitone, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 575) = {
+    SEE = 575;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rt2 = Slice(__opcode, 10, 5);
+    let o0 = Slice(__opcode, 15, 1);
+    let Rs = Slice(__opcode, 16, 5);
+    let L = Slice(__opcode, 22, 1);
+    let size = Slice(__opcode, 30, 2);
+    if (((((((([__opcode[10]] != 0b1 | [__opcode[11]] != 0b1) | [__opcode[12]] != 0b1) | [__opcode[13]] != 0b1) | [__opcode[14]] != 0b1) | [__opcode[16]] != 0b1) | [__opcode[17]] != 0b1) | [__opcode[18]] != 0b1) | [__opcode[19]] != 0b1) | [__opcode[20]] != 0b1 then {
+        throw(Error_ConstrainedUnpredictable())
+    } else {
+        decode_stlr_aarch64_instrs_memory_ordered(Rt, Rn, Rt2, o0, Rs, L, size)
+    }
+}
+
+val decode_stlrb_aarch64_instrs_memory_ordered : (bits(5), bits(5), bits(5), bits(1), bits(5), bits(1), bits(2)) -> unit
+
+function decode_stlrb_aarch64_instrs_memory_ordered (Rt, Rn, Rt2, o0, Rs, L, size) = {
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let 't2 = UInt(Rt2);
+    let 's = UInt(Rs);
+    let wback : bool = false;
+    let 'offset = 0;
+    let rt_unknown : bool = false;
+    let limitedordered : bool = o0 == 0b0;
+    let memop : MemOp = if L == 0b1 then MemOp_LOAD else MemOp_STORE;
+    let 'elsize = (8 << UInt(size));
+    let 'regsize = if elsize == 64 then 64 else 32;
+    let 'datasize = elsize;
+    let tagchecked : bool = n != 31;
+    execute_aarch64_instrs_memory_ordered(datasize, limitedordered, memop, n, offset, regsize, rt_unknown, t, tagchecked, wback)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitzero, bitzero, bitzero, bitone, bitzero, bitzero, bitzero, bitone, bitzero, bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitone, bitone, bitone, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 577) = {
+    SEE = 577;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rt2 = Slice(__opcode, 10, 5);
+    let o0 = Slice(__opcode, 15, 1);
+    let Rs = Slice(__opcode, 16, 5);
+    let L = Slice(__opcode, 22, 1);
+    let size = Slice(__opcode, 30, 2);
+    if (((((((([__opcode[10]] != 0b1 | [__opcode[11]] != 0b1) | [__opcode[12]] != 0b1) | [__opcode[13]] != 0b1) | [__opcode[14]] != 0b1) | [__opcode[16]] != 0b1) | [__opcode[17]] != 0b1) | [__opcode[18]] != 0b1) | [__opcode[19]] != 0b1) | [__opcode[20]] != 0b1 then {
+        throw(Error_ConstrainedUnpredictable())
+    } else {
+        decode_stlrb_aarch64_instrs_memory_ordered(Rt, Rn, Rt2, o0, Rs, L, size)
+    }
+}
+
+val decode_stlrh_aarch64_instrs_memory_ordered : (bits(5), bits(5), bits(5), bits(1), bits(5), bits(1), bits(2)) -> unit
+
+function decode_stlrh_aarch64_instrs_memory_ordered (Rt, Rn, Rt2, o0, Rs, L, size) = {
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let 't2 = UInt(Rt2);
+    let 's = UInt(Rs);
+    let wback : bool = false;
+    let 'offset = 0;
+    let rt_unknown : bool = false;
+    let limitedordered : bool = o0 == 0b0;
+    let memop : MemOp = if L == 0b1 then MemOp_LOAD else MemOp_STORE;
+    let 'elsize = (8 << UInt(size));
+    let 'regsize = if elsize == 64 then 64 else 32;
+    let 'datasize = elsize;
+    let tagchecked : bool = n != 31;
+    execute_aarch64_instrs_memory_ordered(datasize, limitedordered, memop, n, offset, regsize, rt_unknown, t, tagchecked, wback)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitone, bitzero, bitzero, bitone, bitzero, bitzero, bitzero, bitone, bitzero, bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitone, bitone, bitone, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 578) = {
+    SEE = 578;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rt2 = Slice(__opcode, 10, 5);
+    let o0 = Slice(__opcode, 15, 1);
+    let Rs = Slice(__opcode, 16, 5);
+    let L = Slice(__opcode, 22, 1);
+    let size = Slice(__opcode, 30, 2);
+    if (((((((([__opcode[10]] != 0b1 | [__opcode[11]] != 0b1) | [__opcode[12]] != 0b1) | [__opcode[13]] != 0b1) | [__opcode[14]] != 0b1) | [__opcode[16]] != 0b1) | [__opcode[17]] != 0b1) | [__opcode[18]] != 0b1) | [__opcode[19]] != 0b1) | [__opcode[20]] != 0b1 then {
+        throw(Error_ConstrainedUnpredictable())
+    } else {
+        decode_stlrh_aarch64_instrs_memory_ordered(Rt, Rn, Rt2, o0, Rs, L, size)
+    }
+}
+
+val execute_aarch64_instrs_memory_exclusive_pair : forall ('acqrel : Bool) 'datasize 'elsize 'n ('pair : Bool) 'regsize ('rn_unknown : Bool) ('rt_unknown : Bool) 's 't 't2 ('tagchecked : Bool),
+  (0 <= 't2 & 't2 <= 31 & 0 <= 't & 't <= 31 & 0 <= 's & 's <= 31 & 'regsize in {32, 64} & 0 <= 'n & 'n <= 31 & 'elsize in {32, 64} & 'datasize in {32, 64, 128}).
+  (bool('acqrel), int('datasize), int('elsize), MemOp, int('n), bool('pair), int('regsize), bool('rn_unknown), bool('rt_unknown), int('s), int('t), int('t2), bool('tagchecked)) -> unit
+
+function execute_aarch64_instrs_memory_exclusive_pair (acqrel, datasize, elsize, memop, n, pair, regsize, rn_unknown, rt_unknown, s, t, t2, tagchecked) = {
+    address : bits(64) = undefined;
+    data : bits('datasize) = undefined;
+    let 'dbytes = DIV(datasize, 8);
+    let accdesc : AccessDescriptor = CreateAccDescExLDST(memop, acqrel, tagchecked);
+    if n == 31 then {
+        CheckSPAlignment();
+        address = SP_read()
+    } else if rn_unknown then {
+        address = __UNKNOWN_bits(64)
+    } else {
+        address = X_read(n, 64)
+    };
+    match memop {
+      MemOp_STORE => {
+          if rt_unknown then {
+              data = __UNKNOWN_bits(datasize)
+          } else if pair then {
+              let el1 : bits(div('datasize, 2)) = X_read(t, DIV(datasize, 2));
+              let el2 : bits(div('datasize, 2)) = X_read(t2, DIV(datasize, 2));
+              data = if BigEndian(accdesc.acctype) then el1 @ el2 else el2 @ el1
+          } else {
+              assert(constraint('datasize in {8, 16, 32, 64}));
+              data = X_read(t, datasize)
+          };
+          status : bits(1) = 0b1;
+          if AArch64_ExclusiveMonitorsPass(address, dbytes) then {
+              Mem_set(address, dbytes, accdesc) = data;
+              status = ExclusiveMonitorsStatus()
+          } else if SPESampleInFlight then {
+              SPESetDataVirtualAddress(address)
+          } else ();
+          X_set(s, 32) = ZeroExtend(status, 32)
+      },
+      MemOp_LOAD => {
+          AArch64_SetExclusiveMonitors(address, dbytes);
+          if pair then {
+              if rt_unknown then {
+                  assert(constraint('datasize in {32, 64}));
+                  X_set(t, datasize) = __UNKNOWN_bits(datasize)
+              } else if elsize == 32 then {
+                  let data : bits('datasize) = Mem_read(address, dbytes, accdesc);
+                  if BigEndian(accdesc.acctype) then {
+                      assert(constraint((0 <= 'elsize & 'elsize <= 'datasize - 1 & 'datasize - 1 < 'datasize)));
+                      assert(constraint(('datasize - 'elsize == 32 | 'datasize - 'elsize == 64)));
+                      X_set(t, datasize - elsize) = data[datasize - 1 .. elsize];
+                      X_set(t2, elsize) = data[elsize - 1 .. 0]
+                  } else {
+                      X_set(t, elsize) = data[elsize - 1 .. 0];
+                      assert(constraint((0 <= 'elsize & 'elsize <= 'datasize - 1 & 'datasize - 1 < 'datasize)));
+                      assert(constraint(('datasize - 'elsize == 32 | 'datasize - 'elsize == 64)));
+                      X_set(t2, datasize - elsize) = data[datasize - 1 .. elsize]
+                  }
+              } else {
+                  if not_bool(IsAligned__1(address, dbytes)) then {
+                      AArch64_Abort(address, AlignmentFault(accdesc))
+                  };
+                  X_set(t, 64) = Mem_read(address + 0, 8, accdesc);
+                  X_set(t2, 64) = Mem_read(address + 8, 8, accdesc)
+              }
+          } else {
+              let data : bits('datasize) = Mem_read(address, dbytes, accdesc);
+              assert(constraint(('datasize >= 0 & 'regsize >= 'datasize)));
+              X_set(t, regsize) = ZeroExtend(data, regsize)
+          }
+      },
+      _ => ()
+    };
+    if SPESampleInFlight then {
+        let ar : bits(1) = if acqrel then 0b1 else 0b0;
+        let excl : bits(1) = 0b1;
+        let at : bits(1) = 0b0;
+        let is_load : bool = memop == MemOp_LOAD;
+        SPESampleExtendedLoadStore(ar, excl, at, is_load)
+    };
+    ()
+}
+
+val decode_ldaxp_aarch64_instrs_memory_exclusive_pair : (bits(5), bits(5), bits(5), bits(1), bits(5), bits(1), bits(1)) -> unit
+
+function decode_ldaxp_aarch64_instrs_memory_exclusive_pair (Rt, Rn, Rt2, o0, Rs, L, sz) = {
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let 't2 = UInt(Rt2);
+    let 's = UInt(Rs);
+    let acqrel : bool = o0 == 0b1;
+    let pair : bool = true;
+    let memop : MemOp = if L == 0b1 then MemOp_LOAD else MemOp_STORE;
+    let 'elsize = (32 << UInt(sz));
+    let 'regsize = if elsize == 64 then 64 else 32;
+    let 'datasize = if pair then elsize * 2 else elsize;
+    let tagchecked : bool = n != 31;
+    rt_unknown : bool = false;
+    rn_unknown : bool = false;
+    if (memop == MemOp_LOAD & pair) & t == t2 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_LDPOVERLAP);
+        assert(c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if memop == MemOp_STORE then {
+        if s == t | pair & s == t2 then {
+            let c : Constraint = ConstrainUnpredictable(Unpredictable_DATAOVERLAP);
+            assert(c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+            match c {
+              Constraint_UNKNOWN => {
+                  rt_unknown = true
+              },
+              Constraint_UNDEF => {
+                  throw(Error_Undefined())
+              },
+              Constraint_NOP => {
+                  EndOfInstruction()
+              },
+              _ => ()
+            }
+        };
+        if s == n & n != 31 then {
+            let c : Constraint = ConstrainUnpredictable(Unpredictable_BASEOVERLAP);
+            assert(c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+            match c {
+              Constraint_UNKNOWN => {
+                  rn_unknown = true
+              },
+              Constraint_UNDEF => {
+                  throw(Error_Undefined())
+              },
+              Constraint_NOP => {
+                  EndOfInstruction()
+              },
+              _ => ()
+            }
+        };
+        ()
+    };
+    execute_aarch64_instrs_memory_exclusive_pair(acqrel, datasize, elsize, memop, n, pair, regsize, rn_unknown, rt_unknown, s, t, t2, tagchecked)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitone, _, bitzero, bitzero, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitone, bitone, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 579) = {
+    SEE = 579;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rt2 = Slice(__opcode, 10, 5);
+    let o0 = Slice(__opcode, 15, 1);
+    let Rs = Slice(__opcode, 16, 5);
+    let L = Slice(__opcode, 22, 1);
+    let sz = Slice(__opcode, 30, 1);
+    if ((([__opcode[16]] != 0b1 | [__opcode[17]] != 0b1) | [__opcode[18]] != 0b1) | [__opcode[19]] != 0b1) | [__opcode[20]] != 0b1 then {
+        throw(Error_ConstrainedUnpredictable())
+    } else {
+        decode_ldaxp_aarch64_instrs_memory_exclusive_pair(Rt, Rn, Rt2, o0, Rs, L, sz)
+    }
+}
+
+val decode_ldxp_aarch64_instrs_memory_exclusive_pair : (bits(5), bits(5), bits(5), bits(1), bits(5), bits(1), bits(1)) -> unit
+
+function decode_ldxp_aarch64_instrs_memory_exclusive_pair (Rt, Rn, Rt2, o0, Rs, L, sz) = {
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let 't2 = UInt(Rt2);
+    let 's = UInt(Rs);
+    let acqrel : bool = o0 == 0b1;
+    let pair : bool = true;
+    let memop : MemOp = if L == 0b1 then MemOp_LOAD else MemOp_STORE;
+    let 'elsize = (32 << UInt(sz));
+    let 'regsize = if elsize == 64 then 64 else 32;
+    let 'datasize = if pair then elsize * 2 else elsize;
+    let tagchecked : bool = n != 31;
+    rt_unknown : bool = false;
+    rn_unknown : bool = false;
+    if (memop == MemOp_LOAD & pair) & t == t2 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_LDPOVERLAP);
+        assert(c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if memop == MemOp_STORE then {
+        if s == t | pair & s == t2 then {
+            let c : Constraint = ConstrainUnpredictable(Unpredictable_DATAOVERLAP);
+            assert(c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+            match c {
+              Constraint_UNKNOWN => {
+                  rt_unknown = true
+              },
+              Constraint_UNDEF => {
+                  throw(Error_Undefined())
+              },
+              Constraint_NOP => {
+                  EndOfInstruction()
+              },
+              _ => ()
+            }
+        };
+        if s == n & n != 31 then {
+            let c : Constraint = ConstrainUnpredictable(Unpredictable_BASEOVERLAP);
+            assert(c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+            match c {
+              Constraint_UNKNOWN => {
+                  rn_unknown = true
+              },
+              Constraint_UNDEF => {
+                  throw(Error_Undefined())
+              },
+              Constraint_NOP => {
+                  EndOfInstruction()
+              },
+              _ => ()
+            }
+        };
+        ()
+    };
+    execute_aarch64_instrs_memory_exclusive_pair(acqrel, datasize, elsize, memop, n, pair, regsize, rn_unknown, rt_unknown, s, t, t2, tagchecked)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitone, _, bitzero, bitzero, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 580) = {
+    SEE = 580;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rt2 = Slice(__opcode, 10, 5);
+    let o0 = Slice(__opcode, 15, 1);
+    let Rs = Slice(__opcode, 16, 5);
+    let L = Slice(__opcode, 22, 1);
+    let sz = Slice(__opcode, 30, 1);
+    if ((([__opcode[16]] != 0b1 | [__opcode[17]] != 0b1) | [__opcode[18]] != 0b1) | [__opcode[19]] != 0b1) | [__opcode[20]] != 0b1 then {
+        throw(Error_ConstrainedUnpredictable())
+    } else {
+        decode_ldxp_aarch64_instrs_memory_exclusive_pair(Rt, Rn, Rt2, o0, Rs, L, sz)
+    }
+}
+
+val decode_stlxp_aarch64_instrs_memory_exclusive_pair : (bits(5), bits(5), bits(5), bits(1), bits(5), bits(1), bits(1)) -> unit
+
+function decode_stlxp_aarch64_instrs_memory_exclusive_pair (Rt, Rn, Rt2, o0, Rs, L, sz) = {
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let 't2 = UInt(Rt2);
+    let 's = UInt(Rs);
+    let acqrel : bool = o0 == 0b1;
+    let pair : bool = true;
+    let memop : MemOp = if L == 0b1 then MemOp_LOAD else MemOp_STORE;
+    let 'elsize = (32 << UInt(sz));
+    let 'regsize = if elsize == 64 then 64 else 32;
+    let 'datasize = if pair then elsize * 2 else elsize;
+    let tagchecked : bool = n != 31;
+    rt_unknown : bool = false;
+    rn_unknown : bool = false;
+    if (memop == MemOp_LOAD & pair) & t == t2 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_LDPOVERLAP);
+        assert(c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if memop == MemOp_STORE then {
+        if s == t | pair & s == t2 then {
+            let c : Constraint = ConstrainUnpredictable(Unpredictable_DATAOVERLAP);
+            assert(c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+            match c {
+              Constraint_UNKNOWN => {
+                  rt_unknown = true
+              },
+              Constraint_UNDEF => {
+                  throw(Error_Undefined())
+              },
+              Constraint_NOP => {
+                  EndOfInstruction()
+              },
+              _ => ()
+            }
+        };
+        if s == n & n != 31 then {
+            let c : Constraint = ConstrainUnpredictable(Unpredictable_BASEOVERLAP);
+            assert(c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+            match c {
+              Constraint_UNKNOWN => {
+                  rn_unknown = true
+              },
+              Constraint_UNDEF => {
+                  throw(Error_Undefined())
+              },
+              Constraint_NOP => {
+                  EndOfInstruction()
+              },
+              _ => ()
+            }
+        };
+        ()
+    };
+    execute_aarch64_instrs_memory_exclusive_pair(acqrel, datasize, elsize, memop, n, pair, regsize, rn_unknown, rt_unknown, s, t, t2, tagchecked)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitone, _, bitzero, bitzero, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, _, _, _, _, _, bitone, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 581) = {
+    SEE = 581;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rt2 = Slice(__opcode, 10, 5);
+    let o0 = Slice(__opcode, 15, 1);
+    let Rs = Slice(__opcode, 16, 5);
+    let L = Slice(__opcode, 22, 1);
+    let sz = Slice(__opcode, 30, 1);
+    decode_stlxp_aarch64_instrs_memory_exclusive_pair(Rt, Rn, Rt2, o0, Rs, L, sz)
+}
+
+val decode_stxp_aarch64_instrs_memory_exclusive_pair : (bits(5), bits(5), bits(5), bits(1), bits(5), bits(1), bits(1)) -> unit
+
+function decode_stxp_aarch64_instrs_memory_exclusive_pair (Rt, Rn, Rt2, o0, Rs, L, sz) = {
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let 't2 = UInt(Rt2);
+    let 's = UInt(Rs);
+    let acqrel : bool = o0 == 0b1;
+    let pair : bool = true;
+    let memop : MemOp = if L == 0b1 then MemOp_LOAD else MemOp_STORE;
+    let 'elsize = (32 << UInt(sz));
+    let 'regsize = if elsize == 64 then 64 else 32;
+    let 'datasize = if pair then elsize * 2 else elsize;
+    let tagchecked : bool = n != 31;
+    rt_unknown : bool = false;
+    rn_unknown : bool = false;
+    if (memop == MemOp_LOAD & pair) & t == t2 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_LDPOVERLAP);
+        assert(c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if memop == MemOp_STORE then {
+        if s == t | pair & s == t2 then {
+            let c : Constraint = ConstrainUnpredictable(Unpredictable_DATAOVERLAP);
+            assert(c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+            match c {
+              Constraint_UNKNOWN => {
+                  rt_unknown = true
+              },
+              Constraint_UNDEF => {
+                  throw(Error_Undefined())
+              },
+              Constraint_NOP => {
+                  EndOfInstruction()
+              },
+              _ => ()
+            }
+        };
+        if s == n & n != 31 then {
+            let c : Constraint = ConstrainUnpredictable(Unpredictable_BASEOVERLAP);
+            assert(c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+            match c {
+              Constraint_UNKNOWN => {
+                  rn_unknown = true
+              },
+              Constraint_UNDEF => {
+                  throw(Error_Undefined())
+              },
+              Constraint_NOP => {
+                  EndOfInstruction()
+              },
+              _ => ()
+            }
+        };
+        ()
+    };
+    execute_aarch64_instrs_memory_exclusive_pair(acqrel, datasize, elsize, memop, n, pair, regsize, rn_unknown, rt_unknown, s, t, t2, tagchecked)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitone, _, bitzero, bitzero, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, _, _, _, _, _, bitzero, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 582) = {
+    SEE = 582;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rt2 = Slice(__opcode, 10, 5);
+    let o0 = Slice(__opcode, 15, 1);
+    let Rs = Slice(__opcode, 16, 5);
+    let L = Slice(__opcode, 22, 1);
+    let sz = Slice(__opcode, 30, 1);
+    decode_stxp_aarch64_instrs_memory_exclusive_pair(Rt, Rn, Rt2, o0, Rs, L, sz)
+}
+
+val execute_aarch64_instrs_memory_exclusive_single : forall ('acqrel : Bool) 'datasize 'elsize 'n ('pair : Bool) 'regsize ('rn_unknown : Bool) ('rt_unknown : Bool) 's 't 't2 ('tagchecked : Bool),
+  (0 <= 't2 & 't2 <= 31 & 0 <= 't & 't <= 31 & 0 <= 's & 's <= 31 & 'regsize in {32, 64} & 0 <= 'n & 'n <= 31 & 'elsize in {8, 16, 32, 64} & 'datasize in {8, 16, 32, 64, 128}).
+  (bool('acqrel), int('datasize), int('elsize), MemOp, int('n), bool('pair), int('regsize), bool('rn_unknown), bool('rt_unknown), int('s), int('t), int('t2), bool('tagchecked)) -> unit
+
+function execute_aarch64_instrs_memory_exclusive_single (acqrel, datasize, elsize, memop, n, pair, regsize, rn_unknown, rt_unknown, s, t, t2, tagchecked) = {
+    address : bits(64) = undefined;
+    data : bits('datasize) = undefined;
+    let 'dbytes = DIV(datasize, 8);
+    let accdesc : AccessDescriptor = CreateAccDescExLDST(memop, acqrel, tagchecked);
+    if n == 31 then {
+        CheckSPAlignment();
+        address = SP_read()
+    } else if rn_unknown then {
+        address = __UNKNOWN_bits(64)
+    } else {
+        address = X_read(n, 64)
+    };
+    match memop {
+      MemOp_STORE => {
+          if rt_unknown then {
+              data = __UNKNOWN_bits(datasize)
+          } else if pair then {
+              assert(constraint((div('datasize, 2) == 8 | div('datasize, 2) == 16 | div('datasize, 2) == 32 | div('datasize, 2) == 64)));
+              let el1 : bits(div('datasize, 2)) = X_read(t, DIV(datasize, 2));
+              let el2 : bits(div('datasize, 2)) = X_read(t2, DIV(datasize, 2));
+              data = if BigEndian(accdesc.acctype) then el1 @ el2 else el2 @ el1
+          } else {
+              assert(constraint('datasize in {8, 16, 32, 64}));
+              data = X_read(t, datasize)
+          };
+          status : bits(1) = 0b1;
+          if AArch64_ExclusiveMonitorsPass(address, dbytes) then {
+              Mem_set(address, dbytes, accdesc) = data;
+              status = ExclusiveMonitorsStatus()
+          } else if SPESampleInFlight then {
+              SPESetDataVirtualAddress(address)
+          } else ();
+          X_set(s, 32) = ZeroExtend(status, 32)
+      },
+      MemOp_LOAD => {
+          AArch64_SetExclusiveMonitors(address, dbytes);
+          if pair then {
+              if rt_unknown then {
+                  assert(constraint('datasize in {32, 64}));
+                  X_set(t, datasize) = __UNKNOWN_bits(datasize)
+              } else if elsize == 32 then {
+                  let data : bits('datasize) = Mem_read(address, dbytes, accdesc);
+                  if BigEndian(accdesc.acctype) then {
+                      assert(constraint((0 <= 'elsize & 'elsize <= 'datasize - 1 & 'datasize - 1 < 'datasize)));
+                      assert(constraint(('datasize - 'elsize == 32 | 'datasize - 'elsize == 64)));
+                      X_set(t, datasize - elsize) = data[datasize - 1 .. elsize];
+                      X_set(t2, elsize) = data[elsize - 1 .. 0]
+                  } else {
+                      assert(constraint((0 <= 'elsize - 1 & 'elsize - 1 < 'datasize)));
+                      X_set(t, elsize) = data[elsize - 1 .. 0];
+                      assert(constraint((0 <= 'elsize & 'elsize <= 'datasize - 1 & 'datasize - 1 < 'datasize)));
+                      assert(constraint(('datasize - 'elsize == 32 | 'datasize - 'elsize == 64)));
+                      X_set(t2, datasize - elsize) = data[datasize - 1 .. elsize]
+                  }
+              } else {
+                  if not_bool(IsAligned__1(address, dbytes)) then {
+                      AArch64_Abort(address, AlignmentFault(accdesc))
+                  };
+                  X_set(t, 64) = Mem_read(address + 0, 8, accdesc);
+                  X_set(t2, 64) = Mem_read(address + 8, 8, accdesc)
+              }
+          } else {
+              let data : bits('datasize) = Mem_read(address, dbytes, accdesc);
+              assert(constraint(('datasize >= 0 & 'regsize >= 'datasize)));
+              X_set(t, regsize) = ZeroExtend(data, regsize)
+          }
+      },
+      _ => ()
+    };
+    if SPESampleInFlight then {
+        let ar : bits(1) = if acqrel then 0b1 else 0b0;
+        let excl : bits(1) = 0b1;
+        let at : bits(1) = 0b0;
+        let is_load : bool = memop == MemOp_LOAD;
+        SPESampleExtendedLoadStore(ar, excl, at, is_load)
+    };
+    ()
+}
+
+val decode_ldaxr_aarch64_instrs_memory_exclusive_single : (bits(5), bits(5), bits(5), bits(1), bits(5), bits(1), bits(2)) -> unit
+
+function decode_ldaxr_aarch64_instrs_memory_exclusive_single (Rt, Rn, Rt2, o0, Rs, L, size) = {
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let 't2 = UInt(Rt2);
+    let 's = UInt(Rs);
+    let acqrel : bool = o0 == 0b1;
+    let pair : bool = false;
+    let memop : MemOp = if L == 0b1 then MemOp_LOAD else MemOp_STORE;
+    let 'elsize = (8 << UInt(size));
+    let 'regsize = if elsize == 64 then 64 else 32;
+    let 'datasize = if pair then elsize * 2 else elsize;
+    let tagchecked : bool = n != 31;
+    rt_unknown : bool = false;
+    rn_unknown : bool = false;
+    if (memop == MemOp_LOAD & pair) & t == t2 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_LDPOVERLAP);
+        assert(c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if memop == MemOp_STORE then {
+        if s == t | pair & s == t2 then {
+            let c : Constraint = ConstrainUnpredictable(Unpredictable_DATAOVERLAP);
+            assert(c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+            match c {
+              Constraint_UNKNOWN => {
+                  rt_unknown = true
+              },
+              Constraint_UNDEF => {
+                  throw(Error_Undefined())
+              },
+              Constraint_NOP => {
+                  EndOfInstruction()
+              },
+              _ => ()
+            }
+        };
+        if s == n & n != 31 then {
+            let c : Constraint = ConstrainUnpredictable(Unpredictable_BASEOVERLAP);
+            assert(c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+            match c {
+              Constraint_UNKNOWN => {
+                  rn_unknown = true
+              },
+              Constraint_UNDEF => {
+                  throw(Error_Undefined())
+              },
+              Constraint_NOP => {
+                  EndOfInstruction()
+              },
+              _ => ()
+            }
+        };
+        ()
+    };
+    execute_aarch64_instrs_memory_exclusive_single(acqrel, datasize, elsize, memop, n, pair, regsize, rn_unknown, rt_unknown, s, t, t2, tagchecked)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitone, _, bitzero, bitzero, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitone, bitone, bitone, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 583) = {
+    SEE = 583;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rt2 = Slice(__opcode, 10, 5);
+    let o0 = Slice(__opcode, 15, 1);
+    let Rs = Slice(__opcode, 16, 5);
+    let L = Slice(__opcode, 22, 1);
+    let size = Slice(__opcode, 30, 2);
+    if (((((((([__opcode[10]] != 0b1 | [__opcode[11]] != 0b1) | [__opcode[12]] != 0b1) | [__opcode[13]] != 0b1) | [__opcode[14]] != 0b1) | [__opcode[16]] != 0b1) | [__opcode[17]] != 0b1) | [__opcode[18]] != 0b1) | [__opcode[19]] != 0b1) | [__opcode[20]] != 0b1 then {
+        throw(Error_ConstrainedUnpredictable())
+    } else {
+        decode_ldaxr_aarch64_instrs_memory_exclusive_single(Rt, Rn, Rt2, o0, Rs, L, size)
+    }
+}
+
+val decode_ldaxrb_aarch64_instrs_memory_exclusive_single : (bits(5), bits(5), bits(5), bits(1), bits(5), bits(1), bits(2)) -> unit
+
+function decode_ldaxrb_aarch64_instrs_memory_exclusive_single (Rt, Rn, Rt2, o0, Rs, L, size) = {
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let 't2 = UInt(Rt2);
+    let 's = UInt(Rs);
+    let acqrel : bool = o0 == 0b1;
+    let pair : bool = false;
+    let memop : MemOp = if L == 0b1 then MemOp_LOAD else MemOp_STORE;
+    let 'elsize = (8 << UInt(size));
+    let 'regsize = if elsize == 64 then 64 else 32;
+    let 'datasize = if pair then elsize * 2 else elsize;
+    let tagchecked : bool = n != 31;
+    rt_unknown : bool = false;
+    rn_unknown : bool = false;
+    if (memop == MemOp_LOAD & pair) & t == t2 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_LDPOVERLAP);
+        assert(c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if memop == MemOp_STORE then {
+        if s == t | pair & s == t2 then {
+            let c : Constraint = ConstrainUnpredictable(Unpredictable_DATAOVERLAP);
+            assert(c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+            match c {
+              Constraint_UNKNOWN => {
+                  rt_unknown = true
+              },
+              Constraint_UNDEF => {
+                  throw(Error_Undefined())
+              },
+              Constraint_NOP => {
+                  EndOfInstruction()
+              },
+              _ => ()
+            }
+        };
+        if s == n & n != 31 then {
+            let c : Constraint = ConstrainUnpredictable(Unpredictable_BASEOVERLAP);
+            assert(c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+            match c {
+              Constraint_UNKNOWN => {
+                  rn_unknown = true
+              },
+              Constraint_UNDEF => {
+                  throw(Error_Undefined())
+              },
+              Constraint_NOP => {
+                  EndOfInstruction()
+              },
+              _ => ()
+            }
+        };
+        ()
+    };
+    execute_aarch64_instrs_memory_exclusive_single(acqrel, datasize, elsize, memop, n, pair, regsize, rn_unknown, rt_unknown, s, t, t2, tagchecked)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitzero, bitzero, bitzero, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitone, bitone, bitone, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 584) = {
+    SEE = 584;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rt2 = Slice(__opcode, 10, 5);
+    let o0 = Slice(__opcode, 15, 1);
+    let Rs = Slice(__opcode, 16, 5);
+    let L = Slice(__opcode, 22, 1);
+    let size = Slice(__opcode, 30, 2);
+    if (((((((([__opcode[10]] != 0b1 | [__opcode[11]] != 0b1) | [__opcode[12]] != 0b1) | [__opcode[13]] != 0b1) | [__opcode[14]] != 0b1) | [__opcode[16]] != 0b1) | [__opcode[17]] != 0b1) | [__opcode[18]] != 0b1) | [__opcode[19]] != 0b1) | [__opcode[20]] != 0b1 then {
+        throw(Error_ConstrainedUnpredictable())
+    } else {
+        decode_ldaxrb_aarch64_instrs_memory_exclusive_single(Rt, Rn, Rt2, o0, Rs, L, size)
+    }
+}
+
+val decode_ldaxrh_aarch64_instrs_memory_exclusive_single : (bits(5), bits(5), bits(5), bits(1), bits(5), bits(1), bits(2)) -> unit
+
+function decode_ldaxrh_aarch64_instrs_memory_exclusive_single (Rt, Rn, Rt2, o0, Rs, L, size) = {
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let 't2 = UInt(Rt2);
+    let 's = UInt(Rs);
+    let acqrel : bool = o0 == 0b1;
+    let pair : bool = false;
+    let memop : MemOp = if L == 0b1 then MemOp_LOAD else MemOp_STORE;
+    let 'elsize = (8 << UInt(size));
+    let 'regsize = if elsize == 64 then 64 else 32;
+    let 'datasize = if pair then elsize * 2 else elsize;
+    let tagchecked : bool = n != 31;
+    rt_unknown : bool = false;
+    rn_unknown : bool = false;
+    if (memop == MemOp_LOAD & pair) & t == t2 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_LDPOVERLAP);
+        assert(c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if memop == MemOp_STORE then {
+        if s == t | pair & s == t2 then {
+            let c : Constraint = ConstrainUnpredictable(Unpredictable_DATAOVERLAP);
+            assert(c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+            match c {
+              Constraint_UNKNOWN => {
+                  rt_unknown = true
+              },
+              Constraint_UNDEF => {
+                  throw(Error_Undefined())
+              },
+              Constraint_NOP => {
+                  EndOfInstruction()
+              },
+              _ => ()
+            }
+        };
+        if s == n & n != 31 then {
+            let c : Constraint = ConstrainUnpredictable(Unpredictable_BASEOVERLAP);
+            assert(c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+            match c {
+              Constraint_UNKNOWN => {
+                  rn_unknown = true
+              },
+              Constraint_UNDEF => {
+                  throw(Error_Undefined())
+              },
+              Constraint_NOP => {
+                  EndOfInstruction()
+              },
+              _ => ()
+            }
+        };
+        ()
+    };
+    execute_aarch64_instrs_memory_exclusive_single(acqrel, datasize, elsize, memop, n, pair, regsize, rn_unknown, rt_unknown, s, t, t2, tagchecked)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitone, bitzero, bitzero, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitone, bitone, bitone, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 585) = {
+    SEE = 585;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rt2 = Slice(__opcode, 10, 5);
+    let o0 = Slice(__opcode, 15, 1);
+    let Rs = Slice(__opcode, 16, 5);
+    let L = Slice(__opcode, 22, 1);
+    let size = Slice(__opcode, 30, 2);
+    if (((((((([__opcode[10]] != 0b1 | [__opcode[11]] != 0b1) | [__opcode[12]] != 0b1) | [__opcode[13]] != 0b1) | [__opcode[14]] != 0b1) | [__opcode[16]] != 0b1) | [__opcode[17]] != 0b1) | [__opcode[18]] != 0b1) | [__opcode[19]] != 0b1) | [__opcode[20]] != 0b1 then {
+        throw(Error_ConstrainedUnpredictable())
+    } else {
+        decode_ldaxrh_aarch64_instrs_memory_exclusive_single(Rt, Rn, Rt2, o0, Rs, L, size)
+    }
+}
+
+val decode_ldxr_aarch64_instrs_memory_exclusive_single : (bits(5), bits(5), bits(5), bits(1), bits(5), bits(1), bits(2)) -> unit
+
+function decode_ldxr_aarch64_instrs_memory_exclusive_single (Rt, Rn, Rt2, o0, Rs, L, size) = {
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let 't2 = UInt(Rt2);
+    let 's = UInt(Rs);
+    let acqrel : bool = o0 == 0b1;
+    let pair : bool = false;
+    let memop : MemOp = if L == 0b1 then MemOp_LOAD else MemOp_STORE;
+    let 'elsize = (8 << UInt(size));
+    let 'regsize = if elsize == 64 then 64 else 32;
+    let 'datasize = if pair then elsize * 2 else elsize;
+    let tagchecked : bool = n != 31;
+    rt_unknown : bool = false;
+    rn_unknown : bool = false;
+    if (memop == MemOp_LOAD & pair) & t == t2 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_LDPOVERLAP);
+        assert(c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if memop == MemOp_STORE then {
+        if s == t | pair & s == t2 then {
+            let c : Constraint = ConstrainUnpredictable(Unpredictable_DATAOVERLAP);
+            assert(c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+            match c {
+              Constraint_UNKNOWN => {
+                  rt_unknown = true
+              },
+              Constraint_UNDEF => {
+                  throw(Error_Undefined())
+              },
+              Constraint_NOP => {
+                  EndOfInstruction()
+              },
+              _ => ()
+            }
+        };
+        if s == n & n != 31 then {
+            let c : Constraint = ConstrainUnpredictable(Unpredictable_BASEOVERLAP);
+            assert(c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+            match c {
+              Constraint_UNKNOWN => {
+                  rn_unknown = true
+              },
+              Constraint_UNDEF => {
+                  throw(Error_Undefined())
+              },
+              Constraint_NOP => {
+                  EndOfInstruction()
+              },
+              _ => ()
+            }
+        };
+        ()
+    };
+    execute_aarch64_instrs_memory_exclusive_single(acqrel, datasize, elsize, memop, n, pair, regsize, rn_unknown, rt_unknown, s, t, t2, tagchecked)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitone, _, bitzero, bitzero, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitone, bitzero, bitone, bitone, bitone, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 586) = {
+    SEE = 586;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rt2 = Slice(__opcode, 10, 5);
+    let o0 = Slice(__opcode, 15, 1);
+    let Rs = Slice(__opcode, 16, 5);
+    let L = Slice(__opcode, 22, 1);
+    let size = Slice(__opcode, 30, 2);
+    if (((((((([__opcode[10]] != 0b1 | [__opcode[11]] != 0b1) | [__opcode[12]] != 0b1) | [__opcode[13]] != 0b1) | [__opcode[14]] != 0b1) | [__opcode[16]] != 0b1) | [__opcode[17]] != 0b1) | [__opcode[18]] != 0b1) | [__opcode[19]] != 0b1) | [__opcode[20]] != 0b1 then {
+        throw(Error_ConstrainedUnpredictable())
+    } else {
+        decode_ldxr_aarch64_instrs_memory_exclusive_single(Rt, Rn, Rt2, o0, Rs, L, size)
+    }
+}
+
+val decode_ldxrb_aarch64_instrs_memory_exclusive_single : (bits(5), bits(5), bits(5), bits(1), bits(5), bits(1), bits(2)) -> unit
+
+function decode_ldxrb_aarch64_instrs_memory_exclusive_single (Rt, Rn, Rt2, o0, Rs, L, size) = {
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let 't2 = UInt(Rt2);
+    let 's = UInt(Rs);
+    let acqrel : bool = o0 == 0b1;
+    let pair : bool = false;
+    let memop : MemOp = if L == 0b1 then MemOp_LOAD else MemOp_STORE;
+    let 'elsize = (8 << UInt(size));
+    let 'regsize = if elsize == 64 then 64 else 32;
+    let 'datasize = if pair then elsize * 2 else elsize;
+    let tagchecked : bool = n != 31;
+    rt_unknown : bool = false;
+    rn_unknown : bool = false;
+    if (memop == MemOp_LOAD & pair) & t == t2 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_LDPOVERLAP);
+        assert(c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if memop == MemOp_STORE then {
+        if s == t | pair & s == t2 then {
+            let c : Constraint = ConstrainUnpredictable(Unpredictable_DATAOVERLAP);
+            assert(c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+            match c {
+              Constraint_UNKNOWN => {
+                  rt_unknown = true
+              },
+              Constraint_UNDEF => {
+                  throw(Error_Undefined())
+              },
+              Constraint_NOP => {
+                  EndOfInstruction()
+              },
+              _ => ()
+            }
+        };
+        if s == n & n != 31 then {
+            let c : Constraint = ConstrainUnpredictable(Unpredictable_BASEOVERLAP);
+            assert(c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+            match c {
+              Constraint_UNKNOWN => {
+                  rn_unknown = true
+              },
+              Constraint_UNDEF => {
+                  throw(Error_Undefined())
+              },
+              Constraint_NOP => {
+                  EndOfInstruction()
+              },
+              _ => ()
+            }
+        };
+        ()
+    };
+    execute_aarch64_instrs_memory_exclusive_single(acqrel, datasize, elsize, memop, n, pair, regsize, rn_unknown, rt_unknown, s, t, t2, tagchecked)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitzero, bitzero, bitzero, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitone, bitzero, bitone, bitone, bitone, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 587) = {
+    SEE = 587;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rt2 = Slice(__opcode, 10, 5);
+    let o0 = Slice(__opcode, 15, 1);
+    let Rs = Slice(__opcode, 16, 5);
+    let L = Slice(__opcode, 22, 1);
+    let size = Slice(__opcode, 30, 2);
+    if (((((((([__opcode[10]] != 0b1 | [__opcode[11]] != 0b1) | [__opcode[12]] != 0b1) | [__opcode[13]] != 0b1) | [__opcode[14]] != 0b1) | [__opcode[16]] != 0b1) | [__opcode[17]] != 0b1) | [__opcode[18]] != 0b1) | [__opcode[19]] != 0b1) | [__opcode[20]] != 0b1 then {
+        throw(Error_ConstrainedUnpredictable())
+    } else {
+        decode_ldxrb_aarch64_instrs_memory_exclusive_single(Rt, Rn, Rt2, o0, Rs, L, size)
+    }
+}
+
+val decode_ldxrh_aarch64_instrs_memory_exclusive_single : (bits(5), bits(5), bits(5), bits(1), bits(5), bits(1), bits(2)) -> unit
+
+function decode_ldxrh_aarch64_instrs_memory_exclusive_single (Rt, Rn, Rt2, o0, Rs, L, size) = {
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let 't2 = UInt(Rt2);
+    let 's = UInt(Rs);
+    let acqrel : bool = o0 == 0b1;
+    let pair : bool = false;
+    let memop : MemOp = if L == 0b1 then MemOp_LOAD else MemOp_STORE;
+    let 'elsize = (8 << UInt(size));
+    let 'regsize = if elsize == 64 then 64 else 32;
+    let 'datasize = if pair then elsize * 2 else elsize;
+    let tagchecked : bool = n != 31;
+    rt_unknown : bool = false;
+    rn_unknown : bool = false;
+    if (memop == MemOp_LOAD & pair) & t == t2 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_LDPOVERLAP);
+        assert(c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if memop == MemOp_STORE then {
+        if s == t | pair & s == t2 then {
+            let c : Constraint = ConstrainUnpredictable(Unpredictable_DATAOVERLAP);
+            assert(c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+            match c {
+              Constraint_UNKNOWN => {
+                  rt_unknown = true
+              },
+              Constraint_UNDEF => {
+                  throw(Error_Undefined())
+              },
+              Constraint_NOP => {
+                  EndOfInstruction()
+              },
+              _ => ()
+            }
+        };
+        if s == n & n != 31 then {
+            let c : Constraint = ConstrainUnpredictable(Unpredictable_BASEOVERLAP);
+            assert(c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+            match c {
+              Constraint_UNKNOWN => {
+                  rn_unknown = true
+              },
+              Constraint_UNDEF => {
+                  throw(Error_Undefined())
+              },
+              Constraint_NOP => {
+                  EndOfInstruction()
+              },
+              _ => ()
+            }
+        };
+        ()
+    };
+    execute_aarch64_instrs_memory_exclusive_single(acqrel, datasize, elsize, memop, n, pair, regsize, rn_unknown, rt_unknown, s, t, t2, tagchecked)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitone, bitzero, bitzero, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitone, bitzero, bitone, bitone, bitone, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 588) = {
+    SEE = 588;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rt2 = Slice(__opcode, 10, 5);
+    let o0 = Slice(__opcode, 15, 1);
+    let Rs = Slice(__opcode, 16, 5);
+    let L = Slice(__opcode, 22, 1);
+    let size = Slice(__opcode, 30, 2);
+    if (((((((([__opcode[10]] != 0b1 | [__opcode[11]] != 0b1) | [__opcode[12]] != 0b1) | [__opcode[13]] != 0b1) | [__opcode[14]] != 0b1) | [__opcode[16]] != 0b1) | [__opcode[17]] != 0b1) | [__opcode[18]] != 0b1) | [__opcode[19]] != 0b1) | [__opcode[20]] != 0b1 then {
+        throw(Error_ConstrainedUnpredictable())
+    } else {
+        decode_ldxrh_aarch64_instrs_memory_exclusive_single(Rt, Rn, Rt2, o0, Rs, L, size)
+    }
+}
+
+val decode_stlxr_aarch64_instrs_memory_exclusive_single : (bits(5), bits(5), bits(5), bits(1), bits(5), bits(1), bits(2)) -> unit
+
+function decode_stlxr_aarch64_instrs_memory_exclusive_single (Rt, Rn, Rt2, o0, Rs, L, size) = {
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let 't2 = UInt(Rt2);
+    let 's = UInt(Rs);
+    let acqrel : bool = o0 == 0b1;
+    let pair : bool = false;
+    let memop : MemOp = if L == 0b1 then MemOp_LOAD else MemOp_STORE;
+    let 'elsize = (8 << UInt(size));
+    let 'regsize = if elsize == 64 then 64 else 32;
+    let 'datasize = if pair then elsize * 2 else elsize;
+    let tagchecked : bool = n != 31;
+    rt_unknown : bool = false;
+    rn_unknown : bool = false;
+    if (memop == MemOp_LOAD & pair) & t == t2 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_LDPOVERLAP);
+        assert(c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if memop == MemOp_STORE then {
+        if s == t | pair & s == t2 then {
+            let c : Constraint = ConstrainUnpredictable(Unpredictable_DATAOVERLAP);
+            assert(c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+            match c {
+              Constraint_UNKNOWN => {
+                  rt_unknown = true
+              },
+              Constraint_UNDEF => {
+                  throw(Error_Undefined())
+              },
+              Constraint_NOP => {
+                  EndOfInstruction()
+              },
+              _ => ()
+            }
+        };
+        if s == n & n != 31 then {
+            let c : Constraint = ConstrainUnpredictable(Unpredictable_BASEOVERLAP);
+            assert(c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+            match c {
+              Constraint_UNKNOWN => {
+                  rn_unknown = true
+              },
+              Constraint_UNDEF => {
+                  throw(Error_Undefined())
+              },
+              Constraint_NOP => {
+                  EndOfInstruction()
+              },
+              _ => ()
+            }
+        };
+        ()
+    };
+    execute_aarch64_instrs_memory_exclusive_single(acqrel, datasize, elsize, memop, n, pair, regsize, rn_unknown, rt_unknown, s, t, t2, tagchecked)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitone, _, bitzero, bitzero, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, bitone, bitone, bitone, bitone, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 589) = {
+    SEE = 589;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rt2 = Slice(__opcode, 10, 5);
+    let o0 = Slice(__opcode, 15, 1);
+    let Rs = Slice(__opcode, 16, 5);
+    let L = Slice(__opcode, 22, 1);
+    let size = Slice(__opcode, 30, 2);
+    if ((([__opcode[10]] != 0b1 | [__opcode[11]] != 0b1) | [__opcode[12]] != 0b1) | [__opcode[13]] != 0b1) | [__opcode[14]] != 0b1 then {
+        throw(Error_ConstrainedUnpredictable())
+    } else {
+        decode_stlxr_aarch64_instrs_memory_exclusive_single(Rt, Rn, Rt2, o0, Rs, L, size)
+    }
+}
+
+val decode_stlxrb_aarch64_instrs_memory_exclusive_single : (bits(5), bits(5), bits(5), bits(1), bits(5), bits(1), bits(2)) -> unit
+
+function decode_stlxrb_aarch64_instrs_memory_exclusive_single (Rt, Rn, Rt2, o0, Rs, L, size) = {
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let 't2 = UInt(Rt2);
+    let 's = UInt(Rs);
+    let acqrel : bool = o0 == 0b1;
+    let pair : bool = false;
+    let memop : MemOp = if L == 0b1 then MemOp_LOAD else MemOp_STORE;
+    let 'elsize = (8 << UInt(size));
+    let 'regsize = if elsize == 64 then 64 else 32;
+    let 'datasize = if pair then elsize * 2 else elsize;
+    let tagchecked : bool = n != 31;
+    rt_unknown : bool = false;
+    rn_unknown : bool = false;
+    if (memop == MemOp_LOAD & pair) & t == t2 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_LDPOVERLAP);
+        assert(c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if memop == MemOp_STORE then {
+        if s == t | pair & s == t2 then {
+            let c : Constraint = ConstrainUnpredictable(Unpredictable_DATAOVERLAP);
+            assert(c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+            match c {
+              Constraint_UNKNOWN => {
+                  rt_unknown = true
+              },
+              Constraint_UNDEF => {
+                  throw(Error_Undefined())
+              },
+              Constraint_NOP => {
+                  EndOfInstruction()
+              },
+              _ => ()
+            }
+        };
+        if s == n & n != 31 then {
+            let c : Constraint = ConstrainUnpredictable(Unpredictable_BASEOVERLAP);
+            assert(c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+            match c {
+              Constraint_UNKNOWN => {
+                  rn_unknown = true
+              },
+              Constraint_UNDEF => {
+                  throw(Error_Undefined())
+              },
+              Constraint_NOP => {
+                  EndOfInstruction()
+              },
+              _ => ()
+            }
+        };
+        ()
+    };
+    execute_aarch64_instrs_memory_exclusive_single(acqrel, datasize, elsize, memop, n, pair, regsize, rn_unknown, rt_unknown, s, t, t2, tagchecked)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitzero, bitzero, bitzero, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, bitone, bitone, bitone, bitone, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 590) = {
+    SEE = 590;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rt2 = Slice(__opcode, 10, 5);
+    let o0 = Slice(__opcode, 15, 1);
+    let Rs = Slice(__opcode, 16, 5);
+    let L = Slice(__opcode, 22, 1);
+    let size = Slice(__opcode, 30, 2);
+    if ((([__opcode[10]] != 0b1 | [__opcode[11]] != 0b1) | [__opcode[12]] != 0b1) | [__opcode[13]] != 0b1) | [__opcode[14]] != 0b1 then {
+        throw(Error_ConstrainedUnpredictable())
+    } else {
+        decode_stlxrb_aarch64_instrs_memory_exclusive_single(Rt, Rn, Rt2, o0, Rs, L, size)
+    }
+}
+
+val decode_stlxrh_aarch64_instrs_memory_exclusive_single : (bits(5), bits(5), bits(5), bits(1), bits(5), bits(1), bits(2)) -> unit
+
+function decode_stlxrh_aarch64_instrs_memory_exclusive_single (Rt, Rn, Rt2, o0, Rs, L, size) = {
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let 't2 = UInt(Rt2);
+    let 's = UInt(Rs);
+    let acqrel : bool = o0 == 0b1;
+    let pair : bool = false;
+    let memop : MemOp = if L == 0b1 then MemOp_LOAD else MemOp_STORE;
+    let 'elsize = (8 << UInt(size));
+    let 'regsize = if elsize == 64 then 64 else 32;
+    let 'datasize = if pair then elsize * 2 else elsize;
+    let tagchecked : bool = n != 31;
+    rt_unknown : bool = false;
+    rn_unknown : bool = false;
+    if (memop == MemOp_LOAD & pair) & t == t2 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_LDPOVERLAP);
+        assert(c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if memop == MemOp_STORE then {
+        if s == t | pair & s == t2 then {
+            let c : Constraint = ConstrainUnpredictable(Unpredictable_DATAOVERLAP);
+            assert(c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+            match c {
+              Constraint_UNKNOWN => {
+                  rt_unknown = true
+              },
+              Constraint_UNDEF => {
+                  throw(Error_Undefined())
+              },
+              Constraint_NOP => {
+                  EndOfInstruction()
+              },
+              _ => ()
+            }
+        };
+        if s == n & n != 31 then {
+            let c : Constraint = ConstrainUnpredictable(Unpredictable_BASEOVERLAP);
+            assert(c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+            match c {
+              Constraint_UNKNOWN => {
+                  rn_unknown = true
+              },
+              Constraint_UNDEF => {
+                  throw(Error_Undefined())
+              },
+              Constraint_NOP => {
+                  EndOfInstruction()
+              },
+              _ => ()
+            }
+        };
+        ()
+    };
+    execute_aarch64_instrs_memory_exclusive_single(acqrel, datasize, elsize, memop, n, pair, regsize, rn_unknown, rt_unknown, s, t, t2, tagchecked)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitone, bitzero, bitzero, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, bitone, bitone, bitone, bitone, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 591) = {
+    SEE = 591;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rt2 = Slice(__opcode, 10, 5);
+    let o0 = Slice(__opcode, 15, 1);
+    let Rs = Slice(__opcode, 16, 5);
+    let L = Slice(__opcode, 22, 1);
+    let size = Slice(__opcode, 30, 2);
+    if ((([__opcode[10]] != 0b1 | [__opcode[11]] != 0b1) | [__opcode[12]] != 0b1) | [__opcode[13]] != 0b1) | [__opcode[14]] != 0b1 then {
+        throw(Error_ConstrainedUnpredictable())
+    } else {
+        decode_stlxrh_aarch64_instrs_memory_exclusive_single(Rt, Rn, Rt2, o0, Rs, L, size)
+    }
+}
+
+val decode_stxr_aarch64_instrs_memory_exclusive_single : (bits(5), bits(5), bits(5), bits(1), bits(5), bits(1), bits(2)) -> unit
+
+function decode_stxr_aarch64_instrs_memory_exclusive_single (Rt, Rn, Rt2, o0, Rs, L, size) = {
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let 't2 = UInt(Rt2);
+    let 's = UInt(Rs);
+    let acqrel : bool = o0 == 0b1;
+    let pair : bool = false;
+    let memop : MemOp = if L == 0b1 then MemOp_LOAD else MemOp_STORE;
+    let 'elsize = (8 << UInt(size));
+    let 'regsize = if elsize == 64 then 64 else 32;
+    let 'datasize = if pair then elsize * 2 else elsize;
+    let tagchecked : bool = n != 31;
+    rt_unknown : bool = false;
+    rn_unknown : bool = false;
+    if (memop == MemOp_LOAD & pair) & t == t2 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_LDPOVERLAP);
+        assert(c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if memop == MemOp_STORE then {
+        if s == t | pair & s == t2 then {
+            let c : Constraint = ConstrainUnpredictable(Unpredictable_DATAOVERLAP);
+            assert(c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+            match c {
+              Constraint_UNKNOWN => {
+                  rt_unknown = true
+              },
+              Constraint_UNDEF => {
+                  throw(Error_Undefined())
+              },
+              Constraint_NOP => {
+                  EndOfInstruction()
+              },
+              _ => ()
+            }
+        };
+        if s == n & n != 31 then {
+            let c : Constraint = ConstrainUnpredictable(Unpredictable_BASEOVERLAP);
+            assert(c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+            match c {
+              Constraint_UNKNOWN => {
+                  rn_unknown = true
+              },
+              Constraint_UNDEF => {
+                  throw(Error_Undefined())
+              },
+              Constraint_NOP => {
+                  EndOfInstruction()
+              },
+              _ => ()
+            }
+        };
+        ()
+    };
+    execute_aarch64_instrs_memory_exclusive_single(acqrel, datasize, elsize, memop, n, pair, regsize, rn_unknown, rt_unknown, s, t, t2, tagchecked)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitone, _, bitzero, bitzero, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, bitzero, bitone, bitone, bitone, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 592) = {
+    SEE = 592;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rt2 = Slice(__opcode, 10, 5);
+    let o0 = Slice(__opcode, 15, 1);
+    let Rs = Slice(__opcode, 16, 5);
+    let L = Slice(__opcode, 22, 1);
+    let size = Slice(__opcode, 30, 2);
+    if ((([__opcode[10]] != 0b1 | [__opcode[11]] != 0b1) | [__opcode[12]] != 0b1) | [__opcode[13]] != 0b1) | [__opcode[14]] != 0b1 then {
+        throw(Error_ConstrainedUnpredictable())
+    } else {
+        decode_stxr_aarch64_instrs_memory_exclusive_single(Rt, Rn, Rt2, o0, Rs, L, size)
+    }
+}
+
+val decode_stxrb_aarch64_instrs_memory_exclusive_single : (bits(5), bits(5), bits(5), bits(1), bits(5), bits(1), bits(2)) -> unit
+
+function decode_stxrb_aarch64_instrs_memory_exclusive_single (Rt, Rn, Rt2, o0, Rs, L, size) = {
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let 't2 = UInt(Rt2);
+    let 's = UInt(Rs);
+    let acqrel : bool = o0 == 0b1;
+    let pair : bool = false;
+    let memop : MemOp = if L == 0b1 then MemOp_LOAD else MemOp_STORE;
+    let 'elsize = (8 << UInt(size));
+    let 'regsize = if elsize == 64 then 64 else 32;
+    let 'datasize = if pair then elsize * 2 else elsize;
+    let tagchecked : bool = n != 31;
+    rt_unknown : bool = false;
+    rn_unknown : bool = false;
+    if (memop == MemOp_LOAD & pair) & t == t2 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_LDPOVERLAP);
+        assert(c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if memop == MemOp_STORE then {
+        if s == t | pair & s == t2 then {
+            let c : Constraint = ConstrainUnpredictable(Unpredictable_DATAOVERLAP);
+            assert(c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+            match c {
+              Constraint_UNKNOWN => {
+                  rt_unknown = true
+              },
+              Constraint_UNDEF => {
+                  throw(Error_Undefined())
+              },
+              Constraint_NOP => {
+                  EndOfInstruction()
+              },
+              _ => ()
+            }
+        };
+        if s == n & n != 31 then {
+            let c : Constraint = ConstrainUnpredictable(Unpredictable_BASEOVERLAP);
+            assert(c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+            match c {
+              Constraint_UNKNOWN => {
+                  rn_unknown = true
+              },
+              Constraint_UNDEF => {
+                  throw(Error_Undefined())
+              },
+              Constraint_NOP => {
+                  EndOfInstruction()
+              },
+              _ => ()
+            }
+        };
+        ()
+    };
+    execute_aarch64_instrs_memory_exclusive_single(acqrel, datasize, elsize, memop, n, pair, regsize, rn_unknown, rt_unknown, s, t, t2, tagchecked)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitzero, bitzero, bitzero, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, bitzero, bitone, bitone, bitone, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 593) = {
+    SEE = 593;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rt2 = Slice(__opcode, 10, 5);
+    let o0 = Slice(__opcode, 15, 1);
+    let Rs = Slice(__opcode, 16, 5);
+    let L = Slice(__opcode, 22, 1);
+    let size = Slice(__opcode, 30, 2);
+    if ((([__opcode[10]] != 0b1 | [__opcode[11]] != 0b1) | [__opcode[12]] != 0b1) | [__opcode[13]] != 0b1) | [__opcode[14]] != 0b1 then {
+        throw(Error_ConstrainedUnpredictable())
+    } else {
+        decode_stxrb_aarch64_instrs_memory_exclusive_single(Rt, Rn, Rt2, o0, Rs, L, size)
+    }
+}
+
+val decode_stxrh_aarch64_instrs_memory_exclusive_single : (bits(5), bits(5), bits(5), bits(1), bits(5), bits(1), bits(2)) -> unit
+
+function decode_stxrh_aarch64_instrs_memory_exclusive_single (Rt, Rn, Rt2, o0, Rs, L, size) = {
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let 't2 = UInt(Rt2);
+    let 's = UInt(Rs);
+    let acqrel : bool = o0 == 0b1;
+    let pair : bool = false;
+    let memop : MemOp = if L == 0b1 then MemOp_LOAD else MemOp_STORE;
+    let 'elsize = (8 << UInt(size));
+    let 'regsize = if elsize == 64 then 64 else 32;
+    let 'datasize = if pair then elsize * 2 else elsize;
+    let tagchecked : bool = n != 31;
+    rt_unknown : bool = false;
+    rn_unknown : bool = false;
+    if (memop == MemOp_LOAD & pair) & t == t2 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_LDPOVERLAP);
+        assert(c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if memop == MemOp_STORE then {
+        if s == t | pair & s == t2 then {
+            let c : Constraint = ConstrainUnpredictable(Unpredictable_DATAOVERLAP);
+            assert(c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+            match c {
+              Constraint_UNKNOWN => {
+                  rt_unknown = true
+              },
+              Constraint_UNDEF => {
+                  throw(Error_Undefined())
+              },
+              Constraint_NOP => {
+                  EndOfInstruction()
+              },
+              _ => ()
+            }
+        };
+        if s == n & n != 31 then {
+            let c : Constraint = ConstrainUnpredictable(Unpredictable_BASEOVERLAP);
+            assert(c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+            match c {
+              Constraint_UNKNOWN => {
+                  rn_unknown = true
+              },
+              Constraint_UNDEF => {
+                  throw(Error_Undefined())
+              },
+              Constraint_NOP => {
+                  EndOfInstruction()
+              },
+              _ => ()
+            }
+        };
+        ()
+    };
+    execute_aarch64_instrs_memory_exclusive_single(acqrel, datasize, elsize, memop, n, pair, regsize, rn_unknown, rt_unknown, s, t, t2, tagchecked)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitone, bitzero, bitzero, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, bitzero, bitone, bitone, bitone, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 594) = {
+    SEE = 594;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rt2 = Slice(__opcode, 10, 5);
+    let o0 = Slice(__opcode, 15, 1);
+    let Rs = Slice(__opcode, 16, 5);
+    let L = Slice(__opcode, 22, 1);
+    let size = Slice(__opcode, 30, 2);
+    if ((([__opcode[10]] != 0b1 | [__opcode[11]] != 0b1) | [__opcode[12]] != 0b1) | [__opcode[13]] != 0b1) | [__opcode[14]] != 0b1 then {
+        throw(Error_ConstrainedUnpredictable())
+    } else {
+        decode_stxrh_aarch64_instrs_memory_exclusive_single(Rt, Rn, Rt2, o0, Rs, L, size)
+    }
+}
+
+val execute_aarch64_instrs_memory_pair_general_no_alloc : forall 'datasize 'n ('nontemporal : Bool) ('postindex : Bool) ('rt_unknown : Bool) 't 't2 ('tagchecked : Bool) ('wback : Bool),
+  (0 <= 't2 & 't2 <= 31 & 0 <= 't & 't <= 31 & 0 <= 'n & 'n <= 31 & 'datasize in {32, 64}).
+  (int('datasize), MemOp, int('n), bool('nontemporal), bits(64), bool('postindex), bool('rt_unknown), int('t), int('t2), bool('tagchecked), bool('wback)) -> unit
+
+function execute_aarch64_instrs_memory_pair_general_no_alloc (datasize, memop, n, nontemporal, offset, postindex, rt_unknown, t, t2, tagchecked, wback) = {
+    address : bits(64) = undefined;
+    data1 : bits('datasize) = undefined;
+    data2 : bits('datasize) = undefined;
+    let 'dbytes = DIV(datasize, 8);
+    let privileged : bool = PSTATE.EL != EL0;
+    let accdesc : AccessDescriptor = CreateAccDescGPR(memop, nontemporal, privileged, tagchecked);
+    if n == 31 then {
+        CheckSPAlignment();
+        address = SP_read()
+    } else {
+        address = X_read(n, 64)
+    };
+    if not_bool(postindex) then {
+        address = address + offset
+    };
+    match memop {
+      MemOp_STORE => {
+          if rt_unknown & t == n then {
+              data1 = __UNKNOWN_bits(datasize)
+          } else {
+              data1 = X_read(t, datasize)
+          };
+          if rt_unknown & t2 == n then {
+              data2 = __UNKNOWN_bits(datasize)
+          } else {
+              data2 = X_read(t2, datasize)
+          };
+          Mem_set(address + 0, dbytes, accdesc) = data1;
+          Mem_set(address + dbytes, dbytes, accdesc) = data2
+      },
+      MemOp_LOAD => {
+          if HaveLSE2Ext() then {
+              let ispair : bool = true;
+              let full_data : bits(2 * 'datasize) = Mem_read__1(address, 2 * dbytes, accdesc, ispair);
+              if BigEndian(accdesc.acctype) then {
+                  data2 = full_data[datasize - 1 .. 0];
+                  data1 = full_data[2 * datasize - 1 .. datasize]
+              } else {
+                  data1 = full_data[datasize - 1 .. 0];
+                  data2 = full_data[2 * datasize - 1 .. datasize]
+              }
+          } else {
+              data1 = Mem_read(address + 0, dbytes, accdesc);
+              data2 = Mem_read(address + dbytes, dbytes, accdesc)
+          };
+          if rt_unknown then {
+              data1 = __UNKNOWN_bits(datasize);
+              data2 = __UNKNOWN_bits(datasize)
+          };
+          X_set(t, datasize) = data1;
+          X_set(t2, datasize) = data2
+      },
+      _ => ()
+    };
+    if wback then {
+        if postindex then {
+            address = address + offset
+        };
+        if n == 31 then {
+            SP_set() = address
+        } else {
+            X_set(n, 64) = address
+        }
+    };
+    if SPESampleInFlight then {
+        SPESampleGeneralPurposeLoadStore()
+    };
+    ()
+}
+
+val decode_ldnp_gen_aarch64_instrs_memory_pair_general_no_alloc : (bits(5), bits(5), bits(5), bits(7), bits(1), bits(2)) -> unit
+
+function decode_ldnp_gen_aarch64_instrs_memory_pair_general_no_alloc (Rt, Rn, Rt2, imm7, L, opc) = {
+    let wback : bool = false;
+    let postindex : bool = false;
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let 't2 = UInt(Rt2);
+    let nontemporal : bool = true;
+    let memop : MemOp = if L == 0b1 then MemOp_LOAD else MemOp_STORE;
+    if [opc[0]] == 0b1 then {
+        throw(Error_Undefined())
+    };
+    let 'scale = 2 + UInt([opc[1]]);
+    let 'datasize = (8 << scale);
+    let offset : bits(64) = LSL(SignExtend(imm7, 64), scale);
+    let tagchecked : bool = wback | n != 31;
+    rt_unknown : bool = false;
+    if memop == MemOp_LOAD & t == t2 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_LDPOVERLAP);
+        assert(c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    assert(constraint('datasize in {32, 64}));
+    execute_aarch64_instrs_memory_pair_general_no_alloc(datasize, memop, n, nontemporal, offset, postindex, rt_unknown, t, t2, tagchecked, wback)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([_, bitzero, bitone, bitzero, bitone, bitzero, bitzero, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 599) = {
+    SEE = 599;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rt2 = Slice(__opcode, 10, 5);
+    let imm7 = Slice(__opcode, 15, 7);
+    let L = Slice(__opcode, 22, 1);
+    let opc = Slice(__opcode, 30, 2);
+    decode_ldnp_gen_aarch64_instrs_memory_pair_general_no_alloc(Rt, Rn, Rt2, imm7, L, opc)
+}
+
+val decode_stnp_gen_aarch64_instrs_memory_pair_general_no_alloc : (bits(5), bits(5), bits(5), bits(7), bits(1), bits(2)) -> unit
+
+function decode_stnp_gen_aarch64_instrs_memory_pair_general_no_alloc (Rt, Rn, Rt2, imm7, L, opc) = {
+    let wback : bool = false;
+    let postindex : bool = false;
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let 't2 = UInt(Rt2);
+    let nontemporal : bool = true;
+    let memop : MemOp = if L == 0b1 then MemOp_LOAD else MemOp_STORE;
+    if [opc[0]] == 0b1 then {
+        throw(Error_Undefined())
+    };
+    let 'scale = 2 + UInt([opc[1]]);
+    let 'datasize = (8 << scale);
+    let offset : bits(64) = LSL(SignExtend(imm7, 64), scale);
+    let tagchecked : bool = wback | n != 31;
+    rt_unknown : bool = false;
+    if memop == MemOp_LOAD & t == t2 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_LDPOVERLAP);
+        assert(c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    assert(constraint('datasize in {32, 64}));
+    execute_aarch64_instrs_memory_pair_general_no_alloc(datasize, memop, n, nontemporal, offset, postindex, rt_unknown, t, t2, tagchecked, wback)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([_, bitzero, bitone, bitzero, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 600) = {
+    SEE = 600;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rt2 = Slice(__opcode, 10, 5);
+    let imm7 = Slice(__opcode, 15, 7);
+    let L = Slice(__opcode, 22, 1);
+    let opc = Slice(__opcode, 30, 2);
+    decode_stnp_gen_aarch64_instrs_memory_pair_general_no_alloc(Rt, Rn, Rt2, imm7, L, opc)
+}
+
+val execute_aarch64_instrs_memory_pair_general_post_idx : forall 'datasize ('is_signed : Bool) 'n ('nontemporal : Bool) ('postindex : Bool) ('rt_unknown : Bool) 't 't2 ('tagchecked : Bool) ('wb_unknown : Bool) ('wback : Bool),
+  (0 <= 't2 & 't2 <= 31 & 0 <= 't & 't <= 31 & 0 <= 'n & 'n <= 31 & 'datasize in {32, 64}).
+  (int('datasize), MemOp, int('n), bool('nontemporal), bits(64), bool('postindex), bool('rt_unknown), bool('is_signed), int('t), int('t2), bool('tagchecked), bool('wb_unknown), bool('wback)) -> unit
+
+function execute_aarch64_instrs_memory_pair_general_post_idx (datasize, memop, n, nontemporal, offset, postindex, rt_unknown, is_signed, t, t2, tagchecked, wb_unknown, wback) = {
+    address : bits(64) = undefined;
+    data1 : bits('datasize) = undefined;
+    data2 : bits('datasize) = undefined;
+    let 'dbytes = DIV(datasize, 8);
+    let privileged : bool = PSTATE.EL != EL0;
+    let accdesc : AccessDescriptor = CreateAccDescGPR(memop, nontemporal, privileged, tagchecked);
+    if n == 31 then {
+        CheckSPAlignment();
+        address = SP_read()
+    } else {
+        address = X_read(n, 64)
+    };
+    if not_bool(postindex) then {
+        address = address + offset
+    };
+    match memop {
+      MemOp_STORE => {
+          if rt_unknown & t == n then {
+              data1 = __UNKNOWN_bits(datasize)
+          } else {
+              data1 = X_read(t, datasize)
+          };
+          if rt_unknown & t2 == n then {
+              data2 = __UNKNOWN_bits(datasize)
+          } else {
+              data2 = X_read(t2, datasize)
+          };
+          if HaveLSE2Ext() then {
+              full_data : bits(2 * 'datasize) = undefined;
+              if BigEndian(accdesc.acctype) then {
+                  full_data = data1 @ data2
+              } else {
+                  full_data = data2 @ data1
+              };
+              let ispair : bool = true;
+              Mem_set__1(address, 2 * dbytes, accdesc, ispair) = full_data
+          } else {
+              Mem_set(address + 0, dbytes, accdesc) = data1;
+              Mem_set(address + dbytes, dbytes, accdesc) = data2
+          }
+      },
+      MemOp_LOAD => {
+          if HaveLSE2Ext() & not_bool(is_signed) then {
+              let ispair : bool = true;
+              let full_data : bits(2 * 'datasize) = Mem_read__1(address, 2 * dbytes, accdesc, ispair);
+              if BigEndian(accdesc.acctype) then {
+                  data2 = full_data[datasize - 1 .. 0];
+                  data1 = full_data[2 * datasize - 1 .. datasize]
+              } else {
+                  data1 = full_data[datasize - 1 .. 0];
+                  data2 = full_data[2 * datasize - 1 .. datasize]
+              }
+          } else {
+              data1 = Mem_read(address + 0, dbytes, accdesc);
+              data2 = Mem_read(address + dbytes, dbytes, accdesc)
+          };
+          if rt_unknown then {
+              data1 = __UNKNOWN_bits(datasize);
+              data2 = __UNKNOWN_bits(datasize)
+          };
+          if is_signed then {
+              X_set(t, 64) = SignExtend(data1, 64);
+              X_set(t2, 64) = SignExtend(data2, 64)
+          } else {
+              X_set(t, datasize) = data1;
+              X_set(t2, datasize) = data2
+          }
+      },
+      _ => ()
+    };
+    if wback then {
+        if wb_unknown then {
+            address = __UNKNOWN_bits(64)
+        } else if postindex then {
+            address = address + offset
+        } else ();
+        if n == 31 then {
+            SP_set() = address
+        } else {
+            X_set(n, 64) = address
+        }
+    };
+    if SPESampleInFlight then {
+        SPESampleGeneralPurposeLoadStore()
+    };
+    ()
+}
+
+val decode_ldp_gen_aarch64_instrs_memory_pair_general_post_idx : (bits(5), bits(5), bits(5), bits(7), bits(1), bits(2)) -> unit
+
+function decode_ldp_gen_aarch64_instrs_memory_pair_general_post_idx (Rt, Rn, Rt2, imm7, L, opc) = {
+    wback : bool = true;
+    let postindex : bool = true;
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let 't2 = UInt(Rt2);
+    let nontemporal : bool = false;
+    let memop : MemOp = if L == 0b1 then MemOp_LOAD else MemOp_STORE;
+    if (L @ [opc[0]]) == 0b01 | opc == 0b11 then {
+        throw(Error_Undefined())
+    };
+    let is_signed : bool = [opc[0]] != 0b0;
+    let 'scale = 2 + UInt([opc[1]]);
+    let 'datasize = (8 << scale);
+    let offset : bits(64) = LSL(SignExtend(imm7, 64), scale);
+    let tagchecked : bool = wback | n != 31;
+    rt_unknown : bool = false;
+    wb_unknown : bool = false;
+    if ((memop == MemOp_LOAD & wback) & (t == n | t2 == n)) & n != 31 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_WBOVERLAPLD);
+        assert(c == Constraint_WBSUPPRESS | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_WBSUPPRESS => {
+              wback = false
+          },
+          Constraint_UNKNOWN => {
+              wb_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if ((memop == MemOp_STORE & wback) & (t == n | t2 == n)) & n != 31 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_WBOVERLAPST);
+        assert(c == Constraint_NONE | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_NONE => {
+              rt_unknown = false
+          },
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if memop == MemOp_LOAD & t == t2 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_LDPOVERLAP);
+        assert(c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    assert(constraint('datasize in {32, 64}));
+    execute_aarch64_instrs_memory_pair_general_post_idx(datasize, memop, n, nontemporal, offset, postindex, rt_unknown, is_signed, t, t2, tagchecked, wb_unknown, wback)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([_, bitzero, bitone, bitzero, bitone, bitzero, bitzero, bitzero, bitone, bitone, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 609) = {
+    SEE = 609;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rt2 = Slice(__opcode, 10, 5);
+    let imm7 = Slice(__opcode, 15, 7);
+    let L = Slice(__opcode, 22, 1);
+    let opc = Slice(__opcode, 30, 2);
+    decode_ldp_gen_aarch64_instrs_memory_pair_general_post_idx(Rt, Rn, Rt2, imm7, L, opc)
+}
+
+val decode_ldp_gen_aarch64_instrs_memory_pair_general_pre_idx : (bits(5), bits(5), bits(5), bits(7), bits(1), bits(2)) -> unit
+
+function decode_ldp_gen_aarch64_instrs_memory_pair_general_pre_idx (Rt, Rn, Rt2, imm7, L, opc) = {
+    wback : bool = true;
+    let postindex : bool = false;
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let 't2 = UInt(Rt2);
+    let nontemporal : bool = false;
+    let memop : MemOp = if L == 0b1 then MemOp_LOAD else MemOp_STORE;
+    if (L @ [opc[0]]) == 0b01 | opc == 0b11 then {
+        throw(Error_Undefined())
+    };
+    let is_signed : bool = [opc[0]] != 0b0;
+    let 'scale = 2 + UInt([opc[1]]);
+    let 'datasize = (8 << scale);
+    let offset : bits(64) = LSL(SignExtend(imm7, 64), scale);
+    let tagchecked : bool = wback | n != 31;
+    rt_unknown : bool = false;
+    wb_unknown : bool = false;
+    if ((memop == MemOp_LOAD & wback) & (t == n | t2 == n)) & n != 31 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_WBOVERLAPLD);
+        assert(c == Constraint_WBSUPPRESS | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_WBSUPPRESS => {
+              wback = false
+          },
+          Constraint_UNKNOWN => {
+              wb_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if ((memop == MemOp_STORE & wback) & (t == n | t2 == n)) & n != 31 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_WBOVERLAPST);
+        assert(c == Constraint_NONE | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_NONE => {
+              rt_unknown = false
+          },
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if memop == MemOp_LOAD & t == t2 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_LDPOVERLAP);
+        assert(c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    assert(constraint('datasize in {32, 64}));
+    execute_aarch64_instrs_memory_pair_general_post_idx(datasize, memop, n, nontemporal, offset, postindex, rt_unknown, is_signed, t, t2, tagchecked, wb_unknown, wback)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([_, bitzero, bitone, bitzero, bitone, bitzero, bitzero, bitone, bitone, bitone, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 610) = {
+    SEE = 610;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rt2 = Slice(__opcode, 10, 5);
+    let imm7 = Slice(__opcode, 15, 7);
+    let L = Slice(__opcode, 22, 1);
+    let opc = Slice(__opcode, 30, 2);
+    decode_ldp_gen_aarch64_instrs_memory_pair_general_pre_idx(Rt, Rn, Rt2, imm7, L, opc)
+}
+
+val decode_ldp_gen_aarch64_instrs_memory_pair_general_offset : (bits(5), bits(5), bits(5), bits(7), bits(1), bits(2)) -> unit
+
+function decode_ldp_gen_aarch64_instrs_memory_pair_general_offset (Rt, Rn, Rt2, imm7, L, opc) = {
+    wback : bool = false;
+    let postindex : bool = false;
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let 't2 = UInt(Rt2);
+    let nontemporal : bool = false;
+    let memop : MemOp = if L == 0b1 then MemOp_LOAD else MemOp_STORE;
+    if (L @ [opc[0]]) == 0b01 | opc == 0b11 then {
+        throw(Error_Undefined())
+    };
+    let is_signed : bool = [opc[0]] != 0b0;
+    let 'scale = 2 + UInt([opc[1]]);
+    let 'datasize = (8 << scale);
+    let offset : bits(64) = LSL(SignExtend(imm7, 64), scale);
+    let tagchecked : bool = wback | n != 31;
+    rt_unknown : bool = false;
+    wb_unknown : bool = false;
+    if ((memop == MemOp_LOAD & wback) & (t == n | t2 == n)) & n != 31 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_WBOVERLAPLD);
+        assert(c == Constraint_WBSUPPRESS | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_WBSUPPRESS => {
+              wback = false
+          },
+          Constraint_UNKNOWN => {
+              wb_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if ((memop == MemOp_STORE & wback) & (t == n | t2 == n)) & n != 31 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_WBOVERLAPST);
+        assert(c == Constraint_NONE | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_NONE => {
+              rt_unknown = false
+          },
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if memop == MemOp_LOAD & t == t2 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_LDPOVERLAP);
+        assert(c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    assert(constraint('datasize in {32, 64}));
+    execute_aarch64_instrs_memory_pair_general_post_idx(datasize, memop, n, nontemporal, offset, postindex, rt_unknown, is_signed, t, t2, tagchecked, wb_unknown, wback)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([_, bitzero, bitone, bitzero, bitone, bitzero, bitzero, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 611) = {
+    SEE = 611;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rt2 = Slice(__opcode, 10, 5);
+    let imm7 = Slice(__opcode, 15, 7);
+    let L = Slice(__opcode, 22, 1);
+    let opc = Slice(__opcode, 30, 2);
+    decode_ldp_gen_aarch64_instrs_memory_pair_general_offset(Rt, Rn, Rt2, imm7, L, opc)
+}
+
+val decode_ldpsw_aarch64_instrs_memory_pair_general_post_idx : (bits(5), bits(5), bits(5), bits(7), bits(1), bits(2)) -> unit
+
+function decode_ldpsw_aarch64_instrs_memory_pair_general_post_idx (Rt, Rn, Rt2, imm7, L, opc) = {
+    wback : bool = true;
+    let postindex : bool = true;
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let 't2 = UInt(Rt2);
+    let nontemporal : bool = false;
+    let memop : MemOp = if L == 0b1 then MemOp_LOAD else MemOp_STORE;
+    if (L @ [opc[0]]) == 0b01 | opc == 0b11 then {
+        throw(Error_Undefined())
+    };
+    let is_signed : bool = [opc[0]] != 0b0;
+    let 'scale = 2 + UInt([opc[1]]);
+    let 'datasize = (8 << scale);
+    let offset : bits(64) = LSL(SignExtend(imm7, 64), scale);
+    let tagchecked : bool = wback | n != 31;
+    rt_unknown : bool = false;
+    wb_unknown : bool = false;
+    if ((memop == MemOp_LOAD & wback) & (t == n | t2 == n)) & n != 31 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_WBOVERLAPLD);
+        assert(c == Constraint_WBSUPPRESS | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_WBSUPPRESS => {
+              wback = false
+          },
+          Constraint_UNKNOWN => {
+              wb_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if ((memop == MemOp_STORE & wback) & (t == n | t2 == n)) & n != 31 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_WBOVERLAPST);
+        assert(c == Constraint_NONE | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_NONE => {
+              rt_unknown = false
+          },
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if memop == MemOp_LOAD & t == t2 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_LDPOVERLAP);
+        assert(c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    assert(constraint('datasize in {32, 64}));
+    execute_aarch64_instrs_memory_pair_general_post_idx(datasize, memop, n, nontemporal, offset, postindex, rt_unknown, is_signed, t, t2, tagchecked, wb_unknown, wback)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitone, bitone, bitzero, bitone, bitzero, bitzero, bitzero, bitone, bitone, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 612) = {
+    SEE = 612;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rt2 = Slice(__opcode, 10, 5);
+    let imm7 = Slice(__opcode, 15, 7);
+    let L = Slice(__opcode, 22, 1);
+    let opc = Slice(__opcode, 30, 2);
+    decode_ldpsw_aarch64_instrs_memory_pair_general_post_idx(Rt, Rn, Rt2, imm7, L, opc)
+}
+
+val decode_ldpsw_aarch64_instrs_memory_pair_general_pre_idx : (bits(5), bits(5), bits(5), bits(7), bits(1), bits(2)) -> unit
+
+function decode_ldpsw_aarch64_instrs_memory_pair_general_pre_idx (Rt, Rn, Rt2, imm7, L, opc) = {
+    wback : bool = true;
+    let postindex : bool = false;
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let 't2 = UInt(Rt2);
+    let nontemporal : bool = false;
+    let memop : MemOp = if L == 0b1 then MemOp_LOAD else MemOp_STORE;
+    if (L @ [opc[0]]) == 0b01 | opc == 0b11 then {
+        throw(Error_Undefined())
+    };
+    let is_signed : bool = [opc[0]] != 0b0;
+    let 'scale = 2 + UInt([opc[1]]);
+    let 'datasize = (8 << scale);
+    let offset : bits(64) = LSL(SignExtend(imm7, 64), scale);
+    let tagchecked : bool = wback | n != 31;
+    rt_unknown : bool = false;
+    wb_unknown : bool = false;
+    if ((memop == MemOp_LOAD & wback) & (t == n | t2 == n)) & n != 31 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_WBOVERLAPLD);
+        assert(c == Constraint_WBSUPPRESS | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_WBSUPPRESS => {
+              wback = false
+          },
+          Constraint_UNKNOWN => {
+              wb_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if ((memop == MemOp_STORE & wback) & (t == n | t2 == n)) & n != 31 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_WBOVERLAPST);
+        assert(c == Constraint_NONE | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_NONE => {
+              rt_unknown = false
+          },
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if memop == MemOp_LOAD & t == t2 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_LDPOVERLAP);
+        assert(c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    assert(constraint('datasize in {32, 64}));
+    execute_aarch64_instrs_memory_pair_general_post_idx(datasize, memop, n, nontemporal, offset, postindex, rt_unknown, is_signed, t, t2, tagchecked, wb_unknown, wback)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitone, bitone, bitzero, bitone, bitzero, bitzero, bitone, bitone, bitone, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 613) = {
+    SEE = 613;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rt2 = Slice(__opcode, 10, 5);
+    let imm7 = Slice(__opcode, 15, 7);
+    let L = Slice(__opcode, 22, 1);
+    let opc = Slice(__opcode, 30, 2);
+    decode_ldpsw_aarch64_instrs_memory_pair_general_pre_idx(Rt, Rn, Rt2, imm7, L, opc)
+}
+
+val decode_ldpsw_aarch64_instrs_memory_pair_general_offset : (bits(5), bits(5), bits(5), bits(7), bits(1), bits(2)) -> unit
+
+function decode_ldpsw_aarch64_instrs_memory_pair_general_offset (Rt, Rn, Rt2, imm7, L, opc) = {
+    wback : bool = false;
+    let postindex : bool = false;
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let 't2 = UInt(Rt2);
+    let nontemporal : bool = false;
+    let memop : MemOp = if L == 0b1 then MemOp_LOAD else MemOp_STORE;
+    if (L @ [opc[0]]) == 0b01 | opc == 0b11 then {
+        throw(Error_Undefined())
+    };
+    let is_signed : bool = [opc[0]] != 0b0;
+    let 'scale = 2 + UInt([opc[1]]);
+    let 'datasize = (8 << scale);
+    let offset : bits(64) = LSL(SignExtend(imm7, 64), scale);
+    let tagchecked : bool = wback | n != 31;
+    rt_unknown : bool = false;
+    wb_unknown : bool = false;
+    if ((memop == MemOp_LOAD & wback) & (t == n | t2 == n)) & n != 31 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_WBOVERLAPLD);
+        assert(c == Constraint_WBSUPPRESS | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_WBSUPPRESS => {
+              wback = false
+          },
+          Constraint_UNKNOWN => {
+              wb_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if ((memop == MemOp_STORE & wback) & (t == n | t2 == n)) & n != 31 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_WBOVERLAPST);
+        assert(c == Constraint_NONE | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_NONE => {
+              rt_unknown = false
+          },
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if memop == MemOp_LOAD & t == t2 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_LDPOVERLAP);
+        assert(c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    assert(constraint('datasize in {32, 64}));
+    execute_aarch64_instrs_memory_pair_general_post_idx(datasize, memop, n, nontemporal, offset, postindex, rt_unknown, is_signed, t, t2, tagchecked, wb_unknown, wback)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitone, bitone, bitzero, bitone, bitzero, bitzero, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 614) = {
+    SEE = 614;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rt2 = Slice(__opcode, 10, 5);
+    let imm7 = Slice(__opcode, 15, 7);
+    let L = Slice(__opcode, 22, 1);
+    let opc = Slice(__opcode, 30, 2);
+    decode_ldpsw_aarch64_instrs_memory_pair_general_offset(Rt, Rn, Rt2, imm7, L, opc)
+}
+
+val decode_stp_gen_aarch64_instrs_memory_pair_general_post_idx : (bits(5), bits(5), bits(5), bits(7), bits(1), bits(2)) -> unit
+
+function decode_stp_gen_aarch64_instrs_memory_pair_general_post_idx (Rt, Rn, Rt2, imm7, L, opc) = {
+    wback : bool = true;
+    let postindex : bool = true;
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let 't2 = UInt(Rt2);
+    let nontemporal : bool = false;
+    let memop : MemOp = if L == 0b1 then MemOp_LOAD else MemOp_STORE;
+    if (L @ [opc[0]]) == 0b01 | opc == 0b11 then {
+        throw(Error_Undefined())
+    };
+    let is_signed : bool = [opc[0]] != 0b0;
+    let 'scale = 2 + UInt([opc[1]]);
+    let 'datasize = (8 << scale);
+    let offset : bits(64) = LSL(SignExtend(imm7, 64), scale);
+    let tagchecked : bool = wback | n != 31;
+    rt_unknown : bool = false;
+    wb_unknown : bool = false;
+    if ((memop == MemOp_LOAD & wback) & (t == n | t2 == n)) & n != 31 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_WBOVERLAPLD);
+        assert(c == Constraint_WBSUPPRESS | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_WBSUPPRESS => {
+              wback = false
+          },
+          Constraint_UNKNOWN => {
+              wb_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if ((memop == MemOp_STORE & wback) & (t == n | t2 == n)) & n != 31 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_WBOVERLAPST);
+        assert(c == Constraint_NONE | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_NONE => {
+              rt_unknown = false
+          },
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if memop == MemOp_LOAD & t == t2 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_LDPOVERLAP);
+        assert(c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    assert(constraint('datasize in {32, 64}));
+    execute_aarch64_instrs_memory_pair_general_post_idx(datasize, memop, n, nontemporal, offset, postindex, rt_unknown, is_signed, t, t2, tagchecked, wb_unknown, wback)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([_, bitzero, bitone, bitzero, bitone, bitzero, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 615) = {
+    SEE = 615;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rt2 = Slice(__opcode, 10, 5);
+    let imm7 = Slice(__opcode, 15, 7);
+    let L = Slice(__opcode, 22, 1);
+    let opc = Slice(__opcode, 30, 2);
+    decode_stp_gen_aarch64_instrs_memory_pair_general_post_idx(Rt, Rn, Rt2, imm7, L, opc)
+}
+
+val decode_stp_gen_aarch64_instrs_memory_pair_general_pre_idx : (bits(5), bits(5), bits(5), bits(7), bits(1), bits(2)) -> unit
+
+function decode_stp_gen_aarch64_instrs_memory_pair_general_pre_idx (Rt, Rn, Rt2, imm7, L, opc) = {
+    wback : bool = true;
+    let postindex : bool = false;
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let 't2 = UInt(Rt2);
+    let nontemporal : bool = false;
+    let memop : MemOp = if L == 0b1 then MemOp_LOAD else MemOp_STORE;
+    if (L @ [opc[0]]) == 0b01 | opc == 0b11 then {
+        throw(Error_Undefined())
+    };
+    let is_signed : bool = [opc[0]] != 0b0;
+    let 'scale = 2 + UInt([opc[1]]);
+    let 'datasize = (8 << scale);
+    let offset : bits(64) = LSL(SignExtend(imm7, 64), scale);
+    let tagchecked : bool = wback | n != 31;
+    rt_unknown : bool = false;
+    wb_unknown : bool = false;
+    if ((memop == MemOp_LOAD & wback) & (t == n | t2 == n)) & n != 31 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_WBOVERLAPLD);
+        assert(c == Constraint_WBSUPPRESS | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_WBSUPPRESS => {
+              wback = false
+          },
+          Constraint_UNKNOWN => {
+              wb_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if ((memop == MemOp_STORE & wback) & (t == n | t2 == n)) & n != 31 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_WBOVERLAPST);
+        assert(c == Constraint_NONE | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_NONE => {
+              rt_unknown = false
+          },
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if memop == MemOp_LOAD & t == t2 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_LDPOVERLAP);
+        assert(c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    assert(constraint('datasize in {32, 64}));
+    execute_aarch64_instrs_memory_pair_general_post_idx(datasize, memop, n, nontemporal, offset, postindex, rt_unknown, is_signed, t, t2, tagchecked, wb_unknown, wback)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([_, bitzero, bitone, bitzero, bitone, bitzero, bitzero, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 616) = {
+    SEE = 616;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rt2 = Slice(__opcode, 10, 5);
+    let imm7 = Slice(__opcode, 15, 7);
+    let L = Slice(__opcode, 22, 1);
+    let opc = Slice(__opcode, 30, 2);
+    decode_stp_gen_aarch64_instrs_memory_pair_general_pre_idx(Rt, Rn, Rt2, imm7, L, opc)
+}
+
+val decode_stp_gen_aarch64_instrs_memory_pair_general_offset : (bits(5), bits(5), bits(5), bits(7), bits(1), bits(2)) -> unit
+
+function decode_stp_gen_aarch64_instrs_memory_pair_general_offset (Rt, Rn, Rt2, imm7, L, opc) = {
+    wback : bool = false;
+    let postindex : bool = false;
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let 't2 = UInt(Rt2);
+    let nontemporal : bool = false;
+    let memop : MemOp = if L == 0b1 then MemOp_LOAD else MemOp_STORE;
+    if (L @ [opc[0]]) == 0b01 | opc == 0b11 then {
+        throw(Error_Undefined())
+    };
+    let is_signed : bool = [opc[0]] != 0b0;
+    let 'scale = 2 + UInt([opc[1]]);
+    let 'datasize = (8 << scale);
+    let offset : bits(64) = LSL(SignExtend(imm7, 64), scale);
+    let tagchecked : bool = wback | n != 31;
+    rt_unknown : bool = false;
+    wb_unknown : bool = false;
+    if ((memop == MemOp_LOAD & wback) & (t == n | t2 == n)) & n != 31 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_WBOVERLAPLD);
+        assert(c == Constraint_WBSUPPRESS | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_WBSUPPRESS => {
+              wback = false
+          },
+          Constraint_UNKNOWN => {
+              wb_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if ((memop == MemOp_STORE & wback) & (t == n | t2 == n)) & n != 31 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_WBOVERLAPST);
+        assert(c == Constraint_NONE | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_NONE => {
+              rt_unknown = false
+          },
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if memop == MemOp_LOAD & t == t2 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_LDPOVERLAP);
+        assert(c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    assert(constraint('datasize in {32, 64}));
+    execute_aarch64_instrs_memory_pair_general_post_idx(datasize, memop, n, nontemporal, offset, postindex, rt_unknown, is_signed, t, t2, tagchecked, wb_unknown, wback)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([_, bitzero, bitone, bitzero, bitone, bitzero, bitzero, bitone, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 617) = {
+    SEE = 617;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rt2 = Slice(__opcode, 10, 5);
+    let imm7 = Slice(__opcode, 15, 7);
+    let L = Slice(__opcode, 22, 1);
+    let opc = Slice(__opcode, 30, 2);
+    decode_stp_gen_aarch64_instrs_memory_pair_general_offset(Rt, Rn, Rt2, imm7, L, opc)
+}
+
+val execute_aarch64_instrs_memory_literal_general : forall ('is_signed : Bool) ('nontemporal : Bool) 'size 't ('tagchecked : Bool),
+  (0 <= 't & 't <= 31 & 'size in {4, 8}).
+  (MemOp, bool('nontemporal), bits(64), bool('is_signed), int('size), int('t), bool('tagchecked)) -> unit
+
+function execute_aarch64_instrs_memory_literal_general (memop, nontemporal, offset, is_signed, size, t, tagchecked) = {
+    let address : bits(64) = PC_read() + offset;
+    data : bits('size * 8) = undefined;
+    let privileged : bool = PSTATE.EL != EL0;
+    let accdesc : AccessDescriptor = CreateAccDescGPR(memop, nontemporal, privileged, tagchecked);
+    match memop {
+      MemOp_LOAD => {
+          let data : bits('size * 8) = Mem_read(address, size, accdesc);
+          if is_signed then {
+              X_set(t, 64) = SignExtend(data, 64)
+          } else {
+              X_set(t, size * 8) = data
+          }
+      },
+      MemOp_PREFETCH => {
+          Prefetch(address, t[4 .. 0])
+      },
+      _ => ()
+    };
+    if SPESampleInFlight then {
+        SPESampleGeneralPurposeLoadStore()
+    };
+    ()
+}
+
+val decode_ldr_lit_gen_aarch64_instrs_memory_literal_general : (bits(5), bits(19), bits(2)) -> unit
+
+function decode_ldr_lit_gen_aarch64_instrs_memory_literal_general (Rt, imm19, opc) = {
+    let 't = UInt(Rt);
+    memop : MemOp = MemOp_LOAD;
+    is_signed : bool = false;
+    let nontemporal : bool = false;
+    size : {4, 8} = 4;
+    match opc {
+      0b00 => {
+          size = 4
+      },
+      0b01 => {
+          size = 8
+      },
+      0b10 => {
+          size = 4;
+          is_signed = true
+      },
+      0b11 => {
+          memop = MemOp_PREFETCH
+      }
+    };
+    let 'size = size;
+    let offset : bits(64) = SignExtend(imm19 @ 0b00, 64);
+    let tagchecked : bool = false;
+    execute_aarch64_instrs_memory_literal_general(memop, nontemporal, offset, is_signed, size, t, tagchecked)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, _, bitzero, bitone, bitone, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 624) = {
+    SEE = 624;
+    let Rt = Slice(__opcode, 0, 5);
+    let imm19 = Slice(__opcode, 5, 19);
+    let opc = Slice(__opcode, 30, 2);
+    decode_ldr_lit_gen_aarch64_instrs_memory_literal_general(Rt, imm19, opc)
+}
+
+val decode_ldrsw_lit_aarch64_instrs_memory_literal_general : (bits(5), bits(19), bits(2)) -> unit
+
+function decode_ldrsw_lit_aarch64_instrs_memory_literal_general (Rt, imm19, opc) = {
+    let 't = UInt(Rt);
+    memop : MemOp = MemOp_LOAD;
+    is_signed : bool = false;
+    let nontemporal : bool = false;
+    size : {4, 8} = 4;
+    match opc {
+      0b00 => {
+          size = 4
+      },
+      0b01 => {
+          size = 8
+      },
+      0b10 => {
+          size = 4;
+          is_signed = true
+      },
+      0b11 => {
+          memop = MemOp_PREFETCH
+      }
+    };
+    let 'size = size;
+    let offset : bits(64) = SignExtend(imm19 @ 0b00, 64);
+    let tagchecked : bool = false;
+    execute_aarch64_instrs_memory_literal_general(memop, nontemporal, offset, is_signed, size, t, tagchecked)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitone, bitzero, bitzero, bitone, bitone, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 625) = {
+    SEE = 625;
+    let Rt = Slice(__opcode, 0, 5);
+    let imm19 = Slice(__opcode, 5, 19);
+    let opc = Slice(__opcode, 30, 2);
+    decode_ldrsw_lit_aarch64_instrs_memory_literal_general(Rt, imm19, opc)
+}
+
+val decode_prfm_lit_aarch64_instrs_memory_literal_general : (bits(5), bits(19), bits(2)) -> unit
+
+function decode_prfm_lit_aarch64_instrs_memory_literal_general (Rt, imm19, opc) = {
+    let 't = UInt(Rt);
+    memop : MemOp = MemOp_LOAD;
+    is_signed : bool = false;
+    let nontemporal : bool = false;
+    size : {4, 8} = 4;
+    match opc {
+      0b00 => {
+          size = 4
+      },
+      0b01 => {
+          size = 8
+      },
+      0b10 => {
+          size = 4;
+          is_signed = true
+      },
+      0b11 => {
+          memop = MemOp_PREFETCH
+      }
+    };
+    let 'size = size;
+    let offset : bits(64) = SignExtend(imm19 @ 0b00, 64);
+    let tagchecked : bool = false;
+    execute_aarch64_instrs_memory_literal_general(memop, nontemporal, offset, is_signed, size, t, tagchecked)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitone, bitone, bitzero, bitone, bitone, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 626) = {
+    SEE = 626;
+    let Rt = Slice(__opcode, 0, 5);
+    let imm19 = Slice(__opcode, 5, 19);
+    let opc = Slice(__opcode, 30, 2);
+    decode_prfm_lit_aarch64_instrs_memory_literal_general(Rt, imm19, opc)
+}
+
+val execute_aarch64_instrs_memory_single_general_immediate_signed_post_idx : forall 'datasize ('is_signed : Bool) 'n ('nontemporal : Bool) ('postindex : Bool) 'regsize ('rt_unknown : Bool) 't ('tagchecked : Bool) ('wb_unknown : Bool) ('wback : Bool),
+  (0 <= 't & 't <= 31 & 'regsize in {32, 64} & 0 <= 'n & 'n <= 31 & 'datasize in {8, 16, 32, 64}).
+  (int('datasize), MemOp, int('n), bool('nontemporal), bits(64), bool('postindex), int('regsize), bool('rt_unknown), bool('is_signed), int('t), bool('tagchecked), bool('wb_unknown), bool('wback)) -> unit
+
+function execute_aarch64_instrs_memory_single_general_immediate_signed_post_idx (datasize, memop, n, nontemporal, offset, postindex, regsize, rt_unknown, is_signed, t, tagchecked, wb_unknown, wback) = {
+    address : bits(64) = undefined;
+    data : bits('datasize) = undefined;
+    let privileged : bool = PSTATE.EL != EL0;
+    let accdesc : AccessDescriptor = CreateAccDescGPR(memop, nontemporal, privileged, tagchecked);
+    if n == 31 then {
+        if memop != MemOp_PREFETCH then {
+            CheckSPAlignment()
+        };
+        address = SP_read()
+    } else {
+        address = X_read(n, 64)
+    };
+    if not_bool(postindex) then {
+        address = address + offset
+    };
+    match memop {
+      MemOp_STORE => {
+          if rt_unknown then {
+              data = __UNKNOWN_bits(datasize)
+          } else {
+              data = X_read(t, datasize)
+          };
+          if not_bool(wback) then {
+              AArch64_SetLSInstructionSyndrome(DIV(datasize, 8), false, t, regsize == 64, false)
+          };
+          Mem_set(address, DIV(datasize, 8), accdesc) = data
+      },
+      MemOp_LOAD => {
+          if not_bool(wback) then {
+              AArch64_SetLSInstructionSyndrome(DIV(datasize, 8), is_signed, t, regsize == 64, false)
+          };
+          let data : bits('datasize) = Mem_read(address, DIV(datasize, 8), accdesc);
+          if is_signed then {
+              assert(constraint(('datasize > 0 & 'regsize >= 'datasize)));
+              X_set(t, regsize) = SignExtend(data, regsize)
+          } else {
+              assert(constraint(('datasize >= 0 & 'regsize >= 'datasize)));
+              X_set(t, regsize) = ZeroExtend(data, regsize)
+          }
+      },
+      MemOp_PREFETCH => {
+          Prefetch(address, t[4 .. 0])
+      }
+    };
+    if wback then {
+        if wb_unknown then {
+            address = __UNKNOWN_bits(64)
+        } else if postindex then {
+            address = address + offset
+        } else ();
+        if n == 31 then {
+            SP_set() = address
+        } else {
+            X_set(n, 64) = address
+        }
+    };
+    if SPESampleInFlight then {
+        SPESampleGeneralPurposeLoadStore()
+    };
+    ()
+}
+
+val decode_ldr_imm_gen_aarch64_instrs_memory_single_general_immediate_signed_post_idx : (bits(5), bits(5), bits(9), bits(2), bits(2)) -> unit
+
+function decode_ldr_imm_gen_aarch64_instrs_memory_single_general_immediate_signed_post_idx (Rt, Rn, imm9, opc, size) = {
+    wback : bool = true;
+    let postindex : bool = true;
+    let 'scale = UInt(size);
+    let offset : bits(64) = SignExtend(imm9, 64);
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let nontemporal : bool = false;
+    memop : MemOp = undefined;
+    is_signed : bool = undefined;
+    regsize : {32, 64} = 32;
+    if [opc[1]] == 0b0 then {
+        memop = if [opc[0]] == 0b1 then MemOp_LOAD else MemOp_STORE;
+        regsize = if size == 0b11 then 64 else 32;
+        is_signed = false
+    } else {
+        if size == 0b11 then {
+            throw(Error_Undefined())
+        } else {
+            memop = MemOp_LOAD;
+            if size == 0b10 & [opc[0]] == 0b1 then {
+                throw(Error_Undefined())
+            };
+            regsize = if [opc[0]] == 0b1 then 32 else 64;
+            is_signed = true
+        }
+    };
+    let 'regsize = regsize;
+    let 'datasize = (8 << scale);
+    let tagchecked : bool = memop != MemOp_PREFETCH & (wback | n != 31);
+    wb_unknown : bool = false;
+    rt_unknown : bool = false;
+    c : Constraint = undefined;
+    if ((memop == MemOp_LOAD & wback) & n == t) & n != 31 then {
+        c = ConstrainUnpredictable(Unpredictable_WBOVERLAPLD);
+        assert(c == Constraint_WBSUPPRESS | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_WBSUPPRESS => {
+              wback = false
+          },
+          Constraint_UNKNOWN => {
+              wb_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if ((memop == MemOp_STORE & wback) & n == t) & n != 31 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_WBOVERLAPST);
+        assert(c == Constraint_NONE | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_NONE => {
+              rt_unknown = false
+          },
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    execute_aarch64_instrs_memory_single_general_immediate_signed_post_idx(datasize, memop, n, nontemporal, offset, postindex, regsize, rt_unknown, is_signed, t, tagchecked, wb_unknown, wback)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitone, _, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 628) = {
+    SEE = 628;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let imm9 = Slice(__opcode, 12, 9);
+    let opc = Slice(__opcode, 22, 2);
+    let size = Slice(__opcode, 30, 2);
+    decode_ldr_imm_gen_aarch64_instrs_memory_single_general_immediate_signed_post_idx(Rt, Rn, imm9, opc, size)
+}
+
+val decode_ldr_imm_gen_aarch64_instrs_memory_single_general_immediate_signed_pre_idx : (bits(5), bits(5), bits(9), bits(2), bits(2)) -> unit
+
+function decode_ldr_imm_gen_aarch64_instrs_memory_single_general_immediate_signed_pre_idx (Rt, Rn, imm9, opc, size) = {
+    wback : bool = true;
+    let postindex : bool = false;
+    let 'scale = UInt(size);
+    let offset : bits(64) = SignExtend(imm9, 64);
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let nontemporal : bool = false;
+    memop : MemOp = undefined;
+    is_signed : bool = undefined;
+    regsize : {32, 64} = 32;
+    if [opc[1]] == 0b0 then {
+        memop = if [opc[0]] == 0b1 then MemOp_LOAD else MemOp_STORE;
+        regsize = if size == 0b11 then 64 else 32;
+        is_signed = false
+    } else {
+        if size == 0b11 then {
+            throw(Error_Undefined())
+        } else {
+            memop = MemOp_LOAD;
+            if size == 0b10 & [opc[0]] == 0b1 then {
+                throw(Error_Undefined())
+            };
+            regsize = if [opc[0]] == 0b1 then 32 else 64;
+            is_signed = true
+        }
+    };
+    let 'regsize = regsize;
+    let 'datasize = (8 << scale);
+    let tagchecked : bool = memop != MemOp_PREFETCH & (wback | n != 31);
+    wb_unknown : bool = false;
+    rt_unknown : bool = false;
+    c : Constraint = undefined;
+    if ((memop == MemOp_LOAD & wback) & n == t) & n != 31 then {
+        c = ConstrainUnpredictable(Unpredictable_WBOVERLAPLD);
+        assert(c == Constraint_WBSUPPRESS | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_WBSUPPRESS => {
+              wback = false
+          },
+          Constraint_UNKNOWN => {
+              wb_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if ((memop == MemOp_STORE & wback) & n == t) & n != 31 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_WBOVERLAPST);
+        assert(c == Constraint_NONE | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_NONE => {
+              rt_unknown = false
+          },
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    execute_aarch64_instrs_memory_single_general_immediate_signed_post_idx(datasize, memop, n, nontemporal, offset, postindex, regsize, rt_unknown, is_signed, t, tagchecked, wb_unknown, wback)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitone, _, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 629) = {
+    SEE = 629;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let imm9 = Slice(__opcode, 12, 9);
+    let opc = Slice(__opcode, 22, 2);
+    let size = Slice(__opcode, 30, 2);
+    decode_ldr_imm_gen_aarch64_instrs_memory_single_general_immediate_signed_pre_idx(Rt, Rn, imm9, opc, size)
+}
+
+val decode_ldr_imm_gen_aarch64_instrs_memory_single_general_immediate_unsigned : (bits(5), bits(5), bits(12), bits(2), bits(2)) -> unit
+
+function decode_ldr_imm_gen_aarch64_instrs_memory_single_general_immediate_unsigned (Rt, Rn, imm12, opc, size) = {
+    wback : bool = false;
+    let postindex : bool = false;
+    let 'scale = UInt(size);
+    let offset : bits(64) = LSL(ZeroExtend(imm12, 64), scale);
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let nontemporal : bool = false;
+    memop : MemOp = undefined;
+    is_signed : bool = undefined;
+    regsize : {32, 64} = 32;
+    if [opc[1]] == 0b0 then {
+        memop = if [opc[0]] == 0b1 then MemOp_LOAD else MemOp_STORE;
+        regsize = if size == 0b11 then 64 else 32;
+        is_signed = false
+    } else {
+        if size == 0b11 then {
+            throw(Error_Undefined())
+        } else {
+            memop = MemOp_LOAD;
+            if size == 0b10 & [opc[0]] == 0b1 then {
+                throw(Error_Undefined())
+            };
+            regsize = if [opc[0]] == 0b1 then 32 else 64;
+            is_signed = true
+        }
+    };
+    let 'regsize = regsize;
+    let 'datasize = (8 << scale);
+    let tagchecked : bool = memop != MemOp_PREFETCH & (wback | n != 31);
+    wb_unknown : bool = false;
+    rt_unknown : bool = false;
+    c : Constraint = undefined;
+    if ((memop == MemOp_LOAD & wback) & n == t) & n != 31 then {
+        c = ConstrainUnpredictable(Unpredictable_WBOVERLAPLD);
+        assert(c == Constraint_WBSUPPRESS | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_WBSUPPRESS => {
+              wback = false
+          },
+          Constraint_UNKNOWN => {
+              wb_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if ((memop == MemOp_STORE & wback) & n == t) & n != 31 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_WBOVERLAPST);
+        assert(c == Constraint_NONE | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_NONE => {
+              rt_unknown = false
+          },
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    execute_aarch64_instrs_memory_single_general_immediate_signed_post_idx(datasize, memop, n, nontemporal, offset, postindex, regsize, rt_unknown, is_signed, t, tagchecked, wb_unknown, wback)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitone, _, bitone, bitone, bitone, bitzero, bitzero, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 630) = {
+    SEE = 630;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let imm12 = Slice(__opcode, 10, 12);
+    let opc = Slice(__opcode, 22, 2);
+    let size = Slice(__opcode, 30, 2);
+    decode_ldr_imm_gen_aarch64_instrs_memory_single_general_immediate_unsigned(Rt, Rn, imm12, opc, size)
+}
+
+val decode_ldrb_imm_aarch64_instrs_memory_single_general_immediate_signed_post_idx : (bits(5), bits(5), bits(9), bits(2), bits(2)) -> unit
+
+function decode_ldrb_imm_aarch64_instrs_memory_single_general_immediate_signed_post_idx (Rt, Rn, imm9, opc, size) = {
+    wback : bool = true;
+    let postindex : bool = true;
+    let 'scale = UInt(size);
+    let offset : bits(64) = SignExtend(imm9, 64);
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let nontemporal : bool = false;
+    memop : MemOp = undefined;
+    is_signed : bool = undefined;
+    regsize : {32, 64} = 32;
+    if [opc[1]] == 0b0 then {
+        memop = if [opc[0]] == 0b1 then MemOp_LOAD else MemOp_STORE;
+        regsize = if size == 0b11 then 64 else 32;
+        is_signed = false
+    } else {
+        if size == 0b11 then {
+            throw(Error_Undefined())
+        } else {
+            memop = MemOp_LOAD;
+            if size == 0b10 & [opc[0]] == 0b1 then {
+                throw(Error_Undefined())
+            };
+            regsize = if [opc[0]] == 0b1 then 32 else 64;
+            is_signed = true
+        }
+    };
+    let 'regsize = regsize;
+    let 'datasize = (8 << scale);
+    let tagchecked : bool = memop != MemOp_PREFETCH & (wback | n != 31);
+    wb_unknown : bool = false;
+    rt_unknown : bool = false;
+    c : Constraint = undefined;
+    if ((memop == MemOp_LOAD & wback) & n == t) & n != 31 then {
+        c = ConstrainUnpredictable(Unpredictable_WBOVERLAPLD);
+        assert(c == Constraint_WBSUPPRESS | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_WBSUPPRESS => {
+              wback = false
+          },
+          Constraint_UNKNOWN => {
+              wb_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if ((memop == MemOp_STORE & wback) & n == t) & n != 31 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_WBOVERLAPST);
+        assert(c == Constraint_NONE | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_NONE => {
+              rt_unknown = false
+          },
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    execute_aarch64_instrs_memory_single_general_immediate_signed_post_idx(datasize, memop, n, nontemporal, offset, postindex, regsize, rt_unknown, is_signed, t, tagchecked, wb_unknown, wback)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 631) = {
+    SEE = 631;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let imm9 = Slice(__opcode, 12, 9);
+    let opc = Slice(__opcode, 22, 2);
+    let size = Slice(__opcode, 30, 2);
+    decode_ldrb_imm_aarch64_instrs_memory_single_general_immediate_signed_post_idx(Rt, Rn, imm9, opc, size)
+}
+
+val decode_ldrb_imm_aarch64_instrs_memory_single_general_immediate_signed_pre_idx : (bits(5), bits(5), bits(9), bits(2), bits(2)) -> unit
+
+function decode_ldrb_imm_aarch64_instrs_memory_single_general_immediate_signed_pre_idx (Rt, Rn, imm9, opc, size) = {
+    wback : bool = true;
+    let postindex : bool = false;
+    let 'scale = UInt(size);
+    let offset : bits(64) = SignExtend(imm9, 64);
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let nontemporal : bool = false;
+    memop : MemOp = undefined;
+    is_signed : bool = undefined;
+    regsize : {32, 64} = 32;
+    if [opc[1]] == 0b0 then {
+        memop = if [opc[0]] == 0b1 then MemOp_LOAD else MemOp_STORE;
+        regsize = if size == 0b11 then 64 else 32;
+        is_signed = false
+    } else {
+        if size == 0b11 then {
+            throw(Error_Undefined())
+        } else {
+            memop = MemOp_LOAD;
+            if size == 0b10 & [opc[0]] == 0b1 then {
+                throw(Error_Undefined())
+            };
+            regsize = if [opc[0]] == 0b1 then 32 else 64;
+            is_signed = true
+        }
+    };
+    let 'regsize = regsize;
+    let 'datasize = (8 << scale);
+    let tagchecked : bool = memop != MemOp_PREFETCH & (wback | n != 31);
+    wb_unknown : bool = false;
+    rt_unknown : bool = false;
+    c : Constraint = undefined;
+    if ((memop == MemOp_LOAD & wback) & n == t) & n != 31 then {
+        c = ConstrainUnpredictable(Unpredictable_WBOVERLAPLD);
+        assert(c == Constraint_WBSUPPRESS | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_WBSUPPRESS => {
+              wback = false
+          },
+          Constraint_UNKNOWN => {
+              wb_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if ((memop == MemOp_STORE & wback) & n == t) & n != 31 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_WBOVERLAPST);
+        assert(c == Constraint_NONE | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_NONE => {
+              rt_unknown = false
+          },
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    execute_aarch64_instrs_memory_single_general_immediate_signed_post_idx(datasize, memop, n, nontemporal, offset, postindex, regsize, rt_unknown, is_signed, t, tagchecked, wb_unknown, wback)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 632) = {
+    SEE = 632;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let imm9 = Slice(__opcode, 12, 9);
+    let opc = Slice(__opcode, 22, 2);
+    let size = Slice(__opcode, 30, 2);
+    decode_ldrb_imm_aarch64_instrs_memory_single_general_immediate_signed_pre_idx(Rt, Rn, imm9, opc, size)
+}
+
+val decode_ldrb_imm_aarch64_instrs_memory_single_general_immediate_unsigned : (bits(5), bits(5), bits(12), bits(2), bits(2)) -> unit
+
+function decode_ldrb_imm_aarch64_instrs_memory_single_general_immediate_unsigned (Rt, Rn, imm12, opc, size) = {
+    wback : bool = false;
+    let postindex : bool = false;
+    let 'scale = UInt(size);
+    let offset : bits(64) = LSL(ZeroExtend(imm12, 64), scale);
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let nontemporal : bool = false;
+    memop : MemOp = undefined;
+    is_signed : bool = undefined;
+    regsize : {32, 64} = 32;
+    if [opc[1]] == 0b0 then {
+        memop = if [opc[0]] == 0b1 then MemOp_LOAD else MemOp_STORE;
+        regsize = if size == 0b11 then 64 else 32;
+        is_signed = false
+    } else {
+        if size == 0b11 then {
+            throw(Error_Undefined())
+        } else {
+            memop = MemOp_LOAD;
+            if size == 0b10 & [opc[0]] == 0b1 then {
+                throw(Error_Undefined())
+            };
+            regsize = if [opc[0]] == 0b1 then 32 else 64;
+            is_signed = true
+        }
+    };
+    let 'regsize = regsize;
+    let 'datasize = (8 << scale);
+    let tagchecked : bool = memop != MemOp_PREFETCH & (wback | n != 31);
+    wb_unknown : bool = false;
+    rt_unknown : bool = false;
+    c : Constraint = undefined;
+    if ((memop == MemOp_LOAD & wback) & n == t) & n != 31 then {
+        c = ConstrainUnpredictable(Unpredictable_WBOVERLAPLD);
+        assert(c == Constraint_WBSUPPRESS | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_WBSUPPRESS => {
+              wback = false
+          },
+          Constraint_UNKNOWN => {
+              wb_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if ((memop == MemOp_STORE & wback) & n == t) & n != 31 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_WBOVERLAPST);
+        assert(c == Constraint_NONE | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_NONE => {
+              rt_unknown = false
+          },
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    execute_aarch64_instrs_memory_single_general_immediate_signed_post_idx(datasize, memop, n, nontemporal, offset, postindex, regsize, rt_unknown, is_signed, t, tagchecked, wb_unknown, wback)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 633) = {
+    SEE = 633;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let imm12 = Slice(__opcode, 10, 12);
+    let opc = Slice(__opcode, 22, 2);
+    let size = Slice(__opcode, 30, 2);
+    decode_ldrb_imm_aarch64_instrs_memory_single_general_immediate_unsigned(Rt, Rn, imm12, opc, size)
+}
+
+val decode_ldrh_imm_aarch64_instrs_memory_single_general_immediate_signed_post_idx : (bits(5), bits(5), bits(9), bits(2), bits(2)) -> unit
+
+function decode_ldrh_imm_aarch64_instrs_memory_single_general_immediate_signed_post_idx (Rt, Rn, imm9, opc, size) = {
+    wback : bool = true;
+    let postindex : bool = true;
+    let 'scale = UInt(size);
+    let offset : bits(64) = SignExtend(imm9, 64);
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let nontemporal : bool = false;
+    memop : MemOp = undefined;
+    is_signed : bool = undefined;
+    regsize : {32, 64} = 32;
+    if [opc[1]] == 0b0 then {
+        memop = if [opc[0]] == 0b1 then MemOp_LOAD else MemOp_STORE;
+        regsize = if size == 0b11 then 64 else 32;
+        is_signed = false
+    } else {
+        if size == 0b11 then {
+            throw(Error_Undefined())
+        } else {
+            memop = MemOp_LOAD;
+            if size == 0b10 & [opc[0]] == 0b1 then {
+                throw(Error_Undefined())
+            };
+            regsize = if [opc[0]] == 0b1 then 32 else 64;
+            is_signed = true
+        }
+    };
+    let 'regsize = regsize;
+    let 'datasize = (8 << scale);
+    let tagchecked : bool = memop != MemOp_PREFETCH & (wback | n != 31);
+    wb_unknown : bool = false;
+    rt_unknown : bool = false;
+    c : Constraint = undefined;
+    if ((memop == MemOp_LOAD & wback) & n == t) & n != 31 then {
+        c = ConstrainUnpredictable(Unpredictable_WBOVERLAPLD);
+        assert(c == Constraint_WBSUPPRESS | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_WBSUPPRESS => {
+              wback = false
+          },
+          Constraint_UNKNOWN => {
+              wb_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if ((memop == MemOp_STORE & wback) & n == t) & n != 31 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_WBOVERLAPST);
+        assert(c == Constraint_NONE | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_NONE => {
+              rt_unknown = false
+          },
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    execute_aarch64_instrs_memory_single_general_immediate_signed_post_idx(datasize, memop, n, nontemporal, offset, postindex, regsize, rt_unknown, is_signed, t, tagchecked, wb_unknown, wback)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 634) = {
+    SEE = 634;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let imm9 = Slice(__opcode, 12, 9);
+    let opc = Slice(__opcode, 22, 2);
+    let size = Slice(__opcode, 30, 2);
+    decode_ldrh_imm_aarch64_instrs_memory_single_general_immediate_signed_post_idx(Rt, Rn, imm9, opc, size)
+}
+
+val decode_ldrh_imm_aarch64_instrs_memory_single_general_immediate_signed_pre_idx : (bits(5), bits(5), bits(9), bits(2), bits(2)) -> unit
+
+function decode_ldrh_imm_aarch64_instrs_memory_single_general_immediate_signed_pre_idx (Rt, Rn, imm9, opc, size) = {
+    wback : bool = true;
+    let postindex : bool = false;
+    let 'scale = UInt(size);
+    let offset : bits(64) = SignExtend(imm9, 64);
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let nontemporal : bool = false;
+    memop : MemOp = undefined;
+    is_signed : bool = undefined;
+    regsize : {32, 64} = 32;
+    if [opc[1]] == 0b0 then {
+        memop = if [opc[0]] == 0b1 then MemOp_LOAD else MemOp_STORE;
+        regsize = if size == 0b11 then 64 else 32;
+        is_signed = false
+    } else {
+        if size == 0b11 then {
+            throw(Error_Undefined())
+        } else {
+            memop = MemOp_LOAD;
+            if size == 0b10 & [opc[0]] == 0b1 then {
+                throw(Error_Undefined())
+            };
+            regsize = if [opc[0]] == 0b1 then 32 else 64;
+            is_signed = true
+        }
+    };
+    let 'regsize = regsize;
+    let 'datasize = (8 << scale);
+    let tagchecked : bool = memop != MemOp_PREFETCH & (wback | n != 31);
+    wb_unknown : bool = false;
+    rt_unknown : bool = false;
+    c : Constraint = undefined;
+    if ((memop == MemOp_LOAD & wback) & n == t) & n != 31 then {
+        c = ConstrainUnpredictable(Unpredictable_WBOVERLAPLD);
+        assert(c == Constraint_WBSUPPRESS | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_WBSUPPRESS => {
+              wback = false
+          },
+          Constraint_UNKNOWN => {
+              wb_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if ((memop == MemOp_STORE & wback) & n == t) & n != 31 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_WBOVERLAPST);
+        assert(c == Constraint_NONE | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_NONE => {
+              rt_unknown = false
+          },
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    execute_aarch64_instrs_memory_single_general_immediate_signed_post_idx(datasize, memop, n, nontemporal, offset, postindex, regsize, rt_unknown, is_signed, t, tagchecked, wb_unknown, wback)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 635) = {
+    SEE = 635;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let imm9 = Slice(__opcode, 12, 9);
+    let opc = Slice(__opcode, 22, 2);
+    let size = Slice(__opcode, 30, 2);
+    decode_ldrh_imm_aarch64_instrs_memory_single_general_immediate_signed_pre_idx(Rt, Rn, imm9, opc, size)
+}
+
+val decode_ldrh_imm_aarch64_instrs_memory_single_general_immediate_unsigned : (bits(5), bits(5), bits(12), bits(2), bits(2)) -> unit
+
+function decode_ldrh_imm_aarch64_instrs_memory_single_general_immediate_unsigned (Rt, Rn, imm12, opc, size) = {
+    wback : bool = false;
+    let postindex : bool = false;
+    let 'scale = UInt(size);
+    let offset : bits(64) = LSL(ZeroExtend(imm12, 64), scale);
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let nontemporal : bool = false;
+    memop : MemOp = undefined;
+    is_signed : bool = undefined;
+    regsize : {32, 64} = 32;
+    if [opc[1]] == 0b0 then {
+        memop = if [opc[0]] == 0b1 then MemOp_LOAD else MemOp_STORE;
+        regsize = if size == 0b11 then 64 else 32;
+        is_signed = false
+    } else {
+        if size == 0b11 then {
+            throw(Error_Undefined())
+        } else {
+            memop = MemOp_LOAD;
+            if size == 0b10 & [opc[0]] == 0b1 then {
+                throw(Error_Undefined())
+            };
+            regsize = if [opc[0]] == 0b1 then 32 else 64;
+            is_signed = true
+        }
+    };
+    let 'regsize = regsize;
+    let 'datasize = (8 << scale);
+    let tagchecked : bool = memop != MemOp_PREFETCH & (wback | n != 31);
+    wb_unknown : bool = false;
+    rt_unknown : bool = false;
+    c : Constraint = undefined;
+    if ((memop == MemOp_LOAD & wback) & n == t) & n != 31 then {
+        c = ConstrainUnpredictable(Unpredictable_WBOVERLAPLD);
+        assert(c == Constraint_WBSUPPRESS | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_WBSUPPRESS => {
+              wback = false
+          },
+          Constraint_UNKNOWN => {
+              wb_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if ((memop == MemOp_STORE & wback) & n == t) & n != 31 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_WBOVERLAPST);
+        assert(c == Constraint_NONE | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_NONE => {
+              rt_unknown = false
+          },
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    execute_aarch64_instrs_memory_single_general_immediate_signed_post_idx(datasize, memop, n, nontemporal, offset, postindex, regsize, rt_unknown, is_signed, t, tagchecked, wb_unknown, wback)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 636) = {
+    SEE = 636;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let imm12 = Slice(__opcode, 10, 12);
+    let opc = Slice(__opcode, 22, 2);
+    let size = Slice(__opcode, 30, 2);
+    decode_ldrh_imm_aarch64_instrs_memory_single_general_immediate_unsigned(Rt, Rn, imm12, opc, size)
+}
+
+val decode_ldrsb_imm_aarch64_instrs_memory_single_general_immediate_signed_post_idx : (bits(5), bits(5), bits(9), bits(2), bits(2)) -> unit
+
+function decode_ldrsb_imm_aarch64_instrs_memory_single_general_immediate_signed_post_idx (Rt, Rn, imm9, opc, size) = {
+    wback : bool = true;
+    let postindex : bool = true;
+    let 'scale = UInt(size);
+    let offset : bits(64) = SignExtend(imm9, 64);
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let nontemporal : bool = false;
+    memop : MemOp = undefined;
+    is_signed : bool = undefined;
+    regsize : {32, 64} = 32;
+    if [opc[1]] == 0b0 then {
+        memop = if [opc[0]] == 0b1 then MemOp_LOAD else MemOp_STORE;
+        regsize = if size == 0b11 then 64 else 32;
+        is_signed = false
+    } else {
+        if size == 0b11 then {
+            throw(Error_Undefined())
+        } else {
+            memop = MemOp_LOAD;
+            if size == 0b10 & [opc[0]] == 0b1 then {
+                throw(Error_Undefined())
+            };
+            regsize = if [opc[0]] == 0b1 then 32 else 64;
+            is_signed = true
+        }
+    };
+    let 'regsize = regsize;
+    let 'datasize = (8 << scale);
+    let tagchecked : bool = memop != MemOp_PREFETCH & (wback | n != 31);
+    wb_unknown : bool = false;
+    rt_unknown : bool = false;
+    c : Constraint = undefined;
+    if ((memop == MemOp_LOAD & wback) & n == t) & n != 31 then {
+        c = ConstrainUnpredictable(Unpredictable_WBOVERLAPLD);
+        assert(c == Constraint_WBSUPPRESS | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_WBSUPPRESS => {
+              wback = false
+          },
+          Constraint_UNKNOWN => {
+              wb_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if ((memop == MemOp_STORE & wback) & n == t) & n != 31 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_WBOVERLAPST);
+        assert(c == Constraint_NONE | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_NONE => {
+              rt_unknown = false
+          },
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    execute_aarch64_instrs_memory_single_general_immediate_signed_post_idx(datasize, memop, n, nontemporal, offset, postindex, regsize, rt_unknown, is_signed, t, tagchecked, wb_unknown, wback)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitone, _, bitzero, _, _, _, _, _, _, _, _, _, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 637) = {
+    SEE = 637;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let imm9 = Slice(__opcode, 12, 9);
+    let opc = Slice(__opcode, 22, 2);
+    let size = Slice(__opcode, 30, 2);
+    decode_ldrsb_imm_aarch64_instrs_memory_single_general_immediate_signed_post_idx(Rt, Rn, imm9, opc, size)
+}
+
+val decode_ldrsb_imm_aarch64_instrs_memory_single_general_immediate_signed_pre_idx : (bits(5), bits(5), bits(9), bits(2), bits(2)) -> unit
+
+function decode_ldrsb_imm_aarch64_instrs_memory_single_general_immediate_signed_pre_idx (Rt, Rn, imm9, opc, size) = {
+    wback : bool = true;
+    let postindex : bool = false;
+    let 'scale = UInt(size);
+    let offset : bits(64) = SignExtend(imm9, 64);
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let nontemporal : bool = false;
+    memop : MemOp = undefined;
+    is_signed : bool = undefined;
+    regsize : {32, 64} = 32;
+    if [opc[1]] == 0b0 then {
+        memop = if [opc[0]] == 0b1 then MemOp_LOAD else MemOp_STORE;
+        regsize = if size == 0b11 then 64 else 32;
+        is_signed = false
+    } else {
+        if size == 0b11 then {
+            throw(Error_Undefined())
+        } else {
+            memop = MemOp_LOAD;
+            if size == 0b10 & [opc[0]] == 0b1 then {
+                throw(Error_Undefined())
+            };
+            regsize = if [opc[0]] == 0b1 then 32 else 64;
+            is_signed = true
+        }
+    };
+    let 'regsize = regsize;
+    let 'datasize = (8 << scale);
+    let tagchecked : bool = memop != MemOp_PREFETCH & (wback | n != 31);
+    wb_unknown : bool = false;
+    rt_unknown : bool = false;
+    c : Constraint = undefined;
+    if ((memop == MemOp_LOAD & wback) & n == t) & n != 31 then {
+        c = ConstrainUnpredictable(Unpredictable_WBOVERLAPLD);
+        assert(c == Constraint_WBSUPPRESS | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_WBSUPPRESS => {
+              wback = false
+          },
+          Constraint_UNKNOWN => {
+              wb_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if ((memop == MemOp_STORE & wback) & n == t) & n != 31 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_WBOVERLAPST);
+        assert(c == Constraint_NONE | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_NONE => {
+              rt_unknown = false
+          },
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    execute_aarch64_instrs_memory_single_general_immediate_signed_post_idx(datasize, memop, n, nontemporal, offset, postindex, regsize, rt_unknown, is_signed, t, tagchecked, wb_unknown, wback)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitone, _, bitzero, _, _, _, _, _, _, _, _, _, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 638) = {
+    SEE = 638;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let imm9 = Slice(__opcode, 12, 9);
+    let opc = Slice(__opcode, 22, 2);
+    let size = Slice(__opcode, 30, 2);
+    decode_ldrsb_imm_aarch64_instrs_memory_single_general_immediate_signed_pre_idx(Rt, Rn, imm9, opc, size)
+}
+
+val decode_ldrsb_imm_aarch64_instrs_memory_single_general_immediate_unsigned : (bits(5), bits(5), bits(12), bits(2), bits(2)) -> unit
+
+function decode_ldrsb_imm_aarch64_instrs_memory_single_general_immediate_unsigned (Rt, Rn, imm12, opc, size) = {
+    wback : bool = false;
+    let postindex : bool = false;
+    let 'scale = UInt(size);
+    let offset : bits(64) = LSL(ZeroExtend(imm12, 64), scale);
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let nontemporal : bool = false;
+    memop : MemOp = undefined;
+    is_signed : bool = undefined;
+    regsize : {32, 64} = 32;
+    if [opc[1]] == 0b0 then {
+        memop = if [opc[0]] == 0b1 then MemOp_LOAD else MemOp_STORE;
+        regsize = if size == 0b11 then 64 else 32;
+        is_signed = false
+    } else {
+        if size == 0b11 then {
+            throw(Error_Undefined())
+        } else {
+            memop = MemOp_LOAD;
+            if size == 0b10 & [opc[0]] == 0b1 then {
+                throw(Error_Undefined())
+            };
+            regsize = if [opc[0]] == 0b1 then 32 else 64;
+            is_signed = true
+        }
+    };
+    let 'regsize = regsize;
+    let 'datasize = (8 << scale);
+    let tagchecked : bool = memop != MemOp_PREFETCH & (wback | n != 31);
+    wb_unknown : bool = false;
+    rt_unknown : bool = false;
+    c : Constraint = undefined;
+    if ((memop == MemOp_LOAD & wback) & n == t) & n != 31 then {
+        c = ConstrainUnpredictable(Unpredictable_WBOVERLAPLD);
+        assert(c == Constraint_WBSUPPRESS | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_WBSUPPRESS => {
+              wback = false
+          },
+          Constraint_UNKNOWN => {
+              wb_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if ((memop == MemOp_STORE & wback) & n == t) & n != 31 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_WBOVERLAPST);
+        assert(c == Constraint_NONE | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_NONE => {
+              rt_unknown = false
+          },
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    execute_aarch64_instrs_memory_single_general_immediate_signed_post_idx(datasize, memop, n, nontemporal, offset, postindex, regsize, rt_unknown, is_signed, t, tagchecked, wb_unknown, wback)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitone, bitone, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 639) = {
+    SEE = 639;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let imm12 = Slice(__opcode, 10, 12);
+    let opc = Slice(__opcode, 22, 2);
+    let size = Slice(__opcode, 30, 2);
+    decode_ldrsb_imm_aarch64_instrs_memory_single_general_immediate_unsigned(Rt, Rn, imm12, opc, size)
+}
+
+val decode_ldrsh_imm_aarch64_instrs_memory_single_general_immediate_signed_post_idx : (bits(5), bits(5), bits(9), bits(2), bits(2)) -> unit
+
+function decode_ldrsh_imm_aarch64_instrs_memory_single_general_immediate_signed_post_idx (Rt, Rn, imm9, opc, size) = {
+    wback : bool = true;
+    let postindex : bool = true;
+    let 'scale = UInt(size);
+    let offset : bits(64) = SignExtend(imm9, 64);
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let nontemporal : bool = false;
+    memop : MemOp = undefined;
+    is_signed : bool = undefined;
+    regsize : {32, 64} = 32;
+    if [opc[1]] == 0b0 then {
+        memop = if [opc[0]] == 0b1 then MemOp_LOAD else MemOp_STORE;
+        regsize = if size == 0b11 then 64 else 32;
+        is_signed = false
+    } else {
+        if size == 0b11 then {
+            throw(Error_Undefined())
+        } else {
+            memop = MemOp_LOAD;
+            if size == 0b10 & [opc[0]] == 0b1 then {
+                throw(Error_Undefined())
+            };
+            regsize = if [opc[0]] == 0b1 then 32 else 64;
+            is_signed = true
+        }
+    };
+    let 'regsize = regsize;
+    let 'datasize = (8 << scale);
+    let tagchecked : bool = memop != MemOp_PREFETCH & (wback | n != 31);
+    wb_unknown : bool = false;
+    rt_unknown : bool = false;
+    c : Constraint = undefined;
+    if ((memop == MemOp_LOAD & wback) & n == t) & n != 31 then {
+        c = ConstrainUnpredictable(Unpredictable_WBOVERLAPLD);
+        assert(c == Constraint_WBSUPPRESS | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_WBSUPPRESS => {
+              wback = false
+          },
+          Constraint_UNKNOWN => {
+              wb_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if ((memop == MemOp_STORE & wback) & n == t) & n != 31 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_WBOVERLAPST);
+        assert(c == Constraint_NONE | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_NONE => {
+              rt_unknown = false
+          },
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    execute_aarch64_instrs_memory_single_general_immediate_signed_post_idx(datasize, memop, n, nontemporal, offset, postindex, regsize, rt_unknown, is_signed, t, tagchecked, wb_unknown, wback)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitone, _, bitzero, _, _, _, _, _, _, _, _, _, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 640) = {
+    SEE = 640;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let imm9 = Slice(__opcode, 12, 9);
+    let opc = Slice(__opcode, 22, 2);
+    let size = Slice(__opcode, 30, 2);
+    decode_ldrsh_imm_aarch64_instrs_memory_single_general_immediate_signed_post_idx(Rt, Rn, imm9, opc, size)
+}
+
+val decode_ldrsh_imm_aarch64_instrs_memory_single_general_immediate_signed_pre_idx : (bits(5), bits(5), bits(9), bits(2), bits(2)) -> unit
+
+function decode_ldrsh_imm_aarch64_instrs_memory_single_general_immediate_signed_pre_idx (Rt, Rn, imm9, opc, size) = {
+    wback : bool = true;
+    let postindex : bool = false;
+    let 'scale = UInt(size);
+    let offset : bits(64) = SignExtend(imm9, 64);
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let nontemporal : bool = false;
+    memop : MemOp = undefined;
+    is_signed : bool = undefined;
+    regsize : {32, 64} = 32;
+    if [opc[1]] == 0b0 then {
+        memop = if [opc[0]] == 0b1 then MemOp_LOAD else MemOp_STORE;
+        regsize = if size == 0b11 then 64 else 32;
+        is_signed = false
+    } else {
+        if size == 0b11 then {
+            throw(Error_Undefined())
+        } else {
+            memop = MemOp_LOAD;
+            if size == 0b10 & [opc[0]] == 0b1 then {
+                throw(Error_Undefined())
+            };
+            regsize = if [opc[0]] == 0b1 then 32 else 64;
+            is_signed = true
+        }
+    };
+    let 'regsize = regsize;
+    let 'datasize = (8 << scale);
+    let tagchecked : bool = memop != MemOp_PREFETCH & (wback | n != 31);
+    wb_unknown : bool = false;
+    rt_unknown : bool = false;
+    c : Constraint = undefined;
+    if ((memop == MemOp_LOAD & wback) & n == t) & n != 31 then {
+        c = ConstrainUnpredictable(Unpredictable_WBOVERLAPLD);
+        assert(c == Constraint_WBSUPPRESS | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_WBSUPPRESS => {
+              wback = false
+          },
+          Constraint_UNKNOWN => {
+              wb_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if ((memop == MemOp_STORE & wback) & n == t) & n != 31 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_WBOVERLAPST);
+        assert(c == Constraint_NONE | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_NONE => {
+              rt_unknown = false
+          },
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    execute_aarch64_instrs_memory_single_general_immediate_signed_post_idx(datasize, memop, n, nontemporal, offset, postindex, regsize, rt_unknown, is_signed, t, tagchecked, wb_unknown, wback)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitone, _, bitzero, _, _, _, _, _, _, _, _, _, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 641) = {
+    SEE = 641;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let imm9 = Slice(__opcode, 12, 9);
+    let opc = Slice(__opcode, 22, 2);
+    let size = Slice(__opcode, 30, 2);
+    decode_ldrsh_imm_aarch64_instrs_memory_single_general_immediate_signed_pre_idx(Rt, Rn, imm9, opc, size)
+}
+
+val decode_ldrsh_imm_aarch64_instrs_memory_single_general_immediate_unsigned : (bits(5), bits(5), bits(12), bits(2), bits(2)) -> unit
+
+function decode_ldrsh_imm_aarch64_instrs_memory_single_general_immediate_unsigned (Rt, Rn, imm12, opc, size) = {
+    wback : bool = false;
+    let postindex : bool = false;
+    let 'scale = UInt(size);
+    let offset : bits(64) = LSL(ZeroExtend(imm12, 64), scale);
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let nontemporal : bool = false;
+    memop : MemOp = undefined;
+    is_signed : bool = undefined;
+    regsize : {32, 64} = 32;
+    if [opc[1]] == 0b0 then {
+        memop = if [opc[0]] == 0b1 then MemOp_LOAD else MemOp_STORE;
+        regsize = if size == 0b11 then 64 else 32;
+        is_signed = false
+    } else {
+        if size == 0b11 then {
+            throw(Error_Undefined())
+        } else {
+            memop = MemOp_LOAD;
+            if size == 0b10 & [opc[0]] == 0b1 then {
+                throw(Error_Undefined())
+            };
+            regsize = if [opc[0]] == 0b1 then 32 else 64;
+            is_signed = true
+        }
+    };
+    let 'regsize = regsize;
+    let 'datasize = (8 << scale);
+    let tagchecked : bool = memop != MemOp_PREFETCH & (wback | n != 31);
+    wb_unknown : bool = false;
+    rt_unknown : bool = false;
+    c : Constraint = undefined;
+    if ((memop == MemOp_LOAD & wback) & n == t) & n != 31 then {
+        c = ConstrainUnpredictable(Unpredictable_WBOVERLAPLD);
+        assert(c == Constraint_WBSUPPRESS | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_WBSUPPRESS => {
+              wback = false
+          },
+          Constraint_UNKNOWN => {
+              wb_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if ((memop == MemOp_STORE & wback) & n == t) & n != 31 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_WBOVERLAPST);
+        assert(c == Constraint_NONE | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_NONE => {
+              rt_unknown = false
+          },
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    execute_aarch64_instrs_memory_single_general_immediate_signed_post_idx(datasize, memop, n, nontemporal, offset, postindex, regsize, rt_unknown, is_signed, t, tagchecked, wb_unknown, wback)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, bitone, bitone, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 642) = {
+    SEE = 642;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let imm12 = Slice(__opcode, 10, 12);
+    let opc = Slice(__opcode, 22, 2);
+    let size = Slice(__opcode, 30, 2);
+    decode_ldrsh_imm_aarch64_instrs_memory_single_general_immediate_unsigned(Rt, Rn, imm12, opc, size)
+}
+
+val decode_ldrsw_imm_aarch64_instrs_memory_single_general_immediate_signed_post_idx : (bits(5), bits(5), bits(9), bits(2), bits(2)) -> unit
+
+function decode_ldrsw_imm_aarch64_instrs_memory_single_general_immediate_signed_post_idx (Rt, Rn, imm9, opc, size) = {
+    wback : bool = true;
+    let postindex : bool = true;
+    let 'scale = UInt(size);
+    let offset : bits(64) = SignExtend(imm9, 64);
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let nontemporal : bool = false;
+    memop : MemOp = undefined;
+    is_signed : bool = undefined;
+    regsize : {32, 64} = 32;
+    if [opc[1]] == 0b0 then {
+        memop = if [opc[0]] == 0b1 then MemOp_LOAD else MemOp_STORE;
+        regsize = if size == 0b11 then 64 else 32;
+        is_signed = false
+    } else {
+        if size == 0b11 then {
+            throw(Error_Undefined())
+        } else {
+            memop = MemOp_LOAD;
+            if size == 0b10 & [opc[0]] == 0b1 then {
+                throw(Error_Undefined())
+            };
+            regsize = if [opc[0]] == 0b1 then 32 else 64;
+            is_signed = true
+        }
+    };
+    let 'regsize = regsize;
+    let 'datasize = (8 << scale);
+    let tagchecked : bool = memop != MemOp_PREFETCH & (wback | n != 31);
+    wb_unknown : bool = false;
+    rt_unknown : bool = false;
+    c : Constraint = undefined;
+    if ((memop == MemOp_LOAD & wback) & n == t) & n != 31 then {
+        c = ConstrainUnpredictable(Unpredictable_WBOVERLAPLD);
+        assert(c == Constraint_WBSUPPRESS | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_WBSUPPRESS => {
+              wback = false
+          },
+          Constraint_UNKNOWN => {
+              wb_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if ((memop == MemOp_STORE & wback) & n == t) & n != 31 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_WBOVERLAPST);
+        assert(c == Constraint_NONE | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_NONE => {
+              rt_unknown = false
+          },
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    execute_aarch64_instrs_memory_single_general_immediate_signed_post_idx(datasize, memop, n, nontemporal, offset, postindex, regsize, rt_unknown, is_signed, t, tagchecked, wb_unknown, wback)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitone, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitone, bitzero, bitzero, _, _, _, _, _, _, _, _, _, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 643) = {
+    SEE = 643;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let imm9 = Slice(__opcode, 12, 9);
+    let opc = Slice(__opcode, 22, 2);
+    let size = Slice(__opcode, 30, 2);
+    decode_ldrsw_imm_aarch64_instrs_memory_single_general_immediate_signed_post_idx(Rt, Rn, imm9, opc, size)
+}
+
+val decode_ldrsw_imm_aarch64_instrs_memory_single_general_immediate_signed_pre_idx : (bits(5), bits(5), bits(9), bits(2), bits(2)) -> unit
+
+function decode_ldrsw_imm_aarch64_instrs_memory_single_general_immediate_signed_pre_idx (Rt, Rn, imm9, opc, size) = {
+    wback : bool = true;
+    let postindex : bool = false;
+    let 'scale = UInt(size);
+    let offset : bits(64) = SignExtend(imm9, 64);
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let nontemporal : bool = false;
+    memop : MemOp = undefined;
+    is_signed : bool = undefined;
+    regsize : {32, 64} = 32;
+    if [opc[1]] == 0b0 then {
+        memop = if [opc[0]] == 0b1 then MemOp_LOAD else MemOp_STORE;
+        regsize = if size == 0b11 then 64 else 32;
+        is_signed = false
+    } else {
+        if size == 0b11 then {
+            throw(Error_Undefined())
+        } else {
+            memop = MemOp_LOAD;
+            if size == 0b10 & [opc[0]] == 0b1 then {
+                throw(Error_Undefined())
+            };
+            regsize = if [opc[0]] == 0b1 then 32 else 64;
+            is_signed = true
+        }
+    };
+    let 'regsize = regsize;
+    let 'datasize = (8 << scale);
+    let tagchecked : bool = memop != MemOp_PREFETCH & (wback | n != 31);
+    wb_unknown : bool = false;
+    rt_unknown : bool = false;
+    c : Constraint = undefined;
+    if ((memop == MemOp_LOAD & wback) & n == t) & n != 31 then {
+        c = ConstrainUnpredictable(Unpredictable_WBOVERLAPLD);
+        assert(c == Constraint_WBSUPPRESS | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_WBSUPPRESS => {
+              wback = false
+          },
+          Constraint_UNKNOWN => {
+              wb_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if ((memop == MemOp_STORE & wback) & n == t) & n != 31 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_WBOVERLAPST);
+        assert(c == Constraint_NONE | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_NONE => {
+              rt_unknown = false
+          },
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    execute_aarch64_instrs_memory_single_general_immediate_signed_post_idx(datasize, memop, n, nontemporal, offset, postindex, regsize, rt_unknown, is_signed, t, tagchecked, wb_unknown, wback)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitone, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitone, bitzero, bitzero, _, _, _, _, _, _, _, _, _, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 644) = {
+    SEE = 644;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let imm9 = Slice(__opcode, 12, 9);
+    let opc = Slice(__opcode, 22, 2);
+    let size = Slice(__opcode, 30, 2);
+    decode_ldrsw_imm_aarch64_instrs_memory_single_general_immediate_signed_pre_idx(Rt, Rn, imm9, opc, size)
+}
+
+val decode_ldrsw_imm_aarch64_instrs_memory_single_general_immediate_unsigned : (bits(5), bits(5), bits(12), bits(2), bits(2)) -> unit
+
+function decode_ldrsw_imm_aarch64_instrs_memory_single_general_immediate_unsigned (Rt, Rn, imm12, opc, size) = {
+    wback : bool = false;
+    let postindex : bool = false;
+    let 'scale = UInt(size);
+    let offset : bits(64) = LSL(ZeroExtend(imm12, 64), scale);
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let nontemporal : bool = false;
+    memop : MemOp = undefined;
+    is_signed : bool = undefined;
+    regsize : {32, 64} = 32;
+    if [opc[1]] == 0b0 then {
+        memop = if [opc[0]] == 0b1 then MemOp_LOAD else MemOp_STORE;
+        regsize = if size == 0b11 then 64 else 32;
+        is_signed = false
+    } else {
+        if size == 0b11 then {
+            throw(Error_Undefined())
+        } else {
+            memop = MemOp_LOAD;
+            if size == 0b10 & [opc[0]] == 0b1 then {
+                throw(Error_Undefined())
+            };
+            regsize = if [opc[0]] == 0b1 then 32 else 64;
+            is_signed = true
+        }
+    };
+    let 'regsize = regsize;
+    let 'datasize = (8 << scale);
+    let tagchecked : bool = memop != MemOp_PREFETCH & (wback | n != 31);
+    wb_unknown : bool = false;
+    rt_unknown : bool = false;
+    c : Constraint = undefined;
+    if ((memop == MemOp_LOAD & wback) & n == t) & n != 31 then {
+        c = ConstrainUnpredictable(Unpredictable_WBOVERLAPLD);
+        assert(c == Constraint_WBSUPPRESS | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_WBSUPPRESS => {
+              wback = false
+          },
+          Constraint_UNKNOWN => {
+              wb_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if ((memop == MemOp_STORE & wback) & n == t) & n != 31 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_WBOVERLAPST);
+        assert(c == Constraint_NONE | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_NONE => {
+              rt_unknown = false
+          },
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    execute_aarch64_instrs_memory_single_general_immediate_signed_post_idx(datasize, memop, n, nontemporal, offset, postindex, regsize, rt_unknown, is_signed, t, tagchecked, wb_unknown, wback)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitone, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 645) = {
+    SEE = 645;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let imm12 = Slice(__opcode, 10, 12);
+    let opc = Slice(__opcode, 22, 2);
+    let size = Slice(__opcode, 30, 2);
+    decode_ldrsw_imm_aarch64_instrs_memory_single_general_immediate_unsigned(Rt, Rn, imm12, opc, size)
+}
+
+val decode_str_imm_gen_aarch64_instrs_memory_single_general_immediate_signed_post_idx : (bits(5), bits(5), bits(9), bits(2), bits(2)) -> unit
+
+function decode_str_imm_gen_aarch64_instrs_memory_single_general_immediate_signed_post_idx (Rt, Rn, imm9, opc, size) = {
+    wback : bool = true;
+    let postindex : bool = true;
+    let 'scale = UInt(size);
+    let offset : bits(64) = SignExtend(imm9, 64);
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let nontemporal : bool = false;
+    memop : MemOp = undefined;
+    is_signed : bool = undefined;
+    regsize : {32, 64} = 32;
+    if [opc[1]] == 0b0 then {
+        memop = if [opc[0]] == 0b1 then MemOp_LOAD else MemOp_STORE;
+        regsize = if size == 0b11 then 64 else 32;
+        is_signed = false
+    } else {
+        if size == 0b11 then {
+            throw(Error_Undefined())
+        } else {
+            memop = MemOp_LOAD;
+            if size == 0b10 & [opc[0]] == 0b1 then {
+                throw(Error_Undefined())
+            };
+            regsize = if [opc[0]] == 0b1 then 32 else 64;
+            is_signed = true
+        }
+    };
+    let 'regsize = regsize;
+    let 'datasize = (8 << scale);
+    let tagchecked : bool = memop != MemOp_PREFETCH & (wback | n != 31);
+    wb_unknown : bool = false;
+    rt_unknown : bool = false;
+    c : Constraint = undefined;
+    if ((memop == MemOp_LOAD & wback) & n == t) & n != 31 then {
+        c = ConstrainUnpredictable(Unpredictable_WBOVERLAPLD);
+        assert(c == Constraint_WBSUPPRESS | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_WBSUPPRESS => {
+              wback = false
+          },
+          Constraint_UNKNOWN => {
+              wb_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if ((memop == MemOp_STORE & wback) & n == t) & n != 31 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_WBOVERLAPST);
+        assert(c == Constraint_NONE | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_NONE => {
+              rt_unknown = false
+          },
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    execute_aarch64_instrs_memory_single_general_immediate_signed_post_idx(datasize, memop, n, nontemporal, offset, postindex, regsize, rt_unknown, is_signed, t, tagchecked, wb_unknown, wback)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitone, _, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 646) = {
+    SEE = 646;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let imm9 = Slice(__opcode, 12, 9);
+    let opc = Slice(__opcode, 22, 2);
+    let size = Slice(__opcode, 30, 2);
+    decode_str_imm_gen_aarch64_instrs_memory_single_general_immediate_signed_post_idx(Rt, Rn, imm9, opc, size)
+}
+
+val decode_str_imm_gen_aarch64_instrs_memory_single_general_immediate_signed_pre_idx : (bits(5), bits(5), bits(9), bits(2), bits(2)) -> unit
+
+function decode_str_imm_gen_aarch64_instrs_memory_single_general_immediate_signed_pre_idx (Rt, Rn, imm9, opc, size) = {
+    wback : bool = true;
+    let postindex : bool = false;
+    let 'scale = UInt(size);
+    let offset : bits(64) = SignExtend(imm9, 64);
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let nontemporal : bool = false;
+    memop : MemOp = undefined;
+    is_signed : bool = undefined;
+    regsize : {32, 64} = 32;
+    if [opc[1]] == 0b0 then {
+        memop = if [opc[0]] == 0b1 then MemOp_LOAD else MemOp_STORE;
+        regsize = if size == 0b11 then 64 else 32;
+        is_signed = false
+    } else {
+        if size == 0b11 then {
+            throw(Error_Undefined())
+        } else {
+            memop = MemOp_LOAD;
+            if size == 0b10 & [opc[0]] == 0b1 then {
+                throw(Error_Undefined())
+            };
+            regsize = if [opc[0]] == 0b1 then 32 else 64;
+            is_signed = true
+        }
+    };
+    let 'regsize = regsize;
+    let 'datasize = (8 << scale);
+    let tagchecked : bool = memop != MemOp_PREFETCH & (wback | n != 31);
+    wb_unknown : bool = false;
+    rt_unknown : bool = false;
+    c : Constraint = undefined;
+    if ((memop == MemOp_LOAD & wback) & n == t) & n != 31 then {
+        c = ConstrainUnpredictable(Unpredictable_WBOVERLAPLD);
+        assert(c == Constraint_WBSUPPRESS | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_WBSUPPRESS => {
+              wback = false
+          },
+          Constraint_UNKNOWN => {
+              wb_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if ((memop == MemOp_STORE & wback) & n == t) & n != 31 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_WBOVERLAPST);
+        assert(c == Constraint_NONE | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_NONE => {
+              rt_unknown = false
+          },
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    execute_aarch64_instrs_memory_single_general_immediate_signed_post_idx(datasize, memop, n, nontemporal, offset, postindex, regsize, rt_unknown, is_signed, t, tagchecked, wb_unknown, wback)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitone, _, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 647) = {
+    SEE = 647;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let imm9 = Slice(__opcode, 12, 9);
+    let opc = Slice(__opcode, 22, 2);
+    let size = Slice(__opcode, 30, 2);
+    decode_str_imm_gen_aarch64_instrs_memory_single_general_immediate_signed_pre_idx(Rt, Rn, imm9, opc, size)
+}
+
+val decode_str_imm_gen_aarch64_instrs_memory_single_general_immediate_unsigned : (bits(5), bits(5), bits(12), bits(2), bits(2)) -> unit
+
+function decode_str_imm_gen_aarch64_instrs_memory_single_general_immediate_unsigned (Rt, Rn, imm12, opc, size) = {
+    wback : bool = false;
+    let postindex : bool = false;
+    let 'scale = UInt(size);
+    let offset : bits(64) = LSL(ZeroExtend(imm12, 64), scale);
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let nontemporal : bool = false;
+    memop : MemOp = undefined;
+    is_signed : bool = undefined;
+    regsize : {32, 64} = 32;
+    if [opc[1]] == 0b0 then {
+        memop = if [opc[0]] == 0b1 then MemOp_LOAD else MemOp_STORE;
+        regsize = if size == 0b11 then 64 else 32;
+        is_signed = false
+    } else {
+        if size == 0b11 then {
+            throw(Error_Undefined())
+        } else {
+            memop = MemOp_LOAD;
+            if size == 0b10 & [opc[0]] == 0b1 then {
+                throw(Error_Undefined())
+            };
+            regsize = if [opc[0]] == 0b1 then 32 else 64;
+            is_signed = true
+        }
+    };
+    let 'regsize = regsize;
+    let 'datasize = (8 << scale);
+    let tagchecked : bool = memop != MemOp_PREFETCH & (wback | n != 31);
+    wb_unknown : bool = false;
+    rt_unknown : bool = false;
+    c : Constraint = undefined;
+    if ((memop == MemOp_LOAD & wback) & n == t) & n != 31 then {
+        c = ConstrainUnpredictable(Unpredictable_WBOVERLAPLD);
+        assert(c == Constraint_WBSUPPRESS | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_WBSUPPRESS => {
+              wback = false
+          },
+          Constraint_UNKNOWN => {
+              wb_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if ((memop == MemOp_STORE & wback) & n == t) & n != 31 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_WBOVERLAPST);
+        assert(c == Constraint_NONE | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_NONE => {
+              rt_unknown = false
+          },
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    execute_aarch64_instrs_memory_single_general_immediate_signed_post_idx(datasize, memop, n, nontemporal, offset, postindex, regsize, rt_unknown, is_signed, t, tagchecked, wb_unknown, wback)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitone, _, bitone, bitone, bitone, bitzero, bitzero, bitone, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 648) = {
+    SEE = 648;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let imm12 = Slice(__opcode, 10, 12);
+    let opc = Slice(__opcode, 22, 2);
+    let size = Slice(__opcode, 30, 2);
+    decode_str_imm_gen_aarch64_instrs_memory_single_general_immediate_unsigned(Rt, Rn, imm12, opc, size)
+}
+
+val decode_strb_imm_aarch64_instrs_memory_single_general_immediate_signed_post_idx : (bits(5), bits(5), bits(9), bits(2), bits(2)) -> unit
+
+function decode_strb_imm_aarch64_instrs_memory_single_general_immediate_signed_post_idx (Rt, Rn, imm9, opc, size) = {
+    wback : bool = true;
+    let postindex : bool = true;
+    let 'scale = UInt(size);
+    let offset : bits(64) = SignExtend(imm9, 64);
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let nontemporal : bool = false;
+    memop : MemOp = undefined;
+    is_signed : bool = undefined;
+    regsize : {32, 64} = 32;
+    if [opc[1]] == 0b0 then {
+        memop = if [opc[0]] == 0b1 then MemOp_LOAD else MemOp_STORE;
+        regsize = if size == 0b11 then 64 else 32;
+        is_signed = false
+    } else {
+        if size == 0b11 then {
+            throw(Error_Undefined())
+        } else {
+            memop = MemOp_LOAD;
+            if size == 0b10 & [opc[0]] == 0b1 then {
+                throw(Error_Undefined())
+            };
+            regsize = if [opc[0]] == 0b1 then 32 else 64;
+            is_signed = true
+        }
+    };
+    let 'regsize = regsize;
+    let 'datasize = (8 << scale);
+    let tagchecked : bool = memop != MemOp_PREFETCH & (wback | n != 31);
+    wb_unknown : bool = false;
+    rt_unknown : bool = false;
+    c : Constraint = undefined;
+    if ((memop == MemOp_LOAD & wback) & n == t) & n != 31 then {
+        c = ConstrainUnpredictable(Unpredictable_WBOVERLAPLD);
+        assert(c == Constraint_WBSUPPRESS | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_WBSUPPRESS => {
+              wback = false
+          },
+          Constraint_UNKNOWN => {
+              wb_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if ((memop == MemOp_STORE & wback) & n == t) & n != 31 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_WBOVERLAPST);
+        assert(c == Constraint_NONE | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_NONE => {
+              rt_unknown = false
+          },
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    execute_aarch64_instrs_memory_single_general_immediate_signed_post_idx(datasize, memop, n, nontemporal, offset, postindex, regsize, rt_unknown, is_signed, t, tagchecked, wb_unknown, wback)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 649) = {
+    SEE = 649;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let imm9 = Slice(__opcode, 12, 9);
+    let opc = Slice(__opcode, 22, 2);
+    let size = Slice(__opcode, 30, 2);
+    decode_strb_imm_aarch64_instrs_memory_single_general_immediate_signed_post_idx(Rt, Rn, imm9, opc, size)
+}
+
+val decode_strb_imm_aarch64_instrs_memory_single_general_immediate_signed_pre_idx : (bits(5), bits(5), bits(9), bits(2), bits(2)) -> unit
+
+function decode_strb_imm_aarch64_instrs_memory_single_general_immediate_signed_pre_idx (Rt, Rn, imm9, opc, size) = {
+    wback : bool = true;
+    let postindex : bool = false;
+    let 'scale = UInt(size);
+    let offset : bits(64) = SignExtend(imm9, 64);
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let nontemporal : bool = false;
+    memop : MemOp = undefined;
+    is_signed : bool = undefined;
+    regsize : {32, 64} = 32;
+    if [opc[1]] == 0b0 then {
+        memop = if [opc[0]] == 0b1 then MemOp_LOAD else MemOp_STORE;
+        regsize = if size == 0b11 then 64 else 32;
+        is_signed = false
+    } else {
+        if size == 0b11 then {
+            throw(Error_Undefined())
+        } else {
+            memop = MemOp_LOAD;
+            if size == 0b10 & [opc[0]] == 0b1 then {
+                throw(Error_Undefined())
+            };
+            regsize = if [opc[0]] == 0b1 then 32 else 64;
+            is_signed = true
+        }
+    };
+    let 'regsize = regsize;
+    let 'datasize = (8 << scale);
+    let tagchecked : bool = memop != MemOp_PREFETCH & (wback | n != 31);
+    wb_unknown : bool = false;
+    rt_unknown : bool = false;
+    c : Constraint = undefined;
+    if ((memop == MemOp_LOAD & wback) & n == t) & n != 31 then {
+        c = ConstrainUnpredictable(Unpredictable_WBOVERLAPLD);
+        assert(c == Constraint_WBSUPPRESS | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_WBSUPPRESS => {
+              wback = false
+          },
+          Constraint_UNKNOWN => {
+              wb_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if ((memop == MemOp_STORE & wback) & n == t) & n != 31 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_WBOVERLAPST);
+        assert(c == Constraint_NONE | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_NONE => {
+              rt_unknown = false
+          },
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    execute_aarch64_instrs_memory_single_general_immediate_signed_post_idx(datasize, memop, n, nontemporal, offset, postindex, regsize, rt_unknown, is_signed, t, tagchecked, wb_unknown, wback)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 650) = {
+    SEE = 650;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let imm9 = Slice(__opcode, 12, 9);
+    let opc = Slice(__opcode, 22, 2);
+    let size = Slice(__opcode, 30, 2);
+    decode_strb_imm_aarch64_instrs_memory_single_general_immediate_signed_pre_idx(Rt, Rn, imm9, opc, size)
+}
+
+val decode_strb_imm_aarch64_instrs_memory_single_general_immediate_unsigned : (bits(5), bits(5), bits(12), bits(2), bits(2)) -> unit
+
+function decode_strb_imm_aarch64_instrs_memory_single_general_immediate_unsigned (Rt, Rn, imm12, opc, size) = {
+    wback : bool = false;
+    let postindex : bool = false;
+    let 'scale = UInt(size);
+    let offset : bits(64) = LSL(ZeroExtend(imm12, 64), scale);
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let nontemporal : bool = false;
+    memop : MemOp = undefined;
+    is_signed : bool = undefined;
+    regsize : {32, 64} = 32;
+    if [opc[1]] == 0b0 then {
+        memop = if [opc[0]] == 0b1 then MemOp_LOAD else MemOp_STORE;
+        regsize = if size == 0b11 then 64 else 32;
+        is_signed = false
+    } else {
+        if size == 0b11 then {
+            throw(Error_Undefined())
+        } else {
+            memop = MemOp_LOAD;
+            if size == 0b10 & [opc[0]] == 0b1 then {
+                throw(Error_Undefined())
+            };
+            regsize = if [opc[0]] == 0b1 then 32 else 64;
+            is_signed = true
+        }
+    };
+    let 'regsize = regsize;
+    let 'datasize = (8 << scale);
+    let tagchecked : bool = memop != MemOp_PREFETCH & (wback | n != 31);
+    wb_unknown : bool = false;
+    rt_unknown : bool = false;
+    c : Constraint = undefined;
+    if ((memop == MemOp_LOAD & wback) & n == t) & n != 31 then {
+        c = ConstrainUnpredictable(Unpredictable_WBOVERLAPLD);
+        assert(c == Constraint_WBSUPPRESS | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_WBSUPPRESS => {
+              wback = false
+          },
+          Constraint_UNKNOWN => {
+              wb_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if ((memop == MemOp_STORE & wback) & n == t) & n != 31 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_WBOVERLAPST);
+        assert(c == Constraint_NONE | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_NONE => {
+              rt_unknown = false
+          },
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    execute_aarch64_instrs_memory_single_general_immediate_signed_post_idx(datasize, memop, n, nontemporal, offset, postindex, regsize, rt_unknown, is_signed, t, tagchecked, wb_unknown, wback)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitone, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 651) = {
+    SEE = 651;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let imm12 = Slice(__opcode, 10, 12);
+    let opc = Slice(__opcode, 22, 2);
+    let size = Slice(__opcode, 30, 2);
+    decode_strb_imm_aarch64_instrs_memory_single_general_immediate_unsigned(Rt, Rn, imm12, opc, size)
+}
+
+val decode_strh_imm_aarch64_instrs_memory_single_general_immediate_signed_post_idx : (bits(5), bits(5), bits(9), bits(2), bits(2)) -> unit
+
+function decode_strh_imm_aarch64_instrs_memory_single_general_immediate_signed_post_idx (Rt, Rn, imm9, opc, size) = {
+    wback : bool = true;
+    let postindex : bool = true;
+    let 'scale = UInt(size);
+    let offset : bits(64) = SignExtend(imm9, 64);
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let nontemporal : bool = false;
+    memop : MemOp = undefined;
+    is_signed : bool = undefined;
+    regsize : {32, 64} = 32;
+    if [opc[1]] == 0b0 then {
+        memop = if [opc[0]] == 0b1 then MemOp_LOAD else MemOp_STORE;
+        regsize = if size == 0b11 then 64 else 32;
+        is_signed = false
+    } else {
+        if size == 0b11 then {
+            throw(Error_Undefined())
+        } else {
+            memop = MemOp_LOAD;
+            if size == 0b10 & [opc[0]] == 0b1 then {
+                throw(Error_Undefined())
+            };
+            regsize = if [opc[0]] == 0b1 then 32 else 64;
+            is_signed = true
+        }
+    };
+    let 'regsize = regsize;
+    let 'datasize = (8 << scale);
+    let tagchecked : bool = memop != MemOp_PREFETCH & (wback | n != 31);
+    wb_unknown : bool = false;
+    rt_unknown : bool = false;
+    c : Constraint = undefined;
+    if ((memop == MemOp_LOAD & wback) & n == t) & n != 31 then {
+        c = ConstrainUnpredictable(Unpredictable_WBOVERLAPLD);
+        assert(c == Constraint_WBSUPPRESS | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_WBSUPPRESS => {
+              wback = false
+          },
+          Constraint_UNKNOWN => {
+              wb_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if ((memop == MemOp_STORE & wback) & n == t) & n != 31 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_WBOVERLAPST);
+        assert(c == Constraint_NONE | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_NONE => {
+              rt_unknown = false
+          },
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    execute_aarch64_instrs_memory_single_general_immediate_signed_post_idx(datasize, memop, n, nontemporal, offset, postindex, regsize, rt_unknown, is_signed, t, tagchecked, wb_unknown, wback)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 652) = {
+    SEE = 652;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let imm9 = Slice(__opcode, 12, 9);
+    let opc = Slice(__opcode, 22, 2);
+    let size = Slice(__opcode, 30, 2);
+    decode_strh_imm_aarch64_instrs_memory_single_general_immediate_signed_post_idx(Rt, Rn, imm9, opc, size)
+}
+
+val decode_strh_imm_aarch64_instrs_memory_single_general_immediate_signed_pre_idx : (bits(5), bits(5), bits(9), bits(2), bits(2)) -> unit
+
+function decode_strh_imm_aarch64_instrs_memory_single_general_immediate_signed_pre_idx (Rt, Rn, imm9, opc, size) = {
+    wback : bool = true;
+    let postindex : bool = false;
+    let 'scale = UInt(size);
+    let offset : bits(64) = SignExtend(imm9, 64);
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let nontemporal : bool = false;
+    memop : MemOp = undefined;
+    is_signed : bool = undefined;
+    regsize : {32, 64} = 32;
+    if [opc[1]] == 0b0 then {
+        memop = if [opc[0]] == 0b1 then MemOp_LOAD else MemOp_STORE;
+        regsize = if size == 0b11 then 64 else 32;
+        is_signed = false
+    } else {
+        if size == 0b11 then {
+            throw(Error_Undefined())
+        } else {
+            memop = MemOp_LOAD;
+            if size == 0b10 & [opc[0]] == 0b1 then {
+                throw(Error_Undefined())
+            };
+            regsize = if [opc[0]] == 0b1 then 32 else 64;
+            is_signed = true
+        }
+    };
+    let 'regsize = regsize;
+    let 'datasize = (8 << scale);
+    let tagchecked : bool = memop != MemOp_PREFETCH & (wback | n != 31);
+    wb_unknown : bool = false;
+    rt_unknown : bool = false;
+    c : Constraint = undefined;
+    if ((memop == MemOp_LOAD & wback) & n == t) & n != 31 then {
+        c = ConstrainUnpredictable(Unpredictable_WBOVERLAPLD);
+        assert(c == Constraint_WBSUPPRESS | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_WBSUPPRESS => {
+              wback = false
+          },
+          Constraint_UNKNOWN => {
+              wb_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if ((memop == MemOp_STORE & wback) & n == t) & n != 31 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_WBOVERLAPST);
+        assert(c == Constraint_NONE | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_NONE => {
+              rt_unknown = false
+          },
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    execute_aarch64_instrs_memory_single_general_immediate_signed_post_idx(datasize, memop, n, nontemporal, offset, postindex, regsize, rt_unknown, is_signed, t, tagchecked, wb_unknown, wback)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 653) = {
+    SEE = 653;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let imm9 = Slice(__opcode, 12, 9);
+    let opc = Slice(__opcode, 22, 2);
+    let size = Slice(__opcode, 30, 2);
+    decode_strh_imm_aarch64_instrs_memory_single_general_immediate_signed_pre_idx(Rt, Rn, imm9, opc, size)
+}
+
+val decode_strh_imm_aarch64_instrs_memory_single_general_immediate_unsigned : (bits(5), bits(5), bits(12), bits(2), bits(2)) -> unit
+
+function decode_strh_imm_aarch64_instrs_memory_single_general_immediate_unsigned (Rt, Rn, imm12, opc, size) = {
+    wback : bool = false;
+    let postindex : bool = false;
+    let 'scale = UInt(size);
+    let offset : bits(64) = LSL(ZeroExtend(imm12, 64), scale);
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let nontemporal : bool = false;
+    memop : MemOp = undefined;
+    is_signed : bool = undefined;
+    regsize : {32, 64} = 32;
+    if [opc[1]] == 0b0 then {
+        memop = if [opc[0]] == 0b1 then MemOp_LOAD else MemOp_STORE;
+        regsize = if size == 0b11 then 64 else 32;
+        is_signed = false
+    } else {
+        if size == 0b11 then {
+            throw(Error_Undefined())
+        } else {
+            memop = MemOp_LOAD;
+            if size == 0b10 & [opc[0]] == 0b1 then {
+                throw(Error_Undefined())
+            };
+            regsize = if [opc[0]] == 0b1 then 32 else 64;
+            is_signed = true
+        }
+    };
+    let 'regsize = regsize;
+    let 'datasize = (8 << scale);
+    let tagchecked : bool = memop != MemOp_PREFETCH & (wback | n != 31);
+    wb_unknown : bool = false;
+    rt_unknown : bool = false;
+    c : Constraint = undefined;
+    if ((memop == MemOp_LOAD & wback) & n == t) & n != 31 then {
+        c = ConstrainUnpredictable(Unpredictable_WBOVERLAPLD);
+        assert(c == Constraint_WBSUPPRESS | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_WBSUPPRESS => {
+              wback = false
+          },
+          Constraint_UNKNOWN => {
+              wb_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if ((memop == MemOp_STORE & wback) & n == t) & n != 31 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_WBOVERLAPST);
+        assert(c == Constraint_NONE | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_NONE => {
+              rt_unknown = false
+          },
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    execute_aarch64_instrs_memory_single_general_immediate_signed_post_idx(datasize, memop, n, nontemporal, offset, postindex, regsize, rt_unknown, is_signed, t, tagchecked, wb_unknown, wback)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, bitone, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 654) = {
+    SEE = 654;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let imm12 = Slice(__opcode, 10, 12);
+    let opc = Slice(__opcode, 22, 2);
+    let size = Slice(__opcode, 30, 2);
+    decode_strh_imm_aarch64_instrs_memory_single_general_immediate_unsigned(Rt, Rn, imm12, opc, size)
+}
+
+val execute_aarch64_instrs_memory_single_general_register : forall 'datasize ('is_signed : Bool) 'm 'n ('nontemporal : Bool) ('postindex : Bool) 'regsize ('rt_unknown : Bool) 'shift 't ('tagchecked : Bool) ('wb_unknown : Bool) ('wback : Bool),
+  (0 <= 't & 't <= 31 & 'shift in {0, 1, 2, 3} & 'regsize in {32, 64} & 0 <= 'n & 'n <= 31 & 0 <= 'm & 'm <= 31 & 'datasize in {8, 16, 32, 64}).
+  (int('datasize), ExtendType, int('m), MemOp, int('n), bool('nontemporal), bool('postindex), int('regsize), bool('rt_unknown), int('shift), bool('is_signed), int('t), bool('tagchecked), bool('wb_unknown), bool('wback)) -> unit
+
+function execute_aarch64_instrs_memory_single_general_register (datasize, extend_type, m, memop, n, nontemporal, postindex, regsize, rt_unknown, shift, is_signed, t, tagchecked, wb_unknown, wback) = {
+    let offset : bits(64) = ExtendReg(m, extend_type, shift, 64);
+    address : bits(64) = undefined;
+    data : bits('datasize) = undefined;
+    let privileged : bool = PSTATE.EL != EL0;
+    let accdesc : AccessDescriptor = CreateAccDescGPR(memop, nontemporal, privileged, tagchecked);
+    if n == 31 then {
+        if memop != MemOp_PREFETCH then {
+            CheckSPAlignment()
+        };
+        address = SP_read()
+    } else {
+        address = X_read(n, 64)
+    };
+    if not_bool(postindex) then {
+        address = address + offset
+    };
+    match memop {
+      MemOp_STORE => {
+          if rt_unknown then {
+              data = __UNKNOWN_bits(datasize)
+          } else {
+              data = X_read(t, datasize)
+          };
+          if not_bool(wback) then {
+              AArch64_SetLSInstructionSyndrome(DIV(datasize, 8), false, t, regsize == 64, false)
+          };
+          Mem_set(address, DIV(datasize, 8), accdesc) = data
+      },
+      MemOp_LOAD => {
+          if not_bool(wback) then {
+              AArch64_SetLSInstructionSyndrome(DIV(datasize, 8), is_signed, t, regsize == 64, false)
+          };
+          let data : bits('datasize) = Mem_read(address, DIV(datasize, 8), accdesc);
+          if is_signed then {
+              assert(constraint(('datasize > 0 & 'regsize >= 'datasize)));
+              X_set(t, regsize) = SignExtend(data, regsize)
+          } else {
+              assert(constraint(('datasize >= 0 & 'regsize >= 'datasize)));
+              X_set(t, regsize) = ZeroExtend(data, regsize)
+          }
+      },
+      MemOp_PREFETCH => {
+          Prefetch(address, t[4 .. 0])
+      }
+    };
+    if wback then {
+        if wb_unknown then {
+            address = __UNKNOWN_bits(64)
+        } else if postindex then {
+            address = address + offset
+        } else ();
+        if n == 31 then {
+            SP_set() = address
+        } else {
+            X_set(n, 64) = address
+        }
+    };
+    if SPESampleInFlight then {
+        SPESampleGeneralPurposeLoadStore()
+    };
+    ()
+}
+
+val decode_ldr_reg_gen_aarch64_instrs_memory_single_general_register : (bits(5), bits(5), bits(1), bits(3), bits(5), bits(2), bits(2)) -> unit
+
+function decode_ldr_reg_gen_aarch64_instrs_memory_single_general_register (Rt, Rn, S, option_name, Rm, opc, size) = {
+    wback : bool = false;
+    let postindex : bool = false;
+    let 'scale = UInt(size);
+    if [option_name[1]] == 0b0 then {
+        throw(Error_Undefined())
+    };
+    let extend_type : ExtendType = DecodeRegExtend(option_name);
+    let 'shift = if S == 0b1 then scale else 0;
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let 'm = UInt(Rm);
+    let nontemporal : bool = false;
+    memop : MemOp = undefined;
+    is_signed : bool = undefined;
+    regsize : {32, 64} = 32;
+    if [opc[1]] == 0b0 then {
+        memop = if [opc[0]] == 0b1 then MemOp_LOAD else MemOp_STORE;
+        regsize = if size == 0b11 then 64 else 32;
+        is_signed = false
+    } else {
+        if size == 0b11 then {
+            memop = MemOp_PREFETCH;
+            if [opc[0]] == 0b1 then {
+                throw(Error_Undefined())
+            };
+            ()
+        } else {
+            memop = MemOp_LOAD;
+            if size == 0b10 & [opc[0]] == 0b1 then {
+                throw(Error_Undefined())
+            };
+            regsize = if [opc[0]] == 0b1 then 32 else 64;
+            is_signed = true
+        }
+    };
+    let 'regsize = regsize;
+    let 'datasize = (8 << scale);
+    let tagchecked : bool = memop != MemOp_PREFETCH;
+    wb_unknown : bool = false;
+    rt_unknown : bool = false;
+    c : Constraint = undefined;
+    if ((memop == MemOp_LOAD & wback) & n == t) & n != 31 then {
+        c = ConstrainUnpredictable(Unpredictable_WBOVERLAPLD);
+        assert(c == Constraint_WBSUPPRESS | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_WBSUPPRESS => {
+              wback = false
+          },
+          Constraint_UNKNOWN => {
+              wb_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if ((memop == MemOp_STORE & wback) & n == t) & n != 31 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_WBOVERLAPST);
+        assert(c == Constraint_NONE | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_NONE => {
+              rt_unknown = false
+          },
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    execute_aarch64_instrs_memory_single_general_register(datasize, extend_type, m, memop, n, nontemporal, postindex, regsize, rt_unknown, shift, is_signed, t, tagchecked, wb_unknown, wback)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitone, _, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitone, _, _, _, _, _, _, _, _, _, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 655) = {
+    SEE = 655;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let S = Slice(__opcode, 12, 1);
+    let option_name = Slice(__opcode, 13, 3);
+    let Rm = Slice(__opcode, 16, 5);
+    let opc = Slice(__opcode, 22, 2);
+    let size = Slice(__opcode, 30, 2);
+    decode_ldr_reg_gen_aarch64_instrs_memory_single_general_register(Rt, Rn, S, option_name, Rm, opc, size)
+}
+
+val decode_ldrb_reg_aarch64_instrs_memory_single_general_register : (bits(5), bits(5), bits(1), bits(3), bits(5), bits(2), bits(2)) -> unit
+
+function decode_ldrb_reg_aarch64_instrs_memory_single_general_register (Rt, Rn, S, option_name, Rm, opc, size) = {
+    wback : bool = false;
+    let postindex : bool = false;
+    let 'scale = UInt(size);
+    if [option_name[1]] == 0b0 then {
+        throw(Error_Undefined())
+    };
+    let extend_type : ExtendType = DecodeRegExtend(option_name);
+    let 'shift = if S == 0b1 then scale else 0;
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let 'm = UInt(Rm);
+    let nontemporal : bool = false;
+    memop : MemOp = undefined;
+    is_signed : bool = undefined;
+    regsize : {32, 64} = 32;
+    if [opc[1]] == 0b0 then {
+        memop = if [opc[0]] == 0b1 then MemOp_LOAD else MemOp_STORE;
+        regsize = if size == 0b11 then 64 else 32;
+        is_signed = false
+    } else {
+        if size == 0b11 then {
+            memop = MemOp_PREFETCH;
+            if [opc[0]] == 0b1 then {
+                throw(Error_Undefined())
+            };
+            ()
+        } else {
+            memop = MemOp_LOAD;
+            if size == 0b10 & [opc[0]] == 0b1 then {
+                throw(Error_Undefined())
+            };
+            regsize = if [opc[0]] == 0b1 then 32 else 64;
+            is_signed = true
+        }
+    };
+    let 'regsize = regsize;
+    let 'datasize = (8 << scale);
+    let tagchecked : bool = memop != MemOp_PREFETCH;
+    wb_unknown : bool = false;
+    rt_unknown : bool = false;
+    c : Constraint = undefined;
+    if ((memop == MemOp_LOAD & wback) & n == t) & n != 31 then {
+        c = ConstrainUnpredictable(Unpredictable_WBOVERLAPLD);
+        assert(c == Constraint_WBSUPPRESS | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_WBSUPPRESS => {
+              wback = false
+          },
+          Constraint_UNKNOWN => {
+              wb_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if ((memop == MemOp_STORE & wback) & n == t) & n != 31 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_WBOVERLAPST);
+        assert(c == Constraint_NONE | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_NONE => {
+              rt_unknown = false
+          },
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    execute_aarch64_instrs_memory_single_general_register(datasize, extend_type, m, memop, n, nontemporal, postindex, regsize, rt_unknown, shift, is_signed, t, tagchecked, wb_unknown, wback)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitone, _, _, _, _, _, _, _, _, _, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 656) = {
+    SEE = 656;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let S = Slice(__opcode, 12, 1);
+    let option_name = Slice(__opcode, 13, 3);
+    let Rm = Slice(__opcode, 16, 5);
+    let opc = Slice(__opcode, 22, 2);
+    let size = Slice(__opcode, 30, 2);
+    decode_ldrb_reg_aarch64_instrs_memory_single_general_register(Rt, Rn, S, option_name, Rm, opc, size)
+}
+
+val decode_ldrh_reg_aarch64_instrs_memory_single_general_register : (bits(5), bits(5), bits(1), bits(3), bits(5), bits(2), bits(2)) -> unit
+
+function decode_ldrh_reg_aarch64_instrs_memory_single_general_register (Rt, Rn, S, option_name, Rm, opc, size) = {
+    wback : bool = false;
+    let postindex : bool = false;
+    let 'scale = UInt(size);
+    if [option_name[1]] == 0b0 then {
+        throw(Error_Undefined())
+    };
+    let extend_type : ExtendType = DecodeRegExtend(option_name);
+    let 'shift = if S == 0b1 then scale else 0;
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let 'm = UInt(Rm);
+    let nontemporal : bool = false;
+    memop : MemOp = undefined;
+    is_signed : bool = undefined;
+    regsize : {32, 64} = 32;
+    if [opc[1]] == 0b0 then {
+        memop = if [opc[0]] == 0b1 then MemOp_LOAD else MemOp_STORE;
+        regsize = if size == 0b11 then 64 else 32;
+        is_signed = false
+    } else {
+        if size == 0b11 then {
+            memop = MemOp_PREFETCH;
+            if [opc[0]] == 0b1 then {
+                throw(Error_Undefined())
+            };
+            ()
+        } else {
+            memop = MemOp_LOAD;
+            if size == 0b10 & [opc[0]] == 0b1 then {
+                throw(Error_Undefined())
+            };
+            regsize = if [opc[0]] == 0b1 then 32 else 64;
+            is_signed = true
+        }
+    };
+    let 'regsize = regsize;
+    let 'datasize = (8 << scale);
+    let tagchecked : bool = memop != MemOp_PREFETCH;
+    wb_unknown : bool = false;
+    rt_unknown : bool = false;
+    c : Constraint = undefined;
+    if ((memop == MemOp_LOAD & wback) & n == t) & n != 31 then {
+        c = ConstrainUnpredictable(Unpredictable_WBOVERLAPLD);
+        assert(c == Constraint_WBSUPPRESS | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_WBSUPPRESS => {
+              wback = false
+          },
+          Constraint_UNKNOWN => {
+              wb_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if ((memop == MemOp_STORE & wback) & n == t) & n != 31 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_WBOVERLAPST);
+        assert(c == Constraint_NONE | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_NONE => {
+              rt_unknown = false
+          },
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    execute_aarch64_instrs_memory_single_general_register(datasize, extend_type, m, memop, n, nontemporal, postindex, regsize, rt_unknown, shift, is_signed, t, tagchecked, wb_unknown, wback)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitone, _, _, _, _, _, _, _, _, _, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 657) = {
+    SEE = 657;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let S = Slice(__opcode, 12, 1);
+    let option_name = Slice(__opcode, 13, 3);
+    let Rm = Slice(__opcode, 16, 5);
+    let opc = Slice(__opcode, 22, 2);
+    let size = Slice(__opcode, 30, 2);
+    decode_ldrh_reg_aarch64_instrs_memory_single_general_register(Rt, Rn, S, option_name, Rm, opc, size)
+}
+
+val decode_ldrsb_reg_aarch64_instrs_memory_single_general_register : (bits(5), bits(5), bits(1), bits(3), bits(5), bits(2), bits(2)) -> unit
+
+function decode_ldrsb_reg_aarch64_instrs_memory_single_general_register (Rt, Rn, S, option_name, Rm, opc, size) = {
+    wback : bool = false;
+    let postindex : bool = false;
+    let 'scale = UInt(size);
+    if [option_name[1]] == 0b0 then {
+        throw(Error_Undefined())
+    };
+    let extend_type : ExtendType = DecodeRegExtend(option_name);
+    let 'shift = if S == 0b1 then scale else 0;
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let 'm = UInt(Rm);
+    let nontemporal : bool = false;
+    memop : MemOp = undefined;
+    is_signed : bool = undefined;
+    regsize : {32, 64} = 32;
+    if [opc[1]] == 0b0 then {
+        memop = if [opc[0]] == 0b1 then MemOp_LOAD else MemOp_STORE;
+        regsize = if size == 0b11 then 64 else 32;
+        is_signed = false
+    } else {
+        if size == 0b11 then {
+            memop = MemOp_PREFETCH;
+            if [opc[0]] == 0b1 then {
+                throw(Error_Undefined())
+            };
+            ()
+        } else {
+            memop = MemOp_LOAD;
+            if size == 0b10 & [opc[0]] == 0b1 then {
+                throw(Error_Undefined())
+            };
+            regsize = if [opc[0]] == 0b1 then 32 else 64;
+            is_signed = true
+        }
+    };
+    let 'regsize = regsize;
+    let 'datasize = (8 << scale);
+    let tagchecked : bool = memop != MemOp_PREFETCH;
+    wb_unknown : bool = false;
+    rt_unknown : bool = false;
+    c : Constraint = undefined;
+    if ((memop == MemOp_LOAD & wback) & n == t) & n != 31 then {
+        c = ConstrainUnpredictable(Unpredictable_WBOVERLAPLD);
+        assert(c == Constraint_WBSUPPRESS | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_WBSUPPRESS => {
+              wback = false
+          },
+          Constraint_UNKNOWN => {
+              wb_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if ((memop == MemOp_STORE & wback) & n == t) & n != 31 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_WBOVERLAPST);
+        assert(c == Constraint_NONE | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_NONE => {
+              rt_unknown = false
+          },
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    execute_aarch64_instrs_memory_single_general_register(datasize, extend_type, m, memop, n, nontemporal, postindex, regsize, rt_unknown, shift, is_signed, t, tagchecked, wb_unknown, wback)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitone, _, bitone, _, _, _, _, _, _, _, _, _, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 658) = {
+    SEE = 658;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let S = Slice(__opcode, 12, 1);
+    let option_name = Slice(__opcode, 13, 3);
+    let Rm = Slice(__opcode, 16, 5);
+    let opc = Slice(__opcode, 22, 2);
+    let size = Slice(__opcode, 30, 2);
+    decode_ldrsb_reg_aarch64_instrs_memory_single_general_register(Rt, Rn, S, option_name, Rm, opc, size)
+}
+
+val decode_ldrsh_reg_aarch64_instrs_memory_single_general_register : (bits(5), bits(5), bits(1), bits(3), bits(5), bits(2), bits(2)) -> unit
+
+function decode_ldrsh_reg_aarch64_instrs_memory_single_general_register (Rt, Rn, S, option_name, Rm, opc, size) = {
+    wback : bool = false;
+    let postindex : bool = false;
+    let 'scale = UInt(size);
+    if [option_name[1]] == 0b0 then {
+        throw(Error_Undefined())
+    };
+    let extend_type : ExtendType = DecodeRegExtend(option_name);
+    let 'shift = if S == 0b1 then scale else 0;
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let 'm = UInt(Rm);
+    let nontemporal : bool = false;
+    memop : MemOp = undefined;
+    is_signed : bool = undefined;
+    regsize : {32, 64} = 32;
+    if [opc[1]] == 0b0 then {
+        memop = if [opc[0]] == 0b1 then MemOp_LOAD else MemOp_STORE;
+        regsize = if size == 0b11 then 64 else 32;
+        is_signed = false
+    } else {
+        if size == 0b11 then {
+            memop = MemOp_PREFETCH;
+            if [opc[0]] == 0b1 then {
+                throw(Error_Undefined())
+            };
+            ()
+        } else {
+            memop = MemOp_LOAD;
+            if size == 0b10 & [opc[0]] == 0b1 then {
+                throw(Error_Undefined())
+            };
+            regsize = if [opc[0]] == 0b1 then 32 else 64;
+            is_signed = true
+        }
+    };
+    let 'regsize = regsize;
+    let 'datasize = (8 << scale);
+    let tagchecked : bool = memop != MemOp_PREFETCH;
+    wb_unknown : bool = false;
+    rt_unknown : bool = false;
+    c : Constraint = undefined;
+    if ((memop == MemOp_LOAD & wback) & n == t) & n != 31 then {
+        c = ConstrainUnpredictable(Unpredictable_WBOVERLAPLD);
+        assert(c == Constraint_WBSUPPRESS | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_WBSUPPRESS => {
+              wback = false
+          },
+          Constraint_UNKNOWN => {
+              wb_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if ((memop == MemOp_STORE & wback) & n == t) & n != 31 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_WBOVERLAPST);
+        assert(c == Constraint_NONE | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_NONE => {
+              rt_unknown = false
+          },
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    execute_aarch64_instrs_memory_single_general_register(datasize, extend_type, m, memop, n, nontemporal, postindex, regsize, rt_unknown, shift, is_signed, t, tagchecked, wb_unknown, wback)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitone, _, bitone, _, _, _, _, _, _, _, _, _, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 659) = {
+    SEE = 659;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let S = Slice(__opcode, 12, 1);
+    let option_name = Slice(__opcode, 13, 3);
+    let Rm = Slice(__opcode, 16, 5);
+    let opc = Slice(__opcode, 22, 2);
+    let size = Slice(__opcode, 30, 2);
+    decode_ldrsh_reg_aarch64_instrs_memory_single_general_register(Rt, Rn, S, option_name, Rm, opc, size)
+}
+
+val decode_ldrsw_reg_aarch64_instrs_memory_single_general_register : (bits(5), bits(5), bits(1), bits(3), bits(5), bits(2), bits(2)) -> unit
+
+function decode_ldrsw_reg_aarch64_instrs_memory_single_general_register (Rt, Rn, S, option_name, Rm, opc, size) = {
+    wback : bool = false;
+    let postindex : bool = false;
+    let 'scale = UInt(size);
+    if [option_name[1]] == 0b0 then {
+        throw(Error_Undefined())
+    };
+    let extend_type : ExtendType = DecodeRegExtend(option_name);
+    let 'shift = if S == 0b1 then scale else 0;
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let 'm = UInt(Rm);
+    let nontemporal : bool = false;
+    memop : MemOp = undefined;
+    is_signed : bool = undefined;
+    regsize : {32, 64} = 32;
+    if [opc[1]] == 0b0 then {
+        memop = if [opc[0]] == 0b1 then MemOp_LOAD else MemOp_STORE;
+        regsize = if size == 0b11 then 64 else 32;
+        is_signed = false
+    } else {
+        if size == 0b11 then {
+            memop = MemOp_PREFETCH;
+            if [opc[0]] == 0b1 then {
+                throw(Error_Undefined())
+            };
+            ()
+        } else {
+            memop = MemOp_LOAD;
+            if size == 0b10 & [opc[0]] == 0b1 then {
+                throw(Error_Undefined())
+            };
+            regsize = if [opc[0]] == 0b1 then 32 else 64;
+            is_signed = true
+        }
+    };
+    let 'regsize = regsize;
+    let 'datasize = (8 << scale);
+    let tagchecked : bool = memop != MemOp_PREFETCH;
+    wb_unknown : bool = false;
+    rt_unknown : bool = false;
+    c : Constraint = undefined;
+    if ((memop == MemOp_LOAD & wback) & n == t) & n != 31 then {
+        c = ConstrainUnpredictable(Unpredictable_WBOVERLAPLD);
+        assert(c == Constraint_WBSUPPRESS | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_WBSUPPRESS => {
+              wback = false
+          },
+          Constraint_UNKNOWN => {
+              wb_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if ((memop == MemOp_STORE & wback) & n == t) & n != 31 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_WBOVERLAPST);
+        assert(c == Constraint_NONE | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_NONE => {
+              rt_unknown = false
+          },
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    execute_aarch64_instrs_memory_single_general_register(datasize, extend_type, m, memop, n, nontemporal, postindex, regsize, rt_unknown, shift, is_signed, t, tagchecked, wb_unknown, wback)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitone, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 660) = {
+    SEE = 660;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let S = Slice(__opcode, 12, 1);
+    let option_name = Slice(__opcode, 13, 3);
+    let Rm = Slice(__opcode, 16, 5);
+    let opc = Slice(__opcode, 22, 2);
+    let size = Slice(__opcode, 30, 2);
+    decode_ldrsw_reg_aarch64_instrs_memory_single_general_register(Rt, Rn, S, option_name, Rm, opc, size)
+}
+
+val decode_prfm_reg_aarch64_instrs_memory_single_general_register : (bits(5), bits(5), bits(1), bits(3), bits(5), bits(2), bits(2)) -> unit
+
+function decode_prfm_reg_aarch64_instrs_memory_single_general_register (Rt, Rn, S, option_name, Rm, opc, size) = {
+    assert(not_bool((match Rt {
+      [bitone, bitone, _, _, _] => true,
+      _ => false
+    }) : bool));
+    wback : bool = false;
+    let postindex : bool = false;
+    let 'scale = UInt(size);
+    if [option_name[1]] == 0b0 then {
+        throw(Error_Undefined())
+    };
+    let extend_type : ExtendType = DecodeRegExtend(option_name);
+    let 'shift = if S == 0b1 then scale else 0;
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let 'm = UInt(Rm);
+    let nontemporal : bool = false;
+    memop : MemOp = undefined;
+    is_signed : bool = undefined;
+    regsize : {32, 64} = 32;
+    if [opc[1]] == 0b0 then {
+        memop = if [opc[0]] == 0b1 then MemOp_LOAD else MemOp_STORE;
+        regsize = if size == 0b11 then 64 else 32;
+        is_signed = false
+    } else {
+        if size == 0b11 then {
+            memop = MemOp_PREFETCH;
+            if [opc[0]] == 0b1 then {
+                throw(Error_Undefined())
+            };
+            ()
+        } else {
+            memop = MemOp_LOAD;
+            if size == 0b10 & [opc[0]] == 0b1 then {
+                throw(Error_Undefined())
+            };
+            regsize = if [opc[0]] == 0b1 then 32 else 64;
+            is_signed = true
+        }
+    };
+    let 'regsize = regsize;
+    let 'datasize = (8 << scale);
+    let tagchecked : bool = memop != MemOp_PREFETCH;
+    wb_unknown : bool = false;
+    rt_unknown : bool = false;
+    c : Constraint = undefined;
+    if ((memop == MemOp_LOAD & wback) & n == t) & n != 31 then {
+        c = ConstrainUnpredictable(Unpredictable_WBOVERLAPLD);
+        assert(c == Constraint_WBSUPPRESS | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_WBSUPPRESS => {
+              wback = false
+          },
+          Constraint_UNKNOWN => {
+              wb_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if ((memop == MemOp_STORE & wback) & n == t) & n != 31 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_WBOVERLAPST);
+        assert(c == Constraint_NONE | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_NONE => {
+              rt_unknown = false
+          },
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    execute_aarch64_instrs_memory_single_general_register(datasize, extend_type, m, memop, n, nontemporal, postindex, regsize, rt_unknown, shift, is_signed, t, tagchecked, wb_unknown, wback)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitone, bitone, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitone, bitzero, bitone, _, _, _, _, _, _, bitone, _, _, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if not_bool((match Slice(__opcode, 0, 5) {
+  [bitone, bitone, _, _, _] => true,
+  _ => false
+}) : bool) & SEE < 661) = {
+    SEE = 661;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let S = Slice(__opcode, 12, 1);
+    let option_name = Slice(__opcode, 13, 3);
+    let Rm = Slice(__opcode, 16, 5);
+    let opc = Slice(__opcode, 22, 2);
+    let size = Slice(__opcode, 30, 2);
+    decode_prfm_reg_aarch64_instrs_memory_single_general_register(Rt, Rn, S, option_name, Rm, opc, size)
+}
+
+val decode_str_reg_gen_aarch64_instrs_memory_single_general_register : (bits(5), bits(5), bits(1), bits(3), bits(5), bits(2), bits(2)) -> unit
+
+function decode_str_reg_gen_aarch64_instrs_memory_single_general_register (Rt, Rn, S, option_name, Rm, opc, size) = {
+    wback : bool = false;
+    let postindex : bool = false;
+    let 'scale = UInt(size);
+    if [option_name[1]] == 0b0 then {
+        throw(Error_Undefined())
+    };
+    let extend_type : ExtendType = DecodeRegExtend(option_name);
+    let 'shift = if S == 0b1 then scale else 0;
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let 'm = UInt(Rm);
+    let nontemporal : bool = false;
+    memop : MemOp = undefined;
+    is_signed : bool = undefined;
+    regsize : {32, 64} = 32;
+    if [opc[1]] == 0b0 then {
+        memop = if [opc[0]] == 0b1 then MemOp_LOAD else MemOp_STORE;
+        regsize = if size == 0b11 then 64 else 32;
+        is_signed = false
+    } else {
+        if size == 0b11 then {
+            memop = MemOp_PREFETCH;
+            if [opc[0]] == 0b1 then {
+                throw(Error_Undefined())
+            };
+            ()
+        } else {
+            memop = MemOp_LOAD;
+            if size == 0b10 & [opc[0]] == 0b1 then {
+                throw(Error_Undefined())
+            };
+            regsize = if [opc[0]] == 0b1 then 32 else 64;
+            is_signed = true
+        }
+    };
+    let 'regsize = regsize;
+    let 'datasize = (8 << scale);
+    let tagchecked : bool = memop != MemOp_PREFETCH;
+    wb_unknown : bool = false;
+    rt_unknown : bool = false;
+    c : Constraint = undefined;
+    if ((memop == MemOp_LOAD & wback) & n == t) & n != 31 then {
+        c = ConstrainUnpredictable(Unpredictable_WBOVERLAPLD);
+        assert(c == Constraint_WBSUPPRESS | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_WBSUPPRESS => {
+              wback = false
+          },
+          Constraint_UNKNOWN => {
+              wb_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if ((memop == MemOp_STORE & wback) & n == t) & n != 31 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_WBOVERLAPST);
+        assert(c == Constraint_NONE | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_NONE => {
+              rt_unknown = false
+          },
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    execute_aarch64_instrs_memory_single_general_register(datasize, extend_type, m, memop, n, nontemporal, postindex, regsize, rt_unknown, shift, is_signed, t, tagchecked, wb_unknown, wback)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitone, _, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 662) = {
+    SEE = 662;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let S = Slice(__opcode, 12, 1);
+    let option_name = Slice(__opcode, 13, 3);
+    let Rm = Slice(__opcode, 16, 5);
+    let opc = Slice(__opcode, 22, 2);
+    let size = Slice(__opcode, 30, 2);
+    decode_str_reg_gen_aarch64_instrs_memory_single_general_register(Rt, Rn, S, option_name, Rm, opc, size)
+}
+
+val decode_strb_reg_aarch64_instrs_memory_single_general_register : (bits(5), bits(5), bits(1), bits(3), bits(5), bits(2), bits(2)) -> unit
+
+function decode_strb_reg_aarch64_instrs_memory_single_general_register (Rt, Rn, S, option_name, Rm, opc, size) = {
+    wback : bool = false;
+    let postindex : bool = false;
+    let 'scale = UInt(size);
+    if [option_name[1]] == 0b0 then {
+        throw(Error_Undefined())
+    };
+    let extend_type : ExtendType = DecodeRegExtend(option_name);
+    let 'shift = if S == 0b1 then scale else 0;
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let 'm = UInt(Rm);
+    let nontemporal : bool = false;
+    memop : MemOp = undefined;
+    is_signed : bool = undefined;
+    regsize : {32, 64} = 32;
+    if [opc[1]] == 0b0 then {
+        memop = if [opc[0]] == 0b1 then MemOp_LOAD else MemOp_STORE;
+        regsize = if size == 0b11 then 64 else 32;
+        is_signed = false
+    } else {
+        if size == 0b11 then {
+            memop = MemOp_PREFETCH;
+            if [opc[0]] == 0b1 then {
+                throw(Error_Undefined())
+            };
+            ()
+        } else {
+            memop = MemOp_LOAD;
+            if size == 0b10 & [opc[0]] == 0b1 then {
+                throw(Error_Undefined())
+            };
+            regsize = if [opc[0]] == 0b1 then 32 else 64;
+            is_signed = true
+        }
+    };
+    let 'regsize = regsize;
+    let 'datasize = (8 << scale);
+    let tagchecked : bool = memop != MemOp_PREFETCH;
+    wb_unknown : bool = false;
+    rt_unknown : bool = false;
+    c : Constraint = undefined;
+    if ((memop == MemOp_LOAD & wback) & n == t) & n != 31 then {
+        c = ConstrainUnpredictable(Unpredictable_WBOVERLAPLD);
+        assert(c == Constraint_WBSUPPRESS | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_WBSUPPRESS => {
+              wback = false
+          },
+          Constraint_UNKNOWN => {
+              wb_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if ((memop == MemOp_STORE & wback) & n == t) & n != 31 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_WBOVERLAPST);
+        assert(c == Constraint_NONE | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_NONE => {
+              rt_unknown = false
+          },
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    execute_aarch64_instrs_memory_single_general_register(datasize, extend_type, m, memop, n, nontemporal, postindex, regsize, rt_unknown, shift, is_signed, t, tagchecked, wb_unknown, wback)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 663) = {
+    SEE = 663;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let S = Slice(__opcode, 12, 1);
+    let option_name = Slice(__opcode, 13, 3);
+    let Rm = Slice(__opcode, 16, 5);
+    let opc = Slice(__opcode, 22, 2);
+    let size = Slice(__opcode, 30, 2);
+    decode_strb_reg_aarch64_instrs_memory_single_general_register(Rt, Rn, S, option_name, Rm, opc, size)
+}
+
+val decode_strh_reg_aarch64_instrs_memory_single_general_register : (bits(5), bits(5), bits(1), bits(3), bits(5), bits(2), bits(2)) -> unit
+
+function decode_strh_reg_aarch64_instrs_memory_single_general_register (Rt, Rn, S, option_name, Rm, opc, size) = {
+    wback : bool = false;
+    let postindex : bool = false;
+    let 'scale = UInt(size);
+    if [option_name[1]] == 0b0 then {
+        throw(Error_Undefined())
+    };
+    let extend_type : ExtendType = DecodeRegExtend(option_name);
+    let 'shift = if S == 0b1 then scale else 0;
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let 'm = UInt(Rm);
+    let nontemporal : bool = false;
+    memop : MemOp = undefined;
+    is_signed : bool = undefined;
+    regsize : {32, 64} = 32;
+    if [opc[1]] == 0b0 then {
+        memop = if [opc[0]] == 0b1 then MemOp_LOAD else MemOp_STORE;
+        regsize = if size == 0b11 then 64 else 32;
+        is_signed = false
+    } else {
+        if size == 0b11 then {
+            memop = MemOp_PREFETCH;
+            if [opc[0]] == 0b1 then {
+                throw(Error_Undefined())
+            };
+            ()
+        } else {
+            memop = MemOp_LOAD;
+            if size == 0b10 & [opc[0]] == 0b1 then {
+                throw(Error_Undefined())
+            };
+            regsize = if [opc[0]] == 0b1 then 32 else 64;
+            is_signed = true
+        }
+    };
+    let 'regsize = regsize;
+    let 'datasize = (8 << scale);
+    let tagchecked : bool = memop != MemOp_PREFETCH;
+    wb_unknown : bool = false;
+    rt_unknown : bool = false;
+    c : Constraint = undefined;
+    if ((memop == MemOp_LOAD & wback) & n == t) & n != 31 then {
+        c = ConstrainUnpredictable(Unpredictable_WBOVERLAPLD);
+        assert(c == Constraint_WBSUPPRESS | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_WBSUPPRESS => {
+              wback = false
+          },
+          Constraint_UNKNOWN => {
+              wb_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if ((memop == MemOp_STORE & wback) & n == t) & n != 31 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_WBOVERLAPST);
+        assert(c == Constraint_NONE | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_NONE => {
+              rt_unknown = false
+          },
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    execute_aarch64_instrs_memory_single_general_register(datasize, extend_type, m, memop, n, nontemporal, postindex, regsize, rt_unknown, shift, is_signed, t, tagchecked, wb_unknown, wback)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 664) = {
+    SEE = 664;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let S = Slice(__opcode, 12, 1);
+    let option_name = Slice(__opcode, 13, 3);
+    let Rm = Slice(__opcode, 16, 5);
+    let opc = Slice(__opcode, 22, 2);
+    let size = Slice(__opcode, 30, 2);
+    decode_strh_reg_aarch64_instrs_memory_single_general_register(Rt, Rn, S, option_name, Rm, opc, size)
+}
+
+val execute_aarch64_instrs_memory_single_general_immediate_signed_offset_unpriv : forall 'datasize ('is_signed : Bool) 'n ('nontemporal : Bool) ('postindex : Bool) 'regsize ('rt_unknown : Bool) 't ('tagchecked : Bool) ('wb_unknown : Bool) ('wback : Bool),
+  (0 <= 't & 't <= 31 & 'regsize in {32, 64} & 0 <= 'n & 'n <= 31 & 'datasize in {8, 16, 32, 64}).
+  (int('datasize), MemOp, int('n), bool('nontemporal), bits(64), bool('postindex), int('regsize), bool('rt_unknown), bool('is_signed), int('t), bool('tagchecked), bool('wb_unknown), bool('wback)) -> unit
+
+function execute_aarch64_instrs_memory_single_general_immediate_signed_offset_unpriv (datasize, memop, n, nontemporal, offset, postindex, regsize, rt_unknown, is_signed, t, tagchecked, wb_unknown, wback) = {
+    address : bits(64) = undefined;
+    data : bits('datasize) = undefined;
+    let privileged : bool = AArch64_IsUnprivAccessPriv();
+    let accdesc : AccessDescriptor = CreateAccDescGPR(memop, nontemporal, privileged, tagchecked);
+    if n == 31 then {
+        if memop != MemOp_PREFETCH then {
+            CheckSPAlignment()
+        };
+        address = SP_read()
+    } else {
+        address = X_read(n, 64)
+    };
+    if not_bool(postindex) then {
+        address = address + offset
+    };
+    match memop {
+      MemOp_STORE => {
+          if rt_unknown then {
+              data = __UNKNOWN_bits(datasize)
+          } else {
+              data = X_read(t, datasize)
+          };
+          if not_bool(wback) then {
+              AArch64_SetLSInstructionSyndrome(DIV(datasize, 8), false, t, regsize == 64, false)
+          };
+          Mem_set(address, DIV(datasize, 8), accdesc) = data
+      },
+      MemOp_LOAD => {
+          if not_bool(wback) then {
+              AArch64_SetLSInstructionSyndrome(DIV(datasize, 8), is_signed, t, regsize == 64, false)
+          };
+          let data : bits('datasize) = Mem_read(address, DIV(datasize, 8), accdesc);
+          if is_signed then {
+              assert(constraint(('datasize > 0 & 'regsize >= 'datasize)));
+              X_set(t, regsize) = SignExtend(data, regsize)
+          } else {
+              assert(constraint(('datasize >= 0 & 'regsize >= 'datasize)));
+              X_set(t, regsize) = ZeroExtend(data, regsize)
+          }
+      },
+      MemOp_PREFETCH => {
+          Prefetch(address, t[4 .. 0])
+      }
+    };
+    if wback then {
+        if wb_unknown then {
+            address = __UNKNOWN_bits(64)
+        } else if postindex then {
+            address = address + offset
+        } else ();
+        if n == 31 then {
+            SP_set() = address
+        } else {
+            X_set(n, 64) = address
+        }
+    };
+    if SPESampleInFlight then {
+        SPESampleGeneralPurposeLoadStore()
+    };
+    ()
+}
+
+val decode_ldtr_aarch64_instrs_memory_single_general_immediate_signed_offset_unpriv : (bits(5), bits(5), bits(9), bits(2), bits(2)) -> unit
+
+function decode_ldtr_aarch64_instrs_memory_single_general_immediate_signed_offset_unpriv (Rt, Rn, imm9, opc, size) = {
+    wback : bool = false;
+    let postindex : bool = false;
+    let 'scale = UInt(size);
+    let offset : bits(64) = SignExtend(imm9, 64);
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let nontemporal : bool = false;
+    memop : MemOp = undefined;
+    is_signed : bool = undefined;
+    regsize : {32, 64} = 32;
+    if [opc[1]] == 0b0 then {
+        memop = if [opc[0]] == 0b1 then MemOp_LOAD else MemOp_STORE;
+        regsize = if size == 0b11 then 64 else 32;
+        is_signed = false
+    } else {
+        if size == 0b11 then {
+            throw(Error_Undefined())
+        } else {
+            memop = MemOp_LOAD;
+            if size == 0b10 & [opc[0]] == 0b1 then {
+                throw(Error_Undefined())
+            };
+            regsize = if [opc[0]] == 0b1 then 32 else 64;
+            is_signed = true
+        }
+    };
+    let 'regsize = regsize;
+    let 'datasize = (8 << scale);
+    let tagchecked : bool = memop != MemOp_PREFETCH & (wback | n != 31);
+    wb_unknown : bool = false;
+    rt_unknown : bool = false;
+    c : Constraint = undefined;
+    if ((memop == MemOp_LOAD & wback) & n == t) & n != 31 then {
+        c = ConstrainUnpredictable(Unpredictable_WBOVERLAPLD);
+        assert(c == Constraint_WBSUPPRESS | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_WBSUPPRESS => {
+              wback = false
+          },
+          Constraint_UNKNOWN => {
+              wb_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if ((memop == MemOp_STORE & wback) & n == t) & n != 31 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_WBOVERLAPST);
+        assert(c == Constraint_NONE | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_NONE => {
+              rt_unknown = false
+          },
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    execute_aarch64_instrs_memory_single_general_immediate_signed_offset_unpriv(datasize, memop, n, nontemporal, offset, postindex, regsize, rt_unknown, is_signed, t, tagchecked, wb_unknown, wback)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitone, _, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 669) = {
+    SEE = 669;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let imm9 = Slice(__opcode, 12, 9);
+    let opc = Slice(__opcode, 22, 2);
+    let size = Slice(__opcode, 30, 2);
+    decode_ldtr_aarch64_instrs_memory_single_general_immediate_signed_offset_unpriv(Rt, Rn, imm9, opc, size)
+}
+
+val decode_ldtrb_aarch64_instrs_memory_single_general_immediate_signed_offset_unpriv : (bits(5), bits(5), bits(9), bits(2), bits(2)) -> unit
+
+function decode_ldtrb_aarch64_instrs_memory_single_general_immediate_signed_offset_unpriv (Rt, Rn, imm9, opc, size) = {
+    wback : bool = false;
+    let postindex : bool = false;
+    let 'scale = UInt(size);
+    let offset : bits(64) = SignExtend(imm9, 64);
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let nontemporal : bool = false;
+    memop : MemOp = undefined;
+    is_signed : bool = undefined;
+    regsize : {32, 64} = 32;
+    if [opc[1]] == 0b0 then {
+        memop = if [opc[0]] == 0b1 then MemOp_LOAD else MemOp_STORE;
+        regsize = if size == 0b11 then 64 else 32;
+        is_signed = false
+    } else {
+        if size == 0b11 then {
+            throw(Error_Undefined())
+        } else {
+            memop = MemOp_LOAD;
+            if size == 0b10 & [opc[0]] == 0b1 then {
+                throw(Error_Undefined())
+            };
+            regsize = if [opc[0]] == 0b1 then 32 else 64;
+            is_signed = true
+        }
+    };
+    let 'regsize = regsize;
+    let 'datasize = (8 << scale);
+    let tagchecked : bool = memop != MemOp_PREFETCH & (wback | n != 31);
+    wb_unknown : bool = false;
+    rt_unknown : bool = false;
+    c : Constraint = undefined;
+    if ((memop == MemOp_LOAD & wback) & n == t) & n != 31 then {
+        c = ConstrainUnpredictable(Unpredictable_WBOVERLAPLD);
+        assert(c == Constraint_WBSUPPRESS | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_WBSUPPRESS => {
+              wback = false
+          },
+          Constraint_UNKNOWN => {
+              wb_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if ((memop == MemOp_STORE & wback) & n == t) & n != 31 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_WBOVERLAPST);
+        assert(c == Constraint_NONE | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_NONE => {
+              rt_unknown = false
+          },
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    execute_aarch64_instrs_memory_single_general_immediate_signed_offset_unpriv(datasize, memop, n, nontemporal, offset, postindex, regsize, rt_unknown, is_signed, t, tagchecked, wb_unknown, wback)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 670) = {
+    SEE = 670;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let imm9 = Slice(__opcode, 12, 9);
+    let opc = Slice(__opcode, 22, 2);
+    let size = Slice(__opcode, 30, 2);
+    decode_ldtrb_aarch64_instrs_memory_single_general_immediate_signed_offset_unpriv(Rt, Rn, imm9, opc, size)
+}
+
+val decode_ldtrh_aarch64_instrs_memory_single_general_immediate_signed_offset_unpriv : (bits(5), bits(5), bits(9), bits(2), bits(2)) -> unit
+
+function decode_ldtrh_aarch64_instrs_memory_single_general_immediate_signed_offset_unpriv (Rt, Rn, imm9, opc, size) = {
+    wback : bool = false;
+    let postindex : bool = false;
+    let 'scale = UInt(size);
+    let offset : bits(64) = SignExtend(imm9, 64);
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let nontemporal : bool = false;
+    memop : MemOp = undefined;
+    is_signed : bool = undefined;
+    regsize : {32, 64} = 32;
+    if [opc[1]] == 0b0 then {
+        memop = if [opc[0]] == 0b1 then MemOp_LOAD else MemOp_STORE;
+        regsize = if size == 0b11 then 64 else 32;
+        is_signed = false
+    } else {
+        if size == 0b11 then {
+            throw(Error_Undefined())
+        } else {
+            memop = MemOp_LOAD;
+            if size == 0b10 & [opc[0]] == 0b1 then {
+                throw(Error_Undefined())
+            };
+            regsize = if [opc[0]] == 0b1 then 32 else 64;
+            is_signed = true
+        }
+    };
+    let 'regsize = regsize;
+    let 'datasize = (8 << scale);
+    let tagchecked : bool = memop != MemOp_PREFETCH & (wback | n != 31);
+    wb_unknown : bool = false;
+    rt_unknown : bool = false;
+    c : Constraint = undefined;
+    if ((memop == MemOp_LOAD & wback) & n == t) & n != 31 then {
+        c = ConstrainUnpredictable(Unpredictable_WBOVERLAPLD);
+        assert(c == Constraint_WBSUPPRESS | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_WBSUPPRESS => {
+              wback = false
+          },
+          Constraint_UNKNOWN => {
+              wb_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if ((memop == MemOp_STORE & wback) & n == t) & n != 31 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_WBOVERLAPST);
+        assert(c == Constraint_NONE | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_NONE => {
+              rt_unknown = false
+          },
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    execute_aarch64_instrs_memory_single_general_immediate_signed_offset_unpriv(datasize, memop, n, nontemporal, offset, postindex, regsize, rt_unknown, is_signed, t, tagchecked, wb_unknown, wback)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 671) = {
+    SEE = 671;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let imm9 = Slice(__opcode, 12, 9);
+    let opc = Slice(__opcode, 22, 2);
+    let size = Slice(__opcode, 30, 2);
+    decode_ldtrh_aarch64_instrs_memory_single_general_immediate_signed_offset_unpriv(Rt, Rn, imm9, opc, size)
+}
+
+val decode_ldtrsb_aarch64_instrs_memory_single_general_immediate_signed_offset_unpriv : (bits(5), bits(5), bits(9), bits(2), bits(2)) -> unit
+
+function decode_ldtrsb_aarch64_instrs_memory_single_general_immediate_signed_offset_unpriv (Rt, Rn, imm9, opc, size) = {
+    wback : bool = false;
+    let postindex : bool = false;
+    let 'scale = UInt(size);
+    let offset : bits(64) = SignExtend(imm9, 64);
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let nontemporal : bool = false;
+    memop : MemOp = undefined;
+    is_signed : bool = undefined;
+    regsize : {32, 64} = 32;
+    if [opc[1]] == 0b0 then {
+        memop = if [opc[0]] == 0b1 then MemOp_LOAD else MemOp_STORE;
+        regsize = if size == 0b11 then 64 else 32;
+        is_signed = false
+    } else {
+        if size == 0b11 then {
+            throw(Error_Undefined())
+        } else {
+            memop = MemOp_LOAD;
+            if size == 0b10 & [opc[0]] == 0b1 then {
+                throw(Error_Undefined())
+            };
+            regsize = if [opc[0]] == 0b1 then 32 else 64;
+            is_signed = true
+        }
+    };
+    let 'regsize = regsize;
+    let 'datasize = (8 << scale);
+    let tagchecked : bool = memop != MemOp_PREFETCH & (wback | n != 31);
+    wb_unknown : bool = false;
+    rt_unknown : bool = false;
+    c : Constraint = undefined;
+    if ((memop == MemOp_LOAD & wback) & n == t) & n != 31 then {
+        c = ConstrainUnpredictable(Unpredictable_WBOVERLAPLD);
+        assert(c == Constraint_WBSUPPRESS | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_WBSUPPRESS => {
+              wback = false
+          },
+          Constraint_UNKNOWN => {
+              wb_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if ((memop == MemOp_STORE & wback) & n == t) & n != 31 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_WBOVERLAPST);
+        assert(c == Constraint_NONE | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_NONE => {
+              rt_unknown = false
+          },
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    execute_aarch64_instrs_memory_single_general_immediate_signed_offset_unpriv(datasize, memop, n, nontemporal, offset, postindex, regsize, rt_unknown, is_signed, t, tagchecked, wb_unknown, wback)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitone, _, bitzero, _, _, _, _, _, _, _, _, _, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 672) = {
+    SEE = 672;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let imm9 = Slice(__opcode, 12, 9);
+    let opc = Slice(__opcode, 22, 2);
+    let size = Slice(__opcode, 30, 2);
+    decode_ldtrsb_aarch64_instrs_memory_single_general_immediate_signed_offset_unpriv(Rt, Rn, imm9, opc, size)
+}
+
+val decode_ldtrsh_aarch64_instrs_memory_single_general_immediate_signed_offset_unpriv : (bits(5), bits(5), bits(9), bits(2), bits(2)) -> unit
+
+function decode_ldtrsh_aarch64_instrs_memory_single_general_immediate_signed_offset_unpriv (Rt, Rn, imm9, opc, size) = {
+    wback : bool = false;
+    let postindex : bool = false;
+    let 'scale = UInt(size);
+    let offset : bits(64) = SignExtend(imm9, 64);
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let nontemporal : bool = false;
+    memop : MemOp = undefined;
+    is_signed : bool = undefined;
+    regsize : {32, 64} = 32;
+    if [opc[1]] == 0b0 then {
+        memop = if [opc[0]] == 0b1 then MemOp_LOAD else MemOp_STORE;
+        regsize = if size == 0b11 then 64 else 32;
+        is_signed = false
+    } else {
+        if size == 0b11 then {
+            throw(Error_Undefined())
+        } else {
+            memop = MemOp_LOAD;
+            if size == 0b10 & [opc[0]] == 0b1 then {
+                throw(Error_Undefined())
+            };
+            regsize = if [opc[0]] == 0b1 then 32 else 64;
+            is_signed = true
+        }
+    };
+    let 'regsize = regsize;
+    let 'datasize = (8 << scale);
+    let tagchecked : bool = memop != MemOp_PREFETCH & (wback | n != 31);
+    wb_unknown : bool = false;
+    rt_unknown : bool = false;
+    c : Constraint = undefined;
+    if ((memop == MemOp_LOAD & wback) & n == t) & n != 31 then {
+        c = ConstrainUnpredictable(Unpredictable_WBOVERLAPLD);
+        assert(c == Constraint_WBSUPPRESS | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_WBSUPPRESS => {
+              wback = false
+          },
+          Constraint_UNKNOWN => {
+              wb_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if ((memop == MemOp_STORE & wback) & n == t) & n != 31 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_WBOVERLAPST);
+        assert(c == Constraint_NONE | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_NONE => {
+              rt_unknown = false
+          },
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    execute_aarch64_instrs_memory_single_general_immediate_signed_offset_unpriv(datasize, memop, n, nontemporal, offset, postindex, regsize, rt_unknown, is_signed, t, tagchecked, wb_unknown, wback)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitone, _, bitzero, _, _, _, _, _, _, _, _, _, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 673) = {
+    SEE = 673;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let imm9 = Slice(__opcode, 12, 9);
+    let opc = Slice(__opcode, 22, 2);
+    let size = Slice(__opcode, 30, 2);
+    decode_ldtrsh_aarch64_instrs_memory_single_general_immediate_signed_offset_unpriv(Rt, Rn, imm9, opc, size)
+}
+
+val decode_ldtrsw_aarch64_instrs_memory_single_general_immediate_signed_offset_unpriv : (bits(5), bits(5), bits(9), bits(2), bits(2)) -> unit
+
+function decode_ldtrsw_aarch64_instrs_memory_single_general_immediate_signed_offset_unpriv (Rt, Rn, imm9, opc, size) = {
+    wback : bool = false;
+    let postindex : bool = false;
+    let 'scale = UInt(size);
+    let offset : bits(64) = SignExtend(imm9, 64);
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let nontemporal : bool = false;
+    memop : MemOp = undefined;
+    is_signed : bool = undefined;
+    regsize : {32, 64} = 32;
+    if [opc[1]] == 0b0 then {
+        memop = if [opc[0]] == 0b1 then MemOp_LOAD else MemOp_STORE;
+        regsize = if size == 0b11 then 64 else 32;
+        is_signed = false
+    } else {
+        if size == 0b11 then {
+            throw(Error_Undefined())
+        } else {
+            memop = MemOp_LOAD;
+            if size == 0b10 & [opc[0]] == 0b1 then {
+                throw(Error_Undefined())
+            };
+            regsize = if [opc[0]] == 0b1 then 32 else 64;
+            is_signed = true
+        }
+    };
+    let 'regsize = regsize;
+    let 'datasize = (8 << scale);
+    let tagchecked : bool = memop != MemOp_PREFETCH & (wback | n != 31);
+    wb_unknown : bool = false;
+    rt_unknown : bool = false;
+    c : Constraint = undefined;
+    if ((memop == MemOp_LOAD & wback) & n == t) & n != 31 then {
+        c = ConstrainUnpredictable(Unpredictable_WBOVERLAPLD);
+        assert(c == Constraint_WBSUPPRESS | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_WBSUPPRESS => {
+              wback = false
+          },
+          Constraint_UNKNOWN => {
+              wb_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if ((memop == MemOp_STORE & wback) & n == t) & n != 31 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_WBOVERLAPST);
+        assert(c == Constraint_NONE | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_NONE => {
+              rt_unknown = false
+          },
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    execute_aarch64_instrs_memory_single_general_immediate_signed_offset_unpriv(datasize, memop, n, nontemporal, offset, postindex, regsize, rt_unknown, is_signed, t, tagchecked, wb_unknown, wback)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitone, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitone, bitzero, bitzero, _, _, _, _, _, _, _, _, _, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 674) = {
+    SEE = 674;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let imm9 = Slice(__opcode, 12, 9);
+    let opc = Slice(__opcode, 22, 2);
+    let size = Slice(__opcode, 30, 2);
+    decode_ldtrsw_aarch64_instrs_memory_single_general_immediate_signed_offset_unpriv(Rt, Rn, imm9, opc, size)
+}
+
+val decode_sttr_aarch64_instrs_memory_single_general_immediate_signed_offset_unpriv : (bits(5), bits(5), bits(9), bits(2), bits(2)) -> unit
+
+function decode_sttr_aarch64_instrs_memory_single_general_immediate_signed_offset_unpriv (Rt, Rn, imm9, opc, size) = {
+    wback : bool = false;
+    let postindex : bool = false;
+    let 'scale = UInt(size);
+    let offset : bits(64) = SignExtend(imm9, 64);
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let nontemporal : bool = false;
+    memop : MemOp = undefined;
+    is_signed : bool = undefined;
+    regsize : {32, 64} = 32;
+    if [opc[1]] == 0b0 then {
+        memop = if [opc[0]] == 0b1 then MemOp_LOAD else MemOp_STORE;
+        regsize = if size == 0b11 then 64 else 32;
+        is_signed = false
+    } else {
+        if size == 0b11 then {
+            throw(Error_Undefined())
+        } else {
+            memop = MemOp_LOAD;
+            if size == 0b10 & [opc[0]] == 0b1 then {
+                throw(Error_Undefined())
+            };
+            regsize = if [opc[0]] == 0b1 then 32 else 64;
+            is_signed = true
+        }
+    };
+    let 'regsize = regsize;
+    let 'datasize = (8 << scale);
+    let tagchecked : bool = memop != MemOp_PREFETCH & (wback | n != 31);
+    wb_unknown : bool = false;
+    rt_unknown : bool = false;
+    c : Constraint = undefined;
+    if ((memop == MemOp_LOAD & wback) & n == t) & n != 31 then {
+        c = ConstrainUnpredictable(Unpredictable_WBOVERLAPLD);
+        assert(c == Constraint_WBSUPPRESS | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_WBSUPPRESS => {
+              wback = false
+          },
+          Constraint_UNKNOWN => {
+              wb_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if ((memop == MemOp_STORE & wback) & n == t) & n != 31 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_WBOVERLAPST);
+        assert(c == Constraint_NONE | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_NONE => {
+              rt_unknown = false
+          },
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    execute_aarch64_instrs_memory_single_general_immediate_signed_offset_unpriv(datasize, memop, n, nontemporal, offset, postindex, regsize, rt_unknown, is_signed, t, tagchecked, wb_unknown, wback)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitone, _, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 675) = {
+    SEE = 675;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let imm9 = Slice(__opcode, 12, 9);
+    let opc = Slice(__opcode, 22, 2);
+    let size = Slice(__opcode, 30, 2);
+    decode_sttr_aarch64_instrs_memory_single_general_immediate_signed_offset_unpriv(Rt, Rn, imm9, opc, size)
+}
+
+val decode_sttrb_aarch64_instrs_memory_single_general_immediate_signed_offset_unpriv : (bits(5), bits(5), bits(9), bits(2), bits(2)) -> unit
+
+function decode_sttrb_aarch64_instrs_memory_single_general_immediate_signed_offset_unpriv (Rt, Rn, imm9, opc, size) = {
+    wback : bool = false;
+    let postindex : bool = false;
+    let 'scale = UInt(size);
+    let offset : bits(64) = SignExtend(imm9, 64);
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let nontemporal : bool = false;
+    memop : MemOp = undefined;
+    is_signed : bool = undefined;
+    regsize : {32, 64} = 32;
+    if [opc[1]] == 0b0 then {
+        memop = if [opc[0]] == 0b1 then MemOp_LOAD else MemOp_STORE;
+        regsize = if size == 0b11 then 64 else 32;
+        is_signed = false
+    } else {
+        if size == 0b11 then {
+            throw(Error_Undefined())
+        } else {
+            memop = MemOp_LOAD;
+            if size == 0b10 & [opc[0]] == 0b1 then {
+                throw(Error_Undefined())
+            };
+            regsize = if [opc[0]] == 0b1 then 32 else 64;
+            is_signed = true
+        }
+    };
+    let 'regsize = regsize;
+    let 'datasize = (8 << scale);
+    let tagchecked : bool = memop != MemOp_PREFETCH & (wback | n != 31);
+    wb_unknown : bool = false;
+    rt_unknown : bool = false;
+    c : Constraint = undefined;
+    if ((memop == MemOp_LOAD & wback) & n == t) & n != 31 then {
+        c = ConstrainUnpredictable(Unpredictable_WBOVERLAPLD);
+        assert(c == Constraint_WBSUPPRESS | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_WBSUPPRESS => {
+              wback = false
+          },
+          Constraint_UNKNOWN => {
+              wb_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if ((memop == MemOp_STORE & wback) & n == t) & n != 31 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_WBOVERLAPST);
+        assert(c == Constraint_NONE | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_NONE => {
+              rt_unknown = false
+          },
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    execute_aarch64_instrs_memory_single_general_immediate_signed_offset_unpriv(datasize, memop, n, nontemporal, offset, postindex, regsize, rt_unknown, is_signed, t, tagchecked, wb_unknown, wback)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 676) = {
+    SEE = 676;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let imm9 = Slice(__opcode, 12, 9);
+    let opc = Slice(__opcode, 22, 2);
+    let size = Slice(__opcode, 30, 2);
+    decode_sttrb_aarch64_instrs_memory_single_general_immediate_signed_offset_unpriv(Rt, Rn, imm9, opc, size)
+}
+
+val decode_sttrh_aarch64_instrs_memory_single_general_immediate_signed_offset_unpriv : (bits(5), bits(5), bits(9), bits(2), bits(2)) -> unit
+
+function decode_sttrh_aarch64_instrs_memory_single_general_immediate_signed_offset_unpriv (Rt, Rn, imm9, opc, size) = {
+    wback : bool = false;
+    let postindex : bool = false;
+    let 'scale = UInt(size);
+    let offset : bits(64) = SignExtend(imm9, 64);
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let nontemporal : bool = false;
+    memop : MemOp = undefined;
+    is_signed : bool = undefined;
+    regsize : {32, 64} = 32;
+    if [opc[1]] == 0b0 then {
+        memop = if [opc[0]] == 0b1 then MemOp_LOAD else MemOp_STORE;
+        regsize = if size == 0b11 then 64 else 32;
+        is_signed = false
+    } else {
+        if size == 0b11 then {
+            throw(Error_Undefined())
+        } else {
+            memop = MemOp_LOAD;
+            if size == 0b10 & [opc[0]] == 0b1 then {
+                throw(Error_Undefined())
+            };
+            regsize = if [opc[0]] == 0b1 then 32 else 64;
+            is_signed = true
+        }
+    };
+    let 'regsize = regsize;
+    let 'datasize = (8 << scale);
+    let tagchecked : bool = memop != MemOp_PREFETCH & (wback | n != 31);
+    wb_unknown : bool = false;
+    rt_unknown : bool = false;
+    c : Constraint = undefined;
+    if ((memop == MemOp_LOAD & wback) & n == t) & n != 31 then {
+        c = ConstrainUnpredictable(Unpredictable_WBOVERLAPLD);
+        assert(c == Constraint_WBSUPPRESS | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_WBSUPPRESS => {
+              wback = false
+          },
+          Constraint_UNKNOWN => {
+              wb_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if ((memop == MemOp_STORE & wback) & n == t) & n != 31 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_WBOVERLAPST);
+        assert(c == Constraint_NONE | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_NONE => {
+              rt_unknown = false
+          },
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    execute_aarch64_instrs_memory_single_general_immediate_signed_offset_unpriv(datasize, memop, n, nontemporal, offset, postindex, regsize, rt_unknown, is_signed, t, tagchecked, wb_unknown, wback)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 677) = {
+    SEE = 677;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let imm9 = Slice(__opcode, 12, 9);
+    let opc = Slice(__opcode, 22, 2);
+    let size = Slice(__opcode, 30, 2);
+    decode_sttrh_aarch64_instrs_memory_single_general_immediate_signed_offset_unpriv(Rt, Rn, imm9, opc, size)
+}
+
+val execute_aarch64_instrs_memory_single_general_immediate_signed_offset_normal : forall 'datasize ('is_signed : Bool) 'n ('nontemporal : Bool) ('postindex : Bool) 'regsize ('rt_unknown : Bool) 't ('tagchecked : Bool) ('wb_unknown : Bool) ('wback : Bool),
+  (0 <= 't & 't <= 31 & 'regsize in {32, 64} & 0 <= 'n & 'n <= 31 & 'datasize in {8, 16, 32, 64}).
+  (int('datasize), MemOp, int('n), bool('nontemporal), bits(64), bool('postindex), int('regsize), bool('rt_unknown), bool('is_signed), int('t), bool('tagchecked), bool('wb_unknown), bool('wback)) -> unit
+
+function execute_aarch64_instrs_memory_single_general_immediate_signed_offset_normal (datasize, memop, n, nontemporal, offset, postindex, regsize, rt_unknown, is_signed, t, tagchecked, wb_unknown, wback) = {
+    address : bits(64) = undefined;
+    data : bits('datasize) = undefined;
+    let privileged : bool = PSTATE.EL != EL0;
+    let accdesc : AccessDescriptor = CreateAccDescGPR(memop, nontemporal, privileged, tagchecked);
+    if n == 31 then {
+        if memop != MemOp_PREFETCH then {
+            CheckSPAlignment()
+        };
+        address = SP_read()
+    } else {
+        address = X_read(n, 64)
+    };
+    if not_bool(postindex) then {
+        address = address + offset
+    };
+    match memop {
+      MemOp_STORE => {
+          if rt_unknown then {
+              data = __UNKNOWN_bits(datasize)
+          } else {
+              data = X_read(t, datasize)
+          };
+          if not_bool(wback) then {
+              AArch64_SetLSInstructionSyndrome(DIV(datasize, 8), false, t, regsize == 64, false)
+          };
+          Mem_set(address, DIV(datasize, 8), accdesc) = data
+      },
+      MemOp_LOAD => {
+          if not_bool(wback) then {
+              AArch64_SetLSInstructionSyndrome(DIV(datasize, 8), is_signed, t, regsize == 64, false)
+          };
+          let data : bits('datasize) = Mem_read(address, DIV(datasize, 8), accdesc);
+          if is_signed then {
+              assert(constraint(('datasize > 0 & 'regsize >= 'datasize)));
+              X_set(t, regsize) = SignExtend(data, regsize)
+          } else {
+              assert(constraint(('datasize >= 0 & 'regsize >= 'datasize)));
+              X_set(t, regsize) = ZeroExtend(data, regsize)
+          }
+      },
+      MemOp_PREFETCH => {
+          Prefetch(address, t[4 .. 0])
+      }
+    };
+    if wback then {
+        if wb_unknown then {
+            address = __UNKNOWN_bits(64)
+        } else if postindex then {
+            address = address + offset
+        } else ();
+        if n == 31 then {
+            SP_set() = address
+        } else {
+            X_set(n, 64) = address
+        }
+    };
+    if SPESampleInFlight then {
+        SPESampleGeneralPurposeLoadStore()
+    };
+    ()
+}
+
+val decode_ldur_gen_aarch64_instrs_memory_single_general_immediate_signed_offset_normal : (bits(5), bits(5), bits(9), bits(2), bits(2)) -> unit
+
+function decode_ldur_gen_aarch64_instrs_memory_single_general_immediate_signed_offset_normal (Rt, Rn, imm9, opc, size) = {
+    wback : bool = false;
+    let postindex : bool = false;
+    let 'scale = UInt(size);
+    let offset : bits(64) = SignExtend(imm9, 64);
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let nontemporal : bool = false;
+    memop : MemOp = undefined;
+    is_signed : bool = undefined;
+    regsize : {32, 64} = 32;
+    if [opc[1]] == 0b0 then {
+        memop = if [opc[0]] == 0b1 then MemOp_LOAD else MemOp_STORE;
+        regsize = if size == 0b11 then 64 else 32;
+        is_signed = false
+    } else {
+        if size == 0b11 then {
+            memop = MemOp_PREFETCH;
+            if [opc[0]] == 0b1 then {
+                throw(Error_Undefined())
+            };
+            ()
+        } else {
+            memop = MemOp_LOAD;
+            if size == 0b10 & [opc[0]] == 0b1 then {
+                throw(Error_Undefined())
+            };
+            regsize = if [opc[0]] == 0b1 then 32 else 64;
+            is_signed = true
+        }
+    };
+    let 'regsize = regsize;
+    let 'datasize = (8 << scale);
+    let tagchecked : bool = memop != MemOp_PREFETCH & (wback | n != 31);
+    wb_unknown : bool = false;
+    rt_unknown : bool = false;
+    c : Constraint = undefined;
+    if ((memop == MemOp_LOAD & wback) & n == t) & n != 31 then {
+        c = ConstrainUnpredictable(Unpredictable_WBOVERLAPLD);
+        assert(c == Constraint_WBSUPPRESS | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_WBSUPPRESS => {
+              wback = false
+          },
+          Constraint_UNKNOWN => {
+              wb_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if ((memop == MemOp_STORE & wback) & n == t) & n != 31 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_WBOVERLAPST);
+        assert(c == Constraint_NONE | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_NONE => {
+              rt_unknown = false
+          },
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    execute_aarch64_instrs_memory_single_general_immediate_signed_offset_normal(datasize, memop, n, nontemporal, offset, postindex, regsize, rt_unknown, is_signed, t, tagchecked, wb_unknown, wback)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitone, _, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 680) = {
+    SEE = 680;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let imm9 = Slice(__opcode, 12, 9);
+    let opc = Slice(__opcode, 22, 2);
+    let size = Slice(__opcode, 30, 2);
+    decode_ldur_gen_aarch64_instrs_memory_single_general_immediate_signed_offset_normal(Rt, Rn, imm9, opc, size)
+}
+
+val decode_ldurb_aarch64_instrs_memory_single_general_immediate_signed_offset_normal : (bits(5), bits(5), bits(9), bits(2), bits(2)) -> unit
+
+function decode_ldurb_aarch64_instrs_memory_single_general_immediate_signed_offset_normal (Rt, Rn, imm9, opc, size) = {
+    wback : bool = false;
+    let postindex : bool = false;
+    let 'scale = UInt(size);
+    let offset : bits(64) = SignExtend(imm9, 64);
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let nontemporal : bool = false;
+    memop : MemOp = undefined;
+    is_signed : bool = undefined;
+    regsize : {32, 64} = 32;
+    if [opc[1]] == 0b0 then {
+        memop = if [opc[0]] == 0b1 then MemOp_LOAD else MemOp_STORE;
+        regsize = if size == 0b11 then 64 else 32;
+        is_signed = false
+    } else {
+        if size == 0b11 then {
+            memop = MemOp_PREFETCH;
+            if [opc[0]] == 0b1 then {
+                throw(Error_Undefined())
+            };
+            ()
+        } else {
+            memop = MemOp_LOAD;
+            if size == 0b10 & [opc[0]] == 0b1 then {
+                throw(Error_Undefined())
+            };
+            regsize = if [opc[0]] == 0b1 then 32 else 64;
+            is_signed = true
+        }
+    };
+    let 'regsize = regsize;
+    let 'datasize = (8 << scale);
+    let tagchecked : bool = memop != MemOp_PREFETCH & (wback | n != 31);
+    wb_unknown : bool = false;
+    rt_unknown : bool = false;
+    c : Constraint = undefined;
+    if ((memop == MemOp_LOAD & wback) & n == t) & n != 31 then {
+        c = ConstrainUnpredictable(Unpredictable_WBOVERLAPLD);
+        assert(c == Constraint_WBSUPPRESS | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_WBSUPPRESS => {
+              wback = false
+          },
+          Constraint_UNKNOWN => {
+              wb_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if ((memop == MemOp_STORE & wback) & n == t) & n != 31 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_WBOVERLAPST);
+        assert(c == Constraint_NONE | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_NONE => {
+              rt_unknown = false
+          },
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    execute_aarch64_instrs_memory_single_general_immediate_signed_offset_normal(datasize, memop, n, nontemporal, offset, postindex, regsize, rt_unknown, is_signed, t, tagchecked, wb_unknown, wback)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 681) = {
+    SEE = 681;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let imm9 = Slice(__opcode, 12, 9);
+    let opc = Slice(__opcode, 22, 2);
+    let size = Slice(__opcode, 30, 2);
+    decode_ldurb_aarch64_instrs_memory_single_general_immediate_signed_offset_normal(Rt, Rn, imm9, opc, size)
+}
+
+val decode_ldurh_aarch64_instrs_memory_single_general_immediate_signed_offset_normal : (bits(5), bits(5), bits(9), bits(2), bits(2)) -> unit
+
+function decode_ldurh_aarch64_instrs_memory_single_general_immediate_signed_offset_normal (Rt, Rn, imm9, opc, size) = {
+    wback : bool = false;
+    let postindex : bool = false;
+    let 'scale = UInt(size);
+    let offset : bits(64) = SignExtend(imm9, 64);
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let nontemporal : bool = false;
+    memop : MemOp = undefined;
+    is_signed : bool = undefined;
+    regsize : {32, 64} = 32;
+    if [opc[1]] == 0b0 then {
+        memop = if [opc[0]] == 0b1 then MemOp_LOAD else MemOp_STORE;
+        regsize = if size == 0b11 then 64 else 32;
+        is_signed = false
+    } else {
+        if size == 0b11 then {
+            memop = MemOp_PREFETCH;
+            if [opc[0]] == 0b1 then {
+                throw(Error_Undefined())
+            };
+            ()
+        } else {
+            memop = MemOp_LOAD;
+            if size == 0b10 & [opc[0]] == 0b1 then {
+                throw(Error_Undefined())
+            };
+            regsize = if [opc[0]] == 0b1 then 32 else 64;
+            is_signed = true
+        }
+    };
+    let 'regsize = regsize;
+    let 'datasize = (8 << scale);
+    let tagchecked : bool = memop != MemOp_PREFETCH & (wback | n != 31);
+    wb_unknown : bool = false;
+    rt_unknown : bool = false;
+    c : Constraint = undefined;
+    if ((memop == MemOp_LOAD & wback) & n == t) & n != 31 then {
+        c = ConstrainUnpredictable(Unpredictable_WBOVERLAPLD);
+        assert(c == Constraint_WBSUPPRESS | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_WBSUPPRESS => {
+              wback = false
+          },
+          Constraint_UNKNOWN => {
+              wb_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if ((memop == MemOp_STORE & wback) & n == t) & n != 31 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_WBOVERLAPST);
+        assert(c == Constraint_NONE | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_NONE => {
+              rt_unknown = false
+          },
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    execute_aarch64_instrs_memory_single_general_immediate_signed_offset_normal(datasize, memop, n, nontemporal, offset, postindex, regsize, rt_unknown, is_signed, t, tagchecked, wb_unknown, wback)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 682) = {
+    SEE = 682;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let imm9 = Slice(__opcode, 12, 9);
+    let opc = Slice(__opcode, 22, 2);
+    let size = Slice(__opcode, 30, 2);
+    decode_ldurh_aarch64_instrs_memory_single_general_immediate_signed_offset_normal(Rt, Rn, imm9, opc, size)
+}
+
+val decode_ldursb_aarch64_instrs_memory_single_general_immediate_signed_offset_normal : (bits(5), bits(5), bits(9), bits(2), bits(2)) -> unit
+
+function decode_ldursb_aarch64_instrs_memory_single_general_immediate_signed_offset_normal (Rt, Rn, imm9, opc, size) = {
+    wback : bool = false;
+    let postindex : bool = false;
+    let 'scale = UInt(size);
+    let offset : bits(64) = SignExtend(imm9, 64);
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let nontemporal : bool = false;
+    memop : MemOp = undefined;
+    is_signed : bool = undefined;
+    regsize : {32, 64} = 32;
+    if [opc[1]] == 0b0 then {
+        memop = if [opc[0]] == 0b1 then MemOp_LOAD else MemOp_STORE;
+        regsize = if size == 0b11 then 64 else 32;
+        is_signed = false
+    } else {
+        if size == 0b11 then {
+            memop = MemOp_PREFETCH;
+            if [opc[0]] == 0b1 then {
+                throw(Error_Undefined())
+            };
+            ()
+        } else {
+            memop = MemOp_LOAD;
+            if size == 0b10 & [opc[0]] == 0b1 then {
+                throw(Error_Undefined())
+            };
+            regsize = if [opc[0]] == 0b1 then 32 else 64;
+            is_signed = true
+        }
+    };
+    let 'regsize = regsize;
+    let 'datasize = (8 << scale);
+    let tagchecked : bool = memop != MemOp_PREFETCH & (wback | n != 31);
+    wb_unknown : bool = false;
+    rt_unknown : bool = false;
+    c : Constraint = undefined;
+    if ((memop == MemOp_LOAD & wback) & n == t) & n != 31 then {
+        c = ConstrainUnpredictable(Unpredictable_WBOVERLAPLD);
+        assert(c == Constraint_WBSUPPRESS | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_WBSUPPRESS => {
+              wback = false
+          },
+          Constraint_UNKNOWN => {
+              wb_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if ((memop == MemOp_STORE & wback) & n == t) & n != 31 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_WBOVERLAPST);
+        assert(c == Constraint_NONE | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_NONE => {
+              rt_unknown = false
+          },
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    execute_aarch64_instrs_memory_single_general_immediate_signed_offset_normal(datasize, memop, n, nontemporal, offset, postindex, regsize, rt_unknown, is_signed, t, tagchecked, wb_unknown, wback)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitone, _, bitzero, _, _, _, _, _, _, _, _, _, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 683) = {
+    SEE = 683;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let imm9 = Slice(__opcode, 12, 9);
+    let opc = Slice(__opcode, 22, 2);
+    let size = Slice(__opcode, 30, 2);
+    decode_ldursb_aarch64_instrs_memory_single_general_immediate_signed_offset_normal(Rt, Rn, imm9, opc, size)
+}
+
+val decode_ldursh_aarch64_instrs_memory_single_general_immediate_signed_offset_normal : (bits(5), bits(5), bits(9), bits(2), bits(2)) -> unit
+
+function decode_ldursh_aarch64_instrs_memory_single_general_immediate_signed_offset_normal (Rt, Rn, imm9, opc, size) = {
+    wback : bool = false;
+    let postindex : bool = false;
+    let 'scale = UInt(size);
+    let offset : bits(64) = SignExtend(imm9, 64);
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let nontemporal : bool = false;
+    memop : MemOp = undefined;
+    is_signed : bool = undefined;
+    regsize : {32, 64} = 32;
+    if [opc[1]] == 0b0 then {
+        memop = if [opc[0]] == 0b1 then MemOp_LOAD else MemOp_STORE;
+        regsize = if size == 0b11 then 64 else 32;
+        is_signed = false
+    } else {
+        if size == 0b11 then {
+            memop = MemOp_PREFETCH;
+            if [opc[0]] == 0b1 then {
+                throw(Error_Undefined())
+            };
+            ()
+        } else {
+            memop = MemOp_LOAD;
+            if size == 0b10 & [opc[0]] == 0b1 then {
+                throw(Error_Undefined())
+            };
+            regsize = if [opc[0]] == 0b1 then 32 else 64;
+            is_signed = true
+        }
+    };
+    let 'regsize = regsize;
+    let 'datasize = (8 << scale);
+    let tagchecked : bool = memop != MemOp_PREFETCH & (wback | n != 31);
+    wb_unknown : bool = false;
+    rt_unknown : bool = false;
+    c : Constraint = undefined;
+    if ((memop == MemOp_LOAD & wback) & n == t) & n != 31 then {
+        c = ConstrainUnpredictable(Unpredictable_WBOVERLAPLD);
+        assert(c == Constraint_WBSUPPRESS | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_WBSUPPRESS => {
+              wback = false
+          },
+          Constraint_UNKNOWN => {
+              wb_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if ((memop == MemOp_STORE & wback) & n == t) & n != 31 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_WBOVERLAPST);
+        assert(c == Constraint_NONE | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_NONE => {
+              rt_unknown = false
+          },
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    execute_aarch64_instrs_memory_single_general_immediate_signed_offset_normal(datasize, memop, n, nontemporal, offset, postindex, regsize, rt_unknown, is_signed, t, tagchecked, wb_unknown, wback)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitone, _, bitzero, _, _, _, _, _, _, _, _, _, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 684) = {
+    SEE = 684;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let imm9 = Slice(__opcode, 12, 9);
+    let opc = Slice(__opcode, 22, 2);
+    let size = Slice(__opcode, 30, 2);
+    decode_ldursh_aarch64_instrs_memory_single_general_immediate_signed_offset_normal(Rt, Rn, imm9, opc, size)
+}
+
+val decode_ldursw_aarch64_instrs_memory_single_general_immediate_signed_offset_normal : (bits(5), bits(5), bits(9), bits(2), bits(2)) -> unit
+
+function decode_ldursw_aarch64_instrs_memory_single_general_immediate_signed_offset_normal (Rt, Rn, imm9, opc, size) = {
+    wback : bool = false;
+    let postindex : bool = false;
+    let 'scale = UInt(size);
+    let offset : bits(64) = SignExtend(imm9, 64);
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let nontemporal : bool = false;
+    memop : MemOp = undefined;
+    is_signed : bool = undefined;
+    regsize : {32, 64} = 32;
+    if [opc[1]] == 0b0 then {
+        memop = if [opc[0]] == 0b1 then MemOp_LOAD else MemOp_STORE;
+        regsize = if size == 0b11 then 64 else 32;
+        is_signed = false
+    } else {
+        if size == 0b11 then {
+            memop = MemOp_PREFETCH;
+            if [opc[0]] == 0b1 then {
+                throw(Error_Undefined())
+            };
+            ()
+        } else {
+            memop = MemOp_LOAD;
+            if size == 0b10 & [opc[0]] == 0b1 then {
+                throw(Error_Undefined())
+            };
+            regsize = if [opc[0]] == 0b1 then 32 else 64;
+            is_signed = true
+        }
+    };
+    let 'regsize = regsize;
+    let 'datasize = (8 << scale);
+    let tagchecked : bool = memop != MemOp_PREFETCH & (wback | n != 31);
+    wb_unknown : bool = false;
+    rt_unknown : bool = false;
+    c : Constraint = undefined;
+    if ((memop == MemOp_LOAD & wback) & n == t) & n != 31 then {
+        c = ConstrainUnpredictable(Unpredictable_WBOVERLAPLD);
+        assert(c == Constraint_WBSUPPRESS | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_WBSUPPRESS => {
+              wback = false
+          },
+          Constraint_UNKNOWN => {
+              wb_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if ((memop == MemOp_STORE & wback) & n == t) & n != 31 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_WBOVERLAPST);
+        assert(c == Constraint_NONE | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_NONE => {
+              rt_unknown = false
+          },
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    execute_aarch64_instrs_memory_single_general_immediate_signed_offset_normal(datasize, memop, n, nontemporal, offset, postindex, regsize, rt_unknown, is_signed, t, tagchecked, wb_unknown, wback)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitone, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitone, bitzero, bitzero, _, _, _, _, _, _, _, _, _, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 685) = {
+    SEE = 685;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let imm9 = Slice(__opcode, 12, 9);
+    let opc = Slice(__opcode, 22, 2);
+    let size = Slice(__opcode, 30, 2);
+    decode_ldursw_aarch64_instrs_memory_single_general_immediate_signed_offset_normal(Rt, Rn, imm9, opc, size)
+}
+
+val decode_prfum_aarch64_instrs_memory_single_general_immediate_signed_offset_normal : (bits(5), bits(5), bits(9), bits(2), bits(2)) -> unit
+
+function decode_prfum_aarch64_instrs_memory_single_general_immediate_signed_offset_normal (Rt, Rn, imm9, opc, size) = {
+    wback : bool = false;
+    let postindex : bool = false;
+    let 'scale = UInt(size);
+    let offset : bits(64) = SignExtend(imm9, 64);
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let nontemporal : bool = false;
+    memop : MemOp = undefined;
+    is_signed : bool = undefined;
+    regsize : {32, 64} = 32;
+    if [opc[1]] == 0b0 then {
+        memop = if [opc[0]] == 0b1 then MemOp_LOAD else MemOp_STORE;
+        regsize = if size == 0b11 then 64 else 32;
+        is_signed = false
+    } else {
+        if size == 0b11 then {
+            memop = MemOp_PREFETCH;
+            if [opc[0]] == 0b1 then {
+                throw(Error_Undefined())
+            };
+            ()
+        } else {
+            memop = MemOp_LOAD;
+            if size == 0b10 & [opc[0]] == 0b1 then {
+                throw(Error_Undefined())
+            };
+            regsize = if [opc[0]] == 0b1 then 32 else 64;
+            is_signed = true
+        }
+    };
+    let 'regsize = regsize;
+    let 'datasize = (8 << scale);
+    let tagchecked : bool = memop != MemOp_PREFETCH & (wback | n != 31);
+    wb_unknown : bool = false;
+    rt_unknown : bool = false;
+    c : Constraint = undefined;
+    if ((memop == MemOp_LOAD & wback) & n == t) & n != 31 then {
+        c = ConstrainUnpredictable(Unpredictable_WBOVERLAPLD);
+        assert(c == Constraint_WBSUPPRESS | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_WBSUPPRESS => {
+              wback = false
+          },
+          Constraint_UNKNOWN => {
+              wb_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if ((memop == MemOp_STORE & wback) & n == t) & n != 31 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_WBOVERLAPST);
+        assert(c == Constraint_NONE | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_NONE => {
+              rt_unknown = false
+          },
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    execute_aarch64_instrs_memory_single_general_immediate_signed_offset_normal(datasize, memop, n, nontemporal, offset, postindex, regsize, rt_unknown, is_signed, t, tagchecked, wb_unknown, wback)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitone, bitone, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitone, bitzero, bitzero, _, _, _, _, _, _, _, _, _, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 686) = {
+    SEE = 686;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let imm9 = Slice(__opcode, 12, 9);
+    let opc = Slice(__opcode, 22, 2);
+    let size = Slice(__opcode, 30, 2);
+    decode_prfum_aarch64_instrs_memory_single_general_immediate_signed_offset_normal(Rt, Rn, imm9, opc, size)
+}
+
+val decode_stur_gen_aarch64_instrs_memory_single_general_immediate_signed_offset_normal : (bits(5), bits(5), bits(9), bits(2), bits(2)) -> unit
+
+function decode_stur_gen_aarch64_instrs_memory_single_general_immediate_signed_offset_normal (Rt, Rn, imm9, opc, size) = {
+    wback : bool = false;
+    let postindex : bool = false;
+    let 'scale = UInt(size);
+    let offset : bits(64) = SignExtend(imm9, 64);
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let nontemporal : bool = false;
+    memop : MemOp = undefined;
+    is_signed : bool = undefined;
+    regsize : {32, 64} = 32;
+    if [opc[1]] == 0b0 then {
+        memop = if [opc[0]] == 0b1 then MemOp_LOAD else MemOp_STORE;
+        regsize = if size == 0b11 then 64 else 32;
+        is_signed = false
+    } else {
+        if size == 0b11 then {
+            memop = MemOp_PREFETCH;
+            if [opc[0]] == 0b1 then {
+                throw(Error_Undefined())
+            };
+            ()
+        } else {
+            memop = MemOp_LOAD;
+            if size == 0b10 & [opc[0]] == 0b1 then {
+                throw(Error_Undefined())
+            };
+            regsize = if [opc[0]] == 0b1 then 32 else 64;
+            is_signed = true
+        }
+    };
+    let 'regsize = regsize;
+    let 'datasize = (8 << scale);
+    let tagchecked : bool = memop != MemOp_PREFETCH & (wback | n != 31);
+    wb_unknown : bool = false;
+    rt_unknown : bool = false;
+    c : Constraint = undefined;
+    if ((memop == MemOp_LOAD & wback) & n == t) & n != 31 then {
+        c = ConstrainUnpredictable(Unpredictable_WBOVERLAPLD);
+        assert(c == Constraint_WBSUPPRESS | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_WBSUPPRESS => {
+              wback = false
+          },
+          Constraint_UNKNOWN => {
+              wb_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if ((memop == MemOp_STORE & wback) & n == t) & n != 31 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_WBOVERLAPST);
+        assert(c == Constraint_NONE | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_NONE => {
+              rt_unknown = false
+          },
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    execute_aarch64_instrs_memory_single_general_immediate_signed_offset_normal(datasize, memop, n, nontemporal, offset, postindex, regsize, rt_unknown, is_signed, t, tagchecked, wb_unknown, wback)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitone, _, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 687) = {
+    SEE = 687;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let imm9 = Slice(__opcode, 12, 9);
+    let opc = Slice(__opcode, 22, 2);
+    let size = Slice(__opcode, 30, 2);
+    decode_stur_gen_aarch64_instrs_memory_single_general_immediate_signed_offset_normal(Rt, Rn, imm9, opc, size)
+}
+
+val decode_sturb_aarch64_instrs_memory_single_general_immediate_signed_offset_normal : (bits(5), bits(5), bits(9), bits(2), bits(2)) -> unit
+
+function decode_sturb_aarch64_instrs_memory_single_general_immediate_signed_offset_normal (Rt, Rn, imm9, opc, size) = {
+    wback : bool = false;
+    let postindex : bool = false;
+    let 'scale = UInt(size);
+    let offset : bits(64) = SignExtend(imm9, 64);
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let nontemporal : bool = false;
+    memop : MemOp = undefined;
+    is_signed : bool = undefined;
+    regsize : {32, 64} = 32;
+    if [opc[1]] == 0b0 then {
+        memop = if [opc[0]] == 0b1 then MemOp_LOAD else MemOp_STORE;
+        regsize = if size == 0b11 then 64 else 32;
+        is_signed = false
+    } else {
+        if size == 0b11 then {
+            memop = MemOp_PREFETCH;
+            if [opc[0]] == 0b1 then {
+                throw(Error_Undefined())
+            };
+            ()
+        } else {
+            memop = MemOp_LOAD;
+            if size == 0b10 & [opc[0]] == 0b1 then {
+                throw(Error_Undefined())
+            };
+            regsize = if [opc[0]] == 0b1 then 32 else 64;
+            is_signed = true
+        }
+    };
+    let 'regsize = regsize;
+    let 'datasize = (8 << scale);
+    let tagchecked : bool = memop != MemOp_PREFETCH & (wback | n != 31);
+    wb_unknown : bool = false;
+    rt_unknown : bool = false;
+    c : Constraint = undefined;
+    if ((memop == MemOp_LOAD & wback) & n == t) & n != 31 then {
+        c = ConstrainUnpredictable(Unpredictable_WBOVERLAPLD);
+        assert(c == Constraint_WBSUPPRESS | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_WBSUPPRESS => {
+              wback = false
+          },
+          Constraint_UNKNOWN => {
+              wb_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if ((memop == MemOp_STORE & wback) & n == t) & n != 31 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_WBOVERLAPST);
+        assert(c == Constraint_NONE | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_NONE => {
+              rt_unknown = false
+          },
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    execute_aarch64_instrs_memory_single_general_immediate_signed_offset_normal(datasize, memop, n, nontemporal, offset, postindex, regsize, rt_unknown, is_signed, t, tagchecked, wb_unknown, wback)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 688) = {
+    SEE = 688;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let imm9 = Slice(__opcode, 12, 9);
+    let opc = Slice(__opcode, 22, 2);
+    let size = Slice(__opcode, 30, 2);
+    decode_sturb_aarch64_instrs_memory_single_general_immediate_signed_offset_normal(Rt, Rn, imm9, opc, size)
+}
+
+val decode_sturh_aarch64_instrs_memory_single_general_immediate_signed_offset_normal : (bits(5), bits(5), bits(9), bits(2), bits(2)) -> unit
+
+function decode_sturh_aarch64_instrs_memory_single_general_immediate_signed_offset_normal (Rt, Rn, imm9, opc, size) = {
+    wback : bool = false;
+    let postindex : bool = false;
+    let 'scale = UInt(size);
+    let offset : bits(64) = SignExtend(imm9, 64);
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let nontemporal : bool = false;
+    memop : MemOp = undefined;
+    is_signed : bool = undefined;
+    regsize : {32, 64} = 32;
+    if [opc[1]] == 0b0 then {
+        memop = if [opc[0]] == 0b1 then MemOp_LOAD else MemOp_STORE;
+        regsize = if size == 0b11 then 64 else 32;
+        is_signed = false
+    } else {
+        if size == 0b11 then {
+            memop = MemOp_PREFETCH;
+            if [opc[0]] == 0b1 then {
+                throw(Error_Undefined())
+            };
+            ()
+        } else {
+            memop = MemOp_LOAD;
+            if size == 0b10 & [opc[0]] == 0b1 then {
+                throw(Error_Undefined())
+            };
+            regsize = if [opc[0]] == 0b1 then 32 else 64;
+            is_signed = true
+        }
+    };
+    let 'regsize = regsize;
+    let 'datasize = (8 << scale);
+    let tagchecked : bool = memop != MemOp_PREFETCH & (wback | n != 31);
+    wb_unknown : bool = false;
+    rt_unknown : bool = false;
+    c : Constraint = undefined;
+    if ((memop == MemOp_LOAD & wback) & n == t) & n != 31 then {
+        c = ConstrainUnpredictable(Unpredictable_WBOVERLAPLD);
+        assert(c == Constraint_WBSUPPRESS | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_WBSUPPRESS => {
+              wback = false
+          },
+          Constraint_UNKNOWN => {
+              wb_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if ((memop == MemOp_STORE & wback) & n == t) & n != 31 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_WBOVERLAPST);
+        assert(c == Constraint_NONE | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_NONE => {
+              rt_unknown = false
+          },
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    execute_aarch64_instrs_memory_single_general_immediate_signed_offset_normal(datasize, memop, n, nontemporal, offset, postindex, regsize, rt_unknown, is_signed, t, tagchecked, wb_unknown, wback)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 689) = {
+    SEE = 689;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let imm9 = Slice(__opcode, 12, 9);
+    let opc = Slice(__opcode, 22, 2);
+    let size = Slice(__opcode, 30, 2);
+    decode_sturh_aarch64_instrs_memory_single_general_immediate_signed_offset_normal(Rt, Rn, imm9, opc, size)
+}
+
 val execute_aarch64_instrs_integer_arithmetic_mul_uniform_add_sub : forall 'a 'd 'datasize 'destsize 'm 'n ('sub_op : Bool),
   (0 <= 'n & 'n <= 31 & 0 <= 'm & 'm <= 31 & 'destsize in {32, 64} & 'datasize in {32, 64} & 0 <= 'd & 'd <= 31 & 0 <= 'a & 'a <= 31).
   (int('a), int('d), int('datasize), int('destsize), int('m), int('n), bool('sub_op)) -> unit
@@ -4744,6 +15777,163 @@ function clause __DecodeA64_BranchExcSys ((pc, ([bitone, bitone, bitzero, bitone
     decode_pacib_aarch64_instrs_integer_pac_pacib_hint(op2, CRm)
 }
 
+val execute_aarch64_instrs_memory_single_general_immediate_unsigned : forall 'datasize ('is_signed : Bool) 'n ('nontemporal : Bool) ('postindex : Bool) 'regsize ('rt_unknown : Bool) 't ('tagchecked : Bool) ('wb_unknown : Bool) ('wback : Bool),
+  (0 <= 't & 't <= 31 & 'regsize in {32, 64} & 0 <= 'n & 'n <= 31 & 'datasize in {8, 16, 32, 64}).
+  (int('datasize), MemOp, int('n), bool('nontemporal), bits(64), bool('postindex), int('regsize), bool('rt_unknown), bool('is_signed), int('t), bool('tagchecked), bool('wb_unknown), bool('wback)) -> unit
+
+function execute_aarch64_instrs_memory_single_general_immediate_unsigned (datasize, memop, n, nontemporal, offset, postindex, regsize, rt_unknown, is_signed, t, tagchecked, wb_unknown, wback) = {
+    address : bits(64) = undefined;
+    data : bits('datasize) = undefined;
+    let privileged : bool = PSTATE.EL != EL0;
+    let accdesc : AccessDescriptor = CreateAccDescGPR(memop, nontemporal, privileged, tagchecked);
+    if n == 31 then {
+        if memop != MemOp_PREFETCH then {
+            CheckSPAlignment()
+        };
+        address = SP_read()
+    } else {
+        address = X_read(n, 64)
+    };
+    if not_bool(postindex) then {
+        address = address + offset
+    };
+    match memop {
+      MemOp_STORE => {
+          if rt_unknown then {
+              data = __UNKNOWN_bits(datasize)
+          } else {
+              data = X_read(t, datasize)
+          };
+          if not_bool(wback) then {
+              AArch64_SetLSInstructionSyndrome(DIV(datasize, 8), false, t, regsize == 64, false)
+          };
+          Mem_set(address, DIV(datasize, 8), accdesc) = data
+      },
+      MemOp_LOAD => {
+          if not_bool(wback) then {
+              AArch64_SetLSInstructionSyndrome(DIV(datasize, 8), is_signed, t, regsize == 64, false)
+          };
+          let data : bits('datasize) = Mem_read(address, DIV(datasize, 8), accdesc);
+          if is_signed then {
+              assert(constraint(('datasize > 0 & 'regsize >= 'datasize)));
+              X_set(t, regsize) = SignExtend(data, regsize)
+          } else {
+              assert(constraint(('datasize >= 0 & 'regsize >= 'datasize)));
+              X_set(t, regsize) = ZeroExtend(data, regsize)
+          }
+      },
+      MemOp_PREFETCH => {
+          Prefetch(address, t[4 .. 0])
+      }
+    };
+    if wback then {
+        if wb_unknown then {
+            address = __UNKNOWN_bits(64)
+        } else if postindex then {
+            address = address + offset
+        } else ();
+        if n == 31 then {
+            SP_set() = address
+        } else {
+            X_set(n, 64) = address
+        }
+    };
+    if SPESampleInFlight then {
+        SPESampleGeneralPurposeLoadStore()
+    };
+    ()
+}
+
+val decode_prfm_imm_aarch64_instrs_memory_single_general_immediate_unsigned : (bits(5), bits(5), bits(12), bits(2), bits(2)) -> unit
+
+function decode_prfm_imm_aarch64_instrs_memory_single_general_immediate_unsigned (Rt, Rn, imm12, opc, size) = {
+    wback : bool = false;
+    let postindex : bool = false;
+    let 'scale = UInt(size);
+    let offset : bits(64) = LSL(ZeroExtend(imm12, 64), scale);
+    let 'n = UInt(Rn);
+    let 't = UInt(Rt);
+    let nontemporal : bool = false;
+    memop : MemOp = undefined;
+    is_signed : bool = undefined;
+    regsize : {32, 64} = 32;
+    if [opc[1]] == 0b0 then {
+        memop = if [opc[0]] == 0b1 then MemOp_LOAD else MemOp_STORE;
+        regsize = if size == 0b11 then 64 else 32;
+        is_signed = false
+    } else {
+        if size == 0b11 then {
+            memop = MemOp_PREFETCH;
+            if [opc[0]] == 0b1 then {
+                throw(Error_Undefined())
+            };
+            ()
+        } else {
+            memop = MemOp_LOAD;
+            if size == 0b10 & [opc[0]] == 0b1 then {
+                throw(Error_Undefined())
+            };
+            regsize = if [opc[0]] == 0b1 then 32 else 64;
+            is_signed = true
+        }
+    };
+    let 'regsize = regsize;
+    let 'datasize = (8 << scale);
+    let tagchecked : bool = memop != MemOp_PREFETCH & (wback | n != 31);
+    wb_unknown : bool = false;
+    rt_unknown : bool = false;
+    c : Constraint = undefined;
+    if ((memop == MemOp_LOAD & wback) & n == t) & n != 31 then {
+        c = ConstrainUnpredictable(Unpredictable_WBOVERLAPLD);
+        assert(c == Constraint_WBSUPPRESS | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_WBSUPPRESS => {
+              wback = false
+          },
+          Constraint_UNKNOWN => {
+              wb_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if ((memop == MemOp_STORE & wback) & n == t) & n != 31 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_WBOVERLAPST);
+        assert(c == Constraint_NONE | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_NONE => {
+              rt_unknown = false
+          },
+          Constraint_UNKNOWN => {
+              rt_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    execute_aarch64_instrs_memory_single_general_immediate_unsigned(datasize, memop, n, nontemporal, offset, postindex, regsize, rt_unknown, is_signed, t, tagchecked, wb_unknown, wback)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitone, bitone, bitone, bitone, bitone, bitzero, bitzero, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 716) = {
+    SEE = 716;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let imm12 = Slice(__opcode, 10, 12);
+    let opc = Slice(__opcode, 22, 2);
+    let size = Slice(__opcode, 30, 2);
+    decode_prfm_imm_aarch64_instrs_memory_single_general_immediate_unsigned(Rt, Rn, imm12, opc, size)
+}
+
 val execute_aarch64_instrs_integer_arithmetic_rbit : forall 'd 'datasize 'n,
   (0 <= 'n & 'n <= 31 & 'datasize in {32, 64} & 0 <= 'd & 'd <= 31).
   (int('d), int('datasize), int('n)) -> unit
@@ -5227,6 +16417,118 @@ function clause __DecodeA64_DataProcReg ((pc, ([bitone, bitzero, bitzero, bitone
     }
 }
 
+val execute_aarch64_instrs_memory_atomicops_swp : forall ('acquire : Bool) 'datasize 'n 'regsize ('release : Bool) 's 't ('tagchecked : Bool),
+  (0 <= 't & 't <= 31 & 0 <= 's & 's <= 31 & 'regsize in {32, 64} & 0 <= 'n & 'n <= 31 & 'datasize in {8, 16, 32, 64}).
+  (bool('acquire), int('datasize), int('n), int('regsize), bool('release), int('s), int('t), bool('tagchecked)) -> unit
+
+function execute_aarch64_instrs_memory_atomicops_swp (acquire, datasize, n, regsize, release, s, t, tagchecked) = {
+    address : bits(64) = undefined;
+    let accdesc : AccessDescriptor = CreateAccDescAtomicOp(MemAtomicOp_SWP, acquire, release, tagchecked);
+    if n == 31 then {
+        CheckSPAlignment();
+        address = SP_read()
+    } else {
+        address = X_read(n, 64)
+    };
+    let store_value : bits('datasize) = X_read(s, datasize);
+    let comparevalue : bits('datasize) = __UNKNOWN_bits(datasize);
+    let data : bits('datasize) = MemAtomic(address, comparevalue, store_value, accdesc);
+    assert(constraint('regsize >= 'datasize));
+    X_set(t, regsize) = ZeroExtend(data, regsize);
+    if SPESampleInFlight then {
+        let ar : bits(1) = if acquire | release then 0b1 else 0b0;
+        let excl : bits(1) = 0b0;
+        let at : bits(1) = 0b1;
+        let is_load : bool = true;
+        SPESampleExtendedLoadStore(ar, excl, at, is_load)
+    };
+    ()
+}
+
+val decode_swp_aarch64_instrs_memory_atomicops_swp : (bits(5), bits(5), bits(5), bits(1), bits(1), bits(2)) -> unit
+
+function decode_swp_aarch64_instrs_memory_atomicops_swp (Rt, Rn, Rs, R, A, size) = {
+    if not_bool(HaveAtomicExt()) then {
+        throw(Error_Undefined())
+    };
+    let 't = UInt(Rt);
+    let 'n = UInt(Rn);
+    let 's = UInt(Rs);
+    let 'datasize = (8 << UInt(size));
+    let 'regsize = if datasize == 64 then 64 else 32;
+    let acquire : bool = A == 0b1 & Rt != 0b11111;
+    let release : bool = R == 0b1;
+    let tagchecked : bool = n != 31;
+    execute_aarch64_instrs_memory_atomicops_swp(acquire, datasize, n, regsize, release, s, t, tagchecked)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitone, _, bitone, bitone, bitone, bitzero, bitzero, bitzero, _, _, bitone, _, _, _, _, _, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 1000) = {
+    SEE = 1000;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rs = Slice(__opcode, 16, 5);
+    let R = Slice(__opcode, 22, 1);
+    let A = Slice(__opcode, 23, 1);
+    let size = Slice(__opcode, 30, 2);
+    decode_swp_aarch64_instrs_memory_atomicops_swp(Rt, Rn, Rs, R, A, size)
+}
+
+val decode_swpb_aarch64_instrs_memory_atomicops_swp : (bits(5), bits(5), bits(5), bits(1), bits(1), bits(2)) -> unit
+
+function decode_swpb_aarch64_instrs_memory_atomicops_swp (Rt, Rn, Rs, R, A, size) = {
+    if not_bool(HaveAtomicExt()) then {
+        throw(Error_Undefined())
+    };
+    let 't = UInt(Rt);
+    let 'n = UInt(Rn);
+    let 's = UInt(Rs);
+    let 'datasize = (8 << UInt(size));
+    let 'regsize = if datasize == 64 then 64 else 32;
+    let acquire : bool = A == 0b1 & Rt != 0b11111;
+    let release : bool = R == 0b1;
+    let tagchecked : bool = n != 31;
+    execute_aarch64_instrs_memory_atomicops_swp(acquire, datasize, n, regsize, release, s, t, tagchecked)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitzero, _, _, bitone, _, _, _, _, _, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 1001) = {
+    SEE = 1001;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rs = Slice(__opcode, 16, 5);
+    let R = Slice(__opcode, 22, 1);
+    let A = Slice(__opcode, 23, 1);
+    let size = Slice(__opcode, 30, 2);
+    decode_swpb_aarch64_instrs_memory_atomicops_swp(Rt, Rn, Rs, R, A, size)
+}
+
+val decode_swph_aarch64_instrs_memory_atomicops_swp : (bits(5), bits(5), bits(5), bits(1), bits(1), bits(2)) -> unit
+
+function decode_swph_aarch64_instrs_memory_atomicops_swp (Rt, Rn, Rs, R, A, size) = {
+    if not_bool(HaveAtomicExt()) then {
+        throw(Error_Undefined())
+    };
+    let 't = UInt(Rt);
+    let 'n = UInt(Rn);
+    let 's = UInt(Rs);
+    let 'datasize = (8 << UInt(size));
+    let 'regsize = if datasize == 64 then 64 else 32;
+    let acquire : bool = A == 0b1 & Rt != 0b11111;
+    let release : bool = R == 0b1;
+    let tagchecked : bool = n != 31;
+    execute_aarch64_instrs_memory_atomicops_swp(acquire, datasize, n, regsize, release, s, t, tagchecked)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, bitzero, _, _, bitone, _, _, _, _, _, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 1002) = {
+    SEE = 1002;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rs = Slice(__opcode, 16, 5);
+    let R = Slice(__opcode, 22, 1);
+    let A = Slice(__opcode, 23, 1);
+    let size = Slice(__opcode, 30, 2);
+    decode_swph_aarch64_instrs_memory_atomicops_swp(Rt, Rn, Rs, R, A, size)
+}
+
 val execute_aarch64_instrs_branch_conditional_test : forall 'bit_pos 'datasize 't,
   (0 <= 't & 't <= 31 & 'datasize in {32, 64} & 0 <= 'bit_pos & 'bit_pos <= 63).
   (int('bit_pos), bits(1), int('datasize), bits(64), int('t)) -> unit
@@ -5591,6 +16893,8 @@ enum Feature = {
   FEAT_TRBE_MPAM
 }
 
+enum SecurityState = {SS_NonSecure, SS_Root, SS_Realm, SS_Secure}
+
 let EL3 : bits(2) = 0b11
 
 let EL2 : bits(2) = 0b10
@@ -5640,6 +16944,115 @@ enum DSBAlias = {DSBAlias_SSBB, DSBAlias_PSSBB, DSBAlias_DSB}
 
 enum WFxType = {WFxType_WFE, WFxType_WFI, WFxType_WFET, WFxType_WFIT}
 
+type PARTIDtype = bits(16)
+
+type PMGtype = bits(8)
+
+enum PARTIDspaceType = {
+  PIdSpace_Secure,
+  PIdSpace_Root,
+  PIdSpace_Realm,
+  PIdSpace_NonSecure
+}
+
+struct MPAMinfo = {
+  mpam_sp : PARTIDspaceType,
+  partid : PARTIDtype,
+  pmg : PMGtype
+}
+
+enum AccessType = {
+  AccessType_IFETCH,
+  AccessType_GPR,
+  AccessType_ASIMD,
+  AccessType_SVE,
+  AccessType_SME,
+  AccessType_IC,
+  AccessType_DC,
+  AccessType_DCZero,
+  AccessType_AT,
+  AccessType_NV2,
+  AccessType_SPE,
+  AccessType_GCS,
+  AccessType_GPTW,
+  AccessType_TTW
+}
+
+enum MemOp = {MemOp_LOAD, MemOp_STORE, MemOp_PREFETCH}
+
+enum VARange = {VARange_LOWER, VARange_UPPER}
+
+enum MemAtomicOp = {
+  MemAtomicOp_GCSSS1,
+  MemAtomicOp_ADD,
+  MemAtomicOp_BIC,
+  MemAtomicOp_EOR,
+  MemAtomicOp_ORR,
+  MemAtomicOp_SMAX,
+  MemAtomicOp_SMIN,
+  MemAtomicOp_UMAX,
+  MemAtomicOp_UMIN,
+  MemAtomicOp_SWP,
+  MemAtomicOp_CAS
+}
+
+enum CacheOp = {CacheOp_Clean, CacheOp_Invalidate, CacheOp_CleanInvalidate}
+
+enum CacheOpScope = {
+  CacheOpScope_SetWay,
+  CacheOpScope_PoU,
+  CacheOpScope_PoC,
+  CacheOpScope_PoE,
+  CacheOpScope_PoP,
+  CacheOpScope_PoDP,
+  CacheOpScope_PoPA,
+  CacheOpScope_ALLU,
+  CacheOpScope_ALLUIS
+}
+
+enum CacheType = {
+  CacheType_Data,
+  CacheType_Tag,
+  CacheType_Data_Tag,
+  CacheType_Instruction
+}
+
+struct AccessDescriptor = {
+  acctype : AccessType,
+  el : bits(2),
+  ss : SecurityState,
+  acqsc : bool,
+  acqpc : bool,
+  relsc : bool,
+  limitedordered : bool,
+  exclusive : bool,
+  atomicop : bool,
+  modop : MemAtomicOp,
+  nontemporal : bool,
+  read : bool,
+  write : bool,
+  cacheop : CacheOp,
+  opscope : CacheOpScope,
+  cachetype : CacheType,
+  pan : bool,
+  transactional : bool,
+  nonfault : bool,
+  firstfault : bool,
+  first : bool,
+  contiguous : bool,
+  streamingsve : bool,
+  ls64 : bool,
+  mops : bool,
+  rcw : bool,
+  rcws : bool,
+  toplevel : bool,
+  varange : VARange,
+  a32lsmd : bool,
+  tagchecked : bool,
+  tagaccess : bool,
+  mpam : MPAMinfo
+}
+
 enum MBReqDomain = {
   MBReqDomain_Nonshareable,
   MBReqDomain_InnerShareable,
@@ -5648,6 +17061,120 @@ enum MBReqDomain = {
 }
 
 enum MBReqTypes = {MBReqTypes_Reads, MBReqTypes_Writes, MBReqTypes_All}
+
+enum Unpredictable = {
+  Unpredictable_VMSR,
+  Unpredictable_WBOVERLAPLD,
+  Unpredictable_WBOVERLAPST,
+  Unpredictable_LDPOVERLAP,
+  Unpredictable_BASEOVERLAP,
+  Unpredictable_DATAOVERLAP,
+  Unpredictable_DEVPAGE2,
+  Unpredictable_INSTRDEVICE,
+  Unpredictable_RESCPACR,
+  Unpredictable_RESMAIR,
+  Unpredictable_S1CTAGGED,
+  Unpredictable_S2RESMEMATTR,
+  Unpredictable_RESTEXCB,
+  Unpredictable_RESPRRR,
+  Unpredictable_RESDACR,
+  Unpredictable_RESVTCRS,
+  Unpredictable_RESTnSZ,
+  Unpredictable_RESTCF,
+  Unpredictable_DEVICETAGSTORE,
+  Unpredictable_OORTnSZ,
+  Unpredictable_LARGEIPA,
+  Unpredictable_ESRCONDPASS,
+  Unpredictable_ILZEROIT,
+  Unpredictable_ILZEROT,
+  Unpredictable_BPVECTORCATCHPRI,
+  Unpredictable_VCMATCHHALF,
+  Unpredictable_VCMATCHDAPA,
+  Unpredictable_WPMASKANDBAS,
+  Unpredictable_WPBASCONTIGUOUS,
+  Unpredictable_RESWPMASK,
+  Unpredictable_WPMASKEDBITS,
+  Unpredictable_RESBPWPCTRL,
+  Unpredictable_BPNOTIMPL,
+  Unpredictable_RESBPTYPE,
+  Unpredictable_RESMDSELR,
+  Unpredictable_BPNOTCTXCMP,
+  Unpredictable_BPMATCHHALF,
+  Unpredictable_BPMISMATCHHALF,
+  Unpredictable_BPLINKINGDISABLED,
+  Unpredictable_RESBPMASK,
+  Unpredictable_BPMASK,
+  Unpredictable_BPMASKEDBITS,
+  Unpredictable_BPLINKEDADDRMATCH,
+  Unpredictable_RESTARTALIGNPC,
+  Unpredictable_RESTARTZEROUPPERPC,
+  Unpredictable_ZEROUPPER,
+  Unpredictable_ERETZEROUPPERPC,
+  Unpredictable_A32FORCEALIGNPC,
+  Unpredictable_SMD,
+  Unpredictable_NONFAULT,
+  Unpredictable_SVEZEROUPPER,
+  Unpredictable_SVELDNFDATA,
+  Unpredictable_SVELDNFZERO,
+  Unpredictable_CHECKSPNONEACTIVE,
+  Unpredictable_SMEZEROUPPER,
+  Unpredictable_NVNV1,
+  Unpredictable_Shareability,
+  Unpredictable_AFUPDATE,
+  Unpredictable_DBUPDATE,
+  Unpredictable_IESBinDebug,
+  Unpredictable_BADPMSFCR,
+  Unpredictable_ZEROBTYPE,
+  Unpredictable_EL2TIMESTAMP,
+  Unpredictable_EL1TIMESTAMP,
+  Unpredictable_RESERVEDNSxB,
+  Unpredictable_WFxTDEBUG,
+  Unpredictable_LS64UNSUPPORTED,
+  Unpredictable_MISALIGNEDATOMIC,
+  Unpredictable_CLEARERRITEZERO,
+  Unpredictable_ALUEXCEPTIONRETURN,
+  Unpredictable_IGNORETRAPINDEBUG,
+  Unpredictable_DBGxVR_RESS,
+  Unpredictable_PMUEVENTCOUNTER,
+  Unpredictable_PMSCR_PCT,
+  Unpredictable_CounterReservedForEL2,
+  Unpredictable_BRBFILTRATE,
+  Unpredictable_MOPSOVERLAP31,
+  Unpredictable_STOREONLYTAGCHECKEDCAS,
+  Unpredictable_RESTC
+}
+
+enum Constraint = {
+  Constraint_NONE,
+  Constraint_UNKNOWN,
+  Constraint_UNDEF,
+  Constraint_UNDEFEL0,
+  Constraint_NOP,
+  Constraint_TRUE,
+  Constraint_FALSE,
+  Constraint_DISABLED,
+  Constraint_UNCOND,
+  Constraint_COND,
+  Constraint_ADDITIONAL_DECODE,
+  Constraint_WBSUPPRESS,
+  Constraint_FAULT,
+  Constraint_LIMITED_ATOMICITY,
+  Constraint_NVNV1_00,
+  Constraint_NVNV1_01,
+  Constraint_NVNV1_11,
+  Constraint_EL1TIMESTAMP,
+  Constraint_EL2TIMESTAMP,
+  Constraint_OSH,
+  Constraint_ISH,
+  Constraint_NSH,
+  Constraint_NC,
+  Constraint_WT,
+  Constraint_WB,
+  Constraint_FORCE,
+  Constraint_FORCENOSLCHECK,
+  Constraint_MAPTOALLOCATED,
+  Constraint_PMSCR_PCT_VIRT
+}
 
 enum FPType = {
   FPType_Zero,
@@ -5865,6 +17392,98 @@ function AArch64_ChkFeat feat_select = {
     return(feat_select & not_vec(feat_en))
 }
 
+val CreateAccDescGPR : forall ('nontemporal : Bool) ('privileged : Bool) ('tagchecked : Bool).
+  (MemOp, bool('nontemporal), bool('privileged), bool('tagchecked)) -> AccessDescriptor
+
+function CreateAccDescGPR (memop, nontemporal, privileged, tagchecked) = {
+    accdesc : AccessDescriptor = NewAccDesc(AccessType_GPR);
+    accdesc.el = if not_bool(privileged) then EL0 else PSTATE.EL;
+    accdesc.nontemporal = nontemporal;
+    accdesc.read = memop == MemOp_LOAD;
+    accdesc.write = memop == MemOp_STORE;
+    accdesc.pan = true;
+    accdesc.tagchecked = tagchecked;
+    accdesc.transactional = HaveTME() & TSTATE.depth > 0;
+    return(accdesc)
+}
+
+val CreateAccDescExLDST : forall ('acqrel : Bool) ('tagchecked : Bool).
+  (MemOp, bool('acqrel), bool('tagchecked)) -> AccessDescriptor
+
+function CreateAccDescExLDST (memop, acqrel, tagchecked) = {
+    accdesc : AccessDescriptor = NewAccDesc(AccessType_GPR);
+    accdesc.acqsc = acqrel & memop == MemOp_LOAD;
+    accdesc.relsc = acqrel & memop == MemOp_STORE;
+    accdesc.exclusive = true;
+    accdesc.read = memop == MemOp_LOAD;
+    accdesc.write = memop == MemOp_STORE;
+    accdesc.pan = true;
+    accdesc.tagchecked = tagchecked;
+    accdesc.transactional = HaveTME() & TSTATE.depth > 0;
+    return(accdesc)
+}
+
+val CreateAccDescAtomicOp : forall ('acquire : Bool) ('release : Bool) ('tagchecked : Bool).
+  (MemAtomicOp, bool('acquire), bool('release), bool('tagchecked)) -> AccessDescriptor
+
+function CreateAccDescAtomicOp (modop, acquire, release, tagchecked) = {
+    accdesc : AccessDescriptor = NewAccDesc(AccessType_GPR);
+    accdesc.acqsc = acquire;
+    accdesc.relsc = release;
+    accdesc.atomicop = true;
+    accdesc.modop = modop;
+    accdesc.read = true;
+    accdesc.write = true;
+    accdesc.pan = true;
+    accdesc.tagchecked = tagchecked;
+    accdesc.transactional = HaveTME() & TSTATE.depth > 0;
+    return(accdesc)
+}
+
+val CreateAccDescAcqRel : forall ('tagchecked : Bool).
+  (MemOp, bool('tagchecked)) -> AccessDescriptor
+
+function CreateAccDescAcqRel (memop, tagchecked) = {
+    accdesc : AccessDescriptor = NewAccDesc(AccessType_GPR);
+    accdesc.acqsc = memop == MemOp_LOAD;
+    accdesc.relsc = memop == MemOp_STORE;
+    accdesc.read = memop == MemOp_LOAD;
+    accdesc.write = memop == MemOp_STORE;
+    accdesc.pan = true;
+    accdesc.tagchecked = tagchecked;
+    accdesc.transactional = HaveTME() & TSTATE.depth > 0;
+    return(accdesc)
+}
+
+val CreateAccDescLOR : forall ('tagchecked : Bool).
+  (MemOp, bool('tagchecked)) -> AccessDescriptor
+
+function CreateAccDescLOR (memop, tagchecked) = {
+    accdesc : AccessDescriptor = NewAccDesc(AccessType_GPR);
+    accdesc.acqsc = memop == MemOp_LOAD;
+    accdesc.relsc = memop == MemOp_STORE;
+    accdesc.limitedordered = true;
+    accdesc.read = memop == MemOp_LOAD;
+    accdesc.write = memop == MemOp_STORE;
+    accdesc.pan = true;
+    accdesc.tagchecked = tagchecked;
+    accdesc.transactional = HaveTME() & TSTATE.depth > 0;
+    return(accdesc)
+}
+
+val CreateAccDescLDAcqPC : forall ('tagchecked : Bool).
+  bool('tagchecked) -> AccessDescriptor
+
+function CreateAccDescLDAcqPC tagchecked = {
+    accdesc : AccessDescriptor = NewAccDesc(AccessType_GPR);
+    accdesc.acqpc = true;
+    accdesc.read = true;
+    accdesc.pan = true;
+    accdesc.tagchecked = tagchecked;
+    accdesc.transactional = HaveTME() & TSTATE.depth > 0;
+    return(accdesc)
+}
+
 val HaveCRCExt : unit -> bool
 
 function HaveCRCExt () = {
@@ -5913,6 +17532,12 @@ val HaveRASExt : unit -> bool
 
 function HaveRASExt () = {
     return(IsFeatureImplemented(FEAT_RAS))
+}
+
+val HaveAtomicExt : unit -> bool
+
+function HaveAtomicExt () = {
+    return(IsFeatureImplemented(FEAT_LSE))
 }
 
 val HaveFlagManipulateExt : unit -> bool

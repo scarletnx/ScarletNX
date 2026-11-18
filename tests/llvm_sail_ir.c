@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The integer, hint and barrier emitters and the branch operands tools/sailgen generates from the Sail (ir_sail.c)
-   against the hand-written ones they replaced (support/ir_int_reference.c), word by word: the same IR, and the same
-   results.
+/* The integer, hint, barrier and general-purpose load and store emitters and the branch operands tools/sailgen
+   generates from the Sail (ir_sail.c) against the hand-written ones they replaced (support/ir_int_reference.c,
+   ir_ldst_reference.c), word by word: the same IR, and the same results.
      snx-test-llvm-sail-ir [--report FILE] [--samples N] [--states N]
    The words: samples of every decoder row the generated subset covers (llvm_qemu_words.c), decoded for the ounce target
    (TARGET: the Switch's features with PAuth and FlagM), each again with its register fields 31 (the zero register or
@@ -10,20 +10,24 @@
    whose target this LLVM lacks is said and skipped) each word becomes a step (snx_ir_static_step) in two modules, one
    emitted by each, optimized as a game's module is (snx_ir_module_optimize, O2, the SLP vectorizer off as the setting's
    default), and the two functions are compared. Then both sets of steps run on this host from random states, and every
-   register, the flags, the exclusive monitor, the next pc, UNDEF and the runtime's calls for SEV and WFE must match.
-   Sequences that hand flags or a register from one instruction to the next (SUBS then CSEL, CMP then CCMP then CSEL,
-   ADDS then ADC, SUBS then B.HI, a load from a register an ADD just wrote, FCMP then CSEL) are emitted as functions
-   (snx_ir_emit) and must give the hand-written emitters' IR, so a compare's flags still reach the condition as the
-   compare, and a value one emitter writes is the one the other reads back, whichever of the two (generated or written
-   by hand) wrote it. Both keep their state in one per-block cache (the back end's), so in a sequence the hand-written
-   integer emitters run with no value carried through it from one instruction to the next (reference_uncached): a cache
-   that kept a stale one shows in the generated side only. Two IRs that differ only in the order of their instructions
-   and their names count as the same; a step's that differs otherwise may not have more instructions than the
-   hand-written one, nor be another IR for an op whose effect running can't see (strict_ops), and is listed. --report
-   writes each difference's two IR texts; --time ROUNDS only times the two emitters (time_emitters) */
+   register, the flags, the exclusive monitor, the next pc, UNDEF and the runtime's calls for SEV and WFE must match; a
+   load or store runs on guest memory of random bytes, its address registers made to point into it (ldst_start), and the
+   bytes it may write must match too. Sequences that hand flags or a register from one instruction to the next (SUBS
+   then CSEL, CMP then CCMP then CSEL, ADDS then ADC, SUBS then B.HI, a load from a register an ADD just wrote, FCMP
+   then CSEL) are emitted as functions (snx_ir_emit) and must give the hand-written emitters' IR, so a compare's flags
+   still reach the condition as the compare, and a value one emitter writes is the one the other reads back, whichever
+   of the two (generated or written by hand) wrote it. Both keep their state in one per-block cache (the back end's), so
+   in a sequence the hand-written integer emitters run with no value carried through it from one instruction to the
+   next (reference_uncached): a cache that kept a stale one shows in the generated side only. Two IRs that differ only
+   in the order of their instructions and their names count as the same; a step's that differs otherwise may not have
+   more instructions than the hand-written one, nor be another IR for an op whose effect running can't see (strict_ops)
+   or a load or store (unless ldst_other names its op, with why), so a dropped fence, ordering or atomicity shows, and
+   is listed. --report writes each difference's two IR texts; --time ROUNDS only times the two emitters
+   (time_emitters) */
 #include "llvm_steps.h"
 #include "llvm_qemu_words.h"
 #include "support/ir_int_reference.h"
+#include "support/ir_ldst_reference.h"
 #include "common/cpu/aarch64/a64_decoder.h"
 #include "common/utilities/endian.h"
 #include <stdio.h>
@@ -31,7 +35,7 @@
 #include <string.h>
 
 /* the ops ir_int.c sends to the Sail: the data-processing ones (generated()), the branches' operands
-   (generated_branch()) */
+   (generated_branch()); then ir_ldst.c's (generated()), from "STR_i" on (FIRST_LDST) */
 static const char* const generated_ops[] = {
     "ADR",      "ADRP",     "ADD_i",   "ADDS_i",    "SUB_i",     "SUBS_i",    "AND_i",     "ORR_i",   "EOR_i",
     "ANDS_i",   "MOVN",     "MOVZ",    "MOVK",      "SBFM",      "BFM",       "UBFM",      "EXTR",    "AND_r",
@@ -44,8 +48,12 @@ static const char* const generated_ops[] = {
     "SETF8",    "SETF16",   "B_cond",  "CBZ",       "TBZ",       "BR",        "BLR",       "RET",     "BRA",
     "BRAZ",     "BLRA",     "BLRAZ",   "RETA",      "NOP",       "YIELD",     "WFE",       "WFI",     "SEV",
     "SEVL",     "ESB",      "XPACLRI", "PACIA1716", "PACIB1716", "AUTIA1716", "AUTIB1716", "PACIAZ",  "PACIASP",
-    "PACIBZ",   "PACIBSP",  "AUTIAZ",  "AUTIASP",   "AUTIBZ",    "AUTIBSP",   "CLREX",     "DSB_DMB", "ISB"};
+    "PACIBZ",   "PACIBSP",  "AUTIAZ",  "AUTIASP",   "AUTIBZ",    "AUTIBSP",   "CLREX",     "DSB_DMB", "ISB",
+    "STR_i",    "LDR_i",    "STR",     "LDR",       "LD_lit",    "STP",       "LDP",       "STXR",    "LDXR",
+    "STXP",     "LDXP",     "STLR",    "LDAR",      "LDAPR",     "LDAPR_i",   "STLR_i",    "CAS",     "CASP",
+    "LDADD",    "LDCLR",    "LDEOR",   "LDSET",     "LDSMAX",    "LDSMIN",    "LDUMAX",    "LDUMIN",  "SWP"};
 #define GENERATED_OPS (sizeof generated_ops / sizeof *generated_ops)
+#define FIRST_LDST    (GENERATED_OPS - 27)
 
 typedef struct {
     const char* name;
@@ -120,6 +128,34 @@ static int generated(u32 word) {
     for (size_t i = 0; i < GENERATED_OPS; ++i)
         if (!strcmp(name, generated_ops[i])) return 1;
     return 0;
+}
+
+/* a load or store: its IR is held to the hand-written one's instructions, and it runs with guest memory */
+static int is_ldst(u32 word) {
+    const char* name = op_name(word);
+    for (size_t i = FIRST_LDST; name && i < GENERATED_OPS; ++i)
+        if (!strcmp(name, generated_ops[i])) return 1;
+    return 0;
+}
+
+/* the loads and stores whose generated IR may be another than the hand-written one (not longer), and why: any other
+   must give the same instructions, so an access that lost its ordering, its width or its atomicity shows */
+static const struct {
+    const char* op;
+    const char* why;
+} ldst_other[] = {
+    {"STP", "a pair of words of one register (Rt == Rt2): the value stored is its low word times 0x100000001, one "
+            "instruction fewer"},
+    {"LDXP", "a pair of words is one 8-byte load-exclusive (ldx), the hand-written one ldxp of words"},
+    {"STXP", "a pair of words is one 8-byte store-exclusive (stx), which an 8-byte ldx arms, the hand-written one stxp "
+             "of words, which ldxp of words arms"},
+    {NULL, NULL},
+};
+static const char* ldst_other_why(u32 word) {
+    const char* name = op_name(word);
+    for (size_t i = 0; name && ldst_other[i].op; ++i)
+        if (!strcmp(name, ldst_other[i].op)) return ldst_other[i].why;
+    return NULL;
 }
 
 /* a function's text without its name and its metadata attachments, which number differently from module to module */
@@ -297,6 +333,7 @@ static SnxIr* path_ir(const Path* p, int reference, char* error, size_t size) {
     if (reference) {
         ir->int_reference = snx_ir_int_reference;
         ir->operand_reference = snx_ir_int_operand_reference;
+        ir->ldst_reference = snx_ir_ldst_reference;
     }
     return ir;
 }
@@ -313,8 +350,8 @@ static int strict(const char* op) {
     return 0;
 }
 
-/* one comparison: counted; a longer generated IR fails, and another IR of a strict op; the report gets every one that
-   is not the same text */
+/* one comparison: counted; a longer generated IR fails, and another IR of a strict op or of a load or store
+   ldst_other does not name; the report gets every one that is not the same text */
 static void judge(int r, const char* what, u32 word, const char* path, const char* a, const char* b,
                   const size_t* sizes) {
     ++g_test.outcomes[r];
@@ -322,7 +359,8 @@ static void judge(int r, const char* what, u32 word, const char* path, const cha
         ++g_test.failures;
         fprintf(stderr, "FAIL: %s %08x (%s): the generated IR has %zu instructions, the hand-written %zu\n", what,
                 (unsigned)word, path, sizes[1], sizes[0]);
-    } else if (r == OTHER_NOT_LONGER && strict(what)) {
+    } else if (r == OTHER_NOT_LONGER &&
+               (strict(what) || (is_ldst(word) && !strcmp(what, op_name(word)) && !ldst_other_why(word)))) {
         ++g_test.failures;
         fprintf(stderr,
                 "FAIL: %s %08x (%s): the generated IR is another than the hand-written, and running can't tell\n", what,
@@ -391,6 +429,15 @@ static void reference_uncached(SnxIr* ir, const void* decoded, SnxU32 word, SnxU
     ir->state.flags.valid = 0;
 }
 
+/* the same for the hand-written loads and stores */
+static void reference_ldst_uncached(SnxIr* ir, const void* decoded, SnxU32 word, SnxU64 pc) {
+    ir_registers_invalidate(ir);
+    ir->state.flags.valid = 0;
+    snx_ir_ldst_reference(ir, decoded, word, pc);
+    ir_registers_invalidate(ir);
+    ir->state.flags.valid = 0;
+}
+
 /* a sequence as a function of its own (snx_ir_emit), from each emitter, on this host, compared */
 static void compare_sequence(unsigned s) {
     char error[1024];
@@ -427,6 +474,7 @@ static void compare_sequence(unsigned s) {
         if (k == 0) {
             ir->int_reference = reference_uncached;
             ir->operand_reference = snx_ir_int_operand_reference;
+            ir->ldst_reference = reference_ldst_uncached;
         }
         snx_ir_emit(ir, &codegen, &function);
         if (snx_ir_module_optimize(ir, ir->mod, '2', error, sizeof error)) {
@@ -465,15 +513,55 @@ static void on_wfe(CPU* c) {
     ++g_test.wfe;
 }
 
+/* guest memory for the loads and stores: each side's own, guest address 0 MEMORY_ZERO bytes in, the same random
+   bytes in both before each run. The address registers of a load or store are made 0x1000 to 0x1ff0 (16-aligned, so
+   the exclusives and the atomics are aligned host atomics), so every access lands below MEMORY_TOUCHED, which a run
+   compares and puts back; a literal reaches pc 0x1000 plus or minus 1 MiB, which only loads read */
+#define MEMORY_SIZE    (4u << 20)
+#define MEMORY_ZERO    (2u << 20)
+#define MEMORY_TOUCHED 0x14000u
+static u8 g_memory[3][MEMORY_SIZE];
+
+/* a load or store's start: its address registers in the window; for a store-exclusive the monitor armed at its
+   address in some states, with the value there (it stores) or another (it fails), for the size its own load-exclusive
+   arms: STXR's, and STXP's of doublewords (ldxp's 0x13). A pair of words is left unarmed: its generated emitter is a
+   64-bit stx, which a 64-bit ldx arms, where the hand-written one was stxp, which ldxp arms (cpu.h) */
+static void ldst_start(CPU* c, u32 word, unsigned s) {
+    SnxA64Insn insn;
+    u64 address;
+    snx_a64_decode_word(word, TARGET, &insn);
+    c->x[31] = 0x1000 + (rnd() & 0xff0);
+    c->x[insn.args.rn] = 0x1000 + (rnd() & 0xff0);
+    c->x[insn.args.rm] = 0x1000 + (rnd() & 0xff0);
+    address = c->x[insn.args.rn];
+    c->excl_on = 0;
+    if (!(s & 1)) return;
+    if (insn.op == SNX_A64_OP_STXR || (insn.op == SNX_A64_OP_STXP && insn.args.sz == 3)) {
+        c->excl_on = 1;
+        c->excl_addr = address;
+        memcpy(&c->excl_val, g_memory[2] + MEMORY_ZERO + address, 8);
+        memcpy(&c->excl_val2, g_memory[2] + MEMORY_ZERO + address + 8, 8);
+        if (s & 2) c->excl_val = ~c->excl_val;
+        c->excl_size = insn.op == SNX_A64_OP_STXP ? 0x13 : (u32)insn.args.sz;
+    }
+}
+
 static int run_compare(const u32* words, size_t count, unsigned states) {
     char error[1024];
     LlvmSteps set[2];
     RtAPI rt = {.undef = on_undef, .sev = on_sev, .wfe = on_wfe, .cas128 = snx_runtime_cas128};
+    for (size_t i = 0; i < MEMORY_SIZE; i += 8) {
+        u64 v = rnd();
+        memcpy(g_memory[2] + i, &v, 8);
+    }
+    memcpy(g_memory[0], g_memory[2], MEMORY_SIZE);
+    memcpy(g_memory[1], g_memory[2], MEMORY_SIZE);
     for (int k = 0; k < 2; ++k) {
         if (llvm_steps_begin(&set[k], 0, LLVM_STEPS_HOST, error, sizeof error)) return snx_error("%s", error);
         if (k == 0) {
             set[k].ir->int_reference = snx_ir_int_reference;
             set[k].ir->operand_reference = snx_ir_int_operand_reference;
+            set[k].ir->ldst_reference = snx_ir_ldst_reference;
         }
         for (size_t i = 0; i < count; ++i) llvm_steps_add(&set[k], words[i], 0x1000, TARGET);
         if (llvm_steps_load(&set[k], error, sizeof error)) return snx_error("%s", error);
@@ -483,6 +571,7 @@ static int run_compare(const u32* words, size_t count, unsigned states) {
             CPU start = {0}, end[2];
             u64 next[2];
             unsigned undef[2], sev[2], wfe[2];
+            int ldst = is_ldst(words[i]), memory;
             for (unsigned r = 0; r < 32; ++r) start.x[r] = rnd();
             if (s & 1) start.x[(rnd() & 31)] = 0; /* zeros and edges reach the divisions and the shifts */
             if (s & 2) start.x[(rnd() & 31)] = 0x8000000000000000ull;
@@ -492,20 +581,26 @@ static int run_compare(const u32* words, size_t count, unsigned states) {
             start.cf = rnd() & 1;
             start.vf = rnd() & 1;
             start.excl_on = (u32)(rnd() & 1); /* CLREX clears it */
+            if (ldst) ldst_start(&start, words[i], s);
             start.rt = &rt;
             start.pc = 0x1000;
             for (int k = 0; k < 2; ++k) {
                 end[k] = start;
+                end[k].mem = g_memory[k] + MEMORY_ZERO;
                 g_test.undef = g_test.sev = g_test.wfe = 0;
                 next[k] = set[k].steps[i](&end[k]);
                 undef[k] = g_test.undef;
                 sev[k] = g_test.sev;
                 wfe[k] = g_test.wfe;
             }
+            memory = ldst && memcmp(g_memory[0] + MEMORY_ZERO, g_memory[1] + MEMORY_ZERO, MEMORY_TOUCHED);
+            if (ldst)
+                for (int k = 0; k < 2; ++k)
+                    memcpy(g_memory[k] + MEMORY_ZERO, g_memory[2] + MEMORY_ZERO, MEMORY_TOUCHED);
             if (next[0] != next[1] || undef[0] != undef[1] || sev[0] != sev[1] || wfe[0] != wfe[1] ||
                 memcmp(end[0].x, end[1].x, sizeof end[0].x) || end[0].n != end[1].n || end[0].z != end[1].z ||
                 end[0].cf != end[1].cf || end[0].vf != end[1].vf || end[0].pc != end[1].pc ||
-                end[0].excl_on != end[1].excl_on) {
+                end[0].excl_on != end[1].excl_on || memory) {
                 ++g_test.failures;
                 fprintf(stderr, "FAIL: %s %08x state %u: the generated emitter's result differs\n", op_name(words[i]),
                         (unsigned)words[i], s);
@@ -532,6 +627,7 @@ static int time_emitters(const u32* words, size_t count, unsigned rounds) {
             if (k == 0) {
                 ir->int_reference = snx_ir_int_reference;
                 ir->operand_reference = snx_ir_int_operand_reference;
+                ir->ldst_reference = snx_ir_ldst_reference;
             }
             for (size_t i = 0; i < count; ++i) {
                 char name[32];
