@@ -39,9 +39,6 @@ if(NOT snx_cppcheck_rc EQUAL 0)
     message(FATAL_ERROR "${CMAKE_C_COMPILER} -dM -E, for cppcheck's predefined macros, exited ${snx_cppcheck_rc}: "
                         "${snx_cppcheck_err}")
 endif()
-# cppcheck 2.20 reads C11's _Noreturn as nothing (SNX_NORETURN), so the code after plat_exit_now seemed to run; it
-# reads the GNU attribute
-file(APPEND "${snx_cppcheck_dir}/predefined.h" "#define _Noreturn __attribute__((noreturn))\n")
 
 # the third-party headers our files include are theirs to check: the build tree's (FFmpeg's) and CPM's sources, which
 # sit in the build tree without a CPM_SOURCE_CACHE
