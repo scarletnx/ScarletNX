@@ -1467,7 +1467,7 @@ endif()
 # copied delete without the lookup (a heap's, by the size, on a link-time table with one global) do not count
 if(NOT WIN32)
     add_executable(snx-test-alloc-new-shape alloc_new_shape.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/alloc.c")
-    snx_test_target(snx-test-alloc-new-shape 11)
+    snx_test_target(snx-test-alloc-new-shape gnu23)
     target_include_directories(snx-test-alloc-new-shape PRIVATE "${PROJECT_SOURCE_DIR}/src")
     snx_hookgen(snx-test-alloc-new-shape SPEC "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/hooks.hook")
     add_test(NAME alloc_new_shape COMMAND snx-test-alloc-new-shape)
