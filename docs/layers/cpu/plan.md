@@ -55,7 +55,7 @@ guest for free, and each part below notes where that matters.
 | Host | Systems | Objects | Pages | Runtime JIT | General registers | Flags | Memory order against Arm's |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | x86-64 | Linux, Windows, FreeBSD, Solaris, Android | ELF, COFF on Windows | 4 KiB | Yes, on Windows from 10 1803 | 16 | Yes, with the carry of a subtraction inverted against Arm's C | Stronger (TSO) |
-| AArch64 | Linux, Android, iOS, macOS | ELF, or a Mach-O dylib with an ad hoc signature on Apple systems | 4 KiB on most Linux and Android, 16 KiB on Apple silicon | Yes. macOS through `MAP_JIT`, iOS only with a debugger attached | 31, the guest's own | NZCV, the guest's own | The same |
+| AArch64 | Linux, Android, iOS, macOS, Windows | ELF, a Mach-O dylib with an ad hoc signature on Apple systems, COFF on Windows | 4 KiB on most Linux and Android, 16 KiB on Apple silicon | Yes. macOS through `MAP_JIT`, iOS only with a debugger attached | 31, the guest's own | NZCV, the guest's own | The same |
 | PowerPC64, little and big endian | Linux | ELF, ELFv1 or ELFv2 | 64 KiB on most ppc64le kernels | Yes | 32, less r1, r2 and r13 | Condition register fields and the carry in XER | Weaker: not multi-copy atomic |
 | RISC-V 64 | Linux | ELF | 4 KiB | No | 32, less zero, sp, gp and tp | No integer flags | Close (RVWMO) |
 | LoongArch 64 | Linux | ELF | Set by the kernel | No | 32, less zero, tp, sp and r21 | No integer flags | Weak, still to be compared with Arm's |
