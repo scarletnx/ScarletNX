@@ -18,16 +18,8 @@ static _Thread_local struct {
 enum {
     GL_INVALID_ENUM_ = 0x0500,
     GL_INVALID_VALUE_ = 0x0501,
-    GL_INVALID_OPERATION_ = 0x0502,
-    GL_FRONT_ = 0x0404,
     GL_BACK_ = 0x0405,
     GL_FRONT_AND_BACK_ = 0x0408,
-    GL_CCW_ = 0x0901,
-    GL_LESS_ = 0x0201,
-    GL_ALWAYS_ = 0x0207,
-    GL_KEEP_ = 0x1e00,
-    GL_FUNC_ADD_ = 0x8006,
-    GL_DONT_CARE_ = 0x1100,
     GL_VENDOR_ = 0x1f00,
     GL_RENDERER_ = 0x1f01,
     GL_VERSION_ = 0x1f02,
@@ -43,7 +35,7 @@ Gles2Context* gles2_current(void) {
 }
 
 void gles2_error(Gles2Context* gl, unsigned e) {
-    if (gl && !gl->error) gl->error = e;
+    if (gl) snx_gl_error(gl->ctx, e);
 }
 
 uint64_t gles2_arg(const CPU* c, unsigned n) {
@@ -62,27 +54,15 @@ void gles2_warn(unsigned slot, const char* message) {
 Gles2Context* gles2_context_new(int version) {
     Gles2Context* gl = calloc(1, sizeof *gl);
     if (!gl) return NULL;
-    gl->version = version;
-    gl->blend_src[0] = gl->blend_src[1] = 1;
-    gl->blend_eq[0] = gl->blend_eq[1] = GL_FUNC_ADD_;
-    for (int i = 0; i < 4; ++i) gl->color_mask[i] = true;
-    gl->depth_mask = true;
-    gl->depth_func = GL_LESS_;
-    gl->depth_range[1] = 1;
-    gl->cull_face = GL_BACK_;
-    gl->front_face = GL_CCW_;
-    for (int f = 0; f < 2; ++f) {
-        gl->stencil[f].func = GL_ALWAYS_;
-        gl->stencil[f].fail = gl->stencil[f].zfail = gl->stencil[f].zpass = GL_KEEP_;
-        gl->stencil[f].mask = gl->stencil[f].write = 0xffffffffu;
+    gl->ctx = snx_gl_context_new((uint32_t)version);
+    if (!gl->ctx) {
+        char why[96];
+        free(gl);
+        snprintf(why, sizeof why, "no context made: the shared GL layer holds %d at once, all used", SNX_GL_CONTEXTS);
+        gles2_warn(19, why);
+        return NULL;
     }
-    gl->clear_depth = 1;
-    gl->sample_mask = 0xffffffffu;
-    gl->line_width = 1;
-    gl->coverage_value = 1;
-    gl->dither = true;
-    gl->hints[0] = gl->hints[1] = GL_DONT_CARE_;
-    gl->pixel[0].alignment = gl->pixel[1].alignment = 4;
+    gl->version = version;
     gl->draw_fbo = gl->read_fbo = 0;
     for (int i = 0; i < G2_ATTRIBS; ++i) {
         float one = 1;
@@ -101,6 +81,7 @@ Gles2Context* gles2_context_new(int version) {
 void gles2_context_free(Gles2Context* gl) {
     if (!gl) return;
     if (t_gles2.gl == gl) t_gles2.gl = NULL;
+    snx_gl_context_free(gl->ctx);
     gles_surface_free(gl->own);
     free(gl);
 }
@@ -137,8 +118,8 @@ void gles2_make_current(Gles2Context* gl, GlesSurface* draw, GlesSurface* read) 
     if (draw && !gl->sized) {
         int w, h;
         gles_surface_size(draw, &w, &h);
-        gl->viewport[2] = gl->scissor[2] = w;
-        gl->viewport[3] = gl->scissor[3] = h;
+        gles2_fixed(gl)->viewport[2] = gles2_fixed(gl)->scissor[2] = w;
+        gles2_fixed(gl)->viewport[3] = gles2_fixed(gl)->scissor[3] = h;
         gl->sized = true;
     }
 }
@@ -211,190 +192,66 @@ static float F(const CPU* c, unsigned n) {
     return hle_f(c, n);
 }
 
-static void g_get_error(CPU* c, Gles2Context* gl) {
-    X(0) = gl->error;
-    gl->error = 0;
-}
-
-static bool* capability(Gles2Context* gl, unsigned cap) {
-    switch (cap) {
-    case 0x0be2: return &gl->blend;
-    case 0x0b44: return &gl->cull;
-    case 0x0b71: return &gl->depth_test;
-    case 0x0b90: return &gl->stencil_test;
-    case 0x0c11: return &gl->scissor_test;
-    case 0x8037: return &gl->polygon_offset;
-    case 0x0bd0: return &gl->dither;
-    case 0x809e: return &gl->alpha_to_coverage;
-    case 0x80a0: return &gl->sample_coverage;
-    case 0x8c89: return &gl->rasterizer_discard;
-    case 0x8d69: return &gl->primitive_restart;
-    case 0x8e51: return &gl->sample_mask_on; /* GL_SAMPLE_MASK */
-    default: return NULL;
-    }
-}
-static void g_enable(CPU* c, Gles2Context* gl) {
-    bool* on = capability(gl, (unsigned)X(0));
-    if (on) *on = true;
-    else gles2_error(gl, GL_INVALID_ENUM_);
-}
-static void g_disable(CPU* c, Gles2Context* gl) {
-    bool* on = capability(gl, (unsigned)X(0));
-    if (on) *on = false;
-    else gles2_error(gl, GL_INVALID_ENUM_);
-}
-static void g_is_enabled(CPU* c, Gles2Context* gl) {
-    bool* on = capability(gl, (unsigned)X(0));
-    if (!on) gles2_error(gl, GL_INVALID_ENUM_);
-    X(0) = on && *on;
-}
+/* the fixed state's calls: the shared GL layer's (common/gpu/gl/gl_state.h), with the guest's arguments */
+static void g_get_error(CPU* c, Gles2Context* gl) { X(0) = snx_gl_get_error(gl->ctx); }
+static void g_enable(CPU* c, Gles2Context* gl) { snx_gl_enable(gl->ctx, (uint32_t)X(0), 1); }
+static void g_disable(CPU* c, Gles2Context* gl) { snx_gl_enable(gl->ctx, (uint32_t)X(0), 0); }
+static void g_is_enabled(CPU* c, Gles2Context* gl) { X(0) = (uint64_t)snx_gl_is_enabled(gl->ctx, (uint32_t)X(0)); }
 static void g_blend_func(CPU* c, Gles2Context* gl) {
-    gl->blend_src[0] = gl->blend_src[1] = (unsigned)X(0);
-    gl->blend_dst[0] = gl->blend_dst[1] = (unsigned)X(1);
+    snx_gl_blend_func_separate(gl->ctx, (uint32_t)X(0), (uint32_t)X(1), (uint32_t)X(0), (uint32_t)X(1));
 }
 static void g_blend_func_separate(CPU* c, Gles2Context* gl) {
-    gl->blend_src[0] = (unsigned)X(0);
-    gl->blend_dst[0] = (unsigned)X(1);
-    gl->blend_src[1] = (unsigned)X(2);
-    gl->blend_dst[1] = (unsigned)X(3);
+    snx_gl_blend_func_separate(gl->ctx, (uint32_t)X(0), (uint32_t)X(1), (uint32_t)X(2), (uint32_t)X(3));
 }
 static void g_blend_equation(CPU* c, Gles2Context* gl) {
-    gl->blend_eq[0] = gl->blend_eq[1] = (unsigned)X(0);
+    snx_gl_blend_equation_separate(gl->ctx, (uint32_t)X(0), (uint32_t)X(0));
 }
 static void g_blend_equation_separate(CPU* c, Gles2Context* gl) {
-    gl->blend_eq[0] = (unsigned)X(0);
-    gl->blend_eq[1] = (unsigned)X(1);
+    snx_gl_blend_equation_separate(gl->ctx, (uint32_t)X(0), (uint32_t)X(1));
 }
-static void g_blend_color(CPU* c, Gles2Context* gl) {
-    for (unsigned i = 0; i < 4; ++i) gl->blend_color[i] = F(c, i);
-}
+static void g_blend_color(CPU* c, Gles2Context* gl) { snx_gl_blend_color(gl->ctx, F(c, 0), F(c, 1), F(c, 2), F(c, 3)); }
 static void g_color_mask(CPU* c, Gles2Context* gl) {
-    for (unsigned i = 0; i < 4; ++i) gl->color_mask[i] = (X(i) & 0xff) != 0;
+    snx_gl_color_mask(gl->ctx, (X(0) & 0xff) != 0, (X(1) & 0xff) != 0, (X(2) & 0xff) != 0, (X(3) & 0xff) != 0);
 }
-static void g_depth_mask(CPU* c, Gles2Context* gl) {
-    gl->depth_mask = (X(0) & 0xff) != 0;
-}
-static void g_depth_func(CPU* c, Gles2Context* gl) {
-    gl->depth_func = (unsigned)X(0);
-}
-static float unit(float v) {
-    return v < 0 ? 0 : v > 1 ? 1 : v;
-}
-static void g_depth_range(CPU* c, Gles2Context* gl) {
-    gl->depth_range[0] = unit(F(c, 0));
-    gl->depth_range[1] = unit(F(c, 1));
-}
-static void g_cull_face(CPU* c, Gles2Context* gl) {
-    gl->cull_face = (unsigned)X(0);
-}
-static void g_front_face(CPU* c, Gles2Context* gl) {
-    gl->front_face = (unsigned)X(0);
-}
-/* the faces a separate stencil call sets: bit 0 the front's, bit 1 the back's */
-static unsigned faces(unsigned face) {
-    return face == GL_FRONT_ ? 1 : face == GL_BACK_ ? 2 : face == GL_FRONT_AND_BACK_ ? 3 : 0;
-}
-static void stencil_func(Gles2Context* gl, unsigned which, unsigned func, int ref, unsigned mask) {
-    for (int f = 0; f < 2; ++f)
-        if (which & (1u << f)) {
-            gl->stencil[f].func = func;
-            gl->stencil[f].ref = ref;
-            gl->stencil[f].mask = mask;
-        }
-}
+static void g_depth_mask(CPU* c, Gles2Context* gl) { snx_gl_depth_mask(gl->ctx, (X(0) & 0xff) != 0); }
+static void g_depth_func(CPU* c, Gles2Context* gl) { snx_gl_depth_func(gl->ctx, (uint32_t)X(0)); }
+static void g_depth_range(CPU* c, Gles2Context* gl) { snx_gl_depth_range(gl->ctx, F(c, 0), F(c, 1)); }
+static void g_cull_face(CPU* c, Gles2Context* gl) { snx_gl_cull_face(gl->ctx, (uint32_t)X(0)); }
+static void g_front_face(CPU* c, Gles2Context* gl) { snx_gl_front_face(gl->ctx, (uint32_t)X(0)); }
 static void g_stencil_func(CPU* c, Gles2Context* gl) {
-    stencil_func(gl, 3, (unsigned)X(0), (int)X(1), (unsigned)X(2));
+    snx_gl_stencil_func_separate(gl->ctx, GL_FRONT_AND_BACK_, (uint32_t)X(0), (int32_t)X(1), (uint32_t)X(2));
 }
 static void g_stencil_func_separate(CPU* c, Gles2Context* gl) {
-    stencil_func(gl, faces((unsigned)X(0)), (unsigned)X(1), (int)X(2), (unsigned)X(3));
-}
-static void stencil_op(Gles2Context* gl, unsigned which, unsigned fail, unsigned zfail, unsigned zpass) {
-    for (int f = 0; f < 2; ++f)
-        if (which & (1u << f)) {
-            gl->stencil[f].fail = fail;
-            gl->stencil[f].zfail = zfail;
-            gl->stencil[f].zpass = zpass;
-        }
+    snx_gl_stencil_func_separate(gl->ctx, (uint32_t)X(0), (uint32_t)X(1), (int32_t)X(2), (uint32_t)X(3));
 }
 static void g_stencil_op(CPU* c, Gles2Context* gl) {
-    stencil_op(gl, 3, (unsigned)X(0), (unsigned)X(1), (unsigned)X(2));
+    snx_gl_stencil_op_separate(gl->ctx, GL_FRONT_AND_BACK_, (uint32_t)X(0), (uint32_t)X(1), (uint32_t)X(2));
 }
 static void g_stencil_op_separate(CPU* c, Gles2Context* gl) {
-    stencil_op(gl, faces((unsigned)X(0)), (unsigned)X(1), (unsigned)X(2), (unsigned)X(3));
+    snx_gl_stencil_op_separate(gl->ctx, (uint32_t)X(0), (uint32_t)X(1), (uint32_t)X(2), (uint32_t)X(3));
 }
 static void g_stencil_mask(CPU* c, Gles2Context* gl) {
-    gl->stencil[0].write = gl->stencil[1].write = (unsigned)X(0);
+    snx_gl_stencil_mask_separate(gl->ctx, GL_FRONT_AND_BACK_, (uint32_t)X(0));
 }
 static void g_stencil_mask_separate(CPU* c, Gles2Context* gl) {
-    unsigned which = faces((unsigned)X(0));
-    for (int f = 0; f < 2; ++f)
-        if (which & (1u << f)) gl->stencil[f].write = (unsigned)X(1);
+    snx_gl_stencil_mask_separate(gl->ctx, (uint32_t)X(0), (uint32_t)X(1));
 }
-static void g_clear_color(CPU* c, Gles2Context* gl) {
-    for (unsigned i = 0; i < 4; ++i) gl->clear_color[i] = F(c, i);
-}
-static void g_clear_depth(CPU* c, Gles2Context* gl) {
-    gl->clear_depth = unit(F(c, 0));
-}
-static void g_clear_stencil(CPU* c, Gles2Context* gl) {
-    gl->clear_stencil = (int)X(0);
-}
+static void g_clear_color(CPU* c, Gles2Context* gl) { snx_gl_clear_color(gl->ctx, F(c, 0), F(c, 1), F(c, 2), F(c, 3)); }
+static void g_clear_depth(CPU* c, Gles2Context* gl) { snx_gl_clear_depth(gl->ctx, F(c, 0)); }
+static void g_clear_stencil(CPU* c, Gles2Context* gl) { snx_gl_clear_stencil(gl->ctx, (int32_t)X(0)); }
 static void g_viewport(CPU* c, Gles2Context* gl) {
-    if ((int)X(2) < 0 || (int)X(3) < 0) {
-        gles2_error(gl, GL_INVALID_VALUE_);
-        return;
-    }
-    for (int i = 0; i < 4; ++i) gl->viewport[i] = (int)X(i);
+    snx_gl_viewport(gl->ctx, (int32_t)X(0), (int32_t)X(1), (int32_t)X(2), (int32_t)X(3));
 }
 static void g_scissor(CPU* c, Gles2Context* gl) {
-    if ((int)X(2) < 0 || (int)X(3) < 0) {
-        gles2_error(gl, GL_INVALID_VALUE_);
-        return;
-    }
-    for (int i = 0; i < 4; ++i) gl->scissor[i] = (int)X(i);
+    snx_gl_scissor(gl->ctx, (int32_t)X(0), (int32_t)X(1), (int32_t)X(2), (int32_t)X(3));
 }
-static void g_line_width(CPU* c, Gles2Context* gl) {
-    float w = F(c, 0);
-    if (!(w > 0)) gles2_error(gl, GL_INVALID_VALUE_);
-    else gl->line_width = w;
-}
-static void g_polygon_offset(CPU* c, Gles2Context* gl) {
-    gl->offset_factor = F(c, 0);
-    gl->offset_units = F(c, 1);
-}
+static void g_line_width(CPU* c, Gles2Context* gl) { snx_gl_line_width(gl->ctx, F(c, 0)); }
+static void g_polygon_offset(CPU* c, Gles2Context* gl) { snx_gl_polygon_offset(gl->ctx, F(c, 0), F(c, 1)); }
 static void g_sample_coverage(CPU* c, Gles2Context* gl) {
-    gl->coverage_value = unit(F(c, 0));
-    gl->coverage_invert = (X(0) & 0xff) != 0;
+    snx_gl_sample_coverage(gl->ctx, F(c, 0), (X(0) & 0xff) != 0);
 }
-static void g_hint(CPU* c, Gles2Context* gl) {
-    unsigned target = (unsigned)X(0);
-    if (target == 0x8192) gl->hints[0] = (unsigned)X(1);
-    else if (target == 0x8b8b) gl->hints[1] = (unsigned)X(1);
-}
-static void g_pixel_store(CPU* c, Gles2Context* gl) {
-    unsigned name = (unsigned)X(0);
-    int v = (int)X(1);
-    int pack = name >= 0x0d00 && name < 0x0d10 ? 0 : 1;
-    switch (name) {
-    case 0x0d05:
-    case 0x0cf5:
-        if (v != 1 && v != 2 && v != 4 && v != 8) {
-            gles2_error(gl, GL_INVALID_VALUE_);
-            return;
-        }
-        gl->pixel[pack].alignment = v;
-        return;
-    case 0x0d02:
-    case 0x0cf2: gl->pixel[pack].row_length = v; return;
-    case 0x0d03:
-    case 0x0cf3: gl->pixel[pack].skip_rows = v; return;
-    case 0x0d04:
-    case 0x0cf4: gl->pixel[pack].skip_pixels = v; return;
-    case 0x806e: gl->pixel[1].image_height = v; return;
-    case 0x806d: gl->pixel[1].skip_images = v; return;
-    default: gles2_error(gl, GL_INVALID_ENUM_);
-    }
-}
+static void g_hint(CPU* c, Gles2Context* gl) { snx_gl_hint(gl->ctx, (uint32_t)X(0), (uint32_t)X(1)); }
+static void g_pixel_store(CPU* c, Gles2Context* gl) { snx_gl_pixel_store(gl->ctx, (uint32_t)X(0), (int32_t)X(1)); }
 static void g_flush(CPU* c, Gles2Context* gl) {
     (void)c, (void)gl; /* the queue runs what the frame submits in order: nothing waits */
 }
@@ -433,6 +290,7 @@ static int channel_bits(Gles2Context* gl, unsigned pname) {
 
 /* the value of a state or limit: its count, 0 for a name GL does not have */
 static int state(Gles2Context* gl, unsigned pname, double* v) {
+    const SnxGlFixed* fs = gles2_fixed(gl);
     const VkPhysicalDeviceLimits* l = &V.props.limits;
     int max_texture = (int)(V.max_texture ? V.max_texture : 4096);
     G2VertexArray* vao = gles2_vertex_array(gl);
@@ -549,45 +407,55 @@ static int state(Gles2Context* gl, unsigned pname, double* v) {
     case 0x8f43: v[0] = gl->draw_indirect; return 1;
     case 0x90ef: v[0] = gl->dispatch_indirect; return 1;
     case 0x825a: v[0] = 0; return 1;    /* GL_PROGRAM_PIPELINE_BINDING */
-    case 0x8e52: v[0] = gl->sample_mask; return 1;
+    case 0x8e52: v[0] = fs->sample_mask; return 1;
     /* the state */
-    case 0x0ba2: for (int i = 0; i < 4; ++i) v[i] = gl->viewport[i]; return 4;
-    case 0x0c10: for (int i = 0; i < 4; ++i) v[i] = gl->scissor[i]; return 4;
-    case 0x0c22: for (int i = 0; i < 4; ++i) v[i] = gl->clear_color[i]; return 4;
-    case 0x0c23: for (int i = 0; i < 4; ++i) v[i] = gl->color_mask[i]; return 4;
-    case 0x0b73: v[0] = gl->clear_depth; return 1;
-    case 0x0b74: v[0] = gl->depth_func; return 1;
-    case 0x0b70: v[0] = gl->depth_range[0], v[1] = gl->depth_range[1]; return 2;
-    case 0x0b72: v[0] = gl->depth_mask; return 1;
-    case 0x0b91: v[0] = gl->clear_stencil; return 1;
-    case 0x0b92: v[0] = gl->stencil[0].func; return 1;
-    case 0x0b93: v[0] = gl->stencil[0].mask; return 1;
-    case 0x0b94: v[0] = gl->stencil[0].fail; return 1;
-    case 0x0b95: v[0] = gl->stencil[0].zfail; return 1;
-    case 0x0b96: v[0] = gl->stencil[0].zpass; return 1;
-    case 0x0b97: v[0] = gl->stencil[0].ref; return 1;
-    case 0x0b98: v[0] = gl->stencil[0].write; return 1;
-    case 0x8800: v[0] = gl->stencil[1].func; return 1;
-    case 0x8801: v[0] = gl->stencil[1].fail; return 1;
-    case 0x8802: v[0] = gl->stencil[1].zfail; return 1;
-    case 0x8803: v[0] = gl->stencil[1].zpass; return 1;
-    case 0x8ca3: v[0] = gl->stencil[1].ref; return 1;
-    case 0x8ca4: v[0] = gl->stencil[1].mask; return 1;
-    case 0x8ca5: v[0] = gl->stencil[1].write; return 1;
-    case 0x80c9: v[0] = gl->blend_src[0]; return 1;
-    case 0x80c8: v[0] = gl->blend_dst[0]; return 1;
-    case 0x80cb: v[0] = gl->blend_src[1]; return 1;
-    case 0x80ca: v[0] = gl->blend_dst[1]; return 1;
-    case 0x8009: v[0] = gl->blend_eq[0]; return 1;
-    case 0x883d: v[0] = gl->blend_eq[1]; return 1;
-    case 0x8005: for (int i = 0; i < 4; ++i) v[i] = gl->blend_color[i]; return 4;
-    case 0x0b45: v[0] = gl->cull_face; return 1;
-    case 0x0b46: v[0] = gl->front_face; return 1;
-    case 0x0b21: v[0] = gl->line_width; return 1;
-    case 0x8038: v[0] = gl->offset_factor; return 1;
-    case 0x2a00: v[0] = gl->offset_units; return 1;
-    case 0x80aa: v[0] = gl->coverage_value; return 1;
-    case 0x80ab: v[0] = gl->coverage_invert; return 1;
+    case 0x0ba2:
+        for (int i = 0; i < 4; ++i) v[i] = fs->viewport[i];
+        return 4;
+    case 0x0c10:
+        for (int i = 0; i < 4; ++i) v[i] = fs->scissor[i];
+        return 4;
+    case 0x0c22:
+        for (int i = 0; i < 4; ++i) v[i] = fs->clear_color[i];
+        return 4;
+    case 0x0c23:
+        for (int i = 0; i < 4; ++i) v[i] = fs->color_mask[i];
+        return 4;
+    case 0x0b73: v[0] = fs->clear_depth; return 1;
+    case 0x0b74: v[0] = fs->depth_func; return 1;
+    case 0x0b70: v[0] = fs->depth_range[0], v[1] = fs->depth_range[1]; return 2;
+    case 0x0b72: v[0] = fs->depth_mask; return 1;
+    case 0x0b91: v[0] = fs->clear_stencil; return 1;
+    case 0x0b92: v[0] = fs->stencil[0].func; return 1;
+    case 0x0b93: v[0] = fs->stencil[0].mask; return 1;
+    case 0x0b94: v[0] = fs->stencil[0].fail; return 1;
+    case 0x0b95: v[0] = fs->stencil[0].zfail; return 1;
+    case 0x0b96: v[0] = fs->stencil[0].zpass; return 1;
+    case 0x0b97: v[0] = fs->stencil[0].ref; return 1;
+    case 0x0b98: v[0] = fs->stencil[0].write; return 1;
+    case 0x8800: v[0] = fs->stencil[1].func; return 1;
+    case 0x8801: v[0] = fs->stencil[1].fail; return 1;
+    case 0x8802: v[0] = fs->stencil[1].zfail; return 1;
+    case 0x8803: v[0] = fs->stencil[1].zpass; return 1;
+    case 0x8ca3: v[0] = fs->stencil[1].ref; return 1;
+    case 0x8ca4: v[0] = fs->stencil[1].mask; return 1;
+    case 0x8ca5: v[0] = fs->stencil[1].write; return 1;
+    case 0x80c9: v[0] = fs->blend_src[0]; return 1;
+    case 0x80c8: v[0] = fs->blend_dst[0]; return 1;
+    case 0x80cb: v[0] = fs->blend_src[1]; return 1;
+    case 0x80ca: v[0] = fs->blend_dst[1]; return 1;
+    case 0x8009: v[0] = fs->blend_eq[0]; return 1;
+    case 0x883d: v[0] = fs->blend_eq[1]; return 1;
+    case 0x8005:
+        for (int i = 0; i < 4; ++i) v[i] = fs->blend_color[i];
+        return 4;
+    case 0x0b45: v[0] = fs->cull_face; return 1;
+    case 0x0b46: v[0] = fs->front_face; return 1;
+    case 0x0b21: v[0] = fs->line_width; return 1;
+    case 0x8038: v[0] = fs->offset_factor; return 1;
+    case 0x2a00: v[0] = fs->offset_units; return 1;
+    case 0x80aa: v[0] = fs->coverage_value; return 1;
+    case 0x80ab: v[0] = fs->coverage_invert; return 1;
     case 0x84e0: v[0] = 0x84c0 + gl->active; return 1;
     case 0x8069:
     case 0x8514:
@@ -608,18 +476,18 @@ static int state(Gles2Context* gl, unsigned pname, double* v) {
     case 0x88ef: v[0] = gl->pixel_unpack; return 1;
     case 0x8a28: v[0] = gl->uniform_buffer; return 1;
     case 0x8c8f: v[0] = gl->tf_buffer; return 1;
-    case 0x0d05: v[0] = gl->pixel[0].alignment; return 1;
-    case 0x0cf5: v[0] = gl->pixel[1].alignment; return 1;
-    case 0x0d02: v[0] = gl->pixel[0].row_length; return 1;
-    case 0x0d03: v[0] = gl->pixel[0].skip_rows; return 1;
-    case 0x0d04: v[0] = gl->pixel[0].skip_pixels; return 1;
-    case 0x0cf2: v[0] = gl->pixel[1].row_length; return 1;
-    case 0x0cf3: v[0] = gl->pixel[1].skip_rows; return 1;
-    case 0x0cf4: v[0] = gl->pixel[1].skip_pixels; return 1;
-    case 0x806e: v[0] = gl->pixel[1].image_height; return 1;
-    case 0x806d: v[0] = gl->pixel[1].skip_images; return 1;
-    case 0x8192: v[0] = gl->hints[0]; return 1;
-    case 0x8b8b: v[0] = gl->hints[1]; return 1;
+    case 0x0d05: v[0] = fs->pixel[0].alignment; return 1;
+    case 0x0cf5: v[0] = fs->pixel[1].alignment; return 1;
+    case 0x0d02: v[0] = fs->pixel[0].row_length; return 1;
+    case 0x0d03: v[0] = fs->pixel[0].skip_rows; return 1;
+    case 0x0d04: v[0] = fs->pixel[0].skip_pixels; return 1;
+    case 0x0cf2: v[0] = fs->pixel[1].row_length; return 1;
+    case 0x0cf3: v[0] = fs->pixel[1].skip_rows; return 1;
+    case 0x0cf4: v[0] = fs->pixel[1].skip_pixels; return 1;
+    case 0x806e: v[0] = fs->pixel[1].image_height; return 1;
+    case 0x806d: v[0] = fs->pixel[1].skip_images; return 1;
+    case 0x8192: v[0] = fs->hints[0]; return 1;
+    case 0x8b8b: v[0] = fs->hints[1]; return 1;
     case 0x0c02: {
         G2Framebuffer* fb = gles2_framebuffer(gl->read_fbo);
         v[0] = gl->read_fbo && fb ? fb->read : GL_BACK_;
@@ -633,9 +501,9 @@ static int state(Gles2Context* gl, unsigned pname, double* v) {
         v[0] = gl->draw_fbo && fb ? fb->draw[i] : i == 0 ? GL_BACK_ : 0;
         return 1;
     }
-    bool* on = capability(gl, pname);
-    if (on) {
-        v[0] = *on;
+    int on = snx_gl_capability(gl->ctx, pname);
+    if (on >= 0) {
+        v[0] = on;
         return 1;
     }
     return 0;
@@ -711,7 +579,7 @@ static bool indexed(Gles2Context* gl, unsigned pname, unsigned i, int64_t* v) {
         return true;
     }
     if (i < 1 && pname == 0x8e52) {
-        *v = gl->sample_mask;
+        *v = gles2_fixed(gl)->sample_mask;
         return true;
     }
     if (i >= G2_UBO_BINDINGS) return false;

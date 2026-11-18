@@ -1522,6 +1522,12 @@ snx_test_target(snx-test-gl-census gnu23)
 target_link_libraries(snx-test-gl-census PRIVATE scarletnx-common)
 target_include_directories(snx-test-gl-census PRIVATE "${PROJECT_SOURCE_DIR}/src")
 add_test(NAME gl_census COMMAND snx-test-gl-census "${CMAKE_CURRENT_BINARY_DIR}/gl_census.tsv")
+# the shared GL layer's state machine (src/common/gpu/gl/gl_state.c), with no GPU: contexts, the fixed state, GL's
+# errors and clamps, and a save state's copy saved, loaded and refused
+add_executable(snx-test-gl-state gl_state.c)
+snx_test_target(snx-test-gl-state c23)
+target_link_libraries(snx-test-gl-state PRIVATE snx_gl)
+add_test(NAME gl_state COMMAND snx-test-gl-state)
 # native_cond_var (src/nx/hle/hook/family.c, hook.c) over tests/hook/states.hook: the cond_var family's hooks at 1, the
 # game's own wait at 0, and save states refused while the host's wait runs, by a message naming the setting's value
 add_executable(snx-test-hook-states hook_states.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/version.c"

@@ -1044,15 +1044,16 @@ static void upload(Gles2Context* gl, G2Texture* t, int level, int x, int y, int 
             return;
         }
     } else {
-        int row_length = gl->pixel[1].row_length, height = gl->pixel[1].image_height;
-        size_t alignment = (size_t)gl->pixel[1].alignment;
+        int row_length = gles2_fixed(gl)->pixel[1].row_length, height = gles2_fixed(gl)->pixel[1].image_height;
+        size_t alignment = (size_t)gles2_fixed(gl)->pixel[1].alignment;
         row = (size_t)w * f->bytes;
         rows = (size_t)h;
         size_t length = (size_t)(row_length ? row_length : w) * f->bytes;
         stride = (length + alignment - 1) / alignment * alignment;
         image = stride * (size_t)(height ? height : h);
-        src += (size_t)gl->pixel[1].skip_images * image + (size_t)gl->pixel[1].skip_rows * stride +
-               (size_t)gl->pixel[1].skip_pixels * f->bytes;
+        src += (size_t)gles2_fixed(gl)->pixel[1].skip_images * image +
+               (size_t)gles2_fixed(gl)->pixel[1].skip_rows * stride +
+               (size_t)gles2_fixed(gl)->pixel[1].skip_pixels * f->bytes;
     }
     VkDeviceSize size = (VkDeviceSize)row * rows * (VkDeviceSize)d;
     /* an offset that is a multiple of the texel's or block's bytes and of 4 */
@@ -1333,7 +1334,8 @@ static void g_memory_barrier(CPU* c, Gles2Context* gl) {
     if (slot) gles2_memory_barrier(slot->cb);
 }
 static void g_sample_maski(CPU* c, Gles2Context* gl) {
-    if ((unsigned)X(0) == 0) gl->sample_mask = (uint32_t)X(1);
+    if ((unsigned)X(0) == 0)
+        gles2_fixed(gl)->sample_mask = (uint32_t)X(1);
     else gles2_error(gl, GL_INVALID_VALUE_);
 }
 /* glGetMultisamplefv(GL_SAMPLE_POSITION, index, values): Vulkan's standard positions of 4 samples */
