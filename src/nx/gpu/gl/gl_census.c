@@ -31,6 +31,7 @@
 #include "nx/runtime/platform/log.h"
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdatomic.h>
 #include <string.h>
 
 #define GL_CENSUS_SLOTS 8192 /* a power of two, over three times the ~2470 GL functions a driver exports */
@@ -39,12 +40,12 @@
 /* a function the census took, by its entry. first and last are 1 + the frame of the game's first and last call, 0
    before one. Its counters are atomic: any thread calls it */
 typedef struct {
-    u64 addr; /* 0: a free entry */
+    _Atomic u64 addr; /* 0: a free entry */
     GuestFn own;
-    u64 calls, driver_calls, frame_calls, most;
-    u32 frames, first, last;
+    _Atomic u64 calls, driver_calls, frame_calls, most;
+    _Atomic u32 frames, first, last;
     u32 asked;  /* named by the game's eglGetProcAddress, not by an export */
-    u32 behind; /* an export reached through the stub eglGetProcAddress answered for its name: its calls are the
+    _Atomic u32 behind; /* an export reached through the stub eglGetProcAddress answered for its name: its calls are the
                    driver's */
     char name[GL_CENSUS_NAME];
 } GlCensusFn;
@@ -62,8 +63,11 @@ static struct {
     GlCensusFn* fn;
     GuestFn getproc_own;
     u64 driver_lo, driver_hi;
-    u32 taken, no_code, full, next_write, failed;
-    u64 asked, answered, unnamed; /* eglGetProcAddress: names asked, answered, and at an address no export names */
+    u32 taken, no_code, full, failed;
+    _Atomic u32 next_write;
+    /* eglGetProcAddress: names asked, answered, and at an address no export names */
+    _Atomic u64 asked, answered;
+    u64 unnamed;
     char driver[32];
 } g_gl_census = {.lock = PMUTEX_INIT};
 
@@ -71,7 +75,7 @@ static u32 slot_of(u64 addr) { return (u32)((addr >> 2) * 2654435761u) & (GL_CEN
 static GlCensusFn* census_find(u64 addr) {
     GlCensusFn* fn = g_gl_census.fn;
     for (u32 n = 0, i = slot_of(addr); n < GL_CENSUS_SLOTS; n++, i = (i + 1) & (GL_CENSUS_SLOTS - 1)) {
-        u64 a = __atomic_load_n(&fn[i].addr, __ATOMIC_ACQUIRE);
+        u64 a = atomic_load_explicit(&fn[i].addr, memory_order_acquire);
         if (a == addr) return &fn[i];
         if (!a) return NULL;
     }
@@ -90,7 +94,7 @@ static GlCensusFn* export_named(const char* name) {
     return NULL;
 }
 
-static u32 frame_now(void) { return (u32)__atomic_load_n(&g_frames, __ATOMIC_RELAXED); }
+static u32 frame_now(void) { return (u32)atomic_load_explicit(&g_frames, memory_order_relaxed); }
 
 /* the file again, with the counts as they are now. Lock held */
 static void census_write(void) {
@@ -101,14 +105,14 @@ static void census_write(void) {
     char part[sizeof g_settings.gl_call_census + 8];
     FILE* f;
     for (i = 0; i < GL_CENSUS_SLOTS; i++) {
-        GlCensusRow r = {__atomic_load_n(&fn[i].calls, __ATOMIC_RELAXED),
-                         __atomic_load_n(&fn[i].driver_calls, __ATOMIC_RELAXED),
-                         __atomic_load_n(&fn[i].most, __ATOMIC_RELAXED),
-                         __atomic_load_n(&fn[i].frames, __ATOMIC_RELAXED),
-                         __atomic_load_n(&fn[i].first, __ATOMIC_RELAXED),
-                         __atomic_load_n(&fn[i].last, __ATOMIC_RELAXED),
+        GlCensusRow r = {atomic_load_explicit(&fn[i].calls, memory_order_relaxed),
+                         atomic_load_explicit(&fn[i].driver_calls, memory_order_relaxed),
+                         atomic_load_explicit(&fn[i].most, memory_order_relaxed),
+                         atomic_load_explicit(&fn[i].frames, memory_order_relaxed),
+                         atomic_load_explicit(&fn[i].first, memory_order_relaxed),
+                         atomic_load_explicit(&fn[i].last, memory_order_relaxed),
                          i};
-        u64 now = __atomic_load_n(&fn[i].frame_calls, __ATOMIC_RELAXED);
+        u64 now = atomic_load_explicit(&fn[i].frame_calls, memory_order_relaxed);
         if (!r.calls) continue; /* the game's calls: a function only the driver called is the driver's business */
         if (now > r.most) r.most = now; /* the frame still going */
         calls += r.calls;
@@ -132,8 +136,8 @@ static void census_write(void) {
             "calls, %u frames\n",
             g_gl_census.driver, g_gl_census.taken, n, (unsigned long long)calls, frames);
     fprintf(f, "# eglGetProcAddress: %llu names asked, %llu answered, %llu at an address no export names\n",
-            (unsigned long long)__atomic_load_n(&g_gl_census.asked, __ATOMIC_RELAXED),
-            (unsigned long long)__atomic_load_n(&g_gl_census.answered, __ATOMIC_RELAXED),
+            (unsigned long long)atomic_load_explicit(&g_gl_census.asked, memory_order_relaxed),
+            (unsigned long long)atomic_load_explicit(&g_gl_census.answered, memory_order_relaxed),
             (unsigned long long)g_gl_census.unnamed);
     fputs("function\tcalls\tframes\tper_frame\tmost_in_a_frame\tfirst_frame\tlast_frame\tdriver_calls\tnamed_by\n", f);
     for (i = 0; i < n; i++) {
@@ -154,29 +158,30 @@ static void counted(CPU* RESTRICT c, u64 entry) {
     u32 now, prev;
     if (!f) fatal("gl census: a call at %llx, where the census took no function", (unsigned long long)entry);
     if (c->x[30] - g_gl_census.driver_lo < g_gl_census.driver_hi - g_gl_census.driver_lo ||
-        __atomic_load_n(&f->behind, __ATOMIC_RELAXED)) {
-        __atomic_add_fetch(&f->driver_calls, 1, __ATOMIC_RELAXED);
+        atomic_load_explicit(&f->behind, memory_order_relaxed)) {
+        atomic_fetch_add_explicit(&f->driver_calls, 1, memory_order_relaxed);
         f->own(c, entry);
         return;
     }
     now = frame_now() + 1;
-    prev = __atomic_load_n(&f->last, __ATOMIC_RELAXED);
+    prev = atomic_load_explicit(&f->last, memory_order_relaxed);
     /* the thread that moves last to a later frame closes the frame before it; a thread that read an earlier frame
        than another's leaves it */
-    while (prev < now && !__atomic_compare_exchange_n(&f->last, &prev, now, 1, __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {}
+    while (prev < now &&
+           !atomic_compare_exchange_weak_explicit(&f->last, &prev, now, memory_order_relaxed, memory_order_relaxed)) {}
     if (prev < now) {
-        u64 closed = __atomic_exchange_n(&f->frame_calls, 0, __ATOMIC_RELAXED),
-            most = __atomic_load_n(&f->most, __ATOMIC_RELAXED);
-        while (closed > most &&
-               !__atomic_compare_exchange_n(&f->most, &most, closed, 1, __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {}
-        __atomic_add_fetch(&f->frames, 1, __ATOMIC_RELAXED);
-        if (!prev) __atomic_store_n(&f->first, now, __ATOMIC_RELAXED);
+        u64 closed = atomic_exchange_explicit(&f->frame_calls, 0, memory_order_relaxed),
+            most = atomic_load_explicit(&f->most, memory_order_relaxed);
+        while (closed > most && !atomic_compare_exchange_weak_explicit(&f->most, &most, closed, memory_order_relaxed,
+                                                                       memory_order_relaxed)) {}
+        atomic_fetch_add_explicit(&f->frames, 1, memory_order_relaxed);
+        if (!prev) atomic_store_explicit(&f->first, now, memory_order_relaxed);
     }
-    __atomic_add_fetch(&f->frame_calls, 1, __ATOMIC_RELAXED);
-    __atomic_add_fetch(&f->calls, 1, __ATOMIC_RELAXED);
-    if (now > __atomic_load_n(&g_gl_census.next_write, __ATOMIC_RELAXED) && pm_trylock(&g_gl_census.lock)) {
+    atomic_fetch_add_explicit(&f->frame_calls, 1, memory_order_relaxed);
+    atomic_fetch_add_explicit(&f->calls, 1, memory_order_relaxed);
+    if (now > atomic_load_explicit(&g_gl_census.next_write, memory_order_relaxed) && pm_trylock(&g_gl_census.lock)) {
         if (now > g_gl_census.next_write) {
-            __atomic_store_n(&g_gl_census.next_write, now - 1 + SNX_GL_CENSUS_EVERY, __ATOMIC_RELAXED);
+            atomic_store_explicit(&g_gl_census.next_write, now - 1 + SNX_GL_CENSUS_EVERY, memory_order_relaxed);
             census_write();
         }
         pm_unlock(&g_gl_census.lock);
@@ -188,12 +193,14 @@ static void counted(CPU* RESTRICT c, u64 entry) {
    counter, now or from before; 0 when it can't (outside the game's code, no recompiled code, the table full), each
    counted for the log. Lock held */
 static int census_take(u64 addr, const char* name, u32 asked) {
-    GuestFn *slot, cur;
+    _Atomic GuestFn* slot;
+    GuestFn cur;
     GlCensusFn* fn = g_gl_census.fn;
     u32 i, n;
     if (addr < g_code_lo || addr >= g_code_hi || (addr & 3)) return 0;
     slot = &g_disp[(addr - g_code_lo) / 4];
-    cur = nce_slot(*slot); /* under NCE, an empty slot is the function's own native code */
+    cur = nce_slot(atomic_load_explicit(
+        slot, memory_order_relaxed)); /* under NCE, an empty slot is the function's own native code */
     if (cur == counted) return 1;
     if (!cur) {
         g_gl_census.no_code++;
@@ -215,8 +222,8 @@ static int census_take(u64 addr, const char* name, u32 asked) {
         while (names[k]) k = (k + 1) & (GL_CENSUS_SLOTS - 1); /* fewer exports than slots: one is free */
         names[k] = (u16)(i + 1);
     }
-    __atomic_store_n(&fn[i].addr, addr, __ATOMIC_RELEASE);
-    __atomic_store_n(slot, counted, __ATOMIC_RELEASE);
+    atomic_store_explicit(&fn[i].addr, addr, memory_order_release);
+    atomic_store_explicit(slot, counted, memory_order_release);
     nce_slot_taken(addr, "gl census");
     jit_slot_taken(addr, counted);
     g_gl_census.taken++;
@@ -232,9 +239,9 @@ static void getproc(CPU* RESTRICT c, u64 entry) {
     g_gl_census.getproc_own(c, entry);
     while ((pc = c->pc) != lr) snx_lookup(c, pc)(c, pc); /* its lookup is a tail call */
     found = c->x[0];
-    __atomic_add_fetch(&g_gl_census.asked, 1, __ATOMIC_RELAXED);
+    atomic_fetch_add_explicit(&g_gl_census.asked, 1, memory_order_relaxed);
     if (!found) return;
-    __atomic_add_fetch(&g_gl_census.answered, 1, __ATOMIC_RELAXED);
+    atomic_fetch_add_explicit(&g_gl_census.answered, 1, memory_order_relaxed);
     pm_lock(&g_gl_census.lock);
     if (!census_find(found)) {
         if (len <= 1)
@@ -245,7 +252,7 @@ static void getproc(CPU* RESTRICT c, u64 entry) {
                               : "a name of over 63 characters");
         else if (census_take(found, name, 1)) {
             GlCensusFn* export = export_named(name);
-            if (export) __atomic_store_n(&export->behind, 1, __ATOMIC_RELAXED);
+            if (export) atomic_store_explicit(&export->behind, 1, memory_order_relaxed);
             g_gl_census.unnamed++;
             LOG_LIMIT(1,
                       "gl census: eglGetProcAddress answers %s at %llx, where the driver exports no function (a stub "
@@ -264,7 +271,7 @@ void gl_census_init(void) {
     const char* path = g_settings.gl_call_census;
     const char* name;
     u64 getproc_at, addr;
-    GuestFn* slot;
+    _Atomic GuestFn* slot;
     u32 i;
     if (!path[0]) return;
     if (g_arm_mod) {
@@ -300,9 +307,9 @@ void gl_census_init(void) {
             !strncmp(name, "_gl", 3))
             census_take(addr, name + 1, 0); /* glDrawArrays: the name the game asks eglGetProcAddress for */
     slot = &g_disp[(getproc_at - g_code_lo) / 4];
-    g_gl_census.getproc_own = nce_slot(*slot);
+    g_gl_census.getproc_own = nce_slot(atomic_load_explicit(slot, memory_order_relaxed));
     if (g_gl_census.getproc_own) {
-        __atomic_store_n(slot, getproc, __ATOMIC_RELEASE);
+        atomic_store_explicit(slot, getproc, memory_order_release);
         nce_slot_taken(getproc_at, "gl census");
         jit_slot_taken(getproc_at, getproc);
     } else
@@ -328,7 +335,7 @@ void gl_census_report(void) {
     pm_lock(&g_gl_census.lock);
     census_write();
     for (i = 0; i < GL_CENSUS_SLOTS; i++) {
-        u64 n = __atomic_load_n(&fn[i].calls, __ATOMIC_RELAXED);
+        u64 n = atomic_load_explicit(&fn[i].calls, memory_order_relaxed);
         called += n != 0;
         calls += n;
     }
