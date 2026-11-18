@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 /* The GL layer's state machine (gl_state.h): the contexts and their fixed state, in one block of flat records */
 #include "common/gpu/gl/gl_state.h"
+#include "common/gpu/gl/gl_program.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -67,6 +68,7 @@ void snx_gl_context_free(uint32_t ctx) {
 }
 
 SnxGlFixed* snx_gl_fixed(uint32_t ctx) { return fixed(ctx); }
+SnxGlContext* snx_gl_context(uint32_t ctx) { return &g_gl.contexts[ctx - 1]; }
 uint32_t snx_gl_context_api(uint32_t ctx) {
     return ctx && ctx <= SNX_GL_CONTEXTS && g_gl.contexts[ctx - 1].used ? g_gl.contexts[ctx - 1].api : 0;
 }
@@ -375,12 +377,13 @@ uint32_t snx_gl_clear(uint32_t ctx, uint32_t mask) {
     return mask;
 }
 
-size_t snx_gl_state_bytes(void) { return sizeof(SnxGlStateHeader) + sizeof g_gl; }
+size_t snx_gl_state_bytes(void) { return sizeof(SnxGlStateHeader) + sizeof g_gl + snx_gl_program_state_bytes(); }
 
 void snx_gl_state_save(void* out) {
     const SnxGlStateHeader h = {SNX_GL_STATE_MAGIC, SNX_GL_STATE_VERSION, (uint32_t)sizeof g_gl, 0};
     memcpy(out, &h, sizeof h);
     memcpy((unsigned char*)out + sizeof h, &g_gl, sizeof g_gl);
+    snx_gl_program_state_save((unsigned char*)out + sizeof h + sizeof g_gl);
 }
 
 /* an error of a context's record, by what GL can leave there */
@@ -399,7 +402,7 @@ int snx_gl_state_check(const void* in, size_t size, char* why, size_t whysize) {
                  (unsigned)SNX_GL_STATE_MAGIC);
         return -1;
     }
-    if (h.version != SNX_GL_STATE_VERSION || h.bytes != sizeof g_gl || size != sizeof h + sizeof g_gl) {
+    if (h.version != SNX_GL_STATE_VERSION || h.bytes != sizeof g_gl || size < sizeof h + sizeof g_gl) {
         snprintf(why, whysize,
                  "the GL layer's state is layout %u of %u bytes (%zu in all); this build reads layout %u of %zu",
                  (unsigned)h.version, (unsigned)h.bytes, size, (unsigned)SNX_GL_STATE_VERSION, sizeof g_gl);
@@ -428,9 +431,27 @@ int snx_gl_state_check(const void* in, size_t size, char* why, size_t whysize) {
             }
         }
     }
+    if (snx_gl_program_state_check((const unsigned char*)in + sizeof h + sizeof g_gl, size - sizeof h - sizeof g_gl,
+                                   why, whysize))
+        return -1;
+    for (uint32_t i = 0; i < SNX_GL_CONTEXTS; i++) {
+        SnxGlContext c;
+        memcpy(&c, (const unsigned char*)in + sizeof h + i * sizeof c, sizeof c);
+        if (c.used &&
+            !snx_gl_program_state_bound((const unsigned char*)in + sizeof h + sizeof g_gl, c.program, c.pipeline)) {
+            snprintf(why, whysize,
+                     "the GL layer's context %u has program %u and pipeline %u bound, and one of them is not made",
+                     (unsigned)(i + 1), (unsigned)c.program, (unsigned)c.pipeline);
+            return -1;
+        }
+    }
     return 0;
 }
 
-void snx_gl_state_load(const void* in) {
-    memcpy(&g_gl, (const unsigned char*)in + sizeof(SnxGlStateHeader), sizeof g_gl);
+int snx_gl_state_load(const void* in, size_t size) {
+    const unsigned char* i = in;
+    size_t part = sizeof(SnxGlStateHeader) + sizeof g_gl;
+    if (snx_gl_program_state_load(i + part, size - part)) return -1;
+    memcpy(&g_gl, i + sizeof(SnxGlStateHeader), sizeof g_gl);
+    return 0;
 }

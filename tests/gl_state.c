@@ -165,7 +165,7 @@ int main(void) {
     assert(!snx_gl_state_check(saved, bytes, why, sizeof why));
     snx_gl_context_free(b);
     snx_gl_viewport(a, 9, 9, 9, 9);
-    snx_gl_state_load(saved);
+    assert(!snx_gl_state_load(saved, bytes));
     snx_gl_state_save(after);
     assert(!memcmp(saved, after, bytes));
     assert(snx_gl_fixed(a)->viewport[0] == 1 && snx_gl_fixed(b)->depth_func == GL_LESS);
@@ -180,10 +180,11 @@ int main(void) {
     memcpy(copy, saved, bytes);
     copy[4] = 9; /* the layout */
     refused(copy, bytes, "layout 9");
-    refused(saved, bytes - 4, "this build reads layout 2");
+    refused(saved, 20, "this build reads layout 3");
+    refused(saved, bytes - 4, "this build reads");
     {
         SnxGlContext c;
-        size_t at = bytes - (size_t)SNX_GL_CONTEXTS * sizeof c; /* the first context */
+        size_t at = 16; /* the first context, after the header */
         memcpy(copy, saved, bytes);
         memcpy(&c, copy + at, sizeof c);
         c.used = 2;
