@@ -408,6 +408,7 @@ static u32* compute_to_spirv(const u8* code, const u64* words, u32 max_bytes, Sh
                 add = spv_emit_unary(&c->e, SPV_OP_BITCAST, c->f, add);
                 if (B(w, 49, 1)) add = spv_emit_unary(&c->e, SPV_OP_F_NEGATE, c->f, add);
                 result = spv_emit_glsl_ternary(&c->e, c->f, c->glsl, SPV_GLSL_FMA, lhs, rhs, add);
+                spv_emit_no_contraction(&c->e, result);
             } else {
                 result = spv_emit_binary(&c->e, SPV_OP_F_MUL, c->f, lhs, rhs);
                 spv_emit_no_contraction(&c->e, result);

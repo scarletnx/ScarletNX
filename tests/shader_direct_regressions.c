@@ -22,6 +22,7 @@
 #define FMUL_IMM       0x3868003F00070000ull
 #define FFMA_FMZ       0x59C0000000070000ull
 #define FFMA_KEEP      0x5980000000070000ull
+#define DFMA_R         0x5B70000000070000ull
 
 static int failures;
 static const char* storage_paths[4];
@@ -1128,6 +1129,45 @@ static void precise_math(void) {
         if (code) check(count_opcode(code, words, 71, 42) >= 2, "float math has NoContraction");
         free(code);
     }
+}
+
+/* how many of a module's GLSL Fma results have no NoContraction decoration: -1 when it has no Fma */
+static int fma_without_no_contraction(const u32* code, size_t words) {
+    int fmas = 0, bare = 0;
+    for (size_t i = 5; i < words;) {
+        u32 width = code[i] >> 16;
+        if (!width || i + width > words) return -1;
+        if ((code[i] & 0xffff) == 12 && width > 4 && code[i + 4] == 50) {
+            int decorated = 0;
+            for (size_t j = 5; j < words && code[j] >> 16;) {
+                decorated |=
+                    (code[j] & 0xffff) == 71 && code[j] >> 16 >= 3 && code[j + 1] == code[i + 2] && code[j + 2] == 42;
+                j += code[j] >> 16;
+            }
+            fmas++;
+            bare += !decorated;
+        }
+        i += width;
+    }
+    return fmas ? bare : -1;
+}
+
+/* FFMA and DFMA round once, and a GLSL Fma without NoContraction may be split into a multiply and an add: RADV did so
+   in a fractal's loop once its control flow was structured, and the counts it drew drifted from the processor's */
+static void fused_fma(void) {
+    const u64 fma[] = {FFMA_KEEP, DFMA_R};
+    const int stages[] = {ST_VS, ST_FS, ST_CS};
+    for (size_t i = 0; i < sizeof stages / sizeof *stages; i++)
+        for (int n = 1; n <= 2; n++) {
+            ShaderInfo info;
+            size_t words = 0;
+            u32* code = translate(fma, n, stages[i], &info, &words, 0);
+            check_translated(code, &info, "FFMA and DFMA translate");
+            int bare = code ? fma_without_no_contraction(code, words) : -1;
+            if (code && bare) fprintf(stderr, "stage %d, %d FMAs: %d Fma without NoContraction\n", stages[i], n, bare);
+            check(code && bare == 0, "every Fma has NoContraction");
+            free(code);
+        }
 }
 
 /* F2F between two halves with bit 42 rounds to an integer: DREDGE's colour grading takes frac() of a half as x minus
@@ -6862,6 +6902,7 @@ int main(int argc, char** argv) {
     compute_write_log();
     float_controls();
     precise_math();
+    fused_fma();
     f2f_half_rounding();
     saturate_nan();
     hfma2_immediate();

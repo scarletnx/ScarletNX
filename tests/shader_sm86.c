@@ -2042,6 +2042,40 @@ static void spv_ftz_counts(const u32* w, size_t n, int* mode, int* tests) {
         i += count;
     }
 }
+/* FFMA rounds once: its GLSL Fma carries NoContraction, or a driver may split it into a multiply and an add. The
+   compute program with its FMUL made FFMA R2, R2, 2.0, R2 */
+static void test_ffma_fused(void) {
+    u8* code = calloc(1, 0x1000);
+    if (!code) abort();
+    u32 n = compute_program(code), fmul = n;
+    for (u32 i = 0; i < n; i++)
+        if ((code[16 * i] | (u32)(code[16 * i + 1] & 1) << 8) == 0x020) fmul = i;
+    CHECK(fmul < n);
+    if (fmul < n) {
+        Word x = alu(0x023, 4, 2, 2);
+        set(&x, 32, 32, 0x40000000u);
+        set(&x, 64, 8, 2);
+        put(code, fmul, x);
+        ShaderInfo si = {0};
+        size_t count = 0;
+        u32* spv = sm86_to_spirv_ftz(code, n * 16, ST_CS, NULL, &si, &count, SH_FTZ_MODE);
+        CHECK(spv != NULL);
+        u32 fmas = 0, bare = 0;
+        for (size_t i = 5; spv && i < count && spv[i] >> 16; i += spv[i] >> 16) {
+            if ((spv[i] & 0xffff) != 12 || spv[i] >> 16 < 5 || spv[i + 4] != 50) continue;
+            u32 decorated = 0;
+            for (size_t j = 5; j < count && spv[j] >> 16; j += spv[j] >> 16)
+                decorated |=
+                    (spv[j] & 0xffff) == 71 && spv[j] >> 16 >= 3 && spv[j + 1] == spv[i + 2] && spv[j + 2] == 42;
+            fmas++;
+            bare += !decorated;
+        }
+        CHECK(fmas == 1 && bare == 0);
+        if (fmas != 1 || bare) fprintf(stderr, "FFMA: %u Fma, %u without NoContraction\n", fmas, bare);
+        free(spv);
+    }
+    free(code);
+}
 static void test_ftz_modes(const char* dir) {
     u8* code = calloc(1, 0x1000);
     if (!code) abort();
@@ -6217,6 +6251,7 @@ int main(int argc, char** argv) {
     test_hmma_f16_unused();
     test_warp_matrix_coop(dir);
     test_ftz_modes(dir);
+    test_ffma_fused();
     test_complementary_pair(dir);
     test_fuse_pairs();
     test_fuse_branch();
