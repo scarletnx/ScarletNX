@@ -8,6 +8,7 @@
 #include "common/utilities/bits.h"
 #include "common/utilities/spirv_emit.h"
 #include "nx/gpu/shader/translator.h"
+#include "nx/gpu/shader/vt_sample.h"
 #include <assert.h>
 #include <stdlib.h>
 
@@ -109,6 +110,13 @@ typedef struct {
     u32 small_u32[64];
     /* the module's specialization constants by SpecId (shader.h's SH_SPEC_), 0 for one no instruction read yet */
     u32 spec[SH_SPEC_COUNT];
+    /* vt_sparse: shader_vt_sample's ids, and the slots with a read of texels it didn't take: the others may hold a
+       virtual texture (ShaderInfo.tex_vt_mask) */
+    ShVtIds vt;
+    u64 vt_left, vt_reads[10]; /* vt_reads: ShaderInfo.tex_vt_reads */
+    int vt_ok;                 /* the program takes virtual samples (ShaderInfo.vt_early) */
+    int vt_first;              /* and asks for the depth and stencil tests before it runs */
+    int vt_why;                /* and when not, the entry of vt_reads that says why: 6, 8 or 9 */
 } DirectCtx;
 #define SH_SMALL_U32 64u
 

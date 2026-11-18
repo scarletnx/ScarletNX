@@ -329,6 +329,12 @@ uint32_t spv_emit_type_struct_one(SpvEmitter* e, uint32_t member_type) {
 
 
 
+uint32_t spv_emit_type_struct_pair(SpvEmitter* e, uint32_t first, uint32_t second) {
+    uint32_t id = spv_emit_id(e);
+    EMIT(&e->types, SPV_OP_TYPE_STRUCT, id, first, second);
+    return id;
+}
+
 uint32_t spv_emit_type_array_u32(SpvEmitter* e, uint32_t u32_type, uint32_t length) {
     assert(length);
     uint32_t length_id = spv_emit_constant_u32(e, u32_type, length);
@@ -1393,6 +1399,29 @@ uint32_t spv_emit_sample_image_min_lod(SpvEmitter* e, uint32_t result_type, uint
 }
 
 
+uint32_t spv_emit_sample_image_sparse(SpvEmitter* e, uint32_t pair_type, uint32_t sampled_type, uint32_t sampler,
+                                      uint32_t coordinates, uint32_t mode, uint32_t level, uint32_t offset,
+                                      uint32_t gradient_y) {
+    spv_emit_capability(e, SPV_CAPABILITY_SPARSE_RESIDENCY);
+    uint32_t image = spv_emit_load(e, sampled_type, sampler);
+    uint32_t id = spv_emit_id(e);
+    /* Lod, Bias or Grad, and ConstOffset */
+    uint32_t operands = (mode == 1 ? 2u : mode == 2 ? 1u : mode == 3 ? 4u : 0u) | (offset ? 8u : 0u);
+    instruction(&e->functions,
+                mode == 1 || mode == 3 ? SPV_OP_IMAGE_SPARSE_SAMPLE_EXPLICIT_LOD
+                                       : SPV_OP_IMAGE_SPARSE_SAMPLE_IMPLICIT_LOD,
+                5 + !!operands + !!(operands & 7) + (mode == 3) + !!offset);
+    put(&e->functions, pair_type);
+    put(&e->functions, id);
+    put(&e->functions, image);
+    put(&e->functions, coordinates);
+    if (operands) put(&e->functions, operands);
+    if (operands & 7) put(&e->functions, level);
+    if (mode == 3) put(&e->functions, gradient_y);
+    if (offset) put(&e->functions, offset);
+    return id;
+}
+
 uint32_t spv_emit_sample_grad_offset(SpvEmitter* e, uint32_t result_type, uint32_t sampled_type, uint32_t sampler,
                                      uint32_t coordinates, uint32_t dx, uint32_t dy, uint32_t offset,
                                      int dynamic_offset, uint32_t min_lod) {
@@ -1755,7 +1784,7 @@ uint32_t* spv_emit_finish(const SpvEmitter* e, size_t* word_count) {
     if (e->imports.count) memcpy(out + p, e->imports.words, e->imports.count * sizeof(uint32_t));
     p += e->imports.count;
     out[p++] = (3u << 16) | SPV_OP_MEMORY_MODEL;
-    out[p++] = 0; /* Logical */
+    out[p++] = e->physical_storage_buffer ? 5348u : 0; /* PhysicalStorageBuffer64, Logical */
     out[p++] = e->vulkan_memory_model ? 3 : 1; /* Vulkan, GLSL450 */
     for (size_t i = 3; i < sizeof sections / sizeof sections[0]; i++) {
         if (sections[i]->count) memcpy(out + p, sections[i]->words, sections[i]->count * sizeof(uint32_t));

@@ -21,6 +21,32 @@ static void* counted_malloc(size_t n) {
 #define malloc counted_malloc
 #pragma GCC diagnostic ignored "-Wmissing-field-initializers" /* texture.c builds without -Wextra */
 #include "nx/gpu/vk/texture.c"
+/* vt_sparse's records (vk/vt.c, not linked here): virtual textures are off, and no texture is one */
+int vk_vt_on(void) { return 0; }
+int vk_vt_makes(int holes) { return (void)holes, 0; }
+void vk_image_destroy(VkImage img, DevMem mem) { (void)img, (void)mem; } /* of a texture it made sparse: none */
+int vk_vt_register(Surf* t, int holes) {
+    (void)t, (void)holes;
+    return 0;
+}
+int vk_vt_mapping(const Surf* t, u8* bits, u64* keys, u64 nbits) {
+    (void)t, (void)bits, (void)keys, (void)nbits;
+    return 0;
+}
+void vk_vt_mapping_keep(const Surf* t, const u8* bits, const u64* keys, u64 nbits) {
+    (void)t, (void)bits, (void)keys, (void)nbits;
+}
+void vk_vt_forget(Surf* t) { (void)t; }
+void vk_vt_want(const Surf* t, u8* bits, u64 nbits) { (void)t, (void)bits, (void)nbits; }
+void vk_vt_bound(const Surf* t, const u8* bits, u64 nbits) { (void)t, (void)bits, (void)nbits; }
+const u8* vk_vt_fresh(const Surf* t, u32* nblocks) {
+    (void)t;
+    *nblocks = 0;
+    return NULL;
+}
+void vk_vt_loaded(const Surf* t) { (void)t; }
+void vk_vt_remapped(const Surf* t) { (void)t; }
+void vk_vt_frame(void) {}
 #undef malloc
 #include "nx/hle/services/nvdrv.h" /* gmmu_pieces, and g_mem, which the stubs below stand in for */
 #include "nx/memory/mem.h"

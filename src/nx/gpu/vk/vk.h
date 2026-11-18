@@ -1247,6 +1247,12 @@ typedef struct Surf {
     /* textures: made again within 300 presents of the cache's eviction of its key (texture.c): a trim's first step,
        for headroom, leaves it (surface.c vk_mem_trim) */
     u8 came_back;
+    /* textures: vt_sparse (vt.c): a virtual texture, an image with sparse residency whose memory follows the blocks
+       frames sample. vt_slot: its record there, plus one. vt_kind_new: its image made again in the format its blocks'
+       kind takes (texture.c kind_vt_image), not loaded yet */
+    u8 vt, vt_mapped, vt_kind_new; /* vt_mapped: guest memory maps it in part, and a block takes memory only where it is
+                                      mapped */
+    u32 vt_slot;
     /* depth targets: undefined but for draws and clears predicated on the GPU, which may not have run, so they count
        as no draw (render.c zt_written) */
     int pred_undefined;
@@ -1489,6 +1495,50 @@ void vk_surf_stats(int kind, u32* count, u64* bytes, u32* parked);
 void vk_surf_each(int kind, void (*fn)(void* ctx, const Surf* s), void* ctx);
 /* fn on each texture of the caches with ctx, the least recently used first: it may change one, not free or add one */
 void vk_surf_textures(void (*fn)(Surf* t, void* ctx), void* ctx);
+/* Virtual textures (vt.c, vt_sparse). vk_vt_init: with the device, the table the programs' samples mark and its
+   address (g_shader_vt_address), where the device has what they need; vk_vt_on: they are on; vk_vt_makes: and a
+   texture, with holes in its mapping or not, is made one (vt_parts leaves them out to measure). vk_vt_register: a texture
+   made sparse for it gets a record (0 when it can have none: no level held always, a level 0 under two blocks each
+   way, or no room); vk_vt_forget: it goes. vk_vt_want: the bits of its blocks (vk_image_sparse_bind's order) left only where it
+   wants memory (all, for one held whole); vk_vt_bound: the bind of bits went through. vk_vt_fresh: the blocks with
+   memory and no texels yet, a bit each; vk_vt_loaded: every block with memory has its texels.
+   vk_vt_bind: a draw binds t (NULL or any texture) to a slot whose samples mark what they read under identity id, or
+   (unmarked: why, for the log) to one whose reads mark nothing: a virtual t is then held whole (vk_vt_whole). vk_vt_slot: the same for a Maxwell
+   program's slot, whose marks name the draw's set of virtual textures and the slot; vk_vt_draw_word: the draw's word
+   of the push constants, that set (0: no virtual texture) above the frame's quads that mark (vk_vt_phase). vk_vt_frame: each present, the marks that landed applied, the textures whose
+   wanted blocks changed bound and loaded (texture.c vk_tex_vt_load: 0 when memory or staging ran out), the blocks
+   nothing sampled for a while let go */
+void vk_vt_init(void);
+int vk_vt_on(void);
+int vk_vt_makes(int holes);
+int vk_vt_register(Surf* t, int holes);
+void vk_vt_forget(Surf* t);
+void vk_vt_want(const Surf* t, u8* bits, u64 nbits);
+void vk_vt_bound(const Surf* t, const u8* bits, u64 nbits);
+const u8* vk_vt_fresh(const Surf* t, u32* nblocks);
+void vk_vt_loaded(const Surf* t);
+void vk_vt_remapped(const Surf* t); /* t loads again: the blocks guest memory didn't map may be mapped now */
+/* a virtual texture with holes in its mapping (vk_vt_register's holes): the blocks guest memory maps and each one's
+   key, as tex_bind_at's walk of the mapping made them (nbits of them), kept until it loads again; vk_vt_mapping: 1 and
+   both copied out when kept */
+int vk_vt_mapping(const Surf* t, u8* bits, u64* keys, u64 nbits);
+void vk_vt_mapping_keep(const Surf* t, const u8* bits, const u64* keys, u64 nbits);
+void vk_vt_bind(u32 id, Surf* t, const char* unmarked);
+void vk_vt_whole(Surf* t, const char* why);
+u32 vk_vt_phase(void);
+void vk_vt_slot(u32 slot, Surf* t, const char* unmarked);
+u32 vk_vt_draw_word(void);
+void vk_vt_frame(void);
+int vk_tex_vt_load(Surf* t);
+/* statistics, of t or (NULL) of all: the virtual textures now, those held whole, their memory and the blocks with memory that could have
+   none (not the levels held always); and the blocks decoded
+   so far with their texels (vk_tex_vt_stats) */
+typedef struct {
+    u32 textures, whole, held;
+    u64 bytes;
+} VkVtStats;
+void vk_vt_stats(const Surf* t, VkVtStats* s);
+void vk_tex_vt_stats(u64* blocks, u64* texels);
 /* each present, while memory is short: the textures whose texture object the game ended go, once memory can give
    them again and a grace period passed with no object made at their address (a game that ends a texture and makes
    it again there with the same bytes still finds it) */

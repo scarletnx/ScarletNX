@@ -16,6 +16,7 @@
 #include "nx/gpu/shader/write_log.h"
 #include "nx/gpu/shader/fuse.h"
 #include "nx/gpu/shader/minmax_spirv.h"
+#include "nx/gpu/shader/vt_sample.h"
 #include "common/utilities/spirv_emit.h"
 #include "common/utilities/bits.h"
 #include <stdarg.h>
@@ -68,6 +69,13 @@ typedef struct {
     /* types and constants */
     u32 t_void, t_bool, t_u32, t_i32, t_f32, t_v2f, t_v3f, t_v4f, t_v4u, t_v3u, t_v2u;
     u32 t_u64_; /* made with the Int64 capability when an instruction needs it (u64_type) */
+    /* vt_sparse: shader_vt_sample's ids, and the slots with a read of texels it didn't take: the others may hold a
+       virtual texture (ShaderInfo.tex_vt_mask) */
+    ShVtIds vt;
+    u64 vt_left, vt_reads[10]; /* vt_reads: ShaderInfo.tex_vt_reads */
+    int vt_ok;                 /* the program takes virtual samples (ShaderInfo.vt_early) */
+    int vt_first;              /* and asks for the depth and stencil tests before it runs */
+    int vt_why;                /* and when not, the entry of vt_reads that says why: 6, 8 or 9 */
     u32 zero, true_v, false_v, glsl;
     /* the program's state: Function variables, made at the start */
     u32 reg[256], ureg[64], pred[8], upred[8];
@@ -2679,6 +2687,13 @@ static u32 coord_vector(Ctx* c, const u32* f, u32 count) {
     if (count == 3) return spv_emit_vec3_construct(&c->e, c->t_v3f, f[0], f[1], f[2]);
     return spv_emit_vec4_construct(&c->e, c->t_v4f, f);
 }
+/* vt_sparse: the frame's phase (shader.h's SH_VT_QUADS), the low bits of the third word of the uvec4 after the fragment
+   stage's vec4 in the push constants (vk/render.c) */
+static u32 vt_phase(Ctx* c) {
+    scaled_slot(c, 0, 0); /* makes the block */
+    return spv_emit_push_component_f32(&c->e, spv_emit_type_pointer(&c->e, SPV_STORAGE_PUSH_CONSTANT, c->t_u32),
+                                       c->scaled_push, cu(c, 1), cu(c, 2), c->t_u32);
+}
 static void texture(Ctx* c, const Sm86Insn* in) {
     /* a handle from memory (TEX and TLD4 with it in a uniform register) has its slot from memory_handles and none in
        the operand list, as a constant buffer handle */
@@ -2825,15 +2840,35 @@ static void texture(Ctx* c, const Sm86Insn* in) {
             }
         }
         int reduce = shadow ? 0 : shader_minmax_slot(c->si->tex_minmax_mask, c->si->tex_minmax_max, slot);
-        result = indexed && shadow ? sample_indexed_shadow(c, slot, element, coord, dref, mode, level, const_offset)
-                 : reduce ? minmax_sample(c, slot, coord, (int)array, const_offset, reduce)
-                          : spv_emit_sample_image(&c->e, rtype, c->tex_sampled[slot], c->tex[slot], coord, dref, mode,
-                                                  level, const_offset, 0);
+        /* vt_sparse: a fragment program's 2D colour sample is a sparse one that marks what it reads, the texture
+           named by its header's index: the handle's, which is the constant buffer's word, the bindless register's
+           or the uniform register's */
+        const int vt = c->vt_ok && type == 1 && !shadow && !reduce;
+        if (vt) {
+            u32 h = bindless ? rd(c, regs[n0])
+                    : memory ? urd(c, sm86_field(in, 40, 6))
+                             : cbuf_load(c, (handle >> 14) & 31, (handle & 0x3fff) * 4, 0);
+            const u32 phase = vt_phase(c);
+            coop_flow(c);
+            const ShVtSample sample = {c->t_bool, c->t_u32, c->t_i32, c->t_f32, c->t_v2f, c->t_v4f, c->glsl,
+                                       c->tex_sampled[slot], c->tex[slot], coord, f[0], f[1], array ? f[2] : 0,
+                                       (int)array, mode, level, const_offset, h, frag_pixel(c, 0), frag_pixel(c, 1),
+                                       phase};
+            result = shader_vt_sample(&c->e, &c->vt, &sample);
+        } else {
+            result = indexed && shadow ? sample_indexed_shadow(c, slot, element, coord, dref, mode, level, const_offset)
+                     : reduce ? minmax_sample(c, slot, coord, (int)array, const_offset, reduce)
+                              : spv_emit_sample_image(&c->e, rtype, c->tex_sampled[slot], c->tex[slot], coord, dref,
+                                                      mode, level, const_offset, 0);
+            c->vt_left |= 1ull << slot;
+            c->vt_reads[reduce ? 3 : shadow ? 4 : type != 1 ? 5 : c->vt_why] |= 1ull << slot;
+        }
         if (shadow) {
             u32 v[4] = {result, cf(c, 0.0f), cf(c, 0.0f), cf(c, 1.0f)};
             result = spv_emit_vec4_construct(&c->e, c->t_v4f, v);
         }
     }
+    if (op == SM86_TLD4) c->vt_left |= 1ull << slot, c->vt_reads[1] |= 1ull << slot;
     tex_results(c, in, result, c->t_f32);
 }
 static int writes_uniform(const Sm86Insn* w, u32 r);
@@ -2905,6 +2940,19 @@ static void texture_grad(Ctx* c, const Sm86Insn* in) {
 #undef TXD_REG
     int reduce = shader_minmax_slot(c->si->tex_minmax_mask, c->si->tex_minmax_max, slot);
     u32 coord = coord_vector(c, f, count);
+    /* vt_sparse: a fragment program's 2D sample with gradients is a sparse one too, as texture's */
+    if (c->vt_ok && type == 1 && !reduce) {
+        u32 h = in->op == SM86_TXD_U ? urd(c, sm86_field(in, 40, 6))
+                                     : cbuf_load(c, (handle >> 14) & 31, (handle & 0x3fff) * 4, 0);
+        const u32 phase = vt_phase(c);
+        coop_flow(c);
+        const ShVtSample sample = {c->t_bool, c->t_u32, c->t_i32, c->t_f32, c->t_v2f, c->t_v4f, c->glsl,
+                                   c->tex_sampled[slot], c->tex[slot], coord, f[0], f[1], array ? f[2] : 0, (int)array,
+                                   3, gx, 0, h, frag_pixel(c, 0), frag_pixel(c, 1), phase, gy};
+        tex_results(c, in, shader_vt_sample(&c->e, &c->vt, &sample), c->t_f32);
+        return;
+    }
+    c->vt_left |= 1ull << slot, c->vt_reads[type == 1 && !reduce ? c->vt_why : 2] |= 1ull << slot;
     tex_results(c, in,
                 reduce ? minmax_sample(c, slot, coord, (int)array, 0, reduce)
                        : spv_emit_sample_grad(&c->e, c->t_v4f, c->tex_sampled[slot], c->tex[slot], coord, gx, gy, 0),
@@ -2953,6 +3001,7 @@ static void texel_fetch(Ctx* c, const Sm86Insn* in) {
                                           : spv_emit_vec3_construct(&c->e, uvec, v[0], v[1], v[2]));
     u32 level = lod_mode == 3 ? spv_emit_unary(&c->e, SPV_OP_BITCAST, c->t_i32, rd(c, regs[n0]))
                               : spv_emit_unary(&c->e, SPV_OP_BITCAST, c->t_i32, c->zero);
+    c->vt_left |= 1ull << slot, c->vt_reads[0] |= 1ull << slot;
     u32 texel =
         ms ? spv_emit_image_fetch_sample(&c->e, c->t_v4f, c->tex_sampled[slot], c->tex[slot], coord,
                                          spv_emit_unary(&c->e, SPV_OP_BITCAST, c->t_i32, rd(c, regs[n0 + offset])))
@@ -7258,6 +7307,28 @@ u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, Sha
         u32 r = max_register(&insn[i]);
         if (r > top) top = r;
     }
+    /* vt_sparse: a fragment program takes virtual samples where it may test depth before it runs
+       (ShaderInfo.vt_early), and then asks for the tests first (vt_first): none that discards, writes depth or a
+       sample mask (SPH word 19) or reads a storage image (the renderer's own rule for tests that run first counts
+       every one). One that writes memory or a storage image itself takes them too, with nothing asked: its tests
+       run after it already */
+    int vt_kill = 0, vt_writes = 0, vt_reads_image = 0;
+    for (u32 i = 0; i < n; i++) {
+        const int op = insn[i].op;
+        vt_kill |= op == SM86_KILL;
+        vt_writes |= op == SM86_STG || op == SM86_STG_NOU || op == SM86_RED || op == SM86_ATOMG ||
+                     op == SM86_ATOMG_NOU || op == SM86_ATOMG_CAS || op == SM86_SUST_P || op == SM86_SUST_D ||
+                     op == SM86_SUST_P_B || op == SM86_SUST_D_B || op == SM86_SURED || op == SM86_SURED_B ||
+                     op == SM86_SUATOM || op == SM86_SUATOM_B;
+        vt_reads_image |= op == SM86_SULD_P || op == SM86_SULD_P_B || op == SM86_SULD_D || op == SM86_SULD_D_B;
+    }
+    vt_writes |= (c->sph[19] & 2u) != 0; /* a depth of the program's own: as late as a write of memory */
+    const int vt_state = si->vt_early && !(c->sph[19] & 3u);
+    c->vt_first = vt_state && !vt_kill && !vt_writes && !vt_reads_image;
+    c->vt_ok = g_shader_vt_address && stage == ST_FS &&
+               (c->vt_first || vt_writes || (vt_state && vt_kill && !vt_reads_image && (g_shader_vt_parts & 32)));
+    c->vt_first = c->vt_first && c->vt_ok;
+    c->vt_why = !si->vt_early ? 6 : vt_kill ? 8 : 9;
     /* FTZ as spirv_translate.c decides it: per instruction without the execution mode, or with it where some FADD,
        FMUL or FFMA keeps subnormals (the mode is the whole module's); never on a device that flushes by itself */
     int ftz_flush = 0, ftz_keep = 0;
@@ -7504,6 +7575,10 @@ u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, Sha
                 spv_emit_execution_mode(e, fn, SPV_MODE_OUTPUT_TRIANGLES_EXT, 0, 0);
             }
         }
+        /* vt_first names every instruction that keeps the tests from running first: one it missed is said, not drawn
+           wrong */
+        if (c->vt.pair && c->vt_first && (si->has_discard || si->gbuf_wmask || si->nimg))
+            fail(c, "the tests first in a fragment program that discards, writes memory or has a storage image");
         if (!c->failed) {
             SpvShaderStage model = stage == ST_TS   ? SPV_STAGE_TASK
                                    : stage == ST_MS ? SPV_STAGE_MESH
@@ -7537,6 +7612,10 @@ u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, Sha
             }
             /* Maxwell's and Ampere's programs use infinities and NaNs (CLAUDE.md) */
             spv_emit_float_controls(e, fn, ftz_mode, 1, 0);
+            si->tex_vt_mask = g_shader_vt_address && c->stage == ST_FS ? ~c->vt_left : 0;
+            /* the tests before the program, which its marks need (ShaderInfo.vt_early) */
+            if (c->vt.pair && c->vt_first) spv_emit_execution_mode(e, fn, SPV_MODE_EARLY_FRAGMENT_TESTS, 0, 0);
+            memcpy(si->tex_vt_reads, c->vt_reads, sizeof si->tex_vt_reads);
             out = spv_emit_finish(e, word_count);
         }
         spv_emit_destroy(e);

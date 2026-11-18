@@ -2714,6 +2714,11 @@ if(NOT SNX_TOOLS_ONLY)
         "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/range_shape.c")
     snx_test_target(snx-test-vk-tex-census gnu23)
     add_test(NAME vk_tex_census COMMAND snx-test-vk-tex-census)
+    # the calculations of the virtual textures (gpu/vk/vt_pages.c): a mark's blocks, a block's parent, the age from
+    # which blocks go under a budget
+    add_executable(snx-test-vk-vt-pages vk_vt_pages.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/vt_pages.c")
+    snx_test_target(snx-test-vk-vt-pages 11)
+    add_test(NAME vk_vt_pages COMMAND snx-test-vk-vt-pages)
     # the registry of the guest's live texture objects (gpu/guest_textures.c): counted addresses, each in reach while
     # the table grows and while others leave it
     add_executable(snx-test-guest-textures guest_textures.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/guest_textures.c")

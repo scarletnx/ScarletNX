@@ -1235,6 +1235,72 @@ static int count_nonwritable(const u32* code, size_t words) {
         if ((code[i] & 0xffff) == 71 && code[i + 2] == 24) found++;
     return found;
 }
+/* vt_sparse: a fragment program that writes no color target (a depth-only pass) and samples a texture reads the
+   frame's phase from the push constants, which nothing else of it declares: the virtual sample's access chain went
+   through id 0, and radv crashed making the pipeline of a game's shadow pass */
+static void virtual_sample_declares_push(void) {
+    /* IPA R4, a[0x80]; IPA R5, a[0x84] (a generic attribute: the position's y would declare them for the window's
+       origin); TEX.LZ R0, R4, R5, 2D, the handle at 0x40 of the texture bank */
+    const u64 ops[] = {0xe000000000070000ull | 0x20ull << 30 | 4, 0xe000000000070000ull | 0x21ull << 30 | 5,
+                       0xc038000000000000ull | 16ull << 36 | 7ull << 51 | 1ull << 55 | 0xfull << 31 | 2ull << 28 |
+                           16ull << 20 | 7ull << 16 | 4ull << 8};
+    size_t slots, words = 0;
+    u64* program = guest_program(ops, 3, NULL, &slots);
+    ShaderInfo info;
+    memset(&info, 0, sizeof info);
+    info.vt_early = 1;
+    g_shader_vt_address = 0x10000;
+    u32* code = program ? spirv_of(program, slots * sizeof *program, ST_FS, &info, &words, 1, 1, 1, 1) : NULL;
+    g_shader_vt_address = 0;
+    free(program);
+    check_translated(code, &info, "a depth-only fragment program's virtual sample translates");
+    if (code) {
+        int chains_of_nothing = 0;
+        for (size_t i = 5; i < words && code[i] >> 16; i += code[i] >> 16)
+            if ((code[i] & 0xffff) == 65 && !code[i + 3]) chains_of_nothing++;
+        check(count_opcode(code, words, 305, 0xffffffffu) + count_opcode(code, words, 306, 0xffffffffu) >= 1,
+              "the program's sample is a sparse one");
+        check(count_variables(code, words, 9) == 1, "a virtual sample declares the push constants it reads");
+        check(!chains_of_nothing, "no access chain of a virtual sample goes through id 0");
+        check(info.tex_vt_mask & 1, "the slot of a virtual sample may hold a virtual texture");
+        check(count_opcode(code, words, 16, 9) == 1,
+              "a program whose marks are its only writes asks for the tests first");
+    }
+    free(code);
+    /* the same sample in a program that stores to global memory (MOV R2, c[0][0x510]; STG.E [R2], R8): its tests
+       run after it already, so it takes the virtual sample and asks for nothing; without the key's bit too */
+    const u64 stores[] = {ops[0], ops[1], ops[2], 0x4C98078014470002ull, 0xEEDC200000070208ull};
+    program = guest_program(stores, 5, NULL, &slots);
+    memset(&info, 0, sizeof info);
+    g_shader_vt_address = 0x10000;
+    code = program ? spirv_of(program, slots * sizeof *program, ST_FS, &info, &words, 1, 1, 1, 1) : NULL;
+    g_shader_vt_address = 0;
+    free(program);
+    check_translated(code, &info, "a virtual sample in a fragment program that stores to memory translates");
+    if (code) {
+        check(info.gbuf_wmask & 1, "the program stores to a global buffer");
+        check(count_opcode(code, words, 305, 0xffffffffu) + count_opcode(code, words, 306, 0xffffffffu) >= 1,
+              "a program that writes memory takes the virtual sample");
+        check(!count_opcode(code, words, 16, 9), "and asks for no tests before it");
+        check(info.tex_vt_mask & 1, "its slot may hold a virtual texture");
+    }
+    free(code);
+    /* and in one that writes its own depth (SPH word 19, bit 1), which no driver tests before it either */
+    program = guest_program(ops, 3, NULL, &slots);
+    if (program) set_sph(program, 19, 2);
+    memset(&info, 0, sizeof info);
+    g_shader_vt_address = 0x10000;
+    code = program ? spirv_of(program, slots * sizeof *program, ST_FS, &info, &words, 1, 1, 1, 1) : NULL;
+    g_shader_vt_address = 0;
+    free(program);
+    check_translated(code, &info, "a virtual sample in a fragment program that writes depth translates");
+    if (code) {
+        check(count_opcode(code, words, 305, 0xffffffffu) + count_opcode(code, words, 306, 0xffffffffu) >= 1,
+              "a program that writes depth takes the virtual sample");
+        check(!count_opcode(code, words, 16, 9), "and asks for no tests before it");
+    }
+    free(code);
+}
 /* A device with fewer uniform buffers a stage than the 18 slots: a slot past them is a read-only storage buffer, which
    only the descriptor's type tells the renderer. The fixture goes through spirv-val */
 static void constant_buffers_past_the_limit(void) {
@@ -6606,6 +6672,7 @@ int main(int argc, char** argv) {
     buffer_formatted_loads();
     immediate_sampler_handle();
     constant_buffers_past_the_limit();
+    virtual_sample_declares_push();
     guarded_handle_merges();
     recomputed_guard_handle();
     volume_surface_atomics();

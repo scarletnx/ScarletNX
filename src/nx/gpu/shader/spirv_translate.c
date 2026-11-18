@@ -513,6 +513,7 @@ static void predraw_prologue(DirectCtx* c, u64 slots, u32 i32, u32 vec4, u32 fra
     spv_emit_selection_merge(e, done);
     spv_emit_branch_conditional(e, fresh, take, keep);
     spv_emit_label(e, take);
+    c->vt_left |= slots, c->vt_reads[0] |= slots; /* vt_sparse: reads that mark nothing */
     for (int slot = 0; slot < SH_MAXTEX; slot++) {
         if (!(slots >> slot & 1)) continue;
         u32 texel = spv_emit_image_fetch(e, texture_vec4[slot], c->sampled_type[slot], c->sampler[slot], xy,
@@ -670,6 +671,7 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
     int per_vertex_in = (stage == ST_FS && (si->varying & 3) == SH_VARYING_BARYCENTRIC) || pv_flat;
     u32 pv_mask = 0, pv_slot = SH_VARYING_SLOT(si->varying), position_slot = stage == ST_VS ? si->position_copy : 0;
     int needs_glsl = 0, needs_f16 = 0, needs_f64 = 0, needs_i64 = 0;
+    int vt_needs = 0; /* vt_sparse: the program has a sample shader_vt_sample may take */
     int has_flow = 0, has_calls = 0, has_barrier = 0, converge;
     u32 wait_label = 0;
     int first_indexed[SH_INDEXED_TABLES] = {0}, indexed_count = 0, indexed_table[SH_MAXTEX] = {0}, k_indexed;
@@ -1306,6 +1308,9 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
             needs_texel_scale = needs_glsl = 1;
         /* a fetch takes the pixel where the fragment lies in its guest pixel */
         if ((op->id == O_TLD || op->id == O_TLD_B || op->id == O_TLDS) && stage == ST_FS) needs_fragcoord = 1;
+        /* vt_sparse: a fragment program's sample takes its pixel, the push constants' uvec4 and GLSL's functions */
+        if ((op->id == O_TEX || op->id == O_TEX_B || op->id == O_TEXS) && stage == ST_FS && g_shader_vt_address)
+            vt_needs = needs_fragcoord = needs_glsl = 1;
         if (op->id == O_TLD || op->id == O_TLD_B) {
             u32 indexed = 0, ldc = 0;
             u32 off = B(insn[i], 36, 13), ty = B(insn[i], 28, 3);
@@ -2179,6 +2184,20 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
         free(pop_targets);
         return NULL;
     }
+    /* vt_sparse: a fragment program takes virtual samples where it may test depth before it runs
+       (ShaderInfo.vt_early), and then asks for the tests first (vt_first): none that discards or has a helper's
+       side effect to keep out, or writes depth or a sample mask. One that writes memory or a storage image itself
+       (or its own depth) takes them too, with nothing asked: its tests run after it already. None that takes its target's pixels
+       itself (a blend or a capture in the program) */
+    /* memory written already, or a depth of the program's own: the tests run after it as it is */
+    const int vt_writes = gbuf_wmask || image_info.nimg || (sph[19] & 2u);
+    const int vt_plain =
+        !advanced_blend && !si->late_depth && !predraw && !si->coverage_to_color && !si->capture_outputs;
+    c->vt_first = si->vt_early && !needs_demote && !vt_writes && !(sph[19] & 3u);
+    c->vt_ok = g_shader_vt_address && stage == ST_FS && vt_needs && vt_plain &&
+               (c->vt_first || vt_writes || (si->vt_early && !(sph[19] & 3u) && (g_shader_vt_parts & 32)));
+    c->vt_first = c->vt_first && c->vt_ok;
+    c->vt_why = vt_plain && !si->vt_early ? 6 : vt_plain && !(sph[19] & 3u) ? 8 : 9;
     c->ftz_float = can_preserve;
     c->soft_ftz_on = soft_ftz_on;
     spv_emit_init(&c->emit, (size_t)n * 20 + 128);
@@ -2833,13 +2852,13 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
     }
     u32 push = 0, push_pointer = 0;
     if ((stage == ST_FS && ((target & 15) || capture_output || needs_point_coord || needs_texel_scale || needs_frag_y ||
-                            needs_frag_ndc || predraw)) ||
+                            needs_frag_ndc || predraw || vt_needs)) ||
         position_fix || needs_instance || base_vertex || (point_size && !point_size_used)) {
         /* the fragment stage's uvec4: its scaled textures (shader_scaled_fetch) and the window's origin
            (shader_frag_y_origin). After it, each at its own member whichever the program reads: at byte 80 the draw's
            viewport (shader_frag_ndc), at 96 the scaled textures of the size drawn to (vk/render.c's own_size), at 112
            the capture's words */
-        if (stage == ST_FS && (needs_frag_ndc || capture_output || needs_texel_scale || predraw)) {
+        if (stage == ST_FS && (needs_frag_ndc || capture_output || needs_texel_scale || predraw || vt_needs)) {
             u32 members[5] = {vec4, vec4_u32, vec4, vec4_u32, vec4_u32}, offsets[5] = {16, 32, 80, 96, 112};
             u32 structure = spv_emit_type_struct(&c->emit, members, offsets, 5);
             spv_emit_decorate(&c->emit, structure, SPV_DECORATION_BLOCK, NULL, 0);
@@ -2908,8 +2927,8 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
     if (advanced_blend || si->late_depth || predraw)
         spv_emit_execution_mode(&c->emit, fn, SPV_MODE_PIXEL_INTERLOCK_ORDERED_EXT, 0, 0);
     if (post_depth_coverage) spv_emit_execution_mode(&c->emit, fn, SPV_MODE_POST_DEPTH_COVERAGE, 0, 0);
-    if (stage == ST_FS && (si->early_fragment_tests || si->coverage_early_tests ||
-                          (si->advanced_blend_mask & SH_BLEND_EARLY_TESTS)))
+    if (stage == ST_FS && (si->early_fragment_tests || si->coverage_early_tests || c->vt_first ||
+                           (si->advanced_blend_mask & SH_BLEND_EARLY_TESTS)))
         spv_emit_execution_mode(&c->emit, fn, SPV_MODE_EARLY_FRAGMENT_TESTS, 0, 0);
     if (depth_output) spv_emit_fragment_depth_replacing(&c->emit, fn);
     spv_emit_float_controls(&c->emit, fn, fp32_flush && !fp32_preserve && can_flush == SH_FTZ_MODE, can_preserve,
@@ -3379,6 +3398,8 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
     if (c->blend_end)
         advanced_blend_epilogue(c, si, vec4, i32_type, fragcoord, layer_input, coverage, sample_mask_output,
                                  frontface, depth_buffer, advanced_blend ? outputs[0] : 0, blend_image, blend_image_type);
+    si->tex_vt_mask = g_shader_vt_address && stage == ST_FS ? ~c->vt_left : 0;
+    memcpy(si->tex_vt_reads, c->vt_reads, sizeof si->tex_vt_reads);
     spv_emit_function_end(&c->emit);
     u32* result = spv_emit_finish(&c->emit, word_count);
     u32 spec = 0;
@@ -3426,6 +3447,8 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
     next.tex_dc_color_funcs = si->tex_dc_color_funcs;
     next.tex_minmax_mask = si->tex_minmax_mask;
     next.tex_minmax_max = si->tex_minmax_max;
+    next.tex_vt_mask = si->tex_vt_mask;
+    memcpy(next.tex_vt_reads, si->tex_vt_reads, sizeof next.tex_vt_reads);
     next.in_unfed_mask = si->in_unfed_mask;
     next.ntex = texture_count;
     /* a slot sampled both ways would need both of the vertex stage's mappings: it reads elsewhere */
@@ -3467,6 +3490,7 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
     next.has_discard = has_discard;
     next.spec = spec;
     next.early_fragment_tests = si->early_fragment_tests;
+    next.vt_early = si->vt_early;
     next.writes_viewport = viewport_used;
     memcpy(next.tex, textures, (size_t)texture_count * sizeof textures[0]);
     for (u32 i = 0; i < 18; i++)

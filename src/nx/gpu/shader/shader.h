@@ -205,6 +205,19 @@ typedef struct {
        greatest in tex_minmax_max), as their sampler asks and the device's sampler can't (vk/render.c
        vk_tex_minmax_in_program, shader_minmax_sample). A fragment program's key holds the first SH_MINMAX_SLOTS */
     u64 tex_minmax_mask, tex_minmax_max;
+    /* FS, the translation's: the texture slots whose every read of texels is a sample that falls back to a coarser
+       level where a texel has no memory and marks what it reads (shader_vt_sample), those nothing reads texels
+       from among them (a size or level query's): a slot of these may hold a virtual texture (vt_sparse); a texture
+       a draw binds to another slot is held whole */
+    u64 tex_vt_mask;
+    /* and for the log, the slots a fragment program reads with a fetch, a gather, a sample with gradients, a
+       reduction (the least or greatest of its texels), a depth compare, as no 2D texture of floats in a slot the
+       marks name, in a program that takes no virtual sample because of its draw's state (vt_early: alpha to coverage
+       or an alpha test), or (a Maxwell program) with a sample of a form that takes no mark: a minimum level, an
+       offset from a register, an indexed table, one of two handles; then in a program that takes none because it
+       discards, and one that takes none for what else it does (it writes depth, a sample mask or memory, has a
+       storage image, or blends or captures in the program) */
+    u64 tex_vt_reads[10];
     /* FS: texture slots every read of which is a texel fetch at the fragment's own pixel (TLD or TLDS of a 2D texture
        at gl_FragCoord's integer x and y, level 0, no offset): the only ones a draw may sample in place while it
        renders to them (vk/render.c), each fragment reading what earlier draws left at its pixel */
@@ -263,6 +276,14 @@ typedef struct {
        force_early_z has them: a program that stores to images or buffers then leaves no trace for fragments they
        reject */
     u32 early_fragment_tests;
+    /* FS key, vt_sparse: the draw's state lets the depth and stencil tests run before the program (no alpha to
+       coverage, no alpha test). A virtual sample's mark is a write to memory, and a driver runs a program that writes
+       memory for the fragments the depth test then drops (RADV tests depth after it: a racing game's scene took
+       4.9 ms of the GPU a frame where it takes 2.6), unless the program asks for the tests first. So only a program
+       that may ask takes virtual samples, and asks: one with this key that keeps its pixels, its depth and its sample
+       mask and writes no memory of its own. One that writes memory of its own takes them too and asks nothing: its
+       tests run after it already. Another's samples are plain, and its textures held whole */
+    u32 vt_early;
     ShXfb xfb;           /* key: transform feedback's capture of this program's outputs */
     int writes_viewport; /* the last vertex stage selects one of the 16 viewport/scissor pairs */
     /* key (fragment, vertex and compute programs): texture slots whose header takes unnormalized coordinates (TIC
@@ -566,6 +587,33 @@ typedef struct {
     unsigned maximal_reconvergence : 1;
 } ShCaps;
 extern ShCaps g_spirv_translate;
+/* Virtual textures (vt_sparse, vk/vt.c). A fragment program's 2D colour samples are sparse ones
+   (shader_vt_sample): a texel without memory reads a coarser level, and one quad in SH_VT_QUADS, another each frame,
+   marks what it sampled in a table on the device, at g_shader_vt_address (0: no virtual textures, and no program is
+   translated for them). The table is SH_VT_SLOTS entries of two words, an entry at the slot its words hash to
+   (shader_vt_slot: the samples of a sixteenth of a level each way share one), the last writer's:
+     word 0: the texture's identity (SH_VT_IDS of them: an Ounce program's header index; a Maxwell program's set of
+             the draw and slot) | level << 20 | resident << 24 | u's side << 25 | v's side << 27 | 1 << 31
+     word 1: u's cell | v's cell << 10 | layer << 20
+   After the table come SH_VT_IDS bits, a word 32 identities: the ones that name a virtual texture now, whose samples
+   alone write marks (any other texture's would fill the table).
+   A cell is 1 / SH_VT_CELLS of the level, from the coordinate's fraction; a side says the coordinate was under 0 (1)
+   or 1 and over (2), where the sampler's address mode, which the program doesn't know, decides the texel */
+extern u64 g_shader_vt_address;
+/* vt_parts: the parts of a virtual sample that are translated, a bit each: 1 the sparse sample, 2 its coarser read
+   where a texel has no memory, 4 its mark (8 and 16 are the renderer's: vk_vt_makes); 32: a program that discards
+   takes virtual samples too, without the depth test first (ShaderInfo.vt_early) */
+extern u32 g_shader_vt_parts;
+#define SH_VT_IDS        (1u << 20)
+#define SH_VT_SLOT_BITS  15u
+#define SH_VT_SLOTS      (1u << SH_VT_SLOT_BITS)
+#define SH_VT_CELLS      1024u
+#define SH_VT_LAYERS     4096u
+#define SH_VT_QUADS      16u /* a power of two */
+static inline u32 shader_vt_slot(u32 w0, u32 w1) {
+    const u32 place = (w1 & 1023u) >> 6 | ((w1 >> 10 & 1023u) >> 6) << 4 | (w1 >> 20) << 8;
+    return ((w0 ^ place * 0x85EBCA6Bu) * 0x9E3779B1u) >> (32 - SH_VT_SLOT_BITS);
+}
 /* NVN's draw parameters: its driver writes each draw's base vertex and base instance into constant buffer 0 at these
    offsets, which vertex programs read (an instanced program adds the base instance to its instance ID). An indirect
    draw's are in its record, on the GPU: with draw parameters, a vertex program's reads of these words take

@@ -202,6 +202,7 @@ int vk_tex_promote(Surf* t) { STUB(); }
 int vk_uma_held(u64 cpu, u64 len) { STUB(); }
 void vk_unlock(void) { STUB(); }
 void vk_view_formats(VkImageCreateInfo* ii, VkViewFormats* vf, VkFormat raw) { STUB(); }
+void vk_vt_forget(Surf* t) { STUB(); }
 void vk_write_changed(u64 addr, const u8* res, const u8* org, u32 size) { STUB(); }
 void vk_written_runs(const u8* host, u64 len, u32 since, void (*fn)(void*, u64, u64), void* user) { STUB(); }
 int vk_written_since(const u8* host, u64 len, u32 since) { STUB(); }
