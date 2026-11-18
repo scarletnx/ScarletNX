@@ -265,6 +265,7 @@ static void mf_log(u32* log, u32 p, u32 from, u32 to) {
         int past = window > SH_WPAGE_SLOT - 1;
         if (past) window = SH_WPAGE_SLOT - 1;
         part[window] = 1;
+        part[SH_WPAGE_SLOT * (1u + SH_WLOG_MASK) + window / 64] = 1;
         if (!past) part[SH_WPAGE_SLOT + window * SH_WLOG_MASK + (x & 4095) / 32] |= 1u << (x % 32);
     }
 }

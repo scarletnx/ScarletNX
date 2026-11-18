@@ -13,7 +13,8 @@ static int logged_mark(VkWriteLog* log, u32 from, u32 n) {
         memset(masks, 0, sizeof masks);
         for (u32 b = from; b < from + n; b++)
             if (b / 4096 == w) masks[b % 4096 / 32] |= 1u << (b % 32);
-        /* the flag and the mask, copied from staging into the log: the flag first, the mask 16 bytes on */
+        /* the flag and the mask, copied from staging into the log: the flag first, the mask 16 bytes on. The flag is
+           also the window's coarse word */
         VkBuffer src;
         u64 at;
         u8* data = vk_stage_upload(16 + sizeof masks, 16, &src, &at);
@@ -21,9 +22,10 @@ static int logged_mark(VkWriteLog* log, u32 from, u32 n) {
         const u32 one = 1;
         memcpy(data, &one, 4);
         memcpy(data + 16, masks, sizeof masks);
-        VkBufferCopy copy[2] = {{at, (u64)w * 4, 4},
-                                {at + 16, ((u64)SH_WPAGE_SLOT + (u64)w * SH_WLOG_MASK) * 4, sizeof masks}};
-        rec_CmdCopyBuffer(vk_cmd(), src, vk_wlog_buffer(log), 2, copy);
+        VkBufferCopy copy[3] = {{at, (u64)w * 4, 4},
+                                {at + 16, ((u64)SH_WPAGE_SLOT + (u64)w * SH_WLOG_MASK) * 4, sizeof masks},
+                                {at, ((u64)SH_WPAGE_SLOT * (1u + SH_WLOG_MASK) + w / 64) * 4, 4}};
+        rec_CmdCopyBuffer(vk_cmd(), src, vk_wlog_buffer(log), 3, copy);
     }
     return 0;
 }

@@ -416,11 +416,14 @@ static inline void shader_query_hint_unpack(const u32 words[SH_QUERY_WORDS], u8 
 /* The write log: for each logged global buffer (ShaderInfo.gbuf_mark), a part of SH_WLOG_PART words. Its first
    SH_WPAGE_SLOT words are flags, word j set to 1 by any store to the 4 KiB window j of the binding; then a bit for each
    byte of each window, SH_WLOG_MASK words a window, bit b of word k of window j standing for byte j * 4096 + k * 32 +
-   b, set by the store that writes that byte. A store past the windows sets no bit. The flags are an index, so that
-   reading and clearing the log costs the windows written, not the windows bound */
+   b, set by the store that writes that byte. A store past the windows sets no bit. Last, SH_WLOG_COARSE words, word g
+   set to 1 by any store that sets a flag of windows g * 64 to g * 64 + 63. The flags are an index, so that reading
+   and clearing the log costs the windows written, not the windows bound, and the coarse words are an index of the
+   flags: the clear reads 64 of them, not 4096 flags (writelog.c's vk_wlog_unref) */
 #define SH_WPAGE_SLOT    4096u /* the windows of a global buffer: 16 MiB, the most vk_gbuf_desc binds */
 #define SH_WLOG_MASK     128u  /* the mask words of a window: a bit for each of its 4096 bytes */
-#define SH_WLOG_PART     (SH_WPAGE_SLOT * (1u + SH_WLOG_MASK))
+#define SH_WLOG_COARSE   (SH_WPAGE_SLOT / 64u) /* the coarse words of a part, after its masks */
+#define SH_WLOG_PART     (SH_WPAGE_SLOT * (1u + SH_WLOG_MASK) + SH_WLOG_COARSE)
 #define SNX_VKB_ROOT     (SNX_VKB_SMAP + 1)      /* an Ounce program's root tables, banks 24 to 31 (SH_ROOT_BYTES) */
 #define SNX_VKB_IMGBUF   (SNX_VKB_ROOT + 1)      /* 8 buffer images (compute, vertex, fragment) */
 #define SNX_VKB_BLEND    SNX_VKB_IMG             /* fragment: ordered blend uses IMG+nimg, after the guest images */

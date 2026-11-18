@@ -10,7 +10,8 @@
    window a mask word each, zeroing it, its bits past the buffer's length dropped and the rest ORed into the mirror's
    mask at the buffer's place, shifted by its place in a mask word. Every window of the part is looked at, past the
    buffer's length too: a store there is logged (its window clamped to the last, shader/write_log.c) and has to be
-   cleared. Two buffers of one dispatch can overlap, so the ORs are atomic. CMake compiles it into SPIR-V at build time
+   cleared. The part's coarse words (a word for each 64 windows, after its masks) are all zeroed, two a workgroup, as
+   every flag of the part is. Two buffers of one dispatch can overlap, so the ORs are atomic. CMake compiles it into SPIR-V at build time
    (cmake/glsl.cmake). */
 layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
 
@@ -36,6 +37,7 @@ void main() {
     if (t == 0u) nwritten = 0u;
     memoryBarrierShared();
     barrier();
+    if (t < 2u) log_words[masks + 4096u * 128u + gl_WorkGroupID.x * 2u + t] = 0u;
     if (log_words[flags + j] != 0u) {
         log_words[flags + j] = 0u;
         written[atomicAdd(nwritten, 1u)] = j;

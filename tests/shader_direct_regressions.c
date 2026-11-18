@@ -2036,6 +2036,11 @@ static int fractal_run(const u32* spv, size_t words, const FractalFrame* f, cons
             if (counts[y * 13 + x] != fractal_count(f, x, y) && bad++ < 4)
                 fprintf(stderr, "%s: pixel %u, %u counts %u, %u expected\n", what, x, y, counts[y * 13 + x],
                         fractal_count(f, x, y));
+    /* the counts are in window 0: its flag, and the coarse word of windows 0 to 63 (shader.h's SH_WLOG_COARSE) */
+    const u32* coarse = log + SH_WPAGE_SLOT * (1u + SH_WLOG_MASK);
+    if ((log[0] != 1 || coarse[0] != 1) && bad++ < 4)
+        fprintf(stderr, "%s: the write log's flag of window 0 is %u and its coarse word %u, 1 expected\n", what,
+                log[0], coarse[0]);
     free(log);
     return bad;
 }
