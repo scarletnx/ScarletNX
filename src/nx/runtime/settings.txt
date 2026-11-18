@@ -482,6 +482,16 @@ setting Vulkan Video decode
     help 1 = H.264 and AV1 movies decode on the GPU with Vulkan Video (FFmpeg's Vulkan decoder), each where the GPU and
     help its driver have a decode queue for it. Experimental. 0 = FFmpeg decodes them on the CPU. VP9 movies always
     help decode on the CPU
+setting Guest Vulkan
+    key guest_vulkan
+    label Game's Vulkan on the host (experimental)
+    int 0 1
+    default 0
+    startup
+    words Off|On
+    help 1 = a game that links NVIDIA's Vulkan driver calls the Vulkan of this machine directly (gpu/gvk/gvk.c): its
+    help shaders, pipelines and command buffers go to the host's driver as they are. Experimental. 0 = the game's own
+    help driver runs, and its command buffers go through the Maxwell front end
 setting Apple video decode
     key apple_video
     only macos

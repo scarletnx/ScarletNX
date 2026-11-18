@@ -163,7 +163,7 @@
 #define MAX_VARIANTS 256
 #define MAX_FIELDS   64
 #define MAX_NAME     256
-#define MAX_ROUTES   64
+#define MAX_ROUTES   512 /* gpu/gvk/gvk.hook routes the 246 entry points of a Vulkan loader */
 #define MAX_SPECS    64 /* hooks.hook, nvn.hook and the game patches */
 #define MAX_DIRS     8
 #define MAX_TYPES    1024 /* the include line's header's typedefs: nvn.h has about 110 */
