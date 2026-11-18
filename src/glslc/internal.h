@@ -666,6 +666,8 @@ typedef struct {
     void* bind_user;
     int map_default; /* the map places the default uniform block too */
     int flip_y;      /* gl_FragCoord and gl_PointCoord read through the push constant's flip */
+    int desktop;     /* a desktop context's shader: GlslcOptions.desktop */
+    uint16_t desktop_version; /* a desktop GLSL shader's #version (110, 120, 330), 0 for GLSL ES */
     jmp_buf fail;
     /* the raw scanner */
     uint32_t cur;
