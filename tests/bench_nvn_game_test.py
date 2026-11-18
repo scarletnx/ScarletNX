@@ -261,7 +261,7 @@ print('frames=' + str(frames) + ' hash=0123456789abcdef', file=sys.stderr)
         selected, runtime, _, config = self.fixture()
         ini = config / '0100000000000000.ini'
         for key in sorted(bench.EXTERNAL_OUTPUT_SETTINGS):
-            ini.write_text(f'\ufeff[Debug]\r\n {key} = /external/output \r\n')
+            ini.write_text(f'\ufeff[Debug]\r\n {key} = /external/output \r\n', encoding='utf-8')
             output = self.root / ('results-' + key)
             with self.subTest(key=key):
                 self.assertEqual(self.invoke(selected, runtime, output), 2)
