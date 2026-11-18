@@ -118,11 +118,8 @@ void fatal(const char* fmt, ...) {
     va_end(ap);
     exit(1);
 }
-KThread* kthread_cur(void) { return NULL; }
-void kthread_block(KThread* t) { (void)t; }
-void kthread_unblock(KThread* t) { (void)t; }
-void core_enter(KThread* t) { (void)t; }
-void core_leave(KThread* t) { (void)t; }
+void kthread_host_wait_begin(void) {}
+void kthread_host_wait_end(void) {}
 u64 guest_ticks(void) { return 0; }
 static u64 g_gpu_ticks; /* guest_gpu_ticks's answer */
 u64 guest_gpu_ticks(void) { return g_gpu_ticks; }

@@ -109,16 +109,6 @@ u32 nvn_device_flags(void);
 u64 nvn_device(void);
 u64 nvn_pool_gpu(u64 pool);
 
-/* Around a wait for the host inside an NVN call: the game's thread off its guest core. An NVN call comes straight from
-   the game's code, with no SVC to give the core up, and on the console a thread waiting for the GPU leaves its core to
-   the others: one game's main thread held its core through the frame's wait for its fence, and a lower-priority loading
-   thread on that core never finished. The thread is not stopped for a game pause: in the middle of a function the
-   runtime runs natively, nothing in g_hle says where it goes on, and a save state taken then restarted it at a stale pc
-   (one game's thread that waits for its fences lost its wait in nvnSyncWait, and its renderer waited for good). A pause
-   waits for the wait to end, as the GPU runs until the guest threads have stopped (pause.c) */
-void nvn_wait_begin(void);
-void nvn_wait_end(void);
-
 /* the transform feedback layout of the program SetShaders gave serial, 0 when it captures nothing */
 int nvn_program_xfb(u64 serial, ShXfb* x);
 int nvn_program_tess(u64 serial, NvnTessStage stages[2]);
