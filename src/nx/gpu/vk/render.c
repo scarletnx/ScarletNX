@@ -182,7 +182,8 @@ u64 g_vk_targets_kept;
 static void read_targets(const DsState* ds, Surf** rt, Surf** zt, u32* n) {
     const DsTargets* tg = &ds->tgt;
     u64 gen = ds->gen[DS_TARGETS];
-    if (gen && g_targets.gen == gen && g_targets.epoch == g_vk_surf_epoch) {
+    if (gen && g_targets.gen == gen &&
+        g_targets.epoch == atomic_load_explicit(&g_vk_surf_epoch, memory_order_relaxed)) {
         memcpy(rt, g_targets.rt, sizeof g_targets.rt);
         *zt = g_targets.zt;
         *n = g_targets.n;
@@ -230,7 +231,7 @@ static void read_targets(const DsState* ds, Surf** rt, Surf** zt, u32* n) {
     }
     /* the table as the lookups left it: one that made a target changed it */
     g_targets.gen = found ? gen : 0;
-    g_targets.epoch = g_vk_surf_epoch;
+    g_targets.epoch = atomic_load_explicit(&g_vk_surf_epoch, memory_order_relaxed);
     g_targets.n = *n;
     memcpy(g_targets.rt, rt, sizeof g_targets.rt);
     g_targets.zt = *zt;
