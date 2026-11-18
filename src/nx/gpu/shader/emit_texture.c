@@ -780,7 +780,6 @@ void emit_texture(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
         }
         int choose = bindless && !handle_count && memory_slot < 0;
         u32 handle = choose ? reg_read(c, b) : 0;
-        u32 sampler_handle = choose && pair_candidates ? reg_read(c, b + 1) : 0;
         u32 chosen = 0, sample = 0;
         int chosen_slot = -1;
         for (int cand = 0; cand < candidates; cand++) {
@@ -927,15 +926,14 @@ void emit_texture(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
                                : spv_emit_unary(&c->emit, SPV_OP_BITCAST, vec4_u32, sample);
                 u32 word = bank == SH_HANDLE_IMM ? shader_u32(c, off)
                                                  : shader_cbuf_read_dynamic(c, bank, shader_u32(c, off * 4));
-                u32 match = spv_emit_binary(&c->emit, SPV_OP_I_EQUAL, c->bool_type, handle, word);
                 if (handle_words == 2) {
                     u32 sampler_word = bank2 == SH_HANDLE_IMM
                                            ? shader_u32(c, off2)
                                            : shader_cbuf_read_dynamic(c, bank2, shader_u32(c, off2 * 4));
-                    u32 sampler_match =
-                        spv_emit_binary(&c->emit, SPV_OP_I_EQUAL, c->bool_type, sampler_handle, sampler_word);
-                    match = spv_emit_bool_binary(&c->emit, c->bool_type, 0, match, sampler_match);
+                    /* LOP.OR leaves texture|sampler in Rb itself; Rb+1 is not a second runtime handle. */
+                    word = spv_emit_binary(&c->emit, SPV_OP_BITWISE_OR, c->u32_type, word, sampler_word);
                 }
+                u32 match = spv_emit_binary(&c->emit, SPV_OP_I_EQUAL, c->bool_type, handle, word);
                 chosen = spv_emit_ternary(&c->emit, SPV_OP_SELECT, kept_type, match, bits, chosen);
             }
         }

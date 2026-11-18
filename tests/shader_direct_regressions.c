@@ -6058,6 +6058,37 @@ static int chosen_sample(const u64* program, int count, const u32 c2[4], const u
     memcpy(x, &env.out[0][0], 4);
     return !*why;
 }
+/* A predicated LOP.OR can be the only handle definition that reaches an unguarded TEX.B. Bind its texture and sampler
+   together and select the sample by the complete runtime handle. The other path still executes the sample: a bare
+   texture word must not match the combined handle, and an unrelated handle must keep the zero-sample behavior. */
+static void tex_b_predicated_handle_pair(void) {
+    const u64 tex_b = 0xdeb8000000070000ull | (2ull << 28) | (1ull << 37) | (6ull << 20) | (1ull << 31);
+    const u64 load = 0x4c98078800070007ull; /* MOV R7, c[2][0]: the texture half */
+    const u64 pair_or = 0x4c47020800070006ull | (7ull << 8); /* LOP.OR R6, R7, c[2][...] */
+    const u64 under_p0 = ~(0xfull << 16);
+    const u64 sampler1 = ((pair_or & under_p0 & ~(0x3fffull << 20)) | (1ull << 34) | (1ull << 20));
+    const u32 c2[4] = {0x00100001u, 0x00200002u, 0, 0};
+    for (u32 on = 0; on < 3; on++) {
+        const u64 program[] = {fsetp_cbuf3(0, 0), load, mov32i(6, on == 2 ? c2[0] : 0x777), sampler1, tex_b};
+        const u32 c3[4] = {on == 1 ? 0x3f800000u : 0, 0x00200000u, 0, 0};
+        ShaderInfo info;
+        const char* why;
+        float x = -1.0f;
+        int ran = chosen_sample(program, 5, c2, c3, 0, &info, &x, &why);
+        if (!ran || x != (on == 1 ? 1.0f : 0.0f))
+            fprintf(stderr, "predicated split handle, case %u: %s, %d slots, x %g\n", on, ran ? "ran" : why,
+                    info.ntex, (double)x);
+        check(ran && info.ntex == 1 && x == (on == 1 ? 1.0f : 0.0f),
+              on == 1   ? "a predicated split handle selects the sample by texture OR sampler"
+              : on == 2 ? "the texture word alone does not select the split handle"
+                        : "an unrelated value on the false path keeps the zero-sample behavior");
+        if (ran)
+            check(info.tex[0].bl_cbuf == 2 && info.tex[0].cbuf_off == 0 && info.tex[0].bl2 &&
+                      info.tex[0].bl2_cbuf == 3 && info.tex[0].bl2_off == 1,
+                  "a chosen split handle retains both constant buffer sources");
+    }
+}
+
 /* A multisample TLD.B takes its handle in Rb and the sample after it, the order of Mesa's compilers since f9d385d77716
    ("nouveau/codegen: Handle/indirect goes before sample index"). uam's codegen predates it and puts the sample first:
    edenprobe's fetch through a table of four sample handles comes with the sample in R4 and the handle in R5 */
@@ -7012,6 +7043,7 @@ int main(int argc, char** argv) {
     lone_lane_forms();
     fragment_quad_reads();
     fragment_flow_derivatives();
+    tex_b_predicated_handle_pair();
     tex_b_chosen_handle();
     bindless_multisample_order();
     helper_loop_exit();
