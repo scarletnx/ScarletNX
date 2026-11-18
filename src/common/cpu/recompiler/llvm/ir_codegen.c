@@ -21,7 +21,9 @@ static void attribute(SnxIr* ir, LLVMValueRef function, LLVMAttributeIndex index
 /* What Clang gives a function of the generated C: no unwinding through it, asynchronous unwind tables (as Clang
    emits by default on x86-64) and CPU* RESTRICT. On Windows a frame of a page or more must be probed, as the stack
    grows a guard page at a time (rtlib.c's snx_stack_probe), and the module links no compiler runtime for __chkstk: on
-   x86-64 the prologue calls the runtime library's probe instead. Another Windows machine gets no probe */
+   x86-64 the prologue calls the runtime library's probe instead, and on AArch64 the runtime library defines __chkstk
+   itself (SNX_IR_STACK_PROBE_ARM64), the one name LLVM's AArch64 backend calls. Another Windows machine gets no
+   probe */
 static void function_attributes(SnxIr* ir, LLVMValueRef function) {
     attribute(ir, function, LLVMAttributeFunctionIndex, "nounwind", 0);
     attribute(ir, function, LLVMAttributeFunctionIndex, "uwtable", 2);
@@ -30,7 +32,7 @@ static void function_attributes(SnxIr* ir, LLVMValueRef function) {
         LLVMAddAttributeAtIndex(function, LLVMAttributeFunctionIndex,
                                 LLVMCreateStringAttribute(ir->ctx, "probe-stack", 11, SNX_IR_STACK_PROBE,
                                                           (unsigned)strlen(SNX_IR_STACK_PROBE)));
-    else if (ir->windows)
+    else if (ir->windows && strncmp(LLVMGetTarget(ir->mod), "aarch64", 7))
         LLVMAddAttributeAtIndex(function, LLVMAttributeFunctionIndex,
                                 LLVMCreateStringAttribute(ir->ctx, "no-stack-arg-probe", 18, "", 0));
 }

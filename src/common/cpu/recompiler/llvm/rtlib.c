@@ -94,3 +94,22 @@ int DllMainCRTStartup(void* module, unsigned long reason, void* reserved) {
             ".seh_endproc");
 }
 #endif
+#if defined(_WIN32) && defined(__aarch64__)
+/* The same probe on Windows on Arm, where LLVM's AArch64 backend calls __chkstk and no other name: a prologue whose
+   frame is a page or more calls it with the frame's size in 16-byte units in x15, and subtracts x15 << 4 from sp after
+   it, so the probe may change only x16, x17 (the procedure call standard's scratch registers) and the flags. It reads
+   one word in each page from the caller's stack pointer down past the new one, nearest first, as the compiler
+   runtime's __chkstk does, which a module does not link. A leaf that keeps sp and the link register needs no unwind
+   codes */
+[[gnu::naked]] void __chkstk(void);
+[[gnu::naked]] void __chkstk(void) {
+    __asm__("lsl x16, x15, #4\n\t" /* the frame's size in bytes */
+            "mov x17, sp\n"
+            "1:\n\t"
+            "sub x17, x17, #0x1000\n\t"
+            "subs x16, x16, #0x1000\n\t"
+            "ldr xzr, [x17]\n\t"
+            "b.gt 1b\n\t"
+            "ret");
+}
+#endif
