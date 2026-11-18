@@ -1599,6 +1599,61 @@ function clause __DecodeA64_DataProcReg ((pc, ([bitone, bitone, bitzero, bitone,
     decode_autib_aarch64_instrs_integer_pac_autib_dp_1src(Rd, Rn, Z)
 }
 
+val execute_aarch64_instrs_branch_conditional_cond : (bits(4), bits(64)) -> unit
+
+function execute_aarch64_instrs_branch_conditional_cond (condition, offset) = {
+    let branch_conditional : bool = true;
+    if ConditionHolds(condition) then {
+        BranchTo(PC_read() + offset, BranchType_DIR, branch_conditional)
+    } else {
+        BranchNotTaken(BranchType_DIR, branch_conditional)
+    }
+}
+
+val decode_b_cond_aarch64_instrs_branch_conditional_cond : (bits(4), bits(19)) -> unit
+
+function decode_b_cond_aarch64_instrs_branch_conditional_cond (cond, imm19) = {
+    let offset : bits(64) = SignExtend(imm19 @ 0b00, 64);
+    let condition : bits(4) = cond;
+    execute_aarch64_instrs_branch_conditional_cond(condition, offset)
+}
+
+function clause __DecodeA64_BranchExcSys ((pc, ([bitzero, bitone, bitzero, bitone, bitzero, bitone, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, bitzero, _, _, _, _] as __opcode)) if SEE < 69) = {
+    SEE = 69;
+    let cond = Slice(__opcode, 0, 4);
+    let imm19 = Slice(__opcode, 5, 19);
+    decode_b_cond_aarch64_instrs_branch_conditional_cond(cond, imm19)
+}
+
+val execute_aarch64_instrs_branch_conditional_hinted : (bits(4), bits(64)) -> unit
+
+function execute_aarch64_instrs_branch_conditional_hinted (condition, offset) = {
+    let branch_conditional : bool = true;
+    if ConditionHolds(condition) then {
+        BranchTo(PC_read() + offset, BranchType_DIR, branch_conditional)
+    } else {
+        BranchNotTaken(BranchType_DIR, branch_conditional)
+    }
+}
+
+val decode_bc_cond_aarch64_instrs_branch_conditional_hinted : (bits(4), bits(19)) -> unit
+
+function decode_bc_cond_aarch64_instrs_branch_conditional_hinted (cond, imm19) = {
+    if not_bool(HaveFeatHBC()) then {
+        throw(Error_Undefined())
+    };
+    let offset : bits(64) = SignExtend(imm19 @ 0b00, 64);
+    let condition : bits(4) = cond;
+    execute_aarch64_instrs_branch_conditional_hinted(condition, offset)
+}
+
+function clause __DecodeA64_BranchExcSys ((pc, ([bitzero, bitone, bitzero, bitone, bitzero, bitone, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, bitone, _, _, _, _] as __opcode)) if SEE < 70) = {
+    SEE = 70;
+    let cond = Slice(__opcode, 0, 4);
+    let imm19 = Slice(__opcode, 5, 19);
+    decode_bc_cond_aarch64_instrs_branch_conditional_hinted(cond, imm19)
+}
+
 val execute_aarch64_instrs_integer_bitfield : forall 'd 'datasize ('extend : Bool) ('inzero : Bool) 'n 'r 's,
   (0 <= 's & 's <= 63 & 0 <= 'r & 'r <= 63 & 0 <= 'n & 'n <= 31 & 'datasize in {32, 64} & 0 <= 'd & 'd <= 31).
   (int('d), int('datasize), bool('extend), bool('inzero), int('n), int('r), int('s), bits('datasize), bits('datasize)) -> unit
@@ -1772,6 +1827,460 @@ function clause __DecodeA64_DataProcImm ((pc, ([_, bitone, bitzero, bitone, bitz
     let opc = Slice(__opcode, 29, 2);
     let sf = Slice(__opcode, 31, 1);
     decode_ubfm_aarch64_instrs_integer_bitfield(Rd, Rn, imms, immr, N, opc, sf)
+}
+
+val execute_aarch64_instrs_branch_unconditional_register : forall 'm 'n ('pac : Bool) ('source_is_sp : Bool) ('use_key_a : Bool),
+  (0 <= 'n & 'n <= 31 & 0 <= 'm & 'm <= 31).
+  (BranchType, int('m), int('n), bool('pac), bool('source_is_sp), bool('use_key_a)) -> unit
+
+function execute_aarch64_instrs_branch_unconditional_register (branch_type, m, n, pac, source_is_sp, use_key_a) = {
+    inst_type : GCSInstruction = undefined;
+    target : bits(64) = X_read(n, 64);
+    let auth_then_branch : bool = true;
+    if pac then {
+        let modifier : bits(64) = if source_is_sp then SP_read() else
+          X_read(m, 64);
+        if use_key_a then {
+            target = AuthIA(target, modifier, auth_then_branch)
+        } else {
+            target = AuthIB(target, modifier, auth_then_branch)
+        }
+    };
+    if (branch_type == BranchType_RET & HaveGCS()) & GCSPCREnabled(PSTATE.EL) then {
+        if not_bool(pac) then {
+            inst_type = GCSInstType_PRET
+        } else {
+            if use_key_a then {
+                inst_type = GCSInstType_PRETAA
+            } else {
+                inst_type = GCSInstType_PRETAB
+            }
+        };
+        target = LoadCheckGCSRecord(target, inst_type);
+        SetCurrentGCSPointer(GetCurrentGCSPointer() + 8)
+    };
+    if branch_type == BranchType_INDCALL then {
+        if HaveGCS() & GCSPCREnabled(PSTATE.EL) then {
+            AddGCSRecord(PC_read() + 4)
+        };
+        X_set(30, 64) = PC_read() + 4
+    };
+    match branch_type {
+      BranchType_INDIR => {
+          if InGuardedPage then {
+              if n == 16 | n == 17 then {
+                  BTypeNext = 0b01
+              } else {
+                  BTypeNext = 0b11
+              }
+          } else {
+              BTypeNext = 0b01
+          }
+      },
+      BranchType_INDCALL => {
+          BTypeNext = 0b10
+      },
+      BranchType_RET => {
+          BTypeNext = 0b00
+      },
+      _ => ()
+    };
+    let branch_conditional : bool = false;
+    BranchTo(target, branch_type, branch_conditional)
+}
+
+val decode_blr_aarch64_instrs_branch_unconditional_register : (bits(5), bits(5), bits(1), bits(1), bits(2), bits(1)) -> unit
+
+function decode_blr_aarch64_instrs_branch_unconditional_register (Rm, Rn, M, A, op, Z) = {
+    n : range(0, 31) = UInt(Rn);
+    branch_type : BranchType = undefined;
+    let 'm = UInt(Rm);
+    let pac : bool = A == 0b1;
+    let use_key_a : bool = M == 0b0;
+    source_is_sp : bool = Z == 0b1 & m == 31;
+    if not_bool(pac) & m != 0 then {
+        throw(Error_Undefined())
+    } else if pac & not_bool(HavePACExt()) then {
+        throw(Error_Undefined())
+    } else ();
+    match op {
+      0b00 => {
+          branch_type = BranchType_INDIR
+      },
+      0b01 => {
+          branch_type = BranchType_INDCALL
+      },
+      0b10 => {
+          branch_type = BranchType_RET
+      },
+      _ => {
+          throw(Error_Undefined())
+      }
+    };
+    let branch_type = branch_type;
+    if pac then {
+        if Z == 0b0 & m != 31 then {
+            throw(Error_Undefined())
+        };
+        if branch_type == BranchType_RET then {
+            if n != 31 then {
+                throw(Error_Undefined())
+            };
+            n = 30;
+            source_is_sp = true
+        };
+        ()
+    };
+    let 'n = n;
+    execute_aarch64_instrs_branch_unconditional_register(branch_type, m, n, pac, source_is_sp, use_key_a)
+}
+
+function clause __DecodeA64_BranchExcSys ((pc, ([bitone, bitone, bitzero, bitone, bitzero, bitone, bitone, bitzero, bitzero, bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, bitzero, bitzero, bitzero, bitzero, bitzero] as __opcode)) if SEE < 90) = {
+    SEE = 90;
+    let Rm = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let M = Slice(__opcode, 10, 1);
+    let A = Slice(__opcode, 11, 1);
+    let op = Slice(__opcode, 21, 2);
+    let Z = Slice(__opcode, 24, 1);
+    decode_blr_aarch64_instrs_branch_unconditional_register(Rm, Rn, M, A, op, Z)
+}
+
+val decode_blra_aarch64_instrs_branch_unconditional_register : (bits(5), bits(5), bits(1), bits(1), bits(2), bits(1)) -> unit
+
+function decode_blra_aarch64_instrs_branch_unconditional_register (Rm, Rn, M, A, op, Z) = {
+    n : range(0, 31) = UInt(Rn);
+    branch_type : BranchType = undefined;
+    let 'm = UInt(Rm);
+    let pac : bool = A == 0b1;
+    let use_key_a : bool = M == 0b0;
+    source_is_sp : bool = Z == 0b1 & m == 31;
+    if not_bool(pac) & m != 0 then {
+        throw(Error_Undefined())
+    } else if pac & not_bool(HavePACExt()) then {
+        throw(Error_Undefined())
+    } else ();
+    match op {
+      0b00 => {
+          branch_type = BranchType_INDIR
+      },
+      0b01 => {
+          branch_type = BranchType_INDCALL
+      },
+      0b10 => {
+          branch_type = BranchType_RET
+      },
+      _ => {
+          throw(Error_Undefined())
+      }
+    };
+    let branch_type = branch_type;
+    if pac then {
+        if Z == 0b0 & m != 31 then {
+            throw(Error_Undefined())
+        };
+        if branch_type == BranchType_RET then {
+            if n != 31 then {
+                throw(Error_Undefined())
+            };
+            n = 30;
+            source_is_sp = true
+        };
+        ()
+    };
+    let 'n = n;
+    execute_aarch64_instrs_branch_unconditional_register(branch_type, m, n, pac, source_is_sp, use_key_a)
+}
+
+function clause __DecodeA64_BranchExcSys ((pc, ([bitone, bitone, bitzero, bitone, bitzero, bitone, bitone, _, bitzero, bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 91) = {
+    SEE = 91;
+    let Rm = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let M = Slice(__opcode, 10, 1);
+    let A = Slice(__opcode, 11, 1);
+    let op = Slice(__opcode, 21, 2);
+    let Z = Slice(__opcode, 24, 1);
+    decode_blra_aarch64_instrs_branch_unconditional_register(Rm, Rn, M, A, op, Z)
+}
+
+val decode_br_aarch64_instrs_branch_unconditional_register : (bits(5), bits(5), bits(1), bits(1), bits(2), bits(1)) -> unit
+
+function decode_br_aarch64_instrs_branch_unconditional_register (Rm, Rn, M, A, op, Z) = {
+    n : range(0, 31) = UInt(Rn);
+    branch_type : BranchType = undefined;
+    let 'm = UInt(Rm);
+    let pac : bool = A == 0b1;
+    let use_key_a : bool = M == 0b0;
+    source_is_sp : bool = Z == 0b1 & m == 31;
+    if not_bool(pac) & m != 0 then {
+        throw(Error_Undefined())
+    } else if pac & not_bool(HavePACExt()) then {
+        throw(Error_Undefined())
+    } else ();
+    match op {
+      0b00 => {
+          branch_type = BranchType_INDIR
+      },
+      0b01 => {
+          branch_type = BranchType_INDCALL
+      },
+      0b10 => {
+          branch_type = BranchType_RET
+      },
+      _ => {
+          throw(Error_Undefined())
+      }
+    };
+    let branch_type = branch_type;
+    if pac then {
+        if Z == 0b0 & m != 31 then {
+            throw(Error_Undefined())
+        };
+        if branch_type == BranchType_RET then {
+            if n != 31 then {
+                throw(Error_Undefined())
+            };
+            n = 30;
+            source_is_sp = true
+        };
+        ()
+    };
+    let 'n = n;
+    execute_aarch64_instrs_branch_unconditional_register(branch_type, m, n, pac, source_is_sp, use_key_a)
+}
+
+function clause __DecodeA64_BranchExcSys ((pc, ([bitone, bitone, bitzero, bitone, bitzero, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, bitzero, bitzero, bitzero, bitzero, bitzero] as __opcode)) if SEE < 92) = {
+    SEE = 92;
+    let Rm = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let M = Slice(__opcode, 10, 1);
+    let A = Slice(__opcode, 11, 1);
+    let op = Slice(__opcode, 21, 2);
+    let Z = Slice(__opcode, 24, 1);
+    decode_br_aarch64_instrs_branch_unconditional_register(Rm, Rn, M, A, op, Z)
+}
+
+val decode_bra_aarch64_instrs_branch_unconditional_register : (bits(5), bits(5), bits(1), bits(1), bits(2), bits(1)) -> unit
+
+function decode_bra_aarch64_instrs_branch_unconditional_register (Rm, Rn, M, A, op, Z) = {
+    n : range(0, 31) = UInt(Rn);
+    branch_type : BranchType = undefined;
+    let 'm = UInt(Rm);
+    let pac : bool = A == 0b1;
+    let use_key_a : bool = M == 0b0;
+    source_is_sp : bool = Z == 0b1 & m == 31;
+    if not_bool(pac) & m != 0 then {
+        throw(Error_Undefined())
+    } else if pac & not_bool(HavePACExt()) then {
+        throw(Error_Undefined())
+    } else ();
+    match op {
+      0b00 => {
+          branch_type = BranchType_INDIR
+      },
+      0b01 => {
+          branch_type = BranchType_INDCALL
+      },
+      0b10 => {
+          branch_type = BranchType_RET
+      },
+      _ => {
+          throw(Error_Undefined())
+      }
+    };
+    let branch_type = branch_type;
+    if pac then {
+        if Z == 0b0 & m != 31 then {
+            throw(Error_Undefined())
+        };
+        if branch_type == BranchType_RET then {
+            if n != 31 then {
+                throw(Error_Undefined())
+            };
+            n = 30;
+            source_is_sp = true
+        };
+        ()
+    };
+    let 'n = n;
+    execute_aarch64_instrs_branch_unconditional_register(branch_type, m, n, pac, source_is_sp, use_key_a)
+}
+
+function clause __DecodeA64_BranchExcSys ((pc, ([bitone, bitone, bitzero, bitone, bitzero, bitone, bitone, _, bitzero, bitzero, bitzero, bitone, bitone, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 93) = {
+    SEE = 93;
+    let Rm = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let M = Slice(__opcode, 10, 1);
+    let A = Slice(__opcode, 11, 1);
+    let op = Slice(__opcode, 21, 2);
+    let Z = Slice(__opcode, 24, 1);
+    decode_bra_aarch64_instrs_branch_unconditional_register(Rm, Rn, M, A, op, Z)
+}
+
+val decode_ret_aarch64_instrs_branch_unconditional_register : (bits(5), bits(5), bits(1), bits(1), bits(2), bits(1)) -> unit
+
+function decode_ret_aarch64_instrs_branch_unconditional_register (Rm, Rn, M, A, op, Z) = {
+    n : range(0, 31) = UInt(Rn);
+    branch_type : BranchType = undefined;
+    let 'm = UInt(Rm);
+    let pac : bool = A == 0b1;
+    let use_key_a : bool = M == 0b0;
+    source_is_sp : bool = Z == 0b1 & m == 31;
+    if not_bool(pac) & m != 0 then {
+        throw(Error_Undefined())
+    } else if pac & not_bool(HavePACExt()) then {
+        throw(Error_Undefined())
+    } else ();
+    match op {
+      0b00 => {
+          branch_type = BranchType_INDIR
+      },
+      0b01 => {
+          branch_type = BranchType_INDCALL
+      },
+      0b10 => {
+          branch_type = BranchType_RET
+      },
+      _ => {
+          throw(Error_Undefined())
+      }
+    };
+    let branch_type = branch_type;
+    if pac then {
+        if Z == 0b0 & m != 31 then {
+            throw(Error_Undefined())
+        };
+        if branch_type == BranchType_RET then {
+            if n != 31 then {
+                throw(Error_Undefined())
+            };
+            n = 30;
+            source_is_sp = true
+        };
+        ()
+    };
+    let 'n = n;
+    execute_aarch64_instrs_branch_unconditional_register(branch_type, m, n, pac, source_is_sp, use_key_a)
+}
+
+function clause __DecodeA64_BranchExcSys ((pc, ([bitone, bitone, bitzero, bitone, bitzero, bitone, bitone, bitzero, bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, bitzero, bitzero, bitzero, bitzero, bitzero] as __opcode)) if SEE < 94) = {
+    SEE = 94;
+    let Rm = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let M = Slice(__opcode, 10, 1);
+    let A = Slice(__opcode, 11, 1);
+    let op = Slice(__opcode, 21, 2);
+    let Z = Slice(__opcode, 24, 1);
+    decode_ret_aarch64_instrs_branch_unconditional_register(Rm, Rn, M, A, op, Z)
+}
+
+val decode_reta_aarch64_instrs_branch_unconditional_register : (bits(5), bits(5), bits(1), bits(1), bits(2), bits(1)) -> unit
+
+function decode_reta_aarch64_instrs_branch_unconditional_register (Rm, Rn, M, A, op, Z) = {
+    n : range(0, 31) = UInt(Rn);
+    branch_type : BranchType = undefined;
+    let 'm = UInt(Rm);
+    let pac : bool = A == 0b1;
+    let use_key_a : bool = M == 0b0;
+    source_is_sp : bool = Z == 0b1 & m == 31;
+    if not_bool(pac) & m != 0 then {
+        throw(Error_Undefined())
+    } else if pac & not_bool(HavePACExt()) then {
+        throw(Error_Undefined())
+    } else ();
+    match op {
+      0b00 => {
+          branch_type = BranchType_INDIR
+      },
+      0b01 => {
+          branch_type = BranchType_INDCALL
+      },
+      0b10 => {
+          branch_type = BranchType_RET
+      },
+      _ => {
+          throw(Error_Undefined())
+      }
+    };
+    let branch_type = branch_type;
+    if pac then {
+        if Z == 0b0 & m != 31 then {
+            throw(Error_Undefined())
+        };
+        if branch_type == BranchType_RET then {
+            if n != 31 then {
+                throw(Error_Undefined())
+            };
+            n = 30;
+            source_is_sp = true
+        };
+        ()
+    };
+    let 'n = n;
+    execute_aarch64_instrs_branch_unconditional_register(branch_type, m, n, pac, source_is_sp, use_key_a)
+}
+
+function clause __DecodeA64_BranchExcSys ((pc, ([bitone, bitone, bitzero, bitone, bitzero, bitone, bitone, bitzero, bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitone, _, bitone, bitone, bitone, bitone, bitone, bitone, bitone, bitone, bitone, bitone] as __opcode)) if SEE < 95) = {
+    SEE = 95;
+    let Rm = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let M = Slice(__opcode, 10, 1);
+    let A = Slice(__opcode, 11, 1);
+    let op = Slice(__opcode, 21, 2);
+    let Z = Slice(__opcode, 24, 1);
+    decode_reta_aarch64_instrs_branch_unconditional_register(Rm, Rn, M, A, op, Z)
+}
+
+val execute_aarch64_instrs_branch_conditional_compare : forall 'datasize ('iszero : Bool) 't,
+  (0 <= 't & 't <= 31 & 'datasize in {32, 64}).
+  (int('datasize), bool('iszero), bits(64), int('t)) -> unit
+
+function execute_aarch64_instrs_branch_conditional_compare (datasize, iszero, offset, t) = {
+    let operand1 : bits('datasize) = X_read(t, datasize);
+    let branch_conditional : bool = true;
+    if IsZero(operand1) == iszero then {
+        BranchTo(PC_read() + offset, BranchType_DIR, branch_conditional)
+    } else {
+        BranchNotTaken(BranchType_DIR, branch_conditional)
+    }
+}
+
+val decode_cbnz_aarch64_instrs_branch_conditional_compare : (bits(5), bits(19), bits(1), bits(1)) -> unit
+
+function decode_cbnz_aarch64_instrs_branch_conditional_compare (Rt, imm19, op, sf) = {
+    let 't = UInt(Rt);
+    let 'datasize = if sf == 0b1 then 64 else 32;
+    let iszero : bool = op == 0b0;
+    let offset : bits(64) = SignExtend(imm19 @ 0b00, 64);
+    execute_aarch64_instrs_branch_conditional_compare(datasize, iszero, offset, t)
+}
+
+function clause __DecodeA64_BranchExcSys ((pc, ([_, bitzero, bitone, bitone, bitzero, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 117) = {
+    SEE = 117;
+    let Rt = Slice(__opcode, 0, 5);
+    let imm19 = Slice(__opcode, 5, 19);
+    let op = Slice(__opcode, 24, 1);
+    let sf = Slice(__opcode, 31, 1);
+    decode_cbnz_aarch64_instrs_branch_conditional_compare(Rt, imm19, op, sf)
+}
+
+val decode_cbz_aarch64_instrs_branch_conditional_compare : (bits(5), bits(19), bits(1), bits(1)) -> unit
+
+function decode_cbz_aarch64_instrs_branch_conditional_compare (Rt, imm19, op, sf) = {
+    let 't = UInt(Rt);
+    let 'datasize = if sf == 0b1 then 64 else 32;
+    let iszero : bool = op == 0b0;
+    let offset : bits(64) = SignExtend(imm19 @ 0b00, 64);
+    execute_aarch64_instrs_branch_conditional_compare(datasize, iszero, offset, t)
+}
+
+function clause __DecodeA64_BranchExcSys ((pc, ([_, bitzero, bitone, bitone, bitzero, bitone, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 118) = {
+    SEE = 118;
+    let Rt = Slice(__opcode, 0, 5);
+    let imm19 = Slice(__opcode, 5, 19);
+    let op = Slice(__opcode, 24, 1);
+    let sf = Slice(__opcode, 31, 1);
+    decode_cbz_aarch64_instrs_branch_conditional_compare(Rt, imm19, op, sf)
 }
 
 val execute_aarch64_instrs_integer_conditional_compare_register : forall 'datasize 'm 'n ('sub_op : Bool),
@@ -3149,6 +3658,63 @@ function clause __DecodeA64_DataProcReg ((pc, ([bitone, bitzero, bitzero, bitone
     }
 }
 
+val execute_aarch64_instrs_branch_conditional_test : forall 'bit_pos 'datasize 't,
+  (0 <= 't & 't <= 31 & 'datasize in {32, 64} & 0 <= 'bit_pos & 'bit_pos <= 63).
+  (int('bit_pos), bits(1), int('datasize), bits(64), int('t)) -> unit
+
+function execute_aarch64_instrs_branch_conditional_test (bit_pos, bit_val, datasize, offset, t) = {
+    let operand : bits('datasize) = X_read(t, datasize);
+    let branch_conditional : bool = true;
+    assert(constraint('bit_pos < 'datasize));
+    if [operand[bit_pos]] == bit_val then {
+        BranchTo(PC_read() + offset, BranchType_DIR, branch_conditional)
+    } else {
+        BranchNotTaken(BranchType_DIR, branch_conditional)
+    }
+}
+
+val decode_tbnz_aarch64_instrs_branch_conditional_test : (bits(5), bits(14), bits(5), bits(1), bits(1)) -> unit
+
+function decode_tbnz_aarch64_instrs_branch_conditional_test (Rt, imm14, b40, op, b5) = {
+    let 't = UInt(Rt);
+    let 'datasize = if b5 == 0b1 then 64 else 32;
+    let 'bit_pos = UInt(b5 @ b40);
+    let bit_val : bits(1) = op;
+    let offset : bits(64) = SignExtend(imm14 @ 0b00, 64);
+    execute_aarch64_instrs_branch_conditional_test(bit_pos, bit_val, datasize, offset, t)
+}
+
+function clause __DecodeA64_BranchExcSys ((pc, ([_, bitzero, bitone, bitone, bitzero, bitone, bitone, bitone, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 1009) = {
+    SEE = 1009;
+    let Rt = Slice(__opcode, 0, 5);
+    let imm14 = Slice(__opcode, 5, 14);
+    let b40 = Slice(__opcode, 19, 5);
+    let op = Slice(__opcode, 24, 1);
+    let b5 = Slice(__opcode, 31, 1);
+    decode_tbnz_aarch64_instrs_branch_conditional_test(Rt, imm14, b40, op, b5)
+}
+
+val decode_tbz_aarch64_instrs_branch_conditional_test : (bits(5), bits(14), bits(5), bits(1), bits(1)) -> unit
+
+function decode_tbz_aarch64_instrs_branch_conditional_test (Rt, imm14, b40, op, b5) = {
+    let 't = UInt(Rt);
+    let 'datasize = if b5 == 0b1 then 64 else 32;
+    let 'bit_pos = UInt(b5 @ b40);
+    let bit_val : bits(1) = op;
+    let offset : bits(64) = SignExtend(imm14 @ 0b00, 64);
+    execute_aarch64_instrs_branch_conditional_test(bit_pos, bit_val, datasize, offset, t)
+}
+
+function clause __DecodeA64_BranchExcSys ((pc, ([_, bitzero, bitone, bitone, bitzero, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 1010) = {
+    SEE = 1010;
+    let Rt = Slice(__opcode, 0, 5);
+    let imm14 = Slice(__opcode, 5, 14);
+    let b40 = Slice(__opcode, 19, 5);
+    let op = Slice(__opcode, 24, 1);
+    let b5 = Slice(__opcode, 31, 1);
+    decode_tbz_aarch64_instrs_branch_conditional_test(Rt, imm14, b40, op, b5)
+}
+
 val execute_aarch64_instrs_integer_pac_strip_dp_1src : forall 'd ('data : Bool), (0 <= 'd & 'd <= 31).
   (int('d), bool('data)) -> unit
 
@@ -3501,6 +4067,33 @@ enum FPType = {
 
 overload _R = {get_R, set_R, set_R_bits}
 
+enum BranchType = {
+  BranchType_DIRCALL,
+  BranchType_INDCALL,
+  BranchType_ERET,
+  BranchType_DBGEXIT,
+  BranchType_RET,
+  BranchType_DIR,
+  BranchType_INDIR,
+  BranchType_EXCEPTION,
+  BranchType_TMFAIL,
+  BranchType_RESET,
+  BranchType_UNKNOWN
+}
+
+register BTypeNext : bits(2)
+
+enum GCSInstruction = {
+  GCSInstType_PRET,
+  GCSInstType_POPM,
+  GCSInstType_PRETAA,
+  GCSInstType_PRETAB,
+  GCSInstType_SS1,
+  GCSInstType_SS2,
+  GCSInstType_POPCX,
+  GCSInstType_POPX
+}
+
 enum CountOp = {CountOp_CLZ, CountOp_CLS, CountOp_CNT}
 
 enum ExtendType = {
@@ -3660,6 +4253,12 @@ val HaveFlagManipulateExt : unit -> bool
 
 function HaveFlagManipulateExt () = {
     return(IsFeatureImplemented(FEAT_FlagM))
+}
+
+val HaveFeatHBC : unit -> bool
+
+function HaveFeatHBC () = {
+    return(IsFeatureImplemented(FEAT_HBC))
 }
 
 val X_read : forall 'n 'width,

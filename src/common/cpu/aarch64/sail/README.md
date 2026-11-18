@@ -21,9 +21,9 @@ and change the commit above. A new subset is its decode functions added to `a64.
 
 `nx.sail` is ScarletNX's own (GPL-3.0-or-later): the NX's fixups, each with why. The generator reads it after
 `a64.sail`, and its definitions take the place of `a64.sail`'s of the same name: the general-purpose registers as
-ScarletNX's CPU keeps them (one array, `GPR`), EL0's stack pointer, no Statistical Profiling, PAuth with its keys
-disabled, XPAC on 39-bit addresses and PACGA's fixed mix. Another system's fixups (the 3DS's, the NDS's) go in a file of
-their own the same way.
+ScarletNX's CPU keeps them (one array, `GPR`), EL0's stack pointer, no Guarded Control Stack, no guarded page, no
+Statistical Profiling, PAuth with its keys disabled, XPAC on 39-bit addresses and PACGA's fixed mix. Another system's
+fixups (the 3DS's, the NDS's) go in a file of their own the same way.
 
 `tools/sailgen --generate` makes the LLVM emitters from them (`snx_sailgen_a64` of `cmake/sailgen.cmake`); the generated
 code is derived from `a64.sail` and carries its license. `tools/sailgen/README.md` describes the generator.

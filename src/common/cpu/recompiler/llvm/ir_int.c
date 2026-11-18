@@ -2,8 +2,8 @@
    Copyright 2026 the ScarletNX contributors
    Ported from QEMU (target/arm/tcg/translate-a64.c: the trans_* functions of these instructions), LGPL-2.1-or-later:
    Copyright (c) 2013 Alexander Graf <agraf@suse.de> */
-/* The integer branch-operand, hint, barrier and system instructions as LLVM IR, keyed on the generated decoder's
-   ops and arguments; the integer data-processing ones are generated from their Sail (ir_sail.c). The system registers
+/* The hint, barrier and system instructions as LLVM IR, keyed on the generated decoder's ops and arguments; the
+   integer data-processing ones and the branches' operands are generated from their Sail (ir_sail.c). The system registers
    and operations EL0 reaches follow the Arm ARM's EL0 access rules under Horizon's EL1 controls (SCTLR_EL1.UCT, DZE
    and UCI set, UMA clear; CNTKCTL_EL1 lets EL0 read the counters and their frequency): every other one raises UNDEF,
    as on the console. */
@@ -21,14 +21,6 @@ typedef LLVMValueRef V;
 
 /* ---- operands ---- */
 
-static LLVMTypeRef width(SnxIr* ir, int sf) { return sf ? ir->t_i64 : ir->t_i32; }
-static V konst(SnxIr* ir, int sf, SnxU64 v) { return LLVMConstInt(width(ir, sf), sf ? v : (SnxU32)v, 0); }
-
-/* Xn or Wn, n = 31 being the zero register (QEMU's cpu_reg) */
-static V reg(SnxIr* ir, unsigned n, int sf) {
-    V x = ir_rx(ir, n);
-    return sf ? x : ir_u32(ir, x);
-}
 /* a W result is zero-extended into its X register; writes to the zero register are dropped */
 static void set_reg(SnxIr* ir, unsigned n, V v) { ir_setx(ir, n, ir_u64(ir, v)); }
 
@@ -408,27 +400,43 @@ void snx_ir_int(SnxIr* ir, const SnxA64Insn* insn, SnxU32 word, SnxU64 pc) {
     }
 }
 
-LLVMValueRef snx_ir_int_operand(SnxIr* ir, const SnxA64Insn* insn) {
-    const SnxA64Args* a = &insn->args;
-    switch (insn->op) {
-        case SNX_A64_OP_B_cond: return nonzero(ir, ir_flags_cond(ir, (unsigned)a->cond));
+/* the flow ops whose operand comes from their Sail (ir_sail.c): 1 for a conditional one (the operand is whether it is
+   taken), 2 for one to a register (where to), 0 for another op */
+static int generated_branch(SnxA64Op op) {
+    switch (op) {
+        case SNX_A64_OP_B_cond:
         case SNX_A64_OP_CBZ:
-            return LLVMBuildICmp(B, a->nz ? LLVMIntNE : LLVMIntEQ, reg(ir, (unsigned)a->rt, a->sf),
-                                 konst(ir, a->sf, 0), "");
-        case SNX_A64_OP_TBZ: {
-            V bit = LLVMBuildAnd(B, ir_rx(ir, (unsigned)a->rt), ir_i64(ir, 1ull << (unsigned)a->bitpos), "");
-            return LLVMBuildICmp(B, a->nz ? LLVMIntNE : LLVMIntEQ, bit, ir_i64(ir, 0), "");
-        }
+        case SNX_A64_OP_TBZ: return 1;
         case SNX_A64_OP_BR:
         case SNX_A64_OP_BLR:
         case SNX_A64_OP_RET:
         case SNX_A64_OP_BRA:
         case SNX_A64_OP_BRAZ:
         case SNX_A64_OP_BLRA:
-        case SNX_A64_OP_BLRAZ: return ir_rx(ir, (unsigned)a->rn);
-        case SNX_A64_OP_RETA: return ir_rx(ir, 30);
+        case SNX_A64_OP_BLRAZ:
+        case SNX_A64_OP_RETA: return 2;
+        default: return 0;
+    }
+}
+
+LLVMValueRef snx_ir_int_operand(SnxIr* ir, const SnxA64Insn* insn, SnxU32 word, SnxU64 pc) {
+    int kind = generated_branch(insn->op);
+    if (kind) {
+        LLVMValueRef taken = NULL, target = NULL;
+        if (ir->operand_reference) return ir->operand_reference(ir, insn, word, pc);
+        if (!snx_ir_sail_branch(ir, word, pc, &taken, &target)) {
+            /* the decoder's op and the Sail's decode clauses disagree on the word: the module is refused, naming it */
+            if (!ir->fallbacks++) {
+                ir->fallback_word = word;
+                ir->fallback_pc = pc;
+            }
+            return kind == 1 ? LLVMConstInt(ir->t_i1, 0, 0) : ir_i64(ir, pc);
+        }
+        return kind == 1 ? taken : target;
+    }
+    switch (insn->op) {
         case SNX_A64_OP_SVC:
-        case SNX_A64_OP_BRK: return ir_i32(ir, (SnxU32)a->imm & 0xFFFFu);
+        case SNX_A64_OP_BRK: return ir_i32(ir, (SnxU32)insn->args.imm & 0xFFFFu);
         default: return NULL;
     }
 }

@@ -83,6 +83,21 @@ root decode_smulh_aarch64_instrs_integer_arithmetic_mul_widening_64_128hi
 root decode_umulh_aarch64_instrs_integer_arithmetic_mul_widening_64_128hi
 root decode_xpac_aarch64_instrs_integer_pac_strip_dp_1src
 
+# A64 branch operands (ir_codegen.c's flow): the condition of B.cond, CBZ and TBZ, the target of BR, BLR and RET and
+# their PAuth forms; the decode function's BranchTo gives them (gen.c), and BLR's link register is written as its Sail does
+root decode_b_cond_aarch64_instrs_branch_conditional_cond
+root decode_bc_cond_aarch64_instrs_branch_conditional_hinted
+root decode_cbz_aarch64_instrs_branch_conditional_compare
+root decode_cbnz_aarch64_instrs_branch_conditional_compare
+root decode_tbz_aarch64_instrs_branch_conditional_test
+root decode_tbnz_aarch64_instrs_branch_conditional_test
+root decode_br_aarch64_instrs_branch_unconditional_register
+root decode_blr_aarch64_instrs_branch_unconditional_register
+root decode_ret_aarch64_instrs_branch_unconditional_register
+root decode_bra_aarch64_instrs_branch_unconditional_register
+root decode_blra_aarch64_instrs_branch_unconditional_register
+root decode_reta_aarch64_instrs_branch_unconditional_register
+
 # what the generator knows when it recompiles (gen.c: the pc, the decode's SEE) and the state no instruction here
 # reaches: the banked stack pointers the original SP_read picks among (nx.sail's reads GPR's last element), SPE's
 # sample (nx.sail's constant) and the features' table (IsFeatureImplemented is lowered)
@@ -97,8 +112,18 @@ stop FeatureImpl
 
 # what the generator lowers itself (tools/sailgen/README.md, "Builtins"): their Sail is not needed
 stop IsFeatureImplemented
+stop BranchTo
+stop BranchNotTaken
 
-# NX's fixups (nx.sail) in their place: the register file is GPR's elements; nothing writes a part of a register
+# NX's fixups (nx.sail) in their place: the register file is GPR's elements; nothing writes a part of a register; no
+# Guarded Control Stack, so its records are never reached; no guarded page
+stop HaveGCS
+stop GCSPCREnabled
+stop AddGCSRecord
+stop LoadCheckGCSRecord
+stop GetCurrentGCSPointer
+stop SetCurrentGCSPointer
+stop InGuardedPage
 stop get_R
 stop set_R
 stop set_R_bits

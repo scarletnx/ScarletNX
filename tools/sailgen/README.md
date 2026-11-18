@@ -13,7 +13,8 @@ sailgen --generate ROOTS --backend llvm.h -o OUT INPUT... [--overlay FILE]...
 
 `--extract` copies the definitions of sail-arm's files that the roots reach (`extract.c`). `--generate` writes one C
 function per decode function the roots name, which emits that instruction as LLVM IR, and `sg_emit`, which picks one
-by the decode clauses' fixed bits in their order (`gen.c`). An overlay's definitions take the place of the inputs' of
+by the decode clauses' fixed bits in their order (`gen.c`) and gives a branch's operand: whether it is taken (an i1)
+and where to (an i64). An overlay's definitions take the place of the inputs' of
 the same name: a system's fixups (`nx.sail`). `src/common/cpu/recompiler/llvm/ir_sail.c` includes the output.
 
 ## How a decode function becomes C
@@ -30,7 +31,9 @@ Each decode function is walked with everything it calls inlined, and each value 
 A mutable local takes the latest time any of its assignments has; the walk repeats until no local's time changes.
 A function whose arguments are all STATIC and that reaches no state becomes a C function of its own
 (`DecodeBitMasks`, `DecodeShift`). An `if` on a DYN condition becomes a select of what each branch assigns, and its
-branches may not change state. Anything outside this part of Sail stops sailgen with the file, the line and why.
+branches may not change state; a `BranchTo` in one is taken under that condition (B.cond's `if ConditionHolds(cond)`,
+CBZ's `if IsZero(operand1) == iszero`). Anything outside this part of Sail stops sailgen with the file, the line and
+why.
 
 ## The back end (`llvm.h`)
 
@@ -54,6 +57,7 @@ Builtins, lowered by the back end rather than from Sail:
 | `BitReverse(Poly32Mod2(BitReverse(acc) @ Zeros(n) EOR BitReverse(val) @ Zeros(32), poly))` | the reflected CRC update: SSE4.2's CRC32C, AArch64's CRC32, or the sliced tables |
 | `LSL`, `LSR`, `ASR`, `ROR`, `Extend`, `ZeroExtend`, `SignExtend`, `Replicate`, `Zeros`, `Ones`, `IsZero`, `IsZeroBit`, `Bit`, `EOR`, `MOD`, `DIV`, `Min`, `Max`, `HighestSetBit`, `Slice` | the map, or C when the value is STATIC |
 | `IsFeatureImplemented(FEAT_X)` | the guest's feature bit (`SNX_A64_FEAT_X` of `a64.profile`) |
+| `BranchTo(target, type, conditional)`, `BranchNotTaken(type, conditional)` | the branch's operand for the recompiler's flow (`ir_codegen.c`): the target, and the run-time condition it is under; their profiling, branch records and address tagging do nothing at the NX's EL0 |
 
 ## The state
 

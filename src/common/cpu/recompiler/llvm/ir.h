@@ -220,6 +220,8 @@ typedef struct SnxIr {
     /* tests: the hand-written emitters the generated integer ones replaced (tests/support/ir_int_reference.c), used
        instead of them, so the two can be compared; NULL everywhere else */
     void (*int_reference)(struct SnxIr* ir, const void* decoded, SnxU32 word, SnxU64 pc);
+    /* and the branches' hand-written operands (snx_ir_int_operand's) the generated ones replaced, the same way */
+    LLVMValueRef (*operand_reference)(struct SnxIr* ir, const void* decoded, SnxU32 word, SnxU64 pc);
 } SnxIr;
 
 void ir_state_invalidate(SnxIr* ir);

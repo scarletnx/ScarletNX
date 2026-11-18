@@ -56,6 +56,10 @@ typedef struct {
     SnxU64 pc;
     /* flags written alone (PSTATE.N = ...) and not committed yet: an i32 0 or 1 each, NULL for not written */
     LLVMValueRef flag[4];
+    /* where a branch goes (BranchTo): its target, an i64, and when, an i1 (the run-time condition it is under, true
+       when none); branched 0 until it does */
+    LLVMValueRef taken, target;
+    int branched, undefined;
 } SgCtx;
 
 #define SG_B (g->ir->b)
@@ -897,6 +901,27 @@ static inline int sg_feature(SgCtx* g, SnxU64 feature) { return (g->ir->guest_fe
 static inline void sg_undefined(SgCtx* g) {
     ir_set_pc(g->ir, ir_i64(g->ir, g->pc));
     ir_undef(g->ir, g->pc, g->word);
+    g->undefined = 1;
+}
+
+/* ---- the flow ----
+   BranchTo(target, type, conditional) is where the instruction goes: the recompiler's flow (ir_codegen.c) takes the
+   target, and under a run-time condition that condition, as a branch's operand. Its other parts change nothing at the
+   NX's EL0: no Statistical Profiling, no Branch Record Buffer, no top-byte ignore on a branch's address. A branch not
+   taken (BranchNotTaken) records nothing */
+static inline void sg_branch_to(SgCtx* g, SgD target, LLVMValueRef when) {
+    if (g->branched) sg_fail("an instruction that branches twice", (long long)g->word, 0);
+    if (target.w != 64) sg_fail("a branch to a target of other than 64 bits", target.w, 64);
+    g->branched = 1;
+    g->target = sg_d_make(g, &target);
+    g->taken = when ? when : LLVMConstInt(g->ir->t_i1, 1, 0);
+}
+/* the operand an instruction gave: whether it branches and where to. One that branched nowhere is never taken; one
+   that raised UNDEF goes nowhere, its own pc */
+static inline void sg_branch_result(SgCtx* g, LLVMValueRef* taken, LLVMValueRef* target) {
+    int go = g->branched && !g->undefined;
+    if (taken) *taken = go ? g->taken : LLVMConstInt(g->ir->t_i1, 0, 0);
+    if (target) *target = go ? g->target : ir_i64(g->ir, g->pc);
 }
 
 /* bit i of x as a flag: the 0-or-1 source itself, or the bit shifted down (and masked unless it is the top) */
@@ -1067,6 +1092,13 @@ static inline void sg_GPR_write(SgCtx* g, long long n, SgD v) {
     if (v.w != 64) sg_fail("a GPR element written with other than 64 bits", n, v.w);
     bits = sg_d_make(g, &v);
     sg_set_x(g->ir, (unsigned)n, bits);
+}
+
+/* BTypeNext, the branch type the next instruction checks under BTI: no page is guarded (nx.sail's InGuardedPage), so
+   nothing checks it and the runtime keeps it nowhere */
+static inline void sg_BTypeNext_write(SgCtx* g, SgD v) {
+    (void)g;
+    (void)v;
 }
 
 /* PSTATE's fields this back end keeps, numbered as ProcState's */

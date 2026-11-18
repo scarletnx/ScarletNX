@@ -311,13 +311,16 @@ static void stale_check(SnxIr* ir, LLVMValueRef e) {
 }
 
 /* the operand of a flow instruction: decode lets through only the ops ir_int.c has one for */
-static LLVMValueRef flow_operand(SnxIr* ir, const SnxA64Insn* insn) { return snx_ir_int_operand(ir, insn); }
+static LLVMValueRef flow_operand(SnxIr* ir, const SnxA64Insn* insn, SnxU32 word, SnxU64 pc) {
+    return snx_ir_int_operand(ir, insn, word, pc);
+}
 
 /* What word does to the flow for a guest with these features, insn its decode. ir_ldst.c, ir_fpu.c and ir_vec.c
    implement their ops for every feature the decode allows (the LSE and RCpc atomics, FEAT_FP16's halves, FEAT_JSCVT,
-   FEAT_FRINTTS, BFCVT, the AdvSIMD extensions). ir_int.c, with ir_sail.c's generated data processing, implements the
-   integer instructions of the ounce target (the Switch's, PAuth with authentication disabled, FlagM and ESB). An op needing another feature is UNDEF
-   until implemented, as is an op no emitter has (the coverage report lists them), like a word no row matches. */
+   FEAT_FRINTTS, BFCVT, the AdvSIMD extensions). ir_int.c, with ir_sail.c's generated data processing and branch
+   operands, implements the integer instructions of the ounce target (the Switch's, PAuth with authentication disabled,
+   FlagM and ESB). An op needing another feature is UNDEF until implemented, as is an op no emitter has (the coverage
+   report lists them), like a word no row matches. */
 static SnxA64Flow decode(SnxU32 word, SnxU64 features, SnxA64Insn* insn) {
     snx_a64_decode_word(word, features, insn);
     switch (insn->flow) {
@@ -467,7 +470,7 @@ void snx_ir_emit(SnxIr* ir, SnxCodegen* codegen, const SnxFunction* function) {
                 break;
             case SNX_A64_FLOW_BC: {
                 LLVMBasicBlockRef taken = ir_block(ir, "taken"), fall = ir_block(ir, "fall");
-                LLVMValueRef site = LLVMBuildCondBr(B, flow_operand(ir, &insn), taken, fall);
+                LLVMValueRef site = LLVMBuildCondBr(B, flow_operand(ir, &insn, word, address), taken, fall);
                 ir_profile_branch(ir, site, address, word);
                 LLVMPositionBuilderAtEnd(B, taken);
                 branch(ir, codegen, function, labels, address, snx_a64_branch_target(&insn, address));
@@ -487,14 +490,13 @@ void snx_ir_emit(SnxIr* ir, SnxCodegen* codegen, const SnxFunction* function) {
                 break;
             }
             case SNX_A64_FLOW_BLR: {
-                LLVMValueRef t = flow_operand(ir, &insn);
-                ir_set_x(ir, 30, ir_i64(ir, next));
+                LLVMValueRef t = flow_operand(ir, &insn, word, address); /* it writes the link register */
                 call_dynamic(ir, t);
                 check_return(ir, next);
                 break;
             }
             case SNX_A64_FLOW_BR: {
-                LLVMValueRef t = flow_operand(ir, &insn);
+                LLVMValueRef t = flow_operand(ir, &insn, word, address);
                 /* if(t==<bound>){ F_bound(c,bound); return; }: a PLT stub whose slot holds the function its symbol
                    names, entered as a function (through a pointer, or by a call that does not run it in place) */
                 int guard = 0; /* the stub's own branch has the slot's word in hand: always compared */
@@ -516,16 +518,14 @@ void snx_ir_emit(SnxIr* ir, SnxCodegen* codegen, const SnxFunction* function) {
                 break;
             }
             case SNX_A64_FLOW_RET:
-                ir_set_pc(ir, flow_operand(ir, &insn));
+                ir_set_pc(ir, flow_operand(ir, &insn, word, address));
                 ret(ir);
                 terminal = 1;
                 break;
-            case SNX_A64_FLOW_SVC:
-                svc(ir, codegen, address, word, flow_operand(ir, &insn));
-                break;
+            case SNX_A64_FLOW_SVC: svc(ir, codegen, address, word, flow_operand(ir, &insn, word, address)); break;
             case SNX_A64_FLOW_BRK:
                 ir_set_pc(ir, ir_i64(ir, address));
-                brk(ir, address, flow_operand(ir, &insn));
+                brk(ir, address, flow_operand(ir, &insn, word, address));
                 ret(ir);
                 terminal = 1;
                 break;
@@ -595,25 +595,23 @@ LLVMValueRef snx_ir_static_step(SnxIr* ir, SnxU32 word, SnxU64 pc, SnxU64 featur
             break;
         case SNX_A64_FLOW_B: LLVMBuildRet(B, ir_i64(ir, snx_a64_branch_target(&insn, pc))); break;
         case SNX_A64_FLOW_BR:
-        case SNX_A64_FLOW_RET: LLVMBuildRet(B, flow_operand(ir, &insn)); break;
+        case SNX_A64_FLOW_RET: LLVMBuildRet(B, flow_operand(ir, &insn, word, pc)); break;
         case SNX_A64_FLOW_BC:
-            LLVMBuildRet(B, LLVMBuildSelect(B, flow_operand(ir, &insn),
+            LLVMBuildRet(B, LLVMBuildSelect(B, flow_operand(ir, &insn, word, pc),
                                             ir_i64(ir, snx_a64_branch_target(&insn, pc)), ir_i64(ir, pc + 4), ""));
             break;
         case SNX_A64_FLOW_BL:
-        case SNX_A64_FLOW_BLR:
-            /* { u64 t_=<target>; c->x[30]=pc+4; return t_; } */
-            operand = flow == SNX_A64_FLOW_BL ? ir_i64(ir, snx_a64_branch_target(&insn, pc))
-                                              : flow_operand(ir, &insn);
+            /* { c->x[30]=pc+4; return <target>; } */
             ir_set_x(ir, 30, ir_i64(ir, pc + 4));
-            LLVMBuildRet(B, operand);
+            LLVMBuildRet(B, ir_i64(ir, snx_a64_branch_target(&insn, pc)));
             break;
+        case SNX_A64_FLOW_BLR: LLVMBuildRet(B, flow_operand(ir, &insn, word, pc)); break; /* it writes the link */
         case SNX_A64_FLOW_SVC:
-            svc(ir, NULL, pc, word, flow_operand(ir, &insn));
+            svc(ir, NULL, pc, word, flow_operand(ir, &insn, word, pc));
             LLVMBuildRet(B, ir_i64(ir, pc + 4));
             break;
         case SNX_A64_FLOW_BRK:
-            brk(ir, pc, flow_operand(ir, &insn));
+            brk(ir, pc, flow_operand(ir, &insn, word, pc));
             LLVMBuildRet(B, ir_i64(ir, pc));
             break;
     }

@@ -8,6 +8,8 @@
 
 /* word, at pc, emitted from its Sail when it is an instruction of a generated subset (a64.roots): 1, else 0 */
 int snx_ir_sail(SnxIr* ir, SnxU32 word, SnxU64 pc);
+/* the same for a branch, with its operand: whether it branches (*taken, an i1) and where (*target, an i64) */
+int snx_ir_sail_branch(SnxIr* ir, SnxU32 word, SnxU64 pc, LLVMValueRef* taken, LLVMValueRef* target);
 
 /* the condition code (cond >> 1, but AL) on flags a compare or a logical result made in this block, as that compare's
    i1, by the back end's laws (ConditionHolds's); NULL when none did, or the condition needs the flags themselves.
