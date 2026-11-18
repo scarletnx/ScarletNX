@@ -25,13 +25,14 @@
    lost). Without an index of the file's version, the records' headers are read as before and the index written from
    them.
 
-   A hit of an upload whose command buffer the recording thread records (record.c) is read on that thread
-   (vk_bc7_cache_read_later): the GPU thread looks the record up in the index and goes on, and the recording thread
-   reads and checks the blocks into staging just before it records their copy. When they don't check out, it leaves
-   the copy out, and the GPU thread drops the record from the index and, at its next present, has the texture loaded
-   again (vk_bc7_cache_take_failed), which encodes the level as a failed read at once did. Read on the GPU thread, one game's hits took that thread 1.3 s in 110 s (32,000 levels, 2.5 GB). The
-   recording thread has its own handle on the file (Bc7Reader): on Windows a read at an offset moves the file position
-   of a handle, and the GPU thread's appends go by that position */
+   A hit of an upload whose command buffer the recording thread records (record.c) is read on the cache's I/O thread
+   (vk_bc7_cache_read_later): the GPU thread looks the record up in the index and goes on, the I/O thread reads and
+   checks the blocks into a buffer of its own, and the recording thread puts them into staging just before it records
+   their copy. When they don't check out, it leaves the copy out, and the GPU thread drops the record from the index
+   and, at its next present, has the texture loaded again (vk_bc7_cache_take_failed), which encodes the level as a
+   failed read at once did. Read on the GPU thread, one game's hits took that thread 1.3 s in 110 s (32,000 levels,
+   2.5 GB). The I/O thread has its own handle on the file (Bc7Reader): on Windows a read at an offset moves the file
+   position of a handle, and the GPU thread's appends go by that position */
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
@@ -44,6 +45,7 @@
 #include "common/utilities/bits.h"
 #include "common/utilities/common.h"
 #include "nx/runtime/platform/log.h"
+#include "nx/runtime/platform/tracy.h"
 #include "nx/gpu/vk/vk.h"
 
 #define BC7_MAGIC        "SNXBC7\n"
@@ -61,14 +63,15 @@ typedef struct {
     u64 size; /* 0: a record that didn't check out, whose slot stays taken so that probes go on past it */
 } Bc7Entry;
 
-/* the recording thread's side (vk_bc7_cache_read_later): its own handle and buffer, and the reads that it found did
-   not check out. The GPU thread drops their records from the index (bc7_drop_failed), and gives them to their owners
-   (vk_bc7_cache_take_failed). The atomics that both threads write each have a cache line */
+/* the reads off the GPU thread (vk_bc7_cache_read_later): the I/O thread's own handle and buffer, and the reads that
+   the recording thread found did not check out, or left late. The GPU thread drops the first ones' records from the
+   index (bc7_drop_failed), and gives all to their owners (vk_bc7_cache_take_failed). The atomics that more than one
+   thread writes each have a cache line */
 typedef struct {
     u64 key[2], at;
     void* owner; /* vk_bc7_cache_read_later's */
     u64 gva;
-    int dropped; /* out of the index already */
+    int dropped; /* none to drop from the index: out of it already, or a read late or not made */
 } Bc7Failed;
 typedef struct {
     FILE* _Atomic f; /* atomic, the GPU thread's: NULL, the hits are read on the GPU thread */
@@ -88,6 +91,44 @@ typedef struct {
     u8 piece[BC7_PIECE];
 } Bc7Reader;
 
+/* The cache's I/O thread. The file is a large one read at random, and a read of it can take seconds on a busy disk and
+   minutes on one nearly full: the recording thread, which read the hits itself, sat 184 s in one read in a race, its
+   ring filled, and the GPU thread drew nothing all that while (#2487). The reads run on a thread of their own, in the
+   order they were asked, each into a buffer of its own, never straight into staging: a read that comes back after its
+   frame would write over a ring handed out again. The recording thread takes a read that is done, and waits
+   BC7_IO_WAIT_NS at most for one that is not: then it leaves it (IO_LATE), its copy left out, and its texture loads
+   again, encoded (vk_bc7_cache_take_failed), the record kept. It waits for no other until the I/O thread has caught
+   up: waiting for each in turn, a disk at 200 ms a read would hold it 20 s over a hundred queued. Meanwhile, and while a read
+   runs past BC7_IO_LATE_NS, the GPU thread queues none (vk_bc7_cache_read_later answers 0, and the level is encoded
+   at once). The thread reads ahead of the recording thread by BC7_IO_AHEAD bytes at most */
+#define BC7_IO_OPS     1024u
+#define BC7_IO_WAIT_NS 50000000ull  /* a read of a level's blocks takes a few ms off a disk that answers */
+#define BC7_IO_LATE_NS 250000000ull /* a read running this long is a held disk's: none more is queued, and it is said */
+#define BC7_IO_AHEAD   (64ull << 20)
+/* an op's state: free, queued, being read, read and checked, read and not checked out (the record dropped), not
+   read for want of memory or of the file (the record kept), left by the recording thread */
+enum { IO_FREE, IO_QUEUED, IO_READING, IO_OK, IO_BAD, IO_FAIL, IO_LATE };
+typedef struct {
+    _Atomic u32 state;
+    u64 key[2], at, size;
+    u8* buf; /* IO_OK's blocks */
+} Bc7Op;
+typedef struct {
+    int started; /* the GPU thread's: 0 not yet, 1 running, -1 it could not start (the recording thread reads) */
+    PMutex m;    /* head, next, ahead, worst and late; ops' fields before they are queued and after they are done */
+    PCond work;  /* the I/O thread waits on it for an op, or for room ahead */
+    PCond done;  /* the recording thread waits on it for its read, and a close for the thread to be idle */
+    Bc7Op ops[BC7_IO_OPS];
+    u64 head;  /* ops queued so far: the next goes at head % BC7_IO_OPS */
+    u64 next;  /* the next op the I/O thread takes */
+    u64 ahead; /* bytes of reads done and not taken yet */
+    u64 worst; /* the longest read since the last line about the late ones, in ns */
+    int late;  /* the recording thread left a read: it waits for no other until the I/O thread has none queued */
+    _Atomic u64 since;                 /* plat_ns when the read running began, 0 none: atomic, the GPU thread looks */
+    _Atomic u64 n_late, n_skipped;     /* reads left late and not tried, since the last line that said so */
+    _Atomic u64 all_late, all_skipped; /* the same in all, for the statistics */
+} Bc7Io;
+
 typedef struct {
     FILE* f;   /* NULL: no cache */
     FILE* idx; /* the index file: NULL where it couldn't be written (the next run reads the records' headers) */
@@ -103,6 +144,7 @@ typedef struct {
     int started_empty;   /* it held no level as it opened (vk_bc7_cache_cold) */
     u8 piece[BC7_PIECE]; /* what a close clears ends before it */
     Bc7Reader rd;        /* kept over a close: its failed reads go to their owners still */
+    Bc7Io io;            /* kept over a close: the thread lives as long as the process */
 } Bc7Cache;
 static Bc7Cache g_bc7_cache;
 
@@ -256,12 +298,14 @@ static int bc7_start_over(void) {
            !fflush(g_bc7_cache.f) && !snx_cut(g_bc7_cache.f, BC7_HEAD);
 }
 
-/* the recording thread's handle closed once the reads queued before are done. It stays open where that thread does
-   not get to them (a fatal error stops it inside a packet): a read queued still takes the handle that it finds, or
-   fails with none. The failed reads stay for their owners */
+static int io_idle_by(u64 until);
+/* the I/O thread's handle closed once the reads queued before are done: the recording thread's packets that take them,
+   then the thread's own reads. It stays open where they do not end in 2 s each (a fatal error stops the recording
+   thread inside a packet, a disk holds a read): a read queued still takes the handle that it finds, or fails with
+   none. The failed reads stay for their owners */
 static void bc7_reader_close(void) {
     FILE* f = atomic_load_explicit(&g_bc7_cache.rd.f, memory_order_acquire);
-    const int done = !f || vk_rec_sync_until(plat_ns() + 2000000000ull);
+    const int done = !f || (vk_rec_sync_until(plat_ns() + 2000000000ull) && io_idle_by(plat_ns() + 2000000000ull));
     atomic_store_explicit(&g_bc7_cache.rd.f, NULL, memory_order_release);
     if (f && done) fclose(f);
     g_bc7_cache.rd.tried = 0;
@@ -450,9 +494,159 @@ int vk_bc7_cache_read(const u64 key[2], u8* dst, u64 size) {
     return 1;
 }
 
-/* a read on the recording thread, and the copy that it is for */
+/* the I/O thread: each op in the order queued, the reads past BC7_IO_LATE_NS said once they end, with the reads the
+   recording thread left and those the GPU thread did not ask meanwhile */
+static void io_said(u64 size, u64 took, u64 worst) {
+    const u64 late = atomic_exchange_explicit(&g_bc7_cache.io.n_late, 0, memory_order_relaxed);
+    const u64 skipped = atomic_exchange_explicit(&g_bc7_cache.io.n_skipped, 0, memory_order_relaxed);
+    if (size)
+        LOG("vulkan: a read of %llu KiB from the BC7 cache took %.2f s: %llu reads came too late meanwhile and %llu "
+            "were not tried, their levels encoded instead\n",
+            (unsigned long long)(size >> 10), (double)took / 1e9, (unsigned long long)late,
+            (unsigned long long)skipped);
+    else if (late || skipped)
+        LOG("vulkan: the BC7 cache's reads caught up: %llu more came too late and %llu were not tried, their levels "
+            "encoded instead (the longest read took %.0f ms)\n",
+            (unsigned long long)late, (unsigned long long)skipped, (double)worst / 1e6);
+}
+static void io_thread(void* arg) {
+    Bc7Io* io = &g_bc7_cache.io;
+    (void)arg;
+    SNX_THREAD_NAME("BC7 cache I/O");
+    pm_lock(&io->m);
+    for (;;) {
+        if (io->next == io->head || io->ahead >= BC7_IO_AHEAD) {
+            if (io->next == io->head && io->late) { /* caught up: what was left goes in the log */
+                const u64 worst = io->worst;
+                io->late = 0;
+                io->worst = 0;
+                pm_unlock(&io->m);
+                io_said(0, 0, worst);
+                pm_lock(&io->m);
+                continue;
+            }
+            pc_broadcast(&io->done); /* idle, for a close */
+            pc_wait(&io->work, &io->m, -1);
+            continue;
+        }
+        Bc7Op* op = &io->ops[io->next++ % BC7_IO_OPS];
+        u32 s = IO_QUEUED;
+        if (!atomic_compare_exchange_strong_explicit(&op->state, &s, IO_READING, memory_order_acq_rel,
+                                                     memory_order_acquire)) {
+            atomic_store_explicit(&op->state, IO_FREE, memory_order_release); /* left before it began */
+            continue;
+        }
+        const u64 t0 = plat_ns(), size = op->size; /* a slot left late is handed out again once it is free */
+        atomic_store_explicit(&io->since, t0, memory_order_release);
+        pm_unlock(&io->m);
+        FILE* f = atomic_load_explicit(&g_bc7_cache.rd.f, memory_order_acquire);
+        u8* b = f ? malloc((size_t)size) : NULL;
+        const int r = b ? bc7_read_at(f, g_bc7_cache.rd.piece, op->key, op->at, size, b) : 0;
+        const u64 took = plat_ns() - t0;
+        pm_lock(&io->m);
+        atomic_store_explicit(&io->since, 0, memory_order_release);
+        if (took > io->worst) io->worst = took;
+        op->buf = r > 0 ? b : NULL;
+        s = IO_READING;
+        if (atomic_compare_exchange_strong_explicit(&op->state, &s,
+                                                    r > 0 ? IO_OK
+                                                    : b   ? IO_BAD
+                                                          : IO_FAIL,
+                                                    memory_order_acq_rel, memory_order_acquire)) {
+            if (r > 0)
+                io->ahead += size;
+            else
+                free(b);
+        } else { /* left while it was read */
+            free(b);
+            op->buf = NULL;
+            atomic_store_explicit(&op->state, IO_FREE, memory_order_release);
+        }
+        pc_broadcast(&io->done);
+        if (took >= BC7_IO_LATE_NS) {
+            io->worst = 0;
+            pm_unlock(&io->m);
+            io_said(size, took, 0);
+            pm_lock(&io->m);
+        }
+    }
+}
+/* the thread, at the first read that goes there: 0 when it could not start */
+static int io_start(void) {
+    Bc7Io* io = &g_bc7_cache.io;
+    if (io->started) return io->started > 0;
+    pm_init(&io->m);
+    pc_init(&io->work);
+    pc_init(&io->done);
+    io->started = plat_thread(io_thread, NULL, (size_t)256 << 10) ? -1 : 1;
+    if (io->started < 0) {
+        char why[256];
+        WARN("vulkan: the BC7 cache's I/O thread could not start (%s): its hits are read on the recording thread\n",
+             snx_os_error(why, sizeof why));
+    }
+    return io->started > 0;
+}
+/* the I/O thread held by a read past BC7_IO_LATE_NS, or behind a read the recording thread left: no read is queued */
+static int io_stalled(Bc7Io* io) {
+    const u64 since = atomic_load_explicit(&io->since, memory_order_acquire);
+    if (since && plat_ns() - since >= BC7_IO_LATE_NS) return 1;
+    pm_lock(&io->m);
+    const int late = io->late;
+    pm_unlock(&io->m);
+    return late;
+}
+/* the I/O thread with nothing queued, no read running and none left late, by until (plat_ns): 0 when it still had
+   one then */
+static int io_idle_by(u64 until) {
+    Bc7Io* io = &g_bc7_cache.io;
+    if (io->started <= 0) return 1;
+    pm_lock(&io->m);
+    for (;;) {
+        const int idle = io->next == io->head && !io->late && !atomic_load_explicit(&io->since, memory_order_acquire);
+        const u64 now = plat_ns();
+        if (idle || now >= until) {
+            pm_unlock(&io->m);
+            return idle;
+        }
+        pc_wait(&io->done, &io->m, (int64_t)(until - now));
+    }
+}
+/* the recording thread: op's read once it is done, IO_OK, IO_BAD or IO_FAIL; IO_LATE when it left it, after
+   BC7_IO_WAIT_NS, or at once while the I/O thread is behind a read left before. An IO_OK's bytes stop counting
+   ahead */
+static u32 io_take(Bc7Op* op) {
+    Bc7Io* io = &g_bc7_cache.io;
+    const u64 came = plat_ns();
+    pm_lock(&io->m);
+    for (;;) {
+        u32 s = atomic_load_explicit(&op->state, memory_order_acquire);
+        if (s == IO_OK || s == IO_BAD || s == IO_FAIL) {
+            if (s == IO_OK) {
+                io->ahead -= op->size;
+                pc_signal(&io->work);
+            }
+            pm_unlock(&io->m);
+            return s;
+        }
+        const u64 now = plat_ns();
+        if (!io->late && now - came < BC7_IO_WAIT_NS) {
+            pc_wait(&io->done, &io->m, (int64_t)(BC7_IO_WAIT_NS - (now - came)));
+            continue;
+        }
+        if (atomic_compare_exchange_strong_explicit(&op->state, &s, IO_LATE, memory_order_acq_rel,
+                                                    memory_order_acquire)) {
+            io->late = 1;
+            pm_unlock(&io->m);
+            atomic_fetch_add_explicit(&io->n_late, 1, memory_order_relaxed);
+            atomic_fetch_add_explicit(&io->all_late, 1, memory_order_relaxed);
+            return IO_LATE;
+        }
+    }
+}
+
+/* a read of the I/O thread taken on the recording thread, and the copy that it is for */
 typedef struct {
-    u64 key[2], at, size, off, gva;
+    u64 key[2], at, size, off, gva, op;
     u8* dst;
     void* owner;
     VkCommandBuffer cb;
@@ -464,16 +658,21 @@ typedef struct {
 } Bc7Later;
 static void bc7_later_run(const void* p) {
     const Bc7Later* l = p;
-    FILE* f =
-        atomic_load_explicit(&g_bc7_cache.rd.f, memory_order_acquire); /* NULL once the cache closed: then it fails */
-    if (f && bc7_read_at(f, g_bc7_cache.rd.piece, l->key, l->at, l->size, l->dst) > 0) {
+    Bc7Op* op = &g_bc7_cache.io.ops[l->op % BC7_IO_OPS];
+    const u32 s = io_take(op);
+    if (s == IO_OK) {
+        memcpy(l->dst, op->buf, (size_t)l->size);
+        free(op->buf);
+        op->buf = NULL;
+        atomic_store_explicit(&op->state, IO_FREE, memory_order_release);
         /* staging may not be host coherent, and its submission's flush (cmd.c's rings_flush) came before this */
         vk_devmem_flush(l->mem, l->off, l->size);
         if (l->img) vkCmdCopyBufferToImage(l->cb, l->buf, l->img, l->layout, 1, &l->copy);
         atomic_fetch_add_explicit(&g_bc7_cache.rd.hits, 1, memory_order_relaxed);
         return;
     }
-    if (f) bc7_failed_log();
+    if (s != IO_LATE) atomic_store_explicit(&op->state, IO_FREE, memory_order_release); /* a late one is the thread's */
+    if (s == IO_BAD) bc7_failed_log();
     pm_lock(&g_bc7_cache.rd.m);
     if (atomic_load_explicit(&g_bc7_cache.rd.nfailed, memory_order_relaxed) == g_bc7_cache.rd.cap) {
         const u32 cap = g_bc7_cache.rd.cap ? g_bc7_cache.rd.cap * 2 : 16;
@@ -483,10 +682,11 @@ static void bc7_later_run(const void* p) {
             g_bc7_cache.rd.cap = cap;
         }
     }
-    /* out of memory: its record stays, and its next read fails again */
+    /* out of memory: its record stays, and its next read fails again. A read late or not made keeps its record (as
+       dropped already): the texture is loaded again, encoded while the thread is behind */
     if (atomic_load_explicit(&g_bc7_cache.rd.nfailed, memory_order_relaxed) < g_bc7_cache.rd.cap) {
         g_bc7_cache.rd.failed[atomic_load_explicit(&g_bc7_cache.rd.nfailed, memory_order_relaxed)] =
-            (Bc7Failed){{l->key[0], l->key[1]}, l->at, l->owner, l->gva, 0};
+            (Bc7Failed){{l->key[0], l->key[1]}, l->at, l->owner, l->gva, s != IO_BAD};
         atomic_store_explicit(&g_bc7_cache.rd.nfailed,
                               atomic_load_explicit(&g_bc7_cache.rd.nfailed, memory_order_relaxed) + 1,
                               memory_order_release);
@@ -497,28 +697,50 @@ static void bc7_later_run(const void* p) {
 int vk_bc7_cache_read_later(VkCommandBuffer cb, const u64 key[2], u64 size, u8* dst, DevMem mem, u64 off, VkBuffer buf,
                             VkImage img, VkImageLayout layout, const VkBufferImageCopy* copy, void* owner, u64 gva) {
     if (!g_bc7_cache.f) return 0;
-    /* the recording thread's handle, at the first read once that thread runs: the cache can open before it starts */
+    /* the I/O thread's handle, at the first read once the recording thread runs: the cache can open before it starts */
     if (!atomic_load_explicit(&g_bc7_cache.rd.f, memory_order_acquire) && !g_bc7_cache.rd.tried && vk_rec_threaded()) {
         g_bc7_cache.rd.tried = 1;
         if (!g_bc7_cache.rd.init) {
             pm_init(&g_bc7_cache.rd.m);
             g_bc7_cache.rd.init = 1;
         }
-        FILE* f = snx_fopen(g_bc7_cache.path, "rb");
-        if (!f) LOG("vulkan: the BC7 cache's hits are read on the GPU thread: a second handle on it failed\n");
+        FILE* f = io_start() ? snx_fopen(g_bc7_cache.path, "rb") : NULL;
+        if (!f && g_bc7_cache.io.started > 0)
+            LOG("vulkan: the BC7 cache's hits are read on the GPU thread: a second handle on it failed\n");
 #if defined(__linux__)
         /* no readahead past a record, as for the cache's own handle (vk_bc7_cache_open) */
-        else
-            posix_fadvise(fileno(f), 0, 0, POSIX_FADV_RANDOM);
+        if (f) posix_fadvise(fileno(f), 0, 0, POSIX_FADV_RANDOM);
 #endif
         atomic_store_explicit(&g_bc7_cache.rd.f, f, memory_order_release);
     }
     if (!atomic_load_explicit(&g_bc7_cache.rd.f, memory_order_acquire)) return -1;
     const Bc7Entry* e = bc7_entry(key, size);
     if (!e) return 0;
-    const Bc7Later l = {{key[0], key[1]}, e->at, size, off, gva, dst, owner, cb, buf, img, layout, mem, *copy};
+    Bc7Io* io = &g_bc7_cache.io;
+    Bc7Op* op = &io->ops[io->head % BC7_IO_OPS];
+    if (io_stalled(io) || atomic_load_explicit(&op->state, memory_order_acquire) != IO_FREE) {
+        atomic_fetch_add_explicit(&io->n_skipped, 1, memory_order_relaxed);
+        atomic_fetch_add_explicit(&io->all_skipped, 1, memory_order_relaxed);
+        return 0;
+    }
+    pm_lock(&io->m);
+    op->key[0] = key[0];
+    op->key[1] = key[1];
+    op->at = e->at;
+    op->size = size;
+    op->buf = NULL;
+    atomic_store_explicit(&op->state, IO_QUEUED, memory_order_release);
+    const u64 at = io->head++;
+    pc_signal(&io->work);
+    pm_unlock(&io->m);
+    const Bc7Later l = {{key[0], key[1]}, e->at, size, off, gva, at, dst, owner, cb, buf, img, layout, mem, *copy};
     vk_rec_call(bc7_later_run, &l, sizeof l);
     return 1;
+}
+
+void vk_bc7_cache_late(u64* late, u64* skipped) {
+    *late = atomic_load_explicit(&g_bc7_cache.io.all_late, memory_order_relaxed);
+    *skipped = atomic_load_explicit(&g_bc7_cache.io.all_skipped, memory_order_relaxed);
 }
 
 u64 vk_bc7_cache_read_ns(u64 bytes) {

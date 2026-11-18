@@ -1989,13 +1989,13 @@ int vk_bc7_cache_cold(void);
 u64 vk_bc7_cache_find(const u64 key[2]); /* the bytes of key's blocks, 0 when they aren't there */
 /* key's blocks, size bytes of them, into dst: 0 when they aren't there or don't check out (then dropped) */
 int vk_bc7_cache_read(const u64 key[2], u8* dst, u64 size);
-/* key's blocks, size bytes of them, read into dst on the recording thread, and copied from buf (dst is at off in mem
-   and buf) into img, in layout, by copy there when they check out (none when img is VK_NULL_HANDLE): before the
-   commands that cb
-   gets after this, and before its submission. cb must go through that thread (vk_rec_ring). 1 when it is queued, 0
-   when they aren't there, -1 when there is no such thread or it can't open the file (read them with
+/* key's blocks, size bytes of them, read on the cache's I/O thread and put into dst on the recording thread, then
+   copied from buf (dst is at off in mem and buf) into img, in layout, by copy there when they check out (none when img
+   is VK_NULL_HANDLE): before the commands that cb gets after this, and before its submission. cb must go through that
+   thread (vk_rec_ring). 1 when it is queued; 0 when they aren't there, or the I/O thread is behind a slow disk (the
+   level is encoded then); -1 when there is no such thread or the file can't be opened again (read them with
    vk_bc7_cache_read). A record that doesn't check out is dropped, its copy left out, and the read goes to
-   vk_bc7_cache_take_failed with owner and gva */
+   vk_bc7_cache_take_failed with owner and gva; so does a read the recording thread left as late, its record kept */
 int vk_bc7_cache_read_later(VkCommandBuffer cb, const u64 key[2], u64 size, u8* dst, DevMem mem, u64 off, VkBuffer buf,
                             VkImage img, VkImageLayout layout, const VkBufferImageCopy* copy, void* owner, u64 gva);
 /* fn of each read on the recording thread that failed since the last call, with its owner and gva (GPU thread) */
@@ -2008,6 +2008,9 @@ u64 vk_bc7_cache_read_ns(u64 bytes);
 void vk_bc7_cache_put(const u64 key[2], const u8* p, u64 size);
 /* hits, records stored, times it started over at its bound, and the file's bytes */
 void vk_bc7_cache_stats(u64* hits, u64* stored, u64* restarts, u64* bytes);
+/* the hits whose read the recording thread left as late and those the GPU thread did not ask while the cache's I/O
+   thread was behind, in all: a slow disk's, their levels encoded instead */
+void vk_bc7_cache_late(u64* late, u64* skipped);
 u64 vk_bc7_strip_blocks(void); /* the BC7 blocks vk_bc7_encode_kept makes at once at most */
 /* the image levels (or regions of them) uploaded as BC7 so far, the levels the BC7 cache gave (here or between frames),
    their bytes, and the bytes they would have taken as RGBA8 */
