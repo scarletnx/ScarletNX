@@ -1959,8 +1959,8 @@ jobs:
   # way. Another release or other mode words want its file written again. A push, a tag, the nightly's schedule and a
   # run by hand run both, and Amberlith's main beside the release; a pull request runs each only when it changes what
   # that run loads (scripts/edenprobe.py runs), never the main's, and ends at once, passed, when it changes neither. The
-  # runs called for go side by side on the runner's cores. The install is the linux job's, or on a pull request the
-  # appimage job's, which builds a pull request's x86-64 alone
+  # runs called for go one after the other. The install is the linux job's, or on a pull request the appimage job's,
+  # which builds a pull request's x86-64 alone
   edenprobe:
     name: Amberlith (Linux x86_64, lavapipe)
     needs: [linux, appimage]
@@ -2092,10 +2092,10 @@ jobs:
               echo "::warning title=Amberlith main::Amberlith's nightly could not be fetched or checked"
             fi
           fi
-      # The runs called for, side by side, each with its own output, summary and exit: the NRO and the APK held to their
-      # baselines, Amberlith's main beside the release's baseline, warnings only. The APK and the main at the lowest
-      # priority: the NRO's kernel family times its threads (sched's svcSleepThread(0) case failed once with the APK
-      # beside it at the same priority). Artifacts drop the executable bit.
+      # The runs called for, one after the other, each with its own output, summary and exit: the NRO and the APK held to
+      # their baselines, Amberlith's main beside the release's baseline, warnings only. Not side by side: the NRO's kernel
+      # family times its threads, and with the others beside it at the lowest priority, so that it passes, the runs took
+      # no less time in all than one after the other. Artifacts drop the executable bit.
       # Each summary's title is a line of the pull request's comment, as a notice of this job that scripts/pr-builds.sh
       # reads back once the run ends; on one line, % is all a notice escapes
       - name: Run Amberlith
@@ -2107,27 +2107,24 @@ jobs:
           MAIN: ${{ steps.fetch.outputs.main }}
         run: |
           chmod +x stage/bin/*
-          # NAME NICENESS ARGS...: one run in the background, its output in NAME.log, its status in NAME.status
+          # NAME ARGS...: one run, its output in NAME.log, its status in NAME.status
           probe() {
-            local name=$1 niceness=$2
-            shift 2
-            (
-              began=$(date +%s) code=0
-              nice -n "$niceness" python3 scripts/edenprobe.py run --runtime stage/bin/scarletnx "$@" \
-                --summary "$name.md" > "$name.log" 2>&1 || code=$?
-              echo "$code" > "$name.status"
-              echo "$name: $(($(date +%s) - began)) s" >> times.txt
-            ) &
+            local name=$1
+            shift
+            local began=$(date +%s) code=0
+            python3 scripts/edenprobe.py run --runtime stage/bin/scarletnx "$@" --summary "$name.md" \
+              > "$name.log" 2>&1 || code=$?
+            echo "$code" > "$name.status"
+            echo "$name: $(($(date +%s) - began)) s" >> times.txt
           }
           began=$(date +%s)
           : > times.txt
-          [ "$NRO" = true ] && probe edenprobe 0 --nro "$EDENPROBE_NRO" --mode "$EDENPROBE_MODE" --out edenprobe \
+          [ "$NRO" = true ] && probe edenprobe --nro "$EDENPROBE_NRO" --mode "$EDENPROBE_MODE" --out edenprobe \
             --baseline tests/edenprobe/linux-x86_64.txt
-          [ "$APK" = true ] && probe edenprobe-android 19 --apk "$EDENPROBE_APK" --mode "$EDENPROBE_APK_MODE" \
+          [ "$APK" = true ] && probe edenprobe-android --apk "$EDENPROBE_APK" --mode "$EDENPROBE_APK_MODE" \
             --out edenprobe-android --baseline tests/edenprobe/android-x86_64.txt
-          [ "$MAIN" = true ] && probe edenprobe-main 19 --nro edenprobe-main.nro --mode "$EDENPROBE_MODE" \
+          [ "$MAIN" = true ] && probe edenprobe-main --nro edenprobe-main.nro --mode "$EDENPROBE_MODE" \
             --out edenprobe-main --advisory-baseline tests/edenprobe/linux-x86_64.txt
-          wait
           status=0
           for name in edenprobe edenprobe-android edenprobe-main; do
             [ -f "$name.status" ] || continue
@@ -2143,7 +2140,7 @@ jobs:
               [ "$(cat "$name.status")" = 0 ] || status=1
             fi
           done
-          echo "side by side: $(($(date +%s) - began)) s in all; $(tr '\n' ';' < times.txt)"
+          echo "the runs: $(($(date +%s) - began)) s in all; $(tr '\n' ';' < times.txt)"
           exit "$status"
       # The reports, the failures' pictures, the logs and the runs' baseline.txt; not the recompiled game. Each attempt
       # its own: a run takes one artifact of a name, and a job run again keeps the earlier attempt's to compare
