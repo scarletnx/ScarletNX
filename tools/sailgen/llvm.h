@@ -509,7 +509,7 @@ static inline int sg_d_low(const SgD* x, unsigned k) {
 static inline LLVMValueRef sg_d_src(SgCtx* g, const SgD* x, unsigned k) { return sg_cast(g, x->src[k], x->w, 0); }
 
 static inline LLVMValueRef sg_d_make(SgCtx* g, SgD* x) {
-    unsigned w = x->w, i, k, done[SG_W];
+    unsigned w = x->w, i, k, done[SG_W], run_bit[SG_W];
     LLVMValueRef r = NULL, t;
     if (x->value) return x->value;
     if (x->nzcv) sg_d_realize(g, x);
@@ -569,8 +569,18 @@ static inline LLVMValueRef sg_d_make(SgCtx* g, SgD* x) {
             }
         }
     }
-    /* the OR of each source's bits that move by the same distance, masked, and the bits that are 1 */
+    /* the OR of each source's bits that move by the same distance, masked, and the bits that are 1. The bits of a run
+       of one source bit over more than two neighbours (Replicate, a sign) are found first: the one that lands on that
+       bit's own place (XPAC's bit 55) is the run's, not one of the bits that keep their place */
     memset(done, 0, sizeof done);
+    memset(run_bit, 0, sizeof run_bit);
+    for (i = 0; i < w;) {
+        unsigned n = 1;
+        while (x->sel[i] >= 2 && i + n < w && x->sel[i + n] == x->sel[i] && x->pos[i + n] == x->pos[i]) ++n;
+        if (n > 2)
+            for (k = i; k < i + n; ++k) run_bit[k] = 1;
+        i += n;
+    }
     for (i = 0; i < w; ++i) {
         SnxU64 mask[2] = {0, 0};
         unsigned j, sw;
@@ -599,7 +609,7 @@ static inline LLVMValueRef sg_d_make(SgCtx* g, SgD* x) {
             }
         }
         for (j = i; j < w; ++j)
-            if (x->sel[j] == 2 + k && (int)j - (int)x->pos[j] == d) {
+            if (x->sel[j] == 2 + k && (int)j - (int)x->pos[j] == d && !run_bit[j]) {
                 done[j] = 1;
                 mask[j / 64] |= 1ull << (j % 64);
             }
