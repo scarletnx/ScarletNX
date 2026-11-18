@@ -14,6 +14,7 @@
 #include "common/utilities/common.h"
 #include "common/utilities/ini_lines.h"
 #include "common/utilities/run_mark.h"
+#include "nx/gpu/gl/gl_census.h"
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/nvn/nvn_loader.h"
 #include "nx/gpu/nvn/nvn_state.h"
@@ -676,6 +677,7 @@ void snx_save_before_exit(void) {
         svc_core_exit();
         jit_report();
         kernel_core_report();
+        gl_census_report();
         saved = 1;
     }
     pm_unlock(&lock);
@@ -1494,6 +1496,8 @@ int snx_main(int argc, char** argv) {
     nnprepo_init();
     hook_install(); /* before NVN, which takes what a slot holds, and the JIT, which reads the slots */
     nvn_loader_init();
+    /* after the hooks and NVN: it counts in front of what they put in a slot */
+    gl_census_init();
     linker_init(); /* after the hooks and NVN, whose slots it leaves alone */
     entry = linker_entry(entry);
     /* after NVN, which says whether calls must go through the slots it takes. The JIT compiles A64: a 32-bit

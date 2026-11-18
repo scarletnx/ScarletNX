@@ -30,6 +30,9 @@
 # slot. With three callbacks of the linker's, and with two
 route _ZN2nn4init5StartEmmPFvvES2_S2_
 route _ZN2nn4init5StartEmmPFvvES2_
+# The resolver of a game's own OpenGL driver, which gpu/gl/gl_census.c wraps with C of its own (gl_call_census): through
+# its dispatch slot
+route eglGetProcAddress
 
 family libc
 hook memcpy(void* dst out[size], const void* src in[size], u64 size) -> void* = hook_memmove pure
