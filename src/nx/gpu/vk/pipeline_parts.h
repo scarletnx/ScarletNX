@@ -95,6 +95,9 @@ typedef struct {
     u32 arrays; /* PipeKey.arrays' bits of the vertex, tessellation and geometry sets */
     /* 0 where dyn_pr makes them dynamic */
     u32 patch, polygon, depth_clamp, depth_clip, provoking_last, conservative;
+    /* PipeKey.cb_addr of the vertex, tessellation and geometry sets, the fragment set's 0: the part maps those
+       constant buffers by address, as the draws write them. The sixth is 0, so that heaps ends the key with no padding */
+    u32 cb_addr[6];
     u32 heaps;
 } PipePrKey;
 typedef struct {
@@ -105,6 +108,7 @@ typedef struct {
     u32 sample_shading, samples, sample_off, alpha_to_coverage, alpha_to_one;
     VkCoverage coverage;
     u32 spec; /* PipeKey.fs_spec: the module's specialization constants */
+    u32 cb_addr[6]; /* PipeKey.cb_addr of the fragment set, the others 0 (six: no padding before heaps) */
     u32 heaps;
 } PipeFsKey;
 typedef struct {

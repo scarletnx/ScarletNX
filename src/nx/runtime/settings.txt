@@ -1633,6 +1633,15 @@ setting Descriptor buffers
     help barriers are skipped, which the tracking of targets and buffers orders. 0 = descriptor sets for graphics
     help too, where a fragment barrier ends the render pass only after storage writes or reads that are still
     help pending, or after guest memory used in place
+setting Constant buffers by address
+    key vk_cb_address
+    int 0 1
+    default 1
+    startup
+    words Off|On
+    help 1 = with descriptor heaps, a constant buffer that a shader reads only at constant offsets is mapped by its
+    help address, and its draws write no descriptor for it. A read at an offset from a register keeps the
+    help descriptor, whose range bounds it. 0 = a descriptor for every constant buffer
 setting Constant buffer windows
     key vk_cb_windows
     int 0 2

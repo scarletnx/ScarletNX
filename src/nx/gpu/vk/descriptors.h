@@ -5,7 +5,9 @@
 #include "nx/gpu/vk/vk.h"
 /* Graphics descriptor buffers. Compute keeps its independently retired descriptor pools. */
 void vk_descriptors_layout(VkDescriptorSetLayout layout, const VkDescriptorSetLayoutBinding* bindings, u32 count);
-VkDescriptorSet vk_descriptors_write(VkDescriptorSetLayout layout, u32 count, const VkWriteDescriptorSet* writes);
+/* cb_addr: the constant buffer slots that heaps take by address (vk_cb_addr_mask); descriptor buffers write them all */
+VkDescriptorSet vk_descriptors_write(VkDescriptorSetLayout layout, u32 count, const VkWriteDescriptorSet* writes,
+                                     u32 cb_addr);
 void vk_descriptors_bind(VkCommandBuffer cb, VkPipelineLayout layout, u32 first, u32 count, const VkDescriptorSet* sets);
 /* Heap bindings invalidate legacy descriptor state across both pipeline bind points. */
 void vk_descriptors_invalidate(void);

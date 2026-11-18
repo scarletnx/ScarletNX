@@ -73,7 +73,9 @@ int vk_descriptor_heaps_room(u32 slot) {
     (void)slot;
     abort();
 }
-VkDescriptorSet vk_descriptor_heaps_write(VkDescriptorSetLayout layout, u32 count, const VkWriteDescriptorSet* writes) {
+VkDescriptorSet vk_descriptor_heaps_write(VkDescriptorSetLayout layout, u32 count, const VkWriteDescriptorSet* writes,
+                                          u32 cb_addr) {
+    (void)cb_addr;
     (void)layout;
     (void)count;
     (void)writes;
@@ -181,7 +183,7 @@ VKAPI_ATTR void VKAPI_CALL vkGetDescriptorEXT(VkDevice device, const VkDescripto
 
 static const u8* encode(const VkWriteDescriptorSet* writes, u32 count, u32 queries, u32 descriptors) {
     g_test.queries = g_test.encoded = 0;
-    VkDescriptorSet set = vk_descriptors_write(HANDLE(VkDescriptorSetLayout, 1), count, writes);
+    VkDescriptorSet set = vk_descriptors_write(HANDLE(VkDescriptorSetLayout, 1), count, writes, 0);
     assert(g_test.queries == queries && g_test.encoded == descriptors);
     return g_descriptors.frame[0].mapped + (uintptr_t)set - 1;
 }

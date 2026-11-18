@@ -72,7 +72,7 @@ static int dm_table(const DmRes* r, u32 ubos, const u32* at, u32 images) {
                                         .pImageInfo = &im[i]};
     }
     vk_cmd();
-    return vk_descriptors_write(g_vk_dslayout[0][0], n, w) != VK_NULL_HANDLE;
+    return vk_descriptors_write(g_vk_dslayout[0][0], n, w, 0) != VK_NULL_HANDLE;
 }
 /* one step of the sequence: its table, and the words kept (draw_state_check=0) or found again and compared (=1) */
 typedef struct {

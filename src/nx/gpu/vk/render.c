@@ -1345,10 +1345,11 @@ static struct {
     u32 epoch; /* the last draw's write tracking epoch */
     u64 present, drawn, kept, dset_new, dset_reused, targets_kept, submits[VK_SUB_N];
     u32 ww_epoch;
-    u64 heap_buffer_calls, heap_buffer_hits, heap_image_calls, heap_image_hits;
+    u64 heap_buffer_calls, heap_buffer_hits, heap_image_calls, heap_image_hits, heap_cb_addresses;
 } g_stats;
 /* the bytes of the constant buffers that cb_get copied from the CPU (VK_CB_COPIED) since the last statistics line */
 static u64 g_cb_copied_bytes;
+static u64 g_cb_padded; /* constant buffers by address padded with zeros past a short binding (cb_pad) */
 void vk_draw_counts(VkDrawCounts* c) {
     *c = g_stats.n;
     VkDescriptorHeapStats heaps; /* the kept descriptors of the heaps' lasting part that draw_state_check=1 found wrong */
@@ -1439,11 +1440,14 @@ void vk_render_stats_log(void) {
         VkDescriptorHeapStats h;
         vk_descriptor_heaps_get_stats(&h);
         LOG("vulkan: descriptor heaps in the last %llu presents: %llu buffer descriptors written by the driver, %llu "
-            "found; %llu image descriptors written, %llu found\n",
+            "found; %llu image descriptors written, %llu found; %llu constant buffers by address, %llu of them padded\n",
             (unsigned long long)presents, (unsigned long long)(h.buffer_driver_calls - g_stats.heap_buffer_calls),
             (unsigned long long)(h.buffer_hits - g_stats.heap_buffer_hits),
             (unsigned long long)(h.image_driver_calls - g_stats.heap_image_calls),
-            (unsigned long long)(h.image_hits - g_stats.heap_image_hits));
+            (unsigned long long)(h.image_hits - g_stats.heap_image_hits),
+            (unsigned long long)(h.cb_addresses - g_stats.heap_cb_addresses), (unsigned long long)g_cb_padded);
+        g_stats.heap_cb_addresses = h.cb_addresses;
+        g_cb_padded = 0;
         g_stats.heap_buffer_calls = h.buffer_driver_calls;
         g_stats.heap_buffer_hits = h.buffer_hits;
         g_stats.heap_image_calls = h.image_driver_calls;
@@ -2696,6 +2700,27 @@ static int cb_get(const DsState* ds, int stage, int i, u32 sz, u64 align, VkBuff
     return 1;
 }
 
+/* A constant buffer mapped by address (vk_cb_addr_mask) has no range, so its binding must hold every byte the shader
+   reads. Where the game bound fewer bytes than that (cb_range's sz under cbuf_max), the descriptor's robust range read
+   zeros past them, as the console's GPU does past a bank's size: here the sz bytes at *b + *o go into a block of need
+   bytes whose rest is zeros, on the GPU (they can be a result the GPU has yet to write), and *b, *o name the block */
+static int cb_pad(VkBuffer* b, u64* o, u32 sz, u32 need) {
+    VkBuffer pb;
+    u64 po;
+    u8* p = vk_stage(need, vk_stage_align(), &pb, &po);
+    if (!p) return 0;
+    memset(p, 0, need);
+    vk_render_end(); /* the copy happens outside rendering passes */
+    VkCommandBuffer cb = vk_cmd();
+    vk_all_barrier(cb); /* what wrote the bytes, before the copy reads them */
+    VkBufferCopy c = {*o, po, sz};
+    rec_CmdCopyBuffer(cb, *b, pb, 1, &c);
+    vk_all_barrier(cb); /* the copy, before the draw reads the block */
+    *b = pb;
+    *o = po;
+    g_cb_padded++;
+    return 1;
+}
 /* the bytes of constant buffer i that stage s reads, as its descriptor binds them */
 static u32 cb_range(const DsState* ds, int stage, const VkSh* s, int i) {
     u32 sz = ds->bind.cb_size[stage][i];
@@ -2749,6 +2774,7 @@ typedef struct {
     VkBufferView bv[8];
     VkBufferViewCreateInfo bvci[8]; /* what descriptor buffers write for bv (vk_descriptors_write) */
     u32 n;
+    u32 cb_addr; /* the constant buffer slots heaps take by address (vk_cb_addr_mask), as the pipeline maps them */
 } DescWrites;
 
 typedef struct { /* up to eight images for each of the five graphics stages */
@@ -3233,8 +3259,9 @@ static VkDescriptorSet desc_set_cached(VkDescriptorSetLayout layout, DescWrites*
     static DescSetEntry cache[1u << 14][2];
     /* Two indexed image arrays and otherwise at most one element per write. Serialize only initialized fields,
        then hash them with the SIMD dispatcher instead of two serial multiply chains for every descriptor. */
-    u64 key[VK_DESCRIPTOR_KEY_WORDS(SNX_VKB_END, SNX_VKB_END + 2 * SNX_TEX_ARRAY)];
+    u64 key[VK_DESCRIPTOR_KEY_WORDS(SNX_VKB_END, SNX_VKB_END + 2 * SNX_TEX_ARRAY) + 1];
     size_t words = vk_descriptor_key(key, layout, d->w, d->n);
+    key[words++] = d->cb_addr; /* the same writes give a table of other words where other slots go by address */
     const u64 mode = g_vk.has_descriptor_heaps ? 2 : g_vk.has_descriptor_buffers ? 1 : 0;
     u64 frame = (((vk_frame_id() + 1) << 2) | mode) ^ vk_descriptor_heaps_forgets() * VK_FIB_MULT;
     u64 heaps = g_vk.has_descriptor_heaps ? vk_descriptor_heaps_epoch() : 0; /* it moves at each draw without heaps */
@@ -3258,7 +3285,7 @@ static VkDescriptorSet desc_set_cached(VkDescriptorSetLayout layout, DescWrites*
         DescSetEntry* e = bucket[0].frame != frame   ? &bucket[0]
                           : bucket[1].frame != frame ? &bucket[1]
                                                      : &bucket[hash[1] >> 63];
-        set = (g_vk.has_descriptor_buffers || g_vk.has_descriptor_heaps) ? vk_descriptors_write(layout, d->n, d->w)
+        set = (g_vk.has_descriptor_buffers || g_vk.has_descriptor_heaps) ? vk_descriptors_write(layout, d->n, d->w, d->cb_addr)
                                                                          : vk_rec_new_set(layout, d->n, d->w);
         if (!set) return VK_NULL_HANDLE;
         g_vk_dset_new++;
@@ -3479,6 +3506,7 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
     VkDescriptorSet set = VK_NULL_HANDLE; /* the writes take it once their contents are known (desc_set_cached) */
     DescWrites d;
     d.n = 0;
+    d.cb_addr = vk_cb_addr_mask(&s->si);
     /* the profiler's zones of a stage's set: its constant buffers, storage buffers, textures and the set itself */
     SNX_ZONE(zcb, "stage set constants");
     for (int i = 0; i < 18; i++) {
@@ -3510,6 +3538,11 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
             dw_buffer(&d, set, SNX_VKB_CB + i, vk_cbuf_type((u32)i), b, base, (u32)range);
         } else {
             if (vs_fs < 2) g_cb_offsets[vs_fs][i] = 0;
+            /* by address (with heaps, which take no windows), every byte the shader reads is in the binding: past a
+               short one, zeros */
+            if ((d.cb_addr >> i & 1) && sz < vk_cb_range(s->si.cbuf_max[i]) &&
+                !cb_pad(&b, &o, sz, vk_cb_range(s->si.cbuf_max[i])))
+                return VK_NULL_HANDLE;
             dw_buffer(&d, set, SNX_VKB_CB + i, vk_cbuf_type((u32)i), b, o, sz);
         }
     }
@@ -4903,8 +4936,10 @@ static int draw_key(const DsState* ds, const DrawShaders* sh, const VkSh* fs, Su
     k->gs = sh->gs ? sh->gs->mod : VK_NULL_HANDLE;
     {
         const VkSh* stages[5] = {vs, fs, sh->tcs, sh->tes, sh->gs};
-        for (int i = 0; i < 5; i++)
+        for (int i = 0; i < 5; i++) {
             if (stages[i] && stages[i]->indexed) k->arrays |= 1u << shader_vk_set(stages[i]->stage);
+            if (stages[i] && k->heaps) k->cb_addr[shader_vk_set(stages[i]->stage)] = vk_cb_addr_mask(&stages[i]->si);
+        }
     }
     if (sh->tes) { /* the control points of a patch */
         k->patch = rk->patch_vertices ? rk->patch_vertices : 1;

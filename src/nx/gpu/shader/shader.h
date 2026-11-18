@@ -677,6 +677,7 @@ void shader_hmma_choose(int subgroups, int radv_warp32, int shuffle_loops, int s
 #define SNX_SH_SWIZZLE_SHIFT 8
 /* the descriptor set of a stage's bindings */
 int shader_vk_set(int stage);
+#define SHADER_VK_SET_FS 1 /* shader_vk_set(ST_FS): the fragment program's set, in a mesh pipeline too */
 int shader_vk_tex_set(int stage);
 /* can_flush: how the module gets the console's FP32 flush to zero (FTZ on FADD, FMUL and FFMA). SH_FTZ_EMULATE: a
    test and a select on each such operand and result; SH_FTZ_MODE: the DenormFlushToZero execution mode, in a module
