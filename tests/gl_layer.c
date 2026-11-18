@@ -7,8 +7,10 @@
    doesn't know), a 4.5 core debug context (a 2.1 one refused with EGL_BAD_MATCH), a window surface the size of the
    handheld display, eglMakeCurrent setting the viewport to it, glGetString's version in guest memory, eglGetProcAddress
    answering a GL name with its export; glClear's color in the image, then in the scissor alone, rows from GL's bottom;
-   eglSwapBuffers presenting that image (RGBA8888, pitch-linear) and drawing into the other next; a GL and an EGL
-   function without a handler stopping the game, the message naming the function and gl_layer's value */
+   eglSwapBuffers presenting that image (RGBA8888, pitch-linear) and drawing into the other next; a program of
+   desktop GLSL 3.30 core and 1.20 compiled, linked and its uniforms written and read through the slots with the
+   guest's pointers, and a shader refused with its line in the log; a GL and an EGL function without a handler stopping
+   the game, the message naming the function and gl_layer's value */
 #include "common/gpu/gl/gl_state.h"
 #include "common/platform/thread.h"
 #include "nx/gpu/gl/gl_layer.h"
@@ -47,11 +49,41 @@ const SnxArmModule* g_arm_mod;
 Settings g_settings;
 _Atomic int g_frames;
 
-static const char* const exports[] = {
-    "eglGetDisplay",  "eglInitialize",  "eglBindAPI",     "eglChooseConfig",        "eglCreateContext",
-    "eglGetError",    "eglMakeCurrent", "eglSwapBuffers", "eglCreateWindowSurface", "eglGetProcAddress",
-    "eglCopyBuffers", "_glClearColor",  "_glClear",       "_glGetString",           "_glGetIntegerv",
-    "_glEnable",      "_glScissor",     "_glDrawArrays",  "eglQuerySurface",        "eglDestroySurface"};
+static const char* const exports[] = {"eglGetDisplay",
+                                      "eglInitialize",
+                                      "eglBindAPI",
+                                      "eglChooseConfig",
+                                      "eglCreateContext",
+                                      "eglGetError",
+                                      "eglMakeCurrent",
+                                      "eglSwapBuffers",
+                                      "eglCreateWindowSurface",
+                                      "eglGetProcAddress",
+                                      "eglCopyBuffers",
+                                      "_glClearColor",
+                                      "_glClear",
+                                      "_glGetString",
+                                      "_glGetIntegerv",
+                                      "_glEnable",
+                                      "_glScissor",
+                                      "_glDrawArrays",
+                                      "eglQuerySurface",
+                                      "eglDestroySurface",
+                                      "_glCreateShader",
+                                      "_glShaderSource",
+                                      "_glCompileShader",
+                                      "_glGetShaderiv",
+                                      "_glGetShaderInfoLog",
+                                      "_glCreateProgram",
+                                      "_glAttachShader",
+                                      "_glLinkProgram",
+                                      "_glGetProgramiv",
+                                      "_glGetUniformLocation",
+                                      "_glUseProgram",
+                                      "_glUniform4f",
+                                      "_glUniformMatrix4fv",
+                                      "_glGetUniformfv",
+                                      "_glGetAttribLocation"};
 #define EXPORTS (sizeof exports / sizeof *exports)
 static u64 export_name[EXPORTS];
 static u64 at(const char* name) {
@@ -106,7 +138,15 @@ static void present_buffer(u64 cpu_addr, u32 w, u32 h, u32 pitch, u32 layout, u3
 static Renderer renderer = {.present_buffer = present_buffer};
 const Renderer* g_renderer = &renderer;
 int g_renderer_up = 1;
-void logf_(int lvl, const char* fmt, ...) { (void)lvl, (void)fmt; }
+/* the log's last line */
+static char logged[512];
+void logf_(int lvl, const char* fmt, ...) {
+    va_list ap;
+    (void)lvl;
+    va_start(ap, fmt);
+    vsnprintf(logged, sizeof logged, fmt, ap);
+    va_end(ap);
+}
 /* the runtime's fatal: the message kept and the test resumed where it expects one, else the test fails */
 static jmp_buf stopped;
 static int expect_stop;
@@ -271,6 +311,64 @@ int main(void) {
     }
     assert(call("eglSwapBuffers", 1, surface, 0, 0, 0) == 1);
     assert(shown.count == 2 && shown.addr != first); /* the other image */
+
+    /* a program through the slots: its shaders' text from the guest's array of pointers, a 3.30 core vertex shader
+       and a 1.20 fragment shader (the f suffix, a precision statement), linked; a uniform written and read back */
+    {
+        static const char vs[] = "#version 330 core\nlayout(location = 0) in vec4 p;\nuniform mat4 m;\n"
+                                 "void main() { gl_Position = m * p; }\n";
+        static const char fs[] = "#version 120\nprecision mediump float;\nuniform vec4 tint;\n"
+                                 "void main() { gl_FragColor = tint * 0.5f; }\n";
+        const u64 text = SCRATCH + 0x1000, strings = SCRATCH + 0x2000, lengths = SCRATCH + 0x2100;
+        const u64 status = SCRATCH + 0x2200, out = SCRATCH + 0x2300, name = SCRATCH + 0x2400;
+        u64 v, f, prog;
+        memcpy(GP(text), vs, sizeof vs);
+        memcpy(GP(text + 0x400), fs, 20);                  /* fs in two strings: the first 20 bytes, */
+        memcpy(GP(text + 0x800), fs + 20, sizeof fs - 20); /* then the rest, NUL-ended */
+        gw64(strings, text);
+        v = call("_glCreateShader", 0x8b31, 0, 0, 0, 0);
+        call("_glShaderSource", v, 1, strings, 0, 0);
+        call("_glCompileShader", v, 0, 0, 0, 0);
+        call("_glGetShaderiv", v, 0x8b81, status, 0, 0);
+        assert(v && gr32(status) == 1);
+        gw64(strings, text + 0x400), gw64(strings + 8, text + 0x800);
+        gw32(lengths, 20), gw32(lengths + 4, 0xffffffffu); /* -1: up to the NUL */
+        f = call("_glCreateShader", 0x8b30, 0, 0, 0, 0);
+        call("_glShaderSource", f, 2, strings, lengths, 0);
+        call("_glCompileShader", f, 0, 0, 0, 0);
+        call("_glGetShaderiv", f, 0x8b81, status, 0, 0);
+        assert(f && gr32(status) == 1);
+        prog = call("_glCreateProgram", 0, 0, 0, 0, 0);
+        call("_glAttachShader", prog, v, 0, 0, 0);
+        call("_glAttachShader", prog, f, 0, 0, 0);
+        call("_glLinkProgram", prog, 0, 0, 0, 0);
+        call("_glGetProgramiv", prog, 0x8b82, status, 0, 0);
+        assert(prog && gr32(status) == 1);
+        memcpy(GP(name), "tint", 5);
+        u64 tint = call("_glGetUniformLocation", prog, name, 0, 0, 0);
+        memcpy(GP(name), "p", 2);
+        assert((i32)tint >= 0 && call("_glGetAttribLocation", prog, name, 0, 0, 0) == 0);
+        call("_glUseProgram", prog, 0, 0, 0, 0);
+        arg_f(0, 0.5f), arg_f(1, 0.25f), arg_f(2, 1), arg_f(3, 2);
+        call("_glUniform4f", tint, 0, 0, 0, 0);
+        call("_glGetUniformfv", prog, tint, out, 0, 0);
+        {
+            float back[4];
+            memcpy(back, GP(out), sizeof back);
+            assert(back[0] == 0.5f && back[1] == 0.25f && back[2] == 1 && back[3] == 2);
+        }
+        /* a shader that does not compile: its log in guest memory, its line in the runtime's log */
+        memcpy(GP(text), "#version 330 core\nvoid main() { nothing; }\n", 44);
+        gw64(strings, text);
+        v = call("_glCreateShader", 0x8b31, 0, 0, 0, 0);
+        call("_glShaderSource", v, 1, strings, 0, 0);
+        call("_glCompileShader", v, 0, 0, 0, 0);
+        call("_glGetShaderiv", v, 0x8b81, status, 0, 0);
+        assert(gr32(status) == 0);
+        call("_glGetShaderInfoLog", v, 64, status, out, 0);
+        assert(!strncmp((const char*)GP(out), "ERROR: 2:", 9) && gr32(status) == strlen((const char*)GP(out)));
+        assert(!strncmp(logged, "gl layer: a shader does not compile: ERROR: 2:", 46));
+    }
 
     /* a function without a handler stops the game, naming it and gl_layer's value; the driver never ran */
     assert(!strcmp(stops("_glDrawArrays"),
