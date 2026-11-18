@@ -3,6 +3,7 @@
 /* The GL layer's framebuffers and renderbuffers (gl_framebuffer.h) */
 #include "common/gpu/gl/gl_framebuffer.h"
 #include "common/gpu/gl/gl_format.h"
+#include "common/gpu/gl/gl_object.h"
 #include "common/gpu/gl/gl_state.h"
 #include "common/gpu/gl/gl_texture.h"
 #include <stdio.h>
@@ -179,6 +180,8 @@ void snx_gl_delete_renderbuffers(uint32_t ctx, int32_t n, const uint32_t* names)
         uint32_t name;
         memcpy(&name, names + i, 4);
         if (!snx_gl_renderbuffer(name)) continue;
+        if (S.renderbuffers[name - 1].storage)
+            snx_gl_memory_give(S.renderbuffers[name - 1].storage, S.renderbuffers[name - 1].storage_size);
         S.renderbuffers[name - 1] = (SnxGlRenderbuffer){0};
         if (H.renderbuffer_gone) H.renderbuffer_gone(name);
         if (ctx && snx_gl_framebuffers(ctx)->renderbuffer == name) snx_gl_framebuffers(ctx)->renderbuffer = 0;
@@ -221,10 +224,22 @@ void snx_gl_renderbuffer_storage(uint32_t ctx, uint32_t target, int32_t samples,
         return;
     }
     if (H.renderbuffer_gone) H.renderbuffer_gone(name);
+    if (r->storage) snx_gl_memory_give(r->storage, r->storage_size);
+    r->storage = r->storage_size = 0;
     r->format = index, r->width = w, r->height = h;
     r->samples = samples > 2 ? 4 : samples >= 1 ? 2 : 1; /* the counts every device has */
     r->generation++;
     changed();
+    if (w && h && H.storage_bytes) {
+        uint64_t align = 256, size = H.storage_bytes(name, &align);
+        r->storage = size ? snx_gl_memory_take(size, align) : 0;
+        if (size && !r->storage) {
+            r->format = -1;
+            error(ctx, GL_OUT_OF_MEMORY_);
+            return;
+        }
+        r->storage_size = r->storage ? size : 0;
+    }
     if (w && h && H.renderbuffer_storage && !H.renderbuffer_storage(ctx, name)) r->format = -1;
 }
 int snx_gl_get_renderbuffer_parameter(uint32_t ctx, uint32_t target, uint32_t pname, int32_t* v) {
@@ -459,6 +474,11 @@ int snx_gl_framebuffer_state_check(const void* in, size_t size, char* why, size_
     memcpy(c, (const unsigned char*)in + sizeof h, sizeof *c);
     for (uint32_t n = 1; n <= SNX_GL_RENDERBUFFERS; n++) {
         const SnxGlRenderbuffer* r = &c->renderbuffers[n - 1];
+        if (r->used && r->storage && !snx_gl_object_checked_holds(r->storage, r->storage_size)) {
+            snprintf(why, whysize, "the GL layer's renderbuffer %u keeps its storage at %llx+%llx, outside its memory",
+                     (unsigned)n, (unsigned long long)r->storage, (unsigned long long)r->storage_size);
+            return -1;
+        }
         if (r->used && (r->format < -1 || r->format >= SNX_GL_FORMATS || r->width < 0 || r->height < 0)) {
             snprintf(why, whysize, "the GL layer's renderbuffer %u has format %d of %dx%d, which GL has not",
                      (unsigned)n, (int)r->format, (int)r->width, (int)r->height);

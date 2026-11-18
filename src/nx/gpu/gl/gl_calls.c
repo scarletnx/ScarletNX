@@ -205,14 +205,60 @@ u64 gl_get_stringi(CPU* c, u32 name, u32 index) {
 void gl_flush(CPU* c) { (void)c; }
 void gl_finish(CPU* c) { (void)c; }
 
+/* glClear: the renderer's clear of the bound draw framebuffer's targets, or the window surface's */
 void gl_clear(CPU* c, u32 mask) {
-    u32 buffers, draw = gl_egl_draw();
+    u32 buffers;
     CTX;
     buffers = snx_gl_clear(ctx, mask);
-    if (buffers && snx_gl_framebuffers(ctx)->draw) { /* drawing into a framebuffer object comes with the draw path */
-        LOG_LIMIT(1, "gl layer: glClear of framebuffer %u isn't drawn yet: only the window's (framebuffer 0) is\n",
-                  (unsigned)snx_gl_framebuffers(ctx)->draw);
-        return;
-    }
-    if (draw && (buffers & GL_COLOR_BUFFER_BIT_)) gl_host_clear(draw, ctx, buffers);
+    if (buffers) gl_object_calls_lock(), gl_draw_clear(ctx, buffers), gl_object_calls_unlock();
+}
+
+/* ---- the draws (gl_draw.c), under the object lock their buffers and textures are under ---- */
+
+/* GL's primitive modes are the 3D engine's numbers (points 0 to triangle fan 6, the adjacency ones 10 to 13,
+   patches 14) */
+static void draw(u32 ctx, DrawCall* call, u32 type, u64 indices) {
+    gl_object_calls_lock();
+    gl_draw(ctx, call, type, indices);
+    gl_object_calls_unlock();
+}
+void gl_draw_arrays(CPU* c, u32 mode, i32 first, i32 count) {
+    CTX;
+    if (count > 0)
+        draw(ctx, &(DrawCall){.topology = mode, .first = (u32)first, .count = (u32)count, .instances = 1}, 0, 0);
+}
+void gl_draw_arrays_instanced(CPU* c, u32 mode, i32 first, i32 count, i32 instances) {
+    CTX;
+    if (count > 0 && instances > 0)
+        draw(ctx, &(DrawCall){.topology = mode, .first = (u32)first, .count = (u32)count, .instances = (u32)instances},
+             0, 0);
+}
+void gl_draw_elements_base_vertex(CPU* c, u32 mode, i32 count, u32 type, u64 indices, i32 base) {
+    CTX;
+    if (count > 0)
+        draw(ctx,
+             &(DrawCall){.topology = mode, .indexed = 1, .count = (u32)count, .base_vertex = (u32)base, .instances = 1},
+             type, indices);
+}
+void gl_draw_elements(CPU* c, u32 mode, i32 count, u32 type, u64 indices) {
+    gl_draw_elements_base_vertex(c, mode, count, type, indices, 0);
+}
+void gl_draw_range_elements(CPU* c, u32 mode, u32 start, u32 end, i32 count, u32 type, u64 indices) {
+    (void)start, (void)end;
+    gl_draw_elements_base_vertex(c, mode, count, type, indices, 0);
+}
+void gl_draw_elements_instanced_base_vertex(CPU* c, u32 mode, i32 count, u32 type, u64 indices, i32 instances,
+                                            i32 base) {
+    CTX;
+    if (count > 0 && instances > 0)
+        draw(ctx,
+             &(DrawCall){.topology = mode,
+                         .indexed = 1,
+                         .count = (u32)count,
+                         .base_vertex = (u32)base,
+                         .instances = (u32)instances},
+             type, indices);
+}
+void gl_draw_elements_instanced(CPU* c, u32 mode, i32 count, u32 type, u64 indices, i32 instances) {
+    gl_draw_elements_instanced_base_vertex(c, mode, count, type, indices, instances, 0);
 }

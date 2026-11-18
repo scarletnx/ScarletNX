@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* The GL layer's sync calls on the console (gl_layer.h, gpu/gl/gl.hook's sync family): each the shared layer's
-   (common/gpu/gl/gl_sync.h) on the calling thread's current context, under the object lock. The layer records no GPU
-   work yet, so every fence is signaled at once. A sync's handle is the layer's name, which a game only passes back.
+   (common/gpu/gl/gl_sync.h) on the calling thread's current context, under the object lock. A fence waits for the
+   draws and clears before it, which the GPU thread finishes in order (gl_draw.c). A sync's handle is the layer's name, which a game only passes back.
    Without a current context a call does nothing and returns 0 */
 #include "common/gpu/gl/gl_sync.h"
 #include "gpu/gl/gl.hook.h"
@@ -10,7 +10,10 @@
 #include "nx/memory/mem.h"
 #include <string.h>
 
-void gl_sync_calls_init(void) { snx_gl_sync_host(NULL); }
+void gl_sync_calls_init(void) {
+    snx_gl_sync_host(
+        &(SnxGlSyncHost){.recorded = gl_draw_recorded, .completed = gl_draw_completed, .wait = gl_draw_wait});
+}
 
 #define LOCKED(fallback, ...)                                                                                          \
     do {                                                                                                               \

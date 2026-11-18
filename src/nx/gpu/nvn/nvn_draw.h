@@ -92,5 +92,7 @@ void nvn_draw_device(u32 origin, u32 depth_mode);
    engine's registers describe one (gpu/draw_state.h's DsSurf: a multisampled one's size in samples), whether it is a
    depth target, and its sample layout (DS_MSAA_): 0 when the texture's format takes no target */
 int nvn_draw_surface(u64 snapshot, const NvnView* v, DsSurf* s, int* depth, u32* msaa);
+/* the same of a texture record the caller holds (another front end's, laid out as NVN lays one out: the GL layer's) */
+int nvn_draw_surface_of(const NvnTexture* t, const NvnView* v, DsSurf* s, int* depth, u32* msaa);
 
 #endif

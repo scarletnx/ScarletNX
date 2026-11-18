@@ -11,6 +11,7 @@
    nvn_loader.c does for NVN */
 #ifndef SNX_NX_GL_LAYER_H
 #define SNX_NX_GL_LAYER_H
+#include "nx/gpu/draw_state.h"
 #include "nx/gpu/nvn/nvn_obj.h"
 #include "common/cpu/aarch64/cpu.h"
 
@@ -45,6 +46,23 @@ void gl_object_calls_unlock(void);
 /* texture name as NVN describes the same storage (the GL layer lays its textures out as NVN does, at gl_gpu_address of
    their memory): 1, or 0 (out zeroed) for a texture of none or of a format NVN has no form of */
 int gl_nvn_texture(u32 name, NvnTexture* out);
+/* the NVN format of a shared format index (gl_format.h's), 0 for one NVN has no form of */
+u16 gl_nvn_format(int32_t index);
+/* renderbuffer name as NVN describes the same storage: 1, or 0 (out zeroed) for none or a format NVN has no form of */
+int gl_nvn_renderbuffer(u32 name, NvnTexture* out);
+
+/* ---- gl_draw.c */
+/* glDraw*: the renderer's draw of the context's state, call's topology, counts and bases as GL gave them (indexed:
+   indices the offset into the element array buffer, of elements_type), on the GPU thread in order. 1, or 0 for a draw
+   that is skipped (said) */
+int gl_draw(u32 ctx, const DrawCall* call, u32 elements_type, u64 indices);
+/* glClear of buffers (GL's bits) in the bound draw framebuffer, by the renderer: 1, or 0 when there is no target */
+int gl_draw_clear(u32 ctx, u32 buffers);
+/* the fences' serials (gl_sync.h's host): the draws and clears handed to the GPU thread, those it finished, and a wait
+   until it finished serial */
+u64 gl_draw_recorded(void);
+u64 gl_draw_completed(void);
+void gl_draw_wait(u32 ctx, u64 serial);
 /* the shared layer's textures keep their texels in guest memory, and say in the log what they leave out */
 void gl_texture_calls_init(void);
 
@@ -63,9 +81,9 @@ void gl_sync_calls_init(void);
 u32 gl_host_surface_new(u32 w, u32 h);
 void gl_host_surface_free(u32 s);
 void gl_host_surface_size(u32 s, u32* w, u32* h);
-/* glClear's color into the image the surface draws next, in the context's scissor where its test is on, as its color
-   mask lets */
-void gl_host_clear(u32 s, u32 ctx, u32 mask);
+/* the targets a draw into surface s's next image has: the image (pitch-linear RGBA8) at its GPU address and the
+   surface's depth and stencil. 0 for no surface */
+int gl_host_surface_targets(u32 s, DsTargets* t);
 /* the surface's image on the display (eglSwapBuffers), after the pace interval asks; the next one drawn next */
 void gl_host_present(u32 s, u32 interval);
 /* the guest's copy of a host string, made once a string: its address, 0 when guest memory runs out */

@@ -9,7 +9,11 @@
 #include "common/platform/thread.h"
 #include "nx/gpu/gl/gl_layer.h"
 #include "nx/gpu/gpu.h"
+#include "nx/gpu/nvn/nvn_draw.h"
+#include "nx/gpu/nvn/nvn_tex.h"
+#include "nx/gpu/nvn/nvn_tic.h"
 #include "nx/gpu/renderer.h"
+#include "nx/hle/services/nvdrv.h"
 #include "nx/memory/mem.h"
 #include "nx/runtime/main.h"
 #include "nx/runtime/platform/log.h"
@@ -21,7 +25,8 @@
 
 typedef struct {
     u32 used, w, h, next;
-    u64 image[2];
+    u64 image[2], gpu[2]; /* the images' guest and GPU addresses */
+    NvnTexture depth;     /* its depth and stencil, as NVN lays a DEPTH24_STENCIL8 texture out */
 } GlSurface;
 /* an image of a surface on its way to the display, read on the GPU thread */
 typedef struct {
@@ -49,7 +54,26 @@ u32 gl_host_surface_new(u32 w, u32 h) {
     }
     GlSurface* f = &g_gl_host.surfaces[s];
     for (int i = 0; i < 2; i++)
-        if (!f->image[i] || f->w != w || f->h != h) f->image[i] = kmem_alloc(size, MS_KERNEL, PERM_RW);
+        if (!f->image[i] || f->w != w || f->h != h) {
+            f->image[i] = kmem_alloc(size, MS_KERNEL, PERM_RW);
+            f->gpu[i] = f->image[i] ? gmmu_space_alloc(size, 0) : 0;
+            if (f->gpu[i]) gmmu_space_map(f->gpu[i], f->image[i], size);
+        }
+    if (f->image[0] && (!f->depth.gpu || f->w != w || f->h != h)) {
+        NvnTexStorage st;
+        f->depth = (NvnTexture){.magic = NVN_MAGIC('T', 'E', 'X', 0),
+                                .d = {.format = NVN_FORMAT_DEPTH24_STENCIL8,
+                                      .target = NVN_TEXTURE_TARGET_2D,
+                                      .levels = 1,
+                                      .width = w,
+                                      .height = h,
+                                      .depth = 1}};
+        nvn_tex_storage(&f->depth.d, &st);
+        f->depth.size = (st.size + 0xffff) & ~0xffffull;
+        f->depth.memory = kmem_alloc(f->depth.size, MS_KERNEL, PERM_RW);
+        f->depth.gpu = f->depth.memory ? gmmu_space_alloc(f->depth.size, st.align > 0x10000 ? st.align : 0) : 0;
+        if (f->depth.gpu) gmmu_space_map(f->depth.gpu, f->depth.memory, f->depth.size);
+    }
     if (!f->image[0] || !f->image[1]) {
         pm_unlock(&g_gl_host.lock);
         WARN("gl layer: a surface of %ux%u isn't made: guest memory has no 2 x %llu bytes for its images\n", w, h,
@@ -71,28 +95,21 @@ void gl_host_surface_size(u32 s, u32* w, u32* h) {
     *h = f && f->used ? f->h : 0;
 }
 
-/* a color channel in [0, 1] as a byte */
-static u8 unorm8(float v) { return (u8)(v <= 0 ? 0 : v >= 1 ? 255 : (int)(v * 255.0f + 0.5f)); }
-void gl_host_clear(u32 s, u32 ctx, u32 mask) {
-    const SnxGlFixed* f = snx_gl_fixed(ctx);
-    GlSurface* g = &g_gl_host.surfaces[s - 1];
-    u8 rgba[4];
-    i32 x0 = 0, y0 = 0, x1 = (i32)g->w, y1 = (i32)g->h;
-    (void)mask; /* the color alone: depth and stencil have no buffer here yet */
-    for (int i = 0; i < 4; i++) rgba[i] = unorm8(f->clear_color[i]);
-    if (f->scissor_test) {
-        x0 = f->scissor[0] > 0 ? f->scissor[0] : 0;
-        y0 = f->scissor[1] > 0 ? f->scissor[1] : 0;
-        x1 = f->scissor[0] + f->scissor[2] < x1 ? f->scissor[0] + f->scissor[2] : x1;
-        y1 = f->scissor[1] + f->scissor[3] < y1 ? f->scissor[1] + f->scissor[3] : y1;
-    }
-    u8* image = GP(g->image[g->next]);
-    for (i32 y = y0; y < y1; y++) { /* GL's rows count from the bottom, the image's from the top */
-        u8* row = image + (u64)(g->h - 1 - (u32)y) * g->w * 4;
-        for (i32 x = x0; x < x1; x++)
-            for (int k = 0; k < 4; k++)
-                if (f->color_mask[k]) row[4 * x + k] = rgba[k];
-    }
+int gl_host_surface_targets(u32 s, DsTargets* t) {
+    const GlSurface* g = s && s <= GL_HOST_SURFACES ? &g_gl_host.surfaces[s - 1] : NULL;
+    int depth;
+    u32 msaa;
+    memset(t, 0, sizeof *t);
+    if (!g || !g->used || !g->gpu[g->next]) return 0;
+    t->count = 1;
+    t->color[0] = (DsSurf){.gva = g->gpu[g->next],
+                           .width = g->w * 4, /* a pitch-linear target's row bytes */
+                           .height = g->h,
+                           .format = nvn_rt_format(NVN_FORMAT_RGBA8, &depth),
+                           .mem = 1u << 12,
+                           .layers = 1};
+    if (g->depth.gpu) nvn_draw_surface_of(&g->depth, NULL, &t->depth, &depth, &msaa);
+    return 1;
 }
 
 /* on the GPU thread, in order with the GPU's other work: an image of a surface on the display */

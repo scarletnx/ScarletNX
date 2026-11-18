@@ -1343,8 +1343,11 @@ static void window_bits(uint32_t ctx, int32_t* depth, int32_t* stencil) {
     *stencil = gl && gl->draw ? gl->draw->stencil_bits : 0;
 }
 void gles2_framebuffers_init(void) {
-    snx_gl_framebuffer_host(&(SnxGlFramebufferHost){renderbuffer_storage, renderbuffer_gone, gles2_target_forget,
-                                                    window_bits, texture_max_size});
+    snx_gl_framebuffer_host(&(SnxGlFramebufferHost){.renderbuffer_storage = renderbuffer_storage,
+                                                    .renderbuffer_gone = renderbuffer_gone,
+                                                    .changed = gles2_target_forget,
+                                                    .window_bits = window_bits,
+                                                    .max_size = texture_max_size});
 }
 void gles2_objects_vk_free(void) {
     for (size_t i = 0; i < SNX_GL_BUFFERS; ++i) buffer_vk_free(&g_gles2.buffer_vk[i]);

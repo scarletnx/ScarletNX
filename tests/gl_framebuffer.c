@@ -9,6 +9,7 @@
    renderbuffer, an attachment or a binding in it is wrong */
 #include "common/gpu/gl/gl_format.h"
 #include "common/gpu/gl/gl_framebuffer.h"
+#include "common/gpu/gl/gl_object.h"
 #include "common/gpu/gl/gl_program.h"
 #include "common/gpu/gl/gl_state.h"
 #include "common/gpu/gl/gl_sync.h"
@@ -48,7 +49,21 @@ enum {
 static struct {
     unsigned storages, gone, changes;
     int refuse;
+    uint32_t laid_out;                   /* the renderbuffer storage_bytes was last asked for */
+    uint64_t layout_bytes, layout_align; /* what it answers */
 } heard;
+/* the platform's memory: chunks of the test's */
+static uint64_t chunk(uint64_t size, uint64_t* got) {
+    void* p = calloc(1, (size_t)size);
+    *got = p ? size : 0;
+    return (uint64_t)(uintptr_t)p;
+}
+static uint8_t* bytes(uint64_t at) { return (uint8_t*)(uintptr_t)at; }
+static uint64_t layout_bytes(uint32_t renderbuffer, uint64_t* align) {
+    heard.laid_out = renderbuffer;
+    *align = heard.layout_align;
+    return heard.layout_bytes;
+}
 static int storage(uint32_t ctx, uint32_t renderbuffer) {
     (void)ctx, (void)renderbuffer;
     heard.storages++;
@@ -87,7 +102,11 @@ int main(void) {
     uint32_t ctx = snx_gl_context_new(SNX_GL_API_ES, 32, 0), rb[3] = {0}, fb[2] = {0}, tex[2] = {0};
     double v[4];
     assert(ctx);
-    snx_gl_framebuffer_host(&(SnxGlFramebufferHost){storage, gone, changed, window_bits, max_size});
+    snx_gl_framebuffer_host(&(SnxGlFramebufferHost){.renderbuffer_storage = storage,
+                                                    .renderbuffer_gone = gone,
+                                                    .changed = changed,
+                                                    .window_bits = window_bits,
+                                                    .max_size = max_size});
 
     /* renderbuffers: names, a bind of a target GL has not, storage of a format and size, its parameters */
     snx_gl_gen_renderbuffers(ctx, 3, rb);
@@ -285,6 +304,56 @@ int main(void) {
         memcpy(copy + contexts, &c, sizeof c);
         refused(copy, total, "context 1 binds framebuffers 1 and 1025");
         refused(saved, total - 8, "this build reads");
+    }
+    /* a platform that lays renderbuffers out itself: each storage's bytes taken from its memory at its alignment,
+       given back when the storage is made anew or the renderbuffer deleted; a save state's copy whose storage is
+       outside that memory refused; 0 bytes, no storage and no error */
+    {
+        uint32_t r2;
+        uint64_t first;
+        const SnxGlRenderbuffer* x;
+        snx_gl_object_host(&(SnxGlObjectHost){chunk, bytes, NULL, NULL, NULL});
+        snx_gl_framebuffer_host(&(SnxGlFramebufferHost){.renderbuffer_storage = storage,
+                                                        .renderbuffer_gone = gone,
+                                                        .changed = changed,
+                                                        .window_bits = window_bits,
+                                                        .max_size = max_size,
+                                                        .storage_bytes = layout_bytes});
+        heard.layout_bytes = 8192, heard.layout_align = 4096;
+        snx_gl_gen_renderbuffers(ctx, 1, &r2);
+        snx_gl_bind_renderbuffer(ctx, RENDERBUFFER, r2);
+        snx_gl_renderbuffer_storage(ctx, RENDERBUFFER, 0, RGBA8, 16, 16);
+        x = snx_gl_renderbuffer(r2);
+        assert(!snx_gl_get_error(ctx) && heard.laid_out == r2 && x->format >= 0);
+        assert(x->storage && !(x->storage % 4096) && x->storage_size == 8192);
+        first = x->storage;
+        heard.layout_bytes = 4096;
+        snx_gl_renderbuffer_storage(ctx, RENDERBUFFER, 0, RGBA8, 8, 8);
+        assert(x->storage == first && x->storage_size == 4096); /* the first storage's bytes, given back, taken */
+        size_t total2 = snx_gl_state_bytes();
+        unsigned char* kept = malloc(total2);
+        assert(kept);
+        snx_gl_state_save(kept);
+        assert(!snx_gl_state_check(kept, total2, why, sizeof why));
+        {
+            size_t at = total2 - snx_gl_sync_state_bytes() - snx_gl_framebuffer_state_bytes() + 8 +
+                        (r2 - 1) * sizeof(SnxGlRenderbuffer);
+            SnxGlRenderbuffer r;
+            memcpy(&r, kept + at, sizeof r);
+            r.storage = 16; /* no chunk of the memory starts there */
+            memcpy(kept + at, &r, sizeof r);
+            snprintf(why, sizeof why, "renderbuffer %u keeps its storage at 10+1000", (unsigned)r2);
+            refused(kept, total2, why);
+        }
+        free(kept);
+        snx_gl_delete_renderbuffers(ctx, 1, &r2);
+        assert(snx_gl_memory_take(4096, 4096) == first); /* given back */
+        snx_gl_memory_give(first, 4096);
+        heard.layout_bytes = 0;
+        snx_gl_gen_renderbuffers(ctx, 1, &r2);
+        snx_gl_bind_renderbuffer(ctx, RENDERBUFFER, r2);
+        snx_gl_renderbuffer_storage(ctx, RENDERBUFFER, 0, RGBA8, 16, 16);
+        assert(!snx_gl_get_error(ctx) && !snx_gl_renderbuffer(r2)->storage && snx_gl_renderbuffer(r2)->format >= 0);
     }
     free(saved);
     free(copy);
