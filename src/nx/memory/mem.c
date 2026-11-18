@@ -647,6 +647,7 @@ static int alias_clear(u64 a, u64 end) {
     __atomic_thread_fence(__ATOMIC_ACQUIRE);
     return __atomic_load_n(&g_alias.gen, __ATOMIC_RELAXED) == built;
 }
+int mem_alias_clear(u64 a, u64 size) { return size && a + size > a && alias_clear(a, a + size); }
 int mem_alias_any(void) {
     return __atomic_load_n(&g_alias.built, __ATOMIC_ACQUIRE) != __atomic_load_n(&g_alias.gen, __ATOMIC_ACQUIRE) ||
            __atomic_load_n(&g_alias.n, __ATOMIC_RELAXED);

@@ -2433,10 +2433,13 @@ int vk_written_since(const u8* host, u64 len, u32 since) {
     return 0;
 }
 int vk_written_quick(const u8* host, u64 len, u32 since) {
-    if (g_ww <= 0 || !host || !len || __atomic_load_n(&g_wscan_failed, __ATOMIC_ACQUIRE) || g_wclock == UINT32_MAX ||
-        mem_alias_any())
+    if (g_ww <= 0 || !host || !len || __atomic_load_n(&g_wscan_failed, __ATOMIC_ACQUIRE) || g_wclock == UINT32_MAX)
         return -1;
     u64 o = (u64)(host - g_mem), lo = o >> WW_LEAF_SHIFT, hi = (o + len - 1) >> WW_LEAF_SHIFT, end;
+    /* a write through another address of these pages reads as none here (vk_written_since takes their peers). Any
+       page of the game's with two addresses gave up for every texture: in one game's race no texture stayed quiet over
+       an epoch, and each took a full check in each one */
+    if (!mem_alias_clear(o, len)) return -1;
     if (vk_uma_import_in(o, o + len, &end) < o + len) return -1; /* pages no scan watches */
     const u32 seen = vk_ww_epoch() + 1;
     for (u64 l = lo; l <= hi; l++)

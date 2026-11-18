@@ -7994,6 +7994,8 @@ static int run_headless(int argc, char** argv) {
             result = check_memo_over_target();
         else if (!strcmp(name, "texture_quiet_other"))
             result = check_texture_quiet_other();
+        else if (!strcmp(name, "texture_quiet_alias"))
+            result = check_texture_quiet_alias();
         else if (!strcmp(name, "cube_take"))
             result = check_cube_take();
         else if (!strcmp(name, "cube_take_frames"))
@@ -8396,6 +8398,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_texture_quiet());
     CHECK(!check_cube_take());
     CHECK(!check_texture_quiet_other());
+    CHECK(!check_texture_quiet_alias());
     CHECK(!check_memo_over_target());
     CHECK(!check_descriptor_heaps());
     CHECK(!check_descriptor_memo());
