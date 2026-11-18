@@ -21,7 +21,7 @@ typedef struct {
 struct SnxCodeLoader {
     unsigned char* base; /* the arena */
     size_t reserved, page;
-    unsigned machine; /* the objects' machine: an ELF e_machine, or SNX_CODE_COFF_X64 */
+    unsigned machine; /* the objects' machine: an ELF e_machine, SNX_CODE_COFF_X64 or SNX_CODE_COFF_ARM64 */
     SnxCodeRegion region[SNX_CODE_REGIONS];
     size_t committed;     /* bytes from the data region's start that are read-write */
     SnxLinkNames symbols; /* name -> address: the globals of earlier loads and the defined names */
@@ -54,7 +54,7 @@ int snx_code_publish(const SnxCodeLoader* loader, uint64_t start, uint64_t end, 
    in place (code_loader.c's apple_arena), whether this thread sees them writable instead of executable, which no code
    loaded may run meanwhile on this thread. Nothing elsewhere, where a load writes through the read-write views */
 void snx_code_writable(int writable);
-/* code_loader_coff.c's snx_code_load, for a loader of SNX_CODE_COFF_X64 */
+/* code_loader_coff.c's snx_code_load, for a loader of SNX_CODE_COFF_X64 or SNX_CODE_COFF_ARM64 */
 int snx_code_load_coff(SnxCodeLoader* loader, const SnxLinkInput* inputs, size_t count, const char* const* names,
                        size_t name_count, SnxU64* addresses, char* error, size_t error_size);
 

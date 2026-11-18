@@ -65,12 +65,14 @@
 /* the table keeps addresses in SnxLinkNames' size_t values */
 typedef char snx_code_loader_needs_64_bits[sizeof(size_t) >= 8 ? 1 : -1];
 
-/* the machine whose code this process runs, as an ELF e_machine: x86-64's 62, AArch64's 183; Windows' x86-64 COFF.
-   macOS on Apple silicon loads ELF objects as well: the IR backend writes them for the loader with Darwin's calling
-   convention (snx_ir_new_jit), and so does iOS, with a debugger attached (ios_arena), and the iOS simulator on Apple
-   silicon as macOS does. 0 where the loader cannot run what it loads: Intel Macs, never tried */
+/* the machine whose code this process runs, as an ELF e_machine: x86-64's 62, AArch64's 183; Windows' x86-64 or ARM64
+   COFF. macOS on Apple silicon loads ELF objects as well: the IR backend writes them for the loader with Darwin's
+   calling convention (snx_ir_new_jit), and so does iOS, with a debugger attached (ios_arena), and the iOS simulator on
+   Apple silicon as macOS does. 0 where the loader cannot run what it loads: Intel Macs, never tried */
 #if defined(_WIN32) && (defined(__x86_64__) || defined(_M_X64))
 #define HOST_MACHINE SNX_CODE_COFF_X64
+#elif defined(_WIN32) && (defined(__aarch64__) || defined(_M_ARM64))
+#define HOST_MACHINE SNX_CODE_COFF_ARM64
 #elif defined(APPLE_JIT) || defined(IOS_JIT)
 #define HOST_MACHINE 183u
 #elif defined(_WIN32) || defined(__APPLE__)
@@ -313,15 +315,20 @@ static unsigned char* map_views(unsigned char* at, size_t size, int executable, 
    AArch64 core may hold instructions it fetched before the code was written, which neither the writer's cache
    maintenance nor the reader's acquire load discards: each core needs a context synchronization event, which
    membarrier's SYNC_CORE command makes every thread of the process take (an ISB on the way back to user space), and
-   which the process registers for once (on macOS, a context switch: sync_threads). Without it a load would hand out
-   code another core might run stale, so the loader refuses and the JIT stays off (the interpreter runs those
-   functions) */
+   which the process registers for once (on macOS, a context switch: sync_threads; on Windows, the interrupt
+   FlushProcessWriteBuffers sends every processor running a thread of the process, whose return is one). Without it a
+   load would hand out code another core might run stale, so the loader refuses and the JIT stays off (the interpreter
+   runs those functions) */
 static int can_publish(unsigned machine, char* error, size_t error_size) {
     if (machine != HOST_MACHINE) return 1; /* nothing loaded runs: tests of another machine's objects */
 #if defined(__aarch64__)
 #if defined(__linux__) && defined(__NR_membarrier)
     if (!syscall(__NR_membarrier, MEMBARRIER_REGISTER_SYNC_CORE, 0u, 0)) return 1;
     snprintf(error, error_size, "the kernel has no membarrier SYNC_CORE (Linux 4.16), which publishing JIT code needs");
+#elif defined(_WIN32)
+    (void)error;
+    (void)error_size;
+    return 1; /* FlushProcessWriteBuffers, in every Windows (snx_code_publish) */
 #elif defined(APPLE_THREADS)
     (void)error;
     (void)error_size;
@@ -680,6 +687,8 @@ int snx_code_publish(const SnxCodeLoader* loader, uint64_t start, uint64_t end, 
     /* and every other core of the process drops what it fetched before (can_publish) */
 #if defined(__linux__) && defined(__aarch64__) && defined(__NR_membarrier)
     if (loader->machine == HOST_MACHINE) syscall(__NR_membarrier, MEMBARRIER_SYNC_CORE, 0u, 0);
+#elif defined(_WIN32) && defined(__aarch64__)
+    if (loader->machine == HOST_MACHINE) FlushProcessWriteBuffers();
 #elif defined(APPLE_THREADS)
     if (loader->machine == HOST_MACHINE) return sync_threads(error, error_size);
 #endif
@@ -1103,7 +1112,7 @@ static int load(SnxCodeLoader* loader, const SnxLinkInput* inputs, size_t count,
     size_t found;
     unsigned abi = loader->abi; /* PowerPC64's: the first load's (0 takes the object's), every load's after it */
     int rc = -1, absolute;
-    if (loader->machine == SNX_CODE_COFF_X64)
+    if (snx_code_coff(loader->machine))
         return snx_code_load_coff(loader, inputs, count, names, name_count, addresses, error, error_size);
     ld.count = count;
     ld.machine = loader->machine;
@@ -1226,7 +1235,7 @@ int snx_code_load(SnxCodeLoader* loader, const SnxLinkInput* inputs, size_t coun
 }
 int snx_code_load_private(SnxCodeLoader* loader, const SnxLinkInput* inputs, size_t count, const char* const* names,
                           size_t name_count, SnxU64* addresses, char* error, size_t error_size) {
-    if (loader->machine == SNX_CODE_COFF_X64) {
+    if (snx_code_coff(loader->machine)) {
         snprintf(error, error_size, "the JIT loader loads COFF objects with their globals published");
         return -1;
     }
@@ -1235,7 +1244,7 @@ int snx_code_load_private(SnxCodeLoader* loader, const SnxLinkInput* inputs, siz
 #else
 int snx_code_load(SnxCodeLoader* loader, const SnxLinkInput* inputs, size_t count, const char* const* names,
                   size_t name_count, SnxU64* addresses, char* error, size_t error_size) {
-    if (loader->machine == SNX_CODE_COFF_X64)
+    if (snx_code_coff(loader->machine))
         return snx_code_load_coff(loader, inputs, count, names, name_count, addresses, error, error_size);
     snprintf(error, error_size, "the JIT loader reads COFF objects on Windows");
     return -1;

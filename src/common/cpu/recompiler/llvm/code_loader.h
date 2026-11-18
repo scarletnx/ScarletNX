@@ -59,8 +59,11 @@
 
 typedef struct SnxCodeLoader SnxCodeLoader;
 
-/* the machine of Windows' x86-64 COFF objects (IMAGE_FILE_MACHINE_AMD64), for snx_code_loader_new_machine */
-#define SNX_CODE_COFF_X64 0x8664u
+/* the machines of Windows' x86-64 and ARM64 COFF objects (IMAGE_FILE_MACHINE_AMD64, IMAGE_FILE_MACHINE_ARM64), for
+   snx_code_loader_new_machine */
+#define SNX_CODE_COFF_X64      0x8664u
+#define SNX_CODE_COFF_ARM64    0xAA64u
+#define snx_code_coff(machine) ((machine) == SNX_CODE_COFF_X64 || (machine) == SNX_CODE_COFF_ARM64)
 
 /* the arena's size when snx_code_loader_new gets 0 */
 #define SNX_CODE_ARENA_DEFAULT ((size_t)1 << 30)
@@ -74,8 +77,9 @@ SnxCodeLoader* snx_code_loader_new(size_t reserve, char* error, size_t error_siz
    address near it, which the arena's own code then keeps in r2. NULL with the reason in error. Other hosts have no
    TOC and get snx_code_loader_new's arena */
 SnxCodeLoader* snx_code_loader_new_toc(size_t reserve, SnxU64 toc, char* error, size_t error_size);
-/* The same for objects of another machine (an ELF e_machine: 62 x86-64, 183 AArch64; or SNX_CODE_COFF_X64), for tests
-   of the loader on a host that cannot run them: their code is placed and relocated, and must never run */
+/* The same for objects of another machine (an ELF e_machine: 62 x86-64, 183 AArch64; or SNX_CODE_COFF_X64,
+   SNX_CODE_COFF_ARM64), for tests of the loader on a host that cannot run them: their code is placed and relocated, and
+   must never run */
 SnxCodeLoader* snx_code_loader_new_machine(size_t reserve, unsigned machine, char* error, size_t error_size);
 /* An arena of the regions' own sizes in bytes (code, read-only data, data), each rounded up to whole pages and to
    64 KiB (Windows' allocation granularity, where views of a section go), at most 2 GiB in all: for a game's code
