@@ -19,8 +19,8 @@
    integer emitters run with no value carried through it from one instruction to the next (reference_uncached): a cache
    that kept a stale one shows in the generated side only. Two IRs that differ only in the order of their instructions
    and their names count as the same; a step's that differs otherwise may not have more instructions than the
-   hand-written one, and is listed. --report writes each difference's two IR texts; --time ROUNDS only times the two
-   emitters (time_emitters) */
+   hand-written one, nor be another IR for an op whose effect running can't see (strict_ops), and is listed. --report
+   writes each difference's two IR texts; --time ROUNDS only times the two emitters (time_emitters) */
 #include "llvm_steps.h"
 #include "llvm_qemu_words.h"
 #include "support/ir_int_reference.h"
@@ -190,6 +190,11 @@ static u64 value_hash(Dag* d, LLVMValueRef v) {
             LLVMIntPredicate p = LLVMGetICmpPredicate(v);
             h = fnv(h, &p, sizeof p);
         }
+        /* an access's ordering, which no operand holds (a fence acquire is not a fence release) */
+        if (op == LLVMFence || op == LLVMLoad || op == LLVMStore || op == LLVMAtomicRMW) {
+            LLVMAtomicOrdering o = LLVMGetOrdering(v);
+            h = fnv(h, &o, sizeof o);
+        }
         if (n > 16) n = 16;
         for (i = 0; i < n; ++i) ops[i] = value_hash(d, LLVMGetOperand(v, i));
         if (op == LLVMAdd || op == LLVMMul || op == LLVMAnd || op == LLVMOr || op == LLVMXor ||
@@ -299,7 +304,17 @@ static SnxIr* path_ir(const Path* p, int reference, char* error, size_t size) {
 static const char* const outcome[4] = {"the same", "the same instructions reordered", "another IR, not longer",
                                        "LONGER"};
 
-/* one comparison: counted; a longer generated IR fails; the report gets every one that is not the same text */
+/* the ops whose effect the runs below cannot see (a fence, the host's spin-wait hint) or that have none: their IR is
+   the hand-written one, in any order, or they fail */
+static const char* const strict_ops[] = {"NOP", "YIELD", "WFE", "WFI", "SEV", "SEVL", "ESB", "CLREX", "DSB_DMB", "ISB"};
+static int strict(const char* op) {
+    for (size_t i = 0; i < sizeof strict_ops / sizeof *strict_ops; ++i)
+        if (!strcmp(op, strict_ops[i])) return 1;
+    return 0;
+}
+
+/* one comparison: counted; a longer generated IR fails, and another IR of a strict op; the report gets every one that
+   is not the same text */
 static void judge(int r, const char* what, u32 word, const char* path, const char* a, const char* b,
                   const size_t* sizes) {
     ++g_test.outcomes[r];
@@ -307,6 +322,11 @@ static void judge(int r, const char* what, u32 word, const char* path, const cha
         ++g_test.failures;
         fprintf(stderr, "FAIL: %s %08x (%s): the generated IR has %zu instructions, the hand-written %zu\n", what,
                 (unsigned)word, path, sizes[1], sizes[0]);
+    } else if (r == OTHER_NOT_LONGER && strict(what)) {
+        ++g_test.failures;
+        fprintf(stderr,
+                "FAIL: %s %08x (%s): the generated IR is another than the hand-written, and running can't tell\n", what,
+                (unsigned)word, path);
     }
     if (r != SAME && g_test.report)
         fprintf(g_test.report, "== %s %08x on %s: %s (%zu, %zu)\n-- hand-written\n%s\n-- generated\n%s\n", what,
