@@ -3953,7 +3953,9 @@ static int buf_get_owned(u32 i, Vb* e, u64 gva, u64 len, int strict, u32 epoch, 
    only the import holds yet */
 /* IN_FAST: a read-only storage binding of a draw: the fast path binds it in place where imports
    are dear too, when the checks of vk_uma_read pass. The chain then treats it as IN_DEAR */
-enum { IN_NO, IN_TRY, IN_ONLY, IN_DEAR = 4, IN_FAST = 8 };
+/* IN_WINDOW: the binding takes the GPU mirror's bytes at any 16 bytes, which only the mirror's path in place looks at
+   (vk_buf_get_uniform_at): the other paths keep the alignment asked */
+enum { IN_NO, IN_TRY, IN_ONLY, IN_DEAR = 4, IN_FAST = 8, IN_WINDOW = 16 };
 /* the biggest copy engine's source that takes a buffer of its own at once (buf_get): a sixty-fourth of the budget */
 static u64 copy_src_at_once(void) {
     u64 usage, budget;
@@ -4047,7 +4049,7 @@ static int buf_get_(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 a
     u64 cpu = 0;
     const int run = vk_mirror_on() && gmmu_run(gva, len, &cpu) == len;
     if (vk_mirror_pending(gva, len) || (run && vk_mirror_holds_at(cpu, len))) {
-        u64 a = align ? align : 1;
+        u64 a = (inplace & IN_WINDOW) ? 16 : align ? align : 1;
         VkBuffer mb;
         u64 mo;
         if (run && vk_mirror_slice_at(gva, cpu, len, &mb, &mo)) {
@@ -4337,6 +4339,9 @@ static int buf_get_(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 a
 int vk_buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off) {
     return buf_get(gva, len, buf, off, 0, vk_stage_align(), IN_NO);
 }
+int vk_buf_get_at(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off) {
+    return buf_get(gva, len, buf, off, 0, align, IN_NO);
+}
 /* Vertex and index buffers bind at any offset that keeps their elements aligned, not only at the uniform and storage
    bindings' alignment: a draw reading an earlier draw's storage result at another offset reads its buffer in place
    instead of composing it over guest memory. In one game 216,000 vertex buffer bindings in 600 frames were composed
@@ -4540,8 +4545,13 @@ int vk_buf_get_strict(u64 gva, u64 len, VkBuffer* buf, u64* off) {
 /* a constant buffer: read in place where it can be, as vertices are, but the pages the runtime wrote (uma.c's front,
    its constant buffer updates among them), which are copied as before */
 int vk_buf_get_uniform(u64 gva, u64 len, VkBuffer* buf, u64* off) {
+    return vk_buf_get_uniform_at(gva, len, vk_stage_align(), buf, off);
+}
+int vk_buf_get_uniform_at(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off) {
     g_buffer.lk = LK_UNIFORM;
-    const int got = buf_get(gva, len, buf, off, 1, vk_stage_align(), IN_TRY | IN_DEAR);
+    const int window = align < vk_stage_align();
+    const int got = buf_get(gva, len, buf, off, 1, window ? vk_stage_align() : align,
+                            IN_TRY | IN_DEAR | (window ? IN_WINDOW : 0));
     g_buffer.lk = LK_OTHER;
     return got;
 }

@@ -2571,7 +2571,10 @@ static int root_get(const DsState* ds, u32 sz, VkBuffer* buf, u64* off) {
     cb_check_note(e, 0, ds->inl.root, sz, 0);
     return 1;
 }
-static int cb_get(const DsState* ds, int stage, int i, u32 sz, VkBuffer* buf, u64* off) {
+/* constant buffer i of a stage, at an offset that is a multiple of align: 16 for a bank bound through a window
+   (cb_window_place), vk_stage_align() for one bound alone. A kept entry at another offset is not taken by a bank that
+   binds alone */
+static int cb_get(const DsState* ds, int stage, int i, u32 sz, u64 align, VkBuffer* buf, u64* off) {
     int check = g_settings.draw_state_check != 0;
     DsCbBlock in = ds_cb_inline(ds, stage, (u32)i);
     if (in.bytes) {
@@ -2601,7 +2604,8 @@ static int cb_get(const DsState* ds, int stage, int i, u32 sz, VkBuffer* buf, u6
     CbEntry* x = &g_cb.by_addr[(u32)((a >> 8) * 0x9E3779B97F4A7C15ull >> 54)];
     /* The pending checks were the most of cb_get's time in one game: an entry is taken first while no result was
        added since it was made */
-    if (cb_kept(e, a, sz, 1, epoch) || (cb_kept(x, a, sz, 1, epoch) && (*e = *x, 1))) {
+    if ((cb_kept(e, a, sz, 1, epoch) && !(e->off % align)) ||
+        (cb_kept(x, a, sz, 1, epoch) && !(x->off % align) && (*e = *x, 1))) {
         *buf = e->buf;
         *off = e->off;
         g_stats.n.cb[VK_CB_KEPT]++;
@@ -2616,7 +2620,8 @@ static int cb_get(const DsState* ds, int stage, int i, u32 sz, VkBuffer* buf, u6
     int pending = a && ((atomic_load_explicit(&g_gfx_any, memory_order_relaxed) && vk_buf_pending(a, sz)) ||
                         vk_uma_pending(a, sz) || /* written in place too */
                         pend_hit(&g_pend_any, a, sz));
-    if (!pending && (cb_kept(e, a, sz, 0, epoch) || (cb_kept(x, a, sz, 0, epoch) && (*e = *x, 1)))) {
+    if (!pending && ((cb_kept(e, a, sz, 0, epoch) && !(e->off % align)) ||
+                     (cb_kept(x, a, sz, 0, epoch) && !(x->off % align) && (*e = *x, 1)))) {
         /* no result of any kind is over the bytes it holds: the next draw takes it at the first check, while no
            result is added */
         if (e->sz == sz) {
@@ -2647,12 +2652,12 @@ static int cb_get(const DsState* ds, int stage, int i, u32 sz, VkBuffer* buf, u6
         if (!own_any())
             memcpy(p, GP(cpu), sz);
         else if (own_stage(cpu, sz, p, NULL, 0)) {
-            if (!vk_buf_get_uniform(a, sz, buf, off)) return 0;
+            if (!vk_buf_get_uniform_at(a, sz, align, buf, off)) return 0;
             life = CB_OWN;
         }
         g_stats.n.cb[VK_CB_COPIED]++;
         g_cb_copied_bytes += sz;
-    } else if (!(a ? vk_buf_get_uniform(a, sz, buf, off) : vk_buf_copy(a, sz, buf, off)))
+    } else if (!(a ? vk_buf_get_uniform_at(a, sz, align, buf, off) : vk_buf_copy(a, sz, buf, off)))
         return 0;
     else
         g_stats.n.cb[pending ? VK_CB_PENDING : VK_CB_CACHE]++;
@@ -3341,7 +3346,9 @@ static int cb_window_place(int vs_fs, int bank, VkBuffer b, u64 o, u32 sz, u64* 
     CbWindow* w = &g_cb_windows[vs_fs][bank];
     const u64 frame = vk_frame_id() + 1;
     if (w->b != b || w->frame != frame || o < w->base || o + sz > w->base + w->range) {
-        const u64 size = vk_stage_buffer_size(b), align = g_vk.props.limits.minUniformBufferOffsetAlignment;
+        /* the ring's chunks, and the GPU mirror, which is as big as guest memory (cb_get binds banks in it) */
+        const u64 size = b == vk_mirror_buffer() ? (u64)AS_SIZE : vk_stage_buffer_size(b),
+                  align = g_vk.props.limits.minUniformBufferOffsetAlignment;
         const u64 at = align ? o / align * align : o;
         if (!size || at >= size || (o - at) & 15) return 0;
         const u64 reach = size - at < 65536 ? size - at : 65536;
@@ -3371,11 +3378,17 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
         u32 sz = cb_range(ds, stage, s, i);
         VkBuffer b;
         u64 o;
-        if (!cb_get(ds, stage, i, sz, &b, &o)) return VK_NULL_HANDLE;
         u64 base, range;
         const int vs_fs = shader_vk_set(s->stage);
-        if (s->si.cb_window && vs_fs < 2 && (u32)i < g_spirv_translate.uniform_cbufs &&
-            cb_window_place(vs_fs, i, b, o, sz, &base, &range)) {
+        const int windowed = s->si.cb_window && vs_fs < 2 && (u32)i < g_spirv_translate.uniform_cbufs;
+        /* a windowed bank takes its bytes where the GPU mirror has them at any 16 bytes, which a descriptor of its
+           own can't: the mirror copied them out instead, and ended the rendering pass for it (most of one game's
+           pass ends). One whose window can't be placed takes them again at the descriptor's alignment */
+        if (!cb_get(ds, stage, i, sz, windowed ? 16 : vk_stage_align(), &b, &o)) return VK_NULL_HANDLE;
+        const int placed = windowed && cb_window_place(vs_fs, i, b, o, sz, &base, &range);
+        if (!placed && o % vk_stage_align() && !cb_get(ds, stage, i, sz, vk_stage_align(), &b, &o))
+            return VK_NULL_HANDLE;
+        if (placed) {
             g_cb_offsets[vs_fs][i] = (u16)((o - base) >> 4);
             dw_buffer(&d, set, SNX_VKB_CB + i, vk_cbuf_type((u32)i), b, base, (u32)range);
         } else {
@@ -5140,7 +5153,7 @@ static int mesh_indirect(const DrawCall* dc, VkBuffer* buf, u64* off) {
     VkBuffer src;
     u64 at, align = g_vk.props.limits.minUniformBufferOffsetAlignment;
     if (align < 16) align = 16;
-    if ((dc->indirect & 3) || !vk_buf_get(dc->indirect, 8, &src, &at)) return 0;
+    if ((dc->indirect & 3) || !vk_buf_get_at(dc->indirect, 8, 4, &src, &at)) return 0;
     u8* p = vk_stage(2 * align, align, buf, off);
     if (!p) return 0;
     static const u32 record[4] = {0, 1, 1, 0};
@@ -5179,8 +5192,8 @@ static int indirect_args(const DrawCall* dc, int indexed, VkBuffer* abuf, u64* a
         LOG_LIMIT(1, "vulkan: an indirect draw with a count needs drawIndirectCount, which this GPU lacks\n");
         return 0;
     }
-    if (!vk_buf_get(dc->indirect, (u64)(n - 1) * stride + rec, abuf, aoff)) return 0;
-    return !dc->indirect_count || vk_buf_get(dc->indirect_count, 4, cbuf, coff);
+    if (!vk_buf_get_at(dc->indirect, (u64)(n - 1) * stride + rec, 4, abuf, aoff)) return 0;
+    return !dc->indirect_count || vk_buf_get_at(dc->indirect_count, 4, 4, cbuf, coff);
 }
 /* an indirect draw's index buffer: from its address on, as far as its guest memory runs (DsIndex.end), in the
    type Vulkan reads. 0 when the GPU would need its indices made into others first */

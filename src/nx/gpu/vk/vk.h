@@ -2231,6 +2231,10 @@ void vk_tex_later_stats(VkLaterStats* s);
 
 /* gpu/vk/buffer.c: guest memory [gva, gva + len) as a buffer the GPU reads, valid until the next submit */
 int vk_buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off);
+/* vk_buf_get for a use that takes any offset that is a multiple of align: an indirect draw's or dispatch's records and
+   count, and a copy's source, take 4 (Vulkan's rule for them). At the uniform and storage alignment, the GPU mirror's
+   records at a 4-byte address were copied out, and each copy ended the rendering pass (most of one game's pass ends) */
+int vk_buf_get_at(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off);
 /* the same for a vertex, index or storage buffer, whose offset needs only to be a multiple of align (a power of two) */
 int vk_buf_get_input(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off);
 /* the same inside a window shared with the ranges it overlaps (a storage buffer with no size of its own): *off is the
@@ -2242,6 +2246,10 @@ int vk_buf_get_window_input(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off
 void vk_buf_prefetch(u64 gva, u64 len, int step);
 void vk_buf_mapping_changed(void); /* the GPU mappings or the guest memory under them changed: translations go */
 int vk_buf_get_uniform(u64 gva, u64 len, VkBuffer* buf, u64* off); /* a constant buffer: in place where it can be */
+/* vk_buf_get_uniform for a binding that takes any offset that is a multiple of align: a constant buffer bound through
+   a window (render.c cb_window_place) takes 16, where a descriptor of its own takes minUniformBufferOffsetAlignment.
+   The GPU mirror's bytes at such an offset are bound where they are, not copied (which ends the rendering pass) */
+int vk_buf_get_uniform_at(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off);
 /* The buffer of its own of the cache's entry for the range that the last lookup (vk_buf_get_uniform and the others)
    bound: the entry's index, and in *id that buffer's number. 0 when the lookup bound something else: a copy in the
    stream, the page cache, guest memory in place, the mirror, a pending result, which live for their submission only.
