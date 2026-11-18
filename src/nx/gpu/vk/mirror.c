@@ -450,15 +450,18 @@ int vk_mirror_slice_at(u64 gva, u64 cpu, u64 len, VkBuffer* buf, u64* off) {
         for (u64 p = lo; p < hi; p++) r->synced[p] = now;
         /* the binding's pages not given yet: whole, guest memory's bytes, an owned part's left for its owner. One the
            mirror owns has its bytes there already */
-        int whole = 1; /* every page of [lo, hi) valid after this */
+        int whole = 1; /* every page of [lo, hi) valid after this, or the mirror's own (below) */
         for (u64 w = lo / 64; w < (hi + 63) / 64; w++)
             for (u64 bits = ~atomic_load_explicit(&r->valid[w], memory_order_relaxed) & span_bits(w, lo, hi); bits;
                  bits &= bits - 1) {
                 u64 p = w * 64 + snx_ctz64(bits), a = base + p * 4096;
-                if (mirror_owns(a, 4096)) { /* filled at a binding after it lands */
-                    whole = 0;
-                    continue;
-                }
+                /* The mirror holds this page's newest bytes: it is filled at a binding after it lands. It leaves the
+                   check whole all the same. What changes it later moves what a check asks: its landing or another
+                   GPU-side write (landed, from ck_gen), or a CPU write in a new epoch. Taken as not whole, no check was
+                   recorded while a page waited to land: each binding of the granule walked it, compared the runs
+                   landed since an old ck_gen and tried the fill again, 50 to 130 us a draw in one game's first
+                   scene for 40 s */
+                if (mirror_owns(a, 4096)) continue;
                 OwnRange o[16];
                 u8* dst = up_bytes(&u, a, 4096);
                 u64 pb = 1ull << (p % 64);
