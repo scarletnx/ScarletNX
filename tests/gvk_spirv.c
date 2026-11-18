@@ -5,7 +5,9 @@
    it has one. A matrix member with a MatrixStride and no RowMajor or ColMajor gets ColMajor, also through an array of
    matrices; one with RowMajor keeps it. A pointer into an array of uniform or storage buffers by an index that isn't
    a constant, and one made from it, is NonUniform, with the capabilities and the extension that needs; one by a
-   constant isn't. A module that needs nothing, or that gvk can't read, is NULL */
+   constant isn't. A module that needs nothing, or that gvk can't read, is NULL. Apart from them, a fragment module's
+   outputs at Location 1 move to Location 0, Index 1, for dual-source blending: not an input's, nor a vertex module's,
+   nor one the module gives an Index itself */
 #include "nx/gpu/gvk/gvk.h"
 #include <assert.h>
 #include <stdlib.h>
@@ -196,6 +198,34 @@ int main(void) {
             if ((out[at] & 0xffff) == OP_DECORATE && !first_decoration) first_decoration = at;
         }
         assert(ext && ext < first_decoration && !memcmp(out + ext + 1, "SPV_EXT_descriptor_indexing", 28));
+    }
+
+    /* a fragment module's outputs at Location 1 go to Location 0, Index 1; an input at Location 1 stays */
+    enum { OP_ENTRY_POINT = 15, FRAGMENT = 4, VERTEX = 0, LOCATION = 30, INDEX_DECORATION = 32, OUTPUT = 3, INPUT = 1 };
+    for (int kind = 0; kind < 4; kind++) { /* 0 fragment, 1 vertex, 2 an Index given, 3 an input only */
+        header(&m);
+        PUT(&m, OP_CAPABILITY, CAP_SHADER);
+        PUT(&m, OP_ENTRY_POINT, kind == 1 ? VERTEX : FRAGMENT, VAR, 0);
+        PUT(&m, OP_DECORATE, VAR, LOCATION, 1);
+        if (kind == 2) PUT(&m, OP_DECORATE, VAR, INDEX_DECORATION, 0);
+        PUT(&m, OP_DECORATE, INDEX, LOCATION, 1);
+        PUT(&m, OP_TYPE_FLOAT, FLOAT, 32);
+        PUT(&m, OP_TYPE_VECTOR, VEC4, FLOAT, 4);
+        PUT(&m, OP_TYPE_POINTER, PTR_INT, OUTPUT, VEC4);
+        PUT(&m, OP_TYPE_POINTER, PTR_BUFS, INPUT, VEC4);
+        PUT(&m, OP_VARIABLE, kind == 3 ? PTR_BUFS : PTR_INT, VAR, kind == 3 ? INPUT : OUTPUT);
+        PUT(&m, OP_VARIABLE, PTR_BUFS, INDEX, INPUT);
+        out = gvk_spirv_dual_source(m.w, m.n * 4, &bytes);
+        if (kind) {
+            assert(!out);
+            continue;
+        }
+        assert(out && bytes == (m.n + 4) * 4 && !memcmp(out, m.w, 5 * 4));
+        assert(COUNT(out, bytes, OP_DECORATE, VAR, LOCATION, 0) == 1);
+        assert(COUNT(out, bytes, OP_DECORATE, VAR, LOCATION, 1) == 0);
+        assert(COUNT(out, bytes, OP_DECORATE, VAR, INDEX_DECORATION, 1) == 1);
+        assert(COUNT(out, bytes, OP_DECORATE, INDEX, LOCATION, 1) == 1);
+        assert(COUNT(out, bytes, OP_DECORATE, INDEX, INDEX_DECORATION, 1) == 0);
     }
     return 0;
 }
