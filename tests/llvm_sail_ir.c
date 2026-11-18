@@ -31,6 +31,7 @@
 #include "support/ir_ldst_reference.h"
 #include "common/cpu/aarch64/a64_decoder.h"
 #include "common/utilities/endian.h"
+#include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -118,6 +119,8 @@ static struct {
        CASP are 16-byte host atomics (x86-64's cmpxchg16b, AArch64's exclusive pairs), which fault on another address */
     _Alignas(16) u8 memory[3][MEMORY_SIZE];
     size_t outcomes[4];
+    u32 word;          /* the word being emitted where says (a path, a sequence, the runs), for on_abort */
+    const char* where; /* NULL while nothing is emitted */
 } g_test;
 
 static u64 rnd(void) {
@@ -408,8 +411,11 @@ static int compare_path(const Path* p, const u32* words, size_t count, size_t* e
         for (size_t i = 0; i < count; ++i) {
             char name[32];
             snprintf(name, sizeof name, "S_%zu", i);
+            g_test.word = words[i];
+            g_test.where = p->name;
             fn[k][i] = snx_ir_static_step(ir[k], words[i], 0x1000, TARGET, name);
         }
+        g_test.where = NULL;
         if (ir[k]->fallbacks) {
             fprintf(stderr, "FAIL: %s: no emitter for %08x (%s)\n", k ? "generated" : "hand-written",
                     (unsigned)ir[k]->fallback_word, op_name(ir[k]->fallback_word));
@@ -496,7 +502,10 @@ static void compare_sequence(unsigned s) {
             ir->operand_reference = snx_ir_int_operand_reference;
             ir->ldst_reference = reference_ldst_uncached;
         }
+        g_test.word = sequences[s].words[0];
+        g_test.where = sequences[s].what;
         snx_ir_emit(ir, &codegen, &function);
+        g_test.where = NULL;
         if (snx_ir_module_optimize(ir, ir->mod, '2', error, sizeof error)) {
             fprintf(stderr, "FAIL: %s: %s\n", sequences[s].what, error);
             ++g_test.failures;
@@ -577,7 +586,12 @@ static int run_compare(const u32* words, size_t count, unsigned states) {
             set[k].ir->operand_reference = snx_ir_int_operand_reference;
             set[k].ir->ldst_reference = snx_ir_ldst_reference;
         }
-        for (size_t i = 0; i < count; ++i) llvm_steps_add(&set[k], words[i], 0x1000, TARGET);
+        for (size_t i = 0; i < count; ++i) {
+            g_test.word = words[i];
+            g_test.where = "the runs";
+            llvm_steps_add(&set[k], words[i], 0x1000, TARGET);
+        }
+        g_test.where = NULL;
         if (llvm_steps_load(&set[k], error, sizeof error)) return snx_error("%s", error);
     }
     for (size_t i = 0; i < count; ++i)
@@ -625,6 +639,16 @@ static int run_compare(const u32* words, size_t count, unsigned states) {
     return 0;
 }
 
+/* sailgen's back end ends the process on what it can't make (sg_fail, an abort): the word being emitted is named as a
+   failure, before the abort goes on */
+static void on_abort(int signal_number) {
+    const char* name = g_test.where ? op_name(g_test.word) : NULL;
+    (void)signal_number;
+    if (g_test.where)
+        fprintf(stderr, "FAIL: %s %08x (%s): the test stopped while it was emitted\n", name ? name : "UNDEF",
+                (unsigned)g_test.word, g_test.where);
+}
+
 /* --time ROUNDS: what each emitter costs the recompile, the corpus's steps emitted and optimized (O2) ROUNDS times
    with each, alternating, on this host, in processor time; the best round of each, not a gate */
 /* the processor time this process has used, in s (the emitting and optimizing run on this one thread) */
@@ -646,7 +670,10 @@ static int time_emitters(const u32* words, size_t count, unsigned rounds) {
             for (size_t i = 0; i < count; ++i) {
                 char name[32];
                 snprintf(name, sizeof name, "S_%zu", i);
+                g_test.word = words[i];
+                g_test.where = "--time";
                 snx_ir_static_step(ir, words[i], 0x1000, TARGET, name);
+                g_test.where = NULL;
             }
             emitted = now_seconds();
             if (snx_ir_module_optimize(ir, ir->mod, '2', error, sizeof error)) return snx_error("%s", error);
@@ -687,6 +714,7 @@ int main(int argc, char** argv) {
             return snx_error("unknown argument %s (--report FILE, --samples N, --states N, --time ROUNDS, --part K/N)",
                              argv[i]);
     }
+    signal(SIGABRT, on_abort);
     if (snx_ir_init(error, sizeof error)) return snx_error("%s", error);
     /* the other paths' targets, and the SLP vectorizer off, as a game's module is made by default */
     LLVMInitializeAllTargetInfos();
