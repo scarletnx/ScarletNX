@@ -36,8 +36,8 @@ Every call to a hooked function goes through its slot in the dispatch table, `g_
   (`jit_service.c`'s `direct`).
 
 The recompiler routes only the symbols of the route list (`src/nx/loader/hook_routes.c`): each symbol that
-`hooks.hook` and `gpu/nvn/nvn.hook` name in any version, and the `route` lines of the functions the runtime wraps with
-code of its own (`nvnBootstrapLoader` and `nvnDeviceGetProcAddress`, `nvn_loader.c`; a GL driver's
+`hooks.hook`, `gpu/nvn/nvn.hook` and `gpu/gl/gl.hook` name in any version, and the `route` lines of the functions the
+runtime wraps with code of its own (`nvnBootstrapLoader` and `nvnDeviceGetProcAddress`, `nvn_loader.c`; a GL driver's
 `eglGetProcAddress`, `gl_census.c`). `hookgen --routes` generates
 the list. A direct call to any other function stays a direct call. `SNX_ABI` 15 and 16 first routed every function
 that a module exports, but some games export nearly all of their main executable: 88% to 98% of its functions in
