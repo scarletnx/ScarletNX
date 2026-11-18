@@ -1,5 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
-   Copyright 2026 the ScarletNX contributors */
+   Copyright 2026 the ScarletNX contributors
+   Guest memory's atomics ported from QEMU (target/arm/tcg/translate-a64.c: gen_compare_and_swap,
+   gen_compare_and_swap_pair, do_atomic_ld), through ir_ldst.c's, LGPL-2.1-or-later:
+   Copyright (c) 2013 Alexander Graf <agraf@suse.de> */
 /* sailgen's LLVM back end: what the generated emitters call to build IR, copied at the top of every file sailgen
    writes (gen.c), so the file stands alone. It lowers Sail's builtins and the shared functions the generator does not
    inline (README.md, "Builtins") to the IR the recompiler's emitters have always made, and reads and writes the Sail's
@@ -62,6 +65,14 @@ typedef struct {
     int branched, undefined;
     /* the block's last instruction before this one's: a clause that hands the word on (sg_see) has emitted nothing */
     LLVMValueRef start;
+    /* the load-exclusive's values, i64 each (two for a pair of doublewords), and the next an exclusive read takes; the
+       store-exclusive's status, an i32 0 or 1 (GuestLoadExclusive, GuestStoreExclusive) */
+    LLVMValueRef exclusive[2], status;
+    unsigned exclusive_count, exclusive_next;
+    /* the instruction's first two plain 4-byte accesses, the load or store and its address each, and whether they are
+       stores, for sg_accesses_combine (more than two: 3) */
+    LLVMValueRef access[2], access_address[2];
+    unsigned access_count, access_stores;
 } SgCtx;
 
 #define SG_B (g->ir->b)
@@ -1341,6 +1352,319 @@ static inline LLVMValueRef sg_condition_origin(SgCtx* g, SgS cond) {
     r = sg_origin_cond(g->ir, (unsigned)(cond.v >> 1));
     if (r && (cond.v & 1)) r = LLVMBuildNot(SG_B, r, "");
     return r;
+}
+
+/* ---- guest memory ----
+   nx.sail's primitives: guest memory is the host's bytes at CPU.mem plus the address (ir.h's ir_rd and ir_wr, which
+   make the access as unaligned and, with volatile_memory, volatile as every other guest access), an acquire load and a
+   release store sequentially consistent host atomics (ir_ldacq, ir_strel), the exclusives cpu.h's value-based monitor
+   through its helpers (ldx, stx, ldxp, stxp), and the LSE atomics host atomics of the access size */
+
+static inline LLVMValueRef sg_address(SgCtx* g, SgD address) {
+    if (address.w != 64) sg_fail("a guest address of other than 64 bits", address.w, 64);
+    return sg_d_make(g, &address);
+}
+static inline void sg_access_size(long long size, long long most) {
+    if (size != 1 && size != 2 && size != 4 && size != 8 && !(size == 16 && most == 16))
+        sg_fail("a guest access of a size this back end does not make", size, most);
+}
+/* a plain 4-byte access just made (its instruction the block's last), for sg_accesses_combine */
+static inline void sg_access_note(SgCtx* g, LLVMValueRef access, LLVMValueRef address, int store) {
+    if (g->access_count < 2) {
+        g->access[g->access_count] = access;
+        g->access_address[g->access_count] = address;
+        g->access_stores |= (unsigned)store << g->access_count;
+    }
+    if (g->access_count < 3) ++g->access_count;
+}
+/* address as base plus a constant: an add of a constant, else itself plus 0 */
+static inline LLVMValueRef sg_address_base(LLVMValueRef address, long long* offset) {
+    *offset = 0;
+    if (LLVMIsAInstruction(address) && LLVMGetInstructionOpcode(address) == LLVMAdd &&
+        LLVMIsAConstantInt(LLVMGetOperand(address, 1))) {
+        *offset = LLVMConstIntGetSExtValue(LLVMGetOperand(address, 1));
+        return LLVMGetOperand(address, 0);
+    }
+    return address;
+}
+/* An instruction's two plain 4-byte accesses of adjacent words, both loads or both stores with nothing in between that
+   touches memory (LDPSW's two loads, STNP's two stores of words, which Arm makes two accesses on any CPU), become one
+   8-byte access as the instruction ends, as ScarletNX's emitters always made a pair of words: a load of both before
+   the first, whose halves take the two loads' place, or a store of both where the second was. A big-endian host's
+   accesses (not one load or store each) stay two */
+static inline void sg_accesses_combine(SgCtx* g) {
+    SnxIr* ir = g->ir;
+    LLVMValueRef first = g->access[0], second = g->access[1], i, base[2];
+    LLVMBasicBlockRef block = LLVMGetInsertBlock(SG_B);
+    long long offset[2];
+    int stores = g->access_stores == 3;
+    if (g->access_count != 2 || (g->access_stores != 0 && !stores)) return;
+    if (stores ? !LLVMIsAStoreInst(first) || !LLVMIsAStoreInst(second)
+               : !LLVMIsALoadInst(first) || !LLVMIsALoadInst(second))
+        return;
+    base[0] = sg_address_base(g->access_address[0], &offset[0]);
+    base[1] = sg_address_base(g->access_address[1], &offset[1]);
+    if (base[0] != base[1] || offset[1] != offset[0] + 4) return;
+    if (LLVMGetInstructionParent(first) != LLVMGetInstructionParent(second)) return;
+    for (i = LLVMGetNextInstruction(first); i && i != second; i = LLVMGetNextInstruction(i))
+        if (LLVMIsALoadInst(i) || LLVMIsAStoreInst(i) || LLVMIsACallInst(i) || LLVMIsAFenceInst(i) ||
+            LLVMIsAAtomicRMWInst(i) || LLVMIsAAtomicCmpXchgInst(i))
+            return;
+    if (!i) return;
+    if (stores) {
+        LLVMValueRef low, high;
+        LLVMPositionBuilderBefore(SG_B, second);
+        low = LLVMBuildZExt(SG_B, LLVMGetOperand(first, 0), ir->t_i64, "");
+        high = LLVMBuildShl(SG_B, LLVMBuildZExt(SG_B, LLVMGetOperand(second, 0), ir->t_i64, ""), ir_i64(ir, 32), "");
+        ir_wr(ir, g->access_address[0], 64, LLVMBuildOr(SG_B, low, high, ""));
+    } else {
+        LLVMValueRef both;
+        LLVMPositionBuilderBefore(SG_B, first);
+        both = ir_rd(ir, g->access_address[0], 64);
+        LLVMReplaceAllUsesWith(first, LLVMBuildTrunc(SG_B, both, ir->t_i32, ""));
+        LLVMReplaceAllUsesWith(second,
+                               LLVMBuildTrunc(SG_B, LLVMBuildLShr(SG_B, both, ir_i64(ir, 32), ""), ir->t_i32, ""));
+    }
+    LLVMInstructionEraseFromParent(first);
+    LLVMInstructionEraseFromParent(second);
+    LLVMPositionBuilderAtEnd(SG_B, block);
+}
+
+/* GuestMemRead(address, size, acquire): size bytes; 16 (a pair of doublewords) are two 64-bit reads */
+static inline SgD sg_GuestMemRead(SgCtx* g, SgD address, long long size, int acquire) {
+    LLVMValueRef a = sg_address(g, address);
+    sg_access_size(size, acquire ? 8 : 16);
+    if (size == 16) {
+        SgD low = sg_d_from(g, ir_rd(g->ir, a, 64));
+        SgD high = sg_d_from(g, ir_rd(g->ir, LLVMBuildAdd(SG_B, a, ir_i64(g->ir, 8), ""), 64));
+        return sg_d_concat(g, high, low);
+    }
+    if (acquire) return sg_d_from(g, ir_ldacq(g->ir, a, 8u * (unsigned)size));
+    {
+        LLVMValueRef v = ir_rd(g->ir, a, 8u * (unsigned)size);
+        if (size == 4) sg_access_note(g, v, a, 0);
+        return sg_d_from(g, v);
+    }
+}
+/* GuestMemWrite(address, size, release, value); 16 bytes are two 64-bit writes */
+static inline void sg_GuestMemWrite(SgCtx* g, SgD address, long long size, int release, SgD value) {
+    LLVMValueRef a = sg_address(g, address), v;
+    sg_access_size(size, release ? 8 : 16);
+    if (value.w != 8u * (unsigned)size) sg_fail("a guest write of a value of another size", size, value.w);
+    if (size == 16) {
+        LLVMValueRef low = sg_d_value(g, sg_d_slice(g, value, 63, 0)),
+                     high = sg_d_value(g, sg_d_slice(g, value, 127, 64));
+        ir_wr(g->ir, a, 64, low);
+        ir_wr(g->ir, LLVMBuildAdd(SG_B, a, ir_i64(g->ir, 8), ""), 64, high);
+        return;
+    }
+    v = sg_d_make(g, &value);
+    if (release)
+        ir_strel(g->ir, a, 8u * (unsigned)size, v);
+    else {
+        ir_wr(g->ir, a, 8u * (unsigned)size, v);
+        if (size == 4) sg_access_note(g, LLVMGetLastInstruction(LLVMGetInsertBlock(SG_B)), a, 1);
+    }
+}
+
+/* the size's log2, as the exclusive helpers take it */
+static inline LLVMValueRef sg_size_log2(SgCtx* g, long long size) {
+    return ir_i32(g->ir, size == 1 ? 0 : size == 2 ? 1 : size == 4 ? 2 : 3);
+}
+/* GuestLoadExclusive(address, size): ldx of 1 to 8 bytes, or ldxp of a pair of doublewords (16), which arm the monitor
+   with what they read; GuestExclusiveValue reads it */
+static inline void sg_GuestLoadExclusive(SgCtx* g, SgD address, long long size) {
+    SnxIr* ir = g->ir;
+    LLVMValueRef a = sg_address(g, address);
+    sg_access_size(size, 16);
+    if (size == 16) {
+        LLVMValueRef first = ir_local(ir, ir->t_i64), second = ir_local(ir, ir->t_i64), args[6];
+        args[0] = ir->c;
+        args[1] = ir->M;
+        args[2] = a;
+        args[3] = sg_size_log2(g, 8);
+        args[4] = first;
+        args[5] = second;
+        ir_call_helper(ir, SNX_IR_LDXP, args, 6);
+        g->exclusive[0] = ir_load(ir, ir->t_i64, first);
+        g->exclusive[1] = ir_load(ir, ir->t_i64, second);
+        g->exclusive_count = 2;
+    } else {
+        LLVMValueRef args[4];
+        args[0] = ir->c;
+        args[1] = ir->M;
+        args[2] = a;
+        args[3] = sg_size_log2(g, size);
+        g->exclusive[0] = ir_call_helper(ir, SNX_IR_LDX, args, 4);
+        g->exclusive_count = 1;
+    }
+    g->exclusive_next = 0;
+}
+/* GuestExclusiveValue(address, size): the next of what the load-exclusive read, its low size bytes */
+static inline SgD sg_GuestExclusiveValue(SgCtx* g, SgD address, long long size) {
+    (void)address;
+    if (g->exclusive_next >= g->exclusive_count) sg_fail("an exclusive read with no load-exclusive before it", size, 0);
+    if (size > 8) sg_fail("an exclusive read of over 8 bytes", size, 8);
+    return sg_d_slice(g, sg_d_from(g, g->exclusive[g->exclusive_next++]), 8 * size - 1, 0);
+}
+/* GuestStoreExclusive(address, size, value): stx of 1 to 8 bytes, or stxp of a pair of doublewords (16, the first the
+   low half); the status GuestExclusiveStatus gives */
+static inline void sg_GuestStoreExclusive(SgCtx* g, SgD address, long long size, SgD value) {
+    SnxIr* ir = g->ir;
+    LLVMValueRef a = sg_address(g, address);
+    sg_access_size(size, 16);
+    if (value.w != 8u * (unsigned)size) sg_fail("a store-exclusive of a value of another size", size, value.w);
+    if (size == 16) {
+        LLVMValueRef args[6];
+        args[0] = ir->c;
+        args[1] = ir->M;
+        args[2] = a;
+        args[3] = sg_size_log2(g, 8);
+        args[4] = sg_d_value(g, sg_d_slice(g, value, 63, 0));
+        args[5] = sg_d_value(g, sg_d_slice(g, value, 127, 64));
+        g->status = ir_call_helper(ir, SNX_IR_STXP, args, 6);
+    } else {
+        LLVMValueRef args[5];
+        args[0] = ir->c;
+        args[1] = ir->M;
+        args[2] = a;
+        args[3] = sg_size_log2(g, size);
+        args[4] = sg_d_value(g, sg_d_zext(g, value, 64));
+        g->status = ir_call_helper(ir, SNX_IR_STX, args, 5);
+    }
+}
+static inline SgD sg_GuestExclusiveStatus(SgCtx* g) {
+    if (!g->status) sg_fail("an exclusive status with no store-exclusive before it", 0, 0);
+    return sg_d_flag(g->status, NULL);
+}
+
+/* the old value of an atomic read-modify-write of operand (iN) at address. Bitwise operations and exchanges commute
+   with the byte order; on a big-endian host the arithmetic ones are a compare-and-swap loop on the guest's value. So
+   are PowerPC64's byte and halfword UMAX and UMIN: its LLVM compares the operand in all 32 bits of its register
+   (cmplw after lbarx or lharx, the operand never zero-extended), which bits above the byte or halfword change */
+static inline LLVMValueRef sg_rmw_value(SgCtx* g, LLVMAtomicRMWBinOp op, LLVMValueRef old, LLVMValueRef operand) {
+    LLVMIntPredicate p;
+    switch (op) {
+        case LLVMAtomicRMWBinOpAdd: return LLVMBuildAdd(SG_B, old, operand, "");
+        case LLVMAtomicRMWBinOpMax: p = LLVMIntSGT; break;
+        case LLVMAtomicRMWBinOpMin: p = LLVMIntSLT; break;
+        case LLVMAtomicRMWBinOpUMax: p = LLVMIntUGT; break;
+        default: p = LLVMIntULT; break;
+    }
+    return LLVMBuildSelect(SG_B, LLVMBuildICmp(SG_B, p, old, operand, ""), old, operand, "");
+}
+static inline SgD sg_guest_rmw(SgCtx* g, LLVMAtomicRMWBinOp op, SgD address, SgD value) {
+    SnxIr* ir = g->ir;
+    LLVMValueRef operand = sg_d_make(g, &value), pointer = ir_mp(ir, sg_address(g, address)), first, old, pair, seen;
+    LLVMTypeRef type = LLVMTypeOf(operand);
+    LLVMBasicBlockRef entry, loop, done;
+    int bitwise = op == LLVMAtomicRMWBinOpXchg || op == LLVMAtomicRMWBinOpAnd || op == LLVMAtomicRMWBinOpOr ||
+                  op == LLVMAtomicRMWBinOpXor;
+    int partword_unsigned =
+        ir->ppc && LLVMGetIntTypeWidth(type) < 32 && (op == LLVMAtomicRMWBinOpUMax || op == LLVMAtomicRMWBinOpUMin);
+    sg_access_size(value.w / 8, 8);
+    if ((!ir->big_endian || bitwise) && !partword_unsigned) {
+        LLVMValueRef rmw = LLVMBuildAtomicRMW(SG_B, op, pointer, ir_guest_order(ir, operand),
+                                              LLVMAtomicOrderingSequentiallyConsistent, 0);
+        return sg_d_from(g, ir_guest_order(ir, ir_tag_guest(ir, rmw)));
+    }
+    first = LLVMBuildLoad2(SG_B, type, pointer, "");
+    LLVMSetOrdering(first, LLVMAtomicOrderingSequentiallyConsistent);
+    LLVMSetAlignment(first, LLVMGetIntTypeWidth(type) / 8);
+    ir_tag_guest(ir, first);
+    entry = LLVMGetInsertBlock(SG_B);
+    loop = ir_block(ir, "rmw");
+    done = ir_block(ir, "rmw_done");
+    LLVMBuildBr(SG_B, loop);
+    LLVMPositionBuilderAtEnd(SG_B, loop);
+    old = LLVMBuildPhi(SG_B, type, "");
+    pair = LLVMBuildAtomicCmpXchg(
+        SG_B, pointer, old, ir_guest_order(ir, sg_rmw_value(g, op, ir_guest_order(ir, old), operand)),
+        LLVMAtomicOrderingSequentiallyConsistent, LLVMAtomicOrderingSequentiallyConsistent, 0);
+    ir_tag_guest(ir, pair);
+    seen = LLVMBuildExtractValue(SG_B, pair, 0, "");
+    LLVMAddIncoming(old, &first, &entry, 1);
+    LLVMAddIncoming(old, &seen, &loop, 1);
+    LLVMBuildCondBr(SG_B, LLVMBuildExtractValue(SG_B, pair, 1, ""), done, loop);
+    LLVMPositionBuilderAtEnd(SG_B, done);
+    return sg_d_from(g, ir_guest_order(ir, old));
+}
+static inline SgD sg_GuestAtomicAdd(SgCtx* g, SgD address, SgD v) {
+    return sg_guest_rmw(g, LLVMAtomicRMWBinOpAdd, address, v);
+}
+static inline SgD sg_GuestAtomicAnd(SgCtx* g, SgD address, SgD v) {
+    return sg_guest_rmw(g, LLVMAtomicRMWBinOpAnd, address, v);
+}
+static inline SgD sg_GuestAtomicXor(SgCtx* g, SgD address, SgD v) {
+    return sg_guest_rmw(g, LLVMAtomicRMWBinOpXor, address, v);
+}
+static inline SgD sg_GuestAtomicOr(SgCtx* g, SgD address, SgD v) {
+    return sg_guest_rmw(g, LLVMAtomicRMWBinOpOr, address, v);
+}
+static inline SgD sg_GuestAtomicSMax(SgCtx* g, SgD address, SgD v) {
+    return sg_guest_rmw(g, LLVMAtomicRMWBinOpMax, address, v);
+}
+static inline SgD sg_GuestAtomicSMin(SgCtx* g, SgD address, SgD v) {
+    return sg_guest_rmw(g, LLVMAtomicRMWBinOpMin, address, v);
+}
+static inline SgD sg_GuestAtomicUMax(SgCtx* g, SgD address, SgD v) {
+    return sg_guest_rmw(g, LLVMAtomicRMWBinOpUMax, address, v);
+}
+static inline SgD sg_GuestAtomicUMin(SgCtx* g, SgD address, SgD v) {
+    return sg_guest_rmw(g, LLVMAtomicRMWBinOpUMin, address, v);
+}
+static inline SgD sg_GuestAtomicSwap(SgCtx* g, SgD address, SgD v) {
+    return sg_guest_rmw(g, LLVMAtomicRMWBinOpXchg, address, v);
+}
+
+/* GuestCompareSwap(address, expected, desired): the old value, desired stored where it equalled expected; seq_cst both
+   ways. Of 16 bytes (CASP's doublewords) through snx_cas128, the exclusives' (cpu.h): the two halves read, the new value
+   desired if they equal expected and else themselves, retried until the compare-and-swap of what was read succeeds, so
+   the old value returned is one the location held */
+static inline SgD sg_GuestCompareSwap(SgCtx* g, SgD address, SgD expected, SgD desired) {
+    SnxIr* ir = g->ir;
+    LLVMValueRef a = sg_address(g, address), lo, hi, equal, args[6], ok, next, e_lo, e_hi, d_lo, d_hi;
+    LLVMTypeRef params[6];
+    LLVMBasicBlockRef loop, done;
+    SgD old;
+    if (expected.w != desired.w) sg_fail("a compare-and-swap of values of two sizes", expected.w, desired.w);
+    if (expected.w != 128) {
+        LLVMValueRef pair;
+        sg_access_size(expected.w / 8, 8);
+        pair = LLVMBuildAtomicCmpXchg(
+            SG_B, ir_mp(ir, a), ir_guest_order(ir, sg_d_make(g, &expected)), ir_guest_order(ir, sg_d_make(g, &desired)),
+            LLVMAtomicOrderingSequentiallyConsistent, LLVMAtomicOrderingSequentiallyConsistent, 0);
+        ir_tag_guest(ir, pair);
+        return sg_d_from(g, ir_guest_order(ir, LLVMBuildExtractValue(SG_B, pair, 0, "")));
+    }
+    e_lo = sg_d_value(g, sg_d_slice(g, expected, 63, 0));
+    e_hi = sg_d_value(g, sg_d_slice(g, expected, 127, 64));
+    d_lo = sg_d_value(g, sg_d_slice(g, desired, 63, 0));
+    d_hi = sg_d_value(g, sg_d_slice(g, desired, 127, 64));
+    loop = ir_block(ir, "cas128");
+    done = ir_block(ir, "cas128_done");
+    next = LLVMBuildAdd(SG_B, a, ir_i64(ir, 8), "");
+    params[0] = ir->t_ptr;
+    params[1] = ir->t_ptr;
+    params[2] = params[3] = params[4] = params[5] = ir->t_i64;
+    LLVMBuildBr(SG_B, loop);
+    LLVMPositionBuilderAtEnd(SG_B, loop);
+    lo = ir_ldacq(ir, a, 64);
+    hi = ir_ldacq(ir, next, 64);
+    equal = LLVMBuildAnd(SG_B, LLVMBuildICmp(SG_B, LLVMIntEQ, lo, e_lo, ""),
+                         LLVMBuildICmp(SG_B, LLVMIntEQ, hi, e_hi, ""), "");
+    /* snx_cas128 takes the doublewords' values, as STXP's (cpu.h), and a big-endian host's puts them in memory order */
+    args[0] = ir->c;
+    args[1] = ir_mp(ir, a);
+    args[2] = lo;
+    args[3] = hi;
+    args[4] = LLVMBuildSelect(SG_B, equal, d_lo, lo, "");
+    args[5] = LLVMBuildSelect(SG_B, equal, d_hi, hi, "");
+    ok = ir_call(ir, ir_extern(ir, "snx_cas128", ir->t_i32, params, 6), args, 6);
+    LLVMBuildCondBr(SG_B, LLVMBuildICmp(SG_B, LLVMIntNE, ok, ir_i32(ir, 0), ""), done, loop);
+    LLVMPositionBuilderAtEnd(SG_B, done);
+    old = sg_d_from(g, hi);
+    return sg_d_concat(g, old, sg_d_from(g, lo));
 }
 
 /* ---- CRC32 and CRC32C ----

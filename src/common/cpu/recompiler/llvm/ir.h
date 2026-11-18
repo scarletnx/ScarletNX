@@ -222,6 +222,8 @@ typedef struct SnxIr {
     void (*int_reference)(struct SnxIr* ir, const void* decoded, SnxU32 word, SnxU64 pc);
     /* and the branches' hand-written operands (snx_ir_int_operand's) the generated ones replaced, the same way */
     LLVMValueRef (*operand_reference)(struct SnxIr* ir, const void* decoded, SnxU32 word, SnxU64 pc);
+    /* and the general-purpose registers' loads and stores written by hand (tests/support/ir_ldst_reference.c) */
+    void (*ldst_reference)(struct SnxIr* ir, const void* decoded, SnxU32 word, SnxU64 pc);
 } SnxIr;
 
 void ir_state_invalidate(SnxIr* ir);

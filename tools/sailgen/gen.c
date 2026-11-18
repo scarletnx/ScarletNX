@@ -2212,6 +2212,8 @@ int sg_generate(const char* roots_path, const char* backend_path, const char* pr
         sg_out(" if ((word & 0x%08llxu) == 0x%08llxu && sg_%s(g)) {\n    } else", clauses[i].mask, clauses[i].value,
                sg_str(g_parse.defs[clauses[i].decode].name));
     }
-    sg_out("\n        return 0;\n    sg_flags_flush(g);\n    sg_branch_result(g, taken, target);\n    return 1;\n}\n");
+    sg_out(
+        "\n        return 0;\n    sg_accesses_combine(g);\n    sg_flags_flush(g);\n    sg_branch_result(g, taken, target);\n"
+        "    return 1;\n}\n");
     return sg_flush(out_path);
 }
