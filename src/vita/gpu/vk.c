@@ -151,6 +151,7 @@ bool vita_vk_init(const char* title, char* error, size_t error_size) {
        through, and Freedreno's variables: the loader the Switch runtime uses (common/gpu/vk/gpu_driver_load.h). A
        package that does not load ends the run, saying why, as there */
     SnxGpuDriverRun driver = {.driver = g_settings.gpu_driver, .freedreno = g_settings.freedreno_variables};
+    printf("vita: gpu_driver=\"%s\" freedreno_env=\"%s\"\n", g_settings.gpu_driver, g_settings.freedreno_variables);
     snx_gpu_driver_use(&driver);
     if (!snx_vk_window_open("scarletnx-vita", title ? title : "ScarletNX Vita", 960, 544, &v->host, error, error_size))
         return false;
