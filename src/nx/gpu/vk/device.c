@@ -850,6 +850,7 @@ static bool choose_device(SnxVkChoice* c, void* user) {
         VkQueueFamilyProperties* q = snx_vk_queue_families(g_vk.phys, &nq);
         sparse_queue = g_vk.gfx_family < nq && (q[g_vk.gfx_family].queueFlags & VK_QUEUE_SPARSE_BINDING_BIT);
         g_vk.gfx_timestamp_bits = g_vk.gfx_family < nq ? q[g_vk.gfx_family].timestampValidBits : 0;
+        g_vk.compute_timestamp_bits = g_vk.compute_family < nq ? q[g_vk.compute_family].timestampValidBits : 0;
         free(q);
     }
     if (sparse_queue) {

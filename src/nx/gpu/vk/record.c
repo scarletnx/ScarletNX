@@ -251,7 +251,7 @@ void vk_rec_begin_upload(VkCommandBuffer cb) {
 
 typedef struct {
     VkCommandBuffer up, cb;
-    VkSemaphoreSubmitInfo w[3], s[2];
+    VkSemaphoreSubmitInfo w[VK_SUBMIT_WAITS], s[2];
     u32 nw, ns;
     VkSemaphore timeline;
     u64 value;
