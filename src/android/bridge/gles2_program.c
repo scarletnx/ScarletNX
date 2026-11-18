@@ -35,7 +35,9 @@ static void program_vk_release(uint32_t name) {
 }
 static void program_changed(uint32_t name) { program_vk_release(name); }
 static void program_say(const char* line) { fprintf(stderr, "scarletnx-android: GLES 2: %s\n", line); }
-void gles2_programs_init(void) { snx_gl_program_host(&(SnxGlProgramHost){program_changed, program_say}); }
+void gles2_programs_init(void) {
+    snx_gl_program_host(&(SnxGlProgramHost){.program_changed = program_changed, .say = program_say});
+}
 void gles2_programs_vk_free(void) {
     for (uint32_t name = 1; name <= SNX_GL_PROGRAM_NAMES; ++name) program_vk_release(name);
 }
