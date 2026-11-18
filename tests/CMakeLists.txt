@@ -1032,6 +1032,13 @@ add_executable(snx-test-gvk-spirv gvk_spirv.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/
 snx_test_target(snx-test-gvk-spirv gnu23)
 target_include_directories(snx-test-gvk-spirv PRIVATE "${PROJECT_SOURCE_DIR}/src")
 add_test(NAME gvk_spirv COMMAND snx-test-gvk-spirv)
+if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY AND NOT CMAKE_C_BYTE_ORDER STREQUAL "BIG_ENDIAN")
+    add_executable(snx-test-gvk-marshal gvk_marshal.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/gvk/gvk.c")
+    snx_test_target(snx-test-gvk-marshal gnu23)
+    target_include_directories(snx-test-gvk-marshal PRIVATE "${PROJECT_SOURCE_DIR}/src")
+    target_link_libraries(snx-test-gvk-marshal PRIVATE Vulkan::Headers scarletnx-platform)
+    add_test(NAME gvk_marshal COMMAND snx-test-gvk-marshal)
+endif()
 # glslc (src/glslc): its passes, SPIRV-Tools' validator and glslangValidator on its output, a fuzz
 add_subdirectory(glslc)
 if(SNX_BUILD_3DS)
