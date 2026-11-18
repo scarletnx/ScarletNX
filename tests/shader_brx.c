@@ -143,7 +143,7 @@ int main(void) {
 
     u32 pops[64];
     hoisted_program(hoisted);
-    check(shader_resolve_crs(hoisted, 24, pops) && pops[16] == 19 && pops[17] == 19,
+    check(shader_resolve_crs(hoisted, 24, pops, NULL, 0) && pops[16] == 19 && pops[17] == 19,
           "the CRS stack resolves through a resolved hoisted table");
 
     hoisted_program(hoisted);

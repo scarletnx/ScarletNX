@@ -298,6 +298,10 @@ typedef struct {
        equal to none of them samples zeros, which the log says once a program, naming the first such TEX.B */
     u32 chosen_tex;
     char chosen_why[96]; /* "TEX.B at <byte offset>, R<handle>: c[<bank>][<byte>], ..." */
+    /* why the program's control flow runs in the translator's dispatch loop, a switch on the program's position inside
+       one loop, which the log says once a program: empty where its branches and loops are SPIR-V's own, or it has none.
+       "<instruction> at <byte offset>: <what>" where the CRS stack's static walk stops (shader_resolve_crs) */
+    char flow_why[96];
     u32 spec;          /* the specialization constants the module declares: bit SH_SPEC_ of each */
 } ShaderInfo;
 /* A fragment module's specialization constants, by SpecId: state a draw has before its program runs, which the

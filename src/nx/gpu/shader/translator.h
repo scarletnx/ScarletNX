@@ -299,9 +299,13 @@ typedef struct {
 /* Word i of a program is an instruction: words 0-9 are the 80-byte SPH, and word 10 and every fourth after it
    schedule the three instructions that follow. */
 #define IDX_OK(i) ((i) >= 11 && ((i) - 10) % 4 != 0)
-/* the token kind a CRS stack instruction pushes or pops: SSY/SYNC 0, PBK/BRK 1, PCNT/CONT 2, PEXIT 3 */
+/* the token kind a CRS stack instruction pushes or pops: SSY/SYNC 0, PBK/BRK 1, PCNT/CONT 2, PEXIT 3, PRET/RET 4 */
 #define CRS_KIND(id)                                                                                                   \
-    ((id) == O_SSY || (id) == O_SYNC ? 0 : (id) == O_PBK || (id) == O_BRK ? 1 : (id) == O_PEXIT ? 3 : 2)
+    ((id) == O_SSY || (id) == O_SYNC   ? 0                                                                             \
+     : (id) == O_PBK || (id) == O_BRK  ? 1                                                                             \
+     : (id) == O_PEXIT                 ? 3                                                                             \
+     : (id) == O_PRET || (id) == O_RET ? 4                                                                             \
+                                       : 2)
 
 /* A program's bytes are guest memory's, so its words are little-endian: the instruction words as host numbers, which
    the decoder and the translator read. code itself on a little-endian host; on a big-endian one a malloc'd copy of
@@ -316,9 +320,10 @@ u32 bra_target(u64 w, u32 idx);
 int shader_writes_reg(u64 w, int op, u32 reg);
 /* whether a flow instruction always takes effect: predicate PT and flow condition T */
 int flow_always(u64 w);
-/* each SYNC, BRK and CONT's target when the CRS stack can be followed at translation time: 1, or 0 when the stack
-   has to be kept at run time */
-int shader_resolve_crs(const u64* words, u32 count, u32* pop_targets);
+/* each SYNC, BRK, CONT and RET's target when the CRS stack can be followed at translation time (0 for a RET that
+   ends the program): 1, or 0 when the stack has to be kept at run time, with why in why (why_size bytes) when it
+   isn't NULL */
+int shader_resolve_crs(const u64* words, u32 count, u32* pop_targets, char* why, size_t why_size);
 
 /* A program's control flow as structured constructs (structure.c), as a list of tokens in the order the translator
    writes them. Scopes are SPIR-V loop constructs: a block scope runs once and ends before the block it was opened
