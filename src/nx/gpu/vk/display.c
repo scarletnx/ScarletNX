@@ -424,3 +424,27 @@ int vk_display_wait(u64 deadline_ns, u64* refresh_ns) {
     pm_unlock(&g_dc.lock);
     return r;
 }
+
+u64 vk_display_frames(void) {
+    pm_lock(&g_dc.lock);
+    u64 n = g_dc.handed;
+    pm_unlock(&g_dc.lock);
+    return n;
+}
+
+int vk_display_wait_frame(u64 frame, u64 deadline_ns) {
+    int r = 1;
+    if (!__atomic_load_n(&g_dc.started, __ATOMIC_ACQUIRE) || !__atomic_load_n(&g_dc.fifo, __ATOMIC_RELAXED)) return -1;
+    if (!__atomic_load_n(&g_settings.frame_pacing, __ATOMIC_RELAXED)) return -1;
+    pm_lock(&g_dc.lock);
+    while (g_dc.done < frame) {
+        u64 now = plat_ns();
+        if (now >= deadline_ns) {
+            r = 0;
+            break;
+        }
+        pc_wait(&g_dc.shown, &g_dc.lock, (i64)(deadline_ns - now));
+    }
+    pm_unlock(&g_dc.lock);
+    return r;
+}
