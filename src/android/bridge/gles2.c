@@ -54,7 +54,7 @@ void gles2_warn(unsigned slot, const char* message) {
 Gles2Context* gles2_context_new(int version) {
     Gles2Context* gl = calloc(1, sizeof *gl);
     if (!gl) return NULL;
-    gl->ctx = snx_gl_context_new((uint32_t)version);
+    gl->ctx = snx_gl_context_new(SNX_GL_API_ES, 31, 0); /* a context of version 2 or 3 is one of 3.1 */
     if (!gl->ctx) {
         char why[96];
         free(gl);
