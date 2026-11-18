@@ -658,6 +658,8 @@ static void resource_plots(const VkResourceStats* is, const VkResourceStats* was
 static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transform, int game, u64 released_ns,
                  u64 period_ns, u32 shown_syncpt) {
     SNX_ZONE(z_show, "vk show");
+    /* a target dropped for a guest write over it holds nothing to show, as surf_read says: the frame is the layer's */
+    if (src && src->layout == VK_IMAGE_LAYOUT_UNDEFINED) src = NULL;
     if (transform & 4) { u32 w = fw; fw = fh; fh = w; }
     /* the size the swapchain was made for, not the extent the surface clamped it to: that can stay different */
     int ww, wh, kind = src ? frame_kind(hdr) : g_sc_kind, shown = backend_window_shown();
@@ -1324,6 +1326,10 @@ static const u8* surf_read_direct(Surf* s, u32 x, u32 y, u32 w, u32 h, u32 trans
     return sized;
 }
 static const u8* surf_read(Surf* s, u32 x, u32 y, u32 w, u32 h, u32 transform, u32 dw, u32 dh) {
+    /* an image dropped for a guest write over it holds none of its bytes: its pixels now are memory's, and a copy of
+       the image would show what is not the target's any more. The present resolves the frame through vk_rt_for_cpu,
+       which loads such a target; this reads the one kept (g_last) */
+    if (s->layout == VK_IMAGE_LAYOUT_UNDEFINED) return NULL;
     /* blit to an RGBA8 image, whatever the target's format, then read that back. sRGB to sRGB, so the bytes stay
        encoded as the display shows them */
     VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,

@@ -6463,25 +6463,31 @@ static int check_rt_drop(void) {
     const u32 rgba8 = 0x08 | 2u << 7 | 2u << 10 | 2u << 13 | 2u << 16;
     /* 16 by 16, blocks one GOB high: level 0 is the target's 1 KiB */
     const u32 tic[8] = {rgba8, (u32)gva, (u32)(gva >> 32) | 3u << 21, 0, 15 | 1u << 23, 15, 0, 0};
-    static const u8 zero[4] = {0, 0, 0, 0};
+    static const u8 zero[4] = {0, 0, 0, 0}, zeros[0x400];
     GpuChannel* ch = calloc(1, sizeof *ch);
     u64 dropped, finishes;
     u8 px[4];
     CHECK(ch);
     gmmu_map(gva, cpu, 0x10000);
     rt_clear(ch, gva, 16, 16, 0, 0); /* drawn and pending, red */
-    /* the program writes every byte of it: no write-back, so no finish, and the pixels are dropped */
+    /* the program writes every byte of it, through the hook the runtime's own stores take: no write-back, so no
+       finish, and the pixels are dropped */
     dropped = g_vk_rt_dropped;
     finishes = g_vk_finishes;
-    vk_lock();
-    vk_rt_before_write(gva, size, 1);
-    vk_unlock();
+    CHECK(gmem_write(gva, zeros, size) == 0);
     CHECK(g_vk_rt_dropped == dropped + 1 && g_vk_finishes == finishes);
-    memset(GP(cpu), 0, size); /* the store the hook came before */
-    gpu_mem_written(gva, size); /* as gmem_write's own: caches built on those pages check them again */
+    /* a reader that binds the image before anything reloads it (a refresh of the last frame, a screenshot) leaves it
+       out of UNDEFINED, so the layout alone no longer keeps the image from going back to memory */
     vk_lock();
     Surf* s = vk_rt_find(gva);
     CHECK(s);
+    vk_surf_use(vk_cmd(), s, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), VK_PIPELINE_STAGE_2_COPY_BIT,
+                VK_ACCESS_2_TRANSFER_READ_BIT);
+    vk_unlock();
+    finishes = g_vk_finishes;
+    g_renderer->rt_flush(gva); /* the front end's write-back: there is nothing of the image to write */
+    CHECK(g_vk_finishes == finishes && all_bytes(GP(cpu), size, 0));
+    vk_lock();
     vk_rt_note_read(s); /* a bind: it loads what the program wrote, not what the GPU drew */
     CHECK(!read_pixel0(s, px) && !memcmp(px, zero, 4));
     vk_unlock();
