@@ -1633,6 +1633,17 @@ setting Descriptor buffers
     help barriers are skipped, which the tracking of targets and buffers orders. 0 = descriptor sets for graphics
     help too, where a fragment barrier ends the render pass only after storage writes or reads that are still
     help pending, or after guest memory used in place
+setting Constant buffer windows
+    key vk_cb_windows
+    int 0 2
+    default 2
+    startup
+    words Off|On|Automatic
+    help How the vertex and fragment programs' constant buffers are bound. 2, Automatic: as 64 KiB windows of the
+    help staging ring with their offsets in push constants, where the GPU takes 224 bytes of push constants and uniform
+    help ranges of 64 KiB and its descriptors are not in heaps, but not on lavapipe, whose linear rasterizer smashes its
+    help stack with them. 1 = windows on lavapipe too, which needs Mesa's LP_PERF=no_rast_linear (a test runs it so);
+    help a GPU that can't take them binds them one by one and says why. 0 = each constant buffer bound one by one
 setting Indirect copies
     key vk_copy_indirect
     int 0 1

@@ -277,6 +277,14 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
     set_tests_properties(vulkan_headless_descriptor_buffers vulkan_headless_descriptor_buffers_uma PROPERTIES
         TIMEOUT 120 SKIP_RETURN_CODE 77 ENVIRONMENT "VK_KHRONOS_VALIDATION_REPORT_FLAGS=error"
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+    # every check again with the constant buffers in windows of the staging ring on lavapipe, which Automatic leaves
+    # out there (gpu/vk/cb_windows.h): its linear rasterizer, which they overrun, off. Descriptor buffers, as lavapipe's
+    # Automatic is heaps, which take no windows. A line that says they are bound one by one fails it
+    add_test(NAME vulkan_headless_cb_windows
+        COMMAND snx-test-vulkan -H --vk-descriptors-mode=1 --vk-cb-windows=1 --vk-validation=1)
+    set_tests_properties(vulkan_headless_cb_windows PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77
+        ENVIRONMENT "LP_PERF=no_rast_linear;VK_KHRONOS_VALIDATION_REPORT_FLAGS=error"
+        FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR;constant buffers bound one by one")
     # every check again with graphics descriptors in heaps (vk_descriptors_mode=2), which the default, Automatic, takes
     # only on a GPU that shares the system's memory: a discrete GPU runs the default with sets. A device without
     # VK_EXT_descriptor_heap skips it, as the buffers' tests do without VK_EXT_descriptor_buffer
