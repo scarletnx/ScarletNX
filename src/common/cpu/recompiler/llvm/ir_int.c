@@ -266,6 +266,9 @@ int snx_ir_int_handles(SnxA64Op op) {
 /* the plain instructions whose emitters sailgen generates from the Sail (a64.roots): word's op */
 static int generated(SnxA64Op op, SnxU32 word) {
     switch (op) {
+        /* NOP in the hint space (its unallocated part); the decoder's other NOP rows are the prefetches, which emit
+           nothing and have no Sail here */
+        case SNX_A64_OP_NOP: return (word & 0xfffff01fu) == 0xd503201fu;
         case SNX_A64_OP_ADR:
         case SNX_A64_OP_ADRP:
         case SNX_A64_OP_ADD_i:
@@ -340,9 +343,6 @@ static int generated(SnxA64Op op, SnxU32 word) {
         case SNX_A64_OP_RMIF:
         case SNX_A64_OP_SETF8:
         case SNX_A64_OP_SETF16:
-        /* NOP in the hint space (its unallocated part); the decoder's other NOP rows are the prefetches, which emit
-           nothing and have no Sail here */
-        case SNX_A64_OP_NOP: return (word & 0xfffff01fu) == 0xd503201fu;
         /* the hint space (the PAuth hints with the keys disabled), the barriers, CLREX */
         case SNX_A64_OP_YIELD:
         case SNX_A64_OP_WFE:
