@@ -197,10 +197,13 @@ static int refused(const char* fmt, ...) {
          g_vk.has_descriptor_buffers ? "buffers" : "sets");
     return 0;
 }
-static int heap_create(Heap* heap, const VkDescriptorHeapMemoryPlan* plan, const char* name) {
+/* usage: what the heap's buffer is used as besides a heap. The resource heap holds the index tables that push data
+   names, which a shader reads as a uniform buffer: the buffer whose address push data has must have
+   VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT (VUID-vkCmdDraw-None-11437) */
+static int heap_create(Heap* heap, const VkDescriptorHeapMemoryPlan* plan, const char* name, VkBufferUsageFlags usage) {
     VkBufferCreateInfo create = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
         .size = plan->allocation_size,
-        .usage = VK_BUFFER_USAGE_DESCRIPTOR_HEAP_BIT_EXT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+        .usage = VK_BUFFER_USAGE_DESCRIPTOR_HEAP_BIT_EXT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | usage,
         .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
     DevMemWant allocation = {.at = DM_HOST,
                              .mapped = 1,
@@ -709,8 +712,8 @@ int vk_descriptor_heaps_init(const VkPhysicalDeviceDescriptorHeapPropertiesEXT* 
                        (unsigned long long)(encoding_bytes + samplers.frame_size));
     g_heaps.scratch_size = (size_t)(encoding_bytes + samplers.frame_size);
     g_heaps.sampler_bytes = g_heaps.scratch + encoding_bytes;
-    if (!heap_create(&g_heaps.resource, &resources, "resource") ||
-        !heap_create(&g_heaps.sampler, &samplers, "sampler") || !transition_create()) {
+    if (!heap_create(&g_heaps.resource, &resources, "resource", VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT) ||
+        !heap_create(&g_heaps.sampler, &samplers, "sampler", 0) || !transition_create()) {
         transition_destroy();
         heap_discard(&g_heaps.resource);
         heap_discard(&g_heaps.sampler);
