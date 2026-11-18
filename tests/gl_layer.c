@@ -50,7 +50,7 @@ static const char* const exports[] = {
     "eglGetDisplay",  "eglInitialize",  "eglBindAPI",     "eglChooseConfig",        "eglCreateContext",
     "eglGetError",    "eglMakeCurrent", "eglSwapBuffers", "eglCreateWindowSurface", "eglGetProcAddress",
     "eglCopyBuffers", "_glClearColor",  "_glClear",       "_glGetString",           "_glGetIntegerv",
-    "_glEnable",      "_glScissor",     "_glDrawArrays"};
+    "_glEnable",      "_glScissor",     "_glDrawArrays",  "eglQuerySurface",        "eglDestroySurface"};
 #define EXPORTS (sizeof exports / sizeof *exports)
 static u64 export_name[EXPORTS];
 static u64 at(const char* name) {
@@ -200,6 +200,16 @@ int main(void) {
         ctx = call("eglCreateContext", 1, 1, 0, put_ints(SCRATCH + 0x100, core, 7), 0);
         assert(ctx && snx_gl_context_api((u32)ctx) == SNX_GL_API_DESKTOP && snx_gl_context_version((u32)ctx) == 45);
     }
+    /* a window surface is the display's size, docked or handheld, whatever the settings' defaults on the host */
+    g_settings.tv_mode = 1;
+    {
+        u64 docked = call("eglCreateWindowSurface", 1, 1, 0, 0, 0);
+        assert(docked && call("eglQuerySurface", 1, docked, 0x3057, SCRATCH + 0x500, 0) == 1); /* EGL_WIDTH */
+        assert(call("eglQuerySurface", 1, docked, 0x3056, SCRATCH + 0x504, 0) == 1);           /* EGL_HEIGHT */
+        assert(gr32(SCRATCH + 0x500) == 1920 && gr32(SCRATCH + 0x504) == 1080);
+        assert(call("eglDestroySurface", 1, docked, 0, 0, 0) == 1);
+    }
+    g_settings.tv_mode = 0;
     u64 surface = call("eglCreateWindowSurface", 1, 1, 0, 0, 0);
     assert(surface);
     assert(call("eglMakeCurrent", 1, surface, surface, ctx, 0) == 1);
