@@ -3,24 +3,26 @@
 /* The integer emitters tools/sailgen generates from the Sail (ir_sail.c) against the hand-written ones they replaced
    (support/ir_int_reference.c), word by word: the same IR, and the same results.
      snx-test-llvm-sail-ir [--report FILE] [--samples N] [--states N]
-   The words: samples of every decoder row the generated subset covers (llvm_qemu_words.c), each again with its register
-   fields 31 (the zero register or SP). On three paths (x86-64 with SSE4.2's CRC32C, AArch64 with CRC32, and the generic
-   one other hosts take; a path whose target this LLVM lacks is said and skipped) each word becomes a step
-   (snx_ir_static_step) in two modules, one emitted by each, optimized as a game's module is (snx_ir_module_optimize,
-   O2, the SLP vectorizer off as the setting's default), and the two functions are compared. Then both sets of steps run
-   on this host from random states, and every register, the flags, the next pc and UNDEF must match. Sequences that hand
-   flags or a register from one instruction to the next (SUBS then CSEL, CMP then CCMP then CSEL, ADDS then ADC, SUBS
-   then B.HI, a load from a register an ADD just wrote, FCMP then CSEL) are emitted as functions (snx_ir_emit) and must
-   give the hand-written emitters' IR, so a compare's flags still reach the condition as the compare, and a value one
-   emitter writes is the one the other reads back, whichever of the two (generated or written by hand) wrote it. Both
-   keep their state in one per-block cache (the back end's), so in a sequence the hand-written integer emitters run with
-   no value carried through it from one instruction to the next (reference_uncached): a cache that kept a stale one
-   shows in the generated side only. Two IRs that differ only in the order of their instructions and their names count
-   as the same; a step's that differs otherwise may not have more instructions than the hand-written one, and is listed.
-   --report writes each difference's two IR texts; --time ROUNDS only times the two emitters (time_emitters) */
+   The words: samples of every decoder row the generated subset covers (llvm_qemu_words.c), decoded for the ounce target
+   (TARGET: the Switch's features with PAuth and FlagM), each again with its register fields 31 (the zero register or
+   SP). On three paths (x86-64 with SSE4.2's CRC32C, AArch64 with CRC32, and the generic one other hosts take; a path
+   whose target this LLVM lacks is said and skipped) each word becomes a step (snx_ir_static_step) in two modules, one
+   emitted by each, optimized as a game's module is (snx_ir_module_optimize, O2, the SLP vectorizer off as the setting's
+   default), and the two functions are compared. Then both sets of steps run on this host from random states, and every
+   register, the flags, the next pc and UNDEF must match. Sequences that hand flags or a register from one instruction
+   to the next (SUBS then CSEL, CMP then CCMP then CSEL, ADDS then ADC, SUBS then B.HI, a load from a register an ADD
+   just wrote, FCMP then CSEL) are emitted as functions (snx_ir_emit) and must give the hand-written emitters' IR, so a
+   compare's flags still reach the condition as the compare, and a value one emitter writes is the one the other reads
+   back, whichever of the two (generated or written by hand) wrote it. Both keep their state in one per-block cache (the
+   back end's), so in a sequence the hand-written integer emitters run with no value carried through it from one
+   instruction to the next (reference_uncached): a cache that kept a stale one shows in the generated side only. Two IRs
+   that differ only in the order of their instructions and their names count as the same; a step's that differs
+   otherwise may not have more instructions than the hand-written one, and is listed. --report writes each difference's
+   two IR texts; --time ROUNDS only times the two emitters (time_emitters) */
 #include "llvm_steps.h"
 #include "llvm_qemu_words.h"
 #include "support/ir_int_reference.h"
+#include "common/cpu/aarch64/a64_decoder.h"
 #include "common/utilities/endian.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -73,7 +75,10 @@ static const struct {
     {"LDR from X1, ADD to X1, LDR from X1", {0xf9400022u, 0x91002021u, 0xf9400023u, 0xd65f03c0u}, NULL},
     {"ADD to X1, STR of X1, ADD of X1", {0x91000401u, 0xf9000041u, 0x8b010023u, 0xd65f03c0u}, NULL},
     {"FCMP then CSEL GT", {0x1e612000u, 0x9a82c020u, 0xd65f03c0u}, NULL},
-    {"CFINV then B.HS", {0xd500401fu, 0x54000042u, 0x91000400u, 0xd65f03c0u}, NULL},
+    {"CFINV then B.HS",
+     {0xd500401fu, 0x54000042u, 0x91000400u, 0xd65f03c0u},
+     "CFINV's generated emitter flips C alone, the hand-written one packs NZCV and unpacks it"},
+    {"ADCS then B.HS", {0xba020020u, 0x54000042u, 0x91000400u, 0xd65f03c0u}, NULL},
     {"SUBS, LDR, CSEL EQ", {0xeb020020u, 0xf9400003u, 0x9a8600a4u, 0xd65f03c0u}, NULL},
 };
 #define SEQUENCES (sizeof sequences / sizeof *sequences)
@@ -93,8 +98,16 @@ static u64 rnd(void) {
     return g_test.seed;
 }
 
+/* the guest the words are decoded, emitted and run for: the ounce target, the Switch's features with PAuth and FlagM,
+   for which every op ir_int.c sends to the Sail exists (on the Switch's alone 15 of them are UNDEF on both sides) */
+#define TARGET SNX_A64_TARGET_OUNCE
+static const char* op_name(u32 word) {
+    SnxA64Insn insn;
+    return snx_a64_decode_word(word, TARGET, &insn) != SNX_A64_OP_UNDEF ? snx_a64_op_text(insn.op) : NULL;
+}
+
 static int generated(u32 word) {
-    const char* name = lqd_switch_op_name(word);
+    const char* name = op_name(word);
     if (!name) return 0;
     for (size_t i = 0; i < GENERATED_OPS; ++i)
         if (!strcmp(name, generated_ops[i])) return 1;
@@ -249,14 +262,14 @@ static size_t corpus(unsigned samples, u32** out) {
     u32* words = (u32*)snx_realloc(NULL, sizeof(u32) * (count * 8 + 1));
     for (size_t i = 0; i < count; ++i) {
         static const u32 fields[3] = {0x1fu, 0x1fu << 5, 0x1fu << 16};
-        const char* name = lqd_switch_op_name(rows[i]);
+        const char* name = op_name(rows[i]);
         if (!generated(rows[i])) continue;
         words[n++] = rows[i];
         for (unsigned f = 0; f < 7; ++f) { /* each nonempty set of Rd, Rn and Rm made 31 */
             u32 w = rows[i];
             for (unsigned k = 0; k < 3; ++k)
                 if ((f + 1) & (1u << k)) w |= fields[k];
-            if (w != rows[i] && lqd_switch_op_name(w) && !strcmp(lqd_switch_op_name(w), name)) words[n++] = w;
+            if (w != rows[i] && op_name(w) && !strcmp(op_name(w), name)) words[n++] = w;
         }
     }
     free(rows);
@@ -306,11 +319,11 @@ static int compare_path(const Path* p, const u32* words, size_t count, size_t* e
         for (size_t i = 0; i < count; ++i) {
             char name[32];
             snprintf(name, sizeof name, "S_%zu", i);
-            fn[k][i] = snx_ir_static_step(ir[k], words[i], 0x1000, 0, name);
+            fn[k][i] = snx_ir_static_step(ir[k], words[i], 0x1000, TARGET, name);
         }
         if (ir[k]->fallbacks) {
             fprintf(stderr, "FAIL: %s: no emitter for %08x (%s)\n", k ? "generated" : "hand-written",
-                    (unsigned)ir[k]->fallback_word, lqd_switch_op_name(ir[k]->fallback_word));
+                    (unsigned)ir[k]->fallback_word, op_name(ir[k]->fallback_word));
             ++g_test.failures;
         }
         if (snx_ir_module_optimize(ir[k], ir[k]->mod, '2', error, sizeof error)) {
@@ -323,7 +336,7 @@ static int compare_path(const Path* p, const u32* words, size_t count, size_t* e
         char *a, *b;
         size_t sizes[2];
         int k = compare_fns(fn[0][i], fn[1][i], &a, &b, sizes);
-        judge(k, lqd_switch_op_name(words[i]), words[i], p->name, a, b, sizes);
+        judge(k, op_name(words[i]), words[i], p->name, a, b, sizes);
         *equal += k <= REORDERED;
         free(a);
         free(b);
@@ -371,7 +384,8 @@ static void compare_sequence(unsigned s) {
                                 .count = count,
                                 .leaders = leaders,
                                 .leader_count = leader_count};
-        SnxCodegen codegen = {.modules = &module, .module_count = 1, .functions = &function, .function_count = 1};
+        SnxCodegen codegen = {
+            .modules = &module, .module_count = 1, .functions = &function, .function_count = 1, .features = TARGET};
         SnxIr* ir = snx_ir_new("sequence", '2', error, sizeof error);
         if (!ir) {
             fprintf(stderr, "FAIL: %s\n", error);
@@ -419,7 +433,7 @@ static int run_compare(const u32* words, size_t count, unsigned states) {
     for (int k = 0; k < 2; ++k) {
         if (llvm_steps_begin(&set[k], 0, LLVM_STEPS_HOST, error, sizeof error)) return snx_error("%s", error);
         if (k == 0) set[k].ir->int_reference = snx_ir_int_reference;
-        for (size_t i = 0; i < count; ++i) llvm_steps_add(&set[k], words[i], 0x1000, 0);
+        for (size_t i = 0; i < count; ++i) llvm_steps_add(&set[k], words[i], 0x1000, TARGET);
         if (llvm_steps_load(&set[k], error, sizeof error)) return snx_error("%s", error);
     }
     for (size_t i = 0; i < count; ++i)
@@ -447,8 +461,8 @@ static int run_compare(const u32* words, size_t count, unsigned states) {
                 end[0].n != end[1].n || end[0].z != end[1].z || end[0].cf != end[1].cf || end[0].vf != end[1].vf ||
                 end[0].pc != end[1].pc) {
                 ++g_test.failures;
-                fprintf(stderr, "FAIL: %s %08x state %u: the generated emitter's result differs\n",
-                        lqd_switch_op_name(words[i]), (unsigned)words[i], s);
+                fprintf(stderr, "FAIL: %s %08x state %u: the generated emitter's result differs\n", op_name(words[i]),
+                        (unsigned)words[i], s);
                 break;
             }
         }
@@ -473,7 +487,7 @@ static int time_emitters(const u32* words, size_t count, unsigned rounds) {
             for (size_t i = 0; i < count; ++i) {
                 char name[32];
                 snprintf(name, sizeof name, "S_%zu", i);
-                snx_ir_static_step(ir, words[i], 0x1000, 0, name);
+                snx_ir_static_step(ir, words[i], 0x1000, TARGET, name);
             }
             emitted = now_seconds();
             if (snx_ir_module_optimize(ir, ir->mod, '2', error, sizeof error)) return snx_error("%s", error);
@@ -516,6 +530,14 @@ int main(int argc, char** argv) {
     snx_ir_slp_vectorizer(0);
     count = corpus(samples, &words);
     printf("%zu words of the %zu generated ops\n", count, GENERATED_OPS);
+    for (size_t i = 0; i < GENERATED_OPS; ++i) { /* each op has words, or it is compared nowhere */
+        size_t k = 0;
+        while (k < count && strcmp(op_name(words[k]), generated_ops[i])) ++k;
+        if (k == count) {
+            fprintf(stderr, "FAIL: %s has no word in the corpus\n", generated_ops[i]);
+            ++g_test.failures;
+        }
+    }
     if (rounds) {
         int r = time_emitters(words, count, rounds);
         free(words);
