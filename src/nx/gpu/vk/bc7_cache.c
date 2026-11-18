@@ -683,13 +683,15 @@ static void io_thread(void* arg) {
             continue;
         }
         if (io->next == io->head || io->ahead >= BC7_IO_AHEAD) {
-            if (io->next == io->head && io->late) { /* caught up: what was left goes in the log */
+            if (io->next == io->head && io->late) {
+                /* caught up: what was left goes in the log, and only then is the thread idle (io_idle_by), so a wait
+                   for it finds the line written. Nothing is queued meanwhile: the GPU thread asks none while late */
                 const u64 worst = io->worst;
-                io->late = 0;
                 io->worst = 0;
                 pm_unlock(&io->m);
                 io_said(0, 0, worst);
                 pm_lock(&io->m);
+                io->late = 0;
                 continue;
             }
             pc_broadcast(&io->done); /* idle, for a close */
@@ -710,6 +712,7 @@ static void io_thread(void* arg) {
         u8* b = f ? malloc((size_t)size) : NULL;
         const int r = b ? bc7_read_at(f, g_bc7_cache.rd.piece, op->key, op->at, size, b) : 0;
         const u64 took = plat_ns() - t0;
+        if (took >= BC7_IO_LATE_NS) io_said(size, took, 0); /* before the thread is idle (io_idle_by) */
         pm_lock(&io->m);
         atomic_store_explicit(&io->since, 0, memory_order_release);
         if (took > io->worst) io->worst = took;
@@ -729,13 +732,8 @@ static void io_thread(void* arg) {
             op->buf = NULL;
             atomic_store_explicit(&op->state, IO_FREE, memory_order_release);
         }
+        if (took >= BC7_IO_LATE_NS) io->worst = 0; /* said */
         pc_broadcast(&io->done);
-        if (took >= BC7_IO_LATE_NS) {
-            io->worst = 0;
-            pm_unlock(&io->m);
-            io_said(size, took, 0);
-            pm_lock(&io->m);
-        }
     }
 }
 /* the thread, at the first read that goes there: 0 when it could not start */
