@@ -19,6 +19,7 @@
 #include "nx/runtime/platform/tracy.h"
 #include "nx/hle/services/nvdrv.h"
 #include "nx/hle/services/nvdrv_ctrl_gpu.h"
+#include "nx/hle/kernel/kernel.h"
 #include "nx/runtime/clock.h"
 #include "nx/hle/services/vi.h"
 #include "nx/runtime/main.h"
@@ -218,9 +219,9 @@ void nvn_QueueFinalize(CPU* c, u64 q) {
     NvnQueue* o = NVN_OBJ(NvnQueue, q);
     (void)c;
     if (o->magic != NVN_MAGIC('Q', 'U', 'E', 'U')) return;
-    nvn_wait_begin();
+    kthread_host_wait_begin();
     nvn_replay_queue_free(o->replay);
-    nvn_wait_end();
+    kthread_host_wait_end();
     LOG("nvn: queue %llx finalized (replay %u)\n", (unsigned long long)q, o->replay);
     *o = (NvnQueue){0};
 }
@@ -232,9 +233,9 @@ void nvn_QueueFlush(CPU* c, u64 q) {
 /* the game may reuse every recording's memory after it */
 void nvn_QueueFinish(CPU* c, u64 q) {
     (void)c;
-    nvn_wait_begin();
+    kthread_host_wait_begin();
     nvn_replay_finish(NVN_OBJ(NvnQueue, q)->replay);
-    nvn_wait_end();
+    kthread_host_wait_end();
 }
 /* the queue's later work waits on the GPU for the sync, so it is done no earlier than the sync signals */
 static void wait_sync(NvnQueue* o, const NvnSync* s) {
@@ -335,16 +336,16 @@ static i32 sync_wait(CPU* c, u64 sync, u64 timeout) {
     }
     return waited ? NVN_SYNC_WAIT_RESULT_CONDITION_SATISFIED : NVN_SYNC_WAIT_RESULT_ALREADY_SIGNALED;
 }
-/* off the guest core while it waits (nvn_wait_begin); a poll (timeout 0) never waits */
+/* off the guest core while it waits (kthread_host_wait_begin); a poll (timeout 0) never waits */
 i32 nvn_SyncWait(CPU* c, u64 sync, u64 timeout) {
     i32 r;
     if (!timeout) return sync_wait(c, sync, timeout);
     const NvnSync* s = NVN_OBJ(const NvnSync, sync);
     SNX_ZONE_V(z, "nvn sync wait", (u64)s->syncpt << 32 | s->value);
     trace_msg("nvn sync wait %u=%u shown %u from %llx", s->syncpt, s->value, s->shown, caller(c));
-    nvn_wait_begin();
+    kthread_host_wait_begin();
     r = sync_wait(c, sync, timeout);
-    nvn_wait_end();
+    kthread_host_wait_end();
     return r;
 }
 
@@ -589,10 +590,10 @@ static void slot_wait(const NvnWindow* o, i32 i) {
     int drawn = !o->drawn_syncpt[i] || syncpt_wait(o->drawn_syncpt[i], o->drawn[i], 0);
     if (o->shown_at[i] <= now && drawn) return;
     SNX_ZONE_V(z, "nvn acquire wait", (u64)o->drawn_syncpt[i] << 32 | o->drawn[i]);
-    nvn_wait_begin();
+    kthread_host_wait_begin();
     if (o->shown_at[i] > now) plat_sleep_ns((i64)(o->shown_at[i] - now));
     if (!drawn) syncpt_wait(o->drawn_syncpt[i], o->drawn[i], -1); /* the present is queued: the replay reaches it */
-    nvn_wait_end();
+    kthread_host_wait_end();
 }
 static void acquire(NvnWindow* o, NvnSync* s, u64 index) {
     i32 n = window_active(o), i = n ? o->next % n : 0;

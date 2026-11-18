@@ -758,6 +758,14 @@ void kthread_unblock(KThread* t) {
     if (atomic_load_explicit(&t->suspended, memory_order_seq_cst)) svc_pause_point(t); /* paused during the wait */
     kthread_hold_point(t, PARK_RUN); /* rt_miss set the pc it goes on at */
 }
+void kthread_host_wait_begin(void) {
+    KThread* t = kthread_cur();
+    if (t) core_leave(t);
+}
+void kthread_host_wait_end(void) {
+    KThread* t = kthread_cur();
+    if (t) core_enter(t);
+}
 void kthread_commit(void) {
     KThread* t = kthread_cur();
     if (t) g_host.thread.committed[kt_ix(t) - 1] = 1;

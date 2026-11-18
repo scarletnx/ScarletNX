@@ -830,9 +830,9 @@ void nvn_TexturePoolRegisterImage(CPU* c, u64 tp, i32 id, u64 t, u64 v) {
    for the renderer's kept descriptors. The descriptor the slot already holds changes nothing for that work: no wait */
 static void sampler_write(u64 slot, const u32 tsc[8]) {
     if (!memcmp(GP(slot), tsc, NVN_DESCRIPTOR_SIZE)) return;
-    nvn_wait_begin();
+    kthread_host_wait_begin();
     nvn_replay_finish_all();
-    nvn_wait_end();
+    kthread_host_wait_end();
     memcpy(GP(slot), tsc, NVN_DESCRIPTOR_SIZE);
     gpu_mem_written_cpu(slot, NVN_DESCRIPTOR_SIZE);
 }
@@ -1161,15 +1161,13 @@ void nvn_TextureFlushTexels(CPU* c, u64 t, u64 v, u64 region) {
     (void)v;
     (void)region;
 }
-void nvn_wait_begin(void) { core_leave(kthread_cur()); }
-void nvn_wait_end(void) { core_enter(kthread_cur()); }
 /* the texels copied out of the texture by the GPU (gpu/nvn/nvn_copy.c): a deswizzle is the GPU's work, waited for
    off the core */
 void nvn_TextureReadTexels(CPU* c, u64 t, u64 v, u64 region, u64 dst) {
     (void)c;
-    nvn_wait_begin();
+    kthread_host_wait_begin();
     nvn_read_texels(t, v, region, dst, 0, 0);
-    nvn_wait_end();
+    kthread_host_wait_end();
 }
 void nvn_TextureWriteTexels(CPU* c, u64 t, u64 v, u64 region, u64 src) {
     (void)c;
@@ -1220,9 +1218,9 @@ void nvn_TextureWriteTexelsStrided(CPU* c, u64 t, u64 v, u64 region, u64 src, i6
 /* ReadTexels with the destination's rows row bytes apart and its slices image bytes apart (0: tightly packed) */
 void nvn_TextureReadTexelsStrided(CPU* c, u64 t, u64 v, u64 region, u64 dst, i64 row, i64 image) {
     (void)c;
-    nvn_wait_begin();
+    kthread_host_wait_begin();
     nvn_read_texels(t, v, region, dst, row, image);
-    nvn_wait_end();
+    kthread_host_wait_end();
 }
 /* The CPU's caches dropped over the texels of a region, for a CPU read of what the GPU wrote: the CPU and the GPU share
    guest memory here, and the GPU's writes land there before the CPU reads them (GPU-owned memory lands when the CPU
