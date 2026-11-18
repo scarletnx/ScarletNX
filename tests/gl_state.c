@@ -180,7 +180,7 @@ int main(void) {
     memcpy(copy, saved, bytes);
     copy[4] = 9; /* the layout */
     refused(copy, bytes, "layout 9");
-    refused(saved, 20, "this build reads layout 4");
+    refused(saved, 20, "this build reads layout 5");
     refused(saved, bytes - 4, "this build reads");
     {
         SnxGlContext c;

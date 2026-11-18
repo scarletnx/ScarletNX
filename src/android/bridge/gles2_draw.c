@@ -1711,8 +1711,7 @@ static void g_copy_image_sub_data(CPU* c, Gles2Context* gl) {
                            VK_ACCESS_TRANSFER_WRITE_BIT, ATTACHMENT_ACCESS | VK_ACCESS_SHADER_READ_BIT |
                            VK_ACCESS_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
                            ATTACHMENT_STAGES | ALL_READERS);
-    G2Texture* t = (unsigned)a[7] != 0x8d41 ? gles2_texture((unsigned)a[6]) : NULL;
-    if (t) t->defined |= 1u << (unsigned)a[8];
+    if ((unsigned)a[7] != 0x8d41) snx_gl_texture_defined((uint32_t)a[6], (int32_t)a[8]);
 }
 /* glReadnPixels(x, y, width, height, format, type, size, pixels): glReadPixels when size holds the rows */
 static void g_readn_pixels(CPU* c, Gles2Context* gl) {
@@ -1734,7 +1733,7 @@ static void copy_tex(Gles2Context* gl, unsigned target, int level, int dx, int d
         target = 0x8513;
     }
     unsigned index = target == GL_TEXTURE_2D_ ? G2_T2D : target == 0x8513 ? G2_TCUBE : target == 0x806f ? G2_T3D : G2_TARRAY;
-    G2Texture* t = gles2_unit_texture(gl, gl->active, index);
+    G2Texture* t = gles2_unit_texture(gl, snx_gl_textures(gl->ctx)->active, index);
     if (!t || !t->image.image || level >= t->levels) {
         gles2_error(gl, GL_INVALID_OPERATION_);
         return;
@@ -1746,7 +1745,7 @@ static void copy_tex(Gles2Context* gl, unsigned target, int level, int dx, int d
     blit(slot->cb, &src, x, y, x + w, y + h, t->image.image, t->layout, t->layout, false, extent, (uint32_t)level,
          (uint32_t)(index == G2_TCUBE ? face : layer), dx, dy, dx + w, dy + h, VK_FILTER_NEAREST,
          VK_IMAGE_ASPECT_COLOR_BIT);
-    t->defined |= 1u << level;
+    gles2_texture_defined(t, level);
 }
 static void g_copy_tex_sub_image_2d(CPU* c, Gles2Context* gl) {
     copy_tex(gl, (unsigned)X(0), (int)X(1), (int)X(2), (int)X(3), 0, (int)X(4), (int)X(5), (int)X(6), (int)X(7));
@@ -1755,29 +1754,12 @@ static void g_copy_tex_sub_image_3d(CPU* c, Gles2Context* gl) {
     copy_tex(gl, (unsigned)X(0), (int)X(1), (int)X(2), (int)X(3), (int)X(4), (int)X(5), (int)X(6), (int)X(7),
              (int)gles2_arg(c, 8));
 }
-/* glCopyTexImage2D(target, level, internal, x, y, width, height, border): the level made, then copied into */
+/* glCopyTexImage2D(target, level, internal, x, y, width, height, border): the level made (the shared layer's), then
+   copied into */
 static void g_copy_tex_image_2d(CPU* c, Gles2Context* gl) {
-    unsigned target = (unsigned)X(0);
     int level = (int)X(1), w = (int)X(5), h = (int)X(6);
-    unsigned internal = (unsigned)X(2);
-    int face = target >= GL_TEXTURE_CUBE_MAP_POSITIVE_X_ && target < GL_TEXTURE_CUBE_MAP_POSITIVE_X_ + 6;
-    unsigned index = face ? G2_TCUBE : G2_T2D;
-    G2Texture* t = gles2_unit_texture(gl, gl->active, index);
-    if (!t || w < 0 || h < 0) {
-        gles2_error(gl, t ? GL_INVALID_VALUE_ : GL_INVALID_OPERATION_);
-        return;
-    }
-    /* the read framebuffer's own format when the internal format is unsized: 4 bytes */
-    const G2Format* f = gles2_format(internal, internal == 0x1907 ? 0x1907 : 0x1908, GL_UNSIGNED_BYTE_);
-    if (!f) f = gles2_format(0x1908, 0x1908, GL_UNSIGNED_BYTE_);
-    int bw = w << level, bh = h << level;
-    if (!t->image.image || t->format != f || (t->width >> level) != w || (t->height >> level) != h) {
-        int m = bw > bh ? bw : bh, levels = 1;
-        while (m > 1) m >>= 1, ++levels;
-        if (!gles2_texture_storage(gl, t, f, bw, bh, 1, levels)) return;
-    }
-    t->defined |= 1u << level;
-    copy_tex(gl, target, level, 0, 0, 0, (int)X(3), (int)X(4), w, h);
+    if (snx_gl_copy_tex_image(gl->ctx, (uint32_t)X(0), level, (uint32_t)X(2), w, h))
+        copy_tex(gl, (unsigned)X(0), level, 0, 0, 0, (int)X(3), (int)X(4), w, h);
 }
 
 const HleSymbol hle_gles2_draw[] = {

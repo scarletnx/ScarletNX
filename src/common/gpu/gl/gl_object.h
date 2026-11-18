@@ -104,6 +104,14 @@ SnxGlBuffer* snx_gl_buffer(uint32_t name);
 uint8_t* snx_gl_buffer_bytes(uint32_t name);
 /* the vertex array bound (the context's own for 0, or a name deleted since) */
 SnxGlVertexArray* snx_gl_vertex_array(uint32_t ctx);
+/* the host pointer of a client's or the platform's address (the platform's bytes), NULL for 0 */
+uint8_t* snx_gl_client_bytes(uint64_t at);
+/* size bytes of the platform's memory the layer places things in (buffers' bytes, textures' kept texels): their
+   address, 0 when there is none; and given back */
+uint64_t snx_gl_memory_take(uint64_t size);
+void snx_gl_memory_give(uint64_t at, uint64_t size);
+/* after snx_gl_object_state_check passed on a copy: whether that copy's memory holds [at, at + size) in a chunk */
+int snx_gl_object_checked_holds(uint64_t at, uint64_t size);
 /* glGet*'s binding of buffers and vertex arrays of pname into v[0]: 1, or 0 for a pname not of them */
 int snx_gl_object_get(uint32_t ctx, uint32_t pname, double v[4]);
 /* the bytes of a vertex attribute of size components of type, packed */

@@ -20,6 +20,7 @@
 #include "android/bridge/hle.h"
 #include "common/gpu/gl/gl_format.h"
 #include "common/gpu/gl/gl_object.h"
+#include "common/gpu/gl/gl_texture.h"
 #include "common/gpu/gl/gl_program.h"
 #include "common/gpu/gl/gl_state.h"
 #include "common/cpu/aarch64/cpu.h"
@@ -68,15 +69,8 @@ typedef struct {
     uint64_t arena_serial;
 } G2Buffer;
 
-typedef struct {
-    unsigned min, mag, wrap[3], compare_mode, compare_func;
-    float min_lod, max_lod, anisotropy;
-} G2SamplerState;
-
-typedef struct {
-    bool used;
-    G2SamplerState state;
-} G2Sampler;
+/* a sampler's state, the shared layer's (common/gpu/gl/gl_texture.h) */
+typedef SnxGlSamplerState G2SamplerState;
 
 /* a GL format as Vulkan's (gles2_object.c's table) */
 typedef struct {
@@ -100,6 +94,7 @@ enum {
     G2_DS = SNX_GL_DS
 };
 
+/* a texture's image, and its shared record's fields as gles2_texture() copied them (gl_texture.h's) */
 typedef struct {
     bool used;
     uint8_t target; /* G2_T*, 0xff until the first bind */
@@ -187,16 +182,6 @@ typedef struct Gles2Context {
     GlesSurface* read;
     GlesSurface* own; /* a 1x1 pbuffer, for a context current without a surface */
     bool sized;
-    unsigned active;
-    unsigned textures[G2_UNITS][G2_TARGETS];
-    unsigned samplers[G2_UNITS];
-    /* GLES 3.1: the shader storage buffers, the image units, the indirect buffers, the sample mask */
-    struct {
-        unsigned texture;
-        int level, layer;
-        bool layered;
-        unsigned access, format;
-    } images[G2_IMAGE_UNITS];
     unsigned draw_fbo, read_fbo, renderbuffer;
     unsigned query_any; /* the active occlusion query, or 0 */
     unsigned query_any_target;
@@ -223,10 +208,7 @@ typedef struct {
 /* the module's state: the share group's objects, and the caches of the device's objects */
 typedef struct {
     G2Buffer buffer_vk[SNX_GL_BUFFERS];
-    G2Texture* textures;
-    size_t texture_count;
-    G2Sampler* samplers;
-    size_t sampler_count;
+    G2Texture texture_vk[SNX_GL_TEXTURES];
     G2Renderbuffer* renderbuffers;
     size_t renderbuffer_count;
     G2Framebuffer* framebuffers;
@@ -296,7 +278,12 @@ void gles2_buffers_init(void);
 G2Buffer* gles2_buffer(unsigned name);
 /* the context's buffer bindings, vertex arrays and generic attributes (common/gpu/gl/gl_object.h) */
 static inline SnxGlObjectContext* gles2_objects(const Gles2Context* gl) { return snx_gl_objects(gl->ctx); }
+/* the shared layer's textures tell this file when one's storage is new, its texels, its mipmaps, when it goes */
+void gles2_textures_init(void);
+/* a texture's image, with the shared layer's record copied in now: NULL for 0 or a name not made */
 G2Texture* gles2_texture(unsigned name);
+/* a level of the texture written here (a copy into it): it has texels now */
+void gles2_texture_defined(G2Texture* t, int level);
 G2Renderbuffer* gles2_renderbuffer(unsigned name);
 G2Framebuffer* gles2_framebuffer(unsigned name);
 const G2SamplerState* gles2_unit_sampler(Gles2Context* gl, unsigned unit, const G2Texture* t);
@@ -318,9 +305,6 @@ GlesSlot* gles2_transfer_slot(Gles2Context* gl);
 /* the format of a GL internal format (and type, for an unsized one); of the shared layer's index (gl_format.h) */
 const G2Format* gles2_format(unsigned internal, unsigned format, unsigned type);
 const G2Format* gles2_format_at(int index);
-/* the texture's image at width, height, depth, levels and layers of format: made again when it differs */
-bool gles2_texture_storage(Gles2Context* gl, G2Texture* t, const G2Format* f, int width, int height, int depth,
-                           int levels);
 /* the query's Vulkan queries: one begun in the rendering that starts, ended when it ends */
 void gles2_queries_begin(Gles2Context* gl, VkCommandBuffer cb);
 void gles2_queries_end(Gles2Context* gl, VkCommandBuffer cb);
