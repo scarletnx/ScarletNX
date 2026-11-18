@@ -3295,7 +3295,8 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
             continue;
         }
         int skip_helper = stage == ST_FS && shader_helper_side_effect(op);
-        if (op != O_SSY && op != O_PBK && op != O_PCNT && op != O_PEXIT && op != O_CAL &&
+        /* SSY, PBK, PCNT, CAL and PRET have no predicate: their bits 16 to 19 are zero, not P0 */
+        if (op != O_SSY && op != O_PBK && op != O_PCNT && op != O_PEXIT && op != O_CAL && op != O_PRET &&
             (B(w, 16, 3) != 7 || B(w, 19, 1) || (shader_flow_has_cc(op) && B(w, 0, 5) != 15) || skip_helper)) {
             u32 condition = pred_read(c, B(w, 16, 3), B(w, 19, 1));
             if (shader_flow_has_cc(op) && B(w, 0, 5) != 15)
