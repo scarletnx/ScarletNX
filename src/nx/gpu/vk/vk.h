@@ -2409,6 +2409,9 @@ typedef struct {
     int n[VK_DRAW_STAGES];
     VkBuffer map_buf[VK_DRAW_STAGES];
     u64 map_off[VK_DRAW_STAGES], map_size[VK_DRAW_STAGES];
+    /* a vertex program that fetches its own attributes (ShaderInfo.vertex_fetch): each attribute's 4 words of its
+       record (SH_RECORD_ATTR), which render.c's fetch_records fills from the draw's vertex streams */
+    u32 attr[32][4];
 } VkDrawStorage;
 /* whether any stage of the draw reads or writes global memory */
 static inline int vk_draw_storage_any(const VkDrawStorage* draw) {
@@ -2786,6 +2789,9 @@ typedef struct {
     /* all zero with dynamic vertex input (g_vk.vertex_input_dynamic): each draw sets its own (render.c), and one
        pipeline serves every layout its programs are drawn with */
     VertexLayout vi;
+    /* the vertex program fetches its own attributes (ShaderInfo.vertex_fetch): vi is all zero, and the pipeline has
+       an empty vertex input state, none of it dynamic */
+    u32 fetch;
     u32 ncolor;
     u32 color[8];
     u32 depth, stencil;

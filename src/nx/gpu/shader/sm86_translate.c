@@ -84,6 +84,9 @@ typedef struct {
     u32 shared, shared_ptr, shared_words;
     u32 local, local_ptr, local_words; /* LDL and STL's memory: a Function array, made at the start */
     u32 in_attr[32], out_attr[32], position, point_size, fragcoord, color[8], depth;
+    /* a vertex program of vertex_fetch: each component of the attributes it reads, as bits, from its prologue
+       (vertex_fetch_prologue), which dominates all its code */
+    u32 fetched[32][4], fetched_mask;
     u32 vertex_index, instance_index, base_instance, local_id, group_id, lane_id;
     u32 num_groups, hmma_count;  /* NumWorkgroups and the HMMAs so far, for hmma_zero */
     int coop;                    /* HMMA takes hmma_coop (coop_wanted), and the module the Vulkan memory model */
@@ -800,6 +803,7 @@ static u32 input_var(Ctx* c, u32 i) {
 /* the bits of component k of generic input i. A fragment program's input that no output of the stage before writes
    (in_unfed_mask) reads 0, 0, 0, 1, as the Maxwell translator reads it, with no Input for the stage before to match */
 static u32 input_load(Ctx* c, u32 i, u32 k) {
+    if (c->stage == ST_VS && c->si->vertex_fetch) return c->fetched_mask >> i & 1 ? c->fetched[i][k] : c->zero;
     if (c->stage == ST_FS && (c->si->in_unfed_mask >> i & 1)) {
         c->si->in_mask |= 1u << i;
         return to_u(c, cf(c, k == 3 ? 1.0f : 0.0f));
@@ -1177,6 +1181,215 @@ static u32 gbuf_pointer(Ctx* c, u32 buffer, u32 index, u32 type) {
     u32 scratch = pair64(c, record_word(c, SH_RECORD_SCRATCH), record_word(c, SH_RECORD_SCRATCH + 1));
     address = spv_emit_ternary(&c->e, SPV_OP_SELECT, u64_type(c), inside, address, scratch);
     return spv_emit_address_pointer(&c->e, type, address);
+}
+/* ---- a vertex program's own attribute fetch (ShCaps.vertex_fetch) ---- */
+
+/* An SM86 vertex program of the record reads its generic attributes from the vertex streams by device address, where
+   the draw bound vertex buffers and set a vertex input state before. Attribute i's 4 words in the record
+   (SH_RECORD_ATTR + 4 i) give the address of its first element, the bytes from there to its stream's end, and its
+   format in the SH_ATTR_ fields (vk/render.c's fetch_plan). The element is the vertex's (VertexIndex holds the draw's
+   first vertex and vertex offset), or for an attribute stepped per instance firstInstance + (InstanceIndex -
+   firstInstance) / divisor, as Vulkan's fetch has it, BaseInstance being firstInstance */
+static int vertex_fetches(const Ctx* c) {
+    return g_spirv_translate.vertex_fetch && g_spirv_translate.draw_parameters && c->stage == ST_VS &&
+           gbuf_by_address(c);
+}
+static u32 ubits(Ctx* c, u32 v, u32 offset, u32 count) {
+    return spv_emit_ternary(&c->e, SPV_OP_BIT_FIELD_U_EXTRACT, c->t_u32, v, cu(c, offset), cu(c, count));
+}
+static u32 u_equal(Ctx* c, u32 a, u32 b) { return spv_emit_binary(&c->e, SPV_OP_I_EQUAL, c->t_bool, a, b); }
+static u32 u_select(Ctx* c, u32 cond, u32 a, u32 b) {
+    return spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32, cond, a, b);
+}
+static u32 f_select(Ctx* c, u32 cond, u32 a, u32 b) {
+    return spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_f32, cond, a, b);
+}
+/* the n aligned words from address al on, each 0 where its bytes end past lim: robustness doesn't cover addresses,
+   so such a word's load reads the record's scratch word */
+static void fetch_words(Ctx* c, u32 al, u32 lim, u32 scratch, u32 n, u32* w) {
+    const u32 t64 = u64_type(c);
+    for (u32 j = 0; j < n; j++) {
+        u32 at = j ? op2(c, SPV_OP_I_ADD, t64, al, c64(c, 4u * j)) : al;
+        u32 inside = op2(c, SPV_OP_U_LESS_THAN_EQUAL, c->t_bool, op2(c, SPV_OP_I_ADD, t64, at, c64(c, 4)), lim);
+        u32 pointer =
+            spv_emit_address_pointer(&c->e, c->t_u32, spv_emit_ternary(&c->e, SPV_OP_SELECT, t64, inside, at, scratch));
+        w[j] = u_select(c, inside, spv_emit_load_aligned(&c->e, c->t_u32, pointer, 4, 0), c->zero);
+    }
+}
+/* the first m words of the attribute's bytes, which start sh bits into w[0] (sh 0, 8, 16 or 24): w[j] >> sh, with
+   the low bits of w[j + 1] above. (x << 1) << (31 - sh) is x << (32 - sh), and defined at sh 0, where it is 0 */
+static void fetch_align(Ctx* c, const u32* w, u32 n, u32 sh, u32 m, u32* aw) {
+    for (u32 j = 0; j < m; j++) {
+        aw[j] = op2(c, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, w[j], sh);
+        if (j + 1 >= n) continue;
+        u32 high =
+            op2(c, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, op2(c, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, w[j + 1], cu(c, 1)),
+                op2(c, SPV_OP_I_SUB, c->t_u32, cu(c, 31), sh));
+        aw[j] = op2(c, SPV_OP_BITWISE_OR, c->t_u32, aw[j], high);
+    }
+}
+/* an unsigned float of 5 exponent bits over mb mantissa bits (B10G11R11's components) as f32 bits: a denormal is
+   m 2^(-14 - mb), exponent 31 an infinity or a NaN */
+static u32 small_float(Ctx* c, u32 v, u32 mb) {
+    u32 m = ubits(c, v, 0, mb), e = ubits(c, v, mb, 5);
+    u32 mantissa = op2(c, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, m, cu(c, 23 - mb));
+    u32 normal =
+        op2(c, SPV_OP_BITWISE_OR, c->t_u32,
+            op2(c, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, spv_emit_iadd_u32(&c->e, c->t_u32, e, cu(c, 112)), cu(c, 23)),
+            mantissa);
+    u32 special = op2(c, SPV_OP_BITWISE_OR, c->t_u32, cu(c, 0x7F800000u), mantissa);
+    u32 denormal = to_u(c, op2(c, SPV_OP_F_MUL, c->t_f32, spv_emit_unary(&c->e, SPV_OP_CONVERT_U_TO_F, c->t_f32, m),
+                               cf(c, 1.0f / (float)(1u << (14 + mb)))));
+    return u_select(c, u_equal(c, e, c->zero), denormal, u_select(c, u_equal(c, e, cu(c, 31)), special, normal));
+}
+/* component k of an attribute as the program reads it, from its bits r (zero-extended) of wd bits (0: the format has
+   no such component) and the attribute's type: an integer attribute (attr_int_mask) its integer's bits, as its Input
+   variable had them, and else a float. A missing component is 0, and 1 as the last */
+static u32 fetch_decode(Ctx* c, u32 r, u32 wd, u32 type, u32 k, int integer) {
+    u32 s = to_u(c, spv_emit_ternary(&c->e, SPV_OP_BIT_FIELD_S_EXTRACT, c->t_i32,
+                                     spv_emit_unary(&c->e, SPV_OP_BITCAST, c->t_i32, r), c->zero, wd));
+    u32 value = u_select(c, u_equal(c, type, cu(c, 3)), s, r);
+    u32 one = cu(c, integer ? 1u : 0x3F800000u);
+    if (!integer) {
+        /* the largest value of wd bits: (1 << (wd & 31)) - 1 is defined at wd 32 too, where the select takes ~0 */
+        u32 most = u_select(c, u_equal(c, wd, cu(c, 32)), cu(c, 0xFFFFFFFFu),
+                            op2(c, SPV_OP_I_SUB, c->t_u32,
+                                op2(c, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, cu(c, 1),
+                                    op2(c, SPV_OP_BITWISE_AND, c->t_u32, wd, cu(c, 31))),
+                                cu(c, 1)));
+        u32 fu = spv_emit_unary(&c->e, SPV_OP_CONVERT_U_TO_F, c->t_f32, r);
+        u32 fs =
+            spv_emit_unary(&c->e, SPV_OP_CONVERT_S_TO_F, c->t_f32, spv_emit_unary(&c->e, SPV_OP_BITCAST, c->t_i32, s));
+        u32 unorm = op2(c, SPV_OP_F_DIV, c->t_f32, fu, spv_emit_unary(&c->e, SPV_OP_CONVERT_U_TO_F, c->t_f32, most));
+        u32 snorm =
+            spv_emit_glsl_binary(&c->e, c->t_f32, c->glsl, SPV_GLSL_F_MAX,
+                                 op2(c, SPV_OP_F_DIV, c->t_f32, fs,
+                                     spv_emit_unary(&c->e, SPV_OP_CONVERT_U_TO_F, c->t_f32,
+                                                    op2(c, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, most, cu(c, 1)))),
+                                 cf(c, -1.0f));
+        u32 half = spv_emit_vec4_extract(&c->e, c->t_f32, SPV_EXT(&c->e, c->t_v2f, SPV_GLSL_UNPACK_HALF2X16, r), 0);
+        /* float: 32 bits as they are, 16 a half, and the 8-bit and packed formats unorm (the renderer gives those
+           type 2) */
+        u32 flt =
+            f_select(c, u_equal(c, wd, cu(c, 32)), to_f(c, r), f_select(c, u_equal(c, wd, cu(c, 16)), half, unorm));
+        u32 f = f_select(
+            c, u_equal(c, type, cu(c, 1)), snorm,
+            f_select(c, u_equal(c, type, cu(c, 2)), unorm,
+                     f_select(c, u_equal(c, type, cu(c, 5)), fu, f_select(c, u_equal(c, type, cu(c, 6)), fs, flt))));
+        u32 is_int = op2(c, SPV_OP_LOGICAL_OR, c->t_bool, u_equal(c, type, cu(c, 3)), u_equal(c, type, cu(c, 4)));
+        value = u_select(c, is_int, value, to_u(c, f));
+    }
+    return u_select(c, u_equal(c, wd, c->zero), k == 3 ? one : c->zero, value);
+}
+/* The size codes a vertex program fetches: the attribute's bytes, the bytes of each component (0 for a packed
+   format), and its components */
+static const struct {
+    u8 code, bytes, comp, n;
+} g_fetch_sizes[] = {{0x01, 16, 4, 4}, {0x02, 12, 4, 3}, {0x04, 8, 4, 2}, {0x12, 4, 4, 1}, {0x03, 8, 2, 4},
+                     {0x05, 6, 2, 3},  {0x0F, 4, 2, 2},  {0x1B, 2, 2, 1}, {0x0A, 4, 1, 4}, {0x13, 3, 1, 3},
+                     {0x18, 2, 1, 2},  {0x1D, 1, 1, 1},  {0x30, 4, 0, 4}, {0x31, 4, 0, 3}};
+enum { FETCH_SIZES = sizeof g_fetch_sizes / sizeof *g_fetch_sizes };
+/* The fetch of each attribute the program reads, in its first block, before its code: what each ALD of a generic
+   reads is then a value of the prologue (input_load). Each attribute reads the aligned words that hold its bytes and
+   decodes them in a switch on its size code, uniform in the draw: an attribute marked constant takes the default,
+   where no case writes a component */
+static void vertex_fetch_prologue(Ctx* c) {
+    if (!vertex_fetches(c)) return;
+    c->si->vertex_fetch = 1;
+    u32 mask = 0;
+    for (u32 i = 0; i < c->n; i++) {
+        const Sm86Insn* in = &c->in[i];
+        if (in->op != SM86_ALD) continue;
+        const u32 addr = sm86_field(in, 40, 10), comps = sm86_field(in, 74, 2) + 1;
+        for (u32 k = 0; k < comps; k++)
+            if (addr + 4 * k >= 0x80 && addr + 4 * k < 0x280) mask |= 1u << ((addr + 4 * k - 0x80) >> 4);
+    }
+    if (!mask) return;
+    /* the Function variables the cases write, before the first block's other instructions */
+    const u32 ptr = spv_emit_type_function_pointer(&c->e, c->t_u32);
+    u32 raw[4], width[4];
+    for (u32 k = 0; k < 4; k++) {
+        raw[k] = spv_emit_function_variable_init(&c->e, ptr, c->zero);
+        width[k] = spv_emit_function_variable_init(&c->e, ptr, c->zero);
+    }
+    const u32 t64 = u64_type(c);
+    u32 scratch = pair64(c, record_word(c, SH_RECORD_SCRATCH), record_word(c, SH_RECORD_SCRATCH + 1));
+    u32 vertex = builtin_u32(c, &c->vertex_index, SPV_BUILT_IN_VERTEX_INDEX);
+    spv_emit_draw_parameters_capability(&c->e);
+    u32 first = builtin_u32(c, &c->base_instance, SPV_BUILT_IN_BASE_INSTANCE);
+    u32 since = op2(c, SPV_OP_I_SUB, c->t_u32, builtin_u32(c, &c->instance_index, SPV_BUILT_IN_INSTANCE_INDEX), first);
+    for (u32 i = 0; i < 32; i++) {
+        if (!(mask >> i & 1)) continue;
+        const u32 rec = SH_RECORD_ATTR + 4 * i;
+        u32 addr = pair64(c, record_word(c, rec), record_word(c, rec + 1));
+        u32 lim = op2(c, SPV_OP_I_ADD, t64, addr, to64(c, record_word(c, rec + 2)));
+        u32 info = record_word(c, rec + 3);
+        u32 stride = op2(c, SPV_OP_BITWISE_AND, c->t_u32, info, cu(c, SH_ATTR_STRIDE_MASK));
+        u32 size = ubits(c, info, SH_ATTR_SIZE_SHIFT, 6), type = ubits(c, info, SH_ATTR_TYPE_SHIFT, 3);
+        /* instanced, constant, BGRA */
+        const u32 bits[3] = {SH_ATTR_INSTANCED, SH_ATTR_CONSTANT, SH_ATTR_BGRA};
+        u32 flag[3];
+        for (u32 f = 0; f < 3; f++)
+            flag[f] = spv_emit_binary(&c->e, SPV_OP_I_NOT_EQUAL, c->t_bool,
+                                      op2(c, SPV_OP_BITWISE_AND, c->t_u32, info, cu(c, bits[f])), c->zero);
+        u32 divisor = op2(c, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, info, cu(c, SH_ATTR_DIVISOR_SHIFT));
+        divisor = u_select(c, u_equal(c, divisor, c->zero), cu(c, 1), divisor);
+        u32 element =
+            u_select(c, flag[0],
+                     spv_emit_iadd_u32(&c->e, c->t_u32, first, op2(c, SPV_OP_U_DIV, c->t_u32, since, divisor)), vertex);
+        u32 at = op2(c, SPV_OP_I_ADD, t64, addr, op2(c, SPV_OP_I_MUL, t64, to64(c, element), to64(c, stride)));
+        u32 al = op2(c, SPV_OP_BITWISE_AND, t64, at, c64(c, ~(u64)3));
+        u32 sh = op2(c, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32,
+                     op2(c, SPV_OP_BITWISE_AND, c->t_u32, lo32(c, at), cu(c, 3)), cu(c, 3));
+        for (u32 k = 0; k < 4; k++) spv_emit_store(&c->e, width[k], c->zero);
+        u32 merge = spv_emit_id(&c->e), literals[FETCH_SIZES], labels[FETCH_SIZES];
+        for (u32 f = 0; f < FETCH_SIZES; f++) {
+            literals[f] = g_fetch_sizes[f].code;
+            labels[f] = spv_emit_id(&c->e);
+        }
+        /* the selector before the merge: OpSelectionMerge must come right before the OpSwitch */
+        const u32 selector = u_select(c, flag[1], c->zero, size);
+        coop_merge(c, merge);
+        coop_switch(c, selector, merge, literals, labels, FETCH_SIZES);
+        for (u32 f = 0; f < FETCH_SIZES; f++) {
+            const u32 bytes = g_fetch_sizes[f].bytes, comp = g_fetch_sizes[f].comp, code = g_fetch_sizes[f].code;
+            const u32 n = (bytes + 6) / 4, m = (bytes + 3) / 4; /* the words that hold the bytes at any sh */
+            u32 w[5], aw[4];
+            coop_label(c, labels[f]);
+            fetch_words(c, al, lim, scratch, n, w);
+            fetch_align(c, w, n, sh, m, aw);
+            for (u32 k = 0; k < g_fetch_sizes[f].n; k++) {
+                u32 r, wd;
+                if (code == 0x30) { /* A2B10G10R10: 10 bits each from bit 0, the last 2 */
+                    r = ubits(c, aw[0], 10 * k, k < 3 ? 10 : 2);
+                    wd = k < 3 ? 10 : 2;
+                } else if (code == 0x31) { /* B10G11R11 UFLOAT: 6 and 5 mantissa bits, then 5 */
+                    r = small_float(c, ubits(c, aw[0], 11 * k, k < 2 ? 11 : 10), k < 2 ? 6 : 5);
+                    wd = 32;
+                } else {
+                    r = comp == 4 ? aw[k] : ubits(c, aw[k * comp / 4], (k * comp % 4) * 8, comp * 8);
+                    wd = comp * 8;
+                }
+                spv_emit_store(&c->e, raw[k], r);
+                spv_emit_store(&c->e, width[k], cu(c, wd));
+            }
+            coop_branch(c, merge);
+        }
+        coop_label(c, merge);
+        u32 r[4], wd[4];
+        for (u32 k = 0; k < 4; k++) {
+            r[k] = spv_emit_load(&c->e, c->t_u32, raw[k]);
+            wd[k] = spv_emit_load(&c->e, c->t_u32, width[k]);
+        }
+        /* BGRA8: the first and third components swap */
+        const u32 x = r[0];
+        r[0] = u_select(c, flag[2], r[2], x);
+        r[2] = u_select(c, flag[2], x, r[2]);
+        const int integer = c->si->attr_int_mask >> i & 1;
+        for (u32 k = 0; k < 4; k++) c->fetched[i][k] = fetch_decode(c, r[k], wd[k], type, k, integer);
+    }
+    c->fetched_mask = mask;
+    c->si->in_mask |= mask;
 }
 static u32 gbuf_slot(Ctx* c, u32 key, int write) {
     int slot = -1;
@@ -2634,7 +2847,9 @@ static void table_element(Ctx* c, int slot) {
         c->table_samplers = spv_emit_sampler_table(&c->e, c->t_u32, g_spirv_translate.table_set, 1, SNX_TABLE_SAMPLERS);
         add_interface(c, c->table_samplers);
     }
-    u32 word = record_word(c, (g_spirv_translate.gbuf_address ? SH_RECORD_GBUF : 0) + (u32)slot);
+    /* after the attributes in a vertex program that fetches them, else after the global buffers */
+    const u32 at = c->si->vertex_fetch ? SH_RECORD_TEX_FETCH : g_spirv_translate.gbuf_address ? SH_RECORD_GBUF : 0;
+    u32 word = record_word(c, at + (u32)slot);
     u32 image = spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, word, cu(c, (1u << SNX_TABLE_SAMPLER_SHIFT) - 1));
     u32 sampler = spv_emit_binary(&c->e, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, word, cu(c, SNX_TABLE_SAMPLER_SHIFT));
     c->tex[slot] =
@@ -7590,6 +7805,8 @@ u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, Sha
         if (!se.label) abort();
         se.used = (u8*)(se.label + 4 * (size_t)st->nscopes + 2 * (size_t)st->ntokens + 1);
         if (st->uses_flag) se.flag = spv_emit_function_variable_init(e, reg_ptr, c->zero);
+        /* a vertex program's own attribute fetch, after the other Function variables: its code begins the block */
+        vertex_fetch_prologue(c);
         /* pair_partner's pairs: the first half's value, kept for the second, which writes the select */
         u32* pair_first = calloc((size_t)n + 1, sizeof *pair_first);
         u32* pair_value_of = calloc((size_t)n + 1, sizeof *pair_value_of);

@@ -106,6 +106,7 @@ void vk_pipe_part_src(u32 part, const void* key, PipeKey* out) {
         const PipeViKey* vi = key;
         out->topo_class = vi->topo_class;
         out->vi = vi->vi;
+        out->fetch = vi->fetch;
         out->heaps = vi->heaps;
     } else if (part == VK_PART_PR) {
         const PipePrKey* pr = key;
@@ -247,6 +248,7 @@ void vk_pipe_split(const PipeKey* k, VkShaderModule fs, const PipeSplitDevice* d
     *vi = (PipeViKey){0};
     vi->topo_class = k->topo_class;
     vi->vi = k->vi;
+    vi->fetch = k->fetch;
     vi->heaps = k->heaps;
 
     *pr = (PipePrKey){0};
