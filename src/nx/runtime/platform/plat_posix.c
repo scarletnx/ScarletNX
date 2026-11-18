@@ -1264,7 +1264,7 @@ int plat_vm_unshare(u8* p, u64 size) {
 static struct {
     int (*allocate)(const AHardwareBuffer_Desc*, AHardwareBuffer**);
     int (*send)(const AHardwareBuffer*, int);
-    void (*release)(AHardwareBuffer*);
+    void (*_Atomic release)(AHardwareBuffer*);
 } g_ahb;
 static int ahb_load(void) {
     void* so;
@@ -1301,7 +1301,7 @@ int plat_gpu_buffer(u64 size, int* fd, void** handle) {
     }
     /* its dma-buf is the handle's first descriptor: the NDK hands the handle out only through a socket */
     if (socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, sv)) {
-        g_ahb.release(b);
+        atomic_load_explicit(&g_ahb.release, memory_order_relaxed)(b);
         return -1;
     }
     if (!g_ahb.send(b, sv[0])) {
@@ -1319,7 +1319,7 @@ int plat_gpu_buffer(u64 size, int* fd, void** handle) {
     for (int k = 1; k < n; k++) close(fds[k]);
     if (!n || lseek(fds[0], 0, SEEK_END) < (off_t)size) {
         if (n) close(fds[0]);
-        g_ahb.release(b);
+        atomic_load_explicit(&g_ahb.release, memory_order_relaxed)(b);
         errno = ENODEV; /* a handle without a dma-buf that large */
         return -1;
     }
@@ -1351,7 +1351,7 @@ void plat_gpu_buffer_free(int fd, void* handle, u64 size) {
     if (fd >= 0) close(fd);
 #if defined(__ANDROID__)
     (void)size;
-    if (handle) g_ahb.release((AHardwareBuffer*)handle);
+    if (handle) atomic_load_explicit(&g_ahb.release, memory_order_relaxed)((AHardwareBuffer*)handle);
 #else
     if (handle) munmap(handle, (size_t)size);
 #endif
