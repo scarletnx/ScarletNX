@@ -268,13 +268,13 @@ static inline u32 sm86_field(const Sm86Insn* in, unsigned lo, unsigned n) {
 
 /* SM86_LDSM_HMMA is the pair an LDSM and the HMMA that reads its fragments make, one instruction from two, which
    fuse.c makes of them before any pass rewrites the array. Its fields are the HMMA's (the second half, whose lowering
-   the passes and the emitter follow), and the LDSM's are packed into the bits an HMMA does not use: its immediate
-   where an LDSM puts it, at 40, and its destination, address register, matrix count and transpose at 91 */
-#define SM86_FUSE_LDSM_DST 91u
-#define SM86_FUSE_LDSM_A   99u
-#define SM86_FUSE_LDSM_CNT 107u
-#define SM86_FUSE_LDSM_TR  109u
-static inline u32 sm86_fuse_ldsm_dst(const Sm86Insn* in) { return sm86_field(in, SM86_FUSE_LDSM_DST, 8); }
+   the passes and the emitter follow), and the LDSM's are packed into bits the HMMA leaves zero (fuse.c checks them):
+   its immediate where an LDSM puts it, at 40, and its address register, matrix count and transpose at 91 to 101,
+   below the scheduling bits (105 on). Its destination is the HMMA's A, at 24, as a pair's must be */
+#define SM86_FUSE_LDSM_A   91u
+#define SM86_FUSE_LDSM_CNT 99u
+#define SM86_FUSE_LDSM_TR  101u
+static inline u32 sm86_fuse_ldsm_dst(const Sm86Insn* in) { return sm86_field(in, 24, 8); }
 static inline u32 sm86_fuse_ldsm_a(const Sm86Insn* in) { return sm86_field(in, SM86_FUSE_LDSM_A, 8); }
 static inline u32 sm86_fuse_ldsm_count(const Sm86Insn* in) { return sm86_field(in, SM86_FUSE_LDSM_CNT, 2); }
 static inline int sm86_fuse_ldsm_trans(const Sm86Insn* in) { return (int)sm86_field(in, SM86_FUSE_LDSM_TR, 1); }
