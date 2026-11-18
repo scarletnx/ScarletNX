@@ -289,7 +289,7 @@ void gles2_rendering_stop(Gles2Context* gl) {
 
 /* the renderbuffers of the target that are new: their images are in UNDEFINED */
 static void mark_ready(Gles2Context* gl) {
-    G2Framebuffer* fb = gles2_framebuffer(gl->draw_fbo);
+    G2Framebuffer* fb = gles2_framebuffer(gles2_fbos(gl)->draw);
     if (!fb) return;
     for (int i = 0; i < G2_ATTACHMENTS; ++i)
         if (fb->at[i].kind == 2) {
@@ -302,7 +302,7 @@ bool gles2_rendering_begin(Gles2Context* gl) {
     GlesSurface* s = gles2_surface(gl);
     if (!s) return false;
     Target t;
-    if (!target_of(gl, gl->draw_fbo, false, &t)) {
+    if (!target_of(gl, gles2_fbos(gl)->draw, false, &t)) {
         gles2_error(gl, GL_INVALID_FRAMEBUFFER_OPERATION_);
         return false;
     }
@@ -1421,8 +1421,8 @@ typedef struct {
 
 static bool read_source(Gles2Context* gl, Source* out, bool depth) {
     *out = (Source){0};
-    G2Framebuffer* fb = gles2_framebuffer(gl->read_fbo);
-    if (!gl->read_fbo || !fb) {
+    G2Framebuffer* fb = gles2_framebuffer(gles2_fbos(gl)->read);
+    if (!gles2_fbos(gl)->read || !fb) {
         GlesSurface* s = gl->read;
         if (!s || !gles_frame_begin(s)) return false;
         if (depth) {
@@ -1514,7 +1514,7 @@ static void g_blit_framebuffer(CPU* c, Gles2Context* gl) {
     int dx0 = (int)X(4), dy0 = (int)X(5), dx1 = (int)X(6), dy1 = (int)X(7);
     unsigned mask = (unsigned)gles2_arg(c, 8), filter = (unsigned)gles2_arg(c, 9);
     Target dst;
-    if (!target_of(gl, gl->draw_fbo, false, &dst)) {
+    if (!target_of(gl, gles2_fbos(gl)->draw, false, &dst)) {
         gles2_error(gl, GL_INVALID_FRAMEBUFFER_OPERATION_);
         return;
     }
@@ -1534,9 +1534,9 @@ static void g_blit_framebuffer(CPU* c, Gles2Context* gl) {
     if ((mask & GL_COLOR_BUFFER_BIT_) && read_source(gl, &src, false)) {
         for (int i = 0; i < G2_COLORS; ++i) {
             if (!dst.color_images[i]) continue;
-            G2Framebuffer* fb = gles2_framebuffer(gl->draw_fbo);
+            G2Framebuffer* fb = gles2_framebuffer(gles2_fbos(gl)->draw);
             uint32_t level = 0, layer = 0;
-            if (fb && gl->draw_fbo) {
+            if (fb && gles2_fbos(gl)->draw) {
                 unsigned which = fb->draw[i];
                 const G2Attachment* a = &fb->at[which - GL_COLOR_ATTACHMENT0_];
                 level = a->kind == 1 ? (uint32_t)a->level : 0;
