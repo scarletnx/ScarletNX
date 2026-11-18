@@ -546,6 +546,7 @@ static Val helper_call(unsigned n, unsigned def, Val* args, unsigned count) {
             s += (size_t)snprintf(sig + s, sizeof sig - s, ", %s* out%u",
                                   ctype_of(h->ret_kinds[k], BT_STATIC, h->ret_sdef[k]), k);
         emit("%s) {\n    (void)g;\n", sig);
+        for (k = 0; k < count; ++k) emit("    (void)a_%s;\n", sg_str(names[k]));
         buf_add(&g_gen.helpers, local.text ? local.text : "", local.length);
         emit("}\n\n");
         free(local.text);
