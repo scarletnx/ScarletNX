@@ -59,6 +59,14 @@ else()
     target_link_libraries(scarletnx-common PUBLIC m)
 endif()
 
+# the GL layer that translates a guest's GL to Vulkan, shared by the Android bridge and the console (gpu/gl/gl_state.h):
+# its state machine, flat records a save state holds as they are
+add_library(snx_gl STATIC gpu/gl/gl_state.c)
+set_target_properties(snx_gl PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+target_compile_options(snx_gl PRIVATE -pedantic-errors -Wall -Wextra -Werror=missing-prototypes
+                                      -Werror=missing-variable-declarations)
+target_include_directories(snx_gl PUBLIC "${PROJECT_SOURCE_DIR}/src")
+
 # snx_demangle (utilities/demangle.h): C++ names through the C++ runtime's demangler, for the log summary. C, but what
 # links it links the C++ runtime (LINKER_LANGUAGE CXX)
 add_library(snx_demangle STATIC utilities/demangle.c)

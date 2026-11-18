@@ -958,49 +958,50 @@ static VkRect2D rect(const Target* t, int x, int y, int w, int h) {
 
 /* the dynamic state of the context's fixed functions */
 static void dynamic_state(Gles2Context* gl, VkCommandBuffer cb, const Target* t, unsigned mode) {
-    const int* vp = gl->viewport;
-    VkViewport viewport = {(float)vp[0], (float)vp[1], (float)vp[2], (float)vp[3], gl->depth_range[0],
-                           gl->depth_range[1]};
+    const SnxGlFixed* fs = gles2_fixed(gl);
+    const int* vp = fs->viewport;
+    VkViewport viewport = {(float)vp[0], (float)vp[1],       (float)vp[2],
+                           (float)vp[3], fs->depth_range[0], fs->depth_range[1]};
     if (t->flip) viewport.y = (float)t->extent.height - (float)vp[1], viewport.height = -(float)vp[3];
     if (viewport.width < 1) viewport.width = 1;
     if (viewport.height == 0) viewport.height = 1;
     V.vk.vkCmdSetViewport(cb, 0, 1, &viewport);
-    VkRect2D scissor = gl->scissor_test ? rect(t, gl->scissor[0], gl->scissor[1], gl->scissor[2], gl->scissor[3])
+    VkRect2D scissor = fs->scissor_test ? rect(t, fs->scissor[0], fs->scissor[1], fs->scissor[2], fs->scissor[3])
                                         : (VkRect2D){{0, 0}, t->extent};
     V.vk.vkCmdSetScissor(cb, 0, 1, &scissor);
-    float width = gl->line_width;
+    float width = fs->line_width;
     if (!V.features.wideLines) width = 1;
     V.vk.vkCmdSetLineWidth(cb, width);
-    V.vk.vkCmdSetDepthBiasEnable(cb, gl->polygon_offset);
-    V.vk.vkCmdSetDepthBias(cb, gl->offset_units, 0, gl->offset_factor);
-    V.vk.vkCmdSetBlendConstants(cb, gl->blend_color);
-    VkCullModeFlags cull = !gl->cull ? VK_CULL_MODE_NONE
-                           : gl->cull_face == GL_FRONT_ ? VK_CULL_MODE_FRONT_BIT
-                           : gl->cull_face == GL_BACK_  ? VK_CULL_MODE_BACK_BIT
+    V.vk.vkCmdSetDepthBiasEnable(cb, fs->polygon_offset);
+    V.vk.vkCmdSetDepthBias(cb, fs->offset_units, 0, fs->offset_factor);
+    V.vk.vkCmdSetBlendConstants(cb, fs->blend_color);
+    VkCullModeFlags cull = !fs->cull                    ? VK_CULL_MODE_NONE
+                           : fs->cull_face == GL_FRONT_ ? VK_CULL_MODE_FRONT_BIT
+                           : fs->cull_face == GL_BACK_  ? VK_CULL_MODE_BACK_BIT
                                                         : VK_CULL_MODE_FRONT_AND_BACK;
     V.vk.vkCmdSetCullMode(cb, cull);
-    bool ccw = gl->front_face == GL_CCW_;
+    bool ccw = fs->front_face == GL_CCW_;
     if (!t->flip) ccw = !ccw; /* drawn upright, the winding turns */
     V.vk.vkCmdSetFrontFace(cb, ccw ? VK_FRONT_FACE_COUNTER_CLOCKWISE : VK_FRONT_FACE_CLOCKWISE);
     V.vk.vkCmdSetPrimitiveTopology(cb, topology(mode));
     bool depth = t->depth_view && (t->depth_aspect & VK_IMAGE_ASPECT_DEPTH_BIT);
     bool stencil = t->depth_view && (depth_aspect_of(t->depth) & VK_IMAGE_ASPECT_STENCIL_BIT);
-    V.vk.vkCmdSetDepthTestEnable(cb, depth && gl->depth_test);
-    V.vk.vkCmdSetDepthWriteEnable(cb, depth && gl->depth_test && gl->depth_mask);
-    V.vk.vkCmdSetDepthCompareOp(cb, compare(gl->depth_func));
-    V.vk.vkCmdSetStencilTestEnable(cb, stencil && gl->stencil_test);
+    V.vk.vkCmdSetDepthTestEnable(cb, depth && fs->depth_test);
+    V.vk.vkCmdSetDepthWriteEnable(cb, depth && fs->depth_test && fs->depth_mask);
+    V.vk.vkCmdSetDepthCompareOp(cb, compare(fs->depth_func));
+    V.vk.vkCmdSetStencilTestEnable(cb, stencil && fs->stencil_test);
     for (int f = 0; f < 2; ++f) {
         VkStencilFaceFlags face = f ? VK_STENCIL_FACE_BACK_BIT : VK_STENCIL_FACE_FRONT_BIT;
         /* the front face is set to keep GL's (dynamic_state's winding), so GL's front is Vulkan's front */
-        V.vk.vkCmdSetStencilOp(cb, face, stencil_op(gl->stencil[f].fail), stencil_op(gl->stencil[f].zpass),
-                               stencil_op(gl->stencil[f].zfail), compare(gl->stencil[f].func));
-        V.vk.vkCmdSetStencilCompareMask(cb, face, gl->stencil[f].mask);
-        V.vk.vkCmdSetStencilWriteMask(cb, face, gl->stencil[f].write);
-        V.vk.vkCmdSetStencilReference(cb, face, (uint32_t)gl->stencil[f].ref);
+        V.vk.vkCmdSetStencilOp(cb, face, stencil_op(fs->stencil[f].fail), stencil_op(fs->stencil[f].zpass),
+                               stencil_op(fs->stencil[f].zfail), compare(fs->stencil[f].func));
+        V.vk.vkCmdSetStencilCompareMask(cb, face, fs->stencil[f].mask);
+        V.vk.vkCmdSetStencilWriteMask(cb, face, fs->stencil[f].write);
+        V.vk.vkCmdSetStencilReference(cb, face, (uint32_t)fs->stencil[f].ref);
     }
-    V.vk.vkCmdSetPrimitiveRestartEnable(cb, gl->primitive_restart && mode != GL_POINTS_ && mode != GL_LINES_ &&
+    V.vk.vkCmdSetPrimitiveRestartEnable(cb, fs->primitive_restart && mode != GL_POINTS_ && mode != GL_LINES_ &&
                                                 mode != GL_TRIANGLES_);
-    V.vk.vkCmdSetRasterizerDiscardEnable(cb, gl->rasterizer_discard);
+    V.vk.vkCmdSetRasterizerDiscardEnable(cb, fs->rasterizer_discard);
 }
 
 /* the blend's code in the key: GL's factor as an index of codes */
@@ -1079,7 +1080,7 @@ static void draw(Gles2Context* gl, unsigned mode, int32_t first, int32_t count, 
             lo = UINT32_MAX;
             for (int32_t i = 0; i < count; ++i) {
                 uint32_t v = index_at(bytes, idx.type, (uint32_t)i);
-                if (gl->primitive_restart && v == restart) continue;
+                if (gles2_fixed(gl)->primitive_restart && v == restart) continue;
                 if (v < lo) lo = v;
                 if (v > hi) hi = v;
             }
@@ -1107,7 +1108,8 @@ static void draw(Gles2Context* gl, unsigned mode, int32_t first, int32_t count, 
         for (uint32_t i = 0; i < n; ++i) {
             uint32_t k = i < (uint32_t)count ? i : 0;
             uint32_t v = idx.type ? index_at(bytes, idx.type, k) : (uint32_t)first + k;
-            if (idx.type && gl->primitive_restart && v == restart) v = size == 4 ? 0xffffffffu : size == 2 ? 0xffff : 0xff;
+            if (idx.type && gles2_fixed(gl)->primitive_restart && v == restart)
+                v = size == 4 ? 0xffffffffu : size == 2 ? 0xffff : 0xff;
             if (size == 4) memcpy(out + 4 * (size_t)i, &v, 4);
             else if (size == 2) {
                 uint16_t h = (uint16_t)v;
@@ -1147,26 +1149,26 @@ static void draw(Gles2Context* gl, unsigned mode, int32_t first, int32_t count, 
     key.depth = (uint32_t)t->depth;
     key.samples = (uint8_t)t->samples;
     key.topology = topology_class(mode);
-    key.alpha_to_coverage = gl->alpha_to_coverage;
+    key.alpha_to_coverage = gles2_fixed(gl)->alpha_to_coverage;
     key.clip_control = V.depth_clip_control;
-    key.blend = gl->blend;
+    key.blend = gles2_fixed(gl)->blend;
     for (int i = 0; i < G2_COLORS; ++i)
         if (t->integer[i]) key.blend |= (uint8_t)(1u << (4 + i));
-    key.write_mask = (uint8_t)(gl->color_mask[0] | gl->color_mask[1] << 1 | gl->color_mask[2] << 2 |
-                               gl->color_mask[3] << 3);
-    if (gl->blend) {
-        key.factors[0] = factor_code(gl->blend_src[0]);
-        key.factors[1] = factor_code(gl->blend_dst[0]);
-        key.factors[2] = factor_code(gl->blend_src[1]);
-        key.factors[3] = factor_code(gl->blend_dst[1]);
-        key.ops[0] = equation_code(gl->blend_eq[0]);
-        key.ops[1] = equation_code(gl->blend_eq[1]);
+    key.write_mask = (uint8_t)(gles2_fixed(gl)->color_mask[0] | gles2_fixed(gl)->color_mask[1] << 1 |
+                               gles2_fixed(gl)->color_mask[2] << 2 | gles2_fixed(gl)->color_mask[3] << 3);
+    if (gles2_fixed(gl)->blend) {
+        key.factors[0] = factor_code(gles2_fixed(gl)->blend_src[0]);
+        key.factors[1] = factor_code(gles2_fixed(gl)->blend_dst[0]);
+        key.factors[2] = factor_code(gles2_fixed(gl)->blend_src[1]);
+        key.factors[3] = factor_code(gles2_fixed(gl)->blend_dst[1]);
+        key.ops[0] = equation_code(gles2_fixed(gl)->blend_eq[0]);
+        key.ops[1] = equation_code(gles2_fixed(gl)->blend_eq[1]);
     }
-    key.sample_mask = gl->sample_mask_on ? gl->sample_mask : 0xffffffffu;
-    if (gl->sample_coverage && t->samples > 1) {
-        uint32_t covered = (uint32_t)(gl->coverage_value * (float)t->samples + 0.5f);
+    key.sample_mask = gles2_fixed(gl)->sample_mask_on ? gles2_fixed(gl)->sample_mask : 0xffffffffu;
+    if (gles2_fixed(gl)->sample_coverage && t->samples > 1) {
+        uint32_t covered = (uint32_t)(gles2_fixed(gl)->coverage_value * (float)t->samples + 0.5f);
         uint32_t coverage = covered >= 32 ? 0xffffffffu : (1u << covered) - 1;
-        key.sample_mask &= gl->coverage_invert ? ~coverage : coverage;
+        key.sample_mask &= gles2_fixed(gl)->coverage_invert ? ~coverage : coverage;
     }
     if (!V.depth_clip_control) gles2_warn(15, "the device has no VK_EXT_depth_clip_control: depth is [0, 1] of GL's");
     VkPipeline pl = pipeline(p, &key);
@@ -1330,34 +1332,40 @@ static void clear(Gles2Context* gl, int drawbuffer, const VkClearColorValue* col
     VkClearAttachment at[G2_COLORS + 1];
     uint32_t n = 0;
     if (color) {
-        bool partial = !(gl->color_mask[0] && gl->color_mask[1] && gl->color_mask[2] && gl->color_mask[3]);
-        if (partial && (gl->color_mask[0] || gl->color_mask[1] || gl->color_mask[2] || gl->color_mask[3]))
+        bool partial = !(gles2_fixed(gl)->color_mask[0] && gles2_fixed(gl)->color_mask[1] &&
+                         gles2_fixed(gl)->color_mask[2] && gles2_fixed(gl)->color_mask[3]);
+        if (partial && (gles2_fixed(gl)->color_mask[0] || gles2_fixed(gl)->color_mask[1] ||
+                        gles2_fixed(gl)->color_mask[2] || gles2_fixed(gl)->color_mask[3]))
             gles2_warn(16, "glClear with a partial color mask clears every channel");
-        for (int i = 0; i < G2_COLORS && (gl->color_mask[0] || gl->color_mask[1] || gl->color_mask[2] ||
-                                          gl->color_mask[3]); ++i) {
+        for (int i = 0; i < G2_COLORS && (gles2_fixed(gl)->color_mask[0] || gles2_fixed(gl)->color_mask[1] ||
+                                          gles2_fixed(gl)->color_mask[2] || gles2_fixed(gl)->color_mask[3]);
+             ++i) {
             if (!t->color_views[i] || (drawbuffer >= 0 && i != drawbuffer)) continue;
             at[n++] = (VkClearAttachment){VK_IMAGE_ASPECT_COLOR_BIT, (uint32_t)i, {.color = *color}};
         }
     }
     VkImageAspectFlags aspect = 0;
-    if (depth && gl->depth_mask && t->depth_view && (t->depth_aspect & VK_IMAGE_ASPECT_DEPTH_BIT))
+    if (depth && gles2_fixed(gl)->depth_mask && t->depth_view && (t->depth_aspect & VK_IMAGE_ASPECT_DEPTH_BIT))
         aspect |= VK_IMAGE_ASPECT_DEPTH_BIT;
-    if (stencil && t->depth_view && (depth_aspect_of(t->depth) & VK_IMAGE_ASPECT_STENCIL_BIT) && gl->stencil[0].write)
+    if (stencil && t->depth_view && (depth_aspect_of(t->depth) & VK_IMAGE_ASPECT_STENCIL_BIT) &&
+        gles2_fixed(gl)->stencil[0].write)
         aspect |= VK_IMAGE_ASPECT_STENCIL_BIT;
     if (aspect)
         at[n++] = (VkClearAttachment){aspect, 0, {.depthStencil = {depth_value, (uint32_t)stencil_value}}};
-    VkClearRect r = {gl->scissor_test ? rect(t, gl->scissor[0], gl->scissor[1], gl->scissor[2], gl->scissor[3])
-                                      : (VkRect2D){{0, 0}, t->extent},
+    VkClearRect r = {gles2_fixed(gl)->scissor_test ? rect(t, gles2_fixed(gl)->scissor[0], gles2_fixed(gl)->scissor[1],
+                                                          gles2_fixed(gl)->scissor[2], gles2_fixed(gl)->scissor[3])
+                                                   : (VkRect2D){{0, 0}, t->extent},
                      0, 1};
     if (n && r.rect.extent.width && r.rect.extent.height)
         V.vk.vkCmdClearAttachments(s->slots[s->slot].cb, n, at, 1, &r);
 }
 static void g_clear(CPU* c, Gles2Context* gl) {
     unsigned mask = (unsigned)X(0);
-    VkClearColorValue color = {{gl->clear_color[0], gl->clear_color[1], gl->clear_color[2], gl->clear_color[3]}};
+    VkClearColorValue color = {{gles2_fixed(gl)->clear_color[0], gles2_fixed(gl)->clear_color[1],
+                                gles2_fixed(gl)->clear_color[2], gles2_fixed(gl)->clear_color[3]}};
     if (!(mask & (GL_COLOR_BUFFER_BIT_ | GL_DEPTH_BUFFER_BIT_ | GL_STENCIL_BUFFER_BIT_))) return;
-    clear(gl, -1, mask & GL_COLOR_BUFFER_BIT_ ? &color : NULL, (mask & GL_DEPTH_BUFFER_BIT_) != 0, gl->clear_depth,
-          (mask & GL_STENCIL_BUFFER_BIT_) != 0, gl->clear_stencil);
+    clear(gl, -1, mask & GL_COLOR_BUFFER_BIT_ ? &color : NULL, (mask & GL_DEPTH_BUFFER_BIT_) != 0,
+          gles2_fixed(gl)->clear_depth, (mask & GL_STENCIL_BUFFER_BIT_) != 0, gles2_fixed(gl)->clear_stencil);
 }
 /* glClearBuffer{fv,iv,uiv}(buffer, drawbuffer, value) and glClearBufferfi(buffer, drawbuffer, depth, stencil) */
 static void clear_buffer(CPU* c, Gles2Context* gl, char kind) {
@@ -1612,12 +1620,14 @@ void gles2_read_pixels(Gles2Context* gl, int x, int y, int width, int height, un
         const unsigned char* rows = gles2_buffer_bytes(&host);
         /* GL's pack layout: the rows from the bottom, each at the pack alignment */
         size_t row = (size_t)width * 4;
-        size_t length = (size_t)(gl->pixel[0].row_length ? gl->pixel[0].row_length : width) * 4;
-        size_t align = (size_t)gl->pixel[0].alignment;
+        size_t length =
+            (size_t)(gles2_fixed(gl)->pixel[0].row_length ? gles2_fixed(gl)->pixel[0].row_length : width) * 4;
+        size_t align = (size_t)gles2_fixed(gl)->pixel[0].alignment;
         size_t stride = (length + align - 1) / align * align;
         unsigned char* out = pack ? pack->data : (unsigned char*)(uintptr_t)pixels;
         size_t offset = pack ? (size_t)pixels : 0;
-        offset += (size_t)gl->pixel[0].skip_rows * stride + (size_t)gl->pixel[0].skip_pixels * 4;
+        offset +=
+            (size_t)gles2_fixed(gl)->pixel[0].skip_rows * stride + (size_t)gles2_fixed(gl)->pixel[0].skip_pixels * 4;
         if (!pack || offset + stride * (size_t)(height - 1) + row <= pack->size)
             for (int r = 0; r < height; ++r) memcpy(out + offset + (size_t)r * stride, rows + (size_t)r * row, row);
         if (pack) {

@@ -18,6 +18,7 @@
    call that reaches Vulkan holds g_gles_vk.lock */
 #include "android/bridge/gles_vk.h"
 #include "android/bridge/hle.h"
+#include "common/gpu/gl/gl_state.h"
 #include "common/cpu/aarch64/cpu.h"
 #include "glslc/glslc.h"
 #include <stdbool.h>
@@ -290,38 +291,14 @@ typedef struct {
     int64_t offset, size;
 } G2IndexedBuffer;
 
-/* a context of GLES 2 or 3 */
+/* a context of GLES 2 or 3: its fixed state is the shared GL layer's (common/gpu/gl/gl_state.h), named by ctx */
 typedef struct Gles2Context {
-    unsigned error;
+    uint32_t ctx;
     int version; /* 2 or 3 */
     GlesSurface* draw;
     GlesSurface* read;
     GlesSurface* own; /* a 1x1 pbuffer, for a context current without a surface */
     bool sized;
-    /* the enables */
-    bool blend, cull, depth_test, stencil_test, scissor_test, polygon_offset, dither, alpha_to_coverage,
-        sample_coverage, rasterizer_discard, primitive_restart;
-    unsigned blend_src[2], blend_dst[2], blend_eq[2]; /* [0] RGB, [1] alpha */
-    float blend_color[4];
-    bool color_mask[4], depth_mask;
-    unsigned depth_func;
-    float depth_range[2];
-    unsigned cull_face, front_face;
-    struct {
-        unsigned func, fail, zfail, zpass, mask, write;
-        int ref;
-    } stencil[2]; /* front, back */
-    float clear_color[4], clear_depth;
-    int clear_stencil;
-    int viewport[4], scissor[4];
-    float line_width, offset_factor, offset_units;
-    float coverage_value;
-    bool coverage_invert;
-    unsigned hints[2]; /* GL_GENERATE_MIPMAP_HINT, GL_FRAGMENT_SHADER_DERIVATIVE_HINT */
-    /* glPixelStorei: pack [0] and unpack [1] */
-    struct {
-        int alignment, row_length, skip_rows, skip_pixels, image_height, skip_images;
-    } pixel[2];
     unsigned active;
     unsigned textures[G2_UNITS][G2_TARGETS];
     unsigned samplers[G2_UNITS];
@@ -339,8 +316,6 @@ typedef struct Gles2Context {
         bool layered;
         unsigned access, format;
     } images[G2_IMAGE_UNITS];
-    bool sample_mask_on;
-    uint32_t sample_mask;
     unsigned vertex_array; /* 0: the context's own */
     G2VertexArray default_vao;
     unsigned draw_fbo, read_fbo, renderbuffer;
@@ -419,6 +394,8 @@ extern Gles2 g_gles2;
 
 /* the calling thread's current context, or NULL */
 Gles2Context* gles2_current(void);
+/* a context's fixed state (enables, blending, depth, stencil, viewport, scissor, clear values, pixel store) */
+static inline SnxGlFixed* gles2_fixed(const Gles2Context* gl) { return snx_gl_fixed(gl->ctx); }
 /* a context of GLES major version 2 or 3; NULL without memory */
 Gles2Context* gles2_context_new(int version);
 void gles2_context_free(Gles2Context* gl);
