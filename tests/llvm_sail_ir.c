@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The integer emitters and branch operands tools/sailgen generates from the Sail (ir_sail.c) against the hand-written
-   ones they replaced (support/ir_int_reference.c), word by word: the same IR, and the same results.
+/* The integer, hint and barrier emitters and the branch operands tools/sailgen generates from the Sail (ir_sail.c)
+   against the hand-written ones they replaced (support/ir_int_reference.c), word by word: the same IR, and the same results.
      snx-test-llvm-sail-ir [--report FILE] [--samples N] [--states N]
    The words: samples of every decoder row the generated subset covers (llvm_qemu_words.c), decoded for the ounce target
    (TARGET: the Switch's features with PAuth and FlagM), each again with its register fields 31 (the zero register or
@@ -31,14 +31,18 @@
 /* the ops ir_int.c sends to the Sail: the data-processing ones (generated()), the branches' operands
    (generated_branch()) */
 static const char* const generated_ops[] = {
-    "ADR",    "ADRP",   "ADD_i",  "ADDS_i",  "SUB_i",   "SUBS_i",   "AND_i",    "ORR_i",  "EOR_i",  "ANDS_i", "MOVN",
-    "MOVZ",   "MOVK",   "SBFM",   "BFM",     "UBFM",    "EXTR",     "AND_r",    "ORR_r",  "EOR_r",  "ANDS_r", "ADD_r",
-    "SUB_r",  "ADDS_r", "SUBS_r", "ADD_ext", "SUB_ext", "ADDS_ext", "SUBS_ext", "ADC",    "ADCS",   "SBC",    "SBCS",
-    "CCMP",   "CSEL",   "RBIT",   "REV16",   "REV32",   "REV64",    "CLZ",      "CLS",    "UDIV",   "SDIV",   "LSLV",
-    "LSRV",   "ASRV",   "RORV",   "CRC32",   "CRC32C",  "MADD_w",   "MSUB_w",   "MADD_x", "MSUB_x", "SMADDL", "SMSUBL",
-    "UMADDL", "UMSUBL", "SMULH",  "UMULH",   "XPACI",   "XPACD",    "PACGA",    "PACIA",  "PACIB",  "PACDA",  "PACDB",
-    "AUTIA",  "AUTIB",  "AUTDA",  "AUTDB",   "CFINV",   "RMIF",     "SETF8",    "SETF16", "B_cond", "CBZ",    "TBZ",
-    "BR",     "BLR",    "RET",    "BRA",     "BRAZ",    "BLRA",     "BLRAZ",    "RETA"};
+    "ADR",      "ADRP",     "ADD_i",   "ADDS_i",    "SUB_i",     "SUBS_i",    "AND_i",     "ORR_i",   "EOR_i",
+    "ANDS_i",   "MOVN",     "MOVZ",    "MOVK",      "SBFM",      "BFM",       "UBFM",      "EXTR",    "AND_r",
+    "ORR_r",    "EOR_r",    "ANDS_r",  "ADD_r",     "SUB_r",     "ADDS_r",    "SUBS_r",    "ADD_ext", "SUB_ext",
+    "ADDS_ext", "SUBS_ext", "ADC",     "ADCS",      "SBC",       "SBCS",      "CCMP",      "CSEL",    "RBIT",
+    "REV16",    "REV32",    "REV64",   "CLZ",       "CLS",       "UDIV",      "SDIV",      "LSLV",    "LSRV",
+    "ASRV",     "RORV",     "CRC32",   "CRC32C",    "MADD_w",    "MSUB_w",    "MADD_x",    "MSUB_x",  "SMADDL",
+    "SMSUBL",   "UMADDL",   "UMSUBL",  "SMULH",     "UMULH",     "XPACI",     "XPACD",     "PACGA",   "PACIA",
+    "PACIB",    "PACDA",    "PACDB",   "AUTIA",     "AUTIB",     "AUTDA",     "AUTDB",     "CFINV",   "RMIF",
+    "SETF8",    "SETF16",   "B_cond",  "CBZ",       "TBZ",       "BR",        "BLR",       "RET",     "BRA",
+    "BRAZ",     "BLRA",     "BLRAZ",   "RETA",      "NOP",       "YIELD",     "WFE",       "WFI",     "SEV",
+    "SEVL",     "ESB",      "XPACLRI", "PACIA1716", "PACIB1716", "AUTIA1716", "AUTIB1716", "PACIAZ",  "PACIASP",
+    "PACIBZ",   "PACIBSP",  "AUTIAZ",  "AUTIASP",   "AUTIBZ",    "AUTIBSP",   "CLREX",     "DSB_DMB", "ISB"};
 #define GENERATED_OPS (sizeof generated_ops / sizeof *generated_ops)
 
 typedef struct {

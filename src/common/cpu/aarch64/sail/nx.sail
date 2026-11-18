@@ -28,6 +28,21 @@ function SP_set value_name = {
     GPR[31] = value_name
 }
 
+// The exception level guest code runs at, which sailgen reads PSTATE.EL as (a let named for a register's field holds
+// that field fixed)
+let PSTATE_EL : bits(2) = EL0
+
+// No EL2 runs under the guest: no hypervisor's controls (HCR_EL2, HCRX_EL2) or virtual SError reach its EL0
+val EL2Enabled : unit -> bool
+function EL2Enabled () = false
+
+val IsHCRXEL2Enabled : unit -> bool
+function IsHCRXEL2Enabled () = false
+
+// No SError is ever pending (the runtime raises none), so ESB defers none into DISR_EL1
+val AArch64_ESBOperation : unit -> unit
+function AArch64_ESBOperation () = ()
+
 // No Guarded Control Stack: the NX's CPUs have none (FEAT_GCS is Armv9.4's), so a call pushes no record and a return
 // checks none
 val HaveGCS : unit -> bool
@@ -36,6 +51,9 @@ function HaveGCS () = false
 // No branch target identification: Horizon maps no guarded page, so no instruction checks the branch type that led to
 // it (BTypeNext, which the back end keeps nowhere)
 let InGuardedPage : bool = false
+
+// and the CPU keeps no branch type: what a BTI or PACIASP makes of PSTATE.BTYPE (BTypeCompatible) only that check reads
+let PSTATE_BTYPE : bits(2) = 0b00
 
 // No Statistical Profiling Extension: no sample is ever in flight
 let SPESampleInFlight : bool = false

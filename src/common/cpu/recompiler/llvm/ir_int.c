@@ -2,8 +2,9 @@
    Copyright 2026 the ScarletNX contributors
    Ported from QEMU (target/arm/tcg/translate-a64.c: the trans_* functions of these instructions), LGPL-2.1-or-later:
    Copyright (c) 2013 Alexander Graf <agraf@suse.de> */
-/* The hint, barrier and system instructions as LLVM IR, keyed on the generated decoder's ops and arguments; the
-   integer data-processing ones and the branches' operands are generated from their Sail (ir_sail.c). The system registers
+/* The system instructions (SYS, MRS, MSR) as LLVM IR, keyed on the generated decoder's ops and arguments; the integer
+   data-processing ones, the hints, the barriers and the branches' operands are generated from their Sail (ir_sail.c).
+   The system registers
    and operations EL0 reaches follow the Arm ARM's EL0 access rules under Horizon's EL1 controls (SCTLR_EL1.UCT, DZE
    and UCI set, UMA clear; CNTKCTL_EL1 lets EL0 read the counters and their frequency): every other one raises UNDEF,
    as on the console. */
@@ -24,8 +25,6 @@ typedef LLVMValueRef V;
 /* a W result is zero-extended into its X register; writes to the zero register are dropped */
 static void set_reg(SnxIr* ir, unsigned n, V v) { ir_setx(ir, n, ir_u64(ir, v)); }
 
-static V nonzero(SnxIr* ir, V v) { return LLVMBuildICmp(B, LLVMIntNE, v, LLVMConstNull(LLVMTypeOf(v)), ""); }
-
 /* the guest's N, Z, C and V as a nibble with N in bit 3, as ir_flags_set_nzcv takes them */
 static V nzcv_read(SnxIr* ir) {
     V v = ir_i32(ir, 0);
@@ -39,17 +38,6 @@ static V nzcv_read(SnxIr* ir) {
 static void undef(SnxIr* ir, SnxU64 pc, SnxU32 word) {
     ir_set_pc(ir, ir_i64(ir, pc));
     ir_undef(ir, pc, word);
-}
-
-/* DMB and DSB: loads before loads and stores (MBReqTypes_Reads) is an acquire fence, stores before stores a release
-   one (which also orders loads before stores), anything else a full one (trans_DSB_DMB) */
-static void barrier(SnxIr* ir, unsigned types) {
-    if (types == 1)
-        LLVMBuildFence(B, LLVMAtomicOrderingAcquire, 0, "");
-    else if (types == 2)
-        LLVMBuildFence(B, LLVMAtomicOrderingRelease, 0, "");
-    else
-        ir_fence(ir);
 }
 
 /* op0:op1:CRn:CRm:op2 as helpers/integer.c's snx_mrs and snx_msr take them (op0 3) */
@@ -351,7 +339,31 @@ static int generated(SnxA64Op op) {
         case SNX_A64_OP_CFINV:
         case SNX_A64_OP_RMIF:
         case SNX_A64_OP_SETF8:
-        case SNX_A64_OP_SETF16: return 1;
+        case SNX_A64_OP_SETF16:
+        /* the hint space (NOP its unallocated part, the PAuth hints with the keys disabled), the barriers, CLREX */
+        case SNX_A64_OP_NOP:
+        case SNX_A64_OP_YIELD:
+        case SNX_A64_OP_WFE:
+        case SNX_A64_OP_WFI:
+        case SNX_A64_OP_SEV:
+        case SNX_A64_OP_SEVL:
+        case SNX_A64_OP_ESB:
+        case SNX_A64_OP_XPACLRI:
+        case SNX_A64_OP_PACIA1716:
+        case SNX_A64_OP_PACIB1716:
+        case SNX_A64_OP_AUTIA1716:
+        case SNX_A64_OP_AUTIB1716:
+        case SNX_A64_OP_PACIAZ:
+        case SNX_A64_OP_PACIASP:
+        case SNX_A64_OP_PACIBZ:
+        case SNX_A64_OP_PACIBSP:
+        case SNX_A64_OP_AUTIAZ:
+        case SNX_A64_OP_AUTIASP:
+        case SNX_A64_OP_AUTIBZ:
+        case SNX_A64_OP_AUTIBSP:
+        case SNX_A64_OP_CLREX:
+        case SNX_A64_OP_DSB_DMB:
+        case SNX_A64_OP_ISB: return 1;
         default: return 0;
     }
 }
@@ -370,32 +382,8 @@ void snx_ir_int(SnxIr* ir, const SnxA64Insn* insn, SnxU32 word, SnxU64 pc) {
         return;
     }
     switch (op) {
-        case SNX_A64_OP_XPACLRI: {
-            /* The extended HLE profile has 39-bit virtual addresses and no top-byte ignore. XPAC always
-               strips authentication bits, even with SCTLR authentication disabled. Bit 55 selects the
-               address range: restore that bit throughout [63:39], keeping the low address bits. */
-            V pointer = ir_rx(ir, 30);
-            const SnxU64 low = (1ull << 39) - 1;
-            V upper = LLVMBuildSelect(B, nonzero(ir, LLVMBuildAnd(B, pointer, ir_i64(ir, 1ull << 55), "")),
-                                      ir_i64(ir, ~low), ir_i64(ir, 0), "");
-            set_reg(ir, 30, LLVMBuildOr(B, LLVMBuildAnd(B, pointer, ir_i64(ir, low), ""), upper, ""));
-            break;
-        }
-        case SNX_A64_OP_YIELD: ir_yield(ir); break;
-        case SNX_A64_OP_WFE: { /* the runtime lets the core's other threads run: the spin waits on one of them */
-            LLVMTypeRef param = ir->t_ptr;
-            V c = ir->c;
-            ir_rt_call(ir, ir_rt_wfe(), ir->t_void, &param, &c, 1);
-            break;
-        }
-        case SNX_A64_OP_SEV:
-        case SNX_A64_OP_SEVL: ir_rt_call(ir, ir_rt_sev(), ir->t_void, NULL, NULL, 0); break;
-        case SNX_A64_OP_CLREX: ir_cpu_store(ir, ir_i32(ir, 0), ir_off_excl_on()); break;
-        case SNX_A64_OP_DSB_DMB: barrier(ir, (unsigned)a->types); break;
-        case SNX_A64_OP_ISB: ir_fence(ir); break;
         case SNX_A64_OP_SYS: sys(ir, a, word, pc); break;
-        /* NOP and WFI (SCTLR_EL1.nTWI: no trap), ESB, the prefetches, PAuth's hints with its keys disabled; the flow
-           ops have no body */
+        /* the prefetches; the flow ops have no body */
         default: break;
     }
 }

@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The hand-written integer emitters the generated ones replaced (ir_int_reference.c), for the tests that compare them */
+/* The hand-written integer, hint and barrier emitters the generated ones replaced (ir_int_reference.c), for the tests
+   that compare them */
 #ifndef SNX_TESTS_SUPPORT_IR_INT_REFERENCE_H
 #define SNX_TESTS_SUPPORT_IR_INT_REFERENCE_H
 
