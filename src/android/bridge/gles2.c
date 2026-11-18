@@ -66,6 +66,7 @@ Gles2Context* gles2_context_new(int version) {
     gles2_buffers_init();
     gles2_textures_init();
     gles2_framebuffers_init();
+    gles2_syncs_init();
     gl->version = version;
     return gl;
 }

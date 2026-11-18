@@ -20,6 +20,7 @@
 #include "android/bridge/hle.h"
 #include "common/gpu/gl/gl_format.h"
 #include "common/gpu/gl/gl_framebuffer.h"
+#include "common/gpu/gl/gl_sync.h"
 #include "common/gpu/gl/gl_object.h"
 #include "common/gpu/gl/gl_texture.h"
 #include "common/gpu/gl/gl_program.h"
@@ -152,10 +153,6 @@ typedef struct {
     uint64_t result;
 } G2Query;
 
-typedef struct {
-    bool used;
-    uint64_t serial;
-} G2Sync;
 
 /* a program's Vulkan objects, made from its link (common/gpu/gl/gl_program.h) at its first draw, by name - 1 */
 typedef struct {
@@ -206,8 +203,6 @@ typedef struct {
     G2Renderbuffer renderbuffer_vk[SNX_GL_RENDERBUFFERS];
     G2Query* queries;
     size_t query_count;
-    G2Sync* syncs;
-    size_t sync_count;
     G2ProgramVk program_vk[SNX_GL_PROGRAM_NAMES];
     /* the Vulkan samplers by their state */
     struct {
@@ -278,6 +273,8 @@ void gles2_texture_defined(G2Texture* t, int level);
 /* the shared layer's renderbuffers tell this file when one's storage is new or goes, and its framebuffers when they
    change */
 void gles2_framebuffers_init(void);
+/* the shared layer's fences are this file's submissions' serials */
+void gles2_syncs_init(void);
 /* a renderbuffer's image, with the shared layer's record copied in now: NULL for 0 or a name not made */
 G2Renderbuffer* gles2_renderbuffer(unsigned name);
 /* the context's framebuffer and renderbuffer bindings (common/gpu/gl/gl_framebuffer.h) */
