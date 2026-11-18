@@ -311,6 +311,10 @@ typedef struct {
     /* the program reads its global buffers by device address (ShCaps.gbuf_address): each slot's address and length
        are words of its record, and no storage buffer descriptor is bound for them */
     u32 gbuf_address;
+    /* a vertex program that fetches its own generic attributes by device address (ShCaps.vertex_fetch): each
+       attribute's address, length and format are words of its record (SH_RECORD_ATTR), and the draw binds no vertex
+       buffers and sets no vertex input */
+    u32 vertex_fetch;
 } ShaderInfo;
 /* A fragment module's specialization constants, by SpecId: state a draw has before its program runs, which the
    pipeline gives the module (vk/pipeline.c, PipeKey.fs_spec) so that the driver compiles the program for it. As a
@@ -479,6 +483,19 @@ static inline void shader_query_hint_unpack(const u32 words[SH_QUERY_WORDS], u8 
    goes. The texture words follow */
 #define SH_RECORD_GBUF          68u
 #define SH_RECORD_SCRATCH       64u
+/* With vertex_fetch, a vertex program's record holds the 32 generic attributes after the global buffers, 4 words an
+   attribute: the address of its first element (low, high), the bytes from there to the end of its stream (0: no data),
+   and its format, packed with the SH_ATTR_ fields. The texture words follow at SH_RECORD_TEX_FETCH. A fragment
+   program's texture words stay at SH_RECORD_GBUF */
+#define SH_RECORD_ATTR          68u
+#define SH_RECORD_TEX_FETCH     (SH_RECORD_ATTR + 32u * 4u)
+#define SH_ATTR_STRIDE_MASK     0xFFFu /* bits 0-11: the stream's stride in bytes */
+#define SH_ATTR_SIZE_SHIFT      12     /* bits 12-17: the 3D engine's size code */
+#define SH_ATTR_TYPE_SHIFT      18     /* bits 18-20: 1 snorm, 2 unorm, 3 sint, 4 uint, 5 uscaled, 6 sscaled, 7 float */
+#define SH_ATTR_BGRA            (1u << 21) /* the first and third components swap */
+#define SH_ATTR_CONSTANT        (1u << 22) /* no data: 0, 0, 0, 1 */
+#define SH_ATTR_INSTANCED       (1u << 23) /* an element each divisor instances, not each vertex */
+#define SH_ATTR_DIVISOR_SHIFT   24         /* bits 24-31: the divisor, 0 taken as 1 */
 /* Device capabilities the renderer sets before translating, and the values offline translation takes. A 1-bit
    field holds 0 or 1: a mask goes in through a test (!= 0), or its bit is lost */
 typedef struct {
@@ -504,6 +521,10 @@ typedef struct {
     /* with tex_table, an SM86 vertex or fragment program reads its global memory by device address: each slot's
        address and length are words of the draw's record (SH_RECORD_GBUF), not a storage buffer descriptor */
     unsigned gbuf_address : 1;
+    /* with gbuf_address and draw parameters, an SM86 vertex program fetches its own generic attributes by device
+       address, from the words of its record (SH_RECORD_ATTR): the draw binds no vertex buffers and sets no vertex
+       input */
+    unsigned vertex_fetch : 1;
     /* tessellation and geometry programs may write the point size (shaderTessellationAndGeometryPointSize) */
     unsigned stage_point_size : 1;
     /* vertex and tessellation programs may write the layer (shaderOutputLayer, the ShaderLayer capability); without it

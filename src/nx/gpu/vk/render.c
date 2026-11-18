@@ -3384,7 +3384,7 @@ static int cb_window_place(int vs_fs, int bank, VkBuffer b, u64 o, u32 sz, u64* 
    SH_PUSH_TEX_WORDS. The same words as the stage's last draw in this frame take the same bytes: the set and the push
    stay */
 static struct {
-    u32 words[SH_RECORD_GBUF + SH_MAXTEX], n;
+    u32 words[SH_RECORD_TEX_FETCH + SH_MAXTEX], n;
     u64 frame;
     VkBuffer b;
     u64 o;
@@ -3499,16 +3499,21 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
     int ordered = !g_settings.nvn_storage_ordering;
     /* The stage's record in its words' window (table_words): with gbuf_address, each global buffer slot's device
        address and length and the scratch words' address (SH_RECORD_GBUF), then the texture words. A program of
-       gbuf_address takes its slots' addresses there, at any offset, where a descriptor was bound */
+       gbuf_address takes its slots' addresses there, at any offset, where a descriptor was bound. A vertex program
+       that fetches its own attributes has their words after the global buffers' (SH_RECORD_ATTR, fetch_records), and
+       its texture words after those */
     const int recorded = g_spirv_translate.gbuf_address && shader_vk_set(s->stage) < 2;
     const int addressed = recorded && s->si.gbuf_address;
-    u32 rec[SH_RECORD_GBUF + SH_MAXTEX], rec_n = 0;
-    if (addressed) {
+    const int fetch = recorded && s->si.vertex_fetch && s->stage == ST_VS;
+    const u32 tex_at = fetch ? SH_RECORD_TEX_FETCH : recorded ? SH_RECORD_GBUF : 0;
+    u32 rec[SH_RECORD_TEX_FETCH + SH_MAXTEX], rec_n = 0;
+    if (addressed || fetch) {
         memset(rec, 0, SH_RECORD_GBUF * sizeof *rec);
         const u64 scratch = vk_table_scratch();
         rec[SH_RECORD_SCRATCH] = (u32)scratch;
         rec[SH_RECORD_SCRATCH + 1] = (u32)(scratch >> 32);
-        rec_n = SH_RECORD_GBUF;
+        if (fetch) memcpy(rec + SH_RECORD_ATTR, draw->attr, sizeof draw->attr);
+        rec_n = tex_at;
     }
     for (int i = 0; i < s->si.ngbuf && i < 16; i++) {
         const VkDrawGbuf* gb = &draw->b[stage][i];
@@ -3668,7 +3673,7 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
     u32 handles[SH_MAXTEX];
     /* a program of the texture table: each plain slot's word, in place of its descriptor */
     const int table = s->si.tex_table && g_spirv_translate.tex_table && shader_vk_set(s->stage) < 2;
-    u32* words = rec + (recorded ? SH_RECORD_GBUF : 0); /* after the global buffers' part */
+    u32* words = rec + tex_at; /* after the global buffers' part, and a fetching vertex program's attributes */
     VkImageView tviews[SH_MAXTEX];
     VkImageLayout tlayouts[SH_MAXTEX];
     VkSampler tsamplers[SH_MAXTEX];
@@ -3846,8 +3851,8 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
         for (int i = 0; i < nt; i++)
             if (s->si.tex[i].flags & SNX_TEX_INDEXED) tviews[i] = VK_NULL_HANDLE; /* in the stage's set: word 0 */
         if (!vk_table_words(tviews, tlayouts, tsamplers, (u32)nt, words)) return VK_NULL_HANDLE;
-        if (recorded && !addressed) memset(rec, 0, SH_RECORD_GBUF * sizeof *rec);
-        rec_n = (recorded ? SH_RECORD_GBUF : 0) + (u32)nt;
+        if (recorded && !addressed && !fetch) memset(rec, 0, SH_RECORD_GBUF * sizeof *rec);
+        rec_n = tex_at + (u32)nt;
     }
     if (rec_n && !table_words(&d, set, shader_vk_set(s->stage), rec, rec_n)) return VK_NULL_HANDLE;
     SNX_ZONE_END(ztex);
@@ -4187,6 +4192,9 @@ typedef struct {
     VkDeviceSize stride[33];
     u32 used;  /* the streams whose limits the bindings were planned with */
     u32 empty; /* attributes whose relative offsets are outside their guest bindings */
+    /* a vertex program that fetches its own attributes (fetch_plan): each attribute's format word (SH_ATTR_), and vi
+       its bindings, one a stream, for the lookups. No vertex input state is made from vi then */
+    u32 fetch[32];
 } VertexPlan;
 /* pl's vertex layout as dynamic state, when the one the command buffer has (g_dyn) is another or none. Every draw
    pipeline takes it dynamic then, so binding another keeps it; a draw before it is set reads a layout of the driver's */
@@ -4737,6 +4745,78 @@ static u32 topology_class(VkPrimitiveTopology topo) {
 static u32 polygon_mode(const DsRasterKey* rk) {
     return g_vk.feat.fillModeNonSolid ? rk->polygon : VK_POLYGON_MODE_FILL;
 }
+/* the size codes a vertex program fetches (sm86_translate.c's g_fetch_sizes) */
+static int fetch_size_known(u32 size) {
+    switch (size) {
+        case 0x01:
+        case 0x02:
+        case 0x03:
+        case 0x04:
+        case 0x05:
+        case 0x0A:
+        case 0x0F:
+        case 0x12:
+        case 0x13:
+        case 0x18:
+        case 0x1B:
+        case 0x1D:
+        case 0x30:
+        case 0x31: return 1;
+    }
+    return 0;
+}
+/* The vertex plan of a vertex program that fetches its own attributes (ShaderInfo.vertex_fetch): a binding for each
+   stream with data, whose lookup gives the addresses of the attributes in it (fetch_records), and each attribute's
+   format word (SH_ATTR_). It needs no vertex input state, no binding of its own for an offset or a stride the device
+   can't fetch, and no restride: the program reads any byte, and also the 32-bit scaled formats that Vulkan doesn't
+   have. 0 when the draw is skipped */
+static int fetch_plan(const DsVertexFormat* vf, u32 in_mask, VertexPlan* pl) {
+    VertexLayout* vi = &pl->vi;
+    for (u32 i = 0; i < 32; i++) {
+        if (!(in_mask >> i & 1)) continue;
+        const u32 sbuf = vf->stream[i], off = vf->offset[i], size = vf->size[i];
+        u32 ty = vf->type[i];
+        const int known = fetch_size_known(size) && ty >= 1 && ty <= 7 && !(size == 0x31 && (ty == 3 || ty == 4));
+        if ((vf->constant >> i & 1) || !(vf->stream_on >> sbuf & 1) || !known) {
+            pl->fetch[i] = SH_ATTR_CONSTANT; /* 0, 0, 0, 1 */
+            continue;
+        }
+        const u32 stride = vf->stride[sbuf], asz = attr_bytes(size);
+        if (stride > SH_ATTR_STRIDE_MASK) {
+            LOG_LIMIT(1, "vulkan: a vertex stream with stride %u can't be fetched (draw skipped)\n", stride);
+            return 0;
+        }
+        u32 b = 0;
+        while (b < vi->nbind && pl->key[b] != sbuf) b++;
+        if (b == vi->nbind) {
+            u32 div = (vf->instanced >> sbuf) & 1 ? (vf->divisor[sbuf] ? vf->divisor[sbuf] : 1) : 0;
+            if (div > 255) {
+                LOG_LIMIT(1, "vulkan: a vertex stream with instance divisor %u is fetched with divisor 255\n", div);
+                div = 255;
+            }
+            pl->key[b] = sbuf; /* from the stream's start: an attribute's offset is its own */
+            pl->stride[b] = stride;
+            vi->bind[b].divisor = div;
+            vi->nbind++;
+        }
+        /* the stream's limit covers its last vertex's stride: an attribute reaching past the stride reads past it */
+        const u32 pad = stride && off + asz > stride ? off + asz - stride : 0;
+        if (pad > pl->pad[b]) pl->pad[b] = pad;
+        pl->used |= 1u << sbuf;
+        vi->attr[vi->nattr].loc = i;
+        vi->attr[vi->nattr].binding = b;
+        vi->attr[vi->nattr].format = 0;
+        vi->attr[vi->nattr++].offset = off;
+        /* float 8-bit and packed formats are unorm, as attr_format gives them, and B10G11R11 is a float of any type */
+        if (ty == 7 && (attr_component_bytes(size) == 1 || size == 0x30)) ty = 2;
+        if (size == 0x31) ty = 7;
+        const u32 div = vi->bind[b].divisor;
+        pl->fetch[i] = stride | size << SH_ATTR_SIZE_SHIFT | ty << SH_ATTR_TYPE_SHIFT |
+                       (size == 0x0A && ty == 2 && (vf->bgra >> i & 1) ? SH_ATTR_BGRA : 0) |
+                       (div ? SH_ATTR_INSTANCED | div << SH_ATTR_DIVISOR_SHIFT : 0);
+    }
+    return 1;
+}
 /* the pipeline key of the shaders (fs the fragment variant drawn), the state ds and the targets' surfaces rt and zt, all but the feedback loop, and the vertex bindings it
    describes: 0 when the draw is skipped */
 static int draw_key(const DsState* ds, const DrawShaders* sh, const VkSh* fs, Surf* const* rt, const Surf* zt, u32 n,
@@ -4798,7 +4878,10 @@ static int draw_key(const DsState* ds, const DrawShaders* sh, const VkSh* fs, Su
     u32 maxoff = lim->maxVertexInputAttributeOffset;
     u32 nloc = lim->maxVertexInputAttributes < 32 ? lim->maxVertexInputAttributes : 32;
     u32 maxbind = lim->maxVertexInputBindings < 33 ? lim->maxVertexInputBindings : 33;
-    if (nloc < 32 && (vs->si.in_mask >> nloc)) {
+    /* a vertex program that fetches its own attributes: the plan's bindings only find the streams (fetch_plan) */
+    const int fetch = vs->si.vertex_fetch && !sh->mesh;
+    k->fetch = (u32)fetch;
+    if (!fetch && nloc < 32 && (vs->si.in_mask >> nloc)) {
         LOG_LIMIT(1, "vulkan: a vertex shader reads attributes past the %u this GPU has (draw skipped)\n", nloc);
         return 0;
     }
@@ -4806,7 +4889,8 @@ static int draw_key(const DsState* ds, const DrawShaders* sh, const VkSh* fs, Su
     u32 align[33] = {0}; /* each binding's largest attribute component */
     VertexLayout* vi = &pl->vi;
     pl->empty = attributes_empty(vb, vf, vs->si.in_mask);
-    for (u32 i = 0; i < nloc && !over; i++) {
+    if (fetch && !fetch_plan(vf, vs->si.in_mask, pl)) return 0;
+    for (u32 i = 0; i < nloc && !over && !fetch; i++) {
         if (!(vs->si.in_mask & (1u << i))) continue;
         u32 sbuf = vf->stream[i], off = vf->offset[i], size = vf->size[i], ty = vf->type[i];
         VkFormat fmt = attr_format(size, ty, (vf->bgra >> i) & 1);
@@ -4893,7 +4977,7 @@ static int draw_key(const DsState* ds, const DrawShaders* sh, const VkSh* fs, Su
         pl->stride[b] = (st + 3) & ~3u; /* a multiple of 2 or 4, and of the words restride writes */
         if (!g_vk.has_dynamic_stride) vi->bind[b].stride = (u32)pl->stride[b];
     }
-    if (!g_vk.vertex_input_dynamic) k->vi = *vi;
+    if (!g_vk.vertex_input_dynamic && !fetch) k->vi = *vi;
 
     /* attachments and blending */
     k->ncolor = n;
@@ -5082,6 +5166,26 @@ static void index_barrier(VkCommandBuffer cb, VkPipelineStageFlags2 src_stage, V
    range's buffer (vk_buf_get), a GPU result that hasn't landed read where it is. Its words are bound whole: the range
    asked for starts and ends on them, which never takes in another page. The CPU made the copy before, a vertex at a
    time from a whole read of the stream, each draw */
+/* The records of a vertex program that fetches its own attributes (ShaderInfo.vertex_fetch, SH_RECORD_ATTR): each
+   attribute's address of its first element in the buffer its stream's lookup found, the bytes from there to the end
+   of what the lookup bound (0 for none: the program reads zeros there), and its format word from the plan */
+static void fetch_records(const VertexPlan* pl, const VkBuffer* vbuf, const VkDeviceSize* voff,
+                          const VkDeviceSize* vsize, u32 rec[32][4]) {
+    u64 base[33];
+    for (u32 b = 0; b < pl->vi.nbind; b++) base[b] = vbuf[b] && vsize[b] ? vk_buffer_address(vbuf[b]) + voff[b] : 0;
+    for (u32 i = 0; i < 32; i++) {
+        rec[i][0] = rec[i][1] = rec[i][2] = 0;
+        rec[i][3] = pl->fetch[i];
+    }
+    for (u32 a = 0; a < pl->vi.nattr; a++) {
+        const u32 loc = pl->vi.attr[a].loc, b = pl->vi.attr[a].binding, off = pl->vi.attr[a].offset;
+        if (!base[b] || vsize[b] <= off) continue;
+        const u64 at = base[b] + off, bytes = vsize[b] - off;
+        rec[loc][0] = (u32)at;
+        rec[loc][1] = (u32)(at >> 32);
+        rec[loc][2] = bytes > 0xFFFFFFFFu ? 0xFFFFFFFFu : (u32)bytes;
+    }
+}
 static int restride(u64 gva, u64 len, u32 gstride, u32 stride, VkBuffer* buf, VkDeviceSize* off, VkDeviceSize* size) {
     u64 nv = (len + gstride - 1) / gstride, lo = gva & ~3ull, hi = (gva + len + 3) & ~3ull;
     VkBuffer src;
@@ -6204,6 +6308,7 @@ retry:
         staged[DS_TASK] = tcs;
     }
     draw_storage_read(ds, &storage, staged);
+    if (k->fetch) fetch_records(pl, vbuf, voff, vsize, storage.attr);
     if (late_depth) {
         int overlaps = 0;
         for (u32 stage = 0; stage < VK_DRAW_STAGES; stage++)
@@ -6703,6 +6808,11 @@ retry:
             g_dyn.topo = g_dyn.restart = ~0u;
             g_dyn.vi_set = 0;
         }
+        /* nor has a pipeline whose vertex program fetches its own attributes vertex input or binding strides */
+        if (k->fetch) {
+            g_dyn.vi_set = 0;
+            g_dyn.vb_n = 0;
+        }
     }
     if (g_vk.dyn_pr) pr_dynamic(cb, k, !ds->dyn.depth_mode, fresh);
     vk_vrs_draw(cb, dc->shading_rate);
@@ -6743,12 +6853,16 @@ retry:
             vk_descriptors_bind(cb, layout, at, 1, &table);
         }
     }
-    if (g_vk.vertex_input_dynamic && !mesh) vertex_input_set(cb, pl, fresh);
+    /* a program that fetches its own attributes takes an empty layout: its pipeline has the layout static and ignores
+       it, but where the draw binds shader objects, a vertex shader object needs vkCmdSetVertexInputEXT in each
+       command buffer, after each pipeline whose static layout invalidated it (VUID-vkCmdDrawIndexed-None-04914) */
+    static const VertexPlan no_vertices;
+    if (g_vk.vertex_input_dynamic && !mesh) vertex_input_set(cb, k->fetch ? &no_vertices : pl, fresh);
     /* the strides: the layout's with dynamic vertex input, else dynamic state of their own where the device has it */
     /* bound again only where they differ from the last draw's in this command buffer: every draw bound them, and one
        game's draws bind the same streams as the draw before in most of them */
     const VkDeviceSize* strides = !g_vk.vertex_input_dynamic && g_vk.has_dynamic_stride ? pl->stride : NULL;
-    const u32 nvb = pl->vi.nbind;
+    const u32 nvb = k->fetch ? 0 : pl->vi.nbind; /* a program that fetches its attributes binds no vertex buffers */
     if (nvb && (fresh || g_dyn.vb_n != nvb || (strides != NULL) != g_dyn.vb_strided ||
                 memcmp(g_dyn.vb_buf, vbuf, nvb * sizeof *vbuf) || memcmp(g_dyn.vb_off, voff, nvb * sizeof *voff) ||
                 memcmp(g_dyn.vb_size, vsize, nvb * sizeof *vsize) ||

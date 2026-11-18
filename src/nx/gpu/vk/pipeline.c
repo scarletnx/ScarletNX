@@ -765,6 +765,18 @@ void vk_pipeline_init(void) {
         LOG("vulkan: SM86 global memory %s%s\n", no ? "through storage buffer descriptors, as " : "by device address",
             no ? no : "");
     }
+    /* SM86 vertex programs fetch their own attributes by device address, from the words of their records: with global
+       memory by address (the record, the scratch word and buffers with addresses), and with draw parameters, which
+       give the first instance that an attribute stepped per instance counts from */
+    g_spirv_translate.vertex_fetch = 0;
+    if (g_shader_sm86) {
+        const char* no = !g_spirv_translate.gbuf_address      ? "global memory is not read by device address"
+                         : !g_spirv_translate.draw_parameters ? "the device has no draw parameters"
+                                                              : NULL;
+        g_spirv_translate.vertex_fetch = !no;
+        LOG("vulkan: SM86 vertex attributes %s%s\n", no ? "through vertex input, as " : "fetched by the vertex program",
+            no ? no : "");
+    }
     for (int s = 0; s < 5; s++) {
         VkDescriptorSetLayoutBinding b[SNX_VKB_END];
         u32 count = 0;
@@ -1814,7 +1826,7 @@ static void pipe_info(const PipeKey* k, VkShaderModule fs, PipeInfo* o) {
     o->dyn = (PipeDynIn){.dyn_pr = g_vk.dyn_pr,
                          .feedback_dynamic = g_vk.has_feedback_dynamic,
                          .stride = l->nbind && g_vk.has_dynamic_stride,
-                         .vertex_input = g_vk.vertex_input_dynamic,
+                         .vertex_input = g_vk.vertex_input_dynamic && !k->fetch,
                          .tess = k->tes != VK_NULL_HANDLE,
                          .mesh = k->mesh != 0,
                          .clamp_range = g_vk.has_depth_clamp_range,
@@ -2949,7 +2961,7 @@ fail:
    draw that needs its pipeline makes it from its own key */
 static int pf_key_holds(const PipeKey* k) {
     const VkShaderModule mods[5] = {k->vs, k->tcs, k->tes, k->gs, k->fs};
-    u32 arrays = 0, attrs = 0, in = 0;
+    u32 arrays = 0, attrs = 0, in = 0, fetch = 0;
     for (int i = 0; i < 5; i++) {
         const VkSh* sh = NULL;
         if (!mods[i]) continue;
@@ -2957,11 +2969,13 @@ static int pf_key_holds(const PipeKey* k) {
             if (q->mod == mods[i]) sh = q;
         if (!sh) return 0;
         if (sh->indexed) arrays |= 1u << shader_vk_set(sh->stage);
-        if (i == 0) in = sh->si.in_mask;
+        if (i == 0) in = sh->si.in_mask, fetch = sh->si.vertex_fetch;
     }
     for (u32 i = 0; i < k->vi.nattr; i++) attrs |= 1u << k->vi.attr[i].loc;
-    /* with dynamic vertex input a key holds no layout, which the draws give */
-    return arrays == k->arrays && (g_vk.vertex_input_dynamic ? !k->vi.nattr && !k->vi.nbind : attrs == in);
+    /* with dynamic vertex input a key holds no layout, which the draws give, and a program that fetches its own
+       attributes has none */
+    return arrays == k->arrays && fetch == k->fetch &&
+           (g_vk.vertex_input_dynamic || fetch ? !k->vi.nattr && !k->vi.nbind : attrs == in);
 }
 void vk_pf_cspipe(u64 key, const u32 launch[5], const VkCbReads* cbr, const void* vkey, u32 nkey, const u8* code,
                   u32 ncode) {
@@ -3067,6 +3081,7 @@ static void pf_key(char* out, size_t n, size_t* guest) {
                   (u32)g_spirv_translate.cb_windows,
                   (u32)g_spirv_translate.tex_table,
                   (u32)g_spirv_translate.gbuf_address,
+                  (u32)g_spirv_translate.vertex_fetch,
                   (u32)g_spirv_translate.stage_point_size,
                   (u32)g_spirv_translate.output_layer,
                   (u32)g_spirv_translate.geometry,
