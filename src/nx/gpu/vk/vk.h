@@ -1936,7 +1936,8 @@ void vk_bc7_key(const u64 content[2], const VkBc7Level* lv, u64 key[2]);
 int vk_bc7_cache_open(const char* path, const u64 version[2], u64 max);
 void vk_bc7_cache_close(void);
 u64 vk_bc7_cache_find(const u64 key[2]); /* the bytes of key's blocks, 0 when they aren't there */
-/* key's blocks, size bytes of them, into dst: 0 when they aren't there or don't check out (then dropped) */
+/* key's blocks, size bytes of them, into dst: 0 when they aren't there or don't check out (then dropped), or the
+   cache's I/O thread has not read them in 50 ms (a slow disk: the record kept) */
 int vk_bc7_cache_read(const u64 key[2], u8* dst, u64 size);
 /* key's blocks, size bytes of them, read on the cache's I/O thread and put into dst on the recording thread, then
    copied from buf (dst is at off in mem and buf) into img, in layout, by copy there when they check out (none when img
@@ -1954,12 +1955,14 @@ int vk_bc7_cache_failed_pending(void);
 /* how long a read of bytes takes, at the rate of the reads so far: 0 for none, and more than any budget before a read
    was timed */
 u64 vk_bc7_cache_read_ns(u64 bytes);
+/* key's blocks, size bytes at p, kept: in the index at once, written by the cache's I/O thread in its turn; not kept
+   when the writes waiting hold 64 MiB (counted, vk_bc7_cache_late) */
 void vk_bc7_cache_put(const u64 key[2], const u8* p, u64 size);
 /* hits, records stored, times it started over at its bound, and the file's bytes */
 void vk_bc7_cache_stats(u64* hits, u64* stored, u64* restarts, u64* bytes);
-/* the hits whose read the recording thread left as late and those the GPU thread did not ask while the cache's I/O
-   thread was behind, in all: a slow disk's, their levels encoded instead */
-void vk_bc7_cache_late(u64* late, u64* skipped);
+/* the hits whose read was left as late and those not asked while the cache's I/O thread was behind, their levels
+   encoded instead, and the new records not kept for want of room in its queue of writes, in all: a slow disk's */
+void vk_bc7_cache_late(u64* late, u64* skipped, u64* unkept);
 u64 vk_bc7_strip_blocks(void); /* the BC7 blocks vk_bc7_encode_kept makes at once at most */
 /* the image levels (or regions of them) uploaded as BC7 so far, the levels the BC7 cache gave (here or between frames),
    their bytes, and the bytes they would have taken as RGBA8 */

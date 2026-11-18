@@ -975,12 +975,13 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
                         (unsigned long long)bc7_hits, (unsigned long long)vk_astc_bc7_copies(),
                         (unsigned long long)cache_stored, (unsigned long long)(cache_file >> 20),
                         (unsigned long long)cache_restarts, (unsigned long long)(VK_BC7_CACHE_MAX >> 20));
-                u64 cache_late, cache_skipped;
-                vk_bc7_cache_late(&cache_late, &cache_skipped);
-                if (cache_late || cache_skipped)
-                    LOG("vulkan: the BC7 cache's reads on a slow disk: %llu came too late and %llu were not tried, "
-                        "their levels encoded instead\n",
-                        (unsigned long long)cache_late, (unsigned long long)cache_skipped);
+                u64 cache_late, cache_skipped, cache_unkept;
+                vk_bc7_cache_late(&cache_late, &cache_skipped, &cache_unkept);
+                if (cache_late || cache_skipped || cache_unkept)
+                    LOG("vulkan: the BC7 cache on a slow disk: %llu reads came too late and %llu were not tried, their "
+                        "levels encoded instead; %llu new levels were not kept\n",
+                        (unsigned long long)cache_late, (unsigned long long)cache_skipped,
+                        (unsigned long long)cache_unkept);
                 VkLaterStats later;
                 vk_tex_later_stats(&later);
                 if (later.made || later.waiting || later.restarted || later.went_hot)
