@@ -40,6 +40,8 @@ static u64 chunk(u64 size, u64* got) {
 }
 static u8* bytes(u64 at) { return GP(at); }
 void gl_object_calls_init(void) { snx_gl_object_host(&(SnxGlObjectHost){chunk, bytes, NULL, NULL, NULL}); }
+void gl_object_calls_lock(void) { pm_lock(&g_gl_object_calls.lock); }
+void gl_object_calls_unlock(void) { pm_unlock(&g_gl_object_calls.lock); }
 
 #define LOCKED(fallback, ...)                                                                                          \
     do {                                                                                                               \

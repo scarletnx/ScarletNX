@@ -33,6 +33,13 @@ void gl_program_calls_init(void);
 /* ---- gl_object_calls.c */
 /* the shared layer's buffers take their bytes from guest memory */
 void gl_object_calls_init(void);
+/* the lock of the layer's buffers and vertex arrays, and of its textures, which keep their texels in that memory */
+void gl_object_calls_lock(void);
+void gl_object_calls_unlock(void);
+
+/* ---- gl_texture_calls.c */
+/* the shared layer's textures keep their texels in guest memory, and say in the log what they leave out */
+void gl_texture_calls_init(void);
 
 /* ---- gl_host_nx.c */
 #define GL_HOST_SURFACES 8

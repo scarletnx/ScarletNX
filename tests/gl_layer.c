@@ -11,9 +11,11 @@
    desktop GLSL 3.30 core and 1.20 compiled, linked and its uniforms written and read through the slots with the
    guest's pointers, and a shader refused with its line in the log; a buffer of immutable storage mapped persistently
    at an address of guest memory, written through it and read back, a vertex array's attribute reading the array
-   buffer bound; a GL and an EGL function without a handler stopping the game, the message naming the function and
+   buffer bound; a texture given texels from a pointer passed on the stack, kept in guest memory, and a parameter of
+   it read back; a GL and an EGL function without a handler stopping the game, the message naming the function and
    gl_layer's value */
 #include "common/gpu/gl/gl_state.h"
+#include "common/gpu/gl/gl_texture.h"
 #include "common/platform/thread.h"
 #include "nx/gpu/gl/gl_layer.h"
 #include "nx/gpu/renderer.h"
@@ -97,7 +99,12 @@ static const char* const exports[] = {"eglGetDisplay",
                                       "_glBufferData",
                                       "_glVertexAttribPointer",
                                       "_glEnableVertexAttribArray",
-                                      "_glGetVertexAttribiv"};
+                                      "_glGetVertexAttribiv",
+                                      "_glGenTextures",
+                                      "_glBindTexture",
+                                      "_glTexImage2D",
+                                      "_glTexParameteri",
+                                      "_glGetTexParameteriv"};
 #define EXPORTS (sizeof exports / sizeof *exports)
 static u64 export_name[EXPORTS];
 static u64 at(const char* name) {
@@ -412,6 +419,27 @@ int main(void) {
         assert(vao && gr32(out) == ab);
         call("_glGetVertexAttribiv", 2, 0x8622, out, 0, 0); /* _ENABLED */
         assert(gr32(out) == 1);
+    }
+
+    /* a texture: glTexImage2D's ninth argument on the stack, its texels kept in guest memory, a parameter read back */
+    {
+        const u64 names = SCRATCH + 0x3200, out = SCRATCH + 0x3300, pixels = SCRATCH + 0x3400, sp = SCRATCH + 0x3800;
+        const SnxGlTexture* x;
+        u32 t;
+        for (int i = 0; i < 16; i++) guest[pixels + (u64)i] = (u8)(0x10 + i);
+        call("_glGenTextures", 1, names, 0, 0, 0);
+        t = gr32(names);
+        call("_glBindTexture", 0x0de1, t, 0, 0, 0);
+        cpu.x[5] = 0, cpu.x[6] = 0x1908, cpu.x[7] = 0x1401; /* border, GL_RGBA, GL_UNSIGNED_BYTE */
+        cpu.x[31] = sp;
+        gw64(sp, pixels);
+        call("_glTexImage2D", 0x0de1, 0, 0x8058, 2, 2); /* GL_RGBA8, 2x2 */
+        x = snx_gl_texture(t);
+        assert(x && x->levels == 2 && x->texels >= HEAP && x->texels + x->texels_size <= GUEST);
+        assert(!memcmp(GP(x->texels), GP(pixels), 16));
+        call("_glTexParameteri", 0x0de1, 0x2801, 0x2600, 0, 0); /* GL_TEXTURE_MIN_FILTER, GL_NEAREST */
+        call("_glGetTexParameteriv", 0x0de1, 0x2801, out, 0, 0);
+        assert(gr32(out) == 0x2600);
     }
 
     /* a function without a handler stops the game, naming it and gl_layer's value; the driver never ran */
