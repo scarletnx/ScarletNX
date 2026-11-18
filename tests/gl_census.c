@@ -26,10 +26,10 @@
 #define MAINGL  (MAIN + 0x80)    /* a _gl export of another module than the driver */
 #define NAME    0x8000u          /* where the game puts the name it asks for */
 
-static GuestFn slots[(END - MAIN) / 4];
+static _Atomic GuestFn slots[(END - MAIN) / 4];
 static u8 guest[0x40000];
 u8* g_mem = guest;
-GuestFn* g_disp = slots;
+_Atomic GuestFn* g_disp = slots;
 u64 g_code_lo = MAIN, g_code_hi = END;
 static const SnxModInfo modules[2] = {{.name = "main", .base = MAIN, .size = DRIVER - MAIN},
                                       {.name = "driver", .base = DRIVER, .size = END - DRIVER}};
@@ -37,7 +37,7 @@ static SnxModule module = {.nmods = 2, .mods = modules};
 const SnxModule* g_mod = &module;
 const SnxArmModule* g_arm_mod;
 Settings g_settings;
-int g_frames;
+_Atomic int g_frames;
 
 static const struct {
     const char* name;
@@ -120,7 +120,7 @@ static void own_main(CPU* RESTRICT c, u64 entry) {
     (void)entry;
     c->pc = c->x[30];
 }
-static GuestFn* slot(u64 addr) { return &slots[(addr - MAIN) / 4]; }
+static _Atomic GuestFn* slot(u64 addr) { return &slots[(addr - MAIN) / 4]; }
 
 /* a call of addr returning to lr, as the dispatch loop runs it */
 static CPU cpu;
