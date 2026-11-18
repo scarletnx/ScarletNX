@@ -278,19 +278,27 @@ static int tex_bind_at(Surf* t, int finer_ok) {
    loaded the same 15 textures, 10 MB, a frame for seconds at under 2 frames a second */
 static int tex_bind(Surf* t) { return tex_bind_at(t, !t->shed); }
 
-/* the guest bytes a move of a level reads (lsz bytes at gva) staged as they are (what the GPU holds of them copied on
-   the GPU, vk_guest_read), zero past the level's end: buf and off hold the layout's first byte the move reads
-   (vk_bl_range). Bytes a region holds that reach no further than the level's end are read there (vk_guest_in_place):
-   the move takes 16-byte runs */
-static int stage_bl(const VkBlMove* m, u64 gva, u64 lsz, VkBuffer* buf, u64* off) {
+/* the guest bytes a move of a level reads (lsz bytes at gva) staged as they are, zero past the level's end: s->buf
+   and s->at hold the layout's first byte the move reads (vk_bl_range). What the GPU holds of them is read by the move
+   where it is, the runs in s's table (vk_guest_read_inplace), or copied there on the GPU. Bytes a region holds that
+   reach no further than the level's end are read there (vk_guest_in_place): the move takes 16-byte runs */
+#define STAGE_RUNS 64
+static int stage_bl(const VkBlMove* m, u64 gva, u64 lsz, VkBlSrc* s) {
     u64 lo, hi;
     vk_bl_range(m, &lo, &hi);
     u64 n = lo >= lsz ? 0 : hi <= lsz ? hi - lo : lsz - lo;
-    if (n == hi - lo && vk_guest_in_place(gva + lo, n, 16, buf, off)) return 1;
-    u8* p = vk_stage_guest_input(gva + lo, n, hi - lo, buf, off);
+    *s = (VkBlSrc){0};
+    if (n == hi - lo && vk_guest_in_place(gva + lo, n, 16, &s->buf, &s->at)) return 1;
+    u8* p = vk_stage_guest_input(gva + lo, n, hi - lo, &s->buf, &s->at);
     if (!p) return 0;
-    vk_guest_read(gva + lo, n, p, *buf, *off);
+    VkInRun runs[STAGE_RUNS];
+    s->n = vk_guest_read_inplace(gva + lo, n, p, s->buf, s->at, runs, STAGE_RUNS);
     memset(p + n, 0, hi - lo - n);
+    if (!s->n) return 1;
+    /* a storage buffer's offset in the move's descriptor: the device's alignment for one */
+    VkInRun* tab = (VkInRun*)vk_stage_upload(s->n * sizeof *tab, vk_stage_align(), &s->tab, &s->tab_at);
+    if (!tab) return 0;
+    memcpy(tab, runs, s->n * sizeof *tab);
     return 1;
 }
 
@@ -343,17 +351,16 @@ static int astc_rows(void* ctx, VkCommandBuffer* pcb, u32 z, u32 nz, u32 y, u32 
     if (l->t->bl && l->layers) {
         VkBlMove m = {l->rowb, l->th, l->lbh, l->lbd, y, n, 0, 1, l->rowb, l->gobs_x};
         u64 cap, slice = (u64)l->rowb * n;
-        VkBuffer* staged = malloc(nz * (sizeof *staged + sizeof(u64)));
-        u64* at = (u64*)(staged + nz);
+        VkBlSrc* staged = malloc(nz * sizeof *staged);
         *buf = vk_bl_scratch(slice * nz, &cap);
         *off = 0;
         int ok = staged && *buf;
         for (u32 k = 0; ok && k < nz; k++)
-            ok = stage_bl(&m, l->gva + (u64)(z + k) * l->t->layer_size, l->lsz, &staged[k], &at[k]);
+            ok = stage_bl(&m, l->gva + (u64)(z + k) * l->t->layer_size, l->lsz, &staged[k]);
         if (ok) {
             VkCommandBuffer cb = *pcb = upload_cb(l->t, *pcb);
             vk_bl_barrier(cb, 1);
-            for (u32 k = 0; ok && k < nz; k++) ok = vk_bl_move(cb, &m, 0, staged[k], at[k], *buf, k * slice);
+            for (u32 k = 0; ok && k < nz; k++) ok = vk_bl_move_src(cb, &m, &staged[k], *buf, k * slice);
             vk_bl_barrier(cb, 0);
         }
         free(staged);
@@ -361,15 +368,14 @@ static int astc_rows(void* ctx, VkCommandBuffer* pcb, u32 z, u32 nz, u32 y, u32 
     }
     if (l->t->bl) {
         VkBlMove m = {l->rowb, l->th, l->lbh, l->lbd, y, n, z, nz, l->rowb, l->gobs_x}; /* 16 byte blocks: whole runs */
-        VkBuffer staged;
-        u64 at;
+        VkBlSrc staged;
         u64 cap;
         *buf = vk_bl_scratch((u64)l->rowb * n * nz, &cap);
         *off = 0;
-        if (!*buf || !stage_bl(&m, l->gva, l->lsz, &staged, &at)) return 0;
+        if (!*buf || !stage_bl(&m, l->gva, l->lsz, &staged)) return 0;
         VkCommandBuffer cb = *pcb = upload_cb(l->t, *pcb);
         vk_bl_barrier(cb, 1);
-        int ok = vk_bl_move(cb, &m, 0, staged, at, *buf, 0);
+        int ok = vk_bl_move_src(cb, &m, &staged, *buf, 0);
         vk_bl_barrier(cb, 0);
         return ok;
     }
@@ -553,12 +559,12 @@ static int up_rows(Upload* u, const UpLevel* lv, VkBuffer in, u64 in_at, u32 in_
 /* a block linear strip: move m of bytes staged at staged_at deswizzled into the scratch buffer, then up_rows. Its
    rows land at row y, slice z of the level (the move's own rows and slices are a gathered layout's for a strip of
    GOB rows) */
-static int up_move(Upload* u, const UpLevel* lv, const VkBlMove* m, VkBuffer staged, u64 staged_at, u32 z, u32 y) {
+static int up_move(Upload* u, const UpLevel* lv, const VkBlMove* m, const VkBlSrc* staged, u32 z, u32 y) {
     u64 lin = (u64)m->slices * m->rows * m->lin_pitch;
     if (!up_reserve(u, lin + (lv->conv ? vk_tc_out_size(&lv->tc, m->rows, m->slices) : 0))) return 0;
     u64 at = up_space(u, lin, bl_lin_align(u->t->f.bpp));
     up_open(u);
-    if (!vk_bl_move(u->cb, m, 0, staged, staged_at, u->scratch, at)) return 0;
+    if (!vk_bl_move_src(u->cb, m, staged, u->scratch, at)) return 0;
     u->moves++;
     return up_rows(u, lv, u->scratch, at, m->lin_pitch, z, m->slices, y, m->rows);
 }
@@ -582,11 +588,10 @@ static int level_upload_bl(Upload* u, const UpLevel* lv, u64 gva, u64 lsz, u32 l
     u64 block = 512ull << (lbh + lbd), block_row = (u64)lv->gobs_x * block;
     /* scratch bytes a row of units takes: deswizzled, and converted */
     u64 per_row = pitch + (lv->conv ? vk_tc_out_size(&lv->tc, 1, 1) : 0);
-    VkBuffer staged;
-    u64 staged_at;
+    VkBlSrc staged;
     if (per_row * th * ld <= band && lsz <= band && up_bound(u, lv, 0, th, 0, ld, 1)) {
         VkBlMove m = {rowb, th, lbh, lbd, 0, th, 0, ld, pitch, lv->gobs_x};
-        return stage_bl(&m, gva, lsz, &staged, &staged_at) && up_move(u, lv, &m, staged, staged_at, 0, 0);
+        return stage_bl(&m, gva, lsz, &staged) && up_move(u, lv, &m, &staged, 0, 0);
     }
     u64 rows_cost = per_row * (8u << lbh) * nz;
     if (rows_cost <= band && block_row <= band) {
@@ -597,7 +602,7 @@ static int level_upload_bl(Upload* u, const UpLevel* lv, u64 gva, u64 lsz, u32 l
                 u32 rows = th - y < n ? th - y : n, slices = ld - z < nz ? ld - z : nz;
                 VkBlMove m = {rowb, th, lbh, lbd, y, rows, z, slices, pitch, lv->gobs_x};
                 if (!up_bound(u, lv, m.y0, m.rows, z, m.slices, 0)) continue;
-                if (!stage_bl(&m, gva, lsz, &staged, &staged_at) || !up_move(u, lv, &m, staged, staged_at, z, y))
+                if (!stage_bl(&m, gva, lsz, &staged) || !up_move(u, lv, &m, &staged, z, y))
                     return 0;
             }
         return 1;
@@ -616,16 +621,17 @@ static int level_upload_bl(Upload* u, const UpLevel* lv, u64 gva, u64 lsz, u32 l
                        ((((u64)(z & ((1u << lbd) - 1)) << lbh) + (gy & ((1u << lbh) - 1))) << 9);
             u64 end = base + (gobs_x - 1) * block + piece;
             u64 have = base >= lsz ? 0 : end <= lsz ? end - base : lsz - base;
-            u8* p = vk_stage_guest_input(gva + base, have, gobs_x * piece, &staged, &staged_at);
+            staged = (VkBlSrc){0}; /* its pieces copied: a strip of a level too big for staging whole */
+            u8* p = vk_stage_guest_input(gva + base, have, gobs_x * piece, &staged.buf, &staged.at);
             if (!p) return 0;
             for (u32 gx = 0; gx < gobs_x; gx++) {
                 u64 o = base + gx * block, n = o >= lsz ? 0 : o + piece <= lsz ? piece : lsz - o;
-                vk_guest_read(gva + o, n, p + gx * piece, staged, staged_at + gx * piece);
+                vk_guest_read(gva + o, n, p + gx * piece, staged.buf, staged.at + gx * piece);
                 memset(p + gx * piece + n, 0, piece - n);
             }
             u32 y = gy << 3;
             VkBlMove m = {rowb, 8u << k, k, 0, 0, th - y < (8u << k) ? th - y : 8u << k, 0, 1, pitch};
-            if (!up_move(u, lv, &m, staged, staged_at, z, y)) return 0;
+            if (!up_move(u, lv, &m, &staged, z, y)) return 0;
         }
     return 1;
 }
@@ -1043,13 +1049,13 @@ static int resident_upload(Surf* t) {
                         }
                         VkBlMove mv = {across, 8u << lbh, lbh, lbd, 0, 8u << lbh, 0, 1u << lbd, across};
                         const u64 lin = (u64)mv.slices * mv.rows * mv.lin_pitch;
-                        u64 staged_at, at;
-                        VkBuffer staged;
-                        ok = stage_bl(&mv, t->gva + from, t->brick_bytes, &staged, &staged_at) && up_reserve(&u, lin);
+                        u64 at;
+                        VkBlSrc staged;
+                        ok = stage_bl(&mv, t->gva + from, t->brick_bytes, &staged) && up_reserve(&u, lin);
                         if (!ok) break;
                         at = up_space(&u, lin, bl_lin_align(f->bpp));
                         up_open(&u);
-                        if (!(ok = vk_bl_move(u.cb, &mv, 0, staged, staged_at, u.scratch, at))) break;
+                        if (!(ok = vk_bl_move_src(u.cb, &mv, &staged, u.scratch, at))) break;
                         u.moves++;
                         u.src[u.nreg] = u.scratch;
                         u.reg[u.nreg++] = (VkBufferImageCopy){
@@ -2327,7 +2333,7 @@ static int tex_rehash(Surf* t) {
     /* The GPU wrote its bytes in place and that write is still pending: its content is new, so the upload is due
        whatever the bytes hash to. Loading them reads them on the CPU (mem_hash's gmem_ptr), which waits for the
        GPU to finish the write: a title's video frames are four such textures a frame, and those waits were a third
-       of its frame. The upload itself stages them on the GPU (stage_bl through vk_guest_read's copy), no wait.
+       of its frame. The upload itself reads them on the GPU (stage_bl, in place or copied), no wait.
        t->hash keeps what it had, so the first later whole check loads the texture once more before it settles */
     if (vk_uma_pending(t->gva, t->size) && !t->sparse && !t->piecewise) {
         tex_upload(t);
@@ -2386,7 +2392,7 @@ void vk_tex_note_writeback(Surf* t) {
        and hashes only a texture it says the CPU wrote, which then loads anyway: no hash now, 0, which a check by its
        contents takes as changed. Hashing every write-back's texels took a tenth of the GPU thread in an Ounce game */
     /* 0, a check that takes it as changed, when the GPU's write to it is still pending too: hashing its bytes would
-       read them on the CPU and wait for that write, and the load that follows is on the GPU (stage_bl's copy) */
+       read them on the CPU and wait for that write, and the load that follows reads them on the GPU (stage_bl) */
     t->hash = tex_tracked(t) || vk_uma_pending(t->gva, t->size) ? 0 : tex_hash(t);
     t->gw = gpu_mem_generation();
     t->wseen = vk_ww_now();
@@ -3022,6 +3028,19 @@ static int tex_can_piece(const Surf* t) {
     return !t->msaa && !t->sparse && f->conv == VKC_NONE && !vk_tc_converts(f) && !f->depth && f->bpp &&
            (t->bl ? 64 % f->bpp == 0 : 16 % f->bpp == 0);
 }
+/* loaded again a piece at a time where its pages change (tex_check_pieces): what tex_can_piece takes, and a block
+   linear depth texture its guest bytes hold as they are, with no stencil. Its pieces go through the scratch buffer
+   (up_move), at offsets of 16 bytes, which a copy into a depth aspect needs (a multiple of 4). It is loaded whole when
+   it is made, and is never piecewise or resident, which clear and bind color aspects alone (tex_zero, the bricks).
+   One game's 3072x3072 D16 shadow array of 3 layers (54 MB) shares its first pages with a 128 KB storage image that a
+   compute program writes every frame: each publish of that image loaded all 54 MB again, hashed on the CPU and staged,
+   8 to 9 ms each time, 14 times a second */
+static int tex_patchable(const Surf* t) {
+    const VkFmt* f = &t->f;
+    if (!f->depth) return tex_can_piece(t);
+    return t->bl && !t->msaa && !t->sparse && !t->bricks && f->conv == VKC_NONE && !vk_tc_converts(f) && !f->stencil &&
+           f->bpp && 64 % f->bpp == 0;
+}
 
 /* the blocks of one level of one layer (lsz bytes at gva) that its bytes [a, b) lie in, loaded a run of blocks of one
    row of blocks at a time */
@@ -3046,12 +3065,10 @@ static int level_patch_bl(Upload* u, const UpLevel* lv, u64 gva, u64 lsz, u32 lb
                           lv->ld - z < 1u << lbd ? lv->ld - z : 1u << lbd,
                           (rowb + align - 1) / align * align};
             UpLevel run = *lv;
-            VkBuffer staged;
-            u64 at;
+            VkBlSrc staged;
             run.x = x0 * (64 / f->bpp) * f->bw;
             run.cols = rowb / f->bpp * f->bw;
-            if (!stage_bl(&m, gva + k * block, lsz - k * block, &staged, &at) ||
-                !up_move(u, &run, &m, staged, at, z, y))
+            if (!stage_bl(&m, gva + k * block, lsz - k * block, &staged) || !up_move(u, &run, &m, &staged, z, y))
                 return 0;
             __atomic_add_fetch(&g_tex_upload_bytes, (e - k) * block, __ATOMIC_RELAXED);
         }
@@ -3219,16 +3236,18 @@ static int later_pieces_whole(const Surf* t, u64 sum) {
            (t->bc7_hot || later_soon(t) || sum / 16 * t->f.bw * t->f.bh / 16 > VK_BC7_LATER_BLOCKS);
 }
 /* the pieces p of t loaded again into its image; all of it when they are more than half of it (a whole upload reads
-   at most twice their bytes, in fewer moves), when render targets' pixels were copied into it (tex_take_drawn),
-   which a whole upload takes again, or when they are too many BC7 blocks to encode at once (later_pieces_whole). A
-   texture loaded whole whose hash is still its image's (no blocks loaded alone since) is hashed for that, as a change
-   found by its hash is: its pages written with the bytes they had load nothing. 1 when the image has them */
+   at most twice their bytes, in fewer moves), or when they are too many BC7 blocks to encode at once
+   (later_pieces_whole). Render targets' pixels copied into it (tex_take_drawn) stay where no piece goes: the new
+   wgen below makes tex_take_drawn copy the targets drawn fresh again over the pieces, as after a whole upload, and
+   memory has no newer bytes for the rest (no write the records name). A texture loaded whole whose hash is still its
+   image's (no blocks loaded alone since) is hashed for that, as a change found by its hash is: its pages written with
+   the bytes they had load nothing. 1 when the image has them */
 static int tex_patch(Surf* t, const TexPieces* p) {
     u64 sum = 0, bytes = __atomic_load_n(&g_tex_upload_bytes, __ATOMIC_RELAXED);
     for (u32 i = 0; i < p->count; i++) sum += p->piece[i].n;
     /* a texture held as BC1, BC4 or BC5 for what its blocks held loads whole, which reads them again
        (kind_again): pieces of other blocks would show in a format that does not hold them */
-    if (p->all || t->took_drawn || sum > t->size / 2 || later_pieces_whole(t, sum) ||
+    if (p->all || sum > t->size / 2 || later_pieces_whole(t, sum) ||
         (t->f.conv == VKC_ASTC && vk_astc_bcn(t->f.vk))) {
         g_tex_checks.whole++;
         if (t->piecewise || !t->hash) return tex_upload(t);
@@ -3439,7 +3458,7 @@ static void tex_patch_count(Surf* t, const TexPieces* p, int by_cpu, int kind, u
                   kind >= 0 ? g_write_kinds[kind < GPU_WRITE_KINDS ? kind : 0] : "", surface);
     }
 }
-/* the checks of a texture loaded a piece at a time (tex_can_piece; with holes, or loaded whole): the pages the GPU's
+/* the checks of a texture loaded a piece at a time (tex_patchable; with holes, or loaded whole): the pages the GPU's
    records and write tracking name since the last ones, loaded once both were asked, so the image holds what either
    found. 0 when write tracking can't tell: checked by contents (an engine's write after that check in the same epoch
    is loaded by its pages, and leaves the contents' check a hash that differs, so the next one loads it whole) */
@@ -3567,7 +3586,7 @@ static Surf* tex_check_memory(Surf* t, u64 gva) {
         if (!t->upload_valid) return NULL;
     }
     int untracked = 0; /* tex_check_pieces asked write tracking, which can't tell: not asked again below */
-    if (t->piecewise || tex_can_piece(t)) {
+    if (t->piecewise || tex_patchable(t)) {
         if (tex_check_pieces(t, gva)) return t->upload_valid ? t : NULL;
         untracked = 1;
     }
@@ -4622,7 +4641,7 @@ static void take_cover(Surf* t, TexPieces* p) {
     if (p->all || !p->count || t->is_rt || (t->f.conv && !t->f.depth) || t->msaa || t->type == VK_IMAGE_VIEW_TYPE_3D)
         return;
     /* the bytes of each layer past its levels hold no texel: a page that a level's publish stamped can end in them, and
-       a piece left there made a texture that took a target load whole (tex_patch's took_drawn) */
+       a piece left there loaded bytes that no texel reads, and gave the texture a new wgen (tex_patch) */
     if (t->bl && t->layers > 1) {
         u64 end = 0;
         for (u32 l = 0; l < t->levels; l++)

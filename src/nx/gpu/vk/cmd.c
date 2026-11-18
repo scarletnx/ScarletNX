@@ -627,7 +627,9 @@ static u32 chunk_new(u32 ring, u64 size, int bar, u32 slot) {
                                        VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                                        VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT |
                                        VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
-                                       (g_vk.has_xfb ? VK_BUFFER_USAGE_TRANSFORM_FEEDBACK_BUFFER_BIT_EXT : 0),
+                                       (g_vk.has_xfb ? VK_BUFFER_USAGE_TRANSFORM_FEEDBACK_BUFFER_BIT_EXT : 0) |
+                                       /* an indirect copy's list is read at its device address (owned.c) */
+                                       (g_vk.has_copy_indirect ? VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT : 0),
                               .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
     DevMemWant aci = {.at = bar ? DM_WINDOW : DM_HOST, .mapped = 1};
     DevMemInfo info;

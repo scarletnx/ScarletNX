@@ -36,6 +36,9 @@ VkState g_vk;
 /* reentrant on the thread that holds it: landing compute results writes guest memory, which can come back here */
 static PMutex g_vklock;
 static _Thread_local int t_vkdepth;
+/* from vk_lock_pause to vk_lock_resume: the hold goes on after it, and a hold of the lock in between does not end
+   this one's (vk_own_release_held) */
+static _Thread_local int t_vkpaused;
 static u32 g_vk_owner; /* the thread holding it (plat_tid), 0 when none: a trap's fault on it can't be answered */
 /* The lock hands off fairly. A Windows SRW lock (and a pthread mutex) lets the thread that let go take it straight back
    before the waiter it woke runs: a thread whose draws ran back to back kept it, and the threads landing GPU results and
@@ -82,6 +85,9 @@ void vk_unlock(void) {
        before the lock goes, and the next CPU access publishes them */
     if (t_vkdepth == 1 && own_owed_any()) vk_rt_watch_owed();
     if (t_vkdepth == 1 && vk_own_later_any()) vk_own_release_later();
+    /* the results that commands recorded under this hold read by their address: they are recorded now. Not at a
+       pause, part-way through the work that records them */
+    if (t_vkdepth == 1 && !t_vkpaused && vk_own_held_any()) vk_own_release_held();
     if (!--t_vkdepth) vk_let_go();
 }
 int vk_trylock(void) {
@@ -93,11 +99,14 @@ u32 vk_lock_owner(void) { return __atomic_load_n(&g_vk_owner, __ATOMIC_RELAXED);
 int vk_lock_held(void) { return t_vkdepth > 0; }
 int vk_lock_pause(void) {
     if (t_vkdepth != 1) return 0;
+    t_vkpaused = 1;
     vk_unlock();
     return 1;
 }
 void vk_lock_resume(int paused) {
-    if (paused) vk_lock();
+    if (!paused) return;
+    vk_lock();
+    t_vkpaused = 0;
 }
 
 /* What held the memory at an out-of-memory, at the first ones: each heap as devmem.c counts it, and the descriptor
@@ -864,7 +873,7 @@ static bool choose_device(SnxVkChoice* c, void* user) {
     int has_google_timing = 0;
     int has_host_import = 0, has_ahb = 0, has_placed = 0, has_map2 = 0, has_dmabuf = 0;
     int has_descriptor_buffer = 0, has_descriptor_heap = 0, has_extended_flags = 0, has_maintenance5 = 0;
-    int has_maintenance8 = 0;
+    int has_maintenance8 = 0, has_copy_indirect = 0;
     int has_vertex_input = 0;
     int has_hdr_metadata = 0;
     int has_gpl = 0, has_eds2 = 0, has_eds3 = 0; /* the extensions of pipeline libraries and their dynamic state */
@@ -945,6 +954,7 @@ static bool choose_device(SnxVkChoice* c, void* user) {
         has_extended_flags = snx_vk_choice_has(c, VK_KHR_EXTENDED_FLAGS_EXTENSION_NAME);
         has_maintenance5 = snx_vk_choice_has(c, VK_KHR_MAINTENANCE_5_EXTENSION_NAME);
         has_maintenance8 = snx_vk_choice_has(c, VK_KHR_MAINTENANCE_8_EXTENSION_NAME);
+        has_copy_indirect = snx_vk_choice_has(c, VK_KHR_COPY_MEMORY_INDIRECT_EXTENSION_NAME);
         has_reconvergence = snx_vk_choice_has(c, VK_KHR_SHADER_MAXIMAL_RECONVERGENCE_EXTENSION_NAME);
         g_vk.has_feedback = snx_vk_choice_has(c, VK_EXT_ATTACHMENT_FEEDBACK_LOOP_LAYOUT_EXTENSION_NAME);
         has_feedback_dynamic = snx_vk_choice_has(c, VK_EXT_ATTACHMENT_FEEDBACK_LOOP_DYNAMIC_STATE_EXTENSION_NAME);
@@ -1154,6 +1164,8 @@ static bool choose_device(SnxVkChoice* c, void* user) {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_5_FEATURES_KHR};
     VkPhysicalDeviceMaintenance8FeaturesKHR qmaintenance8 = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_8_FEATURES_KHR};
+    VkPhysicalDeviceCopyMemoryIndirectFeaturesKHR qcopy = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COPY_MEMORY_INDIRECT_FEATURES_KHR};
     VkPhysicalDeviceAttachmentFeedbackLoopLayoutFeaturesEXT qloop = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ATTACHMENT_FEEDBACK_LOOP_LAYOUT_FEATURES_EXT};
     VkPhysicalDeviceAttachmentFeedbackLoopDynamicStateFeaturesEXT qloop_dyn = {
@@ -1209,6 +1221,7 @@ static bool choose_device(SnxVkChoice* c, void* user) {
                            has_extended_flags ? &qflags : NULL,
                            has_maintenance5 ? &qmaintenance5 : NULL,
                            has_maintenance8 ? &qmaintenance8 : NULL,
+                           has_copy_indirect ? &qcopy : NULL,
                            &q11,
                            &q12,
                            core13 ? &q13 : NULL,
@@ -1618,6 +1631,26 @@ static bool choose_device(SnxVkChoice* c, void* user) {
             "descriptors use %s\n",
             g_settings.descriptor_buffers, heaps_missing, g_vk.has_descriptor_buffers ? "buffers" : "sets");
     g_vk.has_descriptor_heaps = g_vk.has_descriptor_heap_support;
+    /* the copies name device addresses: the device's memory gets them for these too (bufferDeviceAddress) */
+    g_vk.has_copy_indirect =
+        g_settings.indirect_copies && has_copy_indirect && qcopy.indirectMemoryCopy && q12.bufferDeviceAddress;
+    if (g_vk.has_copy_indirect) { /* recorded in the graphics queue's command buffers: its family has to take them */
+        VkPhysicalDeviceCopyMemoryIndirectPropertiesKHR pcopy = {
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COPY_MEMORY_INDIRECT_PROPERTIES_KHR};
+        VkPhysicalDeviceProperties2 props = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &pcopy};
+        vkGetPhysicalDeviceProperties2(g_vk.phys, &props);
+        g_vk.has_copy_indirect = (pcopy.supportedQueues & VK_QUEUE_GRAPHICS_BIT) != 0;
+    }
+    g_vk.has_inplace_loads = g_settings.texture_loads_in_place && q12.bufferDeviceAddress;
+    LOG("vulkan: kept results are copied %s, and texture loads read them %s\n",
+        g_vk.has_copy_indirect                                      ? "by indirect copies"
+        : !g_settings.indirect_copies                               ? "one command each (vk_copy_indirect=0)"
+        : !has_copy_indirect || !qcopy.indirectMemoryCopy          ? "one command each (no VK_KHR_copy_memory_indirect)"
+        : !q12.bufferDeviceAddress                                  ? "one command each (no bufferDeviceAddress)"
+                                                                    : "one command each (not on the graphics queue)",
+        g_vk.has_inplace_loads              ? "in place"
+        : !g_settings.texture_loads_in_place ? "from copies (vk_inplace_loads=0)"
+                                             : "from copies (no bufferDeviceAddress)");
     if (g_vk.has_descriptor_heap_support) {
         g_vk.descriptor_heap_props = (VkPhysicalDeviceDescriptorHeapPropertiesEXT){
             .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_HEAP_PROPERTIES_EXT};
@@ -1644,7 +1677,10 @@ static bool choose_device(SnxVkChoice* c, void* user) {
                                             .samplerMirrorClampToEdge = q12.samplerMirrorClampToEdge,
                                             .samplerFilterMinmax = q12.samplerFilterMinmax,
                                             .timelineSemaphore = VK_TRUE,
-                                            .bufferDeviceAddress = g_vk.has_descriptor_buffers || g_vk.has_descriptor_heap_support,
+                                            .bufferDeviceAddress = g_vk.has_descriptor_buffers ||
+                                                                   g_vk.has_descriptor_heap_support ||
+                                                                   g_vk.has_copy_indirect ||
+                                                                   g_vk.has_inplace_loads,
                                             .shaderFloat16 = q12.shaderFloat16,
                                             .shaderOutputViewportIndex = q12.shaderOutputViewportIndex,
                                             .shaderOutputLayer = q12.shaderOutputLayer,
@@ -1794,6 +1830,13 @@ static bool choose_device(SnxVkChoice* c, void* user) {
         fmaintenance8.pNext = chain;
         chain = &fmaintenance8;
         snx_vk_choice_enable(c, VK_KHR_MAINTENANCE_8_EXTENSION_NAME);
+    }
+    VkPhysicalDeviceCopyMemoryIndirectFeaturesKHR fcopy = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COPY_MEMORY_INDIRECT_FEATURES_KHR, .indirectMemoryCopy = VK_TRUE};
+    if (g_vk.has_copy_indirect) {
+        fcopy.pNext = chain;
+        chain = &fcopy;
+        snx_vk_choice_enable(c, VK_KHR_COPY_MEMORY_INDIRECT_EXTENSION_NAME);
     }
     VkPhysicalDeviceDescriptorBufferFeaturesEXT fdesc = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_FEATURES_EXT,
@@ -2280,7 +2323,9 @@ static int create_device(void) {
     vkGetDeviceQueue(g_vk.dev, g_vk.compute_family, second ? 1 : 0, &g_vk.compute);
     vk_mem_init(sparse_queue);
     /* the renderer's own allocator (devmem.c): its blocks are 64 MiB at most, and no more than the cap */
-    if (!vk_devmem_init(g_vk.has_descriptor_buffers || g_vk.has_descriptor_heap_support)) return 0;
+    if (!vk_devmem_init(g_vk.has_descriptor_buffers || g_vk.has_descriptor_heap_support || g_vk.has_copy_indirect ||
+                        g_vk.has_inplace_loads))
+        return 0;
     __atomic_store_n(&g_devmem_ready, 1, __ATOMIC_RELEASE);
     { /* a GPU of 4 GiB or less: memory held back for render targets (devmem.c vk_devmem_reserve) */
         VkPhysicalDeviceMemoryProperties mp;

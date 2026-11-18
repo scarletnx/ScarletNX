@@ -532,6 +532,15 @@ static struct {
 
 void vk_mirror_wrote(u64 cpu, u64 len) {
     if (!len) return;
+    const MirRange r = {cpu >> 12, (cpu + len + 4095) >> 12};
+    /* a range the submission's ranges hold already adds nothing: its pages are pending until that range's batch is
+       done, and the harvest takes no page more. Counted all the same, every page of it gained a count here and lost it
+       again when vk_mirror_harvest joined the ranges: one game's programs write the same windows of up to 16 MiB
+       dispatch after dispatch, and half its ranges, half a billion page counts in a run, were such. Only the last
+       ranges listed are looked at: those repeats follow each other, and a range that meets none of them is listed
+       and counted, as before, with no walk over a submission's thousands */
+    for (u32 i = g_mir_nnow, seen = 0; i-- > 0 && seen++ < 8;)
+        if (g_mir_now[i].first <= r.first && r.end <= g_mir_now[i].end) return;
     if (g_mir_nnow == g_mir_capnow) {
         u32 cap = g_mir_capnow ? g_mir_capnow * 2 : 32;
         MirRange* grown = realloc(g_mir_now, (size_t)cap * sizeof *grown);
@@ -539,7 +548,6 @@ void vk_mirror_wrote(u64 cpu, u64 len) {
         g_mir_now = grown;
         g_mir_capnow = cap;
     }
-    MirRange r = {cpu >> 12, (cpu + len + 4095) >> 12};
     g_mir_now[g_mir_nnow++] = r;
     mir_pend_pages(r.first, r.end - 1, 1);
 }
@@ -732,7 +740,7 @@ static void harvest_batch(VkCommandBuffer cb, u64 submit, const MirRange* r, u32
 }
 void vk_mirror_harvest(VkCommandBuffer cb, u64 submit) {
     if (!g_mir_nnow) return;
-    /* each range written gave its pages a count (vk_mirror_wrote), and the batch takes one away from the pages of each
+    /* each range listed gave its pages a count (vk_mirror_wrote), and the batch takes one away from the pages of each
        joined range once it is done (vk_mirror_done). Where the ranges met, the joined ones take their own count first,
        then the written ones lose theirs, so a page never reads as not pending meanwhile. Without it the pages of two
        buffers that overlap stayed pending for good, and each CPU read of them waited for the GPU. The batch's ranges
@@ -806,6 +814,20 @@ static void land_entry(const u32* e) {
     const u32* mask = e + 4;
     const u8* data = (const u8*)(e + 132);
     u64 p = (cpu % MIR_G) >> 12;
+    u32 any = 0;
+    for (u32 w = 0; w < 128; w++) any |= mask[w];
+    if (!any) {
+        gpu_mem_written_cpu(cpu, 4096);
+        return;
+    }
+    /* before the landings below: a GPU-side write they make, or one on another thread, stamps a later one */
+    u64 gen = gpu_mem_generation();
+    /* Once for the page, not for each run of it: own_acquire lands whole pages, and a pending render target over a
+       run is over the page. Mostly none is, and each run asked through every GPU address that maps the page: one
+       game's mirror landings made 43 million of those asks in about 100 s, and 612 found a target */
+    own_acquire(cpu, 4096);
+    const int targets = vk_rt_pending_cpu(cpu, 4096);
+    Gran* r = cpu / MIR_G < g_mir.granules ? g_mir.gran[cpu / MIR_G] : NULL;
     for (u32 a = 0; a < 4096;) {
         u32 rest = mask[a / 32] >> (a % 32);
         if (!rest) { /* none from a to the word's end */
@@ -814,18 +836,19 @@ static void land_entry(const u32* e) {
         }
         a += snx_ctz32(rest);
         u32 b = run_end(mask, a + 1);
-        u64 gen = gpu_mem_generation();
-        own_acquire(cpu + a, b - a);
-        vk_rt_before_write_cpu(cpu + a, b - a);
+        if (targets) { /* as before for each run: a target's write-back in one may change the page's owners */
+            gen = gpu_mem_generation();
+            own_acquire(cpu + a, b - a);
+            vk_rt_before_write_cpu(cpu + a, b - a);
+        }
         /* The shadow doesn't hold bytes either put into guest memory: an owner's landing lets go of it
-           (vk_mirror_landed), and a render target's write-back stamps a generation (any GPU-side write does, here or
-           on another thread). Nor does a page that had other owners when it was given its bytes hold theirs
+           (vk_mirror_landed, so the valid bit is read after the landings above), and a render target's write-back
+           stamps a generation (any GPU-side write does, here or on another thread). Nor does a page that had other owners when it was given its bytes hold theirs
            (own_stage), whose landing can also come just after the binding gave the page its shadow again. Compared
            with such a shadow, their bytes read as the CPU's and the program's went: those land as before, into the
            shadow too where the page has one, which it keeps (a binding's landed_run takes a write-back's bytes in):
            let go of, the next binding would fill the whole page from guest memory, over bytes later submits left
            pending there */
-        Gran* r = cpu / MIR_G < g_mir.granules ? g_mir.gran[cpu / MIR_G] : NULL;
         int valid = r && (__atomic_load_n(&r->valid[p / 64], __ATOMIC_RELAXED) >> (p % 64) & 1);
         u8 *g = GP(cpu + a), *s = valid ? r->shadow + p * 4096 + a : NULL;
         const u8* d = data + a;

@@ -18,12 +18,33 @@
    Everything but k is the same for the GOB's 32 lanes: its block's place (a column of blocks, a row of blocks, a slab
    of 2^bd slices) and its place in the block. The host hands in the shifts and strides (vk/blocklinear.c), and
    the direction picks which side is read with two selects of offsets computed either way, so both directions are
-   the same instructions: one shader and one pipeline, not two.
+   the same instructions: one shader and one pipeline for both. BL_RUNS changes only where a deswizzle reads.
 
    A swizzle's final partial run merges only valid row bytes with the destination.
    The host computes its four word masks once; full runs retain one load/store.
    Each run has one invocation, so the merge needs no atomics. The C++ byte-wise
    reference checks every tail width and randomized layouts, both directions. */
+
+/* a run of the side read. With BL_RUNS (blocklinear.comp), run i of the bound range comes from the result that holds
+   it, which tab names (sorted and apart, from tab_bias on), and else from src. The includer gives BL_RUN_WORD, run k
+   of the result at an address */
+#ifdef BL_RUNS
+uvec4 bl_read(uint i) {
+    uint j = i - tab_bias, lo = 0u, hi = nruns;
+    while (lo < hi) { /* the first run that starts past j */
+        uint mid = (lo + hi) >> 1;
+        if (tab[mid].start <= j)
+            lo = mid + 1u;
+        else
+            hi = mid;
+    }
+    if (lo != 0u && j < tab[lo - 1u].end) return BL_RUN_WORD(tab[lo - 1u].addr, j - tab[lo - 1u].start);
+    return src[i];
+}
+#define BL_READ(i) bl_read(i)
+#else
+#define BL_READ(i) src[i]
+#endif
 
 void main() {
     uint k = gl_LocalInvocationID.x;
@@ -41,7 +62,7 @@ void main() {
     uint lin = lin_bias + (gl_WorkGroupID.z * rows + y) * lin_runs + run;
     if (to_bl != 0u && run + 1u == runs && tail_mask[3] != 0xffffffffu) {
         uvec4 prior = dst[bl];
-        dst[bl] = prior ^ ((prior ^ src[lin]) & tail_mask);
+        dst[bl] = prior ^ ((prior ^ BL_READ(lin)) & tail_mask);
     } else
-        dst[to_bl != 0u ? bl : lin] = src[to_bl != 0u ? lin : bl];
+        dst[to_bl != 0u ? bl : lin] = BL_READ(to_bl != 0u ? lin : bl);
 }

@@ -54,6 +54,26 @@ void vk_guest_read(u64 gva, u64 size, u8* host, VkBuffer buf, u64 at) {
     (void)buf, (void)at;
     gmem_read(gva, host, size);
 }
+/* A GPU result that holds guest bytes [at, at + len) (check_inplace_loads), as its buffer has them at device address
+   RES_ADDR: the read notes the part of it in a range as a run to read in place, and leaves 0xEE in staging there, so
+   a move that reads staging in its place loads bytes that differ from guest memory. None while len is 0 */
+#define RES_ADDR 0x7700000000ull
+static u64 stage_used; /* the staging ring's use, below */
+static struct {
+    u64 at, len;
+    u32 reads; /* runs read in place by vk_bl_move_src */
+} g_inres;
+u32 vk_guest_read_inplace(u64 gva, u64 size, u8* host, VkBuffer buf, u64 at, VkInRun* runs, u32 max) {
+    vk_guest_read(gva, size, host, buf, at);
+    u64 o = gva - GVA, lo = o > g_inres.at ? o : g_inres.at;
+    u64 hi = o + size < g_inres.at + g_inres.len ? o + size : g_inres.at + g_inres.len;
+    if (!g_inres.len || lo >= hi || !max) return 0;
+    CHECK((lo - o) % 16 == 0 && (hi - lo) % 16 == 0);
+    memset(host + (lo - o), 0xEE, hi - lo);
+    stage_used += 16; /* other staging since: the table's place shows the alignment it asked for */
+    runs[0] = (VkInRun){(u32)((lo - o) >> 4), (u32)((hi - o) >> 4), RES_ADDR + (lo - g_inres.at)};
+    return 1;
+}
 static u32 g_peeks;
 void vk_guest_peek(u64 gva, void* dst, u64 size) {
     g_peeks++;
@@ -117,8 +137,9 @@ u64 vk_stage_align(void) { return 64; }
 static u8 scratch[SCRATCH];
 static u8* mem_of(VkBuffer b) { return b == STAGE_BUF ? stage : b == SCRATCH_BUF ? scratch : NULL; }
 /* the copies into the image, with the bytes each copies taken when it is recorded (the scratch buffer is reused):
-   a region's bufferOffset is where its bytes start in copied */
+   a region's bufferOffset is where its bytes start in copied, and regs_src its offset as recorded */
 static VkBufferImageCopy regs[1024];
+static u64 regs_src[1024];
 static u32 nregs, regs_bars[1024], all_bars; /* each region's count of vk_all_barrier before it */
 static u8 copied[16u << 20];
 static u64 copied_used;
@@ -134,6 +155,7 @@ static void VKAPI_CALL copy_to_image(VkCommandBuffer cb, VkBuffer b, VkImage img
         u64 size = row * rows * c.imageExtent.depth;
         CHECK(copied_used + size <= sizeof copied && mem_of(b) && (b != SCRATCH_BUF || bar_state == 2));
         memcpy(copied + copied_used, mem_of(b) + c.bufferOffset, size);
+        regs_src[nregs] = c.bufferOffset;
         c.bufferOffset = copied_used;
         copied_used += size;
         regs_bars[nregs] = all_bars;
@@ -449,6 +471,21 @@ int vk_bl_move(VkCommandBuffer cb, const VkBlMove* m, int to_bl, VkBuffer bl, u6
     /*moves++;*/
     batch_moves++;
     return 1;
+}
+/* the move from staging, and the runs of s's table from the result that holds them (blocklinear.comp's BL_RUNS):
+   its bytes are guest memory's, as the GPU result has them. The table is at a storage buffer's offset alignment */
+int vk_bl_move_src(VkCommandBuffer cb, const VkBlMove* m, const VkBlSrc* s, VkBuffer lin, u64 lin_at) {
+    if (s->n) {
+        CHECK(s->tab == STAGE_BUF && s->tab_at % vk_stage_align() == 0);
+        for (u32 i = 0; i < s->n; i++) {
+            VkInRun r;
+            memcpy(&r, stage + s->tab_at + (u64)i * sizeof r, sizeof r);
+            CHECK(r.start < r.end && r.addr >= RES_ADDR && r.addr - RES_ADDR + (u64)(r.end - r.start) * 16 <= g_inres.len);
+            memcpy(stage + s->at + (u64)r.start * 16, guest + g_inres.at + (r.addr - RES_ADDR), (u64)(r.end - r.start) * 16);
+            g_inres.reads++;
+        }
+    }
+    return vk_bl_move(cb, m, 0, s->buf, s->at, lin, lin_at);
 }
 int vk_tc_converts(const VkFmt* f) { return f->conv != VKC_NONE && f->conv != VKC_ASTC; }
 static u32 g_enc_bound;
@@ -1402,6 +1439,89 @@ static void check_block_linear_changes(void) {
     CHECK(bytes == t.size && partial == 0);
     memset(&g_gpu_writes, 0, sizeof g_gpu_writes);
 }
+/* A block linear depth texture with no stencil takes a write a block at a time, as a color one does (tex_patchable):
+   D16 512x512 in blocks 16 GOBs high (8 KiB). Its region copies the depth aspect from an offset of 16 bytes, as a copy
+   into a depth aspect needs (a multiple of 4). So does a texture that render targets' pixels were copied into
+   (took_drawn), depth or color: tex_take_drawn copies the targets again over the blocks loaded. With stencil, a depth
+   texture still loads whole */
+static void check_depth_changes(void) {
+    Surf t = tex(512, 512, 1, 1, 2, 4, 0, 1);
+    u64 bytes, partial;
+    t.f.vk = VK_FORMAT_D16_UNORM;
+    t.f.depth = 1;
+    t.size = t.layer_size = bl_level_size(512, 512, 1, &t.f, 4, 0, 0, 0, NULL, NULL);
+    loaded(&t);
+    /* 8 bytes of texel (100, 300): GOB column 3, the third row of blocks */
+    const u64 a = bl_offset(200, 300, 0, 1024, 512, 4, 0);
+    cpu_write(a, 8);
+    check_after(&t, &bytes, &partial);
+    CHECK(bytes == 8192 && partial == 1 && nregs == 1 && region_has(0, 0, 100, 300, 1, 1));
+    CHECK(regs[0].imageSubresource.aspectMask == VK_IMAGE_ASPECT_DEPTH_BIT);
+    check_quiet(&t);
+    /* two blocks, two pieces: each a depth copy from an offset in the scratch buffer that is a multiple of 16 (a
+       depth copy's has to be of 4), the second one's past the first's bytes */
+    const u64 a2 = bl_offset(200, 100, 0, 1024, 512, 4, 0);
+    for (u32 i = 0; i < 8; i++) guest[a + i] ^= 0x5A, guest[a2 + i] ^= 0x5A;
+    g_tracking.pending = 1;
+    g_tracking.nruns = 2;
+    g_tracking.run[0].at = a2, g_tracking.run[0].len = 8;
+    g_tracking.run[1].at = a, g_tracking.run[1].len = 8;
+    check_after(&t, &bytes, &partial);
+    CHECK(bytes == 16384 && partial == 1 && nregs == 2 && region_has(0, 0, 100, 300, 1, 1) &&
+          region_has(0, 0, 100, 100, 1, 1));
+    for (u32 k = 0; k < nregs; k++)
+        CHECK(regs[k].imageSubresource.aspectMask == VK_IMAGE_ASPECT_DEPTH_BIT && regs_src[k] % 16 == 0);
+    CHECK(regs_src[0] != regs_src[1]);
+    check_quiet(&t);
+    /* targets' pixels copied in: still the block alone, and a new wgen, so that tex_take_drawn copies the targets drawn
+       fresh again over the piece */
+    t.took_drawn = 1;
+    const u32 wgen = t.wgen;
+    cpu_write(a, 8);
+    check_after(&t, &bytes, &partial);
+    CHECK(bytes == 8192 && partial == 1 && nregs == 1 && region_has(0, 0, 100, 300, 1, 1));
+    CHECK(t.wgen != wgen);
+    check_quiet(&t);
+    /* a color texture the same */
+    Surf c = tex(256, 256, 1, 1, 4, 4, 0, 1);
+    c.size = c.layer_size = bl_level_size(256, 256, 1, &c.f, 4, 0, 0, 0, NULL, NULL);
+    loaded(&c);
+    c.took_drawn = 1;
+    cpu_write(bl_offset(400, 200, 0, 1024, 256, 4, 0), 16);
+    check_after(&c, &bytes, &partial);
+    CHECK(bytes == 8192 && partial == 1 && nregs == 1 && region_has(0, 0, 100, 200, 1, 1));
+    check_quiet(&c);
+    /* with stencil: no pieces, loaded whole (only the flag tex_patchable reads is set, on the D16 texture) */
+    t.f.stencil = 1;
+    t.took_drawn = 0;
+    loaded(&t);
+    cpu_write(a, 8);
+    check_after(&t, &bytes, &partial);
+    CHECK(bytes == t.size && partial == 0);
+    memset(&g_tracking, 0, sizeof g_tracking);
+}
+/* A block of a texture that a GPU result holds loads from the result, read in place by the move (stage_bl's table of
+   runs, vk_bl_move_src): staging has other bytes there (0xEE), and the region's bytes are guest memory's
+   (regions_match). A result over part of the block only gives that part, and the rest comes from staging */
+static void check_inplace_loads(void) {
+    Surf t = tex(256, 256, 1, 1, 4, 4, 0, 1);
+    u64 bytes, partial;
+    t.size = t.layer_size = bl_level_size(256, 256, 1, &t.f, 4, 0, 0, 0, NULL, NULL);
+    loaded(&t);
+    const u64 a = bl_offset(400, 200, 0, 1024, 256, 4, 0), block = a & ~8191ull;
+    g_inres.at = block, g_inres.len = 8192, g_inres.reads = 0;
+    cpu_write(a, 16);
+    check_after(&t, &bytes, &partial);
+    CHECK(bytes == 8192 && partial == 1 && nregs == 1 && g_inres.reads == 1);
+    check_quiet(&t);
+    g_inres.at = block + 4096, g_inres.len = 1024, g_inres.reads = 0;
+    cpu_write(a, 16);
+    check_after(&t, &bytes, &partial);
+    CHECK(bytes == 8192 && partial == 1 && nregs == 1 && g_inres.reads == 1);
+    check_quiet(&t);
+    g_inres = (typeof(g_inres)){0};
+    memset(&g_tracking, 0, sizeof g_tracking);
+}
 /* A texture loaded whole in two runs of host memory and no holes, for which write tracking can't tell: one walk of its
    runs finds that (tex_check_pieces), and its contents are checked, without a second walk to ask again */
 static void check_untracked_runs(void) {
@@ -2318,6 +2438,8 @@ int main(void) {
         memset(&g_tracking, 0, sizeof g_tracking);
     }
     check_block_linear_changes();
+    check_depth_changes();
+    check_inplace_loads();
     check_untracked_runs();
     check_pitch_linear_changes();
     check_astc_changes();
