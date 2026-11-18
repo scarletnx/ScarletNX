@@ -613,7 +613,7 @@ void gles2_draw_vk_free(void) {
 /* ---- the vertex inputs ---- */
 
 /* the Vulkan format of an attribute array, for a shader input of base; 0 for one Vulkan has no format of */
-static VkFormat vertex_format(const G2Attrib* a, uint8_t base) {
+static VkFormat vertex_format(const SnxGlAttrib* a, uint8_t base) {
     int n = a->size;
     bool integer = a->integer || base != SNX_GLSLC_BASE_FLOAT;
     static const VkFormat f32[4] = {VK_FORMAT_R32_SFLOAT, VK_FORMAT_R32G32_SFLOAT, VK_FORMAT_R32G32B32_SFLOAT,
@@ -672,9 +672,7 @@ static uint32_t type_bytes(unsigned type) {
     default: return 4;
     }
 }
-static uint32_t attrib_bytes(const G2Attrib* a) {
-    return gles2_vertex_bytes(a->type, a->size);
-}
+static uint32_t attrib_bytes(const SnxGlAttrib* a) { return snx_gl_vertex_bytes(a->type, a->size); }
 
 /* a draw's vertices: the bindings, their offsets and strides by location */
 typedef struct {
@@ -687,7 +685,7 @@ typedef struct {
    and the buffers. A client array's range is copied into the frame's arena */
 static bool vertex_inputs(Gles2Context* gl, GlesSlot* slot, const SnxGlProgram* p, uint32_t lo, uint32_t hi,
                           uint32_t instances, G2PipelineKey* key, Vertices* v) {
-    G2VertexArray* vao = gles2_vertex_array(gl);
+    SnxGlVertexArray* vao = snx_gl_vertex_array(gl->ctx);
     *v = (Vertices){0};
     for (uint32_t i = 0; i < p->input_count; ++i) {
         const SnxGlInput* in = &snx_gl_program_inputs(p)[i];
@@ -695,7 +693,7 @@ static bool vertex_inputs(Gles2Context* gl, GlesSlot* slot, const SnxGlProgram* 
         for (uint32_t e = 0; e < (uint32_t)in->count * in->columns; ++e) {
             uint32_t index = (uint32_t)in->location + e, loc = (uint32_t)in->spirv + e;
             if (index >= G2_ATTRIBS || loc >= G2_ATTRIBS) continue;
-            const G2Attrib* a = &vao->attribs[index];
+            const SnxGlAttrib* a = &vao->attribs[index];
             VkFormat format = a->enabled ? vertex_format(a, in->base) : VK_FORMAT_UNDEFINED;
             if (a->enabled && !format) gles2_warn(10, "a vertex attribute of a type Vulkan has no format of");
             v->used |= 1u << loc;
@@ -705,7 +703,7 @@ static bool vertex_inputs(Gles2Context* gl, GlesSlot* slot, const SnxGlProgram* 
                                                     VK_FORMAT_R32G32B32A32_SFLOAT};
                 VkDeviceSize at = gles_vk_arena_take(slot, &slot->vertices, 16, 16, 4u << 20, 0);
                 if (at == VK_WHOLE_SIZE) return false;
-                memcpy(slot->vertices.map + at, gl->generic[index].bits, 16);
+                memcpy(slot->vertices.map + at, gles2_objects(gl)->generic[index].bits, 16);
                 key->formats[loc] = (uint32_t)generic[in->base == SNX_GLSLC_BASE_INT    ? 0
                                                       : in->base == SNX_GLSLC_BASE_UINT ? 1
                                                                                         : 2];
@@ -715,7 +713,7 @@ static bool vertex_inputs(Gles2Context* gl, GlesSlot* slot, const SnxGlProgram* 
                 continue;
             }
             key->formats[loc] = (uint32_t)format;
-            const G2VertexBinding* binding = &vao->bindings[a->binding];
+            const SnxGlVertexBinding* binding = &vao->bindings[a->binding];
             uint32_t stride = binding->stride;
             uint64_t pointer = binding->offset + a->relative;
             v->strides[loc] = stride;
@@ -794,7 +792,6 @@ static bool zeros_ref(GlesSlot* slot, G2Ref* out) {
         if (!z->data) return false;
         z->size = 65536;
         z->stale = true;
-        z->used = true;
     }
     return gles2_buffer_ref(slot, z, false, out);
 }
@@ -869,9 +866,10 @@ static VkDescriptorSet descriptor_set(Gles2Context* gl, GlesSlot* slot, uint32_t
                 bool uniform = b->kind == SNX_GLSLC_REFLECT_UNIFORM_BLOCK;
                 unsigned point = uniform ? (b->first + k < G2_UBO_BINDINGS ? p->block_binding[b->first + k] : 0)
                                          : b->first + k;
-                const G2IndexedBuffer* x = uniform && point < G2_UBO_BINDINGS        ? &gl->uniform_buffers[point]
-                                           : !uniform && point < G2_SSBO_BINDINGS ? &gl->storage_buffers[point]
-                                                                                  : NULL;
+                const SnxGlIndexedBuffer* x = uniform && point < G2_UBO_BINDINGS ? &gles2_objects(gl)->uniforms[point]
+                                              : !uniform && point < G2_SSBO_BINDINGS
+                                                  ? &gles2_objects(gl)->storages[point]
+                                                  : NULL;
                 G2Buffer* buffer = x ? gles2_buffer(x->buffer) : NULL;
                 G2Ref ref;
                 VkDeviceSize offset = 0;
@@ -1077,7 +1075,7 @@ static void draw(Gles2Context* gl, unsigned mode, int32_t first, int32_t count, 
         }
         /* the vertices a client array copies: the indices' range (a buffer's arrays need none) */
         bool clients = false;
-        G2VertexArray* vao = gles2_vertex_array(gl);
+        SnxGlVertexArray* vao = snx_gl_vertex_array(gl->ctx);
         for (int i = 0; i < G2_ATTRIBS; ++i)
             clients |= vao->attribs[i].enabled && !vao->bindings[vao->attribs[i].binding].buffer;
         lo = 0, hi = 0;
@@ -1204,7 +1202,7 @@ static void draw(Gles2Context* gl, unsigned mode, int32_t first, int32_t count, 
 }
 
 static Indices indices_of(Gles2Context* gl, unsigned type, uint64_t pointer) {
-    G2Buffer* b = gles2_buffer(gles2_vertex_array(gl)->elements);
+    G2Buffer* b = gles2_buffer(snx_gl_vertex_array(gl->ctx)->elements);
     if (type != GL_UNSIGNED_BYTE_ && type != GL_UNSIGNED_SHORT_ && type != GL_UNSIGNED_INT_) {
         gles2_error(gl, GL_INVALID_ENUM_);
         return (Indices){0};
@@ -1251,7 +1249,7 @@ static void g_draw_elements_instanced_base_vertex(CPU* c, Gles2Context* gl) {
 /* glDrawArraysIndirect(mode, indirect) and glDrawElementsIndirect(mode, type, indirect): the command in the draw
    indirect buffer, at the offset indirect */
 static void g_draw_arrays_indirect(CPU* c, Gles2Context* gl) {
-    G2Buffer* b = gles2_buffer(gl->draw_indirect);
+    G2Buffer* b = gles2_buffer(gles2_objects(gl)->draw_indirect);
     if (!b || X(1) + 16 > b->size || X(1) % 4) {
         gles2_error(gl, GL_INVALID_OPERATION_);
         return;
@@ -1259,7 +1257,7 @@ static void g_draw_arrays_indirect(CPU* c, Gles2Context* gl) {
     draw(gl, (unsigned)X(0), 0, 0, 0, (Indices){0}, 0, b, X(1));
 }
 static void g_draw_elements_indirect(CPU* c, Gles2Context* gl) {
-    G2Buffer* b = gles2_buffer(gl->draw_indirect);
+    G2Buffer* b = gles2_buffer(gles2_objects(gl)->draw_indirect);
     if (!b || X(2) + 20 > b->size || X(2) % 4) {
         gles2_error(gl, GL_INVALID_OPERATION_);
         return;
@@ -1321,7 +1319,7 @@ static void g_dispatch_compute(CPU* c, Gles2Context* gl) {
     if (x && y && z) dispatch(gl, x, y, z, NULL, 0);
 }
 static void g_dispatch_compute_indirect(CPU* c, Gles2Context* gl) {
-    G2Buffer* b = gles2_buffer(gl->dispatch_indirect);
+    G2Buffer* b = gles2_buffer(gles2_objects(gl)->dispatch_indirect);
     if (!b || X(0) + 12 > b->size || X(0) % 4) {
         gles2_error(gl, GL_INVALID_OPERATION_);
         return;
@@ -1576,7 +1574,7 @@ void gles2_read_pixels(Gles2Context* gl, int x, int y, int width, int height, un
         return;
     }
     if (!width || !height) return;
-    G2Buffer* pack = gles2_buffer(gl->pixel_pack);
+    G2Buffer* pack = gles2_buffer(gles2_objects(gl)->pixel_pack);
     if (!pixels && !pack) return;
     GlesSlot* slot = gles2_transfer_slot(gl);
     Source src;
@@ -1611,7 +1609,6 @@ void gles2_read_pixels(Gles2Context* gl, int x, int y, int width, int height, un
          width, height, VK_FILTER_NEAREST, VK_IMAGE_ASPECT_COLOR_BIT);
     G2Ref ref;
     host.data = NULL;
-    host.used = true;
     unsigned char* zero = calloc(1, (size_t)bytes);
     host.data = zero;
     bool ok = zero && gles2_buffer_ref(slot, &host, true, &ref);
@@ -1720,7 +1717,7 @@ static void g_copy_image_sub_data(CPU* c, Gles2Context* gl) {
 /* glReadnPixels(x, y, width, height, format, type, size, pixels): glReadPixels when size holds the rows */
 static void g_readn_pixels(CPU* c, Gles2Context* gl) {
     uint64_t size = X(6);
-    if ((uint64_t)(uint32_t)X(2) * (uint32_t)X(3) * 4 > size && !gles2_buffer(gl->pixel_pack)) {
+    if ((uint64_t)(uint32_t)X(2) * (uint32_t)X(3) * 4 > size && !gles2_buffer(gles2_objects(gl)->pixel_pack)) {
         gles2_error(gl, GL_INVALID_OPERATION_);
         return;
     }

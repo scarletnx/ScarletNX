@@ -118,11 +118,11 @@ const char* snx_gl_string(uint32_t ctx, uint32_t name, int stringi, uint32_t ind
 uint32_t snx_gl_clear(uint32_t ctx, uint32_t mask);
 
 /* A save state's copy of the layer: snx_gl_state_bytes() bytes, a header (magic, layout version, the contexts'
-   size), the contexts, then the programs' part (gl_program.h). Check refuses a copy this build cannot load, with why
+   size), the contexts, then the programs' part (gl_program.h) and the buffers' and vertex arrays' (gl_object.h). Check refuses a copy this build cannot load, with why
    naming the field and its value; load puts a checked copy in place of the running state: 0, or -1 when there is no
    memory for it (the running state left as it was) */
 #define SNX_GL_STATE_MAGIC   0x4c47584eu /* "NXGL" */
-#define SNX_GL_STATE_VERSION 3u
+#define SNX_GL_STATE_VERSION 4u
 size_t snx_gl_state_bytes(void);
 void snx_gl_state_save(void* out);
 int snx_gl_state_check(const void* in, size_t size, char* why, size_t whysize);

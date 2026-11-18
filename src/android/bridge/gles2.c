@@ -63,19 +63,9 @@ Gles2Context* gles2_context_new(int version) {
         return NULL;
     }
     gles2_programs_init();
+    gles2_buffers_init();
     gl->version = version;
     gl->draw_fbo = gl->read_fbo = 0;
-    for (int i = 0; i < G2_ATTRIBS; ++i) {
-        float one = 1;
-        memcpy(&gl->generic[i].bits[3], &one, sizeof one);
-        gl->generic[i].base = SNX_GLSLC_BASE_FLOAT;
-    }
-    for (int i = 0; i < G2_ATTRIBS; ++i) {
-        gl->default_vao.attribs[i].size = 4;
-        gl->default_vao.attribs[i].type = 0x1406; /* GL_FLOAT */
-        gl->default_vao.attribs[i].binding = (uint8_t)i;
-    }
-    gl->default_vao.used = true;
     return gl;
 }
 
@@ -294,7 +284,7 @@ static int state(Gles2Context* gl, unsigned pname, double* v) {
     const SnxGlFixed* fs = gles2_fixed(gl);
     const VkPhysicalDeviceLimits* l = &V.props.limits;
     int max_texture = (int)(V.max_texture ? V.max_texture : 4096);
-    G2VertexArray* vao = gles2_vertex_array(gl);
+    SnxGlVertexArray* vao = snx_gl_vertex_array(gl->ctx);
     switch (pname) {
     /* the limits: the device's, at most what a Mali-G52 gives */
     case 0x0d33: /* GL_MAX_TEXTURE_SIZE */
@@ -404,9 +394,9 @@ static int state(Gles2Context* gl, unsigned pname, double* v) {
     case 0x826e: v[0] = 1024; return 1; /* GL_MAX_UNIFORM_LOCATIONS */
     case 0x8e5e: v[0] = -8; return 1;
     case 0x8e5f: v[0] = 7; return 1;
-    case 0x90d3: v[0] = gl->storage_buffer; return 1;
-    case 0x8f43: v[0] = gl->draw_indirect; return 1;
-    case 0x90ef: v[0] = gl->dispatch_indirect; return 1;
+    case 0x90d3: v[0] = gles2_objects(gl)->storage; return 1;
+    case 0x8f43: v[0] = gles2_objects(gl)->draw_indirect; return 1;
+    case 0x90ef: v[0] = gles2_objects(gl)->dispatch_indirect; return 1;
     case 0x825a: v[0] = 0; return 1;    /* GL_PROGRAM_PIPELINE_BINDING */
     case 0x8e52: v[0] = fs->sample_mask; return 1;
     /* the state */
@@ -464,19 +454,19 @@ static int state(Gles2Context* gl, unsigned pname, double* v) {
     case 0x8c1d:
     case 0x9104: v[0] = binding_of(gl, pname); return 1;
     case 0x8919: v[0] = gl->samplers[gl->active]; return 1;
-    case 0x8894: v[0] = gl->array_buffer; return 1;
+    case 0x8894: v[0] = gles2_objects(gl)->array; return 1;
     case 0x8895: v[0] = vao ? vao->elements : 0; return 1;
     case 0x8b8d: v[0] = snx_gl_current_program(gl->ctx); return 1;
     case 0x8ca6: v[0] = gl->draw_fbo; return 1;
     case 0x8caa: v[0] = gl->read_fbo; return 1;
     case 0x8ca7: v[0] = gl->renderbuffer; return 1;
-    case 0x85b5: v[0] = gl->vertex_array; return 1;
-    case 0x8f36: v[0] = gl->copy_read; return 1;
-    case 0x8f37: v[0] = gl->copy_write; return 1;
-    case 0x88ed: v[0] = gl->pixel_pack; return 1;
-    case 0x88ef: v[0] = gl->pixel_unpack; return 1;
-    case 0x8a28: v[0] = gl->uniform_buffer; return 1;
-    case 0x8c8f: v[0] = gl->tf_buffer; return 1;
+    case 0x85b5: v[0] = gles2_objects(gl)->vertex_array; return 1;
+    case 0x8f36: v[0] = gles2_objects(gl)->copy_read; return 1;
+    case 0x8f37: v[0] = gles2_objects(gl)->copy_write; return 1;
+    case 0x88ed: v[0] = gles2_objects(gl)->pixel_pack; return 1;
+    case 0x88ef: v[0] = gles2_objects(gl)->pixel_unpack; return 1;
+    case 0x8a28: v[0] = gles2_objects(gl)->uniform; return 1;
+    case 0x8c8f: v[0] = gles2_objects(gl)->feedback; return 1;
     case 0x0d05: v[0] = fs->pixel[0].alignment; return 1;
     case 0x0cf5: v[0] = fs->pixel[1].alignment; return 1;
     case 0x0d02: v[0] = fs->pixel[0].row_length; return 1;
@@ -570,7 +560,7 @@ static bool indexed(Gles2Context* gl, unsigned pname, unsigned i, int64_t* v) {
         return true;
     }
     if (i < G2_SSBO_BINDINGS && pname >= 0x90d3 && pname <= 0x90d5) {
-        const G2IndexedBuffer* b = &gl->storage_buffers[i];
+        const SnxGlIndexedBuffer* b = &gles2_objects(gl)->storages[i];
         *v = pname == 0x90d3 ? b->buffer : pname == 0x90d4 ? b->offset : b->size;
         return true;
     }
@@ -585,10 +575,10 @@ static bool indexed(Gles2Context* gl, unsigned pname, unsigned i, int64_t* v) {
     }
     if (i >= G2_UBO_BINDINGS) return false;
     switch (pname) {
-    case 0x8a28: *v = gl->uniform_buffers[i].buffer; return true;
-    case 0x8a29: *v = gl->uniform_buffers[i].offset; return true;
-    case 0x8a2a: *v = gl->uniform_buffers[i].size; return true;
-    default: return false;
+        case 0x8a28: *v = gles2_objects(gl)->uniforms[i].buffer; return true;
+        case 0x8a29: *v = gles2_objects(gl)->uniforms[i].offset; return true;
+        case 0x8a2a: *v = gles2_objects(gl)->uniforms[i].size; return true;
+        default: return false;
     }
 }
 static void g_get_integeri(CPU* c, Gles2Context* gl) {
