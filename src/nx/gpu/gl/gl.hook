@@ -6,7 +6,8 @@
 # symbol the driver exports it as (eglInitialize, _glClearColor; eglGetProcAddress answers glClearColor with that
 # export's address). Every other egl and _gl export of the driver takes the handler that stops the game, naming
 # it. The handlers: gpu/gl/gl_egl.c (EGL), gpu/gl/gl_calls.c (GL, over common/gpu/gl/gl_state.h),
-# gpu/gl/gl_program_calls.c (shaders and programs, over common/gpu/gl/gl_program.h).
+# gpu/gl/gl_program_calls.c (shaders and programs, over common/gpu/gl/gl_program.h), gpu/gl/gl_object_calls.c
+# (buffers and vertex arrays, over common/gpu/gl/gl_object.h).
 
 # EGL functions no hook implements yet, which a game's main calls directly: through their slots, to that handler
 route eglBindTexImage
@@ -219,3 +220,68 @@ hook _glUniformMatrix3x4fv(i32 location, i32 count, u8 transpose, addr value) = 
 hook _glProgramUniformMatrix3x4fv(u32 program, i32 location, i32 count, u8 transpose, addr value) = gl_program_uniform_matrix3x4
 hook _glUniformMatrix4x3fv(i32 location, i32 count, u8 transpose, addr value) = gl_uniform_matrix4x3
 hook _glProgramUniformMatrix4x3fv(u32 program, i32 location, i32 count, u8 transpose, addr value) = gl_program_uniform_matrix4x3
+
+family object
+hook _glGenBuffers(i32 n, addr buffers) = gl_gen_buffers
+hook _glCreateBuffers(i32 n, addr buffers) = gl_gen_buffers
+hook _glDeleteBuffers(i32 n, addr buffers) = gl_delete_buffers
+hook _glIsBuffer(u32 buffer) -> u8 = gl_is_buffer
+hook _glBindBuffer(u32 target, u32 buffer) = gl_bind_buffer
+hook _glBindBufferBase(u32 target, u32 index, u32 buffer) = gl_bind_buffer_base
+hook _glBindBufferRange(u32 target, u32 index, u32 buffer, i64 offset, i64 size) = gl_bind_buffer_range
+hook _glBufferData(u32 target, i64 size, addr data, u32 usage) = gl_buffer_data
+hook _glNamedBufferData(u32 buffer, i64 size, addr data, u32 usage) = gl_named_buffer_data
+hook _glBufferStorage(u32 target, i64 size, addr data, u32 flags) = gl_buffer_storage
+hook _glNamedBufferStorage(u32 buffer, i64 size, addr data, u32 flags) = gl_named_buffer_storage
+hook _glBufferSubData(u32 target, i64 offset, i64 size, addr data) = gl_buffer_sub_data
+hook _glNamedBufferSubData(u32 buffer, i64 offset, i64 size, addr data) = gl_named_buffer_sub_data
+hook _glGetBufferSubData(u32 target, i64 offset, i64 size, addr data) = gl_get_buffer_sub_data
+hook _glGetNamedBufferSubData(u32 buffer, i64 offset, i64 size, addr data) = gl_get_named_buffer_sub_data
+hook _glMapBufferRange(u32 target, i64 offset, i64 length, u32 access) -> addr = gl_map_buffer_range
+hook _glMapNamedBufferRange(u32 buffer, i64 offset, i64 length, u32 access) -> addr = gl_map_named_buffer_range
+hook _glMapBuffer(u32 target, u32 access) -> addr = gl_map_buffer
+hook _glMapNamedBuffer(u32 buffer, u32 access) -> addr = gl_map_named_buffer
+hook _glUnmapBuffer(u32 target) -> u8 = gl_unmap_buffer
+hook _glUnmapNamedBuffer(u32 buffer) -> u8 = gl_unmap_named_buffer
+hook _glFlushMappedBufferRange(u32 target, i64 offset, i64 length) = gl_flush_mapped_buffer_range
+hook _glFlushMappedNamedBufferRange(u32 buffer, i64 offset, i64 length) = gl_flush_mapped_named_buffer_range
+hook _glGetBufferPointerv(u32 target, u32 pname, addr params) = gl_get_buffer_pointerv
+hook _glGetNamedBufferPointerv(u32 buffer, u32 pname, addr params) = gl_get_named_buffer_pointerv
+hook _glCopyBufferSubData(u32 read, u32 write, i64 read_offset, i64 write_offset, i64 size) = gl_copy_buffer_sub_data
+hook _glCopyNamedBufferSubData(u32 read, u32 write, i64 read_offset, i64 write_offset, i64 size) = gl_copy_named_buffer_sub_data
+hook _glGetBufferParameteriv(u32 target, u32 pname, addr params) = gl_get_buffer_parameteriv
+hook _glGetBufferParameteri64v(u32 target, u32 pname, addr params) = gl_get_buffer_parameteri64v
+hook _glGetNamedBufferParameteriv(u32 buffer, u32 pname, addr params) = gl_get_named_buffer_parameteriv
+hook _glGetNamedBufferParameteri64v(u32 buffer, u32 pname, addr params) = gl_get_named_buffer_parameteri64v
+hook _glGenVertexArrays(i32 n, addr arrays) = gl_gen_vertex_arrays
+hook _glCreateVertexArrays(i32 n, addr arrays) = gl_gen_vertex_arrays
+hook _glDeleteVertexArrays(i32 n, addr arrays) = gl_delete_vertex_arrays
+hook _glIsVertexArray(u32 array) -> u8 = gl_is_vertex_array
+hook _glBindVertexArray(u32 array) = gl_bind_vertex_array
+hook _glVertexAttribPointer(u32 index, i32 size, u32 type, u8 normalized, i32 stride, addr pointer) = gl_vertex_attrib_pointer
+hook _glVertexAttribIPointer(u32 index, i32 size, u32 type, i32 stride, addr pointer) = gl_vertex_attrib_ipointer
+hook _glVertexAttribFormat(u32 index, i32 size, u32 type, u8 normalized, u32 relative) = gl_vertex_attrib_format
+hook _glVertexAttribIFormat(u32 index, i32 size, u32 type, u32 relative) = gl_vertex_attrib_iformat
+hook _glVertexAttribBinding(u32 index, u32 binding) = gl_vertex_attrib_binding
+hook _glBindVertexBuffer(u32 binding, u32 buffer, i64 offset, i32 stride) = gl_bind_vertex_buffer
+hook _glVertexBindingDivisor(u32 binding, u32 divisor) = gl_vertex_binding_divisor
+hook _glEnableVertexAttribArray(u32 index) = gl_enable_vertex_attrib_array
+hook _glDisableVertexAttribArray(u32 index) = gl_disable_vertex_attrib_array
+hook _glVertexAttribDivisor(u32 index, u32 divisor) = gl_vertex_attrib_divisor
+hook _glVertexAttrib1f(u32 index, f32 x) = gl_vertex_attrib1f
+hook _glVertexAttrib1fv(u32 index, addr v) = gl_vertex_attrib1fv
+hook _glVertexAttrib2f(u32 index, f32 x, f32 y) = gl_vertex_attrib2f
+hook _glVertexAttrib2fv(u32 index, addr v) = gl_vertex_attrib2fv
+hook _glVertexAttrib3f(u32 index, f32 x, f32 y, f32 z) = gl_vertex_attrib3f
+hook _glVertexAttrib3fv(u32 index, addr v) = gl_vertex_attrib3fv
+hook _glVertexAttrib4f(u32 index, f32 x, f32 y, f32 z, f32 w) = gl_vertex_attrib4f
+hook _glVertexAttrib4fv(u32 index, addr v) = gl_vertex_attrib4fv
+hook _glVertexAttribI4i(u32 index, i32 x, i32 y, i32 z, i32 w) = gl_vertex_attrib_i4i
+hook _glVertexAttribI4ui(u32 index, u32 x, u32 y, u32 z, u32 w) = gl_vertex_attrib_i4ui
+hook _glVertexAttribI4iv(u32 index, addr v) = gl_vertex_attrib_i4iv
+hook _glVertexAttribI4uiv(u32 index, addr v) = gl_vertex_attrib_i4uiv
+hook _glGetVertexAttribiv(u32 index, u32 pname, addr params) = gl_get_vertex_attribiv
+hook _glGetVertexAttribIiv(u32 index, u32 pname, addr params) = gl_get_vertex_attribiv
+hook _glGetVertexAttribIuiv(u32 index, u32 pname, addr params) = gl_get_vertex_attribiv
+hook _glGetVertexAttribfv(u32 index, u32 pname, addr params) = gl_get_vertex_attribfv
+hook _glGetVertexAttribPointerv(u32 index, u32 pname, addr params) = gl_get_vertex_attrib_pointerv
