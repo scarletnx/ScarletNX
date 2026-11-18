@@ -694,7 +694,8 @@ static void on_abort(int signal_number) {
 }
 
 /* --time ROUNDS: what each emitter costs the recompile, the corpus's steps emitted and optimized (O2) ROUNDS times
-   with each, alternating, on this host, in processor time; the best round of each, not a gate */
+   with each, alternating, on this host, in processor time; each round's line, so a chart shows the noise, then the
+   best round of each, not a gate */
 /* the processor time this process has used, in s (the emitting and optimizing run on this one thread) */
 static double now_seconds(void) { return (double)snx_process_cpu_ns() / 1e9; }
 static int time_emitters(const u32* words, size_t count, unsigned rounds) {
@@ -703,7 +704,7 @@ static int time_emitters(const u32* words, size_t count, unsigned rounds) {
     if (!snx_process_cpu_ns()) return snx_error("--time: this system gives no processor time (snx_process_cpu_ns)");
     for (unsigned r = 0; r < rounds; ++r)
         for (int k = 0; k < 2; ++k) {
-            double start = now_seconds(), emitted;
+            double start = now_seconds(), emitted, total;
             SnxIr* ir = snx_ir_new("timing", '2', error, sizeof error);
             if (!ir) return snx_error("%s", error);
             if (k == 0) {
@@ -721,7 +722,10 @@ static int time_emitters(const u32* words, size_t count, unsigned rounds) {
             }
             emitted = now_seconds();
             if (snx_ir_module_optimize(ir, ir->mod, '2', error, sizeof error)) return snx_error("%s", error);
-            if (now_seconds() - start < best[k]) best[k] = now_seconds() - start;
+            total = now_seconds() - start;
+            printf("round %u, %s: %.4f s (emit %.4f s)\n", r + 1, k ? "generated" : "hand-written", total,
+                   emitted - start);
+            if (total < best[k]) best[k] = total;
             if (emitted - start < emit_best[k]) emit_best[k] = emitted - start;
             snx_ir_free(ir);
         }
