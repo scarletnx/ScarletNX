@@ -1406,7 +1406,7 @@ add_test(NAME sailgen_lanes
                  "-DOUT=${CMAKE_CURRENT_BINARY_DIR}/sailgen/lanes.inc"
                  -P "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/lanes_check.cmake")
 set_tests_properties(sailgen_lanes PROPERTIES PASS_REGULAR_EXPRESSION
-    "sailgen_lanes: lanes=lanes carried=loop last=loop fixed=lanes free=loop")
+    "sailgen_lanes: lanes=lanes carried=loop last=loop pairs=lanes fixed=lanes free=loop")
 # and the A64 subsets of src/common/cpu/aarch64/sail/ generate whole, with the NX's fixups
 add_test(NAME sailgen_a64
          COMMAND snx-sailgen --generate "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/sail/a64.roots"
