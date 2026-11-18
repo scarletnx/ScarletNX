@@ -60,12 +60,13 @@ else()
 endif()
 
 # the GL layer that translates a guest's GL to Vulkan, shared by the Android bridge and the console (gpu/gl/gl_state.h):
-# its state machine, flat records a save state holds as they are
-add_library(snx_gl STATIC gpu/gl/gl_state.c)
+# its state machine, flat records a save state holds as they are; glslc compiles its shaders (gpu/gl/gl_program.h)
+add_library(snx_gl STATIC gpu/gl/gl_state.c gpu/gl/gl_program.c)
 set_target_properties(snx_gl PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
 target_compile_options(snx_gl PRIVATE -pedantic-errors -Wall -Wextra -Werror=missing-prototypes
                                       -Werror=missing-variable-declarations)
 target_include_directories(snx_gl PUBLIC "${PROJECT_SOURCE_DIR}/src")
+target_link_libraries(snx_gl PRIVATE snx_glslc)
 
 # snx_demangle (utilities/demangle.h): C++ names through the C++ runtime's demangler, for the log summary. C, but what
 # links it links the C++ runtime (LINKER_LANGUAGE CXX)

@@ -62,6 +62,7 @@ Gles2Context* gles2_context_new(int version) {
         gles2_warn(19, why);
         return NULL;
     }
+    gles2_programs_init();
     gl->version = version;
     gl->draw_fbo = gl->read_fbo = 0;
     for (int i = 0; i < G2_ATTRIBS; ++i) {
@@ -465,7 +466,7 @@ static int state(Gles2Context* gl, unsigned pname, double* v) {
     case 0x8919: v[0] = gl->samplers[gl->active]; return 1;
     case 0x8894: v[0] = gl->array_buffer; return 1;
     case 0x8895: v[0] = vao ? vao->elements : 0; return 1;
-    case 0x8b8d: v[0] = gl->program; return 1;
+    case 0x8b8d: v[0] = snx_gl_current_program(gl->ctx); return 1;
     case 0x8ca6: v[0] = gl->draw_fbo; return 1;
     case 0x8caa: v[0] = gl->read_fbo; return 1;
     case 0x8ca7: v[0] = gl->renderbuffer; return 1;

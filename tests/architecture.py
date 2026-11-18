@@ -11,7 +11,8 @@ import sys
 from pathlib import Path
 
 BOUNDARIES = {
-    'common': {'common'},
+    # glslc too: the shared GL layer compiles a guest's shaders with it (common/gpu/gl/gl_program.c)
+    'common': {'common', 'glslc'},
     'nx': {'nx', 'common'},
     'gnuabi': {'gnuabi', 'common'},
     '3ds': {'3ds', 'common'},

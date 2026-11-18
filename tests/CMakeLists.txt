@@ -1528,6 +1528,12 @@ add_executable(snx-test-gl-state gl_state.c)
 snx_test_target(snx-test-gl-state c23)
 target_link_libraries(snx-test-gl-state PRIVATE snx_gl)
 add_test(NAME gl_state COMMAND snx-test-gl-state)
+# the shared GL layer's shaders and programs (src/common/gpu/gl/gl_program.c), with no GPU: compiled, linked, their
+# uniforms and locations, GL's errors, deletes, a program pipeline, the arena, and a save state's copy loaded and refused
+add_executable(snx-test-gl-program gl_program.c)
+snx_test_target(snx-test-gl-program c23)
+target_link_libraries(snx-test-gl-program PRIVATE snx_gl)
+add_test(NAME gl_program COMMAND snx-test-gl-program)
 # the console's GL layer (src/nx/gpu/gl/) over a stubbed GL driver module, guest memory and renderer: the slots taken
 # with gl_layer=1, EGL, glClear's color in the surface's image, eglSwapBuffers's present, a function without a handler
 add_executable(snx-test-gl-layer gl_layer.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/gl/gl_loader.c"
