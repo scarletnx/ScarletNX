@@ -94,6 +94,11 @@ if(Python3_Interpreter_FOUND)
     add_test(NAME gnu_extensions COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/gnu_extensions.py"
                                          --repo "${PROJECT_SOURCE_DIR}")
 endif()
+# every C source of src/ compiled with -Werror=atomic-implicit-seq-cst, no test's own (cmake/atomic_explicit.cmake)
+if(Python3_Interpreter_FOUND AND CMAKE_EXPORT_COMPILE_COMMANDS)
+    add_test(NAME atomic_explicit COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/atomic_explicit_test.py"
+                                          "${PROJECT_BINARY_DIR}" "${PROJECT_SOURCE_DIR}")
+endif()
 # each native hook of a mod's trampoline (src/nx/hle/hook/ext_skyline.hooks) as the function's own native hook
 if(Python3_Interpreter_FOUND)
     add_test(NAME ext_skyline_hooks COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/ext_skyline_hooks.py")
@@ -1316,6 +1321,22 @@ set_tests_properties(sailgen_refused_see PROPERTIES PASS_REGULAR_EXPRESSION
     "refused_see.sail:7: error: a throw of Error_See under a condition known only at run time")
 set_tests_properties(sailgen_refused_pin PROPERTIES PASS_REGULAR_EXPRESSION
     "refused_pin.sail:14: error: PSTATE.EL written, which the let PSTATE_EL holds fixed")
+# a struct's field may take a value known when the recompiler runs, not one known only when the guest runs
+add_test(NAME sailgen_refused_struct
+         COMMAND snx-sailgen --generate "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/refused_struct.roots"
+                 --backend "${PROJECT_SOURCE_DIR}/tools/sailgen/llvm.h"
+                 -o "${CMAKE_CURRENT_BINARY_DIR}/sailgen/refused_struct.inc"
+                 "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/refused_struct.sail")
+set_tests_properties(sailgen_refused_struct PROPERTIES PASS_REGULAR_EXPRESSION
+    "refused_struct.sail:17: error: the field flag assigned a value known only at run time")
+# an action of the back end gives bits, a bool or nothing: one whose val gives an integer is refused where it is called
+add_test(NAME sailgen_refused_action
+         COMMAND snx-sailgen --generate "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/refused_action.roots"
+                 --backend "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/action_backend.h"
+                 -o "${CMAKE_CURRENT_BINARY_DIR}/sailgen/refused_action.inc"
+                 "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/refused_action.sail")
+set_tests_properties(sailgen_refused_action PROPERTIES PASS_REGULAR_EXPRESSION
+    "refused_action.sail:8: error: Peek, the back end's action, gives a value of kind 2: bits, a bool or none")
 # and the A64 subsets of src/common/cpu/aarch64/sail/ generate whole, with the NX's fixups
 add_test(NAME sailgen_a64
          COMMAND snx-sailgen --generate "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/sail/a64.roots"
@@ -2979,15 +3000,20 @@ if(NOT WIN32)
     snx_decodetree_a64(snx-test-llvm-lowering)
     add_test(NAME llvm_lowering COMMAND snx-test-llvm-lowering "${CMAKE_CURRENT_SOURCE_DIR}/llvm_lowering_expected.txt")
     set_tests_properties(llvm_lowering PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 300)
-    # the integer emitters sailgen generates from the Sail against the hand-written ones they replaced
-    # (support/ir_int_reference.c): the same optimized IR word by word on three paths, the same results run here
-    add_executable(snx-test-llvm-sail-ir llvm_sail_ir.c llvm_qemu_words.c llvm_steps.c support/ir_int_reference.c)
+    # the integer, branch and general-purpose load and store emitters sailgen generates from the Sail against the
+    # hand-written ones they replaced (support/ir_int_reference.c, ir_ldst_reference.c): the same optimized IR word by
+    # word on three paths, the same results (registers, flags, guest memory) run here
+    add_executable(snx-test-llvm-sail-ir llvm_sail_ir.c llvm_qemu_words.c llvm_steps.c support/ir_int_reference.c
+                   support/ir_ldst_reference.c)
     snx_test_target(snx-test-llvm-sail-ir gnu23)
     target_include_directories(snx-test-llvm-sail-ir PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
     target_link_libraries(snx-test-llvm-sail-ir PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
     snx_decodetree_a64(snx-test-llvm-sail-ir)
-    add_test(NAME llvm_sail_ir COMMAND snx-test-llvm-sail-ir)
-    set_tests_properties(llvm_sail_ir PROPERTIES TIMEOUT 600)
+    # a third of the words each, so the sanitizers' build runs each part in its timeout and the parts run side by side
+    foreach(part 1 2 3)
+        add_test(NAME llvm_sail_ir_${part} COMMAND snx-test-llvm-sail-ir --part ${part}/3)
+        set_tests_properties(llvm_sail_ir_${part} PROPERTIES TIMEOUT 600)
+    endforeach()
     # snx_ir_object's check of the symbols an object names (llvm_object_symbols.c)
     add_executable(snx-test-llvm-object-symbols llvm_object_symbols.c)
     snx_test_target(snx-test-llvm-object-symbols c23)

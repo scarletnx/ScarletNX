@@ -23,6 +23,9 @@
 
 enum { BT_CONST, BT_STATIC, BT_DYN };
 
+/* a value of a Sail struct (an access descriptor): known when the recompiler runs, a C struct of its fields (struct_ctype) */
+#define K_STRUCT 32
+
 typedef struct {
     unsigned char kind, bt, ntuple;
     long long value;    /* CONST bool, int or enum member */
@@ -30,6 +33,7 @@ typedef struct {
     char c[512];        /* the C expression of the value */
     unsigned tuple[4]; /* K_TUPLE: the components, in the value pool */
     unsigned node;
+    unsigned sdef; /* K_STRUCT: the struct's definition */
 } Val;
 
 typedef struct {
@@ -41,6 +45,7 @@ typedef struct {
 
 typedef struct {
     unsigned char kind, bt;
+    unsigned sdef; /* K_STRUCT: the struct's definition */
 } Var;
 
 typedef struct {
@@ -56,6 +61,7 @@ typedef struct {
     unsigned char ret_count;
     int tuple;
     unsigned char ret_kinds[4];
+    unsigned ret_sdef[4]; /* a K_STRUCT result's struct */
 } Helper;
 
 typedef struct {
@@ -75,7 +81,10 @@ static struct {
     Val* pool;
     unsigned pool_count, pool_cap;
     unsigned temp;
-    Buffer helpers, body, *out;
+    Buffer types, helpers, body, *out;
+    unsigned structs[64];      /* the structs whose C types the types hold (struct_ctype) */
+    char struct_names[64][96]; /* and those types' names */
+    unsigned struct_count;
     Helper helper[64];
     unsigned helper_count;
     int indent;
@@ -139,8 +148,67 @@ static const char* ctype(int kind, int bt) {
             default: break;
         }
     }
+    if (kind == K_STRUCT)
+        sg_fail(0, "a struct's value known only at run time: sailgen keeps one known when it recompiles");
     sg_fail(0, "no C type for a value of kind %d at time %d", kind, bt);
     return "";
+}
+
+/* the struct a type names: its definition, else 0 (sailgen.h: a type name sailgen doesn't know is K_ENUM) */
+static unsigned type_struct(unsigned type) {
+    const char* text;
+    char name[96];
+    size_t k = 0;
+    if (!type || N(type).value != K_ENUM) return 0;
+    text = sg_str(N(type).name);
+    while (text[k] && !isspace((unsigned char)text[k]) && text[k] != '(' && k + 1 < sizeof name) {
+        name[k] = text[k];
+        ++k;
+    }
+    name[k] = 0;
+    return sg_find(name, D_STRUCT);
+}
+
+/* a field's C type: its kind's, a struct's own, or int for a type sailgen does not keep (a read or a write of such a
+   field is refused) */
+static const char* struct_ctype(unsigned sdef);
+static const char* field_ctype(unsigned type) {
+    unsigned st = type_struct(type);
+    if (st) return struct_ctype(st);
+    switch (type ? (int)N(type).value : K_NONE) {
+        case K_INT: return "long long";
+        case K_BITS:
+        case K_BIT: return "SgS";
+        default: return "int";
+    }
+}
+
+/* the C type of a Sail struct's values: sgt_NAME, its fields in order, written to the types once */
+static const char* struct_ctype(unsigned sdef) {
+    unsigned i, f;
+    Buffer* saved = g_gen.out;
+    int saved_indent = g_gen.indent;
+    for (i = 0; i < g_gen.struct_count; ++i)
+        if (g_gen.structs[i] == sdef) return g_gen.struct_names[i];
+    if (g_gen.struct_count == sizeof g_gen.structs / sizeof *g_gen.structs) sg_fail(0, "more than 64 structs");
+    for (f = g_parse.defs[sdef].params; f; f = N(f).next) (void)field_ctype(N(f).b); /* the structs inside first */
+    i = g_gen.struct_count++;
+    g_gen.structs[i] = sdef;
+    snprintf(g_gen.struct_names[i], sizeof g_gen.struct_names[i], "sgt_%s", sg_str(g_parse.defs[sdef].name));
+    g_gen.out = &g_gen.types;
+    g_gen.indent = 0;
+    emit("typedef struct {\n");
+    for (f = g_parse.defs[sdef].params; f; f = N(f).next) emit("    %s %s;\n", field_ctype(N(f).b), name_of(N(f).a));
+    emit("} %s;\n\n", g_gen.struct_names[i]);
+    g_gen.out = saved;
+    g_gen.indent = saved_indent;
+    return g_gen.struct_names[i];
+}
+
+/* the C type of a value of this kind, time and struct */
+static const char* ctype_of(int kind, int bt, unsigned sdef) {
+    if (kind == K_STRUCT && bt != BT_DYN) return struct_ctype(sdef);
+    return ctype(kind, bt);
 }
 
 static Val val_c(int kind, int bt, const char* fmt, ...) {
@@ -167,7 +235,7 @@ static Val keep(Val v) {
     char t[16];
     if (v.kind == K_UNIT || v.kind == K_TUPLE || v.bt == BT_CONST) return v;
     temp(t, sizeof t);
-    emit("%s %s = %s;\n", ctype(v.kind, v.bt), t, v.c);
+    emit("%s %s = %s;\n", ctype_of(v.kind, v.bt, v.sdef), t, v.c);
     snprintf(v.c, sizeof v.c, "%s", t);
     return v;
 }
@@ -458,11 +526,13 @@ static Val helper_call(unsigned n, unsigned def, Val* args, unsigned count) {
                 if (part.bt == BT_DYN)
                     sg_fail(n, "%s's result is known only at run time", sg_str(g_parse.defs[def].name));
                 h->ret_kinds[k] = part.kind;
+                h->ret_sdef[k] = part.sdef;
                 emit("*out%u = %s;\n", k, part.c);
             }
         } else if (ret.kind != K_UNIT) {
             h->ret_count = 1;
             h->ret_kinds[0] = ret.kind;
+            h->ret_sdef[0] = ret.sdef;
             emit("*out0 = %s;\n", ret.c);
         }
         emit("return 0;\n");
@@ -473,8 +543,10 @@ static Val helper_call(unsigned n, unsigned def, Val* args, unsigned count) {
             s += (size_t)snprintf(sig + s, sizeof sig - s, ", %s a_%s", ctype(args[k].kind, BT_STATIC),
                                   sg_str(names[k]));
         for (k = 0; k < h->ret_count; ++k)
-            s += (size_t)snprintf(sig + s, sizeof sig - s, ", %s* out%u", ctype(h->ret_kinds[k], BT_STATIC), k);
+            s += (size_t)snprintf(sig + s, sizeof sig - s, ", %s* out%u",
+                                  ctype_of(h->ret_kinds[k], BT_STATIC, h->ret_sdef[k]), k);
         emit("%s) {\n    (void)g;\n", sig);
+        for (k = 0; k < count; ++k) emit("    (void)a_%s;\n", sg_str(names[k]));
         buf_add(&g_gen.helpers, local.text ? local.text : "", local.length);
         emit("}\n\n");
         free(local.text);
@@ -491,8 +563,9 @@ static Val helper_call(unsigned n, unsigned def, Val* args, unsigned count) {
     for (i = 0; i < h->ret_count; ++i) {
         char t[16];
         temp(t, sizeof t);
-        emit("%s %s;\n", ctype(h->ret_kinds[i], BT_STATIC), t);
+        emit("%s %s;\n", ctype_of(h->ret_kinds[i], BT_STATIC, h->ret_sdef[i]), t);
         outs[i] = val_c(h->ret_kinds[i], BT_STATIC, "%s", t);
+        outs[i].sdef = h->ret_sdef[i];
         at += (size_t)snprintf(text + at, sizeof text - at, ", &%s", t);
     }
     if (at >= sizeof text) sg_fail(n, "a helper call over %zu characters", sizeof text);
@@ -838,11 +911,13 @@ static int builtin(unsigned n, const char* name, Val* r) {
     return 0;
 }
 
-/* NAME(args), a function with no Sail definition (the machine's action: a barrier, an event) that the back end lowers
-   as sg_NAME: a statement, given the arguments when takes is 1 (DYN ones as the back end's values, the others as C
-   integers) and none when 0 (the back end's sg_NAME takes the context alone: they mean nothing to it) */
+/* NAME(args), a function with no Sail definition (the machine's action: a barrier, an event, a guest memory access)
+   that the back end lowers as sg_NAME: given the arguments when takes is 1 (bits and DYN ones as the back end's values,
+   the others as C integers) and none when 0 (the back end's sg_NAME takes the context alone: they mean nothing to
+   it); a statement, or a DYN value of the result its val gives (nx.sail's GuestMemRead) */
 static Val action_call(unsigned n, const char* name, int takes) {
-    unsigned count = arg_count(n), i;
+    unsigned count = arg_count(n), i, d = sg_find(name, D_VAL);
+    int result = d ? (int)g_parse.defs[d].ret_kind : K_UNIT;
     char text[600];
     int at;
     if (g_gen.dynamic_branch) sg_fail(n, "%s, the back end's action, under a condition known only at run time", name);
@@ -851,9 +926,14 @@ static Val action_call(unsigned n, const char* name, int takes) {
     for (i = 0; takes && i < count; ++i) {
         Val a = eval(arg_at(n, i), 0);
         if (a.kind == K_UNIT || a.kind == K_TUPLE) sg_fail(n, "%s's argument %u is no value", name, i + 1);
+        if (a.kind == K_BITS) a = keep(raise(a, BT_DYN));
         at += snprintf(text + at, sizeof text - (size_t)at, ", %s", a.c);
         if (at >= (int)sizeof text) sg_fail(n, "%s's arguments over %zu characters", name, sizeof text);
     }
+    if (result == K_BITS || result == K_BIT) return keep(val_c(K_BITS, BT_DYN, "%s)", text));
+    if (result == K_BOOL) return keep(val_c(K_BOOL, BT_DYN, "%s)", text));
+    if (result != K_UNIT && result != K_NONE)
+        sg_fail(n, "%s, the back end's action, gives a value of kind %d: bits, a bool or none", name, result);
     emit("%s);\n", text);
     return unit();
 }
@@ -874,7 +954,8 @@ static Val call(unsigned n) {
     for (i = 0; i < count; ++i) {
         args[i] = eval(arg_at(n, i), 0);
         args[i].node = arg_at(n, i);
-        all_static &= args[i].bt != BT_DYN && args[i].kind != K_TUPLE && args[i].kind != K_UNIT;
+        all_static &=
+            args[i].bt != BT_DYN && args[i].kind != K_TUPLE && args[i].kind != K_UNIT && args[i].kind != K_STRUCT;
         all_const &= args[i].bt == BT_CONST;
     }
     /* arguments all known here (none, or constants) inline, so a fixup's constant answer (nx.sail's HaveGCS) folds */
@@ -1035,20 +1116,7 @@ static const char* reg_field(unsigned n, unsigned reg, const char* field) {
 }
 
 /* the struct a register is of: its definition, else 0 */
-static unsigned reg_struct(unsigned reg) {
-    unsigned t = g_parse.defs[reg].params;
-    const char* text;
-    char name[96];
-    size_t k = 0;
-    if (!t || N(t).value != K_ENUM) return 0;
-    text = sg_str(N(t).name);
-    while (text[k] && !isspace((unsigned char)text[k]) && k + 1 < sizeof name) {
-        name[k] = text[k];
-        ++k;
-    }
-    name[k] = 0;
-    return sg_find(name, D_STRUCT);
-}
+static unsigned reg_struct(unsigned reg) { return type_struct(g_parse.defs[reg].params); }
 /* n is REG.FIELD, REG a struct register: REG's definition, and the field's place among the struct's in *index;
    0 when n is not a register's field */
 static unsigned field_of(unsigned n, unsigned* index) {
@@ -1088,12 +1156,39 @@ static unsigned field_pin(unsigned reg, const char* field) {
     snprintf(name, sizeof name, "%s_%s", reg_name(reg), field);
     return sg_find(name, D_LET);
 }
-/* REG.FIELD, a field of a struct register */
+/* the field n names of a value of the struct sdef, as a value of that field's kind known when it recompiles: its C
+   member of the struct's C type (struct_ctype) */
+static Val struct_field(unsigned n, unsigned sdef, const char* of) {
+    unsigned f, st;
+    Val v;
+    for (f = g_parse.defs[sdef].params; f && strcmp(name_of(N(f).a), name_of(n)); f = N(f).next) {}
+    if (!f) sg_fail(n, "%s: the struct %s has no field %s", name_of(n), sg_str(g_parse.defs[sdef].name), name_of(n));
+    st = type_struct(N(f).b);
+    switch (st ? K_STRUCT : (int)N(N(f).b).value) {
+        case K_BOOL:
+        case K_ENUM:
+        case K_INT:
+        case K_BITS:
+        case K_BIT:
+        case K_STRUCT: break;
+        default:
+            sg_fail(n, "the field %s of %s: a type sailgen does not keep", name_of(n), sg_str(g_parse.defs[sdef].name));
+    }
+    v = val_c(st ? K_STRUCT : (int)N(N(f).b).value, BT_STATIC, "(%s).%s", of, name_of(n));
+    v.sdef = st;
+    return v;
+}
+
+/* REG.FIELD, a field of a struct register, or a field of a struct value */
 static Val field_read(unsigned n) {
     unsigned index, reg = field_of(n, &index), pin;
     const char* field;
     char fn[160];
-    if (!reg) sg_fail(n, "the field %s of other than a register", name_of(n));
+    if (!reg) {
+        Val x = eval(N(n).a, 0);
+        if (x.kind != K_STRUCT) sg_fail(n, "the field %s of other than a register or a struct", name_of(n));
+        return struct_field(n, x.sdef, x.c);
+    }
     if ((pin = field_pin(reg, name_of(n))) != 0) { /* the machine holds it fixed: nx.sail's PSTATE_EL */
         Val v = eval(g_parse.defs[pin].body, 0);
         if (v.bt == BT_DYN) sg_fail(n, "the top-level let %s_%s is not a constant", reg_name(reg), name_of(n));
@@ -1202,6 +1297,14 @@ static Val ident(unsigned n) {
     return unit();
 }
 
+/* a and b in temporaries when their C would make the operation's too long for a value (a decode's long chain of
+   checks of the word's bits) */
+static void shorten(Val* a, Val* b) {
+    if (strlen(a->c) + strlen(b->c) < sizeof a->c / 2) return;
+    *a = keep(*a);
+    *b = keep(*b);
+}
+
 static Val binop(unsigned n) {
     const char* op = name_of(n);
     Val a, b;
@@ -1214,6 +1317,7 @@ static Val binop(unsigned n) {
         if (a.bt == BT_CONST && a.value == !is_and) return val_const(K_BOOL, !is_and);
         b = eval(N(n).b, 0);
         if (b.kind != K_BOOL) sg_fail(n, "%s of a bool and other than a bool", op);
+        shorten(&a, &b);
         if (a.bt == BT_CONST) return b;
         if (b.bt == BT_CONST) return b.value == is_and ? a : val_const(K_BOOL, !is_and);
         if (a.bt == BT_STATIC && b.bt == BT_STATIC)
@@ -1222,6 +1326,7 @@ static Val binop(unsigned n) {
                      raise(b, BT_DYN).c);
     }
     b = eval(N(n).b, 0);
+    shorten(&a, &b);
     bt = top_bt(a.bt, b.bt);
     if (a.huge || b.huge) sg_fail(n, "%s of an integer over 62 bits", op);
     if (!strcmp(op, "==") || !strcmp(op, "!=")) {
@@ -1349,11 +1454,17 @@ static int type_kind(unsigned type) { return type ? (int)N(type).value : K_NONE;
 /* the value undefined takes in a local of this type and time: zero */
 static Val undefined_of(unsigned type, int bt) {
     int kind = type_kind(type);
+    unsigned st = type_struct(type);
     Val w;
+    if (st) {
+        w = val_c(K_STRUCT, BT_STATIC, "((%s){0})", struct_ctype(st));
+        w.sdef = st;
+        return w;
+    }
     switch (kind) {
         case K_BITS:
             w = type_width(type);
-            return bt == BT_DYN ? val_c(K_BITS, BT_DYN, "sg_d_from_s(sg_s_zeros(%s))", w.c)
+            return bt == BT_DYN ? val_c(K_BITS, BT_DYN, "sg_d_empty((unsigned)(%s))", w.c)
                                 : val_c(K_BITS, BT_STATIC, "sg_s_zeros(%s)", w.c);
         case K_BIT:
             return bt == BT_DYN ? val_c(K_BITS, BT_DYN, "sg_d_from_s(sg_s(0, 1))")
@@ -1370,19 +1481,23 @@ static Val undefined_of(unsigned type, int bt) {
 
 /* name : type = init, a mutable local, declared at the time its assignments reach */
 static void declare_var(unsigned name, unsigned type, unsigned init_node) {
-    Val init = N(init_node).kind == N_UNDEF ? unit() : eval(init_node, 0);
-    int kind = init.kind != K_UNIT ? init.kind : type_kind(type), var, bt;
+    Val init = N(init_node).kind == N_UNDEF ? unit() : eval(init_node, 0), local;
+    unsigned sdef = init.kind != K_UNIT ? init.sdef : type_struct(type);
+    int kind = init.kind != K_UNIT ? init.kind : sdef ? K_STRUCT : type_kind(type), var, bt;
     char cname[96];
     if (kind == K_BIT) kind = K_BITS;
     if (kind == K_NONE || kind == K_OTHER || kind == K_TUPLE)
         sg_fail(init_node, "a local of a type sailgen does not keep");
     var = new_var(kind, init.kind != K_UNIT ? init.bt : BT_STATIC);
+    g_gen.vars[var].sdef = sdef;
     if (g_gen.dynamic_branch) var_raise(var, BT_DYN);
     bt = g_gen.vars[var].bt;
     snprintf(cname, sizeof cname, "v%d_%s", var, sg_str(name));
     init = init.kind == K_UNIT ? undefined_of(type, bt) : raise(init, bt);
-    emit("%s %s = %s;\n", ctype(kind, bt), cname, init.c);
-    bind(name, val_c(kind, bt, "%s", cname), var, 0);
+    emit("%s %s = %s;\n", ctype_of(kind, bt, sdef), cname, init.c);
+    local = val_c(kind, bt, "%s", cname);
+    local.sdef = sdef;
+    bind(name, local, var, 0);
 }
 
 /* let pattern = value: the names bound to copies (the value may come from a local assigned later) */
@@ -1409,8 +1524,22 @@ static void let_bind(unsigned pattern, Val v, unsigned value_node) {
 
 static void assign(unsigned target, Val v) {
     unsigned t = target, reg;
+    Binding* b;
     if (N(t).kind == N_TYPED) t = N(t).a;
     if (N(t).kind == N_WILD) return;
+    if (N(t).kind == N_FIELD && N(N(t).a).kind == N_ID && (b = lookup(name_of(N(t).a))) != NULL) { /* x.f = v */
+        Val f;
+        if (b->var < 0 || b->val.kind != K_STRUCT)
+            sg_fail(t, "the field %s assigned of other than a struct local", name_of(t));
+        if (g_gen.dynamic_branch) sg_fail(t, "a struct's field assigned under a condition known only at run time");
+        f = struct_field(t, b->val.sdef, b->val.c);
+        if (v.bt == BT_DYN) sg_fail(t, "the field %s assigned a value known only at run time", name_of(t));
+        if ((f.kind == K_BOOL) != (v.kind == K_BOOL) || (f.kind == K_BITS) != (v.kind == K_BITS) ||
+            (f.kind == K_STRUCT && v.sdef != f.sdef))
+            sg_fail(t, "the field %s (kind %d) assigned a value of kind %d", name_of(t), f.kind, v.kind);
+        emit("%s = %s;\n", f.c, raise(v, BT_STATIC).c);
+        return;
+    }
     if (N(t).kind == N_FIELD) { /* PSTATE.N = v */
         fields_write(t, v);
         return;
@@ -1451,8 +1580,8 @@ static void assign(unsigned target, Val v) {
     }
     if (N(t).kind == N_SLICE || N(t).kind == N_INDEX) { /* x[hi .. lo] = v */
         unsigned x = N(t).a;
-        Binding* b = NULL;
         Val hi, lo;
+        b = NULL;
         if (N(x).kind != N_ID || !(b = lookup(name_of(x))) || b->var < 0)
             sg_fail(t, "a slice assigned of other than a local");
         hi = need_static_int(t, eval(N(t).b, 0), "a slice's bound");
@@ -1468,7 +1597,7 @@ static void assign(unsigned target, Val v) {
     }
     if (N(t).kind == N_ID) {
         const char* s = name_of(t);
-        Binding* b = lookup(s);
+        b = lookup(s);
         if (!b && (reg = register_def(t)) != 0) { /* a register of bits or a bool, whole */
             char fn[160];
             if (reg_kind(reg) != K_BITS && reg_kind(reg) != K_BOOL)
@@ -1491,7 +1620,7 @@ static void assign(unsigned target, Val v) {
         if (b->var < 0) sg_fail(t, "%s assigned but bound by let", s);
         var_raise(b->var, v.bt);
         if (g_gen.dynamic_branch) var_raise(b->var, BT_DYN);
-        if (v.kind != K_UNIT && v.kind != g_gen.vars[b->var].kind)
+        if (v.kind != K_UNIT && (v.kind != g_gen.vars[b->var].kind || v.sdef != g_gen.vars[b->var].sdef))
             sg_fail(t, "%s (kind %d) assigned a value of kind %d", s, g_gen.vars[b->var].kind, v.kind);
         emit("%s = %s;\n", b->val.c, raise(v, g_gen.vars[b->var].bt).c);
         return;
@@ -1654,9 +1783,10 @@ static Val if_expr(unsigned n, int tail) {
         return unit();
     }
     r = val_c(a.kind, top_bt(top_bt(a.bt, b.bt), BT_STATIC), "");
+    r.sdef = a.sdef;
     temp(t, sizeof t);
     snprintf(r.c, sizeof r.c, "%s", t);
-    emit("%s %s;\n", ctype(r.kind, r.bt), t);
+    emit("%s %s;\n", ctype_of(r.kind, r.bt, r.sdef), t);
     emit("if (%s) {\n", cond_text(c.c, buffer, sizeof buffer));
     ++g_gen.indent;
     a = eval(N(n).b, tail);
@@ -1725,9 +1855,10 @@ static Val match_expr(unsigned n, int tail) {
         int bt = BT_STATIC;
         for (c = N(n).b; c; c = N(c).next) bt = top_bt(bt, probe(N(c).b, tail).bt);
         r = val_c(first.kind, bt, "");
+        r.sdef = first.sdef;
         temp(t, sizeof t);
         snprintf(r.c, sizeof r.c, "%s", t);
-        emit("%s %s;\n", ctype(r.kind, r.bt), t);
+        emit("%s %s;\n", ctype_of(r.kind, r.bt, r.sdef), t);
     }
     for (c = N(n).b; c; c = N(c).next) {
         char test[192];
@@ -2059,6 +2190,8 @@ int sg_generate(const char* roots_path, const char* backend_path, const char* pr
     g_gen.backend_code = NULL;
     free(g_gen.features);
     g_gen.features = NULL;
+    if (g_gen.types.length)
+        sg_out("/* ---- the Sail's structs, as values the recompiler knows ---- */\n\n%s", g_gen.types.text);
     sg_out("/* ---- helpers: functions of what the recompiler knows ---- */\n\n");
     if (g_gen.helpers.length) sg_out("%s", g_gen.helpers.text);
     sg_out("/* ---- the decode functions ---- */\n\n");
@@ -2080,6 +2213,8 @@ int sg_generate(const char* roots_path, const char* backend_path, const char* pr
         sg_out(" if ((word & 0x%08llxu) == 0x%08llxu && sg_%s(g)) {\n    } else", clauses[i].mask, clauses[i].value,
                sg_str(g_parse.defs[clauses[i].decode].name));
     }
-    sg_out("\n        return 0;\n    sg_flags_flush(g);\n    sg_branch_result(g, taken, target);\n    return 1;\n}\n");
+    sg_out(
+        "\n        return 0;\n    sg_accesses_combine(g);\n    sg_flags_flush(g);\n    sg_branch_result(g, taken, target);\n"
+        "    return 1;\n}\n");
     return sg_flush(out_path);
 }

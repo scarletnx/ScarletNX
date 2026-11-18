@@ -1822,7 +1822,7 @@ static void tex_resolve(const DsState* ds, u32 handle, TexRes* x) {
     r->kind = TEX_RECENT_NONE;
     /* a way just kept is asked about the storage images pending over its texture at its next lookup only */
     const int memo = tex_resolve_memo(ds, handle, x);
-    if (!memo || (memo == 1 && g_gfx_img_any)) return;
+    if (!memo || (memo == 1 && atomic_load_explicit(&g_gfx_img_any, memory_order_relaxed))) return;
     *r = (TexRecent){.x = *x,
                      .ds = ds,
                      .tic_base = b->tex_pool,
@@ -2071,13 +2071,13 @@ static void fs_key(const DsState* ds, const VkSh* s0, TexRes* res, u32 last_out,
               adds = atomic_load_explicit(&g_pend_any.adds, memory_order_relaxed) + vk_uma_writes(),
               img_adds = vk_gfx_image_adds(), take = vk_rt_take_gen();
     const u32 surf_epoch = atomic_load_explicit(&g_vk_surf_epoch, memory_order_relaxed), ww_epoch = vk_ww_epoch();
-    if (g_fs_last.valid && !g_cs_any && !g_settings.draw_state_check && g_fs_last.ds == ds && g_fs_last.s0 == s0 &&
-        g_fs_last.nt == nt && g_fs_last.last_out == last_out && g_fs_last.rt_int == rt_int &&
-        g_fs_last.rt_sint == rt_sint && g_fs_last.tex_pool == b->tex_pool && g_fs_last.smp_pool == b->smp_pool &&
-        g_fs_last.tex_max == b->tex_max && g_fs_last.smp_max == b->smp_max && g_fs_last.smp_mode == b->smp_mode &&
-        g_fs_last.tex_bank == b->tex_bank && g_fs_last.gw == gw && g_fs_last.adds == adds &&
-        g_fs_last.img_adds == img_adds && g_fs_last.take == take && g_fs_last.surf_epoch == surf_epoch &&
-        g_fs_last.ww_epoch == ww_epoch && g_fs_last.present == g_vk_present &&
+    if (g_fs_last.valid && !atomic_load_explicit(&g_cs_any, memory_order_relaxed) && !g_settings.draw_state_check &&
+        g_fs_last.ds == ds && g_fs_last.s0 == s0 && g_fs_last.nt == nt && g_fs_last.last_out == last_out &&
+        g_fs_last.rt_int == rt_int && g_fs_last.rt_sint == rt_sint && g_fs_last.tex_pool == b->tex_pool &&
+        g_fs_last.smp_pool == b->smp_pool && g_fs_last.tex_max == b->tex_max && g_fs_last.smp_max == b->smp_max &&
+        g_fs_last.smp_mode == b->smp_mode && g_fs_last.tex_bank == b->tex_bank && g_fs_last.gw == gw &&
+        g_fs_last.adds == adds && g_fs_last.img_adds == img_adds && g_fs_last.take == take &&
+        g_fs_last.surf_epoch == surf_epoch && g_fs_last.ww_epoch == ww_epoch && g_fs_last.present == g_vk_present &&
         !memcmp(g_fs_last.handles, handles, (size_t)nt * sizeof *handles) &&
         fs_last_holds(g_fs_last.res, nt, ww_epoch)) {
         for (int i = 0; i < nt; i++) {

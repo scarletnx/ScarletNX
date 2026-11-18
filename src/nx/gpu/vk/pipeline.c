@@ -725,7 +725,8 @@ void vk_pipeline_init(void) {
                                         g_spirv_translate.uniform_cbufs, g_vk.has_descriptor_heap_support,
                                         g_vk.driver_id == VK_DRIVER_ID_MESA_LLVMPIPE};
         char line[512];
-        g_spirv_translate.cb_windows = snx_vk_cb_windows_say(line, sizeof line, &wd, SH_PUSH_BYTES_WINDOWS);
+        g_spirv_translate.cb_windows =
+            snx_vk_cb_windows_say(line, sizeof line, &wd, SH_PUSH_BYTES_WINDOWS, g_settings.constant_buffer_windows);
         LOG("%s\n", line);
     }
     /* SM86 programs' plain textures through the texture table (table.c), a set after the stages' sets: where the

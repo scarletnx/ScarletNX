@@ -180,7 +180,7 @@ static void counted(CPU* RESTRICT c, u64 entry) {
     atomic_fetch_add_explicit(&f->frame_calls, 1, memory_order_relaxed);
     atomic_fetch_add_explicit(&f->calls, 1, memory_order_relaxed);
     if (now > atomic_load_explicit(&g_gl_census.next_write, memory_order_relaxed) && pm_trylock(&g_gl_census.lock)) {
-        if (now > g_gl_census.next_write) {
+        if (now > atomic_load_explicit(&g_gl_census.next_write, memory_order_relaxed)) {
             atomic_store_explicit(&g_gl_census.next_write, now - 1 + SNX_GL_CENSUS_EVERY, memory_order_relaxed);
             census_write();
         }
@@ -206,7 +206,8 @@ static int census_take(u64 addr, const char* name, u32 asked) {
         g_gl_census.no_code++;
         return 0;
     }
-    for (n = 0, i = slot_of(addr); n < GL_CENSUS_SLOTS && fn[i].addr; n++) i = (i + 1) & (GL_CENSUS_SLOTS - 1);
+    for (n = 0, i = slot_of(addr); n < GL_CENSUS_SLOTS && atomic_load_explicit(&fn[i].addr, memory_order_relaxed); n++)
+        i = (i + 1) & (GL_CENSUS_SLOTS - 1);
     if (n == GL_CENSUS_SLOTS) {
         WARN_LIMIT(4, "gl census: %s at %llx isn't counted: the table holds %d functions\n", name,
                    (unsigned long long)addr, GL_CENSUS_SLOTS);
@@ -316,7 +317,7 @@ void gl_census_init(void) {
         WARN("gl census: eglGetProcAddress at %llx has no recompiled code: the names the game asks it for aren't "
              "seen\n",
              (unsigned long long)getproc_at);
-    g_gl_census.next_write = SNX_GL_CENSUS_EVERY;
+    atomic_store_explicit(&g_gl_census.next_write, SNX_GL_CENSUS_EVERY, memory_order_relaxed);
     pm_unlock(&g_gl_census.lock);
     if (!hook_routed("eglGetProcAddress"))
         WARN("gl census: the module's route list doesn't name eglGetProcAddress, so the census sees only its calls "

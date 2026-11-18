@@ -277,6 +277,14 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
     set_tests_properties(vulkan_headless_descriptor_buffers vulkan_headless_descriptor_buffers_uma PROPERTIES
         TIMEOUT 120 SKIP_RETURN_CODE 77 ENVIRONMENT "VK_KHRONOS_VALIDATION_REPORT_FLAGS=error"
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+    # every check again with the constant buffers in windows of the staging ring on lavapipe, which Automatic leaves
+    # out there (gpu/vk/cb_windows.h): its linear rasterizer, which they overrun, off. Descriptor buffers, as lavapipe's
+    # Automatic is heaps, which take no windows. A line that says they are bound one by one fails it
+    add_test(NAME vulkan_headless_cb_windows
+        COMMAND snx-test-vulkan -H --vk-descriptors-mode=1 --vk-cb-windows=1 --vk-validation=1)
+    set_tests_properties(vulkan_headless_cb_windows PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77
+        ENVIRONMENT "LP_PERF=no_rast_linear;VK_KHRONOS_VALIDATION_REPORT_FLAGS=error"
+        FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR;constant buffers bound one by one")
     # every check again with graphics descriptors in heaps (vk_descriptors_mode=2), which the default, Automatic, takes
     # only on a GPU that shares the system's memory: a discrete GPU runs the default with sets. A device without
     # VK_EXT_descriptor_heap skips it, as the buffers' tests do without VK_EXT_descriptor_buffer
@@ -523,6 +531,13 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
     # the BCn to ASTC transcoder alone with packed dot products, which a device runs where it says it has an instruction
     # for them (lavapipe says not, and has them): every vendor's builds of its later passes that take them
     add_test(NAME astc_vulkan_encode_dot COMMAND snx-test-astc-vulkan --astc-encode)
+    # every comparison again with the uploads on the ASTC stream, the compute queue's (gpu/vk/astc.c), where the device
+    # has a second queue for compute: its images and staging shared by both queues, the graphics submissions waiting
+    # for it
+    add_test(NAME astc_vulkan_stream COMMAND snx-test-astc-vulkan --stream)
+    # and under a 4 MiB allocation cap, where the images in pieces stay on the graphics queue
+    add_test(NAME astc_vulkan_stream_pieces COMMAND snx-test-astc-vulkan --stream --vk_max_allocation_mb=4)
+    set_tests_properties(astc_vulkan_stream astc_vulkan_stream_pieces PROPERTIES TIMEOUT 300 SKIP_RETURN_CODE 77)
     set_tests_properties(astc_vulkan_encode_dot PROPERTIES TIMEOUT 120 ENVIRONMENT "SNX_TEST_BC7_DOT=1"
         SKIP_RETURN_CODE 77 PASS_REGULAR_EXPRESSION "BC7 encoder: packed dot products.*by each vendor's encoder")
     # the same under the validation layer's synchronization checks, whose hazards a driver that runs commands

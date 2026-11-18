@@ -651,6 +651,8 @@ static u32 chunk_new(u32 ring, u64 size, int bar, u32 slot) {
                                        /* and global memory copies that SM86 programs read by address (gbuf_address) */
                                        (g_vk.has_gbuf_address ? VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT : 0),
                               .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
+    /* the ASTC stream on the compute queue reads staging and writes the readback ring (astc.c) */
+    vk_both_queues(&bci.sharingMode, &bci.queueFamilyIndexCount, &bci.pQueueFamilyIndices);
     DevMemWant aci = {.at = bar ? DM_WINDOW : DM_HOST, .mapped = 1};
     DevMemInfo info;
     VkBuffer buf;
@@ -1072,8 +1074,7 @@ int vk_stage_device_at(const char* file, int line, u64 size, u64 align, VkBuffer
 
 /* the host writes to the chunks the staging and output rings hand out of, and to those they filled and the frame's
    big buffers since the last submit, made visible to the GPU */
-static void rings_flush(const Frame* f) {
-    g_cmd.stream_since = 0;
+static void rings_flush_host(const Frame* f) {
     for (u32 r = XRING_STAGE; r <= XRING_OUTPUT; r++)
         if (f->ring[r].cur) vk_devmem_flush(g_cmd.chunk[f->ring[r].cur - 1].mem, 0, VK_WHOLE_SIZE);
     for (u32 i = 0; g_cmd.unflushed && i < g_cmd.nchunk; i++)
@@ -1082,6 +1083,24 @@ static void rings_flush(const Frame* f) {
             g_cmd.chunk[i].flush = 0;
             g_cmd.unflushed--;
         }
+}
+static void rings_flush(const Frame* f) {
+    g_cmd.stream_since = 0;
+    rings_flush_host(f);
+}
+/* the same before a submission to another queue that reads them (astc.c's stream), the frame's submission still to
+   come */
+void vk_stage_flush(void) { rings_flush_host(&g_fr[g_cur]); }
+/* a resource that the graphics and the compute queue both use, one at a time, with no ownership transfers (astc.c's
+   stream): CONCURRENT where they are two families */
+void vk_both_queues(VkSharingMode* mode, u32* count, const u32** families) {
+    static u32 fam[2];
+    fam[0] = g_vk.gfx_family;
+    fam[1] = g_vk.compute_family;
+    const int two = g_settings.astc_compute_queue && g_vk.compute && g_vk.compute != g_vk.gfx && fam[0] != fam[1];
+    *mode = two ? VK_SHARING_MODE_CONCURRENT : VK_SHARING_MODE_EXCLUSIVE;
+    *count = two ? 2 : 0;
+    *families = two ? fam : NULL;
 }
 
 static void mem_barrier(VkCommandBuffer cb, VkPipelineStageFlags2 src_stage, VkAccessFlags2 src_access,
@@ -1098,6 +1117,9 @@ static void mem_barrier(VkCommandBuffer cb, VkPipelineStageFlags2 src_stage, VkA
    why (VK_SUB_*: the statistics) */
 static void submit(const VkSemaphoreSubmitInfo* xw, const VkSemaphoreSubmitInfo* xs, int land, int why) {
     SNX_ZONE(z_submit, "vk submit");
+    /* the ASTC uploads recorded for the compute queue first: this submission waits for them (below), as its draws
+       sample their textures and its frame's staging and descriptor sets hold what they read */
+    vk_astc_stream_submit();
     vk_render_end();
     g_rec_unsafe++;
     Frame* f = &g_fr[g_cur];
@@ -1114,7 +1136,7 @@ static void submit(const VkSemaphoreSubmitInfo* xw, const VkSemaphoreSubmitInfo*
     }
     /* staging memory may not be host coherent: the host writes are made visible to the GPU here */
     rings_flush(f);
-    VkSemaphoreSubmitInfo w[3];
+    VkSemaphoreSubmitInfo w[VK_SUBMIT_WAITS];
     u32 nw = 0;
     if (g_after[0].semaphore) { /* at most one of the two: vk_submit_after's comes with no other */
         xw = &g_after[0];
@@ -1127,6 +1149,13 @@ static void submit(const VkSemaphoreSubmitInfo* xw, const VkSemaphoreSubmitInfo*
                                           .value = g_vk_cs_wait_value,
                                           .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT};
         g_vk_cs_wait_value = 0;
+    }
+    if (g_vk_astc_wait_value) { /* the ASTC uploads on the compute queue (astc.c's stream) */
+        w[nw++] = (VkSemaphoreSubmitInfo){.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+                                          .semaphore = g_vk_astc_sem,
+                                          .value = g_vk_astc_wait_value,
+                                          .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT};
+        g_vk_astc_wait_value = 0;
     }
     if (vk_sparse_flush(&w[nw])) nw++; /* after the sparse binds made since the last submission (memory.c) */
     VkSemaphoreSubmitInfo s[2] = {{.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
@@ -1230,8 +1259,12 @@ void vk_submit_background(void) {
 void vk_submit_recorded(void) {
     if (g_fr[g_cur].recording) submit_why(VK_NULL_HANDLE, 0, VK_NULL_HANDLE, VK_SUB_OTHER);
 }
-/* What is recorded goes to the GPU, and this waits until the GPU has done it. It lands nothing, so it may run while a
-   draw is set up: that draw starts its setup again on the new submission number.
+void vk_submit_pace(void) {
+    if (g_fr[g_cur].recording) submit(NULL, NULL, 0, VK_SUB_OTHER);
+}
+/* What is recorded goes to the GPU, and this waits until the GPU has done it, or with upto (non-zero) the submissions
+   up to that one only: 0 at once when they are done. It lands nothing, so it may run while a draw is set up: that draw
+   starts its setup again on the new submission number.
 
    With let_go, the wait lets go of vk_lock when this thread holds it once, outside a landing or a recycling: 1 when it
    did. The BC7 encoder's pace (astc.c) waited here with the lock held, part-way through a draw's setup, and the threads
@@ -1241,10 +1274,13 @@ void vk_submit_recorded(void) {
    two frame advances would recycle the slot whose pools and rings the setup holds */
 static int g_letting_go; /* under vk_lock */
 int vk_upload_letting_go(void) { return g_letting_go; }
-int vk_submit_upload_wait(int let_go) {
+int vk_submit_upload_wait(int let_go, u64 upto) {
     if (g_fr[g_cur].recording) submit(NULL, NULL, 0, VK_SUB_OTHER);
-    const u64 at = atomic_load_explicit(
-        &g_gval, memory_order_relaxed); /* other threads submit meanwhile: this waits for its own */
+    /* other threads submit meanwhile: this waits for its own, or for upto where that is older */
+    const u64 gval = atomic_load_explicit(&g_gval, memory_order_relaxed);
+    const u64 at = upto && upto < gval ? upto : gval;
+    u64 done = 0;
+    if (upto && VK_OK(vkGetSemaphoreCounterValue(g_vk.dev, g_gsem, &done)) && done >= at) return 0; /* no wait */
     int paused = 0;
     if (let_go && !g_rec_unsafe && !g_landing && !g_letting_go) {
         g_letting_go = 1;

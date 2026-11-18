@@ -284,6 +284,7 @@ typedef struct {
        vk_swapchain_create found it. Atomic: the display session's thread reads it */
     _Atomic int hdr_display;
     u32 gfx_timestamp_bits;  /* the graphics queue family's timestampValidBits: 0 where it writes no timestamps */
+    u32 compute_timestamp_bits; /* the compute queue family's (astc.c's stream times its encodes there) */
     /* VK_EXT_memory_budget: the driver tells each heap's use and budget (devmem.c reads them, and guesses without) */
     int has_budget;
     /* VK_EXT_pageable_device_local_memory with VK_EXT_memory_priority: where the GPU's own memory is short, the driver
@@ -660,6 +661,16 @@ u64 vk_stage_buffer_size(VkBuffer b); /* a ring chunk's size, 0 for another buff
 u64 vk_stage_chunk(void);
 /* Streamed buffer snapshots in host RAM, with the same frame lifetime as vk_stage. */
 u8* vk_stage_upload(u64 size, u64 align, VkBuffer* buf, u64* off);
+/* the host's writes to staging made visible to the GPU before a submission to another queue reads them */
+void vk_stage_flush(void);
+/* the waits a graphics submission takes at most (cmd.c's submit, record.c's copy of them): vk_submit_after's or the
+   present's acquire, the compute batch's, the ASTC stream's and the sparse binds' */
+#define VK_SUBMIT_WAITS 4
+/* what is recorded goes to the GPU with no landing and no wait: the first half of the BC7 encoder's pace (astc.c),
+   which can run in a draw's setup, as vk_submit_upload_wait can */
+void vk_submit_pace(void);
+/* a buffer's or an image's sharing for the graphics and the compute queue both, with no ownership transfers */
+void vk_both_queues(VkSharingMode* mode, u32* count, const u32** families);
 /* As vk_stage_upload, for bytes that only work recorded now reads: a copy, a dispatch or a draw recorded before the
    submission being recorded goes, or the one after it, or the ones that follow a vk_submit_split each. The memory
    is no frame's (cmd.c's stream): it is handed out again once that work is done, so nothing may keep the buffer and
@@ -687,9 +698,10 @@ void vk_submit_for_readback(void);
 /* the commands recorded since the last submission submitted, when a command buffer is begun: what a change of an
    image's sparse binding has to follow (memory.c) */
 void vk_submit_recorded(void);
-/* the same, and waits for the GPU, landing nothing: an upload's own pace. let_go: with vk_lock let go meanwhile where
-   it can be (then 1), for an upload that holds nothing of the frame's slot across it, in a setup that starts again */
-int vk_submit_upload_wait(int let_go);
+/* the same, and waits for the GPU, landing nothing: an upload's own pace. upto: the submission to wait for (0: this
+   one, all of the GPU's work). let_go: with vk_lock let go meanwhile where it can be (then 1), for an upload that holds
+   nothing of the frame's slot across it, in a setup that starts again */
+int vk_submit_upload_wait(int let_go, u64 upto);
 int vk_upload_letting_go(void); /* vk_submit_upload_wait has let go of vk_lock (read under vk_lock) */
 /* vk_cmd() returns without waiting: the frame slot is recording, or the GPU is done with its last use */
 int vk_cmd_ready(void);
@@ -1856,6 +1868,23 @@ int vk_tc_convert_vi(VkCommandBuffer cb, u32 fmt, u32 w, u32 rows, VkBuffer in, 
    the BC7 cache when they are there, with no decode and no encode, and an encode's blocks go into the cache once its
    submission is done (vk_astc_frame_done) */
 typedef int (*VkAstcRows)(void* ctx, VkCommandBuffer* cb, u32 z, u32 nz, u32 y, u32 n, VkBuffer* buf, u64* off);
+/* The ASTC stream: the uploads of new ASTC textures recorded for the compute queue, where the device has one of its
+   own, so that their decodes and encodes run beside the graphics queue's work and an upload's pace waits for them
+   alone. Each graphics submission submits what the stream recorded first and waits for it (cmd.c's submit), so the
+   frame's staging, descriptor sets and readback ring that the stream uses live until it is done. Only a texture that
+   no graphics work has used yet (layout undefined) goes there, its guest bytes all the CPU's (texture.c's
+   astc_stream_guest): nothing on the graphics queue writes what the stream reads, or reads what it writes.
+   vk_astc_stream_fits: t can go to the stream; vk_astc_stream_cmd: the stream's command buffer, begun;
+   vk_astc_stream_on: cb is it; vk_astc_stream_submit: what it recorded to the compute queue, the next graphics
+   submission waiting for it (g_vk_astc_sem at g_vk_astc_wait_value); vk_astc_stream_bl: the stream's own scratch
+   buffer for the block linear moves of its uploads (vk_bl_scratch's) */
+int vk_astc_stream_fits(const Surf* t);
+VkCommandBuffer vk_astc_stream_cmd(void);
+int vk_astc_stream_on(VkCommandBuffer cb);
+void vk_astc_stream_submit(void);
+VkBuffer vk_astc_stream_bl(u64 size, u64* cap_out);
+extern VkSemaphore g_vk_astc_sem;
+extern u64 g_vk_astc_wait_value;
 int vk_astc_upload(VkCommandBuffer cb, Surf* t, u32 x, u32 y, u32 w, u32 h, u32 depth, u32 level, u32 layer,
                    VkAstcRows rows, void* ctx, const u64* content);
 /* the same for a whole level of layers layers of a 2D array from layer, as a 3D level's slices: rows's z and nz count

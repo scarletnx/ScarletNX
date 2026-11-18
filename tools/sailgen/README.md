@@ -38,7 +38,9 @@ A function whose arguments are all STATIC and that reaches no state becomes a C 
 branches may not change state; a `BranchTo` in one is taken under that condition (B.cond's `if ConditionHolds(cond)`,
 CBZ's `if IsZero(operand1) == iszero`). A throw of `Error_Undefined`, an `EndOfInstruction()` (a hint whose feature
 the guest lacks: a NOP) and a throw of `Error_See` end the decode function, so they may not be under a DYN condition.
-Anything outside this part of Sail stops sailgen with the file, the line and why.
+A value of a Sail struct (a load's `AccessDescriptor`) is STATIC: a C struct of its fields (`sgt_NAME`, written before
+the helpers), which a field's assignment and read reach as C. Anything outside this part of Sail stops sailgen with the
+file, the line and why.
 
 ## The back end (`llvm.h`)
 
@@ -66,9 +68,10 @@ Builtins, lowered by the back end rather than from Sail:
 | `BranchTo(target, type, conditional)`, `BranchNotTaken(type, conditional)` | the branch's operand for the recompiler's flow (`ir_codegen.c`): the target, and the run-time condition it is under; their profiling, branch records and address tagging do nothing at the NX's EL0 |
 
 A function with no Sail definition that the back end defines as `sg_NAME` is one of the machine's actions: a
-statement, given the call's arguments (DYN ones as the back end's values, the others as C integers), or the context
-alone when `sg_NAME` takes nothing else. `llvm.h` gives the hints (`Hint_Yield` the host's spin-wait hint, `Hint_WFE`
-the runtime's `rt_wfe`, `SendEvent` its `rt_sev`), the barriers (`DataMemoryBarrier` and `DataSynchronizationBarrier`
+statement, given the call's arguments (bits and DYN ones as the back end's values, the others as C integers), or the
+context alone when `sg_NAME` takes nothing else; one whose `val` gives a result (nx.sail's guest memory: `GuestMemRead`,
+the exclusives', the atomics') is a DYN value of it. `llvm.h` gives the hints (`Hint_Yield` the host's spin-wait hint,
+`Hint_WFE` the runtime's `rt_wfe`, `SendEvent` its `rt_sev`), the barriers (`DataMemoryBarrier` and `DataSynchronizationBarrier`
 a fence by the accesses they order, `InstructionSynchronizationBarrier` a full one) and the exclusive monitor
 (`ClearExclusiveLocal`), each with why, and those that do nothing here (`Hint_WFI`, `SynchronizeErrors`, `Hint_DGH`).
 
@@ -97,11 +100,21 @@ then reads a condition on them as one `icmp` of the operands, by the laws of `sg
 `ir_flags_cond` uses too for B.cond and the other emitters written by hand. Flags written alone (CFINV, RMIF, SETF8) are
 stored with the others at the end of the instruction.
 
+Guest memory is nx.sail's actions (above), on which its `Mem_read`, `Mem_set`, `MemAtomic` and the exclusive monitor's
+functions are written: `llvm.h` makes them with `ir.h`'s accessors, as the emitters written by hand did: a plain access
+`ir_rd` and `ir_wr` (CPU.mem plus the address, unaligned, volatile with `volatile_memory`; a pair of doublewords two),
+an acquire load or a release store a sequentially consistent host atomic (`ir_ldacq`, `ir_strel`), the exclusives
+`cpu.h`'s value-based monitor through its helpers (the load-exclusive's values kept for the exclusive reads after it,
+the store-exclusive's status for `ExclusiveMonitorsStatus`), and the LSE atomics an `atomicrmw` or a `cmpxchg` of the
+access size (a compare-and-swap loop where the host's byte order or PowerPC64's partword compares need one,
+`snx_cas128` for CASP's 16 bytes). An instruction's two word accesses of adjacent addresses (LDPSW's loads, STNP's
+stores, two in their Sail) become one 8-byte access as it ends (`sg_accesses_combine`), as a pair of words always was.
+
 ## Another back end
 
 The front (the parse, the inlining, the times) and the Sail don't depend on LLVM. Another back end is another
 `llvm.h`, with the same functions over its own values, keeping the registers its own way behind the same
-`sg_NAME_read` and `sg_NAME_write`.
+`sg_NAME_read` and `sg_NAME_write`, and the guest's memory behind the same actions.
 
 ## Tests
 

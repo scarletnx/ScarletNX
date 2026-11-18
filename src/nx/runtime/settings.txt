@@ -492,9 +492,19 @@ setting BC7 queue
     default 0
     startup
     words Auto|#
-    help The thousands of blocks the BC7 encoder may have queued on the GPU before an upload waits for it to do them.
-    help 0 = by the GPU's own memory: 256 for every 2 GB of it, from 256 to 4096, and 256 on a GPU that shares the
-    help computer's memory (a GT 1030, 2 GB, lost the device with more queued). 1 to 16384 = that many thousand
+    help The thousands of blocks the BC7 encoder may have queued on the GPU. An upload submits at each half of them
+    help and waits for the half before. 0 = by the GPU's own memory: 256 for every 2 GB of it, from 256 to 4096, and
+    help 256 on a GPU that shares the computer's memory (a GT 1030, 2 GB, lost the device with more queued). 1 to
+    help 16384 = that many thousand
+setting ASTC compute queue
+    key astc_compute_queue
+    int 0 1
+    default 1
+    startup
+    words Off|On
+    help On = a new ASTC texture is decoded and encoded on the GPU's compute queue, where it has one of its own,
+    help beside the drawing, and a load waits only for those encodes. Off = on the graphics queue, after the drawing
+    help before it. The textures are the same either way
 setting ASTC quick Mtexels
     label Very large ASTC textures from (megatexels)
     key astc_quick_mtexels
@@ -1632,6 +1642,17 @@ setting Constant buffers by address
     help 1 = with descriptor heaps, a constant buffer that a shader reads only at constant offsets is mapped by its
     help address, and its draws write no descriptor for it. A read at an offset from a register keeps the
     help descriptor, whose range bounds it. 0 = a descriptor for every constant buffer
+setting Constant buffer windows
+    key vk_cb_windows
+    int 0 2
+    default 2
+    startup
+    words Off|On|Automatic
+    help How the vertex and fragment programs' constant buffers are bound. 2, Automatic: as 64 KiB windows of the
+    help staging ring with their offsets in push constants, where the GPU takes 224 bytes of push constants and uniform
+    help ranges of 64 KiB and its descriptors are not in heaps, but not on lavapipe, whose linear rasterizer smashes its
+    help stack with them. 1 = windows on lavapipe too, which needs Mesa's LP_PERF=no_rast_linear (a test runs it so);
+    help a GPU that can't take them binds them one by one and says why. 0 = each constant buffer bound one by one
 setting Indirect copies
     key vk_copy_indirect
     int 0 1
