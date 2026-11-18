@@ -10,8 +10,9 @@
    alias region, the stacks and the kernel's), where the kernel maps nothing of the game's: from KERN_END up to
    AS_END, a 39-bit game's 430 GiB. A pointer is the arena's when it lies in the window. One that isn't, which the
    game's own allocator made before its functions were hooked or through a path no hook covers, goes to the hooked
-   function's own code (hook_run_original), which made it. A module that copies its operator delete's code where no
-   hook takes it keeps its own operator new (alloc_new_shape), so that no block of the arena reaches such a copy.
+   function's own code (hook_run_original), which made it. A module whose operator delete looks the block's allocator
+   up by the block's address, and copies that code where no hook takes it, keeps its own operator new
+   (alloc_new_shape), so that no block of the arena reaches such a copy.
 
    jemalloc's functions are the program's own where it links jemalloc (weak references, as an executable exports only
    the C library's names of them), else looked up at run time (dlsym, je_ names on macOS): a build without it
@@ -66,7 +67,7 @@ static struct {
     size_t (*sallocx)(const void*, int);
     int (*mallctl)(const char*, void*, size_t*, void*, size_t);
     u64 mapped;             /* statistics: the window's bytes mapped */
-    signed char copied[32]; /* alloc_new_shape's verdict by module: 1 none, -1 its delete is copied, 0 not read */
+    signed char copied[32]; /* alloc_new_shape's verdict by module: 1 none, -1 its lookup is copied, 0 not read */
 } g_alloc;
 
 /* ============================================================ the arena's pages */
@@ -521,12 +522,18 @@ int alloc_vector_shape(u64 addr) {
 }
 
 /* ============================================================ operator new beside a copied operator delete */
-/* A game's operator delete may be its own allocator's code (one game's looks the block's allocator up in a table of
-   its own by the block's address, others lock the thread's heap and ask it), and the game's build may copy that code
-   into its callers, inlined or as a function no symbol names. No hook takes a copy: a block of the arena that reaches
-   one goes to the game's own allocator, which never gave it (that table is read past its end, past the heap). So in
-   a module whose delete is copied, operator new keeps its own code (alloc_new_shape, every operator new's check):
-   what it returns is the game's, which every copy knows; malloc, free and the hooked deletes stay the arena's.
+/* A game's operator delete may be its own allocator's code, and the game's build may copy that code into its callers,
+   inlined or as a function no symbol names, where no hook takes it. One game's delete looks the block's allocator up
+   in a table by the block's address, table[(block - base) >> 20]: a block of the arena that reaches a copy of it is
+   looked up past the table's end, past the heap. So in a module whose delete does that lookup and is copied,
+   operator new keeps its own code (alloc_new_shape, every operator new's check): what it returns is the game's, which
+   every copy knows; malloc, free and the hooked deletes stay the arena's. A delete that finds its allocator another
+   way (others lock the thread's heap and ask it) leaves its module's new hooked, copied or not.
+
+   The lookup is a 64-bit ldr at a register offset (ldr xt, [xn, xm], any extend or shift) on the delete's walk
+   (below), whose offset is the block's address (x0 at the entry, or a mov's copy of it) less another register (sub
+   xd, xn, xm), then through any 64-bit ubfm (lsr, ubfx, lsl) or and of an immediate. An offset made any other way (an
+   add, an asr, a 32-bit sub or shift, the size argument less something) or a 32-bit entry is not one.
 
    A copy is told by what the delete reads: the guest addresses its code at the entry loads from (an adrp, then an
    add or an ldr from that register), straight on past each conditional branch, past an early return to the branch
@@ -574,6 +581,18 @@ static int listed(const char* name, const char* const* names, size_t n) {
     return 0;
 }
 
+/* the registers instruction w writes, as made_step and lookup_step follow them: none for a store, a branch or a
+   system instruction but x30 for bl and blr and its own for mrs, both for an ldp and its kin, else its first */
+static u32 written(u32 w) {
+    if ((w & 0x3A400000u) == 0x28400000u) return 1u << (w & 31) | 1u << (w >> 10 & 31); /* ldp and its kin */
+    if ((w & 0x3BC00000u) == 0x39000000u || (w & 0x3A400000u) == 0x28000000u) return 0; /* str, stp */
+    if ((w & 0x1C000000u) == 0x14000000u) { /* branches and system instructions */
+        if ((w & 0xFC000000u) == 0x94000000u || (w & 0xFFFFFC1Fu) == 0xD63F0000u) return 1u << 30;
+        return (w & 0xFFF00000u) == 0xD5300000u ? 1u << (w & 31) : 0; /* mrs */
+    }
+    return 1u << (w & 31);
+}
+
 /* the registers that hold a guest address the code made: x<r>'s in at[r] while bit r of known is set */
 typedef struct {
     u64 at[32];
@@ -603,28 +622,44 @@ static u64 made_step(Made* m, u64 pc, u32 w) {
         m->known &= ~(1u << d); /* ldr xt, ldr wt, ldrsw xt, [xn, #imm] */
         return a;
     }
-    if ((w & 0x3A400000u) == 0x28400000u) { /* ldp and its kin write two */
-        m->known &= ~(1u << d | 1u << (w >> 10 & 31));
-        return 0;
-    }
-    if ((w & 0x3BC00000u) == 0x39000000u || (w & 0x3A400000u) == 0x28000000u) return 0; /* str, stp */
-    if ((w & 0x1C000000u) == 0x14000000u) { /* branches and system instructions */
-        if ((w & 0xFC000000u) == 0x94000000u || (w & 0xFFFFFC1Fu) == 0xD63F0000u) m->known &= ~(1u << 30);
-        if ((w & 0xFFF00000u) == 0xD5300000u) m->known &= ~(1u << d); /* mrs */
-        return 0;
-    }
-    m->known &= ~(1u << d);
+    m->known &= ~written(w);
     return 0;
 }
 
+/* the registers that hold, along a delete's walk, the block's address (block) and an offset made from it (offset),
+   as alloc_new_shape's comment says */
+typedef struct {
+    u32 block, offset;
+} Lookup;
+/* instruction w on l: 1 when it is the lookup, a 64-bit ldr at a register offset that l knows */
+static int lookup_step(Lookup* l, u32 w) {
+    u32 n = w >> 5 & 31, k = w >> 16 & 31, to = written(w), block = 0, offset = 0;
+    /* ldr xt, [xn, xm{, extend}], read before it writes xt, which may be xm */
+    int hit = (w & 0xFFE00C00u) == 0xF8600800u && (l->offset >> k & 1);
+    if ((w & 0xFFE0FFE0u) == 0xAA0003E0u) { /* mov xd, xm */
+        block = l->block >> k & 1;
+        offset = l->offset >> k & 1;
+    } else if ((w & 0xFF20FC00u) == 0xCB000000u) { /* sub xd, xn, xm */
+        offset = l->block >> n & 1;
+    } else if ((w & 0xFFC00000u) == 0xD3400000u || (w & 0xFF800000u) == 0x92000000u) { /* ubfm, and xd, xn, #imm */
+        offset = l->offset >> n & 1;
+    }
+    l->block = (l->block & ~to) | (block ? to : 0);
+    l->offset = (l->offset & ~to) | (offset ? to : 0);
+    return hit;
+}
+
 /* the addresses the delete at entry loads from (alloc_new_shape's comment says which), at most COPY_LOADS, in sig:
-   their count. *end is where what was read from entry ends, before a leading b went elsewhere */
-static u32 delete_loads(u64 entry, u64 sig[COPY_LOADS], u64* end) {
+   their count. *end is where what was read from entry ends, before a leading b went elsewhere; *lookup whether the
+   walk does the lookup */
+static u32 delete_loads(u64 entry, u64 sig[COPY_LOADS], u64* end, int* lookup) {
     Made m = {{0}, 0};
+    Lookup l = {1, 0}; /* the block in x0 */
     u64 pc = entry, pending[COPY_WALK];
     u32 n = 0, np = 0, k;
     int followed = 0;
     *end = 0;
+    *lookup = 0;
     for (int i = 0; i < COPY_WALK && in_module(pc, 4); i++) {
         u32 w = snx_ld_le32(GP(pc));
         u64 a;
@@ -648,6 +683,7 @@ static u32 delete_loads(u64 entry, u64 sig[COPY_LOADS], u64* end) {
             pending[np++] = pc + ((u64)(i64)((i32)(w << 8) >> 13) << 2);
         else if ((w & 0x7E000000u) == 0x36000000u) /* tbz, tbnz */
             pending[np++] = pc + ((u64)(i64)((i32)(w << 13) >> 18) << 2);
+        *lookup |= lookup_step(&l, w);
         a = made_step(&m, pc, w);
         for (k = 0; a && k < n && sig[k] != a; k++) {}
         if (a && k == n && n < COPY_LOADS) sig[n++] = a;
@@ -691,8 +727,8 @@ static int same_loads(const u64* a, u32 na, const u64* b, u32 nb) {
     return 1;
 }
 
-/* operator new's check: 0 when the module that holds addr copies its operator delete's code, so that its new keeps
-   its own code; read once a module, and said once */
+/* operator new's check: 0 when the module that holds addr copies the code of an operator delete that does the
+   lookup, so that its new keeps its own code; read once a module, and said once */
 int alloc_new_shape(u64 addr) {
     enum { DELETES = sizeof k_deletes / sizeof *k_deletes };
     const SnxModInfo* mi = NULL;
@@ -706,20 +742,22 @@ int alloc_new_shape(u64 addr) {
         }
     if (!mi) return 1;
     if (m < sizeof g_alloc.copied && g_alloc.copied[m]) return g_alloc.copied[m] > 0;
-    /* each delete's addresses, once for each set, and the family's functions, which the search leaves out */
+    /* the addresses of each delete that does the lookup, once for each set, and every delete's and the family's
+       functions, which the search leaves out */
     for (i = 0; kernel_symbol(i, &a, &name); i++) {
         u64 size = kernel_symbol_size(i), sig[COPY_LOADS], end;
         u32 n;
+        int lookup;
         if (!name || a < mi->base || a - mi->base >= mi->size || nskip == COPY_SKIPS) continue;
         if (listed(name, k_family, sizeof k_family / sizeof *k_family)) {
             if (size) skip[nskip][0] = a, skip[nskip][1] = a + size, nskip++;
             continue;
         }
         if (!listed(name, k_deletes, DELETES)) continue;
-        n = delete_loads(a, sig, &end);
+        n = delete_loads(a, sig, &end, &lookup);
         skip[nskip][0] = a, skip[nskip][1] = end > a + size ? end : a + size, nskip++;
         for (k = 0; k < nsig && !same_loads(sigs[k], nloads[k], sig, n); k++) {}
-        if (n < 2 || k < nsig || nsig == DELETES) continue;
+        if (!lookup || n < 2 || k < nsig || nsig == DELETES) continue;
         memcpy(sigs[nsig], sig, n * sizeof *sig);
         nloads[nsig++] = n;
     }
@@ -734,12 +772,13 @@ int alloc_new_shape(u64 addr) {
     for (i = 0; count && kernel_symbol(i, &a, &name); i++) { /* the delete whose code the first copy has */
         u64 sig[COPY_LOADS], end;
         u32 n;
+        int lookup;
         if (said || !name || a < mi->base || a - mi->base >= mi->size || !listed(name, k_deletes, DELETES)) continue;
-        n = delete_loads(a, sig, &end);
-        if (!same_loads(sigs[first_of], nloads[first_of], sig, n)) continue;
-        LOG("hooks: %s copies the code of its %s at %llx, which loads from %llx and %u more guest addresses, to %u "
-            "place%s no hook takes, the first at %llx: its operator new keeps its own code, as a block of the arena "
-            "would go there to the game's own allocator\n",
+        n = delete_loads(a, sig, &end, &lookup);
+        if (!lookup || !same_loads(sigs[first_of], nloads[first_of], sig, n)) continue;
+        LOG("hooks: %s copies the code of its %s at %llx, which looks a block's allocator up by its address and loads "
+            "from %llx and %u more guest addresses, to %u place%s no hook takes, the first at %llx: its operator new "
+            "keeps its own code, as a block of the arena would go there to the game's own allocator\n",
             mi->name, name, (unsigned long long)a, (unsigned long long)sig[0], n - 1, count, count == 1 ? "" : "s",
             (unsigned long long)first);
         said = 1;
