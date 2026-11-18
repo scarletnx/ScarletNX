@@ -6,8 +6,8 @@
    (gl_loader.c), EGL's displays, configs, contexts and surfaces (gl_egl.c), the GL calls' adapters (gl_calls.c), and
    the thunks to guest memory and the renderer (gl_host_nx.c).
 
-   A function of the driver the layer doesn't implement yet says its name once in the log and returns 0, so a game
-   goes on to show what the layer draws; the log lists every one it reached */
+   A function of the driver the layer doesn't implement yet stops the game when it is called, naming it, as
+   nvn_loader.c does for NVN */
 #ifndef SNX_NX_GL_LAYER_H
 #define SNX_NX_GL_LAYER_H
 #include "common/cpu/aarch64/cpu.h"
