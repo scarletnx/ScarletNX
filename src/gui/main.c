@@ -15707,7 +15707,8 @@ static char* play_program(App* app, const char* game, bool next) {
 #endif
 /* The game activity's arguments for item playing game, apart so tests/gui_sdl.c keeps each console's list: the driver's
    name first where the console's driver is not the default, --game= the game's folder where its driver plays a folder
-   (the Switch's its program), the console's settings only, and the Switch's GPU driver and Freedreno variables. own
+   (the Switch's its program), the console's settings only, and the Switch's and the Vita's GPU driver and Freedreno
+   variables. own
    keeps the strings the caller frees with play_args_free */
 typedef struct {
     char *option, *folder, *driver, *freedreno, *ini;
@@ -15735,8 +15736,8 @@ typedef struct {
     n += item == GUI_3DS     ? gui_settings_ctr_options(s, argv + n)
          : item == GUI_SWITCH ? (size_t)gui_settings_options(s, 0, own->ini, argv + n)
                               : 0;
-    if (item == GUI_SWITCH && own->driver) argv[n++] = own->driver;
-    if (item == GUI_SWITCH && own->freedreno) argv[n++] = own->freedreno;
+    if ((item == GUI_SWITCH || item == GUI_VITA) && own->driver) argv[n++] = own->driver;
+    if ((item == GUI_SWITCH || item == GUI_VITA) && own->freedreno) argv[n++] = own->freedreno;
     argv[n] = NULL;
     return n;
 }
