@@ -862,10 +862,29 @@ int shader_direct_screen_ndc_uv(const ShFlow* f, u32 index, u32 x, u32 y, int* y
     return g >= 0 && !xneg && y < 255 && direct_over_w_half(f, index, y, 1, yneg, 0) == g ? g : -1;
 }
 
+/* reg at index holds the reciprocal of the fragment's interpolated 1 / w, the way the compiler gives IPA.MUL its w:
+   MUFU.RCP, with no absolute value, negation or saturation, of IPA's read of a[0x7c] in pass mode, not indexed nor
+   saturated. Each is the one write that reaches its use however control went (direct_reaching_def), so no path brings
+   another value of either register. sm53_io.sail reads a[0x7c] as FragCoord.w itself */
+static int direct_frag_w_rcp(const ShFlow* f, u32 index, u32 reg) {
+    const u64* insn = f->insn;
+    int k = direct_reaching_def(f, index, reg);
+    if (k < 0) return 0;
+    u64 r = insn[k];
+    if (f->op[k]->id != O_MUFU || B(r, 20, 4) != 4 || B(r, 46, 1) || B(r, 48, 1) || B(r, 50, 1)) return 0;
+    int m = direct_reaching_def(f, (u32)k, B(r, 8, 8));
+    if (m < 0) return 0;
+    u64 v = insn[m];
+    return f->op[m]->id == O_IPA && !B(v, 38, 1) && !B(v, 51, 1) && !B(v, 54, 2) && B(v, 30, 8) * 4 == 0x7c;
+}
+int shader_direct_ipa_over_w(const ShFlow* f, u32 index) {
+    u64 w = f->insn[index];
+    return B(w, 54, 2) == 1 && direct_frag_w_rcp(f, index, B(w, 20, 8));
+}
+
 /* reg at index holds a generic's component c (0 x, 1 y) as the vertex stage wrote it, where the position's w is 1:
    IPA of that word, not indexed nor saturated, in pass mode, or multiplied by the reciprocal of the position's
-   interpolated 1 / w (MUFU.RCP of IPA's pass-through read of a[0x7c], no absolute value, negation or saturation), the
-   way the compiler reads a perspective input. The generic's index, or -1 */
+   interpolated 1 / w (direct_frag_w_rcp), the way the compiler reads a perspective input. The generic's index, or -1 */
 static int direct_plain_generic(const ShFlow* f, u32 index, u32 reg, u32 c, int depth) {
     const u64* insn = f->insn;
     int j = depth > 4 ? -1 : direct_reaching_def(f, index, reg);
@@ -877,16 +896,7 @@ static int direct_plain_generic(const ShFlow* f, u32 index, u32 reg, u32 c, int 
     if (op != O_IPA || B(w, 38, 1) || B(w, 51, 1) || B(w, 54, 2) > 1 || addr < 0x80 || addr >= 0x280 ||
         (addr & 15) != c * 4)
         return -1;
-    if (B(w, 54, 2) == 1) {
-        int k = direct_reaching_def(f, (u32)j, B(w, 20, 8));
-        if (k < 0) return -1;
-        u64 r = insn[k];
-        if (decode(r)->id != O_MUFU || B(r, 20, 4) != 4 || B(r, 46, 1) || B(r, 48, 1) || B(r, 50, 1)) return -1;
-        int m = direct_reaching_def(f, (u32)k, B(r, 8, 8));
-        if (m < 0) return -1;
-        u64 v = insn[m];
-        if (decode(v)->id != O_IPA || B(v, 38, 1) || B(v, 51, 1) || B(v, 54, 2) || B(v, 30, 8) * 4 != 0x7c) return -1;
-    }
+    if (B(w, 54, 2) == 1 && !direct_frag_w_rcp(f, (u32)j, B(w, 20, 8))) return -1;
     return (int)((addr - 0x80) >> 4);
 }
 /* The texture read at index samples at (x, y) = a generic's (x, y) as the vertex stage wrote them, the same generic

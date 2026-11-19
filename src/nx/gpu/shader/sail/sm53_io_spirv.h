@@ -235,6 +235,7 @@
 [[maybe_unused]] static int sg_SphImapAny(SgG* g, int64_t v) { return (g->t->sph[6 + v / 4] >> (v % 4 * 8)) & 0xff; }
 [[maybe_unused]] static int64_t sg_IpaInterpolation(SgG* g, int64_t input) { return shader_ipa_interpolation(g->t->sph, (u32)input); }
 [[maybe_unused]] static int sg_IpaPosition(SgG* g, int64_t addr) { return shader_ipa_position(g->t->pos_in, g->t->sph, (u32)addr); }
+[[maybe_unused]] static int sg_IpaOverW(SgG* g) { return shader_direct_ipa_over_w(g->t->flow, g->i); }
 [[maybe_unused]] static int sg_PvMask(SgG* g, int64_t input) { return (g->t->pv_mask >> input) & 1; }
 [[maybe_unused]] static SgV sg_FragNdc(SgG* g, int64_t k) { return sg_v(g->t->frag_ndc[k], SGT_F32); }
 /* its three vertices' values: the first's, and the others' differences from it by their weights, so that a value the

@@ -5550,6 +5550,159 @@ static void per_vertex_pass(void) {
     }
 }
 
+/* IPA.MUL by the reciprocal of a[0x7c] (shader_direct_ipa_over_w): a perspective generic that IPA.MUL multiplies by
+   MUFU.RCP of IPA's read of a[0x7c] is the input as Vulkan interpolates it, with neither the multiply by
+   gl_FragCoord.w that rebuilds the console's attr / w nor IPA.MUL's by its reciprocal (OpFMul, 133: two where they
+   stay). Another multiplier, a modifier on the way, a write of either register that may reach the use on some path, a
+   screen-linear or flat input and a read in pass mode keep what they had. Run on the CPU (support/spv_eval.c) with
+   generic 0's x 0.7 and gl_FragCoord.w 7, where the two multiplies give 0.70000005: the fold gives the input's bits
+   whatever w is, and IPA's .SAT still clamps them */
+#define FOLD_IPA_W(d)       SCREEN_IPA(d, 0x7c)
+#define FOLD_MUL(d, mul)    SCREEN_IPA_MUL(d, 0x80, mul)
+#define FOLD_GUARD(insn, p) (((insn) & ~(0xfull << 16)) | (u64)(p) << 16)
+#define FOLD_BRA(words)     (0xe24000000000000full | (u64)((words) * 8 & 0xffffff) << 20) /* @P0 BRA, in words */
+static u32* fold_program(const u64* instructions, int count, u32 imap6, ShaderInfo* info, size_t* words) {
+    size_t slots;
+    u64* code = guest_program(instructions, count, NULL, &slots);
+    if (!code) return NULL;
+    set_sph(code, 6, imap6); /* byte 0x18 on: generic 0's components, 2 bits each */
+    set_sph(code, 18, 0xf);  /* render target 0 from R0 to R3 */
+    memset(info, 0, sizeof *info);
+    u32* spv = spirv_of(code, slots * sizeof *code, ST_FS, info, words, 1, 1, 1, 1);
+    free(code);
+    return spv;
+}
+static void fold_case(const u64* instructions, int count, u32 imap6, int multiplies, const char* what) {
+    ShaderInfo info;
+    size_t words = 0;
+    u32* spv = fold_program(instructions, count, imap6, &info, &words);
+    check_translated(spv, &info, what);
+    int found = spv ? count_opcode(spv, words, 133, 0xffffffffu) : -1;
+    if (spv && found != multiplies) fprintf(stderr, "  %d multiplies, %d expected\n", found, multiplies);
+    check(found == multiplies, what);
+    free(spv);
+}
+/* R0 of the program run with generic 0's x and gl_FragCoord.w as given: NULL, else why it did not run */
+static const char* fold_run(const u64* instructions, int count, float x, float w, u32* r0) {
+    ShaderInfo info;
+    size_t words = 0;
+    u32* spv = fold_program(instructions, count, 0xaa, &info, &words);
+    if (!spv) return "not translated";
+    SpvEvalEnv env = {0};
+    static const float scale_values[4] = {1.0f, 1.0f, 1.0f, 0.0f};
+    u32 scale[4];
+    memcpy(scale, scale_values, sizeof scale);
+    env.ubo[SNX_VKB_RS] = scale;
+    env.ubo_words[SNX_VKB_RS] = 4;
+    memcpy(&env.in[0][0], &x, 4);
+    const float one = 1.0f;
+    for (u32 k = 0; k < 3; k++) memcpy(&env.builtin[15][k], &one, 4); /* FragCoord */
+    memcpy(&env.builtin[15][3], &w, 4);
+    const char* why = spv_eval(spv, words, &env);
+    *r0 = env.out[0][0];
+    free(spv);
+    return why;
+}
+static u32 float_bits(float value) {
+    u32 bits;
+    memcpy(&bits, &value, 4);
+    return bits;
+}
+static void perspective_fold(void) {
+    const u64 ipa_w = FOLD_IPA_W(4), rcp = SCREEN_RCP(4, 4), mul = FOLD_MUL(0, 4);
+    const u64 folds[] = {ipa_w, rcp, mul};
+    fold_case(folds, 3, 0xaa, 0, "IPA.MUL by 1 / a[0x7c] is the perspective input with no multiply");
+    fold_case(folds, 3, 0x02, 0, "a generic whose first used component is perspective folds the same");
+    const u64 same_register[] = {ipa_w, rcp, FOLD_MUL(4, 4)};
+    fold_case(same_register, 3, 0xaa, 0, "IPA.MUL that writes the reciprocal's own register folds too");
+    const u64 saturated[] = {ipa_w, rcp, mul | 1ull << 51};
+    fold_case(saturated, 3, 0xaa, 0, "IPA.MUL.SAT folds and keeps its clamp");
+    /* each IPA.MUL of the reciprocal folds: four components */
+    const u64 four[] = {
+        ipa_w, rcp, FOLD_MUL(0, 4), SCREEN_IPA_MUL(1, 0x84, 4), SCREEN_IPA_MUL(2, 0x88, 4), SCREEN_IPA_MUL(3, 0x8c, 4)};
+    fold_case(four, 6, 0xaa, 0, "every component's IPA.MUL by the one reciprocal folds");
+    /* the reciprocal before a forward branch over code that doesn't write it, or before a loop that doesn't */
+    const u64 across[] = {ipa_w, rcp, FOLD_BRA(2), mov32i(5, 0x3f800000u), mul};
+    fold_case(across, 5, 0xaa, 0, "the reciprocal reaches IPA.MUL across a branch over other writes");
+    const u64 loop[] = {ipa_w, rcp, mul, mov32i(5, 0x3f800000u), FOLD_BRA(-4)};
+    fold_case(loop, 5, 0xaa, 0, "the reciprocal reaches IPA.MUL in a loop that writes other registers");
+    const u64 guarded[] = {ipa_w, FOLD_GUARD(rcp, 0), FOLD_GUARD(mul, 0)};
+    fold_case(guarded, 3, 0xaa, 0, "a reciprocal under P0 reaches IPA.MUL under P0");
+
+    /* what keeps both multiplies: a modifier or another function on the way */
+    const u64 absolute[] = {ipa_w, rcp | 1ull << 46, mul};
+    fold_case(absolute, 3, 0xaa, 2, "MUFU.RCP of |a[0x7c]| keeps both multiplies");
+    const u64 negative[] = {ipa_w, rcp | 1ull << 48, mul};
+    fold_case(negative, 3, 0xaa, 2, "MUFU.RCP of -a[0x7c] keeps both multiplies");
+    const u64 rcp_saturated[] = {ipa_w, rcp | 1ull << 50, mul};
+    fold_case(rcp_saturated, 3, 0xaa, 2, "MUFU.RCP.SAT keeps both multiplies");
+    const u64 rsq[] = {ipa_w, (rcp & ~(0xfull << 20)) | 5ull << 20, mul};
+    fold_case(rsq, 3, 0xaa, 2, "MUFU.RSQ of a[0x7c] keeps both multiplies");
+    const u64 no_reciprocal[] = {ipa_w, mul};
+    fold_case(no_reciprocal, 2, 0xaa, 2, "IPA.MUL by a[0x7c] itself keeps both multiplies");
+    const u64 product[] = {ipa_w, SCREEN_FMUL(4, 4, 4), mul}; /* bits 20-23 name R4, as MUFU.RCP's function */
+    fold_case(product, 3, 0xaa, 3, "IPA.MUL by FMUL of a[0x7c] keeps both multiplies");
+    /* a[0x7c] read another way, or another attribute */
+    const u64 w_saturated[] = {ipa_w | 1ull << 51, rcp, mul};
+    fold_case(w_saturated, 3, 0xaa, 2, "the reciprocal of IPA.SAT a[0x7c] keeps both multiplies");
+    const u64 w_multiplied[] = {mov32i(5, 0x40000000u), SCREEN_IPA_MUL(4, 0x7c, 5), rcp, mul};
+    fold_case(w_multiplied, 4, 0xaa, 3, "the reciprocal of IPA.MUL a[0x7c] keeps both multiplies");
+    /* an indexed read (a[R5 + 0x7c]) of generic 0, whose perspective value takes a multiply by gl_FragCoord.w */
+    const u64 w_indexed[] = {(ipa_w & ~(0xffull << 8)) | 5ull << 8 | 1ull << 38, rcp, mul};
+    fold_case(w_indexed, 3, 0xaa, 3, "the reciprocal of an indexed IPA keeps both multiplies");
+    const u64 generic_w[] = {SCREEN_IPA(4, 0x8c), rcp, mul};
+    fold_case(generic_w, 3, 0xaa, 3, "the reciprocal of a generic's w keeps both multiplies");
+    const u64 constant_w[] = {mov32i(4, 0x7c00u), rcp, mul}; /* bits 30-37 read as a[0x7c] */
+    fold_case(constant_w, 3, 0xaa, 2, "the reciprocal of a constant keeps both multiplies");
+    /* a write of either register that may reach on some path */
+    const u64 rewritten[] = {ipa_w, rcp, mov32i(4, 0x3f800000u), mul};
+    fold_case(rewritten, 4, 0xaa, 2, "a write of the multiplier after the reciprocal keeps both multiplies");
+    const u64 w_rewritten[] = {ipa_w, mov32i(4, 0x3f800000u), rcp, mul};
+    fold_case(w_rewritten, 4, 0xaa, 2, "a write of a[0x7c]'s register before MUFU.RCP keeps both multiplies");
+    const u64 branch_skips[] = {ipa_w, rcp, FOLD_BRA(2), mov32i(4, 0x3f800000u), mul};
+    fold_case(branch_skips, 5, 0xaa, 2, "a write on one side of a branch keeps both multiplies");
+    const u64 w_one_path[] = {mov32i(4, 0x40000000u), FOLD_BRA(2), ipa_w, rcp, mul};
+    fold_case(w_one_path, 5, 0xaa, 2, "a[0x7c] read on one side of a branch only keeps both multiplies");
+    const u64 loop_rewrites[] = {ipa_w, rcp, mul, mov32i(4, 0x3f800000u), FOLD_BRA(-4)};
+    fold_case(loop_rewrites, 5, 0xaa, 2, "a write later in a loop around IPA.MUL keeps both multiplies");
+    const u64 guard_differs[] = {ipa_w, FOLD_GUARD(rcp, 0), mul};
+    fold_case(guard_differs, 3, 0xaa, 2, "a reciprocal under P0 doesn't reach every lane of IPA.MUL");
+    /* the multiply by gl_FragCoord.w is a perspective input's alone: IPA.MUL of another keeps its own, and a read in
+       pass mode whose multiplier field names the reciprocal keeps gl_FragCoord.w's */
+    fold_case(folds, 3, 0xff, 1, "IPA.MUL of a screen-linear input keeps its multiply");
+    fold_case(folds, 3, 0x55, 1, "IPA.MUL of a flat input keeps its multiply");
+    const u64 pass[] = {ipa_w, rcp, SCREEN_IPA(0, 0x80) | 4ull << 20};
+    fold_case(pass, 3, 0xaa, 1, "IPA in pass mode keeps the multiply by gl_FragCoord.w");
+
+    /* on the CPU: the fold's R0 is the input's bits for any w; the same arithmetic with |a[0x7c]| rounds twice */
+    volatile float x = 0.7f, w = 7.0f;
+    const float twice = x * w * (1.0f / w);
+    check(float_bits(twice) != float_bits(x), "0.7 times 7 times 1 / 7 is not 0.7 in floats");
+    const float ws[] = {7.0f, 1e-30f, 1e30f, 0.0f, INFINITY, NAN};
+    for (size_t k = 0; k < sizeof ws / sizeof *ws; k++) {
+        u32 r0 = 0;
+        const char* why = fold_run(folds, 3, x, ws[k], &r0);
+        if (why || r0 != float_bits(x))
+            fprintf(stderr, "  w %g: %s, R0 %08x (%08x expected)\n", ws[k], why ? why : "ran", r0, float_bits(x));
+        check(!why && r0 == float_bits(x), "the folded IPA.MUL gives the input's bits whatever w is");
+    }
+    u32 r0 = 0;
+    const char* why = fold_run(absolute, 3, x, w, &r0);
+    check(!why && r0 == float_bits(twice), "the unfolded IPA.MUL rounds x * w and its product with 1 / w");
+    const float huge = 3e38f;
+    why = fold_run(folds, 3, huge, 4.0f, &r0);
+    check(!why && r0 == float_bits(huge), "the folded IPA.MUL of 3e38 at w 4 is 3e38");
+    why = fold_run(absolute, 3, huge, 4.0f, &r0);
+    check(!why && r0 == float_bits(INFINITY), "unfolded, 3e38 times 4 overflows to infinity");
+    const float clamps[][2] = {{1.5f, 1.0f}, {-0.25f, 0.0f}, {NAN, 0.0f}};
+    for (size_t k = 0; k < sizeof clamps / sizeof *clamps; k++) {
+        why = fold_run(saturated, 3, clamps[k][0], w, &r0);
+        if (why || r0 != float_bits(clamps[k][1]))
+            fprintf(stderr, "  IPA.MUL.SAT of %g: %s, R0 %08x\n", clamps[k][0], why ? why : "ran", r0);
+        check(!why && r0 == float_bits(clamps[k][1]), "the folded IPA.MUL.SAT clamps the input to [0, 1]");
+    }
+}
+
 /* ShaderInfo.tex_uv_mask: a plain 2D sample at a generic's x and y as the vertex program wrote them, read by IPA in
    pass mode or multiplied by 1 / gl_FragCoord.w as the console's compiler reads a perspective input, reads the
    fragment's own pixel's centre wherever the vertex program wrote its position from that generic; uv_in names the
@@ -7082,6 +7235,7 @@ int main(int argc, char** argv) {
     vertex_uv_out();
     fragment_position_pass();
     per_vertex_pass();
+    perspective_fold();
     settled_when_translated();
     alpha_function_specialized();
     window_origin_specialized();

@@ -2,7 +2,7 @@
 # Copyright 2026 the ScarletNX contributors
 # SM53's attributes and varyings (sm53_io.sail), which were emit_io.c's emit_io
 static Between InVertices OutVertices ClipUsed HasPointSize HasClip HasLayerOutput HasLayerInput HasInput
-static AttrPrivate PointSizeUsed StreamMask XfbOn PositionFix NeedsScale SphImapAny IpaInterpolation IpaPosition
+static AttrPrivate PointSizeUsed StreamMask XfbOn PositionFix NeedsScale SphImapAny IpaInterpolation IpaPosition IpaOverW
 static PvMask HasFragcoord XfbCount XfbStream XfbLayout HasCapture HasOutputAttr HasPosition HasViewportOutput
 op ALD O_ALD
 op AST O_AST

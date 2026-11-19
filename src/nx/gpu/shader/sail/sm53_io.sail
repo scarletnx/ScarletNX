@@ -85,6 +85,7 @@ val DefaultPointSize : unit -> unit
 val SphImapAny : int -> bool
 val IpaInterpolation : int -> int
 val IpaPosition : int -> bool
+val IpaOverW : unit -> bool
 val PvMask : int -> bool
 val FragNdc : int -> bits(32)
 val ProvokingValue : (int, int) -> bits(32)
@@ -236,6 +237,14 @@ function execute_ISBERD() -> unit = R_write(Dst(), R_read(RegA()))
 /* IPA: a fragment's input at the attribute address at 30 (or the register's, bit 38), interpolated in its mode, then
    IPA.MUL's product with the register at 20 (bits 54-55 1) and .SAT (bit 51) */
 function execute_IPA() -> unit = {
+    /* a perspective input by address that IPA.MUL multiplies by the reciprocal of a[0x7c] (IpaOverW) is attr itself:
+       neither multiplication is made, which takes their roundings, and the infinity of attr times FragCoord.w past
+       the float range, out of the value */
+    let over : bool = if Field(38, 1) == 0b1 then false else {
+        let addr = UInt(Field(30, 8)) * 4;
+        let generic = addr >= 128 & addr != 1020 & addr != 736 & addr != 740;
+        if generic & not_bool(IpaPosition(addr)) then IpaInterpolation(DIV(addr - 128, 16)) == 2 & IpaOverW() else false
+    };
     let v : bits(32) = if Field(38, 1) == 0b1 then {
         /* indexed: the generic input at the index register's address, picked among those the header gives a mode by
            its vector (one nothing feeds reads 0, 0, 0, 1) and interpolated in its own mode */
@@ -286,14 +295,14 @@ function execute_IPA() -> unit = {
             /* a[0x7c] is the interpolated 1/w, FragCoord.w as it is: shaders take its reciprocal for IPA.MUL */
             let scaled = if addr != 124 & NeedsScale() & component < 2 then FMulNoContract(x, ResolutionScale()) else x;
             if addr == 116 then FragYOrigin(scaled) else scaled
-        } else if interpolation == 2 then
+        } else if interpolation == 2 & not_bool(over) then
             /* The hardware interpolates attr/w for a perspective input, and the shader multiplies by w (IPA.MUL with
                the reciprocal of a[0x7c]). Vulkan's input is attr itself: times the interpolated 1/w, FragCoord.w, it
                is what the hardware gives */
             FMulNoContract(value, FragCoordComponent(3))
         else value
     };
-    let m = if Field(54, 2) == 0b01 then FMulNoContract(v, R_readF(RegB())) else v;
+    let m = if Field(54, 2) == 0b01 & not_bool(over) then FMulNoContract(v, R_readF(RegB())) else v;
     R_writeF(Dst(), FloatSaturate(m, UInt(Field(51, 1))))
 }
 
