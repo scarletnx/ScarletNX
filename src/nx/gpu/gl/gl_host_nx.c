@@ -112,13 +112,15 @@ int gl_host_surface_targets(u32 s, DsTargets* t) {
     return 1;
 }
 
-/* on the GPU thread, in order with the GPU's other work: an image of a surface on the display */
+/* on the GPU thread, in order with the GPU's other work: an image of a surface on the display. The layer draws with
+   GL's lower left origin, so the image's rows count up, and it is shown flipped (vi's FlipV, 2), as the NVN front end
+   queues a lower left window (nvn_queue.c) */
 static void present_on_gpu(void* arg) {
     const GlPresent* p = arg;
     i32 crop[4] = {0, 0, (i32)p->w, (i32)p->h};
     if (g_renderer_up)
-        g_renderer->present_buffer(p->image, p->w, p->h, p->w * 4, 0 /* pitch linear */, 0, 1 /* RGBA8888 */, crop, 0,
-                                   0, 0, 0);
+        g_renderer->present_buffer(p->image, p->w, p->h, p->w * 4, 0 /* pitch linear */, 0, 1 /* RGBA8888 */, crop,
+                                   2 /* FlipV */, 0, 0, 0);
     atomic_fetch_add_explicit(&g_frames, 1, memory_order_relaxed);
 }
 void gl_host_present(u32 s, u32 interval) {

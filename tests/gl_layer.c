@@ -247,13 +247,13 @@ void gpu_call(void (*fn)(void*), void* arg, const u32* chans, u32 nchans) {
 static struct {
     unsigned count;
     u64 addr;
-    u32 w, h, pitch, layout, fmt;
+    u32 w, h, pitch, layout, fmt, transform;
 } shown;
 static void present_buffer(u64 cpu_addr, u32 w, u32 h, u32 pitch, u32 layout, u32 bhl, u32 fmt, const i32 crop[4],
                            u32 transform, u64 released_ns, u64 period_ns, u32 shown_syncpt) {
-    (void)bhl, (void)crop, (void)transform, (void)released_ns, (void)period_ns, (void)shown_syncpt;
+    (void)bhl, (void)crop, (void)released_ns, (void)period_ns, (void)shown_syncpt;
     shown.count++, shown.addr = cpu_addr, shown.w = w, shown.h = h, shown.pitch = pitch, shown.layout = layout;
-    shown.fmt = fmt;
+    shown.fmt = fmt, shown.transform = transform;
 }
 /* the renderer's draws, clears and host programs: the last state, call and clears, each program's stage and description */
 static struct {
@@ -474,6 +474,7 @@ int main(void) {
     assert(call("eglSwapBuffers", 1, surface, 0, 0, 0) == 1);
     assert(shown.count == 1 && g_frames == 1 && shown.w == 1280 && shown.h == 720 && shown.pitch == 1280 * 4);
     assert(shown.layout == 0 && shown.fmt == 1 && shown.addr == gpu_cpu(window.gva)); /* the image cleared */
+    assert(shown.transform == 2); /* GL's rows count up: shown flipped, as a lower left NVN window is */
     g_drawn.nclear = 0;
     call("_glClear", 0x4000, 0, 0, 0, 0);
     assert(g_drawn.nclear == 1 && g_drawn.ds.tgt.color[0].gva != window.gva); /* the other image */
