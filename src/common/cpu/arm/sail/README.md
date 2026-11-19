@@ -32,8 +32,8 @@ The guests differ in two ways, each said once here:
   its definitions take the place of `a32.sail`'s of the same name: the registers as `SnxArmCPU` keeps them (`GPR`,
   user mode, no banking), the instruction set, ITSTATE and the condition as the block compiler decides them when it
   compiles a block, guest memory as the board's (`GuestRead`, `GuestWrite`, and the multiple transfers' whole range
-  checked first, `GuestTransfer`), the hints, the exceptions, what an UNPREDICTABLE encoding does
-  (`UnpredictableEncoding()`: it runs as it is written) and the guest's architecture (`ArchVersion()`, which a fixup
+  checked first, `GuestTransfer`), the hints, the exceptions, what an UNPREDICTABLE encoding does on each guest's core
+  (`UnpredictableEncoding()`, each rule with its reason) and the guest's architecture (`ArchVersion()`, which a fixup
   that differs from one architecture to the next asks, as the ARMv7 ARM's ASL does: `LoadWritePC`, the ARM7TDMI's
   `STM`).
 
