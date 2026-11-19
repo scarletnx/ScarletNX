@@ -195,8 +195,9 @@ static int check_mirror_fold(u64 cpu, u64 gva, int gpu) {
 
 /* Frames one after another, as a game's. In each a dispatch in the mirror writes its buffers and its log, taking the
    log the frame before cleared (vk_wlog_get_gpu gives it again), and its folds and the log's clear are recorded as
-   compute.c records them; the CPU writes every byte of the buffers' guest memory while the frame's work is in flight;
-   then the frame's harvest lands. Each frame lands the bytes its own log gives and no others. A bit an earlier frame
+   compute.c records them; the CPU writes every other byte of the buffers' guest memory while the frame's work is in
+   flight (a byte both wrote keeps the CPU's, land_entry, which check_mirror checks); then the frame's harvest lands.
+   Each frame lands the bytes its own log gives and no others. A bit an earlier frame
    left in the log would land the mirror's older byte over the CPU's newer one, a window written and not folded would
    lose the frame's bytes, and a bit past a buffer's length would change a byte no program wrote: the mask each frame's
    folds leave, the log after its clear and guest memory after the landing are checked. The stores are the words
@@ -311,7 +312,7 @@ static int check_mirror_frames(void) {
         const MfFrame* fr = &mf_frames[f];
         /* where the host traps guest memory, the even frames' pages were last touched by the CPU past
            vk_own_cpu_read's 1200 presents: they stay the mirror's once done and land whole at its touch. The odd
-           frames' land with their submit, touched by the landing before */
+           frames' land with their submit, touched by the CPU in the frame before */
         if (!(f & 1)) g_vk_present += 1300;
         vk_ww_new_epoch();
         for (u32 p = 0; p < 3; p++)
@@ -365,8 +366,9 @@ static int check_mirror_frames(void) {
         vk_wlog_clear(vk_cmd(), l, cleared);
         vk_wlog_ready(l);
         kept = l;
-        /* the CPU's writes in flight */
-        for (u32 x = 0; x < MF_LEN; x++) GP(MF_CPU)[x] = (u8)((x * 7 + (f + 2) * 0x35) & 0x7f);
+        /* the CPU's writes in flight, beside the frame's stores */
+        for (u32 x = 0; x < MF_LEN; x++)
+            if (!(mwant[x / 32] >> (x % 32) & 1)) GP(MF_CPU)[x] = (u8)((x * 7 + (f + 2) * 0x35) & 0x7f);
         memcpy(want, GP(MF_CPU), MF_LEN);
         for (u32 r = 0; r < 8; r++) {
             const MfRun* run = &fr->run[r];
@@ -390,6 +392,7 @@ static int check_mirror_frames(void) {
         vk_mirror_publish();
         vk_mirror_mem_need(MF_GVA, MF_LEN);
         own_acquire(MF_CPU, MF_LEN);
+        vk_own_cpu_touched(MF_CPU, MF_LEN); /* as the guest's landing notes it: own_acquire lands as the runtime */
         CHECK(!vk_mirror_pending(MF_GVA, MF_LEN));
         CHECK(!own_traps() || (f & 1 ? own_landings() == lands : own_landings() > lands)); /* each path taken */
         for (u32 x = 0; x < MF_LEN; x++)
@@ -398,7 +401,7 @@ static int check_mirror_frames(void) {
     g_vk_present = present;
     if (mf_report(0)) return 1;
     printf("mirror frames: %u frames took one write log, each left clear by its folds and fills, and each landed the "
-           "bytes its own stores logged over the CPU's writes in flight, and no others (%s)\n",
+           "bytes its own stores logged beside the CPU's writes in flight, and no others (%s)\n",
            MF_FRAMES,
            own_traps() ? "the even frames' pages the mirror's until the CPU touched them, the odd ones' landed with "
                          "their submit"
@@ -537,6 +540,7 @@ static int check_mirror_dispatches(void) {
         vk_mirror_publish();
         vk_mirror_mem_need(MF_GVA, MF_LEN);
         own_acquire(MF_CPU, MF_LEN);
+        vk_own_cpu_touched(MF_CPU, MF_LEN); /* as check_mirror_frames: the guest's touch */
         CHECK(!vk_mirror_pending(MF_GVA, MF_LEN));
         CHECK(!own_traps() || (k & 1 ? own_landings() == lands : own_landings() > lands));
         for (u32 a = 0; a < MF_LEN; a++)
