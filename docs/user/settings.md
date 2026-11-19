@@ -340,12 +340,13 @@ the key (with its modifiers held); Esc cancels, Backspace puts the default back,
 
 ## Online
 
-Each console's online service, the launcher's Online group. They do nothing for a Switch game.
+Each console's online service, the launcher's Online group.
 
 | Key | Default | Effect |
 | --- | --- | --- |
 | `nds_wfc` | `off` | The DS's WFC service, the community's replacement of the closed original, by the DNS server set in the firmware's first Wi-Fi connection: `auto` is the service whose server answers first as the game starts (each asked once, for 1.5 s at most; the log says each one's time and the one taken, and with no answer the connections stay unset), `kaeru` (Kaeru WFC), `wiilink` (WiiLink), `wiimmfi` (Wiimmfi), `wiilink_wfc` (WiiLink WFC), `altwfc` (AltWFC), `newwfc` (NewWFC), `skytemple` (SkyTemple WFC), `diyfi` (DIYFI), `sudomemo` (Sudomemo); `custom` is the server `nds_wfc_dns` names, `off` the DNS of the DS's network. The DS driver reads it from the command line (`--nds-wfc`) or `settings.ini`'s `[Online]`. Another word stops the game, naming it. The DS driver has no wireless yet: a game's Wi-Fi settings show the connection, and no game connects through it ([DS](../platforms/nds/README.md#wfc)) |
 | `nds_wfc_dns` | empty | The DNS server `nds_wfc=custom` sets, an IPv4 address (`178.62.43.212`); with `custom`, empty or anything but an address stops the game |
+| `switch_online` | `0` | The Switch's online service of the console maker (its accounts, friends and game servers) is not offered: the row stays greyed, `Not offered`, on every system, and `0` (Off) is its one value. ScarletNX connects to none of its servers, nor to a service that stands in for them. A game's own internet access is `network` |
 
 ## User
 

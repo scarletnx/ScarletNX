@@ -7108,6 +7108,10 @@ msgstr ""
 msgid "arm64 Linux and Android only"
 msgstr ""
 
+#: src/nx/runtime/ini.c
+msgid "Not offered"
+msgstr ""
+
 #: src/nx/runtime/settings.txt
 msgid "gdbstub"
 msgstr ""

@@ -275,6 +275,7 @@ const char* ini_only_words(int flags) {
         case INI_ONLY_ANDROID: return SNX_TR_NOOP("Android only");
         case INI_ONLY_LINUX: return SNX_TR_NOOP("Linux and Android only");
         case INI_ONLY_ARM64_LINUX: return SNX_TR_NOOP("arm64 Linux and Android only");
+        case INI_ONLY_NONE: return SNX_TR_NOOP("Not offered");
         default: return NULL;
     }
 }
