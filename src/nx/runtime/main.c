@@ -1042,6 +1042,30 @@ static void prepare_wait(const char* title) {
         p.pipes_made, p.pipes, how, ended);
     unattended_start(); /* scripted presses and the timed exit count from the game's start */
 }
+/* the notification over the game fades in and out as the launcher's screens do: the fade_in_ms and fade_out_ms of the
+   theme it shows, or YoRHa's built in where that can't be read. Nothing shows on a headless run; a window minimized
+   now shows them later */
+static void toast_fades(void) {
+    SnxRunTheme theme = {0};
+    char* dir;
+    u32 ms[2];
+    int themed;
+    if (g_opt_headless) return;
+    dir = snx_menu_run_theme ? backend_launcher_folder() : NULL;
+    if (dir) snx_menu_run_theme(dir, &theme);
+    free(dir);
+    themed = theme.ink != theme.page; /* all zeros when the launcher couldn't say */
+    ui_lock();
+    overlay_fades(themed ? &theme : NULL, ms);
+    ui_unlock();
+    if (themed)
+        LOG("overlay: notifications fade in over %u ms and out over %u ms, as the %s theme's screens\n", ms[0], ms[1],
+            theme.name);
+    else
+        LOG("overlay: notifications fade in over %u ms and out over %u ms, as YoRHa's built in: the launcher's theme "
+            "could not be read\n",
+            ms[0], ms[1]);
+}
 
 /* ---- startup ---- */
 
@@ -1540,6 +1564,7 @@ int snx_main(int argc, char** argv) {
         video_init(title, addons);
     }
     switch_start(title);
+    toast_fades();
     /* the log's line on the host's power state, and the mode docked's Auto picks, before the game's first thread */
     options_tv_mode_start();
     if (g_settings.profiler) {
