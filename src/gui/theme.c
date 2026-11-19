@@ -795,6 +795,8 @@ void gui_run_theme(const char* folder, SnxRunTheme* out) {
         out->steps = t->run == GUI_RUN_STEPS;
         out->texture = t->texture;
         out->progress = t->progress;
+        out->fade_in_ms = t->fade_in_ms;
+        out->fade_out_ms = t->fade_out_ms;
     }
     gui_themes_free(&listed);
     free(t);
