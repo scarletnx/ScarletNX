@@ -91,6 +91,8 @@ keeps audits and measurements as they were taken.
     and the optimized pipeline made after them
   - [Driver quirks](layers/gpu/driver-quirks.md): what each GPU driver gets wrong, where that is known from, and how
     the renderer works around it
+  - [GPU clocks](layers/gpu/gpu-clocks.md): the GPU's clocks held up while a game runs (`gpu_pstate`), the way on
+    each system and why some have none
   - [ASTC compute uploads](layers/gpu/astc.md)
   - [Block linear surfaces and texture conversions on the GPU](layers/gpu/blocklinear.md)
   - [BCn without BCn: ETC2 and EAC on phone GPUs](layers/gpu/bcn.md)

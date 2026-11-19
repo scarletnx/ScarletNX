@@ -1,0 +1,387 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later
+   Copyright 2026 the ScarletNX contributors */
+/* gpu_pstate (common/gpu/vk/gpu_pstate.c) with no GPU: its values, and the hold against a stand-in kernel (ioctl
+   wrapped at link time, -Wl,--wrap=ioctl) on a stand-in /sys and /dev, each case in a process of its own, as the hold
+   lasts the process:
+   - off, a GPU of another vendor, and auto on an integrated GPU hold nothing and open nothing; on holds an
+     integrated one;
+   - a discrete AMD GPU at the level auto is held: the node DEVNAME names opened close-on-exec and left open (the
+     kernel puts the level back when the process ends), its driver's name asked, a context made, the peak stable
+     pstate set on it, the level read back; a second hold opens nothing;
+   - a level set on the PC ("high", "manual") is left as it is; one that does not read holds with on, not with auto;
+   - each refusal (EBUSY, EINVAL, ENOTTY, a radeon node, a node that does not open, no render node) said as a warning
+     with the error's words and the node, the node closed again;
+   - every case says exactly one line, naming the value given */
+#include "common/gpu/vk/gpu_pstate.h"
+#include <errno.h>
+#include <fcntl.h>
+#include <stdarg.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/ioctl.h>
+#include <sys/stat.h>
+#include <sys/wait.h>
+#include <unistd.h>
+/* struct drm_version as drm.h declares it */
+struct version {
+    int major, minor, patchlevel;
+    size_t name_len;
+    char* name;
+    size_t date_len;
+    char* date;
+    size_t desc_len;
+    char* desc;
+};
+#if __has_include(<drm/amdgpu_drm.h>) /* the system's uapi headers, where it has them, check the numbers */
+#include <drm/amdgpu_drm.h>
+#include <drm/drm.h>
+#define VERSION_REQUEST DRM_IOCTL_VERSION
+#define CTX_REQUEST     DRM_IOCTL_AMDGPU_CTX
+#else /* the kernel's numbers, as its uapi headers make them */
+#define VERSION_REQUEST _IOWR('d', 0x00, struct version)
+#define CTX_REQUEST     _IOWR('d', 0x42, char[16])
+#endif
+
+static struct {
+    unsigned checks, failures;
+    char root[256];
+    /* the stand-in kernel: what it answers, and what it was asked */
+    const char* driver; /* DRM_IOCTL_VERSION's name */
+    int version_err, alloc_err, set_err;
+    int versions, allocs, sets, others;
+    unsigned set_flags, set_ctx;
+    int fd; /* the fd the context was asked on */
+    /* the lines said */
+    int lines, warn;
+    char line[2048];
+} g;
+
+#define CHECK(c, what)                                                                                                 \
+    do {                                                                                                               \
+        g.checks++;                                                                                                    \
+        if (!(c)) {                                                                                                    \
+            g.failures++;                                                                                              \
+            printf("FAIL line %d: %s\n  said: %s\n", __LINE__, what, g.line);                                          \
+        }                                                                                                              \
+    } while (0)
+
+/* the stand-in kernel: DRM_IOCTL_VERSION and DRM_IOCTL_AMDGPU_CTX's ALLOC_CTX and SET_STABLE_PSTATE, as amdgpu answers
+   them; a set that holds writes the level the kernel would show */
+int __wrap_ioctl(int fd, unsigned long request, ...);
+int __wrap_ioctl(int fd, unsigned long request, ...) {
+    va_list ap;
+    va_start(ap, request);
+    void* arg = va_arg(ap, void*);
+    va_end(ap);
+    if (request == (unsigned long)VERSION_REQUEST) {
+        g.versions++;
+        g.fd = fd;
+        if (g.version_err) return errno = g.version_err, -1;
+        struct version* v = arg;
+        snprintf(v->name, v->name_len + 1, "%s", g.driver);
+        return 0;
+    }
+    if (request == (unsigned long)CTX_REQUEST) {
+        uint32_t* in = arg; /* op, flags, ctx_id, priority */
+        g.fd = fd;
+        if (in[0] == 1) {
+            g.allocs++;
+            if (g.alloc_err) return errno = g.alloc_err, -1;
+            in[0] = 7; /* out.alloc.ctx_id */
+            return 0;
+        }
+        if (in[0] == 6) {
+            g.sets++;
+            g.set_flags = in[1], g.set_ctx = in[2];
+            if (g.set_err) return errno = g.set_err, -1;
+            char path[512];
+            snprintf(path, sizeof path, "%s/sys/dev/char/226:128/device/power_dpm_force_performance_level", g.root);
+            FILE* f = fopen(path, "w");
+            if (f) fputs("profile_peak\n", f), fclose(f);
+            return 0;
+        }
+    }
+    g.others++;
+    return errno = ENOTTY, -1;
+}
+
+static void say(const char* line, int warn) {
+    g.lines++;
+    g.warn = warn;
+    snprintf(g.line, sizeof g.line, "%s", line);
+}
+
+static int has(const char* text) { return strstr(g.line, text) != NULL; }
+
+static void put(const char* rel, const char* text) {
+    char path[512];
+    snprintf(path, sizeof path, "%s/%s", g.root, rel);
+    for (char* s = strchr(path + strlen(g.root) + 1, '/'); s; s = strchr(s + 1, '/')) {
+        *s = 0;
+        mkdir(path, 0755);
+        *s = '/';
+    }
+    FILE* f = fopen(path, "w");
+    if (f) fputs(text, f), fclose(f);
+}
+
+/* the stand-in /sys and /dev of a render node 226:128, dri/renderD128, at level */
+static void machine(const char* level) {
+    put("sys/dev/char/226:128/uevent", "MAJOR=226\nMINOR=128\nDEVNAME=dri/renderD128\nDEVTYPE=drm_minor\n");
+    if (level) put("sys/dev/char/226:128/device/power_dpm_force_performance_level", level);
+    put("dev/dri/renderD128", "");
+    g.driver = "amdgpu";
+}
+
+static SnxGpuPstateDevice device(int type) {
+    static char sys[300], dev[300];
+    snprintf(sys, sizeof sys, "%s/sys", g.root);
+    snprintf(dev, sizeof dev, "%s/dev", g.root);
+    return (SnxGpuPstateDevice){"AMD Radeon RX 6700 XT", SNX_GPU_VENDOR_AMD, type, 1, 226, 128, sys, dev};
+}
+
+static int hold(int mode, SnxGpuPstateDevice d) {
+    int before = g.lines;
+    int held = snx_gpu_pstate_hold(mode, &d, say);
+    CHECK(g.lines == before + 1, "one line a hold");
+    return held;
+}
+
+/* the stand-in's files and folders, each removed by name, the deepest first; 0 or the first that did not go */
+static const char* clean(void) {
+    static const char* const made[] = {"sys/dev/char/226:128/device/power_dpm_force_performance_level",
+                                       "sys/dev/char/226:128/device",
+                                       "sys/dev/char/226:128/uevent",
+                                       "sys/dev/char/226:128",
+                                       "sys/dev/char",
+                                       "sys/dev",
+                                       "sys",
+                                       "dev/dri/renderD128",
+                                       "dev/dri",
+                                       "dev",
+                                       ""};
+    static char path[512];
+    for (size_t i = 0; i < sizeof made / sizeof *made; i++) {
+        snprintf(path, sizeof path, "%s/%s", g.root, made[i]);
+        if (remove(path) && errno != ENOENT) return path;
+    }
+    return NULL;
+}
+
+static int is_open(int fd) { return fd > 0 && fcntl(fd, F_GETFD) != -1; }
+
+enum { OTHER, INTEGRATED, DISCRETE };
+
+static void case_values(void) {
+    static const struct {
+        const char* text;
+        int mode;
+    } cases[] = {{"auto", SNX_GPU_PSTATE_AUTO},
+                 {"on", SNX_GPU_PSTATE_ON},
+                 {"off", SNX_GPU_PSTATE_OFF},
+                 {"Auto", -1},
+                 {"OFF", -1},
+                 {"1", -1},
+                 {"0", -1},
+                 {"", -1},
+                 {"auto ", -1},
+                 {"peak", -1}};
+    for (size_t i = 0; i < sizeof cases / sizeof *cases; i++)
+        CHECK(snx_gpu_pstate_mode(cases[i].text) == cases[i].mode, cases[i].text);
+}
+
+static void case_off(void) {
+    machine("auto\n");
+    CHECK(!hold(SNX_GPU_PSTATE_OFF, device(DISCRETE)), "off holds nothing");
+    CHECK(!g.versions && !g.allocs && !g.sets, "off asks the kernel nothing");
+    CHECK(!g.warn && has("gpu_pstate=off: AMD Radeon RX 6700 XT's driver chooses its clocks"), "off's line");
+}
+
+static void case_auto_integrated(void) {
+    machine("auto\n");
+    CHECK(!hold(SNX_GPU_PSTATE_AUTO, device(INTEGRATED)), "auto holds no integrated GPU");
+    CHECK(!g.versions && !g.allocs && !g.sets, "auto asks the kernel nothing for an integrated GPU");
+    CHECK(!g.warn && has("gpu_pstate=auto: AMD Radeon RX 6700 XT, an integrated GPU: its driver chooses its clocks") &&
+              has("gpu_pstate=on holds them") && has("shares its power with the CPU"),
+          "auto's line on an integrated GPU");
+    CHECK(!hold(SNX_GPU_PSTATE_AUTO, device(OTHER)) && !g.sets && has("a GPU of another kind"),
+          "auto holds a GPU of another kind neither");
+}
+
+static void case_on_integrated(void) {
+    machine("auto\n");
+    CHECK(hold(SNX_GPU_PSTATE_ON, device(INTEGRATED)), "on holds an integrated GPU");
+    CHECK(g.sets == 1 && g.set_flags == 4, "the peak stable pstate set");
+    CHECK(!g.warn && has("gpu_pstate=on: AMD Radeon RX 6700 XT, an integrated GPU: its clocks held"), "on's line");
+}
+
+static void case_held(void) {
+    machine("auto\n");
+    CHECK(hold(SNX_GPU_PSTATE_AUTO, device(DISCRETE)), "auto holds a discrete GPU at the level auto");
+    CHECK(g.versions == 1 && g.allocs == 1 && g.sets == 1 && !g.others, "its name asked, a context made and set");
+    CHECK(g.set_flags == 4 && g.set_ctx == 7, "the peak stable pstate (4) set on the context made (7)");
+    CHECK(is_open(g.fd), "the node left open: the kernel puts the level back when the process ends");
+    CHECK(is_open(g.fd) && (fcntl(g.fd, F_GETFD) & FD_CLOEXEC), "the node closed in a program the game starts");
+    char node[400];
+    snprintf(node, sizeof node, "(%s/dev/dri/renderD128, the level auto, now \"profile_peak\")", g.root);
+    CHECK(!g.warn &&
+              has("gpu_pstate=auto: AMD Radeon RX 6700 XT, a discrete GPU: its clocks held at amdgpu's peak "
+                  "stable pstate ") &&
+              has(node) && has("the kernel puts auto back, a crash too"),
+          "the held line: the node, the level before and after");
+    CHECK(hold(SNX_GPU_PSTATE_AUTO, device(DISCRETE)) && g.versions == 1 && g.sets == 1 && has("held already"),
+          "a second hold opens nothing and says it is held already");
+}
+
+static void case_level_set(void) {
+    static const char* const levels[] = {"high", "manual", "profile_standard", ""};
+    for (int i = 0; i < 4; i++) {
+        char text[64], quoted[80];
+        snprintf(text, sizeof text, "%s\n", levels[i]);
+        snprintf(quoted, sizeof quoted, "the level set on this PC, \"%s\" (", levels[i]);
+        machine(text);
+        for (int mode = SNX_GPU_PSTATE_AUTO; mode <= SNX_GPU_PSTATE_ON; mode++) {
+            CHECK(!hold(mode, device(DISCRETE)), "a level set on the PC is left as it is, by on too");
+            CHECK(!g.versions && !g.sets, "nothing asked of the kernel");
+            CHECK(!g.warn && has(quoted) && has("power_dpm_force_performance_level") && has("leave auto behind"),
+                  "the line names the level and where it is read");
+        }
+    }
+}
+
+static void case_level_unread(void) {
+    machine(NULL);
+    CHECK(!hold(SNX_GPU_PSTATE_AUTO, device(DISCRETE)), "auto holds nothing from a level that does not read");
+    CHECK(!g.versions && !g.sets, "auto asks the kernel nothing then");
+    CHECK(!g.warn && has("does not read (No such file or directory)") && has("gpu_pstate=on holds them anyway"),
+          "auto's line names the error and on");
+    CHECK(hold(SNX_GPU_PSTATE_ON, device(DISCRETE)) && g.sets == 1, "on holds it anyway");
+    CHECK(!g.warn && has("from a level that does not read") && has("No such file or directory"), "on's line");
+}
+
+/* a refusal: a warning with words and the node, nothing held, the node closed */
+static void refused(int mode, const char* words, const char* what) {
+    char node[400];
+    snprintf(node, sizeof node, "%s/dev/dri/renderD128", g.root);
+    CHECK(!hold(mode, device(DISCRETE)), what);
+    CHECK(g.warn && has(words) && has(node) && has("its driver chooses the clocks"), what);
+    CHECK(!is_open(g.fd), "the node closed again");
+}
+
+static void case_busy(void) {
+    machine("auto\n");
+    g.set_err = EBUSY;
+    refused(SNX_GPU_PSTATE_AUTO, "Device or resource busy: another process holds one on this GPU", "EBUSY");
+    CHECK(has("the kernel refused the peak stable pstate (AMDGPU_CTX_OP_SET_STABLE_PSTATE)"), "what was refused");
+}
+
+static void case_old_kernel(void) {
+    machine("auto\n");
+    g.set_err = EINVAL;
+    refused(SNX_GPU_PSTATE_ON, "Invalid argument: a kernel before Linux 5.19 has none", "EINVAL");
+}
+
+static void case_no_context(void) {
+    machine("auto\n");
+    g.alloc_err = ENOMEM;
+    refused(SNX_GPU_PSTATE_AUTO, "a context of the runtime's own (AMDGPU_CTX_OP_ALLOC_CTX)", "ALLOC_CTX refused");
+    CHECK(has("Cannot allocate memory") && !g.sets, "its error, and no set after");
+}
+
+static void case_not_drm(void) {
+    machine("auto\n");
+    g.version_err = ENOTTY;
+    refused(SNX_GPU_PSTATE_AUTO, "its driver's name (DRM_IOCTL_VERSION)", "a node that is no DRM node");
+    CHECK(has("Inappropriate ioctl for device") && !g.allocs, "its error, and no context after");
+}
+
+static void case_radeon(void) {
+    machine("auto\n");
+    g.driver = "radeon";
+    refused(SNX_GPU_PSTATE_AUTO, "kernel driver is radeon, not amdgpu", "a radeon node");
+    CHECK(!g.allocs && !g.sets, "no amdgpu call on it");
+}
+
+static void case_no_node(void) {
+    machine("auto\n");
+    SnxGpuPstateDevice d = device(DISCRETE);
+    d.has_render = 0;
+    for (int mode = SNX_GPU_PSTATE_AUTO; mode <= SNX_GPU_PSTATE_ON; mode++) {
+        CHECK(!snx_gpu_pstate_hold(mode, &d, say), "no render node, no hold");
+        CHECK(g.warn == (mode == SNX_GPU_PSTATE_ON) &&
+                  has("names no render node (VK_EXT_physical_device_drm, whose line says why)"),
+              "said, a warning with on");
+    }
+    d = device(DISCRETE);
+    d.render_minor = 129;
+    char where[400];
+    snprintf(where, sizeof where, "no render node 226:129 in %s/sys/dev/char/226:129/uevent (No such file", g.root);
+    CHECK(!hold(SNX_GPU_PSTATE_AUTO, d) && g.warn && has(where), "a device number sysfs has no node for");
+    put("sys/dev/char/226:128/uevent", "MAJOR=226\nMINOR=128\n");
+    CHECK(!hold(SNX_GPU_PSTATE_AUTO, device(DISCRETE)) && g.warn && has("uevent (No such file"),
+          "a uevent without DEVNAME");
+    machine("auto\n");
+    char path[400];
+    snprintf(path, sizeof path, "%s/dev/dri/renderD128", g.root);
+    unlink(path);
+    snprintf(where, sizeof where, "%s does not open (No such file or directory)", path);
+    CHECK(!hold(SNX_GPU_PSTATE_AUTO, device(DISCRETE)) && g.warn && has(where) && !g.versions,
+          "a node that does not open");
+}
+
+static void case_other_vendor(void) {
+    machine("auto\n");
+    SnxGpuPstateDevice d = device(DISCRETE);
+    d.name = "NVIDIA GeForce RTX 2080", d.vendor = 0x10de;
+    CHECK(!snx_gpu_pstate_hold(SNX_GPU_PSTATE_AUTO, &d, say) && !g.versions, "no way for another vendor");
+    CHECK(!g.warn && has("gpu_pstate=auto: NVIDIA GeForce RTX 2080, a discrete GPU: no way to hold this GPU's clocks "
+                         "on "),
+          "said");
+    CHECK(!snx_gpu_pstate_hold(SNX_GPU_PSTATE_ON, &d, say) && g.warn, "a warning with on");
+}
+
+static const struct {
+    const char* name;
+    void (*run)(void);
+} g_cases[] = {{"values", case_values},
+               {"off", case_off},
+               {"auto_integrated", case_auto_integrated},
+               {"on_integrated", case_on_integrated},
+               {"held", case_held},
+               {"level_set", case_level_set},
+               {"level_unread", case_level_unread},
+               {"busy", case_busy},
+               {"old_kernel", case_old_kernel},
+               {"no_context", case_no_context},
+               {"not_drm", case_not_drm},
+               {"radeon", case_radeon},
+               {"no_node", case_no_node},
+               {"other_vendor", case_other_vendor}};
+
+int main(void) {
+    int failed = 0;
+    for (size_t i = 0; i < sizeof g_cases / sizeof *g_cases; i++) {
+        fflush(stdout);
+        pid_t p = fork();
+        if (!p) {
+            snprintf(g.root, sizeof g.root, "%s/snx-gpu-pstate-XXXXXX", getenv("TMPDIR") ? getenv("TMPDIR") : "/tmp");
+            if (!mkdtemp(g.root)) return perror("mkdtemp"), 3;
+            g.fd = -1;
+            g_cases[i].run();
+            printf("%s: %u checks, %u failed\n", g_cases[i].name, g.checks, g.failures);
+            const char* left = clean();
+            if (left) printf("%s: %s was not removed: %s\n", g_cases[i].name, left, strerror(errno));
+            fflush(stdout);
+            _exit(g.failures ? 1 : 0);
+        }
+        int st = 0;
+        waitpid(p, &st, 0);
+        if (!WIFEXITED(st) || WEXITSTATUS(st)) {
+            printf("FAIL %s (status %d)\n", g_cases[i].name, st);
+            failed++;
+        }
+    }
+    printf("%s\n", failed ? "FAILED" : "ok");
+    return failed ? 1 : 0;
+}
