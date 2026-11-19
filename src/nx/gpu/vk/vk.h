@@ -3194,8 +3194,6 @@ enum { VK_TEX_KEPT, VK_TEX_RESOLVED, VK_TEX_PAST, VK_TEX_VIEW_KEPT, VK_TEX_SAMPL
 enum {
     VK_FS_KEPT,
     VK_FS_NONE,    /* the draw before kept none */
-    VK_FS_COMPUTE, /* compute results pending */
-    VK_FS_CHECK,   /* draw_state_check=1 */
     VK_FS_PROGRAM, /* another draw state or program, its slots, the outputs before it or the targets' integer outputs */
     VK_FS_POOLS,   /* the pools, their limits, the sampler mode or the texture bank */
     VK_FS_GPU,     /* a GPU-side write */
