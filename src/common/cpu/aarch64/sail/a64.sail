@@ -1,7 +1,8 @@
 /* sail-arm's definitions that a64.roots reaches (sailgen --extract), as they are in:
      instrs64.sail
      v8_base.sail
-   BSD 3-Clause Clear License: LICENSE beside this file. Do not edit: an NX fixup goes in nx.sail */
+   BSD 3-Clause Clear License: LICENSE beside this file. Do not edit: a system's fixup goes in its overlay
+   (README.md beside this file) */
 
 val execute_aarch64_instrs_vector_arithmetic_unary_diff_neg_int_sisd : forall 'd 'datasize 'elements 'esize 'n ('neg : Bool),
   (0 <= 'n & 'n <= 31 & 'esize in {8, 16, 32, 64} & 'datasize in {8, 16, 32, 64, 128} & 0 <= 'd & 'd <= 31).
