@@ -7727,15 +7727,17 @@ u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, Sha
             break;
         }
     /* after the CALLs are inlined and before the passes that move instructions: the pairs of instructions that one
-       operation takes the place of (fuse.c), whose spans the array moves invalidate */
+       operation takes the place of (fuse.c), whose spans the array moves invalidate. A pair whose second half a jump
+       lands on (a BRA's target, a BRX's case, flow_sources' edges) stays two, as that jump runs the second alone */
     {
-        u32 nfuse = 0;
+        u32 nfuse = 0, kept = 0;
         FuseSpan* fuse = sm86_fuse_find(insn, n, &nfuse);
-        if (fuse) { /* the array this function allocates, which the translation reads through c->in */
-            sm86_fuse_make(insn, &n, fuse, nfuse);
-            c->in = insn;
-            c->n = n;
+        if (fuse && !flow_sources(c)) fail(c, "out of memory");
+        for (u32 s = 0; fuse && s < nfuse && !c->failed; s++) {
+            u32 second = fuse[s].pos + 1;
+            if (c->jump_first[second] == c->jump_first[second + 1]) fuse[kept++] = fuse[s];
         }
+        sm86_fuse_make(insn, n, fuse, c->failed ? 0 : kept);
     }
     if (!c->failed && !track_globals(c)) fail(c, "out of memory");
     ShStructure* st = c->failed ? NULL : build_structure(c);

@@ -21,7 +21,9 @@ enum { SM86_FUSE_NONE, SM86_FUSE_LDSM_HMMA };
 /* the pairs in an array of n SM86 instructions: the spans as one array, or NULL where there is none. The array is
    read only, so it is safe before any pass of the translation */
 FuseSpan* sm86_fuse_find(const Sm86Insn* in, u32 n, u32* count);
-/* the spans made into fused instructions in the array, the pair's two instructions one SM86_LDSM_HMMA whose fields
-   are the second half's: the array's new count comes back in n. The spans are of no use after this, and are freed */
-void sm86_fuse_make(Sm86Insn* in, u32* n, FuseSpan* spans, u32 count);
+/* the spans made into fused instructions in the n of the array: each pair's first instruction one SM86_LDSM_HMMA
+   whose fields are the second half's, and its second a NOP. Every instruction keeps its position, which a branch's
+   offset, a jump table's entries and LEPC's address name. A pair whose second half a jump lands on is none, which the
+   caller sees to before (the fused instruction would run first). The spans are freed */
+void sm86_fuse_make(Sm86Insn* in, u32 n, FuseSpan* spans, u32 count);
 #endif

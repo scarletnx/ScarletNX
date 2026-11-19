@@ -1,10 +1,10 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* The fusions of two neighbouring SM86 instructions into one, made before the translation lowers them (fuse.h).
-   One pass finds the spans and makes them, in place, in one walk of the array: a pair becomes one instruction whose
-   fields are the second half's, and the first half's fields are packed into the bits that the second half does not
-   use. The pass runs after the CALLs are inlined and before the passes that move instructions (the globals tracked,
-   the blocks placed), which would invalidate a span found before them. */
+   One pass finds the spans and makes them, in place, in one walk of the array: a pair's first instruction becomes one
+   whose fields are the second half's, with the first half's packed into the bits that the second half does not use,
+   and its second a NOP, so that no instruction moves. The pass runs after the CALLs are inlined and before the passes
+   that move instructions (the globals tracked, the blocks placed), which would invalidate a span found before them. */
 #include "nx/gpu/shader/fuse.h"
 #include <stdlib.h>
 
@@ -60,26 +60,13 @@ FuseSpan* sm86_fuse_find(const Sm86Insn* in, u32 n, u32* count) {
     return have ? spans : (free(spans), (FuseSpan*)NULL);
 }
 
-/* removing one instruction shifts every later position down: a branch's encoded offset must change when either its
-   own position or its target moves across the removed index. inline_calls re-encodes its BRAs the same way. */
-static void fuse_shift_branch(Sm86Insn* b, u32 ip, u32 removed) {
-    int op = b->op;
-    if (op != SM86_BRA && op != SM86_UBRA && op != SM86_BSSY && op != SM86_CALL && op != SM86_RET) return;
-    u32 target = sm86_branch_target(b, ip);
-    if (target == 0xffffffffu) return;
-    u32 ip2 = ip > removed ? ip - 1 : ip, target2 = target > removed ? target - 1 : target;
-    if (ip2 == ip && target2 == target) return;
-    unsigned bits = op == SM86_BRA || op == SM86_UBRA ? 48 : 30;
-    u64 field = ((u64)target2 - (u64)ip2 - 1) * 4 & ((((u64)1) << bits) - 1);
-    b->lo = (b->lo & ~(((1ull << 30) - 1) << 34)) | ((field & ((1ull << 30) - 1)) << 34);
-    if (bits == 48) b->hi = (b->hi & ~0x3ffffull) | (field >> 30 & 0x3ffffull);
-}
-void sm86_fuse_make(Sm86Insn* in, u32* n, FuseSpan* spans, u32 count) {
+void sm86_fuse_make(Sm86Insn* in, u32 n, FuseSpan* spans, u32 count) {
     if (!spans) return;
-    u32 shift = 0; /* the instructions a pair has taken out of the array before this one */
+    Sm86Insn nop;
+    sm86_decode(0x918u | (u64)SM86_PT << 12 | (u64)SM86_RZ << 16, 0, &nop); /* NOP, its destination field RZ */
     for (u32 s = 0; s < count; s++) {
-        u32 pos = spans[s].pos - shift, len = spans[s].len;
-        if (pos + len > *n) break;
+        u32 pos = spans[s].pos, len = spans[s].len;
+        if (pos + len > n) break;
         Sm86Insn fused = in[pos + 1]; /* the second half's fields, which the passes and the emitter follow */
         const Sm86Insn* first = &in[pos];
         /* the first half's fields into the bits the second half leaves zero: its immediate where an LDSM puts it, at
@@ -91,12 +78,7 @@ void sm86_fuse_make(Sm86Insn* in, u32* n, FuseSpan* spans, u32 count) {
         fused.lo |= (u64)ldsm_imm(first) << 40;
         fused.op = (u16)SM86_LDSM_HMMA;
         in[pos] = fused;
-        for (u32 i = 0; i < *n; i++)
-            if (i != pos && i != pos + 1) fuse_shift_branch(&in[i], i, pos + 1);
-        u32 rest = *n - pos - len;
-        for (u32 k = 0; k < rest; k++) in[pos + 1 + k] = in[pos + len + k];
-        *n -= len - 1;
-        shift += len - 1;
+        in[pos + 1] = nop;
     }
     free(spans);
 }
