@@ -292,13 +292,15 @@ jobs:
           key: ${{ steps.llvm-cache.outputs.cache-primary-key }}
       # A release leaves out scarletnx --mcp's A64 disassembler (SNX_A64_DISASM), which is for working on the runtime,
       # and the test programs, which the AppImage does not carry: they were half of this build's time. Each build
-      # step's compiler cache counts are its own: zeroed before, shown after
+      # step's compiler cache counts are its own: zeroed before, shown after. x86-64's nightlies and releases link with
+      # ThinLTO (cmake/lto.cmake), and its test tree, which is this folder, then tests that build; a pull request's do not
       - name: Build and install into /usr
         run: |
           git config --global --add safe.directory '*'
           ccache --zero-stats
           cmake --preset default -DSNX_DEPLOY=OFF -DCMAKE_INSTALL_PREFIX=/usr \
             -DLLVM_DIR="$PWD/.cache/llvm/${{ matrix.arch }}/lib/cmake/llvm" -DSNX_A64_DISASM=OFF -DBUILD_TESTING=OFF \
+            -DSNX_LTO=${{ github.event_name != 'pull_request' && matrix.arch == 'x86_64' && 'ON' || 'OFF' }} \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           cmake --build --preset default --parallel "$(getconf _NPROCESSORS_ONLN)"
           cmake --install build/default
@@ -647,9 +649,8 @@ jobs:
   qemu-reference:
     name: A64 differential's QEMU reference
     needs: recompiler-changes
-    if: >-
-      ${{ !cancelled() && (github.event_name != 'pull_request' || needs.recompiler-changes.outputs.differential == 'true')
-      }}
+    # the cross builds' reference alone (appimage-cross), which a pull request does not run
+    if: ${{ !cancelled() && github.event_name != 'pull_request' }}
     runs-on: ubuntu-26.04
     timeout-minutes: 60
     container: archlinux:latest
@@ -742,10 +743,12 @@ jobs:
   appimage-cross:
     name: Linux AppImage (${{ matrix.arch }})
     needs: qemu-reference
-    # without a reference to run against (a pull request that changes nothing the differential tests), the build and
-    # the launcher's tests alone
+    # Not in a pull request: the nightlies' builds (a push, a schedule or a manual run). Pull requests left out
+    # big-endian ppc64, their one cross build, to make their runs shorter. Without a reference to run against, the
+    # build and the launcher's tests alone
     if: >-
-      ${{ !cancelled() && (needs.qemu-reference.result == 'success' || needs.qemu-reference.result == 'skipped') }}
+      ${{ !cancelled() && github.event_name != 'pull_request' &&
+      (needs.qemu-reference.result == 'success' || needs.qemu-reference.result == 'skipped') }}
     runs-on: ubuntu-26.04
     # LLVM's cross build (scripts/linux-llvm.sh) adds about half an hour where its cache misses
     timeout-minutes: 180
@@ -759,16 +762,12 @@ jobs:
       DEBLOATED_PACKAGES_SHA: d215f7676785f1a1bb8784e69085d66c1df81488ef31f1ba7198325a5be05130
     strategy:
       fail-fast: false
-      # A pull request builds big-endian ppc64's alone, and makes no AppImage of it: its build and tests run, its
-      # bundle where a nightly can come of the run (a push or a manual run), as ppc64le's, riscv64's and loongarch64's
       matrix:
-        include: >-
-          ${{ fromJSON(github.event_name == 'pull_request' && '[
-            {"arch": "ppc64", "platform": "ppc64", "preset": "linux-ppc64-elfv2-cross", "qemu": "ppc64"}]' || '[
-            {"arch": "ppc64le", "platform": "ppc64le", "preset": "linux-ppc64le-cross", "qemu": "ppc64le"},
-            {"arch": "riscv64", "platform": "riscv64", "preset": "linux-riscv64-cross", "qemu": "riscv64"},
-            {"arch": "loongarch64", "platform": "loong64", "preset": "linux-loongarch64-cross", "qemu": "loongarch64"},
-            {"arch": "ppc64", "platform": "ppc64", "preset": "linux-ppc64-elfv2-cross", "qemu": "ppc64"}]') }}
+        include:
+          - {arch: ppc64le, platform: ppc64le, preset: linux-ppc64le-cross, qemu: ppc64le}
+          - {arch: riscv64, platform: riscv64, preset: linux-riscv64-cross, qemu: riscv64}
+          - {arch: loongarch64, platform: loong64, preset: linux-loongarch64-cross, qemu: loongarch64}
+          - {arch: ppc64, platform: ppc64, preset: linux-ppc64-elfv2-cross, qemu: ppc64}
     steps:
       # Artifacts carry the commit they came from: the branch's head in a pull request, else the commit pushed
       - name: Name the commit
@@ -1280,7 +1279,8 @@ jobs:
           # the JDK the Android app driver (src/android) builds with: the runner's 21, as the android job's Gradle takes
           jdk=JAVA_HOME_21_${{ matrix.arch == 'aarch64' && 'AARCH64' || 'X64' }}
           export JAVA_HOME="${!jdk:?the runner has no JDK 21 in $jdk}"
-          cmake --preset default \
+          # the nightlies and releases link with ThinLTO (cmake/lto.cmake), a pull request's build does not
+          cmake --preset default -DSNX_LTO=${{ github.event_name != 'pull_request' && 'ON' || 'OFF' }} \
             -DSNX_LLVM_CONFIG="$(cygpath -m "$(command -v llvm-config)")" \
             -DSNX_FFMPEG_SH="$(cygpath -m /usr/bin/sh.exe)" \
             -DSNX_FFMPEG_MAKE="$(cygpath -m /usr/bin/make.exe)" \
@@ -1523,8 +1523,11 @@ jobs:
           SNX_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
         run: |
           for abi in x86_64 arm64-v8a; do
+            # arm64-v8a's nightlies and releases link with ThinLTO (cmake/lto.cmake), x86_64's and a pull request's not
+            lto=OFF
+            [ "$GITHUB_EVENT_NAME" != pull_request ] && [ "$abi" = arm64-v8a ] && lto=ON
             JAVA_HOME=$JAVA_HOME_21_X64 scripts/android-apk.sh "$PWD/build/android-$abi" "$PWD/android-llvm" "$abi" -- \
-              -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+              -DSNX_LTO=$lto -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
             cp "build/android-$abi/stage/gradle/outputs/apk/debug/ScarletNX-debug.apk" \
               "ScarletNX-android-$abi-${{ steps.commit.outputs.short }}.apk"
           done
@@ -1667,8 +1670,10 @@ jobs:
         with:
           path: apple-llvm
           key: macos-llvm-${{ hashFiles('scripts/apple-llvm.sh') }}-${{ steps.xcode.outputs.version }}
+      # iOS is the nightlies' alone: a pull request builds and tests macOS (the iOS steps below skip there too)
       - uses: actions/cache/restore@v5
         id: ios-llvm
+        if: github.event_name != 'pull_request'
         with:
           path: ios-llvm
           key: ios-llvm-${{ hashFiles('scripts/apple-llvm.sh') }}-${{ steps.xcode.outputs.version }}
@@ -1686,9 +1691,9 @@ jobs:
           key: ${{ steps.macos-llvm.outputs.cache-primary-key }}
       - name: Build LLVM's libraries for iOS
         id: ios-llvm-build
-        if: ${{ !cancelled() && steps.ios-llvm.outputs.cache-hit != 'true' }}
+        if: ${{ !cancelled() && github.event_name != 'pull_request' && steps.ios-llvm.outputs.cache-hit != 'true' }}
         run: scripts/apple-llvm.sh ios "$PWD/ios-llvm"
-      - if: ${{ !cancelled() && steps.ios-llvm.outputs.cache-hit != 'true' }}
+      - if: ${{ !cancelled() && github.event_name != 'pull_request' && steps.ios-llvm.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v5
         with:
           path: ios-llvm
@@ -1730,7 +1735,7 @@ jobs:
           cmake --build --preset macos --parallel "$(getconf _NPROCESSORS_ONLN)"
       - name: Build the app for iOS
         id: ios-build
-        if: ${{ !cancelled() && steps.ios-llvm-build.outcome != 'failure' }}
+        if: ${{ !cancelled() && github.event_name != 'pull_request' && steps.ios-llvm-build.outcome != 'failure' }}
         run: |
           cmake --preset ios -DLLVM_DIR="$PWD/ios-llvm/lib/cmake/llvm" \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
