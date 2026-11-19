@@ -344,7 +344,8 @@ const u32* gvk_spirv_dual_source(const u32* w, size_t bytes, size_t* out_bytes) 
 }
 
 /* the descriptor a size query's image operand id was loaded from, as GvkSizeSlots names it: through OpImage,
-   OpSampledImage and OpCopyObject to the OpLoad of a variable, or of its array's element by a constant */
+   OpSampledImage and OpCopyObject to the OpLoad of a variable, or of its array's element by a constant. gvk follows
+   the images of bindings and elements below 8 alone (gvk_api.c's set_bit) */
 static int image_slot(const u32* w, const u32* def, const u32* dset, const u32* dbind, u32 bound, u32 id, u16* slot) {
     for (u32 hops = 0; hops < 16; hops++) {
         if (id >= bound || !def[id]) return 0;
@@ -367,13 +368,21 @@ static int image_slot(const u32* w, const u32* def, const u32* dset, const u32* 
             if (ptr >= bound || !def[ptr]) return 0;
             pop = w[def[ptr]] & 0xffff;
         }
-        if (pop != SPV_VARIABLE || dset[ptr] > 3 || dbind[ptr] > 63 || elem > 255) return 0;
+        if (pop != SPV_VARIABLE || dset[ptr] > 3 || dbind[ptr] > 7 || elem > 7) return 0;
         *slot = (u16)(dset[ptr] << 14 | dbind[ptr] << 8 | elem);
         return 1;
     }
     return 0;
 }
 
+/* whether the OpEntryPoint at e lists the global id among its interface, after its name */
+static int entry_lists(const u32* e, u32 id) {
+    u32 len = e[0] >> 16, at = 3;
+    while (at < len && (e[at] & 0xff000000u) && (e[at] & 0xff0000u) && (e[at] & 0xff00u) && (e[at] & 0xffu)) at++;
+    for (at++; at < len; at++)
+        if (e[at] == id) return 1;
+    return 0;
+}
 /* Each query's result id becomes a new one, and its old id the result divided:
      the push uvec4 loaded, d = 1 + ((x >> k) & 1) * y, and the width and height divided by d (a third component, an
      array's layers, kept). A scalar query (a 1D image) is never of an image drawn at the scale, and stays.
@@ -461,7 +470,9 @@ const u32* gvk_spirv_scaled_size(const u32* w, size_t bytes, size_t* out_bytes, 
         if (rt >= bound || !def[rt] || (w[def[rt]] & 0xffff) != SPV_TYPE_VECTOR) continue; /* a 1D image's */
         u32 count = w[def[rt] + 3];
         u16 slot;
-        if (count < 2 || count > 3 || !image_slot(w, def, dset, dbind, bound, w[i + 3], &slot)) {
+        u32 comp = w[def[rt] + 2]; /* a 32-bit integer's, the divisor's type */
+        int bits32 = comp < bound && def[comp] && (w[def[comp]] & 0xffff) == SPV_TYPE_INT && w[def[comp] + 2] == 32;
+        if (count < 2 || count > 3 || !bits32 || !image_slot(w, def, dset, dbind, bound, w[i + 3], &slot)) {
             slots->skipped++;
             continue;
         }
@@ -477,7 +488,8 @@ const u32* gvk_spirv_scaled_size(const u32* w, size_t bytes, size_t* out_bytes, 
     }
     if (!nq) return w;
     int add_uint = !uint_t, add_v4u = !v4u_t, own_block = !pc_var;
-    int list_var = own_block && w[1] >= 0x00010400u; /* SPIR-V 1.4 lists every global an entry point reads */
+    /* SPIR-V 1.4 lists every global an entry point reads: the block, where an entry point doesn't */
+    int list_var = w[1] >= 0x00010400u;
     size_t extra = 13 + 4 * (size_t)(add_uint + add_v4u) + 4 * (size_t)(2 + slots->n) + (own_block ? 14 : 1) +
                    (list_var ? entries : 0) + 75 * (size_t)nq;
     if (extra > UINT32_MAX - n || extra > SIZE_MAX / sizeof(u32) - n) return NULL;
@@ -564,7 +576,7 @@ const u32* gvk_spirv_scaled_size(const u32* w, size_t bytes, size_t* out_bytes, 
             out[o] += 1u << 16;
             o += len;
             out[o++] = v4u_t;
-        } else if (op == SPV_ENTRY_POINT && list_var) {
+        } else if (op == SPV_ENTRY_POINT && list_var && !entry_lists(w + i, pc_var)) {
             memcpy(out + o, w + i, sizeof *out * len);
             out[o] += 1u << 16;
             o += len;

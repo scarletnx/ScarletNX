@@ -392,7 +392,8 @@ with three memory types: device-local memory, and memory the CPU maps at guest a
 mapping is the game's own address: guest pages the host imports (`VK_EXT_external_memory_host`), or where it can't
 (RenderDoc takes no host memory) the host's own memory exported as a dma-buf and mapped over the guest pages, with
 linear images in it made with the linear DRM format modifier. The swapchain's images are host images, and a present
-blits one into the renderer's window (`present_image`). If the next present has reached the display queue, acquire
+blits one into the renderer's window (`present_image`), applying the `android::Surface` crop rectangle from
+`vkCreateViSurfaceNN` (scaled to host pixels) so dynamic resolution fills the display. If the next present has reached the display queue, acquire
 waits for it within the application's timeout. Otherwise the renderer's copy already releases the guest image from
 the display. A transfer command inside a primary single-subpass render pass can end the pass and begin a twin that
 loads what it stored. A depth format the host lacks (24-bit depth on AMD) is replaced with the nearest supported one.
@@ -415,7 +416,9 @@ image by its use, not by its size or usage flags (one game gives every texture `
 framebuffer that takes an image gives it a shadow: a GVK image at the scale, which the image's views, descriptors,
 barriers and commands use from then on. The game's own image stays behind it, bound to the game's memory. A copy
 between a shadow and a buffer, or an image at the game's size, goes through the game's image and a blit. A framebuffer
-scales all its attachments or none, and keeps the game's size when one has mip levels or storage usage. The
+scales all its attachments or none. It keeps the game's size when an image can't get a shadow yet: an image of mip
+levels or storage usage, one whose view a descriptor set holds (the set would read the old image), one that a command
+buffer that can still run writes (the shadow would miss the write), and one with pixels that no blit can move. The
 swapchain's images are made at the scale. Render areas, dynamic viewports, scissors and clear rectangles scale with
 the framebuffer. Viewports baked into a pipeline do not scale. A fragment shader's size query of an image at the
 scale answers the game's size (`gvk_spirv_scaled_size`): one game normalizes indirect-texture and haze coordinates by

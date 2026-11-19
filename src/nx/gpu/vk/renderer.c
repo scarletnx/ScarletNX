@@ -1271,7 +1271,7 @@ static Surf* gvk_frame(u32 w, u32 h, int srgb) {
 
 /* a game's own Vulkan image (renderer.h): blitted into the renderer's copy, which show() draws, after the game's work
    on the queue before it (the barrier's first scope), and given back to the game in its present layout */
-static void vkr_present_image(u64 image, u32 fmt, u32 w, u32 h) {
+static void vkr_present_image(u64 image, u32 fmt, u32 w, u32 h, const i32 crop[4]) {
     SNX_ZONE(z_present, "present image");
     vk_lock();
     vk_buf_writable_abort();
@@ -1279,6 +1279,13 @@ static void vkr_present_image(u64 image, u32 fmt, u32 w, u32 h) {
     Surf* src = NULL;
     if (w && h && w <= g_vk.props.limits.maxImageDimension2D && h <= g_vk.props.limits.maxImageDimension2D)
         src = gvk_frame(w, h, is_srgb((VkFormat)fmt));
+    u32 x0 = 0, y0 = 0, x1 = w, y1 = h;
+    if (crop && crop[2] > crop[0] && crop[3] > crop[1] && crop[0] >= 0 && crop[1] >= 0) {
+        x0 = (u32)crop[0] < w ? (u32)crop[0] : 0;
+        y0 = (u32)crop[1] < h ? (u32)crop[1] : 0;
+        x1 = (u32)crop[2] < w ? (u32)crop[2] : w;
+        y1 = (u32)crop[3] < h ? (u32)crop[3] : h;
+    }
     if (src) {
         VkCommandBuffer cb = vk_cmd();
         VkImage img = (VkImage)(uintptr_t)image;
@@ -1288,17 +1295,18 @@ static void vkr_present_image(u64 image, u32 fmt, u32 w, u32 h) {
         vk_surf_use(cb, src, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_BLIT_BIT,
                     VK_ACCESS_2_TRANSFER_WRITE_BIT);
         VkImageBlit b = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
-                         .srcOffsets = {{0, 0, 0}, {(i32)w, (i32)h, 1}},
+                         .srcOffsets = {{(i32)x0, (i32)y0, 0}, {(i32)x1, (i32)y1, 1}},
                          .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
-                         .dstOffsets = {{0, 0, 0}, {(i32)w, (i32)h, 1}}};
+                         .dstOffsets = {{(i32)x0, (i32)y0, 0}, {(i32)x1, (i32)y1, 1}}};
         rec_CmdBlitImage(cb, img, VK_IMAGE_LAYOUT_GENERAL, src->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &b,
                          VK_FILTER_NEAREST);
         g_last = src;
         g_last_hdr = (SnxHdrFrame){0};
         g_last_transform = 0;
-        g_last_x = g_last_y = 0;
-        g_last_w = w;
-        g_last_h = h;
+        g_last_x = x0;
+        g_last_y = y0;
+        g_last_w = x1 - x0;
+        g_last_h = y1 - y0;
     }
     if (prepare_screen_shown()) {
         ui_lock();
