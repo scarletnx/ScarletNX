@@ -8093,6 +8093,8 @@ static int run_headless(int argc, char** argv) {
             result = check_draw_memo();
         else if (!strcmp(name, "surface_loads"))
             result = check_layered_surface_loads();
+        else if (!strcmp(name, "targetless_stores"))
+            result = check_targetless_stores();
         else if (!strcmp(name, "owned_page_reads"))
             result = check_owned_page_reads();
         else if (!strcmp(name, "cross_stage_blend"))

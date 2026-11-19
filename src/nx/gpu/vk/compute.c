@@ -1229,6 +1229,16 @@ int vk_buffer_image(const u32* tic, int kind, VkBufImg* out) {
     return 1;
 }
 
+void vk_null_buffer_image(int kind, VkBufImg* out) {
+    /* storage texel buffers of these formats, and atomics on R32_UINT, every Vulkan device has */
+    out->gva = 0;
+    out->bytes = 16;
+    out->fmt = kind == 1   ? VK_FORMAT_R32_UINT
+               : kind == 2 ? VK_FORMAT_R32G32B32A32_UINT
+               : kind == 3 ? VK_FORMAT_R32G32B32A32_SINT
+                           : VK_FORMAT_R32G32B32A32_SFLOAT;
+}
+
 /* whether [pa, pa + len) of code is as it was when the write-tracking clock read wseen and the GPU's writes were at
    generation gw, page by page: a window's pages need not follow each other in host memory. 0 when it can't tell */
 static int cs_code_unchanged(u64 pa, u32 len, u64 gw, u32 wseen, u64 own_hash) {
@@ -1409,6 +1419,8 @@ void vk_dispatch(const DispatchState* d) {
     u32 tcb_key;
     u64 tic_key_base;
     VkBufImg bimg[8] = {0};
+    u64 bimg_at[8] = {0}; /* the buffer images' headers: where, their handles and words 0, for the log */
+    u32 bimg_h[8] = {0}, bimg_w0[8] = {0};
     int i;
     SNX_ZONE(z_dispatch, "dispatch");
     vk_frame_check();
@@ -1665,8 +1677,14 @@ void vk_dispatch(const DispatchState* d) {
             g_cs_skips[CS_SKIP_BUFFER_IMAGE]++;
             return;
         }
-        vk_gmem_words(tic_base + (h & 0xFFFFF) * 32ull, tic, 8);
-        if (!vk_buffer_image(tic, p->si.img[i].kind, &bimg[i])) {
+        bimg_at[i] = tic_base + (h & 0xFFFFF) * 32ull;
+        bimg_h[i] = h;
+        vk_gmem_words(bimg_at[i], tic, 8);
+        bimg_w0[i] = tic[0];
+        /* a header that names no texture: a texel of zeros of its own (gva 0), as a draw's */
+        if (vk_tic_names_none(tic))
+            vk_null_buffer_image(p->si.img[i].kind, &bimg[i]);
+        else if (!vk_buffer_image(tic, p->si.img[i].kind, &bimg[i])) {
             LOG_LIMIT(4, "vulkan: unsupported compute buffer image (header word 0 %08x, skipped)\n", tic[0]);
             g_cs_skips[CS_SKIP_BUFFER_IMAGE]++;
             return;
@@ -2199,6 +2217,23 @@ rebind:
                 bufimg_off[i] = bufimg_off[alias];
                 bufimg_buf[i] = bufimg_buf[alias];
                 if (bimg[i].bytes > bimg[alias].bytes) bimg[i].bytes = bimg[alias].bytes;
+            } else if (!bimg[i].gva) { /* zeros of its own, which land nowhere */
+                u8* zeros;
+                if (deferred)
+                    zeros = vk_stage(bimg[i].bytes, vk_stage_align(), &bufimg_buf[i], &bufimg_off[i]);
+                else {
+                    bufimg_off[i] = arena_alloc(bimg[i].bytes);
+                    bufimg_buf[i] = g_ar;
+                    zeros = g_ar_ptr + bufimg_off[i];
+                }
+                if (!zeros) {
+                    for (k = 0; k < i; k++)
+                        if (bufimg_view[k]) vk_defer_buffer_view(bufimg_view[k]);
+                    g_cs_skips[CS_SKIP_BUFFER_IMAGE]++;
+                    cs_abandon_binding(originals);
+                    return;
+                }
+                memset(zeros, 0, bimg[i].bytes);
             } else if (deferred) { /* a pending result, like a written storage buffer */
                 if (!vk_buf_copy_writable(bimg[i].gva, (u32)bimg[i].bytes, &bufimg_buf[i], &bufimg_off[i], 1)) {
                     for (k = 0; k < i; k++)
@@ -2233,6 +2268,12 @@ rebind:
             w[nw].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER;
             w[nw].pTexelBufferView = &bufimg_view[i];
             nw++;
+            if (!bimg[i].gva && vk_null_header_first(bimg_at[i]))
+                LOG("vulkan: compute %016llx buffer image %d (handle %08x) names %s at %llx (word 0 %08x): it reads "
+                    "zeros and its stores land nowhere, and the dispatch goes on\n",
+                    (unsigned long long)p->key, i, bimg_h[i],
+                    bimg_w0[i] ? "a header of no Vulkan format" : "an empty header", (unsigned long long)bimg_at[i],
+                    bimg_w0[i]);
         }
         if (fmt_used) {
             VkBuffer fbuf = g_ar;
@@ -2311,7 +2352,7 @@ rebind:
         int alias = 0;
         int k;
         for (k = 0; k < i; k++) alias |= bufimg_view[k] && bufimg_off[k] == bufimg_off[i];
-        if (bufimg_view[i] && !alias && g_nout < 256) {
+        if (bufimg_view[i] && bimg[i].gva && !alias && g_nout < 256) {
             memcpy(g_org + bufimg_off[i], g_ar_ptr + bufimg_off[i], bimg[i].bytes);
             g_out[g_nout].addr = bimg[i].gva;
             g_out[g_nout].off = bufimg_off[i];

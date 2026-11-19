@@ -887,6 +887,10 @@ typedef struct {
     VkFormat fmt;
 } VkBufImg;
 int vk_buffer_image(const u32* tic, int kind, VkBufImg* out);
+/* A buffer image slot whose header names no texture (vk_tic_names_none): one texel of zeros of its own, which the
+   caller takes from staging or its arena and writes back nowhere, viewed by the slot's kind as a load reads zero in
+   every component (RGBA32 float, unsigned or signed; an atomic's R32_UINT). gva 0 marks it */
+void vk_null_buffer_image(int kind, VkBufImg* out);
 /* the staging alignment that suits every use: uniform, storage, vertex and index buffers */
 u64 vk_stage_align(void);
 u64 vk_hash(const void* p, u64 size);

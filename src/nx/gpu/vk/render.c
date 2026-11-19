@@ -2825,13 +2825,17 @@ static struct {
     u32 next;
 } g_bufimg;
 /* A draw's buffer image in slot i: a writable copy of its texels (vk_buf_copy_writable), which lands in guest memory
-   as a storage buffer's result does, bound as a storage texel buffer */
-static int dw_buffer_image(DescWrites* d, VkDescriptorSet set, int stage, int i, const u32* tic, int kind, u32 handle) {
+   as a storage buffer's result does, bound as a storage texel buffer. A header at tic_at that names no texture gets a
+   texel of zeros from staging (vk_null_buffer_image), which lands nowhere */
+static int dw_buffer_image(DescWrites* d, VkDescriptorSet set, int stage, int i, const u32* tic, u64 tic_at, int kind,
+                           u32 handle) {
     VkBufImg bi;
     /* the slots of the set the program takes: a mesh program the vertex stage's, a task program the tessellation
        control stage's (vk_set_stages) */
     u32 slots = g_vk.buffer_image_slots[stage == DS_MESH ? ST_VS : stage == DS_TASK ? ST_TCS : stage];
-    if ((u32)i >= slots || !vk_buffer_image(tic, kind, &bi)) {
+    const int none = vk_tic_names_none(tic);
+    if (none) vk_null_buffer_image(kind, &bi);
+    if ((u32)i >= slots || (!none && !vk_buffer_image(tic, kind, &bi))) {
         LOG_LIMIT(4,
                   "vulkan: unsupported buffer image (draw skipped): handle %08x, header word 0 %08x, slot %d of the "
                   "%u this GPU binds\n",
@@ -2840,7 +2844,17 @@ static int dw_buffer_image(DescWrites* d, VkDescriptorSet set, int stage, int i,
     }
     VkBuffer b;
     u64 o, frame = vk_frame_id() + 1;
-    if (!vk_buf_copy_writable(bi.gva, bi.bytes, &b, &o, 1)) return 0;
+    if (none) {
+        u8* zeros = vk_stage(bi.bytes, vk_stage_align(), &b, &o);
+        if (!zeros) return 0;
+        memset(zeros, 0, bi.bytes);
+        if (vk_null_header_first(tic_at))
+            LOG("vulkan: buffer image %d of stage %d (handle %08x) names %s at %llx (word 0 %08x): it reads zeros "
+                "and its stores land nowhere, and the draw goes on\n",
+                i, stage, handle, vk_tic_empty(tic) ? "an empty header" : "a header of no Vulkan format",
+                (unsigned long long)tic_at, tic[0]);
+    } else if (!vk_buf_copy_writable(bi.gva, bi.bytes, &b, &o, 1))
+        return 0;
     d->bvci[i] = (VkBufferViewCreateInfo){.sType = VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO,
                                           .buffer = b,
                                           .format = bi.fmt,
@@ -3960,7 +3974,8 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
         vk_gmem_words(tic_base + (handle & 0xFFFFF) * 32ull, tic, 8);
         int kind = s->si.img[i].kind;
         if (s->si.img[i].type == 1) {
-            if (!dw_buffer_image(&d, set, stage, i, tic, kind, handle)) return VK_NULL_HANDLE;
+            if (!dw_buffer_image(&d, set, stage, i, tic, tic_base + (handle & 0xFFFFF) * 32ull, kind, handle))
+                return VK_NULL_HANDLE;
             continue;
         }
         /* a slot with nothing bound (an empty header): a null descriptor (vk_null_descriptors), or else an empty
