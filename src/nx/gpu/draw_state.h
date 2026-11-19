@@ -387,6 +387,9 @@ typedef struct {
     DsIndex index;
     DsBindings bind;
     DsInline inl; /* its front end gives gen[DS_INLINE] a new generation when it changes them */
+    /* and each block one of its own when it changes (bank 0 and bank 2 of each stage, the root tables): a draw's new
+       base vertex, which every stage's bank 0 holds, leaves the bank 2 blocks and the root tables as they were */
+    u64 inl_gen[2][DS_GFX_STAGES], root_gen;
     /* each group's generation (DS_), a new one whenever its bytes change: from one counter for every owner, so two
        generations are equal only when they are the same state of the same owner */
     u64 gen[DS_GENS];
@@ -394,6 +397,10 @@ typedef struct {
 
 /* a generation for DsState.gen, from one sequence for every front end (gpu/draw_state.c) */
 u64 ds_generation_next(void);
+/* new generations for every group and inline block of ds (DsState.gen, inl_gen, root_gen), which nothing the
+   renderer kept matches: a loaded state's came from the saving process's sequence, where this one may hand the
+   same numbers out for other bytes */
+void ds_generations_renew(DsState* ds);
 
 /* an inline constant buffer block: its bytes, NULL for a buffer in guest memory */
 typedef struct {
@@ -410,6 +417,11 @@ static inline DsCbBlock ds_cb_block(u32 kind, const u8* bank0, const u8* bank2) 
 static inline DsCbBlock ds_cb_inline(const DsState* ds, int stage, u32 bank) {
     u32 k = bank < DS_CBUFS ? ds->bind.cb_inline[stage][bank] : DS_CB_MEMORY;
     return ds_cb_block(k, ds->inl.bank0[stage], ds->inl.bank2[stage]);
+}
+/* the generation of the inline block stage's constant buffer bank names (DsState.inl_gen), 0 for guest memory */
+static inline u64 ds_cb_inline_gen(const DsState* ds, int stage, u32 bank) {
+    u32 k = bank < DS_CBUFS ? ds->bind.cb_inline[stage][bank] : DS_CB_MEMORY;
+    return k == DS_CB_BANK0 ? ds->inl_gen[0][stage] : k == DS_CB_BANK2 ? ds->inl_gen[1][stage] : 0;
 }
 
 /* A compute dispatch, for any front end: everything the renderer reads of it (Renderer.dispatch). Its constant

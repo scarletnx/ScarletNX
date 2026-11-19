@@ -702,6 +702,7 @@ static void sync(NvnDraw* d, i32 base_vertex, u32 base_instance) {
                     const u8* made = (bank ? d->inl.bank2[s] : d->inl.bank0[s]) + lo;
                     if (memcmp(kept, made, hi - lo)) {
                         memcpy(kept, made, hi - lo);
+                        new_gen(&d->ds.inl_gen[bank][s]);
                         changed++;
                         base_only &= !bank && lo >= C0_BASE_VERTEX && hi <= C0_BASE_INSTANCE + 4;
                     }
@@ -715,6 +716,7 @@ static void sync(NvnDraw* d, i32 base_vertex, u32 base_instance) {
             const u8* made = d->inl.root + d->root_lo;
             if (memcmp(kept, made, (u32)(d->root_hi - d->root_lo))) {
                 memcpy(kept, made, (u32)(d->root_hi - d->root_lo));
+                new_gen(&d->ds.root_gen);
                 changed++;
                 base_only = 0;
             }

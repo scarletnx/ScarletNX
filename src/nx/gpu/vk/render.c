@@ -2638,10 +2638,10 @@ static int inline_kind(DsCbBlock in, u32 sz) {
     return in.size != DS_INLINE_BANK0 ? 2 : sz > SH_CB0_BASE_VERTEX ? 0 : 1;
 }
 /* the first sz bytes of the root tables an Ounce program reads (DsInline.root), staged once while their generation
-   holds: every graphics stage reads the same tables */
+   holds (DsState.root_gen): every graphics stage reads the same tables */
 static int root_get(const DsState* ds, u32 sz, VkBuffer* buf, u64* off) {
     CbEntry* e = &g_cb.root;
-    if (e->in == ds->inl.root && e->gen == ds->gen[DS_INLINE] && e->sz >= sz && cb_lives(e)) {
+    if (e->in == ds->inl.root && e->gen == ds->root_gen && e->sz >= sz && cb_lives(e)) {
         *buf = e->buf;
         *off = e->off;
         g_stats.n.inl[3][0]++;
@@ -2651,7 +2651,7 @@ static int root_get(const DsState* ds, u32 sz, VkBuffer* buf, u64* off) {
     u8* p = vk_stage(sz, vk_stage_align(), buf, off);
     if (!p) return 0;
     memcpy(p, ds->inl.root, sz);
-    *e = (CbEntry){.sz = sz, .buf = *buf, .off = *off, .in = ds->inl.root, .gen = ds->gen[DS_INLINE]};
+    *e = (CbEntry){.sz = sz, .buf = *buf, .off = *off, .in = ds->inl.root, .gen = ds->root_gen};
     cb_life(e, CB_FRAME);
     cb_check_note(e, 0, ds->inl.root, sz, 0);
     g_stats.n.inl[3][1]++;
@@ -2664,8 +2664,10 @@ static int cb_get(const DsState* ds, int stage, int i, u32 sz, u64 align, VkBuff
     int check = g_settings.draw_state_check != 0;
     DsCbBlock in = ds_cb_inline(ds, stage, (u32)i);
     if (in.bytes) {
+        /* staged again only when this block changed (DsState.inl_gen), not when another inline block did */
+        const u64 gen = ds_cb_inline_gen(ds, stage, (u32)i);
         CbEntry* e = &g_cb.slot[stage][i];
-        if (e->in == in.bytes && e->gen == ds->gen[DS_INLINE] && e->sz >= sz && cb_lives(e)) {
+        if (e->in == in.bytes && e->gen == gen && e->sz >= sz && cb_lives(e)) {
             *buf = e->buf;
             *off = e->off;
             g_stats.n.cb[VK_CB_INLINE_KEPT]++;
@@ -2678,7 +2680,7 @@ static int cb_get(const DsState* ds, int stage, int i, u32 sz, u64 align, VkBuff
         u32 n = sz < in.size ? sz : in.size;
         memcpy(p, in.bytes, n);
         memset(p + n, 0, sz - n); /* past the block: zeros, as an unbound buffer reads */
-        *e = (CbEntry){.in = in.bytes, .gen = ds->gen[DS_INLINE], .sz = sz, .buf = *buf, .off = *off};
+        *e = (CbEntry){.in = in.bytes, .gen = gen, .sz = sz, .buf = *buf, .off = *off};
         cb_life(e, CB_FRAME);
         cb_check_note(e, 0, in.bytes, n, 0);
         g_stats.n.cb[VK_CB_INLINE_STAGED]++;
