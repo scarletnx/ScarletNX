@@ -939,15 +939,18 @@ trap.**
 - Comment: `cmd.c`, `timeline_wait`.
 - Check: no test covers it. `check_stats_gpu_time` covers other statistics.
 
-**W6. A wait for the GPU runs in slices of a second, and the run ends when the GPU is stuck for 15 s.**
+**W6. A wait for the GPU runs in slices of a second, and the run ends when the GPU is stuck for 15 s (120 s where the
+GPU is the CPU).**
 
 - Without the rule: a stopped GPU signals nothing, and the driver did not report a lost device. The frontend and the
   release thread waited for good, and one game's window froze with no message. The clock of the wait runs only while
   the queue holds work that the GPU did not do. In one race on a loaded host a thread waited past 15 s for a
   pipeline with the GPU idle, and the run ended as "GPU stopped" with nothing for the GPU to do. A lost device also
-  ends the run, because the next Vulkan call would crash in the driver and the log would blame the game.
-- Comment: `cmd.c`, above `VK_GPU_STUCK_NS`, and `vk_wait_semaphore`.
-- Check: no test covers it.
+  ends the run, because the next Vulkan call would crash in the driver and the log would blame the game. lavapipe
+  compiles a program at its first dispatch, inside the submission: on a loaded CI runner the BC7 encoder's first one
+  finished nothing for 15 s, and the run ended as "GPU stopped" while LLVM still compiled.
+- Comment: `cmd.c`, above `VK_GPU_STUCK_NS` and `VK_CPU_STUCK_NS`, and `vk_wait_semaphore`.
+- Check: `astc_vulkan_encode_dot` on lavapipe on a slow host. No test covers a GPU that stops.
 
 **W7. Each `vk_finish` is counted by its call site, with its time.**
 
