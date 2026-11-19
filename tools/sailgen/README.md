@@ -218,9 +218,12 @@ run-time condition, an `Error_Unpredictable` with no overlay's `UnpredictableEnc
 holds fixed, a register or a field the back end does not keep, the back end's function that takes no `path` under a
 run-time condition, one whose `val` gives an integer and a function that calls itself other than as the sum of its
 bits' elements, naming its line; `sailgen_lanes` says which element loops become lanes and `sailgen_halves` that such
-a function is one reduction; `sailgen_a64` generates the in-tree A64 subsets whole.
+a function is one reduction; `sailgen_a64` generates the in-tree A64 subsets whole, and `sailgen_a32` the AArch32
+ones.
 
 `tests/llvm_sail_ir.c` holds the generated emitters to the hand-written ones they replaced
 (`tests/support/ir_int_reference.c`, `tests/support/ir_fpu_reference.c`), word by word on three paths: the same
 optimized IR, or the same instructions in another order, or another IR no longer than theirs; and the same results
-when both run, the floating point from FPCRs and operands chosen for its paths.
+when both run, the floating point from FPCRs and operands chosen for its paths. `tests/arm_sail_ir.c` does the same for
+AArch32's T16 halfwords against the emitters written by hand (`snx_thumb_llvm_block_t16_reference`), on every profile
+and memory mode, alone and in an IT block.

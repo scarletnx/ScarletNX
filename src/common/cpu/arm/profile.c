@@ -217,14 +217,18 @@ unsigned snx_thumb_decode_profile(SnxArmProfile profile, uint16_t h, uint16_t h2
         return TH_F16;
     }
     if (top >= 0xe800 || !snx_thumb_decode(h, h2, o)) goto invalid;
-    if (o->shape == TH_IT || o->shape == TH_HINT ||
+    /* ARMv6's CPS, which user mode runs as a NOP, is the one of these it has */
+    if (o->shape == TH_IT || (o->shape == TH_HINT && !(v6 && (h & 0xffe8) == 0xb660 && (h & 7))) ||
         (o->shape == TH_BRANCH &&
-         (o->op == BR_CBZ || o->op == BR_CBNZ || (o->op == BR_BLX_REG && (!v5 || o->rm == 15))))) /* BLX is v5's */
+         (o->op == BR_CBZ || o->op == BR_CBNZ || (o->op == BR_BLX_REG && !v5)))) /* BLX: v5's */
         goto invalid;
-    /* the forms ARMv6 makes UNPREDICTABLE (a base in an LDM or STM's list, an empty list, CMP of two low registers)
-       run on the ARM7TDMI as it runs them, which its profile's emitter follows */
+    /* the forms ARMv6 makes UNPREDICTABLE (a base in an LDM or STM's list, an empty list, CMP of two low registers, a
+       BLX or both ADD operands of the PC) run on the ARM7TDMI and the ARM946E-S as they are written, which their
+       profiles' emitters follow, and are UNDEFINED on the ARM11 (arm.sail's UnpredictableEncoding) */
     if (!v6) return TH_F16;
     if (o->shape == TH_HI && o->op == 1 && (o->rd == 15 || o->rm == 15 || (o->rd < 8 && o->rm < 8))) goto invalid;
+    if (o->shape == TH_HI && o->op == 0 && o->rd == 15 && o->rm == 15) goto invalid;
+    if (o->shape == TH_BRANCH && o->op == BR_BLX_REG && o->rm == 15) goto invalid;
     if (o->shape == TH_PUSHPOP && !o->imm && !o->ra) goto invalid;
     if (o->shape == TH_LDMSTM) {
         if (!o->imm) goto invalid;

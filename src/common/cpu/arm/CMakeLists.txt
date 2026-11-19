@@ -41,3 +41,6 @@ target_compile_options(snx_arm_llvm PRIVATE -Wall -Wextra -Werror=missing-protot
 target_link_directories(snx_arm_llvm PUBLIC "${SNX_LLVM_LIBRARY_DIR}")
 target_link_libraries(snx_arm_llvm PUBLIC ${SNX_LLVM_LIBS} ${SNX_LLVM_SYSTEM_LIBS} Threads::Threads snx_arm_rt
                       snx_arm_decode)
+# the T16 emitters sailgen generates from the Sail (sail/), which llvm_thumb.inc includes
+include("${PROJECT_SOURCE_DIR}/cmake/sailgen.cmake")
+snx_sailgen_a32(snx_arm_llvm)
