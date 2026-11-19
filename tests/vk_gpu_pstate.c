@@ -13,6 +13,9 @@
      with the error's words and the node, the node closed again;
    - an NVIDIA GPU is held through VK_NV_low_latency2's boost where its device was made with it, said with why
      where it was not, a warning with on; the kernel is asked nothing for it;
+   - an Adreno (kgsl), integrated, is held by auto: a context of our own with the PWR_MAX constraint, a CP_NOP written
+     in a page of its own, then renewed by one command per keeper step while a frame was presented in the last 250 ms,
+     none after; a refused renewal said once and the hold given up; a refused step of the hold said and closed;
    - every case says exactly one line, naming the value given */
 #include "common/gpu/vk/gpu_pstate.h"
 #include <errno.h>
@@ -54,6 +57,13 @@ static struct {
     int versions, allocs, sets, others;
     unsigned set_flags, set_ctx;
     int fd; /* the fd the context was asked on */
+    /* kgsl: what it answers and was asked */
+    int kgsl_err_at, kgsl_err; /* the request (its number) that answers kgsl_err */
+    int creates, properties, allocs_k, infos, commands;
+    unsigned ctx_flags, constraint_type, constraint_ctx, constraint_level;
+    size_t constraint_size, property_size;
+    uint64_t command_flags, command_addr, command_size;
+    unsigned command_ctx, command_n, command_objsize, command_ibflags;
     /* the lines said */
     int lines, warn;
     char line[2048];
@@ -104,6 +114,64 @@ int __wrap_ioctl(int fd, unsigned long request, ...) {
             return 0;
         }
     }
+    if ((request >> 8 & 0xff) == 0x09) { /* kgsl's, the numbers msm_kgsl.h makes on a 64-bit system */
+        if ((int)(request & 0xff) == g.kgsl_err_at && g.kgsl_err) return errno = g.kgsl_err, -1;
+        g.fd = fd;
+        switch (request) {
+            case 0xc0080913ul: { /* IOCTL_KGSL_DRAWCTXT_CREATE */
+                unsigned* c = arg;
+                g.creates++, g.ctx_flags = c[0], c[1] = 3;
+                return 0;
+            }
+            case 0x40180932ul: { /* IOCTL_KGSL_SETPROPERTY */
+                struct {
+                    unsigned type;
+                    void* value;
+                    size_t size;
+                }* p = arg;
+                struct {
+                    unsigned type, context;
+                    unsigned* data;
+                    size_t size;
+                }* k = p->value;
+                g.properties++, g.property_size = p->size;
+                if (p->type != 0x12) return errno = EINVAL, -1;
+                g.constraint_type = k->type, g.constraint_ctx = k->context, g.constraint_size = k->size;
+                g.constraint_level = k->data[0];
+                return 0;
+            }
+            case 0xc0300945ul: { /* IOCTL_KGSL_GPUOBJ_ALLOC: size, flags, va_len, mmapsize, then the id */
+                uint64_t* a = arg;
+                g.allocs_k++;
+                if (a[0] != 4096) return errno = EINVAL, -1;
+                ((unsigned*)(a + 4))[0] = 2;
+                return 0;
+            }
+            case 0xc0300947ul: { /* IOCTL_KGSL_GPUOBJ_INFO: gpuaddr first, the id last */
+                uint64_t* i = arg;
+                g.infos++;
+                if (((unsigned*)(i + 5))[0] != 2) return errno = EINVAL, -1;
+                i[0] = 0x500030000ull;
+                return 0;
+            }
+            case 0xc040094aul: { /* IOCTL_KGSL_GPU_COMMAND */
+                struct {
+                    uint64_t flags, cmdlist;
+                    unsigned cmdsize, numcmds;
+                    uint64_t objlist;
+                    unsigned objsize, numobjs;
+                    uint64_t synclist;
+                    unsigned syncsize, numsyncs, context, timestamp;
+                }* c = arg;
+                const uint64_t* ib = (const uint64_t*)(uintptr_t)c->cmdlist; /* offset, gpuaddr, size, then flags, id */
+                g.commands++, g.command_flags = c->flags, g.command_ctx = c->context, g.command_n = c->numcmds;
+                g.command_objsize = c->cmdsize, g.command_addr = ib[1], g.command_size = ib[2];
+                g.command_ibflags = ((const unsigned*)(ib + 3))[0];
+                c->timestamp = (unsigned)g.commands;
+                return 0;
+            }
+        }
+    }
     g.others++;
     return errno = ENOTTY, -1;
 }
@@ -136,6 +204,14 @@ static void machine(const char* level) {
     g.driver = "amdgpu";
 }
 
+/* the stand-in kgsl device: a file of 16 KiB, which mmap maps the hold's page of (object 2, at 8 KiB) from */
+static void kgsl_machine(void) {
+    char path[512];
+    put("dev/kgsl-3d0", "");
+    snprintf(path, sizeof path, "%s/dev/kgsl-3d0", g.root);
+    if (truncate(path, 16384)) printf("truncate %s: %s\n", path, strerror(errno));
+}
+
 static SnxGpuPstateDevice device(int type) {
     static char sys[300], dev[300];
     snprintf(sys, sizeof sys, "%s/sys", g.root);
@@ -160,6 +236,7 @@ static const char* clean(void) {
                                        "sys/dev",
                                        "sys",
                                        "dev/dri/renderD128",
+                                       "dev/kgsl-3d0",
                                        "dev/dri",
                                        "dev",
                                        ""};
@@ -368,15 +445,102 @@ static void case_nvidia(void) {
 }
 
 /* which devices each value asks held, the choice an NVIDIA device's extensions are made by */
+static SnxGpuPstateDevice adreno(void) {
+    static char dev[300];
+    snprintf(dev, sizeof dev, "%s/dev", g.root);
+    return (SnxGpuPstateDevice){"Adreno (TM) 610", SNX_GPU_VENDOR_QUALCOMM, INTEGRATED, 0, 0, 0, "/nowhere", dev, NULL};
+}
+
+static void case_kgsl(void) {
+    kgsl_machine();
+    SnxGpuPstateDevice d = adreno();
+    CHECK(snx_gpu_pstate_hold(SNX_GPU_PSTATE_AUTO, &d, say), "auto holds an Adreno, integrated as it is");
+    CHECK(g.creates == 1 && g.ctx_flags == 0x812, "a context with the constraint's, preamble and no-GMEM flags");
+    CHECK(g.properties == 1 && g.property_size == 24 && g.constraint_type == 1 && g.constraint_ctx == 3 &&
+              g.constraint_size == 4 && g.constraint_level == 1,
+          "the top power level (PWR_MAX) as the constraint of the context made");
+    CHECK(g.allocs_k == 1 && g.infos == 1 && !g.commands, "a page made, nothing submitted yet");
+    char path[512];
+    unsigned nop = 0;
+    snprintf(path, sizeof path, "%s/dev/kgsl-3d0", g.root);
+    FILE* f = fopen(path, "rb");
+    if (f) {
+        if (fseek(f, 8192, SEEK_SET) || fread(&nop, 4, 1, f) != 1) nop = 0;
+        fclose(f);
+    }
+    CHECK(nop == 0x70108000u, "a CP_NOP written at the page of object 2");
+    CHECK(!g.warn &&
+              has("gpu_pstate=auto: Adreno (TM) 610, an integrated GPU: its clocks held at kgsl's top power level") &&
+              has("/dev/kgsl-3d0) while the game presents frames") && has("drops it 250 ms after the last frame") &&
+              has("a crash too"),
+          "the held line");
+    int fd = g.fd;
+    CHECK(is_open(fd) && (fcntl(fd, F_GETFD) & FD_CLOEXEC),
+          "the device left open, closed in a program the game starts");
+    uint64_t t = 1000; /* the keeper's own clock, which the thread's monotonic one never comes near */
+    CHECK(snx_gpu_pstate_keep(t, 0) == 0 && !g.commands, "no frame yet: nothing renewed");
+    CHECK(snx_gpu_pstate_keep(t + 40000000, t) == 1 && g.commands == 1, "a frame 40 ms before: renewed");
+    CHECK(g.command_ctx == 3 && g.command_n == 1 && g.command_objsize == 32 && g.command_addr == 0x500030000ull &&
+              g.command_size == 4 && g.command_ibflags == 1 && g.command_flags == 0x800,
+          "one IB of the CP_NOP, of 4 bytes, on the context, flagged for its constraint");
+    CHECK(snx_gpu_pstate_keep(t + 249000000, t) == 1 && g.commands == 2, "249 ms after the frame: renewed");
+    CHECK(snx_gpu_pstate_keep(t + 250000000, t) == 0 && g.commands == 2, "250 ms after it: not renewed");
+    CHECK(snx_gpu_pstate_hold(SNX_GPU_PSTATE_AUTO, &d, say) && g.creates == 1 && has("held already"),
+          "a second hold makes nothing");
+    int lines = g.lines;
+    g.kgsl_err_at = 0x4a, g.kgsl_err = EDEADLK;
+    CHECK(snx_gpu_pstate_keep(t + 80000000, t + 40000000) == -1, "a refused renewal gives the hold up");
+    CHECK(g.lines == lines + 1 && g.warn && has("kgsl refused the command that renews its constraint") &&
+              has("Resource deadlock avoided"),
+          "said once, a warning, with the error");
+    CHECK(!is_open(fd), "the device closed, its context with it");
+    CHECK(snx_gpu_pstate_keep(t + 120000000, t + 80000000) == 0 && g.lines == lines + 1, "nothing after");
+}
+
+/* each step of the kgsl hold refused: said as a warning with the step and the error, the device closed */
+static void case_kgsl_refused(void) {
+    static const struct {
+        int at, err;
+        const char *words, *what;
+    } steps[] = {
+        {0x13, EINVAL, "a context of the runtime's own (IOCTL_KGSL_DRAWCTXT_CREATE)", "Invalid argument"},
+        {0x32, EPERM, "the top power level as its constraint (KGSL_PROP_PWR_CONSTRAINT)", "Operation not permitted"},
+        {0x45, ENOMEM, "a page for its commands (IOCTL_KGSL_GPUOBJ_ALLOC)", "Cannot allocate memory"},
+        {0x47, EINVAL, "the page's GPU address (IOCTL_KGSL_GPUOBJ_INFO)", "Invalid argument"}};
+    kgsl_machine();
+    for (size_t i = 0; i < sizeof steps / sizeof *steps; i++) {
+        g.kgsl_err_at = steps[i].at, g.kgsl_err = steps[i].err, g.fd = -1;
+        SnxGpuPstateDevice d = adreno();
+        CHECK(!snx_gpu_pstate_hold(SNX_GPU_PSTATE_ON, &d, say), steps[i].words);
+        CHECK(g.warn && has("kgsl refused") && has(steps[i].words) && has(steps[i].what), steps[i].words);
+        CHECK(g.fd < 0 || !is_open(g.fd), "the device closed again");
+    }
+    char path[512];
+    snprintf(path, sizeof path, "%s/dev/kgsl-3d0", g.root);
+    unlink(path);
+    g.kgsl_err = 0;
+    SnxGpuPstateDevice d = adreno();
+    CHECK(!snx_gpu_pstate_hold(SNX_GPU_PSTATE_AUTO, &d, say) && g.warn && has("kgsl-3d0 does not open (No such file"),
+          "no kgsl device: said");
+    CHECK(!snx_gpu_pstate_hold(SNX_GPU_PSTATE_OFF, &d, say) && !g.warn, "off asks nothing");
+}
+
 static void case_wanted(void) {
     static const struct {
+        unsigned vendor;
         int mode, type, wanted;
-    } cases[] = {{SNX_GPU_PSTATE_AUTO, DISCRETE, 1}, {SNX_GPU_PSTATE_AUTO, INTEGRATED, 0},
-                 {SNX_GPU_PSTATE_AUTO, OTHER, 0},    {SNX_GPU_PSTATE_ON, DISCRETE, 1},
-                 {SNX_GPU_PSTATE_ON, INTEGRATED, 1}, {SNX_GPU_PSTATE_ON, 4, 1},
-                 {SNX_GPU_PSTATE_OFF, DISCRETE, 0},  {SNX_GPU_PSTATE_OFF, INTEGRATED, 0}};
+    } cases[] = {{SNX_GPU_VENDOR_NVIDIA, SNX_GPU_PSTATE_AUTO, DISCRETE, 1},
+                 {SNX_GPU_VENDOR_NVIDIA, SNX_GPU_PSTATE_AUTO, INTEGRATED, 0},
+                 {SNX_GPU_VENDOR_NVIDIA, SNX_GPU_PSTATE_AUTO, OTHER, 0},
+                 {SNX_GPU_VENDOR_NVIDIA, SNX_GPU_PSTATE_ON, DISCRETE, 1},
+                 {SNX_GPU_VENDOR_NVIDIA, SNX_GPU_PSTATE_ON, INTEGRATED, 1},
+                 {SNX_GPU_VENDOR_NVIDIA, SNX_GPU_PSTATE_ON, 4, 1},
+                 {SNX_GPU_VENDOR_NVIDIA, SNX_GPU_PSTATE_OFF, DISCRETE, 0},
+                 {SNX_GPU_VENDOR_AMD, SNX_GPU_PSTATE_AUTO, INTEGRATED, 0},
+                 {SNX_GPU_VENDOR_QUALCOMM, SNX_GPU_PSTATE_AUTO, INTEGRATED, 1},
+                 {SNX_GPU_VENDOR_QUALCOMM, SNX_GPU_PSTATE_OFF, INTEGRATED, 0}};
     for (size_t i = 0; i < sizeof cases / sizeof *cases; i++) {
-        SnxGpuPstateDevice d = {.vendor = SNX_GPU_VENDOR_NVIDIA, .type = cases[i].type};
+        SnxGpuPstateDevice d = {.vendor = cases[i].vendor, .type = cases[i].type};
         CHECK(snx_gpu_pstate_wanted(cases[i].mode, &d) == cases[i].wanted, "wanted");
     }
 }
@@ -399,6 +563,8 @@ static const struct {
                {"no_node", case_no_node},
                {"other_vendor", case_other_vendor},
                {"nvidia", case_nvidia},
+               {"kgsl", case_kgsl},
+               {"kgsl_refused", case_kgsl_refused},
                {"wanted", case_wanted}};
 
 int main(void) {
