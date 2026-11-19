@@ -23,9 +23,9 @@
 
 /* the calibrating dispatch's workgroups: an Adreno 610's gather took 684.9 ms for 64 of them, its staging 19.6 */
 #define PICK_FIRST_GROUPS 8u
-/* the fastest way's dispatch in the timed rounds, in ns: a 65536-workgroup dispatch was 3.8 to 5.2 ms on an RX 6700
-   XT, whole waves on every CU */
-#define PICK_TARGET_NS    2000000.0
+/* the fastest way's dispatch in the timed rounds, in ns: whole waves on every CU of a large GPU for nearly all of it,
+   so that a dispatch's start is a small part of it, and the rounds of five ways a fraction of a second */
+#define PICK_TARGET_NS    1000000.0
 #define PICK_MAX_GROUPS   65536u
 #define PICK_ROUNDS       4u
 /* a way's dispatches in a round, the first untimed: an idle GPU's clock comes up over the first few */
@@ -375,6 +375,7 @@ static int bench_run(int rule, int half, double* us, u64* took, char* why, size_
     for (int w = SH_HMMA_GATHER; w < SH_HMMA_WAYS; w++)
         if (w != rule) order[nord++] = w;
     double best = 0;
+    int fastest = 0;
     for (int k = 0; k < nord && ok > 0; k++) {
         int w = order[k];
         Way* x = &b->way[w];
@@ -403,7 +404,7 @@ static int bench_run(int rule, int half, double* us, u64* took, char* why, size_
                 continue;
             }
         }
-        if (!best || x->first < best) best = x->first;
+        if (!best || x->first < best) best = x->first, fastest = w;
     }
     shader_hmma_take(rule, (int)g_vk.props.limits.maxComputeSharedMemorySize);
     for (int w = SH_HMMA_GATHER; w < SH_HMMA_WAYS && ok > 0; w++) {
@@ -416,6 +417,21 @@ static int bench_run(int rule, int half, double* us, u64* took, char* why, size_
     if (ok > 0 && best > 0) {
         double want = PICK_FIRST_GROUPS * PICK_TARGET_NS / best;
         groups = want >= PICK_MAX_GROUPS ? PICK_MAX_GROUPS : want <= PICK_FIRST_GROUPS ? PICK_FIRST_GROUPS : (u32)want;
+    }
+    /* the calibrating workgroups leave most of a large GPU idle, so their time is mostly a dispatch's start, and the
+       size scaled from it falls short of the target there (an RX 6700 XT's dispatches ran 0.1 ms): the fastest way at
+       that size, and the size scaled again from its time */
+    if (ok > 0 && groups > PICK_FIRST_GROUPS && groups < PICK_MAX_GROUPS) {
+        Way* x = &b->way[fastest];
+        double ns[2];
+        int r = run(b, x, groups, 2, ns, 0, x->why, sizeof x->why);
+        if (r < 0) {
+            snprintf(why, n, "the %s way's %s", g_shader_hmma_names[fastest], x->why);
+            ok = -1;
+        } else if (r && ns[1] > 0 && ns[1] < PICK_TARGET_NS / 2) {
+            double want = groups * PICK_TARGET_NS / ns[1];
+            groups = want >= PICK_MAX_GROUPS ? PICK_MAX_GROUPS : (u32)want;
+        }
     }
     /* the rounds: the ways in turn, the order reversed every other round, as the clock still climbs in the first */
     u32 rounds = 0;
