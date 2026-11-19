@@ -3,9 +3,11 @@
 /* scarletnx --pack: NCAs packed into an NSP or an XCI of the usual kind (a PFS0, or a gamecard image with HEAD), each
    NCA in it plain (hactool/snx_hac.h's snx_hac_plain). Not a DNSP or DXCI: the container and the NCA magics are the
    ordinary ones, and a reader tells a plain NCA by its header, which needs no header_key to read. The NCAs come from a
-   folder (an NSP's or an XCI secure partition's files, as a tool unpacked them) or from a dump */
+   folder (an NSP's or an XCI secure partition's files, as a tool unpacked them) or from a dump, or are fabricated from
+   an extracted game's folder (fabricate.h) */
 #include "nx/runtime/driver/pack.h"
 #include "nx/runtime/driver/container.h"
+#include "nx/runtime/driver/fabricate.h"
 #include "common/utilities/ascii.h"
 #include "common/utilities/bits.h"
 #include "common/utilities/endian.h"
@@ -31,8 +33,8 @@ typedef struct {
 } PackNca;
 
 typedef struct {
-    const char *input, *out, *keys, *title_keys, *data;
-    int xci, force;
+    const char *input, *out, *keys, *title_keys, *data, *name;
+    int xci, force, plan;
 } PackOptions;
 
 typedef struct {
@@ -47,6 +49,8 @@ static void pack_help(void) {
          "  FOLDER              NCAs (.nca), as an NSP's or an XCI's secure partition unpacked; .tik files in it\n"
          "                      give the title keys. A folder without NCAs but with secure/ in it packs that\n"
          "  DUMP                An XCI, NSP, DXCI or DNSP, its NCAs packed again\n"
+         "  GAME                An extracted game's folder (exefs/ with main.npdm, romfs/, and control.nacp and\n"
+         "                      icon.jpg when it has them), made into fabricated NCAs\n"
          "  --nsp               Pack into an NSP (default)\n"
          "  --xci               Pack into an XCI\n"
          "  --out FILE          The output (default: beside the input, FOLDER.nsp or DUMP.decrypted.nsp)\n"
@@ -54,10 +58,15 @@ static void pack_help(void) {
          "  --keys FILE         prod.keys (default: the data folder's, then ~/.switch)\n"
          "  --title-keys FILE   title.keys (same discovery order; optional)\n"
          "  --data DIR          The data folder, where prod.keys is looked for first\n"
+         "  --name NAME         A GAME without control.nacp: its stub's title (default: the folder's name)\n"
+         "  --plan              A GAME: say what it would make, reading main.npdm and the files' sizes alone\n"
          "  --help              Show this help");
     puts("Each NCA goes in plain: its header and sections decrypted, everything else as it was. The output is an\n"
          "ordinary NSP (PFS0) or XCI (HEAD), not a DNSP or DXCI. NCAs plain already need no keys. Tickets are left\n"
-         "out, as plain NCAs need none.");
+         "out, as plain NCAs need none.\n"
+         "A GAME's NCAs are fabricated: a Program (the ExeFS, the RomFS rebuilt with its IVFC hashes), a Control and\n"
+         "a Meta NCA, plain, unsigned, their content IDs the SHA-256 of their headers. A control.nacp the folder\n"
+         "lacks is a stub (its title, 64 MiB saves), and the content meta is made up. Each file is read once.");
 }
 
 static int has_suffix(const char* text, const char* suffix) {
@@ -102,6 +111,10 @@ static int parse_options(int argc, char** argv, PackOptions* options) {
             options->force = 1;
             continue;
         }
+        if (!strcmp(argv[i], "--plan")) {
+            options->plan = 1;
+            continue;
+        }
         if (argv[i][0] != '-' || !argv[i][1]) {
             if (options->input) return snx_error("--pack takes one folder or dump, and %s is a second", argv[i]);
             options->input = argv[i];
@@ -115,6 +128,8 @@ static int parse_options(int argc, char** argv, PackOptions* options) {
             slot = &options->title_keys;
         else if (!strcmp(argv[i], "--data"))
             slot = &options->data;
+        else if (!strcmp(argv[i], "--name"))
+            slot = &options->name;
         if (!slot) return snx_error("unknown option: %s (scarletnx --pack -h lists them)", argv[i]);
         if (i + 1 == argc || !argv[i + 1][0]) return snx_error("%s requires a value", argv[i]);
         *slot = argv[++i];
@@ -305,46 +320,28 @@ static int write_ncas(PackWriter* w, const PackList* list, SnxDump* dump) {
 }
 
 /* a PFS0 or HFS0 header of list's files (none for an empty partition), padded to a multiple of align, malloc'd with
-   its size in *size. An HFS0 entry hashes its file's first hashed bytes (hashes[i] given), a PFS0 entry has none */
+   its size in *size (snx_partition_header). An HFS0 entry hashes its NCA's first HASHED_PREFIX bytes */
 static unsigned char* fs_header(const PackList* list, int hfs0, SnxU64 align, size_t* size) {
-    size_t count = list ? list->count : 0, names = 0, entry = hfs0 ? HFS0_ENTRY : PFS0_ENTRY;
-    for (size_t i = 0; i < count; i++) names += strlen(list->ncas[i].name) + 1;
-    size_t bare = 0x10 + count * entry + names;
-    size_t total = (size_t)snx_align_up(bare, align);
-    unsigned char* h = (unsigned char*)calloc(1, total);
-    if (!h) return NULL;
-    memcpy(h, hfs0 ? "HFS0" : "PFS0", 4);
-    snx_st_le32(h + 4, (SnxU32)count);
-    snx_st_le32(h + 8, (SnxU32)(total - 0x10 - count * entry));
-    SnxU64 at = 0;
-    size_t name_at = 0;
-    for (size_t i = 0; i < count; i++) {
-        const PackNca* nca = &list->ncas[i];
-        unsigned char* e = h + 0x10 + i * entry;
-        snx_st_le64(e, at);
-        snx_st_le64(e + 8, nca->size);
-        snx_st_le32(e + 16, (SnxU32)name_at);
-        if (hfs0) {
-            snx_st_le32(e + 20, HASHED_PREFIX);
-            memcpy(e + 32, nca->hash, 32);
+    size_t count = list ? list->count : 0;
+    const char** names = (const char**)calloc(count ? count : 1, sizeof *names);
+    SnxU64* sizes = (SnxU64*)calloc(count ? count : 1, sizeof *sizes);
+    uint32_t* hashed = (uint32_t*)calloc(count ? count : 1, sizeof *hashed);
+    unsigned char(*hashes)[32] = (unsigned char(*)[32])calloc(count ? count : 1, 32);
+    unsigned char* h = NULL;
+    if (names && sizes && hashed && hashes) {
+        for (size_t i = 0; i < count; i++) {
+            names[i] = list->ncas[i].name;
+            sizes[i] = list->ncas[i].size;
+            hashed[i] = HASHED_PREFIX;
+            memcpy(hashes[i], list->ncas[i].hash, 32);
         }
-        size_t n = strlen(nca->name) + 1;
-        memcpy(h + 0x10 + count * entry + name_at, nca->name, n);
-        name_at += n;
-        at += nca->size;
+        h = snx_partition_header(names, sizes, hashed, (const unsigned char(*)[32])hashes, count, hfs0, align, size);
     }
-    *size = total;
+    free(names);
+    free(sizes);
+    free(hashed);
+    free(hashes);
     return h;
-}
-
-static int write_nsp(PackWriter* w, const PackList* list, SnxDump* dump) {
-    size_t size;
-    unsigned char* header = fs_header(list, 0, 0x20, &size);
-    if (!header) return snx_error("out of memory writing the NSP's header");
-    int failed = sink(header, size, w);
-    free(header);
-    if (failed) return snx_error("cannot write the NSP's header");
-    return write_ncas(w, list, dump);
 }
 
 /* the gamecard's size, by what it holds */
@@ -358,14 +355,25 @@ static int cart_type(SnxU64 bytes) {
     return 0xE2; /* 32 GB */
 }
 
-static int write_xci(PackWriter* w, const PackList* list, SnxDump* dump) {
+/* the bytes of the container before its NCAs, malloc'd, its size in *size: an NSP's PFS0 header, or an XCI's header,
+   its fill, its root partition and the headers of its partitions; and in *tail the zeros after the NCAs that end the
+   XCI's last page. say: what is left out of the XCI's header said. NULL, said why */
+static unsigned char* container_prefix(const PackList* list, int xci, SnxDump* dump, int say, size_t* size,
+                                       SnxU64* tail) {
+    *tail = 0;
+    if (!xci) {
+        unsigned char* header = fs_header(list, 0, 0x20, size);
+        if (!header) snx_error("out of memory writing the NSP's header");
+        return header;
+    }
     size_t empty_size, secure_size, root_size;
     unsigned char* empty = fs_header(NULL, 1, PAGE, &empty_size);
     unsigned char* secure = fs_header(list, 1, PAGE, &secure_size);
     if (!empty || !secure) {
         free(empty);
         free(secure);
-        return snx_error("out of memory writing the XCI's partitions");
+        snx_error("out of memory writing the XCI's partitions");
+        return NULL;
     }
     /* the root partition: update and normal empty, then the secure one, each entry hashing its partition's header */
     PackNca parts[3] = {{0}};
@@ -380,33 +388,37 @@ static int write_xci(PackWriter* w, const PackList* list, SnxDump* dump) {
     for (size_t i = 0; i < list->count; i++) data += list->ncas[i].size;
     parts[2].size += data;
     unsigned char* top = fs_header(&root, 1, PAGE, &root_size);
-    if (!top) {
+    SnxU64 secure_at = XCI_ROOT + root_size + 2 * empty_size;
+    unsigned char* out = top ? (unsigned char*)malloc((size_t)(secure_at + secure_size)) : NULL;
+    if (!out) {
+        free(top);
         free(empty);
         free(secure);
-        return snx_error("out of memory writing the XCI's root partition");
+        snx_error("out of memory writing the XCI's root partition");
+        return NULL;
     }
     for (int i = 0; i < 3; i++) /* the root's entries hash each partition's header alone */
         snx_st_le32(top + 0x10 + (size_t)i * HFS0_ENTRY + 20, (SnxU32)(i < 2 ? empty_size : secure_size));
-    SnxU64 secure_at = XCI_ROOT + root_size + 2 * empty_size;
     SnxU64 end = secure_at + secure_size + data;
     SnxU64 pages = snx_div_up(end, PAGE);
 
-    unsigned char h[PAGE] = {0};
+    unsigned char* h = out;
+    memset(h, 0, PAGE);
     memcpy(h + 0x100, "HEAD", 4);
-    snx_st_le32(h + 0x104, (SnxU32)(secure_at / PAGE));           /* the secure area's first page */
-    snx_st_le32(h + 0x108, 0xFFFFFFFFu);                          /* no backup area */
+    snx_st_le32(h + 0x104, (SnxU32)(secure_at / PAGE)); /* the secure area's first page */
+    snx_st_le32(h + 0x108, 0xFFFFFFFFu);                /* no backup area */
     h[0x10D] = (unsigned char)cart_type(pages * PAGE);
-    snx_st_le64(h + 0x118, pages - 1);                            /* the last page of valid data */
+    snx_st_le64(h + 0x118, pages - 1); /* the last page of valid data */
     snx_st_le64(h + 0x130, XCI_ROOT);
     snx_st_le64(h + 0x138, root_size);
     sha256(top, root_size, h + 0x140);
     unsigned char iv[16];
-    memcpy(iv, h + 0x140 + 16, sizeof iv); /* a fixed IV, from what the card holds */
+    memcpy(iv, h + 0x140 + 16, sizeof iv);                  /* a fixed IV, from what the card holds */
     for (int i = 0; i < 16; i++) h[0x120 + i] = iv[15 - i]; /* stored reversed */
-    snx_st_le32(h + 0x180, 1);                                    /* SelSec */
-    snx_st_le32(h + 0x184, 2);                                    /* SelT1Key */
-    snx_st_le32(h + 0x188, 0);                                    /* SelKey */
-    snx_st_le32(h + 0x18C, (SnxU32)(pages - 1));                  /* LimArea */
+    snx_st_le32(h + 0x180, 1);                              /* SelSec */
+    snx_st_le32(h + 0x184, 2);                              /* SelT1Key */
+    snx_st_le32(h + 0x188, 0);                              /* SelKey */
+    snx_st_le32(h + 0x18C, (SnxU32)(pages - 1));            /* LimArea */
     {
         /* the gamecard info: a retail card's firmware at 25 MHz, the global region. Encrypted under xci_header_key
            when prod.keys has it, else left zero: a reader without the key checks the root's hash alone */
@@ -415,17 +427,58 @@ static int write_xci(PackWriter* w, const PackList* list, SnxDump* dump) {
         snx_st_le32(info + 8, 0x00A10011u);
         snx_st_le32(info + 0xC, 0x1388u);
         snx_st_le64(info + 0x30, 0x0100000000000816ull);
-        if (snx_hac_xci_info(dump->hac, iv, info, h + 0x190))
+        if (snx_hac_xci_info(dump->hac, iv, info, h + 0x190) && say)
             puts("  prod.keys has no xci_header_key: the XCI's gamecard info is left zero");
     }
-    int failed = sink(h, sizeof h, w) || fill(w, 0xFF, XCI_ROOT - PAGE) || sink(top, root_size, w) ||
-                 sink(empty, empty_size, w) || sink(empty, empty_size, w) || sink(secure, secure_size, w);
+    memset(out + PAGE, 0xFF, XCI_ROOT - PAGE);
+    memcpy(out + XCI_ROOT, top, root_size);
+    memcpy(out + XCI_ROOT + root_size, empty, empty_size);
+    memcpy(out + XCI_ROOT + root_size + empty_size, empty, empty_size);
+    memcpy(out + secure_at, secure, secure_size);
     free(top);
     free(empty);
     free(secure);
-    if (failed) return snx_error("cannot write the XCI's header");
-    if (write_ncas(w, list, dump)) return 1;
-    return end % PAGE && fill(w, 0, PAGE - end % PAGE) ? snx_error("cannot write the XCI's last page") : 0;
+    *size = (size_t)(secure_at + secure_size);
+    *tail = end % PAGE ? PAGE - end % PAGE : 0;
+    return out;
+}
+
+/* the container of list's NCAs: their plain forms, or fab's fabricated NCAs (list then names them, as the zeros they
+   are named by until written, then their names). A fabricated pack writes its container's bytes before the NCAs
+   again once the NCAs are named, and fab's patches over what it wrote, after the last byte is written: 0, else
+   nonzero, said why */
+static int write_container(PackWriter* w, PackList* list, SnxDump* dump, int xci, SnxFab* fab) {
+    size_t prefix_size;
+    SnxU64 tail;
+    unsigned char* prefix = container_prefix(list, xci, dump, 1, &prefix_size, &tail);
+    if (!prefix) return 1;
+    int failed = sink(prefix, prefix_size, w) ? snx_error("cannot write the container's header") : 0;
+    free(prefix);
+    if (!failed) failed = fab ? snx_fab_write(fab, sink, w) : write_ncas(w, list, dump);
+    if (!failed && tail && fill(w, 0, tail)) failed = snx_error("cannot write the XCI's last page");
+    if (failed || !fab) return failed;
+    for (size_t i = 0; i < list->count; i++) {
+        char* name = text_join(snx_fab_name(fab, i), "");
+        if (!name) return snx_error("out of memory");
+        free(list->ncas[i].name);
+        list->ncas[i].name = name;
+    }
+    size_t again_size;
+    SnxU64 again_tail;
+    prefix = container_prefix(list, xci, dump, 0, &again_size, &again_tail);
+    if (!prefix) return 1;
+    if (again_size != prefix_size) failed = snx_error("the container's header came out a different size");
+    if (!failed && fflush(w->file)) failed = snx_error("cannot write the container");
+    if (!failed && plat_pwrite(w->file, prefix, prefix_size, 0) != (int64_t)prefix_size)
+        failed = snx_error("cannot write the container's header again");
+    free(prefix);
+    const SnxFabPatch* patches;
+    size_t count = snx_fab_patches(fab, &patches);
+    for (size_t i = 0; i < count && !failed; i++)
+        if (plat_pwrite(w->file, patches[i].bytes, patches[i].size, prefix_size + patches[i].at) !=
+            (int64_t)patches[i].size)
+            failed = snx_error("cannot write the NCAs' hashes and headers");
+    return failed;
 }
 
 /* the output's default path, beside the input: FOLDER.nsp, or DUMP.decrypted.nsp */
@@ -459,13 +512,14 @@ int snx_pack(int argc, char** argv, const SnxPaths* paths) {
     SnxDump dump;
     PackList list = {0};
     PackWriter w = {0};
+    SnxFab* fab = NULL;
     int rc = 1;
-    if (snx_dump_keys(&dump, options.keys, options.title_keys, repo, 1)) goto done;
+    if (snx_dump_keys(&dump, options.keys, options.title_keys, repo, !options.plan)) goto done;
     if (!out || !part) {
         snx_error("out of memory");
         goto done;
     }
-    if (snx_path_exists(out) && !options.force) {
+    if (snx_path_exists(out) && !options.force && !options.plan) {
         snx_error("%s is there already: give --force to replace it, or --out another file", out);
         goto done;
     }
@@ -481,20 +535,47 @@ int snx_pack(int argc, char** argv, const SnxPaths* paths) {
         }
     } else if (list_dump(&list, &dump, options.input, &tickets))
         goto done;
-    if (!list.count) {
-        snx_error("%s has no NCAs (.nca) to pack", options.input);
+    if (!list.count && folder && snx_fab_is_game(options.input)) { /* an extracted game: its NCAs fabricated */
+        if (!(fab = snx_fab_plan(options.input, options.name, 1))) goto done;
+        static const unsigned char zeros[HASHED_PREFIX];
+        unsigned char first[32]; /* a fabricated NCA's first page: its signatures, zero */
+        sha256(zeros, sizeof zeros, first);
+        for (size_t i = 0; i < snx_fab_count(fab); i++) {
+            if (list_add(&list, snx_fab_name(fab, i), "", 0, snx_fab_size(fab, i))) goto done;
+            memcpy(list.ncas[i].hash, first, 32);
+            w.total += snx_fab_size(fab, i);
+        }
+        char size[32];
+        snx_size_text(w.total, size, sizeof size);
+        printf("  the %s: about %s\n", options.xci ? "XCI" : "NSP", size);
+        if (options.plan) {
+            rc = 0;
+            goto done;
+        }
+    } else if (options.plan) {
+        snx_error("--plan is for an extracted game's folder (exefs/ with main), and %s is none", options.input);
+        goto done;
+    } else if (options.name) {
+        snx_error("--name is for an extracted game's folder (exefs/ with main), and %s is none", options.input);
         goto done;
     }
-    qsort(list.ncas, list.count, sizeof *list.ncas, by_name);
-    if (tickets) printf("  %u title key%s from the tickets\n", tickets, tickets == 1 ? "" : "s");
-    if (read_headers(&list, &dump)) goto done;
-    unsigned plain = 0;
-    for (size_t i = 0; i < list.count; i++) {
-        w.total += list.ncas[i].size;
-        plain += (unsigned)list.ncas[i].plain;
+    if (!list.count) {
+        snx_error("%s has no NCAs (.nca) to pack, and is no extracted game's folder (exefs/ with main)",
+                  options.input);
+        goto done;
     }
-    printf("  %lu NCA%s, %u plain already, %lu MB\n", (unsigned long)list.count, list.count == 1 ? "" : "s", plain,
-           (unsigned long)(w.total >> 20));
+    if (!fab) {
+        qsort(list.ncas, list.count, sizeof *list.ncas, by_name);
+        if (tickets) printf("  %u title key%s from the tickets\n", tickets, tickets == 1 ? "" : "s");
+        if (read_headers(&list, &dump)) goto done;
+        unsigned plain = 0;
+        for (size_t i = 0; i < list.count; i++) {
+            w.total += list.ncas[i].size;
+            plain += (unsigned)list.ncas[i].plain;
+        }
+        printf("  %lu NCA%s, %u plain already, %lu MB\n", (unsigned long)list.count, list.count == 1 ? "" : "s",
+               plain, (unsigned long)(w.total >> 20));
+    }
     if (snx_same_file(options.input, out)) {
         snx_error("the output %s is the input", out);
         goto done;
@@ -508,7 +589,7 @@ int snx_pack(int argc, char** argv, const SnxPaths* paths) {
         goto done;
     }
     w.said_at = snx_seconds();
-    int failed = options.xci ? write_xci(&w, &list, &dump) : write_nsp(&w, &list, &dump);
+    int failed = write_container(&w, &list, &dump, options.xci, fab);
     if (w.said) progress_say(&w, 1);
     if (fclose(w.file) && !failed) failed = snx_error("cannot finish writing %s", part);
     w.file = NULL;
@@ -519,9 +600,11 @@ int snx_pack(int argc, char** argv, const SnxPaths* paths) {
     }
     char size[32];
     snx_size_text(snx_file_size(out), size, sizeof size);
-    printf("Packed %s: %s, an %s of plain NCAs\n", out, size, options.xci ? "XCI" : "NSP");
+    printf("Packed %s: %s, an %s of %s NCAs\n", out, size, options.xci ? "XCI" : "NSP",
+           fab ? "fabricated plain" : "plain");
     rc = 0;
 done:
+    snx_fab_free(fab);
     list_free(&list);
     snx_dump_close(&dump);
     free(part);
