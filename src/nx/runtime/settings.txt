@@ -1701,17 +1701,23 @@ setting HMMA in half floats
     help sum past 65504 is an infinity. 0 = the f32 sum, as exact as the console's. A device with the mixed dot
     help product (VK_VALVE_shader_mixed_float_dot_product) or without shaderFloat16 keeps the f32 sum, and the log
     help says so
-setting HMMA A-stationary
-    key hmma_astat
-    int 0 1
+setting HMMA mode
+    key hmma_mode
+    int 0 5
     default 0
     startup
-    words Off|On
-    help An SM86 HMMA off the device's matrix unit forms each product in the lane that holds its A words, takes only
-    help B's words from the other lanes, and adds the partial sums of each quad together in a butterfly of 12 xor
-    help shuffles: the GT 1030 ran the HMMA bench 5.6 times faster than the gather, and 2.7 times faster than A and
-    help B through shared memory. Its f32 sums are a tree, at most 6 roundings a term where the gather's chain has
-    help 16. 0 = the gather, or what the device chose for it (pairs, staging)
+    words Auto|Gather|Pairs|Staged|A-stationary|A-stationary staged
+    help How an SM86 HMMA runs off the device's matrix unit, which is each one where the driver offers none
+    help (VK_KHR_cooperative_matrix): the fastest way differs by GPU and driver, as the HMMA bench ran A and B
+    help through shared memory 35 times faster than the gather on an Adreno 610 (Turnip), 2.2 times slower on an
+    help RX 6700 XT, and A-stationary 5.6 times faster than the gather on a GT 1030. Auto = at the first start of an
+    help Ounce game with a GPU and driver version, the HMMA bench times each way below (a second or less) and the
+    help fastest is kept in the cache folder's shader_cache/hmma.<driver>.txt, which later starts read; the log says
+    help the times and the way. Gather = each lane takes its A and B words from the others by shuffles. Pairs = lanes
+    help 4 apart share B's words, half each. Staged = A and B through a slot of shared memory a warp. A-stationary =
+    help each product in the lane that holds its A words, only B's words from the others, by shuffles; A-stationary
+    help staged = the same, B through the slot. They differ only in the order of the f32 sums (A-stationary's a tree
+    help of at most 6 roundings a term, the others' a chain of 16), all within an HMMA's bound
 setting Vulkan allocation cap
     key vk_max_allocation_mb
     int 0 INT_MAX

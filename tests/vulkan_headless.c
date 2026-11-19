@@ -7409,6 +7409,76 @@ static int check_pipeline_stats_compute(void) {
 #include "vulkan_astc_later.inc"
 #include "vulkan_astc_kind.inc"
 
+/* hmma_mode at the renderer's start (vk/hmma_pick.c), on this device: 1 to 5 take that way; Auto with no file of the
+   bench's times it, keeps the way it picks in hmma.<driver>.txt and takes it, a file of its key is read and not timed
+   again (a way written over by hand is the one taken), and one of another key times it again. A device without
+   subgroup operations in compute (lavapipe) runs no way of HMMA's that reads other lanes, and writes no file */
+static int check_hmma_pick(void) {
+    int pairs_was = g_spirv_translate.hmma_pairs, stage_was = g_spirv_translate.hmma_stage,
+        astat_was = g_spirv_translate.hmma_astat, sm86_was = g_shader_sm86, mode_was = g_settings.hmma_mode;
+    int shared = (int)g_vk.props.limits.maxComputeSharedMemorySize;
+    char* dir = snx_temp_dir(NULL);
+    CHECK(dir);
+    char path[1024];
+    snx_vk_driver_path(path, sizeof path, dir, "hmma", "test", ".txt");
+    g_shader_sm86 = 1;
+    for (int way = SH_HMMA_GATHER; way < SH_HMMA_WAYS && (g_vk_subgroup_stages & VK_SHADER_STAGE_COMPUTE_BIT); way++) {
+        g_settings.hmma_mode = way;
+        vk_hmma_pick(dir, "test");
+        CHECK(g_spirv_translate.hmma_pairs == (way == SH_HMMA_PAIRS) &&
+              g_spirv_translate.hmma_astat == (way == SH_HMMA_ASTAT || way == SH_HMMA_ASTAT_STAGED) &&
+              g_spirv_translate.hmma_stage == (way == SH_HMMA_STAGED || way == SH_HMMA_ASTAT_STAGED ? shared : 0));
+    }
+    g_settings.hmma_mode = SH_HMMA_AUTO;
+    vk_hmma_pick(dir, "test");
+    size_t size = 0;
+    char* text = (char*)snx_read_file(path, &size);
+    if (!(g_vk_subgroup_stages & VK_SHADER_STAGE_COMPUTE_BIT)) {
+        CHECK(!text);
+    } else {
+        CHECK(text && size);
+        char* z = realloc(text, size + 1);
+        CHECK(z);
+        text = z;
+        text[size] = 0;
+        printf("hmma pick: the bench's file on %s:\n%s", g_vk.props.deviceName, text);
+        char* key = strstr(text, "\nkey ");
+        char* way = strstr(text, "\nway ");
+        CHECK(key && way && strstr(text, "\nus gather="));
+        /* the file's way taken as it is: written over with another, the next start takes that one, timing nothing */
+        char* end = strchr(way + 1, '\n');
+        CHECK(end);
+        int now = g_spirv_translate.hmma_astat   ? (g_spirv_translate.hmma_stage ? SH_HMMA_ASTAT_STAGED : SH_HMMA_ASTAT)
+                  : g_spirv_translate.hmma_stage ? SH_HMMA_STAGED
+                  : g_spirv_translate.hmma_pairs ? SH_HMMA_PAIRS
+                                                 : SH_HMMA_GATHER;
+        CHECK(!strncmp(way + 5, g_shader_hmma_names[now], (size_t)(end - way - 5)));
+        int other = now == SH_HMMA_STAGED ? SH_HMMA_GATHER : SH_HMMA_STAGED;
+        char* edited = snx_format("%.*s\nway %s%s", (int)(way - text), text, g_shader_hmma_names[other], end);
+        CHECK(edited && !snx_write_file(path, edited, strlen(edited)));
+        vk_hmma_pick(dir, "test");
+        CHECK(g_spirv_translate.hmma_stage == (other == SH_HMMA_STAGED ? shared : 0) && !g_spirv_translate.hmma_pairs &&
+              !g_spirv_translate.hmma_astat);
+        free(edited);
+        /* another key: timed again, and written with its own */
+        edited = snx_format("%.*s\nkey another%s", (int)(key - text), text, strchr(key + 1, '\n'));
+        CHECK(edited && !snx_write_file(path, edited, strlen(edited)));
+        vk_hmma_pick(dir, "test");
+        free(text);
+        text = (char*)snx_read_file(path, &size);
+        CHECK(text && size && !strstr(text, "\nkey another"));
+        free(edited);
+    }
+    free(text);
+    remove(path);
+    snx_remove_tree(dir);
+    free(dir);
+    g_shader_sm86 = sm86_was, g_settings.hmma_mode = mode_was;
+    g_spirv_translate.hmma_pairs = pairs_was, g_spirv_translate.hmma_stage = stage_was,
+    g_spirv_translate.hmma_astat = astat_was;
+    return 0;
+}
+
 /* The file of earlier runs' pipelines keeps SPIR-V translated with the HMMA forms its key names: each form a run can
    choose (the device's matrix unit, the B gather by pairs of lanes, the hmma_f16 setting's half sums, A and B through
    shared memory) changes the part of the key past the guest part, so a run that chose another form translates its
@@ -8582,6 +8652,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_vertex_input_layouts());
     CHECK(!check_vertex_input_file_key());
     CHECK(!check_hmma_file_key());
+    CHECK(!check_hmma_pick());
     CHECK(!check_targetless_stores());
     CHECK(!check_deko_vertex_storage());
     CHECK(!check_storage_image_keep());

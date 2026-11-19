@@ -6079,15 +6079,17 @@ static void test_hmma_way(void) {
     g_spirv_translate.hmma_f16 = half_was;
 }
 
-/* the HMMA forms vk/device.c chooses (shader_hmma_choose) for the devices measured: the Adreno 610 on Turnip, whose
+/* the HMMA ways the rules of vk/device.c give (shader_hmma_rule, taken by shader_hmma_take) for the devices measured,
+   which hmma_mode's Auto keeps where its bench cannot run: the Adreno 610 on Turnip, whose
    shuffles at a lane's own index loop (the OpGroupNonUniformShuffle line of extension_bans.txt holds there, as
    tests/vk_extension_bans.c checks), stages A and B; the Adreno 830 on its own driver keeps each lane's shuffles;
    RADV with subgroups of 32 shares B by pairs of lanes, its quads in compute or not: missing quads are no reason to
    stage, as RADV staged ran 2.2 times slower */
-static void test_hmma_choose(void) {
+static void test_hmma_rule(void) {
     int quad_was = g_spirv_translate.quad_compute, mixed_was = g_spirv_translate.mixed_dot,
         f16_was = g_spirv_translate.float16, pairs_was = g_spirv_translate.hmma_pairs,
-        stage_was = g_spirv_translate.hmma_stage, coop_was = g_spirv_translate.hmma_coop;
+        stage_was = g_spirv_translate.hmma_stage, coop_was = g_spirv_translate.hmma_coop,
+        astat_was = g_spirv_translate.hmma_astat;
     static const struct {
         const char* device;
         int quad, mixed, radv_warp32, shuffle_loops;
@@ -6106,7 +6108,7 @@ static void test_hmma_choose(void) {
         g_spirv_translate.quad_compute = cases[k].quad, g_spirv_translate.mixed_dot = cases[k].mixed,
         g_spirv_translate.float16 = 1;
         g_spirv_translate.hmma_coop = 0;
-        shader_hmma_choose(1, cases[k].radv_warp32, cases[k].shuffle_loops, 65536);
+        shader_hmma_take(shader_hmma_rule(1, cases[k].radv_warp32, cases[k].shuffle_loops), 65536);
         char way[256];
         shader_hmma_way(way, sizeof way);
         if (strcmp(way, cases[k].want))
@@ -6114,12 +6116,109 @@ static void test_hmma_choose(void) {
         CHECK(!strcmp(way, cases[k].want));
         CHECK(g_spirv_translate.hmma_stage == (cases[k].shuffle_loops ? 65536 : 0));
     }
-    shader_hmma_choose(0, 1, 1, 65536); /* no subgroup operations in compute: no form of hmma's runs */
-    CHECK(!g_spirv_translate.hmma_stage && !g_spirv_translate.hmma_pairs);
+    /* no subgroup operations in compute: the gather, whose shuffles no program of the device takes */
+    CHECK(shader_hmma_rule(0, 1, 1) == SH_HMMA_GATHER);
+    /* each way of hmma_mode's, and the flags it takes: the staged ones' slots within the shared memory given */
+    static const struct {
+        int way, pairs, stage, astat;
+        const char* name;
+    } ways[] = {{SH_HMMA_GATHER, 0, 0, 0, "gather"},
+                {SH_HMMA_PAIRS, 1, 0, 0, "pairs"},
+                {SH_HMMA_STAGED, 0, 49152, 0, "staged"},
+                {SH_HMMA_ASTAT, 0, 0, 1, "astat"},
+                {SH_HMMA_ASTAT_STAGED, 0, 49152, 1, "astat-staged"}};
+    for (size_t k = 0; k < sizeof ways / sizeof *ways; k++) {
+        g_spirv_translate.hmma_pairs = !ways[k].pairs, g_spirv_translate.hmma_stage = 7,
+        g_spirv_translate.hmma_astat = !ways[k].astat;
+        shader_hmma_take(ways[k].way, 49152);
+        CHECK(g_spirv_translate.hmma_pairs == (unsigned)ways[k].pairs &&
+              g_spirv_translate.hmma_stage == ways[k].stage && g_spirv_translate.hmma_astat == (unsigned)ways[k].astat);
+        CHECK(!strcmp(g_shader_hmma_names[ways[k].way], ways[k].name));
+    }
     g_spirv_translate.quad_compute = quad_was, g_spirv_translate.mixed_dot = mixed_was,
     g_spirv_translate.float16 = f16_was;
     g_spirv_translate.hmma_pairs = pairs_was, g_spirv_translate.hmma_stage = stage_was,
-    g_spirv_translate.hmma_coop = coop_was;
+    g_spirv_translate.hmma_coop = coop_was, g_spirv_translate.hmma_astat = astat_was;
+}
+
+/* hmma_mode's Auto: the way the HMMA bench's microseconds pick (the fastest; the rules' way while no other beats it by
+   SH_HMMA_PICK_MARGIN percent; a way not measured never), and the file that keeps it for a GPU and driver, read back
+   under that key alone */
+static void test_hmma_bench_pick(void) {
+    double us[SH_HMMA_WAYS] = {0, 100, 90, 0, 50, 0};
+    CHECK(shader_hmma_bench_pick(us, SH_HMMA_PAIRS) == SH_HMMA_ASTAT);
+    double close[SH_HMMA_WAYS] = {0, 97.5, 100, 0, 0, 0}; /* 2.5% faster: within the margin, the rule's stays */
+    CHECK(shader_hmma_bench_pick(close, SH_HMMA_PAIRS) == SH_HMMA_PAIRS);
+    close[SH_HMMA_GATHER] = 96; /* 4% faster: past it */
+    CHECK(shader_hmma_bench_pick(close, SH_HMMA_PAIRS) == SH_HMMA_GATHER);
+    double no_rule[SH_HMMA_WAYS] = {0, 100, 0, 20, 0, 30}; /* the rule's way left out: the fastest of the rest */
+    CHECK(shader_hmma_bench_pick(no_rule, SH_HMMA_PAIRS) == SH_HMMA_STAGED);
+    double none[SH_HMMA_WAYS] = {0};
+    CHECK(shader_hmma_bench_pick(none, SH_HMMA_STAGED) == SH_HMMA_STAGED);
+    /* the Adreno 610's bench (hmma-multi, 64 workgroups): staged 35 times faster than the gather, the rule's own */
+    double a610[SH_HMMA_WAYS] = {0, 684897.7, 338000.9, 19579.7, 0, 0};
+    CHECK(shader_hmma_bench_pick(a610, SH_HMMA_STAGED) == SH_HMMA_STAGED);
+    /* the GT 1030's (2751a3952c, ns an HMMA): A-stationary, where the rules give the gather */
+    double gt1030[SH_HMMA_WAYS] = {0, 49.3, 41.3, 24.3, 8.9, 20.6};
+    CHECK(shader_hmma_bench_pick(gt1030, SH_HMMA_GATHER) == SH_HMMA_ASTAT);
+
+    char file[1024], why[256];
+    const char* key = "bench=1 driver=068020f6 uuid=00112233445566778899aabbccddeeff hmma_f16=0";
+    size_t len = shader_hmma_bench_format(file, sizeof file, key, SH_HMMA_ASTAT, gt1030, "the bench took 412 ms");
+    CHECK(len == strlen(file) && strstr(file, "\nway astat\n") &&
+          strstr(file, "\nus gather=49.3 pairs=41.3 staged=24.3 astat=8.9 astat-staged=20.6\n") &&
+          strstr(file, "\nnote the bench took 412 ms\n"));
+    CHECK(shader_hmma_bench_parse(file, key, why, sizeof why) == SH_HMMA_ASTAT);
+    /* another driver build's file: run again, the two keys said */
+    CHECK(shader_hmma_bench_parse(file, "bench=1 driver=068020f7 uuid=00 hmma_f16=0", why, sizeof why) == SH_HMMA_AUTO);
+    CHECK(strstr(why, "its key is bench=1 driver=068020f6") &&
+          strstr(why, "this GPU and driver's bench=1 driver=068020f7"));
+    CHECK(shader_hmma_bench_parse("key k\nway warp\n", "k", why, sizeof why) == SH_HMMA_AUTO &&
+          !strcmp(why, "its way warp is none of gather, pairs, staged, astat, astat-staged"));
+    CHECK(shader_hmma_bench_parse("key k\n", "k", why, sizeof why) == SH_HMMA_AUTO &&
+          !strcmp(why, "it has no way line"));
+    CHECK(shader_hmma_bench_parse("way pairs\n", "k", why, sizeof why) == SH_HMMA_AUTO &&
+          !strcmp(why, "it has no key line"));
+    CHECK(shader_hmma_bench_parse("key kk\nway pairs\n", "k", why, sizeof why) ==
+          SH_HMMA_AUTO); /* a prefix is not it */
+    CHECK(shader_hmma_bench_parse("key k\r\nway pairs\r\n", "k", why, sizeof why) == SH_HMMA_PAIRS); /* CR LF */
+    CHECK(shader_hmma_bench_format(file, 40, key, SH_HMMA_ASTAT, gt1030, "") == 0); /* too long for the room */
+    CHECK(shader_hmma_bench_format(file, sizeof file, key, SH_HMMA_AUTO, gt1030, "") == 0);
+}
+
+/* The HMMA bench's program translates in each way, with the bindings vk/hmma_pick.c gives it and no other: cbuf 0, the
+   input and the output buffers, the output's by its address at SH_HMMA_BENCH_CB_OUT; its 96 HMMAs are those of 12
+   steps of 8 */
+static void test_hmma_bench_program(void) {
+    static u8 code[SH_HMMA_BENCH_BYTES];
+    u32 bytes = shader_hmma_bench_program(code), hmmas = 0;
+    CHECK(bytes > 0 && bytes <= SH_HMMA_BENCH_BYTES && bytes % 16 == 0);
+    for (u32 i = 0; i < bytes / 16; i++) {
+        Sm86Insn in;
+        sm86_decode(snx_ld_le64(code + 16 * i), snx_ld_le64(code + 16 * i + 8), &in);
+        CHECK(in.op != SM86_NONE);
+        hmmas += in.op == SM86_HMMA;
+    }
+    CHECK(hmmas == SH_HMMA_BENCH_STEPS * 8);
+    Sm86Program found[2];
+    CHECK(sm86_find_programs(code, bytes, found, 2) == 1 && found[0].complete && found[0].stage == ST_CS);
+    int pairs_was = g_spirv_translate.hmma_pairs, stage_was = g_spirv_translate.hmma_stage,
+        astat_was = g_spirv_translate.hmma_astat;
+    for (int w = SH_HMMA_GATHER; w < SH_HMMA_WAYS; w++) {
+        ShaderInfo si = {0};
+        si.cs_local[0] = (int)SH_HMMA_BENCH_LOCAL, si.cs_local[1] = si.cs_local[2] = 1;
+        si.shared_size = (int)SH_HMMA_BENCH_SHARED;
+        shader_hmma_take(w, 49152);
+        size_t words = 0;
+        u32* spv = sm86_to_spirv(code, bytes, ST_CS, NULL, &si, &words);
+        if (!spv) fprintf(stderr, "HMMA bench, %s: not translated: %s\n", g_shader_hmma_names[w], si.first_unsupported);
+        CHECK(spv && !si.unsupported && si.cbuf_mask == 1u && si.ngbuf == 2 && !si.ntex && !si.nimg && !si.root_max &&
+              !si.shared_spill);
+        CHECK(si.gbuf_cbuf_off[0] == SH_HMMA_BENCH_CB_OUT || si.gbuf_cbuf_off[1] == SH_HMMA_BENCH_CB_OUT);
+        free(spv);
+    }
+    g_spirv_translate.hmma_pairs = pairs_was, g_spirv_translate.hmma_stage = stage_was,
+    g_spirv_translate.hmma_astat = astat_was;
 }
 
 /* hmma_f16 asked for where the device keeps HMMA's f32 sum: the reason the log gives, which names what the device has
@@ -7217,7 +7316,9 @@ int main(int argc, char** argv) {
     test_coop_fused_only(dir);
     test_warp_matrix_flush(dir);
     test_hmma_way();
-    test_hmma_choose();
+    test_hmma_rule();
+    test_hmma_bench_pick();
+    test_hmma_bench_program();
     test_hmma_f16_unused();
     test_warp_matrix_coop(dir);
     test_ftz_modes(dir);
