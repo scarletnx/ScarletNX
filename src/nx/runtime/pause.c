@@ -85,7 +85,10 @@ int game_pause_toggle(char* text, size_t size) {
     else
         snx_key_said(line, sizeof line, "Pause", now ? "on" : "off", now ? "off" : "on");
     LOG("%s\n", line);
-    if (size) snprintf(text, size, "%s", line);
+    if (size && now >= 0)
+        snx_key_now(text, size, "Pause", now ? "on" : "off");
+    else if (size)
+        snprintf(text, size, "%s", line);
     return now;
 }
 

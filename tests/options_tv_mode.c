@@ -253,10 +253,10 @@ static void test_cycle(void) {
     hid = g_test.hid;
     asked = g_test.asked;
     CHECK(options_tv_mode_choice() == 1 && mode() == 1);
-    /* On to Off: handheld mode at once, its line and the same words for the toast; the services hear of it on the
-       update, and once */
+    /* On to Off: handheld mode at once, its line, and the toast's words, the choice alone; the services hear of it on
+       the update, and once */
     CHECK(options_tv_mode_step(1, text, sizeof text) == 0 && options_tv_mode_choice() == 0 && mode() == 0);
-    CHECK(!strcmp(text, "TV mode: Off (handheld mode)") && !strcmp(g_test.logged, "TV mode: Off (handheld mode)\n"));
+    CHECK(!strcmp(text, "TV mode: Off") && !strcmp(g_test.logged, "TV mode: Off (handheld mode)\n"));
     CHECK(g_test.am == am && g_test.hid == hid);
     options_tv_mode_update();
     CHECK(g_test.am == am + 1 && g_test.hid == hid + 1);
@@ -267,7 +267,7 @@ static void test_cycle(void) {
     CHECK(options_tv_mode_step(1, text, sizeof text) == 2 && mode() == 0 && g_test.asked == asked + 1);
     CHECK(!strcmp(g_test.said, "power: the host is on its battery: TV mode Auto picks handheld mode\n"
                                "TV mode: Auto (handheld mode)\n"));
-    CHECK(!strcmp(text, "TV mode: Auto (handheld mode)"));
+    CHECK(!strcmp(text, "TV mode: Auto (handheld)")); /* Auto's with the mode it picks */
     options_tv_mode_update();
     CHECK(g_test.am == am + 1);
     /* Auto follows the watcher, as from the start */
@@ -814,14 +814,14 @@ static void test_key_steps(void) {
     ini_open(path);
     CHECK(g_opt_fps == 120);
     CHECK(options_fps_limit_step(&was, said, sizeof said) == 0 && g_opt_fps == 0 && was == 120);
-    CHECK(!strcmp(said, "FPS limit: off (was 120)") && !strcmp(g_test.logged, "FPS limit: off (was 120)\n"));
+    CHECK(!strcmp(said, "FPS limit: off") && !strcmp(g_test.logged, "FPS limit: off (was 120)\n")); /* toast, log */
     text = picks_written(path);
     CHECK(strstr(text, "\nfps_limit=0\n"));
     free(text);
     CHECK((text = (char*)snx_read_file(path, &(size_t){0})) && strstr(text, "\nfps_limit=120\n"));
     free(text);
     CHECK(options_fps_limit_step(&was, said, sizeof said) == 120 && g_opt_fps == 120);
-    CHECK(!strcmp(said, "FPS limit: 120 (was off)") && !strcmp(g_test.logged, "FPS limit: 120 (was off)\n"));
+    CHECK(!strcmp(said, "FPS limit: 120") && !strcmp(g_test.logged, "FPS limit: 120 (was off)\n"));
     text = picks_written(path);
     CHECK(strstr(text, "\nfps_limit=120\n"));
     free(text);
@@ -829,9 +829,9 @@ static void test_key_steps(void) {
     was = 0;
     g_opt_fps = SNX_FPS_GAME;
     CHECK(options_fps_limit_step(&was, said, sizeof said) == 0 && was == SNX_FPS_GAME);
-    CHECK(!strcmp(said, "FPS limit: off (was the game's pace)"));
+    CHECK(!strcmp(said, "FPS limit: off") && !strcmp(g_test.logged, "FPS limit: off (was the game's pace)\n"));
     CHECK(options_fps_limit_step(&was, said, sizeof said) == SNX_FPS_GAME && g_opt_fps == SNX_FPS_GAME);
-    CHECK(!strcmp(said, "FPS limit: the game's pace (was off)"));
+    CHECK(!strcmp(said, "FPS limit: the game's pace"));
     text = picks_written(path);
     CHECK(strstr(text, "\nfps_limit=game\n"));
     free(text);
@@ -846,17 +846,16 @@ static void test_key_steps(void) {
     snprintf(g_settings.stats_corner, sizeof g_settings.stats_corner, "br");
     g_settings.showcase = g_settings.stats = 0;
     CHECK(options_showcase_step(said, sizeof said) == 1 && g_settings.showcase == 1);
-    CHECK(!strcmp(said, "Showcase: on (was off)") &&
-          !strcmp(g_test.logged, "Showcase: on (was off), showcase_corner=tr\n"));
+    CHECK(!strcmp(said, "Showcase: on") && !strcmp(g_test.logged, "Showcase: on (was off), showcase_corner=tr\n"));
     CHECK(options_stats_step(said, sizeof said) == 1 && g_settings.stats == 1);
-    CHECK(!strcmp(said, "Stats: on (was off)") && !strcmp(g_test.logged, "Stats: on (was off), stats_corner=br\n"));
+    CHECK(!strcmp(said, "Stats: on") && !strcmp(g_test.logged, "Stats: on (was off), stats_corner=br\n"));
     text = picks_written(path);
     CHECK(strstr(text, "\nshowcase=1\n") && strstr(text, "\nstats=1\n"));
     free(text);
     CHECK(options_showcase_step(said, sizeof said) == 0 && g_settings.showcase == 0);
-    CHECK(!strcmp(said, "Showcase: off (was on)") && !strcmp(g_test.logged, "Showcase: off (was on)\n"));
+    CHECK(!strcmp(said, "Showcase: off") && !strcmp(g_test.logged, "Showcase: off (was on)\n"));
     CHECK(options_stats_step(said, sizeof said) == 0 && g_settings.stats == 0);
-    CHECK(!strcmp(said, "Stats: off (was on)") && !strcmp(g_test.logged, "Stats: off (was on)\n"));
+    CHECK(!strcmp(said, "Stats: off") && !strcmp(g_test.logged, "Stats: off (was on)\n"));
     text = picks_written(path);
     CHECK(strstr(text, "\nshowcase=0\n") && strstr(text, "\nstats=0\n"));
     free(text);

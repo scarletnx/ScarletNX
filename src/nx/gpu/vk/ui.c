@@ -2,8 +2,8 @@
    Copyright 2026 the ScarletNX contributors */
 /* The on-screen controls, the game's menu (runtime/platform/ui.h) and the shader loading screen before the game
    (runtime/platform/prepare_screen.h) over a presented frame: the quads they give, drawn opaque in the window's one
-   pass (vk_ui_present), after the frame's own quad and before the present, but for a notification fading in or out
-   (ui_fade_set), blended at its alpha in the same pass. Nothing is recorded while none shows.
+   pass (vk_ui_present), after the frame's own quad and before the present, but for a notification's line fading in or
+   out (ui_fade_set), blended at its alpha in the same pass. Nothing is recorded while none shows.
 
    Each quad is an instance, its SnxUiQuad (20 bytes) as it is, whose corners the vertex shader makes: the CPU writes no
    vertices. The instances stay in a buffer on the device from frame to frame, and a frame copies into it only the
@@ -57,9 +57,10 @@ typedef struct {
 static UiSlot g_slot[VK_FRAMES];
 static int g_slot_now; /* this frame's region */
 static int g_frames_coherent; /* its memory host-coherent: what the CPU writes needs no flush */
-/* the frame's runs of quads, each drawn with one call (ui_record), kept while no quad changes */
+/* the frame's runs of quads, each drawn with one call (ui_record), kept while no quad changes: fade, the faded span its
+   quads are of (g_fades), -1 for none */
 typedef struct {
-    int first, count, set, pipe;
+    int first, count, set, pipe, fade;
     u32 vertices;
 } UiRun;
 static UiRun g_runs[MAX_QUADS];
@@ -69,10 +70,12 @@ static VkPipelineLayout g_layout;
 /* ui.frag's pipelines (its MODE): plain, for a quad that covers every pixel of its own (a fill, a bar, a backed
    letter or icon), and sparse, for one that leaves its clear pixels alone (a shape, a letter, an icon, the atlas's
    texels): discarded, or on a GPU that renders in tiles written clear and blended away. And faded, plain's quads of
-   the span ui_fade_set gives (a notification coming or going), blended over the picture at its alpha (FADE) */
+   the spans ui_fade_set gives (a notification's lines coming or going), blended over the picture at each one's alpha
+   (FADE) */
 enum { UI_PLAIN, UI_SPARSE, UI_FADED, UI_PIPES };
 static VkPipeline g_pipes[UI_PIPES];
-static int g_fade[2]; /* that span of the list, first and end, as the last list made gave it */
+static SnxUiFade g_fades[SNX_UI_FADES]; /* those spans as the last list made gave them, the rest zeroed */
+static int g_nfades;
 static VkFormat g_pipe_format;
 static u32 g_pipe_space; /* what the pipelines' picture takes (g_vk.sc_space): half floats are both HDR spaces' */
 static int g_pipe_tiler; /* the sparse pipeline blends: made for a GPU that renders in tiles */
@@ -397,8 +400,8 @@ static void image_upload(VkCommandBuffer cb) {
     g_image_version = version;
 }
 /* ui.vert's Picture: the picture's size, the ring's head and its slots from bit 16, the bars' slow colour and its
-   height, the backed letters' ground, and the faded span's alpha (1 with none), which g_shown compares from frame to
-   frame: a fade moves it alone */
+   height, the backed letters' ground, which g_shown compares from frame to frame, and a faded span's alpha, pushed
+   before each faded run (ui_record), 1 till then */
 typedef struct {
     float w, h;
     u32 ring, slow, slow_from, ground;
@@ -412,6 +415,7 @@ static UiPicture g_pc;
 static struct {
     int safe[4], n;
     UiPicture pc;
+    SnxUiFade fades[SNX_UI_FADES]; /* and the faded spans: a fade moves their alphas alone */
     int changed;
 } g_shown = {.n = -1, .changed = 1};
 
@@ -585,13 +589,20 @@ static unsigned quad_sample(int i) { return ui_q_bits(&g_quads[i], UI_Q_SAMPLE, 
 /* an outline shape (an unfilled circle, round box or cross with its edge), which ui.vert draws as UI_OUTLINE_PARTS
    quads over its edge and its label, so that its inside takes no fragment: the vertices an instance of it takes */
 #define UI_OUTLINE_PARTS 16 /* ui.vert's OUTLINE_PARTS */
-/* the pipeline a quad is drawn with: plain for a fill, a bar, a backed letter or icon, faded for those in the faded
+/* the faded span quad i is of, -1 for none */
+static int quad_fade(int i) {
+    int k;
+    for (k = 0; k < g_nfades; ++k)
+        if (i >= g_fades[k].first && i < g_fades[k].end) return k;
+    return -1;
+}
+/* the pipeline a quad is drawn with: plain for a fill, a bar, a backed letter or icon, faded for those in a faded
    span, sparse for the rest */
 static int quad_pipe(int i) {
     unsigned ink = ui_q_bits(&g_quads[i], UI_Q_INK, 3);
     if (ink == UI_SOLID || ink == UI_RING ||
         ((ink == UI_GLYPH || ink == UI_ICON) && ui_q_bits(&g_quads[i], UI_Q_BACKED, 1)))
-        return i >= g_fade[0] && i < g_fade[1] ? UI_FADED : UI_PLAIN;
+        return quad_fade(i) >= 0 ? UI_FADED : UI_PLAIN;
     return UI_SPARSE;
 }
 static u32 quad_vertices(int i) {
@@ -628,23 +639,20 @@ static int ui_list(const int safe[4]) {
     overlay_draw(&list, sw, sh, now);
     ui_dirty_end(&first, &end);
     {
-        int fade[2];
-        unsigned alpha = ui_fade(&fade[0], &fade[1]);
-        g_pc = (UiPicture){(float)sw,
-                           (float)sh,
-                           (u32)ring->head | (u32)ring->n << 16,
-                           ring->slow,
-                           ring->slow_from,
-                           ui_ground(),
-                           (float)alpha / 255.0f};
-        if (memcmp(fade, g_fade, sizeof fade)) { /* the runs take the faded span's quads apart */
-            memcpy(g_fade, fade, sizeof fade);
-            g_runs_n = -1;
-        }
+        SnxUiFade fades[SNX_UI_FADES];
+        int k, nf = ui_fades(fades), moved = nf != g_nfades;
+        for (k = 0; k < nf && !moved; ++k) moved = fades[k].first != g_fades[k].first || fades[k].end != g_fades[k].end;
+        if (moved) g_runs_n = -1; /* the runs take the faded spans' quads apart */
+        memcpy(g_fades, fades, sizeof g_fades);
+        g_nfades = nf;
+        g_pc = (UiPicture){(float)sw,   (float)sh, (u32)ring->head | (u32)ring->n << 16, ring->slow, ring->slow_from,
+                           ui_ground(), 1.0f};
     }
     frames_owe(first, end);
     if (first < end || list.n != g_runs_n) g_runs_n = -1; /* a quad changed: the runs are made again */
-    if (first < end || list.n != g_shown.n || memcmp(&g_pc, &g_shown.pc, sizeof g_pc)) g_shown.changed = 1;
+    if (first < end || list.n != g_shown.n || memcmp(&g_pc, &g_shown.pc, sizeof g_pc) ||
+        memcmp(g_fades, g_shown.fades, sizeof g_fades))
+        g_shown.changed = 1;
     return list.n;
 }
 /* the frame's layer, before a rendering pass: its quads made (the producers, under ui_lock), what changed written into
@@ -660,6 +668,7 @@ static int ui_prepare(VkCommandBuffer cb, const int safe[4]) {
     memcpy(g_shown.safe, safe, sizeof g_shown.safe);
     g_shown.n = n;
     g_shown.pc = g_pc;
+    memcpy(g_shown.fades, g_fades, sizeof g_fades);
     g_shown.changed = 0;
     if (!n || !g_atlas || !pipeline_make(g_vk.sc_format) || !glyphs_upload(cb) || !frames_make()) return 0;
     g_slot_now = frames_send(n, ui_ring());
@@ -677,14 +686,15 @@ int vk_ui_changed(void) {
     ui_unlock();
     return g_shown.changed;
 }
-/* the runs of the n quads: of one pipeline, sampling the same way and taking as many vertices, in their order (six
-   corners for a quad, or an outline shape's parts) */
+/* the runs of the n quads: of one pipeline, sampling the same way, taking as many vertices (six corners for a quad, or
+   an outline shape's parts) and faded at one alpha, in their order */
 static void runs_make(int n) {
     int i, run;
     for (i = 0, g_nruns = 0; i < n; i = run) {
         UiRun r = {.first = i, .set = (int)quad_sample(i), .pipe = quad_pipe(i), .vertices = quad_vertices(i)};
+        r.fade = r.pipe == UI_FADED ? quad_fade(i) : -1;
         for (run = i + 1; run < n && (int)quad_sample(run) == r.set && quad_vertices(run) == r.vertices &&
-                          quad_pipe(run) == r.pipe;
+                          quad_pipe(run) == r.pipe && (r.fade < 0 || quad_fade(run) == r.fade);
              ++run)
             continue;
         r.count = run - i;
@@ -693,13 +703,13 @@ static void runs_make(int n) {
     g_runs_n = n;
 }
 /* the n quads ui_prepare made, into the rendering pass open on cb, over the whole picture: from this frame's region,
-   each run with one call, the pipeline and the set bound where they change */
+   each run with one call, the pipeline and the set bound where they change, and before a faded run its span's alpha */
 static void ui_record(VkCommandBuffer cb, int n) {
     VkViewport vp = {0, 0, g_pc.w, g_pc.h, 0, 1};
     VkRect2D sci = {{0, 0}, g_vk.sc_extent};
     VkDeviceSize vo = g_region * (u64)g_slot_now + UI_RING_BYTES;
     u32 ring_at = (u32)(g_region * (u64)g_slot_now / 4); /* ui.vert's Picture.ring_at, in the ring's words */
-    int i, set = -1, pipe = -1;
+    int i, set = -1, pipe = -1, fade = -1;
     if (g_runs_n != n) runs_make(n);
     vk_render_forget_state(); /* another pipeline and layout: a draw after it sets everything again */
     rec_CmdSetViewport(cb, 0, 1, &vp);
@@ -716,6 +726,11 @@ static void ui_record(VkCommandBuffer cb, int n) {
         if (set != r->set)
             rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g_layout, 0, 1, &g_sets[set = r->set], 0,
                                       NULL);
+        if (r->fade >= 0 && r->fade != fade) {
+            const float alpha = (float)g_fades[fade = r->fade].alpha / 255.0f;
+            rec_CmdPushConstants(cb, g_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                                 offsetof(UiPicture, fade), sizeof alpha, &alpha);
+        }
         rec_CmdDraw(cb, r->vertices, (u32)r->count, 0, (u32)r->first);
     }
 }

@@ -27,12 +27,13 @@ typedef struct {
     int atlas_h;
     SnxUiQuad quads[4096];
     float want[UI_H][UI_W][4]; /* the blend, 0 to 1 */
-    float under[UI_H][UI_W][4]; /* what the faded span goes over (ui_fade_set) */
+    float under[UI_H][UI_W][4]; /* what a faded span goes over (ui_fade_set) */
     u8 sure[UI_H][UI_W];
-    u8 drawn[UI_H][UI_W];     /* a quad wrote the pixel: the layer's colour, which an HDR picture takes encoded */
-    u8 faded[UI_H][UI_W];     /* a quad of the faded span wrote it */
-    int fading;               /* the quad blended now is of that span */
-    unsigned alpha;           /* its alpha as the last frame drew it, 255 for none */
+    u8 drawn[UI_H][UI_W];          /* a quad wrote the pixel: the layer's colour, which an HDR picture takes encoded */
+    u8 faded[UI_H][UI_W];          /* a quad of the faded span being blended wrote it */
+    int fading;                    /* the quad blended now is of that span */
+    SnxUiFade fades[SNX_UI_FADES]; /* the faded spans as the last frame drew them */
+    int nfades;
     u8 last[UI_H * UI_W * 4]; /* the frame before's pixels */
 } UiCheck;
 
@@ -109,32 +110,39 @@ static void ui_blend_quad(UiCheck* c, const SnxUiQuadView* q) {
             c->faded[y][x] |= (u8)c->fading;
         }
 }
-/* the CPU's blend of n quads over the back colour: want, and sure where it is. A backed letter over its ground. The
-   quads first to end at alpha (of 255) over what is under them, as one pixel each: a letter and its ground, opaque,
-   then blended once */
-static void ui_blend(UiCheck* c, int n, int first, int end, unsigned alpha) {
-    int x, y, i, k;
+/* the CPU's blend of n quads over the back colour: want, and sure where it is. A backed letter over its ground. Each
+   of the nf faded spans' quads at its alpha (of 255) over what was under them as it began, as one pixel each: a letter
+   and its ground, opaque, then blended once as the span ends */
+static void ui_blend(UiCheck* c, int n, const SnxUiFade* fades, int nf) {
+    int x, y, i, k, f;
     for (y = 0; y < UI_H; ++y)
         for (x = 0; x < UI_W; ++x) {
             for (k = 0; k < 4; ++k) c->want[y][x][k] = (float)ui_back[k] / 255.0f;
             c->sure[y][x] = 1;
             c->drawn[y][x] = 0;
-            c->faded[y][x] = 0;
         }
     for (i = 0; i < n; ++i) {
         SnxUiQuadView ground, drawn = ui_drawn(&c->quads[i]);
-        if (i == first) memcpy(c->under, c->want, sizeof c->under);
-        c->fading = i >= first && i < end;
+        c->fading = 0;
+        for (f = 0; f < nf; ++f) {
+            if (i == fades[f].first) {
+                memcpy(c->under, c->want, sizeof c->under);
+                memset(c->faded, 0, sizeof c->faded);
+            }
+            c->fading |= i >= fades[f].first && i < fades[f].end;
+        }
         if (ui_drawn_ground(&c->quads[i], &ground)) ui_blend_quad(c, &ground);
         ui_blend_quad(c, &drawn);
+        for (f = 0; f < nf; ++f) {
+            const float a = (float)fades[f].alpha / 255.0f;
+            for (y = 0; i + 1 == fades[f].end && y < UI_H; ++y)
+                for (x = 0; x < UI_W; ++x)
+                    if (c->faded[y][x])
+                        for (k = 0; k < 4; ++k)
+                            c->want[y][x][k] = c->want[y][x][k] * a + c->under[y][x][k] * (1.0f - a);
+        }
     }
     c->fading = 0;
-    for (y = 0; first < end && y < UI_H; ++y)
-        for (x = 0; x < UI_W; ++x)
-            if (c->faded[y][x])
-                for (k = 0; k < 4; ++k)
-                    c->want[y][x][k] =
-                        c->want[y][x][k] * (float)alpha / 255.0f + c->under[y][x][k] * (1.0f - (float)alpha / 255.0f);
 }
 /* The layer's colour (sRGB bytes, 0 to 1) as ui.frag writes it to the swapchain of a game's HDR frames, on this
    image's 8 bits: PQ codes in BT.2020's primaries with white at SNX_HDR_PAPER_WHITE nits (SMPTE ST 2084, BT.2087's
@@ -164,8 +172,7 @@ static int ui_frame_once(UiCheck* c, const int safe[4], const char* what, int* c
     VkImageSubresourceRange all = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
     VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {UI_W, UI_H, 1}};
     VkCommandBuffer cb;
-    int n, x, y, k, bad = 0, first, end;
-    unsigned alpha;
+    int n, x, y, k, bad = 0;
     CHECK(px);
     vk_render_end();
     cb = vk_cmd();
@@ -178,8 +185,7 @@ static int ui_frame_once(UiCheck* c, const int safe[4], const char* what, int* c
                VK_LAYOUT(TRANSFER_DST_OPTIMAL), VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
                VK_LAYOUT(TRANSFER_DST_OPTIMAL));
     vk_ui_draw(cb, c->img, safe);
-    alpha = ui_fade(&first, &end); /* the GPU's, which the CPU's making of the list below would move */
-    c->alpha = alpha;
+    c->nfades = ui_fades(c->fades); /* the GPU's, which the CPU's making of the list below would move */
     cb = vk_cmd();
     vk_barrier(cb, c->img, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
                VK_LAYOUT(TRANSFER_DST_OPTIMAL), VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
@@ -188,7 +194,7 @@ static int ui_frame_once(UiCheck* c, const int safe[4], const char* what, int* c
     vk_finish();
     vk_readback_ready();
     n = ui_quads(c, safe);
-    ui_blend(c, n, first, end, alpha);
+    ui_blend(c, n, c->fades, c->nfades);
     *changed = 0;
     for (y = 0; y < UI_H; ++y)
         for (x = 0; x < UI_W; ++x) {
@@ -390,25 +396,30 @@ static int check_ui(void) {
     ui_unlock();
     CHECK(!ui_frame(c, safe, "the notification alone", &changed));
     CHECK(changed > 0);
-    /* the notification fading in, blended over the picture at its alpha by the faded pipeline, its quads the ones
-       drawn whole; then whole, with no blend; then gone */
+    /* two notifications, a line each, fading in: each line blended over the picture at its own alpha by the faded
+       pipeline, its quads the ones drawn whole; then whole, with no blend; then gone */
     {
         const SnxRunTheme slow = {.fade_in_ms = 4000, .fade_out_ms = 4000};
+        const u64 now = plat_ns();
         u32 taken[2];
         ui_lock();
+        overlay_state_toast("", 0); /* the line before, which a new fade in starts again */
         overlay_fades(&slow, taken);
-        overlay_toast(SNX_STATS_ICON_COMPILE, "Compiling shaders", plat_ns() - 1000000000ull); /* a quarter in */
+        overlay_toast(SNX_STATS_ICON_COMPILE, "Compiling shaders", now - 1000000000ull); /* about 64 */
+        overlay_state_saved("slot 2", 0, now - 500000000ull);                            /* about 32 */
         ui_unlock();
-        CHECK(!ui_frame(c, safe, "the notification fading in", &changed));
-        CHECK(changed > 0 && c->alpha > 0 && c->alpha < 255);
+        CHECK(!ui_frame(c, safe, "two notifications fading in", &changed));
+        CHECK(changed > 0 && c->nfades == 2 && c->fades[0].end <= c->fades[1].first);
+        CHECK(c->fades[0].alpha > c->fades[1].alpha && c->fades[1].alpha > 0 && c->fades[0].alpha < 255);
         ui_lock();
         overlay_fades(&(SnxRunTheme){0}, taken);
         ui_unlock();
-        CHECK(!ui_frame(c, safe, "the notification whole", &changed));
-        CHECK(changed > 0 && c->alpha == 255);
+        CHECK(!ui_frame(c, safe, "two notifications whole", &changed));
+        CHECK(changed > 0 && !c->nfades);
     }
     ui_lock();
-    overlay_toast(GUI_ICON_NONE, "", 0);
+    overlay_toast(SNX_STATS_ICON_COMPILE, "", 0);
+    overlay_state_toast("", 0);
     ui_unlock();
     CHECK(!ui_frame(c, safe, "nothing", &changed));
     vk_finish();

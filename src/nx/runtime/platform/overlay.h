@@ -102,16 +102,20 @@ void overlay_pointer_move(u64 id, float x, float y, const int safe[4]);
 int overlay_pointer_up(u64 id, float x, float y, int sw, int sh);
 void overlay_pointer_cancel(u64 id);
 void overlay_pointers_reset(void);
-/* the menu, and over the game a notification until its time is up, at now_ns (plat_ns) */
+/* the menu, and over the game the notifications until their time is up, at now_ns (plat_ns) */
 void overlay_draw(SnxUiList* l, int sw, int sh, u64 now_ns);
 /* a notification of one line in the picture's corner for SNX_OVERLAY_TOAST_MS from now_ns: a save state saved or
    loaded, a screenshot taken. After a blank cell, icon (gui/icons.h's), one the launcher draws for the same thing, then
    text; GUI_ICON_NONE for none, which draws text alone, as the 3DS's notice is drawn (common/utilities/notice.h).
-   Under ui_lock */
+   Each one a line of its own, the oldest at the top and each its own time, OVERLAY_TOASTS at most, a new one past
+   them taking the oldest's place; one of the same subject takes its line where it is, from its words on: a setting's
+   (overlay_setting_toast), its key, another's its icon (a save state's, a controller's). Empty text takes its
+   subject's line out. Under ui_lock */
 #define SNX_OVERLAY_TOAST_MS SNX_NOTICE_MS
+#define OVERLAY_TOASTS       4
 void overlay_toast(unsigned icon, const char* text, u64 now_ns);
 /* the notification of a setting of the game's .ini changed (its key: fps_limit), after the icon the launcher gives it
-   (overlay_setting_icon). Under ui_lock */
+   (overlay_setting_icon), its line its key's. Under ui_lock */
 void overlay_setting_toast(const char* key, const char* text, u64 now_ns);
 /* the icon of the launcher's Settings for a setting by its key: its page's where its page has one, else its group's
    (gui/icons.h's gui_group_icon, of its section in settings.txt); GUI_ICON_NONE for a key no section holds */
@@ -119,22 +123,23 @@ unsigned overlay_setting_icon(const char* key);
 /* the icon of a runtime key's row on F1's page (hotkeys.h's action), the launcher's F1 box's: the notification of
    what it did shows it (a screenshot's, a pause's); GUI_ICON_NONE for an action with no row */
 unsigned overlay_key_icon(int action);
-/* It comes in from its start and goes to its end as the launcher's screens fade in from black and out to it: over the
-   fade_in_ms and fade_out_ms of theme (common/utilities/run_theme.h), or of YoRHa's built in for NULL, where the
-   launcher's can't be read; 0 for no fade, as it is until told. What it takes into ms, in and out. Its alpha at now_ns,
-   0 to 255 (255 between the fades, 0 once its time is up): what the launcher's black leaves of its screen at the same
-   point of a fade as long (run_theme.h's snx_fade_shade), the lesser of the two where they meet. While it fades its
-   quads are the layer's faded span (ui.h's ui_fade_set), the same quads at another alpha each frame. Under ui_lock */
+/* A line comes in from its start and goes at its end as the launcher's screens fade in from black and out to it: over
+   the fade_in_ms and fade_out_ms of theme (common/utilities/run_theme.h), or of YoRHa's built in for NULL, where the
+   launcher's can't be read; 0 for no fade, as it is until told. What it takes into ms, in and out. The alpha of the
+   line'th from the top at now_ns, 0 to 255 (255 between the fades, 0 once its time is up or for no such line): what
+   the launcher's black leaves of its screen at the same point of a fade as long (run_theme.h's snx_fade_shade), the
+   lesser of the two where they meet. While it fades its quads are a faded span of the layer (ui.h's ui_fade_set), the
+   same quads at another alpha each frame. Under ui_lock */
 void overlay_fades(const SnxRunTheme* theme, u32 ms[2]);
-int overlay_toast_alpha(u64 now_ns);
+int overlay_toast_alpha(int line, u64 now_ns);
 /* a save state's notification (loaded, its slot picked, not saved), after the icon of the menu's Save States, the
    launcher's too. Under ui_lock */
 void overlay_state_toast(const char* text, u64 now_ns);
 /* the toast of a save state saved to slot (its words, "slot 2"), "Saved over" one that held a state (over) */
 void overlay_state_saved(const char* slot, int over, u64 now_ns);
-int overlay_toasting(u64 now_ns); /* one shows */
-/* the same from any thread, with or without ui_lock (RenderDoc's notices, gpu/vk/renderdoc.c): its time starts as the
-   next frame draws it, the last one given before then shown */
+int overlay_toasting(u64 now_ns); /* one shows: from any thread */
+/* overlay_toast from any thread, with or without ui_lock (RenderDoc's notices, gpu/vk/renderdoc.c): its time starts as
+   the next frame draws it, the last one given before then shown */
 void overlay_notice(unsigned icon, const char* text);
 /* The caches of earlier runs found empty as the game starts, which the frames to come wait on: shaders, the shader
    cache (no shader or pipeline of an earlier run), textures, the BC7 cache (no ASTC level encoded before). Its words,

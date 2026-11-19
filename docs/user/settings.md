@@ -308,17 +308,17 @@ the key (with its modifiers held); Esc cancels, Backspace puts the default back,
 | `hotkey_help` | `F1` | Shows the keys' help |
 | `hotkey_menu` | `F2` | Opens and closes the game's menu; Back and a controller's Home open it too |
 | `hotkey_screenshot` | `F3` | Takes a screenshot |
-| `hotkey_fps_limit` | `F4` | Turns the FPS limit off and back on, and says over the game the limit now and before it (`FPS limit: off (was the game's pace)`) |
+| `hotkey_fps_limit` | `F4` | Turns the FPS limit off and back on, and says over the game the limit now (`FPS limit: off`), the log the limit before it too |
 | `hotkey_thread_dump` | `F5` | Writes every thread's state to the log |
-| `hotkey_showcase` | `F6` | Turns `showcase` on and off, said over the game (`Showcase: on (was off)`) |
+| `hotkey_showcase` | `F6` | Turns `showcase` on and off, said over the game (`Showcase: on`) |
 | `hotkey_save_state` | `F7` | Saves the game's state to the selected slot |
 | `hotkey_load_state` | `F8` | Loads the selected slot's state |
 | `hotkey_next_slot` | `F9` | Selects the next save state slot |
 | `hotkey_tracy` | `F10` | Records a 60-second Tracy capture, in a build with `SNX_TRACY` |
-| `hotkey_pause` | `Pause` | Pauses the whole game and resumes it, said over the game (`Pause: on (was off)`), or why it did not pause |
+| `hotkey_pause` | `Pause` | Pauses the whole game and resumes it, said over the game (`Pause: on`), or why it did not pause |
 | `hotkey_fullscreen` | `F11` | Switches fullscreen |
 | `hotkey_fullscreen_2` | `Alt+Return` | A second key that switches fullscreen |
-| `hotkey_stats` | `F12` | Turns `stats` on and off, said over the game (`Stats: on (was off)`) |
+| `hotkey_stats` | `F12` | Turns `stats` on and off, said over the game (`Stats: on`) |
 | `hotkey_capture` | `Ctrl+Shift+F12` | Captures the next frame with RenderDoc while RenderDoc is in the game (`renderdoc`) |
 | `hotkey_mouse` | `Ctrl+G` | With `game_mouse` at `0`, declares an Ounce game's Joy-Con mouse mode, and ends it. At `1`, lets the mouse go from a game that holds it, and holds it again |
 | `hotkey_quit` | `Escape` | Quits the game: a first press warns, and a second within 3 seconds quits |

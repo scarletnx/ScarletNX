@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright 2026 the ScarletNX contributors
 // The on-screen layer's pixel (gpu/vk/ui.c), one of its pipelines by MODE, a specialization constant, so that each
-// takes only its own work. Nothing is translucent but a notification fading in or out: a pixel is written opaque or
-// not at all.
+// takes only its own work. Nothing is translucent but a notification's line fading in or out: a pixel is written
+// opaque or not at all.
 // - MODE 0, plain: a quad that covers every pixel of its own (a fill, a bar, a backed letter or icon): its label's bit
 //   picks its colour or the ground (a fill's label, the full block, is all set). No discard, no texture, no branch.
-//   With FADE, the quads of the span ui.h's ui_fade_set gives: the same pixel at the span's alpha, premultiplied and
+//   With FADE, the quads of a span ui.h's ui_fade_set gives: the same pixel at its span's alpha, premultiplied and
 //   blended over the picture.
 // - MODE 1 and 2, sparse: a shape, a letter or an icon that leaves its clear pixels alone, or the atlas's texels (the
 //   user's picture, hard at its round edge, a save state's thumbnail). A pixel not drawn is discarded (1), or on a GPU
@@ -31,7 +31,7 @@ layout(push_constant) uniform Picture {
     vec2 size;
     uint ring, slow, slow_from; // ui.vert's
     uint ground;                // a backed letter's clear pixels' colour
-    float fade;                 // FADE's alpha
+    float fade;                 // FADE's alpha, its span's (ui.c pushes it before each)
 } pc;
 layout(location = 0) in vec2 v_uv;
 layout(location = 1) in vec4 v_color;
