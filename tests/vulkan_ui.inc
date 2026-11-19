@@ -386,7 +386,7 @@ static int check_ui(void) {
     g_settings.stats = 0;
     hud_debug_set("");
     ui_lock();
-    overlay_toast("Saved to slot 2", plat_ns());
+    overlay_state_saved("slot 2", 0, plat_ns());
     ui_unlock();
     CHECK(!ui_frame(c, safe, "the notification alone", &changed));
     CHECK(changed > 0);
@@ -397,7 +397,7 @@ static int check_ui(void) {
         u32 taken[2];
         ui_lock();
         overlay_fades(&slow, taken);
-        overlay_toast("Compiling shaders", plat_ns() - 1000000000ull); /* a quarter in */
+        overlay_toast(SNX_STATS_ICON_COMPILE, "Compiling shaders", plat_ns() - 1000000000ull); /* a quarter in */
         ui_unlock();
         CHECK(!ui_frame(c, safe, "the notification fading in", &changed));
         CHECK(changed > 0 && c->alpha > 0 && c->alpha < 255);
@@ -408,7 +408,7 @@ static int check_ui(void) {
         CHECK(changed > 0 && c->alpha == 255);
     }
     ui_lock();
-    overlay_toast("", 0);
+    overlay_toast(GUI_ICON_NONE, "", 0);
     ui_unlock();
     CHECK(!ui_frame(c, safe, "nothing", &changed));
     vk_finish();

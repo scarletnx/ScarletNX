@@ -859,7 +859,10 @@ fullscreen; F12 stats on and off; Ctrl+Shift+F12 a RenderDoc capture of the next
 Pause pauses the whole game and resumes it (the window's title says "(paused)"); Escape twice within 3 seconds quit, the
 first press a warning over the game; Ctrl+D the TV mode On, Off or Auto for the run, as the game's menu's **TV mode**
 is. F4, F6, F12 and Pause say over the game what the press set and what it was (`FPS limit: off (was the game's
-pace)`, `Stats: on (was off)`), the log the same line. Each of these keys is a setting
+pace)`, `Stats: on (was off)`), the log the same line. A line over the game starts with an icon the launcher shows
+for the same thing: a setting's group in its Settings (Performance's gauge for the FPS limit, Display's screen for
+stats), a key's row on F1's page (a screenshot's picture), the save icon for save states, and Controllers' gamepad
+for a controller joining or leaving. Each of these keys is a setting
 ([Shortcuts](settings.md#shortcuts)), set in the game's menu's **Shortcuts** page too, and F1 lists them as they are
 set. A window shows at most one image per refresh and drops the rest unless images
 tear, and the game keeps the pace `fps_limit` sets.

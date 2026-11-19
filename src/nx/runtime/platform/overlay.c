@@ -55,6 +55,11 @@ enum {
     M_EXIT,
     M_COUNT
 };
+/* their icons; Clean Old Settings' is its notification's too */
+static const unsigned MAIN_ICONS[M_COUNT] = {
+    GUI_ICON_POINTER, GUI_ICON_GAMEPAD_2, GUI_ICON_SAVE,     GUI_ICON_KEYBOARD,
+    GUI_ICON_MONITOR, GUI_ICON_ACTIVITY,  GUI_ICON_VOLUME_2, GUI_ICON_SLIDERS_HORIZONTAL,
+    GUI_ICON_IMAGE,   GUI_ICON_ERASER,    GUI_ICON_LOG_OUT};
 /* the Settings page's entries: the sections of the game's .ini (settings.txt's) the launcher's Settings group, those
    the menu has a page of its own for left out, in the launcher's order with Debug last, a section's own page (Vulkan
    Extensions) after it. Each a table of g_ini_sections, the game's own rows (INI_IN_GAME) left out of its page */
@@ -225,6 +230,7 @@ static int nslots = 1, slot_at, ask, slots_stale;
 enum { ASK_RESET = -1, ASK_CLEAN = -2 };
 static u32 slots_gen; /* counts the lists given: the picture is set again */
 static char toast[OVERLAY_COLS_MAX + 1];
+static unsigned toast_icon;         /* the icon before it */
 static u64 toast_from, toast_until; /* toast_from: when it was given, which its fade in starts from */
 static u32 toast_version;           /* counts the toasts given */
 static u32 toast_fade[2];           /* overlay_fades': the fade in's and the fade out's ms */
@@ -808,7 +814,7 @@ static int act(int i, int step) {
         char said[64];
         snprintf(said, sizeof said, "Clean Old Settings: %d taken out", ini_old_settings());
         ini_clean_old();
-        overlay_notice(said);
+        overlay_notice(MAIN_ICONS[M_CLEAN], said);
         page_open(PAGE_MAIN);
         return OVERLAY_NONE;
     }
@@ -870,15 +876,37 @@ void overlay_slots_set(const OverlaySlot* given, int n) {
 void overlay_state_saved(const char* slot, int over, u64 now_ns) {
     char text[OVERLAY_COLS_MAX + 1];
     snprintf(text, sizeof text, "Saved %s %s", over ? "over" : "to", slot);
-    overlay_toast(text, now_ns);
+    overlay_state_toast(text, now_ns);
 }
-void overlay_toast(const char* text, u64 now_ns) {
+void overlay_state_toast(const char* text, u64 now_ns) { overlay_toast(MAIN_ICONS[M_STATES], text, now_ns); }
+void overlay_toast(unsigned icon, const char* text, u64 now_ns) {
     snprintf(toast, sizeof toast, "%s", text);
+    toast_icon = icon;
     toast_from = now_ns;
     toast_until = now_ns + (u64)SNX_OVERLAY_TOAST_MS * 1000000u;
     ++toast_version;
 }
 int overlay_toasting(u64 now_ns) { return toast[0] && now_ns < toast_until; }
+unsigned overlay_setting_icon(const char* key) {
+    int s, t;
+    for (s = 0; s < g_ini_sections_count; ++s)
+        for (t = 0; t < 3 && g_ini_sections[s].table[t]; ++t)
+            if (ini_find(g_ini_sections[s].table[t], key)) {
+                const char* in = g_ini_sections[s].page[t];
+                unsigned icon = in ? gui_page_icon(in) : GUI_ICON_NONE;
+                return icon != GUI_ICON_NONE ? icon : gui_group_icon(gui_group_name(g_ini_sections[s].name));
+            }
+    return GUI_ICON_NONE;
+}
+void overlay_setting_toast(const char* key, const char* text, u64 now_ns) {
+    overlay_toast(overlay_setting_icon(key), text, now_ns);
+}
+unsigned overlay_key_icon(int action) {
+    size_t i;
+    for (i = 0; i < sizeof KEYS / sizeof *KEYS; ++i)
+        if (action >= 0 && KEYS[i].action == action) return KEYS[i].icon; /* -1: the game's buttons' rows */
+    return GUI_ICON_NONE;
+}
 void overlay_fades(const SnxRunTheme* theme, u32 ms[2]) {
     toast_fade[0] = theme ? theme->fade_in_ms : SNX_GUI_THEME_YORHA_FADE_IN_MS;
     toast_fade[1] = theme ? theme->fade_out_ms : SNX_GUI_THEME_YORHA_FADE_OUT_MS;
@@ -898,10 +926,12 @@ int overlay_toast_alpha(u64 now_ns) {
    or not */
 static PMutex notice_lock = PMUTEX_INIT;
 static char notice[OVERLAY_COLS_MAX + 1];
+static unsigned notice_icon;
 static _Atomic int notice_given; /* a line waits: the draw takes the lock only then */
-void overlay_notice(const char* text) {
+void overlay_notice(unsigned icon, const char* text) {
     pm_lock(&notice_lock);
     snprintf(notice, sizeof notice, "%s", text);
+    notice_icon = icon;
     atomic_store_explicit(&notice_given, 1, memory_order_release);
     pm_unlock(&notice_lock);
 }
@@ -912,7 +942,7 @@ int overlay_cold_cache(int shaders, int textures) {
     static _Atomic int said;
     const char* words = shaders < 0 ? NULL : overlay_cold_cache_words(shaders, textures);
     if (!words || atomic_exchange_explicit(&said, 1, memory_order_relaxed)) return 0;
-    overlay_notice(words);
+    overlay_notice(shaders ? SNX_STATS_ICON_COMPILE : SNX_STATS_ICON_ENCODE, words);
     return 1;
 }
 void overlay_toggle(void) {
@@ -1642,14 +1672,10 @@ static void menu_dialog(Dialog* d, char (*text)[OVERLAY_COLS_MAX + 1], char (*va
     d->focus = focus;
     d->shown = n - top < visible() ? n - top : visible();
     for (r = 0; r < d->shown; ++r) {
-        static const unsigned main_icons[M_COUNT] = {GUI_ICON_POINTER,  GUI_ICON_GAMEPAD_2, GUI_ICON_SAVE,
-                                                     GUI_ICON_KEYBOARD, GUI_ICON_MONITOR,   GUI_ICON_ACTIVITY,
-                                                     GUI_ICON_VOLUME_2, GUI_ICON_SLIDERS_HORIZONTAL,
-                                                     GUI_ICON_IMAGE,    GUI_ICON_ERASER,    GUI_ICON_LOG_OUT};
         const IniOpt* o = slider(top + r);
         label(top + r, text[r], sizeof *text, value[r], sizeof *value);
         d->label[r] = text[r];
-        d->icon[r] = page == PAGE_MAIN ? main_icons[main_item(top + r)] : GUI_ICON_NONE;
+        d->icon[r] = page == PAGE_MAIN ? MAIN_ICONS[main_item(top + r)] : GUI_ICON_NONE;
         d->tone[r] = item_tone(top + r);
         d->value[r] = value[r];
         if (o) {
@@ -1819,9 +1845,10 @@ static const char* pads_hint(char* out, size_t size) {
         snprintf(out, size, "%s", gamepad_name(0));
     return out;
 }
-/* the notification: a band of one row in the picture's top left corner, which is its letters, backed (ui.h's
-   UI_BACKED) by the layer's ink, between a blank cell at either end: nothing is drawn under them. Its letters are the
-   stats box's and showcase's (stats_scale), the other text over a running game, not the menu's that stops it */
+/* the notification: a band of one row in the picture's top left corner, which is its icon, a blank cell and its
+   letters, as the stats box's lines, backed (ui.h's UI_BACKED) by the layer's ink, between a blank cell at either end:
+   nothing is drawn under them. Its letters are the stats box's and showcase's (stats_scale), the other text over a
+   running game, not the menu's that stops it */
 static void toast_draw(SnxUiList* l, int sw, int sh, const float* stats) {
     int px, py, s;
     float cw, ch, x, y, w;
@@ -1831,7 +1858,7 @@ static void toast_draw(SnxUiList* l, int sw, int sh, const float* stats) {
     ch = 16.0f * (float)s;
     x = cw;
     y = ch;
-    w = cw * (float)(strlen(toast) + 2);
+    w = cw * (float)(strlen(toast) + 2 + (toast_icon != GUI_ICON_NONE ? 3 : 0));
     /* the stats' box (x, y, w, h; NULL for none) in that corner too: the band goes under it, from its left, half a
        line apart, where it would lie on it; in the picture's top right corner when there is no room under the box */
     if (stats && x < stats[0] + stats[2] && x + w > stats[0] && y < stats[1] + stats[3] && y + ch > stats[1]) {
@@ -1843,6 +1870,10 @@ static void toast_draw(SnxUiList* l, int sw, int sh, const float* stats) {
         }
     }
     x += ui_text_backed(l, x, y, s, " ", UI_PAGE);
+    if (toast_icon != GUI_ICON_NONE) {
+        x += ui_icon_backed(l, x, y, s, toast_icon, UI_PAGE);
+        x += ui_text_backed(l, x, y, s, " ", UI_PAGE);
+    }
     x += ui_text_backed(l, x, y, s, toast, UI_PAGE);
     ui_text_backed(l, x, y, s, " ", UI_PAGE);
 }
@@ -1939,7 +1970,7 @@ void overlay_draw(SnxUiList* l, int sw, int sh, u64 now_ns) {
     MenuKey key;
     if (atomic_load_explicit(&notice_given, memory_order_acquire)) {
         pm_lock(&notice_lock);
-        if (notice[0]) overlay_toast(notice, now_ns);
+        if (notice[0]) overlay_toast(notice_icon, notice, now_ns);
         notice[0] = 0;
         atomic_store_explicit(&notice_given, 0, memory_order_relaxed);
         pm_unlock(&notice_lock);

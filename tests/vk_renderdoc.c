@@ -24,7 +24,9 @@
 #include "nx/runtime/platform/stats.h"
 #include "nx/runtime/platform/unattended.h"
 #include "renderdoc_app.h"
+#include "nx/runtime/platform/hotkeys.h"
 #include "nx/runtime/platform/overlay.h"
+#include "gui/icons.h"
 #include "common/utilities/common.h"
 #include <assert.h>
 #include <pthread.h>
@@ -56,7 +58,8 @@ static struct {
     RENDERDOC_API_1_1_2 api; /* its functions, below */
     int in_capture;          /* between StartFrameCapture and EndFrameCapture */
     int theirs;              /* a capture RenderDoc's program started runs */
-    char notice[256];        /* overlay_notice's last line, and how many were given */
+    char notice[256];        /* overlay_notice's last line, its icon, and how many were given */
+    unsigned notice_icon;
     int notices;
     u64 size; /* a capture file's size, when there is one (size_known) */
     int size_known;
@@ -183,9 +186,12 @@ void logf_(int lvl, const char* fmt, ...) {
     pthread_cond_broadcast(&g.cv);
     pthread_mutex_unlock(&g.m);
 }
-void overlay_notice(const char* text) {
+/* overlay.c's: a key's icon, here the action's number past GUI_ICON_FIRST, so a notice tells which key's it took */
+unsigned overlay_key_icon(int action) { return GUI_ICON_FIRST + (unsigned)action; }
+void overlay_notice(unsigned icon, const char* text) {
     pthread_mutex_lock(&g.m);
     snprintf(g.notice, sizeof g.notice, "%s", text);
+    g.notice_icon = icon;
     g.notices++;
     pthread_mutex_unlock(&g.m);
 }
@@ -300,6 +306,7 @@ static void case_started(void) {
        nothing */
     assert(vk_renderdoc_capture(1) && logged("renderdoc: a capture is asked: the frame after the next present\n"));
     assert(g.notices == 1 && !strcmp(g.notice, CAPTURING) && strlen(CAPTURING) <= OVERLAY_COLS_MAX);
+    assert(g.notice_icon == overlay_key_icon(HOTKEY_CAPTURE)); /* after the capture key's icon */
     assert(!strcmp(presents(11, 11), "") && !strcmp(presents(12, 12), "sb") && g.device == g.dispatch);
     assert(g.told == 1 && !strcmp(presents(13, 13), "se") && g.captures == 1);
     assert(g.told == 2 && g.shown.ready && g.shown.taken == 1 && !g.shown.failed);
@@ -307,6 +314,7 @@ static void case_started(void) {
     assert(logged("renderdoc: the capture of present 13 written in 0 s to "
                   "/tmp/RenderDoc/scarletnx_2026.11.07_capture.rdc (?)\n"));
     assert(g.notices == 2 && !strcmp(g.notice, "RenderDoc: written in 0 s: scarletnx_2026.11.07_capture.rdc (?)"));
+    assert(g.notice_icon == overlay_key_icon(HOTKEY_CAPTURE));
     assert(!strcmp(presents(14, 20), "") && g.captures == 1 && g.notices == 2);
     /* pressed twice before a present: one frame */
     assert(vk_renderdoc_capture(1) && vk_renderdoc_capture(1));

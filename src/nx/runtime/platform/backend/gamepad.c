@@ -12,6 +12,7 @@
 #include "common/utilities/common.h"
 #include "common/platform/time.h"
 #include "common/utilities/pad_sdl.h"
+#include "gui/icons.h"
 #include <SDL3/SDL.h>
 #if (defined(__FreeBSD__) || defined(__linux__)) && !defined(__ANDROID__)
 #include <dirent.h>
@@ -323,6 +324,8 @@ static unsigned busy(void) {
     for (i = 0; i < SNX_GAMEPADS; i++) b |= (unsigned)(g_gamepad.pads[i] != NULL) << i;
     return b;
 }
+/* a controller's notification, after the icon of the launcher's Controllers. Under ui_lock */
+static void pad_toast(const char* text, u64 now_ns) { overlay_toast(gui_group_icon("Controllers"), text, now_ns); }
 void gamepad_open(u32 id) {
     int i;
     char guid[33];
@@ -380,7 +383,7 @@ void gamepad_open(u32 id) {
     if (g_settings.controller_assignment) { /* as Eden's hints: which controller joined, and as which player */
         char said[96];
         snprintf(said, sizeof said, "P%d: %s joined", i + 1, g_gamepad.names[i]);
-        overlay_toast(said, plat_ns());
+        pad_toast(said, plat_ns());
     }
     ui_unlock();
 }
@@ -397,7 +400,7 @@ void gamepad_close(u32 id) {
                 char said[96];
                 connect_leave(i, plat_ns());
                 snprintf(said, sizeof said, "P%d: %s left", i + 1, g_gamepad.names[i]);
-                overlay_toast(said, plat_ns());
+                pad_toast(said, plat_ns());
             }
             g_gamepad.names[i][0] = 0;
             ++g_gamepad.names_version;
@@ -449,7 +452,7 @@ void gamepad_console(int plus, u64 now_ns) {
     }
     if (notice[0]) { /* the pause's, kept while it lasts */
         ui_lock();
-        overlay_toast(notice, now);
+        pad_toast(notice, now);
         ui_unlock();
     }
     if (freed) gamepad_open_waiting(); /* a player no longer kept: a waiting ninth takes it */

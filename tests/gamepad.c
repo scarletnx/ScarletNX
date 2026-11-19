@@ -12,6 +12,7 @@
 #include "common/utilities/common.h"
 #include "common/utilities/pad_sdl.h" /* snx_pad_slot */
 #include "support/sdl_real_pads.h"
+#include "gui/icons.h"
 #include <SDL3/SDL.h>
 #include <string.h>
 #include <stdio.h>
@@ -38,9 +39,11 @@ static char stored[64];
 void ini_set(const char* k, const char* v) { snprintf(stored, sizeof stored, "%s=%s", k, v); }
 /* gamepad_assign=1's notices and pauses */
 static char toasted[128];
-void overlay_toast(const char* text, u64 now_ns) {
+static unsigned toasted_icon;
+void overlay_toast(unsigned icon, const char* text, u64 now_ns) {
     (void)now_ns;
     snprintf(toasted, sizeof toasted, "%s", text);
+    toasted_icon = icon;
 }
 static int paused;
 int game_pause(void) {
@@ -633,6 +636,7 @@ int main(void) {
         gamepad_console(0, plat_ns()); /* the mode's start: none held */
         one = attach(XBOX);
         CHECK(gamepad_slot_id(0) == SDL_GetJoystickID(one) && strstr(toasted, "P1: ") && strstr(toasted, " joined"));
+        CHECK(toasted_icon == gui_group_icon("Controllers") && toasted_icon == GUI_ICON_GAMEPAD_2); /* the launcher's */
         two = attach(SONY);
         CHECK(gamepad_slot_id(1) == SDL_GetJoystickID(two));
         SDL_DetachVirtualJoystick(SDL_GetJoystickID(two));
@@ -661,6 +665,7 @@ int main(void) {
         CHECK(paused == 1);
         gamepad_console(0, t + 3400000000ull);
         CHECK(!paused && !strcmp(toasted, "Going on without P2") && !gamepad_slot_kept(1));
+        CHECK(toasted_icon == GUI_ICON_GAMEPAD_2);
         /* manual again: what was kept goes, the pads stay where they are */
         CHECK(gamepad_ini("gamepad_assign", "0"));
         gamepad_console(0, t + 3500000000ull);
