@@ -8,6 +8,7 @@
 #include "common/gpu/gl/gl_state.h"
 #include "common/platform/thread.h"
 #include "nx/gpu/gl/gl_layer.h"
+#include "nx/hle/hook/hook.h"
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/nvn/nvn_draw.h"
 #include "nx/gpu/nvn/nvn_tex.h"
@@ -126,7 +127,12 @@ static void present_on_gpu(void* arg) {
 void gl_host_present(u32 s, u32 interval) {
     GlSurface* g = &g_gl_host.surfaces[s - 1];
     GlPresent* p = &g_gl_host.present[s - 1][g->next];
+    /* off the guest core while it waits for the display, as NVN's present waits: the threads of the swapping
+       thread's core run meanwhile (a game's texture loader, behind its main thread, waited for its core 47 s of a
+       load of 50) */
+    hook_wait_begin();
     present_pace(interval, -1);
+    hook_wait_end();
     *p = (GlPresent){g->image[g->next], g->w, g->h};
     gpu_call(present_on_gpu, p, NULL, 0);
     g->next ^= 1;
