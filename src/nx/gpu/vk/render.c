@@ -1467,6 +1467,14 @@ void vk_render_stats_log(void) {
         g_stats.heap_image_calls = h.image_driver_calls;
         g_stats.heap_image_hits = h.image_hits;
     }
+    {
+        double k[4][2], d = (double)(g_vk_drawn - g_stats.drawn);
+        for (int b = 0; b < 4; b++)
+            for (int j = 0; j < 2; j++) k[b][j] = (double)(n->inl[b][j] - w->inl[b][j]) / (double)presents;
+        LOG("vulkan: inline blocks a present (%.1f draws), kept and staged again: bank 0 to its base vertex words %.1f "
+            "and %.1f, bank 0 before them %.1f and %.1f, bank 2 %.1f and %.1f, the root tables %.1f and %.1f\n",
+            d / (double)presents, k[0][0], k[0][1], k[1][0], k[1][1], k[2][0], k[2][1], k[3][0], k[3][1]);
+    }
     LOG("vulkan: constant buffers copied from the CPU in the last %llu presents: %.1f KB a present\n",
         (unsigned long long)presents, (double)g_cb_copied_bytes / 1024.0 / (double)presents);
     g_cb_copied_bytes = 0;
@@ -2625,6 +2633,10 @@ static int cb_kept(const CbEntry* e, u64 a, u32 sz, int adds, u32 epoch) {
     return a && e->a == a && e->epoch == epoch && e->sz >= sz && (!adds || e->adds == cb_adds()) &&
            !gpu_mem_dirty_since(e->gw, a, sz) && cb_lives(e);
 }
+/* VkDrawCounts.inl's row of a lookup of sz bytes of the inline block in */
+static int inline_kind(DsCbBlock in, u32 sz) {
+    return in.size != DS_INLINE_BANK0 ? 2 : sz > SH_CB0_BASE_VERTEX ? 0 : 1;
+}
 /* the first sz bytes of the root tables an Ounce program reads (DsInline.root), staged once while their generation
    holds: every graphics stage reads the same tables */
 static int root_get(const DsState* ds, u32 sz, VkBuffer* buf, u64* off) {
@@ -2632,6 +2644,7 @@ static int root_get(const DsState* ds, u32 sz, VkBuffer* buf, u64* off) {
     if (e->in == ds->inl.root && e->gen == ds->gen[DS_INLINE] && e->sz >= sz && cb_lives(e)) {
         *buf = e->buf;
         *off = e->off;
+        g_stats.n.inl[3][0]++;
         if (g_settings.draw_state_check) cb_check(e, 0, ds->inl.root, e->sz);
         return 1;
     }
@@ -2641,6 +2654,7 @@ static int root_get(const DsState* ds, u32 sz, VkBuffer* buf, u64* off) {
     *e = (CbEntry){.sz = sz, .buf = *buf, .off = *off, .in = ds->inl.root, .gen = ds->gen[DS_INLINE]};
     cb_life(e, CB_FRAME);
     cb_check_note(e, 0, ds->inl.root, sz, 0);
+    g_stats.n.inl[3][1]++;
     return 1;
 }
 /* constant buffer i of a stage, at an offset that is a multiple of align: 16 for a bank bound through a window
@@ -2655,6 +2669,7 @@ static int cb_get(const DsState* ds, int stage, int i, u32 sz, u64 align, VkBuff
             *buf = e->buf;
             *off = e->off;
             g_stats.n.cb[VK_CB_INLINE_KEPT]++;
+            g_stats.n.inl[inline_kind(in, sz)][0]++;
             if (check) cb_check(e, 0, in.bytes, e->sz < in.size ? e->sz : in.size);
             return 1;
         }
@@ -2667,6 +2682,7 @@ static int cb_get(const DsState* ds, int stage, int i, u32 sz, u64 align, VkBuff
         cb_life(e, CB_FRAME);
         cb_check_note(e, 0, in.bytes, n, 0);
         g_stats.n.cb[VK_CB_INLINE_STAGED]++;
+        g_stats.n.inl[inline_kind(in, sz)][1]++;
         return 1;
     }
     u64 a = ds->bind.cb_addr[stage][i];
