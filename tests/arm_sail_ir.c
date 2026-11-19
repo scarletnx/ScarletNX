@@ -72,6 +72,7 @@ static struct {
     /* the bus hook's log of the block running (hook) */
     uint32_t log[HOOK_LOG][3];
     unsigned logged;
+    char why[160]; /* what differs between two runs (differs) */
 } g_test;
 
 static u64 rnd(void) {
@@ -271,7 +272,8 @@ typedef struct {
     uint32_t log[HOOK_LOG][3];
     unsigned logged;
 } RunState;
-/* a random state: registers into guest memory or anywhere, NZCV random, Thumb, user mode */
+/* a random state: registers into guest memory or anywhere (all of them, the even or the odd ones, by state: a negative
+   operand, a shift by 32 or more), NZCV random, Thumb, user mode */
 static void start(RunState* s, unsigned k, const uint16_t* code, size_t n, int legacy) {
     SnxArmCPU* cpu = (SnxArmCPU*)s->cpu;
     memset(s->cpu, 0, sizeof s->cpu);
@@ -282,7 +284,8 @@ static void start(RunState* s, unsigned k, const uint16_t* code, size_t n, int l
     for (size_t i = 0; i < n; ++i) memcpy(s->mem + PC + 2 * i, &code[i], 2); /* little-endian host */
     for (unsigned r = 0; r < 15; ++r) {
         u64 x = rnd();
-        cpu->r[r] = k % 4 == 3 ? (uint32_t)x : (uint32_t)(x % (MEM_SIZE - 0x400)) & (k % 4 == 1 ? ~3u : ~0u);
+        int anywhere = k % 4 == 3 || (k % 4 == 2 && (r & 1)) || (k % 4 == 0 && !(r & 1));
+        cpu->r[r] = anywhere ? (uint32_t)x : (uint32_t)(x % (MEM_SIZE - 0x400)) & (k % 4 == 1 ? ~3u : ~0u);
     }
     cpu->r[13] = 0x8000u + (uint32_t)(rnd() % 0x4000) * (k % 2 ? 4 : 1);
     cpu->r[15] = PC;
@@ -303,27 +306,28 @@ static void finish(RunState* s) {
 }
 /* what differs between the two runs, "" for nothing */
 static const char* differs(const RunState* a, const RunState* b) {
-    static char why[160];
+    char* why = g_test.why;
     const SnxArmCPU *x = (const SnxArmCPU*)a->cpu, *y = (const SnxArmCPU*)b->cpu;
     for (unsigned r = 0; r < 16; ++r)
         if (x->r[r] != y->r[r]) {
-            snprintf(why, sizeof why, "r%u %08x, generated %08x", r, x->r[r], y->r[r]);
+            snprintf(why, sizeof g_test.why, "r%u %08x, generated %08x", r, x->r[r], y->r[r]);
             return why;
         }
-    if (x->cpsr != y->cpsr) return snprintf(why, sizeof why, "cpsr %08x, generated %08x", x->cpsr, y->cpsr), why;
-    if (x->exit != y->exit) return snprintf(why, sizeof why, "exit %u, generated %u", x->exit, y->exit), why;
+    if (x->cpsr != y->cpsr) return snprintf(why, sizeof g_test.why, "cpsr %08x, generated %08x", x->cpsr, y->cpsr), why;
+    if (x->exit != y->exit) return snprintf(why, sizeof g_test.why, "exit %u, generated %u", x->exit, y->exit), why;
     if (x->syndrome != y->syndrome)
-        return snprintf(why, sizeof why, "syndrome %08x, generated %08x", x->syndrome, y->syndrome), why;
+        return snprintf(why, sizeof g_test.why, "syndrome %08x, generated %08x", x->syndrome, y->syndrome), why;
     if (x->exclusive_valid != y->exclusive_valid)
-        return snprintf(why, sizeof why, "exclusive_valid %u, generated %u", x->exclusive_valid, y->exclusive_valid),
+        return snprintf(why, sizeof g_test.why, "exclusive_valid %u, generated %u", x->exclusive_valid,
+                        y->exclusive_valid),
                why;
     if (memcmp(a->cpu + TRACE, b->cpu + TRACE, CPU_BYTES - TRACE)) return "the trace";
     if (memcmp(a->mem, b->mem, MEM_SIZE)) return "guest memory";
     if (a->logged != b->logged)
-        return snprintf(why, sizeof why, "%u bus hook calls, generated %u", a->logged, b->logged), why;
+        return snprintf(why, sizeof g_test.why, "%u bus hook calls, generated %u", a->logged, b->logged), why;
     for (unsigned i = 0; i < a->logged && i < HOOK_LOG; ++i)
         if (memcmp(a->log[i], b->log[i], sizeof a->log[i])) {
-            snprintf(why, sizeof why, "bus hook call %u: %08x %x %08x, generated %08x %x %08x", i, a->log[i][0],
+            snprintf(why, sizeof g_test.why, "bus hook call %u: %08x %x %08x, generated %08x %x %08x", i, a->log[i][0],
                      a->log[i][1], a->log[i][2], b->log[i][0], b->log[i][1], b->log[i][2]);
             return why;
         }
