@@ -254,12 +254,12 @@ static void test_wfc(NdsBoard* board) {
     CHECK(snx_ld_le16(board->mem.base + 0x02050472) == nds_crc16(0xFFFF, board->mem.base + 0x02050400, 0x70));
 }
 
-/* the launcher's menu of WFC services (settings.txt's nds_wfc) is common/online's list: off, each service by its id
-   and its name in the library's order, then custom, the first service the default */
+/* the launcher's menu of WFC services (settings.txt's nds_wfc) is common/online's list: off (the default), auto, each
+   service by its id and its name in the library's order, then custom */
 static void test_wfc_menu(void) {
     const IniOpt* o = ini_find(g_nds_network_ini, "nds_wfc");
     CHECK(o && o->words && o->def);
-    CHECK(!strcmp(o->def, snx_online_wfc_preset_at(0)->id));
+    CHECK(!strcmp(o->def, "off"));
     char words[1024];
     snprintf(words, sizeof words, "%s", o->words);
     size_t count = 0;
@@ -267,9 +267,11 @@ static void test_wfc_menu(void) {
         char* eq = strchr(word, '=');
         CHECK(eq);
         *eq = 0;
-        const SnxOnlineWfcPreset* p = count ? snx_online_wfc_preset_at(count - 1) : NULL;
+        const SnxOnlineWfcPreset* p = count > 1 ? snx_online_wfc_preset_at(count - 2) : NULL;
         if (!count)
             CHECK(!strcmp(word, "off"));
+        else if (count == 1)
+            CHECK(!strcmp(word, "auto"));
         else if (p) {
             if (strcmp(word, p->id) || strcmp(eq + 1, p->name))
                 fprintf(stderr, "nds_wfc's word %zu is %s=%s, common/online's service %s=%s\n", count, word, eq + 1,
@@ -278,7 +280,7 @@ static void test_wfc_menu(void) {
         } else
             CHECK(!strcmp(word, "custom"));
     }
-    CHECK(count == snx_online_wfc_preset_count() + 2);
+    CHECK(count == snx_online_wfc_preset_count() + 3);
 }
 
 static void gx(NdsBoard* board, uint32_t command, uint32_t parameter) {

@@ -219,7 +219,8 @@ The original WFC service is closed; the community's replacements each run a DNS 
 names (`nas.nintendowifi.net`, `conntest.nintendowifi.net`, the GameSpy names) with their own servers, and a player
 sets that server in the connection by hand. The board's firmware has its first connection set that way: the network
 `ScarletNX`, open, its address from DHCP, both DNS servers the service's that `nds_wfc` picks ([Settings](../../user/settings.md#online)),
-from `src/common/online`'s list; `off` leaves the three connections unset. The
+from `src/common/online`'s list, or with `auto` the one whose server answers first
+as the game starts; `off`, the default, leaves the three connections unset. The
 run's log names the server. A game's Wi-Fi settings show the connection; the game cannot connect through it, as the
 wireless service has no answer yet.
 
