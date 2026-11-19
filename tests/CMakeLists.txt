@@ -2668,7 +2668,8 @@ snx_test_target(snx-test-run-ticking c23)
 target_link_libraries(snx-test-run-ticking PRIVATE snx_test_common)
 add_test(NAME run_ticking COMMAND snx-test-run-ticking)
 
-# GNU C23 for hactool's headers, which build the synthetic dumps (hac_synth.h); extract.c itself stays ISO C23 in the driver
+# GNU C23 for hactool's headers, which build the synthetic dumps (hac_synth.h) and their NCZs (ncz_synth.h); extract.c
+# itself stays ISO C23 in the driver
 add_executable(snx-test-extract extract.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/driver/extract.c"
     "${PROJECT_SOURCE_DIR}/src/nx/runtime/driver/container.c" "${PROJECT_SOURCE_DIR}/src/nx/loader/loader.c"
     "${PROJECT_SOURCE_DIR}/src/nx/loader/match.c" "${PROJECT_SOURCE_DIR}/src/nx/runtime/driver/game_name.c")

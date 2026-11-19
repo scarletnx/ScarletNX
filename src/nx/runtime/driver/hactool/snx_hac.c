@@ -9,6 +9,7 @@
 #include "filepath.h"
 #include "hfs0.h"
 #include "nca.h"
+#include "ncz.h"
 #include "pfs0.h"
 #include "pki.h"
 #include "storage.h"
@@ -29,6 +30,8 @@ typedef struct {
     pfs0_ctx_t *pfs0; /* an NSP's */
     SnxHacEntry *entries;
     size_t count;
+    ncz_t **ncz; /* each entry's NCZ, read as the NCA it holds; NULL for any other file, and one that cannot be read */
+    char ncz_why[256]; /* why the first NCZ that cannot be read (SNX_HAC_NCZ_BROKEN) cannot be */
     const unsigned char *map; /* the file mapped (snx_hac_map), map_size bytes, or NULL */
     uint64_t map_size;
 } Container;
@@ -104,6 +107,8 @@ void snx_hac_on_exit(void (*cleanup)(void *data), void *data) {
     io.cleanup_data = data;
 }
 
+void snx_hac_on_restart(void (*said)(const char *line, void *data), void *data) { ncz_on_restart(said, data); }
+
 
 const char *snx_hac_message(void) {
     static char said[sizeof io.message];
@@ -165,9 +170,38 @@ static void container_close(Container *c) {
         free(c->pfs0->npdm);
         free(c->pfs0);
     }
+    for (size_t i = 0; c->ncz && i < c->count; i++) ncz_free(c->ncz[i]);
+    free(c->ncz);
     free(c->entries);
     if (c->file) fclose(c->file);
     memset(c, 0, sizeof *c);
+}
+
+/* an NCZ by its name: <content ID>.ncz, whatever its case */
+static int ncz_named(const char *name) {
+    size_t n = strlen(name);
+    return n > 4 && name[n - 4] == '.' && snx_to_lower(name[n - 3]) == 'n' && snx_to_lower(name[n - 2]) == 'c' &&
+           snx_to_lower(name[n - 1]) == 'z';
+}
+
+/* each entry named .ncz opened as the NCZ it is, which is read as the NCA it holds: 0, or -1 out of memory */
+static int ncz_entries(Container *c) {
+    if (!(c->ncz = calloc(c->count ? c->count : 1, sizeof *c->ncz))) return -1;
+    for (size_t i = 0; i < c->count; i++) {
+        SnxHacEntry *e = &c->entries[i];
+        char why[sizeof c->ncz_why];
+        e->nca_size = e->size;
+        if (!ncz_named(e->name)) continue;
+        c->ncz[i] = ncz_open(storage_file_new(c->file, e->offset, e->size), why, sizeof why);
+        if (!c->ncz[i]) {
+            e->ncz = SNX_HAC_NCZ_BROKEN;
+            if (!c->ncz_why[0]) memcpy(c->ncz_why, why, sizeof why);
+            continue;
+        }
+        e->ncz = ncz_kind(c->ncz[i]) == NCZ_BLOCK ? SNX_HAC_NCZ_BLOCK : SNX_HAC_NCZ_SOLID;
+        e->nca_size = ncz_storage(c->ncz[i])->size;
+    }
+    return 0;
 }
 
 void snx_hac_free(SnxHac *hac) {
@@ -228,6 +262,7 @@ int snx_hac_open(SnxHac *hac, const char *path, int xci) {
         }
         c->count = h->num_files;
     }
+    if (ncz_entries(c)) goto fail;
     return hac->open++;
 fail:
     container_close(c);
@@ -237,6 +272,16 @@ fail:
 size_t snx_hac_entries(SnxHac *hac, int container, const SnxHacEntry **entries) {
     *entries = hac->containers[container].entries;
     return hac->containers[container].count;
+}
+
+const char *snx_hac_ncz_error(SnxHac *hac, int container, size_t *entry) {
+    const Container *c = &hac->containers[container];
+    for (size_t i = 0; i < c->count; i++)
+        if (c->entries[i].ncz == SNX_HAC_NCZ_BROKEN) {
+            *entry = i;
+            return c->ncz_why;
+        }
+    return NULL;
 }
 
 int snx_hac_size(SnxHac *hac, int container, uint64_t *size) {
@@ -256,6 +301,8 @@ int snx_hac_size(SnxHac *hac, int container, uint64_t *size) {
 
 int snx_hac_read(SnxHac *hac, int container, size_t entry, void *buffer, size_t size) {
     Container *c = &hac->containers[container];
+    if (c->ncz[entry])
+        return size <= c->entries[entry].nca_size && storage_read(ncz_storage(c->ncz[entry]), 0, buffer, size) ? 0 : -1;
     if (size > c->entries[entry].size || fseeko64(c->file, c->entries[entry].offset, SEEK_SET) ||
         fread(buffer, 1, size, c->file) != size)
         return -1;
@@ -264,15 +311,23 @@ int snx_hac_read(SnxHac *hac, int container, size_t entry, void *buffer, size_t 
 
 /* ------------------------------------------------------------------ NCAs */
 
-static void nca_open(SnxHac *hac, hactool_ctx_t *tool, nca_ctx_t *nca, int container, size_t entry) {
+/* nca set to read the NCA at entry, an NCZ's through the NCA it holds: 0, or -1 said why for an NCZ that cannot be
+   read */
+static int nca_open(SnxHac *hac, hactool_ctx_t *tool, nca_ctx_t *nca, int container, size_t entry) {
     Container *c = &hac->containers[container];
     nca_init(nca);
+    if (c->entries[entry].ncz == SNX_HAC_NCZ_BROKEN) {
+        snx_hac_fprintf(stderr, "%s cannot be read as the NCA it compresses: %s\n", c->entries[entry].name, c->ncz_why);
+        return -1;
+    }
     nca->tool_ctx = tool;
     nca->file = c->file;
     nca->base_offset = c->entries[entry].offset;
-    nca->file_size = (size_t)c->entries[entry].size;
+    nca->file_size = (size_t)c->entries[entry].nca_size;
     nca->map = c->map;
     nca->map_size = c->map_size;
+    nca->source = c->ncz[entry] ? ncz_storage(c->ncz[entry]) : NULL;
+    return 0;
 }
 
 int snx_hac_newest_generation(SnxHac *hac) {
@@ -310,8 +365,7 @@ static int has_key(SnxHac *hac, const nca_ctx_t *nca, int rights, int generation
 int snx_hac_nca(SnxHac *hac, int container, size_t entry, SnxHacNca *out) {
     nca_ctx_t nca;
     memset(out, 0, sizeof *out);
-    nca_open(hac, &hac->tool, &nca, container, entry);
-    if (!nca_decrypt_header(&nca)) return -1;
+    if (nca_open(hac, &hac->tool, &nca, container, entry) || !nca_decrypt_header(&nca)) return -1;
     out->type = nca.header.content_type == NCACONTENTTYPE_PROGRAM   ? SNX_HAC_PROGRAM
                 : nca.header.content_type == NCACONTENTTYPE_CONTROL ? SNX_HAC_CONTROL
                 : nca.header.content_type == NCACONTENTTYPE_DATA || nca.header.content_type == NCACONTENTTPYE_PUBLICDATA
@@ -353,7 +407,7 @@ static int program_process(SnxHac *hac, hactool_ctx_t *tool, nca_ctx_t *nca, hac
     if (base_container >= 0) { /* --basenca: the base's RomFS under the update's */
         base_tool->settings.keyset = hac->tool.settings.keyset;
         base_tool->settings.known_titlekeys = hac->tool.settings.known_titlekeys;
-        nca_open(hac, base_tool, base, base_container, base_entry);
+        if (nca_open(hac, base_tool, base, base_container, base_entry)) return -1;
         base->is_cli_target = false;
         if (!nca_decrypt_header(base)) return -1;
         tool->base_file = base->file;
@@ -367,7 +421,7 @@ static int program_process(SnxHac *hac, hactool_ctx_t *tool, nca_ctx_t *nca, hac
             alone = 1;
         }
     }
-    nca_open(hac, tool, nca, container, entry);
+    if (nca_open(hac, tool, nca, container, entry)) return -1;
     nca->is_cli_target = true;
     if (!nca_decrypt_header(nca)) return -1;
     if (alone && patches_romfs(nca)) {
@@ -431,6 +485,8 @@ int snx_hac_map(SnxHac *hac, int container, const void *data, uint64_t size) {
         if (c->entries[i].offset > size || c->entries[i].size > size - c->entries[i].offset) return -1;
     c->map = data;
     c->map_size = size;
+    for (size_t i = 0; i < c->count; i++) /* an NCZ reads its bytes there too */
+        if (c->ncz[i]) ncz_set_packed(c->ncz[i], storage_memory_new(data, size, c->entries[i].offset, c->entries[i].size));
     return 0;
 }
 
@@ -455,6 +511,7 @@ SnxHacFs *snx_hac_fs_open(SnxHac *hac, int container, size_t entry, int base_con
                 fs->files[j].name = pfs0_get_file_name(h, j);
                 fs->files[j].offset = data + e->offset;
                 fs->files[j].size = e->size;
+                fs->files[j].nca_size = e->size;
             }
             fs->count = h->num_files;
         } else if ((section->type == ROMFS || section->type == BKTR) && !fs->romfs) {
