@@ -5488,10 +5488,11 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
         case SM86_VOTE:
         case SM86_UVOTE: {
             /* NAK's OpVote: the ballot of the predicate at 87-90 into the destination, and ALL (0), ANY (1) or EQ
-               (2, bits 72-73) of it into the predicate at 81-83. The ballot is of the invocation's 32 lanes */
+               (2, bits 72-73) of it into the predicate at 81-83. The ballot, and the vote, are of the invocation's 32
+               lanes, from the ballots of the predicate and of the active lanes: a vote of the subgroup takes both
+               warps of a subgroup of 64 */
             u32 pred = prd(c, sm86_field(in, 87, 3), sm86_field(in, 90, 1), 0), how = sm86_field(in, 72, 2);
             spv_emit_capability(&c->e, SPV_CAPABILITY_GROUP_NON_UNIFORM_BALLOT);
-            spv_emit_capability(&c->e, SPV_CAPABILITY_GROUP_NON_UNIFORM_VOTE);
             u32 ballot = ballot32(c, pred);
             if (op == SM86_UVOTE)
                 uwr(c, sm86_field(in, 16, 6), ballot);
@@ -5501,11 +5502,12 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
                 fail(c, "VOTE mode %u", how);
                 return;
             }
-            u32 vote = SPV(&c->e,
-                           how == 0   ? SPV_OP_GROUP_NON_UNIFORM_ALL
-                           : how == 1 ? SPV_OP_GROUP_NON_UNIFORM_ANY
-                                      : SPV_OP_GROUP_NON_UNIFORM_ALL_EQUAL /* All, Any, AllEqual */,
-                           c->t_bool, cu(c, SPV_SCOPE_SUBGROUP), pred);
+            u32 active = ballot32(c, c->true_v);
+            u32 all = op2(c, SPV_OP_I_EQUAL, c->t_bool, ballot, active),
+                none = op2(c, SPV_OP_I_EQUAL, c->t_bool, ballot, c->zero);
+            u32 vote = how == 0   ? all
+                       : how == 1 ? spv_emit_unary(&c->e, SPV_OP_LOGICAL_NOT, c->t_bool, none)
+                                  : op2(c, SPV_OP_LOGICAL_OR, c->t_bool, all, none);
             pwr(c, sm86_field(in, 81, 3), vote, op == SM86_UVOTE);
             return;
         }

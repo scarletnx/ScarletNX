@@ -1395,6 +1395,94 @@ static void test_shfl_operands(const char* dir) {
     if (bad) fprintf(stderr, "shfl: %d cases differ\n", bad);
 }
 
+/* VOTE.ALL, .ANY and .EQ (bits 72-73) of a predicate, on a subgroup of 64 lanes, two warps, as a device may run a
+   fragment or compute program: each warp's vote is of its own 32 lanes, as its ballot is. One warp's lanes all vote
+   true while the other's do not (or the other way): the subgroup's vote took both, so the first warp's ALL and EQ were
+   false (or its ANY true). Lane l's input is c[1][4 l]; its outputs at shared [16 l]: the ballot, then ALL, ANY, EQ */
+static Word sel_reg(u32 dst, u32 a, u32 pred);
+static Word ldc(u32 dst, u32 index, u32 bank, u32 off, u32 type);
+static void test_vote_warps(const char* dir) {
+    u8 code[16 * 16] = {0};
+    u32 n = 0;
+    Word x = fix(0x919); /* S2R R0, TID.X */
+    set(&x, 72, 8, 0x21);
+    put(code, n++, x);
+    x = alu(0x024, 4, 1, 0); /* IMAD R1, R0, 4, RZ */
+    set(&x, 32, 32, 4);
+    set(&x, 64, 8, 255);
+    put(code, n++, x);
+    put(code, n++, ldc(2, 1, 1, 0, 4)); /* LDC R2, c[1][R1] */
+    x = alu(0x00c, 4, 255, 2);          /* ISETP.NE.U32.AND P0, PT, R2, 0, PT */
+    set(&x, 76, 3, 5);
+    set(&x, 81, 3, 0);
+    set(&x, 84, 3, 7);
+    set(&x, 87, 3, 7);
+    put(code, n++, x);
+    for (u32 how = 0; how < 3; how++) { /* VOTE.ALL R3, P1, P0, then .ANY P2 and .EQ P3 (the ballot to R3 each time) */
+        x = fix(0x806);
+        set(&x, 16, 8, 3);
+        set(&x, 72, 2, how);
+        set(&x, 81, 3, 1 + how);
+        set(&x, 87, 3, 0);
+        put(code, n++, x);
+    }
+    put(code, n++, mov_imm(7, 1));
+    for (u32 k = 0; k < 3; k++) put(code, n++, sel_reg(4 + k, 7, 1 + k)); /* R4-R6 = P1-P3 */
+    x = alu(0x024, 4, 10, 0);                                             /* IMAD R10, R0, 16, RZ */
+    set(&x, 32, 32, 16);
+    set(&x, 64, 8, 255);
+    put(code, n++, x);
+    x = fix(0x388); /* STS.128 [R10], R3 */
+    set(&x, 24, 8, 10);
+    set(&x, 32, 8, 3);
+    set(&x, 73, 3, 6);
+    put(code, n++, x);
+    put(code, n++, exit_insn());
+    put(code, n, bra(n, n, 7, 0));
+    n++;
+    ShaderInfo si = {0};
+    si.cs_local[0] = 64, si.cs_local[1] = si.cs_local[2] = 1;
+    si.shared_size = 64 * 16;
+    size_t count = 0;
+    u32* spv = sm86_to_spirv(code, n * 16, ST_CS, NULL, &si, &count);
+    CHECK(spv != NULL);
+    if (!spv) {
+        fprintf(stderr, "vote warps: %s\n", si.first_unsupported);
+        return;
+    }
+    CHECK(keep_module(dir, "vote_warps", spv, count));
+    for (u32 set_ = 0; set_ < 2; set_++) {
+        static u32 bank1[64];
+        static SpvEvalEnv env[64];
+        for (u32 l = 0; l < 64; l++) /* all true but lane 40, or all false but lane 40 */
+            bank1[l] = set_ ? l == 40 : l != 40;
+        memset(env, 0, sizeof env);
+        for (u32 l = 0; l < 64; l++) {
+            env[l].ubo[SNX_VKB_CB + 1] = bank1;
+            env[l].ubo_words[SNX_VKB_CB + 1] = 64;
+            env[l].builtin[27][0] = env[l].builtin[29][0] = env[l].builtin[41][0] = l;
+        }
+        const char* why = spv_eval_subgroup(spv, count, env, 64);
+        CHECK(!why && env[0].shared_words >= 64 * 4);
+        if (why) {
+            fprintf(stderr, "vote warps: the evaluator stops at %s\n", why);
+            break;
+        }
+        u32 bad = 0;
+        for (u32 l = 0; l < 64; l++) {
+            u32 ballot = 0, w = l / 32;
+            for (u32 k = 0; k < 32; k++) ballot |= (bank1[32 * w + k] != 0) << k;
+            u32 want[4] = {ballot, ballot == 0xffffffffu, ballot != 0, ballot == 0 || ballot == 0xffffffffu};
+            for (u32 k = 0; k < 4; k++)
+                if (env[0].shared[4 * l + k] != want[k] && bad++ < 4)
+                    fprintf(stderr, "vote warps, set %u: lane %u word %u (ballot, ALL, ANY, EQ) is 0x%x, not 0x%x\n",
+                            set_, l, k, env[0].shared[4 * l + k], want[k]);
+        }
+        CHECK(bad == 0);
+    }
+    free(spv);
+}
+
 /* LDC c[bank][R + offset] of NAK's MemType U8 (0), I8 (1), U16 (2) and I16 (3): the byte or halfword at the
    address, zero or sign extended */
 static Word ldc(u32 dst, u32 index, u32 bank, u32 off, u32 type) {
@@ -6578,6 +6666,7 @@ int main(int argc, char** argv) {
     test_fswzadd(dir);
     test_lane_masks(dir);
     test_shfl_operands(dir);
+    test_vote_warps(dir);
     test_ldc_small(dir);
     test_break(dir);
     test_local_memory(dir);
