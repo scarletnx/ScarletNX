@@ -76,8 +76,8 @@ static const SnxModule g_module = {.nmods = 2, .mods = g_modules};
 const SnxModule* g_mod = &g_module;
 const SnxArmModule* g_arm_mod;
 u64 g_code_lo = ROOT, g_code_hi = UNMAPPED;
-static GuestFn g_slots[(sizeof g_guest.bytes - ROOT) / 4];
-GuestFn* g_disp = g_slots;
+static _Atomic GuestFn g_slots[(sizeof g_guest.bytes - ROOT) / 4];
+_Atomic GuestFn* g_disp = g_slots;
 static const struct { u64 addr; const char* name; } g_symbols[] = {
     {ROOT + 4, "vkQueueSubmit"},
     {NODE + 4, "vkGetInstanceProcAddr"},

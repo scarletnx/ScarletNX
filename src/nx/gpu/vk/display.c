@@ -480,8 +480,10 @@ u64 vk_display_frames(void) {
 
 int vk_display_wait_frame(u64 frame, u64 deadline_ns) {
     int r = 1;
-    if (!__atomic_load_n(&g_dc.started, __ATOMIC_ACQUIRE) || !__atomic_load_n(&g_dc.fifo, __ATOMIC_RELAXED)) return -1;
-    if (!__atomic_load_n(&g_settings.frame_pacing, __ATOMIC_RELAXED)) return -1;
+    if (!atomic_load_explicit(&g_dc.started, memory_order_acquire) ||
+        !atomic_load_explicit(&g_dc.fifo, memory_order_relaxed))
+        return -1;
+    if (!atomic_load_explicit((_Atomic int*)&g_settings.frame_pacing, memory_order_relaxed)) return -1;
     pm_lock(&g_dc.lock);
     while (g_dc.done < frame) {
         u64 now = plat_ns();
