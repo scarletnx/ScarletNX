@@ -9,10 +9,12 @@
    height - 1, unless the framebuffer is flipped) are the compute shaders' business. The triangles the CPU makes for a
    draw with a geometry shader turn their quaternions as video_core/rasterizer_accelerated.cpp's AddTriangle does. */
 #include "3ds/gpu/vk/vk_render.h"
+#include "3ds/gpu/texture.h"
 #include "3ds/gpu/transfer.h"
 #include "3ds/gpu/vk/fsgen.h"
 #include "3ds/gpu/vk/shaders/color_spv.h"
 #include "3ds/gpu/vk/shaders/depth_spv.h"
+#include "3ds/gpu/vk/shaders/scaled_depth_texture_spv.h"
 #include "3ds/gpu/vk/shaders/scaled_texture_spv.h"
 #include "3ds/gpu/vk/shaders/standin_spv.h"
 #include "3ds/gpu/vk/shaders/texture_spv.h"
@@ -82,6 +84,8 @@ static const uint32_t tex_config[3] = {0x081, 0x091, 0x099}, tex_format[3] = {0x
 enum { FMT_BYTE, FMT_UBYTE, FMT_SHORT, FMT_FLOAT };
 enum { DEFAULTS = 12, ZERO_SLOT = 16 }; /* the binding of the default attributes, and its slot of zeros */
 enum { NO_DEPTH = 0xff };
+/* FB_DEPTH_FORMAT's numbers of the depth formats (depth_word.glsl names them alike) */
+enum { DEPTH_D16 = 0, DEPTH_D24 = 2, DEPTH_D24S8 = 3 };
 /* the open rendering pass: a target's attachments, or a shadow pass with none (its draws write the target's colour
    image as storage) */
 enum { RENDERING_TARGET = 1, RENDERING_SHADOW = 2 };
@@ -262,7 +266,7 @@ typedef struct {
 
 static struct {
     bool made, failed;
-    SnxCtrVkCompute color, depth, texture, scaled_texture;
+    SnxCtrVkCompute color, depth, texture, scaled_texture, scaled_depth_texture;
     VkDescriptorSetLayout set0, set1, set2;
     VkDescriptorSetLayout set_layouts[3]; /* the three, for the shader objects that take them */
     /* the stand-ins' push constants (the fragment one's, and the vertex one's where the device has room for them),
@@ -507,7 +511,9 @@ static bool made(void) {
         !snx_ctr_vk_compute(snx_ctr_depth_spv, snx_ctr_depth_spv_size / 4, 3, 0, 32, &g.depth) ||
         !snx_ctr_vk_compute(snx_ctr_texture_spv, snx_ctr_texture_spv_size / 4, 1, 1, 20, &g.texture) ||
         !snx_ctr_vk_compute(snx_ctr_scaled_texture_spv, snx_ctr_scaled_texture_spv_size / 4, 0, 2, 20,
-                            &g.scaled_texture))
+                            &g.scaled_texture) ||
+        !snx_ctr_vk_compute(snx_ctr_scaled_depth_texture_spv, snx_ctr_scaled_depth_texture_spv_size / 4, 2, 1, 28,
+                            &g.scaled_depth_texture))
         return false;
     if (depth_usable(VK_FORMAT_D24_UNORM_S8_UINT))
         g.depth_format = VK_FORMAT_D24_UNORM_S8_UINT;
@@ -861,13 +867,24 @@ static void end_rendering(void) {
     vkCmdEndRendering(snx_ctr_vk_commands());
     g.rendering = 0;
 }
+/* the copies between a depth target's image and its scratch buffer at its scale (the depth words, then the stencil
+   bytes from stencil_at), and the scratch windows they fill, as depth.comp and scaled_depth_texture.comp read them */
+static void depth_scratch(const Target* t, VkBufferImageCopy copies[2], SnxCtrVkWindow windows[2]) {
+    uint32_t width = t->key.width * t->key.scale, height = t->key.height * t->key.scale;
+    VkDeviceSize pixels = (VkDeviceSize)width * height;
+    copies[0] = (VkBufferImageCopy){0, width, height, {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1}, {0, 0, 0},
+                                    {width, height, 1}};
+    copies[1] = (VkBufferImageCopy){t->stencil_at, width, height, {VK_IMAGE_ASPECT_STENCIL_BIT, 0, 0, 1},
+                                    {0, 0, 0}, {width, height, 1}};
+    windows[0] = (SnxCtrVkWindow){t->scratch, 0, pixels * 4};
+    windows[1] = (SnxCtrVkWindow){t->scratch, t->stencil_at, (pixels + 3) / 4 * 4};
+}
 /* the target's colour, and its depth and stencil, moved between the guest's memory and its images (store: to memory,
    which is then the GPU's until the recording is done) */
 static bool target_move(Target* t, bool store, bool color, bool depth) {
     const TargetKey* k = &t->key;
     VkCommandBuffer cb = snx_ctr_vk_commands();
     uint32_t width = k->width * k->scale, height = k->height * k->scale;
-    VkDeviceSize pixels = (VkDeviceSize)width * height;
     SnxCtrVkWindow w[3];
     uint32_t inside;
     if (store) end_rendering(); /* its barrier and dispatch cannot be recorded inside a target's pass */
@@ -880,11 +897,8 @@ static bool target_move(Target* t, bool store, bool color, bool depth) {
         gpu_uses(k->color_pa, color_span(k), store);
     }
     if (depth && k->depth_format != NO_DEPTH && snx_ctr_vk_window(k->depth_pa, depth_span(k), &w[0], &inside)) {
-        VkBufferImageCopy copies[2] = {
-            {0, width, height, {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1}, {0, 0, 0}, {width, height, 1}},
-            {t->stencil_at, width, height, {VK_IMAGE_ASPECT_STENCIL_BIT, 0, 0, 1}, {0, 0, 0}, {width, height, 1}}};
-        w[1] = (SnxCtrVkWindow){t->scratch, 0, pixels * 4};
-        w[2] = (SnxCtrVkWindow){t->scratch, t->stencil_at, (pixels + 3) / 4 * 4};
+        VkBufferImageCopy copies[2];
+        depth_scratch(t, copies, w + 1);
         uint32_t push[8] = {inside, k->width, k->height, k->depth_format, k->flip, store, g.depth_float, k->scale};
         if (store) {
             vkCmdCopyImageToBuffer(cb, t->depth.image, VK_IMAGE_LAYOUT_GENERAL, t->scratch, 2, copies);
@@ -1349,6 +1363,47 @@ static bool scaled_fill(const Target* source, VkImageView destination, uint32_t 
     vkCmdDispatch(cb, (width * scale + 7) / 8, (height * scale + 7) / 8, 1);
     return true;
 }
+/* the texture formats that read a depth buffer's words as texels: a D24S8 word as RGBA8, a D24 one as RGB8, a D16
+   one as RGB5A1, RGB565 or RGBA4 (the 16-bit formats that pixel.glsl decodes)
+   (depth formats: depth.comp; FB_DEPTH_FORMAT, 3dbrew GPU/Internal Registers 0x116) */
+static bool depth_texel(uint8_t depth_format, uint32_t format) {
+    switch (depth_format) {
+    case DEPTH_D16: return format == SNX_CTR_TEX_RGB5A1 || format == SNX_CTR_TEX_RGB565 || format == SNX_CTR_TEX_RGBA4;
+    case DEPTH_D24: return format == SNX_CTR_TEX_RGB8;
+    case DEPTH_D24S8: return format == SNX_CTR_TEX_RGBA8;
+    default: return false;
+    }
+}
+/* the scaled depth target whose depth buffer is the whole of a texture of memory at pa: the same size, one level,
+   neither a cube nor a shadow map, its depth valid, and a texel depth_texel takes. Of several sharing that buffer, the
+   one that drew into it last (the largest used serial) */
+static const Target* scaled_depth_source(uint32_t pa, uint32_t width, uint32_t height, uint32_t format, uint32_t levels,
+                                         bool cube, bool shadow) {
+    if (levels != 1 || cube || shadow) return NULL;
+    const Target* source = NULL;
+    for (unsigned i = 0; i < g.target_count; ++i) {
+        const Target* t = &g.targets[i];
+        if (t->key.scale > 1 && t->depth_valid && t->depth.image && t->key.depth_pa == pa && t->key.width == width &&
+            t->key.height == height && depth_texel(t->key.depth_format, format) && (!source || t->used > source->used))
+            source = t;
+    }
+    return source;
+}
+/* the texture's image filled from a scaled depth target's depth buffer by scaled_depth_texture.comp: the buffer and its
+   stencil copied into the target's scratch first, as the store copies them, then one dispatch over the scaled image */
+static bool scaled_depth_fill(const Target* source, VkImageView destination, uint32_t format) {
+    const TargetKey* k = &source->key;
+    uint32_t width = k->width * k->scale, height = k->height * k->scale;
+    VkBufferImageCopy copies[2];
+    SnxCtrVkWindow w[2];
+    depth_scratch(source, copies, w);
+    uint32_t push[7] = {k->width, k->height, format, k->depth_format, k->flip, k->scale, g.depth_float};
+    VkCommandBuffer cb = snx_ctr_vk_commands();
+    snx_ctr_vk_barrier(cb);
+    vkCmdCopyImageToBuffer(cb, source->depth.image, VK_IMAGE_LAYOUT_GENERAL, source->scratch, 2, copies);
+    snx_ctr_vk_barrier(cb);
+    return dispatch(&g.scaled_depth_texture, w, 2, destination, push, sizeof push, width, height);
+}
 /* the image and sampler of texture unit: the texture kept, or decoded from guest memory on the GPU and kept */
 static SnxCtrPicaResult texture(const SnxCtrPica* p, unsigned unit, unsigned type, const Image** image,
                                 VkSampler* sampled) {
@@ -1377,8 +1432,14 @@ static SnxCtrPicaResult texture(const SnxCtrPica* p, unsigned unit, unsigned typ
        a texture); the textures made from that memory before went stale when the target was drawn into */
     for (unsigned f = 0; f < (cube ? 6u : 1u); ++f)
         if (g.made && !store_over(pa[f], bytes)) return AGAIN;
-    /* a scaled target that is the texture's whole image: the texture is then made from its image, not from memory */
+    /* a scaled target that is the texture's whole image: the texture is then made from its image, not from memory. A
+       colour target's colour comes first, then a depth target's depth buffer */
     const Target* source = scaled_source(pa[0], width, height, format, levels, cube, shadow);
+    bool from_depth = false;
+    if (!source) {
+        source = scaled_depth_source(pa[0], width, height, format, levels, cube, shadow);
+        from_depth = source != NULL;
+    }
     uint32_t scale = source ? source->key.scale : 1;
     bool flip = source && source->key.flip;
     uint64_t serial = snx_ctr_vk_serial();
@@ -1418,7 +1479,11 @@ static SnxCtrPicaResult texture(const SnxCtrPica* p, unsigned unit, unsigned typ
     VkCommandBuffer cb = snx_ctr_vk_commands();
     snx_ctr_vk_barrier(cb);
     if (source) {
-        if (!scaled_fill(source, t->image.levels[0], width, height, scale)) return AGAIN;
+        if (from_depth) {
+            if (!scaled_depth_fill(source, t->image.levels[0], format)) return AGAIN;
+        } else {
+            if (!scaled_fill(source, t->image.levels[0], width, height, scale)) return AGAIN;
+        }
         snx_ctr_vk_barrier(cb);
         for (unsigned f = 0; f < (cube ? 6u : 1u); ++f) gpu_uses(pa[f], bytes, false);
         set_texture(t, true); /* watched from now on */
@@ -2917,6 +2982,7 @@ void snx_ctr_vk_render_free(void) {
     snx_ctr_vk_compute_free(&g.depth);
     snx_ctr_vk_compute_free(&g.texture);
     snx_ctr_vk_compute_free(&g.scaled_texture);
+    snx_ctr_vk_compute_free(&g.scaled_depth_texture);
     free(g.vs);
     free(g.fs);
     free(g.pipes);

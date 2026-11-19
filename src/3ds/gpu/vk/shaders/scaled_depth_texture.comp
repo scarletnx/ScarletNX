@@ -1,0 +1,41 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright 2026 the ScarletNX contributors
+// A PICA texture that a depth target at a render scale above 1 covers as its whole depth buffer: one invocation per
+// texel of the scaled image. A texel is the word that depth.comp stores for the scaled depth and stencil at the same
+// place (depth_word.glsl), decoded as texture.comp decodes the texture format's bytes (pixel.glsl), so the texture
+// keeps the render scale. Texture row t reads image row t, or height * scale - 1 - t when the target is flipped, as the
+// colour target's texture does (scaled_texture.comp).
+#version 450
+#extension GL_EXT_shader_8bit_storage : require
+#extension GL_GOOGLE_include_directive : require
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(std430, set = 0, binding = 0) readonly buffer Depth { uint DEPTH[]; };
+layout(std430, set = 0, binding = 1) readonly buffer Stencil { uint8_t STENCIL[]; };
+layout(set = 0, binding = 2, rgba8) uniform writeonly image2DArray image;
+layout(push_constant) uniform Scaled {
+    uint width, height, format, depth_format, flip, scale, float_depth;
+};
+#define NO_ENCODE
+#define NO_DECODE
+#include "pixel.glsl"
+#include "depth_word.glsl"
+// the colour of a word's low bytes, least significant first, as texture.comp decodes format fmt (a TEX_ name)
+uvec4 texel(uint fmt, uint word) {
+    switch (fmt) {
+    case TEX_RGBA8: return uvec4(word >> 24, word >> 16 & 255u, word >> 8 & 255u, word & 255u);
+    case TEX_RGB8: return uvec4(word >> 16 & 255u, word >> 8 & 255u, word & 255u, 255u);
+    case TEX_RGB5A1: return unpack16(PIX_RGB5A1, word & 0xffffu);
+    case TEX_RGB565: return unpack16(PIX_RGB565, word & 0xffffu);
+    case TEX_RGBA4:
+    default: return unpack16(PIX_RGBA4, word & 0xffffu);
+    }
+}
+void main() {
+    uint x = gl_GlobalInvocationID.x, t = gl_GlobalInvocationID.y;
+    uint image_width = width * scale, image_height = height * scale;
+    if (x >= image_width || t >= image_height) return;
+    uint row = flip != 0u ? image_height - 1u - t : t;
+    uint pixel = row * image_width + x;
+    uint word = depth_word(depth_format, float_depth, DEPTH[pixel], uint(STENCIL[pixel]));
+    imageStore(image, ivec3(int(x), int(t), 0), vec4(texel(format, word)) / 255.0);
+}
