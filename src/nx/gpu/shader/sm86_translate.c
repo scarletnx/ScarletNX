@@ -5465,10 +5465,10 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
                 j = spv_emit_binary(&c->e, SPV_OP_BITWISE_OR, c->t_u32, min_lane,
                                     spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, b, not_seg));
                 ok = op2(c, SPV_OP_U_LESS_THAN_EQUAL, c->t_bool, j, max_lane);
-            } else if (mode == 1) {
+            } else if (mode == 1) { /* UP: in range from the clamp's lane on, as PTX's j >= maxLane */
                 j = spv_emit_binary(&c->e, SPV_OP_I_SUB, c->t_u32, lane, b);
                 ok = op2(c, SPV_OP_S_GREATER_THAN_EQUAL, c->t_bool, spv_emit_unary(&c->e, SPV_OP_BITCAST, c->t_i32, j),
-                         spv_emit_unary(&c->e, SPV_OP_BITCAST, c->t_i32, min_lane));
+                         spv_emit_unary(&c->e, SPV_OP_BITCAST, c->t_i32, max_lane));
             } else {
                 j = mode == 2 ? spv_emit_iadd_u32(&c->e, c->t_u32, lane, b)
                               : spv_emit_binary(&c->e, SPV_OP_BITWISE_XOR, c->t_u32, lane, b);

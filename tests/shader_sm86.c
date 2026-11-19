@@ -1318,8 +1318,8 @@ static void test_lane_masks(const char* dir) {
 
 /* SHFL with its lane operand and c each an immediate or a register (II 0xf89, RI 0x589, IR 0x989, RR 0x389), run at
    every lane of a warp: the lane it reads and whether that lane is in range are PTX's shfl.sync, the same in the
-   four forms. c 0x1c03 is a segment of 4 lanes, 0x1807 of 8, 0x1c1f a segment of 4 whose clamp says 32, 0x1f the
-   warp. A compute network's upscaler has c in a register */
+   four forms (UP's bound is maxLane, as for the others: j >= maxLane). c 0x1c03 is a segment of 4 lanes, 0x1807 of
+   8, 0x1c1f a segment of 4 whose clamp says 32, 0x1f the warp. A compute network's upscaler has c in a register */
 static Word predicated(Word x, u32 pred);
 static void test_shfl_operands(const char* dir) {
     static const u32 forms[4] = {0xf89, 0x589, 0x989, 0x389}, cs[4] = {0x1c03, 0x1807, 0x1c1f, 0x1f};
@@ -1375,7 +1375,7 @@ static void test_shfl_operands(const char* dir) {
                                 : mode == 1 ? lane - b
                                 : mode == 2 ? lane + b
                                             : lane ^ b;
-                        u32 ok = mode == 1 ? (i32)j >= (i32)min_lane : j <= max_lane;
+                        u32 ok = mode == 1 ? (i32)j >= (i32)max_lane : j <= max_lane;
                         SpvEvalEnv env = {0};
                         env.builtin[41][0] = lane;
                         env.shuffle_id = ~0u;
