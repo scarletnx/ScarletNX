@@ -248,7 +248,7 @@ int nvn_draw_surface_of(const NvnTexture* t, const NvnView* v, DsSurf* s, int* d
     *depth = t->d.format == NVN_FORMAT_DEPTH24_STENCIL8, *msaa = DS_MSAA_1X1;
     return t->gpu != 0;
 }
-/* nvn_copy.c's upload into an NVN-laid-out texture, on the GPU thread: what the layer asked for, the bytes kept */
+/* nvn_copy.c's upload into an NVN-laid-out texture, on the GPU thread: what the layer asked for, its first bytes kept */
 static struct {
     NvnTexture t;
     NvnView v;
@@ -266,8 +266,10 @@ void nvn_copy_levels(const NvnTexture* t, unsigned from, unsigned to) {
 }
 int nvn_copy_texels_in(const NvnTexture* t, const NvnView* v, const NVNcopyRegion* region, const u8* bytes, i64 row,
                        i64 image) {
+    const u64 size = (u64)image * (u64)region->depth; /* the upload's bytes, its slices image bytes apart */
     g_upload.t = *t, g_upload.v = *v, g_upload.r = *region, g_upload.row = row, g_upload.image = image;
-    memcpy(g_upload.bytes, bytes, sizeof g_upload.bytes);
+    memset(g_upload.bytes, 0, sizeof g_upload.bytes);
+    memcpy(g_upload.bytes, bytes, size < sizeof g_upload.bytes ? size : sizeof g_upload.bytes);
     g_upload.count++;
     return 1;
 }
