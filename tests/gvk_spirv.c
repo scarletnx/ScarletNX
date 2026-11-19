@@ -7,9 +7,14 @@
    a constant, and one made from it, is NonUniform, with the capabilities and the extension that needs; one by a
    constant isn't. A module that needs nothing, or that gvk can't read, is NULL. Apart from them, a fragment module's
    outputs at Location 1 move to Location 0, Index 1, for dual-source blending: not an input's, nor a vertex module's,
-   nor one the module gives an Index itself */
+   nor one the module gives an Index itself. At the resolution scale a fragment module's size queries of 2D images
+   are divided by the push constants' factor (gvk_spirv_scaled_size), each image named by its set, binding and array
+   element, with an array's layers kept: in the module's push block, or a block of gvk's own. A query of an element by
+   a variable is skipped, and a 1D query left alone. With the validator's path as the argument, each module that
+   changes is valid SPIR-V for Vulkan 1.1 */
 #include "nx/gpu/gvk/gvk.h"
 #include <assert.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -131,7 +136,166 @@ static int count(const u32* w, size_t bytes, u32 op, u32 nops, const u32* ops) {
 }
 #define COUNT(w, bytes, op, ...) count((w), (bytes), (op), sizeof((u32[]){__VA_ARGS__}) / 4, (u32[]){__VA_ARGS__})
 
-int main(void) {
+/* glslc --target-env=vulkan1.0 -O0, debug stripped:
+   g_size_array:    sampler2D tex[8] at set 1, binding 0, a push block {vec4 a}: textureSize(tex[1], 0)
+   g_size_layers:   sampler2DArray at set 0, binding 2, no push block: textureSize(t, 0), an ivec3
+   g_size_by_index: sampler2D tex[4] at set 0, binding 0: textureSize(tex[i], 0) for a flat input i
+   g_size_1d:       sampler1D: textureSize(t, 0), an int */
+static const u32 g_size_array[] = {
+    0x07230203u, 0x00010000u, 0x000d000bu, 0x0000002bu, 0x00000000u, 0x00020011u, 0x00000001u, 0x00020011u,
+    0x00000032u, 0x0006000bu, 0x00000001u, 0x4c534c47u, 0x6474732eu, 0x3035342eu, 0x00000000u, 0x0003000eu,
+    0x00000000u, 0x00000001u, 0x0006000fu, 0x00000004u, 0x00000004u, 0x6e69616du, 0x00000000u, 0x0000001bu,
+    0x00030010u, 0x00000004u, 0x00000007u, 0x00040047u, 0x00000011u, 0x00000021u, 0x00000000u, 0x00040047u,
+    0x00000011u, 0x00000022u, 0x00000001u, 0x00040047u, 0x0000001bu, 0x0000001eu, 0x00000000u, 0x00030047u,
+    0x00000024u, 0x00000002u, 0x00050048u, 0x00000024u, 0x00000000u, 0x00000023u, 0x00000000u, 0x00020013u,
+    0x00000002u, 0x00030021u, 0x00000003u, 0x00000002u, 0x00040015u, 0x00000006u, 0x00000020u, 0x00000001u,
+    0x00040017u, 0x00000007u, 0x00000006u, 0x00000002u, 0x00040020u, 0x00000008u, 0x00000007u, 0x00000007u,
+    0x00030016u, 0x0000000au, 0x00000020u, 0x00090019u, 0x0000000bu, 0x0000000au, 0x00000001u, 0x00000000u,
+    0x00000000u, 0x00000000u, 0x00000001u, 0x00000000u, 0x0003001bu, 0x0000000cu, 0x0000000bu, 0x00040015u,
+    0x0000000du, 0x00000020u, 0x00000000u, 0x0004002bu, 0x0000000du, 0x0000000eu, 0x00000008u, 0x0004001cu,
+    0x0000000fu, 0x0000000cu, 0x0000000eu, 0x00040020u, 0x00000010u, 0x00000000u, 0x0000000fu, 0x0004003bu,
+    0x00000010u, 0x00000011u, 0x00000000u, 0x0004002bu, 0x00000006u, 0x00000012u, 0x00000001u, 0x00040020u,
+    0x00000013u, 0x00000000u, 0x0000000cu, 0x0004002bu, 0x00000006u, 0x00000016u, 0x00000000u, 0x00040017u,
+    0x00000019u, 0x0000000au, 0x00000004u, 0x00040020u, 0x0000001au, 0x00000003u, 0x00000019u, 0x0004003bu,
+    0x0000001au, 0x0000001bu, 0x00000003u, 0x00040017u, 0x0000001du, 0x0000000au, 0x00000002u, 0x0004002bu,
+    0x0000000au, 0x0000001fu, 0x00000000u, 0x0004002bu, 0x0000000au, 0x00000020u, 0x3f800000u, 0x0003001eu,
+    0x00000024u, 0x00000019u, 0x00040020u, 0x00000025u, 0x00000009u, 0x00000024u, 0x0004003bu, 0x00000025u,
+    0x00000026u, 0x00000009u, 0x00040020u, 0x00000027u, 0x00000009u, 0x00000019u, 0x00050036u, 0x00000002u,
+    0x00000004u, 0x00000000u, 0x00000003u, 0x000200f8u, 0x00000005u, 0x0004003bu, 0x00000008u, 0x00000009u,
+    0x00000007u, 0x00050041u, 0x00000013u, 0x00000014u, 0x00000011u, 0x00000012u, 0x0004003du, 0x0000000cu,
+    0x00000015u, 0x00000014u, 0x00040064u, 0x0000000bu, 0x00000017u, 0x00000015u, 0x00050067u, 0x00000007u,
+    0x00000018u, 0x00000017u, 0x00000016u, 0x0003003eu, 0x00000009u, 0x00000018u, 0x0004003du, 0x00000007u,
+    0x0000001cu, 0x00000009u, 0x0004006fu, 0x0000001du, 0x0000001eu, 0x0000001cu, 0x00050051u, 0x0000000au,
+    0x00000021u, 0x0000001eu, 0x00000000u, 0x00050051u, 0x0000000au, 0x00000022u, 0x0000001eu, 0x00000001u,
+    0x00070050u, 0x00000019u, 0x00000023u, 0x00000021u, 0x00000022u, 0x0000001fu, 0x00000020u, 0x00050041u,
+    0x00000027u, 0x00000028u, 0x00000026u, 0x00000016u, 0x0004003du, 0x00000019u, 0x00000029u, 0x00000028u,
+    0x00050085u, 0x00000019u, 0x0000002au, 0x00000023u, 0x00000029u, 0x0003003eu, 0x0000001bu, 0x0000002au,
+    0x000100fdu, 0x00010038u,
+};
+static const u32 g_size_layers[] = {
+    0x07230203u, 0x00010000u, 0x000d000bu, 0x0000001eu, 0x00000000u, 0x00020011u, 0x00000001u, 0x00020011u,
+    0x00000032u, 0x0006000bu, 0x00000001u, 0x4c534c47u, 0x6474732eu, 0x3035342eu, 0x00000000u, 0x0003000eu,
+    0x00000000u, 0x00000001u, 0x0006000fu, 0x00000004u, 0x00000004u, 0x6e69616du, 0x00000000u, 0x00000015u,
+    0x00030010u, 0x00000004u, 0x00000007u, 0x00040047u, 0x0000000eu, 0x00000021u, 0x00000002u, 0x00040047u,
+    0x0000000eu, 0x00000022u, 0x00000000u, 0x00040047u, 0x00000015u, 0x0000001eu, 0x00000000u, 0x00020013u,
+    0x00000002u, 0x00030021u, 0x00000003u, 0x00000002u, 0x00040015u, 0x00000006u, 0x00000020u, 0x00000001u,
+    0x00040017u, 0x00000007u, 0x00000006u, 0x00000003u, 0x00040020u, 0x00000008u, 0x00000007u, 0x00000007u,
+    0x00030016u, 0x0000000au, 0x00000020u, 0x00090019u, 0x0000000bu, 0x0000000au, 0x00000001u, 0x00000000u,
+    0x00000001u, 0x00000000u, 0x00000001u, 0x00000000u, 0x0003001bu, 0x0000000cu, 0x0000000bu, 0x00040020u,
+    0x0000000du, 0x00000000u, 0x0000000cu, 0x0004003bu, 0x0000000du, 0x0000000eu, 0x00000000u, 0x0004002bu,
+    0x00000006u, 0x00000010u, 0x00000000u, 0x00040017u, 0x00000013u, 0x0000000au, 0x00000004u, 0x00040020u,
+    0x00000014u, 0x00000003u, 0x00000013u, 0x0004003bu, 0x00000014u, 0x00000015u, 0x00000003u, 0x00040017u,
+    0x00000017u, 0x0000000au, 0x00000003u, 0x0004002bu, 0x0000000au, 0x00000019u, 0x3f800000u, 0x00050036u,
+    0x00000002u, 0x00000004u, 0x00000000u, 0x00000003u, 0x000200f8u, 0x00000005u, 0x0004003bu, 0x00000008u,
+    0x00000009u, 0x00000007u, 0x0004003du, 0x0000000cu, 0x0000000fu, 0x0000000eu, 0x00040064u, 0x0000000bu,
+    0x00000011u, 0x0000000fu, 0x00050067u, 0x00000007u, 0x00000012u, 0x00000011u, 0x00000010u, 0x0003003eu,
+    0x00000009u, 0x00000012u, 0x0004003du, 0x00000007u, 0x00000016u, 0x00000009u, 0x0004006fu, 0x00000017u,
+    0x00000018u, 0x00000016u, 0x00050051u, 0x0000000au, 0x0000001au, 0x00000018u, 0x00000000u, 0x00050051u,
+    0x0000000au, 0x0000001bu, 0x00000018u, 0x00000001u, 0x00050051u, 0x0000000au, 0x0000001cu, 0x00000018u,
+    0x00000002u, 0x00070050u, 0x00000013u, 0x0000001du, 0x0000001au, 0x0000001bu, 0x0000001cu, 0x00000019u,
+    0x0003003eu, 0x00000015u, 0x0000001du, 0x000100fdu, 0x00010038u,
+};
+static const u32 g_size_by_index[] = {
+    0x07230203u, 0x00010000u, 0x000d000bu, 0x00000023u, 0x00000000u, 0x00020011u, 0x00000001u, 0x00020011u,
+    0x00000032u, 0x0006000bu, 0x00000001u, 0x4c534c47u, 0x6474732eu, 0x3035342eu, 0x00000000u, 0x0003000eu,
+    0x00000000u, 0x00000001u, 0x0007000fu, 0x00000004u, 0x00000004u, 0x6e69616du, 0x00000000u, 0x00000009u,
+    0x00000013u, 0x00030010u, 0x00000004u, 0x00000007u, 0x00040047u, 0x00000009u, 0x0000001eu, 0x00000000u,
+    0x00040047u, 0x00000010u, 0x00000021u, 0x00000000u, 0x00040047u, 0x00000010u, 0x00000022u, 0x00000000u,
+    0x00030047u, 0x00000013u, 0x0000000eu, 0x00040047u, 0x00000013u, 0x0000001eu, 0x00000000u, 0x00020013u,
+    0x00000002u, 0x00030021u, 0x00000003u, 0x00000002u, 0x00030016u, 0x00000006u, 0x00000020u, 0x00040017u,
+    0x00000007u, 0x00000006u, 0x00000004u, 0x00040020u, 0x00000008u, 0x00000003u, 0x00000007u, 0x0004003bu,
+    0x00000008u, 0x00000009u, 0x00000003u, 0x00090019u, 0x0000000au, 0x00000006u, 0x00000001u, 0x00000000u,
+    0x00000000u, 0x00000000u, 0x00000001u, 0x00000000u, 0x0003001bu, 0x0000000bu, 0x0000000au, 0x00040015u,
+    0x0000000cu, 0x00000020u, 0x00000000u, 0x0004002bu, 0x0000000cu, 0x0000000du, 0x00000004u, 0x0004001cu,
+    0x0000000eu, 0x0000000bu, 0x0000000du, 0x00040020u, 0x0000000fu, 0x00000000u, 0x0000000eu, 0x0004003bu,
+    0x0000000fu, 0x00000010u, 0x00000000u, 0x00040015u, 0x00000011u, 0x00000020u, 0x00000001u, 0x00040020u,
+    0x00000012u, 0x00000001u, 0x00000011u, 0x0004003bu, 0x00000012u, 0x00000013u, 0x00000001u, 0x00040020u,
+    0x00000015u, 0x00000000u, 0x0000000bu, 0x0004002bu, 0x00000011u, 0x00000018u, 0x00000000u, 0x00040017u,
+    0x0000001au, 0x00000011u, 0x00000002u, 0x00040017u, 0x0000001cu, 0x00000006u, 0x00000002u, 0x0004002bu,
+    0x00000006u, 0x0000001eu, 0x00000000u, 0x0004002bu, 0x00000006u, 0x0000001fu, 0x3f800000u, 0x00050036u,
+    0x00000002u, 0x00000004u, 0x00000000u, 0x00000003u, 0x000200f8u, 0x00000005u, 0x0004003du, 0x00000011u,
+    0x00000014u, 0x00000013u, 0x00050041u, 0x00000015u, 0x00000016u, 0x00000010u, 0x00000014u, 0x0004003du,
+    0x0000000bu, 0x00000017u, 0x00000016u, 0x00040064u, 0x0000000au, 0x00000019u, 0x00000017u, 0x00050067u,
+    0x0000001au, 0x0000001bu, 0x00000019u, 0x00000018u, 0x0004006fu, 0x0000001cu, 0x0000001du, 0x0000001bu,
+    0x00050051u, 0x00000006u, 0x00000020u, 0x0000001du, 0x00000000u, 0x00050051u, 0x00000006u, 0x00000021u,
+    0x0000001du, 0x00000001u, 0x00070050u, 0x00000007u, 0x00000022u, 0x00000020u, 0x00000021u, 0x0000001eu,
+    0x0000001fu, 0x0003003eu, 0x00000009u, 0x00000022u, 0x000100fdu, 0x00010038u,
+};
+static const u32 g_size_1d[] = {
+    0x07230203u, 0x00010000u, 0x000d000bu, 0x00000015u, 0x00000000u, 0x00020011u, 0x00000001u, 0x00020011u,
+    0x0000002bu, 0x00020011u, 0x00000032u, 0x0006000bu, 0x00000001u, 0x4c534c47u, 0x6474732eu, 0x3035342eu,
+    0x00000000u, 0x0003000eu, 0x00000000u, 0x00000001u, 0x0006000fu, 0x00000004u, 0x00000004u, 0x6e69616du,
+    0x00000000u, 0x00000009u, 0x00030010u, 0x00000004u, 0x00000007u, 0x00040047u, 0x00000009u, 0x0000001eu,
+    0x00000000u, 0x00040047u, 0x0000000du, 0x00000021u, 0x00000000u, 0x00040047u, 0x0000000du, 0x00000022u,
+    0x00000000u, 0x00020013u, 0x00000002u, 0x00030021u, 0x00000003u, 0x00000002u, 0x00030016u, 0x00000006u,
+    0x00000020u, 0x00040017u, 0x00000007u, 0x00000006u, 0x00000004u, 0x00040020u, 0x00000008u, 0x00000003u,
+    0x00000007u, 0x0004003bu, 0x00000008u, 0x00000009u, 0x00000003u, 0x00090019u, 0x0000000au, 0x00000006u,
+    0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000001u, 0x00000000u, 0x0003001bu, 0x0000000bu,
+    0x0000000au, 0x00040020u, 0x0000000cu, 0x00000000u, 0x0000000bu, 0x0004003bu, 0x0000000cu, 0x0000000du,
+    0x00000000u, 0x00040015u, 0x0000000fu, 0x00000020u, 0x00000001u, 0x0004002bu, 0x0000000fu, 0x00000010u,
+    0x00000000u, 0x00050036u, 0x00000002u, 0x00000004u, 0x00000000u, 0x00000003u, 0x000200f8u, 0x00000005u,
+    0x0004003du, 0x0000000bu, 0x0000000eu, 0x0000000du, 0x00040064u, 0x0000000au, 0x00000011u, 0x0000000eu,
+    0x00050067u, 0x0000000fu, 0x00000012u, 0x00000011u, 0x00000010u, 0x0004006fu, 0x00000006u, 0x00000013u,
+    0x00000012u, 0x00070050u, 0x00000007u, 0x00000014u, 0x00000013u, 0x00000013u, 0x00000013u, 0x00000013u,
+    0x0003003eu, 0x00000009u, 0x00000014u, 0x000100fdu, 0x00010038u,
+};
+/* the instruction that makes id, 0 for none */
+static u32 made_at(const u32* w, size_t bytes, u32 id) {
+    for (u32 i = 5; i < bytes / 4; i += w[i] >> 16) {
+        u32 op = w[i] & 0xffff, len = w[i] >> 16;
+        int typed = op == 59 || op == 61 || op == 65 || op == 80 || op == 81 || op == 103 || op == 104 ||
+                    op == 124 || op == 128 || op == 132 || op == 134 || op == 135 || op == 194 || op == 199;
+        if (typed && len >= 3 && w[i + 2] == id) return i;
+    }
+    return 0;
+}
+/* the Offset of the last member of the structure behind the module's PushConstant variable, and how many there are */
+static u32 push_member_offset(const u32* w, size_t bytes, u32* push_vars) {
+    u32 ptr = 0, block = 0, last = 0, offset = 0;
+    *push_vars = 0;
+    for (u32 i = 5; i < bytes / 4; i += w[i] >> 16)
+        if ((w[i] & 0xffff) == 59 && w[i + 3] == 9) {
+            ptr = w[i + 1];
+            ++*push_vars;
+        }
+    for (u32 i = 5; i < bytes / 4; i += w[i] >> 16)
+        if ((w[i] & 0xffff) == 32 && w[i + 1] == ptr) block = w[i + 3];
+    for (u32 i = 5; i < bytes / 4; i += w[i] >> 16)
+        if ((w[i] & 0xffff) == 30 && w[i + 1] == block) last = (w[i] >> 16) - 3;
+    for (u32 i = 5; i < bytes / 4; i += w[i] >> 16)
+        if ((w[i] & 0xffff) == 72 && w[i + 1] == block && w[i + 2] == last && w[i + 3] == 35) offset = w[i + 4];
+    return offset;
+}
+/* the module valid for Vulkan 1.1 by the validator, where there is one */
+static void validate(const char* validator, const u32* w, size_t bytes) {
+    if (!validator) return;
+    FILE* f = fopen("gvk_spirv_scaled.spv", "wb");
+    assert(f && fwrite(w, 1, bytes, f) == bytes);
+    fclose(f);
+    char cmd[1024];
+    snprintf(cmd, sizeof cmd, "\"%s\" --target-env vulkan1.1 gvk_spirv_scaled.spv", validator);
+    assert(system(cmd) == 0);
+    remove("gvk_spirv_scaled.spv");
+}
+/* the size query's result id: the division of the query's own, its width and height divided and a third kept */
+static void check_divided(const u32* out, size_t bytes, u32 result, u32 count) {
+    u32 c = made_at(out, bytes, result);
+    assert(c && (out[c] & 0xffff) == 80 && out[c] >> 16 == 3 + count);
+    u32 query = 0;
+    for (u32 k = 0; k < count; k++) {
+        u32 part = made_at(out, bytes, out[c + 3 + k]);
+        assert(part && (k < 2) == ((out[part] & 0xffff) == 135)); /* SDiv of an extract of the query, or the extract */
+        u32 x = k < 2 ? made_at(out, bytes, out[part + 3]) : part;
+        assert(x && (out[x] & 0xffff) == 81 && out[x + 4] == k);
+        u32 q = made_at(out, bytes, out[x + 3]);
+        assert(q && ((out[q] & 0xffff) == 103 || (out[q] & 0xffff) == 104));
+        assert(!query || query == q);
+        query = q;
+    }
+}
+
+int main(int argc, char** argv) {
+    const char* validator = argc > 1 ? argv[1] : NULL;
     Module m;
     size_t bytes = 0;
 
@@ -270,6 +434,25 @@ int main(void) {
         assert(COUNT(out, bytes, OP_DECORATE, INDEX, LOCATION, 1) == 1);
         assert(COUNT(out, bytes, OP_DECORATE, INDEX, INDEX_DECORATION, 1) == 0);
     }
+    /* size queries at the resolution scale */
+    GvkSizeSlots slots;
+    const u32* sized = gvk_spirv_scaled_size(g_size_array, sizeof g_size_array, &bytes, &slots);
+    u32 pushes;
+    assert(sized && sized != g_size_array && slots.n == 1 && !slots.skipped);
+    assert(slots.slot[0] == (1u << 14 | 0u << 8 | 1u)); /* set 1, binding 0, element 1 */
+    assert(push_member_offset(sized, bytes, &pushes) == GVK_SIZE_PUSH && pushes == 1);
+    check_divided(sized, bytes, 0x18, 2);
+    validate(validator, sized, bytes);
+    sized = gvk_spirv_scaled_size(g_size_layers, sizeof g_size_layers, &bytes, &slots);
+    assert(sized && sized != g_size_layers && slots.n == 1 && !slots.skipped);
+    assert(slots.slot[0] == (0u << 14 | 2u << 8 | 0u));
+    assert(push_member_offset(sized, bytes, &pushes) == GVK_SIZE_PUSH && pushes == 1); /* a block of its own */
+    check_divided(sized, bytes, 0x12, 3);
+    validate(validator, sized, bytes);
+    sized = gvk_spirv_scaled_size(g_size_by_index, sizeof g_size_by_index, &bytes, &slots);
+    assert(sized == g_size_by_index && !slots.n && slots.skipped == 1);
+    sized = gvk_spirv_scaled_size(g_size_1d, sizeof g_size_1d, &bytes, &slots);
+    assert(sized == g_size_1d && !slots.n && !slots.skipped);
     while (g_scratch) {
         Scratch* p = g_scratch;
         g_scratch = p->next;

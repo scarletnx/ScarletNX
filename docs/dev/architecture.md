@@ -417,8 +417,12 @@ barriers and commands use from then on. The game's own image stays behind it, bo
 between a shadow and a buffer, or an image at the game's size, goes through the game's image and a blit. A framebuffer
 scales all its attachments or none, and keeps the game's size when one has mip levels or storage usage. The
 swapchain's images are made at the scale. Render areas, dynamic viewports, scissors and clear rectangles scale with
-the framebuffer. Viewports baked into a pipeline do not scale. Shaders see the scaled size: a size query or
-`gl_FragCoord` reads the host's pixels.
+the framebuffer. Viewports baked into a pipeline do not scale. A fragment shader's size query of an image at the
+scale answers the game's size (`gvk_spirv_scaled_size`): one game normalizes indirect-texture and haze coordinates by
+`textureSize`. GVK keeps the last 16 bytes of the push constants for it, and tells the game a limit of 240. Each
+descriptor set keeps a mask of the bindings that hold images at the scale. At each draw, GVK pushes the bits of the
+images that the pipeline's queries read, and the queries divide width and height by `1 + bit * (scale - 1)`.
+`gl_FragCoord` stays in the host's pixels: the games seen read only its depth.
 
 The shader programs a game ships are translated at startup, on the renderer's shader file thread rather than the GPU
 thread, into `<id>.<driver>.vkshipped` (`prepare_shaders`: before the game's first thread runs, behind main.c's loading screen,

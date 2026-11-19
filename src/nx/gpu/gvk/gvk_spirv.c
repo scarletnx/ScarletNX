@@ -5,7 +5,34 @@
 #include <string.h>
 
 enum {
+    SPV_UNDEF = 1,
     SPV_CAPABILITY = 17,
+    SPV_TYPE_VOID = 19,
+    SPV_TYPE_INT = 21,
+    SPV_TYPE_VECTOR = 23,
+    SPV_TYPE_FORWARD_POINTER = 39,
+    SPV_CONSTANT_TRUE = 41,
+    SPV_FUNCTION = 54,
+    SPV_LOAD = 61,
+    SPV_COMPOSITE_CONSTRUCT = 80,
+    SPV_COMPOSITE_EXTRACT = 81,
+    SPV_COPY_OBJECT = 83,
+    SPV_SAMPLED_IMAGE = 86,
+    SPV_IMAGE = 100,
+    SPV_QUERY_SIZE_LOD = 103,
+    SPV_QUERY_SIZE = 104,
+    SPV_BITCAST = 124,
+    SPV_IADD = 128,
+    SPV_IMUL = 132,
+    SPV_UDIV = 134,
+    SPV_SDIV = 135,
+    SPV_SHIFT_RIGHT_LOGICAL = 194,
+    SPV_BITWISE_AND = 199,
+    SPV_BLOCK = 2,
+    SPV_BINDING = 33,
+    SPV_DESCRIPTOR_SET = 34,
+    SPV_OFFSET = 35,
+    SPV_PUSH_CONSTANT = 9,
     SPV_TYPE_MATRIX = 24,
     SPV_TYPE_ARRAY = 28,
     SPV_TYPE_RUNTIME_ARRAY = 29,
@@ -312,6 +339,295 @@ const u32* gvk_spirv_dual_source(const u32* w, size_t bytes, size_t* out_bytes) 
         }
         i += len;
     }
+    *out_bytes = (size_t)o * 4;
+    return out;
+}
+
+/* the descriptor a size query's image operand id was loaded from, as GvkSizeSlots names it: through OpImage,
+   OpSampledImage and OpCopyObject to the OpLoad of a variable, or of its array's element by a constant */
+static int image_slot(const u32* w, const u32* def, const u32* dset, const u32* dbind, u32 bound, u32 id, u16* slot) {
+    for (u32 hops = 0; hops < 16; hops++) {
+        if (id >= bound || !def[id]) return 0;
+        const u32* d = w + def[id];
+        u32 op = d[0] & 0xffff;
+        if (op == SPV_IMAGE || op == SPV_SAMPLED_IMAGE || op == SPV_COPY_OBJECT) {
+            id = d[3];
+            continue;
+        }
+        if (op != SPV_LOAD) return 0;
+        u32 ptr = d[3], elem = 0;
+        if (ptr >= bound || !def[ptr]) return 0;
+        const u32* p = w + def[ptr];
+        u32 pop = p[0] & 0xffff;
+        if (pop == SPV_ACCESS_CHAIN || pop == SPV_IN_BOUNDS_ACCESS_CHAIN) {
+            u32 idx = p[4];
+            if (p[0] >> 16 != 5 || idx >= bound || !def[idx] || w[def[idx]] != (4u << 16 | SPV_CONSTANT)) return 0;
+            elem = w[def[idx] + 3];
+            ptr = p[3];
+            if (ptr >= bound || !def[ptr]) return 0;
+            pop = w[def[ptr]] & 0xffff;
+        }
+        if (pop != SPV_VARIABLE || dset[ptr] > 3 || dbind[ptr] > 63 || elem > 255) return 0;
+        *slot = (u16)(dset[ptr] << 14 | dbind[ptr] << 8 | elem);
+        return 1;
+    }
+    return 0;
+}
+
+/* Each query's result id becomes a new one, and its old id the result divided:
+     the push uvec4 loaded, d = 1 + ((x >> k) & 1) * y, and the width and height divided by d (a third component, an
+     array's layers, kept). A scalar query (a 1D image) is never of an image drawn at the scale, and stays.
+   The uvec4 is a member at GVK_SIZE_PUSH of the module's push constant block, or of a block of its own where it has
+   none. uint and uvec4 are made where the module has none, before the types (a block's members come first), the
+   pointers and constants before the functions */
+const u32* gvk_spirv_scaled_size(const u32* w, size_t bytes, size_t* out_bytes, GvkSizeSlots* slots) {
+    *slots = (GvkSizeSlots){0};
+    *out_bytes = bytes;
+    if (bytes % 4 || bytes / 4 > UINT32_MAX || bytes / 4 < 5 || w[0] != 0x07230203u || !w[3] || w[3] > SPV_IDS)
+        return NULL;
+    u32 n = (u32)(bytes / 4), bound = w[3];
+    u32* def = gvk_scratch(sizeof *def * bound); /* the instruction that makes each id gvk follows, 0 for none */
+    u32* dset = gvk_scratch(sizeof *dset * bound);
+    u32* dbind = gvk_scratch(sizeof *dbind * bound);
+    memset(def, 0, sizeof *def * bound);
+    memset(dset, 0xff, sizeof *dset * bound);
+    memset(dbind, 0xff, sizeof *dbind * bound);
+    u32 types_at = 0, funcs_at = 0, queries = 0, uint_t = 0, v4u_t = 0, pc_var = 0, pc_ptr = 0, entries = 0;
+    int fragment = 0, other = 0, high_offset = 0;
+    for (u32 i = 5; i < n;) {
+        u32 len = w[i] >> 16, op = w[i] & 0xffff;
+        if (!len || len > n - i) return NULL;
+        const u32* o = w + i + 1;
+        int global = (op >= SPV_TYPE_VOID && op <= SPV_TYPE_FORWARD_POINTER) ||
+                     (op >= SPV_CONSTANT_TRUE && op <= SPV_SPEC_CONSTANT_OP) || op == SPV_UNDEF ||
+                     (op == SPV_VARIABLE && !funcs_at);
+        if (global && !types_at) types_at = i;
+        if (op == SPV_FUNCTION && !funcs_at) funcs_at = i;
+        if (op == SPV_ENTRY_POINT && len >= 3) {
+            fragment |= o[0] == SPV_MODEL_FRAGMENT;
+            other |= o[0] != SPV_MODEL_FRAGMENT;
+            entries++;
+        } else if (op == SPV_DECORATE && len >= 4 && o[0] < bound) {
+            if (o[1] == SPV_DESCRIPTOR_SET) dset[o[0]] = o[2];
+            if (o[1] == SPV_BINDING) dbind[o[0]] = o[2];
+        } else if (op == SPV_MEMBER_DECORATE && len >= 5 && o[2] == SPV_OFFSET) {
+            high_offset |= o[3] >= GVK_SIZE_PUSH && o[0] < bound; /* checked against the push block below */
+        } else if (op == SPV_TYPE_INT && len >= 4 && o[0] < bound) {
+            def[o[0]] = i;
+            if (o[1] == 32 && o[2] == 0 && !uint_t) uint_t = o[0];
+        } else if (op == SPV_TYPE_VECTOR && len >= 4 && o[0] < bound) {
+            def[o[0]] = i;
+            if (uint_t && o[1] == uint_t && o[2] == 4 && !v4u_t) v4u_t = o[0];
+        } else if ((op == SPV_TYPE_STRUCT || op == SPV_TYPE_POINTER) && len >= 2 && o[0] < bound) {
+            def[o[0]] = i;
+        } else if (op == SPV_VARIABLE && len >= 4 && o[1] < bound) {
+            def[o[1]] = i;
+            if (o[2] == SPV_PUSH_CONSTANT && !funcs_at) {
+                if (pc_var) return w; /* two blocks: which takes the member is the entry point's */
+                pc_var = o[1];
+                pc_ptr = o[0];
+            }
+        } else if ((op == SPV_CONSTANT || op == SPV_LOAD || op == SPV_ACCESS_CHAIN || op == SPV_IN_BOUNDS_ACCESS_CHAIN ||
+                    op == SPV_IMAGE || op == SPV_SAMPLED_IMAGE || op == SPV_COPY_OBJECT) &&
+                   len >= 4 && o[1] < bound) {
+            def[o[1]] = i;
+        } else if ((op == SPV_QUERY_SIZE_LOD || op == SPV_QUERY_SIZE) && len >= 4 && funcs_at) {
+            queries++;
+        }
+        i += len;
+    }
+    if (!queries || !fragment || other || !types_at || !funcs_at) return w;
+    /* the push block's structure, whose members end before GVK_SIZE_PUSH, and declared after uvec4 */
+    u32 pc_struct = 0, members = 0;
+    if (pc_var) {
+        if (pc_ptr >= bound || !def[pc_ptr]) return NULL;
+        pc_struct = w[def[pc_ptr] + 3];
+        if (pc_struct >= bound || !def[pc_struct] || (w[def[pc_struct]] & 0xffff) != SPV_TYPE_STRUCT) return w;
+        members = (w[def[pc_struct]] >> 16) - 2;
+        if (v4u_t && def[v4u_t] > def[pc_struct]) return w;
+        for (u32 i = 5; high_offset && i < types_at; i += w[i] >> 16)
+            if ((w[i] & 0xffff) == SPV_MEMBER_DECORATE && (w[i] >> 16) >= 5 && w[i + 1] == pc_struct &&
+                w[i + 3] == SPV_OFFSET && w[i + 4] >= GVK_SIZE_PUSH)
+                return w;
+    }
+    /* each query's bit, or none */
+    u32* q_at = gvk_scratch(sizeof *q_at * queries);
+    u8* q_bit = gvk_scratch(queries);
+    u32 nq = 0;
+    for (u32 i = funcs_at; i < n; i += w[i] >> 16) {
+        u32 op = w[i] & 0xffff;
+        if ((op != SPV_QUERY_SIZE_LOD && op != SPV_QUERY_SIZE) || (w[i] >> 16) < 4) continue;
+        u32 rt = w[i + 1];
+        if (rt >= bound || !def[rt] || (w[def[rt]] & 0xffff) != SPV_TYPE_VECTOR) continue; /* a 1D image's */
+        u32 count = w[def[rt] + 3];
+        u16 slot;
+        if (count < 2 || count > 3 || !image_slot(w, def, dset, dbind, bound, w[i + 3], &slot)) {
+            slots->skipped++;
+            continue;
+        }
+        u32 k = 0;
+        while (k < slots->n && slots->slot[k] != slot) k++;
+        if (k == GVK_SIZE_SLOTS) {
+            slots->skipped++;
+            continue;
+        }
+        if (k == slots->n) slots->slot[slots->n++] = slot;
+        q_at[nq] = i;
+        q_bit[nq++] = (u8)k;
+    }
+    if (!nq) return w;
+    int add_uint = !uint_t, add_v4u = !v4u_t, own_block = !pc_var;
+    int list_var = own_block && w[1] >= 0x00010400u; /* SPIR-V 1.4 lists every global an entry point reads */
+    size_t extra = 13 + 4 * (size_t)(add_uint + add_v4u) + 4 * (size_t)(2 + slots->n) + (own_block ? 14 : 1) +
+                   (list_var ? entries : 0) + 75 * (size_t)nq;
+    if (extra > UINT32_MAX - n || extra > SIZE_MAX / sizeof(u32) - n) return NULL;
+    u32 next = bound;
+    if (add_uint) uint_t = next++;
+    if (add_v4u) v4u_t = next++;
+    u32 ptr_t = next++, c1 = next++, cmember = next++, ck[GVK_SIZE_SLOTS];
+    for (u32 k = 0; k < slots->n; k++) ck[k] = next++;
+    if (own_block) {
+        pc_struct = next++;
+        pc_ptr = next++;
+        pc_var = next++;
+    }
+    if ((u64)next + 15ull * nq > SPV_IDS) return NULL;
+    /* uvec4 after the module's uint, or after gvk's ahead of every type */
+    u32 v4u_at = add_uint ? types_at : def[uint_t] + (w[def[uint_t]] >> 16);
+    if (add_v4u && !add_uint && !own_block && def[uint_t] > def[pc_struct]) {
+        slots->n = 0;
+        return w;
+    }
+    u32* out = gvk_scratch(sizeof *out * (n + extra));
+    memcpy(out, w, 5 * sizeof *out);
+    u32 o = 5, q = 0;
+    for (u32 i = 5; i < n;) {
+        u32 len = w[i] >> 16, op = w[i] & 0xffff;
+        if (i == types_at) { /* the member's offset, then uint ahead of every type */
+            if (own_block) {
+                out[o++] = 3u << 16 | SPV_DECORATE;
+                out[o++] = pc_struct;
+                out[o++] = SPV_BLOCK;
+            }
+            out[o++] = 5u << 16 | SPV_MEMBER_DECORATE;
+            out[o++] = pc_struct;
+            out[o++] = own_block ? 0 : members;
+            out[o++] = SPV_OFFSET;
+            out[o++] = GVK_SIZE_PUSH;
+            if (add_uint) {
+                out[o++] = 4u << 16 | SPV_TYPE_INT;
+                out[o++] = uint_t;
+                out[o++] = 32;
+                out[o++] = 0;
+            }
+        }
+        if (add_v4u && i == v4u_at) {
+            out[o++] = 4u << 16 | SPV_TYPE_VECTOR;
+            out[o++] = v4u_t;
+            out[o++] = uint_t;
+            out[o++] = 4;
+        }
+        if (i == funcs_at) { /* the pointer, the constants and a block of gvk's own, after every global */
+            if (own_block) {
+                out[o++] = 3u << 16 | SPV_TYPE_STRUCT;
+                out[o++] = pc_struct;
+                out[o++] = v4u_t;
+                out[o++] = 4u << 16 | SPV_TYPE_POINTER;
+                out[o++] = pc_ptr;
+                out[o++] = SPV_PUSH_CONSTANT;
+                out[o++] = pc_struct;
+                out[o++] = 4u << 16 | SPV_VARIABLE;
+                out[o++] = pc_ptr;
+                out[o++] = pc_var;
+                out[o++] = SPV_PUSH_CONSTANT;
+            }
+            out[o++] = 4u << 16 | SPV_TYPE_POINTER;
+            out[o++] = ptr_t;
+            out[o++] = SPV_PUSH_CONSTANT;
+            out[o++] = v4u_t;
+            const u32 consts[2][2] = {{c1, 1}, {cmember, own_block ? 0 : members}};
+            for (u32 c = 0; c < 2; c++) {
+                out[o++] = 4u << 16 | SPV_CONSTANT;
+                out[o++] = uint_t;
+                out[o++] = consts[c][0];
+                out[o++] = consts[c][1];
+            }
+            for (u32 k = 0; k < slots->n; k++) {
+                out[o++] = 4u << 16 | SPV_CONSTANT;
+                out[o++] = uint_t;
+                out[o++] = ck[k];
+                out[o++] = k;
+            }
+        }
+        if (op == SPV_TYPE_STRUCT && !own_block && w[i + 1] == pc_struct) {
+            memcpy(out + o, w + i, sizeof *out * len);
+            out[o] += 1u << 16;
+            o += len;
+            out[o++] = v4u_t;
+        } else if (op == SPV_ENTRY_POINT && list_var) {
+            memcpy(out + o, w + i, sizeof *out * len);
+            out[o] += 1u << 16;
+            o += len;
+            out[o++] = pc_var;
+        } else if (q < nq && i == q_at[q]) {
+            u32 rt = w[i + 1], res = w[i + 1 + 1], comp = w[def[rt] + 2], count = w[def[rt] + 3];
+            int sign = comp < bound && def[comp] && w[def[comp] + 3];
+            u32 nq_id = next++, pp = next++, pv = next++, mask = next++, sm1 = next++, sh = next++, b = next++,
+                m = next++, du = next++, d = sign ? next++ : du;
+            memcpy(out + o, w + i, sizeof *out * len);
+            out[o + 2] = nq_id;
+            o += len;
+            const u32 seq[][6] = {
+                {5u << 16 | SPV_ACCESS_CHAIN, ptr_t, pp, pc_var, cmember, 0},
+                {4u << 16 | SPV_LOAD, v4u_t, pv, pp, 0, 0},
+                {5u << 16 | SPV_COMPOSITE_EXTRACT, uint_t, mask, pv, 0, 0},
+                {5u << 16 | SPV_COMPOSITE_EXTRACT, uint_t, sm1, pv, 1, 0},
+                {5u << 16 | SPV_SHIFT_RIGHT_LOGICAL, uint_t, sh, mask, ck[q_bit[q]], 0},
+                {5u << 16 | SPV_BITWISE_AND, uint_t, b, sh, c1, 0},
+                {5u << 16 | SPV_IMUL, uint_t, m, b, sm1, 0},
+                {5u << 16 | SPV_IADD, uint_t, du, m, c1, 0},
+            };
+            for (u32 s = 0; s < sizeof seq / sizeof *seq; s++) {
+                u32 l = seq[s][0] >> 16;
+                memcpy(out + o, seq[s], sizeof *out * l);
+                o += l;
+            }
+            if (sign) {
+                out[o++] = 4u << 16 | SPV_BITCAST;
+                out[o++] = comp;
+                out[o++] = d;
+                out[o++] = du;
+            }
+            u32 part[3];
+            for (u32 c = 0; c < count; c++) {
+                u32 x = next++;
+                out[o++] = 5u << 16 | SPV_COMPOSITE_EXTRACT;
+                out[o++] = comp;
+                out[o++] = x;
+                out[o++] = nq_id;
+                out[o++] = c;
+                part[c] = x;
+                if (c < 2) {
+                    part[c] = next++;
+                    out[o++] = 5u << 16 | (sign ? SPV_SDIV : SPV_UDIV);
+                    out[o++] = comp;
+                    out[o++] = part[c];
+                    out[o++] = x;
+                    out[o++] = d;
+                }
+            }
+            out[o++] = (3 + count) << 16 | SPV_COMPOSITE_CONSTRUCT;
+            out[o++] = rt;
+            out[o++] = res;
+            for (u32 c = 0; c < count; c++) out[o++] = part[c];
+            q++;
+        } else {
+            memcpy(out + o, w + i, sizeof *out * len);
+            o += len;
+        }
+        i += len;
+    }
+    out[3] = next;
     *out_bytes = (size_t)o * 4;
     return out;
 }
