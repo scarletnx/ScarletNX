@@ -58,25 +58,31 @@ def main():
         run(['-r', '--aot-threads-most=abc', *missing], 2, 'scarletnx-nds: aot_threads_most=abc is not a whole number')
         run(['-r', '--aot-threads=2000', *missing], 2, 'scarletnx-nds: aot_threads=2000 is not a whole number from 0')
         # the WFC service: a word the list has not, refused with it and the list
-        run(['-r', '--nds-wfc=nintendo', *missing], 2, '"nintendo" is none of off, custom, kaeru, wiilink, wiimmfi')
+        run(['-r', '--nds-wfc=nintendo', *missing], 2, '"nintendo" is none of off, auto, custom, kaeru, wiilink')
         run(['-r', '--nds-wfc=custom', *missing], 2, 'nds_wfc_dns=: the custom DNS server "" is not an IPv4 address')
         run(['-r', '--nds-wfc=custom', '--nds-wfc-dns=10.0.0.256', *missing], 2, '"10.0.0.256" is not an IPv4')
         run(['-r', '--nds-wfc-dns=1234567890123456', *missing], 2, "nds_wfc_dns's value is longer than 15 bytes")
         # taken: the run goes on to the image
-        for given in (['--nds-wfc=off'], ['--nds-wfc=altwfc'], ['--nds-wfc=custom', '--nds-wfc-dns=10.0.0.53']):
+        # auto is taken here and measured only when a game starts: no server is asked by this test
+        for given in (
+            ['--nds-wfc=off'],
+            ['--nds-wfc=auto'],
+            ['--nds-wfc=altwfc'],
+            ['--nds-wfc=custom', '--nds-wfc-dns=10.0.0.53'],
+        ):
             out = run(['-r', *given, *missing], 1, 'scarletnx-nds: ')
             if 'nds_wfc' in out:
                 failures.append(f'{given} refused:\n{out}')
         # the launcher's settings.ini: read where the command line gives none, the command line's over it
         (config / 'settings.ini').write_text('[Online]\nnds_wfc=retired\n', encoding='utf-8')
-        run(['-r', *missing], 2, 'nds_wfc=retired nds_wfc_dns=: "retired" is none of off, custom, kaeru')
+        run(['-r', *missing], 2, 'nds_wfc=retired nds_wfc_dns=: "retired" is none of off, auto, custom, kaeru')
         out = run(['-r', '--nds-wfc=wiimmfi', *missing], 1, 'scarletnx-nds: ')
         if 'retired' in out:
             failures.append(f'the command line did not win over settings.ini:\n{out}')
         (config / 'settings.ini').write_text('[Online]\nnds_wfc=custom\nnds_wfc_dns=10.0.0.53\n', encoding='utf-8')
         out = run(['-r', *missing], 1, 'scarletnx-nds: ')
         if 'nds_wfc' in out:
-            failures.append(f'settings.ini\'s custom server refused:\n{out}')
+            failures.append(f"settings.ini's custom server refused:\n{out}")
     if failures:
         sys.exit('nds_driver:\n' + '\n'.join(failures))
     print('nds_driver: ok')

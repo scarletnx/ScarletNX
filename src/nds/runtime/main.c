@@ -47,35 +47,36 @@ static void usage(FILE* out) {
           "\n",
           out);
     snx_cli_help(out, nds_cli);
-    fputs("NDS options:\n"
-          "  --press-len=MS         How long each scripted press is held (default 300)\n"
-          "  --aot-threads=N        The threads a recompile may take (0: the system's choice)\n"
-          "  --aot-threads-most=N   The most threads --aot-threads=0 takes (0: the computer's cores, a quarter left\n"
-          "                         free); beside --aot-threads=N it changes nothing, which the recompile says\n"
-          "  --shot-every=N         With --shot PATH, also write PATH.<frame>.ppm every N frames\n"
-          "  --aot=0                Do not compile the game first when it has no module: every block compiles as the\n"
-          "                         run reaches it (a quick look at a game; -r compiles it later, from the hints)\n"
-          "  --wav=PATH             Write the run's sound to PATH, 16 bits stereo\n"
-          "  --dump_ram=PATH        Write 0x01FF8000 to 0x02FFFFFF to PATH when the run ends\n"
-          "  --trace                Say each register access and ARM7 request the board does not know\n"
-          "  --nds-wfc=SERVICE      The WFC service the firmware's first Wi-Fi connection asks for (off, custom,\n"
-          "                         kaeru, wiilink, wiimmfi, wiilink_wfc, altwfc, newwfc, skytemple, diyfi,\n"
-          "                         sudomemo; default kaeru, or settings.ini's [Online] nds_wfc)\n"
-          "  --nds-wfc-dns=IPV4     The DNS server --nds-wfc=custom sets\n"
-          "\n"
-          "--press-len, --aot-threads, --aot-threads-most, --shot-every, --nds-wfc and --nds-wfc-dns are settings:\n"
-          "each with an _ for each - (--press_len=MS), the older spelling, is still read, and said once.\n"
-          "\n"
-          "--frames runs that many of the console's frames and --seconds that much of its time, then ends. --headless\n"
-          "opens no window. --shot writes the last frame, both screens, as a PPM image. --script=MS:KEYS,... presses\n"
-          "keys MS after the run's start, KEYS in hex: KEYINPUT's bits (1 A, 2 B, 4 Select, 8 Start, 10 Right, 20\n"
-          "Left, 40 Up, 80 Down, 100 R, 200 L), 400 X, 800 Y, and 1000 the pen, at the lower screen's pixel the\n"
-          "top 16 bits give (XXYY0000).\n"
-          "\n"
-          "The game's folder, named after the image's file, holds the compiled module (<name>_code.so), the blocks\n"
-          "runs compiled at run time (<name>.hints, which a recompile, -r, starts from), the save (<name>.sav), a\n"
-          "copy of the runtime that plays it (<name>) and <name>.ini, which names the image and the console.\n",
-          out);
+    fputs(
+        "NDS options:\n"
+        "  --press-len=MS         How long each scripted press is held (default 300)\n"
+        "  --aot-threads=N        The threads a recompile may take (0: the system's choice)\n"
+        "  --aot-threads-most=N   The most threads --aot-threads=0 takes (0: the computer's cores, a quarter left\n"
+        "                         free); beside --aot-threads=N it changes nothing, which the recompile says\n"
+        "  --shot-every=N         With --shot PATH, also write PATH.<frame>.ppm every N frames\n"
+        "  --aot=0                Do not compile the game first when it has no module: every block compiles as the\n"
+        "                         run reaches it (a quick look at a game; -r compiles it later, from the hints)\n"
+        "  --wav=PATH             Write the run's sound to PATH, 16 bits stereo\n"
+        "  --dump_ram=PATH        Write 0x01FF8000 to 0x02FFFFFF to PATH when the run ends\n"
+        "  --trace                Say each register access and ARM7 request the board does not know\n"
+        "  --nds-wfc=SERVICE      The WFC service the firmware's first Wi-Fi connection asks for (off, auto: the one\n"
+        "                         that answers first, custom, kaeru, wiilink, wiimmfi, wiilink_wfc, altwfc, newwfc,\n"
+        "                         skytemple, diyfi, sudomemo; default off, or settings.ini's [Online] nds_wfc)\n"
+        "  --nds-wfc-dns=IPV4     The DNS server --nds-wfc=custom sets\n"
+        "\n"
+        "--press-len, --aot-threads, --aot-threads-most, --shot-every, --nds-wfc and --nds-wfc-dns are settings:\n"
+        "each with an _ for each - (--press_len=MS), the older spelling, is still read, and said once.\n"
+        "\n"
+        "--frames runs that many of the console's frames and --seconds that much of its time, then ends. --headless\n"
+        "opens no window. --shot writes the last frame, both screens, as a PPM image. --script=MS:KEYS,... presses\n"
+        "keys MS after the run's start, KEYS in hex: KEYINPUT's bits (1 A, 2 B, 4 Select, 8 Start, 10 Right, 20\n"
+        "Left, 40 Up, 80 Down, 100 R, 200 L), 400 X, 800 Y, and 1000 the pen, at the lower screen's pixel the\n"
+        "top 16 bits give (XXYY0000).\n"
+        "\n"
+        "The game's folder, named after the image's file, holds the compiled module (<name>_code.so), the blocks\n"
+        "runs compiled at run time (<name>.hints, which a recompile, -r, starts from), the save (<name>.sav), a\n"
+        "copy of the runtime that plays it (<name>) and <name>.ini, which names the image and the console.\n",
+        out);
 }
 
 /* The WFC settings the launcher keeps in settings.ini's [Online] of the data folder data, each where the command
@@ -97,6 +98,34 @@ static void network_settings(const char* data, unsigned given) {
     free(text);
     free(path);
     free(config);
+}
+
+/* nds_wfc=auto: every service's DNS server asked at once, the first to answer taken, each one's time said. 1 with dns
+   its server's, else 0 (none answered: the connections stay unset, as with off) */
+static int wfc_fastest(uint8_t dns[4]) {
+    enum { MOST = 32, WAIT_MS = 1500 };
+    uint8_t servers[MOST][4];
+    int ms[MOST];
+    char line[1024], why[512];
+    size_t count = snx_online_wfc_preset_count(), at = 0;
+    if (count > MOST) count = MOST;
+    for (size_t i = 0; i < count; ++i) memcpy(servers[i], snx_online_wfc_preset_at(i)->dns, 4);
+    int best = snx_online_wfc_fastest(servers, NULL, count, WAIT_MS, ms, why, sizeof why);
+    for (size_t i = 0; i < count && at < sizeof line; ++i)
+        at += (size_t)(ms[i] >= 0 ? snprintf(line + at, sizeof line - at, "%s%s %d ms", i ? ", " : "",
+                                             snx_online_wfc_preset_at(i)->name, ms[i])
+                                  : snprintf(line + at, sizeof line - at, "%s%s no answer", i ? ", " : "",
+                                             snx_online_wfc_preset_at(i)->name));
+    printf("WFC: nds_wfc=auto asked every service's DNS server: %s\n", line);
+    if (best < 0) {
+        fprintf(stderr, "scarletnx-nds: nds_wfc=auto: %s: the firmware's Wi-Fi connections are not set, as with off\n",
+                why);
+        return 0;
+    }
+    memcpy(dns, servers[best], 4);
+    printf("WFC: nds_wfc=auto takes %s, the first to answer (%d ms)\n", snx_online_wfc_preset_at((size_t)best)->name,
+           ms[best]);
+    return 1;
 }
 
 static char* game_name(const char* rom) {
@@ -373,6 +402,7 @@ int snx_nds_main(int argc, char** argv) {
         goto done;
     }
     board->trace = trace;
+    if (wfc == SNX_ONLINE_WFC_AUTO) wfc = wfc_fastest(wfc_dns);
     if (wfc > 0 && !nds_pxi_wfc(board, wfc_dns, error, sizeof error)) {
         fprintf(stderr, "scarletnx-nds: the firmware's Wi-Fi connection: %s\n", error);
         goto done;
@@ -381,7 +411,7 @@ int snx_nds_main(int argc, char** argv) {
         printf("WFC: nds_wfc=%s, the firmware's first Wi-Fi connection (%s) asks the DNS server %u.%u.%u.%u\n",
                g_settings.ds_wfc_service, NDS_WFC_NETWORK, wfc_dns[0], wfc_dns[1], wfc_dns[2], wfc_dns[3]);
     else
-        printf("WFC: nds_wfc=off, the firmware's Wi-Fi connections are not set\n");
+        printf("WFC: nds_wfc=%s, the firmware's Wi-Fi connections are not set\n", g_settings.ds_wfc_service);
     save_load(board, save, image);
     recomp = nds_recomp_new(&rom, module, error, sizeof error);
     if (!recomp) goto done;

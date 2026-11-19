@@ -1089,14 +1089,15 @@ table g_nds_network_ini
 setting DS WFC service
     key nds_wfc
     text 16
-    default kaeru
+    default off
     startup
-    words off=Off|kaeru=Kaeru WFC|wiilink=WiiLink|wiimmfi=Wiimmfi|wiilink_wfc=WiiLink WFC|altwfc=AltWFC|newwfc=NewWFC|skytemple=SkyTemple WFC|diyfi=DIYFI|sudomemo=Sudomemo|custom=Custom DNS
+    words off=Off|auto=Fastest|kaeru=Kaeru WFC|wiilink=WiiLink|wiimmfi=Wiimmfi|wiilink_wfc=WiiLink WFC|altwfc=AltWFC|newwfc=NewWFC|skytemple=SkyTemple WFC|diyfi=DIYFI|sudomemo=Sudomemo|custom=Custom DNS
     help The DS's Wi-Fi Connection (WFC) service: one the community runs in place of the original, which is closed.
     help The DS asks that service's DNS server, set in its firmware's first Wi-Fi connection as a player sets it on the
-    help console, and the server sends the game to the service. custom = the server nds_wfc_dns names, off = the DNS
-    help the DS's network gives it. A game's Wi-Fi settings show the connection; the DS driver has no wireless yet, so
-    help no game connects through it. Another word stops the game
+    help console, and the server sends the game to the service. auto = the service whose server answers first as the
+    help game starts (each asked once, for 1.5 s at most; the log says each one's time and the one taken), custom = the
+    help server nds_wfc_dns names, off = the DNS the DS's network gives it. A game's Wi-Fi settings show the
+    help connection; the DS driver has no wireless yet, so no game connects through it. Another word stops the game
 setting DS WFC DNS server
     key nds_wfc_dns
     text 16
