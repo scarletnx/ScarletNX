@@ -5116,7 +5116,7 @@ static void test_warp_matrix_values(const char* dir) {
         static const char* const shape_name[4] = {"16x16x16", "16x8x16", "16x8x8", "8x8x8"};
         int coop_was = g_spirv_translate.hmma_coop;
         u32 shapes_was = g_spirv_translate.hmma_coop_shapes;
-        for (u32 s = 0; s < 4 && set != HM_ZEROS; s++) {
+        for (u32 s = 0; s < 4; s++) {
             g_spirv_translate.hmma_coop = 65536, g_spirv_translate.hmma_coop_shapes = 1u << s,
             g_spirv_translate.float16 = 1;
             char keep[32], what[32];

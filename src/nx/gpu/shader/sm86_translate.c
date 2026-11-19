@@ -3893,10 +3893,11 @@ static void hmma_coop(Ctx* c, const Sm86Insn* in, int k16, int f32, u32 ra, u32 
         at_b = coop_add(c, at_a, COOP_B);
         coop_barrier(c);
         static const u32 a_at[4] = {0, 64, 4, 68};
+        /* a .1688's K pad: -0 halves in A's and +0 in B's, whose -0 products leave the sum and its sign of zero */
         if (ra < SM86_RZ ? fa < 0 : 1)
             for (k = 0; k < ka; k++)
                 spv_emit_store_nonprivate(&c->e, coop_ptr(c, coop_add(c, at_a, a_at[k])),
-                                          k < na ? a[k] : c->zero);
+                                          k < na ? a[k] : cu(c, 0x80008000u));
         if (rb < SM86_RZ ? fb < 0 : 1)
             for (k = 0; k < kb; k++)
                 spv_emit_store_nonprivate(&c->e, coop_ptr(c, coop_add(c, at_b, 4 * k)), k < nb ? b[k] : c->zero);
@@ -3914,7 +3915,9 @@ static void hmma_coop(Ctx* c, const Sm86Insn* in, int k16, int f32, u32 ra, u32 
     /* the products: an 8 wide K splits a .16816's K in two, an 8 wide M its 16 rows in two blocks of 8, each block's
        K halves adding into one accumulator. A 16 wide K is one product */
     static const u32 half_at[2] = {0, 4}, block_at[2] = {0, 64};
-    u32 zero_acc = spv_emit_const_composite(&c->e, t_acc, (const u32[]){cf(c, 0.0f)}, 1);
+    /* the sum's start where no C is in it: an RZ C's +0, which the console adds, or -0 where a C is added after, so
+       that the sum of -0 products and a -0 C stays -0 */
+    u32 zero_acc = spv_emit_const_composite(&c->e, t_acc, (const u32[]){cf(c, rc < SM86_RZ ? -0.0f : 0.0f)}, 1);
     u32 d_mat[2], ma_mat[4], mb_mat[2];
     for (u32 h = 0; h < kblocks; h++) /* B's matrix, one a k half: the same words for every M block */
         if (fb < 0)
