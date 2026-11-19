@@ -15,20 +15,6 @@ layout(push_constant) uniform Texture {
 };
 #define NO_ENCODE
 #include "pixel.glsl"
-#define TEX_RGBA8  0u
-#define TEX_RGB8   1u
-#define TEX_RGB5A1 2u
-#define TEX_RGB565 3u
-#define TEX_RGBA4  4u
-#define TEX_IA8    5u
-#define TEX_RG8    6u
-#define TEX_I8     7u
-#define TEX_A8     8u
-#define TEX_IA4    9u
-#define TEX_I4     10u
-#define TEX_A4     11u
-#define TEX_ETC1   12u
-#define TEX_ETC1A4 13u
 uint tile_bytes(uint f) {
     const uint tiles[14] = uint[](256u, 192u, 128u, 128u, 128u, 128u, 128u, 64u, 64u, 64u, 32u, 32u, 32u, 64u);
     return tiles[f];

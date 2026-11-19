@@ -681,6 +681,8 @@ bottom as the window shows them.
 How a target's render scale is chosen and kept:
 - A texture without mipmaps, other than a cube or shadow map, that covers a scaled colour target's whole image,
   in the target's format, is filled from the scaled image.
+- A texture without mipmaps, other than a cube or shadow map, that covers a scaled depth buffer is filled from
+  the scaled depth when the buffer is D24S8 and the texture RGBA8, D24 and RGB8, or D16 and RGB565, RGB5A1 or RGBA4.
 
 The separate windows and the two render resolutions are checked by `3ds_windows`: each
 screen takes its own setting's scale and no other's, both screens present, and the PPM

@@ -1276,6 +1276,119 @@ static void scaled_texture_from_target(SnxCtrMemory* m) {
     g_settings.ctr_top_resolution = top;
     snx_ctr_vk_finish();
 }
+
+/* a depth format read as the texture format that depth_texel pairs with it: the words depth.comp stores for depth 1.0
+   (far) and 0.25 (near), and the pixel format that decodes them (word_texel) */
+typedef struct {
+    const char* name;
+    unsigned depth, texture, pixel; /* FB_DEPTH_FORMAT, the PICA's texture format, transfer.h's pixel format */
+    uint32_t far_word, near_word;
+} DepthTexel;
+static const DepthTexel depth_texels[] = {
+    {"D24S8 as RGBA8", 3, 0, SNX_CTR_PIX_RGBA8, 0x00ffffffu, 0x00400000u},
+    {"D24 as RGB8", 2, 1, SNX_CTR_PIX_RGB8, 0x00ffffffu, 0x00400000u},
+    {"D16 as RGB5A1", 0, 2, SNX_CTR_PIX_RGB5A1, 0xffffu, 0x4000u},
+    {"D16 as RGB565", 0, 3, SNX_CTR_PIX_RGB565, 0xffffu, 0x4000u},
+    {"D16 as RGBA4", 0, 4, SNX_CTR_PIX_RGBA4, 0xffffu, 0x4000u},
+};
+/* the texel of a depth word read in a texture of pixel format pixel: the word's low bytes, least significant first,
+   decoded by the CPU reference (snx_ctr_pixel_decode), so the oracle does not share the GPU's decode */
+static void word_texel(unsigned pixel, uint32_t word, uint8_t texel[4]) {
+    unsigned char bytes[4];
+    for (unsigned k = 0; k < snx_ctr_pixel_bytes(pixel); ++k) bytes[k] = (unsigned char)(word >> (8 * k));
+    snx_ctr_pixel_decode(pixel, bytes, texel);
+}
+/* A texture made from a scaled target's depth buffer keeps the render scale. Target A is a top screen sized colour
+   target with a D24S8 depth buffer, drawn at scale: the buffer is cleared to 1.0, and a rectangle at 0.25 covers the
+   scaled columns and rows from 1 on, its left and top edges at scaled coordinate 1.0 (as scaled_texture_case does).
+   B samples the buffer as RGBA8 with nearest filtering, so B's console pixel (i, j) reads the scaled texel (i, j) of
+   A's depth image, or row 400 * scale - 1 - j when A is flipped. The texel is the word depth.comp stores for the
+   depth, its stencil in the top byte, read as RGBA8: 0x00ffffff is (0, 255, 255, 255), and 0.25 stores 0x00400000
+   (0.25 * 16777215 rounds to 4194304), which is (0, 64, 0, 0). At scale 1 the texture is the 1x words the store
+   wrote, the control. The other rows of depth_texels read their words in their own texture formats the same way. */
+static void scaled_depth_texture_case(SnxCtrMemory* m, const char* name, const DepthTexel* t, unsigned scale,
+                                      bool flip) {
+    static unsigned char clear[SCALED_TARGET_BYTES], zeros[SCALED_TARGET_BYTES], after[SCALED_TARGET_BYTES];
+    uint8_t far_texel[4], near_texel[4];
+    unsigned bpp = snx_ctr_pixel_bytes(t->pixel);
+    word_texel(t->pixel, t->far_word, far_texel);
+    word_texel(t->pixel, t->near_word, near_texel);
+    for (unsigned p = 0; p < SCALED_TARGET_W * SCALED_TARGET_H; ++p)
+        for (unsigned k = 0; k < bpp; ++k)
+            clear[p * bpp + k] = (unsigned char)(t->far_word >> (8 * k)); /* depth 1.0 */
+    /* the rectangle's left and top edges at console coordinate 1/scale, which is the scaled coordinate 1.0 */
+    float left = 2.0f / (float)(scale * SCALED_TARGET_W) - 1.0f;
+    float top = 2.0f / (float)(scale * SCALED_TARGET_H) - 1.0f;
+    Scene* a = scene(name, 0, 0xff);
+    screen_target(&a->list, COLOR, flip);
+    depth_target(&a->list, t->depth); /* the depth buffer at DEPTH, written */
+    put(&a->list, 0x107, 0x1041u); /* depth test LESS, and the write on */
+    a->vertices[0] = vertex(left, top, -0.25f, 0xffffffffu, 0, 0);
+    a->vertices[1] = vertex(1.0f, top, -0.25f, 0xffffffffu, 0, 0);
+    a->vertices[2] = vertex(left, 1.0f, -0.25f, 0xffffffffu, 0, 0);
+    a->vertices[3] = vertex(1.0f, top, -0.25f, 0xffffffffu, 0, 0);
+    a->vertices[4] = vertex(1.0f, 1.0f, -0.25f, 0xffffffffu, 0, 0);
+    a->vertices[5] = vertex(left, 1.0f, -0.25f, 0xffffffffu, 0, 0);
+    a->vertex_count = 6;
+    array_draw(a);
+    list_end(&a->list);
+    setup_clear(m, a);
+    bool ok = snx_ctr_phys_write(m, COLOR, zeros, SCALED_TARGET_BYTES) == SNX_CTR_MEM_OK;
+    ok = ok && snx_ctr_phys_write(m, DEPTH, clear, SCALED_TARGET_W * SCALED_TARGET_H * bpp) == SNX_CTR_MEM_OK;
+    ok = ok && record(m, a, &vulkan); /* A's rectangle over the cleared depth, its rendering open */
+    Scene* b = scene(name, 0, 0xff);
+    screen_target(&b->list, SECOND_COLOR, false);
+    /* A's depth buffer, read as the texture */
+    screen_texture(&b->list, DEPTH, t->texture);
+    float tc = 1.0f / (float)scale;
+    b->vertices[0] = vertex(-1.0f, -1.0f, -0.5f, 0xffffffffu, 0, 0);
+    b->vertices[1] = vertex(1.0f, -1.0f, -0.5f, 0xffffffffu, tc, 0);
+    b->vertices[2] = vertex(-1.0f, 1.0f, -0.5f, 0xffffffffu, 0, tc);
+    b->vertices[3] = vertex(1.0f, 1.0f, -0.5f, 0xffffffffu, tc, tc);
+    b->vertex_count = 4;
+    put(&b->list, SNX_PICA_TOPOLOGY, 1u << 8);
+    strip_draw(&b->list, 0);
+    list_end(&b->list);
+    ok = ok && snx_ctr_phys_write(m, SECOND_COLOR, zeros, SCALED_TARGET_BYTES) == SNX_CTR_MEM_OK;
+    ok = ok && snx_ctr_phys_write(m, VERTICES, b->vertices, sizeof b->vertices) == SNX_CTR_MEM_OK;
+    ok = ok && snx_ctr_phys_write(m, LIST, b->list.w, b->list.n * 4) == SNX_CTR_MEM_OK;
+    ok = ok && record(m, b, &vulkan); /* B's quad samples A's depth buffer */
+    ok = snx_ctr_vk_finish() && ok;
+    ok = ok && snx_ctr_phys_read(m, SECOND_COLOR, after, SCALED_TARGET_BYTES) == SNX_CTR_MEM_OK;
+    unsigned wrong = 0;
+    for (unsigned j = 0; j < SCALED_TARGET_H; ++j)
+        for (unsigned i = 0; i < SCALED_TARGET_W; ++i) {
+            /* B's row j reads texel row j, which is image row j, or the last one less j when A is flipped */
+            unsigned row = flip ? scale * SCALED_TARGET_H - 1 - j : j;
+            unsigned char want[4];
+            snx_ctr_pixel_encode(SNX_CTR_PIX_RGBA8, (i >= 1 && row >= 1) ? near_texel : far_texel, want);
+            /* B is not flipped, so its row j is memory row H - 1 - j */
+            unsigned y = SCALED_TARGET_H - 1 - j;
+            size_t at = snx_ctr_morton_offset(i, y, 4) + (size_t)(y & ~7u) * SCALED_TARGET_W * 4;
+            wrong += memcmp(after + at, want, sizeof want) != 0;
+        }
+    bool pass = ok && wrong == 0;
+    printf("%-24s %6u of %u pixels differ from the oracle: %s\n", name, wrong, SCALED_TARGET_W * SCALED_TARGET_H,
+           pass ? "ok" : "FAIL");
+    if (!pass) ++failures;
+    free(a);
+    free(b);
+}
+/* target A at render scale 1 (the control), 2 and 3, unflipped and flipped, for each row of depth_texels */
+static void scaled_texture_from_depth(SnxCtrMemory* m) {
+    int top = g_settings.ctr_top_resolution;
+    for (size_t t = 0; t < sizeof depth_texels / sizeof *depth_texels; ++t)
+        for (unsigned scale = 1; scale <= 3; ++scale)
+            for (unsigned flip = 0; flip < 2; ++flip) {
+                char name[64];
+                snprintf(name, sizeof name, "%s at %ux, %s", depth_texels[t].name, scale,
+                         flip ? "flipped" : "unflipped");
+                g_settings.ctr_top_resolution = (int)scale;
+                scaled_depth_texture_case(m, name, &depth_texels[t], scale, flip != 0);
+            }
+    g_settings.ctr_top_resolution = top;
+    snx_ctr_vk_finish();
+}
 /* Shadow maps (Azahar's sw_framebuffer.cpp DrawShadowMapPixel and sw_rasterizer.cpp TextureColor): the colour buffer
    of a shadow pass holds one word per pixel, its bytes the depth from the most significant byte, then the strength */
 #define TEX_CUBE   0x086
@@ -1827,6 +1940,7 @@ static const Mode modes[] = {
     {"--async", "the draws with async_pipelines", async_pipelines},
     {"--pipeline-cache", "the pipeline cache kept between runs", pipeline_cache},
     {"--scaled-texture-from-target", "the textures made from scaled targets", scaled_texture_from_target},
+    {"--scaled-texture-from-depth", "the textures made from scaled depth buffers", scaled_texture_from_depth},
     {"--shadow", "the shadow maps", shadows}};
 
 int main(int argc, char** argv) {

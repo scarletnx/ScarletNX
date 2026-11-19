@@ -10,6 +10,21 @@
 #define PIX_RGB565 2u
 #define PIX_RGB5A1 3u
 #define PIX_RGBA4  4u
+// the PICA texture formats, as texture.h numbers them: texture.comp and scaled_depth_texture.comp decode them
+#define TEX_RGBA8  0u
+#define TEX_RGB8   1u
+#define TEX_RGB5A1 2u
+#define TEX_RGB565 3u
+#define TEX_RGBA4  4u
+#define TEX_IA8    5u
+#define TEX_RG8    6u
+#define TEX_I8     7u
+#define TEX_A8     8u
+#define TEX_IA4    9u
+#define TEX_I4     10u
+#define TEX_A4     11u
+#define TEX_ETC1   12u
+#define TEX_ETC1A4 13u
 
 uint pixel_bytes(uint format) { return format == PIX_RGBA8 ? 4u : format == PIX_RGB8 ? 3u : 2u; }
 uint c5to8(uint v) { return (v << 3) | (v >> 2); }
