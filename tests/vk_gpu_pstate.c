@@ -375,7 +375,9 @@ static void refused(int mode, const char* words, const char* what) {
 static void case_busy(void) {
     machine("auto\n");
     g.set_err = EBUSY;
-    refused(HOLDS, "Device or resource busy: another process holds one on this GPU", "EBUSY");
+    char words[160];
+    snprintf(words, sizeof words, "%s: another process holds one on this GPU", strerror(EBUSY)); /* FreeBSD's differ */
+    refused(HOLDS, words, "EBUSY");
     CHECK(has("the kernel refused the peak stable pstate (AMDGPU_CTX_OP_SET_STABLE_PSTATE)"), "what was refused");
 }
 
