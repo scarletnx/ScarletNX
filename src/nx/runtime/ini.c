@@ -401,6 +401,7 @@ static const struct {
                       {"mesh_draws", "the mesh draws are on where the driver has VK_EXT_mesh_shader and no ban holds: "
                                      "vk_ext_mesh_shader=off skips them"},
                       {"hmma_astat", "went with hmma_mode, which takes its default, 0 (Auto)"},
+                      {"gl_layer", "the GL layer always takes a 64-bit game's own GL driver; a 32-bit game keeps it"},
                       {NULL, NULL}};
 const char* ini_deprecated(const char* k) {
     int i;
