@@ -45,7 +45,8 @@ ScarletNX every time, and the word `unban` runs them.
 `--setting KEY=VALUE` gives each launch that runtime setting as `--KEY=VALUE`, for example `vk_memory=2` to read guest
 buffers in place, the default on an integrated GPU, where a driver can still refuse the imports and copy. Lavapipe,
 which CI runs on, copies by default: its GPU is the CPU, which can't read pages the runtime traps. To run lavapipe
-without installing it, point `VK_DRIVER_FILES` at its ICD file.
+without installing it, point `VK_DRIVER_FILES` at its ICD file. CI's runs of the NRO and the ctest entries below take
+`fps-limit=0`, no FPS limit: the vsync comes every millisecond rather than at 60 Hz, so no case waits on a display.
 
 With `-DSNX_TEST_EDENPROBE=/path/to/edenprobe.nro`, ctest runs it as `edenprobe_vk_memory_1` (copied) and
 `edenprobe_vk_memory_2` (in place) against the baseline.
