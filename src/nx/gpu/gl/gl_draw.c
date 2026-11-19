@@ -24,6 +24,7 @@
 #include "glslc/glslc.h"
 #include "nx/gpu/gl/gl_host_program.h"
 #include "nx/gpu/gl/gl_layer.h"
+#include "nx/hle/hook/hook.h"
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/nvn/nvn_draw.h"
 #include "nx/gpu/nvn/nvn_tex.h"
@@ -146,8 +147,12 @@ static u64 ring_take(u64 size) {
     u64 at = (g_gl_draw.head + 255) & ~255ull, offset = at % RING_BYTES;
     size = (size + 255) & ~255ull;
     if (offset + size > RING_BYTES) at += RING_BYTES - offset, offset = 0; /* a block never wraps */
-    while (at + size - atomic_load_explicit(&g_gl_draw.done, memory_order_acquire) > RING_BYTES)
-        plat_yield(); /* the GPU thread is a ring behind: the draws it has not reached hold these bytes */
+    if (at + size - atomic_load_explicit(&g_gl_draw.done, memory_order_acquire) > RING_BYTES) {
+        hook_wait_begin(); /* off the guest core, as every wait of the layer's */
+        while (at + size - atomic_load_explicit(&g_gl_draw.done, memory_order_acquire) > RING_BYTES)
+            plat_yield(); /* the GPU thread is a ring behind: the draws it has not reached hold these bytes */
+        hook_wait_end();
+    }
     g_gl_draw.head = at + size;
     return g_gl_draw.ring + offset;
 }
@@ -599,7 +604,10 @@ u64 gl_draw_recorded(void) { return g_gl_draw.issued; }
 u64 gl_draw_completed(void) { return atomic_load_explicit(&g_gl_draw.completed, memory_order_acquire); }
 void gl_draw_wait(u32 ctx, u64 serial) {
     (void)ctx; /* every context's draws go to the one GPU thread, in order */
+    if (gl_draw_completed() >= serial) return;
+    hook_wait_begin(); /* off the guest core: its other threads run meanwhile */
     while (gl_draw_completed() < serial) plat_yield();
+    hook_wait_end();
 }
 
 /* ---- the calls ---- */

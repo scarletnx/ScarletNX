@@ -269,7 +269,23 @@ int nvn_copy_texels_in(const NvnTexture* t, const NvnView* v, const NVNcopyRegio
 }
 void pm_lock(PMutex* m) { (void)m; }
 void pm_unlock(PMutex* m) { (void)m; }
-void present_pace(u32 interval, int slot) { (void)interval, (void)slot; }
+/* the guest core: a hook's wait leaves it (hook_wait_begin) and takes it back; the present's pacing is waited for off
+   it, as the console's present blocks the thread and its core runs the others */
+static struct {
+    int off, paced, paced_off;
+} core;
+void hook_wait_begin(void) {
+    assert(!core.off);
+    core.off = 1;
+}
+void hook_wait_end(void) {
+    assert(core.off);
+    core.off = 0;
+}
+void present_pace(u32 interval, int slot) {
+    (void)interval, (void)slot;
+    core.paced++, core.paced_off += core.off;
+}
 void gpu_call(void (*fn)(void*), void* arg, const u32* chans, u32 nchans) {
     (void)chans, (void)nchans;
     fn(arg); /* the GPU thread's turn, at once */
@@ -520,6 +536,7 @@ int main(void) {
     assert(shown.count == 1 && g_frames == 1 && shown.w == 1280 && shown.h == 720 && shown.pitch == 1280 * 4);
     assert(shown.layout == 0 && shown.fmt == 1 && shown.addr == gpu_cpu(window.gva)); /* the image cleared */
     assert(shown.transform == 2); /* GL's rows count up: shown flipped, as a lower left NVN window is */
+    assert(core.paced == 1 && core.paced_off == 1 && !core.off); /* paced off the core, back on it after */
     g_drawn.nclear = 0;
     call("_glClear", 0x4000, 0, 0, 0, 0);
     assert(g_drawn.nclear == 1 && g_drawn.ds.tgt.color[0].gva != window.gva); /* the other image */
