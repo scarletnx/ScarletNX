@@ -82,8 +82,9 @@ static storage_t *nca_section_chain(nca_section_ctx_t *ctx, storage_t *storage) 
     return storage;
 }
 
-/* ScarletNX: [offset, offset + size) of the NCA's file, from its mapping when it has one. */
+/* ScarletNX: [offset, offset + size) of the NCA, from its source or its mapping when it has one, else its file. */
 static storage_t *nca_section_file(nca_section_ctx_t *ctx, uint64_t offset, uint64_t size) {
+    if (ctx->source != NULL) return storage_sub_new(ctx->source, offset, size);
     if (ctx->map != NULL) return storage_memory_new(ctx->map, ctx->map_size, ctx->base_offset + offset, size);
     return storage_file_new(ctx->file, ctx->base_offset + offset, size);
 }
@@ -458,6 +459,7 @@ void nca_process(nca_ctx_t *ctx) {
             ctx->section_contexts[i].base_offset = ctx->base_offset;
             ctx->section_contexts[i].map = ctx->map;
             ctx->section_contexts[i].map_size = ctx->map_size;
+            ctx->section_contexts[i].source = ctx->source;
             ctx->section_contexts[i].section_num = i;
             ctx->section_contexts[i].offset = media_to_real(ctx->header.section_entries[i].media_start_offset);
             ctx->section_contexts[i].size = media_to_real(ctx->header.section_entries[i].media_end_offset) - ctx->section_contexts[i].offset;
@@ -592,11 +594,20 @@ void nca_process(nca_ctx_t *ctx) {
     }
 }
 
+/* ScarletNX: up to size bytes of the NCA at offset, from its source when it has one, else from its file: how many. */
+static size_t nca_read_raw(nca_ctx_t *ctx, uint64_t offset, void *buffer, size_t size) {
+    if (ctx->source != NULL) {
+        if (offset >= ctx->source->size) return 0;
+        if (size > ctx->source->size - offset) size = (size_t)(ctx->source->size - offset);
+        return storage_read(ctx->source, offset, buffer, size) ? size : 0;
+    }
+    fseeko64(ctx->file, ctx->base_offset + offset, SEEK_SET);
+    return fread(buffer, 1, size, ctx->file);
+}
+
 /* Decrypt NCA header, left as the file has it: little-endian. */
 static int nca_decrypt_header_le(nca_ctx_t *ctx) {
-    fseeko64(ctx->file, ctx->base_offset, SEEK_SET);
-    
-    size_t read_size = fread(&ctx->header, 1, 0xC00, ctx->file);
+    size_t read_size = nca_read_raw(ctx, 0, &ctx->header, 0xC00);
     
     if (read_size != 0xC00 && read_size != 0xA00) {
         fprintf(stderr, "Failed to read NCA header!\n");
@@ -684,8 +695,7 @@ static int nca_decrypt_header_le(nca_ctx_t *ctx) {
             for (unsigned int i = 0; i < 4; i++) {
                 if (snx_le32(dec_header.section_entries[i].media_start_offset)) { /* Section exists. */
                     uint64_t offset = media_to_real(snx_le32(dec_header.section_entries[i].media_start_offset));
-                    fseeko64(ctx->file, ctx->base_offset + offset, SEEK_SET);
-                    if (fread(&dec_header.fs_headers[i], sizeof(dec_header.fs_headers[i]), 1, ctx->file) != 1) {
+                    if (nca_read_raw(ctx, offset, &dec_header.fs_headers[i], sizeof(dec_header.fs_headers[i])) != sizeof(dec_header.fs_headers[i])) {
                         fprintf(stderr, "Failed to read NCA0 FS header at %" PRIx64"!\n", offset);
                         exit(EXIT_FAILURE);
                     }

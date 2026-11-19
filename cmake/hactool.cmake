@@ -3,11 +3,12 @@
 # hactool (ISC, src/nx/runtime/driver/hactool) as the library scarletnx --extract calls in its own process: SciresM's hactool
 # at 1d64a83 with ScarletNX's changes (decrypted containers, the build's OpenSSL for its AES, SHA and RSA, the storages
 # ported from LibHac for sparse and compressed sections and bucket trees of any size, NCAs read in place inside an XCI
-# or NSP). The mbedtls 2.x copy hactool bundles, its LZ4 and its main.c are left out: nso.c and storage.c take
-# snx_lz4's lz4.h for LZ4_decompress_safe, the only LZ4 function hactool calls
+# or NSP, and an NSZ's or XCZ's NCZ read as the NCA it holds). The mbedtls 2.x copy hactool bundles, its LZ4 and its
+# main.c are left out: nso.c and storage.c take snx_lz4's lz4.h for LZ4_decompress_safe, the only LZ4 function hactool
+# calls, and ncz.c takes snx_zstd's decoder
 set(hactool_src "${PROJECT_SOURCE_DIR}/src/nx/runtime/driver/hactool")
 set(hactool_sources save sha aes extkeys rsa npdm bktr kip packages pki pfs0 hfs0 nca0_romfs romfs utils nax0 nso nca
-                    xci filepath ConvertUTF storage snx_hac)
+                    xci filepath ConvertUTF storage ncz snx_hac)
 list(TRANSFORM hactool_sources PREPEND "${hactool_src}/")
 list(TRANSFORM hactool_sources APPEND .c)
 add_library(hactool_lib STATIC ${hactool_sources})
@@ -16,7 +17,7 @@ add_library(hactool_lib STATIC ${hactool_sources})
 # the tree as paths from src/ ("nx/runtime/driver/hactool/nca.h")
 set(hactool_definitions _BSD_SOURCE _POSIX_SOURCE _POSIX_C_SOURCE=200112L _DEFAULT_SOURCE __USE_MINGW_ANSI_STDIO=1
                         _FILE_OFFSET_BITS=64)
-target_link_libraries(hactool_lib PUBLIC OpenSSL::Crypto snx_lz4)
+target_link_libraries(hactool_lib PUBLIC OpenSSL::Crypto snx_lz4 snx_zstd)
 target_compile_definitions(hactool_lib PRIVATE ${hactool_definitions})
 add_library(hactool_internals INTERFACE)
 target_compile_definitions(hactool_internals INTERFACE ${hactool_definitions})

@@ -51,7 +51,7 @@ Generated modules include runtime ABI code. Game assets, keys and firmware are e
 | The AppImage's runtime (uruntime) and launcher (sharun, with Anylinux-sharun's `anylinux.so` and cross-libc-dlopen) | MIT |
 | Tracy (the profiler client, built only with `SNX_TRACY`) | BSD-3-Clause |
 | [CPMUtil](https://git.crueter.xyz/CMake/CPMUtil), crueter's, with its trimmed CPM.cmake (`cmake/cpmutil`, as Eden carries them, with five changes of ours: the configure fetches the third-party packages through it, not shipped) | LGPL-3.0-or-later ([text](../cmake/cpmutil/LICENSE)), CPM.cmake's MIT (in `cmake/cpmutil/CPM.cmake`) |
-| ENet / zstd (an Eden room's connection and its datagrams, `src/common/network/net_room.c`) | MIT / BSD-3-Clause |
+| ENet / zstd (an Eden room's connection and its datagrams, `src/common/network/net_room.c`; zstd also an XCZ's or NSZ's NCZ, `src/nx/runtime/driver/hactool/ncz.c`) | MIT / BSD-3-Clause |
 | miniz 3.1.2 (the zip around the launcher's Share Log, `src/gui/logzip.c`) | MIT |
 | libdeflate 1.26 (every deflate: Share Log's, the Vita driver's VPKs and eboot segments, the Android driver's APKs) | MIT |
 | HarfBuzz 15.0.0 (the Android driver's text shaping, `src/android/hwui/text.c`) | MIT ("Old MIT") |
@@ -76,6 +76,7 @@ a source keep that source's copyright lines and license, most with the revision 
 | --- | --- | --- |
 | `src/nx/gpu/gpu.c` (safe reads of compute-inline payloads) and `src/nx/gpu/shader/emit_thread.c` (constant geometry invocation information) | Citron, Zephyron's Princess Peach: Showtime! fixes in [`acfb1dcc1ad9adf25b960c4f8f25c5bf78849406`](https://github.com/citron-neo/emulator/commit/acfb1dcc1ad9adf25b960c4f8f25c5bf78849406), `video_core/dma_pusher.cpp` and `shader_recompiler/backend/spirv/emit_spirv_context_get_set.cpp`; original code copyright 2018 and 2021 yuzu Emulator Project | GPL-2.0-or-later |
 | `src/nx/runtime/driver/hactool/storage.c` and `storage.h` (the storages added to hactool) | LibHac, as Ryubing maintains it | MIT |
+| `src/nx/runtime/driver/hactool/ncz.c` (an NCZ's layout: its sections, blocks and stream, and the counters its sections are encrypted again with) | [nsz](https://github.com/nicoboss/nsz)'s reading of its own format (`nsz/Decompressor.py`, `nsz/BlockDecompressorReader.py` at `148218ff`), Copyright (c) 2019 Nico Bosshard and Blake Warner; none of its code | MIT |
 | `src/nx/hle/filesystem/fs.c` (a save's commit: its last commit and working copy in the save's folder, the commit by two renames, the open that finishes a commit cut short) | LibHac's reading of the console's class (`FsSystem/DirectorySaveDataFileSystem.cs`, nnSdk 14.3.0), as Hyjinx carries it; none of its code | MIT |
 | `src/3ds/gpu/`, `src/3ds/audio/`, `src/3ds/services/dsp.c`, `src/3ds/services/cfg.c` (the config blocks' defaults), `src/3ds/services/hid.c` (HID's samples, their layout and pace) | Azahar (Citra) | GPL-2.0-or-later |
 | `src/3ds/gpu/present.c` (`snx_ctr_layout_rects`) | Azahar (Citra) at `11eceda5`; none of its code | GPL-3.0-or-later |

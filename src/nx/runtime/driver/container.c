@@ -41,6 +41,12 @@ static int has_suffix(const char* text, const char* suffix) {
     return 1;
 }
 
+/* an NCA by its name, or an NCZ (an NCA nsz compressed, of an NSZ or an XCZ), which hactool reads as the NCA it
+   holds */
+static int nca_file(const char* name) { return has_suffix(name, ".nca") || has_suffix(name, ".ncz"); }
+/* a Meta NCA by its name: nsz leaves it as it is, but the name says it either way */
+static int meta_file(const char* name) { return has_suffix(name, ".cnmt.nca") || has_suffix(name, ".cnmt.ncz"); }
+
 static SnxU64 le_bytes(const unsigned char* p, unsigned n) {
     SnxU64 value = 0;
     while (n--) value = value << 8 | p[n];
@@ -71,7 +77,7 @@ int snx_container_kind(const char* path, int* xci) {
     char why[256];
     int kind = kind_of(path);
     if (kind < 0) return snx_error("cannot read %s: %s", path, snx_os_error(why, sizeof why));
-    if (kind == 2) return snx_error("%s is not an NSP/DNSP (PFS0) or an XCI/DXCI (HEAD/DXCI)", path);
+    if (kind == 2) return snx_error("%s is not an NSP/NSZ/DNSP (PFS0) or an XCI/XCZ/DXCI (HEAD/DXCI)", path);
     *xci = kind;
     return 0;
 }
@@ -346,7 +352,7 @@ static void take(SnxNcaRef* ref, int container, size_t entry, const SnxHacEntry*
     ref->found = 1;
     ref->container = container;
     ref->entry = entry;
-    ref->size = e->size;
+    ref->size = e->nca_size;
     ref->title_id = nca->title_id;
     ref->info = *nca;
 }
@@ -354,9 +360,13 @@ static void take(SnxNcaRef* ref, int container, size_t entry, const SnxHacEntry*
 /* a line saying what an NCA is and what reading it takes */
 static void say_nca(const SnxHacNca* nca, const SnxHacEntry* entry) {
     char size[32], title[17], keys[96];
-    snx_size_text(entry->size, size, sizeof size);
+    snx_size_text(entry->nca_size, size, sizeof size);
     snx_title_text(nca->title_id, title);
     printf("  %s NCA of %s, %s", content_name(nca->content), title[0] ? title : "no title", size);
+    if (entry->ncz) {
+        snx_size_text(entry->size, size, sizeof size);
+        printf(" (%s NCZ of %s)", entry->ncz == SNX_HAC_NCZ_BLOCK ? "a block" : "a solid", size);
+    }
     if (nca->sdk)
         printf(", SDK %u.%u.%u", (unsigned)(nca->sdk >> 24), (unsigned)(nca->sdk >> 16 & 0xFF),
                (unsigned)(nca->sdk >> 8 & 0xFF));
@@ -404,7 +414,7 @@ static int read_ncas(SnxDump* dump, int container, const SnxHacEntry** entries, 
     if (!*ncas) return snx_error("out of memory reading the NCAs' headers");
     for (i = 0; i < *count; i++) {
         (*ncas)[i].type = SNX_HAC_OTHER;
-        if (!has_suffix((*entries)[i].name, ".nca") || has_suffix((*entries)[i].name, ".cnmt.nca")) continue;
+        if (!nca_file((*entries)[i].name) || meta_file((*entries)[i].name)) continue;
         if (!dump->has_keys && nca_needs_keys(dump, container, i)) {
             free(*ncas);
             *ncas = NULL;
@@ -488,7 +498,7 @@ static size_t read_metas(SnxDump* dump, int container, Meta** metas) {
     for (i = 0; *metas && i < count; i++) {
         SnxHacNca nca;
         /* a Meta NCA by its header first: hactool ends the process on one it cannot process */
-        if (!has_suffix(entries[i].name, ".cnmt.nca") || entries[i].size < 0xC00 ||
+        if (!meta_file(entries[i].name) || entries[i].nca_size < 0xC00 ||
             (!dump->has_keys && nca_needs_keys(dump, container, i)) || snx_hac_nca(dump->hac, container, i, &nca) ||
             nca.content != 1 || (!nca.decrypted && !nca.keys) ||
             snx_hac_cnmt(dump->hac, container, i, &data, &size))
@@ -507,7 +517,7 @@ static size_t read_metas(SnxDump* dump, int container, Meta** metas) {
         }
         free(data);
     }
-    for (i = 0, size = 0; i < count; i++) size += has_suffix(entries[i].name, ".nca"); /* any NCA to tell them by */
+    for (i = 0, size = 0; i < count; i++) size += nca_file(entries[i].name); /* any NCA to tell them by */
     if (dump->say && !(dump->said_meta & 1u << container) && !n && size)
         puts("  no content meta that can be read: its kind and game told from its NCAs' title IDs");
     dump->said_meta |= 1u << container;
@@ -531,8 +541,7 @@ static long meta_entry(const Meta* m, int type, int index, const SnxHacEntry* en
             }
             name[32] = 0;
             for (j = 0; j < count; j++)
-                if (!strncmp(entries[j].name, name, 32) && entries[j].name[32] == '.' &&
-                    has_suffix(entries[j].name, ".nca"))
+                if (!strncmp(entries[j].name, name, 32) && entries[j].name[32] == '.' && nca_file(entries[j].name))
                     return (long)j;
         }
     return -1;
@@ -618,12 +627,12 @@ static int select_ncas(SnxDump* dump, int container, SnxNcaRef* selected, SnxNca
             if ((int)(ncas[i].title_id - application) >= dump->programs)
                 dump->programs = (int)(ncas[i].title_id - application) + 1;
             if (ncas[i].title_id == application + (SnxU64)index &&
-                (!selected->found || entries[i].size > selected->size))
+                (!selected->found || entries[i].nca_size > selected->size))
                 take(selected, container, i, &entries[i], &ncas[i]);
         }
         for (i = 0; selected->found && i < count; i++) {
             if (embedded_patch && is_patch(&ncas[i]) && (ncas[i].title_id & ~update_bit) == selected->title_id &&
-                (!embedded_patch->found || entries[i].size > embedded_patch->size))
+                (!embedded_patch->found || entries[i].nca_size > embedded_patch->size))
                 take(embedded_patch, container, i, &entries[i], &ncas[i]);
             if (!control->found && ncas[i].type == SNX_HAC_CONTROL && /* the same program's, base or update */
                 (ncas[i].title_id & ~update_bit) == (selected->title_id & ~update_bit))
@@ -705,7 +714,7 @@ static int select_addon(SnxDump* dump, int container) {
                 dump->programs = (int)(program - own) + 1;
             if (is_patch(&ncas[i]) && program == own + (SnxU64)dump->index &&
                 (!dump->patch.found ||
-                 (ncas[i].title_id == dump->patch.title_id && entries[i].size > dump->patch.size))) {
+                 (ncas[i].title_id == dump->patch.title_id && entries[i].nca_size > dump->patch.size))) {
                 take(&dump->patch, container, i, &entries[i], &ncas[i]);
                 dump->game = own;
             }
@@ -717,7 +726,8 @@ static int select_addon(SnxDump* dump, int container) {
             else if (!dump->patch.found && ncas[i].type == SNX_HAC_DATA &&
                      snx_addon_kind(snx_addon_guess(ncas[i].title_id), ncas[i].title_id) == SNX_ADDON_DLC &&
                      (!game || snx_addon_guess(ncas[i].title_id) == game) &&
-                     (!dump->aoc.found || (ncas[i].title_id == dump->aoc.title_id && entries[i].size > dump->aoc.size))) {
+                     (!dump->aoc.found ||
+                      (ncas[i].title_id == dump->aoc.title_id && entries[i].nca_size > dump->aoc.size))) {
                 take(&dump->aoc, container, i, &entries[i], &ncas[i]);
                 dump->game = snx_addon_guess(ncas[i].title_id);
             }
@@ -770,11 +780,24 @@ static int dump_cut(SnxDump* dump, int container, const char* path) {
                      (unsigned long long)(end - size));
 }
 
+/* 0, else nonzero, said with where and why, when an NCZ of the container (an NSZ's or an XCZ's) has a header that cannot
+   be read: what decompresses from it would not be its NCA */
+static int ncz_broken(SnxDump* dump, int container, const char* path) {
+    const SnxHacEntry* entries;
+    size_t entry;
+    const char* why = snx_hac_ncz_error(dump->hac, container, &entry);
+    if (!why) return 0;
+    snx_hac_entries(dump->hac, container, &entries);
+    return snx_error("%s holds %s, which cannot be read as the NCA it compresses: %s. Compress it with nsz again, or "
+                     "dump the game again",
+                     path, entries[entry].name, why);
+}
+
 static int open_container(SnxDump* dump, const char* path, int say) {
     int xci, container;
     unsigned tickets, personal;
     const SnxHacEntry* entries;
-    size_t count, i, ncas = 0;
+    size_t count, i, ncas = 0, nczs = 0;
     char size[32];
     if (snx_container_kind(path, &xci)) return -1;
     if (say) {
@@ -784,14 +807,21 @@ static int open_container(SnxDump* dump, const char* path, int say) {
     container = snx_hac_open(dump->hac, path, xci);
     if (container >= 0 && container < (int)(sizeof dump->opened / sizeof *dump->opened)) dump->opened[container] = path;
     if (container < 0) snx_hac_error(xci ? "cannot read the XCI's secure partition" : "cannot read the NSP");
-    if (container < 0 || dump_cut(dump, container, path) || read_tickets(dump, container, &tickets, &personal))
+    if (container < 0 || dump_cut(dump, container, path) || ncz_broken(dump, container, path) ||
+        read_tickets(dump, container, &tickets, &personal))
         return -1;
     if (say) { /* what it holds: its NCAs, said each as they are read, and its tickets */
         count = snx_hac_entries(dump->hac, container, &entries);
-        for (i = 0; i < count; i++) /* the content meta's left out, as the reading leaves it */
-            ncas += has_suffix(entries[i].name, ".nca") && !has_suffix(entries[i].name, ".cnmt.nca");
+        for (i = 0; i < count; i++) { /* the content meta's left out, as the reading leaves it */
+            ncas += nca_file(entries[i].name) && !meta_file(entries[i].name);
+            nczs += entries[i].ncz != SNX_HAC_NCZ_NONE;
+        }
         snx_size_text(snx_file_size(path), size, sizeof size);
-        printf("  %s, %s: %lu NCA%s", xci ? "a gamecard (XCI)" : "an NSP", size, (unsigned long)ncas, ncas == 1 ? "" : "s");
+        printf("  %s, %s: %lu NCA%s",
+               xci    ? (nczs ? "a gamecard nsz compressed (XCZ)" : "a gamecard (XCI)")
+               : nczs ? "an NSP nsz compressed (NSZ)"
+                      : "an NSP",
+               size, (unsigned long)ncas, ncas == 1 ? "" : "s");
         if (tickets)
             printf(", %u ticket%s%s", tickets, tickets == 1 ? "" : "s",
                    personal == tickets ? " (personalized: their title keys are encrypted for a console)"
