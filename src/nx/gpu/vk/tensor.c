@@ -4,8 +4,9 @@
    passes of such a network are HMMA and LDSM, its inputs and outputs are pictures at an image's size, and the ten of
    one title's upscaler are 40 ms of a frame that the exact path emulates with the device's 8x8x8 cooperative matrices
    (hmma_coop). Here each pass is replaced by one dispatch of tensor_standin.comp: the largest picture the network has
-   sampled so far, filtered into the image the pass would save. The descriptor sets get their two views each, a ring
-   that the pool gives back when it has gone round.
+   sampled so far, filtered into the image the pass would save. Its descriptor sets come from the frame's own spare
+   sets (cmd.c's vk_desc_alloc), which its slot resets once every submission that could read them is done, so a pass
+   never waits for the GPU here.
 
    The one thing this cannot do is make the network's arithmetic: the picture is the network's input, not what it
    would have made of it. A setting, off by default, so nothing a game shows changes unless it is asked for. */
@@ -15,8 +16,6 @@
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/tensor_standin_spv.h"
 #include "nx/runtime/platform/log.h"
-
-#define TS_SETS 256 /* sets the ring holds before its pool goes round: about 25 frames of a network's ten passes */
 
 /* The network's input picture by where it lies (a surface's address and bytes, and its format): the surface itself may
    be let go while the network still runs, and the cache makes it again at the same address */
@@ -35,13 +34,11 @@ static struct {
     VkDescriptorSetLayout lay;
     VkPipelineLayout play;
     VkPipeline pipe;
-    VkDescriptorPool pool;
     VkSampler smp;
     TsInput in;
     TsMade made[TS_MADE];
     u32 made_next;
-    u32 n;      /* sets allocated in the pool */
-    int failed; /* the pipeline or the pool could not be made: every pass runs as it is */
+    int failed; /* the pipeline could not be made: every pass runs as it is */
 } g_ts;
 
 static int ts_init(void) {
@@ -55,8 +52,6 @@ static int ts_init(void) {
     VkPipelineLayoutCreateInfo pl = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
                                      .setLayoutCount = 1,
                                      .pSetLayouts = &g_ts.lay};
-    const float max_lod = 0.0f;
-    (void)max_lod;
     VkSamplerCreateInfo si = {.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
                               .magFilter = VK_FILTER_LINEAR,
                               .minFilter = VK_FILTER_LINEAR,
@@ -66,16 +61,9 @@ static int ts_init(void) {
                               .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
                               .minLod = 0.0f,
                               .maxLod = 0.0f};
-    VkDescriptorPoolSize ps[2] = {{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, TS_SETS},
-                                  {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, TS_SETS}};
-    VkDescriptorPoolCreateInfo pi = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
-                                     .maxSets = TS_SETS,
-                                     .poolSizeCount = 2,
-                                     .pPoolSizes = ps};
     if (!VK_OK(vkCreateDescriptorSetLayout(g_vk.dev, &li, NULL, &g_ts.lay)) ||
         !VK_OK(vkCreatePipelineLayout(g_vk.dev, &pl, NULL, &g_ts.play)) ||
         !VK_OK(vkCreateSampler(g_vk.dev, &si, NULL, &g_ts.smp)) ||
-        !VK_OK(vkCreateDescriptorPool(g_vk.dev, &pi, NULL, &g_ts.pool)) ||
         !VK_OK(snx_vk_compute_pipeline(g_vk.dev, vk_pipeline_cache(), g_ts.play, tensor_standin_spv,
                                        tensor_standin_spv_size, &g_ts.pipe))) {
         g_ts.failed = 1;
@@ -102,20 +90,11 @@ static Surf* ts_input(void) {
     return NULL;
 }
 
-/* a set of the ring with the two views: its pool goes round once every set is in the GPU's hands */
+/* a set with the two views, from this frame's spare sets: the slot resets them when the frame starts, after the
+   submissions that read them are done */
 static VkDescriptorSet ts_set(VkImageView src, VkImageView dst) {
-    if (g_ts.n == TS_SETS) {
-        vk_finish();
-        vkResetDescriptorPool(g_vk.dev, g_ts.pool, 0);
-        g_ts.n = 0;
-    }
-    VkDescriptorSetAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-                                      .descriptorPool = g_ts.pool,
-                                      .descriptorSetCount = 1,
-                                      .pSetLayouts = &g_ts.lay};
-    VkDescriptorSet set = VK_NULL_HANDLE;
-    if (!VK_OK(vkAllocateDescriptorSets(g_vk.dev, &ai, &set))) return VK_NULL_HANDLE;
-    g_ts.n++;
+    VkDescriptorSet set = vk_desc_alloc(g_ts.lay);
+    if (!set) return VK_NULL_HANDLE;
     VkDescriptorImageInfo ii[2] = {{.sampler = g_ts.smp, .imageView = src, .imageLayout = VK_IMAGE_LAYOUT_GENERAL},
                                    {.sampler = VK_NULL_HANDLE, .imageView = dst, .imageLayout = VK_IMAGE_LAYOUT_GENERAL}};
     VkWriteDescriptorSet w[2] = {
