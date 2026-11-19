@@ -1809,6 +1809,14 @@ msgstr ""
 msgid "Import"
 msgstr ""
 
+#: src/gui/main.c
+msgid "NSP"
+msgstr ""
+
+#: src/gui/main.c
+msgid "XCI"
+msgstr ""
+
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
@@ -5143,6 +5151,20 @@ msgid "The Recompiled Library's Main is off and no Extra of it can take a game: 
 msgstr ""
 
 #: src/gui/main.c
+#, c-format
+msgid "Pack: the folder picker could not open: %s"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Pack"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Pack the NCAs of %s, decrypted, into an NSP or an XCI?"
+msgstr ""
+
+#: src/gui/main.c
 msgid "Run Amberlith: no state folder to run in"
 msgstr ""
 
@@ -5987,6 +6009,10 @@ msgstr ""
 msgid "Where the app keeps each kind of its files, and the libraries: each folder opened or changed"
 msgstr ""
 
+#: src/gui/model.c
+msgid "Packs a folder of NCAs into an NSP or an XCI whose NCAs are decrypted, which needs no keys to read"
+msgstr ""
+
 #: src/gui/process_posix.c
 #, c-format
 msgid "Cannot start the run: %s"
@@ -6812,6 +6838,10 @@ msgstr ""
 
 #: src/gui/ui.txt
 msgid "Install Keys"
+msgstr ""
+
+#: src/gui/ui.txt
+msgid "Pack extracted as dXCI/dNSP"
 msgstr ""
 
 #: src/common/utilities/setup.c

@@ -6720,6 +6720,24 @@ int main(int argc, char** argv) {
     }
 #endif
     key(&app, SDLK_RIGHT);
+    /* Pack extracted as dXCI/dNSP, after the keys: the folder picked asks NSP or XCI, NSP in focus; Back packs
+       nothing, and no folder says so */
+    assert(app.menu.selected == GUI_PACK);
+    pack_picked(&app, "/nowhere/Game NCAs", NULL, false);
+    assert(app.confirm.shown && app.confirm.ask == GUI_ASK_PACK && !app.confirm.selected && app.pack_folder);
+    assert(strstr(ask_question(&app), "/nowhere/Game NCAs") != NULL);
+    render(&app);
+    key(&app, SDLK_ESCAPE);
+    assert(!app.confirm.shown && !app.pack_folder && !app.menu.running);
+    pack_picked(&app, NULL, NULL, false);
+    assert(strstr(app.message, "No folder was picked") != NULL && !app.confirm.shown);
+    pack_picked(&app, NULL, "no portal", true);
+    assert(strstr(app.message, "could not open: no portal") != NULL); /* said whole in the box of failures too */
+    assert(app.confirm.shown && app.confirm.ask == GUI_ASK_ERROR && strstr(app.error_line, "no portal"));
+    key(&app, SDLK_RETURN);
+    assert(!app.confirm.shown);
+    app.message[0] = 0;
+    key(&app, SDLK_RIGHT);
     assert(app.menu.selected == GUI_SETTINGS);
     /* the keys screen's line for what it could not install stays in the tips once the menu is back (GUI_KEYS_FAILED_MS)
        and ESC clears it; cleared here on every platform, so the tips say what the Settings are about */
@@ -9518,7 +9536,8 @@ int main(int argc, char** argv) {
             app.groups = 0;
         }
     }
-    key(&app, SDLK_UP);
+    key(&app, SDLK_UP); /* Pack extracted as dXCI/dNSP, then the keys and the loads */
+    key(&app, SDLK_LEFT);
     key(&app, SDLK_LEFT);
     key(&app, SDLK_LEFT);
     key(&app, SDLK_LEFT);
