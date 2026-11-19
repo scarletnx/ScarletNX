@@ -55,6 +55,9 @@ static PCond g_room;
 static _Atomic int g_room_waits;
 /* the most a room wait sleeps before it looks again, should a wake-up be missed */
 #define REC_ROOM_WAIT_NS 100000000ll
+/* how long a room wait spins on sched_yield before it sleeps: a drain the recording thread ends in microseconds (a
+   landing's, owned.c) took 5.1 to 6.4 us asleep and woken, 2.4 to 3.4 us spun (vulkan_recorder, 20,000 drains) */
+#define REC_ROOM_SPIN_NS 200000ull
 
 static void rec_thread(void* arg) {
     u64 tail = 0;
@@ -154,9 +157,15 @@ static void publish(void) {
    VK_REC_FOREVER: none): 0 when until came first. What is pending goes to the consumer first, or it would never make
    the room */
 static int room_wait(u64 more, u64 until) {
+    const u64 spin = plat_ns() + REC_ROOM_SPIN_NS;
     for (;;) {
         if (g_pending + more - atomic_load_explicit(&g_tail, memory_order_seq_cst) <= REC_CAP) return 1;
         const u64 now = plat_ns();
+        if (now < spin && (until == VK_REC_FOREVER || now < until)) {
+            publish();
+            plat_yield();
+            continue;
+        }
         if (until != VK_REC_FOREVER && now >= until) return 0;
         const i64 left =
             until == VK_REC_FOREVER || until - now > (u64)REC_ROOM_WAIT_NS ? REC_ROOM_WAIT_NS : (i64)(until - now);
