@@ -16,7 +16,9 @@
    - an Adreno (kgsl), integrated, is held by auto: a context of our own with the PWR_MAX constraint, a CP_NOP written
      in a page of its own, then renewed by one command per keeper step while a frame was presented in the last 250 ms,
      none after; a refused renewal said once and the hold given up; a refused step of the hold said and closed;
-   - every case says exactly one line, naming the value given */
+   - every case says exactly one line, naming the value given.
+   On FreeBSD, which has no sysfs, devname(3) is wrapped too and names the node; the level never reads, so auto holds
+   nothing and on holds, and the cases of a level set on the PC or of sysfs's files are Linux's alone */
 #include "common/gpu/vk/gpu_pstate.h"
 #include <errno.h>
 #include <fcntl.h>
@@ -176,6 +178,23 @@ int __wrap_ioctl(int fd, unsigned long request, ...) {
     return errno = ENOTTY, -1;
 }
 
+#if defined(__FreeBSD__)
+/* the stand-in devfs: 226:128 is dri/renderD128, other numbers none */
+char* __wrap_devname(dev_t dev, mode_t type);
+char* __wrap_devname(dev_t dev, mode_t type) {
+    static char name[32];
+    snprintf(name, sizeof name, "%s",
+             major(dev) == 226 && minor(dev) == 128 && type == S_IFCHR ? "dri/renderD128" : "#C:0x0");
+    return name;
+}
+/* the mode that holds a GPU at a level that does not read, and how the line says that level */
+#define HOLDS      SNX_GPU_PSTATE_ON
+#define LEVEL_READ "of FreeBSD's amdgpu, which has no sysfs, does not read (Operation not supported)"
+#else
+#define HOLDS      SNX_GPU_PSTATE_AUTO
+#define LEVEL_READ "does not read (No such file or directory)"
+#endif
+
 static void say(const char* line, int warn) {
     g.lines++;
     g.warn = warn;
@@ -204,6 +223,7 @@ static void machine(const char* level) {
     g.driver = "amdgpu";
 }
 
+#if defined(__linux__)
 /* the stand-in kgsl device: a file of 16 KiB, which mmap maps the hold's page of (object 2, at 8 KiB) from */
 static void kgsl_machine(void) {
     char path[512];
@@ -211,6 +231,7 @@ static void kgsl_machine(void) {
     snprintf(path, sizeof path, "%s/dev/kgsl-3d0", g.root);
     if (truncate(path, 16384)) printf("truncate %s: %s\n", path, strerror(errno));
 }
+#endif
 
 static SnxGpuPstateDevice device(int type) {
     static char sys[300], dev[300];
@@ -297,22 +318,25 @@ static void case_on_integrated(void) {
 
 static void case_held(void) {
     machine("auto\n");
-    CHECK(hold(SNX_GPU_PSTATE_AUTO, device(DISCRETE)), "auto holds a discrete GPU at the level auto");
+    CHECK(hold(HOLDS, device(DISCRETE)), "auto holds a discrete GPU at the level auto");
     CHECK(g.versions == 1 && g.allocs == 1 && g.sets == 1 && !g.others, "its name asked, a context made and set");
     CHECK(g.set_flags == 4 && g.set_ctx == 7, "the peak stable pstate (4) set on the context made (7)");
     CHECK(is_open(g.fd), "the node left open: the kernel puts the level back when the process ends");
     CHECK(is_open(g.fd) && (fcntl(g.fd, F_GETFD) & FD_CLOEXEC), "the node closed in a program the game starts");
     char node[400];
+#if defined(__FreeBSD__)
+    snprintf(node, sizeof node, "(%s/dev/dri/renderD128) until the game ends, from a level that does not read", g.root);
+#else
     snprintf(node, sizeof node, "(%s/dev/dri/renderD128, the level auto, now \"profile_peak\")", g.root);
-    CHECK(!g.warn &&
-              has("gpu_pstate=auto: AMD Radeon RX 6700 XT, a discrete GPU: its clocks held at amdgpu's peak "
-                  "stable pstate ") &&
-              has(node) && has("the kernel puts auto back, a crash too"),
+#endif
+    CHECK(!g.warn && has(": AMD Radeon RX 6700 XT, a discrete GPU: its clocks held at amdgpu's peak stable pstate ") &&
+              has(node) && has("a crash too"),
           "the held line: the node, the level before and after");
-    CHECK(hold(SNX_GPU_PSTATE_AUTO, device(DISCRETE)) && g.versions == 1 && g.sets == 1 && has("held already"),
+    CHECK(hold(HOLDS, device(DISCRETE)) && g.versions == 1 && g.sets == 1 && has("held already"),
           "a second hold opens nothing and says it is held already");
 }
 
+#if !defined(__FreeBSD__)
 static void case_level_set(void) {
     static const char* const levels[] = {"high", "manual", "profile_standard", ""};
     for (int i = 0; i < 4; i++) {
@@ -328,15 +352,15 @@ static void case_level_set(void) {
         }
     }
 }
+#endif
 
 static void case_level_unread(void) {
     machine(NULL);
     CHECK(!hold(SNX_GPU_PSTATE_AUTO, device(DISCRETE)), "auto holds nothing from a level that does not read");
     CHECK(!g.versions && !g.sets, "auto asks the kernel nothing then");
-    CHECK(!g.warn && has("does not read (No such file or directory)") && has("gpu_pstate=on holds them anyway"),
-          "auto's line names the error and on");
+    CHECK(!g.warn && has(LEVEL_READ) && has("gpu_pstate=on holds them anyway"), "auto's line names the error and on");
     CHECK(hold(SNX_GPU_PSTATE_ON, device(DISCRETE)) && g.sets == 1, "on holds it anyway");
-    CHECK(!g.warn && has("from a level that does not read") && has("No such file or directory"), "on's line");
+    CHECK(!g.warn && has("from a level that does not read"), "on's line");
 }
 
 /* a refusal: a warning with words and the node, nothing held, the node closed */
@@ -351,7 +375,7 @@ static void refused(int mode, const char* words, const char* what) {
 static void case_busy(void) {
     machine("auto\n");
     g.set_err = EBUSY;
-    refused(SNX_GPU_PSTATE_AUTO, "Device or resource busy: another process holds one on this GPU", "EBUSY");
+    refused(HOLDS, "Device or resource busy: another process holds one on this GPU", "EBUSY");
     CHECK(has("the kernel refused the peak stable pstate (AMDGPU_CTX_OP_SET_STABLE_PSTATE)"), "what was refused");
 }
 
@@ -364,21 +388,21 @@ static void case_old_kernel(void) {
 static void case_no_context(void) {
     machine("auto\n");
     g.alloc_err = ENOMEM;
-    refused(SNX_GPU_PSTATE_AUTO, "a context of the runtime's own (AMDGPU_CTX_OP_ALLOC_CTX)", "ALLOC_CTX refused");
+    refused(HOLDS, "a context of the runtime's own (AMDGPU_CTX_OP_ALLOC_CTX)", "ALLOC_CTX refused");
     CHECK(has("Cannot allocate memory") && !g.sets, "its error, and no set after");
 }
 
 static void case_not_drm(void) {
     machine("auto\n");
     g.version_err = ENOTTY;
-    refused(SNX_GPU_PSTATE_AUTO, "its driver's name (DRM_IOCTL_VERSION)", "a node that is no DRM node");
+    refused(HOLDS, "its driver's name (DRM_IOCTL_VERSION)", "a node that is no DRM node");
     CHECK(has("Inappropriate ioctl for device") && !g.allocs, "its error, and no context after");
 }
 
 static void case_radeon(void) {
     machine("auto\n");
     g.driver = "radeon";
-    refused(SNX_GPU_PSTATE_AUTO, "kernel driver is radeon, not amdgpu", "a radeon node");
+    refused(HOLDS, "kernel driver is radeon, not amdgpu", "a radeon node");
     CHECK(!g.allocs && !g.sets, "no amdgpu call on it");
 }
 
@@ -395,18 +419,21 @@ static void case_no_node(void) {
     d = device(DISCRETE);
     d.render_minor = 129;
     char where[400];
+#if defined(__FreeBSD__)
+    snprintf(where, sizeof where, "no render node 226:129 in devname(3) (No such file");
+    CHECK(!hold(HOLDS, d) && g.warn && has(where), "a device number devfs has no node for");
+#else
     snprintf(where, sizeof where, "no render node 226:129 in %s/sys/dev/char/226:129/uevent (No such file", g.root);
-    CHECK(!hold(SNX_GPU_PSTATE_AUTO, d) && g.warn && has(where), "a device number sysfs has no node for");
+    CHECK(!hold(HOLDS, d) && g.warn && has(where), "a device number sysfs has no node for");
     put("sys/dev/char/226:128/uevent", "MAJOR=226\nMINOR=128\n");
-    CHECK(!hold(SNX_GPU_PSTATE_AUTO, device(DISCRETE)) && g.warn && has("uevent (No such file"),
-          "a uevent without DEVNAME");
+    CHECK(!hold(HOLDS, device(DISCRETE)) && g.warn && has("uevent (No such file"), "a uevent without DEVNAME");
+#endif
     machine("auto\n");
     char path[400];
     snprintf(path, sizeof path, "%s/dev/dri/renderD128", g.root);
     unlink(path);
     snprintf(where, sizeof where, "%s does not open (No such file or directory)", path);
-    CHECK(!hold(SNX_GPU_PSTATE_AUTO, device(DISCRETE)) && g.warn && has(where) && !g.versions,
-          "a node that does not open");
+    CHECK(!hold(HOLDS, device(DISCRETE)) && g.warn && has(where) && !g.versions, "a node that does not open");
 }
 
 static void case_other_vendor(void) {
@@ -445,6 +472,7 @@ static void case_nvidia(void) {
 }
 
 /* which devices each value asks held, the choice an NVIDIA device's extensions are made by */
+#if defined(__linux__)
 static SnxGpuPstateDevice adreno(void) {
     static char dev[300];
     snprintf(dev, sizeof dev, "%s/dev", g.root);
@@ -525,6 +553,8 @@ static void case_kgsl_refused(void) {
     CHECK(!snx_gpu_pstate_hold(SNX_GPU_PSTATE_OFF, &d, say) && !g.warn, "off asks nothing");
 }
 
+#endif
+
 static void case_wanted(void) {
     static const struct {
         unsigned vendor;
@@ -553,7 +583,9 @@ static const struct {
                {"auto_integrated", case_auto_integrated},
                {"on_integrated", case_on_integrated},
                {"held", case_held},
+#if !defined(__FreeBSD__)
                {"level_set", case_level_set},
+#endif
                {"level_unread", case_level_unread},
                {"busy", case_busy},
                {"old_kernel", case_old_kernel},
@@ -563,8 +595,10 @@ static const struct {
                {"no_node", case_no_node},
                {"other_vendor", case_other_vendor},
                {"nvidia", case_nvidia},
+#if defined(__linux__)
                {"kgsl", case_kgsl},
                {"kgsl_refused", case_kgsl_refused},
+#endif
                {"wanted", case_wanted}};
 
 int main(void) {

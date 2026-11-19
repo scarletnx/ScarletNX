@@ -2929,6 +2929,9 @@ if(NOT SNX_TOOLS_ONLY)
         snx_test_target(snx-test-vk-gpu-pstate gnu23)
         target_include_directories(snx-test-vk-gpu-pstate PRIVATE "${PROJECT_SOURCE_DIR}/src")
         target_link_options(snx-test-vk-gpu-pstate PRIVATE "LINKER:--wrap=ioctl")
+        if(CMAKE_SYSTEM_NAME STREQUAL "FreeBSD")
+            target_link_options(snx-test-vk-gpu-pstate PRIVATE "LINKER:--wrap=devname") # devfs's name of the node
+        endif()
         add_test(NAME vk_gpu_pstate COMMAND snx-test-vk-gpu-pstate)
     endif()
     # the block texture formats a device is given (gpu/vk/format.c), with no GPU: a player's Mali-G52 from its vkjson
