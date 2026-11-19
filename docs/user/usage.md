@@ -92,7 +92,7 @@ video, audio or gamepad subsystem, so it needs no display server and only `--scr
 
 ## Extract → AOT → run
 
-Pass a single XCI, NSP, DXCI or DNSP to recompile and play:
+Pass a single XCI, NSP, XCZ, NSZ, DXCI or DNSP to recompile and play:
 
 ```sh
 ./build/scarletnx "Game.xci"
@@ -196,6 +196,16 @@ be used as a base game.
 .\build\scarletnx.exe "C:\Games\Game.dxci"
 .\build\scarletnx.exe --extract "C:\Games\Game.dnsp" --update "C:\Games\Update.dnsp"
 ```
+
+XCZ and NSZ are an XCI and an NSP that [nsz](https://github.com/nicoboss/nsz) compressed: each of their NCZ files is
+read as the NCA it holds, decompressed as it is read and nothing written to disk, everywhere an NCA is (extraction,
+recompile, reading in place, an update or DLC dump). An NCZ in blocks (`nsz -B`, nsz's default for an XCZ) reads any
+part at once. One compressed as one stream (`nsz -S`, its default for an NSZ) is decoded from its start as far as a
+read reaches, and again from its start for a read behind where it got to that the 32 MB of it last read do not hold:
+an extraction says after it how many times that happened, and a game that reads one in place says each in its log
+(`fs: a read at ... decoded again from its start`), where a pause it makes shows. Extract dump, or an NSZ compressed in
+blocks, plays without that. An NCZ whose header cannot be read stops the dump's opening, naming the file in it, where
+and why.
 
 ### Experimental CPU extensions
 
@@ -429,7 +439,8 @@ Remaining examples: POSIX.
   (`%USERPROFILE%\.switch` on Windows).
   Common NSP tickets supplement title keys. Fully decrypted content needs neither key file.
 - **Extraction:** defaults to the data folder's `work/<dump stem>`; `--name`/`--out DIR` override. Refuses existing
-  `exefs`. hactool runs inside the driver and reads each NCA where it lies in the XCI or NSP, so the ExeFS and RomFS
+  `exefs`. hactool runs inside the driver and reads each NCA where it lies in the XCI or NSP (an XCZ's or NSZ's NCZ
+  decompressed as it is read, [`ncz.c`](../../src/nx/runtime/driver/hactool/ncz.c)), so the ExeFS and RomFS
   are written straight into the output and nothing is unpacked beside it
   ([key filtering and cleanup](../../src/nx/runtime/driver/extract.c)).
   Sparse and compressed NCAs, updates with large relocation tables and gamecard dumps that start with the card's key
