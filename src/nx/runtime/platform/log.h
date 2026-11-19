@@ -6,7 +6,8 @@
 #include <stdio.h>
 #include <stdatomic.h>
 
-/* the .ini's log key: 1 normal, 2 also the LOGV lines (and every line on stderr) */
+/* the .ini's log key: 1 normal, 2 also the LOGV lines (and every line on stderr), 3 the profiler's counters as well
+   (gpuprof.c, and the CPU's per resource in renderer.c) */
 #include "snx_settings.h" /* g_settings.log_level, the .ini's log */
 
 /* lvl 0 is a warning, 1 a normal line, 2 a verbose one. Checked like printf */

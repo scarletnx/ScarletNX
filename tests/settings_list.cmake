@@ -63,7 +63,7 @@ foreach(row "Display\tdocked\t1\tint\t0\t2\t1 = TV mode" "Display\tfullscreen\t0
             "Controllers\tgamepad_swap_ab\t0\tint\t0\t1\t" "\tSwap A/B\t0=Off|1=On\t\n"
             "Controllers/Button map\tgamepad_map\t\ttext\t"
             "\tStick dead zone\t0=0%|5=5%|10=10%|" "|90=90%\t\n" "\tVibration\t0=Off|10=10%|20=20%|"
-            "Debug\tlog\t1\tint\t0\t2\t" "\tLog level\t0=0|1=1|2=2\t\n"
+            "Debug\tlog\t1\tint\t0\t3\t" "\tLog level\t0=0|1=1|2=2|3=3\t\n"
             # the game's Volume, a slider of every 5 percent
             "Audio\tvolume\t100\tint\t0\t100\tHow loud the game plays, in percent of its own sound: 0 = mute. "
             "\tVolume\t0=Mute|5=5%|10=10%|15=15%|20=20%|25=25%|30=30%|35=35%|40=40%|45=45%|50=50%|55=55%|60=60%|65=65%|70=70%|75=75%|80=80%|85=85%|90=90%|95=95%|100=100%\t\t\tslider\n"
