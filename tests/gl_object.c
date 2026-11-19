@@ -25,6 +25,8 @@ enum {
     COPY_WRITE = 0x8f37,
     MAP_READ = 0x1,
     MAP_WRITE = 0x2,
+    MAP_INVALIDATE_RANGE = 0x4,
+    MAP_INVALIDATE_BUFFER = 0x8,
     MAP_FLUSH_EXPLICIT = 0x10,
     MAP_UNSYNCHRONIZED = 0x20,
     MAP_PERSISTENT = 0x40,
@@ -38,7 +40,7 @@ enum {
 
 /* the platform: its chunks, and what it heard */
 static struct {
-    unsigned chunks, gone, read_back, marked, odd;
+    unsigned chunks, gone, read_back, marked, odd, refuse;
     uint32_t written_name;
     uint64_t written_lo, written_hi;
     uint64_t odd_at, odd_got; /* the last chunk given with odd set, from odd_mem */
@@ -47,7 +49,9 @@ static struct {
 /* a chunk: zeros, or with marked set, CHUNK more than asked of 0xab, which the layer would write over only where
    something took the bytes before; with odd set, 16 bytes past a multiple of 256 */
 static uint64_t chunk(uint64_t size, uint64_t* got) {
-    void* p = heard.marked ? malloc((size_t)size + CHUNK) : calloc(1, (size_t)size + (heard.odd ? 1024 : 0));
+    void* p;
+    if (heard.refuse) return *got = 0, 0; /* a platform with no more to give */
+    p = heard.marked ? malloc((size_t)size + CHUNK) : calloc(1, (size_t)size + (heard.odd ? 1024 : 0));
     if (p && heard.marked) memset(p, 0xab, (size_t)size + CHUNK), size += CHUNK;
     heard.chunks++;
     *got = p ? size : 0;
@@ -82,38 +86,17 @@ static void gone(uint32_t name) {
     (void)name;
     heard.gone++;
 }
-/* a GPU side that reads after the calls, as the console's GPU thread: the work handed over and finished, and the
-   writes put behind it, which land as the work before them finishes */
+/* a GPU side that reads after the calls, as the console's GPU thread: the work handed over and finished, and the waits
+   asked of it, each finishing the work up to its serial */
 static struct {
     uint64_t issued, finished, waited;
-    unsigned nwrites, waits;
-    struct {
-        uint64_t at, size, serial;
-        int zeros;
-        unsigned char data[16];
-    } w[12];
+    unsigned waits;
 } gpu;
 static uint64_t gpu_issued(void) { return gpu.issued; }
 static uint64_t gpu_finished(void) { return gpu.finished; }
-static uint64_t gpu_write_after(uint64_t at, const void* data, uint64_t size) {
-    assert(gpu.nwrites < 12 && size <= 16);
-    gpu.w[gpu.nwrites].at = at, gpu.w[gpu.nwrites].size = size, gpu.w[gpu.nwrites].zeros = !data;
-    if (data) memcpy(gpu.w[gpu.nwrites].data, data, (size_t)size);
-    return gpu.w[gpu.nwrites++].serial = ++gpu.issued;
-}
-static void gpu_finish(uint64_t serial) {
-    for (unsigned i = 0; i < gpu.nwrites; i++)
-        if (gpu.w[i].serial > gpu.finished && gpu.w[i].serial <= serial) {
-            if (gpu.w[i].zeros)
-                memset(bytes(gpu.w[i].at), 0, (size_t)gpu.w[i].size);
-            else
-                memcpy(bytes(gpu.w[i].at), gpu.w[i].data, (size_t)gpu.w[i].size);
-        }
-    if (serial > gpu.finished) gpu.finished = serial;
-}
 static void gpu_wait(uint64_t serial) {
     gpu.waits++, gpu.waited = serial;
-    gpu_finish(serial);
+    if (serial > gpu.finished) gpu.finished = serial;
 }
 static void was_written(uint32_t name, uint64_t lo, uint64_t hi) {
     assert(heard.written_name == name && heard.written_lo == lo && heard.written_hi == hi);
@@ -378,7 +361,10 @@ int main(void) {
         assert(snx_gl_buffer(z)->data == u && bytes(u)[0] == 0 && bytes(u)[c3 - 1] == 0);
         snx_gl_delete_buffers(ctx, 1, &z);
     }
-    /* a GPU side that reads after the calls */
+    /* a GPU side that reads after the calls: a write of bytes a queued draw still reads gives the buffer a new range,
+       as GL's orphaning, the draw's left as they were; a write past the written ones keeps the range. Only a map with
+       GL's sync of bytes in use waits, and a write into a mapped buffer; a range given back is held until its work is
+       done, and a take with no room asks for a chunk before it waits for the held ones */
     snx_gl_object_host(&(SnxGlObjectHost){.chunk = chunk,
                                           .bytes = bytes,
                                           .read_back = read_back,
@@ -386,85 +372,101 @@ int main(void) {
                                           .gone = gone,
                                           .issued = gpu_issued,
                                           .finished = gpu_finished,
-                                          .write_after = gpu_write_after,
                                           .wait = gpu_wait});
     {
-        uint32_t d[2] = {0};
-        uint64_t at, other;
-        unsigned char back[8];
+        uint32_t d[2] = {0}, p = 0;
+        uint64_t at, next, big, more;
         unsigned chunks;
         snx_gl_gen_buffers(ctx, 2, d);
         snx_gl_bind_buffer(ctx, COPY_WRITE, d[0]);
-        snx_gl_buffer_data(ctx, d[0], 8, "drawn!!", STREAM_DRAW); /* nothing reads it: at once */
+        snx_gl_buffer_data(ctx, d[0], 8, "drawn!!", STREAM_DRAW); /* nothing reads it: in place */
         at = snx_gl_buffer(d[0])->data;
-        assert(!memcmp(bytes(at), "drawn!!", 8) && !gpu.nwrites);
-        /* a map waits for the draws that read the bytes; an unsynchronized one does not */
+        snx_gl_buffer_sub_data(ctx, d[0], 0, 1, "d"); /* over written bytes no draw reads: in place too */
+        assert(snx_gl_buffer(d[0])->data == at);
+        /* glBufferData while a draw reads the bytes: a new range, the draw's bytes kept */
         snx_gl_buffer_read_by(d[0], ++gpu.issued); /* a draw, serial 1 */
-        assert(snx_gl_map_buffer_range(ctx, d[0], 0, 8, MAP_WRITE | MAP_UNSYNCHRONIZED) && !gpu.waits);
-        assert(snx_gl_unmap_buffer(ctx, d[0]));
-        assert(snx_gl_map_buffer_range(ctx, d[0], 0, 8, MAP_WRITE) && gpu.waits == 1 && gpu.waited == 1);
-        assert(snx_gl_unmap_buffer(ctx, d[0]));
-        /* the bytes a draw still reads: each write behind it, in order, the platform told by the write itself; a read
-           waits for them */
-        snx_gl_buffer_read_by(d[0], ++gpu.issued); /* serial 2 */
-        heard.written_name = 0;
+        snx_gl_buffer_data(ctx, d[0], 8, NULL, STREAM_DRAW);
+        next = snx_gl_buffer(d[0])->data;
+        assert(next && next != at && !memcmp(bytes(at), "drawn!!", 8) && !gpu.waits);
+        /* writes past the bytes written keep the range while a draw reads it */
         snx_gl_buffer_sub_data(ctx, d[0], 0, 4, "next");
-        snx_gl_buffer_data(ctx, d[0], 8, NULL, STREAM_DRAW); /* kept where it is: its zeros behind */
+        snx_gl_buffer_read_by(d[0], ++gpu.issued); /* serial 2 */
         snx_gl_buffer_sub_data(ctx, d[0], 4, 4, "last");
-        assert(snx_gl_buffer(d[0])->data == at && gpu.nwrites == 3 && gpu.w[0].serial == 3 && gpu.w[1].zeros &&
-               gpu.w[2].serial == 5);
-        assert(!memcmp(bytes(at), "drawn!!", 8) && !heard.written_name);
-        snx_gl_get_buffer_sub_data(ctx, d[0], 0, 8, back);
-        assert(gpu.waits == 2 && gpu.waited == 5 && !memcmp(back, "\0\0\0\0last", 8));
-        /* an unsynchronized map waits only for those writes */
-        snx_gl_buffer_read_by(d[0], ++gpu.issued);       /* serial 6 */
-        snx_gl_buffer_sub_data(ctx, d[0], 0, 4, "more"); /* serial 7 */
-        assert(snx_gl_map_buffer_range(ctx, d[0], 0, 8, MAP_WRITE | MAP_UNSYNCHRONIZED) && gpu.waits == 3 &&
-               gpu.waited == 7);
+        assert(snx_gl_buffer(d[0])->data == next && !memcmp(bytes(next), "nextlast", 8) && !gpu.waits);
+        /* a write over bytes it reads: a new range, the written ones copied over, the draw's kept */
+        snx_gl_buffer_sub_data(ctx, d[0], 0, 4, "more");
+        at = snx_gl_buffer(d[0])->data;
+        assert(at != next && !memcmp(bytes(at), "morelast", 8) && !memcmp(bytes(next), "nextlast", 8) && !gpu.waits);
+        /* maps of bytes a draw reads: an unsynchronized one keeps the range, an invalidated buffer or range takes a new
+           one (the range's other bytes copied over), neither waits; one with GL's sync waits for the draw */
+        snx_gl_buffer_read_by(d[0], ++gpu.issued); /* serial 3 */
+        assert(snx_gl_map_buffer_range(ctx, d[0], 0, 8, MAP_WRITE | MAP_UNSYNCHRONIZED) == at && !gpu.waits);
         assert(snx_gl_unmap_buffer(ctx, d[0]));
-        /* a copy into bytes a draw still reads goes behind it too, the source's bytes as they are at the call */
+        next = snx_gl_map_buffer_range(ctx, d[0], 0, 8, MAP_WRITE | MAP_INVALIDATE_BUFFER);
+        assert(next && next != at && !memcmp(bytes(at), "morelast", 8) && !gpu.waits);
+        memcpy(bytes(next), "mapped!!", 8);
+        assert(snx_gl_unmap_buffer(ctx, d[0]));
+        snx_gl_buffer_read_by(d[0], ++gpu.issued); /* serial 4 */
+        at = snx_gl_map_buffer_range(ctx, d[0], 4, 4, MAP_WRITE | MAP_INVALIDATE_RANGE);
+        assert(at && at != next + 4 && !memcmp(bytes(at - 4), "mapp", 4) && !gpu.waits);
+        assert(snx_gl_unmap_buffer(ctx, d[0]));
+        snx_gl_buffer_read_by(d[0], ++gpu.issued); /* serial 5 */
+        assert(snx_gl_map_buffer_range(ctx, d[0], 0, 8, MAP_READ) && gpu.waits == 1 && gpu.waited == 5);
+        assert(snx_gl_unmap_buffer(ctx, d[0]));
+        /* a map with GL's sync of bytes not written yet needs no wait */
         snx_gl_bind_buffer(ctx, COPY_READ, d[1]);
-        snx_gl_buffer_data(ctx, d[1], 8, "source!", STREAM_DRAW);
-        snx_gl_buffer_read_by(d[0], ++gpu.issued); /* serial 8 */
-        snx_gl_copy_buffer_sub_data(ctx, d[1], d[0], 0, 0, 4);
-        assert(gpu.nwrites == 5 && gpu.w[4].serial == 9 && !memcmp(gpu.w[4].data, "sour", 4) &&
-               !memcmp(bytes(at), "more", 4));
-        gpu_finish(9);
-        assert(!memcmp(bytes(at), "sourlast", 8));
-        /* a write behind one still to land goes behind it too, once the draw before them is done */
-        snx_gl_buffer_read_by(d[0], ++gpu.issued);       /* serial 10 */
-        snx_gl_buffer_sub_data(ctx, d[0], 0, 4, "aaaa"); /* serial 11 */
-        gpu_finish(10);
-        snx_gl_buffer_sub_data(ctx, d[0], 0, 4, "bbbb"); /* serial 12 */
-        assert(gpu.nwrites == 7 && gpu.w[6].serial == 12);
-        gpu_finish(12);
-        assert(!memcmp(bytes(at), "bbbblast", 8));
+        snx_gl_buffer_data(ctx, d[1], 16, NULL, STREAM_DRAW);
+        snx_gl_buffer_sub_data(ctx, d[1], 0, 4, "head");
+        snx_gl_buffer_read_by(d[1], ++gpu.issued); /* serial 6 */
+        assert(snx_gl_map_buffer_range(ctx, d[1], 8, 8, MAP_WRITE) && gpu.waits == 1);
+        assert(snx_gl_unmap_buffer(ctx, d[1]));
+        /* a copy over bytes a draw reads: a new range too */
+        next = snx_gl_buffer(d[1])->data;
+        snx_gl_copy_buffer_sub_data(ctx, d[0], d[1], 0, 0, 4);
+        more = snx_gl_buffer(d[1])->data;
+        assert(more != next && !memcmp(bytes(more), "mapp", 4) && !memcmp(bytes(next), "head", 4) && gpu.waits == 1);
+        /* a write into a mapped buffer a draw reads: it keeps its range, and the write waits for the draw */
+        snx_gl_gen_buffers(ctx, 1, &p);
+        snx_gl_bind_buffer(ctx, ARRAY, p);
+        snx_gl_buffer_storage(ctx, p, 64, NULL, MAP_WRITE | MAP_PERSISTENT | DYNAMIC_STORAGE);
+        at = snx_gl_map_buffer_range(ctx, p, 0, 64, MAP_WRITE | MAP_PERSISTENT);
+        snx_gl_buffer_read_by(p, ++gpu.issued); /* serial 7 */
+        snx_gl_buffer_sub_data(ctx, p, 0, 4, "sync");
+        assert(at && snx_gl_buffer(p)->data == at && gpu.waits == 2 && gpu.waited == 7 &&
+               !memcmp(bytes(at), "sync", 4));
+        assert(snx_gl_unmap_buffer(ctx, p));
         /* a range given back while a draw reads it is held: the next buffer takes another, and a save frees it, its
            work waited for */
-        snx_gl_buffer_read_by(d[0], ++gpu.issued); /* serial 13 */
+        at = snx_gl_buffer(d[0])->data;
+        snx_gl_buffer_read_by(d[0], ++gpu.issued); /* serial 8 */
         snx_gl_delete_buffers(ctx, 1, d);
         snx_gl_gen_buffers(ctx, 1, d);
         snx_gl_bind_buffer(ctx, COPY_WRITE, d[0]);
-        snx_gl_buffer_data(ctx, d[0], 8, "fresh!!", STREAM_DRAW); /* a name again, nothing reading it: at once */
-        other = snx_gl_buffer(d[0])->data;
-        assert(other && other != at && !memcmp(bytes(at), "bbbblast", 8));
-        assert(!memcmp(bytes(other), "fresh!!", 8) && gpu.nwrites == 7);
+        snx_gl_buffer_data(ctx, d[0], 8, "fresh!!", STREAM_DRAW);
+        next = snx_gl_buffer(d[0])->data;
+        assert(next && next != at && !memcmp(bytes(next), "fresh!!", 8) && !memcmp(bytes(at), "mapped!!", 8));
         {
             unsigned char* state = malloc(snx_gl_object_state_bytes());
             assert(state);
             snx_gl_object_state_save(state);
-            assert(gpu.waits == 4 && gpu.waited == 13);
+            assert(gpu.waits == 3 && gpu.waited == 8);
             free(state);
         }
-        /* a take with no room waits for the held ranges before it asks the platform for a chunk */
+        /* a take with no room asks the platform for a chunk before it waits for the held ranges; with none to give, it
+           waits for them */
         chunks = heard.chunks;
-        other = snx_gl_memory_take(8ull * CHUNK, 256); /* bigger than every free range: a chunk of its own */
-        assert(other && heard.chunks == chunks + 1);
-        ++gpu.issued; /* a draw that may read it, serial 14 */
-        snx_gl_memory_give(other, 8ull * CHUNK);
-        assert(snx_gl_memory_take(8ull * CHUNK, 256) == other && heard.chunks == chunks + 1 && gpu.waits == 5 &&
-               gpu.waited == 14);
-        snx_gl_memory_give(other, 8ull * CHUNK);
+        big = snx_gl_memory_take(8ull * CHUNK, 256); /* bigger than every free range: a chunk of its own */
+        assert(big && heard.chunks == chunks + 1);
+        ++gpu.issued; /* a draw that may read it, serial 9 */
+        snx_gl_memory_give(big, 8ull * CHUNK);
+        more = snx_gl_memory_take(8ull * CHUNK, 256);
+        assert(more && more != big && heard.chunks == chunks + 2 && gpu.waits == 3);
+        snx_gl_memory_give(more, 8ull * CHUNK);
+        heard.refuse = 1;
+        at = snx_gl_memory_take(8ull * CHUNK, 256);
+        heard.refuse = 0;
+        assert((at == big || at == more) && gpu.waits == 4 && gpu.waited == 9);
+        snx_gl_memory_give(at, 8ull * CHUNK);
     }
     /* chunks the platform gave side by side keep their free ranges apart: a buffer across two would run past one of
        its allocations. From no chunk, three side by side, each a buffer and, in the room past it, a small one; given
