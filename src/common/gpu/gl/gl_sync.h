@@ -13,8 +13,11 @@
 
 #define SNX_GL_SYNCS 1024 /* fences alive at once */
 
+/* A sync's handle is its id in the high word and its record's number from 1 in the low: an id is never given twice,
+   so a handle the game kept past a delete names no sync, though the record is used again (a GLsync is a pointer, which
+   a driver doesn't give out again at once, and a game may test a deleted one with glIsSync) */
 typedef struct {
-    uint32_t used, zero;
+    uint32_t used, id;
     uint64_t serial; /* the platform's work it waits for, 0 for none */
 } SnxGlSync;
 

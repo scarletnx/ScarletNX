@@ -88,6 +88,25 @@ int main(void) {
     assert(snx_gl_get_error(ctx) == SNX_GL_INVALID_VALUE);
     snx_gl_delete_sync(ctx, 0);
     assert(!snx_gl_get_error(ctx));
+    /* a deleted fence's handle names no sync though its record is used again: a game that tests a handle it kept past
+       the delete with glIsSync finds it deleted, not the next fence's */
+    {
+        uint64_t next = snx_gl_fence_sync(ctx, GPU_COMMANDS_COMPLETE, 0), loaded;
+        size_t total = snx_gl_state_bytes();
+        unsigned char* saved = malloc(total);
+        assert(next && next != a && (uint32_t)next == (uint32_t)a && !snx_gl_is_sync(a) && snx_gl_is_sync(next));
+        snx_gl_delete_sync(ctx, a);
+        assert(snx_gl_get_error(ctx) == SNX_GL_INVALID_VALUE && snx_gl_is_sync(next));
+        /* after a load, the ids go on past the saved ones */
+        assert(saved);
+        snx_gl_state_save(saved);
+        assert(!snx_gl_state_load(saved, total));
+        free(saved);
+        loaded = snx_gl_fence_sync(ctx, GPU_COMMANDS_COMPLETE, 0);
+        assert(loaded >> 32 > next >> 32 && loaded >> 32 > b >> 32);
+        snx_gl_delete_sync(ctx, next);
+        snx_gl_delete_sync(ctx, loaded);
+    }
     /* a platform with no work: every fence signaled */
     snx_gl_sync_host(NULL);
     a = snx_gl_fence_sync(ctx, GPU_COMMANDS_COMPLETE, 0);
