@@ -1956,6 +1956,274 @@ static void shadows(SnxCtrMemory* m) {
     shadow_sample(m, "shadow cube, shadowed", true, 0.75f, 1, 0);
 }
 
+/* a map texel the occluder misses is lit at this strength: not 255, because at scale 2 a block half lit would
+   average to 127.5, a tie that color.comp's round() may break either way */
+#define SCALED_SHADOW_LIT 200
+/* the occluder covers the scaled texels with x >= 1 and y >= 1 at depth 0.5; the rest of the map keeps depth
+   0xffffff. A receiver at w 0.75 is behind it and samples the whole target, one map texel per scaled texel (f = 0).
+   A console pixel is the average of its block, which color.comp takes as round(sum / (s * s) * 255) */
+static void shadow_scaled_case(SnxCtrMemory* m, const char* name, unsigned scale) {
+    static unsigned char start[SCALED_TARGET_BYTES], zeros[SCALED_TARGET_BYTES], after[SCALED_TARGET_BYTES];
+    static const uint8_t occluder[4] = {0, 0, 0, 255};
+    g_settings.ctr_top_resolution = (int)scale;
+    float x0 = 2.0f / (float)(scale * SCALED_TARGET_W) - 1.0f;
+    float y0 = 2.0f / (float)(scale * SCALED_TARGET_H) - 1.0f;
+    Scene* a = scene(name, 0, 0xff);
+    screen_target(&a->list, COLOR, SCALED_TARGET_W, SCALED_TARGET_H, false);
+    put(&a->list, OM_MODE, 3);
+    put(&a->list, FB_SHADOW, F16_ONE);
+    into_quad(a, 0, x0, y0, 1.0f, 1.0f, occluder);
+    a->vertex_count = 6;
+    array_draw(a);
+    list_end(&a->list);
+    for (unsigned i = 0; i < SCALED_TARGET_BYTES; i += 4) {
+        start[i] = start[i + 1] = start[i + 2] = 0xff;
+        start[i + 3] = SCALED_SHADOW_LIT;
+    }
+    setup_clear(m, a);
+    bool ok = snx_ctr_phys_write(m, COLOR, start, SCALED_TARGET_BYTES) == SNX_CTR_MEM_OK;
+    ok = ok && record(m, a, &vulkan);
+    Scene* b = scene(name, 0, 0xff);
+    screen_target(&b->list, SECOND_COLOR, SCALED_TARGET_W, SCALED_TARGET_H, false);
+    screen_texture(&b->list, COLOR, SCALED_TARGET_W, SCALED_TARGET_H, 0);
+    put(&b->list, TEX0_PARAMS, 2u << 8 | 2u << 12 | 2u << 28);
+    put(&b->list, TEX_SHADOW, 1);
+    put(&b->list, 0x201, 0xbff);       /* texture coordinate 0 with three components */
+    put(&b->list, 0x052, 0x1f100d0cu); /* o2.z is its w */
+    b->vertices[0] = vertex(-1.0f, -1.0f, -0.5f, 0xffffffffu, 0, 0);
+    b->vertices[1] = vertex(1.0f, -1.0f, -0.5f, 0xffffffffu, 1, 0);
+    b->vertices[2] = vertex(-1.0f, 1.0f, -0.5f, 0xffffffffu, 0, 1);
+    b->vertices[3] = vertex(1.0f, 1.0f, -0.5f, 0xffffffffu, 1, 1);
+    for (unsigned k = 0; k < 4; ++k) b->vertices[k].tc[2] = 0.75f;
+    b->vertex_count = 4;
+    put(&b->list, SNX_PICA_TOPOLOGY, 1u << 8);
+    strip_draw(&b->list, 0);
+    list_end(&b->list);
+    ok = ok && snx_ctr_phys_write(m, SECOND_COLOR, zeros, SCALED_TARGET_BYTES) == SNX_CTR_MEM_OK;
+    ok = ok && snx_ctr_phys_write(m, VERTICES, b->vertices, sizeof b->vertices) == SNX_CTR_MEM_OK;
+    ok = ok && snx_ctr_phys_write(m, LIST, b->list.w, b->list.n * 4) == SNX_CTR_MEM_OK;
+    ok = ok && record(m, b, &vulkan);
+    ok = snx_ctr_vk_finish() && ok;
+    ok = ok && snx_ctr_phys_read(m, SECOND_COLOR, after, SCALED_TARGET_BYTES) == SNX_CTR_MEM_OK;
+    unsigned wrong = 0;
+    for (unsigned j = 0; j < SCALED_TARGET_H; ++j)
+        for (unsigned i = 0; i < SCALED_TARGET_W; ++i) {
+            unsigned covered = (i ? scale : scale - 1) * (j ? scale : scale - 1);
+            unsigned value = ((scale * scale - covered) * SCALED_SHADOW_LIT + scale * scale / 2) / (scale * scale);
+            unsigned char want[4];
+            for (unsigned k = 0; k < 4; ++k) want[k] = (unsigned char)value;
+            unsigned y = SCALED_TARGET_H - 1 - j;
+            size_t at = snx_ctr_morton_offset(i, y, 4) + (size_t)(y & ~7u) * SCALED_TARGET_W * 4;
+            wrong += memcmp(after + at, want, sizeof want) != 0;
+        }
+    bool pass = ok && wrong == 0;
+    printf("%-24s %6u of %u pixels differ from the oracle: %s\n", name, wrong, SCALED_TARGET_W * SCALED_TARGET_H,
+           pass ? "ok" : "FAIL");
+    if (!pass) ++failures;
+    free(a);
+    free(b);
+}
+/* a strip over the whole target that samples the map at COLOR, as shadow_scaled_case's receiver does. Its vertices
+   are 12 to 15 of the first scene, which every scene of a case reads: a write of vertices between two recorded draws
+   would wait for the first draw's submission, so the case writes them once */
+static Scene* rewritten_receiver(const char* name, uint32_t target) {
+    Scene* b = scene(name, 0, 0xff);
+    screen_target(&b->list, target, SCALED_TARGET_W, SCALED_TARGET_H, false);
+    screen_texture(&b->list, COLOR, SCALED_TARGET_W, SCALED_TARGET_H, 0);
+    put(&b->list, TEX0_PARAMS, 2u << 8 | 2u << 12 | 2u << 28);
+    put(&b->list, TEX_SHADOW, 1);
+    put(&b->list, 0x201, 0xbff);       /* texture coordinate 0 with three components */
+    put(&b->list, 0x052, 0x1f100d0cu); /* o2.z is its w */
+    put(&b->list, SNX_PICA_TOPOLOGY, 1u << 8);
+    strip_draw(&b->list, 12);
+    list_end(&b->list);
+    return b;
+}
+/* A scaled shadow map is read, drawn into again and read once more, in one recording. The second pass writes the
+   words that the first read samples, so it must wait for that read: rendering passes into one image are not ordered
+   with each other. The first occluder covers the top right quadrant at depth 0.5, the second the bottom quarter at
+   0.25, both in front of the receivers at 0.75. Their edges fall on console pixel edges, so each block of the map is
+   wholly lit or wholly shadowed, and the average is exact */
+static void shadow_rewritten_case(SnxCtrMemory* m, const char* name, unsigned scale) {
+    static unsigned char start[SCALED_TARGET_BYTES], zeros[SCALED_TARGET_BYTES], first[SCALED_TARGET_BYTES],
+        after[SCALED_TARGET_BYTES];
+    static const uint8_t occluder[4] = {0, 0, 0, 255};
+    char label[64];
+    g_settings.ctr_top_resolution = (int)scale;
+    Scene* a = scene(name, 0, 0xff);
+    screen_target(&a->list, COLOR, SCALED_TARGET_W, SCALED_TARGET_H, false);
+    put(&a->list, OM_MODE, 3);
+    put(&a->list, FB_SHADOW, F16_ONE);
+    into_quad(a, 0, 0.0f, 0.0f, 1.0f, 1.0f, occluder);
+    into_quad(a, 6, -1.0f, -1.0f, 1.0f, -0.5f, occluder);
+    for (unsigned k = 6; k < 12; ++k) a->vertices[k].pos[2] = -0.25f;
+    a->vertices[12] = vertex(-1.0f, -1.0f, -0.5f, 0xffffffffu, 0, 0);
+    a->vertices[13] = vertex(1.0f, -1.0f, -0.5f, 0xffffffffu, 1, 0);
+    a->vertices[14] = vertex(-1.0f, 1.0f, -0.5f, 0xffffffffu, 0, 1);
+    a->vertices[15] = vertex(1.0f, 1.0f, -0.5f, 0xffffffffu, 1, 1);
+    for (unsigned k = 12; k < 16; ++k) a->vertices[k].tc[2] = 0.75f;
+    a->vertex_count = 6;
+    array_draw(a);
+    list_end(&a->list);
+    Scene* c = scene(name, 0, 0xff);
+    screen_target(&c->list, COLOR, SCALED_TARGET_W, SCALED_TARGET_H, false);
+    put(&c->list, OM_MODE, 3);
+    put(&c->list, FB_SHADOW, F16_ONE);
+    put(&c->list, VERTEX_OFFSET, 6);
+    c->vertex_count = 6;
+    array_draw(c);
+    list_end(&c->list);
+    Scene* b1 = rewritten_receiver(name, SECOND_COLOR);
+    Scene* b2 = rewritten_receiver(name, THIRD_COLOR);
+    for (unsigned i = 0; i < SCALED_TARGET_BYTES; i += 4) {
+        start[i] = start[i + 1] = start[i + 2] = 0xff;
+        start[i + 3] = SCALED_SHADOW_LIT;
+    }
+    setup_clear(m, a);
+    bool ok = snx_ctr_phys_write(m, COLOR, start, SCALED_TARGET_BYTES) == SNX_CTR_MEM_OK;
+    ok = ok && snx_ctr_phys_write(m, SECOND_COLOR, zeros, SCALED_TARGET_BYTES) == SNX_CTR_MEM_OK;
+    ok = ok && snx_ctr_phys_write(m, THIRD_COLOR, zeros, SCALED_TARGET_BYTES) == SNX_CTR_MEM_OK;
+    ok = ok && record(m, a, &vulkan); /* the first pass into the map */
+    ok = ok && snx_ctr_phys_write(m, LIST, b1->list.w, b1->list.n * 4) == SNX_CTR_MEM_OK && record(m, b1, &vulkan);
+    ok = ok && snx_ctr_phys_write(m, LIST, c->list.w, c->list.n * 4) == SNX_CTR_MEM_OK && record(m, c, &vulkan);
+    ok = ok && snx_ctr_phys_write(m, LIST, b2->list.w, b2->list.n * 4) == SNX_CTR_MEM_OK && record(m, b2, &vulkan);
+    ok = snx_ctr_vk_finish() && ok;
+    ok = ok && snx_ctr_phys_read(m, SECOND_COLOR, first, SCALED_TARGET_BYTES) == SNX_CTR_MEM_OK;
+    ok = ok && snx_ctr_phys_read(m, THIRD_COLOR, after, SCALED_TARGET_BYTES) == SNX_CTR_MEM_OK;
+    unsigned wrong_first = 0, wrong_after = 0, total = SCALED_TARGET_W * SCALED_TARGET_H;
+    for (unsigned j = 0; j < SCALED_TARGET_H; ++j)
+        for (unsigned i = 0; i < SCALED_TARGET_W; ++i) {
+            bool top = i >= SCALED_TARGET_W / 2 && j >= SCALED_TARGET_H / 2;
+            bool bottom = j < SCALED_TARGET_H / 4;
+            unsigned char want_first[4], want_after[4];
+            for (unsigned k = 0; k < 4; ++k) {
+                want_first[k] = (unsigned char)(top ? 0 : SCALED_SHADOW_LIT);
+                want_after[k] = (unsigned char)(top || bottom ? 0 : SCALED_SHADOW_LIT);
+            }
+            unsigned y = SCALED_TARGET_H - 1 - j;
+            size_t at = snx_ctr_morton_offset(i, y, 4) + (size_t)(y & ~7u) * SCALED_TARGET_W * 4;
+            wrong_first += memcmp(first + at, want_first, sizeof want_first) != 0;
+            wrong_after += memcmp(after + at, want_after, sizeof want_after) != 0;
+        }
+    bool pass_first = ok && wrong_first == 0, pass_after = ok && wrong_after == 0;
+    snprintf(label, sizeof label, "%s, first read", name);
+    printf("%-40s %6u of %u pixels differ from the oracle: %s\n", label, wrong_first, total,
+           pass_first ? "ok" : "FAIL");
+    snprintf(label, sizeof label, "%s, read after the second pass", name);
+    printf("%-40s %6u of %u pixels differ from the oracle: %s\n", label, wrong_after, total,
+           pass_after ? "ok" : "FAIL");
+    failures += !pass_first + !pass_after;
+    free(a);
+    free(b1);
+    free(b2);
+    free(c);
+}
+/* A flipped shadow map is read from memory at 1x at any render scale, so a receiver at recv_scale sampling a map
+   drawn at map_scale must match the same receiver sampling a map drawn at 1x. map_bytes, when given, receives the 1x
+   map words that color.comp stored */
+static bool shadow_flipped_words(SnxCtrMemory* m, const char* name, unsigned map_scale, unsigned recv_scale,
+                                 float x0, float y0, float x1, float y1, unsigned char* words,
+                                 unsigned char* map_bytes) {
+    static unsigned char start[SCALED_TARGET_BYTES], zeros[SCALED_TARGET_BYTES];
+    static const uint8_t occluder[4] = {0, 0, 0, 255};
+    Scene* a = scene(name, 0, 0xff);
+    screen_target(&a->list, COLOR, SCALED_TARGET_W, SCALED_TARGET_H, true);
+    put(&a->list, OM_MODE, 3);
+    put(&a->list, FB_SHADOW, F16_ONE);
+    into_quad(a, 0, x0, y0, x1, y1, occluder);
+    a->vertex_count = 6;
+    array_draw(a);
+    list_end(&a->list);
+    for (unsigned i = 0; i < SCALED_TARGET_BYTES; i += 4) {
+        start[i] = start[i + 1] = start[i + 2] = 0xff;
+        start[i + 3] = SCALED_SHADOW_LIT;
+    }
+    setup_clear(m, a);
+    bool ok = snx_ctr_phys_write(m, COLOR, start, SCALED_TARGET_BYTES) == SNX_CTR_MEM_OK;
+    g_settings.ctr_top_resolution = (int)map_scale;
+    ok = ok && record(m, a, &vulkan); /* the flipped map, its rendering open */
+    Scene* b = scene(name, 0, 0xff);
+    screen_target(&b->list, SECOND_COLOR, SCALED_TARGET_W, SCALED_TARGET_H, false);
+    screen_texture(&b->list, COLOR, SCALED_TARGET_W, SCALED_TARGET_H, 0);
+    put(&b->list, TEX0_PARAMS, 2u << 8 | 2u << 12 | 2u << 28);
+    put(&b->list, TEX_SHADOW, 1);
+    put(&b->list, 0x201, 0xbff);       /* texture coordinate 0 with three components */
+    put(&b->list, 0x052, 0x1f100d0cu); /* o2.z is its w */
+    b->vertices[0] = vertex(-1.0f, -1.0f, -0.5f, 0xffffffffu, 0, 0);
+    b->vertices[1] = vertex(1.0f, -1.0f, -0.5f, 0xffffffffu, 1, 0);
+    b->vertices[2] = vertex(-1.0f, 1.0f, -0.5f, 0xffffffffu, 0, 1);
+    b->vertices[3] = vertex(1.0f, 1.0f, -0.5f, 0xffffffffu, 1, 1);
+    for (unsigned k = 0; k < 4; ++k) b->vertices[k].tc[2] = 0.75f;
+    b->vertex_count = 4;
+    put(&b->list, SNX_PICA_TOPOLOGY, 1u << 8);
+    strip_draw(&b->list, 0);
+    list_end(&b->list);
+    ok = ok && snx_ctr_phys_write(m, SECOND_COLOR, zeros, SCALED_TARGET_BYTES) == SNX_CTR_MEM_OK;
+    ok = ok && snx_ctr_phys_write(m, VERTICES, b->vertices, sizeof b->vertices) == SNX_CTR_MEM_OK;
+    ok = ok && snx_ctr_phys_write(m, LIST, b->list.w, b->list.n * 4) == SNX_CTR_MEM_OK;
+    g_settings.ctr_top_resolution = (int)recv_scale;
+    ok = ok && record(m, b, &vulkan); /* the receiver samples the flipped map */
+    ok = snx_ctr_vk_finish() && ok;
+    if (words) ok = ok && snx_ctr_phys_read(m, SECOND_COLOR, words, SCALED_TARGET_BYTES) == SNX_CTR_MEM_OK;
+    if (map_bytes) ok = ok && snx_ctr_phys_read(m, COLOR, map_bytes, SCALED_TARGET_BYTES) == SNX_CTR_MEM_OK;
+    free(a);
+    free(b);
+    return ok;
+}
+/* The receiver runs at scale in both runs so its 2x2 shadow_texture filter has the same fractional coordinates on the
+   1x memory map: only the map's own scale differs (scale vs 1), so every byte must agree */
+static void shadow_flipped_case(SnxCtrMemory* m, const char* name, unsigned scale) {
+    static unsigned char at_scale[SCALED_TARGET_BYTES], at_one[SCALED_TARGET_BYTES];
+    float x0 = 2.0f / (float)SCALED_TARGET_W - 1.0f;
+    float y0 = 2.0f / (float)SCALED_TARGET_H - 1.0f;
+    bool ok = shadow_flipped_words(m, name, scale, scale, x0, y0, 1.0f, 1.0f, at_scale, NULL) &&
+              shadow_flipped_words(m, name, 1, scale, x0, y0, 1.0f, 1.0f, at_one, NULL);
+    unsigned off = 0;
+    for (size_t i = 0; ok && i < SCALED_TARGET_BYTES; ++i) off += at_scale[i] != at_one[i];
+    bool pass = ok && off == 0;
+    printf("%-24s %6u bytes differ from the 1x map: %s\n", name, off, pass ? "ok" : "FAIL");
+    if (!pass) ++failures;
+}
+/* the shadow maps at scale 1 (the control), 2 and 3, the maps read, drawn into again and read at 2 and 3, a flipped
+   map read at 2 against a 1x map, and color.comp's centre-texel shadow store on a half-covered block */
+static void shadow_scaled(SnxCtrMemory* m) {
+    int top = g_settings.ctr_top_resolution;
+    shadow_scaled_case(m, "shadow map at 1x (control)", 1);
+    shadow_scaled_case(m, "shadow map at 2x", 2);
+    shadow_scaled_case(m, "shadow map at 3x", 3);
+    shadow_rewritten_case(m, "shadow map rewritten at 2x", 2);
+    shadow_rewritten_case(m, "shadow map rewritten at 3x", 3);
+    shadow_flipped_case(m, "shadow map flipped at 2x", 2);
+    /* Averaging a half-covered block would mix the packed depth and strength bytes into a word matching neither the
+       lit word nor the single occluded depth and strength word. */
+    static unsigned char map[SCALED_TARGET_BYTES];
+    const unsigned store_scale = 2;
+    float x0 = 2.0f / (float)(store_scale * SCALED_TARGET_W) - 1.0f;
+    float y0 = 2.0f / (float)(store_scale * SCALED_TARGET_H) - 1.0f;
+    bool ok = shadow_flipped_words(m, "shadow map centre store", store_scale, store_scale, x0, y0, 0.0f, 0.0f, NULL,
+                                   map);
+    const unsigned char lit[4] = {0xff, 0xff, 0xff, SCALED_SHADOW_LIT};
+    unsigned ix = SCALED_TARGET_W / 4, iy = SCALED_TARGET_H / 4;
+    size_t sample = snx_ctr_morton_offset(ix, iy, 4) + (size_t)(iy & ~7u) * SCALED_TARGET_W * 4;
+    const unsigned char* occluded = map + sample;
+    bool distinct = ok && memcmp(occluded, lit, 4) != 0;
+    bool have_lit = false, have_occluded = false;
+    unsigned bad = 0;
+    for (size_t i = 0; distinct && i < SCALED_TARGET_BYTES; i += 4) {
+        if (memcmp(map + i, lit, 4) == 0)
+            have_lit = true;
+        else if (memcmp(map + i, occluded, 4) == 0)
+            have_occluded = true;
+        else
+            ++bad;
+    }
+    bool pass = distinct && have_lit && have_occluded && bad == 0;
+    printf("%-24s %6u blended words: %s\n", "shadow map centre store", bad, pass ? "ok" : "FAIL");
+    if (!pass) ++failures;
+    g_settings.ctr_top_resolution = top;
+    snx_ctr_vk_finish();
+}
+
 /* count writes of one register in a burst: the header's extra count, the values after it, the list kept 8-byte
    aligned */
 static void put_run(List* l, uint32_t id, const uint32_t* values, unsigned count) {
@@ -2361,6 +2629,7 @@ static const Mode modes[] = {
      scaled_transfer_into_target},
     {"--scaled-transfer-overlap", "a display transfer into a destination over a target",
      scaled_transfer_overlap},
+    {"--shadow-scaled", "the shadow maps at the render scale", shadow_scaled},
     {"--scaled-texture-from-depth", "the textures made from scaled depth buffers", scaled_texture_from_depth},
     {"--scaled-shared-depth", "two targets over one depth buffer at render scale", scaled_shared_depth},
     {"--shadow", "the shadow maps", shadows}};
