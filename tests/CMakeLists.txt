@@ -474,6 +474,10 @@ if(TARGET snx_ctr_board)
     # two targets over one depth buffer at the scale: the second takes the first's depth, not the 1x reload
     add_test(NAME 3ds_vk_draw_scaled_shared_depth COMMAND snx-test-3ds-vk-draw --scaled-shared-depth)
     set_tests_properties(3ds_vk_draw_scaled_shared_depth PROPERTIES SKIP_RETURN_CODE 77)
+    # a display transfer of a scaled target into a destination target: the destination keeps the render scale, and a
+    # target at the same scale samples it. At scale 1 the destination is the transfer's own result
+    add_test(NAME 3ds_vk_draw_scaled_transfer_into_target COMMAND snx-test-3ds-vk-draw --scaled-transfer-into-target)
+    set_tests_properties(3ds_vk_draw_scaled_transfer_into_target PROPERTIES SKIP_RETURN_CODE 77)
     # a display transfer into a destination over a scaled target's first rows, and no row it reads: the copy is kept,
     # and a draw into the target after it is checked the same way
     add_test(NAME 3ds_vk_draw_scaled_transfer_overlap COMMAND snx-test-3ds-vk-draw --scaled-transfer-overlap)
@@ -507,6 +511,9 @@ if(TARGET snx_ctr_board)
         add_test(NAME 3ds_vk_draw_scaled_shared_depth_validation
                  COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/3ds_vk_validation.py"
                      $<TARGET_FILE:snx-test-3ds-vk-draw> --scaled-shared-depth)
+        add_test(NAME 3ds_vk_draw_scaled_transfer_into_target_validation
+                 COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/3ds_vk_validation.py"
+                     $<TARGET_FILE:snx-test-3ds-vk-draw> --scaled-transfer-into-target)
         add_test(NAME 3ds_vk_draw_scaled_transfer_overlap_validation
                  COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/3ds_vk_validation.py"
                      $<TARGET_FILE:snx-test-3ds-vk-draw> --scaled-transfer-overlap)
@@ -515,6 +522,7 @@ if(TARGET snx_ctr_board)
         set_tests_properties(3ds_vk_draw_scaled_texture_from_target_validation
                              3ds_vk_draw_scaled_texture_from_depth_validation
                              3ds_vk_draw_scaled_shared_depth_validation
+                             3ds_vk_draw_scaled_transfer_into_target_validation
                              3ds_vk_draw_scaled_transfer_overlap_validation PROPERTIES SKIP_RETURN_CODE 77)
         # the window's rendering, with the screens drawn by a copy and through the effects, under Khronos validation
         foreach(snx_mode scaled-layout scaled-layout-effects)

@@ -1164,17 +1164,17 @@ static void scaled_rotating(SnxCtrMemory* m) {
 #define SCALED_TARGET_W     240u
 #define SCALED_TARGET_H     400u
 #define SCALED_TARGET_BYTES (SCALED_TARGET_W * SCALED_TARGET_H * 4)
-/* a colour target of the top screen's size at at, its rows from the top, or from y = 0 up when flip is set */
-static void screen_target(List* l, uint32_t at, bool flip) {
+/* a colour target of width x height at at, its rows from the top, or from y = 0 up when flip is set */
+static void screen_target(List* l, uint32_t at, unsigned width, unsigned height, bool flip) {
     put(l, FB_COLOR_ADDR, at / 8);
-    put(l, 0x041, f24(SCALED_TARGET_W / 2.0f));
-    put(l, 0x043, f24(SCALED_TARGET_H / 2.0f));
-    put(l, 0x11e, SCALED_TARGET_W | (SCALED_TARGET_H - 1) << 12 | (flip ? 0 : 1u << 24));
+    put(l, 0x041, f24(width / 2.0f));
+    put(l, 0x043, f24(height / 2.0f));
+    put(l, 0x11e, width | (height - 1) << 12 | (flip ? 0 : 1u << 24));
 }
-/* texture unit 0 over a top screen sized image at address: nearest and repeated, in the PICA format */
-static void screen_texture(List* l, uint32_t address, unsigned format) {
+/* texture unit 0 over a width x height image at address: nearest and repeated, in the PICA format */
+static void screen_texture(List* l, uint32_t address, unsigned width, unsigned height, unsigned format) {
     put(l, TEX_MAIN, 1);
-    put(l, TEX0_SIZE, SCALED_TARGET_W << 16 | SCALED_TARGET_H);
+    put(l, TEX0_SIZE, width << 16 | height);
     put(l, TEX0_PARAMS, 2u << 8 | 2u << 12);
     put(l, TEX0_ADDRESS, address / 8);
     put(l, TEX0_FORMAT, format);
@@ -1204,7 +1204,7 @@ static void scaled_texture_case(SnxCtrMemory* m, const char* name, unsigned pica
     float top = 2.0f / (float)(scale * SCALED_TARGET_H) - 1.0f;
     uint32_t word = color_word(inside);
     Scene* a = scene(name, pica, 0xff);
-    screen_target(&a->list, COLOR, flip);
+    screen_target(&a->list, COLOR, SCALED_TARGET_W, SCALED_TARGET_H, flip);
     a->vertices[0] = vertex(left, top, -0.5f, word, 0, 0);
     a->vertices[1] = vertex(1.0f, top, -0.5f, word, 0, 0);
     a->vertices[2] = vertex(left, 1.0f, -0.5f, word, 0, 0);
@@ -1220,8 +1220,8 @@ static void scaled_texture_case(SnxCtrMemory* m, const char* name, unsigned pica
     bool ok = snx_ctr_phys_write(m, COLOR, clear, SCALED_TARGET_W * SCALED_TARGET_H * bpp) == SNX_CTR_MEM_OK;
     ok = ok && record(m, a, &vulkan); /* A's rectangle, its rendering open */
     Scene* b = scene(name, 0, 0xff);
-    screen_target(&b->list, SECOND_COLOR, false);
-    screen_texture(&b->list, COLOR, pica);
+    screen_target(&b->list, SECOND_COLOR, SCALED_TARGET_W, SCALED_TARGET_H, false);
+    screen_texture(&b->list, COLOR, SCALED_TARGET_W, SCALED_TARGET_H, pica);
     float tc = 1.0f / (float)scale;
     b->vertices[0] = vertex(-1.0f, -1.0f, -0.5f, 0xffffffffu, 0, 0);
     b->vertices[1] = vertex(1.0f, -1.0f, -0.5f, 0xffffffffu, tc, 0);
@@ -1323,7 +1323,7 @@ static void scaled_depth_texture_case(SnxCtrMemory* m, const char* name, const D
     float left = 2.0f / (float)(scale * SCALED_TARGET_W) - 1.0f;
     float top = 2.0f / (float)(scale * SCALED_TARGET_H) - 1.0f;
     Scene* a = scene(name, 0, 0xff);
-    screen_target(&a->list, COLOR, flip);
+    screen_target(&a->list, COLOR, SCALED_TARGET_W, SCALED_TARGET_H, flip);
     depth_target(&a->list, t->depth); /* the depth buffer at DEPTH, written */
     put(&a->list, 0x107, 0x1041u); /* depth test LESS, and the write on */
     a->vertices[0] = vertex(left, top, -0.25f, 0xffffffffu, 0, 0);
@@ -1340,9 +1340,9 @@ static void scaled_depth_texture_case(SnxCtrMemory* m, const char* name, const D
     ok = ok && snx_ctr_phys_write(m, DEPTH, clear, SCALED_TARGET_W * SCALED_TARGET_H * bpp) == SNX_CTR_MEM_OK;
     ok = ok && record(m, a, &vulkan); /* A's rectangle over the cleared depth, its rendering open */
     Scene* b = scene(name, 0, 0xff);
-    screen_target(&b->list, SECOND_COLOR, false);
+    screen_target(&b->list, SECOND_COLOR, SCALED_TARGET_W, SCALED_TARGET_H, false);
     /* A's depth buffer, read as the texture */
-    screen_texture(&b->list, DEPTH, t->texture);
+    screen_texture(&b->list, DEPTH, SCALED_TARGET_W, SCALED_TARGET_H, t->texture);
     float tc = 1.0f / (float)scale;
     b->vertices[0] = vertex(-1.0f, -1.0f, -0.5f, 0xffffffffu, 0, 0);
     b->vertices[1] = vertex(1.0f, -1.0f, -0.5f, 0xffffffffu, tc, 0);
@@ -1408,7 +1408,7 @@ static void scaled_shared_depth_case(SnxCtrMemory* m, const char* name, unsigned
     float left = 2.0f / (float)(scale * SCALED_TARGET_W) - 1.0f;
     float top = 2.0f / (float)(scale * SCALED_TARGET_H) - 1.0f;
     Scene* a = scene(name, 0, 0xff);
-    screen_target(&a->list, COLOR, false);
+    screen_target(&a->list, COLOR, SCALED_TARGET_W, SCALED_TARGET_H, false);
     depth_target(&a->list, 3); /* D24S8 at DEPTH, written */
     put(&a->list, 0x107, 0xf00 | 1u | 4u << 4 | 1u << 12); /* colour written, depth test LESS, and the write on */
     a->vertices[0] = vertex(left, top, -0.25f, 0xffffffffu, 0, 0);
@@ -1425,7 +1425,7 @@ static void scaled_shared_depth_case(SnxCtrMemory* m, const char* name, unsigned
     ok = ok && snx_ctr_phys_write(m, DEPTH, clear, SCALED_TARGET_BYTES) == SNX_CTR_MEM_OK;
     ok = ok && record(m, a, &vulkan); /* A's rectangle over the cleared depth, its rendering open */
     Scene* b = scene(name, 0, 0xff);
-    screen_target(&b->list, SECOND_COLOR, false);
+    screen_target(&b->list, SECOND_COLOR, SCALED_TARGET_W, SCALED_TARGET_H, false);
     depth_target(&b->list, 3);
     uint32_t green_word = color_word(green), red_word = color_word(red);
     b->vertices[0] = vertex(-1.0f, -1.0f, -0.5f, green_word, 0, 0);
@@ -1447,8 +1447,8 @@ static void scaled_shared_depth_case(SnxCtrMemory* m, const char* name, unsigned
     ok = ok && snx_ctr_phys_write(m, LIST, b->list.w, b->list.n * 4) == SNX_CTR_MEM_OK;
     ok = ok && record(m, b, &vulkan); /* B's quads: its depth is A's, copied when B opened */
     Scene* c = scene(name, 0, 0xff);
-    screen_target(&c->list, THIRD_COLOR, false);
-    screen_texture(&c->list, SECOND_COLOR, 0); /* RGBA8 over B's colour */
+    screen_target(&c->list, THIRD_COLOR, SCALED_TARGET_W, SCALED_TARGET_H, false);
+    screen_texture(&c->list, SECOND_COLOR, SCALED_TARGET_W, SCALED_TARGET_H, 0); /* RGBA8 over B's colour */
     float tc = 1.0f / (float)scale;
     c->vertices[0] = vertex(-1.0f, -1.0f, -0.5f, 0xffffffffu, 0, 0);
     c->vertices[1] = vertex(1.0f, -1.0f, -0.5f, 0xffffffffu, tc, 0);
@@ -1494,6 +1494,20 @@ static void scaled_shared_depth(SnxCtrMemory* m) {
     snx_ctr_vk_finish();
 }
 
+/* The source at render scale 2 has its scaled columns left of 241 P and from 241 Q, and its scaled rows 201 to 600 W:
+   both edges lie mid-pixel, so the 2:1 mean of columns 240 and 241 is 127. The transfers below write a destination
+   that a target at the same scale samples (the readback of scaled_texture_from_target). The scale 1 control compares
+   the destination's memory with the CPU reference of the same transfer */
+#define INTO_DST    SCALED_FB
+#define INTO_EDGE   241u
+#define INTO_BAND_0 201u
+#define INTO_BAND_1 601u
+/* the source's colour at scaled (x, y) of a source at render scale 2 */
+static const uint8_t* into_colour(unsigned x, unsigned y) {
+    static const uint8_t p[4] = {0, 0, 0, 255}, q[4] = {254, 254, 254, 255}, w[4] = {200, 100, 50, 255};
+    if (y >= INTO_BAND_0 && y < INTO_BAND_1) return w;
+    return x >= INTO_EDGE ? q : p;
+}
 /* six vertices of the rectangle from (x0, y0) to (x1, y1) in NDC, of colour c, at vertex at */
 static void into_quad(Scene* s, unsigned at, float x0, float y0, float x1, float y1, const uint8_t c[4]) {
     uint32_t word = color_word(c);
@@ -1503,6 +1517,168 @@ static void into_quad(Scene* s, unsigned at, float x0, float y0, float x1, float
     s->vertices[at + 3] = vertex(x1, y0, -0.5f, word, 0, 0);
     s->vertices[at + 4] = vertex(x1, y1, -0.5f, word, 0, 0);
     s->vertices[at + 5] = vertex(x0, y1, -0.5f, word, 0, 0);
+}
+/* the source at render scale scale: P over the screen, then the Q columns, then the W rows. At scale 1 the edges fall
+   outside the image, or on its last row, and the rectangles are clipped to it */
+static Scene* into_source(unsigned scale) {
+    static const uint8_t p[4] = {0, 0, 0, 255}, q[4] = {254, 254, 254, 255}, w[4] = {200, 100, 50, 255};
+    Scene* s = scene("the source", 0, 0xff);
+    screen_target(&s->list, COLOR, SCALED_TARGET_W, SCALED_TARGET_H, false);
+    float edge = -1.0f + 2.0f * INTO_EDGE / (SCALED_TARGET_W * scale);
+    float band0 = -1.0f + 2.0f * INTO_BAND_0 / (SCALED_TARGET_H * scale);
+    float band1 = -1.0f + 2.0f * INTO_BAND_1 / (SCALED_TARGET_H * scale);
+    if (edge > 1.0f) edge = 1.0f;
+    if (band1 > 1.0f) band1 = 1.0f;
+    into_quad(s, 0, -1.0f, -1.0f, 1.0f, 1.0f, p);
+    into_quad(s, 6, edge, -1.0f, 1.0f, 1.0f, q);
+    into_quad(s, 12, -1.0f, band0, 1.0f, band1, w);
+    s->vertex_count = 18;
+    array_draw(s);
+    list_end(&s->list);
+    return s;
+}
+/* the destination drawn once in target_format, so that its target exists at the render scale: its images are the
+   transfer's after it */
+static Scene* into_destination(unsigned width, unsigned height, unsigned target_format) {
+    Scene* t = scene("the destination", target_format, 0xff);
+    screen_target(&t->list, INTO_DST, width, height, false);
+    triangles(t, 2);
+    array_draw(t);
+    list_end(&t->list);
+    return t;
+}
+/* B reads the destination as scaled_texture_from_target does: its texture is the destination's width x height console
+   pixels in texture_format, and B's console pixel (i, j) reads the destination's scaled texel (x0 + i, j) */
+static Scene* into_readback(unsigned width, unsigned height, unsigned x0, unsigned texture_format) {
+    Scene* b = scene("the readback", 0, 0xff);
+    screen_target(&b->list, SECOND_COLOR, SCALED_TARGET_W, SCALED_TARGET_H, false);
+    screen_texture(&b->list, INTO_DST, width, height, texture_format);
+    /* texture coordinates count console texels, and a console texel is two scaled ones */
+    float u0 = (float)x0 / (2.0f * width), u1 = (float)(x0 + SCALED_TARGET_W) / (2.0f * width);
+    float tv = (float)SCALED_TARGET_H / (2.0f * height);
+    b->vertices[0] = vertex(-1.0f, -1.0f, -0.5f, 0xffffffffu, u0, 0);
+    b->vertices[1] = vertex(1.0f, -1.0f, -0.5f, 0xffffffffu, u1, 0);
+    b->vertices[2] = vertex(-1.0f, 1.0f, -0.5f, 0xffffffffu, u0, tv);
+    b->vertices[3] = vertex(1.0f, 1.0f, -0.5f, 0xffffffffu, u1, tv);
+    b->vertex_count = 4;
+    put(&b->list, SNX_PICA_TOPOLOGY, 1u << 8);
+    strip_draw(&b->list, 0);
+    list_end(&b->list);
+    return b;
+}
+/* The destination's scaled texel (x, j) for scaling 0 (none), 1 (2:1 across) or 2 (2x2): the truncated mean of the
+   source's scaled texels it selects. A flipped transfer takes the source's rows from the last one down */
+static void into_texel(unsigned x, unsigned j, unsigned scaling, bool flip, uint8_t mean[4]) {
+    unsigned cols = scaling ? 2 : 1, rows = scaling == 2 ? 2 : 1;
+    unsigned y = flip ? 2 * SCALED_TARGET_H - rows - j * rows : j * rows;
+    unsigned sum[4] = {0};
+    for (unsigned r = 0; r < rows; ++r)
+        for (unsigned c = 0; c < cols; ++c) {
+            const uint8_t* p = into_colour(cols * x + c, y + r);
+            for (unsigned k = 0; k < 4; ++k) sum[k] += p[k];
+        }
+    for (unsigned k = 0; k < 4; ++k) mean[k] = (uint8_t)(sum[k] / (rows * cols));
+}
+/* one display transfer into a destination at the render scale: the transfer's scaling (0 none, 1 2:1, 2 2x2) and flip,
+   its output format (transfer.h's), and the destination's colour format and the readback's texture format, both the
+   PICA's (3 is RGB565) */
+typedef struct {
+    const char* name;
+    unsigned scale, scaling;
+    bool flip;
+    unsigned out_format, target_format, texture_format;
+} IntoCase;
+/* the 2:1 RGBA8 to RGB565 row takes the 16-bit path of scaled_transfer.comp, which quantises the mean through the
+   output format: its oracle is snx_ctr_pixel_encode of the same mean */
+static const IntoCase into_cases[] = {
+    {"a 2:1 transfer at 2x", 2, 1, false, SNX_CTR_PIX_RGBA8, 0, SNX_CTR_TEX_RGBA8},
+    {"a flipped 2:1 transfer at 2x", 2, 1, true, SNX_CTR_PIX_RGBA8, 0, SNX_CTR_TEX_RGBA8},
+    {"a 1:1 transfer at 2x", 2, 0, false, SNX_CTR_PIX_RGBA8, 0, SNX_CTR_TEX_RGBA8},
+    {"a flipped 1:1 transfer at 2x", 2, 0, true, SNX_CTR_PIX_RGBA8, 0, SNX_CTR_TEX_RGBA8},
+    {"a 2:1 transfer at 1x (control)", 1, 1, false, SNX_CTR_PIX_RGBA8, 0, SNX_CTR_TEX_RGBA8},
+    {"a 2:1 RGBA8 to RGB565 at 2x", 2, 1, false, SNX_CTR_PIX_RGB565, 3, SNX_CTR_TEX_RGB565},
+};
+/* One transfer of the source at render scale c->scale, flipped or not, into the 240 x 400 frame reduced by c->scaling
+   (1 halves the columns, 2 the rows too). At 2x, B reads 240 columns of the destination's scaled image from x0: the 1:1
+   destination is 480 scaled columns wide, so its middle holds the edge at 241 */
+static bool scaled_into_run(SnxCtrMemory* m, const IntoCase* c, bool tiled, unsigned* wrong, unsigned* total) {
+    static unsigned char source_bytes[SCALED_TARGET_BYTES], dest_bytes[SCALED_TARGET_BYTES];
+    static unsigned char reference[SCALED_TARGET_BYTES], after[SCALED_TARGET_BYTES];
+    unsigned width = SCALED_TARGET_W >> (c->scaling != 0), height = SCALED_TARGET_H >> (c->scaling == 2);
+    unsigned size = SCALED_TARGET_W | SCALED_TARGET_H << 16;
+    unsigned bytes = width * height * snx_ctr_pixel_bytes(c->out_format);
+    unsigned flags = (tiled ? SNX_CTR_XFER_NO_SWIZZLE : 0) | c->scaling << SNX_CTR_XFER_SCALE_SHIFT |
+                     c->out_format << SNX_CTR_XFER_OUT_FORMAT;
+    g_settings.ctr_top_resolution = (int)c->scale;
+    Scene* s = into_source(c->scale);
+    Scene* t = into_destination(width, height, c->target_format);
+    SnxCtrDisplayTransfer dt = {size, size, flags | (c->flip ? SNX_CTR_XFER_FLIP : 0)};
+    bool ok = snx_ctr_phys_write(m, VERTICES, s->vertices, sizeof s->vertices) == SNX_CTR_MEM_OK;
+    ok = ok && snx_ctr_phys_write(m, LIST, s->list.w, s->list.n * 4) == SNX_CTR_MEM_OK;
+    ok = ok && record(m, s, &vulkan);
+    ok = ok && snx_ctr_phys_write(m, VERTICES, t->vertices, sizeof t->vertices) == SNX_CTR_MEM_OK;
+    ok = ok && snx_ctr_phys_write(m, LIST, t->list.w, t->list.n * 4) == SNX_CTR_MEM_OK;
+    ok = ok && record(m, t, &vulkan);
+    ok = ok && snx_ctr_vk_display_transfer(&dt, COLOR, INTO_DST) == SNX_CTR_XFER_OK;
+    *wrong = 0;
+    *total = 0;
+    if (c->scale == 2) {
+        unsigned x0 = (width * c->scale - SCALED_TARGET_W) / 2;
+        Scene* b = into_readback(width, height, x0, c->texture_format);
+        ok = ok && snx_ctr_phys_write(m, VERTICES, b->vertices, sizeof b->vertices) == SNX_CTR_MEM_OK;
+        ok = ok && snx_ctr_phys_write(m, LIST, b->list.w, b->list.n * 4) == SNX_CTR_MEM_OK;
+        ok = ok && record(m, b, &vulkan);
+        ok = snx_ctr_vk_finish() && ok;
+        ok = ok && snx_ctr_phys_read(m, SECOND_COLOR, after, sizeof after) == SNX_CTR_MEM_OK;
+        for (unsigned j = 0; j < SCALED_TARGET_H; ++j)
+            for (unsigned i = 0; i < SCALED_TARGET_W; ++i) {
+                uint8_t mean[4], texel[4];
+                into_texel(x0 + i, j, c->scaling, c->flip, mean);
+                quantised(c->out_format, mean, texel);
+                unsigned char want[4];
+                snx_ctr_pixel_encode(SNX_CTR_PIX_RGBA8, texel, want);
+                unsigned row = SCALED_TARGET_H - 1 - j;
+                size_t at = snx_ctr_morton_offset(i, row, 4) + (size_t)(row & ~7u) * SCALED_TARGET_W * 4;
+                *wrong += memcmp(after + at, want, sizeof want) != 0;
+            }
+        *total = SCALED_TARGET_W * SCALED_TARGET_H;
+        free(b);
+    } else {
+        ok = snx_ctr_vk_finish() && ok;
+        ok = ok && snx_ctr_phys_read(m, COLOR, source_bytes, sizeof source_bytes) == SNX_CTR_MEM_OK;
+        ok = ok && snx_ctr_phys_read(m, INTO_DST, dest_bytes, bytes) == SNX_CTR_MEM_OK;
+        ok = ok && snx_ctr_display_transfer(&dt, source_bytes, sizeof source_bytes, reference, bytes) ==
+                       SNX_CTR_XFER_OK;
+        for (size_t k = 0; k < bytes; ++k) *wrong += dest_bytes[k] != reference[k];
+        *total = bytes;
+    }
+    free(s);
+    free(t);
+    return ok;
+}
+static void scaled_transfer_into_target_case(SnxCtrMemory* m, const IntoCase* c) {
+    unsigned wrong = 0, total = 0;
+    bool ok = scaled_into_run(m, c, true, &wrong, &total);
+    bool pass = ok && wrong == 0;
+    printf("%-36s %6u of %u %s differ from the expected: %s\n", c->name, wrong, total,
+           c->scale == 2 ? "pixels" : "bytes", pass ? "ok" : "FAIL");
+    if (!pass) ++failures;
+}
+/* the scaled targets' display transfers into a destination at render scale 2: no reduction and 2:1, unflipped and
+   flipped, an RGBA8 to RGB565 2:1, and a 2:1 at 1 (the control, whose destination is the transfer's own result), plus a
+   linear transfer that does not fill the destination target */
+static void scaled_transfer_into_target(SnxCtrMemory* m) {
+    int top = g_settings.ctr_top_resolution;
+    for (size_t i = 0; i < sizeof into_cases / sizeof *into_cases; ++i)
+        scaled_transfer_into_target_case(m, &into_cases[i]);
+    unsigned wrong = 0, total = 0;
+    bool ok = scaled_into_run(m, &into_cases[0], false, &wrong, &total);
+    bool pass = ok && wrong > 0;
+    printf("%-40s %6u of %u pixels differ from scaled: %s\n",
+           "a linear transfer does not fill a target", wrong, total, pass ? "ok" : "FAIL");
+    if (!pass) ++failures;
+    g_settings.ctr_top_resolution = top;
+    snx_ctr_vk_finish();
 }
 /* A display transfer from a scaled target's row OVERLAP_ROW into a framebuffer sharing the target's earlier rows, and
    no row the transfer reads: the framebuffer's copy is kept */
@@ -2181,6 +2357,8 @@ static const Mode modes[] = {
     {"--async", "the draws with async_pipelines", async_pipelines},
     {"--pipeline-cache", "the pipeline cache kept between runs", pipeline_cache},
     {"--scaled-texture-from-target", "the textures made from scaled targets", scaled_texture_from_target},
+    {"--scaled-transfer-into-target", "a display transfer into a destination at render scale",
+     scaled_transfer_into_target},
     {"--scaled-transfer-overlap", "a display transfer into a destination over a target",
      scaled_transfer_overlap},
     {"--scaled-texture-from-depth", "the textures made from scaled depth buffers", scaled_texture_from_depth},

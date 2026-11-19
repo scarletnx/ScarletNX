@@ -16,6 +16,7 @@
 #include "3ds/gpu/vk/shaders/depth_spv.h"
 #include "3ds/gpu/vk/shaders/scaled_depth_texture_spv.h"
 #include "3ds/gpu/vk/shaders/scaled_texture_spv.h"
+#include "3ds/gpu/vk/shaders/scaled_transfer_spv.h"
 #include "3ds/gpu/vk/shaders/standin_spv.h"
 #include "3ds/gpu/vk/shaders/texture_spv.h"
 #include "3ds/gpu/vk/vk.h"
@@ -266,7 +267,7 @@ typedef struct {
 
 static struct {
     bool made, failed;
-    SnxCtrVkCompute color, depth, texture, scaled_texture, scaled_depth_texture;
+    SnxCtrVkCompute color, depth, texture, scaled_texture, scaled_depth_texture, scaled_transfer;
     VkDescriptorSetLayout set0, set1, set2;
     VkDescriptorSetLayout set_layouts[3]; /* the three, for the shader objects that take them */
     /* the stand-ins' push constants (the fragment one's, and the vertex one's where the device has room for them),
@@ -513,7 +514,9 @@ static bool made(void) {
         !snx_ctr_vk_compute(snx_ctr_scaled_texture_spv, snx_ctr_scaled_texture_spv_size / 4, 0, 2, 20,
                             &g.scaled_texture) ||
         !snx_ctr_vk_compute(snx_ctr_scaled_depth_texture_spv, snx_ctr_scaled_depth_texture_spv_size / 4, 2, 1, 28,
-                            &g.scaled_depth_texture))
+                            &g.scaled_depth_texture) ||
+        !snx_ctr_vk_compute(snx_ctr_scaled_transfer_spv, snx_ctr_scaled_transfer_spv_size / 4, 0, 2, 44,
+                            &g.scaled_transfer))
         return false;
     if (depth_usable(VK_FORMAT_D24_UNORM_S8_UINT))
         g.depth_format = VK_FORMAT_D24_UNORM_S8_UINT;
@@ -1376,13 +1379,13 @@ static const Target* scaled_source(uint32_t pa, uint32_t width, uint32_t height,
     }
     return NULL;
 }
-/* the texture's image filled from the target's colour image by one dispatch of scaled_texture.comp: both are storage
-   images, the source at binding 0 and the destination at 1, with the target's format and flip as push constants */
-static bool scaled_fill(const Target* source, VkImageView destination, uint32_t width, uint32_t height,
-                        uint32_t scale) {
-    VkDescriptorSet set = snx_ctr_vk_set(g.scaled_texture.set);
+/* one dispatch over width x height of a compute pass that reads source at binding 0 and writes destination at 1, both
+   storage images, with the push constants given: a texture or a transfer filled from a scaled target's image */
+static bool scaled_fill(const SnxCtrVkCompute* c, VkImageView source, VkImageView destination, const void* push,
+                        uint32_t push_size, uint32_t width, uint32_t height) {
+    VkDescriptorSet set = snx_ctr_vk_set(c->set);
     if (!set) return false;
-    VkDescriptorImageInfo from = {VK_NULL_HANDLE, source->color.view, VK_IMAGE_LAYOUT_GENERAL};
+    VkDescriptorImageInfo from = {VK_NULL_HANDLE, source, VK_IMAGE_LAYOUT_GENERAL};
     VkDescriptorImageInfo to = {VK_NULL_HANDLE, destination, VK_IMAGE_LAYOUT_GENERAL};
     VkWriteDescriptorSet writes[2] = {{.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
                                        .dstSet = set,
@@ -1397,13 +1400,43 @@ static bool scaled_fill(const Target* source, VkImageView destination, uint32_t 
                                        .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
                                        .pImageInfo = &to}};
     vkUpdateDescriptorSets(device(), 2, writes, 0, NULL);
-    uint32_t push[5] = {width, height, source->key.color_format, source->key.flip, scale};
     VkCommandBuffer cb = snx_ctr_vk_commands();
-    vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g.scaled_texture.pipeline);
-    vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g.scaled_texture.layout, 0, 1, &set, 0, NULL);
-    vkCmdPushConstants(cb, g.scaled_texture.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof push, push);
-    vkCmdDispatch(cb, (width * scale + 7) / 8, (height * scale + 7) / 8, 1);
+    vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, c->pipeline);
+    vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, c->layout, 0, 1, &set, 0, NULL);
+    vkCmdPushConstants(cb, c->layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, push_size, push);
+    vkCmdDispatch(cb, (width + 7) / 8, (height + 7) / 8, 1);
     return true;
+}
+/* After a tiled display transfer's dispatch (SNX_CTR_XFER_NO_SWIZZLE): a destination target of the same size, format,
+   scale and flip as its source takes the transfer's result as its scaled image, by one dispatch of
+   scaled_transfer.comp, and is valid then. The transfer writes every byte of the destination only when its width and
+   height are whole 8x8 tiles, so only then does the image stand for memory. Otherwise nothing changes */
+void snx_ctr_vk_target_fill(SnxCtrVkSource found, uint32_t output, unsigned width, unsigned height, unsigned in_format,
+                            unsigned out_format, unsigned hs, unsigned vs, bool flip) {
+    if (!g.made || width % 8 || height % 8 || !found.target) return;
+    uint32_t first = found.first;
+    const Target* source = &g.targets[found.target - 1];
+    Target* t = NULL;
+    for (unsigned i = 0; i < g.target_count; ++i) {
+        Target* u = &g.targets[i];
+        if (u != source && u->key.color_pa == output && u->key.width == width && u->key.height == height &&
+            u->key.color_format == out_format && u->key.scale == source->key.scale && u->key.flip == source->key.flip &&
+            u->color.image && (!t || u->used > t->used))
+            t = u;
+    }
+    if (!t) return;
+    uint32_t scale = source->key.scale;
+    uint32_t push[11] = {width, height, scale, source->key.height, first, in_format, out_format, hs, vs, flip,
+                         source->key.flip};
+    end_rendering(); /* the dispatch is not recorded inside a target's pass */
+    VkCommandBuffer cb = snx_ctr_vk_commands();
+    snx_ctr_vk_barrier(cb);
+    if (!scaled_fill(&g.scaled_transfer, source->color.view, t->color.view, push, sizeof push, width * scale,
+                     height * scale))
+        return;
+    snx_ctr_vk_barrier(cb);
+    set_color(t, true, false); /* its blocks hold what memory holds, up to rounding: clean, so no store rewrites them */
+    t->used = snx_ctr_vk_serial();
 }
 /* the texture formats that read a depth buffer's words as texels: a D24S8 word as RGBA8, a D24 one as RGB8, a D16
    one as RGB5A1, RGB565 or RGBA4 (the 16-bit formats that pixel.glsl decodes)
@@ -1524,7 +1557,10 @@ static SnxCtrPicaResult texture(const SnxCtrPica* p, unsigned unit, unsigned typ
         if (from_depth) {
             if (!scaled_depth_fill(source, t->image.levels[0], format)) return AGAIN;
         } else {
-            if (!scaled_fill(source, t->image.levels[0], width, height, scale)) return AGAIN;
+            uint32_t push[5] = {width, height, source->key.color_format, source->key.flip, scale};
+            if (!scaled_fill(&g.scaled_texture, source->color.view, t->image.levels[0], push, sizeof push,
+                             width * scale, height * scale))
+                return AGAIN;
         }
         snx_ctr_vk_barrier(cb);
         for (unsigned f = 0; f < (cube ? 6u : 1u); ++f) gpu_uses(pa[f], bytes, false);
@@ -3026,6 +3062,7 @@ void snx_ctr_vk_render_free(void) {
     snx_ctr_vk_compute_free(&g.texture);
     snx_ctr_vk_compute_free(&g.scaled_texture);
     snx_ctr_vk_compute_free(&g.scaled_depth_texture);
+    snx_ctr_vk_compute_free(&g.scaled_transfer);
     free(g.vs);
     free(g.fs);
     free(g.pipes);
