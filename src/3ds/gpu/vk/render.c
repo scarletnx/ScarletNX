@@ -88,8 +88,9 @@ enum { NO_DEPTH = 0xff };
 /* FB_DEPTH_FORMAT's numbers of the depth formats (depth_word.glsl names them alike) */
 enum { DEPTH_D16 = 0, DEPTH_D24 = 2, DEPTH_D24S8 = 3 };
 /* the open rendering pass: a target's attachments, or a shadow pass with none (its draws write the target's colour
-   image as storage) */
-enum { RENDERING_TARGET = 1, RENDERING_SHADOW = 2 };
+   image as storage). A target whose words a draw read holds RENDERING_READ as its last pass kind: the next pass into
+   it waits for that read */
+enum { RENDERING_TARGET = 1, RENDERING_SHADOW = 2, RENDERING_READ = 3 };
 /* texture unit 0's descriptors: a shadow cube's six faces (the other kinds repeat their one image) */
 enum { TEX0_DESCRIPTORS = 6 };
 /* a draw that ran out of the recording's descriptors, uploads or textures: finished, it is recorded again */
@@ -110,6 +111,7 @@ typedef struct {
 typedef struct {
     uint32_t color_pa, depth_pa, width, height;
     uint8_t color_format, depth_format, flip, scale; /* color in transfer.h's order; depth 0 D16, 2 D24, 3 D24S8 */
+    uint8_t shadow, pad[3]; /* above scale 1 only; zero in every key, which memcmp compares */
 } TargetKey;
 /* A render target kept: its images hold memory's contents when valid, and newer ones when dirty (drawn into since they
    were loaded or stored), whose memory is the GPU's until they are stored */
@@ -508,7 +510,7 @@ static bool made(void) {
     SnxCtrVk* v = snx_ctr_vk();
     if (!v) return false;
     g.failed = true;
-    if (!snx_ctr_vk_compute(snx_ctr_color_spv, snx_ctr_color_spv_size / 4, 1, 1, 28, &g.color) ||
+    if (!snx_ctr_vk_compute(snx_ctr_color_spv, snx_ctr_color_spv_size / 4, 1, 1, 32, &g.color) ||
         !snx_ctr_vk_compute(snx_ctr_depth_spv, snx_ctr_depth_spv_size / 4, 3, 0, 32, &g.depth) ||
         !snx_ctr_vk_compute(snx_ctr_texture_spv, snx_ctr_texture_spv_size / 4, 1, 1, 20, &g.texture) ||
         !snx_ctr_vk_compute(snx_ctr_scaled_texture_spv, snx_ctr_scaled_texture_spv_size / 4, 0, 2, 20,
@@ -893,7 +895,7 @@ static bool target_move(Target* t, bool store, bool color, bool depth) {
     if (store) end_rendering(); /* its barrier and dispatch cannot be recorded inside a target's pass */
     snx_ctr_vk_barrier(cb);
     if (color && snx_ctr_vk_window(k->color_pa, color_span(k), &w[0], &inside)) {
-        uint32_t push[7] = {inside, k->width, k->height, k->color_format, k->flip, store, k->scale};
+        uint32_t push[8] = {inside, k->width, k->height, k->color_format, k->flip, store, k->scale, k->shadow};
         if (!dispatch(&g.color, w, 1, t->color.view, push, sizeof push, store ? k->width : width,
                       store ? k->height : height))
             return false;
@@ -978,14 +980,14 @@ static void stale(uint32_t pa, uint64_t size, SnxCtrStaleWriter writer) {
     }
 }
 /* a target's images; a scaled one's colour image is read by a display transfer's blit */
-static bool target_images(Target* t, uint32_t width, uint32_t height, bool scaled) {
+static bool target_images(Target* t, uint32_t width, uint32_t height, bool scaled, bool shadow) {
     VkDeviceSize pixels = (VkDeviceSize)width * height;
     VkDeviceSize alignment = snx_ctr_vk()->properties.limits.minStorageBufferOffsetAlignment;
     if (alignment < 4) alignment = 4;
     t->stencil_at = (pixels * 4 + alignment - 1) / alignment * alignment;
     if (!image_new(VK_FORMAT_R8G8B8A8_UNORM, width, height, 1, 1,
                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_STORAGE_BIT |
-                       (scaled ? VK_IMAGE_USAGE_TRANSFER_SRC_BIT : 0),
+                       (scaled ? VK_IMAGE_USAGE_TRANSFER_SRC_BIT : 0) | (shadow ? VK_IMAGE_USAGE_SAMPLED_BIT : 0),
                    &t->color))
         return false;
     if (!image_new(g.depth_format, width, height, 1, 1,
@@ -1028,7 +1030,7 @@ static Target* target_find(const TargetKey* k) {
         bury(&t->depth, &t->scratch, &t->scratch_memory);
     }
     *t = (Target){0};
-    if (!target_images(t, k->width * k->scale, k->height * k->scale, k->scale > 1)) return NULL;
+    if (!target_images(t, k->width * k->scale, k->height * k->scale, k->scale > 1, k->shadow)) return NULL;
     t->key = *k;
     if (t == &g.targets[g.target_count]) ++g.target_count;
     return t;
@@ -1119,8 +1121,8 @@ bool snx_ctr_vk_target_image(uint32_t pa, unsigned width, unsigned height, unsig
         for (unsigned i = 0; i < g.target_count; ++i) {
             Target* t = &g.targets[i];
             if (t->key.color_pa == pa && t->key.width == width && t->key.height == height &&
-                t->key.color_format == format && t->key.scale > 1 && (t->color_dirty || t->color_valid) &&
-                t->color.view) {
+                t->key.color_format == format && t->key.scale > 1 && !t->key.shadow &&
+                (t->color_dirty || t->color_valid) && t->color.view) {
                 *scaled = (SnxCtrVkScaled){.view = t->color.view, .scale = t->key.scale, .flip = t->key.flip};
                 t->used = snx_ctr_vk_serial();
                 return true;
@@ -1209,7 +1211,7 @@ static const Target* scaled_input(uint32_t input, unsigned in_width, uint32_t co
                                   unsigned in_format, uint32_t* first) {
     for (unsigned i = 0; i < g.target_count; ++i) {
         const Target* u = &g.targets[i];
-        if (u->key.scale <= 1 || input < u->key.color_pa || u->key.width != in_width ||
+        if (u->key.scale <= 1 || u->key.shadow || input < u->key.color_pa || u->key.width != in_width ||
             u->key.color_format != in_format || !(u->color_dirty || u->color_valid) || !u->color.image)
             continue;
         /* the input may start whole rows of 8x8 tiles into the target: games draw both screens into one target and
@@ -1373,8 +1375,21 @@ static const Target* scaled_source(uint32_t pa, uint32_t width, uint32_t height,
     if (levels != 1 || cube || shadow || format >= sizeof color_formats) return NULL;
     for (unsigned i = 0; i < g.target_count; ++i) {
         const Target* t = &g.targets[i];
-        if (t->key.scale > 1 && t->color_valid && t->color.image && t->key.color_pa == pa && t->key.width == width &&
-            t->key.height == height && t->key.color_format == color_formats[format])
+        if (t->key.scale > 1 && !t->key.shadow && t->color_valid && t->color.image && t->key.color_pa == pa &&
+            t->key.width == width && t->key.height == height && t->key.color_format == color_formats[format])
+            return t;
+    }
+    return NULL;
+}
+/* the scaled shadow target whose words are the whole of a shadow map at pa, in the same size and colour format, and
+   whose colour is valid, except the target the draws are open into (its words are being written) */
+static Target* shadow_source(uint32_t pa, uint32_t width, uint32_t height, uint32_t format) {
+    if (format >= sizeof color_formats) return NULL;
+    for (unsigned i = 0; i < g.target_count; ++i) {
+        Target* t = &g.targets[i];
+        if (t->key.shadow && t->key.scale > 1 && !t->key.flip && t->color_valid && t->color.image &&
+            t->key.color_pa == pa && t->key.width == width && t->key.height == height &&
+            t->key.color_format == color_formats[format] && i + 1 != g.open)
             return t;
     }
     return NULL;
@@ -1419,9 +1434,9 @@ void snx_ctr_vk_target_fill(SnxCtrVkSource found, uint32_t output, unsigned widt
     Target* t = NULL;
     for (unsigned i = 0; i < g.target_count; ++i) {
         Target* u = &g.targets[i];
-        if (u != source && u->key.color_pa == output && u->key.width == width && u->key.height == height &&
-            u->key.color_format == out_format && u->key.scale == source->key.scale && u->key.flip == source->key.flip &&
-            u->color.image && (!t || u->used > t->used))
+        if (u != source && !u->key.shadow && u->key.color_pa == output && u->key.width == width &&
+            u->key.height == height && u->key.color_format == out_format && u->key.scale == source->key.scale &&
+            u->key.flip == source->key.flip && u->color.image && (!t || u->used > t->used))
             t = u;
     }
     if (!t) return;
@@ -1507,6 +1522,19 @@ static SnxCtrPicaResult texture(const SnxCtrPica* p, unsigned unit, unsigned typ
        a texture); the textures made from that memory before went stale when the target was drawn into */
     for (unsigned f = 0; f < (cube ? 6u : 1u); ++f)
         if (g.made && !store_over(pa[f], bytes)) return AGAIN;
+    /* a 2D shadow map that is a scaled shadow target's whole image: its words are read from that image, whose size the
+       shadow lookup takes; the barrier orders the shadow pass's writes before this draw */
+    Target* words_of = shadow && !cube && levels == 1 ? shadow_source(pa[0], width, height, format) : NULL;
+    if (words_of) {
+        /* the barrier orders a shadow pass's writes before the read: after a read there are none to order */
+        if (words_of->pass == RENDERING_SHADOW) {
+            end_rendering();
+            snx_ctr_vk_barrier(snx_ctr_vk_commands());
+        }
+        words_of->pass = RENDERING_READ; /* the next pass into the map waits for this read (write after read) */
+        *image = &words_of->color;
+        return SNX_CTR_PICA_OK;
+    }
     /* a scaled target that is the texture's whole image: the texture is then made from its image, not from memory. A
        colour target's colour comes first, then a depth target's depth buffer */
     const Target* source = scaled_source(pa[0], width, height, format, levels, cube, shadow);
@@ -2536,13 +2564,13 @@ static SnxCtrPicaResult record(SnxCtrPica* p, Source source, bool indexed) {
     snx_ctr_fs_config(p, &fs);
     const char* why = NULL;
     if (fs.shadow_rendering) {
-        /* a shadow pass (Azahar's IsShadowRendering): the colour buffer's words only, no depth buffer, and no render
-           scale, since a store averages a scaled image's blocks, which would mix the words */
+        /* a shadow pass (Azahar's IsShadowRendering): the colour buffer's words only, no depth buffer. Above scale 1
+           its target is a key of its own, and its store takes each block's centre texel: an average mixes the words */
         if (!snx_ctr_vk()->fragment_stores) return stop(p, "shadow rendering needs fragmentStoresAndAtomics");
         if (key.color_format != SNX_CTR_PIX_RGBA8) return stop(p, "shadow rendering into a colour buffer not RGBA8");
         key.depth_format = NO_DEPTH;
         key.depth_pa = 0;
-        key.scale = 1;
+        key.shadow = (uint8_t)(key.scale > 1);
     }
     PipeKey k;
     SnxCtrVsConfig vs;
@@ -2672,7 +2700,7 @@ static SnxCtrPicaResult record(SnxCtrPica* p, Source source, bool indexed) {
     if (g.rendering != kind) end_rendering();
     if (!g.rendering) {
         /* the two kinds of pass write the colour image as an attachment and as storage: a barrier between them, also
-           when passes into other targets or a submission came between */
+           when passes into other targets or a submission came between, and before a pass after a read of its words */
         if (t->pass && t->pass != kind) snx_ctr_vk_barrier(cb);
         t->pass = kind;
         VkRenderingAttachmentInfo color = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
