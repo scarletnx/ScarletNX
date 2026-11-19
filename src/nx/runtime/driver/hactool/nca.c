@@ -532,6 +532,14 @@ void nca_process(nca_ctx_t *ctx) {
                 }
             }
 
+            if (ctx->raw_only) {
+                if (ctx->section_contexts[i].type != INVALID && !nca_section_open_raw(&ctx->section_contexts[i])) {
+                    fprintf(stderr, "Section %"PRId32" cannot be read.\n", i);
+                    nca_section_close_storages(&ctx->section_contexts[i]);
+                }
+                continue;
+            }
+
             if (ctx->section_contexts[i].type != INVALID && ctx->section_contexts[i].type != BKTR &&
                 !nca_section_open_raw(&ctx->section_contexts[i])) {
                 fprintf(stderr, "Section %"PRId32" cannot be read.\n", i);
@@ -572,6 +580,8 @@ void nca_process(nca_ctx_t *ctx) {
             }
         }
     }
+
+    if (ctx->raw_only) return;
 
     if (ctx->tool_ctx->action & ACTION_INFO) {
         nca_print(ctx);
