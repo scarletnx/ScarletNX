@@ -2922,6 +2922,15 @@ if(NOT SNX_TOOLS_ONLY)
     snx_test_target(snx-test-vk-vertex-input c23)
     target_link_libraries(snx-test-vk-vertex-input PRIVATE snx_nx_flags)
     add_test(NAME vk_vertex_input COMMAND snx-test-vk-vertex-input)
+    # gpu_pstate (common/gpu/vk/gpu_pstate.c) against a stand-in kernel, ioctl wrapped at link time, on a stand-in /sys
+    # and /dev: its values, auto and on on discrete and integrated GPUs, a level set on the PC, each refusal said
+    if(CMAKE_SYSTEM_NAME MATCHES "^(Linux|FreeBSD)$")
+        add_executable(snx-test-vk-gpu-pstate vk_gpu_pstate.c "${PROJECT_SOURCE_DIR}/src/common/gpu/vk/gpu_pstate.c")
+        snx_test_target(snx-test-vk-gpu-pstate gnu23)
+        target_include_directories(snx-test-vk-gpu-pstate PRIVATE "${PROJECT_SOURCE_DIR}/src")
+        target_link_options(snx-test-vk-gpu-pstate PRIVATE "LINKER:--wrap=ioctl")
+        add_test(NAME vk_gpu_pstate COMMAND snx-test-vk-gpu-pstate)
+    endif()
     # the block texture formats a device is given (gpu/vk/format.c), with no GPU: a player's Mali-G52 from its vkjson
     # (ASTC and ETC2 sampled as the games' blocks, BCn encoded again as ETC2 and EAC), a desktop GPU, native_bc=0 and the
     # other settings at 0, and the log's line for each family

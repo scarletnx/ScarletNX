@@ -602,6 +602,19 @@ setting Thread stack (MB)
     startup
     help The host stack of each of the game's threads, in MB: a game's deep calls take it. Less leaves address space
     help for more threads where a device has little, and a game that calls very deep may then stop
+setting GPU pstate
+    label GPU clocks held
+    key gpu_pstate
+    text 16
+    default auto
+    startup
+    words auto=Auto|on=On|off=Off
+    help Holds the GPU's clocks up while the game runs. A frame keeps the GPU half idle (it waits for the frame's
+    help commands, then the game waits for it), and a driver that sets the clocks by how busy the GPU is lowers them,
+    help which makes every frame slower. auto = held on a discrete GPU where its driver lets a program do it: AMD's on
+    help Linux (amdgpu's peak stable pstate, from the level auto); not on an integrated one, which shares its power
+    help with the CPU. on = held on an integrated GPU too. off = the driver sets them. The log says which, and why
+    help where they are not held. Any other value stops the game, saying so
 setting Pipeline threads
     key pipeline_threads
     int 0 32
@@ -2107,6 +2120,7 @@ setting @VK_EXT_memory_budget
 setting @VK_EXT_memory_priority
 setting @VK_EXT_mesh_shader
 setting @VK_EXT_pageable_device_local_memory
+setting @VK_EXT_physical_device_drm
 setting @VK_EXT_pipeline_creation_feedback
 setting @VK_EXT_pipeline_robustness
 setting @VK_EXT_post_depth_coverage

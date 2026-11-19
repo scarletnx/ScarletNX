@@ -22,6 +22,7 @@
 #include "nx/gpu/texture/astc_bc.h"
 #include "common/gpu/vk/extension_bans.h"
 #include "common/gpu/vk/device_settings.h"
+#include "common/gpu/vk/gpu_pstate.h"
 #include "nx/gpu/vk/hdr_swapchain.h"
 #include "common/gpu/vk/swapchain.h"
 #include "common/gpu/vk/vk_common.h"
@@ -712,6 +713,7 @@ typedef struct {
     ShCaps translate;
     int core13, second, sparse_queue;
     const char* store_none_ext;
+    int has_drm; /* VK_EXT_physical_device_drm in the device's list, after its setting and the bans */
 } DeviceChoice;
 
 /* extension_needs, of a device as common/gpu/vk/device.c asks for them */
@@ -1012,6 +1014,8 @@ static bool choose_device(SnxVkChoice* c, void* user) {
         has_calibrated_khr = snx_vk_choice_has(c, VK_KHR_CALIBRATED_TIMESTAMPS_EXTENSION_NAME);
         has_google_timing = !g_opt_headless && snx_vk_choice_has(c, VK_GOOGLE_DISPLAY_TIMING_EXTENSION_NAME);
         has_host_import = snx_vk_choice_has(c, VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME);
+        /* the render node gpu_pstate holds an AMD GPU's clocks on: its properties read, the device not made with it */
+        d->has_drm = snx_vk_choice_has(c, VK_EXT_PHYSICAL_DEVICE_DRM_EXTENSION_NAME);
         has_placed = snx_vk_choice_has(c, VK_EXT_MAP_MEMORY_PLACED_EXTENSION_NAME);
         has_map2 = snx_vk_choice_has(c, VK_KHR_MAP_MEMORY_2_EXTENSION_NAME);
         has_dmabuf = snx_vk_choice_has(c, VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME) &&
@@ -2288,6 +2292,35 @@ static bool choose_device(SnxVkChoice* c, void* user) {
     return true;
 }
 
+static void pstate_say(const char* line, int warn) {
+    if (warn)
+        WARN("vulkan: %s\n", line);
+    else
+        LOG("vulkan: %s\n", line);
+}
+
+/* The GPU's clocks held while the game runs, as gpu_pstate asks (common/gpu/vk/gpu_pstate.h), on the render node the
+   driver names where the device lists VK_EXT_physical_device_drm (has_drm). A value the setting doesn't take stops the
+   game here, as a player who wrote gpu_pstate=of would otherwise play with what they meant to turn off */
+static void gpu_pstate_hold(int has_drm) {
+    int mode = snx_gpu_pstate_mode(g_settings.gpu_pstate);
+    if (mode < 0) fatal("settings: gpu_pstate=%s is not auto, on or off", g_settings.gpu_pstate);
+    VkPhysicalDeviceDrmPropertiesEXT drm = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRM_PROPERTIES_EXT};
+    if (has_drm) {
+        VkPhysicalDeviceProperties2 p2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &drm};
+        vkGetPhysicalDeviceProperties2(g_vk.phys, &p2);
+    }
+    SnxGpuPstateDevice d = {g_vk.props.deviceName,
+                            g_vk.props.vendorID,
+                            (int)g_vk.props.deviceType,
+                            drm.hasRender,
+                            drm.renderMajor,
+                            drm.renderMinor,
+                            "/sys",
+                            "/dev"};
+    snx_gpu_pstate_hold(mode, &d, pstate_say);
+}
+
 /* The device, on the device device_rating rates highest (choose_device), made again once without an extension the
    first one's driver lacked a command of (common/gpu/vk/device.h), and what the renderer sets up on it. 0 with the
    reason in g_vk.start_failure */
@@ -2395,6 +2428,7 @@ static int create_device(void) {
         snprintf(g_vk.driver_name, sizeof g_vk.driver_name, "%s", dp.driverName);
         LOG("vulkan: the driver that runs: %s, %s (driver ID %d)\n", dp.driverName, dp.driverInfo, (int)dp.driverID);
     }
+    gpu_pstate_hold(d.has_drm);
     if (g_vk.api_cap && g_vk.props.apiVersion >= VK_API_VERSION_1_3)
         LOG("vulkan: vk_api=1.2 runs the Vulkan 1.2 way on this %u.%u device\n",
             VK_API_VERSION_MAJOR(g_vk.props.apiVersion), VK_API_VERSION_MINOR(g_vk.props.apiVersion));
