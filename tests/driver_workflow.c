@@ -786,8 +786,23 @@ static void write_extracted(const char* folder) {
     free(romfs);
 }
 #endif
+/* what a removal left, a path a line: on Windows, a file some process still holds open */
+static void say_left(const char* path) {
+    char** names;
+    size_t n;
+    fprintf(stderr, "driver_workflow: %s is still there\n", path);
+    if (!snx_is_dir(path) || snx_is_link(path) || snx_list_dir(path, &names, &n)) return;
+    for (size_t i = 0; i < n; ++i) {
+        char* p = snx_path_join(path, names[i]);
+        say_left(p);
+        free(p);
+    }
+    snx_free_strings(names, n);
+}
 static void reset(const char* repo, const char* dump) {
-    CHECK(!snx_remove_tree(repo));
+    int left = snx_remove_tree(repo);
+    if (left) say_left(repo);
+    CHECK(!left);
     CHECK(!snx_mkdirs(repo));
     CHECK(!snx_write_file(dump, "synthetic", 9));
     set_env("SNX_WORKFLOW_FAIL", "");
