@@ -831,6 +831,8 @@ typedef struct App {
     GuiWatch watch;
     bool recent_all;        /* every recent game shows, not GUI_RECENT_SHOWN and a row for the rest */
     Uint32 picked_folder;   /* the event a folder from the system's picker comes back as */
+    Uint32 pack_picked;     /* and a folder of NCAs to pack (Pack extracted as dXCI/dNSP) */
+    char* pack_folder;      /* that folder, asked NSP or XCI (GUI_ASK_PACK) */
     SDL_Texture* preview;   /* the editor's: the menu or a run drawn in its theme, at 1x */
     GuiSteps preview_steps; /* the run it shows, over again every GUI_PREVIEW_MS */
     GuiConsole preview_console;
@@ -983,6 +985,7 @@ typedef char gui_entries_in_order[GUI_ENTRY(GUI_LINUX) == UI_MENU_ENTRIES_LOAD_L
                                           GUI_ENTRY(GUI_NDS) == UI_MENU_ENTRIES_LOAD_NDS_ROM &&
                                           GUI_ENTRY(GUI_ANDROID) == UI_MENU_ENTRIES_LOAD_ANDROID_APK_XAPK &&
                                           GUI_ENTRY(GUI_KEYS) == UI_MENU_ENTRIES_INSTALL_KEYS &&
+                                          GUI_ENTRY(GUI_PACK) == UI_MENU_ENTRIES_PACK_EXTRACTED_AS_D_XCI_D_NSP &&
                                           GUI_ENTRY(GUI_SETTINGS) == UI_MENU_ENTRIES_SETTINGS &&
                                           GUI_ENTRY(GUI_SAVES) == UI_MENU_ENTRIES_SAVES &&
                                           GUI_ENTRY(GUI_LOG) == UI_MENU_ENTRIES_SHARE_LOG &&
@@ -2833,7 +2836,8 @@ static const char* ask_question(App* app) {
         case GUI_ASK_CRASH:
         case GUI_ASK_ADDONS:
         case GUI_ASK_SAVES:
-        case GUI_ASK_DELETE_OLD: return app->ask_line;
+        case GUI_ASK_DELETE_OLD:
+        case GUI_ASK_PACK: return app->ask_line;
         case GUI_ASK_OVERWRITE: return snx_tr("Overwrite users.ini? It is kept as users.ini.old");
         case GUI_ASK_ERROR: return app->error_line;
         case GUI_ASK_CLOSE:
@@ -3276,6 +3280,7 @@ static const char* const ask_choices[][2] = {{SNX_TR_NOOP("Continue"), SNX_TR_NO
                                              {SNX_TR_NOOP("Cancel"), SNX_TR_NOOP("Delete")},
                                              {SNX_TR_NOOP("Cancel"), SNX_TR_NOOP("Overwrite")},
                                              {SNX_TR_NOOP("Cancel"), SNX_TR_NOOP("Import")},
+                                             {SNX_TR_NOOP("NSP"), SNX_TR_NOOP("XCI")},
                                              {SNX_TR_NOOP("OK"), NULL}};
 /* a question added to GuiAsk takes its choices here, in its place */
 typedef char snx_gui_ask_choices[SDL_arraysize(ask_choices) == GUI_ASK_ERROR + 1 ? 1 : -1];
@@ -3304,6 +3309,7 @@ static const unsigned ask_tones[] = {UI_ATTR_CAUTION, /* Abort: the run ends */
                                      UI_ATTR_DANGER,  /* Delete: what an older version left */
                                      UI_ATTR_CAUTION, /* Overwrite: users.ini, kept as users.ini.old */
                                      UI_ATTR_CAUTION, /* Import: the saves there to the trash */
+                                     0,               /* XCI: a pack that changes nothing kept */
                                      0};
 typedef char snx_gui_ask_tones[SDL_arraysize(ask_tones) == GUI_ASK_ERROR + 1 ? 1 : -1];
 /* the question shown, over the whole screen in the middle or at its foot, a choice asked twice saying so once pressed:
@@ -19100,6 +19106,82 @@ static void probe_launch(App* app) {
     free(data);
     free(driver);
 }
+/* ---- Pack extracted as dXCI/dNSP: a folder of NCAs picked, NSP or XCI asked, then the driver's --pack on the run's
+   screen (src/nx/runtime/driver/pack.c). Its NCAs go in decrypted, in an ordinary NSP or XCI (not a DNSP or DXCI),
+   beside the folder ---- */
+static void pack_pick(App* app) {
+    char why[sizeof app->message - 64] = "";
+    bool opened = true;
+    if (!app->pack_picked) app->pack_picked = SDL_RegisterEvents(1);
+    if (!app->pack_picked) {
+        opened = false;
+        snprintf(why, sizeof why, "%s", SDL_GetError());
+    }
+#ifdef SDL_PLATFORM_ANDROID /* SDL has no folder picker there: the system's own, through the app */
+    else
+        opened = gui_android_pick_folder(folder_picked, &app->pack_picked, why, sizeof why) != 0;
+#elif defined(SDL_PLATFORM_IOS) /* nor there: the document picker (dist/apple) */
+    else
+        opened = gui_apple_pick(app->window, 1, folder_picked, &app->pack_picked, debug_log(app), why, sizeof why) != 0;
+#else /* its answer comes as an event even when it cannot open, which says why */
+    else
+        SDL_ShowOpenFolderDialog(folder_picked, &app->pack_picked, app->window, NULL, false);
+#endif
+    if (!opened) {
+        snprintf(app->message, sizeof app->message, snx_tr("Pack: the folder picker could not open: %s"), why);
+        say_failure(app, app->message);
+    }
+}
+/* the picker's answer: folder kept and asked NSP or XCI, or why none came */
+static void pack_picked(App* app, const char* folder, const char* error, bool failed) {
+    if (!folder) {
+        if (failed) {
+            snprintf(app->message, sizeof app->message, snx_tr("Pack: the folder picker could not open: %s"),
+                     error ? error : snx_tr("no reason given"));
+            say_failure(app, app->message);
+        } else
+            snprintf(app->message, sizeof app->message, "%s: %s", snx_tr("Pack"), snx_tr("No folder was picked."));
+        return;
+    }
+    free(app->pack_folder);
+    app->pack_folder = snx_strdup(folder);
+    snprintf(app->ask_line, sizeof app->ask_line, snx_tr("Pack the NCAs of %s, decrypted, into an NSP or an XCI?"),
+             folder);
+    gui_confirm_open(&app->confirm, GUI_ASK_PACK, false);
+}
+/* the answer: the folder packed into an NSP, or an XCI when xci, by the Switch driver on the run's screen, which says
+   where it went; Back packs nothing */
+static void pack_answer(App* app, bool taken, bool xci) {
+    char* folder = app->pack_folder;
+    app->pack_folder = NULL;
+    if (!taken || !folder) {
+        free(folder);
+        return;
+    }
+    char* driver = find_driver(app, GUI_SWITCH);
+#ifdef SDL_PLATFORM_IOS /* the app's own driver, which gui_process_start runs on a thread */
+    if (!driver) driver = snx_strdup("scarletnx");
+#endif
+    if (!driver) {
+        driver_missing(app, GUI_SWITCH, app->message, sizeof app->message);
+        say_failure(app, app->message);
+        free(folder);
+        return;
+    }
+    const char* argv[10];
+    size_t n = 0;
+    GuiDriverRun how;
+    argv[n++] = driver;
+    if (driver_run(app, GUI_SWITCH, &how) && how.first) argv[n++] = how.first;
+    argv[n++] = "--pack";
+    argv[n++] = folder;
+    argv[n++] = xci ? "--xci" : "--nsp";
+    argv[n++] = "--data"; /* the keys Install Keys put there */
+    argv[n++] = app->data_dir;
+    argv[n] = NULL;
+    if (!run_start(app, argv, folder, false, false, false)) say_failure(app, app->message); /* it took folder */
+    free(driver);
+}
 /* Run Amberlith pressed, a new run, or Continue, the last one's going on: the first launch started, said in the log;
    why not, in the page's note */
 static void probe_start(App* app, bool continuing) {
@@ -21234,6 +21316,7 @@ static void menu_key(App* app, GuiKey key) {
             open_folders(app, 0);
             app->folders_from_menu = true;
             break;
+        case GUI_MENU_PACK: pack_pick(app); break;
         default: break;
     }
     if (key == GUI_CANCEL || (key == GUI_SELECT && pick_screen(app))) app->message[0] = 0;
@@ -21263,6 +21346,7 @@ static void abort_run(App* app) {
     gui_process_terminate(app->process);
     app->aborting = true;
 }
+static void pack_answer(App* app, bool taken, bool xci);
 /* a key on the question shown (gui_confirm_key); answered, what it asked about: the menu closed, a run aborted or
    started, a folder added or used as the choice says */
 static void ask_key(App* app, GuiKey key) {
@@ -21288,6 +21372,8 @@ static void ask_key(App* app, GuiKey key) {
         addons_answer(app, key == GUI_SELECT, second);
     else if (ask == GUI_ASK_CLEAN_OWN)
         clean_answer(app, key == GUI_SELECT, second);
+    else if (ask == GUI_ASK_PACK)
+        pack_answer(app, key == GUI_SELECT, second);
     else if (ask == GUI_ASK_CLEAN || ask == GUI_ASK_RESET || ask == GUI_ASK_PLACES || ask == GUI_ASK_PLACE ||
              ask == GUI_ASK_FOLDER || ask == GUI_ASK_MOVE || ask == GUI_ASK_STATE || ask == GUI_ASK_CACHE ||
              ask == GUI_ASK_DRIVER || ask == GUI_ASK_CRASH)
@@ -21483,6 +21569,9 @@ void ui_menu_entries_load_gba_multi_boot_rom_action_cb(App* app, uint32_t hit) {
 void ui_menu_entries_load_nds_rom_action_cb(App* app, uint32_t hit) { menu_entry(app, GUI_NDS, hit); }
 void ui_menu_entries_load_android_apk_xapk_action_cb(App* app, uint32_t hit) { menu_entry(app, GUI_ANDROID, hit); }
 void ui_menu_entries_install_keys_action_cb(App* app, uint32_t hit) { menu_entry(app, GUI_KEYS, hit); }
+void ui_menu_entries_pack_extracted_as_d_xci_d_nsp_action_cb(App* app, uint32_t hit) {
+    menu_entry(app, GUI_PACK, hit);
+}
 void ui_menu_entries_settings_action_cb(App* app, uint32_t hit) { menu_entry(app, GUI_SETTINGS, hit); }
 void ui_menu_entries_saves_action_cb(App* app, uint32_t hit) { menu_entry(app, GUI_SAVES, hit); }
 void ui_menu_entries_share_log_action_cb(App* app, uint32_t hit) { menu_entry(app, GUI_LOG, hit); }
@@ -22619,6 +22708,13 @@ static void event_take(App* app, const SDL_Event* e) {
     /* Add Driver's picker's answer: a zip, none, or why it could not open */
     if (app->driver_picked && e->type == app->driver_picked) {
         driver_picked(app, (const char*)e->user.data1, (const char*)e->user.data2, e->user.code != 0);
+        SDL_free(e->user.data1);
+        SDL_free(e->user.data2);
+        return;
+    }
+    /* Pack extracted as dXCI/dNSP's picker's answer: a folder of NCAs, none, or why it could not open */
+    if (app->pack_picked && e->type == app->pack_picked) {
+        pack_picked(app, (const char*)e->user.data1, (const char*)e->user.data2, e->user.code != 0);
         SDL_free(e->user.data1);
         SDL_free(e->user.data2);
         return;

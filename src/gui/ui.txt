@@ -33,6 +33,9 @@
 		[button]"Install Keys" {
 			icon = key-round
 		}
+		[button]"Pack extracted as dXCI/dNSP" {
+			icon = folder-input
+		}
 		[button]"Settings" {
 			icon = settings
 		}

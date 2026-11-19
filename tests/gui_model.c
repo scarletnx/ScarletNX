@@ -125,6 +125,11 @@ int main(void) {
     assert(menu.selected == GUI_KEYS && menu.view == GUI_LOAD_KEYS);
     gui_menu_key(&menu, GUI_CANCEL);
     assert(menu.view == GUI_LOAD_NONE && !menu.quit);
+    /* Pack extracted as dXCI/dNSP, after the keys: its folder picked (main.c's pack_pick), no screen of its own */
+    gui_menu_key(&menu, GUI_RIGHT);
+    assert(menu.selected == GUI_PACK && strstr(gui_setting_description(&menu), "NCAs"));
+    assert(gui_menu_key(&menu, GUI_SELECT) == GUI_MENU_PACK && menu.active == GUI_PACK);
+    assert(menu.view == GUI_LOAD_NONE && !menu.running && !menu.quit);
     gui_menu_key(&menu, GUI_RIGHT);
     assert(menu.selected == GUI_SETTINGS);
     /* Settings opens the screens of the game's settings, the launcher's and its App (settings.h, gui_settings.c) */
