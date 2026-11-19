@@ -13,6 +13,7 @@
 #include "nx/runtime/nce/nce.h"
 #include "nx/runtime/options.h"
 #include "nx/runtime/platform/log.h"
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -447,7 +448,7 @@ static void missing(CPU* RESTRICT c, u64 entry) {
 }
 
 static void set_slot(u64 addr, GuestFn fn) {
-    __atomic_store_n(&g_disp[(addr - g_code_lo) >> 2], fn, __ATOMIC_RELEASE);
+    atomic_store_explicit(&g_disp[(addr - g_code_lo) >> 2], fn, memory_order_release);
     jit_slot_taken(addr, fn);
 }
 

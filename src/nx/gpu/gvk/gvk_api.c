@@ -26,6 +26,7 @@
 #include "nx/runtime/options.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -153,7 +154,7 @@ typedef struct {
 static struct {
     PMutex lock;
     PCond sc_available;
-    int ready;                   /* the memory types are chosen */
+    _Atomic int ready;           /* the memory types are chosen */
     u32 local, coherent, cached; /* the host's memory types behind the game's 0, 1 and 2 */
     u32 ncmd, npool, ngraphics;
     GvkCmd cmd[GVK_CBS];
@@ -178,7 +179,7 @@ static struct {
     u64 presents;
     GvkDebugReport debug[32];
     u64 debug_id;
-    int debug_enabled;
+    _Atomic int debug_enabled;
     /* Protected by vk_lock, like submission to the shared graphics queue. */
     VkHostTimeline retire;
     u64 retire_done;
@@ -559,9 +560,9 @@ static u32 dmabuf_export_bits(void) {
 
 /* once: how the host imports guest pages, and its types behind the game's three */
 static void types_ready(void) {
-    if (__atomic_load_n(&g_gvk_api.ready, __ATOMIC_ACQUIRE)) return;
+    if (atomic_load_explicit(&g_gvk_api.ready, memory_order_acquire)) return;
     pm_lock(&g_gvk_api.lock);
-    if (!g_gvk_api.ready) {
+    if (!atomic_load_explicit(&g_gvk_api.ready, memory_order_relaxed)) {
         pc_init(&g_gvk_api.sc_available);
         u32 bits = 0;
         g_gvk_api.handle_type = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT;
@@ -590,7 +591,7 @@ static void types_ready(void) {
                 ? "the host's memory, as dma-bufs mapped over guest pages"
                 : "guest pages, imported as host memory",
             bits, (unsigned long long)g_gvk_api.import_align);
-        __atomic_store_n(&g_gvk_api.ready, 1, __ATOMIC_RELEASE);
+        atomic_store_explicit(&g_gvk_api.ready, 1, memory_order_release);
     }
     pm_unlock(&g_gvk_api.lock);
 }
@@ -682,7 +683,7 @@ static void gvk_CreateInstance(CPU* RESTRICT c, u64 entry) {
                 ret_vk(c, VK_ERROR_EXTENSION_NOT_PRESENT);
                 return;
             }
-            __atomic_store_n(&g_gvk_api.debug_enabled, 1, __ATOMIC_RELEASE);
+            atomic_store_explicit(&g_gvk_api.debug_enabled, 1, memory_order_release);
         }
     }
     put_handle(c->x[2], U(g_vk.instance));
@@ -697,7 +698,7 @@ static void gvk_CreateDebugReportCallbackEXT(CPU* RESTRICT c, u64 entry) {
     if (c->x[0] != U(g_vk.instance) || !ci ||
         !mem_user_mapped(ci, sizeof(VkDebugReportCallbackCreateInfoEXT)) ||
         gr32(ci) != VK_STRUCTURE_TYPE_DEBUG_REPORT_CALLBACK_CREATE_INFO_EXT ||
-        !__atomic_load_n(&g_gvk_api.debug_enabled, __ATOMIC_ACQUIRE)) {
+        !atomic_load_explicit(&g_gvk_api.debug_enabled, memory_order_acquire)) {
         ret_vk(c, VK_ERROR_INITIALIZATION_FAILED);
         return;
     }
