@@ -10,6 +10,7 @@
 #include "common/platform/thread.h"
 #include "gpu/gl/gl.hook.h"
 #include "nx/gpu/gl/gl_layer.h"
+#include "nx/gpu/gpu.h"
 #include "nx/hle/kernel/kernel.h"
 #include "nx/hle/services/nvdrv.h"
 #include "nx/memory/mem.h"
@@ -66,7 +67,13 @@ u64 gl_gpu_address(u64 guest) {
     return 0;
 }
 static u8* bytes(u64 at) { return GP(at); }
-void gl_object_calls_init(void) { snx_gl_object_host(&(SnxGlObjectHost){chunk, bytes, NULL, NULL, NULL}); }
+/* the CPU's writes of a buffer's bytes that the runtime made (glBufferData, glBufferSubData, glCopyBufferSubData...):
+   the GPU's caches are told, as they see the game's own writes but not the runtime's */
+static void written(uint32_t buffer, uint64_t lo, uint64_t hi) {
+    const SnxGlBuffer* b = snx_gl_buffer(buffer);
+    if (b && b->data) gpu_mem_written_cpu(b->data + lo, hi - lo);
+}
+void gl_object_calls_init(void) { snx_gl_object_host(&(SnxGlObjectHost){chunk, bytes, NULL, written, NULL}); }
 void gl_object_calls_lock(void) { pm_lock(&g_gl_object_calls.lock); }
 void gl_object_calls_unlock(void) { pm_unlock(&g_gl_object_calls.lock); }
 
