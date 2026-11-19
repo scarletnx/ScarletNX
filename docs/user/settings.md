@@ -14,6 +14,7 @@
 * [Controllers](#controllers)
 * [Shortcuts](#shortcuts)
 * [Network](#network)
+* [Online](#online)
 * [User](#user)
 * [Debug](#debug)
 * [Timed runs](#timed-runs)
@@ -336,6 +337,15 @@ the key (with its modifiers held); Esc cancels, Backspace puts the default back,
 | `airplane_mode` | `0` | `1` is the console in airplane mode: offline whatever `network` says, no local wireless, as the game hears it, and in no Eden room |
 | `ldn` | `lan` | Local wireless. `lan` is over the LAN with ldn_mitm's protocol, with another ScarletNX, a Ryujinx or a console running ldn_mitm: with `network=1` the console is the computer's address, with `0` it is `127.0.0.N`, one per ScarletNX on the machine, so two of them play together through loopback. `room` is through the Eden room `room` names, with the Edens and ScarletNXs in it. `off` is local wireless disabled, as the game hears it. Another word stops the game |
 | `room` | empty | The Eden room `ldn=room` joins at start: `host` or `host:port` (`24872` without one); empty with `ldn=room`, or with a space in it, stops the game. The console is there as the user playing, by its nickname ([Users](usage.md#users)), at the address the room gives it (`192.168.x.y`), which nifm gives the game too, and the game's datagrams go through the room. A room with a password takes it from `users/online.ini` ([Folders](usage.md#folders)), a file only you may read (`chmod 600`, not checked on Windows) that holds `room_password=...` alone: another key or a section stops the game. A room that refuses stops the game and says why |
+
+## Online
+
+Each console's online service, the launcher's Online group. They do nothing for a Switch game.
+
+| Key | Default | Effect |
+| --- | --- | --- |
+| `nds_wfc` | `kaeru` | The DS's WFC service, the community's replacement of the closed original, by the DNS server set in the firmware's first Wi-Fi connection: `kaeru` (Kaeru WFC), `wiilink` (WiiLink), `wiimmfi` (Wiimmfi), `wiilink_wfc` (WiiLink WFC), `altwfc` (AltWFC), `newwfc` (NewWFC), `skytemple` (SkyTemple WFC), `diyfi` (DIYFI), `sudomemo` (Sudomemo); `custom` is the server `nds_wfc_dns` names, `off` the DNS of the DS's network. The DS driver reads it from the command line (`--nds-wfc`) or `settings.ini`'s `[Online]`. Another word stops the game, naming it. The DS driver has no wireless yet: a game's Wi-Fi settings show the connection, and no game connects through it ([DS](../platforms/nds/README.md#wfc)) |
+| `nds_wfc_dns` | empty | The DNS server `nds_wfc=custom` sets, an IPv4 address (`178.62.43.212`); with `custom`, empty or anything but an address stops the game |
 
 ## User
 

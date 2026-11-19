@@ -12,6 +12,7 @@
 #include "nds/bios/bios.h"
 #include "common/platform/time.h"
 #include "common/utilities/endian.h"
+#include "common/online/wfc.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -42,7 +43,9 @@ typedef struct NdsPxi {
     unsigned char* flash;
     uint8_t flash_write_enabled;
 } NdsPxi;
-#define FLASH_SIZE 0x40000u
+#define FLASH_SIZE    0x40000u
+/* the Wi-Fi connections, before the user's settings (common/online's SNX_ONLINE_NDS_WFC_BEFORE_USER) */
+#define NDS_WFC_SLOTS (0x3FE00u - SNX_ONLINE_NDS_WFC_BEFORE_USER)
 
 static void reply(NdsBoard* board, uint32_t service, uint32_t data, uint32_t flag) {
     nds_ipc_reply(board, (service & 0x1F) | data << 6 | (flag & 1) << 5);
@@ -65,7 +68,14 @@ static bool flash_make(NdsBoard* board) {
         snx_st_le16(settings + 0x70, (uint16_t)copy); /* the update counter: the second copy is the newer */
         snx_st_le16(settings + 0x72, nds_crc16(0xFFFF, settings, 0x70));
     }
+    /* the three Wi-Fi connections, none set (nds_pxi_wfc sets the first) */
+    for (unsigned slot = 0; slot < SNX_ONLINE_NDS_WFC_SLOTS; ++slot)
+        snx_online_nds_wfc_slot_empty(p->flash + NDS_WFC_SLOTS + slot * SNX_ONLINE_NDS_WFC_SLOT_SIZE);
     return true;
+}
+
+bool nds_pxi_wfc(NdsBoard* board, const uint8_t dns[4], char* why, size_t size) {
+    return !snx_online_nds_wfc_slot(board->pxi->flash + NDS_WFC_SLOTS, NDS_WFC_NETWORK, dns, dns, why, size);
 }
 
 static void firmware(NdsBoard* board, uint32_t data) {
