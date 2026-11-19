@@ -608,6 +608,7 @@ void gl_draw_wait(u32 ctx, u64 serial) {
 static const SnxGlProgram* draw_program(u32 ctx, u32* name, ShaderInfo si[2]) {
     const SnxGlLayout layout = gl_host_program_layout();
     const SnxGlProgram* p;
+    gl_program_layout_refresh(); /* a pipeline's hidden program is linked here */
     *name = snx_gl_draw_program(ctx, 0);
     p = snx_gl_program(*name);
     if (!p || !p->linked) {

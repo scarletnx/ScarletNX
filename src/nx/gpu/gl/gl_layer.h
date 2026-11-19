@@ -46,6 +46,9 @@ void gl_object_calls_unlock(void);
 /* texture name as NVN describes the same storage (the GL layer lays its textures out as NVN does, at gl_gpu_address of
    their memory): 1, or 0 (out zeroed) for a texture of none or of a format NVN has no form of */
 int gl_nvn_texture(u32 name, NvnTexture* out);
+/* ---- gl_program_calls.c */
+/* the program layout the renderer's rules give now, installed for the links that follow when it changed */
+void gl_program_layout_refresh(void);
 /* the NVN format of a shared format index (gl_format.h's), 0 for one NVN has no form of */
 u16 gl_nvn_format(int32_t index);
 /* renderbuffer name as NVN describes the same storage: 1, or 0 (out zeroed) for none or a format NVN has no form of */
