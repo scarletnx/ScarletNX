@@ -3765,9 +3765,7 @@ static int coop_acc_find(Ctx* c, u32 r) {
     }
     return -1;
 }
-/* the words of a D matrix to its registers: the words take a store, so one block's matrices are stored between one
-   pair of subgroup barriers (coop_flow) where there are many, or one matrix alone where one register asks. Both take
-   the slot's base and the lane's word, which a block of matrices makes once */
+/* the words of a D matrix to its registers go through the slot's D words, one matrix's room (coop_acc_write) */
 static void coop_d_store(Ctx* c, u32 shape, const u32* mat, u32 nmat, u32 base) {
     for (u32 m = 0; m < nmat; m++)
         SPV_VOID(&c->e, SPV_OP_COOPERATIVE_MATRIX_STORE_KHR,
@@ -3780,6 +3778,17 @@ static void coop_d_read(Ctx* c, u32 shape, u32 at_d, u32 out[4]) {
     for (u32 k = 0; k < 4; k++)
         out[k] = to_f(c, spv_emit_load_nonprivate(&c->e, c->t_u32, coop_d_word(c, shape, at_d, k)));
 }
+/* a held D's words to its registers, through the slot's D words: stored, then read back by each lane. The barrier
+   before the store keeps the last reads of those words (another D's, or a 16 wide B's, which spans their start) from
+   it, and the one after it the reads from the store */
+static void coop_acc_write(Ctx* c, const CoopAcc* a, u32 base) {
+    u32 out[4];
+    coop_barrier(c);
+    coop_d_store(c, a->shape, a->mat, a->nmat, base);
+    coop_barrier(c);
+    coop_d_read(c, a->shape, coop_d_at(c, a->shape), out);
+    for (u32 k = 0; k < 4; k++) wr(c, a->first + k, to_u(c, out[k]));
+}
 /* the words of the matrix r's register is one of, before a read or a write of it: an other entry stays held, and its
    words are still the matrix's */
 static void coop_acc_take(Ctx* c, u32 r) {
@@ -3788,11 +3797,7 @@ static void coop_acc_take(Ctx* c, u32 r) {
     CoopAcc a = c->coop_acc[i];
     c->coop_acc[i] = c->coop_acc[c->nacc - 1];
     c->nacc--; /* the writes below must not find it again */
-    u32 base = coop_base(c), at_d = coop_d_at(c, a.shape), out[4];
-    coop_d_store(c, a.shape, a.mat, a.nmat, base);
-    coop_barrier(c);
-    coop_d_read(c, a.shape, at_d, out);
-    for (u32 k = 0; k < 4; k++) wr(c, a.first + k, to_u(c, out[k]));
+    coop_acc_write(c, &a, coop_base(c));
 }
 /* an HMMA's f32 result kept as the D matrix of the registers it names, instead of their words: 1 where it is held,
    0 where the block already holds its share of matrices and the words must be written. A held D of the same four
@@ -3814,26 +3819,14 @@ static int coop_acc_hold(Ctx* c, u32 d, u32 shape, const u32* mat, u32 nmat) {
     for (u32 k = 0; k < nmat; k++) a->mat[k] = mat[k];
     return 1;
 }
-/* the block's end, at its branches and labels: D's words back to their registers, and the caches empty. A matrix
-   defined here has no value at a label the block's other arms reach too */
+/* the block's end, at its branches and labels: D's words back to their registers, one held D after the other, and the
+   caches empty. A matrix defined here has no value at a label the block's other arms reach too */
 static void coop_flow(Ctx* c) {
-    if (!c->nacc && !c->nfrags) return;
-    if (c->nacc) {
-        u32 n = c->nacc;
-        c->nacc = c->nfrags = 0; /* the writes below must not find them again */
-        u32 base = coop_base(c), at_d = coop_d_at(c, c->coop_acc[0].shape);
-        for (u32 i = 0; i < n; i++)
-            coop_d_store(c, c->coop_acc[i].shape, c->coop_acc[i].mat, c->coop_acc[i].nmat, base);
-        coop_barrier(c);
-        for (u32 i = 0; i < n; i++) {
-            CoopAcc a = c->coop_acc[i];
-            u32 out[4], at = a.shape == c->coop_acc[0].shape ? at_d : coop_d_at(c, a.shape);
-            coop_d_read(c, a.shape, at, out);
-            for (u32 k = 0; k < 4; k++) wr(c, a.first + k, to_u(c, out[k]));
-        }
-        return;
-    }
-    c->nfrags = 0;
+    u32 n = c->nacc;
+    c->nacc = c->nfrags = 0; /* the writes below must not find them again */
+    if (!n) return;
+    u32 base = coop_base(c);
+    for (u32 i = 0; i < n; i++) coop_acc_write(c, &c->coop_acc[i], base);
 }
 static void hmma_coop(Ctx* c, const Sm86Insn* in, int k16, int f32, u32 ra, u32 rb, u32 rc, const u32* ldsm_a) {
     u32 na = k16 ? 4 : 2, nb = k16 ? 2 : 1, ncd = f32 ? 4 : 2, a[4], b[2], cc[4], k;

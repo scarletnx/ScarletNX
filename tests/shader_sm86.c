@@ -4752,16 +4752,16 @@ static void test_warp_matrix(const char* dir) {
        .16816s' K in two, so 6; 8x8x8 splits their M too, so 12. A fragment is staged once a block, so the matrix
        loads are those of the first HMMA of each kind alone, and of the two f32 Ds' C, whose registers no matrix
        stands for (one an M block). Each HMMA stores its D once: an f16 D at its own HMMA, where its halves round, and
-       an f32 one at the block's end, where its matrix stops. An A register written between HMMAs stages its
-       fragment again (restage below) */
+       an f32 one at the block's end, where its matrix stops, each between barriers of its own. An A register written
+       between HMMAs stages its fragment again (restage below) */
     static const struct {
         u32 bit;
         const char* name;
         u32 products, loads, stores, restage, barriers;
-    } shapes[] = {{SH_COOP_16x16x16, "16x16x16", 4, 6, 4, 4, 11},
-                  {SH_COOP_16x8x16, "16x8x16", 4, 6, 4, 4, 11},
-                  {SH_COOP_16x8x8, "16x8x8", 6, 8, 4, 7, 11},
-                  {SH_COOP_8x8x8, "8x8x8", 12, 13, 8, 12, 11}};
+    } shapes[] = {{SH_COOP_16x16x16, "16x16x16", 4, 6, 4, 4, 14},
+                  {SH_COOP_16x8x16, "16x8x16", 4, 6, 4, 4, 14},
+                  {SH_COOP_16x8x8, "16x8x8", 6, 8, 4, 7, 14},
+                  {SH_COOP_8x8x8, "8x8x8", 12, 13, 8, 12, 14}};
     u32 stages_wide = 0;
     for (u32 s = 0; s < 4; s++) {
         for (int written = 0; written < 2; written++) {
@@ -5374,6 +5374,13 @@ static void test_coop_overlap(const char* dir) {
     static const u32 outs[8] = {20, 21, 22, 23, 24, 25, 26, 27};
     CHECK(coop_case(dir, "coop_overlap_d", d_over, 2, outs, 6));
     CHECK(coop_case(dir, "coop_overlap_c", c_over, 2, outs, 8));
+}
+/* Two f32 Ds held at a block's end: R20 = A B, R24 = A B + R20, then a BRA. Their matrices were all stored to the
+   slot's one D, then read back: each register took the last one's words */
+static void test_coop_flow(const char* dir) {
+    static const u32 insns[3][5] = {{20, 8, 12, 255, 0x18}, {24, 8, 12, 20, 0x18}, {COOP_BRA}};
+    static const u32 outs[8] = {20, 21, 22, 23, 24, 25, 26, 27};
+    CHECK(coop_case(dir, "coop_flow", insns, 3, outs, 8));
 }
 /* the way the log says a device's compute HMMAs take (shader_hmma_way), from the flags device.c sets */
 static void test_hmma_way(void) {
@@ -6484,6 +6491,7 @@ int main(int argc, char** argv) {
     test_coop_rz(dir);
     test_coop_c_regs(dir);
     test_coop_overlap(dir);
+    test_coop_flow(dir);
     test_warp_matrix_flush(dir);
     test_hmma_way();
     test_hmma_choose();
