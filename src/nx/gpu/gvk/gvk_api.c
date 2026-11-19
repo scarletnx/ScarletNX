@@ -84,8 +84,8 @@ typedef struct {
 typedef struct {
     u64 img;
     VkImage shadow;
-    u32 w, h;         /* as the game made it */
-    VkFormat format;  /* the host's */
+    u32 w, h;        /* as the game made it */
+    VkFormat format; /* the host's */
     VkImageUsageFlags usage;
     VkImageCreateFlags flags;
     DevMem shadow_mem;
@@ -111,8 +111,8 @@ typedef struct {
     VkImageUsageFlags usage; /* the view's own (VkImageViewUsageCreateInfo), 0 for the image's */
     u8 swizzle[4];
     u16 aspects;
-    u8 base_level, levels;   /* 0xff: the rest */
-    u16 base_layer, layers;  /* 0xffff: the rest */
+    u8 base_level, levels;  /* 0xff: the rest */
+    u16 base_layer, layers; /* 0xffff: the rest */
     u8 in_set;
 } GvkView;
 /* the targets without a shadow that a command buffer of the game used (host_image): they get none while it can run */
@@ -258,11 +258,11 @@ static struct {
     GvkCmd cmd[GVK_CBS];
     u64 pool[GVK_CBS];
     GvkGraphics graphics[GVK_SCALED];
-    u64 import_align;            /* minImportedHostPointerAlignment, or a host page for dma-bufs */
+    u64 import_align;                               /* minImportedHostPointerAlignment, or a host page for dma-bufs */
     VkExternalMemoryHandleTypeFlagBits handle_type; /* how the host imports guest pages: host memory or a dma-buf */
     u32 nmem, nimage, nrpass, npass, ntarget, nview, nsfb, ndyn, ndual, nsetscale, nmsizes, npsizes, nbound, nlayout,
         ncbw, ndsl, nsetinfo, npoolmasks, nmixed;
-    GvkMem mem[GVK_MEMS];       /* open addressing by handle */
+    GvkMem mem[GVK_MEMS]; /* open addressing by handle */
     GvkImage image[GVK_IMAGES];
     GvkRpass rpass[GVK_RPASSES];
     GvkPass pass[GVK_CBS];
@@ -335,10 +335,10 @@ static int put(u64 g, const void* src, size_t n) {
 static void put_handle(u64 g, u64 h) {
     if (gvk_writable(g, 8)) gw64(g, h);
 }
-#define REQUIRE_OUT(A, SIZE)                                                                                          \
+#define REQUIRE_OUT(A, SIZE)                                                                                           \
     if (!gvk_writable((A), (SIZE))) {                                                                                  \
         ret_vk(c, VK_ERROR_INITIALIZATION_FAILED);                                                                     \
-        return;                                                                                                       \
+        return;                                                                                                        \
     }
 /* a count and an array the game asked for (Vulkan's two-call idiom): *pCount set, at most *pCount of the n elements of
    elem bytes written. VK_INCOMPLETE when some didn't fit */
@@ -397,9 +397,8 @@ static void retire_object(GvkRetired e) {
                                         .semaphore = t->sem,
                                         .value = value,
                                         .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT};
-        VkSubmitInfo2 submit = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
-                                .signalSemaphoreInfoCount = 1,
-                                .pSignalSemaphoreInfos = &signal};
+        VkSubmitInfo2 submit = {
+            .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2, .signalSemaphoreInfoCount = 1, .pSignalSemaphoreInfos = &signal};
         vk_queue_lock(g_vk.gfx);
         VkResult r = vkQueueSubmit2(g_vk.gfx, 1, &submit, VK_NULL_HANDLE);
         vk_queue_unlock(g_vk.gfx);
@@ -415,8 +414,7 @@ static void retire_object(GvkRetired e) {
             size_t next = cap ? 2 * cap : 32;
             GvkRetired* objects = malloc(next * sizeof *objects);
             if (!objects) fatal("gvk: could not grow the resource retirement queue");
-            for (size_t i = 0; i < cap; i++)
-                objects[i] = g_gvk_api.retired[(g_gvk_api.retire_head + i) & (cap - 1)];
+            for (size_t i = 0; i < cap; i++) objects[i] = g_gvk_api.retired[(g_gvk_api.retire_head + i) & (cap - 1)];
             free(g_gvk_api.retired);
             g_gvk_api.retired = objects;
             g_gvk_api.retire_head = 0;
@@ -561,9 +559,7 @@ static u32 scale_factor(void) {
 }
 /* whether the size queries of images drawn at the scale answer the game's size: the push constants past
    GVK_SIZE_PUSH are gvk's, where the host has them (gvk_spirv_scaled_size) */
-static int sizes_on(void) {
-    return scale_factor() > 1 && g_vk.props.limits.maxPushConstantsSize >= GVK_SIZE_PUSH + 16;
-}
+static int sizes_on(void) { return scale_factor() > 1 && g_vk.props.limits.maxPushConstantsSize >= GVK_SIZE_PUSH + 16; }
 /* the aspects of an image of format f */
 static VkImageAspectFlags format_aspects(VkFormat f) {
     switch (f) {
@@ -980,8 +976,7 @@ static void gvk_CreateInstance(CPU* RESTRICT c, u64 entry) {
 static void gvk_CreateDebugReportCallbackEXT(CPU* RESTRICT c, u64 entry) {
     REQUIRE_OUT(c->x[3], 8);
     u64 ci = c->x[1];
-    if (c->x[0] != U(g_vk.instance) || !ci ||
-        !mem_user_mapped(ci, sizeof(VkDebugReportCallbackCreateInfoEXT)) ||
+    if (c->x[0] != U(g_vk.instance) || !ci || !mem_user_mapped(ci, sizeof(VkDebugReportCallbackCreateInfoEXT)) ||
         gr32(ci) != VK_STRUCTURE_TYPE_DEBUG_REPORT_CALLBACK_CREATE_INFO_EXT ||
         !atomic_load_explicit(&g_gvk_api.debug_enabled, memory_order_acquire)) {
         ret_vk(c, VK_ERROR_INITIALIZATION_FAILED);
@@ -1152,51 +1147,54 @@ static void gvk_GetPhysicalDeviceFeatures2(CPU* RESTRICT c, u64 entry) {
     for (u32 hops = 0; a && hops < 64 && mem_user_mapped(a, head); hops++, a = gr64(a + 8)) {
         VkStructureType st = (VkStructureType)gr32(a);
         switch (st) {
-        case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES:
-            put(a + head, (const u8*)&g_vk.feat11 + head, sizeof g_vk.feat11 - head);
-            break;
-        case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES:
-            put(a + head, (const u8*)&g_vk.feat12 + head, sizeof g_vk.feat12 - head);
-            break;
-        case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_16BIT_STORAGE_FEATURES: {
-            VkPhysicalDevice16BitStorageFeatures s = {.storageBuffer16BitAccess = f->storageBuffer16BitAccess,
-                                                      .uniformAndStorageBuffer16BitAccess =
-                                                          f->uniformAndStorageBuffer16BitAccess,
-                                                      .storagePushConstant16 = f->storagePushConstant16,
-                                                      .storageInputOutput16 = f->storageInputOutput16};
-            put(a + head, (const u8*)&s + head, sizeof s - head);
-            break;
-        }
-        case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MULTIVIEW_FEATURES: {
-            VkPhysicalDeviceMultiviewFeatures s = {.multiview = f->multiview,
-                                                   .multiviewGeometryShader = f->multiviewGeometryShader,
-                                                   .multiviewTessellationShader = f->multiviewTessellationShader};
-            put(a + head, (const u8*)&s + head, sizeof s - head);
-            break;
-        }
-        case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VARIABLE_POINTERS_FEATURES: {
-            VkPhysicalDeviceVariablePointersFeatures s = {
-                .variablePointersStorageBuffer = f->variablePointersStorageBuffer,
-                .variablePointers = f->variablePointers};
-            put(a + head, (const u8*)&s + head, sizeof s - head);
-            break;
-        }
-        case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROTECTED_MEMORY_FEATURES: {
-            VkPhysicalDeviceProtectedMemoryFeatures s = {.protectedMemory = f->protectedMemory};
-            put(a + head, (const u8*)&s + head, sizeof s - head);
-            break;
-        }
-        case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SAMPLER_YCBCR_CONVERSION_FEATURES: {
-            VkPhysicalDeviceSamplerYcbcrConversionFeatures s = {.samplerYcbcrConversion = f->samplerYcbcrConversion};
-            put(a + head, (const u8*)&s + head, sizeof s - head);
-            break;
-        }
-        case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_DRAW_PARAMETERS_FEATURES: {
-            VkPhysicalDeviceShaderDrawParametersFeatures s = {.shaderDrawParameters = f->shaderDrawParameters};
-            put(a + head, (const u8*)&s + head, sizeof s - head);
-            break;
-        }
-        default: LOG_LIMIT(16, "gvk: a features structure of type %u is left as the game wrote it\n", (u32)st); break;
+            case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES:
+                put(a + head, (const u8*)&g_vk.feat11 + head, sizeof g_vk.feat11 - head);
+                break;
+            case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES:
+                put(a + head, (const u8*)&g_vk.feat12 + head, sizeof g_vk.feat12 - head);
+                break;
+            case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_16BIT_STORAGE_FEATURES: {
+                VkPhysicalDevice16BitStorageFeatures s = {.storageBuffer16BitAccess = f->storageBuffer16BitAccess,
+                                                          .uniformAndStorageBuffer16BitAccess =
+                                                              f->uniformAndStorageBuffer16BitAccess,
+                                                          .storagePushConstant16 = f->storagePushConstant16,
+                                                          .storageInputOutput16 = f->storageInputOutput16};
+                put(a + head, (const u8*)&s + head, sizeof s - head);
+                break;
+            }
+            case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MULTIVIEW_FEATURES: {
+                VkPhysicalDeviceMultiviewFeatures s = {.multiview = f->multiview,
+                                                       .multiviewGeometryShader = f->multiviewGeometryShader,
+                                                       .multiviewTessellationShader = f->multiviewTessellationShader};
+                put(a + head, (const u8*)&s + head, sizeof s - head);
+                break;
+            }
+            case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VARIABLE_POINTERS_FEATURES: {
+                VkPhysicalDeviceVariablePointersFeatures s = {.variablePointersStorageBuffer =
+                                                                  f->variablePointersStorageBuffer,
+                                                              .variablePointers = f->variablePointers};
+                put(a + head, (const u8*)&s + head, sizeof s - head);
+                break;
+            }
+            case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROTECTED_MEMORY_FEATURES: {
+                VkPhysicalDeviceProtectedMemoryFeatures s = {.protectedMemory = f->protectedMemory};
+                put(a + head, (const u8*)&s + head, sizeof s - head);
+                break;
+            }
+            case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SAMPLER_YCBCR_CONVERSION_FEATURES: {
+                VkPhysicalDeviceSamplerYcbcrConversionFeatures s = {.samplerYcbcrConversion =
+                                                                        f->samplerYcbcrConversion};
+                put(a + head, (const u8*)&s + head, sizeof s - head);
+                break;
+            }
+            case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_DRAW_PARAMETERS_FEATURES: {
+                VkPhysicalDeviceShaderDrawParametersFeatures s = {.shaderDrawParameters = f->shaderDrawParameters};
+                put(a + head, (const u8*)&s + head, sizeof s - head);
+                break;
+            }
+            default:
+                LOG_LIMIT(16, "gvk: a features structure of type %u is left as the game wrote it\n", (u32)st);
+                break;
         }
     }
     ret(c, 0);
@@ -1307,11 +1305,10 @@ static void gvk_AllocateMemory(CPU* RESTRICT c, u64 entry) {
             ret_vk(c, VK_ERROR_OUT_OF_HOST_MEMORY);
             return;
         }
-        m.size = (size + g_gvk_api.import_align - 1) & ~(g_gvk_api.import_align - 1);
+        m.size = snx_align_up(size, g_gvk_api.import_align);
         const VkMemoryDedicatedAllocateInfo* dedicated =
-            next && ((const VkBaseInStructure*)next)->sType == VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO
-                ? next
-                : NULL;
+            next && ((const VkBaseInStructure*)next)->sType == VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO ? next
+                                                                                                                : NULL;
         if (dedicated && (dedicated->buffer || dedicated->image) && m.size != size) {
             WARN_LIMIT(8, "gvk: dedicated allocation size is not aligned for guest memory import\n");
             ret_vk(c, VK_ERROR_OUT_OF_DEVICE_MEMORY);
@@ -1386,8 +1383,7 @@ static void gvk_MapMemory(CPU* RESTRICT c, u64 entry) {
     REQUIRE_OUT(c->x[5], 8);
     GvkMem m = mem_get(c->x[1]);
     u64 off = c->x[2], size = c->x[3];
-    if (!m.va || off >= m.allocation_size ||
-        (size != VK_WHOLE_SIZE && (!size || size > m.allocation_size - off))) {
+    if (!m.va || off >= m.allocation_size || (size != VK_WHOLE_SIZE && (!size || size > m.allocation_size - off))) {
         ret_vk(c, VK_ERROR_MEMORY_MAP_FAILED);
         return;
     }
@@ -1610,8 +1606,9 @@ static void gvk_CreatePipelineLayout(CPU* RESTRICT c, u64 entry) {
             stages = p[frag].stageFlags;
             from = p[frag].offset;
         } else {
-            WARN_LIMIT(4, "gvk: a pipeline layout's push constants reach past %u bytes: its fragment shaders' size "
-                          "queries can't be told the game's size\n",
+            WARN_LIMIT(4,
+                       "gvk: a pipeline layout's push constants reach past %u bytes: its fragment shaders' size "
+                       "queries can't be told the game's size\n",
                        GVK_SIZE_PUSH);
         }
     }
@@ -1644,8 +1641,8 @@ static void target_blit(VkCommandBuffer cb, u64 img, VkImage shadow, u32 f, cons
    game's image: no command buffer that can still run writes it (GvkTarget.pending). A transient attachment takes no
    transfers and holds nothing between passes */
 static int shadow_make(GvkTarget* t, u32 f) {
-    const VkImageCreateFlags keep = VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT | VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT |
-                                    VK_IMAGE_CREATE_EXTENDED_USAGE_BIT;
+    const VkImageCreateFlags keep =
+        VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT | VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT | VK_IMAGE_CREATE_EXTENDED_USAGE_BIT;
     int transient = (t->usage & VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT) != 0;
     VkImageCreateInfo ii = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
@@ -2009,10 +2006,10 @@ static int image_importable(const VkImageCreateInfo* ci) {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_DRM_FORMAT_MODIFIER_INFO_EXT,
         .drmFormatModifier = g_mod_linear,
         .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
-    VkPhysicalDeviceExternalImageFormatInfo ext = {
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_IMAGE_FORMAT_INFO,
-        .pNext = image_modifier() ? &mod : NULL,
-        .handleType = g_gvk_api.handle_type};
+    VkPhysicalDeviceExternalImageFormatInfo ext = {.sType =
+                                                       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_IMAGE_FORMAT_INFO,
+                                                   .pNext = image_modifier() ? &mod : NULL,
+                                                   .handleType = g_gvk_api.handle_type};
     VkPhysicalDeviceImageFormatInfo2 info = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_FORMAT_INFO_2,
                                              .pNext = &ext,
                                              .format = ci->format,
@@ -2023,8 +2020,8 @@ static int image_importable(const VkImageCreateInfo* ci) {
                                              .flags = ci->flags};
     VkExternalImageFormatProperties ep = {.sType = VK_STRUCTURE_TYPE_EXTERNAL_IMAGE_FORMAT_PROPERTIES};
     VkImageFormatProperties2 p = {.sType = VK_STRUCTURE_TYPE_IMAGE_FORMAT_PROPERTIES_2, .pNext = &ep};
-    VkExternalMemoryFeatureFlags feature = image_modifier() ? VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT
-                                                           : VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT;
+    VkExternalMemoryFeatureFlags feature =
+        image_modifier() ? VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT : VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT;
     return vkGetPhysicalDeviceImageFormatProperties2(g_vk.phys, &info, &p) == VK_SUCCESS &&
            (ep.externalMemoryProperties.externalMemoryFeatures & feature);
 }
@@ -2141,8 +2138,9 @@ static void gvk_CreateShaderModule(CPU* RESTRICT c, u64 entry) {
             size_t sized;
             const u32* s = gvk_spirv_scaled_size(mended, bytes, &sized, &slots);
             if (slots.skipped)
-                LOG_LIMIT(8, "gvk: %u size queries of a shader read an image gvk can't follow: they answer the host's "
-                             "size of an image drawn at the scale\n",
+                LOG_LIMIT(8,
+                          "gvk: %u size queries of a shader read an image gvk can't follow: they answer the host's "
+                          "size of an image drawn at the scale\n",
                           slots.skipped);
             if (s && slots.n) {
                 mended = s;
@@ -2363,8 +2361,9 @@ static void set_mask_put_nl(u64 set, u64 on, u64 off) {
         return;
     }
     if (g_gvk_api.nsetscale >= GVK_IMAGES / 8) {
-        LOG_LIMIT(4, "gvk: more than %u descriptor sets hold images drawn at the scale: the others' size queries "
-                     "answer the host's size\n",
+        LOG_LIMIT(4,
+                  "gvk: more than %u descriptor sets hold images drawn at the scale: the others' size queries "
+                  "answer the host's size\n",
                   GVK_IMAGES / 8);
         return;
     }
@@ -2378,8 +2377,9 @@ static void set_info_put_nl(u64 set, u64 pool, u64 layout) {
     set_mask_put_nl(set, 0, ~0ull);
     GvkSetInfo* s = &g_gvk_api.setinfo[tab_slot(TAB(setinfo), set)];
     if (s->set != set && g_gvk_api.nsetinfo >= GVK_IMAGES / 2) {
-        LOG_LIMIT(4, "gvk: more than %u descriptor sets: a write past a binding's end in the others is taken as within "
-                     "it\n",
+        LOG_LIMIT(4,
+                  "gvk: more than %u descriptor sets: a write past a binding's end in the others is taken as within "
+                  "it\n",
                   GVK_IMAGES / 2);
         return;
     }
@@ -2679,7 +2679,9 @@ static void gvk_UpdateDescriptorSets(CPU* RESTRICT c, u64 entry) {
     ret(c, 0);
 }
 
-static int blends_src1(VkBlendFactor f) { return f >= VK_BLEND_FACTOR_SRC1_COLOR && f <= VK_BLEND_FACTOR_ONE_MINUS_SRC1_ALPHA; }
+static int blends_src1(VkBlendFactor f) {
+    return f >= VK_BLEND_FACTOR_SRC1_COLOR && f <= VK_BLEND_FACTOR_ONE_MINUS_SRC1_ALPHA;
+}
 /* A pipeline that blends with the second color takes its fragment module's twin (GvkDual). The host's compiles leave
    the game's core to its other threads (kthread_host_wait_begin): the game makes thousands of pipelines as it starts */
 static void gvk_CreateGraphicsPipelines(CPU* RESTRICT c, u64 entry) {
@@ -2702,10 +2704,9 @@ static void gvk_CreateGraphicsPipelines(CPU* RESTRICT c, u64 entry) {
             const VkPipelineColorBlendStateCreateInfo* b = ci[i].pColorBlendState;
             for (u32 a = 0; b && b->pAttachments && a < b->attachmentCount; a++) {
                 const VkPipelineColorBlendAttachmentState* at = &b->pAttachments[a];
-                src1 |= at->blendEnable && (blends_src1(at->srcColorBlendFactor) ||
-                                            blends_src1(at->dstColorBlendFactor) ||
-                                            blends_src1(at->srcAlphaBlendFactor) ||
-                                            blends_src1(at->dstAlphaBlendFactor));
+                src1 |=
+                    at->blendEnable && (blends_src1(at->srcColorBlendFactor) || blends_src1(at->dstColorBlendFactor) ||
+                                        blends_src1(at->srcAlphaBlendFactor) || blends_src1(at->dstAlphaBlendFactor));
             }
             VkPipelineShaderStageCreateInfo* st = (VkPipelineShaderStageCreateInfo*)ci[i].pStages;
             GvkDual d;
@@ -2936,9 +2937,7 @@ static void gvk_BeginCommandBuffer(CPU* RESTRICT c, u64 entry) {
     }
     ret_vk(c, r);
 }
-static void gvk_EndCommandBuffer(CPU* RESTRICT c, u64 entry) {
-    ret_vk(c, vkEndCommandBuffer(checked_cb(c->x[0])));
-}
+static void gvk_EndCommandBuffer(CPU* RESTRICT c, u64 entry) { ret_vk(c, vkEndCommandBuffer(checked_cb(c->x[0]))); }
 static void gvk_ResetCommandBuffer(CPU* RESTRICT c, u64 entry) {
     VkResult r = vkResetCommandBuffer(checked_cb(c->x[0]), (VkCommandBufferResetFlags)c->x[1]);
     if (r == VK_SUCCESS) {
@@ -3306,11 +3305,11 @@ static void gvk_CmdExecuteCommands(CPU* RESTRICT c, u64 entry) {
 static VkPipelineStageFlags stages_for(VkAccessFlags access, VkPipelineStageFlags have) {
     enum {
         SHADERS = VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_TESSELLATION_CONTROL_SHADER_BIT |
-                  VK_PIPELINE_STAGE_TESSELLATION_EVALUATION_SHADER_BIT | VK_PIPELINE_STAGE_GEOMETRY_SHADER_BIT |
-                  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            VK_PIPELINE_STAGE_TESSELLATION_EVALUATION_SHADER_BIT | VK_PIPELINE_STAGE_GEOMETRY_SHADER_BIT |
+            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
         /* the shader stages added: those every device has */
         ADD_SHADERS = VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
-                      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
         TESTS = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
     };
     static const struct {
@@ -3428,9 +3427,10 @@ static void target_blit(VkCommandBuffer cb, u64 img, VkImage shadow, u32 f, cons
     const VkFormatFeatureFlags blit = VK_FORMAT_FEATURE_BLIT_SRC_BIT | VK_FORMAT_FEATURE_BLIT_DST_BIT;
     GvkImage gi = image_get(img);
     if ((gi.features & blit) != blit || gi.samples != VK_SAMPLE_COUNT_1_BIT) {
-        WARN_LIMIT(4, "gvk: a copy of a target drawn at %ux leaves its pixels out: its format or samples can't be "
-                     "blitted\n",
-                  f);
+        WARN_LIMIT(4,
+                   "gvk: a copy of a target drawn at %ux leaves its pixels out: its format or samples can't be "
+                   "blitted\n",
+                   f);
         return;
     }
     VkImageBlit* b = gvk_scratch(sizeof *b * n);
@@ -3446,11 +3446,11 @@ static void target_blit(VkCommandBuffer cb, u64 img, VkImage shadow, u32 f, cons
         }
         color &= g[i].sub.aspectMask == VK_IMAGE_ASPECT_COLOR_BIT;
     }
-    VkFilter filter =
-        color && (gi.features & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT) ? VK_FILTER_LINEAR : VK_FILTER_NEAREST;
+    VkFilter filter = color && (gi.features & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT) ? VK_FILTER_LINEAR
+                                                                                                 : VK_FILTER_NEAREST;
     VkImage game_img = H(VkImage, img);
-    vkCmdBlitImage(cb, up ? game_img : shadow, VK_IMAGE_LAYOUT_GENERAL, up ? shadow : game_img,
-                   VK_IMAGE_LAYOUT_GENERAL, n, b, filter);
+    vkCmdBlitImage(cb, up ? game_img : shadow, VK_IMAGE_LAYOUT_GENERAL, up ? shadow : game_img, VK_IMAGE_LAYOUT_GENERAL,
+                   n, b, filter);
 }
 /* A copy between images at one scale scales its regions. Between a target drawn at the scale and an image at the
    game's size it goes through the target's own image: blitted down from the shadow and copied out, or copied in and
@@ -3521,7 +3521,8 @@ static void gvk_CmdCopyImage(CPU* RESTRICT c, u64 entry) {
             color &= r[i].srcSubresource.aspectMask == VK_IMAGE_ASPECT_COLOR_BIT;
         }
         VkFilter filter = color && (si.features & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT)
-                            ? VK_FILTER_LINEAR : VK_FILTER_NEAREST;
+                              ? VK_FILTER_LINEAR
+                              : VK_FILTER_NEAREST;
         OUTSIDE(cb, vkCmdBlitImage(cb, src, sl, dst, dl, n, b, filter));
     }
     ret(c, 0);
@@ -3883,17 +3884,17 @@ static VkResult images_general(const VkImage* img, u32 n, VkImageAspectFlags asp
     if (r == VK_SUCCESS) {
         VkImageMemoryBarrier b[GVK_SC_IMAGES];
         for (u32 i = 0; i < n; i++)
-            b[i] = (VkImageMemoryBarrier){.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-                                          .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
-                                          .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-                                          .newLayout = VK_IMAGE_LAYOUT_GENERAL,
-                                          .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                                          .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                                          .image = img[i],
-                                          .subresourceRange = {aspects, 0, VK_REMAINING_MIP_LEVELS, 0,
-                                                               VK_REMAINING_ARRAY_LAYERS}};
-        vkCmdPipelineBarrier(o.cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, NULL,
-                             0, NULL, n, b);
+            b[i] = (VkImageMemoryBarrier){
+                .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
+                .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                .newLayout = VK_IMAGE_LAYOUT_GENERAL,
+                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .image = img[i],
+                .subresourceRange = {aspects, 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS}};
+        vkCmdPipelineBarrier(o.cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, NULL, 0,
+                             NULL, n, b);
     }
     return once_end(&o, r);
 }
@@ -4042,8 +4043,8 @@ static void gvk_AcquireNextImageKHR(CPU* RESTRICT c, u64 entry) {
         VkSemaphore sem = H(VkSemaphore, c->x[3]);
         VkFence fence = H(VkFence, c->x[4]);
         if (r == VK_SUCCESS && (sem || fence)) {
-            VkSubmitInfo si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .signalSemaphoreCount = sem ? 1 : 0,
-                               .pSignalSemaphores = &sem};
+            VkSubmitInfo si = {
+                .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .signalSemaphoreCount = sem ? 1 : 0, .pSignalSemaphores = &sem};
             r = queue_submit(1, &si, fence);
         }
         pm_lock(&g_gvk_api.lock);
@@ -4093,9 +4094,7 @@ static void gvk_QueuePresentKHR(CPU* RESTRICT c, u64 entry) {
     GUEST(semaphores, VkSemaphore, waits, nw);
     GUEST(swapchains, u64, chains, nsc);
     GUEST(image_indices, u32, indices, nsc);
-    if (results) {
-        REQUIRE_OUT(results, 4ull * nsc);
-    }
+    if (results) { REQUIRE_OUT(results, 4ull * nsc); }
     VkResult r = VK_SUCCESS;
     if (nw) {
         VkPipelineStageFlags* stages = gvk_scratch(sizeof *stages * nw);
@@ -4118,8 +4117,7 @@ static void gvk_QueuePresentKHR(CPU* RESTRICT c, u64 entry) {
         VkResult one = s && idx < s->n && (s->acquired & (1u << idx)) ? VK_SUCCESS : VK_ERROR_OUT_OF_DATE_KHR;
         VkImage img = one == VK_SUCCESS ? s->img[idx] : VK_NULL_HANDLE;
         VkFormat fmt = one == VK_SUCCESS ? s->fmt : VK_FORMAT_UNDEFINED;
-        u32 w = one == VK_SUCCESS ? s->w : 0, h = one == VK_SUCCESS ? s->h : 0,
-            sc = one == VK_SUCCESS ? s->scale : 1;
+        u32 w = one == VK_SUCCESS ? s->w : 0, h = one == VK_SUCCESS ? s->h : 0, sc = one == VK_SUCCESS ? s->scale : 1;
         i32 crop[4] = {0};
         int has_crop = one == VK_SUCCESS && vi_window_crop(win, w / sc, h / sc, sc, crop);
         if (has_crop && memcmp(crop, s->crop, sizeof crop)) {

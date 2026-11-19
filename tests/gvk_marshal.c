@@ -17,7 +17,10 @@
 #include <string.h>
 
 enum { PAGE = 4096, ROOT = 0x1000, NODE = 0x2000, EXTRA = 0x2040, UNMAPPED = 0x3000 };
-static union { long double align; u8 bytes[4 * PAGE]; } g_guest;
+static union {
+    long double align;
+    u8 bytes[4 * PAGE];
+} g_guest;
 u8* g_mem = g_guest.bytes;
 u64 g_as_size = sizeof g_guest.bytes;
 MemLayout g_layout = {.end = sizeof g_guest.bytes};
@@ -37,9 +40,7 @@ int mem_set_state(u64 addr, u64 size, u32 state, u32 perm) {
     return 0;
 }
 
-int mem_user_mapped(u64 addr, u64 bytes) {
-    return addr >= ROOT && addr < UNMAPPED && bytes <= UNMAPPED - addr;
-}
+int mem_user_mapped(u64 addr, u64 bytes) { return addr >= ROOT && addr < UNMAPPED && bytes <= UNMAPPED - addr; }
 void mem_query(u64 addr, MemBlock* out) {
     *out = (MemBlock){.addr = addr & ~(u64)(PAGE - 1), .size = PAGE};
     if (mem_user_mapped(addr, 1)) {
@@ -78,11 +79,12 @@ const SnxArmModule* g_arm_mod;
 u64 g_code_lo = ROOT, g_code_hi = UNMAPPED;
 static _Atomic GuestFn g_slots[(sizeof g_guest.bytes - ROOT) / 4];
 _Atomic GuestFn* g_disp = g_slots;
-static const struct { u64 addr; const char* name; } g_symbols[] = {
-    {ROOT + 4, "vkQueueSubmit"},
-    {NODE + 4, "vkGetInstanceProcAddr"},
-    {NODE + 8, "vkPrivateAlias"},
-    {NODE + 8, "vkQueueSubmit"},
+static const struct {
+    u64 addr;
+    const char* name;
+} g_symbols[] = {
+    {ROOT + 4, "vkQueueSubmit"},  {NODE + 4, "vkGetInstanceProcAddr"},
+    {NODE + 8, "vkPrivateAlias"}, {NODE + 8, "vkQueueSubmit"},
     {NODE + 12, "notVulkan"},
 };
 enum { PRIVATE_EXPORTS = 520, PRIVATE_START = NODE + 64 };
@@ -109,7 +111,8 @@ int kernel_symbol(u32 i, u64* addr, const char** name) {
     return 1;
 }
 int hook_routed(const char* name) {
-    return strncmp(name, "vkPrivate", 9) == 0 || !strcmp(name, "vkGetInstanceProcAddr") || !strcmp(name, "vkQueueSubmit");
+    return strncmp(name, "vkPrivate", 9) == 0 || !strcmp(name, "vkGetInstanceProcAddr") ||
+           !strcmp(name, "vkQueueSubmit");
 }
 int nce_wanted(void) { return 0; }
 static u64 g_nce_refused; /* the function whose entry nce_slot_taken can't divert, 0 none */
@@ -130,7 +133,8 @@ GuestFn gvk_api_find(const char* name) {
 int gvk_api_supported(void) { return g_supported; }
 
 static void marshal_submit(void) {
-    VkSubmitInfo s = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1,
+    VkSubmitInfo s = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+                      .commandBufferCount = 1,
                       .pCommandBuffers = (const VkCommandBuffer*)(uintptr_t)NODE};
     memcpy(GP(ROOT), &s, sizeof s);
     gw64(NODE, 0x12345678);
@@ -199,8 +203,7 @@ static void marshal_sample_mask(void) {
 }
 
 static void install_driver(void) {
-    for (u32 i = 0; i < PRIVATE_EXPORTS; i++)
-        snprintf(g_private[i], sizeof *g_private, "vkPrivate%u", i);
+    for (u32 i = 0; i < PRIVATE_EXPORTS; i++) snprintf(g_private[i], sizeof *g_private, "vkPrivate%u", i);
     g_settings.guest_vulkan = 1;
     g_slots[(NODE + 8 - ROOT) / 4] = orig_submit;
     g_code_hi = gvk_proc_space(g_code_hi);
