@@ -35,14 +35,17 @@ enum {
 
 /* the platform: its chunks, and what it heard */
 static struct {
-    unsigned chunks, gone, read_back, odd;
+    unsigned chunks, gone, read_back, marked, odd;
     uint32_t written_name;
     uint64_t written_lo, written_hi;
     uint64_t odd_at, odd_got; /* the last chunk given with odd set, from odd_mem */
     void* odd_mem;
 } heard;
+/* a chunk: zeros, or with marked set, CHUNK more than asked of 0xab, which the layer would write over only where
+   something took the bytes before; with odd set, 16 bytes past a multiple of 256 */
 static uint64_t chunk(uint64_t size, uint64_t* got) {
-    void* p = malloc((size_t)size + (heard.odd ? 1024 : 0));
+    void* p = heard.marked ? malloc((size_t)size + CHUNK) : calloc(1, (size_t)size + (heard.odd ? 1024 : 0));
+    if (p && heard.marked) memset(p, 0xab, (size_t)size + CHUNK), size += CHUNK;
     heard.chunks++;
     *got = p ? size : 0;
     if (p && heard.odd) { /* 16 bytes past a multiple of 256, and 100 more than asked */
@@ -293,11 +296,51 @@ int main(void) {
         a.attribs[3].binding = 99;
         memcpy(copy + arrays + 1 * sizeof a, &a, sizeof a);
         refused(copy, total, "has attribute 3 at binding 99");
+        memcpy(copy, saved, total);
+        {
+            size_t untouched = frees + (size_t)SNX_GL_FREE_RANGES * 16 + 8;
+            uint64_t from = 0x10; /* chunk 0's, outside it */
+            memcpy(copy + untouched, &from, sizeof from);
+            refused(copy, total, "chunk 0 at");
+        }
         refused(saved, total - 8, "this build reads");
     }
     free(saved);
     free(copy);
     free(after);
+    /* zeros: only the bytes an earlier taker wrote are written, the chunk's others left as the platform gave them, so a
+       game's loading does not write every page of its textures. A marked chunk stands for the platform's zeros with
+       0xab, so a write over them shows; each is bigger than every free range, so the take is at its start */
+    {
+        const uint64_t c3 = CHUNK + CHUNK / 2;
+        uint64_t u, w;
+        uint32_t z = 0;
+        heard.marked = 1;
+        u = snx_gl_memory_take_zeroed(c3, 256); /* in a chunk of 2.5 x CHUNK */
+        heard.marked = 0;
+        assert(u && bytes(u)[0] == 0xab && bytes(u)[c3 - 1] == 0xab);
+        memset(bytes(u), 7, 100);
+        snx_gl_memory_give(u, c3);
+        w = snx_gl_memory_take_zeroed(2ull * CHUNK, 256);
+        assert(w == u && bytes(w)[0] == 0 && bytes(w)[99] == 0 && bytes(w)[c3 - 1] == 0);
+        assert(bytes(w)[c3] == 0xab && bytes(w)[2ull * CHUNK - 1] == 0xab);
+        snx_gl_memory_give(w, 2ull * CHUNK);
+        /* a buffer's storage with no data: the same, its doubled room (3 x CHUNK) in a chunk of its own */
+        snx_gl_gen_buffers(ctx, 1, &z);
+        snx_gl_bind_buffer(ctx, COPY_WRITE, z);
+        heard.marked = 1;
+        snx_gl_buffer_storage(ctx, z, (int64_t)c3, NULL, 0);
+        heard.marked = 0;
+        u = snx_gl_buffer(z)->data;
+        assert(!snx_gl_get_error(ctx) && u && bytes(u)[0] == 0xab && bytes(u)[c3 - 1] == 0xab);
+        memset(bytes(u), 7, 100);
+        snx_gl_delete_buffers(ctx, 1, &z);
+        snx_gl_gen_buffers(ctx, 1, &z);
+        snx_gl_bind_buffer(ctx, COPY_WRITE, z);
+        snx_gl_buffer_storage(ctx, z, (int64_t)c3, NULL, 0);
+        assert(snx_gl_buffer(z)->data == u && bytes(u)[0] == 0 && bytes(u)[c3 - 1] == 0);
+        snx_gl_delete_buffers(ctx, 1, &z);
+    }
     /* chunks the platform gave side by side keep their free ranges apart: a buffer across two would run past one of
        its allocations. From no chunk, three side by side, each a buffer and, in the room past it, a small one; given
        back so that a range meets the next chunk's both after it and before it */
