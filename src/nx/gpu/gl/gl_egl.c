@@ -9,6 +9,7 @@
 #include "nx/gpu/gl/gl_layer.h"
 #include "common/gpu/gl/gl_state.h"
 #include "nx/hle/services/vi.h"
+#include "nx/hle/hook/hook.h"
 #include "gpu/gl/gl.hook.h"
 #include "nx/memory/mem.h"
 #include "nx/runtime/platform/log.h"
@@ -100,6 +101,7 @@ static struct {
     _Atomic u32 initialized;
     char pad[60];
     _Atomic u32 interval;
+    u64 answer; /* guest bytes a native window's query writes its answer to */
 } g_gl_egl = {.interval = 1};
 
 static u32 fail(u32 error) {
@@ -267,14 +269,35 @@ u32 gl_egl_query_context(CPU* c, u64 dpy, u64 context, i32 attribute, u64 value)
     }
 }
 
+/* what the game's native window answers its query for what (ANativeWindow's query, through the game's own code): 0
+   when the window is no ANativeWindow ('_wnd') or answers an error */
+static u32 window_query(CPU* c, u64 window, i32 what) {
+    u64 query;
+    if (!window || !mem_user_mapped(window, 152) || gr32(window) != 0x5f776e64u) return 0;
+    query = gr64(window + 144);
+    if (!query) return 0;
+    if (!g_gl_egl.answer) g_gl_egl.answer = gl_guest_pages(0x10000);
+    gw32(g_gl_egl.answer, 0);
+    hook_guest_call(c, query, window, (u64)(i64)what, g_gl_egl.answer, 0);
+    return (i32)c->x[0] ? 0 : gr32(g_gl_egl.answer);
+}
 u64 gl_egl_create_window_surface(CPU* c, u64 dpy, u64 cfg, u64 window, u64 attribs) {
-    u32 s, w, h;
-    (void)c, (void)window, (void)attribs;
+    u32 s, w, h, dw, dh, cw, ch;
+    (void)attribs;
     if (!display_ok(dpy)) return 0;
     if (cfg != CONFIG) return fail(EGL_BAD_CONFIG);
-    /* the native window's size, as the game's driver asks vi for it: the layer's, which docked output scales. A game
-       that draws its last pass at that size fills the display */
+    /* the native window's size as the game's driver reads it: its default size (NATIVE_WINDOW_DEFAULT_WIDTH and
+       _HEIGHT), which is what the game set (native_window_set_buffers_user_dimensions), else its layer's from vi,
+       1280x720 docked too (docked output scales it). One game sets 1920x1080 docked; another draws its last pass at
+       1280x720 into the layer's */
+    dw = window_query(c, window, 6), dh = window_query(c, window, 7);
+    cw = window_query(c, window, 0), ch = window_query(c, window, 1);
     vi_window_size(&w, &h);
+    if (dw && dh) w = dw, h = dh;
+    LOG_LIMIT(8,
+              "gl layer: a window surface of %ux%u: its native window's default size %ux%u (its buffers' %ux%u), "
+              "vi's layer's taken where that is 0\n",
+              w, h, dw, dh, cw, ch);
     s = gl_host_surface_new(w, h);
     return s ? s : fail(EGL_BAD_ALLOC);
 }
