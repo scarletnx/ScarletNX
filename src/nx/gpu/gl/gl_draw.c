@@ -15,7 +15,7 @@
    The game's thread makes a record of the state groups under the object lock and hands it to the GPU thread, which
    keeps a DsState for each context, gives a group a new generation when its bytes changed, and draws, in order with
    the uploads and the presents. The renderer reads a draw's buffers there, so a draw names them to the shared layer
-   (snx_gl_buffer_read_by), which puts a write of their bytes on the GPU thread behind it (gl_draw_write) */
+   (snx_gl_buffer_read_by), which gives a buffer written after it a new range */
 #include "common/gpu/gl/gl_format.h"
 #include "common/gpu/gl/gl_framebuffer.h"
 #include "common/gpu/gl/gl_object.h"
@@ -113,10 +113,10 @@ static struct {
     u64 ring;                       /* the ring's guest address */
     u64 head;                       /* bytes written into the ring, from its start */
     u32 sent[SNX_GL_PROGRAM_NAMES]; /* each program's link handed to the GPU thread, 0 for none */
-    u64 issued;                     /* the draws, clears and writes handed to the GPU thread */
+    u64 issued;                     /* the draws, clears and uploads handed to the GPU thread */
     /* the GPU thread's */
     _Atomic u64 done;      /* the ring's bytes the GPU thread finished with */
-    _Atomic u64 completed; /* the draws, clears and writes it finished, a fence's serial (gl_sync.h) */
+    _Atomic u64 completed; /* the draws, clears and uploads it finished, a fence's serial (gl_sync.h) */
     DsState* state[SNX_GL_CONTEXTS];
     struct {
         u32 generation, vs, fs;
@@ -689,31 +689,6 @@ int gl_draw(u32 ctx, const DrawCall* call, u32 elements_type, u64 indices) {
     return 1;
 }
 
-/* a write of the layer's memory behind the draws (gl_draw_write) */
-typedef struct {
-    u64 at, size, serial;
-    int zeros;
-    u8 bytes[];
-} WriteRecord;
-static void write_on_gpu(void* arg) {
-    WriteRecord* w = arg;
-    if (w->zeros)
-        memset(GP(w->at), 0, w->size);
-    else
-        memcpy(GP(w->at), w->bytes, w->size);
-    gpu_mem_written_cpu(w->at, w->size);
-    gl_draw_done(w->serial);
-    free(w);
-}
-u64 gl_draw_write(u64 at, const void* data, u64 size) {
-    WriteRecord* w = malloc(sizeof *w + (data ? size : 0));
-    if (!w) fatal("gl layer: out of memory for a write of %llu bytes behind the draws", (unsigned long long)size);
-    w->at = at, w->size = size, w->zeros = !data;
-    if (data) memcpy(w->bytes, data, size);
-    w->serial = gl_draw_issue();
-    gpu_call(write_on_gpu, w, NULL, 0);
-    return w->serial;
-}
 u64 gl_draw_issue(void) { return ++g_gl_draw.issued; }
 void gl_draw_done(u64 serial) { atomic_store_explicit(&g_gl_draw.completed, serial, memory_order_release); }
 

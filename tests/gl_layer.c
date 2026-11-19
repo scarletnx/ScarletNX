@@ -13,8 +13,8 @@
    at an address of guest memory, written through it and read back, a vertex array's attribute reading the array
    buffer bound; a texture given texels from a pointer passed on the stack, kept in guest memory, and a parameter of
    it read back, and a framebuffer complete once that texture is attached; the point size and polygon mode set; a
-   fence signaled at once; a draw on a GPU thread that lags reading the bytes it was called with, the buffer's writes
-   after it landing behind it, and a deleted texture's storage held while its upload waits; a GL and an EGL function without a handler stopping the game, the message naming the
+   fence signaled at once; a draw on a GPU thread that lags reading the bytes it was called with, a write over them
+   taking the buffer a new range with no wait, and a deleted texture's storage held while its upload waits; a GL and an EGL function without a handler stopping the game, the message naming the
    function and gl_layer's value */
 #include "common/gpu/gl/gl_framebuffer.h"
 #include "common/gpu/gl/gl_object.h"
@@ -899,10 +899,12 @@ int main(void) {
         assert(sync && call("_glClientWaitSync", sync, 1, 1000000, 0, 0) == 0x911a); /* GL_ALREADY_SIGNALED */
     }
 
-    /* a buffer a draw handed to a GPU thread that lags still reads: the draw reads the bytes it was called with, and
-       glBufferSubData's and glBufferData's land behind it on the GPU thread, in order, the GPU's caches told */
+    /* a buffer a draw handed to a GPU thread that lags still reads: the draw reads the bytes it was called with, the
+       write over them takes the buffer a new range, as GL's orphaning, and nothing waits: the GPU thread is held here,
+       so a wait would never end, and nothing but the draws goes to it */
     {
         const u64 data = snx_gl_buffer((u32)ab)->data, from = SCRATCH + 0x3b00;
+        u64 moved;
         u8 before[12];
         memcpy(before, GP(data), sizeof before);
         call("_glUseProgram", prog, 0, 0, 0, 0);
@@ -913,30 +915,33 @@ int main(void) {
         g_lagging.held = 1;
         call("_glDrawArrays", 4, 0, 3, 0, 0);
         memset(GP(from), 0x5a, 12);
-        call("_glBufferSubData", 0x8892, 0, 12, from, 0);
-        call("_glBufferData", 0x8892, 64, 0, 0x88e8, 0); /* in place: its zeros after */
-        call("_glBufferSubData", 0x8892, 4, 4, from, 0);
-        assert(snx_gl_buffer((u32)ab)->data == data && !memcmp(GP(data), before, sizeof before) && g_lagging.n == 4);
         g_written.n = 0;
+        call("_glBufferSubData", 0x8892, 0, 12, from, 0);
+        moved = snx_gl_buffer((u32)ab)->data;
+        assert(moved != data && !memcmp(GP(data), before, sizeof before) && GP(moved)[0] == 0x5a &&
+               GP(moved)[11] == 0x5a);
+        assert(told_written(moved, 12) && g_lagging.n == 1);
+        call("_glBufferData", 0x8892, 64, 0, 0x88e8, 0); /* no draw reads the new range yet: kept, zeros */
+        call("_glBufferSubData", 0x8892, 4, 4, from, 0);
+        assert(snx_gl_buffer((u32)ab)->data == moved && !GP(moved)[0] && GP(moved)[4] == 0x5a && g_lagging.n == 1);
         gpu_run();
-        assert(!memcmp(g_drawn.vertex, before, sizeof before));
-        assert(!GP(data)[0] && !GP(data)[3] && GP(data)[4] == 0x5a && GP(data)[7] == 0x5a && !GP(data)[8]);
-        assert(told_written(data, 12) && told_written(data, 64) && told_written(data + 4, 4));
-        /* the element array buffer too: its indices as the draw had them */
+        assert(!memcmp(g_drawn.vertex, before, sizeof before) && g_drawn.ds.vbuf.addr[0] == gl_gpu_address(data));
+        /* the element array buffer too: the draw's indices kept where it reads them */
         {
-            const u64 name = SCRATCH + 0x3c00;
+            const u64 name = SCRATCH + 0x3c00, indices_in = SCRATCH + 0x3c10;
             u64 indices;
-            u8 kept;
+            memset(GP(indices_in), 1, 16);
             call("_glCreateBuffers", 1, name, 0, 0, 0);
             call("_glBindBuffer", 0x8893, gr32(name), 0, 0, 0);
-            call("_glBufferData", 0x8893, 16, 0, 0x88e4, 0); /* GL_STATIC_DRAW */
-            indices = snx_gl_buffer(gr32(name))->data, kept = GP(indices)[2];
+            call("_glBufferData", 0x8893, 16, indices_in, 0x88e4, 0); /* GL_STATIC_DRAW */
+            indices = snx_gl_buffer(gr32(name))->data;
             g_lagging.held = 1;
             call("_glDrawElements", 4, 3, 0x1403, 2, 0);
             call("_glBufferSubData", 0x8893, 2, 4, from, 0);
-            assert(GP(indices)[2] == kept && g_lagging.n == 2);
+            assert(snx_gl_buffer(gr32(name))->data != indices && GP(indices)[2] == 1 && g_lagging.n == 1);
+            assert(GP(snx_gl_buffer(gr32(name))->data)[2] == 0x5a);
             gpu_run();
-            assert(GP(indices)[2] == 0x5a && told_written(indices + 2, 4));
+            assert(g_drawn.ds.index.addr == gl_gpu_address(indices) + 2);
         }
         /* a texture deleted while its upload waits for the GPU thread: its storage held until the upload is done, the
            next texture's elsewhere */
