@@ -485,6 +485,112 @@ int main(int argc, char** argv) {
     assert(push_member_offset(sized, bytes, &pushes) == GVK_SIZE_PUSH && pushes == 1);
     check_divided(sized, bytes, 0x13, 2);
     validate(validator, "vulkan1.2", sized, bytes);
+
+    /* Push-constant member starting below GVK_SIZE_PUSH (192) whose mat4 extends into [240, 256): must not rewrite */
+    {
+        enum {
+            OP_FUNCTION = 54,
+            OP_LOAD = 61,
+            OP_QUERY_SIZE_LOD = 103,
+            OP_TYPE_VOID = 19,
+            OP_TYPE_FUNC = 33,
+            OP_TYPE_IMAGE = 25,
+            OP_TYPE_SAMPLED_IMAGE = 27,
+            OP_FUNCTION_END = 56,
+            PUSH_CONST = 9,
+            OFFSET_DEC = 35,
+            BINDING_DEC = 33,
+            SET_DEC = 34,
+            BLOCK_DEC = 2,
+            ID_MAIN = 1,
+            ID_VOID = 2,
+            ID_FN_T = 3,
+            ID_INT = 4,
+            ID_IVEC2 = 5,
+            ID_FLOAT = 6,
+            ID_VEC4 = 7,
+            ID_MAT4 = 8,
+            ID_PC_STRUCT = 9,
+            ID_PC_PTR = 10,
+            ID_PC_VAR = 11,
+            ID_IMG_T = 12,
+            ID_SIMG_T = 13,
+            ID_IMG_PTR = 14,
+            ID_IMG_VAR = 15,
+            ID_C0 = 16,
+            ID_LD = 17,
+            ID_SZ = 18,
+            ID_AC0 = 19,
+        };
+        header(&m);
+        PUT(&m, OP_CAPABILITY, CAP_SHADER);
+        PUT(&m, OP_ENTRY_POINT, FRAGMENT, ID_MAIN, 0);
+        PUT(&m, OP_DECORATE, ID_PC_STRUCT, BLOCK_DEC);
+        PUT(&m, OP_MEMBER_DECORATE, ID_PC_STRUCT, 0, OFFSET_DEC, 192);
+        PUT(&m, OP_MEMBER_DECORATE, ID_PC_STRUCT, 0, MATRIX_STRIDE, 16);
+        PUT(&m, OP_DECORATE, ID_IMG_VAR, SET_DEC, 0);
+        PUT(&m, OP_DECORATE, ID_IMG_VAR, BINDING_DEC, 0);
+        PUT(&m, OP_TYPE_VOID, ID_VOID);
+        PUT(&m, OP_TYPE_FUNC, ID_FN_T, ID_VOID);
+        PUT(&m, OP_TYPE_INT, ID_INT, 32, 1);
+        PUT(&m, OP_TYPE_VECTOR, ID_IVEC2, ID_INT, 2);
+        PUT(&m, OP_TYPE_FLOAT, ID_FLOAT, 32);
+        PUT(&m, OP_TYPE_VECTOR, ID_VEC4, ID_FLOAT, 4);
+        PUT(&m, OP_TYPE_MATRIX, ID_MAT4, ID_VEC4, 4);
+        PUT(&m, OP_TYPE_STRUCT, ID_PC_STRUCT, ID_MAT4);
+        PUT(&m, OP_TYPE_POINTER, ID_PC_PTR, PUSH_CONST, ID_PC_STRUCT);
+        PUT(&m, OP_VARIABLE, ID_PC_PTR, ID_PC_VAR, PUSH_CONST);
+        PUT(&m, OP_TYPE_IMAGE, ID_IMG_T, ID_FLOAT, 1, 0, 0, 0, 1, 0);
+        PUT(&m, OP_TYPE_SAMPLED_IMAGE, ID_SIMG_T, ID_IMG_T);
+        PUT(&m, OP_TYPE_POINTER, ID_IMG_PTR, 0, ID_IMG_T);
+        PUT(&m, OP_VARIABLE, ID_IMG_PTR, ID_IMG_VAR, 0);
+        PUT(&m, OP_CONSTANT, ID_INT, ID_C0, 0);
+        PUT(&m, OP_FUNCTION, ID_VOID, ID_MAIN, 0, ID_FN_T);
+        PUT(&m, OP_LOAD, ID_IMG_T, ID_LD, ID_IMG_VAR);
+        PUT(&m, OP_QUERY_SIZE_LOD, ID_IVEC2, ID_SZ, ID_LD, ID_C0);
+        PUT(&m, OP_FUNCTION_END);
+        sized = gvk_spirv_scaled_size(m.w, m.n * 4, &bytes, &slots);
+        assert(sized == m.w && !slots.n);
+
+        /* 4-word OpAccessChain (0 indices) must not read past the instruction */
+        header(&m);
+        PUT(&m, OP_CAPABILITY, CAP_SHADER);
+        PUT(&m, OP_ENTRY_POINT, FRAGMENT, ID_MAIN, 0);
+        PUT(&m, OP_DECORATE, ID_IMG_VAR, SET_DEC, 0);
+        PUT(&m, OP_DECORATE, ID_IMG_VAR, BINDING_DEC, 0);
+        PUT(&m, OP_TYPE_VOID, ID_VOID);
+        PUT(&m, OP_TYPE_FUNC, ID_FN_T, ID_VOID);
+        PUT(&m, OP_TYPE_INT, ID_INT, 32, 1);
+        PUT(&m, OP_TYPE_VECTOR, ID_IVEC2, ID_INT, 2);
+        PUT(&m, OP_TYPE_FLOAT, ID_FLOAT, 32);
+        PUT(&m, OP_TYPE_IMAGE, ID_IMG_T, ID_FLOAT, 1, 0, 0, 0, 1, 0);
+        PUT(&m, OP_TYPE_POINTER, ID_IMG_PTR, 0, ID_IMG_T);
+        PUT(&m, OP_VARIABLE, ID_IMG_PTR, ID_IMG_VAR, 0);
+        PUT(&m, OP_CONSTANT, ID_INT, ID_C0, 0);
+        PUT(&m, OP_FUNCTION, ID_VOID, ID_MAIN, 0, ID_FN_T);
+        PUT(&m, OP_ACCESS_CHAIN, ID_IMG_PTR, ID_AC0, ID_IMG_VAR); /* 4 words */
+        PUT(&m, OP_LOAD, ID_IMG_T, ID_LD, ID_AC0);
+        PUT(&m, OP_QUERY_SIZE_LOD, ID_IVEC2, ID_SZ, ID_LD, ID_C0);
+        PUT(&m, OP_FUNCTION_END);
+        sized = gvk_spirv_scaled_size(m.w, m.n * 4, &bytes, &slots);
+        assert(sized == m.w && !slots.n && slots.skipped == 1);
+
+        /* Malformed push-constant pointer (not OpTypePointer) must return NULL cleanly */
+        header(&m);
+        PUT(&m, OP_CAPABILITY, CAP_SHADER);
+        PUT(&m, OP_ENTRY_POINT, FRAGMENT, ID_MAIN, 0);
+        PUT(&m, OP_TYPE_VOID, ID_VOID);
+        PUT(&m, OP_TYPE_FUNC, ID_FN_T, ID_VOID);
+        PUT(&m, OP_TYPE_INT, ID_INT, 32, 1);
+        PUT(&m, OP_TYPE_VECTOR, ID_IVEC2, ID_INT, 2);
+        PUT(&m, OP_TYPE_STRUCT, ID_PC_STRUCT); /* 2 words, wrongly referenced as pc_ptr */
+        PUT(&m, OP_VARIABLE, ID_PC_STRUCT, ID_PC_VAR, PUSH_CONST);
+        PUT(&m, OP_FUNCTION, ID_VOID, ID_MAIN, 0, ID_FN_T);
+        PUT(&m, OP_QUERY_SIZE_LOD, ID_IVEC2, ID_SZ, ID_PC_VAR, ID_INT);
+        PUT(&m, OP_FUNCTION_END);
+        sized = gvk_spirv_scaled_size(m.w, m.n * 4, &bytes, &slots);
+        assert(!sized);
+    }
     while (g_scratch) {
         Scratch* p = g_scratch;
         g_scratch = p->next;

@@ -133,7 +133,11 @@ typedef struct {
 /* a fragment module whose size queries gvk divides (gvk_spirv_scaled_size), by its handle, and a graphics pipeline of
    one, by its handle, with the layout that takes its push constants and the stages they are pushed for */
 typedef struct {
-    u64 key, layout;
+    u64 key;
+    union {
+        u64 layout; /* psizes: the layout that takes its push constants */
+        u64 orig;   /* msizes: unrewritten module for a layout with no push-constant room */
+    };
     u32 stages;
     u16 slot[GVK_SIZE_SLOTS];
     u8 n;
@@ -190,7 +194,7 @@ typedef struct {
     u32 n, next;
     u32 acquired; /* a bit for each image the game holds: acquired and not presented yet */
     u32 reserved;
-    int retired;
+    int retired, destroying;
     VkFormat fmt;
     u32 w, h, scale;
     i32 crop[4];
@@ -876,7 +880,7 @@ static int debug_available(void) {
 
 static void gvk_EnumerateInstanceVersion(CPU* RESTRICT c, u64 entry) {
     (void)entry;
-    if (c->x[0] && mem_user_mapped(c->x[0], 4)) gw32(c->x[0], GVK_GUEST_API);
+    if (c->x[0] && gvk_writable(c->x[0], 4)) gw32(c->x[0], GVK_GUEST_API);
     ret_vk(c, VK_SUCCESS);
 }
 
@@ -1061,9 +1065,19 @@ static void gvk_GetPhysicalDeviceProperties2(CPU* RESTRICT c, u64 entry) {
     u64 at[GVK_CHAIN];
     u32 size[GVK_CHAIN], n = 0;
     VkBaseOutStructure* host[GVK_CHAIN];
+    u64 seen[64];
     u64 a = gr64(g + offsetof(VkPhysicalDeviceProperties2, pNext));
     for (u32 hops = 0; a && hops < 64 && mem_user_mapped(a, sizeof(VkBaseOutStructure)); hops++, a = gr64(a + 8)) {
+        int cycle = 0;
+        for (u32 j = 0; j < hops; j++)
+            if (seen[j] == a) cycle = 1;
+        if (cycle) break;
+        seen[hops] = a;
         VkStructureType st = (VkStructureType)gr32(a);
+        int dup = 0;
+        for (u32 j = 0; j < n; j++)
+            if (host[j]->sType == st) dup = 1;
+        if (dup) continue;
         u32 bytes = 0;
         for (size_t i = 0; i < sizeof g_prop_chain / sizeof *g_prop_chain; i++)
             if (g_prop_chain[i].st == st) bytes = g_prop_chain[i].size;
@@ -1268,7 +1282,10 @@ static void gvk_AllocateMemory(CPU* RESTRICT c, u64 entry) {
             return;
         }
         m.size = (size + g_gvk_api.import_align - 1) & ~(g_gvk_api.import_align - 1);
-        const VkMemoryDedicatedAllocateInfo* dedicated = next;
+        const VkMemoryDedicatedAllocateInfo* dedicated =
+            next && ((const VkBaseInStructure*)next)->sType == VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO
+                ? next
+                : NULL;
         if (dedicated && (dedicated->buffer || dedicated->image) && m.size != size) {
             WARN_LIMIT(8, "gvk: dedicated allocation size is not aligned for guest memory import\n");
             ret_vk(c, VK_ERROR_OUT_OF_DEVICE_MEMORY);
@@ -1554,14 +1571,14 @@ static void gvk_CreatePipelineLayout(CPU* RESTRICT c, u64 entry) {
         VkPushConstantRange* p = gvk_scratch(sizeof *p * (n + 1));
         for (u32 i = 0; i < n; i++) {
             p[i] = ci->pPushConstantRanges[i];
-            room &= p[i].offset + p[i].size <= GVK_SIZE_PUSH;
+            room &= (u64)p[i].offset + p[i].size <= GVK_SIZE_PUSH;
             if (p[i].stageFlags & VK_SHADER_STAGE_FRAGMENT_BIT) frag = i;
         }
-        if (frag == n)
-            p[n] = (VkPushConstantRange){VK_SHADER_STAGE_FRAGMENT_BIT, GVK_SIZE_PUSH, 16};
-        else
-            p[frag].size = GVK_SIZE_PUSH + 16 - p[frag].offset;
         if (room) {
+            if (frag == n)
+                p[n] = (VkPushConstantRange){VK_SHADER_STAGE_FRAGMENT_BIT, GVK_SIZE_PUSH, 16};
+            else
+                p[frag].size = GVK_SIZE_PUSH + 16 - p[frag].offset;
             ci->pPushConstantRanges = p;
             ci->pushConstantRangeCount = n + (frag == n);
             stages = p[frag].stageFlags;
@@ -1840,7 +1857,8 @@ static void gvk_DestroyShaderModule(CPU* RESTRICT c, u64 entry) {
     GvkSizes s;
     if (tab_take(TAB(dual), &g_gvk_api.ndual, c->x[1], &e))
         vkDestroyShaderModule(g_vk.dev, H(VkShaderModule, e.dual), NULL);
-    if (scale_factor() > 1) tab_take(TAB(msizes), &g_gvk_api.nmsizes, c->x[1], &s);
+    if (scale_factor() > 1 && tab_take(TAB(msizes), &g_gvk_api.nmsizes, c->x[1], &s) && s.orig)
+        vkDestroyShaderModule(g_vk.dev, H(VkShaderModule, s.orig), NULL);
     vkDestroyShaderModule(g_vk.dev, H(VkShaderModule, c->x[1]), NULL);
     ret(c, 0);
 }
@@ -1960,6 +1978,14 @@ static void gvk_CreateImage(CPU* RESTRICT c, u64 entry) {
         ci->queueFamilyIndexCount = 0;
         ci->pQueueFamilyIndices = NULL;
         ci->format = host_format(ci->format);
+        for (VkBaseOutStructure* n = (VkBaseOutStructure*)ci->pNext; n; n = n->pNext) {
+            if (n->sType != VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO) continue;
+            VkImageFormatListCreateInfo* fl = (VkImageFormatListCreateInfo*)n;
+            if (!fl->viewFormatCount || !fl->pViewFormats) continue;
+            VkFormat* vf = gvk_scratch(sizeof *vf * fl->viewFormatCount);
+            for (u32 i = 0; i < fl->viewFormatCount; i++) vf[i] = host_format(fl->pViewFormats[i]);
+            fl->pViewFormats = vf;
+        }
         int importable = ci->tiling == VK_IMAGE_TILING_LINEAR && image_importable(ci);
         VkImageAspectFlags preinit = 0;
         VkImageDrmFormatModifierListCreateInfoEXT mods = {
@@ -2047,6 +2073,8 @@ static void gvk_CreateShaderModule(CPU* RESTRICT c, u64 entry) {
             return;
         }
         /* at the resolution scale, its size queries answer the game's size (gvk_spirv_scaled_size) */
+        const u32* raw_code = mended;
+        size_t raw_bytes = bytes;
         GvkSizeSlots slots = {0};
         if (sizes_on()) {
             size_t sized;
@@ -2064,7 +2092,12 @@ static void gvk_CreateShaderModule(CPU* RESTRICT c, u64 entry) {
         ci->codeSize = bytes;
         r = vkCreateShaderModule(g_vk.dev, ci, NULL, &h);
         if (r == VK_SUCCESS && slots.n) {
-            GvkSizes e = {.key = U(h), .n = slots.n};
+            VkShaderModule orig = VK_NULL_HANDLE;
+            VkShaderModuleCreateInfo raw_ci = *ci;
+            raw_ci.pCode = raw_code;
+            raw_ci.codeSize = raw_bytes;
+            if (vkCreateShaderModule(g_vk.dev, &raw_ci, NULL, &orig) != VK_SUCCESS) orig = VK_NULL_HANDLE;
+            GvkSizes e = {.key = U(h), .orig = U(orig), .n = slots.n};
             memcpy(e.slot, slots.slot, sizeof e.slot);
             tab_put(TAB(msizes), &g_gvk_api.nmsizes, &e);
         }
@@ -2099,12 +2132,19 @@ static void gvk_CreatePipelineCache(CPU* RESTRICT c, u64 entry) {
     ret_vk(c, r);
 }
 static void gvk_GetPipelineCacheData(CPU* RESTRICT c, u64 entry) {
-    if (!c->x[2] || !mem_user_mapped(c->x[2], 8)) {
+    if (!c->x[2] || !gvk_writable(c->x[2], 8)) {
         ret_vk(c, VK_ERROR_INITIALIZATION_FAILED);
         return;
     }
     size_t size = gr64(c->x[2]);
-    void* data = c->x[3] && mem_user_mapped(c->x[3], size) ? GP(c->x[3]) : NULL;
+    void* data = NULL;
+    if (c->x[3]) {
+        if (!gvk_writable(c->x[3], size)) {
+            ret_vk(c, VK_ERROR_INITIALIZATION_FAILED);
+            return;
+        }
+        data = GP(c->x[3]);
+    }
     VkResult r = vkGetPipelineCacheData(g_vk.dev, H(VkPipelineCache, c->x[1]), &size, data);
     gw64(c->x[2], size);
     ret_vk(c, r);
@@ -2520,7 +2560,14 @@ static void gvk_UpdateDescriptorSets(CPU* RESTRICT c, u64 entry) {
         ret(c, 0);
         return;
     }
+    /* Validate all writes before mutating any view/set tracking state. */
     for (u32 i = 0; w && i < nw; i++) {
+        if (!w[i].descriptorCount) {
+            w[i].pImageInfo = NULL;
+            w[i].pBufferInfo = NULL;
+            w[i].pTexelBufferView = NULL;
+            continue;
+        }
         switch (w[i].descriptorType) {
             case VK_DESCRIPTOR_TYPE_SAMPLER:
             case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
@@ -2533,15 +2580,6 @@ static void gvk_UpdateDescriptorSets(CPU* RESTRICT c, u64 entry) {
                 }
                 w[i].pBufferInfo = NULL;
                 w[i].pTexelBufferView = NULL;
-                if (w[i].pImageInfo && w[i].descriptorType != VK_DESCRIPTOR_TYPE_SAMPLER) {
-                    VkDescriptorImageInfo* im = gvk_scratch(sizeof *im * w[i].descriptorCount);
-                    for (u32 k = 0; k < w[i].descriptorCount; k++) {
-                        im[k] = w[i].pImageInfo[k];
-                        im[k].imageLayout = host_layout(im[k].imageLayout);
-                    }
-                    w[i].pImageInfo = im;
-                    if (scale_factor() > 1) views_to_host(&w[i], im);
-                }
                 break;
             case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
             case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
@@ -2561,6 +2599,16 @@ static void gvk_UpdateDescriptorSets(CPU* RESTRICT c, u64 entry) {
                 w[i].pTexelBufferView = NULL;
                 break;
         }
+    }
+    for (u32 i = 0; w && i < nw; i++) {
+        if (!w[i].descriptorCount || !w[i].pImageInfo || w[i].descriptorType == VK_DESCRIPTOR_TYPE_SAMPLER) continue;
+        VkDescriptorImageInfo* im = gvk_scratch(sizeof *im * w[i].descriptorCount);
+        for (u32 k = 0; k < w[i].descriptorCount; k++) {
+            im[k] = w[i].pImageInfo[k];
+            im[k].imageLayout = host_layout(im[k].imageLayout);
+        }
+        w[i].pImageInfo = im;
+        if (scale_factor() > 1) views_to_host(&w[i], im);
     }
     if (scale_factor() > 1 && cp && nc) copies_scale(cp, nc);
     if (g_vk.gvk_host_sets)
@@ -2586,6 +2634,10 @@ static void gvk_CreateGraphicsPipelines(CPU* RESTRICT c, u64 entry) {
             for (u32 s = 0; ci[i].pStages && s < ci[i].stageCount; s++)
                 tess |= (ci[i].pStages[s].stage & VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT) != 0;
             if (!tess) ci[i].pTessellationState = NULL;
+            if (tess && !ci[i].pTessellationState) {
+                ret_vk(c, VK_ERROR_INITIALIZATION_FAILED);
+                return;
+            }
             const VkPipelineColorBlendStateCreateInfo* b = ci[i].pColorBlendState;
             for (u32 a = 0; b && b->pAttachments && a < b->attachmentCount; a++) {
                 const VkPipelineColorBlendAttachmentState* at = &b->pAttachments[a];
@@ -2601,6 +2653,16 @@ static void gvk_CreateGraphicsPipelines(CPU* RESTRICT c, u64 entry) {
             for (u32 s = 0; src1 && st && s < ci[i].stageCount; s++)
                 if (st[s].stage == VK_SHADER_STAGE_FRAGMENT_BIT && tab_get(TAB(dual), U(st[s].module), &d))
                     st[s].module = H(VkShaderModule, d.dual);
+            /* If the layout has no push-constant room for scaled size queries, use the unrewritten module. */
+            if (scale_factor() > 1 && frag[i]) {
+                GvkSizes ms;
+                GvkLayout lay;
+                if (tab_get(TAB(msizes), frag[i], &ms) && ms.orig &&
+                    (!tab_get(TAB(layout), U(ci[i].layout), &lay) || lay.gone)) {
+                    for (u32 s = 0; st && s < ci[i].stageCount; s++)
+                        if (st[s].stage == VK_SHADER_STAGE_FRAGMENT_BIT) st[s].module = H(VkShaderModule, ms.orig);
+                }
+            }
             /* a viewport baked into the pipeline isn't scaled: which target it draws to is the render pass's */
             if (scale_factor() > 1 && ci[i].pViewportState && ci[i].pViewportState->pViewports) {
                 int dynamic = 0;
@@ -2613,6 +2675,7 @@ static void gvk_CreateGraphicsPipelines(CPU* RESTRICT c, u64 entry) {
         int entered = snx_vk_compile_enter();
         r = vkCreateGraphicsPipelines(g_vk.dev, H(VkPipelineCache, c->x[1]), n, ci, NULL, gvk_ptr(c->x[5]));
         snx_vk_compile_leave(entered);
+        kthread_host_wait_end();
         const VkPipeline* made = gvk_ptr(c->x[5]);
         for (u32 i = 0; scale_factor() > 1 && i < n; i++) {
             if (!made[i]) continue;
@@ -2641,7 +2704,6 @@ static void gvk_CreateGraphicsPipelines(CPU* RESTRICT c, u64 entry) {
             }
             pm_unlock(&g_gvk_api.lock);
         }
-        kthread_host_wait_end();
     }
     if (r != VK_SUCCESS) WARN_LIMIT(16, "gvk: vkCreateGraphicsPipelines failed (%d)\n", (int)r);
     ret_vk(c, r);
@@ -2792,6 +2854,7 @@ static void gvk_BeginCommandBuffer(CPU* RESTRICT c, u64 entry) {
     VkCommandBufferBeginInfo* bi = gvk_in(&gvk_t_begin, c->x[1], 1);
     u32 inherited_scale = 0;
     if (bi && cmd.level == VK_COMMAND_BUFFER_LEVEL_PRIMARY) bi->pInheritanceInfo = NULL;
+    if (bi && cmd.level == VK_COMMAND_BUFFER_LEVEL_SECONDARY && !bi->pInheritanceInfo) bi = NULL;
     if (bi && bi->pInheritanceInfo && (bi->flags & VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT))
         inherited_scale = set_has(g_gvk_api.sfb, GVK_SCALED, U(bi->pInheritanceInfo->framebuffer)) ? scale_factor() : 1;
     VkResult r = bi ? vkBeginCommandBuffer(cb, bi) : VK_ERROR_INITIALIZATION_FAILED;
@@ -2912,8 +2975,9 @@ static void gvk_CmdBindDescriptorSets(CPU* RESTRICT c, u64 entry) {
             tab_put_nl(TAB(bound), &g_gvk_api.nbound, &fresh);
             b = &g_gvk_api.bound[tab_slot(TAB(bound), c->x[0])];
         }
-        for (u32 j = 0; j < (u32)c->x[4] && (u32)c->x[3] + j < 4; j++)
-            b->mask[(u32)c->x[3] + j] = set_mask_nl(U(sets[j]));
+        u32 first = (u32)c->x[3], count = (u32)c->x[4];
+        if (first < 4)
+            for (u32 j = 0; j < count && j < 4 - first; j++) b->mask[first + j] = set_mask_nl(U(sets[j]));
         pm_unlock(&g_gvk_api.lock);
     }
     ret(c, 0);
@@ -2924,9 +2988,20 @@ static void gvk_CmdPushConstants(CPU* RESTRICT c, u64 entry) {
     GUEST(values, u8, c->x[5], (u32)c->x[4]);
     VkShaderStageFlags stages = (VkShaderStageFlags)c->x[2];
     u32 offset = (u32)c->x[3], size = (u32)c->x[4];
+    VkCommandBuffer cb = CB;
+    VkPipelineLayout lay = H(VkPipelineLayout, c->x[1]);
     GvkLayout l;
-    if (scale_factor() > 1 && tab_get(TAB(layout), c->x[1], &l) && offset + size > l.from) stages |= l.stages;
-    vkCmdPushConstants(CB, H(VkPipelineLayout, c->x[1]), stages, offset, size, values);
+    if (scale_factor() > 1 && tab_get(TAB(layout), c->x[1], &l) && (u64)offset + size > l.from) {
+        if (offset < l.from) {
+            u32 head = l.from - offset;
+            vkCmdPushConstants(cb, lay, stages, offset, head, values);
+            vkCmdPushConstants(cb, lay, stages | l.stages, l.from, size - head, values + head);
+            ret(c, 0);
+            return;
+        }
+        stages |= l.stages;
+    }
+    vkCmdPushConstants(cb, lay, stages, offset, size, values);
     ret(c, 0);
 }
 /* the factor the commands of cb draw at now: its render pass's framebuffer's */
@@ -3002,12 +3077,14 @@ static void dyn_again(VkCommandBuffer cb) {
     if (!tab_get(TAB(dyn), U(cb), &d)) return;
     int changed = 0;
     if ((cmd.dynamic & DYN_VIEWPORT) && d.has_vp && d.vp_at != f) {
-        set_viewports(cb, 0, 1, &d.vp, f);
+        VkViewport vp = f > 1 ? viewport_at(d.vp, f) : d.vp;
+        vkCmdSetViewport(cb, 0, 1, &vp);
         d.vp_at = f;
         changed = 1;
     }
     if ((cmd.dynamic & DYN_SCISSOR) && d.has_sc && d.sc_at != f) {
-        set_scissors(cb, 0, 1, &d.sc, f);
+        VkRect2D sc = f > 1 ? rect_at(d.sc, f) : d.sc;
+        vkCmdSetScissor(cb, 0, 1, &sc);
         d.sc_at = f;
         changed = 1;
     }
@@ -3034,7 +3111,7 @@ static void sizes_push(VkCommandBuffer cb) {
     b->pushed_layout = s->layout;
     b->pushed = bits;
     pm_unlock(&g_gvk_api.lock);
-    const u32 values[2] = {bits, scale_factor() - 1};
+    const u32 values[4] = {bits, scale_factor() - 1, 0, 0};
     if (push) vkCmdPushConstants(cb, layout, stages, GVK_SIZE_PUSH, sizeof values, values);
 }
 /* before a draw: the viewport and scissor at its render pass's scale, and its size queries' bits */
@@ -3198,9 +3275,15 @@ static void gvk_CmdPipelineBarrier(CPU* RESTRICT c, u64 entry) {
     gvk_scratch_reset();
     u32 nm = (u32)c->x[4], nb = (u32)c->x[6], ni = (u32)stack_arg(c, 0);
     const VkMemoryBarrier* m = gvk_in(&gvk_t_mbar, c->x[5], nm);
-    const VkBufferMemoryBarrier* b = gvk_in(&gvk_t_bbar, c->x[7], nb);
+    VkBufferMemoryBarrier* b = gvk_in(&gvk_t_bbar, c->x[7], nb);
     VkImageMemoryBarrier* i = gvk_in(&gvk_t_ibar, stack_arg(c, 1), ni);
+    for (u32 k = 0; b && k < nb; k++) {
+        b[k].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        b[k].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    }
     for (u32 k = 0; i && k < ni; k++) {
+        i[k].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        i[k].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         i[k].oldLayout = host_layout(i[k].oldLayout);
         i[k].newLayout = host_layout(i[k].newLayout);
         if (i[k].oldLayout == VK_IMAGE_LAYOUT_PREINITIALIZED && image_get(U(i[k].image)).preinit)
@@ -3280,14 +3363,18 @@ static void gvk_CmdCopyImage(CPU* RESTRICT c, u64 entry) {
     gvk_scratch_reset();
     u32 n = (u32)c->x[5], fs, fd;
     const VkImageCopy* r = n && mem_user_mapped(c->x[6], sizeof *r * n) ? gvk_ptr(c->x[6]) : NULL;
+    if (!r) {
+        ret(c, 0);
+        return;
+    }
     VkImage src = host_image(c->x[1], &fs, c->x[0], 0), dst = host_image(c->x[3], &fd, c->x[0], 1);
     VkImageLayout sl = arg_layout(c->x[2]), dl = arg_layout(c->x[4]);
     VkCommandBuffer cb = CB;
     int down = fs > fd;
     u64 img = down ? c->x[1] : c->x[3];
     VkImage shadow = down ? src : dst;
-    if (!r || (fs == 1 && fd == 1)) {
-        OUTSIDE(cb, vkCmdCopyImage(cb, src, sl, dst, dl, r ? n : 0, r));
+    if (fs == 1 && fd == 1) {
+        OUTSIDE(cb, vkCmdCopyImage(cb, src, sl, dst, dl, n, r));
     } else if (fs == fd) {
         VkImageCopy* s = gvk_scratch(sizeof *s * n);
         for (u32 i = 0; i < n; i++) {
@@ -3346,9 +3433,13 @@ static void gvk_CmdCopyImage(CPU* RESTRICT c, u64 entry) {
 static void gvk_CmdBlitImage(CPU* RESTRICT c, u64 entry) {
     gvk_scratch_reset();
     u32 n = (u32)c->x[5], fs, fd;
-    VkImage src = host_image(c->x[1], &fs, c->x[0], 0), dst = host_image(c->x[3], &fd, c->x[0], 1);
     const VkImageBlit* r = n && mem_user_mapped(c->x[6], sizeof *r * n) ? gvk_ptr(c->x[6]) : NULL;
-    VkImageBlit* s = r && (fs > 1 || fd > 1) ? gvk_scratch(sizeof *s * n) : NULL;
+    if (!r) {
+        ret(c, 0);
+        return;
+    }
+    VkImage src = host_image(c->x[1], &fs, c->x[0], 0), dst = host_image(c->x[3], &fd, c->x[0], 1);
+    VkImageBlit* s = fs > 1 || fd > 1 ? gvk_scratch(sizeof *s * n) : NULL;
     for (u32 i = 0; s && i < n; i++) {
         s[i] = r[i];
         for (u32 k = 0; k < 2; k++) {
@@ -3356,17 +3447,21 @@ static void gvk_CmdBlitImage(CPU* RESTRICT c, u64 entry) {
             s[i].dstOffsets[k] = offset_at(r[i].dstOffsets[k], fd);
         }
     }
-    OUTSIDE(CB, vkCmdBlitImage(CB, src, arg_layout(c->x[2]), dst, arg_layout(c->x[4]), r ? n : 0, s ? s : r,
+    OUTSIDE(CB, vkCmdBlitImage(CB, src, arg_layout(c->x[2]), dst, arg_layout(c->x[4]), n, s ? s : r,
                                (VkFilter)(u32)c->x[7]));
     ret(c, 0);
 }
 static void gvk_CmdResolveImage(CPU* RESTRICT c, u64 entry) {
     gvk_scratch_reset();
     u32 n = (u32)c->x[5], fs, fd;
-    VkImage src = host_image(c->x[1], &fs, c->x[0], 0), dst = host_image(c->x[3], &fd, c->x[0], 1);
     const VkImageResolve* r = n && mem_user_mapped(c->x[6], sizeof *r * n) ? gvk_ptr(c->x[6]) : NULL;
-    VkImageResolve* s = r && fs == fd && fs > 1 ? gvk_scratch(sizeof *s * n) : NULL;
-    if (r && fs != fd) LOG_LIMIT(4, "gvk: a resolve between images at two scales resolves the game's region alone\n");
+    if (!r) {
+        ret(c, 0);
+        return;
+    }
+    VkImage src = host_image(c->x[1], &fs, c->x[0], 0), dst = host_image(c->x[3], &fd, c->x[0], 1);
+    VkImageResolve* s = fs == fd && fs > 1 ? gvk_scratch(sizeof *s * n) : NULL;
+    if (fs != fd) LOG_LIMIT(4, "gvk: a resolve between images at two scales resolves the game's region alone\n");
     for (u32 i = 0; s && i < n; i++) {
         s[i] = r[i];
         s[i].srcOffset = offset_at(r[i].srcOffset, fs);
@@ -3374,7 +3469,7 @@ static void gvk_CmdResolveImage(CPU* RESTRICT c, u64 entry) {
         s[i].extent.width *= fs;
         s[i].extent.height *= fs;
     }
-    OUTSIDE(CB, vkCmdResolveImage(CB, src, arg_layout(c->x[2]), dst, arg_layout(c->x[4]), r ? n : 0, s ? s : r));
+    OUTSIDE(CB, vkCmdResolveImage(CB, src, arg_layout(c->x[2]), dst, arg_layout(c->x[4]), n, s ? s : r));
     ret(c, 0);
 }
 /* A buffer holds the game's pixels: a copy between one and a target drawn at the scale goes through the target's own
@@ -3454,13 +3549,17 @@ static void gvk_CmdClearAttachments(CPU* RESTRICT c, u64 entry) {
     gvk_scratch_reset();
     u32 n = (u32)c->x[3], f = pass_scale(c->x[0]);
     const VkClearRect* r = n && mem_user_mapped(c->x[4], sizeof *r * n) ? gvk_ptr(c->x[4]) : NULL;
-    VkClearRect* s = r && f > 1 ? gvk_scratch(sizeof *s * n) : NULL;
+    if (!r) {
+        ret(c, 0);
+        return;
+    }
+    VkClearRect* s = f > 1 ? gvk_scratch(sizeof *s * n) : NULL;
     for (u32 i = 0; s && i < n; i++) {
         s[i] = r[i];
         s[i].rect = rect_at(r[i].rect, f);
     }
     GUEST(atts, VkClearAttachment, c->x[2], (u32)c->x[1]);
-    vkCmdClearAttachments(CB, (u32)c->x[1], atts, r ? n : 0, s ? s : r);
+    vkCmdClearAttachments(CB, (u32)c->x[1], atts, n, s ? s : r);
     ret(c, 0);
 }
 static void gvk_CmdResetQueryPool(CPU* RESTRICT c, u64 entry) {
@@ -3498,7 +3597,7 @@ static void gvk_CmdResetEvent(CPU* RESTRICT c, u64 entry) {
 static void gvk_GetQueryPoolResults(CPU* RESTRICT c, u64 entry) {
     size_t size = c->x[4];
     VkQueryResultFlags flags = (VkQueryResultFlags)c->x[7];
-    if (!c->x[5] || !mem_user_mapped(c->x[5], size)) {
+    if (!c->x[5] || !gvk_writable(c->x[5], size)) {
         ret_vk(c, VK_ERROR_INITIALIZATION_FAILED);
         return;
     }
@@ -3573,7 +3672,7 @@ static void gvk_DestroySurfaceKHR(CPU* RESTRICT c, u64 entry) {
     ret(c, 0);
 }
 static void gvk_GetPhysicalDeviceSurfaceSupportKHR(CPU* RESTRICT c, u64 entry) {
-    if (c->x[3] && mem_user_mapped(c->x[3], 4)) gw32(c->x[3], VK_TRUE);
+    if (c->x[3] && gvk_writable(c->x[3], 4)) gw32(c->x[3], VK_TRUE);
     ret_vk(c, VK_SUCCESS);
 }
 /* the vi layer's: the console's screen, 1920x1080 in TV mode and 1280x720 handheld. Its transform can be the layer's
@@ -3610,24 +3709,36 @@ static void gvk_GetPhysicalDeviceSurfacePresentModesKHR(CPU* RESTRICT c, u64 ent
 static GvkSwapchain* swapchain_of(u64 h) {
     return h && h <= GVK_SWAPCHAINS && g_gvk_api.sc[h - 1].n ? &g_gvk_api.sc[h - 1] : NULL;
 }
-/* its images go once the queue is idle: the renderer's copy of the last present may still read one */
-static void swapchain_free(GvkSwapchain* s) {
+/* Called with g_gvk_api.lock held; unlocks it before returning. Waits for in-flight acquires and the queue. */
+static void swapchain_free_locked(GvkSwapchain* s) {
+    if (s->destroying) {
+        pm_unlock(&g_gvk_api.lock);
+        return;
+    }
+    s->destroying = 1;
+    s->retired = 1;
+    pc_broadcast(&g_gvk_api.sc_available);
+    while (s->reserved) pc_wait(&g_gvk_api.sc_available, &g_gvk_api.lock, -1);
+    u32 n = s->n;
+    VkImage img[GVK_SC_IMAGES];
+    VkDeviceMemory mem[GVK_SC_IMAGES];
+    memcpy(img, s->img, sizeof img);
+    memcpy(mem, s->mem, sizeof mem);
+    *s = (GvkSwapchain){0};
+    pm_unlock(&g_gvk_api.lock);
     vk_lock();
     vk_rec_queue(g_vk.gfx);
     vk_queue_lock(g_vk.gfx);
     vkQueueWaitIdle(g_vk.gfx);
     vk_queue_unlock(g_vk.gfx);
     vk_unlock();
-    for (u32 i = 0; i < s->n; i++) {
+    for (u32 i = 0; i < n; i++) {
         GvkTarget t;
-        if (s->img[i] && scale_factor() > 1) tab_take(TAB(target), &g_gvk_api.ntarget, U(s->img[i]), &t);
-        if (s->img[i]) image_untrack(U(s->img[i]));
-        vkDestroyImage(g_vk.dev, s->img[i], NULL);
-        vkFreeMemory(g_vk.dev, s->mem[i], NULL);
+        if (img[i] && scale_factor() > 1) tab_take(TAB(target), &g_gvk_api.ntarget, U(img[i]), &t);
+        if (img[i]) image_untrack(U(img[i]));
+        vkDestroyImage(g_vk.dev, img[i], NULL);
+        vkFreeMemory(g_vk.dev, mem[i], NULL);
     }
-    pm_lock(&g_gvk_api.lock);
-    *s = (GvkSwapchain){0};
-    pm_unlock(&g_gvk_api.lock);
 }
 static VkResult once_begin(GvkOnce* o) {
     *o = (GvkOnce){0};
@@ -3749,7 +3860,10 @@ static void gvk_CreateSwapchainKHR(CPU* RESTRICT c, u64 entry) {
     if (r != VK_SUCCESS) {
         WARN("gvk: a swapchain of %u images of format %d, %ux%u, usage %#x, failed (%d)\n", s->n, (int)fmt, w, h, usage,
              (int)r);
-        swapchain_free(s);
+        kthread_host_wait_begin();
+        pm_lock(&g_gvk_api.lock);
+        swapchain_free_locked(s);
+        kthread_host_wait_end();
         ret_vk(c, r);
         return;
     }
@@ -3759,19 +3873,31 @@ static void gvk_CreateSwapchainKHR(CPU* RESTRICT c, u64 entry) {
     ret_vk(c, VK_SUCCESS);
 }
 static void gvk_DestroySwapchainKHR(CPU* RESTRICT c, u64 entry) {
+    kthread_host_wait_begin();
+    pm_lock(&g_gvk_api.lock);
     GvkSwapchain* s = swapchain_of(c->x[1]);
-    if (s) swapchain_free(s);
+    if (s)
+        swapchain_free_locked(s);
+    else
+        pm_unlock(&g_gvk_api.lock);
+    kthread_host_wait_end();
     ret(c, 0);
 }
 static void gvk_GetSwapchainImagesKHR(CPU* RESTRICT c, u64 entry) {
+    pm_lock(&g_gvk_api.lock);
     GvkSwapchain* s = swapchain_of(c->x[1]);
-    if (!s) {
+    u32 n = 0;
+    u64 img[GVK_SC_IMAGES];
+    if (s && !s->destroying) {
+        n = s->n;
+        for (u32 i = 0; i < n; i++) img[i] = U(s->img[i]);
+    }
+    pm_unlock(&g_gvk_api.lock);
+    if (!n) {
         ret_vk(c, VK_ERROR_SURFACE_LOST_KHR);
         return;
     }
-    u64 img[GVK_SC_IMAGES];
-    for (u32 i = 0; i < s->n; i++) img[i] = U(s->img[i]);
-    ret_vk(c, put_list(c->x[2], c->x[3], img, s->n, sizeof *img));
+    ret_vk(c, put_list(c->x[2], c->x[3], img, n, sizeof *img));
 }
 /* Reserve under the swapchain lock. Pacing and display waits run without the lock or guest core. */
 static void gvk_AcquireNextImageKHR(CPU* RESTRICT c, u64 entry) {
@@ -3819,7 +3945,10 @@ static void gvk_AcquireNextImageKHR(CPU* RESTRICT c, u64 entry) {
         }
         pm_lock(&g_gvk_api.lock);
         s->reserved &= ~(1u << idx);
-        if (r == VK_SUCCESS) {
+        if (s->retired || !s->n) {
+            r = VK_ERROR_OUT_OF_DATE_KHR;
+            pc_broadcast(&g_gvk_api.sc_available);
+        } else if (r == VK_SUCCESS) {
             s->acquired |= 1u << idx;
             s->next = (idx + 1) % s->n;
         } else {

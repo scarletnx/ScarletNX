@@ -9,6 +9,7 @@ enum {
     SPV_CAPABILITY = 17,
     SPV_TYPE_VOID = 19,
     SPV_TYPE_INT = 21,
+    SPV_TYPE_FLOAT = 22,
     SPV_TYPE_VECTOR = 23,
     SPV_TYPE_FORWARD_POINTER = 39,
     SPV_CONSTANT_TRUE = 41,
@@ -361,8 +362,9 @@ static int image_slot(const u32* w, const u32* def, const u32* dset, const u32* 
         const u32* p = w + def[ptr];
         u32 pop = p[0] & 0xffff;
         if (pop == SPV_ACCESS_CHAIN || pop == SPV_IN_BOUNDS_ACCESS_CHAIN) {
+            if (p[0] >> 16 != 5) return 0;
             u32 idx = p[4];
-            if (p[0] >> 16 != 5 || idx >= bound || !def[idx] || w[def[idx]] != (4u << 16 | SPV_CONSTANT)) return 0;
+            if (idx >= bound || !def[idx] || w[def[idx]] != (4u << 16 | SPV_CONSTANT)) return 0;
             elem = w[def[idx] + 3];
             ptr = p[3];
             if (ptr >= bound || !def[ptr]) return 0;
@@ -383,6 +385,74 @@ static int entry_lists(const u32* e, u32 id) {
         if (e[at] == id) return 1;
     return 0;
 }
+/* Byte extent of a push-constant type, or UINT32_MAX if unknown or reaching past GVK_SIZE_PUSH */
+static u32 spv_type_size(const u32* w, u32 types_at, const u32* def, const u32* astride, u32 bound, u32 tid,
+                         u32 mstride, int row_major, int depth) {
+    if (depth > 8 || tid >= bound || !def[tid]) return UINT32_MAX;
+    const u32* d = w + def[tid];
+    u32 len = d[0] >> 16, op = d[0] & 0xffff;
+    if (op == SPV_TYPE_INT || op == SPV_TYPE_FLOAT) {
+        if (len < 3 || !d[2] || d[2] > 64) return UINT32_MAX;
+        return (d[2] + 7) / 8;
+    }
+    if (op == SPV_TYPE_VECTOR) {
+        if (len < 4) return UINT32_MAX;
+        u32 elem = spv_type_size(w, types_at, def, astride, bound, d[2], 0, 0, depth + 1);
+        if (elem == UINT32_MAX || d[3] > GVK_SIZE_PUSH / elem) return UINT32_MAX;
+        return elem * d[3];
+    }
+    if (op == SPV_TYPE_MATRIX) {
+        if (len < 4) return UINT32_MAX;
+        u32 col = d[2], cols = d[3];
+        if (col >= bound || !def[col] || (w[def[col]] & 0xffff) != SPV_TYPE_VECTOR || (w[def[col]] >> 16) < 4)
+            return UINT32_MAX;
+        u32 rows = w[def[col] + 3];
+        u32 col_sz = spv_type_size(w, types_at, def, astride, bound, col, 0, 0, depth + 1);
+        if (col_sz == UINT32_MAX) return UINT32_MAX;
+        u32 nvecs = row_major ? rows : cols;
+        u32 stride = mstride ? mstride : col_sz;
+        if (stride < col_sz && !row_major) stride = col_sz;
+        if (!stride || nvecs > GVK_SIZE_PUSH / stride) return UINT32_MAX;
+        return nvecs * stride;
+    }
+    if (op == SPV_TYPE_ARRAY) {
+        if (len < 4) return UINT32_MAX;
+        u32 cid = d[3];
+        if (cid >= bound || !def[cid] || w[def[cid]] != (4u << 16 | SPV_CONSTANT)) return UINT32_MAX;
+        u32 count = w[def[cid] + 3];
+        if (!count) return 0;
+        u32 elem = spv_type_size(w, types_at, def, astride, bound, d[2], mstride, row_major, depth + 1);
+        if (elem == UINT32_MAX) return UINT32_MAX;
+        u32 stride = astride[tid] ? astride[tid] : elem;
+        if (stride < elem) stride = elem;
+        if (count > GVK_SIZE_PUSH / stride) return UINT32_MAX;
+        return count * stride;
+    }
+    if (op == SPV_TYPE_STRUCT) {
+        u32 members = len >= 2 ? len - 2 : 0;
+        u32 end = 0;
+        for (u32 m = 0; m < members; m++) {
+            u32 off = UINT32_MAX, ms = 0;
+            int rm = 0;
+            for (u32 i = 5; i < types_at; i += w[i] >> 16) {
+                if ((w[i] & 0xffff) != SPV_MEMBER_DECORATE || w[i + 1] != tid || w[i + 2] != m) continue;
+                u32 dl = w[i] >> 16, dec = w[i + 3];
+                if (dec == SPV_OFFSET && dl >= 5)
+                    off = w[i + 4];
+                else if (dec == SPV_MATRIX_STRIDE && dl >= 5)
+                    ms = w[i + 4];
+                else if (dec == SPV_ROW_MAJOR)
+                    rm = 1;
+            }
+            if (off >= GVK_SIZE_PUSH) return UINT32_MAX;
+            u32 sz = spv_type_size(w, types_at, def, astride, bound, d[2 + m], ms, rm, depth + 1);
+            if (sz == UINT32_MAX || sz > GVK_SIZE_PUSH - off) return UINT32_MAX;
+            if (off + sz > end) end = off + sz;
+        }
+        return end;
+    }
+    return UINT32_MAX;
+}
 /* Each query's result id becomes a new one, and its old id the result divided:
      the push uvec4 loaded, d = 1 + ((x >> k) & 1) * y, and the width and height divided by d (a third component, an
      array's layers, kept). A scalar query (a 1D image) is never of an image drawn at the scale, and stays.
@@ -398,11 +468,13 @@ const u32* gvk_spirv_scaled_size(const u32* w, size_t bytes, size_t* out_bytes, 
     u32* def = gvk_scratch(sizeof *def * bound); /* the instruction that makes each id gvk follows, 0 for none */
     u32* dset = gvk_scratch(sizeof *dset * bound);
     u32* dbind = gvk_scratch(sizeof *dbind * bound);
+    u32* astride = gvk_scratch(sizeof *astride * bound);
     memset(def, 0, sizeof *def * bound);
     memset(dset, 0xff, sizeof *dset * bound);
     memset(dbind, 0xff, sizeof *dbind * bound);
+    memset(astride, 0, sizeof *astride * bound);
     u32 types_at = 0, funcs_at = 0, queries = 0, uint_t = 0, v4u_t = 0, pc_var = 0, pc_ptr = 0, entries = 0;
-    int fragment = 0, other = 0, high_offset = 0;
+    int fragment = 0, other = 0;
     for (u32 i = 5; i < n;) {
         u32 len = w[i] >> 16, op = w[i] & 0xffff;
         if (!len || len > n - i) return NULL;
@@ -419,15 +491,19 @@ const u32* gvk_spirv_scaled_size(const u32* w, size_t bytes, size_t* out_bytes, 
         } else if (op == SPV_DECORATE && len >= 4 && o[0] < bound) {
             if (o[1] == SPV_DESCRIPTOR_SET) dset[o[0]] = o[2];
             if (o[1] == SPV_BINDING) dbind[o[0]] = o[2];
-        } else if (op == SPV_MEMBER_DECORATE && len >= 5 && o[2] == SPV_OFFSET) {
-            high_offset |= o[3] >= GVK_SIZE_PUSH && o[0] < bound; /* checked against the push block below */
+            if (o[1] == SPV_ARRAY_STRIDE) astride[o[0]] = o[2];
         } else if (op == SPV_TYPE_INT && len >= 4 && o[0] < bound) {
             def[o[0]] = i;
             if (o[1] == 32 && o[2] == 0 && !uint_t) uint_t = o[0];
+        } else if (op == SPV_TYPE_FLOAT && len >= 3 && o[0] < bound) {
+            def[o[0]] = i;
         } else if (op == SPV_TYPE_VECTOR && len >= 4 && o[0] < bound) {
             def[o[0]] = i;
             if (uint_t && o[1] == uint_t && o[2] == 4 && !v4u_t) v4u_t = o[0];
-        } else if ((op == SPV_TYPE_STRUCT || op == SPV_TYPE_POINTER) && len >= 2 && o[0] < bound) {
+        } else if ((op == SPV_TYPE_MATRIX || op == SPV_TYPE_ARRAY || op == SPV_TYPE_POINTER) && len >= 4 &&
+                   o[0] < bound) {
+            def[o[0]] = i;
+        } else if (op == SPV_TYPE_STRUCT && len >= 2 && o[0] < bound) {
             def[o[0]] = i;
         } else if (op == SPV_VARIABLE && len >= 4 && o[1] < bound) {
             def[o[1]] = i;
@@ -449,15 +525,12 @@ const u32* gvk_spirv_scaled_size(const u32* w, size_t bytes, size_t* out_bytes, 
     /* the push block's structure, whose members end before GVK_SIZE_PUSH, and declared after uvec4 */
     u32 pc_struct = 0, members = 0;
     if (pc_var) {
-        if (pc_ptr >= bound || !def[pc_ptr]) return NULL;
+        if (pc_ptr >= bound || !def[pc_ptr] || (w[def[pc_ptr]] & 0xffff) != SPV_TYPE_POINTER) return NULL;
         pc_struct = w[def[pc_ptr] + 3];
         if (pc_struct >= bound || !def[pc_struct] || (w[def[pc_struct]] & 0xffff) != SPV_TYPE_STRUCT) return w;
         members = (w[def[pc_struct]] >> 16) - 2;
         if (v4u_t && def[v4u_t] > def[pc_struct]) return w;
-        for (u32 i = 5; high_offset && i < types_at; i += w[i] >> 16)
-            if ((w[i] & 0xffff) == SPV_MEMBER_DECORATE && (w[i] >> 16) >= 5 && w[i + 1] == pc_struct &&
-                w[i + 3] == SPV_OFFSET && w[i + 4] >= GVK_SIZE_PUSH)
-                return w;
+        if (spv_type_size(w, types_at, def, astride, bound, pc_struct, 0, 0, 0) > GVK_SIZE_PUSH) return w;
     }
     /* each query's bit, or none */
     u32* q_at = gvk_scratch(sizeof *q_at * queries);
@@ -584,8 +657,9 @@ const u32* gvk_spirv_scaled_size(const u32* w, size_t bytes, size_t* out_bytes, 
         } else if (q < nq && i == q_at[q]) {
             u32 rt = w[i + 1], res = w[i + 1 + 1], comp = w[def[rt] + 2], count = w[def[rt] + 3];
             int sign = comp < bound && def[comp] && w[def[comp] + 3];
+            int cast = comp != uint_t;
             u32 nq_id = next++, pp = next++, pv = next++, mask = next++, sm1 = next++, sh = next++, b = next++,
-                m = next++, du = next++, d = sign ? next++ : du;
+                m = next++, du = next++, d = cast ? next++ : du;
             memcpy(out + o, w + i, sizeof *out * len);
             out[o + 2] = nq_id;
             o += len;
@@ -604,7 +678,7 @@ const u32* gvk_spirv_scaled_size(const u32* w, size_t bytes, size_t* out_bytes, 
                 memcpy(out + o, seq[s], sizeof *out * l);
                 o += l;
             }
-            if (sign) {
+            if (cast) {
                 out[o++] = 4u << 16 | SPV_BITCAST;
                 out[o++] = comp;
                 out[o++] = d;
