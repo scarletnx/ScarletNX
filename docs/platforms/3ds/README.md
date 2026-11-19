@@ -11,6 +11,7 @@
   * [Current limits and trust](#current-limits-and-trust)
   * [Build and test](#build-and-test)
 * [Experimental local wireless over rooms](#experimental-local-wireless-over-rooms)
+* [Online: sockets and Pretendo Network](#online-sockets-and-pretendo-network)
 * [Source provenance and licensing](#source-provenance-and-licensing)
 * [Boundaries and prerequisites for stage 2b](#boundaries-and-prerequisites-for-stage-2b)
 * [Parity roadmap (Azahar)](#parity-roadmap-azahar)
@@ -1040,6 +1041,28 @@ disconnect, shutdown and caller exit exercise their cleanup and reply ownership.
 Optional `snx-test-3ds-uds --public` uses `SNX_TEST_UDS_ROOM=host:port` rather than a
 hardcoded public server. No game data is needed for these tests.
 
+## Online: sockets and Pretendo Network
+
+`soc:U` (`src/3ds/services/soc.c`) is the console's BSD sockets on the emulated network stack
+(`src/common/network/net.h`), its wire Azahar's `soc_u.cpp`'s and libctru's: the console's sockaddr, pollfd, addrinfo
+and hostent, and its errno numbers. Host sockets never block: a call that would block a socket the game left blocking
+parks its thread, and the scheduler's pass answers it once the socket is ready or a poll's time is out, while the
+game's other threads run. Offline (`network=0` or airplane mode) a socket reaches loopback alone. Names go through
+Pretendo's NAT check rewrite with `ctr_online=pretendo`, and the console maker's own domains resolve to nothing.
+
+`ac:u` says the console is connected to the internet when it is online, and not connected otherwise: `ConnectAsync`
+signals its event either way, and `GetConnectResult` gives Azahar's not-connected result offline.
+
+`frd:u` logs a game in to its server as a console with Pretendo's Nimbus does: the console's own account read from
+`ctr_console` (its files laid out as Azahar's NAND folder: `rw/sys/LocalFriendCodeSeed_B`, `rw/sys/SecureInfo_A`,
+and the friends save's local account 2, the one Nimbus makes), `RequestGameAuthentication` posts NASC's LOGIN form to
+Pretendo's NASC (`ctr_nasc_url` for another) on a thread of its own and signals the game's event when the answer
+came, and `GetGameAuthenticationData` gives the game server's address, port and token. A login that cannot go out says
+why once and gives NASC's result 0. The NASC form and reply, the console's files and Nimbus's rewrites are
+`src/common/online`'s (its README.md). Not done yet: `http:C` and `ssl:C`
+(a game's own HTTPS, which Nimbus rewrites to `pretendo.cc`), the friends server itself (presence and the friend
+list), and the NCCH's product and maker codes in the form, which Pretendo's NASC does not read.
+
 ## Source provenance and licensing
 
 The initial shallow checkouts were:
@@ -1195,7 +1218,7 @@ recorded under [Source provenance and licensing](#source-provenance-and-licensin
 | F4 Software GPU | Procedural textures, VRAM save and restore, the stereo right eye | `renderer_software/{sw_proctex,sw_framebuffer,sw_rasterizer}.cpp` |
 | F5 Dynamic code | ldr:ro CROs compiled ahead of time, with a design for their run-time base and relocations; a log of missed targets for a second discovery pass; an explicit result for self-modifying code | `service/ldr_ro/` |
 | F6 Audio | The DSP's AAC pipe on FFmpeg; CSND; time stretching if gaps remain | `audio_core/hle/aac_decoder.cpp`, `audio_core/csnd.cpp`, `service/csnd/`, `audio_core/time_stretch.cpp` |
-| F7 Peripherals and network | y2r, mic, cam (no camera), ir:USER (its startup, events and the no-accessory answers are in place; a Circle Pad Pro is not emulated), soc:U, then ssl and http | `service/{cam,mic,ir,soc,ssl,http}/`, `hw/y2r.cpp` |
+| F7 Peripherals and network | y2r, mic, cam (no camera), ir:USER (its startup, events and the no-accessory answers are in place; a Circle Pad Pro is not emulated), soc:U, ac:u and frd:u's game login ([Online](#online-sockets-and-pretendo-network)), then ssl and http | `service/{cam,mic,ir,soc,ssl,http}/`, `hw/y2r.cpp` |
 | F8 Loader | Encrypted content with the user's keys; CCI, CXI, 3DSX and ELF; updates and DLC; a complete module cache key | `file_sys/`, `loader/` |
 | F9 Vulkan renderer | A Vulkan device shared with NX; the PICA fragment shader generator on `spirv_emit.c`; the surface cache with page-level coherence in the memory controller; host vertex and geometry shaders. The software renderer stays as the reference and fallback | `renderer_vulkan/`, `rasterizer_cache/`, `shader/generator/` |
 | F10 Performance | Shader JIT if profiles call for it; the syscore CPU limiter; GUI settings for layouts and controls | `shader/shader_jit_*`, `core.cpp` |

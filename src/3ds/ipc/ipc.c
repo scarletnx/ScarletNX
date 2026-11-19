@@ -23,6 +23,9 @@
 #include "3ds/services/mic.h"
 #include "3ds/services/cam.h"
 #include "3ds/services/csnd.h"
+#include "3ds/services/soc.h"
+#include "3ds/services/ac.h"
+#include "3ds/services/frd.h"
 #include "snx_settings.h"
 #include <stdio.h>
 #include <string.h>
@@ -73,7 +76,8 @@ uint32_t snx_ctr_session_create(SnxCtrProcess* p, uint32_t service, uint32_t* ou
         service != SNX_CTR_SERVICE_DSP && service != SNX_CTR_SERVICE_CFG && service != SNX_CTR_SERVICE_SYSTEM &&
         service != SNX_CTR_SERVICE_AM && service != SNX_CTR_SERVICE_Y2R && service != SNX_CTR_SERVICE_LDR_RO &&
         service != SNX_CTR_SERVICE_IR && service != SNX_CTR_SERVICE_IRRST && service != SNX_CTR_SERVICE_MIC &&
-        service != SNX_CTR_SERVICE_CAM && service != SNX_CTR_SERVICE_CSND)
+        service != SNX_CTR_SERVICE_CAM && service != SNX_CTR_SERVICE_CSND && service != SNX_CTR_SERVICE_SOC &&
+        service != SNX_CTR_SERVICE_AC && service != SNX_CTR_SERVICE_FRD)
         return 0xe0e01bf4u;
     unsigned count = 0;
     for (unsigned i = 1; i < CTR_OBJECTS; ++i)
@@ -148,8 +152,8 @@ static unsigned translation(SnxCtrIpc* c, uint32_t normal, uint32_t translated) 
     return WIRE_OK;
 }
 /* the --ipc-stubs name of each SNX_CTR_SERVICE_*: a file session is fs's */
-static const char* const families[] = {"",    "srv", "fs",     "apt", "ptm", "hid", "fs", "gsp",
-                                       "cfg", "dsp", "system", "am",  "y2r", "ldr", "ir", "irrst", "mic", "cam", "csnd"};
+static const char* const families[] = {"",   "srv", "fs",  "apt", "ptm",   "hid", "fs",  "gsp",  "cfg", "dsp", "system",
+                                       "am", "y2r", "ldr", "ir",  "irrst", "mic", "cam", "csnd", "soc", "ac",  "frd"};
 _Static_assert(sizeof families / sizeof *families == SNX_CTR_SERVICE_COUNT, "a family name per service");
 int snx_ctr_ipc_stub_mask(const char* list, uint32_t* mask) {
     uint32_t names = 0;
@@ -264,6 +268,9 @@ SnxCtrSvcResult snx_ctr_ipc_exchange(SnxCtrProcess* p, uint32_t handle, uint32_t
         case SNX_CTR_SERVICE_MIC: snx_ctr_mic_dispatch(&c); break;
         case SNX_CTR_SERVICE_CAM: snx_ctr_cam_dispatch(&c); break;
         case SNX_CTR_SERVICE_CSND: snx_ctr_csnd_dispatch(&c); break;
+        case SNX_CTR_SERVICE_SOC: snx_ctr_soc_dispatch(&c); break;
+        case SNX_CTR_SERVICE_AC: snx_ctr_ac_dispatch(&c); break;
+        case SNX_CTR_SERVICE_FRD: snx_ctr_frd_dispatch(&c); break;
         default: return SNX_CTR_SVC_UNSUPPORTED;
     }
     if (c.state == SNX_CTR_IPC_UNKNOWN) {

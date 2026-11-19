@@ -19,11 +19,13 @@ add_library(snx_ctr_process STATIC runtime/process.c kernel/kernel.c kernel/thre
             services/srv.c services/fs.c services/apt.c services/font.c services/ptm.c services/hid.c services/romfs.c
             services/file.c services/gsp.c services/dsp.c services/cfg.c services/system.c services/am.c services/y2r.c
             services/ldr.c services/cro.c services/swkbd.c services/mii_selector.c services/ir.c services/irrst.c
-            services/mic.c services/cam.c services/csnd.c)
+            services/mic.c services/cam.c services/csnd.c services/soc.c services/ac.c services/frd.c)
 # the system archives' stand-ins (cmake/ctr_system_archives.cmake), which services/fs.c serves through the NCCH archive
 target_sources(snx_ctr_process PRIVATE "${PROJECT_BINARY_DIR}/generated/ctr_system_archives.c")
 target_sources(snx_ctr_process PRIVATE services/uds.c)
 target_link_libraries(snx_ctr_process PUBLIC scarletnx-ldn)
+# soc:U's names, Pretendo's rewrites and NASC's LOGIN (common/online), posted by the HTTPS client
+target_link_libraries(snx_ctr_process PRIVATE snx_online snx_https)
 # the player's input lives beside the presenter, whose window's events it reads
 add_library(snx_ctr_gpu STATIC gpu/present.c input/input.c gpu/transfer.c gpu/y2r.c gpu/vk/y2r.c gpu/vk/device.c gpu/vk/transfer.c
             gpu/vk/vsgen.c gpu/vk/fsgen.c gpu/vk/render.c gpu/pica.c gpu/shader.c gpu/draw.c "${volk_SOURCE_DIR}/volk.c")

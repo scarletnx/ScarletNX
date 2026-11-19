@@ -54,13 +54,16 @@ void snx_ctr_uds_settings(const char* data) {
                 continue;
             }
             if (strcmp(ini.section, "Network")) continue;
-            if (strcmp(key, "room") && strcmp(key, "ldn") && strcmp(key, "airplane_mode")) continue;
+            if (strcmp(key, "room") && strcmp(key, "ldn") && strcmp(key, "airplane_mode") && strcmp(key, "network"))
+                continue;
             if (!strcmp(key, "room") && strlen(value) < sizeof g_settings.eden_room)
                 snprintf(g_settings.eden_room, sizeof g_settings.eden_room, "%s", value);
             else if (!strcmp(key, "ldn") && (!strcmp(value, "lan") || !strcmp(value, "room") || !strcmp(value, "off")))
                 snprintf(g_settings.local_wireless, sizeof g_settings.local_wireless, "%s", value);
             else if (!strcmp(key, "airplane_mode") && (!strcmp(value, "0") || !strcmp(value, "1")))
                 g_settings.airplane_mode = value[0] == '1';
+            else if (!strcmp(key, "network") && (!strcmp(value, "0") || !strcmp(value, "1")))
+                g_settings.network = value[0] == '1';
         }
     }
     free(text);

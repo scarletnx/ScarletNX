@@ -67,8 +67,8 @@ static void usage(FILE* out) {
         "                         closes)\n"
         "  --ipc-stubs L          With --ctr-auto-stub-ipc=0, still answer a service command the runtime lacks with\n"
         "                         success for the services in L: all, or a comma list of srv, fs, apt, ptm, hid, gsp,\n"
-        "                         cfg, dsp, system, am, y2r, ldr, ir, irrst, mic, cam, csnd. Given more than once, the\n"
-        "                         lists add up\n"
+        "                         cfg, dsp, system, am, y2r, ldr, ir, irrst, mic, cam, csnd, soc, ac, frd. Given more\n"
+        "                         than once, the lists add up\n"
         "  --KEY=VALUE            A setting of the 3DS display, debug or run table (g_ctr_display_ini,\n"
         "                         g_ctr_debug_ini, g_ctr_run_ini in src/nx/runtime/settings.txt; the launcher's\n"
         "                         3DS group and its Debug page): --ctr-screen-layout=4 puts each screen in a\n"
@@ -889,7 +889,7 @@ int snx_ctr_main(int argc, char** argv) {
         } else if (!positional && !strcmp(arg, "--ipc-stubs")) {
             if (++i == argc || !snx_ctr_ipc_stub_mask(argv[i], &ipc_stubs)) {
                 fputs("scarletnx-3ds: --ipc-stubs requires all or a comma list of srv, fs, apt, ptm, hid, gsp, cfg, "
-                      "dsp, system, am, y2r, ldr, ir, irrst, mic, cam, csnd\n",
+                      "dsp, system, am, y2r, ldr, ir, irrst, mic, cam, csnd, soc, ac, frd\n",
                       stderr);
                 snx_cli_free(&cli);
                 return 2;
@@ -932,6 +932,7 @@ int snx_ctr_main(int argc, char** argv) {
                 o = ini_find(g_ctr_display_ini, key);
                 if (!o) o = ini_find(g_ctr_debug_ini, key);
                 if (!o) o = ini_find(g_ctr_run_ini, key);
+                if (!o) o = ini_find(g_ctr_network_ini, key);
                 if (!o && snx_ctr_shared_setting(key)) o = ini_find(g_debug_ini, key);
                 if (!o && snx_ctr_shared_setting(key)) o = ini_find(g_performance_ini, key);
                 if (!o && snx_ctr_shared_setting(key)) o = ini_find(g_gamepad_ini, key);
@@ -984,6 +985,13 @@ int snx_ctr_main(int argc, char** argv) {
     const char* updates[MAX_UPDATES]; /* --update's files, an update's or a DLC's each */
     unsigned update_count = 0;
     if (seconds || cli.frames >= 0) budget_set = true;
+    /* the online service: a word it does not have stops the run, naming it */
+    if (strcmp(g_settings.ctr_online_service, "off") && strcmp(g_settings.ctr_online_service, "pretendo")) {
+        fprintf(stderr, "scarletnx-3ds: ctr_online=%s is neither off nor pretendo: the run stops\n",
+                g_settings.ctr_online_service);
+        snx_cli_free(&cli);
+        return 2;
+    }
     if (cli.update_count > MAX_UPDATES) {
         fprintf(stderr, "scarletnx-3ds: --update is given %d times at most\n", MAX_UPDATES);
         snx_cli_free(&cli);
