@@ -230,6 +230,7 @@ static struct {
         _Atomic int scanning;   /* the pass runs */
         _Atomic int ship_ready; /* the pass is over, or won't run: the draws may read the index (release) */
         _Atomic u32 shaders_total, pipes_total; /* nsh and npipe once the file was read */
+        _Atomic int cold; /* vk_pipeline_cache_cold's: -1 while it is read, then whether it held nothing */
         char apart[64];
         /* atomics, written by the GPU thread and the pipeline workers */
         _Atomic u64 made, hits; /* the file's pipelines made, and those the pipeline cache had */
@@ -2738,6 +2739,9 @@ void vk_pipeline_stats(u64* pipes, u64* hits, u64* make_ms, u64* wait_ms, u64* s
     *shader_ms = g_pipeline.sh_ns / 1000000;
 }
 
+int vk_pipeline_cache_cold(void) {
+    return g_pipeline.pf.on ? atomic_load_explicit(&g_pipeline.pf.cold, memory_order_acquire) : 0;
+}
 u64 vk_shader_folds(void) { return g_pipeline.sh_folds; }
 void vk_cb_fold_switch(int on) { g_pipeline.fold_off = !on; }
 
@@ -3630,6 +3634,7 @@ static void pf_load(void* arg) {
         g_pipeline.pf.nidx, g_pipeline.pf.ship_path);
     atomic_store_explicit(&g_pipeline.pf.shaders_total, g_pipeline.pf.nsh, memory_order_relaxed);
     atomic_store_explicit(&g_pipeline.pf.pipes_total, g_pipeline.pf.npipe, memory_order_relaxed);
+    atomic_store_explicit(&g_pipeline.pf.cold, !g_pipeline.pf.nsh && !g_pipeline.pf.npipe, memory_order_release);
     pm_lock(&g_pipeline.pf.lock);
     g_pipeline.pf.loaded = 1;
     pc_broadcast(&g_pipeline.pf.done);
@@ -3656,6 +3661,7 @@ static void pf_start_load(void) {
             "kept for the next run\n");
         return;
     }
+    atomic_store_explicit(&g_pipeline.pf.cold, -1, memory_order_relaxed); /* before a present can ask (pf_load) */
     g_pipeline.pf.on = 1;
     vk_so_open(g_pipeline.cache_dir, g_pipeline.driver_tag); /* the key of the shader file is settled now */
     null_fs(); /* made here, before the reading thread uses it */

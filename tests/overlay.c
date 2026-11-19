@@ -1996,6 +1996,22 @@ int main(void) {
         assert(!taken[0] && !taken[1] && overlay_toast_alpha(t0) == 255 && overlay_toast_alpha(until - ms) == 255);
         overlay_toast("", 0);
     }
+    /* the caches of earlier runs found empty as the game starts: the shaders' words, else the textures'; none for
+       neither, nor while the shader cache is still read (-1), which then says nothing to keep; said once a run, as
+       the next frame's notification */
+    assert(!overlay_cold_cache_words(0, 0) && !strcmp(overlay_cold_cache_words(1, 0), "Compiling shaders"));
+    assert(!strcmp(overlay_cold_cache_words(1, 1), "Compiling shaders"));
+    assert(!strcmp(overlay_cold_cache_words(0, 1), "Encoding textures"));
+    assert(!overlay_cold_cache(0, 0) && !overlay_cold_cache(-1, 1) && !overlay_cold_cache(-1, 0));
+    draw();
+    assert(!list.n);
+    assert(overlay_cold_cache(0, 1));
+    draw();
+    assert(shows("Encoding textures") && overlay_toasting(0));
+    overlay_toast("", 0);
+    assert(!overlay_cold_cache(1, 0) && !overlay_cold_cache(1, 1)); /* once */
+    draw();
+    assert(!list.n);
     overlay_toggle();
     /* closed, it draws nothing; opened again, its first page */
     overlay_toggle();

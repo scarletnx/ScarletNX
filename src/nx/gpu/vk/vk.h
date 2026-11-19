@@ -1951,6 +1951,8 @@ void vk_bc7_key(const u64 content[2], const VkBc7Level* lv, u64 key[2]);
    no cache (another process holds the file, or it cannot be written) */
 int vk_bc7_cache_open(const char* path, const u64 version[2], u64 max);
 void vk_bc7_cache_close(void);
+/* 1 while the cache is open and held no level as it opened: every ASTC level is encoded as it first loads */
+int vk_bc7_cache_cold(void);
 u64 vk_bc7_cache_find(const u64 key[2]); /* the bytes of key's blocks, 0 when they aren't there */
 /* key's blocks, size bytes of them, into dst: 0 when they aren't there or don't check out (then dropped) */
 int vk_bc7_cache_read(const u64 key[2], u8* dst, u64 size);
@@ -2898,6 +2900,10 @@ VkPipeline vk_pipeline_now(VkPipeline h, int* pending);
 /* so far: pipelines made, how many of them the pipeline cache had, ms the workers took making them, ms the GPU thread
    waited for new ones, shaders translated, ms translating them */
 void vk_pipeline_stats(u64* pipes, u64* hits, u64* make_ms, u64* wait_ms, u64* shaders, u64* shader_ms);
+/* the shader cache of earlier runs (the pipeline file) as it was read: 1 when it held no shader and no pipeline,
+   which this run then translates and makes as draws ask; 0 when it held some, or when none is kept (shaders
+   recorded); -1 while it is still being read */
+int vk_pipeline_cache_cold(void);
 /* of those shaders, the ones translated beside a translation of their program that held, to hold more of a draw's
    constant buffer words as constants (cb_fold.h) */
 u64 vk_shader_folds(void);
