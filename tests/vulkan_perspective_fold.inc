@@ -162,9 +162,10 @@ static int check_perspective_fold(void) {
     /* a triangle across the target, its corners at the places given (x / w, y / w) with these w: four times apart
        near the eye (gl_FragCoord.w about 1000: attr * w a thousand times the input), near 1 and far off (about 1 /
        1000), then a millionfold apart */
-    static const float places[3][2] = {{-0.9f, -0.9f}, {0.9f, -0.7f}, {-0.1f, 0.9f}};
+    /* on whole pixels, where the device's grid of sub-pixel positions puts them too */
+    static const float places[3][2] = {{-28 / 32.0f, -28 / 32.0f}, {28 / 32.0f, -22 / 32.0f}, {-3 / 32.0f, 28 / 32.0f}};
     static const float spans[][3] = {{1, 2, 4}, {1e-3f, 2e-3f, 4e-3f}, {1e3f, 2e3f, 4e3f}, {1e-3f, 1, 1e3f}};
-    static const double tolerance[] = {1e-5, 1e-5, 1e-5, 0};
+    static const double tolerance[] = {1e-4, 1e-4, 1e-4, 0};
     /* generic 0's x and y at each corner, none near 0, where a relative difference measures nothing */
     static const float attr[3][2] = {{0.1f, 3.0f}, {0.7f, 20.0f}, {0.35f, 0.5f}};
     for (u32 s = 0; s < sizeof spans / sizeof *spans; s++) {
@@ -185,8 +186,10 @@ static int check_perspective_fold(void) {
                e.kept[0], e.kept[1], e.y[0], e.y[1], e.w[0], e.w[1], e.differ, e.ulp);
         CHECK(e.pixels > FOLD_W * FOLD_H / 8);
         /* the folded value is the device's perspective-correct input, as near the exact one as the device's
-           interpolation is. Over a millionfold of w that is the device's own: a plane of 1 / w through its corners
-           loses digits where it is small, the input's as much folded or not */
+           interpolation is (lavapipe 5e-7; RADV 7e-5 with the corners off its sub-pixel grid). A fold that dropped
+           one multiply alone would be gl_FragCoord.w or its reciprocal off, 0.75 or more somewhere on each triangle.
+           Over a millionfold of w the difference is the device's own: a plane of 1 / w through the corners loses
+           digits where it is small, folded or not */
         CHECK(!tolerance[s] || (e.folded[0] < tolerance[s] && e.y[0] < tolerance[s]));
         /* the kept one is that input with the round trip's roundings: a few ulp off it, and off it somewhere */
         CHECK(e.differ && e.ulp <= 8);
