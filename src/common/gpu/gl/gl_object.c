@@ -66,6 +66,8 @@ typedef struct {
     SnxGlRange chunks[SNX_GL_CHUNKS];
     SnxGlRange free[SNX_GL_FREE_RANGES]; /* by address, none touching another of its chunk */
     uint32_t chunk_count, free_count;
+    /* each chunk's bytes from here to its end were never taken: still the zeros the platform gave */
+    uint64_t untouched[SNX_GL_CHUNKS];
 } SnxGlObjects;
 
 static struct {
@@ -97,7 +99,7 @@ static uint8_t* bytes(uint64_t at) { return at && H.bytes ? H.bytes(at) : NULL; 
 
 /* size bytes of a free range, at a multiple of align (a power of 2, ALIGN or more), taken: their address, 0 when no
    chunk has room and the platform gives none. The bytes before them in the range stay free */
-static uint64_t memory_take(uint64_t size, uint64_t align) {
+static uint64_t memory_find(uint64_t size, uint64_t align) {
     size = (size + ALIGN - 1) & ~(uint64_t)(ALIGN - 1);
     for (int pass = 0; pass < 2; pass++) {
         for (uint32_t i = 0; i < S.free_count; i++) {
@@ -131,6 +133,7 @@ static uint64_t memory_take(uint64_t size, uint64_t align) {
             if (!raw || got < need) return 0;
             at = (raw + ALIGN - 1) & ~(uint64_t)(ALIGN - 1);
             end = (raw + got) & ~(uint64_t)(ALIGN - 1);
+            S.untouched[S.chunk_count] = at;
             S.chunks[S.chunk_count++] = (SnxGlRange){at, end - at};
             while (i < S.free_count && S.free[i].at < at) i++;
             memmove(&S.free[i + 1], &S.free[i], (S.free_count - i) * sizeof S.free[0]);
@@ -139,6 +142,23 @@ static uint64_t memory_take(uint64_t size, uint64_t align) {
         }
     }
     return 0;
+}
+/* memory_find's bytes, and in *dirty how many of them from the first may hold what an earlier taker wrote: the rest
+   were never taken, and are the zeros the platform gave. Zeroing those alone spares a game's loading a write of every
+   page of its textures (a page fault each, the first time) */
+static uint64_t memory_take(uint64_t size, uint64_t align, uint64_t* dirty) {
+    uint64_t at = memory_find(size, align), end = at + ((size + ALIGN - 1) & ~(uint64_t)(ALIGN - 1));
+    *dirty = 0;
+    if (!at) return 0;
+    for (uint32_t i = 0; i < S.chunk_count; i++)
+        if (at - S.chunks[i].at < S.chunks[i].size) {
+            uint64_t clean = S.untouched[i];
+            *dirty = clean <= at ? 0 : clean >= end ? end - at : clean - at;
+            if (end > clean) S.untouched[i] = end;
+            return at;
+        }
+    *dirty = end - at; /* in no chunk: none of it known */
+    return at;
 }
 /* the chunk that holds address at: its index, chunk_count for none */
 static uint32_t chunk_of(uint64_t at) {
@@ -177,7 +197,14 @@ static int memory_give(uint64_t at, uint64_t size) {
 
 uint8_t* snx_gl_client_bytes(uint64_t at) { return bytes(at); }
 uint64_t snx_gl_memory_take(uint64_t size, uint64_t align) {
-    return align & (align - 1) ? 0 : memory_take(size, align < ALIGN ? ALIGN : align);
+    uint64_t dirty;
+    return align & (align - 1) ? 0 : memory_take(size, align < ALIGN ? ALIGN : align, &dirty);
+}
+uint64_t snx_gl_memory_take_zeroed(uint64_t size, uint64_t align) {
+    uint64_t dirty, at = align & (align - 1) ? 0 : memory_take(size, align < ALIGN ? ALIGN : align, &dirty);
+    uint8_t* to = bytes(at);
+    if (to && dirty) memset(to, 0, dirty < size ? dirty : size);
+    return at;
 }
 void snx_gl_memory_give(uint64_t at, uint64_t size) { memory_give(at, size); }
 
@@ -345,16 +372,16 @@ void snx_gl_bind_buffer_range(uint32_t ctx, uint32_t target, uint32_t index, uin
 
 /* the buffer's bytes placed for size of them: kept where they fit, else a new range (the old one given back): 0, or
    -1 (GL_OUT_OF_MEMORY recorded) without room */
-static int buffer_place(uint32_t ctx, uint32_t name, uint64_t size) {
+static int buffer_place(uint32_t ctx, uint32_t name, uint64_t size, uint64_t* dirty) {
     SnxGlBuffer* b = &S.buffers[name - 1];
     uint64_t want, at;
     if (b->data && size <= b->capacity) {
-        b->size = size;
+        b->size = size, *dirty = size;
         return 0;
     }
     want = size < ALIGN ? ALIGN : size * 2;
-    at = memory_take(want, ALIGN);
-    if (!at && want > size) at = memory_take(want = size, ALIGN);
+    at = memory_take(want, ALIGN, dirty);
+    if (!at && want > size) at = memory_take(want = size, ALIGN, dirty);
     if (!at) {
         error(ctx, GL_OUT_OF_MEMORY_);
         return -1;
@@ -366,18 +393,19 @@ static int buffer_place(uint32_t ctx, uint32_t name, uint64_t size) {
     b->data = at, b->capacity = (want + ALIGN - 1) & ~(uint64_t)(ALIGN - 1), b->size = size;
     return 0;
 }
-/* glBufferData's and glBufferStorage's bytes: data's, or zeros */
-static void buffer_fill(uint32_t name, uint64_t size, const void* data) {
+/* glBufferData's and glBufferStorage's bytes: data's, or zeros (the first dirty of them may hold another's) */
+static void buffer_fill(uint32_t name, uint64_t size, const void* data, uint64_t dirty) {
     uint8_t* to = bytes(S.buffers[name - 1].data);
     if (!to) return;
     if (data)
         memcpy(to, data, size);
-    else
-        memset(to, 0, size);
+    else if (dirty)
+        memset(to, 0, dirty < size ? dirty : size);
     written(name, 0, size);
 }
 void snx_gl_buffer_data(uint32_t ctx, uint32_t name, int64_t size, const void* data, uint32_t usage) {
     SnxGlBuffer* b = snx_gl_buffer(name);
+    uint64_t dirty;
     if (!b) return;
     if (size < 0) {
         error(ctx, SNX_GL_INVALID_VALUE);
@@ -387,12 +415,13 @@ void snx_gl_buffer_data(uint32_t ctx, uint32_t name, int64_t size, const void* d
         error(ctx, SNX_GL_INVALID_OPERATION);
         return;
     }
-    if (buffer_place(ctx, name, (uint64_t)size)) return;
+    if (buffer_place(ctx, name, (uint64_t)size, &dirty)) return;
     S.buffers[name - 1].usage = usage;
-    buffer_fill(name, (uint64_t)size, data);
+    buffer_fill(name, (uint64_t)size, data, dirty);
 }
 void snx_gl_buffer_storage(uint32_t ctx, uint32_t name, int64_t size, const void* data, uint32_t flags) {
     SnxGlBuffer* b = snx_gl_buffer(name);
+    uint64_t dirty;
     if (!b) return;
     if (size <= 0) {
         error(ctx, SNX_GL_INVALID_VALUE);
@@ -403,10 +432,10 @@ void snx_gl_buffer_storage(uint32_t ctx, uint32_t name, int64_t size, const void
         return;
     }
     if (b->mapped) b->mapped = 0;
-    if (buffer_place(ctx, name, (uint64_t)size)) return;
+    if (buffer_place(ctx, name, (uint64_t)size, &dirty)) return;
     S.buffers[name - 1].immutable = 1;
     S.buffers[name - 1].flags = flags;
-    buffer_fill(name, (uint64_t)size, data);
+    buffer_fill(name, (uint64_t)size, data, dirty);
 }
 /* a range [offset, offset + size) of a buffer's bytes: 1, or 0 with GL_INVALID_VALUE recorded */
 static int inside(uint32_t ctx, const SnxGlBuffer* b, int64_t offset, int64_t size) {
@@ -738,6 +767,13 @@ int snx_gl_object_state_check(const void* in, size_t size, char* why, size_t why
                  (unsigned)c->chunk_count, (unsigned)c->free_count, SNX_GL_CHUNKS, SNX_GL_FREE_RANGES);
         return -1;
     }
+    for (uint32_t i = 0; i < c->chunk_count; i++)
+        if (c->untouched[i] - c->chunks[i].at > c->chunks[i].size) {
+            snprintf(why, whysize, "the GL layer's chunk %u at %llx+%llx has its untouched bytes from %llx, outside it",
+                     (unsigned)i, (unsigned long long)c->chunks[i].at, (unsigned long long)c->chunks[i].size,
+                     (unsigned long long)c->untouched[i]);
+            return -1;
+        }
     for (uint32_t i = 0; i < c->free_count; i++)
         if (!in_chunk(c, c->free[i].at, c->free[i].size) ||
             (i && c->free[i].at < c->free[i - 1].at + c->free[i - 1].size)) {

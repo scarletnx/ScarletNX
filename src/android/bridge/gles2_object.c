@@ -338,7 +338,7 @@ bool gles2_buffer_ref(GlesSlot* slot, G2Buffer* b, bool writes, G2Ref* out) {
 /* what the shared layer asks and tells of its buffers: their bytes live in chunks of host memory, as the guest's
    memory is the host's */
 static uint64_t buffer_chunk(uint64_t size, uint64_t* got) {
-    void* p = malloc((size_t)size);
+    void* p = calloc(1, (size_t)size);
     *got = p ? size : 0;
     return (uint64_t)(uintptr_t)p;
 }
