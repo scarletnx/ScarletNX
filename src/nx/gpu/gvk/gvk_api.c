@@ -43,6 +43,9 @@
 #define GVK_SURFACE    0x5653000000000001ull /* the vi layer's surface: the game's only one */
 #define GVK_GUEST_API  VK_API_VERSION_1_1    /* what the game is told: its loader has Vulkan 1.1's functions */
 #define GVK_HEAP       (4ull << 30)          /* the one heap the game is told of: the console's memory */
+#define GVK_SC_MAX     1920u                 /* the widest swapchain the game is told of (maxImageExtent) */
+#define GVK_SC_MAX_H   1080u                 /* and the highest */
+#define GVK_TEMPLATES  (1u << 10)            /* its descriptor update templates */
 
 typedef struct {
     u64 mem;  /* the host's VkDeviceMemory, 0 for a free slot */
@@ -126,6 +129,12 @@ typedef struct {
 typedef struct {
     u64 fb, img[GVK_CB_WRITES];
 } GvkMixed;
+/* a descriptor update template's entries, which its updates read (gvk_UpdateDescriptorSetWithTemplate) */
+typedef struct {
+    u64 tmpl;
+    u32 n;
+    VkDescriptorUpdateTemplateEntry* e;
+} GvkTemplate;
 /* With the resolution scale, the image descriptors of a set that hold a view of an image drawn at the scale: bit
    binding * 8 + element, for bindings and elements below 8 (set_bit). A set with none has no entry. pool: its pool's,
    which counts its sets with a mask (GvkPoolMasks), to forget them as it resets */
@@ -261,7 +270,7 @@ static struct {
     u64 import_align;                               /* minImportedHostPointerAlignment, or a host page for dma-bufs */
     VkExternalMemoryHandleTypeFlagBits handle_type; /* how the host imports guest pages: host memory or a dma-buf */
     u32 nmem, nimage, nrpass, npass, ntarget, nview, nsfb, ndyn, ndual, nsetscale, nmsizes, npsizes, nbound, nlayout,
-        ncbw, ndsl, nsetinfo, npoolmasks, nmixed;
+        ncbw, ndsl, nsetinfo, npoolmasks, nmixed, ntmpl;
     GvkMem mem[GVK_MEMS]; /* open addressing by handle */
     GvkImage image[GVK_IMAGES];
     GvkRpass rpass[GVK_RPASSES];
@@ -270,6 +279,7 @@ static struct {
     GvkView view[GVK_IMAGES];
     u64 sfb[GVK_SCALED];
     GvkMixed mixed[GVK_SCALED];
+    GvkTemplate tmpl[GVK_TEMPLATES];
     GvkDyn dyn[GVK_CBS];
     GvkDual dual[GVK_DUALS];
     GvkSetScale setscale[GVK_IMAGES / 4];
@@ -511,7 +521,7 @@ typedef char gvk_entries_fit[sizeof(GvkMem) <= 64 && sizeof(GvkRpass) <= 64 && s
                                      sizeof(GvkPoolTwin) <= 64 && sizeof(GvkSizes) <= 64 && sizeof(GvkBound) <= 64 &&
                                      sizeof(GvkLayout) <= 64 && sizeof(GvkCbWrites) <= 64 &&
                                      sizeof(GvkDsLayout) <= 64 && sizeof(GvkSetInfo) <= 64 &&
-                                     sizeof(GvkPoolMasks) <= 64 && sizeof(GvkMixed) <= 64
+                                     sizeof(GvkPoolMasks) <= 64 && sizeof(GvkMixed) <= 64 && sizeof(GvkTemplate) <= 64
                                  ? 1
                                  : -1];
 
@@ -548,6 +558,15 @@ static void image_untrack(u64 img) {
 }
 
 /* ------------------------------------------------------------ the resolution scale */
+/* the widest and highest image the host takes as a framebuffer's attachment */
+static u32 fb_max_w(void) {
+    const VkPhysicalDeviceLimits* l = &g_vk.props.limits;
+    return l->maxFramebufferWidth < l->maxImageDimension2D ? l->maxFramebufferWidth : l->maxImageDimension2D;
+}
+static u32 fb_max_h(void) {
+    const VkPhysicalDeviceLimits* l = &g_vk.props.limits;
+    return l->maxFramebufferHeight < l->maxImageDimension2D ? l->maxFramebufferHeight : l->maxImageDimension2D;
+}
 /* The resolution setting as a whole factor, 1 for none. An image the game draws to is drawn that much larger from the
    first framebuffer that takes it (GvkTarget, fb_scale), and the commands that name its pixels are scaled with it:
    render areas, viewports, scissors, clear rectangles, copies and blits. A copy between a scaled image and one that
@@ -555,7 +574,15 @@ static void image_untrack(u64 img) {
    COLOR_ATTACHMENT), so it stays at the game's size */
 static u32 scale_factor(void) {
     float s = g_settings.resolution_scale;
-    return s >= 1.5f ? (u32)(s + 0.5f) : 1;
+    u32 f = s >= 1.5f ? (u32)(s + 0.5f) : 1, w = fb_max_w() / GVK_SC_MAX, h = fb_max_h() / GVK_SC_MAX_H;
+    u32 max = w < h ? w : h;
+    /* the swapchain is made at the scale: the largest one the game can make must fit the host's framebuffers */
+    if (max && f > max) {
+        WARN_LIMIT(1, "gvk: resolution %u is past what the host's framebuffers hold (%ux%u): drawn at %u\n", f,
+                   fb_max_w(), fb_max_h(), max);
+        return max;
+    }
+    return f;
 }
 /* whether the size queries of images drawn at the scale answer the game's size: the push constants past
    GVK_SIZE_PUSH are gvk's, where the host has them (gvk_spirv_scaled_size) */
@@ -1126,9 +1153,19 @@ static void gvk_GetPhysicalDeviceProperties2(CPU* RESTRICT c, u64 entry) {
     for (u32 i = 0; i < n; i++) put(at[i] + sizeof(VkBaseOutStructure), host[i] + 1, size[i] - sizeof *host[i]);
     ret(c, 0);
 }
-/* what the renderer's device has on: the game shares it */
+/* What the renderer's device has on: the game shares it. Not sparse resources or YCbCr conversion, which gvk doesn't
+   carry: its queue family binds no sparse memory (vkQueueBindSparse), and it passes no VkSamplerYcbcrConversionInfo
+   in a sampler's or a view's chain */
+static VkPhysicalDeviceFeatures guest_features(void) {
+    VkPhysicalDeviceFeatures f = g_vk.feat2.features;
+    f.sparseBinding = f.sparseResidencyBuffer = f.sparseResidencyImage2D = f.sparseResidencyImage3D = VK_FALSE;
+    f.sparseResidency2Samples = f.sparseResidency4Samples = f.sparseResidency8Samples = VK_FALSE;
+    f.sparseResidency16Samples = f.sparseResidencyAliased = VK_FALSE;
+    return f;
+}
 static void gvk_GetPhysicalDeviceFeatures(CPU* RESTRICT c, u64 entry) {
-    put(c->x[1], &g_vk.feat2.features, sizeof g_vk.feat2.features);
+    VkPhysicalDeviceFeatures f = guest_features();
+    put(c->x[1], &f, sizeof f);
     ret(c, 0);
 }
 /* the 1.1 features structures a game can chain, and Vulkan 1.1's and 1.2's own, from what the renderer's device has
@@ -1140,15 +1177,18 @@ static void gvk_GetPhysicalDeviceFeatures2(CPU* RESTRICT c, u64 entry) {
         ret(c, 0);
         return;
     }
-    put(g + offsetof(VkPhysicalDeviceFeatures2, features), &g_vk.feat2.features, sizeof g_vk.feat2.features);
-    const VkPhysicalDeviceVulkan11Features* f = &g_vk.feat11;
+    VkPhysicalDeviceFeatures base = guest_features();
+    put(g + offsetof(VkPhysicalDeviceFeatures2, features), &base, sizeof base);
+    VkPhysicalDeviceVulkan11Features f11 = g_vk.feat11;
+    f11.samplerYcbcrConversion = VK_FALSE;
+    const VkPhysicalDeviceVulkan11Features* f = &f11;
     const size_t head = sizeof(VkBaseOutStructure);
     u64 a = gr64(g + offsetof(VkPhysicalDeviceFeatures2, pNext));
     for (u32 hops = 0; a && hops < 64 && mem_user_mapped(a, head); hops++, a = gr64(a + 8)) {
         VkStructureType st = (VkStructureType)gr32(a);
         switch (st) {
             case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES:
-                put(a + head, (const u8*)&g_vk.feat11 + head, sizeof g_vk.feat11 - head);
+                put(a + head, (const u8*)f + head, sizeof *f - head);
                 break;
             case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES:
                 put(a + head, (const u8*)&g_vk.feat12 + head, sizeof g_vk.feat12 - head);
@@ -1211,10 +1251,13 @@ static void gvk_GetPhysicalDeviceMemoryProperties2(CPU* RESTRICT c, u64 entry) {
     if (c->x[1]) put(c->x[1] + offsetof(VkPhysicalDeviceMemoryProperties2, memoryProperties), &p, sizeof p);
     ret(c, 0);
 }
-/* one family: the renderer's graphics queue */
-static void gvk_GetPhysicalDeviceQueueFamilyProperties(CPU* RESTRICT c, u64 entry) {
-    VkQueueFamilyProperties q = {
+/* one family: the renderer's graphics queue, which binds no sparse memory (guest_features) */
+static VkQueueFamilyProperties guest_family(void) {
+    return (VkQueueFamilyProperties){
         VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT, 1, g_vk.gfx_timestamp_bits, {1, 1, 1}};
+}
+static void gvk_GetPhysicalDeviceQueueFamilyProperties(CPU* RESTRICT c, u64 entry) {
+    VkQueueFamilyProperties q = guest_family();
     put_list(c->x[1], c->x[2], &q, 1, sizeof q);
     ret(c, 0);
 }
@@ -1245,6 +1288,114 @@ static void gvk_GetPhysicalDeviceImageFormatProperties(CPU* RESTRICT c, u64 entr
     put(c->x[6], &p, sizeof p);
     ret_vk(c, r);
 }
+/* Vulkan 1.1's two-call idiom for one structure that has its own sType and pNext: n bytes of body written at off in
+   it, which leaves the game's chain alone */
+static VkResult put_one_chained(u64 p_count, u64 p_out, size_t off, const void* body, size_t n) {
+    if (!gvk_writable(p_count, 4)) return VK_ERROR_INITIALIZATION_FAILED;
+    if (p_out && gr32(p_count) && !put(p_out + off, body, n)) return VK_ERROR_INITIALIZATION_FAILED;
+    VkResult r = p_out && !gr32(p_count) ? VK_INCOMPLETE : VK_SUCCESS;
+    gw32(p_count, r == VK_SUCCESS);
+    return r;
+}
+/* one group of the one device, which allocates no subsets */
+static void gvk_EnumeratePhysicalDeviceGroups(CPU* RESTRICT c, u64 entry) {
+    VkPhysicalDeviceGroupProperties g = {.physicalDeviceCount = 1, .physicalDevices = {g_vk.phys}};
+    size_t off = offsetof(VkPhysicalDeviceGroupProperties, physicalDeviceCount);
+    ret_vk(c, put_one_chained(c->x[1], c->x[2], off, (const u8*)&g + off, sizeof g - off));
+}
+static void gvk_GetPhysicalDeviceQueueFamilyProperties2(CPU* RESTRICT c, u64 entry) {
+    VkQueueFamilyProperties q = guest_family();
+    put_one_chained(c->x[1], c->x[2], offsetof(VkQueueFamilyProperties2, queueFamilyProperties), &q, sizeof q);
+    ret(c, 0);
+}
+/* the host's answer for the base structure: no chained structure gvk passes on needs another */
+static void gvk_GetPhysicalDeviceFormatProperties2(CPU* RESTRICT c, u64 entry) {
+    VkFormatProperties p = {0};
+    vkGetPhysicalDeviceFormatProperties(g_vk.phys, host_format((VkFormat)(u32)c->x[1]), &p);
+    put(c->x[2] + offsetof(VkFormatProperties2, formatProperties), &p, sizeof p);
+    ret(c, 0);
+}
+/* The base query as vkGetPhysicalDeviceImageFormatProperties answers it. The game's objects have no external handle
+   types (an external image query is not supported, and the properties of one are none), and no YCbCr conversion
+   (guest_features): its sampler takes one descriptor */
+static void gvk_GetPhysicalDeviceImageFormatProperties2(CPU* RESTRICT c, u64 entry) {
+    u64 gi = c->x[1], go = c->x[2];
+    if (!gi || !mem_user_mapped(gi, sizeof(VkPhysicalDeviceImageFormatInfo2)) ||
+        !gvk_writable(go, sizeof(VkImageFormatProperties2))) {
+        ret_vk(c, VK_ERROR_INITIALIZATION_FAILED);
+        return;
+    }
+    VkPhysicalDeviceImageFormatInfo2 in;
+    memcpy(&in, GP(gi), sizeof in);
+    VkResult r = VK_SUCCESS;
+    u64 a = U(in.pNext);
+    for (u32 hops = 0; a && hops < 64 && mem_user_mapped(a, sizeof(VkBaseInStructure)); hops++, a = gr64(a + 8))
+        if (gr32(a) == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_IMAGE_FORMAT_INFO &&
+            mem_user_mapped(a, sizeof(VkPhysicalDeviceExternalImageFormatInfo)) &&
+            gr32(a + offsetof(VkPhysicalDeviceExternalImageFormatInfo, handleType)))
+            r = VK_ERROR_FORMAT_NOT_SUPPORTED;
+    VkImageFormatProperties p = {0};
+    if (r == VK_SUCCESS)
+        r = vkGetPhysicalDeviceImageFormatProperties(g_vk.phys, host_format(in.format), in.type, in.tiling, in.usage,
+                                                     in.flags, &p);
+    put(go + offsetof(VkImageFormatProperties2, imageFormatProperties), &p, sizeof p);
+    a = gr64(go + offsetof(VkImageFormatProperties2, pNext));
+    for (u32 hops = 0; a && hops < 64 && mem_user_mapped(a, sizeof(VkBaseOutStructure)); hops++, a = gr64(a + 8)) {
+        if (gr32(a) == VK_STRUCTURE_TYPE_EXTERNAL_IMAGE_FORMAT_PROPERTIES) {
+            VkExternalMemoryProperties none = {0};
+            put(a + offsetof(VkExternalImageFormatProperties, externalMemoryProperties), &none, sizeof none);
+        } else if (gr32(a) == VK_STRUCTURE_TYPE_SAMPLER_YCBCR_CONVERSION_IMAGE_FORMAT_PROPERTIES) {
+            u32 one = 1;
+            put(a + offsetof(VkSamplerYcbcrConversionImageFormatProperties, combinedImageSamplerDescriptorCount), &one,
+                sizeof one);
+        }
+    }
+    ret_vk(c, r);
+}
+/* the game's buffers, fences and semaphores have no external handle types */
+static void gvk_GetPhysicalDeviceExternalBufferProperties(CPU* RESTRICT c, u64 entry) {
+    VkExternalMemoryProperties none = {0};
+    put(c->x[2] + offsetof(VkExternalBufferProperties, externalMemoryProperties), &none, sizeof none);
+    ret(c, 0);
+}
+static void gvk_GetPhysicalDeviceExternalFenceProperties(CPU* RESTRICT c, u64 entry) {
+    size_t off = offsetof(VkExternalFenceProperties, exportFromImportedHandleTypes);
+    VkExternalFenceProperties none = {0};
+    put(c->x[2] + off, (const u8*)&none + off, sizeof none - off);
+    ret(c, 0);
+}
+static void gvk_GetPhysicalDeviceExternalSemaphoreProperties(CPU* RESTRICT c, u64 entry) {
+    size_t off = offsetof(VkExternalSemaphoreProperties, exportFromImportedHandleTypes);
+    VkExternalSemaphoreProperties none = {0};
+    put(c->x[2] + off, (const u8*)&none + off, sizeof none - off);
+    ret(c, 0);
+}
+/* no sparse resources (guest_features): no formats for them, and no image of them */
+static void gvk_GetPhysicalDeviceSparseImageFormatProperties(CPU* RESTRICT c, u64 entry) {
+    put_list(c->x[6], c->x[7], NULL, 0, sizeof(VkSparseImageFormatProperties));
+    ret(c, 0);
+}
+static void gvk_GetPhysicalDeviceSparseImageFormatProperties2(CPU* RESTRICT c, u64 entry) {
+    put_list(c->x[2], c->x[3], NULL, 0, sizeof(VkSparseImageFormatProperties2));
+    ret(c, 0);
+}
+static void gvk_GetImageSparseMemoryRequirements(CPU* RESTRICT c, u64 entry) {
+    put_list(c->x[2], c->x[3], NULL, 0, sizeof(VkSparseImageMemoryRequirements));
+    ret(c, 0);
+}
+static void gvk_GetImageSparseMemoryRequirements2(CPU* RESTRICT c, u64 entry) {
+    put_list(c->x[2], c->x[3], NULL, 0, sizeof(VkSparseImageMemoryRequirements2));
+    ret(c, 0);
+}
+/* A command that needs a feature that guest_features says is off: a game that calls it broke Vulkan's rules, and
+   the console's driver would have done what gvk cannot say */
+#define FEATURE_OFF(NAME, FEATURE)                                                                                     \
+    static void gvk_##NAME(CPU* RESTRICT c, u64 entry) {                                                               \
+        (void)c;                                                                                                       \
+        fatal("gvk: the game called vk" #NAME ", which needs " FEATURE ", which gvk tells it is off");                 \
+    }
+FEATURE_OFF(QueueBindSparse, "sparseBinding")
+FEATURE_OFF(CreateSamplerYcbcrConversion, "samplerYcbcrConversion")
 
 static void gvk_CreateDevice(CPU* RESTRICT c, u64 entry) {
     REQUIRE_OUT(c->x[3], 8);
@@ -1258,6 +1409,29 @@ static void gvk_CreateDevice(CPU* RESTRICT c, u64 entry) {
 }
 static void gvk_GetDeviceQueue(CPU* RESTRICT c, u64 entry) {
     put_handle(c->x[3], U(g_vk.gfx));
+    ret(c, 0);
+}
+static void gvk_GetDeviceQueue2(CPU* RESTRICT c, u64 entry) {
+    put_handle(c->x[2], U(g_vk.gfx));
+    ret(c, 0);
+}
+/* one device: its own memory has every peer feature */
+static void gvk_GetDeviceGroupPeerMemoryFeatures(CPU* RESTRICT c, u64 entry) {
+    VkPeerMemoryFeatureFlags all = VK_PEER_MEMORY_FEATURE_COPY_SRC_BIT | VK_PEER_MEMORY_FEATURE_COPY_DST_BIT |
+                                   VK_PEER_MEMORY_FEATURE_GENERIC_SRC_BIT | VK_PEER_MEMORY_FEATURE_GENERIC_DST_BIT;
+    put(c->x[4], &all, sizeof all);
+    ret(c, 0);
+}
+static void gvk_GetDeviceMemoryCommitment(CPU* RESTRICT c, u64 entry) {
+    VkDeviceSize bytes = 0;
+    vkGetDeviceMemoryCommitment(g_vk.dev, H(VkDeviceMemory, c->x[1]), &bytes);
+    put(c->x[2], &bytes, sizeof bytes);
+    ret(c, 0);
+}
+static void gvk_GetRenderAreaGranularity(CPU* RESTRICT c, u64 entry) {
+    VkExtent2D g = {1, 1};
+    vkGetRenderAreaGranularity(g_vk.dev, H(VkRenderPass, c->x[1]), &g);
+    put(c->x[2], &g, sizeof g);
     ret(c, 0);
 }
 static void gvk_DeviceWaitIdle(CPU* RESTRICT c, u64 entry) {
@@ -1443,6 +1617,24 @@ static void gvk_BindImageMemory(CPU* RESTRICT c, u64 entry) {
     VkResult r = vkBindImageMemory(g_vk.dev, img, H(VkDeviceMemory, c->x[2]), c->x[3]);
     VkImageAspectFlags preinit = image_get(c->x[1]).preinit;
     if (r == VK_SUCCESS && preinit) r = images_general(&img, 1, preinit);
+    ret_vk(c, r);
+}
+/* vkBind*Memory2: no chained structure gvk passes on (device groups have one device) */
+static void gvk_BindBufferMemory2(CPU* RESTRICT c, u64 entry) {
+    gvk_scratch_reset();
+    u32 n = (u32)c->x[1];
+    const VkBindBufferMemoryInfo* b = gvk_in(&gvk_t_bind_buffer, c->x[2], n);
+    ret_vk(c, n && !b ? VK_ERROR_INITIALIZATION_FAILED : vkBindBufferMemory2(g_vk.dev, n, b));
+}
+static void gvk_BindImageMemory2(CPU* RESTRICT c, u64 entry) {
+    gvk_scratch_reset();
+    u32 n = (u32)c->x[1];
+    const VkBindImageMemoryInfo* b = gvk_in(&gvk_t_bind_image, c->x[2], n);
+    VkResult r = n && !b ? VK_ERROR_INITIALIZATION_FAILED : vkBindImageMemory2(g_vk.dev, n, b);
+    for (u32 i = 0; r == VK_SUCCESS && i < n; i++) { /* as gvk_BindImageMemory */
+        VkImageAspectFlags preinit = image_get(U(b[i].image)).preinit;
+        if (preinit) r = images_general(&b[i].image, 1, preinit);
+    }
     ret_vk(c, r);
 }
 
@@ -1720,12 +1912,12 @@ static void shadow_free(GvkTarget* t) {
 static int shadow_allowed_nl(const GvkTarget* t, u32 f) {
     const VkFormatFeatureFlags blit = VK_FORMAT_FEATURE_BLIT_SRC_BIT | VK_FORMAT_FEATURE_BLIT_DST_BIT;
     const GvkImage* gi = &g_gvk_api.image[tab_slot(TAB(image), t->img)];
-    u32 max = g_vk.props.limits.maxImageDimension2D;
+    u32 max_w = fb_max_w(), max_h = fb_max_h();
     int transient = (t->usage & VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT) != 0;
     int moves = transient || (t->samples == VK_SAMPLE_COUNT_1_BIT &&
                               (!t->written || (gi->img == t->img && (gi->features & blit) == blit)));
-    return t->mips == 1 && !(t->usage & VK_IMAGE_USAGE_STORAGE_BIT) && t->w * f <= max && t->h * f <= max && moves &&
-           !t->pending && !t->in_set && !t->blocked && (t->layers == 1 || !t->written);
+    return t->mips == 1 && !(t->usage & VK_IMAGE_USAGE_STORAGE_BIT) && t->w * f <= max_w && t->h * f <= max_h &&
+           moves && !t->pending && !t->in_set && !t->blocked && (t->layers == 1 || !t->written);
 }
 /* The n targets of one framebuffer with their shadows, and the shadow's view of each view of them: all or none. A
    target that got a shadow from another framebuffer meanwhile keeps that one, and its shadow made here goes. None
@@ -2213,19 +2405,33 @@ static void gvk_MergePipelineCaches(CPU* RESTRICT c, u64 entry) {
     ret_vk(c, vkMergePipelineCaches(g_vk.dev, H(VkPipelineCache, c->x[1]), (u32)c->x[2], src));
 }
 
-/* the immutable samplers of a binding of another type are ignored, whatever the pointer holds */
+/* the game's layout info at g, where the immutable samplers of a binding of another type are ignored, whatever the
+   pointer holds. NULL when it isn't mapped */
+static VkDescriptorSetLayoutCreateInfo* dslayout_in(u64 g) {
+    VkDescriptorSetLayoutCreateInfo* ci = gvk_in(&gvk_t_dslayout, g, 1);
+    VkDescriptorSetLayoutBinding* b = ci ? (VkDescriptorSetLayoutBinding*)ci->pBindings : NULL;
+    for (u32 i = 0; b && i < ci->bindingCount; i++)
+        if (b[i].descriptorType != VK_DESCRIPTOR_TYPE_SAMPLER &&
+            b[i].descriptorType != VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
+            b[i].pImmutableSamplers = NULL;
+    return ci;
+}
+static void gvk_GetDescriptorSetLayoutSupport(CPU* RESTRICT c, u64 entry) {
+    gvk_scratch_reset();
+    const VkDescriptorSetLayoutCreateInfo* ci = dslayout_in(c->x[1]);
+    VkDescriptorSetLayoutSupport s = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_SUPPORT};
+    if (ci) vkGetDescriptorSetLayoutSupport(g_vk.dev, ci, &s);
+    put(c->x[2] + offsetof(VkDescriptorSetLayoutSupport, supported), &s.supported, sizeof s.supported);
+    ret(c, 0);
+}
 static void gvk_CreateDescriptorSetLayout(CPU* RESTRICT c, u64 entry) {
     REQUIRE_OUT(c->x[3], 8);
     gvk_scratch_reset();
-    VkDescriptorSetLayoutCreateInfo* ci = gvk_in(&gvk_t_dslayout, c->x[1], 1);
+    VkDescriptorSetLayoutCreateInfo* ci = dslayout_in(c->x[1]);
     VkDescriptorSetLayout h = VK_NULL_HANDLE;
     VkResult r = VK_ERROR_INITIALIZATION_FAILED;
     if (ci) {
-        VkDescriptorSetLayoutBinding* b = (VkDescriptorSetLayoutBinding*)ci->pBindings;
-        for (u32 i = 0; b && i < ci->bindingCount; i++)
-            if (b[i].descriptorType != VK_DESCRIPTOR_TYPE_SAMPLER &&
-                b[i].descriptorType != VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
-                b[i].pImmutableSamplers = NULL;
+        const VkDescriptorSetLayoutBinding* b = ci->pBindings;
         r = vkCreateDescriptorSetLayout(g_vk.dev, ci, NULL, &h);
         if (r == VK_SUCCESS && scale_factor() > 1) { /* where a write past a binding's end goes on (slot_bit) */
             GvkDsLayout e = {.layout = U(h)};
@@ -2611,16 +2817,10 @@ static void copies_scale(const VkCopyDescriptorSet* cp, u32 nc) {
     }
     pm_unlock(&g_gvk_api.lock);
 }
-/* a write reads the one of its three arrays its type names, its images in host_layout */
-static void gvk_UpdateDescriptorSets(CPU* RESTRICT c, u64 entry) {
-    gvk_scratch_reset();
-    u32 nw = (u32)c->x[1], nc = (u32)c->x[3];
-    VkWriteDescriptorSet* w = gvk_in(&gvk_t_write, c->x[2], nw);
-    const VkCopyDescriptorSet* cp = gvk_in(&gvk_t_copy, c->x[4], nc);
-    if ((nw && !w) || (nc && !cp)) {
-        ret(c, 0);
-        return;
-    }
+/* writes w and copies cp, each write reading the one of its three arrays its type names (host memory the caller may
+   change), its images in host_layout and its views the shadows' (views_to_host). Nothing when a write lacks its
+   array */
+static void writes_update(VkWriteDescriptorSet* w, u32 nw, const VkCopyDescriptorSet* cp, u32 nc) {
     /* Validate all writes before mutating any view/set tracking state. */
     for (u32 i = 0; w && i < nw; i++) {
         if (!w[i].descriptorCount) {
@@ -2635,27 +2835,18 @@ static void gvk_UpdateDescriptorSets(CPU* RESTRICT c, u64 entry) {
             case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
             case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
             case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT:
-                if (!w[i].pImageInfo) {
-                    ret(c, 0);
-                    return;
-                }
+                if (!w[i].pImageInfo) return;
                 w[i].pBufferInfo = NULL;
                 w[i].pTexelBufferView = NULL;
                 break;
             case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
             case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
-                if (!w[i].pTexelBufferView) {
-                    ret(c, 0);
-                    return;
-                }
+                if (!w[i].pTexelBufferView) return;
                 w[i].pImageInfo = NULL;
                 w[i].pBufferInfo = NULL;
                 break;
             default:
-                if (!w[i].pBufferInfo) {
-                    ret(c, 0);
-                    return;
-                }
+                if (!w[i].pBufferInfo) return;
                 w[i].pImageInfo = NULL;
                 w[i].pTexelBufferView = NULL;
                 break;
@@ -2676,6 +2867,91 @@ static void gvk_UpdateDescriptorSets(CPU* RESTRICT c, u64 entry) {
         update_with_twins(w, w ? nw : 0, cp, cp ? nc : 0);
     else
         vkUpdateDescriptorSets(g_vk.dev, w ? nw : 0, w, cp ? nc : 0, cp);
+}
+static void gvk_UpdateDescriptorSets(CPU* RESTRICT c, u64 entry) {
+    gvk_scratch_reset();
+    u32 nw = (u32)c->x[1], nc = (u32)c->x[3];
+    VkWriteDescriptorSet* w = gvk_in(&gvk_t_write, c->x[2], nw);
+    const VkCopyDescriptorSet* cp = gvk_in(&gvk_t_copy, c->x[4], nc);
+    if ((!nw || w) && (!nc || cp)) writes_update(w, nw, cp, nc);
+    ret(c, 0);
+}
+/* A descriptor update template keeps its entries (GvkTemplate), and an update with it becomes the writes they name:
+   the same path as vkUpdateDescriptorSets, so that views of targets drawn at the scale and the sets' twins follow.
+   The host's template is made only to give the game a handle */
+static void gvk_CreateDescriptorUpdateTemplate(CPU* RESTRICT c, u64 entry) {
+    REQUIRE_OUT(c->x[3], 8);
+    gvk_scratch_reset();
+    const VkDescriptorUpdateTemplateCreateInfo* ci = gvk_in(&gvk_t_template, c->x[1], 1);
+    VkDescriptorUpdateTemplate h = VK_NULL_HANDLE;
+    VkResult r = VK_ERROR_INITIALIZATION_FAILED;
+    /* push descriptors (VK_KHR_push_descriptor) are not among the game's extensions */
+    if (ci && ci->templateType == VK_DESCRIPTOR_UPDATE_TEMPLATE_TYPE_DESCRIPTOR_SET) {
+        u32 n = ci->descriptorUpdateEntryCount;
+        GvkTemplate t = {.n = n, .e = n ? malloc(sizeof *t.e * n) : NULL};
+        if (n && !t.e) {
+            r = VK_ERROR_OUT_OF_HOST_MEMORY;
+        } else {
+            for (u32 i = 0; i < n; i++) t.e[i] = ci->pDescriptorUpdateEntries[i];
+            r = vkCreateDescriptorUpdateTemplate(g_vk.dev, ci, NULL, &h);
+        }
+        if (r == VK_SUCCESS) {
+            t.tmpl = U(h);
+            tab_put(TAB(tmpl), &g_gvk_api.ntmpl, &t);
+        } else {
+            free(t.e);
+        }
+    }
+    if (r != VK_SUCCESS) WARN_LIMIT(16, "gvk: vkCreateDescriptorUpdateTemplate failed (%d)\n", (int)r);
+    put_handle(c->x[3], U(h));
+    ret_vk(c, r);
+}
+static void gvk_DestroyDescriptorUpdateTemplate(CPU* RESTRICT c, u64 entry) {
+    GvkTemplate t;
+    if (tab_take(TAB(tmpl), &g_gvk_api.ntmpl, c->x[1], &t)) free(t.e);
+    vkDestroyDescriptorUpdateTemplate(g_vk.dev, H(VkDescriptorUpdateTemplate, c->x[1]), NULL);
+    ret(c, 0);
+}
+/* the descriptors of entry e at the game's data: count records of n bytes each, stride apart, copied to host memory.
+   NULL when one is not mapped */
+static void* template_records(u64 data, const VkDescriptorUpdateTemplateEntry* e, size_t n) {
+    u8* out = gvk_scratch(n * e->descriptorCount);
+    for (u32 k = 0; k < e->descriptorCount; k++) {
+        u64 at = data + e->offset + (u64)k * e->stride; /* wraps as the game's own pointer arithmetic does */
+        if (!mem_user_mapped(at, n)) return NULL;
+        memcpy(out + n * k, GP(at), n);
+    }
+    return out;
+}
+static void gvk_UpdateDescriptorSetWithTemplate(CPU* RESTRICT c, u64 entry) {
+    gvk_scratch_reset();
+    GvkTemplate t;
+    if (!tab_get(TAB(tmpl), c->x[2], &t)) fatal("gvk: invalid descriptor update template handle");
+    VkWriteDescriptorSet* w = gvk_scratch(sizeof *w * (t.n ? t.n : 1));
+    for (u32 i = 0; i < t.n; i++) {
+        const VkDescriptorUpdateTemplateEntry* e = &t.e[i];
+        w[i] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                                      .dstSet = H(VkDescriptorSet, c->x[1]),
+                                      .dstBinding = e->dstBinding,
+                                      .dstArrayElement = e->dstArrayElement,
+                                      .descriptorCount = e->descriptorCount,
+                                      .descriptorType = e->descriptorType};
+        switch (e->descriptorType) {
+            case VK_DESCRIPTOR_TYPE_SAMPLER:
+            case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
+            case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
+            case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
+            case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT:
+                w[i].pImageInfo = template_records(c->x[3], e, sizeof(VkDescriptorImageInfo));
+                break;
+            case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
+            case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
+                w[i].pTexelBufferView = template_records(c->x[3], e, sizeof(VkBufferView));
+                break;
+            default: w[i].pBufferInfo = template_records(c->x[3], e, sizeof(VkDescriptorBufferInfo)); break;
+        }
+    }
+    writes_update(w, t.n, NULL, 0);
     ret(c, 0);
 }
 
@@ -2859,6 +3135,10 @@ static void gvk_ResetCommandPool(CPU* RESTRICT c, u64 entry) {
     VkResult r = vkResetCommandPool(g_vk.dev, H(VkCommandPool, c->x[1]), (VkCommandPoolResetFlags)c->x[2]);
     if (r == VK_SUCCESS) pool_clear(c->x[1], 0);
     ret_vk(c, r);
+}
+static void gvk_TrimCommandPool(CPU* RESTRICT c, u64 entry) {
+    vkTrimCommandPool(g_vk.dev, H(VkCommandPool, c->x[1]), (VkCommandPoolTrimFlags)c->x[2]);
+    ret(c, 0);
 }
 static void gvk_AllocateCommandBuffers(CPU* RESTRICT c, u64 entry) {
     gvk_scratch_reset();
@@ -3244,6 +3524,14 @@ static void gvk_CmdDispatch(CPU* RESTRICT c, u64 entry) {
     vkCmdDispatch(CB, (u32)c->x[1], (u32)c->x[2], (u32)c->x[3]);
     ret(c, 0);
 }
+static void gvk_CmdDispatchBase(CPU* RESTRICT c, u64 entry) {
+    vkCmdDispatchBase(CB, (u32)c->x[1], (u32)c->x[2], (u32)c->x[3], (u32)c->x[4], (u32)c->x[5], (u32)c->x[6]);
+    ret(c, 0);
+}
+static void gvk_CmdSetDeviceMask(CPU* RESTRICT c, u64 entry) {
+    vkCmdSetDeviceMask(CB, (u32)c->x[1]);
+    ret(c, 0);
+}
 static void gvk_CmdDispatchIndirect(CPU* RESTRICT c, u64 entry) {
     vkCmdDispatchIndirect(CB, H(VkBuffer, c->x[1]), c->x[2]);
     ret(c, 0);
@@ -3339,6 +3627,34 @@ static VkPipelineStageFlags stages_for(VkAccessFlags access, VkPipelineStageFlag
         if ((access & k[e].access) && !(have & k[e].supported)) add |= k[e].add;
     return add;
 }
+/* the game's barriers as the host takes them: one queue family, images in host_layout and as the host draws them
+   (host_image). *sa and *da: the access masks of all */
+static void barriers_to_host(const VkMemoryBarrier* m, u32 nm, VkBufferMemoryBarrier* b, u32 nb,
+                             VkImageMemoryBarrier* i, u32 ni, VkAccessFlags* sa, VkAccessFlags* da) {
+    *sa = *da = 0;
+    for (u32 k = 0; k < nm; k++) {
+        *sa |= m[k].srcAccessMask;
+        *da |= m[k].dstAccessMask;
+    }
+    for (u32 k = 0; k < nb; k++) {
+        b[k].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        b[k].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        *sa |= b[k].srcAccessMask;
+        *da |= b[k].dstAccessMask;
+    }
+    for (u32 k = 0; k < ni; k++) {
+        i[k].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        i[k].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        i[k].oldLayout = host_layout(i[k].oldLayout);
+        i[k].newLayout = host_layout(i[k].newLayout);
+        if (i[k].oldLayout == VK_IMAGE_LAYOUT_PREINITIALIZED && image_get(U(i[k].image)).preinit)
+            i[k].oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+        u32 f;
+        i[k].image = host_image(U(i[k].image), &f, 0, 0);
+        *sa |= i[k].srcAccessMask;
+        *da |= i[k].dstAccessMask;
+    }
+}
 /* A barrier inside a render pass stays there when it fits one self-dependency of the active subpass (a primary's, or
    the subpass a secondary continues) and transitions no layout. Vulkan takes only memory barriers there, and image
    barriers on the subpass's own attachments. The console's driver takes any, so each buffer and image barrier becomes
@@ -3350,28 +3666,12 @@ static void gvk_CmdPipelineBarrier(CPU* RESTRICT c, u64 entry) {
     const VkMemoryBarrier* m = gvk_in(&gvk_t_mbar, c->x[5], nm);
     VkBufferMemoryBarrier* b = gvk_in(&gvk_t_bbar, c->x[7], nb);
     VkImageMemoryBarrier* i = gvk_in(&gvk_t_ibar, stack_arg(c, 1), ni);
-    for (u32 k = 0; b && k < nb; k++) {
-        b[k].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        b[k].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    }
-    for (u32 k = 0; i && k < ni; k++) {
-        i[k].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        i[k].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        i[k].oldLayout = host_layout(i[k].oldLayout);
-        i[k].newLayout = host_layout(i[k].newLayout);
-        if (i[k].oldLayout == VK_IMAGE_LAYOUT_PREINITIALIZED && image_get(U(i[k].image)).preinit)
-            i[k].oldLayout = VK_IMAGE_LAYOUT_GENERAL;
-        u32 f;
-        i[k].image = host_image(U(i[k].image), &f, 0, 0);
-    }
     if ((nm && !m) || (nb && !b) || (ni && !i)) {
         ret(c, 0);
         return;
     }
-    VkAccessFlags sa = 0, da = 0;
-    for (u32 k = 0; k < nm; k++) sa |= m[k].srcAccessMask, da |= m[k].dstAccessMask;
-    for (u32 k = 0; k < nb; k++) sa |= b[k].srcAccessMask, da |= b[k].dstAccessMask;
-    for (u32 k = 0; k < ni; k++) sa |= i[k].srcAccessMask, da |= i[k].dstAccessMask;
+    VkAccessFlags sa, da;
+    barriers_to_host(m, nm, b, nb, i, ni, &sa, &da);
     VkPipelineStageFlags src = (VkPipelineStageFlags)c->x[1], dst = (VkPipelineStageFlags)c->x[2];
     VkDependencyFlags flags = (VkDependencyFlags)c->x[3];
     GvkPass p;
@@ -3414,6 +3714,27 @@ static void gvk_CmdPipelineBarrier(CPU* RESTRICT c, u64 entry) {
     src |= stages_for(sa, src);
     dst |= stages_for(da, dst);
     OUTSIDE(cb, vkCmdPipelineBarrier(cb, src, dst, flags, nm, m, nb, b, ni, i));
+    ret(c, 0);
+}
+/* its barriers as gvk_CmdPipelineBarrier's, outside a render pass */
+static void gvk_CmdWaitEvents(CPU* RESTRICT c, u64 entry) {
+    gvk_scratch_reset();
+    u32 ne = (u32)c->x[1], nm = (u32)c->x[5], nb = (u32)c->x[7], ni = (u32)stack_arg(c, 1);
+    GUEST(ev, VkEvent, c->x[2], ne);
+    const VkMemoryBarrier* m = gvk_in(&gvk_t_mbar, c->x[6], nm);
+    VkBufferMemoryBarrier* b = gvk_in(&gvk_t_bbar, stack_arg(c, 0), nb);
+    VkImageMemoryBarrier* i = gvk_in(&gvk_t_ibar, stack_arg(c, 2), ni);
+    if ((nm && !m) || (nb && !b) || (ni && !i)) {
+        ret(c, 0);
+        return;
+    }
+    VkAccessFlags sa, da;
+    barriers_to_host(m, nm, b, nb, i, ni, &sa, &da);
+    VkPipelineStageFlags src = (VkPipelineStageFlags)c->x[3], dst = (VkPipelineStageFlags)c->x[4];
+    src |= stages_for(sa, src);
+    dst |= stages_for(da, dst);
+    VkCommandBuffer cb = CB;
+    OUTSIDE(cb, vkCmdWaitEvents(cb, ne, ev, src, dst, nm, m, nb, b, ni, i));
     ret(c, 0);
 }
 static void gvk_CmdCopyBuffer(CPU* RESTRICT c, u64 entry) {
@@ -3788,7 +4109,7 @@ static void gvk_GetPhysicalDeviceSurfaceCapabilitiesKHR(CPU* RESTRICT c, u64 ent
         .maxImageCount = GVK_SC_IMAGES,
         .currentExtent = {w, h},
         .minImageExtent = {1, 1},
-        .maxImageExtent = {1920, 1080},
+        .maxImageExtent = {GVK_SC_MAX, GVK_SC_MAX_H},
         .maxImageArrayLayers = 1,
         .supportedTransforms = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR | VK_SURFACE_TRANSFORM_INHERIT_BIT_KHR,
         .currentTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR,
@@ -3910,8 +4231,10 @@ static void gvk_CreateSwapchainKHR(CPU* RESTRICT c, u64 entry) {
     u32 w = gr32(ci + offsetof(VkSwapchainCreateInfoKHR, imageExtent)),
         h = gr32(ci + offsetof(VkSwapchainCreateInfoKHR, imageExtent) + 4);
     VkImageUsageFlags usage = gr32(ci + offsetof(VkSwapchainCreateInfoKHR, imageUsage));
-    /* the game draws its frame into them: at the resolution scale, as its targets */
+    /* the game draws its frame into them: at the resolution scale, as its targets. One past maxImageExtent, which
+       scale_factor doesn't fit to the host, stays at the game's size, and its framebuffers with it (fb_scale) */
     u32 f = usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT ? scale_factor() : 1;
+    if (f > 1 && (w > fb_max_w() / f || h > fb_max_h() / f)) f = 1;
     pm_lock(&g_gvk_api.lock);
     u64 old = gr64(ci + offsetof(VkSwapchainCreateInfoKHR, oldSwapchain));
     GvkSwapchain* retired = swapchain_of(old);
@@ -4183,9 +4506,23 @@ static const struct {
     E(GetPhysicalDeviceQueueFamilyProperties),
     E(GetPhysicalDeviceFormatProperties),
     E(GetPhysicalDeviceImageFormatProperties),
+    E(EnumeratePhysicalDeviceGroups),
+    E(GetPhysicalDeviceQueueFamilyProperties2),
+    E(GetPhysicalDeviceFormatProperties2),
+    E(GetPhysicalDeviceImageFormatProperties2),
+    E(GetPhysicalDeviceExternalBufferProperties),
+    E(GetPhysicalDeviceExternalFenceProperties),
+    E(GetPhysicalDeviceExternalSemaphoreProperties),
+    E(GetPhysicalDeviceSparseImageFormatProperties),
+    E(GetPhysicalDeviceSparseImageFormatProperties2),
     E(CreateDevice),
     AS(DestroyDevice, DestroyNothing),
     E(GetDeviceQueue),
+    E(GetDeviceQueue2),
+    E(GetDeviceGroupPeerMemoryFeatures),
+    E(GetDeviceMemoryCommitment),
+    E(GetRenderAreaGranularity),
+    E(QueueBindSparse),
     E(DeviceWaitIdle),
     E(QueueWaitIdle),
     E(QueueSubmit),
@@ -4201,6 +4538,12 @@ static const struct {
     E(GetImageMemoryRequirements2),
     E(BindBufferMemory),
     E(BindImageMemory),
+    E(BindBufferMemory2),
+    E(BindImageMemory2),
+    E(GetImageSparseMemoryRequirements),
+    E(GetImageSparseMemoryRequirements2),
+    E(CreateSamplerYcbcrConversion),
+    AS(DestroySamplerYcbcrConversion, DestroyNothing),
     E(CreateBuffer),
     E(DestroyBuffer),
     E(CreateImage),
@@ -4228,6 +4571,10 @@ static const struct {
     E(AllocateDescriptorSets),
     E(FreeDescriptorSets),
     E(UpdateDescriptorSets),
+    E(CreateDescriptorUpdateTemplate),
+    E(DestroyDescriptorUpdateTemplate),
+    E(UpdateDescriptorSetWithTemplate),
+    E(GetDescriptorSetLayoutSupport),
     E(CreateRenderPass),
     E(DestroyRenderPass),
     E(CreateFramebuffer),
@@ -4238,6 +4585,7 @@ static const struct {
     E(CreateCommandPool),
     E(DestroyCommandPool),
     E(ResetCommandPool),
+    E(TrimCommandPool),
     E(AllocateCommandBuffers),
     E(FreeCommandBuffers),
     E(BeginCommandBuffer),
@@ -4262,12 +4610,15 @@ static const struct {
     E(CmdDrawIndirect),
     E(CmdDrawIndexedIndirect),
     E(CmdDispatch),
+    E(CmdDispatchBase),
+    E(CmdSetDeviceMask),
     E(CmdDispatchIndirect),
     E(CmdBeginRenderPass),
     E(CmdNextSubpass),
     E(CmdEndRenderPass),
     E(CmdExecuteCommands),
     E(CmdPipelineBarrier),
+    E(CmdWaitEvents),
     E(CmdCopyBuffer),
     E(CmdCopyImage),
     E(CmdBlitImage),
