@@ -7771,6 +7771,7 @@ static int check_hmma_file_key(void) {
 #include "vulkan_capture_cap.inc"
 #include "vulkan_trim.inc"
 #include "vulkan_owned_page_reads.inc"
+#include "vulkan_writeback_sweep.inc"
 
 /* key's row among the settings the runtime applies itself (options.c's), or NULL */
 static const IniOpt* setting_row(const char* key) {
@@ -8969,6 +8970,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_so_note());
     CHECK(!check_dma_bands_frames());
     CHECK(!check_flush_parts());
+    CHECK(!check_writeback_sweep());
     CHECK(!check_publish_bands());
     CHECK(!check_vic_bands());
     CHECK(!check_publish_padding());
