@@ -44,7 +44,16 @@ typedef struct {
        returns to, and its labels) */
     uint32_t pc, prev_label, cur_label, steps, back[16][3], depth;
     int lockstep; /* one of spv_eval_subgroup's lanes: run() stops at a subgroup operation or a barrier */
+    /* lane 0's: the cooperative matrices the subgroup made, which a matrix's value names by its index + 1 */
+    struct Mat* mats;
+    uint32_t nmats, mats_room;
 } Ev;
+/* a cooperative matrix (SPV_KHR_cooperative_matrix), one value of the whole subgroup: its elements row by row, each
+   exactly as its component type holds it */
+typedef struct Mat {
+    uint32_t rows, cols;
+    double v[16 * 16];
+} Mat;
 
 static uint32_t type_words(Ev* e, uint32_t t);
 static uint32_t struct_member(Ev* e, uint32_t t, uint32_t m, uint32_t* off);
@@ -353,7 +362,10 @@ static uint64_t binary(Ev* e, uint32_t op, uint32_t t, uint32_t ta, uint64_t x, 
 /* what run() returns where a lane of spv_eval_subgroup waits for the others: at a subgroup operation (Elect to
    QuadSwap) or a barrier, e->pc on it */
 static const char k_wait[] = "a subgroup operation";
-static int waits(uint32_t op) { return (op >= 333 && op <= 366) || op == 224 || op == 4431; }
+/* the subgroup operations, the barriers, and the cooperative matrices' load, store and multiply-add (4457-4459) */
+static int waits(uint32_t op) {
+    return (op >= 333 && op <= 366) || op == 224 || op == 4431 || (op >= 4457 && op <= 4459);
+}
 
 static const char* run(Ev* e) {
     uint32_t max = e->env->steps_max ? e->env->steps_max : 1000000u;
@@ -721,6 +733,9 @@ static const char* run(Ev* e) {
                 break;
             case 224: /* OpControlBarrier, OpMemoryBarrier: the invocation is alone */
             case 225: break;
+            case 4457: /* a cooperative matrix's load, store or multiply-add: a whole subgroup's */
+            case 4458:
+            case 4459: return "a cooperative matrix outside spv_eval_subgroup";
             case 218: /* OpEmitVertex: the outputs as they are, by location, then Position (32) and PrimitiveId (33) */
                 for (uint32_t id = 0; id < e->bound; id++) {
                     const Id* v = &e->ids[id];
@@ -880,7 +895,7 @@ static const char* ev_open(Ev* e, const uint32_t* w, size_t count, SpvEvalEnv* e
         const uint32_t* in = w + pc;
         uint32_t op = in[0] & 0xffff, len = in[0] >> 16;
         if (op == 15 && !entry) entry = in[2];
-        if (op >= 19 && op <= 39 && len > 1 && in[1] < e->bound) {
+        if (((op >= 19 && op <= 39) || op == 4456) && len > 1 && in[1] < e->bound) { /* 4456: a cooperative matrix */
             Id* y = &e->ids[in[1]];
             y->kind = K_TYPE;
             y->op = (uint16_t)op;
@@ -1016,6 +1031,7 @@ static void ev_close(Ev* e) {
         if (e->blocks[b].owned) free(e->blocks[b].words);
     free(e->blocks);
     free(e->ids);
+    free(e->mats);
 }
 
 const char* spv_eval(const uint32_t* w, size_t count, SpvEvalEnv* env) {
@@ -1029,13 +1045,128 @@ const char* spv_eval(const uint32_t* w, size_t count, SpvEvalEnv* env) {
     return why;
 }
 
+/* ---- cooperative matrices (SPV_KHR_cooperative_matrix): each one value of the subgroup, made, stored and multiplied
+   once for all its lanes at their exchange, where lane 0 keeps it. Stride counts the elements of the pointer's type,
+   and the elements of a row (RowMajorKHR, 0) or a column (ColumnMajorKHR, 1) follow each other as the component type
+   lays them out in memory: f16 halves two to a word, the low one first, or f32 words ---- */
+
+/* a cooperative matrix type of subgroup scope, f16 or f32, at most 16 x 16: its rows, columns and component bits */
+static int coop_type(Ev* e, uint32_t t, uint32_t* rows, uint32_t* cols, uint32_t* width) {
+    if (!type_ok(e, t) || e->ids[t].op != 4456) return 0;
+    const uint32_t* p = e->w + e->ids[t].at; /* the type's result, component type, scope, rows, columns, use */
+    uint32_t comp = p[2];
+    *rows = (uint32_t)e->ids[p[4]].v.c[0], *cols = (uint32_t)e->ids[p[5]].v.c[0];
+    *width = type_ok(e, comp) && e->ids[comp].op == 22 ? e->ids[comp].a : 0;
+    return e->ids[p[3]].v.c[0] == 3 && *rows && *rows <= 16 && *cols && *cols <= 16 && (*width == 16 || *width == 32);
+}
+static double coop_value(uint32_t bits, uint32_t width) { return width == 16 ? half_f(bits) : f32(bits); }
+static uint32_t coop_bits(double v, uint32_t width) { return width == 16 ? half_bits(v) : (uint32_t)u_f32((float)v); }
+/* the element of width bits at byte at past the pointer, read into *bits or written from it */
+static int coop_mem(Ev* e, uint64_t ptr, uint64_t at, uint32_t width, uint32_t* bits, int write) {
+    uint64_t word = (uint32_t)ptr + at / 4;
+    uint32_t shift = (uint32_t)(at % 4) * 8, mask = width == 32 ? 0xffffffffu : 0xffffu << shift;
+    uint32_t* p = word <= 0xffffffffu && !(width == 32 && shift) ? mem_at(e, (ptr & ~0xffffffffull) | word, 1) : NULL;
+    if (!p) return 0;
+    if (write)
+        *p = (*p & ~mask) | (*bits << shift & mask);
+    else
+        *bits = (*p & mask) >> shift;
+    return 1;
+}
+/* the byte of element (r, c) past the pointer, by the layout and the stride's bytes */
+static uint64_t coop_at(uint32_t layout, uint64_t stride, uint32_t width, uint32_t r, uint32_t c) {
+    return layout ? c * stride + (uint64_t)r * (width / 8) : r * stride + (uint64_t)c * (width / 8);
+}
+/* element (r, c) of the matrix an id is: a value lane 0 keeps, or a constant whose one constituent is every element */
+static int coop_elem(Ev* e, uint32_t id, uint32_t width, uint32_t r, uint32_t c, double* v) {
+    const Id* x = &e->ids[id];
+    if (x->kind == K_CONST) {
+        *v = coop_value((uint32_t)x->v.c[0], width);
+        return 1;
+    }
+    if (x->kind != K_VALUE || !x->v.c[0] || x->v.c[0] > e->nmats) return 0;
+    const Mat* m = &e->mats[x->v.c[0] - 1];
+    if (r >= m->rows || c >= m->cols) return 0;
+    *v = m->v[r * m->cols + c];
+    return 1;
+}
+/* a new matrix in lane 0's: its index + 1, 0 when memory runs out */
+static uint32_t coop_new(Ev* e, uint32_t rows, uint32_t cols) {
+    if (e->nmats == e->mats_room) {
+        uint32_t more = e->mats_room ? 2 * e->mats_room : 64;
+        Mat* grown = realloc(e->mats, more * sizeof *grown);
+        if (!grown) return 0;
+        e->mats = grown, e->mats_room = more;
+    }
+    e->mats[e->nmats].rows = rows, e->mats[e->nmats].cols = cols;
+    return ++e->nmats;
+}
+/* OpCooperativeMatrixLoadKHR (4457), StoreKHR (4458) or MulAddKHR (4459), with lane 0's operands, which every lane's
+   pointer and matrices must be: the result is every lane's. MulAdd sums each element's products and C exactly and
+   rounds once to its component type */
+static const char* coop_exchange(Ev* e, uint32_t n, const uint32_t* in, uint32_t op, uint32_t len) {
+    static const uint8_t shared[3][4] = {{3, 0}, {1, 2, 0}, {3, 4, 5, 0}}; /* the operands of each that are ids */
+    for (uint32_t l = 1; l < n; l++)
+        for (const uint8_t* k = shared[op - 4457]; *k; k++)
+            if (*k >= len || e[l].ids[in[*k]].v.c[0] != e[0].ids[in[*k]].v.c[0])
+                return "a cooperative matrix operation whose lanes' operands differ";
+    uint32_t rows, cols, width, m = 0;
+    if (op == 4459) {
+        uint32_t ar, ac, aw, br, bc, bw;
+        if (len < 6 || !coop_type(e, in[1], &rows, &cols, &width) || !coop_type(e, e->ids[in[3]].type, &ar, &ac, &aw) ||
+            !coop_type(e, e->ids[in[4]].type, &br, &bc, &bw) || ar != rows || bc != cols || ac != br)
+            return "a cooperative matrix multiply-add of shapes the evaluator doesn't take";
+        if (!(m = coop_new(e, rows, cols))) return "out of memory";
+        for (uint32_t r = 0; r < rows; r++)
+            for (uint32_t c = 0; c < cols; c++) {
+                double sum, a, b;
+                if (!coop_elem(e, in[5], width, r, c, &sum)) return "a cooperative matrix that isn't one";
+                for (uint32_t k = 0; k < ac; k++) {
+                    if (!coop_elem(e, in[3], aw, r, k, &a) || !coop_elem(e, in[4], bw, k, c, &b))
+                        return "a cooperative matrix that isn't one";
+                    sum += a * b;
+                }
+                e->mats[m - 1].v[r * cols + c] = coop_value(coop_bits(sum, width), width);
+            }
+    } else {
+        uint32_t ptr_id = in[op == 4457 ? 3 : 1], value = op == 4457 ? 0 : in[2], layout_at = op == 4457 ? 4 : 3;
+        if (len <= layout_at || !coop_type(e, op == 4457 ? in[1] : e->ids[value].type, &rows, &cols, &width))
+            return "a cooperative matrix type the evaluator doesn't take";
+        uint64_t ptr = e->ids[ptr_id].v.c[0], layout = e->ids[in[layout_at]].v.c[0];
+        uint64_t stride = len > layout_at + 1 ? e->ids[in[layout_at + 1]].v.c[0] : 0;
+        stride *= 4u * type_words(e, e->ids[e->ids[ptr_id].type].a); /* in bytes */
+        if (layout > 1 || !stride) return "a cooperative matrix layout the evaluator doesn't take";
+        if (op == 4457 && !(m = coop_new(e, rows, cols))) return "out of memory";
+        for (uint32_t r = 0; r < rows; r++)
+            for (uint32_t c = 0; c < cols; c++) {
+                uint32_t bits = 0;
+                double v = 0;
+                if (op == 4458 && !coop_elem(e, value, width, r, c, &v)) return "a cooperative matrix that isn't one";
+                if (op == 4458) bits = coop_bits(v, width);
+                if (!coop_mem(e, ptr, coop_at((uint32_t)layout, stride, width, r, c), width, &bits, op == 4458))
+                    return "a cooperative matrix's element outside its memory";
+                if (op == 4457) e->mats[m - 1].v[r * cols + c] = coop_value(bits, width);
+            }
+    }
+    for (uint32_t l = 0; m && l < n; l++) {
+        Id* r = &e[l].ids[in[2]];
+        r->kind = K_VALUE;
+        r->type = in[1];
+        r->v = (Val){{m}};
+    }
+    return NULL;
+}
+
 /* the subgroup operation (or barrier) every lane waits at: each one's result from the lanes' operands, as
    invocation l of the subgroup is lane l, and every lane past it. A read of a lane outside the subgroup, which
    Vulkan leaves undefined, gives 0 */
 static const char* exchange(Ev* e, uint32_t n) {
     const uint32_t* in = e[0].w + e[0].pc;
     uint32_t op = in[0] & 0xffff, len = in[0] >> 16;
-    if (op != 224) {
+    if (op >= 4457 && op <= 4459) {
+        const char* why = coop_exchange(e, n, in, op, len);
+        if (why) return why;
+    } else if (op != 224) {
         if (len < 5 || e[0].ids[in[3]].v.c[0] != 3) return "a group operation outside the subgroup";
         Val got[64];
         for (uint32_t l = 0; l < n; l++) {
