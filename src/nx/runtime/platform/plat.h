@@ -118,8 +118,8 @@ int plat_ww_scan(u8* p, u64 size, void (*cb)(u8* p, u64 size));
 /* [p, p + size) of the reservation is about to be written by the kernel (a system call given guest memory to fill),
    which the protection plat_ww_scan uses on some hosts would fail with EFAULT: the pages open, written, and no scan
    protects them again until plat_ww_close with the same range, after the call. A range being moved (plat_freeze)
-   waits for the move first. Nothing to do where the kernel's writes are tracked as they come (Linux's userfaultfd,
-   Windows' write watch) */
+   waits for the move first, but on the thread that moves it, whose write is the move's. Nothing to do where the
+   kernel's writes are tracked as they come (Linux's userfaultfd, Windows' write watch) */
 void plat_ww_open(u8* p, u64 size);
 void plat_ww_close(u8* p, u64 size);
 /* Hot pages (write_tracking_hot=1, with page protection only): a page the scans found written in a row is left
@@ -148,7 +148,8 @@ int plat_alias_unmap(u8* p, u64 size);
    allocation temporarily, then move the requested page range to p without a copy. */
 int plat_vm_map_fd(u8* p, u64 size, int fd, u64 off, u64 allocation_size);
 void plat_vm_fd_close(int fd);
-/* copies between host memory and the pool: 0, or -1 with errno (ENXIO for a read past the pool's end) */
+/* copies between host memory and the pool: 0, or -1 with errno (ENXIO for a read past the pool's end). A read into the
+   reservation is the kernel's write to guest memory, which it opens and closes itself (plat_ww_open) */
 int plat_alias_write(u64 off, const void* src, u64 size);
 int plat_alias_read(u64 off, void* dst, u64 size);
 void plat_alias_free(u64 off, u64 size); /* the range reads as zero again and uses no memory */

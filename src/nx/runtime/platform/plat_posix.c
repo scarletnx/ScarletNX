@@ -500,6 +500,7 @@ static _Thread_local struct {
     void* _Atomic wp_retried;
     _Atomic u32 wp_retried_at;
     void* _Atomic frz_retried; /* the address a thawed write was let go again at once (frozen_wait) */
+    int freezing;              /* this thread froze the range frozen now (plat_freeze to plat_thaw) */
     int crashed;       /* this thread faulted already */
 } t_plat_posix;
 /* a range frozen while it is copied (plat_freeze, below) */
@@ -968,7 +969,7 @@ static void frozen_until_thaw(const u8* p, const u8* e) {
 }
 void plat_ww_open(u8* p, u64 size) {
     u64 i, lo, hi, run = 0, n = 0, k;
-    int slot;
+    int slot, mine;
     if (!g_wp_track || wp_pages(p, size, &lo, &hi)) return;
     /* a slot of the ranges scans leave alone, published before any page opens */
     for (;;) {
@@ -985,14 +986,16 @@ void plat_ww_open(u8* p, u64 size) {
     g_ww_open_hi[slot] = p + size;
     atomic_fetch_or_explicit(&g_ww_open_live, 1u << slot, memory_order_seq_cst);
     /* a range being moved (plat_freeze) takes the write when the move is done: opened now, the kernel would write
-       the old pages, which the move has copied already */
-    frozen_until_thaw(p, p + size);
+       the old pages, which the move has copied already. The thread that moves it writes at once, as its write is the
+       move's own (plat_alias_read into the pages a failed move left), and waiting for its own thaw would never end */
+    mine = t_plat_posix.freezing;
+    if (!mine) frozen_until_thaw(p, p + size);
     for (i = lo; i <= hi; i++) {
         /* every page locked, not only those held now: a scan that locked one before the range was published may be
            about to protect it, and holds it until it has */
         if (i < hi) {
             u8 s = wp_lock(i);
-            if ((s & WP_PROT) && !frozen_at(g_wp_base + (i << g_wp_shift))) {
+            if ((s & WP_PROT) && (mine || !frozen_at(g_wp_base + (i << g_wp_shift)))) {
                 if (!n) run = i;
                 n++;
                 continue;
@@ -1620,16 +1623,24 @@ int plat_alias_write(u64 off, const void* src, u64 size) {
 }
 int plat_alias_read(u64 off, void* dst, u64 size) {
     u8* d = (u8*)dst;
-    while (size) {
-        ssize_t n = pread(g_alias, d, (size_t)size, (off_t)off);
+    u64 left = size;
+    int r = 0, why = 0;
+    /* the kernel writes dst, guest memory when mem.c gives a view's source its own pages again: a scan on another
+       thread (the renderer's) that protects one of them before the read reaches it fails the read with EFAULT */
+    plat_ww_open(d, size);
+    while (left) {
+        ssize_t n = pread(g_alias, d + (size - left), (size_t)left, (off_t)(off + (size - left)));
         if (n <= 0) {
             if (n < 0 && errno == EINTR) continue;
-            if (!n) errno = ENXIO; /* the pool ends before off: lseek's SEEK_DATA says so past a file's end */
-            return -1;
+            why = n ? errno : ENXIO; /* the pool ends before off: lseek's SEEK_DATA says so past a file's end */
+            r = -1;
+            break;
         }
-        d += n, off += (u64)n, size -= (u64)n;
+        left -= (u64)n;
     }
-    return 0;
+    plat_ww_close(d, size);
+    if (r) errno = why;
+    return r;
 }
 void plat_alias_free(u64 off, u64 size) {
 #if defined(__linux__) && defined(FALLOC_FL_PUNCH_HOLE)
@@ -2276,6 +2287,7 @@ static void fault_handler_install(void) {
 }
 void plat_freeze(u8* p, u64 size) {
     fault_handler_install();
+    t_plat_posix.freezing = 1;
     atomic_store_explicit(&g_frz_lo, p, memory_order_release);
     atomic_store_explicit(&g_frz_hi, p + size, memory_order_release);
     atomic_store_explicit(&g_frozen, 1, memory_order_seq_cst);
@@ -2292,6 +2304,7 @@ void plat_thaw(void) {
     wp_hold(lo, size, WP_MAPPED);
     mprotect(lo, (size_t)size, PROT_READ | PROT_WRITE | g_vm_exec);
     atomic_store_explicit(&g_frozen, 0, memory_order_seq_cst);
+    t_plat_posix.freezing = 0;
     wp_let(lo, size, WP_MAPPED, 1);
     trap_futex_wake((_Atomic u32*)&g_frozen);
 }
