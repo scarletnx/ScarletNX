@@ -360,11 +360,12 @@ static inline SgD sg_GuestRead(SgCtx* g, SgD address, long long size, int aligne
     }
     if (size < 4) {
         /* readmem's i32 holds a narrow load zero extended (the bus hook answers with the width's value, arm.h): the
-           map's source, so ZeroExtend of it is that i32, as the emitters written by hand used it */
+           map's source, so ZeroExtend of it is that i32, as the emitters written by hand used it. The ARM7TDMI's
+           halfword at an odd address is the aligned one rotated through all 32 bits: the map takes its low 16 */
         SgD d = sg_d_from(g, v);
         unsigned i;
         d.w = (unsigned)size * 8;
-        d.src_w[0] = (unsigned char)d.w;
+        if (size == 1 || !arm7tdmi(a)) d.src_w[0] = (unsigned char)d.w;
         for (i = d.w; i < 32; ++i) d.sel[i] = 0;
         d.value = NULL;
         return d;
