@@ -26,8 +26,8 @@
 /* the fastest way's dispatch in the timed rounds, in ns: whole waves on every CU of a large GPU for nearly all of it,
    so that a dispatch's start is a small part of it, and the rounds of five ways a fraction of a second */
 #define PICK_TARGET_NS    1000000.0
-/* the sizing dispatches of the fastest way at most: a dispatch's time grows with its workgroups only once they fill the
-   GPU, so a size scaled from a smaller one's time can still fall short, and is scaled again */
+/* the rounds dropped for a size scaled again at most: a dispatch's time grows with its workgroups only once they fill
+   the GPU and its clock is up, so a size scaled from a smaller one's time can still fall short */
 #define PICK_SIZINGS      4u
 #define PICK_MAX_GROUPS   65536u
 #define PICK_ROUNDS       4u
@@ -35,7 +35,8 @@
 #define PICK_DISPATCHES   6u
 /* a way whose calibrating dispatch took this many times the fastest's is not timed further */
 #define PICK_DROP         4.0
-/* the rounds stop once the bench has run this long, in ns, and the ways are compared on what they have */
+/* the rounds stop once they have run this long, in ns, past the first kept, and the ways are compared on what they
+   have; the modules' translation and pipelines before them are not counted, which a phone's driver takes seconds of */
 #define PICK_BUDGET_NS    3000000000ull
 /* the input and output addresses cbuf 0 holds: the module reads them, and its buffers are bound at their starts */
 #define PICK_VA_IN        0x100000000ull
@@ -378,7 +379,6 @@ static int bench_run(int rule, int half, double* us, u64* took, char* why, size_
     for (int w = SH_HMMA_GATHER; w < SH_HMMA_WAYS; w++)
         if (w != rule) order[nord++] = w;
     double best = 0;
-    int fastest = 0;
     for (int k = 0; k < nord && ok > 0; k++) {
         int w = order[k];
         Way* x = &b->way[w];
@@ -407,7 +407,7 @@ static int bench_run(int rule, int half, double* us, u64* took, char* why, size_
                 continue;
             }
         }
-        if (!best || x->first < best) best = x->first, fastest = w;
+        if (!best || x->first < best) best = x->first;
     }
     shader_hmma_take(rule, (int)g_vk.props.limits.maxComputeSharedMemorySize);
     for (int w = SH_HMMA_GATHER; w < SH_HMMA_WAYS && ok > 0; w++) {
@@ -421,28 +421,17 @@ static int bench_run(int rule, int half, double* us, u64* took, char* why, size_
         double want = PICK_FIRST_GROUPS * PICK_TARGET_NS / best;
         groups = want >= PICK_MAX_GROUPS ? PICK_MAX_GROUPS : want <= PICK_FIRST_GROUPS ? PICK_FIRST_GROUPS : (u32)want;
     }
-    /* the calibrating workgroups leave most of a large GPU idle, so their time is mostly a dispatch's start, and the
-       size scaled from it falls short of the target there (an RX 6700 XT's dispatches ran 0.1 to 0.2 ms): the fastest
-       way at that size, and the size scaled again from its time, until a dispatch takes half the target */
-    u32 sizings = 0;
-    while (ok > 0 && sizings < PICK_SIZINGS && groups > PICK_FIRST_GROUPS && groups < PICK_MAX_GROUPS) {
-        Way* x = &b->way[fastest];
-        double ns[2];
-        int r = run(b, x, groups, 2, ns, 0, x->why, sizeof x->why);
-        sizings++;
-        if (r < 0) {
-            snprintf(why, n, "the %s way's %s", g_shader_hmma_names[fastest], x->why);
-            ok = -1;
-        }
-        if (r <= 0 || !(ns[1] > 0) || ns[1] >= PICK_TARGET_NS / 2) break;
-        double want = groups * PICK_TARGET_NS / ns[1];
-        groups = want >= PICK_MAX_GROUPS ? PICK_MAX_GROUPS : (u32)want;
-    }
-    /* the rounds: the ways in turn, the order reversed every other round, as the clock still climbs in the first */
-    u32 rounds = 0;
-    for (; rounds < PICK_ROUNDS && ok > 0 && best > 0 && plat_ns() - t0 < PICK_BUDGET_NS; rounds++)
+    /* the rounds: the ways in turn, the order reversed every other round, as the clock still climbs in the first. The
+       calibrating workgroups leave most of a large GPU idle, so their time is mostly a dispatch's start and the size
+       scaled from it falls short of the target there (an RX 6700 XT's dispatches ran 0.1 to 0.2 ms), and a sizing
+       dispatch of its own runs at an idle GPU's clock: while a round's fastest way takes under half the target, the
+       size is scaled again from that round's times, which are dropped */
+    u32 rounds = 0, passes = 0, resized = 0;
+    u64 t_rounds = plat_ns();
+    for (; rounds < PICK_ROUNDS && ok > 0 && best > 0 && (!rounds || plat_ns() - t_rounds < PICK_BUDGET_NS); passes++) {
+        double fast = 0;
         for (int k = 0; k < SH_HMMA_WAYS - 1 && ok > 0; k++) {
-            int w = rounds & 1 ? SH_HMMA_WAYS - 1 - k : SH_HMMA_GATHER + k;
+            int w = passes & 1 ? SH_HMMA_WAYS - 1 - k : SH_HMMA_GATHER + k;
             Way* x = &b->way[w];
             double ns[PICK_DISPATCHES];
             if (!x->pipe || x->why[0]) continue;
@@ -450,9 +439,22 @@ static int bench_run(int rule, int half, double* us, u64* took, char* why, size_
             if (r < 0) {
                 snprintf(why, n, "the %s way's %s", g_shader_hmma_names[w], x->why);
                 ok = -1;
-            } else if (r)
+            } else if (r) {
                 for (u32 d = 1; d < PICK_DISPATCHES; d++) x->ns[x->n++] = ns[d];
+                qsort(ns + 1, PICK_DISPATCHES - 1, sizeof *ns, cmp_double);
+                double mid = ns[1 + (PICK_DISPATCHES - 1) / 2];
+                if (!fast || mid < fast) fast = mid;
+            }
         }
+        if (ok > 0 && fast > 0 && fast < PICK_TARGET_NS / 2 && groups < PICK_MAX_GROUPS && resized < PICK_SIZINGS &&
+            plat_ns() - t_rounds < PICK_BUDGET_NS) {
+            double want = groups * PICK_TARGET_NS / fast;
+            groups = want >= PICK_MAX_GROUPS ? PICK_MAX_GROUPS : (u32)want;
+            resized++;
+            for (int w = SH_HMMA_GATHER; w < SH_HMMA_WAYS; w++) b->way[w].n = 0;
+        } else
+            rounds++;
+    }
     if (ok > 0 && !best) {
         snprintf(why, n, "no way ran");
         ok = 0;
@@ -471,9 +473,9 @@ static int bench_run(int rule, int half, double* us, u64* took, char* why, size_
                                    b->way[w].why);
     if (at) LOG("vulkan: the HMMA bench leaves out %s\n", line);
     if (ok > 0)
-        LOG("vulkan: the HMMA bench ran %u workgroups a dispatch (sized by %u dispatches of the %s way), %u rounds of "
-            "%u dispatches a way, timed by %s\n",
-            groups, sizings, g_shader_hmma_names[fastest], rounds, PICK_DISPATCHES - 1,
+        LOG("vulkan: the HMMA bench ran %u workgroups a dispatch, %u rounds of %u dispatches a way (and %u at fewer "
+            "workgroups, dropped), timed by %s\n",
+            groups, rounds, PICK_DISPATCHES - 1, resized,
             b->timed ? "the GPU's timestamps" : "the host's clock (the compute queue has no timestamps)");
     /* a device lost in the bench keeps what it was using: nothing more is asked of it here */
     if (ok >= 0) {
