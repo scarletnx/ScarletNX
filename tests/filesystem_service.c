@@ -2665,14 +2665,18 @@ int main(int argc, char** argv) {
         if (source) strcpy(g_settings.game_dump, "dump-data/Game.nsp");
         strcpy(g_datadir, "dump-data/Game_data/");
         fs_init(NULL, NULL);
-        if (nsz) { /* read in place all the same, and what a solid NCZ costs said */
-            static const char said[] =
-                "fs: The game's Program NCA in dump-data/Game.source is a solid NCZ (one zstd stream, nsz's default "
-                "for an NSZ): a read behind where its stream got to, and past the pages of it kept, decodes it again "
-                "from its start, each said here as \"decoded again\". With Extract dump on, or the dump compressed in "
-                "blocks (nsz -B), it is read without that\n";
+        if (nsz) { /* read in place all the same, and what a solid NCZ costs said, the dump by its full path */
+            char *dir = snx_absolute("dump-data"),
+                 *said = snx_format("fs: The game's Program NCA in %s/Game.source is a solid NCZ (one zstd stream, "
+                                    "nsz's default for an NSZ): a read behind where its stream got to, and past the "
+                                    "pages of it kept, decodes it again from its start, each said here as \"decoded "
+                                    "again\". With Extract dump on, or the dump compressed in blocks (nsz -B), it is "
+                                    "read without that\n",
+                                    dir);
             if (strcmp(test_fs_text, said)) fprintf(stderr, "said:     %sexpected: %s", test_fs_text, said);
             CHECK(!strcmp(test_fs_text, said));
+            free(said);
+            free(dir);
         }
         test_scans_allowed = 0;
         svc_fs_init();
