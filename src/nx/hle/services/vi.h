@@ -21,6 +21,10 @@ static inline u32 vi_refresh_hz(void) { return (u32)atomic_load_explicit(&g_vi_r
 #define VI_INTERVAL_MIN (-3)
 #define VI_NO_LIMIT_VSYNC_HZ 1000 /* the vsyncs a second with fps_limit 0 (no limit), not a swap interval's */
 u64 vi_vsync_period(void); /* ns from one vsync to the next, as the shown layer's swap interval asks */
+/* the size a native window of the shown layer answers for its default width and height (the buffer queue's query),
+   which a GL driver makes the window surface: the layer's, 1280x720 docked or not until the game's buffers say
+   another. Any thread */
+void vi_window_size(u32* width, u32* height);
 void vi_vsync_tick(void);  /* one display refresh: signals the vsync event */
 /* ---- HLE state in g_hle (hle.h) */
 #define VI_LAYERS 8
