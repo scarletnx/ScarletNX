@@ -5265,6 +5265,98 @@ static void test_warp_matrix_flush(const char* dir) {
     }
 }
 
+/* ---- HFMA2's one rounding ---- */
+
+/* the f16 nearest a double, ties to even, subnormals kept, past 65504 an infinity */
+static u32 f16_rne(double v) {
+    u32 sign = signbit(v) ? 0x8000u : 0;
+    double a = fabs(v);
+    if (a >= 65520.0) return sign | 0x7c00u;
+    if (a < 0x1p-14) return sign | (u32)nearbyint(ldexp(a, 24));
+    int ex;
+    double m = frexp(a, &ex);
+    return sign | (((u32)(ex + 14) << 10) + (u32)nearbyint(ldexp(m, 11)) - 0x400u);
+}
+/* a * b + c of three finite f16 rounded once to the nearest even f16, as a fused multiply-add of halves: the product is
+   exact in double, TwoSum gives the double sum's error, and a sum that is the midpoint of two f16 goes to its error's
+   side. Within the finite f16 */
+static u32 fma16_once(u32 a, u32 b, u32 c) {
+    double p = hmma_half(a) * hmma_half(b), q = hmma_half(c), s = p + q, qs = s - p;
+    double e = (p - (s - qs)) + (q - qs);
+    u32 h = f16_rne(s);
+    double v = hmma_half(h);
+    if (v == s || e == 0) return h;
+    u32 other = fabs(s) > fabs(v) ? h + 1 : h - 1; /* the f16 on s's other side, by magnitude */
+    double w = hmma_half(other);
+    if ((v + w) / 2 != s) return h;
+    return (e > 0) == (w > v) ? other : h;
+}
+/* HFMA2 R0 = R1 * R2 + R3 (R1-R3 from c[1][0], [4] and [8]) on the evaluator, both halves: each the f16 nearest the
+   exact a * b + c. The f32 sum went to PackHalf2x16 rounded already, and two roundings could land on an f16 tie that
+   the sum is not on: the cases below were found so (by exact rationals), where the one rounding goes the other way.
+   Then random triples of f16, the result's magnitude below 65504, against fma16_once */
+static Word mov_cbuf(u32 dst, u32 bank, u32 off);
+static void test_hfma2_once(const char* dir) {
+    /* a, b, c, and the f16 nearest the exact sum */
+    static const u16 twice[6][3] = {{0xd2d8, 0xe440, 0x8f1d}, {0x3e00, 0x7847, 0x176a}, {0x2872, 0x2333, 0xbf52},
+                                    {0xa362, 0x7951, 0xf364}, {0x0a44, 0xe078, 0x52d8}, {0x3baa, 0xc83d, 0x8fdf}};
+    static const double exact[6] = {59552.0, 52576.0, -1.8291015625, -15768.0, 54.65625, -8.1171875};
+    u8 code[16 * 6] = {0};
+    for (u32 k = 0; k < 3; k++) put(code, k, mov_cbuf(1 + k, 1, 4 * k));
+    Word x = alu(0x031, 1, 0, 1); /* HFMA2 R0, R1, R2, R3 */
+    set(&x, 32, 8, 2);
+    set(&x, 64, 8, 3);
+    put(code, 3, x);
+    put(code, 4, exit_insn());
+    put(code, 5, bra(5, 5, 7, 0));
+    u32 fsph[32] = {0};
+    fsph[0] = sph0(2, 5);
+    fsph[18] = 0xf;
+    ShaderInfo si = {0};
+    size_t count = 0;
+    u32* spv = sm86_to_spirv(code, 6 * 16, ST_FS, fsph, &si, &count);
+    CHECK(spv != NULL);
+    if (!spv) {
+        fprintf(stderr, "hfma2 once: %s\n", si.first_unsupported);
+        return;
+    }
+    CHECK(keep_module(dir, "hfma2_once", spv, count));
+    u32 seed = 0x51ed27u, bad = 0, tried = 0;
+    for (u32 k = 0; k < 6 + 4096; k++) {
+        u32 in[3][2], want[2];
+        for (u32 j = 0; j < 2; j++) {
+            if (k < 6) { /* the found cases, in the low half and in the high one */
+                u32 i = (k + 3 * j) % 6;
+                for (u32 t = 0; t < 3; t++) in[t][j] = twice[i][t];
+                want[j] = f16_rne(exact[i]);
+                CHECK(fma16_once(in[0][j], in[1][j], in[2][j]) == want[j]);
+                continue;
+            }
+            do {
+                for (u32 t = 0; t < 3; t++) {
+                    seed = seed * 1664525u + 1013904223u;
+                    u32 h = seed >> 16 & 0x7fffu;
+                    in[t][j] = (h >= 0x7c00u ? h - 0x7c00u : h) | (seed & 0x8000u);
+                }
+            } while (fabs(hmma_half(in[0][j]) * hmma_half(in[1][j]) + hmma_half(in[2][j])) >= 65504.0);
+            want[j] = fma16_once(in[0][j], in[1][j], in[2][j]);
+        }
+        u32 bank1[4] = {in[0][0] | in[0][1] << 16, in[1][0] | in[1][1] << 16, in[2][0] | in[2][1] << 16, 0};
+        SpvEvalEnv env = {0};
+        env.ubo[SNX_VKB_CB + 1] = bank1;
+        env.ubo_words[SNX_VKB_CB + 1] = 4;
+        const char* why = spv_eval(spv, count, &env);
+        u32 got = env.out[0][0], wanted = want[0] | want[1] << 16;
+        tried++;
+        if ((why || got != wanted) && bad++ < 6)
+            fprintf(stderr, "hfma2 once: %04x*%04x+%04x, %04x*%04x+%04x is 0x%08x, not 0x%08x%s%s\n", in[0][0],
+                    in[1][0], in[2][0], in[0][1], in[1][1], in[2][1], got, wanted, why ? ": " : "", why ? why : "");
+    }
+    if (bad) fprintf(stderr, "hfma2 once: %u of %u pairs differ\n", bad, tried);
+    CHECK(bad == 0);
+    free(spv);
+}
+
 /* ---- HMMA on the cooperative matrices against the gathers, bit for bit, on the evaluator's 32 lanes ---- */
 
 /* a lane's input words in c[1] (A's 4, B's 2, an f16 C's 2 and an f32 C's 4: R8-R19) and its output words */
@@ -6727,6 +6819,7 @@ int main(int argc, char** argv) {
     test_fragment_unfed(dir);
     test_uses_isbe();
     test_warp_matrix(dir);
+    test_hfma2_once(dir);
     test_warp_matrix_values(dir);
     test_coop_fused_chain(dir);
     test_coop_rz(dir);
