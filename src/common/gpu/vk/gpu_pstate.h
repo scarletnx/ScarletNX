@@ -9,7 +9,12 @@
    level the context found back when the context ends: when the runtime's process ends, a crash or a kill too, as the
    kernel then closes the node (amdgpu_ctx.c: amdgpu_ctx_set_stable_pstate, amdgpu_ctx_fini). It only counts the
    automatic level as one to go back to, so the hold is taken only from "auto": a level set on the PC (LACT, CoreCtrl
-   or by hand: power_dpm_force_performance_level) would otherwise go back to auto when the game ends. */
+   or by hand: power_dpm_force_performance_level) would otherwise go back to auto when the game ends.
+
+   NVIDIA's driver (Linux, Windows): VK_NV_low_latency2's lowLatencyBoost on each swapchain, with its low latency mode
+   off: "If lowLatencyMode is VK_FALSE, lowLatencyBoost will still hint to the GPU to increase its power state"
+   (VkLatencySleepModeInfoNV), what NVAPI's documentation of the same boost calls running "at max clocks even in
+   scenarios where it is idle most of the frame". A setting of the swapchain, it ends with it. */
 #ifndef SNX_COMMON_VK_GPU_PSTATE_H
 #define SNX_COMMON_VK_GPU_PSTATE_H
 #include <stdbool.h>
@@ -20,11 +25,13 @@ enum { SNX_GPU_PSTATE_AUTO, SNX_GPU_PSTATE_ON, SNX_GPU_PSTATE_OFF };
 /* the value text names, SNX_GPU_PSTATE_*; -1 for none of auto, on and off */
 int snx_gpu_pstate_mode(const char* text);
 
-#define SNX_GPU_VENDOR_AMD 0x1002u
+#define SNX_GPU_VENDOR_AMD    0x1002u
+#define SNX_GPU_VENDOR_NVIDIA 0x10deu
 
 /* The device as Vulkan says it: its name, vendorID and deviceType (a VkPhysicalDeviceType), and its render node's
    device number where the driver gives one (VK_EXT_physical_device_drm's hasRender, renderMajor, renderMinor). sys and
-   dev are the folders the node and its sysfs files are found under: "/sys" and "/dev" */
+   dev are the folders the node and its sysfs files are found under: "/sys" and "/dev". An NVIDIA GPU's boost_lacks
+   says why its device was made without VK_NV_low_latency2, NULL where it was made with it */
 typedef struct {
     const char* name;
     uint32_t vendor;
@@ -32,7 +39,11 @@ typedef struct {
     int has_render;
     int64_t render_major, render_minor;
     const char *sys, *dev;
+    const char* boost_lacks;
 } SnxGpuPstateDevice;
+
+/* mode asks d's clocks held: auto a discrete GPU's, on any GPU's, off none */
+bool snx_gpu_pstate_wanted(int mode, const SnxGpuPstateDevice* d);
 
 /* each line said: warn for one that names what was asked of the setting and could not be done */
 typedef void (*SnxGpuPstateSay)(const char* line, int warn);

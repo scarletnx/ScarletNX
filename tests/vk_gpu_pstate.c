@@ -11,6 +11,8 @@
    - a level set on the PC ("high", "manual") is left as it is; one that does not read holds with on, not with auto;
    - each refusal (EBUSY, EINVAL, ENOTTY, a radeon node, a node that does not open, no render node) said as a warning
      with the error's words and the node, the node closed again;
+   - an NVIDIA GPU is held through VK_NV_low_latency2's boost where its device was made with it, said with why
+     where it was not, a warning with on; the kernel is asked nothing for it;
    - every case says exactly one line, naming the value given */
 #include "common/gpu/vk/gpu_pstate.h"
 #include <errno.h>
@@ -138,7 +140,7 @@ static SnxGpuPstateDevice device(int type) {
     static char sys[300], dev[300];
     snprintf(sys, sizeof sys, "%s/sys", g.root);
     snprintf(dev, sizeof dev, "%s/dev", g.root);
-    return (SnxGpuPstateDevice){"AMD Radeon RX 6700 XT", SNX_GPU_VENDOR_AMD, type, 1, 226, 128, sys, dev};
+    return (SnxGpuPstateDevice){"AMD Radeon RX 6700 XT", SNX_GPU_VENDOR_AMD, type, 1, 226, 128, sys, dev, NULL};
 }
 
 static int hold(int mode, SnxGpuPstateDevice d) {
@@ -333,12 +335,50 @@ static void case_no_node(void) {
 static void case_other_vendor(void) {
     machine("auto\n");
     SnxGpuPstateDevice d = device(DISCRETE);
-    d.name = "NVIDIA GeForce RTX 2080", d.vendor = 0x10de;
+    d.name = "Intel(R) Arc(tm) A770 Graphics (DG2)", d.vendor = 0x8086;
     CHECK(!snx_gpu_pstate_hold(SNX_GPU_PSTATE_AUTO, &d, say) && !g.versions, "no way for another vendor");
-    CHECK(!g.warn && has("gpu_pstate=auto: NVIDIA GeForce RTX 2080, a discrete GPU: no way to hold this GPU's clocks "
-                         "on "),
+    CHECK(!g.warn && has("gpu_pstate=auto: Intel(R) Arc(tm) A770 Graphics (DG2), a discrete GPU: no way to hold this "
+                         "GPU's clocks on "),
           "said");
     CHECK(!snx_gpu_pstate_hold(SNX_GPU_PSTATE_ON, &d, say) && g.warn, "a warning with on");
+}
+
+static void case_nvidia(void) {
+    SnxGpuPstateDevice d = {
+        "NVIDIA GeForce RTX 2080", SNX_GPU_VENDOR_NVIDIA, DISCRETE, 0, 0, 0, "/nowhere", "/nowhere", NULL};
+    CHECK(snx_gpu_pstate_hold(SNX_GPU_PSTATE_AUTO, &d, say), "a discrete NVIDIA GPU made with the boost is held");
+    CHECK(!g.warn &&
+              has("gpu_pstate=auto: NVIDIA GeForce RTX 2080, a discrete GPU: its clocks boosted while the game "
+                  "runs, through VK_NV_low_latency2's lowLatencyBoost on each swapchain") &&
+              has("ends with the swapchain, a crash too"),
+          "the boost's line");
+    CHECK(!g.versions && !g.allocs && !g.sets, "nothing asked of the kernel for it");
+    d.boost_lacks = "its device has no VK_NV_low_latency2 (the extension's line says why)";
+    CHECK(!snx_gpu_pstate_hold(SNX_GPU_PSTATE_AUTO, &d, say), "no boost without the extension");
+    CHECK(!g.warn && has("a discrete GPU: its device has no VK_NV_low_latency2 (the extension's line says why): its "
+                         "driver chooses its clocks"),
+          "said why");
+    CHECK(!snx_gpu_pstate_hold(SNX_GPU_PSTATE_ON, &d, say) && g.warn, "a warning with on");
+    d.type = INTEGRATED, d.boost_lacks = NULL;
+    CHECK(!snx_gpu_pstate_hold(SNX_GPU_PSTATE_AUTO, &d, say) && has("an integrated GPU: its driver chooses"),
+          "auto boosts no integrated NVIDIA GPU");
+    CHECK(snx_gpu_pstate_hold(SNX_GPU_PSTATE_ON, &d, say) && has("its clocks boosted"), "on boosts it");
+    CHECK(!snx_gpu_pstate_hold(SNX_GPU_PSTATE_OFF, &d, say) && has("gpu_pstate=off: NVIDIA GeForce RTX 2080's driver"),
+          "off boosts nothing");
+}
+
+/* which devices each value asks held, the choice an NVIDIA device's extensions are made by */
+static void case_wanted(void) {
+    static const struct {
+        int mode, type, wanted;
+    } cases[] = {{SNX_GPU_PSTATE_AUTO, DISCRETE, 1}, {SNX_GPU_PSTATE_AUTO, INTEGRATED, 0},
+                 {SNX_GPU_PSTATE_AUTO, OTHER, 0},    {SNX_GPU_PSTATE_ON, DISCRETE, 1},
+                 {SNX_GPU_PSTATE_ON, INTEGRATED, 1}, {SNX_GPU_PSTATE_ON, 4, 1},
+                 {SNX_GPU_PSTATE_OFF, DISCRETE, 0},  {SNX_GPU_PSTATE_OFF, INTEGRATED, 0}};
+    for (size_t i = 0; i < sizeof cases / sizeof *cases; i++) {
+        SnxGpuPstateDevice d = {.vendor = SNX_GPU_VENDOR_NVIDIA, .type = cases[i].type};
+        CHECK(snx_gpu_pstate_wanted(cases[i].mode, &d) == cases[i].wanted, "wanted");
+    }
 }
 
 static const struct {
@@ -357,7 +397,9 @@ static const struct {
                {"not_drm", case_not_drm},
                {"radeon", case_radeon},
                {"no_node", case_no_node},
-               {"other_vendor", case_other_vendor}};
+               {"other_vendor", case_other_vendor},
+               {"nvidia", case_nvidia},
+               {"wanted", case_wanted}};
 
 int main(void) {
     int failed = 0;

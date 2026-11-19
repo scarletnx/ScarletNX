@@ -19,6 +19,13 @@
 
 static const char* const g_words[] = {"auto", "on", "off"};
 
+#define SNX_GPU_TYPE_INTEGRATED 1 /* VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU */
+#define SNX_GPU_TYPE_DISCRETE   2 /* VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU */
+
+bool snx_gpu_pstate_wanted(int mode, const SnxGpuPstateDevice* d) {
+    return mode == SNX_GPU_PSTATE_ON || (mode == SNX_GPU_PSTATE_AUTO && d->type == SNX_GPU_TYPE_DISCRETE);
+}
+
 int snx_gpu_pstate_mode(const char* text) {
     for (int i = 0; i < 3; i++)
         if (!strcmp(text, g_words[i])) return i;
@@ -48,9 +55,6 @@ static const char* type_name(int type) {
                                         "a CPU"};
     return type >= 0 && type < 5 ? names[type] : names[0];
 }
-#define SNX_GPU_TYPE_INTEGRATED 1 /* VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU */
-#define SNX_GPU_TYPE_DISCRETE   2 /* VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU */
-
 #if SNX_GPU_PSTATE_AMDGPU
 /* The kernel's interface, as its uapi headers declare it (drm.h's struct drm_version and DRM_IOCTL_VERSION,
    amdgpu_drm.h's union drm_amdgpu_ctx and DRM_IOCTL_AMDGPU_CTX), so that no header of the system's is needed */
@@ -246,9 +250,9 @@ bool snx_gpu_pstate_hold(int mode, const SnxGpuPstateDevice* d, SnxGpuPstateSay 
         say(line, 0);
         return true;
     }
-    int way = d->vendor == SNX_GPU_VENDOR_AMD;
+    int way = d->vendor == SNX_GPU_VENDOR_AMD || d->vendor == SNX_GPU_VENDOR_NVIDIA;
 #else
-    int way = 0;
+    int way = d->vendor == SNX_GPU_VENDOR_NVIDIA;
 #endif
     if (!way) {
         snprintf(line, sizeof line, "%s: no way to hold this GPU's clocks on %s: its driver chooses them", head,
@@ -256,13 +260,26 @@ bool snx_gpu_pstate_hold(int mode, const SnxGpuPstateDevice* d, SnxGpuPstateSay 
         say(line, mode == SNX_GPU_PSTATE_ON);
         return false;
     }
-    if (mode == SNX_GPU_PSTATE_AUTO && d->type != SNX_GPU_TYPE_DISCRETE) {
+    if (!snx_gpu_pstate_wanted(mode, d)) {
         snprintf(line, sizeof line, "%s: its driver chooses its clocks (gpu_pstate=on holds them)%s", head,
                  d->type == SNX_GPU_TYPE_INTEGRATED
                      ? ": an integrated GPU shares its power with the CPU, whose threads it would take"
                      : "");
         say(line, 0);
         return false;
+    }
+    if (d->vendor == SNX_GPU_VENDOR_NVIDIA) {
+        if (d->boost_lacks) {
+            snprintf(line, sizeof line, "%s: %s: its driver chooses its clocks", head, d->boost_lacks);
+            say(line, mode == SNX_GPU_PSTATE_ON);
+            return false;
+        }
+        snprintf(line, sizeof line,
+                 "%s: its clocks boosted while the game runs, through VK_NV_low_latency2's lowLatencyBoost on each "
+                 "swapchain (its low latency mode off), which ends with the swapchain, a crash too",
+                 head);
+        say(line, 0);
+        return true;
     }
 #if SNX_GPU_PSTATE_AMDGPU
     if (!d->has_render) {

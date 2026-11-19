@@ -612,9 +612,9 @@ setting GPU pstate
     help Holds the GPU's clocks up while the game runs. A frame keeps the GPU half idle (it waits for the frame's
     help commands, then the game waits for it), and a driver that sets the clocks by how busy the GPU is lowers them,
     help which makes every frame slower. auto = held on a discrete GPU where its driver lets a program do it: AMD's on
-    help Linux (amdgpu's peak stable pstate, from the level auto); not on an integrated one, which shares its power
-    help with the CPU. on = held on an integrated GPU too. off = the driver sets them. The log says which, and why
-    help where they are not held. Any other value stops the game, saying so
+    help Linux (amdgpu's peak stable pstate, from the level auto), NVIDIA's (VK_NV_low_latency2's boost); not on an
+    help integrated one, which shares its power with the CPU. on = held on an integrated GPU too. off = the driver
+    help sets them. The log says which, and why where they are not held. Any other value stops the game, saying so
 setting Pipeline threads
     key pipeline_threads
     int 0 32
@@ -2174,6 +2174,7 @@ setting @VK_KHR_video_queue
 setting @VK_NV_device_diagnostic_checkpoints
 setting @VK_NV_fragment_coverage_to_color
 setting @VK_NV_framebuffer_mixed_samples
+setting @VK_NV_low_latency2
 setting @VK_NV_shading_rate_image
 setting @VK_VALVE_shader_mixed_float_dot_product
 

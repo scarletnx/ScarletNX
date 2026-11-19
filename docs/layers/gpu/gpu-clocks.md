@@ -35,15 +35,27 @@ ends.
 - **Peak.** `AMDGPU_CTX_STABLE_PSTATE_PEAK` is the highest pstate the GPU sustains. Holding a profile level also keeps
   the GFX block ungated (`amdgpu_dpm.c`), so the GPU draws more power while the game runs.
 
+## NVIDIA's driver (Linux, Windows)
+
+The device is made with `VK_NV_low_latency2` where the driver has it (`vk_nv_low_latency2`), each swapchain with
+`VkSwapchainLatencyCreateInfoNV`, and `vkSetLatencySleepModeNV` asks the boost alone: `lowLatencyMode` off, so no
+sleep paces the game, and `lowLatencyBoost` on. The specification: "If lowLatencyMode is VK_FALSE, lowLatencyBoost will
+still hint to the GPU to increase its power state" (`VkLatencySleepModeInfoNV`); NVAPI's documentation of the same
+boost: it "will request the GPU run at max clocks even in scenarios where it is idle most of the frame and would
+normally try to save power" (`nvapi.h`, `NvAPI_D3D_SetSleepMode`). A setting of the swapchain, it ends with it, and
+needs no privilege. The extension requires presents with ids (`VK_KHR_present_id` with `present_wait`, or
+`present_id2`), which a run without a window does not turn on: the log then says there is no boost. Not checked on an NVIDIA GPU: none is at hand; the decision and its lines are (`tests/vk_gpu_pstate.c`).
+
 ## Other systems
 
 No way for a program without privileges that the kernel or driver gives back when the game ends:
 
 | System and GPU | What exists, and why it is not used |
 | --- | --- |
-| Linux, NVIDIA's driver | NVML's `nvmlDeviceSetGpuLockedClocks`: "Requires root/admin permissions" (`nvml.h`). `nvidia-settings`' `GPUPowerMizerMode` (NV-CONTROL): X11 only, and it stays set after the program ends, so a crash would leave it |
+| NVIDIA, other ways | NVML's `nvmlDeviceSetGpuLockedClocks`: "Requires root/admin permissions" (`nvml.h`). `nvidia-settings`' `GPUPowerMizerMode` (NV-CONTROL): X11 only, and it stays set after the program ends, so a crash would leave it. NVAPI's driver profile setting "Power management mode" (`PREFERRED_PSTATE_ID`): a change to the player's saved driver profiles, which outlives the game |
+| Linux, nouveau (NVK) | no `VK_NV_low_latency2`; its clocks are the firmware's and debugfs', root's |
 | Linux, Intel (i915, xe) | `I915_CONTEXT_PARAM_LOW_LATENCY` and `DRM_XE_EXEC_QUEUE_LOW_LATENCY_HINT` are a frequency hint for the work of the context that carries it (GuC's policy, `intel_guc_submission.c`, `xe_guc_submit.c`), which is the Vulkan driver's, not a context of the runtime's own; `gt_min_freq_mhz` is root's |
-| Linux, Qualcomm (msm), Arm (panfrost, panthor), nouveau | msm's `MSM_PARAM_SYSPROF` needs `CAP_SYS_ADMIN` (`adreno_gpu.c`); the others' clocks are devfreq's or debugfs', root's |
+| Linux, Qualcomm (msm), Arm (panfrost, panthor) | msm's `MSM_PARAM_SYSPROF` needs `CAP_SYS_ADMIN` (`adreno_gpu.c`); panfrost's and panthor's clocks are devfreq's, root's |
 | Windows, AMD | ADLX's manual tuning (`SetGPUMinFrequency`) changes the card's tuning that Adrenalin keeps until `ResetToFactory`, whatever the program does. D3D12's `SetStablePowerState` works only in Windows' developer mode, removes the device without it, and fixes clocks "significantly lower" than a game's |
 | Windows, Intel | D3D12's `SetStablePowerState`, as above |
 | macOS | no API sets a GPU's clocks. Game Mode (macOS 14) gives a full-screen game priority on the CPU and GPU from its bundle's category, not a held clock |
