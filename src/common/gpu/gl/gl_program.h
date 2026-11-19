@@ -111,15 +111,24 @@ typedef struct {
 } SnxGlPipeline;
 
 /* Where a platform whose draws bind each stage's resources in a set of the stage's own (the console's renderer) wants
-   a program's resources: each stage's set; from block_base, the stage's default block and then the program's uniform
-   blocks in the order the stages declare them, blocks bindings in all; from sampler_base, the program's samplers in
-   that order, samplers bindings in all. A sampler array, an image or a storage block has no place in it: the link
-   refuses the program, naming it */
+   a program's resources, and how its programs read them, as the platform's translations of the console's programs do:
+   each stage's set of blocks and set of samplers; from block_base, the stage's default block and then the program's
+   uniform blocks in the order the stages declare them, blocks bindings in all; from sampler_base, the program's
+   samplers in that order, samplers bindings in all. A sampler array, an image or a storage block has no place in it:
+   the link refuses the program, naming it. Block i (from block_base) is read from a uniform buffer below
+   uniform_blocks, else as a read-only storage buffer; a stage with window_push reads its uniform
+   ones through windows (glslc's SNX_GLSLC_BLOCK_WINDOW), block i's offset the 16 bits at bit 16 (i & 1) of the push
+   constant word at byte window_push + 4 (i / 2) */
 typedef struct {
     uint32_t set[3]; /* the vertex, fragment and compute stages' */
     uint32_t block_base, blocks;
     uint32_t sampler_base, samplers;
+    uint32_t sampler_set[3];
+    uint32_t uniform_blocks;
+    uint32_t window_push[3]; /* 0: the stage reads its blocks whole */
 } SnxGlLayout;
+/* how stage reads the block at binding (glslc's SNX_GLSLC_BLOCK_*) in layout, with a window's push constant bit */
+int snx_gl_layout_block(const SnxGlLayout* layout, int stage, uint32_t binding, uint32_t* offset_bit);
 
 /* What a platform hears from the programs: a program's link is gone (linked again, deleted), so its objects made from
    the old one go too; and a shader that does not compile or a program that does not link, for its log. Either may be

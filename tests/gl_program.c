@@ -8,6 +8,7 @@
    deletes when, a program pipeline's hidden program, the arena compacted under many sources, and a save state's copy
    loaded back whole and refused when a range, a location or a binding in it is wrong */
 #include "common/gpu/gl/gl_program.h"
+#include "glslc/glslc.h"
 #include "common/gpu/gl/gl_state.h"
 #include <assert.h>
 #include <stdio.h>
@@ -346,7 +347,13 @@ int main(void) {
         static const char image_fs[] = "#version 310 es\nprecision mediump float;\n"
                                        "layout(rgba8, binding = 0) uniform readonly highp image2D im;\nout vec4 o;\n"
                                        "void main() { o = imageLoad(im, ivec2(0)); }\n";
-        const SnxGlLayout layout = {{0, 1, 0}, 0, 17, 34, 64};
+        const SnxGlLayout layout = {.set = {0, 1, 0},
+                                    .block_base = 0,
+                                    .blocks = 17,
+                                    .sampler_base = 34,
+                                    .samplers = 64,
+                                    .sampler_set = {0, 1, 0},
+                                    .uniform_blocks = 17};
         uint32_t p, ip;
         const SnxGlProgram* pr;
         snx_gl_program_host(
@@ -354,6 +361,7 @@ int main(void) {
         p = program(es, shader(es, VERTEX, vs), shader(es, FRAGMENT, fs));
         assert(piv(es, p, LINK_STATUS));
         pr = snx_gl_program(p);
+        const int32_t plain_uniforms = piv(es, p, ACTIVE_UNIFORMS);
         /* each stage's module: its sets and bindings, read from its decorations */
         for (int stage = 0; stage < 2; stage++) {
             const uint32_t* w = snx_gl_program_spirv(pr, stage);
@@ -381,6 +389,52 @@ int main(void) {
         ip = program(es, shader(es, VERTEX, vs), shader(es, FRAGMENT, image_fs));
         assert(!piv(es, ip, LINK_STATUS));
         assert(strstr(snx_gl_program_info_log(es, ip), "im is an image: this platform's GL layer binds no images yet"));
+        /* a renderer's rules: the samplers in sets of their own (5 and 6), blocks from 1 on read as read-only storage
+           buffers, and the vertex and fragment stages' uniform ones through windows, their offsets pushed from bytes
+           128 and 176; the uniforms still found by the link's reflection */
+        {
+            SnxGlLayout rules = layout;
+            uint32_t bit = 0;
+            rules.sampler_set[0] = 5, rules.sampler_set[1] = 6, rules.uniform_blocks = 1;
+            rules.window_push[0] = 128, rules.window_push[1] = 176;
+            assert(snx_gl_layout_block(&rules, 1, 0, &bit) == SNX_GLSLC_BLOCK_WINDOW && bit == 176 * 8);
+            assert(snx_gl_layout_block(&rules, 1, 1, &bit) == SNX_GLSLC_BLOCK_STORAGE);
+            rules.uniform_blocks = 17;
+            assert(snx_gl_layout_block(&rules, 0, 3, &bit) == SNX_GLSLC_BLOCK_WINDOW && bit == 128 * 8 + 32 + 16);
+            assert(snx_gl_layout_block(&rules, 2, 3, &bit) == SNX_GLSLC_BLOCK_UNIFORM); /* compute: no window */
+            rules.uniform_blocks = 1;
+            snx_gl_program_host(
+                &(SnxGlProgramHost){.program_changed = changed, .say = heard, .stage_sets = 1, .layout = rules});
+            p = program(es, shader(es, VERTEX, vs), shader(es, FRAGMENT, fs));
+            assert(piv(es, p, LINK_STATUS));
+            pr = snx_gl_program(p);
+            assert(snx_gl_uniform_location(es, p, "tint") >= 0 && snx_gl_uniform_location(es, p, "m") >= 0);
+            assert(snx_gl_uniform_block_index(es, p, "B") == 0);
+            assert(piv(es, p, ACTIVE_UNIFORMS) == plain_uniforms); /* a window's variable adds none */
+            /* the storage block's member and the window-read default block's, each once, at its own offset */
+            {
+                int32_t block = -2, offset = -1;
+                uint32_t shift = snx_gl_uniform_index(es, p, "shift"), tint = snx_gl_uniform_index(es, p, "tint");
+                assert(shift != 0xffffffffu && tint != 0xffffffffu);
+                assert(snx_gl_active_uniformiv(es, p, shift, 0x8a3a, &block) &&
+                       block == 0); /* GL_UNIFORM_BLOCK_INDEX */
+                assert(snx_gl_active_uniformiv(es, p, tint, 0x8a3a, &block) && block == -1);
+                assert(snx_gl_active_uniformiv(es, p, shift, 0x8a3b, &offset) && offset == 0); /* GL_UNIFORM_OFFSET */
+                assert(snx_gl_uniform_index(es, p, "") == 0xffffffffu);
+            }
+            for (int stage = 0; stage < 2; stage++) {
+                const uint32_t* w = snx_gl_program_spirv(pr, stage);
+                uint32_t sets = 0, push = 0, storage = 0, offset = 0;
+                for (uint32_t i = 5; i < pr->spirv_words[stage] && (w[i] >> 16); i += w[i] >> 16) {
+                    if ((w[i] & 0xffff) == 71 && w[i + 2] == 34) sets |= 1u << w[i + 3]; /* DescriptorSet */
+                    if ((w[i] & 0xffff) == 59 && w[i + 3] == 9) push++;                  /* OpVariable PushConstant */
+                    if ((w[i] & 0xffff) == 59 && w[i + 3] == 12) storage++;              /* StorageBuffer */
+                    if ((w[i] & 0xffff) == 72 && w[i + 3] == 35 && w[i + 4] >= 128) offset = w[i + 4];
+                }
+                assert(push == 1 && storage == 1 && offset == (stage ? 176u : 128u));
+                assert(sets == (stage ? (1u << 1 | 1u << 6) : 1u)); /* the vertex stage has no sampler */
+            }
+        }
         snx_gl_program_host(&(SnxGlProgramHost){.program_changed = changed, .say = heard});
     }
     puts("gl_program: ok");

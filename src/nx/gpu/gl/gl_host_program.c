@@ -17,13 +17,22 @@ enum {
     GL_UNSIGNED_INT_SAMPLER_2D_MULTISAMPLE_ = 0x910a,
 };
 
+/* The renderer's rules, as its translations of the console's programs follow them (g_spirv_translate, which it sets
+   at its start): each stage's sets, the constant buffers bound as storage buffers, and the vertex and fragment stages'
+   windows with their offsets at SH_PUSH_CB_WINDOW and SH_PUSH_CB_WINDOW_FS */
 SnxGlLayout gl_host_program_layout(void) {
+    const u32 windows = g_spirv_translate.cb_windows;
     return (SnxGlLayout){
-        {(uint32_t)shader_vk_set(ST_VS), (uint32_t)shader_vk_set(ST_FS), (uint32_t)shader_vk_set(ST_CS)},
-        SNX_VKB_CB,
-        GL_HOST_TEX_BANK,
-        SNX_VKB_TEX,
-        SH_MAXTEX};
+        .set = {(uint32_t)shader_vk_set(ST_VS), (uint32_t)shader_vk_set(ST_FS), (uint32_t)shader_vk_set(ST_CS)},
+        .block_base = SNX_VKB_CB,
+        .blocks = GL_HOST_TEX_BANK,
+        .sampler_base = SNX_VKB_TEX,
+        .samplers = SH_MAXTEX,
+        .sampler_set = {(uint32_t)shader_vk_tex_set(ST_VS), (uint32_t)shader_vk_tex_set(ST_FS),
+                        (uint32_t)shader_vk_tex_set(ST_CS)},
+        .uniform_blocks =
+            g_spirv_translate.uniform_cbufs < GL_HOST_TEX_BANK ? g_spirv_translate.uniform_cbufs : GL_HOST_TEX_BANK,
+        .window_push = {windows ? SH_PUSH_CB_WINDOW : 0u, windows ? SH_PUSH_CB_WINDOW_FS : 0u, 0}};
 }
 
 /* the components of a fragment output's GL type: a scalar's 1, a vector's its count */
@@ -71,6 +80,8 @@ int gl_host_shader_info(const SnxGlProgram* p, const SnxGlLayout* y, int stage, 
         si->cbuf_mask |= 1u;
         si->cbuf_max[0] = (p->default_size[stage] + 15) & ~15u;
     }
+    /* its uniform blocks read through windows, the offsets the renderer pushes (render.c cb_window_place) */
+    si->cb_window = y->window_push[stage] != 0;
     for (u32 i = 0; i < p->binding_count; i++) {
         const SnxGlBinding* x = &b[i];
         if (!(x->stages >> stage & 1)) continue;
