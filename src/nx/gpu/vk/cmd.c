@@ -326,6 +326,14 @@ static int bar_room(const DevMemBudget* b, u64 add, int back) {
    with the GPU idle at the last value submitted and 2 MB of commands not recorded. The run ended there as "GPU
    stopped", where the GPU had nothing to do */
 #define VK_GPU_STUCK_NS 15000000000ull
+/* A device whose GPU is the CPU (lavapipe) compiles a pipeline's program at its first dispatch, inside the submission,
+   on one thread of a host that runs everything else too: the BC7 encoder's first submission finished nothing for
+   over 15 s on a CI runner with four tests abreast, and on a 2-core laptop its encoders' first ones took up to 22 s
+   alone and 51 s four tests at once, compiling in LLVM. Such a device is stopped only past VK_CPU_STUCK_NS */
+#define VK_CPU_STUCK_NS 120000000000ull
+static u64 stuck_ns(void) {
+    return g_vk.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_CPU ? VK_CPU_STUCK_NS : VK_GPU_STUCK_NS;
+}
 /* The driver gives the GPU's own report of a fault (VK_EXT_device_fault, record.c's fault_dump) only once it has
    declared the device lost, and a GPU that stopped is not lost yet: the driver's own timeout comes later than
    VK_GPU_STUCK_NS. A stopped GPU gets 20 s more to become a lost one, so that the report has the fault */
@@ -373,13 +381,13 @@ void vk_wait_semaphore(VkSemaphore sem, u64 value) {
         } else if (idle) { /* the queue has work again: the clock of a stopped GPU starts now */
             idle = 0;
             moved = plat_ns();
-        } else if (plat_ns() - moved >= VK_GPU_STUCK_NS) {
+        } else if (plat_ns() - moved >= stuck_ns()) {
             stopped_wait_lost(sem, value);
             vk_checkpoint_dump("GPU stopped");
             vk_ck_report(); /* what the submissions it has not finished hold */
             fatal("vulkan: the GPU stopped responding: no work finished for %llu s (at submission %llu, waiting for "
                   "%llu)",
-                  VK_GPU_STUCK_NS / 1000000000ull, (unsigned long long)now, (unsigned long long)value);
+                  stuck_ns() / 1000000000ull, (unsigned long long)now, (unsigned long long)value);
         }
     }
 }
@@ -411,7 +419,7 @@ int vk_host_bind_sparse(VkHostTimeline* t, const VkBindSparseInfo* bi) {
     vk_queue_unlock(g_vk.gfx);
     return ok && vk_host_wait(t, value);
 }
-/* no submission of the runtime's own paths takes seconds: a wait that does is a stopped GPU */
+/* no submission of the runtime's own paths takes seconds on a GPU: a wait that does is a stopped GPU */
 int vk_host_wait(const VkHostTimeline* t, u64 value) {
     VkSemaphoreWaitInfo wi = {
         .sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO, .semaphoreCount = 1, .pSemaphores = &t->sem, .pValues = &value};
@@ -423,12 +431,12 @@ int vk_host_wait(const VkHostTimeline* t, u64 value) {
             atomic_fetch_add_explicit(&g_host_wait_ns, plat_ns() - t0, memory_order_relaxed);
             return VK_OK(r);
         }
-        if (plat_ns() - t0 >= VK_GPU_STUCK_NS) {
+        if (plat_ns() - t0 >= stuck_ns()) {
             stopped_wait_lost(t->sem, value);
             vk_checkpoint_dump("GPU stopped");
             vk_ck_report();
             fatal("vulkan: the GPU stopped responding: a submission of the runtime's own wasn't done for %llu s",
-                  VK_GPU_STUCK_NS / 1000000000ull);
+                  stuck_ns() / 1000000000ull);
         }
     }
 }
