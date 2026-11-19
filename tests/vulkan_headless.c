@@ -956,14 +956,16 @@ static int check_gpuprof_small_pool(void) {
 /* vk_gpu_profile's fill (gpuprof_gap.h): the GPU idle while the next submission held recorded commands. A copy of 32
    MiB recorded, then 20 ms with the GPU idle before it goes: that idle held the copy, so it counts, up to the copy's own
    GPU time. Then 20 ms idle before anything is recorded, and the copy recorded and submitted at once: the idle held
-   nothing, so under a millisecond counts. The frames after them read the times back (frame_recycle). Lavapipe's
-   timestamps are its rasterizer threads' clock: the first is checked against a floor, not the copy's time */
-static int gpuprof_fill_case(VkBuffer from, VkBuffer to, u64 size, int record_first, u64* fill) {
+   nothing, and only the moment between the command buffer's begin and its submit counts. The first is four times the
+   second at least: a copy's GPU time against a few microseconds of the CPU's (on RADV, 0.21 ms against 0.011). The
+   frames after them read the times back (frame_recycle) */
+static int gpuprof_fill_case(VkBuffer from, VkBuffer to, u64 size, int record_first, u64* fill, u64* busy) {
     VkBufferCopy copy = {0, 0, size};
     u64 subs0, fill0, subs, after;
     vk_finish();
     vk_frame_next();
     vk_gpuprof_fill_totals(&subs0, &fill0);
+    *busy = vk_gpuprof_busy_ns();
     if (record_first) rec_CmdCopyBuffer(vk_cmd(), from, to, 1, &copy);
     plat_sleep_ns(20000000);
     if (!record_first) rec_CmdCopyBuffer(vk_cmd(), from, to, 1, &copy);
@@ -976,6 +978,7 @@ static int gpuprof_fill_case(VkBuffer from, VkBuffer to, u64 size, int record_fi
     vk_frame_next();
     vk_gpuprof_fill_totals(&subs, &after);
     *fill = after - fill0;
+    *busy = vk_gpuprof_busy_ns() - *busy;
     return subs > subs0;
 }
 static int check_gpuprof_fill(void) {
@@ -988,15 +991,15 @@ static int check_gpuprof_fill(void) {
     DevMemInfo info;
     VkBuffer buf[2];
     DevMem mem[2];
-    u64 held, empty;
+    u64 held, empty, held_busy, empty_busy;
     if (!vk_gpuprof_timed()) {
         printf("SKIP gpu profile fill: the graphics queue writes no timestamps (timestampValidBits %u)\n",
                g_vk.gfx_timestamp_bits);
         return 0;
     }
     for (int i = 0; i < 2; i++) CHECK(vk_buffer_create(&bci, &aci, &buf[i], &mem[i], &info) == VK_SUCCESS);
-    int placed = gpuprof_fill_case(buf[0], buf[1], size, 1, &held);
-    placed &= gpuprof_fill_case(buf[0], buf[1], size, 0, &empty);
+    int placed = gpuprof_fill_case(buf[0], buf[1], size, 1, &held, &held_busy);
+    placed &= gpuprof_fill_case(buf[0], buf[1], size, 0, &empty, &empty_busy);
     vk_finish();
     for (int i = 0; i < 2; i++) vk_devmem_buffer_destroy(buf[i], mem[i]);
     if (!placed) {
@@ -1005,11 +1008,10 @@ static int check_gpuprof_fill(void) {
                g_vk.has_calibrated_host, g_vk.has_calibrated_mono);
         return 0;
     }
-    printf("gpu profile fill: 20 ms idle with a 32 MiB copy recorded counts %.3f ms; 20 ms idle before it was recorded "
-           "counts %.3f ms\n",
-           (double)held / 1e6, (double)empty / 1e6);
-    CHECK(held >= 100000);
-    CHECK(empty < 1000000);
+    printf("gpu profile fill: 20 ms idle with a 32 MiB copy recorded counts %.3f ms of the copy's %.3f ms; 20 ms idle "
+           "before it was recorded counts %.3f ms of its %.3f ms\n",
+           (double)held / 1e6, (double)held_busy / 1e6, (double)empty / 1e6, (double)empty_busy / 1e6);
+    CHECK(held && held <= held_busy && held >= 4 * empty);
     return 0;
 }
 
