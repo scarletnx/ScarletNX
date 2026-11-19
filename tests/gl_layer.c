@@ -1,21 +1,22 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* The console's GL layer (src/nx/gpu/gl/: gl_loader.c, gl_egl.c, gl_calls.c, gl_host_nx.c), with the runtime stubbed
-   to a GL driver module's exports, a dispatch table, guest memory and a renderer that records its presents. With
-   gl_layer=0 no slot changes. With 1, every egl and _gl export takes a handler, and the calls go through the slots as a
-   game's do: EGL's display, config (matched, refused for a size it hasn't, EGL_BAD_ATTRIBUTE for an attribute it
-   doesn't know), a 4.5 core debug context (a 2.1 one refused with EGL_BAD_MATCH), a window surface the size of the
-   handheld display, eglMakeCurrent setting the viewport to it, glGetString's version in guest memory, eglGetProcAddress
-   answering a GL name with its export; glClear's color in the image, then in the scissor alone, rows from GL's bottom;
-   eglSwapBuffers presenting that image (RGBA8888, pitch-linear) and drawing into the other next; a program of
-   desktop GLSL 3.30 core and 1.20 compiled, linked and its uniforms written and read through the slots with the
-   guest's pointers, and a shader refused with its line in the log; a buffer of immutable storage mapped persistently
-   at an address of guest memory, written through it and read back, a vertex array's attribute reading the array
-   buffer bound; a texture given texels from a pointer passed on the stack, kept in guest memory, and a parameter of
-   it read back, and a framebuffer complete once that texture is attached; the point size and polygon mode set; a
-   fence signaled at once; a draw on a GPU thread that lags reading the bytes it was called with, a write over them
-   taking the buffer a new range with no wait, and a deleted texture's storage held while its upload waits; a GL and an EGL function without a handler stopping the game, the message naming the
-   function and gl_layer's value */
+   to a GL driver module's exports, a dispatch table, guest memory and a renderer that records its presents. A game with
+   no GL driver keeps every slot, and so does a 32-bit one, which says so; otherwise every egl and _gl export takes a
+   handler, and the calls go through the slots as a game's do: EGL's display, config (matched, refused for a size it
+   hasn't, EGL_BAD_ATTRIBUTE for an attribute it doesn't know), a 4.5 core debug context (a 2.1 one refused with
+   EGL_BAD_MATCH), a window surface the size of the handheld display, eglMakeCurrent setting the viewport to it,
+   glGetString's version in guest memory, eglGetProcAddress answering a GL name with its export; glClear's color in the
+   image, then in the scissor alone, rows from GL's bottom; eglSwapBuffers presenting that image (RGBA8888,
+   pitch-linear) and drawing into the other next; a program of desktop GLSL 3.30 core and 1.20 compiled, linked and its
+   uniforms written and read through the slots with the guest's pointers, and a shader refused with its line in the
+   log; a buffer of immutable storage mapped persistently at an address of guest memory, written through it and read
+   back, a vertex array's attribute reading the array buffer bound; a texture given texels from a pointer passed on the
+   stack, kept in guest memory, and a parameter of it read back, and a framebuffer complete once that texture is
+   attached; the point size and polygon mode set; a fence signaled at once; a draw on a GPU thread that lags reading
+   the bytes it was called with, a write over them taking the buffer a new range with no wait, and a deleted texture's
+   storage held while its upload waits; a GL and an EGL function without a handler stopping the game, the message
+   naming the function */
 #include "common/gpu/gl/gl_framebuffer.h"
 #include "common/gpu/gl/gl_object.h"
 #include "common/gpu/gl/gl_state.h"
@@ -145,7 +146,9 @@ int kernel_symbol(u32 i, u64* addr, const char** name) {
     *addr = DRIVER + 0x100 + 0x40 * (u64)i, *name = (const char*)GP(export_name[i]);
     return 1;
 }
+static int no_driver; /* the game's modules export no GL driver */
 u64 kernel_find_symbol_exact(const char* name) {
+    if (no_driver) return 0;
     for (size_t i = 0; i < EXPORTS; i++)
         if (!strcmp(exports[i], name)) return at(name);
     return 0;
@@ -449,12 +452,20 @@ int main(void) {
     *slot(MAIN + 0x10) = own;
     cpu.mem = guest, cpu.disp = slots, cpu.code_lo = MAIN, cpu.code_hi = END;
 
-    /* gl_layer=0: the driver keeps every slot */
+    /* no GL driver, or a 32-bit game's: every slot kept, the 32-bit game told */
     memcpy(before, slots, sizeof slots);
+    no_driver = 1;
     gl_loader_init();
+    no_driver = 0;
     assert(!memcmp(before, slots, sizeof slots));
+    {
+        static const SnxArmModule arm32 = {0};
+        g_arm_mod = &arm32;
+    }
+    gl_loader_init();
+    g_arm_mod = NULL;
+    assert(!memcmp(before, slots, sizeof slots) && strstr(logged, "the game is 32-bit code"));
 
-    g_settings.gl_layer = 1;
     gl_loader_init();
     for (size_t i = 0; i < EXPORTS; i++) assert(*slot(at(exports[i])) != own);
 
@@ -963,12 +974,11 @@ int main(void) {
         }
     }
 
-    /* a function without a handler stops the game, naming it and gl_layer's value; the driver never ran */
-    assert(
-        !strcmp(stops("_glDispatchCompute"),
-                "gl layer: the game called glDispatchCompute, which the GL layer (gl_layer=1) doesn't implement yet"));
+    /* a function without a handler stops the game, naming it; the driver never ran */
+    assert(!strcmp(stops("_glDispatchCompute"),
+                   "gl layer: the game called glDispatchCompute, which the GL layer doesn't implement yet"));
     assert(!strcmp(stops("eglCopyBuffers"),
-                   "gl layer: the game called eglCopyBuffers, which the GL layer (gl_layer=1) doesn't implement yet"));
+                   "gl layer: the game called eglCopyBuffers, which the GL layer doesn't implement yet"));
     assert(!driver_ran);
     /* the layer's memory past the kernel's region, which these 48 MiB of textures alive at once and the surfaces
        would overrun; then textures made and deleted and a buffer given new data, frame after frame, that take no more */

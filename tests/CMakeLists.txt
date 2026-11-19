@@ -1565,8 +1565,8 @@ snx_test_target(snx-test-gl-host-program gnu23)
 target_link_libraries(snx-test-gl-host-program PRIVATE snx_gl scarletnx-common)
 target_include_directories(snx-test-gl-host-program PRIVATE "${PROJECT_SOURCE_DIR}/src")
 add_test(NAME gl_host_program COMMAND snx-test-gl-host-program)
-# the console's GL layer (src/nx/gpu/gl/) over a stubbed GL driver module, guest memory and renderer: the slots taken
-# with gl_layer=1, EGL, glClear and the draws as the renderer's, eglSwapBuffers's present, a function without a handler
+# the console's GL layer (src/nx/gpu/gl/) over a stubbed GL driver module, guest memory and renderer: the slots taken,
+# EGL, glClear and the draws as the renderer's, eglSwapBuffers's present, a function without a handler
 add_executable(snx-test-gl-layer gl_layer.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/gl/gl_loader.c"
                "${PROJECT_SOURCE_DIR}/src/nx/gpu/gl/gl_egl.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/gl/gl_calls.c"
                "${PROJECT_SOURCE_DIR}/src/nx/gpu/gl/gl_program_calls.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/gl/gl_object_calls.c"
