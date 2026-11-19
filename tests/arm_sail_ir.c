@@ -1,9 +1,9 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The T16 emitters tools/sailgen generates from the Sail (src/common/cpu/arm/sail/, its back end llvm_arm.h) against
-   the ones written by hand they replaced (llvm_thumb.inc, snx_thumb_llvm_block_t16_reference), halfword by halfword:
-   the same IR, and the same results.
-     snx-test-arm-sail-ir [--report FILE] [--states N] [--part K/N] [--every N] [--time ROUNDS]
+/* The T16 and A32 emitters tools/sailgen generates from the Sail (src/common/cpu/arm/sail/, its back end llvm_arm.h)
+   against the ones written by hand they replaced (llvm_thumb.inc, snx_thumb_llvm_block_t16_reference), halfword by
+   halfword: the same IR, and the same results.
+     snx-test-arm-sail-ir [--a32] [--report FILE] [--states N] [--part K/N] [--every N] [--time ROUNDS]
    Every T16 halfword (0x0000 to 0xE7FF, and to 0xFFFF on a profile with no Thumb-2, whose BL halves are 16-bit
    instructions), on every profile and the memory modes it takes (the A57's, the A9's and the ARM11's flat, checked and
    hosted, the ARM7TDMI's flat with its bus trace and without, the ARM946E-S's flat), alone
@@ -14,10 +14,12 @@
    from random states (registers pointing into 64 KiB of guest memory of random bytes, or anywhere; NZCV random), the
    ARM7TDMI's half of the time with a bus hook that answers every access it routes and logs it, and the registers,
    CPSR, the exit and its syndrome, the exclusive monitor, the trace's slots, guest memory and the hook's log must
-   match. Before them, the witnesses: blocks whose answer the architecture gives (BKPT in an IT block, the UNPREDICTABLE
-   forms run as written), run with both emitters. --part K/N and --every N take the Kth of N stretches, 1 in --every
-   of them all, of a walk that visits each once (a ctest part's share, spread over every register and immediate); a
-   sample of 512 or more that misses a value of a register field fails; --report writes each
+   match. --a32 holds the A32 emitters to llvm.c's (snx_arm_llvm_block_reference) the same way, each of 65536 words of
+   the subsets the Sail's take (a32_word) alone in its block. Before the T16 halfwords, the witnesses: blocks whose
+   answer the architecture gives (BKPT in an IT block, the UNPREDICTABLE forms run as written), run with both
+   emitters. --part K/N and --every N take the Kth of N stretches, 1 in --every of them all, of a walk that visits
+   each once (a ctest part's share, spread over every register and immediate); a sample of 512 or more that misses a
+   value of a register field fails; --report writes each
    longer block's two IR texts; --time ROUNDS times the two emitters over the halfwords (time_emitters) */
 #include "common/cpu/arm/llvm.h"
 #include "common/cpu/arm/simd.h"
@@ -74,6 +76,9 @@ static struct {
     uint32_t log[HOOK_LOG][3];
     unsigned logged;
     char why[160]; /* what differs between two runs (differs) */
+    int a32;       /* --a32: A32 words, not T16 halfwords */
+    int only;      /* --word HEX: that halfword or word alone, each run's difference said */
+    uint32_t word;
 } g_test;
 
 static u64 rnd(void) {
@@ -104,18 +109,24 @@ static u64 fnv_text(u64 h, char* text) {
     LLVMDisposeMessage(text);
     return h;
 }
-static int cmp_u16(const void* a, const void* b) { return (int)*(const uint16_t*)a - (int)*(const uint16_t*)b; }
-/* whether a sample of 512 or more holds every value of the register fields at bits 0, 3 and 6 (a T16 instruction's
-   Rd, Rn or Rm, the bits most forms take them in): one that misses one tests a share of the registers only */
-static int sample_spread(const uint16_t* halfwords, size_t count) {
+static int cmp_u32(const void* a, const void* b) {
+    uint32_t x = *(const uint32_t*)a, y = *(const uint32_t*)b;
+    return x < y ? -1 : x > y;
+}
+/* whether a sample of 512 or more holds every value of its register fields (a T16 instruction's Rd, Rn or Rm at bits
+   0, 3 and 6, the bits most forms take them in; an A32 one's Rm, Rd and Rn at 0, 12 and 16): one that misses one
+   tests a share of the registers only */
+static int sample_spread(const uint32_t* items, size_t count) {
+    static const unsigned t16[3] = {0, 3, 6}, a32[3] = {0, 12, 16};
+    unsigned bits = g_test.a32 ? 4 : 3;
     if (count < 512) return 0;
-    for (unsigned at = 0; at <= 6; at += 3) {
-        unsigned seen = 0, values = 0;
-        for (size_t i = 0; i < count; ++i) seen |= 1u << ((halfwords[i] >> at) & 7);
-        for (unsigned v = 0; v < 8; ++v) values += (seen >> v) & 1;
-        if (values != 8) {
-            fprintf(stderr, "FAIL: the %zu halfwords sampled hold %u of the 8 values of the field at bit %u (%#04x)\n",
-                    count, values, at, seen);
+    for (unsigned f = 0; f < 3; ++f) {
+        unsigned at = g_test.a32 ? a32[f] : t16[f], seen = 0, values = 0;
+        for (size_t i = 0; i < count; ++i) seen |= 1u << ((items[i] >> at) & ((1u << bits) - 1));
+        for (unsigned v = 0; v < 1u << bits; ++v) values += (seen >> v) & 1;
+        if (values != 1u << bits) {
+            fprintf(stderr, "FAIL: the %zu %s sampled hold %u of the %u values of the field at bit %u (%#06x)\n", count,
+                    g_test.a32 ? "words" : "halfwords", values, 1u << bits, at, seen);
             return 1;
         }
     }
@@ -224,7 +235,12 @@ static int compare_fns(LLVMValueRef hand, LLVMValueRef gen, char** text_hand, ch
 /* ---- the blocks ---- */
 
 /* the halfwords of the block that tests h at place: their count */
-static size_t block_of(uint16_t h, int place, uint16_t out[3]) {
+static size_t block_of(uint32_t h, int place, uint16_t out[3]) {
+    if (g_test.a32) { /* an A32 word, alone: its halfwords in memory's order */
+        out[0] = (uint16_t)h;
+        out[1] = (uint16_t)(h >> 16);
+        return 2;
+    }
     if (place == ALONE) {
         out[0] = h;
         return 1;
@@ -248,7 +264,7 @@ static SnxArmCodegenOptions options_of(const Config* c) {
     return o;
 }
 /* one module's blocks, from one emitter: the functions in fn, NULL for a block it refused */
-static LLVMModuleRef emit_all(SnxIr* ir, const Config* c, int place, const uint16_t* halfwords, size_t count,
+static LLVMModuleRef emit_all(SnxIr* ir, const Config* c, int place, const uint32_t* halfwords, size_t count,
                               int reference, LLVMValueRef* fn) {
     LLVMModuleRef module = LLVMModuleCreateWithNameInContext(reference ? "hand" : "sail", ir->ctx);
     SnxArmCodegenOptions o = options_of(c);
@@ -259,8 +275,13 @@ static LLVMModuleRef emit_all(SnxIr* ir, const Config* c, int place, const uint1
         size_t n = block_of(halfwords[i], place, code), consumed;
         char name[32];
         snprintf(name, sizeof name, "T_%zu", i);
-        fn[i] = reference ? snx_thumb_llvm_block_t16_reference(module, name, code, n, PC, &consumed, &o)
-                          : snx_thumb_llvm_block_ex(module, name, code, n, PC, &consumed, &o);
+        if (g_test.a32) {
+            uint32_t word = halfwords[i];
+            fn[i] = reference ? snx_arm_llvm_block_reference(module, name, &word, 1, PC, &consumed, &o)
+                              : snx_arm_llvm_block_ex(module, name, &word, 1, PC, &consumed, &o);
+        } else
+            fn[i] = reference ? snx_thumb_llvm_block_t16_reference(module, name, code, n, PC, &consumed, &o)
+                              : snx_thumb_llvm_block_ex(module, name, code, n, PC, &consumed, &o);
     }
     return module;
 }
@@ -310,7 +331,7 @@ static void start(RunState* s, unsigned k, const uint16_t* code, size_t n, int l
     }
     cpu->r[13] = 0x8000u + (uint32_t)(rnd() % 0x4000) * (k % 2 ? 4 : 1);
     cpu->r[15] = PC;
-    cpu->cpsr = 0x10u | SNX_ARM_T | ((uint32_t)rnd() & 0xF0000000u) | (k % 3 == 0 ? 0x08000000u : 0);
+    cpu->cpsr = 0x10u | (g_test.a32 ? 0 : SNX_ARM_T) | ((uint32_t)rnd() & 0xF0000000u) | (k % 3 == 0 ? 0x08000000u : 0);
     cpu->mem = s->mem;
     cpu->mem_size = MEM_SIZE;
     cpu->io = legacy && k % 2 ? hook : NULL;
@@ -393,7 +414,7 @@ static int load(SnxIr* ir, SnxCodeLoader* loader, LLVMModuleRef module[2], size_
 
 /* ---- one configuration ---- */
 
-static void judge(int r, const Config* c, int place, uint16_t h, const char* a, const char* b, const size_t* sizes) {
+static void judge(int r, const Config* c, int place, uint32_t h, const char* a, const char* b, const size_t* sizes) {
     ++g_test.outcomes[r];
     ++g_test.compared;
     if (r == LONGER) {
@@ -401,7 +422,7 @@ static void judge(int r, const Config* c, int place, uint16_t h, const char* a, 
         fprintf(stderr, "FAIL: %04x %s (%s): the generated IR has %zu instructions, the hand-written %zu\n", h, c->name,
                 places[place], sizes[1], sizes[0]);
     }
-    if (r == LONGER && g_test.report) /* every halfword's IR in every place would be gigabytes */
+    if ((r == LONGER || g_test.only) && g_test.report) /* every halfword's IR in every place would be gigabytes */
         fprintf(g_test.report, "== %04x %s %s: %s (%zu, %zu)\n-- hand-written\n%s\n-- generated\n%s\n", h, c->name,
                 places[place], outcome[r], sizes[0], sizes[1], a, b);
 }
@@ -421,7 +442,7 @@ static SnxCodeLoader* new_loader(char* error, size_t size) {
 }
 /* the blocks of count halfwords, emitted into a module of their own by each emitter: printing one function walks its
    whole module, so a module of every halfword would make the comparison quadratic */
-static int run_chunk(SnxIr* ir, const Config* c, int place, const uint16_t* halfwords, size_t count) {
+static int run_chunk(SnxIr* ir, const Config* c, int place, const uint32_t* halfwords, size_t count) {
     SnxCodeLoader* loader = NULL;
     LLVMValueRef* fn[2];
     LLVMModuleRef module[2];
@@ -478,6 +499,11 @@ static int run_chunk(SnxIr* ir, const Config* c, int place, const uint16_t* half
                 }
                 ++g_test.ran;
                 why = differs(&s[0], &s[1]);
+                if (g_test.only)
+                    printf(
+                        "state %u: hand-written exit %u r15 %08x cpsr %08x, generated exit %u r15 %08x cpsr %08x%s%s\n",
+                        k, s[0].cpu.regs.exit, s[0].cpu.regs.r[15], s[0].cpu.regs.cpsr, s[1].cpu.regs.exit,
+                        s[1].cpu.regs.r[15], s[1].cpu.regs.cpsr, *why ? ": " : "", why);
                 if (*why) {
                     ++g_test.failures;
                     fprintf(stderr, "FAIL: %04x %s (%s), state %u: %s\n", halfwords[i], c->name, places[place], k, why);
@@ -496,7 +522,7 @@ static int run_chunk(SnxIr* ir, const Config* c, int place, const uint16_t* half
     return rc;
 }
 #define CHUNK 256
-static int run_config(SnxIr* ir, const Config* c, int place, const uint16_t* halfwords, size_t count) {
+static int run_config(SnxIr* ir, const Config* c, int place, const uint32_t* halfwords, size_t count) {
     for (size_t at = 0; at < count; at += CHUNK)
         if (run_chunk(ir, c, place, halfwords + at, count - at < CHUNK ? count - at : CHUNK)) return -1;
     return 0;
@@ -598,7 +624,7 @@ static void run_witnesses(SnxIr* ir) {
 /* --time ROUNDS: what each emitter costs the recompile, the halfwords alone on the A57 emitted and optimized (O2) in
    modules of CHUNK blocks, ROUNDS times with each, alternating, in processor time; each round's line, so a chart shows
    the noise (llvm_sail_ir.c's format), then the best round of each, not a gate */
-static int time_emitters(SnxIr* ir, const uint16_t* halfwords, size_t count, unsigned rounds) {
+static int time_emitters(SnxIr* ir, const uint32_t* halfwords, size_t count, unsigned rounds) {
     const Config* c = &configs[0];
     LLVMValueRef* fn = (LLVMValueRef*)snx_realloc(NULL, sizeof(LLVMValueRef) * (CHUNK + 1));
     double best[2] = {1e30, 1e30}, emit_best[2] = {1e30, 1e30};
@@ -640,9 +666,35 @@ static int time_emitters(SnxIr* ir, const uint16_t* halfwords, size_t count, uns
     return 0;
 }
 
+/* --a32's ith word of 65536: data processing (immediate, register, register-shifted), B, BL, BLX, BX and MOVW/MOVT,
+   the class and the fields drawn from i, a third of them under AL and the rest under any condition, a register field
+   15 one time in eight */
+static uint32_t a32_word(uint32_t i) {
+    uint64_t x = (uint64_t)i * 0x9E3779B97F4A7C15ull;
+    uint32_t r, w, cond;
+    x ^= x >> 29;
+    x *= 0xBF58476D1CE4E5B9ull;
+    x ^= x >> 32;
+    r = (uint32_t)x;
+    cond = (x >> 40) % 3 == 0 ? 14u : (uint32_t)(x >> 44) & 15;
+    switch ((x >> 48) % 8) {
+        case 0: w = 0x02000000u | (r & 0x01ffffffu); break; /* data processing, immediate */
+        case 1:
+        case 2: w = (r & 0x01ffff6fu); break;                                 /* register, shifted by an immediate */
+        case 3: w = 0x00000010u | (r & 0x01ffff6fu); break;                   /* register, shifted by a register */
+        case 4: w = 0x0a000000u | (r & 0x01ffffffu); break;                   /* B, BL */
+        case 5: w = 0x012fff10u | (r & 0x2fu); break;                         /* BX, BLX */
+        case 6: w = 0x03000000u | (r & 0x004fffffu); break;                   /* MOVW, MOVT */
+        default: w = (r & 1 ? 0xfa000000u : 0x02000000u) | (r & 0x01ffffffu); /* BLX (immediate) or immediate */
+    }
+    for (unsigned f = 0; f < 4; ++f) /* Rm, Rs, Rd, Rn */
+        if (((x >> (52 + 3 * f)) & 7) == 0) w |= 15u << (4 * f == 4 ? 8 : 4 * f == 8 ? 12 : 4 * f == 12 ? 16 : 0);
+    return (w >> 28) == 15 ? w : (w & 0x0fffffffu) | cond << 28;
+}
+
 int main(int argc, char** argv) {
     char error[512];
-    uint16_t* halfwords = (uint16_t*)snx_realloc(NULL, sizeof(uint16_t) * 0x10000);
+    uint32_t* halfwords = (uint32_t*)snx_realloc(NULL, sizeof(uint32_t) * 0x10000);
     size_t count = 0, thumb2 = 0;
     SnxIr* ir;
     g_test.states = 8;
@@ -658,6 +710,10 @@ int main(int argc, char** argv) {
             g_test.states = (unsigned)strtoul(argv[++i], NULL, 10);
         else if (!strcmp(argv[i], "--every") && i + 1 < argc)
             g_test.every = (unsigned)strtoul(argv[++i], NULL, 10);
+        else if (!strcmp(argv[i], "--a32"))
+            g_test.a32 = 1;
+        else if (!strcmp(argv[i], "--word") && i + 1 < argc)
+            g_test.word = (uint32_t)strtoul(argv[++i], NULL, 16), g_test.only = 1;
         else if (!strcmp(argv[i], "--time") && i + 1 < argc)
             g_test.time_rounds = (unsigned)strtoul(argv[++i], NULL, 10);
         else if (!strcmp(argv[i], "--part") && i + 1 < argc &&
@@ -666,8 +722,8 @@ int main(int argc, char** argv) {
             ;
         else
             return fprintf(stderr,
-                           "usage: snx-test-arm-sail-ir [--report FILE] [--states N] [--part K/N] [--every N] "
-                           "[--time ROUNDS]\n%s is not one of these\n",
+                           "usage: snx-test-arm-sail-ir [--a32] [--word HEX] [--report FILE] [--states N] [--part K/N] "
+                           "[--every N] [--time ROUNDS]\n%s is not one of these\n",
                            argv[i]),
                    2;
     }
@@ -677,13 +733,20 @@ int main(int argc, char** argv) {
        Nth step would keep the low bits fixed. In their order, the T32 halves last */
     size_t share = (0x10000 + g_test.parts * g_test.every - 1) / (g_test.parts * g_test.every);
     for (uint32_t i = (uint32_t)((g_test.part - 1) * share); i < 0x10000 && i < g_test.part * share; ++i)
-        halfwords[count++] = (uint16_t)(i * 0x9E37u);
+        halfwords[count++] = g_test.a32 ? a32_word(i) : (uint16_t)(i * 0x9E37u);
+    if (g_test.only) {
+        halfwords[0] = g_test.word;
+        count = 1;
+    }
     if (sample_spread(halfwords, count)) {
         free(halfwords);
         return 1;
     }
-    qsort(halfwords, count, sizeof *halfwords, cmp_u16);
-    while (thumb2 < count && halfwords[thumb2] < 0xE800) ++thumb2;
+    qsort(halfwords, count, sizeof *halfwords, cmp_u32);
+    if (g_test.a32)
+        thumb2 = count;
+    else
+        while (thumb2 < count && halfwords[thumb2] < 0xE800) ++thumb2;
     if (snx_ir_init(error, sizeof error) || !(ir = snx_ir_new_jit("arm-sail-ir", '2', error, sizeof error))) {
         fprintf(stderr, "FAIL: no LLVM for this host: %s\n", error);
         return 1;
@@ -694,10 +757,10 @@ int main(int argc, char** argv) {
         free(halfwords);
         return r;
     }
-    run_witnesses(ir);
+    if (!g_test.a32) run_witnesses(ir);
     for (size_t c = 0; c < sizeof configs / sizeof *configs; ++c)
         for (int place = 0; place < PLACES; ++place) {
-            if (place != ALONE && !configs[c].it) continue;
+            if (place != ALONE && (!configs[c].it || g_test.a32)) continue;
             if (run_config(ir, &configs[c], place, halfwords, configs[c].it ? thumb2 : count)) break;
         }
     printf("%zu halfwords (part %u/%u, every %u): %zu blocks compared: %zu the same, %zu reordered, %zu another IR not "

@@ -1369,8 +1369,20 @@ LLVMValueRef snx_arm_llvm_block(LLVMModuleRef module, const char* name, const ui
                                 uint32_t pc, size_t* consumed) {
     return snx_arm_llvm_block_ex(module, name, words, count, pc, consumed, NULL);
 }
+static LLVMValueRef arm_block(LLVMModuleRef module, const char* name, const uint32_t* words, size_t count, uint32_t pc,
+                              size_t* consumed, const SnxArmCodegenOptions* options, int reference);
 LLVMValueRef snx_arm_llvm_block_ex(LLVMModuleRef module, const char* name, const uint32_t* words, size_t count,
                                    uint32_t pc, size_t* consumed, const SnxArmCodegenOptions* options) {
+    return arm_block(module, name, words, count, pc, consumed, options, 0);
+}
+LLVMValueRef snx_arm_llvm_block_reference(LLVMModuleRef module, const char* name, const uint32_t* words, size_t count,
+                                          uint32_t pc, size_t* consumed, const SnxArmCodegenOptions* options) {
+    return arm_block(module, name, words, count, pc, consumed, options, 1);
+}
+/* the A32 words the Sail's emitters take run there (sg_emit_a32: their condition and their end are the emitter's
+   own), the rest here */
+static LLVMValueRef arm_block(LLVMModuleRef module, const char* name, const uint32_t* words, size_t count, uint32_t pc,
+                              size_t* consumed, const SnxArmCodegenOptions* options, int reference) {
     ArmIR a = {0};
     size_t i;
     if (consumed) *consumed = 0;
@@ -1399,6 +1411,20 @@ LLVMValueRef snx_arm_llvm_block_ex(LLVMModuleRef module, const char* name, const
         a.word = words[i];
         setreg(&a, 15, c32(&a, a.pc));
         instruction_fetch(&a, a.word, 4);
+        if (!reference) {
+            int stop = 0;
+            if (sg_emit_a32(&a, a.word, a.skipped && timed_condition(a.word), &stop)) {
+                LLVMDeleteBasicBlock(execute);
+                LLVMDeleteBasicBlock(skip);
+                LLVMDeleteBasicBlock(next);
+                if (stop) {
+                    ++i;
+                    break;
+                }
+                yield_check(&a);
+                continue;
+            }
+        }
         LLVMBuildCondBr(a.b, condition(&a, a.word >> 28), execute, skip);
         LLVMPositionBuilderAtEnd(a.b, execute);
         int stop = instruction(&a, snx_a32_decode_profile(a.profile, a.word));
@@ -1420,7 +1446,7 @@ LLVMValueRef snx_arm_llvm_block_ex(LLVMModuleRef module, const char* name, const
         }
         yield_check(&a);
     }
-    LLVMBuildRetVoid(a.b);
+    if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(a.b))) LLVMBuildRetVoid(a.b); /* a Sail's UNDEF ends it */
     LLVMDisposeBuilder(a.b);
     if (consumed) *consumed = i;
     return a.fn;

@@ -4,6 +4,53 @@
    BSD 3-Clause Clear License: LICENSE beside this file. Do not edit: a system's fixup goes in its overlay
    (README.md beside this file) */
 
+val execute_aarch32_instrs_ADC_i_Op_A_txt : forall 'd 'n ('setflags : Bool),
+  (0 <= 'n & 'n <= 15 & 0 <= 'd & 'd <= 15).
+  (int('d), bits(32), int('n), bool('setflags)) -> unit
+
+function execute_aarch32_instrs_ADC_i_Op_A_txt (d, imm32, n, setflags) = {
+    nzcv : bits(4) = undefined;
+    result : bits(32) = undefined;
+    (result, nzcv) = AddWithCarry(R_read(n), imm32, PSTATE.C);
+    if d == 15 then {
+        if setflags then {
+            ALUExceptionReturn(result)
+        } else {
+            ALUWritePC(result)
+        }
+    } else {
+        R_set(d) = result;
+        if setflags then {
+            (PSTATE.N @ PSTATE.Z @ PSTATE.C @ PSTATE.V) = nzcv
+        };
+        ()
+    }
+}
+
+val decode_aarch32_instrs_ADC_i_A1enc_A_txt : (bits(4), bits(1), bits(4), bits(4), bits(12)) -> unit
+
+function decode_aarch32_instrs_ADC_i_A1enc_A_txt (cond, S, Rn, Rd, imm12) = {
+    if ConditionPassed() then {
+        assert(cond != 0b1111);
+        let 'd = UInt(Rd);
+        let 'n = UInt(Rn);
+        let setflags : bool = S == 0b1;
+        let imm32 : bits(32) = A32ExpandImm(imm12);
+        execute_aarch32_instrs_ADC_i_Op_A_txt(d, imm32, n, setflags)
+    };
+    ()
+}
+
+function clause __DecodeA32_DataProMisc ((pc, ([_, _, _, _, bitzero, bitzero, bitone, bitzero, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if Slice(__opcode, 28, 4) != 0b1111 & SEE < 2813) = {
+    SEE = 2813;
+    let cond = Slice(__opcode, 28, 4);
+    let S = Slice(__opcode, 20, 1);
+    let Rn = Slice(__opcode, 16, 4);
+    let Rd = Slice(__opcode, 12, 4);
+    let imm12 = Slice(__opcode, 0, 12);
+    decode_aarch32_instrs_ADC_i_A1enc_A_txt(cond, S, Rn, Rd, imm12)
+}
+
 val execute_aarch32_instrs_ADC_r_Op_A_txt : forall 'd 'm 'n ('setflags : Bool) 'shift_n,
   (0 <= 'n & 'n <= 15 & 0 <= 'm & 'm <= 15 & 0 <= 'd & 'd <= 15).
   (int('d), int('m), int('n), bool('setflags), int('shift_n), SRType) -> unit
@@ -28,6 +75,36 @@ function execute_aarch32_instrs_ADC_r_Op_A_txt (d, m, n, setflags, shift_n, shif
     }
 }
 
+val decode_aarch32_instrs_ADC_r_A1enc_A_txt : (bits(4), bits(1), bits(4), bits(4), bits(5), bits(2), bits(4)) -> unit
+
+function decode_aarch32_instrs_ADC_r_A1enc_A_txt (cond, S, Rn, Rd, imm5, stype, Rm) = {
+    if ConditionPassed() then {
+        assert(cond != 0b1111);
+        shift_n : int = undefined;
+        shift_t : SRType = undefined;
+        let 'd = UInt(Rd);
+        let 'n = UInt(Rn);
+        let 'm = UInt(Rm);
+        let setflags : bool = S == 0b1;
+        (shift_t, shift_n) = DecodeImmShift(stype, imm5);
+        let 'shift_n = shift_n;
+        execute_aarch32_instrs_ADC_r_Op_A_txt(d, m, n, setflags, shift_n, shift_t)
+    };
+    ()
+}
+
+function clause __DecodeA32_DataProMisc ((pc, ([_, _, _, _, bitzero, bitzero, bitzero, bitzero, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, bitzero, _, _, _, _] as __opcode)) if Slice(__opcode, 28, 4) != 0b1111 & SEE < 2815) = {
+    SEE = 2815;
+    let cond = Slice(__opcode, 28, 4);
+    let S = Slice(__opcode, 20, 1);
+    let Rn = Slice(__opcode, 16, 4);
+    let Rd = Slice(__opcode, 12, 4);
+    let imm5 = Slice(__opcode, 7, 5);
+    let stype = Slice(__opcode, 5, 2);
+    let Rm = Slice(__opcode, 0, 4);
+    decode_aarch32_instrs_ADC_r_A1enc_A_txt(cond, S, Rn, Rd, imm5, stype, Rm)
+}
+
 val decode_aarch32_instrs_ADC_r_T1enc_A_txt : (bits(3), bits(3)) -> unit
 
 function decode_aarch32_instrs_ADC_r_T1enc_A_txt (Rm, Rdn) = {
@@ -50,6 +127,107 @@ function clause __DecodeT16 ((pc, ([bitzero, bitone, bitzero, bitzero, bitzero, 
     let Rm = Slice(__opcode, 3, 3);
     let Rdn = Slice(__opcode, 0, 3);
     decode_aarch32_instrs_ADC_r_T1enc_A_txt(Rm, Rdn)
+}
+
+val execute_aarch32_instrs_ADC_rr_Op_A_txt : forall 'd 'm 'n 's ('setflags : Bool),
+  (0 <= 's & 's <= 15 & 0 <= 'n & 'n <= 15 & 0 <= 'm & 'm <= 15 & 0 <= 'd & 'd <= 15).
+  (int('d), int('m), int('n), int('s), bool('setflags), SRType) -> unit
+
+function execute_aarch32_instrs_ADC_rr_Op_A_txt (d, m, n, s, setflags, shift_t) = {
+    nzcv : bits(4) = undefined;
+    result : bits(32) = undefined;
+    let 'shift_n = UInt(R_read(s)[7 .. 0]);
+    let shifted : bits(32) = Shift(R_read(m), shift_t, shift_n, PSTATE.C);
+    (result, nzcv) = AddWithCarry(R_read(n), shifted, PSTATE.C);
+    R_set(d) = result;
+    if setflags then {
+        (PSTATE.N @ PSTATE.Z @ PSTATE.C @ PSTATE.V) = nzcv
+    };
+    ()
+}
+
+val decode_aarch32_instrs_ADC_rr_A1enc_A_txt : (bits(4), bits(1), bits(4), bits(4), bits(4), bits(2), bits(4)) -> unit
+
+function decode_aarch32_instrs_ADC_rr_A1enc_A_txt (cond, S, Rn, Rd, Rs, stype, Rm) = {
+    if ConditionPassed() then {
+        assert(cond != 0b1111);
+        let 'd = UInt(Rd);
+        let 'n = UInt(Rn);
+        let 'm = UInt(Rm);
+        let 's = UInt(Rs);
+        let setflags : bool = S == 0b1;
+        let shift_t : SRType = DecodeRegShift(stype);
+        if ((d == 15 | n == 15) | m == 15) | s == 15 then {
+            throw(Error_Unpredictable())
+        };
+        execute_aarch32_instrs_ADC_rr_Op_A_txt(d, m, n, s, setflags, shift_t)
+    };
+    ()
+}
+
+function clause __DecodeA32_DataProMisc ((pc, ([_, _, _, _, bitzero, bitzero, bitzero, bitzero, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _, _, _, _, bitzero, _, _, bitone, _, _, _, _] as __opcode)) if Slice(__opcode, 28, 4) != 0b1111 & SEE < 2818) = {
+    SEE = 2818;
+    let cond = Slice(__opcode, 28, 4);
+    let S = Slice(__opcode, 20, 1);
+    let Rn = Slice(__opcode, 16, 4);
+    let Rd = Slice(__opcode, 12, 4);
+    let Rs = Slice(__opcode, 8, 4);
+    let stype = Slice(__opcode, 5, 2);
+    let Rm = Slice(__opcode, 0, 4);
+    decode_aarch32_instrs_ADC_rr_A1enc_A_txt(cond, S, Rn, Rd, Rs, stype, Rm)
+}
+
+val execute_aarch32_instrs_ADD_i_OpA_A_txt : forall 'd 'n ('setflags : Bool),
+  (0 <= 'n & 'n <= 15 & 0 <= 'd & 'd <= 15).
+  (int('d), bits(32), int('n), bool('setflags)) -> unit
+
+function execute_aarch32_instrs_ADD_i_OpA_A_txt (d, imm32, n, setflags) = {
+    nzcv : bits(4) = undefined;
+    result : bits(32) = undefined;
+    (result, nzcv) = AddWithCarry(R_read(n), imm32, 0b0);
+    if d == 15 then {
+        if setflags then {
+            ALUExceptionReturn(result)
+        } else {
+            ALUWritePC(result)
+        }
+    } else {
+        R_set(d) = result;
+        if setflags then {
+            (PSTATE.N @ PSTATE.Z @ PSTATE.C @ PSTATE.V) = nzcv
+        };
+        ()
+    }
+}
+
+val decode_aarch32_instrs_ADD_i_A1enc_A_txt : (bits(4), bits(1), bits(4), bits(4), bits(12)) -> unit
+
+function decode_aarch32_instrs_ADD_i_A1enc_A_txt (cond, S, Rn, Rd, imm12) = {
+    if ConditionPassed() then {
+        assert(cond != 0b1111);
+        if Rn == 0b1111 & S == 0b0 then {
+            throw(Error_See("ADR"))
+        };
+        if Rn == 0b1101 then {
+            throw(Error_See("ADD (SP plus immediate)"))
+        };
+        let 'd = UInt(Rd);
+        let 'n = UInt(Rn);
+        let setflags : bool = S == 0b1;
+        let imm32 : bits(32) = A32ExpandImm(imm12);
+        execute_aarch32_instrs_ADD_i_OpA_A_txt(d, imm32, n, setflags)
+    };
+    ()
+}
+
+function clause __DecodeA32_DataProMisc ((pc, ([_, _, _, _, bitzero, bitzero, bitone, bitzero, bitone, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if Slice(__opcode, 28, 4) != 0b1111 & SEE < 2819) = {
+    SEE = 2819;
+    let cond = Slice(__opcode, 28, 4);
+    let S = Slice(__opcode, 20, 1);
+    let Rn = Slice(__opcode, 16, 4);
+    let Rd = Slice(__opcode, 12, 4);
+    let imm12 = Slice(__opcode, 0, 12);
+    decode_aarch32_instrs_ADD_i_A1enc_A_txt(cond, S, Rn, Rd, imm12)
 }
 
 val execute_aarch32_instrs_ADD_i_OpT_A_txt : forall 'd 'n ('setflags : Bool),
@@ -132,6 +310,39 @@ function execute_aarch32_instrs_ADD_r_Op_A_txt (d, m, n, setflags, shift_n, shif
     }
 }
 
+val decode_aarch32_instrs_ADD_r_A1enc_A_txt : (bits(4), bits(1), bits(4), bits(4), bits(5), bits(2), bits(4)) -> unit
+
+function decode_aarch32_instrs_ADD_r_A1enc_A_txt (cond, S, Rn, Rd, imm5, stype, Rm) = {
+    if ConditionPassed() then {
+        assert(cond != 0b1111);
+        shift_n : int = undefined;
+        shift_t : SRType = undefined;
+        if Rn == 0b1101 then {
+            throw(Error_See("ADD (SP plus register)"))
+        };
+        let 'd = UInt(Rd);
+        let 'n = UInt(Rn);
+        let 'm = UInt(Rm);
+        let setflags : bool = S == 0b1;
+        (shift_t, shift_n) = DecodeImmShift(stype, imm5);
+        let 'shift_n = shift_n;
+        execute_aarch32_instrs_ADD_r_Op_A_txt(d, m, n, setflags, shift_n, shift_t)
+    };
+    ()
+}
+
+function clause __DecodeA32_DataProMisc ((pc, ([_, _, _, _, bitzero, bitzero, bitzero, bitzero, bitone, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, bitzero, _, _, _, _] as __opcode)) if Slice(__opcode, 28, 4) != 0b1111 & SEE < 2824) = {
+    SEE = 2824;
+    let cond = Slice(__opcode, 28, 4);
+    let S = Slice(__opcode, 20, 1);
+    let Rn = Slice(__opcode, 16, 4);
+    let Rd = Slice(__opcode, 12, 4);
+    let imm5 = Slice(__opcode, 7, 5);
+    let stype = Slice(__opcode, 5, 2);
+    let Rm = Slice(__opcode, 0, 4);
+    decode_aarch32_instrs_ADD_r_A1enc_A_txt(cond, S, Rn, Rd, imm5, stype, Rm)
+}
+
 val decode_aarch32_instrs_ADD_r_T1enc_A_txt : (bits(3), bits(3), bits(3)) -> unit
 
 function decode_aarch32_instrs_ADD_r_T1enc_A_txt (Rm, Rn, Rd) = {
@@ -191,6 +402,54 @@ function clause __DecodeT16 ((pc, ([bitzero, bitone, bitzero, bitzero, bitzero, 
     decode_aarch32_instrs_ADD_r_T2enc_A_txt(DN, Rm, Rdn)
 }
 
+val execute_aarch32_instrs_ADD_rr_Op_A_txt : forall 'd 'm 'n 's ('setflags : Bool),
+  (0 <= 's & 's <= 15 & 0 <= 'n & 'n <= 15 & 0 <= 'm & 'm <= 15 & 0 <= 'd & 'd <= 15).
+  (int('d), int('m), int('n), int('s), bool('setflags), SRType) -> unit
+
+function execute_aarch32_instrs_ADD_rr_Op_A_txt (d, m, n, s, setflags, shift_t) = {
+    nzcv : bits(4) = undefined;
+    result : bits(32) = undefined;
+    let 'shift_n = UInt(R_read(s)[7 .. 0]);
+    let shifted : bits(32) = Shift(R_read(m), shift_t, shift_n, PSTATE.C);
+    (result, nzcv) = AddWithCarry(R_read(n), shifted, 0b0);
+    R_set(d) = result;
+    if setflags then {
+        (PSTATE.N @ PSTATE.Z @ PSTATE.C @ PSTATE.V) = nzcv
+    };
+    ()
+}
+
+val decode_aarch32_instrs_ADD_rr_A1enc_A_txt : (bits(4), bits(1), bits(4), bits(4), bits(4), bits(2), bits(4)) -> unit
+
+function decode_aarch32_instrs_ADD_rr_A1enc_A_txt (cond, S, Rn, Rd, Rs, stype, Rm) = {
+    if ConditionPassed() then {
+        assert(cond != 0b1111);
+        let 'd = UInt(Rd);
+        let 'n = UInt(Rn);
+        let 'm = UInt(Rm);
+        let 's = UInt(Rs);
+        let setflags : bool = S == 0b1;
+        let shift_t : SRType = DecodeRegShift(stype);
+        if ((d == 15 | n == 15) | m == 15) | s == 15 then {
+            throw(Error_Unpredictable())
+        };
+        execute_aarch32_instrs_ADD_rr_Op_A_txt(d, m, n, s, setflags, shift_t)
+    };
+    ()
+}
+
+function clause __DecodeA32_DataProMisc ((pc, ([_, _, _, _, bitzero, bitzero, bitzero, bitzero, bitone, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _, _, _, _, bitzero, _, _, bitone, _, _, _, _] as __opcode)) if Slice(__opcode, 28, 4) != 0b1111 & SEE < 2828) = {
+    SEE = 2828;
+    let cond = Slice(__opcode, 28, 4);
+    let S = Slice(__opcode, 20, 1);
+    let Rn = Slice(__opcode, 16, 4);
+    let Rd = Slice(__opcode, 12, 4);
+    let Rs = Slice(__opcode, 8, 4);
+    let stype = Slice(__opcode, 5, 2);
+    let Rm = Slice(__opcode, 0, 4);
+    decode_aarch32_instrs_ADD_rr_A1enc_A_txt(cond, S, Rn, Rd, Rs, stype, Rm)
+}
+
 val execute_aarch32_instrs_ADD_SP_i_Op_A_txt : forall 'd ('setflags : Bool), (0 <= 'd & 'd <= 15).
   (int('d), bits(32), bool('setflags)) -> unit
 
@@ -211,6 +470,28 @@ function execute_aarch32_instrs_ADD_SP_i_Op_A_txt (d, imm32, setflags) = {
         };
         ()
     }
+}
+
+val decode_aarch32_instrs_ADD_SP_i_A1enc_A_txt : (bits(4), bits(1), bits(4), bits(12)) -> unit
+
+function decode_aarch32_instrs_ADD_SP_i_A1enc_A_txt (cond, S, Rd, imm12) = {
+    if ConditionPassed() then {
+        assert(cond != 0b1111);
+        let 'd = UInt(Rd);
+        let setflags : bool = S == 0b1;
+        let imm32 : bits(32) = A32ExpandImm(imm12);
+        execute_aarch32_instrs_ADD_SP_i_Op_A_txt(d, imm32, setflags)
+    };
+    ()
+}
+
+function clause __DecodeA32_DataProMisc ((pc, ([_, _, _, _, bitzero, bitzero, bitone, bitzero, bitone, bitzero, bitzero, _, bitone, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if Slice(__opcode, 28, 4) != 0b1111 & SEE < 2829) = {
+    SEE = 2829;
+    let cond = Slice(__opcode, 28, 4);
+    let S = Slice(__opcode, 20, 1);
+    let Rd = Slice(__opcode, 12, 4);
+    let imm12 = Slice(__opcode, 0, 12);
+    decode_aarch32_instrs_ADD_SP_i_A1enc_A_txt(cond, S, Rd, imm12)
 }
 
 val decode_aarch32_instrs_ADD_SP_i_T1enc_A_txt : (bits(3), bits(8)) -> unit
@@ -272,6 +553,34 @@ function execute_aarch32_instrs_ADD_SP_r_Op_A_txt (d, m, setflags, shift_n, shif
         };
         ()
     }
+}
+
+val decode_aarch32_instrs_ADD_SP_r_A1enc_A_txt : (bits(4), bits(1), bits(4), bits(5), bits(2), bits(4)) -> unit
+
+function decode_aarch32_instrs_ADD_SP_r_A1enc_A_txt (cond, S, Rd, imm5, stype, Rm) = {
+    if ConditionPassed() then {
+        assert(cond != 0b1111);
+        shift_n : int = undefined;
+        shift_t : SRType = undefined;
+        let 'd = UInt(Rd);
+        let 'm = UInt(Rm);
+        let setflags : bool = S == 0b1;
+        (shift_t, shift_n) = DecodeImmShift(stype, imm5);
+        let 'shift_n = shift_n;
+        execute_aarch32_instrs_ADD_SP_r_Op_A_txt(d, m, setflags, shift_n, shift_t)
+    };
+    ()
+}
+
+function clause __DecodeA32_DataProMisc ((pc, ([_, _, _, _, bitzero, bitzero, bitzero, bitzero, bitone, bitzero, bitzero, _, bitone, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _, _, bitzero, _, _, _, _] as __opcode)) if Slice(__opcode, 28, 4) != 0b1111 & SEE < 2834) = {
+    SEE = 2834;
+    let cond = Slice(__opcode, 28, 4);
+    let S = Slice(__opcode, 20, 1);
+    let Rd = Slice(__opcode, 12, 4);
+    let imm5 = Slice(__opcode, 7, 5);
+    let stype = Slice(__opcode, 5, 2);
+    let Rm = Slice(__opcode, 0, 4);
+    decode_aarch32_instrs_ADD_SP_r_A1enc_A_txt(cond, S, Rd, imm5, stype, Rm)
 }
 
 val decode_aarch32_instrs_ADD_SP_r_T1enc_A_txt : (bits(1), bits(3)) -> unit
@@ -340,6 +649,48 @@ function execute_aarch32_instrs_ADR_Op_A_txt (add, d, imm32) = {
     }
 }
 
+val decode_aarch32_instrs_ADR_A1enc_A_txt : (bits(4), bits(4), bits(12)) -> unit
+
+function decode_aarch32_instrs_ADR_A1enc_A_txt (cond, Rd, imm12) = {
+    if ConditionPassed() then {
+        assert(cond != 0b1111);
+        let 'd = UInt(Rd);
+        let imm32 : bits(32) = A32ExpandImm(imm12);
+        let add : bool = true;
+        execute_aarch32_instrs_ADR_Op_A_txt(add, d, imm32)
+    };
+    ()
+}
+
+function clause __DecodeA32_DataProMisc ((pc, ([_, _, _, _, bitzero, bitzero, bitone, bitzero, bitone, bitzero, bitzero, bitzero, bitone, bitone, bitone, bitone, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if Slice(__opcode, 28, 4) != 0b1111 & SEE < 2838) = {
+    SEE = 2838;
+    let cond = Slice(__opcode, 28, 4);
+    let Rd = Slice(__opcode, 12, 4);
+    let imm12 = Slice(__opcode, 0, 12);
+    decode_aarch32_instrs_ADR_A1enc_A_txt(cond, Rd, imm12)
+}
+
+val decode_aarch32_instrs_ADR_A2enc_A_txt : (bits(4), bits(4), bits(12)) -> unit
+
+function decode_aarch32_instrs_ADR_A2enc_A_txt (cond, Rd, imm12) = {
+    if ConditionPassed() then {
+        assert(cond != 0b1111);
+        let 'd = UInt(Rd);
+        let imm32 : bits(32) = A32ExpandImm(imm12);
+        let add : bool = false;
+        execute_aarch32_instrs_ADR_Op_A_txt(add, d, imm32)
+    };
+    ()
+}
+
+function clause __DecodeA32_DataProMisc ((pc, ([_, _, _, _, bitzero, bitzero, bitone, bitzero, bitzero, bitone, bitzero, bitzero, bitone, bitone, bitone, bitone, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if Slice(__opcode, 28, 4) != 0b1111 & SEE < 2839) = {
+    SEE = 2839;
+    let cond = Slice(__opcode, 28, 4);
+    let Rd = Slice(__opcode, 12, 4);
+    let imm12 = Slice(__opcode, 0, 12);
+    decode_aarch32_instrs_ADR_A2enc_A_txt(cond, Rd, imm12)
+}
+
 val decode_aarch32_instrs_ADR_T1enc_A_txt : (bits(3), bits(8)) -> unit
 
 function decode_aarch32_instrs_ADR_T1enc_A_txt (Rd, imm8) = {
@@ -357,6 +708,55 @@ function clause __DecodeT16 ((pc, ([bitone, bitzero, bitone, bitzero, bitzero, _
     let Rd = Slice(__opcode, 8, 3);
     let imm8 = Slice(__opcode, 0, 8);
     decode_aarch32_instrs_ADR_T1enc_A_txt(Rd, imm8)
+}
+
+val execute_aarch32_instrs_AND_i_Op_A_txt : forall 'd 'n ('setflags : Bool),
+  (0 <= 'n & 'n <= 15 & 0 <= 'd & 'd <= 15).
+  (bits(1), int('d), bits(32), int('n), bool('setflags)) -> unit
+
+function execute_aarch32_instrs_AND_i_Op_A_txt (carry, d, imm32, n, setflags) = {
+    let result : bits(32) = R_read(n) & imm32;
+    if d == 15 then {
+        if setflags then {
+            ALUExceptionReturn(result)
+        } else {
+            ALUWritePC(result)
+        }
+    } else {
+        R_set(d) = result;
+        if setflags then {
+            PSTATE.N = [result[31]];
+            PSTATE.Z = IsZeroBit(result);
+            PSTATE.C = carry
+        };
+        ()
+    }
+}
+
+val decode_aarch32_instrs_AND_i_A1enc_A_txt : (bits(4), bits(1), bits(4), bits(4), bits(12)) -> unit
+
+function decode_aarch32_instrs_AND_i_A1enc_A_txt (cond, S, Rn, Rd, imm12) = {
+    if ConditionPassed() then {
+        assert(cond != 0b1111);
+        carry : bits(1) = undefined;
+        imm32 : bits(32) = undefined;
+        let 'd = UInt(Rd);
+        let 'n = UInt(Rn);
+        let setflags : bool = S == 0b1;
+        (imm32, carry) = A32ExpandImm_C(imm12, PSTATE.C);
+        execute_aarch32_instrs_AND_i_Op_A_txt(carry, d, imm32, n, setflags)
+    };
+    ()
+}
+
+function clause __DecodeA32_DataProMisc ((pc, ([_, _, _, _, bitzero, bitzero, bitone, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if Slice(__opcode, 28, 4) != 0b1111 & SEE < 2843) = {
+    SEE = 2843;
+    let cond = Slice(__opcode, 28, 4);
+    let S = Slice(__opcode, 20, 1);
+    let Rn = Slice(__opcode, 16, 4);
+    let Rd = Slice(__opcode, 12, 4);
+    let imm12 = Slice(__opcode, 0, 12);
+    decode_aarch32_instrs_AND_i_A1enc_A_txt(cond, S, Rn, Rd, imm12)
 }
 
 val execute_aarch32_instrs_AND_r_Op_A_txt : forall 'd 'm 'n ('setflags : Bool) 'shift_n,
@@ -385,6 +785,36 @@ function execute_aarch32_instrs_AND_r_Op_A_txt (d, m, n, setflags, shift_n, shif
     }
 }
 
+val decode_aarch32_instrs_AND_r_A1enc_A_txt : (bits(4), bits(1), bits(4), bits(4), bits(5), bits(2), bits(4)) -> unit
+
+function decode_aarch32_instrs_AND_r_A1enc_A_txt (cond, S, Rn, Rd, imm5, stype, Rm) = {
+    if ConditionPassed() then {
+        assert(cond != 0b1111);
+        shift_n : int = undefined;
+        shift_t : SRType = undefined;
+        let 'd = UInt(Rd);
+        let 'n = UInt(Rn);
+        let 'm = UInt(Rm);
+        let setflags : bool = S == 0b1;
+        (shift_t, shift_n) = DecodeImmShift(stype, imm5);
+        let 'shift_n = shift_n;
+        execute_aarch32_instrs_AND_r_Op_A_txt(d, m, n, setflags, shift_n, shift_t)
+    };
+    ()
+}
+
+function clause __DecodeA32_DataProMisc ((pc, ([_, _, _, _, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, bitzero, _, _, _, _] as __opcode)) if Slice(__opcode, 28, 4) != 0b1111 & SEE < 2845) = {
+    SEE = 2845;
+    let cond = Slice(__opcode, 28, 4);
+    let S = Slice(__opcode, 20, 1);
+    let Rn = Slice(__opcode, 16, 4);
+    let Rd = Slice(__opcode, 12, 4);
+    let imm5 = Slice(__opcode, 7, 5);
+    let stype = Slice(__opcode, 5, 2);
+    let Rm = Slice(__opcode, 0, 4);
+    decode_aarch32_instrs_AND_r_A1enc_A_txt(cond, S, Rn, Rd, imm5, stype, Rm)
+}
+
 val decode_aarch32_instrs_AND_r_T1enc_A_txt : (bits(3), bits(3)) -> unit
 
 function decode_aarch32_instrs_AND_r_T1enc_A_txt (Rm, Rdn) = {
@@ -407,6 +837,56 @@ function clause __DecodeT16 ((pc, ([bitzero, bitone, bitzero, bitzero, bitzero, 
     let Rm = Slice(__opcode, 3, 3);
     let Rdn = Slice(__opcode, 0, 3);
     decode_aarch32_instrs_AND_r_T1enc_A_txt(Rm, Rdn)
+}
+
+val execute_aarch32_instrs_AND_rr_Op_A_txt : forall 'd 'm 'n 's ('setflags : Bool),
+  (0 <= 's & 's <= 15 & 0 <= 'n & 'n <= 15 & 0 <= 'm & 'm <= 15 & 0 <= 'd & 'd <= 15).
+  (int('d), int('m), int('n), int('s), bool('setflags), SRType) -> unit
+
+function execute_aarch32_instrs_AND_rr_Op_A_txt (d, m, n, s, setflags, shift_t) = {
+    carry : bits(1) = undefined;
+    shifted : bits(32) = undefined;
+    let 'shift_n = UInt(R_read(s)[7 .. 0]);
+    (shifted, carry) = Shift_C(R_read(m), shift_t, shift_n, PSTATE.C);
+    let result : bits(32) = R_read(n) & shifted;
+    R_set(d) = result;
+    if setflags then {
+        PSTATE.N = [result[31]];
+        PSTATE.Z = IsZeroBit(result);
+        PSTATE.C = carry
+    };
+    ()
+}
+
+val decode_aarch32_instrs_AND_rr_A1enc_A_txt : (bits(4), bits(1), bits(4), bits(4), bits(4), bits(2), bits(4)) -> unit
+
+function decode_aarch32_instrs_AND_rr_A1enc_A_txt (cond, S, Rn, Rd, Rs, stype, Rm) = {
+    if ConditionPassed() then {
+        assert(cond != 0b1111);
+        let 'd = UInt(Rd);
+        let 'n = UInt(Rn);
+        let 'm = UInt(Rm);
+        let 's = UInt(Rs);
+        let setflags : bool = S == 0b1;
+        let shift_t : SRType = DecodeRegShift(stype);
+        if ((d == 15 | n == 15) | m == 15) | s == 15 then {
+            throw(Error_Unpredictable())
+        };
+        execute_aarch32_instrs_AND_rr_Op_A_txt(d, m, n, s, setflags, shift_t)
+    };
+    ()
+}
+
+function clause __DecodeA32_DataProMisc ((pc, ([_, _, _, _, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _, _, _, _, bitzero, _, _, bitone, _, _, _, _] as __opcode)) if Slice(__opcode, 28, 4) != 0b1111 & SEE < 2848) = {
+    SEE = 2848;
+    let cond = Slice(__opcode, 28, 4);
+    let S = Slice(__opcode, 20, 1);
+    let Rn = Slice(__opcode, 16, 4);
+    let Rd = Slice(__opcode, 12, 4);
+    let Rs = Slice(__opcode, 8, 4);
+    let stype = Slice(__opcode, 5, 2);
+    let Rm = Slice(__opcode, 0, 4);
+    decode_aarch32_instrs_AND_rr_A1enc_A_txt(cond, S, Rn, Rd, Rs, stype, Rm)
 }
 
 val execute_aarch32_instrs_ASR_i_Op_A_txt : forall 'd 'm ('setflags : Bool) 'shift_n,
@@ -500,6 +980,24 @@ function execute_aarch32_instrs_B_Op_A_txt imm32 = {
     BranchWritePC(PC_read__1() + imm32, BranchType_DIR)
 }
 
+val decode_aarch32_instrs_B_A1enc_A_txt : (bits(4), bits(24)) -> unit
+
+function decode_aarch32_instrs_B_A1enc_A_txt (cond, imm24) = {
+    if ConditionPassed() then {
+        assert(cond != 0b1111);
+        let imm32 : bits(32) = SignExtend(imm24 @ 0b00, 32);
+        execute_aarch32_instrs_B_Op_A_txt(imm32)
+    };
+    ()
+}
+
+function clause __DecodeA32_BranchBlock ((pc, ([_, _, _, _, bitone, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if Slice(__opcode, 28, 4) != 0b1111 & SEE < 2851) = {
+    SEE = 2851;
+    let cond = Slice(__opcode, 28, 4);
+    let imm24 = Slice(__opcode, 0, 24);
+    decode_aarch32_instrs_B_A1enc_A_txt(cond, imm24)
+}
+
 val decode_aarch32_instrs_B_T1enc_A_txt : (bits(4), bits(8)) -> unit
 
 function decode_aarch32_instrs_B_T1enc_A_txt (cond, imm8) = {
@@ -546,6 +1044,55 @@ function clause __DecodeT16 ((pc, ([bitone, bitone, bitone, bitzero, bitzero, _,
     decode_aarch32_instrs_B_T2enc_A_txt(imm11)
 }
 
+val execute_aarch32_instrs_BIC_i_Op_A_txt : forall 'd 'n ('setflags : Bool),
+  (0 <= 'n & 'n <= 15 & 0 <= 'd & 'd <= 15).
+  (bits(1), int('d), bits(32), int('n), bool('setflags)) -> unit
+
+function execute_aarch32_instrs_BIC_i_Op_A_txt (carry, d, imm32, n, setflags) = {
+    let result : bits(32) = R_read(n) & not_vec(imm32);
+    if d == 15 then {
+        if setflags then {
+            ALUExceptionReturn(result)
+        } else {
+            ALUWritePC(result)
+        }
+    } else {
+        R_set(d) = result;
+        if setflags then {
+            PSTATE.N = [result[31]];
+            PSTATE.Z = IsZeroBit(result);
+            PSTATE.C = carry
+        };
+        ()
+    }
+}
+
+val decode_aarch32_instrs_BIC_i_A1enc_A_txt : (bits(4), bits(1), bits(4), bits(4), bits(12)) -> unit
+
+function decode_aarch32_instrs_BIC_i_A1enc_A_txt (cond, S, Rn, Rd, imm12) = {
+    if ConditionPassed() then {
+        assert(cond != 0b1111);
+        carry : bits(1) = undefined;
+        imm32 : bits(32) = undefined;
+        let 'd = UInt(Rd);
+        let 'n = UInt(Rn);
+        let setflags : bool = S == 0b1;
+        (imm32, carry) = A32ExpandImm_C(imm12, PSTATE.C);
+        execute_aarch32_instrs_BIC_i_Op_A_txt(carry, d, imm32, n, setflags)
+    };
+    ()
+}
+
+function clause __DecodeA32_DataProMisc ((pc, ([_, _, _, _, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if Slice(__opcode, 28, 4) != 0b1111 & SEE < 2860) = {
+    SEE = 2860;
+    let cond = Slice(__opcode, 28, 4);
+    let S = Slice(__opcode, 20, 1);
+    let Rn = Slice(__opcode, 16, 4);
+    let Rd = Slice(__opcode, 12, 4);
+    let imm12 = Slice(__opcode, 0, 12);
+    decode_aarch32_instrs_BIC_i_A1enc_A_txt(cond, S, Rn, Rd, imm12)
+}
+
 val execute_aarch32_instrs_BIC_r_Op_A_txt : forall 'd 'm 'n ('setflags : Bool) 'shift_n,
   (0 <= 'n & 'n <= 15 & 0 <= 'm & 'm <= 15 & 0 <= 'd & 'd <= 15).
   (int('d), int('m), int('n), bool('setflags), int('shift_n), SRType) -> unit
@@ -572,6 +1119,36 @@ function execute_aarch32_instrs_BIC_r_Op_A_txt (d, m, n, setflags, shift_n, shif
     }
 }
 
+val decode_aarch32_instrs_BIC_r_A1enc_A_txt : (bits(4), bits(1), bits(4), bits(4), bits(5), bits(2), bits(4)) -> unit
+
+function decode_aarch32_instrs_BIC_r_A1enc_A_txt (cond, S, Rn, Rd, imm5, stype, Rm) = {
+    if ConditionPassed() then {
+        assert(cond != 0b1111);
+        shift_n : int = undefined;
+        shift_t : SRType = undefined;
+        let 'd = UInt(Rd);
+        let 'n = UInt(Rn);
+        let 'm = UInt(Rm);
+        let setflags : bool = S == 0b1;
+        (shift_t, shift_n) = DecodeImmShift(stype, imm5);
+        let 'shift_n = shift_n;
+        execute_aarch32_instrs_BIC_r_Op_A_txt(d, m, n, setflags, shift_n, shift_t)
+    };
+    ()
+}
+
+function clause __DecodeA32_DataProMisc ((pc, ([_, _, _, _, bitzero, bitzero, bitzero, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, bitzero, _, _, _, _] as __opcode)) if Slice(__opcode, 28, 4) != 0b1111 & SEE < 2862) = {
+    SEE = 2862;
+    let cond = Slice(__opcode, 28, 4);
+    let S = Slice(__opcode, 20, 1);
+    let Rn = Slice(__opcode, 16, 4);
+    let Rd = Slice(__opcode, 12, 4);
+    let imm5 = Slice(__opcode, 7, 5);
+    let stype = Slice(__opcode, 5, 2);
+    let Rm = Slice(__opcode, 0, 4);
+    decode_aarch32_instrs_BIC_r_A1enc_A_txt(cond, S, Rn, Rd, imm5, stype, Rm)
+}
+
 val decode_aarch32_instrs_BIC_r_T1enc_A_txt : (bits(3), bits(3)) -> unit
 
 function decode_aarch32_instrs_BIC_r_T1enc_A_txt (Rm, Rdn) = {
@@ -596,6 +1173,56 @@ function clause __DecodeT16 ((pc, ([bitzero, bitone, bitzero, bitzero, bitzero, 
     decode_aarch32_instrs_BIC_r_T1enc_A_txt(Rm, Rdn)
 }
 
+val execute_aarch32_instrs_BIC_rr_Op_A_txt : forall 'd 'm 'n 's ('setflags : Bool),
+  (0 <= 's & 's <= 15 & 0 <= 'n & 'n <= 15 & 0 <= 'm & 'm <= 15 & 0 <= 'd & 'd <= 15).
+  (int('d), int('m), int('n), int('s), bool('setflags), SRType) -> unit
+
+function execute_aarch32_instrs_BIC_rr_Op_A_txt (d, m, n, s, setflags, shift_t) = {
+    carry : bits(1) = undefined;
+    shifted : bits(32) = undefined;
+    let 'shift_n = UInt(R_read(s)[7 .. 0]);
+    (shifted, carry) = Shift_C(R_read(m), shift_t, shift_n, PSTATE.C);
+    let result : bits(32) = R_read(n) & not_vec(shifted);
+    R_set(d) = result;
+    if setflags then {
+        PSTATE.N = [result[31]];
+        PSTATE.Z = IsZeroBit(result);
+        PSTATE.C = carry
+    };
+    ()
+}
+
+val decode_aarch32_instrs_BIC_rr_A1enc_A_txt : (bits(4), bits(1), bits(4), bits(4), bits(4), bits(2), bits(4)) -> unit
+
+function decode_aarch32_instrs_BIC_rr_A1enc_A_txt (cond, S, Rn, Rd, Rs, stype, Rm) = {
+    if ConditionPassed() then {
+        assert(cond != 0b1111);
+        let 'd = UInt(Rd);
+        let 'n = UInt(Rn);
+        let 'm = UInt(Rm);
+        let 's = UInt(Rs);
+        let setflags : bool = S == 0b1;
+        let shift_t : SRType = DecodeRegShift(stype);
+        if ((d == 15 | n == 15) | m == 15) | s == 15 then {
+            throw(Error_Unpredictable())
+        };
+        execute_aarch32_instrs_BIC_rr_Op_A_txt(d, m, n, s, setflags, shift_t)
+    };
+    ()
+}
+
+function clause __DecodeA32_DataProMisc ((pc, ([_, _, _, _, bitzero, bitzero, bitzero, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _, _, _, _, bitzero, _, _, bitone, _, _, _, _] as __opcode)) if Slice(__opcode, 28, 4) != 0b1111 & SEE < 2865) = {
+    SEE = 2865;
+    let cond = Slice(__opcode, 28, 4);
+    let S = Slice(__opcode, 20, 1);
+    let Rn = Slice(__opcode, 16, 4);
+    let Rd = Slice(__opcode, 12, 4);
+    let Rs = Slice(__opcode, 8, 4);
+    let stype = Slice(__opcode, 5, 2);
+    let Rm = Slice(__opcode, 0, 4);
+    decode_aarch32_instrs_BIC_rr_A1enc_A_txt(cond, S, Rn, Rd, Rs, stype, Rm)
+}
+
 val execute_aarch32_instrs_BKPT_Op_A_txt : bits(16) -> unit
 
 function execute_aarch32_instrs_BKPT_Op_A_txt imm16 = {
@@ -615,6 +1242,61 @@ function clause __DecodeT16 ((pc, ([bitone, bitzero, bitone, bitone, bitone, bit
     decode_aarch32_instrs_BKPT_T1enc_A_txt(imm8)
 }
 
+val execute_aarch32_instrs_BL_i_Op_A_txt : (bits(32), InstrSet) -> unit
+
+function execute_aarch32_instrs_BL_i_Op_A_txt (imm32, targetInstrSet) = {
+    if CurrentInstrSet() == InstrSet_A32 then {
+        LR_write() = PC_read__1() - 4
+    } else {
+        LR_write() = PC_read__1()[31 .. 1] @ 0b1
+    };
+    targetAddress : bits(32) = undefined;
+    if targetInstrSet == InstrSet_A32 then {
+        targetAddress = Align(PC_read__1(), 4) + imm32
+    } else {
+        targetAddress = PC_read__1() + imm32
+    };
+    SelectInstrSet(targetInstrSet);
+    BranchWritePC(targetAddress, BranchType_DIRCALL)
+}
+
+val decode_aarch32_instrs_BL_i_A1enc_A_txt : (bits(4), bits(24)) -> unit
+
+function decode_aarch32_instrs_BL_i_A1enc_A_txt (cond, imm24) = {
+    if ConditionPassed() then {
+        assert(cond != 0b1111);
+        let imm32 : bits(32) = SignExtend(imm24 @ 0b00, 32);
+        let targetInstrSet : InstrSet = InstrSet_A32;
+        execute_aarch32_instrs_BL_i_Op_A_txt(imm32, targetInstrSet)
+    };
+    ()
+}
+
+function clause __DecodeA32_BranchBlock ((pc, ([_, _, _, _, bitone, bitzero, bitone, bitone, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if Slice(__opcode, 28, 4) != 0b1111 & SEE < 2868) = {
+    SEE = 2868;
+    let cond = Slice(__opcode, 28, 4);
+    let imm24 = Slice(__opcode, 0, 24);
+    decode_aarch32_instrs_BL_i_A1enc_A_txt(cond, imm24)
+}
+
+val decode_aarch32_instrs_BL_i_A2enc_A_txt : (bits(1), bits(24)) -> unit
+
+function decode_aarch32_instrs_BL_i_A2enc_A_txt (H, imm24) = {
+    if ConditionPassed() then {
+        let imm32 : bits(32) = SignExtend((imm24 @ H) @ 0b0, 32);
+        let targetInstrSet : InstrSet = InstrSet_T32;
+        execute_aarch32_instrs_BL_i_Op_A_txt(imm32, targetInstrSet)
+    };
+    ()
+}
+
+function clause __DecodeA32_BranchBlock ((pc, ([bitone, bitone, bitone, bitone, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 2869) = {
+    SEE = 2869;
+    let H = Slice(__opcode, 24, 1);
+    let imm24 = Slice(__opcode, 0, 24);
+    decode_aarch32_instrs_BL_i_A2enc_A_txt(H, imm24)
+}
+
 val execute_aarch32_instrs_BLX_r_Op_A_txt : forall 'm, (0 <= 'm & 'm <= 15).
   int('m) -> unit
 
@@ -629,6 +1311,31 @@ function execute_aarch32_instrs_BLX_r_Op_A_txt m = {
         LR_write() = next_instr_addr[31 .. 1] @ 0b1
     };
     BXWritePC(target, BranchType_INDCALL)
+}
+
+val decode_aarch32_instrs_BLX_r_A1enc_A_txt : (bits(4), bits(4)) -> unit
+
+function decode_aarch32_instrs_BLX_r_A1enc_A_txt (cond, Rm) = {
+    if ConditionPassed() then {
+        assert(cond != 0b1111);
+        let 'm = UInt(Rm);
+        if m == 15 then {
+            throw(Error_Unpredictable())
+        };
+        execute_aarch32_instrs_BLX_r_Op_A_txt(m)
+    };
+    ()
+}
+
+function clause __DecodeA32_DataProMisc ((pc, ([_, _, _, _, bitzero, bitzero, bitzero, bitone, bitzero, bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitone, bitone, bitone, bitone, bitone, bitone, bitzero, bitzero, bitone, bitone, _, _, _, _] as __opcode)) if Slice(__opcode, 28, 4) != 0b1111 & SEE < 2872) = {
+    SEE = 2872;
+    let cond = Slice(__opcode, 28, 4);
+    let Rm = Slice(__opcode, 0, 4);
+    if (((((((((([__opcode[16]] != 0b1 | [__opcode[17]] != 0b1) | [__opcode[18]] != 0b1) | [__opcode[19]] != 0b1) | [__opcode[12]] != 0b1) | [__opcode[13]] != 0b1) | [__opcode[14]] != 0b1) | [__opcode[15]] != 0b1) | [__opcode[8]] != 0b1) | [__opcode[9]] != 0b1) | [__opcode[10]] != 0b1) | [__opcode[11]] != 0b1 then {
+        throw(Error_ConstrainedUnpredictable())
+    } else {
+        decode_aarch32_instrs_BLX_r_A1enc_A_txt(cond, Rm)
+    }
 }
 
 val decode_aarch32_instrs_BLX_r_T1enc_A_txt : bits(4) -> unit
@@ -662,6 +1369,28 @@ val execute_aarch32_instrs_BX_Op_A_txt : forall 'm, (0 <= 'm & 'm <= 15).
 
 function execute_aarch32_instrs_BX_Op_A_txt m = {
     BXWritePC(R_read(m), BranchType_INDIR)
+}
+
+val decode_aarch32_instrs_BX_A1enc_A_txt : (bits(4), bits(4)) -> unit
+
+function decode_aarch32_instrs_BX_A1enc_A_txt (cond, Rm) = {
+    if ConditionPassed() then {
+        assert(cond != 0b1111);
+        let 'm = UInt(Rm);
+        execute_aarch32_instrs_BX_Op_A_txt(m)
+    };
+    ()
+}
+
+function clause __DecodeA32_DataProMisc ((pc, ([_, _, _, _, bitzero, bitzero, bitzero, bitone, bitzero, bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitone, bitone, bitone, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitone, _, _, _, _] as __opcode)) if Slice(__opcode, 28, 4) != 0b1111 & SEE < 2874) = {
+    SEE = 2874;
+    let cond = Slice(__opcode, 28, 4);
+    let Rm = Slice(__opcode, 0, 4);
+    if (((((((((([__opcode[16]] != 0b1 | [__opcode[17]] != 0b1) | [__opcode[18]] != 0b1) | [__opcode[19]] != 0b1) | [__opcode[12]] != 0b1) | [__opcode[13]] != 0b1) | [__opcode[14]] != 0b1) | [__opcode[15]] != 0b1) | [__opcode[8]] != 0b1) | [__opcode[9]] != 0b1) | [__opcode[10]] != 0b1) | [__opcode[11]] != 0b1 then {
+        throw(Error_ConstrainedUnpredictable())
+    } else {
+        decode_aarch32_instrs_BX_A1enc_A_txt(cond, Rm)
+    }
 }
 
 val decode_aarch32_instrs_BX_T1enc_A_txt : bits(4) -> unit
@@ -719,6 +1448,40 @@ function clause __DecodeT16 ((pc, ([bitone, bitzero, bitone, bitone, _, bitzero,
     decode_aarch32_instrs_CBNZ_T1enc_A_txt(op, i, imm5, Rn)
 }
 
+val execute_aarch32_instrs_CMN_i_Op_A_txt : forall 'n, (0 <= 'n & 'n <= 15).
+  (bits(32), int('n)) -> unit
+
+function execute_aarch32_instrs_CMN_i_Op_A_txt (imm32, n) = {
+    nzcv : bits(4) = undefined;
+    result : bits(32) = undefined;
+    (result, nzcv) = AddWithCarry(R_read(n), imm32, 0b0);
+    (PSTATE.N @ PSTATE.Z @ PSTATE.C @ PSTATE.V) = nzcv
+}
+
+val decode_aarch32_instrs_CMN_i_A1enc_A_txt : (bits(4), bits(4), bits(12)) -> unit
+
+function decode_aarch32_instrs_CMN_i_A1enc_A_txt (cond, Rn, imm12) = {
+    if ConditionPassed() then {
+        assert(cond != 0b1111);
+        let 'n = UInt(Rn);
+        let imm32 : bits(32) = A32ExpandImm(imm12);
+        execute_aarch32_instrs_CMN_i_Op_A_txt(imm32, n)
+    };
+    ()
+}
+
+function clause __DecodeA32_DataProMisc ((pc, ([_, _, _, _, bitzero, bitzero, bitone, bitone, bitzero, bitone, bitone, bitone, _, _, _, _, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if Slice(__opcode, 28, 4) != 0b1111 & SEE < 2883) = {
+    SEE = 2883;
+    let cond = Slice(__opcode, 28, 4);
+    let Rn = Slice(__opcode, 16, 4);
+    let imm12 = Slice(__opcode, 0, 12);
+    if (([__opcode[12]] != 0b0 | [__opcode[13]] != 0b0) | [__opcode[14]] != 0b0) | [__opcode[15]] != 0b0 then {
+        throw(Error_ConstrainedUnpredictable())
+    } else {
+        decode_aarch32_instrs_CMN_i_A1enc_A_txt(cond, Rn, imm12)
+    }
+}
+
 val execute_aarch32_instrs_CMN_r_Op_A_txt : forall 'm 'n 'shift_n,
   (0 <= 'n & 'n <= 15 & 0 <= 'm & 'm <= 15).
   (int('m), int('n), int('shift_n), SRType) -> unit
@@ -729,6 +1492,36 @@ function execute_aarch32_instrs_CMN_r_Op_A_txt (m, n, shift_n, shift_t) = {
     let shifted : bits(32) = Shift(R_read(m), shift_t, shift_n, PSTATE.C);
     (result, nzcv) = AddWithCarry(R_read(n), shifted, 0b0);
     (PSTATE.N @ PSTATE.Z @ PSTATE.C @ PSTATE.V) = nzcv
+}
+
+val decode_aarch32_instrs_CMN_r_A1enc_A_txt : (bits(4), bits(4), bits(5), bits(2), bits(4)) -> unit
+
+function decode_aarch32_instrs_CMN_r_A1enc_A_txt (cond, Rn, imm5, stype, Rm) = {
+    if ConditionPassed() then {
+        assert(cond != 0b1111);
+        shift_n : int = undefined;
+        shift_t : SRType = undefined;
+        let 'n = UInt(Rn);
+        let 'm = UInt(Rm);
+        (shift_t, shift_n) = DecodeImmShift(stype, imm5);
+        let 'shift_n = shift_n;
+        execute_aarch32_instrs_CMN_r_Op_A_txt(m, n, shift_n, shift_t)
+    };
+    ()
+}
+
+function clause __DecodeA32_DataProMisc ((pc, ([_, _, _, _, bitzero, bitzero, bitzero, bitone, bitzero, bitone, bitone, bitone, _, _, _, _, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, bitzero, _, _, _, _] as __opcode)) if Slice(__opcode, 28, 4) != 0b1111 & SEE < 2885) = {
+    SEE = 2885;
+    let cond = Slice(__opcode, 28, 4);
+    let Rn = Slice(__opcode, 16, 4);
+    let imm5 = Slice(__opcode, 7, 5);
+    let stype = Slice(__opcode, 5, 2);
+    let Rm = Slice(__opcode, 0, 4);
+    if (([__opcode[12]] != 0b0 | [__opcode[13]] != 0b0) | [__opcode[14]] != 0b0) | [__opcode[15]] != 0b0 then {
+        throw(Error_ConstrainedUnpredictable())
+    } else {
+        decode_aarch32_instrs_CMN_r_A1enc_A_txt(cond, Rn, imm5, stype, Rm)
+    }
 }
 
 val decode_aarch32_instrs_CMN_r_T1enc_A_txt : (bits(3), bits(3)) -> unit
@@ -753,6 +1546,50 @@ function clause __DecodeT16 ((pc, ([bitzero, bitone, bitzero, bitzero, bitzero, 
     decode_aarch32_instrs_CMN_r_T1enc_A_txt(Rm, Rn)
 }
 
+val execute_aarch32_instrs_CMN_rr_Op_A_txt : forall 'm 'n 's,
+  (0 <= 's & 's <= 15 & 0 <= 'n & 'n <= 15 & 0 <= 'm & 'm <= 15).
+  (int('m), int('n), int('s), SRType) -> unit
+
+function execute_aarch32_instrs_CMN_rr_Op_A_txt (m, n, s, shift_t) = {
+    nzcv : bits(4) = undefined;
+    result : bits(32) = undefined;
+    let 'shift_n = UInt(R_read(s)[7 .. 0]);
+    let shifted : bits(32) = Shift(R_read(m), shift_t, shift_n, PSTATE.C);
+    (result, nzcv) = AddWithCarry(R_read(n), shifted, 0b0);
+    (PSTATE.N @ PSTATE.Z @ PSTATE.C @ PSTATE.V) = nzcv
+}
+
+val decode_aarch32_instrs_CMN_rr_A1enc_A_txt : (bits(4), bits(4), bits(4), bits(2), bits(4)) -> unit
+
+function decode_aarch32_instrs_CMN_rr_A1enc_A_txt (cond, Rn, Rs, stype, Rm) = {
+    if ConditionPassed() then {
+        assert(cond != 0b1111);
+        let 'n = UInt(Rn);
+        let 'm = UInt(Rm);
+        let 's = UInt(Rs);
+        let shift_t : SRType = DecodeRegShift(stype);
+        if (n == 15 | m == 15) | s == 15 then {
+            throw(Error_Unpredictable())
+        };
+        execute_aarch32_instrs_CMN_rr_Op_A_txt(m, n, s, shift_t)
+    };
+    ()
+}
+
+function clause __DecodeA32_DataProMisc ((pc, ([_, _, _, _, bitzero, bitzero, bitzero, bitone, bitzero, bitone, bitone, bitone, _, _, _, _, bitzero, bitzero, bitzero, bitzero, _, _, _, _, bitzero, _, _, bitone, _, _, _, _] as __opcode)) if Slice(__opcode, 28, 4) != 0b1111 & SEE < 2888) = {
+    SEE = 2888;
+    let cond = Slice(__opcode, 28, 4);
+    let Rn = Slice(__opcode, 16, 4);
+    let Rs = Slice(__opcode, 8, 4);
+    let stype = Slice(__opcode, 5, 2);
+    let Rm = Slice(__opcode, 0, 4);
+    if (([__opcode[12]] != 0b0 | [__opcode[13]] != 0b0) | [__opcode[14]] != 0b0) | [__opcode[15]] != 0b0 then {
+        throw(Error_ConstrainedUnpredictable())
+    } else {
+        decode_aarch32_instrs_CMN_rr_A1enc_A_txt(cond, Rn, Rs, stype, Rm)
+    }
+}
+
 val execute_aarch32_instrs_CMP_i_Op_A_txt : forall 'n, (0 <= 'n & 'n <= 15).
   (bits(32), int('n)) -> unit
 
@@ -761,6 +1598,30 @@ function execute_aarch32_instrs_CMP_i_Op_A_txt (imm32, n) = {
     result : bits(32) = undefined;
     (result, nzcv) = AddWithCarry(R_read(n), not_vec(imm32), 0b1);
     (PSTATE.N @ PSTATE.Z @ PSTATE.C @ PSTATE.V) = nzcv
+}
+
+val decode_aarch32_instrs_CMP_i_A1enc_A_txt : (bits(4), bits(4), bits(12)) -> unit
+
+function decode_aarch32_instrs_CMP_i_A1enc_A_txt (cond, Rn, imm12) = {
+    if ConditionPassed() then {
+        assert(cond != 0b1111);
+        let 'n = UInt(Rn);
+        let imm32 : bits(32) = A32ExpandImm(imm12);
+        execute_aarch32_instrs_CMP_i_Op_A_txt(imm32, n)
+    };
+    ()
+}
+
+function clause __DecodeA32_DataProMisc ((pc, ([_, _, _, _, bitzero, bitzero, bitone, bitone, bitzero, bitone, bitzero, bitone, _, _, _, _, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if Slice(__opcode, 28, 4) != 0b1111 & SEE < 2889) = {
+    SEE = 2889;
+    let cond = Slice(__opcode, 28, 4);
+    let Rn = Slice(__opcode, 16, 4);
+    let imm12 = Slice(__opcode, 0, 12);
+    if (([__opcode[12]] != 0b0 | [__opcode[13]] != 0b0) | [__opcode[14]] != 0b0) | [__opcode[15]] != 0b0 then {
+        throw(Error_ConstrainedUnpredictable())
+    } else {
+        decode_aarch32_instrs_CMP_i_A1enc_A_txt(cond, Rn, imm12)
+    }
 }
 
 val decode_aarch32_instrs_CMP_i_T1enc_A_txt : (bits(3), bits(8)) -> unit
@@ -791,6 +1652,36 @@ function execute_aarch32_instrs_CMP_r_Op_A_txt (m, n, shift_n, shift_t) = {
     let shifted : bits(32) = Shift(R_read(m), shift_t, shift_n, PSTATE.C);
     (result, nzcv) = AddWithCarry(R_read(n), not_vec(shifted), 0b1);
     (PSTATE.N @ PSTATE.Z @ PSTATE.C @ PSTATE.V) = nzcv
+}
+
+val decode_aarch32_instrs_CMP_r_A1enc_A_txt : (bits(4), bits(4), bits(5), bits(2), bits(4)) -> unit
+
+function decode_aarch32_instrs_CMP_r_A1enc_A_txt (cond, Rn, imm5, stype, Rm) = {
+    if ConditionPassed() then {
+        assert(cond != 0b1111);
+        shift_n : int = undefined;
+        shift_t : SRType = undefined;
+        let 'n = UInt(Rn);
+        let 'm = UInt(Rm);
+        (shift_t, shift_n) = DecodeImmShift(stype, imm5);
+        let 'shift_n = shift_n;
+        execute_aarch32_instrs_CMP_r_Op_A_txt(m, n, shift_n, shift_t)
+    };
+    ()
+}
+
+function clause __DecodeA32_DataProMisc ((pc, ([_, _, _, _, bitzero, bitzero, bitzero, bitone, bitzero, bitone, bitzero, bitone, _, _, _, _, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, bitzero, _, _, _, _] as __opcode)) if Slice(__opcode, 28, 4) != 0b1111 & SEE < 2892) = {
+    SEE = 2892;
+    let cond = Slice(__opcode, 28, 4);
+    let Rn = Slice(__opcode, 16, 4);
+    let imm5 = Slice(__opcode, 7, 5);
+    let stype = Slice(__opcode, 5, 2);
+    let Rm = Slice(__opcode, 0, 4);
+    if (([__opcode[12]] != 0b0 | [__opcode[13]] != 0b0) | [__opcode[14]] != 0b0) | [__opcode[15]] != 0b0 then {
+        throw(Error_ConstrainedUnpredictable())
+    } else {
+        decode_aarch32_instrs_CMP_r_A1enc_A_txt(cond, Rn, imm5, stype, Rm)
+    }
 }
 
 val decode_aarch32_instrs_CMP_r_T1enc_A_txt : (bits(3), bits(3)) -> unit
@@ -846,6 +1737,99 @@ function clause __DecodeT16 ((pc, ([bitzero, bitone, bitzero, bitzero, bitzero, 
     decode_aarch32_instrs_CMP_r_T2enc_A_txt(N, Rm, Rn)
 }
 
+val execute_aarch32_instrs_CMP_rr_Op_A_txt : forall 'm 'n 's,
+  (0 <= 's & 's <= 15 & 0 <= 'n & 'n <= 15 & 0 <= 'm & 'm <= 15).
+  (int('m), int('n), int('s), SRType) -> unit
+
+function execute_aarch32_instrs_CMP_rr_Op_A_txt (m, n, s, shift_t) = {
+    nzcv : bits(4) = undefined;
+    result : bits(32) = undefined;
+    let 'shift_n = UInt(R_read(s)[7 .. 0]);
+    let shifted : bits(32) = Shift(R_read(m), shift_t, shift_n, PSTATE.C);
+    (result, nzcv) = AddWithCarry(R_read(n), not_vec(shifted), 0b1);
+    (PSTATE.N @ PSTATE.Z @ PSTATE.C @ PSTATE.V) = nzcv
+}
+
+val decode_aarch32_instrs_CMP_rr_A1enc_A_txt : (bits(4), bits(4), bits(4), bits(2), bits(4)) -> unit
+
+function decode_aarch32_instrs_CMP_rr_A1enc_A_txt (cond, Rn, Rs, stype, Rm) = {
+    if ConditionPassed() then {
+        assert(cond != 0b1111);
+        let 'n = UInt(Rn);
+        let 'm = UInt(Rm);
+        let 's = UInt(Rs);
+        let shift_t : SRType = DecodeRegShift(stype);
+        if (n == 15 | m == 15) | s == 15 then {
+            throw(Error_Unpredictable())
+        };
+        execute_aarch32_instrs_CMP_rr_Op_A_txt(m, n, s, shift_t)
+    };
+    ()
+}
+
+function clause __DecodeA32_DataProMisc ((pc, ([_, _, _, _, bitzero, bitzero, bitzero, bitone, bitzero, bitone, bitzero, bitone, _, _, _, _, bitzero, bitzero, bitzero, bitzero, _, _, _, _, bitzero, _, _, bitone, _, _, _, _] as __opcode)) if Slice(__opcode, 28, 4) != 0b1111 & SEE < 2896) = {
+    SEE = 2896;
+    let cond = Slice(__opcode, 28, 4);
+    let Rn = Slice(__opcode, 16, 4);
+    let Rs = Slice(__opcode, 8, 4);
+    let stype = Slice(__opcode, 5, 2);
+    let Rm = Slice(__opcode, 0, 4);
+    if (([__opcode[12]] != 0b0 | [__opcode[13]] != 0b0) | [__opcode[14]] != 0b0) | [__opcode[15]] != 0b0 then {
+        throw(Error_ConstrainedUnpredictable())
+    } else {
+        decode_aarch32_instrs_CMP_rr_A1enc_A_txt(cond, Rn, Rs, stype, Rm)
+    }
+}
+
+val execute_aarch32_instrs_EOR_i_Op_A_txt : forall 'd 'n ('setflags : Bool),
+  (0 <= 'n & 'n <= 15 & 0 <= 'd & 'd <= 15).
+  (bits(1), int('d), bits(32), int('n), bool('setflags)) -> unit
+
+function execute_aarch32_instrs_EOR_i_Op_A_txt (carry, d, imm32, n, setflags) = {
+    let result : bits(32) = EOR(R_read(n), imm32);
+    if d == 15 then {
+        if setflags then {
+            ALUExceptionReturn(result)
+        } else {
+            ALUWritePC(result)
+        }
+    } else {
+        R_set(d) = result;
+        if setflags then {
+            PSTATE.N = [result[31]];
+            PSTATE.Z = IsZeroBit(result);
+            PSTATE.C = carry
+        };
+        ()
+    }
+}
+
+val decode_aarch32_instrs_EOR_i_A1enc_A_txt : (bits(4), bits(1), bits(4), bits(4), bits(12)) -> unit
+
+function decode_aarch32_instrs_EOR_i_A1enc_A_txt (cond, S, Rn, Rd, imm12) = {
+    if ConditionPassed() then {
+        assert(cond != 0b1111);
+        carry : bits(1) = undefined;
+        imm32 : bits(32) = undefined;
+        let 'd = UInt(Rd);
+        let 'n = UInt(Rn);
+        let setflags : bool = S == 0b1;
+        (imm32, carry) = A32ExpandImm_C(imm12, PSTATE.C);
+        execute_aarch32_instrs_EOR_i_Op_A_txt(carry, d, imm32, n, setflags)
+    };
+    ()
+}
+
+function clause __DecodeA32_DataProMisc ((pc, ([_, _, _, _, bitzero, bitzero, bitone, bitzero, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if Slice(__opcode, 28, 4) != 0b1111 & SEE < 2903) = {
+    SEE = 2903;
+    let cond = Slice(__opcode, 28, 4);
+    let S = Slice(__opcode, 20, 1);
+    let Rn = Slice(__opcode, 16, 4);
+    let Rd = Slice(__opcode, 12, 4);
+    let imm12 = Slice(__opcode, 0, 12);
+    decode_aarch32_instrs_EOR_i_A1enc_A_txt(cond, S, Rn, Rd, imm12)
+}
+
 val execute_aarch32_instrs_EOR_r_Op_A_txt : forall 'd 'm 'n ('setflags : Bool) 'shift_n,
   (0 <= 'n & 'n <= 15 & 0 <= 'm & 'm <= 15 & 0 <= 'd & 'd <= 15).
   (int('d), int('m), int('n), bool('setflags), int('shift_n), SRType) -> unit
@@ -872,6 +1856,36 @@ function execute_aarch32_instrs_EOR_r_Op_A_txt (d, m, n, setflags, shift_n, shif
     }
 }
 
+val decode_aarch32_instrs_EOR_r_A1enc_A_txt : (bits(4), bits(1), bits(4), bits(4), bits(5), bits(2), bits(4)) -> unit
+
+function decode_aarch32_instrs_EOR_r_A1enc_A_txt (cond, S, Rn, Rd, imm5, stype, Rm) = {
+    if ConditionPassed() then {
+        assert(cond != 0b1111);
+        shift_n : int = undefined;
+        shift_t : SRType = undefined;
+        let 'd = UInt(Rd);
+        let 'n = UInt(Rn);
+        let 'm = UInt(Rm);
+        let setflags : bool = S == 0b1;
+        (shift_t, shift_n) = DecodeImmShift(stype, imm5);
+        let 'shift_n = shift_n;
+        execute_aarch32_instrs_EOR_r_Op_A_txt(d, m, n, setflags, shift_n, shift_t)
+    };
+    ()
+}
+
+function clause __DecodeA32_DataProMisc ((pc, ([_, _, _, _, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, bitzero, _, _, _, _] as __opcode)) if Slice(__opcode, 28, 4) != 0b1111 & SEE < 2905) = {
+    SEE = 2905;
+    let cond = Slice(__opcode, 28, 4);
+    let S = Slice(__opcode, 20, 1);
+    let Rn = Slice(__opcode, 16, 4);
+    let Rd = Slice(__opcode, 12, 4);
+    let imm5 = Slice(__opcode, 7, 5);
+    let stype = Slice(__opcode, 5, 2);
+    let Rm = Slice(__opcode, 0, 4);
+    decode_aarch32_instrs_EOR_r_A1enc_A_txt(cond, S, Rn, Rd, imm5, stype, Rm)
+}
+
 val decode_aarch32_instrs_EOR_r_T1enc_A_txt : (bits(3), bits(3)) -> unit
 
 function decode_aarch32_instrs_EOR_r_T1enc_A_txt (Rm, Rdn) = {
@@ -894,6 +1908,56 @@ function clause __DecodeT16 ((pc, ([bitzero, bitone, bitzero, bitzero, bitzero, 
     let Rm = Slice(__opcode, 3, 3);
     let Rdn = Slice(__opcode, 0, 3);
     decode_aarch32_instrs_EOR_r_T1enc_A_txt(Rm, Rdn)
+}
+
+val execute_aarch32_instrs_EOR_rr_Op_A_txt : forall 'd 'm 'n 's ('setflags : Bool),
+  (0 <= 's & 's <= 15 & 0 <= 'n & 'n <= 15 & 0 <= 'm & 'm <= 15 & 0 <= 'd & 'd <= 15).
+  (int('d), int('m), int('n), int('s), bool('setflags), SRType) -> unit
+
+function execute_aarch32_instrs_EOR_rr_Op_A_txt (d, m, n, s, setflags, shift_t) = {
+    carry : bits(1) = undefined;
+    shifted : bits(32) = undefined;
+    let 'shift_n = UInt(R_read(s)[7 .. 0]);
+    (shifted, carry) = Shift_C(R_read(m), shift_t, shift_n, PSTATE.C);
+    let result : bits(32) = EOR(R_read(n), shifted);
+    R_set(d) = result;
+    if setflags then {
+        PSTATE.N = [result[31]];
+        PSTATE.Z = IsZeroBit(result);
+        PSTATE.C = carry
+    };
+    ()
+}
+
+val decode_aarch32_instrs_EOR_rr_A1enc_A_txt : (bits(4), bits(1), bits(4), bits(4), bits(4), bits(2), bits(4)) -> unit
+
+function decode_aarch32_instrs_EOR_rr_A1enc_A_txt (cond, S, Rn, Rd, Rs, stype, Rm) = {
+    if ConditionPassed() then {
+        assert(cond != 0b1111);
+        let 'd = UInt(Rd);
+        let 'n = UInt(Rn);
+        let 'm = UInt(Rm);
+        let 's = UInt(Rs);
+        let setflags : bool = S == 0b1;
+        let shift_t : SRType = DecodeRegShift(stype);
+        if ((d == 15 | n == 15) | m == 15) | s == 15 then {
+            throw(Error_Unpredictable())
+        };
+        execute_aarch32_instrs_EOR_rr_Op_A_txt(d, m, n, s, setflags, shift_t)
+    };
+    ()
+}
+
+function clause __DecodeA32_DataProMisc ((pc, ([_, _, _, _, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _, _, _, _, bitzero, _, _, bitone, _, _, _, _] as __opcode)) if Slice(__opcode, 28, 4) != 0b1111 & SEE < 2908) = {
+    SEE = 2908;
+    let cond = Slice(__opcode, 28, 4);
+    let S = Slice(__opcode, 20, 1);
+    let Rn = Slice(__opcode, 16, 4);
+    let Rd = Slice(__opcode, 12, 4);
+    let Rs = Slice(__opcode, 8, 4);
+    let stype = Slice(__opcode, 5, 2);
+    let Rm = Slice(__opcode, 0, 4);
+    decode_aarch32_instrs_EOR_rr_A1enc_A_txt(cond, S, Rn, Rd, Rs, stype, Rm)
 }
 
 val decode_aarch32_instrs_IT_T1enc_A_txt : (bits(4), bits(4)) -> unit
@@ -1503,6 +2567,61 @@ function execute_aarch32_instrs_MOV_i_Op_A_txt (carry, d, imm32, setflags) = {
     }
 }
 
+val decode_aarch32_instrs_MOV_i_A1enc_A_txt : (bits(4), bits(1), bits(4), bits(12)) -> unit
+
+function decode_aarch32_instrs_MOV_i_A1enc_A_txt (cond, S, Rd, imm12) = {
+    if ConditionPassed() then {
+        assert(cond != 0b1111);
+        carry : bits(1) = undefined;
+        imm32 : bits(32) = undefined;
+        let 'd = UInt(Rd);
+        let setflags : bool = S == 0b1;
+        (imm32, carry) = A32ExpandImm_C(imm12, PSTATE.C);
+        execute_aarch32_instrs_MOV_i_Op_A_txt(carry, d, imm32, setflags)
+    };
+    ()
+}
+
+function clause __DecodeA32_DataProMisc ((pc, ([_, _, _, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitone, _, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if Slice(__opcode, 28, 4) != 0b1111 & SEE < 3009) = {
+    SEE = 3009;
+    let cond = Slice(__opcode, 28, 4);
+    let S = Slice(__opcode, 20, 1);
+    let Rd = Slice(__opcode, 12, 4);
+    let imm12 = Slice(__opcode, 0, 12);
+    if (([__opcode[16]] != 0b0 | [__opcode[17]] != 0b0) | [__opcode[18]] != 0b0) | [__opcode[19]] != 0b0 then {
+        throw(Error_ConstrainedUnpredictable())
+    } else {
+        decode_aarch32_instrs_MOV_i_A1enc_A_txt(cond, S, Rd, imm12)
+    }
+}
+
+val decode_aarch32_instrs_MOV_i_A2enc_A_txt : (bits(4), bits(4), bits(4), bits(12)) -> unit
+
+function decode_aarch32_instrs_MOV_i_A2enc_A_txt (cond, imm4, Rd, imm12) = {
+    if ConditionPassed() then {
+        assert(cond != 0b1111);
+        carry : bits(1) = undefined;
+        let 'd = UInt(Rd);
+        let setflags : bool = false;
+        let imm32 : bits(32) = ZeroExtend(imm4 @ imm12, 32);
+        if d == 15 then {
+            throw(Error_Unpredictable())
+        };
+        let carry = carry;
+        execute_aarch32_instrs_MOV_i_Op_A_txt(carry, d, imm32, setflags)
+    };
+    ()
+}
+
+function clause __DecodeA32_DataProMisc ((pc, ([_, _, _, _, bitzero, bitzero, bitone, bitone, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if Slice(__opcode, 28, 4) != 0b1111 & SEE < 3010) = {
+    SEE = 3010;
+    let cond = Slice(__opcode, 28, 4);
+    let imm4 = Slice(__opcode, 16, 4);
+    let Rd = Slice(__opcode, 12, 4);
+    let imm12 = Slice(__opcode, 0, 12);
+    decode_aarch32_instrs_MOV_i_A2enc_A_txt(cond, imm4, Rd, imm12)
+}
+
 val decode_aarch32_instrs_MOV_i_T1enc_A_txt : (bits(3), bits(8)) -> unit
 
 function decode_aarch32_instrs_MOV_i_T1enc_A_txt (Rd, imm8) = {
@@ -1546,6 +2665,38 @@ function execute_aarch32_instrs_MOV_r_Op_A_txt (d, m, setflags, shift_n, shift_t
             PSTATE.C = carry
         };
         ()
+    }
+}
+
+val decode_aarch32_instrs_MOV_r_A1enc_A_txt : (bits(4), bits(1), bits(4), bits(5), bits(2), bits(4)) -> unit
+
+function decode_aarch32_instrs_MOV_r_A1enc_A_txt (cond, S, Rd, imm5, stype, Rm) = {
+    if ConditionPassed() then {
+        assert(cond != 0b1111);
+        shift_n : int = undefined;
+        shift_t : SRType = undefined;
+        let 'd = UInt(Rd);
+        let 'm = UInt(Rm);
+        let setflags : bool = S == 0b1;
+        (shift_t, shift_n) = DecodeImmShift(stype, imm5);
+        let 'shift_n = shift_n;
+        execute_aarch32_instrs_MOV_r_Op_A_txt(d, m, setflags, shift_n, shift_t)
+    };
+    ()
+}
+
+function clause __DecodeA32_DataProMisc ((pc, ([_, _, _, _, bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitone, _, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _, _, bitzero, _, _, _, _] as __opcode)) if Slice(__opcode, 28, 4) != 0b1111 & SEE < 3014) = {
+    SEE = 3014;
+    let cond = Slice(__opcode, 28, 4);
+    let S = Slice(__opcode, 20, 1);
+    let Rd = Slice(__opcode, 12, 4);
+    let imm5 = Slice(__opcode, 7, 5);
+    let stype = Slice(__opcode, 5, 2);
+    let Rm = Slice(__opcode, 0, 4);
+    if (([__opcode[16]] != 0b0 | [__opcode[17]] != 0b0) | [__opcode[18]] != 0b0) | [__opcode[19]] != 0b0 then {
+        throw(Error_ConstrainedUnpredictable())
+    } else {
+        decode_aarch32_instrs_MOV_r_A1enc_A_txt(cond, S, Rd, imm5, stype, Rm)
     }
 }
 
@@ -1624,6 +2775,39 @@ function execute_aarch32_instrs_MOV_rr_Op_A_txt (d, m, s, setflags, shift_t) = {
     ()
 }
 
+val decode_aarch32_instrs_MOV_rr_A1enc_A_txt : (bits(4), bits(1), bits(4), bits(4), bits(2), bits(4)) -> unit
+
+function decode_aarch32_instrs_MOV_rr_A1enc_A_txt (cond, S, Rd, Rs, stype, Rm) = {
+    if ConditionPassed() then {
+        assert(cond != 0b1111);
+        let 'd = UInt(Rd);
+        let 'm = UInt(Rm);
+        let 's = UInt(Rs);
+        let setflags : bool = S == 0b1;
+        let shift_t : SRType = DecodeRegShift(stype);
+        if (d == 15 | m == 15) | s == 15 then {
+            throw(Error_Unpredictable())
+        };
+        execute_aarch32_instrs_MOV_rr_Op_A_txt(d, m, s, setflags, shift_t)
+    };
+    ()
+}
+
+function clause __DecodeA32_DataProMisc ((pc, ([_, _, _, _, bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitone, _, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, bitzero, _, _, bitone, _, _, _, _] as __opcode)) if Slice(__opcode, 28, 4) != 0b1111 & SEE < 3018) = {
+    SEE = 3018;
+    let cond = Slice(__opcode, 28, 4);
+    let S = Slice(__opcode, 20, 1);
+    let Rd = Slice(__opcode, 12, 4);
+    let Rs = Slice(__opcode, 8, 4);
+    let stype = Slice(__opcode, 5, 2);
+    let Rm = Slice(__opcode, 0, 4);
+    if (([__opcode[16]] != 0b0 | [__opcode[17]] != 0b0) | [__opcode[18]] != 0b0) | [__opcode[19]] != 0b0 then {
+        throw(Error_ConstrainedUnpredictable())
+    } else {
+        decode_aarch32_instrs_MOV_rr_A1enc_A_txt(cond, S, Rd, Rs, stype, Rm)
+    }
+}
+
 val decode_aarch32_instrs_MOV_rr_T1enc_A_txt : (bits(4), bits(3), bits(3)) -> unit
 
 function decode_aarch32_instrs_MOV_rr_T1enc_A_txt (op, Rs, Rdm) = {
@@ -1649,6 +2833,37 @@ function clause __DecodeT16 ((pc, ([bitzero, bitone, bitzero, bitzero, bitzero, 
     decode_aarch32_instrs_MOV_rr_T1enc_A_txt(op, Rs, Rdm)
 }
 
+val execute_aarch32_instrs_MOVT_Op_A_txt : forall 'd, (0 <= 'd & 'd <= 15).
+  (int('d), bits(16)) -> unit
+
+function execute_aarch32_instrs_MOVT_Op_A_txt (d, imm16) = {
+    R_set(d) = [R_read(d) with 31 .. 16 = imm16]
+}
+
+val decode_aarch32_instrs_MOVT_A1enc_A_txt : (bits(4), bits(4), bits(4), bits(12)) -> unit
+
+function decode_aarch32_instrs_MOVT_A1enc_A_txt (cond, imm4, Rd, imm12) = {
+    if ConditionPassed() then {
+        assert(cond != 0b1111);
+        let 'd = UInt(Rd);
+        let imm16 : bits(16) = imm4 @ imm12;
+        if d == 15 then {
+            throw(Error_Unpredictable())
+        };
+        execute_aarch32_instrs_MOVT_Op_A_txt(d, imm16)
+    };
+    ()
+}
+
+function clause __DecodeA32_DataProMisc ((pc, ([_, _, _, _, bitzero, bitzero, bitone, bitone, bitzero, bitone, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if Slice(__opcode, 28, 4) != 0b1111 & SEE < 3021) = {
+    SEE = 3021;
+    let cond = Slice(__opcode, 28, 4);
+    let imm4 = Slice(__opcode, 16, 4);
+    let Rd = Slice(__opcode, 12, 4);
+    let imm12 = Slice(__opcode, 0, 12);
+    decode_aarch32_instrs_MOVT_A1enc_A_txt(cond, imm4, Rd, imm12)
+}
+
 val decode_aarch32_instrs_MUL_T1enc_A_txt : (bits(3), bits(3)) -> unit
 
 function decode_aarch32_instrs_MUL_T1enc_A_txt (Rn, Rdm) = {
@@ -1667,6 +2882,56 @@ function clause __DecodeT16 ((pc, ([bitzero, bitone, bitzero, bitzero, bitzero, 
     let Rn = Slice(__opcode, 3, 3);
     let Rdm = Slice(__opcode, 0, 3);
     decode_aarch32_instrs_MUL_T1enc_A_txt(Rn, Rdm)
+}
+
+val execute_aarch32_instrs_MVN_i_Op_A_txt : forall 'd ('setflags : Bool), (0 <= 'd & 'd <= 15).
+  (bits(1), int('d), bits(32), bool('setflags)) -> unit
+
+function execute_aarch32_instrs_MVN_i_Op_A_txt (carry, d, imm32, setflags) = {
+    let result : bits(32) = not_vec(imm32);
+    if d == 15 then {
+        if setflags then {
+            ALUExceptionReturn(result)
+        } else {
+            ALUWritePC(result)
+        }
+    } else {
+        R_set(d) = result;
+        if setflags then {
+            PSTATE.N = [result[31]];
+            PSTATE.Z = IsZeroBit(result);
+            PSTATE.C = carry
+        };
+        ()
+    }
+}
+
+val decode_aarch32_instrs_MVN_i_A1enc_A_txt : (bits(4), bits(1), bits(4), bits(12)) -> unit
+
+function decode_aarch32_instrs_MVN_i_A1enc_A_txt (cond, S, Rd, imm12) = {
+    if ConditionPassed() then {
+        assert(cond != 0b1111);
+        carry : bits(1) = undefined;
+        imm32 : bits(32) = undefined;
+        let 'd = UInt(Rd);
+        let setflags : bool = S == 0b1;
+        (imm32, carry) = A32ExpandImm_C(imm12, PSTATE.C);
+        execute_aarch32_instrs_MVN_i_Op_A_txt(carry, d, imm32, setflags)
+    };
+    ()
+}
+
+function clause __DecodeA32_DataProMisc ((pc, ([_, _, _, _, bitzero, bitzero, bitone, bitone, bitone, bitone, bitone, _, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if Slice(__opcode, 28, 4) != 0b1111 & SEE < 3030) = {
+    SEE = 3030;
+    let cond = Slice(__opcode, 28, 4);
+    let S = Slice(__opcode, 20, 1);
+    let Rd = Slice(__opcode, 12, 4);
+    let imm12 = Slice(__opcode, 0, 12);
+    if (([__opcode[16]] != 0b0 | [__opcode[17]] != 0b0) | [__opcode[18]] != 0b0) | [__opcode[19]] != 0b0 then {
+        throw(Error_ConstrainedUnpredictable())
+    } else {
+        decode_aarch32_instrs_MVN_i_A1enc_A_txt(cond, S, Rd, imm12)
+    }
 }
 
 val execute_aarch32_instrs_MVN_r_Op_A_txt : forall 'd 'm ('setflags : Bool) 'shift_n,
@@ -1695,6 +2960,38 @@ function execute_aarch32_instrs_MVN_r_Op_A_txt (d, m, setflags, shift_n, shift_t
     }
 }
 
+val decode_aarch32_instrs_MVN_r_A1enc_A_txt : (bits(4), bits(1), bits(4), bits(5), bits(2), bits(4)) -> unit
+
+function decode_aarch32_instrs_MVN_r_A1enc_A_txt (cond, S, Rd, imm5, stype, Rm) = {
+    if ConditionPassed() then {
+        assert(cond != 0b1111);
+        shift_n : int = undefined;
+        shift_t : SRType = undefined;
+        let 'd = UInt(Rd);
+        let 'm = UInt(Rm);
+        let setflags : bool = S == 0b1;
+        (shift_t, shift_n) = DecodeImmShift(stype, imm5);
+        let 'shift_n = shift_n;
+        execute_aarch32_instrs_MVN_r_Op_A_txt(d, m, setflags, shift_n, shift_t)
+    };
+    ()
+}
+
+function clause __DecodeA32_DataProMisc ((pc, ([_, _, _, _, bitzero, bitzero, bitzero, bitone, bitone, bitone, bitone, _, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _, _, bitzero, _, _, _, _] as __opcode)) if Slice(__opcode, 28, 4) != 0b1111 & SEE < 3032) = {
+    SEE = 3032;
+    let cond = Slice(__opcode, 28, 4);
+    let S = Slice(__opcode, 20, 1);
+    let Rd = Slice(__opcode, 12, 4);
+    let imm5 = Slice(__opcode, 7, 5);
+    let stype = Slice(__opcode, 5, 2);
+    let Rm = Slice(__opcode, 0, 4);
+    if (([__opcode[16]] != 0b0 | [__opcode[17]] != 0b0) | [__opcode[18]] != 0b0) | [__opcode[19]] != 0b0 then {
+        throw(Error_ConstrainedUnpredictable())
+    } else {
+        decode_aarch32_instrs_MVN_r_A1enc_A_txt(cond, S, Rd, imm5, stype, Rm)
+    }
+}
+
 val decode_aarch32_instrs_MVN_r_T1enc_A_txt : (bits(3), bits(3)) -> unit
 
 function decode_aarch32_instrs_MVN_r_T1enc_A_txt (Rm, Rd) = {
@@ -1718,6 +3015,58 @@ function clause __DecodeT16 ((pc, ([bitzero, bitone, bitzero, bitzero, bitzero, 
     decode_aarch32_instrs_MVN_r_T1enc_A_txt(Rm, Rd)
 }
 
+val execute_aarch32_instrs_MVN_rr_Op_A_txt : forall 'd 'm 's ('setflags : Bool),
+  (0 <= 's & 's <= 15 & 0 <= 'm & 'm <= 15 & 0 <= 'd & 'd <= 15).
+  (int('d), int('m), int('s), bool('setflags), SRType) -> unit
+
+function execute_aarch32_instrs_MVN_rr_Op_A_txt (d, m, s, setflags, shift_t) = {
+    carry : bits(1) = undefined;
+    shifted : bits(32) = undefined;
+    let 'shift_n = UInt(R_read(s)[7 .. 0]);
+    (shifted, carry) = Shift_C(R_read(m), shift_t, shift_n, PSTATE.C);
+    let result : bits(32) = not_vec(shifted);
+    R_set(d) = result;
+    if setflags then {
+        PSTATE.N = [result[31]];
+        PSTATE.Z = IsZeroBit(result);
+        PSTATE.C = carry
+    };
+    ()
+}
+
+val decode_aarch32_instrs_MVN_rr_A1enc_A_txt : (bits(4), bits(1), bits(4), bits(4), bits(2), bits(4)) -> unit
+
+function decode_aarch32_instrs_MVN_rr_A1enc_A_txt (cond, S, Rd, Rs, stype, Rm) = {
+    if ConditionPassed() then {
+        assert(cond != 0b1111);
+        let 'd = UInt(Rd);
+        let 'm = UInt(Rm);
+        let 's = UInt(Rs);
+        let setflags : bool = S == 0b1;
+        let shift_t : SRType = DecodeRegShift(stype);
+        if (d == 15 | m == 15) | s == 15 then {
+            throw(Error_Unpredictable())
+        };
+        execute_aarch32_instrs_MVN_rr_Op_A_txt(d, m, s, setflags, shift_t)
+    };
+    ()
+}
+
+function clause __DecodeA32_DataProMisc ((pc, ([_, _, _, _, bitzero, bitzero, bitzero, bitone, bitone, bitone, bitone, _, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, bitzero, _, _, bitone, _, _, _, _] as __opcode)) if Slice(__opcode, 28, 4) != 0b1111 & SEE < 3035) = {
+    SEE = 3035;
+    let cond = Slice(__opcode, 28, 4);
+    let S = Slice(__opcode, 20, 1);
+    let Rd = Slice(__opcode, 12, 4);
+    let Rs = Slice(__opcode, 8, 4);
+    let stype = Slice(__opcode, 5, 2);
+    let Rm = Slice(__opcode, 0, 4);
+    if (([__opcode[16]] != 0b0 | [__opcode[17]] != 0b0) | [__opcode[18]] != 0b0) | [__opcode[19]] != 0b0 then {
+        throw(Error_ConstrainedUnpredictable())
+    } else {
+        decode_aarch32_instrs_MVN_rr_A1enc_A_txt(cond, S, Rd, Rs, stype, Rm)
+    }
+}
+
 val execute_aarch32_instrs_NOP_Op_A_txt : unit -> unit
 
 function execute_aarch32_instrs_NOP_Op_A_txt () = {
@@ -1736,6 +3085,55 @@ function decode_aarch32_instrs_NOP_T1enc_A_txt () = {
 function clause __DecodeT16 ((pc, (0b1011111100000000 as __opcode)) if SEE < 3037) = {
     SEE = 3037;
     decode_aarch32_instrs_NOP_T1enc_A_txt()
+}
+
+val execute_aarch32_instrs_ORR_i_Op_A_txt : forall 'd 'n ('setflags : Bool),
+  (0 <= 'n & 'n <= 15 & 0 <= 'd & 'd <= 15).
+  (bits(1), int('d), bits(32), int('n), bool('setflags)) -> unit
+
+function execute_aarch32_instrs_ORR_i_Op_A_txt (carry, d, imm32, n, setflags) = {
+    let result : bits(32) = R_read(n) | imm32;
+    if d == 15 then {
+        if setflags then {
+            ALUExceptionReturn(result)
+        } else {
+            ALUWritePC(result)
+        }
+    } else {
+        R_set(d) = result;
+        if setflags then {
+            PSTATE.N = [result[31]];
+            PSTATE.Z = IsZeroBit(result);
+            PSTATE.C = carry
+        };
+        ()
+    }
+}
+
+val decode_aarch32_instrs_ORR_i_A1enc_A_txt : (bits(4), bits(1), bits(4), bits(4), bits(12)) -> unit
+
+function decode_aarch32_instrs_ORR_i_A1enc_A_txt (cond, S, Rn, Rd, imm12) = {
+    if ConditionPassed() then {
+        assert(cond != 0b1111);
+        carry : bits(1) = undefined;
+        imm32 : bits(32) = undefined;
+        let 'd = UInt(Rd);
+        let 'n = UInt(Rn);
+        let setflags : bool = S == 0b1;
+        (imm32, carry) = A32ExpandImm_C(imm12, PSTATE.C);
+        execute_aarch32_instrs_ORR_i_Op_A_txt(carry, d, imm32, n, setflags)
+    };
+    ()
+}
+
+function clause __DecodeA32_DataProMisc ((pc, ([_, _, _, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if Slice(__opcode, 28, 4) != 0b1111 & SEE < 3041) = {
+    SEE = 3041;
+    let cond = Slice(__opcode, 28, 4);
+    let S = Slice(__opcode, 20, 1);
+    let Rn = Slice(__opcode, 16, 4);
+    let Rd = Slice(__opcode, 12, 4);
+    let imm12 = Slice(__opcode, 0, 12);
+    decode_aarch32_instrs_ORR_i_A1enc_A_txt(cond, S, Rn, Rd, imm12)
 }
 
 val execute_aarch32_instrs_ORR_r_Op_A_txt : forall 'd 'm 'n ('setflags : Bool) 'shift_n,
@@ -1764,6 +3162,36 @@ function execute_aarch32_instrs_ORR_r_Op_A_txt (d, m, n, setflags, shift_n, shif
     }
 }
 
+val decode_aarch32_instrs_ORR_r_A1enc_A_txt : (bits(4), bits(1), bits(4), bits(4), bits(5), bits(2), bits(4)) -> unit
+
+function decode_aarch32_instrs_ORR_r_A1enc_A_txt (cond, S, Rn, Rd, imm5, stype, Rm) = {
+    if ConditionPassed() then {
+        assert(cond != 0b1111);
+        shift_n : int = undefined;
+        shift_t : SRType = undefined;
+        let 'd = UInt(Rd);
+        let 'n = UInt(Rn);
+        let 'm = UInt(Rm);
+        let setflags : bool = S == 0b1;
+        (shift_t, shift_n) = DecodeImmShift(stype, imm5);
+        let 'shift_n = shift_n;
+        execute_aarch32_instrs_ORR_r_Op_A_txt(d, m, n, setflags, shift_n, shift_t)
+    };
+    ()
+}
+
+function clause __DecodeA32_DataProMisc ((pc, ([_, _, _, _, bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, bitzero, _, _, _, _] as __opcode)) if Slice(__opcode, 28, 4) != 0b1111 & SEE < 3043) = {
+    SEE = 3043;
+    let cond = Slice(__opcode, 28, 4);
+    let S = Slice(__opcode, 20, 1);
+    let Rn = Slice(__opcode, 16, 4);
+    let Rd = Slice(__opcode, 12, 4);
+    let imm5 = Slice(__opcode, 7, 5);
+    let stype = Slice(__opcode, 5, 2);
+    let Rm = Slice(__opcode, 0, 4);
+    decode_aarch32_instrs_ORR_r_A1enc_A_txt(cond, S, Rn, Rd, imm5, stype, Rm)
+}
+
 val decode_aarch32_instrs_ORR_r_T1enc_A_txt : (bits(3), bits(3)) -> unit
 
 function decode_aarch32_instrs_ORR_r_T1enc_A_txt (Rm, Rdn) = {
@@ -1786,6 +3214,56 @@ function clause __DecodeT16 ((pc, ([bitzero, bitone, bitzero, bitzero, bitzero, 
     let Rm = Slice(__opcode, 3, 3);
     let Rdn = Slice(__opcode, 0, 3);
     decode_aarch32_instrs_ORR_r_T1enc_A_txt(Rm, Rdn)
+}
+
+val execute_aarch32_instrs_ORR_rr_Op_A_txt : forall 'd 'm 'n 's ('setflags : Bool),
+  (0 <= 's & 's <= 15 & 0 <= 'n & 'n <= 15 & 0 <= 'm & 'm <= 15 & 0 <= 'd & 'd <= 15).
+  (int('d), int('m), int('n), int('s), bool('setflags), SRType) -> unit
+
+function execute_aarch32_instrs_ORR_rr_Op_A_txt (d, m, n, s, setflags, shift_t) = {
+    carry : bits(1) = undefined;
+    shifted : bits(32) = undefined;
+    let 'shift_n = UInt(R_read(s)[7 .. 0]);
+    (shifted, carry) = Shift_C(R_read(m), shift_t, shift_n, PSTATE.C);
+    let result : bits(32) = R_read(n) | shifted;
+    R_set(d) = result;
+    if setflags then {
+        PSTATE.N = [result[31]];
+        PSTATE.Z = IsZeroBit(result);
+        PSTATE.C = carry
+    };
+    ()
+}
+
+val decode_aarch32_instrs_ORR_rr_A1enc_A_txt : (bits(4), bits(1), bits(4), bits(4), bits(4), bits(2), bits(4)) -> unit
+
+function decode_aarch32_instrs_ORR_rr_A1enc_A_txt (cond, S, Rn, Rd, Rs, stype, Rm) = {
+    if ConditionPassed() then {
+        assert(cond != 0b1111);
+        let 'd = UInt(Rd);
+        let 'n = UInt(Rn);
+        let 'm = UInt(Rm);
+        let 's = UInt(Rs);
+        let setflags : bool = S == 0b1;
+        let shift_t : SRType = DecodeRegShift(stype);
+        if ((d == 15 | n == 15) | m == 15) | s == 15 then {
+            throw(Error_Unpredictable())
+        };
+        execute_aarch32_instrs_ORR_rr_Op_A_txt(d, m, n, s, setflags, shift_t)
+    };
+    ()
+}
+
+function clause __DecodeA32_DataProMisc ((pc, ([_, _, _, _, bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _, _, _, _, bitzero, _, _, bitone, _, _, _, _] as __opcode)) if Slice(__opcode, 28, 4) != 0b1111 & SEE < 3046) = {
+    SEE = 3046;
+    let cond = Slice(__opcode, 28, 4);
+    let S = Slice(__opcode, 20, 1);
+    let Rn = Slice(__opcode, 16, 4);
+    let Rd = Slice(__opcode, 12, 4);
+    let Rs = Slice(__opcode, 8, 4);
+    let stype = Slice(__opcode, 5, 2);
+    let Rm = Slice(__opcode, 0, 4);
+    decode_aarch32_instrs_ORR_rr_A1enc_A_txt(cond, S, Rn, Rd, Rs, stype, Rm)
 }
 
 val decode_aarch32_instrs_POP_T1enc_A_txt : (bits(1), bits(8)) -> unit
@@ -1985,6 +3463,30 @@ function execute_aarch32_instrs_RSB_i_Op_A_txt (d, imm32, n, setflags) = {
     }
 }
 
+val decode_aarch32_instrs_RSB_i_A1enc_A_txt : (bits(4), bits(1), bits(4), bits(4), bits(12)) -> unit
+
+function decode_aarch32_instrs_RSB_i_A1enc_A_txt (cond, S, Rn, Rd, imm12) = {
+    if ConditionPassed() then {
+        assert(cond != 0b1111);
+        let 'd = UInt(Rd);
+        let 'n = UInt(Rn);
+        let setflags : bool = S == 0b1;
+        let imm32 : bits(32) = A32ExpandImm(imm12);
+        execute_aarch32_instrs_RSB_i_Op_A_txt(d, imm32, n, setflags)
+    };
+    ()
+}
+
+function clause __DecodeA32_DataProMisc ((pc, ([_, _, _, _, bitzero, bitzero, bitone, bitzero, bitzero, bitone, bitone, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if Slice(__opcode, 28, 4) != 0b1111 & SEE < 3096) = {
+    SEE = 3096;
+    let cond = Slice(__opcode, 28, 4);
+    let S = Slice(__opcode, 20, 1);
+    let Rn = Slice(__opcode, 16, 4);
+    let Rd = Slice(__opcode, 12, 4);
+    let imm12 = Slice(__opcode, 0, 12);
+    decode_aarch32_instrs_RSB_i_A1enc_A_txt(cond, S, Rn, Rd, imm12)
+}
+
 val decode_aarch32_instrs_RSB_i_T1enc_A_txt : (bits(3), bits(3)) -> unit
 
 function decode_aarch32_instrs_RSB_i_T1enc_A_txt (Rn, Rd) = {
@@ -2003,6 +3505,304 @@ function clause __DecodeT16 ((pc, ([bitzero, bitone, bitzero, bitzero, bitzero, 
     let Rn = Slice(__opcode, 3, 3);
     let Rd = Slice(__opcode, 0, 3);
     decode_aarch32_instrs_RSB_i_T1enc_A_txt(Rn, Rd)
+}
+
+val execute_aarch32_instrs_RSB_r_Op_A_txt : forall 'd 'm 'n ('setflags : Bool) 'shift_n,
+  (0 <= 'n & 'n <= 15 & 0 <= 'm & 'm <= 15 & 0 <= 'd & 'd <= 15).
+  (int('d), int('m), int('n), bool('setflags), int('shift_n), SRType) -> unit
+
+function execute_aarch32_instrs_RSB_r_Op_A_txt (d, m, n, setflags, shift_n, shift_t) = {
+    nzcv : bits(4) = undefined;
+    result : bits(32) = undefined;
+    let shifted : bits(32) = Shift(R_read(m), shift_t, shift_n, PSTATE.C);
+    (result, nzcv) = AddWithCarry(not_vec(R_read(n)), shifted, 0b1);
+    if d == 15 then {
+        if setflags then {
+            ALUExceptionReturn(result)
+        } else {
+            ALUWritePC(result)
+        }
+    } else {
+        R_set(d) = result;
+        if setflags then {
+            (PSTATE.N @ PSTATE.Z @ PSTATE.C @ PSTATE.V) = nzcv
+        };
+        ()
+    }
+}
+
+val decode_aarch32_instrs_RSB_r_A1enc_A_txt : (bits(4), bits(1), bits(4), bits(4), bits(5), bits(2), bits(4)) -> unit
+
+function decode_aarch32_instrs_RSB_r_A1enc_A_txt (cond, S, Rn, Rd, imm5, stype, Rm) = {
+    if ConditionPassed() then {
+        assert(cond != 0b1111);
+        shift_n : int = undefined;
+        shift_t : SRType = undefined;
+        let 'd = UInt(Rd);
+        let 'n = UInt(Rn);
+        let 'm = UInt(Rm);
+        let setflags : bool = S == 0b1;
+        (shift_t, shift_n) = DecodeImmShift(stype, imm5);
+        let 'shift_n = shift_n;
+        execute_aarch32_instrs_RSB_r_Op_A_txt(d, m, n, setflags, shift_n, shift_t)
+    };
+    ()
+}
+
+function clause __DecodeA32_DataProMisc ((pc, ([_, _, _, _, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, bitone, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, bitzero, _, _, _, _] as __opcode)) if Slice(__opcode, 28, 4) != 0b1111 & SEE < 3099) = {
+    SEE = 3099;
+    let cond = Slice(__opcode, 28, 4);
+    let S = Slice(__opcode, 20, 1);
+    let Rn = Slice(__opcode, 16, 4);
+    let Rd = Slice(__opcode, 12, 4);
+    let imm5 = Slice(__opcode, 7, 5);
+    let stype = Slice(__opcode, 5, 2);
+    let Rm = Slice(__opcode, 0, 4);
+    decode_aarch32_instrs_RSB_r_A1enc_A_txt(cond, S, Rn, Rd, imm5, stype, Rm)
+}
+
+val execute_aarch32_instrs_RSB_rr_Op_A_txt : forall 'd 'm 'n 's ('setflags : Bool),
+  (0 <= 's & 's <= 15 & 0 <= 'n & 'n <= 15 & 0 <= 'm & 'm <= 15 & 0 <= 'd & 'd <= 15).
+  (int('d), int('m), int('n), int('s), bool('setflags), SRType) -> unit
+
+function execute_aarch32_instrs_RSB_rr_Op_A_txt (d, m, n, s, setflags, shift_t) = {
+    nzcv : bits(4) = undefined;
+    result : bits(32) = undefined;
+    let 'shift_n = UInt(R_read(s)[7 .. 0]);
+    let shifted : bits(32) = Shift(R_read(m), shift_t, shift_n, PSTATE.C);
+    (result, nzcv) = AddWithCarry(not_vec(R_read(n)), shifted, 0b1);
+    R_set(d) = result;
+    if setflags then {
+        (PSTATE.N @ PSTATE.Z @ PSTATE.C @ PSTATE.V) = nzcv
+    };
+    ()
+}
+
+val decode_aarch32_instrs_RSB_rr_A1enc_A_txt : (bits(4), bits(1), bits(4), bits(4), bits(4), bits(2), bits(4)) -> unit
+
+function decode_aarch32_instrs_RSB_rr_A1enc_A_txt (cond, S, Rn, Rd, Rs, stype, Rm) = {
+    if ConditionPassed() then {
+        assert(cond != 0b1111);
+        let 'd = UInt(Rd);
+        let 'n = UInt(Rn);
+        let 'm = UInt(Rm);
+        let 's = UInt(Rs);
+        let setflags : bool = S == 0b1;
+        let shift_t : SRType = DecodeRegShift(stype);
+        if ((d == 15 | n == 15) | m == 15) | s == 15 then {
+            throw(Error_Unpredictable())
+        };
+        execute_aarch32_instrs_RSB_rr_Op_A_txt(d, m, n, s, setflags, shift_t)
+    };
+    ()
+}
+
+function clause __DecodeA32_DataProMisc ((pc, ([_, _, _, _, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, bitone, _, _, _, _, _, _, _, _, _, _, _, _, _, bitzero, _, _, bitone, _, _, _, _] as __opcode)) if Slice(__opcode, 28, 4) != 0b1111 & SEE < 3101) = {
+    SEE = 3101;
+    let cond = Slice(__opcode, 28, 4);
+    let S = Slice(__opcode, 20, 1);
+    let Rn = Slice(__opcode, 16, 4);
+    let Rd = Slice(__opcode, 12, 4);
+    let Rs = Slice(__opcode, 8, 4);
+    let stype = Slice(__opcode, 5, 2);
+    let Rm = Slice(__opcode, 0, 4);
+    decode_aarch32_instrs_RSB_rr_A1enc_A_txt(cond, S, Rn, Rd, Rs, stype, Rm)
+}
+
+val execute_aarch32_instrs_RSC_i_Op_A_txt : forall 'd 'n ('setflags : Bool),
+  (0 <= 'n & 'n <= 15 & 0 <= 'd & 'd <= 15).
+  (int('d), bits(32), int('n), bool('setflags)) -> unit
+
+function execute_aarch32_instrs_RSC_i_Op_A_txt (d, imm32, n, setflags) = {
+    nzcv : bits(4) = undefined;
+    result : bits(32) = undefined;
+    (result, nzcv) = AddWithCarry(not_vec(R_read(n)), imm32, PSTATE.C);
+    if d == 15 then {
+        if setflags then {
+            ALUExceptionReturn(result)
+        } else {
+            ALUWritePC(result)
+        }
+    } else {
+        R_set(d) = result;
+        if setflags then {
+            (PSTATE.N @ PSTATE.Z @ PSTATE.C @ PSTATE.V) = nzcv
+        };
+        ()
+    }
+}
+
+val decode_aarch32_instrs_RSC_i_A1enc_A_txt : (bits(4), bits(1), bits(4), bits(4), bits(12)) -> unit
+
+function decode_aarch32_instrs_RSC_i_A1enc_A_txt (cond, S, Rn, Rd, imm12) = {
+    if ConditionPassed() then {
+        assert(cond != 0b1111);
+        let 'd = UInt(Rd);
+        let 'n = UInt(Rn);
+        let setflags : bool = S == 0b1;
+        let imm32 : bits(32) = A32ExpandImm(imm12);
+        execute_aarch32_instrs_RSC_i_Op_A_txt(d, imm32, n, setflags)
+    };
+    ()
+}
+
+function clause __DecodeA32_DataProMisc ((pc, ([_, _, _, _, bitzero, bitzero, bitone, bitzero, bitone, bitone, bitone, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if Slice(__opcode, 28, 4) != 0b1111 & SEE < 3102) = {
+    SEE = 3102;
+    let cond = Slice(__opcode, 28, 4);
+    let S = Slice(__opcode, 20, 1);
+    let Rn = Slice(__opcode, 16, 4);
+    let Rd = Slice(__opcode, 12, 4);
+    let imm12 = Slice(__opcode, 0, 12);
+    decode_aarch32_instrs_RSC_i_A1enc_A_txt(cond, S, Rn, Rd, imm12)
+}
+
+val execute_aarch32_instrs_RSC_r_Op_A_txt : forall 'd 'm 'n ('setflags : Bool) 'shift_n,
+  (0 <= 'n & 'n <= 15 & 0 <= 'm & 'm <= 15 & 0 <= 'd & 'd <= 15).
+  (int('d), int('m), int('n), bool('setflags), int('shift_n), SRType) -> unit
+
+function execute_aarch32_instrs_RSC_r_Op_A_txt (d, m, n, setflags, shift_n, shift_t) = {
+    nzcv : bits(4) = undefined;
+    result : bits(32) = undefined;
+    let shifted : bits(32) = Shift(R_read(m), shift_t, shift_n, PSTATE.C);
+    (result, nzcv) = AddWithCarry(not_vec(R_read(n)), shifted, PSTATE.C);
+    if d == 15 then {
+        if setflags then {
+            ALUExceptionReturn(result)
+        } else {
+            ALUWritePC(result)
+        }
+    } else {
+        R_set(d) = result;
+        if setflags then {
+            (PSTATE.N @ PSTATE.Z @ PSTATE.C @ PSTATE.V) = nzcv
+        };
+        ()
+    }
+}
+
+val decode_aarch32_instrs_RSC_r_A1enc_A_txt : (bits(4), bits(1), bits(4), bits(4), bits(5), bits(2), bits(4)) -> unit
+
+function decode_aarch32_instrs_RSC_r_A1enc_A_txt (cond, S, Rn, Rd, imm5, stype, Rm) = {
+    if ConditionPassed() then {
+        assert(cond != 0b1111);
+        shift_n : int = undefined;
+        shift_t : SRType = undefined;
+        let 'd = UInt(Rd);
+        let 'n = UInt(Rn);
+        let 'm = UInt(Rm);
+        let setflags : bool = S == 0b1;
+        (shift_t, shift_n) = DecodeImmShift(stype, imm5);
+        let 'shift_n = shift_n;
+        execute_aarch32_instrs_RSC_r_Op_A_txt(d, m, n, setflags, shift_n, shift_t)
+    };
+    ()
+}
+
+function clause __DecodeA32_DataProMisc ((pc, ([_, _, _, _, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitone, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, bitzero, _, _, _, _] as __opcode)) if Slice(__opcode, 28, 4) != 0b1111 & SEE < 3103) = {
+    SEE = 3103;
+    let cond = Slice(__opcode, 28, 4);
+    let S = Slice(__opcode, 20, 1);
+    let Rn = Slice(__opcode, 16, 4);
+    let Rd = Slice(__opcode, 12, 4);
+    let imm5 = Slice(__opcode, 7, 5);
+    let stype = Slice(__opcode, 5, 2);
+    let Rm = Slice(__opcode, 0, 4);
+    decode_aarch32_instrs_RSC_r_A1enc_A_txt(cond, S, Rn, Rd, imm5, stype, Rm)
+}
+
+val execute_aarch32_instrs_RSC_rr_Op_A_txt : forall 'd 'm 'n 's ('setflags : Bool),
+  (0 <= 's & 's <= 15 & 0 <= 'n & 'n <= 15 & 0 <= 'm & 'm <= 15 & 0 <= 'd & 'd <= 15).
+  (int('d), int('m), int('n), int('s), bool('setflags), SRType) -> unit
+
+function execute_aarch32_instrs_RSC_rr_Op_A_txt (d, m, n, s, setflags, shift_t) = {
+    nzcv : bits(4) = undefined;
+    result : bits(32) = undefined;
+    let 'shift_n = UInt(R_read(s)[7 .. 0]);
+    let shifted : bits(32) = Shift(R_read(m), shift_t, shift_n, PSTATE.C);
+    (result, nzcv) = AddWithCarry(not_vec(R_read(n)), shifted, PSTATE.C);
+    R_set(d) = result;
+    if setflags then {
+        (PSTATE.N @ PSTATE.Z @ PSTATE.C @ PSTATE.V) = nzcv
+    };
+    ()
+}
+
+val decode_aarch32_instrs_RSC_rr_A1enc_A_txt : (bits(4), bits(1), bits(4), bits(4), bits(4), bits(2), bits(4)) -> unit
+
+function decode_aarch32_instrs_RSC_rr_A1enc_A_txt (cond, S, Rn, Rd, Rs, stype, Rm) = {
+    if ConditionPassed() then {
+        assert(cond != 0b1111);
+        let 'd = UInt(Rd);
+        let 'n = UInt(Rn);
+        let 'm = UInt(Rm);
+        let 's = UInt(Rs);
+        let setflags : bool = S == 0b1;
+        let shift_t : SRType = DecodeRegShift(stype);
+        if ((d == 15 | n == 15) | m == 15) | s == 15 then {
+            throw(Error_Unpredictable())
+        };
+        execute_aarch32_instrs_RSC_rr_Op_A_txt(d, m, n, s, setflags, shift_t)
+    };
+    ()
+}
+
+function clause __DecodeA32_DataProMisc ((pc, ([_, _, _, _, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitone, _, _, _, _, _, _, _, _, _, _, _, _, _, bitzero, _, _, bitone, _, _, _, _] as __opcode)) if Slice(__opcode, 28, 4) != 0b1111 & SEE < 3104) = {
+    SEE = 3104;
+    let cond = Slice(__opcode, 28, 4);
+    let S = Slice(__opcode, 20, 1);
+    let Rn = Slice(__opcode, 16, 4);
+    let Rd = Slice(__opcode, 12, 4);
+    let Rs = Slice(__opcode, 8, 4);
+    let stype = Slice(__opcode, 5, 2);
+    let Rm = Slice(__opcode, 0, 4);
+    decode_aarch32_instrs_RSC_rr_A1enc_A_txt(cond, S, Rn, Rd, Rs, stype, Rm)
+}
+
+val execute_aarch32_instrs_SBC_i_Op_A_txt : forall 'd 'n ('setflags : Bool),
+  (0 <= 'n & 'n <= 15 & 0 <= 'd & 'd <= 15).
+  (int('d), bits(32), int('n), bool('setflags)) -> unit
+
+function execute_aarch32_instrs_SBC_i_Op_A_txt (d, imm32, n, setflags) = {
+    nzcv : bits(4) = undefined;
+    result : bits(32) = undefined;
+    (result, nzcv) = AddWithCarry(R_read(n), not_vec(imm32), PSTATE.C);
+    if d == 15 then {
+        if setflags then {
+            ALUExceptionReturn(result)
+        } else {
+            ALUWritePC(result)
+        }
+    } else {
+        R_set(d) = result;
+        if setflags then {
+            (PSTATE.N @ PSTATE.Z @ PSTATE.C @ PSTATE.V) = nzcv
+        };
+        ()
+    }
+}
+
+val decode_aarch32_instrs_SBC_i_A1enc_A_txt : (bits(4), bits(1), bits(4), bits(4), bits(12)) -> unit
+
+function decode_aarch32_instrs_SBC_i_A1enc_A_txt (cond, S, Rn, Rd, imm12) = {
+    if ConditionPassed() then {
+        assert(cond != 0b1111);
+        let 'd = UInt(Rd);
+        let 'n = UInt(Rn);
+        let setflags : bool = S == 0b1;
+        let imm32 : bits(32) = A32ExpandImm(imm12);
+        execute_aarch32_instrs_SBC_i_Op_A_txt(d, imm32, n, setflags)
+    };
+    ()
+}
+
+function clause __DecodeA32_DataProMisc ((pc, ([_, _, _, _, bitzero, bitzero, bitone, bitzero, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if Slice(__opcode, 28, 4) != 0b1111 & SEE < 3113) = {
+    SEE = 3113;
+    let cond = Slice(__opcode, 28, 4);
+    let S = Slice(__opcode, 20, 1);
+    let Rn = Slice(__opcode, 16, 4);
+    let Rd = Slice(__opcode, 12, 4);
+    let imm12 = Slice(__opcode, 0, 12);
+    decode_aarch32_instrs_SBC_i_A1enc_A_txt(cond, S, Rn, Rd, imm12)
 }
 
 val execute_aarch32_instrs_SBC_r_Op_A_txt : forall 'd 'm 'n ('setflags : Bool) 'shift_n,
@@ -2029,6 +3829,36 @@ function execute_aarch32_instrs_SBC_r_Op_A_txt (d, m, n, setflags, shift_n, shif
     }
 }
 
+val decode_aarch32_instrs_SBC_r_A1enc_A_txt : (bits(4), bits(1), bits(4), bits(4), bits(5), bits(2), bits(4)) -> unit
+
+function decode_aarch32_instrs_SBC_r_A1enc_A_txt (cond, S, Rn, Rd, imm5, stype, Rm) = {
+    if ConditionPassed() then {
+        assert(cond != 0b1111);
+        shift_n : int = undefined;
+        shift_t : SRType = undefined;
+        let 'd = UInt(Rd);
+        let 'n = UInt(Rn);
+        let 'm = UInt(Rm);
+        let setflags : bool = S == 0b1;
+        (shift_t, shift_n) = DecodeImmShift(stype, imm5);
+        let 'shift_n = shift_n;
+        execute_aarch32_instrs_SBC_r_Op_A_txt(d, m, n, setflags, shift_n, shift_t)
+    };
+    ()
+}
+
+function clause __DecodeA32_DataProMisc ((pc, ([_, _, _, _, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, bitzero, _, _, _, _] as __opcode)) if Slice(__opcode, 28, 4) != 0b1111 & SEE < 3115) = {
+    SEE = 3115;
+    let cond = Slice(__opcode, 28, 4);
+    let S = Slice(__opcode, 20, 1);
+    let Rn = Slice(__opcode, 16, 4);
+    let Rd = Slice(__opcode, 12, 4);
+    let imm5 = Slice(__opcode, 7, 5);
+    let stype = Slice(__opcode, 5, 2);
+    let Rm = Slice(__opcode, 0, 4);
+    decode_aarch32_instrs_SBC_r_A1enc_A_txt(cond, S, Rn, Rd, imm5, stype, Rm)
+}
+
 val decode_aarch32_instrs_SBC_r_T1enc_A_txt : (bits(3), bits(3)) -> unit
 
 function decode_aarch32_instrs_SBC_r_T1enc_A_txt (Rm, Rdn) = {
@@ -2051,6 +3881,54 @@ function clause __DecodeT16 ((pc, ([bitzero, bitone, bitzero, bitzero, bitzero, 
     let Rm = Slice(__opcode, 3, 3);
     let Rdn = Slice(__opcode, 0, 3);
     decode_aarch32_instrs_SBC_r_T1enc_A_txt(Rm, Rdn)
+}
+
+val execute_aarch32_instrs_SBC_rr_Op_A_txt : forall 'd 'm 'n 's ('setflags : Bool),
+  (0 <= 's & 's <= 15 & 0 <= 'n & 'n <= 15 & 0 <= 'm & 'm <= 15 & 0 <= 'd & 'd <= 15).
+  (int('d), int('m), int('n), int('s), bool('setflags), SRType) -> unit
+
+function execute_aarch32_instrs_SBC_rr_Op_A_txt (d, m, n, s, setflags, shift_t) = {
+    nzcv : bits(4) = undefined;
+    result : bits(32) = undefined;
+    let 'shift_n = UInt(R_read(s)[7 .. 0]);
+    let shifted : bits(32) = Shift(R_read(m), shift_t, shift_n, PSTATE.C);
+    (result, nzcv) = AddWithCarry(R_read(n), not_vec(shifted), PSTATE.C);
+    R_set(d) = result;
+    if setflags then {
+        (PSTATE.N @ PSTATE.Z @ PSTATE.C @ PSTATE.V) = nzcv
+    };
+    ()
+}
+
+val decode_aarch32_instrs_SBC_rr_A1enc_A_txt : (bits(4), bits(1), bits(4), bits(4), bits(4), bits(2), bits(4)) -> unit
+
+function decode_aarch32_instrs_SBC_rr_A1enc_A_txt (cond, S, Rn, Rd, Rs, stype, Rm) = {
+    if ConditionPassed() then {
+        assert(cond != 0b1111);
+        let 'd = UInt(Rd);
+        let 'n = UInt(Rn);
+        let 'm = UInt(Rm);
+        let 's = UInt(Rs);
+        let setflags : bool = S == 0b1;
+        let shift_t : SRType = DecodeRegShift(stype);
+        if ((d == 15 | n == 15) | m == 15) | s == 15 then {
+            throw(Error_Unpredictable())
+        };
+        execute_aarch32_instrs_SBC_rr_Op_A_txt(d, m, n, s, setflags, shift_t)
+    };
+    ()
+}
+
+function clause __DecodeA32_DataProMisc ((pc, ([_, _, _, _, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _, _, _, _, bitzero, _, _, bitone, _, _, _, _] as __opcode)) if Slice(__opcode, 28, 4) != 0b1111 & SEE < 3118) = {
+    SEE = 3118;
+    let cond = Slice(__opcode, 28, 4);
+    let S = Slice(__opcode, 20, 1);
+    let Rn = Slice(__opcode, 16, 4);
+    let Rd = Slice(__opcode, 12, 4);
+    let Rs = Slice(__opcode, 8, 4);
+    let stype = Slice(__opcode, 5, 2);
+    let Rm = Slice(__opcode, 0, 4);
+    decode_aarch32_instrs_SBC_rr_A1enc_A_txt(cond, S, Rn, Rd, Rs, stype, Rm)
 }
 
 val execute_aarch32_instrs_SETEND_Op_A_txt : forall ('set_bigend : Bool).
@@ -2435,6 +4313,36 @@ function execute_aarch32_instrs_SUB_i_Op_A_txt (d, imm32, n, setflags) = {
     }
 }
 
+val decode_aarch32_instrs_SUB_i_A1enc_A_txt : (bits(4), bits(1), bits(4), bits(4), bits(12)) -> unit
+
+function decode_aarch32_instrs_SUB_i_A1enc_A_txt (cond, S, Rn, Rd, imm12) = {
+    if ConditionPassed() then {
+        assert(cond != 0b1111);
+        if Rn == 0b1111 & S == 0b0 then {
+            throw(Error_See("ADR"))
+        };
+        if Rn == 0b1101 then {
+            throw(Error_See("SUB (SP minus immediate)"))
+        };
+        let 'd = UInt(Rd);
+        let 'n = UInt(Rn);
+        let setflags : bool = S == 0b1;
+        let imm32 : bits(32) = A32ExpandImm(imm12);
+        execute_aarch32_instrs_SUB_i_Op_A_txt(d, imm32, n, setflags)
+    };
+    ()
+}
+
+function clause __DecodeA32_DataProMisc ((pc, ([_, _, _, _, bitzero, bitzero, bitone, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if Slice(__opcode, 28, 4) != 0b1111 & SEE < 3235) = {
+    SEE = 3235;
+    let cond = Slice(__opcode, 28, 4);
+    let S = Slice(__opcode, 20, 1);
+    let Rn = Slice(__opcode, 16, 4);
+    let Rd = Slice(__opcode, 12, 4);
+    let imm12 = Slice(__opcode, 0, 12);
+    decode_aarch32_instrs_SUB_i_A1enc_A_txt(cond, S, Rn, Rd, imm12)
+}
+
 val decode_aarch32_instrs_SUB_i_T1enc_A_txt : (bits(3), bits(3), bits(3)) -> unit
 
 function decode_aarch32_instrs_SUB_i_T1enc_A_txt (imm3, Rn, Rd) = {
@@ -2500,6 +4408,39 @@ function execute_aarch32_instrs_SUB_r_Op_A_txt (d, m, n, setflags, shift_n, shif
     }
 }
 
+val decode_aarch32_instrs_SUB_r_A1enc_A_txt : (bits(4), bits(1), bits(4), bits(4), bits(5), bits(2), bits(4)) -> unit
+
+function decode_aarch32_instrs_SUB_r_A1enc_A_txt (cond, S, Rn, Rd, imm5, stype, Rm) = {
+    if ConditionPassed() then {
+        assert(cond != 0b1111);
+        shift_n : int = undefined;
+        shift_t : SRType = undefined;
+        if Rn == 0b1101 then {
+            throw(Error_See("SUB (SP minus register)"))
+        };
+        let 'd = UInt(Rd);
+        let 'n = UInt(Rn);
+        let 'm = UInt(Rm);
+        let setflags : bool = S == 0b1;
+        (shift_t, shift_n) = DecodeImmShift(stype, imm5);
+        let 'shift_n = shift_n;
+        execute_aarch32_instrs_SUB_r_Op_A_txt(d, m, n, setflags, shift_n, shift_t)
+    };
+    ()
+}
+
+function clause __DecodeA32_DataProMisc ((pc, ([_, _, _, _, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, bitzero, _, _, _, _] as __opcode)) if Slice(__opcode, 28, 4) != 0b1111 & SEE < 3241) = {
+    SEE = 3241;
+    let cond = Slice(__opcode, 28, 4);
+    let S = Slice(__opcode, 20, 1);
+    let Rn = Slice(__opcode, 16, 4);
+    let Rd = Slice(__opcode, 12, 4);
+    let imm5 = Slice(__opcode, 7, 5);
+    let stype = Slice(__opcode, 5, 2);
+    let Rm = Slice(__opcode, 0, 4);
+    decode_aarch32_instrs_SUB_r_A1enc_A_txt(cond, S, Rn, Rd, imm5, stype, Rm)
+}
+
 val decode_aarch32_instrs_SUB_r_T1enc_A_txt : (bits(3), bits(3), bits(3)) -> unit
 
 function decode_aarch32_instrs_SUB_r_T1enc_A_txt (Rm, Rn, Rd) = {
@@ -2525,6 +4466,54 @@ function clause __DecodeT16 ((pc, ([bitzero, bitzero, bitzero, bitone, bitone, b
     decode_aarch32_instrs_SUB_r_T1enc_A_txt(Rm, Rn, Rd)
 }
 
+val execute_aarch32_instrs_SUB_rr_Op_A_txt : forall 'd 'm 'n 's ('setflags : Bool),
+  (0 <= 's & 's <= 15 & 0 <= 'n & 'n <= 15 & 0 <= 'm & 'm <= 15 & 0 <= 'd & 'd <= 15).
+  (int('d), int('m), int('n), int('s), bool('setflags), SRType) -> unit
+
+function execute_aarch32_instrs_SUB_rr_Op_A_txt (d, m, n, s, setflags, shift_t) = {
+    nzcv : bits(4) = undefined;
+    result : bits(32) = undefined;
+    let 'shift_n = UInt(R_read(s)[7 .. 0]);
+    let shifted : bits(32) = Shift(R_read(m), shift_t, shift_n, PSTATE.C);
+    (result, nzcv) = AddWithCarry(R_read(n), not_vec(shifted), 0b1);
+    R_set(d) = result;
+    if setflags then {
+        (PSTATE.N @ PSTATE.Z @ PSTATE.C @ PSTATE.V) = nzcv
+    };
+    ()
+}
+
+val decode_aarch32_instrs_SUB_rr_A1enc_A_txt : (bits(4), bits(1), bits(4), bits(4), bits(4), bits(2), bits(4)) -> unit
+
+function decode_aarch32_instrs_SUB_rr_A1enc_A_txt (cond, S, Rn, Rd, Rs, stype, Rm) = {
+    if ConditionPassed() then {
+        assert(cond != 0b1111);
+        let 'd = UInt(Rd);
+        let 'n = UInt(Rn);
+        let 'm = UInt(Rm);
+        let 's = UInt(Rs);
+        let setflags : bool = S == 0b1;
+        let shift_t : SRType = DecodeRegShift(stype);
+        if ((d == 15 | n == 15) | m == 15) | s == 15 then {
+            throw(Error_Unpredictable())
+        };
+        execute_aarch32_instrs_SUB_rr_Op_A_txt(d, m, n, s, setflags, shift_t)
+    };
+    ()
+}
+
+function clause __DecodeA32_DataProMisc ((pc, ([_, _, _, _, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _, _, _, _, bitzero, _, _, bitone, _, _, _, _] as __opcode)) if Slice(__opcode, 28, 4) != 0b1111 & SEE < 3244) = {
+    SEE = 3244;
+    let cond = Slice(__opcode, 28, 4);
+    let S = Slice(__opcode, 20, 1);
+    let Rn = Slice(__opcode, 16, 4);
+    let Rd = Slice(__opcode, 12, 4);
+    let Rs = Slice(__opcode, 8, 4);
+    let stype = Slice(__opcode, 5, 2);
+    let Rm = Slice(__opcode, 0, 4);
+    decode_aarch32_instrs_SUB_rr_A1enc_A_txt(cond, S, Rn, Rd, Rs, stype, Rm)
+}
+
 val execute_aarch32_instrs_SUB_SP_i_Op_A_txt : forall 'd ('setflags : Bool), (0 <= 'd & 'd <= 15).
   (int('d), bits(32), bool('setflags)) -> unit
 
@@ -2547,6 +4536,28 @@ function execute_aarch32_instrs_SUB_SP_i_Op_A_txt (d, imm32, setflags) = {
     }
 }
 
+val decode_aarch32_instrs_SUB_SP_i_A1enc_A_txt : (bits(4), bits(1), bits(4), bits(12)) -> unit
+
+function decode_aarch32_instrs_SUB_SP_i_A1enc_A_txt (cond, S, Rd, imm12) = {
+    if ConditionPassed() then {
+        assert(cond != 0b1111);
+        let 'd = UInt(Rd);
+        let setflags : bool = S == 0b1;
+        let imm32 : bits(32) = A32ExpandImm(imm12);
+        execute_aarch32_instrs_SUB_SP_i_Op_A_txt(d, imm32, setflags)
+    };
+    ()
+}
+
+function clause __DecodeA32_DataProMisc ((pc, ([_, _, _, _, bitzero, bitzero, bitone, bitzero, bitzero, bitone, bitzero, _, bitone, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if Slice(__opcode, 28, 4) != 0b1111 & SEE < 3245) = {
+    SEE = 3245;
+    let cond = Slice(__opcode, 28, 4);
+    let S = Slice(__opcode, 20, 1);
+    let Rd = Slice(__opcode, 12, 4);
+    let imm12 = Slice(__opcode, 0, 12);
+    decode_aarch32_instrs_SUB_SP_i_A1enc_A_txt(cond, S, Rd, imm12)
+}
+
 val decode_aarch32_instrs_SUB_SP_i_T1enc_A_txt : bits(7) -> unit
 
 function decode_aarch32_instrs_SUB_SP_i_T1enc_A_txt imm7 = {
@@ -2563,6 +4574,58 @@ function clause __DecodeT16 ((pc, ([bitone, bitzero, bitone, bitone, bitzero, bi
     SEE = 3246;
     let imm7 = Slice(__opcode, 0, 7);
     decode_aarch32_instrs_SUB_SP_i_T1enc_A_txt(imm7)
+}
+
+val execute_aarch32_instrs_SUB_SP_r_Op_A_txt : forall 'd 'm ('setflags : Bool) 'shift_n,
+  (0 <= 'm & 'm <= 15 & 0 <= 'd & 'd <= 15).
+  (int('d), int('m), bool('setflags), int('shift_n), SRType) -> unit
+
+function execute_aarch32_instrs_SUB_SP_r_Op_A_txt (d, m, setflags, shift_n, shift_t) = {
+    nzcv : bits(4) = undefined;
+    result : bits(32) = undefined;
+    let shifted : bits(32) = Shift(R_read(m), shift_t, shift_n, PSTATE.C);
+    (result, nzcv) = AddWithCarry(R_read(13), not_vec(shifted), 0b1);
+    if d == 15 then {
+        if setflags then {
+            ALUExceptionReturn(result)
+        } else {
+            ALUWritePC(result)
+        }
+    } else {
+        R_set(d) = result;
+        if setflags then {
+            (PSTATE.N @ PSTATE.Z @ PSTATE.C @ PSTATE.V) = nzcv
+        };
+        ()
+    }
+}
+
+val decode_aarch32_instrs_SUB_SP_r_A1enc_A_txt : (bits(4), bits(1), bits(4), bits(5), bits(2), bits(4)) -> unit
+
+function decode_aarch32_instrs_SUB_SP_r_A1enc_A_txt (cond, S, Rd, imm5, stype, Rm) = {
+    if ConditionPassed() then {
+        assert(cond != 0b1111);
+        shift_n : int = undefined;
+        shift_t : SRType = undefined;
+        let 'd = UInt(Rd);
+        let 'm = UInt(Rm);
+        let setflags : bool = S == 0b1;
+        (shift_t, shift_n) = DecodeImmShift(stype, imm5);
+        let 'shift_n = shift_n;
+        execute_aarch32_instrs_SUB_SP_r_Op_A_txt(d, m, setflags, shift_n, shift_t)
+    };
+    ()
+}
+
+function clause __DecodeA32_DataProMisc ((pc, ([_, _, _, _, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, bitzero, _, bitone, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _, _, bitzero, _, _, _, _] as __opcode)) if Slice(__opcode, 28, 4) != 0b1111 & SEE < 3249) = {
+    SEE = 3249;
+    let cond = Slice(__opcode, 28, 4);
+    let S = Slice(__opcode, 20, 1);
+    let Rd = Slice(__opcode, 12, 4);
+    let imm5 = Slice(__opcode, 7, 5);
+    let stype = Slice(__opcode, 5, 2);
+    let Rm = Slice(__opcode, 0, 4);
+    decode_aarch32_instrs_SUB_SP_r_A1enc_A_txt(cond, S, Rd, imm5, stype, Rm)
 }
 
 val execute_aarch32_instrs_SVC_Op_A_txt : bits(32) -> unit
@@ -2644,6 +4707,168 @@ function clause __DecodeT16 ((pc, ([bitone, bitzero, bitone, bitone, bitzero, bi
     decode_aarch32_instrs_SXTH_T1enc_A_txt(Rm, Rd)
 }
 
+val execute_aarch32_instrs_TEQ_i_Op_A_txt : forall 'n, (0 <= 'n & 'n <= 15).
+  (bits(1), bits(32), int('n)) -> unit
+
+function execute_aarch32_instrs_TEQ_i_Op_A_txt (carry, imm32, n) = {
+    let result : bits(32) = EOR(R_read(n), imm32);
+    PSTATE.N = [result[31]];
+    PSTATE.Z = IsZeroBit(result);
+    PSTATE.C = carry
+}
+
+val decode_aarch32_instrs_TEQ_i_A1enc_A_txt : (bits(4), bits(4), bits(12)) -> unit
+
+function decode_aarch32_instrs_TEQ_i_A1enc_A_txt (cond, Rn, imm12) = {
+    if ConditionPassed() then {
+        assert(cond != 0b1111);
+        carry : bits(1) = undefined;
+        imm32 : bits(32) = undefined;
+        let 'n = UInt(Rn);
+        (imm32, carry) = A32ExpandImm_C(imm12, PSTATE.C);
+        execute_aarch32_instrs_TEQ_i_Op_A_txt(carry, imm32, n)
+    };
+    ()
+}
+
+function clause __DecodeA32_DataProMisc ((pc, ([_, _, _, _, bitzero, bitzero, bitone, bitone, bitzero, bitzero, bitone, bitone, _, _, _, _, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if Slice(__opcode, 28, 4) != 0b1111 & SEE < 3268) = {
+    SEE = 3268;
+    let cond = Slice(__opcode, 28, 4);
+    let Rn = Slice(__opcode, 16, 4);
+    let imm12 = Slice(__opcode, 0, 12);
+    if (([__opcode[12]] != 0b0 | [__opcode[13]] != 0b0) | [__opcode[14]] != 0b0) | [__opcode[15]] != 0b0 then {
+        throw(Error_ConstrainedUnpredictable())
+    } else {
+        decode_aarch32_instrs_TEQ_i_A1enc_A_txt(cond, Rn, imm12)
+    }
+}
+
+val execute_aarch32_instrs_TEQ_r_Op_A_txt : forall 'm 'n 'shift_n,
+  (0 <= 'n & 'n <= 15 & 0 <= 'm & 'm <= 15).
+  (int('m), int('n), int('shift_n), SRType) -> unit
+
+function execute_aarch32_instrs_TEQ_r_Op_A_txt (m, n, shift_n, shift_t) = {
+    carry : bits(1) = undefined;
+    shifted : bits(32) = undefined;
+    (shifted, carry) = Shift_C(R_read(m), shift_t, shift_n, PSTATE.C);
+    let result : bits(32) = EOR(R_read(n), shifted);
+    PSTATE.N = [result[31]];
+    PSTATE.Z = IsZeroBit(result);
+    PSTATE.C = carry
+}
+
+val decode_aarch32_instrs_TEQ_r_A1enc_A_txt : (bits(4), bits(4), bits(5), bits(2), bits(4)) -> unit
+
+function decode_aarch32_instrs_TEQ_r_A1enc_A_txt (cond, Rn, imm5, stype, Rm) = {
+    if ConditionPassed() then {
+        assert(cond != 0b1111);
+        shift_n : int = undefined;
+        shift_t : SRType = undefined;
+        let 'n = UInt(Rn);
+        let 'm = UInt(Rm);
+        (shift_t, shift_n) = DecodeImmShift(stype, imm5);
+        let 'shift_n = shift_n;
+        execute_aarch32_instrs_TEQ_r_Op_A_txt(m, n, shift_n, shift_t)
+    };
+    ()
+}
+
+function clause __DecodeA32_DataProMisc ((pc, ([_, _, _, _, bitzero, bitzero, bitzero, bitone, bitzero, bitzero, bitone, bitone, _, _, _, _, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, bitzero, _, _, _, _] as __opcode)) if Slice(__opcode, 28, 4) != 0b1111 & SEE < 3270) = {
+    SEE = 3270;
+    let cond = Slice(__opcode, 28, 4);
+    let Rn = Slice(__opcode, 16, 4);
+    let imm5 = Slice(__opcode, 7, 5);
+    let stype = Slice(__opcode, 5, 2);
+    let Rm = Slice(__opcode, 0, 4);
+    if (([__opcode[12]] != 0b0 | [__opcode[13]] != 0b0) | [__opcode[14]] != 0b0) | [__opcode[15]] != 0b0 then {
+        throw(Error_ConstrainedUnpredictable())
+    } else {
+        decode_aarch32_instrs_TEQ_r_A1enc_A_txt(cond, Rn, imm5, stype, Rm)
+    }
+}
+
+val execute_aarch32_instrs_TEQ_rr_Op_A_txt : forall 'm 'n 's,
+  (0 <= 's & 's <= 15 & 0 <= 'n & 'n <= 15 & 0 <= 'm & 'm <= 15).
+  (int('m), int('n), int('s), SRType) -> unit
+
+function execute_aarch32_instrs_TEQ_rr_Op_A_txt (m, n, s, shift_t) = {
+    carry : bits(1) = undefined;
+    shifted : bits(32) = undefined;
+    let 'shift_n = UInt(R_read(s)[7 .. 0]);
+    (shifted, carry) = Shift_C(R_read(m), shift_t, shift_n, PSTATE.C);
+    let result : bits(32) = EOR(R_read(n), shifted);
+    PSTATE.N = [result[31]];
+    PSTATE.Z = IsZeroBit(result);
+    PSTATE.C = carry
+}
+
+val decode_aarch32_instrs_TEQ_rr_A1enc_A_txt : (bits(4), bits(4), bits(4), bits(2), bits(4)) -> unit
+
+function decode_aarch32_instrs_TEQ_rr_A1enc_A_txt (cond, Rn, Rs, stype, Rm) = {
+    if ConditionPassed() then {
+        assert(cond != 0b1111);
+        let 'n = UInt(Rn);
+        let 'm = UInt(Rm);
+        let 's = UInt(Rs);
+        let shift_t : SRType = DecodeRegShift(stype);
+        if (n == 15 | m == 15) | s == 15 then {
+            throw(Error_Unpredictable())
+        };
+        execute_aarch32_instrs_TEQ_rr_Op_A_txt(m, n, s, shift_t)
+    };
+    ()
+}
+
+function clause __DecodeA32_DataProMisc ((pc, ([_, _, _, _, bitzero, bitzero, bitzero, bitone, bitzero, bitzero, bitone, bitone, _, _, _, _, bitzero, bitzero, bitzero, bitzero, _, _, _, _, bitzero, _, _, bitone, _, _, _, _] as __opcode)) if Slice(__opcode, 28, 4) != 0b1111 & SEE < 3272) = {
+    SEE = 3272;
+    let cond = Slice(__opcode, 28, 4);
+    let Rn = Slice(__opcode, 16, 4);
+    let Rs = Slice(__opcode, 8, 4);
+    let stype = Slice(__opcode, 5, 2);
+    let Rm = Slice(__opcode, 0, 4);
+    if (([__opcode[12]] != 0b0 | [__opcode[13]] != 0b0) | [__opcode[14]] != 0b0) | [__opcode[15]] != 0b0 then {
+        throw(Error_ConstrainedUnpredictable())
+    } else {
+        decode_aarch32_instrs_TEQ_rr_A1enc_A_txt(cond, Rn, Rs, stype, Rm)
+    }
+}
+
+val execute_aarch32_instrs_TST_i_Op_A_txt : forall 'n, (0 <= 'n & 'n <= 15).
+  (bits(1), bits(32), int('n)) -> unit
+
+function execute_aarch32_instrs_TST_i_Op_A_txt (carry, imm32, n) = {
+    let result : bits(32) = R_read(n) & imm32;
+    PSTATE.N = [result[31]];
+    PSTATE.Z = IsZeroBit(result);
+    PSTATE.C = carry
+}
+
+val decode_aarch32_instrs_TST_i_A1enc_A_txt : (bits(4), bits(4), bits(12)) -> unit
+
+function decode_aarch32_instrs_TST_i_A1enc_A_txt (cond, Rn, imm12) = {
+    if ConditionPassed() then {
+        assert(cond != 0b1111);
+        carry : bits(1) = undefined;
+        imm32 : bits(32) = undefined;
+        let 'n = UInt(Rn);
+        (imm32, carry) = A32ExpandImm_C(imm12, PSTATE.C);
+        execute_aarch32_instrs_TST_i_Op_A_txt(carry, imm32, n)
+    };
+    ()
+}
+
+function clause __DecodeA32_DataProMisc ((pc, ([_, _, _, _, bitzero, bitzero, bitone, bitone, bitzero, bitzero, bitzero, bitone, _, _, _, _, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if Slice(__opcode, 28, 4) != 0b1111 & SEE < 3273) = {
+    SEE = 3273;
+    let cond = Slice(__opcode, 28, 4);
+    let Rn = Slice(__opcode, 16, 4);
+    let imm12 = Slice(__opcode, 0, 12);
+    if (([__opcode[12]] != 0b0 | [__opcode[13]] != 0b0) | [__opcode[14]] != 0b0) | [__opcode[15]] != 0b0 then {
+        throw(Error_ConstrainedUnpredictable())
+    } else {
+        decode_aarch32_instrs_TST_i_A1enc_A_txt(cond, Rn, imm12)
+    }
+}
+
 val execute_aarch32_instrs_TST_r_Op_A_txt : forall 'm 'n 'shift_n,
   (0 <= 'n & 'n <= 15 & 0 <= 'm & 'm <= 15).
   (int('m), int('n), int('shift_n), SRType) -> unit
@@ -2656,6 +4881,36 @@ function execute_aarch32_instrs_TST_r_Op_A_txt (m, n, shift_n, shift_t) = {
     PSTATE.N = [result[31]];
     PSTATE.Z = IsZeroBit(result);
     PSTATE.C = carry
+}
+
+val decode_aarch32_instrs_TST_r_A1enc_A_txt : (bits(4), bits(4), bits(5), bits(2), bits(4)) -> unit
+
+function decode_aarch32_instrs_TST_r_A1enc_A_txt (cond, Rn, imm5, stype, Rm) = {
+    if ConditionPassed() then {
+        assert(cond != 0b1111);
+        shift_n : int = undefined;
+        shift_t : SRType = undefined;
+        let 'n = UInt(Rn);
+        let 'm = UInt(Rm);
+        (shift_t, shift_n) = DecodeImmShift(stype, imm5);
+        let 'shift_n = shift_n;
+        execute_aarch32_instrs_TST_r_Op_A_txt(m, n, shift_n, shift_t)
+    };
+    ()
+}
+
+function clause __DecodeA32_DataProMisc ((pc, ([_, _, _, _, bitzero, bitzero, bitzero, bitone, bitzero, bitzero, bitzero, bitone, _, _, _, _, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, bitzero, _, _, _, _] as __opcode)) if Slice(__opcode, 28, 4) != 0b1111 & SEE < 3275) = {
+    SEE = 3275;
+    let cond = Slice(__opcode, 28, 4);
+    let Rn = Slice(__opcode, 16, 4);
+    let imm5 = Slice(__opcode, 7, 5);
+    let stype = Slice(__opcode, 5, 2);
+    let Rm = Slice(__opcode, 0, 4);
+    if (([__opcode[12]] != 0b0 | [__opcode[13]] != 0b0) | [__opcode[14]] != 0b0) | [__opcode[15]] != 0b0 then {
+        throw(Error_ConstrainedUnpredictable())
+    } else {
+        decode_aarch32_instrs_TST_r_A1enc_A_txt(cond, Rn, imm5, stype, Rm)
+    }
 }
 
 val decode_aarch32_instrs_TST_r_T1enc_A_txt : (bits(3), bits(3)) -> unit
@@ -2678,6 +4933,52 @@ function clause __DecodeT16 ((pc, ([bitzero, bitone, bitzero, bitzero, bitzero, 
     let Rm = Slice(__opcode, 3, 3);
     let Rn = Slice(__opcode, 0, 3);
     decode_aarch32_instrs_TST_r_T1enc_A_txt(Rm, Rn)
+}
+
+val execute_aarch32_instrs_TST_rr_Op_A_txt : forall 'm 'n 's,
+  (0 <= 's & 's <= 15 & 0 <= 'n & 'n <= 15 & 0 <= 'm & 'm <= 15).
+  (int('m), int('n), int('s), SRType) -> unit
+
+function execute_aarch32_instrs_TST_rr_Op_A_txt (m, n, s, shift_t) = {
+    carry : bits(1) = undefined;
+    shifted : bits(32) = undefined;
+    let 'shift_n = UInt(R_read(s)[7 .. 0]);
+    (shifted, carry) = Shift_C(R_read(m), shift_t, shift_n, PSTATE.C);
+    let result : bits(32) = R_read(n) & shifted;
+    PSTATE.N = [result[31]];
+    PSTATE.Z = IsZeroBit(result);
+    PSTATE.C = carry
+}
+
+val decode_aarch32_instrs_TST_rr_A1enc_A_txt : (bits(4), bits(4), bits(4), bits(2), bits(4)) -> unit
+
+function decode_aarch32_instrs_TST_rr_A1enc_A_txt (cond, Rn, Rs, stype, Rm) = {
+    if ConditionPassed() then {
+        assert(cond != 0b1111);
+        let 'n = UInt(Rn);
+        let 'm = UInt(Rm);
+        let 's = UInt(Rs);
+        let shift_t : SRType = DecodeRegShift(stype);
+        if (n == 15 | m == 15) | s == 15 then {
+            throw(Error_Unpredictable())
+        };
+        execute_aarch32_instrs_TST_rr_Op_A_txt(m, n, s, shift_t)
+    };
+    ()
+}
+
+function clause __DecodeA32_DataProMisc ((pc, ([_, _, _, _, bitzero, bitzero, bitzero, bitone, bitzero, bitzero, bitzero, bitone, _, _, _, _, bitzero, bitzero, bitzero, bitzero, _, _, _, _, bitzero, _, _, bitone, _, _, _, _] as __opcode)) if Slice(__opcode, 28, 4) != 0b1111 & SEE < 3278) = {
+    SEE = 3278;
+    let cond = Slice(__opcode, 28, 4);
+    let Rn = Slice(__opcode, 16, 4);
+    let Rs = Slice(__opcode, 8, 4);
+    let stype = Slice(__opcode, 5, 2);
+    let Rm = Slice(__opcode, 0, 4);
+    if (([__opcode[12]] != 0b0 | [__opcode[13]] != 0b0) | [__opcode[14]] != 0b0) | [__opcode[15]] != 0b0 then {
+        throw(Error_ConstrainedUnpredictable())
+    } else {
+        decode_aarch32_instrs_TST_rr_A1enc_A_txt(cond, Rn, Rs, stype, Rm)
+    }
 }
 
 val execute_aarch32_instrs_UXTB_Op_A_txt : forall 'd 'm 'rotation,
@@ -3147,6 +5448,27 @@ function Shift_C (value_name, srtype, amount, carry_in) = {
     return((result, carry_out))
 }
 
+val A32ExpandImm_C : (bits(12), bits(1)) -> (bits(32), bits(1))
+
+function A32ExpandImm_C (imm12, carry_in) = {
+    carry_out : bits(1) = undefined;
+    imm32 : bits(32) = undefined;
+    let unrotated_value : bits(32) = ZeroExtend(imm12[7 .. 0], 32);
+    (imm32, carry_out) = Shift_C(unrotated_value, SRType_ROR, 2 * UInt(imm12[11 .. 8]), carry_in);
+    return((imm32, carry_out))
+}
+
+val A32ExpandImm : bits(12) -> bits(32)
+
+function A32ExpandImm imm12 = {
+    imm32 : bits(32) = undefined;
+    let (__tup_0 : bits(32), _) = A32ExpandImm_C(imm12, PSTATE.C) in
+      {
+          imm32 = __tup_0
+      };
+    return(imm32)
+}
+
 val DecodeImmShift : (bits(2), bits(5)) -> (SRType, int)
 
 function DecodeImmShift (srtype, imm5) = {
@@ -3228,16 +5550,6 @@ function BranchWritePC (address_in, branch_type) = {
       _ => false
     }) : bool);
     BranchTo(address, branch_type, branch_conditional)
-}
-
-val ALUWritePC : bits(32) -> unit
-
-function ALUWritePC address = {
-    if CurrentInstrSet() == InstrSet_A32 then {
-        BXWritePC(address, BranchType_INDIR)
-    } else {
-        BranchWritePC(address, BranchType_INDIR)
-    }
 }
 
 val CBWritePC : bits(32) -> unit

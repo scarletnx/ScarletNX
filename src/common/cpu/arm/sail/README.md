@@ -21,7 +21,9 @@ sailgen --extract src/common/cpu/arm/sail/a32.roots -o src/common/cpu/arm/sail/a
 
 and change the commit above. Today the subset is Thumb's 16-bit instructions, every `__DecodeT16` clause but HLT's
 (halting debug is off) and UDF's: with no clause their halfwords stay UNDEFINED, UDF's whatever an IT block's
-condition, as the Thumb decoder has them. The A32 and T32 ones are the next.
+condition, as the Thumb decoder has them. A32's data processing (immediate, register, register-shifted register),
+B, BL, BLX, BX, MOVW and MOVT come next (`decoder sg_decode_a32`): an A32 word none of their clauses takes stays the
+block compiler's (llvm.c). The rest of A32, and T32, are the next.
 
 The guests differ in two ways, each said once here:
 

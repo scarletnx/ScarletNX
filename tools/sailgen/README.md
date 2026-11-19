@@ -26,8 +26,8 @@ overlay's definitions take the place of the inputs' of the same name: a system's
 VERSION ROOT...` lines name (`a32.profile`) is tried only where the back end's `sg_ArchVersion` is that version or
 later. The back end's files are copied at the top of the output in their order: `core.h`, then a machine's
 (`llvm.h` for A64, which the back end's `sg_emit` wraps the dispatcher with and
-`src/common/cpu/recompiler/llvm/ir_sail.c` includes; `llvm_arm.h` for AArch32, its `sg_emit_t16`, which
-`src/common/cpu/arm/llvm_thumb.inc` includes).
+`src/common/cpu/recompiler/llvm/ir_sail.c` includes; `llvm_arm.h` for AArch32, its `sg_emit_t16` and `sg_emit_a32`,
+which `src/common/cpu/arm/llvm_thumb.inc` includes).
 
 ## How a decode function becomes C
 
@@ -200,7 +200,10 @@ knows: a back end function whose result is `SgS`, `int` or `long long` gives a S
 an integer), not IR: `CurrentInstrSet`, `ITSTATE`, `AArch32_CurrentCond` (the instruction's condition: an A32 word's, a
 B<c>'s own, else the IT block's) and `ArchVersion`. `LSL_C`, `LSR_C`, `ASR_C` and `ROR_C`, AArch32's shifter with its
 carry, are the map for an amount known when it recompiles, and `llvm.c`'s `shift` for a register's (0 to 255);
-`BitCount`, `LowestSetBit` and `Align` are C of what the recompiler knows, or the map.
+`BitCount`, `LowestSetBit` and `Align` are C of what the recompiler knows, or the map. `sg_emit_t16` runs a T16
+halfword and `sg_emit_a32` an A32 word, each under the condition its decode's `ConditionPassed()` gives (`sg_when`);
+`sg_emit_a32` hands back a word none of its clauses takes, which llvm.c's emitters run. `CurrentInstrSet` is the
+block's until an instruction selects the other (`SetInstrSet`: BLX's target is aligned as the set it goes to).
 
 ## Another back end
 
