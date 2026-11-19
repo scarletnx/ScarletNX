@@ -5035,13 +5035,37 @@ static int hmma_match(u32 got, int f32, u32 j, double want, double tol, int kind
     if (bits) return v == want;
     return fabs(v - want) <= tol;
 }
+/* the outputs of hmma_program on one set of inputs that are not what hmma_expect says (with packed, of the half
+   sums), the first 8 told under the name what */
+static u32 hmma_bad(const HmmaMats* mats, const u32* out, int set, int packed, const char* what) {
+    u32 bad = 0;
+    for (u32 l = 0; l < 32; l++)
+        for (u32 w = 0; w < HMMA_OUT; w++) {
+            u32 got = out[l * HMMA_OUT + w], at = 0, k = 0;
+            for (; k < 8 && w >= at + (hmma_cases[k][2] & 0x10 ? 4u : 2u); k++) at += hmma_cases[k][2] & 0x10 ? 4u : 2u;
+            int f32 = hmma_cases[k][2] >> 4 & 1;
+            for (u32 j = 0; j < (f32 ? 1u : 2u); j++) {
+                double tol;
+                int kind, zero_sign, overflow;
+                double want = hmma_expect(mats, l, w, j, packed, &tol, &kind, &zero_sign, &overflow);
+                if (hmma_match(got, f32, j, want, tol, kind, zero_sign, set == HM_EXACT, overflow)) continue;
+                if (bad++ < 8)
+                    fprintf(stderr,
+                            "warp matrix values (set %d, %s): lane %u word %u half %u is 0x%08x, expected %.9g within "
+                            "%.3g (kind %d, zero sign %d)\n",
+                            set, what, l, w, j, got, want, tol, kind, zero_sign);
+            }
+        }
+    return bad;
+}
 /* HMMA (16816 and 1688, F16 and F32 D, C from RZ, an f16 input or an earlier D) on the evaluator's 32 lanes, as each
    lane gathers B, as pairs of lanes share it (g_spirv_translate.hmma_pairs) and through a warp's slot of shared memory
    (g_spirv_translate.hmma_stage), with and without the quads and the mixed dot product, and without it in half sums
-   (g_spirv_translate.hmma_f16): on the exact set every output is the sum's bits; on the rounded one within an f32 sum's
-   error, or the half sums' (hmma_expect); on the special and zeros ones infinities, NaNs and the sign of zero follow
-   IEEE's sum of the terms in any order, but where the half sums can overflow. And the forms agree with each other: bit
-   for bit on the exact set, the same kinds on the others */
+   (g_spirv_translate.hmma_f16), and on the device's cooperative matrices of each shape (g_spirv_translate.hmma_coop):
+   on the exact set every output is the sum's bits; on the rounded one within an f32 sum's error, or the half sums'
+   (hmma_expect); on the special and zeros ones infinities, NaNs and the sign of zero follow IEEE's sum of the terms in
+   any order, but where the half sums can overflow. And the forms agree with each other: bit for bit on the exact set,
+   the same kinds on the others */
 static void test_warp_matrix_values(const char* dir) {
     u8 code[16 * 48] = {0};
     u32 n = hmma_program(code);
@@ -5070,30 +5094,10 @@ static void test_warp_matrix_values(const char* dir) {
                         g_spirv_translate.hmma_f16 = half_was;
                         CHECK(ran);
                         if (!ran) return;
-                        u32 bad = 0;
-                        for (u32 l = 0; l < 32; l++)
-                            for (u32 w = 0; w < HMMA_OUT; w++) {
-                                u32 got = out[form][l * HMMA_OUT + w], at = 0, k = 0;
-                                for (; k < 8 && w >= at + (hmma_cases[k][2] & 0x10 ? 4u : 2u); k++)
-                                    at += hmma_cases[k][2] & 0x10 ? 4u : 2u;
-                                int f32 = hmma_cases[k][2] >> 4 & 1;
-                                for (u32 j = 0; j < (f32 ? 1u : 2u); j++) {
-                                    double tol;
-                                    int kind, zero_sign, overflow;
-                                    double want =
-                                        hmma_expect(&mats, l, w, j, packed, &tol, &kind, &zero_sign, &overflow);
-                                    if (hmma_match(got, f32, j, want, tol, kind, zero_sign, set == HM_EXACT, overflow))
-                                        continue;
-                                    if (bad++ < 8)
-                                        fprintf(stderr,
-                                                "warp matrix values (set %d, quad %d, mixed %d, form %d, half sums "
-                                                "%d): lane %u word %u half %u is 0x%08x, expected %.9g within %.3g "
-                                                "(kind %d, zero sign %d)\n",
-                                                set, quad, mixed, form, packed, l, w, j, got, want, tol, kind,
-                                                zero_sign);
-                                }
-                            }
-                        CHECK(bad == 0);
+                        char what[48];
+                        snprintf(what, sizeof what, "quad %d, mixed %d, form %d, half sums %d", quad, mixed, form,
+                                 packed);
+                        CHECK(hmma_bad(&mats, out[form], set, packed, what) == 0);
                     }
                     /* the three forms: the same bits where the sums are exact, else the same kinds and values within
                        their bounds (hmma_match above) */
@@ -5107,6 +5111,22 @@ static void test_warp_matrix_values(const char* dir) {
                                 "forms\n",
                                 quad, mixed, packed, differ);
                 }
+        /* the cooperative matrices, each shape (its products' order is the evaluator's, one rounding to f32) */
+        static const char* const shape_name[4] = {"16x16x16", "16x8x16", "16x8x8", "8x8x8"};
+        int coop_was = g_spirv_translate.hmma_coop;
+        u32 shapes_was = g_spirv_translate.hmma_coop_shapes;
+        for (u32 s = 0; s < 4 && set != HM_ZEROS; s++) {
+            g_spirv_translate.hmma_coop = 65536, g_spirv_translate.hmma_coop_shapes = 1u << s,
+            g_spirv_translate.float16 = 1;
+            char keep[32], what[32];
+            snprintf(keep, sizeof keep, "warp_values_coop_%s", shape_name[s]);
+            snprintf(what, sizeof what, "cooperative %s", shape_name[s]);
+            int ran = hmma_run(code, n, in, out[0], dir, set == HM_EXACT ? keep : NULL, 0);
+            g_spirv_translate.hmma_coop = coop_was, g_spirv_translate.hmma_coop_shapes = shapes_was,
+            g_spirv_translate.float16 = f16_was;
+            CHECK(ran);
+            if (ran) CHECK(hmma_bad(&mats, out[0], set, 0, what) == 0);
+        }
     }
 }
 
