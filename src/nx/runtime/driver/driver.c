@@ -8,6 +8,7 @@
 #include "common/utilities/demangle.h"
 #include "common/utilities/logscan.h"
 #include "nx/runtime/driver/extract.h"
+#include "nx/runtime/driver/pack.h"
 #include "nx/runtime/driver/game_name.h"
 #include "nx/runtime/driver/recompile.h"
 #include "nx/runtime/driver/setup.h"
@@ -92,6 +93,9 @@ static void usage(void) {
          "                         in guest memory into DIR, for tools/symbols.py and tools/disasm.py;\n"
          "                         an XCI or NSP of a game or an update is read in place, with the\n"
          "                         keys of the data folder (--data)");
+    puts("  --pack FOLDER|DUMP     Pack a folder of NCAs (or a dump's) into an NSP, or with --xci an XCI,\n"
+         "                         whose NCAs are decrypted: an ordinary NSP or XCI, not a DNSP or DXCI\n"
+         "                         (--pack -h)");
     puts("  --scan-log LOG... [--format json|markdown] [--name NAME]\n"
          "                         Summarize a game's log or the launcher's Share Log file: the build,\n"
          "                         the game, how the run ended and where, unimplemented services");
@@ -1538,6 +1542,21 @@ static int data_folder(const char* given, const char* program_dir, int make, con
     *folder = *found ? *found : ".";
     return 0;
 }
+/* scarletnx --pack ARGS (pack.c): the keys are looked for in the data folder of this program, unless --data, which
+   pack.c reads itself, names one */
+static int pack_run(int argc, char** argv) {
+    SnxPaths paths = {0};
+    char *self = snx_executable(argv[0]), *dir = self ? snx_dirname(self) : NULL, *found = NULL;
+    const char* repo = NULL;
+    int rc = data_folder(NULL, dir, 0, &repo, &found); /* only its keys are read: nothing is made */
+    snx_tool_console();
+    paths.repo = repo;
+    if (!rc) rc = snx_pack(argc - 2, argv + 2, &paths);
+    free(found);
+    free(dir);
+    free(self);
+    return rc;
+}
 /* --dump-modules PROGRAM DIR [--data DIR]: each module's image and symbols, at the bases the runtime gives them
    (loader.h's snx_dump_program has the format). Tools read game code through it. An XCI or NSP is read in place, with
    the keys of the data folder, else ~/.switch */
@@ -1626,6 +1645,10 @@ int snx_driver(int argc, char** argv) {
     }
     if (!strcmp(argv[1], "--scan-log")) {
         result = snx_logscan_main(argc - 1, argv + 1, snx_demangle);
+        goto done;
+    }
+    if (!strcmp(argv[1], "--pack")) {
+        result = pack_run(argc, argv);
         goto done;
     }
     /* --game DIR and the run's settings given apart are joined into the --key=value the runtime reads */

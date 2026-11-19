@@ -430,6 +430,14 @@ Remaining examples: POSIX.
   ([key filtering and cleanup](../../src/nx/runtime/driver/extract.c)).
   Sparse and compressed NCAs, updates with large relocation tables and gamecard dumps that start with the card's key
   area all extract, through what [`storage.c`](../../src/nx/runtime/driver/hactool/storage.c) ports from LibHac.
+- **Pack plain NCAs:** `scarletnx --pack FOLDER [--xci] [--out FILE]` packs a folder of NCAs (an NSP's files, or an
+  XCI's secure partition, as a tool unpacked them; `.tik` files in it give title keys) into an ordinary NSP (PFS0) or
+  XCI (HEAD) whose NCAs are plain: each header and section decrypted where it lies, everything else, the header's
+  signatures included, unchanged. It is not a DNSP or DXCI: the container and NCA magics are the usual ones, and a
+  reader tells a plain NCA by its header, with no keys. An XCI, NSP, DXCI or DNSP can be given in place of the folder.
+  NCAs plain already need no keys; tickets are left out. The output goes beside the input by default
+  (`FOLDER.nsp`, `DUMP.decrypted.nsp`). The launcher's menu has it as Pack extracted as dXCI/dNSP
+  ([pack.c](../../src/nx/runtime/driver/pack.c)).
 - **Recompile:** AOT → module (LLVM) →
   final runtime deployment, for this machine's CPU. Shaders compile directly to SPIR-V at runtime.
   `-O 0..3,s,z` (`--opt=`) sets the optimization level (2 by default), and `--jobs N` (`--aot-threads=N`) the threads

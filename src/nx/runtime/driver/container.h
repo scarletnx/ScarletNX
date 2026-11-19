@@ -55,6 +55,12 @@ int snx_hac_error(const char* what);
    lacks too); snx_dump_close either way */
 int snx_dump_open(SnxDump* dump, const char* base, const char* addon, int index, const char* keys,
                   const char* title_keys, const char* repo, int say);
+/* a new hactool in dump, with the keys as snx_dump_open takes them and no container opened: 0, else nonzero, said why;
+   snx_dump_close either way */
+int snx_dump_keys(SnxDump* dump, const char* keys, const char* title_keys, const char* repo, int say);
+/* a ticket's (a .tik file's) title key into hac: 1, 0 for a personalized ticket (its key encrypted for a console),
+   -1 for data that is no ticket */
+int snx_ticket_key(SnxHac* hac, const unsigned char* data, size_t size);
 /* path opened alone, with the keys as snx_dump_open takes them: a game's dump (program, and the patch it may have), whose title ID is its
    program's, or else an add-on's (patch or aoc, in update), its title ID the add-on's own and game the game it belongs
    to, as its content meta names it (snx_addon_kind(game, title) tells which), and its version in *version when version
