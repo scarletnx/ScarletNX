@@ -346,9 +346,30 @@ static inline void sg_d_put_any(SgCtx* g, SgD* m, unsigned at, SgD from, unsigne
     if (!sg_d_put(m, at, &from, lo, n)) sg_fail("a bit map with no room for two sources", m->nsrc, from.nsrc);
 }
 
+static inline int sg_d_permutation(const SgD* x);
+static inline int sg_d_low(const SgD* x, unsigned k);
+/* x is one source's low bits rotated, some of them made constant (sg_d_make's rotation with an OR and an AND) */
+static inline int sg_d_rotated(const SgD* x) {
+    unsigned i, r = 0, n = 0;
+    if (x->nsrc != 1 || x->w > 64 || !sg_d_low(x, 0)) return 0;
+    for (i = 0; i < x->w; ++i) {
+        if (x->sel[i] < 2) continue;
+        if (!n++) r = (x->pos[i] + x->w - i) % x->w;
+        if (x->pos[i] != (i + r) % x->w) return 0;
+    }
+    return n > 1 && r;
+}
 static inline SgD sg_d_slice(SgCtx* g, SgD x, long long hi, long long lo) {
     SgD r;
     if (lo < 0 || hi < lo || hi >= (long long)x.w) sg_fail("a slice out of its value", hi, lo);
+    if (hi - lo + 1 < (long long)x.w && !x.nzcv && (sg_d_permutation(&x) || sg_d_rotated(&x))) {
+        /* bits of a rotated value (ORRS's N of a rotated register): the rotation made, as its other use makes it, so
+           LLVM finds one */
+        SgD whole = sg_d_from(g, sg_d_make(g, &x));
+        r = sg_d_empty((unsigned)(hi - lo + 1));
+        sg_d_put_any(g, &r, 0, whole, (unsigned)lo, r.w);
+        return r;
+    }
     r = sg_d_empty((unsigned)(hi - lo + 1));
     sg_d_put_any(g, &r, 0, x, (unsigned)lo, r.w);
     if (lo == 0 && r.w == x.w) return x;
@@ -672,6 +693,99 @@ static inline LLVMValueRef sg_d_make(SgCtx* g, SgD* x) {
             if (sg_d_permutation(&low)) return x->value = sg_cast(g, sg_d_make(g, &low), w, 1);
         }
     }
+    { /* one source bit in several places apart, the rest constant (a sign ANDed with a constant): one select of their
+         mask, as LLVM folds the emitters' AND of a spread sign */
+        unsigned k = 0, p = 0, n = 0, sw;
+        SnxU64 mask = 0, ones = 0;
+        int ok = w <= 64;
+        for (i = 0; i < w && ok; ++i) {
+            if (x->sel[i] == 1)
+                ones |= 1ull << i;
+            else if (x->sel[i] >= 2) {
+                if (!n) {
+                    k = x->sel[i];
+                    p = x->pos[i];
+                }
+                ok = x->sel[i] == k && x->pos[i] == p;
+                mask |= 1ull << i;
+                ++n;
+            }
+        }
+        sw = n ? (x->src_w[k - 2] ? x->src_w[k - 2] : 256) : 0;
+        if (ok && n >= 2 && sw <= 64 && !x->src_flag[k - 2]) {
+            LLVMValueRef src = x->src[k - 2], bit;
+            bit = LLVMBuildAnd(SG_B, src, LLVMConstInt(LLVMTypeOf(src), 1ull << p, 0), "");
+            t = LLVMBuildSelect(SG_B, LLVMBuildICmp(SG_B, LLVMIntNE, bit, LLVMConstNull(LLVMTypeOf(src)), ""),
+                                sg_const(g, w, mask, 0), sg_const(g, w, 0, 0), "");
+            if (ones) t = LLVMBuildOr(SG_B, t, sg_const(g, w, ones, 0), "");
+            return x->value = t;
+        }
+    }
+    { /* a field with some of its bits made constant (ORR or BIC of an immediate after a shift): each such bit filled
+         with the field's own, the field made, then one OR of the ones and one AND of the zeros, as the emitters written
+         by hand build it. The filled bits' values do not matter: the OR and the AND decide them */
+        unsigned lo = w, hi = 0, k0 = 0;
+        int d = 0;
+        for (i = 0; i < w; ++i)
+            if (x->sel[i] >= 2) {
+                if (lo == w) {
+                    lo = i;
+                    k0 = x->sel[i];
+                    d = (int)x->pos[i] - (int)i;
+                }
+                hi = i;
+            }
+        if (lo < w && hi > lo + 1 && w <= 64) {
+            SgD y = *x;
+            SnxU64 one = 0, zero = 0;
+            int ok = 1;
+            for (i = lo + 1; i < hi && ok; ++i) {
+                int p;
+                if (x->sel[i] >= 2) continue;
+                p = x->sel[i - 1] == k0 && x->sel[i + 1] == k0 && x->pos[i - 1] == x->pos[i + 1] ? (int)x->pos[i - 1]
+                                                                                                 : (int)i + d;
+                if (x->src_w[k0 - 2] && p >= (int)x->src_w[k0 - 2]) p = x->src_w[k0 - 2] - 1; /* a sign's run */
+                ok = p >= 0 && p < 256;
+                y.sel[i] = (unsigned char)k0;
+                y.pos[i] = (unsigned char)p;
+                if (x->sel[i])
+                    one |= 1ull << i;
+                else
+                    zero |= 1ull << i;
+            }
+            if (ok && (one || zero)) {
+                y.value = NULL;
+                if ((t = sg_d_field(g, &y)) != NULL) {
+                    if (one) t = LLVMBuildOr(SG_B, t, sg_const(g, w, one, 0), "");
+                    if (zero) t = LLVMBuildAnd(SG_B, t, sg_const(g, w, ~zero & sg_ones(w), 0), "");
+                    return x->value = t;
+                }
+            }
+        }
+        if (lo < w && x->nsrc == 1 && w <= 64 && sg_d_low(x, 0)) {
+            /* a rotation with constant bits (ORR of the PC and a rotated register, a target's bit 0 cleared): every
+               constant bit filled as the rotation has it, the rotation made, then the OR and the AND */
+            SgD y = *x;
+            SnxU64 one = 0, zero = 0;
+            unsigned r = (unsigned)(((int)x->pos[lo] - (int)lo + (int)w) % (int)w);
+            for (i = 0; i < w; ++i) {
+                if (x->sel[i] >= 2) continue;
+                y.sel[i] = (unsigned char)k0;
+                y.pos[i] = (unsigned char)((i + r) % w);
+                if (x->sel[i])
+                    one |= 1ull << i;
+                else
+                    zero |= 1ull << i;
+            }
+            y.value = NULL;
+            if ((one || zero) && r && sg_d_perm(&y, 0, 0, r)) {
+                t = sg_d_make(g, &y);
+                if (one) t = LLVMBuildOr(SG_B, t, sg_const(g, w, one, 0), "");
+                if (zero) t = LLVMBuildAnd(SG_B, t, sg_const(g, w, ~zero & sg_ones(w), 0), "");
+                return x->value = t;
+            }
+        }
+    }
     /* the OR of each source's bits that move by the same distance, masked, and the bits that are 1. The bits of a run
        of one source bit over more than two neighbours (Replicate, a sign) are found first: the one that lands on that
        bit's own place (XPAC's bit 55) is the run's, not one of the bits that keep their place */
@@ -780,7 +894,12 @@ static inline SgD sg_d_and(SgCtx* g, SgD a, SgD b) {
         }
         return r;
     }
-    return sg_d_from(g, LLVMBuildAnd(SG_B, sg_d_make(g, &a), sg_d_make(g, &b), ""));
+    { /* the AND made, its bits a side holds at 0 known (BXWritePC's bit 0 of a value shifted left) */
+        SgD m = sg_d_from(g, LLVMBuildAnd(SG_B, sg_d_make(g, &a), sg_d_make(g, &b), ""));
+        for (i = 0; i < a.w; ++i)
+            if (a.sel[i] == 0 || b.sel[i] == 0) m.sel[i] = 0;
+        return m;
+    }
 }
 static inline SgD sg_d_or(SgCtx* g, SgD a, SgD b) {
     SgD r = sg_d_empty(a.w);
