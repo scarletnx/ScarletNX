@@ -166,6 +166,30 @@ u16 gl_nvn_format(int32_t index) {
     u8 expand;
     return nvn_format(index, &swizzle, &expand);
 }
+/* GL's texture swizzle (GL_TEXTURE_SWIZZLE_R to A) over the format's own (fs, 0 for the identity): NVN's view swizzle,
+   0 where both are the identity. A one-channel format of GL's (a font atlas's RG8 read as luminance and alpha) shows
+   its channels where the game asks */
+static u16 texture_swizzle(u16 fs, const uint32_t gl[4]) {
+    u16 own[4] = {NVN_TEXTURE_SWIZZLE_R, NVN_TEXTURE_SWIZZLE_G, NVN_TEXTURE_SWIZZLE_B, NVN_TEXTURE_SWIZZLE_A}, out = 0;
+    int identity = !(fs & NVN_TEX_SWIZZLE_SET);
+    for (int c = 0; c < 4; c++)
+        if (fs & NVN_TEX_SWIZZLE_SET) own[c] = (u16)(fs >> (3 * c) & 7);
+    for (int c = 0; c < 4; c++) {
+        u16 v;
+        switch (gl[c]) {
+            case 0x1903: v = own[0]; break; /* GL_RED */
+            case 0x1904: v = own[1]; break; /* GL_GREEN */
+            case 0x1905: v = own[2]; break; /* GL_BLUE */
+            case 0x1906: v = own[3]; break; /* GL_ALPHA */
+            case 0: v = NVN_TEXTURE_SWIZZLE_ZERO; break;
+            case 1: v = NVN_TEXTURE_SWIZZLE_ONE; break;
+            default: v = own[c];
+        }
+        if (v != (u16)(NVN_TEXTURE_SWIZZLE_R + c)) identity = 0;
+        out |= (u16)(v << (3 * c));
+    }
+    return identity ? 0 : (u16)(out | NVN_TEX_SWIZZLE_SET);
+}
 int gl_nvn_texture(u32 name, NvnTexture* out) {
     static const u8 targets[SNX_GL_TARGETS] = {NVN_TEXTURE_TARGET_2D, NVN_TEXTURE_TARGET_CUBEMAP, NVN_TEXTURE_TARGET_3D,
                                                NVN_TEXTURE_TARGET_2D_ARRAY, NVN_TEXTURE_TARGET_2D_MULTISAMPLE};
@@ -177,7 +201,7 @@ int gl_nvn_texture(u32 name, NvnTexture* out) {
     if (!format) return 0;
     out->magic = NVN_MAGIC('T', 'E', 'X', 0);
     out->d = (NvnTexDesc){.format = format,
-                          .swizzle = swizzle,
+                          .swizzle = texture_swizzle(swizzle, t->swizzles),
                           .target = targets[t->target],
                           .samples = (u8)(t->samples > 1 ? t->samples : 0),
                           .levels = (u8)t->levels,
