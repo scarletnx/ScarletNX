@@ -3021,6 +3021,9 @@ void vk_uma_forget_all(void);
 /* the dispatches skipped so far; why (size bytes) gets their reasons with each one's count, " (12 not translated, 3
    a texture not bound)", or "" when none was */
 u64 vk_cs_skipped(char* why, size_t size);
+/* the dispatches whose bindings took more of the compute arena than its space check counted (0 where it counts each
+   binding as the arena takes it), the first four said by a log line */
+u64 vk_cs_arena_short(void);
 
 /* render.c */
 /* ends the dynamic rendering pass, if one is open. The caller's file and line count the passes it ended, which the
