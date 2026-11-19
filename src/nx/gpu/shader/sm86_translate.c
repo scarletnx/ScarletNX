@@ -1583,12 +1583,14 @@ static u32 global_address(Ctx* c, const Sm86Insn* in, int uniform_form, int writ
    windows of a pointer table (SH_GBUF_TABLE): its culling programs count and fill their lists at pointers they load
    from cbuf 4 */
 enum { DYN_STORE, DYN_LOAD, DYN_ATOMIC };
+/* the registers a load of mem_type (NAK's MemType) writes: 64 bits two, 128 four */
+static u32 mem_words(u32 type) { return type == 5 ? 2 : type == 6 ? 4 : 1; }
 static void mem_load(Ctx* c, u32 buffer, u32 address, u32 type, u32 dst, int uniform_dst);
 static void mem_store(Ctx* c, u32 buffer, u32 address, u32 type, u32 data);
 static u32 atomic_fadd(Ctx* c, u32 buffer, u32 address, u32 data);
 static void global_dynamic(Ctx* c, const Sm86Insn* in, int kind, u32 opcode, int fadd) {
     int op = in->op, ldst_uniform = op == SM86_LDG || op == SM86_STG;
-    u32 type = sm86_field(in, 73, 3), words = kind == DYN_ATOMIC ? 1 : type == 5 ? 2 : type == 6 ? 4 : 1;
+    u32 type = sm86_field(in, 73, 3), words = kind == DYN_ATOMIC ? 1 : mem_words(type);
     u32 reg = sm86_field(in, 24, 8), imm = sm86_field(in, 40, 24);
     u32 hi = sm86_field(in, ldst_uniform ? 90 : 72, 1) && reg < SM86_RZ ? rd(c, reg + 1) : c->zero;
     u32 address = pair64(c, rd(c, reg), hi);
@@ -1825,7 +1827,7 @@ static void track_step(Ctx* c, u32 i, TrackState* s) {
         return;
     }
     if (op == SM86_LDS || op == SM86_LDL) { /* data from memory, as a load from global memory's */
-        u32 type = sm86_field(in, 73, 3), words = type == 5 ? 2 : type == 6 ? 4 : 1;
+        u32 type = sm86_field(in, 73, 3), words = mem_words(type);
         for (u32 w = 0; w < words && in->dst + w < SM86_RZ; w++) {
             track_write(c, s, 0, in->dst + w, 0, 0, 1, (u16)op, always);
             s->rtab[in->dst + w] = 0, s->rtabx[in->dst + w] = 0, s->rcell[in->dst + w] = 0;
@@ -2296,7 +2298,7 @@ static void mem_ptrs(Ctx* c, u32 buffer, u32 address, u32 n, u32 ptrs[4]) {
 }
 /* a load of mem_type (NAK's MemType) into registers dst on */
 static void mem_load(Ctx* c, u32 buffer, u32 address, u32 type, u32 dst, int uniform_dst) {
-    u32 words = type == 5 ? 2 : type == 6 ? 4 : 1, ptrs[4];
+    u32 words = mem_words(type), ptrs[4];
     mem_ptrs(c, buffer, address, dst >= SM86_RZ ? 1 : words, ptrs);
     for (u32 k = 0; k < words; k++) {
         u32 v = mem_word_load(c, buffer, ptrs[k]);
@@ -2348,7 +2350,7 @@ static void mem_store(Ctx* c, u32 buffer, u32 address, u32 type, u32 data) {
         }
         return;
     }
-    u32 words = type == 5 ? 2 : type == 6 ? 4 : 1, ptrs[4];
+    u32 words = mem_words(type), ptrs[4];
     mem_ptrs(c, buffer, address, words, ptrs);
     for (u32 k = 0; k < words; k++) mem_word_store(c, buffer, ptrs[k], rd(c, data >= SM86_RZ ? data : data + k));
 }
@@ -2772,12 +2774,56 @@ static int reg_const_at(Ctx* c, u32 i, u32 r, u32* value) {
     *value = v;
     return 1;
 }
+/* whether a texture instruction's results go two halves a register: .F16 (bit 79, NAK's note on TLD) on a float
+   result, which all but TXQ's are */
+static int tex_halves(const Sm86Insn* in) {
+    return sm86_field(in, 79, 1) && in->op != SM86_TXQ && in->op != SM86_TXQ_B && in->op != SM86_TXQ_U;
+}
+/* the registers a texture instruction writes (tex_results): one a component of its channel mask, or one a pair of
+   them with tex_halves */
+static u32 tex_result_count(const Sm86Insn* in) {
+    u32 n = snx_popcount64(sm86_field(in, 72, 4));
+    return tex_halves(in) ? (n + 1) / 2 : n;
+}
+/* the register a texture instruction's result k goes to: the first two (one with tex_halves) into dst and on, the
+   others into dst1 (bits 64-71) and on, or on from dst when dst1 is RZ */
+static u32 tex_result_reg(const Sm86Insn* in, u32 k) {
+    u32 d0 = in->dst, d1 = sm86_field(in, 64, 8), first = tex_halves(in) ? 1u : 2u;
+    if (d1 < SM86_RZ && k >= first) return d1 + k - first;
+    return d0 >= SM86_RZ ? d0 : d0 + k;
+}
 /* may_write, of the words an instruction really writes where its type tells: an ALU's result is one but for those of
-   64 bits, an IPA's one, and an LDC's as its size says */
+   64 bits, an IPA's one, a load's as its size says, and a texture instruction's those its channel mask selects */
 static int writes_word(const Sm86Insn* in, u32 r) {
     if (!may_write(in, r)) return 0;
-    if (in->op == SM86_IPA) return r == in->dst;
-    if (in->op == SM86_LDC) return r < in->dst + (sm86_field(in, 73, 3) == 5 ? 2u : 1u);
+    switch (in->op) {
+        case SM86_IPA: return r == in->dst;
+        case SM86_LDC: return r < in->dst + (sm86_field(in, 73, 3) == 5 ? 2u : 1u);
+        case SM86_LDG:
+        case SM86_LDG_NOU:
+        case SM86_LDL: return r < in->dst + mem_words(sm86_field(in, 73, 3));
+        case SM86_TEX:
+        case SM86_TEX_B:
+        case SM86_TLD:
+        case SM86_TLD_B:
+        case SM86_TLD4:
+        case SM86_TLD4_B:
+        case SM86_TMML:
+        case SM86_TMML_B:
+        case SM86_TXD:
+        case SM86_TXD_B:
+        case SM86_TXQ:
+        case SM86_TXQ_B:
+        case SM86_TEX_U:
+        case SM86_TLD_U:
+        case SM86_TLD4_U:
+        case SM86_TXD_U:
+        case SM86_TXQ_U:
+            for (u32 k = 0; k < tex_result_count(in); k++)
+                if (tex_result_reg(in, k) == r) return 1;
+            return 0;
+        default: break;
+    }
     if (sm86_ops[in->op].kind != SM86_K_ALU) return 1;
     switch (in->op) {
         case SM86_DADD:
@@ -3093,16 +3139,15 @@ static int tex_operands(const Sm86Insn* in, u32 n0, u32 n1, u32* regs) {
    with a zero high half. One game's text programs take an alpha that way (HADD2.F32 R, -RZ, R.H0_H0), and with each
    component in a register of its own their glyphs read the low bits of a float */
 static void tex_results(Ctx* c, const Sm86Insn* in, u32 value, u32 scalar) {
-    u32 mask = sm86_field(in, 72, 4), d0 = in->dst, d1 = sm86_field(in, 64, 8), written = 0;
-    if (scalar == c->t_f32 && sm86_field(in, 79, 1)) {
+    u32 mask = sm86_field(in, 72, 4), written = 0;
+    if (tex_halves(in)) {
         u32 half[4], n = 0;
         for (u32 k = 0; k < 4; k++)
             if (mask & (1u << k)) half[n++] = spv_emit_vec4_extract(&c->e, scalar, value, k);
         for (u32 p = 0; 2 * p < n; p++) {
             u32 pair =
                 spv_emit_vec2_construct(&c->e, c->t_v2f, half[2 * p], 2 * p + 1 < n ? half[2 * p + 1] : cf(c, 0.0f));
-            u32 r = p == 0 || d1 >= SM86_RZ ? (d0 >= SM86_RZ ? d0 : d0 + p) : d1;
-            wr(c, r, pack_half(c, pair));
+            wr(c, tex_result_reg(in, p), pack_half(c, pair));
         }
         return;
     }
@@ -3110,9 +3155,7 @@ static void tex_results(Ctx* c, const Sm86Insn* in, u32 value, u32 scalar) {
         if (!(mask & (1u << k))) continue;
         u32 v = spv_emit_vec4_extract(&c->e, scalar, value, k);
         if (scalar != c->t_u32) v = to_u(c, v);
-        u32 r = written < 2 || d1 >= SM86_RZ ? (d0 >= SM86_RZ ? d0 : d0 + written) : d1 + written - 2;
-        wr(c, r, v);
-        written++;
+        wr(c, tex_result_reg(in, written++), v);
     }
 }
 static u32 coord_vector(Ctx* c, const u32* f, u32 count) {
@@ -7073,7 +7116,7 @@ static u32 mh_words(const Sm86Insn* in) {
     u32 type = sm86_field(in, 73, 3);
     switch (in->op) {
         case SM86_LDG:
-        case SM86_LDG_NOU: return type == 5 ? 2 : type == 6 ? 4 : 1;
+        case SM86_LDG_NOU: return mem_words(type);
         case SM86_LDC:
         case SM86_ULDC:
         case SM86_ULDC_IDX: return type == 5 ? 2 : 1;

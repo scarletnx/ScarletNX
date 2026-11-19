@@ -4688,6 +4688,18 @@ static Word fold_with(Word x, unsigned lo, unsigned n, u64 v) {
     set(&x, lo, n, v);
     return x;
 }
+/* TXQ Rd on, the dimensions of c[2][0x40], with bit 79, which only a float result takes as .F16: its integers go one a
+   register */
+static Word fold_txq(u32 dst, u32 mask) {
+    Word x = fix(0xb6f);
+    set(&x, 16, 8, dst);
+    set(&x, 24, 8, 255);
+    set(&x, 40, 19, 2u << 14 | 0x40 >> 2);
+    set(&x, 64, 8, 255);
+    set(&x, 72, 4, mask);
+    set(&x, 79, 1, 1);
+    return x;
+}
 /* the fragment program of n instructions and its EXIT, render target 0 from R0-R3, generic 0's components
    interpolated as imap says (the SPH's byte 0x18, 2 bits a component), translated */
 static u32* fold_fs(const Word* insns, u32 n, u32 imap, ShaderInfo* si, size_t* count) {
@@ -4750,6 +4762,48 @@ static void test_perspective_fold(const char* dir) {
     /* an IPA writes one register: one into R3 leaves the reciprocal in R4 */
     fold_case((const Word[]){w, rcp, fold_ipa(3, 0x84), x, mul}, 5, 0xaa, 2, 1,
               "an IPA into the register below the reciprocal's leaves it to the FMUL");
+    /* a texture instruction writes the registers of the components its mask selects, a load those of its size: one
+       between the reciprocal and the FMUL that doesn't reach R4 leaves it to the FMUL, one that does keeps both */
+    const Word tex = fold_with(tex_f16(2, 255, 3), 79, 1, 0), tex1 = fold_with(tex_f16(8, 4, 3), 79, 1, 0);
+    fold_case((const Word[]){w, rcp, x, tex, mul}, 5, 0xaa, 1, 1, "a TEX into R2 and R3 leaves the reciprocal");
+    fold_case((const Word[]){w, rcp, x, fold_with(tex, 72, 4, 7), mul}, 5, 0xaa, 1, 0,
+              "a TEX whose third component goes on into R4 keeps both");
+    fold_case((const Word[]){w, rcp, x, tex1, mul}, 5, 0xaa, 1, 1,
+              "a TEX of two components into R8 and R9 leaves R4, its second destination, as it was");
+    fold_case((const Word[]){w, rcp, x, fold_with(tex1, 72, 4, 0xd), mul}, 5, 0xaa, 1, 0,
+              "a TEX whose third component goes to its second destination, R4, keeps both");
+    fold_case((const Word[]){w, rcp, x, tex_f16(8, 4, 3), mul}, 5, 0xaa, 1, 1,
+              "TEX.F16 packs two components in R8 alone and leaves R4");
+    fold_case((const Word[]){w, rcp, x, tex_f16(8, 4, 7), mul}, 5, 0xaa, 1, 0,
+              "TEX.F16 packs a third component in its second destination, R4: keeps both");
+    fold_case((const Word[]){w, rcp, x, fold_with(tex_f16(0, 255, 1), 79, 1, 0), mul}, 5, 0xaa, 1, 0,
+              "a TEX into the input's register keeps both");
+    /* TMML and TLD (its level 0) write as TEX does; TMML's levels in fixed point are two multiplies more, and TLD's
+       texel over a fragment's scale eight */
+    const Word tmml = fold_with(tex, 0, 12, 0xb69), tld = fold_with(fold_with(tex, 0, 12, 0xb66), 87, 3, 1);
+    fold_case((const Word[]){w, rcp, x, tmml, mul}, 5, 0xaa, 3, 1, "a TMML into R2 and R3 leaves the reciprocal");
+    fold_case((const Word[]){w, rcp, x, fold_with(tmml, 72, 4, 7), mul}, 5, 0xaa, 3, 0,
+              "a TMML of three values writes R4: keeps both");
+    fold_case((const Word[]){w, rcp, x, tld, mul}, 5, 0xaa, 9, 1, "a TLD into R2 and R3 leaves the reciprocal");
+    fold_case((const Word[]){w, rcp, x, fold_with(tld, 72, 4, 7), mul}, 5, 0xaa, 9, 0,
+              "a TLD of three components writes R4: keeps both");
+    /* a 2D TXQ's size over a fragment's scale (scaled_size) is two multiplies more */
+    fold_case((const Word[]){w, rcp, x, fold_txq(2, 3), mul}, 5, 0xaa, 3, 1,
+              "a TXQ of two values into R2 and R3 leaves R4");
+    fold_case((const Word[]){w, rcp, x, fold_txq(2, 7), mul}, 5, 0xaa, 3, 0,
+              "a TXQ of three values, a register each with bit 79, writes R4: keeps both");
+    fold_case((const Word[]){w, rcp, x, local_op(0x983, 3, 255, 0, 4), mul}, 5, 0xaa, 1, 1,
+              "LDL of 32 bits into R3 leaves R4");
+    fold_case((const Word[]){w, rcp, x, local_op(0x983, 3, 255, 0, 5), mul}, 5, 0xaa, 1, 0,
+              "LDL of 64 bits into R3 writes R4: keeps both");
+    fold_case((const Word[]){w, rcp, x, local_op(0x983, 1, 255, 0, 6), mul}, 5, 0xaa, 1, 0,
+              "LDL of 128 bits into R1 writes R4: keeps both");
+    /* through the pointer c[0][0x110] in R6 and R7 */
+    const Word pointer = ldc(6, 255, 0, 0x110, 5);
+    fold_case((const Word[]){pointer, w, rcp, x, ldg_nou(3, 6, 0, 4), mul}, 6, 0xaa, 1, 1,
+              "LDG of 32 bits into R3 leaves R4");
+    fold_case((const Word[]){pointer, w, rcp, x, ldg_nou(3, 6, 0, 5), mul}, 6, 0xaa, 1, 0,
+              "LDG of 64 bits into R3 writes R4: keeps both");
     const Word two[] = {w, rcp, x, fold_ipa(1, 0x84), mul, fold_fmul(1, 1, 4)};
     fold_case(two, 6, 0xaa, 2, 1, "each component's FMUL by the one reciprocal folds");
     /* the reciprocal before a forward branch over code that writes neither register, or before a loop that doesn't */
@@ -4846,6 +4900,10 @@ static void test_perspective_fold(const char* dir) {
     size_t count = 0;
     u32* spv = fold_fs(folds, 4, 0xaa, &si, &count);
     CHECK(spv && keep_module(dir, "fs_perspective_fold", spv, count));
+    free(spv);
+    /* TXQ's integers with bit 79 go one a register: a module spirv-val passes, where packing them as halves wouldn't */
+    spv = fold_fs((const Word[]){w, rcp, x, fold_txq(2, 7), mul}, 5, 0xaa, &si, &count);
+    CHECK(spv && keep_module(dir, "fs_perspective_fold_txq", spv, count));
     free(spv);
     /* a legacy texture coordinate (a[0x300], generic 22), perspective by the header's texture coordinate map (word
        15): its FMUL by the reciprocal folds as a generic's does, to generic 22's input */
