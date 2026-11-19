@@ -20,6 +20,8 @@ u64 gvk_proc_space(u64 code_hi);
 /* once, after hook_install, with the guest_vulkan setting: the slot of each Vulkan function the game exports takes
    gvk's, and gvk_api's table names which it implements */
 void gvk_install(void);
+/* once, after gpu_init: if the host device cannot back guest-mapped memory, warn and restore the game's own driver */
+void gvk_check_device(void);
 /* Dispatch entry to keep across JIT invalidation, or NULL if there is no executable GVK entry here. */
 GuestFn gvk_invalidation_slot(u64 addr);
 /* 1 once gvk took the game's Vulkan functions: a save state can't hold the host's objects they made */
@@ -29,6 +31,8 @@ int gvk_active(void);
 
 /* gvk_api.c's function for the Vulkan function name, NULL for one it doesn't implement */
 GuestFn gvk_api_find(const char* name);
+/* 1 if the renderer's Vulkan device can back gvk's guest-mapped memory, 0 otherwise */
+int gvk_api_supported(void);
 
 /* A pointer field of a structure, which gvk_in copies what it points to for. A structure's fields end at kind 0 */
 enum {

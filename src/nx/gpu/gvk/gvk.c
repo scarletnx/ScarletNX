@@ -28,6 +28,7 @@ typedef struct {
     const char* name;
     u64 addr;
     GuestFn fn;
+    GuestFn orig;
 } GvkExport;
 
 static struct {
@@ -526,7 +527,7 @@ void gvk_install(void) {
             if (!unrouted++) unrouted_first = name;
         }
         taken += fn != NULL;
-        g_gvk.exports[g_gvk.nexports++] = (GvkExport){name, addr, fn};
+        g_gvk.exports[g_gvk.nexports++] = (GvkExport){name, addr, fn, NULL};
     }
     if (unrouted)
         LOG("gvk: %u functions the driver exports beside the loader's (%s, ...) have no route: a direct call to one "
@@ -546,8 +547,9 @@ void gvk_install(void) {
         for (; i < end; i++) g_gvk.exports[i].fn = fn;
     }
     for (u32 i = 0; i < g_gvk.nexports; i++) {
-        const GvkExport* e = &g_gvk.exports[i];
+        GvkExport* e = &g_gvk.exports[i];
         if (i && e[-1].addr == e->addr) continue;
+        e->orig = atomic_load_explicit(&g_disp[(e->addr - g_code_lo) >> 2], memory_order_relaxed);
         set_slot(e->addr, e->fn);
         nce_slot_taken(e->addr, "gvk");
     }
@@ -573,4 +575,28 @@ void gvk_install(void) {
     }
     LOG("gvk: the %u Vulkan functions of the game's driver (%s) call the host's Vulkan, %u of them implemented (the "
         "others stop the game when called)\n", g_gvk.nexports, driver->name ? driver->name : "?", taken);
+}
+
+void gvk_check_device(void) {
+    if (!g_gvk.nexports || gvk_api_supported()) return;
+    WARN("gvk: guest_vulkan is on, but the host device neither imports guest memory as host memory "
+         "(VK_EXT_external_memory_host) nor exports its own as a dma-buf (VK_EXT_external_memory_dma_buf): "
+         "the game's own driver runs\n");
+    for (u32 i = 0; i < g_gvk.nexports; i++) {
+        const GvkExport* e = &g_gvk.exports[i];
+        if (i && e[-1].addr == e->addr) continue;
+        set_slot(e->addr, e->orig);
+    }
+    if (g_gvk.proc_base) {
+        for (u32 i = 0; i < sizeof debug_procs / sizeof *debug_procs; i++) {
+            if (!g_gvk.proc[i]) continue;
+            set_slot(g_gvk.proc_base + 4 * i, NULL);
+            g_gvk.proc[i] = NULL;
+        }
+    }
+    free(g_gvk.exports);
+    g_gvk.exports = NULL;
+    g_gvk.nexports = 0;
+    g_gvk.driver_base = 0;
+    g_gvk.driver_size = 0;
 }

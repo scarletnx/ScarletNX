@@ -1566,6 +1566,7 @@ int snx_main(int argc, char** argv) {
         if (addons[0]) LOG("game: played with %s\n", addons);
         video_init(title, addons);
     }
+    gvk_check_device();
     switch_start(title);
     toast_fades();
     /* the log's line on the host's power state, and the mode docked's Auto picks, before the game's first thread */

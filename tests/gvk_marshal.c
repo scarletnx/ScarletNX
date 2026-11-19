@@ -121,9 +121,12 @@ void jit_slot_taken(u64 addr, GuestFn fn) {
     (void)fn;
 }
 static void submit(CPU* c, u64 entry) { c->pc = entry; }
+static void orig_submit(CPU* c, u64 entry) { c->pc = entry; }
+static int g_supported = 1;
 GuestFn gvk_api_find(const char* name) {
     return !strcmp(name, "vkQueueSubmit") || !strcmp(name, "vkCreateDebugReportCallbackEXT") ? submit : NULL;
 }
+int gvk_api_supported(void) { return g_supported; }
 
 static void marshal_submit(void) {
     VkSubmitInfo s = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1,
@@ -198,6 +201,7 @@ static void install_driver(void) {
     for (u32 i = 0; i < PRIVATE_EXPORTS; i++)
         snprintf(g_private[i], sizeof *g_private, "vkPrivate%u", i);
     g_settings.guest_vulkan = 1;
+    g_slots[(NODE + 8 - ROOT) / 4] = orig_submit;
     g_code_hi = gvk_proc_space(g_code_hi);
     gvk_install();
     assert(gvk_active());
@@ -217,6 +221,15 @@ static void install_driver(void) {
     g_proc_perm = PERM_R;
     assert(!gvk_invalidation_slot(proc));
     assert(!gvk_export("vkDebugReportMessageEXT"));
+    g_supported = 1;
+    gvk_check_device();
+    assert(gvk_active() && g_slots[(NODE + 8 - ROOT) / 4] == submit);
+    g_supported = 0;
+    gvk_check_device();
+    assert(!gvk_active());
+    assert(g_slots[(NODE + 8 - ROOT) / 4] == orig_submit);
+    assert(!g_slots[(proc - ROOT) / 4]);
+    assert(!gvk_invalidation_slot(NODE + 8));
 }
 
 int main(void) {
