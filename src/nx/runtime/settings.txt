@@ -1112,6 +1112,30 @@ setting DS WFC DNS server
     help The DNS server nds_wfc=custom gives the DS, an IPv4 address such as 178.62.43.212. With custom, empty or
     help anything but an address stops the game
 
+# the 3DS driver's (scarletnx-3ds --key=value; the launcher passes its picks)
+table g_ctr_network_ini
+setting CTR online service
+    key ctr_online
+    label 3DS online service
+    text 16
+    default pretendo
+    startup
+    words off=Off|pretendo=Pretendo Network
+    help The 3DS's online service: Pretendo Network, the community's replacement of the original, which is closed. A
+    help game logs in to its server through Pretendo's NASC with the console's own files (ctr_console), as a console
+    help with Pretendo's Nimbus does; off logs in nowhere. The console maker's own domains resolve to nothing either
+    help way, and the game reaches nothing while network is 0. Another word stops the game
+setting CTR console files
+    key ctr_console
+    label 3DS console files
+    text 2048
+    default ""
+    startup
+    help The folder of the player's own 3DS's files, laid out as Azahar's NAND folder (its nand/, where Azahar's
+    help Artic Setup Tool copies them): rw/sys/LocalFriendCodeSeed_B, rw/sys/SecureInfo_A and the friends module's
+    help save holding the Pretendo account Nimbus made. Empty: the console has no account, and a game's login does not
+    help go out
+
 # the Switch's, which nothing reads: its row shows the service is not offered
 table g_switch_online_ini
 setting Switch online service
@@ -1987,6 +2011,12 @@ setting CTR bottom resolution
 # ---- the 3DS driver's (scarletnx-3ds --key=value), in no section of the game's .ini ----
 
 table g_ctr_debug_ini
+setting CTR NASC URL
+    key ctr_nasc_url
+    text 256
+    default ""
+    help The NASC a game's login posts to with ctr_online=pretendo: empty is Pretendo's, https://nasc.pretendo.cc/ac/;
+    help another, http:// or https://, a NASC of one's own (a Pretendo server run locally, a test's)
 setting CTR IPC trace
     key ctr_ipc_trace
     int 0 1
@@ -2223,7 +2253,7 @@ section On-screen controls: g_vpad_ini, g_backend_ini, g_vpad_shown_ini/Buttons 
 section Controllers: g_gamepad_ini, g_gamepad_map_ini/Button map, g_gamepad_players_ini/Player    backend
 section Shortcuts: g_hotkeys_ini    backend
 section Network: g_network_ini
-section Online: g_nds_network_ini, g_switch_online_ini
+section Online: g_nds_network_ini, g_ctr_network_ini, g_switch_online_ini
 section User: g_user_ini
 section Debug: g_debug_ini
 
