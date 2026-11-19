@@ -139,6 +139,8 @@ VkFormat vk_raw_format(u32 bpp) { stub_hit("vk_raw_format"); }
 u8* vk_readback_buffer(u64 size, VkBuffer* buf) { stub_hit("vk_readback_buffer"); }
 void vk_readback_ready(void) { stub_hit("vk_readback_ready"); }
 void vk_render_end_at(const char* file, int line) { stub_hit("vk_render_end_at"); }
+int vk_render_begun(void) { stub_hit("vk_render_begun"); }
+void vk_rt_copy_count(int why, int ended, u64 bytes, VkFormat from, VkFormat to) { stub_hit("vk_rt_copy_count"); }
 void vk_result_begin(void) { stub_hit("vk_result_begin"); }
 void vk_result_end(void) { stub_hit("vk_result_end"); }
 VkFmt vk_rt_format(u32 fmt) { stub_hit("vk_rt_format"); }
