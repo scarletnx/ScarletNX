@@ -351,6 +351,24 @@ int main(void) {
             assert(heard.uploads == before);
         }
     }
+    /* 8-bit texels of another component order or count: a desktop context converts them into the texture's own, a
+       missing alpha one, a missing color zero; GLES leaves the texture empty */
+    {
+        uint32_t d[2] = {0};
+        snx_gl_gen_textures(desktop, 2, d);
+        snx_gl_bind_texture(desktop, T2D, d[0]);
+        snx_gl_tex_image(desktop, T2D, 0, 0x8051, 2, 1, 1, RGBA, UBYTE, (uint64_t)(uintptr_t)pattern, 0, 0); /* RGB8 */
+        assert(!snx_gl_get_error(desktop) && !heard.last.swap_rb);
+        assert(texels(d[0])[0] == pattern[0] && texels(d[0])[2] == pattern[2] && texels(d[0])[3] == pattern[4]);
+        assert(texels(d[0])[5] == pattern[6]); /* the second texel's blue: its alpha left out */
+        snx_gl_bind_texture(desktop, T2D, d[1]);
+        snx_gl_tex_image(desktop, T2D, 0, RGBA8, 2, 1, 1, 0x1907, UBYTE, (uint64_t)(uintptr_t)pattern, 0, 0); /* RGB */
+        assert(texels(d[1])[0] == pattern[0] && texels(d[1])[3] == 0xff && texels(d[1])[4] == pattern[3]);
+        snx_gl_tex_sub_image(desktop, T2D, 0, 1, 0, 0, 1, 1, 1, 0x1903, UBYTE, (uint64_t)(uintptr_t)(pattern + 9), 0,
+                             0); /* GL_RED */
+        assert(texels(d[1])[4] == pattern[9] && texels(d[1])[5] == 0 && texels(d[1])[6] == 0 &&
+               texels(d[1])[7] == 0xff);
+    }
     /* the LOD bias: a desktop context's alone */
     snx_gl_tex_parameter(ctx, T2D, LOD_BIAS, 1.5f);
     assert(snx_gl_get_error(ctx) == SNX_GL_INVALID_ENUM && snx_gl_texture(1)->sampler.lod_bias == 0);
