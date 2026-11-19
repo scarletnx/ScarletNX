@@ -797,9 +797,11 @@ static u32 dmabuf_export_bits(void) {
 #endif
 }
 
-/* once: how the host imports guest pages, and its types behind the game's three */
-static void types_ready(void) {
-    if (atomic_load_explicit(&g_gvk_api.ready, memory_order_acquire)) return;
+/* once: how the host imports guest pages, and its types behind the game's three. Returns 1 on success, or 0 when
+   probe is set and the host device cannot back guest-mapped memory */
+static int types_ready_try(int probe) {
+    if (atomic_load_explicit(&g_gvk_api.ready, memory_order_acquire)) return 1;
+    int ok = 1;
     pm_lock(&g_gvk_api.lock);
     if (!atomic_load_explicit(&g_gvk_api.ready, memory_order_relaxed)) {
         pc_init(&g_gvk_api.sc_available);
@@ -810,10 +812,15 @@ static void types_ready(void) {
             g_gvk_api.handle_type = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
             bits = dmabuf_export_bits();
         }
-        if (!bits)
+        if (!bits) {
+            if (probe) {
+                ok = 0;
+                goto done;
+            }
             fatal("gvk: the renderer's device neither imports guest memory as host memory "
                   "(VK_EXT_external_memory_host) nor exports its own as a dma-buf (VK_EXT_external_memory_dma_buf), "
                   "which the game's mapped memory needs");
+        }
         const VkMemoryPropertyFlags hv = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
         g_gvk_api.local = first_type(~0u, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
         if (g_gvk_api.local == ~0u) g_gvk_api.local = first_type(~0u, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0);
@@ -821,8 +828,13 @@ static void types_ready(void) {
         g_gvk_api.cached = first_type(bits, hv | VK_MEMORY_PROPERTY_HOST_CACHED_BIT, 0);
         if (g_gvk_api.coherent == ~0u) g_gvk_api.coherent = g_gvk_api.cached;
         if (g_gvk_api.cached == ~0u) g_gvk_api.cached = g_gvk_api.coherent;
-        if (g_gvk_api.local == ~0u || g_gvk_api.coherent == ~0u)
+        if (g_gvk_api.local == ~0u || g_gvk_api.coherent == ~0u) {
+            if (probe) {
+                ok = 0;
+                goto done;
+            }
             fatal("gvk: no memory type for the game's (device-local %d, imported %#x)", (int)g_gvk_api.local, bits);
+        }
         LOG("gvk: the game's memory types are the host's %u (device-local), %u and %u (%s; the host's types for "
             "them %#x, aligned to %llu bytes)\n",
             g_gvk_api.local, g_gvk_api.coherent, g_gvk_api.cached,
@@ -832,8 +844,12 @@ static void types_ready(void) {
             bits, (unsigned long long)g_gvk_api.import_align);
         atomic_store_explicit(&g_gvk_api.ready, 1, memory_order_release);
     }
+done:
     pm_unlock(&g_gvk_api.lock);
+    return ok;
 }
+static void types_ready(void) { (void)types_ready_try(0); }
+int gvk_api_supported(void) { return g_vk.dev != VK_NULL_HANDLE && types_ready_try(1); }
 
 /* the host's memoryTypeBits as the game's three types */
 static u32 guest_bits(u32 host) {
