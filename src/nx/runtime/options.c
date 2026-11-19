@@ -1032,54 +1032,6 @@ static void vk_descriptors_old(void) {
     }
 }
 
-int options_hmma_astat_old(const char* old) {
-    if (!strcmp(old, "1")) return 4; /* SH_HMMA_ASTAT, which tests/options_tv_mode.c checks */
-    if (!strcmp(old, "0")) return -1;
-    return -2;
-}
-/* hmma_astat, deprecated for hmma_mode: the file's read while the file gives hmma_mode no value, into the store, which
-   the file is written with, so the next run reads hmma_mode; the command line's this run's hmma_mode while the command
-   line gives that one none, as vk_descriptors is */
-static void hmma_astat_old(void) {
-    const Entry* file = store_find("hmma_astat");
-    const char *given = override_of("hmma_astat"), *first = override_of("hmma_mode");
-    int now;
-    if (file && !store_find("hmma_mode")) {
-        now = options_hmma_astat_old(file->value);
-        if (now == -2)
-            WARN("settings: hmma_astat=%s, deprecated, is neither 0 nor 1: hmma_mode takes its default, 0 (Auto) "
-                 "(docs/user/deprecations.md)\n",
-                 file->value);
-        else if (now == -1)
-            WARN("settings: hmma_astat=%s, deprecated, was its default: hmma_mode takes its own, 0 (Auto), the way the "
-                 "HMMA bench measures fastest on the GPU (docs/user/deprecations.md)\n",
-                 file->value);
-        else {
-            store_put("hmma_mode", "4");
-            WARN("settings: hmma_astat=%s, deprecated, is hmma_mode=4 (A-stationary) now (docs/user/deprecations.md)\n",
-                 file->value);
-        }
-    }
-    if (!given) return;
-    if (first) {
-        WARN("settings: --hmma_astat=%s is deprecated, and the command line gives --hmma-mode=%s too: hmma_mode=%s "
-             "this run (docs/user/deprecations.md)\n",
-             given, first, first);
-        return;
-    }
-    now = options_hmma_astat_old(given);
-    file = store_find("hmma_mode");
-    if (now >= 0) {
-        ini_override("hmma_mode", "4");
-        WARN("settings: --hmma_astat=%s is deprecated: this run reads it as --hmma-mode=4 (A-stationary) "
-             "(docs/user/deprecations.md)\n",
-             given);
-    } else
-        WARN("settings: --hmma_astat=%s is deprecated%s: hmma_mode=%s this run, %s (docs/user/deprecations.md)\n",
-             given, now == -1 ? "" : ", and neither 0 nor 1", file ? file->value : "0",
-             file ? "the .ini's" : "its default (Auto)");
-}
-
 static void say_deprecated(void) {
     const char* keys[STORE_MAX];
     char line[2048];
@@ -1142,8 +1094,7 @@ void ini_open(const char* path) {
     picks_path();
     ini_set_say(say_setting);
     for (i = 0; i < g_nover; i++) /* --vk_descriptors is read as vk_descriptors_mode, said there */
-        if (!snx_setting_known(g_over[i].key) && strcmp(g_over[i].key, "vk_descriptors") &&
-            strcmp(g_over[i].key, "hmma_astat"))
+        if (!snx_setting_known(g_over[i].key) && strcmp(g_over[i].key, "vk_descriptors"))
             WARN("--%s is not a setting, so it does nothing\n", g_over[i].key);
     launcher_picks();
     options_old_environment();
@@ -1154,7 +1105,6 @@ void ini_open(const char* path) {
         WARN("settings: cannot read %s (%s): every setting takes its default, and the file is not written over\n",
              g_path, why);
         vk_descriptors_old(); /* the command line's */
-        hmma_astat_old();
         apply_all();
         picks_said();
         options_old_environment_say();
@@ -1172,7 +1122,6 @@ void ini_open(const char* path) {
     memory_fit_old();
     astc_bc_old();
     vk_descriptors_old();
-    hmma_astat_old();
     n = pending_take(taken);
     say_deprecated();
     apply_all();

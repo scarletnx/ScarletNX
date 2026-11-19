@@ -400,8 +400,7 @@ static const struct {
                       {"ctr_separate_windows", "now ctr_screen_layout=4"},
                       {"mesh_draws", "the mesh draws are on where the driver has VK_EXT_mesh_shader and no ban holds: "
                                      "vk_ext_mesh_shader=off skips them"},
-                      {"hmma_astat", "now hmma_mode, whose 4 is A-stationary (hmma_astat's 1) and 0 Auto, the way "
-                                     "the HMMA bench measures fastest"},
+                      {"hmma_astat", "went with hmma_mode, which takes its default, 0 (Auto)"},
                       {NULL, NULL}};
 const char* ini_deprecated(const char* k) {
     int i;
