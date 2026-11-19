@@ -165,7 +165,8 @@ static int check_perspective_fold(void) {
     static const float places[3][2] = {{-0.9f, -0.9f}, {0.9f, -0.7f}, {-0.1f, 0.9f}};
     static const float spans[][3] = {{1, 2, 4}, {1e-3f, 2e-3f, 4e-3f}, {1e3f, 2e3f, 4e3f}, {1e-3f, 1, 1e3f}};
     static const double tolerance[] = {1e-5, 1e-5, 1e-5, 0};
-    static const float attr[3][2] = {{0.1f, 3.0f}, {0.7f, -2.0f}, {0.35f, 0.5f}};
+    /* generic 0's x and y at each corner, none near 0, where a relative difference measures nothing */
+    static const float attr[3][2] = {{0.1f, 3.0f}, {0.7f, 20.0f}, {0.35f, 0.5f}};
     for (u32 s = 0; s < sizeof spans / sizeof *spans; s++) {
         float position[3][4];
         for (u32 v = 0; v < 3; v++) {
