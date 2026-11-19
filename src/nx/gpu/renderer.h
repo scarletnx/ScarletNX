@@ -235,7 +235,7 @@ typedef struct Renderer {
        image is its VkImage, of VkFormat fmt and w x h, in VK_IMAGE_LAYOUT_GENERAL (it is no swapchain's), its 2D
        level 0 layer 0 shown. The work that drew it is on the graphics queue before the call, and the copy of it waits
        for that work. The image can be drawn again once a submission on that queue after the call finishes */
-    void (*present_image)(u64 image, u32 fmt, u32 w, u32 h);
+    void (*present_image)(u64 image, u32 fmt, u32 w, u32 h, const i32 crop[4]);
     /* What the next present_buffer's frame holds, and its window's HDR metadata (gpu/hdr_output.h): on the presenting
        thread, before that present. A present without it is an SDR frame's. NULL: every frame is shown as SDR */
     void (*present_hdr)(const SnxHdrFrame* frame);

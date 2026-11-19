@@ -51,8 +51,8 @@ void vi_show_buffer(u32 nvmap_id, u32 offset, u32 w, u32 h, u32 pitch, u32 layou
     frame_shown();
 }
 
-void present_image(u64 image, u32 fmt, u32 w, u32 h) {
-    g_renderer->present_image(image, fmt, w, h);
+void present_image(u64 image, u32 fmt, u32 w, u32 h, const i32 crop[4]) {
+    g_renderer->present_image(image, fmt, w, h, crop);
     frame_shown();
 }
 
