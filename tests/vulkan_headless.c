@@ -953,6 +953,66 @@ static int check_gpuprof_small_pool(void) {
     return 0;
 }
 
+/* vk_gpu_profile's fill (gpuprof_gap.h): the GPU idle while the next submission held recorded commands. A copy of 32
+   MiB recorded, then 20 ms with the GPU idle before it goes: that idle held the copy, so it counts, up to the copy's own
+   GPU time. Then 20 ms idle before anything is recorded, and the copy recorded and submitted at once: the idle held
+   nothing, so under a millisecond counts. The frames after them read the times back (frame_recycle). Lavapipe's
+   timestamps are its rasterizer threads' clock: the first is checked against a floor, not the copy's time */
+static int gpuprof_fill_case(VkBuffer from, VkBuffer to, u64 size, int record_first, u64* fill) {
+    VkBufferCopy copy = {0, 0, size};
+    u64 subs0, fill0, subs, after;
+    vk_finish();
+    vk_frame_next();
+    vk_gpuprof_fill_totals(&subs0, &fill0);
+    if (record_first) rec_CmdCopyBuffer(vk_cmd(), from, to, 1, &copy);
+    plat_sleep_ns(20000000);
+    if (!record_first) rec_CmdCopyBuffer(vk_cmd(), from, to, 1, &copy);
+    vk_submit_recorded();
+    for (u32 i = 0; i <= VK_FRAMES; i++) {
+        vk_cmd();
+        vk_frame_next();
+    }
+    vk_finish();
+    vk_frame_next();
+    vk_gpuprof_fill_totals(&subs, &after);
+    *fill = after - fill0;
+    return subs > subs0;
+}
+static int check_gpuprof_fill(void) {
+    const u64 size = 32ull << 20;
+    VkBufferCreateInfo bci = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                              .size = size,
+                              .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                              .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
+    DevMemWant aci = {.at = DM_DEVICE};
+    DevMemInfo info;
+    VkBuffer buf[2];
+    DevMem mem[2];
+    u64 held, empty;
+    if (!vk_gpuprof_timed()) {
+        printf("SKIP gpu profile fill: the graphics queue writes no timestamps (timestampValidBits %u)\n",
+               g_vk.gfx_timestamp_bits);
+        return 0;
+    }
+    for (int i = 0; i < 2; i++) CHECK(vk_buffer_create(&bci, &aci, &buf[i], &mem[i], &info) == VK_SUCCESS);
+    int placed = gpuprof_fill_case(buf[0], buf[1], size, 1, &held);
+    placed &= gpuprof_fill_case(buf[0], buf[1], size, 0, &empty);
+    vk_finish();
+    for (int i = 0; i < 2; i++) vk_devmem_buffer_destroy(buf[i], mem[i]);
+    if (!placed) {
+        printf("SKIP gpu profile fill: no submission placed on the CPU's clock (calibrated timestamps: host %d, "
+               "monotonic %d)\n",
+               g_vk.has_calibrated_host, g_vk.has_calibrated_mono);
+        return 0;
+    }
+    printf("gpu profile fill: 20 ms idle with a 32 MiB copy recorded counts %.3f ms; 20 ms idle before it was recorded "
+           "counts %.3f ms\n",
+           (double)held / 1e6, (double)empty / 1e6);
+    CHECK(held >= 100000);
+    CHECK(empty < 1000000);
+    return 0;
+}
+
 /* a frame that uploads little: 64 bytes through vk_stage and 64 through vk_stage_upload, 16 of each copied into rb */
 static int staging_light_frame(VkBuffer rb) {
     for (int upload = 0; upload < 2; upload++) {
@@ -8570,6 +8630,7 @@ static int run_headless(int argc, char** argv) {
     }
     if (getenv("SNX_TEST_GPUPROF_POOL_ONLY")) { /* a smaller pool than the profile asks for, alone */
         CHECK(!check_gpuprof_small_pool());
+        CHECK(!check_gpuprof_fill());
         printf("PASS headless Vulkan profile pool only: %u validation messages\n", g_vk_validation_messages);
         return 0;
     }

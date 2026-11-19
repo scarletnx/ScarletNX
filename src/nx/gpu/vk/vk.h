@@ -3427,6 +3427,9 @@ void vk_gpuprof_frame_done(u32 slot);
    profile are off. g_vk_timestamps_read: those read back at the slots' reuse, which a use not timed leaves out */
 int vk_gpuprof_timed(void);
 u64 vk_gpuprof_busy_ns(void);
+/* vk_gpu_profile's submissions placed on the CPU's clock since the start, and the idle their unsubmitted commands left
+   (gpuprof_gap.h's fill) */
+void vk_gpuprof_fill_totals(u64* subs, u64* fill_ns);
 extern u64 g_vk_timestamps, g_vk_timestamps_read;
 /* the device's timestamps next to the client's clock (VK_EXT_calibrated_timestamps with a host time domain) */
 int vk_gpuprof_calibrated(void);
