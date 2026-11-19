@@ -93,25 +93,43 @@ typedef struct {
     u8 mips, samples;
     u8 scale;
     u8 written; /* a command wrote the game's image before it had a shadow: the shadow starts with its pixels */
+    /* why it can't get a shadow now: the command buffers recorded with a command of the game's image that can still
+       run it (GvkCbWrites), and a view of it in a descriptor set, which would read the game's image. blocked: for good,
+       as a framebuffer at the game's size takes it, or a command gvk couldn't follow used it (a secondary command
+       buffer's, or one of too many images in a command buffer) */
+    u16 pending;
+    u8 in_set, blocked;
+    u32 wgen; /* a count of the writes recorded: a shadow made while one is recorded misses it (shadows_publish) */
 } GvkTarget;
 /* a view of a GvkTarget, and the same view of its shadow once it has one. in_set: it was written to a descriptor set
-   before then, which reads the game's image until it is written again */
+   before then */
 typedef struct {
     u64 view, img;
     VkImageView shadow;
     VkImageViewType type;
     VkFormat format;
+    VkImageUsageFlags usage; /* the view's own (VkImageViewUsageCreateInfo), 0 for the image's */
     u8 swizzle[4];
     u16 aspects;
     u8 base_level, levels;   /* 0xff: the rest */
     u16 base_layer, layers;  /* 0xffff: the rest */
     u8 in_set;
 } GvkView;
-/* With the resolution scale, the image descriptors of a set that hold a view of an image drawn at the scale: bit
-   binding * 8 + element, for bindings and elements below 8 (set_bit). A set with none has no entry */
+/* the targets without a shadow that a command buffer of the game used (host_image): they get none while it can run */
+#define GVK_CB_WRITES 7
 typedef struct {
-    u64 set, mask;
+    u64 cb, img[GVK_CB_WRITES];
+} GvkCbWrites;
+/* With the resolution scale, the image descriptors of a set that hold a view of an image drawn at the scale: bit
+   binding * 8 + element, for bindings and elements below 8 (set_bit). A set with none has no entry. pool: its pool's,
+   which counts its sets with a mask (GvkPoolMasks), to forget them as it resets */
+typedef struct {
+    u64 set, pool, mask;
 } GvkSetScale;
+typedef struct {
+    u64 pool;
+    u32 n;
+} GvkPoolMasks;
 /* a fragment module whose size queries gvk divides (gvk_spirv_scaled_size), by its handle, and a graphics pipeline of
    one, by its handle, with the layout that takes its push constants and the stages they are pushed for */
 typedef struct {
@@ -121,11 +139,25 @@ typedef struct {
     u8 n;
 } GvkSizes;
 /* a pipeline layout with gvk's push constants past GVK_SIZE_PUSH: the stages of the fragment stage's range, which
-   holds them, and where that range starts */
+   holds them, and where that range starts. Its pipelines with size queries push through it (sizes_push): the game's
+   vkDestroyPipelineLayout only marks it gone while they last */
 typedef struct {
     u64 layout;
-    u32 stages, from;
+    u32 stages, from, pipes;
+    u8 gone;
 } GvkLayout;
+/* the descriptors of a set layout's bindings 0 to 7, and a set of one with its pool and those counts, which it keeps
+   when the game destroys the layout: where a write or a copy of more descriptors than a binding holds goes on in the
+   next (slot_bit) */
+typedef struct {
+    u64 layout;
+    u32 count[8];
+} GvkDsLayout;
+typedef struct {
+    u64 set, pool;
+    u32 count[8];
+    u8 known;
+} GvkSetInfo;
 /* a command buffer's masks of its bound graphics sets 0 to 3, its graphics pipeline, and the size bits it pushed last,
    with the layout it pushed them with (0: to push at the next draw) */
 typedef struct {
@@ -160,7 +192,8 @@ typedef struct {
     u32 reserved;
     int retired;
     VkFormat fmt;
-    u32 w, h;
+    u32 w, h, scale;
+    i32 crop[4];
     VkImage img[GVK_SC_IMAGES];
     VkDeviceMemory mem[GVK_SC_IMAGES];
     u64 shown[GVK_SC_IMAGES]; /* the display's number for each image's last present (vk_display_frames), 0 none */
@@ -205,7 +238,6 @@ typedef struct {
 
 static struct {
     PMutex lock;
-    PMutex shadow_lock; /* one framebuffer's shadows made at a time (fb_scale), before lock */
     PCond sc_available;
     _Atomic int ready;           /* the memory types are chosen */
     u32 local, coherent, cached; /* the host's memory types behind the game's 0, 1 and 2 */
@@ -215,7 +247,8 @@ static struct {
     GvkGraphics graphics[GVK_SCALED];
     u64 import_align;            /* minImportedHostPointerAlignment, or a host page for dma-bufs */
     VkExternalMemoryHandleTypeFlagBits handle_type; /* how the host imports guest pages: host memory or a dma-buf */
-    u32 nmem, nimage, nrpass, npass, ntarget, nview, nsfb, ndyn, ndual, nsetscale, nmsizes, npsizes, nbound, nlayout;
+    u32 nmem, nimage, nrpass, npass, ntarget, nview, nsfb, ndyn, ndual, nsetscale, nmsizes, npsizes, nbound, nlayout,
+        ncbw, ndsl, nsetinfo, npoolmasks;
     GvkMem mem[GVK_MEMS];       /* open addressing by handle */
     GvkImage image[GVK_IMAGES];
     GvkRpass rpass[GVK_RPASSES];
@@ -229,7 +262,12 @@ static struct {
     GvkSizes msizes[GVK_DUALS], psizes[GVK_SCALED];
     GvkLayout layout[GVK_SCALED];
     GvkBound bound[GVK_CBS];
+    GvkCbWrites cbw[GVK_CBS];
+    GvkDsLayout dsl[GVK_SCALED];
+    GvkSetInfo setinfo[GVK_IMAGES];
+    GvkPoolMasks poolmasks[GVK_POOLS];
     GvkSwapchain sc[GVK_SWAPCHAINS];
+    u64 vi_window; /* guest android::Surface* (ANativeWindow*) from VkViSurfaceCreateInfoNN::window */
     u32 ntpool, ntset, tset_cap, tset_free, nbuckets;
     GvkPoolTwin tpool[GVK_POOLS];
     GvkTwinSet* tsets; /* tset_cap slots */
@@ -244,7 +282,7 @@ static struct {
     int retire_needs_signal;
     GvkRetired* retired;
     size_t retire_head, retire_count, retire_cap;
-} g_gvk_api = {.lock = PMUTEX_INIT, .shadow_lock = PMUTEX_INIT};
+} g_gvk_api = {.lock = PMUTEX_INIT};
 
 /* ------------------------------------------------------------ calls */
 #define H(T, v) ((T)(uintptr_t)(v))
@@ -458,7 +496,10 @@ static int tab_take(u8* t, size_t size, u32 cap, u32* n, u64 key, void* out) {
 }
 typedef char gvk_entries_fit[sizeof(GvkMem) <= 64 && sizeof(GvkRpass) <= 64 && sizeof(GvkPass) <= 64 &&
                                      sizeof(GvkTarget) <= 64 && sizeof(GvkView) <= 64 && sizeof(GvkDyn) <= 64 &&
-                                     sizeof(GvkPoolTwin) <= 64 && sizeof(GvkSizes) <= 64 && sizeof(GvkBound) <= 64
+                                     sizeof(GvkPoolTwin) <= 64 && sizeof(GvkSizes) <= 64 && sizeof(GvkBound) <= 64 &&
+                                     sizeof(GvkLayout) <= 64 && sizeof(GvkCbWrites) <= 64 &&
+                                     sizeof(GvkDsLayout) <= 64 && sizeof(GvkSetInfo) <= 64 &&
+                                     sizeof(GvkPoolMasks) <= 64
                                  ? 1
                                  : -1];
 
@@ -504,6 +545,11 @@ static u32 scale_factor(void) {
     float s = g_settings.resolution_scale;
     return s >= 1.5f ? (u32)(s + 0.5f) : 1;
 }
+/* whether the size queries of images drawn at the scale answer the game's size: the push constants past
+   GVK_SIZE_PUSH are gvk's, where the host has them (gvk_spirv_scaled_size) */
+static int sizes_on(void) {
+    return scale_factor() > 1 && g_vk.props.limits.maxPushConstantsSize >= GVK_SIZE_PUSH + 16;
+}
 /* the aspects of an image of format f */
 static VkImageAspectFlags format_aspects(VkFormat f) {
     switch (f) {
@@ -531,9 +577,57 @@ static void target_track(u64 img, const VkImageCreateInfo* ci, u32 w, u32 h, u32
                    .scale = (u8)f};
     tab_put(TAB(target), &g_gvk_api.ntarget, &t);
 }
-/* the image the host draws img's pixels in, and the factor they are drawn at (*f). writes: a command writes them, so
-   a shadow made later starts with them */
-static VkImage host_image(u64 img, u32* f, int writes) {
+/* A command of the game's command buffer cb on target t, which has no shadow: t gets none while cb can run it. A shadow
+   made now would miss what cb writes later, and cb would read the game's image after the shadow took its place
+   (GvkTarget.pending). A secondary command buffer runs from primaries gvk doesn't follow, so its command blocks the
+   shadow for good, as does one past GVK_CB_WRITES images */
+static void cb_used_nl(u64 cb, GvkTarget* t) {
+    const GvkCmd* cmd = &g_gvk_api.cmd[tab_slot(TAB(cmd), cb)];
+    if (cmd->cb != cb || cmd->level != VK_COMMAND_BUFFER_LEVEL_PRIMARY) {
+        t->blocked = 1;
+        return;
+    }
+    GvkCbWrites* e = &g_gvk_api.cbw[tab_slot(TAB(cbw), cb)];
+    if (e->cb != cb) {
+        GvkCbWrites fresh = {.cb = cb};
+        tab_put_nl(TAB(cbw), &g_gvk_api.ncbw, &fresh);
+        e = &g_gvk_api.cbw[tab_slot(TAB(cbw), cb)];
+    }
+    for (u32 k = 0; k < GVK_CB_WRITES; k++) {
+        if (e->img[k] == t->img) return;
+        if (!e->img[k]) {
+            e->img[k] = t->img;
+            t->pending++;
+            return;
+        }
+    }
+    t->blocked = 1;
+}
+/* cb can't run its commands any more: recorded again, reset or freed */
+static void cb_writes_drop_nl(u64 cb) {
+    GvkCbWrites e;
+    if (!tab_take_nl(TAB(cbw), &g_gvk_api.ncbw, cb, &e)) return;
+    for (u32 k = 0; k < GVK_CB_WRITES && e.img[k]; k++) {
+        GvkTarget* t = &g_gvk_api.target[tab_slot(TAB(target), e.img[k])];
+        if (t->img == e.img[k] && t->pending) t->pending--;
+    }
+}
+/* img gone: the command buffers that used it forget it, as a new image can get its handle */
+static void cb_writes_forget_nl(u64 img) {
+    for (u32 i = 0; i < GVK_CBS; i++) {
+        GvkCbWrites* e = &g_gvk_api.cbw[i];
+        for (u32 k = 0; e->cb && k < GVK_CB_WRITES; k++)
+            if (e->img[k] == img) {
+                memmove(e->img + k, e->img + k + 1, sizeof *e->img * (GVK_CB_WRITES - 1 - k));
+                e->img[GVK_CB_WRITES - 1] = 0;
+                break;
+            }
+    }
+}
+/* the image the host draws img's pixels in, and the factor they are drawn at (*f). cb: the command buffer of the
+   command that uses them, which writes them where writes is set, 0 for none: before img has a shadow, it gets none while
+   cb can run (cb_used_nl), and a shadow made after starts with what was written */
+static VkImage host_image(u64 img, u32* f, u64 cb, int writes) {
     VkImage h = H(VkImage, img);
     *f = 1;
     if (!img || scale_factor() == 1) return h;
@@ -541,18 +635,25 @@ static VkImage host_image(u64 img, u32* f, int writes) {
     GvkTarget* t = &g_gvk_api.target[tab_slot(TAB(target), img)];
     if (t->img == img) {
         *f = t->scale;
-        if (t->shadow)
+        if (t->shadow) {
             h = t->shadow;
-        else if (writes)
-            t->written = 1;
+        } else if (cb && t->scale == 1) {
+            if (writes) {
+                t->written = 1;
+                t->wgen++;
+            }
+            cb_used_nl(cb, t);
+        }
     }
     pm_unlock(&g_gvk_api.lock);
     return h;
 }
 /* v made again on img */
 static VkImageView view_make(const GvkView* v, VkImage img) {
+    VkImageViewUsageCreateInfo usage = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_USAGE_CREATE_INFO, .usage = v->usage};
     VkImageViewCreateInfo ci = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+        .pNext = v->usage ? &usage : NULL,
         .image = img,
         .viewType = v->type,
         .format = v->format,
@@ -568,10 +669,22 @@ static VkImageView view_make(const GvkView* v, VkImage img) {
 /* a view of a GvkTarget, and its shadow's view where the target has a shadow */
 static void view_track(u64 view, const VkImageViewCreateInfo* ci) {
     const VkImageSubresourceRange* s = &ci->subresourceRange;
+    VkImageUsageFlags usage = 0; /* the view's own usage, which its shadow's view keeps */
+    for (const void* p = ci->pNext; p;) {
+        VkBaseInStructure base;
+        memcpy(&base, p, sizeof base);
+        if (base.sType == VK_STRUCTURE_TYPE_IMAGE_VIEW_USAGE_CREATE_INFO) {
+            VkImageViewUsageCreateInfo u;
+            memcpy(&u, p, sizeof u);
+            usage = u.usage;
+        }
+        p = base.pNext;
+    }
     GvkView v = {.view = view,
                  .img = U(ci->image),
                  .type = ci->viewType,
                  .format = ci->format,
+                 .usage = usage,
                  .swizzle = {(u8)ci->components.r, (u8)ci->components.g, (u8)ci->components.b, (u8)ci->components.a},
                  .aspects = (u16)s->aspectMask,
                  .base_level = (u8)s->baseMipLevel,
@@ -895,7 +1008,7 @@ static void gvk_GetPhysicalDeviceProperties(CPU* RESTRICT c, u64 entry) {
     VkPhysicalDeviceProperties p = g_vk.props;
     if (p.apiVersion > GVK_GUEST_API) p.apiVersion = GVK_GUEST_API;
     /* the push constants past GVK_SIZE_PUSH are gvk's, at the resolution scale (gvk_spirv_scaled_size) */
-    if (scale_factor() > 1 && p.limits.maxPushConstantsSize > GVK_SIZE_PUSH) p.limits.maxPushConstantsSize = GVK_SIZE_PUSH;
+    if (sizes_on() && p.limits.maxPushConstantsSize > GVK_SIZE_PUSH) p.limits.maxPushConstantsSize = GVK_SIZE_PUSH;
     put(c->x[1], &p, sizeof p);
     ret(c, 0);
 }
@@ -956,7 +1069,7 @@ static void gvk_GetPhysicalDeviceProperties2(CPU* RESTRICT c, u64 entry) {
     }
     vkGetPhysicalDeviceProperties2(g_vk.phys, &p2);
     if (p2.properties.apiVersion > GVK_GUEST_API) p2.properties.apiVersion = GVK_GUEST_API;
-    if (scale_factor() > 1 && p2.properties.limits.maxPushConstantsSize > GVK_SIZE_PUSH)
+    if (sizes_on() && p2.properties.limits.maxPushConstantsSize > GVK_SIZE_PUSH)
         p2.properties.limits.maxPushConstantsSize = GVK_SIZE_PUSH;
     put(g + offsetof(VkPhysicalDeviceProperties2, properties), &p2.properties, sizeof p2.properties);
     for (u32 i = 0; i < n; i++) put(at[i] + sizeof(VkBaseOutStructure), host[i] + 1, size[i] - sizeof *host[i]);
@@ -1419,7 +1532,7 @@ static void gvk_CreatePipelineLayout(CPU* RESTRICT c, u64 entry) {
     VkPipelineLayout h = VK_NULL_HANDLE;
     VkResult r = VK_ERROR_INITIALIZATION_FAILED;
     u32 stages = 0, from = GVK_SIZE_PUSH;
-    if (ci && scale_factor() > 1) {
+    if (ci && sizes_on()) {
         /* one range a stage: the fragment stage's reaches to gvk's bytes, or gvk's is a range of its own */
         u32 n = ci->pushConstantRangeCount, room = 1, frag = n;
         VkPushConstantRange* p = gvk_scratch(sizeof *p * (n + 1));
@@ -1468,21 +1581,25 @@ typedef struct {
     VkExtent3D e;
 } GvkRegion;
 static void target_blit(VkCommandBuffer cb, u64 img, VkImage shadow, u32 f, const GvkRegion* g, u32 n, int up);
-/* t's shadow at f, in GENERAL as gvk holds each image, with the pixels the game's image got from commands before */
+/* t's shadow at f, in GENERAL as gvk holds each image, with the pixels that the commands submitted before wrote to the
+   game's image: no command buffer that can still run writes it (GvkTarget.pending). A transient attachment takes no
+   transfers and holds nothing between passes */
 static int shadow_make(GvkTarget* t, u32 f) {
     const VkImageCreateFlags keep = VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT | VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT |
                                     VK_IMAGE_CREATE_EXTENDED_USAGE_BIT;
-    VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-                            .flags = t->flags & keep,
-                            .imageType = VK_IMAGE_TYPE_2D,
-                            .format = t->format,
-                            .extent = {t->w * f, t->h * f, 1},
-                            .mipLevels = 1,
-                            .arrayLayers = t->layers,
-                            .samples = (VkSampleCountFlagBits)t->samples,
-                            .tiling = VK_IMAGE_TILING_OPTIMAL,
-                            .usage = t->usage | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-                            .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
+    int transient = (t->usage & VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT) != 0;
+    VkImageCreateInfo ii = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+        .flags = t->flags & keep,
+        .imageType = VK_IMAGE_TYPE_2D,
+        .format = t->format,
+        .extent = {t->w * f, t->h * f, 1},
+        .mipLevels = 1,
+        .arrayLayers = t->layers,
+        .samples = (VkSampleCountFlagBits)t->samples,
+        .tiling = VK_IMAGE_TILING_OPTIMAL,
+        .usage = t->usage | (transient ? 0 : VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT),
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
     VkImage img = VK_NULL_HANDLE;
     DevMem mem = 0;
     VkResult r = VK_SUCCESS;
@@ -1511,8 +1628,8 @@ static int shadow_make(GvkTarget* t, u32 f) {
                                           .image = imgs[i],
                                           .subresourceRange = {aspects, 0, 1, 0, t->layers}};
         vkCmdPipelineBarrier(o.cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, NULL, 0,
-                             NULL, t->written ? 1 : 2, b);
-        if (t->written) {
+                             NULL, t->written || transient ? 1 : 2, b);
+        if (t->written && !transient) {
             GvkRegion whole = {{aspects, 0, 0, t->layers}, {0, 0, 0}, {t->w, t->h, 1}};
             full_barrier(o.cb);
             target_blit(o.cb, t->img, img, f, &whole, 1, 1);
@@ -1531,74 +1648,130 @@ static int shadow_make(GvkTarget* t, u32 f) {
     t->scale = (u8)f;
     return 1;
 }
-/* t with its shadow, and the shadow's view of each view of it made before. A view in a descriptor set already reads
-   the game's image until the set is written again */
-static void shadow_publish(const GvkTarget* t) {
-    u32 stale = 0;
+/* a shadow no command used yet, gone */
+static void shadow_free(GvkTarget* t) {
+    vk_lock();
+    vk_image_destroy(t->shadow, t->shadow_mem);
+    vk_unlock();
+    t->shadow = VK_NULL_HANDLE;
+}
+/* whether target t can get a shadow at f now: an attachment of one level with no storage, which a shader writes at
+   the game's coordinates. Its pixels move between its image and its shadow by blits, of one sample: a multisampled
+   target that isn't transient stays at the game's size, as a copy or a resolve of it to an image at the game's size
+   would lose them. A format that doesn't blit (RADV blits no depth and stencil) takes a shadow where commands wrote no
+   pixels yet. No command buffer that can still run uses it, no descriptor set holds a view of it, and gvk followed
+   each command of it (GvkTarget) */
+static int shadow_allowed_nl(const GvkTarget* t, u32 f) {
+    const VkFormatFeatureFlags blit = VK_FORMAT_FEATURE_BLIT_SRC_BIT | VK_FORMAT_FEATURE_BLIT_DST_BIT;
+    const GvkImage* gi = &g_gvk_api.image[tab_slot(TAB(image), t->img)];
+    u32 max = g_vk.props.limits.maxImageDimension2D;
+    int transient = (t->usage & VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT) != 0;
+    int moves = transient || (t->samples == VK_SAMPLE_COUNT_1_BIT &&
+                              (!t->written || (gi->img == t->img && (gi->features & blit) == blit)));
+    return t->mips == 1 && !(t->usage & VK_IMAGE_USAGE_STORAGE_BIT) && t->w * f <= max && t->h * f <= max && moves &&
+           !t->pending && !t->in_set && !t->blocked && (t->layers == 1 || !t->written);
+}
+/* The n targets of one framebuffer with their shadows, and the shadow's view of each view of them: all or none. A
+   target that got a shadow from another framebuffer meanwhile keeps that one, and its shadow made here goes. None
+   where one lost its image, can't have a shadow any more, or got a write recorded since its shadow was made (wgen),
+   which the shadow missed, or where a view fails */
+static int shadows_publish(GvkTarget* t, u32 n) {
+    if (!n) return 1;
+    u8* dup = gvk_scratch(n);
+    memset(dup, 0, n);
     pm_lock(&g_gvk_api.lock);
-    GvkTarget* e = &g_gvk_api.target[tab_slot(TAB(target), t->img)];
-    if (e->img != t->img) { /* the game let its image go meanwhile */
-        pm_unlock(&g_gvk_api.lock);
-        retire_object((GvkRetired){.image = t->shadow, .dm = t->shadow_mem});
-        return;
+    int ok = 1;
+    for (u32 k = 0; ok && k < n; k++) {
+        const GvkTarget* e = &g_gvk_api.target[tab_slot(TAB(target), t[k].img)];
+        if (e->img != t[k].img)
+            ok = 0;
+        else if (e->shadow)
+            ok = dup[k] = e->scale == t[k].scale;
+        else
+            ok = shadow_allowed_nl(e, t[k].scale) && e->wgen == t[k].wgen;
     }
-    e->shadow = t->shadow;
-    e->shadow_mem = t->shadow_mem;
-    e->scale = t->scale;
-    for (u32 i = 0; i < GVK_IMAGES; i++) {
-        GvkView* v = &g_gvk_api.view[i];
-        if (v->view && v->img == t->img && !v->shadow) {
-            v->shadow = view_make(v, t->shadow);
-            stale += v->in_set;
+    u32 nv = 0;
+    for (u32 i = 0; ok && i < GVK_IMAGES; i++)
+        for (u32 k = 0; k < n; k++) nv += !dup[k] && g_gvk_api.view[i].view && g_gvk_api.view[i].img == t[k].img;
+    u32* at = ok ? gvk_scratch(sizeof *at * (nv + 1)) : NULL;
+    VkImageView* made = ok ? gvk_scratch(sizeof *made * (nv + 1)) : NULL;
+    u32 m = 0;
+    for (u32 i = 0; ok && i < GVK_IMAGES; i++) {
+        const GvkView* v = &g_gvk_api.view[i];
+        for (u32 k = 0; ok && v->view && k < n; k++) {
+            if (dup[k] || v->img != t[k].img) continue;
+            at[m] = i;
+            made[m] = view_make(v, t[k].shadow);
+            ok = made[m++] != VK_NULL_HANDLE;
         }
     }
+    if (!ok) {
+        for (u32 j = 0; j < m; j++)
+            if (made[j]) vkDestroyImageView(g_vk.dev, made[j], NULL);
+        pm_unlock(&g_gvk_api.lock);
+        return 0;
+    }
+    for (u32 j = 0; j < m; j++) g_gvk_api.view[at[j]].shadow = made[j];
+    for (u32 k = 0; k < n; k++) {
+        if (dup[k]) continue;
+        GvkTarget* e = &g_gvk_api.target[tab_slot(TAB(target), t[k].img)];
+        e->shadow = t[k].shadow;
+        e->shadow_mem = t[k].shadow_mem;
+        e->scale = t[k].scale;
+    }
     pm_unlock(&g_gvk_api.lock);
-    LOG_LIMIT(64, "gvk: a %ux%u target of format %d is drawn at %ux%u\n", t->w, t->h, (int)t->format, t->w * t->scale,
-              t->h * t->scale);
-    if (stale)
-        LOG_LIMIT(8, "gvk: %u views of a target were written to descriptor sets before it was drawn at %ux: those sets "
-                     "read its pixels at the game's size until written again\n",
-                  stale, t->scale);
+    for (u32 k = 0; k < n; k++) {
+        if (dup[k])
+            shadow_free(&t[k]);
+        else
+            LOG_LIMIT(64, "gvk: a %ux%u target of format %d is drawn at %ux%u\n", t[k].w, t[k].h, (int)t[k].format,
+                      t[k].w * t[k].scale, t[k].h * t[k].scale);
+    }
+    return 1;
 }
 /* The scale a framebuffer of ci's attachments is drawn at, its views changed to the shadows'. Every attachment takes
-   the scale or none does, as one at another scale is drawn at other pixels. An image that is no target yet gets its
-   shadow (shadow_make), unless it has mip levels, or storage, which a shader writes at the game's coordinates: then
-   the framebuffer is drawn at the game's size */
+   the scale or none does, as one at another scale is drawn at other pixels: each image that has no shadow yet gets
+   one (shadow_allowed_nl). Otherwise the framebuffer is drawn at the game's size. The shadows are made with no lock
+   held, as the GPU's work before them must end first (shadow_make) */
 static u32 fb_scale(VkFramebufferCreateInfo* ci) {
-    u32 n = ci->attachmentCount, f = scale_factor(), max = g_vk.props.limits.maxImageDimension2D;
+    u32 n = ci->attachmentCount, f = scale_factor();
     if (f == 1 || !n || !ci->pAttachments) return 1;
     VkImageView* views = gvk_scratch(sizeof *views * n);
     memcpy(views, ci->pAttachments, sizeof *views * n);
-    pm_lock(&g_gvk_api.shadow_lock);
+    GvkTarget* make = gvk_scratch(sizeof *make * n);
+    u32 nmake = 0;
     int ok = 1, scaled = 0;
+    pm_lock(&g_gvk_api.lock);
     for (u32 i = 0; i < n; i++) {
-        GvkView v;
-        GvkTarget t;
-        if (!tab_get(TAB(view), U(views[i]), &v) || !tab_get(TAB(target), v.img, &t)) {
+        const GvkView* v = &g_gvk_api.view[tab_slot(TAB(view), U(views[i]))];
+        const GvkTarget* t = &g_gvk_api.target[tab_slot(TAB(target), v->img)];
+        if (!views[i] || v->view != U(views[i]) || !v->img || t->img != v->img) {
             ok = 0;
             continue;
         }
-        scaled |= t.scale > 1;
-        if (t.scale == 1 && (t.mips != 1 || (t.usage & VK_IMAGE_USAGE_STORAGE_BIT) || t.w * f > max || t.h * f > max))
+        scaled |= t->scale > 1;
+        if (t->scale > 1) continue;
+        if (!shadow_allowed_nl(t, f)) {
             ok = 0;
+            continue;
+        }
+        u32 k = 0;
+        while (k < nmake && make[k].img != t->img) k++;
+        if (k == nmake) make[nmake++] = *t;
     }
-    for (u32 i = 0; ok && i < n; i++) {
-        GvkView v;
-        GvkTarget t;
-        tab_get(TAB(view), U(views[i]), &v);
-        tab_get(TAB(target), v.img, &t);
-        if (t.scale > 1) continue;
-        ok = shadow_make(&t, f);
-        if (ok) shadow_publish(&t);
-        scaled |= ok;
-    }
+    pm_unlock(&g_gvk_api.lock);
+    u32 made = 0;
+    while (ok && made < nmake && shadow_make(&make[made], f)) made++;
+    ok = ok && made == nmake && shadows_publish(make, nmake);
+    for (u32 k = 0; !ok && k < made; k++) shadow_free(&make[k]);
+    scaled |= ok && nmake;
     pm_lock(&g_gvk_api.lock);
     for (u32 i = 0; i < n; i++) {
         const GvkView* v = &g_gvk_api.view[tab_slot(TAB(view), U(views[i]))];
         GvkTarget* t = &g_gvk_api.target[tab_slot(TAB(target), v->img)];
         if (!v->img || t->img != v->img) continue;
         if (!ok) {
-            t->written |= !t->shadow; /* drawn at the game's size: a shadow made later starts with its pixels */
+            t->blocked |= !t->shadow; /* a framebuffer at the game's size writes the game's image from now on */
         } else if (t->shadow) {   /* else a swapchain image, made at the scale */
             if (v->shadow)
                 views[i] = v->shadow;
@@ -1607,7 +1780,6 @@ static u32 fb_scale(VkFramebufferCreateInfo* ci) {
         }
     }
     pm_unlock(&g_gvk_api.lock);
-    pm_unlock(&g_gvk_api.shadow_lock);
     if (!ok && scaled)
         WARN_LIMIT(4, "gvk: a framebuffer takes images drawn at %ux and images that can't be: it is drawn at the game's "
                       "size, without the pixels drawn at the scale\n",
@@ -1657,13 +1829,26 @@ static void gvk_DestroyShaderModule(CPU* RESTRICT c, u64 entry) {
     ret(c, 0);
 }
 DESTROY(DestroyPipelineCache, VkPipelineCache)
+/* a layout that pipelines with size queries push through stays until they go (gvk_DestroyPipeline) */
 static void gvk_DestroyPipelineLayout(CPU* RESTRICT c, u64 entry) {
+    pm_lock(&g_gvk_api.lock);
+    GvkLayout* l = &g_gvk_api.layout[tab_slot(TAB(layout), c->x[1])];
+    int keep = c->x[1] && l->layout == c->x[1] && l->pipes;
     GvkLayout e;
-    if (scale_factor() > 1) tab_take(TAB(layout), &g_gvk_api.nlayout, c->x[1], &e);
-    vkDestroyPipelineLayout(g_vk.dev, H(VkPipelineLayout, c->x[1]), NULL);
+    if (keep)
+        l->gone = 1;
+    else
+        tab_take_nl(TAB(layout), &g_gvk_api.nlayout, c->x[1], &e);
+    pm_unlock(&g_gvk_api.lock);
+    if (!keep) vkDestroyPipelineLayout(g_vk.dev, H(VkPipelineLayout, c->x[1]), NULL);
     ret(c, 0);
 }
-DESTROY(DestroyDescriptorSetLayout, VkDescriptorSetLayout)
+static void gvk_DestroyDescriptorSetLayout(CPU* RESTRICT c, u64 entry) {
+    GvkDsLayout e;
+    if (scale_factor() > 1) tab_take(TAB(dsl), &g_gvk_api.ndsl, c->x[1], &e);
+    vkDestroyDescriptorSetLayout(g_vk.dev, H(VkDescriptorSetLayout, c->x[1]), NULL);
+    ret(c, 0);
+}
 static void gvk_DestroyFramebuffer(CPU* RESTRICT c, u64 entry) {
     set_take(g_gvk_api.sfb, GVK_SCALED, &g_gvk_api.nsfb, c->x[1]);
     vkDestroyFramebuffer(g_vk.dev, H(VkFramebuffer, c->x[1]), NULL);
@@ -1672,9 +1857,17 @@ static void gvk_DestroyFramebuffer(CPU* RESTRICT c, u64 entry) {
 static void gvk_DestroyPipeline(CPU* RESTRICT c, u64 entry) {
     GvkGraphics e;
     GvkSizes s;
+    GvkLayout gone = {0};
     tab_take(TAB(graphics), &g_gvk_api.ngraphics, c->x[1], &e);
-    if (scale_factor() > 1) tab_take(TAB(psizes), &g_gvk_api.npsizes, c->x[1], &s);
+    pm_lock(&g_gvk_api.lock);
+    if (c->x[1] && tab_take_nl(TAB(psizes), &g_gvk_api.npsizes, c->x[1], &s)) {
+        GvkLayout* l = &g_gvk_api.layout[tab_slot(TAB(layout), s.layout)];
+        if (l->layout == s.layout && l->pipes && !--l->pipes && l->gone)
+            tab_take_nl(TAB(layout), &g_gvk_api.nlayout, s.layout, &gone);
+    }
+    pm_unlock(&g_gvk_api.lock);
     vkDestroyPipeline(g_vk.dev, H(VkPipeline, c->x[1]), NULL);
+    if (gone.layout) vkDestroyPipelineLayout(g_vk.dev, H(VkPipelineLayout, gone.layout), NULL);
     ret(c, 0);
 }
 DESTROY(DestroyFence, VkFence)
@@ -1774,7 +1967,8 @@ static void gvk_CreateImage(CPU* RESTRICT c, u64 entry) {
            size go through it, so it takes both transfers */
         int target = scale_factor() > 1 && ci->imageType == VK_IMAGE_TYPE_2D && ci->tiling == VK_IMAGE_TILING_OPTIMAL &&
                      (ci->usage & (VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT));
-        if (target) ci->usage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+        if (target && !(ci->usage & VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT))
+            ci->usage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
         r = vkCreateImage(g_vk.dev, ci, NULL, &h);
         if (r == VK_SUCCESS && target) target_track(U(h), ci, ci->extent.width, ci->extent.height, 1);
         if (r == VK_SUCCESS && (importable || scale_factor() > 1)) image_track(h, ci, importable, preinit);
@@ -1793,8 +1987,14 @@ static void gvk_DestroyImage(CPU* RESTRICT c, u64 entry) {
     if (c->x[1]) {
         image_untrack(c->x[1]);
         GvkTarget t;
-        if (scale_factor() > 1 && tab_take(TAB(target), &g_gvk_api.ntarget, c->x[1], &t) && t.shadow)
-            retire_object((GvkRetired){.image = t.shadow, .dm = t.shadow_mem});
+        if (scale_factor() > 1 && tab_take(TAB(target), &g_gvk_api.ntarget, c->x[1], &t)) {
+            if (t.pending) { /* command buffers that can still run name the handle, which a new image can get */
+                pm_lock(&g_gvk_api.lock);
+                cb_writes_forget_nl(c->x[1]);
+                pm_unlock(&g_gvk_api.lock);
+            }
+            if (t.shadow) retire_object((GvkRetired){.image = t.shadow, .dm = t.shadow_mem});
+        }
         retire_object((GvkRetired){.image = H(VkImage, c->x[1])});
     }
     ret(c, 0);
@@ -1832,7 +2032,7 @@ static void gvk_CreateShaderModule(CPU* RESTRICT c, u64 entry) {
         }
         /* at the resolution scale, its size queries answer the game's size (gvk_spirv_scaled_size) */
         GvkSizeSlots slots = {0};
-        if (scale_factor() > 1) {
+        if (sizes_on()) {
             size_t sized;
             const u32* s = gvk_spirv_scaled_size(mended, bytes, &sized, &slots);
             if (slots.skipped)
@@ -1912,6 +2112,12 @@ static void gvk_CreateDescriptorSetLayout(CPU* RESTRICT c, u64 entry) {
                 b[i].descriptorType != VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
                 b[i].pImmutableSamplers = NULL;
         r = vkCreateDescriptorSetLayout(g_vk.dev, ci, NULL, &h);
+        if (r == VK_SUCCESS && scale_factor() > 1) { /* where a write past a binding's end goes on (slot_bit) */
+            GvkDsLayout e = {.layout = U(h)};
+            for (u32 i = 0; b && i < ci->bindingCount; i++)
+                if (b[i].binding < 8) e.count[b[i].binding] = b[i].descriptorCount;
+            tab_put(TAB(dsl), &g_gvk_api.ndsl, &e);
+        }
     }
     if (r != VK_SUCCESS) WARN_LIMIT(16, "gvk: vkCreateDescriptorSetLayout failed (%d)\n", (int)r);
     put_handle(c->x[3], U(h));
@@ -1991,6 +2197,106 @@ static void tset_put_nl(u64 set, VkDescriptorSet twin, GvkPoolTwin* p) {
 static void tpool_forget_nl(GvkPoolTwin* p) {
     while (p->sets) tset_drop_nl(p->sets);
 }
+/* ---- which descriptors of a set hold an image drawn at the scale (GvkSetScale), under g_gvk_api.lock */
+/* the bit of a set's descriptor, 64 for one past the mask */
+static u32 set_bit(u32 binding, u32 element) { return binding < 8 && element < 8 ? binding * 8 + element : 64; }
+/* the descriptors of the bindings 0 to 7 of set's layout, NULL where gvk doesn't know them */
+static const u32* set_counts_nl(u64 set) {
+    const GvkSetInfo* s = &g_gvk_api.setinfo[tab_slot(TAB(setinfo), set)];
+    return set && s->set == set && s->known ? s->count : NULL;
+}
+/* the bit of the descriptor element places from (binding, 0), past the binding's end in the next bindings, as a
+   write or a copy goes on by the layout's counts (count NULL: within the binding) */
+static u32 slot_bit(const u32* count, u32 binding, u32 element) {
+    while (count && binding < 8 && element >= count[binding]) element -= count[binding++];
+    return set_bit(binding, element);
+}
+static u64 set_mask_nl(u64 set) {
+    const GvkSetScale* e = &g_gvk_api.setscale[tab_slot(TAB(setscale), set)];
+    return set && e->set == set ? e->mask : 0;
+}
+/* the count of pool's sets with a mask, by d */
+static void pool_masks_nl(u64 pool, int d) {
+    if (!pool) return;
+    GvkPoolMasks* p = &g_gvk_api.poolmasks[tab_slot(TAB(poolmasks), pool)];
+    if (p->pool != pool) {
+        if (d < 0 || g_gvk_api.npoolmasks >= GVK_POOLS / 2) return;
+        GvkPoolMasks fresh = {pool, 0};
+        tab_put_nl(TAB(poolmasks), &g_gvk_api.npoolmasks, &fresh);
+        p = &g_gvk_api.poolmasks[tab_slot(TAB(poolmasks), pool)];
+    }
+    p->n = d < 0 && !p->n ? 0 : p->n + (u32)d;
+    GvkPoolMasks gone;
+    if (!p->n) tab_take_nl(TAB(poolmasks), &g_gvk_api.npoolmasks, pool, &gone);
+}
+/* set's mask with the bits on set and the bits off cleared. A set past the table's room keeps no mask: its size
+   queries answer the host's size */
+static void set_mask_put_nl(u64 set, u64 on, u64 off) {
+    GvkSetScale* e = &g_gvk_api.setscale[tab_slot(TAB(setscale), set)];
+    if (!set || (e->set != set && !on)) return;
+    u64 mask = ((e->set == set ? e->mask : 0) & ~off) | on;
+    GvkSetScale gone;
+    if (!mask) {
+        tab_take_nl(TAB(setscale), &g_gvk_api.nsetscale, set, &gone);
+        pool_masks_nl(gone.pool, -1);
+        return;
+    }
+    if (e->set == set) {
+        e->mask = mask;
+        return;
+    }
+    if (g_gvk_api.nsetscale >= GVK_IMAGES / 8) {
+        LOG_LIMIT(4, "gvk: more than %u descriptor sets hold images drawn at the scale: the others' size queries "
+                     "answer the host's size\n",
+                  GVK_IMAGES / 8);
+        return;
+    }
+    const GvkSetInfo* i = &g_gvk_api.setinfo[tab_slot(TAB(setinfo), set)];
+    GvkSetScale s = {set, i->set == set ? i->pool : 0, mask};
+    tab_put_nl(TAB(setscale), &g_gvk_api.nsetscale, &s);
+    pool_masks_nl(s.pool, 1);
+}
+/* a set's pool and its layout's counts, for slot_bit and sets_forget_nl, and nothing in its mask yet */
+static void set_info_put_nl(u64 set, u64 pool, u64 layout) {
+    set_mask_put_nl(set, 0, ~0ull);
+    GvkSetInfo* s = &g_gvk_api.setinfo[tab_slot(TAB(setinfo), set)];
+    if (s->set != set && g_gvk_api.nsetinfo >= GVK_IMAGES / 2) {
+        LOG_LIMIT(4, "gvk: more than %u descriptor sets: a write past a binding's end in the others is taken as within "
+                     "it\n",
+                  GVK_IMAGES / 2);
+        return;
+    }
+    const GvkDsLayout* l = &g_gvk_api.dsl[tab_slot(TAB(dsl), layout)];
+    GvkSetInfo e = {.set = set, .pool = pool, .known = layout && l->layout == layout};
+    if (e.known) memcpy(e.count, l->count, sizeof e.count);
+    tab_put_nl(TAB(setinfo), &g_gvk_api.nsetinfo, &e);
+}
+static void set_info_drop_nl(u64 set) {
+    GvkSetInfo e;
+    set_mask_put_nl(set, 0, ~0ull);
+    tab_take_nl(TAB(setinfo), &g_gvk_api.nsetinfo, set, &e);
+}
+/* The sets of pool, gone with its reset or its end: their masks at once, where it has any, and their counts at its
+   end or as the table fills (a reset pool's handles come back to its next sets, which take their entries over) */
+static void sets_forget_nl(u64 pool, int always) {
+    if (!pool) return;
+    const GvkPoolMasks* p = &g_gvk_api.poolmasks[tab_slot(TAB(poolmasks), pool)];
+    for (u32 i = 0; pool && p->pool == pool && i < GVK_IMAGES / 4;) {
+        const GvkSetScale* s = &g_gvk_api.setscale[i];
+        if (s->set && s->pool == pool)
+            set_mask_put_nl(s->set, 0, ~0ull); /* the run after it moves back: the same slot again */
+        else
+            i++;
+    }
+    if (!always && g_gvk_api.nsetinfo < GVK_IMAGES / 4) return;
+    for (u32 i = 0; i < GVK_IMAGES;) {
+        const GvkSetInfo* s = &g_gvk_api.setinfo[i];
+        if (s->set && s->pool == pool)
+            set_info_drop_nl(s->set);
+        else
+            i++;
+    }
+}
 /* the pool's twin: the same sizes and flags, in host memory, where sets can't be bound */
 static void gvk_CreateDescriptorPool(CPU* RESTRICT c, u64 entry) {
     REQUIRE_OUT(c->x[3], 8);
@@ -2018,6 +2324,7 @@ static void gvk_DestroyDescriptorPool(CPU* RESTRICT c, u64 entry) {
     GvkPoolTwin e = {0};
     pm_lock(&g_gvk_api.lock);
     GvkPoolTwin* p = tpool_at_nl(c->x[1]);
+    if (scale_factor() > 1) sets_forget_nl(c->x[1], 1);
     if (p) {
         tpool_forget_nl(p);
         tab_take_nl(TAB(tpool), &g_gvk_api.ntpool, c->x[1], &e);
@@ -2031,6 +2338,7 @@ static void gvk_ResetDescriptorPool(CPU* RESTRICT c, u64 entry) {
     VkDescriptorPool twin = VK_NULL_HANDLE;
     pm_lock(&g_gvk_api.lock);
     GvkPoolTwin* p = tpool_at_nl(c->x[1]);
+    if (scale_factor() > 1) sets_forget_nl(c->x[1], 0);
     if (p) {
         tpool_forget_nl(p);
         twin = p->twin;
@@ -2038,34 +2346,6 @@ static void gvk_ResetDescriptorPool(CPU* RESTRICT c, u64 entry) {
     pm_unlock(&g_gvk_api.lock);
     if (twin) vkResetDescriptorPool(g_vk.dev, twin, 0);
     ret_vk(c, vkResetDescriptorPool(g_vk.dev, H(VkDescriptorPool, c->x[1]), (VkDescriptorPoolResetFlags)c->x[2]));
-}
-/* ---- which descriptors of a set hold an image drawn at the scale (GvkSetScale), under g_gvk_api.lock */
-/* the bit of a set's descriptor, 64 for one past the mask */
-static u32 set_bit(u32 binding, u32 element) { return binding < 8 && element < 8 ? binding * 8 + element : 64; }
-static u64 set_mask_nl(u64 set) {
-    const GvkSetScale* e = &g_gvk_api.setscale[tab_slot(TAB(setscale), set)];
-    return set && e->set == set ? e->mask : 0;
-}
-/* set's mask with the bits on set and the bits off cleared */
-static void set_mask_put_nl(u64 set, u64 on, u64 off) {
-    GvkSetScale* e = &g_gvk_api.setscale[tab_slot(TAB(setscale), set)];
-    if (!set || (e->set != set && !on)) return;
-    u64 mask = ((e->set == set ? e->mask : 0) & ~off) | on;
-    GvkSetScale gone;
-    if (!mask) {
-        tab_take_nl(TAB(setscale), &g_gvk_api.nsetscale, set, &gone);
-        return;
-    }
-    /* the sets of a pool reset or destroyed stay until their handles come back (gvk_AllocateDescriptorSets) */
-    if (e->set != set && g_gvk_api.nsetscale >= GVK_IMAGES / 8) {
-        LOG_LIMIT(4, "gvk: more than %u descriptor sets hold images drawn at the scale: their size queries answer the "
-                     "host's size until the sets are written again\n",
-                  GVK_IMAGES / 8);
-        memset(g_gvk_api.setscale, 0, sizeof g_gvk_api.setscale);
-        g_gvk_api.nsetscale = 0;
-    }
-    GvkSetScale s = {set, mask};
-    tab_put_nl(TAB(setscale), &g_gvk_api.nsetscale, &s);
 }
 /* a set of a pool with a twin gets its own twin there, or none when that fails: then copies read the set itself */
 static void gvk_AllocateDescriptorSets(CPU* RESTRICT c, u64 entry) {
@@ -2078,7 +2358,8 @@ static void gvk_AllocateDescriptorSets(CPU* RESTRICT c, u64 entry) {
     if (r == VK_SUCCESS && scale_factor() > 1) { /* a handle back from a pool reset holds nothing yet */
         const VkDescriptorSet* made = gvk_ptr(c->x[2]);
         pm_lock(&g_gvk_api.lock);
-        for (u32 i = 0; g_gvk_api.nsetscale && i < ai->descriptorSetCount; i++) set_mask_put_nl(U(made[i]), 0, ~0ull);
+        for (u32 i = 0; i < ai->descriptorSetCount; i++)
+            set_info_put_nl(U(made[i]), U(ai->descriptorPool), U(ai->pSetLayouts[i]));
         pm_unlock(&g_gvk_api.lock);
     }
     GvkPoolTwin e;
@@ -2105,7 +2386,7 @@ static void gvk_FreeDescriptorSets(CPU* RESTRICT c, u64 entry) {
     VkDescriptorPool twin_pool = VK_NULL_HANDLE;
     u32 k = 0;
     pm_lock(&g_gvk_api.lock);
-    for (u32 i = 0; g_gvk_api.nsetscale && i < n; i++) set_mask_put_nl(U(sets[i]), 0, ~0ull);
+    for (u32 i = 0; scale_factor() > 1 && i < n; i++) set_info_drop_nl(U(sets[i]));
     GvkPoolTwin* p = tpool_at_nl(c->x[1]);
     for (u32 i = 0; p && i < n; i++) {
         u32 t = sets[i] ? tset_find_nl(U(sets[i])) : 0;
@@ -2166,25 +2447,26 @@ static void update_with_twins(VkWriteDescriptorSet* w, u32 nw, const VkCopyDescr
         copy_run(cp + i, st + i, dt + i, end - i, tmp);
     }
 }
-/* A write's image views as the host draws them: a target's shadow's where it has one. A target's view without one is
-   marked: a shadow made later leaves the set reading the game's image (shadow_publish). The set's mask takes the
-   views of images drawn at the scale */
+/* A write's image views as the host draws them: a target's shadow's where it has one. A target without one gets none
+   from then on (fb_scale): the set would read the game's image. The set's mask takes the views of images drawn at the
+   scale */
 static void views_to_host(const VkWriteDescriptorSet* w, VkDescriptorImageInfo* im) {
     u64 on = 0, off = 0;
     pm_lock(&g_gvk_api.lock);
+    const u32* count = set_counts_nl(U(w->dstSet));
     for (u32 k = 0; k < w->descriptorCount; k++) {
-        u32 bit = set_bit(w->dstBinding, w->dstArrayElement + k);
+        u32 bit = slot_bit(count, w->dstBinding, w->dstArrayElement + k);
         u64 b = bit < 64 ? 1ull << bit : 0;
         GvkView* v = &g_gvk_api.view[tab_slot(TAB(view), U(im[k].imageView))];
-        const GvkTarget* t = &g_gvk_api.target[tab_slot(TAB(target), v->img)];
-        int scaled = im[k].imageView && v->view == U(im[k].imageView) && v->img && t->img == v->img && t->scale > 1;
-        if (im[k].imageView && v->view == U(im[k].imageView)) {
-            if (v->shadow)
-                im[k].imageView = v->shadow;
-            else
-                v->in_set = 1;
+        GvkTarget* t = &g_gvk_api.target[tab_slot(TAB(target), v->img)];
+        int known = im[k].imageView && v->view == U(im[k].imageView) && v->img && t->img == v->img;
+        if (known && v->shadow) {
+            im[k].imageView = v->shadow;
+        } else if (known && t->scale == 1) {
+            v->in_set = 1;
+            t->in_set = 1;
         }
-        if (scaled)
+        if (known && t->scale > 1)
             on |= b;
         else
             off |= b;
@@ -2198,9 +2480,10 @@ static void copies_scale(const VkCopyDescriptorSet* cp, u32 nc) {
     for (u32 i = 0; g_gvk_api.nsetscale && i < nc; i++) {
         u64 src = set_mask_nl(U(cp[i].srcSet)), on = 0, off = 0;
         if (!src && !set_mask_nl(U(cp[i].dstSet))) continue;
+        const u32 *sc = set_counts_nl(U(cp[i].srcSet)), *dc = set_counts_nl(U(cp[i].dstSet));
         for (u32 k = 0; k < cp[i].descriptorCount; k++) {
-            u32 s = set_bit(cp[i].srcBinding, cp[i].srcArrayElement + k);
-            u32 d = set_bit(cp[i].dstBinding, cp[i].dstArrayElement + k);
+            u32 s = slot_bit(sc, cp[i].srcBinding, cp[i].srcArrayElement + k);
+            u32 d = slot_bit(dc, cp[i].dstBinding, cp[i].dstArrayElement + k);
             if (d == 64) continue;
             if (s < 64 && (src >> s & 1))
                 on |= 1ull << d;
@@ -2327,14 +2610,20 @@ static void gvk_CreateGraphicsPipelines(CPU* RESTRICT c, u64 entry) {
                 GvkGraphics e = {U(made[i]), dynamic};
                 tab_put(TAB(graphics), &g_gvk_api.ngraphics, &e);
             }
-            GvkSizes sz; /* its fragment module's size queries, and the layout and stages their bits are pushed with */
-            GvkLayout lay;
-            if (frag[i] && tab_get(TAB(msizes), frag[i], &sz) && tab_get(TAB(layout), U(ci[i].layout), &lay)) {
+            /* its fragment module's size queries, and the layout and stages their bits are pushed with: the layout
+               stays while the pipeline does (gvk_DestroyPipelineLayout) */
+            pm_lock(&g_gvk_api.lock);
+            GvkLayout* lay = &g_gvk_api.layout[tab_slot(TAB(layout), U(ci[i].layout))];
+            const GvkSizes* m = &g_gvk_api.msizes[tab_slot(TAB(msizes), frag[i])];
+            if (frag[i] && m->key == frag[i] && lay->layout == U(ci[i].layout) && !lay->gone) {
+                GvkSizes sz = *m;
                 sz.key = U(made[i]);
-                sz.layout = U(ci[i].layout);
-                sz.stages = lay.stages;
-                tab_put(TAB(psizes), &g_gvk_api.npsizes, &sz);
+                sz.layout = lay->layout;
+                sz.stages = lay->stages;
+                tab_put_nl(TAB(psizes), &g_gvk_api.npsizes, &sz);
+                lay->pipes++;
             }
+            pm_unlock(&g_gvk_api.lock);
         }
         kthread_host_wait_end();
     }
@@ -2388,6 +2677,7 @@ static void cb_clear_nl(u64 cb) {
     tab_take_nl(TAB(pass), &g_gvk_api.npass, cb, &p);
     tab_take_nl(TAB(dyn), &g_gvk_api.ndyn, cb, &d);
     tab_take_nl(TAB(bound), &g_gvk_api.nbound, cb, &b);
+    cb_writes_drop_nl(cb);
 }
 static void pool_clear(u64 pool, int destroy) {
     pm_lock(&g_gvk_api.lock);
@@ -2900,7 +3190,7 @@ static void gvk_CmdPipelineBarrier(CPU* RESTRICT c, u64 entry) {
         if (i[k].oldLayout == VK_IMAGE_LAYOUT_PREINITIALIZED && image_get(U(i[k].image)).preinit)
             i[k].oldLayout = VK_IMAGE_LAYOUT_GENERAL;
         u32 f;
-        i[k].image = host_image(U(i[k].image), &f, 0);
+        i[k].image = host_image(U(i[k].image), &f, 0, 0);
     }
     if ((nm && !m) || (nb && !b) || (ni && !i)) {
         ret(c, 0);
@@ -2943,7 +3233,7 @@ static void target_blit(VkCommandBuffer cb, u64 img, VkImage shadow, u32 f, cons
     const VkFormatFeatureFlags blit = VK_FORMAT_FEATURE_BLIT_SRC_BIT | VK_FORMAT_FEATURE_BLIT_DST_BIT;
     GvkImage gi = image_get(img);
     if ((gi.features & blit) != blit || gi.samples != VK_SAMPLE_COUNT_1_BIT) {
-        LOG_LIMIT(4, "gvk: a copy of a target drawn at %ux leaves its pixels out: its format or samples can't be "
+        WARN_LIMIT(4, "gvk: a copy of a target drawn at %ux leaves its pixels out: its format or samples can't be "
                      "blitted\n",
                   f);
         return;
@@ -2951,8 +3241,9 @@ static void target_blit(VkCommandBuffer cb, u64 img, VkImage shadow, u32 f, cons
     VkImageBlit* b = gvk_scratch(sizeof *b * n);
     int color = 1;
     for (u32 i = 0; i < n; i++) {
-        VkOffset3D end = {g[i].o.x + (i32)g[i].e.width, g[i].o.y + (i32)g[i].e.height, g[i].o.z + (i32)g[i].e.depth};
-        VkOffset3D game[2] = {g[i].o, end}, scaled[2] = {offset_at(g[i].o, f), offset_at(end, f)};
+        /* a 2D image's: its layers are the subresource's, whatever depth a 3D image's copy names */
+        VkOffset3D o = {g[i].o.x, g[i].o.y, 0}, end = {g[i].o.x + (i32)g[i].e.width, g[i].o.y + (i32)g[i].e.height, 1};
+        VkOffset3D game[2] = {o, end}, scaled[2] = {offset_at(o, f), offset_at(end, f)};
         b[i] = (VkImageBlit){.srcSubresource = g[i].sub, .dstSubresource = g[i].sub};
         for (u32 k = 0; k < 2; k++) {
             b[i].srcOffsets[k] = up ? game[k] : scaled[k];
@@ -2973,7 +3264,7 @@ static void gvk_CmdCopyImage(CPU* RESTRICT c, u64 entry) {
     gvk_scratch_reset();
     u32 n = (u32)c->x[5], fs, fd;
     const VkImageCopy* r = n && mem_user_mapped(c->x[6], sizeof *r * n) ? gvk_ptr(c->x[6]) : NULL;
-    VkImage src = host_image(c->x[1], &fs, 0), dst = host_image(c->x[3], &fd, 1);
+    VkImage src = host_image(c->x[1], &fs, c->x[0], 0), dst = host_image(c->x[3], &fd, c->x[0], 1);
     VkImageLayout sl = arg_layout(c->x[2]), dl = arg_layout(c->x[4]);
     VkCommandBuffer cb = CB;
     int down = fs > fd;
@@ -3039,7 +3330,7 @@ static void gvk_CmdCopyImage(CPU* RESTRICT c, u64 entry) {
 static void gvk_CmdBlitImage(CPU* RESTRICT c, u64 entry) {
     gvk_scratch_reset();
     u32 n = (u32)c->x[5], fs, fd;
-    VkImage src = host_image(c->x[1], &fs, 0), dst = host_image(c->x[3], &fd, 1);
+    VkImage src = host_image(c->x[1], &fs, c->x[0], 0), dst = host_image(c->x[3], &fd, c->x[0], 1);
     const VkImageBlit* r = n && mem_user_mapped(c->x[6], sizeof *r * n) ? gvk_ptr(c->x[6]) : NULL;
     VkImageBlit* s = r && (fs > 1 || fd > 1) ? gvk_scratch(sizeof *s * n) : NULL;
     for (u32 i = 0; s && i < n; i++) {
@@ -3056,7 +3347,7 @@ static void gvk_CmdBlitImage(CPU* RESTRICT c, u64 entry) {
 static void gvk_CmdResolveImage(CPU* RESTRICT c, u64 entry) {
     gvk_scratch_reset();
     u32 n = (u32)c->x[5], fs, fd;
-    VkImage src = host_image(c->x[1], &fs, 0), dst = host_image(c->x[3], &fd, 1);
+    VkImage src = host_image(c->x[1], &fs, c->x[0], 0), dst = host_image(c->x[3], &fd, c->x[0], 1);
     const VkImageResolve* r = n && mem_user_mapped(c->x[6], sizeof *r * n) ? gvk_ptr(c->x[6]) : NULL;
     VkImageResolve* s = r && fs == fd && fs > 1 ? gvk_scratch(sizeof *s * n) : NULL;
     if (r && fs != fd) LOG_LIMIT(4, "gvk: a resolve between images at two scales resolves the game's region alone\n");
@@ -3076,7 +3367,7 @@ static void gvk_CmdCopyBufferToImage(CPU* RESTRICT c, u64 entry) {
     u32 n = (u32)c->x[4], f;
     GUEST(r, VkBufferImageCopy, c->x[5], n);
     gvk_scratch_reset();
-    VkImage dst = host_image(c->x[2], &f, 1);
+    VkImage dst = host_image(c->x[2], &f, c->x[0], 1);
     VkBuffer buf = H(VkBuffer, c->x[1]);
     VkCommandBuffer cb = CB;
     if (dst == H(VkImage, c->x[2]) || !n) {
@@ -3099,7 +3390,7 @@ static void gvk_CmdCopyImageToBuffer(CPU* RESTRICT c, u64 entry) {
     u32 n = (u32)c->x[4], f;
     GUEST(r, VkBufferImageCopy, c->x[5], n);
     gvk_scratch_reset();
-    VkImage src = host_image(c->x[1], &f, 0);
+    VkImage src = host_image(c->x[1], &f, c->x[0], 0);
     VkBuffer buf = H(VkBuffer, c->x[3]);
     VkCommandBuffer cb = CB;
     if (src == H(VkImage, c->x[1]) || !n) {
@@ -3131,7 +3422,7 @@ static void gvk_CmdClearColorImage(CPU* RESTRICT c, u64 entry) {
     GUEST(color, VkClearColorValue, c->x[3], 1);
     GUEST(ranges, VkImageSubresourceRange, c->x[5], (u32)c->x[4]);
     u32 f;
-    VkImage img = host_image(c->x[1], &f, 1);
+    VkImage img = host_image(c->x[1], &f, c->x[0], 1);
     OUTSIDE(CB, vkCmdClearColorImage(CB, img, arg_layout(c->x[2]), color, (u32)c->x[4], ranges));
     ret(c, 0);
 }
@@ -3139,7 +3430,7 @@ static void gvk_CmdClearDepthStencilImage(CPU* RESTRICT c, u64 entry) {
     GUEST(value, VkClearDepthStencilValue, c->x[3], 1);
     GUEST(ranges, VkImageSubresourceRange, c->x[5], (u32)c->x[4]);
     u32 f;
-    VkImage img = host_image(c->x[1], &f, 1);
+    VkImage img = host_image(c->x[1], &f, c->x[0], 1);
     OUTSIDE(CB, vkCmdClearDepthStencilImage(CB, img, arg_layout(c->x[2]), value, (u32)c->x[4], ranges));
     ret(c, 0);
 }
@@ -3250,8 +3541,20 @@ static void gvk_QueueWaitIdle(CPU* RESTRICT c, u64 entry) { gvk_DeviceWaitIdle(c
 /* ------------------------------------------------------------ the window */
 static void gvk_CreateViSurfaceNN(CPU* RESTRICT c, u64 entry) {
     REQUIRE_OUT(c->x[3], 8);
+    u64 win = c->x[1] && mem_user_mapped(c->x[1], 32) ? gr64(c->x[1] + 24) : 0;
+    pm_lock(&g_gvk_api.lock);
+    g_gvk_api.vi_window = win;
+    pm_unlock(&g_gvk_api.lock);
     put_handle(c->x[3], GVK_SURFACE);
     ret_vk(c, VK_SUCCESS);
+}
+static void gvk_DestroySurfaceKHR(CPU* RESTRICT c, u64 entry) {
+    if (c->x[1] == GVK_SURFACE) {
+        pm_lock(&g_gvk_api.lock);
+        g_gvk_api.vi_window = 0;
+        pm_unlock(&g_gvk_api.lock);
+    }
+    ret(c, 0);
 }
 static void gvk_GetPhysicalDeviceSurfaceSupportKHR(CPU* RESTRICT c, u64 entry) {
     if (c->x[3] && mem_user_mapped(c->x[3], 4)) gw32(c->x[3], VK_TRUE);
@@ -3398,7 +3701,8 @@ static void gvk_CreateSwapchainKHR(CPU* RESTRICT c, u64 entry) {
                                                     : want,
                         .fmt = fmt,
                         .w = w * f,
-                        .h = h * f};
+                        .h = h * f,
+                        .scale = f};
     pm_unlock(&g_gvk_api.lock);
     VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
                             .imageType = VK_IMAGE_TYPE_2D,
@@ -3511,6 +3815,19 @@ static void gvk_AcquireNextImageKHR(CPU* RESTRICT c, u64 entry) {
     if (r == VK_SUCCESS) gw32(c->x[5], idx);
     ret_vk(c, r);
 }
+/* android::Surface (nnSdk's ANativeWindow) keeps mCrop (left, top, right, bottom) at +0xee0, right after its 64
+   buffer slots and four request words. The game sets it via native_window_set_crop for dynamic resolution, and the
+   console's driver puts it into QueueBuffer; gvk reads it here and scales it to the swapchain's host pixels */
+static int vi_window_crop(u64 win, u32 game_w, u32 game_h, u32 scale, i32 out[4]) {
+    if (!win || !mem_user_mapped(win, 0xef0) || gr32(win + 0x40) != 0x7fffffffu || !gr64(win + 0x98)) return 0;
+    i32 l = (i32)gr32(win + 0xee0), t = (i32)gr32(win + 0xee4), r = (i32)gr32(win + 0xee8), b = (i32)gr32(win + 0xeec);
+    if (l < 0 || t < 0 || r <= l || b <= t || (u32)r > game_w || (u32)b > game_h) return 0;
+    out[0] = l * (i32)scale;
+    out[1] = t * (i32)scale;
+    out[2] = r * (i32)scale;
+    out[3] = b * (i32)scale;
+    return 1;
+}
 /* the game's semaphores waited for on the queue, then each image shown (renderer.h present_image) */
 static void gvk_QueuePresentKHR(CPU* RESTRICT c, u64 entry) {
     gvk_scratch_reset();
@@ -3549,11 +3866,23 @@ static void gvk_QueuePresentKHR(CPU* RESTRICT c, u64 entry) {
         pm_lock(&g_gvk_api.lock);
         GvkSwapchain* s = swapchain_of(swapchains[i]);
         u32 idx = image_indices[i];
+        u64 win = g_gvk_api.vi_window;
         VkResult one = s && idx < s->n && (s->acquired & (1u << idx)) ? VK_SUCCESS : VK_ERROR_OUT_OF_DATE_KHR;
+        VkImage img = one == VK_SUCCESS ? s->img[idx] : VK_NULL_HANDLE;
+        VkFormat fmt = one == VK_SUCCESS ? s->fmt : VK_FORMAT_UNDEFINED;
+        u32 w = one == VK_SUCCESS ? s->w : 0, h = one == VK_SUCCESS ? s->h : 0,
+            sc = one == VK_SUCCESS ? s->scale : 1;
+        i32 crop[4] = {0};
+        int has_crop = one == VK_SUCCESS && vi_window_crop(win, w / sc, h / sc, sc, crop);
+        if (has_crop && memcmp(crop, s->crop, sizeof crop)) {
+            LOG_LIMIT(16, "gvk: crop %d,%d to %d,%d\n", crop[0] / (i32)sc, crop[1] / (i32)sc, crop[2] / (i32)sc,
+                      crop[3] / (i32)sc);
+            memcpy(s->crop, crop, sizeof crop);
+        }
         pm_unlock(&g_gvk_api.lock);
         if (one == VK_SUCCESS) {
             if (!g_gvk_api.presents++) LOG("gvk: the game's first present\n");
-            present_image(U(s->img[idx]), (u32)s->fmt, s->w, s->h);
+            present_image(U(img), (u32)fmt, w, h, has_crop ? crop : NULL);
             pm_lock(&g_gvk_api.lock);
             s->shown[idx] = vk_display_frames();
             s->acquired &= ~(1u << idx);
@@ -3727,7 +4056,7 @@ static const struct {
     E(DestroyQueryPool),
     E(GetQueryPoolResults),
     E(CreateViSurfaceNN),
-    AS(DestroySurfaceKHR, DestroyNothing),
+    E(DestroySurfaceKHR),
     E(GetPhysicalDeviceSurfaceSupportKHR),
     E(GetPhysicalDeviceSurfaceCapabilitiesKHR),
     E(GetPhysicalDeviceSurfaceFormatsKHR),

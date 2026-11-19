@@ -97,8 +97,10 @@ const u32* gvk_spirv_dual_source(const u32* w, size_t bytes, size_t* out_bytes);
    size to sample at texels of the game's size (one game's indirect textures and haze, of copies of its targets). The
    module gets a uvec4 in its push constants at byte GVK_SIZE_PUSH: x a bit for each image it queries, set when that
    image is drawn at the scale, and y the scale less one. Each query's width and height are divided by 1 + bit * y.
-   slots names bit k's image as set << 14 | binding << 8 | array element. A query of an image gvk can't name (more
-   than GVK_SIZE_SLOTS, an element by a variable, a function's parameter) stays the host's, counted in skipped.
+   slots names bit k's image as set << 14 | binding << 8 | array element, for bindings and elements below 8, which
+   gvk follows in descriptor sets. A query of an image gvk can't name (another binding or element, more than
+   GVK_SIZE_SLOTS, an element by a variable, a function's parameter, a result of other than 32 bits) stays the host's,
+   counted in skipped.
    Returns w with slots->n 0 where nothing changes, a scratch copy with the queries divided, or NULL for a module that
    isn't SPIR-V gvk can read */
 #define GVK_SIZE_SLOTS 16

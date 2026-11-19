@@ -65,7 +65,7 @@ void crash_report(void* host_pc, void* fault, int sig);
 void vi_show_buffer(u32 nvmap_id, u32 offset, u32 w, u32 h, u32 pitch, u32 layout, u32 bhl, u32 fmt, const i32 crop[4],
                     u32 transform, int slot);
 /* a game's own Vulkan image on the display (gpu/gvk/gvk.c, renderer.h present_image): its VkImage, VkFormat and size */
-void present_image(u64 image, u32 fmt, u32 w, u32 h);
+void present_image(u64 image, u32 fmt, u32 w, u32 h, const i32 crop[4]);
 /* the wait before vi hands the game a buffer for its next frame, as fps_limit says: with fps_limit=game until the
    frame before has been on the display for interval refreshes (its swap interval). slot: the buffer's (vi's) */
 void present_pace(u32 interval, int slot);
