@@ -134,10 +134,10 @@ Before any profiler, look at what the runtime already measures.
 
 - **The stats box** (`stats=1`, `F12`): frames a second, the last frame's time, the process's CPU and memory, the
   graphics queue's busy share and busy time a frame (from Vulkan timestamps), video memory against the driver's
-  budget (`VK_EXT_memory_budget`), and a graph of the last 120 frame times with 60 and 30 FPS guides, under it the
-  pipelines made and the BC7 encoder's runs of the last second while there are any (`Compiling 3  Encoding 12`). A
-  graph that is flat but high is steady work; one with spikes is a hitch to find (a JIT miss, a pipeline compile, a
-  texture upload: Tracy names it).
+  budget (`VK_EXT_memory_budget`), and a graph of the last 120 frame times with 60 and 30 FPS guides, under it a line
+  each for the pipelines made and the BC7 encoder's runs while the last second had some, that second's and the
+  run's (`Compiling: 3 / 1240`, `Encoding: 12 / 5300`). A graph that is flat but high is steady work; one with spikes
+  is a hitch to find (a JIT miss, a pipeline compile, a texture upload: Tracy names it).
 - **`--log=2`** adds, each second, a `resources:` line (footprint, free memory, the renderer's device memory), every
   5 s a `threads:` line with the three threads that took the most CPU, and every 600 presents an `ipc:` line with the
   slowest service commands. That alone often says which thread to profile. `--log=2` costs time itself: do not time a

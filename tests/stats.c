@@ -568,9 +568,10 @@ int main(void) {
         draw(at);
         stats_box(safe, 2, box);
         assert(box[3] == plain && box[2] == STATS_COLS * 16 && !note(0)[0]);
-        /* the work new to this run over the last second, on the line right under the graph while there is some: the
-           pipelines made (Compiling) and the BC7 encoder's runs (Encoding), from the counts the renderer reads at each
-           frame, measured once a second; the box no wider, a line taller, and as before once both are back at 0 */
+        /* the work new to this run that holds frames back, a line each right under the graph while the last second
+           had some: the pipelines made (Compiling) and the BC7 encoder's runs (Encoding), that second's and the run's
+           from the counts the renderer reads at each frame, measured once a second; each after its icon, the box no
+           wider and a line taller for each, and as before once both are back at 0 */
         g_test.gpu = (SnxStatsGpu){0};
         stats_frame(at += 1000 * MS, &g_test.gpu); /* a measure to count from */
         stats_frame(at += 1000 * MS, &g_test.gpu);
@@ -580,31 +581,43 @@ int main(void) {
         stats_frame(at += 1000 * MS, &g_test.gpu);
         draw(at);
         stats_box(safe, 2, box);
-        assert(!strcmp(note(0), "Compiling 3") && note_icon(0, TEXT_RGBA) == GUI_ICON_HAMMER);
-        assert(box[3] == plain + 32 + 8 && box[2] == STATS_COLS * 16 && past_margin() == 0);
-        g_test.gpu.compiled = 5;
+        assert(!strcmp(note(0), "Compiling: 3 / 3") && note_icon(0, TEXT_RGBA) == SNX_STATS_ICON_COMPILE);
+        assert(!note(1)[0] && box[3] == plain + 32 + 8 && box[2] == STATS_COLS * 16 && past_margin() == 0);
+        g_test.gpu.compiled = 1240;
         g_test.gpu.encoded = 12;
         stats_frame(at += 1000 * MS, &g_test.gpu);
         draw(at);
-        assert(!strcmp(note(0), "Compiling 2  Encoding 12"));
-        g_test.gpu.encoded = 20;
+        stats_box(safe, 2, box);
+        assert(!strcmp(note(0), "Compiling: 1237 / 1240") && !strcmp(note(1), "Encoding: 12 / 12"));
+        assert(note_icon(1, TEXT_RGBA) == SNX_STATS_ICON_ENCODE && SNX_STATS_ICON_ENCODE != SNX_STATS_ICON_COMPILE);
+        assert(box[3] == plain + 2 * 32 + 8 && box[2] == STATS_COLS * 16 && past_margin() == 0);
+        /* a second with no compiling: its line gone, encoding's up in its place */
+        g_test.gpu.encoded = 5300;
         stats_frame(at += 1000 * MS, &g_test.gpu);
         draw(at);
-        assert(!strcmp(note(0), "Encoding 8"));
+        stats_box(safe, 2, box);
+        assert(!strcmp(note(0), "Encoding: 5288 / 5300") && note_icon(0, TEXT_RGBA) == SNX_STATS_ICON_ENCODE);
+        assert(!note(1)[0] && box[3] == plain + 32 + 8);
         /* above RenderDoc's lines */
         stats_capture(&c);
         draw(at);
-        assert(!strcmp(note(0), "Encoding 8") && !strncmp(note(1), "RenderDoc: ", 11));
+        assert(!strcmp(note(0), "Encoding: 5288 / 5300") && !strncmp(note(1), "RenderDoc: ", 11));
         stats_capture(&(SnxStatsCapture){0});
-        /* a second with none: the line gone */
+        /* compiling back alone, encoding's line gone: the run's count kept from before */
+        g_test.gpu.compiled = 1241;
+        stats_frame(at += 1000 * MS, &g_test.gpu);
+        draw(at);
+        assert(!strcmp(note(0), "Compiling: 1 / 1241") && note_icon(0, TEXT_RGBA) == SNX_STATS_ICON_COMPILE);
+        assert(!note(1)[0]);
+        /* a second with none: both gone */
         stats_frame(at += 1000 * MS, &g_test.gpu);
         draw(at);
         stats_box(safe, 2, box);
         assert(!note(0)[0] && box[3] == plain);
         /* as stats_measured says it, the renderer's counts aside */
-        stats_measured(&(SnxStatsMeasure){.cpu = -1, .gpu = -1, .compiling = 1});
+        stats_measured(&(SnxStatsMeasure){.cpu = -1, .gpu = -1, .encoding = 1, .encoded = 9});
         draw(at);
-        assert(!strcmp(note(0), "Compiling 1"));
+        assert(!strcmp(note(0), "Encoding: 1 / 9") && !note(1)[0]);
         stats_measured(&(SnxStatsMeasure){.cpu = -1, .gpu = -1});
         draw(at);
         assert(!note(0)[0]);
