@@ -694,17 +694,29 @@ with tempfile.TemporaryDirectory() as temporary:
 server.shutdown()
 
 # the packages a pull request's notes leave out are those build.yml's appimage-cross makes for a nightly's run alone:
-# the legs a pull request's run has not, and the others too where it skips their bundle
+# every leg where a pull request does not run the job, else the legs a pull request's run has not, and the others too
+# where it skips their bundle
 spec = importlib.util.spec_from_file_location('publish_builds', SCRIPT)
 publish_builds = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(publish_builds)
 workflow = (SCRIPT.parent.parent / '.github' / 'workflows' / 'build.yml').read_text()
 cross = workflow[workflow.index('\n  appimage-cross:\n') :]
+head = cross[: cross.index('\n    steps:\n')]
+job_if = re.search(r'\n    if: >-\n((?:      .*\n)+)', head)
+skips_pulls = bool(job_if) and "github.event_name != 'pull_request'" in job_if[1]
 legs = re.search(r"github\.event_name == 'pull_request' && '(\[.*?\])' \|\| '(\[.*?\])'", cross, re.S)
-check("build.yml's appimage-cross has a pull request's legs and the others", legs, cross[:400])
+listed = re.findall(r'\n          - \{arch: ([\w-]+),', head)
+check(
+    "build.yml's appimage-cross has a pull request's legs and the others, or skips a pull request with its legs listed",
+    legs or (skips_pulls and listed),
+    cross[:400],
+)
 bundle = re.search(r'\n      - name: Bundle the AppImage\n        if: ([^\n]*)\n', cross)
-if legs:
-    pull_arches, every_arch = ({leg['arch'] for leg in json.loads(text)} for text in legs.groups())
+if legs or (skips_pulls and listed):
+    if legs:
+        pull_arches, every_arch = ({leg['arch'] for leg in json.loads(text)} for text in legs.groups())
+    else:
+        pull_arches, every_arch = set(), set(listed)
     pull_made = set() if bundle and bundle[1] == "github.event_name != 'pull_request'" else pull_arches
     expected = {f'ScarletNX-linux-{arch}.AppImage' for arch in every_arch - pull_made}
     check(

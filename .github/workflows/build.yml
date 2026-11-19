@@ -650,7 +650,7 @@ jobs:
     name: A64 differential's QEMU reference
     needs: recompiler-changes
     # the cross builds' reference alone (appimage-cross), which a pull request does not run
-    if: ${{ !cancelled() && github.event_name != 'pull_request' }}
+    if: ${{ github.event_name != 'pull_request' && !cancelled() }}
     runs-on: ubuntu-26.04
     timeout-minutes: 60
     container: archlinux:latest
