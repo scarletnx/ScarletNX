@@ -112,9 +112,10 @@ int hook_routed(const char* name) {
     return strncmp(name, "vkPrivate", 9) == 0 || !strcmp(name, "vkGetInstanceProcAddr") || !strcmp(name, "vkQueueSubmit");
 }
 int nce_wanted(void) { return 0; }
-void nce_slot_taken(u64 addr, const char* family) {
-    (void)addr;
+static u64 g_nce_refused; /* the function whose entry nce_slot_taken can't divert, 0 none */
+int nce_slot_taken(u64 addr, const char* family) {
     (void)family;
+    return addr == g_nce_refused ? -1 : 0;
 }
 void jit_slot_taken(u64 addr, GuestFn fn) {
     (void)addr;
@@ -230,6 +231,14 @@ static void install_driver(void) {
     assert(g_slots[(NODE + 8 - ROOT) / 4] == orig_submit);
     assert(!g_slots[(proc - ROOT) / 4]);
     assert(!gvk_invalidation_slot(NODE + 8));
+
+    /* one function that native code keeps: no slot stays taken, so the driver never sees the host's handles */
+    g_nce_refused = NODE + 8;
+    gvk_install();
+    assert(!gvk_active());
+    assert(g_slots[(NODE + 8 - ROOT) / 4] == orig_submit);
+    assert(!gvk_export("vkQueueSubmit"));
+    g_nce_refused = 0;
 }
 
 static void marshal_optional_one(void) {

@@ -60,7 +60,7 @@ int mem_user_string(char* dst, u64 addr, u64 cap) {
     return 0;
 }
 GuestFn nce_slot(GuestFn f) { return f; }
-void nce_slot_taken(u64 addr, const char* what) { (void)addr, (void)what; }
+int nce_slot_taken(u64 addr, const char* what) { return (void)addr, (void)what, 0; }
 void jit_slot_taken(u64 addr, GuestFn fn) { (void)addr, (void)fn; }
 int hook_routed(const char* name) { return !strcmp(name, "eglGetProcAddress"); }
 void logf_(int lvl, const char* fmt, ...) { (void)lvl, (void)fmt; }

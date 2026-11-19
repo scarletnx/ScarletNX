@@ -96,7 +96,7 @@ void mem_query(u64 addr, MemBlock* b) {
     if (addr < CODE || addr >= CODE + 0x1000) b->addr = addr, b->size = 0, b->state = MS_FREE;
 }
 GuestFn nce_slot(GuestFn f) { return f; }
-void nce_slot_taken(u64 addr, const char* what) { (void)addr, (void)what; }
+int nce_slot_taken(u64 addr, const char* what) { return (void)addr, (void)what, 0; }
 void jit_slot_taken(u64 addr, GuestFn fn) { (void)addr, (void)fn; }
 GuestFn jit_code_now(u64 pc) { return pc == ANSWER ? game_answer : pc == TRAMP ? tramp_code : NULL; }
 _Atomic SnxArmBlock* arm_slot(u32 addr, int thumb) { return (void)addr, (void)thumb, NULL; }
