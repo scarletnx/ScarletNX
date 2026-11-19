@@ -13,8 +13,8 @@
    Lavapipe is of the first kind; the second is had there by taking the device-local flag off its one memory type while
    the target moves out, so that system memory finds a type. A discrete GPU is of the second kind as it is, and of the
    first by its memory model */
-#define ASIDE_CPU   (HEAP_BASE + 0x3ca00000)
-#define ASIDE_GA    0x9f0000000ull
+#define ASIDE_CPU   (HEAP_BASE + 0x3d000000)
+#define ASIDE_GA    0xa90000000ull
 #define ASIDE_W     320u
 #define ASIDE_H     180u
 #define ASIDE_BYTES (ASIDE_W * ASIDE_H * 4u)
