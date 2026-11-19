@@ -872,8 +872,9 @@ static void scaled_case(SnxCtrMemory* m, const char* dir, const char* name, unsi
     free(s);
 }
 /* A target drawn at a render scale and copied to a framebuffer by display transfers is shown at that scale, with the
-   picture its memory has, until a draw or a fill changes the framebuffer. The presenter numbers its first eight dumps
-   only (present.c), two a case, so four cases fit */
+   picture its memory has, until a fill changes the framebuffer. A draw changes the target's image, not memory: the
+   presenter shows memory where a store changes it. The presenter numbers its first eight dumps only (present.c), two
+   a case, so four cases fit */
 static void scaled_transfer(SnxCtrMemory* m) {
     char* dir = snx_temp_dir(NULL);
     if (!dir) {
@@ -905,7 +906,8 @@ static void scaled_transfer(SnxCtrMemory* m) {
     snx_ctr_phys_write(m, VERTICES, over->vertices, sizeof over->vertices);
     snx_ctr_phys_write(m, LIST, over->list.w, over->list.n * 4);
     bool ok = record(m, over, &vulkan);
-    bool drawn = ok && !snx_ctr_vk_target_image(part, 240, 304, SNX_CTR_PIX_RGB565, 240 * 2, &scaled);
+    bool drawn = ok && snx_ctr_vk_target_image(part, 240, 304, SNX_CTR_PIX_RGB565, 240 * 2, &scaled) &&
+                 scaled.scale == 2;
     SnxCtrDisplayTransfer dt = {whole, 240 | 320u << 16, rgb565};
     ok = ok && snx_ctr_vk_display_transfer(&dt, COLOR + 80 * 240 * 4, SCALED_FB) == SNX_CTR_XFER_OK;
     bool again = ok && snx_ctr_vk_target_image(part, 240, 304, SNX_CTR_PIX_RGB565, 240 * 2, &scaled);
@@ -913,7 +915,7 @@ static void scaled_transfer(SnxCtrMemory* m) {
     bool filled = !snx_ctr_vk_target_image(part, 240, 304, SNX_CTR_PIX_RGB565, 240 * 2, &scaled);
     ok = ok && snx_ctr_vk_finish();
     bool pass = ok && drawn && again && filled;
-    printf("%-24s the scaled image dropped: %s, kept again: %s, dropped after a fill: %s: %s\n", over->name,
+    printf("%-24s kept after the draw: %s, kept again: %s, dropped after a fill: %s: %s\n", over->name,
            drawn ? "yes" : "no", again ? "yes" : "no", filled ? "yes" : "no", pass ? "ok" : "FAIL");
     if (!pass) ++failures;
     free(over);
@@ -1514,7 +1516,8 @@ static void into_quad(Scene* s, unsigned at, float x0, float y0, float x1, float
 /* the framebuffer that ends where the rows read begin, so it shares the target's rows before OVERLAP_ROW alone */
 #define OVERLAP_FB       (OVERLAP_TARGET + OVERLAP_ROW * OVERLAP_TARGET_W * 4 - OVERLAP_FB_BYTES)
 #define OVERLAP_OTHER    SECOND_COLOR
-/* the target at OVERLAP_TARGET, its rows from the top, drawn in two halves of colours left and right */
+/* the target at OVERLAP_TARGET, its rows from the top, drawn in two halves of colours left and right: one flat colour
+   would make the copy and memory agree almost everywhere, so the frames would compare few distinct pixels */
 static Scene* overlap_scene(const char* name, const uint8_t left[4], const uint8_t right[4]) {
     Scene* s = scene(name, 0, 0xff);
     put(&s->list, FB_COLOR_ADDR, OVERLAP_TARGET / 8);
@@ -1550,23 +1553,82 @@ static void overlap_check(const char* name, const char* what, bool pass) {
     printf("%-24s %-40s %s\n", name, what, pass ? "ok" : "FAIL");
     if (!pass) ++failures;
 }
-/* the target drawn in two colours, then the transfer into fb: the copy is looked up after the transfer */
-static void overlap_case(SnxCtrMemory* m, const char* name, uint32_t fb) {
+/* the framebuffer's frame as the presenter shows it, the copy or memory's own picture: the same size for both, so their
+   dumps compare pixel by pixel */
+static bool overlap_show(uint32_t fb) {
+    return snx_ctr_present_frame(0, fb, OVERLAP_FB_W, OVERLAP_FB_H, SNX_CTR_PIX_RGB565, OVERLAP_FB_W * 2, NULL);
+}
+static bool overlap_show_bytes(SnxCtrMemory* m, const unsigned char* bytes) {
+    return snx_ctr_phys_write(m, SCALED_COPY, bytes, OVERLAP_FB_BYTES) == SNX_CTR_MEM_OK && overlap_show(SCALED_COPY);
+}
+/* the four dumps of a case, in the order the presenter wrote them: 0 the copy before the draw, 1 memory's picture
+   before it, 2 the copy after it, 3 memory's picture after the store. Where memory's picture changed, the copy after
+   the draw shows memory; elsewhere it shows the copy as before */
+static bool overlap_pixels(const char* dir) {
+    unsigned char* frame[4] = {NULL, NULL, NULL, NULL};
+    bool ok = true;
+    unsigned count = 0, wrong = 0;
+    for (unsigned i = 0; i < 4; ++i) {
+        unsigned w = 0, h = 0;
+        frame[i] = test_ctr_frame_dump(dir, 0, i, &w, &h);
+        ok = ok && frame[i] && w == OVERLAP_FB_H && h == OVERLAP_FB_W;
+    }
+    for (size_t p = 0; ok && p < (size_t)OVERLAP_FB_W * OVERLAP_FB_H; ++p) {
+        const unsigned char *copy_before = frame[0] + p * 3, *memory_before = frame[1] + p * 3;
+        const unsigned char *copy_after = frame[2] + p * 3, *memory_after = frame[3] + p * 3;
+        bool stored = memcmp(memory_before, memory_after, 3) != 0;
+        count += stored;
+        wrong += stored ? memcmp(copy_after, memory_after, 3) != 0 : memcmp(copy_after, copy_before, 3) != 0;
+    }
+    for (unsigned i = 0; i < 4; ++i) free(frame[i]);
+    return ok && count > 0 && wrong == 0;
+}
+/* the target drawn in one colour, the transfer into fb, the target drawn in another; the copy looked up after each.
+   With pixels, the presenter's frames of the copy and memory before and after the draw are compared (overlap_pixels) */
+static void overlap_case(SnxCtrMemory* m, const char* dir, const char* name, uint32_t fb, bool pixels) {
     static const uint8_t inside[4] = {100, 50, 200, 255}, outside[4] = {20, 220, 90, 255};
+    static unsigned char before[OVERLAP_FB_BYTES], after[OVERLAP_FB_BYTES];
     Scene* a = overlap_scene("the target", inside, outside);
+    Scene* b = overlap_scene("the target drawn again", outside, inside);
     bool transferred = overlap_record(m, a) && overlap_transfer(fb);
     overlap_check(name, "the copy after the transfer", transferred && overlap_copy(fb));
+    /* the copy's frame and memory's picture before the draw, the bytes read once the transfer is done */
+    bool shown = pixels && transferred && overlap_show(fb) && snx_ctr_vk_finish() &&
+                 snx_ctr_phys_read(m, fb, before, sizeof before) == SNX_CTR_MEM_OK && overlap_show_bytes(m, before);
+    bool redrawn = transferred && overlap_record(m, b);
+    overlap_check(name, "the copy after a draw into the target", redrawn && overlap_copy(fb));
+    if (pixels) {
+        bool stored = shown && redrawn && overlap_show(fb) && snx_ctr_vk_finish() &&
+                      snx_ctr_phys_read(m, fb, after, sizeof after) == SNX_CTR_MEM_OK && overlap_show_bytes(m, after);
+        bool pass = stored && snx_ctr_vk_finish() && overlap_pixels(dir);
+        overlap_check(name, "shows memory where the store changed it", pass);
+    }
     free(a);
+    free(b);
 }
 /* A display transfer into a framebuffer that shares the earlier rows of a scaled target and no row it reads: the copy
-   is kept. The control's framebuffer lies beyond the target */
+   is kept, and so is one after a draw into the target, whose store the presenter's frame shows. The control's
+   framebuffer lies beyond the target. Four dumps for the overlap case, under the presenter's eight */
 static void scaled_transfer_overlap(SnxCtrMemory* m) {
+    char* dir = snx_temp_dir(NULL);
+    if (!dir) {
+        ++failures;
+        return;
+    }
     int top = g_settings.ctr_top_resolution;
     g_settings.ctr_top_resolution = 2;
-    overlap_case(m, "over the target's rows", OVERLAP_FB);
-    overlap_case(m, "beyond the target (control)", OVERLAP_OTHER);
+    if (!snx_ctr_present_init(m, dir, false)) {
+        ++failures;
+        g_settings.ctr_top_resolution = top;
+        free(dir);
+        return;
+    }
+    overlap_case(m, dir, "over the target's rows", OVERLAP_FB, true);
+    overlap_case(m, dir, "beyond the target (control)", OVERLAP_OTHER, false);
     g_settings.ctr_top_resolution = top;
     snx_ctr_vk_finish();
+    (void)snx_remove_tree(dir);
+    free(dir);
 }
 /* Shadow maps (Azahar's sw_framebuffer.cpp DrawShadowMapPixel and sw_rasterizer.cpp TextureColor): the colour buffer
    of a shadow pass holds one word per pixel, its bytes the depth from the most significant byte, then the strength */

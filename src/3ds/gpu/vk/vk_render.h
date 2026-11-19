@@ -15,8 +15,9 @@
      their pages are watched, and a write to them, the CPU's or a GPU engine's, drops them.
    - A display transfer's destination is kept at the source target's render scale (Shown), with the target's rows the
      transfer read, and the bytes the transfer wrote: the presenter shows that copy for a framebuffer inside the
-     destination, where the framebuffer's memory still is those bytes, and the memory's own pixel where it is not. A GPU
-     engine's write or a draw over it drops it; a CPU write is left to that compare.
+     destination, where the framebuffer's memory still is those bytes, and the memory's own pixel where it is not. Only
+     a GPU engine's write over it drops it. A draw into the target or a CPU write is left to that compare, and the
+     presenter first syncs the dirty targets over the copy into memory (snx_ctr_present_frame).
    - Memory the GPU writes (stores, transfers, fills, Y2R) is the GPU's until the submission that writes it is done,
      or, where the work is on a copy of the RAM (vk.h), until the CPU touches it and it is copied back.
    Vertex and index data are read where the work is: the RAM in place, or its copy. A draw with a geometry shader runs

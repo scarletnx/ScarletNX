@@ -477,7 +477,8 @@ if(TARGET snx_ctr_board)
     # two targets over one depth buffer at the scale: the second takes the first's depth, not the 1x reload
     add_test(NAME 3ds_vk_draw_scaled_shared_depth COMMAND snx-test-3ds-vk-draw --scaled-shared-depth)
     set_tests_properties(3ds_vk_draw_scaled_shared_depth PROPERTIES SKIP_RETURN_CODE 77)
-    # a display transfer into a destination over a scaled target's first rows, and no row it reads: the copy is kept
+    # a display transfer into a destination over a scaled target's first rows, and no row it reads: the copy is kept,
+    # and a draw into the target after it is checked the same way
     add_test(NAME 3ds_vk_draw_scaled_transfer_overlap COMMAND snx-test-3ds-vk-draw --scaled-transfer-overlap)
     set_tests_properties(3ds_vk_draw_scaled_transfer_overlap PROPERTIES SKIP_RETURN_CODE 77)
     # the screens laid out at the console's proportions whatever each render scale: a top screen at 2x above a bottom
