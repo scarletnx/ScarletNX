@@ -3691,6 +3691,12 @@ add_executable(snx-test-recompiler-library recompiler_library.c)
 snx_test_target(snx-test-recompiler-library gnu23)
 target_link_libraries(snx-test-recompiler-library PRIVATE scarletnx-recompiler)
 add_test(NAME recompiler_library COMMAND snx-test-recompiler-library)
+# the same header from C++, as the embedders include it
+add_executable(snx-test-recompiler-library-cpp recompiler_library_cpp.cpp)
+set_target_properties(snx-test-recompiler-library-cpp PROPERTIES CXX_STANDARD 23 CXX_STANDARD_REQUIRED ON)
+target_compile_options(snx-test-recompiler-library-cpp PRIVATE -Wall -Wextra -Werror)
+target_link_libraries(snx-test-recompiler-library-cpp PRIVATE scarletnx-recompiler)
+add_test(NAME recompiler_library_cpp COMMAND snx-test-recompiler-library-cpp)
 # what the library's archive needs from outside it: LLVM and the system's libraries alone
 # (tests/recompiler_symbols.cmake). Its program links every object of the archive with those, named here rather than
 # taken from the archive's own link line, which a new library would join. Built by the test, so a library more fails
