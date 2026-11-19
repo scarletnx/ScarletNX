@@ -62,6 +62,7 @@
 #include "nx/runtime/platform/wait_screen.h"
 #include "nx/runtime/platform/unattended.h"
 #include <errno.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -101,6 +102,7 @@ int g_ounce;
 int (*snx_menu)(const char* self);
 void (*snx_menu_run_theme)(const char* folder, SnxRunTheme* out);
 const SnxModule* g_mod;
+static const void* g_code_at; /* an address in the game's code module, for code_resident */
 const SnxVariants* g_variants;
 const SnxRoutes* g_routes;
 const SnxNros* g_nros;
@@ -292,6 +294,17 @@ static const SnxModule* load_pack(const char* path) {
 }
 #endif
 
+/* The game's code module read from its file into memory while the game starts: hundreds of MB, whose pages would
+   otherwise come from the disk the first time the game runs them. A guest thread waiting in the host's kernel for
+   such a page holds its emulated core all that time, and the core's other threads wait behind it: on a busy disk,
+   250 ms and more at once, the game shows no frame (the core watch's "keeps core ... host thread D" lines) */
+static void code_resident(void* at) {
+    char said[512];
+    SNX_THREAD_NAME("code read");
+    plat_dl_resident(at, said, sizeof said);
+    LOG("game: its code module, %s\n", said);
+}
+
 static const SnxModule* load_module(const char* path) {
     void *lib, *sym;
     ModuleFn get;
@@ -330,6 +343,7 @@ static const SnxModule* load_module(const char* path) {
         fatal("%s is not a ScarletNX game module", path);
     if (!m) fatal("%s could not be loaded: it describes no game", path);
     plat_crash_code_module(sym); /* the module its descriptor's function is in */
+    g_code_at = sym;
     if ((sym = plat_dl_sym(lib, "snx_variants")) != NULL) {
         memcpy(&get_variants, &sym, sizeof get_variants);
         g_variants = get_variants();
@@ -1534,6 +1548,8 @@ int snx_main(int argc, char** argv) {
     plat_install_crash_handler();
     clock_start();
     mod = g_mod = nce_module(mod, &entry); /* from here the log is a file, in the state folder */
+    if (g_code_at && plat_thread(code_resident, (void*)(uintptr_t)g_code_at, 0))
+        WARN("game: its code module is not read ahead: no thread for it (%s)\n", strerror(errno));
     title = game_shown(mod->title && mod->title[0] ? mod->title : g_exename, shown, sizeof shown, why, sizeof why);
     snprintf(g_closing_name, sizeof g_closing_name, "%s", title);
 #if defined(SNX_TRACY)

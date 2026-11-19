@@ -1127,6 +1127,30 @@ static void test_guest_files(const char* dir) {
 #endif
 }
 
+#if !defined(__APPLE__)
+/* the KiB of path's mappings in this process's memory (/proc/self/smaps' Rss), -1 where there is no smaps */
+static long rss_kb(const char* path) {
+    char want[4096], line[4608];
+    long kb = 0, v;
+    int in = 0;
+    FILE* f = fopen("/proc/self/smaps", "r");
+    if (!f || !realpath(path, want)) {
+        if (f) fclose(f);
+        return -1;
+    }
+    while (fgets(line, sizeof line, f)) {
+        char* p = strchr(line, '/');
+        if (strchr(line, '-') == line + strspn(line, "0123456789abcdef")) { /* a mapping's line: its path last */
+            line[strcspn(line, "\n")] = 0;
+            in = p && !strcmp(p, want);
+        } else if (in && sscanf(line, "Rss: %ld kB", &v) == 1)
+            kb += v;
+    }
+    fclose(f);
+    return kb;
+}
+#endif
+
 int main(int argc, char** argv) {
     const char* dir = argc > 1 ? argv[1] : ".";
     char path[1200], tmp[1200], sub[1200];
@@ -1221,6 +1245,25 @@ int main(int argc, char** argv) {
         void* sym = found ? plat_dl_sym(found, "snx_test_dl_probe") : NULL;
         memcpy(&probe, &sym, sizeof probe);
         CHECK(opened && found && probe && probe() == 42, "a library opened was not found, or its function");
+        /* its every part read in and mapped, the 4 MB it never reads among them; an address in no object, nothing */
+        char said[512];
+#if !defined(__APPLE__)
+        long before = rss_kb(SNX_TEST_DL_PROBE);
+#endif
+        size_t got = plat_dl_resident(sym, said, sizeof said);
+        printf("  %s\n", said);
+#if defined(__APPLE__) /* dyld lists no object's parts */
+        CHECK(!got && strstr(said, "is not read ahead"), "plat_dl_resident said nothing of doing nothing on macOS");
+#else
+        CHECK(got >= (4u << 20) && strstr(said, " parts "), "plat_dl_resident did not cover the probe's 4 MB part");
+        if (strstr(said, "(MADV_POPULATE_READ)"))
+            CHECK(rss_kb(SNX_TEST_DL_PROBE) - before >= 4000,
+                  "MADV_POPULATE_READ left the probe's unread part unmapped");
+        void* heap = malloc(1u << 20);
+        CHECK(heap && !plat_dl_resident(heap, said, sizeof said) && strstr(said, "no loaded object holds the address"),
+              "an address in no loaded object was read ahead");
+        free(heap);
+#endif
     }
 
     printf("timed waits and threads\n");

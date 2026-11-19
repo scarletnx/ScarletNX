@@ -17,4 +17,10 @@ void* plat_dl_loaded(const char* name);
 /* What plat_dl_open tries when the system refuses path, NULL for nothing: Android's shared storage is mounted noexec,
    and its driver loads a copy in the app's cache folder. Set once, before the first plat_dl_open */
 void plat_dl_fallback(void* (*open)(const char* path));
+#include <stddef.h>
+/* The loaded object (a library, the program) whose code or data holds inside: each of its parts read from its file
+   into memory and mapped now, waiting for the reads (Linux's MADV_POPULATE_READ; a kernel without it, or FreeBSD,
+   MADV_WILLNEED, which only starts them), so its code never waits on the disk the first time it runs. Returns the
+   bytes it covered, 0 for none; said gets one line of what it did, or why it did nothing */
+size_t plat_dl_resident(const void* inside, char* said, size_t size);
 #endif
