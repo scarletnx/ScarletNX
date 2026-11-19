@@ -5350,6 +5350,13 @@ static void test_coop_fused_chain(const char* dir) {
     static const u32 outs[4] = {20, 21, 22, 23};
     CHECK(coop_case(dir, "coop_fused_chain", insns, 2, outs, 4));
 }
+/* HMMA with an RZ A or B, whose products are zeros: R24 = RZ B + R20 and R28 = A RZ + R20 are R20 = A B. The staging
+   stored what the fragment's array held for an RZ one, the words of the HMMA before */
+static void test_coop_rz(const char* dir) {
+    static const u32 insns[3][5] = {{20, 8, 12, 255, 0x18}, {24, 255, 12, 20, 0x18}, {28, 8, 255, 20, 0x18}};
+    static const u32 outs[12] = {20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31};
+    CHECK(coop_case(dir, "coop_rz", insns, 3, outs, 12));
+}
 /* the way the log says a device's compute HMMAs take (shader_hmma_way), from the flags device.c sets */
 static void test_hmma_way(void) {
     int quad_was = g_spirv_translate.quad_compute, mixed_was = g_spirv_translate.mixed_dot,
@@ -6455,6 +6462,7 @@ int main(int argc, char** argv) {
     test_warp_matrix(dir);
     test_warp_matrix_values(dir);
     test_coop_fused_chain(dir);
+    test_coop_rz(dir);
     test_warp_matrix_flush(dir);
     test_hmma_way();
     test_hmma_choose();

@@ -3879,10 +3879,10 @@ static void hmma_coop(Ctx* c, const Sm86Insn* in, int k16, int f32, u32 ra, u32 
     int words = (ra < SM86_RZ ? fa < 0 : 1) || (rb < SM86_RZ ? fb < 0 : 1);
     u32 base = words || fa < 0 || fb < 0 ? coop_base(c) : 0, g8 = 0, t = 0, at_a = 0, at_b = 0;
     if (words) {
-        if (ra < SM86_RZ && fa < 0)
-            for (k = 0; k < na; k++) a[k] = ldsm_a ? ldsm_a[k] : rd(c, ra + k);
-        if (rb < SM86_RZ && fb < 0)
-            for (k = 0; k < nb; k++) b[k] = rd(c, rb + k);
+        if (fa < 0) /* an RZ fragment's too: zeros */
+            for (k = 0; k < na; k++) a[k] = ra >= SM86_RZ ? c->zero : ldsm_a ? ldsm_a[k] : rd(c, ra + k);
+        if (fb < 0)
+            for (k = 0; k < nb; k++) b[k] = rb >= SM86_RZ ? c->zero : rd(c, rb + k);
         coop_lane(c, &g8, &t, 0);
         at_a = spv_emit_iadd_u32(&c->e, c->t_u32, base, spv_emit_iadd_u32(&c->e, c->t_u32, g8, t));
         at_b = coop_add(c, at_a, COOP_B);
