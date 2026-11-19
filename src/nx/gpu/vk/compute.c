@@ -1433,12 +1433,15 @@ static void mirror_need_others(u64 gva, u64 len) {
 /* v: 0 not a network's pass, 1 it is, 2 it is and its translation has no storage image, so nothing it writes is
    reached by anything of the game's and the dispatch can go before a binding of it is even asked for. The last is
    only known once the program has been translated, which the first dispatch of it does: one dispatch a program pays
-   for it, and the tens of them a frame that follow pay for a lookup */
+   for it, and the tens of them a frame that follow pay for a lookup.
+   Another program can be loaded at the same address and size (two programs over one scratch), so the entry is only
+   good while the bytes are: the write tracking's clock (wseen) and the code's hash answer that, and a read that the
+   tracking cannot speak for is compared byte for byte */
 typedef struct {
-    u64 code;
+    u64 code, hash;
     u32 bytes;
     int v;
-    u32 wseen; /* the write tracking's clock when the code was last seen, so a program loaded there since is not skipped */
+    u32 wseen; /* the write tracking's clock when the code was read */
 } TensorMemo;
 static TensorMemo g_tensor[TENSOR_MEMO];
 static u32 g_tensor_next;
@@ -1448,25 +1451,46 @@ static TensorMemo* tensor_find(u64 code, u32 bytes) {
         if (g_tensor[i].code == code && g_tensor[i].bytes == bytes) return &g_tensor[i];
     return NULL;
 }
+/* whether the code at code is still the bytes hashed, read whole: only asked where write tracking cannot tell (an
+   import holds the pages, uma.c), which is where a memo entry would otherwise be trusted blind */
+static int tensor_code_is(u64 code, u32 bytes, u64 hash) {
+    u8* buf = malloc(bytes);
+    int same = buf && gmem_read_code_cpu(code, buf, bytes) == bytes && vk_hash(buf, bytes) == hash;
+    free(buf);
+    return same;
+}
+/* whether a memo entry still describes the code there: 1 yes, 0 no, -1 the tracking cannot tell */
+static int tensor_entry_live(const TensorMemo* m) {
+    u8* host = gmem_host(m->code, m->bytes);
+    return host ? vk_written_since(host, m->bytes, m->wseen) == 0 : -1;
+}
 static int cs_tensor_program(u64 code, u32 bytes) {
     TensorMemo* m = tensor_find(code, bytes);
-    if (m) return m->v != 0;
+    if (m) {
+        int live = tensor_entry_live(m);
+        if (live > 0 || (live < 0 && tensor_code_is(code, bytes, m->hash))) return m->v != 0;
+    }
     u8* buf = malloc(bytes);
     if (!buf) return 0;
-    gmem_read_code(code, buf, bytes);
+    gmem_read_code(code, buf, bytes); /* the bytes the GPU will run, as the game left them */
     int v = sm86_uses_hmma(buf, bytes);
+    u64 hash = vk_hash(buf, bytes);
     free(buf);
-    g_tensor[g_tensor_next] = (TensorMemo){code, bytes, v};
-    g_tensor_next = (g_tensor_next + 1) % TENSOR_MEMO;
+    if (!m) { /* a free slot, the oldest ring entry's */
+        m = &g_tensor[g_tensor_next];
+        g_tensor_next = (g_tensor_next + 1) % TENSOR_MEMO;
+    }
+    *m = (TensorMemo){code, hash, bytes, v, vk_ww_now()};
     return v;
 }
 /* whether a dispatch of this program can go at once: it is a network's pass and its translation saves no image */
 static int cs_tensor_skippable(u64 code, u32 bytes) {
     TensorMemo* m = tensor_find(code, bytes);
-    /* another program can be loaded at the same address and size (two programs over one scratch): the write tracking
-       says whether the code was written since its translation, and a written one is translated again */
-    u8* host;
-    return m && m->v == 2 && (host = gmem_host(code, bytes)) != NULL && vk_written_since(host, bytes, m->wseen) < 0;
+    if (!m || m->v != 2) return 0;
+    int live = tensor_entry_live(m);
+    /* the tracking proves it unchanged, or cannot tell and the bytes agree: either way it is the program that was
+       translated. Anything else is translated again (cs_tensor_program), which is the safe way round */
+    return live > 0 || (live < 0 && tensor_code_is(code, bytes, m->hash));
 }
 static void cs_tensor_mark_skippable(u64 code, u32 bytes) {
     TensorMemo* m = tensor_find(code, bytes);
@@ -1474,12 +1498,21 @@ static void cs_tensor_mark_skippable(u64 code, u32 bytes) {
     m->v = 2;
     m->wseen = vk_ww_now();
 }
+/* an image's pixels as the GPU has them: a render target's own size, else its guest size */
+static u64 cs_img_pixels(const Surf* t) { return (u64)(t->sw ? t->sw : t->w) * (t->sh ? t->sh : t->h); }
 /* The largest of the images a program stores to, or NULL: a network's pass saves its picture in one */
 static Surf* cs_largest_image(Surf* const* images, int n) {
     Surf* out = NULL;
     for (int i = 0; i < n; i++)
-        if (images[i] && (!out || (u64)images[i]->w * images[i]->h > (u64)out->w * out->h)) out = images[i];
+        if (images[i] && (!out || cs_img_pixels(images[i]) > cs_img_pixels(out))) out = images[i];
     return out;
+}
+/* whether out is the only image the program stores to: the stand-in writes that one, and any other would be left with
+   the bytes of an earlier pass */
+static int cs_image_is_only(const Surf* out, Surf* const* images, int n) {
+    for (int i = 0; i < n; i++)
+        if (images[i] && images[i] != out) return 0;
+    return 1;
 }
 
 void vk_dispatch(const DispatchState* d) {
@@ -2204,7 +2237,7 @@ rebind:
                 v = vk_null_view(want, st->shadow ? 3 : num, ms); /* a compare's: the farthest depth, as a draw's */
                 sampled_layout = VK_LAYOUT(SHADER_READ_ONLY_OPTIMAL);
             }
-            if (v && (!biggest_tex || (u64)t->w * t->h > (u64)biggest_tex->w * biggest_tex->h)) biggest_tex = t;
+            if (t && v && (!biggest_tex || cs_img_pixels(t) > cs_img_pixels(biggest_tex))) biggest_tex = t;
             VkSampler smp =
                 vk_tex_bind_sampler(tsc, tic, st, num, sampled, want, (int)(p->si.tex_minmax_mask >> i & 1));
             if (!v || !smp) { /* before any output is recorded: nothing of this dispatch lands */
@@ -2537,18 +2570,21 @@ rebind:
     if (g_settings.tensor_standin && !mir && cs_tensor_program(d->code, d->code_bytes)) {
         Surf* out = cs_largest_image(images, p->si.nimg);
         if (biggest_tex) vk_tensor_remember(biggest_tex); /* the pass that samples the picture carries it on */
-        int stood = out ? vk_tensor_standin(cb, out) : 0;
-        skip = 1;
-        g_cs_standins++;
+        /* The stand-in replaces the pass only where it can write every image the pass would: one image, and no buffer
+           of the game's (a counter, an indirect grid, a semaphore the guest waits on). Anything else runs as it is,
+           and so does a pass the copy could not be recorded for */
+        int stood = 0;
+        if (out && !p->si.gbuf_wmask && cs_image_is_only(out, images, p->si.nimg))
+            stood = vk_tensor_standin(cb, out);
+        skip = stood != 0;
+        if (skip) g_cs_standins++;
         LOG_LIMIT(16,
                   "vulkan: program %016llx multiplies with the tensor core's matrices (a network's pass), its input "
                   "%dx%d of %d and the image it saves %dx%d of %d: %s\n",
                   (unsigned long long)p->key, biggest_tex ? (int)biggest_tex->w : 0,
                   biggest_tex ? (int)biggest_tex->h : 0, biggest_tex ? (int)biggest_tex->f.vk : -1,
                   out ? (int)out->w : 0, out ? (int)out->h : 0, out ? (int)out->f.vk : -1,
-                  stood == 1 ? "the picture it would make, in one pass"
-                             : stood == 2 ? "that picture is already in it this frame"
-                                          : "no picture to make: the pass is left out");
+                  skip ? "the picture it would make, in one pass" : "the pass runs as it is: its copy was not made");
     }
     if (!skip) {
         if (d->indirect) {
