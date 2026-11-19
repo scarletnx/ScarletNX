@@ -211,6 +211,7 @@ The settings, each with its extension and, where one took it in, the Vulkan vers
 | `vk_ext_memory_budget` | `auto` | `VK_EXT_memory_budget` |
 | `vk_ext_memory_priority` | `auto` | `VK_EXT_memory_priority`, which `VK_EXT_pageable_device_local_memory` needs: off turns both off |
 | `vk_ext_mesh_shader` | `auto` | `VK_EXT_mesh_shader` |
+| `vk_ext_mutable_descriptor_type` | `auto` | `VK_EXT_mutable_descriptor_type`, whose host-only descriptor pools hold the twins of a game's own descriptor sets (`guest_vulkan`), so its descriptor copies read host memory |
 | `vk_ext_pageable_device_local_memory` | `auto` | `VK_EXT_pageable_device_local_memory`: where the GPU's own memory is short because other programs take video memory, the driver moves textures loaded from memory to system memory first, and render targets last. ScarletNX keeps its own use under the driver's budget either way. Off, the renderer gives no priorities |
 | `vk_ext_physical_device_drm` | `auto` | `VK_EXT_physical_device_drm`: the render node of the GPU's driver, which `gpu_pstate` holds an AMD GPU's clocks on. It is only read, the device is not made with it; off, no clocks are held there |
 | `vk_ext_pipeline_creation_feedback` | `auto` | `VK_EXT_pipeline_creation_feedback`, promoted to Vulkan 1.3 |

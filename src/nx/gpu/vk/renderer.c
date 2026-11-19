@@ -1616,7 +1616,7 @@ static void vkr_present_image(u64 image, u32 fmt, u32 w, u32 h) {
     }
     SnxHdrFrame hdr = {0};
     show(src, &hdr, w, h, 0, 1, 0, 0, 0);
-    __atomic_store_n(&g_shown_ns, plat_ns(), __ATOMIC_RELAXED);
+    atomic_store_explicit(&g_shown_ns, plat_ns(), memory_order_relaxed);
     vk_unlock();
 }
 /* the presenting thread's, before its present: nothing else reads g_next_hdr */
