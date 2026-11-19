@@ -641,6 +641,7 @@ void emit_io(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
         u32 component = (addr >> 2) & 3;
         u32 value;
         u32 interpolation = 0;
+        int over_w = 0;
         if (addr == 0x64) {
             value = layer_input
                         ? spv_emit_unary(&c->emit, SPV_OP_BITCAST, c->f32_type,
@@ -707,12 +708,17 @@ void emit_io(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
         } else if (interpolation == 2) {
             /* The hardware interpolates attr/w for a perspective input, and the shader multiplies by w
                (IPA.MUL with the reciprocal of a[0x7c]). Vulkan's input is attr itself: times the
-               interpolated 1/w, FragCoord.w, it is what the hardware gives. */
-            u32 wcoord = shader_input_component(c, vec4, fragcoord, c->f32_type, 3);
-            value = spv_emit_binary(&c->emit, SPV_OP_F_MUL, c->f32_type, value, wcoord);
-            spv_emit_no_contraction(&c->emit, value);
+               interpolated 1/w, FragCoord.w, it is what the hardware gives. Where the multiplier is that
+               reciprocal, attr is the product: neither multiplication is made, which takes their roundings, and
+               the infinity of an attr times FragCoord.w past the float range, out of the value */
+            over_w = shader_direct_ipa_over_w(t->flow, i);
+            if (!over_w) {
+                u32 wcoord = shader_input_component(c, vec4, fragcoord, c->f32_type, 3);
+                value = spv_emit_binary(&c->emit, SPV_OP_F_MUL, c->f32_type, value, wcoord);
+                spv_emit_no_contraction(&c->emit, value);
+            }
         }
-        if (B(w, 54, 2) == 1) {
+        if (B(w, 54, 2) == 1 && !over_w) {
             u32 rhs = reg_read_as(c, b, c->f32_type);
             value = spv_emit_binary(&c->emit, SPV_OP_F_MUL, c->f32_type, value, rhs);
             spv_emit_no_contraction(&c->emit, value);
