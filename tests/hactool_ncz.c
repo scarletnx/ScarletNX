@@ -480,27 +480,31 @@ static void data_flaws(void) {
     ncz_part_t parts[6];
     unsigned count = bytes_parts(parts, 0xC00, nca.size);
     const size_t body = 0x4010 + 6 * 0x40, sizes = body + 0x18;
-    size_t at = sizes + 24 * 4, stored = 0, b;
+    size_t at = sizes + 24 * 4, stored = 0, b, made;
+    unsigned char zeros[0x4000] = {0}, frame[0x100];
+    uint32_t seed = 13;
     char says[256];
     fill(nca.data, nca.size, 9);
+    for (size_t i = 0x4000; i < 0x8000; i++) nca.data[i] = (unsigned char)(next(&seed) & 0x0F); /* block 0: half */
     ncz_encrypt(nca.data, parts, count);
     block = ncz_build(&nca, parts, count, 14, NULL);
     solid = ncz_build(&nca, parts, count, 0, NULL);
-    for (b = 0; b < 24; b++, at += stored) { /* the first block zstd compressed to room for two frames */
+    /* a frame of 0x10 bytes fewer than a block, which a compressed block's bytes take with a skippable frame after */
+    made = ZSTD_compress(frame, sizeof frame, zeros, sizeof zeros - 0x10, 3);
+    CHECK(!ZSTD_isError(made));
+    for (b = 0; b < 24; b++, at += stored) { /* the first block zstd compressed to room for both */
         stored = le32(block.data + sizes + 4 * b);
-        if (stored < 0x4000 && stored >= 64) break;
+        if (stored < 0x4000 && stored >= made + 8) break;
     }
-    CHECK(b < 24);
+    CHECK(b == 0);          /* the half noise one */
     block.data[at] ^= 0xFF; /* its frame's magic */
     snprintf(says, sizeof says,
              "NCZ block %zu, 0x%zx bytes at 0x%zx (the NCA's 0x%zx on), does not decompress: zstd says ", b, stored, at,
              0x4000 + b * 0x4000);
     read_fails(block.data, block.size, 0x4000 + b * 0x4000 + 5, says, "Unknown frame descriptor");
     block.data[at] ^= 0xFF;
-    { /* a frame of 0x10 bytes fewer than the block, and a skippable frame over the rest of its bytes */
-        unsigned char zeros[0x4000] = {0};
-        size_t made = ZSTD_compress(block.data + at, stored, zeros, sizeof zeros - 0x10, 3);
-        CHECK(!ZSTD_isError(made) && made + 8 <= stored);
+    { /* the frame, and a skippable frame over the rest of the block's bytes */
+        memcpy(block.data + at, frame, made);
         put32(block.data + at + made, 0x184D2A50);
         put32(block.data + at + made + 4, (uint32_t)(stored - made - 8));
         snprintf(says, sizeof says,
