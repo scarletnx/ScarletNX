@@ -666,6 +666,8 @@ static int time_emitters(SnxIr* ir, const uint32_t* halfwords, size_t count, uns
     return 0;
 }
 
+/* ADD, RSC and ORR writing the PC with bit 0 the condition or the PC makes 0: their CPSR was stored as it was */
+static const uint32_t a32_found[] = {0x208ffb03u, 0x22effab8u, 0x618ffb08u};
 /* --a32's ith word of 65536: data processing (immediate, register, register-shifted), B, BL, BLX, BX and MOVW/MOVT,
    the class and the fields drawn from i, a third of them under AL and the rest under any condition, a register field
    15 one time in eight */
@@ -694,7 +696,8 @@ static uint32_t a32_word(uint32_t i) {
 
 int main(int argc, char** argv) {
     char error[512];
-    uint32_t* halfwords = (uint32_t*)snx_realloc(NULL, sizeof(uint32_t) * 0x10000);
+    uint32_t* halfwords =
+        (uint32_t*)snx_realloc(NULL, sizeof(uint32_t) * (0x10000 + sizeof a32_found / sizeof *a32_found));
     size_t count = 0, thumb2 = 0;
     SnxIr* ir;
     g_test.states = 8;
@@ -734,6 +737,8 @@ int main(int argc, char** argv) {
     size_t share = (0x10000 + g_test.parts * g_test.every - 1) / (g_test.parts * g_test.every);
     for (uint32_t i = (uint32_t)((g_test.part - 1) * share); i < 0x10000 && i < g_test.part * share; ++i)
         halfwords[count++] = g_test.a32 ? a32_word(i) : (uint16_t)(i * 0x9E37u);
+    if (g_test.a32 && g_test.part == 1) /* the words the whole corpus once found longer, in every first part */
+        for (size_t i = 0; i < sizeof a32_found / sizeof *a32_found; ++i) halfwords[count++] = a32_found[i];
     if (g_test.only) {
         halfwords[0] = g_test.word;
         count = 1;
