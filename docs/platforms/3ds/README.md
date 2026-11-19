@@ -687,6 +687,8 @@ How a target's render scale is chosen and kept:
   copies that target's scaled depth.
 - A tiled display transfer from a scaled target into another target of the transfer's size and format, with the same
   scale and flip, fills that target's scaled image when the transfer covers whole 8x8 tiles.
+- A shadow map is drawn at the scale, and its stored words are each block's centre texel.
+- A cube shadow map and a flipped shadow map are read from memory at scale 1.
 
 The separate windows and the two render resolutions are checked by `3ds_windows`: each
 screen takes its own setting's scale and no other's, both screens present, and the PPM
