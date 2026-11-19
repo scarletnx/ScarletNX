@@ -48,13 +48,17 @@ description: "Build the ScarletNX runtime and recompile games correctly. Avoid t
 
 ## ThinLTO
 
-`SNX_LTO` (`cmake/lto.cmake`) is on by default. The Release, RelWithDebInfo and MinSizeRel builds compile to LLVM
-bitcode, and the link optimizes across files. A Debug build does not use it. The configure prints `ThinLTO: on`, or
-the reason that it is off. On a Steam Deck, ThinLTO cut the time of the GPU thread for each frame by 6.3%.
+`SNX_LTO` (`cmake/lto.cmake`) is off by default. The nightlies and releases of CI turn it on for Linux x86-64,
+Windows and Android's arm64-v8a. With `-DSNX_LTO=ON`, the Release, RelWithDebInfo and MinSizeRel builds compile to
+LLVM bitcode, and the link optimizes across files. A Debug build does not use it. The configure prints
+`ThinLTO: on`, or the reason that it is off.
+
+On a Steam Deck, ThinLTO cut the time of the GPU thread for each frame by 6.3%. Use it to measure speed, as the
+nightlies have it.
 
 - Each link takes more time. A clean build took 440 s, and 316 s without LTO. The link keeps the machine code of
   each module in `thinlto-cache/` of the build folder. Thus a build after an edit to one file took 18 s, and 4 s
-  without LTO. For a faster loop of edits and tests, configure a separate build folder with `-DSNX_LTO=OFF`.
+  without LTO.
 - `llvm-objdump` cannot read the object of an LTO target. Read the linked program, or use a build with
   `-DSNX_LTO=OFF`.
 - The archive `scarletnx-recompiler` and its parts never use LTO (`snx_no_lto`). A project that links the archive
