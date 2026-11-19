@@ -67,6 +67,11 @@ SnxCtrVkSource snx_ctr_vk_target_source(uint32_t input, unsigned in_width, unsig
    output. A target at the console's scale keeps nothing. */
 void snx_ctr_vk_target_transfer(SnxCtrVkSource source, uint32_t output, unsigned width, unsigned height,
                                 unsigned out_format, unsigned hs, unsigned vs, bool flip);
+/* After a tiled display transfer's snx_ctr_vk_sync calls and dispatch: a destination target of the same size, format,
+   scale and flip as its source takes the transfer's result as its scaled image, by one dispatch, and is valid then.
+   Otherwise nothing changes */
+void snx_ctr_vk_target_fill(SnxCtrVkSource found, uint32_t output, unsigned width, unsigned height, unsigned in_format,
+                            unsigned out_format, unsigned hs, unsigned vs, bool flip);
 /* write tracking's handler (snx_ctr_track_handler), which the device installs: an owned page's targets stored and
    its GPU writes waited for, or its copy copied back; a watched page's textures and targets dropped, its display
    transfer copies left to the presenter's compare, and its copy stale */
