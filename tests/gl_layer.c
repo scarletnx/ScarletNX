@@ -618,6 +618,17 @@ int main(void) {
         call("_glTexParameteri", 0x0de1, 0x2801, 0x2600, 0, 0); /* GL_TEXTURE_MIN_FILTER, GL_NEAREST */
         call("_glGetTexParameteriv", 0x0de1, 0x2801, out, 0, 0);
         assert(gr32(out) == 0x2600);
+        /* GL's texture swizzle in the NVN view: a luminance and alpha atlas in RG (R, R, R, G), then the identity */
+        {
+            static const u32 la[4] = {0x1903, 0x1903, 0x1903, 0x1904};
+            NvnTexture n;
+            for (u32 c = 0; c < 4; c++) call("_glTexParameteri", 0x0de1, 0x8e42 + c, la[c], 0, 0);
+            assert(gl_nvn_texture(t, &n) &&
+                   n.d.swizzle == (NVN_TEXTURE_SWIZZLE_R | NVN_TEXTURE_SWIZZLE_R << 3 | NVN_TEXTURE_SWIZZLE_R << 6 |
+                                   NVN_TEXTURE_SWIZZLE_G << 9 | NVN_TEX_SWIZZLE_SET));
+            for (u32 c = 0; c < 4; c++) call("_glTexParameteri", 0x0de1, 0x8e42 + c, 0x1903 + c, 0, 0);
+            assert(gl_nvn_texture(t, &n) && n.d.swizzle == 0);
+        }
         /* a framebuffer of that texture: none attached, then complete */
         call("_glGenFramebuffers", 1, names, 0, 0, 0);
         call("_glBindFramebuffer", 0x8d40, gr32(names), 0, 0, 0);
