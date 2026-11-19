@@ -232,12 +232,33 @@ static void install_driver(void) {
     assert(!gvk_invalidation_slot(NODE + 8));
 }
 
+static void marshal_optional_one(void) {
+    /* Uninitialized / unmapped pInheritanceInfo and pTessellationState must be cleared to NULL, not fail gvk_in. */
+    VkCommandBufferBeginInfo bi = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+        .pInheritanceInfo = (const VkCommandBufferInheritanceInfo*)(uintptr_t)UNMAPPED,
+    };
+    memcpy(GP(ROOT), &bi, sizeof bi);
+    const VkCommandBufferBeginInfo* hbi = gvk_in(&gvk_t_begin, ROOT, 1);
+    assert(hbi && !hbi->pInheritanceInfo);
+
+    VkGraphicsPipelineCreateInfo pipe = {
+        .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+        .pTessellationState = (const VkPipelineTessellationStateCreateInfo*)(uintptr_t)UNMAPPED,
+    };
+    memcpy(GP(ROOT), &pipe, sizeof pipe);
+    const VkGraphicsPipelineCreateInfo* hp = gvk_in(&gvk_t_gpipe, ROOT, 1);
+    assert(hp && !hp->pTessellationState);
+}
+
 int main(void) {
     marshal_submit();
     gvk_scratch_reset();
     marshal_chain();
     gvk_scratch_reset();
     marshal_sample_mask();
+    gvk_scratch_reset();
+    marshal_optional_one();
     gvk_scratch_free();
 #if !defined(__BYTE_ORDER__) || __BYTE_ORDER__ != __ORDER_BIG_ENDIAN__
     install_driver();

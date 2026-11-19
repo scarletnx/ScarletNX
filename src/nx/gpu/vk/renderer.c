@@ -1607,6 +1607,11 @@ static void vkr_reset(void) {
         free(g_cpu_img);
         g_cpu_img = NULL;
     }
+    if (g_gvk_img) {
+        vk_defer_image(g_gvk_img->img, g_gvk_img->mem, g_gvk_img->present, g_gvk_img->att);
+        free(g_gvk_img);
+        g_gvk_img = NULL;
+    }
     g_last = NULL;
     g_vk.shader_generation++; /* the shaders found at guest addresses: the code there is the state's */
     vk_unlock();
