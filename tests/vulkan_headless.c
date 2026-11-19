@@ -211,8 +211,18 @@ static void full_ring_producer(void* arg) {
     atomic_store_explicit(&g_full_ring_done, 1, memory_order_release);
     plat_wake_word(&g_full_ring_done);
 }
+/* what a drain costs (vk_rec_run: the packet published, run and waited for), printed to compare builds: the wait
+   spins a while before it sleeps (record.c's REC_ROOM_SPIN_NS) */
+static void drain_run(void* arg) { (void)arg; }
+static void drain_time(void) {
+    const u64 t0 = plat_ns();
+    for (int i = 0; i < 20000; i++) vk_rec_run(drain_run, NULL);
+    printf("The recording ring drained in %.2f us on average over 20,000 runs\n",
+           (double)(plat_ns() - t0) / 20000 / 1e3);
+}
 static int check_full_ring_sleeps(void) {
     static const int no_queue = 0;
+    drain_time();
     static const u32 packets = (5u << 20) / FULL_RING_PACKET;
     if (!vk_rec_threaded()) {
         puts("SKIP the full ring's wait: vk_record=0 has no ring");
