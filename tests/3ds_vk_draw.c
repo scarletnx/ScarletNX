@@ -1597,6 +1597,8 @@ static const IntoCase into_cases[] = {
     {"a flipped 1:1 transfer at 2x", 2, 0, true, SNX_CTR_PIX_RGBA8, 0, SNX_CTR_TEX_RGBA8},
     {"a 2:1 transfer at 1x (control)", 1, 1, false, SNX_CTR_PIX_RGBA8, 0, SNX_CTR_TEX_RGBA8},
     {"a 2:1 RGBA8 to RGB565 at 2x", 2, 1, false, SNX_CTR_PIX_RGB565, 3, SNX_CTR_TEX_RGB565},
+    {"a 2x2 transfer at 2x", 2, 2, false, SNX_CTR_PIX_RGBA8, 0, SNX_CTR_TEX_RGBA8},
+    {"a flipped 2x2 transfer at 2x", 2, 2, true, SNX_CTR_PIX_RGBA8, 0, SNX_CTR_TEX_RGBA8},
 };
 /* One transfer of the source at render scale c->scale, flipped or not, into the 240 x 400 frame reduced by c->scaling
    (1 halves the columns, 2 the rows too). At 2x, B reads 240 columns of the destination's scaled image from x0: the 1:1
@@ -1664,11 +1666,12 @@ static void scaled_transfer_into_target_case(SnxCtrMemory* m, const IntoCase* c)
            c->scale == 2 ? "pixels" : "bytes", pass ? "ok" : "FAIL");
     if (!pass) ++failures;
 }
-/* the scaled targets' display transfers into a destination at render scale 2: no reduction and 2:1, unflipped and
+/* the scaled targets' display transfers into a destination at render scale 2: no reduction, 2:1 and 2x2, unflipped and
    flipped, an RGBA8 to RGB565 2:1, and a 2:1 at 1 (the control, whose destination is the transfer's own result), plus a
    linear transfer that does not fill the destination target */
 static void scaled_transfer_into_target(SnxCtrMemory* m) {
-    int top = g_settings.ctr_top_resolution;
+    int top = g_settings.ctr_top_resolution, bottom = g_settings.ctr_bottom_resolution;
+    g_settings.ctr_bottom_resolution = 1; /* a 200-row destination takes the larger setting, the top's 2 */
     for (size_t i = 0; i < sizeof into_cases / sizeof *into_cases; ++i)
         scaled_transfer_into_target_case(m, &into_cases[i]);
     unsigned wrong = 0, total = 0;
@@ -1678,6 +1681,7 @@ static void scaled_transfer_into_target(SnxCtrMemory* m) {
            "a linear transfer does not fill a target", wrong, total, pass ? "ok" : "FAIL");
     if (!pass) ++failures;
     g_settings.ctr_top_resolution = top;
+    g_settings.ctr_bottom_resolution = bottom;
     snx_ctr_vk_finish();
 }
 /* A display transfer from a scaled target's row OVERLAP_ROW into a framebuffer sharing the target's earlier rows, and
@@ -1805,6 +1809,76 @@ static void scaled_transfer_overlap(SnxCtrMemory* m) {
     snx_ctr_vk_finish();
     (void)snx_remove_tree(dir);
     free(dir);
+}
+#define OTHER_BYTES (256u * 512u * 4u)
+/* A is cleared to Y and holds X from its scaled coordinate 1.0 (console 1/scale) on. B samples A at the same render
+   scale, so its console pixel (i, j), j counted from the bottom and held in memory row bh - 1 - j, reads A's scaled
+   texel (i, j): X where i and j are both at least 1, else Y */
+static void other_size_case(SnxCtrMemory* m, const char* name, unsigned aw, unsigned ah, unsigned bh,
+                            unsigned scale) {
+    static const uint8_t inside[4] = {0, 0, 255, 255}, outside[4] = {255, 0, 0, 255};
+    static unsigned char clear[OTHER_BYTES], zeros[OTHER_BYTES], after[OTHER_BYTES];
+    size_t pixels = (size_t)aw * ah, a_bytes = pixels * 4, b_bytes = (size_t)aw * bh * 4;
+    for (size_t p = 0; p < pixels; ++p) snx_ctr_pixel_encode(SNX_CTR_PIX_RGBA8, outside, clear + p * 4);
+    float left = 2.0f / (float)(scale * aw) - 1.0f, top = 2.0f / (float)(scale * ah) - 1.0f;
+    Scene* a = scene(name, 0, 0xff);
+    screen_target(&a->list, COLOR, aw, ah, false);
+    into_quad(a, 0, left, top, 1.0f, 1.0f, inside);
+    a->vertex_count = 6;
+    array_draw(a);
+    list_end(&a->list);
+    setup_clear(m, a);
+    bool ok = snx_ctr_phys_write(m, COLOR, clear, a_bytes) == SNX_CTR_MEM_OK;
+    ok = ok && record(m, a, &vulkan); /* A's rectangle, its rendering open */
+    Scene* b = scene(name, 0, 0xff);
+    screen_target(&b->list, SECOND_COLOR, aw, bh, false);
+    screen_texture(&b->list, COLOR, aw, ah, 0);
+    /* B's coordinates reach 1/scale across and bh / (scale * ah) up: a console pixel reads one scaled texel of A */
+    float tx = 1.0f / (float)scale, ty = (float)bh / (float)(scale * ah);
+    b->vertices[0] = vertex(-1.0f, -1.0f, -0.5f, 0xffffffffu, 0, 0);
+    b->vertices[1] = vertex(1.0f, -1.0f, -0.5f, 0xffffffffu, tx, 0);
+    b->vertices[2] = vertex(-1.0f, 1.0f, -0.5f, 0xffffffffu, 0, ty);
+    b->vertices[3] = vertex(1.0f, 1.0f, -0.5f, 0xffffffffu, tx, ty);
+    b->vertex_count = 4;
+    put(&b->list, SNX_PICA_TOPOLOGY, 1u << 8);
+    strip_draw(&b->list, 0);
+    list_end(&b->list);
+    ok = ok && snx_ctr_phys_write(m, SECOND_COLOR, zeros, b_bytes) == SNX_CTR_MEM_OK;
+    ok = ok && snx_ctr_phys_write(m, VERTICES, b->vertices, sizeof b->vertices) == SNX_CTR_MEM_OK;
+    ok = ok && snx_ctr_phys_write(m, LIST, b->list.w, b->list.n * 4) == SNX_CTR_MEM_OK;
+    ok = ok && record(m, b, &vulkan); /* B samples A, its rendering open */
+    ok = snx_ctr_vk_finish() && ok;
+    ok = ok && snx_ctr_phys_read(m, SECOND_COLOR, after, b_bytes) == SNX_CTR_MEM_OK;
+    unsigned wrong = 0;
+    for (unsigned j = 0; j < bh; ++j)
+        for (unsigned i = 0; i < aw; ++i) {
+            unsigned char want[4];
+            snx_ctr_pixel_encode(SNX_CTR_PIX_RGBA8, (i >= 1 && j >= 1) ? inside : outside, want);
+            unsigned y = bh - 1 - j;
+            size_t at = snx_ctr_morton_offset(i, y, 4) + (size_t)(y & ~7u) * aw * 4;
+            wrong += memcmp(after + at, want, sizeof want) != 0;
+        }
+    bool pass = ok && wrong == 0;
+    printf("%-36s %6u of %u pixels differ from the oracle: %s\n", name, wrong, aw * bh, pass ? "ok" : "FAIL");
+    if (!pass) ++failures;
+    free(a);
+    free(b);
+}
+/* A target that is not a screen's size takes the larger setting, a 400-row one the top's. The cases: 256 x 512 and
+   256 x 256 at 3 (top 1, bottom 3), the same at 1 (both 1, the control), and 240 x 400 at the top's 2 (bottom 3) */
+static void scaled_other_sizes(SnxCtrMemory* m) {
+    int top = g_settings.ctr_top_resolution, bottom = g_settings.ctr_bottom_resolution;
+    g_settings.ctr_top_resolution = 1;
+    g_settings.ctr_bottom_resolution = 3;
+    other_size_case(m, "256x512, 256x256 at 3x", 256, 512, 256, 3);
+    g_settings.ctr_bottom_resolution = 1;
+    other_size_case(m, "256x512, 256x256 at 1x (control)", 256, 512, 256, 1);
+    g_settings.ctr_top_resolution = 2;
+    g_settings.ctr_bottom_resolution = 3;
+    other_size_case(m, "240x400 at the top's 2x", 240, 400, 400, 2);
+    g_settings.ctr_top_resolution = top;
+    g_settings.ctr_bottom_resolution = bottom;
+    snx_ctr_vk_finish();
 }
 /* Shadow maps (Azahar's sw_framebuffer.cpp DrawShadowMapPixel and sw_rasterizer.cpp TextureColor): the colour buffer
    of a shadow pass holds one word per pixel, its bytes the depth from the most significant byte, then the strength */
@@ -2632,6 +2706,7 @@ static const Mode modes[] = {
     {"--shadow-scaled", "the shadow maps at the render scale", shadow_scaled},
     {"--scaled-texture-from-depth", "the textures made from scaled depth buffers", scaled_texture_from_depth},
     {"--scaled-shared-depth", "two targets over one depth buffer at render scale", scaled_shared_depth},
+    {"--scaled-other-sizes", "the render scale of targets that are not a screen's size", scaled_other_sizes},
     {"--shadow", "the shadow maps", shadows}};
 
 int main(int argc, char** argv) {

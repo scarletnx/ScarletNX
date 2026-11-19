@@ -86,8 +86,8 @@ bool snx_ctr_vk_copies(void);
 /* the RAM is a copy in the device's host-visible memory (the device can neither import it nor move it there), and the
    CPU copies its pages to and from the board's own memory as the GPU uses them */
 bool snx_ctr_vk_shadow(void);
-/* the 3D render scale of a screen of these framebuffer sizes: the CTR top or bottom resolution setting, as far as
-   the device's largest image takes (1 before a device, or with none) */
+/* the 3D render scale of a target of these framebuffer sizes: 400 rows take the CTR top setting, 320 the bottom,
+   any other the larger of the two, as far as the device's largest image takes (1 before a device, or with none) */
 uint8_t snx_ctr_vk_target_scale(unsigned width, unsigned height);
 /* The device and the window (unless headless or none can be made), with memory's RAM regions its buffers: imported,
    or, when the driver refuses that, the RAM moved into the device's memory, or, when it cannot take it either, a copy
