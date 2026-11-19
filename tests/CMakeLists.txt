@@ -3183,8 +3183,9 @@ snx_test_target(snx-test-runtime-module-abi c23)
 target_link_libraries(snx-test-runtime-module-abi PRIVATE snx_test_common)
 add_test(NAME runtime_module_abi COMMAND snx-test-runtime-module-abi $<TARGET_FILE:scarletnx>
     $<TARGET_FILE:snx-test-module-abi> $<TARGET_FILE:snx-test-module-abi-arm>)
-# Amberlith (edenprobe before 1.0.0; docs/dev/edenprobe.md) as CI runs it, against its baseline, once with guest
-# buffers copied and once read in place (vk_memory=2: the path a GPU that shares memory takes, lavapipe's in CI).
+# Amberlith (edenprobe before 1.0.0; docs/dev/edenprobe.md) as CI runs it, with no FPS limit, against its baseline,
+# once with guest buffers copied and once read in place (vk_memory=2: the path a GPU that shares memory takes,
+# lavapipe's in CI).
 # -DSNX_TEST_EDENPROBE=/path/to/the.nro, of the release that .github/workflows/build.yml pins
 if(SNX_TEST_EDENPROBE AND Python3_Interpreter_FOUND AND NOT CMAKE_CROSSCOMPILING AND CMAKE_SYSTEM_NAME STREQUAL "Linux"
    AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
@@ -3196,7 +3197,7 @@ if(SNX_TEST_EDENPROBE AND Python3_Interpreter_FOUND AND NOT CMAKE_CROSSCOMPILING
                 --mode "quick notime cpu fs video display kernel audio hooks"
                 --out "${CMAKE_CURRENT_BINARY_DIR}/edenprobe-vk_memory-${snx_memory}"
                 --baseline "${PROJECT_SOURCE_DIR}/tests/edenprobe/linux-x86_64.txt" --timeout 120
-                --setting vk_memory=${snx_memory})
+                --setting fps-limit=0 --setting vk_memory=${snx_memory})
         set_tests_properties(edenprobe_vk_memory_${snx_memory} PROPERTIES TIMEOUT 1800 RUN_SERIAL TRUE LABELS external)
     endforeach()
 endif()

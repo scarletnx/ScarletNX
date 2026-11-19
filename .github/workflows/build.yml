@@ -516,7 +516,8 @@ jobs:
       # The runs called for, one after the other, each with its own output, summary and exit: the NRO and the APK held to
       # their baselines, Amberlith's main beside the release's baseline, warnings only. Not side by side: the NRO's kernel
       # family times its threads, and with the others beside it at the lowest priority, so that it passes, the runs took
-      # no less time in all than one after the other.
+      # no less time in all than one after the other. The NRO runs with no FPS limit (fps-limit=0): its vsync comes every
+      # millisecond, not at 60 Hz, so no case waits on a display; scarletnx-android has no such setting.
       # Each summary's title is a line of the pull request's comment, as a notice of this job that scripts/pr-builds.sh
       # reads back once the run ends, and finds by this step's name; on one line, % is all a notice escapes
       - name: Run Amberlith
@@ -541,11 +542,11 @@ jobs:
           began=$(date +%s)
           : > times.txt
           [ "$NRO" = true ] && probe edenprobe --nro "$EDENPROBE_NRO" --mode "$EDENPROBE_MODE" --out edenprobe \
-            --baseline tests/edenprobe/linux-x86_64.txt
+            --baseline tests/edenprobe/linux-x86_64.txt --setting fps-limit=0
           [ "$APK" = true ] && probe edenprobe-android --apk "$EDENPROBE_APK" --mode "$EDENPROBE_APK_MODE" \
             --out edenprobe-android --baseline tests/edenprobe/android-x86_64.txt
           [ "$MAIN" = true ] && probe edenprobe-main --nro edenprobe-main.nro --mode "$EDENPROBE_MODE" \
-            --out edenprobe-main --advisory-baseline tests/edenprobe/linux-x86_64.txt
+            --out edenprobe-main --advisory-baseline tests/edenprobe/linux-x86_64.txt --setting fps-limit=0
           status=0
           for name in edenprobe edenprobe-android edenprobe-main; do
             [ -f "$name.status" ] || continue
