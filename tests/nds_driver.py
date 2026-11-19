@@ -22,11 +22,17 @@ def main():
     with tempfile.TemporaryDirectory(prefix='snx-nds-driver-', ignore_cleanup_errors=True) as temporary:
         work = pathlib.Path(temporary)
 
-        # a home of the test's own: the launcher's settings.ini the driver reads is the one written below
+        # a home of the test's own: the launcher's settings.ini the driver reads is the one written below, in the
+        # config folder each system keeps (snx_user_dir, src/common/utilities/common.c)
         env = dict(os.environ)
-        for name in ('HOME', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_STATE_HOME', 'XDG_CACHE_HOME'):
+        for name in ('HOME', 'APPDATA', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_STATE_HOME', 'XDG_CACHE_HOME'):
             env[name] = str(work / 'home' / name.lower())
-        config = pathlib.Path(env['XDG_CONFIG_HOME']) / 'scarletnx'
+        if sys.platform == 'win32':
+            config = pathlib.Path(env['APPDATA']) / 'scarletnx' / 'config'
+        elif sys.platform == 'darwin':
+            config = pathlib.Path(env['HOME']) / 'Library' / 'Application Support' / 'scarletnx' / 'config'
+        else:
+            config = pathlib.Path(env['XDG_CONFIG_HOME']) / 'scarletnx'
         config.mkdir(parents=True)
 
         def run(args, status, contains):
