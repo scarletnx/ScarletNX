@@ -22,7 +22,6 @@
 #include "common/gpu/gl/gl_program.h"
 #include "common/gpu/gl/gl_state.h"
 #include "common/gpu/gl/gl_texture.h"
-#include "glslc/glslc.h"
 #include "nx/gpu/gl/gl_host_program.h"
 #include "nx/gpu/gl/gl_layer.h"
 #include "nx/hle/hook/hook.h"

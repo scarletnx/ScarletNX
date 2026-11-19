@@ -16,6 +16,7 @@
    its platform's GL lock around every call, as for gl_state.h's */
 #ifndef SNX_GL_PROGRAM_H
 #define SNX_GL_PROGRAM_H
+#include "glslc/glslc.h" /* the records' kinds and bases are glslc's (GlslcReflectKind, GlslcBase) */
 #include <stddef.h>
 #include <stdint.h>
 
