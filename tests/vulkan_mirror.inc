@@ -553,6 +553,61 @@ static int check_mirror_dispatches(void) {
     return 0;
 }
 
+/* byte i of the second page after the publish: the program's, the owner's, else guest memory's */
+static u8 publish_owner_want(u32 i) {
+    return i >= 0x10 && i < 0x14 ? 0x72 : i >= 0x100 && i < 0x200 ? 0x22 : (u8)((0x1000 + i) * 3);
+}
+/* Not touched lately, a page programs wrote lands before its publish (its shadow let go of) with another owner over
+   part of it (0x100 bytes of 0x22 at 0x100), after a page whose bytes there are 0x5c: the publish brings the mirror's
+   page up to date with guest memory's bytes, the program's logged ones kept and the owner's from its resource. Copied
+   from the publish's page buffer, the owned part took the page before's bytes, recorded after the owner's copy */
+static int check_mirror_publish_owner(void) {
+    const u64 cpu = HEAP_BASE + 0x3c000000, gva = 0xa900000, len = 0x2000; /* a granule no other check binds */
+    const u32 present = g_vk_present;
+    static u8 m[0x1000];
+    VkBuffer buf;
+    u64 off;
+    OwnRange o[4];
+    CHECK(mem_map(cpu, 0x10000, MS_NORMAL, PERM_RW) == 0);
+    gmmu_map(gva, cpu, 0x10000);
+    for (u32 i = 0; i < len; i++) GP(cpu)[i] = i < 0x1000 ? 0x5c : (u8)(i * 3);
+    vk_ww_new_epoch();
+    CHECK(vk_mirror_slice(gva, len, &buf, &off));
+    g_vk_present += 1300; /* past the presents a page the CPU touched lands with its submit: both stay the mirror's */
+    CHECK(!mirror_write(cpu + 0x10, 4, 0x71, 1));
+    CHECK(!mirror_write(cpu + 0x1010, 4, 0x72, 1));
+    vk_mirror_wrote(cpu, len);
+    vk_finish();
+    CHECK(vk_mirror_pending(gva, len)); /* taken in, published below */
+    VkOwnRes* owner = vk_own_res_new(0x100, VK_OWN_BY_DRAW);
+    CHECK(owner && !owned_test_fill(owner->buf, 0, 0x100, 0x22));
+    vk_mirror_landed(cpu + 0x1000, 0x1000);
+    vk_own_publish_owned(cpu + 0x1100, 0x100, owner, 0);
+    vk_mirror_publish();
+    CHECK(!vk_mirror_pending(gva, len));
+    CHECK(!mirror_read(cpu + 0x1000, 0x1000, m));
+    g_vk_present = present;
+    own_acquire(cpu, len); /* the CPU's touch: what the publish left GPU-owned lands */
+    CHECK(!own_lookup(cpu, len, o, 4));
+    vk_own_res_unref(owner);
+    /* the mirror's page, then guest memory's after the landing */
+    const u8* got[2] = {m, GP(cpu + 0x1000)};
+    int wrong = 0;
+    for (u32 k = 0; k < 2; k++) {
+        u32 n = 0, first = 0;
+        for (u32 i = 0; i < 0x1000; i++)
+            if (got[k][i] != publish_owner_want(i) && !n++) first = i;
+        if (n)
+            fprintf(stderr,
+                    "vulkan_headless: mirror: a page published over an owner: %u bytes of %s differ, the first "
+                    "%#x is %#x, not %#x\n",
+                    n, k ? "guest memory" : "the mirror", first, got[k][first], publish_owner_want(first));
+        wrong |= n != 0;
+    }
+    CHECK(!wrong);
+    return 0;
+}
+
 static int check_mirror(void) {
     const u64 cpu = HEAP_BASE + 0x7c0000, gva = 0xa600000, len = 0x3000;
     static u8 got[0x3000];
@@ -755,6 +810,7 @@ static int check_mirror(void) {
         }
         vk_own_res_unref(owner);
         CHECK(vk_mirror_slice(gva, len, &buf, &off)); /* bound again, for the checks after */
+        CHECK(!check_mirror_publish_owner());
     }
 
     /* more pages written than the harvest's room (64 at first): those past it land by a pass of their own */
