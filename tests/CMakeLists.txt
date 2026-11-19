@@ -4,6 +4,8 @@ option(SNX_TEST_SANITIZERS
        "Build the native regression tests, and the in-tree libraries they exercise, with ASan and UBSan (a test build: \
 the runtime links those libraries too, and isn't deployed)" OFF)
 option(SNX_TEST_VULKAN "Run offscreen Vulkan integration tests (requires a Vulkan 1.3 ICD, e.g. lavapipe)" OFF)
+option(SNX_TEST_ONLINE_LIVE
+       "Ask each WFC service's DNS server over the internet (online_presets_live, ctest -L network)" OFF)
 option(SNX_TEST_ARM_AOT "Build asset-free static ARM11/checked-memory witnesses (requires native LLVM SDK)" OFF)
 option(SNX_TEST_VP9_VECTORS
        "Run NVDEC's VP9 jobs on libvpx's test vectors (configure downloads 32 files from the WebM project)" OFF)
@@ -46,9 +48,9 @@ if(SNX_TEST_SANITIZERS)
     cmake_language(DEFER DIRECTORY "${PROJECT_SOURCE_DIR}" CALL snx_test_sanitize
         # the common code: the platform layer, network, filesystems, LZ4, ZBIC and xxHash, the Vulkan setup the
         # frontends share, the launcher's HTTPS and the roots it carries, the zip reader of VPKs and APKs, the glTF
-        # reader of a Mii's parts
+        # reader of a Mii's parts, the DS's and the 3DS's online services
         scarletnx-common scarletnx-platform scarletnx-net scarletnx-ldn scarletnx-filesystem snx_demangle snx_lz4
-        snx_zbic snx_xxhash snx_vk_common snx_https snx_cacert snx_zip snx_cgltf
+        snx_zbic snx_xxhash snx_vk_common snx_https snx_cacert snx_zip snx_cgltf snx_online
         snx-logscan
         # the recompiler, its backends and what they take of the common code
         snx_recompiler_base snx_llvm snx_arm_llvm snx_arm_decode scarletnx-recompiler scarletnx-recompiler-shared
@@ -1398,6 +1400,31 @@ else()
     add_test(NAME qemu_ref_selftest COMMAND snx-test-qemu-ref --skip "${SNX_QEMU_REF_MISSING}")
 endif()
 set_tests_properties(qemu_ref_selftest PROPERTIES SKIP_RETURN_CODE 77)
+
+# The online services (src/common/online): the WFC presets and the DS's slot, DNS queries and replies, the resolver
+# against a DNS server of its own on 127.0.0.1, NASC's form and reply, and the 3DS console's files, which online_ctr
+# writes in a folder of the build tree it empties first
+if(TARGET snx_online)
+    set(snx_online_ctr_folder "${CMAKE_CURRENT_BINARY_DIR}/online_ctr_console")
+    foreach(part wfc dns resolve nasc ctr)
+        add_executable(snx-test-online-${part} online_${part}.c)
+        snx_test_target(snx-test-online-${part} c23)
+        target_link_libraries(snx-test-online-${part} PRIVATE snx_online)
+        add_test(NAME online_${part}
+            COMMAND snx-test-online-${part} $<$<STREQUAL:${part},ctr>:${snx_online_ctr_folder}>)
+        set_tests_properties(online_${part} PROPERTIES TIMEOUT 30)
+    endforeach()
+    add_test(NAME online_ctr_folder COMMAND "${CMAKE_COMMAND}" -E rm -rf "${snx_online_ctr_folder}")
+    set_tests_properties(online_ctr_folder PROPERTIES FIXTURES_SETUP snx_online_ctr_folder)
+    set_tests_properties(online_ctr PROPERTIES FIXTURES_REQUIRED snx_online_ctr_folder)
+    if(SNX_TEST_ONLINE_LIVE) # the internet: how a service that stopped answering is found, not a gate
+        add_executable(snx-test-online-presets-live online_presets_live.c)
+        snx_test_target(snx-test-online-presets-live c23)
+        target_link_libraries(snx-test-online-presets-live PRIVATE snx_online)
+        add_test(NAME online_presets_live COMMAND snx-test-online-presets-live)
+        set_tests_properties(online_presets_live PROPERTIES LABELS "external;network" TIMEOUT 120)
+    endif()
+endif()
 
 # The emulated network stack over the host's loopback (src/common/network)
 add_executable(snx-test-network-stack network_stack.c)

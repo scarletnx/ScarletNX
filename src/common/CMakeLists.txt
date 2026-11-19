@@ -125,6 +125,20 @@ elseif(APPLE) # the system resolver's DNS servers (network/net_iface.c)
     target_link_libraries(scarletnx-net PUBLIC resolv)
 endif()
 
+# The DS's and the 3DS's online services through their communities' replacements (online/, its README.md): the WFC
+# services and the DS firmware's connection slot, a DNS resolver, NASC's login on Pretendo Network and the 3DS
+# console's files. Strict C99 on the host's own sockets
+if(SNX_BUILD_NDS OR SNX_BUILD_3DS OR BUILD_TESTING)
+    add_library(snx_online STATIC online/wfc.c online/dns.c online/resolve.c online/socket.c online/nasc.c
+        online/ctr.c online/hosts.c)
+    set_target_properties(snx_online PROPERTIES C_STANDARD 99 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF
+        POSITION_INDEPENDENT_CODE ON)
+    target_compile_options(snx_online PRIVATE -pedantic-errors -Wall -Wextra -Werror=missing-prototypes)
+    if(WIN32)
+        target_link_libraries(snx_online PUBLIC ws2_32)
+    endif()
+endif()
+
 # Local wireless for nx's ldn and bsd (network/net_ldn.h): over the LAN, or through an Eden room (network/net_room.h),
 # which is ENet and zstd, fetched for the NX build and the tests
 if(TARGET snx_enet)
