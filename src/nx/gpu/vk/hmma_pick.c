@@ -26,6 +26,9 @@
 /* the fastest way's dispatch in the timed rounds, in ns: whole waves on every CU of a large GPU for nearly all of it,
    so that a dispatch's start is a small part of it, and the rounds of five ways a fraction of a second */
 #define PICK_TARGET_NS    1000000.0
+/* the sizing dispatches of the fastest way at most: a dispatch's time grows with its workgroups only once they fill the
+   GPU, so a size scaled from a smaller one's time can still fall short, and is scaled again */
+#define PICK_SIZINGS      4u
 #define PICK_MAX_GROUPS   65536u
 #define PICK_ROUNDS       4u
 /* a way's dispatches in a round, the first untimed: an idle GPU's clock comes up over the first few */
@@ -419,19 +422,21 @@ static int bench_run(int rule, int half, double* us, u64* took, char* why, size_
         groups = want >= PICK_MAX_GROUPS ? PICK_MAX_GROUPS : want <= PICK_FIRST_GROUPS ? PICK_FIRST_GROUPS : (u32)want;
     }
     /* the calibrating workgroups leave most of a large GPU idle, so their time is mostly a dispatch's start, and the
-       size scaled from it falls short of the target there (an RX 6700 XT's dispatches ran 0.1 ms): the fastest way at
-       that size, and the size scaled again from its time */
-    if (ok > 0 && groups > PICK_FIRST_GROUPS && groups < PICK_MAX_GROUPS) {
+       size scaled from it falls short of the target there (an RX 6700 XT's dispatches ran 0.1 to 0.2 ms): the fastest
+       way at that size, and the size scaled again from its time, until a dispatch takes half the target */
+    u32 sizings = 0;
+    while (ok > 0 && sizings < PICK_SIZINGS && groups > PICK_FIRST_GROUPS && groups < PICK_MAX_GROUPS) {
         Way* x = &b->way[fastest];
         double ns[2];
         int r = run(b, x, groups, 2, ns, 0, x->why, sizeof x->why);
+        sizings++;
         if (r < 0) {
             snprintf(why, n, "the %s way's %s", g_shader_hmma_names[fastest], x->why);
             ok = -1;
-        } else if (r && ns[1] > 0 && ns[1] < PICK_TARGET_NS / 2) {
-            double want = groups * PICK_TARGET_NS / ns[1];
-            groups = want >= PICK_MAX_GROUPS ? PICK_MAX_GROUPS : (u32)want;
         }
+        if (r <= 0 || !(ns[1] > 0) || ns[1] >= PICK_TARGET_NS / 2) break;
+        double want = groups * PICK_TARGET_NS / ns[1];
+        groups = want >= PICK_MAX_GROUPS ? PICK_MAX_GROUPS : (u32)want;
     }
     /* the rounds: the ways in turn, the order reversed every other round, as the clock still climbs in the first */
     u32 rounds = 0;
@@ -466,8 +471,9 @@ static int bench_run(int rule, int half, double* us, u64* took, char* why, size_
                                    b->way[w].why);
     if (at) LOG("vulkan: the HMMA bench leaves out %s\n", line);
     if (ok > 0)
-        LOG("vulkan: the HMMA bench ran %u workgroups a dispatch, %u rounds of %u dispatches a way, timed by %s\n",
-            groups, rounds, PICK_DISPATCHES - 1,
+        LOG("vulkan: the HMMA bench ran %u workgroups a dispatch (sized by %u dispatches of the %s way), %u rounds of "
+            "%u dispatches a way, timed by %s\n",
+            groups, sizings, g_shader_hmma_names[fastest], rounds, PICK_DISPATCHES - 1,
             b->timed ? "the GPU's timestamps" : "the host's clock (the compute queue has no timestamps)");
     /* a device lost in the bench keeps what it was using: nothing more is asked of it here */
     if (ok >= 0) {
