@@ -3162,14 +3162,19 @@ target_link_libraries(snx-test-arm-module-chain PRIVATE snx_driver_llvm ${CMAKE_
 add_test(NAME arm_module_chain COMMAND snx-test-arm-module-chain)
 set_tests_properties(arm_module_chain PROPERTIES TIMEOUT 120)
 # the AArch32 dispatch loop's lookup keeps no frame and no stack canary: compile(), its slow path, stays out of line
-# (arm_dispatch_frame.py reads arm.c's object with the build's llvm-objdump)
-# snx_core comes from src/nx, which the root CMakeLists adds after tests/ when the NX runtime is built
+# (arm_dispatch_frame.py reads arm.c's object with the build's llvm-objdump). With ThinLTO the object is bitcode and the
+# link makes the machine code, so it reads the program, which the line table ties to arm.c (cmake/lto.cmake)
+# snx_core and scarletnx come from src/nx and src/multicall, which the root CMakeLists adds after tests/
 if(Python3_Interpreter_FOUND AND SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY AND SNX_LLVM_CONFIG)
     get_filename_component(snx_llvm_bin "${SNX_LLVM_CONFIG}" DIRECTORY)
     find_program(SNX_LLVM_OBJDUMP llvm-objdump HINTS "${snx_llvm_bin}" NO_DEFAULT_PATH)
-    if(SNX_LLVM_OBJDUMP)
+    find_program(SNX_LLVM_NM llvm-nm HINTS "${snx_llvm_bin}" NO_DEFAULT_PATH)
+    find_program(SNX_LLVM_SYMBOLIZER llvm-symbolizer HINTS "${snx_llvm_bin}" NO_DEFAULT_PATH)
+    if(SNX_LLVM_OBJDUMP AND (NOT SNX_LTO_GENEX OR (SNX_LLVM_NM AND SNX_LLVM_SYMBOLIZER)))
         add_test(NAME arm_dispatch_frame COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/arm_dispatch_frame.py"
-                                                 --objdump "${SNX_LLVM_OBJDUMP}" "$<TARGET_OBJECTS:snx_core>")
+            --objdump "${SNX_LLVM_OBJDUMP}"
+            "$<IF:${SNX_LTO_GENEX},--program=$<TARGET_FILE:scarletnx>,$<TARGET_OBJECTS:snx_core>>"
+            "$<${SNX_LTO_GENEX}:--nm=${SNX_LLVM_NM}>" "$<${SNX_LTO_GENEX}:--symbolizer=${SNX_LLVM_SYMBOLIZER}>")
     endif()
 endif()
 # the runtime looking a pc up in the AOT variant table instead of compiling it
