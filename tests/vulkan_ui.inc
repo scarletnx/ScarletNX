@@ -234,6 +234,18 @@ static int check_ui(void) {
         showcase = g_settings.showcase;
     const IniOpt* corner = ini_find(g_display_ini, "stats_corner");
     CHECK(c && corner);
+    /* the shader cache the cold cache notice reads (vk_pipeline_cache_cold): this run's folder is new, so the file of
+       earlier runs holds nothing once it is read; with none kept (shaders recorded) it is never cold */
+    {
+        RendererPrepare p;
+        const u64 until = plat_ns() + 30000000000ull;
+        for (;;) {
+            vk_pipeline_prepare(&p);
+            if (p.loaded || p.done || plat_ns() > until) break;
+            plat_sleep_ns(1000000);
+        }
+        CHECK(p.loaded ? vk_pipeline_cache_cold() == 1 : p.done && !vk_pipeline_cache_cold());
+    }
     CHECK(vk_devmem_image(&ii, &device, &c->img, &c->mem) == VK_SUCCESS);
     /* the atlas: the font, the white block and the icons */
     c->atlas = ui_atlas_make(&c->atlas_h);

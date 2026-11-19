@@ -122,6 +122,13 @@ int overlay_toasting(u64 now_ns); /* one shows */
 /* the same from any thread, with or without ui_lock (RenderDoc's notices, gpu/vk/renderdoc.c): its time starts as the
    next frame draws it, the last one given before then shown */
 void overlay_notice(const char* text);
+/* The caches of earlier runs found empty as the game starts, which the frames to come wait on: shaders, the shader
+   cache (no shader or pipeline of an earlier run), textures, the BC7 cache (no ASTC level encoded before). Its words,
+   "Compiling shaders" where the shaders' is, else "Encoding textures"; NULL for neither */
+const char* overlay_cold_cache_words(int shaders, int textures);
+/* those words as overlay_notice's, once a run, from any thread: 1 when this call gave them. shaders -1, the shader
+   cache still being read (gpu/vk's vk_pipeline_cache_cold), gives none yet */
+int overlay_cold_cache(int shaders, int textures);
 /* The save states' pages: a row per slot, the focused one's thumbnail beside them, and Save, Load and Delete for one
    (Load and Delete asked first). Slot 0 is the one a load saves over first, which only loads or goes */
 #define OVERLAY_SLOTS_MAX 33

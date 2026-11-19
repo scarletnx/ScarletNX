@@ -100,6 +100,7 @@ typedef struct {
     u32 cap; /* slots in map, a power of two */
     u32 used;
     u64 hits, stored, restarts;
+    int started_empty;   /* it held no level as it opened (vk_bc7_cache_cold) */
     u8 piece[BC7_PIECE]; /* what a close clears ends before it */
     Bc7Reader rd;        /* kept over a close: its failed reads go to their owners still */
 } Bc7Cache;
@@ -320,6 +321,7 @@ int vk_bc7_cache_open(const char* path, const u64 version[2], u64 max) {
             return 0;
         }
         LOG("vulkan: the BC7 cache %s starts empty\n", path);
+        g_bc7_cache.started_empty = 1;
         return 1;
     }
     /* the records' headers, each where the one before it ends, until one is cut short or makes no sense. Read where
@@ -359,8 +361,10 @@ int vk_bc7_cache_open(const char* path, const u64 version[2], u64 max) {
 #endif
     LOG("vulkan: the BC7 cache %s holds %u levels of %llu MB\n", path, g_bc7_cache.used,
         (unsigned long long)(bytes >> 20));
+    g_bc7_cache.started_empty = !g_bc7_cache.used;
     return 1;
 }
+int vk_bc7_cache_cold(void) { return g_bc7_cache.started_empty; } /* a close clears it */
 
 /* size bytes of key's record, its blocks at `at`, read from f through piece and checked on the way into dst: 1, 0 when
    they don't check out, -1 when its header can't be read */

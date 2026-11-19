@@ -171,23 +171,31 @@ static void file(void) {
     remove(IDX);
     CHECK(vk_bc7_cache_open(PATH, v1, 64u << 20));
     CHECK(!vk_bc7_cache_find(ka));
+    CHECK(vk_bc7_cache_cold()); /* the run's notice: every level is encoded as it first loads */
     vk_bc7_cache_put(ka, a, na);
     vk_bc7_cache_put(kb, b, nb);
     CHECK(reads_as(ka, a, na) && reads_as(kb, b, nb));
+    CHECK(vk_bc7_cache_cold()); /* as it opened, the levels it takes since aside */
     u8 small[16];
     CHECK(!vk_bc7_cache_read(ka, small, 16)); /* another size is not the record */
     intptr_t lock;
     CHECK(snx_lock_file(PATH, &lock) == 1); /* held while open */
     vk_bc7_cache_close();
+    CHECK(!vk_bc7_cache_cold()); /* none open */
     CHECK(!snx_lock_file(PATH, &lock));
     snx_unlock_file(lock);
     /* a later run */
     CHECK(vk_bc7_cache_open(PATH, v1, 64u << 20));
     CHECK(reads_as(ka, a, na) && reads_as(kb, b, nb) && !vk_bc7_cache_find(kc));
+    CHECK(!vk_bc7_cache_cold());
     vk_bc7_cache_close();
     /* another version: the encoder, its SPIR-V, the GPU or the driver changed */
     CHECK(vk_bc7_cache_open(PATH, v2, 64u << 20));
     CHECK(!vk_bc7_cache_find(ka) && !vk_bc7_cache_find(kb) && file_size() == BC7_HEAD);
+    CHECK(vk_bc7_cache_cold());
+    vk_bc7_cache_close();
+    CHECK(vk_bc7_cache_open(PATH, v2, 64u << 20)); /* its header alone, of this version: no level yet */
+    CHECK(vk_bc7_cache_cold() && file_size() == BC7_HEAD);
     vk_bc7_cache_put(ka, a, na);
     vk_bc7_cache_put(kb, b, nb);
     vk_bc7_cache_close();

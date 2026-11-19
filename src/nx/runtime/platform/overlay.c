@@ -905,6 +905,16 @@ void overlay_notice(const char* text) {
     atomic_store_explicit(&notice_given, 1, memory_order_release);
     pm_unlock(&notice_lock);
 }
+const char* overlay_cold_cache_words(int shaders, int textures) {
+    return shaders ? "Compiling shaders" : textures ? "Encoding textures" : NULL;
+}
+int overlay_cold_cache(int shaders, int textures) {
+    static _Atomic int said;
+    const char* words = shaders < 0 ? NULL : overlay_cold_cache_words(shaders, textures);
+    if (!words || atomic_exchange_explicit(&said, 1, memory_order_relaxed)) return 0;
+    overlay_notice(words);
+    return 1;
+}
 void overlay_toggle(void) {
     changed();
     if (!atomic_load_explicit(&shown, memory_order_relaxed)) page_open(PAGE_MAIN);
