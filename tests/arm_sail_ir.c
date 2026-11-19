@@ -15,8 +15,9 @@
    ARM7TDMI's half of the time with a bus hook that answers every access it routes and logs it, and the registers,
    CPSR, the exit and its syndrome, the exclusive monitor, the trace's slots, guest memory and the hook's log must
    match. Before them, the witnesses: blocks whose answer the architecture gives (BKPT in an IT block, the UNPREDICTABLE
-   forms run as written), run with both emitters. --part K/N and --every N take one halfword in N * --every of a walk
-   that visits each once (a ctest part's share, spread over every register and immediate); --report writes each
+   forms run as written), run with both emitters. --part K/N and --every N take the Kth of N stretches, 1 in --every
+   of them all, of a walk that visits each once (a ctest part's share, spread over every register and immediate); a
+   sample of 512 or more that misses a value of a register field fails; --report writes each
    longer block's two IR texts; --time ROUNDS times the two emitters over the halfwords (time_emitters) */
 #include "common/cpu/arm/llvm.h"
 #include "common/cpu/arm/simd.h"
@@ -104,6 +105,22 @@ static u64 fnv_text(u64 h, char* text) {
     return h;
 }
 static int cmp_u16(const void* a, const void* b) { return (int)*(const uint16_t*)a - (int)*(const uint16_t*)b; }
+/* whether a sample of 512 or more holds every value of the register fields at bits 0, 3 and 6 (a T16 instruction's
+   Rd, Rn or Rm, the bits most forms take them in): one that misses one tests a share of the registers only */
+static int sample_spread(const uint16_t* halfwords, size_t count) {
+    if (count < 512) return 0;
+    for (unsigned at = 0; at <= 6; at += 3) {
+        unsigned seen = 0, values = 0;
+        for (size_t i = 0; i < count; ++i) seen |= 1u << ((halfwords[i] >> at) & 7);
+        for (unsigned v = 0; v < 8; ++v) values += (seen >> v) & 1;
+        if (values != 8) {
+            fprintf(stderr, "FAIL: the %zu halfwords sampled hold %u of the 8 values of the field at bit %u (%#04x)\n",
+                    count, values, at, seen);
+            return 1;
+        }
+    }
+    return 0;
+}
 static int cmp_u64(const void* a, const void* b) {
     u64 x = *(const u64*)a, y = *(const u64*)b;
     return x < y ? -1 : x > y;
@@ -651,10 +668,16 @@ int main(int argc, char** argv) {
                    2;
     }
     if (!g_test.every) g_test.every = 1;
-    /* the share of the halfwords: the ith of a walk that visits each once in an order the low bits do not repeat in (an
-       odd multiplier), so a sample holds every register and immediate; in their order, the T32 halves last */
-    for (uint32_t i = 0; i < 0x10000; ++i)
-        if (i % (g_test.parts * g_test.every) == g_test.part - 1) halfwords[count++] = (uint16_t)(i * 0x9E37u);
+    /* the share of the halfwords: the Kth stretch of a walk that visits each once (an odd multiplier). Consecutive
+       steps of it run through every value of the low bits, so a stretch holds every register and immediate; every
+       Nth step would keep the low bits fixed. In their order, the T32 halves last */
+    size_t share = (0x10000 + g_test.parts * g_test.every - 1) / (g_test.parts * g_test.every);
+    for (uint32_t i = (uint32_t)((g_test.part - 1) * share); i < 0x10000 && i < g_test.part * share; ++i)
+        halfwords[count++] = (uint16_t)(i * 0x9E37u);
+    if (sample_spread(halfwords, count)) {
+        free(halfwords);
+        return 1;
+    }
     qsort(halfwords, count, sizeof *halfwords, cmp_u16);
     while (thumb2 < count && halfwords[thumb2] < 0xE800) ++thumb2;
     if (snx_ir_init(error, sizeof error) || !(ir = snx_ir_new_jit("arm-sail-ir", '2', error, sizeof error))) {
