@@ -1491,6 +1491,83 @@ static void scaled_shared_depth(SnxCtrMemory* m) {
     g_settings.ctr_top_resolution = top;
     snx_ctr_vk_finish();
 }
+
+/* six vertices of the rectangle from (x0, y0) to (x1, y1) in NDC, of colour c, at vertex at */
+static void into_quad(Scene* s, unsigned at, float x0, float y0, float x1, float y1, const uint8_t c[4]) {
+    uint32_t word = color_word(c);
+    s->vertices[at] = vertex(x0, y0, -0.5f, word, 0, 0);
+    s->vertices[at + 1] = vertex(x1, y0, -0.5f, word, 0, 0);
+    s->vertices[at + 2] = vertex(x0, y1, -0.5f, word, 0, 0);
+    s->vertices[at + 3] = vertex(x1, y0, -0.5f, word, 0, 0);
+    s->vertices[at + 4] = vertex(x1, y1, -0.5f, word, 0, 0);
+    s->vertices[at + 5] = vertex(x0, y1, -0.5f, word, 0, 0);
+}
+/* A display transfer from a scaled target's row OVERLAP_ROW into a framebuffer sharing the target's earlier rows, and
+   no row the transfer reads: the framebuffer's copy is kept */
+#define OVERLAP_TARGET   (VRAM + 0x200000u)
+#define OVERLAP_TARGET_W 240u
+#define OVERLAP_TARGET_H 400u
+#define OVERLAP_ROW      160u
+#define OVERLAP_FB_W     240u
+#define OVERLAP_FB_H     240u
+#define OVERLAP_FB_BYTES (OVERLAP_FB_W * OVERLAP_FB_H * 2) /* RGB565 */
+/* the framebuffer that ends where the rows read begin, so it shares the target's rows before OVERLAP_ROW alone */
+#define OVERLAP_FB       (OVERLAP_TARGET + OVERLAP_ROW * OVERLAP_TARGET_W * 4 - OVERLAP_FB_BYTES)
+#define OVERLAP_OTHER    SECOND_COLOR
+/* the target at OVERLAP_TARGET, its rows from the top, drawn in two halves of colours left and right */
+static Scene* overlap_scene(const char* name, const uint8_t left[4], const uint8_t right[4]) {
+    Scene* s = scene(name, 0, 0xff);
+    put(&s->list, FB_COLOR_ADDR, OVERLAP_TARGET / 8);
+    put(&s->list, 0x041, f24(OVERLAP_TARGET_W / 2.0f));
+    put(&s->list, 0x043, f24(OVERLAP_TARGET_H / 2.0f));
+    put(&s->list, 0x11e, OVERLAP_TARGET_W | (OVERLAP_TARGET_H - 1) << 12 | 1u << 24);
+    into_quad(s, 0, -1.0f, -1.0f, 0.0f, 1.0f, left);
+    into_quad(s, 6, 0.0f, -1.0f, 1.0f, 1.0f, right);
+    s->vertex_count = 12;
+    array_draw(s);
+    list_end(&s->list);
+    return s;
+}
+/* a scene's vertices and list written to the board, then its list recorded */
+static bool overlap_record(SnxCtrMemory* m, const Scene* s) {
+    return snx_ctr_phys_write(m, VERTICES, s->vertices, sizeof s->vertices) == SNX_CTR_MEM_OK &&
+           snx_ctr_phys_write(m, LIST, s->list.w, s->list.n * 4) == SNX_CTR_MEM_OK && record(m, s, &vulkan);
+}
+/* the display transfer from the target's row OVERLAP_ROW into fb: RGBA8 to RGB565, at the console's scale */
+static bool overlap_transfer(uint32_t fb) {
+    SnxCtrDisplayTransfer dt = {OVERLAP_TARGET_W | OVERLAP_FB_H << 16, OVERLAP_FB_W | OVERLAP_FB_H << 16,
+                                SNX_CTR_PIX_RGB565 << SNX_CTR_XFER_OUT_FORMAT};
+    uint32_t from = OVERLAP_TARGET + OVERLAP_ROW * OVERLAP_TARGET_W * 4;
+    return snx_ctr_vk_display_transfer(&dt, from, fb) == SNX_CTR_XFER_OK;
+}
+/* the copy the presenter looks up for the RGB565 framebuffer at fb: a copy at the target's render scale */
+static bool overlap_copy(uint32_t fb) {
+    SnxCtrVkScaled scaled = {0};
+    return snx_ctr_vk_target_image(fb, OVERLAP_FB_W, OVERLAP_FB_H, SNX_CTR_PIX_RGB565, OVERLAP_FB_W * 2, &scaled) &&
+           scaled.scale == 2;
+}
+static void overlap_check(const char* name, const char* what, bool pass) {
+    printf("%-24s %-40s %s\n", name, what, pass ? "ok" : "FAIL");
+    if (!pass) ++failures;
+}
+/* the target drawn in two colours, then the transfer into fb: the copy is looked up after the transfer */
+static void overlap_case(SnxCtrMemory* m, const char* name, uint32_t fb) {
+    static const uint8_t inside[4] = {100, 50, 200, 255}, outside[4] = {20, 220, 90, 255};
+    Scene* a = overlap_scene("the target", inside, outside);
+    bool transferred = overlap_record(m, a) && overlap_transfer(fb);
+    overlap_check(name, "the copy after the transfer", transferred && overlap_copy(fb));
+    free(a);
+}
+/* A display transfer into a framebuffer that shares the earlier rows of a scaled target and no row it reads: the copy
+   is kept. The control's framebuffer lies beyond the target */
+static void scaled_transfer_overlap(SnxCtrMemory* m) {
+    int top = g_settings.ctr_top_resolution;
+    g_settings.ctr_top_resolution = 2;
+    overlap_case(m, "over the target's rows", OVERLAP_FB);
+    overlap_case(m, "beyond the target (control)", OVERLAP_OTHER);
+    g_settings.ctr_top_resolution = top;
+    snx_ctr_vk_finish();
+}
 /* Shadow maps (Azahar's sw_framebuffer.cpp DrawShadowMapPixel and sw_rasterizer.cpp TextureColor): the colour buffer
    of a shadow pass holds one word per pixel, its bytes the depth from the most significant byte, then the strength */
 #define TEX_CUBE   0x086
@@ -2042,6 +2119,8 @@ static const Mode modes[] = {
     {"--async", "the draws with async_pipelines", async_pipelines},
     {"--pipeline-cache", "the pipeline cache kept between runs", pipeline_cache},
     {"--scaled-texture-from-target", "the textures made from scaled targets", scaled_texture_from_target},
+    {"--scaled-transfer-overlap", "a display transfer into a destination over a target",
+     scaled_transfer_overlap},
     {"--scaled-texture-from-depth", "the textures made from scaled depth buffers", scaled_texture_from_depth},
     {"--scaled-shared-depth", "two targets over one depth buffer at render scale", scaled_shared_depth},
     {"--shadow", "the shadow maps", shadows}};

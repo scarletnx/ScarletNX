@@ -1147,25 +1147,13 @@ bool snx_ctr_vk_target_image(uint32_t pa, unsigned width, unsigned height, unsig
    (snx_ctr_vk_target_image), and the bytes the dispatch wrote to the destination, which the presenter compares the
    framebuffer's memory with. Recorded after the dispatch, so the copy reads what it wrote. A target at the console's
    scale keeps nothing: its image holds the draws' unquantised colours */
-void snx_ctr_vk_target_transfer(uint32_t input, uint32_t output, unsigned in_width, unsigned width, unsigned height,
-                                unsigned in_format, unsigned out_format, unsigned hs, unsigned vs, bool flip) {
+void snx_ctr_vk_target_transfer(SnxCtrVkSource source, uint32_t output, unsigned width, unsigned height,
+                                unsigned out_format, unsigned hs, unsigned vs, bool flip) {
     if (!g.made) return;
+    if (!source.target) return;
     uint32_t columns = width << hs, rows = height << vs;
-    const Target* t = NULL;
-    uint32_t first = 0;
-    for (unsigned i = 0; i < g.target_count && !t; ++i) {
-        const Target* u = &g.targets[i];
-        if (u->key.scale <= 1 || input < u->key.color_pa || u->key.width != in_width ||
-            u->key.color_format != in_format || !(u->color_dirty || u->color_valid) || !u->color.image)
-            continue;
-        /* the input may start whole rows of 8x8 tiles into the target: games draw both screens into one target and
-           copy each screen's rows */
-        uint32_t strip = u->key.width * 8 * color_bytes(u->key.color_format), at = input - u->key.color_pa;
-        if (at % strip || columns > u->key.width || at / strip * 8 + rows > u->key.height) continue;
-        t = u;
-        first = at / strip * 8;
-    }
-    if (!t) return;
+    const Target* t = &g.targets[source.target - 1];
+    uint32_t first = source.first;
     uint32_t scale = t->key.scale, image_width = width * scale, image_height = height * scale;
     uint32_t span = width * height * snx_ctr_pixel_bytes(out_format);
     Shown* s = shown_slot(output);
@@ -1211,6 +1199,36 @@ void snx_ctr_vk_target_transfer(uint32_t input, uint32_t output, unsigned in_wid
     s->format = (uint8_t)out_format;
     s->used = snx_ctr_vk_serial();
     s->valid = true;
+}
+/* the scaled target a display transfer reads: the one whose colour holds the input's rows, from a whole strip of
+   8x8 tiles, and the input's first row in it */
+static const Target* scaled_input(uint32_t input, unsigned in_width, uint32_t columns, uint32_t rows,
+                                  unsigned in_format, uint32_t* first) {
+    for (unsigned i = 0; i < g.target_count; ++i) {
+        const Target* u = &g.targets[i];
+        if (u->key.scale <= 1 || input < u->key.color_pa || u->key.width != in_width ||
+            u->key.color_format != in_format || !(u->color_dirty || u->color_valid) || !u->color.image)
+            continue;
+        /* the input may start whole rows of 8x8 tiles into the target: games draw both screens into one target and
+           copy each screen's rows */
+        uint32_t strip = u->key.width * 8 * color_bytes(u->key.color_format), at = input - u->key.color_pa;
+        if (at % strip || columns > u->key.width || at / strip * 8 + rows > u->key.height) continue;
+        *first = at / strip * 8;
+        return u;
+    }
+    return NULL;
+}
+/* the scaled source of a display transfer, found before the destination's sync stales a target over it */
+SnxCtrVkSource snx_ctr_vk_target_source(uint32_t input, unsigned in_width, unsigned width, unsigned height,
+                                        unsigned in_format, unsigned hs, unsigned vs) {
+    SnxCtrVkSource source = {0, 0};
+    if (!g.made) return source;
+    uint32_t first = 0;
+    const Target* t = scaled_input(input, in_width, width << hs, height << vs, in_format, &first);
+    if (!t) return source;
+    source.target = (uint32_t)(t - g.targets) + 1;
+    source.first = first;
+    return source;
 }
 /* The run of pages around pa (256 at most on each side, in its region) whose copy is newer than the RAM copied back to
    it, and waited for: the same from then on. One CPU access to what the GPU wrote takes what is around it too, a frame
