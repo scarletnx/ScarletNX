@@ -164,7 +164,7 @@ void nce_slot_taken(u64 addr, const char* what) { (void)addr, (void)what; }
 void jit_slot_taken(u64 addr, GuestFn fn) { (void)addr, (void)fn; }
 int hook_routed(const char* name) { return (void)name, 1; }
 int shader_vk_set(int stage) { return stage == 4; } /* shader.c's: the fragment stage's set 1 */
-int shader_vk_tex_set(int stage) { return shader_vk_set(stage); }
+int shader_vk_tex_set(int stage) { return shader_vk_set(stage) + (g_spirv_translate.split_sets ? 5 : 0); }
 ShCaps g_spirv_translate = {.uniform_cbufs = 18}; /* the renderer's rules: sets, no windows */
 /* nvdrv's GPU address space: the layer's chunks at addresses of their own, mapped one to one here */
 static u64 g_gpu_next = 0x4000000000ull;
@@ -750,6 +750,8 @@ int main(void) {
         /* a texture sampled: its TIC entry at its name in the pool, its sampler state's TSC entry, the handle of both
            in the fragment stage's texture bank */
         {
+            /* the renderer started after the layer and split its texture sets: the next link takes its rules */
+            g_spirv_translate.split_sets = 1;
             u64 sampled =
                 program("#version 330 core\nlayout(location = 0) in vec4 p;\nvoid main() { gl_Position = p; }\n",
                         "#version 330 core\nuniform sampler2D s;\nout vec4 o;\n"
@@ -770,6 +772,15 @@ int main(void) {
             assert(told_written(gpu_cpu(b->tex_pool + 32ull * t), 32) &&
                    told_written(gpu_cpu(b->smp_pool + 32ull * t), 32));
             assert(told_written(gpu_cpu(b->cb_addr[4][17]), 4));
+            {
+                const SnxGlProgram* sp = snx_gl_program((u32)sampled);
+                const u32* w = snx_gl_program_spirv(sp, 1);
+                u32 sampler_set = 0;
+                for (u32 i = 5; i < sp->spirv_words[1] && (w[i] >> 16); i += w[i] >> 16)
+                    if ((w[i] & 0xffff) == 71 && w[i + 2] == 34 && w[i + 3] != 1) sampler_set = w[i + 3];
+                assert(sampler_set == 6); /* the fragment stage's set 1, its textures' five after */
+            }
+            g_spirv_translate.split_sets = 0;
         }
     }
 

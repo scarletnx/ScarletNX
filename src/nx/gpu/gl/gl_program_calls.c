@@ -24,10 +24,18 @@ static void* host(u64 a) { return a ? GP(a) : NULL; }
 static const char* text(u64 a) { return (const char*)host(a); }
 
 static void say(const char* line) { LOG("gl layer: %s\n", line); }
-/* the renderer's draws bind each stage's resources in the stage's own set (gl_host_program.h) */
-void gl_program_calls_init(void) {
-    snx_gl_program_host(&(SnxGlProgramHost){.say = say, .stage_sets = 1, .layout = gl_host_program_layout()});
+/* the renderer's draws bind each stage's resources in the stage's own set (gl_host_program.h), by its rules for the
+   device, which it sets as it starts: after the layer's start, before the game's first link. Each link takes them as
+   they are then */
+void gl_program_layout_refresh(void) {
+    static SnxGlLayout installed;
+    static int done;
+    SnxGlLayout now = gl_host_program_layout();
+    if (done && !memcmp(&now, &installed, sizeof now)) return;
+    installed = now, done = 1;
+    snx_gl_program_host(&(SnxGlProgramHost){.say = say, .stage_sets = 1, .layout = now});
 }
+void gl_program_calls_init(void) { gl_program_layout_refresh(); }
 
 /* the calling thread's context, the lock held: the body runs with ctx; without a context, none and fallback */
 #define LOCKED(fallback, ...)                                                                                          \
@@ -131,7 +139,9 @@ void gl_get_attached_shaders(CPU* c, u32 program, i32 max, u64 count, u64 shader
 void gl_bind_attrib_location(CPU* c, u32 program, u32 index, u64 name) {
     LOCKED(NONE, snx_gl_bind_attrib_location(ctx, program, index, text(name)));
 }
-void gl_link_program(CPU* c, u32 program) { LOCKED(NONE, snx_gl_link_program(ctx, program)); }
+void gl_link_program(CPU* c, u32 program) {
+    LOCKED(NONE, gl_program_layout_refresh(); snx_gl_link_program(ctx, program));
+}
 void gl_use_program(CPU* c, u32 program) { LOCKED(NONE, snx_gl_use_program(ctx, program)); }
 void gl_validate_program(CPU* c, u32 program) { LOCKED(NONE, snx_gl_validate_program(ctx, program)); }
 void gl_program_parameteri(CPU* c, u32 program, u32 pname, i32 value) {
@@ -299,6 +309,7 @@ u32 gl_create_shader_programv(CPU* c, u32 type, i32 count, u64 strings) {
     LOCKED(
         0, u32 shader = snx_gl_create_shader(ctx, type); if (shader) {
             source(ctx, shader, count, strings, 0);
+            gl_program_layout_refresh();
             program = snx_gl_create_shader_program(ctx, shader);
         });
     return program;
