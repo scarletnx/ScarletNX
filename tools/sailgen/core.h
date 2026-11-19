@@ -894,12 +894,7 @@ static inline SgD sg_d_and(SgCtx* g, SgD a, SgD b) {
         }
         return r;
     }
-    { /* the AND made, its bits a side holds at 0 known (BXWritePC's bit 0 of a value shifted left) */
-        SgD m = sg_d_from(g, LLVMBuildAnd(SG_B, sg_d_make(g, &a), sg_d_make(g, &b), ""));
-        for (i = 0; i < a.w; ++i)
-            if (a.sel[i] == 0 || b.sel[i] == 0) m.sel[i] = 0;
-        return m;
-    }
+    return sg_d_from(g, LLVMBuildAnd(SG_B, sg_d_make(g, &a), sg_d_make(g, &b), ""));
 }
 static inline SgD sg_d_or(SgCtx* g, SgD a, SgD b) {
     SgD r = sg_d_empty(a.w);

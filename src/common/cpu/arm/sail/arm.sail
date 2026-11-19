@@ -12,19 +12,13 @@
 
 // ScarletNX's AArch32 CPU keeps R0 to R15 in one array (SnxArmCPU.r), and a guest runs in user mode alone, which banks
 // none of them: sail-arm's Rmode_read and Rmode_set pick a mode's bank, here GPR's elements, which the back end loads
-// and stores where the CPU keeps them (sg_GPR_read). R15 is read through R_read, the pc of the instruction plus 8 or 4,
-// and written there only by an UNPREDICTABLE form run as written (a register-shifted register's Rd): a branch to the
-// value, as an ALU result's write of the PC, the way the block compiler runs every one of them
+// and stores where the CPU keeps them (sg_GPR_read). R15 is read through R_read, the pc of the instruction plus 8 or 4
 register GPR : vector(16, bits(32))
 val Rmode_read : forall 'n. (int('n), bits(5)) -> bits(32)
 function Rmode_read (n, mode) = GPR[n]
 val Rmode_set : forall 'n. (int('n), bits(5), bits(32)) -> unit
 function Rmode_set (n, mode, value_name) = {
-    if n == 15 then {
-        ALUWritePC(value_name)
-    } else {
-        GPR[n] = value_name
-    }
+    GPR[n] = value_name
 }
 // The exception level and the mode guest code runs at, which sailgen reads PSTATE.EL and PSTATE.M as (a let named for a
 // register's field holds that field fixed): what only a privileged mode does (CPS, SETPAN) folds away
