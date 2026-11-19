@@ -72,6 +72,11 @@ this tree, or a new external library, fails it. The backend generates code for t
 the `scarletnx` command does: build the library on the machine that will use it, or one
 with the same instruction set extensions.
 
+The archive holds machine code in every build. The rest of a build that links with ThinLTO
+([`SNX_LTO`](build.md#build-variants)) compiles to LLVM bitcode, which a consumer's linker may not read. The archive,
+the parts it is made of and the shared library build without it, so the programs of this tree that link those parts
+get no inlining across them.
+
 `-DSNX_RECOMPILER_SHARED=ON` also builds `libscarletnx-recompiler.so` (a DLL on
 Windows), which exports only the header's functions and is linked with
 `ScarletNX::recompiler-shared`. It compiles the backend as position-independent code.

@@ -35,6 +35,9 @@ if(SNX_RECOMPILER_SHARED)
 else()
     set(snx_recompiler_kinds STATIC)
 endif()
+# The archive is installed for other projects' linkers, which need machine code and not this Clang's bitcode: its parts
+# and the archive compile without ThinLTO (cmake/lto.cmake). The programs that link the parts get no LTO across them
+snx_no_lto(${snx_recompiler_parts})
 foreach(kind IN LISTS snx_recompiler_kinds)
     if(kind STREQUAL STATIC)
         set(target scarletnx-recompiler)
@@ -45,6 +48,7 @@ foreach(kind IN LISTS snx_recompiler_kinds)
     set_target_properties(${target} PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON C_EXTENSIONS ON
         OUTPUT_NAME scarletnx-recompiler)
     add_dependencies(${target} ${snx_recompiler_parts})
+    snx_no_lto(${target})
     # installed, the headers' layout under the prefix; in this tree (a project that adds ScarletNX with CPM or
     # add_subdirectory), <scarletnx/snx_recompiler.h> as well, and the headers it includes from src/
     target_include_directories(${target} PUBLIC "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>"

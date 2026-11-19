@@ -346,7 +346,8 @@ runtime must not mix with another LLVM build.
 cmake --build build
 ```
 
-Default: Ninja + Clang, `RelWithDebInfo` (`-O2 -g`). Runtime relinks deploy `recompiled/Game/Game[.exe]` beside
+Default: Ninja + Clang, `RelWithDebInfo` (`-O2 -g`), linked with ThinLTO where the toolchain can
+([`SNX_LTO`](#build-variants)). Runtime relinks deploy `recompiled/Game/Game[.exe]` beside
 matching `Game_code.so/.dll`, in the data folder's `recompiled/` ([Usage](../user/usage.md#folders)); no-op builds skip deployment. Recompiler/ABI edits require [module rebuilds](development.md).
 
 CPMUtil downloads each package [cpmfile.json](../../cpmfile.json) pins once into a shared `.cache/cpm` cache, at
@@ -443,6 +444,20 @@ cmake --preset default -B build -DSNX_FFMPEG_ASM=OFF && cmake --build build
 ```
 
 - `-DSNX_FFMPEG_ASM=OFF`: omit x86-64 NASM assembly; slower FFmpeg decoding.
+- `-DSNX_LTO=OFF`: link without ThinLTO ([cmake/lto.cmake](../../cmake/lto.cmake)). ON by default, and used in the
+  Release, RelWithDebInfo and MinSizeRel builds, never in a Debug one, where CMake's `CheckIPOSupported` links a test
+  project with it: Linux, FreeBSD, Windows (Clang with lld: MSYS2's CLANG64, llvm-mingw, the `windows-cross` preset)
+  and Android. It is OFF by default on macOS and iOS, where CMake has no IPO for the apps' Swift, and in the Linux and
+  NetBSD cross builds, whose preset linker the check does not test (`-DSNX_LTO=ON` turns it on there). It is also off
+  with `SNX_TEST_SANITIZERS` unless the linker is lld: ASan gives each object a common symbol, and GNU ld's LTO plugin
+  then takes every archive member that has one, with references that nothing defines. The objects
+  compile to LLVM bitcode, and the link optimizes across files: on a Steam Deck, the GPU thread's time for each frame
+  fell by 6.3%. The links take longer, the test programs' too. On an 8-thread Linux desktop a clean build took 440 s,
+  against 316 s without it. The link keeps each module's machine code in the build folder's `thinlto-cache/` (2 GB at
+  most, with lld or GNU ld's gold plugin), so a build after an edit to one file of the renderer took 18 s, against
+  50 s without the cache and 4 s without ThinLTO. The installed `scarletnx-recompiler` archive and the parts it is made
+  of always build without it, as machine code ([Library](library.md)), and the game modules' runtime library is
+  compiled with its own flags, which it does not change.
 - `-DSDL3_FORCE_BUNDLED=ON`: build the pinned SDL3 instead of using a system SDL3 development package
   (`-DCPM_DOWNLOAD_SDL3=ON` before CPMUtil, read as this).
 - `-DSNX_DEPLOY=OFF`: disable runtime deployment.

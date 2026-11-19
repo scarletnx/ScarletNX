@@ -46,6 +46,24 @@ description: "Build the ScarletNX runtime and recompile games correctly. Avoid t
 | Nobody sees a new warning | The runtime builds with only the default warnings of Clang. The third-party packages and the generated game module build with `-w`. A warning does not stop the build. | Check a changed file with more warnings on. Take the line of the file from `build/compile_commands.json`. Run it with `-Wall -Wextra -fsyntax-only`. Fix the warnings that come from the change. |
 | The game crashes at startup with `recompiled code is from another ScarletNX version` | The build of the game module used another `SNX_ABI` (`src/common/cpu/aarch64/cpu.h`) | Recompile the game. |
 
+## ThinLTO
+
+`SNX_LTO` (`cmake/lto.cmake`) is on by default. The Release, RelWithDebInfo and MinSizeRel builds compile to LLVM
+bitcode, and the link optimizes across files. A Debug build does not use it. The configure prints `ThinLTO: on`, or
+the reason that it is off. On a Steam Deck, ThinLTO cut the time of the GPU thread for each frame by 6.3%.
+
+- Each link takes more time. A clean build took 440 s, and 316 s without LTO. The link keeps the machine code of
+  each module in `thinlto-cache/` of the build folder. Thus a build after an edit to one file took 18 s, and 4 s
+  without LTO. For a faster loop of edits and tests, configure a separate build folder with `-DSNX_LTO=OFF`.
+- `llvm-objdump` cannot read the object of an LTO target. Read the linked program, or use a build with
+  `-DSNX_LTO=OFF`.
+- The archive `scarletnx-recompiler` and its parts never use LTO (`snx_no_lto`). A project that links the archive
+  must get machine code.
+- A test can fail only with LTO. LTO inlines across files, and this can show undefined behavior that the test did
+  not show before. Find the cause and fix it. Do not turn off LTO for that target.
+- With `SNX_TEST_SANITIZERS`, LTO stays off unless the linker is lld. GNU ld takes archive members that no reference
+  needs, because each ASan object has a common symbol.
+
 ## The screen tests
 
 A build makes `snx-test-gui-sdl` and `snx-test-gui-setup` on the Mac too. But `tests/cmake/gui.cmake` registers

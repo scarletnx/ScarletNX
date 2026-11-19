@@ -179,6 +179,9 @@ if(NOT SNX_BUILD_TESTING)
 endif()
 # Before the dependencies: the tests' network fixtures link ENet and zstd, whatever the build
 include(CTest)
+# ThinLTO in the optimized configurations, where the toolchain links it (cmake/lto.cmake): before the packages, which
+# get it too
+include(cmake/lto.cmake)
 # Before the sources: the ISO C driver of a tools-only build links LZ4 too
 include(cmake/dependencies.cmake)
 # every local include is a path from src/ ("nx/hle/kernel/ipc.h"); generated and third-party headers come with their
