@@ -7,12 +7,14 @@
 #include "common/gpu/gl/gl_sync.h"
 #include "gpu/gl/gl.hook.h"
 #include "nx/gpu/gl/gl_layer.h"
+#include "nx/runtime/platform/log.h"
 #include "nx/memory/mem.h"
 #include <string.h>
 
+static void say(const char* line) { WARN("gl layer: %s\n", line); }
 void gl_sync_calls_init(void) {
-    snx_gl_sync_host(
-        &(SnxGlSyncHost){.recorded = gl_draw_recorded, .completed = gl_draw_completed, .wait = gl_draw_wait});
+    snx_gl_sync_host(&(SnxGlSyncHost){
+        .recorded = gl_draw_recorded, .completed = gl_draw_completed, .wait = gl_draw_wait, .say = say});
 }
 
 #define LOCKED(fallback, ...)                                                                                          \

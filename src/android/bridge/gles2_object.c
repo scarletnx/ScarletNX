@@ -1674,7 +1674,10 @@ static void sync_wait(uint32_t ctx, uint64_t serial) {
     }
     gles_vk_wait(serial);
 }
-void gles2_syncs_init(void) { snx_gl_sync_host(&(SnxGlSyncHost){sync_recorded, sync_completed, sync_wait}); }
+void gles2_syncs_init(void) {
+    snx_gl_sync_host(&(SnxGlSyncHost){
+        .recorded = sync_recorded, .completed = sync_completed, .wait = sync_wait, .say = texture_say});
+}
 static void g_fence_sync(CPU* c, Gles2Context* gl) {
     X(0) = snx_gl_fence_sync(gl->ctx, (uint32_t)X(0), (uint32_t)X(1));
 }

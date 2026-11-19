@@ -28,6 +28,7 @@ static struct {
     SnxGlSync s[SNX_GL_SYNCS]; /* what a save state holds */
     SnxGlSyncHost host;
     uint32_t last_id; /* the id the last sync made took (a load takes the highest of its records) */
+    int said;         /* the table full was told */
 } g_gl_sync;
 
 #define S g_gl_sync.s
@@ -52,6 +53,14 @@ uint64_t snx_gl_fence_sync(uint32_t ctx, uint32_t condition, uint32_t flags) {
             S[i] = (SnxGlSync){.used = 1, .id = g_gl_sync.last_id, .serial = H.recorded ? H.recorded() : 0};
             return (uint64_t)g_gl_sync.last_id << 32 | (i + 1);
         }
+    if (!g_gl_sync.said && H.say) {
+        char line[160];
+        snprintf(line, sizeof line,
+                 "glFenceSync: the layer holds %d syncs, all alive (none deleted): GL_OUT_OF_MEMORY, the game gets 0",
+                 SNX_GL_SYNCS);
+        H.say(line);
+    }
+    g_gl_sync.said = 1;
     snx_gl_error(ctx, GL_OUT_OF_MEMORY_);
     return 0;
 }
