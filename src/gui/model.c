@@ -211,8 +211,8 @@ const char* gui_setting_description(const GuiMenu* menu) {
             return snx_tr(
                 "Where the app keeps each kind of its files, and the libraries: each folder opened or changed");
         case GUI_PACK:
-            return snx_tr("Packs a folder of NCAs into an NSP or an XCI whose NCAs are decrypted, which needs no keys "
-                          "to read");
+            return snx_tr("Packs a folder of NCAs, or an extracted game's folder (exefs/, romfs/), into an NSP or an "
+                          "XCI whose NCAs are decrypted, which needs no keys to read");
         default: return "";
     }
 }
