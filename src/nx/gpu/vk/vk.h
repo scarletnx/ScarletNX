@@ -3375,7 +3375,8 @@ void vk_predraw_report(void);   /* logs the counts of each reason (render.c) */
    op) and by loading as DONT_CARE */
 extern u64 g_vk_passes, g_vk_clear_cmds, g_vk_clear_loads, g_vk_dontcare_loads;
 
-/* gpuprof.c, vk_gpu_profile=1: GPU time per rendering pass, summed per target and logged every 10 s */
+/* gpuprof.c, vk_gpu_profile=1 or log=3: GPU time per rendering pass, summed per target and logged every 10 s, with
+   the slowest passes and what they held */
 /* the Tracy GPU track's contexts, one per queue: the graphics queue's render passes, the compute queue's batches */
 #define VK_GPU_CTX_GRAPHICS 1
 #define VK_GPU_CTX_COMPUTE  2

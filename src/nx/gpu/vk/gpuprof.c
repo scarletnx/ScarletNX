@@ -74,7 +74,60 @@ typedef struct {
     u64 ns, passes, draws;
 } GpKey;
 
-static int g_on = -1;
+/* The slow passes, by what they had: their target and the gap before them (copies and dispatches; a barrier is an
+   ordinary part of a pass). A pass that costs milliseconds at a few thousand pixels is a stall or a gap, not its
+   pixels, and this says which it was: the target and its size are the pixels, the gap is the stall, and the draws are
+   what the CPU asked the GPU to do. Each entry sums the passes of one shape, and keeps the most any one of them had.
+   Only passes of 0.3 ms or more are kept: a pass of a tenth of a millisecond says nothing about a frame. The table
+   keeps the mean time of a pass, not the window's total for it, since a stall of one frame is what this looks for.
+   A pass that runs a thousand times and stays cheap is the other table's line (g_key, summed per target) */
+#define GP_SLOW 8
+typedef struct {
+    u64 gva, ns, n;
+    u32 w, h, fmt;
+    u32 gap; /* what the gap before it held: 1 copies, 2 dispatches */
+    u32 draws, xfers, barriers, dispatches; /* the most any one of them had */
+} GpSlow;
+static GpSlow g_slow[GP_SLOW];
+static void gp_slow(const GpPass* p, u64 ns) {
+    u32 worst = 0;
+    const u32 gap = (p->xfers != 0) | (p->dispatches != 0) << 1;
+    if (ns < 300000) return;
+    for (u32 i = 0; i < GP_SLOW; i++) { /* the same pass again: summed with it, and its worst kept */
+        GpSlow* s = &g_slow[i];
+        if (!s->n || s->gva != p->gva || s->w != p->w || s->h != p->h || s->fmt != p->fmt || s->gap != gap) continue;
+        s->ns += ns, s->n++;
+        if (p->draws > s->draws) s->draws = p->draws;
+        if (p->xfers > s->xfers) s->xfers = p->xfers;
+        if (p->barriers > s->barriers) s->barriers = p->barriers;
+        if (p->dispatches > s->dispatches) s->dispatches = p->dispatches;
+        return;
+    }
+    for (u32 i = 0; i < GP_SLOW; i++) { /* the least of them, an empty one first, gives way to a pass that costs more */
+        const GpSlow* s = &g_slow[i];
+        if (!s->n) {
+            worst = i;
+            break;
+        }
+        if (!g_slow[worst].n || s->ns / s->n < g_slow[worst].ns / g_slow[worst].n) worst = i;
+    }
+    if (g_slow[worst].n && ns <= g_slow[worst].ns / g_slow[worst].n) return;
+    g_slow[worst] = (GpSlow){.gva = p->gva,
+                             .ns = ns,
+                             .n = 1,
+                             .w = p->w,
+                             .h = p->h,
+                             .fmt = p->fmt,
+                             .gap = gap,
+                             .draws = p->draws,
+                             .xfers = p->xfers,
+                             .barriers = p->barriers,
+                             .dispatches = p->dispatches};
+}
+/* The value in effect, -1 until it is worked out, and what it was worked out for: log's value may change during a
+   run, and the GPU thread and the recording thread both ask. Read relaxed, as the stats box's setting is */
+static _Atomic int g_on = -1;
+static _Atomic int g_asked = -1;
 static GpSlot* g_slot[VK_FRAMES];
 static GpKey g_key[GP_KEYS];
 static u64 g_pass_ns, g_span_ns, g_frames, g_lost;
@@ -161,10 +214,21 @@ int vk_gpuprof_calibrated(void) {
 }
 
 static int gp_on(void) {
-    if (g_on < 0) {
-        char say[640];
-        g_on = vk_gpuprof_setting(g_settings.gpu_profile, g_vk.props.limits.timestampComputeAndGraphics,
-                                  g_vk.has_portability, g_vk.props.deviceName, say, sizeof say);
+    /* log=3's counters are the same work as the setting's: the CPU's per resource, and the GPU's a pass */
+    int by_log = g_settings.log_level >= 3, asked = g_settings.gpu_profile || by_log;
+    if (atomic_load_explicit(&g_on, memory_order_relaxed) < 0 ||
+        asked != atomic_load_explicit(&g_asked, memory_order_relaxed)) {
+        /* log's value may change during a run (it is not a startup setting) */
+        char say[640], by[32];
+        if (by_log && !g_settings.gpu_profile)
+            snprintf(by, sizeof by, "log=%d", g_settings.log_level);
+        else
+            snprintf(by, sizeof by, "vk_gpu_profile=%d", g_settings.gpu_profile);
+        atomic_store_explicit(&g_asked, asked, memory_order_relaxed);
+        atomic_store_explicit(&g_on,
+                              vk_gpuprof_setting(asked, by, g_vk.props.limits.timestampComputeAndGraphics,
+                                                 g_vk.has_portability, g_vk.props.deviceName, say, sizeof say),
+                              memory_order_relaxed);
         if (say[0]) WARN("%s\n", say);
     }
     if (g_dead) return 0;
@@ -172,7 +236,7 @@ static int gp_on(void) {
        of a client no server has connected to, so a --tracy run waiting for a GUI would otherwise pay a query pool
        reset and two timestamps for every pass, a read-back at each recycle, and keep none of it. */
     if (snx_tracy_attached()) return g_vk.props.limits.timestampComputeAndGraphics;
-    return g_on;
+    return atomic_load_explicit(&g_on, memory_order_relaxed);
 }
 int vk_gpuprof_timed(void) { return g_vk.gfx_timestamp_bits && !g_dead; }
 /* whether the profile is on and its report will log: gates the recorder's command-kind count, which runs on every
@@ -437,7 +501,7 @@ static GpDKey* gp_dkey(u32 kind, u64 key, i64 site) {
 }
 /* the CPU waits for the timeline's value (kind: VK_WAIT_*) */
 void vk_gpuprof_waited(u64 value, int kind) {
-    if (g_on <= 0) return;
+    if (atomic_load_explicit(&g_on, memory_order_relaxed) <= 0) return;
     g_waited[value % GP_WAITS].value = value;
     g_waited[value % GP_WAITS].kind = kind + 1;
 }
@@ -659,6 +723,7 @@ void vk_gpuprof_frame_done(u32 slot) {
         u64 ns = gp_ns(ts[p->qi], ts[p->qi + 1], period);
         GpKey* k = gp_key(p);
         g_pass_ns += ns;
+        gp_slow(p, ns);
         if (!k) continue;
         k->ns += ns;
         k->passes++;
@@ -795,6 +860,13 @@ static int key_cmp(const void* a, const void* b) {
     u64 x = ((const GpKey*)a)->ns, y = ((const GpKey*)b)->ns;
     return x < y ? 1 : x > y ? -1 : 0;
 }
+/* the slow passes by their mean, the slowest first, an empty one last however it compares */
+static int slow_cmp(const void* a, const void* b) {
+    const GpSlow *x = a, *y = b;
+    if (!x->n || !y->n) return x->n ? -1 : y->n ? 1 : 0;
+    const u64 m = x->ns / x->n, n = y->ns / y->n;
+    return m < n ? 1 : m > n ? -1 : 0;
+}
 /* The log's other breakdowns as plots too: why the CPU waited, what the busy time held, and why submissions went
    out. Each is the window's sum divided by the same presents or frames as the log. */
 static const char* const g_round_plot[VK_WAIT_N] = {"gpu round: finish ms", "gpu round: recycle ms",
@@ -827,7 +899,7 @@ static void gp_plots(void) {
 static void gp_report(void) {
     if (!g_frames) return;
     gp_plots();
-    if (g_on <= 0) {
+    if (atomic_load_explicit(&g_on, memory_order_relaxed) <= 0) {
         /* the setting is off and the client asked for the sums: the plots have them, and the next window starts */
         memset(g_mix_ns, 0, sizeof g_mix_ns);
         memset(g_mixes, 0, sizeof g_mixes);
@@ -836,6 +908,7 @@ static void gp_report(void) {
         memset(g_gap_ns, 0, sizeof g_gap_ns);
         memset(g_gaps, 0, sizeof g_gaps);
         memset(g_key, 0, sizeof g_key);
+        memset(g_slow, 0, sizeof g_slow);
         g_pass_ns = g_span_ns = g_frames = g_lost = 0;
         gp_idle_report();
         return;
@@ -868,6 +941,21 @@ static void gp_report(void) {
             (unsigned long long)sorted[i].draws, (unsigned long long)sorted[i].gva, sorted[i].w, sorted[i].h,
             sorted[i].fmt);
     memset(g_key, 0, sizeof g_key);
+    {
+        /* the slowest pass first: the top of this list is where a frame's GPU time goes */
+        static GpSlow slow[GP_SLOW];
+        memcpy(slow, g_slow, sizeof slow);
+        qsort(slow, GP_SLOW, sizeof *slow, slow_cmp);
+        for (u32 i = 0; i < GP_SLOW; i++) {
+            const GpSlow* s = &slow[i];
+            if (!s->n) break;
+            LOG("vulkan: GPU   a pass of %.2f ms on average, %llu of them at 0.3 ms or more: target %llx %ux%u format "
+                "%u, up to %u draws, gap before it up to %u copies, %u barriers, %u dispatches\n",
+                (double)s->ns / 1e6 / (double)s->n, (unsigned long long)s->n, (unsigned long long)s->gva, s->w, s->h,
+                s->fmt, s->draws, s->xfers, s->barriers, s->dispatches);
+        }
+    }
+    memset(g_slow, 0, sizeof g_slow);
     /* the dispatches by tag: compute programs by key (vulkan: compute KEY ready), and the renderer's own pipelines by
        their VK_PROF_* */
     if (g_disps) {
