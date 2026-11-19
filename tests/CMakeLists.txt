@@ -1465,6 +1465,15 @@ add_test(NAME sailgen_a64
                  -o "${CMAKE_CURRENT_BINARY_DIR}/sailgen/a64_sail.inc"
                  "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/sail/a64.sail"
                  --overlay "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/sail/nx.sail")
+# and the AArch32 ones of src/common/cpu/arm/sail/, with the architectures' profile and fixups
+add_test(NAME sailgen_a32
+         COMMAND snx-sailgen --generate "${PROJECT_SOURCE_DIR}/src/common/cpu/arm/sail/a32.roots"
+                 --backend "${PROJECT_SOURCE_DIR}/tools/sailgen/core.h"
+                 --backend "${PROJECT_SOURCE_DIR}/tools/sailgen/llvm_arm.h"
+                 --profile "${PROJECT_SOURCE_DIR}/src/common/cpu/arm/sail/a32.profile"
+                 -o "${CMAKE_CURRENT_BINARY_DIR}/sailgen/a32_sail.inc"
+                 "${PROJECT_SOURCE_DIR}/src/common/cpu/arm/sail/a32.sail"
+                 --overlay "${PROJECT_SOURCE_DIR}/src/common/cpu/arm/sail/arm.sail")
 
 
 # The QEMU reference (tests/qemu_ref/): hand-checked cases, the ported cases and the decoder's UNDEF sets under
@@ -3240,6 +3249,17 @@ if(NOT WIN32)
     foreach(part 1 2 3)
         add_test(NAME llvm_sail_ir_${part} COMMAND snx-test-llvm-sail-ir --part ${part}/3)
         set_tests_properties(llvm_sail_ir_${part} PROPERTIES TIMEOUT 600)
+    endforeach()
+    # the T16 emitters sailgen generates from the Sail against the ones written by hand they replaced
+    # (snx_thumb_llvm_block_t16_reference): the same optimized IR halfword by halfword on every profile and memory mode,
+    # alone and in an IT block, and the same results run here. Each part takes a sixteenth of its third, spread over
+    # every field: the whole (--every 1) takes about two hours
+    add_executable(snx-test-arm-sail-ir arm_sail_ir.c)
+    snx_test_target(snx-test-arm-sail-ir gnu23)
+    target_link_libraries(snx-test-arm-sail-ir PRIVATE snx_llvm snx_arm_llvm snx_driver ${CMAKE_DL_LIBS})
+    foreach(part 1 2 3)
+        add_test(NAME arm_sail_ir_${part} COMMAND snx-test-arm-sail-ir --part ${part}/3 --every 16)
+        set_tests_properties(arm_sail_ir_${part} PROPERTIES TIMEOUT 900)
     endforeach()
     # snx_ir_object's check of the symbols an object names (llvm_object_symbols.c)
     add_executable(snx-test-llvm-object-symbols llvm_object_symbols.c)
