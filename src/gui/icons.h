@@ -8,6 +8,7 @@
 #ifndef SNX_GUI_ICONS_H
 #define SNX_GUI_ICONS_H
 #include <stdint.h>
+#include <string.h>
 
 enum {
     GUI_ICON_NONE, /* no icon: an item's, a row's */
@@ -84,5 +85,51 @@ static inline char* gui_icon_utf8(unsigned icon, char out[4]) {
     out[2] = (char)(0x80 | (icon & 0x3F));
     out[3] = 0;
     return out;
+}
+
+/* gui/i18n.h's mark of a phrase the launcher shows in its language, for the game's runtime, which has none */
+#ifndef SNX_TR_NOOP
+#define SNX_TR_NOOP(s) s
+#endif
+/* The name a section of settings.txt has as a group of the launcher's Settings: Overlay for the runtime's On-screen
+   controls, whose page in the game and settings.ini's [header] keep that name */
+static inline const char* gui_group_name(const char* section) {
+    return strcmp(section, "On-screen controls") ? section : SNX_TR_NOOP("Overlay");
+}
+/* The icon of a group of the launcher's Settings by its name (gui_group_name's English), another for each group, and
+   of a page of one by the page's: GUI_ICON_NONE for a name these do not have. The launcher draws them before the rows
+   that open them (src/gui/main.c), and the game's notification of a setting changed before its line (overlay.c's
+   overlay_setting_icon). gui_sdl's test refuses a section or a page of settings.txt without one, and two groups with
+   the same */
+static inline unsigned gui_group_icon(const char* name) {
+    static const struct {
+        const char* name;
+        unsigned icon;
+    } icons[] = {{"App", GUI_ICON_APP_WINDOW},
+                 {"Launch", GUI_ICON_ROCKET},
+                 {"Game", GUI_ICON_JOYSTICK},
+                 {"Display", GUI_ICON_MONITOR},
+                 {"Graphics", GUI_ICON_IMAGE},
+                 {"3DS", GUI_ICON_SQUARE_SPLIT_VERTICAL},
+                 {"Performance", GUI_ICON_GAUGE},
+                 {"Overlay", GUI_ICON_POINTER},
+                 {"Controllers", GUI_ICON_GAMEPAD_2},
+                 {"Shortcuts", GUI_ICON_KEYBOARD},
+                 {"Network", GUI_ICON_WIFI},
+                 {"User", GUI_ICON_USER},
+                 {"Debug", GUI_ICON_BUG},
+                 {"GBA", GUI_ICON_GAMEPAD}, /* the menu's Load GBA ROM's */
+                 {"Audio", GUI_ICON_VOLUME_2},
+                 {"Reset to Global", GUI_ICON_ROTATE_CCW}}; /* a game's own: its last */
+    for (size_t i = 0; i < sizeof icons / sizeof *icons; ++i)
+        if (!strcmp(icons[i].name, name)) return icons[i].icon;
+    return GUI_ICON_NONE;
+}
+static inline unsigned gui_page_icon(const char* page) {
+    return !strcmp(page, "LLVM Internals")      ? GUI_ICON_CPU
+           : !strcmp(page, "Vulkan Extensions") ? GUI_ICON_GPU
+           : !strcmp(page, "Buttons")           ? GUI_ICON_LAYOUT_GRID
+           : !strcmp(page, "Button map")        ? GUI_ICON_GAMEPAD_DIRECTIONAL
+                                                : GUI_ICON_NONE;
 }
 #endif

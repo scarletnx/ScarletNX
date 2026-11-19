@@ -9087,36 +9087,6 @@ static void group_add(App* app, const char* name, int first, const char* about) 
     app->group_first[g] = first;
     app->group_rows[g] = 0;
 }
-/* the name a section's group has in the launcher: Overlay for the runtime's On-screen controls, whose page in the game
-   and settings.ini's [header] keep that name */
-static const char* group_title(const char* section) {
-    return strcmp(section, "On-screen controls") ? section : SNX_TR_NOOP("Overlay");
-}
-/* the icon of a group by its name (group_title's English), another for each group, and of a group's row that opens a
-   page by the page's: none for one these do not name. gui_sdl's test refuses a section or a page of settings.txt
-   without one, and two groups with the same */
-static unsigned group_icon(const char* name) {
-    static const struct {
-        const char* name;
-        unsigned icon;
-    } icons[] = {
-        {"App", GUI_ICON_APP_WINDOW},     {"Launch", GUI_ICON_ROCKET},   {"Game", GUI_ICON_JOYSTICK},
-        {"Display", GUI_ICON_MONITOR},    {"Graphics", GUI_ICON_IMAGE},  {"3DS", GUI_ICON_SQUARE_SPLIT_VERTICAL},
-        {"Performance", GUI_ICON_GAUGE},  {"Overlay", GUI_ICON_POINTER}, {"Controllers", GUI_ICON_GAMEPAD_2},
-        {"Shortcuts", GUI_ICON_KEYBOARD}, {"Network", GUI_ICON_WIFI},    {"User", GUI_ICON_USER},
-        {"Debug", GUI_ICON_BUG},          {"GBA", GUI_ICON_GAMEPAD}, /* the menu's Load GBA ROM's */
-        {"Audio", GUI_ICON_VOLUME_2},     {"Reset to Global", GUI_ICON_ROTATE_CCW}}; /* a game's own: its last */
-    for (size_t i = 0; i < SDL_arraysize(icons); ++i)
-        if (!strcmp(icons[i].name, name)) return icons[i].icon;
-    return GUI_ICON_NONE;
-}
-static unsigned page_icon(const char* page) {
-    return !strcmp(page, "LLVM Internals")      ? GUI_ICON_CPU
-           : !strcmp(page, "Vulkan Extensions") ? GUI_ICON_GPU
-           : !strcmp(page, "Buttons")           ? GUI_ICON_LAYOUT_GRID
-           : !strcmp(page, "Button map")        ? GUI_ICON_GAMEPAD_DIRECTIONAL
-                                                : GUI_ICON_NONE;
-}
 /* the groups: the launcher's App, then a group a section; a game's own (own_picks) its sections, then Reset to
    Global (its first row -1) */
 static void settings_groups(App* app) {
@@ -9136,7 +9106,7 @@ static void settings_groups(App* app) {
         if (g < 0 || (g == 0 && !app->own_picks) ||
             (strcmp(s->keys[r].section, s->keys[app->group_first[g]].section) &&
              app->groups < GUI_GROUPS_MAX - (app->own_picks != NULL))) {
-            group_add(app, group_title(s->keys[r].section), r, "");
+            group_add(app, gui_group_name(s->keys[r].section), r, "");
             g = app->groups - 1;
             about = app->group_about[g];
             n = 0;
@@ -12945,7 +12915,7 @@ static unsigned form_icon(const App* app, const GuiEditor* e, int r) {
                : folder_row(app, r, &at, &group) == GUI_ROW_ADD ? GUI_ICON_FOLDER_PLUS
                                                                 : GUI_ICON_NONE;
     if (form_setting(app, e, r) >= 0 && screen_settings(app)->values[form_setting(app, e, r)].kind == GUI_SETTING_PAGE)
-        return page_icon(k->key);
+        return gui_page_icon(k->key);
     return GUI_ICON_NONE;
 }
 /* the look of row r of e: Settings > App's Clean Old Settings, Move Old Files and Reset to Defaults, Folders' Reset to
@@ -12995,7 +12965,7 @@ bool ui_form_list_rows_get_row_info(App* app, size_t row, int width, UiRowInfo* 
         return form_row_info(app, &app->editor, row, form_labels(&app->editor), width, info);
     if (row >= (size_t)app->groups) return false;
     info->label = snx_tr(app->group_keys[row].key);
-    info->icon = group_icon(app->group_keys[row].key);
+    info->icon = gui_group_icon(app->group_keys[row].key);
     if (app->form != GUI_FORM_SETTINGS && (int)row == form_group(app)) info->attr = UI_ATTR_OPEN;
     return true;
 }

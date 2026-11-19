@@ -1544,35 +1544,36 @@ static void button_map(App* app) {
         free(folder);
     }
 }
-/* every section of settings.txt has its group's icon (group_icon, by group_title's name), none another group's (App's
-   among them), and every page its row's (page_icon), but Controllers' Player, a row that steps the player and opens
-   none: one without, or two groups with one, are named */
+/* every section of settings.txt has its group's icon (gui/icons.h's gui_group_icon, by gui_group_name's name), none
+   another group's (App's among them), and every page its row's (gui_page_icon), but Controllers' Player, a row that
+   steps the player and opens none: one without, or two groups with one, are named */
 static void icons_named(void) {
     size_t size;
     char* text = (char*)snx_read_file(SNX_GUI_SETTINGS_TXT, &size);
     const char* line;
-    char group[32][64] = {"App"}; /* the groups so far, the launcher's own first: group_title's names */
+    char group[32][64] = {"App"}; /* the groups so far, the launcher's own first: gui_group_name's names */
     int sections = 0, pages = 0, groups = 1;
-    assert(text && group_icon("App") != GUI_ICON_NONE);
+    assert(text && gui_group_icon("App") != GUI_ICON_NONE);
     icons_are();
     for (line = text; line; line = strchr(line, '\n') ? strchr(line, '\n') + 1 : NULL) {
         char name[64], rest[256];
         const char* page;
         unsigned icon;
         if (sscanf(line, "section %63[^:]: %255[^\n]", name, rest) != 2) continue;
-        icon = group_icon(group_title(name));
+        icon = gui_group_icon(gui_group_name(name));
         if (icon == GUI_ICON_NONE) {
-            fprintf(stderr, "settings.txt's section %s has no icon in main.c's group_icon\n", name);
+            fprintf(stderr, "settings.txt's section %s has no icon in gui/icons.h's gui_group_icon\n", name);
             assert(!"a group's icon");
         }
         for (int g = 0; g < groups; ++g)
-            if (group_icon(group[g]) == icon) {
-                fprintf(stderr, "the Settings' groups %s and %s have the same icon, U+%04X, in main.c's group_icon\n",
-                        group[g], group_title(name), icon);
+            if (gui_group_icon(group[g]) == icon) {
+                fprintf(stderr,
+                        "the Settings' groups %s and %s have the same icon, U+%04X, in gui/icons.h's gui_group_icon\n",
+                        group[g], gui_group_name(name), icon);
                 assert(!"a group's own icon");
             }
         assert(groups < (int)SDL_arraysize(group));
-        snprintf(group[groups++], sizeof group[0], "%s", group_title(name));
+        snprintf(group[groups++], sizeof group[0], "%s", gui_group_name(name));
         ++sections;
         for (page = strchr(rest, '/'); page; page = strchr(page + 1, '/')) {
             char p[64];
@@ -1580,8 +1581,8 @@ static void icons_named(void) {
             if (strstr(p, "  ")) *strstr(p, "  ") = 0; /* the section's words after its tables: backend, launcher */
             while (p[0] && p[strlen(p) - 1] == ' ') p[strlen(p) - 1] = 0;
             if (!strcmp(p, "Player")) continue;
-            if (page_icon(p) == GUI_ICON_NONE) {
-                fprintf(stderr, "settings.txt's page %s of %s has no icon in main.c's page_icon\n", p, name);
+            if (gui_page_icon(p) == GUI_ICON_NONE) {
+                fprintf(stderr, "settings.txt's page %s of %s has no icon in gui/icons.h's gui_page_icon\n", p, name);
                 assert(!"a page's icon");
             }
             ++pages;
@@ -14512,7 +14513,8 @@ int main(int argc, char** argv) {
             b = form_row_box(&app, &f, false, 0);
             text_px_is(&app, b.x + cw / 2, item_text_y(&app, b), "- " ICON_APP_WINDOW " App", yellow, black);
             b = form_row_box(&app, &f, false, app.groups - 1); /* the last group, whole */
-            snprintf(last, sizeof last, "- %s %s", gui_icon_utf8(group_icon(app.group_keys[app.groups - 1].key), glyph),
+            snprintf(last, sizeof last, "- %s %s",
+                     gui_icon_utf8(gui_group_icon(app.group_keys[app.groups - 1].key), glyph),
                      app.group_keys[app.groups - 1].key);
             text_px_is(&app, b.x + cw / 2, item_text_y(&app, b), last, normal, black);
             text_px_is(&app, f.place.side.x + cw, f.place.side.y + 2 * s, "App", normal, black);
@@ -16949,7 +16951,7 @@ int main(int argc, char** argv) {
         {
             char last[80], glyph[4];
             snprintf(last, sizeof last, "\xfe %s %s",
-                     gui_icon_utf8(group_icon(app.group_keys[app.groups - 1].key), glyph),
+                     gui_icon_utf8(gui_group_icon(app.group_keys[app.groups - 1].key), glyph),
                      app.group_keys[app.groups - 1].key);
             text_px_is(&app, b.x + cw / 2, item_text_y(&app, b), last, rgb(app.theme.page), rgb(app.theme.focus));
         }

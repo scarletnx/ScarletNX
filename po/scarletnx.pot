@@ -602,6 +602,10 @@ msgstr ""
 msgid "Unsupported"
 msgstr ""
 
+#: src/gui/icons.h
+msgid "Overlay"
+msgstr ""
+
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
@@ -2969,10 +2973,6 @@ msgstr ""
 
 #: src/gui/main.c
 msgid "Not added"
-msgstr ""
-
-#: src/gui/main.c
-msgid "Overlay"
 msgstr ""
 
 #: src/gui/main.c
