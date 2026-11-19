@@ -440,7 +440,10 @@ static VkFmt tic_format(u32 w0, int srgb, u32 native) {
     }
 #undef PICK
     static u32 said[8];
-    if (first_time(said, f)) WARN("vulkan: unsupported texture format %x, header word 0 %08x (not drawn)\n", f, w0);
+    /* an empty header (word 0 nought) names no texture, not a format: the slots that read one say so, with its address
+       and what they read in its place (vk_null_header_first) */
+    if (w0 && first_time(said, f))
+        WARN("vulkan: unsupported texture format %x, header word 0 %08x: no Vulkan format\n", f, w0);
     VkFmt r = {0};
     return r;
 }
