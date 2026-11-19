@@ -5,9 +5,10 @@
    uses of the driver's budget, the quickest and slowest of its last STATS_FRAMES frames' times, and under them a graph
    of those times with a guide at 60 and 30 FPS's, as wide as the lines and right under them, in stats_corner's corner
    over the game; in showcase's own corner
-   beside showcase's box, toward the picture's middle. Under the graph, while they apply: RenderDoc's lines, that a
-   capture can be taken (the capture key, hotkey_capture) and the captures written with the last one's file, and the
-   debugger tracing the game. On every system: a value it does not tell shows as ? */
+   beside showcase's box, toward the picture's middle. Under the graph, while they apply: the work new to this run
+   over the last second, which holds frames back (Compiling and the pipelines made, Encoding and the BC7 encoder's
+   runs), RenderDoc's lines, that a capture can be taken (the capture key, hotkey_capture) and the captures written
+   with the last one's file, and the debugger tracing the game. On every system: a value it does not tell shows as ? */
 #ifndef SNX_STATS_H
 #define SNX_STATS_H
 #include "nx/runtime/platform/ui.h"
@@ -23,22 +24,26 @@
    colour */
 #define STATS_60_MS  (1000.0f / 60)
 #define STATS_30_MS  (1000.0f / 30)
-#define STATS_NOTES  3    /* the lines under the graph at most: RenderDoc's two and the debugger's */
+#define STATS_NOTES   4    /* the lines under the graph at most: the work's, RenderDoc's two and the debugger's */
 #define STATS_PATH   1024 /* a capture's path, with its NUL */
 
 /* what the renderer reads of the GPU at a frame while stats is on: the time its graphics queue was busy, summed from
    any start (busy_ns), where it can time that queue (timed); the device-local heap's use by the process and the
    driver's budget for it, in bytes, 0 where nothing tells them; vram_ours where the driver tells neither, and they are
-   what the process took from the heap and the heap's size */
+   what the process took from the heap and the heap's size. And the work new to this run, counted from its start: the
+   pipelines made that no earlier run's shader cache held (compiled), and the BC7 encoder's runs (encoded: a texture
+   level each, a strip of one too large for a run) */
 typedef struct {
     u64 busy_ns;
     int timed;
     u64 vram, vram_budget;
     int vram_ours;
+    u64 compiled, encoded;
 } SnxStatsGpu;
 /* what the measured lines say. cpu: the processor's share of the machine in percent, -1 unknown; memory in bytes, 0
    unknown; memory_total the machine's physical memory, 0 unknown. gpu: the graphics queue's busy share of the time in percent, -1 unknown; gpu_ns its busy time a frame.
-   vram, vram_budget and vram_ours as SnxStatsGpu's */
+   vram, vram_budget and vram_ours as SnxStatsGpu's. compiling and encoding: SnxStatsGpu's compiled and encoded over
+   the measure's second, the line under the graph ("Compiling 3  Encoding 12") while either is past 0 */
 typedef struct {
     int cpu;
     u64 memory, memory_total;
@@ -46,6 +51,7 @@ typedef struct {
     u64 gpu_ns;
     u64 vram, vram_budget;
     int vram_ours;
+    u64 compiling, encoding;
 } SnxStatsMeasure;
 
 /* what RenderDoc's lines say (gpu/vk/renderdoc.c, as it loads and after each capture): ready, a capture can be taken
