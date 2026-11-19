@@ -92,7 +92,7 @@ typedef struct {
     u16 layers;
     u8 mips, samples;
     u8 scale;
-    u8 written; /* a command wrote the game's image before it had a shadow: the shadow starts with its pixels */
+    u8 written; /* a submitted command wrote the game's image before its shadow: the shadow starts with its pixels */
     /* why it can't get a shadow now: the command buffers recorded with a command of the game's image that can still
        run it (GvkCbWrites), and a view of it in a descriptor set, which would read the game's image. blocked: for good,
        as a framebuffer at the game's size takes it, or a command gvk couldn't follow used it (a secondary command
@@ -120,6 +120,12 @@ typedef struct {
 typedef struct {
     u64 cb, img[GVK_CB_WRITES];
 } GvkCbWrites;
+/* A framebuffer at the game's size that takes targets with a shadow (fb_scale): it draws their game's images, which
+   the other commands do not read. Its passes blit each shadow down into the game's image before they begin, and the
+   game's image back up when they end (mixed_sync) */
+typedef struct {
+    u64 fb, img[GVK_CB_WRITES];
+} GvkMixed;
 /* With the resolution scale, the image descriptors of a set that hold a view of an image drawn at the scale: bit
    binding * 8 + element, for bindings and elements below 8 (set_bit). A set with none has no entry. pool: its pool's,
    which counts its sets with a mask (GvkPoolMasks), to forget them as it resets */
@@ -182,7 +188,10 @@ typedef struct {
     u64 cb, pool;
     VkCommandBufferLevel level;
     u32 inherited_scale;
-    u32 dynamic; /* flags of the bound graphics pipeline */
+    u32 inherited_subpass; /* with inherited_rp: the subpass a secondary continues */
+    u64 inherited_rp;      /* the render pass a secondary continues (RENDER_PASS_CONTINUE), 0 for none */
+    u32 dynamic;           /* flags of the bound graphics pipeline */
+    u8 writes; /* bit k: a command recorded since the last begin writes GvkCbWrites.img[k] (cb_submitted_nl) */
 } GvkCmd;
 typedef struct {
     u64 pipeline;
@@ -252,7 +261,7 @@ static struct {
     u64 import_align;            /* minImportedHostPointerAlignment, or a host page for dma-bufs */
     VkExternalMemoryHandleTypeFlagBits handle_type; /* how the host imports guest pages: host memory or a dma-buf */
     u32 nmem, nimage, nrpass, npass, ntarget, nview, nsfb, ndyn, ndual, nsetscale, nmsizes, npsizes, nbound, nlayout,
-        ncbw, ndsl, nsetinfo, npoolmasks;
+        ncbw, ndsl, nsetinfo, npoolmasks, nmixed;
     GvkMem mem[GVK_MEMS];       /* open addressing by handle */
     GvkImage image[GVK_IMAGES];
     GvkRpass rpass[GVK_RPASSES];
@@ -260,6 +269,7 @@ static struct {
     GvkTarget target[GVK_IMAGES];
     GvkView view[GVK_IMAGES];
     u64 sfb[GVK_SCALED];
+    GvkMixed mixed[GVK_SCALED];
     GvkDyn dyn[GVK_CBS];
     GvkDual dual[GVK_DUALS];
     GvkSetScale setscale[GVK_IMAGES / 4];
@@ -503,7 +513,7 @@ typedef char gvk_entries_fit[sizeof(GvkMem) <= 64 && sizeof(GvkRpass) <= 64 && s
                                      sizeof(GvkPoolTwin) <= 64 && sizeof(GvkSizes) <= 64 && sizeof(GvkBound) <= 64 &&
                                      sizeof(GvkLayout) <= 64 && sizeof(GvkCbWrites) <= 64 &&
                                      sizeof(GvkDsLayout) <= 64 && sizeof(GvkSetInfo) <= 64 &&
-                                     sizeof(GvkPoolMasks) <= 64
+                                     sizeof(GvkPoolMasks) <= 64 && sizeof(GvkMixed) <= 64
                                  ? 1
                                  : -1];
 
@@ -584,9 +594,9 @@ static void target_track(u64 img, const VkImageCreateInfo* ci, u32 w, u32 h, u32
 /* A command of the game's command buffer cb on target t, which has no shadow: t gets none while cb can run it. A shadow
    made now would miss what cb writes later, and cb would read the game's image after the shadow took its place
    (GvkTarget.pending). A secondary command buffer runs from primaries gvk doesn't follow, so its command blocks the
-   shadow for good, as does one past GVK_CB_WRITES images */
-static void cb_used_nl(u64 cb, GvkTarget* t) {
-    const GvkCmd* cmd = &g_gvk_api.cmd[tab_slot(TAB(cmd), cb)];
+   shadow for good, as does one past GVK_CB_WRITES images. writes: the command writes t, which counts at submission */
+static void cb_used_nl(u64 cb, GvkTarget* t, int writes) {
+    GvkCmd* cmd = &g_gvk_api.cmd[tab_slot(TAB(cmd), cb)];
     if (cmd->cb != cb || cmd->level != VK_COMMAND_BUFFER_LEVEL_PRIMARY) {
         t->blocked = 1;
         return;
@@ -598,17 +608,33 @@ static void cb_used_nl(u64 cb, GvkTarget* t) {
         e = &g_gvk_api.cbw[tab_slot(TAB(cbw), cb)];
     }
     for (u32 k = 0; k < GVK_CB_WRITES; k++) {
-        if (e->img[k] == t->img) return;
         if (!e->img[k]) {
             e->img[k] = t->img;
             t->pending++;
+        }
+        if (e->img[k] == t->img) {
+            if (writes) cmd->writes |= (u8)(1u << k);
             return;
         }
     }
     t->blocked = 1;
 }
+/* the game submitted cb: the targets that its commands write now have pixels (GvkTarget.written). A command buffer
+   recorded and then reset or recorded again without a submission wrote nothing, and its target stays UNDEFINED */
+static void cb_submitted_nl(u64 cb) {
+    const GvkCmd* cmd = &g_gvk_api.cmd[tab_slot(TAB(cmd), cb)];
+    const GvkCbWrites* e = &g_gvk_api.cbw[tab_slot(TAB(cbw), cb)];
+    if (cmd->cb != cb || !cmd->writes || e->cb != cb) return;
+    for (u32 k = 0; k < GVK_CB_WRITES && e->img[k]; k++) {
+        if (!(cmd->writes >> k & 1)) continue;
+        GvkTarget* t = &g_gvk_api.target[tab_slot(TAB(target), e->img[k])];
+        if (t->img == e->img[k]) t->written = 1;
+    }
+}
 /* cb can't run its commands any more: recorded again, reset or freed */
 static void cb_writes_drop_nl(u64 cb) {
+    GvkCmd* cmd = &g_gvk_api.cmd[tab_slot(TAB(cmd), cb)];
+    if (cmd->cb == cb) cmd->writes = 0;
     GvkCbWrites e;
     if (!tab_take_nl(TAB(cbw), &g_gvk_api.ncbw, cb, &e)) return;
     for (u32 k = 0; k < GVK_CB_WRITES && e.img[k]; k++) {
@@ -624,13 +650,16 @@ static void cb_writes_forget_nl(u64 img) {
             if (e->img[k] == img) {
                 memmove(e->img + k, e->img + k + 1, sizeof *e->img * (GVK_CB_WRITES - 1 - k));
                 e->img[GVK_CB_WRITES - 1] = 0;
+                GvkCmd* cmd = &g_gvk_api.cmd[tab_slot(TAB(cmd), e->cb)];
+                if (cmd->cb == e->cb) /* the bits after k move down with their images */
+                    cmd->writes = (u8)((cmd->writes & ((1u << k) - 1)) | (cmd->writes >> (k + 1) << k));
                 break;
             }
     }
 }
 /* the image the host draws img's pixels in, and the factor they are drawn at (*f). cb: the command buffer of the
-   command that uses them, which writes them where writes is set, 0 for none: before img has a shadow, it gets none while
-   cb can run (cb_used_nl), and a shadow made after starts with what was written */
+   command that uses them, which writes them where writes is set, 0 for none: before img has a shadow, it gets none
+   while cb can run (cb_used_nl), and a shadow made after starts with what cb wrote once it is submitted */
 static VkImage host_image(u64 img, u32* f, u64 cb, int writes) {
     VkImage h = H(VkImage, img);
     *f = 1;
@@ -642,11 +671,8 @@ static VkImage host_image(u64 img, u32* f, u64 cb, int writes) {
         if (t->shadow) {
             h = t->shadow;
         } else if (cb && t->scale == 1) {
-            if (writes) {
-                t->written = 1;
-                t->wgen++;
-            }
-            cb_used_nl(cb, t);
+            if (writes) t->wgen++;
+            cb_used_nl(cb, t, writes);
         }
     }
     pm_unlock(&g_gvk_api.lock);
@@ -1764,16 +1790,17 @@ static int shadows_publish(GvkTarget* t, u32 n) {
 }
 /* The scale a framebuffer of ci's attachments is drawn at, its views changed to the shadows'. Every attachment takes
    the scale or none does, as one at another scale is drawn at other pixels: each image that has no shadow yet gets
-   one (shadow_allowed_nl). Otherwise the framebuffer is drawn at the game's size. The shadows are made with no lock
-   held, as the GPU's work before them must end first (shadow_make) */
-static u32 fb_scale(VkFramebufferCreateInfo* ci) {
+   one (shadow_allowed_nl). Otherwise the framebuffer is drawn at the game's size, and *mixed lists its targets that
+   have a shadow already, whose pixels its passes move (mixed_sync). The shadows are made with no lock held, as the
+   GPU's work before them must end first (shadow_make) */
+static u32 fb_scale(VkFramebufferCreateInfo* ci, GvkMixed* mixed) {
     u32 n = ci->attachmentCount, f = scale_factor();
     if (f == 1 || !n || !ci->pAttachments) return 1;
     VkImageView* views = gvk_scratch(sizeof *views * n);
     memcpy(views, ci->pAttachments, sizeof *views * n);
     GvkTarget* make = gvk_scratch(sizeof *make * n);
     u32 nmake = 0;
-    int ok = 1, scaled = 0;
+    int ok = 1, swapchain = 0;
     pm_lock(&g_gvk_api.lock);
     for (u32 i = 0; i < n; i++) {
         const GvkView* v = &g_gvk_api.view[tab_slot(TAB(view), U(views[i]))];
@@ -1782,7 +1809,7 @@ static u32 fb_scale(VkFramebufferCreateInfo* ci) {
             ok = 0;
             continue;
         }
-        scaled |= t->scale > 1;
+        swapchain |= t->scale > 1 && !t->shadow;
         if (t->scale > 1) continue;
         if (!shadow_allowed_nl(t, f)) {
             ok = 0;
@@ -1797,7 +1824,8 @@ static u32 fb_scale(VkFramebufferCreateInfo* ci) {
     while (ok && made < nmake && shadow_make(&make[made], f)) made++;
     ok = ok && made == nmake && shadows_publish(make, nmake);
     for (u32 k = 0; !ok && k < made; k++) shadow_free(&make[k]);
-    scaled |= ok && nmake;
+    u32 nmixed = 0;
+    int lost = 0;
     pm_lock(&g_gvk_api.lock);
     for (u32 i = 0; i < n; i++) {
         const GvkView* v = &g_gvk_api.view[tab_slot(TAB(view), U(views[i]))];
@@ -1805,7 +1833,16 @@ static u32 fb_scale(VkFramebufferCreateInfo* ci) {
         if (!v->img || t->img != v->img) continue;
         if (!ok) {
             t->blocked |= !t->shadow; /* a framebuffer at the game's size writes the game's image from now on */
-        } else if (t->shadow) {   /* else a swapchain image, made at the scale */
+            /* a transient attachment holds nothing between passes, so its shadow needs none of the pixels */
+            if (!t->shadow || (t->usage & VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT)) continue;
+            u32 k = 0;
+            while (k < nmixed && mixed->img[k] != t->img) k++;
+            if (k < nmixed) continue;
+            if (nmixed < GVK_CB_WRITES)
+                mixed->img[nmixed++] = t->img;
+            else
+                lost = 1;
+        } else if (t->shadow) { /* else a swapchain image, made at the scale */
             if (v->shadow)
                 views[i] = v->shadow;
             else
@@ -1813,13 +1850,30 @@ static u32 fb_scale(VkFramebufferCreateInfo* ci) {
         }
     }
     pm_unlock(&g_gvk_api.lock);
-    if (!ok && scaled)
-        WARN_LIMIT(4, "gvk: a framebuffer takes images drawn at %ux and images that can't be: it is drawn at the game's "
-                      "size, without the pixels drawn at the scale\n",
-                   f);
+    if (!ok && (swapchain || lost))
+        WARN_LIMIT(4,
+                   "gvk: a framebuffer takes %s at %ux and images that can't be: it is drawn at the game's size, "
+                   "without the pixels drawn at the scale\n",
+                   swapchain ? "a swapchain image" : "too many images drawn", f);
     if (!ok) return 1;
     ci->pAttachments = views;
     return f;
+}
+/* fb's targets that have a shadow, when it is drawn at the game's size (GvkMixed): their pixels blitted from the
+   shadows to the game's images (up 0, before a pass begins), or back (up 1, after it ends). Outside a pass */
+static void mixed_sync(VkCommandBuffer cb, u64 fb, int up) {
+    GvkMixed m;
+    if (!tab_get(TAB(mixed), fb, &m)) return;
+    full_barrier(cb);
+    for (u32 k = 0; k < GVK_CB_WRITES && m.img[k]; k++) {
+        pm_lock(&g_gvk_api.lock);
+        GvkTarget t = g_gvk_api.target[tab_slot(TAB(target), m.img[k])];
+        pm_unlock(&g_gvk_api.lock);
+        if (t.img != m.img[k] || !t.shadow) continue;
+        GvkRegion whole = {{format_aspects(t.format), 0, 0, t.layers}, {0, 0, 0}, {t.w, t.h, 1}};
+        target_blit(cb, t.img, t.shadow, t.scale, &whole, 1, up);
+    }
+    full_barrier(cb);
 }
 static void gvk_CreateFramebuffer(CPU* RESTRICT c, u64 entry) {
     REQUIRE_OUT(c->x[3], 8);
@@ -1828,11 +1882,16 @@ static void gvk_CreateFramebuffer(CPU* RESTRICT c, u64 entry) {
     VkFramebuffer h = VK_NULL_HANDLE;
     VkResult r = VK_ERROR_INITIALIZATION_FAILED;
     if (ci) {
-        u32 f = fb_scale(ci);
+        GvkMixed mixed = {0};
+        u32 f = fb_scale(ci, &mixed);
         ci->width *= f;
         ci->height *= f;
         r = vkCreateFramebuffer(g_vk.dev, ci, NULL, &h);
         if (r == VK_SUCCESS && f > 1) set_put(g_gvk_api.sfb, GVK_SCALED, &g_gvk_api.nsfb, U(h));
+        if (r == VK_SUCCESS && mixed.img[0]) {
+            mixed.fb = U(h);
+            tab_put(TAB(mixed), &g_gvk_api.nmixed, &mixed);
+        }
     }
     if (r != VK_SUCCESS) WARN_LIMIT(16, "gvk: vkCreateFramebuffer failed (%d)\n", (int)r);
     put_handle(c->x[3], U(h));
@@ -1884,7 +1943,9 @@ static void gvk_DestroyDescriptorSetLayout(CPU* RESTRICT c, u64 entry) {
     ret(c, 0);
 }
 static void gvk_DestroyFramebuffer(CPU* RESTRICT c, u64 entry) {
+    GvkMixed mixed;
     set_take(g_gvk_api.sfb, GVK_SCALED, &g_gvk_api.nsfb, c->x[1]);
+    tab_take(TAB(mixed), &g_gvk_api.nmixed, c->x[1], &mixed);
     vkDestroyFramebuffer(g_vk.dev, H(VkFramebuffer, c->x[1]), NULL);
     ret(c, 0);
 }
@@ -2852,17 +2913,24 @@ static void gvk_BeginCommandBuffer(CPU* RESTRICT c, u64 entry) {
     GvkCmd cmd;
     tab_get(TAB(cmd), c->x[0], &cmd);
     VkCommandBufferBeginInfo* bi = gvk_in(&gvk_t_begin, c->x[1], 1);
-    u32 inherited_scale = 0;
+    u32 inherited_scale = 0, inherited_subpass = 0;
+    u64 inherited_rp = 0;
     if (bi && cmd.level == VK_COMMAND_BUFFER_LEVEL_PRIMARY) bi->pInheritanceInfo = NULL;
     if (bi && cmd.level == VK_COMMAND_BUFFER_LEVEL_SECONDARY && !bi->pInheritanceInfo) bi = NULL;
-    if (bi && bi->pInheritanceInfo && (bi->flags & VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT))
+    if (bi && bi->pInheritanceInfo && (bi->flags & VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT)) {
         inherited_scale = set_has(g_gvk_api.sfb, GVK_SCALED, U(bi->pInheritanceInfo->framebuffer)) ? scale_factor() : 1;
+        inherited_rp = U(bi->pInheritanceInfo->renderPass);
+        inherited_subpass = bi->pInheritanceInfo->subpass;
+    }
     VkResult r = bi ? vkBeginCommandBuffer(cb, bi) : VK_ERROR_INITIALIZATION_FAILED;
     if (r == VK_SUCCESS) {
         pm_lock(&g_gvk_api.lock);
         cb_clear_nl(cmd.cb);
         cmd.inherited_scale = inherited_scale;
+        cmd.inherited_rp = inherited_rp;
+        cmd.inherited_subpass = inherited_subpass;
         cmd.dynamic = 0;
+        cmd.writes = 0;
         tab_put_nl(TAB(cmd), &g_gvk_api.ncmd, &cmd);
         pm_unlock(&g_gvk_api.lock);
     }
@@ -3188,6 +3256,7 @@ static void gvk_CmdBeginRenderPass(CPU* RESTRICT c, u64 entry) {
         VkSubpassContents contents = (VkSubpassContents)(u32)c->x[2];
         u32 scaled = set_has(g_gvk_api.sfb, GVK_SCALED, U(bi->framebuffer));
         if (scaled) bi->renderArea = rect_at(bi->renderArea, scale_factor());
+        mixed_sync(CB, U(bi->framebuffer), 0);
         vkCmdBeginRenderPass(CB, bi, contents);
         GvkPass p = {c->x[0], U(bi->renderPass), U(bi->framebuffer), bi->renderArea, 0, contents, scaled};
         tab_put(TAB(pass), &g_gvk_api.npass, &p);
@@ -3205,7 +3274,9 @@ static void gvk_CmdNextSubpass(CPU* RESTRICT c, u64 entry) {
     ret(c, 0);
 }
 static void gvk_CmdEndRenderPass(CPU* RESTRICT c, u64 entry) {
+    GvkPass p;
     vkCmdEndRenderPass(CB);
+    if (tab_get(TAB(pass), c->x[0], &p)) mixed_sync(CB, p.fb, 1);
     pass_forget(c->x[0]);
     ret(c, 0);
 }
@@ -3269,8 +3340,11 @@ static VkPipelineStageFlags stages_for(VkAccessFlags access, VkPipelineStageFlag
         if ((access & k[e].access) && !(have & k[e].supported)) add |= k[e].add;
     return add;
 }
-/* An in-pass memory barrier must fit one self-dependency of the active subpass. Image and buffer barriers go
-   outside the pass rather than assuming that an arbitrary image is a framebuffer attachment. */
+/* A barrier inside a render pass stays there when it fits one self-dependency of the active subpass (a primary's, or
+   the subpass a secondary continues) and transitions no layout. Vulkan takes only memory barriers there, and image
+   barriers on the subpass's own attachments. The console's driver takes any, so each buffer and image barrier becomes
+   a memory barrier with its access masks: the same dependency over all memory, legal whatever the image is. Another
+   barrier ends the pass (OUTSIDE) */
 static void gvk_CmdPipelineBarrier(CPU* RESTRICT c, u64 entry) {
     gvk_scratch_reset();
     u32 nm = (u32)c->x[4], nb = (u32)c->x[6], ni = (u32)stack_arg(c, 0);
@@ -3303,14 +3377,36 @@ static void gvk_CmdPipelineBarrier(CPU* RESTRICT c, u64 entry) {
     VkDependencyFlags flags = (VkDependencyFlags)c->x[3];
     GvkPass p;
     GvkRpass rp;
+    GvkCmd cmd;
     VkCommandBuffer cb = CB;
-    if (!nb && !ni && tab_get(TAB(pass), c->x[0], &p) && p.contents == VK_SUBPASS_CONTENTS_INLINE &&
-        tab_get(TAB(rpass), p.rp, &rp)) {
+    u64 in_rp = 0;
+    u32 in_subpass = 0;
+    if (tab_get(TAB(pass), c->x[0], &p)) {
+        if (p.contents == VK_SUBPASS_CONTENTS_INLINE) {
+            in_rp = p.rp;
+            in_subpass = p.subpass;
+        }
+    } else if (tab_get(TAB(cmd), c->x[0], &cmd) && cmd.inherited_rp) {
+        in_rp = cmd.inherited_rp;
+        in_subpass = cmd.inherited_subpass;
+    }
+    int same_layouts = 1;
+    for (u32 k = 0; k < ni; k++) same_layouts &= i[k].oldLayout == i[k].newLayout;
+    if (in_rp && same_layouts && tab_get(TAB(rpass), in_rp, &rp)) {
         for (u32 k = 0; k < rp.nself; k++) {
             const VkSubpassDependency* d = &rp.self[k];
-            if (d->srcSubpass == p.subpass && !(src & ~d->srcStageMask) && !(dst & ~d->dstStageMask) &&
+            if (d->srcSubpass == in_subpass && !(src & ~d->srcStageMask) && !(dst & ~d->dstStageMask) &&
                 !(sa & ~d->srcAccessMask) && !(da & ~d->dstAccessMask) && flags == d->dependencyFlags) {
-                vkCmdPipelineBarrier(cb, src, dst, flags, nm, m, 0, NULL, 0, NULL);
+                VkMemoryBarrier* all = gvk_scratch(sizeof *all * ((size_t)nm + nb + ni));
+                u32 n = 0;
+                for (u32 j = 0; j < nm; j++) all[n++] = m[j];
+                for (u32 j = 0; j < nb; j++)
+                    all[n++] = (VkMemoryBarrier){VK_STRUCTURE_TYPE_MEMORY_BARRIER, NULL, b[j].srcAccessMask,
+                                                 b[j].dstAccessMask};
+                for (u32 j = 0; j < ni; j++)
+                    all[n++] = (VkMemoryBarrier){VK_STRUCTURE_TYPE_MEMORY_BARRIER, NULL, i[j].srcAccessMask,
+                                                 i[j].dstAccessMask};
+                vkCmdPipelineBarrier(cb, src, dst, flags, n, all, 0, NULL, 0, NULL);
                 ret(c, 0);
                 return;
             }
@@ -3649,7 +3745,14 @@ static void gvk_QueueSubmit(CPU* RESTRICT c, u64 entry) {
         for (u32 k = 0; k < count; k++) checked_cb(U(copy[k]));
         s[i].pCommandBuffers = copy;
     }
-    ret_vk(c, queue_submit(n, s, H(VkFence, c->x[3])));
+    VkResult r = queue_submit(n, s, H(VkFence, c->x[3]));
+    if (r == VK_SUCCESS && scale_factor() != 1) {
+        pm_lock(&g_gvk_api.lock);
+        for (u32 i = 0; i < n; i++)
+            for (u32 k = 0; k < s[i].commandBufferCount; k++) cb_submitted_nl(U(s[i].pCommandBuffers[k]));
+        pm_unlock(&g_gvk_api.lock);
+    }
+    ret_vk(c, r);
 }
 static void gvk_QueueWaitIdle(CPU* RESTRICT c, u64 entry) { gvk_DeviceWaitIdle(c, entry); }
 
