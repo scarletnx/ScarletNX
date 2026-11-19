@@ -275,7 +275,7 @@ static int tex_bind_at(Surf* t, int finer_ok) {
 }
 /* a load's or a check's bind keeps the floor: a level comes back only by vk_tex_finer, when no level has had to give
    way for a while. Taken back at any bind where the heap had room for a moment, as the memory a coarser level let go
-   came free, a texture went finer, loaded, made the next trim shed it, and did so again each frame: Mario Kart World
+   came free, a texture went finer, loaded, made the next trim shed it, and did so again each frame: a racing game
    loaded the same 15 textures, 10 MB, a frame for seconds at under 2 frames a second */
 static int tex_bind(Surf* t) { return tex_bind_at(t, !t->shed); }
 
@@ -906,7 +906,7 @@ static void resident_keys(const Surf* t, const u64* ukey, u64* dkey) {
     for (u32 i = t->layers * t->bricks; i < resident_pages(t); i++) dkey[i] = 0;
 }
 /* The levels of such a texture finer than floor, in dev (the order vk_image_resident takes), left without memory.
-   Mario Kart World's terrain is two 8192x8192 arrays of 68 layers with memory where the game maps its tiles: 429 MB
+   A racing game's terrain is two 8192x8192 arrays of 68 layers with memory where the game maps its tiles: 429 MB
    of BC6H, and 109 MB of ASTC 8x8 that is 429 MB as the BC7 it is held as (four times its two bits a texel). On a GPU
    of 2 GB, whose budget is 1,360 MB, neither bind found memory, and the draws that sample them were skipped. The game
    maps its levels from 3 on whole and its finer ones where it looks, each a quarter of the one before: without level
@@ -1801,8 +1801,8 @@ static int astc_by_kind(const VkFmt* f, VkImageViewType vt, int holes) {
            vt != VK_IMAGE_VIEW_TYPE_3D;
 }
 /* ------------------------------------------------------------ textures in system memory */
-/* The second tier. On a GPU of 2 GB under a desktop, the driver's budget for this process is 1.3 GB, and Mario Kart
-   World's race needs about 2: the cache evicted and loaded again 5,000 to 7,000 textures in 4 minutes, each a load
+/* The second tier. On a GPU of 2 GB under a desktop, the driver's budget for this process is 1.3 GB, and a racing
+   game's race needs about 2: the cache evicted and loaded again 5,000 to 7,000 textures in 4 minutes, each a load
    (and an encode) where it was used next. The device takes any image in system memory too (memory type 1 of a
    GeForce GT 1030, which no CPU maps), and samples it there over the bus. So where the trim would evict a texture
    (surface.c), its image is copied on the GPU into one in system memory and takes its place: slower to sample, but
@@ -1868,7 +1868,7 @@ static int astc_kind_outcome(u32 kind, int srgb, int unread) {
 /* the image format of an outcome that has one: BC4 and BC5 UNORM (there is no sRGB BC4 or BC5), BC1 as sRGB or not */
 /* Opaque colour that BC1 holds only roughly (more than one line in a 4x4 block: VK_ASTC_KIND_LINES), held as BC1
    all the same, half BC7's bytes: astc_lines_bc1=2, or its Auto (0) once the images have run short of memory
-   (g_vk.bc1_tight); Never (1) by default. Half of Mario Kart World's ASTC textures are such, and on a GPU of 2 GB its race needs more than
+   (g_vk.bc1_tight); Never (1) by default. Half of a racing game's ASTC textures are such, and on a GPU of 2 GB its race needs more than
    the budget: the cache evicted and made again 5,000 to 7,000 textures in 4 minutes */
 static int astc_lines_bc1(void) {
     return g_settings.astc_lines_bc1 == 2 || (g_settings.astc_lines_bc1 == 0 && g_vk.bc1_tight);
@@ -2621,8 +2621,8 @@ static Surf* tex_create(u64 gva, u32 w, u32 h, u32 layers, u32 d3, u32 levels, V
     /* And a texture mapped whole that the GPU only reads, with levels, of TEX_SHED_MIN or more (texture_shed): sparse
        for its levels alone, all bound, so that where the device's memory runs short its finest level goes (vk_mem_trim,
        vk_tex_coarser), a quarter of its bytes left and sampled from the next level, in place of the whole texture
-       evicted and loaded again; the level comes back when there is room (vk_tex_finer). On a GPU of 2 GB Mario Kart
-       World's caches evicted 2,400 textures the last 60 presents had used every 600 presents, each loaded again at its
+       evicted and loaded again; the level comes back when there is room (vk_tex_finer). On a GPU of 2 GB a racing
+       game's caches evicted 2,400 textures the last 60 presents had used every 600 presents, each loaded again at its
        next use. Not ASTC that goes RGBA8 first and BC7 between frames, whose BC7 image is another, nor ASTC held as
        BC1, BC4 or BC5, whose image another of its kind takes the place of when it loads again (kind_again) */
     /* Made under memory pressure (texture_half_res), such a texture is made so whatever texture_shed says, its finest
@@ -4806,7 +4806,7 @@ static void tex_take_drawn(Surf* t) {
     for (int i = 0; i < n; i++) {
         Surf* s = d[i];
         /* depth targets feed depth textures of the same host format, with their stencil when it has one (a depth
-           pyramid of a D24S8 target: Pokemon Legends Z-A's lighting samples it with all its levels) */
+           pyramid of a D24S8 target: one game's lighting samples it with all its levels) */
         /* a multisampled target read as a single-sampled texture of its samples' size, the guest's layout of them
            (gpu/vk/msaa.c: a program resolving the samples itself): each layer's samples unpacked into that layout and
            copied into the texture's first level. A multisampled texture takes nothing of targets: memory has them */

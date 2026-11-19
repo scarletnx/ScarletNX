@@ -167,7 +167,7 @@ static Gran* gran_bind(u64 g) {
     DevMemInfo info[2];
     if (!r->shadow) goto fail;
     /* the GPU's memory, else system memory, where the programs read and write it over the bus: a granule that found
-       none left its dispatches the slow way each time, under a frame a second for seconds in Mario Kart World on a GPU
+       none left its dispatches the slow way each time, under a frame a second for seconds in a racing game on a GPU
        of 2 GB. Its mask goes with it */
     int got = 0;
     for (int at = 0; at < 2 && !got; at++) {

@@ -973,7 +973,7 @@ static CsPipe* cs_pipe(const u8* code, u32 flow_base, u32 lx, u32 ly, u32 lz, u3
     while (p && (p->key != key || !vk_cb_reads_hold(&p->cbr, cs_cb_read))) p = p->next;
     if (p) return p;
     /* Made with vk_lock let go: the translation and the driver's compile need nothing it guards (the pipeline file's
-       thread makes these with no hold, vk_cs_pipe_load). One took 235 ms in Mario Kart World, and every thread that
+       thread makes these with no hold, vk_cs_pipe_load). One took 235 ms in a racing game, and every thread that
        landed GPU results waited for it. The table, g_cb and the code window are the dispatching thread's alone. Not
        while a constant buffer is still to be read (g_cb_later): a read of it can land results */
     int paused = !g_cb_later && vk_lock_pause();
@@ -2425,7 +2425,7 @@ rebind:
     if (deferred) {
         /* pending from here: the submit copies them where the host reads them (vk_buf_host_barrier). Submitted at
            once, the GPU runs it while the stream goes on, and a reader of its results waits for that submit alone,
-           not for the draws recorded after it: Pokemon Legends Z-A writes command lists with a dispatch and fetches
+           not for the draws recorded after it: one game writes command lists with a dispatch and fetches
            them a little later (a GPFIFO entry with SYNC), once a frame */
         const u64 staged_before = vk_buf_commits_staged();
         vk_uma_writer(p->key);

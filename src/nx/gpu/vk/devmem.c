@@ -988,7 +988,7 @@ VkResult vk_devmem_alloc(const VkMemoryRequirements* req, const DevMemWant* want
     return alloc(req, want, 0, VK_NULL_HANDLE, VK_NULL_HANDLE, mem, info);
 }
 /* The reserve: a block of the GPU's memory for render targets alone, which the rest leave alone. On a GPU of 2 GB,
-   Mario Kart World's depth targets found no memory for hundreds of presents as its race loaded: what the trim freed
+   a racing game's depth targets found no memory for hundreds of presents as its race loaded: what the trim freed
    was the driver's again only once the frame was done, and other requests took it first. Its draws were skipped, and
    its auto-exposure, fed those frames, went to nothing: the scene stayed black for a minute or for the run. Made where
    the device's heap is 4 GiB or less; images only take it (g_devmem.apart), and only within vk_devmem_reserve_use */

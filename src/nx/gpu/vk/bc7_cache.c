@@ -19,7 +19,7 @@
 
    Beside it, <file>.idx: the same header, then the index's entries in the file's order, {u64 key[2], u64 at, u64
    bytes} (BC7_IDX), one appended with each record. The cache opens from it, where the records' own headers lie all
-   through the file: Mario Kart World's 91,000 records, 4.3 GB, took minutes to open off a disk whose cache had let
+   through the file: a racing game's 91,000 records, 4.3 GB, took minutes to open off a disk whose cache had let
    the file go, where its index is 3 MB. An entry is taken while it lies past the last one and its blocks within the
    file; the file is cut after the last one taken (a record after it, written as a crash came before its entry, is
    lost). Without an index of the file's version, the records' headers are read as before and the index written from
@@ -326,7 +326,7 @@ int vk_bc7_cache_open(const char* path, const u64 version[2], u64 max) {
     }
     /* the records' headers, each where the one before it ends, until one is cut short or makes no sense. Read where
        they lie (plat_pread), not through the stream: after a seek each read of 32 bytes filled the stream's buffer of a
-       block (128 KiB on ZFS), and Mario Kart World's cache of 84,000 records, 4.3 GB, took minutes to open */
+       block (128 KiB on ZFS), and a racing game's cache of 84,000 records, 4.3 GB, took minutes to open */
     if (fseek(g_bc7_cache.f, 0, SEEK_END)) {
         bc7_off("its size could not be read");
         return 0;
