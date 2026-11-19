@@ -3,8 +3,8 @@
 /* The GL layer's thunks on the console (gl_layer.h): guest memory and the display. A surface is two RGBA8 images in
    guest memory, pitch-linear, rows from the top; glClear fills the one the surface draws next on the CPU, and
    eglSwapBuffers hands it to the renderer on the GPU thread as vi hands a game's buffer (present_buffer), then draws
-   into the other. The surfaces and the strings are guest addresses and sizes: a save state's guest memory holds their
-   pixels and bytes */
+   into the other once the GPU thread showed it last. The surfaces and the strings are guest addresses and sizes: a
+   save state's guest memory holds their pixels and bytes */
 #include "common/gpu/gl/gl_state.h"
 #include "common/platform/thread.h"
 #include "nx/gpu/gl/gl_layer.h"
@@ -29,9 +29,9 @@ typedef struct {
     u64 image[2], gpu[2]; /* the images' guest and GPU addresses */
     NvnTexture depth;     /* its depth and stencil, as NVN lays a DEPTH24_STENCIL8 texture out */
 } GlSurface;
-/* an image of a surface on its way to the display, read on the GPU thread */
+/* an image of a surface on its way to the display, read on the GPU thread, done there at serial (gl_draw_issue's) */
 typedef struct {
-    u64 image;
+    u64 image, serial;
     u32 w, h;
 } GlPresent;
 
@@ -123,6 +123,7 @@ static void present_on_gpu(void* arg) {
         g_renderer->present_buffer(p->image, p->w, p->h, p->w * 4, 0 /* pitch linear */, 0, 1 /* RGBA8888 */, crop,
                                    2 /* FlipV */, 0, 0, 0);
     atomic_fetch_add_explicit(&g_frames, 1, memory_order_relaxed);
+    gl_draw_done(p->serial);
 }
 void gl_host_present(u32 s, u32 interval) {
     GlSurface* g = &g_gl_host.surfaces[s - 1];
@@ -133,9 +134,16 @@ void gl_host_present(u32 s, u32 interval) {
     hook_wait_begin();
     present_pace(interval, -1);
     hook_wait_end();
-    *p = (GlPresent){g->image[g->next], g->w, g->h};
+    gl_object_calls_lock(); /* the serial in order with the draws' */
+    *p = (GlPresent){.image = g->image[g->next], .serial = gl_draw_issue(), .w = g->w, .h = g->h};
     gpu_call(present_on_gpu, p, NULL, 0);
+    gl_object_calls_unlock();
     g->next ^= 1;
+    /* the next image's last present done before the game draws into it again, as NVN's acquire waits for its texture's
+       and a GL driver's swap holds a game a window's images ahead of the display: a game whose frames take the GPU
+       longer than the CPU ran on ahead of the GPU thread, which then showed each frame later than the one before (a
+       game's opening on a phone at twice its length) */
+    gl_draw_wait(0, g_gl_host.present[s - 1][g->next].serial);
 }
 
 u64 gl_host_string(const char* s) {
