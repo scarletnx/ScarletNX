@@ -792,8 +792,21 @@ static SnxGlUniform* uniform_add(Link* l, const char* name) {
 }
 
 /* the members of type at offset, as GL names them under prefix: each a uniform of the stage (block: its index) */
+/* whether member m of struct type holds a GLSL bool, which the module keeps as an unsigned integer (glslc's bools) */
+static int bool_member(uint32_t type, uint32_t m) {
+    const GlslcResult* r = &g_gl_program.result;
+    for (uint32_t i = 0; i < r->bool_count; ++i)
+        if (r->bools[i].type == type && r->bools[i].member == m) return 1;
+    return 0;
+}
+/* the GL type of a uniform of SPIR-V type t, a bool's (GL_BOOL, GL_BOOL_VEC*) where it holds GLSL bools */
+static uint32_t uniform_type(const Spv* s, uint32_t t, int boolean) {
+    uint32_t type = gl_type(s, t);
+    if (!boolean) return type;
+    return type == GL_UNSIGNED_INT_ ? GL_BOOL_ : type >= 0x8dc6 && type <= 0x8dc8 ? 0x8b57 + (type - 0x8dc6) : type;
+}
 static void flatten(Link* l, const Spv* s, uint32_t type, const char* prefix, uint32_t offset, uint32_t mstride,
-                    int stage, int block) {
+                    int stage, int block, int boolean) {
     char name[256];
     uint32_t o = op(s, type);
     SnxGlUniform* u;
@@ -804,7 +817,7 @@ static void flatten(Link* l, const Spv* s, uint32_t type, const char* prefix, ui
             decoration(s, type, m, DEC_OFFSET, &off, NULL);
             decoration(s, type, m, DEC_MATRIX_STRIDE, &ms, NULL);
             snprintf(name, sizeof name, "%s%s%s", prefix, prefix[0] ? "." : "", member_name(s, type, m));
-            flatten(l, s, at(s, type)[2 + m], name, offset + off, ms, stage, block);
+            flatten(l, s, at(s, type)[2 + m], name, offset + off, ms, stage, block, bool_member(type, m));
         }
         return;
     }
@@ -814,14 +827,14 @@ static void flatten(Link* l, const Spv* s, uint32_t type, const char* prefix, ui
         if (op(s, elem) == OP_TYPE_STRUCT || op(s, elem) == OP_TYPE_ARRAY) {
             for (uint32_t i = 0; i < len && i < 256; ++i) {
                 snprintf(name, sizeof name, "%s[%u]", prefix, i);
-                flatten(l, s, elem, name, offset + i * stride, mstride, stage, block);
+                flatten(l, s, elem, name, offset + i * stride, mstride, stage, block, boolean);
             }
             return;
         }
         snprintf(name, sizeof name, "%s[0]", prefix);
         u = uniform_add(l, name);
         if (!u) return;
-        u->type = gl_type(s, elem);
+        u->type = uniform_type(s, elem, boolean);
         u->count = (uint16_t)(len ? len : 1);
         u->array_stride = (uint16_t)stride;
         u->matrix_stride = (uint16_t)mstride;
@@ -831,7 +844,7 @@ static void flatten(Link* l, const Spv* s, uint32_t type, const char* prefix, ui
     }
     u = uniform_add(l, prefix);
     if (!u) return;
-    u->type = gl_type(s, type);
+    u->type = uniform_type(s, type, boolean);
     u->matrix_stride = (uint16_t)mstride;
     u->offset[stage] = (int32_t)offset;
     u->block = (int16_t)block;
@@ -867,14 +880,14 @@ static void reflect_module(Link* l, uint32_t* words, size_t n, int stage) {
             decoration(&s, id, UINT32_MAX, DEC_BINDING, &binding, NULL)) {
             int32_t held = resource_at(l, binding, stage);
             if (held == -2) { /* the default block */
-                flatten(l, &s, pointee, "", 0, 0, stage, -1);
+                flatten(l, &s, pointee, "", 0, 0, stage, -1, 0);
             } else if (held >= 0) {
                 Resource* r = &l->resources[held];
                 if (r->kind == SNX_GLSLC_REFLECT_UNIFORM_BLOCK) {
                     uint32_t index = 0, t;
                     for (int32_t i = 0; i < held; ++i) index += l->resources[i].kind == SNX_GLSLC_REFLECT_UNIFORM_BLOCK;
                     t = op(&s, pointee) == OP_TYPE_ARRAY ? at(&s, pointee)[2] : pointee;
-                    flatten(l, &s, t, "", 0, 0, stage, (int)index);
+                    flatten(l, &s, t, "", 0, 0, stage, (int)index, 0);
                 }
             }
         } else if (storage == SC_UNIFORM_CONSTANT && decoration(&s, id, UINT32_MAX, DEC_BINDING, &binding, NULL) &&

@@ -42,6 +42,7 @@
 #define SNX_GLSLC_MAX_SCOPES       64u     /* scopes nested in each other */
 #define SNX_GLSLC_MAX_WORDS        262144u /* words of SPIR-V the module may have */
 #define SNX_GLSLC_MAX_REFLECT      256u    /* entries of GlslcResult.reflect */
+#define SNX_GLSLC_MAX_BOOLS        256u    /* entries of GlslcResult.bools */
 
 typedef enum { SNX_GLSLC_VERTEX = 0, SNX_GLSLC_FRAGMENT = 1, SNX_GLSLC_COMPUTE = 2 } GlslcStage;
 
@@ -92,10 +93,16 @@ typedef struct {
     uint16_t version;      /* the GLSL ES version compiled: 100, 300, 310 or 320 */
     uint16_t warnings;     /* how many warnings there were; warning holds the first */
     uint16_t reflect_count;
-    uint16_t pad;
+    uint16_t bool_count;
     char error[256];   /* the error, "" when the compilation worked */
     char warning[256]; /* the first warning, "" without one */
     GlslcReflect reflect[SNX_GLSLC_MAX_REFLECT];
+    /* The members of the module's laid-out structs (a block's, the default uniform block's, a struct's in them) that
+       hold a GLSL bool, a bvec or an array of them, which memory keeps as 32-bit unsigned integers: each the struct's
+       SPIR-V id and the member's index, for a backend that reads the module's types and says a bool uniform is one */
+    struct {
+        uint32_t type, member;
+    } bools[SNX_GLSLC_MAX_BOOLS];
 } GlslcResult;
 
 /* A sampler, image or block as the backend's binding map sees it, in the order the shader declares them */

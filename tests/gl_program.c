@@ -437,6 +437,36 @@ int main(void) {
         }
         snx_gl_program_host(&(SnxGlProgramHost){.program_changed = changed, .say = heard});
     }
+    /* bool uniforms (a LOVE shader's "extern bool"): reported as GL_BOOL and GL_BOOL_VEC3, an array's and a struct
+       member's too, though memory keeps them as unsigned integers; set from an integer, read back as 1 */
+    {
+        static const char vs[] = "#version 300 es\nin vec4 p;\nvoid main() { gl_Position = p; }\n";
+        static const char fs[] = "#version 300 es\nprecision mediump float;\nuniform bool shadow;\n"
+                                 "uniform bvec3 mask;\nuniform bool flags[2];\nstruct S { bool on; float x; };\n"
+                                 "uniform S s;\nuniform uint plain;\nout vec4 o;\n"
+                                 "void main() { o = vec4(shadow && mask.y && flags[1] && s.on ? s.x : 0.0, "
+                                 "float(plain), 0.0, 1.0); }\n";
+        uint32_t p = program(es, shader(es, VERTEX, vs), shader(es, FRAGMENT, fs)),
+                 want[5][2] = {{snx_gl_uniform_index(es, p, "shadow"), 0x8b56},
+                               {snx_gl_uniform_index(es, p, "mask"), 0x8b58},
+                               {snx_gl_uniform_index(es, p, "flags[0]"), 0x8b56},
+                               {snx_gl_uniform_index(es, p, "s.on"), 0x8b56},
+                               {snx_gl_uniform_index(es, p, "plain"), 0x1405}};
+        int32_t one = 5, back = 0, count;
+        uint32_t type;
+        assert(piv(es, p, LINK_STATUS));
+        for (int i = 0; i < 5; i++) {
+            assert(want[i][0] != 0xffffffffu && snx_gl_active(es, p, want[i][0], 1, &count, &type));
+            if (type != want[i][1]) {
+                fprintf(stderr, "gl_program: uniform %d is type 0x%x, not 0x%x\n", i, (unsigned)type, want[i][1]);
+                abort();
+            }
+        }
+        snx_gl_use_program(es, p);
+        snx_gl_uniform(es, snx_gl_uniform_location(es, p, "shadow"), 1, &one, 1, 'i', 0);
+        snx_gl_get_uniform(es, p, snx_gl_uniform_location(es, p, "shadow"), 'i', &back);
+        assert(!snx_gl_get_error(es) && back == 1);
+    }
     puts("gl_program: ok");
     return 0;
 }

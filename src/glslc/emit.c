@@ -477,6 +477,17 @@ static uint32_t image_type(Glslc* g, uint32_t t, uint32_t format) {
     return r;
 }
 
+/* member m of laid-out struct r holds GLSL type t: kept in the result's bools when t is a bool, a bvec or an array of
+   them */
+static void bool_member(Glslc* g, uint32_t r, uint32_t m, uint32_t t) {
+    GlslcResult* res = g->result;
+    if (ty(g, element_of(g, t))->base != SNX_GLSLC_BASE_BOOL || ty(g, element_of(g, t))->kind == GLSLC_T_STRUCT) return;
+    if (res->bool_count >= SNX_GLSLC_MAX_BOOLS)
+        glslc_fail(g, g->e.site, "the shader's structs and blocks hold more than the %u bool members glslc describes",
+                   SNX_GLSLC_MAX_BOOLS);
+    res->bools[res->bool_count].type = r, res->bools[res->bool_count++].member = m;
+}
+
 static void member_decorations(Glslc* g, uint32_t r, uint32_t t, uint32_t layout, int is_block) {
     const GlslcType* y = ty(g, t);
     uint32_t offset = 0;
@@ -499,6 +510,7 @@ static void member_decorations(Glslc* g, uint32_t r, uint32_t t, uint32_t layout
             EMIT(g, &g->e.annotations, OP_MEMBER_DECORATE, r, m, DEC_NON_WRITABLE);
         if (is_block && (mb->mflags & GLSLC_MEM_WRITEONLY))
             EMIT(g, &g->e.annotations, OP_MEMBER_DECORATE, r, m, DEC_NON_READABLE);
+        if (layout) bool_member(g, r, m, mb->type);
         offset += s;
         m++;
     }
@@ -2764,6 +2776,7 @@ static void default_uniform_block(Glslc* g) {
         }
         uint32_t pre[2] = {r, m};
         inst_string(g, &g->e.names, OP_MEMBER_NAME, pre, 2, glslc_view_text(g, y->name), y->name.len, NULL, 0);
+        bool_member(g, r, m, y->type);
         if (y->prec == GLSLC_PREC_LOW || y->prec == GLSLC_PREC_MEDIUM) {
             uint32_t k = ty(g, e)->kind;
             if ((k == GLSLC_T_SCALAR || k == GLSLC_T_VECTOR || k == GLSLC_T_MATRIX) &&
@@ -2898,6 +2911,7 @@ void glslc_emit(Glslc* g, uint32_t* words, size_t capacity) {
     memset(e->sym_types, 0, (size_t)g->nsyms * sizeof(uint32_t));
     memset(e->sampler_ids, 0, (size_t)g->nsyms * sizeof(uint32_t));
     e->next_id = 1;
+    g->result->bool_count = 0;
     e->nblock_reads = 0;
     e->window_type = e->window_push = e->window_word0 = 0;
     e->site = 0;
