@@ -2,9 +2,9 @@
 # Copyright 2026 the ScarletNX contributors
 # The built-in themes are their files, src/gui/themes/<id>/theme.ini, and nothing else: the GUI has each file compiled
 # in (generated/gui_themes.c) and reads it as it reads any theme.ini (src/gui/theme.c). The runtime's game menu takes
-# YoRHa's colours from generated/gui_theme_colors.h, made here from the same files, and so does its shader loading
-# screen (with YoRHa's name, loading title and [run] layout, texture and progress) when it can't read the launcher's
-# theme. tests/gui_theme.c checks both against the GUI's own reading of the files
+# YoRHa's colours from generated/gui_theme_colors.h, made here from the same files, and so do its shader loading
+# screen (with YoRHa's name, loading title and [run] layout, texture and progress) and its notification's fades when it
+# can't read the launcher's theme. tests/gui_theme.c checks both against the GUI's own reading of the files
 include_guard(GLOBAL)
 get_filename_component(snx_gui_themes_dir "${CMAKE_CURRENT_LIST_DIR}/../src/gui/themes" ABSOLUTE)
 file(GLOB snx_gui_themes_all RELATIVE "${snx_gui_themes_dir}" LIST_DIRECTORIES true CONFIGURE_DEPENDS
@@ -66,6 +66,13 @@ foreach(id IN LISTS snx_gui_themes)
             endif()
         elseif(section STREQUAL "run" AND line MATCHES "^[ \t]*progress[ \t]*=[ \t]*(amount|percent|time)[ \t\r]*$")
             list(FIND snx_gui_progresses "${CMAKE_MATCH_1}" word_${name}_RUN_PROGRESS)
+        elseif(section STREQUAL "transitions" AND line MATCHES "^[ \t]*fade_(in|out)_ms[ \t]*=[ \t]*([0-9]+)[ \t\r]*$")
+            # a number past 10000 is none to theme.c, which keeps the base's
+            string(TOUPPER "${CMAKE_MATCH_1}" key)
+            if(NOT CMAKE_MATCH_2 GREATER 10000)
+                math(EXPR value "${CMAKE_MATCH_2}")
+                set(word_${name}_FADE_${key}_MS "${value}u")
+            endif()
         elseif(line MATCHES "^[ \t]*([a-z]+)[ \t]*=[ \t]*(#${snx_gui_hex}|\"#${snx_gui_hex}\")[ \t\r]*$")
             set(key "${CMAKE_MATCH_1}")
             string(REGEX REPLACE "[\"#]" "" value "${CMAKE_MATCH_2}")
@@ -95,7 +102,7 @@ foreach(id IN LISTS snx_gui_themes)
             string(APPEND snx_gui_themes_colors "#define SNX_GUI_THEME_${name}_${key} \"${text_${name}_${key}}\"\n")
         endif()
     endforeach()
-    foreach(key RUN_STEPS RUN_TEXTURE RUN_PROGRESS)
+    foreach(key RUN_STEPS RUN_TEXTURE RUN_PROGRESS FADE_IN_MS FADE_OUT_MS)
         if(DEFINED word_${name}_${key})
             string(APPEND snx_gui_themes_colors "#define SNX_GUI_THEME_${name}_${key} ${word_${name}_${key}}\n")
         endif()
@@ -131,7 +138,8 @@ file(CONFIGURE OUTPUT "${PROJECT_BINARY_DIR}/generated/gui_theme_colors.h" @ONLY
 #define SNX_GUI_THEME_COLORS_H
 /* each built-in's colours, 0xRRGGBB: [colors], [run] as RUN_, [splash] page as SPLASH_PAGE; and [head] picture as
    PICTURE, 0 none, 1 square, 2 round. As its file says them (a key it leaves to its base isn't here): [theme] name
-   as NAME, [head] loading as LOADING, and [run] layout as RUN_STEPS (1 steps, 0 console), texture as RUN_TEXTURE
-   and progress as RUN_PROGRESS (GuiProgress's numbers) */
+   as NAME, [head] loading as LOADING, [run] layout as RUN_STEPS (1 steps, 0 console), texture as RUN_TEXTURE
+   and progress as RUN_PROGRESS (GuiProgress's numbers), and [transitions] fade_in_ms and fade_out_ms as FADE_IN_MS
+   and FADE_OUT_MS */
 @snx_gui_themes_colors@#endif
 ")

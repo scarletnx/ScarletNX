@@ -2789,12 +2789,12 @@ static void overlay(App* app) {
     Uint64 now = now_ms(app);
     float a = 0;
     if (entering(app))
-        a = (float)(now > app->entering_ms ? now - app->entering_ms : 0) / (float)theme->fade_out_ms;
+        a = snx_fade_done(now, app->entering_ms, theme->fade_out_ms);
     else if (app->leaving_ms && theme->fade_out_ms)
-        a = SDL_min(1.0f, (float)(now > app->leaving_ms ? now - app->leaving_ms : 0) / (float)theme->fade_out_ms);
+        a = snx_fade_done(now, app->leaving_ms, theme->fade_out_ms);
     else if (app->fade_ms && theme->fade_in_ms && now < app->fade_ms + theme->fade_in_ms)
-        a = 1.0f - (float)(now > app->fade_ms ? now - app->fade_ms : 0) / (float)theme->fade_in_ms;
-    if (a > 0) shade(app, (Uint8)(a * 255));
+        a = 1.0f - snx_fade_done(now, app->fade_ms, theme->fade_in_ms);
+    if (a > 0) shade(app, snx_fade_shade(a));
 }
 static bool jobs_live(const App* app);
 /* leaving the menu while the queue's recompile runs, its line in ask_line (no other question of a menu that is
