@@ -116,6 +116,7 @@ static inline unsigned gui_group_icon(const char* name) {
                  {"Controllers", GUI_ICON_GAMEPAD_2},
                  {"Shortcuts", GUI_ICON_KEYBOARD},
                  {"Network", GUI_ICON_WIFI},
+                 {"Online", GUI_ICON_SHARE_2}, /* the consoles' online services */
                  {"User", GUI_ICON_USER},
                  {"Debug", GUI_ICON_BUG},
                  {"GBA", GUI_ICON_GAMEPAD}, /* the menu's Load GBA ROM's */

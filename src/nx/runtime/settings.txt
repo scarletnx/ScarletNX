@@ -1083,6 +1083,28 @@ setting Eden room
     help The Eden room ldn=room joins: host or host:port (port 24872 without one). The nickname there is the user's,
     help and a room's password is room_password in users/online.ini
 
+# the consoles' online services, the launcher's Online group: the DS driver's (scarletnx-nds --key=value, and the
+# launcher's [Online] in settings.ini)
+table g_nds_network_ini
+setting DS WFC service
+    key nds_wfc
+    text 16
+    default kaeru
+    startup
+    words off=Off|kaeru=Kaeru WFC|wiilink=WiiLink|wiimmfi=Wiimmfi|wiilink_wfc=WiiLink WFC|altwfc=AltWFC|newwfc=NewWFC|skytemple=SkyTemple WFC|diyfi=DIYFI|sudomemo=Sudomemo|custom=Custom DNS
+    help The DS's Wi-Fi Connection (WFC) service: one the community runs in place of the original, which is closed.
+    help The DS asks that service's DNS server, set in its firmware's first Wi-Fi connection as a player sets it on the
+    help console, and the server sends the game to the service. custom = the server nds_wfc_dns names, off = the DNS
+    help the DS's network gives it. A game's Wi-Fi settings show the connection; the DS driver has no wireless yet, so
+    help no game connects through it. Another word stops the game
+setting DS WFC DNS server
+    key nds_wfc_dns
+    text 16
+    default ""
+    startup
+    help The DNS server nds_wfc=custom gives the DS, an IPv4 address such as 178.62.43.212. With custom, empty or
+    help anything but an address stops the game
+
 table g_user_ini
 setting User uid
     key user_uid
@@ -2173,6 +2195,7 @@ section On-screen controls: g_vpad_ini, g_backend_ini, g_vpad_shown_ini/Buttons 
 section Controllers: g_gamepad_ini, g_gamepad_map_ini/Button map, g_gamepad_players_ini/Player    backend
 section Shortcuts: g_hotkeys_ini    backend
 section Network: g_network_ini
+section Online: g_nds_network_ini
 section User: g_user_ini
 section Debug: g_debug_ini
 

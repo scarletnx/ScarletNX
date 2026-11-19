@@ -16,7 +16,8 @@ add_library(scarletnx-nds STATIC cartridge/rom.c cartridge/key1.c board/board.c 
                                  board/dma.c board/timers.c board/card.c bios/bios.c hle/pxi.c hle/sound.c audio/spu.c
                                  cpu/cpu.c cpu/recomp.c gpu/gpu3d.c gpu/present.c)
 set_target_properties(scarletnx-nds PROPERTIES OUTPUT_NAME scarletnx-nds-runtime C_STANDARD 23 C_STANDARD_REQUIRED ON)
-target_link_libraries(scarletnx-nds PUBLIC scarletnx-common snx_arm_llvm snx_llvm PRIVATE snx_zip) # the BIOS's CRC-32
+# the BIOS's CRC-32; the firmware's Wi-Fi connections
+target_link_libraries(scarletnx-nds PUBLIC scarletnx-common snx_arm_llvm snx_llvm PRIVATE snx_zip snx_online)
 target_compile_options(scarletnx-nds PRIVATE -Wall -Wextra -Werror=missing-prototypes)
 
 # the Vulkan device: the 2D engines' frame, the 3D engine's picture and the window. volk.c is compiled into each
@@ -55,7 +56,7 @@ target_link_libraries(scarletnx-nds PUBLIC snx_nds_gpu)
 # snx_settings: the settings its command line takes, by their names there (settings_arg)
 add_library(snx_nds_program STATIC runtime/main.c runtime/host.c aot/compiler.c aot/discover.c)
 target_link_libraries(snx_nds_program PUBLIC scarletnx-nds snx_nds_gpu snx_build_info snx_window_icon snx_pad_sdl
-                      snx_settings)
+                      snx_settings PRIVATE snx_online) # the WFC service's DNS server (runtime/main.c)
 set_target_properties(snx_nds_program PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON)
 target_compile_options(snx_nds_program PRIVATE -Wall -Wextra -Werror=missing-prototypes)
 include("${PROJECT_SOURCE_DIR}/tests/cmake/nds.cmake") # its tests

@@ -2,7 +2,8 @@
    Copyright 2026 the ScarletNX contributors */
 /* The NDS board without its CPU: the image's loader and its decompressor, the window's memories and the banks that
    move in it, the registers (the divider, the square root, the timers, DMA, the card), the BIOS's routines, the
-   ARM7's answers over the FIFO, and the geometry engine's commands. No game's data. */
+   ARM7's answers over the FIFO, the firmware's Wi-Fi connections, and the geometry engine's commands. No game's
+   data. */
 #include "nds/bios/bios.h"
 #include "nds/board/nds.h"
 #include "nds/cartridge/rom.h"
@@ -11,6 +12,8 @@
 #include "common/utilities/common.h"
 #include "common/utilities/endian.h"
 #include "support/nds_image.h"
+#include "common/online/wfc.h"
+#include "snx_settings.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -216,6 +219,68 @@ static void test_arm7(NdsBoard* board) {
     CHECK(!memcmp(board->mem.base + 0x02040200, "savedata", 8));
 }
 
+/* the firmware's bytes at from, length of them, read into main memory at to as a game reads them: the firmware
+   service's words over the FIFO (service 4, each word's index in bits 16-19, the first marked by bit 25, the last by
+   bit 24), command 3 (0x23 in the first word's high byte) */
+static void firmware_read(NdsBoard* board, uint32_t from, uint32_t length, uint32_t to) {
+    const uint16_t w[6] = {(uint16_t)(0x2300 | (from >> 16 & 0xFF)),
+                           (uint16_t)from,
+                           (uint16_t)(length >> 16),
+                           (uint16_t)length,
+                           (uint16_t)(to >> 16),
+                           (uint16_t)to};
+    for (uint32_t i = 0; i < 6; ++i)
+        nds_io_write(board, IO + 0x188, 4,
+                     4 | (i << 16 | w[i] | (i == 0 ? 1u << 25 : 0) | (i == 5 ? 1u << 24 : 0)) << 6);
+    CHECK(fifo_read(board) == (4 | 0x0300A300u << 6));
+}
+
+/* the firmware's three Wi-Fi connections: none set, with their CRC, until the driver sets the first to a WFC
+   service's DNS server, which a game then reads as it reads any of the firmware */
+static void test_wfc(NdsBoard* board) {
+    uint8_t* slot = board->mem.base + 0x02050000;
+    SnxOnlineNdsWfcSlot read;
+    char why[256] = "";
+    firmware_read(board, 0x3FA00, 3 * SNX_ONLINE_NDS_WFC_SLOT_SIZE, 0x02050000);
+    for (unsigned i = 0; i < 3; ++i) CHECK(snx_online_nds_wfc_slot_read(slot + i * 256, &read, why, sizeof why) == 0);
+    static const uint8_t kaeru[4] = {178, 62, 43, 212};
+    CHECK(nds_pxi_wfc(board, kaeru, why, sizeof why));
+    firmware_read(board, 0x3FA00, 3 * SNX_ONLINE_NDS_WFC_SLOT_SIZE, 0x02050000);
+    CHECK(snx_online_nds_wfc_slot_read(slot, &read, why, sizeof why) == 1);
+    CHECK(!strcmp(read.ssid, NDS_WFC_NETWORK) && !memcmp(read.dns1, kaeru, 4) && !memcmp(read.dns2, kaeru, 4));
+    CHECK(snx_online_nds_wfc_slot_read(slot + 256, &read, why, sizeof why) == 0);
+    /* the user's settings after them are the board's as before */
+    firmware_read(board, 0x3FE00, 0x74, 0x02050400);
+    CHECK(snx_ld_le16(board->mem.base + 0x02050472) == nds_crc16(0xFFFF, board->mem.base + 0x02050400, 0x70));
+}
+
+/* the launcher's menu of WFC services (settings.txt's nds_wfc) is common/online's list: off, each service by its id
+   and its name in the library's order, then custom, the first service the default */
+static void test_wfc_menu(void) {
+    const IniOpt* o = ini_find(g_nds_network_ini, "nds_wfc");
+    CHECK(o && o->words && o->def);
+    CHECK(!strcmp(o->def, snx_online_wfc_preset_at(0)->id));
+    char words[1024];
+    snprintf(words, sizeof words, "%s", o->words);
+    size_t count = 0;
+    for (char* word = strtok(words, "|"); word; word = strtok(NULL, "|"), ++count) {
+        char* eq = strchr(word, '=');
+        CHECK(eq);
+        *eq = 0;
+        const SnxOnlineWfcPreset* p = count ? snx_online_wfc_preset_at(count - 1) : NULL;
+        if (!count)
+            CHECK(!strcmp(word, "off"));
+        else if (p) {
+            if (strcmp(word, p->id) || strcmp(eq + 1, p->name))
+                fprintf(stderr, "nds_wfc's word %zu is %s=%s, common/online's service %s=%s\n", count, word, eq + 1,
+                        p->id, p->name);
+            CHECK(!strcmp(word, p->id) && !strcmp(eq + 1, p->name));
+        } else
+            CHECK(!strcmp(word, "custom"));
+    }
+    CHECK(count == snx_online_wfc_preset_count() + 2);
+}
+
 static void gx(NdsBoard* board, uint32_t command, uint32_t parameter) {
     nds_io_write(board, IO + 0x400 + (command << 2 & 0x1FC) + 0x40 - 0x40, 4, parameter);
 }
@@ -300,6 +365,8 @@ int main(void) {
     test_registers(board);
     test_bios(board);
     test_arm7(board);
+    test_wfc(board);
+    test_wfc_menu();
     test_geometry(board);
     test_matrices(board);
     nds_board_free(board);
