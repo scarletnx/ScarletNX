@@ -2322,6 +2322,80 @@ static void test_fragment_depth(const char* dir) {
     (void)dir;
 }
 
+/* the instruction that defines type id (a type's result is its word 1), 0 for none */
+static size_t spv_type_def(const u32* words, size_t count, u32 id) {
+    for (size_t i = 5; i < count && words[i] >> 16; i += words[i] >> 16)
+        if ((words[i] & 0xffff) >= 19 /* OpTypeVoid */ && (words[i] & 0xffff) <= 39 /* OpTypeForwardPointer */ &&
+            words[i + 1] == id)
+            return i;
+    return 0;
+}
+/* the component type of the output variable at location: 'u' unsigned, 'i' signed, 'f' float, 0 for none */
+static char spv_output_kind(const u32* words, size_t count, u32 location) {
+    u32 decorations[64], variables[64];
+    u32 nd = spv_find(words, count, SPV_OP_DECORATE, decorations, 64);
+    u32 nv = spv_find(words, count, 59 /* OpVariable */, variables, 64);
+    for (u32 d = 0; d < nd; d++) {
+        const u32* x = words + decorations[d];
+        if (x[2] != 30 /* Location */ || x[3] != location) continue;
+        for (u32 v = 0; v < nv; v++) {
+            const u32* var = words + variables[v];
+            if (var[2] != x[1] || var[3] != 3 /* Output */) continue;
+            size_t pointer = spv_type_def(words, count, var[1]);
+            size_t vector = pointer ? spv_type_def(words, count, words[pointer + 3]) : 0;
+            size_t component = vector ? spv_type_def(words, count, words[vector + 2]) : 0;
+            if (!component) return 0;
+            if ((words[component] & 0xffff) == 22 /* OpTypeFloat */) return 'f';
+            return (words[component] & 0xffff) == 21 /* OpTypeInt */ ? (words[component + 3] ? 'i' : 'u') : 0;
+        }
+    }
+    return 0;
+}
+/* A fragment program's colour for an integer target (the key's rt_int_mask, signed in rt_sint_mask) goes out in an
+   output of the target's numeric type with the registers' bits: a float output's values are undefined in an integer
+   attachment, which the validation layer reported for each mesh draw of one game into its R8_UINT target. Targets 0
+   unsigned, 1 signed and 2 float, from R0-R11 */
+static void test_integer_targets(const char* dir) {
+    const u32 bits[12] = {5, 0x12, 0x34, 0xff, 0xfffffffeu, 7, 0x80000000u, 1, f2u(0.5f), f2u(-1.0f), 0, f2u(1.0f)};
+    u8 code[16 * 16] = {0};
+    u32 n = 0;
+    for (u32 r = 0; r < 12; r++) put(code, n++, mov_imm(r, bits[r]));
+    put(code, n++, exit_insn());
+    put(code, n, bra(n, n, 7, 0));
+    n++;
+    u32 fsph[32] = {0};
+    fsph[0] = sph0(2, 5);
+    fsph[18] = 0xfff;
+    ShaderInfo si = {.rt_int_mask = 3, .rt_sint_mask = 2};
+    size_t count = 0;
+    u32* spv = sm86_to_spirv(code, n * 16, ST_FS, fsph, &si, &count);
+    CHECK(spv != NULL);
+    if (!spv) {
+        fprintf(stderr, "integer targets: %s\n", si.first_unsupported);
+        return;
+    }
+    static const char kinds[3] = {'u', 'i', 'f'};
+    for (u32 rt = 0; rt < 3; rt++) {
+        char kind = spv_output_kind(spv, count, rt);
+        CHECK(kind == kinds[rt]);
+        if (kind != kinds[rt])
+            fprintf(stderr, "integer targets: render target %u's output has components of kind '%c', not '%c'\n", rt,
+                    kind ? kind : '0', kinds[rt]);
+    }
+    SpvEvalEnv env = {0};
+    const char* why = spv_eval(spv, count, &env);
+    if (why) fprintf(stderr, "integer targets: the evaluator stops at %s\n", why);
+    CHECK(!why);
+    for (u32 i = 0; !why && i < 12; i++) {
+        CHECK(env.out[i / 4][i % 4] == bits[i]);
+        if (env.out[i / 4][i % 4] != bits[i])
+            fprintf(stderr, "integer targets: render target %u component %u is %08x, R%u's %08x expected\n", i / 4,
+                    i % 4, env.out[i / 4][i % 4], i, bits[i]);
+    }
+    if (dir) CHECK(keep_module(dir, "fs_integer_targets", spv, count));
+    free(spv);
+}
+
 /* ISETP.GE.U32.AND Pd, PT, RZ, imm, PT: Pd true for imm 0, false for 1 */
 static Word setp_const(u32 pd, u32 imm) {
     Word x = alu(0x00c, 4, 255, 255);
@@ -7095,6 +7169,7 @@ int main(int argc, char** argv) {
     test_tex_f16(dir);
     test_output_defaults(dir);
     test_fragment_depth(dir);
+    test_integer_targets(dir);
     test_clip_distances(dir);
     test_float64_fallback_scale(dir);
     test_flow_operand(dir);

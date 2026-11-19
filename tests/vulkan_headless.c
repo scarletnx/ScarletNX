@@ -7391,6 +7391,7 @@ static int check_pipeline_stats_compute(void) {
 #include "vulkan_indexed_feedback.inc"
 #include "vulkan_scaled_fragment.inc"
 #include "vulkan_sm86_perspective_fold.inc"
+#include "vulkan_ounce_int_targets.inc"
 #include "vulkan_slices_from_targets.inc"
 #include "vulkan_targetless_stores.inc"
 #include "vulkan_storage_image_keep.inc"
@@ -8274,6 +8275,13 @@ static int run_headless(int argc, char** argv) {
         printf("PASS headless Vulkan resolution scale only: %u validation messages\n", g_vk_validation_messages);
         return 0;
     }
+    if (getenv("SNX_TEST_OUNCE_INT_ONLY")) { /* an Ounce program's colour into integer targets alone */
+        CHECK(!check_ounce_integer_targets());
+        vk_finish();
+        vk_pipeline_quiesce();
+        printf("PASS headless Vulkan Ounce integer targets only: %u validation messages\n", g_vk_validation_messages);
+        return 0;
+    }
     if (getenv("SNX_TEST_PIPELINE_STATS_ONLY")) { /* pipeline_stats' compute rows alone: run with --pipeline-stats */
         CHECK(!check_pipeline_stats_compute());
         vk_finish();
@@ -8548,6 +8556,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_storage_image_formats());
     CHECK(!check_scaled_compute());
     CHECK(!check_scaled_fragment());
+    CHECK(!check_ounce_integer_targets());
     CHECK(!check_slices_from_targets());
     CHECK(!check_volume_surface_atomics());
     CHECK(!check_layered_surface_loads());

@@ -4573,7 +4573,9 @@ static u32 fmul_over_w(Ctx* c, u32 i) {
 /* the fragment program's outputs from the registers when it ends: the colours of the render targets the SPH's omap
    enables, four registers a target, then the sample mask's register and the depth's after it (Maxwell's layout, as
    emit_flow.c reads it: the depth is the last colour register plus two whether the program writes a sample mask or
-   not, as nouveau's nvc0_fp_assign_output_slots has it from Kepler on) */
+   not, as nouveau's nvc0_fp_assign_output_slots has it from Kepler on). An integer target (the key's rt_int_mask,
+   signed in rt_sint_mask) takes the registers' bits in an output of its own numeric type: Vulkan leaves a float
+   output's values undefined in an integer attachment */
 static void epilogue(Ctx* c) {
     if (c->stage == ST_VS && c->position && !(c->si->clip_enable & SNX_SH_NOT_LAST)) vertex_depth_fix(c);
     if (c->stage == ST_GS && c->passthrough) gs_passthrough(c);
@@ -4581,13 +4583,18 @@ static void epilogue(Ctx* c) {
     u32 target = c->sph[18], reg = 0;
     for (u32 rt = 0; rt < 8; rt++) {
         if (!((target >> (rt * 4)) & 15)) continue;
+        int integer = c->si->rt_int_mask >> rt & 1, sign = integer && (c->si->rt_sint_mask >> rt & 1);
+        u32 type = !integer ? c->t_v4f : sign ? spv_emit_type_vec4(&c->e, c->t_i32) : c->t_v4u;
         if (!c->color[rt]) {
-            c->color[rt] = spv_emit_output_vec4(&c->e, c->t_v4f, rt);
+            c->color[rt] = spv_emit_output_vec4(&c->e, type, rt);
             add_interface(c, c->color[rt]);
         }
         u32 v[4];
-        for (u32 k = 0; k < 4; k++) v[k] = to_f(c, rd(c, reg + k));
-        spv_emit_store(&c->e, c->color[rt], spv_emit_vec4_construct(&c->e, c->t_v4f, v));
+        for (u32 k = 0; k < 4; k++) {
+            u32 bits = rd(c, reg + k);
+            v[k] = !integer ? to_f(c, bits) : sign ? spv_emit_unary(&c->e, SPV_OP_BITCAST, c->t_i32, bits) : bits;
+        }
+        spv_emit_store(&c->e, c->color[rt], spv_emit_vec4_construct(&c->e, type, v));
         reg += 4;
     }
     /* reg: the sample mask, which a single-sampled target ignores */
