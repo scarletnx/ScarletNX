@@ -2015,13 +2015,17 @@ static uint32_t rvalue(Glslc* g, uint32_t n) {
 
 /* statements */
 
-static void relaxed(Glslc* g, uint32_t target, uint32_t t, uint8_t prec) {
+/* whether a value of type t (its element's) declared at precision prec is RelaxedPrecision: lowp and mediump numbers
+   of GLSL ES. Desktop GLSL's qualifiers are there for portability and change nothing (GLSL 4.50, 4.7): a driver that
+   computes RelaxedPrecision at 16 bits would draw a desktop game's mediump coordinates in steps */
+static int relaxed_at(const Glslc* g, uint32_t t, uint8_t prec) {
     uint32_t e = element_of(g, t);
     uint8_t k = ty(g, e)->kind;
-    if ((prec != GLSLC_PREC_LOW && prec != GLSLC_PREC_MEDIUM) ||
-        !(k == GLSLC_T_SCALAR || k == GLSLC_T_VECTOR || k == GLSLC_T_MATRIX) || ty(g, e)->base == SNX_GLSLC_BASE_BOOL)
-        return;
-    EMIT(g, &g->e.annotations, OP_DECORATE, target, DEC_RELAXED_PRECISION);
+    return !g->desktop_version && (prec == GLSLC_PREC_LOW || prec == GLSLC_PREC_MEDIUM) &&
+           (k == GLSLC_T_SCALAR || k == GLSLC_T_VECTOR || k == GLSLC_T_MATRIX) && ty(g, e)->base != SNX_GLSLC_BASE_BOOL;
+}
+static void relaxed(Glslc* g, uint32_t target, uint32_t t, uint8_t prec) {
+    if (relaxed_at(g, t, prec)) EMIT(g, &g->e.annotations, OP_DECORATE, target, DEC_RELAXED_PRECISION);
 }
 
 static void local_declaration(Glslc* g, uint32_t n) {
@@ -2777,12 +2781,8 @@ static void default_uniform_block(Glslc* g) {
         uint32_t pre[2] = {r, m};
         inst_string(g, &g->e.names, OP_MEMBER_NAME, pre, 2, glslc_view_text(g, y->name), y->name.len, NULL, 0);
         bool_member(g, r, m, y->type);
-        if (y->prec == GLSLC_PREC_LOW || y->prec == GLSLC_PREC_MEDIUM) {
-            uint32_t k = ty(g, e)->kind;
-            if ((k == GLSLC_T_SCALAR || k == GLSLC_T_VECTOR || k == GLSLC_T_MATRIX) &&
-                ty(g, e)->base != SNX_GLSLC_BASE_BOOL)
-                EMIT(g, &g->e.annotations, OP_MEMBER_DECORATE, r, m, DEC_RELAXED_PRECISION);
-        }
+        if (relaxed_at(g, y->type, y->prec))
+            EMIT(g, &g->e.annotations, OP_MEMBER_DECORATE, r, m, DEC_RELAXED_PRECISION);
         reflect(g, SNX_GLSLC_REFLECT_UNIFORM, y->name, y->type, 0, 0, offset);
         offset += size;
     }
