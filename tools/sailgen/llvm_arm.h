@@ -128,6 +128,9 @@ static inline void sg_branch_to(SgCtx* g, SgD target, LLVMValueRef when) {
     g->branched = 1;
     t = sg_d_make(g, &target);
     if (when) t = LLVMBuildSelect(SG_B, when, t, c32(g->a, g->a->next), "");
+    /* an A32 branch's CPSR before R15, as llvm.c's branch_exchange writes them: LLVM then drops a store of CPSR's own
+       value (an ALU write of the PC whose bit 0 the condition fixes) */
+    if (!g->a->thumb) sg_flags_flush(g);
     setreg(g->a, 15, t);
 }
 /* UNDEFINED: the backend's to run or stop at (llvm.c's trap) */
