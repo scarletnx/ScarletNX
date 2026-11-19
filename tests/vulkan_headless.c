@@ -7647,6 +7647,9 @@ static int check_vk12_way(void) {
             g_vk.api >= VK_API_VERSION_1_3 || snx_vk_extensions_has(&dev, VK_EXT_SUBGROUP_SIZE_CONTROL_EXTENSION_NAME);
         int mesh = snx_vk_extensions_has(&dev, VK_EXT_MESH_SHADER_EXTENSION_NAME);
         snx_vk_extensions_free(&dev);
+        /* the extension as the renderer took it: an off ban on it that holds for this driver takes it out, unless
+           vk_ext_mesh_shader=on goes over the ban (vk_ban_find answers 0 then) */
+        int mesh_on = mesh && !vk_ban_find(VK_EXT_MESH_SHADER_EXTENSION_NAME);
         VkPhysicalDeviceMeshShaderFeaturesEXT mf = {.sType =
                                                         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT};
         VkPhysicalDeviceSubgroupSizeControlFeatures sf = {
@@ -7663,8 +7666,8 @@ static int check_vk12_way(void) {
         int of32 = sized && sf.subgroupSizeControl && sf.computeFullSubgroups && sp.minSubgroupSize <= 32 &&
                    sp.maxSubgroupSize >= 32;
         int warp32 = of32 && (sp.requiredSubgroupSizeStages & VK_SHADER_STAGE_COMPUTE_BIT) != 0;
-        int meshes = g_settings.mesh_draws && mesh && mf.meshShader && of32 &&
-                     (sp.requiredSubgroupSizeStages & VK_SHADER_STAGE_MESH_BIT_EXT) != 0;
+        int meshes =
+            mesh_on && mf.meshShader && of32 && (sp.requiredSubgroupSizeStages & VK_SHADER_STAGE_MESH_BIT_EXT) != 0;
         if (g_vk.has_cs_warp32 != warp32 || g_vk.has_mesh != meshes)
             fprintf(stderr,
                     "subgroup sizes: the Vulkan %u.%u way has compute subgroups of 32 %d and mesh draws %d, where "

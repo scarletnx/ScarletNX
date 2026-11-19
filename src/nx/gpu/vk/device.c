@@ -487,21 +487,21 @@ static VkPhysicalDeviceSubgroupSizeControlProperties subgroup_sizes(int has, voi
 /* An Ounce's mesh draws (render.c): VK_EXT_mesh_shader's mesh stage, and its task stage when the device has one. The
    programs' lanes are a warp's (sm86.h), so both stages need a required subgroup size of 32 in full subgroups
    (subgroupSizeControl, computeFullSubgroups, requiredSubgroupSizeStages: sizes says whether the device has them,
-   Vulkan 1.3's or VK_EXT_subgroup_size_control's). Without them, or with the experimental mesh_draws setting off, the
-   draws are skipped, and the log says why once */
+   Vulkan 1.3's or VK_EXT_subgroup_size_control's). Without them, or with the extension off (a ban on the device's
+   driver, or vk_ext_mesh_shader=off: its own line says which), the draws are skipped, and the log says why once */
 static void mesh_choose(int has_ext, const VkPhysicalDeviceMeshShaderFeaturesEXT* f,
                         const VkPhysicalDeviceVulkan13Features* f13, int sizes) {
     VkPhysicalDeviceMeshShaderPropertiesEXT mp = {.sType =
                                                       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_PROPERTIES_EXT};
     VkPhysicalDeviceSubgroupSizeControlProperties sp = subgroup_sizes(sizes, has_ext ? &mp : NULL);
     const VkShaderStageFlags both = VK_SHADER_STAGE_MESH_BIT_EXT | VK_SHADER_STAGE_TASK_BIT_EXT;
-    const char* why = !g_settings.mesh_draws                                    ? "mesh_draws off (experimental)"
-                      : !has_ext                                                ? "no VK_EXT_mesh_shader"
-                      : !f->meshShader                                          ? "no meshShader"
-                      : !f13->subgroupSizeControl || !f13->computeFullSubgroups ? "no subgroup size control"
-                      : sp.minSubgroupSize > 32 || sp.maxSubgroupSize < 32      ? "no subgroups of 32"
+    const char* why = !has_ext         ? "VK_EXT_mesh_shader is off (the line on VK_EXT_mesh_shader says why)"
+                      : !f->meshShader ? "this GPU has no meshShader"
+                      : !f13->subgroupSizeControl || !f13->computeFullSubgroups
+                          ? "this GPU has no subgroup size control"
+                      : sp.minSubgroupSize > 32 || sp.maxSubgroupSize < 32 ? "this GPU has no subgroups of 32"
                       : (sp.requiredSubgroupSizeStages & VK_SHADER_STAGE_MESH_BIT_EXT) == 0
-                          ? "no required subgroup size in the mesh stage"
+                          ? "this GPU has no required subgroup size in the mesh stage"
                           : NULL;
     g_vk.has_mesh = why == NULL;
     g_vk.has_task = g_vk.has_mesh && f->taskShader && (sp.requiredSubgroupSizeStages & both) == both;
@@ -516,7 +516,7 @@ static void mesh_choose(int has_ext, const VkPhysicalDeviceMeshShaderFeaturesEXT
     g_vk.mesh_vertex_granule = mp.meshOutputPerVertexGranularity;
     g_vk.mesh_primitive_granule = mp.meshOutputPerPrimitiveGranularity;
     if (why)
-        LOG("vulkan: mesh draws are skipped: %s%s\n", g_settings.mesh_draws ? "this GPU has " : "", why);
+        LOG("vulkan: mesh draws are skipped: %s\n", why);
     else
         LOG("vulkan: mesh draws use VK_EXT_mesh_shader%s\n",
             g_vk.has_task ? " with task shaders" : ", without task shaders");

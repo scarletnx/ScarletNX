@@ -98,6 +98,9 @@ OpGroupNonUniformShuffle | off | turnip | * | any | * | compiles a shuffle whose
 VK_EXT_descriptor_heap | off | amd-proprietary | * | any | * | crashes a game at start with descriptor heaps (Adrenalin 26.7.1 on an RX 7900 XTX) | DXVK 076922bd24 (2026-09-19), issue 5837 | headless:--vk-descriptors-mode=3 | never | -
 VK_EXT_descriptor_heap | off | nvidia | < 595.84.0 | any | * | runs descriptor heaps slower than its later drivers do | DXVK dxvk_device_info.cpp:506 (b5fadf8e5a, 2026-06-18) | new:headless:--bench-descriptors under vk_descriptors_mode=3 against vk_descriptors_mode=1 | never | -
 
+# Mesh draws (device.c's mesh_choose: without VK_EXT_mesh_shader an Ounce game's mesh draws are skipped)
+VK_EXT_mesh_shader | off | nvidia | * | any | * | faulted the GPU in most menu runs of an Ounce game with its mesh draws on an RTX 2080: Xid 31 and 109, then a lost device, and 2 of 7 runs still hung once both mesh stages saw the sets of both | ScarletNX 0002310032 and 62f2ec0570 (2026-11-05), docs/platforms/nx/ounce.md#draws | headless:--vk-ext-mesh-shader=on | 2026-11-05 broken on 615.78.08 (RTX 2080) | -
+
 # Pipeline libraries (gpu/vk/pipeline_parts.c: a new pipeline links the parts of its shaders)
 VK_EXT_graphics_pipeline_library | off | nvidia | < 531.0.0 | any | * | draws transient glitches with pipeline libraries | ANGLE vk_renderer.cpp:6928, anglebug 42266655 | new:amberlith:the graphics suites with pipeline libraries on | never | -
 VK_EXT_graphics_pipeline_library | off | mali | * | any | * | runs unacceptably slower with pipeline libraries | ANGLE vk_renderer.cpp:6928, anglebug 404581992 | new:amberlith:the graphics suites timed with pipeline libraries on and off | never | -

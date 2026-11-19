@@ -320,8 +320,8 @@ channel 22 and a ring of 16 on channel 23. Their increments and decrements don't
 
 The game draws part of its frames with mesh shaders: about 14 `nvnCommandBufferDrawMeshTasks` calls a frame in the
 screens after the title, all from the programs of `Shader/Drive.Nin_Ounce_NVN2.release.sarc.zs`
-(`DrivePassShaderDefault.sharcb`, the 3D scene's passes). The renderer can draw them with `VK_EXT_mesh_shader`
-behind the experimental `mesh_draws` setting, off by default (see [Draws](#draws)). No font or UI program
+(`DrivePassShaderDefault.sharcb`, the 3D scene's passes). The renderer draws them with `VK_EXT_mesh_shader` where
+the driver has it and no ban holds, which keeps them off on NVIDIA's driver (see [Draws](#draws)). No font or UI program
 (`Lib/sead/nvn2_font`, the programs in `main`) is a mesh program, so the missing menu text has another cause. Of the
 programs that the shipped pass translates, about 500 fragment and vertex programs are refused (most with "BRX with no
 jump table"), which is a better lead for the text.
@@ -447,7 +447,7 @@ the push constant's z has `SH_PUSH_GPU_MESH_FIRST`, the task program, or the mes
 workgroup from there. The copy ends the rendering pass. In the first 3D scene of one game about 30 mesh draws a frame
 are indirect; the 3D form's and the multi-draws, which no run calls, are still skipped.
 
-With `mesh_draws` on, an RTX 2080 faulted in most menu runs: Xid 31 (`GPCCLIENT_GCC`, reads of addresses that no
+With the mesh draws on, an RTX 2080 faulted in most menu runs: Xid 31 (`GPCCLIENT_GCC`, reads of addresses that no
 memory backs), then Xid 109 and a lost device. NV diagnostic checkpoints put each hang in a draw with a task program,
 and the device fault data put the faulting instruction in the task program, at the same address in each run. A task
 program that does nothing launched no fault. A task program that reads no constant buffer still faulted. Every
@@ -523,16 +523,18 @@ the menus and the first 3D scene. With `RADV_DEBUG=hang`, which waits for each d
 draws of the menus hung the GPU twice, once with every task draw of 0 workgroups (the gfx ring, then a compute ring
 timed out; the dump's compute IB held an `ACQUIRE_MEM` and `NOP`s, with the shader engines idle): a task program's
 draw is a gang submission, its task stage on an ACE queue, which that option's waits stall. Don't take it to a run
-with mesh draws.
+with mesh draws. On an RX 6700 XT (RADV, Mesa 26.2.6) a run from boot into a race drew 213,192 mesh draws, and one
+under the validation layer 78,495, with no fault.
 
-With `mesh_draws=1` the draws translate and draw, with no `not translated` line and no validation message of their
+With the mesh draws on, the draws translate and draw, with no `not translated` line and no validation message of their
 own, but 6 of 7 runs through the menus on an RTX 2080 (driver 615.78.08) ended in a GPU fault: Xid 109 (context switch
 timeout) and Xid 31 (MMU faults of `GPCCLIENT_GCC`, reads at addresses such as `0xfffff079_ad3f2000`), then
 `VK_ERROR_DEVICE_LOST`. Runs without mesh draws had none. GPU-assisted validation reported nothing about them. What
 did not remove the faults: the per-primitive SPH at the right offset, the fragment inputs no mesh output writes read
 as 0, 0, 0, 1, and storage buffers of the two stages bound to all the memory mapped from their addresses. A run that
 drew only the mesh programs alone without per-primitive outputs had no fault in 319 frames, which is too few to be
-sure. So the setting stays off.
+sure. So `VK_EXT_mesh_shader` is off on NVIDIA's driver, by its line in `src/common/gpu/vk/extension_bans.txt`, which
+`vk_ext_mesh_shader=on` goes over to test it again (the `vulkan_headless_mesh` test does).
 
 ### Open questions
 
@@ -541,7 +543,7 @@ sure. So the setting stays off.
   does when no lane writes the count. The design starts it at 0.
 - Whether `first` reaches the index as the first vertex of the point draw does (the game passes 0, so the runs
   cannot show it).
-- The cause of the GPU faults with `mesh_draws=1`. Next checks: the per-primitive outputs and the fragment
+- The cause of the GPU faults on NVIDIA's driver. Next checks: the per-primitive outputs and the fragment
   program's `PerPrimitiveEXT` inputs (with their interpolation decorations), the primitive indices against the vertex
   count, and a RenderDoc capture of the first faulting draw.
 - The 3D form's indirect record (x, y, z), and whether `DrawMeshTasksIndirect`'s is `{count, first}`, as the
