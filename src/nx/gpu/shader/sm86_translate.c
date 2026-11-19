@@ -534,6 +534,33 @@ static u32 nocontract(Ctx* c, u32 v) {
     spv_emit_no_contraction(&c->e, v);
     return v;
 }
+/* p + q for two pairs of floats, rounded to odd: where the sum is not exact, the f32 next to it whose last bit is 1,
+   toward the exact sum. HFMA2 rounds a * b + c once to f16, and a * b is exact in f32, but the sum rounded to the
+   nearest f32 and then by PackHalf2x16 to the nearest f16 can land on an f16 tie that the exact sum is not on (1.5 *
+   35040 + 0.0018 is 52560.0018: 52576, not 52544). The odd f32 is never on one, and f32's 13 more bits make its
+   nearest f16 the exact sum's. TwoSum's error of the nearest sum is exact, as Vulkan's f32 adds are rounded correctly (a sum
+   of f16 values is a multiple of 2^-48, so neither is below the normals); a sum not a number keeps its error from
+   moving it */
+static u32 sum_to_odd(Ctx* c, u32 p, u32 q) {
+    u32 t = c->t_v2f, tu = c->t_v2u, tb = spv_emit_type_vector(&c->e, c->t_bool, 2);
+    u32 s = nocontract(c, op2(c, SPV_OP_F_ADD, t, p, q));
+    u32 qs = nocontract(c, op2(c, SPV_OP_F_SUB, t, s, p)), ps = nocontract(c, op2(c, SPV_OP_F_SUB, t, s, qs));
+    u32 err = nocontract(c, op2(c, SPV_OP_F_ADD, t, nocontract(c, op2(c, SPV_OP_F_SUB, t, p, ps)),
+                                nocontract(c, op2(c, SPV_OP_F_SUB, t, q, qs))));
+    u32 fzero = spv_emit_constant_vec2(&c->e, t, cf(c, 0.0f), cf(c, 0.0f));
+    u32 one = spv_emit_constant_vec2(&c->e, tu, cu(c, 1), cu(c, 1)),
+        zero = spv_emit_constant_vec2(&c->e, tu, c->zero, c->zero);
+    u32 bits = spv_emit_unary(&c->e, SPV_OP_BITCAST, tu, s);
+    u32 even = op2(c, SPV_OP_I_EQUAL, tb, op2(c, SPV_OP_BITWISE_AND, tu, bits, one), zero);
+    u32 move = op2(c, SPV_OP_LOGICAL_AND, tb, op2(c, SPV_OP_F_ORD_NOT_EQUAL, tb, err, fzero), even);
+    /* away from zero where the error has the sum's sign: one more of the magnitude's bits, else one less */
+    u32 away = op2(c, SPV_OP_LOGICAL_EQUAL, tb, op2(c, SPV_OP_F_ORD_LESS_THAN, tb, err, fzero),
+                   op2(c, SPV_OP_F_ORD_LESS_THAN, tb, s, fzero));
+    u32 step = spv_emit_ternary(&c->e, SPV_OP_SELECT, tu, away, one,
+                                spv_emit_constant_vec2(&c->e, tu, cu(c, ~0u), cu(c, ~0u)));
+    bits = spv_emit_ternary(&c->e, SPV_OP_SELECT, tu, move, op2(c, SPV_OP_I_ADD, tu, bits, step), bits);
+    return spv_emit_unary(&c->e, SPV_OP_BITCAST, t, bits);
+}
 /* NAK's FRndMode (bits 78-79): 0 to nearest even, 1 toward -inf, 2 toward +inf, 3 toward zero. r is the result
    rounded to nearest, and above and below say if the exact result is above or below it. A directed mode moves r
    one step (one unit of its bits) when the exact result is on the other side of it */
@@ -5775,7 +5802,8 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
                modifiers at 83 (abs) and 84 (neg), not where a three-source float's are. Bit 79 is .RELU: a result at or
                below zero becomes zero where the predicate at 87 holds, while infinity and NaN stay. Bit 86 is .H0_NH1:
                b's halves swap and the new low one is negated, the second term of a complex product. Bits 78 and 85 are
-               refused. A product of two halves is exact in a float of 32 bits */
+               refused. A product of two halves is exact in a float of 32 bits, and its sum with c is rounded once
+               (sum_to_odd), as the console's fused multiply-add of halves is */
             int relu = (int)sm86_field(in, 79, 1), h0_nh1 = (int)sm86_field(in, 86, 1);
             if (sm86_field(in, 78, 1) || sm86_field(in, 85, 1) || (relu && sm86_field(in, 77, 1))) {
                 fail(c, "HFMA2 with modes 0x%x, 0x%x, saturate %u", sm86_field(in, 78, 2), sm86_field(in, 85, 2),
@@ -5816,8 +5844,8 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
                 if (neg) pair = SPV(&c->e, SPV_OP_F_NEGATE, c->t_v2f, pair);
                 v[k] = pair;
             }
-            u32 r = nocontract(c, op2(c, SPV_OP_F_ADD, c->t_v2f,
-                                      nocontract(c, spv_emit_binary(&c->e, SPV_OP_F_MUL, c->t_v2f, v[0], v[1])), v[2]));
+            u32 p = nocontract(c, spv_emit_binary(&c->e, SPV_OP_F_MUL, c->t_v2f, v[0], v[1]));
+            u32 r = sum_to_odd(c, p, v[2]);
             if (sm86_field(in, 77, 1))
                 r = SPV_EXT(&c->e, c->t_v2f, SPV_GLSL_N_CLAMP, r,
                             spv_emit_vec2_construct(&c->e, c->t_v2f, cf(c, 0.0f), cf(c, 0.0f)),
