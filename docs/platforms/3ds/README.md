@@ -679,6 +679,9 @@ writes the last frame of both screens as one PPM to exactly PATH, the top above 
 bottom as the window shows them.
 
 How a target's render scale is chosen and kept:
+- A target 400 rows high takes the top screen's setting, a target 320 rows high the bottom screen's, and any
+  other target the larger of the two, as far as the device's largest image size allows. A target whose scaled
+  images the device has no room for is drawn at scale 1.
 - A texture without mipmaps, other than a cube or shadow map, that covers a scaled colour target's whole image,
   in the target's format, is filled from the scaled image.
 - A texture without mipmaps, other than a cube or shadow map, that covers a scaled depth buffer is filled from
