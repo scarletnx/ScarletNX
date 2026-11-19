@@ -48,7 +48,8 @@ static struct {
 _Static_assert(STATS_BARS <= SNX_UI_RING_MAX, "the bars fit the ring, a slot each, which is a quad's glyph byte");
 /* the height past which a bar draws in the failure colour: a frame past 30 FPS's, STATS_30_MS of STATS_TOP_MS */
 #define STATS_SLOW_FROM ((int)(255.0f * STATS_30_MS / STATS_TOP_MS + 0.5f))
-#define STATS_QUADS     1536 /* its quads at most: the lines, the graph and four lines under it of 255 letters */
+/* its quads at most: the lines, the graph, and under it the work's two lines and three of 255 letters */
+#define STATS_QUADS     1536
 #define STATS_CELLS     (STATS_COLS - 6) /* a line's cells: after a blank and the icon's three, to the graph's right */
 #define STATS_CPU_CELLS (STATS_GPU_AT - 5)
 #define STATS_GPU_CELLS (STATS_COLS - 1 - (STATS_GPU_AT + 3))
@@ -74,7 +75,7 @@ static struct {
     SnxUiQuad q[STATS_QUADS];
     int n;
     int cells[STATS_LINES], gpu; /* the first cell of each line, and of the GPU's text */
-    int work;                    /* and of the work's line under the graph, -1 without it */
+    int work[2];                 /* and of the work's lines under the graph (compiling, encoding), -1 without */
     int bars;                        /* the first of the bars, slot 0's */
     u8 height[STATS_BARS];           /* the ring's bytes (ui.h) */
     u32 ring_version;                /* counts their changes */
@@ -105,8 +106,8 @@ void stats_corner_set(const IniOpt* o, const char* v) {
 }
 void stats_measured(const SnxStatsMeasure* m) {
     ui_lock();
-    /* the work's line comes or goes: the box is laid out again */
-    if (!(g_stats.shown.compiling || g_stats.shown.encoding) != !(m->compiling || m->encoding)) ++g_stats.notes;
+    /* a work's line comes or goes: the box is laid out again */
+    if (!g_stats.shown.compiling != !m->compiling || !g_stats.shown.encoding != !m->encoding) ++g_stats.notes;
     g_stats.shown = *m;
     ++g_stats.measures;
     ui_unlock();
@@ -165,7 +166,9 @@ void stats_frame(u64 now_ns, const SnxStatsGpu* gpu) {
             .vram_budget = gpu->vram_budget,
             .vram_ours = gpu->vram_ours,
             .compiling = gpu->compiled > g_stats.compiled ? gpu->compiled - g_stats.compiled : 0,
-            .encoding = gpu->encoded > g_stats.encoded ? gpu->encoded - g_stats.encoded : 0};
+            .encoding = gpu->encoded > g_stats.encoded ? gpu->encoded - g_stats.encoded : 0,
+            .compiled = gpu->compiled,
+            .encoded = gpu->encoded};
         /* the GPU's busy time read since the last measure, over its time and its frames: the renderer reads a frame's
            once its slot is reused, two frames on, a shift a second's sum hardly shows */
         if (gpu->timed && g_stats.busy_timed) {
@@ -187,14 +190,14 @@ void stats_frame(u64 now_ns, const SnxStatsGpu* gpu) {
 int stats_scale(int menu_scale) { return menu_scale > 1 ? menu_scale - 1 : 1; }
 
 /* the lines under the graph that apply, each after its icon in its colour, the longest's letters; a field of
-   STATS_CELLS cells in place of a text for one whose letters change (cells) */
+   STATS_CELLS cells in place of a text for a work's line, whose letters change (work: 1 compiling, 2 encoding) */
 typedef struct {
     int n;
     size_t longest;
     char text[STATS_NOTES][STATS_NOTE_MAX];
     unsigned icon[STATS_NOTES];
     u32 rgba[STATS_NOTES];
-    int cells[STATS_NOTES];
+    int work[STATS_NOTES];
 } StatsNotes;
 /* a line of lead and value, in room letters at most: a value past them keeps its end after "...", where a capture's
    file name tells it from the others (_capture_2.rdc) */
@@ -210,25 +213,28 @@ static void note(StatsNotes* s, unsigned icon, u32 rgba, size_t room, const char
         snprintf(t, room + 1, "%s", lead);
     s->icon[s->n] = icon;
     s->rgba[s->n] = rgba;
-    s->cells[s->n] = 0;
+    s->work[s->n] = 0;
     len = strlen(t);
     if (len > s->longest) s->longest = len;
     s->n++;
 }
 /* a path's file name, after its last separator */
-/* the lines that apply, in room letters each: the work new to this run over the last measure's second, a field of
-   cells its letters go into as they change (work_text); RenderDoc's, that a capture can be taken (by the capture key's
-   setting, hotkeys.h, or with none the menu's item) and what the last one asked for wrote (its file's name, ? where
-   RenderDoc didn't say it) or that it failed, in the failure colour; and the debugger tracing the game */
+/* a work's line, a field of cells its letters go into as they change (work_text) */
+static void work_note(StatsNotes* s, unsigned icon, int work) {
+    note(s, icon, UI_PAGE, 0, "", "");
+    s->work[s->n - 1] = work;
+    if (s->longest < STATS_CELLS) s->longest = STATS_CELLS;
+}
+/* the lines that apply, in room letters each: each work new to this run that the measure's second had, compiling
+   then encoding; RenderDoc's, that a capture can be taken (by the capture key's setting, hotkeys.h, or with none the
+   menu's item) and what the last one asked for wrote (its file's name, ? where RenderDoc didn't say it) or that it
+   failed, in the failure colour; and the debugger tracing the game */
 static void notes_make(StatsNotes* s, size_t room) {
     char lead[96];
     s->n = 0;
     s->longest = 0;
-    if (g_stats.shown.compiling || g_stats.shown.encoding) {
-        note(s, GUI_ICON_HAMMER, UI_PAGE, room, "", "");
-        s->cells[s->n - 1] = 1;
-        if (s->longest < STATS_CELLS) s->longest = STATS_CELLS;
-    }
+    if (g_stats.shown.compiling) work_note(s, SNX_STATS_ICON_COMPILE, 1);
+    if (g_stats.shown.encoding) work_note(s, SNX_STATS_ICON_ENCODE, 2);
     if (g_stats.capture.ready) {
         if (*g_settings.render_doc_capture_shortcut)
             snprintf(lead, sizeof lead, "RenderDoc: %s captures", g_settings.render_doc_capture_shortcut);
@@ -292,12 +298,11 @@ static char* put_mib(char* at, u64 bytes) { return bytes ? ui_put_u(at, bytes >>
 /* tenths at at, at most 999.9: a field's letters are as many as it holds */
 static char* put_tenths(char* at, u64 tenths) { return ui_put_tenths(at, tenths < 9999 ? tenths : 9999); }
 
-/* the work's line: the pipelines made over the measure's second and the BC7 encoder's runs, each while past 0 */
-static void work_text(char* text, const SnxStatsMeasure* m) {
-    char* at = text;
-    if (m->compiling) at = ui_put_u(ui_put(at, "Compiling "), m->compiling);
-    if (m->encoding) at = ui_put_u(ui_put(at, m->compiling ? "  Encoding " : "Encoding "), m->encoding);
-    *at = 0;
+/* a work's line (1 compiling, 2 encoding): what the measure's second made of it, and the run so far */
+static void work_text(char* text, int work, const SnxStatsMeasure* m) {
+    char* at = ui_put(text, work == 1 ? "Compiling: " : "Encoding: ");
+    at = ui_put(ui_put_u(at, work == 1 ? m->compiling : m->encoding), " / ");
+    *ui_put_u(at, work == 1 ? m->compiled : m->encoded) = 0;
 }
 /* an icon, backed, and a backed space after it: the band of ground its line's letters go on from */
 static void icon_backed(SnxUiList* l, float x, float y, int scale, unsigned icon, u32 rgba) {
@@ -368,7 +373,7 @@ static void box_layout(const int safe[4], int scale, const StatsKey* key) {
         ui_fill(&l, g_box.gx, top, g_box.gw, (float)scale, UI_SOFT);
     }
     g_box.bars = l.n;
-    g_box.work = -1;
+    g_box.work[0] = g_box.work[1] = -1;
     ui_ring_bars(&l, g_box.gx, g_box.gy, g_box.gw, g_box.gh, STATS_BARS, UI_PAGE); /* none yet */
     memset(g_box.height, 0, sizeof g_box.height);
     ++g_box.ring_version;
@@ -383,8 +388,9 @@ static void box_layout(const int safe[4], int scale, const StatsKey* key) {
             float y = g_box.gy + g_box.gh + ch / 2 + (float)j * ch, at;
             ui_text_backed(&l, box[0] + cw, y, scale, " ", UI_PAGE);
             icon_backed(&l, box[0] + 2 * cw, y, scale, notes.icon[j], notes.rgba[j]);
-            if (notes.cells[j]) {
-                g_box.work = ui_cells_backed(&l, box[0] + 5 * cw, y, scale, STATS_CELLS, notes.rgba[j]);
+            if (notes.work[j]) {
+                g_box.work[notes.work[j] - 1] =
+                    ui_cells_backed(&l, box[0] + 5 * cw, y, scale, STATS_CELLS, notes.rgba[j]);
                 at = box[0] + 5 * cw + STATS_CELLS * cw;
             } else
                 at = box[0] + 5 * cw + ui_text_backed(&l, box[0] + 5 * cw, y, scale, notes.text[j], notes.rgba[j]);
@@ -501,10 +507,11 @@ void stats_draw(SnxUiList* l, const int safe[4], int menu_scale, u64 now_ns) {
         *ui_put(put_mib(ui_put(put_mib(ui_put(text, "vram "), m->vram), "/"), m->vram_budget),
                 m->vram_ours ? " MiB ours/heap" : " MiB") = 0;
         cells(g_box.cells[3], STATS_CELLS, text);
-        if (g_box.work >= 0) {
-            work_text(text, m);
-            cells(g_box.work, STATS_CELLS, text);
-        }
+        for (j = 0; j < 2; ++j)
+            if (g_box.work[j] >= 0) {
+                work_text(text, (int)j + 1, m);
+                cells(g_box.work[j], STATS_CELLS, text);
+            }
         g_box.measures = g_stats.measures;
     }
     ui_append_kept(l, &(SnxUiList){g_box.q, g_box.n, STATS_QUADS}, g_box.version, &g_box, &g_box.changed);
