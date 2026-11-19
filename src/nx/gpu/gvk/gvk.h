@@ -92,6 +92,22 @@ const u32* gvk_spirv_mend(const u32* w, size_t bytes, size_t* out_bytes, u32 all
    game's blends of SRC1_ALPHA). NULL for a module with no such output, for one with an entry point of another stage,
    and for one that gives an output at Location 1 an Index itself */
 const u32* gvk_spirv_dual_source(const u32* w, size_t bytes, size_t* out_bytes);
+/* The size queries of a fragment module's images (OpImageQuerySize and OpImageQuerySizeLod) answer the game's size
+   of an image gvk draws at the resolution scale, where the host's answer is its own. A game's shaders divide by the
+   size to sample at texels of the game's size (one game's indirect textures and haze, of copies of its targets). The
+   module gets a uvec4 in its push constants at byte GVK_SIZE_PUSH: x a bit for each image it queries, set when that
+   image is drawn at the scale, and y the scale less one. Each query's width and height are divided by 1 + bit * y.
+   slots names bit k's image as set << 14 | binding << 8 | array element. A query of an image gvk can't name (more
+   than GVK_SIZE_SLOTS, an element by a variable, a function's parameter) stays the host's, counted in skipped.
+   Returns w with slots->n 0 where nothing changes, a scratch copy with the queries divided, or NULL for a module that
+   isn't SPIR-V gvk can read */
+#define GVK_SIZE_SLOTS 16
+#define GVK_SIZE_PUSH  240
+typedef struct {
+    u8 n, skipped;
+    u16 slot[GVK_SIZE_SLOTS];
+} GvkSizeSlots;
+const u32* gvk_spirv_scaled_size(const u32* w, size_t bytes, size_t* out_bytes, GvkSizeSlots* slots);
 
 /* the structures gvk_api.c copies (gvk.c's tables) */
 extern const GvkType gvk_t_submit, gvk_t_buffer, gvk_t_image, gvk_t_image_view, gvk_t_buffer_view, gvk_t_sampler,

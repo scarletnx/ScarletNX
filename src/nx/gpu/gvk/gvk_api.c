@@ -107,6 +107,31 @@ typedef struct {
     u16 base_layer, layers;  /* 0xffff: the rest */
     u8 in_set;
 } GvkView;
+/* With the resolution scale, the image descriptors of a set that hold a view of an image drawn at the scale: bit
+   binding * 8 + element, for bindings and elements below 8 (set_bit). A set with none has no entry */
+typedef struct {
+    u64 set, mask;
+} GvkSetScale;
+/* a fragment module whose size queries gvk divides (gvk_spirv_scaled_size), by its handle, and a graphics pipeline of
+   one, by its handle, with the layout that takes its push constants and the stages they are pushed for */
+typedef struct {
+    u64 key, layout;
+    u32 stages;
+    u16 slot[GVK_SIZE_SLOTS];
+    u8 n;
+} GvkSizes;
+/* a pipeline layout with gvk's push constants past GVK_SIZE_PUSH: the stages of the fragment stage's range, which
+   holds them, and where that range starts */
+typedef struct {
+    u64 layout;
+    u32 stages, from;
+} GvkLayout;
+/* a command buffer's masks of its bound graphics sets 0 to 3, its graphics pipeline, and the size bits it pushed last,
+   with the layout it pushed them with (0: to push at the next draw) */
+typedef struct {
+    u64 cb, mask[4], pipe, pushed_layout;
+    u32 pushed;
+} GvkBound;
 
 /* a command buffer's first viewport and scissor as the game set them, and the scale each was set at: a render pass
    at another scale sets them again at its own */
@@ -190,7 +215,7 @@ static struct {
     GvkGraphics graphics[GVK_SCALED];
     u64 import_align;            /* minImportedHostPointerAlignment, or a host page for dma-bufs */
     VkExternalMemoryHandleTypeFlagBits handle_type; /* how the host imports guest pages: host memory or a dma-buf */
-    u32 nmem, nimage, nrpass, npass, ntarget, nview, nsfb, ndyn, ndual;
+    u32 nmem, nimage, nrpass, npass, ntarget, nview, nsfb, ndyn, ndual, nsetscale, nmsizes, npsizes, nbound, nlayout;
     GvkMem mem[GVK_MEMS];       /* open addressing by handle */
     GvkImage image[GVK_IMAGES];
     GvkRpass rpass[GVK_RPASSES];
@@ -200,6 +225,10 @@ static struct {
     u64 sfb[GVK_SCALED];
     GvkDyn dyn[GVK_CBS];
     GvkDual dual[GVK_DUALS];
+    GvkSetScale setscale[GVK_IMAGES / 4];
+    GvkSizes msizes[GVK_DUALS], psizes[GVK_SCALED];
+    GvkLayout layout[GVK_SCALED];
+    GvkBound bound[GVK_CBS];
     GvkSwapchain sc[GVK_SWAPCHAINS];
     u32 ntpool, ntset, tset_cap, tset_free, nbuckets;
     GvkPoolTwin tpool[GVK_POOLS];
@@ -429,7 +458,7 @@ static int tab_take(u8* t, size_t size, u32 cap, u32* n, u64 key, void* out) {
 }
 typedef char gvk_entries_fit[sizeof(GvkMem) <= 64 && sizeof(GvkRpass) <= 64 && sizeof(GvkPass) <= 64 &&
                                      sizeof(GvkTarget) <= 64 && sizeof(GvkView) <= 64 && sizeof(GvkDyn) <= 64 &&
-                                     sizeof(GvkPoolTwin) <= 64
+                                     sizeof(GvkPoolTwin) <= 64 && sizeof(GvkSizes) <= 64 && sizeof(GvkBound) <= 64
                                  ? 1
                                  : -1];
 
@@ -865,6 +894,8 @@ static void gvk_EnumeratePhysicalDevices(CPU* RESTRICT c, u64 entry) {
 static void gvk_GetPhysicalDeviceProperties(CPU* RESTRICT c, u64 entry) {
     VkPhysicalDeviceProperties p = g_vk.props;
     if (p.apiVersion > GVK_GUEST_API) p.apiVersion = GVK_GUEST_API;
+    /* the push constants past GVK_SIZE_PUSH are gvk's, at the resolution scale (gvk_spirv_scaled_size) */
+    if (scale_factor() > 1 && p.limits.maxPushConstantsSize > GVK_SIZE_PUSH) p.limits.maxPushConstantsSize = GVK_SIZE_PUSH;
     put(c->x[1], &p, sizeof p);
     ret(c, 0);
 }
@@ -925,6 +956,8 @@ static void gvk_GetPhysicalDeviceProperties2(CPU* RESTRICT c, u64 entry) {
     }
     vkGetPhysicalDeviceProperties2(g_vk.phys, &p2);
     if (p2.properties.apiVersion > GVK_GUEST_API) p2.properties.apiVersion = GVK_GUEST_API;
+    if (scale_factor() > 1 && p2.properties.limits.maxPushConstantsSize > GVK_SIZE_PUSH)
+        p2.properties.limits.maxPushConstantsSize = GVK_SIZE_PUSH;
     put(g + offsetof(VkPhysicalDeviceProperties2, properties), &p2.properties, sizeof p2.properties);
     for (u32 i = 0; i < n; i++) put(at[i] + sizeof(VkBaseOutStructure), host[i] + 1, size[i] - sizeof *host[i]);
     ret(c, 0);
@@ -1377,7 +1410,48 @@ static void gvk_DestroyRenderPass(CPU* RESTRICT c, u64 entry) {
 }
 CREATE(CreateBufferView, VkBufferView, gvk_t_buffer_view)
 CREATE(CreateSampler, VkSampler, gvk_t_sampler)
-CREATE(CreatePipelineLayout, VkPipelineLayout, gvk_t_playout)
+/* At the resolution scale each layout takes gvk's push constants for the size queries of its fragment shaders
+   (gvk_spirv_scaled_size), past the game's, which the limit gvk tells it keeps below GVK_SIZE_PUSH */
+static void gvk_CreatePipelineLayout(CPU* RESTRICT c, u64 entry) {
+    REQUIRE_OUT(c->x[3], 8);
+    gvk_scratch_reset();
+    VkPipelineLayoutCreateInfo* ci = gvk_in(&gvk_t_playout, c->x[1], 1);
+    VkPipelineLayout h = VK_NULL_HANDLE;
+    VkResult r = VK_ERROR_INITIALIZATION_FAILED;
+    u32 stages = 0, from = GVK_SIZE_PUSH;
+    if (ci && scale_factor() > 1) {
+        /* one range a stage: the fragment stage's reaches to gvk's bytes, or gvk's is a range of its own */
+        u32 n = ci->pushConstantRangeCount, room = 1, frag = n;
+        VkPushConstantRange* p = gvk_scratch(sizeof *p * (n + 1));
+        for (u32 i = 0; i < n; i++) {
+            p[i] = ci->pPushConstantRanges[i];
+            room &= p[i].offset + p[i].size <= GVK_SIZE_PUSH;
+            if (p[i].stageFlags & VK_SHADER_STAGE_FRAGMENT_BIT) frag = i;
+        }
+        if (frag == n)
+            p[n] = (VkPushConstantRange){VK_SHADER_STAGE_FRAGMENT_BIT, GVK_SIZE_PUSH, 16};
+        else
+            p[frag].size = GVK_SIZE_PUSH + 16 - p[frag].offset;
+        if (room) {
+            ci->pPushConstantRanges = p;
+            ci->pushConstantRangeCount = n + (frag == n);
+            stages = p[frag].stageFlags;
+            from = p[frag].offset;
+        } else {
+            WARN_LIMIT(4, "gvk: a pipeline layout's push constants reach past %u bytes: its fragment shaders' size "
+                          "queries can't be told the game's size\n",
+                       GVK_SIZE_PUSH);
+        }
+    }
+    if (ci) r = vkCreatePipelineLayout(g_vk.dev, ci, NULL, &h);
+    if (r == VK_SUCCESS && stages) {
+        GvkLayout e = {U(h), stages, from};
+        tab_put(TAB(layout), &g_gvk_api.nlayout, &e);
+    }
+    if (r != VK_SUCCESS) WARN_LIMIT(16, "gvk: vkCreatePipelineLayout failed (%d)\n", (int)r);
+    put_handle(c->x[3], U(h));
+    ret_vk(c, r);
+}
 /* a command buffer of gvk's own, recorded between them and run to its end before once_end returns (images_general) */
 typedef struct {
     VkCommandPool pool;
@@ -1575,13 +1649,20 @@ DESTROY(DestroyBufferView, VkBufferView)
 DESTROY(DestroySampler, VkSampler)
 static void gvk_DestroyShaderModule(CPU* RESTRICT c, u64 entry) {
     GvkDual e;
+    GvkSizes s;
     if (tab_take(TAB(dual), &g_gvk_api.ndual, c->x[1], &e))
         vkDestroyShaderModule(g_vk.dev, H(VkShaderModule, e.dual), NULL);
+    if (scale_factor() > 1) tab_take(TAB(msizes), &g_gvk_api.nmsizes, c->x[1], &s);
     vkDestroyShaderModule(g_vk.dev, H(VkShaderModule, c->x[1]), NULL);
     ret(c, 0);
 }
 DESTROY(DestroyPipelineCache, VkPipelineCache)
-DESTROY(DestroyPipelineLayout, VkPipelineLayout)
+static void gvk_DestroyPipelineLayout(CPU* RESTRICT c, u64 entry) {
+    GvkLayout e;
+    if (scale_factor() > 1) tab_take(TAB(layout), &g_gvk_api.nlayout, c->x[1], &e);
+    vkDestroyPipelineLayout(g_vk.dev, H(VkPipelineLayout, c->x[1]), NULL);
+    ret(c, 0);
+}
 DESTROY(DestroyDescriptorSetLayout, VkDescriptorSetLayout)
 static void gvk_DestroyFramebuffer(CPU* RESTRICT c, u64 entry) {
     set_take(g_gvk_api.sfb, GVK_SCALED, &g_gvk_api.nsfb, c->x[1]);
@@ -1590,7 +1671,9 @@ static void gvk_DestroyFramebuffer(CPU* RESTRICT c, u64 entry) {
 }
 static void gvk_DestroyPipeline(CPU* RESTRICT c, u64 entry) {
     GvkGraphics e;
+    GvkSizes s;
     tab_take(TAB(graphics), &g_gvk_api.ngraphics, c->x[1], &e);
+    if (scale_factor() > 1) tab_take(TAB(psizes), &g_gvk_api.npsizes, c->x[1], &s);
     vkDestroyPipeline(g_vk.dev, H(VkPipeline, c->x[1]), NULL);
     ret(c, 0);
 }
@@ -1747,9 +1830,28 @@ static void gvk_CreateShaderModule(CPU* RESTRICT c, u64 entry) {
             ret_vk(c, VK_ERROR_INITIALIZATION_FAILED);
             return;
         }
+        /* at the resolution scale, its size queries answer the game's size (gvk_spirv_scaled_size) */
+        GvkSizeSlots slots = {0};
+        if (scale_factor() > 1) {
+            size_t sized;
+            const u32* s = gvk_spirv_scaled_size(mended, bytes, &sized, &slots);
+            if (slots.skipped)
+                LOG_LIMIT(8, "gvk: %u size queries of a shader read an image gvk can't follow: they answer the host's "
+                             "size of an image drawn at the scale\n",
+                          slots.skipped);
+            if (s && slots.n) {
+                mended = s;
+                bytes = sized;
+            }
+        }
         ci->pCode = mended;
         ci->codeSize = bytes;
         r = vkCreateShaderModule(g_vk.dev, ci, NULL, &h);
+        if (r == VK_SUCCESS && slots.n) {
+            GvkSizes e = {.key = U(h), .n = slots.n};
+            memcpy(e.slot, slots.slot, sizeof e.slot);
+            tab_put(TAB(msizes), &g_gvk_api.nmsizes, &e);
+        }
         const u32* dual = r == VK_SUCCESS ? gvk_spirv_dual_source(ci->pCode, ci->codeSize, &bytes) : NULL;
         VkShaderModule twin = VK_NULL_HANDLE;
         if (dual) {
@@ -1937,6 +2039,34 @@ static void gvk_ResetDescriptorPool(CPU* RESTRICT c, u64 entry) {
     if (twin) vkResetDescriptorPool(g_vk.dev, twin, 0);
     ret_vk(c, vkResetDescriptorPool(g_vk.dev, H(VkDescriptorPool, c->x[1]), (VkDescriptorPoolResetFlags)c->x[2]));
 }
+/* ---- which descriptors of a set hold an image drawn at the scale (GvkSetScale), under g_gvk_api.lock */
+/* the bit of a set's descriptor, 64 for one past the mask */
+static u32 set_bit(u32 binding, u32 element) { return binding < 8 && element < 8 ? binding * 8 + element : 64; }
+static u64 set_mask_nl(u64 set) {
+    const GvkSetScale* e = &g_gvk_api.setscale[tab_slot(TAB(setscale), set)];
+    return set && e->set == set ? e->mask : 0;
+}
+/* set's mask with the bits on set and the bits off cleared */
+static void set_mask_put_nl(u64 set, u64 on, u64 off) {
+    GvkSetScale* e = &g_gvk_api.setscale[tab_slot(TAB(setscale), set)];
+    if (!set || (e->set != set && !on)) return;
+    u64 mask = ((e->set == set ? e->mask : 0) & ~off) | on;
+    GvkSetScale gone;
+    if (!mask) {
+        tab_take_nl(TAB(setscale), &g_gvk_api.nsetscale, set, &gone);
+        return;
+    }
+    /* the sets of a pool reset or destroyed stay until their handles come back (gvk_AllocateDescriptorSets) */
+    if (e->set != set && g_gvk_api.nsetscale >= GVK_IMAGES / 8) {
+        LOG_LIMIT(4, "gvk: more than %u descriptor sets hold images drawn at the scale: their size queries answer the "
+                     "host's size until the sets are written again\n",
+                  GVK_IMAGES / 8);
+        memset(g_gvk_api.setscale, 0, sizeof g_gvk_api.setscale);
+        g_gvk_api.nsetscale = 0;
+    }
+    GvkSetScale s = {set, mask};
+    tab_put_nl(TAB(setscale), &g_gvk_api.nsetscale, &s);
+}
 /* a set of a pool with a twin gets its own twin there, or none when that fails: then copies read the set itself */
 static void gvk_AllocateDescriptorSets(CPU* RESTRICT c, u64 entry) {
     gvk_scratch_reset();
@@ -1945,6 +2075,12 @@ static void gvk_AllocateDescriptorSets(CPU* RESTRICT c, u64 entry) {
     if (ai && gvk_writable(c->x[2], 8ull * ai->descriptorSetCount))
         r = vkAllocateDescriptorSets(g_vk.dev, ai, gvk_ptr(c->x[2]));
     if (r != VK_SUCCESS) WARN_LIMIT(16, "gvk: vkAllocateDescriptorSets failed (%d)\n", (int)r);
+    if (r == VK_SUCCESS && scale_factor() > 1) { /* a handle back from a pool reset holds nothing yet */
+        const VkDescriptorSet* made = gvk_ptr(c->x[2]);
+        pm_lock(&g_gvk_api.lock);
+        for (u32 i = 0; g_gvk_api.nsetscale && i < ai->descriptorSetCount; i++) set_mask_put_nl(U(made[i]), 0, ~0ull);
+        pm_unlock(&g_gvk_api.lock);
+    }
     GvkPoolTwin e;
     if (r == VK_SUCCESS && ai->descriptorSetCount && tab_get(TAB(tpool), U(ai->descriptorPool), &e)) {
         const VkDescriptorSet* sets = gvk_ptr(c->x[2]);
@@ -1969,6 +2105,7 @@ static void gvk_FreeDescriptorSets(CPU* RESTRICT c, u64 entry) {
     VkDescriptorPool twin_pool = VK_NULL_HANDLE;
     u32 k = 0;
     pm_lock(&g_gvk_api.lock);
+    for (u32 i = 0; g_gvk_api.nsetscale && i < n; i++) set_mask_put_nl(U(sets[i]), 0, ~0ull);
     GvkPoolTwin* p = tpool_at_nl(c->x[1]);
     for (u32 i = 0; p && i < n; i++) {
         u32 t = sets[i] ? tset_find_nl(U(sets[i])) : 0;
@@ -2029,17 +2166,48 @@ static void update_with_twins(VkWriteDescriptorSet* w, u32 nw, const VkCopyDescr
         copy_run(cp + i, st + i, dt + i, end - i, tmp);
     }
 }
-/* n image descriptors' views as the host draws them: a target's shadow's where it has one. A target's view without
-   one is marked: a shadow made later leaves the set reading the game's image (shadow_publish) */
-static void views_to_host(VkDescriptorImageInfo* im, u32 n) {
+/* A write's image views as the host draws them: a target's shadow's where it has one. A target's view without one is
+   marked: a shadow made later leaves the set reading the game's image (shadow_publish). The set's mask takes the
+   views of images drawn at the scale */
+static void views_to_host(const VkWriteDescriptorSet* w, VkDescriptorImageInfo* im) {
+    u64 on = 0, off = 0;
     pm_lock(&g_gvk_api.lock);
-    for (u32 k = 0; k < n; k++) {
+    for (u32 k = 0; k < w->descriptorCount; k++) {
+        u32 bit = set_bit(w->dstBinding, w->dstArrayElement + k);
+        u64 b = bit < 64 ? 1ull << bit : 0;
         GvkView* v = &g_gvk_api.view[tab_slot(TAB(view), U(im[k].imageView))];
-        if (!im[k].imageView || v->view != U(im[k].imageView)) continue;
-        if (v->shadow)
-            im[k].imageView = v->shadow;
+        const GvkTarget* t = &g_gvk_api.target[tab_slot(TAB(target), v->img)];
+        int scaled = im[k].imageView && v->view == U(im[k].imageView) && v->img && t->img == v->img && t->scale > 1;
+        if (im[k].imageView && v->view == U(im[k].imageView)) {
+            if (v->shadow)
+                im[k].imageView = v->shadow;
+            else
+                v->in_set = 1;
+        }
+        if (scaled)
+            on |= b;
         else
-            v->in_set = 1;
+            off |= b;
+    }
+    set_mask_put_nl(U(w->dstSet), on, off);
+    pm_unlock(&g_gvk_api.lock);
+}
+/* the copies' masks, in order */
+static void copies_scale(const VkCopyDescriptorSet* cp, u32 nc) {
+    pm_lock(&g_gvk_api.lock);
+    for (u32 i = 0; g_gvk_api.nsetscale && i < nc; i++) {
+        u64 src = set_mask_nl(U(cp[i].srcSet)), on = 0, off = 0;
+        if (!src && !set_mask_nl(U(cp[i].dstSet))) continue;
+        for (u32 k = 0; k < cp[i].descriptorCount; k++) {
+            u32 s = set_bit(cp[i].srcBinding, cp[i].srcArrayElement + k);
+            u32 d = set_bit(cp[i].dstBinding, cp[i].dstArrayElement + k);
+            if (d == 64) continue;
+            if (s < 64 && (src >> s & 1))
+                on |= 1ull << d;
+            else
+                off |= 1ull << d;
+        }
+        set_mask_put_nl(U(cp[i].dstSet), on, off);
     }
     pm_unlock(&g_gvk_api.lock);
 }
@@ -2073,7 +2241,7 @@ static void gvk_UpdateDescriptorSets(CPU* RESTRICT c, u64 entry) {
                         im[k].imageLayout = host_layout(im[k].imageLayout);
                     }
                     w[i].pImageInfo = im;
-                    if (scale_factor() > 1) views_to_host(im, w[i].descriptorCount);
+                    if (scale_factor() > 1) views_to_host(&w[i], im);
                 }
                 break;
             case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
@@ -2095,6 +2263,7 @@ static void gvk_UpdateDescriptorSets(CPU* RESTRICT c, u64 entry) {
                 break;
         }
     }
+    if (scale_factor() > 1 && cp && nc) copies_scale(cp, nc);
     if (g_vk.gvk_host_sets)
         update_with_twins(w, w ? nw : 0, cp, cp ? nc : 0);
     else
@@ -2111,6 +2280,8 @@ static void gvk_CreateGraphicsPipelines(CPU* RESTRICT c, u64 entry) {
     VkGraphicsPipelineCreateInfo* ci = gvk_in(&gvk_t_gpipe, c->x[3], n);
     VkResult r = VK_ERROR_INITIALIZATION_FAILED;
     if (ci && gvk_writable(c->x[5], 8ull * n)) {
+        u64* frag = gvk_scratch(sizeof *frag * n); /* each pipeline's fragment module as the game named it */
+        memset(frag, 0, sizeof *frag * n);
         for (u32 i = 0; i < n; i++) { /* the tessellation state is read only with its stages */
             int tess = 0, src1 = 0;
             for (u32 s = 0; ci[i].pStages && s < ci[i].stageCount; s++)
@@ -2126,6 +2297,8 @@ static void gvk_CreateGraphicsPipelines(CPU* RESTRICT c, u64 entry) {
             }
             VkPipelineShaderStageCreateInfo* st = (VkPipelineShaderStageCreateInfo*)ci[i].pStages;
             GvkDual d;
+            for (u32 s = 0; st && s < ci[i].stageCount; s++)
+                if (st[s].stage == VK_SHADER_STAGE_FRAGMENT_BIT) frag[i] = U(st[s].module);
             for (u32 s = 0; src1 && st && s < ci[i].stageCount; s++)
                 if (st[s].stage == VK_SHADER_STAGE_FRAGMENT_BIT && tab_get(TAB(dual), U(st[s].module), &d))
                     st[s].module = H(VkShaderModule, d.dual);
@@ -2153,6 +2326,14 @@ static void gvk_CreateGraphicsPipelines(CPU* RESTRICT c, u64 entry) {
             if (dynamic) {
                 GvkGraphics e = {U(made[i]), dynamic};
                 tab_put(TAB(graphics), &g_gvk_api.ngraphics, &e);
+            }
+            GvkSizes sz; /* its fragment module's size queries, and the layout and stages their bits are pushed with */
+            GvkLayout lay;
+            if (frag[i] && tab_get(TAB(msizes), frag[i], &sz) && tab_get(TAB(layout), U(ci[i].layout), &lay)) {
+                sz.key = U(made[i]);
+                sz.layout = U(ci[i].layout);
+                sz.stages = lay.stages;
+                tab_put(TAB(psizes), &g_gvk_api.npsizes, &sz);
             }
         }
         kthread_host_wait_end();
@@ -2203,8 +2384,10 @@ static void gvk_CreateCommandPool(CPU* RESTRICT c, u64 entry) {
 static void cb_clear_nl(u64 cb) {
     GvkPass p;
     GvkDyn d;
+    GvkBound b;
     tab_take_nl(TAB(pass), &g_gvk_api.npass, cb, &p);
     tab_take_nl(TAB(dyn), &g_gvk_api.ndyn, cb, &d);
+    tab_take_nl(TAB(bound), &g_gvk_api.nbound, cb, &b);
 }
 static void pool_clear(u64 pool, int destroy) {
     pm_lock(&g_gvk_api.lock);
@@ -2387,6 +2570,13 @@ static void gvk_CmdBindPipeline(CPU* RESTRICT c, u64 entry) {
         u32 d = tab_slot(TAB(dyn), c->x[0]);
         if (!(e.dynamic & DYN_VIEWPORT)) g_gvk_api.dyn[d].has_vp = 0;
         if (!(e.dynamic & DYN_SCISSOR)) g_gvk_api.dyn[d].has_sc = 0;
+        GvkBound* b = &g_gvk_api.bound[tab_slot(TAB(bound), c->x[0])];
+        if (b->cb != c->x[0]) {
+            GvkBound fresh = {.cb = c->x[0]};
+            tab_put_nl(TAB(bound), &g_gvk_api.nbound, &fresh);
+            b = &g_gvk_api.bound[tab_slot(TAB(bound), c->x[0])];
+        }
+        b->pipe = c->x[2];
         pm_unlock(&g_gvk_api.lock);
     }
     ret(c, 0);
@@ -2407,12 +2597,30 @@ static void gvk_CmdBindDescriptorSets(CPU* RESTRICT c, u64 entry) {
     GUEST(dyn, u32, c->x[7], (u32)c->x[6]);
     vkCmdBindDescriptorSets(CB, (VkPipelineBindPoint)(u32)c->x[1], H(VkPipelineLayout, c->x[2]), (u32)c->x[3],
                             (u32)c->x[4], sets, (u32)c->x[6], dyn);
+    /* the masks of the sets a draw's size queries read (sizes_push) */
+    if ((u32)c->x[1] == VK_PIPELINE_BIND_POINT_GRAPHICS && scale_factor() > 1) {
+        pm_lock(&g_gvk_api.lock);
+        GvkBound* b = &g_gvk_api.bound[tab_slot(TAB(bound), c->x[0])];
+        if (b->cb != c->x[0]) {
+            GvkBound fresh = {.cb = c->x[0]};
+            tab_put_nl(TAB(bound), &g_gvk_api.nbound, &fresh);
+            b = &g_gvk_api.bound[tab_slot(TAB(bound), c->x[0])];
+        }
+        for (u32 j = 0; j < (u32)c->x[4] && (u32)c->x[3] + j < 4; j++)
+            b->mask[(u32)c->x[3] + j] = set_mask_nl(U(sets[j]));
+        pm_unlock(&g_gvk_api.lock);
+    }
     ret(c, 0);
 }
+/* A push into the fragment stage's range, which gvk widened to its bytes (GvkLayout), names that range's stages too,
+   as Vulkan asks of a push into a range: one game pushes a geometry stage's constants there */
 static void gvk_CmdPushConstants(CPU* RESTRICT c, u64 entry) {
     GUEST(values, u8, c->x[5], (u32)c->x[4]);
-    vkCmdPushConstants(CB, H(VkPipelineLayout, c->x[1]), (VkShaderStageFlags)c->x[2], (u32)c->x[3], (u32)c->x[4],
-                       values);
+    VkShaderStageFlags stages = (VkShaderStageFlags)c->x[2];
+    u32 offset = (u32)c->x[3], size = (u32)c->x[4];
+    GvkLayout l;
+    if (scale_factor() > 1 && tab_get(TAB(layout), c->x[1], &l) && offset + size > l.from) stages |= l.stages;
+    vkCmdPushConstants(CB, H(VkPipelineLayout, c->x[1]), stages, offset, size, values);
     ret(c, 0);
 }
 /* the factor the commands of cb draw at now: its render pass's framebuffer's */
@@ -2499,6 +2707,36 @@ static void dyn_again(VkCommandBuffer cb) {
     }
     if (changed) tab_put(TAB(dyn), &g_gvk_api.ndyn, &d);
 }
+/* The size bits of the bound graphics pipeline's queries (GvkSizes) from its sets' masks, pushed where they differ
+   from the last pushed with its layout */
+static void sizes_push(VkCommandBuffer cb) {
+    pm_lock(&g_gvk_api.lock);
+    GvkBound* b = &g_gvk_api.bound[tab_slot(TAB(bound), U(cb))];
+    const GvkSizes* s = &g_gvk_api.psizes[tab_slot(TAB(psizes), b->pipe)];
+    if (b->cb != U(cb) || !b->pipe || s->key != b->pipe) {
+        pm_unlock(&g_gvk_api.lock);
+        return;
+    }
+    u32 bits = 0;
+    for (u32 k = 0; k < s->n; k++) {
+        u32 bit = set_bit(s->slot[k] >> 8 & 63, s->slot[k] & 255);
+        if (bit < 64 && (b->mask[s->slot[k] >> 14] >> bit & 1)) bits |= 1u << k;
+    }
+    VkPipelineLayout layout = H(VkPipelineLayout, s->layout);
+    VkShaderStageFlags stages = s->stages;
+    int push = b->pushed_layout != s->layout || b->pushed != bits;
+    b->pushed_layout = s->layout;
+    b->pushed = bits;
+    pm_unlock(&g_gvk_api.lock);
+    const u32 values[2] = {bits, scale_factor() - 1};
+    if (push) vkCmdPushConstants(cb, layout, stages, GVK_SIZE_PUSH, sizeof values, values);
+}
+/* before a draw: the viewport and scissor at its render pass's scale, and its size queries' bits */
+static void draw_scale(VkCommandBuffer cb) {
+    if (scale_factor() == 1) return;
+    dyn_again(cb);
+    sizes_push(cb);
+}
 static void gvk_CmdSetLineWidth(CPU* RESTRICT c, u64 entry) {
     vkCmdSetLineWidth(CB, c->v[0].f[0]);
     ret(c, 0);
@@ -2530,25 +2768,25 @@ static void gvk_CmdSetStencilReference(CPU* RESTRICT c, u64 entry) {
 }
 static void gvk_CmdDraw(CPU* RESTRICT c, u64 entry) {
     VkCommandBuffer cb = CB;
-    dyn_again(cb);
+    draw_scale(cb);
     vkCmdDraw(cb, (u32)c->x[1], (u32)c->x[2], (u32)c->x[3], (u32)c->x[4]);
     ret(c, 0);
 }
 static void gvk_CmdDrawIndexed(CPU* RESTRICT c, u64 entry) {
     VkCommandBuffer cb = CB;
-    dyn_again(cb);
+    draw_scale(cb);
     vkCmdDrawIndexed(cb, (u32)c->x[1], (u32)c->x[2], (u32)c->x[3], (i32)(u32)c->x[4], (u32)c->x[5]);
     ret(c, 0);
 }
 static void gvk_CmdDrawIndirect(CPU* RESTRICT c, u64 entry) {
     VkCommandBuffer cb = CB;
-    dyn_again(cb);
+    draw_scale(cb);
     vkCmdDrawIndirect(cb, H(VkBuffer, c->x[1]), c->x[2], (u32)c->x[3], (u32)c->x[4]);
     ret(c, 0);
 }
 static void gvk_CmdDrawIndexedIndirect(CPU* RESTRICT c, u64 entry) {
     VkCommandBuffer cb = CB;
-    dyn_again(cb);
+    draw_scale(cb);
     vkCmdDrawIndexedIndirect(cb, H(VkBuffer, c->x[1]), c->x[2], (u32)c->x[3], (u32)c->x[4]);
     ret(c, 0);
 }
@@ -2600,6 +2838,12 @@ static void gvk_CmdExecuteCommands(CPU* RESTRICT c, u64 entry) {
     memcpy(copy, cbs, n * sizeof *copy);
     for (u32 i = 0; i < n; i++) checked_cb(U(copy[i]));
     vkCmdExecuteCommands(CB, n, copy);
+    if (scale_factor() > 1) { /* the secondaries' push constants are the primary's after them */
+        pm_lock(&g_gvk_api.lock);
+        GvkBound* b = &g_gvk_api.bound[tab_slot(TAB(bound), c->x[0])];
+        if (b->cb == c->x[0]) b->pushed_layout = 0;
+        pm_unlock(&g_gvk_api.lock);
+    }
     ret(c, 0);
 }
 /* The stages to add to have for each access in access that none of its stages supports, as the console's driver
