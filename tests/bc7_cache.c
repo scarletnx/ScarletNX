@@ -57,12 +57,6 @@ void vk_rec_call(void (*fn)(const void* arg), const void* arg, u64 size) {
     memcpy(g_deferred[g_ndeferred], arg, (size_t)size);
     g_deferred_fn[g_ndeferred++] = fn;
 }
-/* the next packet deferred */
-static void run_deferred(void) {
-    static unsigned ran;
-    g_deferred_fn[ran](g_deferred[ran]);
-    if (++ran == g_ndeferred) ran = g_ndeferred = 0;
-}
 VkResult vk_devmem_flush(DevMem m, u64 off, u64 size) {
     (void)m;
     (void)off;
@@ -424,6 +418,12 @@ static void later(void) {
    again has the reads copied. A watchdog lets the disk go after 3 s, so a recording thread that waits for a held read
    fails the check of its time rather than hang */
 #if defined(__linux__)
+/* the next packet deferred */
+static void run_deferred(void) {
+    static unsigned ran;
+    g_deferred_fn[ran](g_deferred[ran]);
+    if (++ran == g_ndeferred) ran = g_ndeferred = 0;
+}
 static void let_go_by(void* arg) {
     const u64 until = *(const u64*)arg;
     while (atomic_load_explicit(&g_hold, memory_order_acquire) && plat_ns() < until) usleep(1000);
