@@ -65,7 +65,8 @@ static int mesh_draw_depths(u64 target, float expected, const char* what) {
 }
 static int check_mesh_draws(void) {
     if (!g_vk.has_mesh || !g_vk.has_task) {
-        puts("SKIP mesh draws: mesh_draws is off, or the device has no mesh and task shaders with subgroups of 32");
+        puts("SKIP mesh draws: VK_EXT_mesh_shader is off (a ban or vk_ext_mesh_shader=off), or the device has no mesh "
+             "and task shaders with subgroups of 32");
         return 0;
     }
     /* both mesh stages see the sets of both (vk_set_stages), and the other stages see only their own */

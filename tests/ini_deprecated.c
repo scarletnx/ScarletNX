@@ -35,6 +35,9 @@ int main(void) {
            !ini_deprecated("astc_background"));
     assert(!strcmp(ini_deprecated("press_at"), "now script, whose press_at:press is the same press") &&
            !ini_deprecated("press_len") && !ini_deprecated("script"));
+    /* the mesh draws follow their extension's setting now: what an old .ini's mesh_draws=0 meant is not taken */
+    assert(ini_deprecated("mesh_draws") && strstr(ini_deprecated("mesh_draws"), "vk_ext_mesh_shader=off") &&
+           !ini_deprecated("vk_ext_mesh_shader"));
     assert(!ini_deprecated("resolution") && !ini_deprecated("controls") && !ini_deprecated(""));
     /* the section, word for word */
     f = tmpfile();
