@@ -429,6 +429,21 @@ static void desktop(void) {
     refused_as("#version 140 core\nvoid main() {}\n", 1, "#version 140 is not a GLSL ES version");
     refused_as("#version 330 compatibility\nvoid main() {}\n", 1, "desktop GLSL's that glslc takes is core");
     refused_as("#version 100\nvoid main() { float k = 1.0; gl_FragColor = vec4(k); }\n", 1, "no precision here");
+    /* desktop GLSL's precision qualifiers change nothing: no RelaxedPrecision (decoration 0) on a variable (OpDecorate,
+       71) or a block member (OpMemberDecorate, 72), which a mobile driver computes at 16 bits; GLSL ES keeps them */
+    {
+        static const char body[] = "precision mediump float;\nuniform mediump vec4 s;\n"
+                                   "uniform B { mediump vec4 m; };\nin mediump vec2 uv;\n"
+                                   "layout(location = 0) out lowp vec4 c;\n"
+                                   "void main() { mediump float k = s.x; c = vec4(uv, k, 1.0) + m; }\n";
+        char text[512];
+        snprintf(text, sizeof text, "#version 330 core\n%s", body);
+        assert(!compile_as(SNX_GLSLC_FRAGMENT, text, 1));
+        assert(!instruction_with(71, 1, 0) && !instruction_with(72, 2, 0));
+        snprintf(text, sizeof text, "#version 300 es\n%s", body);
+        assert(!compile_as(SNX_GLSLC_FRAGMENT, text, 1));
+        assert(instruction_with(71, 1, 0) && instruction_with(72, 2, 0));
+    }
 }
 
 /* samplers inside structs: a variable each, placed in declaration order among the other samplers, reported by the
