@@ -221,6 +221,8 @@ typedef struct nca_ctx {
     int has_rights_id;
     int is_decrypted;
     int is_cli_target;
+    int raw_only; /* ScarletNX: nca_process opens each section's raw storage (the decrypted bytes as the file lays
+                     them out, an update's tables included) and reads no file system. */
     enum nca_version format_version;
     validity_t fixed_sig_validity;
     validity_t npdm_sig_validity;
