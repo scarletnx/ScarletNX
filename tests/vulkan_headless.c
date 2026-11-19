@@ -1608,6 +1608,63 @@ static int check_big_volume(void) {
     puts("big volume: a 1024x1024x513 BC1 texture is made, its first block from memory");
     return 0;
 }
+/* A 3D pitch-linear level bigger than the staging one piece may take (texture.c's band, a quarter of the allocation
+   cap, faked here to 1 MiB) whose slice's rows fit the band exactly: staged a slice at a time, each slice comes from
+   memory. RGBA8, 8x64x8 with rows 4096 bytes apart, 256 KiB of rows a slice and 2 MiB the level. Staged whole, the 2
+   MiB passed what an allocation may be, and the level was left out */
+static int check_pitch_volume_band(void) {
+    const u64 gva = 0x9e0000000ull, cpu = HEAP_BASE + 0x3c600000;
+    const u32 w = 8, h = 64, d = 8, pitch = 4096;
+    if (vk_uma()) {
+        puts("pitch volume band: memory is shared with the CPU, where the rows are read in place: not checked");
+        return 0;
+    }
+    CHECK(mem_map(cpu, (u64)pitch * h * d, MS_NORMAL, PERM_RW) == 0);
+    gmmu_map(gva, cpu, (u64)pitch * h * d);
+    for (u32 z = 0; z < d; z++)
+        for (u32 y = 0; y < h; y++)
+            for (u32 x = 0; x < w * 4; x++) GP(cpu)[((u64)z * h + y) * pitch + x] = (u8)(z * 31 + y * 7 + x);
+    /* A8B8G8R8 UNORM, pitch linear, 3D */
+    const u32 tic[8] = {0x08 | 2u << 7 | 2u << 10 | 2u << 13 | 2u << 16 | 2u << 19 | 3u << 22 | 4u << 25 | 5u << 28,
+                        (u32)gva,
+                        (u32)(gva >> 32) | 2u << 21,
+                        pitch >> 5,
+                        (w - 1) | 2u << 23,
+                        (h - 1) | (d - 1) << 16,
+                        0,
+                        0};
+    u8 got[8 * 4] = {0}, want[8 * 4];
+    for (u32 x = 0; x < sizeof want; x++) want[x] = (u8)((d - 1) * 31 + (h - 1) * 7 + x);
+    const u64 cap = g_vk.alloc_cap;
+    vk_lock();
+    g_vk.alloc_cap = 1u << 20;
+    Surf* t = vk_tex_from_tic(tic);
+    g_vk.alloc_cap = cap;
+    const int valid = t && t->upload_valid;
+    VkBuffer buffer;
+    u8* result = valid ? vk_readback_buffer(sizeof got, &buffer) : NULL;
+    if (result) { /* the last row of the last slice */
+        VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                                  .imageOffset = {0, (i32)h - 1, (i32)d - 1},
+                                  .imageExtent = {w, 1, 1}};
+        vk_surf_use(vk_cmd(), t, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), VK_PIPELINE_STAGE_2_COPY_BIT,
+                    VK_ACCESS_2_TRANSFER_READ_BIT);
+        rec_CmdCopyImageToBuffer(vk_cmd(), t->img, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), buffer, 1, &copy);
+        vk_finish();
+        vk_readback_ready();
+        memcpy(got, result, sizeof got);
+    }
+    vk_unlock();
+    if (!valid || memcmp(got, want, sizeof got))
+        fprintf(stderr,
+                "pitch volume band: texture %d, loaded %d, the last row's first texel %02x%02x%02x%02x, not "
+                "%02x%02x%02x%02x\n",
+                t != NULL, valid, got[0], got[1], got[2], got[3], want[0], want[1], want[2], want[3]);
+    CHECK(t && t->type == VK_IMAGE_VIEW_TYPE_3D && !t->bl && t->depth3d == d);
+    CHECK(valid && !memcmp(got, want, sizeof got));
+    puts("pitch volume band: an 8x64x8 pitch-linear level of 2 MiB is staged a slice at a time and loads whole");
+    return 0;
+}
 static int check_depth_array(void) {
     GpuChannel* ch = calloc(1, sizeof *ch);
     CHECK(ch);
@@ -8555,6 +8612,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_publish_padding());
     CHECK(!check_dma_texture());
     CHECK(!check_sparse_volume());
+    CHECK(!check_pitch_volume_band());
     CHECK(!check_sparse_view());
     CHECK(!check_sparse_tiles());
     CHECK(!check_sparse_alias());

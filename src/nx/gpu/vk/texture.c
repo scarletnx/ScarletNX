@@ -706,8 +706,10 @@ static int level_upload_pitch(Upload* u, const UpLevel* lv, u64 gva, u64 lsz, u6
     int as_is = gp % (lv->conv ? lv->tc.in_align : 4) == 0 && gp % t->f.bpp == 0;
     u32 pitch = as_is ? gp : lv->pitch;
     u64 out_row = lv->conv ? vk_tc_out_size(&lv->tc, 1, 1) : 0, per_row = pitch > out_row ? pitch : out_row;
-    u32 n = per_row * th * ld <= band ? th : (u32)(band / per_row ? band / per_row : 1);
-    u32 nz = n == th ? ld : 1;
+    const int whole = per_row * th * ld <= band;
+    u32 n = whole ? th : (u32)(band / per_row ? band / per_row : 1);
+    /* all the slices at once only when the level fits: a band of a slice's rows or more is a slice at a time */
+    u32 nz = whole ? ld : 1;
     if (n > th) n = th;
     for (u32 z = 0; z < ld; z += nz)
         for (u32 y = 0; y < th; y += n) {
