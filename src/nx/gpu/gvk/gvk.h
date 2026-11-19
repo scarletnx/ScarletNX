@@ -21,7 +21,9 @@ u64 gvk_proc_space(u64 code_hi);
 /* once, after hook_install, with the guest_vulkan setting: the slot of each Vulkan function the game exports takes
    gvk's, and gvk_api's table names which it implements */
 void gvk_install(void);
-/* once, after gpu_init: if the host device cannot back guest-mapped memory, warn and restore the game's own driver */
+/* once, after gpu_init and before the game's first thread: if the host device cannot back guest-mapped memory, warn
+   and restore the game's own driver. Else stop the game when the recompile routes no direct calls to a function gvk
+   implements */
 void gvk_check_device(void);
 /* Dispatch entry to keep across JIT invalidation, or NULL if there is no executable GVK entry here. */
 GuestFn gvk_invalidation_slot(u64 addr);
@@ -121,7 +123,7 @@ const u32* gvk_spirv_scaled_size(const u32* w, size_t bytes, size_t* out_bytes, 
 extern const GvkType gvk_t_submit, gvk_t_buffer, gvk_t_image, gvk_t_image_view, gvk_t_buffer_view, gvk_t_sampler,
     gvk_t_shader, gvk_t_cache, gvk_t_playout, gvk_t_dslayout, gvk_t_dspool, gvk_t_dsalloc, gvk_t_write, gvk_t_copy,
     gvk_t_rpass, gvk_t_fb, gvk_t_gpipe, gvk_t_cpipe, gvk_t_begin, gvk_t_rpbegin, gvk_t_mbar, gvk_t_bbar, gvk_t_ibar,
-    gvk_t_pool, gvk_t_cballoc, gvk_t_fence, gvk_t_sem, gvk_t_query, gvk_t_event, gvk_t_range, gvk_t_imreq2,
-    gvk_t_bufreq2, gvk_t_req2;
+    gvk_t_pool, gvk_t_cballoc, gvk_t_fence, gvk_t_sem, gvk_t_query, gvk_t_event, gvk_t_imreq2, gvk_t_bufreq2,
+    gvk_t_req2, gvk_t_template, gvk_t_bind_buffer, gvk_t_bind_image;
 
 #endif

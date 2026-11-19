@@ -38,7 +38,8 @@ static struct {
     u64 driver_base, driver_size;
     u64 proc_base;
     GuestFn proc[3];
-    u32 unknown_said[64]; /* the pNext structure types said once */
+    const char* unrouted_impl; /* an implemented function the recompile has no route for (gvk_check_device) */
+    u32 unknown_said[64];      /* the pNext structure types said once */
     u32 nunknown;
 } g_gvk = {.lock = PMUTEX_INIT};
 
@@ -390,7 +391,11 @@ CHAINED(gvk_t_fence, VkFenceCreateInfo, VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, {0}
 CHAINED(gvk_t_sem, VkSemaphoreCreateInfo, VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, {0});
 CHAINED(gvk_t_query, VkQueryPoolCreateInfo, VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO, {0});
 CHAINED(gvk_t_event, VkEventCreateInfo, VK_STRUCTURE_TYPE_EVENT_CREATE_INFO, {0});
-CHAINED(gvk_t_range, VkMappedMemoryRange, VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, {0});
+CHAINED(gvk_t_template, VkDescriptorUpdateTemplateCreateInfo, VK_STRUCTURE_TYPE_DESCRIPTOR_UPDATE_TEMPLATE_CREATE_INFO,
+        PLAIN(VkDescriptorUpdateTemplateCreateInfo, pDescriptorUpdateEntries, descriptorUpdateEntryCount,
+              VkDescriptorUpdateTemplateEntry));
+CHAINED(gvk_t_bind_buffer, VkBindBufferMemoryInfo, VK_STRUCTURE_TYPE_BIND_BUFFER_MEMORY_INFO, {0});
+CHAINED(gvk_t_bind_image, VkBindImageMemoryInfo, VK_STRUCTURE_TYPE_BIND_IMAGE_MEMORY_INFO, {0});
 CHAINED(gvk_t_imreq2, VkImageMemoryRequirementsInfo2, VK_STRUCTURE_TYPE_IMAGE_MEMORY_REQUIREMENTS_INFO_2, {0});
 CHAINED(gvk_t_bufreq2, VkBufferMemoryRequirementsInfo2, VK_STRUCTURE_TYPE_BUFFER_MEMORY_REQUIREMENTS_INFO_2, {0});
 CHAINED(gvk_t_req2, VkMemoryRequirements2, VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2, {0});
@@ -549,11 +554,8 @@ void gvk_install(void) {
            loader. Another export of the driver (one SDK's vkDevExtError) has no function here, which a call through
            its slot finds stopping the game, and only its direct calls would run the driver */
         if (!hook_routed(name)) {
-            if (fn)
-                fatal("gvk: guest_vulkan=1 needs a Vulkan route missing from the recompiled game (%s). "
-                      "Recompile with --hook-direct-calls or set guest_vulkan=0",
-                      name);
-            if (!unrouted++) unrouted_first = name;
+            if (fn && !g_gvk.unrouted_impl) g_gvk.unrouted_impl = name;
+            if (!fn && !unrouted++) unrouted_first = name;
         }
         taken += fn != NULL;
         g_gvk.exports[g_gvk.nexports++] = (GvkExport){name, addr, fn, NULL};
@@ -616,8 +618,16 @@ void gvk_install(void) {
 }
 
 void gvk_check_device(void) {
-    if (!g_gvk.nexports || gvk_api_supported()) return;
-    release("gvk: guest_vulkan is on, but the host device neither imports guest memory as host memory "
-            "(VK_EXT_external_memory_host) nor exports its own as a dma-buf (VK_EXT_external_memory_dma_buf): "
-            "the game's own driver runs\n");
+    if (!g_gvk.nexports) return;
+    if (!gvk_api_supported()) {
+        release("gvk: guest_vulkan is on, but the host device neither imports guest memory as host memory "
+                "(VK_EXT_external_memory_host) nor exports its own as a dma-buf (VK_EXT_external_memory_dma_buf): "
+                "the game's own driver runs\n");
+        return;
+    }
+    /* after the check above, so that a host where gvk can't run falls back to the driver whatever the recompile */
+    if (g_gvk.unrouted_impl)
+        fatal("gvk: guest_vulkan=1 needs a Vulkan route missing from the recompiled game (%s). "
+              "Recompile with --hook-direct-calls or set guest_vulkan=0",
+              g_gvk.unrouted_impl);
 }

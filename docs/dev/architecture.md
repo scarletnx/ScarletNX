@@ -414,6 +414,12 @@ Calls and memory:
 - For recompiled code, GVK can provide `VK_EXT_debug_report` entry points that the guest driver does not export. Guest
   debug messages reach guest callbacks. Host validation messages stay in the runtime log.
 - Pipeline compilation releases the guest core.
+- The game sees Vulkan 1.1, and gvk has a function for each command of 1.0 and 1.1. It tells the game that sparse
+  resources and YCbCr conversion are off: its queue family binds no sparse memory, and it passes no YCbCr conversion
+  in a chain. A call that needs one of them stops the game and names the feature. A descriptor update template keeps
+  its entries, and an update with it becomes the writes of `vkUpdateDescriptorSets`.
+- A recompile without a route for a function gvk implements stops the game in `gvk_check_device`, after the device
+  check, so a host where gvk cannot run falls back to the game's driver whatever the recompile.
 - [GVK is not a security boundary](../user/settings.md). It forwards some guest-provided Vulkan handles and data to
   the host driver.
 
@@ -437,6 +443,9 @@ so that dynamic resolution fills the display. If the next present has reached th
 within the application's timeout. Otherwise the renderer's copy already released the guest image from the display.
 
 Resolution scaling: the resolution setting is a whole factor for GVK, none below 1.5×, otherwise the nearest integer.
+It is at most the factor at which the largest swapchain the game can make (1920x1080, `maxImageExtent`) fits the
+host's framebuffers (`maxFramebufferWidth` and `maxFramebufferHeight`, within `maxImageDimension2D`): 8 on an RX 9070,
+whose images reach 32768 but its framebuffers 16384. A target gets a shadow only where it fits them too.
 GVK scales an image by its use, not by its size or usage flags (one game gives every texture `COLOR_ATTACHMENT`).
 
 - The first framebuffer that takes an image gives it a shadow: a GVK image at the scale, which the image's views,
