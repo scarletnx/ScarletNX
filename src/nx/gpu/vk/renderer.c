@@ -827,6 +827,8 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
                 gpu.busy_ns = vk_gpuprof_busy_ns();
                 gpu.timed = vk_gpuprof_timed();
                 vk_mem_driver_use(&gpu.vram, &gpu.vram_budget, &gpu.vram_ours);
+                gpu.compiled = is[0]; /* vk_pipeline_stats' pipelines made */
+                gpu.encoded = vk_astc_dispatches();
             }
             stats_frame(now_ns, &gpu);
         }

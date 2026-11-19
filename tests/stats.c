@@ -568,6 +568,46 @@ int main(void) {
         draw(at);
         stats_box(safe, 2, box);
         assert(box[3] == plain && box[2] == STATS_COLS * 16 && !note(0)[0]);
+        /* the work new to this run over the last second, on the line right under the graph while there is some: the
+           pipelines made (Compiling) and the BC7 encoder's runs (Encoding), from the counts the renderer reads at each
+           frame, measured once a second; the box no wider, a line taller, and as before once both are back at 0 */
+        g_test.gpu = (SnxStatsGpu){0};
+        stats_frame(at += 1000 * MS, &g_test.gpu); /* a measure to count from */
+        stats_frame(at += 1000 * MS, &g_test.gpu);
+        draw(at);
+        assert(!note(0)[0]);
+        g_test.gpu.compiled = 3;
+        stats_frame(at += 1000 * MS, &g_test.gpu);
+        draw(at);
+        stats_box(safe, 2, box);
+        assert(!strcmp(note(0), "Compiling 3") && note_icon(0, TEXT_RGBA) == GUI_ICON_HAMMER);
+        assert(box[3] == plain + 32 + 8 && box[2] == STATS_COLS * 16 && past_margin() == 0);
+        g_test.gpu.compiled = 5;
+        g_test.gpu.encoded = 12;
+        stats_frame(at += 1000 * MS, &g_test.gpu);
+        draw(at);
+        assert(!strcmp(note(0), "Compiling 2  Encoding 12"));
+        g_test.gpu.encoded = 20;
+        stats_frame(at += 1000 * MS, &g_test.gpu);
+        draw(at);
+        assert(!strcmp(note(0), "Encoding 8"));
+        /* above RenderDoc's lines */
+        stats_capture(&c);
+        draw(at);
+        assert(!strcmp(note(0), "Encoding 8") && !strncmp(note(1), "RenderDoc: ", 11));
+        stats_capture(&(SnxStatsCapture){0});
+        /* a second with none: the line gone */
+        stats_frame(at += 1000 * MS, &g_test.gpu);
+        draw(at);
+        stats_box(safe, 2, box);
+        assert(!note(0)[0] && box[3] == plain);
+        /* as stats_measured says it, the renderer's counts aside */
+        stats_measured(&(SnxStatsMeasure){.cpu = -1, .gpu = -1, .compiling = 1});
+        draw(at);
+        assert(!strcmp(note(0), "Compiling 1"));
+        stats_measured(&(SnxStatsMeasure){.cpu = -1, .gpu = -1});
+        draw(at);
+        assert(!note(0)[0]);
     }
 #ifdef TRACED_CHILD
     /* a game a debugger traces: the line names it from the frames, as snx_debugger reads it (the test, here) */
