@@ -678,6 +678,10 @@ host seconds, which are the console's seconds at the default pace, and `--shot P
 writes the last frame of both screens as one PPM to exactly PATH, the top above the
 bottom as the window shows them.
 
+How a target's render scale is chosen and kept:
+- A texture without mipmaps, other than a cube or shadow map, that covers a scaled colour target's whole image,
+  in the target's format, is filled from the scaled image.
+
 The separate windows and the two render resolutions are checked by `3ds_windows`: each
 screen takes its own setting's scale and no other's, both screens present, and the PPM
 dumps stay the framebuffer's own size whatever the scale. With screen layout 4 on, that

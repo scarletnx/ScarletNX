@@ -1157,6 +1157,125 @@ static void scaled_rotating(SnxCtrMemory* m) {
     g_settings.ctr_top_resolution = top;
 }
 
+/* the top screen's framebuffer, which the render scale takes at its height of 400 rows */
+#define SCALED_TARGET_W     240u
+#define SCALED_TARGET_H     400u
+#define SCALED_TARGET_BYTES (SCALED_TARGET_W * SCALED_TARGET_H * 4)
+/* a colour target of the top screen's size at at, its rows from the top, or from y = 0 up when flip is set */
+static void screen_target(List* l, uint32_t at, bool flip) {
+    put(l, FB_COLOR_ADDR, at / 8);
+    put(l, 0x041, f24(SCALED_TARGET_W / 2.0f));
+    put(l, 0x043, f24(SCALED_TARGET_H / 2.0f));
+    put(l, 0x11e, SCALED_TARGET_W | (SCALED_TARGET_H - 1) << 12 | (flip ? 0 : 1u << 24));
+}
+/* texture unit 0 over a top screen sized image at address: nearest and repeated, in the PICA format */
+static void screen_texture(List* l, uint32_t address, unsigned format) {
+    put(l, TEX_MAIN, 1);
+    put(l, TEX0_SIZE, SCALED_TARGET_W << 16 | SCALED_TARGET_H);
+    put(l, TEX0_PARAMS, 2u << 8 | 2u << 12);
+    put(l, TEX0_ADDRESS, address / 8);
+    put(l, TEX0_FORMAT, format);
+    put(l, TEV_STAGE0, 0x00030003u); /* colour and alpha from texture 0 */
+}
+/* a colour as a texel of a texture in the format: what the console stores of it, read back */
+static void quantised(unsigned format, const uint8_t color[4], uint8_t texel[4]) {
+    unsigned char bytes[4];
+    snx_ctr_pixel_encode(format, color, bytes);
+    snx_ctr_pixel_decode(format, bytes, texel);
+}
+/* a colour as the word that vertex() takes: red in the top byte */
+static uint32_t color_word(const uint8_t color[4]) {
+    return (uint32_t)color[0] << 24 | (uint32_t)color[1] << 16 | (uint32_t)color[2] << 8 | color[3];
+}
+/* Target A is drawn at scale and sampled by B at once, with no CPU step between: B's recording stores A to memory.
+   Above scale 1, the texture is made from A's scaled image: B's pixel (i, j) reads texel (i, j) of that image,
+   quantised in the format. Texture row j reads image row j, or the last one less j when A is flipped
+   (scaled_texture.comp). */
+static void scaled_texture_case(SnxCtrMemory* m, const char* name, unsigned pica, unsigned pixel, unsigned scale,
+                                bool flip) {
+    static const uint8_t inside[4] = {100, 50, 200, 255}, outside[4] = {20, 220, 90, 255};
+    static unsigned char clear[SCALED_TARGET_BYTES], zeros[SCALED_TARGET_BYTES], after[SCALED_TARGET_BYTES];
+    size_t bpp = snx_ctr_pixel_bytes(pixel);
+    /* the rectangle's left and top edges at console coordinate 1/scale, which is the scaled coordinate 1.0 */
+    float left = 2.0f / (float)(scale * SCALED_TARGET_W) - 1.0f;
+    float top = 2.0f / (float)(scale * SCALED_TARGET_H) - 1.0f;
+    uint32_t word = color_word(inside);
+    Scene* a = scene(name, pica, 0xff);
+    screen_target(&a->list, COLOR, flip);
+    a->vertices[0] = vertex(left, top, -0.5f, word, 0, 0);
+    a->vertices[1] = vertex(1.0f, top, -0.5f, word, 0, 0);
+    a->vertices[2] = vertex(left, 1.0f, -0.5f, word, 0, 0);
+    a->vertices[3] = vertex(1.0f, top, -0.5f, word, 0, 0);
+    a->vertices[4] = vertex(1.0f, 1.0f, -0.5f, word, 0, 0);
+    a->vertices[5] = vertex(left, 1.0f, -0.5f, word, 0, 0);
+    a->vertex_count = 6;
+    array_draw(a);
+    list_end(&a->list);
+    for (unsigned p = 0; p < SCALED_TARGET_W * SCALED_TARGET_H; ++p)
+        snx_ctr_pixel_encode(pixel, outside, clear + p * bpp);
+    setup_clear(m, a);
+    bool ok = snx_ctr_phys_write(m, COLOR, clear, SCALED_TARGET_W * SCALED_TARGET_H * bpp) == SNX_CTR_MEM_OK;
+    ok = ok && record(m, a, &vulkan); /* A's rectangle, its rendering open */
+    Scene* b = scene(name, 0, 0xff);
+    screen_target(&b->list, SECOND_COLOR, false);
+    screen_texture(&b->list, COLOR, pica);
+    float tc = 1.0f / (float)scale;
+    b->vertices[0] = vertex(-1.0f, -1.0f, -0.5f, 0xffffffffu, 0, 0);
+    b->vertices[1] = vertex(1.0f, -1.0f, -0.5f, 0xffffffffu, tc, 0);
+    b->vertices[2] = vertex(-1.0f, 1.0f, -0.5f, 0xffffffffu, 0, tc);
+    b->vertices[3] = vertex(1.0f, 1.0f, -0.5f, 0xffffffffu, tc, tc);
+    b->vertex_count = 4;
+    put(&b->list, SNX_PICA_TOPOLOGY, 1u << 8);
+    strip_draw(&b->list, 0);
+    list_end(&b->list);
+    ok = ok && snx_ctr_phys_write(m, SECOND_COLOR, zeros, SCALED_TARGET_BYTES) == SNX_CTR_MEM_OK;
+    ok = ok && snx_ctr_phys_write(m, VERTICES, b->vertices, sizeof b->vertices) == SNX_CTR_MEM_OK;
+    ok = ok && snx_ctr_phys_write(m, LIST, b->list.w, b->list.n * 4) == SNX_CTR_MEM_OK;
+    ok = ok && record(m, b, &vulkan); /* B's quad samples A */
+    ok = snx_ctr_vk_finish() && ok;
+    ok = ok && snx_ctr_phys_read(m, SECOND_COLOR, after, SCALED_TARGET_BYTES) == SNX_CTR_MEM_OK;
+    unsigned wrong = 0;
+    for (unsigned j = 0; j < SCALED_TARGET_H; ++j)
+        for (unsigned i = 0; i < SCALED_TARGET_W; ++i) {
+            unsigned row = flip ? scale * SCALED_TARGET_H - 1 - j : j;
+            uint8_t texel[4];
+            unsigned char want[4];
+            quantised(pixel, (i >= 1 && row >= 1) ? inside : outside, texel);
+            snx_ctr_pixel_encode(SNX_CTR_PIX_RGBA8, texel, want);
+            /* B is not flipped, so its row j is memory row H - 1 - j */
+            unsigned y = SCALED_TARGET_H - 1 - j;
+            size_t at = snx_ctr_morton_offset(i, y, 4) + (size_t)(y & ~7u) * SCALED_TARGET_W * 4;
+            wrong += memcmp(after + at, want, sizeof want) != 0;
+        }
+    bool pass = ok && wrong == 0;
+    printf("%-24s %6u of %u pixels differ from the oracle: %s\n", name, wrong, SCALED_TARGET_W * SCALED_TARGET_H,
+           pass ? "ok" : "FAIL");
+    if (!pass) ++failures;
+    free(a);
+    free(b);
+}
+/* target A in each format at scale 1 (the control), 2 and 3, unflipped and flipped */
+static void scaled_texture_from_target(SnxCtrMemory* m) {
+    static const struct {
+        const char* name;
+        unsigned pica, pixel;
+    } formats[] = {{"RGBA8", SNX_CTR_TEX_RGBA8, SNX_CTR_PIX_RGBA8},
+                   {"RGB8", SNX_CTR_TEX_RGB8, SNX_CTR_PIX_RGB8},
+                   {"RGB5A1", SNX_CTR_TEX_RGB5A1, SNX_CTR_PIX_RGB5A1},
+                   {"RGB565", SNX_CTR_TEX_RGB565, SNX_CTR_PIX_RGB565},
+                   {"RGBA4", SNX_CTR_TEX_RGBA4, SNX_CTR_PIX_RGBA4}};
+    int top = g_settings.ctr_top_resolution;
+    for (size_t f = 0; f < sizeof formats / sizeof *formats; ++f)
+        for (unsigned scale = 1; scale <= 3; ++scale)
+            for (unsigned flip = 0; flip < 2; ++flip) {
+                char name[64];
+                snprintf(name, sizeof name, "%s at %ux, %s", formats[f].name, scale, flip ? "flipped" : "unflipped");
+                g_settings.ctr_top_resolution = (int)scale;
+                scaled_texture_case(m, name, formats[f].pica, formats[f].pixel, scale, flip != 0);
+            }
+    g_settings.ctr_top_resolution = top;
+    snx_ctr_vk_finish();
+}
 /* Shadow maps (Azahar's sw_framebuffer.cpp DrawShadowMapPixel and sw_rasterizer.cpp TextureColor): the colour buffer
    of a shadow pass holds one word per pixel, its bytes the depth from the most significant byte, then the strength */
 #define TEX_CUBE   0x086
@@ -1707,6 +1826,7 @@ static const Mode modes[] = {
     {"--draw-after-submit", "a draw after a submission", draw_after_submit},
     {"--async", "the draws with async_pipelines", async_pipelines},
     {"--pipeline-cache", "the pipeline cache kept between runs", pipeline_cache},
+    {"--scaled-texture-from-target", "the textures made from scaled targets", scaled_texture_from_target},
     {"--shadow", "the shadow maps", shadows}};
 
 int main(int argc, char** argv) {
