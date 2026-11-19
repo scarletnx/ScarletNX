@@ -4750,17 +4750,18 @@ static void test_warp_matrix(const char* dir) {
     /* The matrix unit's shapes, one OpCooperativeMatrixMulAddKHR a product, on the same 4 HMMAs (two .16816, two
        .1688, all of them A at R8 and B at R12): a 16 wide K takes each in one product, so 4; 16x8x8 splits the
        .16816s' K in two, so 6; 8x8x8 splits their M too, so 12. A fragment is staged once a block, so the matrix
-       loads are those of the first HMMA of each kind alone. Each HMMA stores its D once: an f16 D at its own HMMA,
-       where its halves round, and an f32 one at the block's end, where its matrix stops. An A register written
-       between HMMAs stages its fragment again (restage below) */
+       loads are those of the first HMMA of each kind alone, and of the two f32 Ds' C, whose registers no matrix
+       stands for (one an M block). Each HMMA stores its D once: an f16 D at its own HMMA, where its halves round, and
+       an f32 one at the block's end, where its matrix stops. An A register written between HMMAs stages its
+       fragment again (restage below) */
     static const struct {
         u32 bit;
         const char* name;
         u32 products, loads, stores, restage, barriers;
-    } shapes[] = {{SH_COOP_16x16x16, "16x16x16", 4, 4, 4, 3, 7},
-                  {SH_COOP_16x8x16, "16x8x16", 4, 4, 4, 3, 7},
-                  {SH_COOP_16x8x8, "16x8x8", 6, 6, 4, 6, 7},
-                  {SH_COOP_8x8x8, "8x8x8", 12, 9, 8, 10, 7}};
+    } shapes[] = {{SH_COOP_16x16x16, "16x16x16", 4, 6, 4, 4, 11},
+                  {SH_COOP_16x8x16, "16x8x16", 4, 6, 4, 4, 11},
+                  {SH_COOP_16x8x8, "16x8x8", 6, 8, 4, 7, 11},
+                  {SH_COOP_8x8x8, "8x8x8", 12, 13, 8, 12, 11}};
     u32 stages_wide = 0;
     for (u32 s = 0; s < 4; s++) {
         for (int written = 0; written < 2; written++) {
@@ -5357,6 +5358,13 @@ static void test_coop_rz(const char* dir) {
     static const u32 outs[12] = {20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31};
     CHECK(coop_case(dir, "coop_rz", insns, 3, outs, 12));
 }
+/* An f32 D whose C is in registers that no held matrix stands for: R20 = A B + R16. Its D stayed in its matrix, and
+   the C its words were to take after the product never came */
+static void test_coop_c_regs(const char* dir) {
+    static const u32 insns[1][5] = {{20, 8, 12, 16, 0x18}};
+    static const u32 outs[4] = {20, 21, 22, 23};
+    CHECK(coop_case(dir, "coop_c_regs", insns, 1, outs, 4));
+}
 /* the way the log says a device's compute HMMAs take (shader_hmma_way), from the flags device.c sets */
 static void test_hmma_way(void) {
     int quad_was = g_spirv_translate.quad_compute, mixed_was = g_spirv_translate.mixed_dot,
@@ -5482,10 +5490,11 @@ static u32 spv_decorations(const u32* words, size_t count, u32 decoration) {
 /* HMMA on the device's cooperative matrices (g_spirv_translate.hmma_coop), in a program that also reads and writes
    global memory (LDG, STG), stores to shared memory (STS, a byte's by two atomics), adds there (ATOMS), waits
    (MEMBAR.GPU, BAR.SYNC) and reads it (LDSM), whose barriers and atomics the Vulkan memory model takes too: each HMMA
-   one OpCooperativeMatrixMulAddKHR of two matrices loaded and one stored, with no dot products and no B gathers (LDSM's
-   4 shuffles and MOVM's 2 stay), in a module of the Vulkan memory model, whose global buffer is not Coherent but read
-   and written by atomics. With the flag off, or a block of 16 lanes, too little shared memory left for the slots, no
-   shaderFloat16, the program is hmma's as before; and a program without HMMA stays GLSL450's with the flag on */
+   one OpCooperativeMatrixMulAddKHR of two matrices loaded (an f32 D's C from the registers a third) and one stored,
+   with no dot products and no B gathers (LDSM's 4 shuffles and MOVM's 2 stay), in a module of the Vulkan memory
+   model, whose global buffer is not Coherent but read and written by atomics. With the flag off, or a block of 16
+   lanes, too little shared memory left for the slots, no shaderFloat16, the program is hmma's as before; and a
+   program without HMMA stays GLSL450's with the flag on */
 static void test_warp_matrix_coop(const char* dir) {
     u8 code[16 * 20] = {0};
     u32 n = 0;
@@ -5580,7 +5589,7 @@ static void test_warp_matrix_coop(const char* dir) {
                 u32 model = spv_memory_model(spv, count), coherent = spv_decorations(spv, count, 23);
                 u32 atomic_rw = spv_count(spv, count, 227) + spv_count(spv, count, 228);
                 if (coop) {
-                    CHECK(products == 4 && loads == 4 && stores == 4 && dots == 0 && shuffles == 6);
+                    CHECK(products == 4 && loads == 6 && stores == 4 && dots == 0 && shuffles == 6);
                     CHECK(model == 3 && coherent == 0 && atomic_rw == 2);
                     CHECK(spv_has_capability(spv, count, 6022) && spv_has_capability(spv, count, 5345) &&
                           spv_has_capability(spv, count, 5346));
@@ -6463,6 +6472,7 @@ int main(int argc, char** argv) {
     test_warp_matrix_values(dir);
     test_coop_fused_chain(dir);
     test_coop_rz(dir);
+    test_coop_c_regs(dir);
     test_warp_matrix_flush(dir);
     test_hmma_way();
     test_hmma_choose();
