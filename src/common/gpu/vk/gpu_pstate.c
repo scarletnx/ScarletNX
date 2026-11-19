@@ -3,6 +3,7 @@
 /* gpu_pstate (gpu_pstate.h): the setting's values, and the hold on each system a way exists on */
 #include "common/gpu/vk/gpu_pstate.h"
 #include <errno.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <string.h>
 #if defined(__linux__) || defined(__FreeBSD__)
@@ -37,12 +38,13 @@ static struct {
     /* amdgpu: the render node the hold's context is on, left open until the process ends, when the kernel closes it
        and puts the level back; -1 for none */
     int fd;
-    /* kgsl: the device the hold's context is on (-1 for none, __atomic: the keeper's thread reads it), the context, the
-       CP_NOP's GPU address and object, the last frame presented (ns of the monotonic clock, __atomic: the renderer
-       writes it), and where the keeper says a renewal refused */
-    int kgsl;
+    /* kgsl: the device the hold's context is on (-1 for none; the keeper's thread reads it), the context, the
+       CP_NOP's GPU address and object, the last frame presented (ns of the monotonic clock; the renderer writes it),
+       and where the keeper says a renewal refused */
+    _Atomic int kgsl;
     unsigned kgsl_ctx, kgsl_obj;
-    uint64_t kgsl_nop, last_present;
+    uint64_t kgsl_nop;
+    _Atomic uint64_t last_present;
     SnxGpuPstateSay say;
 } g_gpu_pstate = {.fd = -1, .kgsl = -1};
 
@@ -309,7 +311,8 @@ static uint64_t monotonic_ns(void) {
 static void* kgsl_keeper(void* unused) {
     (void)unused;
     struct timespec period = {0, 40000000L};
-    while (snx_gpu_pstate_keep(monotonic_ns(), __atomic_load_n(&g_gpu_pstate.last_present, __ATOMIC_RELAXED)) >= 0)
+    while (snx_gpu_pstate_keep(monotonic_ns(),
+                               atomic_load_explicit(&g_gpu_pstate.last_present, memory_order_relaxed)) >= 0)
         nanosleep(&period, NULL);
     return NULL;
 }
@@ -366,14 +369,14 @@ static bool kgsl_hold(const SnxGpuPstateDevice* d, const char* head, SnxGpuPstat
     g_gpu_pstate.kgsl_obj = alloc.id;
     g_gpu_pstate.kgsl_nop = info.gpuaddr;
     g_gpu_pstate.say = say;
-    __atomic_store_n(&g_gpu_pstate.kgsl, fd, __ATOMIC_RELEASE);
+    atomic_store_explicit(&g_gpu_pstate.kgsl, fd, memory_order_release);
     pthread_t keeper;
     pthread_attr_t attr;
     err = pthread_attr_init(&attr);
     if (!err) err = pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
     if (!err) err = pthread_create(&keeper, &attr, kgsl_keeper, NULL);
     if (err) {
-        __atomic_store_n(&g_gpu_pstate.kgsl, -1, __ATOMIC_RELEASE);
+        atomic_store_explicit(&g_gpu_pstate.kgsl, -1, memory_order_release);
         close(fd);
         snprintf(line, sizeof line, "%s: the thread that renews kgsl's constraint did not start (%s): %s", head,
                  strerror(err), chooses);
@@ -392,14 +395,14 @@ static bool kgsl_hold(const SnxGpuPstateDevice* d, const char* head, SnxGpuPstat
 
 void snx_gpu_pstate_present(void) {
 #if SNX_GPU_PSTATE_KGSL
-    if (__atomic_load_n(&g_gpu_pstate.kgsl, __ATOMIC_RELAXED) >= 0)
-        __atomic_store_n(&g_gpu_pstate.last_present, monotonic_ns(), __ATOMIC_RELAXED);
+    if (atomic_load_explicit(&g_gpu_pstate.kgsl, memory_order_relaxed) >= 0)
+        atomic_store_explicit(&g_gpu_pstate.last_present, monotonic_ns(), memory_order_relaxed);
 #endif
 }
 
 int snx_gpu_pstate_keep(uint64_t now_ns, uint64_t last_present_ns) {
 #if SNX_GPU_PSTATE_KGSL
-    int fd = __atomic_load_n(&g_gpu_pstate.kgsl, __ATOMIC_ACQUIRE);
+    int fd = atomic_load_explicit(&g_gpu_pstate.kgsl, memory_order_acquire);
     if (fd < 0 || !last_present_ns || now_ns - last_present_ns >= SNX_KGSL_WINDOW_NS) return 0;
     struct snx_kgsl_object nop = {
         .gpuaddr = g_gpu_pstate.kgsl_nop, .size = 4, .flags = SNX_KGSL_CMDLIST_IB, .id = g_gpu_pstate.kgsl_obj};
@@ -415,7 +418,7 @@ int snx_gpu_pstate_keep(uint64_t now_ns, uint64_t last_present_ns) {
              "gpu_pstate: kgsl refused the command that renews its constraint (IOCTL_KGSL_GPU_COMMAND, %s): the "
              "clocks are the driver's from now on",
              strerror(err));
-    __atomic_store_n(&g_gpu_pstate.kgsl, -1, __ATOMIC_RELEASE);
+    atomic_store_explicit(&g_gpu_pstate.kgsl, -1, memory_order_release);
     close(fd);
     g_gpu_pstate.say(line, 1);
     return -1;
@@ -434,7 +437,7 @@ bool snx_gpu_pstate_hold(int mode, const SnxGpuPstateDevice* d, SnxGpuPstateSay 
         return false;
     }
     snprintf(head, sizeof head, "gpu_pstate=%s: %s, %s", word, d->name, type_name(d->type));
-    if (g_gpu_pstate.fd >= 0 || __atomic_load_n(&g_gpu_pstate.kgsl, __ATOMIC_RELAXED) >= 0) {
+    if (g_gpu_pstate.fd >= 0 || atomic_load_explicit(&g_gpu_pstate.kgsl, memory_order_relaxed) >= 0) {
         snprintf(line, sizeof line, "%s: its clocks are held already, by this process's first device", head);
         say(line, 0);
         return true;
