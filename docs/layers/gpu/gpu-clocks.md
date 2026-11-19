@@ -8,8 +8,8 @@ or why there is none (`src/common/gpu/vk/gpu_pstate.c`, called once the Switch r
 
 | Value | What it holds |
 | --- | --- |
-| `auto` (default) | a discrete GPU's clocks; an integrated GPU's are left to its driver, as it shares its power with the CPU, whose threads a held GPU clock would take |
-| `on` | an integrated GPU's too |
+| `auto` (default) | a discrete GPU's clocks, and a phone's Adreno's; a computer's integrated GPU's are left to its driver, as it shares its power with the CPU, whose threads a held GPU clock would take |
+| `on` | those too |
 | `off` | nothing: the driver picks the clocks |
 
 ## Linux, AMD (amdgpu)
@@ -45,6 +45,23 @@ boost: it "will request the GPU run at max clocks even in scenarios where it is 
 normally try to save power" (`nvapi.h`, `NvAPI_D3D_SetSleepMode`). A setting of the swapchain, it ends with it, and
 needs no privilege. The extension requires presents with ids (`VK_KHR_present_id` with `present_wait`, or
 `present_id2`), which a run without a window does not turn on: the log then says there is no boost. Not checked on an NVIDIA GPU: none is at hand; the decision and its lines are (`tests/vk_gpu_pstate.c`).
+
+## Android, Adreno (kgsl)
+
+kgsl, Qualcomm's kernel driver (under Qualcomm's Vulkan driver or Turnip), takes a power-level constraint per context:
+`KGSL_PROP_PWR_CONSTRAINT` with `KGSL_CONSTRAINT_PWR_MAX` on a context of the runtime's own (`IOCTL_KGSL_DRAWCTXT_CREATE`
+with `KGSL_CONTEXT_PWR_CONSTRAINT`), applied each time that context submits a command. A thread submits one `CP_NOP`
+every 40 ms while the game has presented a frame in the last 250 ms. kgsl holds the GPU's top level while those come,
+and drops the constraint once its last command retired and its interval passed, or once its context is gone
+(`kgsl_pwrctrl_adjust_pwrlevel`), which the process's end takes with it.
+
+- **No root.** The calls are the ones every Vulkan driver on kgsl makes from the app.
+- **Checked on a Poco M3** (Adreno 610, Linux 4.19, Android 17), a program running as the app (`run-as`), the clock
+  read from `/sys/class/kgsl/kgsl-3d0/gpuclk`: 320 MHz idle, 950 MHz (its top) while held with the GPU otherwise idle,
+  320 MHz again within 0.2 s of the program's normal end, a `SIGKILL` and a `SIGSEGV`.
+- **Not `KGSL_PROP_PWRCTRL`**, libadrenotools' `adrenotools_set_turbo`: it turns the whole device's frequency scaling
+  off (`a6xx_setproperty` sets its `ctrl_flags` and disables `pwrscale`), state no process owns and that closing the
+  device does not touch (`kgsl_release`), so a crash or a kill would leave it until something set it back.
 
 ## Other systems
 

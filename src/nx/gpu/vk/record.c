@@ -15,6 +15,7 @@
 #include <string.h>
 #include <stdatomic.h>
 #include "common/utilities/common.h"
+#include "common/gpu/vk/gpu_pstate.h"
 #include "nx/runtime/options.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/gpu/vk/vk.h"
@@ -363,6 +364,7 @@ static VkResult present_run(const Present* x) {
     vk_queue_unlock(g_vk.gfx);
     pm_unlock(&g_vk.sc_lock);
     vk_display_made(x->id, r);
+    snx_gpu_pstate_present(); /* a kgsl hold lasts while frames are presented */
     return r;
 }
 static void present_queued(const void* p) {

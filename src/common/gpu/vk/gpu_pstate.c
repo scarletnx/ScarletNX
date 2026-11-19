@@ -16,6 +16,12 @@
 #endif
 #define SNX_GPU_PSTATE_AMDGPU 1
 #endif
+#if defined(__linux__)
+#include <pthread.h>
+#include <sys/mman.h>
+#include <time.h>
+#define SNX_GPU_PSTATE_KGSL 1
+#endif
 
 static const char* const g_words[] = {"auto", "on", "off"};
 
@@ -23,8 +29,22 @@ static const char* const g_words[] = {"auto", "on", "off"};
 #define SNX_GPU_TYPE_DISCRETE   2 /* VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU */
 
 bool snx_gpu_pstate_wanted(int mode, const SnxGpuPstateDevice* d) {
-    return mode == SNX_GPU_PSTATE_ON || (mode == SNX_GPU_PSTATE_AUTO && d->type == SNX_GPU_TYPE_DISCRETE);
+    return mode == SNX_GPU_PSTATE_ON ||
+           (mode == SNX_GPU_PSTATE_AUTO && (d->type == SNX_GPU_TYPE_DISCRETE || d->vendor == SNX_GPU_VENDOR_QUALCOMM));
 }
+
+static struct {
+    /* amdgpu: the render node the hold's context is on, left open until the process ends, when the kernel closes it
+       and puts the level back; -1 for none */
+    int fd;
+    /* kgsl: the device the hold's context is on (-1 for none, __atomic: the keeper's thread reads it), the context, the
+       CP_NOP's GPU address and object, the last frame presented (ns of the monotonic clock, __atomic: the renderer
+       writes it), and where the keeper says a renewal refused */
+    int kgsl;
+    unsigned kgsl_ctx, kgsl_obj;
+    uint64_t kgsl_nop, last_present;
+    SnxGpuPstateSay say;
+} g_gpu_pstate = {.fd = -1, .kgsl = -1};
 
 int snx_gpu_pstate_mode(const char* text) {
     for (int i = 0; i < 3; i++)
@@ -83,12 +103,6 @@ typedef char snx_amdgpu_ctx_size[sizeof(union snx_amdgpu_ctx) == 16 ? 1 : -1];
 #define SNX_AMDGPU_CTX_OP_ALLOC_CTX  1u
 #define SNX_AMDGPU_CTX_OP_SET_PSTATE 6u /* AMDGPU_CTX_OP_SET_STABLE_PSTATE */
 #define SNX_AMDGPU_PSTATE_PEAK       4u /* AMDGPU_CTX_STABLE_PSTATE_PEAK */
-
-static struct {
-    /* the render node the hold's context is on, left open until the process ends, when the kernel closes it and puts
-       the level back; -1 for none */
-    int fd;
-} g_gpu_pstate = {-1};
 
 /* path's first line, its newline cut, into out: 0, or the errno that kept it from opening */
 static int read_line(const char* path, char* out, size_t n) {
@@ -235,6 +249,181 @@ static bool amdgpu_hold(int mode, const SnxGpuPstateDevice* d, const char* head,
 }
 #endif
 
+#if SNX_GPU_PSTATE_KGSL
+/* kgsl's interface, as its uapi header msm_kgsl.h declares it */
+struct snx_kgsl_property {
+    unsigned int type;
+    void* value;
+    size_t sizebytes;
+};
+struct snx_kgsl_ctx_create {
+    unsigned int flags, drawctxt_id;
+};
+struct snx_kgsl_constraint {
+    unsigned int type, context_id;
+    void* data;
+    size_t size;
+};
+struct snx_kgsl_alloc {
+    uint64_t size, flags, va_len, mmapsize;
+    unsigned int id, metadata_len;
+    uint64_t metadata;
+};
+struct snx_kgsl_info {
+    uint64_t gpuaddr, flags, size, va_len, va_addr;
+    unsigned int id;
+};
+struct snx_kgsl_object {
+    uint64_t offset, gpuaddr, size;
+    unsigned int flags, id;
+};
+struct snx_kgsl_command {
+    uint64_t flags, cmdlist;
+    unsigned int cmdsize, numcmds;
+    uint64_t objlist;
+    unsigned int objsize, numobjs;
+    uint64_t synclist;
+    unsigned int syncsize, numsyncs, context_id, timestamp;
+};
+#define SNX_KGSL_SETPROPERTY     _IOW(0x09, 0x32, struct snx_kgsl_property)
+#define SNX_KGSL_DRAWCTXT_CREATE _IOWR(0x09, 0x13, struct snx_kgsl_ctx_create)
+#define SNX_KGSL_GPUOBJ_ALLOC    _IOWR(0x09, 0x45, struct snx_kgsl_alloc)
+#define SNX_KGSL_GPUOBJ_INFO     _IOWR(0x09, 0x47, struct snx_kgsl_info)
+#define SNX_KGSL_GPU_COMMAND     _IOWR(0x09, 0x4A, struct snx_kgsl_command)
+#define SNX_KGSL_PROP_CONSTRAINT 0x12u  /* KGSL_PROP_PWR_CONSTRAINT */
+#define SNX_KGSL_CONTEXT_FLAGS   0x812u /* KGSL_CONTEXT_PWR_CONSTRAINT, PREAMBLE, NO_GMEM_ALLOC: an a6xx's needs both */
+#define SNX_KGSL_CONSTRAINT_LEVEL 1u    /* KGSL_CONSTRAINT_PWRLEVEL */
+#define SNX_KGSL_CONSTRAINT_MAX   1u    /* KGSL_CONSTRAINT_PWR_MAX */
+#define SNX_KGSL_CMDLIST_IB       1u
+#define SNX_KGSL_CP_NOP           0x70108000u  /* a type 7 CP_NOP with no payload, its parity bits set */
+#define SNX_KGSL_WINDOW_NS        250000000ull /* a frame presented this recently keeps the hold */
+
+static uint64_t monotonic_ns(void) {
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return (uint64_t)t.tv_sec * 1000000000ull + (uint64_t)t.tv_nsec;
+}
+
+/* the keeper: a renewal every 40 ms while frames are presented, until one is refused */
+static void* kgsl_keeper(void* unused) {
+    (void)unused;
+    struct timespec period = {0, 40000000L};
+    while (snx_gpu_pstate_keep(monotonic_ns(), __atomic_load_n(&g_gpu_pstate.last_present, __ATOMIC_RELAXED)) >= 0)
+        nanosleep(&period, NULL);
+    return NULL;
+}
+
+/* The hold on kgsl's device, said in a line after head. True where held */
+static bool kgsl_hold(const SnxGpuPstateDevice* d, const char* head, SnxGpuPstateSay say) {
+    char node[512], line[1536];
+    const char* chooses = "its driver chooses the clocks";
+    snprintf(node, sizeof node, "%s/kgsl-3d0", d->dev);
+    int fd = open(node, O_RDWR | O_CLOEXEC);
+    if (fd < 0) {
+        int err = errno;
+        snprintf(line, sizeof line, "%s: %s does not open (%s): %s", head, node, strerror(err), chooses);
+        say(line, 1);
+        return false;
+    }
+    struct snx_kgsl_ctx_create ctx = {SNX_KGSL_CONTEXT_FLAGS, 0};
+    unsigned level = SNX_KGSL_CONSTRAINT_MAX;
+    struct snx_kgsl_constraint constraint = {SNX_KGSL_CONSTRAINT_LEVEL, 0, &level, sizeof level};
+    struct snx_kgsl_property property = {SNX_KGSL_PROP_CONSTRAINT, &constraint, sizeof constraint};
+    struct snx_kgsl_alloc alloc = {.size = 4096};
+    struct snx_kgsl_info info = {0};
+    const char* what = "a context of the runtime's own (IOCTL_KGSL_DRAWCTXT_CREATE)";
+    int err = ioctl(fd, SNX_KGSL_DRAWCTXT_CREATE, &ctx) ? errno : 0;
+    if (!err) {
+        what = "the top power level as its constraint (KGSL_PROP_PWR_CONSTRAINT)";
+        constraint.context_id = ctx.drawctxt_id;
+        err = ioctl(fd, SNX_KGSL_SETPROPERTY, &property) ? errno : 0;
+    }
+    if (!err) {
+        what = "a page for its commands (IOCTL_KGSL_GPUOBJ_ALLOC)";
+        err = ioctl(fd, SNX_KGSL_GPUOBJ_ALLOC, &alloc) ? errno : 0;
+    }
+    if (!err) {
+        what = "the page's GPU address (IOCTL_KGSL_GPUOBJ_INFO)";
+        info.id = alloc.id;
+        err = ioctl(fd, SNX_KGSL_GPUOBJ_INFO, &info) ? errno : 0;
+    }
+    void* page = MAP_FAILED;
+    if (!err) {
+        what = "the page mapped (mmap)";
+        page = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_SHARED, fd, (off_t)alloc.id << 12);
+        err = page == MAP_FAILED ? errno : 0;
+    }
+    if (err) {
+        snprintf(line, sizeof line, "%s: kgsl refused %s on %s (%s): %s", head, what, node, strerror(err), chooses);
+        say(line, 1);
+        close(fd); /* the context and the page go with it */
+        return false;
+    }
+    *(volatile uint32_t*)page = SNX_KGSL_CP_NOP;
+    munmap(page, 4096);
+    g_gpu_pstate.kgsl_ctx = ctx.drawctxt_id;
+    g_gpu_pstate.kgsl_obj = alloc.id;
+    g_gpu_pstate.kgsl_nop = info.gpuaddr;
+    g_gpu_pstate.say = say;
+    __atomic_store_n(&g_gpu_pstate.kgsl, fd, __ATOMIC_RELEASE);
+    pthread_t keeper;
+    pthread_attr_t attr;
+    err = pthread_attr_init(&attr);
+    if (!err) err = pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+    if (!err) err = pthread_create(&keeper, &attr, kgsl_keeper, NULL);
+    if (err) {
+        __atomic_store_n(&g_gpu_pstate.kgsl, -1, __ATOMIC_RELEASE);
+        close(fd);
+        snprintf(line, sizeof line, "%s: the thread that renews kgsl's constraint did not start (%s): %s", head,
+                 strerror(err), chooses);
+        say(line, 1);
+        return false;
+    }
+    snprintf(line, sizeof line,
+             "%s: its clocks held at kgsl's top power level (KGSL_PROP_PWR_CONSTRAINT of a context of the runtime's "
+             "own on %s) while the game presents frames, renewed every 40 ms; kgsl drops it %llu ms after the last "
+             "frame, and with the context when the game ends, a crash too",
+             head, node, (unsigned long long)(SNX_KGSL_WINDOW_NS / 1000000));
+    say(line, 0);
+    return true;
+}
+#endif
+
+void snx_gpu_pstate_present(void) {
+#if SNX_GPU_PSTATE_KGSL
+    if (__atomic_load_n(&g_gpu_pstate.kgsl, __ATOMIC_RELAXED) >= 0)
+        __atomic_store_n(&g_gpu_pstate.last_present, monotonic_ns(), __ATOMIC_RELAXED);
+#endif
+}
+
+int snx_gpu_pstate_keep(uint64_t now_ns, uint64_t last_present_ns) {
+#if SNX_GPU_PSTATE_KGSL
+    int fd = __atomic_load_n(&g_gpu_pstate.kgsl, __ATOMIC_ACQUIRE);
+    if (fd < 0 || !last_present_ns || now_ns - last_present_ns >= SNX_KGSL_WINDOW_NS) return 0;
+    struct snx_kgsl_object nop = {
+        .gpuaddr = g_gpu_pstate.kgsl_nop, .size = 4, .flags = SNX_KGSL_CMDLIST_IB, .id = g_gpu_pstate.kgsl_obj};
+    struct snx_kgsl_command command = {.flags = SNX_KGSL_CONTEXT_FLAGS & 0x800u, /* KGSL_CMDBATCH_PWR_CONSTRAINT */
+                                       .cmdlist = (uintptr_t)&nop,
+                                       .cmdsize = sizeof nop,
+                                       .numcmds = 1,
+                                       .context_id = g_gpu_pstate.kgsl_ctx};
+    if (!ioctl(fd, SNX_KGSL_GPU_COMMAND, &command)) return 1;
+    int err = errno;
+    char line[512];
+    snprintf(line, sizeof line,
+             "gpu_pstate: kgsl refused the command that renews its constraint (IOCTL_KGSL_GPU_COMMAND, %s): the "
+             "clocks are the driver's from now on",
+             strerror(err));
+    __atomic_store_n(&g_gpu_pstate.kgsl, -1, __ATOMIC_RELEASE);
+    close(fd);
+    g_gpu_pstate.say(line, 1);
+    return -1;
+#else
+    (void)now_ns, (void)last_present_ns;
+    return 0;
+#endif
+}
+
 bool snx_gpu_pstate_hold(int mode, const SnxGpuPstateDevice* d, SnxGpuPstateSay say) {
     char head[512], line[1024];
     const char* word = mode >= 0 && mode < 3 ? g_words[mode] : "?";
@@ -244,15 +433,17 @@ bool snx_gpu_pstate_hold(int mode, const SnxGpuPstateDevice* d, SnxGpuPstateSay 
         return false;
     }
     snprintf(head, sizeof head, "gpu_pstate=%s: %s, %s", word, d->name, type_name(d->type));
-#if SNX_GPU_PSTATE_AMDGPU
-    if (g_gpu_pstate.fd >= 0) {
+    if (g_gpu_pstate.fd >= 0 || __atomic_load_n(&g_gpu_pstate.kgsl, __ATOMIC_RELAXED) >= 0) {
         snprintf(line, sizeof line, "%s: its clocks are held already, by this process's first device", head);
         say(line, 0);
         return true;
     }
-    int way = d->vendor == SNX_GPU_VENDOR_AMD || d->vendor == SNX_GPU_VENDOR_NVIDIA;
-#else
     int way = d->vendor == SNX_GPU_VENDOR_NVIDIA;
+#if SNX_GPU_PSTATE_AMDGPU
+    way = way || d->vendor == SNX_GPU_VENDOR_AMD;
+#endif
+#if SNX_GPU_PSTATE_KGSL
+    way = way || d->vendor == SNX_GPU_VENDOR_QUALCOMM;
 #endif
     if (!way) {
         snprintf(line, sizeof line, "%s: no way to hold this GPU's clocks on %s: its driver chooses them", head,
@@ -281,6 +472,9 @@ bool snx_gpu_pstate_hold(int mode, const SnxGpuPstateDevice* d, SnxGpuPstateSay 
         say(line, 0);
         return true;
     }
+#if SNX_GPU_PSTATE_KGSL
+    if (d->vendor == SNX_GPU_VENDOR_QUALCOMM) return kgsl_hold(d, head, say);
+#endif
 #if SNX_GPU_PSTATE_AMDGPU
     if (!d->has_render) {
         snprintf(line, sizeof line,
