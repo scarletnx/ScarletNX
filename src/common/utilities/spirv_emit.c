@@ -1822,16 +1822,6 @@ uint32_t spv_emit_ext(SpvEmitter* e, uint32_t type, uint32_t instruction_number,
     return id;
 }
 
-SpvMark spv_emit_mark(const SpvEmitter* e) {
-    SpvMark mark = {e->functions.count, e->block};
-    return mark;
-}
-void spv_emit_rewind(SpvEmitter* e, SpvMark mark) {
-    assert(mark.at <= e->functions.count && mark.block <= e->block);
-    /* the words and the labels of the marked block go: the ids they made are of no harm, unused */
-    e->functions.count = mark.at;
-    e->block = mark.block;
-}
 uint32_t* spv_emit_finish(const SpvEmitter* e, size_t* word_count) {
     const SpvWords* sections[] = {&e->capabilities, &e->extensions,  &e->imports, &e->entry_points, &e->execution_modes,
                                   &e->debug,        &e->decorations, &e->types,   &e->functions};

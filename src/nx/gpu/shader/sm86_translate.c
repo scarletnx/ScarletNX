@@ -4328,9 +4328,7 @@ static void ldsm_words(Ctx* c, u32 reg, u32 imm, u32 count, int trans, u32* out)
         }
     }
 }
-/* the LDSM's reads into out, and the destination registers' words, which the two halves of a fused pair give
-   twice: once each with its own emitter, whose block the fuse deletes, and once with the fuse's words given to the
-   HMMA (out kept for the second of them) */
+/* the LDSM's reads into out (a fused pair's, which its HMMA takes), and the destination registers' words */
 static void ldsm_do(Ctx* c, u32 dst, u32 reg, u32 imm, u32 count, int trans, u32* out) {
     u32 out4[4];
     if (!out) out = out4;
@@ -4347,25 +4345,10 @@ static void ldsm(Ctx* c, const Sm86Insn* in) {
     u32 imm = sm86_field(in, 40, 24), bias = imm & 0x800000u ? imm | 0xff000000u : imm;
     ldsm_do(c, in->dst, sm86_field(in, 24, 8), bias, count, (int)trans, NULL);
 }
-/* the fused pair of an LDSM and the HMMA that reads its fragments (fuse.c's SM86_LDSM_HMMA). The two halves are
-   written first, each with its own emitter, whose SPIR-V the fuse then deletes and writes over from scratch: the
-   properties the two halves make (the capabilities, the shared variable, the cooperative slot, the registers) are
-   the module's, in sections the delete does not touch, and the caches the deleted block made go with it. The fused
-   one reads the tiles once, writes the destination registers with the words and gives them to the HMMA, which puts
-   A's words into the slot without a read of the registers */
+/* the fused pair of an LDSM and the HMMA that reads its fragments (fuse.c's SM86_LDSM_HMMA): the LDSM's reads of the
+   tiles, once, write the destination registers and go to the HMMA as A's words, which it then takes without a read
+   of those registers */
 static void fused_ldsm_hmma(Ctx* c, const Sm86Insn* in) {
-    SpvMark mark = spv_emit_mark(&c->e);
-    u32 nfrags = c->nfrags, nacc = c->nacc, warp_base = c->warp_base;
-    u32 out4[4];
-    ldsm_words(c, sm86_fuse_ldsm_a(in), sm86_field(in, 40, 24), sm86_fuse_ldsm_count(in), sm86_fuse_ldsm_trans(in),
-               out4);
-    hmma(c, in, NULL, NULL);
-    spv_emit_rewind(&c->e, mark);
-    c->nfrags = nfrags, c->nacc = nacc; /* and the caches, and any value the module made in the deleted block: the
-        ids it made are of the words that are gone, so the fused block makes them again */
-    c->warp_base = warp_base;
-    /* coop_gen[] and hmma_count also advanced in the deleted block: the generation marks only compare equal within
-       a block, and hmma_zero only needs a value that is never zero in a lane that runs, so both still hold. */
     u32 count = sm86_fuse_ldsm_count(in), trans = sm86_fuse_ldsm_trans(in);
     u32 imm = sm86_field(in, 40, 24), bias = imm & 0x800000u ? imm | 0xff000000u : imm;
     int k16 = (int)(sm86_field(in, 72, 19) >> 3 & 1);

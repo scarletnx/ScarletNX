@@ -5176,6 +5176,180 @@ static void test_warp_matrix_flush(const char* dir) {
     }
 }
 
+/* ---- HMMA on the cooperative matrices against the gathers, bit for bit, on the evaluator's 32 lanes ---- */
+
+/* a lane's input words in c[1] (A's 4, B's 2, an f16 C's 2 and an f32 C's 4: R8-R19) and its output words */
+#define COOP_IN  12u
+#define COOP_OUT 16u
+static Word hmma_insn(u32 d, u32 a, u32 b, u32 cr, u32 variant) {
+    Word x = fix(0x23c);
+    set(&x, 16, 8, d);
+    set(&x, 24, 8, a);
+    set(&x, 32, 8, b);
+    set(&x, 64, 8, cr);
+    set(&x, 72, 19, variant);
+    return x;
+}
+/* S2R R0, TID.X; R1 = 4 COOP_IN R0; R2 = 0x400 + 4 COOP_OUT R0, the lane's outputs past the tile; STS [R2], RZ (the
+   program's shared memory, the first Workgroup variable, which the evaluator keeps); R8-R19 from c[1][R1 + 4k]; R7 =
+   16 R0, the lane's A words stored at [R7 + 0x40], the tile an LDSM.4 of [R7 + 0x40] reads back; BAR.SYNC */
+static u32 coop_prologue(u8* code) {
+    u32 n = 0;
+    Word x = fix(0x919);
+    set(&x, 72, 8, 0x21);
+    put(code, n++, x);
+    static const u32 scale[3][3] = {{1, 4 * COOP_IN, 0}, {2, 4 * COOP_OUT, 0x400}, {7, 16, 0}};
+    for (u32 k = 0; k < 3; k++) { /* IMAD Rd, R0, scale, RZ, then IADD3 Rd, Rd, offset */
+        x = alu(0x024, 4, scale[k][0], 0);
+        set(&x, 32, 32, scale[k][1]);
+        set(&x, 64, 8, 255);
+        put(code, n++, x);
+        if (scale[k][2]) put(code, n++, iadd3_imm(scale[k][0], scale[k][0], scale[k][2]));
+    }
+    x = fix(0x388); /* STS [R2], RZ */
+    set(&x, 24, 8, 2);
+    set(&x, 32, 8, 255);
+    set(&x, 73, 3, 4);
+    put(code, n++, x);
+    for (u32 k = 0; k < COOP_IN; k++) put(code, n++, ldc(8 + k, 1, 1, 4 * k, 4));
+    x = fix(0x388); /* STS.128 [R7 + 0x40], R8 */
+    set(&x, 24, 8, 7);
+    set(&x, 32, 8, 8);
+    set(&x, 40, 24, 0x40);
+    set(&x, 73, 3, 6);
+    put(code, n++, x);
+    put(code, n++, fix(0xb1d)); /* BAR.SYNC 0 */
+    return n;
+}
+/* STS [R2 + 4k], regs[k] for each output, EXIT and the BRA to itself: the count of instructions */
+static u32 coop_epilogue(u8* code, u32 n, const u32* regs, u32 outs) {
+    for (u32 k = 0; k < outs; k++) {
+        Word x = fix(0x388);
+        set(&x, 24, 8, 2);
+        set(&x, 32, 8, regs[k]);
+        set(&x, 40, 24, 4 * k);
+        set(&x, 73, 3, 4);
+        put(code, n++, x);
+    }
+    put(code, n++, exit_insn());
+    put(code, n, bra(n, n, 7, 0));
+    return n + 1;
+}
+/* the program on the evaluator's 32 lanes, with the exact set's A, B and f16 C (hmma_inputs) and an f32 C of the same
+   values, translated with the cooperative matrices of one shape (shape_bit) or with the gathers (0): the outputs into
+   out, 0 when the translation or the evaluator fails */
+static int coop_run(const u8* code, u32 n, u32 shape_bit, u32* out, const char* dir, const char* keep) {
+    static HmmaMats mats;
+    static u32 in[32 * 8], bank1[32 * COOP_IN];
+    hmma_inputs(&mats, in, HM_EXACT);
+    u32 seed = 0x7f4a7c15u;
+    for (u32 l = 0; l < 32; l++) {
+        for (u32 k = 0; k < 8; k++) bank1[l * COOP_IN + k] = in[l * 8 + k];
+        for (u32 k = 0; k < 4; k++)
+            bank1[l * COOP_IN + 8 + k] = f2u((float)hmma_half(hmma_element(&seed, HM_EXACT, 0)));
+    }
+    int coop_was = g_spirv_translate.hmma_coop, f16_was = g_spirv_translate.float16;
+    u32 shapes_was = g_spirv_translate.hmma_coop_shapes;
+    g_spirv_translate.hmma_coop = shape_bit ? 65536 : 0, g_spirv_translate.hmma_coop_shapes = shape_bit;
+    g_spirv_translate.float16 = 1;
+    ShaderInfo si = {0};
+    si.cs_local[0] = 32, si.cs_local[1] = si.cs_local[2] = 1;
+    si.shared_size = (int)(0x400 + 32 * COOP_OUT * 4);
+    size_t count = 0;
+    u32* spv = sm86_to_spirv(code, n * 16, ST_CS, NULL, &si, &count);
+    g_spirv_translate.hmma_coop = coop_was, g_spirv_translate.hmma_coop_shapes = shapes_was;
+    g_spirv_translate.float16 = f16_was;
+    if (!spv) {
+        fprintf(stderr, "%s: not translated: %s\n", keep, si.first_unsupported);
+        return 0;
+    }
+    if (shape_bit && !spv_count(spv, count, 4459)) {
+        fprintf(stderr, "%s: no cooperative matrix product\n", keep);
+        free(spv);
+        return 0;
+    }
+    CHECK(keep_module(dir, keep, spv, count));
+    static SpvEvalEnv env[32];
+    memset(env, 0, sizeof env);
+    for (u32 l = 0; l < 32; l++) {
+        env[l].ubo[SNX_VKB_CB + 1] = bank1;
+        env[l].ubo_words[SNX_VKB_CB + 1] = 32 * COOP_IN;
+        env[l].builtin[27][0] = env[l].builtin[29][0] = env[l].builtin[41][0] = l; /* LocalInvocationId.x, Index */
+        env[l].builtin[24][0] = env[l].builtin[24][1] = env[l].builtin[24][2] = 1; /* NumWorkgroups */
+    }
+    const char* why = spv_eval_subgroup(spv, count, env, 32);
+    free(spv);
+    if (why || env[0].shared_words < 0x100 + 32 * COOP_OUT) {
+        fprintf(stderr, "%s: the evaluator stops at %s (%u shared words)\n", keep, why ? why : "nothing",
+                env[0].shared_words);
+        return 0;
+    }
+    memcpy(out, env[0].shared + 0x100, 32 * COOP_OUT * 4);
+    return 1;
+}
+/* whether the program's outputs (outs a lane) on the cooperative matrices of each shape are the gathers', bit for
+   bit: every sum of the exact set is exact in f16 and f32, so any difference is a wrong value. The modules are kept
+   as name_<shape> */
+static int coop_agrees(const u8* code, u32 n, u32 outs, const char* dir, const char* name) {
+    static const char* const shape_name[4] = {"16x16x16", "16x8x16", "16x8x8", "8x8x8"};
+    static u32 want[32 * COOP_OUT], got[32 * COOP_OUT];
+    char keep[64];
+    snprintf(keep, sizeof keep, "%s_gathers", name);
+    if (!coop_run(code, n, 0, want, dir, keep)) return 0;
+    int ok = 1;
+    for (u32 s = 0; s < 4; s++) {
+        snprintf(keep, sizeof keep, "%s_%s", name, shape_name[s]);
+        if (!coop_run(code, n, 1u << s, got, dir, keep)) {
+            ok = 0;
+            continue;
+        }
+        u32 bad = 0;
+        for (u32 l = 0; l < 32; l++)
+            for (u32 w = 0; w < outs; w++)
+                if (got[l * COOP_OUT + w] != want[l * COOP_OUT + w] && bad++ < 4)
+                    fprintf(stderr, "%s: lane %u output %u is 0x%08x, the gathers' 0x%08x\n", keep, l, w,
+                            got[l * COOP_OUT + w], want[l * COOP_OUT + w]);
+        ok &= bad == 0;
+    }
+    return ok;
+}
+/* a program of the prologue, then HMMAs (d, a, b, c, variant; an a of COOP_LDSM | r has an LDSM.4 of [R7 + 0x40] into
+   r before it, the pair the fuse takes; a d of COOP_BRA is a BRA to the next instruction, which ends the block), then
+   the outputs' stores: whether the cooperative matrices of each shape give the gathers' outputs */
+#define COOP_LDSM 0x100u
+#define COOP_BRA  0x200u
+static int coop_case(const char* dir, const char* name, const u32 (*insns)[5], u32 ninsns, const u32* outs, u32 nouts) {
+    u8 code[16 * 64] = {0};
+    u32 n = coop_prologue(code);
+    for (u32 i = 0; i < ninsns; i++) {
+        const u32* h = insns[i];
+        if (h[0] == COOP_BRA) {
+            put(code, n, bra(n, n + 1, 7, 0));
+            n++;
+            continue;
+        }
+        if (h[1] & COOP_LDSM) {
+            Word x = fix(0x83b); /* LDSM.16.M88.4 r, [R7 + 0x40] */
+            set(&x, 16, 8, h[1] & 0xff);
+            set(&x, 24, 8, 7);
+            set(&x, 40, 24, 0x40);
+            set(&x, 72, 2, 2);
+            put(code, n++, x);
+        }
+        put(code, n++, hmma_insn(h[0], h[1] & 0xff, h[2], h[3], h[4]));
+    }
+    n = coop_epilogue(code, n, outs, nouts);
+    return coop_agrees(code, n, nouts, dir, name);
+}
+
+/* A GEMM chain across an LDSM fused with its HMMA (fuse.c): R20 = A B, then R20 = A' B + R20, A' the LDSM's tile. The
+   fused block wrote both halves and took their code back, but not the matrices they held: the fused HMMA missed R20's
+   matrix and added the words of its registers, never written, which lost A B */
+static void test_coop_fused_chain(const char* dir) {
+    static const u32 insns[2][5] = {{20, 8, 12, 255, 0x18}, {20, COOP_LDSM | 24, 12, 20, 0x18}};
+    static const u32 outs[4] = {20, 21, 22, 23};
+    CHECK(coop_case(dir, "coop_fused_chain", insns, 2, outs, 4));
+}
 /* the way the log says a device's compute HMMAs take (shader_hmma_way), from the flags device.c sets */
 static void test_hmma_way(void) {
     int quad_was = g_spirv_translate.quad_compute, mixed_was = g_spirv_translate.mixed_dot,
@@ -6280,6 +6454,7 @@ int main(int argc, char** argv) {
     test_uses_isbe();
     test_warp_matrix(dir);
     test_warp_matrix_values(dir);
+    test_coop_fused_chain(dir);
     test_warp_matrix_flush(dir);
     test_hmma_way();
     test_hmma_choose();
