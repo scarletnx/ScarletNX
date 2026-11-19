@@ -1,9 +1,9 @@
-# sailgen_lanes: generates lanes.sail (SAILGEN, BACKEND, OUT) and says, for each of its decode functions, whether
-# its element loop became one vector operation (lanes) or stayed a loop of elements (loop)
+# sailgen_lanes: generates lanes.sail (SAILGEN, CORE and BACKEND, OUT) and says, for each of its decode functions,
+# whether its element loop became one vector operation (lanes) or stayed a loop of elements (loop)
 get_filename_component(out_dir "${OUT}" DIRECTORY)
 file(MAKE_DIRECTORY "${out_dir}")
-execute_process(COMMAND "${SAILGEN}" --generate "${DIR}/lanes.roots" --backend "${BACKEND}" -o "${OUT}"
-                "${DIR}/lanes.sail" RESULT_VARIABLE rc)
+execute_process(COMMAND "${SAILGEN}" --generate "${DIR}/lanes.roots" --backend "${CORE}" --backend "${BACKEND}"
+                -o "${OUT}" "${DIR}/lanes.sail" RESULT_VARIABLE rc)
 if(NOT rc EQUAL 0)
     message(FATAL_ERROR "sailgen_lanes: snx-sailgen exited ${rc} on lanes.sail")
 endif()

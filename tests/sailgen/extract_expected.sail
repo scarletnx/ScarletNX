@@ -1,6 +1,7 @@
 /* sail-arm's definitions that fixture.roots reaches (sailgen --extract), as they are in:
      upstream.sail
-   BSD 3-Clause Clear License: LICENSE beside this file. Do not edit: an NX fixup goes in nx.sail */
+   BSD 3-Clause Clear License: LICENSE beside this file. Do not edit: a system's fixup goes in its overlay
+   (README.md beside this file) */
 
 enum Shade = {Shade_Dark, Shade_Light}
 

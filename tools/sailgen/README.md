@@ -2,23 +2,32 @@
 <!-- Copyright 2026 the ScarletNX contributors -->
 # sailgen
 
-Generates the recompiler's A64 instruction emitters from the Sail of the Arm architecture: sail-arm's translation of
-Arm's ASL, kept in `src/common/cpu/aarch64/sail/` (its README says where from and how to update it). Strict C23 with
-no dependency, built and run during the build as `tools/decodetree` is (`cmake/sailgen.cmake`).
+Generates the recompiler's A64 and AArch32 instruction emitters from the Sail of the Arm architecture: sail-arm's
+translation of Arm's ASL, kept in `src/common/cpu/aarch64/sail/` and `src/common/cpu/arm/sail/` (their READMEs say
+where from and how to update them). Strict C23 with no dependency, built and run during the build as
+`tools/decodetree` is (`cmake/sailgen.cmake`).
 
 ```sh
 sailgen --extract ROOTS -o OUT INPUT...
-sailgen --generate ROOTS --backend llvm.h [--profile a64.profile] -o OUT INPUT... [--overlay FILE]...
+sailgen --generate ROOTS --backend core.h --backend llvm.h [--profile PROFILE] -o OUT INPUT... [--overlay FILE]...
 ```
 
 `--extract` copies the definitions of sail-arm's files that the roots reach (`extract.c`). `--generate` writes one C
-function per decode function the roots name, which emits that instruction as LLVM IR, and `sg_emit`, which picks one
-by the decode clauses' fixed bits in their order (`gen.c`) and gives a branch's operand: whether it is taken (an i1)
-and where to (an i64). A clause whose decode function throws `Error_See` hands the word on to the next clause that
-matches it, as Sail's decode does (the hint space's PAuth hints); one an earlier clause covers whole and never hands
-on is never reached. An overlay's definitions take the place of the inputs' of the same name: a system's fixups
-(`nx.sail`). With `--profile`, a feature the decoder's profile names in none of its `feature` lines is one no guest
-has. `src/common/cpu/recompiler/llvm/ir_sail.c` includes the output.
+function per decode function the roots name, which emits that instruction as LLVM IR, and a dispatcher that picks one
+by the decode clauses' fixed bits in their order (`gen.c`): `sg_decode` for every clause, or, for each `decoder NAME
+FAMILY...` line of the roots, NAME for the clauses of those scattered decode functions alone (AArch32's
+`sg_decode_t16`, the `__DecodeT16` clauses of a T16 halfword's 16 bits, apart from A32's and T32's words). A clause
+whose decode function throws `Error_See` hands the word on to the next clause that matches it, as Sail's decode does
+(the hint space's PAuth hints), and so does one whose guard tests the word beyond its pattern and fails (B T1's
+`cond != 0b1111`, read for a roots file with decoder lines; A64's one, PRFM register's, would hand RPRFM's words to a
+clause that is no root and stays unread); one an earlier clause covers whole and never hands on is never reached. An
+overlay's definitions take the place of the inputs' of the same name: a system's fixups (`nx.sail`, `arm.sail`). With
+`--profile`, a feature the profile names in none of its `feature` lines is one no guest has, and a root its `since
+VERSION ROOT...` lines name (`a32.profile`) is tried only where the back end's `sg_ArchVersion` is that version or
+later. The back end's files are copied at the top of the output in their order: `core.h`, then a machine's
+(`llvm.h` for A64, which the back end's `sg_emit` wraps the dispatcher with and
+`src/common/cpu/recompiler/llvm/ir_sail.c` includes; `llvm_arm.h` for AArch32, its `sg_emit_t16`, which
+`src/common/cpu/arm/llvm_thumb.inc` includes).
 
 ## How a decode function becomes C
 
@@ -37,11 +46,20 @@ Each decode function is walked with everything it calls inlined, and each value 
   build IR.
 
 A mutable local takes the latest time any of its assignments has; the walk repeats until no local's time changes.
+sailgen also keeps what it knows of a value it does not: the width of bits a slice or a literal makes, and so the range
+of `UInt` and `SInt` of them, so a test of a field against a number it can't hold folds (`t == 15` of a T16 load's
+three-bit Rt, which keeps LoadWritePC's run-time alignment check out of it).
 A function whose arguments are all STATIC and that reaches no state becomes a C function of its own
-(`DecodeBitMasks`, `DecodeShift`). An `if` on a DYN condition becomes a select of what each branch assigns, and its
-branches may not change state; a `BranchTo` in one is taken under that condition (B.cond's `if ConditionHolds(cond)`,
-CBZ's `if IsZero(operand1) == iszero`). A throw of `Error_Undefined`, an `EndOfInstruction()` (a hint whose feature
-the guest lacks: a NOP) and a throw of `Error_See` end the decode function, so they may not be under a DYN condition.
+(`DecodeBitMasks`, `DecodeShift`); its locals are its own. An `if` on a DYN condition becomes a select of what each
+branch assigns, and its branches may not change state; a `BranchTo` in one is taken under that condition (B.cond's `if
+ConditionHolds(cond)`, CBZ's `if IsZero(operand1) == iszero`). The one exception is a decode function that is all
+`if C then { ... }`, every AArch32 one's `if ConditionPassed()`: where the back end defines `sg_when`, the rest of the
+instruction runs under C (`sg_when(g, c)` branches past it where C fails), as the AArch32 block compilers always ran a
+conditional instruction. A throw of `Error_Undefined`, an `EndOfInstruction()` (a hint whose feature the guest lacks:
+a NOP) and a throw of `Error_See` end the decode function, so they may not be under a DYN condition. A throw of
+`Error_Unpredictable` (an AArch32 encoding the architecture leaves UNPREDICTABLE) walks the overlay's
+`UnpredictableEncoding()` in its place, what the system's cores do with one (`arm.sail`'s runs it as it is written);
+without one sailgen stops at the throw.
 A value of a Sail struct (a load's `AccessDescriptor`) is STATIC: a C struct of its fields (`sgt_NAME`, written before
 the helpers), which a field's assignment and read reach as C. Anything outside this part of Sail stops sailgen with the
 file, the line and why.
@@ -80,7 +98,7 @@ in a loop from 1, or leaves the loop with an element's value rather than the vec
 as the loop it is, every element its own IR, which `tests/llvm_sail_ir.c` shows as longer than the hand-written
 emitter's (`sailgen_lanes` holds each outcome).
 
-## The back end (`llvm.h`)
+## The back end (`core.h`, then `llvm.h` or `llvm_arm.h`)
 
 `llvm.h` is copied at the top of the output. It holds the lowering to LLVM of Sail's builtins and of the shared
 functions sailgen does not inline, and the bit map: a DYN bits value is, until something computes with it, which
@@ -101,6 +119,8 @@ Builtins, lowered by the back end rather than from Sail:
 | `CountLeadingZeroBits`, `CountLeadingSignBits` | `llvm.ctlz` |
 | `BitReverse(Poly32Mod2(BitReverse(acc) @ Zeros(n) EOR BitReverse(val) @ Zeros(32), poly))` | the reflected CRC update: SSE4.2's CRC32C, AArch64's CRC32, or the sliced tables |
 | `LSL`, `LSR`, `ASR`, `ROR`, `Extend`, `ZeroExtend`, `SignExtend`, `Replicate`, `Zeros`, `Ones`, `IsZero`, `IsZeroBit`, `Bit`, `EOR`, `MOD`, `DIV`, `Min`, `Max`, `HighestSetBit`, `Slice`, `Elem_set` | the map, or C when the value is STATIC |
+| `LSL_C`, `LSR_C`, `ASR_C`, `ROR_C` (AArch32's shifter and its carry) | the map for an amount known when it recompiles; for a register's, 0 to 255, the AArch32 block compiler's `shift` (every LLVM shift kept below the width) |
+| `BitCount`, `LowestSetBit`, `Align` | C of a register list or a pc; `Align` of bits known only at run time the map |
 | `IsFeatureImplemented(FEAT_X)` | the guest's feature bit (`SNX_A64_FEAT_X` of `a64.profile`); false, a CONST, for a feature `--profile` names nowhere |
 | `EndOfInstruction()` | the end of the instruction: nothing more is emitted |
 | `BranchTo(target, type, conditional)`, `BranchNotTaken(type, conditional)` | the branch's operand for the recompiler's flow (`ir_codegen.c`): the target, and the run-time condition it is under; their profiling, branch records and address tagging do nothing at the NX's EL0 |
@@ -167,21 +187,38 @@ access size (a compare-and-swap loop where the host's byte order or PowerPC64's 
 `snx_cas128` for CASP's 16 bytes). An instruction's two word accesses of adjacent addresses (LDPSW's loads, STNP's
 stores, two in their Sail) become one 8-byte access as it ends (`sg_accesses_combine`), as a pair of words always was.
 
+## AArch32 (`llvm_arm.h`)
+
+The AArch32 block compiler (`src/common/cpu/arm/llvm.c`) builds its IR with its own builder (`ArmIR`), which the file
+sailgen writes is compiled with (`llvm_thumb.inc` includes it), so `llvm_arm.h` builds on its helpers as `llvm.h` does
+on `ir.h`'s: `GPR[n]` is a load or a store of `SnxArmCPU.r[n]`, PSTATE's N, Z, C, V, T and E are CPSR's bits, written
+together in one store of CPSR as the instruction ends (`sg_flags_flush`, as `nz` wrote them), guest memory is `readmem`
+and `writemem` after `transfer_begin` (flat, checked or hosted, with the ARM7TDMI's and the ARM946E-S's bus rules), a
+multiple transfer's whole range checked first (`GuestTransfer`), and UNDEFINED, SVC and BKPT the block's exits
+(`trap`). What the block compiler decides when it compiles a block the back end answers as values the recompiler
+knows: a back end function whose result is `SgS`, `int` or `long long` gives a STATIC value (bits, a bool or an enum,
+an integer), not IR: `CurrentInstrSet`, `ITSTATE`, `AArch32_CurrentCond` (the instruction's condition: an A32 word's, a
+B<c>'s own, else the IT block's) and `ArchVersion`. `LSL_C`, `LSR_C`, `ASR_C` and `ROR_C`, AArch32's shifter with its
+carry, are the map for an amount known when it recompiles, and `llvm.c`'s `shift` for a register's (0 to 255);
+`BitCount`, `LowestSetBit` and `Align` are C of what the recompiler knows, or the map.
+
 ## Another back end
 
 The front (the parse, the inlining, the times) and the Sail don't depend on LLVM. Another back end is another
 `llvm.h`, with the same functions over its own values, keeping the registers its own way behind the same
-`sg_NAME_read` and `sg_NAME_write`, and the guest's memory behind the same actions.
+`sg_NAME_read` and `sg_NAME_write`, and the guest's memory behind the same actions. `core.h` holds what every machine's
+shares (the bits, the map, the integers, AddWithCarry's flags) and asks the machine's file for its builder, its LLVM
+context and its intrinsics (`sg_builder`, `sg_llvm_context`, `sg_intrinsic`, `sg_select_phi`).
 
 ## Tests
 
 `tests/sailgen/`: `--extract` of a small file copies the closure of its root and nothing else, and of a function it
 lowers the `val` and the types it names alone; `--generate` refuses a throw it has no meaning for, an `Error_See` under a
-run-time condition, a write to a field a `let` holds fixed, a register or a field the back end does not keep, the back
-end's function that takes no `path` under a run-time condition, one whose `val` gives an integer and a function that
-calls itself other than as the sum of its bits' elements, naming its line; `sailgen_lanes` says which element loops
-become lanes and `sailgen_halves` that such a function is one reduction; `sailgen_a64` generates the in-tree A64
-subsets whole.
+run-time condition, an `Error_Unpredictable` with no overlay's `UnpredictableEncoding()`, a write to a field a `let`
+holds fixed, a register or a field the back end does not keep, the back end's function that takes no `path` under a
+run-time condition, one whose `val` gives an integer and a function that calls itself other than as the sum of its
+bits' elements, naming its line; `sailgen_lanes` says which element loops become lanes and `sailgen_halves` that such
+a function is one reduction; `sailgen_a64` generates the in-tree A64 subsets whole.
 
 `tests/llvm_sail_ir.c` holds the generated emitters to the hand-written ones they replaced
 (`tests/support/ir_int_reference.c`, `tests/support/ir_fpu_reference.c`), word by word on three paths: the same
