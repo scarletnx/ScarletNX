@@ -483,7 +483,7 @@ static GpDKey* gp_dkey(u32 kind, u64 key, i64 site) {
 }
 /* the CPU waits for the timeline's value (kind: VK_WAIT_*) */
 void vk_gpuprof_waited(u64 value, int kind) {
-    if (atomic_load_explicit(&g_on, memory_order_relaxed) <= 0) return;
+    if (gp_on() <= 0) return; /* worked out here too: the first wait after log changes is classified as well */
     g_waited[value % GP_WAITS].value = value;
     g_waited[value % GP_WAITS].kind = kind + 1;
 }
