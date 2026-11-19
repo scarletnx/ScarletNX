@@ -22,6 +22,7 @@
 typedef struct {
     u64 gva, size;
     VkFormat vk;
+    u32 w, h, sw, sh; /* the surface's size then: one made again at the address need not have it */
 } TsInput;
 /* the copies recorded this frame, by the picture they came from and the image they went to (TS_MADE of them): a
    later pass of the same network over the same picture asks for bytes that are already there */
@@ -76,16 +77,17 @@ static int ts_init(void) {
 
 /* the picture the network sampled in this pass: the pass that saves it copies that one, not what the network would */
 void vk_tensor_remember(const Surf* in) {
-    if (!g_settings.tensor_standin || !in || in->f.depth || in->f.is_int) return;
-    g_ts.in = (TsInput){in->gva, in->size, in->f.vk};
+    if (!g_settings.tensor_standin || !in || in->f.depth || in->f.stencil || in->f.is_int) return;
+    g_ts.in = (TsInput){in->gva, in->size, in->f.vk, in->w, in->h, in->sw, in->sh};
 }
 
 /* the surface the network's picture lies in now, or NULL: another at the address, or none */
 static Surf* ts_input(void) {
     if (!g_ts.in.gva || !g_ts.in.size) return NULL;
     for (Surf* t = vk_surf_first(g_ts.in.gva); t; t = t->next)
-        if (t->gva == g_ts.in.gva && t->size == g_ts.in.size && t->f.vk == g_ts.in.vk &&
-            t->type == VK_IMAGE_VIEW_TYPE_2D && !t->msaa)
+        if (t->gva == g_ts.in.gva && t->size == g_ts.in.size && t->f.vk == g_ts.in.vk && t->w == g_ts.in.w &&
+            t->h == g_ts.in.h && t->sw == g_ts.in.sw && t->sh == g_ts.in.sh && t->type == VK_IMAGE_VIEW_TYPE_2D &&
+            !t->msaa)
             return t;
     return NULL;
 }
