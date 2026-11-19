@@ -75,14 +75,14 @@ enum {
 #define SPV_IDS (1u << 22) /* a module's id bound gvk mends, at most */
 /* what an id is */
 enum {
-    SPV_MATRIX = 1,       /* a matrix type */
-    SPV_STRIDED = 2,      /* an array type with its own ArrayStride */
-    SPV_BUFFER_TYPE = 4,  /* a structure decorated BufferBlock: a storage buffer in the Uniform class */
-    SPV_UNIFORM_ID = 8,   /* a constant, the same in every invocation */
+    SPV_MATRIX = 1,        /* a matrix type */
+    SPV_STRIDED = 2,       /* an array type with its own ArrayStride */
+    SPV_BUFFER_TYPE = 4,   /* a structure decorated BufferBlock: a storage buffer in the Uniform class */
+    SPV_UNIFORM_ID = 8,    /* a constant, the same in every invocation */
     SPV_BUFFER_ARRAY = 16, /* a variable that is an array of buffers (with 32 for storage buffers) */
     SPV_SSBO_ARRAY = 32,
-    SPV_INDEXED = 64,     /* a pointer into such an array, by an index that can differ between invocations */
-    SPV_HAS_NU = 128,     /* decorated NonUniform by the module itself */
+    SPV_INDEXED = 64, /* a pointer into such an array, by an index that can differ between invocations */
+    SPV_HAS_NU = 128, /* decorated NonUniform by the module itself */
 };
 static const char g_ext_name[] = "SPV_EXT_descriptor_indexing";
 #define SPV_EXT_WORDS ((u32)(sizeof g_ext_name + 3) / 4) /* its words, with its NUL */
@@ -184,7 +184,8 @@ const u32* gvk_spirv_mend(const u32* w, size_t bytes, size_t* out_bytes, u32 all
             if (t && t < bound && elem[t]) {
                 u32 e = elem[t];
                 flag[o[1]] |= SPV_BUFFER_ARRAY;
-                if (o[2] == SPV_STORAGE_BUFFER || (e < bound && (flag[e] & SPV_BUFFER_TYPE))) flag[o[1]] |= SPV_SSBO_ARRAY;
+                if (o[2] == SPV_STORAGE_BUFFER || (e < bound && (flag[e] & SPV_BUFFER_TYPE)))
+                    flag[o[1]] |= SPV_SSBO_ARRAY;
             }
         } else if ((op == SPV_ACCESS_CHAIN || op == SPV_IN_BOUNDS_ACCESS_CHAIN) && len >= 5 && o[1] < bound &&
                    o[2] < bound && o[3] < bound) {
@@ -215,7 +216,8 @@ const u32* gvk_spirv_mend(const u32* w, size_t bytes, size_t* out_bytes, u32 all
     int add_cap[3] = {indexed && !has_cap[0], indexed && need_ubo && !has_cap[1], indexed && need_ssbo && !has_cap[2]};
     int add_ext = indexed && !has_ext;
     if (!fixes && !indexed) return w;
-    extra += 3 * (size_t)indexed + 2 * (size_t)(add_cap[0] + add_cap[1] + add_cap[2]) + (add_ext ? 1 + SPV_EXT_WORDS : 0);
+    extra +=
+        3 * (size_t)indexed + 2 * (size_t)(add_cap[0] + add_cap[1] + add_cap[2]) + (add_ext ? 1 + SPV_EXT_WORDS : 0);
     if (extra > UINT32_MAX - n || extra > SIZE_MAX / sizeof(u32) - n) return NULL;
     u32* out = gvk_scratch(sizeof *out * (n + extra));
     memcpy(out, w, 5 * sizeof *out);
@@ -512,8 +514,9 @@ const u32* gvk_spirv_scaled_size(const u32* w, size_t bytes, size_t* out_bytes, 
                 pc_var = o[1];
                 pc_ptr = o[0];
             }
-        } else if ((op == SPV_CONSTANT || op == SPV_LOAD || op == SPV_ACCESS_CHAIN || op == SPV_IN_BOUNDS_ACCESS_CHAIN ||
-                    op == SPV_IMAGE || op == SPV_SAMPLED_IMAGE || op == SPV_COPY_OBJECT) &&
+        } else if ((op == SPV_CONSTANT || op == SPV_LOAD || op == SPV_ACCESS_CHAIN ||
+                    op == SPV_IN_BOUNDS_ACCESS_CHAIN || op == SPV_IMAGE || op == SPV_SAMPLED_IMAGE ||
+                    op == SPV_COPY_OBJECT) &&
                    len >= 4 && o[1] < bound) {
             def[o[1]] = i;
         } else if ((op == SPV_QUERY_SIZE_LOD || op == SPV_QUERY_SIZE) && len >= 4 && funcs_at) {

@@ -20,8 +20,8 @@
 /* the host's structures have the guest's layout (gvk.h): 64-bit pointers, little-endian */
 typedef char gvk_host_lp64[sizeof(void*) == 8 && sizeof(size_t) == 8 ? 1 : -1];
 
-#define GVK_CHUNKS  24  /* scratch chunks, each at least twice the one before */
-#define GVK_CHUNK   (1u << 20)
+#define GVK_CHUNKS     24 /* scratch chunks, each at least twice the one before */
+#define GVK_CHUNK      (1u << 20)
 #define GVK_CHAIN_HOPS 64
 
 typedef struct {
@@ -63,7 +63,7 @@ void gvk_scratch_free(void) {
 
 void* gvk_scratch(size_t n) {
     GvkTls* t = &t_gvk;
-    n = (n + 15) & ~(size_t)15;
+    n = (size_t)snx_align_up(n, 16);
     for (;;) {
         if (t->cur < t->n && n <= t->cap[t->cur] - t->used) {
             void* p = t->chunk[t->cur] + t->used;
@@ -396,7 +396,10 @@ CHAINED(gvk_t_bufreq2, VkBufferMemoryRequirementsInfo2, VK_STRUCTURE_TYPE_BUFFER
 CHAINED(gvk_t_req2, VkMemoryRequirements2, VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2, {0});
 
 static const GvkType* chain_type(u32 parent, u32 stype) {
-    static const struct { u32 parent; const GvkType* type; } ext[] = {
+    static const struct {
+        u32 parent;
+        const GvkType* type;
+    } ext[] = {
         {VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2, &t_dedicated_req},
         {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, &t_dedicated_alloc},
         {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, &t_format_list},
@@ -412,8 +415,8 @@ static const GvkType* chain_type(u32 parent, u32 stype) {
 }
 
 /* Older loaders return these extension functions from GetInstanceProcAddr without exporting their names. */
-static const char* const debug_procs[] = {
-    "vkCreateDebugReportCallbackEXT", "vkDestroyDebugReportCallbackEXT", "vkDebugReportMessageEXT"};
+static const char* const debug_procs[] = {"vkCreateDebugReportCallbackEXT", "vkDestroyDebugReportCallbackEXT",
+                                          "vkDebugReportMessageEXT"};
 
 u64 gvk_proc_space(u64 code_hi) {
     if (!g_settings.guest_vulkan || g_arm_mod || nce_wanted() || !code_hi) return code_hi;
@@ -426,7 +429,7 @@ u64 gvk_proc_space(u64 code_hi) {
         if (m->base + m->size > end) end = m->base + m->size;
     }
     u64 page = plat_vm_page();
-    g_gvk.proc_base = (end + page - 1) & ~(page - 1);
+    g_gvk.proc_base = snx_align_up(end, page);
     return g_gvk.proc_base + page;
 }
 
@@ -458,8 +461,7 @@ static void set_slot(u64 addr, GuestFn fn) {
 }
 
 GuestFn gvk_invalidation_slot(u64 addr) {
-    if (g_gvk.proc_base && addr - g_gvk.proc_base < sizeof debug_procs / sizeof *debug_procs * 4 &&
-        !(addr & 3)) {
+    if (g_gvk.proc_base && addr - g_gvk.proc_base < sizeof debug_procs / sizeof *debug_procs * 4 && !(addr & 3)) {
         MemBlock b;
         mem_query(addr, &b);
         return (b.perm & PERM_X) ? g_gvk.proc[(addr - g_gvk.proc_base) / 4] : NULL;
@@ -549,7 +551,8 @@ void gvk_install(void) {
         if (!hook_routed(name)) {
             if (fn)
                 fatal("gvk: guest_vulkan=1 needs a Vulkan route missing from the recompiled game (%s). "
-                      "Recompile with --hook-direct-calls or set guest_vulkan=0", name);
+                      "Recompile with --hook-direct-calls or set guest_vulkan=0",
+                      name);
             if (!unrouted++) unrouted_first = name;
         }
         taken += fn != NULL;
@@ -557,7 +560,8 @@ void gvk_install(void) {
     }
     if (unrouted)
         LOG("gvk: %u functions the driver exports beside the loader's (%s, ...) have no route: a direct call to one "
-            "runs the driver's own code\n", unrouted, unrouted_first);
+            "runs the driver's own code\n",
+            unrouted, unrouted_first);
     g_gvk.driver_base = driver->base;
     g_gvk.driver_size = driver->size;
     for (u32 i = 0; i < g_gvk.nexports;) {
@@ -607,7 +611,8 @@ void gvk_install(void) {
         }
     }
     LOG("gvk: the %u Vulkan functions of the game's driver (%s) call the host's Vulkan, %u of them implemented (the "
-        "others stop the game when called)\n", g_gvk.nexports, driver->name ? driver->name : "?", taken);
+        "others stop the game when called)\n",
+        g_gvk.nexports, driver->name ? driver->name : "?", taken);
 }
 
 void gvk_check_device(void) {

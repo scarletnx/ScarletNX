@@ -3,7 +3,8 @@
 /* The guest's Vulkan on the host's (the guest_vulkan setting). A game that links NVIDIA's Vulkan driver calls the entry
    points of the loader in the driver's module. gvk.c puts a function of its own into the dispatch slot of each one
    (gvk.hook routes the direct calls to them), and gvk_api.c calls the host's Vulkan on the renderer's device with the
-   game's arguments. The driver itself never runs, and nothing goes through nvdrv or the Maxwell front end.
+   game's arguments. The driver's code runs only for a call that no slot takes, and nothing goes through nvdrv or the
+   Maxwell front end. Where gvk cannot run (gvk_check_device), the slots go back to the driver.
 
    The structures of Vulkan have one layout on AArch64 and on every 64-bit little-endian host: pointers and handles of
    8 bytes, enums of 4, and natural alignment. A structure with no pointer in it is read where the game wrote it. A
@@ -36,11 +37,11 @@ int gvk_api_supported(void);
 
 /* A pointer field of a structure, which gvk_in copies what it points to for. A structure's fields end at kind 0 */
 enum {
-    GVK_ONE = 1, /* one element */
-    GVK_ARRAY,   /* count elements, count at count_off (count_size bytes) */
-    GVK_BYTES,   /* count bytes, count at count_off (count_size bytes) */
-    GVK_STR,     /* a string */
-    GVK_EMBED,   /* not a pointer: a structure inside this one, at off, whose own pointers are fixed */
+    GVK_ONE = 1,        /* one element */
+    GVK_ARRAY,          /* count elements, count at count_off (count_size bytes) */
+    GVK_BYTES,          /* count bytes, count at count_off (count_size bytes) */
+    GVK_STR,            /* a string */
+    GVK_EMBED,          /* not a pointer: a structure inside this one, at off, whose own pointers are fixed */
     GVK_OPTIONAL_ARRAY, /* Vulkan may ignore this array even with a nonzero count */
     GVK_OPTIONAL_ONE,   /* Vulkan may ignore this pointer depending on state (e.g. primary CB, no tessellation) */
     GVK_SAMPLE_MASK     /* optional ceil(rasterizationSamples / 32) words */
