@@ -5320,10 +5320,50 @@ static int check_resident_texture_in_flight(void) {
     g_settings.astc_mode = had;
     return failed;
 }
+/* copies of the CPU's bytes one after another with no draw between them (a game's load through the GL layer, 256 MiB
+   in copies of 512 KiB) under a 64 MiB budget: their staging comes free as the submissions that read it end, so the
+   rings stay far below what the copies took in all; the last copy's bytes land */
+static int check_snapshot_uploads(void) {
+    enum { LINE = 4096, LINES = 128, COPIES = 512 };
+    GpuDmaOp o;
+    u8* bytes = malloc((size_t)LINE * LINES);
+    u64 before, most = 0, saved_budget;
+    CHECK(bytes);
+    vk_finish();
+    vk_frame_next();
+    saved_budget = vk_mem_budget_cap(64u << 20);
+    before = vk_ring_bytes();
+    memset(&o, 0, sizeof o);
+    o.width = o.line_in = o.line_out = LINE;
+    o.lines = LINES;
+    o.src = pitch_side(0, LINE);
+    o.dst = pitch_side(DMA_GA + 0x80000, LINE);
+    o.snap = bytes;
+    for (u32 k = 0; k < COPIES; k++) {
+        u64 now;
+        memset(bytes, (int)(k & 0xff), (size_t)LINE * LINES);
+        CHECK(g_renderer->dma_copy(&o));
+        now = vk_ring_bytes();
+        if (now > most) most = now;
+    }
+    vk_finish();
+    vk_mem_budget_cap(saved_budget);
+    printf("%u copies of %u KiB of the CPU's bytes, no draw between them, a 64 MiB budget: rings %llu MiB at most, "
+           "%llu before\n",
+           (unsigned)COPIES, (unsigned)(LINE * LINES >> 10), (unsigned long long)(most >> 20),
+           (unsigned long long)(before >> 20));
+    CHECK(most - before < (u64)COPIES * LINE * LINES / 2);
+    guest_done(DMA_A + 0x80000, (u64)LINE * LINES);
+    CHECK(GP(DMA_A + 0x80000)[0] == (u8)((COPIES - 1) & 0xff) &&
+          GP(DMA_A + 0x80000)[LINE * LINES - 1] == (u8)((COPIES - 1) & 0xff));
+    free(bytes);
+    return 0;
+}
 static int check_dma(void) {
     GpuDmaOp o;
     gmmu_map(DMA_GA, DMA_A, DMA_SPAN);
     gmmu_map(DMA_GB, DMA_B, DMA_SPAN);
+    CHECK(!check_snapshot_uploads());
     /* a one-dimensional copy */
     memset(&o, 0, sizeof o);
     o.width = o.line_in = o.line_out = 1001;
