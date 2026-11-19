@@ -5382,6 +5382,14 @@ static void test_coop_flow(const char* dir) {
     static const u32 outs[8] = {20, 21, 22, 23, 24, 25, 26, 27};
     CHECK(coop_case(dir, "coop_flow", insns, 3, outs, 8));
 }
+/* A program whose one HMMA is fused with its LDSM: it takes the cooperative matrices as a lone HMMA does (coop_wanted
+   counted the HMMAs alone) */
+static void test_coop_fused_only(const char* dir) {
+    static const u32 insns[1][5] = {{20, COOP_LDSM | 24, 12, 255, 0x18}};
+    static const u32 outs[4] = {20, 21, 22, 23};
+    CHECK(coop_case(dir, "coop_fused_only", insns, 1, outs, 4));
+}
+
 /* the way the log says a device's compute HMMAs take (shader_hmma_way), from the flags device.c sets */
 static void test_hmma_way(void) {
     int quad_was = g_spirv_translate.quad_compute, mixed_was = g_spirv_translate.mixed_dot,
@@ -6492,6 +6500,7 @@ int main(int argc, char** argv) {
     test_coop_c_regs(dir);
     test_coop_overlap(dir);
     test_coop_flow(dir);
+    test_coop_fused_only(dir);
     test_warp_matrix_flush(dir);
     test_hmma_way();
     test_hmma_choose();

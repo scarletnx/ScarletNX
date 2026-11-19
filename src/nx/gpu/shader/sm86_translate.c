@@ -3666,7 +3666,7 @@ static int coop_wanted(const Ctx* c) {
     u32 own = c->si->shared_size > 0 ? (u32)c->si->shared_size : 16384u; /* shared_var's */
     if (own + lanes / 32 * COOP_WORDS * 4 > (u32)g_spirv_translate.hmma_coop) return 0;
     for (u32 i = 0; i < c->n; i++)
-        if (c->in[i].op == SM86_HMMA) return 1;
+        if (c->in[i].op == SM86_HMMA || c->in[i].op == SM86_LDSM_HMMA) return 1;
     return 0;
 }
 static void coop_barrier(Ctx* c) {
