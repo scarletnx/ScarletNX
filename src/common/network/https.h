@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* An HTTP GET through libcurl (cmake/curl.cmake), TLS by the build's OpenSSL verified against Mozilla's root
+/* An HTTP GET (and a POST) through libcurl (cmake/curl.cmake), TLS by the build's OpenSSL verified against Mozilla's root
    certificates the build carries (cmake/cacert.cmake), as Eden does with its bundled OpenSSL, or the file
    SSL_CERT_FILE names: the launcher's downloads (GPU driver packages, their releases' lists). Redirects followed to any
    origin, as a release's asset is served from another host than its page, nothing secret being sent (no cookie, no
@@ -32,4 +32,8 @@ const char* snx_https_init(void);
 /* GET url (https:// or http://): 0 with out filled, whatever its status, else -1 with why saying what failed and the
    values it had (the host, the bytes, the time). out->body is NULL after a failure */
 int snx_https_get(const char* url, const SnxHttpsOptions* o, SnxHttpsResponse* out, char* why, size_t size);
+/* POST body (body_size bytes of the Content-Type type) to url, as the 3DS's friends module posts to NASC: the answer as
+   snx_https_get's, no redirect followed (a POST's would send it again). agent: the User-Agent, NULL for ScarletNX's */
+int snx_https_post(const char* url, const char* type, const void* body, size_t body_size, const char* agent,
+                   const SnxHttpsOptions* o, SnxHttpsResponse* out, char* why, size_t size);
 #endif

@@ -83,8 +83,8 @@ static size_t take(char* p, size_t one, size_t count, void* user) {
 }
 
 /* why a transfer failed, by curl's code and what the sink saw, with the values it had */
-static void failed(CURL* curl, CURLcode rc, const char* url, const char* detail, const Sink* k, unsigned timeout,
-                   char* why, size_t size) {
+static void failed(CURL* curl, CURLcode rc, const char* method, const char* url, const char* detail, const Sink* k,
+                   unsigned timeout, char* why, size_t size) {
     char *host = NULL, *port = NULL;
     CURLU* u = curl_url();
     const char* named;
@@ -94,13 +94,14 @@ static void failed(CURL* curl, CURLcode rc, const char* url, const char* detail,
     }
     named = host ? host : url;
     if (k->over && length_said(curl))
-        snprintf(why, size, "GET %s: its body is %llu bytes, over the %llu this takes", url, length_said(curl), k->max);
+        snprintf(why, size, "%s %s: its body is %llu bytes, over the %llu this takes", method, url, length_said(curl),
+                 k->max);
     else if (k->over)
-        snprintf(why, size, "GET %s: its body is over the %llu bytes this takes", url, k->max);
+        snprintf(why, size, "%s %s: its body is over the %llu bytes this takes", method, url, k->max);
     else if (k->stopped)
-        snprintf(why, size, "GET %s: stopped, %zu bytes in", url, k->size);
+        snprintf(why, size, "%s %s: stopped, %zu bytes in", method, url, k->size);
     else if (k->no_memory)
-        snprintf(why, size, "GET %s: no memory for %zu bytes of its answer", url, k->size);
+        snprintf(why, size, "%s %s: no memory for %zu bytes of its answer", method, url, k->size);
     else if (rc == CURLE_COULDNT_RESOLVE_HOST)
         snprintf(why, size, "%s does not resolve: %s", named, detail);
     else if (rc == CURLE_COULDNT_CONNECT)
@@ -110,11 +111,11 @@ static void failed(CURL* curl, CURLcode rc, const char* url, const char* detail,
     else if (rc == CURLE_SSL_CONNECT_ERROR)
         snprintf(why, size, "%s: the TLS handshake failed: %s", named, detail);
     else if (rc == CURLE_OPERATION_TIMEDOUT)
-        snprintf(why, size, "GET %s: no whole answer within %u s, %zu bytes in", url, timeout, k->size);
+        snprintf(why, size, "%s %s: no whole answer within %u s, %zu bytes in", method, url, timeout, k->size);
     else if (rc == CURLE_PARTIAL_FILE)
-        snprintf(why, size, "GET %s: %zu of its %llu bytes came", url, k->size, length_said(curl));
+        snprintf(why, size, "%s %s: %zu of its %llu bytes came", method, url, k->size, length_said(curl));
     else
-        snprintf(why, size, "GET %s: %s (curl's error %d)", url, detail, (int)rc);
+        snprintf(why, size, "%s %s: %s (curl's error %d)", method, url, detail, (int)rc);
     curl_free(host);
     curl_free(port);
     curl_url_cleanup(u);
@@ -128,10 +129,14 @@ static int finish(CURL* curl, struct curl_slist* head, char* body) {
     return -1;
 }
 
-int snx_https_get(const char* url, const SnxHttpsOptions* o, SnxHttpsResponse* out, char* why, size_t size) {
+/* GET, or POST of body (body_size bytes of type) when method is "POST", whose redirects are not followed */
+static int request(const char* method, const char* url, const char* type, const void* body, size_t body_size,
+                   const char* agent, const SnxHttpsOptions* o, SnxHttpsResponse* out, char* why, size_t size) {
     unsigned timeout = o && o->timeout_s ? o->timeout_s : HTTPS_DEFAULT_TIMEOUT_S;
-    int redirects = !o || !o->redirects ? HTTPS_DEFAULT_REDIRECTS : o->redirects < 0 ? 0 : o->redirects, hop;
-    char accept[320], detail[CURL_ERROR_SIZE];
+    int post = !strcmp(method, "POST");
+    int redirects = post || (o && o->redirects < 0) ? 0 : !o || !o->redirects ? HTTPS_DEFAULT_REDIRECTS : o->redirects;
+    int hop;
+    char accept[320], content[320], detail[CURL_ERROR_SIZE];
     struct curl_slist* head = NULL;
     struct curl_blob roots;
     Sink k = {0};
@@ -152,17 +157,24 @@ int snx_https_get(const char* url, const SnxHttpsOptions* o, SnxHttpsResponse* o
     }
     curl_url_cleanup(check);
     if (g_https.global != CURLE_OK || !(curl = curl_easy_init())) {
-        snprintf(why, size, "GET %s: libcurl did not start (%s)", url,
+        snprintf(why, size, "%s %s: libcurl did not start (%s)", method, url,
                  curl_easy_strerror(g_https.global != CURLE_OK ? g_https.global : CURLE_FAILED_INIT));
         return -1;
     }
     snprintf(accept, sizeof accept, "Accept: %s", o && o->accept ? o->accept : "*/*");
     head = curl_slist_append(head, accept);
+    if (post) {
+        snprintf(content, sizeof content, "Content-Type: %s", type);
+        head = curl_slist_append(head, content);
+        head = curl_slist_append(head, "Expect:"); /* the body at once, without waiting for a 100 Continue */
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body);
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE_LARGE, (curl_off_t)body_size);
+    }
     memcpy(out->url, url, strlen(url) + 1);
     k.curl = curl;
     k.o = o;
     k.max = o && o->body_max ? o->body_max : HTTPS_DEFAULT_BODY_MAX;
-    curl_easy_setopt(curl, CURLOPT_USERAGENT, "ScarletNX");
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, agent ? agent : "ScarletNX");
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, head);
     curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, (long)timeout);
@@ -188,7 +200,7 @@ int snx_https_get(const char* url, const SnxHttpsOptions* o, SnxHttpsResponse* o
         curl_easy_setopt(curl, CURLOPT_URL, out->url);
         rc = curl_easy_perform(curl);
         if (rc != CURLE_OK) {
-            failed(curl, rc, out->url, detail[0] ? detail : curl_easy_strerror(rc), &k, timeout, why, size);
+            failed(curl, rc, method, out->url, detail[0] ? detail : curl_easy_strerror(rc), &k, timeout, why, size);
             return finish(curl, head, k.body);
         }
         curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
@@ -196,14 +208,14 @@ int snx_https_get(const char* url, const SnxHttpsOptions* o, SnxHttpsResponse* o
         out->status = (int)status;
         if (!next || hop >= redirects) break;
         if (strlen(next) >= sizeof out->url) {
-            snprintf(why, size, "GET %s: its redirect leads to %zu bytes of URL, over %zu", out->url, strlen(next),
-                     sizeof out->url - 1);
+            snprintf(why, size, "%s %s: its redirect leads to %zu bytes of URL, over %zu", method, out->url,
+                     strlen(next), sizeof out->url - 1);
             return finish(curl, head, k.body);
         }
         memmove(out->url, next, strlen(next) + 1);
     }
     if (!k.body && !(k.body = (char*)calloc(1, 1))) {
-        snprintf(why, size, "GET %s: no memory for its empty body", out->url);
+        snprintf(why, size, "%s %s: no memory for its empty body", method, out->url);
         return finish(curl, head, NULL);
     }
     out->body = k.body;
@@ -211,4 +223,11 @@ int snx_https_get(const char* url, const SnxHttpsOptions* o, SnxHttpsResponse* o
     curl_slist_free_all(head);
     curl_easy_cleanup(curl);
     return 0;
+}
+int snx_https_get(const char* url, const SnxHttpsOptions* o, SnxHttpsResponse* out, char* why, size_t size) {
+    return request("GET", url, NULL, NULL, 0, NULL, o, out, why, size);
+}
+int snx_https_post(const char* url, const char* type, const void* body, size_t body_size, const char* agent,
+                   const SnxHttpsOptions* o, SnxHttpsResponse* out, char* why, size_t size) {
+    return request("POST", url, type, body, body_size, agent, o, out, why, size);
 }
