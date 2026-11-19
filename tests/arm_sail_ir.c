@@ -284,16 +284,20 @@ static uint32_t hook(SnxArmCPU* cpu, uint32_t address, uint32_t size_write, uint
     return bytes >= 4 ? v : v & ((1u << bytes * 8) - 1);
 }
 typedef struct {
-    unsigned char cpu[CPU_BYTES];
+    union { /* the CPU structure, the block's trace after it: aligned as the structure, in each RunState of an array */
+        SnxArmCPU regs;
+        unsigned char bytes[CPU_BYTES];
+    } cpu;
     unsigned char mem[MEM_SIZE];
     uint32_t log[HOOK_LOG][3];
     unsigned logged;
 } RunState;
+static_assert(sizeof(RunState) % alignof(SnxArmCPU) == 0, "the second RunState of two must hold an aligned SnxArmCPU");
 /* a random state: registers into guest memory or anywhere (all of them, the even or the odd ones, by state: a negative
    operand, a shift by 32 or more), NZCV random, Thumb, user mode */
 static void start(RunState* s, unsigned k, const uint16_t* code, size_t n, int legacy) {
-    SnxArmCPU* cpu = (SnxArmCPU*)s->cpu;
-    memset(s->cpu, 0, sizeof s->cpu);
+    SnxArmCPU* cpu = &s->cpu.regs;
+    memset(&s->cpu, 0, sizeof s->cpu);
     for (size_t i = 0; i < MEM_SIZE; i += 8) {
         u64 x = rnd();
         memcpy(s->mem + i, &x, 8);
@@ -315,7 +319,7 @@ static void start(RunState* s, unsigned k, const uint16_t* code, size_t n, int l
     cpu->exclusive_size = 4;
 }
 static void finish(RunState* s) {
-    SnxArmCPU* cpu = (SnxArmCPU*)s->cpu;
+    SnxArmCPU* cpu = &s->cpu.regs;
     memcpy(s->log, g_test.log, sizeof s->log);
     s->logged = g_test.logged;
     cpu->mem = NULL;
@@ -324,7 +328,7 @@ static void finish(RunState* s) {
 /* what differs between the two runs, "" for nothing */
 static const char* differs(const RunState* a, const RunState* b) {
     char* why = g_test.why;
-    const SnxArmCPU *x = (const SnxArmCPU*)a->cpu, *y = (const SnxArmCPU*)b->cpu;
+    const SnxArmCPU *x = &a->cpu.regs, *y = &b->cpu.regs;
     for (unsigned r = 0; r < 16; ++r)
         if (x->r[r] != y->r[r]) {
             snprintf(why, sizeof g_test.why, "r%u %08x, generated %08x", r, x->r[r], y->r[r]);
@@ -338,7 +342,7 @@ static const char* differs(const RunState* a, const RunState* b) {
         return snprintf(why, sizeof g_test.why, "exclusive_valid %u, generated %u", x->exclusive_valid,
                         y->exclusive_valid),
                why;
-    if (memcmp(a->cpu + TRACE, b->cpu + TRACE, CPU_BYTES - TRACE)) return "the trace";
+    if (memcmp(a->cpu.bytes + TRACE, b->cpu.bytes + TRACE, CPU_BYTES - TRACE)) return "the trace";
     if (memcmp(a->mem, b->mem, MEM_SIZE)) return "guest memory";
     if (a->logged != b->logged)
         return snprintf(why, sizeof g_test.why, "%u bus hook calls, generated %u", a->logged, b->logged), why;
@@ -469,7 +473,7 @@ static int run_chunk(SnxIr* ir, const Config* c, int place, const uint16_t* half
                     g_test.seed = seed;
                     start(&s[side], k, code, n, legacy);
                     g_test.logged = 0;
-                    ((SnxArmBlock)(uintptr_t)addr[side][i])((SnxArmCPU*)s[side].cpu);
+                    ((SnxArmBlock)(uintptr_t)addr[side][i])(&s[side].cpu.regs);
                     finish(&s[side]);
                 }
                 ++g_test.ran;
@@ -569,7 +573,7 @@ static void run_witnesses(SnxIr* ir) {
     for (size_t i = 0; loader && i < WITNESSES; ++i)
         for (int k = 0; k < 2; ++k) {
             const Witness* w = &witnesses[i];
-            SnxArmCPU* cpu = (SnxArmCPU*)s->cpu;
+            SnxArmCPU* cpu = &s->cpu.regs;
             start(s, 0, w->code, w->count, 0);
             cpu->r[0] = w->r0;
             cpu->r[1] = w->r1;
