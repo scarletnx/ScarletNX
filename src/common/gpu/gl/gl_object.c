@@ -112,11 +112,12 @@ static uint64_t memory_take(uint64_t size) {
         }
         if (pass || !H.chunk || S.chunk_count == SNX_GL_CHUNKS || S.free_count == SNX_GL_FREE_RANGES) return 0;
         {
-            uint64_t got = 0, at = H.chunk(size > CHUNK ? size : CHUNK, &got), end;
+            /* a platform's chunk may start off ALIGN's multiple: room to align its start, its end where it ends */
+            uint64_t need = size + ALIGN - 1, got = 0, raw = H.chunk(need > CHUNK ? need : CHUNK, &got), at, end;
             uint32_t i = 0;
-            if (!at || got < size) return 0;
-            at = (at + ALIGN - 1) & ~(uint64_t)(ALIGN - 1);
-            end = (at + got) & ~(uint64_t)(ALIGN - 1);
+            if (!raw || got < need) return 0;
+            at = (raw + ALIGN - 1) & ~(uint64_t)(ALIGN - 1);
+            end = (raw + got) & ~(uint64_t)(ALIGN - 1);
             S.chunks[S.chunk_count++] = (SnxGlRange){at, end - at};
             while (i < S.free_count && S.free[i].at < at) i++;
             memmove(&S.free[i + 1], &S.free[i], (S.free_count - i) * sizeof S.free[0]);

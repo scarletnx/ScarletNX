@@ -35,14 +35,21 @@ enum {
 
 /* the platform: its chunks, and what it heard */
 static struct {
-    unsigned chunks, gone, read_back;
+    unsigned chunks, gone, read_back, odd;
     uint32_t written_name;
     uint64_t written_lo, written_hi;
+    uint64_t odd_at, odd_got; /* the last chunk given with odd set, from odd_mem */
+    void* odd_mem;
 } heard;
 static uint64_t chunk(uint64_t size, uint64_t* got) {
-    void* p = malloc((size_t)size);
+    void* p = malloc((size_t)size + (heard.odd ? 1024 : 0));
     heard.chunks++;
     *got = p ? size : 0;
+    if (p && heard.odd) { /* 16 bytes past a multiple of 256, and 100 more than asked */
+        heard.odd_mem = p, heard.odd_got = *got = size + 100;
+        heard.odd_at = (((uint64_t)(uintptr_t)p + 255) & ~(uint64_t)255) + 16;
+        return heard.odd_at;
+    }
     return (uint64_t)(uintptr_t)p;
 }
 static uint8_t* bytes(uint64_t at) { return (uint8_t*)(uintptr_t)at; }
@@ -82,6 +89,11 @@ int main(void) {
     assert(ctx);
     snx_gl_object_host(&(SnxGlObjectHost){chunk, bytes, read_back, written, gone});
     for (int i = 0; i < 300; i++) pattern[i] = (unsigned char)i;
+    /* the layer with no chunk yet, to start one from later */
+    size_t total0 = snx_gl_state_bytes();
+    unsigned char* empty = malloc(total0);
+    assert(empty);
+    snx_gl_state_save(empty);
 
     /* names, binds, and the errors of a target GL has not and of none bound */
     snx_gl_gen_buffers(ctx, 3, names);
@@ -265,6 +277,37 @@ int main(void) {
     free(saved);
     free(copy);
     free(after);
+    /* a chunk the platform gives a layer with no chunk at an address that is no multiple of 256: the chunk the layer
+       keeps of it, and what it places there, end where the platform's ends */
+    {
+        uint32_t o = 0, count;
+        size_t objects = 16 + (size_t)SNX_GL_CONTEXTS * sizeof(SnxGlContext) + snx_gl_program_state_bytes() + 8;
+        size_t chunks = objects + SNX_GL_BUFFERS * sizeof(SnxGlBuffer) +
+                        SNX_GL_VERTEX_ARRAYS * sizeof(SnxGlVertexArray) + SNX_GL_CONTEXTS * sizeof(SnxGlObjectContext);
+        unsigned char *state = malloc(total0), *had = malloc(total0);
+        uint64_t range[2] = {0}, data;
+        assert(state && had);
+        snx_gl_state_save(had);
+        assert(!snx_gl_state_load(empty, total0));
+        heard.odd = 1;
+        snx_gl_gen_buffers(ctx, 1, &o);
+        snx_gl_bind_buffer(ctx, COPY_WRITE, o);
+        snx_gl_buffer_data(ctx, o, (int64_t)(4ull * CHUNK), NULL, STREAM_DRAW);
+        heard.odd = 0;
+        data = snx_gl_buffer(o)->data;
+        assert(!snx_gl_get_error(ctx) && data >= heard.odd_at);
+        assert(data + snx_gl_buffer(o)->capacity <= heard.odd_at + heard.odd_got);
+        snx_gl_state_save(state);
+        memcpy(&count, state + chunks + SNX_GL_CHUNKS * 16 + (size_t)SNX_GL_FREE_RANGES * 16, sizeof count);
+        memcpy(range, state + chunks, sizeof range);
+        assert(count == 1 && range[0] <= data && range[0] + range[1] <= heard.odd_at + heard.odd_got);
+        snx_gl_delete_buffers(ctx, 1, &o);
+        assert(!snx_gl_state_load(had, total0)); /* the chunks the test had */
+        free(heard.odd_mem);
+        free(state);
+        free(had);
+    }
+    free(empty);
     puts("gl_object: ok");
     return 0;
 }
