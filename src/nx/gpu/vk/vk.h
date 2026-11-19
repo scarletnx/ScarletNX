@@ -270,6 +270,9 @@ typedef struct {
     /* VK_KHR_present_id2, VK_KHR_present_wait2 and VK_EXT_present_timing's presentAtAbsoluteTime (with
        VK_KHR_get_surface_capabilities2): a present can be held until a time, on a surface that says so (sc_hold) */
     int has_present_timing;
+    /* VK_NV_low_latency2, for its lowLatencyBoost on each swapchain: gpu_pstate holds an NVIDIA GPU's clocks with it
+       (common/gpu/vk/gpu_pstate.h) */
+    int has_low_latency2;
     int has_calibrated_mono; /* CLOCK_MONOTONIC among the calibrateable time domains */
     /* QueryPerformanceCounter among them (Windows), VK_EXT_calibrated_timestamps on for it: plat_ns's clock, which the
        GPU profile's idle times are put on there (gpuprof.c) */
