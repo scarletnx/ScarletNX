@@ -146,6 +146,7 @@ static int node_path(const SnxGpuPstateDevice* d, char* out, size_t n, char* whe
    reading; its path in where. FreeBSD has no sysfs to read it from */
 static int dpm_level(const SnxGpuPstateDevice* d, char* out, size_t n, char* where, size_t where_n) {
 #if defined(__FreeBSD__)
+    (void)d, (void)n;
     snprintf(where, where_n, "of FreeBSD's amdgpu, which has no sysfs,");
     out[0] = 0;
     return ENOTSUP;
