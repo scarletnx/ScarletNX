@@ -3183,6 +3183,44 @@ extern u64 g_vk_targets_kept;
    through a copy instead (gpu/vk/render.c); the times a target's pixels were copied into a copy of it, for those draws
    and for textures that read a target as another size or format (gpu/vk/texture.c) */
 extern u64 g_vk_fb_draws, g_vk_fb_barriers, g_vk_fb_restarts, g_vk_rt_copies, g_vk_rt_copy_writes;
+/* Why a render target's pixels were copied into another image: a texture reads its bytes as another color format of
+   the same texel size, a corner of it, or both (texture.c rt_crop); a draw samples the target it renders to where no
+   feedback loop takes it (vk_rt_snapshot); a program that counts texels reads a scaled target at the guest's size
+   (rt_guest); a target taking an address starts from the pixels of the one in another format that it parks there
+   (surface.c rt_take_pixels). Which of them a view of the target could replace, and what each costs a frame in copies
+   and in rendering passes ended, decides whether targets take other formats' views */
+enum {
+    VK_RT_COPY_FORMAT,
+    VK_RT_COPY_CROP,
+    VK_RT_COPY_FORMAT_CROP,
+    VK_RT_COPY_FEEDBACK,
+    VK_RT_COPY_GUEST,
+    VK_RT_COPY_TAKE,
+    VK_RT_COPY_N
+};
+#define VK_RT_COPY_PAIRS 8
+typedef struct {
+    u64 written[VK_RT_COPY_N]; /* copies whose pixels were copied (a copy reused as it is counts nothing) */
+    u64 ended[VK_RT_COPY_N];   /* of those, the ones whose barriers ended a rendering pass with work in it */
+    u64 bytes[VK_RT_COPY_N];   /* their texels' bytes, every sample and layer */
+    /* copies made after another with no draw or dispatch recorded between them (one draw's textures), and of those the
+       ones that ended a pass: one pass ended for several copies is already the case where this is 0 */
+    u64 again, again_ended;
+    u64 presents;         /* presents counted in (vk_tex_frame) */
+    u64 most, most_ended; /* the most copies, and passes they ended, of one present */
+    /* the formats the copies that read another one went between (from the target's, to the copy's), the first
+       VK_RT_COPY_PAIRS seen with their counts, and the copies of the pairs past them */
+    struct {
+        u32 from, to; /* VkFormat */
+        u64 n;
+    } pair[VK_RT_COPY_PAIRS];
+    u64 pairs_past;
+} VkRtCopyCounts;
+/* a copy for why (VK_RT_COPY_*) written: ended, its barriers ended a pass with work in it (vk_render_begun before them
+   and not after); bytes its texels'; from and to the formats it went between */
+void vk_rt_copy_count(int why, int ended, u64 bytes, VkFormat from, VkFormat to);
+void vk_rt_copy_counts(VkRtCopyCounts* out); /* since the last stats line */
+void vk_rt_copy_log(void);                   /* a stats line of them, a present, then counted again from 0 */
 /* statistics: the guest's full barriers not recorded, as no command came after the one before them in the submission
    (renderer.c vkr_method_barrier) */
 extern u64 g_vk_barriers_merged;

@@ -1073,6 +1073,7 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
                 (unsigned long long)g_vk_rt_copies, (unsigned long long)g_vk_rt_copy_writes,
                 (unsigned long long)g_vk_barriers_merged, (unsigned long long)g_vk_barriers_in_pass);
             vk_predraw_report();
+            vk_rt_copy_log();
             if (g_vk_capture_draws || g_vk_capture_capped)
                 LOG("vulkan: %llu draws captured a primitive at a time (%llu primitives), %llu skipped past %u "
                     "primitives\n",

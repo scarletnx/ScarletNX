@@ -2244,6 +2244,7 @@ static int rt_take_pixels(Surf* to, Surf* from, int fresh) {
         from->bd != to->bd || from->pitch != to->pitch || from->layers != to->layers ||
         from->layer_size != to->layer_size || from->volume || to->volume || from->msaa != to->msaa)
         return 0;
+    const int open = vk_render_begun();
     vk_render_end();
     VkCommandBuffer cb = vk_cmd();
     vk_surf_use(cb, from, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), VK_PIPELINE_STAGE_2_COPY_BIT,
@@ -2255,6 +2256,8 @@ static int rt_take_pixels(Surf* to, Surf* from, int fresh) {
                      .extent = {to->sw, to->sh, 1}};
     rec_CmdCopyImage(cb, from->img, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), to->img, VK_LAYOUT(TRANSFER_DST_OPTIMAL),
                      1, &c);
+    vk_rt_copy_count(VK_RT_COPY_TAKE, open, (u64)to->sw * to->sh * to->layers * to->f.bpp * (u64)vk_surf_samples(to),
+                     from->f.vk, to->f.vk);
     LOG_LIMIT(10, "vulkan: the %ux%u render target at %llx in format %x takes the pixels of the one in format %x\n",
               to->w, to->h, (unsigned long long)to->gva, to->fkey, from->fkey);
     vk_surf_wrote(to);
