@@ -964,17 +964,25 @@ void vk_mirror_publish(void) {
         u32 owned = own_stage(cpu, 4096, page, o, 16);
         if (owned > 16) continue; /* other owners' bytes all over it: theirs went into the mirror when it was bound */
         if (!valid) {
-            for (u32 a = 0; a < 4096;) {
+            /* every byte the program didn't log but the owned parts', which own_stage left in page as they were
+               (another page's): their owners' bytes go in from the resources (up_owned), recorded now, before the
+               copy of the bytes gathered here */
+            for (u32 a = 0, k = 0; a < 4096;) {
+                const u32 own_at = k < owned ? (u32)(o[k].addr - cpu) : 4096;
+                if (a >= own_at) {
+                    a = (u32)(o[k].addr + o[k].size - cpu);
+                    k++;
+                    continue;
+                }
                 if (bit(mask, a)) {
                     a++;
                     continue;
                 }
                 u32 b = a + 1;
-                while (b < 4096 && !bit(mask, b)) b++;
+                while (b < own_at && !bit(mask, b)) b++;
                 memcpy(up_bytes(&u, cpu + a, b - a), page + a, b - a);
                 a = b;
             }
-            /* owned parts: their owners' bytes, copied in after these (up_owned) */
             if (owned) up_owned(cpu, 4096);
             continue;
         }
