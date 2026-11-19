@@ -53,6 +53,18 @@ static uint64_t chunk(uint64_t size, uint64_t* got) {
     return (uint64_t)(uintptr_t)p;
 }
 static uint8_t* bytes(uint64_t at) { return (uint8_t*)(uintptr_t)at; }
+/* a platform that gives its chunks side by side, from one block, as macOS's allocator did, each 256-byte rounded:
+   until the block is used */
+static struct {
+    uint8_t* base;
+    uint64_t used, size;
+} side;
+static uint64_t chunk_side(uint64_t size, uint64_t* got) {
+    size = (size + 255) & ~(uint64_t)255;
+    if (side.used + size > side.size) return *got = 0, 0;
+    side.used += size, *got = size;
+    return (uint64_t)(uintptr_t)(side.base + side.used - size);
+}
 static void read_back(uint32_t name) {
     (void)name;
     heard.read_back++;
@@ -277,6 +289,43 @@ int main(void) {
     free(saved);
     free(copy);
     free(after);
+    /* chunks the platform gave side by side keep their free ranges apart: a buffer across two would run past one of
+       its allocations. From no chunk, three side by side, each a buffer and, in the room past it, a small one; given
+       back so that a range meets the next chunk's both after it and before it */
+    {
+        uint8_t* block;
+        uint32_t ab[6] = {0};
+        uint64_t a;
+        unsigned char* had = malloc(total0);
+        block = malloc(18ull * CHUNK + 1024);
+        assert(block && had);
+        snx_gl_state_save(had);
+        assert(!snx_gl_state_load(empty, total0));
+        side.base = block + (256 - (uintptr_t)block % 256) % 256, side.size = 18ull * CHUNK + 768;
+        snx_gl_object_host(&(SnxGlObjectHost){.chunk = chunk_side, .bytes = bytes});
+        snx_gl_gen_buffers(ctx, 6, ab);
+        for (int i = 0; i < 5; i++) { /* A, B and C a chunk each, one after the other; then the small ones past A, B */
+            snx_gl_bind_buffer(ctx, COPY_WRITE, ab[i]);
+            snx_gl_buffer_data(ctx, ab[i], (int64_t)(i < 3 ? 3ull * CHUNK : 100), NULL, STREAM_DRAW);
+        }
+        a = snx_gl_buffer(ab[0])->data;
+        assert(a == (uint64_t)(uintptr_t)side.base && snx_gl_buffer(ab[1])->data == a + 6ull * CHUNK + 256 &&
+               snx_gl_buffer(ab[2])->data == a + 12ull * CHUNK + 512);
+        assert(snx_gl_buffer(ab[3])->data == a + 6ull * CHUNK && snx_gl_buffer(ab[4])->data == a + 12ull * CHUNK + 256);
+        snx_gl_delete_buffers(ctx, 1, &ab[2]); /* C */
+        snx_gl_delete_buffers(ctx, 1, &ab[4]); /* past B: C's chunk right after it */
+        snx_gl_delete_buffers(ctx, 1, &ab[0]); /* A */
+        snx_gl_delete_buffers(ctx, 1, &ab[3]); /* past A */
+        snx_gl_delete_buffers(ctx, 1, &ab[1]); /* B: A's chunk right before it */
+        (void)snx_gl_get_error(ctx);
+        snx_gl_bind_buffer(ctx, COPY_WRITE, ab[5]);
+        snx_gl_buffer_data(ctx, ab[5], (int64_t)(9ull * CHUNK), NULL, STREAM_DRAW);     /* room only across two */
+        assert(snx_gl_get_error(ctx) == 0x0505 && !snx_gl_buffer(ab[5])->data);         /* GL_OUT_OF_MEMORY */
+        snx_gl_object_host(&(SnxGlObjectHost){chunk, bytes, read_back, written, gone}); /* the test's own again */
+        assert(!snx_gl_state_load(had, total0));                                        /* and the chunks it had */
+        free(had);
+        free(block);
+    }
     /* a chunk the platform gives a layer with no chunk at an address that is no multiple of 256: the chunk the layer
        keeps of it, and what it places there, end where the platform's ends */
     {

@@ -64,7 +64,7 @@ typedef struct {
     SnxGlVertexArray arrays[SNX_GL_VERTEX_ARRAYS];
     SnxGlObjectContext contexts[SNX_GL_CONTEXTS];
     SnxGlRange chunks[SNX_GL_CHUNKS];
-    SnxGlRange free[SNX_GL_FREE_RANGES]; /* by address, none touching another */
+    SnxGlRange free[SNX_GL_FREE_RANGES]; /* by address, none touching another of its chunk */
     uint32_t chunk_count, free_count;
 } SnxGlObjects;
 
@@ -127,16 +127,24 @@ static uint64_t memory_take(uint64_t size) {
     }
     return 0;
 }
-/* size bytes at at given back, merged with the free ranges beside them: 0, or -1 when the list is full (they stay
-   taken) */
+/* the chunk that holds address at: its index, chunk_count for none */
+static uint32_t chunk_of(uint64_t at) {
+    uint32_t i = 0;
+    while (i < S.chunk_count && at - S.chunks[i].at >= S.chunks[i].size) i++;
+    return i;
+}
+/* size bytes at at given back, merged with the free ranges beside them in its chunk: 0, or -1 when the list is full
+   (they stay taken) */
 static int memory_give(uint64_t at, uint64_t size) {
     uint32_t i = 0;
     int before, after;
     size = (size + ALIGN - 1) & ~(uint64_t)(ALIGN - 1);
     if (!at || !size) return 0;
     while (i < S.free_count && S.free[i].at < at) i++;
-    before = i > 0 && S.free[i - 1].at + S.free[i - 1].size == at;
-    after = i < S.free_count && at + size == S.free[i].at;
+    /* a neighbour in another chunk stays apart: two chunks the platform gave side by side are two of its allocations,
+       which a range across both would read past (macOS's allocator hands them out so) */
+    before = i > 0 && S.free[i - 1].at + S.free[i - 1].size == at && chunk_of(S.free[i - 1].at) == chunk_of(at);
+    after = i < S.free_count && at + size == S.free[i].at && chunk_of(S.free[i].at) == chunk_of(at);
     if (before && after) {
         S.free[i - 1].size += size + S.free[i].size;
         memmove(&S.free[i], &S.free[i + 1], (S.free_count - i - 1) * sizeof S.free[0]);
