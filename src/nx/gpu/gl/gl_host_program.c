@@ -2,7 +2,6 @@
    Copyright 2026 the ScarletNX contributors */
 /* The GL layer's programs as host programs (gl_host_program.h) */
 #include "nx/gpu/gl/gl_host_program.h"
-#include "glslc/glslc.h"
 #include <string.h>
 
 enum {
