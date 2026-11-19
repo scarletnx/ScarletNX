@@ -13,6 +13,7 @@
 #include "3ds/gpu/vk/fsgen.h"
 #include "3ds/gpu/vk/shaders/color_spv.h"
 #include "3ds/gpu/vk/shaders/depth_spv.h"
+#include "3ds/gpu/vk/shaders/scaled_texture_spv.h"
 #include "3ds/gpu/vk/shaders/standin_spv.h"
 #include "3ds/gpu/vk/shaders/texture_spv.h"
 #include "3ds/gpu/vk/vk.h"
@@ -122,6 +123,7 @@ typedef struct {
 typedef struct {
     uint32_t pa[6], format, width, height, levels, bytes;
     bool cube, valid;
+    bool flip; /* a texture made from a scaled target takes the target's flip */
     Image image;
     uint64_t used;
 } Texture;
@@ -260,7 +262,7 @@ typedef struct {
 
 static struct {
     bool made, failed;
-    SnxCtrVkCompute color, depth, texture;
+    SnxCtrVkCompute color, depth, texture, scaled_texture;
     VkDescriptorSetLayout set0, set1, set2;
     VkDescriptorSetLayout set_layouts[3]; /* the three, for the shader objects that take them */
     /* the stand-ins' push constants (the fragment one's, and the vertex one's where the device has room for them),
@@ -503,7 +505,9 @@ static bool made(void) {
     g.failed = true;
     if (!snx_ctr_vk_compute(snx_ctr_color_spv, snx_ctr_color_spv_size / 4, 1, 1, 28, &g.color) ||
         !snx_ctr_vk_compute(snx_ctr_depth_spv, snx_ctr_depth_spv_size / 4, 3, 0, 32, &g.depth) ||
-        !snx_ctr_vk_compute(snx_ctr_texture_spv, snx_ctr_texture_spv_size / 4, 1, 1, 20, &g.texture))
+        !snx_ctr_vk_compute(snx_ctr_texture_spv, snx_ctr_texture_spv_size / 4, 1, 1, 20, &g.texture) ||
+        !snx_ctr_vk_compute(snx_ctr_scaled_texture_spv, snx_ctr_scaled_texture_spv_size / 4, 0, 2, 20,
+                            &g.scaled_texture))
         return false;
     if (depth_usable(VK_FORMAT_D24_UNORM_S8_UINT))
         g.depth_format = VK_FORMAT_D24_UNORM_S8_UINT;
@@ -649,6 +653,7 @@ static bool dispatch(const SnxCtrVkCompute* c, const SnxCtrVkWindow* windows, un
 
 static unsigned color_bytes(unsigned format) { return format == 0 ? 4 : format == 1 ? 3 : 2; }
 static unsigned depth_bytes(unsigned format) { return format == 0 ? 2 : format == 2 ? 3 : 4; }
+static const uint8_t color_formats[8] = {0, 1, 3, 2, 4, 0xff, 0xff, 0xff}; /* PICA's to transfer.h's */
 static bool overlaps(uint32_t a, uint64_t a_size, uint32_t b, uint64_t b_size) {
     return a < (uint64_t)b + b_size && b < (uint64_t)a + a_size;
 }
@@ -1301,6 +1306,49 @@ static Texture* texture_slot(uint32_t width, uint32_t height, uint32_t levels, u
     set_texture(least, false);
     return least;
 }
+/* the scaled target whose colour image is the whole of a texture of memory at pa, in the same size and colour format
+   (color_formats takes the texture's format to the target's): one level, neither a cube nor a shadow map, and the
+   target's colour valid */
+static const Target* scaled_source(uint32_t pa, uint32_t width, uint32_t height, uint32_t format, uint32_t levels,
+                                   bool cube, bool shadow) {
+    if (levels != 1 || cube || shadow || format >= sizeof color_formats) return NULL;
+    for (unsigned i = 0; i < g.target_count; ++i) {
+        const Target* t = &g.targets[i];
+        if (t->key.scale > 1 && t->color_valid && t->color.image && t->key.color_pa == pa && t->key.width == width &&
+            t->key.height == height && t->key.color_format == color_formats[format])
+            return t;
+    }
+    return NULL;
+}
+/* the texture's image filled from the target's colour image by one dispatch of scaled_texture.comp: both are storage
+   images, the source at binding 0 and the destination at 1, with the target's format and flip as push constants */
+static bool scaled_fill(const Target* source, VkImageView destination, uint32_t width, uint32_t height,
+                        uint32_t scale) {
+    VkDescriptorSet set = snx_ctr_vk_set(g.scaled_texture.set);
+    if (!set) return false;
+    VkDescriptorImageInfo from = {VK_NULL_HANDLE, source->color.view, VK_IMAGE_LAYOUT_GENERAL};
+    VkDescriptorImageInfo to = {VK_NULL_HANDLE, destination, VK_IMAGE_LAYOUT_GENERAL};
+    VkWriteDescriptorSet writes[2] = {{.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                                       .dstSet = set,
+                                       .dstBinding = 0,
+                                       .descriptorCount = 1,
+                                       .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                                       .pImageInfo = &from},
+                                      {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                                       .dstSet = set,
+                                       .dstBinding = 1,
+                                       .descriptorCount = 1,
+                                       .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                                       .pImageInfo = &to}};
+    vkUpdateDescriptorSets(device(), 2, writes, 0, NULL);
+    uint32_t push[5] = {width, height, source->key.color_format, source->key.flip, scale};
+    VkCommandBuffer cb = snx_ctr_vk_commands();
+    vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g.scaled_texture.pipeline);
+    vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g.scaled_texture.layout, 0, 1, &set, 0, NULL);
+    vkCmdPushConstants(cb, g.scaled_texture.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof push, push);
+    vkCmdDispatch(cb, (width * scale + 7) / 8, (height * scale + 7) / 8, 1);
+    return true;
+}
 /* the image and sampler of texture unit: the texture kept, or decoded from guest memory on the GPU and kept */
 static SnxCtrPicaResult texture(const SnxCtrPica* p, unsigned unit, unsigned type, const Image** image,
                                 VkSampler* sampled) {
@@ -1329,11 +1377,16 @@ static SnxCtrPicaResult texture(const SnxCtrPica* p, unsigned unit, unsigned typ
        a texture); the textures made from that memory before went stale when the target was drawn into */
     for (unsigned f = 0; f < (cube ? 6u : 1u); ++f)
         if (g.made && !store_over(pa[f], bytes)) return AGAIN;
+    /* a scaled target that is the texture's whole image: the texture is then made from its image, not from memory */
+    const Target* source = scaled_source(pa[0], width, height, format, levels, cube, shadow);
+    uint32_t scale = source ? source->key.scale : 1;
+    bool flip = source && source->key.flip;
     uint64_t serial = snx_ctr_vk_serial();
     for (unsigned i = 0; i < g.texture_count; ++i) {
         Texture* t = &g.textures[i];
         if (t->valid && t->cube == cube && t->format == format && t->width == width && t->height == height &&
-            t->levels == levels && !memcmp(t->pa, pa, sizeof pa)) {
+            t->levels == levels && t->image.width == width * scale && t->flip == flip &&
+            !memcmp(t->pa, pa, sizeof pa)) {
             t->used = serial;
             *image = &t->image;
             return SNX_CTR_PICA_OK;
@@ -1343,20 +1396,35 @@ static SnxCtrPicaResult texture(const SnxCtrPica* p, unsigned unit, unsigned typ
     uint32_t inside[6];
     for (unsigned f = 0; f < (cube ? 6u : 1u); ++f)
         if (!snx_ctr_vk_window(pa[f], bytes, &windows[f], &inside[f])) return SNX_CTR_PICA_OK; /* outside RAM */
-    Texture* t = texture_slot(width, height, levels, cube ? 6 : 1);
+    Texture* t = texture_slot(width * scale, height * scale, levels, cube ? 6 : 1);
     /* the image's layout transition and the decode below cannot be recorded inside a target's pass */
     end_rendering();
-    if (!texture_image(t, width, height, levels, cube ? 6 : 1)) return SNX_CTR_PICA_UNSUPPORTED;
+    if (!texture_image(t, width * scale, height * scale, levels, cube ? 6 : 1)) {
+        if (!source) return SNX_CTR_PICA_UNSUPPORTED;
+        /* the device had no room for the scaled image: the texture is decoded from memory at scale 1 instead */
+        source = NULL;
+        flip = false;
+        if (!texture_image(t, width, height, levels, cube ? 6 : 1)) return SNX_CTR_PICA_UNSUPPORTED;
+    }
     memcpy(t->pa, pa, sizeof pa);
     t->format = format;
     t->width = width;
     t->height = height;
     t->levels = levels;
     t->bytes = bytes;
+    t->flip = flip;
     t->cube = cube;
     t->used = serial;
     VkCommandBuffer cb = snx_ctr_vk_commands();
     snx_ctr_vk_barrier(cb);
+    if (source) {
+        if (!scaled_fill(source, t->image.levels[0], width, height, scale)) return AGAIN;
+        snx_ctr_vk_barrier(cb);
+        for (unsigned f = 0; f < (cube ? 6u : 1u); ++f) gpu_uses(pa[f], bytes, false);
+        set_texture(t, true); /* watched from now on */
+        *image = &t->image;
+        return SNX_CTR_PICA_OK;
+    }
     for (unsigned f = 0; f < (cube ? 6u : 1u); ++f) {
         uint32_t at = inside[f];
         for (uint32_t i = 0; i < levels; ++i) {
@@ -2305,7 +2373,6 @@ static SnxCtrPicaResult record(SnxCtrPica* p, Source source, bool indexed) {
                      /* Azahar's IsFlipped: the rows go from y = 0 up when bit 24 is clear (games set it) */
                      .flip = (uint8_t)!(r[FB_SIZE] >> 24 & 1),
                      .depth_format = (uint8_t)(r[FB_DEPTH_FORMAT] & 3)};
-    static const uint8_t color_formats[8] = {0, 1, 3, 2, 4, 0xff, 0xff, 0xff}; /* PICA's to transfer.h's */
     key.color_format = color_formats[r[FB_COLOR_FORMAT] >> 16 & 7];
     uint64_t pixels = (uint64_t)key.width * key.height;
     SnxCtrVkWindow probe;
@@ -2849,6 +2916,7 @@ void snx_ctr_vk_render_free(void) {
     snx_ctr_vk_compute_free(&g.color);
     snx_ctr_vk_compute_free(&g.depth);
     snx_ctr_vk_compute_free(&g.texture);
+    snx_ctr_vk_compute_free(&g.scaled_texture);
     free(g.vs);
     free(g.fs);
     free(g.pipes);
