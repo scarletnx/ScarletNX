@@ -11,7 +11,9 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define SNX_GL_SYNCS 1024 /* fences alive at once */
+/* fences alive at once: a game keeps one for each texture it uploads until the texture is first drawn (1267 at once),
+   so as many as the layer holds textures and buffers */
+#define SNX_GL_SYNCS 12288
 
 /* A sync's handle is its id in the high word and its record's number from 1 in the low: an id is never given twice,
    so a handle the game kept past a delete names no sync, though the record is used again (a GLsync is a pointer, which
@@ -27,6 +29,7 @@ typedef struct {
     uint64_t (*completed)(void); /* the serial of the work the GPU finished */
     /* wait until the GPU finished serial, the context's recorded work submitted first */
     void (*wait)(uint32_t ctx, uint64_t serial);
+    void (*say)(const char* line); /* a line for the log: the first glFenceSync that finds every record alive */
 } SnxGlSyncHost;
 void snx_gl_sync_host(const SnxGlSyncHost* host);
 

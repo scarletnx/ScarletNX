@@ -39,11 +39,18 @@ static int32_t parameter(uint32_t ctx, uint64_t sync, uint32_t pname) {
     return v;
 }
 
+static int said;
+static char last_said[200];
+static void told(const char* line) {
+    said++;
+    snprintf(last_said, sizeof last_said, "%s", line);
+}
+
 int main(void) {
     uint32_t ctx = snx_gl_context_new(SNX_GL_API_DESKTOP, 45, 0);
     uint64_t a, b;
     assert(ctx);
-    snx_gl_sync_host(&(SnxGlSyncHost){recorded, completed, wait_for});
+    snx_gl_sync_host(&(SnxGlSyncHost){recorded, completed, wait_for, told});
 
     /* a fence of the work recorded: unsignaled until the platform finished it */
     gpu.recorded = 5, gpu.completed = 4;
@@ -106,6 +113,29 @@ int main(void) {
         assert(loaded >> 32 > next >> 32 && loaded >> 32 > b >> 32);
         snx_gl_delete_sync(ctx, next);
         snx_gl_delete_sync(ctx, loaded);
+    }
+    /* a fence for each texture a game uploads, alive until the texture is first drawn: 2000 at once (a game made 1267
+       textures), each its own; past the table, 0 with GL_OUT_OF_MEMORY, said once with the count */
+    {
+        uint32_t n = SNX_GL_SYNCS > 2000 ? SNX_GL_SYNCS : 2000;
+        uint64_t* kept = calloc(n, sizeof *kept);
+        char full[64];
+        assert(kept);
+        snx_gl_delete_sync(ctx, b);
+        for (uint32_t i = 0; i < 2000; i++) {
+            kept[i] = snx_gl_fence_sync(ctx, GPU_COMMANDS_COMPLETE, 0);
+            assert(kept[i] && !snx_gl_get_error(ctx) && (!i || kept[i] != kept[i - 1]));
+        }
+        assert(snx_gl_is_sync(kept[0]) && snx_gl_is_sync(kept[1999]));
+        for (uint32_t i = 2000; i < SNX_GL_SYNCS; i++)
+            assert((kept[i] = snx_gl_fence_sync(ctx, GPU_COMMANDS_COMPLETE, 0)));
+        assert(!snx_gl_fence_sync(ctx, GPU_COMMANDS_COMPLETE, 0) && snx_gl_get_error(ctx) == 0x0505);
+        assert(!snx_gl_fence_sync(ctx, GPU_COMMANDS_COMPLETE, 0) && snx_gl_get_error(ctx) == 0x0505);
+        snprintf(full, sizeof full, "holds %d syncs, all alive", SNX_GL_SYNCS);
+        assert(said == 1 && strstr(last_said, full));
+        for (uint32_t i = 0; i < SNX_GL_SYNCS; i++) snx_gl_delete_sync(ctx, kept[i]);
+        assert(!snx_gl_get_error(ctx));
+        free(kept);
     }
     /* a platform with no work: every fence signaled */
     snx_gl_sync_host(NULL);
