@@ -12,5 +12,11 @@ if(BUILD_TESTING AND TARGET hactool_lib)
     snx_test_target(snx-test-hactool-layers gnu23)
     target_link_libraries(snx-test-hactool-layers PRIVATE hactool_internals)
     add_test(NAME hactool_layers COMMAND snx-test-hactool-layers)
+    # nsz's NCZ (src/nx/runtime/driver/hactool/ncz.c), the NCAs of NSZ and XCZ dumps, made by the test from synthetic
+    # NCAs in blocks and as one zstd stream
+    add_executable(snx-test-hactool-ncz tests/hactool_ncz.c)
+    snx_test_target(snx-test-hactool-ncz gnu23)
+    target_link_libraries(snx-test-hactool-ncz PRIVATE hactool_internals)
+    add_test(NAME hactool_ncz COMMAND snx-test-hactool-ncz)
     snx_sanitizer_path() # tests/CMakeLists.txt
 endif()

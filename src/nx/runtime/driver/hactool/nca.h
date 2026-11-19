@@ -176,6 +176,7 @@ typedef struct {
     uint64_t base_offset; /* ScarletNX: where the NCA starts in file, as the NCA's context has it. */
     const unsigned char *map; /* ScarletNX: file mapped into memory, as the NCA's context has it. */
     uint64_t map_size;
+    storage_t *source; /* ScarletNX: the NCA's bytes when they are in no file as they are, as its context has it. */
     uint64_t offset;
     uint64_t size;
     uint32_t section_num;
@@ -216,6 +217,9 @@ typedef struct nca_ctx {
     const unsigned char *map; /* ScarletNX: file mapped into memory (map_size bytes), which sections read instead of
                                  file when it is set: the runtime's reads, from several threads. NULL otherwise. */
     uint64_t map_size;
+    /* ScarletNX: the NCA's bytes when no file holds them as they are, an NCZ's (ncz.h) decompressed, which every read
+       takes instead of file and map. NULL otherwise. */
+    storage_t *source;
     size_t file_size;
     unsigned char crypto_type;
     int has_rights_id;

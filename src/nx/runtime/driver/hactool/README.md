@@ -28,6 +28,10 @@ What ScarletNX changed, each change marked `ScarletNX` where it is not a file of
   and the SHA3 hash types, which LibHac names but does not read, are refused with a message.
 - **NCAs read in place.** `nca_ctx_t.base_offset` is where an NCA starts in its file, so one inside an XCI's secure
   partition or an NSP is read there instead of from a copy unpacked beside it.
+- **NCZ** (`ncz.c`): an XCZ's or NSZ's NCZ, the NCA [nsz](https://github.com/nicoboss/nsz) compressed, read as that
+  NCA by every NCA context (`nca_ctx_t.source`, a storage that `snx_hac.c` opens for each `.ncz` entry): its first 0x4000
+  bytes as they are, its blocks or its zstd stream decompressed as reads reach them, its AES-CTR sections encrypted
+  again, so the storage chains above it decrypt them as they would the NCA's. The layout follows nsz's own reader.
 - **Read in place, mapped.** `nca_ctx_t.map` (and each section's) is the container mapped into memory, which the
   sections' storage chains read from (`storage_memory_new`) instead of the file, so the runtime can read from several
   threads with no file position between them. `snx_hac_fs_open` keeps a program NCA's ExeFS and RomFS open, an
