@@ -1646,7 +1646,7 @@ GpuStaged* gpu_state_parse(StateIo* io) {
         ch->r3d_dirty = ~0u; /* nothing the renderer derived holds */
         /* the draw state's generations came from the saving process's sequence (gpu/draw_state.c), where this one may
            hand the same numbers out for other states: new ones, which nothing kept matches */
-        for (u32 g = 0; g < DS_GENS; g++) ch->ds.gen[g] = ds_generation_next();
+        ds_generations_renew(&ch->ds);
         ch->owner.pred = 0;        /* the predicate was the renderer's: draws run until the next render enable */
         ch->owner.xfb_started = 0; /* the byte counters were the renderer's */
     }

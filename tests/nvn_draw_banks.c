@@ -468,9 +468,41 @@ static void test_inline_updates(void) {
         snx_st_le32(expected.bank0[s] + SH_CB0_BASE_VERTEX, (u32)r.base_vertex);
         snx_st_le32(expected.bank0[s] + SH_CB0_BASE_INSTANCE, (u32)r.base_instance);
     }
+    u64 bank0[DS_GFX_STAGES], bank2[DS_GFX_STAGES], root = d.ds.root_gen;
+    for (u32 s = 0; s < DS_GFX_STAGES; s++) bank0[s] = d.ds.inl_gen[0][s], bank2[s] = d.ds.inl_gen[1][s];
     check(nvn_draw_record(&d, OP_DRAW_IDX, DRAW, sizeof r), "changed draw parameters accepted");
     check(!memcmp(&d.ds.inl, &expected, sizeof expected), "changed parameters preserve all bound handles and storage");
     check(d.ds.gen[DS_INLINE] != gen, "changed draw parameters change the inline generation");
+    /* each block's own generation: a new base vertex is in every stage's bank 0, and no bank 2 or root table moves */
+    int moved0 = 1, kept2 = 1;
+    for (u32 s = 0; s < DS_GFX_STAGES; s++) {
+        moved0 &= d.ds.inl_gen[0][s] != bank0[s];
+        kept2 &= d.ds.inl_gen[1][s] == bank2[s];
+    }
+    check(moved0, "a new base vertex gives every stage's bank 0 a new generation");
+    check(kept2 && d.ds.root_gen == root, "a new base vertex keeps every bank 2's and the root tables' generations");
+    /* a handle bound in the fragment stage moves that stage's bank 2 alone */
+    for (u32 s = 0; s < DS_GFX_STAGES; s++) bank0[s] = d.ds.inl_gen[0][s], bank2[s] = d.ds.inl_gen[1][s];
+    t.stage = NVN_SHADER_STAGE_FRAGMENT;
+    t.h = 0x5eed0001;
+    memcpy(GP(SSBO), &t, sizeof t);
+    nvn_draw_record(&d, OP_BIND_TEX1, SSBO, sizeof t);
+    check(nvn_draw_record(&d, OP_DRAW_IDX, DRAW, sizeof r), "draw after a fragment handle accepted");
+    int alone = 1;
+    for (u32 s = 0; s < DS_GFX_STAGES; s++)
+        alone &= d.ds.inl_gen[0][s] == bank0[s] && (d.ds.inl_gen[1][s] != bank2[s]) == (s == 4);
+    check(alone, "a fragment handle moves the fragment stage's bank 2 generation alone");
+    /* a push constant into the graphics root table moves the root tables' generation alone */
+    for (u32 s = 0; s < DS_GFX_STAGES; s++) bank0[s] = d.ds.inl_gen[0][s], bank2[s] = d.ds.inl_gen[1][s];
+    root = d.ds.root_gen;
+    NvnPPush push = {.compute = 0, .table = 0, .offset = 8, .words = 0};
+    memcpy(GP(SSBO), &push, sizeof push);
+    snx_st_le32(GP(SSBO + sizeof push), 0x600dcafeu);
+    check(nvn_draw_record(&d, OP_PUSH_CONSTANTS, SSBO, sizeof push + 4), "push constant accepted");
+    check(nvn_draw_record(&d, OP_DRAW_IDX, DRAW, sizeof r), "draw after a push constant accepted");
+    int roots = d.ds.root_gen != root;
+    for (u32 s = 0; s < DS_GFX_STAGES; s++) roots &= d.ds.inl_gen[0][s] == bank0[s] && d.ds.inl_gen[1][s] == bank2[s];
+    check(roots, "a push constant moves the root tables' generation alone");
 }
 
 /* CPU front-end cost only. These records use no Vulkan driver or game data. Each workload varies one draw parameter

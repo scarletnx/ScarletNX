@@ -551,6 +551,86 @@ static int compute_pending_cases(GpuChannel* channel) {
     return 0;
 }
 
+/* Inline constant blocks, as NVN's front end gives them (DsInline, its per-block generations DsState.inl_gen): the
+   constant buffer program reads its color from slot 3, the fragment stage's bank 2 block. A draw's new base vertex
+   moves every stage's bank 0 block and the inline generation, not bank 2: the next draw keeps bank 2's staged copy.
+   A new color in bank 2 is staged again and drawn */
+static void inline_set(DsState* ds, int bank0, const float* color) {
+    if (bank0)
+        for (int s = 0; s < DS_GFX_STAGES; s++) {
+            snx_st_le32(ds->inl.bank0[s] + SH_CB0_BASE_VERTEX, (u32)(19 + s));
+            ds->inl_gen[0][s] = ds_generation_next();
+        }
+    if (color) {
+        life_floats(ds->inl.bank2[4], color, 4);
+        ds->inl_gen[1][4] = ds_generation_next();
+    }
+    ds->gen[DS_INLINE] = ds_generation_next();
+}
+static int inline_draw(GpuChannel* channel, u8 px[4], u64* kept, u64* staged) {
+    u32* r = channel->r3d;
+    const u64 target = MEMO_GPU + 0x20000;
+    VkDrawCounts before, after;
+    vk_draw_counts(&before);
+    vk_lock();
+    rt_clear(channel, target, MEMO_SIDE, MEMO_SIDE, 0, 0);
+    r[0x851] = LIFE_CB_PROGRAM;
+    r[0x458] = 0 | 1u << 21 | 7u << 27;
+    channel->r3d_dirty = ~0u;
+    mx_draw_state_sync(channel);
+    channel->ds.bind.cb_inline[4][3] = DS_CB_BANK2;
+    channel->ds.gen[DS_BIND] = ds_generation_next();
+    DrawCall call = {.topology = 4, .count = 3, .instances = 1};
+    u64 drawn = g_vk_drawn;
+    vk_render_draw(&channel->ds, &call, &channel->owner);
+    vk_render_end();
+    CHECK(g_vk_drawn == drawn + 1);
+    Surf* t = vk_rt_find(target);
+    CHECK(t);
+    if (t) CHECK(!read_pixel_at(t, 0, 0, px));
+    vk_unlock();
+    vk_draw_counts(&after);
+    *kept = after.inl[2][0] - before.inl[2][0];
+    *staged = after.inl[2][1] - before.inl[2][1];
+    return 0;
+}
+static int inline_block_cases(GpuChannel* channel) {
+    DsState* ds = &channel->ds;
+    int saved_check = g_settings.draw_state_check;
+    static const u8 green[4] = {0, 255, 0, 255}, blue[4] = {0, 0, 255, 255};
+    for (int check = 0; check < 2; check++) {
+        g_settings.draw_state_check = check;
+        VkDrawCounts before, after;
+        vk_draw_counts(&before);
+        u8 px[3][4];
+        u64 kept[3], staged[3];
+        inline_set(ds, 0, g_life_green);
+        CHECK(!inline_draw(channel, px[0], &kept[0], &staged[0]));
+        inline_set(ds, 1, NULL); /* a new base vertex in every bank 0 */
+        CHECK(!inline_draw(channel, px[1], &kept[1], &staged[1]));
+        inline_set(ds, 0, g_life_blue);
+        CHECK(!inline_draw(channel, px[2], &kept[2], &staged[2]));
+        vk_draw_counts(&after);
+        int ok = staged[0] == 1 && kept[1] == 1 && !staged[1] && staged[2] == 1 && life_near(px[0], green) &&
+                 life_near(px[1], green) && life_near(px[2], blue) && after.differs == before.differs;
+        if (!ok)
+            fprintf(stderr,
+                    "inline blocks%s: bank 2 kept %llu %llu %llu, staged %llu %llu %llu (expected staged, kept, "
+                    "staged); pixels %u,%u,%u %u,%u,%u %u,%u,%u (green, green, blue); %llu differences\n",
+                    check ? " with draw_state_check=1" : "", (unsigned long long)kept[0], (unsigned long long)kept[1],
+                    (unsigned long long)kept[2], (unsigned long long)staged[0], (unsigned long long)staged[1],
+                    (unsigned long long)staged[2], px[0][0], px[0][1], px[0][2], px[1][0], px[1][1], px[1][2], px[2][0],
+                    px[2][1], px[2][2], (unsigned long long)(after.differs - before.differs));
+        CHECK(ok);
+    }
+    g_settings.draw_state_check = saved_check;
+    /* the channel's slot 3 back in guest memory and its blocks zero, under generations nothing staged holds */
+    ds->bind.cb_inline[4][3] = DS_CB_MEMORY;
+    memset(&ds->inl, 0, sizeof ds->inl);
+    ds_generations_renew(ds);
+    return 0;
+}
+
 /* Headers that name no texture, sampled by the fragment program of the texture cases (slot 0, its handle in constant
    buffer 2): an empty one, all eight words nought; one whose word 0 alone is nought, a texture's address, size and
    layout after it; and one of a format the renderer has no Vulkan format for. Word 0's four component sources (bits 19
@@ -981,13 +1061,14 @@ static int check_draw_memo(void) {
     CHECK(!memo_case(channel, "A, B, A's code written, A", recode, 3, 0));
     CHECK(!life_cases(channel));
     CHECK(!compute_pending_cases(channel));
+    CHECK(!inline_block_cases(channel));
     CHECK(!empty_header_cases(channel));
     CHECK(!last_cases(channel));
     free(channel);
     puts("PASS draw memo: A, B, A and a state in two vertex formats take the table, a new epoch and new code make the "
          "state again; constant buffers kept past submissions, views, samplers and a stage's last set kept in the "
          "frame, and CPU, 3D engine and storage result writes, header writes and presents between draws drawn as "
-         "without them; draw_state_check=1 finds no difference; headers that name no texture read zeros, their "
-         "draws drawn and each header said once");
+         "without them; draw_state_check=1 finds no difference; an inline block kept while another changes, staged "
+         "again when it does; headers that name no texture read zeros, their draws drawn and each header said once");
     return 0;
 }
