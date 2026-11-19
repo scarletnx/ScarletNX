@@ -322,8 +322,9 @@ settings, its logs and its caches, each where the table below puts it. One not k
 named its dump) or not there yet is greyed, and pressed it says why and makes nothing; Back goes back to the box's rows.
 **Clean Cache** deletes the game's shader cache (`shader_cache/` of its cache
 folder: the pipeline cache, the translated shaders and those prepared ahead of time) and its code cache
-(`<id>.jitcache`), asked first with each one's size and folder; the game makes them again as it runs, and its saves,
-settings and dump stay. It is greyed while the game has neither.
+(`<id>.jitcache`), asked first with each one's size and folder; the game makes them again as it runs (its next run
+says `Compiling shaders` over the game as it starts), and its saves, settings and dump stay. It is greyed while the
+game has neither.
 
 A mod's `exefs/` changes the game's code, which ScarletNX compiles ahead of time. The game's stamp (`<id>.abi`) records
 the mods' ExeFS files it was recompiled with, and playing it through the driver or the launcher recompiles it when the
