@@ -17,7 +17,7 @@ static void presets(void) {
     const SnxOnlineWfcPreset* kaeru = snx_online_wfc_preset_find("kaeru");
     CHECK(kaeru && kaeru->dns[0] == 178 && kaeru->dns[1] == 62 && kaeru->dns[2] == 43 && kaeru->dns[3] == 212);
     CHECK_STR(snx_online_wfc_preset_at(0)->id, "kaeru"); /* the issue's first, the menus' first */
-    CHECK(snx_online_wfc_preset_find("nintendo") == NULL);
+    CHECK(snx_online_wfc_preset_find("official") == NULL);
     CHECK(snx_online_wfc_preset_find(NULL) == NULL);
 }
 
