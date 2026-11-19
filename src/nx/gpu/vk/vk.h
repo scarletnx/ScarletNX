@@ -3189,6 +3189,28 @@ extern u64 g_vk_draw_kept, g_vk_draw_checked;
 enum { VK_CB_INLINE_KEPT, VK_CB_INLINE_STAGED, VK_CB_KEPT, VK_CB_KEPT_CHECKED, VK_CB_COPIED, VK_CB_CACHE, VK_CB_PENDING,
        VK_CB_PAST_SUBMIT, VK_CB_N };
 enum { VK_TEX_KEPT, VK_TEX_RESOLVED, VK_TEX_PAST, VK_TEX_VIEW_KEPT, VK_TEX_SAMPLER_KEPT, VK_TEX_N };
+/* A draw's fragment key (render.c's fs_key): the draw before's, or made again for the first of these that held it
+   back, in the order fs_key asks them; then the keys made again that weren't kept for the next draw, and why */
+enum {
+    VK_FS_KEPT,
+    VK_FS_NONE,    /* the draw before kept none */
+    VK_FS_COMPUTE, /* compute results pending */
+    VK_FS_CHECK,   /* draw_state_check=1 */
+    VK_FS_PROGRAM, /* another draw state or program, its slots, the outputs before it or the targets' integer outputs */
+    VK_FS_POOLS,   /* the pools, their limits, the sampler mode or the texture bank */
+    VK_FS_GPU,     /* a GPU-side write */
+    VK_FS_RESULTS, /* a result added, or a write in place */
+    VK_FS_IMAGES,  /* a storage image added */
+    VK_FS_TAKE,    /* a target taken */
+    VK_FS_SURFACES,        /* the surface table */
+    VK_FS_EPOCH,           /* a write tracking epoch */
+    VK_FS_PRESENT,         /* a present */
+    VK_FS_HANDLES,         /* other handle words */
+    VK_FS_QUIET,           /* a slot's target undefined, or its texture not quiet now */
+    VK_FS_UNKEPT_IMAGES,   /* not kept: the program has images, which image_variant reads each draw */
+    VK_FS_UNKEPT_TEXTURES, /* not kept: a slot's texture isn't one the texture memo keeps, or is over a target */
+    VK_FS_N
+};
 typedef struct {
     u64 lookups; /* draws that looked for a kept state */
     u64 last;    /* of them, those that took the last draw's */
@@ -3200,7 +3222,7 @@ typedef struct {
     u64 differs; /* the differences draw_state_check=1 found */
     u64 epochs;  /* write tracking epochs with draws */
     u64 sets_last; /* descriptor sets a stage took again from its last one, with no hash or lookup */
-    u64 cb[VK_CB_N], tex[VK_TEX_N];
+    u64 cb[VK_CB_N], tex[VK_TEX_N], fs[VK_FS_N];
 } VkDrawCounts;
 void vk_draw_counts(VkDrawCounts* c);
 void vk_render_stats_log(void); /* the counts of the last 600 presents in the log (each 600 presents) */
