@@ -903,12 +903,16 @@ size_t gui_settings_java_home(GuiSettings* s, const char** argv) {
     return 1;
 }
 size_t gui_settings_gba(GuiSettings* s, const char** argv) {
-    int i = find(s, "gba_color");
-    const char* value = i < s->own ? picked(s, i) : NULL;
-    if (!value) return 0;
-    ini_option(s->values[i].option, sizeof s->values[i].option, "gba_color", value);
-    argv[0] = s->values[i].option;
-    return 1;
+    static const char* const keys[] = {"gba_color", "gba_mobile", "gba_mobile_dns"};
+    size_t n = 0;
+    for (size_t k = 0; k < sizeof keys / sizeof *keys; ++k) {
+        int i = find(s, keys[k]);
+        const char* value = i < s->own ? picked(s, i) : NULL;
+        if (!value) continue;
+        ini_option(s->values[i].option, sizeof s->values[i].option, keys[k], value);
+        argv[n++] = s->values[i].option;
+    }
+    return n;
 }
 size_t gui_settings_one(GuiSettings* s, const char* key, const char** argv) {
     int i = find(s, key);

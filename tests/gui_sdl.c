@@ -8179,7 +8179,8 @@ int main(int argc, char** argv) {
     key(&app, SDLK_ESCAPE);
     assert(app.editing && app.form == GUI_FORM_SETTINGS && app.editor.row == 1);
     /* GBA's, after Launch: Covers, None by default, then Box art (libretro-thumbnails), Del back to None; Colors,
-       GBA screen by default, then Raw, Del back to GBA screen */
+       GBA screen by default, then Raw, Del back to GBA screen; Mobile (the Mobile Adapter GB), Off by default, then On,
+       Del back to Off; DNS (its DNS server), empty by default */
     {
         char line[64];
         key(&app, SDLK_DOWN);
@@ -8187,7 +8188,7 @@ int main(int argc, char** argv) {
         shows(&app, "- " ICON_GAMEPAD " GBA", yellow);
         shows_half(&app, "Covers", normal); /* the group's help names its setting */
         key(&app, SDLK_RETURN);
-        assert(app.form == GUI_FORM_GROUP && app.group == 2 && app.editor.count == 2);
+        assert(app.form == GUI_FORM_GROUP && app.group == 2 && app.editor.count == 4);
         render(&app);
         shows(&app, "GBA", normal);
         snprintf(line, sizeof line, "- %-8s %s", "Covers", "None [default]"); /* no row of it opens a page: no gutter */
@@ -8211,6 +8212,21 @@ int main(int argc, char** argv) {
         shows(&app, line, yellow);
         key(&app, SDLK_DELETE);
         assert(setting_is(&app, "gba_color", NULL));
+        key(&app, SDLK_DOWN);
+        render(&app);
+        snprintf(line, sizeof line, "- %-8s %s", "Mobile", "Off [default]");
+        shows(&app, line, yellow);
+        key(&app, SDLK_RIGHT);
+        assert(setting_is(&app, "gba_mobile", "1"));
+        render(&app);
+        snprintf(line, sizeof line, "- %-8s %s", "Mobile", "On *");
+        shows(&app, line, yellow);
+        key(&app, SDLK_DELETE);
+        assert(setting_is(&app, "gba_mobile", NULL));
+        key(&app, SDLK_DOWN);
+        render(&app);
+        snprintf(line, sizeof line, "- %-8s %s", "DNS", "[default]"); /* an empty default */
+        shows(&app, line, yellow);
         key(&app, SDLK_ESCAPE);
         assert(app.form == GUI_FORM_SETTINGS && app.editor.row == 2);
     }

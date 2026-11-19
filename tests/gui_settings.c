@@ -183,6 +183,18 @@ int main(int argc, char** argv) {
         assert(!gui_settings_recompile(&s, 1, NULL, options) && !gui_settings_one(&s, "gba_color", options));
         assert(gui_settings_set(&s, "gba_color", "gba") && !gui_settings_gba(&s, options));
     }
+    /* Settings > GBA's Mobile Adapter GB after Colors: off and no option by default, on its --gba-mobile=1, its DNS
+       server's --gba-mobile-dns beside it */
+    {
+        int adapter = at(&s, "gba_mobile");
+        assert(adapter == at(&s, "gba_color") + 1 && !strcmp(s.keys[adapter].section, "GBA") &&
+               !strcmp(s.keys[adapter].key, "Mobile") && !gui_settings_gba(&s, options));
+        assert(gui_settings_set(&s, "gba_mobile", "1") && gui_settings_set(&s, "gba_mobile_dns", "10.0.0.53") &&
+               gui_settings_gba(&s, options) == 2 && !strcmp(options[0], "--gba-mobile=1") &&
+               !strcmp(options[1], "--gba-mobile-dns=10.0.0.53"));
+        assert(gui_settings_set(&s, "gba_mobile", "0") && gui_settings_set(&s, "gba_mobile_dns", "") &&
+               !gui_settings_gba(&s, options));
+    }
     /* a game's setting alone, as a GBA run takes fullscreen: once picked, and never a launcher's own */
     assert(!gui_settings_one(&s, "slp_vectorizer", options) && gui_settings_set(&s, "slp_vectorizer", "1"));
     assert(gui_settings_one(&s, "slp_vectorizer", options) == 1 && !strcmp(options[0], "--slp-vectorizer=1"));

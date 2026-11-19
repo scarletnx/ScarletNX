@@ -185,7 +185,8 @@ size_t gui_settings_recompile(GuiSettings* settings, int make, const char* game_
 size_t gui_settings_recompile_shared(GuiSettings* settings, const char** argv);
 /* argv's --key=value of the game's setting key when it is picked: its count, 1 or 0 */
 size_t gui_settings_one(GuiSettings* settings, const char* key, const char** argv);
-/* argv's --gba-color=raw for a GBA game's run, when the launcher's GBA colors (gba_color) is Raw, not its default: 1, else 0 */
+/* argv's settings of the GBA section for a GBA game's run, each picked off its default: --gba-color=raw,
+   --gba-mobile=1 and --gba-mobile-dns=IPV4. Their count */
 size_t gui_settings_gba(GuiSettings* settings, const char** argv);
 /* argv's --java-home=DIR for the Android driver when Java home is set: its count, 1 or 0 (empty, the driver's own) */
 size_t gui_settings_java_home(GuiSettings* settings, const char** argv);
