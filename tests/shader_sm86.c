@@ -5236,6 +5236,13 @@ static u32 coop_epilogue(u8* code, u32 n, const u32* regs, u32 outs) {
     put(code, n, bra(n, n, 7, 0));
     return n + 1;
 }
+/* c[2], which a program of the tests below may read: its jump tables, and their read by the translation */
+static u32 hmma_bank2[16];
+static int hmma_bank2_read(u32 idx, u32 off, u32* out) {
+    if (idx != 2 || off % 4 || off / 4 >= sizeof hmma_bank2 / 4) return 0;
+    *out = hmma_bank2[off / 4];
+    return 1;
+}
 /* the program on the evaluator's 32 lanes, with the exact set's A, B and f16 C (hmma_inputs) and an f32 C of the same
    values, translated with the cooperative matrices of one shape (shape_bit) or with the gathers (0): the outputs into
    out, 0 when the translation or the evaluator fails */
@@ -5275,6 +5282,8 @@ static int coop_run(const u8* code, u32 n, u32 shape_bit, u32* out, const char* 
     for (u32 l = 0; l < 32; l++) {
         env[l].ubo[SNX_VKB_CB + 1] = bank1;
         env[l].ubo_words[SNX_VKB_CB + 1] = 32 * COOP_IN;
+        env[l].ubo[SNX_VKB_CB + 2] = hmma_bank2;
+        env[l].ubo_words[SNX_VKB_CB + 2] = sizeof hmma_bank2 / 4;
         env[l].builtin[27][0] = env[l].builtin[29][0] = env[l].builtin[41][0] = l; /* LocalInvocationId.x, Index */
         env[l].builtin[24][0] = env[l].builtin[24][1] = env[l].builtin[24][2] = 1; /* NumWorkgroups */
     }
@@ -5388,6 +5397,79 @@ static void test_coop_fused_only(const char* dir) {
     static const u32 insns[1][5] = {{20, COOP_LDSM | 24, 12, 255, 0x18}};
     static const u32 outs[4] = {20, 21, 22, 23};
     CHECK(coop_case(dir, "coop_fused_only", insns, 1, outs, 4));
+}
+
+/* Jumps around a fused LDSM and HMMA (fuse.c), on the evaluator's 32 lanes with the gathers, against the same program
+   with a MOV between the two halves, which no fuse takes: every output the same. After the prologue, a BRX of R40,
+   c[2][0x10 + c[2][0]], to the LDSM, the HMMA (R20 = R24 R12 + R16) or the MOV R30, 1.0 after it, and a loop whose
+   BRA goes back to the HMMA (R20 = R24 R12 + R20, twice). The fuse took the HMMA's place out of the array: a BRX's
+   case past the pair landed one instruction late, past the MOV; and a case or a BRA that went to the HMMA ran the
+   pair's next instruction instead. Such a pair now stays two, and a pair keeps every position */
+static Word brx_at(u32 ip, u32 reg, int uniform);
+static void test_fuse_jumps(const char* dir) {
+    int coop_was = g_spirv_translate.hmma_coop;
+    g_spirv_translate.hmma_coop = 0;
+    for (int form = 0; form < 3; form++) /* the BRX to the LDSM and the MOV, to all three, the loop */
+        for (u32 pick = 0; pick < (form == 0 ? 2u : form == 1 ? 3u : 1u); pick++) {
+            static u32 out[2][32 * COOP_OUT];
+            static const u32 outs[5] = {20, 21, 22, 23, 30};
+            u32 ncases = form == 0 ? 2 : form == 1 ? 3 : 1, nouts = 5;
+            int ran = 1;
+            for (int apart = 0; apart < 2; apart++) {
+                u8 code[16 * 64] = {0};
+                u32 n = coop_prologue(code), ldsm = 0;
+                if (form < 2) {
+                    put(code, n++, ldc(41, 255, 2, 0, 4));   /* LDC R41, c[2][0]: the case times 4 */
+                    put(code, n++, ldc(40, 41, 2, 0x10, 4)); /* LDC R40, c[2][R41 + 0x10] */
+                    put(code, n, brx_at(n, 40, 0));
+                    n++;
+                }
+                Word x = fix(0x83b); /* LDSM.16.M88.4 R24, [R7 + 0x40] */
+                set(&x, 16, 8, 24);
+                set(&x, 24, 8, 7);
+                set(&x, 40, 24, 0x40);
+                set(&x, 72, 2, 2);
+                ldsm = n;
+                put(code, n++, x);
+                if (apart) put(code, n++, mov_imm(60, 0)); /* MOV R60, 0 */
+                u32 hmma_at = n;
+                put(code, n++, hmma_insn(20, 24, 12, form < 2 ? 16 : 20, 0x18));
+                u32 mov_at = n;
+                put(code, n++, mov_imm(30, f2u(1.0f)));
+                if (form == 2) { /* R31 += 1; P0 = R31 < 2; @P0 BRA the HMMA */
+                    put(code, n++, iadd3_imm(31, 31, 1));
+                    x = alu(0x00c, 4, 255, 31);
+                    set(&x, 32, 32, 2);
+                    set(&x, 76, 3, 1);
+                    set(&x, 81, 3, 0);
+                    set(&x, 84, 3, 7);
+                    set(&x, 87, 3, 7);
+                    put(code, n++, x);
+                    put(code, n, bra(n, hmma_at, 0, 0));
+                    n++;
+                }
+                n = coop_epilogue(code, n, outs, nouts);
+                const u32 targets[3] = {ldsm, form == 1 ? hmma_at : mov_at, mov_at};
+                memset(hmma_bank2, 0, sizeof hmma_bank2);
+                hmma_bank2[0] = 4 * pick;
+                for (u32 k = 0; k < ncases; k++) hmma_bank2[4 + k] = targets[k] * 16;
+                hmma_bank2[4 + ncases] = 0xffffffffu;
+                char keep[48];
+                snprintf(keep, sizeof keep, "fuse_jumps%d%u%d", form, pick, apart);
+                g_shader_cb_read = hmma_bank2_read;
+                ran &= coop_run(code, n, 0, out[apart], dir, keep);
+                g_shader_cb_read = NULL;
+            }
+            CHECK(ran);
+            u32 bad = 0;
+            for (u32 l = 0; ran && l < 32; l++)
+                for (u32 w = 0; w < nouts; w++)
+                    if (out[0][l * COOP_OUT + w] != out[1][l * COOP_OUT + w] && bad++ < 4)
+                        fprintf(stderr, "fuse jumps, form %d, case %u: lane %u output %u is 0x%08x, apart 0x%08x\n",
+                                form, pick, l, w, out[0][l * COOP_OUT + w], out[1][l * COOP_OUT + w]);
+            CHECK(bad == 0);
+        }
+    g_spirv_translate.hmma_coop = coop_was;
 }
 
 /* the way the log says a device's compute HMMAs take (shader_hmma_way), from the flags device.c sets */
@@ -5733,8 +5815,8 @@ static void test_fuse_pairs(void) {
     u32 n = 2, count = 0;
     FuseSpan* spans = sm86_fuse_find(pair, n, &count);
     CHECK(spans && count == 1 && spans[0].pos == 0 && spans[0].len == 2 && spans[0].tag == SM86_FUSE_LDSM_HMMA);
-    sm86_fuse_make(pair, &n, spans, count);
-    CHECK(n == 1 && pair[0].op == SM86_LDSM_HMMA);
+    sm86_fuse_make(pair, n, spans, count);
+    CHECK(pair[0].op == SM86_LDSM_HMMA && pair[1].op == SM86_NOP && pair[1].dst == SM86_RZ);
     /* the LDSM's fields, packed into the bits the HMMA does not use */
     CHECK(sm86_fuse_ldsm_dst(&pair[0]) == 24 && sm86_fuse_ldsm_a(&pair[0]) == 7 &&
           sm86_fuse_ldsm_count(&pair[0]) == 2 && sm86_fuse_ldsm_trans(&pair[0]) == 0 &&
@@ -5759,11 +5841,8 @@ static void test_fuse_pairs(void) {
     }
 }
 
-/* a program's LDSM and HMMAs on the same fragments, in two shapes: the LDSM beside the first HMMA (a pair), and the
-   same with an instruction between them (none). The pair's module takes four instructions less than the other's,
-   which are A's words read from the registers the LDSM wrote */
-/* a branch that spans a fused pair keeps its absolute target: the pass shortens its encoded offset, as the CALL
-   inliner does when it removes instructions. */
+/* a fused pair leaves every instruction where it was, the HMMA's place a NOP: the branches over the pair, either way,
+   keep their encodings and targets */
 static void test_fuse_branch(void) {
     Word words[5] = {0};
     u32 n = 0;
@@ -5789,13 +5868,16 @@ static void test_fuse_branch(void) {
     FuseSpan* span = sm86_fuse_find(in, n, &count);
     CHECK(span && count == 1);
     if (span) {
-        sm86_fuse_make(in, &n, span, count);
-        CHECK(n == 4);
-        CHECK(in[0].op == SM86_BRA && sm86_branch_target(&in[0], 0) == 3); /* was 4 */
-        CHECK(in[3].op == SM86_BRA && sm86_branch_target(&in[3], 3) == 0); /* backward, unchanged */
+        sm86_fuse_make(in, n, span, count);
+        CHECK(in[1].op == SM86_LDSM_HMMA && in[2].op == SM86_NOP && in[3].op == SM86_MOV);
+        CHECK(in[0].op == SM86_BRA && in[0].lo == words[0].w[0] && sm86_branch_target(&in[0], 0) == 4);
+        CHECK(in[4].op == SM86_BRA && in[4].lo == words[4].w[0] && sm86_branch_target(&in[4], 4) == 0);
     }
 }
 
+/* a program's LDSM and HMMAs on the same fragments, in two shapes: the LDSM beside the first HMMA (a pair), and the
+   same with an instruction between them (none). The pair's module takes four instructions less than the other's,
+   which are A's words read from the registers the LDSM wrote */
 static void test_fuse_ldsm_hmma(const char* dir) {
     static const u32 hmma[4][3] = {{16, 14, 0x08}, {20, 24, 0x18}, {28, 255, 0x00}, {32, 36, 0x10}};
     static u32 words_of[4];
@@ -6574,6 +6656,7 @@ int main(int argc, char** argv) {
     test_fuse_pairs();
     test_fuse_branch();
     test_fuse_ldsm_hmma(dir);
+    test_fuse_jumps(dir);
     if (failures) {
         fprintf(stderr, "%d checks failed\n", failures);
         return 1;
