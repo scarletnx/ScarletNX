@@ -5365,6 +5365,16 @@ static void test_coop_c_regs(const char* dir) {
     static const u32 outs[4] = {20, 21, 22, 23};
     CHECK(coop_case(dir, "coop_c_regs", insns, 1, outs, 4));
 }
+/* HMMAs whose D or C takes only some of a held D's registers. R22 = A B over R20 = A B's R22 and R23: R20 and R21 keep
+   the first D's words, which went nowhere when the second held its own. R24 = A B + R22, C R20's last two words and two
+   never written: it took R20's matrix whole as its C */
+static void test_coop_overlap(const char* dir) {
+    static const u32 d_over[2][5] = {{20, 8, 12, 255, 0x18}, {22, 8, 12, 255, 0x18}};
+    static const u32 c_over[2][5] = {{20, 8, 12, 255, 0x18}, {24, 8, 12, 22, 0x18}};
+    static const u32 outs[8] = {20, 21, 22, 23, 24, 25, 26, 27};
+    CHECK(coop_case(dir, "coop_overlap_d", d_over, 2, outs, 6));
+    CHECK(coop_case(dir, "coop_overlap_c", c_over, 2, outs, 8));
+}
 /* the way the log says a device's compute HMMAs take (shader_hmma_way), from the flags device.c sets */
 static void test_hmma_way(void) {
     int quad_was = g_spirv_translate.quad_compute, mixed_was = g_spirv_translate.mixed_dot,
@@ -6473,6 +6483,7 @@ int main(int argc, char** argv) {
     test_coop_fused_chain(dir);
     test_coop_rz(dir);
     test_coop_c_regs(dir);
+    test_coop_overlap(dir);
     test_warp_matrix_flush(dir);
     test_hmma_way();
     test_hmma_choose();

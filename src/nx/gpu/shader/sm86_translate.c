@@ -3795,8 +3795,17 @@ static void coop_acc_take(Ctx* c, u32 r) {
     for (u32 k = 0; k < 4; k++) wr(c, a.first + k, to_u(c, out[k]));
 }
 /* an HMMA's f32 result kept as the D matrix of the registers it names, instead of their words: 1 where it is held,
-   0 where the block already holds its share of matrices and the words must be written */
+   0 where the block already holds its share of matrices and the words must be written. A held D of the same four
+   registers is this one's to replace, and one that shares only some of them goes to its registers first: the others
+   keep its words */
 static int coop_acc_hold(Ctx* c, u32 d, u32 shape, const u32* mat, u32 nmat) {
+    for (u32 k = 0; k < 4; k++) {
+        int i = coop_acc_find(c, d + k);
+        if (i >= 0 && c->coop_acc[i].first == d)
+            c->coop_acc[i] = c->coop_acc[--c->nacc];
+        else if (i >= 0)
+            coop_acc_take(c, d + k);
+    }
     for (u32 k = 0; k < 4; k++) c->coop_gen[d + k]++; /* the words are the matrix's now */
     if (c->nacc == COOP_ACC) return 0;
     CoopAcc* a = &c->coop_acc[c->nacc++];
@@ -3861,7 +3870,7 @@ static void hmma_coop(Ctx* c, const Sm86Insn* in, int k16, int f32, u32 ra, u32 
     int c_chain = 0;
     if (f32 && rc < SM86_RZ) {
         int i = coop_acc_find(c, rc);
-        if (i >= 0 && c->coop_acc[i].shape == shape) {
+        if (i >= 0 && c->coop_acc[i].shape == shape && c->coop_acc[i].first == rc) {
             for (u32 m = 0; m < mblocks; m++) c_mat[m] = c->coop_acc[i].mat[m];
             c_chain = 1;
         } else if (i >= 0)
