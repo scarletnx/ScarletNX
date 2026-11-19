@@ -666,8 +666,10 @@ static int time_emitters(SnxIr* ir, const uint32_t* halfwords, size_t count, uns
     return 0;
 }
 
-/* ADD, RSC and ORR writing the PC with bit 0 the condition or the PC makes 0: their CPSR was stored as it was */
-static const uint32_t a32_found[] = {0x208ffb03u, 0x22effab8u, 0x618ffb08u};
+/* words the whole corpus found longer and a sample may miss: an ADD, an RSC and an ORR writing the PC with bit 0 the
+   condition or the PC makes 0 (their CPSR was stored as it was); two RSCs, whose NOT(R[n]) goes second in AddWithCarry
+   as llvm.c's reverse subtraction adds it */
+static const uint32_t a32_found[] = {0x208ffb03u, 0x22effab8u, 0x618ffb08u, 0x30f72e0fu, 0x52fb01feu};
 /* --a32's ith word of 65536: data processing (immediate, register, register-shifted), B, BL, BLX, BX and MOVW/MOVT,
    the class and the fields drawn from i, a third of them under AL and the rest under any condition, a register field
    15 one time in eight */
