@@ -407,10 +407,15 @@ twin in host memory, and each set a twin in it. A write goes to the set and to i
 twin: RADV keeps descriptors in write-combined device memory, where a copy's reads are uncached.
 [GVK is not a security boundary](../user/settings.md). It forwards some guest-provided Vulkan handles and data to
 the host driver.
-The experimental resolution heuristic uses native size below 1.5× and otherwise rounds to the nearest integer scale.
-It scales the swapchain and single-level color and depth targets that meet a size threshold. Render areas, dynamic
-viewports, scissors, clear rectangles, copies and blits adapt to scaled targets. Viewports baked into a pipeline do
-not scale.
+The resolution setting is a whole factor for GVK: none below 1.5×, otherwise the nearest integer. GVK scales an
+image by its use, not by its size or usage flags (one game gives every texture `COLOR_ATTACHMENT`). The first
+framebuffer that takes an image gives it a shadow: a GVK image at the scale, which the image's views, descriptors,
+barriers and commands use from then on. The game's own image stays behind it, bound to the game's memory. A copy
+between a shadow and a buffer, or an image at the game's size, goes through the game's image and a blit. A framebuffer
+scales all its attachments or none, and keeps the game's size when one has mip levels or storage usage. The
+swapchain's images are made at the scale. Render areas, dynamic viewports, scissors and clear rectangles scale with
+the framebuffer. Viewports baked into a pipeline do not scale. Shaders see the scaled size: a size query or
+`gl_FragCoord` reads the host's pixels.
 
 The shader programs a game ships are translated at startup, on the renderer's shader file thread rather than the GPU
 thread, into `<id>.<driver>.vkshipped` (`prepare_shaders`: before the game's first thread runs, behind main.c's loading screen,
