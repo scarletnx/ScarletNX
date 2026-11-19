@@ -25,6 +25,7 @@
 #include <string.h>
 #include <stdatomic.h>
 #include "common/gpu/vk/vk_common.h"
+#include "nx/gpu/vk/gpuprof_gap.h"
 #include "nx/gpu/vk/gpuprof_setting.h"
 #include "nx/gpu/vk/gpuprof_time.h"
 #include "nx/gpu/vk/vk.h"
@@ -53,6 +54,7 @@ typedef struct {
     u32 passes, dispatches;
     u64 xfers;
     u64 cpu;    /* CLOCK_MONOTONIC at its submit */
+    u64 cpu0;   /* and at its begin: from then on it held recorded work */
     u64 value;  /* its value on the graphics timeline */
     int why;    /* VK_SUB_* */
     /* the command buffer its begin went in: an end skipped while timing was off (stats turned off and on again
@@ -108,6 +110,15 @@ static const char* const g_idle_plot[IDLE_N] = {"gpu idle: waited", "gpu idle: f
                                                 "gpu idle: queued"};
 static u64 g_idle_ns[IDLE_N], g_idles[IDLE_N], g_busy_ns, g_subs, g_sub_why[VK_SUB_N];
 static u64 g_round_ns[VK_WAIT_N]; /* IDLE_WAITED by the kind of the CPU's wait */
+/* The idle time before a submission while it already held recorded work (from its begin to its submit): what
+   submitting its commands as they were recorded could have run, up to the submission's own GPU time, by its VK_SUB_*,
+   and the part of it before a submission the CPU then waited for (a round trip that much shorter) */
+static u64 g_fill_ns[VK_SUB_N], g_fill_waited_ns;
+static u64 g_idle_subs_all, g_fill_all_ns; /* the submissions gp_idle placed and their fill since the start (tests) */
+void vk_gpuprof_fill_totals(u64* subs, u64* fill_ns) {
+    *subs = g_idle_subs_all;
+    *fill_ns = g_fill_all_ns;
+}
 /* The busy time by what the submissions held: rendering passes, else dispatches, else copies, else nothing. Most of
    one game's submissions held no pass, so the passes' times said nothing of most of the GPU's */
 enum { HOLD_PASSES, HOLD_DISPATCHES, HOLD_COPIES, HOLD_NOTHING, HOLD_N };
@@ -232,8 +243,12 @@ void vk_gpuprof_cb_begin(VkCommandBuffer cb) {
         g_lost++;
         return;
     }
-    g->sub[g->nsub] =
-        (GpSub){.q0 = g->ops.used, .passes = g->npass, .dispatches = (u32)g_dispatched, .xfers = g_rec_xfers, .cb = cb};
+    g->sub[g->nsub] = (GpSub){.q0 = g->ops.used,
+                              .passes = g->npass,
+                              .dispatches = (u32)g_dispatched,
+                              .xfers = g_rec_xfers,
+                              .cb = cb,
+                              .cpu0 = gp_host_ns()};
     gp_stamp(cb, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, g->ops.pool, g->ops.used++);
     g->nsub++;
     g_cur_cb = cb;
@@ -501,21 +516,22 @@ static void gp_idle(const GpSlot* g, const u64* ts, double period) {
         g_holds[hold]++;
         g_subs++;
         g_sub_why[s->why]++;
-        if (g_last_end && b > g_last_end) {
-            /* the GPU idled from the last submission's end to this one's start: before this one was submitted, as
-               the CPU was busy, and after it */
-            u64 cut = s->cpu < g_last_end ? g_last_end : s->cpu > b ? b : s->cpu;
-            if (cut > g_last_end) {
-                int c = g_prev_kind ? IDLE_WAITED : g_prev_why == VK_SUB_PRESENT ? IDLE_FRAME : IDLE_RECORDING;
-                g_idle_ns[c] += cut - g_last_end;
-                g_idles[c]++;
-                if (g_prev_kind) g_round_ns[g_prev_kind - 1] += cut - g_last_end;
-            }
-            if (b > cut) {
-                g_idle_ns[IDLE_QUEUED] += b - cut;
-                g_idles[IDLE_QUEUED]++;
-            }
+        const VkGpGap gap = vk_gpuprof_gap(g_last_end, s->cpu0, s->cpu, b, e);
+        if (gap.before) {
+            /* the GPU idled from the last submission's end to this one's submit, as the CPU was busy */
+            int c = g_prev_kind ? IDLE_WAITED : g_prev_why == VK_SUB_PRESENT ? IDLE_FRAME : IDLE_RECORDING;
+            g_idle_ns[c] += gap.before;
+            g_idles[c]++;
+            if (g_prev_kind) g_round_ns[g_prev_kind - 1] += gap.before;
         }
+        if (gap.queued) {
+            g_idle_ns[IDLE_QUEUED] += gap.queued;
+            g_idles[IDLE_QUEUED]++;
+        }
+        g_fill_ns[s->why] += gap.fill;
+        g_fill_all_ns += gap.fill;
+        g_idle_subs_all++;
+        if (g_waited[s->value % GP_WAITS].value == s->value) g_fill_waited_ns += gap.fill;
         if (e > g_last_end) g_last_end = e;
         g_prev_why = s->why;
         g_prev_kind = g_waited[s->value % GP_WAITS].value == s->value ? g_waited[s->value % GP_WAITS].kind : 0;
@@ -719,6 +735,16 @@ static void gp_idle_report(void) {
             at += snprintf(line + at, sizeof line - (size_t)at, "%s %s %.1f", w ? "," : "", why[w],
                            (double)g_sub_why[w] / f);
         LOG("vulkan: GPU   submissions a present by why:%s\n", line);
+        u64 fill = 0;
+        at = 0;
+        for (int w = 0; w < VK_SUB_N; w++) {
+            fill += g_fill_ns[w];
+            at += snprintf(line + at, sizeof line - (size_t)at, "%s %s %.2f", w ? "," : "", why[w],
+                           (double)g_fill_ns[w] / 1e6 / f);
+        }
+        LOG("vulkan: GPU   idle while the next submission held commands not yet submitted, up to its GPU time: %.2f "
+            "ms a present, %.2f ms of it before a submission the CPU waited for; by its why:%s\n",
+            (double)fill / 1e6 / f, (double)g_fill_waited_ns / 1e6 / f, line);
         for (int c = 0; c < HOLD_N; c++)
             if (g_holds[c])
                 LOG("vulkan: GPU   busy in submissions holding %s: %.2f ms a present, %.1f of them\n", g_hold_name[c],
@@ -734,6 +760,8 @@ static void gp_idle_report(void) {
     memset(g_idle_ns, 0, sizeof g_idle_ns);
     memset(g_idles, 0, sizeof g_idles);
     memset(g_round_ns, 0, sizeof g_round_ns);
+    memset(g_fill_ns, 0, sizeof g_fill_ns);
+    g_fill_waited_ns = 0;
     memset(g_sub_why, 0, sizeof g_sub_why);
     g_busy_ns = g_subs = 0;
     g_t0 = now;
