@@ -35,7 +35,7 @@ SnxA32Kind snx_a32_decode_ref(uint32_t w) {
         return SNX_A32_UNDEFINED;
     }
     if ((w & 0x0ffffff0) == 0x012fff10 || (w & 0x0ffffff0) == 0x012fff30)
-        return m != 15 ? SNX_A32_BX : SNX_A32_UNDEFINED;
+        return m != 15 || !(w & 0x20) ? SNX_A32_BX : SNX_A32_UNDEFINED; /* BX PC branches; BLX PC can't */
     if ((w & 0x0ff000f0) == 0x01200070) return (w >> 28) == 14 ? SNX_A32_BKPT : SNX_A32_UNDEFINED;
     /* MRC/MCR and MRRC/MCRR to the system coprocessors: which registers exist, and what they hold, is the backend's
        (SnxArmRt.coproc). Coprocessors 10 and 11 are VFP's, decoded above */
@@ -165,7 +165,8 @@ SnxA32Kind snx_a32_decode_ref(uint32_t w) {
     }
     if ((w & 0x0c000000) == 0) {
         op = (w >> 21) & 15;
-        if (!(w & (1u << 25)) && (w & 0x10) && ((w & 0x80) || s == 15 || m == 15 || n == 15)) return SNX_A32_UNDEFINED;
+        if (!(w & (1u << 25)) && (w & 0x10) && ((w & 0x80) || s == 15 || m == 15 || n == 15 || d == 15))
+            return SNX_A32_UNDEFINED;
         if (op >= 8 && op <= 11) {
             if (!(w & (1u << 20)) || d) return SNX_A32_UNDEFINED;
         } else if (d == 15 && (w & (1u << 20)))

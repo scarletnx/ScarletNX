@@ -37,6 +37,9 @@ struct SgCtx {
     LLVMValueRef group_start;
     /* the registers a multiple load wrote, stored as the instruction ends (sg_registers_flush) */
     unsigned deferred;
+    /* an A32 word whose skip the block's trace records (llvm.c's timed_condition, SnxArmCodegenOptions.skipped) */
+    int timed;
+    int iset; /* the instruction set it selected (SelectInstrSet), 0 for the block's */
 };
 
 static inline LLVMBuilderRef sg_builder(SgCtx* g) { return g->a->b; }
@@ -68,8 +71,10 @@ static inline long long sg_ArchVersion(SgCtx* g) {
         default: return 8;
     }
 }
-/* the instruction set the block runs in, InstrSet's member (InstrSet_A64, InstrSet_A32, InstrSet_T32) */
-static inline int sg_CurrentInstrSet(SgCtx* g) { return g->a->thumb ? 2 : 1; }
+/* the instruction set the instruction runs in, InstrSet's member (InstrSet_A64, InstrSet_A32, InstrSet_T32): the
+   block's, until it selects the other (SelectInstrSet: BLX's target is aligned as the set it goes to) */
+static inline int sg_CurrentInstrSet(SgCtx* g) { return g->iset ? g->iset : g->a->thumb ? 2 : 1; }
+static inline void sg_SetInstrSet(SgCtx* g, int iset) { g->iset = iset; }
 /* ITSTATE before the instruction */
 static inline SgS sg_ITSTATE(SgCtx* g) { return sg_s(g->itstate, 8); }
 /* CurrentCond (the Arm ARM's shared AArch32.CurrentCond): an A32 word's condition, the T1 and T3 B<c>'s own, else the
@@ -221,10 +226,22 @@ static inline LLVMValueRef sg_arm_wide(SgCtx* g, LLVMValueRef x, LLVMValueRef y,
     ArmIR* a = g->a;
     return add(a, add(a, z64(a, x), z64(a, y)), z64(a, cin));
 }
+/* v is NOT of a value (sg_d_not's xor with all ones) */
+static inline int sg_arm_is_not(LLVMValueRef v) {
+    LLVMValueRef k;
+    if (!LLVMIsAInstruction(v) || LLVMGetInstructionOpcode(v) != LLVMXor) return 0;
+    k = LLVMGetOperand(v, 1);
+    return LLVMIsAConstantInt(k) && LLVMConstIntGetSExtValue(k) == -1;
+}
 static inline void sg_add_with_carry(SgCtx* g, SgD a, SgD b, SgD cin, SgD* result, SgD* nzcv) {
     LLVMValueRef x = sg_d_make(g, &a), y = sg_d_make(g, &b), c = sg_cast(g, sg_d_make(g, &cin), 32, 0), r;
     SgD flags = sg_d_empty(4);
     if (a.w != 32) sg_fail("AArch32's AddWithCarry of other than 32 bits", a.w, 32);
+    if (sg_arm_is_not(x) && !sg_arm_is_not(y)) { /* RSB's and RSC's NOT(R[n]) + operand: the NOT second, as llvm.c's */
+        LLVMValueRef t = x;                      /* reverse subtractions add it, so V is the same IR */
+        x = y;
+        y = t;
+    }
     r = LLVMBuildTrunc(SG_B, sg_arm_wide(g, x, y, c), g->a->i32, "");
     *result = sg_d_from(g, r);
     flags.nzcv = SG_NZCV_CARRY;
@@ -286,6 +303,9 @@ static inline void sg_PSTATE_write(SgCtx* g, long long first, long long count, S
         return;
     }
     if (v.nzcv) sg_d_realize(g, &v);
+    if (first == SG_PSTATE_T && count == 1 && !g->field[SG_PSTATE_T] && sg_d_is_const(&v) &&
+        (sg_d_const_word(&v, 0) & 1) == (unsigned)g->a->thumb)
+        return; /* the block's own instruction set (A32 BL's SelectInstrSet): CPSR keeps it */
     for (i = 0; i < (unsigned)count; ++i) {
         LLVMValueRef f = sg_cast(g, sg_d_flag_value(g, &v, (unsigned)count - 1 - i), 32, 0);
         (void)sg_pstate_bit(first + i);
@@ -406,8 +426,9 @@ static inline void sg_GuestWrite(SgCtx* g, SgD address, long long size, int alig
 
 /* ---- the entry ---- */
 
-/* the T16 dispatcher sailgen generates after this file (a32.roots' decoder) */
+/* the T16 and A32 dispatchers sailgen generates after this file (a32.roots' decoders) */
 static int sg_decode_t16(SgCtx* g);
+static int sg_decode_a32(SgCtx* g);
 /* the instruction's end: what it wrote stored, and the way where its condition failed joined, R15 the next
    instruction's where it ran on (llvm_thumb.inc's driver did both for the emitters written by hand). 1 when it ends the
    block: it branched, or stopped the block (an exit) */
@@ -427,6 +448,10 @@ static inline int sg_arm_finish(SgCtx* g) {
         }
         LLVMPositionBuilderAtEnd(SG_B, g->skip);
         setreg(a, 15, c32(a, a->next));
+        if (g->timed && a->skipped) { /* the skipped instruction's bit, as llvm.c's A32 driver sets it */
+            uint32_t i = (a->pc - a->start) / 4, at = a->skipped + (i >> 5) * 4;
+            put(a, at, bor(a, get(a, at, a->i32), c32(a, 1u << (i & 31))));
+        }
         LLVMBuildBr(SG_B, next);
         LLVMPositionBuilderAtEnd(SG_B, next);
         return stop;
@@ -450,5 +475,20 @@ static int sg_emit_t16(ArmIR* a, uint16_t halfword, unsigned itstate, int* stop,
     *stop = sg_arm_finish(g);
     *it_set = g->it_set;
     *it_next = g->it_next;
+    return 1;
+}
+/* an A32 word at a->pc: emitted and *stop set (sg_arm_finish), 1; or 0 when no clause of the Sail's takes it, with
+   nothing emitted, for the block compiler's emitters. timed: its skip goes in the trace */
+static int sg_emit_a32(ArmIR* a, uint32_t word, int timed, int* stop) {
+    SgCtx context, *g = &context;
+    memset(g, 0, sizeof *g);
+    g->a = a;
+    g->word = word;
+    g->pc = a->pc;
+    g->timed = timed;
+    g->start_block = LLVMGetInsertBlock(a->b);
+    g->start = LLVMGetLastInstruction(g->start_block);
+    if (!sg_decode_a32(g)) return 0;
+    *stop = sg_arm_finish(g);
     return 1;
 }

@@ -12,21 +12,34 @@
 
 // ScarletNX's AArch32 CPU keeps R0 to R15 in one array (SnxArmCPU.r), and a guest runs in user mode alone, which banks
 // none of them: sail-arm's Rmode_read and Rmode_set pick a mode's bank, here GPR's elements, which the back end loads
-// and stores where the CPU keeps them (sg_GPR_read). R15 is read through R_read, the pc of the instruction plus 8 or 4
+// and stores where the CPU keeps them (sg_GPR_read). R15 is read through R_read, the pc of the instruction plus 8 or 4,
+// and written there only by an UNPREDICTABLE form run as written (a register-shifted register's Rd): a branch to the
+// value, as an ALU result's write of the PC, the way the block compiler runs every one of them
 register GPR : vector(16, bits(32))
 val Rmode_read : forall 'n. (int('n), bits(5)) -> bits(32)
 function Rmode_read (n, mode) = GPR[n]
 val Rmode_set : forall 'n. (int('n), bits(5), bits(32)) -> unit
 function Rmode_set (n, mode, value_name) = {
-    GPR[n] = value_name
+    if n == 15 then {
+        ALUWritePC(value_name)
+    } else {
+        GPR[n] = value_name
+    }
 }
 // The exception level and the mode guest code runs at, which sailgen reads PSTATE.EL and PSTATE.M as (a let named for a
 // register's field holds that field fixed): what only a privileged mode does (CPS, SETPAN) folds away
 let PSTATE_EL : bits(2) = EL0
 let PSTATE_M : bits(5) = 0b10000 // M32_User
 // The instruction set a block runs in is the block's (the dispatcher picks an A32 or a Thumb block by CPSR.T): the back
-// end answers it when it recompiles
+// end answers it when it recompiles, and an instruction that selects the other one (BLX) has it from then on, so its
+// branch aligns its target as the new set does (SetInstrSet, the back end's; PSTATE.T as sail-arm's SelectInstrSet)
 val CurrentInstrSet : unit -> InstrSet
+val SetInstrSet : InstrSet -> unit
+val SelectInstrSet : InstrSet -> unit
+function SelectInstrSet iset = {
+    SetInstrSet(iset);
+    PSTATE.T = if iset == InstrSet_A32 then 0b0 else 0b1
+}
 
 // ---- the condition and the IT block ----
 
@@ -284,6 +297,12 @@ function BXWritePC (address_in, branch_type) = {
     }) : bool);
     BranchTo(address, branch_type, branch_conditional)
 }
+// A data processing write of the PC in A32 interworks from ARMv7 on; ARMv4T to ARMv6 branch in A32, to the word its
+// bits 1 and 0 cleared leave (the ARMv7 ARM's ALUWritePC); a Thumb one branches in Thumb
+val ALUWritePC : bits(32) -> unit
+function ALUWritePC address = if CurrentInstrSet() == InstrSet_A32 & ArchVersion() >= 7 then
+                                  BXWritePC(address, BranchType_INDIR)
+                              else BranchWritePC(address, BranchType_INDIR)
 // A load into the PC branches, with the state from bit 0 from ARMv5 on; the ARM7TDMI (ARMv4T) stays in its state, its
 // bit 0 dropped (the ARMv7 ARM's LoadWritePC, A2.3.2)
 val LoadWritePC : bits(32) -> unit
@@ -426,10 +445,12 @@ function ALUExceptionReturn address = throw(Error_Undefined())
 // An UNPREDICTABLE encoding (sail-arm's throw of Error_Unpredictable, which sailgen walks as UnpredictableEncoding())
 // runs as it is written: a high-register CMP or ADD of two low registers, a write of the PC inside an IT block, an
 // empty PUSH or POP's transfer of nothing (an empty LDM's or STM's is above). Old toolchains and hand-written code
-// leave such forms in games, and the guests' cores run them so. The 3DS's ARM11 (ArchVersion() 6) is the one that
-// refuses them: they are UNDEFINED there, as its profile has always decoded them (profile.c)
+// leave such forms in games, and the guests' cores run them so. The 3DS's ARM11 (ArchVersion() 6) refuses them: they
+// are UNDEFINED there, as its profile has always decoded them (profile.c); and so is every A32 one, on every guest, as
+// the A32 decoder has always had them (a32.decode: a PC operand of a register-shifted register, ...)
 val UnpredictableEncoding : unit -> unit
-function UnpredictableEncoding () = if ArchVersion() == 6 then throw(Error_Undefined())
+function UnpredictableEncoding () = if ArchVersion() == 6 | CurrentInstrSet() == InstrSet_A32 then
+                                        throw(Error_Undefined())
 // An UNKNOWN value is zero, as sailgen starts an undefined local
 val __UNKNOWN_bits : forall 'n, 'n >= 0. int('n) -> bits('n)
 function __UNKNOWN_bits n = Zeros(n)

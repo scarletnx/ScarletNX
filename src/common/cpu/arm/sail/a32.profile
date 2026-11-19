@@ -26,3 +26,7 @@ since 7 decode_aarch32_instrs_NOP_T1enc_A_txt decode_aarch32_instrs_YIELD_T1enc_
 since 7 decode_aarch32_instrs_WFI_T1enc_A_txt decode_aarch32_instrs_SEV_T1enc_A_txt decode_aarch32_unallocated_hint_T1
 # SEVL is ARMv8's
 since 8 decode_aarch32_instrs_SEVL_T1enc_A_txt
+# A32: BLX's forms are ARMv5T's, MOVW and MOVT came with ARMv6T2 (no guest short of ARMv7 here has them). A word the
+# Sail takes only from a later version stays the block compiler's on an older guest (sg_emit_a32 hands it back)
+since 5 decode_aarch32_instrs_BLX_r_A1enc_A_txt decode_aarch32_instrs_BL_i_A2enc_A_txt
+since 7 decode_aarch32_instrs_MOV_i_A2enc_A_txt decode_aarch32_instrs_MOVT_A1enc_A_txt
