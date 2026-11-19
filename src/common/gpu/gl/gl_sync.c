@@ -27,6 +27,7 @@ enum {
 static struct {
     SnxGlSync s[SNX_GL_SYNCS]; /* what a save state holds */
     SnxGlSyncHost host;
+    uint32_t last_id; /* the id the last sync made took (a load takes the highest of its records) */
 } g_gl_sync;
 
 #define S g_gl_sync.s
@@ -35,7 +36,8 @@ static struct {
 void snx_gl_sync_host(const SnxGlSyncHost* host) { H = host ? *host : (SnxGlSyncHost){0}; }
 
 static SnxGlSync* sync_of(uint64_t sync) {
-    return sync && sync <= SNX_GL_SYNCS && S[sync - 1].used ? &S[sync - 1] : NULL;
+    uint32_t n = (uint32_t)sync;
+    return n && n <= SNX_GL_SYNCS && S[n - 1].used && S[n - 1].id == (uint32_t)(sync >> 32) ? &S[n - 1] : NULL;
 }
 static int signaled(const SnxGlSync* s) { return !s->serial || (H.completed && s->serial <= H.completed()); }
 
@@ -46,8 +48,9 @@ uint64_t snx_gl_fence_sync(uint32_t ctx, uint32_t condition, uint32_t flags) {
     }
     for (uint32_t i = 0; i < SNX_GL_SYNCS; i++)
         if (!S[i].used) {
-            S[i] = (SnxGlSync){.used = 1, .serial = H.recorded ? H.recorded() : 0};
-            return i + 1;
+            if (!++g_gl_sync.last_id) g_gl_sync.last_id = 1; /* past 2^32 syncs: 0 names none */
+            S[i] = (SnxGlSync){.used = 1, .id = g_gl_sync.last_id, .serial = H.recorded ? H.recorded() : 0};
+            return (uint64_t)g_gl_sync.last_id << 32 | (i + 1);
         }
     snx_gl_error(ctx, GL_OUT_OF_MEMORY_);
     return 0;
@@ -111,5 +114,9 @@ int snx_gl_sync_state_check(const void* in, size_t size, char* why, size_t whysi
 }
 void snx_gl_sync_state_load(const void* in) {
     memcpy(S, (const unsigned char*)in + 2 * sizeof(uint32_t), sizeof S);
-    for (uint32_t i = 0; i < SNX_GL_SYNCS; i++) S[i].serial = 0; /* the work before the save state is done */
+    g_gl_sync.last_id = 0;
+    for (uint32_t i = 0; i < SNX_GL_SYNCS; i++) {
+        S[i].serial = 0; /* the work before the save state is done */
+        if (S[i].used && S[i].id > g_gl_sync.last_id) g_gl_sync.last_id = S[i].id;
+    }
 }
