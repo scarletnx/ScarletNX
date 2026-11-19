@@ -793,8 +793,8 @@ static int gap_line(SnxLogScan* s, Span line) {
                 if (starts(rest, "compute ")) return gap(s, SNX_GAP_COMPUTE, skip(rest, (size_t)at + 17));
                 return 0;
             }
-            /* a format the runtime doesn't map (vk/format.c): "unsupported texture format <f>, header word 0 <w>
-               (not drawn)", "unsupported render target format <f>, drawn as RGBA8", "unsupported depth format <f>,
+            /* a format the runtime doesn't map (vk/format.c): "unsupported texture format <f>, header word 0 <w>: no
+               Vulkan format", "unsupported render target format <f>, drawn as RGBA8", "unsupported depth format <f>,
                using D32F"; a texture or a draw texture it can't make (vk/texture.c, render.c): "... (not drawn)" */
             if (take_lit(&rest, "unsupported texture format "))
                 return gap(s, SNX_GAP_TEXTURE, span(rest.p, hex_run(rest)));

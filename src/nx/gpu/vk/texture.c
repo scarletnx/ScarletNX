@@ -4303,6 +4303,39 @@ VkImageView vk_null_view(VkImageViewType type, int num, int ms) {
     return views[ms][type][num];
 }
 
+int vk_tic_names_none(const u32* tic) { return vk_tic_empty(tic) || !vk_tic_format(tic[0], 0).bpp; }
+
+/* The headers vk_null_header_first said: an open table twice the number it lists, so a lookup ends at an empty slot
+   within a probe or two, as a draw asks for each slot it binds the null texture to */
+enum { NULL_HEADERS_LISTED = 64, NULL_HEADERS_SLOTS = 2 * NULL_HEADERS_LISTED };
+static struct {
+    u64 said[NULL_HEADERS_SLOTS]; /* each header's address plus one (a pool may start at 0), 0 for none */
+    u32 listed;
+} g_null_headers;
+
+int vk_null_header_first(u64 tic_at) {
+    const u64 key = tic_at + 1;
+    u32 at = (u32)((key * 0x9E3779B97F4A7C15ull) >> 57) & (NULL_HEADERS_SLOTS - 1);
+    while (g_null_headers.said[at]) {
+        if (g_null_headers.said[at] == key) return 0;
+        at = (at + 1) & (NULL_HEADERS_SLOTS - 1);
+    }
+    if (g_null_headers.listed >= NULL_HEADERS_LISTED) {
+        if (g_null_headers.listed == NULL_HEADERS_LISTED) {
+            g_null_headers.listed++; /* said once */
+            LOG("vulkan: %u headers that name no texture were each said once: the ones after them read the null "
+                "texture too, unlisted\n",
+                (unsigned)NULL_HEADERS_LISTED);
+        }
+        return 0;
+    }
+    g_null_headers.said[at] = key;
+    g_null_headers.listed++;
+    return 1;
+}
+
+void vk_null_headers_forget(void) { memset(&g_null_headers, 0, sizeof g_null_headers); }
+
 Surf* vk_null_storage(VkImageViewType type, int kind, VkImageView* view) {
     /* a 2D image for the 2D and 2D array views, a 3D one for the 3D view; by kind, the format of the program's image
        (shader.h ShaderInfo.img): 0 float, 1 an atomic's R32ui, 2 unsigned, 3 signed */

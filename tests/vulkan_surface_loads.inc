@@ -201,6 +201,64 @@ static int check_layered_surface_loads(void)
 		CHECK(g_vk_dispatches == dispatches);
 		CHECK(strstr(text, expected));
 	}
+	/* an empty header (all eight words nought) under a raw load names no texture: it reads the null texture, as a
+	   draw's raw load does, so the dispatch goes on and stores a zero where the program writes what it read, and the
+	   log names the header's address, once for the two dispatches. The round trip of a raw R32 texel in a 2D array */
+	{
+		u64 load = 0xeb00000000070008ull | 4ull << 33 | 4ull << 39 | 4ull << 20 | 1ull << 52; /* SULD.D.32 */
+		u64 store = 0xeb20000000070008ull | 4ull << 33 | 6ull << 39 | 1ull << 20;
+		u64 instructions[] = {storage_mov(0, 1), storage_mov(1, 1), storage_mov(2, 1), 0x4c98078804a70004ull,
+			0x4c98078804b70006ull, load, storage_mov(0, 2), store, 0xe30000000007000full};
+		u32 empty[8] = {0};
+		u32 output_tic[8] = {0x0f | 4u << 7 | 4u << 10 | 4u << 13 | 4u << 16, (u32)target,
+			(u32)(target >> 32) | 3u << 21, 2u << 28, 7u | 5u << 23, 3u | 3u << 16, 0, 2u << 4};
+		u64 program = address + 0x4200;
+		u64 output_offset = 3 * 512 + bl_offset(8, 1, 0, 8 * 4, 4, 0, 0); /* layer 1, past level 0 to 2 of layer 0 */
+		u8 code[256] = {0}, output[8192], result[8192];
+		char expected[256], text[4096] = {0};
+		u64 dispatches = g_vk_dispatches;
+		u32 at = 0;
+		FILE *log = tmpfile();
+
+		CHECK(log);
+		for (u32 i = 0; i < sizeof(instructions) / sizeof(instructions[0]); i++) {
+			if (!(i % 3)) snx_st_le64(code + 8 * at++, 0x001f8000fc0007e0ull);
+			snx_st_le64(code + 8 * at++, instructions[i]);
+		}
+		for (u32 i = 0; i < sizeof(output); i++) output[i] = (u8)(i * 37 + (i >> 8));
+		CHECK(!gmem_write(program, code, sizeof(code)));
+		CHECK(!gmem_write(target, output, sizeof(output)));
+		CHECK(!storage_write_words(descriptors, empty, 8));
+		CHECK(!storage_write_words(descriptors + 32, output_tic, 8));
+		vk_null_headers_forget();
+		t_plat.log_redirect = log;
+		for (int run = 0; run < 2; run++) {
+			vk_lock();
+			{
+				DispatchState d;
+				mx_dispatch_state(qmd, channel->rcomp, program, &d);
+				vk_dispatch(&d);
+			}
+			vk_unlock();
+		}
+		t_plat.log_redirect = NULL;
+		rewind(log);
+		text[fread(text, 1, sizeof(text) - 1, log)] = 0;
+		fclose(log);
+		snx_st_le32(output + output_offset, 0);
+		CHECK(!gmem_read(target, result, sizeof(result)));
+		snprintf(expected, sizeof(expected),
+			"texture 0 (handle 00000000) names an empty header at %llx (word 0 00000000): it reads the null texture, "
+			"zeros, and the dispatch goes on\n", (unsigned long long)descriptors);
+		const char *said = strstr(text, expected);
+		if (g_vk_dispatches != dispatches + 2 || memcmp(result, output, sizeof(result)) || !said ||
+			strstr(said + 1, expected))
+			fprintf(stderr, "a raw load of an empty header: %llu dispatches, texel %08x, log:\n%s",
+				(unsigned long long)(g_vk_dispatches - dispatches), snx_ld_le32(result + output_offset), text);
+		CHECK(g_vk_dispatches == dispatches + 2);
+		CHECK(!memcmp(result, output, sizeof(result)));
+		CHECK(said && !strstr(said + 1, expected));
+	}
 	printf("array and volume surface loads: %u formatted/raw round-trips checked\n", count);
 	CHECK(!check_unsized_compute_program(address, channel, qmd));
 	free(channel);

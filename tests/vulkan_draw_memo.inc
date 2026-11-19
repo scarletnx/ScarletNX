@@ -419,6 +419,170 @@ static int life_cases(GpuChannel* channel) {
     return 0;
 }
 
+/* Headers that name no texture, sampled by the fragment program of the texture cases (slot 0, its handle in constant
+   buffer 2): an empty one, all eight words nought; one whose word 0 alone is nought, a texture's address, size and
+   layout after it; and one of a format the renderer has no Vulkan format for. Word 0's four component sources (bits 19
+   to 30) of nought are ZERO on the console (envytools' gm200_texture.xml X_SOURCE to W_SOURCE, g80_defs.xml
+   G80_TIC_SOURCE), so the first two read (0, 0, 0, 0) whatever the texture unit fetches. Each draw is drawn, its pixel
+   (0, 0, 0, 0) over the red clear, and the log says once for each header its address, its word 0 and the null texture
+   read in its place. Then a program of a dynamic handle table (render.c's tex_tables_set) reads a fifth, empty one */
+#define EMPTY_INDEXED_PROGRAM 0x11000
+static int empty_header_draw(GpuChannel* channel, u32 program, u32 handle, u8 px[4], u64* drawn) {
+    u32* r = channel->r3d;
+    const u64 target = MEMO_GPU + 0x20000;
+    /* constant buffer 2's bytes 0x40 to 0x7f, written by the guest's CPU in a new epoch as LIFE_CPU writes: the TEX's
+       handle, its first word, and the table's entries, one each 16 bytes */
+    for (u32 k = 0; k < 4; k++) snx_st_le32(GP(MEMO_CPU + (LIFE_POOL + 0x240 + 16 * k - MEMO_GPU)), handle);
+    vk_ww_new_epoch();
+    const u64 before = g_vk_drawn;
+    vk_lock();
+    rt_clear(channel, target, MEMO_SIDE, MEMO_SIDE, 0, 0);
+    r[0x851] = program;
+    r[0x458] = 0 | 1u << 21 | 7u << 27; /* RGBA32F, the whole target's triangle */
+    channel->r3d_dirty = ~0u;           /* the registers were set directly */
+    mx_draw_state_sync(channel);
+    DrawCall call = {.topology = 4, .count = 3, .instances = 1};
+    vk_render_draw(&channel->ds, &call, &channel->owner);
+    vk_render_end();
+    Surf* t = vk_rt_find(target);
+    CHECK(t);
+    if (t) CHECK(!read_pixel_at(t, 0, 0, px));
+    vk_unlock();
+    *drawn = g_vk_drawn - before;
+    return 0;
+}
+static int empty_header_cases(GpuChannel* channel) {
+    u32* r = channel->r3d;
+    u32 headers[3][8] = {{0}};
+    life_tic(headers[1], 0);
+    headers[1][0] = 0;
+    life_tic(headers[2], 0);
+    headers[2][0] = 0x7f | 7u << 7 | 7u << 10 | 7u << 13 | 7u << 16 | 2u << 19 | 3u << 22 | 4u << 25 | 5u << 28;
+    for (u32 h = 0; h < 3; h++) { /* indices 1 to 3 of the pool, before its samplers at 0x100 */
+        u8 bytes[32];
+        for (u32 i = 0; i < 8; i++) snx_st_le32(bytes + 4 * i, headers[h][i]);
+        CHECK(!gmem_write(LIFE_POOL + 32 * (h + 1), bytes, 32));
+    }
+    CHECK(!life_headers(0, 0)); /* index 0 a texture, sampler 0 linear */
+    r[0x55F] = 3;               /* the pool's highest index */
+    r[0x982] = 2;
+    r[0x8E0] = 256; /* constant buffers 2 (the texture's handle) and 3 of the fragment stage */
+    r[0x8E1] = (u32)((LIFE_POOL + 0x200) >> 32);
+    r[0x8E2] = (u32)(LIFE_POOL + 0x200);
+    r3d_cb_bind(channel, 4, 1 | 2u << 4);
+    r[0x8E1] = (u32)(LIFE_CB >> 32);
+    r[0x8E2] = (u32)LIFE_CB;
+    r3d_cb_bind(channel, 4, 1 | 3u << 4);
+    /* each header twice, the empty one's two draws one after the other */
+    static const u32 handles[] = {1, 1, 2, 3, 2, 3};
+    enum { DRAWS = sizeof handles / sizeof *handles };
+    u8 px[DRAWS][4];
+    u64 drawn[DRAWS];
+    vk_null_headers_forget();
+    FILE* log = tmpfile();
+    CHECK(log);
+    if (!log) return 1;
+    t_plat.log_redirect = log;
+    for (u32 i = 0; i < DRAWS; i++) CHECK(!empty_header_draw(channel, LIFE_TEX_PROGRAM, handles[i], px[i], &drawn[i]));
+    t_plat.log_redirect = NULL;
+    char text[4096] = {0};
+    rewind(log);
+    text[fread(text, 1, sizeof text - 1, log)] = 0;
+    fclose(log);
+    static const u8 zero[4] = {0, 0, 0, 0};
+    for (u32 i = 0; i < DRAWS; i++) {
+        if (drawn[i] != 1 || memcmp(px[i], zero, 4))
+            fprintf(stderr,
+                    "empty headers: draw %u (handle %u): %llu drawn, pixel %u,%u,%u,%u, expected 1 and 0,0,0,0\n", i,
+                    handles[i], (unsigned long long)drawn[i], px[i][0], px[i][1], px[i][2], px[i][3]);
+        CHECK(drawn[i] == 1 && !memcmp(px[i], zero, 4));
+    }
+    for (u32 h = 1; h <= 3; h++) {
+        char want[256];
+        snprintf(want, sizeof want,
+                 "vulkan: texture 0 of stage %d (handle %08x) names %s at %llx (word 0 %08x): it reads the null "
+                 "texture, zeros, and the draw goes on\n",
+                 ST_FS, h, h == 3 ? "a header of no Vulkan format" : "an empty header",
+                 (unsigned long long)(LIFE_POOL + 32 * h), headers[h - 1][0]);
+        const char* at = strstr(text, want);
+        if (!at || strstr(at + 1, want)) fprintf(stderr, "empty headers: not once in the log: %slog:\n%s", want, text);
+        CHECK(at && !strstr(at + 1, want));
+    }
+    /* word 0 nought is no texture, not a format the runtime lacks */
+    CHECK(!strstr(text, "unsupported texture format 0,"));
+    /* a dynamic handle table: each fragment's column picks an entry (LDC R4, c[2][x * 16 + 0x40]), every entry handle
+       4, an empty header the draws above did not read; TLD.B.LZ fetches texel (0, 0) through it */
+    if (g_spirv_translate.texture_arrays) {
+        const u64 indexed[] = {0xe000000000070002ull | 0x1cull << 30, /* IPA R2, fragment X */
+                               0x5cb0000000070002ull | 3ull << 39 | 2ull << 20 | 2ull << 10 | 2ull << 8, /* F2I R2 */
+                               0x3848000000470205ull, /* SHL R5, R2, 4 */
+                               0xef94002004070504ull, /* LDC R4, c[2][R5 + 0x40] */
+                               0x0100000000071002ull, /* MOV32I R2, 0 */
+                               0x0100000000071003ull, /* MOV32I R3, 0 */
+                               0xdd380007a0470200ull, /* TLD.B.LZ R0..3, R2, handle R4 */
+                               0xe30000000007000full};
+        CHECK(mesh_program(MEMO_GPU + EMPTY_INDEXED_PROGRAM, indexed, sizeof indexed / sizeof *indexed, 1));
+        maxwell3d_method(channel, 0x369, 1, 1); /* the code cache invalidated */
+        CHECK(!gmem_write(LIFE_POOL + 32 * 4, (const u8[32]){0}, 32));
+        r[0x55F] = 4;
+        u8 pixel[4];
+        u64 count = 0;
+        log = tmpfile();
+        CHECK(log);
+        if (!log) return 1;
+        t_plat.log_redirect = log;
+        for (int k = 0; k < 2; k++) CHECK(!empty_header_draw(channel, EMPTY_INDEXED_PROGRAM, 4, pixel, &count));
+        t_plat.log_redirect = NULL;
+        memset(text, 0, sizeof text);
+        rewind(log);
+        text[fread(text, 1, sizeof text - 1, log)] = 0;
+        fclose(log);
+        char want[256];
+        snprintf(
+            want, sizeof want,
+            "vulkan: an indexed texture of stage %d (bank 2 handle 00000004) names an empty header at %llx (word 0 "
+            "00000000): it reads the null texture, zeros, and the draw goes on\n",
+            ST_FS, (unsigned long long)(LIFE_POOL + 32 * 4));
+        const char* at = strstr(text, want);
+        if (count != 1 || memcmp(pixel, zero, 4) || !at || strstr(at + 1, want))
+            fprintf(stderr,
+                    "empty headers, a handle table: %llu drawn, pixel %u,%u,%u,%u, expected 1 and 0,0,0,0 and "
+                    "once in the log: %slog:\n%s",
+                    (unsigned long long)count, pixel[0], pixel[1], pixel[2], pixel[3], want, text);
+        CHECK(count == 1 && !memcmp(pixel, zero, 4) && at && !strstr(at + 1, want));
+    } else
+        puts("SKIP empty headers in a handle table: non-uniform sampled image arrays are unavailable");
+    /* the first 64 headers are each said once, then one line says the later ones are not */
+    vk_null_headers_forget();
+    log = tmpfile();
+    CHECK(log);
+    if (!log) return 1;
+    t_plat.log_redirect = log;
+    int firsts = 0, again = 0;
+    for (u64 k = 0; k < 66; k++) firsts += vk_null_header_first(0x10000 + 32 * k);
+    for (u64 k = 0; k < 66; k++) again += vk_null_header_first(0x10000 + 32 * k);
+    t_plat.log_redirect = NULL;
+    memset(text, 0, sizeof text);
+    rewind(log);
+    text[fread(text, 1, sizeof text - 1, log)] = 0;
+    fclose(log);
+    static const char unlisted[] = "vulkan: 64 headers that name no texture were each said once: the ones after them "
+                                   "read the null texture too, unlisted\n";
+    const char* cap = strstr(text, unlisted);
+    if (firsts != 64 || again || !cap || strstr(cap + 1, unlisted))
+        fprintf(stderr, "empty headers: %d said of 66, %d said again, log:\n%s", firsts, again, text);
+    CHECK(firsts == 64 && !again && cap && !strstr(cap + 1, unlisted));
+    vk_null_headers_forget();
+    for (u32 k = 0; k < 4; k++) /* handle 0 again, for the cases after */
+        snx_st_le32(GP(MEMO_CPU + (LIFE_POOL + 0x240 + 16 * k - MEMO_GPU)), 0);
+    vk_ww_new_epoch();
+    channel->ds.bind.cb_addr[4][2] = channel->ds.bind.cb_addr[4][3] = 0;
+    channel->ds.bind.cb_size[4][2] = channel->ds.bind.cb_size[4][3] = 0;
+    r[0x982] = 0;
+    r[0x55F] = 0;
+    return 0;
+}
+
 /* The descriptor heaps' lasting part (descriptor_heaps.c): the descriptors of views and of the buffers that outlive a
    frame are kept from frame to frame, and a destroy forgets them. Each case draws as it is and with
    draw_state_check=1, each draw into a target of its own read at once (an eviction takes the targets too), and the
@@ -684,11 +848,13 @@ static int check_draw_memo(void) {
     const MemoDraw recode[] = {{MEMO_GREEN, 0, 0, 0}, {MEMO_BLUE, 0, 0, 0}, {MEMO_GREEN, 0, 0, 1}};
     CHECK(!memo_case(channel, "A, B, A's code written, A", recode, 3, 0));
     CHECK(!life_cases(channel));
+    CHECK(!empty_header_cases(channel));
     CHECK(!last_cases(channel));
     free(channel);
     puts("PASS draw memo: A, B, A and a state in two vertex formats take the table, a new epoch and new code make the "
          "state again; constant buffers kept past submissions, views, samplers and a stage's last set kept in the "
          "frame, and CPU, 3D engine and storage result writes, header writes and presents between draws drawn as "
-         "without them; draw_state_check=1 finds no difference");
+         "without them; draw_state_check=1 finds no difference; headers that name no texture read zeros, their "
+         "draws drawn and each header said once");
     return 0;
 }

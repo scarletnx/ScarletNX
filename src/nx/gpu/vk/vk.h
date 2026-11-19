@@ -2174,6 +2174,15 @@ VkImageView vk_tex_storage_view(Surf* s, VkImageViewType type);
 /* an empty texture of a view type: num 0 float, 1 unsigned, 2 signed integer, 3 depth at 1.0 (shadow samplers);
    ms: a multisampled one (2D and 2D array views, not depth) */
 VkImageView vk_null_view(VkImageViewType type, int num, int ms);
+/* Whether the header tic names no texture by itself: an empty one (word 0 nought, whose four swizzles read zero on
+   the console whatever its format) or one of a format the renderer has no Vulkan format for. A sampled slot reads the
+   null texture (vk_null_view) in its place, and the draw goes on */
+int vk_tic_names_none(const u32* tic);
+/* 1 the first time a slot reads the null texture for the header at tic_at, for the first 64 headers: the caller says
+   which slot, the header's address and what it reads in its place, once for each header */
+int vk_null_header_first(u64 tic_at);
+/* no header said yet: a test's checks of those lines start from none */
+void vk_null_headers_forget(void);
 /* The texture table (table.c): the set of ShCaps.tex_table, with a slot for each sampled view in a layout and for each
    sampler. vk_table_init says if the device can hold it (and why not, in why), and makes it */
 int vk_table_init(char* why, size_t size);

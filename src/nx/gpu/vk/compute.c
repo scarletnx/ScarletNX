@@ -2028,18 +2028,23 @@ rebind:
                     h |= h2;
             }
             u32 tic[8] = {0}, tsc[8] = {0};
+            const u64 tic_at = tic_base + (u64)texture_handle_tic_id(h) * TEXTURE_POOL_ENTRY_BYTES;
             /* a handle from memory the program alone makes (SH_PROBE_NONE) names no header: no texture */
-            if (!(st->flags & SNX_TEX_MEMORY) || st->cbuf_off != SH_PROBE_NONE) {
-                vk_gmem_words(tic_base + (u64)texture_handle_tic_id(h) * TEXTURE_POOL_ENTRY_BYTES, tic, 8);
+            const int headed = !(st->flags & SNX_TEX_MEMORY) || st->cbuf_off != SH_PROBE_NONE;
+            if (headed) {
+                vk_gmem_words(tic_at, tic, 8);
                 vk_gmem_words(tsc_base + (u64)texture_handle_tsc_id(h) * TEXTURE_POOL_ENTRY_BYTES, tsc, 8);
             }
             VkImageViewType want = vk_tex_view_type(st);
             Surf* t = vk_tex_from_tic_guest(tic, st->flags & 1);
+            /* a header that names no texture by itself reads the null texture, a raw load's too, and the dispatch goes
+               on, as a draw's does */
+            const int none = !t && headed && vk_tic_names_none(tic);
             /* a program fetching samples (flags bit 1) reads a multisampled image, others a single-sampled one: an
                image of other samples reads zeros, as a missing texture does */
             int ms = (st->flags & 2) != 0;
             if (t && ms != (t->msaa != 0)) t = NULL;
-            if ((st->flags & 1) && !t) {
+            if ((st->flags & 1) && !t && !none) {
                 LOG_LIMIT(4,
                           "vulkan: a raw surface load's header %08x %08x %08x names no texture of 4-, 8- or 16-byte "
                           "color texels stored as they are: the dispatch is skipped\n",
@@ -2074,6 +2079,12 @@ rebind:
                 cs_abandon_binding(originals);
                 return;
             }
+            if (none && !sampled && vk_null_header_first(tic_at))
+                LOG("vulkan: compute %016llx texture %d (handle %08x) names %s at %llx (word 0 %08x): it reads the "
+                    "null texture, %s, and the dispatch goes on\n",
+                    (unsigned long long)p->key, i, h,
+                    vk_tic_empty(tic) ? "an empty header" : "a header of no Vulkan format", (unsigned long long)tic_at,
+                    tic[0], st->shadow ? "a depth of 1.0 to compare" : "zeros");
             ii[i] = (VkDescriptorImageInfo){smp, v, sampled_layout};
             w[nw++] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
                                              .dstSet = set,

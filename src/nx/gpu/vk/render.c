@@ -3086,8 +3086,17 @@ static int tex_tables_set(const DsState* ds, int stage, const VkSh* s, const int
                     vk_surf_use(vk_cmd(), x.t, layout, VK_SAMPLED_STAGES, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
                 else {
                     view = tk->none;
-                    /* an unused entry holds 0: a handle that names nothing else is the black-texture signal */
-                    if (handle)
+                    const u64 tic_at = ds->bind.tex_pool + (handle & 0xFFFFF) * 32ull;
+                    if (x.have && !x.t && vk_tic_names_none(x.tic)) {
+                        if (vk_null_header_first(tic_at))
+                            LOG("vulkan: an indexed texture of stage %d (bank %u handle %08x) names %s at %llx (word 0 "
+                                "%08x): it reads the null texture, %s, and the draw goes on\n",
+                                stage, bank, handle,
+                                vk_tic_empty(x.tic) ? "an empty header" : "a header of no Vulkan format",
+                                (unsigned long long)tic_at, x.tic[0],
+                                kind->shadow ? "a depth of 1.0 to compare" : "zeros");
+                    } else if (handle) /* an unused entry holds 0: a handle that names nothing else is the black-texture
+                                          signal */
                         LOG_LIMIT(4, "vulkan: indexed texture reads the null texture (bank %u handle %08x)\n", bank,
                                   handle);
                 }
@@ -3901,6 +3910,14 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
                           t->f.is_int ? (t->f.sint ? "signed" : "unsigned") : "float");
             view = vk_null_view(want, st->shadow ? 3 : num, ms);
             layout = VK_LAYOUT(SHADER_READ_ONLY_OPTIMAL);
+            const u32 index = handle & 0xFFFFF;
+            if (view && !x->t && index <= ds->bind.tex_max && vk_tic_names_none(x->tic) &&
+                vk_null_header_first(ds->bind.tex_pool + index * 32ull))
+                LOG("vulkan: texture %d of stage %d (handle %08x) names %s at %llx (word 0 %08x): it reads the null "
+                    "texture, %s, and the draw goes on\n",
+                    i, stage, handle, vk_tic_empty(x->tic) ? "an empty header" : "a header of no Vulkan format",
+                    (unsigned long long)(ds->bind.tex_pool + index * 32ull), x->tic[0],
+                    st->shadow ? "a depth of 1.0 to compare" : "zeros");
         }
         if (!view) return VK_NULL_HANDLE;
         VkSampler smp = tex_bind_sampler(x, st, num, sampled, want, (int)(s->si.tex_minmax_mask >> i & 1));
