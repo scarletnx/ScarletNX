@@ -823,17 +823,6 @@ void spv_emit_function_end(SpvEmitter* e);
 /* The caller owns the returned words. A module is assembled once after all functions are emitted. */
 uint32_t* spv_emit_finish(const SpvEmitter* e, size_t* word_count);
 
-/* A place in the function's words that spv_emit_rewind comes back to: the words written after it, and the labels
-   made after it, are taken out of the module again. A fusion of two instructions writes the two of them with their
-   own emitters, comes back to the place before them, and writes the fused one from scratch. The types, constants,
-   capabilities and decorations the two made stay: they are in other sections, and an unused one is of no harm. */
-typedef struct {
-    size_t at;         /* the functions section's count at the mark */
-    uint32_t block;    /* the OpLabels made since the function's start */
-} SpvMark;
-SpvMark spv_emit_mark(const SpvEmitter* e);
-void spv_emit_rewind(SpvEmitter* e, SpvMark mark);
-
 /* ---- the generic layer ---- */
 
 /* an extension, declared once however often it is asked for */
