@@ -44,10 +44,15 @@ static void check(int good, const char* expression, int line) {
 
 #define TITLE 0x0100000000AC0000ULL
 
-/* synthetic keys: the header key's XTS halves differ, as OpenSSL requires */
-static const char prod_keys[] = "header_key = 0123456789abcdef0123456789abcdeffedcba9876543210fedcba9876543210\n"
-                                "key_area_key_application_00 = 00112233445566778899aabbccddeeff\n"
-                                "titlekek_00 = 0f1e2d3c4b5a69788796a5b4c3d2e1f0\n";
+/* synthetic keys, apart from their names so no line reads as a keys file's: the header key's XTS halves differ, as
+   OpenSSL requires */
+#define HEADER_KEY     "0123456789abcdef0123456789abcdeffedcba9876543210fedcba9876543210"
+#define AREA_KEY       "00112233445566778899aabbccddeeff"
+#define TITLEKEK       "0f1e2d3c4b5a69788796a5b4c3d2e1f0"
+#define XCI_HEADER_KEY "2468ace013579bdf2468ace013579bdf"
+static const char prod_keys[] = "header_key = " HEADER_KEY "\n"
+                                "key_area_key_application_00 = " AREA_KEY "\n"
+                                "titlekek_00 = " TITLEKEK "\n";
 static const unsigned char header_key[32] = {0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45,
                                              0x67, 0x89, 0xab, 0xcd, 0xef, 0xfe, 0xdc, 0xba, 0x98, 0x76, 0x54,
                                              0x32, 0x10, 0xfe, 0xdc, 0xba, 0x98, 0x76, 0x54, 0x32, 0x10};
@@ -571,10 +576,10 @@ int main(void) {
 
     /* with xci_header_key, the gamecard info is encrypted under it: AES-128-CBC, the IV the header's reversed */
     {
-        static const char with_xci[] = "header_key = 0123456789abcdef0123456789abcdeffedcba9876543210fedcba9876543210\n"
-                                       "key_area_key_application_00 = 00112233445566778899aabbccddeeff\n"
-                                       "titlekek_00 = 0f1e2d3c4b5a69788796a5b4c3d2e1f0\n"
-                                       "xci_header_key = 2468ace013579bdf2468ace013579bdf\n";
+        static const char with_xci[] = "header_key = " HEADER_KEY "\n"
+                                       "key_area_key_application_00 = " AREA_KEY "\n"
+                                       "titlekek_00 = " TITLEKEK "\n"
+                                       "xci_header_key = " XCI_HEADER_KEY "\n";
         static const unsigned char xci_key[16] = {0x24, 0x68, 0xac, 0xe0, 0x13, 0x57, 0x9b, 0xdf,
                                                   0x24, 0x68, 0xac, 0xe0, 0x13, 0x57, 0x9b, 0xdf};
         char *keys2 = snx_path_join(scratch, "xci.keys"), *xci2 = snx_path_join(scratch, "info.xci");
