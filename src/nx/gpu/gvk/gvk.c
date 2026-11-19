@@ -146,13 +146,16 @@ static int fix(const GvkType* t, u8* h, int fix_chain) {
             if (f->kind == GVK_STR) {
                 char* s = gvk_scratch(256);
                 if (mem_user_string(s, g, 256) > 0) p = s;
+            } else if (f->kind == GVK_OPTIONAL_ONE && f->type) {
+                if (mapped(g, f->type->size) && (!f->type->stype || gr32(g) == f->type->stype))
+                    p = copy_in(f->type, g, count);
             } else if (f->type) {
                 p = copy_in(f->type, g, count);
             } else if (count <= AS_SIZE / f->elem && mapped(g, count * f->elem)) {
                 p = GP(g);
             }
         }
-        if (count && !p && f->kind != GVK_OPTIONAL_ARRAY &&
+        if (count && !p && f->kind != GVK_OPTIONAL_ARRAY && f->kind != GVK_OPTIONAL_ONE &&
             (g || f->kind == GVK_ARRAY || f->kind == GVK_BYTES || f->kind == GVK_STR))
             return 0;
         st_ptr(h + f->off, p);
@@ -255,6 +258,7 @@ void gvk_out(const GvkType* t, u64 g, void* host) {
 #define PLAIN(S, p, n, E)      {offsetof(S, p), GVK_ARRAY, SZ(S, n), offsetof(S, n), sizeof(E), NULL}
 #define OPT(S, p, n, E)        {offsetof(S, p), GVK_OPTIONAL_ARRAY, SZ(S, n), offsetof(S, n), sizeof(E), NULL}
 #define ONE(S, p, T)           {offsetof(S, p), GVK_ONE, 0, 0, 0, &(T)}
+#define OPT_ONE(S, p, T)       {offsetof(S, p), GVK_OPTIONAL_ONE, 0, 0, 0, &(T)}
 #define ONE_PLAIN(S, p, E)     {offsetof(S, p), GVK_ONE, 0, 0, sizeof(E), NULL}
 #define BYTES(S, p, n)         {offsetof(S, p), GVK_BYTES, SZ(S, n), offsetof(S, n), 1, NULL}
 #define STR(S, p)              {offsetof(S, p), GVK_STR, 0, 0, 1, NULL}
@@ -364,7 +368,7 @@ CHAINED(gvk_t_gpipe, VkGraphicsPipelineCreateInfo, VK_STRUCTURE_TYPE_GRAPHICS_PI
         ARR(VkGraphicsPipelineCreateInfo, pStages, stageCount, t_stage),
         ONE(VkGraphicsPipelineCreateInfo, pVertexInputState, t_vertex_input),
         ONE(VkGraphicsPipelineCreateInfo, pInputAssemblyState, t_input_assembly),
-        ONE(VkGraphicsPipelineCreateInfo, pTessellationState, t_tess),
+        OPT_ONE(VkGraphicsPipelineCreateInfo, pTessellationState, t_tess),
         ONE(VkGraphicsPipelineCreateInfo, pViewportState, t_viewport),
         ONE(VkGraphicsPipelineCreateInfo, pRasterizationState, t_raster),
         ONE(VkGraphicsPipelineCreateInfo, pMultisampleState, t_multisample),
@@ -374,7 +378,7 @@ CHAINED(gvk_t_gpipe, VkGraphicsPipelineCreateInfo, VK_STRUCTURE_TYPE_GRAPHICS_PI
 CHAINED(gvk_t_cpipe, VkComputePipelineCreateInfo, VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
         EMBED(VkComputePipelineCreateInfo, stage, t_stage));
 CHAINED(gvk_t_begin, VkCommandBufferBeginInfo, VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
-        ONE(VkCommandBufferBeginInfo, pInheritanceInfo, t_inherit));
+        OPT_ONE(VkCommandBufferBeginInfo, pInheritanceInfo, t_inherit));
 CHAINED(gvk_t_rpbegin, VkRenderPassBeginInfo, VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
         PLAIN(VkRenderPassBeginInfo, pClearValues, clearValueCount, VkClearValue));
 CHAINED(gvk_t_mbar, VkMemoryBarrier, VK_STRUCTURE_TYPE_MEMORY_BARRIER, {0});

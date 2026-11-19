@@ -42,6 +42,7 @@ enum {
     GVK_STR,     /* a string */
     GVK_EMBED,   /* not a pointer: a structure inside this one, at off, whose own pointers are fixed */
     GVK_OPTIONAL_ARRAY, /* Vulkan may ignore this array even with a nonzero count */
+    GVK_OPTIONAL_ONE,   /* Vulkan may ignore this pointer depending on state (e.g. primary CB, no tessellation) */
     GVK_SAMPLE_MASK     /* optional ceil(rasterizationSamples / 32) words */
 };
 typedef struct GvkType GvkType;
