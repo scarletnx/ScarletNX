@@ -580,7 +580,8 @@ int main(void) {
     free(path);
     /* the dumps the Android games/ list offers, to prepare first */
     assert(gui_is_dump("a.NRO") && gui_is_dump("b.xci") && gui_is_dump("c.nsp") && gui_is_dump("d.dxci"));
-    assert(!gui_is_dump("e_code.so") && !gui_is_dump("nro") && !gui_is_dump("f.nro.ini"));
+    assert(gui_is_dump("g.nsz") && gui_is_dump("h.XCZ")); /* nsz's: compressed NSPs and gamecards */
+    assert(!gui_is_dump("e_code.so") && !gui_is_dump("nro") && !gui_is_dump("f.nro.ini") && !gui_is_dump("i.ncz"));
     path = gui_document_path("C:\\Games\\a.nro"); /* Windows' */
     assert(path && !strcmp(path, "C:\\Games\\a.nro"));
     free(path);
