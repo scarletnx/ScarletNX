@@ -341,6 +341,82 @@ static void test_protection_tracking(void) {
 /* page n's hot count, and whether the tracking holds it read only */
 static u8 hot_count(u64 n) { return atomic_load_explicit(&g_wp_hot[n], memory_order_relaxed); }
 static int held(u64 n) { return (atomic_load_explicit(&g_wp[n], memory_order_relaxed) & WP_PROT) != 0; }
+/* The pool's contents read back into guest memory (plat_alias_read, as mem.c gives a view's source its own pages
+   again): the kernel writes them, so the pages a scan protected since they were committed open for it, no scan
+   protects one again while it reads, and the thread that moves the range (plat_freeze) reads without waiting for its
+   own thaw. Pages 24 to 27, and the pool's second megabyte */
+#define POOL_AT   (24 * 4096)
+#define POOL_SIZE (4 * 4096)
+#define POOL_OFF  0x100000ull
+typedef struct {
+    u8 bytes[POOL_SIZE]; /* what the pool holds */
+    _Atomic int stop, moved;
+    _Atomic u64 reads;
+    u64 failed; /* the reader's, then the mover's: read once each has ended */
+} PoolRead;
+static void* pool_reader(void* arg) {
+    PoolRead* r = (PoolRead*)arg;
+    while (!atomic_load_explicit(&r->stop, memory_order_seq_cst)) {
+        /* fresh pages each time, as the reservation's own are when the pool's go: the read faults each one in */
+        plat_vm_decommit(g_base + POOL_AT, POOL_SIZE);
+        if (plat_vm_commit(g_base + POOL_AT, POOL_SIZE) || plat_alias_read(POOL_OFF, g_base + POOL_AT, POOL_SIZE) ||
+            memcmp(g_base + POOL_AT, r->bytes, POOL_SIZE))
+            r->failed++;
+        atomic_fetch_add_explicit(&r->reads, 1, memory_order_relaxed);
+    }
+    return NULL;
+}
+static void* pool_mover(void* arg) {
+    PoolRead* r = (PoolRead*)arg;
+    plat_freeze(g_base + POOL_AT, POOL_SIZE);
+    /* the pages a failed move leaves: committed again, and protected by a scan before the pool's contents come */
+    if (plat_vm_commit(g_base + POOL_AT, POOL_SIZE)) r->failed++;
+    plat_ww_scan(g_base + POOL_AT, POOL_SIZE, on_seen);
+    if (plat_alias_read(POOL_OFF, g_base + POOL_AT, POOL_SIZE)) r->failed++;
+    plat_thaw();
+    atomic_store_explicit(&r->moved, 1, memory_order_seq_cst);
+    return NULL;
+}
+static void test_pool_read(void) {
+    PoolRead r = {0};
+    pthread_t t;
+    u64 scans = 0, i;
+    printf("the pool's contents read back into guest memory\n");
+    if (plat_alias_init(2 * POOL_OFF)) {
+        printf("  no alias pool on this host: nothing to read back\n");
+        return;
+    }
+    for (i = 0; i < POOL_SIZE; i++) r.bytes[i] = (u8)(i * 13 + i / 4096 + 1);
+    CHECK(!plat_alias_write(POOL_OFF, r.bytes, POOL_SIZE), "the pool took no bytes");
+    /* written, then scanned: where protection tracks the writes the pages are read only now */
+    memset(g_base + POOL_AT, 0xEE, POOL_SIZE);
+    CHECK((scan() >> 24 & 0xF) == 0xF, "the written pages were not reported");
+    if (g_wp && g_wp_track) CHECK(held(24) && held(27), "the scan left the pages writable");
+    CHECK(!plat_alias_read(POOL_OFF, g_base + POOL_AT, POOL_SIZE), "the read into pages a scan protected failed");
+    CHECK(!memcmp(g_base + POOL_AT, r.bytes, POOL_SIZE), "the pages do not hold the pool's bytes");
+    CHECK(scan() == 0xFull << 24, "the pages the kernel wrote were not reported alone");
+    /* a scan on another thread, as the renderer's scanner, while the pages are committed and read again and again */
+    CHECK(!pthread_create(&t, NULL, pool_reader, &r), "no reader");
+    while (atomic_load_explicit(&r.reads, memory_order_relaxed) < 5000) {
+        plat_ww_scan(g_base + POOL_AT, POOL_SIZE, on_seen);
+        scans++;
+    }
+    atomic_store_explicit(&r.stop, 1, memory_order_seq_cst);
+    pthread_join(t, NULL);
+    CHECK(r.failed == 0, "a read of the pool into guest memory failed under another thread's scans");
+    printf("  %llu reads, %llu failed, %llu scans\n", (unsigned long long)r.reads, (unsigned long long)r.failed,
+           (unsigned long long)scans);
+    /* the mover's own read, inside its freeze */
+    r.failed = 0;
+    CHECK(!pthread_create(&t, NULL, pool_mover, &r), "no mover");
+    for (i = 0; i < 5000 && !atomic_load_explicit(&r.moved, memory_order_seq_cst); i++) plat_sleep_ns(1000000);
+    CHECK(atomic_load_explicit(&r.moved, memory_order_seq_cst), "the mover's read waited for its own thaw");
+    if (!atomic_load_explicit(&r.moved, memory_order_seq_cst)) plat_thaw(); /* so that it ends */
+    pthread_join(t, NULL);
+    CHECK(r.failed == 0 && !memcmp(g_base + POOL_AT, r.bytes, POOL_SIZE),
+          "the mover's read into pages a scan protected failed");
+    scan();
+}
 /* page n written, then scanned, k times: 1 when every scan reported it */
 static int written_scans(u64 n, int k) {
     int all = 1;
@@ -534,6 +610,7 @@ static void test_guest_memory(const char* dir) {
             test_open_frozen();
             test_shed();
         }
+        test_pool_read();
         if (hot) { /* back, counted from zero: the scans without it left its counts behind */
             memset(hot, 0, (size_t)g_wp_pages);
             atomic_store_explicit(&g_wp_hot_n, 0, memory_order_relaxed);
