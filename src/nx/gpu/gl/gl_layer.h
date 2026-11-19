@@ -66,11 +66,18 @@ int gl_nvn_renderbuffer(u32 name, NvnTexture* out);
 int gl_draw(u32 ctx, const DrawCall* call, u32 elements_type, u64 indices);
 /* glClear of buffers (GL's bits) in the bound draw framebuffer, by the renderer: 1, or 0 when there is no target */
 int gl_draw_clear(u32 ctx, u32 buffers);
-/* the fences' serials (gl_sync.h's host): the draws and clears handed to the GPU thread, those it finished, and a wait
-   until it finished serial */
+/* the fences' serials (gl_sync.h's host): the draws, clears and writes handed to the GPU thread, those it finished,
+   and a wait until it finished serial */
 u64 gl_draw_recorded(void);
 u64 gl_draw_completed(void);
 void gl_draw_wait(u32 ctx, u64 serial);
+/* size bytes of data, zeros for NULL, written at guest address at on the GPU thread after the draws handed to it
+   before, the GPU's caches told (gl_object.h's write_after): its serial */
+u64 gl_draw_write(u64 at, const void* data, u64 size);
+/* other work handed to the GPU thread in the same order (a texture's upload, its levels): its serial, under the object
+   lock, and its end there, so a range given back waits for it too */
+u64 gl_draw_issue(void);
+void gl_draw_done(u64 serial);
 /* the shared layer's textures keep their texels in guest memory, and say in the log what they leave out */
 void gl_texture_calls_init(void);
 

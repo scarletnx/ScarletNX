@@ -6,8 +6,10 @@
    persistent map only of storage that allows it, an explicit flush telling exactly its range), immutable storage
    refusing what GL refuses, deleted with their bindings; what the platform hears (the GPU's writes asked for before
    the CPU touches the bytes, the bytes written, a buffer gone); free ranges merged and a second chunk asked when the
-   first is full; vertex arrays and their attributes, the generic attributes, glGet's bindings; and a save state's
-   copy loaded back whole and refused when a buffer, a free range or a vertex array in it is wrong */
+   first is full; vertex arrays and their attributes, the generic attributes, glGet's bindings; a save state's copy
+   loaded back whole and refused when a buffer, a free range or a vertex array in it is wrong; and with a GPU side
+   that reads after the calls, the writes of bytes a draw still reads put behind it, maps and reads waiting, and the
+   ranges given back held until the work that reads them is done */
 #include "common/gpu/gl/gl_object.h"
 #include "common/gpu/gl/gl_program.h"
 #include "common/gpu/gl/gl_state.h"
@@ -24,6 +26,7 @@ enum {
     MAP_READ = 0x1,
     MAP_WRITE = 0x2,
     MAP_FLUSH_EXPLICIT = 0x10,
+    MAP_UNSYNCHRONIZED = 0x20,
     MAP_PERSISTENT = 0x40,
     MAP_COHERENT = 0x80,
     DYNAMIC_STORAGE = 0x100,
@@ -79,6 +82,39 @@ static void gone(uint32_t name) {
     (void)name;
     heard.gone++;
 }
+/* a GPU side that reads after the calls, as the console's GPU thread: the work handed over and finished, and the
+   writes put behind it, which land as the work before them finishes */
+static struct {
+    uint64_t issued, finished, waited;
+    unsigned nwrites, waits;
+    struct {
+        uint64_t at, size, serial;
+        int zeros;
+        unsigned char data[16];
+    } w[12];
+} gpu;
+static uint64_t gpu_issued(void) { return gpu.issued; }
+static uint64_t gpu_finished(void) { return gpu.finished; }
+static uint64_t gpu_write_after(uint64_t at, const void* data, uint64_t size) {
+    assert(gpu.nwrites < 12 && size <= 16);
+    gpu.w[gpu.nwrites].at = at, gpu.w[gpu.nwrites].size = size, gpu.w[gpu.nwrites].zeros = !data;
+    if (data) memcpy(gpu.w[gpu.nwrites].data, data, (size_t)size);
+    return gpu.w[gpu.nwrites++].serial = ++gpu.issued;
+}
+static void gpu_finish(uint64_t serial) {
+    for (unsigned i = 0; i < gpu.nwrites; i++)
+        if (gpu.w[i].serial > gpu.finished && gpu.w[i].serial <= serial) {
+            if (gpu.w[i].zeros)
+                memset(bytes(gpu.w[i].at), 0, (size_t)gpu.w[i].size);
+            else
+                memcpy(bytes(gpu.w[i].at), gpu.w[i].data, (size_t)gpu.w[i].size);
+        }
+    if (serial > gpu.finished) gpu.finished = serial;
+}
+static void gpu_wait(uint64_t serial) {
+    gpu.waits++, gpu.waited = serial;
+    gpu_finish(serial);
+}
 static void was_written(uint32_t name, uint64_t lo, uint64_t hi) {
     assert(heard.written_name == name && heard.written_lo == lo && heard.written_hi == hi);
     heard.written_name = 0;
@@ -102,7 +138,8 @@ int main(void) {
     unsigned char pattern[300];
     double v[4];
     assert(ctx);
-    snx_gl_object_host(&(SnxGlObjectHost){chunk, bytes, read_back, written, gone});
+    snx_gl_object_host(
+        &(SnxGlObjectHost){.chunk = chunk, .bytes = bytes, .read_back = read_back, .written = written, .gone = gone});
     for (int i = 0; i < 300; i++) pattern[i] = (unsigned char)i;
     /* the layer with no chunk yet, to start one from later */
     size_t total0 = snx_gl_state_bytes();
@@ -341,6 +378,94 @@ int main(void) {
         assert(snx_gl_buffer(z)->data == u && bytes(u)[0] == 0 && bytes(u)[c3 - 1] == 0);
         snx_gl_delete_buffers(ctx, 1, &z);
     }
+    /* a GPU side that reads after the calls */
+    snx_gl_object_host(&(SnxGlObjectHost){.chunk = chunk,
+                                          .bytes = bytes,
+                                          .read_back = read_back,
+                                          .written = written,
+                                          .gone = gone,
+                                          .issued = gpu_issued,
+                                          .finished = gpu_finished,
+                                          .write_after = gpu_write_after,
+                                          .wait = gpu_wait});
+    {
+        uint32_t d[2] = {0};
+        uint64_t at, other;
+        unsigned char back[8];
+        unsigned chunks;
+        snx_gl_gen_buffers(ctx, 2, d);
+        snx_gl_bind_buffer(ctx, COPY_WRITE, d[0]);
+        snx_gl_buffer_data(ctx, d[0], 8, "drawn!!", STREAM_DRAW); /* nothing reads it: at once */
+        at = snx_gl_buffer(d[0])->data;
+        assert(!memcmp(bytes(at), "drawn!!", 8) && !gpu.nwrites);
+        /* a map waits for the draws that read the bytes; an unsynchronized one does not */
+        snx_gl_buffer_read_by(d[0], ++gpu.issued); /* a draw, serial 1 */
+        assert(snx_gl_map_buffer_range(ctx, d[0], 0, 8, MAP_WRITE | MAP_UNSYNCHRONIZED) && !gpu.waits);
+        assert(snx_gl_unmap_buffer(ctx, d[0]));
+        assert(snx_gl_map_buffer_range(ctx, d[0], 0, 8, MAP_WRITE) && gpu.waits == 1 && gpu.waited == 1);
+        assert(snx_gl_unmap_buffer(ctx, d[0]));
+        /* the bytes a draw still reads: each write behind it, in order, the platform told by the write itself; a read
+           waits for them */
+        snx_gl_buffer_read_by(d[0], ++gpu.issued); /* serial 2 */
+        heard.written_name = 0;
+        snx_gl_buffer_sub_data(ctx, d[0], 0, 4, "next");
+        snx_gl_buffer_data(ctx, d[0], 8, NULL, STREAM_DRAW); /* kept where it is: its zeros behind */
+        snx_gl_buffer_sub_data(ctx, d[0], 4, 4, "last");
+        assert(snx_gl_buffer(d[0])->data == at && gpu.nwrites == 3 && gpu.w[0].serial == 3 && gpu.w[1].zeros &&
+               gpu.w[2].serial == 5);
+        assert(!memcmp(bytes(at), "drawn!!", 8) && !heard.written_name);
+        snx_gl_get_buffer_sub_data(ctx, d[0], 0, 8, back);
+        assert(gpu.waits == 2 && gpu.waited == 5 && !memcmp(back, "\0\0\0\0last", 8));
+        /* an unsynchronized map waits only for those writes */
+        snx_gl_buffer_read_by(d[0], ++gpu.issued);       /* serial 6 */
+        snx_gl_buffer_sub_data(ctx, d[0], 0, 4, "more"); /* serial 7 */
+        assert(snx_gl_map_buffer_range(ctx, d[0], 0, 8, MAP_WRITE | MAP_UNSYNCHRONIZED) && gpu.waits == 3 &&
+               gpu.waited == 7);
+        assert(snx_gl_unmap_buffer(ctx, d[0]));
+        /* a copy into bytes a draw still reads goes behind it too, the source's bytes as they are at the call */
+        snx_gl_bind_buffer(ctx, COPY_READ, d[1]);
+        snx_gl_buffer_data(ctx, d[1], 8, "source!", STREAM_DRAW);
+        snx_gl_buffer_read_by(d[0], ++gpu.issued); /* serial 8 */
+        snx_gl_copy_buffer_sub_data(ctx, d[1], d[0], 0, 0, 4);
+        assert(gpu.nwrites == 5 && gpu.w[4].serial == 9 && !memcmp(gpu.w[4].data, "sour", 4) &&
+               !memcmp(bytes(at), "more", 4));
+        gpu_finish(9);
+        assert(!memcmp(bytes(at), "sourlast", 8));
+        /* a write behind one still to land goes behind it too, once the draw before them is done */
+        snx_gl_buffer_read_by(d[0], ++gpu.issued);       /* serial 10 */
+        snx_gl_buffer_sub_data(ctx, d[0], 0, 4, "aaaa"); /* serial 11 */
+        gpu_finish(10);
+        snx_gl_buffer_sub_data(ctx, d[0], 0, 4, "bbbb"); /* serial 12 */
+        assert(gpu.nwrites == 7 && gpu.w[6].serial == 12);
+        gpu_finish(12);
+        assert(!memcmp(bytes(at), "bbbblast", 8));
+        /* a range given back while a draw reads it is held: the next buffer takes another, and a save frees it, its
+           work waited for */
+        snx_gl_buffer_read_by(d[0], ++gpu.issued); /* serial 13 */
+        snx_gl_delete_buffers(ctx, 1, d);
+        snx_gl_gen_buffers(ctx, 1, d);
+        snx_gl_bind_buffer(ctx, COPY_WRITE, d[0]);
+        snx_gl_buffer_data(ctx, d[0], 8, "fresh!!", STREAM_DRAW); /* a name again, nothing reading it: at once */
+        other = snx_gl_buffer(d[0])->data;
+        assert(other && other != at && !memcmp(bytes(at), "bbbblast", 8));
+        assert(!memcmp(bytes(other), "fresh!!", 8) && gpu.nwrites == 7);
+        {
+            unsigned char* state = malloc(snx_gl_object_state_bytes());
+            assert(state);
+            snx_gl_object_state_save(state);
+            assert(gpu.waits == 4 && gpu.waited == 13);
+            free(state);
+        }
+        /* a take with no room waits for the held ranges before it asks the platform for a chunk */
+        chunks = heard.chunks;
+        other = snx_gl_memory_take(8ull * CHUNK, 256); /* bigger than every free range: a chunk of its own */
+        assert(other && heard.chunks == chunks + 1);
+        ++gpu.issued; /* a draw that may read it, serial 14 */
+        snx_gl_memory_give(other, 8ull * CHUNK);
+        assert(snx_gl_memory_take(8ull * CHUNK, 256) == other && heard.chunks == chunks + 1 && gpu.waits == 5 &&
+               gpu.waited == 14);
+        snx_gl_memory_give(other, 8ull * CHUNK);
+    }
     /* chunks the platform gave side by side keep their free ranges apart: a buffer across two would run past one of
        its allocations. From no chunk, three side by side, each a buffer and, in the room past it, a small one; given
        back so that a range meets the next chunk's both after it and before it */
@@ -371,10 +496,12 @@ int main(void) {
         snx_gl_delete_buffers(ctx, 1, &ab[1]); /* B: A's chunk right before it */
         (void)snx_gl_get_error(ctx);
         snx_gl_bind_buffer(ctx, COPY_WRITE, ab[5]);
-        snx_gl_buffer_data(ctx, ab[5], (int64_t)(9ull * CHUNK), NULL, STREAM_DRAW);     /* room only across two */
-        assert(snx_gl_get_error(ctx) == 0x0505 && !snx_gl_buffer(ab[5])->data);         /* GL_OUT_OF_MEMORY */
-        snx_gl_object_host(&(SnxGlObjectHost){chunk, bytes, read_back, written, gone}); /* the test's own again */
-        assert(!snx_gl_state_load(had, total0));                                        /* and the chunks it had */
+        snx_gl_buffer_data(ctx, ab[5], (int64_t)(9ull * CHUNK), NULL, STREAM_DRAW); /* room only across two */
+        assert(snx_gl_get_error(ctx) == 0x0505 && !snx_gl_buffer(ab[5])->data);     /* GL_OUT_OF_MEMORY */
+        /* the test's own platform again */
+        snx_gl_object_host(&(SnxGlObjectHost){
+            .chunk = chunk, .bytes = bytes, .read_back = read_back, .written = written, .gone = gone});
+        assert(!snx_gl_state_load(had, total0)); /* and the chunks it had */
         free(had);
         free(block);
     }

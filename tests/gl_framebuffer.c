@@ -312,7 +312,7 @@ int main(void) {
         uint32_t r2;
         uint64_t first;
         const SnxGlRenderbuffer* x;
-        snx_gl_object_host(&(SnxGlObjectHost){chunk, bytes, NULL, NULL, NULL});
+        snx_gl_object_host(&(SnxGlObjectHost){.chunk = chunk, .bytes = bytes});
         snx_gl_framebuffer_host(&(SnxGlFramebufferHost){.renderbuffer_storage = storage,
                                                         .renderbuffer_gone = gone,
                                                         .changed = changed,

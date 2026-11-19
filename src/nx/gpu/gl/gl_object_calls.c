@@ -99,7 +99,17 @@ static void written(uint32_t buffer, uint64_t lo, uint64_t hi) {
     const SnxGlBuffer* b = snx_gl_buffer(buffer);
     if (b && b->data) gpu_mem_written_cpu(b->data + lo, hi - lo);
 }
-void gl_object_calls_init(void) { snx_gl_object_host(&(SnxGlObjectHost){chunk, bytes, NULL, written, NULL}); }
+/* a write behind the draws waits off the guest core, as every wait of the layer's */
+static void wait(uint64_t serial) { gl_draw_wait(0, serial); }
+void gl_object_calls_init(void) {
+    snx_gl_object_host(&(SnxGlObjectHost){.chunk = chunk,
+                                          .bytes = bytes,
+                                          .written = written,
+                                          .issued = gl_draw_recorded,
+                                          .finished = gl_draw_completed,
+                                          .write_after = gl_draw_write,
+                                          .wait = wait});
+}
 void gl_object_calls_lock(void) { pm_lock(&g_gl_object_calls.lock); }
 void gl_object_calls_unlock(void) { pm_unlock(&g_gl_object_calls.lock); }
 

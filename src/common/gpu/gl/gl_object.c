@@ -5,7 +5,11 @@
    The buffers' bytes are placed in chunks of the platform's memory by a first-fit free list, kept sorted by address
    and merged with its neighbours on a free, every range 256-byte aligned (the uniform buffer offset alignment a
    platform asks at most). A buffer keeps its range while glBufferData's size fits it, and takes a new one, twice
-   its size, when it does not: an engine that fills a buffer every frame does not move it */
+   its size, when it does not: an engine that fills a buffer every frame does not move it.
+
+   Where the platform's GPU side reads the bytes after the draw's call (SnxGlObjectHost.issued), a range given back
+   while work handed over may still read it is held, and freed once that work finished; a take that finds no room
+   waits for the held ones before it asks the platform for a chunk */
 #include "common/gpu/gl/gl_object.h"
 #include "common/gpu/gl/gl_state.h"
 #include <stdio.h>
@@ -28,6 +32,7 @@ enum {
     GL_MAP_READ_BIT_ = 0x1,
     GL_MAP_WRITE_BIT_ = 0x2,
     GL_MAP_FLUSH_EXPLICIT_BIT_ = 0x10,
+    GL_MAP_UNSYNCHRONIZED_BIT_ = 0x20,
     GL_MAP_PERSISTENT_BIT_ = 0x40,
     GL_DYNAMIC_STORAGE_BIT_ = 0x100,
     GL_BUFFER_SIZE_ = 0x8764,
@@ -52,11 +57,15 @@ enum {
     BASE_FLOAT = 3,
     ALIGN = 256,
     CHUNK = 16u << 20,
+    HELD = 4096, /* ranges given back that work handed over may still read */
 };
 
 typedef struct {
     uint64_t at, size;
 } SnxGlRange;
+typedef struct {
+    uint64_t at, size, serial; /* free once the GPU side finished serial */
+} SnxGlHeld;
 
 /* what a save state holds */
 typedef struct {
@@ -74,6 +83,11 @@ static struct {
     SnxGlObjects s;
     SnxGlObjects checked; /* a save state's copy being checked: a check never touches the running state */
     SnxGlObjectHost host;
+    /* each buffer's work on the GPU side: the last draw handed over that reads its bytes, and the last write put
+       behind the draws. Not part of a save state, nor the held ranges: a load finds the work done */
+    uint64_t read[SNX_GL_BUFFERS], wrote[SNX_GL_BUFFERS];
+    SnxGlHeld held[HELD];
+    uint32_t held_count;
 } g_gl_object;
 
 #define S g_gl_object.s
@@ -94,12 +108,27 @@ static void gone(uint32_t name) {
     if (H.gone) H.gone(name);
 }
 static uint8_t* bytes(uint64_t at) { return at && H.bytes ? H.bytes(at) : NULL; }
+/* the serial of the last work the GPU side finished: all of it for a platform that reads at the call (one without the
+   four calls of a later GPU side) */
+static uint64_t finished(void) {
+    return H.issued && H.finished && H.write_after && H.wait ? H.finished() : ~(uint64_t)0;
+}
+/* serial when that work is not finished yet, else 0 */
+static uint64_t unfinished(uint64_t serial) { return serial > finished() ? serial : 0; }
+/* the GPU side's work on buffer's bytes still to finish, its serial: 0 for none */
+static uint64_t busy(uint32_t name) {
+    uint64_t r = g_gl_object.read[name - 1], w = g_gl_object.wrote[name - 1];
+    return unfinished(r > w ? r : w);
+}
+static void settle(uint64_t serial) {
+    if (serial && H.wait) H.wait(serial);
+}
 
 /* ---- the platform's memory ---- */
 
 /* size bytes of a free range, at a multiple of align (a power of 2, ALIGN or more), taken: their address, 0 when no
-   chunk has room and the platform gives none. The bytes before them in the range stay free */
-static uint64_t memory_find(uint64_t size, uint64_t align) {
+   chunk has room and, with grow, the platform gives none. The bytes before them in the range stay free */
+static uint64_t memory_find(uint64_t size, uint64_t align, int grow) {
     size = (size + ALIGN - 1) & ~(uint64_t)(ALIGN - 1);
     for (int pass = 0; pass < 2; pass++) {
         for (uint32_t i = 0; i < S.free_count; i++) {
@@ -124,7 +153,7 @@ static uint64_t memory_find(uint64_t size, uint64_t align) {
             }
             return at;
         }
-        if (pass || !H.chunk || S.chunk_count == SNX_GL_CHUNKS || S.free_count == SNX_GL_FREE_RANGES) return 0;
+        if (pass || !grow || !H.chunk || S.chunk_count == SNX_GL_CHUNKS || S.free_count == SNX_GL_FREE_RANGES) return 0;
         {
             /* room for the alignment asked from whatever start the platform's chunk has, which may be off ALIGN's
                multiple, and its end where the platform's ends */
@@ -143,32 +172,15 @@ static uint64_t memory_find(uint64_t size, uint64_t align) {
     }
     return 0;
 }
-/* memory_find's bytes, and in *dirty how many of them from the first may hold what an earlier taker wrote: the rest
-   were never taken, and are the zeros the platform gave. Zeroing those alone spares a game's loading a write of every
-   page of its textures (a page fault each, the first time) */
-static uint64_t memory_take(uint64_t size, uint64_t align, uint64_t* dirty) {
-    uint64_t at = memory_find(size, align), end = at + ((size + ALIGN - 1) & ~(uint64_t)(ALIGN - 1));
-    *dirty = 0;
-    if (!at) return 0;
-    for (uint32_t i = 0; i < S.chunk_count; i++)
-        if (at - S.chunks[i].at < S.chunks[i].size) {
-            uint64_t clean = S.untouched[i];
-            *dirty = clean <= at ? 0 : clean >= end ? end - at : clean - at;
-            if (end > clean) S.untouched[i] = end;
-            return at;
-        }
-    *dirty = end - at; /* in no chunk: none of it known */
-    return at;
-}
 /* the chunk that holds address at: its index, chunk_count for none */
 static uint32_t chunk_of(uint64_t at) {
     uint32_t i = 0;
     while (i < S.chunk_count && at - S.chunks[i].at >= S.chunks[i].size) i++;
     return i;
 }
-/* size bytes at at given back, merged with the free ranges beside them in its chunk: 0, or -1 when the list is full
+/* size bytes at at back in the free ranges, merged with those beside them in its chunk: 0, or -1 when the list is full
    (they stay taken) */
-static int memory_give(uint64_t at, uint64_t size) {
+static int range_free(uint64_t at, uint64_t size) {
     uint32_t i = 0;
     int before, after;
     size = (size + ALIGN - 1) & ~(uint64_t)(ALIGN - 1);
@@ -195,6 +207,64 @@ static int memory_give(uint64_t at, uint64_t size) {
     return 0;
 }
 
+/* the held ranges whose work finished, free */
+static void held_free(void) {
+    uint64_t done = finished();
+    uint32_t kept = 0;
+    for (uint32_t i = 0; i < g_gl_object.held_count; i++) {
+        const SnxGlHeld h = g_gl_object.held[i];
+        if (h.serial <= done)
+            range_free(h.at, h.size);
+        else
+            g_gl_object.held[kept++] = h;
+    }
+    g_gl_object.held_count = kept;
+}
+/* every held range free, its work waited for */
+static void held_wait(void) {
+    uint64_t last = 0;
+    for (uint32_t i = 0; i < g_gl_object.held_count; i++)
+        if (g_gl_object.held[i].serial > last) last = g_gl_object.held[i].serial;
+    settle(unfinished(last));
+    held_free();
+}
+/* memory_find's bytes, and in *dirty how many of them from the first may hold what an earlier taker wrote: the rest
+   were never taken, and are the zeros the platform gave. Zeroing those alone spares a game's loading a write of every
+   page of its textures (a page fault each, the first time) */
+static uint64_t memory_take(uint64_t size, uint64_t align, uint64_t* dirty) {
+    uint64_t at, end;
+    held_free();
+    at = memory_find(size, align, 0);
+    if (!at && g_gl_object.held_count) { /* the room work still reads, before more of the platform's memory */
+        held_wait();
+        at = memory_find(size, align, 0);
+    }
+    if (!at) at = memory_find(size, align, 1);
+    end = at + ((size + ALIGN - 1) & ~(uint64_t)(ALIGN - 1));
+    *dirty = 0;
+    if (!at) return 0;
+    for (uint32_t i = 0; i < S.chunk_count; i++)
+        if (at - S.chunks[i].at < S.chunks[i].size) {
+            uint64_t clean = S.untouched[i];
+            *dirty = clean <= at ? 0 : clean >= end ? end - at : clean - at;
+            if (end > clean) S.untouched[i] = end;
+            return at;
+        }
+    *dirty = end - at; /* in no chunk: none of it known */
+    return at;
+}
+/* size bytes at at given back: free, or held until the GPU side finished serial (0: nothing reads them). A full
+   list of held ones waits for them first */
+static void memory_give(uint64_t at, uint64_t size, uint64_t serial) {
+    if (!at || !size) return;
+    if (!unfinished(serial)) {
+        range_free(at, size);
+        return;
+    }
+    if (g_gl_object.held_count == HELD) held_wait();
+    g_gl_object.held[g_gl_object.held_count++] = (SnxGlHeld){at, size, serial};
+}
+
 uint8_t* snx_gl_client_bytes(uint64_t at) { return bytes(at); }
 uint64_t snx_gl_memory_take(uint64_t size, uint64_t align) {
     uint64_t dirty;
@@ -206,7 +276,8 @@ uint64_t snx_gl_memory_take_zeroed(uint64_t size, uint64_t align) {
     if (to && dirty) memset(to, 0, dirty < size ? dirty : size);
     return at;
 }
-void snx_gl_memory_give(uint64_t at, uint64_t size) { memory_give(at, size); }
+/* a texture's or renderbuffer's range: any draw handed over may read it */
+void snx_gl_memory_give(uint64_t at, uint64_t size) { memory_give(at, size, unfinished(H.issued ? H.issued() : 0)); }
 
 /* ---- the objects ---- */
 
@@ -217,9 +288,15 @@ SnxGlBuffer* snx_gl_buffer(uint32_t name) {
 uint8_t* snx_gl_buffer_bytes(uint32_t name) {
     const SnxGlBuffer* b = snx_gl_buffer(name);
     if (!b || !b->data) return NULL;
+    settle(unfinished(g_gl_object.wrote[name - 1])); /* the writes put behind the draws are in */
     read_back(name);
     return bytes(b->data);
 }
+void snx_gl_buffer_read_by(uint32_t name, uint64_t serial) {
+    if (snx_gl_buffer(name) && serial > g_gl_object.read[name - 1]) g_gl_object.read[name - 1] = serial;
+}
+/* buffer's bytes in a range of their own, or none: no work reads that one yet */
+static void buffer_moved(uint32_t name) { g_gl_object.read[name - 1] = g_gl_object.wrote[name - 1] = 0; }
 SnxGlVertexArray* snx_gl_vertex_array(uint32_t ctx) {
     SnxGlObjectContext* o = snx_gl_objects(ctx);
     uint32_t a = o->vertex_array;
@@ -294,7 +371,8 @@ void snx_gl_gen_buffers(uint32_t ctx, int32_t n, uint32_t* out) {
 }
 static void buffer_free(uint32_t name) {
     SnxGlBuffer* b = &S.buffers[name - 1];
-    memory_give(b->data, b->capacity);
+    memory_give(b->data, b->capacity, busy(name));
+    buffer_moved(name);
     gone(name);
     *b = (SnxGlBuffer){0};
 }
@@ -387,20 +465,42 @@ static int buffer_place(uint32_t ctx, uint32_t name, uint64_t size, uint64_t* di
         return -1;
     }
     if (b->data) {
-        memory_give(b->data, b->capacity);
+        memory_give(b->data, b->capacity, busy(name));
+        buffer_moved(name);
         gone(name); /* the platform's copy was of the old range */
     }
     b->data = at, b->capacity = (want + ALIGN - 1) & ~(uint64_t)(ALIGN - 1), b->size = size;
     return 0;
 }
+/* size bytes of data, zeros for NULL, into buffer's bytes at offset: behind the work on them still to finish, which
+   reads them as they were (the platform tells its caches once they land), else at once */
+static void buffer_write(uint32_t name, uint64_t offset, const void* data, uint64_t size) {
+    uint64_t at = S.buffers[name - 1].data;
+    uint8_t* to = bytes(at);
+    if (!to || !size) return;
+    if (busy(name)) {
+        g_gl_object.wrote[name - 1] = H.write_after(at + offset, data, size);
+        return;
+    }
+    if (data)
+        memmove(to + offset, data, (size_t)size); /* glCopyBufferSubData within one buffer */
+    else
+        memset(to + offset, 0, (size_t)size);
+    written(name, offset, offset + size);
+}
 /* glBufferData's and glBufferStorage's bytes: data's, or zeros (the first dirty of them may hold another's) */
 static void buffer_fill(uint32_t name, uint64_t size, const void* data, uint64_t dirty) {
     uint8_t* to = bytes(S.buffers[name - 1].data);
+    uint64_t n = data ? size : dirty < size ? dirty : size;
     if (!to) return;
+    if (n && busy(name)) { /* the range kept, which draws handed over still read */
+        buffer_write(name, 0, data, n);
+        return;
+    }
     if (data)
         memcpy(to, data, size);
-    else if (dirty)
-        memset(to, 0, dirty < size ? dirty : size);
+    else if (n)
+        memset(to, 0, n);
     written(name, 0, size);
 }
 void snx_gl_buffer_data(uint32_t ctx, uint32_t name, int64_t size, const void* data, uint32_t usage) {
@@ -444,8 +544,7 @@ static int inside(uint32_t ctx, const SnxGlBuffer* b, int64_t offset, int64_t si
     return 1;
 }
 void snx_gl_buffer_sub_data(uint32_t ctx, uint32_t name, int64_t offset, int64_t size, const void* data) {
-    SnxGlBuffer* b = snx_gl_buffer(name);
-    uint8_t* to;
+    const SnxGlBuffer* b = snx_gl_buffer(name);
     if (!b || !inside(ctx, b, offset, size)) return;
     if (b->immutable && !(b->flags & GL_DYNAMIC_STORAGE_BIT_)) {
         error(ctx, SNX_GL_INVALID_OPERATION);
@@ -455,10 +554,9 @@ void snx_gl_buffer_sub_data(uint32_t ctx, uint32_t name, int64_t offset, int64_t
         error(ctx, SNX_GL_INVALID_OPERATION);
         return;
     }
-    to = snx_gl_buffer_bytes(name);
-    if (!to || !size || !data) return;
-    memcpy(to + offset, data, (size_t)size);
-    written(name, (uint64_t)offset, (uint64_t)(offset + size));
+    if (!size || !data || !bytes(b->data)) return;
+    read_back(name);
+    buffer_write(name, (uint64_t)offset, data, (uint64_t)size);
 }
 void snx_gl_get_buffer_sub_data(uint32_t ctx, uint32_t name, int64_t offset, int64_t size, void* out) {
     SnxGlBuffer* b = snx_gl_buffer(name);
@@ -474,6 +572,8 @@ uint64_t snx_gl_map_buffer_range(uint32_t ctx, uint32_t name, int64_t offset, in
         return error(ctx, SNX_GL_INVALID_VALUE), 0;
     if (b->mapped || ((access & GL_MAP_PERSISTENT_BIT_) && !(b->flags & GL_MAP_PERSISTENT_BIT_)))
         return error(ctx, SNX_GL_INVALID_OPERATION), 0;
+    /* GL's map waits for the draws that read the bytes; an unsynchronized one only for the writes put behind them */
+    settle(access & GL_MAP_UNSYNCHRONIZED_BIT_ ? unfinished(g_gl_object.wrote[name - 1]) : busy(name));
     read_back(name);
     b->mapped = 1;
     b->map_offset = (uint64_t)offset, b->map_length = (uint64_t)length, b->map_access = access;
@@ -508,15 +608,14 @@ uint64_t snx_gl_buffer_pointer(uint32_t ctx, uint32_t name) {
 }
 void snx_gl_copy_buffer_sub_data(uint32_t ctx, uint32_t read, uint32_t write, int64_t read_offset, int64_t write_offset,
                                  int64_t size) {
-    SnxGlBuffer *r = snx_gl_buffer(read), *w = snx_gl_buffer(write);
-    uint8_t *from, *to;
+    const SnxGlBuffer *r = snx_gl_buffer(read), *w = snx_gl_buffer(write);
+    const uint8_t* from;
     if (!r || !w) return;
     if (!inside(ctx, r, read_offset, size) || !inside(ctx, w, write_offset, size)) return;
     from = snx_gl_buffer_bytes(read);
-    to = snx_gl_buffer_bytes(write);
-    if (!from || !to || !size) return;
-    memmove(to + write_offset, from + read_offset, (size_t)size);
-    written(write, (uint64_t)write_offset, (uint64_t)(write_offset + size));
+    if (!from || !bytes(w->data) || !size) return;
+    read_back(write);
+    buffer_write(write, (uint64_t)write_offset, from + read_offset, (uint64_t)size);
 }
 int snx_gl_buffer_parameter(uint32_t ctx, uint32_t name, uint32_t pname, int64_t* v) {
     const SnxGlBuffer* b = snx_gl_buffer(name);
@@ -724,8 +823,10 @@ int snx_gl_get_vertex_attrib(uint32_t ctx, uint32_t index, uint32_t pname, doubl
 /* ---- the save state ---- */
 
 size_t snx_gl_object_state_bytes(void) { return sizeof(uint32_t) * 2 + sizeof S; }
+/* the held ranges free first, their work waited for: a load finds none of that work */
 void snx_gl_object_state_save(void* out) {
     const uint32_t h[2] = {(uint32_t)sizeof S, 0};
+    held_wait();
     memcpy(out, h, sizeof h);
     memcpy((unsigned char*)out + sizeof h, &S, sizeof S);
 }
@@ -831,5 +932,8 @@ int snx_gl_object_state_check(const void* in, size_t size, char* why, size_t why
 int snx_gl_object_checked_holds(uint64_t at, uint64_t size) { return in_chunk(&g_gl_object.checked, at, size); }
 void snx_gl_object_state_load(const void* in) {
     memcpy(&S, (const unsigned char*)in + 2 * sizeof(uint32_t), sizeof S);
+    memset(g_gl_object.read, 0, sizeof g_gl_object.read);
+    memset(g_gl_object.wrote, 0, sizeof g_gl_object.wrote);
+    g_gl_object.held_count = 0;
     for (uint32_t n = 1; n <= SNX_GL_BUFFERS; n++) gone(n); /* what a platform made is of the old records */
 }

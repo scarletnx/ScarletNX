@@ -133,7 +133,7 @@ int main(void) {
     uint8_t pattern[512];
     double v[4];
     assert(ctx && desktop);
-    snx_gl_object_host(&(SnxGlObjectHost){chunk, bytes, NULL, NULL, NULL});
+    snx_gl_object_host(&(SnxGlObjectHost){.chunk = chunk, .bytes = bytes});
     snx_gl_texture_host(&(SnxGlTextureHost){.storage = storage,
                                             .upload = upload,
                                             .mipmaps = mipmaps,
