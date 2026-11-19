@@ -107,6 +107,7 @@ static const char* const exports[] = {"eglGetDisplay",
                                       "_glBindVertexArray",
                                       "_glBindBuffer",
                                       "_glBufferData",
+                                      "_glBufferSubData",
                                       "_glVertexAttribPointer",
                                       "_glEnableVertexAttribArray",
                                       "_glDisableVertexAttribArray",
@@ -190,6 +191,20 @@ static const u8* gpu_bytes(u64 gva) {
     exit(1);
 }
 static u64 gpu_cpu(u64 gva) { return (u64)(gpu_bytes(gva) - guest); }
+/* maxwell3d.c's notice of guest bytes the runtime wrote, which the GPU's caches take again: the last 256 ranges */
+static struct {
+    u64 cpu[256], size[256];
+    unsigned n;
+} g_written;
+void gpu_mem_written_cpu(u64 cpu, u64 size) {
+    g_written.cpu[g_written.n % 256] = cpu, g_written.size[g_written.n++ % 256] = size;
+}
+/* whether [cpu, cpu + size) was told written */
+static int told_written(u64 cpu, u64 size) {
+    for (unsigned i = 0; i < 256 && i < g_written.n; i++)
+        if (cpu >= g_written.cpu[i] && cpu + size <= g_written.cpu[i] + g_written.size[i]) return 1;
+    return 0;
+}
 /* nvn_draw.c's render target of an NVN texture: its GPU address and size, the view asked for kept */
 static NvnView g_surface_view;
 int nvn_draw_surface_of(const NvnTexture* t, const NvnView* v, DsSurf* s, int* depth, u32* msaa) {
@@ -545,6 +560,10 @@ int main(void) {
         ab = gr32(names);
         call("_glBindBuffer", 0x8892, ab, 0, 0, 0);
         call("_glBufferData", 0x8892, 64, 0, 0x88e8, 0); /* GL_DYNAMIC_DRAW */
+        /* bytes the runtime writes into it: the GPU's caches are told, as they see only the game's own writes */
+        memcpy(GP(out), "sixteen bytes...", 16);
+        call("_glBufferSubData", 0x8892, 8, 16, out, 0);
+        assert(told_written(snx_gl_buffer((u32)ab)->data + 8, 16));
         cpu.x[5] = 32;                                   /* the pointer: an offset in the array buffer */
         call("_glVertexAttribPointer", 2, 3, 0x1406, 0, 12);
         call("_glEnableVertexAttribArray", 2, 0, 0, 0, 0);
@@ -658,6 +677,9 @@ int main(void) {
             assert(d->bind.cb_size[0][0] == p->default_size[0] && d->bind.cb_size[4][0] == p->default_size[1]);
             memcpy(tint, gpu_bytes(d->bind.cb_addr[4][0]), sizeof tint);
             assert(tint[0] == 0.5f && tint[1] == 0.25f && tint[2] == 1 && tint[3] == 2);
+            /* the ring's copies the GPU's caches are told of: its addresses come round again with new bytes */
+            assert(told_written(gpu_cpu(d->bind.cb_addr[4][0]), p->default_size[1]) &&
+                   told_written(gpu_cpu(d->bind.cb_addr[0][0]), p->default_size[0]));
             assert(d->tgt.color[0].gva == window.gva && d->tgt.count == 1); /* the image after two swaps */
             assert(d->dyn.window_origin == DS_ORIGIN_FLIP_Y && d->rkey.provoking_last && d->rkey.depth_zero_one);
             assert(d->vp.scale[0][0] == 640 && d->vp.scale[0][1] == 360 && d->vp.translate[0][1] == 360);
@@ -745,6 +767,9 @@ int main(void) {
             memcpy(tic, gpu_bytes(b->tex_pool + 32ull * t), sizeof tic);
             memcpy(tsc, gpu_bytes(b->smp_pool + 32ull * t), sizeof tsc);
             assert(memcmp(tic, zero, sizeof tic) && memcmp(tsc, zero, sizeof tsc));
+            assert(told_written(gpu_cpu(b->tex_pool + 32ull * t), 32) &&
+                   told_written(gpu_cpu(b->smp_pool + 32ull * t), 32));
+            assert(told_written(gpu_cpu(b->cb_addr[4][17]), 4));
         }
     }
 

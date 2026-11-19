@@ -136,6 +136,8 @@ static int memory_ready(void) {
     }
     memset(GP(g_gl_draw.tic), 0, (SNX_GL_TEXTURES + 1) * 32ull);
     memset(GP(g_gl_draw.tsc), 0, TSC_ENTRIES * 32ull);
+    gpu_mem_written_cpu(g_gl_draw.tic, (SNX_GL_TEXTURES + 1) * 32ull);
+    gpu_mem_written_cpu(g_gl_draw.tsc, TSC_ENTRIES * 32ull);
     return 0;
 }
 /* size bytes of the ring, 256-aligned, once the GPU thread finished with the bytes they take the place of: their
@@ -148,6 +150,24 @@ static u64 ring_take(u64 size) {
         plat_yield(); /* the GPU thread is a ring behind: the draws it has not reached hold these bytes */
     g_gl_draw.head = at + size;
     return g_gl_draw.ring + offset;
+}
+
+/* size bytes of src into the ring: their guest address. The GPU's caches are told of them, as of every byte the
+   runtime writes into guest memory the GPU reads: the ring's addresses come round again with new bytes */
+static u64 ring_put(const void* src, u64 size) {
+    u64 at = ring_take(size);
+    memcpy(GP(at), src, size);
+    gpu_mem_written_cpu(at, size);
+    return at;
+}
+/* a texture or sampler descriptor's 8 words into its pool entry at guest address slot, when they are new there: the
+   draws handed to the GPU thread before it read the entry as it was, so they are drawn first, as nvn_object.c's
+   sampler_write waits for the replay; the GPU's caches are told */
+static void descriptor_put(u64 slot, const u32 words[8]) {
+    if (!memcmp(GP(slot), words, 32)) return;
+    gl_draw_wait(0, g_gl_draw.issued);
+    memcpy(GP(slot), words, 32);
+    gpu_mem_written_cpu(slot, 32);
 }
 
 /* ---- textures and samplers ---- */
@@ -176,7 +196,7 @@ static void sampler_entry(u32 index, const SnxGlSamplerState* s) {
     p.lod_min = s->min_lod, p.lod_max = s->max_lod, p.lod_bias = s->lod_bias;
     p.anisotropy = s->anisotropy;
     nvn_tsc_encode(&p, words);
-    memcpy(GP(g_gl_draw.tsc + (u64)index * 32), words, sizeof words);
+    descriptor_put(g_gl_draw.tsc + (u64)index * 32, words);
 }
 /* the texture's TIC entry at its name, its levels from its base level to its last complete one: 0 for none (a
    texture GL samples as incomplete, zeros) */
@@ -188,7 +208,7 @@ static int texture_entry(u32 name) {
     if (!t || !snx_gl_texture_complete(name, &levels) || !gl_nvn_texture(name, &n) || !n.gpu) return 0;
     NvnView v = {.set = NVN_VIEW_LEVELS, .base_level = (u8)t->base_level, .levels = (u8)levels};
     if (!nvn_tic_encode(&n, &v, 0, 0, words)) return 0;
-    memcpy(GP(g_gl_draw.tic + (u64)name * 32), words, sizeof words);
+    descriptor_put(g_gl_draw.tic + (u64)name * 32, words);
     return 1;
 }
 /* the handles of stage's texture slots (si's), the textures bound to the units the program's samplers name: into the
@@ -215,8 +235,7 @@ static void texture_handles(u32 ctx, const SnxGlProgram* p, const ShaderInfo* si
             handles[k] = texture | texture << 20;
         }
     }
-    at = ring_take(sizeof handles);
-    memcpy(GP(at), handles, sizeof handles);
+    at = ring_put(handles, sizeof handles);
     b->cb_addr[stage][GL_HOST_TEX_BANK] = gl_gpu_address(at);
     b->cb_size[stage][GL_HOST_TEX_BANK] = sizeof handles;
 }
@@ -300,8 +319,7 @@ static int vertex_state(u32 ctx, const SnxGlProgram* p, const ShaderInfo* vs, Dr
             r->vbuf.size[a->binding] = buf->size > b->offset ? buf->size - b->offset : 0;
         } else { /* glVertexAttrib*'s value, at stride 0 */
             u32 s = GENERIC_BASE + g;
-            u64 at = ring_take(16);
-            memcpy(GP(at), o->generic[g].bits, 16);
+            u64 at = ring_put(o->generic[g].bits, 16);
             f->stream[i] = (u8)s, f->offset[i] = 0;
             f->size[i] = 0x01; /* 32_32_32_32 */
             f->type[i] = o->generic[g].base == SNX_GLSLC_BASE_INT    ? 3
@@ -480,8 +498,7 @@ static void constants(u32 ctx, const SnxGlProgram* p, const ShaderInfo si[2], Dr
     for (u32 s = 0; s < 2; s++) {
         u32 stage = s ? 4 : 0; /* DsBindings' stages: VS, TCS, TES, GS, FS */
         if (p->default_size[s]) {
-            u64 at = ring_take(p->default_size[s]);
-            memcpy(GP(at), snx_gl_program_default(p, (int)s), p->default_size[s]);
+            u64 at = ring_put(snx_gl_program_default(p, (int)s), p->default_size[s]);
             r->bind.cb_addr[stage][0] = gl_gpu_address(at);
             r->bind.cb_size[stage][0] = p->default_size[s];
         }
