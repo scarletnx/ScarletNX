@@ -58,7 +58,7 @@ def main():
         run(['-r', '--aot-threads-most=abc', *missing], 2, 'scarletnx-nds: aot_threads_most=abc is not a whole number')
         run(['-r', '--aot-threads=2000', *missing], 2, 'scarletnx-nds: aot_threads=2000 is not a whole number from 0')
         # the WFC service: a word the list has not, refused with it and the list
-        run(['-r', '--nds-wfc=nintendo', *missing], 2, '"nintendo" is none of off, auto, custom, kaeru, wiilink')
+        run(['-r', '--nds-wfc=official', *missing], 2, '"official" is none of off, auto, custom, kaeru, wiilink')
         run(['-r', '--nds-wfc=custom', *missing], 2, 'nds_wfc_dns=: the custom DNS server "" is not an IPv4 address')
         run(['-r', '--nds-wfc=custom', '--nds-wfc-dns=10.0.0.256', *missing], 2, '"10.0.0.256" is not an IPv4')
         run(['-r', '--nds-wfc-dns=1234567890123456', *missing], 2, "nds_wfc_dns's value is longer than 15 bytes")
