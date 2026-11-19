@@ -153,6 +153,14 @@ void ui_append_kept(SnxUiList* l, const SnxUiList* from, u32 version, const void
    a quad marks it; under ui_lock */
 void ui_dirty_begin(const SnxUiQuad* list);
 void ui_dirty_end(int* first, int* end);
+/* One span of a list, first to end, drawn at alpha (0 to 254, of 255) over what is under it: the one thing in the layer
+   that is translucent, a notification fading in or out (overlay.c), and only while it fades. Its quads are fills,
+   bars and backed letters and icons, which the renderer otherwise draws opaque with no blending (gpu/vk/ui.c), its
+   quads unchanged from frame to frame while alpha moves. Each list starts with none (ui_dirty_begin); alpha 255 is
+   none. Under ui_lock */
+void ui_fade_set(int first, int end, unsigned alpha);
+/* that span into first and end (first >= end for none), and its alpha */
+unsigned ui_fade(int* first, int* end);
 /* an icon of the menus' (gui/icons.h), two of the font's cells at a whole scale, as the launcher draws it beside a
    label; returns the width drawn, 0 for GUI_ICON_NONE. Its texels are in the atlas beside the picture, on its rows:
    icon i's 16x16 from x SNX_UI_ICONS_X + 16 * i */

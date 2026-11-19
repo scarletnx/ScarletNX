@@ -8,6 +8,7 @@
 #ifndef SNX_OVERLAY_H
 #define SNX_OVERLAY_H
 #include "common/utilities/notice.h"
+#include "common/utilities/run_theme.h"
 #include "nx/runtime/platform/ui.h"
 
 /* the 3DS's, the Vita's and the GBA's notices are drawn as this menu's (common/utilities/notice.h) */
@@ -107,6 +108,14 @@ void overlay_draw(SnxUiList* l, int sw, int sh, u64 now_ns);
    loaded, a screenshot taken. Under ui_lock */
 #define SNX_OVERLAY_TOAST_MS SNX_NOTICE_MS
 void overlay_toast(const char* text, u64 now_ns);
+/* It comes in from its start and goes to its end as the launcher's screens fade in from black and out to it: over the
+   fade_in_ms and fade_out_ms of theme (common/utilities/run_theme.h), or of YoRHa's built in for NULL, where the
+   launcher's can't be read; 0 for no fade, as it is until told. What it takes into ms, in and out. Its alpha at now_ns,
+   0 to 255 (255 between the fades, 0 once its time is up): what the launcher's black leaves of its screen at the same
+   point of a fade as long (run_theme.h's snx_fade_shade), the lesser of the two where they meet. While it fades its
+   quads are the layer's faded span (ui.h's ui_fade_set), the same quads at another alpha each frame. Under ui_lock */
+void overlay_fades(const SnxRunTheme* theme, u32 ms[2]);
+int overlay_toast_alpha(u64 now_ns);
 /* the toast of a save state saved to slot (its words, "slot 2"), "Saved over" one that held a state (over) */
 void overlay_state_saved(const char* slot, int over, u64 now_ns);
 int overlay_toasting(u64 now_ns); /* one shows */

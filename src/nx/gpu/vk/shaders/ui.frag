@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright 2026 the ScarletNX contributors
-// The on-screen layer's pixel (gpu/vk/ui.c), one of two pipelines by MODE, a specialization constant, so that each
-// takes only its own work. Nothing is translucent: a pixel is written opaque or not at all.
+// The on-screen layer's pixel (gpu/vk/ui.c), one of its pipelines by MODE, a specialization constant, so that each
+// takes only its own work. Nothing is translucent but a notification fading in or out: a pixel is written opaque or
+// not at all.
 // - MODE 0, plain: a quad that covers every pixel of its own (a fill, a bar, a backed letter or icon): its label's bit
 //   picks its colour or the ground (a fill's label, the full block, is all set). No discard, no texture, no branch.
+//   With FADE, the quads of the span ui.h's ui_fade_set gives: the same pixel at the span's alpha, premultiplied and
+//   blended over the picture.
 // - MODE 1 and 2, sparse: a shape, a letter or an icon that leaves its clear pixels alone, or the atlas's texels (the
 //   user's picture, hard at its round edge, a save state's thumbnail). A pixel not drawn is discarded (1), or on a GPU
 //   that renders in tiles, where a discard costs its tile's early tests, written clear and blended away (2: the blend
@@ -18,6 +21,7 @@ layout(constant_id = 0) const uint MODE = 0u;
 layout(constant_id = 1) const bool SRGB = false;
 layout(constant_id = 2) const uint SPACE = 0u;
 layout(constant_id = 3) const float WHITE = 203.0;
+layout(constant_id = 4) const bool FADE = false;
 layout(set = 0, binding = 0) uniform sampler2D atlas;
 // gui_vga_font's 256 letters, then each icon's halves (gui_icon_font), 16 rows of a byte each, four bytes a word
 layout(std430, set = 0, binding = 1) readonly buffer Glyphs {
@@ -27,6 +31,7 @@ layout(push_constant) uniform Picture {
     vec2 size;
     uint ring, slow, slow_from; // ui.vert's
     uint ground;                // a backed letter's clear pixels' colour
+    float fade;                 // FADE's alpha
 } pc;
 layout(location = 0) in vec2 v_uv;
 layout(location = 1) in vec4 v_color;
@@ -82,4 +87,5 @@ void main() {
     if (SPACE == 2u) c = decode(c) * (WHITE / 80.0);
     if (MODE == 1u && !drawn) discard;
     o = vec4(c, 1.0) * (MODE == 2u ? float(drawn) : 1.0); // MODE 2: clear, blended away, when not drawn
+    if (FADE) o *= pc.fade;
 }

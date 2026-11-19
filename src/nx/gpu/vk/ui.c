@@ -2,7 +2,8 @@
    Copyright 2026 the ScarletNX contributors */
 /* The on-screen controls, the game's menu (runtime/platform/ui.h) and the shader loading screen before the game
    (runtime/platform/prepare_screen.h) over a presented frame: the quads they give, drawn opaque in the window's one
-   pass (vk_ui_present), after the frame's own quad and before the present. Nothing is recorded while none shows.
+   pass (vk_ui_present), after the frame's own quad and before the present, but for a notification fading in or out
+   (ui_fade_set), blended at its alpha in the same pass. Nothing is recorded while none shows.
 
    Each quad is an instance, its SnxUiQuad (20 bytes) as it is, whose corners the vertex shader makes: the CPU writes no
    vertices. The instances stay in a buffer on the device from frame to frame, and a frame copies into it only the
@@ -43,7 +44,7 @@ static DevMem g_glyphs_mem;
 #define UI_RING_BYTES SNX_UI_RING_MAX
 /* ui.vert's push constants: its Picture (UiPicture), then the frame's region's first word in Ring, pushed apart as it
    changes every frame (ui_record) */
-#define UI_PUSH_BYTES 28
+#define UI_PUSH_BYTES 32
 static VkBuffer g_frames;
 static DevMem g_frames_mem;
 static u8* g_frames_at;
@@ -65,17 +66,20 @@ static UiRun g_runs[MAX_QUADS];
 static int g_nruns, g_runs_n = -1; /* the quads they were made for, -1 for none */
 static VkDescriptorSetLayout g_dsl;
 static VkPipelineLayout g_layout;
-/* ui.frag's two pipelines (its MODE): plain, for a quad that covers every pixel of its own (a fill, a bar, a backed
+/* ui.frag's pipelines (its MODE): plain, for a quad that covers every pixel of its own (a fill, a bar, a backed
    letter or icon), and sparse, for one that leaves its clear pixels alone (a shape, a letter, an icon, the atlas's
-   texels): discarded, or on a GPU that renders in tiles written clear and blended away */
-enum { UI_PLAIN, UI_SPARSE };
-static VkPipeline g_pipes[2];
+   texels): discarded, or on a GPU that renders in tiles written clear and blended away. And faded, plain's quads of
+   the span ui_fade_set gives (a notification coming or going), blended over the picture at its alpha (FADE) */
+enum { UI_PLAIN, UI_SPARSE, UI_FADED, UI_PIPES };
+static VkPipeline g_pipes[UI_PIPES];
+static int g_fade[2]; /* that span of the list, first and end, as the last list made gave it */
 static VkFormat g_pipe_format;
 static u32 g_pipe_space; /* what the pipelines' picture takes (g_vk.sc_space): half floats are both HDR spaces' */
 static int g_pipe_tiler; /* the sparse pipeline blends: made for a GPU that renders in tiles */
 typedef struct {
     u32 mode, srgb, space;
     f32 white;
+    u32 fade;
 } UiSpec;
 /* a GPU that renders in tiles, by its vendor: ARM's Mali, Qualcomm's Adreno, Apple's, Imagination's PowerVR and
    Broadcom's VideoCore, where a discard costs its tile's early tests */
@@ -204,15 +208,16 @@ static int pipeline_make(VkFormat format) {
                                         .pColorBlendState = &cb,
                                         .pDynamicState = &ds,
                                         .layout = g_layout};
-    /* ui.frag's MODE (0 plain, 1 sparse that discards, 2 sparse that blends) and SRGB, and for the swapchain of a
-       game's HDR frames its SPACE (gpu/hdr_output.h's) and WHITE, the light the layer's white is drawn at there */
+    /* ui.frag's MODE (0 plain, 1 sparse that discards, 2 sparse that blends) and SRGB, for the swapchain of a game's
+       HDR frames its SPACE (gpu/hdr_output.h's) and WHITE, the light the layer's white is drawn at there, and FADE */
     UiSpec spec;
-    VkSpecializationMapEntry entries[4] = {{0, offsetof(UiSpec, mode), 4},
+    VkSpecializationMapEntry entries[5] = {{0, offsetof(UiSpec, mode), 4},
                                            {1, offsetof(UiSpec, srgb), 4},
                                            {2, offsetof(UiSpec, space), 4},
-                                           {3, offsetof(UiSpec, white), 4}};
-    VkSpecializationInfo si = {4, entries, sizeof spec, &spec};
-    /* premultiplied: a pixel written clear leaves the picture as it was */
+                                           {3, offsetof(UiSpec, white), 4},
+                                           {4, offsetof(UiSpec, fade), 4}};
+    VkSpecializationInfo si = {5, entries, sizeof spec, &spec};
+    /* premultiplied: a pixel written clear leaves the picture as it was, and one at alpha a takes 1 - a of it */
     const VkPipelineColorBlendAttachmentState blended = {.blendEnable = VK_TRUE,
                                                          .srcColorBlendFactor = VK_BLEND_FACTOR_ONE,
                                                          .dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
@@ -222,10 +227,10 @@ static int pipeline_make(VkFormat format) {
                                                          .alphaBlendOp = VK_BLEND_OP_ADD,
                                                          .colorWriteMask = 0xF};
     int ok, i, blend = tiler();
-    if (g_pipes[UI_PLAIN] && g_pipes[UI_SPARSE] && g_pipe_format == format && g_pipe_space == g_vk.sc_space &&
-        g_pipe_tiler == blend)
+    if (g_pipes[UI_PLAIN] && g_pipes[UI_SPARSE] && g_pipes[UI_FADED] && g_pipe_format == format &&
+        g_pipe_space == g_vk.sc_space && g_pipe_tiler == blend)
         return 1;
-    for (i = 0; i < 2; ++i) { /* vk_finish ran when the swapchain changed format */
+    for (i = 0; i < UI_PIPES; ++i) { /* vk_finish ran when the swapchain changed format */
         if (g_pipes[i]) vkDestroyPipeline(g_vk.dev, g_pipes[i], NULL);
         g_pipes[i] = VK_NULL_HANDLE;
     }
@@ -235,12 +240,14 @@ static int pipeline_make(VkFormat format) {
     st[1].module = fs;
     st[1].pSpecializationInfo = &si;
     ok = vs && fs;
-    for (i = 0; ok && i < 2; ++i) {
-        spec.mode = i == UI_PLAIN ? 0 : blend ? 2 : 1;
+    for (i = 0; ok && i < UI_PIPES; ++i) {
+        spec.mode = i == UI_SPARSE ? blend ? 2 : 1 : 0;
         spec.srgb = (u32)g_vk.sc_srgb;
         spec.space = g_vk.sc_space;
         spec.white = (f32)snx_hdr_paper_white(g_settings.hdr_paper_white);
-        ba = i == UI_SPARSE && blend ? blended : (VkPipelineColorBlendAttachmentState){.colorWriteMask = 0xF};
+        spec.fade = i == UI_FADED;
+        ba = (i == UI_SPARSE && blend) || i == UI_FADED ? blended
+                                                        : (VkPipelineColorBlendAttachmentState){.colorWriteMask = 0xF};
         int entered = snx_vk_compile_enter();
         ok = VK_OK(vkCreateGraphicsPipelines(g_vk.dev, vk_pipeline_cache(), 1, &gci, NULL, &g_pipes[i]));
         snx_vk_compile_leave(entered);
@@ -250,7 +257,7 @@ static int pipeline_make(VkFormat format) {
     g_pipe_format = format;
     g_pipe_space = g_vk.sc_space;
     g_pipe_tiler = blend;
-    for (i = 0; i < 2 && !ok; ++i) {
+    for (i = 0; i < UI_PIPES && !ok; ++i) {
         if (g_pipes[i]) vkDestroyPipeline(g_vk.dev, g_pipes[i], NULL);
         g_pipes[i] = VK_NULL_HANDLE;
     }
@@ -390,10 +397,12 @@ static void image_upload(VkCommandBuffer cb) {
     g_image_version = version;
 }
 /* ui.vert's Picture: the picture's size, the ring's head and its slots from bit 16, the bars' slow colour and its
-   height, and the backed letters' ground, which g_shown compares from frame to frame */
+   height, the backed letters' ground, and the faded span's alpha (1 with none), which g_shown compares from frame to
+   frame: a fade moves it alone */
 typedef struct {
     float w, h;
     u32 ring, slow, slow_from, ground;
+    float fade;
 } UiPicture;
 _Static_assert(UI_PUSH_BYTES == sizeof(UiPicture) + sizeof(u32), "ui.vert's Picture, then the ring's word");
 static UiPicture g_pc;
@@ -576,13 +585,14 @@ static unsigned quad_sample(int i) { return ui_q_bits(&g_quads[i], UI_Q_SAMPLE, 
 /* an outline shape (an unfilled circle, round box or cross with its edge), which ui.vert draws as UI_OUTLINE_PARTS
    quads over its edge and its label, so that its inside takes no fragment: the vertices an instance of it takes */
 #define UI_OUTLINE_PARTS 16 /* ui.vert's OUTLINE_PARTS */
-/* the pipeline a quad is drawn with: plain for a fill, a bar, a backed letter or icon, sparse for the rest */
+/* the pipeline a quad is drawn with: plain for a fill, a bar, a backed letter or icon, faded for those in the faded
+   span, sparse for the rest */
 static int quad_pipe(int i) {
     unsigned ink = ui_q_bits(&g_quads[i], UI_Q_INK, 3);
-    return ink == UI_SOLID || ink == UI_RING ||
-                   ((ink == UI_GLYPH || ink == UI_ICON) && ui_q_bits(&g_quads[i], UI_Q_BACKED, 1))
-               ? UI_PLAIN
-               : UI_SPARSE;
+    if (ink == UI_SOLID || ink == UI_RING ||
+        ((ink == UI_GLYPH || ink == UI_ICON) && ui_q_bits(&g_quads[i], UI_Q_BACKED, 1)))
+        return i >= g_fade[0] && i < g_fade[1] ? UI_FADED : UI_PLAIN;
+    return UI_SPARSE;
 }
 static u32 quad_vertices(int i) {
     const SnxUiQuad* q = &g_quads[i];
@@ -617,8 +627,21 @@ static int ui_list(const int safe[4]) {
     }
     overlay_draw(&list, sw, sh, now);
     ui_dirty_end(&first, &end);
-    g_pc = (UiPicture){(float)sw,  (float)sh,       (u32)ring->head | (u32)ring->n << 16,
-                       ring->slow, ring->slow_from, ui_ground()};
+    {
+        int fade[2];
+        unsigned alpha = ui_fade(&fade[0], &fade[1]);
+        g_pc = (UiPicture){(float)sw,
+                           (float)sh,
+                           (u32)ring->head | (u32)ring->n << 16,
+                           ring->slow,
+                           ring->slow_from,
+                           ui_ground(),
+                           (float)alpha / 255.0f};
+        if (memcmp(fade, g_fade, sizeof fade)) { /* the runs take the faded span's quads apart */
+            memcpy(g_fade, fade, sizeof fade);
+            g_runs_n = -1;
+        }
+    }
     frames_owe(first, end);
     if (first < end || list.n != g_runs_n) g_runs_n = -1; /* a quad changed: the runs are made again */
     if (first < end || list.n != g_shown.n || memcmp(&g_pc, &g_shown.pc, sizeof g_pc)) g_shown.changed = 1;

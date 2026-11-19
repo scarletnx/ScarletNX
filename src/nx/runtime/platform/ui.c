@@ -85,7 +85,7 @@ SnxUiQuadView ui_view(const SnxUiQuad* q) {
                            .glyph = (u8)(alpha_glyph ? 0 : byte)};
 }
 /* the renderer's list (ui_dirty_begin), the span of it written since, and the parts kept in it (ui_append_kept) this
-   frame and the one before */
+   frame and the one before; and its span drawn translucent (ui_fade_set), first and end, and that one's alpha */
 #define UI_PARTS 16
 typedef struct {
     const void* who;
@@ -98,8 +98,22 @@ static struct {
     int first, end;
     UiPart part[2][UI_PARTS];
     int parts[2], now;
+    int fade[2];
+    unsigned fade_alpha;
 } g_dirty;
+void ui_fade_set(int first, int end, unsigned alpha) {
+    const int none = first >= end || alpha >= 255;
+    g_dirty.fade[0] = none ? 0 : first;
+    g_dirty.fade[1] = none ? 0 : end;
+    g_dirty.fade_alpha = none ? 255 : alpha;
+}
+unsigned ui_fade(int* first, int* end) {
+    *first = g_dirty.fade[0];
+    *end = g_dirty.fade[1];
+    return g_dirty.fade[0] < g_dirty.fade[1] ? g_dirty.fade_alpha : 255;
+}
 void ui_dirty_begin(const SnxUiQuad* list) {
+    ui_fade_set(0, 0, 255);
     g_dirty.now ^= 1;
     g_dirty.parts[g_dirty.now] = 0;
     if (list != g_dirty.was) g_dirty.parts[g_dirty.now ^ 1] = 0; /* another list: nothing in it is known */

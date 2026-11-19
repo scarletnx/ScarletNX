@@ -225,8 +225,9 @@ static int nslots = 1, slot_at, ask, slots_stale;
 enum { ASK_RESET = -1, ASK_CLEAN = -2 };
 static u32 slots_gen; /* counts the lists given: the picture is set again */
 static char toast[OVERLAY_COLS_MAX + 1];
-static u64 toast_until;
-static u32 toast_version; /* counts the toasts given */
+static u64 toast_from, toast_until; /* toast_from: when it was given, which its fade in starts from */
+static u32 toast_version;           /* counts the toasts given */
+static u32 toast_fade[2];           /* overlay_fades': the fade in's and the fade out's ms */
 static int pad_player; /* the player the gamepads' page shows: 0 every player's, 1 to SNX_GAMEPADS */
 /* the Shortcuts page: its row in focus waits for a key, and what the last key given was refused for ("" none) */
 static int listening;
@@ -873,10 +874,26 @@ void overlay_state_saved(const char* slot, int over, u64 now_ns) {
 }
 void overlay_toast(const char* text, u64 now_ns) {
     snprintf(toast, sizeof toast, "%s", text);
+    toast_from = now_ns;
     toast_until = now_ns + (u64)SNX_OVERLAY_TOAST_MS * 1000000u;
     ++toast_version;
 }
 int overlay_toasting(u64 now_ns) { return toast[0] && now_ns < toast_until; }
+void overlay_fades(const SnxRunTheme* theme, u32 ms[2]) {
+    toast_fade[0] = theme ? theme->fade_in_ms : SNX_GUI_THEME_YORHA_FADE_IN_MS;
+    toast_fade[1] = theme ? theme->fade_out_ms : SNX_GUI_THEME_YORHA_FADE_OUT_MS;
+    ms[0] = toast_fade[0];
+    ms[1] = toast_fade[1];
+}
+int overlay_toast_alpha(u64 now_ns) {
+    const u64 now = now_ns / 1000000u, from = toast_from / 1000000u, until = toast_until / 1000000u;
+    /* the launcher's black coming in from it, and going out to it: that fade begins fade_out_ms before the end,
+       counted on from there, a fade longer than the toast too */
+    const u8 in = snx_fade_shade(1.0f - snx_fade_done(now, from, toast_fade[0])),
+             out = toast_fade[1] ? snx_fade_shade(snx_fade_done(now + toast_fade[1], until, toast_fade[1])) : 0;
+    if (!overlay_toasting(now_ns)) return 0;
+    return 255 - (in > out ? in : out);
+}
 /* overlay_notice's line until the next draw takes it ("" none), under a lock of its own: its callers may hold ui_lock
    or not */
 static PMutex notice_lock = PMUTEX_INIT;
@@ -1940,7 +1957,7 @@ void overlay_draw(SnxUiList* l, int sw, int sh, u64 now_ns) {
         ui_append_kept(l, &(SnxUiList){g_menu.q, g_menu.n, g_menu.n}, g_menu.version, &g_menu, NULL);
     }
     if (overlay_toasting(now_ns)) {
-        int percent = overlay_display_percent();
+        int percent = overlay_display_percent(), alpha = overlay_toast_alpha(now_ns);
         float stats[4] = {0};
         int boxed = stats_box_drawn(stats); /* the stats' box, which it keeps clear of */
         if (g_toast.given != toast_version || g_toast.sw != sw || g_toast.sh != sh || g_toast.percent != percent ||
@@ -1956,7 +1973,11 @@ void overlay_draw(SnxUiList* l, int sw, int sh, u64 now_ns) {
             g_toast.percent = percent;
             ++g_toast.version;
         }
-        ui_append_kept(l, &(SnxUiList){g_toast.q, g_toast.n, g_toast.n}, g_toast.version, &g_toast, NULL);
+        if (alpha) {
+            const int first = l->n;
+            ui_append_kept(l, &(SnxUiList){g_toast.q, g_toast.n, g_toast.n}, g_toast.version, &g_toast, NULL);
+            ui_fade_set(first, l->n, (unsigned)alpha); /* as it fades: its quads the same, their alpha moving */
+        }
     }
 }
 int overlay_error_hit(const SnxOverlayRect* r, float x, float y) {

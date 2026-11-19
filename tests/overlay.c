@@ -1932,6 +1932,70 @@ int main(void) {
     overlay_toast("", 0);
     draw();
     assert(!list.n);
+    /* It comes in and goes as the launcher's screens fade from black and to it, over its theme's fade_in_ms and
+       fade_out_ms, on the launcher's curve and black (run_theme.h's snx_fade_done and snx_fade_shade, as
+       src/gui/main.c's overlay takes them): what that black leaves of the screen, 0 at its start, 128 at the half
+       (the black's 127), whole at the end; the same going. While it fades its quads are the layer's faded span at that
+       alpha, the same quads from frame to frame; whole, there is no span, and at 0 nothing is drawn */
+    {
+        const u64 t0 = 5000000000ull, ms = 1000000ull, until = t0 + (u64)SNX_OVERLAY_TOAST_MS * ms;
+        static const char said[] = "Compiling shaders";
+        const SnxRunTheme theme = {.fade_in_ms = 250, .fade_out_ms = 500};
+        SnxUiQuad held[64];
+        u32 taken[2];
+        int first, end, n = (int)strlen(said) + 2;
+        overlay_fades(&theme, taken);
+        assert(taken[0] == 250 && taken[1] == 500);
+        overlay_toast(said, t0);
+        assert(overlay_toast_alpha(t0) == 0 && overlay_toast_alpha(t0 + 125 * ms) == 128);
+        assert(overlay_toast_alpha(t0 + 200 * ms) ==
+               255 - snx_fade_shade(1.0f - snx_fade_done(t0 / ms + 200, t0 / ms, 250)));
+        assert(overlay_toast_alpha(t0 + 250 * ms) == 255 && overlay_toast_alpha(t0 + 1000 * ms) == 255);
+        assert(overlay_toast_alpha(until - 500 * ms) == 255 && overlay_toast_alpha(until - 250 * ms) == 128);
+        assert(overlay_toast_alpha(until - 100 * ms) ==
+               255 - snx_fade_shade(snx_fade_done(until / ms - 100, until / ms - 500, 500)));
+        assert(overlay_toast_alpha(until - ms) == 1 && overlay_toast_alpha(until) == 0); /* black 254, then gone */
+        list.n = 0;
+        ui_fade_set(0, 0, 255);
+        overlay_draw(&list, SW, SH, t0); /* at 0: nothing */
+        assert(!list.n && ui_fade(&first, &end) == 255 && first >= end);
+        overlay_draw(&list, SW, SH, t0 + 125 * ms);
+        assert(list.n == n && ui_fade(&first, &end) == 128 && first == 0 && end == n);
+        memcpy(held, list.q, sizeof *held * (size_t)n);
+        list.n = 0;
+        overlay_draw(&list, SW, SH, t0 + 200 * ms);
+        assert(list.n == n && ui_fade(&first, &end) == (unsigned)overlay_toast_alpha(t0 + 200 * ms) &&
+               !memcmp(held, list.q, sizeof *held * (size_t)n));
+        list.n = 0;
+        ui_fade_set(0, 0, 255);
+        overlay_draw(&list, SW, SH, t0 + 1000 * ms); /* whole: no span, the same quads */
+        assert(list.n == n && ui_fade(&first, &end) == 255 && first >= end &&
+               !memcmp(held, list.q, sizeof *held * (size_t)n));
+        list.n = 0;
+        overlay_draw(&list, SW, SH, until - 250 * ms);
+        assert(list.n == n && ui_fade(&first, &end) == 128 && !memcmp(held, list.q, sizeof *held * (size_t)n));
+        /* behind the menu's quads, the span is the notification's alone */
+        overlay_toggle();
+        list.n = 0;
+        overlay_draw(&list, SW, SH, until - 250 * ms);
+        assert(ui_fade(&first, &end) == 128 && first > 0 && end == list.n && end - first == n);
+        overlay_toggle();
+        /* YoRHa's built in, where the launcher's theme can't be read: its theme.ini's (gui_theme_colors.h) */
+        overlay_fades(NULL, taken);
+        assert(taken[0] == SNX_GUI_THEME_YORHA_FADE_IN_MS && taken[1] == SNX_GUI_THEME_YORHA_FADE_OUT_MS);
+        assert(overlay_toast_alpha(t0 + SNX_GUI_THEME_YORHA_FADE_IN_MS / 2 * ms) ==
+               255 - snx_fade_shade(
+                         1.0f - snx_fade_done(SNX_GUI_THEME_YORHA_FADE_IN_MS / 2, 0, SNX_GUI_THEME_YORHA_FADE_IN_MS)));
+        /* a fade out longer than the notification, given as the clock starts: 3 s of its 10 s left at its start */
+        overlay_fades(&(SnxRunTheme){.fade_out_ms = 10000}, taken);
+        overlay_toast(said, 1000);
+        assert(overlay_toast_alpha(1000) == 77 && overlay_toast_alpha(1500 * ms) == 39);
+        overlay_toast(said, t0);
+        /* a theme with no fades: whole from its start to its end */
+        overlay_fades(&(SnxRunTheme){0}, taken);
+        assert(!taken[0] && !taken[1] && overlay_toast_alpha(t0) == 255 && overlay_toast_alpha(until - ms) == 255);
+        overlay_toast("", 0);
+    }
     overlay_toggle();
     /* closed, it draws nothing; opened again, its first page */
     overlay_toggle();
