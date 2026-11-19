@@ -47,6 +47,9 @@ int snx_extracted_game(const char* path);
 char* snx_extracted_part(const char* path, int romfs);
 /* what a game's source= names, for a line about it: "folder" for an extracted game, there or not, else "dump" */
 const char* snx_source_kind(const char* source);
+/* 1 for a Switch dump by its name, whatever its case: an XCI or NSP, decrypted (DXCI, DNSP) or compressed by nsz (XCZ,
+   NSZ), which the driver reads by its header; 0 for any other name */
+int snx_switch_dump_name(const char* name);
 /* The RomFS Extract dump keeps in the data folder of the game name in folder (<name>_data/romfs/), as a start and a
    recompile check it: SNX_ROMFS_EXTRACTING when an extraction into it stopped before it ended and left
    <name>.extracting in folder (it writes its files under their own names), SNX_ROMFS_STOPPED when a copy of it stopped

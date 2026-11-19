@@ -32,7 +32,7 @@ typedef struct {
 } ExtractState;
 
 static void extract_help(void) {
-    puts("Usage: scarletnx -x BASE.xci|BASE.nsp|BASE.dxci|BASE.dnsp|FOLDER [options]\n"
+    puts("Usage: scarletnx -x BASE.xci|BASE.nsp|BASE.xcz|BASE.nsz|BASE.dxci|BASE.dnsp|FOLDER [options]\n"
          "  FOLDER, an extracted game (exefs/, romfs/), is copied into --out as it is\n"
          "  --update FILE       Apply a same-title update during extraction, or add a DLC's RomFS image\n"
          "  --name NAME         Output name (default: base dump stem)\n"
