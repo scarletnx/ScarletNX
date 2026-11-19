@@ -258,21 +258,32 @@ static int attr_format(const SnxGlAttrib* a, u8* size, u8* type, int* bgra) {
     return 1;
 }
 /* the vertex arrays' attributes the vertex program reads, and their streams: the bound buffers' bytes, or each
-   attribute without an array its generic value, a 16-byte vertex in the ring that every vertex reads */
-static int vertex_state(u32 ctx, const ShaderInfo* vs, DrawRecord* r) {
+   attribute without an array its generic value, a 16-byte vertex in the ring that every vertex reads. The program's
+   input at the module's location i reads the attribute of its GL location (glBindAttribLocation's), which can differ */
+static int vertex_state(u32 ctx, const SnxGlProgram* p, const ShaderInfo* vs, DrawRecord* r) {
     const SnxGlVertexArray* va = snx_gl_vertex_array(ctx);
     const SnxGlObjectContext* o = snx_gl_objects(ctx);
+    const SnxGlInput* in = snx_gl_program_inputs(p);
     DsVertexFormat* f = &r->vfmt;
-    for (u32 i = 0; i < DS_ATTRS && i < SNX_GL_VERTEX_ATTRIBS; i++) {
-        const SnxGlAttrib* a = &va->attribs[i];
+    u8 gl_of[DS_ATTRS];
+    for (u32 i = 0; i < DS_ATTRS; i++) gl_of[i] = (u8)i;
+    for (u32 k = 0; k < p->input_count; k++)
+        for (u32 e = 0; e < (u32)in[k].count * in[k].columns; e++)
+            if (in[k].spirv >= 0 && in[k].location >= 0 && (u32)in[k].spirv + e < DS_ATTRS &&
+                (u32)in[k].location + e < SNX_GL_VERTEX_ATTRIBS)
+                gl_of[in[k].spirv + e] = (u8)(in[k].location + e);
+    for (u32 i = 0; i < DS_ATTRS; i++) {
+        const u32 g = gl_of[i];
+        const SnxGlAttrib* a;
         u8 size, type;
         int bgra;
-        if (!(vs->in_mask >> i & 1)) continue;
+        if (!(vs->in_mask >> i & 1) || g >= SNX_GL_VERTEX_ATTRIBS) continue;
+        a = &va->attribs[g];
         if (a->enabled) {
             const SnxGlVertexBinding* b = &va->bindings[a->binding];
             const SnxGlBuffer* buf = snx_gl_buffer(b->buffer);
             if (!buf || !attr_format(a, &size, &type, &bgra)) {
-                LOG_LIMIT(4, "gl layer: attribute %u reads %s (type 0x%x, size %d): the draw is skipped\n", (unsigned)i,
+                LOG_LIMIT(4, "gl layer: attribute %u reads %s (type 0x%x, size %d): the draw is skipped\n", (unsigned)g,
                           buf ? "a format no attribute takes" : "a client array, which a core context has not",
                           (unsigned)a->type, (int)a->size);
                 return 0;
@@ -288,13 +299,13 @@ static int vertex_state(u32 ctx, const ShaderInfo* vs, DrawRecord* r) {
             r->vbuf.addr[a->binding] = gl_gpu_address(buf->data) + b->offset;
             r->vbuf.size[a->binding] = buf->size > b->offset ? buf->size - b->offset : 0;
         } else { /* glVertexAttrib*'s value, at stride 0 */
-            u32 s = GENERIC_BASE + i;
+            u32 s = GENERIC_BASE + g;
             u64 at = ring_take(16);
-            memcpy(GP(at), o->generic[i].bits, 16);
+            memcpy(GP(at), o->generic[g].bits, 16);
             f->stream[i] = (u8)s, f->offset[i] = 0;
             f->size[i] = 0x01; /* 32_32_32_32 */
-            f->type[i] = o->generic[i].base == SNX_GLSLC_BASE_INT    ? 3
-                         : o->generic[i].base == SNX_GLSLC_BASE_UINT ? 4
+            f->type[i] = o->generic[g].base == SNX_GLSLC_BASE_INT    ? 3
+                         : o->generic[g].base == SNX_GLSLC_BASE_UINT ? 4
                                                                      : 7;
             if (f->type[i] != 7) f->is_int |= 1u << i;
             if (f->type[i] == 3) f->is_sint |= 1u << i;
@@ -618,7 +629,7 @@ int gl_draw(u32 ctx, const DrawCall* call, u32 elements_type, u64 indices) {
     r = calloc(1, sizeof *r);
     if (!r) fatal("gl layer: out of memory for a draw");
     r->ctx = ctx, r->program = program, r->generation = p->generation, r->call = *call;
-    if (!targets(ctx, &r->tgt) || !vertex_state(ctx, &si[0], r)) {
+    if (!targets(ctx, &r->tgt) || !vertex_state(ctx, p, &si[0], r)) {
         free(r);
         return 0;
     }

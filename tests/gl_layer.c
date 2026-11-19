@@ -89,6 +89,7 @@ static const char* const exports[] = {"eglGetDisplay",
                                       "_glGetShaderInfoLog",
                                       "_glCreateProgram",
                                       "_glAttachShader",
+                                      "_glBindAttribLocation",
                                       "_glLinkProgram",
                                       "_glGetProgramiv",
                                       "_glGetUniformLocation",
@@ -685,6 +686,45 @@ int main(void) {
             assert(g_drawn.draws == 3 && g_drawn.programs == 2 && g_drawn.call.indexed == 1 && g_drawn.call.count == 3);
             assert(g_drawn.ds.index.addr == at + 2 && g_drawn.ds.index.end == at + 15 && g_drawn.ds.index.format == 1);
         }
+        /* attributes bound to locations other than the module's (glBindAttribLocation): the input the module has at
+           location 0 (a) reads GL attribute 1, b at 1 reads GL attribute 0 */
+        {
+            const u64 text = SCRATCH + 0x4000, strings = SCRATCH + 0x4f00, status = SCRATCH + 0x4f10;
+            static const char vs2[] =
+                "#version 330 core\nin vec4 a;\nin vec4 b;\nvoid main() { gl_Position = a + b; }\n";
+            static const char fs2[] = "#version 330 core\nout vec4 o;\nvoid main() { o = vec4(1.0); }\n";
+            u64 bound = call("_glCreateProgram", 0, 0, 0, 0, 0);
+            for (int i = 0; i < 2; i++) {
+                u64 sh = call("_glCreateShader", i ? 0x8b30 : 0x8b31, 0, 0, 0, 0);
+                memcpy(GP(text), i ? fs2 : vs2, strlen(i ? fs2 : vs2) + 1);
+                gw64(strings, text);
+                call("_glShaderSource", sh, 1, strings, 0, 0);
+                call("_glCompileShader", sh, 0, 0, 0, 0);
+                call("_glAttachShader", bound, sh, 0, 0, 0);
+            }
+            memcpy(GP(text), "b\0a", 4);
+            call("_glBindAttribLocation", bound, 0, text, 0, 0);
+            call("_glBindAttribLocation", bound, 1, text + 2, 0, 0);
+            call("_glLinkProgram", bound, 0, 0, 0, 0);
+            call("_glGetProgramiv", bound, 0x8b82, status, 0, 0);
+            assert(gr32(status) == 1);
+            cpu.x[5] = 0; /* GL attribute 0 (b): the array buffer from its start; attribute 1 (a): from byte 32 */
+            call("_glVertexAttribPointer", 0, 4, 0x1406, 0, 0);
+            call("_glEnableVertexAttribArray", 0, 0, 0, 0, 0);
+            cpu.x[5] = 32;
+            call("_glVertexAttribPointer", 1, 2, 0x1406, 0, 0);
+            call("_glEnableVertexAttribArray", 1, 0, 0, 0, 0);
+            call("_glUseProgram", bound, 0, 0, 0, 0);
+            call("_glDrawArrays", 4, 0, 3, 0, 0);
+            const DsVertexFormat* f = &g_drawn.ds.vfmt;
+            const u64 data = gl_gpu_address(snx_gl_buffer((u32)ab)->data);
+            assert(g_drawn.ds.vbuf.addr[f->stream[0]] == data + 32 && f->size[0] == 0x04); /* a: 2 floats */
+            assert(g_drawn.ds.vbuf.addr[f->stream[1]] == data && f->size[1] == 0x01);      /* b: 4 floats */
+            call("_glDisableVertexAttribArray", 1, 0, 0, 0, 0);
+            call("_glUseProgram", prog, 0, 0, 0, 0);
+            cpu.x[5] = 0;
+            call("_glVertexAttribPointer", 0, 3, 0x1406, 0, 12);
+        }
         /* a texture sampled: its TIC entry at its name in the pool, its sampler state's TSC entry, the handle of both
            in the fragment stage's texture bank */
         {
@@ -698,9 +738,9 @@ int main(void) {
             call("_glBindTexture", 0x0de1, t, 0, 0, 0);
             call("_glUseProgram", sampled, 0, 0, 0, 0);
             call("_glDrawArrays", 4, 0, 3, 0, 0);
-            assert(g_drawn.draws == 4 && g_drawn.programs == 4 && g_drawn.si[3].ntex == 1);
+            assert(g_drawn.draws == 5 && g_drawn.programs == 6 && g_drawn.si[5].ntex == 1);
             assert(b->tex_bank == 17 && b->tex_max >= t && b->cb_size[4][17] >= 4 && b->cb_addr[4][17]);
-            memcpy(&handle, gpu_bytes(b->cb_addr[4][17] + g_drawn.si[3].tex[0].cbuf_off), 4);
+            memcpy(&handle, gpu_bytes(b->cb_addr[4][17] + g_drawn.si[5].tex[0].cbuf_off), 4);
             assert(handle == (t | t << 20));
             memcpy(tic, gpu_bytes(b->tex_pool + 32ull * t), sizeof tic);
             memcpy(tsc, gpu_bytes(b->smp_pool + 32ull * t), sizeof tsc);
