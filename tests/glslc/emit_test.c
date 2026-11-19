@@ -603,6 +603,13 @@ static void block_reads(void) {
                         "#version 300 es\nprecision mediump float;\nuniform vec4 t;\nout vec4 o;\n"
                         "void main() { o = t * gl_FragCoord; }\n") == -1);
     assert(strstr(g_emit_test.result.error, "windows' offsets and flip_y's flip from push constants"));
+    /* the members that hold bools: the default block's bool and bvec2, the block's bool array; not its vec4 */
+    assert(compile_read(SNX_GLSLC_BLOCK_UNIFORM, 0, 0,
+                        "#version 300 es\nprecision mediump float;\nuniform B { bool f[2]; vec4 c; };\n"
+                        "uniform bool b;\nuniform bvec2 v;\nout vec4 o;\n"
+                        "void main() { o = b && v.x && f[1] ? c : vec4(0); }\n") == 0);
+    assert(g_emit_test.result.bool_count == 3);
+    for (uint32_t i = 0; i < 3; i++) assert(g_emit_test.result.bools[i].member < 2);
 }
 
 int main(void) {
