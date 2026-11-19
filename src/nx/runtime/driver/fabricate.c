@@ -165,7 +165,8 @@ static int node_walk(FabNode* dir, const char* path, int deep, size_t* folders, 
     char** names;
     size_t count;
     if (snx_list_dir(path, &names, &count)) return snx_error("cannot list %s", path);
-    qsort(names, count, sizeof *names, by_name);
+    /* an empty folder's list is NULL, which qsort takes not even for no entries */
+    if (count) qsort(names, count, sizeof *names, by_name);
     FabNode** tail = &dir->children;
     while (*tail) tail = &(*tail)->next;
     int failed = 0;
