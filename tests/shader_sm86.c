@@ -2858,6 +2858,50 @@ static void test_wide_carries(const char* dir) {
     free(spv);
 }
 
+/* A signed IMAD.HI (bit 73) writes its carry out to the predicate at 81-83 as the unsigned one does: the carry of the
+   64-bit sum of the product's bits and c sign extended. R12 = IMAD.HI -2, 3, 5 (-1: no carry) over a P1 that was true,
+   R13 = IMAD.X RZ, RZ, R6, P1; R14 = IMAD.HI -2, 3, 7 (1: a carry) over a P2 that was false, R15 = IMAD.X RZ, RZ, R6,
+   P2. The predicate kept its old value, so R13 and R15 took the carry the other way */
+static void test_imad_hi_signed_carry(const char* dir) {
+    u8 code[16 * 14] = {0};
+    u32 n = 0;
+    put(code, n++, mov_imm(3, 0xfffffffeu));
+    put(code, n++, mov_imm(4, 3));
+    put(code, n++, mov_imm(5, 5));
+    put(code, n++, mov_imm(6, 0x10));
+    put(code, n++, mov_imm(7, 7));
+    put(code, n++, setp_const(1, 0)); /* P1 = true */
+    for (u32 k = 0; k < 2; k++) {
+        Word m = alu(0x027, 1, 12 + 2 * k, 3); /* IMAD.HI R12 + 2k, Pk+1, R3, R4, R5 or R7 */
+        set(&m, 32, 8, 4), set(&m, 64, 8, k ? 7 : 5), set(&m, 73, 1, 1), set(&m, 81, 3, 1 + k), set(&m, 84, 3, 7);
+        set(&m, 87, 4, 7);
+        put(code, n++, m);
+        m = alu(0x024, 1, 13 + 2 * k, 255); /* IMAD.X R13 + 2k, RZ, RZ, R6, Pk+1 */
+        set(&m, 32, 8, 255), set(&m, 64, 8, 6), set(&m, 74, 1, 1), set(&m, 81, 3, 7), set(&m, 84, 3, 7);
+        set(&m, 87, 4, 1 + k);
+        put(code, n++, m);
+    }
+    put(code, n++, ast(0x70, 12, 4));
+    put(code, n++, exit_insn());
+    put(code, n, bra(n, n, 7, 0));
+    n++;
+    u32 vsph[32] = {0};
+    vsph[0] = sph0(1, 1);
+    SpvEvalEnv env = {0};
+    int ran = run_stage(ST_VS, code, n, vsph, &env);
+    int ok = ran && env.position[0] == 0xffffffffu && env.position[1] == 0x10 && env.position[2] == 0 &&
+             env.position[3] == 0x11;
+    CHECK(ok);
+    if (!ok)
+        fprintf(stderr, "signed IMAD.HI's carry: ran %d, %x %x %x %x (want ffffffff 10 0 11)\n", ran, env.position[0],
+                env.position[1], env.position[2], env.position[3]);
+    ShaderInfo si = {0};
+    size_t count = 0;
+    u32* spv = sm86_to_spirv(code, n * 16, ST_VS, vsph, &si, &count);
+    CHECK(spv && keep_module(dir, "imad_hi_signed_carry", spv, count));
+    free(spv);
+}
+
 /* A vertex program's instance ID (ALD of a[0x2f8]) counts from 0 whatever the draw's base instance: with draw
    parameters (the offline default) the module takes BaseInstance beside InstanceIndex, InstanceIndex - (BaseInstance -
    push.x), as the Maxwell translator does. With InstanceIndex less the push constant alone, a direct draw's instances
@@ -6789,6 +6833,7 @@ int main(int argc, char** argv) {
     test_flow_operand(dir);
     test_global_pointer(dir);
     test_wide_carries(dir);
+    test_imad_hi_signed_carry(dir);
     test_instance_id(dir);
     test_base_instance_word(dir);
     test_u64_conversions();

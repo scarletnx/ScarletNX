@@ -5727,7 +5727,7 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
                                          op2(c, SPV_OP_U_LESS_THAN, c->t_bool, more, sum));
                 sum = more;
             }
-            if (!is_signed) pwr(c, sm86_field(in, 81, 3), carry, uniform);
+            pwr(c, sm86_field(in, 81, 3), carry, uniform); /* signed too: its 64 bits' carry, as IMAD.WIDE's */
             dwr(c, in, hi32(c, sum));
             return;
         }
