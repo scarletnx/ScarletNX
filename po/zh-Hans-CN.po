@@ -7111,6 +7111,10 @@ msgstr "仅 Linux 和 Android"
 msgid "arm64 Linux and Android only"
 msgstr "仅 arm64 Linux 和 Android"
 
+#: src/nx/runtime/ini.c
+msgid "Not offered"
+msgstr ""
+
 #: src/nx/runtime/settings.txt
 msgid "gdbstub"
 msgstr "gdbstub"
