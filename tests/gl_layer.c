@@ -8,20 +8,22 @@
    EGL_BAD_MATCH), a window surface the size of the handheld display, eglMakeCurrent setting the viewport to it,
    glGetString's version in guest memory, eglGetProcAddress answering a GL name with its export; glClear's color in the
    image, then in the scissor alone, rows from GL's bottom; eglSwapBuffers presenting that image (RGBA8888,
-   pitch-linear) and drawing into the other next; a program of desktop GLSL 3.30 core and 1.20 compiled, linked and its
-   uniforms written and read through the slots with the guest's pointers, and a shader refused with its line in the
-   log; a buffer of immutable storage mapped persistently at an address of guest memory, written through it and read
-   back, a vertex array's attribute reading the array buffer bound; a texture given texels from a pointer passed on the
-   stack, kept in guest memory, and a parameter of it read back, and a framebuffer complete once that texture is
-   attached; the point size and polygon mode set; a fence signaled at once; a draw on a GPU thread that lags reading
-   the bytes it was called with, a write over them taking the buffer a new range with no wait, and a deleted texture's
-   storage held while its upload waits; a GL and an EGL function without a handler stopping the game, the message
-   naming the function */
+   pitch-linear) and drawing into the other next, and, with a GPU thread that lags, a frame ahead of it at most (the
+   swap after waiting off the core for the last present of its next image); a program of desktop GLSL 3.30 core and 1.20
+   compiled, linked and its uniforms written and read through the slots with the guest's pointers, and a shader refused
+   with its line in the log; a buffer of immutable storage mapped persistently at an address of guest memory, written
+   through it and read back, a vertex array's attribute reading the array buffer bound; a texture given texels from a
+   pointer passed on the stack, kept in guest memory, and a parameter of it read back, and a framebuffer complete once
+   that texture is attached; the point size and polygon mode set; a fence signaled at once; a draw on a GPU thread that
+   lags reading the bytes it was called with, a write over them taking the buffer a new range with no wait, and a
+   deleted texture's storage held while its upload waits; a GL and an EGL function without a handler stopping the game,
+   the message naming the function */
 #include "common/gpu/gl/gl_framebuffer.h"
 #include "common/gpu/gl/gl_object.h"
 #include "common/gpu/gl/gl_state.h"
 #include "common/gpu/gl/gl_texture.h"
 #include "common/platform/thread.h"
+#include "common/platform/time.h"
 #include "nx/gpu/gl/gl_layer.h"
 #include "nx/gpu/nvn/nvn_tex.h"
 #include "nx/gpu/nvn/nvn_tic.h"
@@ -278,7 +280,8 @@ void pm_unlock(PMutex* m) { (void)m; }
 /* the guest core: a hook's wait leaves it (hook_wait_begin) and takes it back; the present's pacing is waited for off
    it, as the console's present blocks the thread and its core runs the others */
 static struct {
-    int off, paced, paced_off;
+    _Atomic int off; /* read by the test's GPU thread too */
+    int paced, paced_off;
 } core;
 void hook_wait_begin(void) {
     assert(!core.off);
@@ -295,24 +298,43 @@ void present_pace(u32 interval, int slot) {
 /* the GPU thread: its turn at once, or, held, the calls kept in order until gpu_run, as a GPU thread that lags behind
    the game's */
 static struct {
-    int held;
-    unsigned n;
+    _Atomic int held;
+    _Atomic unsigned n; /* a call is counted once it is kept, for the test's GPU thread */
     void (*fn[16])(void*);
     void* arg[16];
 } g_lagging;
 void gpu_call(void (*fn)(void*), void* arg, const u32* chans, u32 nchans) {
+    unsigned n = g_lagging.n;
     (void)chans, (void)nchans;
     if (!g_lagging.held) {
         fn(arg);
         return;
     }
-    assert(g_lagging.n < 16);
-    g_lagging.fn[g_lagging.n] = fn, g_lagging.arg[g_lagging.n++] = arg;
+    assert(n < 16);
+    g_lagging.fn[n] = fn, g_lagging.arg[n] = arg;
+    g_lagging.n = n + 1;
 }
 static void gpu_run(void) {
     g_lagging.held = 0;
     for (unsigned i = 0; i < g_lagging.n; i++) g_lagging.fn[i](g_lagging.arg[i]);
     g_lagging.n = 0;
+}
+/* a GPU thread of its own that catches up once the game's swap has queued its present (want calls kept) and left the
+   core; started as it begins, ran when it is done, neither when it gave up after 10 s */
+static struct {
+    _Atomic int started, ran;
+    unsigned want;
+} g_gpu_thread;
+static void gpu_thread(void* arg) {
+    const u64 until = plat_ns() + 10000000000ull;
+    (void)arg;
+    while (g_lagging.n < g_gpu_thread.want || !core.off) {
+        if (plat_ns() > until) return;
+        plat_yield();
+    }
+    g_gpu_thread.started = 1;
+    gpu_run();
+    g_gpu_thread.ran = 1;
 }
 static struct {
     unsigned count;
@@ -578,6 +600,22 @@ int main(void) {
     assert(g_drawn.nclear == 1 && g_drawn.ds.tgt.color[0].gva != window.gva); /* the other image */
     assert(call("eglSwapBuffers", 1, surface, 0, 0, 0) == 1);
     assert(shown.count == 2 && shown.addr == gpu_cpu(g_drawn.ds.tgt.color[0].gva));
+    /* a GPU thread that lags: the next swap goes on, the game a frame ahead of it, and the one after waits off the core
+       until the GPU thread ran the last present of the image the game draws into next */
+    {
+        const unsigned before = shown.count;
+        g_lagging.held = 1;
+        call("_glClear", 0x4000, 0, 0, 0, 0);
+        assert(call("eglSwapBuffers", 1, surface, 0, 0, 0) == 1);
+        assert(shown.count == before && g_lagging.n == 2); /* its clear and present kept, the game on */
+        call("_glClear", 0x4000, 0, 0, 0, 0);
+        g_gpu_thread.want = 4;
+        assert(!plat_thread(gpu_thread, NULL, 0));
+        assert(call("eglSwapBuffers", 1, surface, 0, 0, 0) == 1);
+        assert(g_gpu_thread.started); /* back only once the GPU thread ran the image's last present */
+        while (!g_gpu_thread.ran) plat_yield();
+        assert(shown.count == before + 2 && !g_lagging.n && !core.off);
+    }
 
     /* a program through the slots: its shaders' text from the guest's array of pointers, a 3.30 core vertex shader
        and a 1.20 fragment shader (the f suffix, a precision statement), linked; a uniform written and read back */
