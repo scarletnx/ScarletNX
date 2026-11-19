@@ -115,9 +115,10 @@ void nce_thread_run(struct KThread* t, u64 pc) {
 }
 void nce_kick(struct KThread* t) { (void)t; }
 GuestFn nce_slot(GuestFn f) { return f; }
-void nce_slot_taken(u64 addr, const char* family) {
+int nce_slot_taken(u64 addr, const char* family) {
     (void)addr;
     (void)family;
+    return 0;
 }
 void nce_code_added(u64 base, u64 text_size) {
     (void)base;
@@ -427,17 +428,17 @@ void nce_init(void) {
     if (plat_thread(kicker, NULL, 64 << 10)) fatal("NCE: the thread of the kicks cannot start");
 }
 
-void nce_slot_taken(u64 addr, const char* family) {
+int nce_slot_taken(u64 addr, const char* family) {
     u64 original;
     u32 word, i;
-    if (!g_nce.on) return;
+    if (!g_nce.on) return 0;
     pm_lock(&g_nce.lock);
     u32 n = atomic_load_explicit(&g_nce.diverts, memory_order_relaxed); /* under the lock: its only writer */
     for (i = 0; i < n; i++)
         if (g_nce.entry[i] == addr) break;
     if (i < n) {
         pm_unlock(&g_nce.lock);
-        return;
+        return 0;
     }
     if (i == NCE_DIVERTS) fatal("NCE: more than %d functions take handlers", NCE_DIVERTS);
     {
@@ -453,7 +454,7 @@ void nce_slot_taken(u64 addr, const char* family) {
                 WARN("nce: the function at %llx (%s) keeps its own code, its handler never run: no pool of stubs "
                      "within a B's reach (128 MiB) of it has room for one more\n",
                      (unsigned long long)addr, family);
-            return;
+            return -1;
         }
     }
     g_nce.entry[i] = addr;
@@ -464,6 +465,7 @@ void nce_slot_taken(u64 addr, const char* family) {
     atomic_store_explicit(&g_nce.diverts, i + 1, memory_order_release); /* before the entry branches to it */
     code_write(addr, word);
     pm_unlock(&g_nce.lock);
+    return 0;
 }
 
 void nce_code_added(u64 base, u64 text_size) {

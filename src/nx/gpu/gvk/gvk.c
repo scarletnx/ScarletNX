@@ -485,6 +485,28 @@ static int driver_export(const SnxModInfo* driver, u64 addr, const char* name) {
            name[0] == 'v' && name[1] == 'k' && name[2] >= 'A' && name[2] <= 'Z';
 }
 
+/* gives each slot that gvk_install took back to the driver's code, with why in the log: the game's own driver runs */
+static void release(const char* why) {
+    WARN("%s", why);
+    for (u32 i = 0; i < g_gvk.nexports; i++) {
+        const GvkExport* e = &g_gvk.exports[i];
+        if (i && e[-1].addr == e->addr) continue;
+        set_slot(e->addr, e->orig);
+    }
+    if (g_gvk.proc_base) {
+        for (u32 i = 0; i < sizeof debug_procs / sizeof *debug_procs; i++) {
+            if (!g_gvk.proc[i]) continue;
+            set_slot(g_gvk.proc_base + 4 * i, NULL);
+            g_gvk.proc[i] = NULL;
+        }
+    }
+    free(g_gvk.exports);
+    g_gvk.exports = NULL;
+    g_gvk.nexports = 0;
+    g_gvk.driver_base = 0;
+    g_gvk.driver_size = 0;
+}
+
 void gvk_install(void) {
     if (!g_settings.guest_vulkan) return;
 #if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
@@ -555,7 +577,14 @@ void gvk_install(void) {
         if (i && e[-1].addr == e->addr) continue;
         e->orig = atomic_load_explicit(&g_disp[(e->addr - g_code_lo) >> 2], memory_order_relaxed);
         set_slot(e->addr, e->fn);
-        nce_slot_taken(e->addr, "gvk");
+        /* under NCE a function whose entry no stub reaches keeps running the driver's code for native calls, and the
+           driver would get the host's handles that the other functions return: all the functions or none */
+        if (nce_slot_taken(e->addr, "gvk")) {
+            g_gvk.nexports = i + 1;
+            release("gvk: guest_vulkan is on, but a Vulkan function of the driver can't be taken from native code: "
+                    "the game's own driver runs\n");
+            return;
+        }
     }
     if (g_gvk.proc_base) {
         int needed = 0;
@@ -583,24 +612,7 @@ void gvk_install(void) {
 
 void gvk_check_device(void) {
     if (!g_gvk.nexports || gvk_api_supported()) return;
-    WARN("gvk: guest_vulkan is on, but the host device neither imports guest memory as host memory "
-         "(VK_EXT_external_memory_host) nor exports its own as a dma-buf (VK_EXT_external_memory_dma_buf): "
-         "the game's own driver runs\n");
-    for (u32 i = 0; i < g_gvk.nexports; i++) {
-        const GvkExport* e = &g_gvk.exports[i];
-        if (i && e[-1].addr == e->addr) continue;
-        set_slot(e->addr, e->orig);
-    }
-    if (g_gvk.proc_base) {
-        for (u32 i = 0; i < sizeof debug_procs / sizeof *debug_procs; i++) {
-            if (!g_gvk.proc[i]) continue;
-            set_slot(g_gvk.proc_base + 4 * i, NULL);
-            g_gvk.proc[i] = NULL;
-        }
-    }
-    free(g_gvk.exports);
-    g_gvk.exports = NULL;
-    g_gvk.nexports = 0;
-    g_gvk.driver_base = 0;
-    g_gvk.driver_size = 0;
+    release("gvk: guest_vulkan is on, but the host device neither imports guest memory as host memory "
+            "(VK_EXT_external_memory_host) nor exports its own as a dma-buf (VK_EXT_external_memory_dma_buf): "
+            "the game's own driver runs\n");
 }
