@@ -394,6 +394,86 @@ static int buffer_formatted_load(GpuChannel *channel, const u32 *qmd, u64 addres
 	return 0;
 }
 
+/* buffer_formatted_load's program reading texel 0, the one an empty header has, of header 2, which is empty (all
+ * eight words nought): its SULD.P.RGBA reads zeros, which the SUST.P.RGBA stores whole into texel 0 of the RGBA32_FLOAT
+ * buffer; texel 1 keeps its bytes. The dispatch was skipped; it runs twice, and the log names the header once.
+ */
+static int buffer_empty_header(GpuChannel *channel, const u32 *qmd, u64 address)
+{
+	const u64 program = address + 0x7400, target = address + 0x67000;
+	const u64 suld = 0xeb00028200170202ull & ~(0xffull | 0xffull << 8 | 0xfull << 16 | 0xfull << 20 | 0xffull << 39);
+	const u64 sust = 0xeb203a0200f77614ull & ~(0xffull | 0xffull << 8 | 0xfull << 16 | 0xffull << 39 | 7ull << 33);
+	const u64 instructions[] = {
+		0x4c98078804a70004ull, /* MOV R4, c[2][0x128]: the empty header's handle */
+		0x4c98078804b70006ull, /* MOV R6, c[2][0x12c]: the target's */
+		storage_mov(0, 0),
+		suld | 8 | 7ull << 16 | 0xfull << 20 | 4ull << 39, /* SULD.P.RGBA R8, [R0], R4 */
+		storage_mov(1, 0),
+		sust | 8 | 1ull << 8 | 7ull << 16 | 6ull << 39 | 1ull << 33, /* SUST.P.RGBA [R1], R8, R6 */
+		0xe30000000007000full,
+	};
+	u8 code[128] = {0};
+	u32 at = 0;
+	const u32 rgba32f = 0x01 | 7u << 7 | 7u << 10 | 7u << 13 | 7u << 16;
+	const u32 headers[16] = {
+		0, 0, 0, 0, 0, 0, 0, 0,
+		rgba32f, (u32)target, (u32)(target >> 32), 0, 1u | 6u << 23, 0, 0, 0,
+	};
+	u8 initial[32], result[32];
+	char text[4096] = {0}, want[256];
+	u64 dispatches = g_vk_dispatches;
+	int runs = 0;
+	FILE *log = tmpfile();
+
+	CHECK(log);
+	if (!log)
+		return 1;
+	for (u32 i = 0; i < sizeof(instructions) / sizeof(instructions[0]); i++) {
+		if (!(i % 3)) snx_st_le64(code + 8 * at++, 0x001f8000fc0007e0ull);
+		snx_st_le64(code + 8 * at++, instructions[i]);
+	}
+	CHECK(!gmem_write(program, code, sizeof(code)));
+	g_renderer->method_barrier(5);
+	CHECK(!storage_write_words(address + 0x21040, headers, 16));
+	CHECK(!storage_write_words(address + 0x20000 + 0x128, (const u32[2]){2, 3}, 2));
+	memset(initial, 0xa5, sizeof(initial));
+	vk_null_headers_forget();
+	for (int k = 0; k < 2; k++) {
+		CHECK(!gmem_write(target, initial, sizeof(initial)));
+		t_plat.log_redirect = log;
+		vk_lock();
+		{
+			DispatchState d;
+			mx_dispatch_state(qmd, channel->rcomp, program, &d);
+			vk_dispatch(&d);
+		}
+		vk_unlock();
+		t_plat.log_redirect = NULL;
+		CHECK(!gmem_read(target, result, sizeof(result)));
+		int zeros = !memcmp(result + 16, initial + 16, 16);
+		for (u32 c = 0; c < 4; c++)
+			zeros &= snx_ld_le32(result + 4 * c) == 0;
+		if (!zeros)
+			fprintf(stderr, "buffer load of an empty header, dispatch %d: texel 0 %08x %08x %08x %08x, expected "
+				"zeros, texel 1 kept %d\n", k, snx_ld_le32(result), snx_ld_le32(result + 4),
+				snx_ld_le32(result + 8), snx_ld_le32(result + 12), !memcmp(result + 16, initial + 16, 16));
+		runs += zeros;
+	}
+	rewind(log);
+	text[fread(text, 1, sizeof(text) - 1, log)] = 0;
+	fclose(log);
+	snprintf(want, sizeof(want), " (handle 00000002) names an empty header at %llx (word 0 00000000): it reads zeros "
+		"and its stores land nowhere, and the dispatch goes on\n", (unsigned long long)(address + 0x21040));
+	const char *said = strstr(text, want);
+	if (g_vk_dispatches != dispatches + 2 || !said || strstr(said + 1, want) || !strstr(text, "buffer image "))
+		fprintf(stderr, "buffer load of an empty header: %llu dispatches, not said once as \"buffer image N%s\"; "
+			"log:\n%s", (unsigned long long)(g_vk_dispatches - dispatches), want, text);
+	CHECK(runs == 2 && g_vk_dispatches == dispatches + 2);
+	CHECK(said && !strstr(said + 1, want) && strstr(text, "buffer image "));
+	vk_null_headers_forget();
+	return 0;
+}
+
 static int check_storage_image_formats(void)
 {
 	static const struct {
@@ -492,6 +572,8 @@ static int check_storage_image_formats(void)
 	completed++;
 	if (g_vk.feat.shaderStorageImageReadWithoutFormat) {
 		CHECK(!buffer_formatted_load(channel, qmd, address));
+		completed++;
+		CHECK(!buffer_empty_header(channel, qmd, address));
 		completed++;
 	} else
 		puts("storage image formats: unformatted reads unavailable, the buffer formatted load skipped");

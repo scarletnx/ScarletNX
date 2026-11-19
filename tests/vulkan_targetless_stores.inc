@@ -150,8 +150,68 @@ static int check_targetless_stores(void) {
                 "store beside an empty image slot: drawn %d, skipped %d, texel 2 holds %08x, expected 00005eed\n",
                 drawn, skipped, snx_ld_le32(after + 8));
     CHECK(drawn && !skipped && same);
+    /* A buffer image whose header is empty, header 2 of the pool (all eight words nought): SULD.P.RGBA of its texel 0
+       reads zeros, which four STG store over the first store's buffer, and a SUST.P into it lands nowhere. The draw
+       was skipped; it runs twice, and the log names the header once */
+    const u64 suld = 0xeb00028200170202ull & ~(0xffull | 0xffull << 8 | 0xfull << 16 | 0xfull << 20 | 0xffull << 39);
+    const u64 empty_buffer[] = {0x4c98078014470000ull, /* MOV R0, c[0][0x510]: the buffer's address */
+                                0x4c98078014570001ull, /* MOV R1, c[0][0x514] */
+                                storage_mov(15, 0),    /* MOV32I R15, 0: the one texel an empty header has */
+                                0x4c9807800487001cull, /* MOV R28, c[0][0x120]: header 2's handle */
+                                suld | 24 | 15ull << 8 | 7ull << 16 | 0xfull << 20 |
+                                    28ull << 39,       /* SULD.P.RGBA R24, [R15], R28 */
+                                0xeedc200000070018ull, /* STG.E [R0], R24 */
+                                0xeedc200000470019ull, /* STG.E [R0+4], R25 */
+                                0xeedc20000087001aull, /* STG.E [R0+8], R26 */
+                                0xeedc200000c7001bull, /* STG.E [R0+12], R27 */
+                                0xeb200e0200f70f18ull, /* SUST.P.RGBA [R15], R24, R28 */
+                                0xe30000000007000full};
+    const u32 dead[4] = {0xdead0000u, 0xdead0001u, 0xdead0002u, 0xdead0003u};
+    CHECK(!storage_write_words(pool + 0x40, (const u32[8]){0}, 8));
+    CHECK(!storage_write_words(cbuf + 0x120, (const u32[1]){2}, 1));
+    CHECK(mesh_program(address + 0x1000, empty_buffer, 11, 0));
+    maxwell3d_method(channel, 0x369, 1, 1);
+    r[0x55F] = 2;
+    vk_null_headers_forget();
+    FILE* log = tmpfile();
+    CHECK(log);
+    if (!log) return 1;
+    int runs = 0;
+    for (int k = 0; k < 2; k++) {
+        CHECK(!storage_write_words(stored, dead, 4));
+        channel->r3d_dirty = ~0u;
+        t_plat.log_redirect = log;
+        targetless_draw(channel, &drawn, &skipped);
+        t_plat.log_redirect = NULL;
+        u8 got[16];
+        CHECK(!gmem_read(stored, got, sizeof got));
+        int zeros = 1;
+        for (u32 c = 0; c < 4; c++) zeros &= snx_ld_le32(got + 4 * c) == 0;
+        if (!drawn || skipped || !zeros)
+            fprintf(stderr,
+                    "an empty buffer image, draw %d: drawn %d, skipped %d, it read %08x %08x %08x %08x, expected "
+                    "zeros\n",
+                    k, drawn, skipped, snx_ld_le32(got), snx_ld_le32(got + 4), snx_ld_le32(got + 8),
+                    snx_ld_le32(got + 12));
+        runs += drawn && !skipped && zeros;
+    }
+    CHECK(runs == 2);
+    char text[4096] = {0}, want[256];
+    rewind(log);
+    text[fread(text, 1, sizeof text - 1, log)] = 0;
+    fclose(log);
+    snprintf(want, sizeof want,
+             " of stage 4 (handle 00000002) names an empty header at %llx (word 0 00000000): it reads zeros and its "
+             "stores land nowhere, and the draw goes on\n",
+             (unsigned long long)(pool + 0x40));
+    const char* said = strstr(text, want);
+    if (!said || strstr(said + 1, want) || !strstr(text, "vulkan: buffer image "))
+        fprintf(stderr, "an empty buffer image: not said once, as \"vulkan: buffer image N%s\"; log:\n%s", want, text);
+    CHECK(said && !strstr(said + 1, want) && strstr(text, "vulkan: buffer image "));
+    vk_null_headers_forget();
     puts("targetless draws: a fragment program's store runs, into memory or a buffer image, also beside an empty image "
-         "slot; a program with no store is skipped");
+         "slot; an empty buffer image reads zeros, takes stores and its draw runs; a program with no store is "
+         "skipped");
     free(channel);
     return 0;
 }
