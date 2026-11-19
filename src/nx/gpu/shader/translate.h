@@ -236,6 +236,9 @@ int shader_direct_screen_uv(const ShFlow* f, u32 index, u32 x, u32 y);
 int shader_direct_screen_ndc_uv(const ShFlow* f, u32 index, u32 x, u32 y, int* yneg);
 u32 shader_direct_screen_out(const ShFlow* f, u32* yneg);
 int shader_direct_plain_uv(const ShFlow* f, u32 index, u32 x, u32 y);
+/* the IPA at index, one that isn't indexed, multiplies what it reads by the reciprocal of a[0x7c], the interpolated
+   1 / w, in a register that holds nothing else there however control went: IPA.MUL with that MUFU.RCP's register */
+int shader_direct_ipa_over_w(const ShFlow* f, u32 index);
 u32 shader_direct_uv_out(const ShFlow* f, u32* yneg);
 u32 shader_direct_position_out(const ShFlow* f);
 int shader_direct_track_const(const ShFlow* f, u32 index, u32 reg, u32* value, int depth);
