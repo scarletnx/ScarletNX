@@ -7479,6 +7479,36 @@ static int check_hmma_pick(void) {
     return 0;
 }
 
+/* --bench-hmma-pick=N: hmma_mode's Auto at N starts of an Ounce game with no file of the bench's, each timed whole, as
+   it holds the renderer's start back. The first start of a run whose driver keeps no shaders of earlier runs
+   (MESA_SHADER_CACHE_DISABLE=true on Mesa) is a new driver build's; later ones make their pipelines from the driver's
+   cache */
+static int bench_hmma_pick(u32 starts) {
+    if (!(g_vk_subgroup_stages & VK_SHADER_STAGE_COMPUTE_BIT)) {
+        printf("HMMA pick bench: %s has no subgroup operations in compute, so no way of HMMA's runs there\n",
+               g_vk.props.deviceName);
+        return 77;
+    }
+    int sm86_was = g_shader_sm86, mode_was = g_settings.hmma_mode;
+    g_shader_sm86 = 1, g_settings.hmma_mode = SH_HMMA_AUTO;
+    printf("HMMA pick bench device: %s, driver version %08x\n", g_vk.props.deviceName,
+           (unsigned)g_vk.props.driverVersion);
+    for (u32 k = 0; k < starts; k++) {
+        char* dir = snx_temp_dir(NULL);
+        CHECK(dir);
+        u64 t0 = plat_ns();
+        vk_hmma_pick(dir, "bench");
+        double ms = (double)(plat_ns() - t0) / 1e6;
+        char way[256];
+        shader_hmma_way(way, sizeof way);
+        printf("HMMA_PICK start %u of %u: %.1f ms, %s\n", k + 1, starts, ms, way);
+        CHECK(!snx_remove_tree(dir));
+        free(dir);
+    }
+    g_shader_sm86 = sm86_was, g_settings.hmma_mode = mode_was;
+    return 0;
+}
+
 /* The file of earlier runs' pipelines keeps SPIR-V translated with the HMMA forms its key names: each form a run can
    choose (the device's matrix unit, the B gather by pairs of lanes, the hmma_f16 setting's half sums, A and B through
    shared memory) changes the part of the key past the guest part, so a run that chose another form translates its
@@ -7814,7 +7844,7 @@ static int run_headless(int argc, char** argv) {
     u32 benchmark_sets = 0, benchmark_count = 16, benchmark_images = 0, benchmark_indexed = 0;
     u32 benchmark_sparse = 0, benchmark_storage = 0, benchmark_image = 0;
     u32 benchmark_buffer = 0, benchmark_stage = 0;
-    u32 benchmark_passes = 0;
+    u32 benchmark_passes = 0, benchmark_hmma = 0;
     const char* pipeline_probe = NULL;
     int pipeline_probe_disable = 0;
     /* a game's .ini, opened as a run opens it, before the settings given here go over its values: a copy of it, which
@@ -7907,15 +7937,25 @@ static int run_headless(int argc, char** argv) {
             benchmark_passes = (u32)strtoul(argv[i] + 20, NULL, 10);
             continue;
         }
+        if (!strncmp(argv[i], "--bench-hmma-pick=", 18)) {
+            char* end;
+            unsigned long n = strtoul(argv[i] + 18, &end, 10);
+            if (*end || !n || n > 64) {
+                fprintf(stderr, "snx-test-vulkan: %s is not a count of starts from 1 to 64\n", argv[i]);
+                return 2;
+            }
+            benchmark_hmma = (u32)n;
+            continue;
+        }
         if (settings_arg(argv[i], key, sizeof key)) o = setting_row(key);
         if (!o) {
             fprintf(stderr,
                     "snx-test-vulkan: %s is not an option it takes: -H, --KEY=VALUE of the runtime's settings, "
                     "--bench-descriptors=N, --descriptor-images=N, --descriptor-indexed=N, --descriptor-count=N, "
                     "--bench-sparse-volume, --bench-sparse-texture, --bench-storage-lookup, --bench-storage-image, "
-                    "--bench-storage-buffer, --bench-stage-memory, --bench-pass-breaks=N, --nvn-draw-bench=N, "
-                    "--bench-indexed-map=N, --pipeline-probe=FILE, --pipeline-probe-disable-opt=0|1, "
-                    "--settings-ini=FILE\n",
+                    "--bench-storage-buffer, --bench-stage-memory, --bench-pass-breaks=N, --bench-hmma-pick=N, "
+                    "--nvn-draw-bench=N, --bench-indexed-map=N, --pipeline-probe=FILE, "
+                    "--pipeline-probe-disable-opt=0|1, --settings-ini=FILE\n",
                     argv[i]);
             return 2;
         }
@@ -8084,6 +8124,15 @@ static int run_headless(int argc, char** argv) {
     }
     if (benchmark_sets) {
         int result = bench_descriptors(benchmark_sets, benchmark_count, benchmark_images, benchmark_indexed);
+        vk_pipeline_quiesce();
+        CHECK(!snx_remove_tree(root));
+        free(root);
+        free(shot);
+        free(ppm);
+        return result;
+    }
+    if (benchmark_hmma) {
+        int result = bench_hmma_pick(benchmark_hmma);
         vk_pipeline_quiesce();
         CHECK(!snx_remove_tree(root));
         free(root);
