@@ -1428,7 +1428,10 @@ static void mirror_need_others(u64 gva, u64 len) {
 
 /* ------------------------------------------------------------ the tensor core's networks */
 /* Whether the program at code, bytes of it, multiplies with the tensor core's matrices (sm86_uses_hmma), kept by the
-   program's address: a program's code is the same at every one of its dispatches, and reading it replies */
+   program's address: a program's code is the same at every one of its dispatches, and reading it replies.
+   Only a game whose shaders are SM86 is asked. A Maxwell program has no tensor core, and read as SM86 its words can
+   match an HMMA or an LDSM opcode: three of a Maxwell title's compute dumps, 4112 words each, held none, but the
+   chance is not zero and a pass stood in by mistake drops the game's own work */
 #define TENSOR_MEMO 64
 /* v: 0 not a network's pass, 1 it is, 2 it is and its translation has no storage image, so nothing it writes is
    reached by anything of the game's and the dispatch can go before a binding of it is even asked for. The last is
@@ -1480,7 +1483,7 @@ static int tensor_entry_live(TensorMemo* m) {
     return m->live;
 }
 static int cs_tensor_program(u64 code, u32 bytes) {
-    TensorMemo* m = tensor_find(code, bytes);
+    TensorMemo* m = g_shader_sm86 ? tensor_find(code, bytes) : NULL;
     if (m) {
         int live = tensor_entry_live(m);
         if (live > 0 || (live < 0 && tensor_code_is(code, bytes, m->hash))) return m->v != 0;
