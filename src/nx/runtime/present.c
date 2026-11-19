@@ -27,6 +27,13 @@ static struct {
     _Atomic u64 released_ns[VI_SLOTS], period_ns[VI_SLOTS];
 } g_pace = {.lock = PMUTEX_INIT};
 
+/* a frame on the display: counted, and what runs once per frame shown */
+static void frame_shown(void) {
+    atomic_fetch_add_explicit(&g_frames, 1, memory_order_relaxed);
+    cheats_frame(); /* the cheats run once per frame shown, as dmnt's run on the console */
+    SNX_FRAME_MARK();
+}
+
 void vi_show_buffer(u32 nvmap_id, u32 offset, u32 w, u32 h, u32 pitch, u32 layout, u32 bhl, u32 fmt, const i32 crop[4],
                     u32 transform, int slot) {
     u64 a = nvmap_addr_by_id(nvmap_id);
@@ -39,9 +46,12 @@ void vi_show_buffer(u32 nvmap_id, u32 offset, u32 w, u32 h, u32 pitch, u32 layou
     g_renderer->present_buffer(a + offset, w, h, pitch, layout, bhl, fmt, crop, transform,
                                known ? atomic_load_explicit(&g_pace.released_ns[slot], memory_order_relaxed) : 0,
                                known ? atomic_load_explicit(&g_pace.period_ns[slot], memory_order_relaxed) : 0, 0);
-    atomic_fetch_add_explicit(&g_frames, 1, memory_order_relaxed);
-    cheats_frame(); /* the cheats run once per frame shown, as dmnt's run on the console */
-    SNX_FRAME_MARK();
+    frame_shown();
+}
+
+void present_image(u64 image, u32 fmt, u32 w, u32 h, const i32 crop[4]) {
+    g_renderer->present_image(image, fmt, w, h, crop);
+    frame_shown();
 }
 
 /* The schedule is under g_pace's lock, the wait itself outside it. Called on the game's thread from vi's
@@ -71,12 +81,12 @@ static void released(int slot, u64 period) {
     atomic_store_explicit(&g_pace.period_ns[slot], period, memory_order_relaxed);
 }
 
-void present_pace(u32 interval, int slot) {
+int present_pace_until(u32 interval, int slot, u64 deadline_ns) {
     int fps = atomic_load_explicit(&g_opt_fps, memory_order_relaxed);
     u64 refresh, period, now, next;
     if (!fps || (fps == SNX_FPS_GAME && !interval)) {
         released(slot, 0);
-        return;
+        return 1;
     }
     refresh = 1000000000u / (fps == SNX_FPS_GAME ? (u64)vi_refresh_hz() : (u64)fps);
     period = fps == SNX_FPS_GAME ? refresh * interval : refresh;
@@ -85,7 +95,9 @@ void present_pace(u32 interval, int slot) {
         int stuck = atomic_load_explicit(&g_pace.display_stuck, memory_order_relaxed);
         u64 shown = 0, start = plat_ns();
         /* two periods at most, or none while the display is stuck: only whether it took the frames since */
-        int r = g_renderer->display_wait(stuck ? start : start + 2 * period, &shown);
+        u64 cap = stuck ? start : start + 2 * period;
+        int r = g_renderer->display_wait(cap < deadline_ns ? cap : deadline_ns, &shown);
+        if (!r && plat_ns() >= deadline_ns) return 0;
         if (r >= 0) atomic_store_explicit(&g_pace.display_stuck, !r, memory_order_relaxed);
         if (r > 0 && shown) {
             u64 d = present_display_period(period, shown);
@@ -102,9 +114,16 @@ void present_pace(u32 interval, int slot) {
        fps_limit is a ceiling, so a frame already late starts it again at once too: the frames after it were let
        through until the schedule caught up, and presents went above the limit */
     if (!g_pace.last || now > next + refresh || (fps != SNX_FPS_GAME && now >= next)) next = now;
+    if (next > deadline_ns) {
+        pm_unlock(&g_pace.lock);
+        return 0;
+    }
     g_pace.last = next;
     pm_unlock(&g_pace.lock);
     if (next > now) plat_sleep_ns((i64)(next - now));
     SNX_PLOT("present pace ms", (double)(plat_ns() - started) / 1e6);
     released(slot, fps == SNX_FPS_GAME ? period : 0);
+    return 1;
 }
+
+void present_pace(u32 interval, int slot) { present_pace_until(interval, slot, UINT64_MAX); }
