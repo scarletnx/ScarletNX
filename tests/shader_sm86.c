@@ -1471,7 +1471,7 @@ static void test_vote_warps(const char* dir) {
         u32 bad = 0;
         for (u32 l = 0; l < 64; l++) {
             u32 ballot = 0, w = l / 32;
-            for (u32 k = 0; k < 32; k++) ballot |= (bank1[32 * w + k] != 0) << k;
+            for (u32 k = 0; k < 32; k++) ballot |= (u32)(bank1[32 * w + k] != 0) << k;
             u32 want[4] = {ballot, ballot == 0xffffffffu, ballot != 0, ballot == 0 || ballot == 0xffffffffu};
             for (u32 k = 0; k < 4; k++)
                 if (env[0].shared[4 * l + k] != want[k] && bad++ < 4)
