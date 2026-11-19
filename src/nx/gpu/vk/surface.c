@@ -3797,6 +3797,16 @@ static u32 zt_depth_bytes(VkFormat f) { return f == VK_FORMAT_D16_UNORM || f == 
 static int zt_stencil(VkFormat f) {
     return f == VK_FORMAT_D24_UNORM_S8_UINT || f == VK_FORMAT_D32_SFLOAT_S8_UINT || f == VK_FORMAT_D16_UNORM_S8_UINT;
 }
+/* The bytes a layer of an aspect of s takes in the copies' buffer, rounded up to 4: a depth or stencil copy's buffer
+   offset is a multiple of 4 (VUID-vkCmdCopyImageToBuffer-srcImage-07978, VUID-vkCmdCopyBufferToImage-dstImage-07978),
+   and a layer of the stencil's byte a texel, or of D16's two, ends off it where the texels are odd. The state holds
+   each layer's bytes alone, one after another (zt_put, zt_restore) */
+static u64 zt_layer(const Surf* s, u32 aspect) { return (u64)s->sw * s->sh * (aspect ? 1u : zt_depth_bytes(s->f.vk)); }
+static u64 zt_layer_padded(const Surf* s, u32 aspect) { return (zt_layer(s, aspect) + 3) & ~3ull; }
+/* the copies' bytes of every aspect and layer of s */
+static u64 zt_padded(const Surf* s) {
+    return s->layers * (zt_layer_padded(s, 0) + (zt_stencil(s->f.vk) ? zt_layer_padded(s, 1) : 0));
+}
 /* a multisampled one's samples aren't saved: copies don't reach them */
 static int zt_saved(const Surf* s) {
     return s->is_rt && s->f.depth && !(s->gva >> 63) && s->layout != VK_IMAGE_LAYOUT_UNDEFINED && !s->volume &&
@@ -3809,10 +3819,9 @@ static void zt_drop(void) {
     g_zt = NULL;
     g_nzt = 0;
 }
-/* each aspect of every layer of s copied between its image and buf at at, the depth's then the stencil's: to the
-   buffer (out) or from it */
+/* each aspect of every layer of s copied between its image and buf at at (a multiple of 4), the depth's then the
+   stencil's, each layer zt_layer_padded bytes: to the buffer (out) or from it */
 static void zt_copy(VkCommandBuffer cb, Surf* s, VkBuffer buf, u64 at, int out) {
-    u64 dsize = (u64)s->sw * s->sh * zt_depth_bytes(s->f.vk);
     u32 layer, a, aspects = zt_stencil(s->f.vk) ? 2 : 1;
     for (a = 0; a < aspects; a++)
         for (layer = 0; layer < s->layers; layer++) {
@@ -3824,8 +3833,18 @@ static void zt_copy(VkCommandBuffer cb, Surf* s, VkBuffer buf, u64 at, int out) 
                 rec_CmdCopyImageToBuffer(cb, s->img, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), buf, 1, &c);
             else
                 rec_CmdCopyBufferToImage(cb, buf, s->img, VK_LAYOUT(TRANSFER_DST_OPTIMAL), 1, &c);
-            at += a ? (u64)s->sw * s->sh : dsize;
+            at += zt_layer_padded(s, a);
         }
+}
+/* the layers of the copies' bytes at p, each aspect's in turn, into the state: the bytes of each layer alone */
+static int zt_put(StateIo* io, const Surf* s, const u8* p) {
+    u32 aspects = zt_stencil(s->f.vk) ? 2 : 1;
+    for (u32 a = 0; a < aspects; a++)
+        for (u32 layer = 0; layer < s->layers; layer++) {
+            if (io_put(io, p, zt_layer(s, a))) return -1;
+            p += zt_layer_padded(s, a);
+        }
+    return 0;
 }
 int vk_zt_save(StateIo* io) {
     u64 total = 0, at = 0;
@@ -3839,7 +3858,7 @@ int vk_zt_save(StateIo* io) {
             const Surf* s = g_rows.surf[row];
             if (zt_saved(s)) {
                 n++;
-                total += (u64)s->sw * s->sh * s->layers * (zt_depth_bytes(s->f.vk) + (zt_stencil(s->f.vk) ? 1u : 0u));
+                total += zt_padded(s);
             }
         }
     if (!n) return io_put32(io, 0);
@@ -3867,7 +3886,7 @@ int vk_zt_save(StateIo* io) {
             vk_surf_use(cb, s, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), VK_PIPELINE_STAGE_2_COPY_BIT,
                         VK_ACCESS_2_TRANSFER_READ_BIT);
             zt_copy(cb, s, buf, at, 1);
-            at += (u64)s->sw * s->sh * s->layers * (zt_depth_bytes(s->f.vk) + (zt_stencil(s->f.vk) ? 1u : 0u));
+            at += zt_padded(s);
         }
         rec_CmdPipelineBarrier2(cb, &di);
     }
@@ -3876,12 +3895,11 @@ int vk_zt_save(StateIo* io) {
     r |= io_put32(io, n);
     for (i = 0, at = 0; i < n && !r; i++) {
         Surf* s = all[i];
-        u64 dsize = (u64)s->sw * s->sh * s->layers * zt_depth_bytes(s->f.vk),
-            ssize = zt_stencil(s->f.vk) ? (u64)s->sw * s->sh * s->layers : 0;
+        u64 dsize = zt_layer(s, 0) * s->layers, ssize = zt_stencil(s->f.vk) ? zt_layer(s, 1) * s->layers : 0;
         r |= io_put64(io, s->gva) | io_put32(io, s->w) | io_put32(io, s->h) | io_put32(io, s->sw) | io_put32(io, s->sh);
         r |= io_put32(io, s->fkey) | io_put32(io, (u32)s->f.vk) | io_put32(io, s->layers) | io_put64(io, dsize) |
-             io_put64(io, ssize) | io_put(io, p + at, dsize + ssize);
-        at += dsize + ssize;
+             io_put64(io, ssize) | zt_put(io, s, p + at);
+        at += zt_padded(s);
     }
     free(all);
     LOG("vulkan: %u depth targets saved (%llu KB)\n", n, (unsigned long long)(total >> 10));
@@ -3917,10 +3935,18 @@ static void zt_restore(Surf* s) {
         u8* to;
         if (z->gva != s->gva || z->w != s->w || z->h != s->h || z->sw != s->sw || z->sh != s->sh ||
             z->fkey != s->fkey || z->vk != (u32)s->f.vk || z->layers != s->layers ||
-            z->dsize != (u64)s->sw * s->sh * s->layers * zt_depth_bytes(s->f.vk))
+            z->dsize != zt_layer(s, 0) * s->layers ||
+            z->ssize != (zt_stencil(s->f.vk) ? zt_layer(s, 1) * s->layers : 0))
             continue;
-        if ((to = vk_stage(z->dsize + z->ssize, 4, &buf, &off)) != NULL) {
-            memcpy(to, z->bytes, (size_t)(z->dsize + z->ssize));
+        if ((to = vk_stage(zt_padded(s), 4, &buf, &off)) != NULL) {
+            /* each layer's bytes where zt_copy reads it */
+            const u8* from = z->bytes;
+            for (u32 a = 0; a < (zt_stencil(s->f.vk) ? 2u : 1u); a++)
+                for (u32 layer = 0; layer < s->layers; layer++) {
+                    memcpy(to, from, (size_t)zt_layer(s, a));
+                    from += zt_layer(s, a);
+                    to += zt_layer_padded(s, a);
+                }
             vk_render_end();
             cb = vk_cmd();
             vk_surf_use(cb, s, VK_LAYOUT(TRANSFER_DST_OPTIMAL), VK_PIPELINE_STAGE_2_COPY_BIT,

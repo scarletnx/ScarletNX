@@ -7297,6 +7297,7 @@ static int check_pipeline_stats_compute(void) {
 #include "vulkan_rect_textures.inc"
 #include "vulkan_minmax_program.inc"
 #include "vulkan_compute_depth.inc"
+#include "vulkan_depth_state.inc"
 #include "vulkan_owned_readback.inc"
 #include "vulkan_own_trim.inc"
 #include "vulkan_wlog_again.inc"
@@ -8513,6 +8514,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_packed_depth());
     CHECK(!check_astc_mode());
     CHECK(!check_depth_array());
+    CHECK(!check_depth_save_state());
     CHECK(!check_depth_writeback());
     CHECK(!check_big_volume());
     CHECK(!check_srgb_write());
