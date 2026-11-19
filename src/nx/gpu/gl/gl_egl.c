@@ -8,9 +8,9 @@
    current context and surfaces, and its EGL error, as EGL's are per thread */
 #include "nx/gpu/gl/gl_layer.h"
 #include "common/gpu/gl/gl_state.h"
+#include "nx/hle/services/vi.h"
 #include "gpu/gl/gl.hook.h"
 #include "nx/memory/mem.h"
-#include "nx/runtime/options.h"
 #include "nx/runtime/platform/log.h"
 #include <stdatomic.h>
 #include <string.h>
@@ -268,12 +268,14 @@ u32 gl_egl_query_context(CPU* c, u64 dpy, u64 context, i32 attribute, u64 value)
 }
 
 u64 gl_egl_create_window_surface(CPU* c, u64 dpy, u64 cfg, u64 window, u64 attribs) {
-    u32 s;
+    u32 s, w, h;
     (void)c, (void)window, (void)attribs;
     if (!display_ok(dpy)) return 0;
     if (cfg != CONFIG) return fail(EGL_BAD_CONFIG);
-    /* the display's size, as vi gives the game's layer: docked or handheld */
-    s = snx_tv_mode() ? gl_host_surface_new(1920, 1080) : gl_host_surface_new(1280, 720);
+    /* the native window's size, as the game's driver asks vi for it: the layer's, which docked output scales. A game
+       that draws its last pass at that size fills the display */
+    vi_window_size(&w, &h);
+    s = gl_host_surface_new(w, h);
     return s ? s : fail(EGL_BAD_ALLOC);
 }
 u64 gl_egl_create_pbuffer_surface(CPU* c, u64 dpy, u64 cfg, u64 attribs) {

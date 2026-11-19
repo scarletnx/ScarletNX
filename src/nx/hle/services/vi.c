@@ -753,6 +753,15 @@ static int nn_visrv_sf_IManagerDisplayService_GetDisplayModeChangedEvent(SvcObj*
    waits long. A game that counts vsyncs as its time then runs faster than on the console, as a measure of its frame
    rate with no limit asks. The interval is clamped here too, as vi_queue clamps it, so that no value makes the period
    0 */
+void vi_window_size(u32* width, u32* height) {
+    const ViLayer* l = &g_hle.vi.layer[VI_SHOWN];
+    pm_lock(&g_host.vi.lock);
+    if (atomic_load_explicit(&l->layer_id, memory_order_relaxed) && l->width && l->height)
+        *width = l->width, *height = l->height;
+    else
+        *width = VI_WIDTH, *height = VI_HEIGHT;
+    pm_unlock(&g_host.vi.lock);
+}
 u64 vi_vsync_period(void) {
     const ViLayer* l = &g_hle.vi.layer[VI_SHOWN];
     int fps = atomic_load_explicit(&g_opt_fps, memory_order_relaxed);

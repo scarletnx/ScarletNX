@@ -25,6 +25,7 @@
 #include "nx/gpu/nvn/nvn_tic.h"
 #include "nx/gpu/renderer.h"
 #include "nx/hle/hook/hook.h"
+#include "nx/hle/services/vi.h"
 #include "nx/memory/mem.h"
 #include "nx/runtime/loader.h"
 #include "nx/runtime/main.h"
@@ -183,6 +184,9 @@ int shader_vk_tex_set(int stage) { return shader_vk_set(stage) + (g_spirv_transl
 ShCaps g_spirv_translate = {.uniform_cbufs = 18}; /* the renderer's rules: sets, no windows */
 /* nvdrv's GPU address space: the layer's chunks at addresses of their own, mapped one to one here */
 static u64 g_gpu_next = 0x4000000000ull;
+/* vi's shown layer: the size its native window answers (vi_window_size) */
+static u32 g_layer_size[2] = {1280, 720};
+void vi_window_size(u32* width, u32* height) { *width = g_layer_size[0], *height = g_layer_size[1]; }
 u64 gmmu_space_alloc(u64 size, u64 align) {
     u64 a = g_gpu_next;
     (void)align;
@@ -430,14 +434,22 @@ int main(void) {
         ctx = call("eglCreateContext", 1, 1, 0, put_ints(SCRATCH + 0x100, core, 7), 0);
         assert(ctx && snx_gl_context_api((u32)ctx) == SNX_GL_API_DESKTOP && snx_gl_context_version((u32)ctx) == 45);
     }
-    /* a window surface is the display's size, docked or handheld, whatever the settings' defaults on the host */
+    /* a window surface is its native window's size, as vi answers the driver: the layer's 1280x720 docked too (docked
+       output scales it), or the size the game's buffers gave the layer */
     g_settings.tv_mode = 1;
     {
         u64 docked = call("eglCreateWindowSurface", 1, 1, 0, 0, 0);
         assert(docked && call("eglQuerySurface", 1, docked, 0x3057, SCRATCH + 0x500, 0) == 1); /* EGL_WIDTH */
         assert(call("eglQuerySurface", 1, docked, 0x3056, SCRATCH + 0x504, 0) == 1);           /* EGL_HEIGHT */
+        assert(gr32(SCRATCH + 0x500) == 1280 && gr32(SCRATCH + 0x504) == 720);
+        assert(call("eglDestroySurface", 1, docked, 0, 0, 0) == 1);
+        g_layer_size[0] = 1920, g_layer_size[1] = 1080;
+        docked = call("eglCreateWindowSurface", 1, 1, 0, 0, 0);
+        assert(docked && call("eglQuerySurface", 1, docked, 0x3057, SCRATCH + 0x500, 0) == 1);
+        assert(call("eglQuerySurface", 1, docked, 0x3056, SCRATCH + 0x504, 0) == 1);
         assert(gr32(SCRATCH + 0x500) == 1920 && gr32(SCRATCH + 0x504) == 1080);
         assert(call("eglDestroySurface", 1, docked, 0, 0, 0) == 1);
+        g_layer_size[0] = 1280, g_layer_size[1] = 720;
     }
     g_settings.tv_mode = 0;
     u64 surface = call("eglCreateWindowSurface", 1, 1, 0, 0, 0);
