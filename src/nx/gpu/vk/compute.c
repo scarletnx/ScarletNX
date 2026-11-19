@@ -1435,13 +1435,17 @@ static void mirror_need_others(u64 gva, u64 len) {
    only known once the program has been translated, which the first dispatch of it does: one dispatch a program pays
    for it, and the tens of them a frame that follow pay for a lookup.
    Another program can be loaded at the same address and size (two programs over one scratch), so the entry is only
-   good while the bytes are: the write tracking's clock (wseen) and the code's hash answer that, and a read that the
-   tracking cannot speak for is compared byte for byte */
+   good while the bytes are: the write tracking's clock (wseen), the GPU's generation (gw) and the code's hash answer
+   that, and a read that the tracking cannot speak for is compared byte for byte. Under vk_lock, as the dispatch is */
 typedef struct {
     u64 code, hash;
+    u64 gw;           /* the GPU's memory generation when the code was read */
     u32 bytes;
     int v;
-    u32 wseen; /* the write tracking's clock when the code was read */
+    u32 wseen;        /* the write tracking's clock when the code was read */
+    signed char live; /* the answer tensor_entry_live gave: -1 cannot tell, 0 written, 1 unchanged */
+    u32 live_epoch;   /* the write tracking epoch that answer was given in */
+    u64 live_gw;      /* and the GPU's generation then */
 } TensorMemo;
 static TensorMemo g_tensor[TENSOR_MEMO];
 static u32 g_tensor_next;
@@ -1459,10 +1463,21 @@ static int tensor_code_is(u64 code, u32 bytes, u64 hash) {
     free(buf);
     return same;
 }
-/* whether a memo entry still describes the code there: 1 yes, 0 no, -1 the tracking cannot tell */
-static int tensor_entry_live(const TensorMemo* m) {
-    u8* host = gmem_host(m->code, m->bytes);
-    return host ? vk_written_since(host, m->bytes, m->wseen) == 0 : -1;
+/* whether the entry still describes the code there: 1 yes, 0 no, -1 the tracking cannot tell. An answer holds for
+   the rest of the write tracking epoch (vk_ww_epoch), as vk_written_since's does, so a program's dispatches in one
+   epoch cost one answer: a scan at an epoch's first, a lookup after */
+static int tensor_entry_live(TensorMemo* m) {
+    const u32 epoch = vk_ww_epoch();
+    const u64 gw = gpu_mem_generation();
+    if (m->live && m->live_epoch == epoch && m->live_gw == gw) return m->live;
+    int w = 0; /* a GPU write of those bytes since the read leaves another program there */
+    if (!gpu_mem_dirty_since(m->gw, m->code, m->bytes)) {
+        u8* host = gmem_host(m->code, m->bytes);
+        if (host) w = vk_written_since(host, m->bytes, m->wseen);
+        else w = -1;
+    }
+    m->live = (signed char)(w < 0 ? -1 : w == 0 ? 1 : 0), m->live_epoch = epoch, m->live_gw = gw;
+    return m->live;
 }
 static int cs_tensor_program(u64 code, u32 bytes) {
     TensorMemo* m = tensor_find(code, bytes);
@@ -1470,6 +1485,8 @@ static int cs_tensor_program(u64 code, u32 bytes) {
         int live = tensor_entry_live(m);
         if (live > 0 || (live < 0 && tensor_code_is(code, bytes, m->hash))) return m->v != 0;
     }
+    u32 wseen = vk_ww_now();      /* both before the read: a write that lands during it is still one since */
+    u64 gw = gpu_mem_generation(); /* and a GPU write of it is after this generation */
     u8* buf = malloc(bytes);
     if (!buf) return 0;
     gmem_read_code(code, buf, bytes); /* the bytes the GPU will run, as the game left them */
@@ -1480,7 +1497,7 @@ static int cs_tensor_program(u64 code, u32 bytes) {
         m = &g_tensor[g_tensor_next];
         g_tensor_next = (g_tensor_next + 1) % TENSOR_MEMO;
     }
-    *m = (TensorMemo){code, hash, bytes, v, vk_ww_now()};
+    *m = (TensorMemo){.code = code, .hash = hash, .gw = gw, .bytes = bytes, .v = v, .wseen = wseen};
     return v;
 }
 /* whether a dispatch of this program can go at once: it is a network's pass and its translation saves no image */
@@ -1495,8 +1512,7 @@ static int cs_tensor_skippable(u64 code, u32 bytes) {
 static void cs_tensor_mark_skippable(u64 code, u32 bytes) {
     TensorMemo* m = tensor_find(code, bytes);
     if (!m) return;
-    m->v = 2;
-    m->wseen = vk_ww_now();
+    m->v = 2; /* the clock stays the one of the read the translation was made from */
 }
 /* an image's pixels as the GPU has them: a render target's own size, else its guest size */
 static u64 cs_img_pixels(const Surf* t) { return (u64)(t->sw ? t->sw : t->w) * (t->sh ? t->sh : t->h); }
@@ -1512,6 +1528,13 @@ static Surf* cs_largest_image(Surf* const* images, int n) {
 static int cs_image_is_only(const Surf* out, Surf* const* images, int n) {
     for (int i = 0; i < n; i++)
         if (images[i] && images[i] != out) return 0;
+    return 1;
+}
+/* whether the program stores to no buffer image: those are bound as buffer views, not in images[], so the stand-in
+   replaces nothing of them */
+static int cs_no_buffer_image(const ShaderInfo* si) {
+    for (int i = 0; i < si->nimg; i++)
+        if (si->img[i].type == 1) return 0;
     return 1;
 }
 
@@ -2237,7 +2260,7 @@ rebind:
                 v = vk_null_view(want, st->shadow ? 3 : num, ms); /* a compare's: the farthest depth, as a draw's */
                 sampled_layout = VK_LAYOUT(SHADER_READ_ONLY_OPTIMAL);
             }
-            if (t && v && (!biggest_tex || cs_img_pixels(t) > cs_img_pixels(biggest_tex))) biggest_tex = t;
+            if (t && v && (!biggest_tex || (u64)t->w * t->h > (u64)biggest_tex->w * biggest_tex->h)) biggest_tex = t;
             VkSampler smp =
                 vk_tex_bind_sampler(tsc, tic, st, num, sampled, want, (int)(p->si.tex_minmax_mask >> i & 1));
             if (!v || !smp) { /* before any output is recorded: nothing of this dispatch lands */
@@ -2574,7 +2597,8 @@ rebind:
            of the game's (a counter, an indirect grid, a semaphore the guest waits on). Anything else runs as it is,
            and so does a pass the copy could not be recorded for */
         int stood = 0;
-        if (out && !p->si.gbuf_wmask && cs_image_is_only(out, images, p->si.nimg))
+        if (out && !d->indirect && !p->si.gbuf_wmask && cs_image_is_only(out, images, p->si.nimg) &&
+            cs_no_buffer_image(&p->si))
             stood = vk_tensor_standin(cb, out);
         skip = stood != 0;
         if (skip) g_cs_standins++;

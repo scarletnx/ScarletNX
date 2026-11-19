@@ -84,7 +84,7 @@ void vk_tensor_remember(const Surf* in) {
 /* the surface the network's picture lies in now, or NULL: another at the address, or none */
 static Surf* ts_input(void) {
     if (!g_ts.in.gva || !g_ts.in.size) return NULL;
-    for (Surf* t = vk_surf_first(g_ts.in.gva); t; t = t->next)
+    for (Surf* t = vk_surf_first(g_ts.in.gva); t; t = vk_surf_next(t)) /* the address's bucket, not a copy chain */
         if (t->gva == g_ts.in.gva && t->size == g_ts.in.size && t->f.vk == g_ts.in.vk && t->w == g_ts.in.w &&
             t->h == g_ts.in.h && t->sw == g_ts.in.sw && t->sh == g_ts.in.sh && t->type == VK_IMAGE_VIEW_TYPE_2D &&
             !t->msaa)
