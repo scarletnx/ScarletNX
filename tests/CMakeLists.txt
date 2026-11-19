@@ -471,6 +471,9 @@ if(TARGET snx_ctr_board)
     # a texture made from a scaled depth buffer keeps the scale: a second target at the same scale samples it
     add_test(NAME 3ds_vk_draw_scaled_texture_from_depth COMMAND snx-test-3ds-vk-draw --scaled-texture-from-depth)
     set_tests_properties(3ds_vk_draw_scaled_texture_from_depth PROPERTIES SKIP_RETURN_CODE 77)
+    # two targets over one depth buffer at the scale: the second takes the first's depth, not the 1x reload
+    add_test(NAME 3ds_vk_draw_scaled_shared_depth COMMAND snx-test-3ds-vk-draw --scaled-shared-depth)
+    set_tests_properties(3ds_vk_draw_scaled_shared_depth PROPERTIES SKIP_RETURN_CODE 77)
     # the screens laid out at the console's proportions whatever each render scale: a top screen at 2x above a bottom
     # one at 1x, and a press on the bottom screen's pixel (160, 220) landing on it
     add_test(NAME 3ds_vk_draw_scaled_layout COMMAND snx-test-3ds-vk-draw --scaled-layout)
@@ -497,10 +500,14 @@ if(TARGET snx_ctr_board)
         add_test(NAME 3ds_vk_draw_scaled_texture_from_depth_validation
                  COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/3ds_vk_validation.py"
                      $<TARGET_FILE:snx-test-3ds-vk-draw> --scaled-texture-from-depth)
+        add_test(NAME 3ds_vk_draw_scaled_shared_depth_validation
+                 COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/3ds_vk_validation.py"
+                     $<TARGET_FILE:snx-test-3ds-vk-draw> --scaled-shared-depth)
         set_tests_properties(3ds_vk_draw_scaled_transfer_validation 3ds_vk_draw_scaled_rotating_validation
                              3ds_vk_draw_scaled_verify_validation PROPERTIES SKIP_RETURN_CODE 77)
         set_tests_properties(3ds_vk_draw_scaled_texture_from_target_validation
-                             3ds_vk_draw_scaled_texture_from_depth_validation PROPERTIES SKIP_RETURN_CODE 77)
+                             3ds_vk_draw_scaled_texture_from_depth_validation
+                             3ds_vk_draw_scaled_shared_depth_validation PROPERTIES SKIP_RETURN_CODE 77)
         # the window's rendering, with the screens drawn by a copy and through the effects, under Khronos validation
         foreach(snx_mode scaled-layout scaled-layout-effects)
             string(REPLACE "-" "_" snx_name "${snx_mode}")

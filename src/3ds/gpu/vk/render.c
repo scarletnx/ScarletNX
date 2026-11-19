@@ -1030,6 +1030,10 @@ static Target* target_find(const TargetKey* k) {
     if (t == &g.targets[g.target_count]) ++g.target_count;
     return t;
 }
+static bool depth_shared(const TargetKey* a, const TargetKey* b) {
+    return a->depth_pa == b->depth_pa && a->width == b->width && a->height == b->height &&
+           a->depth_format == b->depth_format && a->scale == b->scale && a->flip == b->flip;
+}
 /* the draw's target open: the one kept for key, loaded from memory unless its images hold what memory does. Other
    targets over the same memory are stored first, and are stale from now on */
 static SnxCtrPicaResult target_open(const TargetKey* k) {
@@ -1038,6 +1042,8 @@ static SnxCtrPicaResult target_open(const TargetKey* k) {
     g.open = 0;
     Target* t = target_find(k);
     if (!t) return SNX_CTR_PICA_UNSUPPORTED;
+    /* the target over the same depth buffer, at the same scale, that drew last and holds its depth */
+    Target* shared = NULL;
     for (unsigned i = 0; i < g.target_count; ++i) {
         Target* u = &g.targets[i];
         if (u == t) continue;
@@ -1047,8 +1053,26 @@ static SnxCtrPicaResult target_open(const TargetKey* k) {
                      overlaps(u->key.depth_pa, depth_span(&u->key), k->depth_pa, depth_span(k));
         if (!color && !depth) continue;
         if (!target_store(u)) return AGAIN;
+        if (u->depth_valid && k->scale > 1 && k->depth_format != NO_DEPTH && depth_shared(&u->key, k) &&
+            (!shared || u->used > shared->used))
+            shared = u;
         if (color) set_color(u, false, u->color_dirty);
         if (depth) set_depth(u, false, u->depth_dirty);
+    }
+    /* the 1x reload would lose the scaled depth of the shared target, so its depth image is copied instead */
+    if (shared && !t->depth_valid) {
+        VkCommandBuffer cb = snx_ctr_vk_commands();
+        uint32_t width = k->width * k->scale, height = k->height * k->scale;
+        VkImageCopy copy = {{VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT, 0, 0, 1},
+                            {0, 0, 0},
+                            {VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT, 0, 0, 1},
+                            {0, 0, 0},
+                            {width, height, 1}};
+        snx_ctr_vk_barrier(cb);
+        vkCmdCopyImage(cb, shared->depth.image, VK_IMAGE_LAYOUT_GENERAL, t->depth.image, VK_IMAGE_LAYOUT_GENERAL, 1,
+                       &copy);
+        snx_ctr_vk_barrier(cb);
+        set_depth(t, true, t->depth_dirty);
     }
     bool color = !t->color_valid, depth = !t->depth_valid && k->depth_format != NO_DEPTH;
     if ((color || depth) && !target_move(t, false, color, depth)) return AGAIN;

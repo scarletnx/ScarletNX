@@ -51,6 +51,7 @@ static uint32_t g_fcram = 0x20000000u, g_vram = 0x18000000u, g_vertices = 0x2011
 #define AFTER_SPAN   0x20000u
 #define AFTER_FILL   0x1000u
 #define SECOND_COLOR (VRAM + 0x300000u)
+#define THIRD_COLOR (VRAM + 0x380000u)
 #define STORE_AT     (COLOR + 0x1000)
 #define RELOAD_AT    (COLOR + (H - 2) * W * 4) /* the tiled guest buffer's last two 8x8 tiles, a corner of the target */
 #define RELOAD_SPAN  (2 * W * 4)
@@ -1389,6 +1390,107 @@ static void scaled_texture_from_depth(SnxCtrMemory* m) {
     g_settings.ctr_top_resolution = top;
     snx_ctr_vk_finish();
 }
+
+/* B takes A's depth at the render scale when it opens, not the buffer's 1x reload. A is cleared to 1.0, with a
+   rectangle at 0.25 whose left and top edges are at scaled coordinate 1.0. B is cleared to green by a full quad
+   with the depth test ALWAYS and no write. A full quad of red at 0.5, with LESS and no write, then shows where
+   the rectangle is not. C samples B over the top-left 1/scale, so its console pixel (i, j) is B's texel (i, j):
+   green where i >= 1 and j >= 1, red elsewhere. Without the change the 1x reload gives the far depth to the texels
+   with i < scale or j < scale, so those with i and j >= 1 show red: 637 pixels at scale 2, 1272 at scale 3. */
+static void scaled_shared_depth_case(SnxCtrMemory* m, const char* name, unsigned scale) {
+    static const uint8_t red[4] = {255, 0, 0, 255}, green[4] = {0, 255, 0, 255};
+    static unsigned char clear[SCALED_TARGET_BYTES], zeros[SCALED_TARGET_BYTES], after[SCALED_TARGET_BYTES];
+    for (unsigned p = 0; p < SCALED_TARGET_W * SCALED_TARGET_H; ++p)
+        clear[p * 4] = clear[p * 4 + 1] = clear[p * 4 + 2] = 0xff; /* depth 1.0, stencil 0 */
+    /* the rectangle's left and top edges at console coordinate 1/scale, which is the scaled coordinate 1.0 */
+    float left = 2.0f / (float)(scale * SCALED_TARGET_W) - 1.0f;
+    float top = 2.0f / (float)(scale * SCALED_TARGET_H) - 1.0f;
+    Scene* a = scene(name, 0, 0xff);
+    screen_target(&a->list, COLOR, false);
+    depth_target(&a->list, 3); /* D24S8 at DEPTH, written */
+    put(&a->list, 0x107, 0xf00 | 1u | 4u << 4 | 1u << 12); /* colour written, depth test LESS, and the write on */
+    a->vertices[0] = vertex(left, top, -0.25f, 0xffffffffu, 0, 0);
+    a->vertices[1] = vertex(1.0f, top, -0.25f, 0xffffffffu, 0, 0);
+    a->vertices[2] = vertex(left, 1.0f, -0.25f, 0xffffffffu, 0, 0);
+    a->vertices[3] = vertex(1.0f, top, -0.25f, 0xffffffffu, 0, 0);
+    a->vertices[4] = vertex(1.0f, 1.0f, -0.25f, 0xffffffffu, 0, 0);
+    a->vertices[5] = vertex(left, 1.0f, -0.25f, 0xffffffffu, 0, 0);
+    a->vertex_count = 6;
+    array_draw(a);
+    list_end(&a->list);
+    setup_clear(m, a);
+    bool ok = snx_ctr_phys_write(m, COLOR, zeros, SCALED_TARGET_BYTES) == SNX_CTR_MEM_OK;
+    ok = ok && snx_ctr_phys_write(m, DEPTH, clear, SCALED_TARGET_BYTES) == SNX_CTR_MEM_OK;
+    ok = ok && record(m, a, &vulkan); /* A's rectangle over the cleared depth, its rendering open */
+    Scene* b = scene(name, 0, 0xff);
+    screen_target(&b->list, SECOND_COLOR, false);
+    depth_target(&b->list, 3);
+    uint32_t green_word = color_word(green), red_word = color_word(red);
+    b->vertices[0] = vertex(-1.0f, -1.0f, -0.5f, green_word, 0, 0);
+    b->vertices[1] = vertex(1.0f, -1.0f, -0.5f, green_word, 0, 0);
+    b->vertices[2] = vertex(-1.0f, 1.0f, -0.5f, green_word, 0, 0);
+    b->vertices[3] = vertex(1.0f, 1.0f, -0.5f, green_word, 0, 0);
+    b->vertices[4] = vertex(-1.0f, -1.0f, -0.5f, red_word, 0, 0);
+    b->vertices[5] = vertex(1.0f, -1.0f, -0.5f, red_word, 0, 0);
+    b->vertices[6] = vertex(-1.0f, 1.0f, -0.5f, red_word, 0, 0);
+    b->vertices[7] = vertex(1.0f, 1.0f, -0.5f, red_word, 0, 0);
+    b->vertex_count = 8;
+    put(&b->list, SNX_PICA_TOPOLOGY, 1u << 8);
+    put(&b->list, 0x107, 0xf00 | 1u | 1u << 4); /* the clear: colour written, depth test ALWAYS, and no write */
+    strip_draw(&b->list, 0);
+    put(&b->list, 0x107, 0xf00 | 1u | 4u << 4); /* colour written, depth test LESS, and no write */
+    strip_draw(&b->list, 4);
+    list_end(&b->list);
+    ok = ok && snx_ctr_phys_write(m, VERTICES, b->vertices, sizeof b->vertices) == SNX_CTR_MEM_OK;
+    ok = ok && snx_ctr_phys_write(m, LIST, b->list.w, b->list.n * 4) == SNX_CTR_MEM_OK;
+    ok = ok && record(m, b, &vulkan); /* B's quads: its depth is A's, copied when B opened */
+    Scene* c = scene(name, 0, 0xff);
+    screen_target(&c->list, THIRD_COLOR, false);
+    screen_texture(&c->list, SECOND_COLOR, 0); /* RGBA8 over B's colour */
+    float tc = 1.0f / (float)scale;
+    c->vertices[0] = vertex(-1.0f, -1.0f, -0.5f, 0xffffffffu, 0, 0);
+    c->vertices[1] = vertex(1.0f, -1.0f, -0.5f, 0xffffffffu, tc, 0);
+    c->vertices[2] = vertex(-1.0f, 1.0f, -0.5f, 0xffffffffu, 0, tc);
+    c->vertices[3] = vertex(1.0f, 1.0f, -0.5f, 0xffffffffu, tc, tc);
+    c->vertex_count = 4;
+    put(&c->list, SNX_PICA_TOPOLOGY, 1u << 8);
+    strip_draw(&c->list, 0);
+    list_end(&c->list);
+    ok = ok && snx_ctr_phys_write(m, VERTICES, c->vertices, sizeof c->vertices) == SNX_CTR_MEM_OK;
+    ok = ok && snx_ctr_phys_write(m, LIST, c->list.w, c->list.n * 4) == SNX_CTR_MEM_OK;
+    ok = ok && record(m, c, &vulkan); /* C samples B's scaled colour */
+    ok = snx_ctr_vk_finish() && ok;
+    ok = ok && snx_ctr_phys_read(m, THIRD_COLOR, after, SCALED_TARGET_BYTES) == SNX_CTR_MEM_OK;
+    unsigned wrong = 0;
+    for (unsigned j = 0; j < SCALED_TARGET_H; ++j)
+        for (unsigned i = 0; i < SCALED_TARGET_W; ++i) {
+            unsigned char want[4];
+            snx_ctr_pixel_encode(SNX_CTR_PIX_RGBA8, (i >= 1 && j >= 1) ? green : red, want);
+            /* C is not flipped, so its row j is memory row H - 1 - j */
+            unsigned y = SCALED_TARGET_H - 1 - j;
+            size_t at = snx_ctr_morton_offset(i, y, 4) + (size_t)(y & ~7u) * SCALED_TARGET_W * 4;
+            wrong += memcmp(after + at, want, sizeof want) != 0;
+        }
+    bool pass = ok && wrong == 0;
+    printf("%-24s %6u of %u pixels differ from the oracle: %s\n", name, wrong, SCALED_TARGET_W * SCALED_TARGET_H,
+           pass ? "ok" : "FAIL");
+    if (!pass) ++failures;
+    free(a);
+    free(b);
+    free(c);
+}
+/* the shared depth buffer at render scale 1 (the control), 2 and 3 */
+static void scaled_shared_depth(SnxCtrMemory* m) {
+    int top = g_settings.ctr_top_resolution;
+    for (unsigned scale = 1; scale <= 3; ++scale) {
+        char name[64];
+        snprintf(name, sizeof name, "shared D24S8 at %ux", scale);
+        g_settings.ctr_top_resolution = (int)scale;
+        scaled_shared_depth_case(m, name, scale);
+    }
+    g_settings.ctr_top_resolution = top;
+    snx_ctr_vk_finish();
+}
 /* Shadow maps (Azahar's sw_framebuffer.cpp DrawShadowMapPixel and sw_rasterizer.cpp TextureColor): the colour buffer
    of a shadow pass holds one word per pixel, its bytes the depth from the most significant byte, then the strength */
 #define TEX_CUBE   0x086
@@ -1941,6 +2043,7 @@ static const Mode modes[] = {
     {"--pipeline-cache", "the pipeline cache kept between runs", pipeline_cache},
     {"--scaled-texture-from-target", "the textures made from scaled targets", scaled_texture_from_target},
     {"--scaled-texture-from-depth", "the textures made from scaled depth buffers", scaled_texture_from_depth},
+    {"--scaled-shared-depth", "two targets over one depth buffer at render scale", scaled_shared_depth},
     {"--shadow", "the shadow maps", shadows}};
 
 int main(int argc, char** argv) {
