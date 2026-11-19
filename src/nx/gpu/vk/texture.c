@@ -4529,13 +4529,15 @@ void vk_tex_frame(void) {
        a second kept 600 presents' worth, 100 seconds, of the targets it made every frame); textures come back from
        memory if they are needed again. Those whose pixels would be lost (vk_surf_reclaim) go before five minutes
        only under the budget's pressure (vk_mem_trim), and a target holding a draw a texture would take stays until
-       then. The recency lists hand out the oldest first, so this costs what goes. The lossy pass looks every 600
+       then; a render target of them moves into system memory instead, or stays where the GPU has no memory of its
+       own. The recency lists hand out the oldest first, so this costs what goes. The lossy pass looks every 600
        presents: it passes over the targets it keeps, and asking whether one holds such a draw can hash its memory.
        Render targets later ones drew all over hold nothing: every 30 presents those unused for a second and eight
        presents go (a game at a dynamic resolution makes its scene's targets again each frame) */
     u32 before = vk_present_before(20000000000ull, 120);
     vk_surf_ended_frame(); /* those the game ended go sooner */
     vk_tex_refine_frame(); /* levels shed for room come back while there is some */
+    vk_rt_sys_frame();     /* render targets moved into system memory, into the GPU's, first: they are drawn to */
     vk_tex_promote_frame(); /* and textures moved into system memory, into the GPU's */
     vk_surf_reclaim(VK_LRU_TEX, before, ~0ull, VK_RECLAIM_LOSSLESS);
     vk_surf_reclaim(VK_LRU_RT, before, ~0ull, VK_RECLAIM_LOSSLESS);

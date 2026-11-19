@@ -313,6 +313,16 @@ void vk_tex_report_log(void) {
         LOG("vulkan: %llu textures moved into system memory for room in place of an eviction (texture_sysmem), %llu "
             "moved back; %llu MB there now\n",
             (unsigned long long)sys_out, (unsigned long long)sys_back, MB(sys_bytes));
+    VkRtSysStats rts;
+    vk_rt_sys_stats(&rts);
+    if (rts.kept || rts.lost)
+        LOG("vulkan: %llu render targets with pixels memory lacks kept where the caches would have let them go, %llu "
+            "of them loaded again from memory the guest wrote meanwhile; %llu moved into system memory, %llu back, %llu "
+            "there now (%llu MB). %llu went with such pixels (%llu MB): under the budget's pressure where none could "
+            "move, or the system heap was short\n",
+            (unsigned long long)rts.kept, (unsigned long long)rts.reloads, (unsigned long long)rts.out,
+            (unsigned long long)rts.back, (unsigned long long)rts.n, MB(rts.bytes), (unsigned long long)rts.lost,
+            MB(rts.lost_bytes));
     u64 shed_made, shed_bytes, shed_coarser, shed_finer;
     vk_tex_shed_stats(&shed_made, &shed_bytes, &shed_coarser, &shed_finer);
     if (shed_made)

@@ -194,6 +194,8 @@ int vk_tc_blit(VkCommandBuffer cb, u32 bpp, u32 fmt, u32 nb, u32 rows, VkBuffer 
 int vk_tex_can_coarsen(const Surf* t) { STUB(); }
 u64 vk_tex_coarser(Surf* t) { STUB(); }
 u64 vk_tex_demote(Surf* t) { STUB(); }
+void vk_devmem_budgets(DevMemBudget* b) { STUB(); }
+u32 vk_mem_owner_prio(u32 owner) { STUB(); }
 void vk_tex_evicted(const Surf* t) { STUB(); }
 int vk_tex_finer(Surf* t) { STUB(); }
 void vk_tex_later_forget(Surf* s) { STUB(); }

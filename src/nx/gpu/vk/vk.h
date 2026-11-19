@@ -1274,9 +1274,16 @@ typedef struct Surf {
     /* textures: an image with sparse residency, memory bound only for the levels that guest memory maps
        (gpu/vk/texture.c tex_bind). mem is VK_NULL_HANDLE, and bytes counts the memory bound now */
     u8 sparse;
-    /* textures: its image is in system memory (texture.c vk_tex_demote), bytes 0 while it is: sys_bytes its size */
+    /* its image is in system memory (texture.c vk_tex_demote, a render target's surface.c rt_demote), bytes 0 while it
+       is: sys_bytes its size */
     u8 demoted;
     u64 sys_bytes;
+    /* render targets the caches would have let go with pixels memory lacks, kept (surface.c rt_aside): the guest's
+       memory as of then, its write-tracking clock (aside_wseen, 0 without tracking: aside_hash its bytes' hash), so
+       that its next use loads memory again where the guest wrote it since, as a target made after an eviction would */
+    u8 aside;
+    u32 aside_wseen;
+    u64 aside_hash;
     /* textures sparse for their levels (shed): its finest levels in system memory, the GPU's own having no room
        (vk_tex_coarser with texture_sysmem) */
     u8 sys_levels;
@@ -1572,6 +1579,20 @@ void vk_tex_sysmem_stats(u64* out, u64* back, u64* bytes);
 u64 vk_mirror_system(void); /* mirror.c: its granules that took system memory so far */
 /* surface.c: once a present, the demoted textures the last presents used moved back while the GPU's memory has room */
 void vk_tex_promote_frame(void);
+/* surface.c: render targets whose pixels exist only on the GPU, moved into system memory where the caches would let
+   them go (rt_demote). Once a present, those used lately go back while the GPU's memory has room, and the oldest go
+   while the system heap they went to is short */
+void vk_rt_sys_frame(void);
+typedef struct {
+    u64 out, back; /* moved there and back so far */
+    u64 n, bytes;  /* there now, and their bytes */
+    /* targets that went with pixels memory lacks so far: none could move, or the system heap was short */
+    u64 lost, lost_bytes;
+    /* targets kept so far where the caches would have let them go, and those of them loaded again at their next use,
+       as the guest had written their memory meanwhile */
+    u64 kept, reloads;
+} VkRtSysStats;
+void vk_rt_sys_stats(VkRtSysStats* st);
 /* surface.c: once a present, shed textures used lately a level finer while the heap has room */
 void vk_tex_refine_frame(void);
 /* texture.c: the shed textures made, their bytes as made whole, and the levels shed and taken back so far */
@@ -2295,7 +2316,8 @@ int vk_pages_move_end(void* owner, DevMem a, DevMem to);
 int vk_buf_move(VkCommandBuffer cb, u32 i, DevMem from, u64* bytes);
 /* surface.c: render target s's image made again in a run of another block and copied there on cb, with its attachment
    view, in the layout it had; the old image and its views go when the frames in flight are done. 1 with *bytes, 0
-   when no run held it, -1 when it cannot move now (a storage result of it still lands) */
+   when no run held it, -1 when it cannot move now (a storage result of it still lands, or its image is in system
+   memory, which no block being emptied holds) */
 int vk_rt_move(VkCommandBuffer cb, Surf* s, u64* bytes);
 /* the encoder's blocks a frame: 3.3 ms of an RX 6700 XT, which encodes 10 million a second (docs/layers/gpu/astc.md), a tenth of
    a frame at 30 fps */

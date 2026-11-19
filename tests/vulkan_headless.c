@@ -7313,6 +7313,7 @@ static void results_copied(u64 cpu, u64 len) { vk_own_cpu_touched(cpu, len); }
 #include "vulkan_shader_windows.inc"
 #include "vulkan_shared_clamp.inc"
 #include "vulkan_compute_arena.inc"
+#include "vulkan_rt_aside.inc"
 #include "vulkan_index_draws.inc"
 #include "vulkan_polygon_lines.inc"
 #include "vulkan_pass_breaks.inc"
@@ -8623,6 +8624,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_dma_owners());
     CHECK(!check_dma_bands());
     CHECK(!check_rt_superseded());
+    CHECK(!check_rt_aside());
     CHECK(!check_dma_bands_frames());
     CHECK(!check_flush_parts());
     CHECK(!check_publish_bands());
