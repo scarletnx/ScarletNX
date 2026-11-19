@@ -10,6 +10,8 @@
 #include "common/utilities/common.h"
 #include "nx/runtime/driver/container.h"
 #include "nx/runtime/driver/pack.h"
+#include "nx/runtime/driver/extract.h"
+#include "nx/runtime/driver/fabricate.h"
 #if defined(_WIN32) && defined(__clang__)
 /* hactool's utils.h redeclares the MinGW CRT's imported fseeko64. */
 #pragma clang diagnostic push
@@ -19,6 +21,7 @@
 #include "nx/runtime/driver/hactool/hfs0.h"
 #include "nx/runtime/driver/hactool/nca.h"
 #include "nx/runtime/driver/hactool/pfs0.h"
+#include "nx/runtime/driver/hactool/pki.h"
 #include "nx/runtime/driver/hactool/sha.h"
 #include "nx/runtime/driver/hactool/xci.h"
 #if defined(_WIN32) && defined(__clang__)
@@ -268,6 +271,284 @@ static void check_xci(const char* path, const Expected expected[3]) {
     free(xci);
 }
 
+
+/* ------------------------------------------------------------------ fabricated NCAs from an extracted game */
+
+#define GAME_TITLE 0x0100000000AD0000ULL
+
+/* bytes that are not all alike, so a block put in the wrong place hashes and compares wrong */
+static blob_t noise(size_t size, unsigned seed) {
+    blob_t b = {zalloc(size ? size : 1), size};
+    uint32_t x = 2463534242u ^ seed;
+    for (size_t i = 0; i < size; i++) {
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        b.data[i] = (unsigned char)x;
+    }
+    return b;
+}
+
+static void put_file(const char* dir, const char* name, blob_t blob) {
+    char* path = snx_path_join(dir, name);
+    char* parent = path ? snx_dirname(path) : NULL;
+    CHECK(parent && !snx_mkdirs(parent) && !snx_write_file(path, blob.data, blob.size));
+    free(parent);
+    free(path);
+    free(blob.data);
+}
+
+/* an extracted game: an ExeFS whose main spans several of its hash blocks, a RomFS of nested folders, an empty folder,
+   an empty file, sizes not a multiple of 16, a file over many IVFC blocks, a name in UTF-8, and wget's .listing files
+   that are no part of it; with control.nacp and icon.jpg when full */
+static void make_game(const char* folder, int full) {
+    blob_t meta = {zalloc(0x100), 0x100};
+    memcpy(meta.data, "META", 4);
+    meta.data[0x0c] = 1;
+    put32(meta.data + 0x70, 0x80);
+    put32(meta.data + 0x74, 0x40);
+    memcpy(meta.data + 0x80, "ACI0", 4);
+    put64(meta.data + 0x90, GAME_TITLE);
+    char* exefs = snx_path_join(folder, "exefs");
+    char* romfs = snx_path_join(folder, "romfs");
+    put_file(exefs, "main.npdm", meta);
+    put_file(exefs, "main", noise(0x2345F, 1));
+    put_file(exefs, "rtld", noise(0x1001, 2));
+    put_file(exefs, ".listing", text_blob("-r--r--r-- 1 ftp ftp 8912 Jan 01  1970 rtld"));
+    put_file(romfs, "a.bin", noise(0x1A001, 3));
+    put_file(romfs, "dir1/b.txt", text_blob("hello"));
+    put_file(romfs, "dir1/sub/c.bin", (blob_t){zalloc(1), 0});
+    put_file(romfs, "dir1/sub/d.bin", noise(17, 4));
+    put_file(romfs, "dir1/\xc3\xbcn\xc3\xaf.txt", text_blob("unicode"));
+    put_file(romfs, "Zeta/z.bin", noise(0x8003, 5));
+    put_file(romfs, ".listing", text_blob("dr-xr-xr-x 1 ftp ftp 0 Jan 01  1970 dir1"));
+    put_file(romfs, "dir1/.listing", text_blob("-r--r--r-- 1 ftp ftp 5 Jan 01  1970 b.txt"));
+    char* empty = snx_path_join(romfs, "dir2");
+    CHECK(empty && !snx_mkdirs(empty));
+    free(empty);
+    if (full) {
+        blob_t nacp = {zalloc(0x4000), 0x4000};
+        strcpy((char*)nacp.data + 2 * 0x300, "Its Own Name"); /* Japanese alone */
+        put_file(folder, "control.nacp", nacp);
+        put_file(folder, "icon.jpg", text_blob("\xff\xd8\xff a synthetic icon"));
+    }
+    free(exefs);
+    free(romfs);
+}
+
+/* the files under a (a's .listing files left out) are those under b, byte for byte, and b has no other */
+static void same_tree(const char* a, const char* b) {
+    char** names;
+    size_t count, other_count;
+    char** other;
+    CHECK(!snx_list_dir(a, &names, &count) && !snx_list_dir(b, &other, &other_count));
+    size_t kept = 0;
+    for (size_t i = 0; i < count; i++) {
+        if (!strcmp(names[i], ".listing")) continue;
+        kept++;
+        char *pa = snx_path_join(a, names[i]), *pb = snx_path_join(b, names[i]);
+        if (snx_is_dir(pa)) {
+            CHECK(snx_is_dir(pb));
+            same_tree(pa, pb);
+        } else {
+            size_t na, nb;
+            unsigned char *da = snx_read_file(pa, &na), *db = snx_read_file(pb, &nb);
+            if (!db || na != nb || (na && memcmp(da, db, na))) fprintf(stderr, "differs: %s\n", pb);
+            CHECK(db && na == nb && (!na || !memcmp(da, db, na)));
+            free(da);
+            free(db);
+        }
+        free(pa);
+        free(pb);
+    }
+    CHECK(kept == other_count);
+    snx_free_strings(names, count);
+    snx_free_strings(other, other_count);
+}
+
+/* each NCA of the container, read by hactool in its verify mode with no keys: plain, every section's hashes and IVFC
+   levels good, its FS headers hashed in its header, named by its header's hash; its content meta's records name the
+   other two by their names and sizes */
+static void check_fabricated(const char* path, int xci) {
+    SnxHac* hac = snx_hac_new();
+    int container = snx_hac_open(hac, path, xci);
+    CHECK(container >= 0);
+    const SnxHacEntry* entries;
+    size_t count = snx_hac_entries(hac, container, &entries);
+    CHECK(count == 3);
+    FILE* file = fopen(path, "rb");
+    CHECK(file != NULL);
+    unsigned char cnmt_ids[2][16] = {{0}};
+    SnxU64 cnmt_sizes[2] = {0};
+    int metas = 0;
+    for (size_t i = 0; i < count; i++) {
+        hactool_ctx_t* tool = calloc(1, sizeof *tool);
+        nca_ctx_t* nca = calloc(1, sizeof *nca);
+        CHECK(tool && nca);
+        pki_initialize_keyset(&tool->settings.keyset, KEYSET_RETAIL);
+        tool->action = ACTION_VERIFY;
+        nca_init(nca);
+        nca->tool_ctx = tool;
+        nca->file = file;
+        nca->base_offset = entries[i].offset;
+        nca->file_size = (size_t)entries[i].size;
+        nca_process(nca);
+        CHECK(nca->is_decrypted && nca->header.nca_size == entries[i].size && nca->header.title_id == GAME_TITLE);
+        unsigned char raw[0xC00], hash[32];
+        CHECK(!snx_hac_read(hac, container, i, raw, sizeof raw));
+        sha256_hash_buffer(hash, raw, sizeof raw);
+        char name[33];
+        for (int k = 0; k < 16; k++) snprintf(name + 2 * k, 3, "%02x", hash[k]);
+        CHECK(!strncmp(entries[i].name, name, 32));
+        int sections = 0;
+        for (unsigned j = 0; j < 4; j++) {
+            nca_section_ctx_t* s = &nca->section_contexts[j];
+            if (!s->is_present) continue;
+            sections++;
+            sha256_hash_buffer(hash, raw + 0x400 + 0x200 * j, 0x200);
+            CHECK(!memcmp(hash, raw + 0x280 + 0x20 * j, 32));
+            CHECK(s->superblock_hash_validity == VALIDITY_VALID);
+            if (s->type == PFS0) CHECK(s->pfs0_ctx.hash_table_validity == VALIDITY_VALID);
+            if (s->type == ROMFS)
+                for (unsigned l = 0; l < IVFC_MAX_LEVEL; l++)
+                    CHECK(s->romfs_ctx.ivfc_levels[l].hash_validity == VALIDITY_VALID);
+        }
+        int content = nca->header.content_type;
+        CHECK(sections == (content == NCACONTENTTYPE_PROGRAM ? 2 : 1));
+        if (content == NCACONTENTTYPE_META) { /* its PFS0's one file, the content meta */
+            nca_section_ctx_t* s = &nca->section_contexts[0];
+            pfs0_header_t* h = s->pfs0_ctx.header;
+            CHECK(s->type == PFS0 && h && h->num_files == 1 && strstr(entries[i].name, ".cnmt.nca") != NULL);
+            pfs0_file_entry_t* e = pfs0_get_file_entry(h, 0);
+            unsigned char cnmt[0xC0];
+            CHECK(e->size == sizeof cnmt);
+            nca_section_fseek(s, s->pfs0_ctx.superblock->pfs0_offset + pfs0_get_header_size(h) + e->offset);
+            CHECK(nca_section_fread(s, cnmt, sizeof cnmt) == sizeof cnmt);
+            CHECK(snx_ld_le64(cnmt) == GAME_TITLE && cnmt[0xC] == 0x80 && snx_ld_le16(cnmt + 0x10) == 2);
+            for (int r = 0; r < 2; r++) {
+                memcpy(cnmt_ids[r], cnmt + 0x30 + 0x38 * r + 0x20, 16);
+                cnmt_sizes[r] = 0;
+                for (int k = 0; k < 6; k++) cnmt_sizes[r] |= (SnxU64)cnmt[0x30 + 0x38 * r + 0x30 + k] << (8 * k);
+                CHECK(cnmt[0x30 + 0x38 * r + 0x36] == (r ? 3 : 1));
+            }
+            metas++;
+        }
+        nca_free_section_contexts(nca);
+        free(nca);
+        free(tool);
+    }
+    CHECK(metas == 1);
+    for (int r = 0; r < 2; r++) { /* the records name the Program and the Control NCAs there */
+        char name[33];
+        for (int k = 0; k < 16; k++) snprintf(name + 2 * k, 3, "%02x", cnmt_ids[r][k]);
+        int found = 0;
+        for (size_t i = 0; i < count; i++)
+            found += !strncmp(entries[i].name, name, 32) && entries[i].size == cnmt_sizes[r];
+        CHECK(found == 1);
+    }
+    fclose(file);
+    snx_hac_free(hac);
+}
+
+/* the container extracted with no keys: the game's title, its ExeFS and RomFS those of folder, and control.nacp and
+   icon.jpg its own or the stub's */
+static void check_extracted(const char* container, const char* folder, const char* scratch, const char* stub_title) {
+    SnxDump dump;
+    SnxU64 title = 0, game = 0;
+    CHECK(!snx_dump_title(&dump, container, NULL, NULL, scratch, 0, &title, &game, NULL));
+    CHECK(title == GAME_TITLE && dump.program.found && dump.control.found && dump.program.info.decrypted);
+    snx_dump_close(&dump);
+    char* out = snx_path_join(scratch, "extracted");
+    snx_remove_tree(out);
+    char* argv[] = {(char*)container, "--out", out, NULL};
+    SnxPaths paths = {0};
+    paths.repo = scratch;
+    CHECK(!snx_extract(3, argv, &paths));
+    char *exefs_in = snx_path_join(folder, "exefs"), *exefs_out = snx_path_join(out, "exefs"),
+         *romfs_in = snx_path_join(folder, "romfs"), *romfs_out = snx_path_join(out, "romfs"),
+         *nacp = snx_path_join(out, "control.nacp"), *icon = snx_path_join(out, "icon.jpg");
+    same_tree(exefs_in, exefs_out);
+    same_tree(romfs_in, romfs_out);
+    size_t size;
+    unsigned char* got = snx_read_file(nacp, &size);
+    CHECK(got && size == 0x4000);
+    if (stub_title) {
+        CHECK(!strcmp((const char*)got, stub_title) && got[0x3025] == 1);
+        CHECK(snx_ld_le64(got + 0x3070) == GAME_TITLE + 0x1000 && snx_ld_le64(got + 0x3078) == GAME_TITLE);
+        CHECK(snx_ld_le64(got + 0x3080) == 0x4000000 && snx_ld_le64(got + 0x3098) == 0x4000000);
+        CHECK(!snx_path_exists(icon));
+    } else {
+        CHECK(!strcmp((const char*)got + 2 * 0x300, "Its Own Name"));
+        free(got);
+        got = snx_read_file(icon, &size);
+        CHECK(got && size == strlen("\xff\xd8\xff a synthetic icon"));
+    }
+    free(got);
+    free(exefs_in);
+    free(exefs_out);
+    free(romfs_in);
+    free(romfs_out);
+    free(nacp);
+    free(icon);
+    snx_remove_tree(out);
+    free(out);
+}
+
+static int pack_game(const char* input, const char* out, const char* keys, const char* data, int xci,
+                     const char* name, int plan) {
+    char* argv[12];
+    int n = 0;
+    argv[n++] = (char*)input;
+    if (out) {
+        argv[n++] = "--out";
+        argv[n++] = (char*)out;
+    }
+    argv[n++] = "--keys";
+    argv[n++] = (char*)keys;
+    argv[n++] = "--data";
+    argv[n++] = (char*)data;
+    if (xci) argv[n++] = "--xci";
+    if (name) {
+        argv[n++] = "--name";
+        argv[n++] = (char*)name;
+    }
+    if (plan) argv[n++] = "--plan";
+    argv[n] = NULL;
+    g_said[0] = 0;
+    return snx_pack(n, argv, NULL);
+}
+
+static void test_fabricated(const char* scratch, const char* keys) {
+    char *game = snx_path_join(scratch, "Some Game"), *own = snx_path_join(scratch, "Own Control"),
+         *nsp = snx_path_join(scratch, "Some Game.nsp"), *xci = snx_path_join(scratch, "fab.xci"),
+         *own_nsp = snx_path_join(scratch, "own.nsp");
+    make_game(game, 0);
+    make_game(own, 1);
+    CHECK(!pack_game(game, NULL, keys, scratch, 0, NULL, 1) && !snx_path_exists(nsp)); /* the plan writes nothing */
+    CHECK(!pack_game(game, NULL, keys, scratch, 0, NULL, 0) && snx_is_file(nsp));      /* beside the folder */
+    check_fabricated(nsp, 0);
+    check_extracted(nsp, game, scratch, "Some Game");
+    printf("PASS an extracted game into an NSP of fabricated NCAs, its hashes good, extracted again the same\n");
+    CHECK(!pack_game(game, xci, keys, scratch, 1, "A Given Name", 0));
+    check_fabricated(xci, 1);
+    check_extracted(xci, game, scratch, "A Given Name");
+    printf("PASS an extracted game into an XCI of fabricated NCAs\n");
+    CHECK(!pack_game(own, own_nsp, keys, scratch, 0, NULL, 0));
+    check_fabricated(own_nsp, 0);
+    check_extracted(own_nsp, own, scratch, NULL);
+    printf("PASS the game's own control.nacp and icon kept\n");
+    /* a folder of neither NCAs nor a game, and --plan for NCAs: refused, said */
+    char* nothing = snx_path_join(scratch, "nothing");
+    CHECK(!snx_mkdirs(nothing));
+    CHECK(pack_game(nothing, NULL, keys, scratch, 0, NULL, 0) && strstr(g_said, "no extracted game"));
+    free(nothing);
+    free(game);
+    free(own);
+    free(nsp);
+    free(xci);
+    free(own_nsp);
+}
+
 int main(void) {
     char* scratch = snx_temp_dir(NULL);
     CHECK(scratch != NULL);
@@ -337,6 +618,8 @@ int main(void) {
         free(b);
     }
     printf("PASS an XCI packed again into the same NSP\n");
+
+    test_fabricated(scratch, keys);
 
     /* a title key no ticket gives: refused, said, nothing left */
     make_folder(bare, unused, 1);
