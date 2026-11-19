@@ -5370,6 +5370,37 @@ static void test_uses_isbe(void) {
     CHECK(!sm86_uses_isbe(code, n * 16));
 }
 
+/* the tensor stand-in's detector (vk/tensor.c, setting tensor_standin): a program with an HMMA or an LDSM is a
+   network's pass and is stood in for, one without is a game's, and bytes of less than a whole instruction hold none */
+static void test_uses_hmma(void) {
+    u8 code[16 * 8] = {0};
+    Word x = fix(0x23c); /* HMMA.16816.F32 R16, R8, R12, R16 */
+    set(&x, 16, 8, 16);
+    set(&x, 24, 8, 8);
+    set(&x, 32, 8, 12);
+    set(&x, 64, 8, 20);
+    set(&x, 72, 19, 0);
+    put(code, 0, mov_imm(1, 5));
+    put(code, 1, x);
+    put(code, 2, exit_insn());
+    CHECK(sm86_uses_hmma(code, 3 * 16));
+    CHECK(!sm86_uses_hmma(code, 16)); /* the MOV alone */
+    CHECK(!sm86_uses_hmma(code, 8));  /* not a whole instruction */
+    memset(code, 0, sizeof code);
+    x = fix(0x83b); /* LDSM.16.M88.4 R40, [R7 + 0x40] */
+    set(&x, 16, 8, 40);
+    set(&x, 24, 8, 7);
+    set(&x, 40, 24, 0x40);
+    set(&x, 72, 2, 2);
+    put(code, 0, x);
+    put(code, 1, exit_insn());
+    CHECK(sm86_uses_hmma(code, 2 * 16) && sm86_uses_hmma(code, 16));
+    memset(code, 0, sizeof code);
+    put(code, 0, mov_imm(1, 5));
+    put(code, 1, exit_insn());
+    CHECK(!sm86_uses_hmma(code, 2 * 16));
+}
+
 static void test_tcs_empty(void) {
     u8 code[16 * 2] = {0};
     put(code, 0, exit_insn());
@@ -7979,6 +8010,7 @@ int main(int argc, char** argv) {
     test_fragment_unfed(dir);
     test_perspective_fold(dir);
     test_uses_isbe();
+    test_uses_hmma();
     test_warp_matrix(dir);
     test_hfma2_once(dir);
     test_narrow_ldsm(dir);
