@@ -159,6 +159,12 @@ static struct {
     Clause clauses[1024];
     Decoder decoders[8];
     unsigned decoder_count;
+    /* a profile's since lines (a32.profile: "since 6 ROOT..."): the ArchVersion() each encoding came with, by root */
+    struct {
+        unsigned root;
+        long long version;
+    } since[512];
+    unsigned since_count;
     char* features;           /* --profile's features, " FEAT_A FEAT_B ", in capitals; NULL without one */
     char* backend_code;       /* the back end's text (--backend) with its comments and strings blanked */
     const char* backend_name; /* its file's name, for the errors */
@@ -3371,13 +3377,7 @@ static int clause_decoder(const char* family) {
     return -1;
 }
 
-/* a profile's since lines (a32.profile: "since 6 ROOT..."): the ArchVersion() each encoding came with, by root, 0
-   for one every guest has */
-static struct {
-    unsigned root;
-    long long version;
-} g_since[512];
-static unsigned g_since_count;
+/* a profile's since lines into g_gen.since */
 static void profile_since(const char* path) {
     size_t size, i;
     char* text = sg_read(path, &size);
@@ -3398,9 +3398,10 @@ static void profile_since(const char* path) {
                     if (*end || version <= 0)
                         sg_fail(0, "%s: since takes an architecture version (since 6 ROOT...), not %s", path, number);
                 } else {
-                    if (g_since_count == sizeof g_since / sizeof *g_since) sg_fail(0, "%s: over 512 since roots", path);
-                    g_since[g_since_count].root = sg_intern(text + i, w);
-                    g_since[g_since_count++].version = version;
+                    if (g_gen.since_count == sizeof g_gen.since / sizeof *g_gen.since)
+                        sg_fail(0, "%s: over 512 since roots", path);
+                    g_gen.since[g_gen.since_count].root = sg_intern(text + i, w);
+                    g_gen.since[g_gen.since_count++].version = version;
                 }
                 if (i + w < e && text[i + w] == '#') break;
                 i += w;
@@ -3410,10 +3411,11 @@ static void profile_since(const char* path) {
     }
     free(text);
 }
+/* the ArchVersion() a root came with, 0 for one every guest has */
 static long long root_since(const char* root) {
     unsigned i;
-    for (i = 0; i < g_since_count; ++i)
-        if (!strcmp(sg_str(g_since[i].root), root)) return g_since[i].version;
+    for (i = 0; i < g_gen.since_count; ++i)
+        if (!strcmp(sg_str(g_gen.since[i].root), root)) return g_gen.since[i].version;
     return 0;
 }
 
@@ -3474,7 +3476,7 @@ int sg_generate(const char* roots_path, const char* const* backend_paths, int ba
     g_gen.backend_code = backend_code(backend, backend_size);
     g_gen.features = profile_path ? profile_features(profile_path) : NULL;
     if (profile_path) profile_since(profile_path);
-    if (g_since_count && !backend_defines_function("sg_ArchVersion"))
+    if (g_gen.since_count && !backend_defines_function("sg_ArchVersion"))
         sg_fail(0, "%s: since lines need the back end's sg_ArchVersion, which %s does not define", profile_path,
                 g_gen.backend_name);
     for (d = 1; d < g_parse.def_count; ++d) { /* each root's clause: the one that calls it */
@@ -3498,10 +3500,12 @@ int sg_generate(const char* roots_path, const char* const* backend_paths, int ba
             sg_fail(0, "%s: no decode clause %scalls the root %s", roots_path,
                     g_gen.decoder_count ? "of a decoder's families " : "", sg_str(roots[i]));
     }
-    for (i = 0; i < g_since_count; ++i) {
-        for (k = 0; k < root_count && roots[k] != g_since[i].root && strcmp(sg_str(roots[k]), sg_str(g_since[i].root));
+    for (i = 0; i < g_gen.since_count; ++i) {
+        for (k = 0;
+             k < root_count && roots[k] != g_gen.since[i].root && strcmp(sg_str(roots[k]), sg_str(g_gen.since[i].root));
              ++k) {}
-        if (k == root_count) sg_fail(0, "%s: since names %s, which is no root", profile_path, sg_str(g_since[i].root));
+        if (k == root_count)
+            sg_fail(0, "%s: since names %s, which is no root", profile_path, sg_str(g_gen.since[i].root));
     }
     /* the clauses are tried in their order, as Sail's scattered decode tries them, each after the one that handed the
        word on (Error_See, a guard that fails, an encoding newer than the guest's architecture): one an earlier clause

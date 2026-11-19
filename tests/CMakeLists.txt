@@ -3253,7 +3253,7 @@ if(NOT WIN32)
     # the T16 emitters sailgen generates from the Sail against the ones written by hand they replaced
     # (snx_thumb_llvm_block_t16_reference): the same optimized IR halfword by halfword on every profile and memory mode,
     # alone and in an IT block, and the same results run here. Each part takes a sixteenth of its third, spread over
-    # every field: the whole (--every 1) takes about two hours
+    # every field: the whole (--every 1) takes 45 minutes on 4 threads
     add_executable(snx-test-arm-sail-ir arm_sail_ir.c)
     snx_test_target(snx-test-arm-sail-ir gnu23)
     target_link_libraries(snx-test-arm-sail-ir PRIVATE snx_llvm snx_arm_llvm snx_driver ${CMAKE_DL_LIBS})
