@@ -53,7 +53,7 @@ static struct {
     int asked;      /* plat_power_watch's calls */
     int am, hid;    /* am_display_mode_changed's and hid_mode_changed's calls */
     int lines;      /* the log's lines */
-    char logged[256];
+    char logged[2048]; /* a line as options.c makes its longest (say_deprecated's), never cut */
     char said[4096]; /* every line, one after the other */
     int write;       /* plat_replace_file replaces the file: ini_open writes it */
 } g_test;
@@ -79,8 +79,9 @@ void logf_(int lvl, const char* fmt, ...) {
     va_list ap;
     (void)lvl;
     va_start(ap, fmt);
-    vsnprintf(g_test.logged, sizeof g_test.logged, fmt, ap);
+    int n = vsnprintf(g_test.logged, sizeof g_test.logged, fmt, ap);
     va_end(ap);
+    CHECK(n >= 0 && (size_t)n < sizeof g_test.logged); /* a cut line would fail a check of its end, on a long path */
     if (strlen(g_test.said) + strlen(g_test.logged) < sizeof g_test.said) strcat(g_test.said, g_test.logged);
     g_test.lines++;
 }
