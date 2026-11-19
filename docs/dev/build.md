@@ -501,6 +501,9 @@ Test options, read when `BUILD_TESTING` is on (CTest's default), all OFF by defa
   `LSAN_OPTIONS=use_stacks=0:use_registers=0:suppressions=$PWD/tests/lsan.supp` so the leak check finds the same leaks
   on every machine, and none of the system's libraries' own (SDL's ALSA backend never frees ALSA's device hints).
 - `-DSNX_TEST_VULKAN=ON`: add the offscreen Vulkan integration tests, see below.
+- `-DSNX_TEST_ONLINE_LIVE=ON`: add `online_presets_live`, which asks each WFC service's DNS server over the
+  internet (labels `external` and `network`): how a service that stopped answering is found
+  ([src/common/online](../../src/common/online/README.md)).
 - `-DSNX_TEST_EDENPROBE=/path/to/edenprobe.nro`: add `edenprobe_vk_memory_1` and `edenprobe_vk_memory_2`, which run
   edenprobe as CI does against its baseline, with guest buffers copied and read in place (docs/dev/edenprobe.md).
 - `-DSNX_TEST_VP9_VECTORS=ON`: add the `nvdec_vp9_*` tests, which run NVDEC's VP9 jobs on libvpx's test vectors;
