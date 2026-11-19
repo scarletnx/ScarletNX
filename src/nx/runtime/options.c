@@ -127,7 +127,10 @@ int options_tv_mode_step(int step, char* text, size_t size) {
     ini_word(ini_find(g_display_ini, "docked"), choice, word, sizeof word);
     snprintf(line, sizeof line, "TV mode: %s (%s)", word, snx_tv_mode() ? "TV mode" : "handheld mode");
     LOG("%s\n", line);
-    if (size) snprintf(text, size, "%s", line);
+    if (size && choice == 2)
+        snprintf(text, size, "TV mode: %s (%s)", word, snx_tv_mode() ? "TV" : "handheld");
+    else if (size)
+        snx_key_now(text, size, "TV mode", word);
     return choice;
 }
 
@@ -174,7 +177,7 @@ int options_fps_limit_step(int* was, char* text, size_t size) {
     fps_limit_text(before, old, sizeof old);
     snx_fps_limit_said(line, sizeof line, v, old);
     LOG("%s\n", line);
-    if (size) snprintf(text, size, "%s", line);
+    if (size) snx_fps_limit_now(text, size, v);
     return now;
 }
 /* showcase's and stats's steps: setting off or on, the .ini's key with it (a run's --key=1 stays out of the file);
@@ -190,7 +193,7 @@ static int onoff_step(_Atomic int* setting, const char* key, const char* what, c
         LOG("%s, %s_corner=%s\n", line, key, corner);
     else
         LOG("%s\n", line);
-    if (size) snprintf(text, size, "%s", line);
+    if (size) snx_key_now(text, size, what, on ? "on" : "off");
     return on;
 }
 int options_showcase_step(char* text, size_t size) {

@@ -84,13 +84,15 @@ u64 unattended_ms(void) { return 0; }
 static int held(int n) {
     return g_test.kernel_held == n && g_test.gpu_held == n && g_test.audio_held == n && g_test.clock_held == n;
 }
-/* a press: what it returns, its words over the game and its log line, the same */
+/* a press: what it returns, its log line, and its words over the game: the log's up to " (was", the pause now alone */
 static void press(int want, const char* line) {
-    char text[96], logged[100];
+    char text[96], logged[100], over[96];
     CHECK(game_pause_toggle(text, sizeof text) == want);
     snprintf(logged, sizeof logged, "%s\n", line);
-    if (strcmp(text, line) || strcmp(g_test.logged, logged)) {
-        fprintf(stderr, "pause: \"%s\", logged \"%s\"; expected \"%s\"\n", text, g_test.logged, line);
+    snprintf(over, sizeof over, "%.*s",
+             (int)(strstr(line, " (was") ? strstr(line, " (was") - line : (long)strlen(line)), line);
+    if (strcmp(text, over) || strcmp(g_test.logged, logged)) {
+        fprintf(stderr, "pause: \"%s\", logged \"%s\"; expected \"%s\" and \"%s\"\n", text, g_test.logged, over, line);
         exit(1);
     }
 }

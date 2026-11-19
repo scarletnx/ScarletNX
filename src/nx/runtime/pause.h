@@ -13,8 +13,8 @@ int game_pause(void);
 void game_resume(void);
 int game_paused(void); /* any thread */
 /* the player's pause (the menu's Pause, the Pause key), on or off: 1 on, 0 off, -1 for a pause that didn't happen,
-   the game going on. Its line in the log, the pause now and before it or why it didn't happen, the same words in text
-   (size bytes, 0 for none) */
+   the game going on. Its line in the log, the pause now and before it or why it didn't happen; in text the pause now
+   alone ("Pause: on") or why (size bytes, 0 for none) */
 int game_pause_toggle(char* text, size_t size);
 /* an unattended run's pauses (the pause setting), at each pass of the frontend's loop */
 void pause_unattended(void);

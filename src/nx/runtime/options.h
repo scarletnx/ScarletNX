@@ -90,11 +90,11 @@ void ini_poll(int final);
 extern _Atomic int g_opt_fps;                      /* atomic: the game's threads read it */
 void fps_limit_text(int fps, char* out, size_t n); /* g_opt_fps as fps_limit's value: "game", "0", "30"... */
 /* hotkey_fps_limit's, on the frontend's thread: the limit off, *was the one it took off, or back from off to *was (0
-   for none yet: the game's pace), written to the .ini. Its line in the log, the limit now and before it, the same words
-   in text (size bytes, 0 for none), and the limit now */
+   for none yet: the game's pace), written to the .ini. Its line in the log, the limit now and before it, the limit now
+   alone in text, the notification's ("FPS limit: off", size bytes, 0 for none), and the limit now */
 int options_fps_limit_step(int* was, char* text, size_t size);
 /* hotkey_showcase's and hotkey_stats's: the setting off or on, written to the .ini. Its line in the log, the setting now
-   and before it and, when on, the corner it draws in; the same words without the corner in text (size bytes, 0 for
+   and before it and, when on, the corner it draws in; the setting now alone in text ("Stats: on", size bytes, 0 for
    none); and the setting now */
 int options_showcase_step(char* text, size_t size);
 int options_stats_step(char* text, size_t size);
@@ -115,7 +115,8 @@ void options_tv_mode_update(void);
 int options_tv_mode_choice(void);
 /* hotkey_tv_mode's and the game's menu's TV mode row's, on the frontend's thread: the next choice round On, Off and
    Auto (step < 0 the other way), in effect at once and for this run only, the .ini's docked as it was. Its line in the
-   log, the same words in text (size bytes, 0 for none), and the choice. The services hear of a new mode on the next
+   log, the choice and the mode in effect; the choice alone in text, but Auto's with the mode it picks ("TV mode: Off",
+   "TV mode: Auto (handheld)", size bytes, 0 for none); and the choice. The services hear of a new mode on the next
    options_tv_mode_update: the menu's pads step it under the input's lock, which hid's change takes */
 int options_tv_mode_step(int step, char* text, size_t size);
 /* ldn, read: local wireless over the LAN (ldn_mitm's protocol), through an Eden room, or off

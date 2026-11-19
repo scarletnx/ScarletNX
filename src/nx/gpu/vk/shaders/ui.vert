@@ -22,7 +22,7 @@ layout(push_constant) uniform Picture {
     uint slow;      // the colour of a bar past slow_from, R G B A bytes
     uint slow_from; // the height past which a bar is slow
     uint ground;    // the backed letters' ground, R G B A bytes (ui.h's UI_BACKED): ui.frag's
-    float fade;     // the faded span's alpha: ui.frag's
+    float fade;     // a faded span's alpha: ui.frag's
     uint ring_at;   // the first word of this frame's region in Ring, where its ring's bytes are (ui.c's ui_record)
 } pc;
 // every frame's region (ui.c's frames_make), a ring's bytes at the start of each: a bar's height in 255ths of the
