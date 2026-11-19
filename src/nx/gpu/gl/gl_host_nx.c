@@ -55,7 +55,7 @@ u32 gl_host_surface_new(u32 w, u32 h) {
     GlSurface* f = &g_gl_host.surfaces[s];
     for (int i = 0; i < 2; i++)
         if (!f->image[i] || f->w != w || f->h != h) {
-            f->image[i] = kmem_alloc(size, MS_KERNEL, PERM_RW);
+            f->image[i] = gl_guest_pages(size);
             f->gpu[i] = f->image[i] ? gmmu_space_alloc(size, 0) : 0;
             if (f->gpu[i]) gmmu_space_map(f->gpu[i], f->image[i], size);
         }
@@ -70,7 +70,7 @@ u32 gl_host_surface_new(u32 w, u32 h) {
                                       .depth = 1}};
         nvn_tex_storage(&f->depth.d, &st);
         f->depth.size = (st.size + 0xffff) & ~0xffffull;
-        f->depth.memory = kmem_alloc(f->depth.size, MS_KERNEL, PERM_RW);
+        f->depth.memory = gl_guest_pages(f->depth.size);
         f->depth.gpu = f->depth.memory ? gmmu_space_alloc(f->depth.size, st.align > 0x10000 ? st.align : 0) : 0;
         if (f->depth.gpu) gmmu_space_map(f->depth.gpu, f->depth.memory, f->depth.size);
     }

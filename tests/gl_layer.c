@@ -43,7 +43,8 @@
 #define NAMES   0x40000u  /* the driver's string table */
 #define SCRATCH 0x50000u  /* where the game keeps its arguments */
 #define HEAP    0x100000u /* kmem_alloc's */
-#define GUEST   (128u << 20) /* two window surfaces with their depth, the draws' 16 MiB ring */
+#define WINDOW  (16u << 20)  /* the kernel's region ends here (its pages: kmem_alloc's), the layer's window starts */
+#define GUEST   (512u << 20) /* two window surfaces with their depth, the draws' 16 MiB ring, textures */
 
 static _Atomic GuestFn slots[(END - MAIN) / 4];
 static u8 guest[GUEST];
@@ -152,11 +153,25 @@ int mem_user_string(char* dst, u64 addr, u64 cap) {
         if (!(dst[i] = (char)guest[addr + i])) return (int)(i + 1);
     return 0;
 }
+/* the address space: the kernel's region small, as the console's GiB is small against a game's textures, and the window
+   past it where the layer maps its memory (mem.c's mem_find_free and mem_map over a bump) */
+MemLayout g_layout = {.base = 0, .end = GUEST, .kern = HEAP, .kern_end = WINDOW};
+static u64 g_window = WINDOW;
+u64 mem_find_free(u64 lo, u64 hi, u64 size, u64 align) {
+    u64 a = (g_window + align - 1) & ~(align - 1);
+    assert(lo >= WINDOW && hi == GUEST);
+    return a >= lo && a + size <= hi ? a : 0;
+}
+int mem_map(u64 addr, u64 size, u32 state, u32 perm) {
+    (void)state, (void)perm;
+    g_window = addr + size;
+    return 0;
+}
 static u64 heap = HEAP;
 u64 kmem_alloc(u64 size, u32 state, u32 perm) {
     u64 a = heap;
     (void)state, (void)perm;
-    if (heap + size > GUEST) return 0;
+    if (heap + size > WINDOW) return 0;
     heap += (size + 0xfff) & ~0xfffull;
     return a;
 }
@@ -821,6 +836,32 @@ int main(void) {
     assert(!strcmp(stops("eglCopyBuffers"),
                    "gl layer: the game called eglCopyBuffers, which the GL layer (gl_layer=1) doesn't implement yet"));
     assert(!driver_ran);
+    /* the layer's memory past the kernel's region, which these 48 MiB of textures alive at once and the surfaces
+       would overrun; then textures made and deleted and a buffer given new data, frame after frame, that take no more */
+    {
+        u32 tex[12], buffer = 0;
+        u64 taken;
+        (void)snx_gl_get_error((u32)ctx); /* what the steps above left */
+        snx_gl_gen_textures((u32)ctx, 12, tex);
+        for (int i = 0; i < 12; i++) {
+            snx_gl_bind_texture((u32)ctx, 0x0de1, tex[i]);
+            snx_gl_tex_image((u32)ctx, 0x0de1, 0, 0x8058, 1024, 1024, 1, 0x1908, 0x1401, 0, 0, 0); /* 4 MiB */
+            assert(!snx_gl_get_error((u32)ctx) && snx_gl_texture(tex[i])->texels);
+        }
+        snx_gl_delete_textures((u32)ctx, 12, tex);
+        snx_gl_gen_buffers((u32)ctx, 1, &buffer);
+        snx_gl_bind_buffer((u32)ctx, 0x8892, buffer);
+        taken = gl_guest_pages_taken();
+        for (int frame = 0; frame < 60; frame++) {
+            u32 t = 0;
+            snx_gl_gen_textures((u32)ctx, 1, &t);
+            snx_gl_bind_texture((u32)ctx, 0x0de1, t);
+            snx_gl_tex_image((u32)ctx, 0x0de1, 0, 0x8058, 1024, 512, 1, 0x1908, 0x1401, 0, 0, 0);
+            snx_gl_buffer_data((u32)ctx, buffer, frame & 1 ? 1 << 20 : 3 << 19, NULL, 0x88e0); /* GL_STREAM_DRAW */
+            snx_gl_delete_textures((u32)ctx, 1, &t);
+        }
+        assert(!snx_gl_get_error((u32)ctx) && gl_guest_pages_taken() == taken);
+    }
     puts("gl_layer: ok");
     return 0;
 }
