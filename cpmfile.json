@@ -107,6 +107,11 @@
         "repo": "ebiggers/libdeflate",
         "version": "v1.26"
     },
+    "libmobile": {
+        "hash": "827a992f36d85ec4b7def7f30c3d6752d286865645cf99ced590e14a9f0e861ae82fd1d81162a45ddf4b55893a4ed486a4c4b7adb7e48396644cbfed950b29ed",
+        "repo": "REONTeam/libmobile",
+        "version": "0704f56902f23b7ebf05c82c222e0e145e3140b6"
+    },
     "lunasvg": {
         "hash": "62cf1433f4d158008ab07c9b6a83dca2322e1adf97a7f30a2021be5610af7b28e2ed54c75292fb382a3dcc6205f0e7b8d815b8a59aa11843a059883203d191c1",
         "repo": "sammycage/lunasvg",

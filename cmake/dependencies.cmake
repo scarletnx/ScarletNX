@@ -373,6 +373,25 @@ add_library(snx_libdeflate STATIC
 target_include_directories(snx_libdeflate SYSTEM PUBLIC "${libdeflate_SOURCE_DIR}")
 snx_quiet(snx_libdeflate)
 
+# libmobile (LGPL-3.0-or-later, REONTeam's), the Mobile Adapter GB on the GBA driver's link port
+# (src/agb/board/mobile.c), for REON's replacement of the adapter's service. Its sources built here, its callbacks the
+# driver's (MOBILE_LIBCONF_USE, no weak ones), its options all off: mobile_config.h written empty
+if(SNX_BUILD_AGB)
+    AddJsonPackage(NAME libmobile DOWNLOAD_ONLY FORCE_BUNDLED_PACKAGE ON)
+    # written only when it changes (file(CONFIGURE)), so a configure rebuilds nothing on its own
+    file(CONFIGURE OUTPUT "${PROJECT_BINARY_DIR}/libmobile/mobile_config.h"
+         CONTENT "/* libmobile's options (its mobile_config.h.in), none set */\n#pragma once\n")
+    add_library(snx_libmobile STATIC
+        "${libmobile_SOURCE_DIR}/callback.c" "${libmobile_SOURCE_DIR}/commands.c" "${libmobile_SOURCE_DIR}/config.c"
+        "${libmobile_SOURCE_DIR}/debug.c" "${libmobile_SOURCE_DIR}/dns.c" "${libmobile_SOURCE_DIR}/inet_pton.c"
+        "${libmobile_SOURCE_DIR}/mobile.c" "${libmobile_SOURCE_DIR}/relay.c" "${libmobile_SOURCE_DIR}/serial.c"
+        "${libmobile_SOURCE_DIR}/util.c")
+    target_include_directories(snx_libmobile SYSTEM PUBLIC "${libmobile_SOURCE_DIR}" "${PROJECT_BINARY_DIR}/libmobile")
+    target_compile_definitions(snx_libmobile PUBLIC MOBILE_LIBCONF_USE)
+    set_target_properties(snx_libmobile PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON POSITION_INDEPENDENT_CODE ON)
+    snx_quiet(snx_libmobile)
+endif()
+
 # The Android app driver's text (src/android/hwui/), fetched only for a build with the driver: HarfBuzz (MIT) shapes
 # it and gives the glyphs' outlines and metrics, built from its one-file amalgamation without FreeType. Its default
 # family is the Noto Sans JP subset of the shared fonts (SIL OFL 1.1, above), which has Latin and the math signs too:

@@ -5,11 +5,13 @@
    native module, then runs on the emulated board, the way the NX and GNU ABI system types prepare their
    code before playing. */
 #include "agb/board/board.h"
+#include "agb/board/mobile.h"
 #include "agb/cpu/agb_cpu.h"
 #include "agb/cpu/memmap.h"
 #include "agb/cpu/recomp.h"
 #include "agb/runtime/host.h"
 #include "agb/runtime/main.h"
+#include "common/network/net.h"
 #include "common/platform/time.h"
 #include "common/utilities/build_info.h"
 #include "common/utilities/cli.h"
@@ -49,6 +51,9 @@ static void usage(FILE* out) {
           "  --registers            Print the CPU's registers when the run ends\n"
           "  --gba-color=gba|raw    The screen's colours: gba as the original GBA's unlit screen shows them\n"
           "                         (default), raw as the game writes them\n"
+          "  --gba-mobile=0|1       1: the Mobile Adapter GB on the link port (libmobile), for REON's service; its\n"
+          "                         configuration in mobile_adapter.bin of the launcher's config folder (default 0)\n"
+          "  --gba-mobile-dns=IPV4  The DNS server the adapter asks when the game gives none (REON's)\n"
           "  --aot-threads=N        The threads a recompile may take (0 to 1024), as the other drivers': a ROM's code\n"
           "                         is one module, which compiles on 1 thread whatever N, and the recompile says so;\n"
           "                         --aot-threads-most=N the same\n"
@@ -174,6 +179,10 @@ int snx_agb_main(int argc, char** argv) {
     char opt = '2';             /* the setting opt's default, or -O's */
     int registers = 0;
     int lcd = 1; /* --gba-color: the original GBA's screen colours, raw the game's (settings.txt's gba_color) */
+    int mobile = 0;              /* --gba-mobile: the Mobile Adapter GB on the cable */
+    uint8_t mobile_dns[4] = {0}; /* --gba-mobile-dns, all zeros for none */
+    int mobile_dns_given = 0;
+    char mobile_dns_text[16] = ""; /* as given, for the line that says it */
     SnxCli cli;
     snx_cli_init(&cli, "scarletnx-agb", agb_cli);
     for (int i = 1; i < argc; ++i) {
@@ -217,6 +226,21 @@ int snx_agb_main(int argc, char** argv) {
                 return 2;
             }
             lcd = !strcmp(value, "gba");
+        } else if (value && !strcmp(key, "gba_mobile")) {
+            if (strcmp(value, "0") && strcmp(value, "1")) {
+                fprintf(stderr, "scarletnx-agb: --gba-mobile=%s is not 0 or 1\n", value);
+                snx_cli_free(&cli);
+                return 2;
+            }
+            mobile = value[0] == '1';
+        } else if (value && !strcmp(key, "gba_mobile_dns")) {
+            mobile_dns_given = value[0] != 0;
+            snprintf(mobile_dns_text, sizeof mobile_dns_text, "%s", value);
+            if (mobile_dns_given && !snx_net_parse_ipv4(value, mobile_dns)) {
+                fprintf(stderr, "scarletnx-agb: --gba-mobile-dns=%s is not an IPv4 address such as 10.0.0.53\n", value);
+                snx_cli_free(&cli);
+                return 2;
+            }
         } else if (!strcmp(argv[i], "--registers"))
             registers = 1;
         else if (!strcmp(argv[i], "--"))
@@ -290,6 +314,20 @@ int snx_agb_main(int argc, char** argv) {
         path = rom;
         agb_board_init(&board);
         agb_ppu_lcd(&board, lcd);
+        if (mobile) { /* the adapter's configuration is the launcher's, kept whatever game plays */
+            char *config = snx_menu_dir(data ? data : folder, SNX_USER_CONFIG), *file = NULL;
+            if (config && !snx_mkdirs(config)) file = snx_path_join(config, "mobile_adapter.bin");
+            board.mobile =
+                file ? agb_mobile_open(file, mobile_dns_given ? mobile_dns : NULL, error, sizeof error) : NULL;
+            if (!board.mobile)
+                fprintf(stderr, "scarletnx-agb: gba_mobile=1: %s: the game plays with no adapter on the cable\n",
+                        file ? error : "the launcher's config folder cannot be made");
+            else
+                printf("The Mobile Adapter GB is on the cable, its configuration %s, its DNS server %s\n", file,
+                       mobile_dns_given ? mobile_dns_text : "the game's");
+            free(file);
+            free(config);
+        }
         if (!multiboot_rom(path) && agb_board_insert(&board, image, length, error, sizeof error)) {
             fprintf(stderr, "scarletnx-agb: %s: %s\n", path, error);
             free(image);
@@ -461,6 +499,7 @@ int snx_agb_main(int argc, char** argv) {
                 told_swi_number = cpu.unknown_swi;
             }
             if (host) agb_host_frame(host, board.ppu.framebuffer, audio, written);
+            if (board.mobile) agb_mobile_loop(board.mobile); /* each frame: well within libmobile's 100 ms */
             if (board.save.dirty && written_at < 0) written_at = frame;
             if (written_at >= 0 && frame - written_at >= SAVE_QUIET_FRAMES && board.save.dirty &&
                 agb_save_size(&board)) {
