@@ -4655,6 +4655,215 @@ static void test_fragment_unfed(const char* dir) {
     CHECK(inputs_of[0] == inputs_of[1] + 1); /* the generic's Input, beside FragCoord */
 }
 
+/* FMUL of a perspective input's IPA by MUFU.RCP of IPA's read of a[0x7c] (sm86_translate.c's fmul_over_w): the input
+   as Vulkan interpolates it, with neither the multiply by gl_FragCoord.w that ipa_input makes to rebuild the console's
+   attr / w nor the FMUL's. A program's OpFMul (133) are then its perspective IPAs' alone, one each; an FMUL kept adds
+   its own, in any rounding mode. A modifier or a scale on the way, another multiplier, a guard, a write of either register
+   that may reach the FMUL on some path, an a[0x7c] read at another frequency, and an input that isn't perspective at
+   frequency 0 keep it. Run on the CPU (support/spv_eval.c) with generic 0's x 0.7 and gl_FragCoord.w 7, where the two
+   multiplies give 0.70000005: the fold gives the input's bits whatever w is, and the FMUL's .SAT still clamps them */
+static Word fold_ipa(u32 dst, u32 addr) { /* IPA Rd, a[addr], at the default place and frequency */
+    Word x = fix(0x326);
+    set(&x, 16, 8, dst);
+    set(&x, 32, 8, 255);
+    set(&x, 64, 8, addr >> 2);
+    set(&x, 81, 3, 7);
+    return x;
+}
+static Word fold_mufu(u32 dst, u32 b, u32 fn) { /* MUFU.<fn> Rd, Rb: 4 RCP, 5 RSQ */
+    Word x = alu(0x108, 1, dst, 255);
+    set(&x, 32, 8, b);
+    set(&x, 64, 8, 255);
+    set(&x, 74, 6, fn);
+    return x;
+}
+static Word fold_fmul(u32 dst, u32 a, u32 b) { /* FMUL Rd, Ra, Rb, rounding to nearest with no scale */
+    Word x = alu(0x020, 1, dst, a);
+    set(&x, 32, 8, b);
+    set(&x, 64, 8, 255);
+    set(&x, 84, 3, 4);
+    return x;
+}
+static Word fold_with(Word x, unsigned lo, unsigned n, u64 v) {
+    set(&x, lo, n, v);
+    return x;
+}
+/* the fragment program of n instructions and its EXIT, render target 0 from R0-R3, generic 0's components
+   interpolated as imap says (the SPH's byte 0x18, 2 bits a component), translated */
+static u32* fold_fs(const Word* insns, u32 n, u32 imap, ShaderInfo* si, size_t* count) {
+    u8 code[16 * 24] = {0};
+    for (u32 i = 0; i < n; i++) put(code, i, insns[i]);
+    put(code, n, exit_insn());
+    put(code, n + 1, bra(n + 1, n + 1, 7, 0));
+    u32 fsph[32] = {0};
+    fsph[0] = sph0(2, 5);
+    fsph[6] = imap;
+    fsph[18] = 0xf;
+    *si = (ShaderInfo){0};
+    u32* spv = sm86_to_spirv(code, (n + 2) * 16, ST_FS, fsph, si, count);
+    if (!spv) fprintf(stderr, "perspective fold: %s\n", si->first_unsupported);
+    return spv;
+}
+/* folds: whether the FMULs fold, the program's OpFMul being then its perspective IPAs' and its other multiplies
+   (others) alone */
+static void fold_case(const Word* insns, u32 n, u32 imap, u32 others, int folds, const char* what) {
+    ShaderInfo si;
+    size_t count = 0;
+    u32* spv = fold_fs(insns, n, imap, &si, &count);
+    u32 at[64], found = spv ? spv_find(spv, count, 133 /* OpFMul */, at, 64) : 0;
+    int ok = spv && (folds ? found == others : found > others);
+    if (!ok) fprintf(stderr, "perspective fold: %s: %u multiplies, %s %u\n", what, found, folds ? "" : "over", others);
+    CHECK(ok);
+    free(spv);
+}
+/* R0 of the program run with generic 0's x and gl_FragCoord.w as given, 1 when it ran */
+static int fold_run(const Word* insns, u32 n, float x, float w, u32* r0) {
+    ShaderInfo si;
+    size_t count = 0;
+    u32* spv = fold_fs(insns, n, 0xaa, &si, &count);
+    if (!spv) return 0;
+    SpvEvalEnv env = {0};
+    env.in[0][0] = f2u(x);
+    for (u32 k = 0; k < 3; k++) env.builtin[15][k] = f2u(1.0f); /* FragCoord */
+    env.builtin[15][3] = f2u(w);
+    const char* why = spv_eval(spv, count, &env);
+    free(spv);
+    if (why) fprintf(stderr, "perspective fold: the evaluator stops at %s\n", why);
+    *r0 = env.out[0][0];
+    return !why;
+}
+static void test_perspective_fold(const char* dir) {
+    const Word w = fold_ipa(4, 0x7c), rcp = fold_mufu(4, 4, 4), x = fold_ipa(0, 0x80), mul = fold_fmul(0, 0, 4);
+    const Word one = mov_imm(5, f2u(1.0f)), r4 = mov_imm(4, f2u(1.0f));
+    const Word folds[] = {w, rcp, x, mul};
+    fold_case(folds, 4, 0xaa, 1, 1, "FMUL of a perspective IPA by 1 / a[0x7c] is the input with no multiply");
+    fold_case(folds, 4, 0x02, 1, 1, "a generic whose first used component is perspective folds the same");
+    const Word swapped[] = {w, rcp, x, fold_fmul(0, 4, 0)};
+    fold_case(swapped, 4, 0xaa, 1, 1, "FMUL by 1 / a[0x7c] times the IPA folds too");
+    const Word into_rcp[] = {w, rcp, x, fold_fmul(4, 0, 4)};
+    fold_case(into_rcp, 4, 0xaa, 1, 1, "an FMUL that writes the reciprocal's own register folds too");
+    const Word ftz[] = {w, rcp, x, fold_with(mul, 80, 1, 1)};
+    /* the flush of its result is the one multiply more: by 0, for the subnormal's signed zero */
+    fold_case(ftz, 4, 0xaa, 2, 1, "FMUL.FTZ folds and keeps its flush");
+    const Word saturated[] = {w, rcp, x, fold_with(mul, 77, 1, 1)};
+    fold_case(saturated, 4, 0xaa, 1, 1, "FMUL.SAT folds and keeps its clamp");
+    /* an IPA writes one register: one into R3 leaves the reciprocal in R4 */
+    fold_case((const Word[]){w, rcp, fold_ipa(3, 0x84), x, mul}, 5, 0xaa, 2, 1,
+              "an IPA into the register below the reciprocal's leaves it to the FMUL");
+    const Word two[] = {w, rcp, x, fold_ipa(1, 0x84), mul, fold_fmul(1, 1, 4)};
+    fold_case(two, 6, 0xaa, 2, 1, "each component's FMUL by the one reciprocal folds");
+    /* the reciprocal before a forward branch over code that writes neither register, or before a loop that doesn't */
+    const Word across[] = {w, rcp, x, bra(3, 5, 0, 0), one, mul};
+    fold_case(across, 6, 0xaa, 1, 1, "the operands reach the FMUL across a branch over other writes");
+    const Word loop[] = {w, rcp, x, fold_fmul(1, 0, 4), one, bra(5, 3, 0, 0)};
+    fold_case(loop, 6, 0xaa, 1, 1, "the operands reach the FMUL in a loop that writes other registers");
+
+    /* a modifier or a scale on the FMUL */
+    fold_case((const Word[]){w, rcp, x, fold_with(mul, 72, 1, 1)}, 4, 0xaa, 1, 0, "FMUL of -IPA keeps both");
+    fold_case((const Word[]){w, rcp, x, fold_with(mul, 73, 1, 1)}, 4, 0xaa, 1, 0, "FMUL of |IPA| keeps both");
+    fold_case((const Word[]){w, rcp, x, fold_with(mul, 63, 1, 1)}, 4, 0xaa, 1, 0, "FMUL by -1 / w keeps both");
+    fold_case((const Word[]){w, rcp, x, fold_with(mul, 62, 1, 1)}, 4, 0xaa, 1, 0, "FMUL by |1 / w| keeps both");
+    /* one game's interpolation is FMUL.RZ.FTZ, its product rounded toward zero on doubles */
+    fold_case((const Word[]){w, rcp, x, fold_with(fold_with(mul, 78, 2, 3), 80, 1, 1)}, 4, 0xaa, 2, 1,
+              "FMUL.RZ.FTZ folds too");
+    fold_case((const Word[]){w, rcp, x, fold_with(mul, 84, 3, 3)}, 4, 0xaa, 1, 0, "FMUL.D2 keeps both");
+    /* another multiplier */
+    /* with a MUFU.RCP into the same register after the FMUL, the RSQ the one that reaches it */
+    fold_case((const Word[]){w, fold_mufu(4, 4, 5), x, mul, rcp}, 5, 0xaa, 1, 0, "MUFU.RSQ of a[0x7c] keeps both");
+    fold_case((const Word[]){w, fold_with(rcp, 62, 1, 1), x, mul}, 4, 0xaa, 1, 0, "MUFU.RCP of |a[0x7c]| keeps both");
+    fold_case((const Word[]){w, fold_with(rcp, 63, 1, 1), x, mul}, 4, 0xaa, 1, 0, "MUFU.RCP of -a[0x7c] keeps both");
+    fold_case((const Word[]){w, fold_with(rcp, 73, 1, 1), x, mul}, 4, 0xaa, 1, 0, "MUFU.RCP.F16 keeps both");
+    fold_case((const Word[]){w, x, mul}, 3, 0xaa, 1, 0, "FMUL by a[0x7c] itself keeps both");
+    fold_case((const Word[]){w, fold_mufu(5, 4, 4), fold_fmul(0, 4, 5)}, 3, 0xaa, 0, 0,
+              "FMUL of a[0x7c] by its reciprocal keeps its multiply");
+    /* an immediate's operand field reads as R0, where the input is */
+    fold_case((const Word[]){w, rcp, x, fold_with(fold_with(alu(0x020, 4, 1, 4), 32, 32, f2u(2.0f)), 84, 3, 4)}, 4,
+              0xaa, 1, 0, "FMUL of the reciprocal by an immediate keeps its multiply");
+    Word rcp_imm = fold_with(alu(0x108, 4, 4, 255), 32, 32, f2u(2.0f));
+    fold_case((const Word[]){fold_ipa(0, 0x7c), fold_with(rcp_imm, 74, 6, 4), fold_ipa(1, 0x80), fold_fmul(1, 1, 4)}, 4,
+              0xaa, 1, 0, "MUFU.RCP of an immediate keeps both");
+    /* an FMUL into the input's register whose fields read as IPA a[0x80]'s */
+    fold_case((const Word[]){w, rcp, x, fold_with(fold_fmul(0, 0, 255), 64, 8, 0x80 >> 2), mul}, 5, 0xaa, 2, 0,
+              "an FMUL that writes the input's register keeps both");
+    fold_case((const Word[]){w, fold_fmul(4, 4, 4), x, mul}, 4, 0xaa, 1, 0, "FMUL by an FMUL of a[0x7c] keeps both");
+    /* the same FMUL with MUFU's function field, 74-79, as RCP's; and one with IPA's address field, 64-71, as a[0x7c]'s,
+       that the reciprocal is of */
+    fold_case((const Word[]){w, fold_with(fold_fmul(4, 4, 4), 74, 6, 4), x, mul, rcp}, 5, 0xaa, 2, 0,
+              "FMUL by an FMUL whose bits read as MUFU.RCP's keeps both");
+    fold_case((const Word[]){w, fold_with(fold_fmul(4, 4, 4), 64, 8, 0x7c >> 2), rcp, x, mul}, 5, 0xaa, 2, 0,
+              "the reciprocal of an FMUL whose bits read as IPA a[0x7c]'s keeps both");
+    fold_case((const Word[]){fold_with(w, 78, 2, 1), rcp, x, mul}, 4, 0xaa, 1, 0,
+              "the reciprocal of a[0x7c] read at another frequency keeps both");
+    fold_case((const Word[]){fold_ipa(4, 0x8c), rcp, x, mul}, 4, 0xaa, 2, 0,
+              "the reciprocal of a generic's w keeps both");
+    fold_case((const Word[]){mov_imm(4, 0x40e00000u), rcp, x, mul}, 4, 0xaa, 1, 0,
+              "the reciprocal of a constant keeps both");
+    /* a guard, or a write that may reach the FMUL on some path */
+    fold_case((const Word[]){w, predicated(rcp, 0), x, mul}, 4, 0xaa, 1, 0, "a reciprocal under P0 keeps both");
+    fold_case((const Word[]){w, predicated(w, 0), rcp, x, mul}, 5, 0xaa, 1, 0, "a[0x7c] read under P0 keeps both");
+    fold_case((const Word[]){w, rcp, x, predicated(x, 0), mul}, 5, 0xaa, 2, 0, "an input read under P0 keeps both");
+    fold_case((const Word[]){w, rcp, r4, x, mul}, 5, 0xaa, 1, 0, "a write of the multiplier after it keeps both");
+    fold_case((const Word[]){w, r4, rcp, x, mul}, 5, 0xaa, 1, 0, "a write of a[0x7c]'s register keeps both");
+    fold_case((const Word[]){w, rcp, x, mov_imm(0, f2u(1.0f)), mul}, 5, 0xaa, 1, 0,
+              "a write of the input's register keeps both");
+    fold_case((const Word[]){w, rcp, x, bra(3, 5, 0, 0), r4, mul}, 6, 0xaa, 1, 0,
+              "a write of the multiplier on one side of a branch keeps both");
+    fold_case((const Word[]){r4, bra(1, 3, 0, 0), w, rcp, x, mul}, 6, 0xaa, 1, 0,
+              "a[0x7c] read on one side of a branch only keeps both");
+    fold_case((const Word[]){w, rcp, mov_imm(0, f2u(1.0f)), bra(3, 5, 0, 0), x, mul}, 6, 0xaa, 1, 0,
+              "the input read on one side of a branch only keeps both");
+    fold_case((const Word[]){w, rcp, x, fold_fmul(1, 0, 4), r4, bra(5, 3, 0, 0)}, 6, 0xaa, 1, 0,
+              "a write of the multiplier later in a loop around the FMUL keeps both");
+    /* the multiply by gl_FragCoord.w is a perspective input's at frequency 0 alone: none to take back elsewhere */
+    fold_case(folds, 4, 0xff, 0, 0, "FMUL of a screen-linear input keeps its multiply");
+    fold_case(folds, 4, 0x55, 0, 0, "FMUL of a flat input keeps its multiply");
+    fold_case((const Word[]){w, rcp, fold_with(x, 78, 2, 1), mul}, 4, 0xaa, 0, 0,
+              "FMUL of an input read at another frequency keeps its multiply");
+
+    /* on the CPU: the fold's R0 is the input's bits for any w; the same arithmetic with |1 / w| rounds twice */
+    volatile float vx = 0.7f, vw = 7.0f;
+    const float twice = vx * vw * (1.0f / vw);
+    CHECK(f2u(twice) != f2u(vx));
+    const float ws[] = {7.0f, 1e-30f, 1e30f, 0.0f, INFINITY, NAN};
+    u32 r0 = 0;
+    for (size_t k = 0; k < sizeof ws / sizeof *ws; k++) {
+        int ran = fold_run(folds, 4, vx, ws[k], &r0);
+        if (!ran || r0 != f2u(vx)) fprintf(stderr, "perspective fold: w %g: R0 %08x, not %08x\n", ws[k], r0, f2u(vx));
+        CHECK(ran && r0 == f2u(vx));
+    }
+    const Word kept[] = {w, rcp, x, fold_with(mul, 62, 1, 1)}; /* |1 / w|, which is 1 / w here */
+    CHECK(fold_run(kept, 4, vx, vw, &r0) && r0 == f2u(twice));
+    CHECK(fold_run(folds, 4, 3e38f, 4.0f, &r0) && r0 == f2u(3e38f));
+    CHECK(fold_run(kept, 4, 3e38f, 4.0f, &r0) && r0 == f2u(INFINITY));
+    CHECK(fold_run(ftz, 4, vx, vw, &r0) && r0 == f2u(vx));
+    const Word rz[] = {w, rcp, x, fold_with(fold_with(mul, 78, 2, 3), 80, 1, 1)};
+    CHECK(fold_run(rz, 4, vx, vw, &r0) && r0 == f2u(vx));
+    CHECK(fold_run(ftz, 4, -0x1p-140f, vw, &r0) && r0 == 0x80000000u); /* a subnormal input flushed, its sign kept */
+    const float clamps[][2] = {{1.5f, 1.0f}, {-0.25f, 0.0f}, {NAN, 0.0f}};
+    for (size_t k = 0; k < sizeof clamps / sizeof *clamps; k++)
+        CHECK(fold_run(saturated, 4, clamps[k][0], vw, &r0) && r0 == f2u(clamps[k][1]));
+    ShaderInfo si;
+    size_t count = 0;
+    u32* spv = fold_fs(folds, 4, 0xaa, &si, &count);
+    CHECK(spv && keep_module(dir, "fs_perspective_fold", spv, count));
+    free(spv);
+    /* a legacy texture coordinate (a[0x300], generic 22), perspective by the header's texture coordinate map (word
+       15): its FMUL by the reciprocal folds as a generic's does, to generic 22's input */
+    u8 code[16 * 8] = {0};
+    const Word legacy[] = {w, rcp, fold_ipa(0, 0x300), mul};
+    for (u32 i = 0; i < 4; i++) put(code, i, legacy[i]);
+    put(code, 4, exit_insn());
+    put(code, 5, bra(5, 5, 7, 0));
+    u32 fsph[32] = {0};
+    fsph[0] = sph0(2, 5);
+    fsph[15] = 0xaa;
+    fsph[18] = 0xf;
+    SpvEvalEnv env = {0};
+    env.in[22][0] = f2u(vx);
+    env.builtin[15][3] = f2u(vw);
+    CHECK(run_stage(ST_FS, code, 6, fsph, &env) && env.out[0][0] == f2u(vx));
+}
+
 /* the pass over the shipped programs leaves a task or mesh program to its draw: it finds their ISBE accesses */
 static void test_uses_isbe(void) {
     u8 code[16 * 40] = {0};
@@ -6862,6 +7071,7 @@ int main(int argc, char** argv) {
     test_geometry_adjacency();
     test_fragment_per_primitive(dir);
     test_fragment_unfed(dir);
+    test_perspective_fold(dir);
     test_uses_isbe();
     test_warp_matrix(dir);
     test_hfma2_once(dir);

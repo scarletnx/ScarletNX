@@ -157,6 +157,10 @@ typedef struct {
     BrxTable* brx_table; /* by instruction, the jump table that brx_resolve found for its BRX */
     int brx_resolved;    /* brx_resolve has looked for the tables */
     u32 cur;         /* the instruction being written */
+    /* the registers an IPA that ipa_over_w takes writes, and those a MUFU.RCP writes, a bit each, made at the first
+       FMUL fmul_over_w looks at: an FMUL of two others needs no search */
+    u32 over_w_ipa[8], over_w_rcp[8];
+    int over_w_known;
     u32 branch_cond; /* the condition of the BRA that ends the body before, 0 for always */
     u32 branch_target; /* the instruction that the BRX which ends the body before goes to */
     /* a task or mesh program's ISBE (isbe_var): a mesh program's attribute area and map (Workgroup), a task
@@ -2769,9 +2773,10 @@ static int reg_const_at(Ctx* c, u32 i, u32 r, u32* value) {
     return 1;
 }
 /* may_write, of the words an instruction really writes where its type tells: an ALU's result is one but for those of
-   64 bits, and an LDC's as its size says */
+   64 bits, an IPA's one, and an LDC's as its size says */
 static int writes_word(const Sm86Insn* in, u32 r) {
     if (!may_write(in, r)) return 0;
+    if (in->op == SM86_IPA) return r == in->dst;
     if (in->op == SM86_LDC) return r < in->dst + (sm86_field(in, 73, 3) == 5 ? 2u : 1u);
     if (sm86_ops[in->op].kind != SM86_K_ALU) return 1;
     switch (in->op) {
@@ -4440,9 +4445,8 @@ static u32 ballot32(Ctx* c, u32 pred) {
     return SPV(&c->e, SPV_OP_VECTOR_EXTRACT_DYNAMIC, c->t_u32, all, half);
 }
 
-/* IPA of component k of generic input i: at the centroid (loc 1) or the default place, and with the program's
-   multiply by w taken back for a perspective input of frequency 0 */
-static u32 ipa_input(Ctx* c, u32 i, u32 k, u32 loc, u32 freq) {
+/* component k of generic input i as Vulkan interpolates it, at the centroid (loc 1) or the default place */
+static u32 ipa_attr(Ctx* c, u32 i, u32 k, u32 loc) {
     u32 v = to_f(c, input_load(c, i, k));
     if (loc == 1 && c->in_attr[i] && !(c->centroid_mask & (1u << i))) {
         /* a variable has one location: centroid when any IPA of the input asks for it. An input that no stage
@@ -4451,6 +4455,12 @@ static u32 ipa_input(Ctx* c, u32 i, u32 k, u32 loc, u32 freq) {
         spv_emit_decorate(&c->e, c->in_attr[i], SPV_DECORATION_CENTROID, NULL, 0);
         c->centroid_mask |= 1u << i;
     }
+    return v;
+}
+/* IPA of component k of generic input i, with the program's multiply by w taken back for a perspective input of
+   frequency 0 */
+static u32 ipa_input(Ctx* c, u32 i, u32 k, u32 loc, u32 freq) {
+    u32 v = ipa_attr(c, i, k, loc);
     /* The hardware interpolates attr/w for a perspective input, and the program multiplies by w (the reciprocal of
        a[0x7c]). Vulkan's input is attr itself: times the interpolated 1/w, FragCoord.w */
     if (interp_mode(c, i) == 2 && freq == 0) {
@@ -4458,6 +4468,61 @@ static u32 ipa_input(Ctx* c, u32 i, u32 k, u32 loc, u32 freq) {
         spv_emit_no_contraction(&c->e, v);
     }
     return v;
+}
+/* the last instruction before i in program order that writes register r (writes_word), -1 for none */
+static int nearest_write(Ctx* c, u32 i, u32 r) {
+    for (u32 j = i; j-- > 0;)
+        if (writes_word(&c->in[j], r)) return (int)j;
+    return -1;
+}
+/* the attribute address the IPA at k reads where ipa_input multiplies it by FragCoord.w (a perspective generic at
+   frequency 0, read as the IPA case reads it, which refuses the program for the IPA forms it doesn't take), 0 for
+   another */
+static u32 ipa_over_w(Ctx* c, u32 k) {
+    const Sm86Insn* in = &c->in[k];
+    if (in->op != SM86_IPA || sm86_field(in, 78, 2)) return 0;
+    u32 addr = sm86_field(in, 64, 8) * 4;
+    if (shader_legacy_group(addr) >= 0) addr = shader_legacy_address(addr);
+    return addr >= 0x80 && addr < 0x280 && interp_mode(c, (addr - 0x80) >> 4) == 2 ? addr : 0;
+}
+/* the FMUL at i, with no scale, of two registers with no modifier: one an IPA's that ipa_input multiplied by
+   FragCoord.w (ipa_over_w), the other MUFU.RCP, with no modifier, of IPA's read of a[0x7c] at frequency 0, which is
+   FragCoord.w. Each the one write that reaches its use however control went (reaching_write). That product is the
+   input itself: as Vulkan interpolates it, with neither multiply, whose roundings (the FMUL's in its own mode, toward
+   zero in one game's programs) and infinity past the float range it doesn't take. 0 for another FMUL */
+static u32 fmul_over_w(Ctx* c, u32 i) {
+    const Sm86Insn* in = &c->in[i];
+    if (sm86_field(in, 84, 3) != 4 || in->b.kind != SM86_SRC_REG || in->a.neg || in->a.abs || in->b.neg || in->b.abs)
+        return 0;
+    if (!c->over_w_known) {
+        for (u32 j = 0; j < c->n; j++) {
+            const Sm86Insn* x = &c->in[j];
+            if (x->dst >= SM86_RZ) continue;
+            if (ipa_over_w(c, j)) c->over_w_ipa[x->dst >> 5] |= 1u << (x->dst & 31);
+            if (x->op == SM86_MUFU && sm86_field(x, 74, 6) == 4) c->over_w_rcp[x->dst >> 5] |= 1u << (x->dst & 31);
+        }
+        c->over_w_known = 1;
+    }
+    for (u32 side = 0; side < 2; side++) {
+        /* each operand's write before it in program order first, which costs no walk of the flow, then the walks that
+           prove it the one that reaches it */
+        u32 ra = side ? in->b.reg : in->a.reg, rb = side ? in->a.reg : in->b.reg;
+        if (!(c->over_w_ipa[ra >> 5] >> (ra & 31) & 1) || !(c->over_w_rcp[rb >> 5] >> (rb & 31) & 1)) continue;
+        int k = nearest_write(c, i, ra), m = nearest_write(c, i, rb);
+        u32 addr = k >= 0 ? ipa_over_w(c, (u32)k) : 0;
+        if (!addr || m < 0) continue;
+        const Sm86Insn* r = &c->in[m];
+        if (r->op != SM86_MUFU || sm86_field(r, 74, 6) != 4 || sm86_field(r, 73, 1) || r->b.kind != SM86_SRC_REG ||
+            r->b.neg || r->b.abs)
+            continue;
+        int w = nearest_write(c, (u32)m, r->b.reg);
+        if (w < 0) continue;
+        const Sm86Insn* v = &c->in[w];
+        if (v->op == SM86_IPA && sm86_field(v, 64, 8) * 4 == 0x7c && !sm86_field(v, 78, 2) &&
+            reaching_write(c, i, ra) == k && reaching_write(c, i, rb) == m && reaching_write(c, (u32)m, r->b.reg) == w)
+            return ipa_attr(c, (addr - 0x80) >> 4, (addr >> 2) & 3, sm86_field(&c->in[k], 76, 2));
+    }
+    return 0;
 }
 
 /* ---- one instruction ---- */
@@ -4859,8 +4924,11 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
             int on = (int)sm86_field(in, 80, 1);
             u32 mode = sm86_field(in, 78, 2), scale = sm86_field(in, 84, 3), v;
             note_ftz(c, on);
-            u32 x = ftz(c, src_f(c, &in->a), on);
-            if (op == SM86_FADD)
+            u32 attr = op == SM86_FMUL ? fmul_over_w(c, c->cur) : 0;
+            u32 x = attr ? 0 : ftz(c, src_f(c, &in->a), on);
+            if (attr)
+                v = attr;
+            else if (op == SM86_FADD)
                 v = float_add(c, mode, x, ftz(c, src_f(c, second(in)), on));
             else if (op == SM86_FMUL) {
                 if (!scale) {
