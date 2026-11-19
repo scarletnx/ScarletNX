@@ -25,6 +25,7 @@
 #include "nx/gpu/vk/vk.h"
 #include "nx/runtime/options.h"
 #include "nx/runtime/platform/log.h"
+#include "nx/runtime/platform/hotkeys.h"
 #include "nx/runtime/platform/overlay.h"
 #include "nx/runtime/platform/plat.h"
 #include "nx/runtime/platform/stats.h"
@@ -72,6 +73,8 @@ static struct {
     unsigned writing, writes;
     u64 since;
 } g_renderdoc = {.lock = PMUTEX_INIT};
+/* a notice's line over the game, after the capture key's icon */
+static void rd_notice(const char* text) { overlay_notice(overlay_key_icon(HOTKEY_CAPTURE), text); }
 
 void vk_renderdoc_load(void) {
     const char *prefix = g_settings.render_doc_captures, *frames = g_settings.render_doc_frames, *p;
@@ -131,7 +134,7 @@ int vk_renderdoc_capture(int ask) {
     }
     if (ask) {
         atomic_store_explicit(&g_renderdoc.asked, 1, memory_order_release);
-        overlay_notice(RD_CAPTURING);
+        rd_notice(RD_CAPTURING);
         LOG("renderdoc: a capture is asked: the frame after the next present\n");
     }
     return 1;
@@ -217,7 +220,7 @@ static void rd_written(RENDERDOC_API_1_1_2* rd, unsigned n, u64 secs, const char
         snprintf(line, sizeof line, "%s%s (%s)", lead, name, size);
     else
         snprintf(line, sizeof line, "%s...%s (%s)", lead, name + len - (room - 3), size);
-    overlay_notice(line);
+    rd_notice(line);
     stats_capture(&shown);
 }
 /* a capture that wrote no file after secs, what it held: in the log with what to read, over the game, the stats box
@@ -228,7 +231,7 @@ static void rd_failed(RENDERDOC_API_1_1_2* rd, u64 secs, const char* what) {
          (unsigned long long)secs);
     snprintf(line, sizeof line, "RenderDoc: capture failed after %llu s, no file written (see its log)",
              (unsigned long long)secs);
-    overlay_notice(line);
+    rd_notice(line);
     stats_capture(&(SnxStatsCapture){.ready = 1, .taken = rd->GetNumCaptures(), .failed = 1});
 }
 /* RenderDoc's own capture, seen at an earlier present, which it writes in the present that ends it: written once
@@ -286,7 +289,7 @@ void vk_renderdoc_present(u64 present) {
         /* RenderDoc's own, its program's: it writes it in the swapchain's present that ends the frame */
         g_renderdoc.theirs = 1;
         g_renderdoc.before = rd->GetNumCaptures();
-        overlay_notice(RD_CAPTURING);
+        rd_notice(RD_CAPTURING);
         LOG("renderdoc: RenderDoc's own capture runs, from present %llu: the game stops while it writes\n",
             (unsigned long long)present);
         rd_write_begin();

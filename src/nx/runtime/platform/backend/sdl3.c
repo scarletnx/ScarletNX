@@ -1214,10 +1214,17 @@ static int key_action(const SDL_KeyboardEvent* k) {
                    hotkey_row(also)->key, hotkey_row(a)->key);
     return a;
 }
-/* a line over the game for a few seconds, from the frontend's thread: the renderer draws it under ui_lock */
-static void toast(const char* text) {
+/* a line over the game for a few seconds, from the frontend's thread: the renderer draws it under ui_lock. After the
+   icon of the runtime key that did it (overlay_key_icon) */
+static void toast(int action, const char* text) {
     ui_lock();
-    overlay_toast(text, plat_ns());
+    overlay_toast(overlay_key_icon(action), text, plat_ns());
+    ui_unlock();
+}
+/* the same for a setting it changed (key, the .ini's), after the icon the launcher's Settings give the setting */
+static void setting_toast(const char* key, const char* text) {
+    ui_lock();
+    overlay_setting_toast(key, text, plat_ns());
     ui_unlock();
 }
 /* a runtime key's action, which the game's menu's F1 page lists (overlay.c's keys_row) with the game's buttons of
@@ -1242,14 +1249,14 @@ static void hotkey(int action) {
                started off */
             char text[64];
             options_fps_limit_step(&g_sdl3.fps_was, text, sizeof text);
-            toast(text);
+            setting_toast("fps_limit", text);
             break;
         }
         case HOTKEY_THREAD_DUMP: kernel_dump_threads(); break;
         case HOTKEY_SHOWCASE: {
             char text[64];
             options_showcase_step(text, sizeof text);
-            toast(text);
+            setting_toast("showcase", text);
             break;
         }
         case HOTKEY_SAVE_STATE: state_ask(STATE_SAVE, -1); break;
@@ -1258,7 +1265,7 @@ static void hotkey(int action) {
         case HOTKEY_STATS: {
             char text[64];
             options_stats_step(text, sizeof text);
-            toast(text);
+            setting_toast("stats", text);
             break;
         }
 #if defined(SNX_TRACY)
@@ -1270,7 +1277,7 @@ static void hotkey(int action) {
             char text[96];
             game_pause_toggle(text, sizeof text);
             title_paused(game_paused());
-            toast(text);
+            toast(HOTKEY_PAUSE, text);
             break;
         }
         case HOTKEY_CAPTURE: g_renderer->capture(1); break;
@@ -1281,14 +1288,14 @@ static void hotkey(int action) {
             else {
                 char text[96];
                 snx_quit_warning(text, sizeof text, hotkey_text(HOTKEY_QUIT));
-                toast(text);
+                toast(HOTKEY_QUIT, text);
                 LOG("%s\n", text);
             }
             break;
         case HOTKEY_TV_MODE: {
             char text[64];
             options_tv_mode_step(1, text, sizeof text);
-            toast(text);
+            setting_toast("docked", text);
             break;
         }
         case HOTKEY_UPSCALER: /* for the run: the .ini keeps its own */
@@ -1297,7 +1304,7 @@ static void hotkey(int action) {
             char text[64];
             if (!now) break;
             snprintf(text, sizeof text, "%s: %s", action == HOTKEY_UPSCALER ? "Upscaler" : "Anti-aliasing", now);
-            toast(text);
+            setting_toast(action == HOTKEY_UPSCALER ? "upscaler" : "anti_aliasing", text);
             LOG("%s, for this run\n", text);
             break;
         }
@@ -2099,9 +2106,7 @@ void frontend_frame(void) {
     g_sdl3.press.kind = PRESS_NONE;
     if (full) { /* the log's first cut (log.c), said over the game once */
         snprintf(p, sizeof p, "Log full at %d MiB: older lines cut (Debug > Log size limit)", full);
-        ui_lock();
-        overlay_toast(p, plat_ns());
-        ui_unlock();
+        setting_toast("log_max", p);
     }
     /* the controls and the menu stay on the window while the game shows nothing new, and so does its last frame while
        it is paused */
@@ -2124,9 +2129,7 @@ void frontend_frame(void) {
         snprintf(p, sizeof p, "%scaptures/screenshot_%04d%02d%02d_%02d%02d%02d", g_exedir, t.tm_year + 1900,
                  t.tm_mon + 1, t.tm_mday, t.tm_hour, t.tm_min, t.tm_sec);
         g_renderer->screenshot(p);
-        ui_lock();
-        overlay_toast("Screenshot saved in captures", plat_ns());
-        ui_unlock();
+        toast(HOTKEY_SCREENSHOT, "Screenshot saved in captures");
     }
     if (unattended_periodic_shot(p, sizeof p)) g_renderer->screenshot(p);
     if (unattended_done()) {

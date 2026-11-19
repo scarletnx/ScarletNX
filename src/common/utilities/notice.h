@@ -1,10 +1,10 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* A notice over a running game's picture in the windows with no menu of their own (the 3DS's, the Vita's and the
-   GBA's), drawn as the Switch's game draws its own (nx/runtime/platform/overlay.c's toast): one row of the 8x16 font
-   (font.h) in the picture's top left corner, a cell in from its left and a row down from its top, its letters the
-   YoRHa theme's page colour on its ink, a blank cell at either end, for SNX_NOTICE_MS. The band is opaque, so a window
-   draws it by copying its pixels over the picture */
+   GBA's), drawn as the Switch's game draws its own (nx/runtime/platform/overlay.c's toast), without the icon before
+   its letters: one row of the 8x16 font (font.h) in the picture's top left corner, a cell in from its left and a row
+   down from its top, its letters the YoRHa theme's page colour on its ink, a blank cell at either end, for
+   SNX_NOTICE_MS. The band is opaque, so a window draws it by copying its pixels over the picture */
 #ifndef SNX_NOTICE_H
 #define SNX_NOTICE_H
 #include <stddef.h>

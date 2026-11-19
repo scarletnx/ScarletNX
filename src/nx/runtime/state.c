@@ -1584,7 +1584,7 @@ static void toast(const char* fmt, ...) {
     vsnprintf(text, sizeof text, fmt, ap);
     va_end(ap);
     ui_lock();
-    overlay_toast(text, plat_ns());
+    overlay_state_toast(text, plat_ns());
     ui_unlock();
 }
 /* a state's date and the play time then, as the menu lists them */

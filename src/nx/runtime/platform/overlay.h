@@ -105,9 +105,20 @@ void overlay_pointers_reset(void);
 /* the menu, and over the game a notification until its time is up, at now_ns (plat_ns) */
 void overlay_draw(SnxUiList* l, int sw, int sh, u64 now_ns);
 /* a notification of one line in the picture's corner for SNX_OVERLAY_TOAST_MS from now_ns: a save state saved or
-   loaded, a screenshot taken. Under ui_lock */
+   loaded, a screenshot taken. After a blank cell, icon (gui/icons.h's), one the launcher draws for the same thing, then
+   text; GUI_ICON_NONE for none, which draws text alone, as the 3DS's notice is drawn (common/utilities/notice.h).
+   Under ui_lock */
 #define SNX_OVERLAY_TOAST_MS SNX_NOTICE_MS
-void overlay_toast(const char* text, u64 now_ns);
+void overlay_toast(unsigned icon, const char* text, u64 now_ns);
+/* the notification of a setting of the game's .ini changed (its key: fps_limit), after the icon the launcher gives it
+   (overlay_setting_icon). Under ui_lock */
+void overlay_setting_toast(const char* key, const char* text, u64 now_ns);
+/* the icon of the launcher's Settings for a setting by its key: its page's where its page has one, else its group's
+   (gui/icons.h's gui_group_icon, of its section in settings.txt); GUI_ICON_NONE for a key no section holds */
+unsigned overlay_setting_icon(const char* key);
+/* the icon of a runtime key's row on F1's page (hotkeys.h's action), the launcher's F1 box's: the notification of
+   what it did shows it (a screenshot's, a pause's); GUI_ICON_NONE for an action with no row */
+unsigned overlay_key_icon(int action);
 /* It comes in from its start and goes to its end as the launcher's screens fade in from black and out to it: over the
    fade_in_ms and fade_out_ms of theme (common/utilities/run_theme.h), or of YoRHa's built in for NULL, where the
    launcher's can't be read; 0 for no fade, as it is until told. What it takes into ms, in and out. Its alpha at now_ns,
@@ -116,18 +127,22 @@ void overlay_toast(const char* text, u64 now_ns);
    quads are the layer's faded span (ui.h's ui_fade_set), the same quads at another alpha each frame. Under ui_lock */
 void overlay_fades(const SnxRunTheme* theme, u32 ms[2]);
 int overlay_toast_alpha(u64 now_ns);
+/* a save state's notification (loaded, its slot picked, not saved), after the icon of the menu's Save States, the
+   launcher's too. Under ui_lock */
+void overlay_state_toast(const char* text, u64 now_ns);
 /* the toast of a save state saved to slot (its words, "slot 2"), "Saved over" one that held a state (over) */
 void overlay_state_saved(const char* slot, int over, u64 now_ns);
 int overlay_toasting(u64 now_ns); /* one shows */
 /* the same from any thread, with or without ui_lock (RenderDoc's notices, gpu/vk/renderdoc.c): its time starts as the
    next frame draws it, the last one given before then shown */
-void overlay_notice(const char* text);
+void overlay_notice(unsigned icon, const char* text);
 /* The caches of earlier runs found empty as the game starts, which the frames to come wait on: shaders, the shader
    cache (no shader or pipeline of an earlier run), textures, the BC7 cache (no ASTC level encoded before). Its words,
    "Compiling shaders" where the shaders' is, else "Encoding textures"; NULL for neither */
 const char* overlay_cold_cache_words(int shaders, int textures);
-/* those words as overlay_notice's, once a run, from any thread: 1 when this call gave them. shaders -1, the shader
-   cache still being read (gpu/vk's vk_pipeline_cache_cold), gives none yet */
+/* those words as overlay_notice's, once a run, from any thread, after the icon of the stats' line of that work
+   (stats.h's SNX_STATS_ICON_COMPILE, SNX_STATS_ICON_ENCODE): 1 when this call gave them. shaders -1, the shader cache
+   still being read (gpu/vk's vk_pipeline_cache_cold), gives none yet */
 int overlay_cold_cache(int shaders, int textures);
 /* The save states' pages: a row per slot, the focused one's thumbnail beside them, and Save, Load and Delete for one
    (Load and Delete asked first). Slot 0 is the one a load saves over first, which only loads or goes */
