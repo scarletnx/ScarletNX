@@ -3633,8 +3633,9 @@ static u32 hmma_zero(Ctx* c) {
    whatever the 64 words after its 8 hold (the start of D's), which only reach D's columns 8-15, never read back. A
    16 wide K pads a .1688's k of 8 with zeros in A's columns and B's rows 8-15, as stale words there could be
    infinities or NaNs, and 0 times those poisons the sums; a 16x8x8 shape splits a .16816's K in two products and an
-   8x8x8 its M in two more. The accumulator starts at zero and C is added to the lane's four elements of D after the
-   product: staging C as well (4 stores, 8 loads) cost one game's video upscaler half of the gain. A subgroup barrier
+   8x8x8 its M in two more. The accumulator starts at zero and an f16 D's C is added to the lane's four elements of D
+   after the product: staging C as well (4 stores, 8 loads) cost one game's video upscaler half of the gain. An f32 D,
+   which stays in its matrix (below), takes a C from the registers staged as its accumulator. A subgroup barrier
    comes before the stores (the last HMMA's loads of the slot), between them and the matrix loads, and between D's
    store and the lanes' loads of it; RADV makes them no instruction, a wave's LDS accesses being in order.
    The products of two f16 are exact in f32, and the device sums them in f32 inside the instruction, rounded as it
@@ -3869,14 +3870,16 @@ static void hmma_coop(Ctx* c, const Sm86Insn* in, int k16, int f32, u32 ra, u32 
     /* the words the staging writes: a .1688's second K half is zeros where the shape's K is 16, and an 8 wide K reads
        only the first half's, whose .1688 has none to zero */
     u32 ka = k16 || depth == 16 ? 4 : 2, kb = k16 || depth == 16 ? 2 : 1;
-    /* C's words, which the product takes from the registers where no matrix stands for them: added to the lane's
-       words after the product, as they were before the matrices stayed. Staging them instead costs a matrix load for
-       the 4 word loads and adds it takes */
+    /* C's words, which the product takes from the registers where no matrix stands for them: an f16 D's are added to
+       the lane's words after the product, as they were before the matrices stayed (staging them costs a matrix load
+       for the 4 word loads and adds it takes), and an f32 D's are staged as the product's accumulator, as that D
+       stays in its matrix, where nothing would add them after */
+    int stage_c = f32 && rc < SM86_RZ && !c_chain;
     if (rc < SM86_RZ && !c_chain)
         for (k = 0; k < ncd; k++) cc[k] = rd(c, rc + k);
     /* the fragments no matrix stands for, staged in the slot, with the barrier that keeps the last HMMA's loads of it
        away. An RZ fragment's zeros stage too, as the words there can be anything */
-    int words = (ra < SM86_RZ ? fa < 0 : 1) || (rb < SM86_RZ ? fb < 0 : 1);
+    int words = (ra < SM86_RZ ? fa < 0 : 1) || (rb < SM86_RZ ? fb < 0 : 1) || stage_c;
     u32 base = words || fa < 0 || fb < 0 ? coop_base(c) : 0, g8 = 0, t = 0, at_a = 0, at_b = 0;
     if (words) {
         if (fa < 0) /* an RZ fragment's too: zeros */
@@ -3895,8 +3898,17 @@ static void hmma_coop(Ctx* c, const Sm86Insn* in, int k16, int f32, u32 ra, u32 
         if (rb < SM86_RZ ? fb < 0 : 1)
             for (k = 0; k < kb; k++)
                 spv_emit_store_nonprivate(&c->e, coop_ptr(c, coop_add(c, at_b, 4 * k)), k < nb ? b[k] : c->zero);
+        if (stage_c) { /* where the lane reads its D words back: B's spare columns of a 16 wide one take them too */
+            u32 at_c = coop_d_at(c, shape);
+            for (k = 0; k < 4; k++) spv_emit_store_nonprivate(&c->e, coop_d_word(c, shape, at_c, k), cc[k]);
+        }
         coop_barrier(c);
     }
+    for (u32 m = 0; stage_c && m < mblocks; m++)
+        c_mat[m] =
+            SPV(&c->e, SPV_OP_COOPERATIVE_MATRIX_LOAD_KHR, t_acc,
+                coop_ptr(c, coop_add(c, coop_add(c, base, COOP_D), m ? 64 : 0)),
+                cu(c, SPV_COOPERATIVE_MATRIX_LAYOUT_ROW_MAJOR_KHR), cu(c, cols), SPV_MEMORY_ACCESS_NON_PRIVATE_POINTER);
     /* the products: an 8 wide K splits a .16816's K in two, an 8 wide M its 16 rows in two blocks of 8, each block's
        K halves adding into one accumulator. A 16 wide K is one product */
     static const u32 half_at[2] = {0, 4}, block_at[2] = {0, 64};
@@ -3909,7 +3921,7 @@ static void hmma_coop(Ctx* c, const Sm86Insn* in, int k16, int f32, u32 ra, u32 
                              cu(c, SPV_COOPERATIVE_MATRIX_LAYOUT_COLUMN_MAJOR_KHR), cu(c, 8),
                              SPV_MEMORY_ACCESS_NON_PRIVATE_POINTER);
     for (u32 m = 0; m < mblocks; m++) {
-        u32 acc = c_chain ? c_mat[m] : 0;
+        u32 acc = c_chain || stage_c ? c_mat[m] : 0;
         for (u32 h = 0; h < kblocks; h++) {
             u32 ma = fa >= 0 ? c->coop_frags[fa].mat[m * kblocks + h]
                              : SPV(&c->e, SPV_OP_COOPERATIVE_MATRIX_LOAD_KHR, t_a,
@@ -3937,7 +3949,7 @@ static void hmma_coop(Ctx* c, const Sm86Insn* in, int k16, int f32, u32 ra, u32 
     coop_barrier(c);
     u32 acc[4];
     coop_d_read(c, shape, at_d, acc);
-    if (rc < SM86_RZ && !c_chain) /* C was the product's accumulator operand where its matrix stayed */
+    if (rc < SM86_RZ && !c_chain && !stage_c) /* C was the product's accumulator where it had a matrix */
         for (u32 i = 0; i < 2; i++) {
             u32 pair = f32 ? 0 : half_pair(c, cc[i]);
             for (u32 j = 0; j < 2; j++) {
