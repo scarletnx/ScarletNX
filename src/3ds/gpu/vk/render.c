@@ -2701,15 +2701,16 @@ static SnxCtrPicaResult record(SnxCtrPica* p, Source source, bool indexed) {
         vkCmdDrawIndexed(cb, count, 1, 0, 0, 0);
     } else
         vkCmdDraw(cb, count, 1, source == ARRAYS ? r[VERTEX_OFFSET] : 0, 0);
-    /* drawn into: newer than memory, which is the GPU's until the target is stored, and what was kept of that memory
-       (textures, display transfer copies) stale */
+    /* drawn into: newer than memory, which is the GPU's until the target is stored, and the textures made from that
+       memory stale. A display transfer's copy stays: the draw changed the target's image and not memory, and the
+       presenter syncs memory from the dirty targets over a copy before it compares the copy's bytes with memory */
     t->used = snx_ctr_vk_serial();
     if ((k.color_mask || k.shadow) && !t->color_dirty) {
-        drop_kept(t->key.color_pa, color_span(&t->key));
+        drop_textures(t->key.color_pa, color_span(&t->key));
         set_color(t, t->color_valid, true);
     }
     if (depth && k.depth_write && ((om >> 12 & 1) || k.stencil_on) && !t->depth_dirty) {
-        drop_kept(t->key.depth_pa, depth_span(&t->key));
+        drop_textures(t->key.depth_pa, depth_span(&t->key));
         set_depth(t, t->depth_valid, true);
     }
     return SNX_CTR_PICA_OK;
