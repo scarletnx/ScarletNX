@@ -228,6 +228,9 @@ typedef struct {
        sizes and compute among requiredSubgroupSizeStages): those of the programs that use other lanes' values do
        (compute.c's cs_make) */
     int has_cs_warp32;
+    /* the way an SM86 HMMA takes off the matrix unit by the device's rules (shader_hmma_rule), which hmma_mode's Auto
+       keeps where its bench cannot run (hmma_pick.c) */
+    int hmma_rule;
     VkShaderStageFlags mesh_stages;
     u32 mesh_groups_max; /* the most workgroups a mesh draw launches: maxTaskWorkGroupCount[0], with maxMesh...'s */
     /* maxMeshOutputMemorySize and the granules that sm86_mesh_output_bytes counts vertices and primitives in */
@@ -2770,6 +2773,10 @@ void vk_cb_fold_switch(int on);
 /* ftz_probe.c: 1 when the device flushes FP32 subnormals in FADD, FMUL and FFMA as the console's FTZ does, in a module
    that declares no denormal mode (it runs a compute shader and waits for it: at the renderer's start only) */
 int vk_ftz_native(void);
+/* hmma_pick.c: the way an SM86 compute program's HMMA takes off the matrix unit, by hmma_mode: Auto's from the file
+   the HMMA bench keeps in cache_dir for the driver (driver_tag), or from the bench, which it runs and waits for where
+   the file is not this driver's (at the renderer's start only, before any translation) */
+void vk_hmma_pick(const char* cache_dir, const char* driver_tag);
 extern VkShaderStageFlags g_vk_subgroup_stages;
 /* by set, shader_vk_set(stage): [0] without the indexed texture arrays, [1] with them. A set holding 512 array
    descriptors cost the driver twice the time to bind (one game's 6,700 draws a frame), so only an indexed shader's has

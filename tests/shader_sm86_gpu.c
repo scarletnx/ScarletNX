@@ -1586,90 +1586,18 @@ static int fuse_value(Gpu* g) {
 }
 
 /* ---- the HMMA bench (SNX_HMMA_BENCH=ROUNDS: only it runs) ----
-   A warp's 32x32 tile as a GEMM's inner loop keeps it: each of BENCH_STEPS steps loads two A fragments (LDSM.4) and
-   four B fragments (two LDSM.T.4) from shared memory and multiplies each A by each B into its accumulator, eight
-   HMMA.16816.F32 whose C is that accumulator (RZ in the first step); the sum of the 32 accumulator registers is the
-   invocation's output. SNX_HMMA_BENCH_GROUPS workgroups of 64 (BENCH_GROUPS where unset), in subgroups of 32 where
-   the device lets a pipeline require them, as vk/compute.c asks for programs that read other lanes, else in the
-   device's own (64 on Adreno, two warps a subgroup, as the renderer runs them there). Each round times each form of
-   hmma in turn, 30 dispatches of which the first 10 only bring the GPU's clock up from an idle device's (an RX 6700 XT
-   ran the first ones several times slower), the forms' order alternating, and prints the median of each as an
-   HMMA_BENCH line */
-#define BENCH_STEPS  12u
+   shader.h's HMMA bench program, as hmma_mode's Auto times it (vk/hmma_pick.c), by hand: SNX_HMMA_BENCH_GROUPS
+   workgroups (BENCH_GROUPS where unset), in subgroups of 32 where the device lets a pipeline require them, as
+   vk/compute.c asks for programs that read other lanes, else in the device's own (64 on Adreno, two warps a subgroup,
+   as the renderer runs them there). Each round times each form of hmma in turn, 30 dispatches of which the first 10
+   only bring the GPU's clock up from an idle device's (an RX 6700 XT ran the first ones several times slower), the
+   forms' order alternating, and prints the median of each as an HMMA_BENCH line, then the way Auto picks from them */
 #define BENCH_GROUPS 65536u
-#define BENCH_LOCAL  64u
+#define BENCH_LOCAL  SH_HMMA_BENCH_LOCAL
 static void bench_program(Prog* p) {
     p->outputs = 1;
     p->approx_from = 1;
-    Sm86Word w = sm86_fix(0x919); /* S2R R0, TID.X */
-    f(&w, 72, 8, 0x21);
-    emit(p, w);
-    w = sm86_fix(0x919); /* S2R R1, CTAID.X */
-    f(&w, 16, 8, 1);
-    f(&w, 72, 8, 0x25);
-    emit(p, w);
-    emit(p, ri(0x024, 2, 1, BENCH_LOCAL, 0)); /* IMAD R2, R1, 64, R0 */
-    for (u32 k = 0; k < 2; k++) {
-        w = sm86_fix(0xab9); /* ULDC.64 */
-        f(&w, 16, 6, 4 + 2 * k);
-        sm86_cbuf(&w, 0, 0x20 + 8 * k);
-        f(&w, 73, 3, 5);
-        emit(p, w);
-    }
-    w = rr(0x011, 3, 0, 255); /* LEA R3, R0, RZ, 6: the lane's 64 bytes of inputs, the same in every workgroup */
-    f(&w, 75, 5, 6);
-    f(&w, 81, 3, 7);
-    emit(p, w);
-    for (u32 k = 0; k < 4; k++) {
-        w = sm86_fix(0x981); /* LDG.E.128 R8 + 4k, [R3.U32 + UR4 + 16k] */
-        f(&w, 16, 8, 8 + 4 * k);
-        f(&w, 24, 8, 3);
-        f(&w, 32, 6, 4);
-        f(&w, 40, 24, 16 * k);
-        f(&w, 72, 1, 1);
-        f(&w, 73, 3, 6);
-        f(&w, 81, 3, 7);
-        f(&w, 84, 3, 1);
-        f(&w, 91, 1, 1);
-        emit(p, w);
-    }
-    emit(p, ri(0x024, 7, 0, 16, 255)); /* IMAD R7, R0, 16, RZ */
-    for (u32 q = 0; q < 4; q++) {
-        w = sm86_fix(0x388); /* STS.128 [R7 + 1024q], R8 + 4q: four sets of rows */
-        f(&w, 24, 8, 7);
-        f(&w, 32, 8, 8 + 4 * q);
-        f(&w, 40, 24, 1024 * q);
-        f(&w, 73, 3, 6);
-        emit(p, w);
-    }
-    emit(p, sm86_fix(0xb1d)); /* BAR.SYNC 0 */
-    for (u32 step = 0; step < BENCH_STEPS; step++) {
-        for (u32 m = 0; m < 4; m++) { /* A0 R24, A1 R28 (LDSM.4); B0-B1 R32, B2-B3 R36 (LDSM.T.4) */
-            w = sm86_fix(0x83b);
-            f(&w, 16, 8, 24 + 4 * m);
-            f(&w, 24, 8, 7);
-            f(&w, 40, 24, 1024 * ((step + m) % 4));
-            f(&w, 72, 2, 2);
-            f(&w, 78, 1, m >= 2);
-            emit(p, w);
-        }
-        for (u32 i = 0; i < 2; i++)
-            for (u32 j = 0; j < 4; j++) { /* HMMA.16816.F32 R40 + 4(4i + j), A_i, B_j, the same or RZ */
-                u32 d = 40 + 4 * (4 * i + j);
-                w = sm86_fix(0x23c);
-                f(&w, 16, 8, d);
-                f(&w, 24, 8, 24 + 4 * i);
-                f(&w, 32, 8, 32 + 2 * j);
-                f(&w, 64, 8, step ? d : 255);
-                f(&w, 72, 19, 0x18);
-                emit(p, w);
-            }
-    }
-    emit(p, rr(0x021, 72, 40, 41)); /* FADD R72, R40, R41, then R72 plus each of R42 to R71 */
-    for (u32 r = 42; r < 72; r++) emit(p, rr(0x021, 72, 72, r));
-    emit(p, ri(0x024, 6, 2, 4, 255)); /* IMAD R6, R2, 4, RZ */
-    store(p, 0, 72);
-    epilogue(p);
+    p->n = shader_hmma_bench_program(p->code) / 16;
 }
 static int cmp_double(const void* a, const void* b) {
     double x = *(const double*)a, y = *(const double*)b;
@@ -1707,16 +1635,8 @@ static int run_hmma_bench(u32 rounds, u32 groups) {
            g.mixed_dot, g.coop != 0);
     Prog p = {0};
     bench_program(&p);
-    static u32 in[BENCH_LOCAL * 16];
-    u32 seed = 0x2545f491u;
-    for (u32 k = 0; k < BENCH_LOCAL * 16; k++) { /* two f16 of [0.5, 2), either sign */
-        u32 h[2];
-        for (u32 j = 0; j < 2; j++) {
-            seed = seed * 1664525u + 1013904223u;
-            h[j] = (seed >> 31) << 15 | (14u + (seed >> 20 & 1)) << 10 | (seed >> 8 & 0x3ffu);
-        }
-        in[k] = h[0] | h[1] << 16;
-    }
+    static u32 in[SH_HMMA_BENCH_INPUT];
+    shader_hmma_bench_inputs(in);
     u32 out_words = groups * BENCH_LOCAL;
     u32* out = calloc(out_words, 4);
     u32* first = calloc(out_words, 4);
@@ -1736,7 +1656,7 @@ static int run_hmma_bench(u32 rounds, u32 groups) {
             if (!bench_form_usable(form, &g)) continue;
             ShaderInfo si = {0};
             si.cs_local[0] = (int)BENCH_LOCAL, si.cs_local[1] = si.cs_local[2] = 1;
-            si.shared_size = 4096;
+            si.shared_size = (int)SH_HMMA_BENCH_SHARED;
             int quad_was = g_spirv_translate.quad_compute, mixed_was = g_spirv_translate.mixed_dot, f16_was = g_spirv_translate.float16;
             g_spirv_translate.quad_compute = g.quad, g_spirv_translate.mixed_dot = g.mixed_dot, g_spirv_translate.float16 = g.float16;
             bench_form(form, &g);
@@ -1771,13 +1691,24 @@ static int run_hmma_bench(u32 rounds, u32 groups) {
             }
         }
     /* a warp's HMMAs a dispatch: its 8 a step, BENCH_GROUPS workgroups of two warps */
-    double hmmas = (double)groups * (BENCH_LOCAL / 32) * BENCH_STEPS * 8;
+    double hmmas = (double)groups * (BENCH_LOCAL / 32) * SH_HMMA_BENCH_STEPS * 8;
+    /* each form's median by hmma_mode's way, for the pick: coop and half are none of them */
+    static const int form_way[BENCH_FORMS] = {SH_HMMA_GATHER, SH_HMMA_PAIRS,       SH_HMMA_STAGED, 0, 0,
+                                              SH_HMMA_ASTAT,  SH_HMMA_ASTAT_STAGED};
+    double us[SH_HMMA_WAYS] = {0};
     for (u32 k = 0; k < BENCH_FORMS && ok; k++) {
         if (!nsamples[k]) continue;
         qsort(samples[k], nsamples[k], sizeof **samples, cmp_double);
         double median = samples[k][nsamples[k] / 2];
+        if (form_way[k]) us[form_way[k]] = median / 1000;
         printf("HMMA_BENCH form=%s dispatches=%u median_us=%.1f warp_hmma_ns=%.4f (%u steps, %u workgroups)\n",
-               bench_forms[k], nsamples[k], median / 1000, median / hmmas, BENCH_STEPS, groups);
+               bench_forms[k], nsamples[k], median / 1000, median / hmmas, SH_HMMA_BENCH_STEPS, groups);
+    }
+    if (ok) { /* what Auto takes from these times where the device's rules give each way */
+        printf("HMMA_BENCH pick:");
+        for (int rule = SH_HMMA_GATHER; rule < SH_HMMA_WAYS; rule++)
+            printf(" rules %s -> %s%s", g_shader_hmma_names[rule],
+                   g_shader_hmma_names[shader_hmma_bench_pick(us, rule)], rule + 1 < SH_HMMA_WAYS ? "," : "\n");
     }
     printf("HMMA_BENCH outputs: the largest relative difference from form %s's is %.3g\n", bench_forms[0], worst);
     free(out);

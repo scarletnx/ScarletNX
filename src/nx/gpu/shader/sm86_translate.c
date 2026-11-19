@@ -3642,9 +3642,15 @@ static u32 quad_read(Ctx* c, u32 value, u32 lane, u32* g4, u32 p) {
     return warp_read(c, value, warp_index(c, quad_base(c, lane, g4), p));
 }
 static u32 half_pair(Ctx* c, u32 bits) { return SPV_EXT(&c->e, c->t_v2f, SPV_GLSL_UNPACK_HALF2X16, bits); }
-void shader_hmma_choose(int subgroups, int radv_warp32, int shuffle_loops, int shared_max) {
-    g_spirv_translate.hmma_stage = subgroups && shuffle_loops ? shared_max : 0;
-    g_spirv_translate.hmma_pairs = subgroups && radv_warp32 && !g_spirv_translate.hmma_stage;
+const char* const g_shader_hmma_names[SH_HMMA_WAYS] = {"auto", "gather", "pairs", "staged", "astat", "astat-staged"};
+int shader_hmma_rule(int subgroups, int radv_warp32, int shuffle_loops) {
+    if (!subgroups) return SH_HMMA_GATHER;
+    return shuffle_loops ? SH_HMMA_STAGED : radv_warp32 ? SH_HMMA_PAIRS : SH_HMMA_GATHER;
+}
+void shader_hmma_take(int way, int shared_max) {
+    g_spirv_translate.hmma_pairs = way == SH_HMMA_PAIRS;
+    g_spirv_translate.hmma_stage = way == SH_HMMA_STAGED || way == SH_HMMA_ASTAT_STAGED ? shared_max : 0;
+    g_spirv_translate.hmma_astat = way == SH_HMMA_ASTAT || way == SH_HMMA_ASTAT_STAGED;
 }
 void shader_hmma_way(char* out, size_t n) {
     int mixed = g_spirv_translate.mixed_dot && g_spirv_translate.float16,

@@ -9,7 +9,8 @@
    controls_alpha, deprecated, kept under [Deprecated], and the other keys settings.txt dropped. And vk_descriptors,
    deprecated: the
    default an older version wrote in every game's .ini is no pick, so the game runs Automatic and nothing is said over
-   its picture; a pick is carried to vk_descriptors_mode, and --vk_descriptors=N is this run's. And the FPS limit's,
+   its picture; a pick is carried to vk_descriptors_mode, and --vk_descriptors=N is this run's. And hmma_astat,
+   deprecated for hmma_mode: its 1 is A-stationary, its 0 Auto's, from an old .ini and the command line. And the FPS limit's,
    showcase's and stats's keys: the value now and before it, in the log and the toast alike, and the .ini given it */
 #include "common/utilities/common.h"
 #include "nx/hle/services/hid.h"
@@ -26,6 +27,7 @@
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
 #include "nx/runtime/platform/unattended.h"
+#include "nx/gpu/shader/shader.h" /* SH_HMMA_ASTAT, hmma_mode's A-stationary */
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -542,6 +544,63 @@ static void test_vk_descriptors_old(void) {
     ini_override("vk_descriptors_mode", NULL);
     g_test.write = 0;
 }
+/* hmma_astat, deprecated for hmma_mode: an older version's .ini with its 1 is hmma_mode=4 (A-stationary), written for
+   the next run, which reads hmma_mode alone; its 0, the default every .ini had written, leaves hmma_mode at its own,
+   Auto; a value that is neither leaves the default too, said with the value; the new key given, the old one is not
+   read. On the command line, --hmma_astat=1 is this run's hmma_mode=4, said, and the file keeps its own */
+static void test_hmma_astat_old(void) {
+    char *text, *again;
+    CHECK(options_hmma_astat_old("1") == SH_HMMA_ASTAT && options_hmma_astat_old("0") == -1);
+    CHECK(options_hmma_astat_old("2") == -2 && options_hmma_astat_old("") == -2 && options_hmma_astat_old("on") == -2);
+    g_test.write = 1;
+    text = open_ini("[Debug]\nhmma_astat=1\n");
+    CHECK(strstr(g_test.said, "settings: hmma_astat=1, deprecated, is hmma_mode=4 (A-stationary) now "
+                              "(docs/user/deprecations.md)\n"));
+    CHECK(text && strstr(text, "\nhmma_mode=4\n") && strstr(text, "\n[Deprecated]\n") &&
+          strstr(text, "\n[Deprecated]\n") < strstr(text, "\nhmma_astat=1\n"));
+    again = open_ini(text); /* the next run: hmma_mode given, hmma_astat not read again */
+    CHECK(!strstr(g_test.said, "settings: hmma_astat=") && again && strstr(again, "\nhmma_mode=4\n"));
+    free(again);
+    free(text);
+    text = open_ini("[Debug]\nhmma_astat=0\n");
+    CHECK(strstr(g_test.said, "settings: hmma_astat=0, deprecated, was its default: hmma_mode takes its own, 0 (Auto), "
+                              "the way the HMMA bench measures fastest on the GPU (docs/user/deprecations.md)\n"));
+    CHECK(text && !strstr(text, "\nhmma_mode=4\n"));
+    free(text);
+    text = open_ini("[Debug]\nhmma_astat=yes\n");
+    CHECK(strstr(g_test.said, "settings: hmma_astat=yes, deprecated, is neither 0 nor 1: hmma_mode takes its default, "
+                              "0 (Auto) (docs/user/deprecations.md)\n"));
+    free(text);
+    text = open_ini("[Debug]\nhmma_astat=1\nhmma_mode=2\n");
+    CHECK(!strstr(g_test.said, "settings: hmma_astat=") && text && strstr(text, "\nhmma_mode=2\n"));
+    free(text);
+    /* --hmma_astat=1: A-stationary this run, said, and no "not a setting"; the file keeps its Pairs */
+    ini_override("hmma_astat", "1");
+    text = open_ini("[Debug]\nhmma_mode=2\n");
+    CHECK(!strstr(g_test.said, "is not a setting") && ini_overridden("hmma_mode") &&
+          !strcmp(ini_overridden("hmma_mode"), "4"));
+    CHECK(strstr(g_test.said, "settings: --hmma_astat=1 is deprecated: this run reads it as --hmma-mode=4 "
+                              "(A-stationary) (docs/user/deprecations.md)\n"));
+    CHECK(text && strstr(text, "\nhmma_mode=2\n"));
+    free(text);
+    ini_override("hmma_mode", NULL);
+    ini_override("hmma_astat", "0");
+    text = open_ini("[Debug]\nhmma_mode=3\n");
+    CHECK(!ini_overridden("hmma_mode"));
+    CHECK(strstr(g_test.said, "settings: --hmma_astat=0 is deprecated: hmma_mode=3 this run, the .ini's "
+                              "(docs/user/deprecations.md)\n"));
+    free(text);
+    ini_override("hmma_astat", "1");
+    ini_override("hmma_mode", "5");
+    text = open_ini("[Debug]\n");
+    CHECK(!strcmp(ini_overridden("hmma_mode"), "5"));
+    CHECK(strstr(g_test.said, "settings: --hmma_astat=1 is deprecated, and the command line gives --hmma-mode=5 too: "
+                              "hmma_mode=5 this run (docs/user/deprecations.md)\n"));
+    free(text);
+    ini_override("hmma_astat", NULL);
+    ini_override("hmma_mode", NULL);
+    g_test.write = 0;
+}
 /* a startup setting is read by the process's first ini_open alone, so each of these is a process of its own
    (CMakeLists.txt's options_vk_descriptors_*): what the run plays with and says over its picture. old: an older
    version's .ini with vk_descriptors=0, its default then, plays Automatic with nothing over the picture; pick: its 2,
@@ -886,6 +945,7 @@ int main(int argc, char** argv) {
     test_dropped_keys_old();
     test_vk_descriptors_old_default();
     test_vk_descriptors_old();
+    test_hmma_astat_old();
     test_key_steps();
     printf("options_tv_mode: ok\n");
     return 0;

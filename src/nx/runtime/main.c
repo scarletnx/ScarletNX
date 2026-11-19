@@ -1555,7 +1555,6 @@ int snx_main(int argc, char** argv) {
     nv_init();
     romfs_init();
     g_spirv_translate.hmma_f16 = g_settings.hmma_in_half_floats; /* before the first program is translated */
-    g_spirv_translate.hmma_astat = g_settings.hmma_a_stationary;
     gpu_init();
     {
         char addons[256];

@@ -285,6 +285,9 @@ int main(void) {
         char list[2048];
         assert(ini_find(g_graphics_ini, "astc_mode") && !ini_find(g_debug_ini, "astc_mode"));
         assert(!ini_find(g_graphics_ini, "astc_bc") && ini_deprecated("astc_bc"));
+        /* hmma_mode took hmma_astat's place, which is deprecated */
+        assert(ini_find(g_debug_ini, "hmma_mode") && !ini_find(g_debug_ini, "hmma_astat") &&
+               ini_deprecated("hmma_astat"));
         g_settings.astc_mode = 1;
         ini_changed(g_debug_ini, INI_CHANGED_NO_TEXT, list, sizeof list);
         assert(!strstr(list, "astc_mode"));

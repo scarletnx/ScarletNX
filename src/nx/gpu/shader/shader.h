@@ -658,11 +658,55 @@ extern ShCaps g_spirv_translate;
 const char* shader_hmma_f16_unused(void);
 /* the way a compute program's HMMA takes with the flags above, in words for the log, into out (n bytes) */
 void shader_hmma_way(char* out, size_t n);
-/* g_spirv_translate.hmma_pairs and g_spirv_translate.hmma_stage from what vk/device.c reads of the device: subgroup
-   operations in compute (subgroups), RADV with subgroups of 32 a pipeline can require (radv_warp32: its xor of 4 is a
-   DPP move where a shuffle at any other index is a permute through LDS), an "off" line on OpGroupNonUniformShuffle that
-   holds for its driver (shuffle_loops), and its maxComputeSharedMemorySize */
-void shader_hmma_choose(int subgroups, int radv_warp32, int shuffle_loops, int shared_max);
+/* The ways an SM86 compute program's HMMA takes off the device's matrix unit, the hmma_mode setting's 1 to 5: each lane
+   gathers its A and B words by shuffles; pairs of lanes share B's (hmma_pairs); A and B through a warp's slot of shared
+   memory (hmma_stage); each product formed in the lane that holds its A words (hmma_astat), B by shuffles, or through
+   the slot. hmma_mode's 0, Auto, takes the one the HMMA bench measures fastest on the device (vk/hmma_pick.c). Only the
+   order of the f32 sums differs between them, within hmma's bound; hmma_f16's half sums are no way of these */
+enum { SH_HMMA_AUTO, SH_HMMA_GATHER, SH_HMMA_PAIRS, SH_HMMA_STAGED, SH_HMMA_ASTAT, SH_HMMA_ASTAT_STAGED, SH_HMMA_WAYS };
+/* each way's name, in the log and in the bench's file: "auto", "gather", "pairs", "staged", "astat", "astat-staged" */
+extern const char* const g_shader_hmma_names[SH_HMMA_WAYS];
+/* the way of the device's rules, which Auto keeps where the bench cannot run: through shared memory where its driver
+   loops for a shuffle whose index differs between lanes (shuffle_loops: an "off" line on OpGroupNonUniformShuffle that
+   holds for it), pairs on RADV with subgroups of 32 a pipeline can require (radv_warp32: its xor of 4 is a DPP move
+   where a shuffle at any other index is a permute through LDS), else the gather. subgroups: subgroup operations in
+   compute, without which no way reads other lanes (the gather) */
+int shader_hmma_rule(int subgroups, int radv_warp32, int shuffle_loops);
+/* g_spirv_translate.hmma_pairs, hmma_stage and hmma_astat for a way (SH_HMMA_GATHER to SH_HMMA_ASTAT_STAGED), a staged
+   one's slots within shared_max, the device's maxComputeSharedMemorySize */
+void shader_hmma_take(int way, int shared_max);
+
+/* The HMMA bench (hmma_bench.c): a warp's 32x32 tile as a GEMM's inner loop keeps it. Each of 12 steps loads two A
+   fragments (LDSM.4) and four B fragments (two LDSM.T.4) from shared memory and multiplies each A by each B into its
+   accumulator, eight HMMA.16816.F32 whose C is that accumulator (RZ in the first step); the sum of the 32 accumulator
+   registers is the invocation's output. A workgroup is SH_HMMA_BENCH_LOCAL invocations with SH_HMMA_BENCH_SHARED
+   bytes of shared memory, and reads its inputs (SH_HMMA_BENCH_INPUT words, the same for every workgroup) from the
+   global address at cbuf 0's SH_HMMA_BENCH_CB_IN and writes a word an invocation at the one at SH_HMMA_BENCH_CB_OUT */
+#define SH_HMMA_BENCH_LOCAL  64u
+#define SH_HMMA_BENCH_SHARED 4096u
+#define SH_HMMA_BENCH_INPUT  (SH_HMMA_BENCH_LOCAL * 16u)
+#define SH_HMMA_BENCH_CB_IN  0x20u
+#define SH_HMMA_BENCH_CB_OUT 0x28u
+#define SH_HMMA_BENCH_STEPS  12u
+#define SH_HMMA_BENCH_BYTES  (16u * 256u) /* room for the program's instructions */
+/* the program into code (SH_HMMA_BENCH_BYTES), and its length in bytes */
+u32 shader_hmma_bench_program(u8* code);
+/* the inputs: pairs of f16 of [0.5, 2), either sign, so that no sum is exact and none overflows */
+void shader_hmma_bench_inputs(u32* in);
+/* The way Auto takes from the bench's microseconds a dispatch of each way (us[way], 0 for one not measured or left
+   out): the fastest, but the rule's way while no other is SH_HMMA_PICK_MARGIN percent faster than it, as two ways
+   that close are within the bench's noise and the rule's is the one the device's pipelines were made with. The rule's
+   way not measured, the fastest; none measured, the rule's */
+#define SH_HMMA_PICK_MARGIN 3.0
+int shader_hmma_bench_pick(const double* us, int rule);
+/* The file that keeps Auto's pick for a device and driver (vk/hmma_pick.c's hmma.<driver>.txt): a comment, then
+   "key KEY", "way NAME", "us NAME=US..." and "note TEXT" lines, KEY the bench's version, the driver's version and its
+   pipelineCacheUUID. shader_hmma_bench_format writes it into out (n bytes) and returns its length, or 0 when it does
+   not fit; shader_hmma_bench_parse gives the way of a file whose key is key, else SH_HMMA_AUTO with why (n bytes):
+   another key, no way, a way it does not know */
+#define SH_HMMA_BENCH_VERSION 1
+size_t shader_hmma_bench_format(char* out, size_t n, const char* key, int way, const double* us, const char* note);
+int shader_hmma_bench_parse(const char* text, const char* key, char* why, size_t n);
 /* in clip_enable: a later stage before rasterization (tessellation or geometry) follows, and the last one applies
    the depth mode and the clip distances */
 #define SNX_SH_NOT_LAST  (1u << 31)

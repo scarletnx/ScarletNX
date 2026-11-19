@@ -959,6 +959,8 @@ void vk_pipeline_init(void) {
         g_vk_ftz = SH_FTZ_EMULATE;
         WARN("vulkan: FP32 denormal flush mode unavailable; graphics shaders use per-instruction FTZ fallback\n");
     }
+    /* the way of HMMA, which the pipeline file's key holds, settled before the reading thread translates any */
+    vk_hmma_pick(g_pipeline.cache_dir, g_pipeline.driver_tag);
     pf_start_load();
 }
 
