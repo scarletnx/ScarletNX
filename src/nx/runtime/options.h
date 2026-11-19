@@ -80,10 +80,6 @@ int options_astc_bc_old(const char* old);
    which are -1, vk_descriptors_mode's default, as 0 was vk_descriptors's own until 3 was, and every game's .ini had
    written its default; -2 for a value that is not a whole number from 0 to 3 */
 int options_vk_descriptors_old(const char* old, int given);
-/* hmma_astat's value old as hmma_mode's (0 Auto, 4 A-stationary): 1 is 4; 0 is -1, hmma_mode's default, as 0 was
-   hmma_astat's own (the gather, or the device's rules' way), which Auto keeps unless the bench measures another faster;
-   -2 for any other value */
-int options_hmma_astat_old(const char* old);
 /* the path ini_open read, "" before it */
 const char* ini_file(void);
 /* about once a second, from the main loop. final: at exit, where an edit still being saved is left for the next start
