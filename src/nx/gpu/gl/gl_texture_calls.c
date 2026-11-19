@@ -234,12 +234,14 @@ typedef struct {
     NvnView view;
     NVNcopyRegion region;
     i64 row, image;
+    u64 serial;
     u8 bytes[];
 } TexelUpload;
 static void upload_on_gpu(void* arg) {
     TexelUpload* w = arg;
     if (!nvn_copy_texels_in(&w->t, &w->view, &w->region, w->bytes, w->row, w->image))
         LOG_LIMIT(4, "gl layer: an upload into a texture of NVN format %#x the runtime can't lay out\n", w->t.d.format);
+    gl_draw_done(w->serial);
     free(w);
 }
 /* the client's texels into the texture's storage, by the GPU in order with the draws: as they are, red and blue
@@ -275,6 +277,7 @@ static void upload(uint32_t ctx, uint32_t name, const SnxGlUpload* u) {
             else
                 memcpy(to, from, (size_t)u->row);
         }
+    w->serial = gl_draw_issue();
     gpu_call(upload_on_gpu, w, NULL, 0);
 }
 
@@ -282,10 +285,12 @@ static void upload(uint32_t ctx, uint32_t name, const SnxGlUpload* u) {
 typedef struct {
     NvnTexture t;
     u32 base, top;
+    u64 serial;
 } LevelsMade;
 static void mipmaps_on_gpu(void* arg) {
     LevelsMade* m = arg;
     nvn_copy_levels(&m->t, m->base, m->top);
+    gl_draw_done(m->serial);
     free(m);
 }
 static int mipmaps(uint32_t ctx, uint32_t name) {
@@ -300,6 +305,7 @@ static int mipmaps(uint32_t ctx, uint32_t name) {
         return 0;
     }
     m->base = (u32)t->base_level, m->top = (u32)t->levels - 1;
+    m->serial = gl_draw_issue();
     gpu_call(mipmaps_on_gpu, m, NULL, 0);
     return 1;
 }

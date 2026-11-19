@@ -13,8 +13,9 @@
    at an address of guest memory, written through it and read back, a vertex array's attribute reading the array
    buffer bound; a texture given texels from a pointer passed on the stack, kept in guest memory, and a parameter of
    it read back, and a framebuffer complete once that texture is attached; the point size and polygon mode set; a
-   fence signaled at once; a GL and an EGL function without a handler stopping the game, the message naming the function and
-   gl_layer's value */
+   fence signaled at once; a draw on a GPU thread that lags reading the bytes it was called with, the buffer's writes
+   after it landing behind it, and a deleted texture's storage held while its upload waits; a GL and an EGL function without a handler stopping the game, the message naming the
+   function and gl_layer's value */
 #include "common/gpu/gl/gl_framebuffer.h"
 #include "common/gpu/gl/gl_object.h"
 #include "common/gpu/gl/gl_state.h"
@@ -286,9 +287,27 @@ void present_pace(u32 interval, int slot) {
     (void)interval, (void)slot;
     core.paced++, core.paced_off += core.off;
 }
+/* the GPU thread: its turn at once, or, held, the calls kept in order until gpu_run, as a GPU thread that lags behind
+   the game's */
+static struct {
+    int held;
+    unsigned n;
+    void (*fn[16])(void*);
+    void* arg[16];
+} g_lagging;
 void gpu_call(void (*fn)(void*), void* arg, const u32* chans, u32 nchans) {
     (void)chans, (void)nchans;
-    fn(arg); /* the GPU thread's turn, at once */
+    if (!g_lagging.held) {
+        fn(arg);
+        return;
+    }
+    assert(g_lagging.n < 16);
+    g_lagging.fn[g_lagging.n] = fn, g_lagging.arg[g_lagging.n++] = arg;
+}
+static void gpu_run(void) {
+    g_lagging.held = 0;
+    for (unsigned i = 0; i < g_lagging.n; i++) g_lagging.fn[i](g_lagging.arg[i]);
+    g_lagging.n = 0;
 }
 static struct {
     unsigned count;
@@ -301,9 +320,11 @@ static void present_buffer(u64 cpu_addr, u32 w, u32 h, u32 pitch, u32 layout, u3
     shown.count++, shown.addr = cpu_addr, shown.w = w, shown.h = h, shown.pitch = pitch, shown.layout = layout;
     shown.fmt = fmt, shown.transform = transform;
 }
-/* the renderer's draws, clears and host programs: the last state, call and clears, each program's stage and description */
+/* the renderer's draws, clears and host programs: the last state, call and clears, each program's stage and
+   description, and the first bytes attribute 0 read when it drew */
 static struct {
     unsigned draws, nclear, programs;
+    u8 vertex[12];
     DsState ds;
     DrawCall call;
     DrawClear clear[8];
@@ -311,8 +332,10 @@ static struct {
     ShaderInfo si[8];
 } g_drawn;
 static void drawn(const DsState* ds, const DrawCall* dc, DrawOwner* o) {
+    const u64 at = ds->vbuf.addr[ds->vfmt.stream[0]];
     (void)o;
     g_drawn.draws++, g_drawn.ds = *ds, g_drawn.call = *dc;
+    if (at) memcpy(g_drawn.vertex, gpu_bytes(at), sizeof g_drawn.vertex);
 }
 static void cleared(const DsState* ds, const DrawClear* c, const DrawOwner* o) {
     (void)o;
@@ -874,6 +897,65 @@ int main(void) {
     {
         u64 sync = call("_glFenceSync", 0x9117, 0, 0, 0, 0);                         /* GL_SYNC_GPU_COMMANDS_COMPLETE */
         assert(sync && call("_glClientWaitSync", sync, 1, 1000000, 0, 0) == 0x911a); /* GL_ALREADY_SIGNALED */
+    }
+
+    /* a buffer a draw handed to a GPU thread that lags still reads: the draw reads the bytes it was called with, and
+       glBufferSubData's and glBufferData's land behind it on the GPU thread, in order, the GPU's caches told */
+    {
+        const u64 data = snx_gl_buffer((u32)ab)->data, from = SCRATCH + 0x3b00;
+        u8 before[12];
+        memcpy(before, GP(data), sizeof before);
+        call("_glUseProgram", prog, 0, 0, 0, 0);
+        call("_glBindBuffer", 0x8892, ab, 0, 0, 0);
+        cpu.x[5] = 0;
+        call("_glVertexAttribPointer", 0, 3, 0x1406, 0, 12);
+        call("_glEnableVertexAttribArray", 0, 0, 0, 0, 0);
+        g_lagging.held = 1;
+        call("_glDrawArrays", 4, 0, 3, 0, 0);
+        memset(GP(from), 0x5a, 12);
+        call("_glBufferSubData", 0x8892, 0, 12, from, 0);
+        call("_glBufferData", 0x8892, 64, 0, 0x88e8, 0); /* in place: its zeros after */
+        call("_glBufferSubData", 0x8892, 4, 4, from, 0);
+        assert(snx_gl_buffer((u32)ab)->data == data && !memcmp(GP(data), before, sizeof before) && g_lagging.n == 4);
+        g_written.n = 0;
+        gpu_run();
+        assert(!memcmp(g_drawn.vertex, before, sizeof before));
+        assert(!GP(data)[0] && !GP(data)[3] && GP(data)[4] == 0x5a && GP(data)[7] == 0x5a && !GP(data)[8]);
+        assert(told_written(data, 12) && told_written(data, 64) && told_written(data + 4, 4));
+        /* the element array buffer too: its indices as the draw had them */
+        {
+            const u64 name = SCRATCH + 0x3c00;
+            u64 indices;
+            u8 kept;
+            call("_glCreateBuffers", 1, name, 0, 0, 0);
+            call("_glBindBuffer", 0x8893, gr32(name), 0, 0, 0);
+            call("_glBufferData", 0x8893, 16, 0, 0x88e4, 0); /* GL_STATIC_DRAW */
+            indices = snx_gl_buffer(gr32(name))->data, kept = GP(indices)[2];
+            g_lagging.held = 1;
+            call("_glDrawElements", 4, 3, 0x1403, 2, 0);
+            call("_glBufferSubData", 0x8893, 2, 4, from, 0);
+            assert(GP(indices)[2] == kept && g_lagging.n == 2);
+            gpu_run();
+            assert(GP(indices)[2] == 0x5a && told_written(indices + 2, 4));
+        }
+        /* a texture deleted while its upload waits for the GPU thread: its storage held until the upload is done, the
+           next texture's elsewhere */
+        {
+            u32 t = 0, u = 0;
+            u64 kept;
+            snx_gl_gen_textures((u32)ctx, 1, &t);
+            snx_gl_bind_texture((u32)ctx, 0x0de1, t);
+            g_lagging.held = 1;
+            snx_gl_tex_image((u32)ctx, 0x0de1, 0, 0x8058, 64, 64, 1, 0x1908, 0x1401, SCRATCH + 0x10000, 0, 0);
+            kept = snx_gl_texture(t)->texels;
+            snx_gl_delete_textures((u32)ctx, 1, &t);
+            snx_gl_gen_textures((u32)ctx, 1, &u);
+            snx_gl_bind_texture((u32)ctx, 0x0de1, u);
+            snx_gl_tex_image((u32)ctx, 0x0de1, 0, 0x8058, 64, 64, 1, 0x1908, 0x1401, 0, 0, 0);
+            assert(kept && g_lagging.n >= 1 && snx_gl_texture(u)->texels && snx_gl_texture(u)->texels != kept);
+            gpu_run();
+            snx_gl_delete_textures((u32)ctx, 1, &u);
+        }
     }
 
     /* a function without a handler stops the game, naming it and gl_layer's value; the driver never ran */

@@ -11,7 +11,14 @@
    The records are flat, named by index + 1, and one block with the per-context state (each context's buffer
    bindings, its vertex array 0 and the generic attributes' values) that a save state holds as it is. A platform's GPU
    copy of a buffer is its own: the layer tells it which bytes the CPU wrote, asks it for the GPU's writes before the
-   CPU reads or writes, and tells it when a buffer's bytes go. The caller holds its platform's GL lock */
+   CPU reads or writes, and tells it when a buffer's bytes go. The caller holds its platform's GL lock.
+
+   GL's draws read a buffer's bytes as they were when the draw was called. A platform whose GPU side reads them
+   later, in order with its calls (SnxGlObjectHost.issued: the console's GPU thread), names the buffers each draw
+   reads (snx_gl_buffer_read_by); the layer then puts the CPU's writes of bytes still to be read behind those draws
+   (write_after), makes a map or a read of them wait, and frees a range given back only once the work that reads it
+   is done. An engine that streams its vertices refills one buffer every frame while the GPU side is still drawing
+   the frame before */
 #ifndef SNX_GL_OBJECT_H
 #define SNX_GL_OBJECT_H
 #include <stddef.h>
@@ -94,6 +101,15 @@ typedef struct {
     void (*written)(uint32_t buffer, uint64_t lo, uint64_t hi);
     /* buffer's bytes went (deleted, or placed anew): the platform's copy of them goes too; may be NULL */
     void (*gone)(uint32_t buffer);
+    /* A GPU side that reads the platform's memory after the calls that drew with it returned, in order with them; NULL
+       for one that reads it at the call. The serial of the last work handed to it, and of the last it finished */
+    uint64_t (*issued)(void);
+    uint64_t (*finished)(void);
+    /* size bytes of data, zeros for NULL, written at the platform's address at after the work handed over before,
+       in order with it, and told to the platform's caches as written tells them: the serial of that write */
+    uint64_t (*write_after)(uint64_t at, const void* data, uint64_t size);
+    /* until the work of serial is finished */
+    void (*wait)(uint64_t serial);
 } SnxGlObjectHost;
 void snx_gl_object_host(const SnxGlObjectHost* host);
 
@@ -143,6 +159,9 @@ uint64_t snx_gl_map_buffer_range(uint32_t ctx, uint32_t name, int64_t offset, in
 /* glUnmapBuffer: 1, or 0 with the error recorded for a buffer not mapped */
 int snx_gl_unmap_buffer(uint32_t ctx, uint32_t name);
 void snx_gl_flush_mapped_range(uint32_t ctx, uint32_t name, int64_t offset, int64_t length);
+/* the GPU side's work serial (SnxGlObjectHost.issued) reads buffer's bytes: the CPU's writes of them after go behind
+   it, and a map waits for it */
+void snx_gl_buffer_read_by(uint32_t name, uint64_t serial);
 /* glGetBufferPointerv: the open map's address, 0 for none */
 uint64_t snx_gl_buffer_pointer(uint32_t ctx, uint32_t name);
 void snx_gl_copy_buffer_sub_data(uint32_t ctx, uint32_t read, uint32_t write, int64_t read_offset, int64_t write_offset,

@@ -14,7 +14,8 @@
 
    The game's thread makes a record of the state groups under the object lock and hands it to the GPU thread, which
    keeps a DsState for each context, gives a group a new generation when its bytes changed, and draws, in order with
-   the uploads and the presents */
+   the uploads and the presents. The renderer reads a draw's buffers there, so a draw names them to the shared layer
+   (snx_gl_buffer_read_by), which puts a write of their bytes on the GPU thread behind it (gl_draw_write) */
 #include "common/gpu/gl/gl_format.h"
 #include "common/gpu/gl/gl_framebuffer.h"
 #include "common/gpu/gl/gl_object.h"
@@ -112,10 +113,10 @@ static struct {
     u64 ring;                       /* the ring's guest address */
     u64 head;                       /* bytes written into the ring, from its start */
     u32 sent[SNX_GL_PROGRAM_NAMES]; /* each program's link handed to the GPU thread, 0 for none */
-    u64 issued;                     /* the draws and clears handed to the GPU thread */
+    u64 issued;                     /* the draws, clears and writes handed to the GPU thread */
     /* the GPU thread's */
     _Atomic u64 done;      /* the ring's bytes the GPU thread finished with */
-    _Atomic u64 completed; /* the draws and clears it finished, a fence's serial (gl_sync.h) */
+    _Atomic u64 completed; /* the draws, clears and writes it finished, a fence's serial (gl_sync.h) */
     DsState* state[SNX_GL_CONTEXTS];
     struct {
         u32 generation, vs, fs;
@@ -284,7 +285,7 @@ static int attr_format(const SnxGlAttrib* a, u8* size, u8* type, int* bgra) {
 /* the vertex arrays' attributes the vertex program reads, and their streams: the bound buffers' bytes, or each
    attribute without an array its generic value, a 16-byte vertex in the ring that every vertex reads. The program's
    input at the module's location i reads the attribute of its GL location (glBindAttribLocation's), which can differ */
-static int vertex_state(u32 ctx, const SnxGlProgram* p, const ShaderInfo* vs, DrawRecord* r) {
+static int vertex_state(u32 ctx, const SnxGlProgram* p, const ShaderInfo* vs, DrawRecord* r, u64 serial) {
     const SnxGlVertexArray* va = snx_gl_vertex_array(ctx);
     const SnxGlObjectContext* o = snx_gl_objects(ctx);
     const SnxGlInput* in = snx_gl_program_inputs(p);
@@ -322,6 +323,7 @@ static int vertex_state(u32 ctx, const SnxGlProgram* p, const ShaderInfo* vs, Dr
             if (b->divisor) f->instanced |= 1u << a->binding, f->divisor[a->binding] = b->divisor;
             r->vbuf.addr[a->binding] = gl_gpu_address(buf->data) + b->offset;
             r->vbuf.size[a->binding] = buf->size > b->offset ? buf->size - b->offset : 0;
+            snx_gl_buffer_read_by(b->buffer, serial);
         } else { /* glVertexAttrib*'s value, at stride 0 */
             u32 s = GENERIC_BASE + g;
             u64 at = ring_put(o->generic[g].bits, 16);
@@ -497,7 +499,7 @@ static void fixed_state(u32 ctx, DrawRecord* r) {
     }
 }
 /* the program's constant buffers: each stage's default block in the ring, the uniform blocks at their buffers */
-static void constants(u32 ctx, const SnxGlProgram* p, const ShaderInfo si[2], DrawRecord* r) {
+static void constants(u32 ctx, const SnxGlProgram* p, const ShaderInfo si[2], DrawRecord* r, u64 serial) {
     const SnxGlBinding* bindings = snx_gl_program_bindings(p);
     const SnxGlObjectContext* o = snx_gl_objects(ctx);
     for (u32 s = 0; s < 2; s++) {
@@ -520,6 +522,7 @@ static void constants(u32 ctx, const SnxGlProgram* p, const ShaderInfo si[2], Dr
             buf = u ? snx_gl_buffer(u->buffer) : NULL;
             if (!buf || (u64)u->offset >= buf->size) continue;
             r->bind.cb_addr[stage][slot] = gl_gpu_address(buf->data) + (u64)u->offset;
+            snx_gl_buffer_read_by(u->buffer, serial);
             r->bind.cb_size[stage][slot] =
                 (u32)(u->size < 0 || (u64)u->offset + (u64)u->size > buf->size ? buf->size - (u64)u->offset
                                                                                : (u64)u->size);
@@ -646,6 +649,7 @@ static const SnxGlProgram* draw_program(u32 ctx, u32* name, ShaderInfo si[2]) {
 
 int gl_draw(u32 ctx, const DrawCall* call, u32 elements_type, u64 indices) {
     ShaderInfo si[2];
+    u64 serial;
     u32 program;
     const SnxGlProgram* p;
     DrawRecord* r;
@@ -655,7 +659,8 @@ int gl_draw(u32 ctx, const DrawCall* call, u32 elements_type, u64 indices) {
     r = calloc(1, sizeof *r);
     if (!r) fatal("gl layer: out of memory for a draw");
     r->ctx = ctx, r->program = program, r->generation = p->generation, r->call = *call;
-    if (!targets(ctx, &r->tgt) || !vertex_state(ctx, p, &si[0], r)) {
+    serial = g_gl_draw.issued + 1; /* the record's below: the steps between hand nothing over */
+    if (!targets(ctx, &r->tgt) || !vertex_state(ctx, p, &si[0], r, serial)) {
         free(r);
         return 0;
     }
@@ -666,6 +671,7 @@ int gl_draw(u32 ctx, const DrawCall* call, u32 elements_type, u64 indices) {
             free(r);
             return 0;
         }
+        snx_gl_buffer_read_by(snx_gl_vertex_array(ctx)->elements, serial);
         r->index.addr = gl_gpu_address(e->data) + indices;
         r->index.end = gl_gpu_address(e->data) + (e->size ? e->size - 1 : 0);
         r->index.format = elements_type == GL_UNSIGNED_BYTE_ ? 0 : elements_type == GL_UNSIGNED_SHORT_ ? 1 : 2;
@@ -674,7 +680,7 @@ int gl_draw(u32 ctx, const DrawCall* call, u32 elements_type, u64 indices) {
     }
     fixed_state(ctx, r);
     r->dyn.depth_word = call->base_instance;
-    constants(ctx, p, si, r);
+    constants(ctx, p, si, r, serial);
     r->call.state_flags |= DS_DRAW_POINT_SIZE;
     r->call.point_size = snx_gl_fixed(ctx)->point_size;
     r->ring_end = g_gl_draw.head;
@@ -682,6 +688,34 @@ int gl_draw(u32 ctx, const DrawCall* call, u32 elements_type, u64 indices) {
     gpu_call(draw_on_gpu, r, NULL, 0);
     return 1;
 }
+
+/* a write of the layer's memory behind the draws (gl_draw_write) */
+typedef struct {
+    u64 at, size, serial;
+    int zeros;
+    u8 bytes[];
+} WriteRecord;
+static void write_on_gpu(void* arg) {
+    WriteRecord* w = arg;
+    if (w->zeros)
+        memset(GP(w->at), 0, w->size);
+    else
+        memcpy(GP(w->at), w->bytes, w->size);
+    gpu_mem_written_cpu(w->at, w->size);
+    gl_draw_done(w->serial);
+    free(w);
+}
+u64 gl_draw_write(u64 at, const void* data, u64 size) {
+    WriteRecord* w = malloc(sizeof *w + (data ? size : 0));
+    if (!w) fatal("gl layer: out of memory for a write of %llu bytes behind the draws", (unsigned long long)size);
+    w->at = at, w->size = size, w->zeros = !data;
+    if (data) memcpy(w->bytes, data, size);
+    w->serial = gl_draw_issue();
+    gpu_call(write_on_gpu, w, NULL, 0);
+    return w->serial;
+}
+u64 gl_draw_issue(void) { return ++g_gl_draw.issued; }
+void gl_draw_done(u64 serial) { atomic_store_explicit(&g_gl_draw.completed, serial, memory_order_release); }
 
 int gl_draw_clear(u32 ctx, u32 buffers) {
     const SnxGlFixed* g = snx_gl_fixed(ctx);

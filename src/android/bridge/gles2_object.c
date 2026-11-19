@@ -365,8 +365,11 @@ static void buffer_gone(uint32_t name) {
     *b = (G2Buffer){0};
 }
 void gles2_buffers_init(void) {
-    snx_gl_object_host(
-        &(SnxGlObjectHost){buffer_chunk, buffer_host, buffer_read_back_name, buffer_written, buffer_gone});
+    snx_gl_object_host(&(SnxGlObjectHost){.chunk = buffer_chunk,
+                                          .bytes = buffer_host,
+                                          .read_back = buffer_read_back_name,
+                                          .written = buffer_written,
+                                          .gone = buffer_gone});
 }
 
 /* the buffer bound to target: 0 with GL's error recorded */
