@@ -346,8 +346,7 @@ static int32_t socket_recv(SnxCtrIpc* c, uint32_t tls, bool other) {
     if (size > 0x100000u) size = 0x100000u;
     uint8_t* data = malloc(size ? size : 1);
     if (!data) return answer(c, -49), 0; /* ENOMEM */
-    SnxSockAddr from;
-    memset(&from, 0, sizeof from);
+    SnxSockAddr from = {0};
     int64_t got = snx_socket_recv(own->socket, data, size, (int)(flags & 3), addr_length ? &from : NULL, NULL);
     if (got == -SNX_EAGAIN && own->blocking && !(flags & SOC_DONTWAIT)) {
         free(data);
