@@ -7390,6 +7390,7 @@ static int check_pipeline_stats_compute(void) {
 #include "vulkan_alpha_coverage.inc"
 #include "vulkan_indexed_feedback.inc"
 #include "vulkan_scaled_fragment.inc"
+#include "vulkan_sm86_perspective_fold.inc"
 #include "vulkan_slices_from_targets.inc"
 #include "vulkan_targetless_stores.inc"
 #include "vulkan_storage_image_keep.inc"
@@ -8560,6 +8561,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_owned_page_reads());
     CHECK(!check_frag_coord_origin());
     CHECK(!check_varying_passes());
+    CHECK(!check_sm86_perspective_fold());
     CHECK(!check_rt_other_layout());
     CHECK(!check_vertex_restride());
     CHECK(!check_vertex_input_layouts());
