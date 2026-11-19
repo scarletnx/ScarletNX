@@ -96,7 +96,7 @@ typedef struct {
     u32 nfrags, nacc;
     u32 coop_gen[256];               /* the writes each register took, which the matrices are held against */
     u32 stage_slots;                 /* hmma's A and B staged a warp each (g_spirv_translate.hmma_stage, Workgroup) */
-    u32 warp_base;                   /* warp_read's index high bits, made once: every read of a module's is the same */
+    u32 warp_base;                   /* warp_read's index high bits, made once a block (coop_flow forgets it) */
     u32 push, push_ptr; /* a vertex program's push constant vec4: the base instance, the depth fix (vk/render.c) */
     /* with cb_windows, a vertex or fragment program's one push block (unified_push): the members of push and
        scaled_push, then the three uvec4 of its constant buffers' window offsets from member cbw_member */
@@ -3531,7 +3531,7 @@ static u32 warp_lane(Ctx* c) {
     return spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, system_value(c, 0), cu(c, 31));
 }
 /* value as lane j (0-31) of the invocation's own 32 holds it. The index's high bits are the address of the lanes'
-   own 32 in the subgroup's, which every read of a module takes as one value (warp_base) */
+   own 32 in the subgroup's, which every read of a block takes as one value (warp_base) */
 static u32 warp_read(Ctx* c, u32 value, u32 j) {
     if (!c->warp_base)
         c->warp_base = spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, system_value(c, 0), cu(c, ~31u));
@@ -3820,8 +3820,10 @@ static int coop_acc_hold(Ctx* c, u32 d, u32 shape, const u32* mat, u32 nmat) {
     return 1;
 }
 /* the block's end, at its branches and labels: D's words back to their registers, one held D after the other, and the
-   caches empty. A matrix defined here has no value at a label the block's other arms reach too */
+   caches empty. A matrix defined here has no value at a label the block's other arms reach too, nor has warp_read's
+   lane base, which the next block that reads another lane makes again */
 static void coop_flow(Ctx* c) {
+    c->warp_base = 0;
     u32 n = c->nacc;
     c->nacc = c->nfrags = 0; /* the writes below must not find them again */
     if (!n) return;
