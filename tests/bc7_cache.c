@@ -46,14 +46,14 @@ int vk_rec_sync_until(u64 until) {
 /* with g_defer set, the packets wait for run_deferred, in order, as ones the recording thread gets to later */
 static int g_defer;
 static unsigned g_ndeferred;
-static void (*g_deferred_fn[8])(const void* arg);
-static _Alignas(16) u8 g_deferred[8][256];
+static void (*g_deferred_fn[2048])(const void* arg);
+static _Alignas(16) u8 g_deferred[2048][256];
 void vk_rec_call(void (*fn)(const void* arg), const void* arg, u64 size) {
     if (!g_defer) {
         fn(arg);
         return;
     }
-    if (size > sizeof g_deferred[0] || g_ndeferred == 8) abort();
+    if (size > sizeof g_deferred[0] || g_ndeferred == sizeof g_deferred / sizeof g_deferred[0]) abort();
     memcpy(g_deferred[g_ndeferred], arg, (size_t)size);
     g_deferred_fn[g_ndeferred++] = fn;
 }
@@ -536,6 +536,16 @@ static void slow_disk(void) {
     const unsigned now_copies = g_copies;
     memset(dst, 0, (size_t)na);
     CHECK(READ_A() == 1 && g_copies == now_copies + 1 && !memcmp(dst, a, (size_t)na));
+    /* a load's burst: 2000 hits asked before the recording thread takes any, as many as its ring holds of a frame's,
+       are all read and copied, none refused */
+    vk_bc7_cache_late(&late, &skipped, &unkept);
+    const u64 skipped_before = skipped;
+    g_defer = 1;
+    for (int i = 0; i < 2000; i++) CHECK(READ_A() == 1);
+    g_defer = 0;
+    for (int i = 0; i < 2000; i++) run_deferred();
+    vk_bc7_cache_late(&late, &skipped, &unkept);
+    CHECK(skipped == skipped_before && g_copies == now_copies + 2001);
 #undef READ_A
     vk_bc7_cache_close();
     g_threaded = 0;

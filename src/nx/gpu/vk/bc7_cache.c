@@ -104,7 +104,9 @@ typedef struct {
    Meanwhile, and while a read runs past BC7_IO_LATE_NS, the GPU thread queues none (vk_bc7_cache_read_later answers
    0, and the level is encoded at once). The thread reads ahead of the recording thread by BC7_IO_AHEAD bytes at
    most */
-#define BC7_IO_OPS     1024u
+/* reads queued at once at most: as many as the recording ring (record.c's 4 MiB) holds of their packets, so a load's
+   burst of hits is never refused for want of one (1024 refused 489 of a race's reads off a disk that answered) */
+#define BC7_IO_OPS      32768u
 #define BC7_IO_LATE_NS 250000000ull /* a read running this long is a held disk's: none more is queued, and it is said */
 #define BC7_IO_AHEAD   (64ull << 20)
 #define BC7_IO_CLOSE_NS 5000000000ull /* a close waits this long for the writes queued */
@@ -827,6 +829,8 @@ typedef struct {
     DevMem mem;
     VkBufferImageCopy copy;
 } Bc7Later;
+/* each a packet of record.c's ring, with its header of 16 bytes: BC7_IO_OPS of them take more than its 4 MiB */
+_Static_assert((u64)BC7_IO_OPS * (sizeof(Bc7Later) + 16) >= (4ull << 20), "fewer reads than the recording ring holds");
 static void bc7_later_run(const void* p) {
     const Bc7Later* l = p;
     Bc7Op* op = &g_bc7_cache.io.ops[l->op % BC7_IO_OPS];
