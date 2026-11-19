@@ -5871,6 +5871,67 @@ static void test_fuse_ldsm_hmma(const char* dir) {
         CHECK(words_of[coop] == words_of[2 + coop] + 5);
 }
 
+/* Reads of other lanes in two blocks, the first of which does not reach the second on every path: MOVM R10, R8 under
+   @P0 BRA past it, then MOVM R11, R8. The lanes' base (warp_base) was made once for the module, in the first block, and
+   the second's use of it was not dominated by its definition: the module failed spirv-val (shader_sm86_test.py). Each
+   block makes its own now. The values on the evaluator's 32 lanes: R11 is R10 where both ran */
+static Word setp_ge(u32 imm);
+static void test_warp_base_blocks(const char* dir) {
+    u8 code[16 * 12] = {0};
+    u32 n = 0;
+    Word x = fix(0x919); /* S2R R0, TID.X */
+    set(&x, 72, 8, 0x21);
+    put(code, n++, x);
+    put(code, n++, ldc(8, 255, 1, 0, 4)); /* LDC R8, c[1][0] */
+    put(code, n++, setp_ge(64));          /* P0 = R0 >= 64: false */
+    put(code, n, bra(n, n + 2, 0, 0));    /* @P0 BRA past the first MOVM */
+    n++;
+    for (u32 k = 0; k < 2; k++) {
+        x = fix(0x23a); /* MOVM.16.MT88 R10 + k, R8 */
+        set(&x, 16, 8, 10 + k);
+        set(&x, 24, 8, 8);
+        put(code, n++, x);
+    }
+    x = alu(0x024, 4, 2, 0); /* IMAD R2, R0, 8, RZ */
+    set(&x, 32, 32, 8);
+    set(&x, 64, 8, 255);
+    put(code, n++, x);
+    x = fix(0x388); /* STS.64 [R2], R10 */
+    set(&x, 24, 8, 2);
+    set(&x, 32, 8, 10);
+    set(&x, 73, 3, 5);
+    put(code, n++, x);
+    put(code, n++, exit_insn());
+    put(code, n, bra(n, n, 7, 0));
+    n++;
+    ShaderInfo si = {0};
+    si.cs_local[0] = 32, si.cs_local[1] = si.cs_local[2] = 1;
+    si.shared_size = 32 * 8;
+    size_t count = 0;
+    u32* spv = sm86_to_spirv(code, n * 16, ST_CS, NULL, &si, &count);
+    CHECK(spv != NULL);
+    if (!spv) {
+        fprintf(stderr, "warp base blocks: %s\n", si.first_unsupported);
+        return;
+    }
+    CHECK(keep_module(dir, "warp_base_blocks", spv, count));
+    static u32 bank1[4] = {0x12345678u};
+    static SpvEvalEnv env[32];
+    memset(env, 0, sizeof env);
+    for (u32 l = 0; l < 32; l++) {
+        env[l].ubo[SNX_VKB_CB + 1] = bank1;
+        env[l].ubo_words[SNX_VKB_CB + 1] = 4;
+        env[l].builtin[27][0] = env[l].builtin[29][0] = env[l].builtin[41][0] = l;
+    }
+    const char* why = spv_eval_subgroup(spv, count, env, 32);
+    free(spv);
+    CHECK(!why && env[0].shared_words >= 64);
+    u32 bad = 0;
+    for (u32 l = 0; !why && l < 32; l++) bad += env[0].shared[2 * l] != env[0].shared[2 * l + 1];
+    CHECK(bad == 0);
+    if (why || bad) fprintf(stderr, "warp base blocks: %s, %u lanes differ\n", why ? why : "ran", bad);
+}
+
 /* ---- a jump table whose load is far from its BRX, or across a branch ---- */
 
 /* the table that the tests below read from c[1][0x10]: two targets, then a word that is no target */
@@ -6422,6 +6483,7 @@ int main(int argc, char** argv) {
     test_programs(dir);
     test_game_forms(dir);
     test_brx(dir);
+    test_warp_base_blocks(dir);
     test_brx_bounded(dir);
     test_alu_group(dir);
     test_compute_forms(dir);
