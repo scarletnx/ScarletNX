@@ -4,7 +4,8 @@
    close; a redirect to the same origin, one to another and one that loops past the most followed; a body over the
    most taken and one cut short refused with their bytes; a status other than 200 given back with its body; the
    progress said and a stop taken; TLS with a certificate the roots have (SSL_CERT_FILE), for a name and for an
-   address, and one they do not have refused saying so */
+   address, and one they do not have refused saying so; a POST with its body, its type and its User-Agent, whose
+   redirect is given back and not followed */
 #include "common/network/https.h"
 #include <assert.h>
 #include <signal.h>
@@ -160,7 +161,33 @@ static void* serve(void* arg) {
             if (strstr(req, "\r\n\r\n")) break;
         }
         req[n] = 0;
-        if (sscanf(req, "GET %4095s HTTP/1.1", path) == 1 && strstr(req, "\r\nUser-Agent: ScarletNX\r\n")) {
+        /* a POST's body after its headers, as its Content-Length counts it */
+        const char *length = strstr(req, "\r\nContent-Length: "), *head = strstr(req, "\r\n\r\n");
+        size_t want = length && head ? (size_t)(head + 4 - req) + strtoul(length + 18, NULL, 10) : 0;
+        while (n < want && n < sizeof req - 1) {
+            int r = ssl ? SSL_read(ssl, req + n, (int)(sizeof req - 1 - n))
+                        : (int)recv(c, req + n, (int)(sizeof req - 1 - n), 0);
+            if (r <= 0) break;
+            n += (size_t)r;
+            req[n] = 0;
+        }
+        if (sscanf(req, "POST %4095s HTTP/1.1", path) == 1 && strstr(req, "\r\nUser-Agent: CTR FPD/000F\r\n") &&
+            !strstr(req, "\r\nExpect:") && head) {
+            /* /echo: the type and the body as they came; anything else redirected, as /rel's GET is */
+            char type[128] = "";
+            const char* named = strstr(req, "\r\nContent-Type: ");
+            if (named) sscanf(named + 16, "%127[^\r]", type);
+            if (!strcmp(path, "/echo"))
+                snprintf(room, sizeof room, "HTTP/1.1 200 OK\r\nContent-Length: %zu\r\n\r\n%s|%s",
+                         strlen(type) + 1 + strlen(head + 4), type, head + 4);
+            else
+                snprintf(room, sizeof room, "HTTP/1.1 301 Moved\r\nLocation: /len\r\nContent-Length: 3\r\n\r\nbye");
+            out = strlen(room);
+            if (ssl)
+                SSL_write(ssl, room, (int)out);
+            else
+                send(c, room, (int)out, 0);
+        } else if (sscanf(req, "GET %4095s HTTP/1.1", path) == 1 && strstr(req, "\r\nUser-Agent: ScarletNX\r\n")) {
             reply = answer(path, &out, room, sizeof room);
             if (ssl)
                 SSL_write(ssl, reply, (int)out);
@@ -250,6 +277,17 @@ int main(void) {
     /* a status other than 200: given back, with its body */
     snprintf(url, sizeof url, "http://127.0.0.1:%u/missing", g_test.plain.port);
     assert(!get(url, &o, &r, why) && r.status == 404 && !strcmp(r.body, "no"));
+    free(r.body);
+    /* a POST: the body and its type sent at once, the User-Agent given; its redirect given back, not followed */
+    static const char form[] = "action=TE9HSU4*&unitcd=Mg**";
+    snprintf(url, sizeof url, "http://127.0.0.1:%u/echo", g_test.plain.port);
+    assert(!snx_https_post(url, "application/x-www-form-urlencoded", form, sizeof form - 1, "CTR FPD/000F", &o, &r, why,
+                           sizeof why) &&
+           r.status == 200 && !strcmp(r.body, "application/x-www-form-urlencoded|action=TE9HSU4*&unitcd=Mg**"));
+    free(r.body);
+    snprintf(url, sizeof url, "http://127.0.0.1:%u/moved", g_test.plain.port);
+    assert(!snx_https_post(url, "text/plain", "x", 1, "CTR FPD/000F", &o, &r, why, sizeof why) && r.status == 301 &&
+           !strcmp(r.body, "bye"));
     free(r.body);
     /* redirects: to the same origin, to another one (the URL that answered said), and one past the most followed */
     snprintf(url, sizeof url, "http://127.0.0.1:%u/rel", g_test.plain.port);
