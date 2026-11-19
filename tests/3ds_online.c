@@ -23,13 +23,13 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define DATA  0x300000u /* the data page, then the BSS: 0x11000 bytes the test lays its buffers in */
-#define ADDR  (DATA + 0x100)
-#define ADDR2 (DATA + 0x140)
-#define BYTES (DATA + 0x200)
-#define OUT   (DATA + 0x1000)
-#define OUT2  (DATA + 0x3000)
-#define TLS   SNX_CTR_INITIAL_TLS
+#define DATA      0x300000u /* the data page, then the BSS: 0x11000 bytes the test lays its buffers in */
+#define ADDR      (DATA + 0x100)
+#define ADDR2     (DATA + 0x140)
+#define BYTES     (DATA + 0x200)
+#define RECEIVED  (DATA + 0x1000)
+#define RECEIVED2 (DATA + 0x3000)
+#define TLS       SNX_CTR_INITIAL_TLS
 
 static void check(int ok, const char* what) {
     if (!ok) {
@@ -119,7 +119,7 @@ static void sockets(SnxCtrProcess* p, uint32_t soc) {
     check(port != 0, "a bound port");
     sockaddr_put(p, ADDR, loopback, port);
     check(soc_sendto(p, soc, b, "hello", ADDR) == 5, "SendTo");
-    receive_buffer(p, 0, OUT, 256);
+    receive_buffer(p, 0, RECEIVED, 256);
     receive_buffer(p, 1, ADDR2, 8);
     int32_t got = 0;
     for (int tries = 0; tries < 200 && got <= 0; ++tries) { /* loopback is quick, not instant */
@@ -128,7 +128,7 @@ static void sockets(SnxCtrProcess* p, uint32_t soc) {
         if (got == -6) plat_sleep_ns(5000000);
     }
     char text[16] = {0};
-    bytes_get(p, OUT, text, 5);
+    bytes_get(p, RECEIVED, text, 5);
     check(got == 5 && ctr_command_word(p, 3) == 5 && !strcmp(text, "hello"), "RecvFrom's datagram");
     uint8_t from[8];
     bytes_get(p, ADDR2, from, 8);
@@ -142,7 +142,7 @@ static void sockets(SnxCtrProcess* p, uint32_t soc) {
         if (snx_ctr_soc_waiting(p)) plat_sleep_ns(5000000);
     }
     memset(text, 0, sizeof text);
-    bytes_get(p, OUT, text, 4);
+    bytes_get(p, RECEIVED, text, 4);
     check(!snx_ctr_soc_waiting(p) && ctr_command_word(p, 2) == 4 && !strcmp(text, "late") && !p->cpu.state.cpu.r[0],
           "the parked receive answered into the thread's command buffer");
     /* poll: nothing to read on a, b writable as libctru asks it (its POLLOUT is the console's write band) */
@@ -150,16 +150,16 @@ static void sockets(SnxCtrProcess* p, uint32_t soc) {
     snx_st_le32(fds, (uint32_t)a), snx_st_le32(fds + 4, 0x01);
     snx_st_le32(fds + 12, (uint32_t)b), snx_st_le32(fds + 16, 0x10);
     bytes_put(p, BYTES, fds, sizeof fds);
-    receive_buffer(p, 0, OUT, 24);
+    receive_buffer(p, 0, RECEIVED, 24);
     const uint32_t poll[] = {0x00140084u, 2, 0, 0x20, 0, 24u << 14 | 10 << 10 | 2, BYTES};
     check(call(p, soc, poll, 7) == 1, "Poll's count");
-    bytes_get(p, OUT, fds, sizeof fds);
+    bytes_get(p, RECEIVED, fds, sizeof fds);
     check(snx_ld_le32(fds + 8) == 0 && snx_ld_le32(fds + 20) == 0x10, "Poll's events");
     /* F_SETFL O_NONBLOCK: an empty receive says EAGAIN instead of parking */
     const uint32_t nonblock[] = {0x001300C2u, (uint32_t)a, 4, 4, 0x20, 0};
     const uint32_t getfl[] = {0x001300C2u, (uint32_t)a, 3, 0, 0x20, 0};
     check(call(p, soc, nonblock, 6) == 0 && call(p, soc, getfl, 6) == 4, "Fcntl");
-    receive_buffer(p, 0, OUT, 256);
+    receive_buffer(p, 0, RECEIVED, 256);
     check(call(p, soc, recvfrom_words(a, 0), 7) == -6, "a non-blocking empty receive: EAGAIN");
     /* a TCP connection on loopback */
     int32_t listener = soc_socket(p, soc, 1), client = soc_socket(p, soc, 1);
@@ -187,13 +187,13 @@ static void sockets(SnxCtrProcess* p, uint32_t soc) {
           "Close of a closed descriptor");
     /* offline: loopback still, any other address unreachable */
     g_settings.network = 0;
-    const uint8_t far[4] = {192, 0, 2, 1};
-    sockaddr_put(p, ADDR, far, 53);
+    const uint8_t elsewhere[4] = {192, 0, 2, 1};
+    sockaddr_put(p, ADDR, elsewhere, 53);
     check(soc_sendto(p, soc, b, "x", ADDR) == -40, "SendTo off loopback offline: ENETUNREACH");
     sockaddr_put(p, ADDR, loopback, port);
     check(soc_sendto(p, soc, b, "x", ADDR) == 1, "SendTo on loopback offline");
     /* names: the console maker's resolve to nothing; a numeric one resolves offline too */
-    receive_buffer(p, 0, OUT2, 0x130);
+    receive_buffer(p, 0, RECEIVED2, 0x130);
     const char maker[] = "nasc.nintendowifi.net", number[] = "127.0.0.1";
     bytes_put(p, BYTES, maker, sizeof maker);
     const uint32_t gai_maker[] = {0x000F0106u, sizeof maker, 0, 0,           0x130, sizeof maker << 14 | 5 << 10 | 2,
@@ -204,7 +204,7 @@ static void sockets(SnxCtrProcess* p, uint32_t soc) {
                                    BYTES,       6 << 10 | 2,   0, 7 << 10 | 2, 0};
     check(call(p, soc, gai_number, 11) == 0 && ctr_command_word(p, 3) >= 1, "GetAddrInfo of a number");
     uint8_t info[0x130];
-    bytes_get(p, OUT2, info, sizeof info);
+    bytes_get(p, RECEIVED2, info, sizeof info);
     check(snx_ld_le32(info + 4) == 2 && info[20 + 256 + 1] == 2 && !memcmp(info + 20 + 256 + 4, loopback, 4),
           "GetAddrInfo's answer");
     g_settings.network = 1;
@@ -230,7 +230,7 @@ static bool signaled(SnxCtrProcess* p, uint32_t handle) {
 
 static void connection(SnxCtrProcess* p, uint32_t ac) {
     uint32_t event = event_new(p);
-    const uint32_t connect[] = {0x00040006u, 0x20, 0, 0, event, 0x200u << 14 | 1 << 10 | 2, OUT};
+    const uint32_t connect[] = {0x00040006u, 0x20, 0, 0, event, 0x200u << 14 | 1 << 10 | 2, RECEIVED};
     const uint32_t result[] = {0x00050002u, 0x20, 0}, wifi[] = {0x000D0000u};
     g_settings.network = 0;
     check(send(p, ac, connect, 7) == SNX_CTR_SVC_RETURN && !ctr_command_word(p, 1) && signaled(p, event),
@@ -331,9 +331,9 @@ static void login(SnxCtrProcess* p, uint32_t frd, const char* folder) {
     request[8] = 3, request[9] = 4, request[10] = 0x20, request[12] = 0, request[13] = event;
     check(send(p, frd, request, 14) == SNX_CTR_SVC_RETURN && !ctr_command_word(p, 1) && signaled(p, event),
           "RequestGameAuthentication with no console files answers at once");
-    receive_buffer(p, 0, OUT, 0x138);
+    receive_buffer(p, 0, RECEIVED, 0x138);
     const uint32_t data[] = {0x00290000u};
-    check(send(p, frd, data, 1) == SNX_CTR_SVC_RETURN && !ctr_command_word(p, 1) && ctr_word(p, OUT) == 0,
+    check(send(p, frd, data, 1) == SNX_CTR_SVC_RETURN && !ctr_command_word(p, 1) && ctr_word(p, RECEIVED) == 0,
           "GetGameAuthenticationData of a login that did not go out: NASC's result 0");
     /* the console's files and a NASC here: the LOGIN goes out, and its answer comes back to the game */
     console_files(folder);
@@ -363,7 +363,7 @@ static void login(SnxCtrProcess* p, uint32_t frd, const char* folder) {
     check(!strcmp(field(n.form, "csnum", value, sizeof value), "CW412345678"), "the form's csnum");
     check(send(p, frd, data, 1) == SNX_CTR_SVC_RETURN && !ctr_command_word(p, 1), "GetGameAuthenticationData");
     uint8_t auth[0x138];
-    bytes_get(p, OUT, auth, sizeof auth);
+    bytes_get(p, RECEIVED, auth, sizeof auth);
     check(snx_ld_le32(auth) == 1 && snx_ld_le32(auth + 4) == 200, "NASC's result 001 and HTTP 200");
     check(!strcmp((char*)auth + 8, "127.0.0.1") && snx_ld_le16(auth + 0x28) == 60123, "the game server");
     check(!strcmp((char*)auth + 0x30, "VE9LRU4tT0Y-U0NBUkxFVA**"), "the token, as NASC sent it");
