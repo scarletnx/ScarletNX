@@ -850,7 +850,7 @@ static int rt_load_copy(VkCommandBuffer cb, Surf* s, VkBuffer buf, u64 off, u32 
         const int scaled = s->sw != s->w || s->sh != s->h;
         VkImage t = scaled ? vk_unscaled_image(s, 1, &tm) : VK_NULL_HANDLE;
         /* no memory for the image of the guest's size: never a copy of that size into the scaled one, which went
-           past its edge and faulted the GPU's copy engine (Xid 39) in Mario Kart World at resolution=0.5 */
+           past its edge and faulted the GPU's copy engine (Xid 39) in a racing game at resolution=0.5 */
         if (scaled && !t) return 0;
         if (!t)
             rec_CmdCopyBufferToImage(cb, buf, s->img, VK_LAYOUT(TRANSFER_DST_OPTIMAL), 1, &c);
@@ -3057,7 +3057,7 @@ static u32 g_oom_target; /* the same of render targets */
 static u64 g_oom_target_bytes;
 u64 vk_mem_trimmed(void) { return g_trimmed; }
 u64 vk_mem_trim_start(u64 budget) { return budget - trim_head(budget); }
-/* The caches' trim takes only what the last presents didn't use, and on a GPU of 2 GB Mario Kart World's working set
+/* The caches' trim takes only what the last presents didn't use, and on a GPU of 2 GB a racing game's working set
    didn't fit: its depth targets found no memory, and most of its draws were skipped. Its terrain textures, bound by
    tiles, are the memory that can give way without a hole: a level coarser, a quarter of the bytes */
 u64 vk_tex_shed(u64 need) {
@@ -3083,7 +3083,7 @@ u64 vk_tex_shed(u64 need) {
    it and the next use loaded it all again. Those the present being recorded uses too, but for one a draw recorded and
    not yet submitted holds: the bind goes before the next submission, which a recorded draw would be in, sampling a
    level with no memory. A submitted draw is safe: the bind waits for the work submitted before it (memory.c). The
-   working set itself has to give way: on a GPU of 2 GB Mario Kart World's frames used more than the budget, and a
+   working set itself has to give way: on a GPU of 2 GB a racing game's frames used more than the budget, and a
    trim that took only what two presents hadn't used freed nothing. The bytes released */
 #define SHED_PER_TRIM 64 /* the textures a trim makes coarser at most: each is a sparse bind */
 static u32 g_shed_at; /* the present a level last gave way (+1) */
@@ -3101,8 +3101,8 @@ static u64 tex_shed_lru(u32 before, u64 want) {
     return freed;
 }
 /* Once a present, the headroom of textures sparse for their levels (texture.c's shed). Memory let go comes back only
-   when the frames that could read it are done, and a request in the meantime finds none: on a GPU of 2 GB Mario Kart
-   World's frames used more than the budget, the trim ran when an allocation was already short, and the sparse blocks
+   when the frames that could read it are done, and a request in the meantime finds none: on a GPU of 2 GB a racing
+   game's frames used more than the budget, the trim ran when an allocation was already short, and the sparse blocks
    of the textures it then loaded found no memory frame after frame. So while the heap's use, less what waits to be
    freed, is past the budget less two of the trim's heads, those textures give up their finest level ahead of the
    requests, the least recently used first. Under a head more below that, and once 300 presents have gone with no level
@@ -3130,7 +3130,7 @@ void vk_tex_refine_frame(void) {
 /* Once a present: the demoted textures (vk_tex_demote) the last two presents used, the most recently used first, moved
    back into the GPU's memory, 16 MB a present at most; where the GPU's memory has no room for one, textures no present
    used in the last 30 go into system memory in its place, the least recently used first. Waiting for room alone, the
-   GPU's memory never had any in Mario Kart World's race, and the textures its frames used stayed in system memory,
+   GPU's memory never had any in a racing game's race, and the textures its frames used stayed in system memory,
    sampled over the bus. The use counted is less what waits to be freed: what a swap lets go is the GPU's again when
    the frame is done, and the move back that finds no memory now is tried again at the next present */
 void vk_tex_promote_frame(void) {
@@ -3347,7 +3347,7 @@ int vk_cache_image_create(const VkImageCreateInfo* ii, VkImage* img, DevMem* mem
     }
     /* one as big of its kind found no memory this present: neither will this one (what was freed meanwhile is released
        when the frame is done). Its draws go without it until the next present. Render targets are counted apart: in
-       Mario Kart World on a GPU of 2 GB, textures of 66 KB to 1.6 MB found none in each present, and its depth targets
+       a racing game on a GPU of 2 GB, textures of 66 KB to 1.6 MB found none in each present, and its depth targets
        of 2 to 8 MB, refused for them, skipped 500,000 draws in a minute and a half where 220 found no memory. So are
        the images its compute programs store to (VK_OWN_WRITTEN), whose loss is a dispatch's results: refused about
        20 times for each that found no memory, and each refusal skipped the dispatch */
@@ -3429,7 +3429,7 @@ static int blit_depth_gather(Surf* source, Surf* destination, i32 x0, i32 y0, i3
 }
 
 /* A 2D blit whose source is a depth target: the game copies the depth buffer's texels as a color surface of their
-   size (Pokemon Legends Z-A blits its D24S8 depth as BGRA8 into another depth buffer, which its lighting tests
+   size (one game blits its D24S8 depth as BGRA8 into another depth buffer, which its lighting tests
    against, and halves it for half-size passes). The texels are copied whole on the console, so here the depth and
    stencil go into a depth target of the source's format at the destination, which the draw that binds it finds.
    Depth targets don't reach guest memory, so a copy through memory would leave it undefined: black lighting. 0 when

@@ -1015,7 +1015,7 @@ void vk_pages_frame(void) {
 /* For the budget (surface.c vk_mem_trim, through vk_buf_reclaim): the granules nothing read since `before`, whose
    pages hold no bytes of the GPU's (no owner: their bytes are memory's), give their memory back, until want bytes go;
    a range that reads one again binds it again, or is copied to the ring. vk_pages_frame waits twenty seconds for a
-   granule, which on a GPU of 2 GB held 150 to 190 MB while Mario Kart World's textures were evicted for room every
+   granule, which on a GPU of 2 GB held 150 to 190 MB while a racing game's textures were evicted for room every
    few frames. The bytes let go */
 u64 vk_pages_reclaim(u32 before, u64 want) {
     u64 freed = 0;

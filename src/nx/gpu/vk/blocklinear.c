@@ -56,7 +56,7 @@ static const BlPipe* bl_init(int runs) {
     return p;
 }
 
-/* The scratch buffer stays as big as the most asked of it, and in Mario Kart World on a GPU of 2 GB one target's load
+/* The scratch buffer stays as big as the most asked of it, and in a racing game on a GPU of 2 GB one target's load
    of 144 MB made it 256 MB for the rest of the run, where the DMA engine's moves after it asked 64 MB at most: a
    fifth of the device's budget held for nothing while its depth targets and storage images found no memory. Once a
    present with the heap past four fifths of its budget, one more than twice the most asked of it since the last

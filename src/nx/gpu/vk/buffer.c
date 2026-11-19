@@ -1130,7 +1130,7 @@ static void any_span(void* user, u64 at, u64 from, u64 n) {
     *(int*)user = 1;
 }
 /* [gva, gva + len) and o share bytes, through the same GPU address or pages in common (q): a result lands its own
-   bytes alone, so the rest of a page it shares is free to read and write (Pokemon Legends Z-A writes a word next to
+   bytes alone, so the rest of a page it shares is free to read and write (one game writes a word next to
    its transform feedback captures before each, through a macro's inline upload). rm is the range's pages, made
    once; without memory for them, any page in common counts */
 static int out_meets(const GfxOut* o, u64 gva, u64 len, const RangePages* q, RangeMap* rm) {

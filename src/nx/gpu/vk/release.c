@@ -249,7 +249,7 @@ static void release(Release* r) {
        is the draws'). Else results of earlier submits are older, and the submit being recorded holds the rest (and a
        samples-passed report's counts). The release waits for that submit without submitting it now: whoever needs the
        release submits it (submit_through), and so do the end of the GPFIFO submission and a wait in it (stream_end).
-       Submitting at each release made Pokemon Legends Z-A submit about 150 times a frame, with storage results
+       Submitting at each release made one game submit about 150 times a frame, with storage results
        pending through most of its releases */
     u64 recording = vk_submit_number();
     if (!r->samples && !vk_buf_pending_any() && !vk_gfx_image_in_flight(0) &&
