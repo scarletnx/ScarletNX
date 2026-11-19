@@ -605,6 +605,10 @@ msgstr "内存不足，无法容纳 %s 的 %zu 个发布版本和 %zu 个资源"
 msgid "Unsupported"
 msgstr "不支持"
 
+#: src/gui/icons.h
+msgid "Overlay"
+msgstr "覆盖层"
+
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
@@ -2973,10 +2977,6 @@ msgstr "从转储游戏库中移除 %s？其游戏仍留在文件夹中。"
 #: src/gui/main.c
 msgid "Not added"
 msgstr "未添加"
-
-#: src/gui/main.c
-msgid "Overlay"
-msgstr "覆盖层"
 
 #: src/gui/main.c
 msgid "App"

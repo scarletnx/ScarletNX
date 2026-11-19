@@ -605,6 +605,10 @@ msgstr "sem memória para %s: %zu releases e %zu assets"
 msgid "Unsupported"
 msgstr "Sem suporte"
 
+#: src/gui/icons.h
+msgid "Overlay"
+msgstr "Sobreposição"
+
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
@@ -2973,10 +2977,6 @@ msgstr "Remover %s da biblioteca de dumps? Os jogos ficam na pasta."
 #: src/gui/main.c
 msgid "Not added"
 msgstr "Não adicionada"
-
-#: src/gui/main.c
-msgid "Overlay"
-msgstr "Sobreposição"
 
 #: src/gui/main.c
 msgid "App"
