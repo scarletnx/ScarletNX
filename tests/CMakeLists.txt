@@ -2679,6 +2679,13 @@ if(WIN32) # a scenario's crash says where it was (one ended 0xC0000005 on Window
 endif()
 add_test(NAME extraction_native COMMAND snx-test-extract)
 
+# scarletnx --pack: synthetic encrypted NCAs packed into an NSP and an XCI of plain ones (hac_synth.h, as above)
+add_executable(snx-test-pack pack.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/driver/pack.c"
+    "${PROJECT_SOURCE_DIR}/src/nx/runtime/driver/container.c")
+snx_test_target(snx-test-pack gnu23)
+target_link_libraries(snx-test-pack PRIVATE snx_test_common hactool_internals OpenSSL::Crypto)
+add_test(NAME pack_plain COMMAND snx-test-pack)
+
 add_executable(snx-test-loader loader_test.c "${PROJECT_SOURCE_DIR}/src/nx/loader/loader.c"
     "${PROJECT_SOURCE_DIR}/src/nx/loader/match.c" "${PROJECT_SOURCE_DIR}/src/nx/runtime/driver/game_name.c")
 snx_test_target(snx-test-loader c23)

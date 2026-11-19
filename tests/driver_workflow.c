@@ -8,6 +8,7 @@
 #include "nx/runtime/driver/driver.h"
 #include "nx/runtime/driver/extract.h"
 #include "nx/runtime/driver/game_name.h"
+#include "nx/runtime/driver/pack.h"
 #include "nx/runtime/driver/recompile.h"
 #include "snx_settings.h"
 #include <signal.h>
@@ -276,6 +277,20 @@ int snx_dump_modules_of_dump(const char* dump, const SnxPaths* paths, const char
     dumped_into = snx_strdup(outdir);
     dumped_repo = paths->repo ? snx_strdup(paths->repo) : NULL;
     return strstr(dump, "unreadable") ? -1 : 0; /* a dump it cannot read: -1, said */
+}
+/* pack.c's --pack: its arguments after --pack, and the data folder it finds the keys in */
+static char *packed_args, *packed_repo;
+int snx_pack(int argc, char** argv, const SnxPaths* paths) {
+    free(packed_args);
+    free(packed_repo);
+    packed_args = snx_strdup("");
+    for (int i = 0; i < argc; ++i) {
+        char* more = snx_format("%s%s%s", packed_args, i ? "|" : "", argv[i]);
+        free(packed_args);
+        packed_args = more;
+    }
+    packed_repo = paths && paths->repo ? snx_strdup(paths->repo) : NULL;
+    return strstr(packed_args, "fails") ? 1 : 0;
 }
 /* recompile.c's: a setting of the recompile, from the generated tables */
 const IniOpt* snx_recompile_setting(const char* key) {
@@ -925,6 +940,20 @@ int main(int argc, char** argv) {
         free(given);
         puts("PASS --dump-modules reads an XCI or NSP in place with the data folder's keys or --data's, an extracted "
              "program through the loader, and refuses what it does not take");
+    }
+    { /* --pack: its arguments go to pack.c as given, --data among them, with the data folder a run uses for the keys;
+         its status is the run's */
+        char program[] = "scarletnx", flag[] = "--pack", folder[] = "Game NCAs", xci[] = "--xci", data[] = "--data";
+        char dir[] = "some data", fails[] = "fails";
+        char* args[] = {program, flag, folder, xci, data, dir, NULL};
+        char* failing[] = {program, flag, fails, NULL};
+        CHECK(snx_driver(6, args) == 0 && packed_args && !strcmp(packed_args, "Game NCAs|--xci|--data|some data"));
+        CHECK(packed_repo && packed_repo[0]);
+        CHECK(snx_driver(3, failing) == 1 && !strcmp(packed_args, "fails"));
+        free(packed_args);
+        free(packed_repo);
+        packed_args = packed_repo = NULL;
+        puts("PASS --pack hands its arguments to pack.c with the data folder's keys, its status the run's");
     }
     keys = snx_path_join(root, "provided prod.keys");
     title_keys = snx_path_join(root, "provided title.keys");

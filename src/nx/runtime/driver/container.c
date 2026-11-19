@@ -299,10 +299,28 @@ static const char* dump_file(const SnxDump* dump, int container) {
                ? dump->opened[container]
                : "the dump";
 }
+int snx_ticket_key(SnxHac* hac, const unsigned char* data, size_t size) {
+    size_t offset;
+    if (size < 4) return -1;
+    switch ((SnxU32)le_bytes(data, 4)) {
+        case 0x10000UL:
+        case 0x10003UL: offset = 4 + 0x200 + 0x3c; break;
+        case 0x10001UL:
+        case 0x10004UL: offset = 4 + 0x100 + 0x3c; break;
+        case 0x10002UL:
+        case 0x10005UL: offset = 4 + 0x3c + 0x40; break;
+        case 0x10006UL: offset = 4 + 0x14 + 0x28; break;
+        default: return -1;
+    }
+    if (size < offset + 0x170) return -1;
+    if (data[offset + 0x141]) return 0; /* a personalized ticket's key is encrypted */
+    snx_hac_add_title_key(hac, data + offset + 0x160, data + offset + 0x40);
+    return 1;
+}
 static int read_tickets(SnxDump* dump, int container, unsigned* tickets, unsigned* personal) {
     unsigned char data[1024];
     const SnxHacEntry* entries;
-    size_t count, i, size, offset;
+    size_t count, i, size;
     count = snx_hac_entries(dump->hac, container, &entries);
     *tickets = *personal = 0;
     for (i = 0; i < count; i++) {
@@ -311,20 +329,7 @@ static int read_tickets(SnxDump* dump, int container, unsigned* tickets, unsigne
         size = entries[i].size < sizeof data ? (size_t)entries[i].size : sizeof data;
         if (snx_hac_read(dump->hac, container, i, data, size))
             return snx_error("cannot read the ticket %s", entries[i].name);
-        if (size < 4) continue;
-        switch ((SnxU32)le_bytes(data, 4)) {
-            case 0x10000UL:
-            case 0x10003UL: offset = 4 + 0x200 + 0x3c; break;
-            case 0x10001UL:
-            case 0x10004UL: offset = 4 + 0x100 + 0x3c; break;
-            case 0x10002UL:
-            case 0x10005UL: offset = 4 + 0x3c + 0x40; break;
-            case 0x10006UL: offset = 4 + 0x14 + 0x28; break;
-            default: continue;
-        }
-        if (size >= offset + 0x170 && data[offset + 0x141]) ++*personal;
-        if (size < offset + 0x170 || data[offset + 0x141]) continue; /* a personalized ticket's key is encrypted */
-        snx_hac_add_title_key(dump->hac, data + offset + 0x160, data + offset + 0x40);
+        if (!snx_ticket_key(dump->hac, data, size)) ++*personal;
     }
     memset(data, 0, sizeof data);
     return 0;
@@ -797,8 +802,7 @@ static int open_container(SnxDump* dump, const char* path, int say) {
     return container;
 }
 
-/* the keys loaded into a new hactool: 0, else nonzero, said why */
-static int dump_start(SnxDump* dump, const char* keys, const char* title_keys, const char* repo, int say) {
+int snx_dump_keys(SnxDump* dump, const char* keys, const char* title_keys, const char* repo, int say) {
     memset(dump, 0, sizeof *dump);
     dump->base = dump->update = -1;
     dump->programs = 1;
@@ -815,7 +819,7 @@ static int dump_start(SnxDump* dump, const char* keys, const char* title_keys, c
 
 int snx_dump_open(SnxDump* dump, const char* base, const char* addon, int index, const char* keys,
                   const char* title_keys, const char* repo, int say) {
-    if (dump_start(dump, keys, title_keys, repo, say)) return 1;
+    if (snx_dump_keys(dump, keys, title_keys, repo, say)) return 1;
     if (index < 0 || index >= SNX_PROGRAMS_MAX)
         return snx_error("program %d of a dump: an application numbers its programs from 0 to %d", index,
                          SNX_PROGRAMS_MAX - 1);
@@ -836,7 +840,7 @@ int snx_dump_title(SnxDump* dump, const char* path, const char* keys, const char
     size_t count, i, nmetas;
     unsigned long unreadable;
     int application = 0;
-    if (dump_start(dump, keys, title_keys, repo, say) || (dump->base = open_container(dump, path, say)) < 0 ||
+    if (snx_dump_keys(dump, keys, title_keys, repo, say) || (dump->base = open_container(dump, path, say)) < 0 ||
         read_ncas(dump, dump->base, &entries, &count, &ncas, &unreadable))
         return 1;
     /* a game's dump when its content meta says so, else when it has a game's program; an update's or a DLC's else */
