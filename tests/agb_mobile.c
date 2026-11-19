@@ -2,8 +2,8 @@
    Copyright 2026 the ScarletNX contributors */
 /* The Mobile Adapter GB on the link port (src/agb/board/mobile.c): a game's Begin Session packet clocked out a byte at
    a time in the serial port's Normal 8 bit mode, as the console's master side sends it, the adapter's acknowledgment
-   in the bytes it clocks back, then its answer to the packet, NINTENDO again, after the idle bytes the game sends while
-   it waits; the board with no adapter still reads 0. No network: Begin Session reaches no server */
+   in the bytes it clocks back, then its answer to the packet, the same 8 letters back, after the idle bytes the game
+   sends while it waits; the board with no adapter still reads 0. No network: Begin Session reaches no server */
 #include "agb/board/board.h"
 #include "agb/board/mobile.h"
 #include "common/utilities/common.h"
@@ -43,8 +43,9 @@ int main(void) {
         fprintf(stderr, "agb_mobile: no adapter: %s\n", why);
         return 1;
     }
-    /* Begin Session: 99 66, command 10, 00, length 0008, "NINTENDO", the checksum of the command, the length and the
-       data, then the GBA's device byte (81) and a byte for the adapter's answer */
+    /* Begin Session: 99 66, command 10, 00, length 0008, the 8 letters the adapter takes (the console maker's name),
+       the checksum of the command, the length and the data, then the GBA's device byte (81) and a byte for the
+       adapter's answer */
     static const uint8_t data[8] = {'N', 'I', 'N', 'T', 'E', 'N', 'D', 'O'};
     uint8_t packet[32] = {0x99, 0x66, 0x10, 0x00, 0x00, 0x08};
     unsigned n = 6, sum = 0x10 + 0x08;
