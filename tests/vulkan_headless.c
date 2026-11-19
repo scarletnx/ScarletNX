@@ -7255,6 +7255,7 @@ static void results_copied(u64 cpu, u64 len) { vk_own_cpu_touched(cpu, len); }
 #include "vulkan_shader_invalidate.inc"
 #include "vulkan_shader_windows.inc"
 #include "vulkan_shared_clamp.inc"
+#include "vulkan_compute_arena.inc"
 #include "vulkan_index_draws.inc"
 #include "vulkan_polygon_lines.inc"
 #include "vulkan_pass_breaks.inc"
@@ -8535,6 +8536,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_indirect_dispatch_once());
     CHECK(!check_shared_clamp());
     CHECK(!check_shared_spill());
+    CHECK(!check_compute_arena_count());
     CHECK(!check_vic());
     CHECK(!check_vic_chain(shot));
     CHECK(!check_nvdec_vic());
