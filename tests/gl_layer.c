@@ -187,6 +187,17 @@ static u64 g_gpu_next = 0x4000000000ull;
 /* vi's shown layer: the size its native window answers (vi_window_size) */
 static u32 g_layer_size[2] = {1280, 720};
 void vi_window_size(u32* width, u32* height) { *width = g_layer_size[0], *height = g_layer_size[1]; }
+/* a game's native window (an ANativeWindow at WINDOW: '_wnd', its query at +144): the SDK's query answers its default
+   size (6, 7: what the game set) and its buffers' (0, 1) from window_answers, through hook_guest_call */
+#define WINDOW_QUERY 0x7700u
+static u32 window_answers[8];
+int mem_user_mapped(u64 addr, u64 size) { return addr && addr + size <= GUEST; }
+void hook_guest_call(CPU* c, u64 fn, u64 a0, u64 a1, u64 a2, u64 a3) {
+    (void)a0, (void)a3;
+    assert(fn == WINDOW_QUERY && a1 < 8);
+    gw32(a2, window_answers[a1]);
+    c->x[0] = 0;
+}
 u64 gmmu_space_alloc(u64 size, u64 align) {
     u64 a = g_gpu_next;
     (void)align;
@@ -434,22 +445,29 @@ int main(void) {
         ctx = call("eglCreateContext", 1, 1, 0, put_ints(SCRATCH + 0x100, core, 7), 0);
         assert(ctx && snx_gl_context_api((u32)ctx) == SNX_GL_API_DESKTOP && snx_gl_context_version((u32)ctx) == 45);
     }
-    /* a window surface is its native window's size, as vi answers the driver: the layer's 1280x720 docked too (docked
-       output scales it), or the size the game's buffers gave the layer */
+    /* a window surface is its native window's default size, as the game's driver reads it: the size the game set
+       (1920x1080 docked, one game), else vi's layer's, 1280x720 docked too (another game draws its last pass at that);
+       a window that is no ANativeWindow takes the layer's */
     g_settings.tv_mode = 1;
     {
-        u64 docked = call("eglCreateWindowSurface", 1, 1, 0, 0, 0);
-        assert(docked && call("eglQuerySurface", 1, docked, 0x3057, SCRATCH + 0x500, 0) == 1); /* EGL_WIDTH */
-        assert(call("eglQuerySurface", 1, docked, 0x3056, SCRATCH + 0x504, 0) == 1);           /* EGL_HEIGHT */
-        assert(gr32(SCRATCH + 0x500) == 1280 && gr32(SCRATCH + 0x504) == 720);
-        assert(call("eglDestroySurface", 1, docked, 0, 0, 0) == 1);
-        g_layer_size[0] = 1920, g_layer_size[1] = 1080;
-        docked = call("eglCreateWindowSurface", 1, 1, 0, 0, 0);
-        assert(docked && call("eglQuerySurface", 1, docked, 0x3057, SCRATCH + 0x500, 0) == 1);
-        assert(call("eglQuerySurface", 1, docked, 0x3056, SCRATCH + 0x504, 0) == 1);
-        assert(gr32(SCRATCH + 0x500) == 1920 && gr32(SCRATCH + 0x504) == 1080);
-        assert(call("eglDestroySurface", 1, docked, 0, 0, 0) == 1);
-        g_layer_size[0] = 1280, g_layer_size[1] = 720;
+        static const u32 asked[3][2] = {{1920, 1080}, {0, 0}, {1600, 900}};
+        static const u32 made[4][2] = {{1920, 1080}, {1280, 720}, {1280, 720}, {1280, 720}};
+        u64 window = SCRATCH + 0x600;
+        gw32(window, 0x5f776e64u); /* '_wnd' */
+        gw64(window + 144, WINDOW_QUERY);
+        for (int k = 0; k < 4; k++) {
+            u64 docked;
+            if (k < 3) {
+                window_answers[6] = asked[k][0], window_answers[7] = asked[k][1];
+                window_answers[0] = 1280, window_answers[1] = 720; /* the buffers', which the driver doesn't take */
+            }
+            if (k == 2) gw32(window, 0x12345678u); /* not '_wnd': the layer's size, the query never called */
+            docked = call("eglCreateWindowSurface", 1, 1, k == 3 ? 0 : window, 0, 0);
+            assert(docked && call("eglQuerySurface", 1, docked, 0x3057, SCRATCH + 0x500, 0) == 1); /* EGL_WIDTH */
+            assert(call("eglQuerySurface", 1, docked, 0x3056, SCRATCH + 0x504, 0) == 1);           /* EGL_HEIGHT */
+            assert(gr32(SCRATCH + 0x500) == made[k][0] && gr32(SCRATCH + 0x504) == made[k][1]);
+            assert(call("eglDestroySurface", 1, docked, 0, 0, 0) == 1);
+        }
     }
     g_settings.tv_mode = 0;
     u64 surface = call("eglCreateWindowSurface", 1, 1, 0, 0, 0);
