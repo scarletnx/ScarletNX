@@ -379,54 +379,6 @@ method to its engine in `gpu/maxwell/`. The 3D engine's registers make the same 
 (`maxwell/draw_state.c`), and its draws go to `g_renderer`. The macro engine (`maxwell/mme.c`) interprets every
 macro, with no macro HLE or JIT.
 
-A game that links NVIDIA's Vulkan driver (one module exports the loader's `vk*` entry points) runs that driver as
-recompiled code by default: it writes Maxwell command buffers into the GPFIFO above. With the experimental
-`guest_vulkan` setting the driver never runs. `gpu/gvk/gvk.c` puts a function of its own into the dispatch slot of
-each entry point the driver's module exports (the module that exports `vkGetInstanceProcAddr`; `gpu/gvk/gvk.hook`
-routes the game's direct calls to them, and a module recompiled before it stops the game), and `gpu/gvk/gvk_api.c`
-executes the Vulkan calls on the renderer's device and graphics queue after compatibility fixes. Vulkan's structures
-have the same layout on AArch64 and on 64-bit little-endian hosts. `gvk_in` translates their pointers from a table of
-structure fields. A 32-bit game or a big-endian host uses the game's own driver. Save states cannot hold GVK objects.
-The game sees one heap
-with three memory types: device-local memory, and memory the CPU maps at guest addresses in the alias region, so a
-mapping is the game's own address: guest pages the host imports (`VK_EXT_external_memory_host`), or where it can't
-(RenderDoc takes no host memory) the host's own memory exported as a dma-buf and mapped over the guest pages, with
-linear images in it made with the linear DRM format modifier. The swapchain's images are host images, and a present
-blits one into the renderer's window (`present_image`), applying the `android::Surface` crop rectangle from
-`vkCreateViSurfaceNN` (scaled to host pixels) so dynamic resolution fills the display. If the next present has reached the display queue, acquire
-waits for it within the application's timeout. Otherwise the renderer's copy already releases the guest image from
-the display. A transfer command inside a primary single-subpass render pass can end the pass and begin a twin that
-loads what it stored. A depth format the host lacks (24-bit depth on AMD) is replaced with the nearest supported one.
-The console's driver ignores image layouts. GVK uses `GENERAL` for most layouts, retains discard transitions, and
-adds stages required by barrier access masks. GVK also adjusts SPIR-V (`gpu/gvk/gvk_spirv.c`): a member's ArrayStride
-moves to its array type, a matrix with no order becomes column-major, an index that can vary by invocation is
-marked NonUniform for buffer arrays. A pipeline that blends with the second color can use a twin of its fragment
-module with that output at `Location 0, Index 1`. Pipeline compilation releases the guest core.
-For recompiled code, GVK can provide `VK_EXT_debug_report` entry points that the guest driver does not export.
-Guest debug messages reach guest callbacks. Host Vulkan validation messages stay in the runtime log.
-GVK defers destruction of guest images and release of their backing memory until earlier work on the graphics queue
-completes. Multiple releases between submissions share one completion signal.
-Where the device has host-only descriptor pools (`VK_EXT_mutable_descriptor_type`), each guest descriptor pool has a
-twin in host memory, and each set a twin in it. A write goes to the set and to its twin, and a copy reads the source's
-twin: RADV keeps descriptors in write-combined device memory, where a copy's reads are uncached.
-[GVK is not a security boundary](../user/settings.md). It forwards some guest-provided Vulkan handles and data to
-the host driver.
-The resolution setting is a whole factor for GVK: none below 1.5×, otherwise the nearest integer. GVK scales an
-image by its use, not by its size or usage flags (one game gives every texture `COLOR_ATTACHMENT`). The first
-framebuffer that takes an image gives it a shadow: a GVK image at the scale, which the image's views, descriptors,
-barriers and commands use from then on. The game's own image stays behind it, bound to the game's memory. A copy
-between a shadow and a buffer, or an image at the game's size, goes through the game's image and a blit. A framebuffer
-scales all its attachments or none. It keeps the game's size when an image can't get a shadow yet: an image of mip
-levels or storage usage, one whose view a descriptor set holds (the set would read the old image), one that a command
-buffer that can still run writes (the shadow would miss the write), and one with pixels that no blit can move. The
-swapchain's images are made at the scale. Render areas, dynamic viewports, scissors and clear rectangles scale with
-the framebuffer. Viewports baked into a pipeline do not scale. A fragment shader's size query of an image at the
-scale answers the game's size (`gvk_spirv_scaled_size`): one game normalizes indirect-texture and haze coordinates by
-`textureSize`. GVK keeps the last 16 bytes of the push constants for it, and tells the game a limit of 240. Each
-descriptor set keeps a mask of the bindings that hold images at the scale. At each draw, GVK pushes the bits of the
-images that the pipeline's queries read, and the queries divide width and height by `1 + bit * (scale - 1)`.
-`gl_FragCoord` stays in the host's pixels: the games seen read only its depth.
-
 The shader programs a game ships are translated at startup, on the renderer's shader file thread rather than the GPU
 thread, into `<id>.<driver>.vkshipped` (`prepare_shaders`: before the game's first thread runs, behind main.c's loading screen,
 or in the background as it runs). `gpu/shipped_pass.c` walks the RomFS and the executables' segments, and
@@ -437,6 +389,78 @@ reads the jump tables of BRX from them, and a draw takes such a shader only whil
 `gpu/vk/pipeline.c` translates each into the file, which a draw's lookup reads from when it has no shader of its own. The files the walk found nothing in are kept in
 `<id>.vkscan` by their name, place and size, under the hash of the walk's sources (`cmake/ship_walk.cmake`) rather than
 the build, so a new build or driver reads only the files that hold programs again.
+
+#### A game's own Vulkan (`guest_vulkan`)
+
+A game that links NVIDIA's Vulkan driver (one module exports the loader's `vk*` entry points) runs that driver as
+recompiled code by default. It writes Maxwell command buffers into the GPFIFO above. With the experimental
+`guest_vulkan` setting, `gpu/gvk/gvk.c` puts a function of its own into the dispatch slot of each entry point that the
+driver's module (the one that exports `vkGetInstanceProcAddr`) exports. `gpu/gvk/gvk.hook` routes the game's direct
+calls to them, and a module recompiled before that list stops the game. `gpu/gvk/gvk_api.c` executes the calls on the
+renderer's device and graphics queue after compatibility fixes. The driver's code then runs only for calls that no
+slot takes. A host without memory import (`gvk_check_device`), a 32-bit game and a big-endian host give the slots back,
+and the game's own driver runs. Save states cannot hold GVK objects.
+
+Calls and memory:
+
+- Vulkan's structures have the same layout on AArch64 and on 64-bit little-endian hosts. `gvk_in` translates their
+  pointers from a table of structure fields.
+- The game sees one heap with three memory types: device-local memory, and two types that the CPU maps at guest
+  addresses in the alias region, so that a mapping is the game's own address. The host imports those guest pages
+  (`VK_EXT_external_memory_host`). Where it cannot (RenderDoc takes no host memory), the host's own memory is exported
+  as a dma-buf and mapped over the guest pages, and linear images in it use the linear DRM format modifier.
+- GVK defers the destruction of guest images, and the release of their memory, until earlier work on the graphics
+  queue completes. Releases between two submissions share one completion signal.
+- Where the device has host-only descriptor pools (`VK_EXT_mutable_descriptor_type`), each guest descriptor pool has a
+  twin in host memory, and each set a twin in it. A write goes to the set and to its twin, and a copy reads the
+  source's twin. RADV keeps descriptors in write-combined device memory, where a copy's reads are uncached.
+- For recompiled code, GVK can provide `VK_EXT_debug_report` entry points that the guest driver does not export. Guest
+  debug messages reach guest callbacks. Host validation messages stay in the runtime log.
+- Pipeline compilation releases the guest core.
+- [GVK is not a security boundary](../user/settings.md). It forwards some guest-provided Vulkan handles and data to
+  the host driver.
+
+What the console's driver takes and the host's does not:
+
+- The console's driver ignores image layouts. GVK uses `GENERAL` for most layouts, keeps discard transitions, and adds
+  the stages that barrier access masks require.
+- A barrier inside a render pass that fits a self-dependency of the subpass (a primary's, or the one that a secondary
+  continues) and changes no layout stays in the pass, each of its buffer and image barriers made a memory barrier with
+  the same access masks. Vulkan takes only memory barriers there and image barriers on the subpass's attachments.
+- A transfer command or another barrier inside a primary single-subpass render pass can end the pass and begin a twin
+  that loads what it stored.
+- A depth format that the host lacks (24-bit depth on AMD) becomes the nearest supported one.
+- `gpu/gvk/gvk_spirv.c` mends SPIR-V. A member's ArrayStride moves to its array type, a matrix with no order becomes
+  column-major, and an index into a buffer array that can vary by invocation is marked NonUniform. A pipeline that
+  blends with the second color can use a twin of its fragment module with that output at `Location 0, Index 1`.
+
+Present: the swapchain's images are host images, and a present blits one into the renderer's window
+(`present_image`). It applies the `android::Surface` crop rectangle from `vkCreateViSurfaceNN`, scaled to host pixels,
+so that dynamic resolution fills the display. If the next present has reached the display queue, acquire waits for it
+within the application's timeout. Otherwise the renderer's copy already released the guest image from the display.
+
+Resolution scaling: the resolution setting is a whole factor for GVK, none below 1.5×, otherwise the nearest integer.
+GVK scales an image by its use, not by its size or usage flags (one game gives every texture `COLOR_ATTACHMENT`).
+
+- The first framebuffer that takes an image gives it a shadow: a GVK image at the scale, which the image's views,
+  descriptors, barriers and commands use from then on. The game's own image stays behind it, bound to the game's
+  memory. A copy between a shadow and a buffer, or an image at the game's size, goes through the game's image and a
+  blit.
+- A framebuffer scales all its attachments or none. It keeps the game's size when an image cannot get a shadow yet:
+  an image of mip levels or storage usage, one whose view a descriptor set holds (the set would read the old image),
+  one that a command buffer that can still run writes (the shadow would miss the write), and one with pixels that no
+  blit can move. Such a framebuffer draws the game's images of its attachments that have a shadow already. Its passes
+  blit each shadow down into the game's image before they begin, and back up when they end, so that the views,
+  descriptors and copies that use the shadow see what the pass drew. A swapchain image has no image at the game's
+  size, and a framebuffer at the game's size draws only part of it.
+- The swapchain's images are made at the scale. Render areas, dynamic viewports, scissors and clear rectangles scale
+  with the framebuffer. Viewports baked into a pipeline do not scale.
+- A fragment shader's size query of an image at the scale answers the game's size (`gvk_spirv_scaled_size`), because
+  one game normalizes indirect-texture and haze coordinates by `textureSize`. GVK keeps the last 16 bytes of the push
+  constants for it, and tells the game a limit of 240. Each descriptor set keeps a mask of the bindings that hold
+  images at the scale. At each draw, GVK pushes the bits of the images that the pipeline's queries read, and the
+  queries divide width and height by `1 + bit * (scale - 1)`.
+- `gl_FragCoord` stays in the host's pixels. The games seen read only its depth.
 
 ### Renderer coherence + lifetime
 

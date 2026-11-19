@@ -68,6 +68,8 @@ void present_image(u64 image, u32 fmt, u32 w, u32 h, const i32 crop[4]);
 /* the wait before vi hands the game a buffer for its next frame, as fps_limit says: with fps_limit=game until the
    frame before has been on the display for interval refreshes (its swap interval). slot: the buffer's (vi's) */
 void present_pace(u32 interval, int slot);
+/* present_pace that gives up at deadline_ns (plat_ns): 0 when the deadline came first, else 1 (gvk's acquire, which
+   has the game's timeout) */
 int present_pace_until(u32 interval, int slot, u64 deadline_ns);
 /* A frame period (ns) on the display's clock: the nearest whole number of the display's refreshes (refresh, 0 unknown)
    within 1/512 of it, so near-identical clocks (59.94 Hz) do not drift. Incompatible refresh ratios keep period. */

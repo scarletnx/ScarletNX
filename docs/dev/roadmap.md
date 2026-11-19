@@ -39,3 +39,6 @@ writes command memory, and a queue's recordings replay on the GPU thread. Progra
 buffers (OpenGL games, homebrew) submit them with `SUBMIT_GPFIFO`, and the Maxwell front end (`src/nx/gpu/gpu.c` and
 `src/nx/gpu/maxwell/`) runs them: the GPFIFO puller, the 3D, compute, 2D, DMA and inline-to-memory engines, and the
 macro engine, which interprets every macro. The [NVN reference](../layers/gpu/nvn.md) records what the SDK does.
+With the experimental `guest_vulkan` setting, a game that links NVIDIA's Vulkan driver takes a third path
+(`src/nx/gpu/gvk/`, #2422): its `vk*` calls run on the renderer's device, and the driver writes no command buffers
+([architecture](architecture.md#a-games-own-vulkan-guest_vulkan)).
