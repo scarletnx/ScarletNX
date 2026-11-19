@@ -40,7 +40,7 @@ const IniOpt* snx_recompile_setting(const char* key) {
 }
 static void usage(void) {
     puts("Usage: scarletnx -r INPUT [NAME] [OPTIONS]\n"
-         "  INPUT                  Game/ExeFS folder, .nro, or an XCI or NSP dump (read in place)\n"
+         "  INPUT                  Game/ExeFS folder, .nro, or an XCI, NSP, XCZ or NSZ dump (read in place)\n"
          "  --name NAME            Output name (default: the title ID, else the NPDM's or input name)\n"
          "  --outdir DIR           Where the game's folder goes (default: recompiled/)\n"
          "  --layout FILE          Put the code of these functions first, in this order (hex PCs, one per line):\n"
