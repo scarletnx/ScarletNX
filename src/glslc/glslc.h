@@ -114,6 +114,20 @@ typedef struct {
    to refuse the shader. Two resources at one set and binding are an error */
 typedef int (*GlslcBindFn)(void* user, const GlslcResource* resource, uint32_t* set, uint32_t* binding);
 
+/* How the shader reads a uniform block, as a backend that binds them as a translator binds a GPU's constant buffers
+   wants (GlslcBlockFn's answer) */
+enum {
+    SNX_GLSLC_BLOCK_UNIFORM = 0, /* a uniform buffer that holds the block from its start */
+    SNX_GLSLC_BLOCK_STORAGE = 1, /* a read-only storage buffer of the same layout */
+    /* a window: a uniform buffer of up to 64 KiB that holds the block's bytes at an offset, in 16-byte units, that the
+       shader reads from the 16 bits of its push constants from *offset_bit on (a multiple of 16). The block takes no
+       more than 65536 bytes */
+    SNX_GLSLC_BLOCK_WINDOW = 2
+};
+/* The backend's map of how each uniform block it placed (the default one too, with map_default) is read: one of
+   SNX_GLSLC_BLOCK_*, with a window's *offset_bit. Any other answer refuses the shader, saying it */
+typedef int (*GlslcBlockFn)(void* user, uint32_t set, uint32_t binding, uint32_t* offset_bit);
+
 typedef struct {
     GlslcStage stage;
     /* NULL: each resource at the set and binding it gives, else at the first free binding of set 0. The default
@@ -132,6 +146,10 @@ typedef struct {
        shader has no GL_ES macro, __VERSION__ is its own version, and every type is highp by default in every stage,
        as desktop GLSL has no precision of its own. GLSL ES versions compile as they are */
     int desktop;
+    /* NULL: each uniform block a uniform buffer that holds it from its start. Else how each one bind placed is read,
+       bind_user its first argument. A shader with a window reads its offsets from push constants, and so takes no
+       flip_y that reads gl_FragCoord or gl_PointCoord */
+    GlslcBlockFn block;
 } GlslcOptions;
 
 /* The scratch memory of compilations: every array of the bounds above, carved anew by each compilation, so nothing

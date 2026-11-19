@@ -162,6 +162,8 @@ void nce_slot_taken(u64 addr, const char* what) { (void)addr, (void)what; }
 void jit_slot_taken(u64 addr, GuestFn fn) { (void)addr, (void)fn; }
 int hook_routed(const char* name) { return (void)name, 1; }
 int shader_vk_set(int stage) { return stage == 4; } /* shader.c's: the fragment stage's set 1 */
+int shader_vk_tex_set(int stage) { return shader_vk_set(stage); }
+ShCaps g_spirv_translate = {.uniform_cbufs = 18}; /* the renderer's rules: sets, no windows */
 /* nvdrv's GPU address space: the layer's chunks at addresses of their own, mapped one to one here */
 static u64 g_gpu_next = 0x4000000000ull;
 u64 gmmu_space_alloc(u64 size, u64 align) {

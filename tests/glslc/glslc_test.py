@@ -189,6 +189,15 @@ def check_shaders(args, failures):
             valid = run([args.spirv_val, '--target-env', 'vulkan1.1', str(mapped)])
             if result.returncode != 0 or valid.returncode != 0:
                 failures.append(f'{shader.name}: with a binding map: {result.stdout.strip()} {valid.stdout.strip()}')
+            # every uniform block, the default one too, read through a window, then as a read-only storage buffer
+            for flag, what in (('-w', 'windows'), ('-s', 'storage')):
+                read = Path(directory) / (shader.name + f'.{what}.spv')
+                result = run([args.cli, flag, *desktop, '-o', str(read), str(shader)])
+                valid = run([args.spirv_val, '--target-env', 'vulkan1.1', str(read)])
+                if result.returncode != 0 or valid.returncode != 0:
+                    failures.append(
+                        f'{shader.name}: {what}: {result.stdout.strip()} {(valid.stdout + valid.stderr).strip()}'
+                    )
             if shader.suffix == '.frag':  # gl_FragCoord and gl_PointCoord through the push constant's flip
                 flipped = Path(directory) / (shader.name + '.flipped.spv')
                 result = run([args.cli, '-f', *desktop, '-o', str(flipped), str(shader)])

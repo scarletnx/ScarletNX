@@ -11,8 +11,11 @@
 #include <stdio.h>
 #include <string.h>
 
-/* shader.c's: each stage's set as the renderer's translations have it (the fragment stage's 1, the others 0) */
+/* shader.c's: each stage's set as the renderer's translations have it (the fragment stage's 1, the others 0), its
+   textures' five after it with split_sets, and the rules the renderer sets */
+ShCaps g_spirv_translate = {.uniform_cbufs = 18};
 int shader_vk_set(int stage) { return stage == ST_FS; }
+int shader_vk_tex_set(int stage) { return shader_vk_set(stage) + (g_spirv_translate.split_sets ? 5 : 0); }
 
 static uint32_t shader(uint32_t ctx, uint32_t type, const char* text) {
     uint32_t s = snx_gl_create_shader(ctx, type);
@@ -60,6 +63,21 @@ int main(void) {
     for (int k = 0; k < 3; k++) assert(f.tex[k].cbuf_off == (u32)k && f.tex[k].type == 1);
     assert(!f.tex[0].array && !f.tex[0].shadow && f.tex[1].array && f.tex[1].shadow && !f.tex[2].shadow);
     assert(f.tex_int_mask == 4u && !f.tex_sint_mask);
+    assert(!v.cb_window && !f.cb_window && layout.uniform_blocks == GL_HOST_TEX_BANK);
+    assert(layout.sampler_set[1] == 1 && !layout.window_push[0] && !layout.window_push[1]);
+    /* a device of split sets, constant buffer windows and 2 uniform buffers a stage: the samplers' sets five after
+       the stages', the windows' offsets where the translations' are, the blocks from 2 on storage buffers, and each
+       stage described as reading through windows */
+    g_spirv_translate.split_sets = 1, g_spirv_translate.cb_windows = 1, g_spirv_translate.uniform_cbufs = 2;
+    layout = gl_host_program_layout();
+    assert(layout.sampler_set[0] == 5 && layout.sampler_set[1] == 6 && layout.uniform_blocks == 2);
+    assert(layout.window_push[0] == SH_PUSH_CB_WINDOW && layout.window_push[1] == SH_PUSH_CB_WINDOW_FS);
+    assert(!layout.window_push[2]);
+    snx_gl_program_host(&(SnxGlProgramHost){.stage_sets = 1, .layout = layout});
+    snx_gl_link_program(ctx, p);
+    pr = snx_gl_program(p);
+    assert(pr->linked && !gl_host_shader_info(pr, &layout, 0, &v) && !gl_host_shader_info(pr, &layout, 1, &f));
+    assert(v.cb_window && f.cb_window && f.cbuf_mask == 2u && f.ntex == 3);
     puts("gl_host_program: ok");
     return 0;
 }
