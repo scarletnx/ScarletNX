@@ -92,6 +92,26 @@ static void dump_exit(void* data) {
     snx_hac_error("fs: hactool stopped on the game's dump");
 }
 
+/* a read of a solid NCZ behind where its stream got to, which decodes it again from its start (snx_hac_on_restart):
+   the line that says how far, in the game's log, where a pause it makes is found */
+static void ncz_restart(const char* line, void* data) {
+    (void)data;
+    LOG("fs: %s\n", line);
+}
+
+/* what an NCA read in place, what names it ("The game's Program NCA"), costs when it is a solid NCZ: said once */
+static void solid_said(SnxDump* dump, const SnxNcaRef* nca, const char* what) {
+    const SnxHacEntry* entries;
+    if (!nca->found) return;
+    snx_hac_entries(dump->hac, nca->container, &entries);
+    if (entries[nca->entry].ncz == SNX_HAC_NCZ_SOLID)
+        WARN("fs: %s in %s is a solid NCZ (one zstd stream, nsz's default for an NSZ): a read behind where its "
+             "stream got to, and past the pages of it kept, decodes it again from its start, each said here as "
+             "\"decoded again\". With Extract dump on, or the dump compressed in blocks (nsz -B), it is read without "
+             "that\n",
+             what, dump->opened[nca->container]);
+}
+
 /* the game's title ID, which its folder and data are named by: 0 for a game named otherwise */
 static SnxU64 game_title(void) {
     SnxU64 id = 0;
@@ -111,6 +131,10 @@ static void dump_map(SnxDump* dump, PFileMap* base_map, PFileMap* addon_map, con
         (dump->patch.found && snx_nca_keys(dump, &dump->patch, "The update's Program NCA")) ||
         (dump->aoc.found && snx_nca_keys(dump, &dump->aoc, "The DLC's Data NCA")))
         fatal("A dump the game reads in place needs keys its keys file does not have: the line before says which");
+    snx_hac_on_restart(ncz_restart, NULL);
+    solid_said(dump, &dump->program, "The game's Program NCA");
+    solid_said(dump, &dump->patch, "The update's Program NCA");
+    solid_said(dump, &dump->aoc, "The DLC's Data NCA");
     if (base && (plat_file_map_sized(base_map, base, snx_file_size(base)) ||
                  snx_hac_map(dump->hac, dump->base, base_map->data, base_map->size)))
         fatal("Could not map the game's dump %s", base);
