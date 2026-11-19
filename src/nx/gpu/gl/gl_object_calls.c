@@ -39,18 +39,44 @@ static struct {
     PMutex lock;
     GpuChunk chunks[GPU_CHUNKS];
     u32 chunk_count;
+    u64 mapped; /* the bytes of guest memory the layer took (gl_guest_pages) */
 } g_gl_object_calls = {.lock = PMUTEX_INIT};
 
 static void* host(u64 a) { return a ? GP(a) : NULL; }
 
+u64 gl_guest_pages(u64 size) {
+    /* past every region the console gives a program (the kernel's, the heap, the alias region, the stacks), as the
+       hooked allocator's arena (hle/hook/alloc.c): the kernel's own region is a GiB, which a game's textures fill */
+    u64 lo = KERN_END, a = 0;
+    if (HEAP_BASE + HEAP_SIZE > lo) lo = HEAP_BASE + HEAP_SIZE;
+    if (ALIAS_BASE + ALIAS_SIZE > lo) lo = ALIAS_BASE + ALIAS_SIZE;
+    if (STACK_BASE + STACK_SIZE > lo) lo = STACK_BASE + STACK_SIZE;
+    lo = (lo + 0x1fffff) & ~0x1fffffull;
+    size = (size + 0xffff) & ~0xffffull;
+    for (int tries = 0; tries < 8 && lo < AS_END; tries++) {
+        a = mem_find_free(lo, AS_END, size, 0x10000);
+        if (!a) break;
+        if (!mem_map(a, size, MS_NORMAL, PERM_RW)) {
+            g_gl_object_calls.mapped += size;
+            return a;
+        }
+        a = 0; /* another mapping took it first: look again */
+    }
+    fatal("gl layer: no room for %llu bytes of its memory past the program's regions (%llu taken so far)",
+          (unsigned long long)size, (unsigned long long)g_gl_object_calls.mapped);
+}
+u64 gl_guest_pages_taken(void) { return g_gl_object_calls.mapped; }
+
 /* the layer's buffers and textures in chunks of guest memory, each mapped in the GPU's address space too, where the
-   renderer's draws read them */
+   renderer's draws read them. A chunk is half of what the layer took at least, so the chunks hold a game's whole
+   memory */
 static u64 chunk(u64 size, u64* got) {
-    u64 at, gpu, pages = (size + 0xffff) & ~0xffffull;
+    u64 at, gpu, pages = (size + 0xffff) & ~0xffffull, half = (g_gl_object_calls.mapped / 2 + 0xffff) & ~0xffffull;
     if (g_gl_object_calls.chunk_count == GPU_CHUNKS)
         fatal("gl layer: its memory takes a chunk of %llu bytes past the %d it maps for the GPU",
               (unsigned long long)size, GPU_CHUNKS);
-    at = kmem_alloc(pages, MS_KERNEL, PERM_RW); /* stops the game, saying the size, when guest memory has none */
+    if (pages < half) pages = half;
+    at = gl_guest_pages(pages);
     gpu = at ? gmmu_space_alloc(pages, 0) : 0;
     if (at && !gpu)
         fatal("gl layer: no GPU address space left for %llu bytes of its memory", (unsigned long long)pages);

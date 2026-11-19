@@ -46,6 +46,11 @@ void gl_object_calls_unlock(void);
 /* texture name as NVN describes the same storage (the GL layer lays its textures out as NVN does, at gl_gpu_address of
    their memory): 1, or 0 (out zeroed) for a texture of none or of a format NVN has no form of */
 int gl_nvn_texture(u32 name, NvnTexture* out);
+/* ---- gl_object_calls.c */
+/* size bytes of guest pages for the layer (64 KiB steps), mapped read and write past the program's regions; it stops
+   the game, saying the sizes, where there is no room. And the bytes taken so far */
+u64 gl_guest_pages(u64 size);
+u64 gl_guest_pages_taken(void);
 /* ---- gl_program_calls.c */
 /* the program layout the renderer's rules give now, installed for the links that follow when it changed */
 void gl_program_layout_refresh(void);
