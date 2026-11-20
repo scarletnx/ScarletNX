@@ -2227,11 +2227,13 @@ add_test(NAME gsv_hdr COMMAND snx-test-gsv-hdr)
 
 # the save state loader's staging of the HLE's copy (runtime/state.c, included for its statics): what a state file says
 # of a service object's size and of an am storage's bytes is checked. The rest of the loader is not run, and what it
-# calls of the runtime is left unresolved, which the linkers of Linux and FreeBSD take an option for
+# calls of the runtime is left unresolved, which the linkers of Linux and FreeBSD take an option for. The linker
+# leaves a relocation of no type in the PLT's table for each: the loader skips those where it binds a program whole at
+# its start (-z now), and glibc's lazy binding on AArch64 stops on them ("unexpected PLT reloc type 0x00")
 if(CMAKE_SYSTEM_NAME MATCHES "Linux|FreeBSD")
     add_executable(snx-test-state-stage state_stage.c)
     snx_test_target(snx-test-state-stage gnu23)
-    target_link_options(snx-test-state-stage PRIVATE LINKER:--unresolved-symbols=ignore-all)
+    target_link_options(snx-test-state-stage PRIVATE LINKER:--unresolved-symbols=ignore-all LINKER:-z,now)
     add_test(NAME state_stage COMMAND snx-test-state-stage)
 endif()
 
