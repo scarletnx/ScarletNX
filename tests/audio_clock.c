@@ -37,6 +37,7 @@ struct PAudio {
     u32 buffer; /* bytes a take */
     u32 queued;
     u64 silent, given; /* bytes */
+    u64 queues;        /* the frames it was given, whole or played shorter */
     int started;
 };
 /* the host: its time, the stalls to come (the sleep that passes at ends late ms later; whole: the output's own
@@ -74,6 +75,7 @@ int plat_audio_queue(PAudio* a, const void* samples, u32 bytes) {
     out_run(a);
     a->queued += bytes;
     a->given += bytes;
+    a->queues++;
     return 1;
 }
 void plat_audio_start(PAudio* a, int started) {
@@ -195,22 +197,26 @@ int audren_frame(ARState* s, i16* stereo) {
 }
 
 /* the clock's thread until the host's time is at_ms: what its frames found in that time, in ms of sound, the silence
-   the output played for want of sound and the frames it was not given. Its turn starts at now again in each call, as
+   the output played for want of sound, the frames it was not given and the sound the frames it was given were played
+   shorter by. Its turn starts at now again in each call, as
    after a pause, so a call ends where no stall is */
 typedef struct {
     u32 least, most, silent;
     unsigned dropped;
+    u32 shorter; /* the sound the frames given were played shorter by, in tenths of a ms */
 } Found;
 static Found run_until(u64 at_ms) {
-    u64 silent = g_test.out.silent, given = g_test.out.given;
+    u64 silent = g_test.out.silent, given = g_test.out.given, queues = g_test.out.queues;
     unsigned events = g_test.events;
     g_test.end = at_ms * TEST_MS;
     g_test.frames = 0;
     g_test.least = g_test.most = 0;
     if (!setjmp(g_test.ended)) audio_clock(NULL);
-    return (Found){g_test.least / TEST_MS_BYTES, g_test.most / TEST_MS_BYTES,
-                   (u32)((g_test.out.silent - silent) / TEST_MS_BYTES),
-                   g_test.events - events - (unsigned)((g_test.out.given - given) / (5 * TEST_MS_BYTES))};
+    u64 frames = g_test.out.queues - queues, full = frames * 5 * TEST_MS_BYTES;
+    Found f = {g_test.least / TEST_MS_BYTES, g_test.most / TEST_MS_BYTES,
+               (u32)((g_test.out.silent - silent) / TEST_MS_BYTES), g_test.events - events - (unsigned)frames,
+               (u32)((full - (g_test.out.given - given)) * 10 / TEST_MS_BYTES)};
+    return f;
 }
 static void stall_of(u64 at_ms, u32 late_ms, int whole) {
     CHECK(g_test.nstalls < TEST_STALLS_MAX);
@@ -231,63 +237,66 @@ int main(void) {
     /* a host that never stalls: the output takes 20 ms as the clock gives the fourth frame of 5, so a frame finds
        0 to 15 ms, every frame is played and there is no silence; the game's event every frame */
     f = run_until(10000);
-    CHECK(f.least == 0 && f.most == 15 && !f.silent && !f.dropped && g_test.events == 2000);
+    CHECK(f.least == 0 && f.most == 15 && !f.silent && !f.dropped && !f.shorter && g_test.events == 2000);
     CHECK(g_test.out.given == 10000 * TEST_MS_BYTES);
     /* a turn of the clock's thread 12 ms late: within what the output holds between two takes */
     stall(11000, 12);
     f = run_until(20000);
-    CHECK(f.least == 0 && f.most == 15 && !f.silent && !f.dropped);
+    CHECK(f.least == 0 && f.most == 15 && !f.silent && !f.dropped && !f.shorter);
     /* 40 ms late: the output plays 40 ms of silence, then the clock gives the stall's eight frames at once, and from
        there a frame finds 40 ms more than before: the sound trails the clock by the stall */
     stall(21000, 40);
     f = run_until(22000);
     CHECK(f.silent == 40 && !f.dropped);
     f = run_until(30000);
-    CHECK(f.least == 40 && f.most == 55 && !f.silent && !f.dropped);
-    /* which is taken back, a frame a second, once no frame found the output empty for 10 s: four frames, down to the
-       target of 20 ms, and no further */
+    CHECK(f.least == 40 && f.most == 55 && !f.silent && !f.dropped && !f.shorter);
+    /* which is taken back once no frame found the output empty for 10 s, by playing frames shorter, never by dropping
+       one: at most 0.5%, less as it nears the target of 20 ms. 18.5 of the 20 ms in the next 10 s, the rest in the 20
+       after, and no further */
     f = run_until(40000);
-    CHECK(f.least == 20 && f.most == 55 && !f.silent && f.dropped == 4);
+    CHECK(f.least == 21 && f.most == 55 && !f.silent && !f.dropped && f.shorter == 185);
     f = run_until(60000);
-    CHECK(f.least == 20 && f.most == 35 && !f.silent && !f.dropped);
+    CHECK(f.least == 20 && f.most == 36 && !f.silent && !f.dropped && f.shorter == 15);
     /* a host that goes on stalling, 40 ms every 5 s: the first stall's silence is the 20 ms the output did not hold,
        and the 40 ms it then holds stay, each stall emptying it and none of them heard */
     for (u64 at = 61000; at < 100000; at += 5000) stall(at, 40);
     f = run_until(62000);
     CHECK(f.silent == 20 && !f.dropped);
     f = run_until(101000);
-    CHECK(f.least == 0 && f.most == 55 && !f.silent && !f.dropped && g_test.stall == g_test.nstalls);
+    CHECK(f.least == 0 && f.most == 55 && !f.silent && !f.dropped && !f.shorter && g_test.stall == g_test.nstalls);
     /* more than ten frames late, 60 ms: the clock starts over from now and the stall's frames are never made */
     stall(102000, 60);
     f = run_until(103000);
     CHECK(f.silent == 20 && !f.dropped && g_test.events == 103000 / 5 - 12);
     f = run_until(120000);
-    CHECK(f.least == 0 && f.most == 15 && !f.silent && !f.dropped);
-    /* an output a thousandth slower than the clock holds a millisecond more each second: taken back at the target
-       too, a frame each 5 s, long before the bound of 100 ms */
+    CHECK(f.least == 0 && f.most == 15 && !f.silent && !f.dropped && !f.shorter);
+    /* an output a thousandth slower than the clock holds a millisecond more each second: played shorter by as much,
+       100 ms in 100 s once it settled, 2 ms over the target where the frames' 0.1% shorter keeps up with it, long
+       before the bound of 200 ms */
     g_test.out.period += g_test.out.period / 1000;
     f = run_until(220000);
-    CHECK(f.least == 0 && f.most == 40 && !f.silent && f.dropped == 16);
+    CHECK(f.least == 0 && f.most == 42 && !f.silent && !f.dropped && f.shorter == 772);
     f = run_until(320000);
-    CHECK(f.least == 20 && f.most == 40 && !f.silent && f.dropped == 20);
+    CHECK(f.least == 22 && f.most == 42 && !f.silent && !f.dropped && f.shorter == 999);
     /* the whole process stalls for 30 ms, the output's thread with the clock's: the output missed a take of what it
        held, so the stall's frames leave 20 ms more than before, and a second stall 20 ms more again. No frame found
-       it empty, so they are taken back from the next second on */
+       it empty, so they are taken back from the next second on, played shorter */
     g_test.out.period = 20 * TEST_MS;
     stall_of(321000, 30, 1);
     stall_of(323000, 30, 1);
     f = run_until(321500);
-    CHECK(f.silent == 20 && !f.dropped);
+    CHECK(f.silent == 20 && !f.dropped && f.shorter == 9);
     f = run_until(322000);
-    CHECK(f.least == 40 && f.most == 55 && !f.silent && !f.dropped);
+    CHECK(f.least == 41 && f.most == 56 && !f.silent && !f.dropped && f.shorter == 2);
     f = run_until(323500);
-    CHECK(f.silent == 20 && f.dropped == 2);
+    CHECK(f.silent == 20 && !f.dropped && f.shorter == 68);
     f = run_until(324000);
-    CHECK(f.least == 50 && f.most == 65 && !f.silent && !f.dropped);
+    CHECK(f.least == 52 && f.most == 69 && !f.silent && !f.dropped && f.shorter == 20);
     f = run_until(330000);
-    CHECK(f.least == 20 && !f.silent && f.dropped == 6);
+    CHECK(f.least == 27 && !f.silent && !f.dropped && f.shorter == 251);
     f = run_until(340000);
-    CHECK(f.least == 20 && f.most == 35 && !f.silent && !f.dropped && g_test.stall == g_test.nstalls);
+    CHECK(f.least == 20 && f.most == 42 && !f.silent && !f.dropped && f.shorter == 70 &&
+          g_test.stall == g_test.nstalls);
     printf("audio_clock: %u checks passed\n", g_test.checks);
     return 0;
 }
