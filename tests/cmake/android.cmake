@@ -38,6 +38,13 @@ if(BUILD_TESTING)
     set_target_properties(snx-test-android-inputs PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
     target_compile_options(snx-test-android-inputs PRIVATE ${snx_android_c_options} -UNDEBUG)
     add_test(NAME android_inputs COMMAND snx-test-android-inputs)
+    # the DEX reader's values as a file may nest them, past what a compiler writes and what a stack holds (dex/dex.c)
+    add_executable(snx-test-android-dex "${PROJECT_SOURCE_DIR}/tests/android_dex.c")
+    target_include_directories(snx-test-android-dex PRIVATE "${PROJECT_SOURCE_DIR}/src")
+    target_link_libraries(snx-test-android-dex PRIVATE snx_android_dex)
+    set_target_properties(snx-test-android-dex PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+    target_compile_options(snx-test-android-dex PRIVATE ${snx_android_c_options} -UNDEBUG)
+    add_test(NAME android_dex COMMAND snx-test-android-dex)
     # bionic's C library as the bridge's HLE gives it to an app's code (bridge/hle_libc.c, hle_posix.c, args.c),
     # against what bionic gives on Android 16
     add_executable(snx-test-android-bionic "${PROJECT_SOURCE_DIR}/tests/android_bionic.c")
@@ -111,6 +118,6 @@ endif()
 
 if(COMMAND snx_sanitizer_path) # tests/CMakeLists.txt: this folder's tests
     snx_test_sanitize(snx-test-bionic-sync snx-test-android-image snx-test-android-host-anon snx-test-android-gles2
-                      snx-test-android-inputs snx-test-android-bionic snx-test-android-arm32)
+                      snx-test-android-inputs snx-test-android-bionic snx-test-android-arm32 snx-test-android-dex)
     snx_sanitizer_path()
 endif()

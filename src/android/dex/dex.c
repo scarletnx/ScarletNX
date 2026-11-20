@@ -283,15 +283,23 @@ DexValue dex_read_value(const unsigned char** p, const unsigned char* end) {
     v.bits = bits;
     return v;
 }
-void dex_skip_value(const unsigned char** p, const unsigned char* end) {
+/* a value depth levels inside the one asked for: past DEX_VALUE_DEPTH of them it is no value, and what is left of
+   the item is skipped with it, as what is left of a value cut short is */
+static void skip_value(const unsigned char** p, const unsigned char* end, unsigned depth) {
     DexValue v = dex_read_value(p, end);
+    if (v.type != DEX_VALUE_ARRAY && v.type != DEX_VALUE_ANNOTATION) return;
+    if (depth == DEX_VALUE_DEPTH) {
+        *p = end;
+        return;
+    }
     if (v.type == DEX_VALUE_ARRAY) {
-        for (uint32_t n = dex_uleb(p, end); n && *p < end; --n) dex_skip_value(p, end);
-    } else if (v.type == DEX_VALUE_ANNOTATION) {
+        for (uint32_t n = dex_uleb(p, end); n && *p < end; --n) skip_value(p, end, depth + 1);
+    } else {
         dex_uleb(p, end); /* its type */
         for (uint32_t n = dex_uleb(p, end); n && *p < end; --n) {
             dex_uleb(p, end); /* the element's name */
-            dex_skip_value(p, end);
+            skip_value(p, end, depth + 1);
         }
     }
 }
+void dex_skip_value(const unsigned char** p, const unsigned char* end) { skip_value(p, end, 0); }
