@@ -160,6 +160,14 @@ def main():
         assert status == 3 and 'holds no game' in text, text
         status, text = both(tar(('game.cci', ncsd()), ('game.cci', ncsd())), 'bundle-duplicate', extension='bcci')
         assert status == 1 and 'two entries named' in text, text
+        # a name with a prefix is kept whole, longer than the name field alone: its second entry is still told from
+        # the entry between them, and a bundle's last entry of the 50 a reader takes has room for its own
+        deep = 'd' * 150 + '/game.cci'
+        status, text = both(tar((deep, ncsd()), ('note.txt', b'a note'), (deep, ncsd())), 'bundle-deep-duplicate',
+                            extension='bcci')
+        assert status == 1 and 'two entries named' in text, text
+        many = [(f'{i:02d}' + 'd' * 148 + '/note.txt', b'a note') for i in range(49)] + [(deep, ncsd())]
+        assert both(tar(*many), 'bundle-deep-last', extension='bcci')[0] == 0
 
         def break_checksum(blob):
             blob[148] = (blob[148] + 1) % 128

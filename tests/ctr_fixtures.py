@@ -223,12 +223,18 @@ def z3ds(blob, patch_header=None, frames=1):
 
 def tar(*entries, patch=None):
     """A tar bundle, what Azahar's .bcci/.bcxi/.bcia is: ustar headers of 512 bytes, each entry's data after its
-    header rounded to 512, two zero blocks at the end, every header's checksum set."""
+    header rounded to 512, two zero blocks at the end, every header's checksum set. A name over 100 bytes goes as
+    ustar keeps one: its folders in the prefix field, what follows the last '/' in the name field."""
     out = bytearray()
     for name, blob in entries:
         h = bytearray(512)
-        n = name.encode()[:100]
+        prefix, n = b'', name.encode()
+        if len(n) > 100:
+            prefix, _, n = n.rpartition(b'/')
+            assert 0 < len(prefix) <= 155 and len(n) <= 100, name
+        n = n[:100]
         h[: len(n)] = n
+        h[345 : 345 + len(prefix)] = prefix
         h[100:108] = b'0000644\0'
         h[108:116] = h[116:124] = b'0000000\0'
         h[124:136] = f'{len(blob):011o}\0'.encode()
