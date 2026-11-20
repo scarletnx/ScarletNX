@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #if !defined(_WIN32) && !defined(_POSIX_C_SOURCE)
-#define _POSIX_C_SOURCE 200112L /* sockets, select and clock_gettime under -std=c99 */
+#define _POSIX_C_SOURCE 200112L /* sockets, select and clock_gettime under -std=c23 */
 #endif
 #include "common/online/socket.h"
 #include <stdio.h>
