@@ -117,6 +117,7 @@ static struct {
     _Atomic u64 done;      /* the ring's bytes the GPU thread finished with */
     _Atomic u64 completed; /* the draws, clears and uploads it finished, a fence's serial (gl_sync.h) */
     DsState* state[SNX_GL_CONTEXTS];
+    DrawOwner owners[SNX_GL_CONTEXTS]; /* what each context's draws take of it besides their state */
     struct {
         u32 generation, vs, fs;
     } ids[SNX_GL_PROGRAM_NAMES];
@@ -560,7 +561,6 @@ static void keep(void* kept, const void* made, size_t n, u64* gen) {
 static void draw_on_gpu(void* arg) {
     DrawRecord* r = arg;
     DsState* s = g_gl_draw.state[r->ctx - 1];
-    static DrawOwner owners[SNX_GL_CONTEXTS];
     if (!s) {
         s = g_gl_draw.state[r->ctx - 1] = calloc(1, sizeof *s);
         if (!s) fatal("gl layer: out of memory for context %u's draw state", (unsigned)r->ctx);
@@ -592,10 +592,10 @@ static void draw_on_gpu(void* arg) {
             c.slot = i;
             c.color_mask = i < colors && s->tgt.color[i].gva ? r->clear_args.color_mask : 0;
             c.aspects = i == 0 ? r->clear_args.aspects : 0;
-            if (c.color_mask || c.aspects) g_renderer->clear(s, &c, &owners[r->ctx - 1]);
+            if (c.color_mask || c.aspects) g_renderer->clear(s, &c, &g_gl_draw.owners[r->ctx - 1]);
         }
     } else if (g_renderer_up && !r->clear && g_renderer->draw) {
-        g_renderer->draw(s, &r->call, &owners[r->ctx - 1]);
+        g_renderer->draw(s, &r->call, &g_gl_draw.owners[r->ctx - 1]);
     }
 done:
     atomic_store_explicit(&g_gl_draw.done, r->ring_end, memory_order_release);

@@ -17,6 +17,8 @@
 
 static struct {
     PMutex lock;
+    SnxGlLayout installed; /* the renderer's rules the shared layer was given last */
+    int given;             /* whether it was given any */
 } g_gl_program_calls = {.lock = PMUTEX_INIT};
 
 /* a guest pointer as a host one, NULL for 0 */
@@ -28,11 +30,9 @@ static void say(const char* line) { LOG("gl layer: %s\n", line); }
    device, which it sets as it starts: after the layer's start, before the game's first link. Each link takes them as
    they are then */
 void gl_program_layout_refresh(void) {
-    static SnxGlLayout installed;
-    static int done;
     SnxGlLayout now = gl_host_program_layout();
-    if (done && !memcmp(&now, &installed, sizeof now)) return;
-    installed = now, done = 1;
+    if (g_gl_program_calls.given && !memcmp(&now, &g_gl_program_calls.installed, sizeof now)) return;
+    g_gl_program_calls.installed = now, g_gl_program_calls.given = 1;
     snx_gl_program_host(&(SnxGlProgramHost){.say = say, .stage_sets = 1, .layout = now});
 }
 void gl_program_calls_init(void) { gl_program_layout_refresh(); }
