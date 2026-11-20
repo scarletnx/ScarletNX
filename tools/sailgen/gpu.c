@@ -1028,12 +1028,12 @@ static const char* case_test(unsigned pat, Val x) {
 static Val ev_match(unsigned n) {
     Val x = ev(NODE(n).a);
     unsigned c;
-    const char* conds[64];
-    unsigned bodies[64];
+    const char* conds[256];
+    unsigned bodies[256];
     int count = 0;
     if (x.time == TD) sg_fail(n, "a match on a run-time value: write it as ifs");
     for (c = NODE(n).b; c; c = NODE(c).next) {
-        if (count == 64) sg_fail(n, "a match of more than 64 cases");
+        if (count == 256) sg_fail(n, "a match of more than 256 cases"); /* lut3.sail's tables are 256 */
         if (NODE(c).c) sg_fail(c, "a case's guard");
         conds[count] = case_test(NODE(c).a, x);
         bodies[count++] = NODE(c).b;
