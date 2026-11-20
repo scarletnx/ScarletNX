@@ -2573,6 +2573,19 @@ static void issue126_shader_modes(void) {
         if (code) check(count_opcode(code, words, 195, 0xffffffffu) == 0, "a 2D texel fetch keeps its coordinates");
         free(code);
     }
+    /* An unconditional branch jumps over a write to the handle register. The skipped MOV32I is not a source: the
+       handle loaded before the branch is. */
+    {
+        const u64 tld_b = (0xdd3a0007a0070200ull & ~(0xffull << 20)) | (6ull << 20); /* TLD.B R0, R2, R6, 2D */
+        const u64 skip_one = 0xe24000000000000full | (16ull << 20) | (7ull << 16);  /* BRA over one instruction */
+        const u64 vertex_skip[] = {0x4c98078800070006ull, skip_one, mov32i(6, 0x3f800000), tld_b};
+        ShaderInfo info;
+        size_t words = 0;
+        u32* code = translate(vertex_skip, 4, ST_VS, &info, &words, 1);
+        if (!code) fprintf(stderr, "vertex skipped write: '%s'\n", info.first_unsupported);
+        check_translated(code, &info, "a vertex handle survives an unconditional branch over a write");
+        free(code);
+    }
     /* One game's histogram: SURED.ADD into a buffer surface, U32 and then S32 (bit 20), on the handle
        MOV R5, c[0x2][0x128] */
     {
@@ -2676,6 +2689,32 @@ static void issue126_shader_modes(void) {
     check_refused(code, &info, "untracked texture handle",
                   "a handle written in code a branch skips doesn't reach the target");
     free(code);
+    /* A vertex program branches to its sample before a loop. The loop's BRK
+       reaches a constant write, but the branch after that write leaves before
+       the sample. Neither write reaches the sample; the load before the first
+       branch does. Scheduling words put these instructions at 11, 12, 13, 15,
+       16, 17, 18, 20 and 21. */
+    const u64 pbk_to_constant = 0xe2a0000000000000ull | (32ull << 20);
+    const u64 brk = 0xe34000000007000full;
+    u64 after_loop[] = {0x4c98078800070006ull,
+                        0xe24000000000000full | (64ull << 20),
+                        pbk_to_constant,
+                        FMUL_KEEP | 6,
+                        brk,
+                        FMUL_KEEP | 5,
+                        mov32i(6, 0x3f800000u),
+                        0xe24000000007000full | (8ull << 20),
+                        tex_b};
+    code = translate(after_loop, 9, ST_VS, &info, &words, 1);
+    check_translated(code, &info, "a vertex handle load reaches a sample past a loop's non-reaching writes");
+    check(code && info.ntex == 1 && info.tex[0].bindless && info.tex[0].bl_cbuf == 2 && info.tex[0].cbuf_off == 0,
+          "the sample past a loop keeps the handle loaded on the branch path");
+    free(code);
+    after_loop[7] = FMUL_KEEP | 5;
+    code = translate(after_loop, 9, ST_VS, &info, &words, 1);
+    check_refused(code, &info, "untracked texture handle",
+                  "a constant handle reached by a loop break remains unsupported");
+    free(code);
     /* Both sides of a forward branch may independently assemble the same
        split descriptor. The merge is safe only when every source agrees. */
     const u64 choose = 0xe24000000000000full | (32ull << 20);
@@ -2687,6 +2726,16 @@ static void issue126_shader_modes(void) {
     check(code && info.ntex == 1 && info.tex[0].bl2 && info.tex[0].bl_cbuf == 2 && info.tex[0].cbuf_off == 0 &&
               info.tex[0].bl2_cbuf == 2 && info.tex[0].bl2_off == 0x100,
           "a merged split handle retains both descriptor sources");
+    free(code);
+    /* A predicated LOP in the sample's own block leaves a split handle on one path and another split handle on the
+       other. Both are bound, and the pair of words selects the sample per path. */
+    const u64 pair_or_alt = (pair_or & ~((0x1full << 34) | (0xfull << 16))) | (3ull << 34) | (1ull << 16);
+    const u64 predicated_choice[] = {0x4c98078800070006ull, pair_or, pair_or_alt, tex_b};
+    code = translate(predicated_choice, 4, ST_FS, &info, &words, 1);
+    check_translated(code, &info, "a predicated split handle in one block samples per path");
+    check(code && info.ntex == 2 && info.tex[0].bl2 && info.tex[1].bl2 && info.tex[0].bl2_cbuf == 2 &&
+              info.tex[1].bl2_cbuf == 3 && info.tex[0].bl2_off == 0x100 && info.tex[1].bl2_off == 0x100,
+          "both predicated split handles bind their sampler");
     free(code);
     u64 disagree[7];
     memcpy(disagree, joined, sizeof disagree);
@@ -6113,6 +6162,37 @@ static int chosen_sample(const u64* program, int count, const u32 c2[4], const u
     memcpy(x, &env.out[0][0], 4);
     return !*why;
 }
+/* A predicated LOP.OR can be the only handle definition that reaches an unguarded TEX.B. Bind its texture and sampler
+   together and select the sample by the complete runtime handle. The other path still executes the sample: a bare
+   texture word must not match the combined handle, and an unrelated handle must keep the zero-sample behavior. */
+static void tex_b_predicated_handle_pair(void) {
+    const u64 tex_b = 0xdeb8000000070000ull | (2ull << 28) | (1ull << 37) | (6ull << 20) | (1ull << 31);
+    const u64 load = 0x4c98078800070007ull; /* MOV R7, c[2][0]: the texture half */
+    const u64 pair_or = 0x4c47020800070006ull | (7ull << 8); /* LOP.OR R6, R7, c[2][...] */
+    const u64 under_p0 = ~(0xfull << 16);
+    const u64 sampler1 = ((pair_or & under_p0 & ~(0x3fffull << 20)) | (1ull << 34) | (1ull << 20));
+    const u32 c2[4] = {0x00100001u, 0x00200002u, 0, 0};
+    for (u32 on = 0; on < 3; on++) {
+        const u64 program[] = {fsetp_cbuf3(0, 0), load, mov32i(6, on == 2 ? c2[0] : 0x777), sampler1, tex_b};
+        const u32 c3[4] = {on == 1 ? 0x3f800000u : 0, 0x00200000u, 0, 0};
+        ShaderInfo info;
+        const char* why;
+        float x = -1.0f;
+        int ran = chosen_sample(program, 5, c2, c3, 0, &info, &x, &why);
+        if (!ran || x != (on == 1 ? 1.0f : 0.0f))
+            fprintf(stderr, "predicated split handle, case %u: %s, %d slots, x %g\n", on, ran ? "ran" : why,
+                    info.ntex, (double)x);
+        check(ran && info.ntex == 1 && x == (on == 1 ? 1.0f : 0.0f),
+              on == 1   ? "a predicated split handle selects the sample by texture OR sampler"
+              : on == 2 ? "the texture word alone does not select the split handle"
+                        : "an unrelated value on the false path keeps the zero-sample behavior");
+        if (ran)
+            check(info.tex[0].bl_cbuf == 2 && info.tex[0].cbuf_off == 0 && info.tex[0].bl2 &&
+                      info.tex[0].bl2_cbuf == 3 && info.tex[0].bl2_off == 1,
+                  "a chosen split handle retains both constant buffer sources");
+    }
+}
+
 /* A multisample TLD.B takes its handle in Rb and the sample after it, the order of Mesa's compilers since f9d385d77716
    ("nouveau/codegen: Handle/indirect goes before sample index"). uam's codegen predates it and puts the sample first:
    edenprobe's fetch through a table of four sample handles comes with the sample in R4 and the handle in R5 */
@@ -7070,6 +7150,7 @@ int main(int argc, char** argv) {
     lone_lane_forms();
     fragment_quad_reads();
     fragment_flow_derivatives();
+    tex_b_predicated_handle_pair();
     tex_b_chosen_handle();
     bindless_multisample_order();
     helper_loop_exit();

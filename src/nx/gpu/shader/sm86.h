@@ -391,11 +391,6 @@ u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, Sha
    there). Each probe (SH_PROBE) takes the value its register has when its instruction has run, into out. Returns 0
    when an instruction is not one sm86_eval_takes, or a load finds no memory (out then holds 0 for the probes after
    it) */
-typedef struct Sm86EvalIo {
-    void* user;
-    u32 (*cbuf)(void* user, u32 bank, u32 offset);
-    int (*mem)(void* user, u64 address, u32* words, u32 count);
-} Sm86EvalIo;
 int sm86_eval(const u64 (*insn)[2], u32 n, const Sm86EvalIo* io, const u32* probes, u32 nprobes, u32* out);
 /* whether sm86_eval runs the instruction: MOV, UMOV, R2UR, IADD3, IMAD (.WIDE), LEA, LOP3, SHF, SEL, IMNMX, ISETP,
    PLOP3 and PRMT (their uniform forms too), CS2R of zero, LDC, ULDC (.IDX) and LDG, in the forms the translation
