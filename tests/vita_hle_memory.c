@@ -491,6 +491,36 @@ static void libc_stream_sizes(VitaProcess* p, VitaThread* t) {
     assert(CALL(libc, "fread", buffer, 0x10000, 1, file) == 1 && bytes[0] == 0x5a && bytes[0xffff] == 0x5a);
     assert(CALL(libc, "fclose", file) == 0);
 }
+/* a file opened in a mounted archive closes with it: once the archive is unmounted its handle names no file, where it
+   would read the archive's freed tables. The archive is a PSARC of one stored file: the header, the manifest's entry
+   and the file's (30 bytes each: a hash, the first block, the size and the offset), their blocks' sizes, then the
+   manifest, which is the file's name, and the file */
+static void fios_archive_unmount(VitaProcess* p, VitaThread* t) {
+    const VitaHle* io = vita_hle_io;
+    static const unsigned char data[16] = "archived bytes.";
+    unsigned char psarc[96 + 8 + 16] = "PSAR\0\1\0\4zlib";
+    psarc[15] = 96, psarc[19] = 30, psarc[23] = 2, psarc[25] = 1;  /* the tables' end, an entry, two, 64 KiB blocks */
+    psarc[32 + 24] = 8, psarc[32 + 29] = 96;                       /* the manifest: 8 bytes at 96, from block 0 */
+    psarc[62 + 19] = 1, psarc[62 + 24] = 16, psarc[62 + 29] = 104; /* the file: 16 bytes at 104, from block 1 */
+    psarc[93] = 8, psarc[95] = 16;                                 /* each block stored whole */
+    memcpy(psarc + 96, "data.bin", 8), memcpy(psarc + 104, data, 16);
+    host_file(p, "one-file.psarc", psarc, sizeof psarc, 1);
+    uint32_t names = vita_alloc(p, &p->user, 0x1000, 0x1000), mount = names + 0x200, file = names + 0x204,
+             buffer = names + 0x300;
+    assert(names);
+    strcpy(vita_ptr(p, names), "ux0:one-file.psarc"), strcpy(vita_ptr(p, names + 0x40), "ux0:packed");
+    strcpy(vita_ptr(p, names + 0x80), "ux0:packed/data.bin");
+    assert(CALL(io, "sceFiosArchiveMountSync", 0, mount, names, names + 0x40, 0, 0, 0) == 0);
+    assert(CALL(io, "sceFiosFHOpenSync", 0, file, names + 0x80, 0) == 0);
+    uint32_t handle = vita_read32(p, file);
+    assert(CALL(io, "sceFiosFHReadSync", 0, handle, buffer, 0, 16, 0) == 16 && t->cpu.r[1] == 0);
+    assert(!memcmp(vita_ptr(p, buffer), data, 16));
+    assert(CALL(io, "sceFiosArchiveUnmountSync", 0, vita_read32(p, mount)) == 0);
+    assert(CALL(io, "sceFiosFHGetSize", handle) == UINT32_MAX && t->cpu.r[1] == UINT32_MAX);
+    assert(CALL(io, "sceFiosFHPreadSync", 0, handle, buffer, 0, 16, 0, 0, 0) == UINT32_MAX &&
+           t->cpu.r[1] == UINT32_MAX);
+}
+
 int main(void) {
     char *root = snx_temp_dir(NULL), *folder = root ? snx_path_join(root, "game") : NULL, error[256] = {0};
     assert(folder && !snx_mkdirs(folder));
@@ -512,8 +542,9 @@ int main(void) {
     ngs_atrac9_and_extra_busses(p, t, mem);
     gxm_program_metadata(p, t, mem);
     gxm_texture_transfers(p, t, mem);
-    /* this makes blocks of its own after mem, which is the last one no longer */
+    /* these make blocks of their own after mem, which is the last one no longer */
     libc_stream_sizes(p, t);
+    fios_archive_unmount(p, t);
     vita_process_free(p);
     assert(!snx_remove_tree(root));
     free(folder);
