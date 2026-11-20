@@ -37,10 +37,13 @@ Two halves of one thing:
   `tests/vk_extension_bans.c` loads the table the build carries and checks it (`vk_pipeline_parts`, `vk_vertex_input`
   and `vulkan_headless` load it too), and `snx-test-vk-bans --devices` lists the lines that hold for this machine's
   drivers, `--match qualcomm 512.800.48 android` for a driver given by hand.
-- **The code**: what the renderer does on a driver for which no line of the table can stand, a `driverID` or a vendor
-  checked where the work is done, or a rule of `tests/architecture.py` that keeps something out of the renderer.
-  [In the code](#in-the-code) lists each, by hand, with the function, the commit that brought it and the test that
-  keeps it, or none.
+- **The code**: what the renderer does for every driver because one of them needs it, or a rule of
+  `tests/architecture.py` that keeps something out of the renderer. [In the code](#in-the-code) lists each, by hand,
+  with the function, the commit that brought it and the test that keeps it, or none. No source of `src/` compares a
+  driver, a vendor or a device to choose a way: `runtime_architecture` (`check_driver_choices`) refuses one outside
+  the table's reader, but for the comparisons its `DRIVER_CHOICES` lists with their reasons, which choose no way by
+  driver (a cache's identity, a vendor's own interface for `gpu_pstate`, the GPU family an ASTC encoder or the UI's
+  blend is written for).
 
 An extension whose driver lists it without one of the commands it requires needs neither: once the device is made,
 each command of each extension it is made with is asked of the driver, and one that gives none takes its extension
