@@ -1816,7 +1816,7 @@ u32* shader_untracked_reject(ShaderInfo* si, const u64* insn, u32 i, u32 reg, u8
     else
         snprintf(si->first_unsupported, sizeof si->first_unsupported,
                  "global memory base R%u not tracked at %x: no write before", reg, i * 8);
-    si->unsupported++;
+    si->unsupported = 1;
     return NULL;
 }
 /* The words of a program (n of them, sph its header, words in all) with every attribute load, store and

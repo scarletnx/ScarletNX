@@ -309,7 +309,7 @@ static i32 sync_wait(CPU* c, u64 sync, u64 timeout) {
         LOG_LIMIT(8,
                   "nvn: sync %llx waited on before anything fenced it (timeout %llx, called from %llx): the wait "
                   "fails at once\n",
-                  (unsigned long long)sync, (unsigned long long)timeout, (unsigned long long)c->x[30]);
+                  (unsigned long long)sync, (unsigned long long)timeout, caller(c));
         return NVN_SYNC_WAIT_RESULT_FAILED;
     }
     if (s->syncpt && !syncpt_wait(s->syncpt, s->value, 0)) {

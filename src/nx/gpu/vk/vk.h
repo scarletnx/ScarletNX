@@ -709,7 +709,6 @@ void vk_stage_report(void);
    The frame goes on: its staging, pools and deferred resources live until vk_frame_next and its slot's next use.
    Either semaphore may be VK_NULL_HANDLE */
 void vk_submit(VkSemaphore wait, VkPipelineStageFlags2 wait_stage, VkSemaphore signal);
-void vk_submit_for_readback(void);
 /* the commands recorded since the last submission submitted, when a command buffer is begun: what a change of an
    image's sparse binding has to follow (memory.c) */
 void vk_submit_recorded(void);
@@ -3083,14 +3082,6 @@ extern u64 g_vk_cs_cpu_reads; /* dispatches kept on the compute queue because th
 /* the submission a unified memory dispatch was left in for the stream's end to submit (vk_release_submit), and how many
    were left so (statistics) */
 extern u64 g_vk_cs_open, g_vk_cs_left;
-/* uma.c: the device's memory model, and guest memory that the GPU reads in place (vk_memory) */
-int vk_uma_choose(int has_import, int has_ahb, int has_placed, int has_dmabuf);
-void vk_uma_init(void); /* after it */
-int vk_uma(void);       /* guest ranges are read in place where they can be */
-int vk_uma_get(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off);
-u64 vk_uma_bound(void); /* the submit that last read guest memory in place */
-void vk_uma_frame(void);
-void vk_uma_forget_all(void);
 
 /* the dispatches skipped so far; why (size bytes) gets their reasons with each one's count, " (12 not translated, 3
    a texture not bound)", or "" when none was */
@@ -3453,14 +3444,5 @@ int vk_gpuprof_clock(i64* cpu, i64* gpu);
 extern u64 g_rec_xfers, g_rec_barriers;         /* record.c: copies and blits, and barriers, put in the frame's ring */
 extern u64 g_rec_barriers_synced;               /* record.c: barriers with a pNext chain, after the ring drained */
 extern u64 g_rec_xfer_kind[3], g_rec_buf_bytes; /* buffer, buffer-image, image copies; buffer copies' bytes */
-
-/* uma.c: the device's memory model, and guest memory that the GPU reads in place (vk_memory) */
-int vk_uma_choose(int has_import, int has_ahb, int has_placed, int has_dmabuf);
-void vk_uma_init(void); /* after it */
-int vk_uma(void);       /* guest ranges are read in place where they can be */
-int vk_uma_get(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off);
-u64 vk_uma_bound(void); /* the submit that last read guest memory in place */
-void vk_uma_frame(void);
-void vk_uma_forget_all(void);
 
 #endif
