@@ -682,7 +682,6 @@ int sm53_sail_emit(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b);
 /* each family of instructions: writes the instruction i (its word w, opcode op, and fields d, a, b) when one of its branches takes it; op_family (spirv_translate.c) sends each opcode to its family */
 /* EXIT's end of the program (emit_flow.c), which sail/sm53_flow.sail's EXIT runs */
 void shader_exit(const Tr* t, u32 i, u64 w);
-void emit_int(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b);
 void emit_float(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b);
 void emit_texture(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b);
 #endif
