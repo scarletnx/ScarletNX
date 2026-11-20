@@ -4119,6 +4119,52 @@ static void rect_textures(void) {
     }
 }
 
+/* the components of the vectors that each instruction of opcode in code has as its result type: the fewest and the
+   most found, 0 and 0 when none */
+static void result_widths(const u32* code, size_t words, u32 opcode, u32* fewest, u32* most) {
+    *fewest = *most = 0;
+    for (size_t i = 5; i < words;) {
+        u32 width = code[i] >> 16, n = 0;
+        if (!width || i + width > words) return;
+        if ((code[i] & 0xffff) == opcode && width > 2)
+            for (size_t j = 5; j < words;) { /* OpTypeVector: result id, component type, count */
+                u32 wj = code[j] >> 16;
+                if (!wj || j + wj > words) break;
+                if ((code[j] & 0xffff) == 23 && wj == 4 && code[j + 1] == code[i + 1]) n = code[j + 3];
+                j += wj;
+            }
+        if ((code[i] & 0xffff) == opcode) {
+            if (!*fewest || n < *fewest) *fewest = n;
+            if (n > *most) *most = n;
+        }
+        i += width;
+    }
+}
+/* A rectangle texture bound as a 2D array (TEX R8, R0, ARRAY_2D with the key's tex_rect_mask): its size query
+   (OpImageQuerySizeLod) has the array's three components, the layers last, of which the coordinates take x and y. Two
+   components are invalid SPIR-V, on which RADV's compiler crashed making a racing game's pipeline */
+static void rect_array_texture(void) {
+    const u64 tex =
+        0xc000000000000000ull | 0x10ull << 36 | 7ull << 51 | 1ull << 31 | 3ull << 28 | 0xffull << 20 | 7ull << 16 | 8;
+    size_t slots, words = 0;
+    u64* code = guest_program(&tex, 1, NULL, &slots);
+    check(code != NULL, "a rectangle 2D array's program is made");
+    if (!code) return;
+    ShaderInfo info = {0};
+    info.tex_rect_mask = 1;
+    u32* rect = spirv_of(code, slots * sizeof *code, ST_FS, &info, &words, 1, 1, 1, 1);
+    free(code);
+    check_translated(rect, &info, "a sample of a rectangle texture bound as a 2D array translates");
+    if (rect) {
+        u32 fewest, most;
+        result_widths(rect, words, 103, &fewest, &most);
+        if (fewest != 3 || most != 3)
+            fprintf(stderr, "a rectangle 2D array's size queries have %u to %u components, not 3\n", fewest, most);
+        check(fewest == 3 && most == 3, "a rectangle texture bound as a 2D array queries its three components");
+    }
+    free(rect);
+}
+
 /* A sampler's min/max reduction the program takes itself (ShaderInfo.tex_minmax_mask, the key; tex_minmax_max for
    the greatest): TEX and TXD of a 2D texture become four gathers, one a component, and the least or greatest of the
    texels their footprint weighs, which the evaluator runs on a 4x4 texture. At (0.5, 0.5) the footprint is texels 1
@@ -7010,6 +7056,7 @@ int main(int argc, char** argv) {
     attribute_pointer();
     legacy_varyings_forms();
     rect_textures();
+    rect_array_texture();
     minmax_samples();
     viewport_mask();
     indexed_attribute_load();

@@ -312,7 +312,7 @@ u32 shader_sample_dref(DirectCtx* c, const ShaderInfo* si, int slot, u32 vec4_ty
                        u32 lod);
 void shader_scaled_fetch(DirectCtx* c, u32 push, u32 fragcoord, u32 vec4, int slot, u32 i32_type, u32* x, u32* y);
 void shader_scaled_size(DirectCtx* c, u32 push, int slot, u32* x, u32* y);
-void shader_rect_coords(DirectCtx* c, u32 push, int scaled, int slot, u32 vec2_u32, u32 i32_type, u32* x, u32* y,
+void shader_rect_coords(DirectCtx* c, u32 push, int scaled, int slot, u32 size_type, u32 i32_type, u32* x, u32* y,
                         u32* gx, u32* gy);
 void shader_texel_row_coord(DirectCtx* c, u32 i32_type, u32* x, u32* y);
 int shader_direct_image_slot(const ShaderInfo* info, u32 off, int bindless, u32 bank, int r32ui, int type);
