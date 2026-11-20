@@ -836,6 +836,7 @@ static void gp_report(void) {
                                                    [VK_PROF_TEXCONV] = "a texture conversion",
                                                    [VK_PROF_VIC] = "a VIC composition",
                                                    [VK_PROF_XFB_INDIRECT] = "transform feedback's draw arguments",
+                                                   [VK_PROF_INDIRECT_QUADS] = "an indirect draw's quads",
                                                    [VK_PROF_QUERY_PREDICATE] = "the queries' predicates",
                                                    [VK_PROF_QUERY_COMPARE] = "a query compare",
                                                    [VK_PROF_QUERY_COUNT] = "the queries' counts",

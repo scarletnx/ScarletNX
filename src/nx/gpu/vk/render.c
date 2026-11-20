@@ -5754,6 +5754,43 @@ static int indirect_indices_made(const DrawCall* dc, const DsIndex* ix, int rest
     return index_convert(dc, 0, ix->addr, isz, 0, (u32)n, isz == 2 ? TC_INDEX_RESTART16 : TC_INDEX_RESTART32, 0, ri,
                          words, (u64)words * 4, buf, off);
 }
+/* An indirect draw of quads: its record made the indexed record of their triangles on the GPU (vk_indirect_quads),
+   since the count that says how many is there. Quads of vertices draw through the quad indices of vertex numbers
+   (quad_indices), INDIRECT_QUADS of them; quads of indices have theirs made from the index buffer, the same number at
+   most. A restart index ends no quad here, as in a direct draw whose indices the CPU can't read. One record, with no
+   count: 0 for the others, and when it can't be made */
+#define INDIRECT_QUADS 65536u
+static int indirect_quads(const DrawCall* dc, const DsState* ds, int indexed, VkBuffer* abuf, u64* aoff, VkBuffer* ibuf,
+                          u64* ioff) {
+    const DsIndex* ix = &ds->index;
+    const u32 flags = ds->rkey.provoking_last ? QUADS_LAST : 0, isz = ix->format == 0 ? 1 : ix->format == 1 ? 2 : 4;
+    VkBuffer source = VK_NULL_HANDLE;
+    u64 source_at = 0, made_at, limit = INDIRECT_QUADS;
+    if (dc->draw_count > 1 || dc->indirect_count || dc->xfb_control) {
+        LOG_LIMIT(1, "vulkan: an indirect draw of quads with %u records%s isn't drawn\n", dc->draw_count,
+                  dc->indirect_count ? " under a count"
+                  : dc->xfb_control  ? " of a transform feedback"
+                                     : "");
+        return 0;
+    }
+    LOG_LIMIT(1, "vulkan: an indirect draw of quads draws %u quads at most\n", INDIRECT_QUADS);
+    if (indexed) {
+        u64 len = ix->end >= ix->addr ? ix->end - ix->addr + 1 : 0;
+        limit = len / isz;
+        if (limit > (u64)INDIRECT_QUADS * 4) limit = (u64)INDIRECT_QUADS * 4;
+        if (!limit || (ix->addr & (isz - 1)) || !vk_buf_get_input(ix->addr, limit * isz, isz, &source, &source_at))
+            return 0;
+    } else if (!quad_indices(INDIRECT_QUADS, flags, ibuf, ioff))
+        return 0;
+    if (!vk_indirect_quads(*abuf, *aoff, indexed ? isz : 0, source, source_at, (u32)limit, flags & QUADS_LAST, abuf,
+                           aoff, &made_at))
+        return 0;
+    if (indexed) {
+        *ibuf = *abuf;
+        *ioff = made_at;
+    }
+    return 1;
+}
 /* the draws: Vulkan's draw count past one needs multiDrawIndirect, else one call each */
 static void draw_indirect(VkCommandBuffer cb, int indexed, VkBuffer abuf, u64 aoff, VkBuffer cbuf, u64 coff, u32 n,
                           u32 stride) {
@@ -6775,11 +6812,19 @@ retry:
         itype = VK_INDEX_TYPE_UINT32;
         topo = points ? VK_PRIMITIVE_TOPOLOGY_POINT_LIST : VK_PRIMITIVE_TOPOLOGY_LINE_LIST;
     } else if (dc->indirect) {
-        /* quads made into triangles need the count, which only the GPU has */
-        if (topology == 7 || (indexed && !indirect_indices(&ds->index, restart, &ibuf, &ioff, &itype) &&
-                              !indirect_indices_made(dc, &ds->index, restart, &ibuf, &ioff, &itype))) {
+        int made = 1;
+        if (topology == 7) { /* two triangles a quad, as a direct draw's (below) */
+            made = indirect_quads(dc, ds, indexed, &abuf, &aoff, &ibuf, &ioff);
+            indexed = 2;
+            itype = VK_INDEX_TYPE_UINT32;
+            topo = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+        } else if (indexed)
+            made = indirect_indices(&ds->index, restart, &ibuf, &ioff, &itype) ||
+                   indirect_indices_made(dc, &ds->index, restart, &ibuf, &ioff, &itype);
+        if (!made) {
             LOG_LIMIT(1, "vulkan: an indirect draw of %s isn't drawn\n",
-                      topology == 7 ? "quads" : "indices that can't be made into ones Vulkan reads");
+                      topology == 7 ? "quads that can't be made into triangles"
+                                    : "indices that can't be made into ones Vulkan reads");
             draw_images_discard(&images);
             if (late_depth) vk_depth_shadow_cancel();
             g_vk_skipped++;
