@@ -13,6 +13,7 @@
 #include "common/online/wfc.h"
 #include "online_check.h"
 #include "online_thread.h"
+#include <stdatomic.h>
 #include <stdint.h>
 #ifdef _WIN32
 typedef SOCKET Fd;
@@ -33,7 +34,10 @@ typedef struct Server {
     int answers;  /* the queries it answers before it ends */
     int silent;   /* it reads and never answers */
     int delay_ms; /* how long it waits before it answers */
+    int behind;   /* it answers only once this many answers of all the servers went out, up to 2 s */
 } Server;
+
+static _Atomic int g_answers; /* the answers the servers sent */
 
 static void pause_ms(int ms) {
 #ifdef _WIN32
@@ -66,6 +70,7 @@ SNX_ONLINE_THREAD_MAIN(serve, arg) {
         int got = (int)recvfrom(s->fd, (char*)q, sizeof q, 0, (struct sockaddr*)&from, &length);
         if (got <= 0) break;
         if (s->silent || snx_online_dns_question(q, (size_t)got, name, NULL)) continue;
+        for (int waited = 0; atomic_load(&g_answers) < s->behind && waited < 2000; ++waited) pause_ms(1);
         if (s->delay_ms) pause_ms(s->delay_ms);
         int service = strlen(name) >= 16 && !strcmp(name + strlen(name) - 16, "nintendowifi.net");
         size_t rl = snx_online_dns_reply(r, sizeof r, q, (size_t)got, wfc, service ? 1 : 0, 60);
@@ -74,6 +79,7 @@ SNX_ONLINE_THREAD_MAIN(serve, arg) {
         stray[0] ^= 0x55; /* an earlier query's late reply: another id */
         sendto(s->fd, (const char*)stray, (int)rl, 0, (struct sockaddr*)&from, length);
         sendto(s->fd, (const char*)r, (int)rl, 0, (struct sockaddr*)&from, length);
+        atomic_fetch_add(&g_answers, 1);
     }
     SNX_ONLINE_THREAD_END;
 }
@@ -110,12 +116,14 @@ int main(void) {
     snx_online_thread_join(t);
     closefd(quiet.fd);
 
-    /* auto: the fastest of three, one answering at once, one 150 ms late, one never; then none answering */
+    /* auto: the fastest of three, one answering at once, one 400 ms after it, one never; then none answering */
     Server fast = {0}, slow = {0}, mute = {0};
     SnxOnlineThread tf, ts, tm;
     CHECK_INT(server_open(&fast) | server_open(&slow) | server_open(&mute), 0);
     fast.answers = slow.answers = mute.answers = 1;
-    slow.delay_ms = 150;
+    slow.delay_ms = 400;
+    slow.behind = 1; /* after the fast one's answer, whenever its thread runs */
+    atomic_store(&g_answers, 0);
     mute.silent = 1;
     CHECK_INT(snx_online_thread_start(&tf, serve, &fast) | snx_online_thread_start(&ts, serve, &slow) |
                   snx_online_thread_start(&tm, serve, &mute),
@@ -123,8 +131,13 @@ int main(void) {
     const uint8_t three[3][4] = {{127, 0, 0, 1}, {127, 0, 0, 1}, {127, 0, 0, 1}};
     const uint16_t ports[3] = {slow.port, mute.port, fast.port};
     int ms[3] = {0, 0, 0};
-    CHECK_INT(snx_online_wfc_fastest(three, ports, 3, 1000, ms, why, sizeof why), 2);
-    CHECK(ms[2] >= 0 && ms[2] < 150 && ms[0] >= 150 && ms[0] < 1000 && ms[1] == -1);
+    CHECK_INT(snx_online_wfc_fastest(three, ports, 3, 2000, ms, why, sizeof why), 2);
+    /* the order of the times, not their size: the clock steps by about 16 ms on Windows (GetTickCount64) */
+    if (!(ms[2] >= 0 && ms[0] > ms[2] && ms[0] < 2000 && ms[1] == -1)) {
+        fprintf(stderr, "%s:%d: fast %d ms, slow %d ms, mute %d ms: not 0 <= fast < slow < 2000 and mute -1\n",
+                __FILE__, __LINE__, ms[2], ms[0], ms[1]);
+        ++g_failures;
+    }
     snx_online_thread_join(tf);
     snx_online_thread_join(ts);
     snx_online_thread_join(tm);
