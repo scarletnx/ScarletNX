@@ -74,6 +74,11 @@ static void display(void) {
     t.flags = (SNX_CTR_PIX_RGBA8 << SNX_CTR_XFER_IN_FORMAT) | (SNX_CTR_PIX_RGB8 << SNX_CTR_XFER_OUT_FORMAT);
     check(snx_ctr_display_spans(&t, &need_in, &need_out) && need_in == 256 && need_out == 192,
           "spans of an 8x8 RGBA8 to RGB8 transfer");
+    /* the registers' largest sizes, 65535 a side: more bytes than any memory of the console, with no spans */
+    SnxCtrDisplayTransfer huge = t;
+    huge.input_size = huge.output_size = 0xffffffffu;
+    check(!snx_ctr_display_spans(&huge, &need_in, &need_out), "no spans for a transfer of 2^32 pixels");
+    check(snx_ctr_display_spans(&t, &need_in, &need_out) && need_in == 256 && need_out == 192, "the 8x8 one again");
     memset(out, 0, sizeof out);
     check(snx_ctr_display_transfer(&t, in, need_in, out, need_out) == SNX_CTR_XFER_OK, "tiled to linear runs");
     ok = 1;

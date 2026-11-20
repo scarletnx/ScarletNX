@@ -155,10 +155,16 @@ static uint64_t source_reach(const Display* d) {
     return (uint64_t)d->in_bpp * (d->scaling == 2 ? 4 : d->scaling ? 2 : 1);
 }
 
+#define SPAN_BYTES_MOST 0x10000000u /* the New 3DS's FCRAM, 256 MiB */
 static bool display_spans(const SnxCtrDisplayTransfer* t, size_t* input_bytes, size_t* output_bytes) {
     Display d;
     uint64_t in_end = 0, out_end = 0, src, dst;
     if (display_setup(t, &d) != SNX_CTR_XFER_OK) return false;
+    /* the size registers are 16 bits a side, 2^32 pixels, and the console's largest memory holds 2^28 bytes: a transfer
+       of more reads or writes outside every memory, and is not walked */
+    if ((uint64_t)d.out_w * d.out_h * d.out_bpp > SPAN_BYTES_MOST ||
+        (uint64_t)d.in_w * d.in_h * d.in_bpp > SPAN_BYTES_MOST)
+        return false;
     for (uint32_t y = 0; y < d.out_h; ++y)
         for (uint32_t x = 0; x < d.out_w; ++x) {
             display_offsets(&d, x, y, &src, &dst);
