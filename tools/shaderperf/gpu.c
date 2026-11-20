@@ -627,8 +627,6 @@ static bool make_device(Gpu* g, const SpConfig* cfg) {
         if (f2.features.geometryShader)
             g->stat_flags |= VK_QUERY_PIPELINE_STATISTIC_GEOMETRY_SHADER_INVOCATIONS_BIT |
                              VK_QUERY_PIPELINE_STATISTIC_GEOMETRY_SHADER_PRIMITIVES_BIT;
-        if (g->family == UINT32_MAX)
-            g->stat_flags = 0;
     } else if (cfg->pipeline_stats) {
         sp_warn(g->b, "the device has no pipelineStatisticsQuery");
     }
