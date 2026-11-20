@@ -2098,7 +2098,13 @@ int plat_trap_arm(u8* p, u64 size) {
     reg.mode = UFFDIO_REGISTER_MODE_MINOR; /* in place of the write tracking's registration */
     if (ioctl(g_uffd, UFFDIO_REGISTER, &reg)) return -1;
     /* the pages leave the page tables and stay in the pool: the next access is a minor fault */
-    return madvise(p, (size_t)size, MADV_DONTNEED) ? -1 : 0;
+    if (madvise(p, (size_t)size, MADV_DONTNEED)) return -1;
+    /* A page armed again may have a thread asleep in a fault on it, whose fault a landing took already and left to the
+       let_go that now finds this owner there and keeps the page trapped. The unregister above wakes no minor fault
+       (Linux wakes those of a missing-mode range only), so that thread would sleep for good: woken, it faults again
+       and lands this owner */
+    struct uffdio_range wake = {(u64)(uintptr_t)p, size};
+    return ioctl(g_uffd, UFFDIO_WAKE, &wake) ? -1 : 0;
 #else
     (void)p;
     (void)size;
