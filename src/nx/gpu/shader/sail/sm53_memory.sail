@@ -61,9 +61,10 @@ val LogWritten : (int, bits(32), int) -> unit
 /* a byte (size 0, 1 signed) or halfword (2, 3 signed) of a word, at its address's place in the word */
 function SubwordOffset(address : bits(32), size : int) -> bits(32) =
     (address & (if size < 2 then 0x00000003 else 0x00000002)) << 3
-function SubwordExtract(word : bits(32), bit_offset : bits(32), size : int) -> bits(32) =
-    if MOD(size, 2) == 1 then Bits32(BitsS(word, bit_offset, if size < 2 then 0x00000008 else 0x00000010))
-    else BitsU(word, bit_offset, if size < 2 then 0x00000008 else 0x00000010)
+function SubwordExtract(word : bits(32), bit_offset : bits(32), width : bits(32), size : int) -> bits(32) =
+    if MOD(size, 2) == 1 then Bits32(BitsS(word, bit_offset, width)) else BitsU(word, bit_offset, width)
+/* a byte's or a halfword's width, made where the translator made it: before the word's load */
+function SubwordWidth(size : int) -> bits(32) = Bits32(if size < 2 then 0x00000008 else 0x00000010)
 /* the words of a size at 48-50: 5 two, 6 and 7 four */
 function SizeWords(size : int) -> int = if size == 5 then 2 else if size >= 6 then 4 else 1
 
@@ -71,7 +72,7 @@ function SizeWords(size : int) -> int = if size == 5 then 2 else if size >= 6 th
    high half added to the bank, its low half the address), a byte or halfword of it (48-50) or a pair. It loads the
    handle of a texture that is indexed: the element it picks, the address register over the stride, stored */
 function execute_LDC() -> unit = {
-    let off = SignExtend(Field(20, 16), 32);
+    let off = Bits32(SignExtend(Field(20, 16), 32)); /* made before the register's read, as the translator made it */
     let a = R_read(RegA());
     let bank = UInt(Field(36, 5));
     let dynamic_bank = Field(44, 1) == 0b1;
@@ -86,7 +87,7 @@ function execute_LDC() -> unit = {
     if size < 4 then {
         let byte_offset = address & (if size < 2 then 0x00000003 else 0x00000002);
         let bit_offset = byte_offset << 3;
-        R_write(Dst(), SubwordExtract(word, bit_offset, size))
+        R_write(Dst(), SubwordExtract(word, bit_offset, SubwordWidth(size), size))
     } else R_write(Dst(), word);
     if size == 5 then {
         let next = address + 0x00000004;
@@ -118,8 +119,8 @@ function execute_ATOMS() -> unit = {
    word's other bytes) */
 function execute_LDS() -> unit = {
     let store = Form() == 1;
-    let immediate = SignExtend(Field(20, 24), 32);
-    let address = if RegA() == RZ then Bits32(immediate) else R_read(RegA()) + immediate; /* a word at run time */
+    let immediate = Bits32(SignExtend(Field(20, 24), 32)); /* made before the register's read */
+    let address = if RegA() == RZ then immediate else R_read(RegA()) + immediate;
     let first = address >> 2;
     let size = UInt(Field(48, 3));
     foreach (k from 0 to SizeWords(size) - 1) {
@@ -127,9 +128,9 @@ function execute_LDS() -> unit = {
         let pointer = SharedPointer(SharedIndex(index0, SharedWords()));
         if size < 4 then {
             let bit_offset = SubwordOffset(address, size);
-            let width = if size < 2 then 0x00000008 else 0x00000010;
+            let width = SubwordWidth(size);
             if store then CasInsertShared(pointer, bit_offset, width, Dst())
-            else R_write(Dst(), SubwordExtract(AtomicLoadShared(pointer), bit_offset, size))
+            else R_write(Dst(), SubwordExtract(AtomicLoadShared(pointer), bit_offset, width, size))
         } else if store then Store(pointer, R_read(Dst() + k))
         else R_write(Dst() + k, Load(pointer))
     }
@@ -139,8 +140,8 @@ function execute_LDS() -> unit = {
    store (the invocation's own memory) */
 function execute_LDL() -> unit = {
     let store = Form() == 1;
-    let immediate = SignExtend(Field(20, 24), 32);
-    let address = if RegA() == RZ then Bits32(immediate) else R_read(RegA()) + immediate; /* a word at run time */
+    let immediate = Bits32(SignExtend(Field(20, 24), 32)); /* made before the register's read */
+    let address = if RegA() == RZ then immediate else R_read(RegA()) + immediate;
     let first = address >> 2;
     let size = UInt(Field(48, 3));
     foreach (k from 0 to SizeWords(size) - 1) {
@@ -148,10 +149,10 @@ function execute_LDL() -> unit = {
         let pointer = LocalPointer(index0 & to_bits(32, LocalWords() - 1));
         if size < 4 then {
             let bit_offset = SubwordOffset(address, size);
-            let width = if size < 2 then 0x00000008 else 0x00000010;
+            let width = SubwordWidth(size);
             let old = Load(pointer);
             if store then Store(pointer, BitsInsert(old, R_read(Dst()), bit_offset, width))
-            else R_write(Dst(), SubwordExtract(old, bit_offset, size))
+            else R_write(Dst(), SubwordExtract(old, bit_offset, width, size))
         } else if store then Store(pointer, R_read(Dst() + k))
         else R_write(Dst() + k, Load(pointer))
     }
@@ -166,7 +167,7 @@ function execute_LDG() -> unit = {
     if store & at == 255 then () else if at == 254 then GlobalDynamic() else {
         let slot = at - 1;
         let base = CbufReadDynamic(GbufBank(slot), to_bits(32, GbufOffset(slot)));
-        let immediate = SignExtend(Field(20, 24), 32);
+        let immediate = Bits32(SignExtend(Field(20, 24), 32)); /* made before the register's read */
         let address0 = R_read(RegA()) + immediate;
         let address = address0 - base;
         let index = address >> 2;
@@ -179,9 +180,9 @@ function execute_LDG() -> unit = {
             if size < 4 then {
                 let byte_offset = address & (if size < 2 then 0x00000003 else 0x00000002);
                 let bit_offset = byte_offset << 3;
-                let width = if size < 2 then 0x00000008 else 0x00000010;
+                let width = SubwordWidth(size);
                 if store then CasInsert(ptr, bit_offset, width, Dst())
-                else R_write(Dst(), SubwordExtract(AtomicLoad(ptr), bit_offset, size))
+                else R_write(Dst(), SubwordExtract(AtomicLoad(ptr), bit_offset, width, size))
             } else if store then Store(ptr, R_read(Dst() + k))
             else R_write(Dst() + k, Load(ptr))
         }
