@@ -110,7 +110,7 @@ typedef struct {
     bool used;
 } Glyph;
 
-/* android_render_set_options': the program's options, before the renderer starts */
+/* android_render_set_options: the program's options, before the renderer starts */
 static struct {
     bool headless;
     const char* shot;
