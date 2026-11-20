@@ -132,6 +132,14 @@ if(BUILD_TESTING)
         target_compile_options(snx-test-android-linker-lock PRIVATE -Wall -Wextra -Werror -UNDEBUG)
         add_test(NAME android_linker_lock COMMAND snx-test-android-linker-lock)
         set_tests_properties(android_linker_lock PROPERTIES TIMEOUT 60)
+        # libraries whose symbol hash tables hold no bucket, made by the test, loaded and looked up in
+        add_executable(snx-test-android-linker-hash "${PROJECT_SOURCE_DIR}/tests/android_linker_hash.c")
+        target_link_libraries(snx-test-android-linker-hash PRIVATE
+                              "$<LINK_GROUP:RESCAN,snx_android_program,snx_android_bridge>")
+        set_target_properties(snx-test-android-linker-hash PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON)
+        target_compile_options(snx-test-android-linker-hash PRIVATE -Wall -Wextra -Werror -UNDEBUG)
+        add_test(NAME android_linker_hash COMMAND snx-test-android-linker-hash)
+        set_tests_properties(android_linker_hash PROPERTIES WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
         add_executable(snx-test-android-bridge-start "${PROJECT_SOURCE_DIR}/tests/android_bridge_start.c")
         target_link_libraries(snx-test-android-bridge-start PRIVATE
                               "$<LINK_GROUP:RESCAN,snx_android_program,snx_android_bridge>")
@@ -203,7 +211,8 @@ if(COMMAND snx_sanitizer_path) # tests/CMakeLists.txt: this folder's tests
     snx_test_sanitize(snx-test-bionic-sync snx-test-android-image snx-test-android-host-anon snx-test-android-gles2
                       snx-test-android-inputs snx-test-android-bionic snx-test-android-arm32 snx-test-android-dex
                       snx-test-android-bridge-start snx-test-android-audio snx-test-android-gles1
-                      snx-test-android-linker-lock snx-test-android-arm32-jni-copy
-                      snx-test-android-gles1-samplers snx-test-android-arsc-style)
+                      snx-test-android-linker-lock snx-test-android-linker-hash
+                      snx-test-android-gles1-samplers snx-test-android-arsc-style
+                      snx-test-android-arm32-jni-copy)
     snx_sanitizer_path()
 endif()

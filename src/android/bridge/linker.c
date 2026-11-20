@@ -113,6 +113,7 @@ static const Elf64_Sym* defined(const GuestLibrary* l, const char* name) {
     if (l->gnu_hash) {
         const uint32_t* h = l->gnu_hash;
         uint32_t buckets = h[0], offset = h[1], bloom_size = h[2], shift = h[3];
+        if (!buckets || !bloom_size) return NULL; /* a table of no bucket or no filter word holds no symbol */
         const uint64_t* bloom = (const uint64_t*)(h + 4);
         const uint32_t* bucket = (const uint32_t*)(bloom + bloom_size);
         const uint32_t* chain = bucket + buckets;
@@ -130,6 +131,7 @@ static const Elf64_Sym* defined(const GuestLibrary* l, const char* name) {
     }
     if (l->hash) {
         uint32_t buckets = l->hash[0];
+        if (!buckets) return NULL;
         const uint32_t *bucket = l->hash + 2, *chain = bucket + buckets;
         for (uint32_t i = bucket[snx_elf_sysv_hash(name) % buckets]; i; i = chain[i]) {
             const Elf64_Sym* s = &l->symbols[i];
