@@ -138,7 +138,7 @@ int gui_steps_percent(const GuiSteps* steps) {
             percent = s->state == GUI_STEP_DONE ? 100 : s->total ? (int)(s->value * 100ull / s->total) : 0;
         else if (!strcmp(s->label, "EXTRACT"))
             percent = s->state == GUI_STEP_DONE ? 100 : s->total ? (int)(s->value * 100ull / s->total) : -1;
-        else if (!strcmp(s->label, "BUILT") || !strcmp(s->label, "LAUNCH") || !strcmp(s->label, "READY"))
+        else if (!strcmp(s->label, "BUILD") || !strcmp(s->label, "LAUNCH") || !strcmp(s->label, "READY"))
             percent = 100;
     }
     return percent;
