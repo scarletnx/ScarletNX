@@ -223,6 +223,37 @@ def check_environment(repo):
     return errors
 
 
+THREAD32_STUB = re.compile(
+    r'(?<![A-Za-z0-9_])(arm_cpu|hook_a32_cpu)\s*\(\s*(?:CPU|SnxArmCPU)\s*\*\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)\s*\{([^}]*)\}'
+)
+
+
+def check_test_threads(repo):
+    """a test that gives the handlers a 32-bit thread's registers (its arm_cpu returns some) finds them from the CPU,
+    and the CPU from the registers (its hook_a32_cpu), as the runtime does in one KThread: an A32 adapter holds the
+    registers through a restrict pointer, and registers that are an object of the test's own, returned whatever the
+    argument, are not that pointer's to the compiler, which then moves the adapter's reads past the handler's writes
+    (hook_install_a32 on Windows on Arm with ThinLTO returned to a stale lr)"""
+    errors = []
+    for path in sorted((repo / 'tests').rglob('*.c')):
+        shown = path.relative_to(repo).as_posix()
+        source = without_comments(path.read_text(encoding='utf-8', errors='replace'), literals=False)
+        stubs = {m.group(1): m for m in THREAD32_STUB.finditer(source)}
+        registers = stubs.get('arm_cpu')
+        if not registers or re.search(r'return\s+(?:\(void\)\s*\w+\s*,\s*)?(?:NULL|0|nullptr)\s*;', registers.group(3)):
+            continue  # no registers for a handler to reach
+        for name, match in sorted(stubs.items()):
+            if re.search(r'\(void\)\s*' + re.escape(match.group(2)) + r'\b', match.group(3)):
+                line = source.count('\n', 0, match.start()) + 1
+                errors.append(
+                    f"{shown}:{line}: {name} returns an object of the test's whatever its argument, and arm_cpu gives "
+                    "the handlers a thread's registers: an A32 adapter holds them through a restrict pointer, so find "
+                    'the registers from the CPU and the CPU from the registers, in one struct, as '
+                    "tests/hook_install_a32.c's Thread32 (src/nx/runtime/arm.c does it in KThread)"
+                )
+    return errors
+
+
 WINDOW_OPEN = re.compile(r'(?<![A-Za-z0-9_])(SDL_CreateWindow|SDL_CreateWindowAndRenderer)\s*\(')
 
 
@@ -660,7 +691,15 @@ def check_graph(graph):
         ('snx_agb_program', ('scarletnx-nx', 'scarletnx-gnuabi', 'scarletnx-3ds', 'snx_driver', 'snx_nx_module')),
         (
             'scarletnx-nds',
-            ('scarletnx-nx', 'scarletnx-gnuabi', 'scarletnx-3ds', 'scarletnx-agb', 'snx_ctr_board', 'snx_driver', 'snx_nx_module'),
+            (
+                'scarletnx-nx',
+                'scarletnx-gnuabi',
+                'scarletnx-3ds',
+                'scarletnx-agb',
+                'snx_ctr_board',
+                'snx_driver',
+                'snx_nx_module',
+            ),
         ),
         (
             'snx_nds_program',
@@ -1111,6 +1150,7 @@ def main():
         check_sources(args.repo.resolve())
         + check_include_flags(args.repo.resolve())
         + check_environment(args.repo.resolve())
+        + check_test_threads(args.repo.resolve())
         + check_window_pixels(args.repo.resolve())
         + check_state_fns(args.repo.resolve())
         + check_dynamic_descriptors(args.repo.resolve())
