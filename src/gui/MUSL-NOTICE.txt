@@ -1,5 +1,5 @@
 The reader of the menu's catalogs, snx_mo_lookup in src/gui/i18n.c, is musl's src/locale/__mo_lookup.c, rewritten
-in C99 to read the catalog a byte at a time and to check that its tables are whole.
+in ISO C23 to read the catalog a byte at a time and to check that its tables are whole.
 https://git.musl-libc.org/cgit/musl/tree/src/locale/__mo_lookup.c
 
 musl's notice:

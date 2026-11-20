@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* hactool as scarletnx --extract calls it, in its own process (snx_hac.c): the containers opened once, each NCA read
-   where it lies in them, and the ExeFS and RomFS written straight into the extraction. Plain C99, for the driver;
+   where it lies in them, and the ExeFS and RomFS written straight into the extraction. Plain C23, for the driver;
    hactool's own headers stay inside hactool_lib */
 #ifndef SNX_HAC_H
 #define SNX_HAC_H

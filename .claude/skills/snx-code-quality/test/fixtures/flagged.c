@@ -1,4 +1,4 @@
-/* every rule the checker sees, once each, in strict ISO C99; Locks is C11 code it still meets in src/ */
+/* every rule the checker sees, once each, in strict ISO C23; Locks is C11 code it still meets in src/ */
 #include <stdlib.h>
 typedef unsigned int u32;
 typedef unsigned char u8;

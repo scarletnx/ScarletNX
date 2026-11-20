@@ -98,7 +98,7 @@ math correct and efficient.
 
 ## What to prefer
 - Integer or fixed-point arithmetic where the console uses it. Conversions as quotient and remainder, or with a
-  portable 64-by-64 multiply (strict C99 per RFC #142, for LP64 and LLP64 alike).
+  portable 64-by-64 multiply (strict ISO C23 per RFC #142, for LP64 and LLP64 alike).
 - Quaternions for orientation. Integrate them with the exponential map (exact for a constant rate over the step), or
   with a first-order step and then renormalization.
 - Polynomials in Horner form with a stated error bound. Compensated or pairwise sums where accumulation error is
