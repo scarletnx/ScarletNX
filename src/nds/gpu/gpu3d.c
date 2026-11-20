@@ -215,17 +215,21 @@ static void update_clip_matrix(NdsGpu3D* g)
 static void clip_segment(NdsVertex* outbuf, const NdsVertex* vin, const NdsVertex* vout, int comp, int32_t plane,
                          bool attribs)
 {
-    int64_t factor_num = vin->position[3] - (plane*vin->position[comp]);
-    int32_t factor_den = (int32_t)(factor_num - (vout->position[3] - (plane*vout->position[comp])));
+    /* w minus or plus the coordinate, and the differences between the two ends, keep the 32 bits of their result as
+       a vector through the vector matrix does: the clip matrix's words are any 32 bits, and int's range is passed */
+#define WRAP32(a, op, b) ((int32_t)((uint32_t)(a)op(uint32_t)(b)))
+    int64_t factor_num = WRAP32(vin->position[3], -, WRAP32(plane, *, vin->position[comp]));
+    int32_t factor_den = (int32_t)(factor_num - WRAP32(vout->position[3], -, WRAP32(plane, *, vout->position[comp])));
     if (!factor_den) factor_den = 1;
 
-#define INTERPOLATE(var, type)  { outbuf->var = (type)(vin->var + ((vout->var - vin->var) * factor_num) / factor_den); }
+#define INTERPOLATE(var, type)                                                                                         \
+    { outbuf->var = (type)(vin->var + (WRAP32(vout->var, -, vin->var) * factor_num) / factor_den); }
 
     if (comp != 0) INTERPOLATE(position[0], int32_t);
     if (comp != 1) INTERPOLATE(position[1], int32_t);
     if (comp != 2) INTERPOLATE(position[2], int32_t);
     INTERPOLATE(position[3], int32_t);
-    outbuf->position[comp] = plane*outbuf->position[3];
+    outbuf->position[comp] = WRAP32(plane, *, outbuf->position[3]);
 
     if (attribs)
     {
@@ -240,6 +244,7 @@ static void clip_segment(NdsVertex* outbuf, const NdsVertex* vin, const NdsVerte
     outbuf->clipped = true;
 
 #undef INTERPOLATE
+#undef WRAP32
 }
 
 static int clip_against_plane(const NdsGpu3D* g, NdsVertex* vertices, int nverts, int clipstart, int comp,

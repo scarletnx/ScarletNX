@@ -372,6 +372,25 @@ static void test_vectors(NdsBoard* board) {
     gx(board, 0x15, 0), gx(board, 0x29, 0x001F00C0), gx(board, 0x40, 0), gx(board, 0x41, 0);
 }
 
+/* a box whose corners the clip matrix puts at x = z = 0x60000000 with w = -0x60000000, and the reverse: w - z passes
+   int's range where an edge between them meets the far side of the view volume (kept, by the polygon's bit 12), and
+   keeps its 32 bits. The sanitizers' build stops on the overflow; the answer is the wrapped one's */
+static void test_clip(NdsBoard* board) {
+    gx(board, 0x10, 0);
+    for (uint32_t k = 0; k < 16; k++) gx(board, 0x16, k == 0 || k == 2 ? 0x60000000u : k == 3 ? 0xA0000000u : 0);
+    gx(board, 0x10, 2), gx(board, 0x15, 0);
+    gx(board, 0x29, 0x001F10C0), gx(board, 0x40, 0), gx(board, 0x41, 0);
+    nds_io_write(board, IO + 0x5C0, 4, 0xF000);        /* x = -1.0, y = 0 */
+    nds_io_write(board, IO + 0x5C0, 4, 0x2000u << 16); /* z = 0, width 2.0 */
+    nds_io_write(board, IO + 0x5C0, 4, 0);             /* no height, no depth */
+    uint32_t answer = nds_io_read(board, IO + 0x600, 4) & 2;
+    nds_io_write(board, IO + 0x5C0, 4, 0xF000), nds_io_write(board, IO + 0x5C0, 4, 0x2000u << 16);
+    nds_io_write(board, IO + 0x5C0, 4, 0);
+    CHECK((nds_io_read(board, IO + 0x600, 4) & 2) == answer); /* and the same again */
+    gx(board, 0x10, 0), gx(board, 0x15, 0), gx(board, 0x10, 2);
+    gx(board, 0x29, 0x001F00C0), gx(board, 0x40, 0), gx(board, 0x41, 0);
+}
+
 /* a PSG channel's low half is -0x7FFF, which its volume's divider multiplies and never shifts: the sanitizers' build
    stops on a negative value shifted left. Half the samples of a 50% square are below zero */
 static void test_spu(NdsBoard* board) {
@@ -446,6 +465,7 @@ int main(void) {
     test_geometry(board);
     test_matrices(board);
     test_vectors(board);
+    test_clip(board);
     test_spu(board);
     test_sound(board);
     nds_board_free(board);
