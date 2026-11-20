@@ -2757,6 +2757,21 @@ static int tex_superseded(const Surf* s) {
     return !s->is_rt && s->took_drawn && s->size && span_drawn_over(s, s->gva, s->size, s->took_wseq);
 }
 void vk_tex_took(Surf* t) { t->took_wseq = g_wseq; }
+void vk_rt_kinds(VkRtKinds* k) {
+    *k = (VkRtKinds){0};
+    for (int lru = VK_LRU_RT; lru <= VK_LRU_RT + LRU_AGED; lru += LRU_AGED)
+        for (u32 r = g_rows.lists[lru].head; r; r = g_rows.lru[r].next) {
+            const Surf* s = g_rows.surf[r];
+            const int kind = s->layout != VK_IMAGE_LAYOUT_UNDEFINED && rt_superseded(s) ? 0 : lossless(s) ? 1 : 2;
+            k->n[kind]++;
+            k->bytes[kind] += s->bytes;
+            k->parked[kind] += (s->gva >> 63) != 0;
+            for (const Surf* c = s->crop; c; c = c->next) {
+                k->copies++;
+                k->copy_bytes += c->bytes;
+            }
+        }
+}
 /* The runs of s's span's size bytes that no target drawn after s last changed is over, as [from, to) offsets into the
    span in address order: the bytes whose newest pixels are s's. The rest are a later target's, as all of a target
    covered whole are (rt_superseded, whose sweep this is, kept going past a gap): s's owner there would put its pixels
