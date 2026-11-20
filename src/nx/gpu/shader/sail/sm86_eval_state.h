@@ -8,6 +8,7 @@ struct SgG {
     SgEval ev;
     Sm86EvalState* st;
     const Sm86Insn* in;
+    const Sm86Insn* at[4]; /* a fusion's instructions, at[0] the first */
     const Sm86EvalIo* io;
     int uniform;
 };
@@ -16,6 +17,7 @@ static SgEval* sg_eval(SgG* g) { return &g->ev; }
     g->ev.undefined = g->ev.thrown = 0;
     g->st = st;
     g->in = in;
+    g->at[0] = in;
     g->io = io;
     g->uniform = sm86_ops[in->op].kind == SM86_K_UALU;
 }
@@ -39,6 +41,33 @@ static SgEval* sg_eval(SgG* g) { return &g->ev; }
 [[maybe_unused]] static int sg_IsZero(SgG* g, int64_t s) { return sg86_zero(sg86_src(g, s)); }
 [[maybe_unused]] static int sg_SrcIsImm(SgG* g, int64_t s) { return sg86_src(g, s)->kind == SM86_SRC_IMM; }
 [[maybe_unused]] static int64_t sg_SrcImm(SgG* g, int64_t s) { return sg86_src(g, s)->value; }
+/* a fusion's instruction k (sg86_fuse's), its operands as the first's are read */
+[[maybe_unused]] static const Sm86Src* sg86_src_at(SgG* g, int64_t k, int64_t s) {
+    const Sm86Insn* in = g->at[k];
+    switch (s) {
+        case SGE_A: return &in->a;
+        case SGE_B: return &in->b;
+        case SGE_C: return &in->c;
+        default: return in->form == 2 || in->form == 3 || in->form == 7 ? &in->c : &in->b;
+    }
+}
+[[maybe_unused]] static uint64_t sg_FieldAt(SgG* g, int64_t k, int64_t lo, int64_t n) {
+    return sm86_field(g->at[k], (u32)lo, (u32)n);
+}
+[[maybe_unused]] static int sg_SrcNegAt(SgG* g, int64_t k, int64_t s) {
+    const Sm86Src* x = sg86_src_at(g, k, s);
+    return x->neg && x->kind != SM86_SRC_IMM;
+}
+[[maybe_unused]] static int sg_IsZeroAt(SgG* g, int64_t k, int64_t s) { return sg86_zero(sg86_src_at(g, k, s)); }
+/* the operand of instruction k is a register (a uniform one for a uniform instruction) that instruction j writes */
+[[maybe_unused]] static int sg_ReadsDstAt(SgG* g, int64_t k, int64_t s, int64_t j) {
+    const Sm86Src* x = sg86_src_at(g, k, s);
+    const Sm86Insn* w = g->at[j];
+    int uniform = sm86_ops[w->op].kind == SM86_K_UALU;
+    if (uniform ? x->kind != SM86_SRC_UREG || x->reg >= SM86_URZ : x->kind != SM86_SRC_REG || x->reg >= SM86_RZ)
+        return 0;
+    return x->reg == w->dst;
+}
 [[maybe_unused]] static SgV sg86_bits(SgG* g, const Sm86Src* x);
 [[maybe_unused]] static SgV sg_SrcBits(SgG* g, int64_t s) { return sg86_bits(g, sg86_src(g, s)); }
 [[maybe_unused]] static SgV sg86_bits(SgG* g, const Sm86Src* x) {
@@ -79,4 +108,12 @@ static SgEval* sg_eval(SgG* g) { return &g->ev; }
 [[maybe_unused]] static void sg_throw_Unsupported(SgG* g, const char* why) {
     (void)why;
     g->ev.thrown = 1;
+}
+[[maybe_unused]] static SgV sg_SrcBitsAt(SgG* g, int64_t k, int64_t s) { return sg86_bits(g, sg86_src_at(g, k, s)); }
+[[maybe_unused]] static void sg_D_writeAt(SgG* g, int64_t k, SgV v) {
+    const Sm86Insn* in = g->at[k];
+    if (sm86_ops[in->op].kind == SM86_K_UALU) {
+        if (in->dst < SM86_URZ) g->st->ur[in->dst] = (u32)v.v;
+    } else if (in->dst < SM86_RZ)
+        g->st->r[in->dst] = (u32)v.v;
 }

@@ -34,6 +34,14 @@ val R_write : (int, bits(32)) -> unit
 val PredRead : (int, int, int) -> bool
 /* written unless p is PT */
 val PredWrite : (int, bool, int) -> unit
+/* A fusion's instructions (sm86.roots' fuse lines): the same of its instruction k, 0 the first */
+val FieldAt : forall 'n. (int, int, int('n)) -> bits('n)
+val SrcBitsAt : (int, Operand) -> bits(32)
+val SrcNegAt : (int, Operand) -> bool
+val IsZeroAt : (int, Operand) -> bool
+/* the operand of instruction k is the register instruction j writes (none for RZ) */
+val ReadsDstAt : (int, Operand, int) -> bool
+val D_writeAt : (int, bits(32)) -> unit
 /* an instruction the translation refuses: why */
 val Unsupported : string -> unit
 
@@ -293,3 +301,30 @@ function Plop3(u : int) -> unit = {
 function execute_PLOP3() -> unit = Plop3(0)
 function execute_UPLOP3() -> unit = Plop3(1)
 
+/* IADD3 lo, P, a, b, RZ then IADD3.X hi, a', b', RZ, P, !PT: the 64-bit sum (a':a) + (b':b), or with b and b' negated
+   the difference, as NVIDIA's compiler adds a 64-bit offset to an address. Each instruction's sum is made in 64 bits
+   for its carries; the pair is one 32-bit add, its carry, and the high words' add, with the same results: lo, the
+   carry in P, hi. The low word's write must leave the high word's sources as they were */
+function IADD3_WIDE_ok() -> bool = {
+    let p = UInt(FieldAt(0, 81, 3));
+    FieldAt(0, 74, 1) == 0b0 & p < PT & UInt(FieldAt(0, 84, 3)) == PT & IsZeroAt(0, C) & not_bool(SrcNegAt(0, C))
+    & FieldAt(1, 74, 1) == 0b1 & UInt(FieldAt(1, 87, 3)) == p & FieldAt(1, 90, 1) == 0b0
+    & FieldAt(1, 77, 4) == 0xf & UInt(FieldAt(1, 81, 3)) == PT & UInt(FieldAt(1, 84, 3)) == PT
+    & IsZeroAt(1, C) & not_bool(SrcNegAt(1, C))
+    & not_bool(SrcNegAt(0, A)) & not_bool(SrcNegAt(1, A)) & SrcNegAt(0, B) == SrcNegAt(1, B)
+    & not_bool(ReadsDstAt(1, A, 0)) & not_bool(ReadsDstAt(1, B, 0))
+}
+function IADD3_WIDE() -> unit = {
+    let a0 = SrcBitsAt(0, A);
+    let b0 = SrcBitsAt(0, B);
+    let a1 = SrcBitsAt(1, A);
+    let b1 = SrcBitsAt(1, B);
+    let sub = SrcNegAt(0, B);
+    let lo = if sub then a0 - b0 else a0 + b0;
+    /* the low word's carry: no borrow of a subtraction, a sum that wrapped */
+    let carry = if sub then UInt(a0) >= UInt(b0) else UInt(lo) < UInt(a0);
+    let hi = a1 + (if sub then not_vec(b1) else b1) + (if carry then 0x00000001 else 0x00000000);
+    D_writeAt(0, lo);
+    PredWrite(UInt(FieldAt(0, 81, 3)), carry, 0);
+    D_writeAt(1, hi)
+}

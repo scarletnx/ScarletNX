@@ -178,6 +178,9 @@ typedef struct {
        complementary pair (pair_partner), which become one select */
     int cap_on;
     u32 cap_reg, cap_val, cap_n;
+    /* by instruction, 1 where a fusion of sm86.roots (sg86_fuse) took it with the ones before it, which it wrote:
+       made with the first instruction a fusion takes, NULL before */
+    u8* fused;
     int failed;
 } Ctx;
 
@@ -4984,10 +4987,38 @@ static int stage_ok(Ctx* c, const Sm86Insn* in) {
    accessors above (sail/sm86_spirv.h): sg86_emit runs the one of an opcode and says whether there is one */
 #include "sm86_sail.inc"
 
+/* the fusion of sm86.roots that instruction cur starts, if one does: the instructions that may take part are cur and
+   those after it that run as it does, unguarded, and that no branch lands on (in the same block). Those it takes are
+   marked in fused, whose writes it made: 1 when it ran */
+static int emit_fused(Ctx* c, SgG* g) {
+    int ops[4];
+    u32 avail = 0, i = c->cur;
+    if (c->cap_on || i >= c->n || &c->in[i] != g->in || !sg86_fuse_starts(g->in->op) || !flow_sources(c)) return 0;
+    while (avail < 4 && i + avail < c->n) {
+        const Sm86Insn* in = &c->in[i + avail];
+        if (in->pred != SM86_PT || in->pred_not) break;
+        if (avail && c->jump_first[i + avail] != c->jump_first[i + avail + 1]) break;
+        g->at[avail] = in;
+        ops[avail++] = in->op;
+    }
+    if (avail < 2) return 0;
+    u32 len = sg86_fuse(g, ops, avail);
+    if (!len) return 0;
+    if (!c->fused) c->fused = calloc(c->n, 1);
+    if (!c->fused) {
+        fail(c, "out of memory");
+        return 1;
+    }
+    for (u32 k = 1; k < len; k++) c->fused[i + k] = 1;
+    return 1;
+}
+
 static void emit_insn(Ctx* c, const Sm86Insn* in) {
     int op = in->op, uniform = sm86_ops[op].kind == SM86_K_UALU;
     SgG g;
+    if (c->fused && c->cur < c->n && &c->in[c->cur] == in && c->fused[c->cur]) return; /* a fusion before wrote it */
     sg86_begin(&g, c, in);
+    if (emit_fused(c, &g)) return;
     if (sg86_emit(&g, op)) return;
     switch (op) {
         case SM86_NOP:
@@ -8037,6 +8068,7 @@ u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, Sha
     if (!out && si->unsupported) sm86_debug_dump("program", code, bytes, sph, si->first_unsupported);
     free(st);
     free(c->addr_key);
+    free(c->fused);
     free(c->handle);
     free(c->mh_mark);
     free(c->mh_pos);
