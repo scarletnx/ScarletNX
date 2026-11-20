@@ -2,8 +2,9 @@
    Copyright 2026 the ScarletNX contributors */
 /* gui/gpu_driver_fetch.c: a repository's releases from GitHub's list of them, its latest marked as GitHub marks it,
    titled by name or by tag and ordered as Eden orders them; the assets each has, those with no link to download left
-   out, a GPU maker's own marked, radv-xclipse's that are not for Android and a release's .txt left out; GitHub's own
-   error said; and the recommendation by model, found among a repository's releases, NX-Mali's from 0.0.3 on */
+   out, a GPU maker's own marked, radv-xclipse's that are not for Android and what is no zip left out (a release's
+   checksums and notes, MaliSX2's build for Linux); GitHub's own error said; and the recommendation by model, found
+   among a repository's releases, NX-Mali's from 0.0.3 on */
 #include "gui/gpu_driver_fetch.h"
 #include <assert.h>
 #include <stdio.h>
@@ -67,18 +68,24 @@ int main(void) {
                !gui_driver_assets(&r)[0].proprietary);
         gui_driver_releases_free(&r);
     }
-    /* MaliSX2, for a Mali beside NX-Mali, recommended on none */
+    /* MaliSX2, for a Mali beside NX-Mali, recommended on none: its zip listed, not its checksums nor its build for
+       Linux */
     {
         static const char malisx2_json[] =
             "[{\"tag_name\": \"v0.5.1\", \"name\": \"malisx2 0.5.1\", \"prerelease\": false, \"assets\": ["
             "   {\"name\": \"malisx2-0.5.1-308fe121c7.zip\", \"size\": 3815046, \"browser_download_url\":"
-            "    \"https://github.com/bmdhacks/malisx2/releases/download/v0.5.1/malisx2-0.5.1-308fe121c7.zip\"}]}]";
+            "    \"https://github.com/bmdhacks/malisx2/releases/download/v0.5.1/malisx2-0.5.1-308fe121c7.zip\"},"
+            "   {\"name\": \"malisx2-0.5.1-308fe121c7.zip.sha256\", \"size\": 95, \"browser_download_url\":"
+            "    \"https://github.com/bmdhacks/malisx2/releases/download/v0.5.1/malisx2-0.5.1-308fe121c7.zip.sha256\"},"
+            "   {\"name\": \"malisx2-0.5.1-aarch64.tar.gz\", \"size\": 4827836, \"browser_download_url\":"
+            "    \"https://github.com/bmdhacks/malisx2/releases/download/v0.5.1/malisx2-0.5.1-aarch64.tar.gz\"}]}]";
         const GuiDriverRepo* malisx2 = &gui_driver_repos[8];
         assert(!strcmp(malisx2->path, "bmdhacks/malisx2") && !strcmp(malisx2->name, "MaliSX2") &&
                malisx2->gpu == GUI_DRIVER_MALI && !malisx2->tag_titles && !malisx2->by_time);
         assert(gui_driver_releases_parse(malisx2_json, strlen(malisx2_json), malisx2, &r, why, sizeof why));
         assert(r.count == 1 && r.assets_count == 1 && !strcmp(r.releases[0].title, "malisx2 0.5.1") &&
-               r.releases[0].latest && gui_driver_recommended_release(10615, 8, &r) == -1);
+               r.releases[0].latest && gui_driver_recommended_release(10615, 8, &r) == -1 &&
+               !strcmp(gui_driver_assets(&r)[0].name, "malisx2-0.5.1-308fe121c7.zip"));
         gui_driver_releases_free(&r);
     }
     /* GitHub's own error, said; what is no list of releases, said by its size */
