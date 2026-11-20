@@ -321,6 +321,10 @@ struct SnxCtrProcess {
     uint32_t* aot_stale;
     SnxCtrDspService dsp;
     struct SnxCtrUds* uds;
+    struct SnxCtrSoc* soc; /* soc:U's sockets and the threads that wait on them (services/soc.c) */
+    struct SnxCtrFrd* frd; /* the friends module's account and a game's login (services/frd.c) */
+    bool ac_connected;     /* ac:u's ConnectAsync connected the console (services/ac.c) */
+    uint32_t ac_disconnect_event;
     SnxCtrY2rService y2r;
     SnxCtrIrService ir;
     uint32_t irrst_objects[2]; /* ir:rst's shared memory and its update event, made at its first GetHandles */

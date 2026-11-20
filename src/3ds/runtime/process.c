@@ -11,6 +11,9 @@
 #include "3ds/services/ptm.h"
 #include "3ds/services/file.h"
 #include "3ds/services/uds.h"
+#include "3ds/services/soc.h"
+#include "3ds/services/ac.h"
+#include "3ds/services/frd.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -101,6 +104,9 @@ void snx_ctr_process_free(SnxCtrProcess* p) {
     snx_ctr_dispatch_forget();
     snx_ctr_hooks_free(p->hooks);
     snx_ctr_uds_close(p);
+    snx_ctr_soc_close(p);
+    snx_ctr_frd_close(p);
+    snx_ctr_ac_close(p);
     if (p->gsp.pica) snx_ctr_pica_free(p->gsp.pica);
     free(p->gsp.pica);
     snx_ctr_dsp_close(p);

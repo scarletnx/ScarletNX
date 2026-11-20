@@ -38,6 +38,8 @@ static Locale locale(const SnxCtrProcess* p) {
     return (Locale){r, first[r], country[r]};
 }
 
+uint32_t snx_ctr_cfg_language(const SnxCtrProcess* p) { return locale(p).language; }
+
 /* "Washington DC" and "United States" repeated over the 16 languages' 0x40 UTF-16 code units */
 static void location_names(uint8_t* out, const char* name) {
     memset(out, 0, 16 * 0x80);
