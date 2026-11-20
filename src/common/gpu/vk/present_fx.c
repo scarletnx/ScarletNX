@@ -92,7 +92,7 @@ struct SnxFx {
     VkPipeline copy;
     VkPipeline fxaa;
     VkPipeline smaa_edge, smaa_weights, smaa_blend;
-    VkPipeline nis, nis8, sgsr;
+    VkPipeline nis, sgsr;
     int nis_failed, sgsr_failed, coef_ready;
     FxImage coef[2];
     VkBuffer coef_buf, nis_ub;
@@ -730,7 +730,6 @@ void snx_fx_destroy(SnxFx* fx) {
     DESTROY_PIPE(smaa_weights);
     DESTROY_PIPE(smaa_blend);
     DESTROY_PIPE(nis);
-    DESTROY_PIPE(nis8);
     DESTROY_PIPE(sgsr);
 #undef DESTROY_PIPE
     for (uint32_t i = 0; i < SNX_FX_FORMATS; ++i)
