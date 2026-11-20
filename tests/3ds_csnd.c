@@ -183,6 +183,7 @@ int main(void) {
     assert((p->csnd.hw.channel[8].cnt & PLAYING) == PLAYING);
     /* the state: the mask register's channels and the channel's own (8 is the client's first: index 0) */
     assert(block_word(p, block, 0x100) == 0xffffff00u && (block_word(p, block, 0x110) & 0xff) == 1);
+    assert(block_word(p, block, 0x104) == 1); /* and the capture units': the client still holds unit 0 */
     /* the frame it plays reaches the recording alone, as the DSP plays none: two CSND frames, then both go out */
     for (unsigned i = 0; i < 2; ++i) snx_ctr_csnd_update(p, snx_ctr_csnd_deadline(p));
     /* a DSP frame of 100s mixed with nothing waiting */
