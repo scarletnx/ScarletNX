@@ -321,6 +321,8 @@ static int copy_memory(const NvnPCopyT2T* r, const TexPlane* source, const TexPl
         if (linear) {
             x -= 0.5;
             float at = x <= 0 ? 0 : x >= source->columns ? (float)(source->columns - 1) : (float)x;
+            /* an x between the last column's center and the edge, which the line above passes as it is */
+            if (at > (float)(source->columns - 1)) at = (float)(source->columns - 1);
             memcpy(table + i, &at, sizeof at);
         } else
             table[i] = (u32)x;
