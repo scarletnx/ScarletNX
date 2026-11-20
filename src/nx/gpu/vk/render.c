@@ -1476,6 +1476,12 @@ void vk_render_stats_log(void) {
             "and %.1f, bank 0 before them %.1f and %.1f, bank 2 %.1f and %.1f, the root tables %.1f and %.1f\n",
             d / (double)presents, k[0][0], k[0][1], k[1][0], k[1][1], k[2][0], k[2][1], k[3][0], k[3][1]);
     }
+    LOG("vulkan: index ranges a present, for their highest index: %.1f kept, %.1f scanned again (%.1f indices), %.1f "
+        "not known (outside memory, or under results the GPU holds), which bind their streams whole\n",
+        (double)(n->top[VK_TOP_KEPT] - w->top[VK_TOP_KEPT]) / (double)presents,
+        (double)(n->top[VK_TOP_SCANNED] - w->top[VK_TOP_SCANNED]) / (double)presents,
+        (double)(n->top_indices - w->top_indices) / (double)presents,
+        (double)(n->top[VK_TOP_UNKNOWN] - w->top[VK_TOP_UNKNOWN]) / (double)presents);
     LOG("vulkan: constant buffers copied from the CPU in the last %llu presents: %.1f KB a present\n",
         (unsigned long long)presents, (double)g_cb_copied_bytes / 1024.0 / (double)presents);
     g_cb_copied_bytes = 0;
@@ -5451,7 +5457,10 @@ static u64 draw_last_vertex(const u32* inline_indices, const DsIndex* ix, int in
     } else {
         u32 ifmt = ix->format, isz = ifmt == 0 ? 1 : ifmt == 1 ? 2 : 4;
         u64 ia = ix->addr, iend = ix->end;
-        if (iend < ia || first >= (iend - ia + 1) / isz) return ~0ull;
+        if (iend < ia || first >= (iend - ia + 1) / isz) {
+            g_stats.n.top[VK_TOP_UNKNOWN]++;
+            return ~0ull;
+        }
         u64 n = (iend - ia + 1) / isz - first, a = ia + (u64)first * isz;
         VkBuffer tb;
         u64 to;
@@ -5459,8 +5468,10 @@ static u64 draw_last_vertex(const u32* inline_indices, const DsIndex* ix, int in
         /* indices the GPU wrote and holds aren't read here either: landing them takes a submit and a wait for the GPU,
            and the draw reads them where their owner holds them (buffer.c buf_get_owned) */
         if (vk_buf_pending(a, n * isz) || vk_uma_pending(a, n * isz) || vk_compute_gpu_src(a, n * isz, &tb, &to) ||
-            vk_buf_owned(a, n * isz))
+            vk_buf_owned(a, n * isz)) {
+            g_stats.n.top[VK_TOP_UNKNOWN]++;
             return ~0ull;
+        }
         vk_compute_mem_need(a, n * isz);
         /* the restart index, and all ones where Vulkan restarts instead, mark no vertex: with the restart off its
            index is all ones too */
@@ -5472,15 +5483,20 @@ static u64 draw_last_vertex(const u32* inline_indices, const DsIndex* ix, int in
         u64 key = a | (u64)isz << 56, gw = gpu_mem_generation();
         u32 way = 0, ws = vk_ww_now();
         const u8* p = gmem_ptr(a, n * isz);
-        if (!p) return ~0ull;
+        if (!p) {
+            g_stats.n.top[VK_TOP_UNKNOWN]++;
+            return ~0ull;
+        }
         while (way < 3 && !(set[way].key == key && set[way].n == n && set[way].ri == ri)) way++;
         int hit = set[way].key == key && set[way].n == n && set[way].ri == ri &&
                   !gpu_mem_dirty_since(set[way].gw, a, n * isz) && vk_written_since(p, n * isz, set[way].ws) == 0;
         TopMemo e = set[way];
         for (; way > 0; way--) set[way] = set[way - 1]; /* the latest used first, the last way or the stale one out */
+        g_stats.n.top[hit ? VK_TOP_KEPT : VK_TOP_SCANNED]++;
         if (hit)
             set[0] = e;
         else {
+            g_stats.n.top_indices += n;
             /* a loop for each size, in signed arithmetic where the indices fit it, which SSE2 makes vector maxima of */
             if (isz == 4) {
                 u32 m = 0;

@@ -3257,6 +3257,9 @@ enum {
     VK_FS_UNKEPT_TEXTURES, /* not kept: a slot's texture isn't one the texture memo keeps */
     VK_FS_N
 };
+/* An indexed draw's highest index (render.c's draw_last_vertex): kept from an earlier draw of the range, found by
+   scanning its indices again, or not known */
+enum { VK_TOP_KEPT, VK_TOP_SCANNED, VK_TOP_UNKNOWN, VK_TOP_N };
 typedef struct {
     u64 lookups; /* draws that looked for a kept state */
     u64 last;    /* of them, those that took the last draw's */
@@ -3269,6 +3272,7 @@ typedef struct {
     u64 epochs;  /* write tracking epochs with draws */
     u64 sets_last; /* descriptor sets a stage took again from its last one, with no hash or lookup */
     u64 cb[VK_CB_N], tex[VK_TEX_N], fs[VK_FS_N];
+    u64 top[VK_TOP_N], top_indices; /* the index ranges' lookups, and the indices of those scanned again */
     u64 inl[4][2]; /* the inline blocks' lookups (render.c's cb_get, root_get), each kept or staged again: bank 0 copies
                       that reach its base vertex and base instance words (SH_CB0_BASE_VERTEX), bank 0 copies that end
                       before them, bank 2, the root tables */
