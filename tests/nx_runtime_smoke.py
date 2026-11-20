@@ -108,6 +108,111 @@ def core_order_code(length):
     )
 
 
+def code_memory_code(length):
+    """the code-memory SVCs on a homebrew's own heap: map it as code, run the code, unmap, write a second program, map
+    it and run again, then unmap. The second run answers 43 only if the view keeps the source's pages, the permission
+    change tells the runtime to compile the range again, and the unmap gives the heap read-write access back. For
+    make_nro's text=0x200: the two programs are below the marker, at 0x18c and 0x194"""
+    return (
+        0xD2800000,  # MOV X0, #0: the SVC's first register, which it does not read
+        0xD2A00401,  # MOV X1, #0x200000: 2 MiB of heap, the SVC's step
+        0xD4000021,  # SVC #1: SetHeapSize, the base in X1
+        0x350007E0,  # CBNZ W0, fail
+        0xAA0103F4,  # MOV X20, X1: the heap, normal read-write memory
+        0xD2AC0015,  # MOV X21, #0x60000000: the view's address
+        0xD2900036,
+        0xF2BFFFF6,  # MOV X22, #0xFFFF8001: the process handle
+        0x1000076A,  # ADR X10, code1
+        0xB940014B,  # LDR W11, [X10] / STR W11, [X20]: MOV W0, #42; RET into the heap
+        0xB900028B,
+        0xB940054B,  # LDR W11, [X10, #4] / STR W11, [X20, #4]
+        0xB900068B,
+        0xAA1603E0,
+        0xAA1503E1,
+        0xAA1403E2,
+        0xD2820003,
+        0xD4000EE1,  # SVC #0x77: MapProcessCodeMemory(handle, dst, src, size)
+        0x35000600,  # CBNZ W0, fail
+        0xAA1603E0,
+        0xAA1503E1,
+        0xD2820002,
+        0xD28000A3,
+        0xD4000E61,  # SVC #0x73: SetProcessMemoryPermission(handle, dst, size, 5)
+        0x35000540,  # CBNZ W0, fail
+        0xAA1503E1,  # BLR the view: the code runs and answers 42
+        0xD63F0020,  # CMP W0, #42
+        0x7100A81F,  # B.NE fail
+        0x540004C1,
+        0xAA1603E0,
+        0xAA1503E1,
+        0xAA1403E2,
+        0xD2820003,
+        0xD4000F01,  # SVC #0x78: UnmapProcessCodeMemory
+        0x35000400,
+        0x1000044A,  # ADR X10, code2: MOV W0, #43; RET
+        0xB940014B,
+        0xB900028B,
+        0xB940054B,
+        0xB900068B,
+        0xAA1603E0,
+        0xAA1503E1,
+        0xAA1403E2,
+        0xD2820003,
+        0xD4000EE1,  # SVC #0x77: map the same source again
+        0x350002A0,
+        0xAA1603E0,
+        0xAA1503E1,
+        0xD2820002,
+        0xD28000A3,
+        0xD4000E61,  # SVC #0x73: read-execute again
+        0x350001E0,
+        0xAA1503E1,  # BLR the view: the range was compiled again, so 43
+        0xD63F0020,  # CMP W0, #43
+        0x7100AC1F,  # B.NE fail
+        0x54000161,
+        0xAA1603E0,
+        0xAA1503E1,
+        0xAA1403E2,
+        0xD2820003,
+        0xD4000F01,  # SVC #0x78: the last unmap
+        0x350000A0,  # ADR X0, the marker at 0x200
+        0x10000440,  # MOV X1, the marker's length
+        0xD2800221,  # SVC #0x27: OutputDebugString
+        0xD40004E1,  # SVC #7: ExitProcess
+        0xD40000E1,  # BRK: a failed SVC or a wrong answer
+        0xD4200000,  # BRK: a failed SVC or a wrong answer
+        0x52800540,  # MOV W0, #42 / RET (code1)
+        0xD65F03C0,
+        0x52800560,  # MOV W0, #43 / RET (code2)
+        0xD65F03C0,
+        0x00000000,
+        0x00000000,
+        0x00000000,
+        0x00000000,
+        0x00000000,
+        0x00000000,
+        0x00000000,
+        0x00000000,
+        0x00000000,
+        0x00000000,
+        0x00000000,
+        0x00000000,
+        0x00000000,
+        0x00000000,
+        0x00000000,
+        0x00000000,
+        0x00000000,
+        0x00000000,
+        0x00000000,
+        0x00000000,
+        0x00000000,
+        0x00000000,
+        0x00000000,
+        0x00000000,
+        0x00000000,
+    )
+
+
 def recompile(runtime, repo, fixture, name, output, scratch, env, timeout):
     """the program's folder, once it is recompiled; its launcher has the folder's name"""
     compiled = subprocess.run(
@@ -212,10 +317,21 @@ def main():
                     f"a thread lined up on its starter's core ran during the starter's svcMapPhysicalMemory, or"
                     f' never ran: the run returned {code}'
                 )
+            fixture = scratch / 'code memory.nro'
+            fixture.write_bytes(make_nro(code_memory_code, text=0x200))
+            folder = recompile(runtime, repo, fixture, 'NX Code Memory', output, scratch, env, args.timeout)
+            code, text = run(
+                folder, 'NX Code Memory', ['--prepare-shaders=0', *args.runtime_arg], scratch, env, args.timeout
+            )
+            if code or '[game] NX runtime smoke' not in text or 'The game exited (code 0)' not in text:
+                raise RuntimeError(
+                    f'the code-memory SVCs did not map, run, unmap, write and map again: the run returned {code}'
+                )
             print(
                 'Synthetic NRO recompiled and ran Horizon OutputDebugString/ExitProcess with headless Vulkan, '
                 'with each prepare_shaders mode; a call to 0 stopped with its caller in the report; a thread lined '
-                "up on its starter's core ran only once the starter waited, not during its memory SVC."
+                "up on its starter's core ran only once the starter waited, not during its memory SVC; the "
+                'code-memory SVCs mapped the heap as code, ran it, unmapped, wrote new code and ran that.'
             )
             return 0
         except (OSError, RuntimeError, subprocess.TimeoutExpired) as error:
