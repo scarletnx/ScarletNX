@@ -219,6 +219,7 @@ static uint32_t get_sema_info(VitaProcess* p, VitaThread* t) {
     unsigned char* info;
     if (!o) return SCE_KERNEL_ERROR_UNKNOWN_SEMA_ID;
     if (!at || arg(p, t, 2) < 0x3c) return SCE_KERNEL_ERROR_ERROR;
+    if (!vita_mapped(p, at, 0x3c)) return SCE_KERNEL_ERROR_INVALID_ARGUMENT;
     info = vita_ptr(p, at);
     memset(info, 0, 0x3c);
     snx_st_le32(info, 0x3c);
@@ -803,6 +804,7 @@ static uint32_t get_free_memory_size(VitaProcess* p, VitaThread* t) {
         else
             user -= a->size;
     }
+    if (!vita_mapped(p, info, 16)) return SCE_KERNEL_ERROR_INVALID_ARGUMENT;
     vita_write32(p, info + 4, user);
     vita_write32(p, info + 8, cdram);
     vita_write32(p, info + 12, 0x1000000);
@@ -896,6 +898,7 @@ static uint32_t get_module_info(VitaProcess* p, VitaThread* t) {
     uint32_t at = arg(p, t, 1);
     unsigned char* info;
     if (!m || !at) return SCE_KERNEL_ERROR_MODULEMGR_NO_MOD;
+    if (!vita_mapped(p, at, MODULE_INFO_SIZE)) return SCE_KERNEL_ERROR_INVALID_ARGUMENT;
     info = vita_ptr(p, at);
     memset(info, 0, MODULE_INFO_SIZE);
     snx_st_le32(info, MODULE_INFO_SIZE);
