@@ -11,6 +11,7 @@
 #include "nx/gpu/vk/pipeline_parts.h"
 #include "nx/runtime/options.h"
 #include "nx/runtime/platform/log.h"
+#include "common/platform/thread.h" /* plat_thread_note */
 
 /* A module's SPIR-V, by the module's handle bits, in an open-addressed table that grows (spirv_lock). A module kept
    here lives as long as the run (the translator's and the shader file's, pipeline.c's modinfo_put), unless it is
@@ -292,7 +293,9 @@ static VkShaderEXT stage_get(VkShaderModule mod, VkShaderStageFlagBits stage, u3
     }
     st->state = 1;
     pm_unlock(&g_so.stage_lock);
+    vk_so_note(mod, stage);
     VkShaderEXT obj = stage_create(st, words, count);
+    plat_thread_note_clear();
     pm_lock(&g_so.stage_lock);
     st->obj = obj;
     st->state = 2;
