@@ -66,10 +66,9 @@ and each one is a promise that the runtime asks the device for and falls back fr
 - **Subgroups of 32** for a compute program that reads another lane: `cs_reads_lanes` in `src/nx/gpu/vk/compute.c`
   asks for a subgroup of 32 and full subgroups for such a program, and `snx_vk_compute_pipeline_subgroups` in
   `src/common/gpu/vk/vk_common.c` makes the pipeline with them.
-- **Shared memory** where invocations share data: the ASTC decode stages a tile (`texture/astc.comp`). Where every
-  input has one reader the shader loads it directly, because the shared staging was measured slower: a shader with a
-  tile declared and unused cost more than the same work with the tile, since shared memory is what limits the
-  workgroups in flight ([the ASTC layer](astc.md), "straight from the blocks").
+- **Shared memory** where invocations share data: the ASTC decode stages a tile of decoded blocks (`texture/astc.comp`).
+  Where every input has one reader, a shader loads it directly instead: a tile costs shared memory, which is what
+  bounds the workgroups a device keeps in flight ([the ASTC layer](astc.md)).
 - **One shader, builds by define**: the encoded texture's format, the footprint of a block and the fast path of an
   encoder are `DEFINES` of one source, never a copied file.
 
