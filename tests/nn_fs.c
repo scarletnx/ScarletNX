@@ -799,6 +799,21 @@ int main(int argc, char** argv) {
         CHECK(nnfs_create_directory(c, PATH) == 0x77 && own(SYM_CREATE_DIR, runs + 2));
         sd_there = 0;
     }
+    /* an image whose root names a first file past the file table (the table is empty): the folder lists no file, and
+       no entry is read where the table is not (the sanitizers' build stops on that read) */
+    image(data_image_bytes, 12);
+    snx_st_le32(data_image_bytes + snx_ld_le64(data_image_bytes + 0x18) + 12, 0x100);
+    text(NAME, "far");
+    text(PATH, "far:/");
+    CHECK(nnfs_mount_system_data(c, NAME, SYSTEM_ID, CACHE, 0x100) == 0);
+    CHECK(nnfs_open_directory(c, RESULT, PATH, 2) == 0);
+    {
+        u64 h = snx_ld_le64(mem + RESULT);
+        snx_st_le64(mem + RESULT, 0xee);
+        CHECK(nnfs_get_directory_entry_count(c, RESULT, h) == 0 && snx_ld_le64(mem + RESULT) == 0);
+        nnfs_close_directory(c, h);
+    }
+    nnfs_unmount(c, NAME);
     printf("nn_fs: %u checks passed\n", checks);
     return 0;
 }
