@@ -192,7 +192,7 @@ hook lock(addr m) -> u32 = os_lock_old uses nn::os::MutexType
   (`gpu/nvn/nvn_driver.c`: 53.5, 53.13, 53.105, 53.209, 53.311 to 53.314 and 55.8 to 55.15). The runtime takes the
   game's NVN calls for every version.
 - `movie` is the version of the movie library, from the label its subsdk module carries
-  (`SDK MW+Nintendo+NintendoSDK_movie-x_y_z`), packed as `sdk`'s. That module has no `nnSdk` label, so its
+  (`SDK MW+<vendor>+<vendor>SDK_movie-x_y_z`), packed as `sdk`'s. That module has no `nnSdk` label, so its
   functions (NVIDIA's multimedia stack, whose JPEG decoder and encoder `nn/tvmr_jpeg.hook` runs natively) are
   versioned by it. `hooks: module subsdk0, SDK unknown, movie 4.4.1` is its line in the log.
 - A hook is matched per module, against the version of the module that exports its function. An unknown version
