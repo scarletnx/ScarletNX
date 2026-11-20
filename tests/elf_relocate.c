@@ -1511,15 +1511,17 @@ static int host_module(void) {
 #endif
 
 /* An object no compiler wrote (a cached one a disk damaged): a section whose offset plus its size wraps past 2^64 to
-   inside the file, and a symbol in a section the object has not, are refused by snx_elf_parse, which every reader of
-   its sections and of its symbols' addresses then relies on. The object is a null section, a symbol table of two
-   symbols and its string table */
+   inside the file, a section's or a symbol's name outside its string table, and a symbol in a section the object has
+   not, are refused by snx_elf_parse, which every reader of its sections, of its names and of its symbols' addresses
+   then relies on. The object is a null section, a symbol table of two symbols, its string table and the section name
+   string table */
 static void malformed_objects(void) {
     struct {
         Elf64_Ehdr header;
-        Elf64_Shdr sections[3];
+        Elf64_Shdr sections[4];
         Elf64_Sym symbols[2];
         char strings[8];
+        char names[8];
     } image, whole = {0};
     SnxLinkInput input = {(const unsigned char*)&image, sizeof(image), "malformed.o"};
     SnxElfObject o;
@@ -1527,21 +1529,40 @@ static void malformed_objects(void) {
     memcpy(whole.header.e_ident, ELFMAG, SELFMAG);
     whole.header.e_ident[EI_CLASS] = ELFCLASS64, whole.header.e_ident[EI_DATA] = snx_elf_host_data();
     whole.header.e_type = ET_REL, whole.header.e_machine = EM_AARCH64;
-    whole.header.e_shentsize = sizeof(Elf64_Shdr), whole.header.e_shnum = 3;
+    whole.header.e_shentsize = sizeof(Elf64_Shdr), whole.header.e_shnum = 4;
     whole.header.e_shoff = offsetof(typeof(whole), sections);
+    whole.header.e_shstrndx = 3;
     whole.sections[1] = (Elf64_Shdr){.sh_type = SHT_SYMTAB,
                                      .sh_offset = offsetof(typeof(whole), symbols),
                                      .sh_size = sizeof(whole.symbols),
                                      .sh_link = 2};
     whole.sections[2] = (Elf64_Shdr){
         .sh_type = SHT_STRTAB, .sh_offset = offsetof(typeof(whole), strings), .sh_size = sizeof(whole.strings)};
+    whole.sections[3] = (Elf64_Shdr){
+        .sh_type = SHT_STRTAB, .sh_offset = offsetof(typeof(whole), names), .sh_size = sizeof(whole.names)};
+    memcpy(whole.names, "\0.text", 6);
     whole.symbols[1] = (Elf64_Sym){.st_info = ELF64_ST_INFO(STB_LOCAL, STT_OBJECT), .st_shndx = 2};
-    for (unsigned kind = 0; kind < 5; ++kind) {
-        static const char* const names[] = {"a whole object", "a section that wraps past 2^64",
-                                            "a symbol in section 8 of 3", "a local common symbol",
-                                            "a section header table that wraps past 2^64"};
-        static const char* const wants[] = {"", "truncated section", "symbol 1 is in section 8 of 3",
-                                            "symbol 1 is in section 65522 of 3", "not an x86-64"};
+    for (unsigned kind = 0; kind < 10; ++kind) {
+        static const char* const names[] = {"a whole object",
+                                            "a section that wraps past 2^64",
+                                            "a symbol in section 8 of 4",
+                                            "a local common symbol",
+                                            "a section header table that wraps past 2^64",
+                                            "a section name table past the sections",
+                                            "a section name past its table",
+                                            "a symbol name past its table",
+                                            "a symbol name that runs into the end of its table",
+                                            "a section name that runs into the end of its table"};
+        static const char* const wants[] = {"",
+                                            "truncated section",
+                                            "symbol 1 is in section 8 of 4",
+                                            "symbol 1 is in section 65522 of 4",
+                                            "not an x86-64",
+                                            "bad section name table",
+                                            "bad section name",
+                                            "bad symbol name",
+                                            "bad symbol name",
+                                            "bad section name"};
         unsigned machine = 0, abi = 0;
         int rc;
         image = whole;
@@ -1549,6 +1570,11 @@ static void malformed_objects(void) {
         if (kind == 2) image.symbols[1].st_shndx = 8;
         if (kind == 3) image.symbols[1].st_shndx = SHN_COMMON;
         if (kind == 4) image.header.e_shoff = UINT64_MAX - 0x40;
+        if (kind == 5) image.header.e_shstrndx = 7;
+        if (kind == 6) image.sections[2].sh_name = 8;
+        if (kind == 7) image.symbols[1].st_name = 8;
+        if (kind == 8) memset(image.strings, 'x', sizeof image.strings), image.symbols[1].st_name = 7;
+        if (kind == 9) memset(image.names, 'y', sizeof image.names);
         error[0] = 0;
         rc = snx_elf_parse(&o, &input, &machine, &abi, error, sizeof(error));
         if ((rc != 0) != (kind != 0) || !strstr(error, wants[kind])) {
@@ -1559,8 +1585,43 @@ static void malformed_objects(void) {
     }
 }
 
+/* snx_elf_ppc_entry's scan of a PowerPC64 ELFv1 object's sections for the descriptor's relocation: a SHT_NOBITS
+   section's offset is exempt from the parse's check, so the scan must not form a pointer from it. The object is built
+   here rather than parsed, so the scan is what runs */
+static void ppc_entry_skips_unreadable_offsets(void) {
+    struct {
+        Elf64_Ehdr header;
+        Elf64_Shdr sections[3];
+        Elf64_Sym symbols[2];
+        char names[8];
+        unsigned char code[16];
+    } image = {0};
+    SnxLinkInput input = {(const unsigned char*)&image, sizeof image, "ppc.o"};
+    SnxElfObject o = {0};
+    SnxLinkNames globals = {0};
+    char error[256] = {0};
+    uint64_t global = 0, local = 0;
+    image.header.e_shnum = 3, image.header.e_shstrndx = 2;
+    memcpy(image.names, "\0.opd\0", 6);
+    /* the symbol's section, named ".opd" */
+    image.sections[0] = (Elf64_Shdr){.sh_name = 1, .sh_type = SHT_PROGBITS,
+                                     .sh_offset = offsetof(typeof(image), code), .sh_size = sizeof image.code};
+    /* no bytes in the object, and an offset near 2^64 */
+    image.sections[1] = (Elf64_Shdr){.sh_type = SHT_NOBITS, .sh_offset = UINT64_MAX - 0xFF, .sh_size = 0x100};
+    image.sections[2] = (Elf64_Shdr){
+        .sh_type = SHT_STRTAB, .sh_offset = offsetof(typeof(image), names), .sh_size = sizeof image.names};
+    image.symbols[1] = (Elf64_Sym){.st_name = 6, .st_info = ELF64_ST_INFO(STB_LOCAL, STT_OBJECT)};
+    o.input = &input, o.eh = &image.header, o.sh = image.sections, o.syms = image.symbols, o.nsyms = 2;
+    o.strtab = image.names, o.strtab_size = sizeof image.names;
+    if (snx_elf_ppc_entry(&o, &globals, SNX_ELF_PPC_ELFV1, 0, 1, 0, 0, &global, &local, error, sizeof error) >= 0 ||
+        !strstr(error, ".opd descriptor"))
+        printf("FAIL: a SHT_NOBITS section's offset: rc, \"%s\" (want .opd descriptor without its code)\n", error),
+            ++failures;
+}
+
 int main(void) {
     malformed_objects();
+    ppc_entry_skips_unreadable_offsets();
     data_relocations();
     instruction_relocations();
     veneers();

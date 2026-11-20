@@ -16,6 +16,8 @@ const char* snx_elf_symbol_name(const SnxElfObject* o, const Elf64_Sym* s) {
     return o->strtab + s->st_name;
 }
 
+/* Both tables' names were checked against their size and their end when the object was parsed, so these reads stay
+   inside the input */
 const char* snx_elf_section_name(const SnxElfObject* o, size_t index) {
     return (const char*)o->input->data + o->sh[o->eh->e_shstrndx].sh_offset + o->sh[index].sh_name;
 }
@@ -93,6 +95,13 @@ int snx_elf_parse(SnxElfObject* o, const SnxLinkInput* input, unsigned* machine,
                              : *machine == EM_MIPS ? "e_flags differ: the ISA, PIC or the NaN encoding"
                                                    : "e_flags differ: the float ABI, or compressed code");
     o->sh = (const Elf64_Shdr*)(input->data + o->eh->e_shoff);
+    /* every section's name is read through this table at once (snx_elf_section_name): its index, its offset and its
+       size must all lie inside the object, as the symbol table's string table below does */
+    if (o->eh->e_shstrndx >= o->eh->e_shnum)
+        return snx_link_fail(error, error_size, "%s: bad section name table%s", input->name, "");
+    const Elf64_Shdr* names = &o->sh[o->eh->e_shstrndx];
+    if (names->sh_offset > input->size || names->sh_size > input->size - names->sh_offset)
+        return snx_link_fail(error, error_size, "%s: truncated section%s", input->name, "");
     /* one block, the 8-byte arrays first */
     o->address = (uint64_t*)calloc(o->eh->e_shnum, 2 * sizeof(uint64_t) + sizeof(int));
     if (!o->address) return snx_link_fail(error, error_size, "out of memory%s%s", "", "");
@@ -101,6 +110,10 @@ int snx_elf_parse(SnxElfObject* o, const SnxLinkInput* input, unsigned* machine,
     for (size_t i = 0; i < o->eh->e_shnum; ++i) {
         const Elf64_Shdr* s = &o->sh[i];
         o->kind[i] = -1;
+        /* a name that starts outside the table, or runs to its end without a NUL, would be read past the object */
+        if (s->sh_name >= names->sh_size ||
+            !memchr((const char*)input->data + names->sh_offset + s->sh_name, 0, names->sh_size - s->sh_name))
+            return snx_link_fail(error, error_size, "%s: bad section name%s", input->name, "");
         /* the size against what is left after the offset: their sum wraps for an offset near 2^64 */
         if (s->sh_type != SHT_NOBITS && (s->sh_offset > input->size || s->sh_size > input->size - s->sh_offset))
             return snx_link_fail(error, error_size, "%s: truncated section%s", input->name, "");
@@ -116,6 +129,7 @@ int snx_elf_parse(SnxElfObject* o, const SnxLinkInput* input, unsigned* machine,
             if (link->sh_offset > input->size || link->sh_size > input->size - link->sh_offset)
                 return snx_link_fail(error, error_size, "%s: truncated section%s", input->name, "");
             o->strtab = (const char*)input->data + link->sh_offset;
+            o->strtab_size = link->sh_size;
         }
         if (!(s->sh_flags & SHF_ALLOC)) continue;
         if (s->sh_flags & SHF_TLS)
@@ -144,6 +158,11 @@ int snx_elf_parse(SnxElfObject* o, const SnxLinkInput* input, unsigned* machine,
         unsigned section = o->syms[j].st_shndx;
         int bind = ELF64_ST_BIND(o->syms[j].st_info);
         char what[80];
+        /* a name that starts outside the string table, or runs to its end without a NUL, is read past the object by
+           snx_elf_symbol_name */
+        if (o->syms[j].st_name >= o->strtab_size ||
+            !memchr(o->strtab + o->syms[j].st_name, 0, o->strtab_size - o->syms[j].st_name))
+            return snx_link_fail(error, error_size, "%s: bad symbol name%s", input->name, "");
         if (section < o->eh->e_shnum || section == SHN_ABS ||
             (section == SHN_COMMON && (bind == STB_GLOBAL || bind == STB_WEAK)))
             continue;
@@ -915,9 +934,11 @@ int snx_elf_ppc_entry(const SnxElfObject* objs, const SnxLinkNames* globals, uns
     }
     if (sym->st_shndx >= o->eh->e_shnum || strcmp(snx_elf_section_name(o, sym->st_shndx), ".opd")) return 0;
     for (size_t j = 0; j < o->eh->e_shnum; ++j) {
+        /* the type first: a SHT_NOBITS section's offset is exempt from the check above, and this pointer may not be
+           formed for it */
+        if (o->sh[j].sh_type != SHT_RELA || o->sh[j].sh_info != sym->st_shndx) continue;
         const Elf64_Rela* r = (const Elf64_Rela*)(o->input->data + o->sh[j].sh_offset);
         size_t n = o->sh[j].sh_size / sizeof(Elf64_Rela);
-        if (o->sh[j].sh_type != SHT_RELA || o->sh[j].sh_info != sym->st_shndx) continue;
         for (size_t k = 0; k < n; ++k)
             if (r[k].r_offset == sym->st_value + (uint64_t)A && ELF64_R_TYPE(r[k].r_info) == SNX_PPC_ADDR64) {
                 int where = snx_elf_definition(objs, globals, def_object, ELF64_R_SYM(r[k].r_info), &code_object,
