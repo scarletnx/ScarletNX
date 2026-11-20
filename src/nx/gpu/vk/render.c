@@ -5754,37 +5754,54 @@ static int indirect_indices_made(const DrawCall* dc, const DsIndex* ix, int rest
     return index_convert(dc, 0, ix->addr, isz, 0, (u32)n, isz == 2 ? TC_INDEX_RESTART16 : TC_INDEX_RESTART32, 0, ri,
                          words, (u64)words * 4, buf, off);
 }
-/* An indirect draw of quads: its record made the indexed record of their triangles on the GPU (vk_indirect_quads),
-   since the count that says how many is there. Quads of vertices draw through the quad indices of vertex numbers
-   (quad_indices), INDIRECT_QUADS of them; quads of indices have theirs made from the index buffer, the same number at
-   most. A restart index ends no quad here, as in a direct draw whose indices the CPU can't read. One record, with no
-   count: 0 for the others, and when it can't be made */
-#define INDIRECT_QUADS 65536u
-static int indirect_quads(const DrawCall* dc, const DsState* ds, int indexed, VkBuffer* abuf, u64* aoff, VkBuffer* ibuf,
-                          u64* ioff) {
+/* An indirect draw of quads: its records made the indexed records of their triangles on the GPU (vk_indirect_quads),
+   since the counts that say how many are there; as many records as the draw may take (a count buffer cuts them at
+   the draw, as before), 20 bytes apart then. Quads of vertices draw through the quad indices of vertex numbers
+   (quad_indices), as many as the draw's streams hold vertices for (vertices; 0 when no stream tells), and quads of
+   indices have theirs made from the whole index buffer, for a record that starts at any index. Past
+   INDIRECT_QUAD_VERTICES vertices or indices, where a direct draw is cut too, the log says what is drawn. A restart
+   index ends no quad here, as in a direct draw whose indices the CPU can't read. 0 when they can't be made */
+#define INDIRECT_QUAD_VERTICES (1u << 24)
+#define INDIRECT_QUAD_UNTOLD   (1u << 20) /* the vertices drawn of a record whose draw has no stream to tell */
+static int indirect_quads(const DrawCall* dc, const DsState* ds, int indexed, u64 vertices, VkBuffer* abuf, u64* aoff,
+                          VkBuffer* ibuf, u64* ioff) {
     const DsIndex* ix = &ds->index;
     const u32 flags = ds->rkey.provoking_last ? QUADS_LAST : 0, isz = ix->format == 0 ? 1 : ix->format == 1 ? 2 : 4;
+    const u32 record = indexed ? 20 : 16, records = dc->xfb_control || !dc->draw_count ? 1 : dc->draw_count;
+    const u32 stride = dc->xfb_control || !dc->stride ? record : dc->stride;
     VkBuffer source = VK_NULL_HANDLE;
-    u64 source_at = 0, made_at, limit = INDIRECT_QUADS;
-    if (dc->draw_count > 1 || dc->indirect_count || dc->xfb_control) {
-        LOG_LIMIT(1, "vulkan: an indirect draw of quads with %u records%s isn't drawn\n", dc->draw_count,
-                  dc->indirect_count ? " under a count"
-                  : dc->xfb_control  ? " of a transform feedback"
-                                     : "");
-        return 0;
-    }
-    LOG_LIMIT(1, "vulkan: an indirect draw of quads draws %u quads at most\n", INDIRECT_QUADS);
+    u64 source_at = 0, made_at, limit;
     if (indexed) {
         u64 len = ix->end >= ix->addr ? ix->end - ix->addr + 1 : 0;
         limit = len / isz;
-        if (limit > (u64)INDIRECT_QUADS * 4) limit = (u64)INDIRECT_QUADS * 4;
+        if (limit > INDIRECT_QUAD_VERTICES) {
+            LOG_LIMIT(1, "vulkan: an indirect draw of quads reads the first %u of its index buffer's %llu indices\n",
+                      INDIRECT_QUAD_VERTICES, (unsigned long long)limit);
+            limit = INDIRECT_QUAD_VERTICES;
+        }
         if (!limit || (ix->addr & (isz - 1)) || !vk_buf_get_input(ix->addr, limit * isz, isz, &source, &source_at))
             return 0;
-    } else if (!quad_indices(INDIRECT_QUADS, flags, ibuf, ioff))
+    } else {
+        if (!vertices) {
+            LOG_LIMIT(1,
+                      "vulkan: an indirect draw of quads with no vertex stream draws %u vertices of a record at "
+                      "most\n",
+                      INDIRECT_QUAD_UNTOLD);
+            vertices = INDIRECT_QUAD_UNTOLD;
+        } else if (vertices > INDIRECT_QUAD_VERTICES) {
+            LOG_LIMIT(1, "vulkan: an indirect draw of quads draws %u of the %llu vertices its streams hold at most\n",
+                      INDIRECT_QUAD_VERTICES, (unsigned long long)vertices);
+            vertices = INDIRECT_QUAD_VERTICES;
+        }
+        limit = vertices / 4 ? vertices / 4 : 1;
+        if (!quad_indices((u32)limit, flags, ibuf, ioff)) return 0;
+    }
+    if (!vk_indirect_quads(*abuf, *aoff, stride, records, indexed ? isz : 0, source, source_at, (u32)limit,
+                           flags & QUADS_LAST, abuf, aoff, &made_at)) {
+        LOG_LIMIT(1, "vulkan: an indirect draw of quads of %u records and %llu %s couldn't be made into triangles\n",
+                  records, (unsigned long long)limit, indexed ? "indices" : "quads");
         return 0;
-    if (!vk_indirect_quads(*abuf, *aoff, indexed ? isz : 0, source, source_at, (u32)limit, flags & QUADS_LAST, abuf,
-                           aoff, &made_at))
-        return 0;
+    }
     if (indexed) {
         *ibuf = *abuf;
         *ioff = made_at;
@@ -6612,6 +6629,7 @@ retry:
     /* an indirect draw's arguments and count, as the GPU holds them (a compute program's results that haven't landed
        read where they are) */
     VkBuffer abuf = VK_NULL_HANDLE, cntbuf = VK_NULL_HANDLE;
+    u32 astride = dc->stride; /* an indirect draw's bytes from a record to the next */
     u64 aoff = 0, cntoff = 0;
     if (dc->indirect &&
         (mesh ? !mesh_indirect(dc, &abuf, &aoff) : !indirect_args(dc, indexed, &abuf, &aoff, &cntbuf, &cntoff))) {
@@ -6814,7 +6832,16 @@ retry:
     } else if (dc->indirect) {
         int made = 1;
         if (topology == 7) { /* two triangles a quad, as a direct draw's (below) */
-            made = indirect_quads(dc, ds, indexed, &abuf, &aoff, &ibuf, &ioff);
+            /* the vertices the longest stream that steps by vertex holds: no record of vertices draws more */
+            u64 held = 0;
+            for (u32 v = 0; v < pl->vi.nbind; v++) {
+                const u64 step = pl->guest_stride[v] ? pl->guest_stride[v] : pl->stride[v];
+                if (pl->key[v] == ~0u || pl->key[v] == ~1u || pl->vi.bind[v].divisor || !step) continue;
+                const u64 holds = stream_len(&ds->vbuf, pl->key[v] & 31) / step;
+                held = holds > held ? holds : held;
+            }
+            made = indirect_quads(dc, ds, indexed, held, &abuf, &aoff, &ibuf, &ioff);
+            astride = 20; /* the records made, one after another */
             indexed = 2;
             itype = VK_INDEX_TYPE_UINT32;
             topo = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
@@ -7505,7 +7532,7 @@ retry:
         rec_CmdDrawMeshTasks(cb, count);
     else if (dc->indirect) {
         if (indexed) rec_CmdBindIndexBuffer(cb, ibuf, ioff, itype);
-        draw_indirect(cb, indexed, abuf, aoff, cntbuf, cntoff, dc->draw_count, dc->stride);
+        draw_indirect(cb, indexed, abuf, aoff, cntbuf, cntoff, dc->draw_count, astride);
     } else if (indexed) {
         rec_CmdBindIndexBuffer(cb, ibuf, ioff, itype);
         rec_CmdDrawIndexed(cb, icount, instances, 0, voffset, base_instance);
