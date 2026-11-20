@@ -9,3 +9,4 @@ include sm53_thread.roots
 include sm53_flow.roots
 include sm53_io.roots
 include sm53_memory.roots
+include sm53_int.roots

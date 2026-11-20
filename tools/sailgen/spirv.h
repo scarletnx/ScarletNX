@@ -39,6 +39,8 @@ typedef struct {
     /* the ISA's translator folds the true and false constants out of its booleans' operations and selects (as
        spirv_translate.c's cc_and, cc_or, cc_not, cc_xor and shader_select do), and its Sail's are folded alike */
     int fold;
+    /* its translator bitcasts a value each time an operation takes it as another type: no cast is taken again */
+    int fresh_casts;
 } SgSpv;
 static SgSpv* sg_spv(SgG* g); /* the ISA's file gives it */
 
@@ -73,6 +75,7 @@ static inline uint32_t sg_as(SgG* g, SgV v, int t) {
     for (i = 0; i < s->ncast; ++i)
         if (s->cast[i].from == v.id && s->cast[i].t == t) return s->cast[i].to;
     id = spv_emit_unary(s->e, SPV_OP_BITCAST, sg_type(g, t), v.id);
+    if (s->fresh_casts) return id;
     if (s->ncast < 16) {
         s->cast[s->ncast].from = v.id;
         s->cast[s->ncast].t = (uint8_t)t;

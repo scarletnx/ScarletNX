@@ -30,6 +30,7 @@ static SgSpv* sg_spv(SgG* g) { return &g->spv; }
     g->spv.t_u64 = sg86_t_u64;
     g->spv.ncast = 0;
     g->spv.fold = 0; /* sm86_translate.c's booleans keep their constants' operations */
+    g->spv.fresh_casts = 0;
 }
 
 /* the opcode's place in its roots line: SM86's forms are its decoder's, Form */

@@ -3358,7 +3358,6 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
         }
         /* the instruction to its Sail (sm53_sail.c), else to the family whose branches take its opcode */
         if (!sm53_sail_emit(&tr, i, w, op, d, a, b)) switch (op_family(op)) {
-            case FAM_INT: emit_int(&tr, i, w, op, d, a, b); break;
             case FAM_FLOAT: emit_float(&tr, i, w, op, d, a, b); break;
             case FAM_TEXTURE: emit_texture(&tr, i, w, op, d, a, b); break;
         }
