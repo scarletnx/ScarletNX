@@ -379,19 +379,21 @@ typedef struct {
     i16 stereo[2 * 1024]; /* a frame is at most 1024 samples (audren_state_new); only the clock's thread */
 } HleAudren;
 /* what a renderer's host output still held at each frame of the clock. Since the log's last line about it: the bytes
-   at their least and most and summed, the frames that found it empty while playing, those dropped at the bound and
-   those dropped for the target. For the target: the least of the frames so far of the window that is open, and the
-   frames since one found it empty */
+   at their least and most and summed, the frames that found it empty while playing, those dropped at the bound, and
+   those played shorter to bring it to the target with the samples they left out. For the target: the least of the
+   frames so far of the window that is open, the frames since one found it empty, the bytes over the target the last
+   whole window held, and the part of a sample to leave out that the frames so far owe, in 65536ths */
 typedef struct {
-    u32 frames, least, most, empty, dropped, trimmed;
+    u32 frames, least, most, empty, dropped, shortened, cut;
     u64 sum;
-    u32 window, floor, calm;
+    u32 window, floor, calm, over, owed;
 } AudrenQueued;
 /* audren's host side: locks and condition variables, which a save state never holds (hle.h's g_host), and each
    renderer's queue as the clock found it, by the renderer's slot */
 typedef struct {
     PMutex lk;
     AudrenQueued queued[SNX_AUDREN_MAX];
+    i16 shorter[2 * 1024]; /* a frame played shorter (audren_tick), only the clock's thread */
 } HostAudren;
 
 /* ---- ldr.c */
