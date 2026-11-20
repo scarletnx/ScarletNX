@@ -28,7 +28,7 @@ static void test_fail(const char* expression, int line) {
 
 #define TEST_MS         1000000ull
 #define TEST_MS_BYTES   192u /* 48 kHz stereo s16 */
-#define TEST_STALLS_MAX 16
+#define TEST_STALLS_MAX 20
 
 /* the output: it takes a buffer of sound every period, and plays silence for what it does not find */
 struct PAudio {
@@ -39,13 +39,15 @@ struct PAudio {
     u64 silent, given; /* bytes */
     int started;
 };
-/* the host: its time, the stalls to come (the sleep that passes at ends late ms later), when the run ends, what the
-   clock's frames found since the last look, and its output */
+/* the host: its time, the stalls to come (the sleep that passes at ends late ms later; whole: the output's own
+   thread stalls with it, and takes nothing meanwhile), when the run ends, what the clock's frames found since the
+   last look, and its output */
 static struct {
     u64 now, end;
     struct {
         u64 at;
         u32 late_ms;
+        int whole;
     } stalls[TEST_STALLS_MAX];
     unsigned nstalls, stall;
     jmp_buf ended;
@@ -94,8 +96,13 @@ u64 guest_ns(void) { return g_test.now; }
 void plat_sleep_ns(i64 ns) {
     CHECK(ns > 0);
     g_test.now += (u64)ns;
-    if (g_test.stall < g_test.nstalls && g_test.stalls[g_test.stall].at <= g_test.now)
-        g_test.now += g_test.stalls[g_test.stall++].late_ms * TEST_MS;
+    if (g_test.stall < g_test.nstalls && g_test.stalls[g_test.stall].at <= g_test.now) {
+        PAudio* a = &g_test.out;
+        out_run(a);
+        g_test.now += g_test.stalls[g_test.stall].late_ms * TEST_MS;
+        if (g_test.stalls[g_test.stall++].whole) /* the takes it missed are silence, and it goes on from now */
+            for (; a->next <= g_test.now; a->next += a->period) a->silent += a->buffer;
+    }
     if (g_test.now >= g_test.end) longjmp(g_test.ended, 1);
 }
 
@@ -205,11 +212,13 @@ static Found run_until(u64 at_ms) {
                    (u32)((g_test.out.silent - silent) / TEST_MS_BYTES),
                    g_test.events - events - (unsigned)((g_test.out.given - given) / (5 * TEST_MS_BYTES))};
 }
-static void stall(u64 at_ms, u32 late_ms) {
+static void stall_of(u64 at_ms, u32 late_ms, int whole) {
     CHECK(g_test.nstalls < TEST_STALLS_MAX);
     g_test.stalls[g_test.nstalls].at = at_ms * TEST_MS;
-    g_test.stalls[g_test.nstalls++].late_ms = late_ms;
+    g_test.stalls[g_test.nstalls].late_ms = late_ms;
+    g_test.stalls[g_test.nstalls++].whole = whole;
 }
+static void stall(u64 at_ms, u32 late_ms) { stall_of(at_ms, late_ms, 0); }
 
 int main(void) {
     static const u8 params[0x34];
@@ -261,6 +270,24 @@ int main(void) {
     CHECK(f.least == 0 && f.most == 40 && !f.silent && f.dropped == 16);
     f = run_until(320000);
     CHECK(f.least == 20 && f.most == 40 && !f.silent && f.dropped == 20);
+    /* the whole process stalls for 30 ms, the output's thread with the clock's: the output missed a take of what it
+       held, so the stall's frames leave 20 ms more than before, and a second stall 20 ms more again. No frame found
+       it empty, so they are taken back from the next second on */
+    g_test.out.period = 20 * TEST_MS;
+    stall_of(321000, 30, 1);
+    stall_of(323000, 30, 1);
+    f = run_until(321500);
+    CHECK(f.silent == 20 && !f.dropped);
+    f = run_until(322000);
+    CHECK(f.least == 40 && f.most == 55 && !f.silent && !f.dropped);
+    f = run_until(323500);
+    CHECK(f.silent == 20 && f.dropped == 2);
+    f = run_until(324000);
+    CHECK(f.least == 50 && f.most == 65 && !f.silent && !f.dropped);
+    f = run_until(330000);
+    CHECK(f.least == 20 && !f.silent && f.dropped == 6);
+    f = run_until(340000);
+    CHECK(f.least == 20 && f.most == 35 && !f.silent && !f.dropped && g_test.stall == g_test.nstalls);
     printf("audio_clock: %u checks passed\n", g_test.checks);
     return 0;
 }
