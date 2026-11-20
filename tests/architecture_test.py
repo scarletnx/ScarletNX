@@ -7,6 +7,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 spec = importlib.util.spec_from_file_location('architecture', Path(__file__).with_name('architecture.py'))
 architecture = importlib.util.module_from_spec(spec)
@@ -185,6 +186,75 @@ class ArchitectureTests(unittest.TestCase):
             'src/nx/runtime/main.c': '/* [[gnu::weak]] int old(void); */\nconst char* s = "[[gnu::weak]] int f(void);";\n',
         }
         self.assertEqual(self.weak_errors(files), [])
+
+    def driver_errors(self, files, allowed=None):
+        with tempfile.TemporaryDirectory(prefix='snx-arch-test-') as temporary:
+            root = Path(temporary)
+            for name, text in files.items():
+                (root / name).parent.mkdir(parents=True, exist_ok=True)
+                (root / name).write_text(text, encoding='ascii')
+            with mock.patch.object(architecture, 'DRIVER_CHOICES', allowed or {}):
+                return architecture.check_driver_choices(root)
+
+    def test_a_driver_a_vendor_or_a_device_compared_is_rejected(self):
+        files = {
+            'src/nx/gpu/vk/device.c': 'void f(void) {\n    int nvidia = g_vk.props.vendorID == 0x10DE;\n'
+            '    serial(p12.driverID == VK_DRIVER_ID_NVIDIA_PROPRIETARY);\n}\n',
+            'src/nx/gpu/vk/ui.c': 'int t(void) {\n    switch (g_vk.props.vendorID) {\n    default: return 0;\n    }\n}\n',
+            'src/3ds/gpu/vk/a.c': 'int a(void) { return strstr(props.deviceName, "Adreno") != NULL; }\n',
+            'src/vita/gpu/b.c': 'int b(u32 v) { return v == 0x1002u; }\n',
+            'src/nx/gpu/vk/uma.c': 'int c(u32 id) {\n    switch (id) {\n        case VK_DRIVER_ID_MESA_RADV: return 1;\n'
+            '        default: return 0;\n    }\n}\n',
+        }
+        errors = self.driver_errors(files)
+        self.assertEqual(len(errors), 6, errors)
+        self.assertIn(
+            'src/3ds/gpu/vk/a.c:1: "int a(void) { return strstr(props.deviceName, "Adreno") != NULL; }" '
+            'compares a driver, a vendor or a device, which only the extension bans do: put it in '
+            'src/common/gpu/vk/extension_bans.txt',
+            errors[0],
+        )
+        self.assertIn('an "off" line asked with vk_ban', errors[0])
+        self.assertIn('a "prefer" line asked with vk_prefer', errors[0])
+        self.assertIn('joins DRIVER_CHOICES in tests/architecture.py with its reason', errors[0])
+        self.assertIn('src/nx/gpu/vk/device.c:2: "int nvidia = g_vk.props.vendorID == 0x10DE;"', errors[1])
+        self.assertIn('src/nx/gpu/vk/device.c:3: "serial(p12.driverID == VK_DRIVER_ID_NVIDIA_PROPRIETARY);"', errors[2])
+        self.assertIn('src/nx/gpu/vk/ui.c:2: "switch (g_vk.props.vendorID) {"', errors[3])
+        self.assertIn('src/nx/gpu/vk/uma.c:3: "case VK_DRIVER_ID_MESA_RADV: return 1;"', errors[4])
+        self.assertIn('src/vita/gpu/b.c:1: "int b(u32 v) { return v == 0x1002u; }"', errors[5])
+
+    def test_the_reader_a_log_a_define_and_a_comment_pass(self):
+        files = {
+            'src/common/gpu/vk/extension_bans.c': 'int h(void) { return b->driver == VK_DRIVER_ID_MESA_RADV; }\n',
+            'src/nx/gpu/vk/device.c': '/* not where vendorID == 0x10DE */\n#define SNX_GPU_VENDOR_AMD 0x1002u\n'
+            'void l(void) {\n    LOG("%s, vendor %04x\\n", p.deviceName, p.vendorID);\n'
+            '    g_vk.driver_id = (u32)dp.driverID;\n    tag(g_vk.driver_id, p.vendorID, p.deviceID);\n'
+            '    say("vendorID == 0x10DE");\n    if (vk_prefer("Location", 1, say) != 0) g_vk.host_varying = 1;\n}\n',
+            'src/nx/gpu/maxwell/m.c': 'int t(u32 o) {\n    switch (o) {\n        case 0x1002: return 1;\n'
+            '        default: return 0;\n    }\n}\n',
+            'src/android/bridge/hle_vulkan.c': 'void g(void) { p->vendorID = ARM_VENDOR_ID; d->driverID = 9; }\n',
+        }
+        self.assertEqual(self.driver_errors(files), [])
+
+    def test_a_listed_comparison_passes_and_a_stale_entry_is_rejected(self):
+        files = {
+            'src/nx/gpu/vk/ui.c': 'int t(void) {\n    switch  (g_vk.props.vendorID) {\n    default: return 0;\n    }\n}\n'
+        }
+        listed = {'src/nx/gpu/vk/ui.c': {'switch (g_vk.props.vendorID) {': 'a GPU that renders in tiles'}}
+        self.assertEqual(self.driver_errors(files, listed), [])
+        files['src/nx/gpu/vk/ui.c'] += 'int n(void) { return g_vk.props.vendorID == 0x10DE; }\n'
+        errors = self.driver_errors(files, listed)
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn('src/nx/gpu/vk/ui.c:6: "int n(void) { return g_vk.props.vendorID == 0x10DE; }"', errors[0])
+        stale = {'src/nx/gpu/vk/ui.c': {'if (g_vk.props.vendorID == 0x5143) {': 'gone'}}
+        errors = self.driver_errors({'src/nx/gpu/vk/ui.c': 'int t(void) { return 0; }\n'}, stale)
+        self.assertEqual(
+            errors,
+            [
+                'tests/architecture.py: DRIVER_CHOICES allows "if (g_vk.props.vendorID == 0x5143) {" in '
+                'src/nx/gpu/vk/ui.c, which has no such line: take the entry out'
+            ],
+        )
 
     def dynamic_errors(self, files):
         with tempfile.TemporaryDirectory(prefix='snx-arch-test-') as temporary:
