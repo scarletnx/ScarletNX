@@ -24,9 +24,15 @@ static void test_fail(const char* expression, int line) {
         if (!(expr)) test_fail(#expr, __LINE__);                                                                       \
     } while (0)
 
+static char test_log[1024];
 void logf_(int level, const char* format, ...) {
+    va_list args;
+    size_t at = strlen(test_log);
     (void)level;
-    (void)format;
+    if (at >= sizeof test_log - 1) return;
+    va_start(args, format);
+    vsnprintf(test_log + at, sizeof test_log - at, format, args);
+    va_end(args);
 }
 /* log.c's: the stop of a program that opened a service the runtime answers only natively; its message is kept */
 static jmp_buf test_stopped;
@@ -91,6 +97,25 @@ static nn_sm_ServiceName name_of(const char* s, size_t n) {
     memset(&name, 0, sizeof name);
     memcpy(name.v, s, n);
     return name;
+}
+
+/* a TIPC request to sm's own dispatcher: cmd, and the raw data after the HIPC headers. kind adds the descriptor or
+   handle of that number, which sm takes none of: 1 an A buffer, 2 an empty X descriptor, 3 a C list, 4 a copy handle */
+static u32 ask_tipc(u32 cmd, const void* raw, u32 size, int kind) {
+    IpcCtx c;
+    memset(&c, 0, sizeof c);
+    c.tipc = 1;
+    c.cmd = cmd;
+    c.raw = (const u8*)raw;
+    c.raw_size = size;
+    switch (kind) {
+        case 1: c.na = 1; break;
+        case 2: c.nx = 1; break; /* a descriptor of no size, which sf still counts */
+        case 3: c.nc = 1; break;
+        case 4: c.ncopy = 1; break;
+        default: break;
+    }
+    return (u32)sm_dispatch(NULL, &c);
 }
 
 void pm_init(PMutex* m) { (void)m; }
@@ -168,6 +193,46 @@ int main(void) {
     CHECK(nn_sm_detail_IUserInterface_UnregisterService(NULL, &name) == RC(21, 7));
     name = name_of("set", 3);
     CHECK(nn_sm_detail_IUserInterface_UnregisterService(NULL, &name) == RC(21, 8));
+
+    /* The Switch 2 TIPC forms: RegisterService's name, max_sessions and is_light (16 bytes), or a service space
+       ahead of them (20); UnregisterService's name (8), or a space ahead of it (12). The fields the CMIF form orders
+       the other way (max_sessions before is_light) are read where TIPC puts them, and a size that is neither form,
+       or a request with a buffer, is one sm can not decode */
+    {
+        u8 raw[24];
+        u32 space = 3, max_sessions = 4, light = 1;
+        memset(raw, 0, sizeof raw);
+        memcpy(raw, "mysrv", 5);
+        memcpy(raw + 8, &max_sessions, 4);
+        raw[12] = light;
+        test_log[0] = 0;
+        CHECK(ask_tipc(2, raw, 16, 0) == RC(21, 8));
+        CHECK(strstr(test_log, "mysrv (4 sessions, light)"));
+        memcpy(raw, &space, 4);
+        memcpy(raw + 4, "mysrv", 5);
+        memcpy(raw + 12, &max_sessions, 4);
+        raw[16] = light;
+        test_log[0] = 0;
+        CHECK(ask_tipc(2, raw, 20, 0) == RC(21, 8));
+        CHECK(strstr(test_log, "service space 3") && strstr(test_log, "mysrv (4 sessions, light)"));
+        CHECK(ask_tipc(2, raw, 12, 0) == 1 && ask_tipc(2, raw, 24, 0) == 1); /* neither form */
+        /* the commands take no buffer, X descriptor, C list or handle, of any size */
+        for (u32 kind = 1; kind <= 4; kind++) CHECK(ask_tipc(2, raw, 16, (int)kind) == 1);
+        memset(raw, 0, sizeof raw);
+        memcpy(raw, "set", 3);
+        CHECK(ask_tipc(3, raw, 8, 0) == RC(21, 8)); /* the runtime's own service */
+        memcpy(raw, "mysrv", 5);
+        CHECK(ask_tipc(3, raw, 8, 0) == RC(21, 7)); /* nobody serves it */
+        memcpy(raw, &space, 4);
+        memcpy(raw + 4, "mysrv", 5);
+        test_log[0] = 0;
+        CHECK(ask_tipc(3, raw, 12, 0) == RC(21, 7));
+        CHECK(strstr(test_log, "service space 3"));
+        CHECK(ask_tipc(3, raw, 16, 0) == 1); /* neither form */
+        /* a name sm refuses is refused in either form, not taken for another request */
+        memcpy(raw + 4, "se\0t", 4);
+        CHECK(ask_tipc(2, raw, 20, 0) == RC(21, 6) && ask_tipc(3, raw, 12, 0) == RC(21, 6));
+    }
 
     printf("PASS sm_service (%u checks)\n", test_checks);
     return 0;

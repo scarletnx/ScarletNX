@@ -115,7 +115,11 @@ only read):
   (`ipc_objects`), checked before the rest as sf's DomainServiceObjectProcessor does, and a command that takes objects
   answers NotSupported on a plain session, which can't send them. A TIPC request (sm, from newer SDKs) carries its pid
   in the special header only, so its raw data has no pid slot, and the generated code reads its arguments where TIPC
-  puts them. A request whose data region doesn't hold its CmifInHeader (or domain header) is answered InvalidHeaderSize,
+  puts them. sm's `RegisterService` and `UnregisterService` also take the Switch 2 TIPC forms, which carry a service
+  space before the name (`RegisterService` is 20 bytes then, with `max_sessions` before `is_light`, where CMIF has
+  `is_light` first; without a space they are 16 and 8 bytes). `sm.c`'s own dispatcher reads those two commands, and
+  the runtime serves one service space, so the space is logged and otherwise ignored, as the SM proxy of the public CFW
+  does. A request whose data region doesn't hold its CmifInHeader (or domain header) is answered InvalidHeaderSize,
   and one without the SFCI magic or with a version above 1 InvalidInHeader. So a declaration that differs from what the
   game's SDK sends fails every such request. One difference from the console, on purpose: sf closes the session for
   these refusals (the client's SendSyncRequest gets SessionClosed), while the runtime answers the result in a reply and
