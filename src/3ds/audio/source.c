@@ -166,7 +166,8 @@ static void filters_process(DspFilters* f, DspFrame frame) {
         for (unsigned n = 0; n < SNX_CTR_DSP_SAMPLES; ++n) {
             /* H(z) = b0 / (1 - a1 z^-1), 15 fractional bits */
             for (unsigned c = 0; c < 2; ++c)
-                frame[n][c] = snx_clamp_s16((f->simple_b0 * frame[n][c] + f->simple_a1 * f->simple_y1[c]) >> 15);
+                frame[n][c] = snx_clamp_s16(
+                    ((int64_t)f->simple_b0 * frame[n][c] + (int64_t)f->simple_a1 * f->simple_y1[c]) >> 15);
             memcpy(f->simple_y1, frame[n], sizeof f->simple_y1);
         }
     if (f->biquad_enabled)

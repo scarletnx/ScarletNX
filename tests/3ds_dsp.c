@@ -236,6 +236,23 @@ static void wide_sums(SnxCtrMemory* m) {
     assert(snx_ctr_dsp_tick(dsp, frame) && snx_ctr_dsp_tick(dsp, frame));
     for (unsigned n = 2; n < 10; ++n) assert(frame[n][0] == 32767);
     snx_ctr_dsp_free(dsp);
+
+    /* the simple filter with b0 = a1 = -1.0: an output is the opposite of the sample plus the last output. The lowest
+       sample gives the highest output, the highest sample after it the lowest, and the lowest again a sum of two
+       products of 2^30, which is 65536 clamped and not the lowest again */
+    dsp = initialized(m);
+    const int16_t swing[8] = {-32768, 32767, -32768};
+    put(m, SAMPLES, swing, sizeof swing);
+    counters(m, 2, 1);
+    config = source(SAMPLES, 8, DSP_PCM16, DSP_NONE, 1.0f);
+    config.dirty |= DSP_FILTERS_ENABLED_DIRTY | DSP_SIMPLE_FILTER_DIRTY;
+    config.filters_enabled = 1;
+    config.simple_b0 = config.simple_a1 = -32768;
+    put(m, R0 + DSP_SOURCE_CONFIGS, &config, sizeof config);
+    master(m, R0);
+    assert(snx_ctr_dsp_tick(dsp, frame) && snx_ctr_dsp_tick(dsp, frame));
+    assert(frame[2][0] == 32767 && frame[3][0] == -32768 && frame[4][0] == 32767); /* after two of history */
+    snx_ctr_dsp_free(dsp);
 }
 
 /* ---- the binary pipe's AAC decoder ---- */
