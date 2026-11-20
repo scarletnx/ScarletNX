@@ -252,18 +252,17 @@ f32 libc_strtof(CPU* c, u64 s, u64 end) {
 /* ---- integer arithmetic. div's div_t (two ints) comes back in x0, ldiv's ldiv_t (two longs) in x0 and x1. Their
    quotient is the guest's sdiv's (cpu.h's sdiv32 and sdiv64): 0 for a divisor of 0, and the dividend back for the
    lowest value over -1, where the host's division traps */
+/* The lowest value has no opposite and comes back as it is, as the guest's own code leaves it; the game's long is 64
+   bits, which a host's may not be */
 i32 libc_abs(CPU* c, i32 v) {
     (void)c;
-    return abs(v);
+    return (i32)(v < 0 ? 0u - (u32)v : (u32)v);
 }
 i64 libc_labs(CPU* c, i64 v) {
     (void)c;
-    return labs((long)v);
+    return (i64)(v < 0 ? 0u - (u64)v : (u64)v);
 }
-i64 libc_llabs(CPU* c, i64 v) {
-    (void)c;
-    return llabs((long long)v);
-}
+i64 libc_llabs(CPU* c, i64 v) { return libc_labs(c, v); }
 u64 libc_div(CPU* c, i32 n, i32 d) {
     (void)c;
     i32 q = sdiv32(n, d);

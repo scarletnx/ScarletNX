@@ -96,6 +96,10 @@ int main(void) {
     assert(libc_div(c, 7, 0) == (u64)7 << 32 && libc_div(c, INT32_MIN, -1) == (u32)INT32_MIN);
     assert(libc_ldiv(c, -9, 0) == 0 && c->x[1] == (u64)-9);
     assert(libc_ldiv(c, INT64_MIN, -1) == INT64_MIN && c->x[1] == 0);
+    /* abs: the game's long is 64 bits on every host, and the lowest value comes back as it is */
+    assert(libc_abs(c, -7) == 7 && libc_abs(c, INT32_MIN) == INT32_MIN);
+    assert(libc_labs(c, -0x100000001ll) == 0x100000001ll && libc_labs(c, INT64_MIN) == INT64_MIN);
+    assert(libc_llabs(c, -0x100000001ll) == 0x100000001ll && libc_llabs(c, INT64_MIN) == INT64_MIN);
     assert(libc_htonl(c, 0x11223344) == 0x44332211 && libc_htons(c, 0x1122) == 0x2211);
     /* qsort and bsearch through the guest's comparison */
     i32 v[6] = {5, -1, 3, 9, 0, 3};
