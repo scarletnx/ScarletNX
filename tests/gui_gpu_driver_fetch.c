@@ -131,6 +131,26 @@ int main(void) {
                gui_driver_recommended_release(10076, 10, &r) == 0);
         gui_driver_releases_free(&r);
     }
+    /* FourFectVK, for the G57: only test builds, the newest recommended by its tag, newest first by date */
+    {
+        static const char g57_json[] =
+            "[{\"tag_name\": \"fourfectvk-g57-v0.0.8-alpha\", \"name\": \"FourFectVK G57 v0.0.8-alpha\","
+            "  \"prerelease\": true,"
+            "  \"published_at\": \"2026-10-07T10:00:00Z\", \"assets\": []},"
+            " {\"tag_name\": \"fourfectvk-g57-v0.1.0-test9\", \"name\": \"FourFectVK G57 v0.1.0-test9\","
+            "  \"prerelease\": true,"
+            "  \"published_at\": \"2026-10-28T10:00:00Z\", \"assets\": [{\"name\": \"FourFectVK-G57-v0.1.0-test9.zip\","
+            "  \"size\": 9000000, \"browser_download_url\": \"https://github.com/Noysz/a.zip\"},"
+            "  {\"name\": \"SHA256SUMS.txt\", \"size\": 90,"
+            "   \"browser_download_url\": \"https://github.com/Noysz/a.txt\"}]}]";
+        const GuiDriverRepo* g57 = &gui_driver_repos[11];
+        assert(!strcmp(g57->path, "Noysz/panvk-g99-jm") && g57->gpu == GUI_DRIVER_MALI && g57->by_time);
+        assert(gui_driver_releases_parse(g57_json, strlen(g57_json), g57, &r, why, sizeof why));
+        assert(r.count == 2 && r.assets_count == 1 && !strcmp(r.releases[0].tag, "fourfectvk-g57-v0.1.0-test9"));
+        assert(!strcmp(gui_driver_recommended(10057), "FourFectVK (G57)") &&
+               gui_driver_recommended_release(10057, 11, &r) == 0);
+        gui_driver_releases_free(&r);
+    }
     /* GitHub's own error, said; what is no list of releases, said by its size */
     assert(!gui_driver_releases_parse("{\"message\": \"API rate limit exceeded for 1.2.3.4.\"}", 51, purple, &r, why,
                                       sizeof why) &&
