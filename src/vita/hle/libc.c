@@ -430,6 +430,12 @@ static void put(Out* o, uint32_t unit) {
 static void put_text(Out* o, const char* s) {
     while (*s) put(o, (unsigned char)*s++);
 }
+/* a field's width or precision, a digit more: counted to FIELD_MOST and held just past it, however many digits a
+   format has (the texts made are 4200 bytes) */
+#define FIELD_MOST 4096
+static int field_digit(int value, uint32_t digit) {
+    return value > FIELD_MOST ? value : value * 10 + (int)(digit - '0');
+}
 /* format's characters, wide (16-bit) ones or bytes */
 static uint32_t unit_at(VitaProcess* p, uint32_t address, bool wide, uint32_t i) {
     return wide ? vita_read16(p, address + i * 2) : p->mem[(uint32_t)(address + i)];
@@ -450,13 +456,14 @@ static void format(Args* a, uint32_t fmt, bool wide, Out* o) {
             if (n < 8) spec[n++] = (char)c;
             if (c == '-') left = true;
         }
+        /* a width and a precision are any digits, or any 32 bits a * takes: counted to FIELD_MOST and no further */
         int width = -1, precision = -1;
         if (c == '*') {
             width = (int32_t)next_word(a);
-            if (width < 0) left = true, width = -width, spec[n++] = '-';
+            if (width < 0) left = true, width = width < -FIELD_MOST ? FIELD_MOST : -width, spec[n++] = '-';
             c = unit_at(p, fmt, wide, ++i);
         } else if (c >= '0' && c <= '9') {
-            for (width = 0; c >= '0' && c <= '9'; c = unit_at(p, fmt, wide, ++i)) width = width * 10 + (int)(c - '0');
+            for (width = 0; c >= '0' && c <= '9'; c = unit_at(p, fmt, wide, ++i)) width = field_digit(width, c);
         }
         if (c == '.') {
             c = unit_at(p, fmt, wide, ++i);
@@ -465,11 +472,11 @@ static void format(Args* a, uint32_t fmt, bool wide, Out* o) {
                 precision = (int32_t)next_word(a);
                 c = unit_at(p, fmt, wide, ++i);
             } else {
-                for (; c >= '0' && c <= '9'; c = unit_at(p, fmt, wide, ++i)) precision = precision * 10 + (int)(c - '0');
+                for (; c >= '0' && c <= '9'; c = unit_at(p, fmt, wide, ++i)) precision = field_digit(precision, c);
             }
         }
-        if (width > 4096) width = 4096;
-        if (precision > 4096) precision = 4096;
+        if (width > FIELD_MOST) width = FIELD_MOST;
+        if (precision > FIELD_MOST) precision = FIELD_MOST;
         if (width >= 0) n += (size_t)snprintf(spec + n, sizeof spec - n, "%d", width);
         if (precision >= 0) n += (size_t)snprintf(spec + n, sizeof spec - n, ".%d", precision);
         int longs = 0, shorts = 0;
@@ -648,7 +655,7 @@ static uint32_t lc_sscanf(VitaProcess* p, VitaThread* t) {
         int width = 0, longs = 0, shorts = 0;
         c = p->mem[(uint32_t)(fmt + i++)];
         if (c == '*') skip = true, c = p->mem[(uint32_t)(fmt + i++)];
-        for (; c >= '0' && c <= '9'; c = p->mem[(uint32_t)(fmt + i++)]) width = width * 10 + (c - '0');
+        for (; c >= '0' && c <= '9'; c = p->mem[(uint32_t)(fmt + i++)]) width = field_digit(width, (uint32_t)c);
         for (;; c = p->mem[(uint32_t)(fmt + i++)]) {
             if (c == 'l') ++longs;
             else if (c == 'h') ++shorts;

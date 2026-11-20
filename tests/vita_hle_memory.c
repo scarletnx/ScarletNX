@@ -525,6 +525,18 @@ static void unmapped_outputs(VitaProcess* p, VitaThread* t, uint32_t mem) {
     strcpy(vita_ptr(p, mem), "ux0:..\\..\\outside.txt"), strcpy(vita_ptr(p, mem + 0x40), "wb");
     assert(CALL(vita_hle_libc, "fopen", mem, mem + 0x40) == 0);
 }
+/* a field's width from an argument is any 32 bits, and its digits any number: the widest field is 4096, to the left
+   for a negative width, the most negative one too */
+static void libc_field_widths(VitaProcess* p, VitaThread* t, uint32_t mem) {
+    const VitaHle* libc = vita_hle_libc;
+    uint32_t out = vita_alloc(p, &p->user, 0x2000, 0x1000);
+    assert(out);
+    char* text = vita_ptr(p, out);
+    strcpy(vita_ptr(p, mem), "%*d");
+    assert(CALL(libc, "sprintf", out, mem, 0x80000000u, 5) == 4096 && text[0] == '5' && text[4095] == ' ');
+    strcpy(vita_ptr(p, mem), "%99999999999d");
+    assert(CALL(libc, "sprintf", out, mem, 5) == 4096 && text[4095] == '5' && text[0] == ' ');
+}
 /* a file opened in a mounted archive closes with it: once the archive is unmounted its handle names no file, where it
    would read the archive's freed tables. The archive is a PSARC of one stored file: the header, the manifest's entry
    and the file's (30 bytes each: a hash, the first block, the size and the offset), their blocks' sizes, then the
@@ -577,6 +589,7 @@ int main(void) {
     /* these make blocks of their own after mem, which is the last one no longer */
     libc_stream_sizes(p, t);
     unmapped_outputs(p, t, mem);
+    libc_field_widths(p, t, mem);
     fios_archive_unmount(p, t);
     vita_process_free(p);
     assert(!snx_remove_tree(root));
