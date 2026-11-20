@@ -477,6 +477,16 @@ static uint32_t words_block(VitaProcess* p) {
     return block;
 }
 
+/* A request whose size rounds to nothing (within a page of 4 GiB) is refused: it used to round to 0, take a slot no
+   free list would ever see again, and, where the host's page is larger than the guest's, commit a page for it */
+static void impossible_size(VitaProcess* p) {
+    assert(vita_alloc(p, &p->user, 0xfffff800u, 0x1000) == 0);
+    assert(vita_alloc(p, &p->user, 0xffffffffu, 0x1000) == 0);
+    uint32_t a = vita_alloc(p, &p->user, 0x1000, 0x1000);
+    assert(a && vita_mapped(p, a, 0x1000));
+    vita_free(p, a);
+}
+
 /* A block that comes back inside a host page another block still holds must read zero, as one on a fresh page does:
    the page stays mapped, so a range committed into it would otherwise repeat what the last block left there */
 static void shared_page_zero(VitaProcess* p) {
@@ -489,6 +499,7 @@ static void shared_page_zero(VitaProcess* p) {
     vita_free(p, a);
     vita_free(p, b);
 }
+
 /* SceLibc's fread and fwrite take a size and a count, and 0x10000 times 0x10001 is 0x10000 more than 4 GiB: the bytes
    the call may move are the product's, which no buffer holds, not what 32 bits keep of it, which this one does. The
    stream's own block is made first, so the buffer is the last and the page past its end is no one's */
@@ -598,6 +609,7 @@ int main(void) {
     ngs_atrac9_and_extra_busses(p, t, mem);
     gxm_program_metadata(p, t, mem);
     gxm_texture_transfers(p, t, mem);
+    impossible_size(p);
     shared_page_zero(p);
     /* these make blocks of their own after mem, which is the last one no longer */
     libc_stream_sizes(p, t);
