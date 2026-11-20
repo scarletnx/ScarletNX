@@ -292,7 +292,7 @@ static void invalid_patch_layout(unsigned kind) {
 
 /* A dump's words that name more than it holds: a file's name that starts past its table's string table (kind 4, a
    PFS0; 6, an HFS0; 7, an NCA's PFS0 section) or has no end in it (5), which strcmp and strlen would read to wherever
-   a zero is */
+   a zero is, and an IVFC level's block size of 2^32 (8), a shift by the width of what is shifted */
 static void invalid_table(unsigned kind) {
     hactool_ctx_t tool = {0};
     struct {
@@ -317,7 +317,7 @@ static void invalid_table(unsigned kind) {
         ctx.tool_ctx = &tool;
         ctx.file = archive(&hfs, sizeof(hfs), NULL, 0);
         hfs0_process(&ctx);
-    } else {
+    } else if (kind == 7) {
         /* pfs_sections' plaintext archive, its PFS0 the one above: the hash table's one block covers it */
         nca_header_t header = {0};
         nca_ctx_t ctx;
@@ -345,13 +345,20 @@ static void invalid_table(unsigned kind) {
         ctx.tool_ctx = &tool;
         ctx.file = archive(&header, sizeof(header), body, sizeof(body));
         nca_process(&ctx);
+    } else {
+        nca_section_ctx_t section = {0};
+        romfs_superblock_t sb = {0};
+        section.tool_ctx = &tool;
+        section.romfs_ctx.superblock = &sb;
+        sb.ivfc_header.level_headers[0].block_size = 32;
+        nca_process_ivfc_section(&section);
     }
     exit(90); /* read on, where the table is refused */
 }
 
 static void invalid_patch_layouts(const char* self) {
     CHECK(!fflush(NULL));
-    for (unsigned kind = 0; kind < 8; kind++) {
+    for (unsigned kind = 0; kind < 9; kind++) {
 #if defined(_WIN32)
         char kind_text[] = {(char)('0' + kind), 0};
         char* quoted_self = malloc(strlen(self) + 3);
@@ -413,7 +420,7 @@ static void gamecard_headers(void) {
 
 int main(int argc, char** argv) {
     if (argc == 3 && !strcmp(argv[1], "--invalid-bktr")) {
-        CHECK(argv[2][0] >= '0' && argv[2][0] <= '7' && !argv[2][1]);
+        CHECK(argv[2][0] >= '0' && argv[2][0] <= '8' && !argv[2][1]);
         argv[2][0] < '4' ? invalid_patch_layout((unsigned)(argv[2][0] - '0'))
                          : invalid_table((unsigned)(argv[2][0] - '0'));
     }
