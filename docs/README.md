@@ -57,6 +57,7 @@ keeps audits and measurements as they were taken.
   - [NRO files](platforms/nx/nro.md): NRO programs, and the NROs a game loads through `ldr:ro`
   - [Networking](platforms/nx/networking.md): sockets, translation tables and their limits
   - [Memory accounting](platforms/nx/memory-accounting.md): the application's memory budget
+  - [Code memory](platforms/nx/code-memory.md): the SVCs that publish a program's own memory as code
   - [Ounce bring-up](platforms/nx/ounce.md): what the captures of the first Ounce game proved, its shaders and surfaces
 - [3DS](platforms/3ds/README.md): the 3DS driver, its status, building and testing
   - [CTR IPC and startup services](platforms/3ds/ipc.md): the wire, the generator subset and the services implemented
