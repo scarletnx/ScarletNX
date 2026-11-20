@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""JIT the real LLVM NZCV emitters and compare their CPU state to integer arithmetic."""
+"""JIT the real LLVM NZCV emitters and compare their CPU state to integer arithmetic.
+
+The emitters are ir_state.c's (adds, subs, logic, set_nzcv and the condition), taken from the source as it is. The
+block's cache of the flags they read and write is the back end's since the generated emitters keep theirs there
+(ir_sail.c over sailgen's sg_*), so this harness gives them one of its own with the same behaviour, and no compare to
+fold a condition into (snx_ir_sail_origin gives none): every condition here is read from the four flags."""
 from pathlib import Path
 import sys
 src=(Path(__file__).resolve().parents[2]/'src/common/cpu/recompiler/llvm/ir_state.c').read_text()
@@ -10,7 +15,7 @@ def fn(signature):
   if src[i]=='}': depth-=1
   i+=1
  return src[a:i]
-funcs='\n\n'.join(fn(sig) for sig in ('void ir_flags_invalidate(', 'static SnxIrFlags* flags_block(', 'LLVMValueRef ir_flag_read(', 'static void flags_commit(', 'LLVMValueRef ir_flags_adds(', 'LLVMValueRef ir_flags_subs(', 'void ir_flags_logic(', 'void ir_flags_set_nzcv(', 'LLVMValueRef ir_flags_cond('))
+funcs='\n\n'.join(fn(sig) for sig in ('LLVMValueRef ir_flags_adds(', 'LLVMValueRef ir_flags_subs(', 'void ir_flags_logic(', 'void ir_flags_set_nzcv(', 'LLVMValueRef ir_flags_cond('))
 code=r'''
 #include "common/cpu/aarch64/cpu.h"
 #include <stdint.h>
@@ -50,6 +55,28 @@ static V ir_cpu(SnxIr*ir,size_t offset){V off=ir_i64(ir,offset);return LLVMBuild
 static V ir_tag_cpu(SnxIr*ir,V access){(void)ir;return access;}
 static V ir_cpu_load(SnxIr*ir,LLVMTypeRef type,size_t offset){return LLVMBuildLoad2(ir->b,type,ir_cpu(ir,offset),"");}
 static const size_t flag_offsets[4]={offsetof(CPU,n),offsetof(CPU,z),offsetof(CPU,cf),offsetof(CPU,vf)};
+enum { SNX_IR_FLAGS_SOME, SNX_IR_FLAGS_SUB, SNX_IR_FLAGS_ADD, SNX_IR_FLAGS_LOGIC };
+extern V LLVMIsAConstantInt(V);
+extern unsigned long long LLVMConstIntGetZExtValue(V);
+/* the block's flags as the emitters reach them: each read once from the CPU and kept, each written to it and kept */
+static void ir_flags_invalidate(SnxIr*ir){ir->state.flags.valid=0;ir->state.flags.block=NULL;}
+static SnxIrFlags* flags_block(SnxIr*ir){
+    SnxIrFlags*flags=&ir->state.flags;LLVMBasicBlockRef block=LLVMGetInsertBlock(ir->b);
+    if(flags->block!=block){flags->valid=0;flags->block=block;}
+    return flags;
+}
+static V ir_flag_read(SnxIr*ir,unsigned index){
+    SnxIrFlags*flags=flags_block(ir);unsigned bit=1u<<index;
+    if(!(flags->valid&bit)){flags->value[index]=ir_cpu_load(ir,ir->t_i32,flag_offsets[index]);flags->valid|=bit;}
+    return flags->value[index];
+}
+static void ir_flags_commit(SnxIr*ir,V n,V z,V c,V v){
+    SnxIrFlags*flags=flags_block(ir);V values[4]={n,z,c,v};
+    for(unsigned i=0;i<4;++i){V bits=ir_u32(ir,values[i]);ir_tag_cpu(ir,LLVMBuildStore(ir->b,bits,ir_cpu(ir,flag_offsets[i])));flags->value[i]=bits;}
+    flags->valid=15;
+}
+static void ir_flags_origin(SnxIr*ir,unsigned origin,V left,V right){(void)ir;(void)origin;(void)left;(void)right;}
+static V snx_ir_sail_origin(SnxIr*ir,unsigned code){(void)ir;(void)code;return NULL;}
 ''' + funcs +r'''
 static void build(SnxIr* ir,int mode,unsigned width,unsigned cond) {
     char name[40];sprintf(name,"f_%u_%u_%u",mode,width,cond);

@@ -1187,6 +1187,10 @@ add_test(NAME llvm_vfp_minmax COMMAND snx-test-llvm-vfp-minmax)
 if(Python3_Interpreter_FOUND)
     add_test(NAME llvm_half_order_math COMMAND "${Python3_EXECUTABLE}"
         "${CMAKE_CURRENT_SOURCE_DIR}/llvm_perf/half_order_math.py")
+    # llvm_perf/run.sh's NZCV harness takes the flag emitters out of ir_state.c by their signatures: that it still
+    # finds each one, where the harness itself (a JIT over the system's libLLVM) is run by hand
+    add_test(NAME llvm_perf_nzcv_source COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/llvm_perf/test_nzcv.py" "${CMAKE_CURRENT_BINARY_DIR}/llvm_perf_nzcv.c")
 endif()
 
 add_executable(snx-test-llvm-round llvm_round.c llvm_steps.c
