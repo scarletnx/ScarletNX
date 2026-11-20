@@ -203,6 +203,7 @@ The settings, each with its extension and, where one took it in, the Vulkan vers
 | `vk_khr_calibrated_timestamps` | `auto` | `VK_KHR_calibrated_timestamps` |
 | `vk_khr_cooperative_matrix` | `auto` | `VK_KHR_cooperative_matrix` |
 | `vk_khr_copy_memory_indirect` | `auto` | `VK_KHR_copy_memory_indirect` |
+| `vk_khr_driver_properties` | `auto` | `VK_KHR_driver_properties`, promoted to Vulkan 1.2 |
 | `vk_khr_dynamic_rendering` | `auto` | `VK_KHR_dynamic_rendering`, promoted to Vulkan 1.3 |
 | `vk_khr_dynamic_rendering_local_read` | `auto` | `VK_KHR_dynamic_rendering_local_read`, promoted to Vulkan 1.4 |
 | `vk_khr_extended_flags` | `auto` | `VK_KHR_extended_flags` |
@@ -228,6 +229,7 @@ The settings, each with its extension and, where one took it in, the Vulkan vers
 | `vk_khr_shader_maximal_reconvergence` | `auto` | `VK_KHR_shader_maximal_reconvergence` |
 | `vk_khr_swapchain` | `auto` | `VK_KHR_swapchain` |
 | `vk_khr_synchronization2` | `auto` | `VK_KHR_synchronization2`, promoted to Vulkan 1.3 |
+| `vk_khr_timeline_semaphore` | `auto` | `VK_KHR_timeline_semaphore`, promoted to Vulkan 1.2 |
 | `vk_khr_unified_image_layouts` | `auto` | `VK_KHR_unified_image_layouts` |
 | `vk_khr_video_decode_av1` | `auto` | `VK_KHR_video_decode_av1` |
 | `vk_khr_video_decode_h264` | `auto` | `VK_KHR_video_decode_h264` |
