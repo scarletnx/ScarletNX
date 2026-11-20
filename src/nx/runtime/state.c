@@ -974,7 +974,9 @@ static int hle_check(const Hle* h) {
         if (o->data) { /* a slot of its service's pool, whose first u32 names it (svcobj_new_data) */
             uintptr_t off = (uintptr_t)o->data - HLE_LO;
             u32 id;
-            if ((uintptr_t)o->data < HLE_LO || o->datasize < 4 || off > sizeof(Hle) - o->datasize) return -1;
+            if ((uintptr_t)o->data < HLE_LO || o->datasize < 4 || o->datasize > sizeof(Hle) ||
+                off > sizeof(Hle) - o->datasize)
+                return -1;
             memcpy(&id, (const u8*)h + off, 4);
             if (id != i + 1) return -1;
         }
