@@ -106,8 +106,7 @@ int snx_codegen_word(SnxCodegen* codegen, SnxU64 address, SnxU32* word) {
     if (off > module->image_size || module->image_size - off < 4 ||
         address - (module->base + module->text_off) + 4 > module->text_size)
         return 0;
-    const unsigned char* p = module->image + off;
-    *word = snx_ld_le32(p);
+    *word = snx_code_image_word(module, off);
     return 1;
 }
 
@@ -449,11 +448,53 @@ static int image_read(SnxCodegen* codegen, SnxU64 address, unsigned width, SnxU6
         if (!m->image || address < m->base || address - m->base > m->image_size ||
             m->image_size - (size_t)(address - m->base) < width)
             continue;
-        const unsigned char* p = m->image + (address - m->base);
-        *value = width == 1 ? p[0] : width == 2 ? snx_ld_le16(p) : width == 4 ? snx_ld_le32(p) : snx_ld_le64(p);
+        size_t off = (size_t)(address - m->base);
+        if (m->atomic_words) {
+            unsigned char bytes[8];
+            size_t residue = (size_t)(4 - (m->base & 3)) & 3;
+            for (;;) {
+                uint64_t before = m->generation ? atomic_load_explicit(m->generation, memory_order_seq_cst) : 0;
+                uint64_t after;
+                size_t last_word_off = SIZE_MAX;
+                uint32_t word = 0;
+                if (before & 1) continue;
+                for (unsigned i = 0; i < width; ++i) {
+                    size_t byte_off = off + i;
+                    if (byte_off < residue) {
+                        bytes[i] = m->image[byte_off];
+                        continue;
+                    }
+                    size_t word_off = byte_off - ((byte_off - residue) & 3);
+                    if (word_off + 4 > m->image_size) {
+                        bytes[i] = m->image[byte_off];
+                        continue;
+                    }
+                    if (word_off != last_word_off) {
+                        word = snx_code_image_word(m, word_off);
+                        last_word_off = word_off;
+                    }
+                    bytes[i] = (unsigned char)(word >> ((byte_off - word_off) * 8));
+                }
+                after = m->generation ? atomic_load_explicit(m->generation, memory_order_seq_cst) : before;
+                if (before == after) break;
+            }
+            *value = width == 1 ? bytes[0] : width == 2 ? snx_ld_le16(bytes) : width == 4 ? snx_ld_le32(bytes)
+                                                                                             : snx_ld_le64(bytes);
+        } else {
+            const unsigned char* p = m->image + off;
+            *value = width == 1 ? p[0] : width == 2 ? snx_ld_le16(p) : width == 4 ? snx_ld_le32(p) : snx_ld_le64(p);
+        }
         return 1;
     }
     return 0;
+}
+
+static const _Atomic uint64_t* image_generation(const SnxCodegen* codegen, SnxU64 address) {
+    for (size_t i = 0; i < codegen->module_count; ++i) {
+        const SnxCodeImage* m = &codegen->modules[i];
+        if (m->atomic_words && address >= m->base && address - m->base < m->image_size) return m->generation;
+    }
+    return NULL;
 }
 
 /* the entries a CMP Wn, #imm or Xn, #imm of the index bounds a table to, cases + 1; 0 when word is no such compare */
@@ -509,13 +550,24 @@ static unsigned table_bound(SnxCodegen* codegen, SnxU64 load, unsigned index_reg
 
 size_t snx_codegen_jump_table(SnxCodegen* codegen, SnxU64 address, SnxU64* targets, size_t capacity) {
     JumpTable table;
+    const _Atomic uint64_t* code_generation = image_generation(codegen, address);
+    const _Atomic uint64_t* table_generation;
+    uint64_t code_version = code_generation ? atomic_load_explicit(code_generation, memory_order_seq_cst) : 0;
+    uint64_t table_version;
     SnxU32 word;
     unsigned limit;
     size_t count = 0;
-    if (!capacity || !snx_codegen_word(codegen, address, &word) || !is_br(word) ||
+    if (!capacity || (code_version & 1) || !snx_codegen_word(codegen, address, &word) || !is_br(word) ||
         !jump_table_shape(codegen, address, word, &table))
         return 0;
     limit = table_bound(codegen, table.load, table.index_reg);
+    table_generation = image_generation(codegen, table.base);
+    table_version = table_generation == code_generation
+                        ? code_version
+                        : table_generation ? atomic_load_explicit(table_generation, memory_order_seq_cst) : 0;
+    if ((table_version & 1) ||
+        (code_generation && atomic_load_explicit(code_generation, memory_order_seq_cst) != code_version))
+        return 0;
     /* an entry of four bytes that is no case leaves the text and ends an unbounded table; a byte or a half from an
        address in the code lands in the text whatever it holds, so such a table is followed only to its bound */
     if (!limit && table.anchor != table.base && table.width < 4) return 0;
@@ -541,6 +593,10 @@ size_t snx_codegen_jump_table(SnxCodegen* codegen, SnxU64 address, SnxU64* targe
             }
         if (!found) targets[count++] = target;
     }
+    if ((code_generation && atomic_load_explicit(code_generation, memory_order_seq_cst) != code_version) ||
+        (table_generation && table_generation != code_generation &&
+         atomic_load_explicit(table_generation, memory_order_seq_cst) != table_version))
+        return 0;
     return count;
 }
 

@@ -125,6 +125,8 @@ struct snx_recompiled {
        the caller's may go once snx_recompile returns */
     SnxCodeImage* views;
     size_t view_count;
+    int live_code; /* the views are the caller's bytes (snx_recompiler_set_live_code), not a copy */
+    _Atomic uint64_t code_generation;
     /* the descriptor's entries, which the JIT's code calls directly */
     const uint64_t* entry_addresses;
     const _Atomic GuestFn* entry_functions;
@@ -1103,17 +1105,18 @@ static int keep_code(struct snx_recompiler* r, struct snx_recompiled* m, const s
                      size_t count) {
     size_t total = 0;
     for (size_t i = 0; i < count; ++i) {
-        if (ranges[i].size > SIZE_MAX / 2 - total) {
+        if (total > SIZE_MAX / 2 - 3 || ranges[i].size > SIZE_MAX / 2 - total - 3) {
             fail(r, "the code ranges are too large");
             return -1;
         }
-        total += ranges[i].size;
+        total += ranges[i].size + 3;
     }
     if (count > (SIZE_MAX / 2 - total) / sizeof(SnxCodeImage)) {
         fail(r, "the code ranges are too large");
         return -1;
     }
     if (r->live_code) total = 0; /* no copy: the views are the caller's bytes, which outlive the module */
+    atomic_init(&m->code_generation, 0);
     m->views = (SnxCodeImage*)calloc(1, count * sizeof(SnxCodeImage) + total);
     if (!m->views) {
         fail(r, "out of memory for a copy of the code");
@@ -1125,15 +1128,25 @@ static int keep_code(struct snx_recompiler* r, struct snx_recompiled* m, const s
         if (r->live_code)
             m->views[i].image = (const unsigned char*)ranges[i].code;
         else {
+            at += ((size_t)ranges[i].address - at) & 3;
             memcpy(bytes + at, ranges[i].code, ranges[i].size);
             m->views[i].image = bytes + at;
+            size_t first = (size_t)(4 - (ranges[i].address & 3)) & 3;
+            for (size_t off = first; off + 4 <= ranges[i].size; off += 4) {
+                uint32_t word;
+                memcpy(&word, bytes + at + off, sizeof(word));
+                atomic_init((_Atomic uint32_t*)(void*)(bytes + at + off), word);
+            }
             at += ranges[i].size;
         }
         m->views[i].image_size = ranges[i].size;
         m->views[i].base = ranges[i].address;
         m->views[i].text_size = ranges[i].size;
+        m->views[i].atomic_words = !r->live_code;
+        if (!r->live_code) m->views[i].generation = &m->code_generation;
     }
     m->view_count = count;
+    m->live_code = r->live_code;
     return 0;
 }
 
@@ -1374,28 +1387,34 @@ int snx_recompiled_bind(struct snx_recompiled* m, CPU* cpu) {
 /* cpu.h's snx_lookup over the module's table, and the JIT's code for a pc the table lacks */
 GuestFn snx_recompiled_lookup(struct snx_recompiled* m, uint64_t pc) { return module_code(m, pc); }
 
-/* The module's copy of the code, which its JIT compiles from, brought up to what the guest has now: the NX runtime's
-   JIT reads the guest's memory itself, an embedder's module holds a copy (keep_code), and code the guest patches
-   (IC IVAU) is otherwise rebuilt from the bytes it replaced. Whole words, each a relaxed store: a JIT worker may be
-   reading the same view. Returns the number of bytes updated. */
+/* Update the module's copy before invalidation, so its JIT builds patched code from the current bytes. Readers of a
+   copied view use atomic word loads. A live-code module has no copy and its caller may use read-only storage. */
 size_t snx_recompiled_update_code(struct snx_recompiled* m, uint64_t addr, const void* code, size_t size) {
     size_t i, updated = 0;
     const unsigned char* bytes = (const unsigned char*)code;
-    if (!m || !code || (addr & 3) || (size & 3) || size > UINT64_MAX - addr) return 0;
+    int writing = 0;
+    if (!m || !code || m->live_code || (addr & 3) || (size & 3) || size > UINT64_MAX - addr) return 0;
     for (i = 0; i < m->view_count; ++i) {
         const SnxCodeImage* view = &m->views[i];
         uint64_t lo = addr > view->base ? addr : view->base;
         uint64_t hi = addr + size < view->base + view->image_size ? addr + size : view->base + view->image_size;
         uint64_t at;
+        lo += (4 - (lo & 3)) & 3;
+        hi &= ~UINT64_C(3);
         if (lo >= hi) continue;
+        if (!writing) {
+            atomic_fetch_add_explicit(&m->code_generation, 1, memory_order_seq_cst);
+            writing = 1;
+        }
         for (at = lo; at < hi; at += 4) {
             uint32_t word;
             memcpy(&word, bytes + (at - addr), sizeof(word));
             atomic_store_explicit((_Atomic uint32_t*)(void*)((unsigned char*)view->image + (at - view->base)), word,
-                                  memory_order_relaxed);
+                                  memory_order_seq_cst);
         }
         updated += (size_t)(hi - lo);
     }
+    if (writing) atomic_fetch_add_explicit(&m->code_generation, 1, memory_order_seq_cst);
     return updated;
 }
 

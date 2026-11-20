@@ -3,6 +3,8 @@
 #ifndef SNX_CODE_IMAGE_H
 #define SNX_CODE_IMAGE_H
 #include "common/utilities/common.h"
+#include "common/utilities/endian.h"
+#include <stdatomic.h>
 typedef struct {
     SnxU64 start, size;
 } SnxFde;
@@ -20,5 +22,16 @@ typedef struct {
     size_t routed_count;
     const SnxFde* fde;
     size_t fde_count;
+    int atomic_words; /* image words may be updated while JIT workers read them */
+    const _Atomic uint64_t* generation;
 } SnxCodeImage;
+
+static inline uint32_t snx_code_image_word(const SnxCodeImage* image, size_t offset) {
+    if (image->atomic_words) {
+        uint32_t word = atomic_load_explicit((const _Atomic uint32_t*)(const void*)(image->image + offset),
+                                             memory_order_seq_cst);
+        return snx_ld_le32(&word);
+    }
+    return snx_ld_le32(image->image + offset);
+}
 #endif

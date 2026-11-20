@@ -200,7 +200,9 @@ threads. An optional callback receives each retired [start, end) span.
 word-aligned range into the module's own copy of the code, the copy its JIT compiles from,
 and returns the bytes inside the module's ranges. Call it with the changed bytes before
 `snx_recompiled_invalidate`. Without it, a module made for an embedder compiles a patched
-function again from the bytes it was made from.
+function again from the bytes it was made from. A module made with
+`snx_recompiler_set_live_code` has no copy, so the call returns 0 and writes nothing. JIT workers read copied words
+atomically while they compile.
 
 For A32 and Thumb, `snx_recompile32` prepares an address range whose blocks are compiled
 on first use by the LLVM block compiler (`src/common/cpu/arm/`), and
