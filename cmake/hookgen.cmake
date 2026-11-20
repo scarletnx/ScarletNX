@@ -25,7 +25,8 @@ if(CMAKE_CROSSCOMPILING)
         BUILD_BYPRODUCTS "${snx_hookgen_exe}"
         INSTALL_COMMAND "")
     add_executable(snx-hookgen IMPORTED GLOBAL)
-    set_target_properties(snx-hookgen PROPERTIES IMPORTED_LOCATION "${snx_hookgen_exe}")
+    # a program of the build machine: a test that runs it does not go through the target's emulator
+    set_target_properties(snx-hookgen PROPERTIES IMPORTED_LOCATION "${snx_hookgen_exe}" CROSSCOMPILING_EMULATOR "")
     add_dependencies(snx-hookgen snx_hookgen_host)
 else()
     add_executable(snx-hookgen "${PROJECT_SOURCE_DIR}/tools/hookgen/hookgen.c")
