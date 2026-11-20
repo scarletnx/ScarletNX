@@ -531,8 +531,9 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
         "${PROJECT_SOURCE_DIR}/tests/glsl/bcn_etc2_cpu.cpp" "${PROJECT_SOURCE_DIR}/tests/glsl/bcn_astc_cpu.cpp"
         "${PROJECT_SOURCE_DIR}/tests/glsl/astc_vendor_cpu.cpp" "${PROJECT_SOURCE_DIR}/tests/glsl/blit_convert_cpu.cpp")
     target_include_directories(snx-test-astc-vulkan PRIVATE "${PROJECT_SOURCE_DIR}/tests/glsl")
-    target_link_libraries(snx-test-astc-vulkan PRIVATE snx_nx_flags scarletnx-filesystem snx_xxhash snx_vk_common
-                                                      Threads::Threads SDL3::SDL3 ${CMAKE_DL_LIBS})
+    # snx_settings_runtime: the graphics table, whose bc7_cache_gb the cache's bound case reads
+    target_link_libraries(snx-test-astc-vulkan PRIVATE snx_nx_flags snx_settings_runtime scarletnx-filesystem snx_xxhash
+                                                      snx_vk_common Threads::Threads SDL3::SDL3 ${CMAKE_DL_LIBS})
     if(WIN32)
         target_link_libraries(snx-test-astc-vulkan PRIVATE powrprof)
     endif()
