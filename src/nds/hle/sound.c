@@ -11,6 +11,7 @@
    The driver's state is this file's: a process runs one board. */
 #include "nds/hle/pxi.h"
 #include "nds/audio/spu.h"
+#include "common/utilities/bits.h"
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1980,10 +1981,13 @@ static int update_track(SndTrack* track, SndSequence* seq, int id, bool process)
                         wr16(paramaddr, (int16_t)rd16(paramaddr) / param);
                         break;
                     case 0xB5: // shift
+                        /* the variable's 16 bits, shifted as a signed 32-bit word's: a count of 16 or more leaves
+                           none of them (0 to the left, the sign to the right) */
                         if (param >= 0)
-                            wr16(paramaddr, (int16_t)rd16(paramaddr) << param);
+                            wr16(paramaddr, param < 16 ? (uint16_t)((uint32_t)rd16(paramaddr) << param) : 0);
                         else
-                            wr16(paramaddr, (int16_t)rd16(paramaddr) >> (-param));
+                            wr16(paramaddr, (uint16_t)snx_asr32((uint32_t)(int16_t)rd16(paramaddr),
+                                                                param > -31 ? (unsigned)-param : 31));
                         break;
                     case 0xB6: //
                         {
