@@ -23281,19 +23281,22 @@ const char* snx_menu_language(int i, const char** name) {
     *name = snx_gui_languages[i].name;
     return snx_gui_languages[i].code;
 }
+/* the menu's state, on the heap: some 750 KiB, of the 1 MiB of stack Windows gives a program's main thread */
+static App* app_new(void) {
+    App* app = calloc(1, sizeof *app);
+    if (!app) fprintf(stderr, "scarletnx: no memory for the menu's state (%zu bytes)\n", sizeof *app);
+    return app;
+}
 #if !defined(SDL_PLATFORM_ANDROID) && !defined(SDL_PLATFORM_IOS)
 /* Move Old Files without the menu, to out: each entry and what it does or would, then how many; with apply, done.
    0, or 1 when one could not be moved; 2 when the folders cannot be found */
 static int migrate(const char* self, bool apply, FILE* out) {
-    App* app = (App*)calloc(1, sizeof *app); /* on the heap, as snx_gui_main's */
+    App* app = app_new();
     char file[4400], what[4400];
     const char* at;
     bool ok;
     int moves, rc;
-    if (!app) {
-        fprintf(stderr, "scarletnx: no memory for the menu's state (%zu bytes)\n", sizeof *app);
-        return 2;
-    }
+    if (!app) return 2;
     snx_tr_languages(snx_gui_languages, snx_gui_language_count);
     app->look_only = !apply;
     if (!paths_start(app, self)) {
@@ -23331,12 +23334,8 @@ int snx_gui_migrate(const char* self, const char* option) {
 }
 #endif
 int snx_gui_main(const char* self) {
-    /* on the heap: some 750 KiB, of the 1 MiB of stack Windows gives a program's main thread */
-    App* app = (App*)calloc(1, sizeof *app);
-    if (!app) {
-        fprintf(stderr, "scarletnx: no memory for the menu's state (%zu bytes)\n", sizeof *app);
-        return 1;
-    }
+    App* app = app_new();
+    if (!app) return 1;
     if (!initialize(app, self)) {
         char why[1024];
         SDL_strlcpy(why, SDL_GetError(), sizeof why);
