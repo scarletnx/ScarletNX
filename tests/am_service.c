@@ -403,6 +403,15 @@ static void test_transfer_storage(void) {
     svcobj_unref(acc);
     svcobj_unref(s);
     CHECK(test_objects == 0 && test_tmem.o.refs == 1);
+    /* a storage over the game's memory to read and write (CreateTransferMemoryStorage) is opened by Open, and is none
+       to open as a transfer storage */
+    CHECK(nn_am_service_ILibraryAppletCreator_CreateTransferMemoryStorage(NULL, 1, 0x4000, TEST_TMEM_HANDLE, &s) == 0);
+    acc = NULL;
+    CHECK(nn_am_service_IStorage_OpenTransferStorage(s, &acc) == SNX_RC_AM_OPENED_AS_WRONG_TYPE && !acc);
+    CHECK(nn_am_service_IStorage_Open(s, &plain) == 0);
+    svcobj_unref(plain);
+    svcobj_unref(s);
+    CHECK(test_objects == 0 && test_tmem.o.refs == 1);
 }
 /* VR mode: on and off as the game turns it, by SetVrModeEnabled or by BeginVrModeEx and EndVrModeEx */
 static void test_vr_mode(void) {
