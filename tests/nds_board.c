@@ -347,6 +347,29 @@ static void test_matrices(NdsBoard* board) {
     CHECK((uint32_t)g->tex_matrix[12] == 0xFFF00005u);
 }
 
+/* a vector through the vector matrix keeps the 32 bits of its sum: a matrix word of 2^30 + 1.0 times a component of
+   511 passes int's range, and what the engine keeps of the product (bits 12 to 22 for a normal, 9 to 24 for the
+   vector test) is 1.0's, so a lit normal's colour and the test's answer are the identity matrix's */
+static void test_vectors(NdsBoard* board) {
+    const NdsGpu3D* g = nds_gpu3d_state(board);
+    uint8_t lit[3];
+    gx(board, 0x10, 2), gx(board, 0x15, 0);
+    gx(board, 0x30, 0x7FFF), gx(board, 0x31, 0);                         /* white diffuse, nothing else */
+    gx(board, 0x32, 0x200), gx(board, 0x33, 0x7FFF);                     /* light 0, white, shining down -x */
+    gx(board, 0x29, 0x001F00C1), gx(board, 0x40, 0), gx(board, 0x41, 0); /* light 0 on */
+    gx(board, 0x21, 0x1FF);                                              /* a normal along +x, towards the light */
+    memcpy(lit, g->vertex_color, sizeof lit);
+    CHECK(lit[0] == 29 && lit[1] == 29 && lit[2] == 29); /* 31 * 31 * 511 >> 14 */
+    gx(board, 0x72, 0x1FF);
+    CHECK(nds_io_read(board, IO + 0x630, 4) == 0x0FF8 && nds_io_read(board, IO + 0x634, 2) == 0);
+    for (uint32_t k = 0; k < 16; k++) gx(board, 0x16, k == 0 ? 0x40001000u : k % 5 == 0 ? 0x1000 : 0);
+    gx(board, 0x21, 0x1FF);
+    CHECK(!memcmp(lit, g->vertex_color, sizeof lit));
+    gx(board, 0x72, 0x1FF);
+    CHECK(nds_io_read(board, IO + 0x630, 4) == 0x0FF8 && nds_io_read(board, IO + 0x634, 2) == 0);
+    gx(board, 0x15, 0), gx(board, 0x29, 0x001F00C0), gx(board, 0x40, 0), gx(board, 0x41, 0);
+}
+
 int main(void) {
     char error[512] = "";
     char* dir = snx_temp_dir(NULL);
@@ -371,6 +394,7 @@ int main(void) {
     test_wfc_menu();
     test_geometry(board);
     test_matrices(board);
+    test_vectors(board);
     nds_board_free(board);
     free(board);
     nds_rom_close(&rom);
