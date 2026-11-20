@@ -813,6 +813,9 @@ static bool choose_device(SnxVkChoice* c, void* user) {
     g_vk.has_dynamic_stride = !vk_ban("VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE", 1, ban_say);
     /* the rings the CPU fills in cached host memory by default (cmd.c's stage_cached) */
     g_vk.stage_cached = vk_prefer("VK_MEMORY_PROPERTY_HOST_CACHED_BIT", 1, ban_say) != 0;
+    /* the constant buffers' windows of the staging ring, whose offsets take 224 bytes of push constants a stage
+       (pipeline.c, cb_windows.h) */
+    g_vk.cb_windows_ban = vk_ban_find("maxPushConstantsSize");
     g_vk_preserve_infnan64 = p12.shaderSignedZeroInfNanPreserveFloat64 != 0;
     g_vk.has_minmax_swizzle = p12.filterMinmaxImageComponentMapping != 0;
     /* 32 bit alone: a device whose denorm modes can't differ per width would need 16 and 64 bit declared too. A driver

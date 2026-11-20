@@ -852,19 +852,23 @@ static void check_shipped(void) {
             CHECK(vk_ban_find(eden[i].key) == 0, "and a ban nowhere");
         }
     }
-    /* this machine's drivers, RADV and lavapipe: no "off" line holds; RADV's warnings are the lifted bans, and its
-       prefer lines the ways it takes */
+    /* this machine's drivers, RADV and lavapipe: the "off" lines that hold are the ones named here; RADV's warnings
+       are the lifted bans, and its prefer lines the ways it takes */
+    static const char* const off_here[] = {"maxPushConstantsSize"}; /* lavapipe's windows of constant buffers */
     static const struct {
         uint32_t id, v;
     } here[] = {{VK_DRIVER_ID_MESA_RADV, MESA(26u, 2u, 6u)}, {VK_DRIVER_ID_MESA_LLVMPIPE, MESA(26u, 2u, 6u)}};
     for (size_t i = 0; i < 2; i++) {
         device(here[i].id, here[i].v, 0x73bf, SNX_VK_BAN_LINUX);
         for (uint32_t line = vk_bans_holding(0); line; line = vk_bans_holding(line)) {
-            char action[8], what[160];
+            char action[8], key[160], what[320];
+            int named = 0;
             vk_ban_field(line, VK_BAN_ACTION, action, sizeof action);
-            snprintf(what, sizeof what, "line %u holds for %s 26.2.6 as %s", (unsigned)line,
+            vk_ban_field(line, VK_BAN_KEY, key, sizeof key);
+            for (size_t k = 0; k < sizeof off_here / sizeof *off_here; k++) named |= !strcmp(key, off_here[k]);
+            snprintf(what, sizeof what, "line %u (%s) holds for %s 26.2.6 as %s", (unsigned)line, key,
                      vk_ban_driver_name(here[i].id), action);
-            CHECK(strcmp(action, "off"), what);
+            CHECK(strcmp(action, "off") || named, what);
         }
     }
 }
@@ -1076,6 +1080,10 @@ static int anv_only(uint32_t id, uint32_t system) {
     (void)system;
     return id == VK_DRIVER_ID_INTEL_OPEN_SOURCE_MESA;
 }
+static int lavapipe_only(uint32_t id, uint32_t system) {
+    (void)system;
+    return id == VK_DRIVER_ID_MESA_LLVMPIPE;
+}
 static void check_choices(void) {
     static const struct {
         const char* key;
@@ -1086,6 +1094,7 @@ static void check_choices(void) {
         {"Location", 1, nvidia_only},
         {"OpGroupNonUniformShuffleXor", 1, radv_only},
         {"VK_MEMORY_PROPERTY_HOST_CACHED_BIT", 1, anv_only},
+        {"maxPushConstantsSize", 0, lavapipe_only},
     };
     static const uint32_t systems[] = {0,
                                        SNX_VK_BAN_LINUX,

@@ -121,6 +121,10 @@ VK_EXT_fragment_shader_interlock.fragmentShaderPixelInterlock | prefer | amd-pro
 VK_EXT_descriptor_heap | off | amd-proprietary | * | any | * | crashes a game at start with descriptor heaps (Adrenalin 26.7.1 on an RX 7900 XTX) | DXVK 076922bd24 (2026-09-19), issue 5837 | headless:--vk-descriptors-mode=3 | never | -
 VK_EXT_descriptor_heap | off | nvidia | < 595.84.0 | any | * | runs descriptor heaps slower than its later drivers do | DXVK dxvk_device_info.cpp:506 (b5fadf8e5a, 2026-06-18) | new:headless:--bench-descriptors under vk_descriptors_mode=3 against vk_descriptors_mode=1 | never | -
 
+# Constant buffers as windows of the staging ring (pipeline.c, cb_windows.h: their offsets go in push constants past
+# the 128 bytes every layout had, 224 a stage; off binds each constant buffer by itself)
+maxPushConstantsSize | off | lavapipe | * | any | * | hands its linear rasterizer the push constants of every stage a draw binds as one buffer, which the rasterizer copies into a stack array that holds 256 bytes' worth: the 224 bytes each of a vertex and a fragment program whose constant buffers are windows smash its stack, unless LP_PERF=no_rast_linear turns that rasterizer off (Mesa 26.2.6) | #2461; ScarletNX a48a365a2d (2026-11-18) | headless: | 2026-11-18 broken on 26.2.6 | vk_cb_windows=1
+
 # Mesh draws (device.c's mesh_choose: without VK_EXT_mesh_shader an Ounce game's mesh draws are skipped)
 VK_EXT_mesh_shader | off | nvidia | * | any | * | faulted the GPU in most menu runs of an Ounce game with its mesh draws on an RTX 2080: Xid 31 and 109, then a lost device, and 2 of 7 runs still hung once both mesh stages saw the sets of both | ScarletNX 0002310032 and 62f2ec0570 (2026-11-05), docs/platforms/nx/ounce.md#draws | headless:--vk-ext-mesh-shader=on | 2026-11-05 broken on 615.78.08 (RTX 2080) | -
 

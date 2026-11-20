@@ -17,6 +17,7 @@
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
 #include "common/gpu/vk/vk_common.h"
+#include "common/gpu/vk/extension_bans.h"
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/shader/advanced_blend_spirv.h"
 #include "nx/gpu/vk/descriptors.h"
@@ -727,10 +728,11 @@ void vk_pipeline_init(void) {
     /* the vertex and fragment programs' constant buffers through windows of the staging ring, their offsets in push
        constants past the 128 bytes every layout had (cb_windows.h) */
     {
+        char ban[1200] = "", line[2048];
+        if (g_vk.cb_windows_ban) vk_ban_why(g_vk.cb_windows_ban, ban, sizeof ban);
         const SnxVkCbWindowDevice wd = {g_vk.props.limits.maxPushConstantsSize, g_vk.props.limits.maxUniformBufferRange,
                                         g_spirv_translate.uniform_cbufs, g_vk.has_descriptor_heap_support,
-                                        g_vk.driver_id == VK_DRIVER_ID_MESA_LLVMPIPE};
-        char line[512];
+                                        ban[0] ? ban : NULL};
         g_spirv_translate.cb_windows =
             snx_vk_cb_windows_say(line, sizeof line, &wd, SH_PUSH_BYTES_WINDOWS, g_settings.constant_buffer_windows);
         LOG("%s\n", line);
