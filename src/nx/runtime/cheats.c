@@ -126,10 +126,10 @@ static void run_cheat(const Cheat* c) {
         u32 width = (w[i] >> 24) & 15;
         switch (op) {
             case 0: { /* 0TMR00AA AAAAAAAA V[V]: [base(M) + reg R + A] = V */
-                if (i + 3 > n) return;
+                if (i + (width == 8 ? 4 : 3) > n) return; /* a value of 8 bytes is two words */
                 u32 m = (w[i] >> 20) & 15, r = (w[i] >> 16) & 15;
                 u64 a = ((u64)(w[i] & 0xFF) << 32) | w[i + 1];
-                u64 v = width == 8 ? ((u64)w[i + 2] << 32) | (i + 3 < n ? w[i + 3] : 0) : w[i + 2];
+                u64 v = width == 8 ? ((u64)w[i + 2] << 32) | w[i + 3] : w[i + 2];
                 if (m == 0) wr(g_main_base + reg[r] + a, width, v);
                 i += width == 8 ? 4 : 3;
                 break;
