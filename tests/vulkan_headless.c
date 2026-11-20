@@ -59,6 +59,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <stdatomic.h>
 
 #define CHECK(x)                                                                                                       \
@@ -119,6 +120,45 @@ static int check_recorder_self_sync(void) {
     vk_rec_run(recorder_self_sync, &ran);
     CHECK(ran == 1);
     printf("The recording thread's own vk_rec_sync returns\n");
+    return 0;
+}
+
+/* A drain of the ring behind a packet that takes long (the driver making a pipeline or a shader object) sleeps: it
+   yielded at full speed for as long, a core of the GPU thread's in each frame that made a pipeline (one racing game's
+   500 ms frame had 28% of that thread's cycles in sched_yield). The packet here sleeps 200 ms, and the thread that
+   waits for it may use a quarter of that on the processor */
+static void recorder_takes_long(const void* arg) {
+    (void)arg;
+    plat_sleep_ns(200000000);
+}
+static int check_recorder_drain_sleeps(void) {
+#ifdef CLOCK_THREAD_CPUTIME_ID
+    struct timespec a, b;
+    int unused = 0;
+    if (!vk_rec_threaded()) {
+        puts("SKIP a drain behind a long packet: vk_record=0 runs the commands on the GPU thread");
+        return 0;
+    }
+    vk_rec_sync();
+    vk_lock();
+    vk_rec_call(recorder_takes_long, &unused, sizeof unused);
+    vk_unlock();
+    u64 t0 = plat_ns();
+    CHECK(!clock_gettime(CLOCK_THREAD_CPUTIME_ID, &a));
+    vk_rec_sync();
+    CHECK(!clock_gettime(CLOCK_THREAD_CPUTIME_ID, &b));
+    u64 wall = plat_ns() - t0;
+    i64 cpu = (i64)(b.tv_sec - a.tv_sec) * 1000000000 + (b.tv_nsec - a.tv_nsec);
+    if (wall < 150000000 || cpu > 50000000)
+        fprintf(stderr,
+                "a drain behind a packet of 200 ms waited %llu ms (150 or more expected) and ran %lld ms on the "
+                "processor (50 at most expected)\n",
+                (unsigned long long)(wall / 1000000), (long long)(cpu / 1000000));
+    CHECK(wall >= 150000000 && cpu <= 50000000);
+    printf("A drain behind a packet of 200 ms ran %lld ms on the processor\n", (long long)(cpu / 1000000));
+#else
+    puts("SKIP a drain behind a long packet: no per-thread processor clock here");
+#endif
     return 0;
 }
 
@@ -8082,6 +8122,7 @@ static int run_headless(int argc, char** argv) {
     if (getenv("SNX_TEST_RECORDER_ONLY")) { /* the recording thread's own sync alone, on the driver the loader picks */
         CHECK(!check_recorder_self_sync());
         CHECK(!check_release_stopped_recorder());
+        CHECK(!check_recorder_drain_sleeps());
         vk_finish();
         vk_pipeline_quiesce();
         printf("PASS headless Vulkan recorder only: %u validation messages\n", g_vk_validation_messages);
@@ -8089,6 +8130,7 @@ static int run_headless(int argc, char** argv) {
     }
     CHECK(!check_recorder_self_sync());
     CHECK(!check_release_stopped_recorder());
+    CHECK(!check_recorder_drain_sleeps());
     viw_install();
     /* every check with each draw binding the pipeline linked from its parts and never the one made whole
        (SNX_TEST_GPL=linked), or with each pipeline made whole, with the dynamic state the libraries gave (whole) */

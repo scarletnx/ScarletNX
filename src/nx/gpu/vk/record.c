@@ -36,6 +36,7 @@ typedef struct {
    frames took 5% fewer cycles. The producer waits for room only when the recording thread is a whole frame behind */
 #define REC_CAP     (4ull << 20)
 #define REC_PUBLISH (32ull << 10)
+#define REC_DRAIN_SPIN_NS 100000 /* a drain's wait yields this long before it sleeps */
 
 static u8* g_ring;
 static int g_rec = -1; /* recording on the thread: 1, at once: 0, not decided yet: -1 */
@@ -47,6 +48,8 @@ static _Atomic u64 g_tail;
 static char g_pad1[64];
 static _Atomic u32 g_rec_tid; /* the recording thread's plat_tid: a vk_rec_sync from it waits for no one */
 static _Atomic int g_sleep;   /* the consumer waits on g_cv for more */
+/* 1 while vk_rec_sync_until sleeps for the ring to drain: the consumer wakes it when it moves g_tail */
+static _Atomic u32 g_drain_wait;
 static PMutex g_m;
 static PCond g_cv;
 
@@ -79,7 +82,11 @@ static void rec_thread(void* arg) {
         }
         SNX_ZONE_VALUE(z_rec, records);
         SNX_ZONE_END(z_rec);
-        atomic_store_explicit(&g_tail, tail, memory_order_release);
+        atomic_store_explicit(&g_tail, tail, memory_order_seq_cst); /* ordered with the waiter's check, as g_head is */
+        if (atomic_load_explicit(&g_drain_wait, memory_order_seq_cst)) {
+            atomic_store_explicit(&g_drain_wait, 0, memory_order_seq_cst);
+            plat_wake_word(&g_drain_wait);
+        }
     }
 }
 
@@ -179,12 +186,25 @@ int vk_rec_sync_until(u64 until) {
     if (atomic_load_explicit(&g_rec_tid, memory_order_acquire) == self) return 1;
     vk_lock(); /* no command is added meanwhile */
     publish();
+    /* Most waits end within the commands of a submission, which yielding rides out. A packet that takes long (a
+       pipeline or a shader object made by the driver, hundreds of milliseconds) had this thread yield at full speed for
+       as long: a core of the GPU thread's in every frame that made a pipeline. Past REC_DRAIN_SPIN_NS it sleeps until
+       the consumer moves its tail, or until the wait's deadline */
+    const u64 spin_until = plat_ns() + REC_DRAIN_SPIN_NS;
     while (atomic_load_explicit(&g_tail, memory_order_acquire) != g_pending) {
-        if (until != VK_REC_FOREVER && plat_ns() >= until) {
+        const u64 now = plat_ns();
+        if (until != VK_REC_FOREVER && now >= until) {
             drained = 0;
             break;
         }
-        plat_yield();
+        if (now < spin_until) {
+            plat_yield();
+            continue;
+        }
+        atomic_store_explicit(&g_drain_wait, 1, memory_order_seq_cst);
+        if (atomic_load_explicit(&g_tail, memory_order_seq_cst) != g_pending)
+            plat_wait_word(&g_drain_wait, 1, until == VK_REC_FOREVER ? -1 : (i64)(until - now));
+        atomic_store_explicit(&g_drain_wait, 0, memory_order_seq_cst);
     }
     vk_unlock();
     return drained;
