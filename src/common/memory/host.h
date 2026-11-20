@@ -34,7 +34,8 @@ void snx_host_memory_close(SnxHostMemory* memory);
 /* size bytes, inaccessible; NULL on failure */
 unsigned char* snx_host_reserve(uint64_t size);
 void snx_host_release(unsigned char* base, uint64_t size);
-/* at, offset and size in pages; permissions SNX_HOST_READ, SNX_HOST_WRITE, SNX_HOST_EXEC */
+/* at, offset and size in bytes, each a multiple of the host's page; permissions SNX_HOST_READ, SNX_HOST_WRITE,
+   SNX_HOST_EXEC */
 bool snx_host_map(const SnxHostMemory* memory, unsigned char* base, uint64_t at, uint64_t offset, uint64_t size,
                   unsigned permissions);
 /* private memory of zeros, readable and writable, in place of what the reservation holds there */
