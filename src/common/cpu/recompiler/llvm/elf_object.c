@@ -99,7 +99,8 @@ int snx_elf_parse(SnxElfObject* o, const SnxLinkInput* input, unsigned* machine,
     for (size_t i = 0; i < o->eh->e_shnum; ++i) {
         const Elf64_Shdr* s = &o->sh[i];
         o->kind[i] = -1;
-        if (s->sh_type != SHT_NOBITS && s->sh_offset + s->sh_size > input->size)
+        /* the size against what is left after the offset: their sum wraps for an offset near 2^64 */
+        if (s->sh_type != SHT_NOBITS && (s->sh_offset > input->size || s->sh_size > input->size - s->sh_offset))
             return snx_link_fail(error, error_size, "%s: truncated section%s", input->name, "");
         if (s->sh_type == SHT_SYMTAB) {
             o->syms = (const Elf64_Sym*)(input->data + s->sh_offset);
