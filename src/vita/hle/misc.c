@@ -372,8 +372,9 @@ static uint32_t save_data_data_save(VitaProcess* p, VitaThread* t) {
                                ? !snx_mkdirs(path)
                                : save_file(path, buffer ? vita_ptr(p, buffer) : NULL, buffer ? size : 0, offset,
                                            mode == SAVE_MODE_FILE_TRUNCATE));
+        bool named = path != NULL; /* read before the path is freed */
         free(path);
-        if (!ok) return path ? SCE_APPUTIL_ERROR_SAVEDATA_NO_SPACE_FS : SCE_APPUTIL_ERROR_PARAMETER;
+        if (!ok) return named ? SCE_APPUTIL_ERROR_SAVEDATA_NO_SPACE_FS : SCE_APPUTIL_ERROR_PARAMETER;
     }
     if (!slot) return 0;
     unsigned char param[SLOT_PARAM_SIZE];
