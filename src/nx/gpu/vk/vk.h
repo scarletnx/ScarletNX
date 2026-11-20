@@ -1278,6 +1278,7 @@ typedef struct Surf {
     u32 row;
     u64 bytes; /* the device memory its image takes */
     int took_drawn; /* textures: pixels copied from render targets since the last upload (memory may not have them) */
+    u64 took_wseq;  /* textures: the newest change (wseq) of the surfaces those pixels came from */
     /* storage images: the serial of the owner the last publish put over its texels (vk_surf_publish), 0 before one.
        Bytes that owner still holds are the image's own (texture.c pieces_published) */
     u64 pub_serial;
@@ -1550,6 +1551,7 @@ void vk_surf_add(Surf* s); /* a texture, into the table and the textures' recenc
 void vk_surf_touch(Surf* s);
 /* s's pixels can be had again now: off the list of old ones whose pixels would be lost, if it is on it */
 void vk_surf_relist(Surf* s);
+int vk_surf_lossless(const Surf* s); /* its pixels can be had again once it goes: from memory, or later targets */
 VkImageAspectFlags vk_aspect(const VkFmt* f);
 /* frees textures (VK_LRU_TEX) or render targets (VK_LRU_RT), the least recently used first, last used before the
    present `before`, until `want` bytes went. lossy says which: VK_RECLAIM_LOSSLESS only those whose pixels can be had

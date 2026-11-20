@@ -2714,23 +2714,36 @@ void vk_rt_watch_owed(void) {
     }
 }
 static u64 g_drawn_max; /* the biggest span a listed target has: how far before an address one over it can start */
-/* Whether every byte of s's span was drawn over after s last changed, by targets drawn later, each over its own span:
-   memory holds their pixels now (or would on the console), so s's are no one's to read and it goes without loss. A
-   game rendering at a dynamic resolution makes its scene's targets again at another size each frame over the same
-   memory, and each old one held a draw memory never got: kept as precious, a few thousand took the budget from the
-   targets that are (one game's ink maps, drawn once at a level's start, went under that pressure with the budget
-   lowered, and its walls took no ink). The drawn list is in order of address, so the targets over s are a sweep from its start */
-static int rt_superseded(const Surf* s) {
-    u64 lo = s->gva & ~(1ull << 63), hi = lo + s->rt_size, reach = lo;
-    if (!s->is_rt || !s->rt_size) return 0;
+/* Whether every byte of [lo, hi) was drawn over by targets other than self drawn after `after`, each over its own
+   span: memory holds their pixels now (or would on the console). Of a target drawn over after it last changed
+   (rt_superseded), its own pixels are then no one's to read, and it goes without loss. A game rendering at a dynamic
+   resolution makes its scene's targets again at another size each frame over the same memory, and each old one held a
+   draw memory never got: kept as precious, a few thousand took the budget from the targets that are (one game's ink
+   maps, drawn once at a level's start, went under that pressure with the budget lowered, and its walls took no ink).
+   The drawn list is in order of address, so the targets over [lo, hi) are a sweep from lo */
+static int drawn_covers(u64 lo, u64 hi, u64 after, const Surf* self) {
+    u64 reach = lo;
     for (int i = drawn_lower(lo > g_drawn_max ? lo - g_drawn_max : 0); i < g_ndrawn && g_drawn[i]->drawn_from <= reach;
          i++) {
         const Surf* o = g_drawn[i];
-        if (o == s || o->draw_wseq <= s->wseq || o->drawn_from + o->rt_size <= reach) continue;
+        if (o == self || o->draw_wseq <= after || o->drawn_from + o->rt_size <= reach) continue;
         reach = o->drawn_from + o->rt_size;
         if (reach >= hi) return 1;
     }
     return 0;
+}
+static int rt_superseded(const Surf* s) {
+    const u64 lo = s->gva & ~(1ull << 63);
+    return s->is_rt && s->rt_size && drawn_covers(lo, lo + s->rt_size, s->wseq, s);
+}
+/* The same of a texture that took pixels from render targets (tex_take_drawn): every byte of its span drawn over by
+   targets drawn after the newest it took (took_wseq). Its pixels are older than theirs, which a texture made there
+   takes again, so it goes as one loaded from memory does, the game's ended ones first (ended_reclaim). A racing game at
+   a dynamic resolution, which draws its scene to targets of a new size each frame, held 4.8 GB of textures with no live
+   texture object at their address, and its trims moved 1.8 GB of textures into system memory */
+static int tex_superseded(const Surf* t) {
+    return !t->is_rt && t->took_drawn && t->size && !(t->gva >> 63) &&
+           drawn_covers(t->gva, t->gva + t->size, t->took_wseq, t);
 }
 void vk_rt_kinds(VkRtKinds* k) {
     *k = (VkRtKinds){0};
@@ -2897,15 +2910,16 @@ static int keeps_drawn(Surf* s) {
     return s->f.depth ? s->layout != VK_IMAGE_LAYOUT_UNDEFINED : vk_rt_drawn_fresh(s);
 }
 /* a surface whose pixels can be had again once it goes. A texture: loaded from memory, unless it took pixels from
-   render targets since. A render target: without defined contents, or with memory holding what it holds (written back
+   render targets since that later ones did not draw over (tex_superseded). A render target: without defined contents, or with memory holding what it holds (written back
    or loaded since its last draw, in a format that moves between the two; rt_create loads it again), or with every
    byte drawn over by later targets (rt_superseded). A parked one too only then: taken out of parking it gives back
    its own pixels, which memory, written by neither target's draws, doesn't have */
 static int lossless(const Surf* s) {
-    if (!s->is_rt) return !s->took_drawn;
+    if (!s->is_rt) return !s->took_drawn || tex_superseded(s);
     if (s->layout == VK_IMAGE_LAYOUT_UNDEFINED) return 1;
     return (!s->f.depth && s->f.raw && s->mem_wgen == s->wgen && moves_scaled(s)) || rt_superseded(s);
 }
+int vk_surf_lossless(const Surf* s) { return lossless(s); }
 /* s out of the table and freed, with its copies (gpu/vk/texture.c rt_crop): the device memory that releases */
 /* a texture where an eviction would take it (want: bytes of the GPU's memory are asked for): moved into system memory
    (vk_tex_demote), else evicted. One in system memory already frees none of the GPU's memory: it stays for such a

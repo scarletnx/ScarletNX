@@ -6630,6 +6630,36 @@ static int check_take_after_writes(void) {
     free(ch);
     return 0;
 }
+/* A texture that took a target's pixels holds pixels only it has until targets drawn after the take cover all of its
+   span, and none after (surface.c tex_superseded): a texture made there takes theirs. A 16 by 64 target drawn first
+   spans all of it but counts for nothing, being older than the take. The texture's two levels of 16 by 16 are a 16 by
+   16 target's 1 KiB, drawn over that one, then 512 bytes the same target drawn again leaves; a 16 by 32 target drawn
+   there after covers both */
+static int check_take_drawn_over(void) {
+    const u64 under = 0x4C0040000ull, gva = under + 0x400, cpu = HEAP_BASE + 0x530000;
+    const u32 rgba8 = 0x08 | 2u << 7 | 2u << 10 | 2u << 13 | 2u << 16;
+    const u32 tic[8] = {rgba8, (u32)gva, (u32)(gva >> 32) | 3u << 21, 1u << 28, 15 | 1u << 23, 15, 0, 1u << 4};
+    GpuChannel* ch = calloc(1, sizeof *ch);
+    CHECK(ch);
+    gmmu_map(under, cpu, 0x10000);
+    rt_clear(ch, under, 16, 64, 0, 1); /* 4 KiB from under: all of the texture's span, before the take */
+    rt_clear(ch, gva, 16, 16, 0, 0);
+    vk_lock();
+    Surf* t = vk_tex_from_tic(tic);
+    CHECK(t && !t->is_rt && t->took_drawn && t->size > 0x400 && t->size <= 0xC00 && !vk_surf_lossless(t));
+    vk_unlock();
+    rt_clear(ch, gva, 16, 16, 0, 1); /* the same target again: its first level alone drawn over */
+    vk_lock();
+    CHECK(!vk_surf_lossless(t));
+    vk_unlock();
+    rt_clear(ch, gva, 16, 32, 0, 0); /* a taller one: both levels drawn over after the take */
+    vk_lock();
+    CHECK(vk_surf_lossless(t));
+    vk_unlock();
+    puts("drawn targets into textures: one holds pixels only it has until targets drawn after it cover all of it");
+    free(ch);
+    return 0;
+}
 /* A clear whose targets' group (DsState.gen[DS_TARGETS]) and the surface table are as the last draw's or clear's keeps
    its targets (read_targets, g_vk_targets_kept) and clears them; another target, or the table changed under the same
    registers (a texture made elsewhere), looks them up again */
@@ -8937,6 +8967,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_blit());
     CHECK(!check_blit_bands());
     CHECK(!check_take_after_writes());
+    CHECK(!check_take_drawn_over());
     CHECK(!check_targets_kept());
     CHECK(!check_uma_in_flight());
     CHECK(!check_uma_trap_ranges());

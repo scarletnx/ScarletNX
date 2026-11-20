@@ -192,7 +192,6 @@ int vk_tex_can_coarsen(const Surf* t) { stub_hit("vk_tex_can_coarsen"); }
 u64 vk_tex_coarser(Surf* t) { stub_hit("vk_tex_coarser"); }
 u64 vk_tex_demote(Surf* t) { stub_hit("vk_tex_demote"); }
 u32 vk_mem_owner_prio(u32 owner) { stub_hit("vk_mem_owner_prio"); }
-void vk_tex_evicted(const Surf* t) { stub_hit("vk_tex_evicted"); }
 int vk_tex_finer(Surf* t) { stub_hit("vk_tex_finer"); }
 void vk_tex_note_writeback(Surf* s) { stub_hit("vk_tex_note_writeback"); }
 int vk_tex_promote(Surf* t) { stub_hit("vk_tex_promote"); }
@@ -213,6 +212,9 @@ u32 vk_ww_now(void) { stub_hit("vk_ww_now"); }
 VkFmt vk_zt_format(u32 fmt) { stub_hit("vk_zt_format"); }
 int mem_lock_held(void) { stub_hit("mem_lock_held"); }
 
+/* the texture cache's count of evictions, which a texture the trim takes adds to */
+static u32 g_tex_evicted;
+void vk_tex_evicted(const Surf* t) { g_tex_evicted++; }
 /* the clock of the resource statistics (vk_resource_begin) */
 uint64_t plat_ns(void) { return 0; }
 /* the texture objects the game ended (gpu.c): none */
@@ -480,6 +482,34 @@ static int forced_holes_take(u64 holes) {
     return held == 1;
 }
 
+/* A texture that took pixels from targets (took_drawn, the newest at wseq 5) and a target over [from, from + span) drawn
+   at `wseq`, and the sweep of idle textures (VK_RECLAIM_LOSSLESS, all it finds): drawn after the take over all of the
+   texture's span, the target holds newer pixels than the texture's (tex_superseded), and the sweep takes the texture;
+   drawn before the take, or over a part of the span, the texture holds pixels only it has and goes to the aged list.
+   1 when the sweep took it */
+static int texture_drawn_over(u64 from, u64 span, u64 wseq) {
+    g_vk_present += 1000;
+    Surf* t = calloc(1, sizeof *t);
+    CHECK(t);
+    t->gva = 0x58000000;
+    t->size = t->bytes = 1 << 20;
+    t->took_drawn = 1;
+    t->took_wseq = 5;
+    row_take(t);
+    lru_add(t, VK_LRU_TEX);
+    t->last_used = g_vk_present - 100;
+    drawn_over(target(from, span, wseq));
+    const u32 evicted = g_tex_evicted;
+    vk_surf_reclaim(VK_LRU_TEX, g_vk_present, ~0ull, VK_RECLAIM_LOSSLESS);
+    const int taken = g_tex_evicted == evicted + 1;
+    CHECK(taken ? !g_rows.lists[VK_LRU_TEX + LRU_AGED].head
+                : g_rows.surf[g_rows.lists[VK_LRU_TEX + LRU_AGED].head] == t);
+    if (!taken) surf_evict(t);
+    while (g_rows.lists[VK_LRU_RT].head) surf_evict(g_rows.surf[g_rows.lists[VK_LRU_RT].head]);
+    CHECK(!g_rows.lists[VK_LRU_TEX].head && !g_rows.lists[VK_LRU_TEX + LRU_AGED].head && !g_ndrawn);
+    return taken;
+}
+
 int main(void) {
     g_budget = 1ull << 30;
     g_vk_present = 1000;
@@ -500,9 +530,13 @@ int main(void) {
     CHECK(gap_once_a_present());
     /* for an allocation, the free space inside the blocks counts for what went unused for a second */
     CHECK(forced_holes_take(128u << 20) && forced_holes_take(320u << 20) && !forced_holes_take(0));
+    /* a texture with pixels from targets: taken once a later one drew over all of it, kept otherwise */
+    CHECK(texture_drawn_over(0x58000000, 1 << 20, 6) && texture_drawn_over(0x57f00000, 2 << 20, 6));
+    CHECK(!texture_drawn_over(0x58000000, 1 << 20, 5) && !texture_drawn_over(0x58001000, 1 << 20, 6));
     printf(
         "vk_mem_trim: the trims kept and took the targets drawn over and the idle ones as they should, the memory in "
-        "flight and the free space inside the blocks counted; a target with pixels memory lacks stayed for its age "
+        "flight and the free space inside the blocks counted, a texture with pixels from targets once later ones drew over "
+        "it; a target with pixels memory lacks stayed for its age "
         "and went under the pressure where it can't move, loaded memory again where its bytes changed meanwhile, and "
         "targets in system memory went oldest first while the system heap was short\n");
     return 0;
