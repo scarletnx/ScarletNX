@@ -137,7 +137,10 @@ u64 write_pages_newest(const WritePages* t, u64 a, u64 size) {
             p |= LEAF_PAGES - 1; /* nothing newer in this leaf: the next one */
             continue;
         }
+        /* the page's own stamp, or its group's when a range stamped the whole group at once */
         u64 g = atomic_load_explicit(&l->gen[p & (LEAF_PAGES - 1)], memory_order_relaxed);
+        u64 all = atomic_load_explicit(&l->group_all[(p & (LEAF_PAGES - 1)) / GROUP_PAGES], memory_order_relaxed);
+        if (all > g) g = all;
         if (g > newest) newest = g;
     }
     return newest;
