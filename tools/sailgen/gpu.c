@@ -1357,6 +1357,14 @@ int sg_gpu_generate(const char* roots_path, const char* const* backend_paths, in
                    g_roots.prefix, r->name);
     }
     sg_out("        default: return 0;\n    }\n}\n");
+    /* whether a root takes op: a translator refuses an opcode none takes before it writes anything */
+    sg_out("[[maybe_unused]] static int %s_takes(int op) {\n    switch (op) {\n", g_roots.prefix);
+    for (i = 0; i < g_roots.nroots; ++i) {
+        Root* r = &g_roots.roots[i];
+        if (r->fuse) continue;
+        for (k = 0; k < r->nops; ++k) sg_out("        case %s:\n", r->ops[k]);
+    }
+    sg_out("            return 1;\n        default: return 0;\n    }\n}\n");
     /* the fusions: at the instructions whose opcodes are ops (avail of them, the first the one being translated, none
        after it a branch lands on), the first fusion whose opcodes and guard they meet, run: how many it took, 0 for
        none. The back end's g holds the instructions (sg_fuse_at) */
