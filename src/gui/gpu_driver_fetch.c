@@ -2,7 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 /* gui/gpu_driver_fetch.h. The repositories, a release's fields and which one is the latest, the newest-first order and
    the recommendation by model are Eden's (DriverFetcherFragment.kt: repoList, Release.fromJson, driverMap,
-   parseAdrenoModel); NX-Mali, FristOneRR's PanVK, radv-xclipse and the proprietary mark are ScarletNX's */
+   parseAdrenoModel); the Mali drivers, radv-xclipse and the proprietary mark are ScarletNX's */
 #include "gui/gpu_driver_fetch.h"
 #include "common/utilities/ascii.h"
 #include "gui/i18n.h"
@@ -21,7 +21,9 @@ const GuiDriverRepo gui_driver_repos[GUI_DRIVER_REPOS] = {
     {"NX-Mali", "Slopinator99/NX-Mali", 0, 0, GUI_DRIVER_MALI, 3},
     {"RADV Xclipse", "JimVulkan/radv-xclipse", 1, 0, GUI_DRIVER_XCLIPSE, 0}, /* its releases share one name */
     /* PanVK on kbase, its zips Add Driver's packages; its release names vary, its tags are the versions */
-    {"FristOneRR PanVK", "FristOneRR/FristOneRR-Panvk-Driver", 1, 0, GUI_DRIVER_MALI, 0}};
+    {"FristOneRR PanVK", "FristOneRR/FristOneRR-Panvk-Driver", 1, 0, GUI_DRIVER_MALI, 0},
+    /* the driver NX-Mali forks, recommended nowhere: it says Vulkan 1.1 (0.5.1), below the 1.2 a device needs */
+    {"MaliSX2", "bmdhacks/malisx2", 0, 0, GUI_DRIVER_MALI, 0}};
 
 /* whether text has part, in any case */
 static int has_nocase(const char* text, const char* part) {
