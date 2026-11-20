@@ -153,6 +153,19 @@ static int nn_am_service_IStorageAccessor_GetSize(SvcObj* self, i64* size) {
     *size = (i64)((StorageData*)((AmAccessor*)self->data)->storage->data)->size;
     R_SUCCEED();
 }
+static int nn_am_service_ITransferStorageAccessor_GetSize(SvcObj* self, i64* size) {
+    *size = (i64)((StorageData*)((AmAccessor*)self->data)->storage->data)->size;
+    R_SUCCEED();
+}
+/* the storage's transfer memory, a handle of the game's own to it, with the size the storage was made with: what the
+   SDK's GetHandle hands an applet's code to map (OpenTransferStorage opens no storage that has none) */
+static int nn_am_service_ITransferStorageAccessor_GetHandle(SvcObj* self, i64* size, u32* transfer_memory) {
+    StorageData* s = (StorageData*)((AmAccessor*)self->data)->storage->data;
+    *size = (i64)s->size;
+    *transfer_memory = h_new(kobj_at(s->tmem));
+    R_UNLESS(*transfer_memory, SNX_RC_SVC_OUT_OF_HANDLES);
+    R_SUCCEED();
+}
 static int nn_am_service_IStorageAccessor_Write(SvcObj* self, i64 offset, IpcBuf data) {
     SvcObj* st = ((AmAccessor*)self->data)->storage;
     u64 size = ((StorageData*)st->data)->size;
