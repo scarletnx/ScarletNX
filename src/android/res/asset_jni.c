@@ -11,7 +11,7 @@
 #include <string.h>
 
 static struct {
-    jfieldID type, data, cookie, resource, changing, density, string, source;
+    jfieldID type, data, cookie, resource, changing, density, string;
 } typed_value;
 
 static ArscAssets* assets_of(jlong h) {
