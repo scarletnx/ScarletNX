@@ -891,6 +891,7 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
                 goto done;
             }
             if (analysis && akey[0]) {
+                error[0] = '\0';
                 if (snx_analysis_cache_store(analysis, akey, &codegen, error, sizeof error))
                     if (!options->quiet) snx_error("analysis cache store: %s", error);
             }
