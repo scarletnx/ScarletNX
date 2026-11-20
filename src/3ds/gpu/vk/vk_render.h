@@ -15,8 +15,9 @@
      their pages are watched, and a write to them, the CPU's or a GPU engine's, drops them.
    - A display transfer's destination is kept at the source target's render scale (Shown), with the target's rows the
      transfer read, and the bytes the transfer wrote: the presenter shows that copy for a framebuffer inside the
-     destination, where the framebuffer's memory still is those bytes, and the memory's own pixel where it is not. A GPU
-     engine's write or a draw over it drops it; a CPU write is left to that compare.
+     destination, where the framebuffer's memory still is those bytes, and the memory's own pixel where it is not. Only
+     a GPU engine's write over it drops it. A draw into the target or a CPU write is left to that compare, and the
+     presenter first syncs the dirty targets over the copy into memory (snx_ctr_present_frame).
    - Memory the GPU writes (stores, transfers, fills, Y2R) is the GPU's until the submission that writes it is done,
      or, where the work is on a copy of the RAM (vk.h), until the CPU touches it and it is copied back.
    Vertex and index data are read where the work is: the RAM in place, or its copy. A draw with a geometry shader runs
@@ -49,14 +50,28 @@ typedef struct {
    framebuffer's memory with, pixel by pixel. Marks what it finds as used. False when no such image is kept. */
 bool snx_ctr_vk_target_image(uint32_t pa, unsigned width, unsigned height, unsigned format, unsigned pitch,
                              SnxCtrVkScaled* scaled);
-/* A display transfer from input to output, after its snx_ctr_vk_sync calls: width x height output pixels from the
-   first (width << hs) x (height << vs) pixels of the input in memory's order, each output pixel the mean of 2 (hs) or
-   4 (hs and vs) input pixels, rows reversed when flip. When the input is a colour target at a render scale above the
-   console's, in_width pixels wide, in_format, or whole rows of 8x8 tiles into one, its rows are copied at that scale
-   into a destination kept for output, in out_format, for snx_ctr_vk_target_image, with the bytes the dispatch wrote to
-   that output. A target at the console's scale keeps nothing. */
-void snx_ctr_vk_target_transfer(uint32_t input, uint32_t output, unsigned in_width, unsigned width, unsigned height,
-                                unsigned in_format, unsigned out_format, unsigned hs, unsigned vs, bool flip);
+/* A display transfer's scaled source: the target whose colour holds the rows the transfer reads, found by
+   snx_ctr_vk_target_source before the transfer's sync of its output, which stales a target over that output. target is
+   the target's index in the kept targets plus one (0 for none), first the input's first row in it */
+typedef struct {
+    uint32_t target, first;
+} SnxCtrVkSource;
+/* The scaled source of a display transfer from input (in_width pixels wide, in_format) to width x height output pixels
+   reduced by hs and vs: the scaled target whose colour holds those rows from a whole strip of 8x8 tiles, else none */
+SnxCtrVkSource snx_ctr_vk_target_source(uint32_t input, unsigned in_width, unsigned width, unsigned height,
+                                        unsigned in_format, unsigned hs, unsigned vs);
+/* A display transfer's output, after its snx_ctr_vk_sync calls and dispatch: width x height output pixels from the
+   first (width << hs) x (height << vs) pixels of its input in memory's order, each output pixel the mean of 2 (hs) or
+   4 (hs and vs) input pixels, rows reversed when flip. When source is a target, its rows are copied at its scale into
+   a destination kept for output, in out_format, for snx_ctr_vk_target_image, with the bytes the dispatch wrote to that
+   output. A target at the console's scale keeps nothing. */
+void snx_ctr_vk_target_transfer(SnxCtrVkSource source, uint32_t output, unsigned width, unsigned height,
+                                unsigned out_format, unsigned hs, unsigned vs, bool flip);
+/* After a tiled display transfer's snx_ctr_vk_sync calls and dispatch: a destination target of the same size, format,
+   scale and flip as its source takes the transfer's result as its scaled image, by one dispatch, and is valid then.
+   Otherwise nothing changes */
+void snx_ctr_vk_target_fill(SnxCtrVkSource found, uint32_t output, unsigned width, unsigned height, unsigned in_format,
+                            unsigned out_format, unsigned hs, unsigned vs, bool flip);
 /* write tracking's handler (snx_ctr_track_handler), which the device installs: an owned page's targets stored and
    its GPU writes waited for, or its copy copied back; a watched page's textures and targets dropped, its display
    transfer copies left to the presenter's compare, and its copy stale */

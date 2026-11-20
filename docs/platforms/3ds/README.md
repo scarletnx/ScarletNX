@@ -679,12 +679,19 @@ writes the last frame of both screens as one PPM to exactly PATH, the top above 
 bottom as the window shows them.
 
 How a target's render scale is chosen and kept:
+- A target 400 rows high takes the top screen's setting, a target 320 rows high the bottom screen's, and any
+  other target the larger of the two, as far as the device's largest image size allows. A target whose scaled
+  images the device has no room for is drawn at scale 1.
 - A texture without mipmaps, other than a cube or shadow map, that covers a scaled colour target's whole image,
   in the target's format, is filled from the scaled image.
 - A texture without mipmaps, other than a cube or shadow map, that covers a scaled depth buffer is filled from
   the scaled depth when the buffer is D24S8 and the texture RGBA8, D24 and RGB8, or D16 and RGB565, RGB5A1 or RGBA4.
 - A target that opens over a depth buffer last drawn by another target of the same size, format, scale and flip
   copies that target's scaled depth.
+- A tiled display transfer from a scaled target into another target of the transfer's size and format, with the same
+  scale and flip, fills that target's scaled image when the transfer covers whole 8x8 tiles.
+- A shadow map is drawn at the scale, and its stored words are each block's centre texel.
+- A cube shadow map and a flipped shadow map are read from memory at scale 1.
 
 The separate windows and the two render resolutions are checked by `3ds_windows`: each
 screen takes its own setting's scale and no other's, both screens present, and the PPM

@@ -97,18 +97,28 @@ SnxCtrXferResult snx_ctr_vk_display_transfer(const SnxCtrDisplayTransfer* t, uin
                              (flags & SNX_CTR_XFER_NO_SWIZZLE ? 4u : 0u),
                          skew};
     snx_ctr_vk_sync(input, (uint32_t)in_bytes, false); /* the draws over its input stored first */
-    snx_ctr_vk_sync(output, (uint32_t)out_bytes, true);
     /* a target's tiles into a framebuffer */
     bool target = !skew && !(flags & (SNX_CTR_XFER_LINEAR | SNX_CTR_XFER_NO_SWIZZLE));
+    /* a tiled transfer into another target */
+    bool tiled = !skew && !(flags & SNX_CTR_XFER_LINEAR) && (flags & SNX_CTR_XFER_NO_SWIZZLE);
+    /* the output's sync stales a target over it, but the rows read, which the write misses, are still in its image */
+    bool clash = (uint64_t)input < (uint64_t)output + out_bytes && (uint64_t)output < (uint64_t)input + in_bytes;
+    SnxCtrVkSource source = {0, 0};
+    if ((target || tiled) && !clash) /* a destination over the rows read takes no copy, as before */
+        source = snx_ctr_vk_target_source(input, in_w, push[3], push[4], in_fmt, scaling != 0, scaling == 2);
+    snx_ctr_vk_sync(output, (uint32_t)out_bytes, true);
     VkCommandBuffer cb = snx_ctr_vk_commands();
     snx_ctr_vk_compute_barrier(cb);
     bind(cb, &g_transfer.display, w, 2, push, sizeof push);
     vkCmdDispatch(cb, (push[3] + 7) / 8, (push[4] + 7) / 8, 1);
     if (target)
-        /* input, output, the input's width, the output's width and height, the input's and output's formats, the
+        /* the source found above, the output, the output's width and height, the output's format, the
            horizontal and vertical reduction, and the flip */
-        snx_ctr_vk_target_transfer(input, output, in_w, push[3], push[4], in_fmt, out_fmt, scaling != 0, scaling == 2,
+        snx_ctr_vk_target_transfer(source, output, push[3], push[4], out_fmt, scaling != 0, scaling == 2,
                                    (flags & SNX_CTR_XFER_FLIP) != 0);
+    if (tiled)
+        snx_ctr_vk_target_fill(source, output, push[3], push[4], in_fmt, out_fmt, scaling != 0, scaling == 2,
+                               (flags & SNX_CTR_XFER_FLIP) != 0);
     return SNX_CTR_XFER_OK;
 }
 
