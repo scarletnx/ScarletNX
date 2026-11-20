@@ -798,7 +798,8 @@ static int indirect_rest_cases(GpuChannel* channel, u64 target, u64 indices, u64
 }
 
 /* The runs of direct draws that record.c counts with vk_draw_runs=1 (VkRecRuns): the same indexed draw three times
-   with nothing else between them, then once from another first index, then once with two instances */
+   with nothing else between them, then once with the index buffer bound six indices on, then once with two
+   instances; and the index ranges the renderer's own draws look up (VkDrawCounts.top) */
 static int draw_runs_case(GpuChannel* channel, u64 target, u64 indices) {
     const u32 list[12] = {4, 5, 7, 5, 6, 7, 4, 5, 7, 5, 6, 7};
     const int was_on = g_settings.draw_run_stats;
@@ -822,23 +823,34 @@ static int draw_runs_case(GpuChannel* channel, u64 target, u64 indices) {
     rt_clear(channel, target, 4, 4, 0, 1);
     channel->r3d_dirty = ~0u;
     mx_draw_state_sync(channel);
-    vk_render_draw(&channel->ds, &call, &channel->owner); /* after the clear: it starts a run of every key */
-    vk_rec_runs(&before);
+    /* the index buffer as a draw binds it, looked up before the pass the draws below open */
+    VkBuffer bound;
+    u64 bound_at;
+    CHECK(vk_buf_get_input(indices, 24, 2, &bound, &bound_at));
+    vk_render_draw(&channel->ds, &call, &channel->owner);
     vk_draw_counts(&tops[0]);
     vk_render_draw(&channel->ds, &call, &channel->owner);
     vk_render_draw(&channel->ds, &call, &channel->owner);
-    vk_rec_runs(&after);
     vk_draw_counts(&tops[1]);
+    /* The runs, from commands given to the ring here, in the pass and with the state those draws left: what the
+       renderer records between two of its own draws hangs on the clock too (a periodic submission), and the vk_lock
+       held keeps every other producer out. The first draw, after a binding of its own, starts a run of every key */
+    VkCommandBuffer cb = vk_cmd();
+    rec_CmdBindIndexBuffer(cb, bound, bound_at, VK_INDEX_TYPE_UINT16);
+    rec_CmdDrawIndexed(cb, 6, 1, 0, 0, 0);
+    vk_rec_runs(&before);
+    rec_CmdDrawIndexed(cb, 6, 1, 0, 0, 0);
+    rec_CmdDrawIndexed(cb, 6, 1, 0, 0, 0);
+    vk_rec_runs(&after);
     for (u32 k = 0; k < VK_REC_RUN_KEYS; k++) equal[k] = after.runs[k] - before.runs[k];
     drawn = after.draws - before.draws;
     before = after;
-    call.first = 6; /* the same buffer from another index: the offset alone moved */
-    vk_render_draw(&channel->ds, &call, &channel->owner);
+    rec_CmdBindIndexBuffer(cb, bound, bound_at + 12, VK_INDEX_TYPE_UINT16); /* six indices on: the offset alone */
+    rec_CmdDrawIndexed(cb, 6, 1, 0, 0, 0);
     vk_rec_runs(&after);
     for (u32 k = 0; k < VK_REC_RUN_KEYS; k++) moved[k] = after.runs[k] - before.runs[k];
     before = after;
-    call.instances = 2; /* no multi-draw takes two instance counts */
-    vk_render_draw(&channel->ds, &call, &channel->owner);
+    rec_CmdDrawIndexed(cb, 6, 2, 0, 0, 0); /* no multi-draw takes two instance counts */
     vk_rec_runs(&after);
     for (u32 k = 0; k < VK_REC_RUN_KEYS; k++) instanced[k] = after.runs[k] - before.runs[k];
     /* the same indices written again: their highest index is found by a scan of the draw's six */
