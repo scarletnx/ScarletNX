@@ -137,6 +137,11 @@ page cache.
 - Owned spans are not write-tracked: their consumers use the ownership map. `plat_ww_scan` skips them. A span the
   trap lets go is mapped with `UFFDIO_CONTINUE` and registered for write tracking again while no scan runs: it reads as
   written once, with what the woken thread writes.
+- Unregistering a range wakes none of the minor faults sleeping on it (measured on 6.18: Linux wakes a missing-mode
+  range's only), and arming a page again unregisters it first. A thread whose fault a landing took already, and left
+  to the let_go of the landing that cut the page's entries, sleeps there for good when a new owner arms the page
+  before that let_go, which then keeps it trapped. So `plat_trap_arm` wakes the range it arms, and such a thread
+  faults again into the new owner (`tests/memory_own.c`'s `test_rearm_sleeper`).
 - `UFFD_USER_MODE_ONLY` (needed without privileges) means a system call that reads or writes an owned page from the
   kernel gets EFAULT rather than a fault. Every system call that takes a guest pointer and `pread`/`pwrite` on the
   pool first acquires the range (`own_acquire`): fs.c's IFile Read and Write and IStorage Read (the RomFS, a DLC's,
