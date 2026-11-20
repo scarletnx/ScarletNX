@@ -239,7 +239,7 @@ def main():
     a = ap.parse_args()
     if a.rounds < 3 or not 1 <= a.sets <= 16384 or any(not 1 <= n <= 34 for n in a.counts) or \
             any(not 0 <= n <= 16 for n in a.images) or any(not 0 <= n <= 256 for n in a.indexed):
-        ap.error('require at least3 rounds,1..16384 sets,1..34 buffers,0..16 images and0..256 indexed handles')
+        ap.error('require at least 3 rounds, 1..16384 sets, 1..34 buffers, 0..16 images and 0..256 indexed handles')
     bench = a.bench.resolve()
     if not bench.is_file():
         ap.error('build the snx-test-vulkan target first')

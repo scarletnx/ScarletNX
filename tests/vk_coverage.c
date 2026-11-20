@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* Validate mixed-sample coverage's feature gates and the independent16-entry NVN to N/C-entry Vulkan table map. */
+/* Validate mixed-sample coverage's feature gates and the independent 16-entry NVN to N/C-entry Vulkan table map. */
 #include "nx/gpu/vk/coverage.h"
 #include <stdio.h>
 #include <string.h>
