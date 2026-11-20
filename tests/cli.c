@@ -73,6 +73,14 @@ int main(void) {
                   !strcmp(error, "scarletnx-test: --seconds requires a positive number, not 0"),
               "--seconds=0: %s", error);
         CHECK(match(ALL, &i, &arg, error, sizeof error, c) == SNX_CLI_FRAMES && arg.number == 12, "--frames=12");
+        /* a count no long holds, and a negative one: refused with the value, not taken as the largest */
+        char *most[] = {"--frames=99999999999999999999", NULL}, *below[] = {"--frames=-1", NULL};
+        CHECK(match(ALL, &i, &arg, error, sizeof error, most) == SNX_CLI_ERROR &&
+                  !strcmp(error, "scarletnx-test: --frames requires a whole number, not 99999999999999999999"),
+              "--frames past a long: %s", error);
+        CHECK(match(ALL, &i, &arg, error, sizeof error, below) == SNX_CLI_ERROR &&
+                  !strcmp(error, "scarletnx-test: --frames requires a whole number, not -1"),
+              "--frames below 0: %s", error);
     }
     /* the short letters, and the flags that take no value but --fullscreen's 0 or 1 */
     {
