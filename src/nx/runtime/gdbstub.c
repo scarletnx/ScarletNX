@@ -56,7 +56,10 @@ static void monitor(int listener, int life, int gate, pid_t target, const char* 
     char ready, pid[32];
     signal(SIGPIPE, SIG_IGN);
     /* Parent first authorizes ptrace, then lets the helper accept clients. */
-    if (read(life, &ready, 1) != 1) goto done;
+    ssize_t began;
+    do began = read(life, &ready, 1); /* a signal as the helper starts is no end of the parent */
+    while (began < 0 && errno == EINTR);
+    if (began != 1) goto done;
     fds[0].fd = life;
     fds[0].events = POLLIN;
     fds[1].fd = listener;
