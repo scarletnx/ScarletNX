@@ -88,6 +88,27 @@ int main(void) {
                !strcmp(gui_driver_assets(&r)[0].name, "malisx2-0.5.1-308fe121c7.zip"));
         gui_driver_releases_free(&r);
     }
+    /* Zenithblue's PanVK, for every Mali no other driver is recommended on: its adrenotools zip alone */
+    {
+        static const char zenith_json[] =
+            "[{\"tag_name\": \"panvk-kbase-v26.3.1\", \"name\": \"Mesa PanVK panvk-kbase-v26.3.1\","
+            "  \"prerelease\": false,"
+            "  \"assets\": [{\"name\": \"Mesa-PanVK-Android-v26.3.1-795ca7ff-adrenotools.zip\", \"size\": 9100000,"
+            "    \"browser_download_url\": \"https://github.com/zenithblue-oss/a-adrenotools.zip\"},"
+            "   {\"name\": \"Mesa-PanVK-Android-v26.3.1-795ca7ff-winlator.zip\", \"size\": 9100000,"
+            "    \"browser_download_url\": \"https://github.com/zenithblue-oss/a-winlator.zip\"},"
+            "   {\"name\": \"libvulkan_panfrost-android-aarch64.so\", \"size\": 34850936,"
+            "    \"browser_download_url\": \"https://github.com/zenithblue-oss/a.so\"}]}]";
+        const GuiDriverRepo* zenith = &gui_driver_repos[9];
+        assert(!strcmp(zenith->path, "zenithblue-oss/panvk-kbase-android") && zenith->gpu == GUI_DRIVER_MALI);
+        assert(gui_driver_releases_parse(zenith_json, strlen(zenith_json), zenith, &r, why, sizeof why));
+        assert(r.count == 1 && r.assets_count == 1 &&
+               !strcmp(gui_driver_assets(&r)[0].name, "Mesa-PanVK-Android-v26.3.1-795ca7ff-adrenotools.zip"));
+        assert(!strcmp(gui_driver_recommended(10078), "Zenithblue PanVK") &&
+               !strcmp(gui_driver_recommended(10615), "NX-Mali 0.0.3") &&
+               gui_driver_recommended_release(10078, 9, &r) == 0);
+        gui_driver_releases_free(&r);
+    }
     /* GitHub's own error, said; what is no list of releases, said by its size */
     assert(!gui_driver_releases_parse("{\"message\": \"API rate limit exceeded for 1.2.3.4.\"}", 51, purple, &r, why,
                                       sizeof why) &&
@@ -155,7 +176,7 @@ int main(void) {
     /* a Mali's and an Xclipse's models; NX-Mali's latest recommended on a Mali it gives 1.3 from 0.0.3 on, by the
        version in its title, and radv-xclipse's on an Xclipse */
     assert(gui_gpu_model("Mali-G615 MC6") == 10615 && gui_gpu_model("Samsung Xclipse 940") == 20940 &&
-           gui_gpu_model("Adreno (TM) 615") == 615 && !strcmp(gui_driver_recommended(10078), "Unsupported"));
+           gui_gpu_model("Adreno (TM) 615") == 615 && !strcmp(gui_driver_recommended(20078), "Unsupported"));
     {
         static const struct {
             const char* title;
