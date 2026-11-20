@@ -422,6 +422,11 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
     add_test(NAME vulkan_headless_hot COMMAND snx-test-vulkan -H --write-tracking=1 --write-tracking-hot=1)
     set_tests_properties(vulkan_headless_hot PROPERTIES TIMEOUT 120
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+    # every check again with draw_state_check=1: a kept state that differs when it is made again fails it, and so does
+    # a read past the count a draw has of its buffers or images, which hold a pattern there (draw_storage_read)
+    add_test(NAME vulkan_headless_draw_state_check COMMAND snx-test-vulkan -H --draw-state-check=1)
+    set_tests_properties(vulkan_headless_draw_state_check PROPERTIES TIMEOUT 180
+        FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR;draw_state_check=1: a draw that kept")
     # the checks of guest memory read in place again with the write tracking by page protection: the driver takes an
     # import's pages for writing, and amdgpu refuses those a scan left protected (VK_ERROR_INVALID_EXTERNAL_HANDLE)
     add_test(NAME vulkan_uma_hot COMMAND snx-test-vulkan -H --vk-memory=2 --write-tracking=1 --write-tracking-hot=1)

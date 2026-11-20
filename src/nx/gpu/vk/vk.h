@@ -2496,7 +2496,6 @@ typedef struct {
    stages, geometry, fragment (ST_VS to ST_FS), then an Ounce's task and mesh stages (DS_TASK, DS_MESH) */
 #define VK_DRAW_STAGES DS_GFX_STAGES
 typedef struct {
-    VkDrawGbuf b[VK_DRAW_STAGES][16];
     int n[VK_DRAW_STAGES];
     VkBuffer map_buf[VK_DRAW_STAGES];
     u64 map_off[VK_DRAW_STAGES], map_size[VK_DRAW_STAGES];
@@ -2505,6 +2504,9 @@ typedef struct {
        the draw's vertex streams */
     u32 attr[32][4];
     u32 divisor[32];
+    /* last: a draw clears what is above and the n[stage] buffers each stage has (render.c's draw_storage_read), not
+       the 5 KiB of all of them. Nothing reads a stage's buffers past its count */
+    VkDrawGbuf b[VK_DRAW_STAGES][16];
 } VkDrawStorage;
 /* whether any stage of the draw reads or writes global memory */
 static inline int vk_draw_storage_any(const VkDrawStorage* draw) {

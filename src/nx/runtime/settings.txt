@@ -1420,7 +1420,8 @@ setting Draw state check
     help state's bytes). A kept constant buffer's bytes are hashed again (where the CPU wrote nothing since), a kept
     help texture view or sampler is made again, and a descriptor kept from an earlier frame is encoded again, and
     help compared too. A texture the quick check finds unchanged is checked the full way too, and the log counts where
-    help the full check found a change. Slow: for checking what a draw keeps
+    help the full check found a change. The buffers and images of a draw past the count it has of each, which a draw
+    help leaves unwritten, hold a pattern, so a read past a count shows. Slow: for checking what a draw keeps
 setting Profiler
     key profile
     only windows

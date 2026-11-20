@@ -2199,7 +2199,7 @@ static void fs_key(const DsState* ds, const VkSh* s0, TexRes* res, u32 last_out,
     fk->rm |= image_variant(ds, 4, s0, &signed_images) << 8;
     fk->rs |= signed_images << 8;
     if (check) fs_key_check(&kept, res, nt, fk);
-    g_fs_last = (FsLast){0};
+    g_fs_last.valid = 0; /* all a reader asks before the rest, which the next key kept writes whole */
     /* image_variant reads the image bindings, which the key doesn't hold: a program with images is keyed each draw */
     if (s0->si.nimg || !fs_last_keepable(res, nt)) {
         g_stats.n.fs[s0->si.nimg ? VK_FS_UNKEPT_IMAGES : VK_FS_UNKEPT_TEXTURES]++;
@@ -3279,7 +3279,10 @@ static void table_ssbo_windows(const DsState* ds, const VkSh* sh, int stage, u32
 /* the global memory each stage of the draw reads or writes, sh[] by stage (vertex, the tessellation stages, geometry,
    fragment) */
 static void draw_storage_read(const DsState* ds, VkDrawStorage* draw, VkSh* const sh[VK_DRAW_STAGES]) {
-    memset(draw, 0, sizeof *draw);
+    /* the counts, the maps and the fetch records here, each buffer as its stage counts it below: the buffers past a
+       stage's count are never read. With draw_state_check=1 they hold a pattern, so a reader past a count shows */
+    if (g_settings.draw_state_check) memset(draw, 0xA5, sizeof *draw);
+    memset(draw, 0, offsetof(VkDrawStorage, b));
     for (int s = 0; s < VK_DRAW_STAGES; s++) {
         if (!sh[s]) continue;
         int stage = s;
@@ -3291,6 +3294,7 @@ static void draw_storage_read(const DsState* ds, VkDrawStorage* draw, VkSh* cons
         u32 tw_len[SH_GBUF_TABLE_MAX];
         for (int i = 0; i < draw->n[s]; i++) {
             VkDrawGbuf* b = &draw->b[s][i];
+            *b = (VkDrawGbuf){0};
             u32 v[3] = {0, 0, 0}, desc = sh[s]->si.gbuf_cbuf_off[i];
             b->writable = (sh[s]->si.gbuf_wmask >> i) & 1;
             if (SH_GBUF_TABLE_SSBO(desc)) { /* a window of a pointer table in memory, its base in SNX_VKB_MBASE */
@@ -6576,7 +6580,9 @@ retry:
     int zt_ro = 0;
     u32 fb = 0;
     u64 scaled[2] = {0};
-    DrawImages images = {0};
+    DrawImages images; /* read below its count alone (a pattern past it with draw_state_check=1, as the storage) */
+    if (g_settings.draw_state_check) memset(&images, 0xA5, sizeof images);
+    images.n = images.sampled_general = 0;
     for (u32 i = 0; i < VK_DRAW_STAGES; i++)
         if (staged[i] && staged[i]->si.nimg) images.sampled_general = 1;
     /* transform feedback without the extension: the buffers the vertex program stores into */
