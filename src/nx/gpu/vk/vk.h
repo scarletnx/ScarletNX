@@ -321,6 +321,8 @@ typedef enum { VK_CLOCK_NONE, VK_CLOCK_WAIT, VK_CLOCK_WAIT2, VK_CLOCK_GOOGLE } V
 int vk_init(void);
 /* why vk_init found no device it runs on, with each device's Vulkan version; "" when it did not say */
 const char* vk_start_failure(void);
+/* why a swapchain could not be made, into out: the device, its driver ("" for its driver) and r with its number */
+void vk_swapchain_failure(char* out, size_t size, const char* device, const char* driver, VkResult r);
 /* how many of the extensions a Vulkan 1.2 device runs the renderer with (1.3's, device.c) e lacks, their names in out
    (size bytes, may be 0) comma separated */
 u32 vk_1_2_missing(const SnxVkExtensions* e, char* out, size_t size);

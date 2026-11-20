@@ -82,7 +82,10 @@ const char* fatal_hint(const char* msg) {
         return "The GPU stopped answering and its driver reset it: something the game gave it, a shader or a draw, "
                "ran too long or read memory it should not.";
     if (strstr(msg, "Unsupported instruction")) return "The game ran an instruction ScarletNX does not translate yet.";
-    if (strstr(msg, "Vulkan 1.3")) return "ScarletNX needs a GPU and driver with Vulkan 1.3, and this one has none.";
+    if (strstr(msg, "ScarletNX needs Vulkan 1.3"))
+        return "ScarletNX needs a GPU and driver with Vulkan 1.3, and this one has none.";
+    if (strstr(msg, "swapchain could not be made"))
+        return "The GPU driver could not make the images the window shows: another driver, or the system's, may.";
     if (strstr(msg, "out of memory") || strstr(msg, "Out of memory"))
         return "The device ran out of memory: close other apps and start the game again.";
     return NULL;
