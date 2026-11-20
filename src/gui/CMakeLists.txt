@@ -141,6 +141,8 @@ endif()
 set_target_properties(scarletnx-gui PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON
     RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}")
 target_compile_options(scarletnx-gui PRIVATE -Wall -Wextra -Werror=missing-prototypes)
+# the menu's state (App, some 750 KiB) on no stack: Windows gives a program's main thread 1 MiB
+target_compile_options(scarletnx-gui PRIVATE -Wframe-larger-than=262144 -Werror=frame-larger-than)
 target_compile_definitions(scarletnx-gui PRIVATE SNX_SOURCE_DIR="${PROJECT_SOURCE_DIR}" SNX_BUILD_DIR="${PROJECT_BINARY_DIR}")
 target_link_libraries(scarletnx-gui PUBLIC snx_gui_support PRIVATE snx_gui_ui scarletnx-common SDL3::SDL3
                       snx_window_icon snx_build_info snx_pad_sdl snx_gui_pad snx_splash snx_gui_languages snx_demangle)

@@ -5992,7 +5992,7 @@ int main(int argc, char** argv) {
         fputs("driver stderr\n", stderr);
         return nx ? 0 : 7; /* Both successful and failed drivers need ESC acknowledgement. */
     }
-    App app;
+    static App app; /* not on the stack, as snx_gui_main's */
     /* the menu's data folder from the test's own environment, never the user's: XDG's here, and a home of the test's
        own where it comes from HOME, APPDATA or USERPROFILE */
     char* own_home = snx_temp_dir(NULL);

@@ -80,7 +80,7 @@ static int box_row(const App* app, int item) {
 }
 
 int main(void) {
-    App app = {0};
+    static App app; /* not on the stack, as snx_gui_main's */
     char *root = snx_temp_dir(NULL), *users, *games, *game, *program, *save, *path, *out, *back, why[256], uid[33];
     char label[160];
     assert(root && SDL_Init(SDL_INIT_VIDEO));
