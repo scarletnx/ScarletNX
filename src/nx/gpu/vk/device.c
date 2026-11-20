@@ -262,7 +262,7 @@ static int create_instance(void) {
     SnxVkInstanceInfo info = {.app_name = "ScarletNX",
                               .extensions = ext,
                               .extension_count = next,
-                              .api_version = g_vk.api_cap,
+                              .api_version = g_vk.api_cap == VK_API_VERSION_1_2 ? g_vk.api_cap : 0, /* 1.1's: auto's */
                               .validation = g_settings.vulkan_validation_layer != 0,
                               .gpu_assisted = g_settings.vulkan_validation_layer == 2,
                               .portability = true,
@@ -343,18 +343,37 @@ u32 vk_1_2_missing(const SnxVkExtensions* e, char* out, size_t size) {
     }
     return n;
 }
+/* what the 1.2 way takes on a Vulkan 1.1 device beside vk12_extensions, where 1.2 made it core: a timeline
+   semaphore and the driver's identity. How many of those and of vk12_extensions e lacks, their names in out as
+   vk_1_2_missing writes them */
+u32 vk_1_1_missing(const SnxVkExtensions* e, char* out, size_t size) {
+    static const char* const core12[] = {VK_KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME,
+                                         VK_KHR_DRIVER_PROPERTIES_EXTENSION_NAME};
+    char rest[512];
+    u32 n = 0, more = vk_1_2_missing(e, rest, sizeof rest);
+    size_t at = 0;
+    if (size) out[0] = 0;
+    for (u32 i = 0; i < sizeof core12 / sizeof *core12; i++) {
+        if (snx_vk_extensions_has(e, core12[i])) continue;
+        if (at < size) at += (size_t)snprintf(out + at, size - at, "%s%s", n ? ", " : "", core12[i]);
+        n++;
+    }
+    if (more && at < size) snprintf(out + at, size - at, "%s%s", n ? ", " : "", rest);
+    return n + more;
+}
 int vk_api_setting(const char* text, u32* cap, char* why, size_t n) {
-    if (!strcmp(text, "auto") || !strcmp(text, "1.2")) {
-        *cap = text[0] == 'a' ? 0 : VK_API_VERSION_1_2;
+    if (!strcmp(text, "auto") || !strcmp(text, "1.2") || !strcmp(text, "1.1")) {
+        *cap = text[0] == 'a' ? 0 : text[2] == '2' ? VK_API_VERSION_1_2 : VK_API_VERSION_1_1;
         return 1;
     }
-    snprintf(why, n, "vk_api=%s is not auto or 1.2", text);
+    snprintf(why, n, "vk_api=%s is not auto, 1.2 or 1.1", text);
     return 0;
 }
 
-/* the version the renderer runs a device of api at: the device's, up to 1.3 (or api_cap) */
+/* the version the renderer runs a device of api at: the device's, up to 1.3 (or vk_api's 1.2). vk_api=1.1 holds no
+   device back: it names what the 1.2 way lacks on a 1.1 one, which no device then runs (start_failure_devices) */
 static u32 vk_api_for(u32 api) {
-    u32 most = g_vk.api_cap ? g_vk.api_cap : VK_API_VERSION_1_3;
+    u32 most = g_vk.api_cap == VK_API_VERSION_1_2 ? VK_API_VERSION_1_2 : VK_API_VERSION_1_3;
     return api < most ? api : most;
 }
 
@@ -401,7 +420,7 @@ static int device_rating(VkPhysicalDevice pd, const VkPhysicalDeviceProperties* 
    listed by a GPU driver package, the package and the GPU it does not drive */
 static void start_failure_devices(void) {
     VkPhysicalDevice devices[8];
-    u32 n = 8;
+    u32 n = 8, elevens = 0;
     size_t at = 0;
     if (vkEnumeratePhysicalDevices(g_vk.instance, &n, devices) < 0) n = 0;
     if (!n && backend_vk_no_device(g_vk.start_failure, sizeof g_vk.start_failure)) {
@@ -413,14 +432,19 @@ static void start_failure_devices(void) {
         char lacks[512] = "";
         vkGetPhysicalDeviceProperties(devices[i], &p);
         u32 api = vk_api_for(p.apiVersion);
-        if (api >= VK_API_VERSION_1_2 && api < VK_API_VERSION_1_3) {
+        /* vk_api=1.1 asks what the 1.2 way lacks on a 1.1 device too: the extensions 1.2 made core with the others */
+        int eleven = g_vk.api_cap == VK_API_VERSION_1_1 && api >= VK_API_VERSION_1_1 && api < VK_API_VERSION_1_2;
+        if ((api >= VK_API_VERSION_1_2 && api < VK_API_VERSION_1_3) || eleven) {
             SnxVkExtensions e;
             char names[400];
             if (!snx_vk_device_extensions(devices[i], &e))
                 snprintf(lacks, sizeof lacks, " (its extensions could not be listed)");
-            else if (vk_1_2_missing(&e, names, sizeof names))
+            else if (eleven ? vk_1_1_missing(&e, names, sizeof names) : vk_1_2_missing(&e, names, sizeof names))
                 snprintf(lacks, sizeof lacks, " without %s", names);
+            else if (eleven)
+                snprintf(lacks, sizeof lacks, " with every extension the 1.2 way takes");
             snx_vk_extensions_free(&e);
+            elevens += eleven;
         }
         WARN("vulkan: %s has Vulkan %u.%u.%u%s, driver %08x\n", p.deviceName, VK_API_VERSION_MAJOR(p.apiVersion),
              VK_API_VERSION_MINOR(p.apiVersion), VK_API_VERSION_PATCH(p.apiVersion), lacks, p.driverVersion);
@@ -434,9 +458,14 @@ static void start_failure_devices(void) {
     const char* hint = "";
 #endif
     if (at < sizeof g_vk.start_failure)
+        at += (size_t)snprintf(
+            g_vk.start_failure + at, sizeof g_vk.start_failure - at,
+            "%sScarletNX needs Vulkan 1.3, or 1.2 with the extensions 1.3 took in, and a %s queue%s",
+            n ? ", and " : "No Vulkan device: ", g_opt_headless ? "graphics" : "graphics and presentation", hint);
+    if (elevens && at < sizeof g_vk.start_failure)
         snprintf(g_vk.start_failure + at, sizeof g_vk.start_failure - at,
-                 "%sScarletNX needs Vulkan 1.3, or 1.2 with the extensions 1.3 took in, and a %s queue%s",
-                 n ? ", and " : "No Vulkan device: ", g_opt_headless ? "graphics" : "graphics and presentation", hint);
+                 ". vk_api=1.1 named what the 1.2 way lacks on a Vulkan 1.1 device, which the renderer has no way for "
+                 "yet: its shaders are SPIR-V 1.5, its features read through Vulkan 1.1's and 1.2's structs");
 }
 
 /* the shapes of f16 A and B into an f32 accumulator in subgroup scope in compute that the device multiplies, as
@@ -2441,7 +2470,11 @@ static int create_device(void) {
         LOG("vulkan: the driver that runs: %s, %s (driver ID %d)\n", dp.driverName, dp.driverInfo, (int)dp.driverID);
     }
     gpu_pstate_hold(pstate, d.has_drm, d.boost_lacks);
-    if (g_vk.api_cap && g_vk.props.apiVersion >= VK_API_VERSION_1_3)
+    if (g_vk.api_cap == VK_API_VERSION_1_1)
+        LOG("vulkan: vk_api=1.1 on a Vulkan %u.%u device, which runs as auto would: the setting takes in only a 1.1 "
+            "one\n",
+            VK_API_VERSION_MAJOR(g_vk.props.apiVersion), VK_API_VERSION_MINOR(g_vk.props.apiVersion));
+    else if (g_vk.api_cap && g_vk.props.apiVersion >= VK_API_VERSION_1_3)
         LOG("vulkan: vk_api=1.2 runs the Vulkan 1.2 way on this %u.%u device\n",
             VK_API_VERSION_MAJOR(g_vk.props.apiVersion), VK_API_VERSION_MINOR(g_vk.props.apiVersion));
     else if (g_vk.api_cap)

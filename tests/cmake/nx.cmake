@@ -313,6 +313,11 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
         "--settings-ini=${CMAKE_CURRENT_BINARY_DIR}/vulkan_headless_vk12.ini" --vk-validation=1)
     set_tests_properties(vulkan_headless_vk12 PROPERTIES TIMEOUT 120
         ENVIRONMENT "VK_KHRONOS_VALIDATION_REPORT_FLAGS=error" FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+    # vk_api=1.1 on a device with more, which runs as auto: the setting takes in only a Vulkan 1.1 device
+    file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/vulkan_headless_vk11.ini" "[Debug]\nvk_api=1.1\n")
+    add_test(NAME vulkan_headless_vk11 COMMAND snx-test-vulkan -H
+        "--settings-ini=${CMAKE_CURRENT_BINARY_DIR}/vulkan_headless_vk11.ini")
+    set_tests_properties(vulkan_headless_vk11 PROPERTIES TIMEOUT 120 FAIL_REGULAR_EXPRESSION "failed: VK_ERROR")
     # every check again on a device made again without VK_EXT_depth_clamp_control and VK_EXT_conditional_rendering,
     # whose commands vk_debug_hide_commands has the check of each extension's commands take as missing (gpu/vk/device.c):
     # each extension off, the log saying the command and the driver (tests/vulkan_hidden_commands.inc). A driver that

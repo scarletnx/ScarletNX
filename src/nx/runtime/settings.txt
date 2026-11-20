@@ -1198,11 +1198,12 @@ setting Vulkan API
     text 8
     default auto
     startup
-    words auto=Auto|1.2=1.2
+    words auto=Auto|1.2=1.2|1.1=1.1
     help The Vulkan version the renderer runs at. auto = the device's, up to 1.3: a device with only 1.2 runs the 1.2
     help way where it has the extensions 1.3 took in. 1.2 = the 1.2 way on a 1.3 device too, to test it: the 1.3
-    help features from those extensions, shaders in SPIR-V 1.5, no Vulkan Video decode. Any other value stops the game,
-    help saying so
+    help features from those extensions, shaders in SPIR-V 1.5, no Vulkan Video decode. 1.1 = on a device with only
+    help Vulkan 1.1, which the renderer cannot run yet, the game stops naming what the 1.2 way lacks there; a 1.2 or
+    help 1.3 device runs as auto. Any other value stops the game, saying so
 setting Native ASTC
     key native_astc
     int 0 1
