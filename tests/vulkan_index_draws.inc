@@ -595,6 +595,52 @@ static int indirect_made_cases(GpuChannel* channel, u64 target, u64 indices, u64
     return 0;
 }
 
+/* Indirect draws of quads, whose record a compute pass makes the indexed record of their triangles (render.c's
+   indirect_quads, indirect_quads.comp): the green quad's vertices; the red quad then the green one over it, two
+   quads of one record; quads of 1, 2 and 4-byte indices from first index 1, through a base vertex, and with a
+   count past the buffer's end, which draws the one quad the buffer holds. None of them was drawn before */
+static int indirect_quads_cases(GpuChannel* channel, u64 target, u64 indices, u64 args) {
+    IndexPixels px;
+    const u32 quad[5] = {9, 4, 5, 6, 7}, quad0[4] = {0, 1, 2, 3}, list0[6] = {0, 1, 3, 1, 2, 3};
+    /* count, instances, first vertex, base instance */
+    const u32 green[4] = {4, 1, 4, 0}, both[4] = {8, 1, 0, 0};
+    /* count, instances, first index, base vertex, base instance */
+    const u32 from1[5] = {4, 1, 1, 0, 0}, based[5] = {4, 1, 0, 4, 0}, past[5] = {8, 1, 1, 0, 0};
+    DrawCall call = {.topology = 7, .count = 1, .instances = 1, .indirect = args, .draw_count = 1, .stride = 16};
+    CHECK(!put_words(args, green, 4));
+    CHECK(!index_draw(channel, target, &call, &px));
+    if (!index_all_green(&px)) fprintf(stderr, "indirect quads of vertices: %u green, %u red\n", px.green, px.red);
+    CHECK(index_all_green(&px));
+    CHECK(!put_words(args, both, 4));
+    CHECK(!index_draw(channel, target, &call, &px));
+    if (!index_all_green(&px)) fprintf(stderr, "indirect quads, two of a record: %u green, %u red\n", px.green, px.red);
+    CHECK(index_all_green(&px));
+    call.indexed = 1;
+    call.stride = 20;
+    for (u32 isz = 1; isz <= 4; isz *= 2) {
+        const struct {
+            const u32* indices;
+            u32 count;
+            const u32* record;
+            const char* what;
+        } cases[3] = {{quad, 5, from1, "from index 1"},
+                      {quad0, 4, based, "through a base vertex"},
+                      {quad, 5, past, "with a count past the buffer"}};
+        for (u32 c = 0; c < 3; c++) {
+            CHECK(!index_buffer(channel, indices, cases[c].indices, cases[c].count, isz, ~0u));
+            CHECK(!put_words(args, cases[c].record, 5));
+            CHECK(!index_draw(channel, target, &call, &px));
+            if (!index_all_green(&px))
+                fprintf(stderr, "indirect quads of %u byte indices %s: %u green, %u red\n", isz, cases[c].what,
+                        px.green, px.red);
+            CHECK(index_all_green(&px));
+        }
+    }
+    CHECK(!index_buffer(channel, indices, list0, 6, 2, ~0u)); /* as indirect_cases left it */
+    puts("indirect draws: quads of vertices and of indices made triangles on the GPU, their records too");
+    return 0;
+}
+
 /* NVN's draw parameters in an indirect draw (DrawCall.params): the game's driver writes each draw's base vertex and
    base instance into constant buffer 0 at 0x640 and 0x644 from the record, on the GPU, and instanced vertex programs
    add the base instance to their instance ID to find their instance's data. nvn's bank 0 holds 0 there for an
@@ -1958,6 +2004,7 @@ static int check_index_draws(void) {
     g_vk.has_list_restart = had_list_restart;
     CHECK(!indirect_cases(channel, target, indices, address + 0x16000));
     CHECK(!indirect_made_cases(channel, target, indices, address + 0x16000));
+    CHECK(!indirect_quads_cases(channel, target, indices, address + 0x16000));
     CHECK(!owned_stream_case(channel, target, colors, address + 0x15000, cpu + 0x15000));
     CHECK(!owned_index_case(channel, target, indices, cpu + 0x14000, address + 0x11000));
     if (g_vk.has_shader_draw_parameters) CHECK(!draw_params_case(channel, target, indices, address));
