@@ -131,7 +131,9 @@ static void f2d_blit_memory(const u32* r, const Surf2D* s, const Surf2D* d, cons
     } else if (s->format != d->format)
         LOG_LIMIT(4, "gpu: a 2D blit from format %x to %x copies the bytes\n", s->format, d->format);
     if (!s->width || !s->height) return;
-    /* the destination rectangle clipped to the destination surface */
+    /* the destination rectangle clipped to the destination surface: one that ends left of it or above it has no pixel
+       there, and its end is no coordinate to count from */
+    if ((i64)c->dst_x0 + c->dst_width <= 0 || (i64)c->dst_y0 + c->dst_height <= 0) return;
     x0 = c->dst_x0 > 0 ? (u32)c->dst_x0 : 0;
     y0 = c->dst_y0 > 0 ? (u32)c->dst_y0 : 0;
     x1 = (i64)c->dst_x0 + c->dst_width < (i64)d->width ? (u32)((i64)c->dst_x0 + c->dst_width) : d->width;
