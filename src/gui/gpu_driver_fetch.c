@@ -25,7 +25,9 @@ const GuiDriverRepo gui_driver_repos[GUI_DRIVER_REPOS] = {
     /* the driver NX-Mali forks, recommended nowhere: it says Vulkan 1.1 (0.5.1), below the 1.2 a device needs */
     {"MaliSX2", "bmdhacks/malisx2", 0, 0, GUI_DRIVER_MALI, 0},
     /* Mesa's PanVK on kbase for every Mali from Bifrost v6 to v14, its adrenotools zip alone */
-    {"Zenithblue PanVK", "zenithblue-oss/panvk-kbase-android", 0, 0, GUI_DRIVER_MALI, 0}};
+    {"Zenithblue PanVK", "zenithblue-oss/panvk-kbase-android", 0, 0, GUI_DRIVER_MALI, 0},
+    /* PanVK for the Bifrost G52, G72 and G76; its zip for a PS2 emulator left out */
+    {"Soulexit PanVK", "soulexit/panvk-bifrost-soulexit", 0, 0, GUI_DRIVER_MALI, 0}};
 
 /* whether text has part, in any case */
 static int has_nocase(const char* text, const char* part) {
@@ -116,7 +118,8 @@ int gui_driver_releases_parse(const char* json, size_t n, const GuiDriverRepo* r
                 (!strcmp(repo->path, "JimVulkan/radv-xclipse") &&
                  (strncmp(d->name, "radv-xclipse-", 13) || !snx_is_digit((unsigned char)d->name[13]))) ||
                 (!strcmp(repo->path, "zenithblue-oss/panvk-kbase-android") &&
-                 !ends_nocase(d->name, "-adrenotools.zip")))
+                 !ends_nocase(d->name, "-adrenotools.zip")) ||
+                (!strcmp(repo->path, "soulexit/panvk-bifrost-soulexit") && has_nocase(d->name, "-armsx2")))
                 continue;
             d->size = yyjson_is_num(bytes) && yyjson_get_num(bytes) > 0 ? (unsigned long long)yyjson_get_num(bytes) : 0;
             d->proprietary = gui_driver_proprietary(repo->path, d->name);
@@ -164,7 +167,8 @@ int gui_gpu_model(const char* gpu_name) {
 /* the picks by model (gui_gpu_model; Adreno's are Eden's, DriverFetcherFragment.kt), each as the repository its
    release is in and a part of that release's tag, NULL for the repository's latest. 605 to 613 have no multiview in
    hardware: EOL-24.3.4 then says Vulkan 1.0, short of what ScarletNX needs, and T30 emulates it and says 1.4. NX-Mali
-   says 1.3 only on its command-stream Malis, and Zenithblue's PanVK is every other Mali's (a row after the others);
+   says 1.3 only on its command-stream Malis, Soulexit's PanVK is the Bifrost G52, G72 and G76's it builds for, and
+   Zenithblue's PanVK every other Mali's (a row after the others);
    radv-xclipse drives every Xclipse so far, at 1.4 */
 static const struct {
     int lo, hi;
@@ -178,6 +182,9 @@ static const struct {
                      {800, 899, "GameHub Adreno 8xx", "crueter/GameHub-8Elite-Drivers", NULL},
                      {10610, 10615, "NX-Mali 0.0.3", "Slopinator99/NX-Mali", NULL},
                      {10710, 10715, "NX-Mali 0.0.3", "Slopinator99/NX-Mali", NULL},
+                     {10052, 10052, "Soulexit PanVK", "soulexit/panvk-bifrost-soulexit", NULL},
+                     {10072, 10072, "Soulexit PanVK", "soulexit/panvk-bifrost-soulexit", NULL},
+                     {10076, 10076, "Soulexit PanVK", "soulexit/panvk-bifrost-soulexit", NULL},
                      {10001, 10999, "Zenithblue PanVK", "zenithblue-oss/panvk-kbase-android", NULL},
                      {20530, 20550, "RADV Xclipse", "JimVulkan/radv-xclipse", NULL},
                      {20920, 20960, "RADV Xclipse", "JimVulkan/radv-xclipse", NULL}};
