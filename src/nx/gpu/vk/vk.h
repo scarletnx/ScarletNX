@@ -224,6 +224,10 @@ typedef struct {
        subgroups for both stages: an Ounce's mesh draws (render.c). mesh_stages: the stage bits that the sets and the
        push constants of the graphics pipelines' layouts add for them (VK_PUSH_STAGES), 0 without */
     int has_mesh, has_task;
+    /* the compute-task path (sm86.h's sm86_mesh_task_cap): a mesh draw with a task program runs the task program as a
+       compute dispatch and draws the mesh program with no task stage, where the native task+mesh gang is not safe on
+       this device (device.c's mesh_choose, vk_mesh_path) */
+    int mesh_task_compute;
     /* compute pipelines can ask for subgroups of 32 (subgroupSizeControl and computeFullSubgroups, 32 within the
        sizes and compute among requiredSubgroupSizeStages): those of the programs that use other lanes' values do
        (compute.c's cs_make) */
@@ -2776,6 +2780,10 @@ typedef struct VkSh {
     VkCbReads cbr;
     ShaderInfo si;
     VkShaderModule mod;
+    /* a task program of the compute-task path: its SPIR-V, whose entry point is a compute one, kept for the compute
+       pipeline the draw dispatches it with (render.c's mesh_task_pipe) */
+    u32* spv;
+    u32 nspv;
     int indexed; /* it reads indexed textures: its set needs the texture array bindings (vk_playout) */
     int failed;
     int shipped; /* a program the game ships, translated before a draw asked for it: 2 once one found it */
@@ -2795,6 +2803,9 @@ void vk_shader_generated_record(VkSh* shader, const u32* spv, size_t words, cons
    (every layout has the same push constant range) */
 extern VkPipelineLayout g_vk_playout;
 VkPipelineLayout vk_playout(u32 arrays); /* arrays: a bit per set (shader_vk_set) that has them */
+/* the layout of a compute dispatch's sets: vk_playout's, without the independent sets that a graphics pipeline
+   library's parts use (the compute-task path's task program, render.c) */
+VkPipelineLayout vk_playout_compute(u32 arrays);
 VkShaderStageFlags vk_set_stages(int set); /* the stages that see descriptor set set (pipeline.c) */
 int vk_graphics_playout_is(VkPipelineLayout layout);
 extern int g_vk_preserve_infnan;
@@ -2827,7 +2838,9 @@ extern u32 g_vk_stage_sets; /* sets in the pipeline layout: 5, or 2 without the 
 #define VK_PUSH_STAGES                                                                                                 \
     (VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT |                                           \
      VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT | VK_SHADER_STAGE_GEOMETRY_BIT | VK_SHADER_STAGE_FRAGMENT_BIT |       \
-     g_vk.mesh_stages)
+     g_vk.mesh_stages |                                                                                               \
+     /* the compute-task path's task program, a compute dispatch of the same layout (sm86.h) */                        \
+     VK_SHADER_STAGE_COMPUTE_BIT)
 void vk_pipeline_init(void);
 /* the shader at gva (after a VertexA program at gva_a, or 0). The masks key integer inputs: attributes for the
    vertex stage, textures and render target outputs for the fragment stage. dc_funcs and unfed, the fragment stage's,
@@ -2855,7 +2868,7 @@ VkSh* vk_shader_get_ex(const DsState* ds, u64 gva, u64 gva_a, int stage, u64 int
    fields in the key's words, and the per-primitive SPH that k names read from the program's code area. A fragment
    program drawn after a mesh program takes the generics that it writes per primitive (ShaderInfo.prim_mask) in the
    clip word of its key */
-VkSh* vk_shader_mesh(const DsState* ds, u64 gva, int stage, const DsMeshKey* k);
+VkSh* vk_shader_mesh(const DsState* ds, u64 gva, int stage, const DsMeshKey* k, u32 payload_stride, int task_compute);
 /* whether the constant buffer words s's translation read still hold in ds's bound buffers (vk_shader_get's check on
    a hit, for a caller that kept s) */
 int vk_shader_cb_hold(const DsState* ds, const VkSh* s);
@@ -2934,6 +2947,9 @@ typedef struct {
 /* the overestimation of conservative rasterization of a PipeKey.conservative, within the device's most (pipeline.c) */
 float vk_conservative_extra(u32 conservative);
 #define PIPE_MESH_WHOLE(stage) (2u << ((stage) == ST_TS)) /* PipeKey.mesh's bit of a whole stage's workgroup */
+/* PipeKey.mesh's bit of the compute-task path: the draw's vs is the mesh program and there is no task stage (its task
+   program is dispatched before the draw, render.c's mesh_task_dispatch) */
+#define PIPE_MESH_TASK_COMPUTE 8u
 /* the pipeline for k, made when new and waited for while a worker makes it: NULL only when it can't be made */
 VkPipeline vk_pipeline_get(const PipeKey* k);
 /* the key a file of earlier runs' shaders and pipelines must have to be read: the device, the build, and what changes
@@ -3195,6 +3211,7 @@ extern u64 g_vk_drawn, g_vk_skipped; /* draws recorded, and draws skipped (unsup
 /* draws whose depth the console clips and clamps, and of them those that write depth or take a depth bias (render.c) */
 extern u64 g_vk_depth_apart_draws, g_vk_depth_apart_moved;
 extern u64 g_vk_mesh_draws, g_vk_mesh_drawn; /* of them, an Ounce's mesh draws, and those recorded */
+extern u64 g_vk_mesh_task_compute; /* of those, the ones whose task program was a compute dispatch */
 /* The ordered capture fallback (render.c capture_draw) records a clear, a draw and a resolve for every primitive: past
    this many primitives a draw is skipped instead. Statistics: draws captured, their primitives, the draws skipped */
 #define VK_CAPTURE_PRIMITIVES_MAX 256u

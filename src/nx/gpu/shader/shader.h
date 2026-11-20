@@ -125,8 +125,11 @@ typedef struct {
     u16 payload;                      /* the task payload's bytes, its 16-byte header included (0x5a) */
     u16 max_vertices, max_primitives; /* a mesh program's (0x60, 0x62) */
     u8 has_task, primitive_vertices;  /* a mesh program's: after a task program (0x5e), and 3 (0x5f) */
-    u16 reserved;                     /* 0 */
-    u32 prim_sph[20];                 /* the per-primitive SPH's first 80 bytes (0x64, 0x68), all 0 for none */
+    /* The compute-task path (vk_mesh_path, vk/device.c): the task program is a compute dispatch that writes its
+       payload into a storage buffer, and the mesh program has no task stage and reads that buffer (sm86.h) */
+    u16 payload_stride : 15; /* words of one task workgroup's slot in the buffer (the two payloads' largest) */
+    u16 payload_buf : 1;
+    u32 prim_sph[20]; /* the per-primitive SPH's first 80 bytes (0x64, 0x68), all 0 for none */
 } ShMesh;
 /* A program's key state (set by the renderer before translating) and what translation found. The corpus stores it
    whole, so a corpus file only loads into a build where this struct has the same size. */
@@ -440,7 +443,11 @@ static inline void shader_query_hint_unpack(const u32 words[SH_QUERY_WORDS], u8 
 #define SNX_VKB_IMGBUF   (SNX_VKB_ROOT + 1)      /* 8 buffer images (compute, vertex, fragment) */
 #define SNX_VKB_BLEND    SNX_VKB_IMG             /* fragment: ordered blend uses IMG+nimg, after the guest images */
 #define SNX_VKB_CAPTURE  (SNX_VKB_IMGBUF + 8)    /* fragment: sparse capture tile flags and dispatch list */
-#define SNX_VKB_TEXARRAY (SNX_VKB_CAPTURE + 1)   /* up to SNX_TEX_ARRAY distinct indexed handles */
+/* A task program's payload and the mesh groups it launches, for the compute-task path: a flat array of words, a slot of
+   payload_stride words for each task workgroup, then a count of each, then the indirect mesh draw's record
+   (sm86.h's sm86_mesh_task_cap) */
+#define SNX_VKB_MESHBUF  (SNX_VKB_CAPTURE + 1)
+#define SNX_VKB_TEXARRAY (SNX_VKB_MESHBUF + 1)   /* up to SNX_TEX_ARRAY distinct indexed handles */
 #define SNX_VKB_TEXFUNCS (SNX_VKB_TEXARRAY + 1)  /* their depth compare functions */
 #define SNX_VKB_TEXDEPTH (SNX_VKB_TEXFUNCS + 1)  /* their depth views */
 #define SNX_VKB_TEXMAP   (SNX_VKB_TEXDEPTH + 1)  /* table and element to compact descriptor index */

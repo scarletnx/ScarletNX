@@ -343,6 +343,17 @@ void vk_descriptors_bind(VkCommandBuffer cb, VkPipelineLayout layout, u32 first,
     rec_CmdSetDescriptorBufferOffsetsEXT(cb, layout, first, count, offsets);
 }
 
+/* a compute dispatch's set, at the compute bind point: the graphics draws' sets bind at the graphics one. The heap
+   path is the draws' (a heap's bind is the graphics pipeline's), so the compute-task path asks for sets or buffers */
+void vk_descriptors_bind_compute(VkCommandBuffer cb, VkPipelineLayout layout, u32 first, VkDescriptorSet set) {
+    if (!g_vk.has_descriptor_buffers) {
+        rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, layout, first, 1, &set, 0, NULL);
+        return;
+    }
+    rec_CmdBindDescriptorBuffersEXT(cb, g_descriptors.frame[vk_frame_slot()].address);
+    VkDeviceSize offset = (u64)(uintptr_t)set - 1;
+    rec_CmdSetDescriptorBufferOffsetsBP(cb, VK_PIPELINE_BIND_POINT_COMPUTE, layout, first, 1, &offset);
+}
 void vk_descriptors_stats(void) {
     if (g_vk.has_descriptor_heaps) {
         vk_descriptor_heaps_stats();

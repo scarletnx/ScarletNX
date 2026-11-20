@@ -189,6 +189,11 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
     add_test(NAME vulkan_headless_mesh COMMAND snx-test-vulkan -H --vk-ext-mesh-shader=on)
     set_tests_properties(vulkan_headless_mesh PROPERTIES TIMEOUT 60
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+    # the same draws with the task and mesh stages in one submission (vk_mesh_path=native): the native path is still
+    # the one a measured device takes, and the check draws through both
+    add_test(NAME vulkan_headless_mesh_native COMMAND snx-test-vulkan -H --vk-ext-mesh-shader=on --vk-mesh-path=native)
+    set_tests_properties(vulkan_headless_mesh_native PROPERTIES TIMEOUT 60
+        FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
     # an Ounce fragment program's colour into integer targets (tests/vulkan_ounce_int_targets.inc) under the validation
     # layer when it is installed, which reports a float output in an integer attachment
     add_test(NAME vulkan_ounce_int_targets COMMAND snx-test-vulkan -H --vk-validation=1)

@@ -4144,7 +4144,7 @@ static ShaderInfo mesh_info(u32 sph[32]) {
     ShaderInfo si = {0};
     sph[0] = sph0(1, 1);
     sph[13] = 0xfu << 12 | 1u << 21; /* the output map: the position (bits 428-431) and generic 1.y (bit 437) */
-    si.mesh = (ShMesh){1, 0x80, 40, 2, 0, 3, 0, {0}};
+    si.mesh = (ShMesh){.threads = 1, .payload = 0x80, .max_vertices = 40, .max_primitives = 2, .primitive_vertices = 3};
     si.mesh.prim_sph[0] = 0x010c1081u; /* a geometry SPH with passthrough on, generic 0.x (bit 432) */
     si.mesh.prim_sph[13] = 1u << 16;
     return si;
@@ -4264,7 +4264,7 @@ static void test_mesh_after_task(const char* dir) {
     sph[0] = 0x020c0c81u;          /* a tessellation evaluation SPH, as the hardware runs it */
     sph[13] = 1u << 12 | 1u << 16; /* position.x and generic 0.x */
     ShaderInfo si = {0};
-    si.mesh = (ShMesh){1, 0x20, 1, 1, 1, 3, 0, {0}};
+    si.mesh = (ShMesh){.threads = 1, .payload = 0x20, .max_vertices = 1, .max_primitives = 1, .has_task = 1, .primitive_vertices = 3};
     size_t count = 0;
     u32* spv = sm86_to_spirv(code, n * 16, ST_MS, sph, &si, &count);
     CHECK(spv != NULL);
@@ -4286,6 +4286,125 @@ static void test_mesh_after_task(const char* dir) {
     CHECK(!why && env.set_outputs == 1 && env.mesh_outputs[0] == 1 && env.mesh_outputs[1] == 1);
     CHECK(position[0] == f2u(3.0f) && position[1] == 0 && position[2] == 0 && position[3] == f2u(1.0f));
     CHECK(generic0[0] == 2);
+}
+
+/* The compute-task path (sm86.h): the task program is a compute program that writes the payload into a storage
+   buffer, and the mesh program reads it from there, both with the buffer's slots given by the push constant and the
+   groups the task stores in the draw's record. The evaluator runs the modules as they are, which is where the record,
+   the counts and a slot's payload are checked */
+static void test_mesh_task_compute(const char* dir) {
+    const u32 stride = 8, cap = 4, groups_asked = 5, first = 0;
+    u32 buffer[256];
+    u8 code[16 * 10] = {0};
+    u32 n = 0;
+    /* the task program: its workgroup index into the payload's word 4, and the groups it launches */
+    put(code, n++, isbe_insn(0, 0, 255, 0, ISBE_B32, ISBE_ATTR, 1, 0));
+    put(code, n++, isbe_insn(1, 0, 255, 0x10, ISBE_B32, ISBE_ATTR, 0, 1));
+    put(code, n++, isbe_insn(1, 0, 255, 4, ISBE_B32, ISBE_ATTR, 0, 1));
+    put(code, n++, exit_insn());
+    put(code, n, bra(n, n, 7, 0));
+    n++;
+    u32 sph[32] = {0};
+    sph[0] = 0x000c0481u; /* a task program's */
+    ShaderInfo si = {0};
+    si.mesh = (ShMesh){.threads = 1, .payload = stride * 4, .payload_buf = 1, .payload_stride = stride};
+    size_t count = 0;
+    u32* spv = sm86_to_spirv(code, n * 16, ST_TS, sph, &si, &count);
+    CHECK(spv != NULL);
+    if (!spv) {
+        fprintf(stderr, "task compute: %s\n", si.first_unsupported);
+        return;
+    }
+    CHECK(!si.unsupported && keep_module(dir, "ts_compute", spv, count));
+    u32 first_word[4] = {first, 0, 0, 0};
+    for (u32 group = 0; group < 3; group++) { /* workgroup 0 stores the record's groups, 2 a slot's payload */
+        memset(buffer, 0, sizeof buffer);
+        SpvEvalEnv env = {0};
+        env.builtin[26][0] = group, env.builtin[24][0] = groups_asked;
+        env.push[0] = first;
+        env.push[2] = SH_PUSH_GPU_MESH_FIRST | cap << 8;
+        env.ubo[SNX_VKB_RS] = first_word, env.ubo_words[SNX_VKB_RS] = 4;
+        env.ubo[SNX_VKB_MESHBUF] = buffer, env.ubo_words[SNX_VKB_MESHBUF] = 256;
+        const char* why = spv_eval(spv, count, &env);
+        free(spv);
+        if (why) fprintf(stderr, "task compute: the evaluator stops at %s\n", why);
+        CHECK(!why);
+        u32 groups = groups_asked < cap ? groups_asked : cap;
+        u32 slot = group < groups ? group : groups - 1;
+        u32 base = 4 + groups + slot * stride;
+        CHECK(buffer[base + 4] == group);         /* the payload's word 4 */
+        CHECK(buffer[4 + slot] == group);         /* the groups this task workgroup launched */
+        CHECK(buffer[0] == (group ? group : 0));  /* the record's x: the most one launched */
+        if (!group) CHECK(buffer[1] == groups && buffer[2] == 1);
+        /* the mesh program's evaluation below uses the whole buffer as one task workgroup's slots only: remake it */
+        if (group == 2) break;
+        /* translate again for the next workgroup: the module was freed */
+        si = (ShaderInfo){0};
+        si.mesh = (ShMesh){.threads = 1, .payload = stride * 4, .payload_buf = 1, .payload_stride = stride};
+        spv = sm86_to_spirv(code, n * 16, ST_TS, sph, &si, &count);
+    }
+    /* The mesh program after the task, in the same buffer: its slot is WorkgroupId.y's, the groups are the record's
+       word 1, and its payload's word 5 is position.x. A workgroup at or past its task's count produces nothing */
+    u8 mesh_code[16 * 10] = {0};
+    n = 0;
+    put(mesh_code, n++, isbe_insn(0, 0, 255, 0, ISBE_B32, ISBE_ATTR, 0, 0));
+    put(mesh_code, n++, isbe_insn(0, 1, 255, 0x14, ISBE_B32, ISBE_ATTR, 0, 0));
+    put(mesh_code, n++, isbe_insn(1, 1, 255, 0, ISBE_B32, ISBE_ATTR, 1, 1));
+    put(mesh_code, n++, isbe_insn(1, 0, 255, 0x80, ISBE_B32, ISBE_ATTR, 1, 1));
+    put(mesh_code, n++, mov_imm(2, 1));
+    put(mesh_code, n++, isbe_insn(1, 2, 255, 3, ISBE_B32, ISBE_MAP, 0, 1));
+    put(mesh_code, n++, exit_insn());
+    put(mesh_code, n, bra(n, n, 7, 0));
+    n++;
+    u32 msph[32] = {0};
+    msph[0] = 0x020c0c81u;
+    msph[13] = 1u << 12 | 1u << 16;
+    for (u32 culled = 0; culled < 2; culled++) {
+        ShaderInfo msi = {0};
+        msi.mesh = (ShMesh){.threads = 1,
+                            .payload = stride * 4,
+                            .payload_buf = 1,
+                            .payload_stride = stride,
+                            .max_vertices = 1,
+                            .max_primitives = 1,
+                            .has_task = 1,
+                            .primitive_vertices = 3};
+        size_t mcount = 0;
+        u32* mspv = sm86_to_spirv(mesh_code, n * 16, ST_MS, msph, &msi, &mcount);
+        CHECK(mspv != NULL);
+        if (!mspv) {
+            fprintf(stderr, "mesh compute: %s\n", msi.first_unsupported);
+            return;
+        }
+        if (!culled) CHECK(keep_module(dir, "ms_compute", mspv, mcount));
+        memset(buffer, 0, sizeof buffer);
+        u32 groups = 2, y = 1, x = culled ? 3 : 1;
+        buffer[1] = groups;
+        buffer[4 + y] = 2; /* the task workgroup 1 launched two groups */
+        u32 base = 4 + groups + y * stride;
+        buffer[base + 5] = f2u(7.0f);
+        static u32 position[4], generic0[4];
+        memset(position, 0, sizeof position);
+        SpvEvalEnv env = {0};
+        env.builtin[26][0] = x, env.builtin[26][1] = y;
+        env.push[2] = SH_PUSH_GPU_MESH_FIRST | cap << 8;
+        env.ubo[SNX_VKB_RS] = first_word, env.ubo_words[SNX_VKB_RS] = 4;
+        env.ubo[SNX_VKB_MESHBUF] = buffer, env.ubo_words[SNX_VKB_MESHBUF] = 256;
+        env.arrays[32] = position, env.array_words[32] = 4;
+        env.arrays[0] = generic0, env.array_words[0] = 4;
+        const char* why = spv_eval(mspv, mcount, &env);
+        free(mspv);
+        if (why) fprintf(stderr, "mesh compute: the evaluator stops at %s\n", why);
+        CHECK(!why && env.set_outputs == 1);
+        if (culled) {
+            CHECK(env.mesh_outputs[0] == 0 && env.mesh_outputs[1] == 0); /* it says so before it returns */
+            CHECK(position[0] == 0);
+        } else {
+            CHECK(env.mesh_outputs[0] == 1 && env.mesh_outputs[1] == 1);
+            CHECK(position[0] == f2u(7.0f) && position[1] == 0 && position[3] == f2u(1.0f));
+            CHECK(generic0[0] == x); /* the index within the task's launch, read from the record's slot */
+        }
+    }
 }
 
 /* sm86_mesh_output_bytes against the outputs that the translation declares: four scalars for each Output location,
@@ -7296,6 +7415,7 @@ int main(int argc, char** argv) {
     test_mesh(dir);
     test_task(dir);
     test_mesh_after_task(dir);
+    test_mesh_task_compute(dir);
     test_mesh_output_bytes();
     test_mesh_refused();
     test_geometry(dir);

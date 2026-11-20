@@ -166,6 +166,10 @@ typedef struct {
     /* a task or mesh program's ISBE (isbe_var): a mesh program's attribute area and map (Workgroup), a task
        payload (TaskPayloadWorkgroupEXT), their words, and LocalInvocationIndex */
     u32 isbe_attr, isbe_map, payload, isbe_attr_words, isbe_map_words, payload_words, local_index;
+    /* the compute-task path (ShMesh.payload_buf, sm86.h): the buffer (a flat u32 array of SNX_VKB_MESHBUF) and the
+       words of a task workgroup's slot */
+    u32 payload_block, payload_stride, payload_groups;
+    int payload_buf;
     u32 mesh_first;                    /* the uniform buffer of an indirect mesh draw's first group (workgroup_index) */
     u32 vertex_words, primitive_words; /* the output words of a vertex and of a primitive (omap_words) */
     u32 prim_attr[32];                 /* a mesh program's per-primitive generic outputs */
@@ -2475,6 +2479,101 @@ static void isbe_store(Ctx* c, u32 var, u32 storage, u32 words, u32 index, u32 v
 }
 static u32 payload_var(Ctx* c) { return isbe_var(c, &c->payload, SPV_STORAGE_TASK_PAYLOAD, c->payload_words); }
 static u32 map_var(Ctx* c) { return isbe_var(c, &c->isbe_map, SPV_STORAGE_WORKGROUP, c->isbe_map_words); }
+/* The compute-task path's buffer (sm86.h's sm86_mesh_task_cap): a storage buffer of words that the task dispatch
+   writes and the mesh draw reads, a flat array with no fixed size */
+static u32 payload_block_var(Ctx* c) {
+    if (c->payload_block) return c->payload_block;
+    u32 array = spv_emit_type_runtime_array(&c->e, c->t_u32, 4);
+    u32 block = spv_emit_type_struct_one(&c->e, array);
+    c->payload_block = spv_emit_storage_buffer(&c->e, block, (u32)shader_vk_set(c->stage), SNX_VKB_MESHBUF);
+    add_interface(c, c->payload_block);
+    return c->payload_block;
+}
+/* a word of the buffer, at index */
+static u32 payload_word_ptr(Ctx* c, u32 index) {
+    return spv_emit_storage_access_u32(&c->e, spv_emit_type_pointer(&c->e, SPV_STORAGE_STORAGE_BUFFER, c->t_u32),
+                                       payload_block_var(c), c->zero, index);
+}
+/* the task workgroups the draw's buffer holds, above the flag in the push constant's z (sm86.h) */
+static u32 payload_cap(Ctx* c) {
+    u32 cap = spv_emit_binary(&c->e, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, to_u(c, push_component(c, 2)), cu(c, 8));
+    return spv_emit_glsl_binary(&c->e, c->t_u32, c->glsl, SPV_GLSL_U_MAX, cap, cu(c, 1));
+}
+/* a word of the vec4 at SNX_VKB_RS, which the draw gives the task and mesh stages: 0 the first workgroup of an
+   indirect draw (SH_PUSH_GPU_MESH_FIRST) */
+static u32 mesh_param(Ctx* c, u32 k) {
+    if (!c->mesh_first) {
+        c->mesh_first = spv_emit_uniform_vec4_array(&c->e, c->t_v4u, c->t_u32, c->t_u32, (u32)shader_vk_set(c->stage),
+                                                    SNX_VKB_RS, 1, &c->cbuf_ptr);
+        add_interface(c, c->mesh_first);
+    }
+    return spv_emit_uniform_component(&c->e, c->cbuf_ptr, c->mesh_first, c->zero, c->zero, cu(c, k), c->t_u32);
+}
+/* this workgroup's slot in the compute-task path's buffer, clamped: the task dispatch's own workgroup, or the task
+   workgroup that launched this mesh workgroup */
+static u32 payload_slot_index(Ctx* c, u32 groups) {
+    u32 group = builtin_vec3(c, &c->group_id, SPV_BUILT_IN_WORKGROUP_ID, c->stage == ST_TS ? 0 : 1);
+    return spv_emit_glsl_binary(&c->e, c->t_u32, c->glsl, SPV_GLSL_U_MIN, group,
+                                spv_emit_iadd_u32(&c->e, c->t_u32, groups, cu(c, 0xffffffffu)));
+}
+/* the first word of that slot: the record and the counts go first, the payloads after them */
+static u32 payload_slot(Ctx* c, u32 groups) {
+    u32 slot = payload_slot_index(c, groups);
+    return spv_emit_iadd_u32(&c->e, c->t_u32,
+                             spv_emit_binary(&c->e, SPV_OP_I_MUL, c->t_u32, slot, cu(c, c->payload_stride)),
+                             spv_emit_iadd_u32(&c->e, c->t_u32, cu(c, 4), groups));
+}
+/* the groups the task dispatch and its mesh draws share: the task's dispatch size cut to the buffer's slots, which it
+   stores at the record's word 1 for the mesh program to read */
+static u32 payload_groups(Ctx* c) {
+    if (!c->payload_groups) {
+        /* a Private variable: the module's body function and its entry point read it, and every invocation of a
+           workgroup writes the same value */
+        c->payload_groups = spv_emit_variable(&c->e, SPV_STORAGE_PRIVATE, c->t_u32);
+        add_interface(c, c->payload_groups);
+    }
+    return spv_emit_load(&c->e, c->t_u32, c->payload_groups);
+}
+/* a word of the payload, as isbe_load reads one, and one that ISBEWR writes: the workgroup's, past the slots of the
+   task workgroups before it in the compute-task path */
+static u32 payload_load(Ctx* c, u32 word) {
+    if (!c->payload_buf) return isbe_load(c, payload_var(c), SPV_STORAGE_TASK_PAYLOAD, c->payload_words, word);
+    u32 inside = spv_emit_binary(&c->e, SPV_OP_U_LESS_THAN, c->t_bool, word, cu(c, c->payload_words));
+    u32 at = spv_emit_glsl_binary(&c->e, c->t_u32, c->glsl, SPV_GLSL_U_MIN, cu(c, c->payload_words - 1), word);
+    u32 ptr = payload_word_ptr(c, spv_emit_iadd_u32(&c->e, c->t_u32, payload_slot(c, payload_groups(c)), at));
+    u32 v = spv_emit_load_nonprivate(&c->e, c->t_u32, ptr);
+    return spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32, inside, v, c->zero);
+}
+static void payload_store(Ctx* c, u32 word, u32 value) {
+    if (!c->payload_buf) {
+        isbe_store(c, payload_var(c), SPV_STORAGE_TASK_PAYLOAD, c->payload_words, word, value);
+        return;
+    }
+    u32 inside = spv_emit_binary(&c->e, SPV_OP_U_LESS_THAN, c->t_bool, word, cu(c, c->payload_words));
+    u32 then = spv_emit_id(&c->e), merge = spv_emit_id(&c->e);
+    coop_merge(c, merge);
+    coop_branch_if(c, inside, then, merge);
+    coop_label(c, then);
+    spv_emit_store_nonprivate(&c->e,
+                              payload_word_ptr(c, spv_emit_iadd_u32(&c->e, c->t_u32, payload_slot(c, payload_groups(c)), word)),
+                              value);
+    coop_branch(c, merge);
+    coop_label(c, merge);
+}
+/* the count of the mesh groups that task workgroup g launched, at word 4 + g */
+static u32 payload_count_ptr(Ctx* c, u32 group) {
+    return payload_word_ptr(c, spv_emit_iadd_u32(&c->e, c->t_u32, cu(c, 4), group));
+}
+/* word k of the draw's record, at word k: the most groups one task workgroup launched, the task workgroups, 1 and 0 */
+static u32 payload_record_ptr(Ctx* c, u32 k) { return payload_word_ptr(c, cu(c, k)); }
+/* the groups of this dispatch, for the wrapper to keep: the task's, or the mesh program's the task stored */
+static u32 payload_groups_compute(Ctx* c) {
+    if (c->stage == ST_TS) {
+        u32 num = builtin_vec3(c, &c->num_groups, SPV_BUILT_IN_NUM_WORKGROUPS, 0);
+        return spv_emit_glsl_binary(&c->e, c->t_u32, c->glsl, SPV_GLSL_U_MIN, num, payload_cap(c));
+    }
+    return spv_emit_load_nonprivate(&c->e, c->t_u32, payload_record_ptr(c, 1));
+}
 /* The workgroup index that ISBERD.ATTR [RZ+0x0] reads: the vertex ID of the hardware's point draw for a task
    program, or a mesh program without one, which counts from the draw's first group (the push constant's x, as bits).
    A mesh program after a task program reads its index in its task's launch */
@@ -2482,19 +2581,11 @@ static u32 workgroup_index(Ctx* c) {
     u32 id = builtin_vec3(c, &c->group_id, SPV_BUILT_IN_WORKGROUP_ID, 0);
     if (c->stage == ST_MS && c->si->mesh.has_task) return id;
     /* an indirect draw's first group: the record's, in the uniform buffer at SNX_VKB_RS (SH_PUSH_GPU_MESH_FIRST) */
-    if (!c->mesh_first) {
-        c->mesh_first = spv_emit_uniform_vec4_array(&c->e, c->t_v4u, c->t_u32, c->t_u32, (u32)shader_vk_set(c->stage),
-                                                    SNX_VKB_RS, 1, &c->cbuf_ptr);
-        add_interface(c, c->mesh_first);
-    }
     u32 flags = to_u(c, push_component(c, 2));
     u32 gpu = spv_emit_binary(
         &c->e, SPV_OP_I_NOT_EQUAL, c->t_bool,
         spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, flags, cu(c, SH_PUSH_GPU_MESH_FIRST)), c->zero);
-    u32 first = spv_emit_ternary(
-        &c->e, SPV_OP_SELECT, c->t_u32, gpu,
-        spv_emit_uniform_component(&c->e, c->cbuf_ptr, c->mesh_first, c->zero, c->zero, c->zero, c->t_u32),
-        to_u(c, push_component(c, 0)));
+    u32 first = spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32, gpu, mesh_param(c, 0), to_u(c, push_component(c, 0)));
     return spv_emit_iadd_u32(&c->e, c->t_u32, id, first);
 }
 /* ISBERD and ISBEWR (NAK's sm70_encode.rs): the offset register at 24-31, the data register at 32-39 (ISBEWR), the
@@ -2531,12 +2622,12 @@ static void isbe(Ctx* c, const Sm86Insn* in) {
         return;
     }
     if (!write && mesh && m->has_task && attr && !skew && !output && b32) {
-        wr(c, in->dst, isbe_load(c, payload_var(c), SPV_STORAGE_TASK_PAYLOAD, c->payload_words, word));
+        wr(c, in->dst, payload_load(c, word));
         return;
     }
     u32 data = write ? rd(c, sm86_field(in, 32, 8)) : 0;
     if (write && task && attr && !skew && output && b32) {
-        isbe_store(c, payload_var(c), SPV_STORAGE_TASK_PAYLOAD, c->payload_words, word, data);
+        payload_store(c, word, data);
         return;
     }
     if (write && mesh && attr && skew && output && b32 && c->isbe_attr_words) {
@@ -4805,14 +4896,38 @@ static u32 mesh_entry(Ctx* c, u32 body) {
     coop_label(c, spv_emit_id(e));
     MeshLoop loop = {0};
     if (c->stage == ST_MS) loop.counter = spv_emit_function_variable(e, spv_emit_type_function_pointer(e, c->t_u32));
+    /* the groups the dispatch and its mesh draws share, in a module variable (payload_groups) */
+    if (c->payload_buf) (void)payload_groups(c);
     loop.step = cu(c, m->threads);
     u32 invocation = builtin_u32(c, &c->local_index, SPV_BUILT_IN_LOCAL_INVOCATION_INDEX);
     u32 first = spv_emit_binary(e, SPV_OP_I_EQUAL, c->t_bool, invocation, c->zero);
+    if (c->payload_buf) {
+        u32 groups = payload_groups_compute(c);
+        spv_emit_store(e, c->payload_groups, groups);
+        /* The compute-task path draws every mesh workgroup of the grid of the most any task workgroup launched: one at
+           or past its task workgroup's count was not launched, and produces nothing */
+        if (c->stage == ST_MS && m->has_task) {
+            u32 index = builtin_vec3(c, &c->group_id, SPV_BUILT_IN_WORKGROUP_ID, 0);
+            u32 count = spv_emit_load_nonprivate(e, c->t_u32, payload_count_ptr(c, payload_slot_index(c, groups)));
+            u32 launched = spv_emit_binary(e, SPV_OP_U_LESS_THAN, c->t_bool, index, count);
+            u32 run = spv_emit_id(e), out = spv_emit_id(e);
+            coop_merge(c, out);
+            coop_branch_if(c, launched, run, out);
+            coop_label(c, out);
+            /* the workgroup produces nothing, and says so: RADV hangs a mesh workgroup that returns without
+               OpSetMeshOutputsEXT */
+            SPV_VOID(e, SPV_OP_SET_MESH_OUTPUTS_EXT, c->zero, c->zero);
+            coop_end(c);
+            coop_label(c, run);
+        }
+    }
     u32 then = spv_emit_id(e), merge = spv_emit_id(e);
     coop_merge(c, merge);
     coop_branch_if(c, first, then, merge);
     coop_label(c, then);
-    if (c->stage == ST_TS)
+    if (c->stage == ST_TS && c->payload_buf)
+        payload_store(c, cu(c, 1), c->zero);
+    else if (c->stage == ST_TS)
         spv_emit_store(e, isbe_ptr(c, payload_var(c), SPV_STORAGE_TASK_PAYLOAD, cu(c, 1)), c->zero);
     else
         spv_emit_store(e, isbe_ptr(c, map_var(c), SPV_STORAGE_WORKGROUP, cu(c, 3)), c->zero);
@@ -4822,12 +4937,41 @@ static u32 mesh_entry(Ctx* c, u32 body) {
     SPV(e, SPV_OP_FUNCTION_CALL, c->t_void, body);
     spv_emit_control_barrier(e, c->t_u32);
     if (c->stage == ST_TS) {
-        u32 count = spv_emit_load(e, c->t_u32, isbe_ptr(c, payload_var(c), SPV_STORAGE_TASK_PAYLOAD, cu(c, 1)));
+        u32 count = payload_load(c, cu(c, 1));
         /* within the device's limit: a count past it is undefined behavior, which can hang the GPU */
         if (g_spirv_translate.mesh_tasks_max)
             count = spv_emit_glsl_binary(e, c->t_u32, c->glsl, SPV_GLSL_U_MIN, count,
                                          cu(c, g_spirv_translate.mesh_tasks_max));
-        SPV_VOID(e, SPV_OP_EMIT_MESH_TASKS_EXT, count, cu(c, 1), cu(c, 1), payload_var(c));
+        if (!c->payload_buf) {
+            SPV_VOID(e, SPV_OP_EMIT_MESH_TASKS_EXT, count, cu(c, 1), cu(c, 1), payload_var(c));
+        } else {
+            /* The compute-task path: the groups this workgroup launched, in its slot, and the draw's record, which
+               the mesh workgroups read instead of the payload the hardware would copy: the most any one workgroup
+               launched (x), the task workgroups (y) and 1 (z) */
+            u32 groups = payload_groups(c);
+            u32 group = payload_slot_index(c, groups);
+            u32 wrote = spv_emit_id(e), ready = spv_emit_id(e);
+            coop_merge(c, ready);
+            coop_branch_if(c, first, wrote, ready);
+            coop_label(c, wrote);
+            spv_emit_store_nonprivate(e, payload_count_ptr(c, group), count);
+            spv_emit_atomic_u32(e, c->t_u32, SPV_OP_ATOMIC_U_MAX, payload_record_ptr(c, 0), count);
+            u32 none = spv_emit_binary(e, SPV_OP_I_EQUAL, c->t_bool, group, c->zero);
+            u32 y_then = spv_emit_id(e), y_merge = spv_emit_id(e);
+            coop_merge(c, y_merge);
+            coop_branch_if(c, none, y_then, y_merge);
+            coop_label(c, y_then);
+            u32 num = builtin_vec3(c, &c->num_groups, SPV_BUILT_IN_NUM_WORKGROUPS, 0);
+            num = spv_emit_glsl_binary(e, c->t_u32, c->glsl, SPV_GLSL_U_MIN, num, groups);
+            spv_emit_store_nonprivate(e, payload_record_ptr(c, 1), num);
+            spv_emit_store_nonprivate(e, payload_record_ptr(c, 2), cu(c, 1));
+            spv_emit_store_nonprivate(e, payload_record_ptr(c, 3), c->zero);
+            coop_branch(c, y_merge);
+            coop_label(c, y_merge);
+            coop_branch(c, ready);
+            coop_label(c, ready);
+            spv_emit_return(e); /* the merge block of the count's selection ends the invocation */
+        }
         spv_emit_function_end(e);
         return fn;
     }
@@ -7673,6 +7817,15 @@ static void mesh_layout(Ctx* c) {
         }
         c->payload_words = m->payload / 4u;
     }
+    if (m->payload_buf) {
+        /* the compute-task path: one stride for both programs' slots, and the counts and record before them */
+        if (!m->payload_stride || m->payload_stride < c->payload_words) {
+            fail(c, "a compute-task slot of %u words for a payload of %u", m->payload_stride, c->payload_words);
+            return;
+        }
+        c->payload_buf = 1;
+        c->payload_stride = m->payload_stride;
+    }
     if (c->stage == ST_TS) return;
     if (m->primitive_vertices != 3) {
         fail(c, "a mesh program's primitives of %u vertices", m->primitive_vertices);
@@ -8069,9 +8222,12 @@ u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, Sha
         free(pair_value_of);
         free(se.label);
         int mesh = stage == ST_TS || stage == ST_MS;
+        /* the compute-task path: a task program is a compute program, and the mesh program it launches has no task
+           stage (sm86.h's sm86_mesh_task_cap) */
+        int task_compute = stage == ST_TS && c->payload_buf;
         if (!c->failed && mesh) {
             /* the program is the body of an entry point of its own */
-            mesh_capability(c);
+            if (!task_compute) mesh_capability(c);
             fn = mesh_entry(c, fn);
             spv_emit_local_size(e, fn, si->mesh.threads, 1, 1);
             if (stage == ST_MS) {
@@ -8081,9 +8237,10 @@ u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, Sha
             }
         }
         if (!c->failed) {
-            SpvShaderStage model = stage == ST_TS   ? SPV_STAGE_TASK
-                                   : stage == ST_MS ? SPV_STAGE_MESH
-                                                    : (SpvShaderStage)stage;
+            SpvShaderStage model = task_compute ? SPV_STAGE_COMPUTE
+                                   : stage == ST_TS   ? SPV_STAGE_TASK
+                                   : stage == ST_MS   ? SPV_STAGE_MESH
+                                                      : (SpvShaderStage)stage;
             spv_emit_entry_str(e, model, fn, "main", c->interfaces, c->ninterfaces);
             if (stage == ST_GS) {
                 /* the input primitive, the output topology (a passthrough program's the input's) and vertices, and

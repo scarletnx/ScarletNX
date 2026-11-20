@@ -31,4 +31,10 @@ VkResult vk_buffer_create(const VkBufferCreateInfo* info, const DevMemWant* allo
 void rec_CmdBindDescriptorBuffersEXT(VkCommandBuffer cb, VkDeviceAddress address);
 void rec_CmdSetDescriptorBufferOffsetsEXT(VkCommandBuffer cb, VkPipelineLayout layout, u32 first, u32 count,
                                          const VkDeviceSize* offsets);
+/* the same at another bind point, a compute pipeline's (vk_descriptors_bind_compute) */
+void rec_CmdSetDescriptorBufferOffsetsBP(VkCommandBuffer cb, VkPipelineBindPoint bp, VkPipelineLayout layout, u32 first,
+                                         u32 count, const VkDeviceSize* offsets);
+/* a compute dispatch's set, at the compute bind point: descriptor sets, or descriptor buffers where the renderer
+   uses them (descriptor heaps have no compute path) */
+void vk_descriptors_bind_compute(VkCommandBuffer cb, VkPipelineLayout layout, u32 first, VkDescriptorSet set);
 #endif
