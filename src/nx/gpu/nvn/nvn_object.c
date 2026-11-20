@@ -24,7 +24,6 @@
 #include "nx/gpu/nvn/nvn_section.h"
 #include "nx/gpu/texture/blocklinear.h"
 #include "nx/runtime/main.h"
-#include "nx/gpu/gpu.h"
 #include "nx/gpu/shader/sm86.h"
 #include "nx/hle/services/nvdrv.h"
 #include "nx/hle/services/native_video.h"
@@ -38,7 +37,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <stdatomic.h>
 
 u64 nvn_serial(void) { return (atomic_fetch_add_explicit(&g_nvn.object.serial, 1, memory_order_relaxed) + 1); }
