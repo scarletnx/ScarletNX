@@ -128,6 +128,9 @@ maxPushConstantsSize | off | lavapipe | * | any | * | hands its linear rasterize
 # Mesh draws (device.c's mesh_choose: without VK_EXT_mesh_shader an Ounce game's mesh draws are skipped)
 VK_EXT_mesh_shader | off | nvidia | * | any | * | faulted the GPU in most menu runs of an Ounce game with its mesh draws on an RTX 2080: Xid 31 and 109, then a lost device, and 2 of 7 runs still hung once both mesh stages saw the sets of both | ScarletNX 0002310032 and 62f2ec0570 (2026-11-05), docs/platforms/nx/ounce.md#draws | headless:--vk-ext-mesh-shader=on | 2026-11-05 broken on 615.78.08 (RTX 2080) | -
 
+# Pipelines made on several threads at once (vk_common.c's snx_vk_compile_serial: off makes them one at a time)
+vkCreateGraphicsPipelines | off | nvidia | * | linux, android, macos, ios, freebsd, openbsd, netbsd | * | deadlocks in the compiler of its Unix driver (libnvidia-gpucomp) with pipelines made on several threads at once: one thread waits in a pthread_once whose initializer, on another, waits for a mutex (580.178.04 on FreeBSD, a GT 1030). The Windows driver has its own compiler, where one at a time made each fast link wait 1.2 to 1.7 ms behind a compile | ScarletNX 0aae8f9410 (2026-11-14) | new:headless:pipelines made from eight threads at once | 2026-11-14 broken on 580.178.04 (FreeBSD, a GT 1030) | -
+
 # Pipeline libraries (gpu/vk/pipeline_parts.c: a new pipeline links the parts of its shaders)
 VK_EXT_graphics_pipeline_library | off | nvidia | < 531.0.0 | any | * | draws transient glitches with pipeline libraries | ANGLE vk_renderer.cpp:6928, anglebug 42266655 | new:amberlith:the graphics suites with pipeline libraries on | never | -
 VK_EXT_graphics_pipeline_library | off | mali | * | any | * | runs unacceptably slower with pipeline libraries | ANGLE vk_renderer.cpp:6928, anglebug 404581992 | new:amberlith:the graphics suites timed with pipeline libraries on and off | never | -

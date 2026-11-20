@@ -1091,6 +1091,11 @@ static int amdgpu_drivers(uint32_t id, uint32_t system) {
     return id == VK_DRIVER_ID_MESA_RADV || id == VK_DRIVER_ID_AMD_OPEN_SOURCE ||
            (id == VK_DRIVER_ID_AMD_PROPRIETARY && system == SNX_VK_BAN_LINUX);
 }
+static int nvidia_unix(uint32_t id, uint32_t system) {
+    /* #ifndef _WIN32: every system the table names but Windows. A system it names none of (0) made them one at a
+       time too, and no line can say so: NVIDIA's driver runs on none of those */
+    return id == VK_DRIVER_ID_NVIDIA_PROPRIETARY && system && system != SNX_VK_BAN_WINDOWS;
+}
 static void check_choices(void) {
     static const struct {
         const char* key;
@@ -1103,6 +1108,7 @@ static void check_choices(void) {
         {"VK_MEMORY_PROPERTY_HOST_CACHED_BIT", 1, anv_only},
         {"maxPushConstantsSize", 0, lavapipe_only},
         {"VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT", 0, amdgpu_drivers},
+        {"vkCreateGraphicsPipelines", 0, nvidia_unix},
     };
     static const uint32_t systems[] = {0,
                                        SNX_VK_BAN_LINUX,
