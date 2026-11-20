@@ -782,6 +782,12 @@ add_executable(snx-test-cheat-list cheat_list.c)
 snx_test_target(snx-test-cheat-list c23)
 target_link_libraries(snx-test-cheat-list PRIVATE scarletnx-common)
 add_test(NAME cheat_list COMMAND snx-test-cheat-list)
+# a game's cheats as a frame runs them (src/nx/runtime/cheats.c), over a file and a memory of the test's
+add_executable(snx-test-cheats-run cheats_run.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/cheats.c")
+snx_test_target(snx-test-cheats-run gnu23)
+target_include_directories(snx-test-cheats-run PRIVATE "${PROJECT_SOURCE_DIR}/src")
+target_link_libraries(snx-test-cheats-run PRIVATE scarletnx-common scarletnx-platform)
+add_test(NAME cheats_run COMMAND snx-test-cheats-run)
 # a GPU driver package's meta.json, folder name and library, the devices that load one, a run's check that it did, and
 # Freedreno's variables (common/utilities/gpu_driver.c)
 add_executable(snx-test-gpu-driver gpu_driver.c)
