@@ -83,8 +83,17 @@ if(BUILD_TESTING)
     set_target_properties(snx-test-android-gles1 PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON)
     target_compile_options(snx-test-android-gles1 PRIVATE -Wall -Wextra -Werror -UNDEBUG)
     add_test(NAME android_gles1 COMMAND snx-test-android-gles1)
-    # the bridge's start where the LLVM backend cannot target the host, snx_recompiler_new wrapped at link time
+    # the bridge's start where the LLVM backend cannot target the host, snx_recompiler_new wrapped at link time; and
+    # a lookup in the linker's libraries while another thread's load is held in its read, plat_pread_fd wrapped
     if(CMAKE_SYSTEM_NAME MATCHES "^(Linux|FreeBSD)$")
+        add_executable(snx-test-android-linker-lock "${PROJECT_SOURCE_DIR}/tests/android_linker_lock.c")
+        target_link_libraries(snx-test-android-linker-lock PRIVATE
+                              "$<LINK_GROUP:RESCAN,snx_android_program,snx_android_bridge>" Threads::Threads)
+        target_link_options(snx-test-android-linker-lock PRIVATE "LINKER:--wrap=plat_pread_fd")
+        set_target_properties(snx-test-android-linker-lock PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON)
+        target_compile_options(snx-test-android-linker-lock PRIVATE -Wall -Wextra -Werror -UNDEBUG)
+        add_test(NAME android_linker_lock COMMAND snx-test-android-linker-lock)
+        set_tests_properties(android_linker_lock PROPERTIES TIMEOUT 60)
         add_executable(snx-test-android-bridge-start "${PROJECT_SOURCE_DIR}/tests/android_bridge_start.c")
         target_link_libraries(snx-test-android-bridge-start PRIVATE
                               "$<LINK_GROUP:RESCAN,snx_android_program,snx_android_bridge>")
@@ -155,6 +164,7 @@ endif()
 if(COMMAND snx_sanitizer_path) # tests/CMakeLists.txt: this folder's tests
     snx_test_sanitize(snx-test-bionic-sync snx-test-android-image snx-test-android-host-anon snx-test-android-gles2
                       snx-test-android-inputs snx-test-android-bionic snx-test-android-arm32 snx-test-android-dex
-                      snx-test-android-bridge-start snx-test-android-audio snx-test-android-gles1)
+                      snx-test-android-bridge-start snx-test-android-audio snx-test-android-gles1
+                      snx-test-android-linker-lock)
     snx_sanitizer_path()
 endif()
