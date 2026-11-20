@@ -121,8 +121,10 @@ Pretendo account's principal ID and the code its server gave it. Its replies: `r
 and `datetime`; an error's code otherwise (102 an unknown account or device, 110 no server for the title, 121 a
 certificate it refuses, 122 a wrong `uidhmac`, 150 a serial that is not the device's, 152 another game server ID).
 
-The console's files come from a folder laid out as Azahar's NAND folder (`ctr_console`), where Azahar's Artic Setup
-Tool copies them from the player's console:
+The console's files come from a folder laid out as Azahar's NAND folder (`ctr_console`). Azahar's Artic Setup Tool
+copies the first two from the player's console; the third, the friends save with the Pretendo account, it does not
+copy ("Artic Setup Tool does not copy your account or save data from your system", Pretendo's guide for Azahar): Nimbus
+makes it when it runs in Azahar:
 
 | File                                                                    | What the login takes                 |
 |-------------------------------------------------------------------------|--------------------------------------|

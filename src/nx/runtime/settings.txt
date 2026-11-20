@@ -1319,10 +1319,10 @@ setting CTR console files
     text 2048
     default ""
     startup
-    help The folder of the player's own 3DS's files, laid out as Azahar's NAND folder (its nand/, where Azahar's
-    help Artic Setup Tool copies them): rw/sys/LocalFriendCodeSeed_B, rw/sys/SecureInfo_A and the friends module's
-    help save holding the Pretendo account Nimbus made. Empty: the console has no account, and a game's login does not
-    help go out
+    help The folder of the player's own 3DS's files, laid out as Azahar's NAND folder (its nand/):
+    help rw/sys/LocalFriendCodeSeed_B and rw/sys/SecureInfo_A, which Azahar's Artic Setup Tool copies from the console,
+    help and the friends module's save holding the Pretendo account, which it does not copy: Nimbus makes it when it
+    help runs in Azahar. Empty: the console has no account, and a game's login does not go out
 
 # the Switch's, which nothing reads: its row shows the service is not offered
 table g_switch_online_ini
