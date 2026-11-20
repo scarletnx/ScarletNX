@@ -1053,7 +1053,9 @@ static int stage_hle(Hle* ld, Buf* heap, const Names* names, Buf* fs_paths) {
         heap->at += n;
         switch (kind) {
             case HEAP_STORAGE:
+                /* its bytes, as many as the storage says it holds (one for an empty one, as they were written) */
                 if (slot >= AM_STORAGES || ld->am.storages[slot].d ||
+                    n != (ld->am.storages[slot].size ? ld->am.storages[slot].size : 1) ||
                     !(ld->am.storages[slot].d = (u8*)malloc((size_t)(n ? n : 1))))
                     goto bad;
                 memcpy(ld->am.storages[slot].d, p, (size_t)n);
