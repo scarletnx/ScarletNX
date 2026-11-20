@@ -43,6 +43,17 @@ the call cannot set execute on them again. The program unmaps and maps again ins
 Setting a read-execute permission tells the runtime's JIT that the range changed, so the runtime compiles the code
 again. The same happens at the unmap, for the view and its source.
 
+## Ranges and attributes
+
+`svcUnmapProcessCodeMemory` takes a range, and the range can be part of a view. The console unmaps what it is
+given, so a program can unmap the parts of a view in any order. The runtime keeps each view's parts, and the
+source's lock stays only where a part is left.
+
+A view whose attribute changes keeps its source's lock. `svcSetMemoryAttribute` can set Uncached on code data, and
+the console's page table still holds the source Locked. The lock goes when the view does, not when its attribute
+changes. An unmap takes only a view whose attribute is nothing but PermissionLocked, as the console does, so the
+program clears Uncached first.
+
 ## Invalid requests
 
 The calls return the console's results. A wrong alignment is InvalidAddress. A zero or partial page count is
@@ -50,7 +61,7 @@ InvalidSize. A range that wraps is InvalidCurrentMemory. A handle that is not a 
 destination outside the address space, or over the heap, the alias region or the kernel's pages, is
 InvalidMemoryRegion. A source that is not normal read-write memory, a destination that is not free, and a range that
 is not code are InvalidCurrentMemory. A wrong permission is InvalidNewMemoryPermission. An unmap whose source is not
-the view's own source is InvalidMemoryRegion, as the console's page group comparison gives.
+the view's own source, for the range given, is InvalidMemoryRegion, as the console's page group comparison gives.
 
 ## Limits
 
