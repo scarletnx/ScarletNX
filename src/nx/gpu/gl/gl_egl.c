@@ -95,9 +95,12 @@ static const struct {
 static _Thread_local struct {
     u32 api, ctx, draw, read, error;
 } t_egl;
+/* the display's state and the swap interval, which the game's threads set, each on a cache line of its own */
 static struct {
-    _Atomic u32 initialized, interval;
-} g_gl_egl = {0, 1};
+    _Atomic u32 initialized;
+    char pad[60];
+    _Atomic u32 interval;
+} g_gl_egl = {.interval = 1};
 
 static u32 fail(u32 error) {
     t_egl.error = error;
