@@ -185,8 +185,8 @@ typedef void (*snx_recompiled_invalidate_callback)(void* context, uint64_t start
    [addr, addr + size), word aligned: call it with what the guest now has before snx_recompiled_invalidate, so the
    units the JIT then builds for the changed code are the new code. Returns the bytes updated (those inside the
    module's ranges), 0 for a module made with snx_recompiler_set_live_code, whose JIT already reads the caller's
-   bytes. The JIT reads copied words atomically while workers compile. code holds the bytes as the guest has them in
-   memory */
+   bytes. Concurrent updates to one module are serialized; JIT readers of copied words reject a read if its image
+   generation changes. The caller must still invalidate changed functions after updating the bytes. */
 SNX_RECOMPILER_API size_t snx_recompiled_update_code(struct snx_recompiled* m, uint64_t addr, const void* code,
                                                      size_t size);
 SNX_RECOMPILER_API size_t snx_recompiled_invalidate(struct snx_recompiled* m, uint64_t addr, uint64_t size,

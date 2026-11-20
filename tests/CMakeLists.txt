@@ -3695,7 +3695,7 @@ add_test(NAME recompiler_library COMMAND snx-test-recompiler-library)
 add_executable(snx-test-recompiler-library-cpp recompiler_library_cpp.cpp)
 set_target_properties(snx-test-recompiler-library-cpp PROPERTIES CXX_STANDARD 23 CXX_STANDARD_REQUIRED ON)
 target_compile_options(snx-test-recompiler-library-cpp PRIVATE -Wall -Wextra -Werror)
-target_link_libraries(snx-test-recompiler-library-cpp PRIVATE scarletnx-recompiler)
+target_link_libraries(snx-test-recompiler-library-cpp PRIVATE scarletnx-recompiler Threads::Threads)
 add_test(NAME recompiler_library_cpp COMMAND snx-test-recompiler-library-cpp)
 # what the library's archive needs from outside it: LLVM and the system's libraries alone
 # (tests/recompiler_symbols.cmake). Its program links every object of the archive with those, named here rather than

@@ -202,7 +202,8 @@ and returns the bytes inside the module's ranges. Call it with the changed bytes
 `snx_recompiled_invalidate`. Without it, a module made for an embedder compiles a patched
 function again from the bytes it was made from. A module made with
 `snx_recompiler_set_live_code` has no copy, so the call returns 0 and writes nothing. JIT workers read copied words
-atomically while they compile.
+atomically while they compile. Concurrent updates to one module are serialized, and readers reject copied-image
+reads when the image generation changes; callers still invalidate changed functions after updating the bytes.
 
 For A32 and Thumb, `snx_recompile32` prepares an address range whose blocks are compiled
 on first use by the LLVM block compiler (`src/common/cpu/arm/`), and
