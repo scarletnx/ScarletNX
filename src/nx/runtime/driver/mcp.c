@@ -354,7 +354,6 @@ static char* nacp_version(const char* game) {
     return out;
 }
 
-/* every extracted game, or only title_id's, as {path, title_id, version} into list */
 /* the save states of the recompiled game title_id, in the data folder's games/ or recompiled/ (state_header.h) */
 static void find_states(const Mcp* m, SnxU64 title_id, yyjson_mut_doc* d, yyjson_mut_val* list) {
     static const char* const libraries[] = {"games", "recompiled"};
@@ -399,6 +398,7 @@ static void find_states(const Mcp* m, SnxU64 title_id, yyjson_mut_doc* d, yyjson
         free(folder);
     }
 }
+/* every extracted game, or only title_id's, as {path, title_id, version} into list */
 static void find_games(const Mcp* m, SnxU64 title_id, yyjson_mut_doc* d, yyjson_mut_val* list) {
     int w;
     for (w = 0; w < 2; w++) {

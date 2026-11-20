@@ -2006,7 +2006,6 @@ static void method_free(Method* m) {
     cf_free(&m->out);
     cf_free(&m->text);
 }
-/* a method's Code attribute into out (with its attributes count); false with m->error filled */
 /* the method's instructions, blocks and handlers, and the dataflow over them */
 static bool analyze(Method* m) {
     uint32_t n = m->n = m->code.insns_size;
@@ -2056,6 +2055,7 @@ static bool analyze(Method* m) {
     free(entry);
     return ok;
 }
+/* a method's Code attribute into out (with its attributes count); false with m->error filled */
 static bool translate_code(Method* m, CfBuffer* out) {
     if (!analyze(m)) return false;
     uint32_t params = dex_proto_param_count(m->dex, m->proto_idx);
