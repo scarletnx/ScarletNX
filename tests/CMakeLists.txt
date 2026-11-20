@@ -3950,6 +3950,17 @@ add_executable(snx-test-audren-host audren_host.c)
 snx_test_target(snx-test-audren-host gnu23)
 add_test(NAME audren_host COMMAND snx-test-audren-host)
 
+# the audio clock (audio.c) and the renderer's frames it queues (audren.c) on a host the test makes, whose clock
+# thread stalls: how far the sound trails the clock afterwards. Without FFmpeg: no Opus decoder opens here
+add_executable(snx-test-audio-clock audio_clock.c)
+snx_test_target(snx-test-audio-clock gnu23)
+snx_service_swipc(snx-test-audio-clock hle/services/audio.swipc)
+target_compile_definitions(snx-test-audio-clock PRIVATE SNX_NO_H264)
+if(NOT WIN32)
+    target_link_libraries(snx-test-audio-clock PRIVATE m)
+endif()
+add_test(NAME audio_clock COMMAND snx-test-audio-clock)
+
 add_executable(snx-test-render-enable render_enable.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/engines.c"
     "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/maxwell3d.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/write_pages.c"
     "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/draw_state.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/draw_state.c")
