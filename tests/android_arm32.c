@@ -681,6 +681,12 @@ int main(void) {
         fprintf(stderr, "android_arm32: no folder for the test's libraries in the working folder\n");
         return 1;
     }
+    /* an aligned block whose size with its alignment and header passes 32 bits is none, not a small one */
+    expect_int("memalign(4096, 0xfffffff0)", arm32_memalign(4096, 0xfffffff0u), 0);
+    expect_int("memalign(16, 0xffffffe0)", arm32_memalign(16, 0xffffffe0u), 0);
+    uint32_t aligned = arm32_memalign(4096, 100);
+    expect_int("memalign(4096, 100) is made, at a page", aligned && !(aligned & 4095), 1);
+    arm32_free(aligned);
     test_loader();
     test_shim();
     test_fortify();
