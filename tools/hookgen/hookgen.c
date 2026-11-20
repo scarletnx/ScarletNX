@@ -350,10 +350,14 @@ static void fail(int line, const char* fmt, ...) {
 static void out(const char* fmt, ...) {
     char line[1024];
     size_t n;
+    int made;
     va_list ap;
     va_start(ap, fmt);
-    vsnprintf(line, sizeof line, fmt, ap);
+    made = vsnprintf(line, sizeof line, fmt, ap);
     va_end(ap);
+    /* a line the buffer does not hold is not written cut, which would be C that does not compile or, worse, does */
+    if (made < 0 || (size_t)made >= sizeof line)
+        fail(0, "a generated line of %d bytes passes the %d a line holds", made, (int)sizeof line - 1);
     n = strlen(line);
     if (olen + n + 1 > ocap) {
         ocap = (olen + n + 1) * 2;

@@ -1947,6 +1947,13 @@ add_test(NAME hookgen_refuses_a32_all COMMAND snx-hookgen --a32 --out "${CMAKE_C
          "${CMAKE_CURRENT_SOURCE_DIR}/hook/bad/a32_all.hook")
 set_tests_properties(hookgen_refuses_a32_all PROPERTIES
                      PASS_REGULAR_EXPRESSION "a32_all.hook:4: .*one for it alone needs --a32-marked")
+# a prefix that makes a generated line longer than the generator's line holds: refused, where it was written cut
+string(REPEAT "p" 200 snx_hookgen_long_prefix)
+add_test(NAME hookgen_refuses_long_line COMMAND snx-hookgen --prefix "${snx_hookgen_long_prefix}"
+         -I "${PROJECT_SOURCE_DIR}/src" --header "${CMAKE_CURRENT_BINARY_DIR}/refused.h"
+         --out "${CMAKE_CURRENT_BINARY_DIR}/refused.inc" "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/hooks.hook")
+set_tests_properties(hookgen_refuses_long_line PROPERTIES
+                     PASS_REGULAR_EXPRESSION "a generated line of [0-9]+ bytes passes the 1023 a line holds")
 add_executable(snx-test-swipc-dispatch swipc_dispatch.c)
 snx_test_target(snx-test-swipc-dispatch gnu23)
 snx_swipc(snx-test-swipc-dispatch ROOT "${PROJECT_SOURCE_DIR}" FILES tests/swipc/test.swipc tests/swipc/other.swipc)
