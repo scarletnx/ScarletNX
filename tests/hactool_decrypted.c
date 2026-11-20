@@ -380,6 +380,25 @@ static void invalid_patch_layouts(const char* self) {
     }
 }
 
+/* a PFS0 whose main.npdm holds no byte: no ExeFS, and no read of the magic the file has not (malloc gives a block of
+   no bytes for it, which the sanitizers' build stops a read of) */
+static void empty_npdm(void) {
+    hactool_ctx_t tool = {0};
+    pfs0_ctx_t ctx = {0};
+    struct {
+        pfs0_header_t header;
+        pfs0_file_entry_t entry;
+        char names[16];
+    } pfs = {{snx_le32(MAGIC_PFS0), snx_le32(1), snx_le32(16), 0}, {0}, "main.npdm"};
+    ctx.tool_ctx = &tool;
+    ctx.file = archive(&pfs, sizeof(pfs), NULL, 0);
+    pfs0_process(&ctx);
+    CHECK(!ctx.is_exefs && ctx.npdm_size == 0);
+    free(ctx.npdm);
+    free(ctx.header);
+    CHECK(!fclose(ctx.file));
+}
+
 static void gamecard_headers(void) {
     const uint32_t magics[] = {MAGIC_DXCI, MAGIC_HEAD};
     for (unsigned i = 0; i < sizeof(magics) / sizeof(magics[0]); i++) {
@@ -433,6 +452,7 @@ int main(int argc, char** argv) {
     plaintext_patch(CRYPT_NONE, 0, 0x4200);
     plaintext_patch(CRYPT_NONE, 0x200, 0x4200);
     invalid_patch_layouts(argv[0]);
+    empty_npdm();
     gamecard_headers();
     printf("hactool decrypted: %u checks passed\n", checks);
     return 0;
