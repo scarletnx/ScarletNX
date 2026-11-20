@@ -1081,17 +1081,15 @@ brings a translation up to the code; a phrase it leaves empty, or marks `fuzzy`,
   greyed (`~`, one its screen cannot do now) stays greyed;
 - has a letter the menu's font does not draw, which would show as `?`: the font is CP437, the Latin letters of
   U+00A0 to U+024F past it, the blocks game titles are written in and the wide letters the languages show, GNU
-  Unifont's. The build takes every code point of the CJK and Hangul blocks of `scripts/build-glyphs.py`'s
-  `TITLE_RANGES` (CJK Unified Ideographs without Extension A, Hiragana, Katakana, Hangul Syllables, their punctuation
-  and the halfwidth and fullwidth forms), whatever the languages show, from the Unifont `.hex` it downloads
-  (`cpmfile.json`'s `unifont`). `scripts/build-glyphs.py --from` keeps the others from a Unifont `.hex`
-  (`unifont-<version>.hex` or `unifont_all-<version>.hex`): the Latin ones in `src/gui/unifont-latin.hex`, which the
-  build draws with the VGA font's stems and baseline, and in `src/gui/unifont-wide.hex` the 16x16 glyphs of every
-  other letter of `po/*.po` and `tests/po/*.po`. The menu draws a 16x16 one two columns wide: every
+  Unifont's. `scripts/build-glyphs.py` takes them all from the Unifont `.hex` the build downloads (`cpmfile.json`'s
+  `unifont`): the Latin ones, which the build draws with the VGA font's stems and baseline; every code point of the
+  CJK and Hangul blocks of its `TITLE_RANGES` (CJK Unified Ideographs without Extension A, Hiragana, Katakana, Hangul
+  Syllables, their punctuation and the halfwidth and fullwidth forms), whatever the languages show; and the 16x16
+  glyphs of every other letter of `po/*.po` and `tests/po/*.po`. The menu draws a 16x16 one two columns wide: every
   width, cut, wrap and slide of its text counts them so (`src/gui/wide.h`), and a row breaks after one as at a space.
   The font's texture holds the others whole and 2048 of the 16x16 ones at a time, those drawn longest ago giving their
-  place to the next. A language that shows a new letter runs it again; the `gui_glyphs_kept` test checks the files
-  hold each of them once, and no other, and `--check --from` the `.hex` compares their glyphs with Unifont's too;
+  place to the next. A letter Unifont lacks, or draws 8 wide outside the Latin ones, stops the build, named; the
+  `gui_glyphs_kept` test checks the downloaded `.hex` the same way (`--check`);
 - has contexts (`msgctxt`), plurals (`msgid_plural`), a phrase twice, or is not UTF-8.
 
 The runtime's settings stay as the runtime names them (their groups, names, help and words come from

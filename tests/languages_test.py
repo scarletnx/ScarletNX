@@ -241,14 +241,30 @@ class Files(unittest.TestCase):
         self.assertIn(0x00E3, DRAWN)
         self.assertIn(0x00E9, DRAWN)
         self.assertNotIn(0x2026, DRAWN)
-        # a wide letter a language shows (tests/po/xx.po's), kept by scripts/build-glyphs.py; one none shows is refused,
-        # saying how it gets its glyph
+        # a letter a language shows (tests/po/xx.po's), which scripts/build-glyphs.py takes from Unifont; one no
+        # language of the checkout shows is refused here, saying how it gets its glyph
         self.compile(entry('Settings', '\u83dc\u5355'))
         self.assertIn(0x83DC, DRAWN)
         self.assertIn(0x9F8D, DRAWN)  # the titles' blocks, whatever the languages show
         self.assertNotIn(0xA000, DRAWN)
-        with self.assertRaisesRegex(bl.Refused, r'\(U\+A000\).*build-glyphs\.py --from'):
+        with self.assertRaisesRegex(bl.Refused, r'\(U\+A000\).*build-glyphs\.py takes from GNU Unifont'):
             self.compile(entry('Settings', '\u83dc\ua000'))
+
+    def test_letters_a_language_shows_are_drawn(self):
+        # a wide letter the checkout's languages show is drawn, from Unifont; the Latin one left out (U+00AD) is not
+        with tempfile.TemporaryDirectory(prefix='snx-drawn-') as folder:
+            root = Path(folder)
+            (root / 'src/common/utilities').mkdir(parents=True)
+            (root / 'src/common/utilities/font.c').write_text((ROOT / 'src/common/utilities/font.c').read_text())
+            (root / 'po').mkdir()
+            po = 'msgid ""\nmsgstr ""\n"Language: ii\\n"\n"X-Language-Name: Test\\n"\n\n'
+            po += 'msgid "Menu"\nmsgstr "\ua000\u00ad"\n'
+            (root / 'po/ii.po').write_text(po, encoding='utf-8')
+            drawn = bl.drawable(root)
+        self.assertIn(0xA000, drawn)
+        self.assertNotIn(0x00AD, drawn)
+        self.assertIn(0x00E3, drawn)
+        self.assertIn(0x9F8D, drawn)
 
     def test_refused_headers_and_names(self):
         with self.assertRaises(bl.Refused):
