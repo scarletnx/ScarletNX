@@ -19,6 +19,8 @@
    published, so the batches after it don't compile it again */
 #include "common/cpu/recompiler/llvm/jit_service.h"
 #include "common/cpu/recompiler/llvm/jit_cache.h"
+#include "nx/runtime/ini.h"
+#include "snx_settings.h"
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -36,6 +38,16 @@
 #include <sys/syscall.h>
 #include <unistd.h>
 #endif
+
+/* the set functions of the performance table, whose jit_threads is read here (options.c's): none runs for that key */
+void options_fps_set(const IniOpt* o, const char* v) {
+    (void)o;
+    (void)v;
+}
+void options_heap_max_set(const IniOpt* o, const char* v) {
+    (void)o;
+    (void)v;
+}
 
 #define MEMORY     0x40000
 #define CODE_LO    0x1000
@@ -1058,6 +1070,33 @@ int main(int argc, char** argv) {
     snx_jit_stats(service, &stats);
     CHECK(stats.compiled == before + 1 && !stats.failures && stats.bytes > 0);
     snx_jit_service_free(service);
+
+    /* jit_threads, read as the game's .ini gives it and passed on as guest_jit.c passes it, is the compile threads the
+       service starts, up to SNX_JIT_THREADS, the setting's top; Auto (0) stays at SNX_JIT_THREADS_AUTO at most */
+    {
+        const IniOpt* o = ini_find(g_performance_ini, "jit_threads");
+        CHECK(o && o->lo == 0 && o->hi == SNX_JIT_THREADS && g_settings.jit_threads == 0);
+        ini_read(o, "12");
+        CHECK(g_settings.jit_threads == 12);
+        service = start(0, (unsigned)g_settings.jit_threads);
+        if (!service) return 1;
+        snx_jit_stats(service, &stats);
+        CHECK(stats.threads == 12);
+        snx_jit_service_free(service);
+        service = start(0, SNX_JIT_THREADS + 8);
+        if (!service) return 1;
+        snx_jit_stats(service, &stats);
+        CHECK(stats.threads == SNX_JIT_THREADS);
+        snx_jit_service_free(service);
+        ini_read(o, "0");
+        service = start(0, (unsigned)g_settings.jit_threads);
+        if (!service) return 1;
+        snx_jit_stats(service, &stats);
+        CHECK(stats.threads >= 1 && stats.threads <= SNX_JIT_THREADS_AUTO);
+        snx_jit_service_free(service);
+        printf("jit_threads=12 starts 12 compile threads, %u asked start %u, Auto %u\n", SNX_JIT_THREADS + 8,
+               SNX_JIT_THREADS, stats.threads);
+    }
 
     /* the bank, missed by THREADS threads at once: on every compile thread there can be, then one pc per compile on
        one thread. Each thread waits for its miss, so the queue holds at most THREADS pcs and the batches are small:
