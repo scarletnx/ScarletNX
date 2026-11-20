@@ -408,9 +408,15 @@ static void set_error(GlesContext* gl, unsigned e) {
 
 /* ---- textures ---- */
 
+/* the texture names the table has room for: it is indexed by them, and an app binds any name it likes, one it
+   never generated too. glGenTextures gives the lowest free ones */
+#define TEXTURE_NAMES (1u << 20)
+
+/* the texture of a name, made the first time; NULL for a name past TEXTURE_NAMES or when memory runs out */
 static Texture* texture(unsigned name) {
+    if (name >= TEXTURE_NAMES) return NULL;
     if (name >= g.texture_count) {
-        size_t count = name + 64;
+        size_t count = (size_t)name + 64;
         Texture* grown = realloc(g.textures, count * sizeof *grown);
         if (!grown) return NULL;
         memset(grown + g.texture_count, 0, (count - g.texture_count) * sizeof *grown);
@@ -1225,6 +1231,8 @@ static void g_bind_texture(CPU* c, void* data) {
     pthread_mutex_lock(&V.lock);
     unsigned name = (unsigned)X(1);
     if (texture(name)) gl->bound[gl->active] = name;
+    else
+        set_error(gl, GL_OUT_OF_MEMORY_); /* the name stays unbound, and the texture before it bound */
     pthread_mutex_unlock(&V.lock);
 }
 static void g_active_texture(CPU* c, void* data) {
