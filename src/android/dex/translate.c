@@ -1352,7 +1352,7 @@ static const char* array_type(Method* m, const uint32_t* s, uint32_t r, unsigned
     return defaults[base - 0x44];
 }
 static void emit_array(Method* m, const Insn* in, const uint32_t* s) {
-    unsigned op = in->op, base = op >= 0x4b ? op - 7 : op;
+    unsigned op = in->op;
     bool put = op >= 0x4b;
     const char* t = array_type(m, s, in->b, op);
     load(m, s, V_A, in->b);
@@ -1369,7 +1369,6 @@ static void emit_array(Method* m, const Insn* in, const uint32_t* s) {
     case 'S': view = V_I; jop = 0x35; break;
     default: view = V_A; jop = 0x32; break;
     }
-    (void)base;
     int width = (int)view_width[view];
     if (put) {
         load(m, s, view, in->a);
