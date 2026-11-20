@@ -78,10 +78,11 @@ u32 ev_handle(u32 ev) { return 0x100 + ev; }
 static int signaled(u32 handle) { return g_events[handle - 0x100 - 1].signaled; }
 static void clear(u32 handle) { g_events[handle - 0x100 - 1].signaled = 0; }
 void kobj_unref(KObj* o) { (void)o; }
+/* the transfer memories BindSyncpointMemory is handed: handles 0x201 (read-write) and 0x202 (read-only) */
+static KTmem g_tmems[2];
 KObj* h_get_ref(u32 h, int t) {
-    (void)h, (void)t;
-    UNUSED("h_get_ref");
-    return NULL;
+    (void)t;
+    return h == 0x201 ? &g_tmems[0].o : h == 0x202 ? &g_tmems[1].o : NULL;
 }
 int new_event(u32* event, const char* name, int is_signaled) {
     u32 id = owned_event(name);
@@ -419,6 +420,25 @@ static void armed_waits(void) {
     CHECK(g_wait.unheld == 0 && g_wait.held == 0);
 }
 
+/* BindSyncpointMemory fills 0x2000 bytes of the read-only memory and reads the read-write one's first 0x20: a memory
+   shorter than its part is refused, and nothing past its end is written */
+static void syncpoint_memory(void) {
+    static u8 rw[0x1000], ro[0x3000];
+    u8 request[8] = {0};
+    u32 asked = 0, done = 0;
+    memset(ro, 0xEE, sizeof ro);
+    g_tmems[0] = (KTmem){.addr = (u64)(uintptr_t)rw, .size = sizeof rw};
+    g_tmems[1] = (KTmem){.addr = (u64)(uintptr_t)ro, .size = 0x1000};
+    CHECK(nn_gsv_UserSession_BindSyncpointMemory(NULL, 0x201, 0x202, request, &asked, &done) != 0);
+    CHECK(ro[0] == 0xEE && ro[0x1000] == 0xEE && ro[0x1FFF] == 0xEE);
+    g_tmems[0].size = 0x10, g_tmems[1].size = 0x2000;
+    CHECK(nn_gsv_UserSession_BindSyncpointMemory(NULL, 0x201, 0x202, request, &asked, &done) != 0 && ro[0] == 0xEE);
+    CHECK(nn_gsv_UserSession_BindSyncpointMemory(NULL, 0x201, 0x203, request, &asked, &done) != 0);
+    g_tmems[0].size = sizeof rw;
+    CHECK(nn_gsv_UserSession_BindSyncpointMemory(NULL, 0x201, 0x202, request, &asked, &done) == 0 && asked && done);
+    CHECK(ro[0] == 1 && ro[0x1FFF] == 0 && ro[0x2000] == 0xEE);
+}
+
 int main(void) {
     u8 r[12], other[12];
     u32 hdr_event = 0, vsync_event = 0;
@@ -479,6 +499,7 @@ int main(void) {
     camera_session();
     state_in_hle();
     armed_waits();
+    syncpoint_memory();
     printf("gsv hdr: %u checks\n", test_checks);
     return 0;
 }
