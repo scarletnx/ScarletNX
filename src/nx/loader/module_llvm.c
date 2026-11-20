@@ -14,6 +14,7 @@
 #include "nx/loader/hook_routes.h"
 #include "common/utilities/bits.h"
 #include "nx/loader/unit_cache.h"
+#include "nx/loader/analysis_cache.h"
 #include "common/cpu/recompiler/llvm/rtlib_object.h"
 #include "snx_settings.h"
 #include "common/platform/file.h"
@@ -837,9 +838,67 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
         }
         cache_count = snx_jit_cache_count(cache);
     }
-    if (!options->interp_only &&
-        snx_nx_codegen_analyze(&codegen, loaded, options->hints, options->hint_count, options->quiet, features))
-        goto done;
+    if (!options->interp_only) {
+        SnxAnalysisCache* analysis = NULL;
+        char akey[65] = {0};
+        char analysis_folder[4200] = {0};
+        const char* analysis_path = build->analysis_cache;
+        int analysis_hit = 0;
+        SnxCodeImage* views = NULL;
+        if (!analysis_path && build->unit_cache) {
+            if (snprintf(analysis_folder, sizeof analysis_folder, "%s/analysis", build->unit_cache) < (int)sizeof analysis_folder)
+                analysis_path = analysis_folder;
+        }
+        if (analysis_path) {
+            SnxAnalysisIdentity aid = {.features = features, .version = SNX_ANALYSIS_VERSION};
+            analysis = snx_analysis_cache_open(analysis_path, &aid, error, sizeof error);
+            if (!analysis) {
+                if (!options->quiet) snx_error("analysis cache disabled: %s", error);
+            } else {
+                views = (SnxCodeImage*)snx_alloc(loaded->module_count * sizeof(*views));
+                if (views) {
+                    size_t mi;
+                    for (mi = 0; mi < loaded->module_count; ++mi) {
+                        const SnxModuleImage* m = &loaded->modules[mi];
+                        views[mi].image = m->image;
+                        views[mi].image_size = m->image_size;
+                        views[mi].base = m->base;
+                        views[mi].text_off = m->text_off;
+                        views[mi].text_size = m->text_size;
+                        views[mi].functions = m->functions;
+                        views[mi].function_count = m->function_count;
+                        views[mi].relptrs = m->relptrs;
+                        views[mi].relptr_count = m->relptr_count;
+                        views[mi].routed = m->routed;
+                        views[mi].routed_count = m->routed_count;
+                        views[mi].fde = m->fde;
+                        views[mi].fde_count = m->fde_count;
+                    }
+                    if (snx_analysis_cache_key(analysis, views, loaded->module_count, options->hints, options->hint_count, akey) == 0) {
+                        memset(&codegen, 0, sizeof codegen);
+                        if (snx_analysis_cache_load(analysis, akey, &codegen, error, sizeof error) == 0) {
+                            analysis_hit = 1;
+                            codegen.features = features;
+                        }
+                    }
+                }
+            }
+        }
+        if (!analysis_hit) {
+            if (snx_nx_codegen_analyze(&codegen, loaded, options->hints, options->hint_count, options->quiet, features)) {
+                free(views);
+                snx_analysis_cache_close(analysis);
+                goto done;
+            }
+            if (analysis && akey[0]) {
+                if (snx_analysis_cache_store(analysis, akey, &codegen, error, sizeof error))
+                    if (!options->quiet) snx_error("analysis cache store: %s", error);
+            }
+        }
+        free(views);
+        snx_analysis_cache_report(analysis, options->quiet);
+        snx_analysis_cache_close(analysis);
+    }
     if (build->found) *build->found = codegen.instruction_count;
     codegen.features = features;
     codegen.direct_svc = 1; /* the runtime's RtAPI.svcs (svc.c's g_svc64) */
