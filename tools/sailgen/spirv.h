@@ -36,6 +36,9 @@ typedef struct {
         uint8_t t;
     } cast[16];
     unsigned ncast;
+    /* the ISA's translator folds the true and false constants out of its booleans' operations and selects (as
+       spirv_translate.c's cc_and, cc_or, cc_not, cc_xor and shader_select do), and its Sail's are folded alike */
+    int fold;
 } SgSpv;
 static SgSpv* sg_spv(SgG* g); /* the ISA's file gives it */
 
@@ -239,18 +242,48 @@ static inline SgV sg_sge(SgG* g, int w, SgV a, SgV b) { return sg_cmp(g, w, SPV_
 static inline SgV sg_lbin(SgG* g, uint32_t op, SgV a, SgV b) {
     return sg_v(sg_op2(sg_spv(g)->e, op, sg_spv(g)->t_bool, a.id, b.id), SGT_BOOL);
 }
-static inline SgV sg_and_bool(SgG* g, SgV a, SgV b) { return sg_lbin(g, SPV_OP_LOGICAL_AND, a, b); }
-static inline SgV sg_or_bool(SgG* g, SgV a, SgV b) { return sg_lbin(g, SPV_OP_LOGICAL_OR, a, b); }
-static inline SgV sg_eq_bool(SgG* g, SgV a, SgV b) { return sg_lbin(g, SPV_OP_LOGICAL_EQUAL, a, b); }
-static inline SgV sg_ne_bool(SgG* g, SgV a, SgV b) { return sg_lbin(g, SPV_OP_LOGICAL_NOT_EQUAL, a, b); }
 static inline SgV sg_not_bool(SgG* g, SgV a) {
-    return sg_v(spv_emit_unary(sg_spv(g)->e, SPV_OP_LOGICAL_NOT, sg_spv(g)->t_bool, a.id), SGT_BOOL);
+    SgSpv* s = sg_spv(g);
+    if (s->fold && a.id == s->true_v) return sg_v(s->false_v, SGT_BOOL);
+    if (s->fold && a.id == s->false_v) return sg_v(s->true_v, SGT_BOOL);
+    return sg_v(spv_emit_unary(s->e, SPV_OP_LOGICAL_NOT, s->t_bool, a.id), SGT_BOOL);
 }
+static inline SgV sg_and_bool(SgG* g, SgV a, SgV b) {
+    SgSpv* s = sg_spv(g);
+    if (s->fold) {
+        if (a.id == s->true_v) return b;
+        if (b.id == s->true_v) return a;
+        if (a.id == s->false_v || b.id == s->false_v) return sg_v(s->false_v, SGT_BOOL);
+    }
+    return sg_lbin(g, SPV_OP_LOGICAL_AND, a, b);
+}
+static inline SgV sg_or_bool(SgG* g, SgV a, SgV b) {
+    SgSpv* s = sg_spv(g);
+    if (s->fold) {
+        if (a.id == s->false_v) return b;
+        if (b.id == s->false_v) return a;
+        if (a.id == s->true_v || b.id == s->true_v) return sg_v(s->true_v, SGT_BOOL);
+    }
+    return sg_lbin(g, SPV_OP_LOGICAL_OR, a, b);
+}
+static inline SgV sg_ne_bool(SgG* g, SgV a, SgV b) {
+    SgSpv* s = sg_spv(g);
+    if (s->fold) {
+        if (a.id == s->false_v) return b;
+        if (b.id == s->false_v) return a;
+        if (a.id == s->true_v) return sg_not_bool(g, b);
+        if (b.id == s->true_v) return sg_not_bool(g, a);
+    }
+    return sg_lbin(g, SPV_OP_LOGICAL_NOT_EQUAL, a, b);
+}
+static inline SgV sg_eq_bool(SgG* g, SgV a, SgV b) { return sg_lbin(g, SPV_OP_LOGICAL_EQUAL, a, b); }
 
 /* if c then a else b of bits(w) (w 0: bools): a select of a's type, b made that type */
 static inline SgV sg_select(SgG* g, int w, SgV c, SgV a, SgV b) {
     int t = w ? a.t : SGT_BOOL;
     uint32_t y;
+    if (sg_spv(g)->fold && c.id == sg_spv(g)->true_v) return a;
+    if (sg_spv(g)->fold && c.id == sg_spv(g)->false_v) return b;
     if (w < 0) return sg_vt(spv_emit_ternary(sg_spv(g)->e, SPV_OP_SELECT, a.ty, c.id, a.id, b.id), a.ty);
     y = sg_as(g, b, t);
     return sg_v(spv_emit_ternary(sg_spv(g)->e, SPV_OP_SELECT, sg_type(g, t), c.id, a.id, y), t);

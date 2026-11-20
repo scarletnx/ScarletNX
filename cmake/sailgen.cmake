@@ -99,12 +99,26 @@ function(snx_sailgen_gpu target isa)
         set(what "emitted as SPIR-V")
         set(roots "${dir}/${isa}.roots")
     endif()
+    # an ISA's families may each have their Sail, roots and back end of their own: <isa>_<family>.sail, .roots
+    # (which <isa>.roots includes) and _spirv.h
+    file(GLOB family_sail CONFIGURE_DEPENDS "${dir}/${isa}_*.sail")
+    file(GLOB family_roots CONFIGURE_DEPENDS "${dir}/${isa}_*.roots")
+    set(states "${state}")
+    if(NOT "EVAL" IN_LIST ARGN)
+        file(GLOB family_states CONFIGURE_DEPENDS "${dir}/${isa}_*_spirv.h")
+        list(APPEND states ${family_states})
+    endif()
+    set(backends)
+    foreach(f ${states})
+        list(APPEND backends --backend "${f}")
+    endforeach()
     set(out "${CMAKE_CURRENT_BINARY_DIR}/sailgen")
     add_custom_command(OUTPUT "${out}/${name}"
         COMMAND "${CMAKE_COMMAND}" -E make_directory "${out}"
-        COMMAND snx-sailgen --gpu "${roots}" --backend "${core}" --backend "${state}"
-                -o "${out}/${name}" "${dir}/gpu.sail" "${dir}/${isa}.sail"
-        DEPENDS snx-sailgen "${roots}" "${dir}/gpu.sail" "${dir}/${isa}.sail" "${state}" "${core}"
+        COMMAND snx-sailgen --gpu "${roots}" --backend "${core}" ${backends}
+                -o "${out}/${name}" "${dir}/gpu.sail" "${dir}/${isa}.sail" ${family_sail}
+        DEPENDS snx-sailgen "${roots}" ${family_roots} "${dir}/gpu.sail" "${dir}/${isa}.sail" ${family_sail} ${states}
+                "${core}"
         COMMENT "Generating the ${isa} instructions from Sail, ${what} (GPU mode)" VERBATIM)
     target_sources(${target} PRIVATE "${out}/${name}")
     target_include_directories(${target} PRIVATE "${out}")

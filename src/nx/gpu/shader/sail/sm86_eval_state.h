@@ -22,6 +22,8 @@ static SgEval* sg_eval(SgG* g) { return &g->ev; }
     g->uniform = sm86_ops[in->op].kind == SM86_K_UALU;
 }
 
+/* the opcode's place in its roots line: SM86's forms are its decoder's, Form */
+[[maybe_unused]] static void sg_set_form(SgG* g, int k) { (void)g, (void)k; }
 [[maybe_unused]] static uint64_t sg_Field(SgG* g, int64_t lo, int64_t n) { return sm86_field(g->in, (u32)lo, (u32)n); }
 [[maybe_unused]] static int sg_Uniform(SgG* g) { return g->uniform; }
 [[maybe_unused]] static int64_t sg_Dst(SgG* g) { return g->in->dst; }

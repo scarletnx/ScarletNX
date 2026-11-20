@@ -4689,7 +4689,7 @@ static u32 system_value(Ctx* c, u32 sr) {
         case 0x1d:
             /* SR_INVOCATION_INFO of a geometry program: the input primitive's vertices in bits 16-23 and the
                primitive's index in the batch (bits 0-7) 0, which makes the index the program builds for ISBERD the
-               vertex's (emit_thread.c has Maxwell's the same) */
+               vertex's (sail/sm53_thread.sail has Maxwell's the same) */
             if (c->stage != ST_GS) {
                 fail(c, "S2R system register 0x1d outside a geometry program");
                 return c->zero;

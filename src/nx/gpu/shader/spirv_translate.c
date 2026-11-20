@@ -1812,7 +1812,7 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
        subgroups in the fragment stage, runs each invocation as one lane alone too, the lane of its place in its 2x2
        quad (DirectCtx.quad_lane, from FragCoord): its ballot is that lane's bit, the votes are its predicate,
        FSWZADD takes the mode of its place, a SHFL within the quad reads the other pixel's register through fine
-       derivatives (emit_thread.c's quad_read; dFdx and dFdy are SHFL.BFLY then FSWZADD on the console) and any other
+       derivatives (sail/sm53_thread_spirv.h's quad_read; dFdx and dFdy are SHFL.BFLY then FSWZADD on the console) and any other
        SHFL keeps its own value. Those reads take every pixel of the quad in step, as derivatives do */
     int quad_lane = stage == ST_FS && !can_subgroup && (votes || swizzle_lanes || lane_used);
     int lone_lane = quad_lane ||
@@ -3356,11 +3356,10 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
                 spv_emit_label(&c->emit, execute);
             }
         }
-        /* the instruction to the family whose branches take its opcode */
-        switch (op_family(op)) {
+        /* the instruction to its Sail (sm53_sail.c), else to the family whose branches take its opcode */
+        if (!sm53_sail_emit(&tr, i, w, op, d, a, b)) switch (op_family(op)) {
             case FAM_FLOW: emit_flow(&tr, i, w, op, d, a, b); break;
             case FAM_IO: emit_io(&tr, i, w, op, d, a, b); break;
-            case FAM_THREAD: emit_thread(&tr, i, w, op, d, a, b); break;
             case FAM_INT: emit_int(&tr, i, w, op, d, a, b); break;
             case FAM_FLOAT: emit_float(&tr, i, w, op, d, a, b); break;
             case FAM_MEMORY: emit_memory(&tr, i, w, op, d, a, b); break;
