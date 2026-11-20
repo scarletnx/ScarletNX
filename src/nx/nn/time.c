@@ -152,10 +152,11 @@ static void make_rule(i32 offset, TimeRule* r) {
     r->utc_offset = offset;
     if (!offset)
         strcpy(r->abbreviation, "UTC");
-    else if (offset % 3600)
-        snprintf(r->abbreviation, sizeof r->abbreviation, "%+03d%02d", (int)(offset / 3600),
-                 (int)((offset < 0 ? -offset : offset) / 60 % 60));
-    else
+    else if (offset % 3600) { /* the sign is the offset's, which its hours lose under one: -0030 */
+        u32 seconds = offset < 0 ? 0u - (u32)offset : (u32)offset;
+        snprintf(r->abbreviation, sizeof r->abbreviation, "%c%02u%02u", offset < 0 ? '-' : '+', seconds / 3600,
+                 seconds / 60 % 60);
+    } else
         snprintf(r->abbreviation, sizeof r->abbreviation, "%+03d", (int)(offset / 3600));
 }
 /* the rule of a zone by its name: the device's, UTC or Etc/GMT+N */
