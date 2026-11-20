@@ -5916,6 +5916,20 @@ static int indirect_quads(const DrawCall* dc, const DsState* ds, int indexed, u6
         }
         if (!limit || (ix->addr & (isz - 1)) || !vk_buf_get_input(ix->addr, limit * isz, isz, &source, &source_at))
             return 0;
+        if ((source_at | (limit * isz)) &
+            3) { /* the program reads whole words: a copy that starts at one, rounded up */
+            VkBuffer words;
+            u64 words_at;
+            if (!vk_stage_output((limit * isz + 3) & ~3ull, vk_stage_align(), &words, &words_at, NULL)) return 0;
+            vk_render_end(); /* copies happen outside rendering passes */
+            VkCommandBuffer cb = vk_cmd();
+            VkBufferCopy c = {source_at, words_at, limit * isz};
+            rec_CmdCopyBuffer(cb, source, words, 1, &c);
+            index_barrier(cb, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                          VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
+            source = words;
+            source_at = words_at;
+        }
     } else {
         if (!vertices) {
             LOG_LIMIT(1,
