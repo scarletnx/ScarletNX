@@ -419,6 +419,12 @@
         "repo": "wolfpld/tracy",
         "version": "v0.15.0"
     },
+    "unifont": {
+        "hash": "d74d0f22c542aee5a8beeb460b35daf73a800cc5fe96836d4638fd5f515b8676afe9404cce2cdff0f33a2d59be376f6a523860a87d63e3e02a1961f81cb4e46c",
+        "package": "Unifont",
+        "url": "https://ftp.gnu.org/gnu/unifont/unifont-18.0.01/unifont_all-18.0.01.hex.gz",
+        "version": "18.0.01"
+    },
     "volk": {
         "hash": "c1d97fb4419effe08e84dc83e220229e1a070359b4d7187cfd54142df0dd0cee525d791d89e0deadb399d270772805ba1f48f8f6c6f3dd3820a44a947ca297db",
         "repo": "zeux/volk",
