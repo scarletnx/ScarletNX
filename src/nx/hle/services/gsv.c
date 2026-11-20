@@ -845,7 +845,8 @@ static int nn_vi2_IVi2Session_UnregisterClientState(SvcObj* self, const u8* requ
     R_UNLESS(token && c, SNX_RC_VI2_NOT_FOUND);
     g_hle.gsv.vi2_client_slots &= ~c->slots;
     for (i = 0; i < VI2_DISPLAYS; i++)
-        if (g_hle.gsv.vi2_displays[i].endpoint == token) g_hle.gsv.vi2_displays[i].endpoint = 0;
+        if (g_hle.gsv.vi2_displays[i].endpoint == (u32)token) /* as OpenEndpoint keeps it: its low 32 bits */
+            g_hle.gsv.vi2_displays[i].endpoint = 0;
     c->token = 0;
     R_SUCCEED();
 }

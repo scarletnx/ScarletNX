@@ -439,8 +439,22 @@ static void syncpoint_memory(void) {
     CHECK(ro[0] == 1 && ro[0x1FFF] == 0 && ro[0x2000] == 0xEE);
 }
 
+/* a client's token is 64 bits, and a display's endpoint keeps the client by the low 32: a client that goes takes its
+   endpoint with it whatever its token's high bits, so the next client opens the display's */
+static void endpoint_of_a_gone_client(void) {
+    u8 client[16], open[24];
+    const u64 token = 0x100000002ull;
+    snx_st_le64(client, token), snx_st_le32(client + 8, 3), snx_st_le32(client + 12, 4);
+    snx_st_le64(open, DEFAULT_DISPLAY), snx_st_le64(open + 8, DEFAULT_DISPLAY), snx_st_le64(open + 16, token);
+    CHECK(!nn_vi2_IVi2Session_RegisterClientState(NULL, client) && !nn_vi2_IVi2Session_OpenEndpoint(NULL, open));
+    CHECK(nn_vi2_IVi2Session_OpenEndpoint(NULL, open) != 0); /* held */
+    CHECK(!nn_vi2_IVi2Session_UnregisterClientState(NULL, client));
+    CHECK(!nn_vi2_IVi2Session_RegisterClientState(NULL, client) && !nn_vi2_IVi2Session_OpenEndpoint(NULL, open));
+    CHECK(!nn_vi2_IVi2Session_CloseEndpoint(NULL, open) && !nn_vi2_IVi2Session_UnregisterClientState(NULL, client));
+}
 int main(void) {
     u8 r[12], other[12];
+    endpoint_of_a_gone_client();
     u32 hdr_event = 0, vsync_event = 0;
     max_resolution();
     refresh_rate();
