@@ -1517,8 +1517,10 @@ static int takes_value(const char* arg) {
         if (!strcmp(arg, names[i])) return 1;
     return 0;
 }
-/* a setting the runtime knows */
-static int setting_known(const char* key) { return snx_setting_known && snx_setting_known(key); }
+/* the driver alone has no runtime and so no setting: the runtime's snx_setting_known (options.c) takes this one's
+   place. A definition and not a weak declaration tested for null: where the program defines the function, LLVM reads
+   that test on Windows on Arm through a slot COFF has not, the function's own first words */
+[[gnu::weak]] int snx_setting_known(const char* key) { return (void)key, 0; }
 static int container_path(const char* path) {
     const char* ext = strrchr(path, '.');
     char lower[6];
@@ -1825,7 +1827,7 @@ int snx_driver(int argc, char** argv) {
             if (!strncmp(rest[i], "--", 2) && strchr(rest[i], '=')) {
                 char key[64];
                 const char* value = settings_arg(rest[i], key, sizeof key);
-                int recompiles = value && snx_recompile_setting(key), plays = value && setting_known(key);
+                int recompiles = value && snx_recompile_setting(key), plays = value && snx_setting_known(key);
                 if (!recompiles && !plays) {
                     result = snx_error("unknown option: %s", rest[i]);
                     goto done;
@@ -1906,7 +1908,8 @@ int snx_driver(int argc, char** argv) {
                 !strncmp(rest[i], "--game=", 7))
                 continue;
             char key[64];
-            if (!input && (!strcmp(rest[i], "-v") || (settings_arg(rest[i], key, sizeof key) && setting_known(key))))
+            if (!input &&
+                (!strcmp(rest[i], "-v") || (settings_arg(rest[i], key, sizeof key) && snx_setting_known(key))))
                 continue;
             if (rest[i][0] == '-' && rest[i][1] && strcmp(rest[i], "--tmpfs") && strcmp(rest[i], "-h") &&
                 strcmp(rest[i], "--help") && strcmp(rest[i], "--hook-direct-calls")) {

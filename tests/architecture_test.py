@@ -119,6 +119,40 @@ class ArchitectureTests(unittest.TestCase):
         }
         self.assertEqual(self.device_errors(files), [])
 
+    def weak_errors(self, files):
+        with tempfile.TemporaryDirectory(prefix='snx-arch-test-') as temporary:
+            root = Path(temporary)
+            for name, text in files.items():
+                (root / name).parent.mkdir(parents=True, exist_ok=True)
+                (root / name).write_text(text, encoding='ascii')
+            return architecture.check_weak_declarations(root)
+
+    def test_a_weak_declaration_of_ours_is_rejected(self):
+        files = {
+            'src/nx/runtime/driver/driver.h': '/* weak */\n[[gnu::weak]] int snx_setting_known(const char* key);\n',
+            'src/nx/runtime/driver/setup.h': '[[gnu::weak, gnu::cold]] extern const char* snx_menu_words[4];\n'
+            'int f(void) __attribute__((weak));\n',
+        }
+        errors = self.weak_errors(files)
+        self.assertEqual(len(errors), 3)
+        self.assertIn(
+            'src/nx/runtime/driver/driver.h:2: snx_setting_known is declared weak with no definition', errors[0]
+        )
+        self.assertIn('"misaligned ldr/str offset"', errors[0])
+        self.assertIn('WEAK_DECLARED (tests/architecture.py)', errors[0])
+        self.assertIn('src/nx/runtime/driver/setup.h:1: snx_menu_words is declared weak', errors[1])
+        self.assertIn('src/nx/runtime/driver/setup.h:2: ', errors[2])
+
+    def test_a_weak_definition_a_listed_name_and_a_comment_pass(self):
+        files = {
+            'src/nx/runtime/driver/driver.c': '[[gnu::weak]] int snx_setting_known(const char* key) { return 0; }\n'
+            '[[gnu::weak]] struct jit_descriptor __jit_debug_descriptor = {1, 0, NULL, NULL};\n',
+            'src/nx/hle/hook/alloc.c': '[[gnu::weak]] extern void* mallocx(size_t size, int flags);\n'
+            '[[gnu::weak, gnu::visibility("hidden")]] extern const char __ehdr_start[];\n',
+            'src/nx/runtime/main.c': '/* [[gnu::weak]] int old(void); */\nconst char* s = "[[gnu::weak]] int f(void);";\n',
+        }
+        self.assertEqual(self.weak_errors(files), [])
+
     def dynamic_errors(self, files):
         with tempfile.TemporaryDirectory(prefix='snx-arch-test-') as temporary:
             root = Path(temporary)
