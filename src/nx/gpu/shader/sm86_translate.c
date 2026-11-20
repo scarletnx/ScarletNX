@@ -434,57 +434,6 @@ static u32 combine(Ctx* c, u32 set_op, u32 x, u32 acc) {
         default: return op2(c, SPV_OP_LOGICAL_NOT_EQUAL, c->t_bool, x, acc);
     }
 }
-/* NAK's IntCmpOp, bits 76-78 */
-static u32 int_compare(Ctx* c, u32 cmp, int is_signed, u32 x, u32 y) {
-    static const u16 u_ops[8] = {0,
-                                 SPV_OP_U_LESS_THAN,
-                                 SPV_OP_I_EQUAL,
-                                 SPV_OP_U_LESS_THAN_EQUAL,
-                                 SPV_OP_U_GREATER_THAN,
-                                 SPV_OP_I_NOT_EQUAL,
-                                 SPV_OP_U_GREATER_THAN_EQUAL,
-                                 0};
-    static const u16 s_ops[8] = {0,
-                                 SPV_OP_S_LESS_THAN,
-                                 SPV_OP_I_EQUAL,
-                                 SPV_OP_S_LESS_THAN_EQUAL,
-                                 SPV_OP_S_GREATER_THAN,
-                                 SPV_OP_I_NOT_EQUAL,
-                                 SPV_OP_S_GREATER_THAN_EQUAL,
-                                 0};
-    if (cmp == 0) return c->false_v;
-    if (cmp == 7) return c->true_v;
-    return op2(c, is_signed ? s_ops[cmp] : u_ops[cmp], c->t_bool, x, y);
-}
-/* a 3-input truth table (LOP3, PLOP3) over three values of type, x the 0xf0 input, y 0xcc and z 0xaa */
-static u32 lut3(Ctx* c, u32 lut, u32 type, u32 x, u32 y, u32 z, u32 all, u32 none) {
-    int boolean = type == c->t_bool;
-    u32 and_op = boolean ? SPV_OP_LOGICAL_AND : SPV_OP_BITWISE_AND,
-        or_op = boolean ? SPV_OP_LOGICAL_OR : SPV_OP_BITWISE_OR;
-    u32 not_op = boolean ? SPV_OP_LOGICAL_NOT : SPV_OP_NOT;
-    switch (lut & 0xff) {
-        case 0x00: return none;
-        case 0xff: return all;
-        case 0xf0: return x;
-        case 0xcc: return y;
-        case 0xaa: return z;
-        case 0xc0: return op2(c, and_op, type, x, y);
-        case 0xa0: return op2(c, and_op, type, x, z);
-        case 0x88: return op2(c, and_op, type, y, z);
-        case 0xfc: return op2(c, or_op, type, x, y);
-        case 0xfa: return op2(c, or_op, type, x, z);
-        case 0xee: return op2(c, or_op, type, y, z);
-        default: break;
-    }
-    u32 nx = SPV(&c->e, not_op, type, x), ny = SPV(&c->e, not_op, type, y), nz = SPV(&c->e, not_op, type, z);
-    u32 result = 0;
-    for (u32 i = 0; i < 8; i++) {
-        if (!(lut & (1u << i))) continue;
-        u32 term = op2(c, and_op, type, op2(c, and_op, type, i & 4 ? x : nx, i & 2 ? y : ny), i & 1 ? z : nz);
-        result = result ? op2(c, or_op, type, result, term) : term;
-    }
-    return result;
-}
 
 /* ---- the 64-bit helpers of IADD3, LEA and SHF ---- */
 
@@ -507,16 +456,6 @@ static u32 pair64(Ctx* c, u32 low, u32 high) {
 static u32 carry_in(Ctx* c, u32 field_lo, const Sm86Insn* in, int uniform) {
     u32 p = prd(c, sm86_field(in, field_lo, 3), sm86_field(in, field_lo + 3, 1), uniform);
     return spv_emit_ternary(&c->e, SPV_OP_SELECT, u64_type(c), p, c64(c, 1), c64(c, 0));
-}
-/* a source of a 64-bit sum: its two's complement as NAK's fold reads it, ~x + 1 in 33 bits. With the carries in
-   (.X) the modifier is the complement alone, ~x (NAK's OpIAdd3X folds get_u32_bnot_src, and nvdisasm writes
-   IADD3.X R17, ~R17, ...): the low word's sum gave the + 1 as a carry. One game's 64-bit subtractions are
-   IADD3 a, b, -c then IADD3.X a', b', ~c', and with ~c' + 1 their high word was one too many */
-static u32 term64(Ctx* c, const Sm86Src* s, int x) {
-    u32 v = src_bits(c, s);
-    if (!s->neg || s->kind == SM86_SRC_IMM) return to64(c, v);
-    v = to64(c, spv_emit_unary(&c->e, SPV_OP_NOT, c->t_u32, v));
-    return x ? v : op2(c, SPV_OP_I_ADD, u64_type(c), v, c64(c, 1));
 }
 
 /* ---- FTZ and the rounding modes ---- */
@@ -5041,28 +4980,15 @@ static int stage_ok(Ctx* c, const Sm86Insn* in) {
     return 1;
 }
 
-/* IADD3 and UIADD3: a + b + c, with the carries out in the predicates p and q and, for .X, two carries in */
-static void emit_insn_iadd3(Ctx* c, const Sm86Insn* in, int uniform, u32 p, u32 q, int x) {
-    if (p >= SM86_PT && q >= SM86_PT && !x) {
-        u32 v = spv_emit_iadd_u32(&c->e, c->t_u32, src_int(c, &in->a), src_int(c, &in->b));
-        dwr(c, in, spv_emit_iadd_u32(&c->e, c->t_u32, v, src_int(c, &in->c)));
-        return;
-    }
-    /* the sum in 64 bits: its carries, and .X's two carries in */
-    u32 sum = op2(c, SPV_OP_I_ADD, u64_type(c), term64(c, &in->a, x), term64(c, &in->b, x));
-    sum = op2(c, SPV_OP_I_ADD, u64_type(c), sum, term64(c, &in->c, x));
-    if (x) {
-        sum = op2(c, SPV_OP_I_ADD, u64_type(c), sum, carry_in(c, 87, in, uniform));
-        sum = op2(c, SPV_OP_I_ADD, u64_type(c), sum, carry_in(c, 77, in, uniform));
-    }
-    u32 high = hi32(c, sum);
-    dwr(c, in, lo32(c, sum));
-    pwr(c, p, spv_emit_binary(&c->e, SPV_OP_U_LESS_THAN, c->t_bool, c->zero, high), uniform);
-    pwr(c, q, spv_emit_binary(&c->e, SPV_OP_U_LESS_THAN, c->t_bool, cu(c, 1), high), uniform);
-}
+/* The instructions sm86.sail says (src/nx/gpu/shader/sail/), which sailgen's GPU mode writes as emitters over the
+   accessors above (sail/sm86_spirv.h): sg86_emit runs the one of an opcode and says whether there is one */
+#include "sm86_sail.inc"
 
 static void emit_insn(Ctx* c, const Sm86Insn* in) {
     int op = in->op, uniform = sm86_ops[op].kind == SM86_K_UALU;
+    SgG g;
+    sg86_begin(&g, c, in);
+    if (sg86_emit(&g, op)) return;
     switch (op) {
         case SM86_NOP:
         case SM86_DEPBAR:
@@ -5115,7 +5041,6 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
             if (to >= 16) fail(c, "%s into state register %u", sm86_ops[op].name, to);
             return;
         }
-        case SM86_MOV: wr(c, in->dst, src_bits(c, &in->b)); return;
         case SM86_FADD:
         case SM86_FMUL:
         case SM86_FFMA: {
@@ -5189,29 +5114,10 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
             dwr(c, in, to_u(c, spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_f32, cmp, cf(c, 1.0f), cf(c, 0.0f))));
             return;
         }
-        case SM86_FSETP:
-        case SM86_UISETP:
-        case SM86_ISETP: {
-            u32 cmp;
-            if (op == SM86_FSETP) {
-                int on = (int)sm86_field(in, 80, 1);
-                cmp = spv_emit_fcompare(&c->e, c->t_bool, sm86_field(in, 76, 4), ftz(c, src_f(c, &in->a), on),
+        case SM86_FSETP: {
+            int on = (int)sm86_field(in, 80, 1);
+            u32 cmp = spv_emit_fcompare(&c->e, c->t_bool, sm86_field(in, 76, 4), ftz(c, src_f(c, &in->a), on),
                                         ftz(c, src_f(c, &in->b), on));
-            } else {
-                /* no negation: bit 72, a's negation in the decoder's fields, is .EX, and 73 the signedness (NAK's
-                   OpISetP, whose sources take no modifiers). As a's negation, .EX compared -a: one game's
-                   ISETP.NE.AND.EX of a pointer's high word, R-ff (RZ) its a, didn't show it */
-                cmp = int_compare(c, sm86_field(in, 76, 3), (int)sm86_field(in, 73, 1), src_bits(c, &in->a),
-                                  src_bits(c, &in->b));
-                if (sm86_field(in, 72, 1)) { /* .EX: equal high words take the low words' comparison */
-                    u32 low = prd(c, sm86_field(in, 68, 3), sm86_field(in, 71, 1), uniform);
-                    u32 equal =
-                        spv_emit_binary(&c->e, SPV_OP_I_EQUAL, c->t_bool, src_bits(c, &in->a), src_bits(c, &in->b));
-                    u32 cmp_op = sm86_field(in, 76, 3);
-                    if (cmp_op != 0 && cmp_op != 7)
-                        cmp = spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_bool, equal, low, cmp);
-                }
-            }
             u32 acc = prd(c, sm86_field(in, 87, 3), sm86_field(in, 90, 1), uniform);
             u32 set_op = sm86_field(in, 74, 2);
             pwr(c, sm86_field(in, 81, 3), combine(c, set_op, cmp, acc), uniform);
@@ -5257,12 +5163,10 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
             }
             return;
         }
-        case SM86_FSEL:
-        case SM86_USEL:
-        case SM86_SEL: {
+        case SM86_FSEL: {
             u32 p = prd(c, sm86_field(in, 87, 3), sm86_field(in, 90, 1), uniform);
-            u32 x = op == SM86_FSEL ? to_u(c, src_f(c, &in->a)) : src_bits(c, &in->a);
-            u32 y = op == SM86_FSEL ? to_u(c, src_f(c, &in->b)) : src_bits(c, &in->b);
+            u32 x = to_u(c, src_f(c, &in->a));
+            u32 y = to_u(c, src_f(c, &in->b));
             dwr(c, in, spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32, p, x, y));
             return;
         }
@@ -5494,73 +5398,6 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
                      spv_emit_glsl_unary(&c->e, c->t_f32, c->glsl, rounding[sm86_field(in, 78, 2)], src_f(c, &in->b))));
             return;
         }
-        case SM86_IADD3:
-        case SM86_UIADD3: {
-            u32 p = sm86_field(in, 81, 3), q = sm86_field(in, 84, 3);
-            int x = (int)sm86_field(in, 74, 1);
-            emit_insn_iadd3(c, in, uniform, p, q, x);
-            return;
-        }
-        case SM86_UIMAD:
-        case SM86_IMAD: {
-            /* .X (bit 74) adds the carry predicate at 87-90, as IADD3.X does, and as there a negated addend is then
-               its complement, ~c: one game's 64-bit division negates a high word with IMAD.X RZ, RZ, ~c, P */
-            u32 v = spv_emit_binary(&c->e, SPV_OP_I_MUL, c->t_u32, src_int(c, &in->a), src_int(c, &in->b));
-            u32 addend = sm86_field(in, 74, 1) && in->c.neg && in->c.kind != SM86_SRC_IMM
-                             ? spv_emit_unary(&c->e, SPV_OP_NOT, c->t_u32, src_bits(c, &in->c))
-                             : src_int(c, &in->c);
-            v = spv_emit_iadd_u32(&c->e, c->t_u32, v, addend);
-            if (sm86_field(in, 74, 1))
-                v = spv_emit_iadd_u32(&c->e, c->t_u32, v,
-                                      spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32,
-                                                       prd(c, sm86_field(in, 87, 3), sm86_field(in, 90, 1), uniform),
-                                                       cu(c, 1), c->zero));
-            dwr(c, in, v);
-            return;
-        }
-        case SM86_UIMNMX:
-        case SM86_IMNMX: {
-            u32 min = prd(c, sm86_field(in, 87, 3), sm86_field(in, 90, 1), uniform);
-            u32 x = src_bits(c, &in->a), y = src_bits(c, &in->b);
-            u32 v;
-            if (sm86_field(in, 73, 1)) {
-                u32 xi = spv_emit_unary(&c->e, SPV_OP_BITCAST, c->t_i32, x),
-                    yi = spv_emit_unary(&c->e, SPV_OP_BITCAST, c->t_i32, y);
-                v = to_u(c, spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_i32, min,
-                                             spv_emit_glsl_binary(&c->e, c->t_i32, c->glsl, SPV_GLSL_S_MIN, xi, yi),
-                                             spv_emit_glsl_binary(&c->e, c->t_i32, c->glsl, SPV_GLSL_S_MAX, xi, yi)));
-            } else
-                v = spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32, min,
-                                     spv_emit_glsl_binary(&c->e, c->t_u32, c->glsl, SPV_GLSL_U_MIN, x, y),
-                                     spv_emit_glsl_binary(&c->e, c->t_u32, c->glsl, SPV_GLSL_U_MAX, x, y));
-            dwr(c, in, v);
-            return;
-        }
-        case SM86_FLO:
-        case SM86_UFLO: {
-            /* NAK's OpFlo: bit 73 signed, 74 the shift amount (31 - the bit) in place of the bit, 63 the source
-               inverted. No 1 gives 0xffffffff, as FindUMsb's -1 */
-            u32 x = src_bits(c, &in->b);
-            if (sm86_field(in, 63, 1)) x = spv_emit_unary(&c->e, SPV_OP_NOT, c->t_u32, x);
-            u32 bit = sm86_field(in, 73, 1) ? to_u(c, SPV_EXT(&c->e, c->t_i32, SPV_GLSL_FIND_S_MSB,
-                                                              spv_emit_unary(&c->e, SPV_OP_BITCAST, c->t_i32, x)))
-                                            : SPV_EXT(&c->e, c->t_u32, SPV_GLSL_FIND_U_MSB, x);
-            if (sm86_field(in, 74, 1))
-                bit = spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32,
-                                       spv_emit_binary(&c->e, SPV_OP_I_EQUAL, c->t_bool, bit, cu(c, 0xffffffffu)), bit,
-                                       spv_emit_binary(&c->e, SPV_OP_I_SUB, c->t_u32, cu(c, 31), bit));
-            dwr(c, in, bit);
-            return;
-        }
-        case SM86_POPC:
-        case SM86_UPOPC: {
-            u32 x = src_bits(c, &in->b);
-            if (sm86_field(in, 63, 1)) x = spv_emit_unary(&c->e, SPV_OP_NOT, c->t_u32, x);
-            dwr(c, in, spv_emit_unary(&c->e, SPV_OP_BIT_COUNT, c->t_u32, x));
-            return;
-        }
-        case SM86_BREV:
-        case SM86_UBREV: dwr(c, in, spv_emit_unary(&c->e, SPV_OP_BIT_REVERSE, c->t_u32, src_bits(c, &in->b))); return;
         case SM86_R2UR: /* the register is the same in each invocation: its value as it is */
             uwr(c, sm86_field(in, 16, 6), rd(c, sm86_field(in, 24, 8)));
             return;
@@ -5612,70 +5449,6 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
             dwr(c, in, v);
             return;
         }
-        case SM86_IABS:
-            dwr(c, in,
-                to_u(c, spv_emit_glsl_unary(&c->e, c->t_i32, c->glsl, SPV_GLSL_S_ABS,
-                                            spv_emit_unary(&c->e, SPV_OP_BITCAST, c->t_i32, src_bits(c, &in->b)))));
-            return;
-        case SM86_ULEA:
-        case SM86_LEA: {
-            u32 shift = sm86_field(in, 75, 5), p = sm86_field(in, 81, 3);
-            int high = (int)sm86_field(in, 80, 1), x = (int)sm86_field(in, 74, 1);
-            u32 a = src_bits(c, &in->a), shifted;
-            if (high) /* the high word of (c:a) << shift */
-                shifted = shift ? spv_emit_binary(&c->e, SPV_OP_BITWISE_OR, c->t_u32,
-                                                  spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32,
-                                                                  src_bits(c, &in->c), cu(c, shift)),
-                                                  spv_emit_binary(&c->e, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, a,
-                                                                  cu(c, 32 - shift)))
-                                : src_bits(c, &in->c);
-            else
-                shifted = spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, a, cu(c, shift));
-            if (sm86_field(in, 72, 1)) shifted = spv_emit_binary(&c->e, SPV_OP_I_SUB, c->t_u32, c->zero, shifted);
-            if (p >= SM86_PT && !x) {
-                dwr(c, in, spv_emit_iadd_u32(&c->e, c->t_u32, shifted, src_int(c, &in->b)));
-                return;
-            }
-            u32 sum = op2(c, SPV_OP_I_ADD, u64_type(c), to64(c, shifted), to64(c, src_int(c, &in->b)));
-            if (x) sum = op2(c, SPV_OP_I_ADD, u64_type(c), sum, carry_in(c, 87, in, uniform));
-            dwr(c, in, lo32(c, sum));
-            pwr(c, p, spv_emit_binary(&c->e, SPV_OP_U_LESS_THAN, c->t_bool, c->zero, hi32(c, sum)), uniform);
-            return;
-        }
-        case SM86_ULOP3:
-        case SM86_LOP3: {
-            if (sm86_field(in, 80, 1) || sm86_field(in, 87, 4) != 0xf) {
-                fail(c, "LOP3 with a predicate operand");
-                return;
-            }
-            u32 v = lut3(c, sm86_field(in, 72, 8), c->t_u32, src_bits(c, &in->a), src_bits(c, &in->b),
-                         src_bits(c, &in->c), cu(c, 0xffffffffu), c->zero);
-            dwr(c, in, v);
-            pwr(c, sm86_field(in, 81, 3), spv_emit_binary(&c->e, SPV_OP_I_NOT_EQUAL, c->t_bool, v, c->zero), uniform);
-            return;
-        }
-        case SM86_USHF:
-        case SM86_SHF: {
-            u32 dtype = sm86_field(in, 73, 2), bits = dtype < 2 ? 64 : 32;
-            int right = (int)sm86_field(in, 76, 1), wrap = (int)sm86_field(in, 75, 1),
-                high = (int)sm86_field(in, 80, 1);
-            int is_signed = dtype == 0 || dtype == 2;
-            u32 s = src_bits(c, &in->b);
-            s = wrap ? spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, s, cu(c, bits - 1))
-                     : spv_emit_glsl_binary(&c->e, c->t_u32, c->glsl, SPV_GLSL_U_MIN, s, cu(c, bits));
-            u32 value = pair64(c, src_bits(c, &in->a), src_bits(c, &in->c));
-            /* a shift by 64 is out of SPIR-V's range: split it in two */
-            u32 s64 = to64(c, s), half = c64(c, 0);
-            u32 big = spv_emit_binary(&c->e, SPV_OP_U_LESS_THAN, c->t_bool, cu(c, 63), s);
-            u32 s_part = spv_emit_ternary(&c->e, SPV_OP_SELECT, u64_type(c), big, c64(c, 63), s64);
-            u32 extra = spv_emit_ternary(&c->e, SPV_OP_SELECT, u64_type(c), big, c64(c, 1), half);
-            u32 opcode = !right      ? SPV_OP_SHIFT_LEFT_LOGICAL
-                         : is_signed ? SPV_OP_SHIFT_RIGHT_ARITHMETIC
-                                     : SPV_OP_SHIFT_RIGHT_LOGICAL;
-            u32 shifted = op2(c, opcode, u64_type(c), op2(c, opcode, u64_type(c), value, s_part), extra);
-            dwr(c, in, high ? hi32(c, shifted) : lo32(c, shifted));
-            return;
-        }
         case SM86_R2P: {
             u32 byte = sm86_field(in, 76, 2); /* nvdisasm's .B1 sets bit 76, .B2 bit 77 */
             u32 mask = in->b.kind == SM86_SRC_IMM ? in->b.value : 0;
@@ -5692,19 +5465,6 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
                             spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, x, cu(c, 1u << (i + 8 * byte))),
                             c->zero),
                         0);
-            return;
-        }
-        case SM86_UPLOP3:
-        case SM86_PLOP3: {
-            /* bit 67: the third source is a uniform predicate (NAK) */
-            int u = op == SM86_UPLOP3; /* all of UPLOP3's predicates are uniform (NAK) */
-            u32 x = prd(c, sm86_field(in, 87, 3), sm86_field(in, 90, 1), u);
-            u32 y = prd(c, sm86_field(in, 77, 3), sm86_field(in, 80, 1), u);
-            u32 z = prd(c, sm86_field(in, 68, 3), sm86_field(in, 71, 1), u || (int)sm86_field(in, 67, 1));
-            u32 lut0 = sm86_field(in, 64, 3) | sm86_field(in, 72, 5) << 3, lut1 = sm86_field(in, 16, 8);
-            u32 p = sm86_field(in, 81, 3), q = sm86_field(in, 84, 3);
-            if (p < SM86_PT) pwr(c, p, lut3(c, lut0, c->t_bool, x, y, z, c->true_v, c->false_v), u);
-            if (q < SM86_PT) pwr(c, q, lut3(c, lut1, c->t_bool, x, y, z, c->true_v, c->false_v), u);
             return;
         }
         case SM86_PSETP: {

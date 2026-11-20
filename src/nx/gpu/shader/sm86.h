@@ -424,6 +424,14 @@ typedef struct Sm86EvalIo {
     int (*mem)(void* user, u64 address, u32* words, u32 count);
 } Sm86EvalIo;
 int sm86_eval(const u64 (*insn)[2], u32 n, const Sm86EvalIo* io, const u32* probes, u32 nprobes, u32* out);
+/* the state sm86_eval runs on: the registers, the uniform registers and the predicates (0 or 1; PT is none of them) */
+typedef struct {
+    u32 r[256], ur[64];
+    u8 p[8], up[8];
+} Sm86EvalState;
+/* one instruction run on s, as sm86_eval runs each (the tests hold sail/sm86.sail to it): 0 when it is not one
+   sm86_eval_takes, or a load finds no memory */
+int sm86_eval_step(Sm86EvalState* s, const Sm86Insn* in, const Sm86EvalIo* io);
 /* whether sm86_eval runs the instruction: MOV, UMOV, R2UR, IADD3, IMAD (.WIDE), LEA, LOP3, SHF, SEL, IMNMX, ISETP,
    PLOP3 and PRMT (their uniform forms too), CS2R of zero, LDC, ULDC (.IDX) and LDG, in the forms the translation
    takes */

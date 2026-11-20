@@ -4499,6 +4499,13 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
     # the SM86 frontend (gpu/shader/sm86.h): the decoder on words made by NAK's encoding rules, the search for
     # programs, and small translations, which spirv-val checks (shader_sm86_test.py, which passes it
     # each module as an argument: cmd.exe refused the quoted command system() gave it)
+    # sail/sm86.sail run on values against sm86_eval (cmake/sailgen.cmake's EVAL)
+    add_executable(snx-test-shader-sail-sm86 shader_sail_sm86.c)
+    snx_test_target(snx-test-shader-sail-sm86 gnu23)
+    target_link_libraries(snx-test-shader-sail-sm86 PRIVATE snx_shader)
+    include("${PROJECT_SOURCE_DIR}/cmake/sailgen.cmake")
+    snx_sailgen_gpu(snx-test-shader-sail-sm86 sm86 EVAL)
+    add_test(NAME shader_sail_sm86 COMMAND snx-test-shader-sail-sm86)
     add_executable(snx-test-shader-sm86 shader_sm86.c support/spv_eval.c)
     snx_test_target(snx-test-shader-sm86 gnu23)
     target_link_libraries(snx-test-shader-sm86 PRIVATE snx_shader)
