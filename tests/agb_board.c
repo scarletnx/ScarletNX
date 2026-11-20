@@ -116,6 +116,11 @@ static int check_rtc(void) {
     /* the registers read back in every cartridge window: SIO an input still, chip select low, SCK high */
     CHECK(agb_read16(&board, 0x080000C6) == 5 && agb_read16(&board, 0x0A0000C8) == 1 &&
           agb_read16(&board, 0x0C0000C4) == 3);
+    /* and are written in every window: the control register through the second and the third */
+    agb_write16(&board, 0x0A0000C8, 0);
+    CHECK(agb_read16(&board, 0x080000C8) == 0 && agb_read16(&board, 0x080000C6) == 0); /* write-only: zeros */
+    agb_write16(&board, 0x0C0000C8, 1);
+    CHECK(agb_read16(&board, 0x080000C8) == 1 && agb_read16(&board, 0x080000C6) == 5);
     board.gpio.clock = 5144407; /* 2000-02-29 13:00:07, a leap day */
     rtc_command(&board, 0xA6);
     for (unsigned i = 0; i < 7; ++i) CHECK(rtc_receive(&board) == leap[i]);
