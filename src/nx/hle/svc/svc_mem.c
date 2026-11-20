@@ -329,13 +329,12 @@ static void views_prune(void) {
 /* the nth free slot for a view, under map_lk, stale views' taken before one past the end is reported: -1 when none
    is */
 static int map_view_slot_nth(int nth) {
-    u32 i;
     int k = 0;
-    for (i = 0; i < KMAPVIEW_MAX; i++)
+    for (u32 i = 0; i < KMAPVIEW_MAX; i++)
         if (!g_hle.svcmem.maps[i].size && k++ == nth) return (int)i;
     views_prune();
     k = 0;
-    for (i = 0; i < KMAPVIEW_MAX; i++)
+    for (u32 i = 0; i < KMAPVIEW_MAX; i++)
         if (!g_hle.svcmem.maps[i].size && k++ == nth) return (int)i;
     return -1;
 }
@@ -367,11 +366,10 @@ static void map_view_del(u64 dst) {
    that covers each page names the source the page at that offset has. The console compares page groups, so a range
    can be part of a view, or span the parts a partial unmap left */
 static int code_pages_owned(u64 dst, u64 src, u64 size) {
-    u64 end = dst + size, at;
-    for (at = dst; at < end; at += 0x1000) {
+    u64 end = dst + size;
+    for (u64 at = dst; at < end; at += 0x1000) {
         int found = 0;
-        u32 i;
-        for (i = 0; i < KMAPVIEW_MAX && !found; i++) {
+        for (u32 i = 0; i < KMAPVIEW_MAX && !found; i++) {
             const KMapView* v = &g_hle.svcmem.maps[i];
             if (!v->size || at < v->dst || at - v->dst >= v->size) continue;
             if (v->src + (at - v->dst) == src + (at - dst)) found = 1;
@@ -386,8 +384,7 @@ static int code_pages_owned(u64 dst, u64 src, u64 size) {
 static int map_view_cut_slots(u64 dst, u64 size, int slots[2]) {
     u64 end = dst + size;
     int n = 0;
-    u32 i;
-    for (i = 0; i < KMAPVIEW_MAX; i++) {
+    for (u32 i = 0; i < KMAPVIEW_MAX; i++) {
         const KMapView* v = &g_hle.svcmem.maps[i];
         if (!v->size || v->dst >= end || dst >= v->dst + v->size || v->dst >= dst || end >= v->dst + v->size) continue;
         if (n == 2) return -1;
@@ -402,12 +399,10 @@ static int map_view_cut_slots(u64 dst, u64 size, int slots[2]) {
 static void map_view_cut(u64 dst, u64 size, const int* slots) {
     u64 end = dst + size;
     int k = 0;
-    u32 i;
-    for (i = 0; i < KMAPVIEW_MAX; i++) {
+    for (u32 i = 0; i < KMAPVIEW_MAX; i++) {
         KMapView* v = &g_hle.svcmem.maps[i];
-        u64 vend;
         if (!v->size) continue;
-        vend = v->dst + v->size;
+        u64 vend = v->dst + v->size;
         if (vend <= dst || end <= v->dst) continue;
         if (v->dst < dst && end < vend) { /* the middle: the lower part stays, the upper goes to a slot */
             KMapView* u = &g_hle.svcmem.maps[slots[k++]];
@@ -684,9 +679,8 @@ static void set_code_perm(u64 a, u64 size, u32 perm) {
     u64 end = a + size;
     while (a < end) {
         MemBlock b;
-        u64 hi;
         mem_query(a, &b);
-        hi = b.addr + b.size < end ? b.addr + b.size : end;
+        u64 hi = b.addr + b.size < end ? b.addr + b.size : end;
         mem_set_state(a, hi - a, code_state(b.state, perm), perm);
         a = hi;
     }
@@ -730,14 +724,13 @@ u32 svc_set_process_mem_perm(u32 process, u64 addr, u64 size, u32 perm) {
    with nothing to record its source */
 u32 svc_map_process_code_memory(u32 process, u64 dst, u64 src, u64 size) {
     KObj* p;
-    int slot;
     u32 r = 0;
     R_TRY(check_code_range(dst, src, size));
     p = h_get_ref(process, KO_PROCESS);
     R_UNLESS(p, SNX_RC_SVC_INVALID_HANDLE);
     kobj_unref(p);
     pm_lock(&g_host.svcmem.map_lk);
-    slot = map_view_slot();
+    int slot = map_view_slot();
     /* the console's order: the source is in the address space, the destination's region takes code, the source is
        normal read-write memory, and the destination is free */
     if (!in_region(src, size, 0, AS_END))
@@ -774,7 +767,7 @@ u32 svc_map_process_code_memory(u32 process, u64 dst, u64 src, u64 size) {
    was written through the view when the host has no pool, as the console's same pages would */
 u32 svc_unmap_process_code_memory(u32 process, u64 dst, u64 src, u64 size) {
     KObj* p;
-    int slots[2] = {-1, -1}, i;
+    int slots[2] = {-1, -1};
     u32 r = 0;
     R_TRY(check_code_range(dst, src, size));
     p = h_get_ref(process, KO_PROCESS);
@@ -794,7 +787,7 @@ u32 svc_unmap_process_code_memory(u32 process, u64 dst, u64 src, u64 size) {
         r = SNX_RC_SVC_INVALID_CURRENT_MEMORY;
     else if (!code_pages_owned(dst, src, size))
         r = SNX_RC_SVC_INVALID_MEMORY_REGION;
-    else if ((i = map_view_cut_slots(dst, size, slots)) < 0) {
+    else if (map_view_cut_slots(dst, size, slots) < 0) {
         WARN_LIMIT(4,
                    "svcUnmapProcessCodeMemory: all %d views are in use, the game gets OutOfResource (%#x): the "
                    "view's remaining part would have no entry\n",
