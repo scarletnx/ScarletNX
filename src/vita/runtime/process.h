@@ -229,6 +229,9 @@ typedef struct VitaProcess {
     VitaObject objects[VITA_OBJECTS];
     VitaFile files[VITA_FILES];
     VitaAllocation allocations[VITA_ALLOCATIONS];
+    /* the commit count of each host page of the guest's space where the host's page is larger than the guest's (16 KiB
+       on Apple silicon): a page mprotect can neither commit nor give back alone. NULL when the pages are the same */
+    uint16_t* page_refs;
     VitaRegion user, cdram;
     VitaThread* current;
     /* the thread that last waited for a vblank, which paces the frames */
