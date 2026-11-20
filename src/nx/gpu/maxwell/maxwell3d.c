@@ -450,7 +450,8 @@ void r3d_clear(GpuChannel* ch, u32 v) {
         /* the slot is taken through RT_CONTROL's count and permutation, like draws do. Whether the hardware takes the
            target registers of that index directly isn't settled: the first clear where the two differ is logged */
         u32 ctl = ch->r3d[0x487], slot = (v >> 6) & 15;
-        if (((v >> 2) & 15) && (slot >= (ctl & 15) || ((ctl >> (4 + slot * 3)) & 7) != slot))
+        /* RT_CONTROL maps 8 slots, in 3 bits each from bit 4: a slot past them is in no field of it */
+        if (((v >> 2) & 15) && (slot >= 8 || slot >= (ctl & 15) || ((ctl >> (4 + slot * 3)) & 7) != slot))
             LOG_LIMIT(1, "vulkan: a clear of color slot %u under RT_CONTROL %08x\n", slot, ctl);
         DrawClear c;
         mx_draw_state_sync(ch);
