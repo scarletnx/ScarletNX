@@ -5320,7 +5320,7 @@ static int check_resident_texture_in_flight(void) {
    rings stay far below what the copies took in all; the last copy's bytes land */
 static int check_snapshot_uploads(void) {
     enum { LINE = 4096, LINES = 128, COPIES = 512 };
-    GpuDmaOp o;
+    GpuDmaOp o = {0};
     u8* bytes = malloc((size_t)LINE * LINES);
     u64 before, most = 0, saved_budget;
     CHECK(bytes);
@@ -5328,7 +5328,6 @@ static int check_snapshot_uploads(void) {
     vk_frame_next();
     saved_budget = vk_mem_budget_cap(64u << 20);
     before = vk_ring_bytes();
-    memset(&o, 0, sizeof o);
     o.width = o.line_in = o.line_out = LINE;
     o.lines = LINES;
     o.src = pitch_side(0, LINE);
