@@ -754,6 +754,18 @@ static void own_expire(void) {
 }
 
 /* memory of one type (lock held): the allocation, or 0 with *res */
+/* The units a request of units takes where its size follows the game's (DevMemWant.sized): from a sixteenth of a block
+   on, its size rounded up to an eighth of the power of two at or below it (1 MiB steps from 8 to 16 MiB), a block at
+   most. A racing game at a dynamic resolution made its scene's targets and their copies a little bigger or smaller
+   from one frame to the next: at the heap's cap, a request of 10.9 MB found none while the blocks had 2.3 GB free
+   inside them, the largest piece 10.9 MB, the run the frame before had let go. Of one class, the run one leaves
+   takes the next */
+static u64 class_units(u64 units, u64 cap) {
+    const u64 cap_units = cap / DM_UNIT;
+    if (units < cap_units / 16 || units > cap_units) return units;
+    const u64 step = (1ull << (63 - snx_clz64(units))) / 8, up = (units + step - 1) / step * step;
+    return up < cap_units ? up : cap_units;
+}
 static DevMem alloc_in(u32 type, const VkMemoryRequirements* req, const DevMemWant* want, int alone, VkBuffer buf,
                        VkImage img, VkResult* res) {
     VkMemoryPropertyFlags f = g_devmem.mp.memoryTypes[type].propertyFlags;
@@ -763,6 +775,7 @@ static DevMem alloc_in(u32 type, const VkMemoryRequirements* req, const DevMemWa
         align < g_vk.props.limits.nonCoherentAtomSize)
         align = g_vk.props.limits.nonCoherentAtomSize;
     u64 units64 = (req->size + DM_UNIT - 1) / DM_UNIT, align_units = align > DM_UNIT ? align / DM_UNIT : 1;
+    if (want->sized) units64 = class_units(units64, cap);
     DevMem m = rec_new();
     *res = VK_ERROR_OUT_OF_HOST_MEMORY;
     if (!m) return 0;

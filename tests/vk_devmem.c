@@ -930,6 +930,37 @@ static void check_cap(void) {
     check_counts(0);
 }
 
+/* An image whose size follows the game's (DevMemWant.sized: a render target at a dynamic resolution, a copy of one)
+   takes a run of its size class: with the heap at its cap and no other room, one of 11 MiB takes the run one of 10.9
+   MiB let go, both of the 11 MiB class. Without the class that run held 10.9 MiB, and the bigger request found none
+   with more free inside the blocks than it asked. The size an image asked for is the one it is bound with, and a
+   request that is not sized takes its own size */
+static void check_size_class(void) {
+    enum { CAP = 8192 };
+    static Held held[CAP];
+    DevMemWant gpu = {.at = DM_DEVICE, .image = 1, .moves = 1}, sized = gpu;
+    sized.sized = 1;
+    device(0, 1024, 64, GIB);
+    Held a, b;
+    CHECK(make(1, 10 * MIB + 900 * KIB, 4096, ~0u, 0, sized, &a) == VK_SUCCESS);
+    CHECK(g_devmem.rec[a.mem - 1].units * DM_UNIT == 11 * MIB);
+    u32 n = 0;
+    VkResult res = VK_SUCCESS;
+    /* no room left: in a block, or for a new one under the cap, 1 MiB at a time and then 64 KiB */
+    while (n < CAP && (res = make(1, MIB, 4096, ~0u, 0, gpu, &held[n])) == VK_SUCCESS) n++;
+    CHECK(res == VK_ERROR_OUT_OF_DEVICE_MEMORY);
+    while (n < CAP && (res = make(1, 64 * KIB, 4096, ~0u, 0, gpu, &held[n])) == VK_SUCCESS) n++;
+    CHECK(n < CAP && res == VK_ERROR_OUT_OF_DEVICE_MEMORY && g_devmem.rec[held[0].mem - 1].units * DM_UNIT == MIB);
+    const VkDeviceMemory memory = a.info.memory;
+    const u64 at = a.info.offset;
+    unmake(&a);
+    CHECK(make(1, 11 * MIB, 4096, ~0u, 0, sized, &b) == VK_SUCCESS);
+    CHECK(b.info.memory == memory && b.info.offset == at);
+    unmake(&b);
+    for (u32 i = 0; i < n; i++) unmake(&held[i]);
+    check_counts(0);
+}
+
 /* memory the CPU maps without coherence: an allocation starts on an atom, and a flush or an invalidate names whole
    atoms that hold the bytes asked and no byte of another allocation */
 static void check_atoms(u64 atom) {
@@ -1497,6 +1528,7 @@ int main(void) {
     check_kind_fallback();
     check_keep();
     check_cap();
+    check_size_class();
     check_atoms(64);
     check_atoms(4096);
     check_threads(); /* the last: the allocator's thread runs from it to the end (check_priority_ahead in it) */
