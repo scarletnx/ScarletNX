@@ -1237,6 +1237,28 @@ static void bluetooth_settings(App* app, const char* temporary) {
     assert(!gui_settings_read(&app->settings, list));
     gui_settings_mark(&app->settings);
     app->settings_file = settings;
+    { /* a game's own Settings on the same list: its Bluetooth page opens as its other pages, on the game's rows */
+        int g = 0, page = -1;
+        assert(!gui_settings_read_game(&app->game_settings, list));
+        gui_settings_mark(&app->game_settings);
+        app->own_picks = snx_path_join(temporary, "bt game.picks");
+        settings_top(app, 0);
+        while (g < app->groups && strcmp(app->group_keys[g].key, "Controllers")) ++g;
+        for (int r = 0; r < app->game_settings.count; ++r)
+            if (app->game_settings.values[r].kind == GUI_SETTING_PAGE &&
+                !strcmp(app->game_settings.keys[r].key, "Bluetooth"))
+                page = r;
+        assert(g < app->groups && page >= 0);
+        open_group(app, g);
+        app->editing = true;
+        app->editor.row = row_of(app, page);
+        assert(app->editor.row >= 0);
+        key(app, SDLK_RETURN);
+        assert(app->form == GUI_FORM_GROUP && app->page == page &&
+               app->editor.object == (char*)app->game_settings.values && !app->bt_scan);
+        leave_editor(app);
+        game_settings_close(app);
+    }
     open_bt(app);
     assert(app->form == GUI_FORM_BLUETOOTH && !form_row_off(app, &app->editor, GUI_BT_ROW_ON) &&
            !form_row_off(app, &app->editor, GUI_BT_ROW_SCALE) && strstr(app->bt_form.value[GUI_BT_ROW_ON], "Off") &&

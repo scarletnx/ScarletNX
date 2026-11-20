@@ -12507,11 +12507,13 @@ static bool pad_page(const App* app, int row) {
     int map = setting_row(app, "gamepad_map");
     return map >= 0 && map >= page->first && map < page->first + page->count;
 }
-/* the page of the Joy-Con 2 settings (settings.txt's Controllers/Bluetooth), which Bluetooth's own form shows */
+/* the page of the Joy-Con 2 settings (settings.txt's Controllers/Bluetooth), which Bluetooth's own form shows in the
+   launcher's Settings. A game's own shows its rows as its other pages, Global until picked: the form keeps the
+   launcher's settings, and the controllers synced are every game's */
 static bool bt_page(const App* app, int row) {
-    const GuiSetting* page = &app->settings.values[row];
+    const GuiSetting* page = &screen_settings(app)->values[row];
     int on = setting_row(app, "joycon2");
-    return on >= 0 && on >= page->first && on < page->first + page->count;
+    return !app->own_picks && on >= 0 && on >= page->first && on < page->first + page->count;
 }
 /* the pad's name, its labels and what it holds now */
 static void pad_sync(App* app) {
