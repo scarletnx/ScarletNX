@@ -10,6 +10,13 @@
 # Cross builds run the host's, since the shader is the same for every target.
 
 set(SNX_GLSLANG "" CACHE FILEPATH "glslangValidator to compile shaders with (empty: the pinned release, or PATH)")
+# the suffix of a program of the machine doing the build: CMAKE_HOST_EXECUTABLE_SUFFIX is CMake 3.31's, and the build
+# takes 3.28
+if(CMAKE_HOST_WIN32)
+    set(snx_host_exe ".exe")
+else()
+    set(snx_host_exe "")
+endif()
 if(NOT SNX_GLSLANG)
     set(snx_glslang_host "")
     if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_HOST_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$")
@@ -22,9 +29,9 @@ if(NOT SNX_GLSLANG)
     if(snx_glslang_host)
         AddJsonPackage(NAME glslang-tools-${snx_glslang_host} DOWNLOAD_ONLY FORCE_BUNDLED_PACKAGE ON)
         set(snx_glslang_dir "${glslang-tools-${snx_glslang_host}_SOURCE_DIR}")
-        set(snx_glslang_path "${snx_glslang_dir}/bin/glslangValidator${CMAKE_HOST_EXECUTABLE_SUFFIX}")
+        set(snx_glslang_path "${snx_glslang_dir}/bin/glslangValidator${snx_host_exe}")
         if (NOT EXISTS "${snx_glslang_path}")
-            set(snx_glslang_path "${snx_glslang_dir}/bin/glslang${CMAKE_HOST_EXECUTABLE_SUFFIX}")
+            set(snx_glslang_path "${snx_glslang_dir}/bin/glslang${snx_host_exe}")
         endif()
     else()
         find_program(snx_glslang_path NAMES glslangValidator glslang)
