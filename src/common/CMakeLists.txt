@@ -138,11 +138,11 @@ endif()
 
 # The DS's and the 3DS's online services through their communities' replacements (online/, its README.md): the WFC
 # services and the DS firmware's connection slot, a DNS resolver, NASC's login on Pretendo Network and the 3DS
-# console's files. Strict C99 on the host's own sockets
+# console's files. Strict ISO C23 on the host's own sockets
 if(SNX_BUILD_NDS OR SNX_BUILD_3DS OR BUILD_TESTING)
     add_library(snx_online STATIC online/wfc.c online/dns.c online/resolve.c online/socket.c online/nasc.c
         online/ctr.c online/hosts.c)
-    set_target_properties(snx_online PROPERTIES C_STANDARD 99 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF
+    set_target_properties(snx_online PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF
         POSITION_INDEPENDENT_CODE ON)
     target_compile_options(snx_online PRIVATE -pedantic-errors -Wall -Wextra -Werror=missing-prototypes)
     if(WIN32)
