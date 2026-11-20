@@ -160,6 +160,11 @@ static void pair_and_event(void) {
     CHECK(snx_net_poll(&w, 1, 0) == 1 && (w.revents & SNX_POLLIN));
     memset(v, 0, sizeof v);
     CHECK(snx_socket_recv(e, v, 8, 0, NULL, NULL) == 8 && v[0] == 4);
+    /* a blocking read of a count of 0 waits out the receive timeout the socket took */
+    SnxTimeval tv = {0, (int64_t)snx_le64(100000)};
+    CHECK(!snx_socket_setsockopt(e, SNX_SOL_SOCKET, SNX_SO_RCVTIMEO, &tv, sizeof tv));
+    double t0 = now();
+    CHECK(snx_socket_recv(e, v, 8, 0, NULL, NULL) == -SNX_EAGAIN && now() - t0 >= 0.09);
     snx_socket_set_nonblocking(e, 1);
     CHECK(snx_socket_recv(e, v, 8, 0, NULL, NULL) == -SNX_EAGAIN);
     snx_socket_unref(e);
