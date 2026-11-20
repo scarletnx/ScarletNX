@@ -315,6 +315,13 @@ static void test_code_view(void) {
     check_tracking(m.source, 0x3000);
 }
 
+/* the view entry of a destination, as the runtime keeps it (svc_mem.c's KMapView table): NULL when there is none */
+static const KMapView* view_at(u64 dst) {
+    for (u32 i = 0; i < KMAPVIEW_MAX; i++)
+        if (g_hle.svcmem.maps[i].size && g_hle.svcmem.maps[i].dst == dst) return &g_hle.svcmem.maps[i];
+    return NULL;
+}
+
 /* The code-memory SVCs a JIT uses: MapProcessCodeMemory makes an AliasCode view of the game's own normal memory and
    locks the source, SetProcessMemoryPermission gives the view read-execute, and UnmapProcessCodeMemory unmaps it and
    puts the source back to read-write, so the game maps again after writing. The console maps exactly the range it is
@@ -408,7 +415,8 @@ static void test_process_code(void) {
     gw32(src + 0x10000, 1);
     CHECK(svc_map_process_code_memory(0x1234, dst + 0x300000, src + 0x10000, 0x1000) == 0);
     CHECK(svc_unmap_process_code_memory(0x1234, dst, src + 0x10000, size) == SNX_RC_SVC_INVALID_CURRENT_MEMORY);
-    CHECK(svc_unmap_process_code_memory(0x1234, dst, src, size - 0x1000) == SNX_RC_SVC_INVALID_MEMORY_REGION);
+    /* the view's pages must be the source's: [dst, dst + 0x1000) is src's first page, not its second */
+    CHECK(svc_unmap_process_code_memory(0x1234, dst, src + 0x1000, 0x1000) == SNX_RC_SVC_INVALID_MEMORY_REGION);
     CHECK(svc_unmap_process_code_memory(0x1234, dst, src + 0x1000, size) == SNX_RC_SVC_INVALID_CURRENT_MEMORY);
     CHECK(svc_unmap_process_code_memory(0x1234, dst + 0x300000, src, 0x1000) == SNX_RC_SVC_INVALID_MEMORY_REGION);
     CHECK(state(dst) == MS_ALIASCODEDATA && gr32(src) == 0xD65F03C0);
@@ -436,6 +444,54 @@ static void test_process_code(void) {
     CHECK(gr32(dst) == 0xD65F03C0);
     CHECK(svc_unmap_process_code_memory(0x1234, dst, src, size) == 0);
     CHECK(mem_pool_used() == 0);
+    /* A range can be part of a view, or all that its parts leave: the console unmaps what it is given, and the
+       source keeps its lock only where a view is left */
+    {
+        const u64 src3 = HEAP_BASE + 0xA0000, dst3 = STACK_BASE + 0xB0000;
+        CHECK(svc_map_process_code_memory(0x1234, dst3, src3, 0x3000) == 0);
+        CHECK(svc_unmap_process_code_memory(0x1234, dst3 + 0x1000, src3 + 0x1000, 0x1000) == 0);
+        CHECK(state(dst3) == MS_ALIASCODE && state(dst3 + 0x1000) == MS_FREE &&
+              state(dst3 + 0x2000) == MS_ALIASCODE);
+        mem_query(src3, &b);
+        CHECK(b.perm == PERM_NONE && b.attr == MA_LOCKED);
+        mem_query(src3 + 0x1000, &b);
+        CHECK(b.perm == PERM_RW && b.attr == 0);
+        mem_query(src3 + 0x2000, &b);
+        CHECK(b.perm == PERM_NONE && b.attr == MA_LOCKED);
+        {   /* the view's table keeps its parts, not one entry over the hole */
+            const KMapView* v = view_at(dst3);
+            CHECK(v && v->size == 0x1000 && v->src == src3);
+            v = view_at(dst3 + 0x2000);
+            CHECK(v && v->size == 0x1000 && v->src == src3 + 0x2000);
+            CHECK(!view_at(dst3 + 0x1000));
+        }
+        CHECK(svc_unmap_process_code_memory(0x1234, dst3, src3, 0x1000) == 0);
+        CHECK(svc_unmap_process_code_memory(0x1234, dst3 + 0x2000, src3 + 0x2000, 0x1000) == 0);
+        CHECK(state(dst3) == MS_FREE && state(dst3 + 0x2000) == MS_FREE);
+        mem_query(src3, &b);
+        CHECK(b.perm == PERM_RW && b.attr == 0 && mem_pool_used() == 0);
+        /* a part's source must be that part's: the whole view's source is not the second page's source */
+        CHECK(svc_map_process_code_memory(0x1234, dst3, src3, 0x2000) == 0);
+        CHECK(svc_unmap_process_code_memory(0x1234, dst3 + 0x1000, src3, 0x1000) == SNX_RC_SVC_INVALID_MEMORY_REGION);
+        CHECK(svc_unmap_process_code_memory(0x1234, dst3, src3, 0x2000) == 0);
+        CHECK(mem_pool_used() == 0);
+        /* a view whose attribute changed still owns its source's lock: the console's page table keeps the source
+           Locked, so the game cannot take the heap back while the view is there. Clearing the attribute lets the
+           unmap through again, and an attribute the unmap does not take refuses it */
+        CHECK(svc_map_process_code_memory(0x1234, dst3, src3, 0x1000) == 0);
+        CHECK(svc_set_process_mem_perm(0x1234, dst3, 0x1000, PERM_RW) == 0);
+        CHECK(svc_set_mem_attr(dst3, 0x1000, MA_UNCACHED, MA_UNCACHED) == 0);
+        mem_query(dst3, &b);
+        CHECK(b.state == MS_ALIASCODEDATA && b.attr == MA_UNCACHED);
+        CHECK(svc_set_mem_attr(src3, 0x1000, MA_UNCACHED, MA_UNCACHED) == SNX_RC_SVC_INVALID_CURRENT_MEMORY);
+        mem_query(src3, &b);
+        CHECK(b.perm == PERM_NONE && b.attr == MA_LOCKED); /* the lock has an owner still */
+        CHECK(svc_unmap_process_code_memory(0x1234, dst3, src3, 0x1000) == SNX_RC_SVC_INVALID_CURRENT_MEMORY);
+        CHECK(svc_set_mem_attr(dst3, 0x1000, MA_UNCACHED, 0) == 0);
+        CHECK(svc_unmap_process_code_memory(0x1234, dst3, src3, 0x1000) == 0);
+        mem_query(src3, &b);
+        CHECK(b.perm == PERM_RW && b.attr == 0 && mem_pool_used() == 0);
+    }
     /* the process's own code, as a module's is (Code, not AliasCode): read-execute, then read-write as code data */
     CHECK(mem_map(dst + 0x400000, 0x1000, MS_CODE, PERM_RX) == 0);
     CHECK(svc_set_process_mem_perm(0x1234, dst + 0x400000, 0x1000, PERM_R) == 0);
