@@ -1779,6 +1779,17 @@ setting HMMA mode
     help each product in the lane that holds its A words, only B's words from the others, by shuffles; A-stationary
     help staged = the same, B through the slot. They differ only in the order of the f32 sums (A-stationary's a tree
     help of at most 6 roundings a term, the others' a chain of 16), all within an HMMA's bound
+setting Tensor standin
+    key tensor_standin
+    int 0 1
+    default 0
+    startup
+    words Off|Approximate
+    help A program that multiplies with the tensor core's matrices (HMMA, LDSM) is a network's pass, as the titles'
+    help upscalers are: 1 replaces it with a filtered copy of its largest sampled image into its largest storage image,
+    help the picture such a network makes, in one pass instead of each of its own. A pass that stores to a buffer of the
+    help game's, to a buffer image, or to more than one image runs as it is. 0 = every pass runs, exactly, which is tens
+    help of milliseconds a frame where the device's matrix unit is 8x8x8. The picture loses the network's detail
 setting Vulkan allocation cap
     key vk_max_allocation_mb
     int 0 INT_MAX
