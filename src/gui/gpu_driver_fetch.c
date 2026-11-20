@@ -107,10 +107,10 @@ int gui_driver_releases_parse(const char* json, size_t n, const GuiDriverRepo* r
             yyjson_val* bytes = yyjson_obj_get(asset, "size");
             text_of(asset, "name", d->name, sizeof d->name);
             text_of(asset, "browser_download_url", d->url, sizeof d->url);
-            /* none to download: not listed; nor a .txt (a release's checksums or notes), no driver package; nor
-               radv-xclipse's -glibc- and -wayland- zips, for Linux and Bannerlator: its Android one has the version
-               right after its name */
-            if (!d->name[0] || strncmp(d->url, "https://", 8) || ends_nocase(d->name, ".txt") ||
+            /* none to download: not listed; nor a file Add Driver takes no package from, as it takes a zip (a
+               release's checksums and notes, MaliSX2's build for Linux); nor radv-xclipse's -glibc- and -wayland-
+               zips, for Linux and Bannerlator: its Android one has the version right after its name */
+            if (!d->name[0] || strncmp(d->url, "https://", 8) || !ends_nocase(d->name, ".zip") ||
                 (!strcmp(repo->path, "JimVulkan/radv-xclipse") &&
                  (strncmp(d->name, "radv-xclipse-", 13) || !snx_is_digit((unsigned char)d->name[13]))))
                 continue;
