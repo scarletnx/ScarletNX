@@ -10,7 +10,8 @@
 
 void snx_vk_driver_tag(char* out, size_t n, uint32_t driver_id, uint32_t vendor, uint32_t device, const char* package) {
     int w = snprintf(out, n, "d%u-%04x-%08x", (unsigned)driver_id, (unsigned)vendor, (unsigned)device);
-    if (w < 0 || (size_t)w >= n || !package || !*package) return;
+    /* the package goes after a - : with no room for both and the end, the tag stays the driver's alone */
+    if (w < 0 || (size_t)w + 2 >= n || !package || !*package) return;
     size_t at = (size_t)w;
     out[at++] = '-';
     /* a package's folder name as a file name keeps it: any other letter is an underscore */
