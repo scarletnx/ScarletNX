@@ -29,7 +29,6 @@
 #include "nx/memory/mem.h"
 #include "hle/services/nvdrv.swipc.inc"
 #include "nx/hle/kernel/kernel.h"
-#include "nx/memory/mem.h"
 #include "common/utilities/bits.h"
 #include "common/utilities/endian.h"
 #include "nx/runtime/platform/log.h"
