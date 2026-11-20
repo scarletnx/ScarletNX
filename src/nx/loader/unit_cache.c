@@ -306,6 +306,35 @@ static void hold(SnxUnitCache* cache, const char* key) {
 #endif
 }
 
+int snx_unit_cache_identity_digest(const SnxUnitCache* cache, char out[65]) {
+    return snx_unit_cache_key(cache, "", "", "", (const unsigned char*)cache->bytes + cache->folder_size,
+                              cache->identity_size, out);
+}
+
+unsigned char* snx_unit_cache_reuse(SnxUnitCache* cache, const char* key, size_t* size, char* error,
+                                    size_t error_size) {
+    char *name = snx_format("%s.o", key), *path = snx_path_join(snx_unit_cache_folder(cache), name), why[512];
+    size_t file_size = 0, object_size = 0;
+    unsigned char* file = snx_read_file(path, &file_size);
+    free(name);
+    if (!file)
+        snprintf(error, error_size, "cannot read %s: %s", path, snx_os_error(why, sizeof why));
+    else if (whole(file, file_size, key, &object_size, why, sizeof why)) {
+        snprintf(error, error_size, "%s is not a whole object (%s)", path, why);
+        free(file);
+        file = NULL;
+    } else {
+        hold(cache, key);
+        if (snx_set_file_time(path, (SnxU64)time(NULL))) {
+            if (!cache->stale++) snprintf(cache->stale_why, sizeof cache->stale_why, "%s: %s", path,
+                                          snx_os_error(why, sizeof why));
+        }
+        *size = object_size;
+    }
+    free(path);
+    return file;
+}
+
 unsigned char* snx_unit_cache_read(const SnxUnitCache* cache, const char* key, size_t* size, char* error,
                                    size_t error_size) {
     char *name = snx_format("%s.o", key), *path = snx_path_join(snx_unit_cache_folder(cache), name), why[512];
