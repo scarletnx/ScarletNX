@@ -27,7 +27,7 @@ void pm_lock(PMutex* m) { (void)m; }
 void pm_unlock(PMutex* m) { (void)m; }
 void pm_lock_announce(PMutex* m, const char* name) { (void)m, (void)name; }
 /* the log's last line, and how many it took */
-static char test_line[256];
+static char test_line[320];
 static unsigned test_lines;
 void logf_(int level, const char* format, ...) {
     va_list a;
@@ -117,12 +117,12 @@ static void frames_at(u32 id, unsigned frames, u32 ms) {
     while (frames--) audren_tick();
 }
 /* The line about a playing renderer's host queue, once in 10 s of frames (2000 of 5 ms): the least, the most and
-   the average the clock found, the frames that found it empty and those dropped above 100 ms, which the host is
-   not given; then the next 10 s counted from zero. The frame that opens the output, before it plays, is not one */
+   the average the clock found, the frames that found it empty, those dropped above 100 ms and those dropped for the
+   target, which the host is not given; then the next 10 s counted from zero. The frame that opens the output, before it plays, is not one */
 static void test_queue_line(void) {
     static const u8 params[0x34];
     u32 id = audren_open(params, 0), again = 0;
-    char line[256];
+    char line[320];
     CHECK(id != 0);
     play(id);
     unsigned lines = test_lines;
@@ -136,17 +136,21 @@ static void test_queue_line(void) {
     CHECK(test_lines == lines + 1);
     snprintf(line, sizeof line,
              "audren %u: the host held 0 to 120 ms of sound over the last 10 s, 36 ms on average; 3 frames "
-             "found it empty, and 5 found more than 100 ms and were dropped\n",
+             "found it empty, 5 found more than 100 ms and were dropped, and 0 were dropped to bring it back to "
+             "20 ms\n",
              id);
     CHECK(!strcmp(test_line, line));
     frames_at(id, 1000, 12);
     frames_at(id, 999, 49);
     CHECK(test_lines == lines + 1);
-    frames_at(id, 1, 100); /* at the bound, not above it: played */
-    CHECK(test_lines == lines + 2 && host_of(id)->frames == 1 + 1995 + 2000);
+    frames_at(id, 1, 100); /* at the bound, not above it */
+    /* above the target of 20 ms through each of the last five seconds, the 10 s before them with no frame that found
+       it empty: a frame dropped at each second's end */
+    CHECK(test_lines == lines + 2 && host_of(id)->frames == 1 + 1995 + 2000 - 5);
     snprintf(line, sizeof line,
              "audren %u: the host held 12 to 100 ms of sound over the last 10 s, 31 ms on average; 0 frames "
-             "found it empty, and 0 found more than 100 ms and were dropped\n",
+             "found it empty, 0 found more than 100 ms and were dropped, and 5 were dropped to bring it back to "
+             "20 ms\n",
              id);
     CHECK(!strcmp(test_line, line));
     /* a renderer opened in a closed one's slot starts its own count */
@@ -164,7 +168,8 @@ static void test_queue_line(void) {
     CHECK(test_lines == lines + 3);
     snprintf(line, sizeof line,
              "audren %u: the host held 7 to 9 ms of sound over the last 10 s, 7 ms on average; 0 frames "
-             "found it empty, and 0 found more than 100 ms and were dropped\n",
+             "found it empty, 0 found more than 100 ms and were dropped, and 0 were dropped to bring it back to "
+             "20 ms\n",
              id);
     CHECK(!strcmp(test_line, line));
     audren_close(id);
