@@ -2177,6 +2177,7 @@ setting @VK_GOOGLE_display_timing
 setting @VK_KHR_calibrated_timestamps
 setting @VK_KHR_cooperative_matrix
 setting @VK_KHR_copy_memory_indirect
+setting @VK_KHR_driver_properties
 setting @VK_KHR_dynamic_rendering
 setting @VK_KHR_dynamic_rendering_local_read
 setting @VK_KHR_extended_flags
@@ -2202,6 +2203,7 @@ setting @VK_KHR_shader_clock
 setting @VK_KHR_shader_maximal_reconvergence
 setting @VK_KHR_swapchain
 setting @VK_KHR_synchronization2
+setting @VK_KHR_timeline_semaphore
 setting @VK_KHR_unified_image_layouts
 setting @VK_KHR_video_decode_av1
 setting @VK_KHR_video_decode_h264
