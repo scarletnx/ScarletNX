@@ -5,8 +5,8 @@
    it) and peak, GetHdrPaperWhite, and the HDR status event when the display's changes; the largest picture it
    takes, GetBufferMaxResolution; and its refresh rates, with the window's display stood in for: the ones it takes
    (GetDisplayModeCapability), the one it runs at (GetDisplayRefreshRate and its bits), and the game turning 120 Hz
-   on and off (301) with the refresh rate event. Everything else gsv.c reaches is stood in
-   for by functions no check here calls */
+   on and off (301) with the refresh rate event; and its state as a save state's load puts it back (g_hle's).
+   Everything else gsv.c reaches is stood in for by functions no check here calls */
 #include "nx/hle/services/services_int.h"
 #include <stdarg.h>
 
@@ -27,6 +27,7 @@ static void test_fail(const char* expression, int line) {
 /* ---- what gsv.c links against ---- */
 u8* g_mem;
 MemLayout g_layout;
+Hle g_hle;
 HleHost g_host;
 Settings g_settings;
 _Atomic int g_frames;
@@ -356,6 +357,23 @@ static void refresh_rate(void) {
     CHECK(!set_rates(DEFAULT_DISPLAY, 0, RATE_120) && rate_now(DEFAULT_DISPLAY) == RATE_60);
 }
 
+/* The supervisor's state is g_hle's, which a save state writes and a load puts back: a native memory made after the
+   state was taken is gone once it is loaded, and the next one takes its handle again. Kept in the file's own
+   variables, the state stayed the running process's whatever was loaded */
+static void state_in_hle(void) {
+    u8 request[12] = {0};
+    u32 first = 0, second = 0, again = 0;
+    Hle* state = malloc(sizeof g_hle);
+    CHECK(state != NULL);
+    snx_st_le64(request + 4, 0x4000);
+    CHECK(!nn_gsv_UserSession_CreateNativeMemory(NULL, request, &first) && first);
+    memcpy(state, &g_hle, sizeof g_hle);
+    CHECK(!nn_gsv_UserSession_CreateNativeMemory(NULL, request, &second) && second == first + 1);
+    memcpy(&g_hle, state, sizeof g_hle);
+    CHECK(!nn_gsv_UserSession_CreateNativeMemory(NULL, request, &again) && again == second);
+    free(state);
+}
+
 int main(void) {
     u8 r[12], other[12];
     u32 hdr_event = 0, vsync_event = 0;
@@ -414,6 +432,7 @@ int main(void) {
     gsv_vsync_tick();
     CHECK(!signaled(hdr_event));
     camera_session();
+    state_in_hle();
     printf("gsv hdr: %u checks\n", test_checks);
     return 0;
 }
