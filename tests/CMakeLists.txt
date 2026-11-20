@@ -3796,6 +3796,11 @@ if(TARGET snx_vita_usse)
     snx_test_target(snx-test-vita-usse-cube gnu23)
     target_link_libraries(snx-test-vita-usse-cube PRIVATE snx_vita_usse)
     add_test(NAME vita_usse_cube COMMAND snx-test-vita-usse-cube)
+    # a program whose counts and indices name more than it holds is refused, nothing read or written outside it
+    add_executable(snx-test-vita-usse-bounds vita_usse_bounds.c)
+    snx_test_target(snx-test-vita-usse-bounds gnu23)
+    target_link_libraries(snx-test-vita-usse-bounds PRIVATE snx_vita_usse)
+    add_test(NAME vita_usse_bounds COMMAND snx-test-vita-usse-bounds)
 endif()
 # the texture conversion shader's GLSL run on the CPU against the CPU's conversions and ETC2 and BCn decoders: no GPU
 # needed
