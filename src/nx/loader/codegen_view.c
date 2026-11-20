@@ -7,7 +7,9 @@ int snx_nx_codegen_analyze(SnxCodegen* codegen, const SnxProgram* program, const
     SnxCodeImage* views;
     size_t i;
     int result;
-    views = (SnxCodeImage*)snx_alloc(program->module_count * sizeof(*views));
+    /* SnxCodeImage gained atomic_words/generation: zero them so the atomic read path is not
+       entered with garbage from an uninitialized malloc'd view. */
+    views = (SnxCodeImage*)calloc(program->module_count, sizeof(*views));
     for (i = 0; i < program->module_count; ++i) {
         const SnxModuleImage* m = &program->modules[i];
         views[i].image = m->image;
