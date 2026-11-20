@@ -14,10 +14,10 @@ typedef struct {
     JNIEnv* env;
 } AndroidJvm;
 
-/* a JVM with class_path (the framework's jar) on the calling thread, its options after the class path's. False with
-   error filled */
 /* the JDK to run on (--java-home), before android_jvm_start: NULL for the one the build found */
 void android_jvm_set_home(const char* home);
+/* a JVM with class_path (the framework's jar) on the calling thread, its options after the class path's. False with
+   error filled */
 bool android_jvm_start(AndroidJvm* jvm, const char* class_path, const char* const* options, size_t option_count,
                        char* error, size_t error_size);
 /* the pending exception, printed with its stack and cleared; false when there was none */
