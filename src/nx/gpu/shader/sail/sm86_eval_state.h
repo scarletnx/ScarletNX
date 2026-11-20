@@ -105,8 +105,8 @@ static SgEval* sg_eval(SgG* g) { return &g->ev; }
 [[maybe_unused]] static void sg_PredWrite(SgG* g, int64_t p, SgV v, int64_t u) {
     if (p < SM86_PT) (u ? g->st->up : g->st->p)[p] = (u8)(v.v != 0);
 }
-[[maybe_unused]] static void sg_throw_Unsupported(SgG* g, const char* why) {
-    (void)why;
+[[maybe_unused]] static void sg_throw_Unsupported(SgG* g, const char* f, ...) {
+    (void)f;
     g->ev.thrown = 1;
 }
 [[maybe_unused]] static SgV sg_SrcBitsAt(SgG* g, int64_t k, int64_t s) { return sg86_bits(g, sg86_src_at(g, k, s)); }

@@ -5,6 +5,7 @@
 # in a row where FN_ok holds. The back end's functions named static give values the translator knows
 prefix sg86
 static Field Uniform SrcNeg Dst IsZero SrcIsImm SrcImm FieldAt SrcNegAt IsZeroAt ReadsDstAt
+static Form SrcAbs SrcAbsRaw SrcNegRaw SrcIsReg SrcReg OpName FmulOverW Float64 I2fNearest
 
 op IADD3 SM86_IADD3 SM86_UIADD3
 op IMAD SM86_IMAD SM86_UIMAD
@@ -21,6 +22,24 @@ op SHF SM86_SHF SM86_USHF
 op ISETP SM86_ISETP SM86_UISETP
 op PLOP3 SM86_PLOP3
 op UPLOP3 SM86_UPLOP3
+op FADD SM86_FADD
+op FMUL SM86_FMUL
+op FFMA SM86_FFMA
+op FSWZADD SM86_FSWZADD
+op FMNMX SM86_FMNMX
+op FSET SM86_FSET
+op FSETP SM86_FSETP
+op HSETP2 SM86_HSETP2
+op FSEL SM86_FSEL
+op MUFU SM86_MUFU
+op F2F SM86_F2F
+op F2I64 SM86_F2I64
+op I2F64 SM86_I2F64
+op F2I SM86_F2I
+op F2IP SM86_F2IP
+op I2F SM86_I2F SM86_I2FP
+op FRND SM86_FRND
+op F2FP SM86_F2FP
 
 # IADD3 then IADD3.X: one 64-bit add of 32-bit words
 fuse IADD3_WIDE SM86_IADD3 SM86_IADD3

@@ -18,7 +18,9 @@
 #define NODE(i) (g_parse.nodes[i])
 
 enum { TS, TD }; /* STATIC, DYN */
-enum { VK_UNIT, VK_BITS, VK_BOOL, VK_INT, VK_ENUM, VK_STR };
+/* VK_OPAQUE: a run-time value of a type the Sail does not compute with (a vector, a pair of halves), which the back
+   end makes and takes: it is bound, passed and chosen, nothing else */
+enum { VK_UNIT, VK_BITS, VK_BOOL, VK_INT, VK_ENUM, VK_STR, VK_OPAQUE };
 
 /* a value while the walk makes it: STATIC values are C expressions of uint64_t (bits), int64_t (int), int (bool or
    an enum's member); DYN ones the name of the C variable that holds their SgV. A DYN int is UInt or SInt of bits:
@@ -191,7 +193,7 @@ static Val v_static(int kind, int width, const char* c) {
 static Val v_unit(void) { return v_static(VK_UNIT, 0, "0"); }
 
 static const char* kind_name(int k) {
-    static const char* const names[] = {"unit", "bits", "bool", "int", "enum", "string"};
+    static const char* const names[] = {"unit", "bits", "bool", "int", "enum", "string", "opaque value"};
     return names[k];
 }
 
@@ -345,7 +347,12 @@ static int type_kind(const char* t, int* width, char* wid_param) {
     if (!strcmp(t, "string")) return VK_STR;
     if (!strncmp(t, "int", 3) || !strncmp(t, "nat", 3) || !strncmp(t, "range", 5) || !strncmp(t, "atom", 4))
         return VK_INT;
-    return VK_ENUM;
+    /* a Sail enum's name, else a type of the back end's own */
+    {
+        char name[64];
+        sscanf(t, "%63[A-Za-z0-9_]", name);
+        return sg_find(name, D_ENUM) ? VK_ENUM : VK_OPAQUE;
+    }
 }
 
 /* the width a type's text gives, for a let's or var's ascription */
@@ -391,13 +398,42 @@ static const char* mask_of(int w) { return w >= 64 ? "0xffffffffffffffffull" : f
 /* STATIC bits of width w: masked to w */
 static const char* masked(const char* c, int w) { return w && w < 64 ? fmt("((%s) & %s)", c, mask_of(w)) : c; }
 
+/* b, the right operand of a binary operator whose left one is a: where a is known when the translator runs and b is a
+   run-time value, a is made the back end's constant before b's code, as C's left to right arguments of the
+   hand-written emitters made it (the constant's id then comes first) */
+static Val ev_right(unsigned n, Val* a) {
+    Buf* outer = g_buf;
+    Buf code = {0};
+    Val b;
+    g_buf = &code;
+    b = ev(NODE(n).b);
+    g_buf = outer;
+    if (a->time == TS && b.time == TD && strcmp(sg_str(NODE(n).name), "@")) {
+        if (a->kind == VK_BITS && (b.kind == VK_BITS || b.kind == VK_INT)) {
+            Val x = *a;
+            if (!x.width) x.width = b.width;
+            if (x.width) *a = dyn(n, x);
+        } else if (a->kind == VK_BOOL && b.kind == VK_BOOL)
+            *a = dyn(n, *a);
+        else if (a->kind == VK_INT && b.kind == VK_INT && b.width) {
+            Val x = dyn(n, v_static(VK_BITS, b.width, a->c));
+            x.kind = VK_INT;
+            x.sign = b.sign;
+            *a = x;
+        }
+    }
+    buf_add(g_buf, code.text ? code.text : "");
+    free(code.text);
+    return b;
+}
+
 static Val ev_binop(unsigned n) {
     const char* op = sg_str(NODE(n).name);
     Val a = ev(NODE(n).a), b;
     int w;
     if (!strcmp(op, "&") || !strcmp(op, "|")) {
         /* bool's and and or are lazy in Sail: a STATIC false (true) left side decides it in C */
-        b = ev(NODE(n).b);
+        b = ev_right(n, &a);
         if (a.kind != b.kind) sg_fail(n, "%s of %s and %s", op, kind_name(a.kind), kind_name(b.kind));
         if (a.kind == VK_BOOL) {
             if (a.time == TS && b.time == TS) return v_static(VK_BOOL, 0, fmt("(%s %s%s %s)", a.c, op, op, b.c));
@@ -413,7 +449,7 @@ static Val ev_binop(unsigned n) {
         b = dyn(n, b.width ? b : (b.width = w, b));
         return dyn_op(op[0] == '&' ? "sg_and" : "sg_or", VK_BITS, w, fmt("%d, %s, %s", w, a.c, b.c));
     }
-    b = ev(NODE(n).b);
+    b = ev_right(n, &a);
     if (!strcmp(op, "@")) {
         if (a.kind != VK_BITS || b.kind != VK_BITS || !a.width || !b.width) sg_fail(n, "@ of bits of unknown widths");
         check_width(n, a.width + b.width);
@@ -704,6 +740,9 @@ static Val ev_args_call(unsigned n) {
         if (st) {
             if (a.time == TD) sg_fail(n, "%s is static, its argument %d a run-time value", name, i + 1);
             list = fmt("%s, %s", list, a.c);
+        } else if (pk == VK_OPAQUE) {
+            if (a.kind != VK_OPAQUE) sg_fail(n, "%s's argument %d is a %s, not an opaque value", name, i + 1, kind_name(a.kind));
+            list = fmt("%s, %s", list, a.c);
         } else if (pk == VK_BITS || pk == VK_BOOL) {
             if (pk == VK_BITS && !a.width) a.width = pw;
             list = fmt("%s, %s", list, dyn(an, a).c);
@@ -714,15 +753,21 @@ static Val ev_args_call(unsigned n) {
     }
     if (i != s.nparams) sg_fail(n, "%s takes %d arguments, the call gives %d", name, s.nparams, i);
     if (st) {
+        /* made once, where the Sail asks for it: a back end's function the translator runs may have effects of its
+           own (a resource it declares, what it notes in the program's info), in their order */
+        const char* t;
         if (kind == VK_UNIT) sg_fail(n, "%s is static and gives nothing", name);
-        return v_static(kind, width, fmt("sg_%s(g%s)", name, list));
+        t = temp("s");
+        emit("const %s %s = sg_%s(g%s);",
+             kind == VK_BITS ? "uint64_t" : kind == VK_INT ? "int64_t" : kind == VK_STR ? "char*" : "int", t, name, list);
+        return v_static(kind, width, t);
     }
     if (kind == VK_UNIT) {
         if (g_dyn_ctl) sg_fail(n, "%s changes state under a run-time condition", name);
         emit("sg_%s(g%s);", name, list);
         return v_unit();
     }
-    if (kind != VK_BITS && kind != VK_BOOL) sg_fail(n, "%s gives a %s at run time", name, kind_name(kind));
+    if (kind != VK_BITS && kind != VK_BOOL && kind != VK_OPAQUE) sg_fail(n, "%s gives a %s at run time", name, kind_name(kind));
     if (kind == VK_BITS) check_width(n, width);
     {
         Val r = {TD, kind, width, 0, temp("v")};
@@ -820,7 +865,7 @@ static Val branches(unsigned at, const char** conds, const unsigned* bodies, int
             a = dyn(at, a.width ? a : (a.width = t.width, a));
             b = dyn(at, b.width ? b : (b.width = t.width, b));
             g_env[k].v = dyn_op("sg_select", t.kind, t.width,
-                                fmt("%d, %s, %s, %s", t.kind == VK_BOOL ? 0 : t.width, dyn_cond, a.c, b.c));
+                                fmt("%d, %s, %s, %s", t.kind == VK_BOOL ? 0 : t.kind == VK_OPAQUE ? -1 : t.width, dyn_cond, a.c, b.c));
         }
         if (has_value) {
             Val a = arms[0].value, b = arms[1].value, t;
@@ -833,10 +878,12 @@ static Val branches(unsigned at, const char** conds, const unsigned* bodies, int
                 b = int_bits(b);
             }
             t = merge_type(at, a, b);
-            if (t.kind != VK_BITS && t.kind != VK_BOOL) sg_fail(at, "a %s chosen at run time", kind_name(t.kind));
-            a = dyn(at, a.width ? a : (a.width = t.width, a));
-            b = dyn(at, b.width ? b : (b.width = t.width, b));
-            result = dyn_op("sg_select", t.kind, t.width, fmt("%d, %s, %s, %s", t.kind == VK_BOOL ? 0 : t.width, dyn_cond, a.c, b.c));
+            if (t.kind != VK_BITS && t.kind != VK_BOOL && t.kind != VK_OPAQUE) sg_fail(at, "a %s chosen at run time", kind_name(t.kind));
+            if (t.kind != VK_OPAQUE) {
+                a = dyn(at, a.width ? a : (a.width = t.width, a));
+                b = dyn(at, b.width ? b : (b.width = t.width, b));
+            }
+            result = dyn_op("sg_select", t.kind, t.width, fmt("%d, %s, %s, %s", t.kind == VK_BOOL ? 0 : t.kind == VK_OPAQUE ? -1 : t.width, dyn_cond, a.c, b.c));
             if (sign >= 0) {
                 result.kind = VK_INT;
                 result.sign = sign;
@@ -1202,7 +1249,8 @@ static Val ev(unsigned n) {
             for (an = NODE(e).a; an; an = NODE(an).next) {
                 Val a = ev(an);
                 if (a.time == TD) sg_fail(n, "a throw of a run-time value");
-                list = fmt("%s, %s", list, a.c);
+                /* a message's arguments, as the translators' fail() takes them: unsigned */
+                list = fmt("%s, %s%s", list, a.kind == VK_STR ? "" : "(unsigned)", a.c);
             }
             emit("sg_throw_%s(g%s);", sg_str(NODE(e).name), list);
             emit("return;");

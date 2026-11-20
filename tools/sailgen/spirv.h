@@ -15,12 +15,15 @@
 #define SNX_SAILGEN_SPIRV_H
 #include "common/utilities/spirv_emit.h"
 #include <stdint.h>
+#include <string.h>
 
 typedef struct SgG SgG;
-enum { SGT_U32, SGT_I32, SGT_F32, SGT_U64, SGT_BOOL };
+/* SGT_OTHER: an opaque value (gpu.sail's half pairs, an ISA's vectors), of the SPIR-V type ty */
+enum { SGT_U32, SGT_I32, SGT_F32, SGT_U64, SGT_BOOL, SGT_OTHER };
 typedef struct {
     uint32_t id;
     uint8_t t;
+    uint32_t ty;
 } SgV;
 typedef struct {
     SpvEmitter* e;
@@ -41,7 +44,11 @@ static inline uint32_t sg_op2(SpvEmitter* e, uint32_t op, uint32_t type, uint32_
     return SPV(e, op, type, a, b);
 }
 static inline SgV sg_v(uint32_t id, int t) {
-    SgV v = {id, (uint8_t)t};
+    SgV v = {id, (uint8_t)t, 0};
+    return v;
+}
+static inline SgV sg_vt(uint32_t id, uint32_t type) {
+    SgV v = {id, SGT_OTHER, type};
     return v;
 }
 static inline uint32_t sg_type(SgG* g, int t) {
@@ -59,7 +66,7 @@ static inline uint32_t sg_as(SgG* g, SgV v, int t) {
     SgSpv* s = sg_spv(g);
     unsigned i;
     uint32_t id;
-    if (v.t == t || v.t == SGT_U64 || v.t == SGT_BOOL || t == SGT_U64 || t == SGT_BOOL) return v.id;
+    if (v.t == t || v.t == SGT_U64 || v.t == SGT_BOOL || v.t == SGT_OTHER || t == SGT_U64 || t == SGT_BOOL) return v.id;
     for (i = 0; i < s->ncast; ++i)
         if (s->cast[i].from == v.id && s->cast[i].t == t) return s->cast[i].to;
     id = spv_emit_unary(s->e, SPV_OP_BITCAST, sg_type(g, t), v.id);
@@ -241,8 +248,9 @@ static inline SgV sg_not_bool(SgG* g, SgV a) {
 /* if c then a else b of bits(w) (w 0: bools): a select of a's type, b made that type */
 static inline SgV sg_select(SgG* g, int w, SgV c, SgV a, SgV b) {
     int t = w ? a.t : SGT_BOOL;
-    uint32_t y = sg_as(g, b, t);
-    (void)w;
+    uint32_t y;
+    if (w < 0) return sg_vt(spv_emit_ternary(sg_spv(g)->e, SPV_OP_SELECT, a.ty, c.id, a.id, b.id), a.ty);
+    y = sg_as(g, b, t);
     return sg_v(spv_emit_ternary(sg_spv(g)->e, SPV_OP_SELECT, sg_type(g, t), c.id, a.id, y), t);
 }
 
@@ -259,4 +267,110 @@ static inline SgV sg_umin(SgG* g, int w, SgV a, SgV b) { return sg_minmax(g, w, 
 static inline SgV sg_umax(SgG* g, int w, SgV a, SgV b) { return sg_minmax(g, w, SGT_U32, SPV_GLSL_U_MAX, a, b); }
 static inline SgV sg_smin(SgG* g, int w, SgV a, SgV b) { return sg_minmax(g, w, SGT_I32, SPV_GLSL_S_MIN, a, b); }
 static inline SgV sg_smax(SgG* g, int w, SgV a, SgV b) { return sg_minmax(g, w, SGT_I32, SPV_GLSL_S_MAX, a, b); }
+
+/* ---- gpu.sail's floats: an f32 is bits(32) to the Sail, here an f32 id (the bits a bitcast of it, when asked) ---- */
+static inline uint32_t sg_f(SgG* g, SgV v) { return sg_as(g, v, SGT_F32); }
+static inline SgV sg_fv(uint32_t id) { return sg_v(id, SGT_F32); }
+/* the f32 of these bits */
+static inline SgV sg_FConst(SgG* g, int64_t bits) {
+    uint32_t u = (uint32_t)bits;
+    float f;
+    memcpy(&f, &u, 4);
+    return sg_fv(spv_emit_constant_f32(sg_spv(g)->e, sg_spv(g)->t_f32, f));
+}
+static inline SgV sg_glsl1(SgG* g, SpvGlsl450Op op, SgV x) {
+    SgSpv* s = sg_spv(g);
+    return sg_fv(spv_emit_glsl_unary(s->e, s->t_f32, s->glsl, op, sg_f(g, x)));
+}
+static inline SgV sg_glsl2(SgG* g, SpvGlsl450Op op, SgV x, SgV y) {
+    SgSpv* s = sg_spv(g);
+    uint32_t a = sg_f(g, x), b = sg_f(g, y);
+    return sg_fv(spv_emit_glsl_binary(s->e, s->t_f32, s->glsl, op, a, b));
+}
+static inline SgV sg_fop2(SgG* g, uint32_t op, SgV x, SgV y) {
+    uint32_t a = sg_f(g, x), b = sg_f(g, y);
+    return sg_fv(sg_op2(sg_spv(g)->e, op, sg_spv(g)->t_f32, a, b));
+}
+static inline SgV sg_Bits32(SgG* g, SgV x) { return sg_v(sg_u32(g, x), SGT_U32); }
+static inline SgV sg_Float32(SgG* g, SgV x) { return sg_fv(sg_f(g, x)); }
+static inline SgV sg_U64ToF(SgG* g, SgV x) {
+    return sg_fv(spv_emit_unary(sg_spv(g)->e, SPV_OP_CONVERT_U_TO_F, sg_spv(g)->t_f32, x.id));
+}
+static inline SgV sg_FToU64(SgG* g, SgV x) {
+    return sg_v(spv_emit_unary(sg_spv(g)->e, SPV_OP_CONVERT_F_TO_U, sg_spv(g)->t_u64(g), sg_f(g, x)), SGT_U64);
+}
+static inline SgV sg_FAbs(SgG* g, SgV x) { return sg_glsl1(g, SPV_GLSL_F_ABS, x); }
+static inline SgV sg_FNeg(SgG* g, SgV x) {
+    return sg_fv(spv_emit_unary(sg_spv(g)->e, SPV_OP_F_NEGATE, sg_spv(g)->t_f32, sg_f(g, x)));
+}
+static inline SgV sg_FAdd(SgG* g, SgV x, SgV y) { return sg_fop2(g, SPV_OP_F_ADD, x, y); }
+static inline SgV sg_FSub(SgG* g, SgV x, SgV y) { return sg_fop2(g, SPV_OP_F_SUB, x, y); }
+static inline SgV sg_FMul(SgG* g, SgV x, SgV y) { return sg_fop2(g, SPV_OP_F_MUL, x, y); }
+static inline SgV sg_FDiv(SgG* g, SgV x, SgV y) { return sg_fop2(g, SPV_OP_F_DIV, x, y); }
+/* GLSL.std.450's: NMin and NMax take the number where one is NaN, FMin and FMax leave it undefined */
+static inline SgV sg_FMinN(SgG* g, SgV x, SgV y) { return sg_glsl2(g, SPV_GLSL_N_MIN, x, y); }
+static inline SgV sg_FMaxN(SgG* g, SgV x, SgV y) { return sg_glsl2(g, SPV_GLSL_N_MAX, x, y); }
+static inline SgV sg_FMin(SgG* g, SgV x, SgV y) { return sg_glsl2(g, SPV_GLSL_F_MIN, x, y); }
+static inline SgV sg_FMax(SgG* g, SgV x, SgV y) { return sg_glsl2(g, SPV_GLSL_F_MAX, x, y); }
+/* 0 to the nearest even, 1 down, 2 up, 3 toward zero */
+static inline SgV sg_FRound(SgG* g, int64_t mode, SgV x) {
+    static const SpvGlsl450Op op[4] = {SPV_GLSL_ROUND_EVEN, SPV_GLSL_FLOOR, SPV_GLSL_CEIL, SPV_GLSL_TRUNC};
+    return sg_glsl1(g, op[mode & 3], x);
+}
+static inline SgV sg_FSin(SgG* g, SgV x) { return sg_glsl1(g, SPV_GLSL_SIN, x); }
+static inline SgV sg_FCos(SgG* g, SgV x) { return sg_glsl1(g, SPV_GLSL_COS, x); }
+static inline SgV sg_FExp2(SgG* g, SgV x) { return sg_glsl1(g, SPV_GLSL_EXP2, x); }
+static inline SgV sg_FLog2(SgG* g, SgV x) { return sg_glsl1(g, SPV_GLSL_LOG2, x); }
+static inline SgV sg_FInvSqrt(SgG* g, SgV x) { return sg_glsl1(g, SPV_GLSL_INVERSE_SQRT, x); }
+static inline SgV sg_FSqrt(SgG* g, SgV x) { return sg_glsl1(g, SPV_GLSL_SQRT, x); }
+static inline SgV sg_FTanh(SgG* g, SgV x) { return sg_glsl1(g, SPV_GLSL_TANH, x); }
+static inline SgV sg_FIsNaN(SgG* g, SgV x) {
+    return sg_v(spv_emit_unary(sg_spv(g)->e, SPV_OP_IS_NAN, sg_spv(g)->t_bool, sg_f(g, x)), SGT_BOOL);
+}
+/* spv_emit_fcompare's comparison codes (NAK's FloatCmpOp) */
+static inline SgV sg_FCompare(SgG* g, int64_t op, SgV x, SgV y) {
+    uint32_t a = sg_f(g, x), b = sg_f(g, y);
+    return sg_v(spv_emit_fcompare(sg_spv(g)->e, sg_spv(g)->t_bool, (uint32_t)op, a, b), SGT_BOOL);
+}
+static inline SgV sg_FToS32(SgG* g, SgV x) {
+    return sg_v(spv_emit_unary(sg_spv(g)->e, SPV_OP_CONVERT_F_TO_S, sg_spv(g)->t_i32, sg_f(g, x)), SGT_I32);
+}
+static inline SgV sg_FToU32(SgG* g, SgV x) {
+    return sg_v(spv_emit_unary(sg_spv(g)->e, SPV_OP_CONVERT_F_TO_U, sg_spv(g)->t_u32, sg_f(g, x)), SGT_U32);
+}
+static inline SgV sg_S32ToF(SgG* g, SgV x) {
+    return sg_fv(spv_emit_unary(sg_spv(g)->e, SPV_OP_CONVERT_S_TO_F, sg_spv(g)->t_f32, sg_as(g, x, SGT_I32)));
+}
+static inline SgV sg_U32ToF(SgG* g, SgV x) {
+    return sg_fv(spv_emit_unary(sg_spv(g)->e, SPV_OP_CONVERT_U_TO_F, sg_spv(g)->t_f32, sg_u32(g, x)));
+}
+/* a pair of halves: a vec2 of f32 (UnpackHalf2x16 of a word, or two floats), its components and their abs and neg */
+static inline uint32_t sg_t_v2f(SgG* g) { return spv_emit_type_vec2(sg_spv(g)->e, sg_spv(g)->t_f32); }
+static inline SgV sg_UnpackHalf2(SgG* g, SgV x) {
+    SgSpv* s = sg_spv(g);
+    uint32_t t = sg_t_v2f(g);
+    return sg_vt(SPV_EXT(s->e, t, SPV_GLSL_UNPACK_HALF2X16, sg_u32(g, x)), t);
+}
+static inline SgV sg_Half2At(SgG* g, SgV v, int64_t k) {
+    return sg_fv(spv_emit_vec4_extract(sg_spv(g)->e, sg_spv(g)->t_f32, v.id, (uint32_t)k));
+}
+static inline SgV sg_Half2(SgG* g, SgV lo, SgV hi) {
+    uint32_t t = sg_t_v2f(g), a = sg_f(g, lo), b = sg_f(g, hi);
+    return sg_vt(spv_emit_vec2_construct(sg_spv(g)->e, t, a, b), t);
+}
+static inline SgV sg_Half2Abs(SgG* g, SgV v) { return sg_vt(SPV_EXT(sg_spv(g)->e, v.ty, SPV_GLSL_F_ABS, v.id), v.ty); }
+static inline SgV sg_Half2Neg(SgG* g, SgV v) { return sg_vt(SPV(sg_spv(g)->e, SPV_OP_F_NEGATE, v.ty, v.id), v.ty); }
+/* a field of a word at a run-time offset: BitFieldUExtract, and BitFieldSExtract of the i32 */
+static inline SgV sg_BitsU(SgG* g, SgV x, SgV at, SgV n) {
+    SgSpv* s = sg_spv(g);
+    uint32_t a = sg_u32(g, x);
+    return sg_v(spv_emit_ternary(s->e, SPV_OP_BIT_FIELD_U_EXTRACT, s->t_u32, a, sg_u32(g, at), sg_u32(g, n)), SGT_U32);
+}
+static inline SgV sg_BitsS(SgG* g, SgV x, SgV at, SgV n) {
+    SgSpv* s = sg_spv(g);
+    uint32_t a = sg_as(g, x, SGT_I32);
+    return sg_v(spv_emit_ternary(s->e, SPV_OP_BIT_FIELD_S_EXTRACT, s->t_i32, a, sg_u32(g, at), sg_u32(g, n)), SGT_I32);
+}
+/* a capability the instruction needs: declared once */
+static inline void sg_Capability(SgG* g, int64_t cap) { spv_emit_capability(sg_spv(g)->e, (uint32_t)cap); }
 #endif

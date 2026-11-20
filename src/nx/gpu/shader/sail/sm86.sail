@@ -328,3 +328,370 @@ function IADD3_WIDE() -> unit = {
     PredWrite(UInt(FieldAt(0, 81, 3)), carry, 0);
     D_writeAt(1, hi)
 }
+
+/* ---- floating point ---- */
+
+/* the operand as a float, with its absolute value and negation (an immediate has neither) */
+val SrcF : Operand -> bits(32)
+/* the operand takes its absolute value (an immediate does not) */
+val SrcAbs : Operand -> bool
+/* the decoder's form (bits 9-11), which places the sources */
+val Form : unit -> int
+/* the modifiers as the decoder left them, an immediate's too (MUFU.F16's and F2I's half) */
+val SrcAbsRaw : Operand -> bool
+val SrcNegRaw : Operand -> bool
+/* the operand is a register, and which */
+val SrcIsReg : Operand -> bool
+val SrcReg : Operand -> int
+/* the instruction's name, for a refusal */
+val OpName : unit -> string
+/* x flushed to the zero of its sign where it is subnormal, when on and the module does not flush by itself
+   (sm86_to_spirv_ftz's soft_ftz); noted in the program's info as the FTZ it asks for */
+val Ftz : (bits(32), int) -> bits(32)
+val NoteFtz : int -> unit
+/* the rounding modes' sums and products (78-79: 0 nearest, 1 down, 2 up, 3 toward zero), FMUL's scaled by 2^(scale - 4) */
+val FloatAdd : (int, bits(32), bits(32)) -> bits(32)
+val FloatMul : (int, int, bits(32), bits(32)) -> bits(32)
+val FloatFma : (int, bits(32), bits(32), bits(32)) -> bits(32)
+/* .SAT: clamped to 0 to 1, a NaN 0 */
+val Saturate : (bits(32), int) -> bits(32)
+/* x decorated NoContraction (a sum the device must not fuse) */
+val NoContract : bits(32) -> bits(32)
+/* the FMUL being written as a perspective's attribute times w, taken whole (fmul_over_w): its value, 0 for none */
+val FmulOverW : unit -> int
+val ValueF : int -> bits(32)
+/* a system value (S2R's numbering): the lane, the thread ids... */
+val SystemValue : int -> bits(32)
+/* a pair of halves to the word PackHalf2x16 makes, as the console converts (pack_half) */
+val PackHalf : half2 -> bits(32)
+/* a float's bfloat16, rounded to nearest */
+val Bf16 : bits(32) -> bits(32)
+/* a 32-bit integer's float to nearest, as the device's conversion might not (spv_emit_int_to_f32_nearest) */
+val IntToF32Nearest : (bits(32), int) -> bits(32)
+/* where the device has doubles; where a conversion to f32 is replaced by IntToF32Nearest (1 signed, 2 unsigned) */
+val Float64 : unit -> bool
+val I2fNearest : unit -> int
+/* an integer's double, and that double rounded to an f32 by the mode */
+val ToF64 : (bits(32), int) -> f64
+val RoundF64 : (int, f64) -> bits(32)
+
+enum FOp = {OpFADD, OpFMUL, OpFFMA}
+
+/* FADD, FMUL and FFMA: bit 77 saturate, 78-79 the rounding mode, 80 FTZ, and FMUL's 84-86 the scale 2^(field - 4),
+   which nvdisasm names .D4 (2), .D2 (3) and none (4). An FMUL fmul_over_w takes is its value */
+function FArith(op : FOp) -> unit = {
+    let on = UInt(Field(80, 1));
+    let mode = UInt(Field(78, 2));
+    let scale = UInt(Field(84, 3));
+    NoteFtz(on);
+    let attr = match op { OpFMUL => FmulOverW(), _ => 0 };
+    let v : bits(32) = if attr != 0 then ValueF(attr) else {
+        let x = Ftz(SrcF(A), on);
+        match op {
+            OpFADD => FloatAdd(mode, x, Ftz(SrcF(Second), on)),
+            OpFMUL => {
+                if scale == 0 then throw(Unsupported("FMUL with scale field 0"));
+                FloatMul(mode, scale, x, Ftz(SrcF(B), on))
+            },
+            _ => {
+                let y = Ftz(SrcF(B), on);
+                FloatFma(mode, x, y, Ftz(SrcF(C), on))
+            }
+        }
+    };
+    D_write(Bits32(Saturate(Ftz(v, on), UInt(Field(77, 1)))))
+}
+function execute_FADD() -> unit = FArith(OpFADD)
+function execute_FMUL() -> unit = FArith(OpFMUL)
+function execute_FFMA() -> unit = FArith(OpFFMA)
+
+/* FSWZADD: a at 24, b at 64, the swizzle at 32-39. Each lane of a quad does the mode in its two bits of the swizzle,
+   lane L's at bits 6 - 2L (lane 0 the upper left), as Maxwell's FSWZADD: a + b (0), b - a (1), a - b (2) or b (3).
+   CuAssembler's sm_86 names show the order: 0xcc is ZPPPZPPP, b alone in lanes 0 and 2. Bit 77 is NDV, which
+   changes nothing computed. The other bits are refused */
+function execute_FSWZADD() -> unit = {
+    if (Field(72, 19) & not_vec(0b0000000000000100000)) != 0b0000000000000000000 then
+        throw(Unsupported("FSWZADD with modifiers 0x%x", Field(72, 19)));
+    let swizzle = Field(32, 8);
+    let a = Float32(R_read(UInt(Field(24, 8))));
+    let b = Float32(R_read(UInt(Field(64, 8))));
+    Capability(61);
+    let lane = SystemValue(0) & 0x00000003;
+    let shift = 0x00000006 - (lane << 1);
+    let mode = (ZeroExtend(swizzle, 32) >> shift) & 0x00000003;
+    let x = if mode == 0x00000001 then FNeg(a) else a;
+    let y = if mode == 0x00000002 then FNeg(b) else b;
+    let sum = NoContract(FAdd(x, y));
+    D_write(Bits32(if mode == 0x00000003 then b else sum))
+}
+
+/* FMNMX: the minimum of a and b where the predicate at 87 holds, else the maximum, FTZ with bit 80 */
+function execute_FMNMX() -> unit = {
+    let min = PredRead(UInt(Field(87, 3)), UInt(Field(90, 1)), 0);
+    let on = UInt(Field(80, 1));
+    let x = Ftz(SrcF(A), on);
+    let y = Ftz(SrcF(B), on);
+    let lo = FMinN(x, y);
+    let hi = FMaxN(x, y);
+    D_write(Bits32(if min then lo else hi))
+}
+
+/* FSET: 1.0 where a and b compare (76-79) combined (74) with the predicate at 87, else 0.0 */
+function execute_FSET() -> unit = {
+    let on = UInt(Field(80, 1));
+    let x = Ftz(SrcF(A), on);
+    let cmp = FCompare(UInt(Field(76, 4)), x, Ftz(SrcF(B), on));
+    let acc = PredRead(UInt(Field(87, 3)), UInt(Field(90, 1)), 0);
+    let r = Combine(Field(74, 2), cmp, acc);
+    D_write(Bits32(if r then FConst(0x3f800000) else FConst(0x00000000)))
+}
+
+/* FSETP: a and b compared (76-79), combined (74) with the predicate at 87 into the one at 81, and its negation into
+   the one at 84 */
+function execute_FSETP() -> unit = {
+    let on = UInt(Field(80, 1));
+    let x = Ftz(SrcF(A), on);
+    let cmp = FCompare(UInt(Field(76, 4)), x, Ftz(SrcF(B), on));
+    let acc = PredAt(87);
+    let set_op = Field(74, 2);
+    PredWrite(UInt(Field(81, 3)), Combine(set_op, cmp, acc), Uniform());
+    PredWrite(UInt(Field(84, 3)), Combine(set_op, not_bool(cmp), acc), Uniform())
+}
+
+/* the operand of a 16-bit instruction as a pair of halves: its swizzle sw (0 both, 1 a float, 2 the low half in both,
+   3 the high one), then its absolute value and negation (an immediate has neither) */
+function HalfOperand(s : Operand, sw : int, what : string) -> half2 = {
+    if sw == 1 then throw(Unsupported("%s with a float operand", what));
+    let pair = UnpackHalf2(SrcBits(s));
+    let swizzled = if sw >= 2 then {
+        let h = Half2At(pair, sw - 2);
+        Half2(h, h)
+    } else pair;
+    let absed = if SrcAbs(s) then Half2Abs(swizzled) else swizzled;
+    if SrcNeg(s) then Half2Neg(absed) else absed
+}
+
+/* HSETP2: the halves of a and of b, each pair compared by the operation at 76-79 (FSETP's codes), then each with the
+   predicate at 87-90 by the operation at 69-70: the low halves into the predicate at 81-83, the high ones into 84-86.
+   The forms of the 16-bit ALU, as CuAssembler's sm_86 encodings show them: b a register at 32 (1), two halves at
+   32-63 (2), a constant buffer (3). a's swizzle is at 74-75 and b's at 60-61 (HADD2's codes). FTZ (80) and the other
+   bits of 64-71, which no program sets, are refused */
+function execute_HSETP2() -> unit = {
+    if Form() > 3 | Field(80, 1) != 0b0 | Field(64, 5) != 0b00000 | Field(71, 1) != 0b0 then
+        throw(Unsupported("HSETP2 of form %u with modifiers 0x%x", Form(), Field(64, 17)));
+    let swa = UInt(Field(74, 2));
+    let swb = if SrcIsImm(Second) then 0 else UInt(Field(60, 2));
+    let va = HalfOperand(A, swa, "HSETP2");
+    let vb = HalfOperand(Second, swb, "HSETP2");
+    let acc = PredRead(UInt(Field(87, 3)), UInt(Field(90, 1)), 0);
+    let set_op = Field(69, 2);
+    foreach (k from 0 to 1) {
+        let cmp = FCompare(UInt(Field(76, 4)), Half2At(va, k), Half2At(vb, k));
+        PredWrite(UInt(Field(81 + 3 * k, 3)), Combine(set_op, cmp, acc), 0)
+    }
+}
+
+/* FSEL: a where the predicate at 87 holds, else b, as floats */
+function execute_FSEL() -> unit = {
+    let p = PredAt(87);
+    let x = Bits32(SrcF(A));
+    let y = Bits32(SrcF(B));
+    D_write(if p then x else y)
+}
+
+/* the half a 16-bit source names (bit 60), with b's modifiers: MUFU.F16's and F2I's */
+function HalfOf(s : Operand) -> bits(32) = {
+    let x = Half2At(UnpackHalf2(SrcBits(s)), UInt(Field(60, 1)));
+    let absed = if SrcAbsRaw(s) then FAbs(x) else x;
+    if SrcNegRaw(s) then FNeg(absed) else absed
+}
+
+/* MUFU: the function at 74-79 of b. .F16 (bit 73): the operand is the half bit 60 names, with b's modifiers, and the
+   result the low half */
+function execute_MUFU() -> unit = {
+    let half = Field(73, 1) == 0b1;
+    let fn = UInt(Field(74, 6));
+    if half & Field(61, 1) == 0b1 then throw(Unsupported("MUFU.F16 with a swizzle"));
+    let x = if half then HalfOf(B) else SrcF(B);
+    let v : bits(32) = match fn {
+        0 => FCos(FMul(x, FConst(0x40c90fdb))), /* the argument in turns, as the hardware takes it */
+        1 => FSin(FMul(x, FConst(0x40c90fdb))),
+        2 => FExp2(x),
+        3 => FLog2(x),
+        4 => FDiv(FConst(0x3f800000), x),
+        5 => FInvSqrt(x),
+        8 => FSqrt(x),
+        9 => FTanh(x),
+        _ => throw(Unsupported("MUFU function %u", fn))
+    };
+    if half then D_write(PackHalf(Half2(v, FConst(0x00000000)))) else D_write(Bits32(v))
+}
+
+/* F2F: NAK's log2 of the destination's bytes at 75, of the source's at 84, the rounding at 78 and FTZ at 80. One
+   game's programs only narrow a float to the low half, rounding to nearest */
+function execute_F2F() -> unit = {
+    let dsize = UInt(Field(75, 2));
+    let ssize = UInt(Field(84, 2));
+    let rnd = UInt(Field(78, 2));
+    if dsize != 1 | ssize != 2 | rnd != 0 then
+        throw(Unsupported("F2F from %u to %u bytes, rounding %u", 1 << ssize, 1 << dsize, rnd));
+    D_write(PackHalf(Half2(SrcF(B), FConst(0x00000000))))
+}
+
+/* F2I's fields (NAK), to a 64-bit integer: the register pair dst, dst + 1. One game's compute programs have
+   F2I.U64.F32.TRUNC, the only form here: the hardware saturates, and a NaN gives 0 */
+function execute_F2I64() -> unit = {
+    let dsize = UInt(Field(75, 2));
+    let ssize = UInt(Field(84, 2));
+    if dsize != 3 | ssize != 2 | Field(72, 1) != 0b0 then
+        throw(Unsupported("F2I.64 of sizes %u, %u, signed %u", ssize, dsize, Field(72, 1)));
+    let x = FRound(UInt(Field(78, 2)), SrcF(B));
+    let nan = FIsNaN(x);
+    let high = FCompare(6, x, FConst(0x5f800000));
+    /* the largest float under 2^64 keeps the conversion in range where the result is not taken */
+    let clamped = FMinN(FMaxN(x, FConst(0x00000000)), FConst(0x5f7fffff));
+    let u = FToU64(clamped);
+    let v = if nan then 0x0000000000000000 else if high then 0xffffffffffffffff else u;
+    R_write(Dst(), v[31 .. 0]);
+    if Dst() < RZ then R_write(Dst() + 1, v[63 .. 32])
+}
+
+/* I2F's fields, from a 64-bit integer in the register pair b, b + 1: the same programs' I2F.F32.U64, to the nearest
+   and upward. The conversion rounds as the device does, so for a direction the result is stepped to the float on the
+   asked side of the integer when it is on the other */
+function execute_I2F64() -> unit = {
+    let dsize = UInt(Field(75, 2));
+    let ssize = UInt(Field(84, 2));
+    let mode = UInt(Field(78, 2));
+    if dsize != 2 | ssize != 3 | Field(74, 1) != 0b0 | not_bool(SrcIsReg(B)) then
+        throw(Unsupported("I2F.64 of sizes %u, %u, signed %u", ssize, dsize, Field(74, 1)));
+    let lo_reg = SrcReg(B);
+    let hi_reg = if lo_reg + 1 < RZ then lo_reg + 1 else RZ;
+    let lo = R_read(lo_reg);
+    let hi = R_read(hi_reg);
+    let x = hi @ lo;
+    let r = U64ToF(x);
+    if mode == 0 then D_write(Bits32(r)) else {
+        let big = FCompare(6, r, FConst(0x5f800000));
+        let back = FToU64(FMinN(r, FConst(0x5f7fffff)));
+        let bits = Bits32(r);
+        if mode == 2 then {
+            /* up: under the integer, and not 2^64 itself */
+            let under = UInt(back) < UInt(x);
+            let step = if under then 0x00000001 else 0x00000000;
+            let step2 = if big then 0x00000000 else step;
+            D_write(Bits32(Float32(bits + step2)))
+        } else {
+            /* down, toward zero: over the integer, as 2^64 is */
+            let over = UInt(x) < UInt(back);
+            let step = if over then 0x00000001 else 0x00000000;
+            let step2 = if big then 0x00000001 else step;
+            D_write(Bits32(Float32(bits - step2)))
+        }
+    }
+}
+
+/* F2I: NAK's log2 of the destination's bytes at 75 and of the source's at 84, signed with 72, the rounding at 78. A
+   half's source is the one bit 60 names, with b's modifiers, as MUFU.F16's. The hardware saturates, and a NaN gives
+   0; an 8- or 16-bit result saturates to its range, then fills the register sign or zero extended */
+function execute_F2I() -> unit = {
+    let dsize = UInt(Field(75, 2));
+    let ssize = UInt(Field(84, 2));
+    if dsize == 3 | (ssize != 1 & ssize != 2) then throw(Unsupported("F2I of sizes %u, %u", ssize, dsize));
+    let from = if ssize == 1 then HalfOf(B) else SrcF(B);
+    let x = FRound(UInt(Field(78, 2)), from);
+    let is_signed = Field(72, 1) == 0b1;
+    let nan = FIsNaN(x);
+    let v : bits(32) = if dsize < 2 then {
+        let lo = if dsize == 0 then (if is_signed then 0xc3000000 else 0x00000000)
+                 else (if is_signed then 0xc7000000 else 0x00000000);
+        let hi = if dsize == 0 then (if is_signed then 0x42fe0000 else 0x437f0000)
+                 else (if is_signed then 0x46fffe00 else 0x477fff00);
+        let clamped = FMinN(FMaxN(x, FConst(lo)), FConst(hi));
+        if is_signed then Bits32(FToS32(clamped)) else FToU32(clamped)
+    } else if is_signed then {
+        let high = FCompare(6, x, FConst(0x4f000000));
+        let clamped = FMaxN(x, FConst(0xcf000000));
+        let s = Bits32(FToS32(clamped));
+        if high then 0x7fffffff else s
+    } else {
+        let high = FCompare(6, x, FConst(0x4f800000));
+        let clamped = FMaxN(x, FConst(0x00000000));
+        let u = FToU32(clamped);
+        if high then 0xffffffff else u
+    };
+    D_write(if nan then 0x00000000 else v)
+}
+
+/* F2IP.U8.F32.NTZ d, a, b, c: the floats a and b each rounded to an integer and saturated to 8 bits, a NaN 0 (.NTZ),
+   packed as PTX's cvt.pack packs I2IP's: d = c << 16 | a' << 8 | b'. Bits 72-79 (CuAssembler's sm_86 records): 0x04
+   .U8.F32.NTZ, bit 76 .S8 (-128 to 127), bit 75 .RELU (0 to 127). Bits 78-79 are the rounding, in F2I's place and
+   order: CuAssembler records none but the nearest, and one game's mesh programs give 3 to F2IP.U8 of a float times
+   255, as a shader's uint() truncates. Its compute programs pack colours with F2IP.U8 then PRMT */
+function F2ipPart(r : int, s8 : bool, lo : bits(32), hi : bits(32), rounding : int) -> bits(32) = {
+    let x = Float32(R_read(r));
+    let nan = FIsNaN(x);
+    let rounded = FRound(rounding, x);
+    let clamped = FMinN(FMaxN(rounded, FConst(lo)), FConst(hi));
+    let i = if s8 then Bits32(FToS32(clamped)) else FToU32(clamped);
+    let byte = i & 0x000000ff;
+    if nan then 0x00000000 else byte
+}
+function execute_F2IP() -> unit = {
+    let flags = Field(72, 8);
+    if (flags & not_vec(0xd8)) != 0x04 then throw(Unsupported("F2IP with flags 0x%x", flags));
+    let s8 = flags[4] == 0b1;
+    let relu = flags[3] == 0b1;
+    let lo = if s8 & not_bool(relu) then 0xc3000000 else 0x00000000;
+    let hi = if s8 then 0x42fe0000 else 0x437f0000;
+    let p0 = F2ipPart(UInt(Field(24, 8)), s8, lo, hi, UInt(flags[7 .. 6]));
+    let p1 = F2ipPart(UInt(Field(32, 8)), s8, lo, hi, UInt(flags[7 .. 6]));
+    let v = (p0 << 8) | p1;
+    R_write(Dst(), (R_read(UInt(Field(64, 8))) << 16) | v)
+}
+
+/* I2F and I2FP: the rounding mode in 78-79, a 32-bit integer being exact in a double. An 8- or 16-bit source (84-85)
+   is the byte (.B1 to .B3) or halfword (.H1) that 60-61 select (CuAssembler sm_86). A device without doubles
+   converts to a float, which a 32-bit integer keeps no more exactly: it rounds to nearest, as the mode 0 conversion
+   does */
+function execute_I2F() -> unit = {
+    let src_size = UInt(Field(84, 2));
+    if Field(75, 2) != 0b10 | src_size == 3 then
+        throw(Unsupported("%s of sizes %u, %u", OpName(), src_size, Field(75, 2)));
+    let b = SrcBits(B);
+    let is_signed = Field(74, 1) == 0b1;
+    let x = if src_size < 2 then {
+        let width = if src_size == 1 then 16 else 8;
+        if is_signed then Bits32(BitsS(b, to_bits(32, width * UInt(Field(60, 2))), to_bits(32, width)))
+        else BitsU(b, to_bits(32, width * UInt(Field(60, 2))), to_bits(32, width))
+    } else b;
+    let mode = if Float64() then UInt(Field(78, 2)) else 0;
+    let nearest = if is_signed then MOD(I2fNearest(), 2) == 1 else MOD(DIV(I2fNearest(), 2), 2) == 1;
+    if mode == 0 then {
+        if src_size == 2 & nearest then D_write(Bits32(IntToF32Nearest(x, if is_signed then 1 else 0)))
+        else D_write(Bits32(if is_signed then S32ToF(x) else U32ToF(x)))
+    } else D_write(Bits32(RoundF64(mode, ToF64(x, if is_signed then 1 else 0))))
+}
+
+/* FRND: b rounded to an integral float by the mode at 78-79 */
+function execute_FRND() -> unit = {
+    if Field(75, 2) != 0b10 | Field(84, 2) != 0b10 then throw(Unsupported("FRND of 64-bit or 16-bit floats"));
+    D_write(Bits32(FRound(UInt(Field(78, 2)), SrcF(B))))
+}
+
+/* F2FP.PACK_AB Rd, Ra, Rb: a in the high half, b in the low one, as PTX's cvt.rn.f16x2.f32; bit 76 BF16 (CuAssembler
+   sm_86). The halves round to nearest. .MERGE_C (78, NAK's note): b converted in the low half, c's low half (its
+   high one with .H1, bit 72) in the high half, a unused */
+function execute_F2FP() -> unit = {
+    if Field(78, 1) == 0b1 then {
+        let c = SrcBits(C);
+        let keep = if Field(72, 1) == 0b1 then c >> 16 else c;
+        let low = PackHalf(Half2(SrcF(B), FConst(0x00000000)));
+        D_write((keep << 16) | low)
+    } else {
+        let hi = SrcF(A);
+        let lo = SrcF(Second);
+        if Field(76, 1) == 0b1 then D_write((Bf16(hi) << 16) | Bf16(lo))
+        else D_write(PackHalf(Half2(lo, hi)))
+    }
+}
