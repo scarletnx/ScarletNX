@@ -441,7 +441,7 @@ static void test_table(void) {
     CHECK(!handler(&hook32_table, hook32_handler, s, 0x030501));
     CHECK(!handler(&hook_table, hook_handler, "TVMRJPEGEncSupportedLayout", 0x040401));
     /* the label the module carries */
-    static const char label[] = "..SDK MW+Nintendo+NintendoSDK_movie-4_4_1-Release..";
+    static const char label[] = "..SDK MW+Vendor+VendorSDK_movie-4_4_1-Release..";
     CHECK(hook_label_version((const u8*)label, sizeof label - 1, "movie") == 0x040401);
     CHECK(hook_label_version((const u8*)label, sizeof label - 1, "nnSdk") == 0);
 }
