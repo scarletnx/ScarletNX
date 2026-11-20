@@ -547,7 +547,7 @@ void snx_ctr_csnd_dispatch(SnxCtrIpc* c) {
         case 0x0b: /* InvalidateDataCache(address, size, process): within the linear heap or the FCRAM's mirror */
             if (!snx_ctr_ipc_expect(c, 2, 2)) return;
             {
-                uint32_t address = c->in[1], end = address + c->in[2];
+                uint64_t address = c->in[1], end = address + c->in[2]; /* a size that wraps 32 bits ends outside */
                 bool heap =
                     0x14000000u <= address && address <= 0x1c000000u && 0x14000000u <= end && end <= 0x1c000000u;
                 bool mirror =
