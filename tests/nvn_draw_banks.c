@@ -674,7 +674,7 @@ static void test_shading_rate(void) {
     check(g_rate.draw_rate == 0, "a draw with no image bound carries 0, not %u", g_rate.draw_rate);
 
     rate_palette(1, 0xb988888866665555ull);
-    check(g_rate.calls == 0, "a palette set with no image bound calls the renderer");
+    check(g_rate.calls == 0, "a palette set with no image bound does not call the renderer");
     rate_bind(0x123000, 0x23);
     check(g_rate.calls == 1 && g_rate.last.new_image && g_rate.last.addr == 0x123000 && g_rate.last.texel == 16,
           "the bind gives the renderer the image");

@@ -38,7 +38,6 @@ static const char list[] =
     "Debug\tslp_vectorizer\t0\tint\t0\t1\tLLVM's SLP vectorizer\tSLP vectorizer\t0=Off|1=On\n"
     "Debug\tlog\t1\tint\t0\t2\tLog detail\t\t0=0|1=1|2=2";
 
-/* a row by its .ini key, or by the name it shows */
 /* a row by its key or name: the runtime's first, then the launcher's (both have an All, the LLVM Internals page's) */
 static int at(const GuiSettings* s, const char* name) {
     int i, n;
