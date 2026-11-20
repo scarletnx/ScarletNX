@@ -1999,7 +1999,7 @@ static void pipe_parts(Pipe* p) {
        a pipeline of sample locations or coverage to color, state the parts' keys (vk_pipe_split) do not hold yet. One
        of descriptor heaps is linked: made whole, each new pipeline on a device that takes heaps (an integrated GPU's,
        vk_descriptors_auto) compiled every stage again, and a battle's new effects waited 100 to 560 ms a frame */
-    if (!g_vk.has_gpl || p->k.mesh || p->k.sample_locations.samples || p->k.coverage_to_color) return;
+    if (!g_vk.has_gpl || p->k.mesh || p->k.heaps || p->k.sample_locations.samples || p->k.coverage_to_color) return;
     const PipeSplitDevice d = {.dyn_pr = g_vk.dyn_pr, .feedback_dynamic = g_vk.has_feedback_dynamic};
     PipePartKey k[4];
     memset(k, 0, sizeof k);
