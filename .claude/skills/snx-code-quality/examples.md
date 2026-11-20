@@ -1,6 +1,6 @@
 # snx-code-quality: the rules with their wrong and right forms
 
-Every C block here is strict ISO C99 (`-std=c99 -pedantic-errors`). Each wrong/right pair gives the same results
+Every C block here is strict ISO C23 (`-std=c23 -pedantic-errors`). Each wrong/right pair gives the same results
 under ASan and UBSan, except where the right form differs on purpose. Read the rule in doubt.
 
 ## 1. No state another value already says
@@ -96,8 +96,8 @@ int belongs_to(const FsTree* tree, u32 n) {
 
 **Do:** the arrays of an object come from one allocation that offsets divide, and one `free` releases them. When
 the sizes are constant, a struct that holds the arrays is the simplest block. When the sizes are available only at
-run time, put each array at a multiple of the size of its type. A size is always a multiple of the alignment, and
-C99 has no `alignof`.
+run time, put each array at a multiple of the size of its type. A size is always a multiple of the alignment, which
+C23 names `alignof`.
 
 **Why:** one block keeps an owner's data together and leaves less to fragment. It also turns a
 cleanup path with one `free` per array into a single `free`.
@@ -178,8 +178,9 @@ typedef struct {
     char apart[SNX_CACHE_LINE - sizeof(u32)];
     u32 completed; /* the GPU thread's */
 } Queue;
-/* C99 has no static assert: an array of negative size if they would share a line */
-typedef char snx_queue_apart[offsetof(Queue, completed) - offsetof(Queue, submitted) >= SNX_CACHE_LINE ? 1 : -1];
+/* the two counters must not share one line */
+static_assert(offsetof(Queue, completed) - offsetof(Queue, submitted) >= SNX_CACHE_LINE,
+              "the counters share a cache line");
 ```
 
 **Does not apply when:**

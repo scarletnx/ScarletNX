@@ -16,7 +16,7 @@
 typedef char check_cmdbuf_new[sizeof(NVNcommandBuffer) >= CMDBUF_FIELDS_END_NEW ? 1 : -1];
 typedef char check_cmdbuf_old[sizeof(NVNcommandBuffer) >= CMDBUF_FIELDS_END_OLD ? 1 : -1];
 
-/* prototypes in NVN's own types, which the generated function types must be compatible with (C99 6.7.5.3): pointers
+/* prototypes in NVN's own types, which the generated function types must be compatible with (C23 6.7.6.3): pointers
    to const and to pointers, a ptrdiff_t as int64_t, an enum and an NVNboolean, a float, a callback, and the results */
 typedef void WriteTexelsStrided(const NVNtexture*, const NVNtextureView*, const NVNcopyRegion*, const void*, int64_t,
                                 int64_t);

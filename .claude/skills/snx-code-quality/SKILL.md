@@ -1,12 +1,12 @@
 ---
 name: snx-code-quality
-description: "The C rules of RFC #142: strict ISO C99, no redundant state and indices in place of pointer chains. Also one allocation per owner, atomics apart, no stored pointers and one global struct per file. Use it when you write or review C in src/."
+description: "The C rules of RFC #142: strict ISO C23, no redundant state and indices in place of pointer chains. Also one allocation per owner, atomics apart, no stored pointers and one global struct per file. Use it when you write or review C in src/."
 ---
 
 # Code quality (#142)
 
-Write strict ISO C: C99, as the driver builds (`-std=c99 -pedantic-errors`), unless the target needs more. C99 is the
-baseline, so use what it has:
+Write strict ISO C23, as the targets build it (`-std=c23 -pedantic-errors`), unless a target allows GNU extensions.
+C23 is the baseline, so use what it has:
 - `static inline` functions.
 - `<stdint.h>` types (`SnxU32`/`SnxU64` in the driver).
 - 64-bit literals as `0x...ull` (not `UINT64_C`, not two halves).
@@ -16,12 +16,11 @@ baseline, so use what it has:
   Windows.
 - `bool` or `int` flags, `strtoull` and `snprintf`.
 
-Keep comments as `/* */`, as the code has them. In place of C11 and C23, use `__atomic_*` builtins on plain integers
-and a `char` padding array. Use a negative-size array typedef as the static assert. The build flags of a file with
-`-std=c99 -pedantic` show what is not C99.
+Keep comments as `/* */`, as the code has them. An atomic is `_Atomic`, or an object that an `__atomic_*` builtin
+reaches. A static assert is `static_assert`. Put a `char` padding array between two atomics that different threads
+write. The build flags of a file with `-std=c23 -pedantic` show what is not C23.
 
-`strdup` is not C99. Use `snx_strdup` (common.h), which is C99. When memory runs out, it fails the same way as the rest
-of the code.
+C23 has `strdup`. Use `snx_strdup` (common.h) for the same failure as the rest of the code when memory runs out.
 
 No C89 workarounds. Declare a local where it first gets its value, together with that assignment. Declare it in the
 innermost block that uses it, and a loop counter in its `for`. Do not put a block of bare declarations at the top of a

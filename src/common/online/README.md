@@ -8,7 +8,7 @@
 * [3DS on Pretendo Network](#3ds-on-pretendo-network)
 * [Tests](#tests)
 
-The DS's and the 3DS's online services through their communities' replacements, in strict C99 on the host's own
+The DS's and the 3DS's online services through their communities' replacements, in strict ISO C23 on the host's own
 sockets: the DS's WFC services and its firmware's connection slot, which `src/nds/hle/pxi.c` gives the game, and the
 3DS's login on Pretendo Network, which `src/3ds/services/frd.c` and `soc.c` make. Every call that can fail returns a
 negative value and writes why into the caller's buffer, naming the value it was given.

@@ -126,7 +126,7 @@ Run it through the normal CMake/CTest configuration on a Unix host, or without t
 runtime's third-party dependencies from the repository root:
 
 ```sh
-cc -std=gnu11 -O2 -Wall -Wextra -Werror -Iruntime \
+cc -std=gnu23 -O2 -Wall -Wextra -Werror -Iruntime \
   tests/memory_accounting.c src/nx/memory/mem.c src/nx/hle/svc/svc_mem.c \
   -pthread -o /tmp/snx-test-memory
 /tmp/snx-test-memory
