@@ -1750,7 +1750,7 @@ static void set_env(const char* name, const char* value) {
 }
 
 int main(void) {
-    static App app; /* not on the stack, as snx_gui_main's */
+    App app;
     root = snx_temp_dir(NULL);
     assert(root);
     /* a program as deep as one in a Windows user's Downloads: what the foot says has to come before the path, which
