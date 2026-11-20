@@ -29,7 +29,9 @@ const GuiDriverRepo gui_driver_repos[GUI_DRIVER_REPOS] = {
     /* PanVK for the Bifrost G52, G72 and G76; its zip for a PS2 emulator left out */
     {"Soulexit PanVK", "soulexit/panvk-bifrost-soulexit", 0, 0, GUI_DRIVER_MALI, 0},
     /* PanVK for the G57 MC2 (Helio G99), test builds alone: the newest recommended, by its tag */
-    {"FourFectVK (G57)", "Noysz/panvk-g99-jm", 0, 1, GUI_DRIVER_MALI, 0}};
+    {"FourFectVK (G57)", "Noysz/panvk-g99-jm", 0, 1, GUI_DRIVER_MALI, 0},
+    /* PanVK for the G925 (Immortalis), its builds named by what each traces */
+    {"PanVK G925", "adesyaefull/panvk-kbase-android-g925", 0, 0, GUI_DRIVER_MALI, 0}};
 
 /* whether text has part, in any case */
 static int has_nocase(const char* text, const char* part) {
@@ -188,6 +190,7 @@ static const struct {
                      {10072, 10072, "Soulexit PanVK", "soulexit/panvk-bifrost-soulexit", NULL},
                      {10076, 10076, "Soulexit PanVK", "soulexit/panvk-bifrost-soulexit", NULL},
                      {10057, 10057, "FourFectVK (G57)", "Noysz/panvk-g99-jm", "fourfectvk-g57"},
+                     {10925, 10925, "PanVK G925", "adesyaefull/panvk-kbase-android-g925", NULL},
                      {10001, 10999, "Zenithblue PanVK", "zenithblue-oss/panvk-kbase-android", NULL},
                      {20530, 20550, "RADV Xclipse", "JimVulkan/radv-xclipse", NULL},
                      {20920, 20960, "RADV Xclipse", "JimVulkan/radv-xclipse", NULL}};
