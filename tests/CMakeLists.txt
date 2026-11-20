@@ -1380,14 +1380,35 @@ add_test(NAME sailgen_refused_action
                  "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/refused_action.sail")
 set_tests_properties(sailgen_refused_action PROPERTIES PASS_REGULAR_EXPRESSION
     "refused_action.sail:8: error: Peek gives an integer: the back end's functions give nothing, bits, a bool, an enum or a tuple of bits")
-# Reduce is lowered for ReduceOp_ADD alone: a floating-point op's pairwise order is refused, naming the op
-add_test(NAME sailgen_refused_reduce
-         COMMAND snx-sailgen --generate "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/refused_reduce.roots"
-                 --backend "${PROJECT_SOURCE_DIR}/tools/sailgen/llvm.h"
-                 -o "${CMAKE_CURRENT_BINARY_DIR}/sailgen/refused_reduce.inc"
-                 "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/refused_reduce.sail")
-set_tests_properties(sailgen_refused_reduce PROPERTIES PASS_REGULAR_EXPRESSION
-    "refused_reduce.sail:9: error: Reduce of ReduceOp_FADD: sailgen lowers ReduceOp_ADD alone")
+# a function that calls itself on each half of its bits is read as the sum of the bits' elements, and only so: one
+# that joins the halves' results by other than +, gives other than their sum, or that sum under a condition alone,
+# halves other than each half, gives other than the element for one element or writes a register where it joins them
+# is refused, naming it and why
+foreach(case IN ITEMS op more some sides base state)
+    add_test(NAME sailgen_refused_halves_${case}
+             COMMAND snx-sailgen --generate "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/refused_halves_${case}.roots"
+                     --backend "${PROJECT_SOURCE_DIR}/tools/sailgen/llvm.h"
+                     -o "${CMAKE_CURRENT_BINARY_DIR}/sailgen/refused_halves_${case}.inc"
+                     "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/halves.sail")
+endforeach()
+set_tests_properties(sailgen_refused_halves_op PROPERTIES PASS_REGULAR_EXPRESSION
+    "halves.sail:91: error: Fold joins what it gives for each half of its bits other than by \\+ of the two")
+set_tests_properties(sailgen_refused_halves_more PROPERTIES PASS_REGULAR_EXPRESSION
+    "halves.sail:97: error: Fold gives other than the \\+ of what it gives for each half of its bits")
+set_tests_properties(sailgen_refused_halves_some PROPERTIES PASS_REGULAR_EXPRESSION
+    "halves.sail:122: error: Some gives other than the \\+ of what it gives for each half of its bits")
+set_tests_properties(sailgen_refused_halves_sides PROPERTIES PASS_REGULAR_EXPRESSION
+    "halves.sail:103: error: Lower calls itself: sailgen reads a function that gives its bits where they are one element wide")
+set_tests_properties(sailgen_refused_halves_base PROPERTIES PASS_REGULAR_EXPRESSION
+    "halves.sail:109: error: Base calls itself: sailgen reads a function that gives its bits where they are one element wide")
+set_tests_properties(sailgen_refused_halves_state PROPERTIES PASS_REGULAR_EXPRESSION
+    "halves.sail:62: error: the register GPR written where a function that calls itself joins what it gives for each half")
+add_test(NAME sailgen_halves
+         COMMAND "${CMAKE_COMMAND}" "-DSAILGEN=$<TARGET_FILE:snx-sailgen>"
+                 "-DBACKEND=${PROJECT_SOURCE_DIR}/tools/sailgen/llvm.h" "-DDIR=${CMAKE_CURRENT_SOURCE_DIR}/sailgen"
+                 "-DOUT=${CMAKE_CURRENT_BINARY_DIR}/sailgen/halves.inc"
+                 -P "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/halves_check.cmake")
+set_tests_properties(sailgen_halves PROPERTIES PASS_REGULAR_EXPRESSION "sailgen_halves: sum=reduce")
 # a function the back end lowers: --extract copies its val and the types it names, not its Sail; called under a
 # run-time condition by a back end function that takes none, it is refused with its line
 add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/sailgen/lower.sail"
