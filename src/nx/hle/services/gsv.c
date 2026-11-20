@@ -211,7 +211,14 @@ static int nn_gsv_UserSession_BindSyncpointMemory(SvcObj* self, u32 rw, u32 ro, 
     static const u32 header[8] = {1, 0, 191, 0x40, 0, 0x640, 8, 0x648}; /* Eden's GraphicsSyncpointCache::Header */
     u32 i;
     (void)self, (void)request;
-    R_UNLESS(rwt && rot, SNX_RC_SVC_INVALID_HANDLE);
+    /* the cache is 0x2000 bytes of the read-only memory, and the request the first 0x20 of the read-write one: a
+       memory too short for its part is none to bind */
+    if (!rwt || !rot || rot->size < 0x2000 || rwt->size < 0x20) {
+        int rc = rwt && rot ? SNX_RC_SVC_INVALID_SIZE : SNX_RC_SVC_INVALID_HANDLE;
+        if (rwt) kobj_unref(&rwt->o);
+        if (rot) kobj_unref(&rot->o);
+        R_THROW(rc);
+    }
     g_hle.gsv.sync_rw = rwt->addr;
     g_hle.gsv.sync_ro = rot->addr;
     kobj_unref(&rwt->o);
