@@ -97,6 +97,7 @@
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/descriptor_heaps.h"
 #include "nx/gpu/vk/pending_pages.h"
+#include "nx/gpu/vk/uma_pages.h"
 #include "nx/gpu/renderer.h"
 #include "common/gpu/vk/vk_common.h"
 #include "nx/hle/services/nvdrv.h"
@@ -408,13 +409,10 @@ static int rg_blk(const Rgn* r, u64 cpu, u64 len) {
     if (!r->nblk) return 0;
     const _Atomic u64 *f = rg_front(r), *pd = rg_pend(r);
     u64 p0 = (cpu - r->cpu) >> 12, p1 = (cpu + len - 1 - r->cpu) >> 12;
-    for (u64 wi = p0 >> 6; wi <= p1 >> 6; wi++) {
-        u64 a = wi << 6 > p0 ? p0 & 63 : 0, b = (wi << 6) + 63 < p1 ? 63 : p1 & 63;
-        u64 mask = (~0ull << a) & (~0ull >> (63 - b));
+    for (u64 wi = p0 >> 6; wi <= p1 >> 6; wi++)
         if ((atomic_load_explicit(&f[wi], memory_order_relaxed) | atomic_load_explicit(&pd[wi], memory_order_relaxed)) &
-            mask)
+            vk_uma_word_mask(wi, p0, p1))
             return 1;
-    }
     return 0;
 }
 /* word wi of r's front or pend bits becomes now (bits, 1 for front): nblk follows, and bgen moves for a bit gained */
