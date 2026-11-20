@@ -633,7 +633,7 @@ if(TARGET snx_ctr_board)
     target_link_libraries(snx-test-3ds-windows PRIVATE snx_ctr_gpu)
     # the one window's screen layouts: the rectangles for each, the pure geometry the presenter uses
     add_executable(snx-test-3ds-layouts 3ds_layouts.c)
-    snx_test_target(snx-test-3ds-layouts 11)
+    snx_test_target(snx-test-3ds-layouts gnu23)
     target_link_libraries(snx-test-3ds-layouts PRIVATE snx_ctr_gpu)
     add_test(NAME 3ds_layouts COMMAND snx-test-3ds-layouts)
     add_test(NAME 3ds_windows COMMAND snx-test-3ds-windows "${CMAKE_CURRENT_BINARY_DIR}/window-frames")
@@ -4505,7 +4505,7 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
     # the GPU mirror's bookkeeping on the CPU (gpu/vk/mirror.c), with no device
     add_executable(snx-test-mirror-landing mirror_landing.c tracy_stubs.c
                    "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/pending_pages.c")
-    snx_test_target(snx-test-mirror-landing 23)
+    snx_test_target(snx-test-mirror-landing gnu23)
     target_link_libraries(snx-test-mirror-landing PRIVATE snx_nx_flags)
     add_test(NAME mirror_landing COMMAND snx-test-mirror-landing)
     add_executable(snx-test-vulkan-backing vulkan_backing.c)
@@ -4674,7 +4674,7 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
     # the trim of the caches (gpu/vk/surface.c vk_mem_trim) over stubs of the rest of the renderer: when it takes the
     # render targets that later ones drew all over, where the driver moves memory by priority and where it does not
     add_executable(snx-test-vk-mem-trim vk_mem_trim.c)
-    snx_test_target(snx-test-vk-mem-trim 23)
+    snx_test_target(snx-test-vk-mem-trim gnu23)
     target_compile_definitions(snx-test-vk-mem-trim PRIVATE VK_NO_PROTOTYPES)
     target_include_directories(snx-test-vk-mem-trim PRIVATE "${volk_SOURCE_DIR}" "${renderdoc_app_SOURCE_DIR}")
     target_link_libraries(snx-test-vk-mem-trim PRIVATE Vulkan::Headers)
