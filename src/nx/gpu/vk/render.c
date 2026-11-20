@@ -5728,6 +5728,32 @@ static int indirect_indices(const DsIndex* ix, int restart, VkBuffer* buf, u64* 
     if (len > (4u << 20)) len = 4u << 20; /* a window holds it, and the binding reads on to the window's end */
     return vk_buf_get_window_input(ix->addr, len, isz, buf, off);
 }
+/* An indirect draw's indices that Vulkan can't read as they are (8-bit ones without VK_KHR_index_type_uint8, or with
+   a restart index that isn't all ones), made on the GPU as a direct draw's are (index_convert). Every index of the
+   buffer is made, from its address to its end: the records' first index and count are the GPU's, and they stay as
+   they are, counting from the same first index. 0 when they can't be made */
+static int indirect_indices_made(const DrawCall* dc, const DsIndex* ix, int restart, VkBuffer* buf, u64* off,
+                                 VkIndexType* type) {
+    u32 isz = ix->format == 0 ? 1 : ix->format == 1 ? 2 : 4, ones = isz == 1 ? 0xFFu : isz == 2 ? 0xFFFFu : ~0u;
+    u32 ri = ix->restart_index & ones;
+    u64 len = ix->end >= ix->addr ? ix->end - ix->addr + 1 : 0, n = len / isz;
+    if (!n || (ix->addr & (isz - 1))) return 0;
+    if (n > (1u << 24)) {
+        LOG_LIMIT(1, "vulkan: an indirect draw's index buffer of %llu indices is past the %u made into others\n",
+                  (unsigned long long)n, 1u << 24);
+        return 0;
+    }
+    if (isz == 1) { /* widened to 16 bits, the restart index (when on, whatever the topology) becoming 0xFFFF */
+        *type = VK_INDEX_TYPE_UINT16;
+        return index_convert(dc, 0, ix->addr, 1, 0, (u32)n, TC_INDEX_WIDEN8, ix->restart != 0, ri, (u32)((n + 1) / 2),
+                             (n + 1) / 2 * 4, buf, off);
+    }
+    if (!(ix->restart && restart && ri != ones)) return 0;
+    u32 words = isz == 2 ? (u32)((n + 1) / 2) : (u32)n;
+    *type = isz == 2 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32;
+    return index_convert(dc, 0, ix->addr, isz, 0, (u32)n, isz == 2 ? TC_INDEX_RESTART16 : TC_INDEX_RESTART32, 0, ri,
+                         words, (u64)words * 4, buf, off);
+}
 /* the draws: Vulkan's draw count past one needs multiDrawIndirect, else one call each */
 static void draw_indirect(VkCommandBuffer cb, int indexed, VkBuffer abuf, u64 aoff, VkBuffer cbuf, u64 coff, u32 n,
                           u32 stride) {
@@ -6726,17 +6752,12 @@ retry:
         count = 1u << 24;
     }
     /* Vulkan restarts at all ones of the index type, in strips and fans, and in lists (patch lists apart) as the 3D
-       engine does where the device has VK_EXT_primitive_topology_list_restart; the guest's restart index is 0x592. An
-       indirect draw's indices are read as they are: there a list restarts at Vulkan's own restart index only, and
-       another one stays a vertex, as it was without the extension */
+       engine does where the device has VK_EXT_primitive_topology_list_restart; the guest's restart index is 0x592 */
     int list = topo == VK_PRIMITIVE_TOPOLOGY_POINT_LIST || topo == VK_PRIMITIVE_TOPOLOGY_LINE_LIST ||
                topo == VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST || topo == VK_PRIMITIVE_TOPOLOGY_LINE_LIST_WITH_ADJACENCY ||
                topo == VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST_WITH_ADJACENCY;
     int list_restart = topo == VK_PRIMITIVE_TOPOLOGY_PATCH_LIST ? g_vk.has_patch_list_restart : g_vk.has_list_restart;
-    u32 vulkan_ri = isz == 1 ? 0xFFu : isz == 2 ? 0xFFFFu : 0xFFFFFFFFu;
-    int restart =
-        ds->index.restart && ((!list && topo != VK_PRIMITIVE_TOPOLOGY_PATCH_LIST) ||
-                              (list_restart && (!dc->indirect || (ds->index.restart_index & vulkan_ri) == vulkan_ri)));
+    int restart = ds->index.restart && ((!list && topo != VK_PRIMITIVE_TOPOLOGY_PATCH_LIST) || list_restart);
     u32 icount = count;
     i32 voffset = (i32)base_vertex; /* the draw's vertexOffset */
     if (edges) {
@@ -6754,10 +6775,11 @@ retry:
         itype = VK_INDEX_TYPE_UINT32;
         topo = points ? VK_PRIMITIVE_TOPOLOGY_POINT_LIST : VK_PRIMITIVE_TOPOLOGY_LINE_LIST;
     } else if (dc->indirect) {
-        /* what the CPU makes into other indices needs the count, which only the GPU has */
-        if (topology == 7 || (indexed && !indirect_indices(&ds->index, restart, &ibuf, &ioff, &itype))) {
+        /* quads made into triangles need the count, which only the GPU has */
+        if (topology == 7 || (indexed && !indirect_indices(&ds->index, restart, &ibuf, &ioff, &itype) &&
+                              !indirect_indices_made(dc, &ds->index, restart, &ibuf, &ioff, &itype))) {
             LOG_LIMIT(1, "vulkan: an indirect draw of %s isn't drawn\n",
-                      topology == 7 ? "quads" : "8-bit indices or another restart index than Vulkan's");
+                      topology == 7 ? "quads" : "indices that can't be made into ones Vulkan reads");
             draw_images_discard(&images);
             if (late_depth) vk_depth_shadow_cancel();
             g_vk_skipped++;
