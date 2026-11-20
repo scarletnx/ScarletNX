@@ -521,6 +521,9 @@ static void unmapped_outputs(VitaProcess* p, VitaThread* t, uint32_t mem) {
     uint32_t free_run = CALL(kernel, "sceKernelCreateSema", mem, 0, 2, 0, 0); /* no most */
     assert(CALL(kernel, "sceKernelSignalSema", free_run, 0x7fffffff) == SCE_KERNEL_ERROR_SEMA_OVF);
     assert(CALL(kernel, "sceKernelGetSemaInfo", free_run, mem + 0x100, 0x3c) == 0 && vita_read32(p, mem + 0x12c) == 2);
+    /* a path's parts are parted by a backslash too where the host parts them so: ".." between two names no file */
+    strcpy(vita_ptr(p, mem), "ux0:..\\..\\outside.txt"), strcpy(vita_ptr(p, mem + 0x40), "wb");
+    assert(CALL(vita_hle_libc, "fopen", mem, mem + 0x40) == 0);
 }
 /* a file opened in a mounted archive closes with it: once the archive is unmounted its handle names no file, where it
    would read the archive's freed tables. The archive is a PSARC of one stored file: the header, the manifest's entry

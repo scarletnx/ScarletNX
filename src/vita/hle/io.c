@@ -143,8 +143,9 @@ static char* host_path_of(VitaProcess* p, char* path, bool* writable) {
     while (*rest == '/') ++rest;
     /* each part relative and not ".." */
     for (const char* q = rest; *q;) {
-        const char* slash = strchr(q, '/');
-        size_t n = slash ? (size_t)(slash - q) : strlen(q);
+        /* a backslash parts a path too where the host takes one (Windows) */
+        size_t n = strcspn(q, "/\\");
+        const char* slash = q[n] ? q + n : NULL;
         if (n == 2 && q[0] == '.' && q[1] == '.') return NULL;
         if (!slash) break;
         q = slash + 1;
