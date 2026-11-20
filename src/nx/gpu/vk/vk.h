@@ -1991,11 +1991,9 @@ int vk_astc_bcn_kept(VkCommandBuffer cb, Surf* t, VkImage dst, u32 kind);
 #define VK_BC7_MODE6_TEXELS (8192u * 8192u)
 u32 vk_bc7_build(u32 w, u32 h, u32 d);
 
-/* bc7_cache.c: the BC7 blocks of ASTC levels encoded before, kept across runs in one file, which only an index of
-   points into (a hit reads its record from the file). VK_BC7_ENCODER_VERSION goes into every key: bump it when what
-   the encoder writes changes other than through its SPIR-V (which the file's version holds), as a level's choice of
-   build does. The file's bound, after which it starts over, is the setting bc7_cache_gb (8 GB by default: one Ounce
-   game's demo alone holds 3.3 GB of BC7, so 4 GB went over as more of it was played) */
+/* bc7_cache.c: the BC7 blocks of ASTC levels encoded before, kept in memory while the game runs: the levels used
+   most, up to a bound. VK_BC7_ENCODER_VERSION goes into every key: bump it when what the encoder writes changes, as a
+   level's choice of build does */
 #define VK_BC7_ENCODER_VERSION 1
 /* content (two words, zero to start) with n bytes at p mixed in: an ASTC level's guest bytes and its layout's words */
 void vk_bc7_content(u64 content[2], const void* p, u64 n);
@@ -2005,41 +2003,34 @@ typedef struct {
     u32 w, h, depth, layers, bw, bh, srgb, build;
 } VkBc7Level;
 void vk_bc7_key(const u64 content[2], const VkBc7Level* lv, u64 key[2]);
-/* the file at path as the cache, or a new one where it holds another version, bounded to max bytes: 0 when there is
-   no cache (another process holds the file, or it cannot be written) */
-int vk_bc7_cache_open(const char* path, const u64 version[2], u64 max);
+/* the cache started, empty, holding max bytes of blocks at most (0: an eighth of the machine's memory, from 64 MiB to
+   2 GiB, 256 MiB where the system doesn't tell): 0 when there is none (no memory for its table) */
+int vk_bc7_cache_open(u64 max);
 void vk_bc7_cache_close(void);
-u64 vk_bc7_cache_max(void); /* the bound the cache was opened with */
-/* 1 while the cache is open and held no level as it opened: every ASTC level is encoded as it first loads */
-int vk_bc7_cache_cold(void);
-u64 vk_bc7_cache_find(const u64 key[2]); /* the bytes of key's blocks, 0 when they aren't there */
-/* key's blocks, size bytes of them, into dst: 0 when they aren't there or don't check out (then dropped), or the
-   cache's I/O thread is held 250 ms in a read (a slow disk: the record kept) */
+u64 vk_bc7_cache_max(void);              /* the bound of the cache that is open, 0 with none */
+u64 vk_bc7_cache_find(const u64 key[2]); /* the bytes of key's blocks, 0 when they aren't held */
+/* key's blocks, size bytes of them, into dst: 0 when they aren't held */
 int vk_bc7_cache_read(const u64 key[2], u8* dst, u64 size);
-/* key's blocks, size bytes of them, read on the cache's I/O thread and put into dst on the recording thread, then
-   copied from buf (dst is at off in mem and buf) into img, in layout, by copy there when they check out (none when img
-   is VK_NULL_HANDLE): before the commands that cb gets after this, and before its submission. cb must go through that
-   thread (vk_rec_ring). 1 when it is queued; 0 when they aren't there, or the I/O thread is behind a slow disk (the
-   level is encoded then); -1 when there is no such thread or the file can't be opened again (read them with
-   vk_bc7_cache_read). A record that doesn't check out is dropped, its copy left out, and the read goes to
-   vk_bc7_cache_take_failed with owner and gva; so does a read the recording thread left as late, its record kept */
+/* key's blocks, size bytes of them, put into dst on the recording thread, then copied from buf (dst is at off in mem
+   and buf) into img, in layout, by copy there (none when img is VK_NULL_HANDLE): before the commands that cb gets after
+   this, and before its submission. cb must go through that thread (vk_rec_ring). 1 when it is queued; 0 when they
+   aren't held (the level is encoded then); -1 when there is no such thread (read them with vk_bc7_cache_read) */
 int vk_bc7_cache_read_later(VkCommandBuffer cb, const u64 key[2], u64 size, u8* dst, DevMem mem, u64 off, VkBuffer buf,
-                            VkImage img, VkImageLayout layout, const VkBufferImageCopy* copy, void* owner, u64 gva);
-/* fn of each read on the recording thread that failed since the last call, with its owner and gva (GPU thread) */
-void vk_bc7_cache_take_failed(void (*fn)(void* owner, u64 gva, const u64 key[2]));
-/* 1 while a read on the recording thread failed and vk_bc7_cache_take_failed has not given it to its owner yet */
-int vk_bc7_cache_failed_pending(void);
-/* how long a read of bytes takes, at the rate of the reads so far: 0 for none, and more than any budget before a read
-   was timed */
-u64 vk_bc7_cache_read_ns(u64 bytes);
-/* key's blocks, size bytes at p, kept: in the index at once, written by the cache's I/O thread in its turn; not kept
-   when the writes waiting hold 64 MiB (counted, vk_bc7_cache_late) */
+                            VkImage img, VkImageLayout layout, const VkBufferImageCopy* copy);
+/* key's blocks, size bytes at p, counted as a use of the level and kept where they have room: the room left under the
+   bound, or that of held levels used less, none of which the last two presents used. Not kept otherwise */
 void vk_bc7_cache_put(const u64 key[2], const u8* p, u64 size);
-/* hits, records stored, times it started over at its bound, and the file's bytes */
-void vk_bc7_cache_stats(u64* hits, u64* stored, u64* restarts, u64* bytes);
-/* the hits whose read was left as late and those not asked while the cache's I/O thread was behind, their levels
-   encoded instead, and the new records not kept for want of room in its queue of writes, in all: a slow disk's */
-void vk_bc7_cache_late(u64* late, u64* skipped, u64* unkept);
+/* the blocks of every level last used before the present `before` (vk_present_before) freed, their counts kept: the
+   bytes that went (vk_mem_release_run, at the system's low memory word) */
+u64 vk_bc7_cache_release(u32 before);
+typedef struct {
+    u64 hits, stored;  /* reads; levels whose blocks were kept */
+    u64 evicted;       /* levels whose blocks went for one used more */
+    u64 refused;       /* encodes not kept: no held level was used less */
+    u64 released;      /* bytes freed at the system's low memory word */
+    u64 bytes, levels; /* held now; keys met, held or not */
+} VkBc7CacheStats;
+void vk_bc7_cache_stats(VkBc7CacheStats* s);
 u64 vk_bc7_strip_blocks(void); /* the BC7 blocks vk_bc7_encode_kept makes at once at most */
 /* the image levels (or regions of them) uploaded as BC7 so far, the levels the BC7 cache gave (here or between frames),
    their bytes, and the bytes they would have taken as RGBA8 */
@@ -2077,9 +2068,8 @@ enum {
 void vk_astc_kind_seen(int outcome, u64 ns, int again);
 const char* vk_astc_kind_name(int outcome);
 void vk_astc_kind_say(void);
-/* The BC7 cache of ASTC levels (astc.c over bc7_cache.c). vk_astc_cache_open: the cache of this game and device in the
-   file at path, its records' version made of the encoder's (and the decoder's) SPIR-V, VK_BC7_ENCODER_VERSION and the
-   GPU and its driver (pipeline.c, where the GPU samples BCn but not ASTC). vk_astc_cached: a level of w x h texels and
+/* The BC7 cache of ASTC levels (astc.c over bc7_cache.c). vk_astc_cache_open: the cache started, empty (pipeline.c,
+   where the GPU samples BCn but not ASTC). vk_astc_cached: a level of w x h texels and
    depth slices or layers goes through it (the cache open, its blocks VK_BC7_CAPTURE_BYTES or less).
    vk_bc7_level_key: the key of a level of that shape, footprint bw x bh, sRGB decode mode and encoder build (from
    content, its guest bytes' part). vk_astc_frame_done: the submission sub is done, and the blocks encodes in it read
@@ -2090,7 +2080,7 @@ void vk_astc_kind_say(void);
    the cache: 0 when there is no room for them now. VK_BC7_CAPTURE_BYTES bounds the blocks read back at once, which
    bounds the readback ring's growth and is the most a level's blocks are to be cached */
 #define VK_BC7_CAPTURE_BYTES (32ull << 20)
-void vk_astc_cache_open(const char* path);
+void vk_astc_cache_open(void);
 /* the game's BC7 cache opened, where pipeline.c put it off (Auto holding them as RGBA8 as the device started): once */
 void vk_pipeline_bc7_cache(void);
 int vk_astc_cached(u32 w, u32 h, u32 depth);

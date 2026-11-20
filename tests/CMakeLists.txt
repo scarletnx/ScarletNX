@@ -3078,9 +3078,9 @@ if(NOT SNX_TOOLS_ONLY)
     target_link_libraries(snx-test-guest-textures PRIVATE scarletnx-platform) # the registry's PMutex
     add_test(NAME guest_textures COMMAND snx-test-guest-textures)
     # the BC7 cache of ASTC levels (gpu/vk/bc7_cache.c), without a GPU: every input that changes a level's blocks
-    # changes its key, records come back as written and from the file in a later run, another version or a damaged
-    # record starts the file over or drops the record, a record cut short is cut off, and the bound starts it over; a
-    # read a held disk keeps (an interposed pread) does not hold the recording thread
+    # changes its key, blocks come back as stored while it holds them, past its bound it keeps the levels used most,
+    # a low memory word frees what no recent present used, and a hit queued for the recording thread is copied from
+    # blocks that are still there
     add_executable(snx-test-bc7-cache bc7_cache.c tracy_stubs.c)
     snx_test_target(snx-test-bc7-cache gnu23)
     target_link_libraries(snx-test-bc7-cache PRIVATE snx_nx_flags snx_xxhash scarletnx-common scarletnx-platform)

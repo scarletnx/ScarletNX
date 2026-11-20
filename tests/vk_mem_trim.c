@@ -149,6 +149,7 @@ void vk_lock(void) { stub_hit("vk_lock"); }
 int vk_mem_heap(void) { stub_hit("vk_mem_heap"); }
 void vk_mem_track(DevMem a, u32 owner) { stub_hit("vk_mem_track"); }
 u64 vk_memory_blocks(void) { stub_hit("vk_memory_blocks"); }
+u64 vk_bc7_cache_release(u32 before) { stub_hit("vk_bc7_cache_release"); }
 int vk_ms_moves(const Surf* s) { stub_hit("vk_ms_moves"); }
 int vk_ms_pack(VkCommandBuffer cb, Surf* s, u32 layer, VkBuffer buf, u64 off, u32 pitch) { stub_hit("vk_ms_pack"); }
 int vk_ms_supported(VkFormat f, VkImageUsageFlags usage, VkImageCreateFlags flags, u32 msaa) {

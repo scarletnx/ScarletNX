@@ -843,7 +843,8 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
         { /* the caches of earlier runs found empty, said over the game once: the frames to come wait for the work */
             static int cold_said;
             if (!cold_said) {
-                const int shaders = vk_pipeline_cache_cold(), textures = vk_bc7_cache_cold();
+                const int shaders = vk_pipeline_cache_cold(),
+                          textures = 0; /* the BC7 cache starts empty in every run */
                 if ((cold_said = overlay_cold_cache(shaders, textures)))
                     LOG("vulkan: %s%s%s: \"%s\" over the game\n",
                         shaders ? "the shader cache started empty (no shader or pipeline of an earlier run)" : "",
@@ -985,27 +986,24 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
                         (unsigned long long)waits, (unsigned long long)wait_ms, (unsigned long long)behind_ms,
                         (unsigned long long)max_ms, opt_workers);
                 }
-                u64 bc7_levels, bc7_hits, bc7_bytes, bc7_rgba8, cache_reads, cache_stored, cache_restarts, cache_file;
+                u64 bc7_levels, bc7_hits, bc7_bytes, bc7_rgba8;
+                VkBc7CacheStats cache;
                 vk_astc_stats(&bc7_levels, &bc7_hits, &bc7_bytes, &bc7_rgba8);
-                vk_bc7_cache_stats(&cache_reads, &cache_stored, &cache_restarts, &cache_file);
+                vk_bc7_cache_stats(&cache);
                 if (bc7_levels)
                     LOG("vulkan: %llu ASTC texture levels or regions uploaded straight to BC7, %llu MB where RGBA8 "
                         "takes %llu MB; %llu encoder dispatches in all\n",
                         (unsigned long long)bc7_levels, (unsigned long long)(bc7_bytes >> 20),
                         (unsigned long long)(bc7_rgba8 >> 20), (unsigned long long)vk_astc_dispatches());
-                if (cache_file)
-                    LOG("vulkan: the BC7 cache gave %llu levels, %llu more were copied from textures that held them, "
-                        "and it took %llu new; its file holds %llu MB (started over %llu times at %llu MB)\n",
+                if (cache.levels)
+                    LOG("vulkan: the BC7 cache gave %llu levels, and %llu more were copied from textures that held "
+                        "them; of %llu levels met it holds %llu MB (%llu at most): it kept %llu encodes, let %llu go "
+                        "for levels used more, did not keep %llu, and freed %llu MB at low memory words\n",
                         (unsigned long long)bc7_hits, (unsigned long long)vk_astc_bc7_copies(),
-                        (unsigned long long)cache_stored, (unsigned long long)(cache_file >> 20),
-                        (unsigned long long)cache_restarts, (unsigned long long)(vk_bc7_cache_max() >> 20));
-                u64 cache_late, cache_skipped, cache_unkept;
-                vk_bc7_cache_late(&cache_late, &cache_skipped, &cache_unkept);
-                if (cache_late || cache_skipped || cache_unkept)
-                    LOG("vulkan: the BC7 cache on a slow disk: %llu reads came too late and %llu were not tried, their "
-                        "levels encoded instead; %llu new levels were not kept\n",
-                        (unsigned long long)cache_late, (unsigned long long)cache_skipped,
-                        (unsigned long long)cache_unkept);
+                        (unsigned long long)cache.levels, (unsigned long long)(cache.bytes >> 20),
+                        (unsigned long long)(vk_bc7_cache_max() >> 20), (unsigned long long)cache.stored,
+                        (unsigned long long)cache.evicted, (unsigned long long)cache.refused,
+                        (unsigned long long)(cache.released >> 20));
                 VkLaterStats later;
                 vk_tex_later_stats(&later);
                 if (later.made || later.waiting || later.restarted || later.went_hot)

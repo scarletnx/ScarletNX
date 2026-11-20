@@ -396,6 +396,25 @@ static void test_astc_bc_old(void) {
     g_test.write = 0;
 }
 
+/* bc7_cache_gb, deprecated with the BC7 cache's file: an old .ini's value is said with what bounds the cache now, and
+   stays in the file under [Deprecated] */
+static void test_bc7_cache_gb_old(void) {
+    char* text;
+    g_test.write = 1;
+    text = open_ini("[Graphics]\nbc7_cache_gb=3\n");
+    CHECK(strstr(g_test.said,
+                 "settings: bc7_cache_gb=3, deprecated, bounds nothing: the BC7 cache has no file now, and "
+                 "holds the ASTC levels used most in memory, up to an eighth of the machine's, from 64 MB "
+                 "to 2048 MB (docs/user/deprecations.md)\n"));
+    CHECK(text && strstr(text, "\n[Deprecated]\n") &&
+          strstr(text, "\n[Deprecated]\n") < strstr(text, "\nbc7_cache_gb=3\n"));
+    free(text);
+    text = open_ini("[Graphics]\nastc_mode=0\n"); /* an .ini without it says nothing of it */
+    CHECK(!strstr(g_test.said, "bc7_cache_gb"));
+    free(text);
+    g_test.write = 0;
+}
+
 /* the log's settings line: the Display, Graphics, Audio and Performance settings off their default, each with its
    default */
 static void test_settings_line(void) {
@@ -883,6 +902,7 @@ int main(int argc, char** argv) {
     test_settings_line();
     test_memory_fit_old();
     test_astc_bc_old();
+    test_bc7_cache_gb_old();
     test_controls_opacity_old();
     test_dropped_keys_old();
     test_vk_descriptors_old_default();

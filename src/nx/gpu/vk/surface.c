@@ -3527,6 +3527,7 @@ static struct {
     PMutex lock; /* why, between the thread that asks and the renderer's */
     char why[160], said[160];
     u64 by[3], blocks; /* what went (textures, buffers, render targets), and the blocks before */
+    u64 bc7;           /* the BC7 cache's blocks that went, the system's memory */
     u32 present;       /* when it ran (+1), 0 none to tell */
     u32 runs;
 } g_release = {.lock = PMUTEX_INIT};
@@ -3544,10 +3545,12 @@ void vk_mem_release_run(void) {
     if (g_release.present && g_vk_present - (g_release.present - 1) >= 4) {
         LOG_LIMIT(20,
                   "vulkan: %s: %llu MB of textures, %llu of buffers and %llu of render targets that the two presents "
-                  "before didn't use went, and the renderer's memory blocks went from %llu to %llu MB\n",
+                  "before didn't use went, and the renderer's memory blocks went from %llu to %llu MB; the BC7 cache "
+                  "let %llu MB of the system's memory go\n",
                   g_release.said, (unsigned long long)(g_release.by[0] >> 20),
                   (unsigned long long)(g_release.by[1] >> 20), (unsigned long long)(g_release.by[2] >> 20),
-                  (unsigned long long)(g_release.blocks >> 20), (unsigned long long)(vk_memory_blocks() >> 20));
+                  (unsigned long long)(g_release.blocks >> 20), (unsigned long long)(vk_memory_blocks() >> 20),
+                  (unsigned long long)(g_release.bc7 >> 20));
         g_release.present = 0;
     }
     if (!atomic_exchange_explicit(&g_release.asked, 0, memory_order_acq_rel)) return;
@@ -3562,6 +3565,7 @@ void vk_mem_release_run(void) {
     g_release.by[0] = vk_surf_reclaim(VK_LRU_TEX, before, ~0ull, VK_RECLAIM_LOSSLESS);
     g_release.by[1] = vk_buf_reclaim(before, ~0ull);
     g_release.by[2] += vk_surf_reclaim(VK_LRU_RT, before, ~0ull, VK_RECLAIM_LOSSLESS);
+    g_release.bc7 = vk_bc7_cache_release(before); /* the system's memory, not the renderer's: not in g_trimmed */
     g_trimmed += g_release.by[0] + g_release.by[1] + g_release.by[2];
     g_release.present = g_vk_present + 1;
     g_release.runs++;
