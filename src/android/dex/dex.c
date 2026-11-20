@@ -265,6 +265,11 @@ DexValue dex_read_value(const unsigned char** p, const unsigned char* end) {
         *p = end;
         return v;
     }
+    /* a float is 4 bytes at most: one said to be longer is no value, and ends the item as one cut short does */
+    if (v.type == DEX_VALUE_FLOAT && size > 4) {
+        *p = end;
+        return v;
+    }
     uint64_t bits = 0;
     for (unsigned i = 0; i < size; ++i) bits |= (uint64_t)(*p)[i] << (8 * i);
     *p += size;

@@ -57,6 +57,17 @@ int main(void) {
     assert(bytes);
     dex_skip_value(&p, value + sizeof value);
     assert(p == value + sizeof value - 1);
+    {
+        /* a float of 4 bytes is its bits; one said to be 5 is no value, and takes what is left of the item */
+        static const unsigned char whole[] = {DEX_VALUE_FLOAT | 3 << 5, 0, 0, 0x80, 0x3f, 0xAA};
+        static const unsigned char longer[] = {DEX_VALUE_FLOAT | 4 << 5, 1, 2, 3, 4, 5, 0xAA};
+        const unsigned char* at = whole;
+        DexValue f = dex_read_value(&at, whole + sizeof whole);
+        assert(f.type == DEX_VALUE_FLOAT && f.bits == 0x3f800000u && at == whole + 5);
+        at = longer;
+        f = dex_read_value(&at, longer + sizeof longer);
+        assert(f.bits == 0 && at == longer + sizeof longer);
+    }
     assert(skipped(bytes, 1) == 1 * ARRAY_OF_ONE + 2);
     assert(skipped(bytes, DEX_VALUE_DEPTH) == DEX_VALUE_DEPTH * ARRAY_OF_ONE + 2);
     assert(skipped(bytes, DEX_VALUE_DEPTH + 1) == (DEX_VALUE_DEPTH + 1) * ARRAY_OF_ONE + 3);
