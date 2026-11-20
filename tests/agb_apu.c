@@ -197,6 +197,10 @@ int main(void) {
     agb_apu_write(&board, 0x082, 0x330E); /* the PSG and FIFOs A and B at 100 percent, both sides */
     board.apu.fifo_sample[0] = board.apu.fifo_sample[1] = 127;  /* as their timers' overflows would leave them */
     CHECK(run_samples(8) == 8 && left_count(8, 511 * 48) == 8); /* 120 + 508 + 508 clips at 0x3FF - 0x200 */
+    /* with SOUNDBIAS at 0 the same sum clips at 0x3FF, and 48 of that at a sample's top, not past it */
+    agb_apu_write(&board, 0x088, 0x0000);
+    CHECK(run_samples(8) == 8 && left_count(8, 32767) == 8);
+    agb_apu_write(&board, 0x088, 0x0200);
 
     /* the master switch silences everything */
     agb_apu_write(&board, 0x084, 0x0000);
