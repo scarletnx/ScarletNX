@@ -69,12 +69,14 @@ static void VKAPI_PTR copy_stub(VkCommandBuffer cb, VkBuffer src, VkImage dst, V
 }
 PFN_vkCmdCopyBufferToImage vkCmdCopyBufferToImage = copy_stub;
 
+static char g_said[1024]; /* the last line logged */
 void logf_(int lvl, const char* fmt, ...) {
     va_list ap;
     (void)lvl;
     va_start(ap, fmt);
-    vprintf(fmt, ap);
+    vsnprintf(g_said, sizeof g_said, fmt, ap);
     va_end(ap);
+    fputs(g_said, stdout);
 }
 u32 g_vk_present;
 
@@ -347,8 +349,30 @@ static void bound(void) {
     puts("PASS the bound is an eighth of the machine's memory, from 64 MiB to 2 GiB, and 256 MiB where it is not told");
 }
 
+/* a file an earlier version kept the cache in: said with its path and size, and left as it is; none, nothing said */
+static void old_file(void) {
+    static const char path[] = "bc7_cache_test_old.vkbc7";
+    u8* p = blocks(3u << 19, 5); /* 1.5 MiB */
+    FILE* f = fopen(path, "wb");
+    CHECK(f && fwrite(p, 1, 3u << 19, f) == 3u << 19 && !fclose(f));
+    g_said[0] = 0;
+    CHECK(vk_bc7_cache_old_file(path));
+    CHECK(!strcmp(g_said,
+                  "vulkan: bc7_cache_test_old.vkbc7 (1.5 MB) is a BC7 cache file of an earlier version, which this "
+                  "one does not read or write: the BC7 cache is held in memory now. The game's Delete Old "
+                  "Caches in the launcher deletes it\n"));
+    f = fopen(path, "rb"); /* still there, whole */
+    CHECK(f && !fseek(f, 0, SEEK_END) && ftell(f) == 3 << 19 && !fclose(f));
+    remove(path);
+    g_said[0] = 0;
+    CHECK(!vk_bc7_cache_old_file(path) && !g_said[0]);
+    free(p);
+    puts("PASS a BC7 cache file of an earlier version is said with its path and size, and left as it is");
+}
+
 int main(void) {
     keys();
+    old_file();
     held();
     most_used();
     low_memory();

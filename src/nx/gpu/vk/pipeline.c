@@ -921,6 +921,15 @@ void vk_pipeline_init(void) {
        astc_mode's Auto once it holds them as BC7 (vk_astc_auto_present) */
     g_pipeline.bc7_cache = 1;
     if (vk_astc_bc7()) vk_pipeline_bc7_cache();
+    { /* the files earlier versions kept that cache in: said once a run, and left where they are */
+        char old[1400];
+        snprintf(old, sizeof old, "%s/%s.vkbc7", g_pipeline.cache_dir, g_exename);
+        snx_path_native(old);
+        vk_bc7_cache_old_file(old);
+        snprintf(old, sizeof old, "%s/%s.vkbc7.idx", g_pipeline.cache_dir, g_exename);
+        snx_path_native(old);
+        vk_bc7_cache_old_file(old);
+    }
     /* each driver's files apart: a game run with the system's driver, then a package's (gpu_driver), then the
        system's again keeps the first one's */
     snx_vk_driver_tag(g_pipeline.driver_tag, sizeof g_pipeline.driver_tag, g_vk.driver_id, g_vk.props.vendorID,

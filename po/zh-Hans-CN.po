@@ -1948,6 +1948,21 @@ msgstr "%s 不在「文件」App 的范围内，它只显示本应用的 Documen
 
 #: src/gui/main.c
 #, c-format
+msgid "Delete the old caches of %s? %s of BC7 cache files (.vkbc7) an earlier version left in %s. This version does not use them, and the game does not make them again; the caches it uses, its saves, settings and dump stay."
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Could not delete %s: %s"
+msgstr "无法删除 %s：%s"
+
+#: src/gui/main.c
+#, c-format
+msgid "Deleted the old caches of %s: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
 msgid "%s has no cache to delete: no %s, no %s"
 msgstr "%s 没有可删除的缓存：没有 %s，也没有 %s"
 
@@ -1959,11 +1974,6 @@ msgstr "删除 %s 的缓存？着色器缓存 %s（%s）和代码缓存 %s（%s�
 #: src/gui/main.c
 msgid "none"
 msgstr "无"
-
-#: src/gui/main.c
-#, c-format
-msgid "Could not delete %s: %s"
-msgstr "无法删除 %s：%s"
 
 #: src/gui/main.c
 #, c-format
@@ -2030,6 +2040,10 @@ msgstr ""
 #: src/gui/main.c
 msgid "Clean Cache"
 msgstr "清理缓存"
+
+#: src/gui/main.c
+msgid "Delete Old Caches"
+msgstr ""
 
 #: src/gui/main.c
 msgid "Save States"

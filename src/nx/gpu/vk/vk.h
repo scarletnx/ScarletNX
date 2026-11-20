@@ -2007,6 +2007,9 @@ void vk_bc7_key(const u64 content[2], const VkBc7Level* lv, u64 key[2]);
    2 GiB, 256 MiB where the system doesn't tell): 0 when there is none (no memory for its table) */
 int vk_bc7_cache_open(u64 max);
 void vk_bc7_cache_close(void);
+/* a file an earlier version kept the cache in (shader_cache/<game>.vkbc7, its .idx), where there is one at path: said
+   in the log with its path and size, and left as it is. 1 when there was one */
+int vk_bc7_cache_old_file(const char* path);
 u64 vk_bc7_cache_max(void);              /* the bound of the cache that is open, 0 with none */
 u64 vk_bc7_cache_find(const u64 key[2]); /* the bytes of key's blocks, 0 when they aren't held */
 /* key's blocks, size bytes of them, into dst: 0 when they aren't held */
