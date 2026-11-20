@@ -90,6 +90,7 @@ typedef struct {
     HostVi vi;
     HostNvdrv nvdrv;
     HostNativeVideo native_video;
+    HostGsv gsv;
     HostBsd bsd;
     HostLdn ldn;
     HostSsl ssl;
