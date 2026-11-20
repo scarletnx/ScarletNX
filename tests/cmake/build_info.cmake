@@ -12,4 +12,12 @@ if(BUILD_TESTING)
              "-DOUT=${snx_commit_header}" -DCHECK=1 -P "${PROJECT_SOURCE_DIR}/cmake/commit.cmake")
     add_test(NAME build_info_no_git COMMAND "${CMAKE_COMMAND}" "-DSRC=${PROJECT_SOURCE_DIR}"
              "-DOUT=${PROJECT_BINARY_DIR}/build_info_no_git.h" -P "${PROJECT_SOURCE_DIR}/tests/build_info_no_git.cmake")
+    # the version: the header the build made is what the tree's numbers make, each number raises it by one, and each
+    # number named like them in src/ is listed as a part of it or left out
+    add_test(NAME version_current COMMAND "${CMAKE_COMMAND}" "-DSRC=${PROJECT_SOURCE_DIR}"
+             "-DOUT=${snx_version_header}" -DCHECK=1 -P "${PROJECT_SOURCE_DIR}/cmake/version.cmake")
+    add_test(NAME version_bump COMMAND "${CMAKE_COMMAND}" "-DSRC=${PROJECT_SOURCE_DIR}"
+             "-DWORK=${PROJECT_BINARY_DIR}/version_bump" -P "${PROJECT_SOURCE_DIR}/tests/version_bump.cmake")
+    add_test(NAME version_census COMMAND "${CMAKE_COMMAND}" "-DSRC=${PROJECT_SOURCE_DIR}"
+             -P "${PROJECT_SOURCE_DIR}/tests/version_census.cmake")
 endif()

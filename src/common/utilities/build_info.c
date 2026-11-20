@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 #include "common/utilities/build_info.h"
 #include "snx_commit.h"
+#include "snx_version.h"
 #include <stdio.h>
 
 #define SNX_TEXT(x)   #x
@@ -55,11 +56,12 @@
 #endif
 
 const char* snx_build_info(void) {
-    return "ScarletNX " SNX_BRANCH " " SNX_COMMIT " (" SNX_COMPILER ", " SNX_OS " " SNX_ARCH ")";
+    return "ScarletNX " SNX_BRANCH " " SNX_COMMIT " (version " SNX_VERSION ", " SNX_COMPILER ", " SNX_OS " " SNX_ARCH
+           ")";
 }
 const char* snx_build_log_line(void) {
-    return "ScarletNX " SNX_BRANCH " " SNX_COMMIT ", committed " SNX_COMMIT_DATE " (" SNX_COMPILER ", " SNX_OS
-           " " SNX_ARCH ")";
+    return "ScarletNX " SNX_BRANCH " " SNX_COMMIT ", committed " SNX_COMMIT_DATE " (version " SNX_VERSION
+           ", " SNX_COMPILER ", " SNX_OS " " SNX_ARCH ")";
 }
 const char* snx_build_commit(void) { return SNX_COMMIT; }
 void snx_run_log_line(char out[SNX_RUN_LOG_LINE], long long now) {

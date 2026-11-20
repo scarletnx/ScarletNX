@@ -1,9 +1,10 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The line the window titles carry: the branch and commit the build read, this compiler's version, this host; and the
-   logs' line, with the day that commit was made. */
+/* The line the window titles carry: the branch and commit the build read, the version, this compiler's version, this
+   host; and the logs' line, with the day that commit was made. */
 #include "common/utilities/build_info.h"
 #include "snx_commit.h"
+#include "snx_version.h"
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
@@ -41,15 +42,16 @@ int main(void) {
     arch = NULL;
 #endif
 #if defined(__clang__)
-    snprintf(want, sizeof want, "ScarletNX %s %s (clang %d.%d.%d, %s %s)", SNX_BRANCH, SNX_COMMIT, __clang_major__,
-             __clang_minor__, __clang_patchlevel__, os, arch ? arch : "");
-    snprintf(logged, sizeof logged, "ScarletNX %s %s, committed %s (clang %d.%d.%d, %s %s)", SNX_BRANCH, SNX_COMMIT,
-             day, __clang_major__, __clang_minor__, __clang_patchlevel__, os, arch ? arch : "");
+    snprintf(want, sizeof want, "ScarletNX %s %s (version %s, clang %d.%d.%d, %s %s)", SNX_BRANCH, SNX_COMMIT,
+             SNX_VERSION, __clang_major__, __clang_minor__, __clang_patchlevel__, os, arch ? arch : "");
+    snprintf(logged, sizeof logged, "ScarletNX %s %s, committed %s (version %s, clang %d.%d.%d, %s %s)", SNX_BRANCH,
+             SNX_COMMIT, day, SNX_VERSION, __clang_major__, __clang_minor__, __clang_patchlevel__, os,
+             arch ? arch : "");
 #else
-    snprintf(want, sizeof want, "ScarletNX %s %s (gcc %d.%d.%d, %s %s)", SNX_BRANCH, SNX_COMMIT, __GNUC__,
-             __GNUC_MINOR__, __GNUC_PATCHLEVEL__, os, arch ? arch : "");
-    snprintf(logged, sizeof logged, "ScarletNX %s %s, committed %s (gcc %d.%d.%d, %s %s)", SNX_BRANCH, SNX_COMMIT, day,
-             __GNUC__, __GNUC_MINOR__, __GNUC_PATCHLEVEL__, os, arch ? arch : "");
+    snprintf(want, sizeof want, "ScarletNX %s %s (version %s, gcc %d.%d.%d, %s %s)", SNX_BRANCH, SNX_COMMIT,
+             SNX_VERSION, __GNUC__, __GNUC_MINOR__, __GNUC_PATCHLEVEL__, os, arch ? arch : "");
+    snprintf(logged, sizeof logged, "ScarletNX %s %s, committed %s (version %s, gcc %d.%d.%d, %s %s)", SNX_BRANCH,
+             SNX_COMMIT, day, SNX_VERSION, __GNUC__, __GNUC_MINOR__, __GNUC_PATCHLEVEL__, os, arch ? arch : "");
 #endif
     printf("%s\n%s\n", snx_build_info(), snx_build_log_line());
     {
@@ -80,6 +82,9 @@ int main(void) {
     assert(strlen(SNX_COMMIT) >= 7); /* a hash, or "unknown" */
     assert(!strcmp(snx_build_commit(), SNX_COMMIT));
     assert(SNX_BRANCH[0]); /* a branch, "detached" or "unknown" */
-    puts("build info: commit, compiler and host in the window titles' line, and its commit's day in the logs' passed");
+    /* the version, a whole number from 1 */
+    assert(SNX_VERSION[0] > '0' && SNX_VERSION[0] <= '9' && strspn(SNX_VERSION, "0123456789") == strlen(SNX_VERSION));
+    puts("build info: commit, version, compiler and host in the window titles' line, and its commit's day in the logs' "
+         "passed");
     return 0;
 }
