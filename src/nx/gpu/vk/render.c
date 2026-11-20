@@ -3816,8 +3816,8 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
     d.cb_addr = vk_cb_addr_mask(&s->si);
     /* the profiler's zones of a stage's set: its constant buffers, storage buffers, textures and the set itself */
     SNX_ZONE(zcb, "stage set constants");
-    for (int i = 0; i < 18; i++) {
-        if (!(s->si.cbuf_mask & (1u << i))) continue;
+    for (u32 banks = s->si.cbuf_mask & 0x3FFFFu; banks; banks &= banks - 1) { /* the banks the program has */
+        const int i = (int)snx_ctz32(banks);
         u32 sz = cb_range(ds, stage, s, i);
         VkBuffer b;
         u64 o;
