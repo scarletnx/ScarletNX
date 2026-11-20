@@ -97,7 +97,14 @@ struct KThread {
     /* what an IPC request it is in holds: its session's reference (kobj_id) and an nvdrv ioctl's use of its fd (the fd
        plus 1), which a request a restored thread makes again lets go of first (svc_service_retry) */
     u32 req_session, req_nvfd;
-    int wait_kind; /* 0 none, 1 objects, 2 mutex, 3 condition variable, 4 address, 5 being paused */
+    int wait_kind; /* 0 none, 1 objects, 2 mutex, 3 condition variable, 5 being paused (an address wait: arb_in) */
+    /* An address wait (svcWaitForAddress) is under its word's bucket lock (g_host.kernel.arb_lk), not g_klock: arb_in
+       is the bucket plus 1 while the thread waits there, 0 otherwise, and wait_ticket its place among waiters of one
+       priority (a priority change moves it behind them, as the console requeues it). Atomic: g_klock's holders read
+       them (a priority change, the thread dump) */
+    _Atomic int arb_in;
+    _Atomic u64 wait_ticket;
+    _Atomic int arb_prio; /* prio, as an address wait's wake reads it with no g_klock */
     /* kinds 1 and 5: the objects it waits on (kobj_id), as many times as it named each; kind 1's wait_key is the one
        whose signal woke it, 0 before */
     u32 waits[64];
