@@ -18,6 +18,11 @@ val Uniform : unit -> bool
 val SrcBits : Operand -> bits(32)
 /* the operand is negated (a register's or a constant's: an immediate has no modifier) */
 val SrcNeg : Operand -> bool
+/* the operand reads zero whatever the state: the zero register or the immediate 0 */
+val IsZero : Operand -> bool
+/* the operand is an immediate, and its value */
+val SrcIsImm : Operand -> bool
+val SrcImm : Operand -> int
 /* the destination, a register or a uniform register, written */
 val D_write : bits(32) -> unit
 /* the destination register the decoder found */
@@ -64,7 +69,21 @@ function execute_IADD3() -> unit = {
     let p = UInt(Field(81, 3));
     let q = UInt(Field(84, 3));
     let x = Field(74, 1) == 0b1;
-    if p >= PT & q >= PT & not_bool(x) then D_write(SrcInt(A) + SrcInt(B) + SrcInt(C)) else {
+    if p >= PT & q >= PT & not_bool(x) then {
+        /* the sum of the terms that aren't zero, a register's or an immediate's whatever the state */
+        var sum : bits(32) = 0x00000000;
+        var any : bool = false;
+        if not_bool(IsZero(A)) then {
+            sum = SrcInt(A);
+            any = true
+        };
+        if not_bool(IsZero(B)) then {
+            if any then { sum = sum + SrcInt(B) } else { sum = SrcInt(B) };
+            any = true
+        };
+        if not_bool(IsZero(C)) then { if any then { sum = sum + SrcInt(C) } else { sum = SrcInt(C) } };
+        D_write(sum)
+    } else {
         /* the sum in 64 bits: its carries, and .X's two carries in */
         var sum : bits(64) = Term64(A, x) + Term64(B, x);
         sum = sum + Term64(C, x);
@@ -83,9 +102,14 @@ function execute_IADD3() -> unit = {
    addend is then its complement, ~c: one game's 64-bit division negates a high word with IMAD.X RZ, RZ, ~c, P */
 function execute_IMAD() -> unit = {
     let x = Field(74, 1) == 0b1;
-    var v : bits(32) = SrcInt(A) * SrcInt(B);
-    let addend = if x & SrcNeg(C) then not_vec(SrcBits(C)) else SrcInt(C);
-    v = v + addend;
+    /* a factor of zero (IMAD.MOV's RZ, RZ) leaves the addend; an addend of zero (IMAD.SHL's RZ) the product */
+    let zero = IsZero(A) | IsZero(B);
+    let product = if zero then 0x00000000 else SrcInt(A) * SrcInt(B);
+    var v : bits(32) = product;
+    if x | not_bool(IsZero(C)) then {
+        let addend = if x & SrcNeg(C) then not_vec(SrcBits(C)) else SrcInt(C);
+        if zero then { v = addend } else { v = v + addend }
+    };
     if x then { v = v + (if PredAt(87) then 0x00000001 else 0x00000000) };
     D_write(v)
 }
@@ -165,8 +189,37 @@ function execute_LOP3() -> unit = {
 /* SHF and USHF: the funnel shift of (c:a) by b, right with bit 76 (arithmetic for the signed types at 73-74), its
    high word with .HI (80); the amount wraps at the width with bit 75, else saturates. A shift by 64 is out of
    SPIR-V's range: split in two */
+/* SHF of a 32-bit type by an immediate (one game's are nearly all so: SHF.R.U32.HI d, RZ, s, x): (c:a) shifted by
+   s, known when the translator runs, of 32-bit words. Its high word or low word is a word shifted, or two words'
+   bits put together; s 0 and 32 take a word whole (a shift by 32 is out of SPIR-V's range) */
+function Shf32(right : bool, is_signed : bool, high : bool, s : int) -> unit = {
+    if s == 0 then D_write(if high then SrcBits(C) else SrcBits(A))
+    else if right & high then {
+        let c = SrcBits(C);
+        if s == 32 then D_write(if is_signed then ASR(c, 31) else 0x00000000)
+        else D_write(if is_signed then ASR(c, s) else c >> s)
+    } else if not_bool(right) & not_bool(high) then {
+        if s == 32 then D_write(0x00000000) else D_write(SrcBits(A) << s)
+    } else if s == 32 then D_write(if high then SrcBits(A) else SrcBits(C))
+    else {
+        /* the low word of a right shift (a's bits down, c's in from above), or the high word of a left shift (c's
+           bits up, a's in from below); a word that reads zero adds nothing */
+        let from = if right then 32 - s else s;
+        let up = if IsZero(C) then 0x00000000 else SrcBits(C) << from;
+        let down = if IsZero(A) then 0x00000000 else SrcBits(A) >> (32 - from);
+        if IsZero(A) then D_write(up) else if IsZero(C) then D_write(down) else D_write(up | down)
+    }
+}
+
 function execute_SHF() -> unit = {
     let dtype = UInt(Field(73, 2));
+    if dtype >= 2 & SrcIsImm(B) then {
+        let b = SrcImm(B);
+        Shf32(Field(76, 1) == 0b1, dtype == 2, Field(80, 1) == 0b1, if Field(75, 1) == 0b1 then MOD(b, 32) else Min(b, 32))
+    } else Shf(dtype)
+}
+
+function Shf(dtype : int) -> unit = {
     let width = if dtype < 2 then 64 else 32;
     let right = Field(76, 1) == 0b1;
     let is_signed = dtype == 0 | dtype == 2;
@@ -239,3 +292,4 @@ function Plop3(u : int) -> unit = {
 }
 function execute_PLOP3() -> unit = Plop3(0)
 function execute_UPLOP3() -> unit = Plop3(1)
+
