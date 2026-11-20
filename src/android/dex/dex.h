@@ -110,5 +110,8 @@ typedef struct {
     uint64_t bits;
 } DexValue;
 DexValue dex_read_value(const unsigned char** p, const unsigned char* end);
+/* the arrays and annotations inside one another that dex_skip_value goes through: a file bounds them by nothing, at
+   two bytes a level, and each is a call's frame. A compiler's file has a handful */
+#define DEX_VALUE_DEPTH 64
 void dex_skip_value(const unsigned char** p, const unsigned char* end);
 #endif
