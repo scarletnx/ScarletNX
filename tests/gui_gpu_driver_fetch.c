@@ -151,6 +151,23 @@ int main(void) {
                gui_driver_recommended_release(10057, 11, &r) == 0);
         gui_driver_releases_free(&r);
     }
+    /* PanVK G925, for the G925: its latest that is no prerelease recommended */
+    {
+        static const char g925_json[] =
+            "[{\"tag_name\": \"v0.18.68-dev\", \"name\": \"PanVK G925 0.18.68-dev\", \"prerelease\": true,"
+            "  \"assets\": []},"
+            " {\"tag_name\": \"v0.18.66-dev\", \"name\": \"PanVK G925 0.18.66-dev\", \"prerelease\": false,"
+            "  \"assets\": ["
+            "  {\"name\": \"PanVK-G925-v0.18.66.adpkg.zip\", \"size\": 9000000,"
+            "   \"browser_download_url\": \"https://github.com/adesyaefull/a.adpkg.zip\"}]}]";
+        const GuiDriverRepo* g925 = &gui_driver_repos[12];
+        assert(!strcmp(g925->path, "adesyaefull/panvk-kbase-android-g925") && g925->gpu == GUI_DRIVER_MALI);
+        assert(gui_driver_releases_parse(g925_json, strlen(g925_json), g925, &r, why, sizeof why));
+        assert(r.count == 2 && r.assets_count == 1 && r.releases[1].latest);
+        assert(!strcmp(gui_driver_recommended(10925), "PanVK G925") &&
+               gui_driver_recommended_release(10925, 12, &r) == 1);
+        gui_driver_releases_free(&r);
+    }
     /* GitHub's own error, said; what is no list of releases, said by its size */
     assert(!gui_driver_releases_parse("{\"message\": \"API rate limit exceeded for 1.2.3.4.\"}", 51, purple, &r, why,
                                       sizeof why) &&
