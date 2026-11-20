@@ -76,6 +76,9 @@ int main(void) {
     /* anything but the cache's own header is refused */
     write_cache(path, "BADMAGIC", key);
     assert(!gui_aot_cache_info(path, &info));
+    /* and a key that ends at its level, with none */
+    write_cache(path, SNX_JIT_CACHE_MAGIC, "abi=13 llvm=x rtlib=0 cpu=c hook=1 opt=");
+    assert(!gui_aot_cache_info(path, &info));
 
     /* without .folders the runtime's user cache path is used, as kind_dir does */
     assert(!remove(folders));
