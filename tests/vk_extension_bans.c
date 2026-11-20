@@ -91,7 +91,7 @@ static void check_errors(void) {
         {HEAD ".feature | off | nvidia | * | any | * | b | s | headless: | never | -\n", "key \".feature\" is not"},
         {HEAD "VK_X.Feature | off | nvidia | * | any | * | b | s | headless: | never | -\n", "key \"VK_X.Feature\""},
         {HEAD "VK_EXT_x | ban | nvidia | * | any | * | b | s | headless: | never | -\n",
-         "action \"ban\" is not off or warn"},
+         "action \"ban\" is not off, warn or prefer"},
         {HEAD "VK_EXT_x | off | geforce | * | any | * | b | s | headless: | never | -\n",
          "driver \"geforce\" is none of the drivers"},
         {HEAD "VK_EXT_x | off | nvidia | 580.119.02 | any | * | b | s | headless: | never | -\n",
@@ -151,7 +151,7 @@ static void check_errors(void) {
          "override \"vertex_input\" is not - or a setting's key=value"},
         {HEAD "VK_EXT_x | off | radv | * | any | * | b | s | headless: | never | key=\n", "override \"key=\""},
         {HEAD "VK_EXT_x | warn | radv | * | any | * | b | s | headless: | never | key=on\n",
-         "override \"key=on\" is for an off line"},
+         "override \"key=on\" is for an off or a prefer line: a warn line chooses nothing"},
         {many, "extension_bans.txt:194: past the 192 bans this reader holds"},
         {big, "bytes, past the 65535 this reader holds"},
     };
@@ -921,12 +921,13 @@ static void check_ignore(void) {
     vk_bans_device(&nv595);
     g_test.nsaid = 0;
     vk_bans_ignored(say);
-    CHECK(g_test.nsaid == 1 && !g_test.warned[0] &&
-              said_with("vulkan: VK_KHR_present_id2 is not banned on NVIDIA GeForce RTX 3060 (NVIDIA, 595.0.00, driver "
-                        "version 595.0.00), with or without vulkan_ban_ignore=VK_KHR_present_id2: no off line on it "
-                        "holds there",
-                        NULL, NULL) >= 0,
-          "a key no ban holds for says so");
+    CHECK(
+        g_test.nsaid == 1 && !g_test.warned[0] &&
+            said_with("vulkan: VK_KHR_present_id2 is not banned on NVIDIA GeForce RTX 3060 (NVIDIA, 595.0.00, driver "
+                      "version 595.0.00), with or without vulkan_ban_ignore=VK_KHR_present_id2: no off or prefer line "
+                      "on it holds there",
+                      NULL, NULL) >= 0,
+        "a key no ban holds for says so");
     if (g_test.nsaid != 1) show_said();
     /* the setting's own ban: dynamic vertex input on NVIDIA 575 holds no more */
     CHECK(vk_bans_ignore("VK_EXT_vertex_input_dynamic_state", err, sizeof err), err);
@@ -967,7 +968,7 @@ static void check_ignore(void) {
               said_with("vulkan: VK_EXT_b is not banned on",
                         "vulkan_ban_ignore= featureD ,, VK_EXT_b,featureF  goes over the ban: RADV from 25.0.3",
                         NULL) >= 0 &&
-              said_with("vulkan: featureF is not banned on", "no off line on it holds there", NULL) >= 0 &&
+              said_with("vulkan: featureF is not banned on", "no off or prefer line on it holds there", NULL) >= 0 &&
               g_test.nsaid == 3,
           "each key of the list said once, with the value as given");
     if (g_test.nsaid != 3) show_said();
@@ -980,6 +981,77 @@ static void check_ignore(void) {
           "a ban gone over is no unclaimed one");
     CHECK(vk_bans_load(g_table, err, sizeof err) && vk_ban_find("featureD") == 6,
           "a new load lets every ban hold again");
+}
+
+/* prefer lines: the way a key names taken on the drivers listed and no other, said where the device can take it;
+   they ban nothing, the filter leaves their extension in and says nothing, and vulkan_ban_ignore goes over them */
+static void check_prefer(void) {
+    static const char table[] =
+        HEAD "wayA | prefer | radv | * | any | * | runs wayA 9.7% faster | src a | headless: | never | way_a=0\n"
+             "wayA | prefer | nvidia | >= 580.0.0 | linux | * | runs wayA faster | src n | headless: | never | -\n"
+             "VK_EXT_p | prefer | radv | * | any | * | runs p faster | src p | headless: | never | -\n"
+             "featureQ | off | radv | * | any | * | breaks q | src q | headless: | never | -\n";
+    char err[512] = "";
+    CHECK(vk_bans_load(table, err, sizeof err), err);
+    device(VK_DRIVER_ID_MESA_RADV, MESA(26u, 2u, 6u), 0x73df, SNX_VK_BAN_LINUX);
+    g_test.nsaid = 0;
+    CHECK(vk_prefer("wayA", 1, say) == 2 && g_test.nsaid == 1 && !g_test.warned[0] &&
+              said_with("vulkan: wayA is preferred on AMD Radeon RX 6800 (RADV NAVI21) (radv, Mesa 26.0.4, driver "
+                        "version 26.2.6): RADV runs wayA 9.7% faster (src a; extension_bans.txt:2)",
+                        NULL, NULL) == 0,
+          "RADV takes wayA, said with the line's text and number");
+    if (g_test.nsaid != 1) show_said();
+    g_test.nsaid = 0;
+    CHECK(vk_prefer("wayA", 0, say) == 0 && !g_test.nsaid, "a device that can't take the way takes none, unsaid");
+    CHECK(vk_ban_find("wayA") == 0 && vk_ban("wayA", 1, say) == 0 && !g_test.nsaid, "a prefer line bans nothing");
+    CHECK(vk_prefer("featureQ", 1, say) == 0 && vk_prefer("wayB", 1, say) == 0 && !g_test.nsaid,
+          "an off line, and a key the table has not, prefer nothing");
+    VkExtensionProperties list[1] = {{"VK_EXT_p", 1}};
+    SnxVkExtensions e = {list, 1};
+    CHECK(vk_bans_filter(&e, say) == 0 && e.count == 1 && !g_test.nsaid,
+          "the filter leaves a preferred extension in and says nothing of it");
+    vk_bans_features_say(say);
+    vk_bans_say("VK_EXT_p", say);
+    vk_bans_unclaimed(say);
+    CHECK(said_with("wayA", NULL, NULL) < 0 && said_with("VK_EXT_p", NULL, NULL) < 0,
+          "no warning and no unclaimed ban is a prefer line's");
+    CHECK(vk_prefer("VK_EXT_p", 1, say) == 4, "an extension's own way is asked like a feature's");
+    static const struct {
+        uint32_t id, v, system, line;
+    } cases[] = {
+        {VK_DRIVER_ID_INTEL_OPEN_SOURCE_MESA, MESA(26u, 2u, 6u), SNX_VK_BAN_LINUX, 0},
+        {VK_DRIVER_ID_AMD_PROPRIETARY, MESA(2u, 0u, 302u), SNX_VK_BAN_WINDOWS, 0},
+        {VK_DRIVER_ID_NVIDIA_PROPRIETARY, NV(575u, 64u, 5u), SNX_VK_BAN_LINUX, 0},
+        {VK_DRIVER_ID_NVIDIA_PROPRIETARY, NV(580u, 0u, 0u), SNX_VK_BAN_LINUX, 3},
+        {VK_DRIVER_ID_NVIDIA_PROPRIETARY, NV(580u, 0u, 0u), SNX_VK_BAN_WINDOWS, 0},
+        {VK_DRIVER_ID_MESA_RADV, MESA(23u, 0u, 0u), SNX_VK_BAN_FREEBSD, 2},
+    };
+    for (size_t i = 0; i < sizeof cases / sizeof *cases; i++) {
+        char what[160];
+        device(cases[i].id, cases[i].v, 0, cases[i].system);
+        uint32_t line = vk_prefer("wayA", 1, say);
+        snprintf(what, sizeof what, "case %zu: wayA preferred by line %u, got %u", i, (unsigned)cases[i].line,
+                 (unsigned)line);
+        CHECK(line == cases[i].line, what);
+    }
+    /* vulkan_ban_ignore goes over a prefer line: the way is not taken, and the line that says so names it */
+    CHECK(vk_bans_ignore("wayA", err, sizeof err), err);
+    device(VK_DRIVER_ID_MESA_RADV, MESA(26u, 2u, 6u), 0x73df, SNX_VK_BAN_LINUX);
+    g_test.nsaid = 0;
+    CHECK(vk_prefer("wayA", 1, say) == 0 && !g_test.nsaid, "vulkan_ban_ignore=wayA leaves wayA untaken");
+    vk_bans_ignored(say);
+    CHECK(g_test.nsaid == 1 && g_test.warned[0] &&
+              said_with("vulkan: wayA is not preferred on",
+                        "vulkan_ban_ignore=wayA goes over the preference: RADV "
+                        "runs wayA 9.7% faster (src a; extension_bans.txt:2)",
+                        NULL) == 0,
+          "and the log says which preference it goes over");
+    if (g_test.nsaid != 1) show_said();
+    device(VK_DRIVER_ID_INTEL_OPEN_SOURCE_MESA, MESA(26u, 2u, 6u), 0, SNX_VK_BAN_LINUX);
+    g_test.nsaid = 0;
+    vk_bans_ignored(say);
+    CHECK(said_with("vulkan: wayA is not banned on", "no off or prefer line on it holds there", NULL) == 0,
+          "where no line on the key holds, the log says that");
 }
 
 /* text as a whole file */
@@ -1125,6 +1197,7 @@ int main(int argc, char** argv) {
     check_lacking();
     check_quiet();
     check_shipped();
+    check_prefer();
     ini_set_say(say_ini);
     check_ignore();
     printf("%s: %u checks, %u failed\n", g_test.failures ? "FAIL" : "PASS", g_test.checks, g_test.failures);
