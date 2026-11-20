@@ -25,9 +25,11 @@
 #include <string.h>
 
 /* What a hook's versions compare (hookgen's @version): HOOK_SDK the nnSdk version of the SDK label in the module that
-   exports the function (x << 16 | y << 8 | z), HOOK_NVN the NVN API version (major << 16 | minor). HOOK_ANY is an
-   unversioned hook's, which holds for every module. A version of 0 is unknown, and only HOOK_ANY holds for it */
-enum { HOOK_ANY, HOOK_SDK, HOOK_NVN, HOOK_KEYS };
+   exports the function (x << 16 | y << 8 | z), HOOK_NVN the NVN API version (major << 16 | minor), HOOK_MOVIE the
+   version of the movie library's label in that module (NintendoSDK_movie-x_y_z, packed as HOOK_SDK's: its subsdk
+   module has no nnSdk label). HOOK_ANY is an unversioned hook's, which holds for every module. A version of 0 is
+   unknown, and only HOOK_ANY holds for it */
+enum { HOOK_ANY, HOOK_SDK, HOOK_NVN, HOOK_MOVIE, HOOK_KEYS };
 
 /* a hook's check (hookgen's check FN): whether the function at guest address addr, which the hook's pattern matched,
    has the shape its handler does the work of; 0 leaves it to its own code */
