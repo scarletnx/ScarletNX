@@ -13,6 +13,7 @@ struct SgG {
     int op;  /* its opcode */
     u32 d, a, b;
     int form; /* its opcode's place in its roots line */
+    u32 out[4]; /* what a back end's function of several results gave, for the functions that read them */
 };
 static SgSpv* sg_spv(SgG* g) { return &g->spv; }
 [[maybe_unused]] static uint32_t sg53_t_u64(SgG* g) { return g->t->u64_type; }
