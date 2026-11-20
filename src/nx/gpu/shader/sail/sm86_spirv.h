@@ -39,6 +39,13 @@ static SgSpv* sg_spv(SgG* g) { return &g->spv; }
         default: return second(g->in);
     }
 }
+[[maybe_unused]] static int sg86_zero(const Sm86Src* x) {
+    return (x->kind == SM86_SRC_REG && x->reg >= SM86_RZ) || (x->kind == SM86_SRC_UREG && x->reg >= SM86_URZ) ||
+           (x->kind == SM86_SRC_IMM && x->value == 0);
+}
+[[maybe_unused]] static int sg_IsZero(SgG* g, int64_t s) { return sg86_zero(sg86_src(g, s)); }
+[[maybe_unused]] static int sg_SrcIsImm(SgG* g, int64_t s) { return sg86_src(g, s)->kind == SM86_SRC_IMM; }
+[[maybe_unused]] static int64_t sg_SrcImm(SgG* g, int64_t s) { return sg86_src(g, s)->value; }
 [[maybe_unused]] static SgV sg_SrcBits(SgG* g, int64_t s) { return sg_v(src_bits(g->c, sg86_src(g, s)), SGT_U32); }
 [[maybe_unused]] static int sg_SrcNeg(SgG* g, int64_t s) {
     const Sm86Src* x = sg86_src(g, s);
