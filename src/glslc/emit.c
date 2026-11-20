@@ -203,6 +203,11 @@ typedef struct {
     uint32_t idx[16];
     uint32_t nidx;
     uint32_t swizzle, nswizzle; /* a swizzle of two or more components of the vector the chain ends at */
+    /* a uniform block read through a window (GlslcOptions.block): its variable, its offset's push constant bit, and
+       where the access is in the block, a byte offset in uint wdyn (0 for none) plus wconst; wcomp the bytes between
+       the components of the vector there (16 for a row-major matrix's column), wrow whether the matrices there are
+       row-major. idx is unused */
+    uint32_t wvar, wbit, wdyn, wconst, wcomp, wrow;
 } Access;
 
 static uint32_t rvalue(Glslc* g, uint32_t n);
@@ -472,6 +477,17 @@ static uint32_t image_type(Glslc* g, uint32_t t, uint32_t format) {
     return r;
 }
 
+/* member m of laid-out struct r holds GLSL type t: kept in the result's bools when t is a bool, a bvec or an array of
+   them */
+static void bool_member(Glslc* g, uint32_t r, uint32_t m, uint32_t t) {
+    GlslcResult* res = g->result;
+    if (ty(g, element_of(g, t))->base != SNX_GLSLC_BASE_BOOL || ty(g, element_of(g, t))->kind == GLSLC_T_STRUCT) return;
+    if (res->bool_count >= SNX_GLSLC_MAX_BOOLS)
+        glslc_fail(g, g->e.site, "the shader's structs and blocks hold more than the %u bool members glslc describes",
+                   SNX_GLSLC_MAX_BOOLS);
+    res->bools[res->bool_count].type = r, res->bools[res->bool_count++].member = m;
+}
+
 static void member_decorations(Glslc* g, uint32_t r, uint32_t t, uint32_t layout, int is_block) {
     const GlslcType* y = ty(g, t);
     uint32_t offset = 0;
@@ -494,6 +510,7 @@ static void member_decorations(Glslc* g, uint32_t r, uint32_t t, uint32_t layout
             EMIT(g, &g->e.annotations, OP_MEMBER_DECORATE, r, m, DEC_NON_WRITABLE);
         if (is_block && (mb->mflags & GLSLC_MEM_WRITEONLY))
             EMIT(g, &g->e.annotations, OP_MEMBER_DECORATE, r, m, DEC_NON_READABLE);
+        if (layout) bool_member(g, r, m, mb->type);
         offset += s;
         m++;
     }
@@ -728,6 +745,14 @@ static uint32_t from_layout(Glslc* g, uint32_t v, uint32_t t, uint32_t layout, i
     return r;
 }
 
+/* how GlslcOptions.block reads the uniform block of symbol s (0 the default block): NULL for whole, from a uniform
+   buffer */
+static const GlslcBlockRead* block_read(const Glslc* g, uint32_t s) {
+    for (uint32_t i = 0; i < g->e.nblock_reads; i++)
+        if (g->e.block_reads[i].sym == s) return &g->e.block_reads[i];
+    return NULL;
+}
+
 /* the storage class a symbol's variable has */
 static uint32_t storage_of(const Glslc* g, uint32_t s) {
     const GlslcSymbol* y = &g->syms[s];
@@ -745,7 +770,9 @@ static uint32_t storage_of(const Glslc* g, uint32_t s) {
             uint32_t e = y->type;
             while (ty(g, e)->kind == GLSLC_T_ARRAY) e = ty(g, e)->elem;
             uint8_t k = ty(g, e)->kind;
-            return k == GLSLC_T_SAMPLER || k == GLSLC_T_IMAGE ? SC_UNIFORM_CONSTANT : SC_UNIFORM;
+            if (k == GLSLC_T_SAMPLER || k == GLSLC_T_IMAGE) return SC_UNIFORM_CONSTANT;
+            const GlslcBlockRead* r = block_read(g, s);
+            return r && r->mode == SNX_GLSLC_BLOCK_STORAGE ? SC_STORAGE_BUFFER : SC_UNIFORM;
         }
         case GLSLC_ST_BUFFER: return SC_STORAGE_BUFFER;
         case GLSLC_ST_SHARED: return SC_WORKGROUP;
@@ -882,6 +909,170 @@ static uint32_t emit_constant(Glslc* g, uint32_t n, uint32_t depth) {
 
 /* memory */
 
+/* Uniform blocks read through windows (GlslcOptions.block): the block's variable is a uniform buffer of 4096 uvec4,
+   and an access is a byte offset in the block, which each word read adds to the window's offset (16-byte units) from
+   the push constants. A value is read word by word as the block's layout places it */
+
+/* member m's byte offset in struct or block t of layout, as member_decorations places it; *row whether a block's
+   member is row-major */
+static uint32_t member_offset(const Glslc* g, uint32_t t, uint32_t m, uint32_t layout, uint32_t* row) {
+    const GlslcType* y = ty(g, t);
+    int is_block = y->kind == GLSLC_T_BLOCK;
+    uint32_t offset = 0;
+    for (uint32_t i = 0; i < y->len; i++) {
+        const GlslcMember* mb = &g->members[y->first + i];
+        if (is_sampler_member(g, mb->type)) continue;
+        int rm = is_block && (mb->mflags & GLSLC_MEM_ROW_MAJOR);
+        uint32_t a, s;
+        lay(g, mb->type, layout, rm, &a, &s);
+        offset = round_up(offset, a);
+        if (i == m) {
+            if (row) *row = (uint32_t)rm;
+            return offset;
+        }
+        offset += s;
+    }
+    return offset;
+}
+/* loose uniform s's byte offset in the default uniform block, as default_uniform_block places it */
+static uint32_t default_offset(const Glslc* g, uint32_t s) {
+    uint32_t offset = 0;
+    for (uint32_t k = 1; k < g->nsyms; k++) {
+        const GlslcSymbol* y = &g->syms[k];
+        if (y->storage != GLSLC_ST_UNIFORM || g->e.sym_types[k] != 0xffffffffu) continue;
+        uint32_t a, size;
+        lay(g, y->type, GLSLC_LAYOUT_STD140, 0, &a, &size);
+        offset = round_up(offset, a);
+        if (k == s) return offset;
+        offset += size;
+    }
+    return offset;
+}
+static void window_start(Access* a, const GlslcBlockRead* r, uint32_t var, uint32_t type, uint32_t at, uint32_t row) {
+    memset(a, 0, sizeof *a);
+    a->wvar = var, a->wbit = r->bit, a->wconst = at, a->wcomp = 4, a->wrow = row;
+    a->storage = SC_UNIFORM;
+    a->layout = GLSLC_LAYOUT_STD140;
+    a->type = type;
+}
+/* a window access indexed by node index: an array's element, a matrix's column, a vector's component */
+static void window_index(Glslc* g, Access* a, uint32_t index) {
+    const GlslcType* t = ty(g, a->type);
+    uint32_t stride, u = val_type(g, GT_UINT);
+    if (t->kind == GLSLC_T_ARRAY) {
+        stride = array_stride(g, a->type, a->layout, (int)a->wrow);
+    } else if (t->kind == GLSLC_T_MATRIX) {
+        uint32_t ms = matrix_stride(g, a->type, a->layout, (int)a->wrow);
+        stride = a->wrow ? 4u : ms; /* a row-major matrix's column: a component of each row */
+        a->wcomp = a->wrow ? ms : 4u;
+        a->wrow = 0;
+    } else {
+        stride = a->wcomp;
+    }
+    if (nd(g, index)->kind == GLSLC_N_CONST) { /* a constant index: bytes known now */
+        a->wconst += (nd(g, index)->a | (uint32_t)nd(g, index)->b << 16) * stride;
+        return;
+    }
+    uint32_t i = rvalue(g, index);
+    if (ty(g, nd(g, index)->type)->base != SNX_GLSLC_BASE_UINT) i = op1(g, OP_BITCAST, u, i);
+    uint32_t bytes = op2(g, OP_I_MUL, u, i, constant(g, GT_UINT, stride));
+    a->wdyn = a->wdyn ? op2(g, OP_I_ADD, u, a->wdyn, bytes) : bytes;
+}
+/* the window's offset of a's block, in 16-byte units, from the push constants */
+static uint32_t window_units(Glslc* g, const Access* a) {
+    uint32_t u = val_type(g, GT_UINT), zero = const_int(g, 0),
+             word = const_int(g, (int32_t)(a->wbit / 32 - g->e.window_word0));
+    uint32_t w =
+        op1(g, OP_LOAD, u, op3(g, OP_ACCESS_CHAIN, ptr_type(g, SC_PUSH_CONSTANT, u), g->e.window_push, zero, word));
+    if (a->wbit % 32) w = op2(g, OP_SHIFT_RIGHT_LOGICAL, u, w, constant(g, GT_UINT, a->wbit % 32));
+    return op2(g, OP_BITWISE_AND, u, w, constant(g, GT_UINT, 0xffffu));
+}
+/* the word at byte at past a's place in its block */
+static uint32_t window_word(Glslc* g, const Access* a, uint32_t units, uint32_t at) {
+    uint32_t u = val_type(g, GT_UINT), k = a->wconst + at, index, comp;
+    if (!a->wdyn) {
+        index = op2(g, OP_I_ADD, u, units, constant(g, GT_UINT, k >> 4));
+        comp = constant(g, GT_UINT, (k >> 2) & 3u);
+    } else {
+        uint32_t byte = op2(g, OP_I_ADD, u, a->wdyn, constant(g, GT_UINT, k));
+        index = op2(g, OP_I_ADD, u, units, op2(g, OP_SHIFT_RIGHT_LOGICAL, u, byte, constant(g, GT_UINT, 4)));
+        comp = op2(g, OP_BITWISE_AND, u, op2(g, OP_SHIFT_RIGHT_LOGICAL, u, byte, constant(g, GT_UINT, 2)),
+                   constant(g, GT_UINT, 3));
+    }
+    uint32_t pt = ptr_type(g, SC_UNIFORM, u), zero = const_int(g, 0), p = id(g), at_ = mark(g);
+    push(g, pt);
+    push(g, p);
+    push(g, a->wvar);
+    push(g, zero);
+    push(g, index);
+    push(g, comp);
+    inst_stack(g, &g->e.body, OP_ACCESS_CHAIN, at_);
+    return op1(g, OP_LOAD, u, p);
+}
+/* words w (a uint, or a uvec of t's components) as the scalar or vector t */
+static uint32_t words_as(Glslc* g, uint32_t w, uint32_t t) {
+    uint32_t base = ty(g, t)->base;
+    if (base == SNX_GLSLC_BASE_UINT) return w;
+    if (base == SNX_GLSLC_BASE_BOOL)
+        return op2(g, OP_I_NOT_EQUAL, val_type(g, t), w,
+                   const_splat(g, glslc_vector_type(SNX_GLSLC_BASE_UINT, rows_of(g, t)), 0));
+    return op1(g, OP_BITCAST, val_type(g, t), w);
+}
+/* the value of type t at byte at past a's place, its vectors' components comp bytes apart, its matrices row-major
+   with row */
+static uint32_t window_value(Glslc* g, const Access* a, uint32_t units, uint32_t t, uint32_t at, uint32_t comp,
+                             uint32_t row) {
+    const GlslcType* y = ty(g, t);
+    uint32_t r, mark_at;
+    switch (y->kind) {
+        case GLSLC_T_SCALAR: return words_as(g, window_word(g, a, units, at), t);
+        case GLSLC_T_VECTOR: {
+            uint32_t w[4];
+            for (uint32_t i = 0; i < y->rows; i++) w[i] = window_word(g, a, units, at + i * comp);
+            r = id(g), mark_at = mark(g);
+            push(g, val_type(g, glslc_vector_type(SNX_GLSLC_BASE_UINT, y->rows)));
+            push(g, r);
+            for (uint32_t i = 0; i < y->rows; i++) push(g, w[i]);
+            inst_stack(g, &g->e.body, OP_COMPOSITE_CONSTRUCT, mark_at);
+            return words_as(g, r, t);
+        }
+        case GLSLC_T_MATRIX: {
+            uint32_t col = glslc_vector_type(SNX_GLSLC_BASE_FLOAT, y->rows),
+                     ms = matrix_stride(g, t, a->layout, (int)row);
+            r = id(g), mark_at = mark(g);
+            push(g, val_type(g, t));
+            push(g, r);
+            for (uint32_t c = 0; c < y->cols; c++)
+                push(g, window_value(g, a, units, col, at + (row ? 4u * c : ms * c), row ? ms : 4u, 0));
+            inst_stack(g, &g->e.body, OP_COMPOSITE_CONSTRUCT, mark_at);
+            return r;
+        }
+        case GLSLC_T_ARRAY: {
+            if (!y->len) glslc_fail(g, g->e.site, "an array with no size cannot be copied whole: read its elements");
+            uint32_t stride = array_stride(g, t, a->layout, (int)row);
+            r = id(g), mark_at = mark(g);
+            push(g, val_type(g, t));
+            push(g, r);
+            for (uint32_t i = 0; i < y->len; i++) push(g, window_value(g, a, units, y->elem, at + i * stride, 4u, row));
+            inst_stack(g, &g->e.body, OP_COMPOSITE_CONSTRUCT, mark_at);
+            return r;
+        }
+        case GLSLC_T_STRUCT: {
+            r = id(g), mark_at = mark(g);
+            push(g, val_type(g, t));
+            push(g, r);
+            for (uint32_t i = 0; i < y->len; i++) {
+                uint32_t mt = g->members[y->first + i].type;
+                if (is_sampler_member(g, mt)) continue;
+                push(g, window_value(g, a, units, mt, at + member_offset(g, t, i, a->layout, NULL), 4u, 0));
+            }
+            inst_stack(g, &g->e.body, OP_COMPOSITE_CONSTRUCT, mark_at);
+            return r;
+        }
+        default: glslc_fail(g, g->e.site, "glslc reads no value of this type through a window"); return 0;
+    }
+}
+
 static void access_push(Glslc* g, Access* a, uint32_t index) {
     if (a->nidx == 16) { /* a long chain, in two instructions */
         uint32_t t = ty(g, a->type)->kind == GLSLC_T_IMAGE ? a->img : type_id(g, a->type, a->layout);
@@ -925,6 +1116,12 @@ static int access(Glslc* g, uint32_t n, Access* a) {
                 return 0;
             if (y->kind == GLSLC_SK_BLOCK_MEMBER) {
                 const GlslcSymbol* holder = &g->syms[y->aux];
+                const GlslcBlockRead* r = block_read(g, y->aux);
+                if (r && r->mode == SNX_GLSLC_BLOCK_WINDOW) {
+                    uint32_t row = 0, at = member_offset(g, holder->type, y->aux2, GLSLC_LAYOUT_STD140, &row);
+                    window_start(a, r, r->var, y->type, at, row);
+                    return 1;
+                }
                 a->base = g->e.sym_ids[y->aux];
                 a->storage = storage_of(g, y->aux);
                 a->layout = block_layout(holder->packing);
@@ -932,13 +1129,25 @@ static int access(Glslc* g, uint32_t n, Access* a) {
                 return 1;
             }
             if (y->storage == GLSLC_ST_UNIFORM && g->e.sym_types[s] == 0xffffffffu) { /* a loose uniform */
+                const GlslcBlockRead* r = block_read(g, 0);
+                if (r && r->mode == SNX_GLSLC_BLOCK_WINDOW) {
+                    window_start(a, r, r->var, y->type, default_offset(g, s), 0);
+                    return 1;
+                }
                 a->base = g->e.default_block;
-                a->storage = SC_UNIFORM;
+                a->storage = r && r->mode == SNX_GLSLC_BLOCK_STORAGE ? SC_STORAGE_BUFFER : SC_UNIFORM;
                 a->layout = GLSLC_LAYOUT_STD140;
                 a->idx[a->nidx++] = const_int(g, (int32_t)g->e.sym_ids[s]);
                 return 1;
             }
             if (!g->e.sym_ids[s]) return 0;
+            if (y->storage == GLSLC_ST_UNIFORM) { /* an instance-named block */
+                const GlslcBlockRead* r = block_read(g, s);
+                if (r && r->mode == SNX_GLSLC_BLOCK_WINDOW) {
+                    window_start(a, r, r->var, y->type, 0, 0);
+                    return 1;
+                }
+            }
             a->base = g->e.sym_ids[s];
             a->storage = storage_of(g, s);
             uint32_t e = y->type;
@@ -949,6 +1158,11 @@ static int access(Glslc* g, uint32_t n, Access* a) {
         }
         case GLSLC_N_INDEX:
             if (!access(g, x->a, a) || a->nswizzle) return 0;
+            if (a->wvar) {
+                window_index(g, a, x->b);
+                a->type = x->type;
+                return 1;
+            }
             access_push(g, a, rvalue(g, x->b));
             a->type = x->type;
             return 1;
@@ -959,13 +1173,21 @@ static int access(Glslc* g, uint32_t n, Access* a) {
                 return 1;
             }
             if (!access(g, x->a, a)) return 0;
+            if (a->wvar) {
+                a->wconst += member_offset(g, st, x->b, a->layout, &a->wrow);
+                a->wcomp = 4;
+                a->type = x->type;
+                return 1;
+            }
             access_push(g, a, const_int(g, (int32_t)spirv_member(g, st, x->b)));
             a->type = x->type;
             return 1;
         }
         case GLSLC_N_SWIZZLE:
             if (!access(g, x->a, a) || a->nswizzle) return 0;
-            if (x->op == 1) {
+            if (x->op == 1 && a->wvar) {
+                a->wconst += (x->b & 3u) * a->wcomp;
+            } else if (x->op == 1) {
                 access_push(g, a, const_int(g, x->b & 3));
             } else {
                 a->vtype = nd(g, x->a)->type;
@@ -982,6 +1204,7 @@ static int access(Glslc* g, uint32_t n, Access* a) {
 
 /* the pointer the access ends at, before its swizzle */
 static uint32_t pointer_of(Glslc* g, const Access* a) {
+    if (a->wvar) glslc_fail(g, g->e.site, "a uniform block read through a window is read as values, never pointed at");
     if (!a->nidx) return a->base;
     uint32_t t = a->nswizzle ? a->vtype : a->type;
     uint32_t pt = ty(g, t)->kind == GLSLC_T_IMAGE ? a->img : type_id(g, t, a->layout);
@@ -1001,9 +1224,16 @@ static uint32_t load_ptr(Glslc* g, uint32_t ptr, uint32_t t, uint32_t layout, ui
 }
 
 static uint32_t load(Glslc* g, const Access* a) {
-    uint32_t ptr = pointer_of(g, a);
-    if (!a->nswizzle) return load_ptr(g, ptr, a->type, a->layout, a->img);
-    uint32_t v = load_ptr(g, ptr, a->vtype, a->layout, 0);
+    uint32_t v;
+    if (a->wvar) {
+        uint32_t units = window_units(g, a);
+        if (!a->nswizzle) return window_value(g, a, units, a->type, 0, a->wcomp, a->wrow);
+        v = window_value(g, a, units, a->vtype, 0, a->wcomp, a->wrow);
+    } else {
+        uint32_t ptr = pointer_of(g, a);
+        if (!a->nswizzle) return load_ptr(g, ptr, a->type, a->layout, a->img);
+        v = load_ptr(g, ptr, a->vtype, a->layout, 0);
+    }
     uint32_t r = id(g), at = mark(g);
     push(g, val_type(g, a->type));
     push(g, r);
@@ -1785,13 +2015,17 @@ static uint32_t rvalue(Glslc* g, uint32_t n) {
 
 /* statements */
 
-static void relaxed(Glslc* g, uint32_t target, uint32_t t, uint8_t prec) {
+/* whether a value of type t (its element's) declared at precision prec is RelaxedPrecision: lowp and mediump numbers
+   of GLSL ES. Desktop GLSL's qualifiers are there for portability and change nothing (GLSL 4.50, 4.7): a driver that
+   computes RelaxedPrecision at 16 bits would draw a desktop game's mediump coordinates in steps */
+static int relaxed_at(const Glslc* g, uint32_t t, uint8_t prec) {
     uint32_t e = element_of(g, t);
     uint8_t k = ty(g, e)->kind;
-    if ((prec != GLSLC_PREC_LOW && prec != GLSLC_PREC_MEDIUM) ||
-        !(k == GLSLC_T_SCALAR || k == GLSLC_T_VECTOR || k == GLSLC_T_MATRIX) || ty(g, e)->base == SNX_GLSLC_BASE_BOOL)
-        return;
-    EMIT(g, &g->e.annotations, OP_DECORATE, target, DEC_RELAXED_PRECISION);
+    return !g->desktop_version && (prec == GLSLC_PREC_LOW || prec == GLSLC_PREC_MEDIUM) &&
+           (k == GLSLC_T_SCALAR || k == GLSLC_T_VECTOR || k == GLSLC_T_MATRIX) && ty(g, e)->base != SNX_GLSLC_BASE_BOOL;
+}
+static void relaxed(Glslc* g, uint32_t target, uint32_t t, uint8_t prec) {
+    if (relaxed_at(g, t, prec)) EMIT(g, &g->e.annotations, OP_DECORATE, target, DEC_RELAXED_PRECISION);
 }
 
 static void local_declaration(Glslc* g, uint32_t n) {
@@ -2349,6 +2583,85 @@ static void io_block_variable(Glslc* g, uint32_t s) {
     }
 }
 
+/* GlslcOptions.block's answer for uniform block s (0 the default one), placed at set and binding, of size bytes and
+   array blocks (0 for one), kept when it is not a uniform buffer read whole */
+static void ask_block(Glslc* g, uint32_t s, uint32_t set, uint32_t binding, uint32_t size, uint32_t array,
+                      GlslcView name) {
+    static const char default_name[] = "the default uniform block";
+    const char* text = name.len ? glslc_view_text(g, name) : default_name;
+    int len = name.len ? (int)name.len : (int)sizeof default_name - 1;
+    uint32_t bit = 0;
+    if (!g->block) return;
+    int mode = g->block(g->bind_user, set, binding, &bit);
+    if (mode == SNX_GLSLC_BLOCK_UNIFORM) return;
+    if (mode != SNX_GLSLC_BLOCK_STORAGE && mode != SNX_GLSLC_BLOCK_WINDOW)
+        glslc_fail(g, name.pos,
+                   "the block map answers %d for %.*s: glslc takes 0 (a uniform buffer), 1 (a storage buffer) or 2 (a "
+                   "window)",
+                   mode, len, text);
+    if (array)
+        glslc_fail(g, name.pos, "%.*s is an array of %u blocks: the block map reads one block a binding", len, text,
+                   array);
+    if (mode == SNX_GLSLC_BLOCK_WINDOW && size > 65536u)
+        glslc_fail(g, name.pos, "%.*s takes %u bytes, past the 65536 a window holds", len, text, size);
+    if (mode == SNX_GLSLC_BLOCK_WINDOW && bit % 16)
+        glslc_fail(g, name.pos, "the block map puts %.*s's window offset at bit %u, which is not a multiple of 16", len,
+                   text, bit);
+    if (g->e.nblock_reads == GLSLC_MAX_BLOCK_READS)
+        glslc_fail(g, name.pos, "the shader has more than the %u uniform blocks glslc reads otherwise than whole",
+                   GLSLC_MAX_BLOCK_READS);
+    g->e.block_reads[g->e.nblock_reads++] = (GlslcBlockRead){s, (uint32_t)mode, bit, 0};
+}
+/* a window's variable type: a Block of 4096 uvec4, 64 KiB */
+static uint32_t window_type(Glslc* g) {
+    if (g->e.window_type) return g->e.window_type;
+    uint32_t uvec4 = val_type(g, GT_UVEC4), len = constant(g, GT_UINT, 4096), arr = id(g), st = id(g);
+    EMIT(g, &g->e.globals, OP_TYPE_ARRAY, arr, uvec4, len);
+    EMIT(g, &g->e.annotations, OP_DECORATE, arr, DEC_ARRAY_STRIDE, 16);
+    EMIT(g, &g->e.globals, OP_TYPE_STRUCT, st, arr);
+    EMIT(g, &g->e.annotations, OP_DECORATE, st, DEC_BLOCK);
+    EMIT(g, &g->e.annotations, OP_MEMBER_DECORATE, st, 0, DEC_OFFSET, 0);
+    static const char block_name[] = "gl_ScarletWindow";
+    inst_string(g, &g->e.names, OP_NAME, &st, 1, block_name, (uint32_t)sizeof block_name - 1, NULL, 0);
+    g->e.window_type = st;
+    return st;
+}
+/* the variable a window's reads go through, beside the block's own at its set and binding: the block's keeps its
+   struct for a backend that reads the module's types, and no read uses it */
+static uint32_t window_variable(Glslc* g, uint32_t set, uint32_t binding) {
+    uint32_t v = id(g);
+    EMIT(g, &g->e.globals, OP_VARIABLE, ptr_type(g, SC_UNIFORM, window_type(g)), v, SC_UNIFORM);
+    EMIT(g, &g->e.annotations, OP_DECORATE, v, DEC_DESCRIPTOR_SET, set);
+    EMIT(g, &g->e.annotations, OP_DECORATE, v, DEC_BINDING, binding);
+    return v;
+}
+/* the push constants the windows' offsets are read from: a Block of the words from the first to the last window's */
+static void window_push_block(Glslc* g) {
+    uint32_t lo = 0xffffffffu, hi = 0;
+    for (uint32_t i = 0; i < g->e.nblock_reads; i++) {
+        const GlslcBlockRead* r = &g->e.block_reads[i];
+        if (r->mode != SNX_GLSLC_BLOCK_WINDOW) continue;
+        if (r->bit / 32 < lo) lo = r->bit / 32;
+        if (r->bit / 32 > hi) hi = r->bit / 32;
+    }
+    if (lo == 0xffffffffu) return;
+    if (g->e.flip_in[0] || g->e.flip_in[1])
+        glslc_fail(g, 0,
+                   "the shader reads its windows' offsets and flip_y's flip from push constants: glslc takes one "
+                   "of them");
+    uint32_t u = val_type(g, GT_UINT), len = constant(g, GT_UINT, hi - lo + 1), arr = id(g), st = id(g), v = id(g);
+    EMIT(g, &g->e.globals, OP_TYPE_ARRAY, arr, u, len);
+    EMIT(g, &g->e.annotations, OP_DECORATE, arr, DEC_ARRAY_STRIDE, 4);
+    EMIT(g, &g->e.globals, OP_TYPE_STRUCT, st, arr);
+    EMIT(g, &g->e.annotations, OP_DECORATE, st, DEC_BLOCK);
+    EMIT(g, &g->e.annotations, OP_MEMBER_DECORATE, st, 0, DEC_OFFSET, lo * 4);
+    EMIT(g, &g->e.globals, OP_VARIABLE, ptr_type(g, SC_PUSH_CONSTANT, st), v, SC_PUSH_CONSTANT);
+    static const char block_name[] = "gl_ScarletWindows";
+    inst_string(g, &g->e.names, OP_NAME, &st, 1, block_name, (uint32_t)sizeof block_name - 1, NULL, 0);
+    g->e.window_push = v;
+    g->e.window_word0 = lo;
+}
+
 static void resource_variable(Glslc* g, uint32_t s) {
     GlslcSymbol* y = &g->syms[s];
     uint32_t e = element_of(g, y->type), set, binding;
@@ -2373,6 +2686,10 @@ static void resource_variable(Glslc* g, uint32_t s) {
         set = y->set >= 0 ? (uint32_t)y->set : 0;
         binding = y->binding >= 0 ? (uint32_t)y->binding : free_binding(g, y->name);
     }
+    if (kind == SNX_GLSLC_REFLECT_UNIFORM_BLOCK)
+        ask_block(g, s, set, binding, size, ty(g, y->type)->kind == GLSLC_T_ARRAY ? ty(g, y->type)->len : 0, et->name);
+    GlslcBlockRead* read = (GlslcBlockRead*)block_read(g, s);
+    if (read && read->mode == SNX_GLSLC_BLOCK_WINDOW) read->var = window_variable(g, set, binding);
     uint32_t pointee, v;
     if (et->kind == GLSLC_T_IMAGE) {
         pointee = image_type(g, e, y->packing);
@@ -2386,6 +2703,7 @@ static void resource_variable(Glslc* g, uint32_t s) {
     }
     v = variable(g, s, storage_of(g, s), pointee, 0);
     if (et->kind == GLSLC_T_BLOCK) EMIT(g, &g->e.annotations, OP_DECORATE, type_id(g, e, 0), DEC_BLOCK);
+    if (read && read->mode == SNX_GLSLC_BLOCK_STORAGE) EMIT(g, &g->e.annotations, OP_DECORATE, v, DEC_NON_WRITABLE);
     EMIT(g, &g->e.annotations, OP_DECORATE, v, DEC_DESCRIPTOR_SET, set);
     EMIT(g, &g->e.annotations, OP_DECORATE, v, DEC_BINDING, binding);
     if (y->qual & GLSLC_Q_READONLY) EMIT(g, &g->e.annotations, OP_DECORATE, v, DEC_NON_WRITABLE);
@@ -2462,26 +2780,28 @@ static void default_uniform_block(Glslc* g) {
         }
         uint32_t pre[2] = {r, m};
         inst_string(g, &g->e.names, OP_MEMBER_NAME, pre, 2, glslc_view_text(g, y->name), y->name.len, NULL, 0);
-        if (y->prec == GLSLC_PREC_LOW || y->prec == GLSLC_PREC_MEDIUM) {
-            uint32_t k = ty(g, e)->kind;
-            if ((k == GLSLC_T_SCALAR || k == GLSLC_T_VECTOR || k == GLSLC_T_MATRIX) &&
-                ty(g, e)->base != SNX_GLSLC_BASE_BOOL)
-                EMIT(g, &g->e.annotations, OP_MEMBER_DECORATE, r, m, DEC_RELAXED_PRECISION);
-        }
+        bool_member(g, r, m, y->type);
+        if (relaxed_at(g, y->type, y->prec))
+            EMIT(g, &g->e.annotations, OP_MEMBER_DECORATE, r, m, DEC_RELAXED_PRECISION);
         reflect(g, SNX_GLSLC_REFLECT_UNIFORM, y->name, y->type, 0, 0, offset);
         offset += size;
     }
-    EMIT(g, &g->e.annotations, OP_DECORATE, r, DEC_BLOCK);
-    uint32_t v = id(g);
-    EMIT(g, &g->e.globals, OP_VARIABLE, ptr_type(g, SC_UNIFORM, r), v, SC_UNIFORM);
-    inst_string(g, &g->e.names, OP_NAME, &v, 1, "", 0, NULL, 0);
     uint32_t set = 0, binding = 0;
     if (g->bind && g->map_default) {
         GlslcResource res = {none, none, SNX_GLSLC_REFLECT_UNIFORM_BLOCK, 0, 0, -1, -1, 0, round_up(offset, max)};
         mapped_binding(g, &res, &set, &binding);
+        ask_block(g, 0, set, binding, round_up(offset, max), 0, none);
     } else {
         binding = free_binding(g, none);
     }
+    GlslcBlockRead* read = (GlslcBlockRead*)block_read(g, 0);
+    uint32_t storage = read && read->mode == SNX_GLSLC_BLOCK_STORAGE ? SC_STORAGE_BUFFER : SC_UNIFORM;
+    if (read && read->mode == SNX_GLSLC_BLOCK_WINDOW) read->var = window_variable(g, set, binding);
+    EMIT(g, &g->e.annotations, OP_DECORATE, r, DEC_BLOCK);
+    uint32_t v = id(g);
+    EMIT(g, &g->e.globals, OP_VARIABLE, ptr_type(g, storage, r), v, storage);
+    inst_string(g, &g->e.names, OP_NAME, &v, 1, "", 0, NULL, 0);
+    if (storage == SC_STORAGE_BUFFER) EMIT(g, &g->e.annotations, OP_DECORATE, v, DEC_NON_WRITABLE);
     EMIT(g, &g->e.annotations, OP_DECORATE, v, DEC_DESCRIPTOR_SET, set);
     EMIT(g, &g->e.annotations, OP_DECORATE, v, DEC_BINDING, binding);
     g->e.default_block = v;
@@ -2574,6 +2894,7 @@ static void global_variables(Glslc* g) {
         }
     }
     default_uniform_block(g);
+    window_push_block(g);
 }
 
 static void fail_size(Glslc* g, const char* message) {
@@ -2590,12 +2911,16 @@ void glslc_emit(Glslc* g, uint32_t* words, size_t capacity) {
     memset(e->sym_types, 0, (size_t)g->nsyms * sizeof(uint32_t));
     memset(e->sampler_ids, 0, (size_t)g->nsyms * sizeof(uint32_t));
     e->next_id = 1;
+    g->result->bool_count = 0;
+    e->nblock_reads = 0;
+    e->window_type = e->window_push = e->window_word0 = 0;
     e->site = 0;
     cap(g, CAP_SHADER);
     e->glsl_ext = id(g);
     static const char glsl[] = "GLSL.std.450";
     inst_string(g, &e->imports, OP_EXT_INST_IMPORT, &e->glsl_ext, 1, glsl, (uint32_t)sizeof glsl - 1, NULL, 0);
-    EMIT(g, &e->names, 3, 1, g->version); /* OpSource ESSL version */
+    /* OpSource: ESSL (1) and its version, or GLSL (2) and a desktop shader's */
+    EMIT(g, &e->names, 3, g->desktop_version ? 2u : 1u, g->desktop_version ? g->desktop_version : g->version);
     global_variables(g);
     for (uint32_t d = g->first_decl; d; d = nd(g, d)->next) {
         if (nd(g, d)->kind != GLSLC_N_FUNCTION) continue;

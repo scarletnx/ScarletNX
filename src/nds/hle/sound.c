@@ -729,7 +729,9 @@ static void init_track(SndTrack* track)
 
 static void release_track(SndTrack* track, SndSequence* seq, bool flag)
 {
-    int volbase3 = base_volume_table[seq->volume] + base_volume_table[track->volume] + base_volume_table[track->expression];
+    /* the three are bytes a game's sequence and commands set whole: the table holds a volume's 128 levels */
+    int volbase3 = base_volume_table[seq->volume & 0x7F] + base_volume_table[track->volume & 0x7F] +
+                   base_volume_table[track->expression & 0x7F];
     if (volbase3 < -0x8000) volbase3 = -0x8000;
 
     int volbase1 = track->track_unk0_a + seq->seq_unk06;

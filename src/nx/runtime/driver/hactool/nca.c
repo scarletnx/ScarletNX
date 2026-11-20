@@ -1065,6 +1065,13 @@ void nca_process_pfs0_section(nca_section_ctx_t *ctx) {
         exit(EXIT_FAILURE);
     }
     pfs0_header_from_le(ctx->pfs0_ctx.header, 1);
+    uint32_t bad_name = pfs0_first_bad_name(ctx->pfs0_ctx.header);
+    if (bad_name != ctx->pfs0_ctx.header->num_files) {
+        fprintf(stderr, "Error: PFS0 is corrupt: file %"PRIu32"'s name, from byte %"PRIu32" of a string table of "
+                "%"PRIu32" bytes, does not end in it!\n", bad_name,
+                pfs0_get_file_entry(ctx->pfs0_ctx.header, bad_name)->string_table_offset, ctx->pfs0_ctx.header->string_table_size);
+        exit(EXIT_FAILURE);
+    }
 
     for (unsigned int i = 0; i < ctx->pfs0_ctx.header->num_files; i++) {
         pfs0_file_entry_t *cur_file = pfs0_get_file_entry(ctx->pfs0_ctx.header, i);
@@ -1087,7 +1094,9 @@ void nca_process_pfs0_section(nca_section_ctx_t *ctx) {
                 exit(EXIT_FAILURE);
             }
 
-            if (ctx->pfs0_ctx.npdm->magic == SNX_LE32(MAGIC_META)) {
+            /* ScarletNX: a file shorter than the magic has none to read */
+            if (cur_file->size >= sizeof(ctx->pfs0_ctx.npdm->magic) &&
+                ctx->pfs0_ctx.npdm->magic == SNX_LE32(MAGIC_META)) {
                 ctx->pfs0_ctx.is_exefs = 1;
             }
         }
@@ -1102,7 +1111,13 @@ void nca_process_ivfc_section(nca_section_ctx_t *ctx) {
         ivfc_level_ctx_t *cur_level = &ctx->romfs_ctx.ivfc_levels[i];
         cur_level->data_offset = sb->ivfc_header.level_headers[i].logical_offset;
         cur_level->data_size = sb->ivfc_header.level_headers[i].hash_data_size;
-        cur_level->hash_block_size = 1 << sb->ivfc_header.level_headers[i].block_size;
+        /* ScarletNX: the size's power of two is the dump's word, and one that passes the size's 32 bits is no size */
+        if (sb->ivfc_header.level_headers[i].block_size >= 32) {
+            fprintf(stderr, "Error: IVFC level %u's block size is 2^%"PRIu32", past 2^31!\n", i + 1,
+                    sb->ivfc_header.level_headers[i].block_size);
+            exit(EXIT_FAILURE);
+        }
+        cur_level->hash_block_size = UINT32_C(1) << sb->ivfc_header.level_headers[i].block_size;
 
         if (i != 0) {
             /* Hash table is previous level's data. */
@@ -1274,7 +1289,13 @@ void nca_process_bktr_section(nca_section_ctx_t *ctx) {
             ivfc_level_ctx_t *cur_level = &ctx->bktr_ctx.ivfc_levels[i];
             cur_level->data_offset = sb->ivfc_header.level_headers[i].logical_offset;
             cur_level->data_size = sb->ivfc_header.level_headers[i].hash_data_size;
-            cur_level->hash_block_size = 1 << sb->ivfc_header.level_headers[i].block_size;
+            /* ScarletNX: the size's power of two is the dump's word, and one that passes the size's 32 bits is no size */
+            if (sb->ivfc_header.level_headers[i].block_size >= 32) {
+                fprintf(stderr, "Error: IVFC level %u's block size is 2^%"PRIu32", past 2^31!\n", i + 1,
+                        sb->ivfc_header.level_headers[i].block_size);
+                exit(EXIT_FAILURE);
+            }
+            cur_level->hash_block_size = UINT32_C(1) << sb->ivfc_header.level_headers[i].block_size;
 
             if (i != 0) {
                 /* Hash table is previous level's data. */

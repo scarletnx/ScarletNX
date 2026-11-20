@@ -93,5 +93,9 @@ int gnu_arm_run(GnuThread* t) {
     }
     t->running = 0;
     snx_arm_exec_free(exec);
+    if (reason >= 16) { /* a fault in guest code, from the host's handler (execution.c): the process ends by it */
+        gnu_process_fault(t, reason - 16, "Guest memory access violated mapped permissions");
+        reason = p->exited && p->kernel.stopper == &t->k ? 1 : 4;
+    }
     return reason ? reason : 1;
 }

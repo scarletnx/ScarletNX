@@ -200,6 +200,10 @@ if(BUILD_TESTING)
     list(FILTER gui_tests INCLUDE REGEX "^snx-test-")
     foreach(test IN LISTS gui_tests)
         target_compile_options(${test} PRIVATE -Wall -Wextra -Werror -UNDEBUG)
+        # these tests keep the menu's state (App, some 750 KiB) on their stack: Windows gives 1 MiB, Linux 8
+        if(WIN32)
+            target_link_options(${test} PRIVATE "LINKER:--stack,8388608")
+        endif()
     endforeach()
     snx_test_sanitize(${gui_tests})
     # every gui_ test's program, tests/CMakeLists.txt's two with these: what a cross build runs of the launcher's tests

@@ -284,6 +284,28 @@ root decode_umax_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_max_min
 root decode_umin_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_max_min_single
 root decode_neg_advsimd_aarch64_instrs_vector_arithmetic_unary_diff_neg_int_simd
 root decode_abs_advsimd_aarch64_instrs_vector_arithmetic_unary_diff_neg_int_simd
+root decode_mul_advsimd_vec_aarch64_instrs_vector_arithmetic_binary_uniform_mul_int_product
+
+# A64 SIMD, the pairwise ops (ir_vec.c's three same ones that read the elements of Vm:Vn two by two): each element
+# loop's element 2e and 2e + 1 of the concatenation are a shuffle of both registers' lanes (gen.c's lanes)
+root decode_addp_advsimd_vec_aarch64_instrs_vector_arithmetic_binary_uniform_add_wrapping_pair
+root decode_smaxp_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_max_min_pair
+root decode_sminp_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_max_min_pair
+root decode_umaxp_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_max_min_pair
+root decode_uminp_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_max_min_pair
+
+# A64 SIMD, across lanes (ir_vec.c's across()): each element loop that folds the elements into one value from the
+# first is one reduction of the lanes, and so is ADDV's Reduce, which adds what it gives for each half of its bits
+# (gen.c's halves). Reduce's floating-point minimum and maximum, which no instruction here reaches, are not followed
+root decode_addv_advsimd_aarch64_instrs_vector_reduce_add_simd
+root decode_saddlv_advsimd_aarch64_instrs_vector_reduce_add_long
+root decode_uaddlv_advsimd_aarch64_instrs_vector_reduce_add_long
+root decode_smaxv_advsimd_aarch64_instrs_vector_reduce_int_max
+root decode_sminv_advsimd_aarch64_instrs_vector_reduce_int_max
+root decode_umaxv_advsimd_aarch64_instrs_vector_reduce_int_max
+root decode_uminv_advsimd_aarch64_instrs_vector_reduce_int_max
+stop FPMin__1
+stop FPMax__1
 
 # what the generator knows when it recompiles (gen.c: the pc, the decode's SEE) and the state no instruction here
 # reaches: the banked stack pointers the original SP_read picks among (nx.sail's reads GPR's last element), SPE's
@@ -476,6 +498,7 @@ lower FPRoundingMode
 stop V_read
 stop V_set
 stop FPCR_read
+stop FPCR
 stop CheckFPEnabled64
 stop CheckFPAdvSIMDEnabled64
 stop IsMerging

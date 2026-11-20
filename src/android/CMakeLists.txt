@@ -103,6 +103,7 @@ if(NOT TARGET scarletnx-gnuabi-kernel)
 endif()
 # scarletnx-net: the network stack's constants as the host's (common/network/net_host.h), for the guest's sockets,
 # which are the host's own. Windows: winpthreads for bionic's threads, Winsock for its sockets
+target_link_libraries(snx_android_bridge PUBLIC snx_gl) # GLES 2 and 3's fixed state (common/gpu/gl/gl_state.h)
 target_link_libraries(snx_android_bridge PUBLIC scarletnx-common scarletnx-recompiler scarletnx-gnuabi-kernel
                       scarletnx-net snx_zlib snx_glslc SDL3::SDL3 Vulkan::Headers)
 find_package(Threads REQUIRED)

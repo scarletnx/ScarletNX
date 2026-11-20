@@ -6,6 +6,7 @@
 #include "common/network/net_ldn.h"
 #include "common/network/net_internal.h"
 #include "common/utilities/endian.h"
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -191,6 +192,32 @@ static void two_consoles(void) {
 
     /* nothing to find before the host creates its network: the scan waits its whole time out */
     CHECK(snx_ldn_scan(b, NULL, found, 4, 150) == 0);
+
+    /* an SSID's length is a byte, the filter's as the network's, and the field holds 33: a network whose host says
+       200 is found by no filter's SSID, whatever follows the field on either side. Here the 200 bytes from the
+       filter's SSID on, the room after it with them, are the network's from its own: the filter's flag lies among
+       them, so the network carries its bytes at that place */
+    {
+        struct {
+            SnxLdnScanFilter filter;
+            uint8_t room[200];
+        } wide;
+        const size_t flag_at = offsetof(SnxLdnScanFilter, flag) - offsetof(SnxLdnScanFilter, ssid);
+        const uint32_t flag = snx_le32(SNX_LDN_FILTER_SSID);
+        network_of(a, &net, 0x0100ABCD12345000ull);
+        net.ssid_length = 200;
+        memcpy((uint8_t*)&net + offsetof(SnxLdnNetworkInfo, ssid) + flag_at, &flag, sizeof flag);
+        CHECK(snx_ldn_create_network(a, &net) == 0);
+        CHECK(snx_ldn_scan(b, NULL, found, 4, 1000) == 1 && found[0].ssid_length == 200);
+        memset(&wide, 0, sizeof wide);
+        wide.filter.ssid_length = 200;
+        memcpy((uint8_t*)&wide + offsetof(SnxLdnScanFilter, ssid),
+               (const uint8_t*)&found[0] + offsetof(SnxLdnNetworkInfo, ssid), 200);
+        CHECK(wide.filter.flag == flag);
+        CHECK(snx_ldn_scan(b, &wide.filter, found, 4, 300) == 0);
+        snx_ldn_destroy_network(a);
+        CHECK(!snx_ldn_connected(a));
+    }
 
     /* the host's network, with its advertisement set before and after */
     CHECK(snx_ldn_set_advertise_data(a, "before", 6) == 0);

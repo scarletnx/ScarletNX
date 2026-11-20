@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "common/utilities/program_start.h"
+#include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -15,15 +16,16 @@ static SnxStartRow* row(SnxStartRow* rows, int* n, const char* label) {
     r->value[0] = 0;
     return r;
 }
-/* the end of a row's value, to go on writing it */
-static char* tail(SnxStartRow* r, size_t* left) {
+/* more text at the end of a row's value, cut where the value's room ends */
+[[gnu::format(printf, 2, 3)]] static void add(SnxStartRow* r, const char* format, ...) {
     size_t n = strlen(r->value);
-    *left = sizeof r->value - n;
-    return r->value + n;
+    va_list arguments;
+    va_start(arguments, format);
+    vsnprintf(r->value + n, sizeof r->value - n, format, arguments);
+    va_end(arguments);
 }
 int snx_program_start_rows(const SnxProgramStart* f, SnxStartRow rows[SNX_START_ROWS]) {
     SnxStartRow* r;
-    size_t left;
     int n = 0;
     r = row(rows, &n, "PROGRAM");
     if (f->program < 0)
@@ -40,12 +42,11 @@ int snx_program_start_rows(const SnxProgramStart* f, SnxStartRow rows[SNX_START_
                  f->previous == f->program ? " (restarted)" : "");
     r = row(rows, &n, "USER");
     snprintf(r->value, sizeof r->value, "%s", f->user[0] ? f->user : "?");
-    if (f->user[0] && f->user_number > 0) snprintf(tail(r, &left), left, " (user %d)", f->user_number);
-    if (f->user_kept == 1 && f->previous >= 0) snprintf(tail(r, &left), left, ", kept from program %d", f->previous);
+    if (f->user[0] && f->user_number > 0) add(r, " (user %d)", f->user_number);
+    if (f->user_kept == 1 && f->previous >= 0) add(r, ", kept from program %d", f->previous);
     r = row(rows, &n, "VERSION");
     snprintf(r->value, sizeof r->value, "%s", f->version[0] ? f->version : "?");
-    if (f->updated != 0)
-        snprintf(tail(r, &left), left, " (update %s)", f->updated > 0 && f->update[0] ? f->update : "?");
+    if (f->updated != 0) add(r, " (update %s)", f->updated > 0 && f->update[0] ? f->update : "?");
     r = row(rows, &n, "DLC");
     snprintf(r->value, sizeof r->value, "%s", f->dlcs < 0 ? "?" : !f->dlcs ? "none" : f->dlc[0] ? f->dlc : "?");
     if (f->storages >= 0) {

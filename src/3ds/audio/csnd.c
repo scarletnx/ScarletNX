@@ -145,8 +145,9 @@ static void step(SnxCtrCsndChannel* ch, SnxCtrMemory* memory) {
 }
 static int32_t interpolated(const SnxCtrCsndChannel* ch) {
     if (!(ch->cnt & SNX_CTR_CSND_INTERPOLATE)) return ch->current;
-    int32_t delta = ch->current - ch->previous;
-    return (int16_t)(ch->previous + delta * (int32_t)ch->counter / (int32_t)period_of(ch));
+    /* 64 bits: the samples' full swing times a counter past half the longest period does not fit in 32 */
+    int64_t delta = ch->current - ch->previous;
+    return (int16_t)(ch->previous + delta * (int64_t)ch->counter / (int64_t)period_of(ch));
 }
 void snx_ctr_csnd_render(SnxCtrCsndHw* hw, SnxCtrMemory* memory, int16_t (*out)[2], unsigned count) {
     for (unsigned s = 0; s < count; ++s) {

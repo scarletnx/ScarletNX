@@ -11,7 +11,7 @@
    Copyright (c) 2018 Linaro
    Copyright (c) 2020 Linaro */
 /* The integer AdvSIMD instructions as LLVM IR on LLVM vectors, keyed on the generated decoder's ops and arguments:
-   three same, three different, two-register miscellaneous, across lanes, pairwise, copy, modified immediate, shifts
+   three same, three different, two-register miscellaneous, pairwise, copy, modified immediate, shifts
    by immediate and by register, by element, permutes, table lookups, the dot and matrix products (FEAT_DotProd,
    FEAT_I8MM) and FEAT_RDM's accumulating forms; and the building blocks ir_vec_fp.c and ir_vec_crypto.c share.
    A register is read and written whole or by lanes in the CPU structure (V128, aligned to 8), as numbers on any
@@ -164,17 +164,6 @@ static V unzip(SnxIr* ir, V a, V b, unsigned odd) {
     unsigned n = ir_vec_count(a), mask[64];
     for (unsigned i = 0; i < n; ++i) mask[i] = 2 * i + odd;
     return ir_vec_shuffle(ir, a, b, mask, n);
-}
-/* the pairwise sums' operands of a and b: unzip's evens and odds */
-static V pairwise(SnxIr* ir, V a, V b, unsigned op) {
-    V even = unzip(ir, a, b, 0), odd = unzip(ir, a, b, 1);
-    switch (op) {
-        case 0: return LLVMBuildAdd(B, even, odd, "");
-        case 1: return call2(ir, "llvm.smax", even, odd);
-        case 2: return call2(ir, "llvm.smin", even, odd);
-        case 3: return call2(ir, "llvm.umax", even, odd);
-        default: return call2(ir, "llvm.umin", even, odd);
-    }
 }
 
 /* v (wide lanes) saturated to bits: from signed (sign) or unsigned, to signed (!uns) or unsigned; QC on a change */
@@ -348,7 +337,7 @@ enum {
     T_ADD, T_SUB, T_AND, T_BIC, T_ORR, T_ORN, T_EOR, T_BSL, T_BIT, T_BIF, T_SQADD, T_UQADD, T_SQSUB, T_UQSUB,
     T_SUQADD, T_USQADD, T_SSHL, T_USHL, T_CMGT, T_CMHI, T_CMGE, T_CMHS, T_CMTST, T_CMEQ, T_SHADD, T_UHADD, T_SHSUB,
     T_UHSUB, T_SRHADD, T_URHADD, T_SABD, T_UABD, T_SABA, T_UABA, T_MUL, T_PMUL,
-    T_MLA, T_MLS, T_SQDMULH, T_SQRDMULH, T_SQRDMLAH, T_SQRDMLSH, T_ADDP, T_SMAXP, T_SMINP, T_UMAXP, T_UMINP
+    T_MLA, T_MLS, T_SQDMULH, T_SQRDMULH, T_SQRDMLAH, T_SQRDMLSH
 };
 
 static V abd(SnxIr* ir, V a, V b, int sign) {
@@ -410,12 +399,7 @@ static V same(SnxIr* ir, unsigned op, V n, V m, V d) {
         case T_SQDMULH: return qrdmlah(ir, n, m, NULL, 0, 0);
         case T_SQRDMULH: return qrdmlah(ir, n, m, NULL, 0, 1);
         case T_SQRDMLAH: return qrdmlah(ir, n, m, d, 0, 1);
-        case T_SQRDMLSH: return qrdmlah(ir, n, m, d, 1, 1);
-        case T_ADDP: return pairwise(ir, n, m, 0);
-        case T_SMAXP: return pairwise(ir, n, m, 1);
-        case T_SMINP: return pairwise(ir, n, m, 2);
-        case T_UMAXP: return pairwise(ir, n, m, 3);
-        default: return pairwise(ir, n, m, 4);
+        default: return qrdmlah(ir, n, m, d, 1, 1);
     }
 }
 static int same_reads_d(unsigned op) {
@@ -575,17 +559,6 @@ static void shll(SnxIr* ir, const SnxA64Args* a) {
     unsigned esz = (unsigned)a->esz;
     V n = widen(ir, half(ir, (unsigned)a->rn, esz, a->q), 0);
     ir_vec_write(ir, (unsigned)a->rd, LLVMBuildShl(B, n, ir_vec_like(ir, n, 8u << esz), ""));
-}
-
-/* ---- across lanes ---- */
-
-/* ADDV, SADDLV, UADDLV (long: widened first), SMAXV, UMAXV, SMINV, UMINV: one element into a scalar Vd */
-static void across(SnxIr* ir, const SnxA64Args* a, const char* reduce, int widen_sign) {
-    unsigned esz = (unsigned)a->esz, lanes = ir_vec_lanes(a->q, esz);
-    V n = reg(ir, (unsigned)a->rn, esz, lanes);
-    if (widen_sign >= 0) n = widen(ir, n, widen_sign);
-    V r = ir_intrinsic(ir, reduce, LLVMTypeOf(n), &n, 1);
-    ir_vec_write(ir, (unsigned)a->rd, ir_vec_splat(ir, r, 1));
 }
 
 /* ---- copy ---- */
@@ -1060,7 +1033,6 @@ static int same_op(SnxA64Op op) {
         case SNX_A64_OP_UABD_v: return T_UABD;
         case SNX_A64_OP_SABA_v: return T_SABA;
         case SNX_A64_OP_UABA_v: return T_UABA;
-        case SNX_A64_OP_MUL_v: return T_MUL;
         case SNX_A64_OP_PMUL_v: return T_PMUL;
         case SNX_A64_OP_MLA_v: return T_MLA;
         case SNX_A64_OP_MLS_v: return T_MLS;
@@ -1072,11 +1044,6 @@ static int same_op(SnxA64Op op) {
         case SNX_A64_OP_SQRDMLAH_s: return T_SQRDMLAH;
         case SNX_A64_OP_SQRDMLSH_v:
         case SNX_A64_OP_SQRDMLSH_s: return T_SQRDMLSH;
-        case SNX_A64_OP_ADDP_v: return T_ADDP;
-        case SNX_A64_OP_SMAXP_v: return T_SMAXP;
-        case SNX_A64_OP_SMINP_v: return T_SMINP;
-        case SNX_A64_OP_UMAXP_v: return T_UMAXP;
-        case SNX_A64_OP_UMINP_v: return T_UMINP;
         default: return -1;
     }
 }
@@ -1281,13 +1248,6 @@ static int int_other(SnxA64Op op) {
         case SNX_A64_OP_UQXTN_s:
         case SNX_A64_OP_SQXTUN_s:
         case SNX_A64_OP_SHLL_v:
-        case SNX_A64_OP_ADDV:
-        case SNX_A64_OP_SADDLV:
-        case SNX_A64_OP_UADDLV:
-        case SNX_A64_OP_SMAXV:
-        case SNX_A64_OP_UMAXV:
-        case SNX_A64_OP_SMINV:
-        case SNX_A64_OP_UMINV:
         case SNX_A64_OP_DUP_element_s:
         case SNX_A64_OP_DUP_element_v:
         case SNX_A64_OP_DUP_general:
@@ -1413,13 +1373,6 @@ static void int_body(SnxIr* ir, const SnxA64Insn* insn) {
         case SNX_A64_OP_UQXTN_s: extract_narrow(ir, a, 2, 1); break;
         case SNX_A64_OP_SQXTUN_s: extract_narrow(ir, a, 3, 1); break;
         case SNX_A64_OP_SHLL_v: shll(ir, a); break;
-        case SNX_A64_OP_ADDV: across(ir, a, "llvm.vector.reduce.add", -1); break;
-        case SNX_A64_OP_SADDLV: across(ir, a, "llvm.vector.reduce.add", 1); break;
-        case SNX_A64_OP_UADDLV: across(ir, a, "llvm.vector.reduce.add", 0); break;
-        case SNX_A64_OP_SMAXV: across(ir, a, "llvm.vector.reduce.smax", -1); break;
-        case SNX_A64_OP_UMAXV: across(ir, a, "llvm.vector.reduce.umax", -1); break;
-        case SNX_A64_OP_SMINV: across(ir, a, "llvm.vector.reduce.smin", -1); break;
-        case SNX_A64_OP_UMINV: across(ir, a, "llvm.vector.reduce.umin", -1); break;
         case SNX_A64_OP_DUP_element_s:
         case SNX_A64_OP_DUP_element_v:
         case SNX_A64_OP_DUP_general:
@@ -1484,7 +1437,20 @@ static int generated(SnxA64Op op) {
         case SNX_A64_OP_UMAX_v:
         case SNX_A64_OP_UMIN_v:
         case SNX_A64_OP_NEG_v:
-        case SNX_A64_OP_ABS_v: return 1;
+        case SNX_A64_OP_ABS_v:
+        case SNX_A64_OP_MUL_v:
+        case SNX_A64_OP_ADDP_v:
+        case SNX_A64_OP_SMAXP_v:
+        case SNX_A64_OP_SMINP_v:
+        case SNX_A64_OP_UMAXP_v:
+        case SNX_A64_OP_UMINP_v:
+        case SNX_A64_OP_ADDV:
+        case SNX_A64_OP_SADDLV:
+        case SNX_A64_OP_UADDLV:
+        case SNX_A64_OP_SMAXV:
+        case SNX_A64_OP_SMINV:
+        case SNX_A64_OP_UMAXV:
+        case SNX_A64_OP_UMINV: return 1;
         default: return 0;
     }
 }

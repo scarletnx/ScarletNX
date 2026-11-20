@@ -279,7 +279,8 @@ static int channel_sample(AgbBoard* board, int channel) {
         while (apu->phase[3] >= AGB_APU_RATE) {
             uint32_t bit = (apu->noise_lfsr & 1) ^ ((apu->noise_lfsr >> 1) & 1);
             apu->noise_lfsr = (uint16_t)((apu->noise_lfsr >> 1) | (bit << 14));
-            if (apu->cnt_x[3] & 0x80) apu->noise_lfsr = (uint16_t)((apu->noise_lfsr & ~(1u << 6)) | (bit << 6));
+            /* SOUND4CNT_H's bit 3 makes it the 7 bit register; bits 4 to 7 are s */
+            if (apu->cnt_x[3] & 0x8) apu->noise_lfsr = (uint16_t)((apu->noise_lfsr & ~(1u << 6)) | (bit << 6));
             apu->phase[3] -= AGB_APU_RATE;
         }
         int high = !(apu->noise_lfsr & 1);

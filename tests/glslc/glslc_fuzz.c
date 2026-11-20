@@ -5,7 +5,8 @@
    that starts with SPIR-V's magic, or fails with a message; any crash is the test failing, and a sanitized build
    (SNX_TEST_SANITIZERS) turns a bad read or write into one. One workspace serves every compilation, as a caller's
    thread keeps one; every 16th mutant is compiled again over the workspace filled with another pattern, and must
-   give the same words or the same error, so nothing of one compilation leaks into the next. With --keep DIR, every
+   give the same words or the same error, so nothing of one compilation leaks into the next. A seed whose file name
+   starts with "desktop" is compiled as a desktop GL context's shader (GlslcOptions.desktop). With --keep DIR, every
    module a mutant compiled to is written there, for spirv-val.
 
        snx-test-glslc-fuzz [--iterations N] [--seed S] [--keep DIR] SHADER... */
@@ -22,6 +23,7 @@ typedef struct {
     char* seeds[MAX_INPUTS];
     size_t sizes[MAX_INPUTS];
     GlslcStage stages[MAX_INPUTS];
+    int desktop[MAX_INPUTS];
     uint32_t count;
     char work[BUFFER];
     uint32_t words[SNX_GLSLC_MAX_WORDS];
@@ -218,6 +220,10 @@ static int load(const char* path) {
     g_fuzz.seeds[g_fuzz.count] = data;
     g_fuzz.sizes[g_fuzz.count] = size;
     g_fuzz.stages[g_fuzz.count] = stage;
+    {
+        const char* base = strrchr(path, '/');
+        g_fuzz.desktop[g_fuzz.count] = !strncmp(base ? base + 1 : path, "desktop", 7);
+    }
     g_fuzz.count++;
     return 0;
 }
@@ -254,12 +260,14 @@ int main(int argc, char** argv) {
         memcpy(g_fuzz.work, g_fuzz.seeds[k], size);
         /* mostly one change, so that many mutants still compile and reach the emitter */
         for (size_t m = below(4) ? 1 : 2 + below(7); m > 0; m--) mutate(g_fuzz.work, &size);
-        int r = snx_glslc_compile(&g_fuzz.workspace, &(GlslcOptions){g_fuzz.stages[k], NULL, NULL, 0, 0}, g_fuzz.work, size,
-                                  g_fuzz.words, SNX_GLSLC_MAX_WORDS, &g_fuzz.result);
+        int r = snx_glslc_compile(&g_fuzz.workspace,
+                                  &(GlslcOptions){g_fuzz.stages[k], NULL, NULL, 0, 0, g_fuzz.desktop[k], NULL},
+                                  g_fuzz.work, size, g_fuzz.words, SNX_GLSLC_MAX_WORDS, &g_fuzz.result);
         if (it % 16 == 0) {
             memset(g_fuzz.workspace.memory, (int)(0x5a ^ (it & 0xff)), g_fuzz.workspace.size);
-            int r2 = snx_glslc_compile(&g_fuzz.workspace, &(GlslcOptions){g_fuzz.stages[k], NULL, NULL, 0, 0}, g_fuzz.work,
-                                       size, g_fuzz.again, SNX_GLSLC_MAX_WORDS, &g_fuzz.second);
+            int r2 = snx_glslc_compile(&g_fuzz.workspace,
+                                       &(GlslcOptions){g_fuzz.stages[k], NULL, NULL, 0, 0, g_fuzz.desktop[k], NULL},
+                                       g_fuzz.work, size, g_fuzz.again, SNX_GLSLC_MAX_WORDS, &g_fuzz.second);
             if (r2 != r || strcmp(g_fuzz.second.error, g_fuzz.result.error) ||
                 g_fuzz.second.line != g_fuzz.result.line || g_fuzz.second.words != g_fuzz.result.words ||
                 (r == 0 && memcmp(g_fuzz.again, g_fuzz.words, g_fuzz.result.words * sizeof(uint32_t)))) {

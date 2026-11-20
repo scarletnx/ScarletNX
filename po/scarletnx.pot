@@ -3325,7 +3325,7 @@ msgid "Download Driver"
 msgstr ""
 
 #: src/gui/main.c
-msgid "Drivers from GitHub releases: Turnip and a GPU maker's own for an Adreno (the maker's marked proprietary, no license), NX-Mali and FristOneRR's PanVK for a Mali, RADV for an Xclipse. One picked is downloaded and added as Add Driver adds a zip"
+msgid "Drivers from GitHub releases: Turnip and a GPU maker's own for an Adreno (the maker's marked proprietary, no license), NX-Mali, MaliSX2 and PanVK builds for a Mali, RADV for an Xclipse. One picked is downloaded and added as Add Driver adds a zip"
 msgstr ""
 
 #: src/gui/main.c
@@ -7106,6 +7106,10 @@ msgstr ""
 
 #: src/nx/runtime/ini.c
 msgid "arm64 Linux and Android only"
+msgstr ""
+
+#: src/nx/runtime/ini.c
+msgid "Not offered"
 msgstr ""
 
 #: src/nx/runtime/settings.txt

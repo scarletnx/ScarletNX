@@ -1,0 +1,3 @@
+# a function that calls itself on each half of its bits and adds the two results: the sum of the bits' elements, one
+# reduction of the lanes
+root decode_sum_aarch64_instrs_test

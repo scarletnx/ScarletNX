@@ -351,7 +351,9 @@ static int thumb_instruction(ArmIR* a, const SnxThumb* t) {
             LLVMValueRef carry, r = shift(a, treg(a, t->rm), t->op == ALU_LSL ? 0 : t->op == ALU_LSR ? 1 : 2,
                                           NULL, 1, t->imm, &carry);
             setreg(a, t->rd, r);
-            if (!a->in_it) nz(a, r, carry, NULL);
+            /* LSL #0 is MOVS (MOV (register) T2), which sets the flags in an IT block too (UNPREDICTABLE there: run as
+               it is written) */
+            if (!a->in_it || (t->op == ALU_LSL && !t->imm)) nz(a, r, carry, NULL);
             return 0;
         }
         case TH_ADDSUB: {
@@ -468,17 +470,54 @@ static int thumb_instruction(ArmIR* a, const SnxThumb* t) {
     }
 }
 
+/* the T16 instructions' emitters, which sailgen generates from the Sail (src/common/cpu/arm/sail/, its back end
+   tools/sailgen/llvm_arm.h): sg_emit_t16. The generated code binds every parameter and local of the Sail, used or
+   not */
+#if defined(__clang__)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wunused-variable"
+#pragma clang diagnostic ignored "-Wunused-but-set-variable"
+#elif defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-variable"
+#pragma GCC diagnostic ignored "-Wunused-but-set-variable"
+#endif
+#include "a32_sail.inc"
+#if defined(__clang__)
+#pragma clang diagnostic pop
+#elif defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
+
 /* Emits one Thumb block: 16-bit and 32-bit instructions from the halfword
    stream, honouring IT conditions, ending at a control transfer or the end. An IT block's conditions are the
    block's, decided when it compiles: an instruction that traps under one that fails lets the block go on, a block
    the code ends inside one (callers give the rest of the code) or an SVC or BKPT inside one leaves ITSTATE in
    CPSR, and a block entered with ITSTATE there stops (SNX_ARM_IT_ENTRY, the ITSTATE its syndrome) */
+static LLVMValueRef thumb_block(LLVMModuleRef module, const char* name, const uint16_t* halfwords, size_t count,
+                                uint32_t pc, size_t* consumed, const SnxArmCodegenOptions* options, int reference);
 LLVMValueRef snx_thumb_llvm_block(LLVMModuleRef module, const char* name, const uint16_t* halfwords,
                                   size_t count, uint32_t pc, size_t* consumed) {
-    return snx_thumb_llvm_block_ex(module, name, halfwords, count, pc, consumed, NULL);
+    return thumb_block(module, name, halfwords, count, pc, consumed, NULL, 0);
 }
 LLVMValueRef snx_thumb_llvm_block_ex(LLVMModuleRef module, const char* name, const uint16_t* halfwords,
                                     size_t count, uint32_t pc, size_t* consumed, const SnxArmCodegenOptions* options) {
+    return thumb_block(module, name, halfwords, count, pc, consumed, options, 0);
+}
+LLVMValueRef snx_thumb_llvm_block_t16_reference(LLVMModuleRef module, const char* name, const uint16_t* halfwords,
+                                                size_t count, uint32_t pc, size_t* consumed,
+                                                const SnxArmCodegenOptions* options) {
+    return thumb_block(module, name, halfwords, count, pc, consumed, options, 1);
+}
+/* a T16 halfword, which the Sail's emitters run: on a profile with Thumb-2 one that starts no T32 instruction (below
+   11101), on one without any (its BL halves, which start with 11101, 11110 or 11111, are 16-bit instructions there:
+   arm.sail's) */
+static int sail_t16(const ArmIR* a, uint16_t hw1) {
+    return (hw1 >> 11) < 0x1D || a->profile == SNX_ARM_PROFILE_ARM7TDMI || a->profile == SNX_ARM_PROFILE_ARM946E ||
+           a->profile == SNX_ARM_PROFILE_ARM11;
+}
+static LLVMValueRef thumb_block(LLVMModuleRef module, const char* name, const uint16_t* halfwords, size_t count,
+                                uint32_t pc, size_t* consumed, const SnxArmCodegenOptions* options, int reference) {
     ArmIR a = {0};
     size_t used = 0;
     unsigned itstate = 0; /* ITSTATE before the instruction being emitted */
@@ -511,9 +550,36 @@ LLVMValueRef snx_thumb_llvm_block_ex(LLVMModuleRef module, const char* name, con
     while (used < count) {
         SnxThumb t;
         uint16_t hw1 = halfwords[used], hw2 = (used + 1 < count) ? halfwords[used + 1] : 0;
-        unsigned len = snx_thumb_decode_profile(a.profile, hw1, hw2, &t);
-        unsigned cond = 14;
+        unsigned len, cond = 14;
         int stop;
+        if (!reference && sail_t16(&a, hw1)) {
+            /* the Sail's: its condition (the IT block's, a B<c>'s) and its end are the emitter's own */
+            int it_set = 0;
+            unsigned it_next = 0;
+            a.pc = pc + (uint32_t)used * 2;
+            a.next = a.pc + 2;
+            a.word = hw1;
+            setreg(&a, 15, c32(&a, a.pc));
+            instruction_fetch(&a, a.word, 2);
+            a.in_it = itstate != 0;
+            {
+                unsigned before = itstate;
+                itstate = itstate & 7 ? (itstate & 0xE0) | ((itstate << 1) & 0x1F) : 0; /* ITAdvance */
+                a.it_next = itstate;
+                if (!sg_emit_t16(&a, hw1, before, &stop, &it_set, &it_next)) { /* no instruction: UNDEFINED */
+                    trap(&a, SNX_ARM_UNDEFINED, c32(&a, a.word));
+                    used += 1;
+                    break;
+                }
+            }
+            if (!stop) yield_check(&a);
+            a.yields = 0;
+            used += 1;
+            if (it_set) itstate = it_next;
+            if (stop) break;
+            continue;
+        }
+        len = snx_thumb_decode_profile(a.profile, hw1, hw2, &t);
         if (!len || (len == TH_F32 && used + 1 >= count)) {
             /* the backend's (SnxArmRt.undefined): a Thumb32 one as hw1 | hw2 << 16, when its second half is here */
             unsigned units = (hw1 >> 11) >= 0x1D && used + 1 < count ? 2 : 1;
@@ -534,7 +600,10 @@ LLVMValueRef snx_thumb_llvm_block_ex(LLVMModuleRef module, const char* name, con
         instruction_fetch(&a, a.word, len * 2);
         a.in_it = itstate != 0;
         if (itstate) { /* ITAdvance */
-            cond = itstate >> 4;
+            /* BKPT runs whatever the IT block's condition; a B<c>, CBZ or CBNZ in one (UNPREDICTABLE) runs as it is
+               written, under its own condition */
+            if (t.shape != TH_BRANCH || (t.op != BR_BKPT && t.op != BR_BCOND && t.op != BR_CBZ && t.op != BR_CBNZ))
+                cond = itstate >> 4;
             itstate = itstate & 7 ? (itstate & 0xE0) | ((itstate << 1) & 0x1F) : 0;
         }
         a.it_next = itstate;
@@ -542,8 +611,10 @@ LLVMValueRef snx_thumb_llvm_block_ex(LLVMModuleRef module, const char* name, con
             LLVMBasicBlockRef execute = block(&a, "execute"), skip = block(&a, "skip"), next = block(&a, "next");
             LLVMBuildCondBr(a.b, condition(&a, cond), execute, skip);
             LLVMPositionBuilderAtEnd(a.b, execute);
-            stop = thumb_instruction(&a, &t); /* one that traps here goes on when its condition fails */
-            if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(a.b))) {
+            stop = thumb_instruction(&a, &t);
+            if (LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(a.b)))
+                stop = 0; /* it trapped (an SVC): where its condition fails the block goes on */
+            else {
                 if (!stop) setreg(&a, 15, c32(&a, next_pc));
                 LLVMBuildBr(a.b, next);
             }

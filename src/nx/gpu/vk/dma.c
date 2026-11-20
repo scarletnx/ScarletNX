@@ -236,8 +236,12 @@ static int dma(const GpuDmaOp* o, const DmaNeeds* need, u64 snap_skip) {
             sb = c->buf;
             sat = (u64)m->at * SNAP_UNIT + snap_skip;
             got = VK_OK(vk_devmem_flush(c->mem, sat, sspan));
-        } else if (o->snap) { /* the same in the submitting thread's memory */
-            u8* p = vk_stage(sspan, vk_stage_align(), &sb, &sat);
+        } else if (o->snap) {
+            /* the same in the submitting thread's memory: CPU bytes read once, through the stream, whose chunks come
+               free as the submission that read them ends, as vk_stage_guest_input's do. In the frame's rings they
+               stayed to its end, and a load of uploads with no present between them held a GB of a phone's GPU
+               memory there */
+            u8* p = vk_stream_upload(sspan, vk_stage_align(), &sb, &sat);
             if ((got = p != NULL)) memcpy(p, o->snap, sspan);
         } else if (need->sparse) { /* each line as the GPU sees it, packed */
             got = vk_stage_device(sspan, vk_stage_align(), &sb, &sat);
@@ -434,6 +438,9 @@ int vk_dma_copy(const GpuDmaOp* o) {
     vk_lock();
     g_dma.copies++;
     vk_own_room();
+    /* a copy of the CPU's bytes may come with no draw before it (uploads one after another): the frame is checked here
+       as at a draw's start, so the stream's bytes go to the GPU and come free */
+    if (o->snap && !o->snap_id) vk_frame_check();
     r = dma_bands(o);
     if (o->snap_id) vk_defer_call(snap_free_later, (void*)(uintptr_t)o->snap_id); /* after its frame's work */
     vk_unlock();

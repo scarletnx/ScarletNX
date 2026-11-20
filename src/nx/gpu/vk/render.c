@@ -37,6 +37,7 @@
 #include "nx/gpu/texture/descriptor.h"
 #include "nx/gpu/vk/draw_texture.h"
 #include "nx/gpu/vk/draw_texture_shader.h"
+#include "nx/gpu/vk/host_program.h"
 #include "nx/gpu/vk/lookup_ways.h"
 #include "nx/gpu/vk/pending_pages.h"
 #include "nx/gpu/vk/tess_passthrough.h"
@@ -1431,8 +1432,8 @@ void vk_render_stats_log(void) {
     LOG("vulkan: lookups in the last %llu presents: constant buffers %llu inline kept, %llu inline staged, %llu kept, "
         "%llu kept after the pending check, %llu copied from the CPU, %llu from the buffer cache, %llu pending, %llu of "
         "the kept ones past their submission; textures %llu kept, %llu resolved again, %llu past the pools, %llu views "
-        "and %llu samplers kept; descriptor sets %llu written, %llu reused, %llu of those a stage's last; %llu draws "
-        "kept the last one's targets\n",
+        "and %llu samplers kept, %llu lookups through the memo; descriptor sets %llu written, %llu reused, %llu of "
+        "those a stage's last; %llu draws kept the last one's targets\n",
         (unsigned long long)presents, (unsigned long long)(n->cb[VK_CB_INLINE_KEPT] - w->cb[VK_CB_INLINE_KEPT]),
         (unsigned long long)(n->cb[VK_CB_INLINE_STAGED] - w->cb[VK_CB_INLINE_STAGED]),
         (unsigned long long)(n->cb[VK_CB_KEPT] - w->cb[VK_CB_KEPT]),
@@ -1446,9 +1447,9 @@ void vk_render_stats_log(void) {
         (unsigned long long)(n->tex[VK_TEX_PAST] - w->tex[VK_TEX_PAST]),
         (unsigned long long)(n->tex[VK_TEX_VIEW_KEPT] - w->tex[VK_TEX_VIEW_KEPT]),
         (unsigned long long)(n->tex[VK_TEX_SAMPLER_KEPT] - w->tex[VK_TEX_SAMPLER_KEPT]),
+        (unsigned long long)(n->tex[VK_TEX_MEMO] - w->tex[VK_TEX_MEMO]),
         (unsigned long long)(g_vk_dset_new - g_stats.dset_new),
-        (unsigned long long)(g_vk_dset_reused - g_stats.dset_reused),
-        (unsigned long long)(n->sets_last - w->sets_last),
+        (unsigned long long)(g_vk_dset_reused - g_stats.dset_reused), (unsigned long long)(n->sets_last - w->sets_last),
         (unsigned long long)(g_vk_targets_kept - g_stats.targets_kept));
     if (g_vk.has_descriptor_heaps) {
         VkDescriptorHeapStats h;
@@ -1466,6 +1467,14 @@ void vk_render_stats_log(void) {
         g_stats.heap_buffer_hits = h.buffer_hits;
         g_stats.heap_image_calls = h.image_driver_calls;
         g_stats.heap_image_hits = h.image_hits;
+    }
+    {
+        double k[4][2], d = (double)(g_vk_drawn - g_stats.drawn);
+        for (int b = 0; b < 4; b++)
+            for (int j = 0; j < 2; j++) k[b][j] = (double)(n->inl[b][j] - w->inl[b][j]) / (double)presents;
+        LOG("vulkan: inline blocks a present (%.1f draws), kept and staged again: bank 0 to its base vertex words %.1f "
+            "and %.1f, bank 0 before them %.1f and %.1f, bank 2 %.1f and %.1f, the root tables %.1f and %.1f\n",
+            d / (double)presents, k[0][0], k[0][1], k[1][0], k[1][1], k[2][0], k[2][1], k[3][0], k[3][1]);
     }
     LOG("vulkan: constant buffers copied from the CPU in the last %llu presents: %.1f KB a present\n",
         (unsigned long long)presents, (double)g_cb_copied_bytes / 1024.0 / (double)presents);
@@ -1587,8 +1596,8 @@ static int tex_memo_image_pending(TexMemo* m) {
     m->img_adds = adds;
     return 0;
 }
-/* tex_resolve through the memo: what x is of it, 2 a way found, 1 a way kept for the next lookup, -1 none but its
-   headers as memory has them, 0 none, or a texture over a target (its own checks run at each lookup) */
+/* tex_resolve through the memo: what x is of it, 2 a way found, 1 a way kept for the next lookup, 4 and 3 the same of
+   a texture over a target (TexMemo.over), -1 none but its headers as memory has them, 0 none */
 static int tex_resolve_memo(const DsState* ds, u32 handle, TexRes* x) {
     const DsBindings* b = &ds->bind;
     if (b->smp_mode) {
@@ -1612,6 +1621,7 @@ static int tex_resolve_memo(const DsState* ds, u32 handle, TexRes* x) {
     u32 epoch = vk_ww_epoch(), now = vk_ww_now(); /* before the headers are read */
     /* a write in place is no result added: its own count moves (vk_uma_writes) */
     u64 adds = atomic_load_explicit(&g_pend_any.adds, memory_order_relaxed) + vk_uma_writes();
+    g_stats.n.tex[VK_TEX_MEMO]++;
     x->handle = handle;
     x->have = 1;
     x->memo = 0;
@@ -1683,7 +1693,7 @@ static int tex_resolve_memo(const DsState* ds, u32 handle, TexRes* x) {
             x->memo = 0;
         }
         g_stats.n.tex[VK_TEX_KEPT]++;
-        return 0;
+        return x->t ? 4 : 0;
     }
     if (miss < 0) {
         m->gw = gw;
@@ -1750,9 +1760,30 @@ static int tex_resolve_memo(const DsState* ds, u32 handle, TexRes* x) {
         m->over_gw = gw; /* read before the headers and the texture */
         m->copy = over && vk_tex_is_copy_of(x->t, over);
         x->memo = set_at * TEX_MEMO_WAYS + (u32)(m - set) + 1;
-        return over ? 0 : 1;
+        return over ? 3 : 1;
     }
     return -1;
+}
+/* A texture the memo keeps over a target (TexMemo.over), for the tables in front of the memo: the target and its
+   write generation when the memo's checks last passed, and whether the texture is a copy of it (TexMemo.copy). The
+   target's draws move its write generation and none of those tables' stamps, so each asks tex_over_holds; the memo's
+   other checks of such a way (the target still at the address, the epoch, the GPU's writes under the texture) read
+   stamps the tables hold */
+typedef struct {
+    Surf* rt;
+    u32 wgen;
+    int copy;
+} TexOver;
+/* x's, rt NULL for a texture that is over no target or that the memo doesn't keep */
+static TexOver tex_over_of(const TexRes* x) {
+    if (!x->t || !x->memo) return (TexOver){0};
+    const TexMemo* m = &g_tex_memo.set[(x->memo - 1) / TEX_MEMO_WAYS][(x->memo - 1) % TEX_MEMO_WAYS];
+    if (m->t != x->t || !m->over || m->over->wgen != m->over_wgen) return (TexOver){0};
+    return (TexOver){.rt = m->over, .wgen = m->over_wgen, .copy = m->copy};
+}
+/* the target still holds the pixels the texture was kept over */
+static int tex_over_holds(const TexOver* o) {
+    return o->rt->wgen == o->wgen && o->rt->layout != VK_IMAGE_LAYOUT_UNDEFINED;
 }
 /* The memo's last answers by handle, with what every check of a memo hit reads, taken before the lookup: while none
    of those moved, the same way is found again and each of its checks says the same (the surface table's epoch moves
@@ -1763,18 +1794,21 @@ static int tex_resolve_memo(const DsState* ds, u32 handle, TexRes* x) {
    big for the cache. A draw-level form of the fast draws of Cemu's command processor, which skip the checks of each
    draw while only uniforms and vertex buffers change (cemu-project/Cemu #706, the idea only). A resolve the memo doesn't
    keep keeps its headers here, which the same checks prove unwritten: only the texture is found again from them, as
-   the memo's lookup would. A texture the memo keeps over a target (TexMemo.over) isn't kept here: the target's draws
-   move none of these stamps, so its own checks run at each lookup. With draw_state_check=1 each lookup goes to the
-   memo. A frame's draws use some hundreds of handles: 1024 entries of about 150 bytes, which the cache holds */
+   the memo's lookup would. A texture the memo keeps over a target (TexMemo.over) is kept with the target's write
+   generation (TexOver): one racing game's draws sample such a texture in half of its draws, each a lookup through the
+   memo. With draw_state_check=1 each lookup goes to the memo. A frame's draws use some hundreds of handles: 1024 entries of about 150 bytes, which the cache holds */
 #define TEX_RECENT_BITS 10
-enum { TEX_RECENT_NONE, TEX_RECENT_TARGET, TEX_RECENT_TEXTURE, TEX_RECENT_HEADERS };
+enum { TEX_RECENT_NONE, TEX_RECENT_TARGET, TEX_RECENT_TEXTURE, TEX_RECENT_HEADERS, TEX_RECENT_OVER };
 typedef struct {
     TexRes x;
     const DsState* ds;
     u64 tic_base, tsc_base, gw, adds, img_adds;
     u32 surf_epoch, ww_epoch;
     u32 tex_max, smp_max;
-    int kind; /* TEX_RECENT_*: x.t the render target itself read whole, a texture the memo keeps, or headers only */
+    /* TEX_RECENT_*: x.t the render target itself read whole, a texture the memo keeps, headers only, or a texture the
+       memo keeps over the target `over` */
+    int kind;
+    TexOver over;
     /* a texture's: the present and the targets' take count of its last check (vk_tex_recheck), which gives the same
        answer while they and the stamps above are the same */
     u32 present;
@@ -1814,6 +1848,13 @@ static void tex_resolve(const DsState* ds, u32 handle, TexRes* x) {
                 g_stats.n.tex[VK_TEX_KEPT]++;
                 return;
             }
+        } else if (r->kind == TEX_RECENT_OVER && !tex_over_holds(&r->over)) {
+            /* the target was drawn to: the memo's lookup, which takes the texture from it again */
+        } else if (r->kind == TEX_RECENT_OVER && r->over.copy) {
+            vk_rt_note_read(r->over.rt); /* as the memo's hit notes a read of the target */
+            *x = r->x;
+            g_stats.n.tex[VK_TEX_KEPT]++;
+            return;
         } else if (r->present == g_vk_present && r->take == take && tex_quiet_now(t, ww_epoch)) {
             /* checked in this present and left quiet, and since then no GPU-side write (gw), no CPU write epoch, no
                surface, result or target taken: the check (tex_check) would read the texture's own state to give the
@@ -1836,8 +1877,11 @@ static void tex_resolve(const DsState* ds, u32 handle, TexRes* x) {
     r->kind = TEX_RECENT_NONE;
     /* a way just kept is asked about the storage images pending over its texture at its next lookup only */
     const int memo = tex_resolve_memo(ds, handle, x);
-    if (!memo || (memo == 1 && atomic_load_explicit(&g_gfx_img_any, memory_order_relaxed))) return;
+    if (!memo || ((memo == 1 || memo == 3) && atomic_load_explicit(&g_gfx_img_any, memory_order_relaxed))) return;
+    const TexOver over = memo >= 3 ? tex_over_of(x) : (TexOver){0};
+    if (memo >= 3 && !over.rt) return;
     *r = (TexRecent){.x = *x,
+                     .over = over,
                      .ds = ds,
                      .tic_base = b->tex_pool,
                      .tsc_base = b->smp_pool,
@@ -1851,6 +1895,7 @@ static void tex_resolve(const DsState* ds, u32 handle, TexRes* x) {
                      .present = g_vk_present,
                      .take = take,
                      .kind = memo < 0      ? TEX_RECENT_HEADERS
+                             : memo >= 3   ? TEX_RECENT_OVER
                              : x->t->is_rt ? TEX_RECENT_TARGET
                                            : TEX_RECENT_TEXTURE};
 }
@@ -2035,9 +2080,10 @@ static void rt_int_targets(const DsTargets* tg, u32* rm, u32* rs) {
    what each slot's resolve checks. Those checks are the stamps of the texture front table (tex_resolve), the
    targets' take generation (tex_take_drawn), and the present (vk_tex_recheck's checks once a frame). About a third
    of one game's draws read other handle words than the draw before, and a sixth run another program. The key
-   holds for most of the rest. Only where each slot's texture is one the memo keeps, not over a target (whose target's
-   draws move none of these stamps), and each texture is quiet in this present and epoch, as vk_tex_recheck's quiet
-   check asks (a texture that isn't takes a full check at each lookup). A compute result pending over a slot's texture
+   holds for most of the rest. Only where each slot's texture is one the memo keeps, one over a target with that
+   target's write generation (TexOver: the target's draws move none of these stamps), and each texture is quiet in
+   this present and epoch, as vk_tex_recheck's quiet check asks (a texture that isn't takes a full check at each
+   lookup). A compute result pending over a slot's texture
    or headers is one added since the key was made, which moves the results added (the stamp tex_resolve keeps a
    texture by, pending_pages.c's count_add): those made the key land the results over them first. With
    draw_state_check=1 the key is made again in full and compared (fs_key_check) */
@@ -2049,26 +2095,32 @@ typedef struct {
     int nt, valid;
     u32 handles[SH_MAXTEX];
     TexRes res[SH_MAXTEX];
+    TexOver over[SH_MAXTEX]; /* by slot: the target a slot's texture is kept over, rt NULL for none */
     FsKey fk;
 } FsLast;
 static FsLast g_fs_last;
 /* whether the slots' textures res, which the last draw resolved, hold as they are (FsLast): a target still defined, a
-   texture still quiet */
-static int fs_last_holds(const TexRes* res, int nt, u32 ww_epoch) {
+   texture still quiet, one over a target (over, by slot) with that target as it was */
+static int fs_last_holds(const TexRes* res, const TexOver* over, int nt, u32 ww_epoch) {
     for (int i = 0; i < nt; i++) {
         const Surf* t = res[i].t;
         if (!t) continue;
         if (t->is_rt ? t->layout == VK_IMAGE_LAYOUT_UNDEFINED : !tex_quiet_now(t, ww_epoch)) return 0;
+        if (over[i].rt && !tex_over_holds(&over[i])) return 0;
     }
     return 1;
 }
-/* whether each slot's texture of res is one the memo keeps, not over a target (TexMemo.over) */
-static int fs_last_keepable(const TexRes* res, int nt) {
+/* whether each slot's texture of res is one the memo keeps, with the target each is kept over into over (by slot) */
+static int fs_last_keepable(const TexRes* res, int nt, TexOver* over) {
     for (int i = 0; i < nt; i++) {
+        over[i] = (TexOver){0};
         if (!res[i].t) continue;
         if (!res[i].memo) return 0;
         const TexMemo* m = &g_tex_memo.set[(res[i].memo - 1) / TEX_MEMO_WAYS][(res[i].memo - 1) % TEX_MEMO_WAYS];
-        if (m->t != res[i].t || m->over) return 0;
+        if (m->t != res[i].t) return 0;
+        if (!m->over) continue;
+        over[i] = tex_over_of(&res[i]);
+        if (!over[i].rt) return 0;
     }
     return 1;
 }
@@ -2116,7 +2168,7 @@ static void fs_key(const DsState* ds, const VkSh* s0, TexRes* res, u32 last_out,
                     : g_fs_last.ww_epoch != ww_epoch                                   ? VK_FS_EPOCH
                     : g_fs_last.present != g_vk_present                                ? VK_FS_PRESENT
                     : memcmp(g_fs_last.handles, handles, (size_t)nt * sizeof *handles) ? VK_FS_HANDLES
-                    : !fs_last_holds(g_fs_last.res, nt, ww_epoch)                      ? VK_FS_QUIET
+                    : !fs_last_holds(g_fs_last.res, g_fs_last.over, nt, ww_epoch)      ? VK_FS_QUIET
                                                                                        : VK_FS_KEPT;
     g_stats.n.fs[why]++;
     const int check = why == VK_FS_KEPT && g_settings.draw_state_check;
@@ -2131,6 +2183,8 @@ static void fs_key(const DsState* ds, const VkSh* s0, TexRes* res, u32 last_out,
             const Surf* t = res[i].t;
             if (t && t->is_rt && t->row && !(t->gva >> 63) && t->layout != VK_IMAGE_LAYOUT_UNDEFINED)
                 vk_rt_note_read(res[i].t);
+            /* a copy of a target: the read is the target's, as the memo's hit notes it */
+            if (t && g_fs_last.over[i].rt && g_fs_last.over[i].copy) vk_rt_note_read(g_fs_last.over[i].rt);
         }
         g_stats.n.tex[VK_TEX_KEPT] += (u64)nt;
         *fk = g_fs_last.fk;
@@ -2190,9 +2244,9 @@ static void fs_key(const DsState* ds, const VkSh* s0, TexRes* res, u32 last_out,
     fk->rm |= image_variant(ds, 4, s0, &signed_images) << 8;
     fk->rs |= signed_images << 8;
     if (check) fs_key_check(&kept, res, nt, fk);
-    g_fs_last = (FsLast){0};
+    g_fs_last.valid = 0; /* all a reader asks before the rest, which the next key kept writes whole */
     /* image_variant reads the image bindings, which the key doesn't hold: a program with images is keyed each draw */
-    if (s0->si.nimg || !fs_last_keepable(res, nt)) {
+    if (s0->si.nimg || !fs_last_keepable(res, nt, g_fs_last.over)) {
         g_stats.n.fs[s0->si.nimg ? VK_FS_UNKEPT_IMAGES : VK_FS_UNKEPT_TEXTURES]++;
         return;
     }
@@ -2625,22 +2679,28 @@ static int cb_kept(const CbEntry* e, u64 a, u32 sz, int adds, u32 epoch) {
     return a && e->a == a && e->epoch == epoch && e->sz >= sz && (!adds || e->adds == cb_adds()) &&
            !gpu_mem_dirty_since(e->gw, a, sz) && cb_lives(e);
 }
+/* VkDrawCounts.inl's row of a lookup of sz bytes of the inline block in */
+static int inline_kind(DsCbBlock in, u32 sz) {
+    return in.size != DS_INLINE_BANK0 ? 2 : sz > SH_CB0_BASE_VERTEX ? 0 : 1;
+}
 /* the first sz bytes of the root tables an Ounce program reads (DsInline.root), staged once while their generation
-   holds: every graphics stage reads the same tables */
+   holds (DsState.root_gen): every graphics stage reads the same tables */
 static int root_get(const DsState* ds, u32 sz, VkBuffer* buf, u64* off) {
     CbEntry* e = &g_cb.root;
-    if (e->in == ds->inl.root && e->gen == ds->gen[DS_INLINE] && e->sz >= sz && cb_lives(e)) {
+    if (e->in == ds->inl.root && e->gen == ds->root_gen && e->sz >= sz && cb_lives(e)) {
         *buf = e->buf;
         *off = e->off;
+        g_stats.n.inl[3][0]++;
         if (g_settings.draw_state_check) cb_check(e, 0, ds->inl.root, e->sz);
         return 1;
     }
     u8* p = vk_stage(sz, vk_stage_align(), buf, off);
     if (!p) return 0;
     memcpy(p, ds->inl.root, sz);
-    *e = (CbEntry){.sz = sz, .buf = *buf, .off = *off, .in = ds->inl.root, .gen = ds->gen[DS_INLINE]};
+    *e = (CbEntry){.sz = sz, .buf = *buf, .off = *off, .in = ds->inl.root, .gen = ds->root_gen};
     cb_life(e, CB_FRAME);
     cb_check_note(e, 0, ds->inl.root, sz, 0);
+    g_stats.n.inl[3][1]++;
     return 1;
 }
 /* constant buffer i of a stage, at an offset that is a multiple of align: 16 for a bank bound through a window
@@ -2650,11 +2710,14 @@ static int cb_get(const DsState* ds, int stage, int i, u32 sz, u64 align, VkBuff
     int check = g_settings.draw_state_check != 0;
     DsCbBlock in = ds_cb_inline(ds, stage, (u32)i);
     if (in.bytes) {
+        /* staged again only when this block changed (DsState.inl_gen), not when another inline block did */
+        const u64 gen = ds_cb_inline_gen(ds, stage, (u32)i);
         CbEntry* e = &g_cb.slot[stage][i];
-        if (e->in == in.bytes && e->gen == ds->gen[DS_INLINE] && e->sz >= sz && cb_lives(e)) {
+        if (e->in == in.bytes && e->gen == gen && e->sz >= sz && cb_lives(e)) {
             *buf = e->buf;
             *off = e->off;
             g_stats.n.cb[VK_CB_INLINE_KEPT]++;
+            g_stats.n.inl[inline_kind(in, sz)][0]++;
             if (check) cb_check(e, 0, in.bytes, e->sz < in.size ? e->sz : in.size);
             return 1;
         }
@@ -2663,10 +2726,11 @@ static int cb_get(const DsState* ds, int stage, int i, u32 sz, u64 align, VkBuff
         u32 n = sz < in.size ? sz : in.size;
         memcpy(p, in.bytes, n);
         memset(p + n, 0, sz - n); /* past the block: zeros, as an unbound buffer reads */
-        *e = (CbEntry){.in = in.bytes, .gen = ds->gen[DS_INLINE], .sz = sz, .buf = *buf, .off = *off};
+        *e = (CbEntry){.in = in.bytes, .gen = gen, .sz = sz, .buf = *buf, .off = *off};
         cb_life(e, CB_FRAME);
         cb_check_note(e, 0, in.bytes, n, 0);
         g_stats.n.cb[VK_CB_INLINE_STAGED]++;
+        g_stats.n.inl[inline_kind(in, sz)][1]++;
         return 1;
     }
     u64 a = ds->bind.cb_addr[stage][i];
@@ -3260,7 +3324,10 @@ static void table_ssbo_windows(const DsState* ds, const VkSh* sh, int stage, u32
 /* the global memory each stage of the draw reads or writes, sh[] by stage (vertex, the tessellation stages, geometry,
    fragment) */
 static void draw_storage_read(const DsState* ds, VkDrawStorage* draw, VkSh* const sh[VK_DRAW_STAGES]) {
-    memset(draw, 0, sizeof *draw);
+    /* the counts, the maps and the fetch records here, each buffer as its stage counts it below: the buffers past a
+       stage's count are never read. With draw_state_check=1 they hold a pattern, so a reader past a count shows */
+    if (g_settings.draw_state_check) memset(draw, 0xA5, sizeof *draw);
+    memset(draw, 0, offsetof(VkDrawStorage, b));
     for (int s = 0; s < VK_DRAW_STAGES; s++) {
         if (!sh[s]) continue;
         int stage = s;
@@ -3272,6 +3339,7 @@ static void draw_storage_read(const DsState* ds, VkDrawStorage* draw, VkSh* cons
         u32 tw_len[SH_GBUF_TABLE_MAX];
         for (int i = 0; i < draw->n[s]; i++) {
             VkDrawGbuf* b = &draw->b[s][i];
+            *b = (VkDrawGbuf){0};
             u32 v[3] = {0, 0, 0}, desc = sh[s]->si.gbuf_cbuf_off[i];
             b->writable = (sh[s]->si.gbuf_wmask >> i) & 1;
             if (SH_GBUF_TABLE_SSBO(desc)) { /* a window of a pointer table in memory, its base in SNX_VKB_MBASE */
@@ -4694,11 +4762,38 @@ static int mesh_shaders(const DsState* ds, DrawShaders* o) {
     rt_int_targets(&ds->tgt, &o->rt_int, &o->rt_sint);
     return 1;
 }
+/* the shaders of a draw of host programs (DS_HOST_PROGRAM): the vertex and fragment modules as they were given,
+   nothing between them and no variant of either, which their GLSL decided. 0 when the draw is skipped (said once) */
+static int host_shaders(const DsState* ds, u32 topology, DrawShaders* o) {
+    const DsPrograms* p = &ds->prog;
+    int fs_on = p->on >> 5 & 1;
+    *o = (DrawShaders){.topology = topology,
+                       .window_xy = !ds->vp.transform_on,
+                       .attr_int = ds->vfmt.is_int,
+                       .attr_sint = ds->vfmt.is_sint};
+    if ((p->on & 0x1d) || p->xfb_on || vk_viewport_swizzle_key(&ds->vp)) {
+        LOG_LIMIT(4,
+                  "vulkan: a draw of host programs with program slots %#x on, capture %u and a viewport swizzle "
+                  "(%#x) skipped: host programs take a vertex and a fragment stage, nothing more\n",
+                  (unsigned)p->on, (unsigned)p->xfb_on, (unsigned)vk_viewport_swizzle_key(&ds->vp));
+        return 0;
+    }
+    o->vs = vk_host_shader(p->code[1], ST_VS);
+    o->fs0 = fs_on ? vk_host_shader(p->code[5], ST_FS) : NULL;
+    if (!o->vs || (fs_on && !o->fs0)) {
+        LOG_LIMIT(4, "vulkan: a draw skipped: its programs %llx and %llx aren't host programs the renderer was given\n",
+                  (unsigned long long)p->code[1], (unsigned long long)p->code[5]);
+        return 0;
+    }
+    rt_int_targets(&ds->tgt, &o->rt_int, &o->rt_sint);
+    return 1;
+}
 /* the shaders of the programs, the vertex format and the targets of ds for a draw of topology: 0 when the draw is
    skipped */
 static int draw_shaders(const DsState* ds, u32 topology, int mesh, DrawShaders* o) {
     const DsPrograms* p = &ds->prog;
     if (mesh) return mesh_shaders(ds, o);
+    if (vk_host_programs(p)) return host_shaders(ds, topology, o);
     o->mesh = 0;
     o->prim = 0;
     const DsVertexFormat* vf = &ds->vfmt;
@@ -4826,7 +4921,9 @@ static int draw_shaders(const DsState* ds, u32 topology, int mesh, DrawShaders* 
    draw takes the position pass, and so does a quad draw the device can do no better for */
 static u32 draw_varying(const DsState* ds, const DrawShaders* sh, int per_vertex) {
     const VkSh *vs = sh->vs, *fs = sh->fs0;
-    if (g_vk.driver_id == VK_DRIVER_ID_NVIDIA_PROPRIETARY || sh->mesh || sh->tcs || sh->tes || sh->gs || !fs) return 0;
+    if (g_vk.driver_id == VK_DRIVER_ID_NVIDIA_PROPRIETARY || sh->mesh || sh->tcs || sh->tes || sh->gs || !fs ||
+        vk_host_programs(&ds->prog)) /* a host program interpolates as its GLSL asks, as the device does */
+        return 0;
     if (vs->si.writes_viewport || sh->window_xy || sh->swizzle || sh->topology < 4 || sh->topology > 9 ||
         ds->rkey.polygon != DS_POLYGON_FILL)
         return 0;
@@ -5631,6 +5728,69 @@ static int indirect_indices(const DsIndex* ix, int restart, VkBuffer* buf, u64* 
     if (len > (4u << 20)) len = 4u << 20; /* a window holds it, and the binding reads on to the window's end */
     return vk_buf_get_window_input(ix->addr, len, isz, buf, off);
 }
+/* An indirect draw's indices that Vulkan can't read as they are (8-bit ones without VK_KHR_index_type_uint8, or with
+   a restart index that isn't all ones), made on the GPU as a direct draw's are (index_convert). Every index of the
+   buffer is made, from its address to its end: the records' first index and count are the GPU's, and they stay as
+   they are, counting from the same first index. 0 when they can't be made */
+static int indirect_indices_made(const DrawCall* dc, const DsIndex* ix, int restart, VkBuffer* buf, u64* off,
+                                 VkIndexType* type) {
+    u32 isz = ix->format == 0 ? 1 : ix->format == 1 ? 2 : 4, ones = isz == 1 ? 0xFFu : isz == 2 ? 0xFFFFu : ~0u;
+    u32 ri = ix->restart_index & ones;
+    u64 len = ix->end >= ix->addr ? ix->end - ix->addr + 1 : 0, n = len / isz;
+    if (!n || (ix->addr & (isz - 1))) return 0;
+    if (n > (1u << 24)) {
+        LOG_LIMIT(1, "vulkan: an indirect draw's index buffer of %llu indices is past the %u made into others\n",
+                  (unsigned long long)n, 1u << 24);
+        return 0;
+    }
+    if (isz == 1) { /* widened to 16 bits, the restart index (when on, whatever the topology) becoming 0xFFFF */
+        *type = VK_INDEX_TYPE_UINT16;
+        return index_convert(dc, 0, ix->addr, 1, 0, (u32)n, TC_INDEX_WIDEN8, ix->restart != 0, ri, (u32)((n + 1) / 2),
+                             (n + 1) / 2 * 4, buf, off);
+    }
+    if (!(ix->restart && restart && ri != ones)) return 0;
+    u32 words = isz == 2 ? (u32)((n + 1) / 2) : (u32)n;
+    *type = isz == 2 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32;
+    return index_convert(dc, 0, ix->addr, isz, 0, (u32)n, isz == 2 ? TC_INDEX_RESTART16 : TC_INDEX_RESTART32, 0, ri,
+                         words, (u64)words * 4, buf, off);
+}
+/* An indirect draw of quads: its record made the indexed record of their triangles on the GPU (vk_indirect_quads),
+   since the count that says how many is there. Quads of vertices draw through the quad indices of vertex numbers
+   (quad_indices), INDIRECT_QUADS of them; quads of indices have theirs made from the index buffer, the same number at
+   most. A restart index ends no quad here, as in a direct draw whose indices the CPU can't read. One record, with no
+   count: 0 for the others, and when it can't be made */
+#define INDIRECT_QUADS 65536u
+static int indirect_quads(const DrawCall* dc, const DsState* ds, int indexed, VkBuffer* abuf, u64* aoff, VkBuffer* ibuf,
+                          u64* ioff) {
+    const DsIndex* ix = &ds->index;
+    const u32 flags = ds->rkey.provoking_last ? QUADS_LAST : 0, isz = ix->format == 0 ? 1 : ix->format == 1 ? 2 : 4;
+    VkBuffer source = VK_NULL_HANDLE;
+    u64 source_at = 0, made_at, limit = INDIRECT_QUADS;
+    if (dc->draw_count > 1 || dc->indirect_count || dc->xfb_control) {
+        LOG_LIMIT(1, "vulkan: an indirect draw of quads with %u records%s isn't drawn\n", dc->draw_count,
+                  dc->indirect_count ? " under a count"
+                  : dc->xfb_control  ? " of a transform feedback"
+                                     : "");
+        return 0;
+    }
+    LOG_LIMIT(1, "vulkan: an indirect draw of quads draws %u quads at most\n", INDIRECT_QUADS);
+    if (indexed) {
+        u64 len = ix->end >= ix->addr ? ix->end - ix->addr + 1 : 0;
+        limit = len / isz;
+        if (limit > (u64)INDIRECT_QUADS * 4) limit = (u64)INDIRECT_QUADS * 4;
+        if (!limit || (ix->addr & (isz - 1)) || !vk_buf_get_input(ix->addr, limit * isz, isz, &source, &source_at))
+            return 0;
+    } else if (!quad_indices(INDIRECT_QUADS, flags, ibuf, ioff))
+        return 0;
+    if (!vk_indirect_quads(*abuf, *aoff, indexed ? isz : 0, source, source_at, (u32)limit, flags & QUADS_LAST, abuf,
+                           aoff, &made_at))
+        return 0;
+    if (indexed) {
+        *ibuf = *abuf;
+        *ioff = made_at;
+    }
+    return 1;
+}
 /* the draws: Vulkan's draw count past one needs multiDrawIndirect, else one call each */
 static void draw_indirect(VkCommandBuffer cb, int indexed, VkBuffer abuf, u64 aoff, VkBuffer cbuf, u64 coff, u32 n,
                           u32 stride) {
@@ -6155,9 +6315,10 @@ retry:
         if (kept && memcmp(&fk, &ke->fkey, sizeof fk)) kept = 0;
         if (kept) fs = ke->fs;
         if (!kept || check) {
-            VkSh* made = texture ? vk_draw_texture_fragment((u32)fk.tm, (u32)fk.ts, fk.rm, fk.rs,
-                                                            fk.advanced_blend, fk.advanced_mask)
-                                 : fs_variant(ds, ds->prog.code[5], sh.fs0, &fk);
+            VkSh* made = texture ? vk_draw_texture_fragment((u32)fk.tm, (u32)fk.ts, fk.rm, fk.rs, fk.advanced_blend,
+                                                            fk.advanced_mask)
+                         : vk_host_programs(&ds->prog) ? sh.fs0 /* its GLSL decided what it does */
+                                                       : fs_variant(ds, ds->prog.code[5], sh.fs0, &fk);
             if (kept && made != fs) {
                 draw_differs("fragment shader");
                 kept = 0;
@@ -6527,7 +6688,9 @@ retry:
     int zt_ro = 0;
     u32 fb = 0;
     u64 scaled[2] = {0};
-    DrawImages images = {0};
+    DrawImages images; /* read below its count alone (a pattern past it with draw_state_check=1, as the storage) */
+    if (g_settings.draw_state_check) memset(&images, 0xA5, sizeof images);
+    images.n = images.sampled_general = 0;
     for (u32 i = 0; i < VK_DRAW_STAGES; i++)
         if (staged[i] && staged[i]->si.nimg) images.sampled_general = 1;
     /* transform feedback without the extension: the buffers the vertex program stores into */
@@ -6626,17 +6789,12 @@ retry:
         count = 1u << 24;
     }
     /* Vulkan restarts at all ones of the index type, in strips and fans, and in lists (patch lists apart) as the 3D
-       engine does where the device has VK_EXT_primitive_topology_list_restart; the guest's restart index is 0x592. An
-       indirect draw's indices are read as they are: there a list restarts at Vulkan's own restart index only, and
-       another one stays a vertex, as it was without the extension */
+       engine does where the device has VK_EXT_primitive_topology_list_restart; the guest's restart index is 0x592 */
     int list = topo == VK_PRIMITIVE_TOPOLOGY_POINT_LIST || topo == VK_PRIMITIVE_TOPOLOGY_LINE_LIST ||
                topo == VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST || topo == VK_PRIMITIVE_TOPOLOGY_LINE_LIST_WITH_ADJACENCY ||
                topo == VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST_WITH_ADJACENCY;
     int list_restart = topo == VK_PRIMITIVE_TOPOLOGY_PATCH_LIST ? g_vk.has_patch_list_restart : g_vk.has_list_restart;
-    u32 vulkan_ri = isz == 1 ? 0xFFu : isz == 2 ? 0xFFFFu : 0xFFFFFFFFu;
-    int restart =
-        ds->index.restart && ((!list && topo != VK_PRIMITIVE_TOPOLOGY_PATCH_LIST) ||
-                              (list_restart && (!dc->indirect || (ds->index.restart_index & vulkan_ri) == vulkan_ri)));
+    int restart = ds->index.restart && ((!list && topo != VK_PRIMITIVE_TOPOLOGY_PATCH_LIST) || list_restart);
     u32 icount = count;
     i32 voffset = (i32)base_vertex; /* the draw's vertexOffset */
     if (edges) {
@@ -6654,10 +6812,19 @@ retry:
         itype = VK_INDEX_TYPE_UINT32;
         topo = points ? VK_PRIMITIVE_TOPOLOGY_POINT_LIST : VK_PRIMITIVE_TOPOLOGY_LINE_LIST;
     } else if (dc->indirect) {
-        /* what the CPU makes into other indices needs the count, which only the GPU has */
-        if (topology == 7 || (indexed && !indirect_indices(&ds->index, restart, &ibuf, &ioff, &itype))) {
+        int made = 1;
+        if (topology == 7) { /* two triangles a quad, as a direct draw's (below) */
+            made = indirect_quads(dc, ds, indexed, &abuf, &aoff, &ibuf, &ioff);
+            indexed = 2;
+            itype = VK_INDEX_TYPE_UINT32;
+            topo = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+        } else if (indexed)
+            made = indirect_indices(&ds->index, restart, &ibuf, &ioff, &itype) ||
+                   indirect_indices_made(dc, &ds->index, restart, &ibuf, &ioff, &itype);
+        if (!made) {
             LOG_LIMIT(1, "vulkan: an indirect draw of %s isn't drawn\n",
-                      topology == 7 ? "quads" : "8-bit indices or another restart index than Vulkan's");
+                      topology == 7 ? "quads that can't be made into triangles"
+                                    : "indices that can't be made into ones Vulkan reads");
             draw_images_discard(&images);
             if (late_depth) vk_depth_shadow_cancel();
             g_vk_skipped++;

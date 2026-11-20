@@ -84,6 +84,24 @@ int main(void) {
         CHECK(board.apu.noise_lfsr == lfsr);
     }
 
+    /* SOUND4CNT_H's bit 3 makes it the 7 bit register, the feedback into bit 6 too; s 8, bit 7 of the same
+       register, is the 15 bit one stepping 256 times slower: 8 steps in 256 samples at r 1 */
+    for (uint32_t narrow = 0; narrow < 2; ++narrow) {
+        uint16_t lfsr = 0x7FFF;
+        reset();
+        agb_apu_write(&board, 0x080, 0x8877);
+        agb_apu_write(&board, 0x082, 0x0002);
+        agb_apu_write(&board, 0x078, 0xF000);
+        agb_apu_write(&board, 0x07C, (uint16_t)(0x8001 | (narrow ? 0x08 : 0x80)));
+        CHECK(run_samples(narrow ? 16 : 256) == (narrow ? 16 : 256));
+        for (int step = 0; step < (narrow ? 8 * 16 : 8); ++step) {
+            uint16_t bit = (lfsr ^ lfsr >> 1) & 1;
+            lfsr = (uint16_t)(lfsr >> 1 | bit << 14);
+            if (narrow) lfsr = (uint16_t)((lfsr & ~0x40) | bit << 6);
+        }
+        CHECK(board.apu.noise_lfsr == lfsr);
+    }
+
     /* the envelope steps down at 64 Hz */
     reset();
     agb_apu_write(&board, 0x080, 0x2277);

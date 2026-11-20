@@ -829,7 +829,11 @@ static uint32_t fios_archive_mount_sync(VitaProcess* p, VitaThread* t) {
 static uint32_t fios_archive_unmount_sync(VitaProcess* p, VitaThread* t) {
     uint32_t fh = vita_arg(p, t, 1);
     if (fh >= ARCHIVE_MOUNT_FH && fh < ARCHIVE_MOUNT_FH + ARCHIVE_MOUNTS && archive_mounts[fh - ARCHIVE_MOUNT_FH].archive) {
-        vita_psarc_close(archive_mounts[fh - ARCHIVE_MOUNT_FH].archive);
+        VitaPsarc* a = archive_mounts[fh - ARCHIVE_MOUNT_FH].archive;
+        /* its open files close with it: a handle left open would read the archive after it is freed */
+        for (unsigned i = 0; i < ARCHIVE_FILES; ++i)
+            if (archive_files[i].archive == a) archive_files[i].archive = NULL;
+        vita_psarc_close(a);
         archive_mounts[fh - ARCHIVE_MOUNT_FH].archive = NULL;
     }
     return 0;

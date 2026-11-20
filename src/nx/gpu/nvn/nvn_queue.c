@@ -712,9 +712,11 @@ void nvn_QueuePresentTexture(CPU* c, u64 q, u64 w, i32 index) {
         o->drawn[index] = value;
     }
     if (!o->presents++) LOG("nvn: first present, texture %d of window %llx\n", index, (unsigned long long)w);
-    if (!(o->presents % 1800))
+    if (!(o->presents % 1800)) {
         LOG("nvn: %llu presents, %llu submissions\n", (unsigned long long)o->presents,
             (unsigned long long)atomic_load_explicit(&g_nvn.queue.submits, memory_order_relaxed));
+        nvn_draw_stats_log(1800);
+    }
     atomic_store_explicit(&g_nvn.queue.period, period, memory_order_relaxed);
     slot = pace(o, queue_ready(queue), period);
     if (index >= 0 && index < 4) {

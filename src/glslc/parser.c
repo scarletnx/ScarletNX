@@ -270,6 +270,7 @@ static uint8_t default_precision(const Glslc* g, uint32_t key) {
     for (uint32_t i = g->nprecs; i-- > 0;) {
         if (g->precs[i].type == key) return g->precs[i].prec;
     }
+    if (g->desktop_version) return GLSLC_PREC_HIGH; /* desktop GLSL has no precision: every type is highp */
     int frag = g->stage == SNX_GLSLC_FRAGMENT;
     if (key == GT_FLOAT) return frag ? GLSLC_PREC_NONE : GLSLC_PREC_HIGH;
     if (key == GT_INT) return frag ? GLSLC_PREC_MEDIUM : GLSLC_PREC_HIGH;

@@ -31,6 +31,9 @@
 #include <windows.h>
 #include <io.h>
 #else
+#ifdef __linux__
+#include <sys/prctl.h>
+#endif
 #include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -76,10 +79,15 @@ void gnu_spawn_exit(GnuProcess* p) {
     fflush(stderr);
 #ifndef _WIN32
     if (p->faulted && gnu_host_signal(p->faulted)) {
-        /* the parent sees the signal, as it would of the program on Linux; no core of the runtime */
+        /* the parent sees the signal, as it would of the program on Linux; no core of the runtime. The limit stops a
+           core written to a file; one piped to a program (a core_pattern of "|...") is made whatever the limit, the
+           guest's reservation in it: a process that is not dumpable leaves neither */
         struct rlimit none = {0, 0};
         int sig = gnu_host_signal(p->faulted);
         (void)setrlimit(RLIMIT_CORE, &none);
+#ifdef __linux__
+        (void)prctl(PR_SET_DUMPABLE, 0);
+#endif
         signal(sig, SIG_DFL);
         if (sig != SIGKILL && sig != SIGSTOP) {
             sigset_t set;

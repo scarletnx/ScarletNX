@@ -1,0 +1,2 @@
+# a function that calls itself on the lower half of its bits twice: refused, it is not each half
+root decode_sides_aarch64_instrs_test

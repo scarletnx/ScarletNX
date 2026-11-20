@@ -7,7 +7,12 @@
 #include "nx/runtime/cli.h"
 #include "nx/runtime/ini.h"
 #include "nx/runtime/options.h"
+#include "common/gpu/gl/gl_program.h"
+#include "common/gpu/gl/gl_state.h"
+#include "glslc/glslc.h"
+#include "nx/gpu/gl/gl_host_program.h"
 #include "nx/gpu/maxwell/draw_state.h"
+#include "nx/gpu/vk/host_program.h"
 #include "nx/gpu/guest_textures.h"
 #include "nx/gpu/renderer.h"
 #include "common/gpu/vk/vk_common.h"
@@ -176,6 +181,81 @@ static int check_release_stopped_recorder(void) {
     printf("The window's release returns while the recording thread is stopped in a packet\n");
     return 0;
 }
+
+/* A full ring sleeps: with the recording thread held in a packet (a read of a slow disk held it 184 s in a race, #2487),
+   the producer that finds no room waits on a condition, where it spun on sched_yield and took a whole core. The
+   producer here, with vk_lock as the GPU thread has it, adds 5 MiB to the 4 MiB ring past a held packet: its own CPU
+   time over the 1.5 s it waits stays far under that while, and its packets all run once the packet lets go */
+#if !defined(_WIN32) && defined(CLOCK_THREAD_CPUTIME_ID)
+#define FULL_RING_PACKET (64u << 10)
+static _Atomic u32 g_full_ring_done; /* 0 adding, 1 all added */
+static _Atomic u32 g_full_ring_ran;  /* the producer's packets the recording thread ran */
+static u64 g_full_ring_cpu_ns;       /* the producer's CPU time while it added them */
+static u64 thread_cpu_ns(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts);
+    return (u64)ts.tv_sec * 1000000000ull + (u64)ts.tv_nsec;
+}
+static void full_ring_packet(const void* arg) {
+    (void)arg;
+    atomic_fetch_add_explicit(&g_full_ring_ran, 1, memory_order_relaxed);
+}
+static void full_ring_producer(void* arg) {
+    static u8 bytes[FULL_RING_PACKET];
+    const u32 n = *(const u32*)arg;
+    const u64 t0 = thread_cpu_ns();
+    vk_lock();
+    for (u32 i = 0; i < n; i++) vk_rec_call(full_ring_packet, bytes, sizeof bytes);
+    vk_unlock();
+    g_full_ring_cpu_ns = thread_cpu_ns() - t0;
+    atomic_store_explicit(&g_full_ring_done, 1, memory_order_release);
+    plat_wake_word(&g_full_ring_done);
+}
+/* what a drain costs (vk_rec_run: the packet published, run and waited for), printed to compare builds: the wait
+   spins a while before it sleeps (record.c's REC_ROOM_SPIN_NS) */
+static void drain_run(void* arg) { (void)arg; }
+static void drain_time(void) {
+    const u64 t0 = plat_ns();
+    for (int i = 0; i < 20000; i++) vk_rec_run(drain_run, NULL);
+    printf("The recording ring drained in %.2f us on average over 20,000 runs\n",
+           (double)(plat_ns() - t0) / 20000 / 1e3);
+}
+static int check_full_ring_sleeps(void) {
+    static const int no_queue = 0;
+    drain_time();
+    static const u32 packets = (5u << 20) / FULL_RING_PACKET;
+    if (!vk_rec_threaded()) {
+        puts("SKIP the full ring's wait: vk_record=0 has no ring");
+        return 0;
+    }
+    atomic_store_explicit(&g_rec_stop, 0, memory_order_release);
+    atomic_store_explicit(&g_full_ring_done, 0, memory_order_release);
+    atomic_store_explicit(&g_full_ring_ran, 0, memory_order_release);
+    vk_lock();
+    vk_rec_call(recorder_stops, &no_queue, sizeof no_queue); /* the producer's packets publish it */
+    vk_unlock();
+    CHECK(plat_thread(full_ring_producer, (void*)&packets, 0) == 0);
+    plat_sleep_ns(1500000000ull);
+    const u32 added_early = atomic_load_explicit(&g_full_ring_done, memory_order_acquire);
+    const u32 stop = atomic_load_explicit(&g_rec_stop, memory_order_acquire);
+    atomic_store_explicit(&g_rec_stop, 2, memory_order_release);
+    plat_wake_word(&g_rec_stop);
+    while (!atomic_load_explicit(&g_full_ring_done, memory_order_acquire)) plat_wait_word(&g_full_ring_done, 0, -1);
+    vk_rec_sync();
+    printf("The full ring's producer used %.1f ms of CPU while it waited 1.5 s for room\n",
+           (double)g_full_ring_cpu_ns / 1e6);
+    CHECK(stop == 1);                         /* the recording thread was held in the packet */
+    CHECK(!added_early);                      /* the ring had no room for 5 MiB past it */
+    CHECK(g_full_ring_cpu_ns < 300000000ull); /* asleep: spinning on sched_yield took the whole 1.5 s */
+    CHECK(atomic_load_explicit(&g_full_ring_ran, memory_order_relaxed) == packets);
+    return 0;
+}
+#else
+static int check_full_ring_sleeps(void) {
+    puts("SKIP the full ring's wait: no CPU clock for a thread here");
+    return 0;
+}
+#endif
 
 /* A frame's descriptor pool holds VK_POOL_ARRAY_SETS sets of the arrays layouts, not 1024: a driver may make a pool's
    memory for all it can hold as the pool is made (Qualcomm's: 470 MiB for 1024 sets that all could hold the arrays).
@@ -5315,10 +5395,49 @@ static int check_resident_texture_in_flight(void) {
     g_settings.astc_mode = had;
     return failed;
 }
+/* copies of the CPU's bytes one after another with no draw between them (a game's load through the GL layer, 256 MiB
+   in copies of 512 KiB) under a 64 MiB budget: their staging comes free as the submissions that read it end, so the
+   rings stay far below what the copies took in all; the last copy's bytes land */
+static int check_snapshot_uploads(void) {
+    enum { LINE = 4096, LINES = 128, COPIES = 512 };
+    GpuDmaOp o = {0};
+    u8* bytes = malloc((size_t)LINE * LINES);
+    u64 before, most = 0, saved_budget;
+    CHECK(bytes);
+    vk_finish();
+    vk_frame_next();
+    saved_budget = vk_mem_budget_cap(64u << 20);
+    before = vk_ring_bytes();
+    o.width = o.line_in = o.line_out = LINE;
+    o.lines = LINES;
+    o.src = pitch_side(0, LINE);
+    o.dst = pitch_side(DMA_GA + 0x80000, LINE);
+    o.snap = bytes;
+    for (u32 k = 0; k < COPIES; k++) {
+        u64 now;
+        memset(bytes, (int)(k & 0xff), (size_t)LINE * LINES);
+        CHECK(g_renderer->dma_copy(&o));
+        now = vk_ring_bytes();
+        if (now > most) most = now;
+    }
+    vk_finish();
+    vk_mem_budget_cap(saved_budget);
+    printf("%u copies of %u KiB of the CPU's bytes, no draw between them, a 64 MiB budget: rings %llu MiB at most, "
+           "%llu before\n",
+           (unsigned)COPIES, (unsigned)(LINE * LINES >> 10), (unsigned long long)(most >> 20),
+           (unsigned long long)(before >> 20));
+    CHECK(most - before < (u64)COPIES * LINE * LINES / 2);
+    guest_done(DMA_A + 0x80000, (u64)LINE * LINES);
+    CHECK(GP(DMA_A + 0x80000)[0] == (u8)((COPIES - 1) & 0xff) &&
+          GP(DMA_A + 0x80000)[LINE * LINES - 1] == (u8)((COPIES - 1) & 0xff));
+    free(bytes);
+    return 0;
+}
 static int check_dma(void) {
     GpuDmaOp o;
     gmmu_map(DMA_GA, DMA_A, DMA_SPAN);
     gmmu_map(DMA_GB, DMA_B, DMA_SPAN);
+    CHECK(!check_snapshot_uploads());
     /* a one-dimensional copy */
     memset(&o, 0, sizeof o);
     o.width = o.line_in = o.line_out = 1001;
@@ -7314,6 +7433,7 @@ static void results_copied(u64 cpu, u64 len) { vk_own_cpu_touched(cpu, len); }
 #include "vulkan_shared_clamp.inc"
 #include "vulkan_compute_arena.inc"
 #include "vulkan_rt_aside.inc"
+#include "vulkan_so_note.inc"
 #include "vulkan_index_draws.inc"
 #include "vulkan_polygon_lines.inc"
 #include "vulkan_pass_breaks.inc"
@@ -7558,6 +7678,7 @@ static int check_hmma_file_key(void) {
 #include "vulkan_nvn_copy_conversions.inc"
 #include "vulkan_nvn_xfb.inc"
 #include "vulkan_nvn_state.inc"
+#include "vulkan_host_program.inc"
 #include "vulkan_maxwell_fixed.inc"
 #include "vulkan_nvn_events.inc"
 #include "vulkan_nvn_subroutines.inc"
@@ -7713,9 +7834,22 @@ static int check_vk12_way(void) {
     char why[64] = "";
     CHECK(vk_api_setting("auto", &cap, why, sizeof why) && cap == 0);
     CHECK(vk_api_setting("1.2", &cap, why, sizeof why) && cap == VK_API_VERSION_1_2);
-    CHECK(!vk_api_setting("1.3", &cap, why, sizeof why) && !strcmp(why, "vk_api=1.3 is not auto or 1.2"));
+    CHECK(vk_api_setting("1.1", &cap, why, sizeof why) && cap == VK_API_VERSION_1_1);
+    CHECK(!vk_api_setting("1.3", &cap, why, sizeof why) && !strcmp(why, "vk_api=1.3 is not auto, 1.2 or 1.1"));
+    /* a swapchain the driver could not make, said with the device, its driver and the result's name and number */
+    {
+        char said[300];
+        vk_swapchain_failure(said, sizeof said, "Mali-G720 MC7", "panvk", VK_ERROR_INVALID_EXTERNAL_HANDLE);
+        CHECK(!strcmp(said, "the swapchain could not be made on Mali-G720 MC7 (panvk): "
+                            "VK_ERROR_INVALID_EXTERNAL_HANDLE (-1000072003)"));
+        vk_swapchain_failure(said, sizeof said, "Mali-G720 MC7", "", VK_ERROR_SURFACE_LOST_KHR);
+        CHECK(strstr(said, "(its driver): VK_ERROR_SURFACE_LOST_KHR (-1000000000)") != NULL);
+    }
     CHECK(!g_vk.api_cap == !strcmp(g_settings.vulkan_api, "auto"));
-    if (g_vk.api_cap) {
+    if (g_vk.api_cap == VK_API_VERSION_1_1) { /* lavapipe has 1.3 and more: it runs as auto */
+        CHECK(!strcmp(g_settings.vulkan_api, "1.1"));
+        CHECK(g_vk.api >= VK_API_VERSION_1_3 && version == 0x00010600u && g_vk.feat12.pNext == &g_vk.feat13);
+    } else if (g_vk.api_cap) {
         CHECK(!strcmp(g_settings.vulkan_api, "1.2"));
         CHECK(g_vk.api < VK_API_VERSION_1_3 && g_vk.api >= VK_API_VERSION_1_2);
         CHECK(version == 0x00010500u);
@@ -7798,6 +7932,22 @@ static int check_vk12_way(void) {
     snprintf(list[n - 1].extensionName, sizeof list[n - 1].extensionName, "VK_EXT_not_this");
     CHECK(vk_1_2_missing(&ext, names, sizeof names) == 2 &&
           !strcmp(names, VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME ", " VK_KHR_LOAD_STORE_OP_NONE_EXTENSION_NAME));
+    /* on a 1.1 device the timeline semaphore and the driver's identity before them, as 1.2 has them in its core;
+       the list cut to the room given */
+    {
+        char longer[512], cut[40];
+        CHECK(vk_1_1_missing(&ext, longer, sizeof longer) == 4 &&
+              !strcmp(longer, VK_KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME ", " VK_KHR_DRIVER_PROPERTIES_EXTENSION_NAME
+                                                                       ", " VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME
+                                                                       ", " VK_KHR_LOAD_STORE_OP_NONE_EXTENSION_NAME));
+        CHECK(vk_1_1_missing(&ext, cut, sizeof cut) == 4 && strlen(cut) == sizeof cut - 1);
+        snprintf(list[n - 1].extensionName, sizeof list[n - 1].extensionName, "%s",
+                 VK_KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME);
+        CHECK(vk_1_1_missing(&ext, longer, sizeof longer) == 3 &&
+              !strcmp(longer, VK_KHR_DRIVER_PROPERTIES_EXTENSION_NAME ", " VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME
+                                                                      ", " VK_KHR_LOAD_STORE_OP_NONE_EXTENSION_NAME));
+        snprintf(list[n - 1].extensionName, sizeof list[n - 1].extensionName, "VK_EXT_not_this");
+    }
     /* all of them on a driver the bans keep from dynamic rendering: the filter create_device runs first takes it out,
        and the device lacks it by name. The table and the device are put back after */
     ext.list = list;
@@ -8027,6 +8177,7 @@ static int run_headless(int argc, char** argv) {
     if (getenv("SNX_TEST_RECORDER_ONLY")) { /* the recording thread's own sync alone, on the driver the loader picks */
         CHECK(!check_recorder_self_sync());
         CHECK(!check_release_stopped_recorder());
+        CHECK(!check_full_ring_sleeps());
         vk_finish();
         vk_pipeline_quiesce();
         printf("PASS headless Vulkan recorder only: %u validation messages\n", g_vk_validation_messages);
@@ -8034,6 +8185,7 @@ static int run_headless(int argc, char** argv) {
     }
     CHECK(!check_recorder_self_sync());
     CHECK(!check_release_stopped_recorder());
+    CHECK(!check_full_ring_sleeps());
     viw_install();
     /* every check with each draw binding the pipeline linked from its parts and never the one made whole
        (SNX_TEST_GPL=linked), or with each pipeline made whole, with the dynamic state the libraries gave (whole) */
@@ -8624,6 +8776,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_nvn_stencil_masks());
     CHECK(!check_nvn_xfb());
     CHECK(!check_nvn_fixed_state());
+    CHECK(!check_host_program());
     CHECK(!check_maxwell_point_size());
     CHECK(!check_maxwell_depth_bounds());
     CHECK(!check_maxwell_depth_range());
@@ -8745,6 +8898,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_dma_bands());
     CHECK(!check_rt_superseded());
     CHECK(!check_rt_aside());
+    CHECK(!check_so_note());
     CHECK(!check_dma_bands_frames());
     CHECK(!check_flush_parts());
     CHECK(!check_publish_bands());
@@ -8832,6 +8986,17 @@ static int run_headless(int argc, char** argv) {
           snx_vk_pipeline_workers(0, 64) == 12);
     CHECK(snx_vk_pipeline_workers(5, 12) == 5 && snx_vk_pipeline_workers(32, 4) == 32 &&
           snx_vk_pipeline_workers(1, 64) == 1);
+    /* how a draw reads a target it writes at its own pixel: the interlock's capture on NVIDIA's and AMD's GPUs that
+       have all it needs, else two draws with dynamic rendering local read, else in place */
+    CHECK(vk_feedback_choice(0x10DE, 1, 1, 1, 1) == VK_FEEDBACK_INTERLOCK &&
+          vk_feedback_choice(0x1002, 1, 1, 1, 1) == VK_FEEDBACK_INTERLOCK &&
+          vk_feedback_choice(0x1002, 1, 1, 1, 0) == VK_FEEDBACK_INTERLOCK);
+    CHECK(vk_feedback_choice(0x8086, 1, 1, 1, 1) == VK_FEEDBACK_PREDRAW &&
+          vk_feedback_choice(0x1002, 1, 0, 1, 1) == VK_FEEDBACK_PREDRAW &&
+          vk_feedback_choice(0x1002, 0, 1, 1, 1) == VK_FEEDBACK_PREDRAW &&
+          vk_feedback_choice(0x10DE, 1, 1, 0, 1) == VK_FEEDBACK_PREDRAW);
+    CHECK(vk_feedback_choice(0x8086, 1, 1, 1, 0) == VK_FEEDBACK_IN_PLACE &&
+          vk_feedback_choice(0x1002, 1, 0, 1, 0) == VK_FEEDBACK_IN_PLACE);
 #if defined(__linux__)
     if (vk_rec_threaded()) { /* the workers started with the first draws': two at the main thread's nice, the rest low */
         int n = snx_vk_pipeline_workers(g_settings.pipeline_threads, plat_cpu_count()), low, normal, other;

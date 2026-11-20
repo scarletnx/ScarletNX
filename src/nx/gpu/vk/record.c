@@ -49,6 +49,16 @@ static _Atomic u32 g_rec_tid; /* the recording thread's plat_tid: a vk_rec_sync 
 static _Atomic int g_sleep;   /* the consumer waits on g_cv for more */
 static PMutex g_m;
 static PCond g_cv;
+/* the producer waits on g_room for the consumer to move g_tail (room in a full ring, or a drain), counted in
+   g_room_waits. It spun on sched_yield before: with the recording thread held 184 s in a read of a slow disk, the GPU
+   thread took a whole core all that while, 60% of it in the kernel (#2487) */
+static PCond g_room;
+static _Atomic int g_room_waits;
+/* the most a room wait sleeps before it looks again, should a wake-up be missed */
+#define REC_ROOM_WAIT_NS 100000000ll
+/* how long a room wait spins on sched_yield before it sleeps: a drain the recording thread ends in microseconds (a
+   landing's, owned.c) took 5.1 to 6.4 us asleep and woken, 2.4 to 3.4 us spun (vulkan_recorder, 20,000 drains) */
+#define REC_ROOM_SPIN_NS 200000ull
 
 static void rec_thread(void* arg) {
     u64 tail = 0;
@@ -79,7 +89,14 @@ static void rec_thread(void* arg) {
         }
         SNX_ZONE_VALUE(z_rec, records);
         SNX_ZONE_END(z_rec);
-        atomic_store_explicit(&g_tail, tail, memory_order_release);
+        /* seq_cst with the load after it, as the producer's store of g_room_waits and its look at g_tail: one of the
+           two sees the other, so a producer about to sleep is woken */
+        atomic_store_explicit(&g_tail, tail, memory_order_seq_cst);
+        if (atomic_load_explicit(&g_room_waits, memory_order_seq_cst)) {
+            pm_lock(&g_m);
+            pc_broadcast(&g_room);
+            pm_unlock(&g_m);
+        }
     }
 }
 
@@ -90,6 +107,7 @@ static int rec_enabled(void) {
             g_ring = malloc(REC_CAP);
             pm_init(&g_m);
             pc_init(&g_cv);
+            pc_init(&g_room);
             if (!g_ring || plat_thread(rec_thread, NULL, (size_t)1 << 20)) {
                 char why[256];
                 WARN("vulkan: could not start the command recording thread (%s): recording on the GPU thread\n",
@@ -136,6 +154,31 @@ static void publish(void) {
     atomic_store_explicit(&g_head, g_pending, memory_order_seq_cst);
     wake();
 }
+/* the producer asleep until the consumer has made more than `more` bytes of room past g_pending, or until (plat_ns,
+   VK_REC_FOREVER: none): 0 when until came first. What is pending goes to the consumer first, or it would never make
+   the room */
+static int room_wait(u64 more, u64 until) {
+    const u64 spin = plat_ns() + REC_ROOM_SPIN_NS;
+    for (;;) {
+        if (g_pending + more - atomic_load_explicit(&g_tail, memory_order_seq_cst) <= REC_CAP) return 1;
+        const u64 now = plat_ns();
+        if (now < spin && (until == VK_REC_FOREVER || now < until)) {
+            publish();
+            plat_yield();
+            continue;
+        }
+        if (until != VK_REC_FOREVER && now >= until) return 0;
+        const i64 left =
+            until == VK_REC_FOREVER || until - now > (u64)REC_ROOM_WAIT_NS ? REC_ROOM_WAIT_NS : (i64)(until - now);
+        publish();
+        pm_lock(&g_m);
+        atomic_fetch_add_explicit(&g_room_waits, 1, memory_order_seq_cst);
+        if (g_pending + more - atomic_load_explicit(&g_tail, memory_order_seq_cst) > REC_CAP)
+            pc_wait(&g_room, &g_m, left);
+        atomic_fetch_sub_explicit(&g_room_waits, 1, memory_order_relaxed);
+        pm_unlock(&g_m);
+    }
+}
 /* room for a packet of size bytes of arguments, filled in and then made known by rec_commit */
 static void* rec_push(RecFn fn, u64 size) {
     u64 need = (sizeof(RecHdr) + size + 15) & ~15ull, at = g_pending & (REC_CAP - 1);
@@ -144,20 +187,14 @@ static void* rec_push(RecFn fn, u64 size) {
         fatal("vulkan: a command of %llu bytes, past what the recording ring takes", (unsigned long long)need);
     if (at + need > REC_CAP) { /* the packet doesn't fit before the end: the rest is skipped */
         u64 skip = REC_CAP - at;
-        while (g_pending + skip - atomic_load_explicit(&g_tail, memory_order_acquire) > REC_CAP) {
-            publish();
-            plat_yield();
-        }
+        room_wait(skip, VK_REC_FOREVER);
         RecHdr* s = (RecHdr*)(g_ring + at);
         s->fn = NULL;
         s->size = skip;
         g_pending += skip;
         at = 0;
     }
-    while (g_pending + need - atomic_load_explicit(&g_tail, memory_order_acquire) > REC_CAP) {
-        publish();
-        plat_yield();
-    }
+    room_wait(need, VK_REC_FOREVER);
     RecHdr* h = (RecHdr*)(g_ring + at);
     h->fn = fn;
     h->size = need;
@@ -179,13 +216,7 @@ int vk_rec_sync_until(u64 until) {
     if (atomic_load_explicit(&g_rec_tid, memory_order_acquire) == self) return 1;
     vk_lock(); /* no command is added meanwhile */
     publish();
-    while (atomic_load_explicit(&g_tail, memory_order_acquire) != g_pending) {
-        if (until != VK_REC_FOREVER && plat_ns() >= until) {
-            drained = 0;
-            break;
-        }
-        plat_yield();
-    }
+    drained = room_wait(REC_CAP, until); /* all of the ring's room: everything pending made */
     vk_unlock();
     return drained;
 }

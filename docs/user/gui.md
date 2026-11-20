@@ -206,9 +206,11 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   value. A
   package's box has **Use** and **Remove** (Del removes too), which asks first; one added is picked where packages
   load. **Download Driver** lists the GitHub releases for the device's GPU: Eden's five repositories on an Adreno,
-  [NX-Mali](https://github.com/Slopinator99/NX-Mali) on a Mali, radv-xclipse's Android zips on an Xclipse; the one
-  recommended for its model is marked, a GPU maker's own *proprietary, no license*, and the one picked is downloaded
-  and added as Add Driver adds a zip. They load on Android 9 or newer, arm64, with an Adreno GPU
+  [NX-Mali](https://github.com/Slopinator99/NX-Mali), [MaliSX2](https://github.com/bmdhacks/malisx2) (which says
+  Vulkan 1.1, below the 1.2 ScarletNX needs) and builds of PanVK on a Mali, radv-xclipse's Android zips on an Xclipse,
+  each release's zips alone; the one recommended for its model is marked, a GPU maker's own *proprietary, no license*,
+  and the one picked is downloaded and added as Add Driver adds a zip. They load on Android 9 or newer, arm64, with an
+  Adreno GPU
   (`/dev/kgsl-3d0`), a Mali
   GPU (`/dev/mali0`) or an Xclipse GPU (a render node of the `amdgpu` kernel driver in `/dev/dri`, for [RADV's port to
   it](https://github.com/JimVulkan/radv-xclipse), whose package asks Android 14): the page's first line says what this

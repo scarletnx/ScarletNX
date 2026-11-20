@@ -83,6 +83,13 @@ static int32_t fx_sum(int64_t p0, int64_t p1, int64_t p2, int64_t p3) {
     return (int32_t)(uint32_t)(((uint64_t)p0 + (uint64_t)p1 + (uint64_t)p2 + (uint64_t)p3) >> 12);
 }
 
+/* a 10 bit vector times a column of the vector matrix, in the 32 bits the sum keeps: a game's matrix word times a
+   component passes int's range, which is undefined, so the products and the sum are uint32_t's, which wrap */
+static uint32_t vec_column(const int16_t* v, const int32_t* column) {
+    return (uint32_t)v[0] * (uint32_t)column[0] + (uint32_t)v[1] * (uint32_t)column[4] +
+           (uint32_t)v[2] * (uint32_t)column[8];
+}
+
 static void matrix_mult4x4(int32_t* m, const int32_t* s)
 {
     int32_t tmp[16];
@@ -831,10 +838,8 @@ static void calculate_lighting(NdsGpu3D* g)
         g->tex_coords[1] = g->raw_tex_coords[1] + (((int64_t)g->normal[0]*g->tex_matrix[1] + (int64_t)g->normal[1]*g->tex_matrix[5] + (int64_t)g->normal[2]*g->tex_matrix[9]) >> 21);
     }
 
-    int32_t normaltrans[3]; // should be 1 bit sign 10 bits frac
-    normaltrans[0] = ((g->normal[0]*g->vec_matrix[0] + g->normal[1]*g->vec_matrix[4] + g->normal[2]*g->vec_matrix[8]) << 9) >> 21;
-    normaltrans[1] = ((g->normal[0]*g->vec_matrix[1] + g->normal[1]*g->vec_matrix[5] + g->normal[2]*g->vec_matrix[9]) << 9) >> 21;
-    normaltrans[2] = ((g->normal[0]*g->vec_matrix[2] + g->normal[1]*g->vec_matrix[6] + g->normal[2]*g->vec_matrix[10]) << 9) >> 21;
+    int32_t normaltrans[3]; // should be 1 bit sign 10 bits frac: the sum's bits 12 to 22
+    for (int i = 0; i < 3; i++) normaltrans[i] = snx_sext32(vec_column(g->normal, &g->vec_matrix[i]) >> 12, 11);
 
     int32_t c = 0;
     uint32_t vtxbuff[3] =
@@ -1033,9 +1038,8 @@ static void vec_test(NdsGpu3D* g, uint32_t param)
     normal[1] = (int16_t)((param & 0x000FFC00) >> 4) >> 6;
     normal[2] = (int16_t)((param & 0x3FF00000) >> 14) >> 6;
 
-    g->vec_test_result[0] = (normal[0]*g->vec_matrix[0] + normal[1]*g->vec_matrix[4] + normal[2]*g->vec_matrix[8]) >> 9;
-    g->vec_test_result[1] = (normal[0]*g->vec_matrix[1] + normal[1]*g->vec_matrix[5] + normal[2]*g->vec_matrix[9]) >> 9;
-    g->vec_test_result[2] = (normal[0]*g->vec_matrix[2] + normal[1]*g->vec_matrix[6] + normal[2]*g->vec_matrix[10]) >> 9;
+    /* the sum's bits 9 to 24 */
+    for (int i = 0; i < 3; i++) g->vec_test_result[i] = (int16_t)(uint16_t)(vec_column(normal, &g->vec_matrix[i]) >> 9);
 
     if (g->vec_test_result[0] & 0x1000) g->vec_test_result[0] |= 0xF000;
     if (g->vec_test_result[1] & 0x1000) g->vec_test_result[1] |= 0xF000;

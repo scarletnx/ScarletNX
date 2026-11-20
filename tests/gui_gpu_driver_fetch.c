@@ -2,8 +2,9 @@
    Copyright 2026 the ScarletNX contributors */
 /* gui/gpu_driver_fetch.c: a repository's releases from GitHub's list of them, its latest marked as GitHub marks it,
    titled by name or by tag and ordered as Eden orders them; the assets each has, those with no link to download left
-   out, a GPU maker's own marked, radv-xclipse's that are not for Android and a release's .txt left out; GitHub's own
-   error said; and the recommendation by model, found among a repository's releases, NX-Mali's from 0.0.3 on */
+   out, a GPU maker's own marked, radv-xclipse's that are not for Android and what is no zip left out (a release's
+   checksums and notes, MaliSX2's build for Linux); GitHub's own error said; and the recommendation by model, found
+   among a repository's releases, NX-Mali's from 0.0.3 on */
 #include "gui/gpu_driver_fetch.h"
 #include <assert.h>
 #include <stdio.h>
@@ -65,6 +66,109 @@ int main(void) {
         assert(r.count == 1 && r.assets_count == 1 && !strcmp(r.releases[0].title, "v3.7.0") && r.releases[0].latest &&
                !strcmp(gui_driver_assets(&r)[0].name, "PanVK-FristOneRR-V.3.7.0.zip") &&
                !gui_driver_assets(&r)[0].proprietary);
+        gui_driver_releases_free(&r);
+    }
+    /* MaliSX2, for a Mali beside NX-Mali, recommended on none: its zip listed, not its checksums nor its build for
+       Linux */
+    {
+        static const char malisx2_json[] =
+            "[{\"tag_name\": \"v0.5.1\", \"name\": \"malisx2 0.5.1\", \"prerelease\": false, \"assets\": ["
+            "   {\"name\": \"malisx2-0.5.1-308fe121c7.zip\", \"size\": 3815046, \"browser_download_url\":"
+            "    \"https://github.com/bmdhacks/malisx2/releases/download/v0.5.1/malisx2-0.5.1-308fe121c7.zip\"},"
+            "   {\"name\": \"malisx2-0.5.1-308fe121c7.zip.sha256\", \"size\": 95, \"browser_download_url\":"
+            "    \"https://github.com/bmdhacks/malisx2/releases/download/v0.5.1/malisx2-0.5.1-308fe121c7.zip.sha256\"},"
+            "   {\"name\": \"malisx2-0.5.1-aarch64.tar.gz\", \"size\": 4827836, \"browser_download_url\":"
+            "    \"https://github.com/bmdhacks/malisx2/releases/download/v0.5.1/malisx2-0.5.1-aarch64.tar.gz\"}]}]";
+        const GuiDriverRepo* malisx2 = &gui_driver_repos[8];
+        assert(!strcmp(malisx2->path, "bmdhacks/malisx2") && !strcmp(malisx2->name, "MaliSX2") &&
+               malisx2->gpu == GUI_DRIVER_MALI && !malisx2->tag_titles && !malisx2->by_time);
+        assert(gui_driver_releases_parse(malisx2_json, strlen(malisx2_json), malisx2, &r, why, sizeof why));
+        assert(r.count == 1 && r.assets_count == 1 && !strcmp(r.releases[0].title, "malisx2 0.5.1") &&
+               r.releases[0].latest && gui_driver_recommended_release(10615, 8, &r) == -1 &&
+               !strcmp(gui_driver_assets(&r)[0].name, "malisx2-0.5.1-308fe121c7.zip"));
+        gui_driver_releases_free(&r);
+    }
+    /* Zenithblue's PanVK, for every Mali no other driver is recommended on: its adrenotools zip alone */
+    {
+        static const char zenith_json[] =
+            "[{\"tag_name\": \"panvk-kbase-v26.3.1\", \"name\": \"Mesa PanVK panvk-kbase-v26.3.1\","
+            "  \"prerelease\": false,"
+            "  \"assets\": [{\"name\": \"Mesa-PanVK-Android-v26.3.1-795ca7ff-adrenotools.zip\", \"size\": 9100000,"
+            "    \"browser_download_url\": \"https://github.com/zenithblue-oss/a-adrenotools.zip\"},"
+            "   {\"name\": \"Mesa-PanVK-Android-v26.3.1-795ca7ff-winlator.zip\", \"size\": 9100000,"
+            "    \"browser_download_url\": \"https://github.com/zenithblue-oss/a-winlator.zip\"},"
+            "   {\"name\": \"libvulkan_panfrost-android-aarch64.so\", \"size\": 34850936,"
+            "    \"browser_download_url\": \"https://github.com/zenithblue-oss/a.so\"}]}]";
+        const GuiDriverRepo* zenith = &gui_driver_repos[9];
+        assert(!strcmp(zenith->path, "zenithblue-oss/panvk-kbase-android") && zenith->gpu == GUI_DRIVER_MALI);
+        assert(gui_driver_releases_parse(zenith_json, strlen(zenith_json), zenith, &r, why, sizeof why));
+        assert(r.count == 1 && r.assets_count == 1 &&
+               !strcmp(gui_driver_assets(&r)[0].name, "Mesa-PanVK-Android-v26.3.1-795ca7ff-adrenotools.zip"));
+        assert(!strcmp(gui_driver_recommended(10078), "Zenithblue PanVK") &&
+               !strcmp(gui_driver_recommended(10615), "NX-Mali 0.0.3") &&
+               gui_driver_recommended_release(10078, 9, &r) == 0);
+        gui_driver_releases_free(&r);
+    }
+    /* Soulexit's PanVK, for the Bifrost it builds for: its zip, not the one for a PS2 emulator nor a program */
+    {
+        static const char soulexit_json[] =
+            "[{\"tag_name\": \"v1.0.004\", \"name\": \"soulexit PanVK 1.0.004\", \"prerelease\": false, \"assets\": ["
+            "   {\"name\": \"soulexit-panvk-1.0.004.zip\", \"size\": 9000000,"
+            "    \"browser_download_url\": \"https://github.com/soulexit/a.zip\"},"
+            "   {\"name\": \"soulexit-panvk-1.0.004-armsx2.zip\", \"size\": 9000000,"
+            "    \"browser_download_url\": \"https://github.com/soulexit/a-armsx2.zip\"},"
+            "   {\"name\": \"panvk-report.exe\", \"size\": 90000,"
+            "    \"browser_download_url\": \"https://github.com/soulexit/a.exe\"}]}]";
+        const GuiDriverRepo* soulexit = &gui_driver_repos[10];
+        assert(!strcmp(soulexit->path, "soulexit/panvk-bifrost-soulexit") && soulexit->gpu == GUI_DRIVER_MALI);
+        assert(gui_driver_releases_parse(soulexit_json, strlen(soulexit_json), soulexit, &r, why, sizeof why));
+        assert(r.count == 1 && r.assets_count == 1 &&
+               !strcmp(gui_driver_assets(&r)[0].name, "soulexit-panvk-1.0.004.zip"));
+        assert(!strcmp(gui_driver_recommended(10052), "Soulexit PanVK") &&
+               !strcmp(gui_driver_recommended(10072), "Soulexit PanVK") &&
+               !strcmp(gui_driver_recommended(10076), "Soulexit PanVK") &&
+               !strcmp(gui_driver_recommended(10051), "Zenithblue PanVK") &&
+               gui_driver_recommended_release(10076, 10, &r) == 0);
+        gui_driver_releases_free(&r);
+    }
+    /* FourFectVK, for the G57: only test builds, the newest recommended by its tag, newest first by date */
+    {
+        static const char g57_json[] =
+            "[{\"tag_name\": \"fourfectvk-g57-v0.0.8-alpha\", \"name\": \"FourFectVK G57 v0.0.8-alpha\","
+            "  \"prerelease\": true,"
+            "  \"published_at\": \"2026-10-07T10:00:00Z\", \"assets\": []},"
+            " {\"tag_name\": \"fourfectvk-g57-v0.1.0-test9\", \"name\": \"FourFectVK G57 v0.1.0-test9\","
+            "  \"prerelease\": true,"
+            "  \"published_at\": \"2026-10-28T10:00:00Z\", \"assets\": [{\"name\": \"FourFectVK-G57-v0.1.0-test9.zip\","
+            "  \"size\": 9000000, \"browser_download_url\": \"https://github.com/Noysz/a.zip\"},"
+            "  {\"name\": \"SHA256SUMS.txt\", \"size\": 90,"
+            "   \"browser_download_url\": \"https://github.com/Noysz/a.txt\"}]}]";
+        const GuiDriverRepo* g57 = &gui_driver_repos[11];
+        assert(!strcmp(g57->path, "Noysz/panvk-g99-jm") && g57->gpu == GUI_DRIVER_MALI && g57->by_time);
+        assert(gui_driver_releases_parse(g57_json, strlen(g57_json), g57, &r, why, sizeof why));
+        assert(r.count == 2 && r.assets_count == 1 && !strcmp(r.releases[0].tag, "fourfectvk-g57-v0.1.0-test9"));
+        assert(!strcmp(gui_driver_recommended(10057), "FourFectVK (G57)") &&
+               gui_driver_recommended_release(10057, 11, &r) == 0);
+        gui_driver_releases_free(&r);
+    }
+    /* PanVK G925, for the G925: its latest that is no prerelease recommended */
+    {
+        static const char g925_json[] =
+            "[{\"tag_name\": \"v0.18.68-dev\", \"name\": \"PanVK G925 0.18.68-dev\", \"prerelease\": true,"
+            "  \"assets\": []},"
+            " {\"tag_name\": \"v0.18.66-dev\", \"name\": \"PanVK G925 0.18.66-dev\", \"prerelease\": false,"
+            "  \"assets\": ["
+            "  {\"name\": \"PanVK-G925-v0.18.66.adpkg.zip\", \"size\": 9000000,"
+            "   \"browser_download_url\": \"https://github.com/adesyaefull/a.adpkg.zip\"}]}]";
+        const GuiDriverRepo* g925 = &gui_driver_repos[12];
+        assert(!strcmp(g925->path, "adesyaefull/panvk-kbase-android-g925") && g925->gpu == GUI_DRIVER_MALI);
+        assert(gui_driver_releases_parse(g925_json, strlen(g925_json), g925, &r, why, sizeof why));
+        assert(r.count == 2 && r.assets_count == 1 && r.releases[1].latest);
+        assert(!strcmp(gui_driver_recommended(10925), "PanVK G925") &&
+               gui_driver_recommended_release(10925, 12, &r) == 1);
+        /* named either way: Mali-G925-Immortalis or Immortalis-G925 */
+        assert(gui_gpu_model("Mali-G925-Immortalis MC12") == 10925 && gui_gpu_model("Immortalis-G925 MC12") == 10925 &&
+               gui_gpu_model("Immortalis-") == 0);
         gui_driver_releases_free(&r);
     }
     /* GitHub's own error, said; what is no list of releases, said by its size */
@@ -134,7 +238,7 @@ int main(void) {
     /* a Mali's and an Xclipse's models; NX-Mali's latest recommended on a Mali it gives 1.3 from 0.0.3 on, by the
        version in its title, and radv-xclipse's on an Xclipse */
     assert(gui_gpu_model("Mali-G615 MC6") == 10615 && gui_gpu_model("Samsung Xclipse 940") == 20940 &&
-           gui_gpu_model("Adreno (TM) 615") == 615 && !strcmp(gui_driver_recommended(10078), "Unsupported"));
+           gui_gpu_model("Adreno (TM) 615") == 615 && !strcmp(gui_driver_recommended(20078), "Unsupported"));
     {
         static const struct {
             const char* title;
