@@ -60,6 +60,9 @@ int gnu_elf_load_at(GnuElf* elf, GnuMemory* m, const void* source, size_t size, 
         return fail(error, cap, "Expected a little-endian ELF executable");
     unsigned bits = b[4] == 1 ? 32 : b[4] == 2 ? 64 : 0;
     if (!bits) return fail(error, cap, "ELF class %u is neither 1 (32-bit) nor 2 (64-bit)", b[4]);
+    /* the 64-bit header's fields go on to its byte 64 */
+    if (bits == 64 && size < 64)
+        return fail(error, cap, "A 64-bit ELF of %llu bytes is shorter than its header's 64", (unsigned long long)size);
     elf->bits = bits;
     uint16_t type = snx_ld_le16(b + 16), machine = snx_ld_le16(b + 18);
     uint16_t phsize = snx_ld_le16(b + (bits == 32 ? 42 : 54)), phnum = snx_ld_le16(b + (bits == 32 ? 44 : 56));
