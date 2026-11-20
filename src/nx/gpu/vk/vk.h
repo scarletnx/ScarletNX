@@ -68,6 +68,9 @@ typedef struct {
     u32 api_cap;           /* the most it takes, 0 for 1.3: vk_api=1.2 runs the 1.2 way on a newer device */
     u32 driver_id;         /* VkDriverId: whose driver runs, which keeps a shader cache of its own (pipeline.c) */
     char driver_name[256]; /* its own name for itself (VkPhysicalDeviceDriverProperties) */
+    /* the rings the CPU fills take cached host memory by default (cmd.c's stage_cached; the extension bans' prefer
+       lines on VK_MEMORY_PROPERTY_HOST_CACHED_BIT) */
+    int stage_cached;
     /* a fragment input is the driver's own interpolation: no varying pass (render.c's draw_varying; the extension
        bans' prefer lines on Location) */
     int host_varying;

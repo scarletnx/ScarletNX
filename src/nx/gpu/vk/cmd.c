@@ -637,12 +637,9 @@ void vk_stage_report(void) {
 /* Whether the rings the CPU fills are in cached host memory (vk_stage_memory), not in memory for writes in order
    (devmem.h's DM_CACHED and DM_HOST). The second is a type that is not cached where the device has one, and a driver
    can map that write-combined: each store then goes to the memory through a few line buffers, and a ring's many
-   small copies, each at its own alignment, leave lines half filled that the next copy flushes. Intel's Mesa driver
-   has both types over the same system memory, so there the cached one costs the GPU nothing */
-static int stage_cached(void) {
-    return g_settings.staging_memory ? g_settings.staging_memory == 2
-                                     : g_vk.driver_id == VK_DRIVER_ID_INTEL_OPEN_SOURCE_MESA;
-}
+   small copies, each at its own alignment, leave lines half filled that the next copy flushes. A driver with both
+   types over the same system memory pays nothing for the cached one: the extension bans' prefer lines name them */
+static int stage_cached(void) { return g_settings.staging_memory ? g_settings.staging_memory == 2 : g_vk.stage_cached; }
 /* a new buffer of size bytes for ring, handed out to slot (a frame slot plus one): in device memory the CPU maps when
    bar, else in host memory (the device ring's in device memory). Its entry's index plus one, 0 when none was made */
 static u32 chunk_new(u32 ring, u64 size, int bar, u32 slot) {

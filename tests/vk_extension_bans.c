@@ -1072,6 +1072,10 @@ static int radv_only(uint32_t id, uint32_t system) {
     (void)system;
     return id == VK_DRIVER_ID_MESA_RADV;
 }
+static int anv_only(uint32_t id, uint32_t system) {
+    (void)system;
+    return id == VK_DRIVER_ID_INTEL_OPEN_SOURCE_MESA;
+}
 static void check_choices(void) {
     static const struct {
         const char* key;
@@ -1081,6 +1085,7 @@ static void check_choices(void) {
         {"VK_EXT_fragment_shader_interlock.fragmentShaderPixelInterlock", 1, nvidia_or_amd},
         {"Location", 1, nvidia_only},
         {"OpGroupNonUniformShuffleXor", 1, radv_only},
+        {"VK_MEMORY_PROPERTY_HOST_CACHED_BIT", 1, anv_only},
     };
     static const uint32_t systems[] = {0,
                                        SNX_VK_BAN_LINUX,
