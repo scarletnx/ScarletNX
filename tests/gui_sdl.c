@@ -2617,8 +2617,9 @@ static void add_mod(App* app, const char* temporary) {
     fixture_file(bare, "notes.txt", "no exefs, no romfs");
     fixture_file(hidden, "romfs/a", "hidden");
     assert(!snx_write_file(file, "a file", 6));
-    assert(addons_rows(app) == ADDONS_TAIL && ADDONS_TAIL == (int)SDL_arraysize(tail) && !app->addons_focus);
-    for (i = 0; i < ADDONS_TAIL; ++i) assert(addons_row(app, i) == tail[i]);
+    assert(addons_rows(app) == addons_tail_count(app) && addons_tail_count(app) == (int)SDL_arraysize(tail) &&
+           !app->addons_focus);
+    for (i = 0; i < addons_tail_count(app); ++i) assert(addons_row(app, i) == tail[i]);
     render(app);
     assert(find_text(app, "Add Mod", yellow, 1, &nx, &ny));
     assert(find_text(app, "Open Mods Folder", rgb(app->theme.ink), 1, &nx, &ny));
@@ -2667,7 +2668,8 @@ static void add_mod(App* app, const char* temporary) {
     snprintf(want, sizeof want, "Mod Better Fonts added: %s", to);
     assert(!strcmp(app->message, want) && !app->confirm.shown);
     assert(app->mods_count == 1 && !strcmp(app->mods[0], "Better Fonts") && app->mods_on[0]);
-    assert(addons_rows(app) == ADDONS_TAIL + 1 && app->addons_focus == 1 && addons_row(app, 1) == ROW_ADD_MOD);
+    assert(addons_rows(app) == addons_tail_count(app) + 1 && app->addons_focus == 1 &&
+           addons_row(app, 1) == ROW_ADD_MOD);
     assert(file_is(to, "romfs/font/a.bin", "font bytes") && file_is(to, "romfs/readme.txt", "read me"));
     assert(file_is(fonts, "romfs/font/a.bin", "font bytes") && file_is(fonts, "romfs/readme.txt", "read me"));
     {
@@ -2932,7 +2934,8 @@ static void add_cheats(App* app, const char* temporary) {
     assert(!strcmp(app->message, want) && !app->confirm.shown);
     assert(app->cheats_count == 2 && !strcmp(app->cheats[0], "60 FPS") && !strcmp(app->cheats[1], "Moon Jump") &&
            app->cheats_on[0] && app->cheats_on[1]);
-    assert(addons_rows(app) == ADDONS_TAIL + 2 && app->addons_focus == 4 && addons_row(app, 4) == ROW_ADD_CHEATS);
+    assert(addons_rows(app) == addons_tail_count(app) + 2 && app->addons_focus == 4 &&
+           addons_row(app, 4) == ROW_ADD_CHEATS);
     assert(file_is(cheats, "0123456789ABCDEF.txt", named_text) && file_is(root, "0123456789abcdef.txt", named_text));
     {
         char* staged = snx_path_join(cheats, ".0123456789ABCDEF.txt.adding");
@@ -12993,6 +12996,41 @@ int main(int argc, char** argv) {
                        strstr(app.ask_line, "its saves, settings and dump stay"));
                 key(&app, SDLK_ESCAPE);
                 assert(!app.confirm.shown && app.addons_shown && snx_is_file(shader) && snx_is_file(caches[1]));
+                { /* Delete Old Caches: a row only while the game has BC7 cache files of an earlier version, after
+                     Clean Cache; its question says their size and where, Back keeps them, Delete takes them alone */
+                    char *bc7 = snx_path_join(caches[0], "game.vkbc7"),
+                         *idx = snx_path_join(caches[0], "game.vkbc7.idx");
+                    char old[32], label[128];
+                    const int rows = addons_rows(&app);
+                    assert(addons_row(&app, 18) != ROW_OLD_CACHES && !app.addons_old_caches);
+                    assert(bc7 && idx && !snx_write_file(bc7, bytes, 2000) && !snx_write_file(idx, bytes, 500));
+                    old_caches_refresh(&app); /* as the box's opening does */
+                    assert(addons_rows(&app) == rows + 1 && addons_row(&app, 17) == ROW_CLEAN_CACHE &&
+                           addons_row(&app, 18) == ROW_OLD_CACHES);
+                    addons_label(&app, 18, label, sizeof label);
+                    assert(strstr(label, "Delete Old Caches"));
+                    info = (UiRowInfo){0};
+                    assert(ui_addons_rows_get_row_info(&app, 18, 0, &info) && (info.attr & UI_ATTR_DANGER));
+                    app.addons_focus = 18;
+                    key(&app, SDLK_RETURN);
+                    gui_size_text(old, sizeof old, 2500);
+                    assert(app.confirm.shown && app.confirm.ask == GUI_ASK_CACHE && strstr(app.ask_line, old) &&
+                           strstr(app.ask_line, "Delete the old caches of") && strstr(app.ask_line, caches[0]) &&
+                           strstr(app.ask_line, "the caches it uses, its saves, settings and dump stay"));
+                    key(&app, SDLK_ESCAPE);
+                    assert(!app.confirm.shown && snx_is_file(bc7) && snx_is_file(idx));
+                    key(&app, SDLK_RETURN);
+                    key(&app, SDLK_DOWN);
+                    key(&app, SDLK_RETURN);
+                    snprintf(want, sizeof want, "Deleted the old caches of %s: %s", app.addons_title, old);
+                    assert(!app.confirm.shown && app.addons_shown && !strcmp(app.message, want));
+                    assert(!snx_path_exists(bc7) && !snx_path_exists(idx)); /* the old ones alone: */
+                    assert(snx_is_file(shader) && snx_is_file(caches[1]) && addons_rows(&app) == rows &&
+                           addons_row(&app, 18) != ROW_OLD_CACHES);
+                    free(bc7);
+                    free(idx);
+                    app.addons_focus = 17;
+                }
                 key(&app, SDLK_RETURN);
                 key(&app, SDLK_DOWN);
                 key(&app, SDLK_RETURN);

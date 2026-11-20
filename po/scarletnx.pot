@@ -1945,6 +1945,21 @@ msgstr ""
 
 #: src/gui/main.c
 #, c-format
+msgid "Delete the old caches of %s? %s of BC7 cache files (.vkbc7) an earlier version left in %s. This version does not use them, and the game does not make them again; the caches it uses, its saves, settings and dump stay."
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Could not delete %s: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Deleted the old caches of %s: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
 msgid "%s has no cache to delete: no %s, no %s"
 msgstr ""
 
@@ -1955,11 +1970,6 @@ msgstr ""
 
 #: src/gui/main.c
 msgid "none"
-msgstr ""
-
-#: src/gui/main.c
-#, c-format
-msgid "Could not delete %s: %s"
 msgstr ""
 
 #: src/gui/main.c
@@ -2026,6 +2036,10 @@ msgstr ""
 
 #: src/gui/main.c
 msgid "Clean Cache"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Delete Old Caches"
 msgstr ""
 
 #: src/gui/main.c

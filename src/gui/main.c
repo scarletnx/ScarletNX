@@ -746,6 +746,9 @@ typedef struct App {
     char vk_system[300];     /* the system's Vulkan driver as System driver's row says it, asked once */
     char addons_driver[400]; /* the game box's GPU Driver row: the game's pick, or Global and the launcher's */
     bool addons_driver_off;  /* that row greyed: no package loads here, and the game picked none to take back */
+    uint64_t addons_old_caches; /* the bytes of the box's game's caches of earlier versions (old_bc7_bytes): its
+                                   Delete Old Caches row shows while there are any */
+    bool caches_old_only;       /* GUI_ASK_CACHE asks about those alone (Delete Old Caches), not Clean Cache's */
     SnxFreedrenoVar fd_vars[SNX_FREEDRENO_MAX]; /* Freedreno Settings' variables as the page edits them */
     int fd_count;
     GuiFreedrenoForm fd_form;
@@ -5360,28 +5363,37 @@ enum {
     ROW_FREEDRENO = -12,
     ROW_SETTINGS = -13,
     ROW_EXPORT_SAVES = -14,
-    ROW_IMPORT_SAVES = -15
+    ROW_IMPORT_SAVES = -15,
+    ROW_OLD_CACHES = -16
 };
 /* the rows after the cheats: Add Mod and Add Cheats, each with its folder's Open after it, Open Folder (the game's other
    folders), Export Saves and Import Saves (its saves out as Eden's zip and back in, saves_start), Save States (S's box,
-   the way a finger has to it), Clean Cache, its own GPU Driver, Freedreno Settings and Settings (their pages), Save and
-   Play; on every system, a phone's Files app showing the folders */
-static const int addons_tail[] = {ROW_ADD_MOD,     ROW_MODS_FOLDER,  ROW_ADD_CHEATS,   ROW_CHEATS_FOLDER,
-                                  ROW_OPEN_FOLDER, ROW_EXPORT_SAVES, ROW_IMPORT_SAVES, ROW_STATES,
-                                  ROW_CLEAN_CACHE, ROW_GPU_DRIVER,   ROW_FREEDRENO,    ROW_SETTINGS,
-                                  ROW_SAVE,        ROW_PLAY};
-#define ADDONS_TAIL ((int)SDL_arraysize(addons_tail))
+   the way a finger has to it), Clean Cache, Delete Old Caches (only while the game has caches an earlier version left,
+   which this one does not use), its own GPU Driver, Freedreno Settings and Settings (their pages), Save and Play; on
+   every system, a phone's Files app showing the folders */
+static const int addons_tail_all[] = {ROW_ADD_MOD,     ROW_MODS_FOLDER,  ROW_ADD_CHEATS,   ROW_CHEATS_FOLDER,
+                                      ROW_OPEN_FOLDER, ROW_EXPORT_SAVES, ROW_IMPORT_SAVES, ROW_STATES,
+                                      ROW_CLEAN_CACHE, ROW_OLD_CACHES,   ROW_GPU_DRIVER,   ROW_FREEDRENO,
+                                      ROW_SETTINGS,    ROW_SAVE,         ROW_PLAY};
+#define ADDONS_TAIL_OLD 9 /* ROW_OLD_CACHES's place in it */
+/* the tail's rows the box shows, and its i-th */
+static int addons_tail_count(const App* app) {
+    return (int)SDL_arraysize(addons_tail_all) - (app->addons_old_caches ? 0 : 1);
+}
+static int addons_tail(const App* app, int i) {
+    return addons_tail_all[i + (!app->addons_old_caches && i >= ADDONS_TAIL_OLD ? 1 : 0)];
+}
 /* the box's rows; on Open Folder's page, a folder of the game's each */
 static int addons_rows(const App* app) {
     if (app->addons_folders_shown) return GUI_GAME_FOLDERS;
     return (int)(app->addons.count + app->mods_count + app->cheats_count) + app->programs_count +
-           (addons_updates(app) ? 1 : 0) + ADDONS_TAIL;
+           (addons_updates(app) ? 1 : 0) + addons_tail_count(app);
 }
 /* what row is: its add-on's index in addons, a mod's (mods' index past addons' count), a cheat's (cheats' past the
    mods'), a program's (past the cheats'), ROW_NO_UPDATE, or one of addons_tail */
 static int addons_row(const App* app, int row) {
     int updates = (int)addons_updates(app), rows = addons_rows(app);
-    if (row >= rows - ADDONS_TAIL) return addons_tail[row - (rows - ADDONS_TAIL)];
+    if (row >= rows - addons_tail_count(app)) return addons_tail(app, row - (rows - addons_tail_count(app)));
     if (row < updates) return row;
     if (updates && row == updates) return ROW_NO_UPDATE;
     return row - (updates ? 1 : 0);
@@ -5518,6 +5530,87 @@ static void game_caches(const App* app, char* caches[2]) {
     free(folder);
     free(name);
 }
+/* the bytes of the BC7 cache files an earlier version kept in the shader cache's folder (<game>.vkbc7, its .idx),
+   which nothing reads or writes now: Clean Cache deletes them with the folder, and its question says them */
+static uint64_t old_bc7_bytes(const char* shader_cache) {
+    char** names = NULL;
+    size_t count = 0, i;
+    uint64_t total = 0;
+    if (!shader_cache || snx_list_dir(shader_cache, &names, &count)) return 0;
+    for (i = 0; i < count; ++i) {
+        const size_t n = strlen(names[i]);
+        if ((n > 6 && !strcmp(names[i] + n - 6, ".vkbc7")) || (n > 10 && !strcmp(names[i] + n - 10, ".vkbc7.idx"))) {
+            char* file = snx_path_join(shader_cache, names[i]);
+            if (file) total += tree_bytes(file);
+            free(file);
+        }
+    }
+    snx_free_strings(names, count);
+    return total;
+}
+/* the box's game's old caches counted again (App.addons_old_caches): as its box opens, and after a deletion */
+static void old_caches_refresh(App* app) {
+    char* caches[2];
+    game_caches(app, caches);
+    app->addons_old_caches = old_bc7_bytes(caches[0]);
+    free(caches[0]);
+    free(caches[1]);
+}
+/* Delete Old Caches pressed: asked first (GUI_ASK_CACHE with caches_old_only), with their size and where they are */
+static void old_caches_ask(App* app) {
+    char *caches[2], size[32];
+    game_caches(app, caches);
+    old_caches_refresh(app);
+    if (app->addons_old_caches) {
+        gui_size_text(size, sizeof size, app->addons_old_caches);
+        snprintf(app->ask_line, sizeof app->ask_line,
+                 snx_tr("Delete the old caches of %s? %s of BC7 cache files (.vkbc7) an earlier version left in %s. "
+                        "This version does not use them, and the game does not make them again; the caches it uses, "
+                        "its saves, settings and dump stay."),
+                 app->addons_title, size, caches[0]);
+        app->caches_old_only = true;
+        gui_confirm_open(&app->confirm, GUI_ASK_CACHE, false);
+    }
+    free(caches[0]);
+    free(caches[1]);
+}
+/* the deletion taken: each old cache file gone and nothing else, the message saying what went, or what could not */
+static void old_caches_delete(App* app) {
+    char *caches[2], **names = NULL, why[256], size[32];
+    size_t count = 0, i;
+    uint64_t bytes = 0;
+    game_caches(app, caches);
+    app->message[0] = 0;
+    if (caches[0] && !snx_list_dir(caches[0], &names, &count)) {
+        for (i = 0; i < count && !app->message[0]; ++i) {
+            const size_t n = strlen(names[i]);
+            char* file;
+            if (!((n > 6 && !strcmp(names[i] + n - 6, ".vkbc7")) ||
+                  (n > 10 && !strcmp(names[i] + n - 10, ".vkbc7.idx"))))
+                continue;
+            file = snx_path_join(caches[0], names[i]);
+            if (file) {
+                const uint64_t these = tree_bytes(file);
+                if (snx_remove_tree(file))
+                    snprintf(app->message, sizeof app->message, snx_tr("Could not delete %s: %s"), file,
+                             snx_os_error(why, sizeof why));
+                else
+                    bytes += these;
+            }
+            free(file);
+        }
+        snx_free_strings(names, count);
+    }
+    if (!app->message[0]) {
+        gui_size_text(size, sizeof size, bytes);
+        snprintf(app->message, sizeof app->message, snx_tr("Deleted the old caches of %s: %s"), app->addons_title,
+                 size);
+    }
+    free(caches[0]);
+    free(caches[1]);
+    old_caches_refresh(app);
+    app->addons_focus = SDL_min(app->addons_focus, addons_rows(app) - 1);
+}
 /* whether the box's game has a cache to delete */
 static bool caches_there(const App* app) {
     char* caches[2];
@@ -5545,6 +5638,7 @@ static void caches_ask(App* app) {
                         "makes them again as it runs; its saves, settings and dump stay."),
                  app->addons_title, there[0] ? shader : snx_tr("none"), caches[0] ? caches[0] : "shader_cache/",
                  there[1] ? code : snx_tr("none"), caches[1] ? caches[1] : ".jitcache");
+        app->caches_old_only = false;
         gui_confirm_open(&app->confirm, GUI_ASK_CACHE, false);
     }
     free(caches[0]);
@@ -5554,6 +5648,11 @@ static void caches_ask(App* app) {
 static void caches_delete(App* app) {
     char *caches[2], why[256], size[32];
     uint64_t bytes = 0;
+    if (app->caches_old_only) {
+        app->caches_old_only = false;
+        old_caches_delete(app);
+        return;
+    }
     game_caches(app, caches);
     app->message[0] = 0;
     for (int i = 0; i < 2 && !app->message[0]; ++i) {
@@ -5572,6 +5671,8 @@ static void caches_delete(App* app) {
     }
     free(caches[0]);
     free(caches[1]);
+    old_caches_refresh(app); /* the shader cache's folder went with any old cache in it */
+    app->addons_focus = SDL_min(app->addons_focus, addons_rows(app) - 1);
 }
 /* the box of game, shown as title: with always (M) even when it has nothing beside it, its Add rows to give it some */
 static void addons_open(App* app, const char* game, const char* title, bool always) {
@@ -5608,6 +5709,7 @@ static void addons_open(App* app, const char* game, const char* title, bool alwa
     /* greyed where no package loads, the row saying what the device lacks; but for a game set to a package, whose row
        stays to take the pick back */
     app->addons_driver_off = drivers_lack(app) != NULL;
+    old_caches_refresh(app);
     if (snx_ini_has(ini, "gpu_driver")) { /* its own pick, else Global's */
         text = snx_ini_value(ini, "gpu_driver");
         snprintf(app->addons_driver, sizeof app->addons_driver, snx_tr("GPU Driver: %s"),
@@ -5637,7 +5739,7 @@ static unsigned addons_icon(const App* app, int row) {
     if (item == ROW_SETTINGS) return GUI_ICON_SLIDERS_HORIZONTAL; /* as its row's game has in Games */
     return item == ROW_ADD_MOD                                                               ? GUI_ICON_PACKAGE_PLUS
            : item == ROW_MODS_FOLDER || item == ROW_CHEATS_FOLDER || item == ROW_OPEN_FOLDER ? GUI_ICON_FOLDER_OPEN
-           : item == ROW_CLEAN_CACHE                                                         ? GUI_ICON_ERASER
+           : item == ROW_CLEAN_CACHE || item == ROW_OLD_CACHES                               ? GUI_ICON_ERASER
            : item == ROW_GPU_DRIVER                                                          ? GUI_ICON_CPU
            : item == ROW_FREEDRENO                                                           ? GUI_ICON_SETTINGS
            : item == ROW_ADD_CHEATS                                                          ? GUI_ICON_FILE_PLUS
@@ -5693,6 +5795,8 @@ static void addons_label(const App* app, int row, char* label, size_t size) {
         snprintf(label, size, "%s%s", app->theme.marker, snx_tr("Import Saves"));
     else if (item == ROW_CLEAN_CACHE)
         snprintf(label, size, "%s%s", app->theme.marker, snx_tr("Clean Cache"));
+    else if (item == ROW_OLD_CACHES)
+        snprintf(label, size, "%s%s", app->theme.marker, snx_tr("Delete Old Caches"));
     else if (item == ROW_STATES)
         snprintf(label, size, "%s%s", app->theme.marker, snx_tr("Save States"));
     else if (item == ROW_GPU_DRIVER)
@@ -5750,7 +5854,8 @@ bool ui_addons_rows_get_row_info(App* app, size_t row, int width, UiRowInfo* inf
                  (addons_row(app, (int)row) == ROW_GPU_DRIVER && app->addons_driver_off);
     if (why[0])
         info->attr |= UI_ATTR_OFF;
-    else if (!app->addons_folders_shown && addons_row(app, (int)row) == ROW_CLEAN_CACHE)
+    else if (!app->addons_folders_shown &&
+             (addons_row(app, (int)row) == ROW_CLEAN_CACHE || addons_row(app, (int)row) == ROW_OLD_CACHES))
         info->attr |= UI_ATTR_DANGER; /* the caches deleted */
     return true;
 }
@@ -5811,8 +5916,8 @@ static int addons_save(App* app, char** program) {
 /* the row of item, one of addons_tail */
 static int addons_row_of(const App* app, int item) {
     int i = 0;
-    while (i < ADDONS_TAIL - 1 && addons_tail[i] != item) ++i;
-    return addons_rows(app) - ADDONS_TAIL + i;
+    while (i < addons_tail_count(app) - 1 && addons_tail(app, i) != item) ++i;
+    return addons_rows(app) - addons_tail_count(app) + i;
 }
 /* the mods, or with row ROW_ADD_CHEATS the cheats, listed again once one was added: each one listed before as the
    box had it, a new one checked; the focus on row, the Add row, and the game's count on Games (its +N) what the box
@@ -6175,6 +6280,10 @@ static void addons_press(App* app, int row) {
     }
     if (item == ROW_CLEAN_CACHE) {
         caches_ask(app);
+        return;
+    }
+    if (item == ROW_OLD_CACHES) {
+        old_caches_ask(app);
         return;
     }
     if (item == ROW_EXPORT_SAVES || item == ROW_IMPORT_SAVES) { /* the box goes: the picker's answer, a question and

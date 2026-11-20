@@ -123,6 +123,15 @@ static u64 bc7_share(int known, u64 total) {
     return share < BC7_MAX_LEAST ? BC7_MAX_LEAST : share > BC7_MAX_MOST ? BC7_MAX_MOST : share;
 }
 
+int vk_bc7_cache_old_file(const char* path) {
+    const u64 size = snx_file_size(path);
+    if (!size) return 0;
+    WARN("vulkan: %s (%.1f MB) is a BC7 cache file of an earlier version, which this one does not read or write: "
+         "the BC7 cache is held in memory now. The game's Delete Old Caches in the launcher deletes it\n",
+         path, (double)size / 1048576.0);
+    return 1;
+}
+
 void vk_bc7_cache_close(void) {
     for (u32 i = 0; i < g_bc7_cache.cap; i++)
         if (g_bc7_cache.map[i].blocks) bc7_free(g_bc7_cache.map[i].blocks);
