@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+# The roots of sm86.roots that tests/shader_sail_sm86.c runs on values (sailgen --gpu with eval.h): the integer
+# instructions sm86_eval also runs, and the fusions of them
+prefix sg86
+static Field Uniform SrcNeg Dst IsZero SrcIsImm SrcImm FieldAt SrcNegAt IsZeroAt ReadsDstAt
+static Form SrcAbs SrcAbsRaw SrcNegRaw SrcIsReg SrcReg OpName FmulOverW Float64 I2fNearest
+op IADD3 SM86_IADD3 SM86_UIADD3
+op IMAD SM86_IMAD SM86_UIMAD
+op IMNMX SM86_IMNMX SM86_UIMNMX
+op FLO SM86_FLO SM86_UFLO
+op POPC SM86_POPC SM86_UPOPC
+op BREV SM86_BREV SM86_UBREV
+op IABS SM86_IABS
+op MOV SM86_MOV
+op SEL SM86_SEL SM86_USEL
+op LEA SM86_LEA SM86_ULEA
+op LOP3 SM86_LOP3 SM86_ULOP3
+op SHF SM86_SHF SM86_USHF
+op ISETP SM86_ISETP SM86_UISETP
+op PLOP3 SM86_PLOP3
+op UPLOP3 SM86_UPLOP3
+fuse IADD3_WIDE SM86_IADD3 SM86_IADD3
