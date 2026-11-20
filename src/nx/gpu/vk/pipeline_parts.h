@@ -149,4 +149,8 @@ void vk_pipe_part_src(u32 part, const void* key, PipeKey* out);
    (plat_thread_note): the color targets' formats (VkFormat) and which blend, the depth and stencil formats, the samples
    and the topology's class, then what is set of the rest. Into out (n bytes), cut at its end */
 void vk_pipe_key_text(const PipeKey* k, char* out, size_t n);
+/* pipeline.c: the crash report's note of a shader object the driver makes now (plat_thread_note), of mod at stage, as a
+   pipeline's names its stages: a driver that crashes compiling one says only its own offset, which names no shader.
+   The caller clears it (plat_thread_note_clear) once the driver returns */
+void vk_so_note(VkShaderModule mod, VkShaderStageFlagBits stage);
 #endif
