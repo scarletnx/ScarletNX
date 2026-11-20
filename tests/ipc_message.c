@@ -411,6 +411,10 @@ static int test_dispatch(SvcObj* self, IpcCtx* c) {
             out_obj(c, test_object("test:child"));
             out32(c, 0xBAD);
             return 0;
+        /* what a strict object's dispatcher answers a request it cannot decode: sf's refusals, whose normal reply the
+           session's strict flag turns into a close (30: bad request, 31: unknown command) */
+        case 30: return ipc_bad_request(self, c);
+        case 31: return ipc_unknown(self, c);
         default: return RC(10, 221);
     }
 }
@@ -1180,6 +1184,123 @@ static void full_domains(void) {
     CHECK(h_close(h) == 0 && objects_live == objects);
 }
 
+/* the registry's strict flag: the object svc_open makes of a service registered that way carries it, and one of a
+   plain registration does not */
+static SvcObj* ctor_plain(void) { return test_object("test:plain"); }
+static SvcObj* ctor_strict(void) { return test_object("test:strict"); }
+static void strict_registry(void) {
+    int objects = objects_live;
+    SvcObj* o;
+    svc_register("test:plain", ctor_plain);
+    svc_register_strict("test:strict", ctor_strict);
+    o = svc_open("test:plain");
+    CHECK(o && !o->strict && !strcmp(o->name, "test:plain"));
+    svcobj_unref(o);
+    o = svc_open("test:strict");
+    CHECK(o && o->strict && !strcmp(o->name, "test:strict"));
+    svcobj_unref(o);
+    CHECK(!svc_open("test:none"));
+    CHECK(objects_live == objects);
+}
+
+/* sm's session lifetime: a request it cannot decode closes the client's session, where the runtime answers the
+   result and keeps the session for every other service. A close takes no reply: the client's SendSyncRequest answers
+   SessionClosed, and so does every later one */
+static void strict_closes(void) {
+    static u8 before[0x100];
+    int objects = objects_live;
+    SvcObj* root = test_object("sm:");
+    u32 h, ring;
+    root->strict = 1; /* what sm.c's new_sm sets, and its TIPC dispatcher hands to */
+    /* the dispatcher's refusal of a request that isn't the command's shape */
+    svcobj_ref(root);
+    h = session_new(root);
+    clear();
+    cmif_make_request(msg(), (CmifRequestFormat){.request_id = 30});
+    memcpy(before, msg(), 0x100);
+    ring = g_hle.ipc.ring_n;
+    CHECK(send(h) == 0xF601 && got.calls == 1 && ((KSession*)handle_object(h))->closed);
+    CHECK(!memcmp(before, msg(), 0x100)); /* no reply */
+    CHECK(g_hle.ipc.ring_n == ring + 1 && strstr(last_ring(), "session closed"));
+    clear();
+    cmif_make_request(msg(), (CmifRequestFormat){.request_id = 1, .data_size = 8});
+    CHECK(send(h) == 0xF601 && !got.calls); /* not served: the session is closed */
+    CHECK(h_close(h) == 0);
+    /* a CmifInHeader it cannot read */
+    svcobj_ref(root);
+    h = session_new(root);
+    clear();
+    CmifRequest r = cmif_make_request(msg(), (CmifRequestFormat){.request_id = 1});
+    put32(r.header, 0x58434653);
+    memcpy(before, msg(), 0x100);
+    CHECK(send(h) == 0xF601 && !got.calls && !memcmp(before, msg(), 0x100));
+    CHECK(h_close(h) == 0);
+    /* a control request it has none of */
+    svcobj_ref(root);
+    h = session_new(root);
+    clear();
+    cmif_make_control_request(msg(), 9, 0);
+    CHECK(send(h) == 0xF601 && !got.calls);
+    CHECK(h_close(h) == 0);
+    /* a command it doesn't declare: sf's UnknownCommandId, and with it the close */
+    svcobj_ref(root);
+    h = session_new(root);
+    clear();
+    cmif_make_request(msg(), (CmifRequestFormat){.request_id = 31});
+    CHECK(send(h) == 0xF601 && got.calls == 1 && ((KSession*)handle_object(h))->closed);
+    CHECK(h_close(h) == 0);
+    /* a domain request for an object the domain doesn't have */
+    svcobj_ref(root);
+    h = session_new(root);
+    clear();
+    cmif_make_control_request(msg(), 0, 0);
+    CHECK(send(h) == 0 && !got.calls);
+    clear();
+    cmif_make_request(msg(), (CmifRequestFormat){.object_id = 2, .request_id = 1, .data_size = 8});
+    CHECK(send(h) == 0xF601 && !got.calls && ((KSession*)handle_object(h))->closed);
+    CHECK(h_close(h) == 0);
+    /* a command that fails is not one the session cannot decode: its result is answered and the session stays */
+    svcobj_ref(root);
+    h = session_new(root);
+    clear();
+    cmif_make_request(msg(), (CmifRequestFormat){.request_id = 9});
+    CHECK(send(h) == 0 && got.calls == 1 && !((KSession*)handle_object(h))->closed);
+    CHECK(cmif_parse_response(msg(), 0, 0).result == RC(10, 221));
+    CHECK(h_close(h) == 0);
+    /* a request it does decode is served as on any session */
+    svcobj_ref(root);
+    h = session_new(root);
+    clear();
+    CmifRequest ok = cmif_make_request(msg(), (CmifRequestFormat){.request_id = 1, .data_size = 8});
+    put32(ok.data, 5), put32(ok.data + 4, 7);
+    CHECK(send(h) == 0 && got.calls == 1 && !((KSession*)handle_object(h))->closed);
+    CHECK(cmif_parse_response(msg(), 0, 0).result == 0 && get32(cmif_parse_response(msg(), 0, 0).data) == 12);
+    CHECK(h_close(h) == 0);
+    svcobj_unref(root); /* the reference test_object gave */
+    CHECK(objects_live == objects);
+}
+
+/* the same requests on an object that isn't strict: the result is answered, and the session stays */
+static void answer_keeps(void) {
+    SvcObj* root = test_object("test:s");
+    u32 h = session_new(root);
+    clear();
+    cmif_make_request(msg(), (CmifRequestFormat){.request_id = 30});
+    CHECK(send(h) == 0 && got.calls == 1 && !((KSession*)handle_object(h))->closed);
+    CHECK(cmif_parse_response(msg(), 0, 0).result == RC(11, 420));
+    clear();
+    cmif_make_request(msg(), (CmifRequestFormat){.request_id = 31});
+    CHECK(send(h) == 0 && got.calls == 1 && !((KSession*)handle_object(h))->closed);
+    CHECK(cmif_parse_response(msg(), 0, 0).result == RC(10, 221));
+    clear();
+    CmifRequest r = cmif_make_request(msg(), (CmifRequestFormat){.request_id = 1});
+    put32(r.header, 0x58434653);
+    CHECK(send(h) == 0 && !got.calls && !((KSession*)handle_object(h))->closed);
+    CHECK(cmif_parse_response(msg(), 0, 0).result == RC(10, 211));
+    CHECK(h_close(h) == 0);
+}
+
+
 /* what sf closes the session for: a message type it doesn't serve, a TIPC close, a CMIF close. The client's
    SendSyncRequest and every later one get SessionClosed, and the crash report's ring shows them */
 static void session_closes(void) {
@@ -1213,6 +1334,7 @@ int main(void) {
     CHECK(g_mem != NULL);
 
     undeclared_commands();
+    strict_registry();
     reply_sizes();
     SvcObj* root = test_object("test:p");
     u32 h = session_new(root);
@@ -1230,6 +1352,8 @@ int main(void) {
     full_handle_table();
     full_domains();
     session_closes();
+    strict_closes();
+    answer_keeps();
     /* a plain Close (type 2): sf closes the session, and the client then closes its handle */
     clear();
     cmif_make_close_request(msg(), 0);

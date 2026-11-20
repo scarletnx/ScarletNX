@@ -4,6 +4,7 @@
 
 type nn::sm::ServiceName = bytes<8>;
 
+@fallback(ipc_unknown)
 interface nn::sm::detail::IUserInterface is sm: {
     @stub [0] RegisterClient(pid);
     [1] GetServiceHandle(nn::sm::ServiceName name) -> handle<move, session> session;
@@ -11,3 +12,7 @@ interface nn::sm::detail::IUserInterface is sm: {
     [3] UnregisterService(nn::sm::ServiceName name);
     @stub [4] DetachClient(pid);
 }
+# sm's own dispatcher (sm_dispatch in sm.c) reads the Switch 2 TIPC forms of RegisterService and UnregisterService,
+# which carry a service space before the name and put max_sessions before is_light; the CMIF forms above keep the
+# SDK's order. A request sm cannot decode closes the client's session, as the console's does: the fallback is sf's
+# UnknownCommandId, which sm.c's strict flag turns into a close
