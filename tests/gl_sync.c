@@ -22,16 +22,20 @@ enum {
     WAIT_FAILED = 0x911d,
 };
 
-/* the platform: the work recorded and done, and the waits asked */
+/* the platform: the work recorded and done and the waits asked, and the lines the layer said and its last */
 static struct {
-    uint64_t recorded, completed, waited;
-} gpu;
-static uint64_t recorded(void) { return gpu.recorded; }
-static uint64_t completed(void) { return gpu.completed; }
+    struct {
+        uint64_t recorded, completed, waited;
+    } gpu;
+    int said;
+    char last_said[200];
+} g_gl_sync_test;
+static uint64_t recorded(void) { return g_gl_sync_test.gpu.recorded; }
+static uint64_t completed(void) { return g_gl_sync_test.gpu.completed; }
 static void wait_for(uint32_t ctx, uint64_t serial) {
     (void)ctx;
-    gpu.waited = serial;
-    gpu.completed = serial;
+    g_gl_sync_test.gpu.waited = serial;
+    g_gl_sync_test.gpu.completed = serial;
 }
 static int32_t parameter(uint32_t ctx, uint64_t sync, uint32_t pname) {
     int32_t v = -1;
@@ -39,11 +43,9 @@ static int32_t parameter(uint32_t ctx, uint64_t sync, uint32_t pname) {
     return v;
 }
 
-static int said;
-static char last_said[200];
 static void told(const char* line) {
-    said++;
-    snprintf(last_said, sizeof last_said, "%s", line);
+    g_gl_sync_test.said++;
+    snprintf(g_gl_sync_test.last_said, sizeof g_gl_sync_test.last_said, "%s", line);
 }
 
 int main(void) {
@@ -53,12 +55,12 @@ int main(void) {
     snx_gl_sync_host(&(SnxGlSyncHost){recorded, completed, wait_for, told});
 
     /* a fence of the work recorded: unsignaled until the platform finished it */
-    gpu.recorded = 5, gpu.completed = 4;
+    g_gl_sync_test.gpu.recorded = 5, g_gl_sync_test.gpu.completed = 4;
     a = snx_gl_fence_sync(ctx, GPU_COMMANDS_COMPLETE, 0);
     assert(a && snx_gl_is_sync(a) && !snx_gl_is_sync(a + 1) && parameter(ctx, a, STATUS) == UNSIGNALED);
     assert(parameter(ctx, a, 0x9112) == 0x9116 && parameter(ctx, a, 0x9113) == GPU_COMMANDS_COMPLETE);
-    assert(snx_gl_client_wait_sync(ctx, a, 0, 0) == TIMEOUT_EXPIRED && !gpu.waited);
-    assert(snx_gl_client_wait_sync(ctx, a, 1, 1000) == CONDITION_SATISFIED && gpu.waited == 5);
+    assert(snx_gl_client_wait_sync(ctx, a, 0, 0) == TIMEOUT_EXPIRED && !g_gl_sync_test.gpu.waited);
+    assert(snx_gl_client_wait_sync(ctx, a, 1, 1000) == CONDITION_SATISFIED && g_gl_sync_test.gpu.waited == 5);
     assert(parameter(ctx, a, STATUS) == SIGNALED && snx_gl_client_wait_sync(ctx, a, 0, 0) == ALREADY_SIGNALED);
     /* GL's errors */
     assert(!snx_gl_fence_sync(ctx, 0x1234, 0) && snx_gl_get_error(ctx) == SNX_GL_INVALID_ENUM);
@@ -74,7 +76,7 @@ int main(void) {
         assert(!snx_gl_get_sync(ctx, a, 0x1234, &v) && snx_gl_get_error(ctx) == SNX_GL_INVALID_ENUM);
     }
     /* a save state's copy: its fences signaled after the load, the work before it done */
-    gpu.recorded = 9;
+    g_gl_sync_test.gpu.recorded = 9;
     b = snx_gl_fence_sync(ctx, GPU_COMMANDS_COMPLETE, 0);
     assert(parameter(ctx, b, STATUS) == UNSIGNALED);
     {
@@ -132,7 +134,7 @@ int main(void) {
         assert(!snx_gl_fence_sync(ctx, GPU_COMMANDS_COMPLETE, 0) && snx_gl_get_error(ctx) == 0x0505);
         assert(!snx_gl_fence_sync(ctx, GPU_COMMANDS_COMPLETE, 0) && snx_gl_get_error(ctx) == 0x0505);
         snprintf(full, sizeof full, "holds %d syncs, all alive", SNX_GL_SYNCS);
-        assert(said == 1 && strstr(last_said, full));
+        assert(g_gl_sync_test.said == 1 && strstr(g_gl_sync_test.last_said, full));
         for (uint32_t i = 0; i < SNX_GL_SYNCS; i++) snx_gl_delete_sync(ctx, kept[i]);
         assert(!snx_gl_get_error(ctx));
         free(kept);

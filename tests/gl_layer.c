@@ -298,7 +298,8 @@ void present_pace(u32 interval, int slot) {
 /* the GPU thread: its turn at once, or, held, the calls kept in order until gpu_run, as a GPU thread that lags behind
    the game's */
 static struct {
-    _Atomic int held;
+    _Atomic int held; /* the test's GPU thread clears it, the game's side sets it */
+    char pad[60];
     _Atomic unsigned n; /* a call is counted once it is kept, for the test's GPU thread */
     void (*fn[16])(void*);
     void* arg[16];

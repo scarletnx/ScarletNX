@@ -24,6 +24,10 @@ typedef struct {
     uint32_t words[SNX_GLSLC_MAX_WORDS];
     uint32_t words2[SNX_GLSLC_MAX_WORDS];
     char big[70000];
+    struct {
+        int answer;
+        uint32_t bit;
+    } block; /* GlslcOptions.block's answers, and what the module holds of them */
 } EmitTest;
 
 static EmitTest g_emit_test;
@@ -558,15 +562,10 @@ static void binding_map(void) {
     assert(!strcmp(g_emit_test.result.error, "the options are NULL: they give the stage at least"));
 }
 
-/* GlslcOptions.block's answers, and what the module holds of them */
-static struct {
-    int answer;
-    uint32_t bit;
-} g_block;
 static int read_block(void* user, uint32_t set, uint32_t binding, uint32_t* offset_bit) {
     (void)user, (void)set, (void)binding;
-    *offset_bit = g_block.bit;
-    return g_block.answer;
+    *offset_bit = g_emit_test.block.bit;
+    return g_emit_test.block.answer;
 }
 static int compile_read(int answer, uint32_t bit, int flip, const char* source) {
     GlslcOptions o = {.stage = SNX_GLSLC_FRAGMENT,
@@ -576,7 +575,7 @@ static int compile_read(int answer, uint32_t bit, int flip, const char* source) 
                       .flip_y = flip,
                       .block = read_block};
     memset(&g_emit_test.map, 0, sizeof g_emit_test.map);
-    g_block.answer = answer, g_block.bit = bit;
+    g_emit_test.block.answer = answer, g_emit_test.block.bit = bit;
     return snx_glslc_compile(&g_emit_test.workspace, &o, source, strlen(source), g_emit_test.words, SNX_GLSLC_MAX_WORDS,
                              &g_emit_test.result);
 }
