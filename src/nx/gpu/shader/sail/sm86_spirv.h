@@ -29,8 +29,11 @@ static SgSpv* sg_spv(SgG* g) { return &g->spv; }
     g->spv.false_v = c->false_v;
     g->spv.t_u64 = sg86_t_u64;
     g->spv.ncast = 0;
+    g->spv.fold = 0; /* sm86_translate.c's booleans keep their constants' operations */
 }
 
+/* the opcode's place in its roots line: SM86's forms are its decoder's, Form */
+[[maybe_unused]] static void sg_set_form(SgG* g, int k) { (void)g, (void)k; }
 [[maybe_unused]] static uint64_t sg_Field(SgG* g, int64_t lo, int64_t n) { return sm86_field(g->in, (u32)lo, (u32)n); }
 [[maybe_unused]] static int sg_Uniform(SgG* g) { return g->uniform; }
 [[maybe_unused]] static int64_t sg_Dst(SgG* g) { return g->in->dst; }

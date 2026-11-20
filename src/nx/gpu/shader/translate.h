@@ -90,7 +90,7 @@ typedef struct {
     int quad; /* quad operations are declared: shader_shfl_quad's SHFL are ones */
     /* A fragment program run as one lane alone, where the stage has no subgroup: its place in its 2x2 quad (x's parity
        in bit 0, y's in bit 1, from FragCoord, as Vulkan groups the pixels of a fine derivative) and, for each axis,
-       1.0 where the other pixel of its pair along it comes after it and -1.0 where before (emit_thread.c's
+       1.0 where the other pixel of its pair along it comes after it and -1.0 where before (sail/sm53_thread_spirv.h's
        quad_read). 0 in other programs */
     u32 quad_lane, quad_sign[2];
     /* A fragment program with flow discards nothing inside its loop: a KIL or a failed alpha test sets this bool,
@@ -672,10 +672,11 @@ typedef struct {
     u8* block_start;
     ShStructure* structure;
 } Tr;
+/* the instruction from SM53's Sail (sm53_sail.c, sail/sm53.sail): 1 when the Sail has it, 0 for its family's emitter */
+int sm53_sail_emit(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b);
 /* each family of instructions: writes the instruction i (its word w, opcode op, and fields d, a, b) when one of its branches takes it; op_family (spirv_translate.c) sends each opcode to its family */
 void emit_flow(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b);
 void emit_io(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b);
-void emit_thread(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b);
 void emit_int(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b);
 void emit_float(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b);
 void emit_memory(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b);

@@ -144,7 +144,7 @@ int main(int argc, char** argv) {
     const char* mode = NULL;
     const char* roots = NULL;
     const char* out = NULL;
-    const char* backends[4];
+    const char* backends[16];
     int backend_count = 0;
     const char* profile = NULL;
     const char* inputs[16];
@@ -157,7 +157,7 @@ int main(int argc, char** argv) {
             roots = argv[++i];
         } else if (!strcmp(argv[i], "--backend")) {
             if (i + 1 >= argc) return usage("--backend takes the back end's file");
-            if (backend_count == 4) return usage("more than 4 back end files");
+            if (backend_count == 16) return usage("more than 16 back end files");
             backends[backend_count++] = argv[++i];
         } else if (!strcmp(argv[i], "--profile")) {
             if (i + 1 >= argc) return usage("--profile takes the decoder's profile (a64.profile)");

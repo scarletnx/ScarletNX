@@ -119,9 +119,10 @@ static int is_static_fn(const char* name) {
 static void read_roots(const char* path) {
     size_t size;
     char* text = sg_read(path, &size);
+    static int depth;
     char* line = text;
     unsigned number = 0;
-    strcpy(g_roots.prefix, "sg");
+    if (!depth && !g_roots.prefix[0]) strcpy(g_roots.prefix, "sg");
     while (line && *line) {
         char* next = strchr(line, '\n');
         char* words[MAX_OPS + 2];
@@ -134,7 +135,13 @@ static void read_roots(const char* path) {
         for (p = strtok(line, " \t\r"); p && count < MAX_OPS + 2; p = strtok(NULL, " \t\r")) words[count++] = p;
         line = next;
         if (!count) continue;
-        if (!strcmp(words[0], "prefix") && count == 2) {
+        if (!strcmp(words[0], "include") && count == 2) { /* another roots file, beside this one */
+            const char* slash = strrchr(path, '/');
+            char* other = slash ? fmt("%.*s/%s", (int)(slash - path), path, words[1]) : fmt("%s", words[1]);
+            if (++depth > 8) sg_fail(0, "%s:%u: roots included 8 deep", path, number);
+            read_roots(other);
+            --depth;
+        } else if (!strcmp(words[0], "prefix") && count == 2) {
             snprintf(g_roots.prefix, sizeof g_roots.prefix, "%s", words[1]);
         } else if (!strcmp(words[0], "static")) {
             int i;
@@ -1343,8 +1350,11 @@ int sg_gpu_generate(const char* roots_path, const char* const* backend_paths, in
     for (i = 0; i < g_roots.nroots; ++i) {
         Root* r = &g_roots.roots[i];
         if (r->fuse) continue;
-        for (k = 0; k < r->nops; ++k) sg_out("        case %s:\n", r->ops[k]);
-        sg_out("            %s_%s(g);\n            return 1;\n", g_roots.prefix, r->name);
+        /* each opcode of the root, its place in the line given to the back end (sg_set_form): an ISA whose
+           opcodes are one instruction's forms (SM53's _R, _C, _I) reads it as Form() */
+        for (k = 0; k < r->nops; ++k)
+            sg_out("        case %s:\n            sg_set_form(g, %d);\n            %s_%s(g);\n            return 1;\n", r->ops[k], k,
+                   g_roots.prefix, r->name);
     }
     sg_out("        default: return 0;\n    }\n}\n");
     /* the fusions: at the instructions whose opcodes are ops (avail of them, the first the one being translated, none
