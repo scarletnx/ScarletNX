@@ -1,16 +1,23 @@
 /* SPDX-License-Identifier: MIT
    Copyright (C) 2013 Jorge Jimenez, Jose I. Echevarria, Belen Masia, Fernando Navarro and Diego Gutierrez
    Copyright 2026 the ScarletNX contributors */
-/* areatexgen: SMAA's area texture, AreaTex.h, a C form of the SMAA distribution's Scripts/AreaTex.py (iryoku/smaa
-   71c806a838) that writes the header its Textures/AreaTex.h is, byte for byte: 160x560 R8G8, for each edge pattern
-   and each distance to the pattern's two ends the area the line through it takes of the pixel, on each side. The left
-   half holds the 16 orthogonal patterns at 7 subsample offsets, their distances 0 to 15 standing for their squares,
-   the right half the 16 diagonal ones at 5 offsets. Each value is the script's double arithmetic in the script's
-   order, so every rounding has to stay as it is: no fused multiply-add (cmake/areatex.cmake builds this with
-   -ffp-contract=off) and no wider evaluation (FLT_EVAL_METHOD 0). A value the 0..255 bytes cannot hold stops it,
-   named. It is strict ISO C23 and depends on nothing, so a cross build can build it for the machine it runs on.
+/* areatexgen: SMAA's two lookup textures, a C form of the SMAA distribution's Scripts/AreaTex.py and SearchTex.py
+   (iryoku/smaa 71c806a838) that writes the headers its Textures/AreaTex.h and SearchTex.h are, byte for byte.
 
-   Usage: areatexgen OUT.h (rewritten only when it changes) */
+   AreaTex.h is 160x560 R8G8: for each edge pattern and each distance to the pattern's two ends, the area the line
+   through it takes of the pixel, on each side. The left half holds the 16 orthogonal patterns at 7 subsample offsets,
+   their distances 0 to 15 standing for their squares, the right half the 16 diagonal ones at 5 offsets. Each value is
+   the script's double arithmetic in the script's order, so every rounding has to stay as it is: no fused multiply-add
+   (cmake/areatex.cmake builds this with -ffp-contract=off) and no wider evaluation (FLT_EVAL_METHOD 0). A value the
+   0..255 bytes cannot hold stops it, named.
+
+   SearchTex.h is 64x16 R8: for the edges a bilinear fetch between four pixels sees, how many pixels the last step of
+   a search to the left (the left half) or to the right goes on, times 127.
+
+   It is strict ISO C23 and depends on nothing, so a cross build can build it for the machine it runs on.
+
+   Usage: areatexgen OUT.h, the area texture; areatexgen --search OUT.h, the search texture (each rewritten only when it
+   changes) */
 #include <float.h>
 #include <math.h>
 #include <stdarg.h>
@@ -30,6 +37,9 @@
 #define SAMPLES_DIAG        30 /* each way, in a pixel of a diagonal pattern */
 #define SMOOTH_MAX_DISTANCE 32 /* the U patterns are smoothed up to it */
 #define PER_LINE            12 /* the header's bytes on each line */
+#define SEARCH_WIDTH        64
+#define SEARCH_HEIGHT       16
+#define SEARCH_FULL         33 /* the fetches each way, 0 to 1 by 1/32: each half of the texture before its crop */
 
 typedef struct {
     double x, y;
@@ -70,58 +80,72 @@ static const struct {
     {2, {{1, 1, 1, 1}, {1, 0, 1, 0}}},
 };
 
-/* what the header says around the bytes, as the distribution's file has it */
-static const char header_start[] =
-    "/**\n"
-    " * Copyright (C) 2013 Jorge Jimenez (jorge@iryoku.com)\n"
-    " * Copyright (C) 2013 Jose I. Echevarria (joseignacioechevarria@gmail.com)\n"
-    " * Copyright (C) 2013 Belen Masia (bmasia@unizar.es)\n"
-    " * Copyright (C) 2013 Fernando Navarro (fernandn@microsoft.com)\n"
-    " * Copyright (C) 2013 Diego Gutierrez (diegog@unizar.es)\n"
-    " *\n"
-    " * Permission is hereby granted, free of charge, to any person obtaining a copy\n"
-    " * this software and associated documentation files (the \"Software\"), to deal in\n"
-    " * the Software without restriction, including without limitation the rights to\n"
-    " * use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies\n"
-    " * of the Software, and to permit persons to whom the Software is furnished to\n"
-    " * do so, subject to the following conditions:\n"
-    " *\n"
-    " * The above copyright notice and this permission notice shall be included in\n"
-    " * all copies or substantial portions of the Software. As clarification, there\n"
-    " * is no requirement that the copyright notice and permission be included in\n"
-    " * binary distributions of the Software.\n"
-    " *\n"
-    " * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n"
-    " * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n"
-    " * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE\n"
-    " * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER\n"
-    " * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,\n"
-    " * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE\n"
-    " * SOFTWARE.\n"
-    " */\n"
-    "\n"
-    "\n"
-    "#ifndef AREATEX_H\n"
-    "#define AREATEX_H\n"
-    "\n"
-    "#define AREATEX_WIDTH 160\n"
-    "#define AREATEX_HEIGHT 560\n"
-    "#define AREATEX_PITCH (AREATEX_WIDTH * 2)\n"
-    "#define AREATEX_SIZE (AREATEX_HEIGHT * AREATEX_PITCH)\n"
-    "\n"
-    "/**\n"
-    " * Stored in R8G8 format. Load it in the following format:\n"
-    " *  - DX9:  D3DFMT_A8L8 \n"
-    " *  - DX10: DXGI_FORMAT_R8G8_UNORM\n"
-    " */\n"
-    "static const unsigned char areaTexBytes[] = {\n";
+/* what the headers say around the bytes, as the distribution's files have it */
+static const char notice[] = "/**\n"
+                             " * Copyright (C) 2013 Jorge Jimenez (jorge@iryoku.com)\n"
+                             " * Copyright (C) 2013 Jose I. Echevarria (joseignacioechevarria@gmail.com)\n"
+                             " * Copyright (C) 2013 Belen Masia (bmasia@unizar.es)\n"
+                             " * Copyright (C) 2013 Fernando Navarro (fernandn@microsoft.com)\n"
+                             " * Copyright (C) 2013 Diego Gutierrez (diegog@unizar.es)\n"
+                             " *\n"
+                             " * Permission is hereby granted, free of charge, to any person obtaining a copy\n"
+                             " * this software and associated documentation files (the \"Software\"), to deal in\n"
+                             " * the Software without restriction, including without limitation the rights to\n"
+                             " * use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies\n"
+                             " * of the Software, and to permit persons to whom the Software is furnished to\n"
+                             " * do so, subject to the following conditions:\n"
+                             " *\n"
+                             " * The above copyright notice and this permission notice shall be included in\n"
+                             " * all copies or substantial portions of the Software. As clarification, there\n"
+                             " * is no requirement that the copyright notice and permission be included in\n"
+                             " * binary distributions of the Software.\n"
+                             " *\n"
+                             " * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n"
+                             " * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n"
+                             " * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE\n"
+                             " * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER\n"
+                             " * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,\n"
+                             " * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE\n"
+                             " * SOFTWARE.\n"
+                             " */\n"
+                             "\n"
+                             "\n";
+static const char area_start[] = "#ifndef AREATEX_H\n"
+                                 "#define AREATEX_H\n"
+                                 "\n"
+                                 "#define AREATEX_WIDTH 160\n"
+                                 "#define AREATEX_HEIGHT 560\n"
+                                 "#define AREATEX_PITCH (AREATEX_WIDTH * 2)\n"
+                                 "#define AREATEX_SIZE (AREATEX_HEIGHT * AREATEX_PITCH)\n"
+                                 "\n"
+                                 "/**\n"
+                                 " * Stored in R8G8 format. Load it in the following format:\n"
+                                 " *  - DX9:  D3DFMT_A8L8 \n"
+                                 " *  - DX10: DXGI_FORMAT_R8G8_UNORM\n"
+                                 " */\n"
+                                 "static const unsigned char areaTexBytes[] = {\n";
+static const char search_start[] = "#ifndef SEARCHTEX_H\n"
+                                   "#define SEARCHTEX_H\n"
+                                   "\n"
+                                   "#define SEARCHTEX_WIDTH 64\n"
+                                   "#define SEARCHTEX_HEIGHT 16\n"
+                                   "#define SEARCHTEX_PITCH SEARCHTEX_WIDTH\n"
+                                   "#define SEARCHTEX_SIZE (SEARCHTEX_HEIGHT * SEARCHTEX_PITCH)\n"
+                                   "\n"
+                                   "/**\n"
+                                   " * Stored in R8 format. Load it in the following format:\n"
+                                   " *  - DX9:  D3DFMT_L8 \n"
+                                   " *  - DX10: DXGI_FORMAT_R8_UNORM\n"
+                                   " */\n"
+                                   "static const unsigned char searchTexBytes[] = {\n";
 static const char header_end[] = "};\n\n#endif\n";
 
-/* "    0x00, " for each byte, the last without ", ", and "\n" after each line */
-#define TEXT_MAX (sizeof header_start - 1 + BYTES * 6 + (BYTES / PER_LINE + 1) * 5 + sizeof header_end - 1)
+/* "    0x00, " for each byte, and "\n" after each line: the area texture's, the larger */
+#define TEXT_MAX (sizeof notice + sizeof area_start + BYTES * 6 + (BYTES / PER_LINE + 1) * 5 + sizeof header_end)
 
 static struct {
     unsigned char tex[HEIGHT][WIDTH][2];
+    unsigned char search[SEARCH_HEIGHT][SEARCH_WIDTH];
     char text[TEXT_MAX];
     size_t text_n;
 } g_areatexgen;
@@ -275,21 +299,67 @@ static void build(void) {
                         area_diag(pattern, left, right, diag_offsets[k]), "diagonal", pattern, left, right, k);
 }
 
+/* SearchTex.py's bilinear fetch of the four edges e, from the pixel of e[3] at (-0.25, -0.125) */
+static double search_fetch(const int e[4]) {
+    double a = e[0] + (e[1] - e[0]) * (1.0 - 0.25);
+    double b = e[2] + (e[3] - e[2]) * (1.0 - 0.25);
+    return a + (b - a) * (1.0 - 0.125);
+}
+
+/* the edges a fetch saw, as the script's reverse lookup of search_fetch (a later combination wins a value two give),
+   or false when the value is none of them */
+static bool search_edges(double fetch, int e[4]) {
+    bool found = false;
+    for (int i = 0; i < 16; i++) {
+        int c[4] = {i >> 3 & 1, i >> 2 & 1, i >> 1 & 1, i & 1};
+        if (search_fetch(c) == fetch) {
+            for (int k = 0; k < 4; k++) e[k] = c[k];
+            found = true;
+        }
+    }
+    return found;
+}
+
+/* how many pixels the last step of a search goes on (deltaLeft, deltaRight): one where the top fetch has an edge
+   (and, to the right, the left one no crossing edge), two where the edge goes on with no crossing edge */
+static int search_delta(bool right, const int left[4], const int top[4]) {
+    int d = 0;
+    if (top[3] == 1 && (!right || (left[1] != 1 && left[3] != 1))) d++;
+    if (d == 1 && top[2] == 1 && (right ? left[0] != 1 && left[2] != 1 : left[1] != 1 && left[3] != 1)) d++;
+    return d;
+}
+
+/* both halves of the full 66x33 texture, then the 64x16 of its rows 17 to 32, upside down, as the script crops it */
+static void build_search(void) {
+    unsigned char full[SEARCH_FULL][2 * SEARCH_FULL] = {0};
+    for (int half = 0; half < 2; half++)
+        for (int x = 0; x < SEARCH_FULL; x++)
+            for (int y = 0; y < SEARCH_FULL; y++) {
+                int left[4], top[4];
+                if (search_edges(0.03125 * x, left) && search_edges(0.03125 * y, top))
+                    full[y][SEARCH_FULL * half + x] = (unsigned char)(127 * search_delta(half, left, top));
+            }
+    for (int y = 0; y < SEARCH_HEIGHT; y++)
+        for (int x = 0; x < SEARCH_WIDTH; x++) g_areatexgen.search[y][x] = full[SEARCH_FULL - 1 - y][x];
+}
+
 static void text(const char* s, size_t n) {
     if (n > TEXT_MAX - g_areatexgen.text_n) fail("the header outgrows its %zu bytes", (size_t)TEXT_MAX);
     memcpy(g_areatexgen.text + g_areatexgen.text_n, s, n);
     g_areatexgen.text_n += n;
 }
 
-static void write_header(const char* path) {
+/* the header at path: notice, start, then n bytes, the last with a comma where last_comma says (the search
+   texture's file has one, the area texture's none) */
+static void write_header(const char* path, const char* start, const unsigned char* bytes, size_t n, bool last_comma) {
     static const char hex[] = "0123456789abcdef";
-    const unsigned char* bytes = &g_areatexgen.tex[0][0][0];
-    text(header_start, sizeof header_start - 1);
-    for (size_t i = 0; i < BYTES; i++) {
+    text(notice, sizeof notice - 1);
+    text(start, strlen(start));
+    for (size_t i = 0; i < n; i++) {
         char entry[6] = {'0', 'x', hex[bytes[i] >> 4], hex[bytes[i] & 15], ',', ' '};
         if (i % PER_LINE == 0) text("    ", 4);
-        text(entry, i + 1 < BYTES ? 6 : 4);
-        if (i + 1 == BYTES || (i + 1) % PER_LINE == 0) text("\n", 1);
+        text(entry, i + 1 < n ? 6 : last_comma ? 5 : 4);
+        if (i + 1 == n || (i + 1) % PER_LINE == 0) text("\n", 1);
     }
     text(header_end, sizeof header_end - 1);
 
@@ -308,11 +378,17 @@ static void write_header(const char* path) {
 }
 
 int main(int argc, char** argv) {
-    if (argc != 2) {
-        fprintf(stderr, "usage: areatexgen OUT.h\n");
+    bool search = argc == 3 && !strcmp(argv[1], "--search");
+    if (!(argc == 2 && argv[1][0] != '-') && !search) {
+        fprintf(stderr, "usage: areatexgen OUT.h (the area texture), or areatexgen --search OUT.h (the search one)\n");
         return 2;
     }
-    build();
-    write_header(argv[1]);
+    if (search) {
+        build_search();
+        write_header(argv[2], search_start, &g_areatexgen.search[0][0], sizeof g_areatexgen.search, true);
+    } else {
+        build();
+        write_header(argv[1], area_start, &g_areatexgen.tex[0][0][0], BYTES, false);
+    }
     return 0;
 }

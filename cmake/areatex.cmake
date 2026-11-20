@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
-# SMAA's area texture, common/gpu/vk/fx/AreaTex.h (which gpu/vk/present_fx.c uploads), written by tools/areatexgen
-# under generated/include, on the include path beside src. It runs during the build, so a cross build also builds it for
-# the machine doing the build (SNX_HOST_CC), as ui.cmake does for uigen. Both keep each rounding of its double
-# arithmetic (-ffp-contract=off): clang fuses a multiply and an add where the machine has the instruction (an AArch64
-# host), and that changes bytes of the texture
+# SMAA's area and search textures, common/gpu/vk/fx/AreaTex.h and SearchTex.h (which gpu/vk/present_fx.c uploads),
+# written by tools/areatexgen under generated/include, on the include path beside src. It runs during the build, so a
+# cross build also builds it for the machine doing the build (SNX_HOST_CC), as ui.cmake does for uigen. Both keep each
+# rounding of its double arithmetic (-ffp-contract=off): clang fuses a multiply and an add where the machine has the
+# instruction (an AArch64 host), and that changes bytes of the area texture
 include_guard(GLOBAL)
 if(CMAKE_CROSSCOMPILING)
     include("${CMAKE_CURRENT_LIST_DIR}/host_cc.cmake")
@@ -39,10 +39,17 @@ else()
     endif()
 endif()
 set(snx_areatex_h "${PROJECT_BINARY_DIR}/generated/include/common/gpu/vk/fx/AreaTex.h")
-# for the generator's test (tests/areatexgen.cmake), which checks this file too
+set(snx_searchtex_h "${PROJECT_BINARY_DIR}/generated/include/common/gpu/vk/fx/SearchTex.h")
+# for the generator's test (tests/areatexgen.cmake), which checks these files too
 set_property(GLOBAL PROPERTY snx_areatex_h "${snx_areatex_h}")
+set_property(GLOBAL PROPERTY snx_searchtex_h "${snx_searchtex_h}")
 add_custom_command(OUTPUT "${snx_areatex_h}"
     COMMAND "${CMAKE_COMMAND}" -E make_directory "${PROJECT_BINARY_DIR}/generated/include/common/gpu/vk/fx"
     COMMAND snx-areatexgen "${snx_areatex_h}"
     DEPENDS snx-areatexgen
     COMMENT "Generating SMAA's area texture" VERBATIM)
+add_custom_command(OUTPUT "${snx_searchtex_h}"
+    COMMAND "${CMAKE_COMMAND}" -E make_directory "${PROJECT_BINARY_DIR}/generated/include/common/gpu/vk/fx"
+    COMMAND snx-areatexgen --search "${snx_searchtex_h}"
+    DEPENDS snx-areatexgen
+    COMMENT "Generating SMAA's search texture" VERBATIM)
