@@ -190,9 +190,7 @@ static int owned_astc_key(void) {
     al_fill(&x);
     gmmu_map(gbase, base, AL_SPAN);
     later_drain(); /* what the checks before left to the encoder */
-    char cache[sizeof g_cachedir + 40];
-    al_cache_path(cache, sizeof cache, "vulkan_headless_owned_reads.vkbc7");
-    CHECK(!al_cache_open(cache)); /* the keys are made only where a cache takes the levels */
+    vk_astc_cache_open(); /* the keys are made only where a cache takes the levels */
     vk_lock();
     VkOwnRes* owner = vk_own_res_new(16, VK_OWN_BY_DRAW);
     CHECK(owner && !owned_test_fill(owner->buf, 0, 16, 0x3c));
@@ -210,7 +208,6 @@ static int owned_astc_key(void) {
                 all, kept ? "kept" : "gone", landed ? "landed" : "nothing landed");
     later_drain();
     vk_bc7_cache_close();
-    remove(cache);
     gmmu_space_unmap(gbase, AL_SPAN);
     mem_unmap(base, AL_SPAN);
     g_settings.astc_mode = had;

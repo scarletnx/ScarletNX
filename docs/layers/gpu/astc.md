@@ -718,19 +718,11 @@ megatexels (8 by default: a 4096x2048 level, or two layers of 2048x2048) and the
   (`vk_astc_forget`) stops that, and the pieces then go to the cache alone. This run shows the better blocks as they
   come, and a texture uploaded again before the end (an eviction) finds its piece in the cache, or the background
   goes on into the new image.
-- **The next run:** an upload whose pieces are all in the cache copies them into the image, with no decode and no
-  encode. One piece missing (a run ended before the background did) encodes the level quickly again, and the
-  background makes only the missing pieces. The reads run on the GPU thread, which the frame waits for: 21 ms for a
-  168 MB level in the system's page cache, but 4.2 s from that laptop's game disk, an NVMe drive in a USB enclosure
-  that reads 40 MB/s (`dd iflag=direct`: it runs at USB 2 speed). So a frame's hits read for 100 ms at most
+- **The next upload:** an upload whose pieces are all in the cache copies them into the image, with no decode and
+  no encode. One piece missing (the level left the cache, or the background had not ended) encodes the level
+  quickly again, and the background makes only the missing pieces. A frame's hits take the GPU thread 100 ms at most
   (`BG_HIT_NS`): past that a level is encoded quickly, and the pieces the cache holds load into the texture after
-  the presents that follow, 2 ms of reads after each (at least a piece: 6.5 ms from that disk), `vk_astc_background`.
-  The file is read without the kernel's readahead (`POSIX_FADV_RANDOM`, on Linux): that disk's (64 MiB) streamed the
-  loads at its full 40 MB/s, which starved the game's own reads, 2.4 frames a second while the 1890 pieces loaded in
-  15 s; without it they take 100 s, a piece a frame, at 4 frames a second for the scene's first 10 s and its usual
-  rate after. With the file out of the page cache the scene's worst frame was still 3 s, of which the very large
-  levels took 0.1 s; the rest is not measured apart, and is likely the whole levels the cache gives the scene's other
-  textures (some 60 MB, read that way since the cache began) and the game's own reads from the same disk.
+  the presents that follow, 2 ms of them after each (at least a piece), `vk_astc_background`.
 
 On the 890M in that game's first 3D scene (the 3D picture is wrong there for other reasons, and its frame rate climbs
 over the scene's first 40 seconds as the game streams):
@@ -762,8 +754,8 @@ That game's arrays are past either bound: their levels of 160, 40 and 10 megatex
 the fast build. A level between 8 megatexels and `VK_BC7_CAPTURE_BYTES` that earlier runs cached whole is encoded
 quickly once more, and its pieces stored, as its old record is not the pieces'.
 
-The pieces of the two arrays' quick levels, 450 MB, took the cache's file from 181 to 631 MB (1890 records more in
-its index, 32 bytes each in memory).
+The pieces of the two arrays' quick levels are 1890, 450 MB of blocks: they stay in the cache while its bound and
+the other levels' uses leave them room.
 
 | The quick build on edenprobe's astcimage picture | Gradients | Edges | Noise | Alpha |
 | --- | --- | --- | --- | --- |
@@ -946,12 +938,14 @@ package, and `-DSNX_GLSLANG=path` picks any. spirv-opt and spirv-val are the SPI
   the BC7 cache's key: made only where `vk_astc_cached` says, the same for the same bytes, another for a byte of any
   layer changed, none where the GPU holds bytes, and kept in the texture for the encoder between frames.
 - `bc7_cache` (ctest, no GPU) checks `bc7_cache.c`: the key changes with each field of the level, its build, every bit
-  of its bytes and every word of its layout; records come back as written, also after the file is opened again; a file
-  of another version starts empty; a changed byte drops its record; a record cut short is cut off; the bound starts the
-  file over; the index grows past 3,000 records; and the file stays locked while it is open.
+  of its bytes and every word of its layout; blocks come back as stored while the cache holds them, and a new cache
+  holds none; past its bound the levels used most stay, none goes that the last two presents used, and the counts
+  halve with time; a low memory word frees what no recent present used; a hit queued for the recording thread is
+  copied from blocks that are still there however the level left; the bound follows the machine's memory; and a
+  file an earlier version left is said and kept.
 - `astc_vulkan` and `astc_vulkan_pieces` upload a level into a new BC7 image three times with the cache's key: strips
-  of 4, 2 and 1 block rows, layers, slices and many strips. The first encodes; the second, and the third after the
-  file is opened again, encode nothing (`vk_astc_stats` counts the levels and the hits, `vk_astc_dispatches` the
+  of 4, 2 and 1 block rows, layers, slices and many strips. The first encodes; the second and the third
+  encode nothing (`vk_astc_stats` counts the levels and the hits, `vk_astc_dispatches` the
   encoder's dispatches) and their bytes are the first's; a changed block misses; and 100 encodes in one submission
   are all stored. `vulkan_headless` (`tests/vulkan_astc_later.inc`) stores the levels the encoder makes between frames
   and gives them to a second texture of the same bytes in its first frame, with no encode.
@@ -982,8 +976,8 @@ package, and `-DSNX_GLSLANG=path` picks any. spirv-opt and spirv-val are the SPI
 - `astc_vulkan` and `astc_vulkan_pieces` also upload very large levels (`astc_quick_mtexels=1` there, a megatexel):
   bands of block rows of 4x4 and 6x6 blocks (whose bands step 3 rows) and pieces of several layers, once with the
   background on the CPU and once on the GPU. The first upload's image is the quick build of the CPU decoder's texels,
-  byte for byte, and the level goes to the background; once it is done (`vk_astc_background_drain`), the next upload,
-  and one after the file is opened again, copy the pieces, which are the fast build of the whole level byte for byte:
+  byte for byte, and the level goes to the background; once it is done (`vk_astc_background_drain`), the next upload
+  copies the pieces, which are the fast build of the whole level byte for byte:
   the CPU's and the GPU's pieces are the same. A hit out of time (`g_vk_astc_hit_ns` 0) encodes quickly and loads the
   pieces into the image after it. An image kept alive while the background runs ends up with the fast build too, from
   the pieces it copied into it. On the GPU, a background stopped after one piece leaves it in the cache, and the next
