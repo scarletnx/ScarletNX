@@ -2,10 +2,11 @@
    Copyright 2026 the ScarletNX contributors */
 /* The Ounce's graphics supervisor's state (gsv.c), in g_hle so that a save state holds it: the native images and
    memories a game made, the syncpoint cache it bound and its armed waits, and the display session (nn::vi2) with its
-   clients, displays and request groups */
+   clients, displays and request groups. Its host side is the lock of what the GPU's thread reaches too */
 #ifndef SNX_GSV_H
 #define SNX_GSV_H
 #include "common/cpu/aarch64/cpu.h"
+#include "nx/runtime/platform/plat.h" /* PMutex */
 
 #define GSV_HANDLES    4096 /* the native images, native memories and GPU memories a game makes, each */
 #define GSV_SYNC_WAITS 63
@@ -51,10 +52,10 @@ typedef struct {
     /* the syncpoint cache: the game's request page (RW) and the value page (RO) it polls, bound by command 204 */
     u64 sync_rw, sync_ro;
     u32 sync_request_event, sync_completed_event;
-    GsvSyncWait sync_waits[GSV_SYNC_WAITS];
+    GsvSyncWait sync_waits[GSV_SYNC_WAITS]; /* under g_host.gsv.lock */
     /* the display session */
     u32 vi2_event;                     /* the notification event's kobj id */
-    u32 vi2_notifications[32];         /* the notification bitmask */
+    u32 vi2_notifications[32];         /* the notification bitmask, under g_host.gsv.lock */
     u32 vi2_group_events[VI2_GROUPS];  /* the request group events' kobj ids */
     u32 vi2_group_vsync[VI2_GROUPS];   /* 1 while a group is registered for the display's vsync (kind 0) */
     u32 vi2_group_refresh[VI2_GROUPS]; /* 1 while a group is registered for the display's refresh rate (kind 1) */
@@ -65,4 +66,9 @@ typedef struct {
     Vi2Display vi2_displays[VI2_DISPLAYS];
     u64 vi2_rates_on; /* the rates the game turned on, 60 Hz always among them once it set any */
 } HleGsv;
+/* ---- the host side in g_host: the lock of the armed waits and of the notifications, which a guest's thread arms and
+   reads while the GPU's thread and the video's signal them */
+typedef struct {
+    PMutex lock;
+} HostGsv;
 #endif

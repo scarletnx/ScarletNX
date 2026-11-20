@@ -608,9 +608,11 @@ static void vi2_present_cb(void* arg) {
     atomic_fetch_add_explicit(&g_frames, 1, memory_order_relaxed);
     if (p->client) {
         Vi2Client* c = &g_hle.gsv.vi2_clients[p->client - 1];
+        pm_lock(&g_host.gsv.lock);
         c->available |= 1ull << p->slot;
         g_hle.gsv.vi2_notifications[c->available_notification / 32] |= 1u << (c->available_notification % 32);
         if (g_hle.gsv.vi2_event) ev_signal(g_hle.gsv.vi2_event);
+        pm_unlock(&g_host.gsv.lock);
     }
     free(p);
 }
@@ -644,9 +646,11 @@ static int nn_vi2_IVi2Session_ReleaseNotificationEvent(SvcObj* self, const u8* r
 static int nn_vi2_IVi2Session_GetNotifications(SvcObj* self, IpcBuf out) {
     (void)self;
     R_UNLESS(out.size >= sizeof g_hle.gsv.vi2_notifications, SNX_RC_VI2_BUFFER_TOO_SMALL);
+    pm_lock(&g_host.gsv.lock);
     memcpy(GP(out.addr), g_hle.gsv.vi2_notifications, sizeof g_hle.gsv.vi2_notifications);
     memset(g_hle.gsv.vi2_notifications, 0, sizeof g_hle.gsv.vi2_notifications);
     if (g_hle.gsv.vi2_event) ev_clear(g_hle.gsv.vi2_event);
+    pm_unlock(&g_host.gsv.lock);
     R_SUCCEED();
 }
 static int nn_vi2_IVi2Session_CreateRequestGroupEvent(SvcObj* self, const u8* request, u32* event) {
@@ -1024,8 +1028,13 @@ static int nn_gsv_SyncptSession_SetSyncpointLimit(SvcObj* self, u32 id) {
     (void)self, (void)id;
     R_SUCCEED();
 }
+/* The armed syncpoint waits, by slot, under g_host.gsv.lock: a guest's thread arms and cancels them while the GPU's
+   and the video's move the syncpoints. An arm that set its wait while a syncpoint moved was seen by neither side
+   without it, and a wait armed at the threshold stayed unsignaled. The events are signaled under it too, so that a
+   signal decided for the wait before never lands after a new arm cleared the event */
 void gsv_syncpt_changed(void) {
     u32 i;
+    pm_lock(&g_host.gsv.lock);
     for (i = 0; i < GSV_SYNC_WAITS; i++) {
         if (!g_hle.gsv.sync_waits[i].armed) continue;
         if ((i32)(syncpt_read(g_hle.gsv.sync_waits[i].id) - g_hle.gsv.sync_waits[i].thresh) >= 0) {
@@ -1035,6 +1044,7 @@ void gsv_syncpt_changed(void) {
             if (g_hle.gsv.sync_waits[i].event) ev_signal(g_hle.gsv.sync_waits[i].event);
         }
     }
+    pm_unlock(&g_host.gsv.lock);
     if (g_hle.gsv.sync_ro) /* the cache's value page: the game polls it directly */
         for (i = 0; i < 192; i++) gw64(g_hle.gsv.sync_ro + 0x40 + (u64)i * 8, syncpt_read(i));
     if (g_sync_shim_cpu) /* the syncpoint shim: 192 counters, 4 bytes each */
@@ -1044,8 +1054,10 @@ static int nn_gsv_SyncptSession_GetEvent(SvcObj* self, u32 slot, u32* event) {
     (void)self;
     R_UNLESS(slot < GSV_SYNC_WAITS, SNX_RC_SVC_OUT_OF_HANDLES);
     /* the service keeps the kernel object id to signal it, and hands the game a handle of its own */
+    pm_lock(&g_host.gsv.lock);
     g_hle.gsv.sync_waits[slot].event = owned_event("gsv:syncpoint");
     *event = ev_handle(g_hle.gsv.sync_waits[slot].event);
+    pm_unlock(&g_host.gsv.lock);
     R_UNLESS(*event, SNX_RC_SVC_OUT_OF_HANDLES);
     R_SUCCEED();
 }
@@ -1063,6 +1075,7 @@ static int nn_gsv_SyncptSession_ArmWait(SvcObj* self, const u8* request) {
     memcpy(&id, request + 4, 4);
     memcpy(&threshold, request + 8, 8);
     R_UNLESS(slot < GSV_SYNC_WAITS, SNX_RC_SVC_OUT_OF_HANDLES);
+    pm_lock(&g_host.gsv.lock);
     g_hle.gsv.sync_waits[slot].id = ~id;
     g_hle.gsv.sync_waits[slot].thresh = (u32)threshold;
     if (g_hle.gsv.sync_waits[slot].event)
@@ -1074,6 +1087,7 @@ static int nn_gsv_SyncptSession_ArmWait(SvcObj* self, const u8* request) {
         g_hle.gsv.sync_waits[slot].armed = 0;
         if (g_hle.gsv.sync_waits[slot].event) ev_signal(g_hle.gsv.sync_waits[slot].event);
     }
+    pm_unlock(&g_host.gsv.lock);
     R_SUCCEED();
 }
 /* The wait ends with the slot's event signaled, armed or not: the SDK's CancelSyncPointEvent (and
@@ -1082,8 +1096,10 @@ static int nn_gsv_SyncptSession_ArmWait(SvcObj* self, const u8* request) {
 static int nn_gsv_SyncptSession_CancelWait(SvcObj* self, u32 slot) {
     (void)self;
     R_UNLESS(slot < GSV_SYNC_WAITS, SNX_RC_SVC_OUT_OF_HANDLES);
+    pm_lock(&g_host.gsv.lock);
     g_hle.gsv.sync_waits[slot].armed = 0;
     if (g_hle.gsv.sync_waits[slot].event) ev_signal(g_hle.gsv.sync_waits[slot].event);
+    pm_unlock(&g_host.gsv.lock);
     R_SUCCEED();
 }
 static int nn_gsv_UserSession_CreateNvDrv2UserSessionWithRemoteMemory(SvcObj* self, u32* session) {
