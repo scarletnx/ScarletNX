@@ -4,7 +4,7 @@
 # execute_FN for each of the decoder's opcodes (sm86.h's SM86_OPS), "fuse FN OPCODE..." the fusion FN of those opcodes
 # in a row where FN_ok holds. The back end's functions named static give values the translator knows
 prefix sg86
-static Field Uniform SrcNeg Dst IsZero SrcIsImm SrcImm
+static Field Uniform SrcNeg Dst IsZero SrcIsImm SrcImm FieldAt SrcNegAt IsZeroAt ReadsDstAt
 
 op IADD3 SM86_IADD3 SM86_UIADD3
 op IMAD SM86_IMAD SM86_UIMAD
@@ -22,3 +22,5 @@ op ISETP SM86_ISETP SM86_UISETP
 op PLOP3 SM86_PLOP3
 op UPLOP3 SM86_UPLOP3
 
+# IADD3 then IADD3.X: one 64-bit add of 32-bit words
+fuse IADD3_WIDE SM86_IADD3 SM86_IADD3

@@ -249,9 +249,84 @@ static void test_tables(void) {
     }
 }
 
+/* an IADD3 of form f (b a register, an immediate or a constant) */
+static Sm86Insn iadd3(u32 form, u32 d, u32 a, u32 b, int neg_b, u32 c, int x, u32 p, u32 q, u32 cin1, u32 cin2) {
+    u64 lo = 0, hi = 0;
+    Sm86Insn in;
+    set(&lo, &hi, 0, 9, 0x010);
+    set(&lo, &hi, 9, 3, form);
+    set(&lo, &hi, 12, 4, 7);
+    set(&lo, &hi, 16, 8, d);
+    set(&lo, &hi, 24, 8, a);
+    if (form == 4)
+        set(&lo, &hi, 32, 32, b);
+    else if (form == 5) {
+        set(&lo, &hi, 40, 14, b); /* the constant's word offset and bank */
+        set(&lo, &hi, 54, 5, 1);
+    } else
+        set(&lo, &hi, 32, 8, b);
+    set(&lo, &hi, 63, 1, (u64)neg_b); /* b's negation */
+    set(&lo, &hi, 64, 8, c);
+    set(&lo, &hi, 74, 1, (u64)x);
+    set(&lo, &hi, 77, 4, cin2);
+    set(&lo, &hi, 81, 3, p);
+    set(&lo, &hi, 84, 3, q);
+    set(&lo, &hi, 87, 4, cin1);
+    sm86_decode(lo, hi, &in);
+    return in;
+}
+
+/* IADD3_WIDE (sm86.roots' fusion): every pair its guard takes, run as one, against the two run one after the other by
+   sm86_eval; and pairs a little off it, which it must not take */
+static void test_fusion(void) {
+    u32 taken = 0, refused = 0;
+    for (u32 t = 0; t < 200000; t++) {
+        u32 form = (u32[]){1, 4, 5}[next() % 3];
+        int neg = next() & 1;
+        u32 p = (u32)next() % 7;
+        Sm86Insn in[2];
+        in[0] = iadd3(form, some_reg(0), some_reg(0), form == 4 ? (u32)next() : form == 5 ? (u32)next() % 64 : some_reg(0),
+                      neg, SM86_RZ, 0, p, 7, 0xf, 0xf);
+        in[1] = iadd3(form, some_reg(0), some_reg(0), form == 4 ? (u32)next() : form == 5 ? (u32)next() % 64 : some_reg(0),
+                      neg, SM86_RZ, 1, 7, 7, p, 0xf);
+        /* a near miss now and then: another carry predicate, a carry written, a second operand negated alone */
+        u32 miss = (u32)next() % 8;
+        if (miss == 0) in[1] = iadd3(form, in[1].dst, in[1].a.reg, in[1].b.reg, neg, SM86_RZ, 1, 7, 7, (p + 1) % 7, 0xf);
+        if (miss == 1) in[1] = iadd3(form, in[1].dst, in[1].a.reg, in[1].b.reg, !neg, SM86_RZ, 1, 7, 7, p, 0xf);
+        if (miss == 2) in[0] = iadd3(form, in[0].dst, in[0].a.reg, in[0].b.reg, neg, SM86_RZ, 0, p, (p + 1) % 7, 0xf, 0xf);
+        if (in[0].op != SM86_IADD3 || in[1].op != SM86_IADD3) continue;
+        Sm86EvalState want, got;
+        random_state(&want);
+        got = want;
+        CHECK(sm86_eval_step(&want, &in[0], &io) && sm86_eval_step(&want, &in[1], &io));
+        SgG g;
+        sg86_begin(&g, &got, &in[0], &io);
+        g.at[1] = &in[1];
+        int ops[2] = {in[0].op, in[1].op};
+        u32 len = sg86_fuse(&g, ops, 2);
+        if (!len) { /* not taken: each runs alone */
+            refused++;
+            CHECK(sg86_emit(&g, in[0].op));
+            sg86_begin(&g, &got, &in[1], &io);
+            CHECK(sg86_emit(&g, in[1].op));
+        } else
+            taken++;
+        int same = !g.ev.undefined && !g.ev.thrown && !memcmp(&want, &got, sizeof want);
+        if (!same && taken + refused < 50)
+            fprintf(stderr, "IADD3_WIDE %s: %016llx %016llx, %016llx %016llx\n", len ? "fused" : "alone",
+                    (unsigned long long)in[0].lo, (unsigned long long)in[0].hi, (unsigned long long)in[1].lo,
+                    (unsigned long long)in[1].hi);
+        CHECK(same);
+    }
+    /* the guard took most, and left some */
+    CHECK(taken > 50000 && refused > 10000);
+    printf("shader_sail_sm86: IADD3_WIDE took %u pairs, left %u\n", taken, refused);
+}
+
 int main(void) {
     test_tables();
     test_random();
+    test_fusion();
     if (failures) {
         fprintf(stderr, "shader_sail_sm86: %d checks failed\n", failures);
         return 1;
