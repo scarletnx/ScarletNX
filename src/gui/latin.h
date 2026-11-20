@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* The Latin letters the menu draws past its VGA font's CP437: GNU Unifont's 8x16 glyphs of U+00A0 to U+024F that CP437
-   lacks (src/gui/unifont-latin.hex, compiled in by scripts/build-glyphs.py; src/gui/FONT-NOTICE.txt) */
+   lacks, which scripts/build-glyphs.py compiles in from the Unifont the build downloads (src/gui/FONT-NOTICE.txt) */
 #ifndef SNX_GUI_LATIN_H
 #define SNX_GUI_LATIN_H
 #include <stdint.h>

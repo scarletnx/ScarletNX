@@ -486,15 +486,15 @@ def check_entry(msgid, msgstr, keys, words, where):
 
 
 def drawable(root):
-    """the code points past ASCII the menu's font draws: CP437's, the Latin letters and the wide letters kept from GNU
-    Unifont, and the titles' blocks, every code point of which the build takes from Unifont"""
+    """the code points past ASCII the menu's font draws: CP437's, and the glyphs build-glyphs.py takes from GNU Unifont,
+    the Latin letters, the titles' blocks and the wide letters root's languages show (a letter Unifont lacks, or draws
+    8 wide outside the Latin letters, stops that script)"""
     spec = importlib.util.spec_from_file_location('build_glyphs', Path(__file__).with_name('build-glyphs.py'))
     glyphs = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(glyphs)
-    drawn = glyphs.codepage(root) | set(glyphs.titles_wanted())
-    for kept in (root / glyphs.KEPT, root / glyphs.WIDE_KEPT):
-        drawn |= set(glyphs.read_hex(kept.read_text().splitlines(), kept))
-    return drawn
+    return (
+        glyphs.codepage(root) | set(glyphs.wanted(root)) | set(glyphs.titles_wanted()) | set(glyphs.wide_wanted(root))
+    )
 
 
 def check_drawn(text, drawn, where):
@@ -503,7 +503,8 @@ def check_drawn(text, drawn, where):
         letters = ', '.join(f'U+{ord(c):04X}' for c in lacking)
         raise Refused(
             f"{where}: {text!r} has what the menu's font does not draw ({letters}): it would show as ?. "
-            'scripts/build-glyphs.py --from takes from GNU Unifont the glyph of each letter the languages show'
+            'scripts/build-glyphs.py takes from GNU Unifont the glyph of each letter the languages show, but for'
+            ' those of its RANGES it leaves out (LEFT_OUT)'
         )
 
 
