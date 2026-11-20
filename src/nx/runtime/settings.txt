@@ -1632,6 +1632,15 @@ setting Buffer copy stats
     startup
     words Off|On
     help 1 = logs what the renderer copies between guest memory and its buffers, and why it waits for their results
+setting Draw run stats
+    key vk_draw_runs
+    int 0 1
+    default 0
+    startup
+    words Off|On
+    help 1 = logs every 600 presents how many direct draws came in runs that one Vulkan call could draw: with nothing
+    help recorded between two draws, with the index buffer's offset alone, and with descriptors, push constants and
+    help vertex buffer offsets too. Counted on the recording thread's ring (vk_record=1)
 setting Sparse texture sharing
     key vk_sparse_share
     int 0 1

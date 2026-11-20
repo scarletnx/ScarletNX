@@ -797,6 +797,59 @@ static int indirect_rest_cases(GpuChannel* channel, u64 target, u64 indices, u64
     return 0;
 }
 
+/* The runs of direct draws that record.c counts with vk_draw_runs=1 (VkRecRuns): the same indexed draw three times
+   with nothing else between them, then once from another first index, then once with two instances */
+static int draw_runs_case(GpuChannel* channel, u64 target, u64 indices) {
+    const u32 list[12] = {4, 5, 7, 5, 6, 7, 4, 5, 7, 5, 6, 7};
+    const int was_on = g_settings.draw_run_stats;
+    VkRecRuns before, after;
+    u64 drawn, equal[VK_REC_RUN_KEYS], moved[VK_REC_RUN_KEYS], instanced[VK_REC_RUN_KEYS];
+    IndexPixels px;
+    if (!vk_rec_threaded()) return 0;
+    CHECK(!index_buffer(channel, indices, list, 12, 2, ~0u));
+    DrawCall call = {.topology = 4, .indexed = 1, .count = 6, .instances = 1};
+    g_settings.draw_run_stats = 1;
+    vk_lock();
+    rt_clear(channel, target, 4, 4, 0, 1);
+    channel->r3d_dirty = ~0u;
+    mx_draw_state_sync(channel);
+    vk_render_draw(&channel->ds, &call, &channel->owner); /* after the clear: it starts a run of every key */
+    vk_rec_runs(&before);
+    vk_render_draw(&channel->ds, &call, &channel->owner);
+    vk_render_draw(&channel->ds, &call, &channel->owner);
+    vk_rec_runs(&after);
+    for (u32 k = 0; k < VK_REC_RUN_KEYS; k++) equal[k] = after.runs[k] - before.runs[k];
+    drawn = after.draws - before.draws;
+    before = after;
+    call.first = 6; /* the same buffer from another index: the offset alone moved */
+    vk_render_draw(&channel->ds, &call, &channel->owner);
+    vk_rec_runs(&after);
+    for (u32 k = 0; k < VK_REC_RUN_KEYS; k++) moved[k] = after.runs[k] - before.runs[k];
+    before = after;
+    call.instances = 2; /* no multi-draw takes two instance counts */
+    vk_render_draw(&channel->ds, &call, &channel->owner);
+    vk_rec_runs(&after);
+    for (u32 k = 0; k < VK_REC_RUN_KEYS; k++) instanced[k] = after.runs[k] - before.runs[k];
+    CHECK(!index_pixels(target, &px));
+    vk_unlock();
+    g_settings.draw_run_stats = was_on;
+    CHECK(index_all_green(&px));
+    if (drawn != 2 || equal[0] || equal[1] || equal[2])
+        fprintf(stderr,
+                "draw runs: two draws equal to the one before them: %llu draws started %llu, %llu and %llu runs\n",
+                (unsigned long long)drawn, (unsigned long long)equal[0], (unsigned long long)equal[1],
+                (unsigned long long)equal[2]);
+    CHECK(drawn == 2 && !equal[0] && !equal[1] && !equal[2]);
+    if (moved[0] != 1 || moved[1] || moved[2])
+        fprintf(stderr, "draw runs: a draw from another first index started %llu, %llu and %llu runs\n",
+                (unsigned long long)moved[0], (unsigned long long)moved[1], (unsigned long long)moved[2]);
+    CHECK(moved[0] == 1 && !moved[1] && !moved[2]);
+    CHECK(instanced[0] == 1 && instanced[1] == 1 && instanced[2] == 1);
+    puts("draw runs: equal draws in one run, another first index a run of its own only as the draws are, other "
+         "instances a run of every key");
+    return 0;
+}
+
 /* NVN's draw parameters in an indirect draw (DrawCall.params): the game's driver writes each draw's base vertex and
    base instance into constant buffer 0 at 0x640 and 0x644 from the record, on the GPU, and instanced vertex programs
    add the base instance to their instance ID to find their instance's data. nvn's bank 0 holds 0 there for an
@@ -2162,6 +2215,7 @@ static int check_index_draws(void) {
     CHECK(!indirect_made_cases(channel, target, indices, address + 0x16000));
     CHECK(!indirect_quads_cases(channel, target, indices, address + 0x16000));
     CHECK(!indirect_rest_cases(channel, target, indices, address + 0x16000));
+    CHECK(!draw_runs_case(channel, target, indices));
     CHECK(!owned_stream_case(channel, target, colors, address + 0x15000, cpu + 0x15000));
     CHECK(!owned_index_case(channel, target, indices, cpu + 0x14000, address + 0x11000));
     if (g_vk.has_shader_draw_parameters) CHECK(!draw_params_case(channel, target, indices, address));

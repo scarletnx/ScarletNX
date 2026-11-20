@@ -205,6 +205,105 @@ static void rec_commit(void) {
     if (g_pending - g_published >= REC_PUBLISH) publish();
 }
 
+/* Runs of draws (vk_draw_runs=1): whether one Vulkan call could take a direct draw and the one before it, from what
+   the ring took between the two. Nothing at all: a multi-draw as they are. The index buffer bound again at another
+   offset a whole number of indices away: the same once the offset goes in the draw's first index. Descriptor sets,
+   push constants or the offsets of the same vertex buffers too: only once the draws read those by their number. Any
+   other command, another buffer, another kind of draw or other instances ends the run. A binding is compared by
+   value with the last one of its slot, since the renderer binds some again that did not change; the commands that
+   are not bindings are told by their bytes in the ring, which the bindings' bytes do not add up to. Commands for the
+   upload command buffer go through the ring too and end a run here as any other does */
+enum { RUN_INDEX_AT = 1, RUN_BOUND = 2, RUN_OTHER = 4 };
+enum { RUN_SETS = 1, RUN_PUSH, RUN_PUSH_DATA, RUN_OFFSETS, RUN_VERTEX_BUFFERS, RUN_VERTEX_AT };
+static struct {
+    u64 at, known;                       /* g_pending after the last direct draw, and the bindings' bytes since */
+    u32 since;                           /* RUN_ bits: what changed since that draw */
+    u32 kind, instances, first_instance; /* that draw: 1 of vertices, 2 of indices, and its instances */
+    struct {
+        u64 key, value;
+    } last[32]; /* the last value of each kind of binding at each slot */
+    VkBuffer index_buffer;
+    u64 index_at;
+    VkIndexType index_type;
+    u64 length[VK_REC_RUN_KEYS]; /* the draws of the run each key is in */
+    VkRecRuns n;
+} g_runs;
+static u64 run_hash(u64 h, const void* p, u64 size) {
+    const u8* b = p;
+    for (u64 i = 0; i < size; i++) h = (h ^ b[i]) * 0x100000001B3ull;
+    return h;
+}
+/* a binding of kind at slot whose value hashes to value, of bytes bytes in the ring; other: not what it bound last */
+static void run_bound(u32 kind, u32 slot, u64 value, u64 bytes, u32 other) {
+    u64 key = (u64)kind << 32 | slot;
+    u32 i = (kind * 5 + slot) & 31;
+    if (g_runs.last[i].key != key || g_runs.last[i].value != value) g_runs.since |= other;
+    g_runs.last[i].key = key;
+    g_runs.last[i].value = value;
+    g_runs.known += bytes;
+}
+static void run_index(VkBuffer buffer, u64 at, VkIndexType type, u64 bytes) {
+    u64 size = type == VK_INDEX_TYPE_UINT16 ? 2 : type == VK_INDEX_TYPE_UINT32 ? 4 : 1;
+    u64 apart = at > g_runs.index_at ? at - g_runs.index_at : g_runs.index_at - at;
+    if (buffer != g_runs.index_buffer || type != g_runs.index_type || apart % size)
+        g_runs.since |= RUN_OTHER;
+    else if (apart)
+        g_runs.since |= RUN_INDEX_AT;
+    g_runs.index_buffer = buffer;
+    g_runs.index_at = at;
+    g_runs.index_type = type;
+    g_runs.known += bytes;
+}
+/* a direct draw whose packet starts at was in the ring */
+static void run_draw(u32 kind, u32 instances, u32 first_instance, u64 was) {
+    u32 since = g_runs.since;
+    if (was - g_runs.at != g_runs.known || kind != g_runs.kind || instances != g_runs.instances ||
+        first_instance != g_runs.first_instance)
+        since |= RUN_OTHER;
+    const u32 ends[VK_REC_RUN_KEYS] = {RUN_INDEX_AT | RUN_BOUND | RUN_OTHER, RUN_BOUND | RUN_OTHER, RUN_OTHER};
+    g_runs.n.draws++;
+    for (u32 k = 0; k < VK_REC_RUN_KEYS; k++) {
+        if (!g_runs.length[k] || (since & ends[k])) {
+            g_runs.n.runs[k]++;
+            g_runs.length[k] = 0;
+        }
+        if (++g_runs.length[k] > g_runs.n.longest[k]) g_runs.n.longest[k] = g_runs.length[k];
+    }
+    g_runs.at = g_pending;
+    g_runs.known = 0;
+    g_runs.since = 0;
+    g_runs.kind = kind;
+    g_runs.instances = instances;
+    g_runs.first_instance = first_instance;
+}
+void vk_rec_runs(VkRecRuns* runs) { *runs = g_runs.n; }
+void vk_rec_runs_log(void) {
+    static VkRecRuns was;
+    static int said;
+    const VkRecRuns* n = &g_runs.n;
+    if (g_rec <= 0) {
+        if (!said++)
+            LOG("vulkan: vk_draw_runs=1 counts what the recording thread's ring takes: vk_record is 0, and no run "
+                "is counted\n");
+        return;
+    }
+    u64 draws = n->draws - was.draws, runs[VK_REC_RUN_KEYS];
+    double each[VK_REC_RUN_KEYS];
+    for (u32 k = 0; k < VK_REC_RUN_KEYS; k++) {
+        runs[k] = n->runs[k] - was.runs[k];
+        each[k] = runs[k] ? (double)draws / (double)runs[k] : 0;
+    }
+    LOG("vulkan: runs of direct draws in the last 600 presents (vk_draw_runs=1): %llu draws. With nothing between "
+        "two draws: %llu runs, %.2f draws each, the longest %llu. With the index buffer's offset alone: %llu runs, "
+        "%.2f each, the longest %llu. With descriptors, push constants and vertex buffer offsets too: %llu runs, "
+        "%.2f each, the longest %llu\n",
+        (unsigned long long)draws, (unsigned long long)runs[0], each[0], (unsigned long long)n->longest[0],
+        (unsigned long long)runs[1], each[1], (unsigned long long)n->longest[1], (unsigned long long)runs[2], each[2],
+        (unsigned long long)n->longest[2]);
+    for (u32 k = 0; k < VK_REC_RUN_KEYS; k++) g_runs.n.longest[k] = 0;
+    was = g_runs.n;
+}
+
 int vk_rec_sync_until(u64 until) {
     int drained = 1;
     if (g_rec <= 0) return 1;
@@ -647,8 +746,10 @@ void rec_CmdDraw(VkCommandBuffer cb, u32 vertices, u32 instances, u32 first_vert
         vkCmdDraw(cb, vertices, instances, first_vertex, first_instance);
         return;
     }
+    const u64 was = g_pending;
     DrawArgs* x = rec_push(draw_run, sizeof *x);
     *x = (DrawArgs){cb, vertices, instances, first_vertex, first_instance, {g_rec_tag[0], g_rec_tag[1]}, g_rec_src};
+    if (g_settings.draw_run_stats) run_draw(1, instances, first_instance, was);
     rec_commit();
 }
 typedef struct {
@@ -672,9 +773,11 @@ void rec_CmdDrawIndexed(VkCommandBuffer cb, u32 indices, u32 instances, u32 firs
         vkCmdDrawIndexed(cb, indices, instances, first_index, vertex_offset, first_instance);
         return;
     }
+    const u64 was = g_pending;
     DrawIndexedArgs* x = rec_push(draw_indexed_run, sizeof *x);
     *x = (DrawIndexedArgs){cb, indices, instances, first_index, vertex_offset, first_instance,
                            {g_rec_tag[0], g_rec_tag[1]}, g_rec_src};
+    if (g_settings.draw_run_stats) run_draw(2, instances, first_instance, was);
     rec_commit();
 }
 /* an Ounce's mesh draw: groups workgroups in a row (render.c) */
@@ -747,7 +850,27 @@ void rec_CmdDrawIndirect(VkCommandBuffer cb, int indexed, VkBuffer buf, VkDevice
     *x = a;
     rec_commit();
 }
-REC3(CmdBindIndexBuffer, VkBuffer, VkDeviceSize, VkIndexType)
+typedef struct {
+    VkCommandBuffer cb;
+    VkBuffer buffer;
+    VkDeviceSize at;
+    VkIndexType type;
+} IndexBufferArgs;
+static void index_buffer_run(const void* p) {
+    const IndexBufferArgs* x = p;
+    vkCmdBindIndexBuffer(x->cb, x->buffer, x->at, x->type);
+}
+void rec_CmdBindIndexBuffer(VkCommandBuffer cb, VkBuffer buffer, VkDeviceSize at, VkIndexType type) {
+    if (!rec_on(cb)) {
+        vkCmdBindIndexBuffer(cb, buffer, at, type);
+        return;
+    }
+    const u64 was = g_pending;
+    IndexBufferArgs* x = rec_push(index_buffer_run, sizeof *x);
+    *x = (IndexBufferArgs){cb, buffer, at, type};
+    if (g_settings.draw_run_stats) run_index(buffer, at, type, g_pending - was);
+    rec_commit();
+}
 /* generated under other names: the calls go through vk_gpuprof's timing of each dispatch first, and each carries a
    checkpoint so a hanging dispatch (a Xid 109 CTX SWITCH TIMEOUT) is named in vk/owned.c's queue checkpoint dump */
 typedef struct {
@@ -984,10 +1107,14 @@ void rec_CmdPushConstants(VkCommandBuffer cb, VkPipelineLayout layout, VkShaderS
         vkCmdPushConstants(cb, layout, stages, offset, size, data);
         return;
     }
+    const u64 was = g_pending;
     PushArgs* x = rec_push(push_run, REC_AL(sizeof *x) + size);
     *x = (PushArgs){cb, layout, stages, offset, size};
     memcpy((u8*)x + REC_AL(sizeof *x), data, size);
     snx_le32_array((u8*)x + REC_AL(sizeof *x), size / 4);
+    if (g_settings.draw_run_stats)
+        run_bound(RUN_PUSH, offset, run_hash(run_hash(stages, &layout, sizeof layout), data, size), g_pending - was,
+                  RUN_BOUND);
     rec_commit();
 }
 
@@ -1015,10 +1142,13 @@ void rec_CmdPushDataEXT(VkCommandBuffer cb, u32 offset, u32 size, const void* da
         vkCmdPushDataEXT(cb, &info);
         return;
     }
+    const u64 was = g_pending;
     HeapPushArgs* x = rec_push(heap_push_run, REC_AL(sizeof *x) + size);
     *x = (HeapPushArgs){cb, offset, size};
     memcpy((u8*)x + REC_AL(sizeof *x), data, size);
     snx_le32_array((u8*)x + REC_AL(sizeof *x), size / 4);
+    if (g_settings.draw_run_stats)
+        run_bound(RUN_PUSH_DATA, offset, run_hash(size, data, size), g_pending - was, RUN_BOUND);
     rec_commit();
 }
 typedef struct {
@@ -1069,10 +1199,16 @@ void rec_CmdBindDescriptorSets(VkCommandBuffer cb, VkPipelineBindPoint bp, VkPip
         return;
     }
     u64 so = REC_AL(sizeof(SetsArgs)), dof = so + REC_AL(n * sizeof *sets);
+    const u64 was = g_pending;
     SetsArgs* x = rec_push(sets_run, dof + ndyn * sizeof *dyn);
     *x = (SetsArgs){cb, bp, layout, first, n, ndyn};
     memcpy((u8*)x + so, sets, n * sizeof *sets);
     if (ndyn) memcpy((u8*)x + dof, dyn, ndyn * sizeof *dyn);
+    if (g_settings.draw_run_stats && bp == VK_PIPELINE_BIND_POINT_GRAPHICS)
+        run_bound(
+            RUN_SETS, first,
+            run_hash(run_hash(run_hash(n, &layout, sizeof layout), sets, n * sizeof *sets), dyn, ndyn * sizeof *dyn),
+            g_pending - was, RUN_BOUND);
     rec_commit();
 }
 
@@ -1125,8 +1261,13 @@ void rec_CmdSetDescriptorBufferOffsetsBP(VkCommandBuffer cb, VkPipelineBindPoint
         descriptor_offsets_run(&args);
         return;
     }
+    const u64 was = g_pending;
     DescriptorOffsetsArgs* x = rec_push(descriptor_offsets_run, sizeof *x);
     *x = args;
+    if (g_settings.draw_run_stats)
+        run_bound(RUN_OFFSETS, first,
+                  run_hash(run_hash(count, &layout, sizeof layout), args.offsets, sizeof args.offsets), g_pending - was,
+                  RUN_BOUND);
     rec_commit();
 }
 
@@ -1151,6 +1292,7 @@ void rec_CmdBindVertexBuffers2(VkCommandBuffer cb, u32 first, u32 n, const VkBuf
         return;
     }
     u64 h = REC_AL(sizeof(VbArgs)), bn = REC_AL(n * sizeof *bufs), dn = REC_AL(n * sizeof *offs);
+    const u64 was = g_pending;
     VbArgs* x = rec_push(vb_run, h + bn + dn * (1 + !!sizes + !!strides));
     u8* q = (u8*)x + h;
     *x = (VbArgs){cb, first, n, !!sizes, !!strides};
@@ -1158,6 +1300,13 @@ void rec_CmdBindVertexBuffers2(VkCommandBuffer cb, u32 first, u32 n, const VkBuf
     memcpy(q + bn, offs, n * sizeof *offs);
     if (sizes) memcpy(q + bn + dn, sizes, n * sizeof *sizes);
     if (strides) memcpy(q + bn + dn * (1 + !!sizes), strides, n * sizeof *strides);
+    if (g_settings.draw_run_stats) {
+        u64 where = run_hash(n, offs, n * sizeof *offs);
+        if (sizes) where = run_hash(where, sizes, n * sizeof *sizes);
+        if (strides) where = run_hash(where ^ 1, strides, n * sizeof *strides);
+        run_bound(RUN_VERTEX_BUFFERS, first, run_hash(n, bufs, n * sizeof *bufs), 0, RUN_OTHER);
+        run_bound(RUN_VERTEX_AT, first, where, g_pending - was, RUN_BOUND);
+    }
     rec_commit();
 }
 void rec_CmdBindVertexBuffers(VkCommandBuffer cb, u32 first, u32 n, const VkBuffer* bufs, const VkDeviceSize* offs) {

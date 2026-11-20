@@ -1036,6 +1036,15 @@ void rec_CmdBindDescriptorSets(VkCommandBuffer cb, VkPipelineBindPoint bp, VkPip
 /* descriptor sets bound so far (rec_CmdBindDescriptorSets): one bound for any pipeline unbinds the descriptor buffers
    the draws' sets are in (descriptors.c), so a draw after it binds them again */
 u64 vk_rec_set_binds(void);
+/* Runs of direct draws that one Vulkan call could take (record.c), counted with vk_draw_runs=1 since the start: the
+   draws, and for each key the runs they fall in and the longest since the last log. Key 0: nothing recorded between
+   two draws. Key 1: the index buffer's offset alone. Key 2: descriptors, push constants and vertex buffer offsets too */
+#define VK_REC_RUN_KEYS 3
+typedef struct {
+    u64 draws, runs[VK_REC_RUN_KEYS], longest[VK_REC_RUN_KEYS];
+} VkRecRuns;
+void vk_rec_runs(VkRecRuns* runs);
+void vk_rec_runs_log(void); /* the last 600 presents' in the log */
 void rec_CmdBindVertexBuffers2(VkCommandBuffer cb, u32 first, u32 n, const VkBuffer* bufs, const VkDeviceSize* offs,
                                const VkDeviceSize* sizes, const VkDeviceSize* strides);
 void rec_CmdBindVertexBuffers(VkCommandBuffer cb, u32 first, u32 n, const VkBuffer* bufs, const VkDeviceSize* offs);

@@ -901,6 +901,7 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
                 disp_was = g_vk_dispatches;
             }
             vk_render_stats_log();
+            if (g_settings.draw_run_stats) vk_rec_runs_log();
             gmmu_alias_log();
             if (g_vk_depth_apart_draws) {
                 static u64 apart_was, moved_was;
