@@ -682,6 +682,15 @@ static u32 svc_MapProcessMemory(u64 dst_address, u32 process_handle, u64 src_add
 static u32 svc_UnmapProcessMemory(u64 dst_address, u32 process_handle, u64 src_address, u64 size) {
     return svc_unmap_process_memory(dst_address, process_handle, src_address, size);
 }
+static u32 svc_SetProcessMemoryPermission(u32 process_handle, u64 address, u64 size, u32 perm) {
+    return svc_set_process_mem_perm(process_handle, address, size, perm);
+}
+static u32 svc_MapProcessCodeMemory(u32 process_handle, u64 dst_address, u64 src_address, u64 size) {
+    return svc_map_process_code_memory(process_handle, dst_address, src_address, size);
+}
+static u32 svc_UnmapProcessCodeMemory(u32 process_handle, u64 dst_address, u64 src_address, u64 size) {
+    return svc_unmap_process_code_memory(process_handle, dst_address, src_address, size);
+}
 static u32 svc_QueryMemory(u64 out_memory_info, u32* out_page_info, u64 address) {
     *out_page_info = 0; /* no flags */
     return svc_query(out_memory_info, address);

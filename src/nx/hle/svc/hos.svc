@@ -159,12 +159,12 @@ type SecureMonitorArguments 32 64 -
 0x70 stub Result CreatePort(Handle* out_server_handle, Handle* out_client_handle, int32_t max_sessions, bool is_light, Address name);
 0x71 stub Result ManageNamedPort(Handle* out_server_handle, Address name, int32_t max_sessions);
 0x72 stub Result ConnectToPort(Handle* out_handle, Handle port);
-0x73 stub Result SetProcessMemoryPermission(Handle process_handle, uint64_t address, uint64_t size, MemoryPermission perm);
+0x73 Result SetProcessMemoryPermission(Handle process_handle, uint64_t address, uint64_t size, MemoryPermission perm);
 0x74 Result MapProcessMemory(Address dst_address, Handle process_handle, uint64_t src_address, Size size);
 0x75 Result UnmapProcessMemory(Address dst_address, Handle process_handle, uint64_t src_address, Size size);
 0x76 stub Result QueryProcessMemory(Address out_memory_info, PageInfo* out_page_info, Handle process_handle, uint64_t address);
-0x77 stub Result MapProcessCodeMemory(Handle process_handle, uint64_t dst_address, uint64_t src_address, uint64_t size);
-0x78 stub Result UnmapProcessCodeMemory(Handle process_handle, uint64_t dst_address, uint64_t src_address, uint64_t size);
+0x77 Result MapProcessCodeMemory(Handle process_handle, uint64_t dst_address, uint64_t src_address, uint64_t size);
+0x78 Result UnmapProcessCodeMemory(Handle process_handle, uint64_t dst_address, uint64_t src_address, uint64_t size);
 0x79 stub Result CreateProcess(Handle* out_handle, Address parameters, Address caps, int32_t num_caps);
 0x7A stub Result StartProcess(Handle process_handle, int32_t priority, int32_t core_id, uint64_t main_thread_stack_size);
 0x7B stub Result TerminateProcess(Handle process_handle);
