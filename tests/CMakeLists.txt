@@ -2626,6 +2626,12 @@ endif()
 add_test(NAME system_sdl3 COMMAND "${CMAKE_COMMAND}" "-DSRC=${PROJECT_SOURCE_DIR}"
          "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/system-sdl3-test" "-DGENERATOR=${CMAKE_GENERATOR}"
          "-DMAKE=${CMAKE_MAKE_PROGRAM}" -P "${CMAKE_CURRENT_SOURCE_DIR}/system_sdl3_test.cmake")
+# shaderperf's reflection of a module whose spec constant's id is past the id bound (tools/shaderperf/reflect.c)
+add_executable(snx-test-shaderperf-reflect shaderperf_reflect.c "${PROJECT_SOURCE_DIR}/tools/shaderperf/reflect.c")
+snx_test_target(snx-test-shaderperf-reflect gnu23)
+target_include_directories(snx-test-shaderperf-reflect PRIVATE "${PROJECT_SOURCE_DIR}/tools/shaderperf")
+target_link_libraries(snx-test-shaderperf-reflect PRIVATE Vulkan::Headers)
+add_test(NAME shaderperf_reflect COMMAND snx-test-shaderperf-reflect)
 # a cross build's generators run on the machine that builds: a test of one names no emulator of the target
 add_test(NAME host_tools_emulator COMMAND "${CMAKE_COMMAND}" "-DSRC=${PROJECT_SOURCE_DIR}"
          "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/host-tools-emulator-test" "-DGENERATOR=${CMAKE_GENERATOR}"

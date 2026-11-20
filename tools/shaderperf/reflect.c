@@ -619,8 +619,7 @@ bool sr_reflect(const uint32_t* words, size_t size, const char* entry, SrModule*
         }
         if (op == OP_SPEC_CONSTANT || op == OP_SPEC_CONSTANT_TRUE || op == OP_SPEC_CONSTANT_FALSE) {
             uint32_t id = in[2];
-            if (c.ids[id].spec_id == NONE)
-                continue;
+            if (id >= c.bound || c.ids[id].spec_id == NONE) continue;
             out->specs = grow(out->specs, &spec_cap, out->spec_count, sizeof *out->specs);
             SrSpec* s = &out->specs[out->spec_count++];
             memset(s, 0, sizeof *s);
@@ -747,9 +746,10 @@ bool sr_reflect(const uint32_t* words, size_t size, const char* entry, SrModule*
         out->bindings = grow(out->bindings, &bind_cap, out->binding_count, sizeof b);
         out->bindings[out->binding_count++] = b;
     }
-    qsort(out->bindings, out->binding_count, sizeof *out->bindings, cmp_binding);
-    qsort(out->inputs, out->input_count, sizeof *out->inputs, cmp_varying);
-    qsort(out->outputs, out->output_count, sizeof *out->outputs, cmp_varying);
+    /* a module with none of a kind has no array of it, and qsort takes no null one */
+    if (out->binding_count) qsort(out->bindings, out->binding_count, sizeof *out->bindings, cmp_binding);
+    if (out->input_count) qsort(out->inputs, out->input_count, sizeof *out->inputs, cmp_varying);
+    if (out->output_count) qsort(out->outputs, out->output_count, sizeof *out->outputs, cmp_varying);
     free(c.ids);
     free(c.mdec);
     free(c.mname);
