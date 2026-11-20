@@ -80,6 +80,8 @@ keeps audits and measurements as they were taken.
     unified memory, and its phases
   - [ASTC compute uploads](layers/gpu/astc.md)
   - [Block linear surfaces and texture conversions on the GPU](layers/gpu/blocklinear.md)
+  - [The GPU's compute path](layers/gpu/vulkan-compute.md): Vulkan compute and cooperative matrices instead of a
+    vendor's kernel language, and how a pass proves itself
   - [glslc](layers/gpu/glslc.md): GLSL ES into SPIR-V, for the backends that run OpenGL ES programs on Vulkan
 - Video (`layers/media/`)
   - [VIC composition on the GPU](layers/media/vic.md)
