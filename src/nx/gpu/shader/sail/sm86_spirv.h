@@ -10,6 +10,7 @@ struct SgG {
     const Sm86Insn* in;
     const Sm86Insn* at[4]; /* a fusion's instructions, at[0] the one being translated */
     int uniform;
+    u32 address; /* GlobalAddress's and StackAddress's address */
 };
 static SgSpv* sg_spv(SgG* g) { return &g->spv; }
 [[maybe_unused]] static uint32_t sg86_t_u64(SgG* g) { return u64_type(g->c); }
@@ -173,3 +174,135 @@ static SgSpv* sg_spv(SgG* g) { return &g->spv; }
     /* the device scope, for every scope: acquire and release of buffer, workgroup and image memory */
     spv_emit_memory_barrier(&g->c->e, g->c->t_u32, SPV_SCOPE_DEVICE, 0x8 | 0x40 | 0x100 | 0x800);
 }
+
+/* ---- memory, attributes, textures, surfaces, the tensor cores: the translator's own ---- */
+[[maybe_unused]] static SgV sg_U_read(SgG* g, int64_t r) { return sg_v(urd(g->c, (u32)r), SGT_U32); }
+[[maybe_unused]] static int sg_IsRegZero(SgG* g, int64_t s) {
+    const Sm86Src* x = sg86_src(g, s);
+    return x->kind == SM86_SRC_REG && x->reg == SM86_RZ;
+}
+[[maybe_unused]] static int64_t sg_AtomicOpcode(SgG* g, int64_t type, int64_t how) {
+    return (void)g, atomic_opcode((u32)type, (u32)how);
+}
+[[maybe_unused]] static int sg_AddressFromMemory(SgG* g) {
+    Ctx* c = g->c;
+    return !c->addr_key[c->cur] && c->addr_key[2 * (c->n + 1) + c->cur];
+}
+[[maybe_unused]] static void sg_GlobalDynamic(SgG* g, int64_t kind, int64_t opcode, int64_t fadd) {
+    global_dynamic(g->c, g->in, (int)kind, (u32)opcode, (int)fadd);
+}
+[[maybe_unused]] static int64_t sg_GlobalAddress(SgG* g, int64_t uniform_form, int64_t write) {
+    return global_address(g->c, g->in, (int)uniform_form, (int)write, &g->address);
+}
+[[maybe_unused]] static void sg_StackAddress(SgG* g, int64_t ur) { g->address = stack_address(g->c, g->in, (u32)ur); }
+[[maybe_unused]] static SgV sg_Address(SgG* g) { return sg_v(g->address, SGT_U32); }
+[[maybe_unused]] static void sg_MarkRead(SgG* g) { mark_read(g->c, g->c->gkey); }
+[[maybe_unused]] static void sg_MarkWritten(SgG* g, int64_t bytes) { mark_written(g->c, g->c->gkey, g->address, (u32)bytes); }
+[[maybe_unused]] static SgV sg_AtomicU32(SgG* g, int64_t opcode, int64_t buffer, SgV data) {
+    Ctx* c = g->c;
+    u32 ptr = mem_ptr(c, (u32)buffer, g->address, 0);
+    return sg_v(spv_emit_atomic_u32(&c->e, c->t_u32, (u32)opcode, ptr, sg_u32(g, data)), SGT_U32);
+}
+[[maybe_unused]] static SgV sg_AtomicFAdd(SgG* g, int64_t buffer, SgV data) {
+    return sg_v(atomic_fadd(g->c, (u32)buffer, g->address, sg_u32(g, data)), SGT_U32);
+}
+[[maybe_unused]] static SgV sg_AtomicShared(SgG* g, int64_t opcode, SgV data) {
+    Ctx* c = g->c;
+    u32 ptr = mem_ptr(c, 0, g->address, 0);
+    return sg_v(spv_emit_atomic_shared_u32(&c->e, c->t_u32, (u32)opcode, ptr, sg_u32(g, data)), SGT_U32);
+}
+[[maybe_unused]] static void sg_SharedVar(SgG* g) { shared_var(g->c); }
+[[maybe_unused]] static void sg_MemLoad(SgG* g, int64_t buffer, int64_t type, int64_t d) {
+    mem_load(g->c, (u32)buffer, g->address, (u32)type, (u32)d, 0);
+}
+[[maybe_unused]] static void sg_MemStore(SgG* g, int64_t buffer, int64_t type, int64_t data) {
+    mem_store(g->c, (u32)buffer, g->address, (u32)type, (u32)data);
+}
+[[maybe_unused]] static int64_t sg_MEM_LOCAL(SgG* g) { return (void)g, MEM_LOCAL; }
+[[maybe_unused]] static SgV sg_CbufLoad(SgG* g, int64_t bank, int64_t off) {
+    return sg_v(cbuf_load(g->c, (u32)bank, (u32)off, 0), SGT_U32);
+}
+[[maybe_unused]] static SgV sg_CbufLoadAt(SgG* g, int64_t bank, int64_t off, SgV index) {
+    return sg_v(cbuf_load(g->c, (u32)bank, (u32)off, sg_u32(g, index)), SGT_U32);
+}
+[[maybe_unused]] static SgV sg_CbufSubword(SgG* g, int64_t bank, int64_t off, int64_t type) {
+    return sg_v(cbuf_subword(g->c, (u32)bank, (u32)off, 0, (u32)type), SGT_U32);
+}
+[[maybe_unused]] static SgV sg_CbufSubwordAt(SgG* g, int64_t bank, int64_t off, SgV index, int64_t type) {
+    return sg_v(cbuf_subword(g->c, (u32)bank, (u32)off, sg_u32(g, index), (u32)type), SGT_U32);
+}
+[[maybe_unused]] static int sg_HandleIndexed(SgG* g) { return g->c->handle && g->c->handle[g->c->cur].var; }
+/* the element of the table of handles the LDC reads */
+[[maybe_unused]] static void sg_NoteHandleIndex(SgG* g, SgV index, int64_t off) {
+    Ctx* c = g->c;
+    const TexHandle* h = &c->handle[c->cur];
+    u32 at = spv_emit_binary(&c->e, SPV_OP_I_SUB, c->t_u32, spv_emit_iadd_u32(&c->e, c->t_u32, sg_u32(g, index), cu(c, (u32)off)),
+                             cu(c, h->first));
+    spv_emit_store(&c->e, h->var, op2(c, SPV_OP_U_DIV, c->t_u32, at, cu(c, h->stride)));
+}
+[[maybe_unused]] static SgV sg_AttrLoad(SgG* g, int64_t addr) { return sg_v(attr_load(g->c, (u32)addr), SGT_U32); }
+[[maybe_unused]] static SgV sg_GsAttrLoad(SgG* g, int64_t addr, SgV vertex) {
+    return sg_v(gs_attr_load(g->c, (u32)addr, sg_u32(g, vertex)), SGT_U32);
+}
+[[maybe_unused]] static void sg_AttrStore(SgG* g, int64_t addr, SgV v) { attr_store(g->c, (u32)addr, sg_u32(g, v)); }
+[[maybe_unused]] static SgV sg_FragCoord(SgG* g, int64_t k) { return sg_fv(frag_coord(g->c, (u32)k)); }
+[[maybe_unused]] static SgV sg_IpaInput(SgG* g, int64_t i, int64_t k, int64_t loc, int64_t freq) {
+    return sg_fv(ipa_input(g->c, (u32)i, (u32)k, (u32)loc, (u32)freq));
+}
+[[maybe_unused]] static SgV sg_FrontFacing(SgG* g) {
+    Ctx* c = g->c;
+    if (!c->front_facing) {
+        c->front_facing = spv_emit_builtin_input_u32(&c->e, c->t_bool, SPV_BUILT_IN_FRONT_FACING);
+        add_interface(c, c->front_facing);
+    }
+    return sg_v(spv_emit_load(&c->e, c->t_bool, c->front_facing), SGT_BOOL);
+}
+[[maybe_unused]] static SgV sg_PointCoord(SgG* g, int64_t k) {
+    Ctx* c = g->c;
+    if (!c->point_coord) {
+        c->point_coord = spv_emit_interface_variable(&c->e, SPV_STORAGE_INPUT, c->t_v2f, c->t_u32, 0, 16, 0, 0);
+        add_interface(c, c->point_coord);
+    }
+    return sg_fv(spv_emit_vec4_extract(&c->e, c->t_f32, spv_emit_load(&c->e, c->t_v2f, c->point_coord), (u32)k));
+}
+/* the primitive's number with no geometry stage, or after the varying pass's (which writes it); a mesh program writes
+   none, so a mesh draw with this program is refused at its link. The builtin needs the Geometry capability in a
+   fragment program */
+[[maybe_unused]] static SgV sg_PrimitiveId(SgG* g) {
+    Ctx* c = g->c;
+    if (!c->primitive_id) {
+        c->si->reads_primitive_id = 1;
+        c->primitive_id = spv_emit_builtin_input_u32(&c->e, c->t_u32, SPV_BUILT_IN_PRIMITIVE_ID);
+        spv_emit_flat(&c->e, c->primitive_id);
+        spv_emit_capability(&c->e, SPV_CAPABILITY_GEOMETRY);
+        add_interface(c, c->primitive_id);
+    }
+    return sg_v(spv_emit_load(&c->e, c->t_u32, c->primitive_id), SGT_U32);
+}
+[[maybe_unused]] static int64_t sg_LegacyAddress(SgG* g, int64_t addr) {
+    (void)g;
+    return shader_legacy_group((u32)addr) >= 0 ? shader_legacy_address((u32)addr) : addr;
+}
+[[maybe_unused]] static int sg_GeometryOk(SgG* g) { return (void)g, g_spirv_translate.geometry != 0; }
+[[maybe_unused]] static int sg_ImapReads(SgG* g, int64_t i, int64_t k) {
+    return (g->c->sph[6 + i / 4] >> ((i % 4) * 8 + k * 2)) & 3;
+}
+[[maybe_unused]] static int sg_HasHandleSlot(SgG* g) { return g->c->handle && g->c->handle[g->c->cur].slot; }
+[[maybe_unused]] static void sg_Texture(SgG* g) { texture(g->c, g->in); }
+[[maybe_unused]] static void sg_TextureGrad(SgG* g) { texture_grad(g->c, g->in); }
+[[maybe_unused]] static void sg_TexelFetch(SgG* g) { texel_fetch(g->c, g->in); }
+[[maybe_unused]] static void sg_TextureQuery(SgG* g) { texture_query(g->c, g->in); }
+[[maybe_unused]] static void sg_UniformHandle(SgG* g) { uniform_handle(g->c, g->in); }
+[[maybe_unused]] static void sg_Surface(SgG* g) { surface(g->c, g->in); }
+[[maybe_unused]] static void sg_Hmma(SgG* g) { hmma(g->c, g->in, NULL, NULL); }
+[[maybe_unused]] static void sg_Ldsm(SgG* g) { ldsm(g->c, g->in); }
+[[maybe_unused]] static void sg_FusedLdsmHmma(SgG* g) { fused_ldsm_hmma(g->c, g->in); }
+[[maybe_unused]] static void sg_Movm(SgG* g) { movm(g->c, g->in); }
+[[maybe_unused]] static void sg_Isbe(SgG* g) { isbe(g->c, g->in); }
+[[maybe_unused]] static void sg_Demote(SgG* g) {
+    g->c->si->has_discard = 1; /* the renderer tests depth before the program only for one that keeps its pixels */
+    coop_demote(g->c);
+}
+[[maybe_unused]] static void sg_ControlBarrier(SgG* g) { spv_emit_control_barrier(&g->c->e, g->c->t_u32); }
+[[maybe_unused]] static SgV sg_NoContract2(SgG* g, SgV v) { return sg_vt(nocontract(g->c, v.id), v.ty); }
+[[maybe_unused]] static SgV sg_SumToOdd(SgG* g, SgV p, SgV q) { return sg_vt(sum_to_odd(g->c, p.id, q.id), p.ty); }
