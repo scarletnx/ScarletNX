@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+# SM53's attributes and varyings (sm53_io.sail), which were emit_io.c's emit_io
+static Between InVertices OutVertices ClipUsed HasPointSize HasClip HasLayerOutput HasLayerInput HasInput
+static AttrPrivate PointSizeUsed StreamMask XfbOn PositionFix NeedsScale SphImapAny IpaInterpolation IpaPosition
+static PvMask HasFragcoord XfbCount XfbStream XfbLayout HasCapture HasOutputAttr HasPosition HasViewportOutput
+op ALD O_ALD
+op AST O_AST
+op OUT O_OUT_R O_OUT_C O_OUT_I
+op AL2P O_AL2P
+op ISBERD O_ISBERD
+op IPA O_IPA
+op PIXLD O_PIXLD
