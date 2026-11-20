@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+# SM53's constant buffer, local, shared and global memory instructions (sm53_memory.sail), which were emit_memory.c's
+# emit_memory
+static TextureCount TexIndexedBy TexIndexShift GbAt GbufBank GbufOffset LocalWords SharedWords SharedAtomicOpcode
+static GlobalAtomicOpcode
+op LDC O_LDC
+op ATOMS O_ATOMS
+op LDS O_LDS O_STS
+op LDL O_LDL O_STL
+op LDG O_LDG O_STG
+op ATOM_CAS O_ATOM_CAS
+op ATOMS_CAS O_ATOMS_CAS
+op RED O_RED O_ATOM

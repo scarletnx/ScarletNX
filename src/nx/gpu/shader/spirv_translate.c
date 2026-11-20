@@ -3360,7 +3360,6 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
         if (!sm53_sail_emit(&tr, i, w, op, d, a, b)) switch (op_family(op)) {
             case FAM_INT: emit_int(&tr, i, w, op, d, a, b); break;
             case FAM_FLOAT: emit_float(&tr, i, w, op, d, a, b); break;
-            case FAM_MEMORY: emit_memory(&tr, i, w, op, d, a, b); break;
             case FAM_TEXTURE: emit_texture(&tr, i, w, op, d, a, b); break;
         }
         /* no texture is sparse, so every texel a fetch reads is resident */
