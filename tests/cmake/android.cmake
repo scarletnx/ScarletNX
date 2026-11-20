@@ -97,6 +97,18 @@ if(BUILD_TESTING)
     set_target_properties(snx-test-android-arm32-jni-copy PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON)
     target_compile_options(snx-test-android-arm32-jni-copy PRIVATE -UNDEBUG)
     add_test(NAME android_arm32_jni_copy COMMAND snx-test-android-arm32-jni-copy)
+    # GLES 1.1's samplers, one for each pair of a texture's filters and wraps: hle_gles.c included for its static,
+    # vkCreateSampler stood in for
+    add_executable(snx-test-android-gles1-samplers "${PROJECT_SOURCE_DIR}/tests/android_gles1_samplers.c")
+    if(APPLE)
+        target_link_libraries(snx-test-android-gles1-samplers PRIVATE snx_android_program snx_android_bridge)
+    else()
+        target_link_libraries(snx-test-android-gles1-samplers PRIVATE
+                              "$<LINK_GROUP:RESCAN,snx_android_program,snx_android_bridge>")
+    endif()
+    set_target_properties(snx-test-android-gles1-samplers PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON)
+    target_compile_options(snx-test-android-gles1-samplers PRIVATE -UNDEBUG)
+    add_test(NAME android_gles1_samplers COMMAND snx-test-android-gles1-samplers)
     # the bridge's start where the LLVM backend cannot target the host, snx_recompiler_new wrapped at link time; and
     # a lookup in the linker's libraries while another thread's load is held in its read, plat_pread_fd wrapped
     if(CMAKE_SYSTEM_NAME MATCHES "^(Linux|FreeBSD)$")
@@ -179,6 +191,7 @@ if(COMMAND snx_sanitizer_path) # tests/CMakeLists.txt: this folder's tests
     snx_test_sanitize(snx-test-bionic-sync snx-test-android-image snx-test-android-host-anon snx-test-android-gles2
                       snx-test-android-inputs snx-test-android-bionic snx-test-android-arm32 snx-test-android-dex
                       snx-test-android-bridge-start snx-test-android-audio snx-test-android-gles1
-                      snx-test-android-linker-lock snx-test-android-arm32-jni-copy)
+                      snx-test-android-linker-lock snx-test-android-arm32-jni-copy
+                      snx-test-android-gles1-samplers)
     snx_sanitizer_path()
 endif()
