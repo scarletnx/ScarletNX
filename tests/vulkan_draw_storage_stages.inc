@@ -30,7 +30,19 @@ static int check_draw_storage_stages(void) {
     read.b[ST_GS][0] = (VkDrawGbuf){.addr = gva, .size = 256};
     vk_lock();
     CHECK(vk_draw_storage_any(&read) && vk_buf_draw_has_alias(&read) == 0);
+    /* with nothing aliased, every stage of every draw of the frame binds one map, where the draw before bound it: a
+       map of its own for each draw gave each a descriptor set of its own. An aliased draw's map stays its own */
+    VkDrawStorage next = read;
+    next.n[ST_VS] = 1;
+    next.b[ST_VS][0] = (VkDrawGbuf){.addr = gva + 0x2000, .size = 64};
+    CHECK(vk_buf_draw_prepare(&read) && vk_buf_draw_prepare(&next));
+    CHECK(read.map_buf[ST_GS] && read.map_size[ST_GS] == 48 * 4 && !read.b[ST_GS][0].aliased);
+    CHECK(next.map_buf[ST_GS] == read.map_buf[ST_GS] && next.map_off[ST_GS] == read.map_off[ST_GS]);
+    CHECK(next.map_buf[ST_VS] == read.map_buf[ST_GS] && next.map_off[ST_VS] == read.map_off[ST_GS] &&
+          next.map_size[ST_VS] == 48 * 4);
+    CHECK(draw.map_buf[ST_GS] != read.map_buf[ST_GS] || draw.map_off[ST_GS] != read.map_off[ST_GS]);
     vk_unlock();
-    printf("draw storage: a geometry stage's writable global memory aliases the vertex stage's, and is prepared\n");
+    printf("draw storage: a geometry stage's writable global memory aliases the vertex stage's, and is prepared; draws "
+           "with nothing aliased share the frame's map\n");
     return 0;
 }
