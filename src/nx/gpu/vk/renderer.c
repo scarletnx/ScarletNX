@@ -840,15 +840,16 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
             }
             stats_frame(now_ns, &gpu);
         }
-        { /* the caches of earlier runs found empty, said over the game once: the frames to come wait for the work */
+        { /* the shader cache of earlier runs found empty, and the BC7 cache, which starts empty in every run where
+             it runs: said over the game once, as the frames to come wait for the work */
             static int cold_said;
             if (!cold_said) {
-                const int shaders = vk_pipeline_cache_cold(),
-                          textures = 0; /* the BC7 cache starts empty in every run */
+                const int shaders = vk_pipeline_cache_cold(), textures = vk_bc7_cache_max() != 0;
                 if ((cold_said = overlay_cold_cache(shaders, textures)))
                     LOG("vulkan: %s%s%s: \"%s\" over the game\n",
                         shaders ? "the shader cache started empty (no shader or pipeline of an earlier run)" : "",
-                        shaders && textures ? ", and " : "", textures ? "the BC7 cache started empty" : "",
+                        shaders && textures ? ", and " : "",
+                        textures ? "the BC7 cache starts empty, as in every run" : "",
                         overlay_cold_cache_words(shaders, textures));
             }
         }
