@@ -997,7 +997,7 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
                         "and it took %llu new; its file holds %llu MB (started over %llu times at %llu MB)\n",
                         (unsigned long long)bc7_hits, (unsigned long long)vk_astc_bc7_copies(),
                         (unsigned long long)cache_stored, (unsigned long long)(cache_file >> 20),
-                        (unsigned long long)cache_restarts, (unsigned long long)(VK_BC7_CACHE_MAX >> 20));
+                        (unsigned long long)cache_restarts, (unsigned long long)(vk_bc7_cache_max() >> 20));
                 u64 cache_late, cache_skipped, cache_unkept;
                 vk_bc7_cache_late(&cache_late, &cache_skipped, &cache_unkept);
                 if (cache_late || cache_skipped || cache_unkept)

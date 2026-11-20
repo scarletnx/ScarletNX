@@ -387,7 +387,7 @@ void vk_astc_cache_open(const char* path) {
        than its own 9, because the landing that would have stored them in the old file had not come yet */
     for (u32 i = 0; i < g_astc.ncaptures; i++) g_astc.captures[i].sub = 0;
     g_astc.captured = 0;
-    vk_bc7_cache_open(path, version, VK_BC7_CACHE_MAX);
+    vk_bc7_cache_open(path, version, (u64)g_settings.bc7_cache_limit << 30);
 }
 
 /* the last submission vk_astc_frame_done had: what the background waits for is done up to it */

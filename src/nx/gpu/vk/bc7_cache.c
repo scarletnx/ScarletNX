@@ -998,6 +998,7 @@ void vk_bc7_cache_put(const u64 key[2], const u8* p, u64 size) {
     io_queue_put(w);
 }
 
+u64 vk_bc7_cache_max(void) { return g_bc7_cache.max; }
 void vk_bc7_cache_stats(u64* hits, u64* stored, u64* restarts, u64* bytes) {
     *hits = g_bc7_cache.hits + atomic_load_explicit(&g_bc7_cache.rd.hits, memory_order_relaxed);
     *stored = g_bc7_cache.stored;
