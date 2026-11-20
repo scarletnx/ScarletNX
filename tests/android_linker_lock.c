@@ -2,7 +2,8 @@
    Copyright 2026 the ScarletNX contributors */
 /* The bridge's linker (src/android/bridge/linker.c) with two threads: a lookup in the libraries waits for a load
    another thread is in, which holds the group from its first look at it to its last constructor, as bionic's dlopen
-   does. The load is held where it reads its library's header (plat_pread_fd, wrapped at link time) while a second
+   does. The load is held where it reads its library's header (libc's pread, wrapped at link time: under ThinLTO
+   plat_pread_fd is bitcode the link can inline into the load, past the wrap, and the load never waited) while a second
    thread asks for a symbol: the lookup has not answered a third of a second later, and answers once the load is let
    go. Without the group's lock on the lookup it walked the libraries while the load changed them */
 #include "android/bridge/linker.h"
@@ -14,6 +15,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
+#include <unistd.h>
 
 static struct {
     pthread_mutex_t lock;
@@ -21,8 +23,8 @@ static struct {
     int hold, held, looked_up; /* under lock: the load is to wait in its read, it waits there, the lookup answered */
 } g_test = {PTHREAD_MUTEX_INITIALIZER, PTHREAD_COND_INITIALIZER, 0, 0, 0};
 
-int64_t __real_plat_pread_fd(int fd, void* buffer, uint64_t size, uint64_t offset);
-int64_t __wrap_plat_pread_fd(int fd, void* buffer, uint64_t size, uint64_t offset) {
+ssize_t __real_pread(int fd, void* buffer, size_t size, off_t offset);
+ssize_t __wrap_pread(int fd, void* buffer, size_t size, off_t offset) {
     pthread_mutex_lock(&g_test.lock);
     if (g_test.hold) {
         g_test.held = 1;
@@ -30,7 +32,7 @@ int64_t __wrap_plat_pread_fd(int fd, void* buffer, uint64_t size, uint64_t offse
         while (g_test.hold) pthread_cond_wait(&g_test.changed, &g_test.lock);
     }
     pthread_mutex_unlock(&g_test.lock);
-    return __real_plat_pread_fd(fd, buffer, size, offset);
+    return __real_pread(fd, buffer, size, offset);
 }
 
 static void* load(void* path) {
