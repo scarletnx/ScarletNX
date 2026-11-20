@@ -3438,6 +3438,7 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
     memcpy(next.chosen_why, chosen_why, sizeof next.chosen_why);
     if (has_flow && !structure) memcpy(next.flow_why, flow_why, sizeof next.flow_why);
     next.flow_base = si->flow_base;
+    next.cb_window = si->cb_window; /* told as the push block was made: the renderer places the windows by it */
     next.advanced_blend = si->advanced_blend;
     next.advanced_blend_mask = si->advanced_blend_mask;
     next.coverage_to_color = si->coverage_to_color;
