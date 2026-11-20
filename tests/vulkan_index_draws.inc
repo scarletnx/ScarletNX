@@ -641,11 +641,13 @@ static int indirect_quads_cases(GpuChannel* channel, u64 target, u64 indices, u6
     return 0;
 }
 
-/* What indirect draws of quads left out at first: several records (stride bytes apart, the bytes between them not
-   the draw's), records under a count buffer, and a record past 65536 quads. A red quad's record before the green
-   one's draws green, and the other order red, so both records and their order show; under a count of one only the
-   first draws. The long cases fill guest memory of their own (INDIRECT_BIG, its host bytes clear of the other
-   checks'): 65537 quads of which the last alone is green, as 16-bit indices and as vertices of two streams */
+/* What indirect draws of quads and of converted indices left out at first: several records (stride bytes apart, the
+   bytes between them not the draw's), records under a count buffer, a record past 65536 quads, and an index buffer
+   past 16,777,216 indices. A red quad's record before the green one's draws green, and the other order red, so both
+   records and their order show; under a count of one only the first draws. The long cases fill guest memory of
+   their own (INDIRECT_BIG, its host bytes clear of the other checks'): 65537 quads of which the last alone is green,
+   as 16-bit indices and as vertices of two streams, and 8-bit indices whose only triangles are past index
+   16,777,216, widened */
 #define INDIRECT_BIG      0x47a000000ull
 #define INDIRECT_BIG_CPU  (HEAP_BASE + 0x33000000)
 #define INDIRECT_BIG_SIZE 0x2000000ull
@@ -721,8 +723,10 @@ static int indirect_rest_cases(GpuChannel* channel, u64 target, u64 indices, u64
     }
     /* 65537 quads of 16-bit indices in one record: the red quad 65536 times, then the green one */
     const u32 many = 65537, vertices = many * 4;
-    const u64 big_indices = INDIRECT_BIG, big_positions = INDIRECT_BIG + 0x400000, big_colors = INDIRECT_BIG + 0x900000;
-    u8* bytes = malloc(16 * (size_t)vertices);
+    const u64 big_indices = INDIRECT_BIG, big_positions = INDIRECT_BIG + 0x400000, big_colors = INDIRECT_BIG + 0x900000,
+              long_indices = INDIRECT_BIG + 0xE00000;
+    const u32 long_first = (1u << 24) + 2, long_count = long_first + 6;
+    u8* bytes = malloc(long_count);
     CHECK(bytes);
     CHECK(mem_map(INDIRECT_BIG_CPU, INDIRECT_BIG_SIZE, MS_NORMAL, PERM_RW) == 0);
     gmmu_map(INDIRECT_BIG, INDIRECT_BIG_CPU, INDIRECT_BIG_SIZE);
@@ -768,9 +772,28 @@ static int indirect_rest_cases(GpuChannel* channel, u64 target, u64 indices, u64
     if (!index_all_green(&px))
         fprintf(stderr, "indirect quads, %u of vertices in a record: %u green, %u red\n", many, px.green, px.red);
     CHECK(index_all_green(&px));
+    /* 8-bit indices widened, the green quad's two triangles from index 16,777,218 on and index 0 before them */
+    const u8 list[6] = {4, 5, 7, 5, 6, 7};
+    const int had8 = g_vk.has_index8;
+    memset(bytes, 0, long_first);
+    memcpy(bytes + long_first, list, 6);
+    CHECK(!gmem_write(long_indices, bytes, long_count));
     free(bytes);
+    index_registers(channel, long_indices, long_count, 1);
+    const u32 far_list[5] = {6, 1, long_first, 0, 0};
+    CHECK(!put_words(args, far_list, 5));
+    call = (DrawCall){
+        .topology = 4, .indexed = 1, .count = 1, .instances = 1, .indirect = args, .draw_count = 1, .stride = 20};
+    g_vk.has_index8 = 0;
+    CHECK(!index_draw(channel, target, &call, &px));
+    g_vk.has_index8 = had8;
+    if (!index_all_green(&px))
+        fprintf(stderr, "indirect list of widened 8-bit indices from index %u: %u green, %u red\n", long_first,
+                px.green, px.red);
+    CHECK(index_all_green(&px));
     CHECK(!index_buffer(channel, indices, list0, 6, 2, ~0u)); /* as indirect_cases left it */
-    puts("indirect draws: quads of several records and under a count, and 65537 quads of a record");
+    puts("indirect draws: quads of several records and under a count, 65537 quads of a record, and 8-bit indices past "
+         "16,777,216 widened");
     return 0;
 }
 

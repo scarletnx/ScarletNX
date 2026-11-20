@@ -5738,21 +5738,32 @@ static int indirect_indices_made(const DrawCall* dc, const DsIndex* ix, int rest
     u32 ri = ix->restart_index & ones;
     u64 len = ix->end >= ix->addr ? ix->end - ix->addr + 1 : 0, n = len / isz;
     if (!n || (ix->addr & (isz - 1))) return 0;
-    if (n > (1u << 24)) {
-        LOG_LIMIT(1, "vulkan: an indirect draw's index buffer of %llu indices is past the %u made into others\n",
-                  (unsigned long long)n, 1u << 24);
+    /* what texconv's 32-bit counts and offsets reach: an output of 4 GiB */
+    if (n > (isz == 4 ? 0x3FFFFFFFu : 0x7FFFFFFFu)) {
+        LOG_LIMIT(1,
+                  "vulkan: an indirect draw's index buffer of %llu indices of %u bytes is past the %u made into "
+                  "others\n",
+                  (unsigned long long)n, isz, isz == 4 ? 0x3FFFFFFFu : 0x7FFFFFFFu);
         return 0;
     }
+    int made;
+    u32 words = isz == 4 ? (u32)n : (u32)((n + 1) / 2);
     if (isz == 1) { /* widened to 16 bits, the restart index (when on, whatever the topology) becoming 0xFFFF */
         *type = VK_INDEX_TYPE_UINT16;
-        return index_convert(dc, 0, ix->addr, 1, 0, (u32)n, TC_INDEX_WIDEN8, ix->restart != 0, ri, (u32)((n + 1) / 2),
-                             (n + 1) / 2 * 4, buf, off);
+        made = index_convert(dc, 0, ix->addr, 1, 0, (u32)n, TC_INDEX_WIDEN8, ix->restart != 0, ri, words,
+                             (u64)words * 4, buf, off);
+    } else {
+        if (!(ix->restart && restart && ri != ones)) return 0;
+        *type = isz == 2 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32;
+        made = index_convert(dc, 0, ix->addr, isz, 0, (u32)n, isz == 2 ? TC_INDEX_RESTART16 : TC_INDEX_RESTART32, 0, ri,
+                             words, (u64)words * 4, buf, off);
     }
-    if (!(ix->restart && restart && ri != ones)) return 0;
-    u32 words = isz == 2 ? (u32)((n + 1) / 2) : (u32)n;
-    *type = isz == 2 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32;
-    return index_convert(dc, 0, ix->addr, isz, 0, (u32)n, isz == 2 ? TC_INDEX_RESTART16 : TC_INDEX_RESTART32, 0, ri,
-                         words, (u64)words * 4, buf, off);
+    if (!made)
+        LOG_LIMIT(1,
+                  "vulkan: an indirect draw's index buffer of %llu indices of %u bytes couldn't be made into "
+                  "others (%llu bytes)\n",
+                  (unsigned long long)n, isz, (unsigned long long)words * 4);
+    return made;
 }
 /* An indirect draw of quads: its records made the indexed records of their triangles on the GPU (vk_indirect_quads),
    since the counts that say how many are there; as many records as the draw may take (a count buffer cuts them at
