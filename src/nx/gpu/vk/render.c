@@ -5032,11 +5032,12 @@ static int draw_shaders(const DsState* ds, u32 topology, int mesh, DrawShaders* 
     return 1;
 }
 /* The varying pass of a draw with shaders sh (ShaderInfo.varying, the fragment program's key): none where the host
-   interpolates as the console does (g_vk.host_varying: NVIDIA's driver, which Eden leaves alone too). A pass needs the fragment program
-   straight after the vertex program, whose position is the rasterizer's as written (no swizzle the program applies,
-   the viewport transform on) in viewport 0, and triangles drawn filled. The per-vertex pass (per_vertex: the draw may
-   take it) is for a draw of quads, the game's own topology, that culls no face, and captures nothing: the huge
-   clipped primitives one game draws its sea of clouds and its sky with. Eden's rule (PR 4575, vk_pipeline_cache.cpp):
+   interpolates as the console does (g_vk.host_varying: NVIDIA's driver, which Eden leaves alone too). A pass needs
+   the fragment program straight after the vertex program, whose position is the rasterizer's as written (no swizzle
+   the program applies, the viewport transform on) in viewport 0, and triangles drawn filled. The per-vertex pass
+   (per_vertex: the draw may take it) is for a draw of quads, the game's own topology, that culls no face, and
+   captures nothing: the huge clipped primitives one game draws its sea of clouds and its sky with. Eden's rule (PR
+   4575, vk_pipeline_cache.cpp):
    on every draw the pass cost two other games 4 and 7 points of GPU time for nothing visible. The position goes in
    the generic after the last one the two programs use, and the position inputs stay the position pass's. Every other
    draw takes the position pass, and so does a quad draw the device can do no better for */

@@ -1817,9 +1817,10 @@ static bool choose_device(SnxVkChoice* c, void* user) {
     }
     f12.vulkanMemoryModel = f12.vulkanMemoryModelDeviceScope = g_spirv_translate.hmma_coop != 0;
     /* HMMA off the matrix unit, by the rules: pairs of lanes with subgroups of 32 where the extension bans prefer
-       them (OpGroupNonUniformShuffleXor), and A and B through shared memory where the driver loops for a shuffle whose index differs
-       between lanes, which no feature or property tells, so the table does. hmma_mode settles the way before the
-       first translation (vk_hmma_pick), Auto by the bench, keeping the rules' where it cannot run */
+       them (OpGroupNonUniformShuffleXor), and A and B through shared memory where the driver loops for a shuffle
+       whose index differs between lanes, which no feature or property tells, so the table does. hmma_mode settles
+       the way before the first translation (vk_hmma_pick), Auto by the bench, keeping the rules' where it cannot
+       run */
     int compute_subgroups = (g_vk_subgroup_stages & VK_SHADER_STAGE_COMPUTE_BIT) != 0;
     g_vk.hmma_rule =
         shader_hmma_rule(compute_subgroups, vk_prefer("OpGroupNonUniformShuffleXor", g_vk.has_cs_warp32, ban_say) != 0,
