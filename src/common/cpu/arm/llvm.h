@@ -59,4 +59,13 @@ LLVMValueRef snx_arm_llvm_block_ex(LLVMModuleRef module, const char* name, const
                                    uint32_t pc, size_t* consumed, const SnxArmCodegenOptions* options);
 LLVMValueRef snx_thumb_llvm_block_ex(LLVMModuleRef module, const char* name, const uint16_t* halfwords, size_t count,
                                      uint32_t pc, size_t* consumed, const SnxArmCodegenOptions* options);
+/* snx_arm_llvm_block_ex, its A32 words through the emitters written by hand alone (llvm.c), as the generated ones
+   (sg_emit_a32) took them over: the reference tests/arm_sail_ir.c holds the generated ones to */
+LLVMValueRef snx_arm_llvm_block_reference(LLVMModuleRef module, const char* name, const uint32_t* words, size_t count,
+                                          uint32_t pc, size_t* consumed, const SnxArmCodegenOptions* options);
+/* The same, its T16 instructions through the emitters written by hand that the Sail's replaced (llvm_thumb.inc): the
+   reference tests/arm_sail_ir.c holds the generated ones to */
+LLVMValueRef snx_thumb_llvm_block_t16_reference(LLVMModuleRef module, const char* name, const uint16_t* halfwords,
+                                                size_t count, uint32_t pc, size_t* consumed,
+                                                const SnxArmCodegenOptions* options);
 #endif

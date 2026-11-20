@@ -99,13 +99,17 @@ int snx_elf_parse(SnxElfObject* o, const SnxLinkInput* input, unsigned* machine,
     for (size_t i = 0; i < o->eh->e_shnum; ++i) {
         const Elf64_Shdr* s = &o->sh[i];
         o->kind[i] = -1;
-        if (s->sh_type != SHT_NOBITS && s->sh_offset + s->sh_size > input->size)
+        /* the size against what is left after the offset: their sum wraps for an offset near 2^64 */
+        if (s->sh_type != SHT_NOBITS && (s->sh_offset > input->size || s->sh_size > input->size - s->sh_offset))
             return snx_link_fail(error, error_size, "%s: truncated section%s", input->name, "");
         if (s->sh_type == SHT_SYMTAB) {
             o->syms = (const Elf64_Sym*)(input->data + s->sh_offset);
             o->nsyms = s->sh_size / sizeof(Elf64_Sym);
             if (s->sh_link >= o->eh->e_shnum)
                 return snx_link_fail(error, error_size, "%s: bad symbol table%s", input->name, "");
+            /* the names' section may come after this one, its own check with it: no pointer past the file before */
+            if (o->sh[s->sh_link].sh_offset > input->size)
+                return snx_link_fail(error, error_size, "%s: truncated section%s", input->name, "");
             o->strtab = (const char*)input->data + o->sh[s->sh_link].sh_offset;
         }
         if (!(s->sh_flags & SHF_ALLOC)) continue;
@@ -129,6 +133,18 @@ int snx_elf_parse(SnxElfObject* o, const SnxLinkInput* input, unsigned* machine,
             return snx_link_fail(error, error_size, "%s: unsupported allocated section type%s", input->name, "");
     }
     if (!o->syms) return snx_link_fail(error, error_size, "%s: no symbol table%s", input->name, "");
+    /* a symbol's section indexes the arrays above, which hold e_shnum entries: one past them is no section, but for
+       an absolute symbol's and a common one's, which snx_elf_collect_globals refuses by name */
+    for (size_t j = 0; j < o->nsyms; ++j) {
+        unsigned section = o->syms[j].st_shndx;
+        int bind = ELF64_ST_BIND(o->syms[j].st_info);
+        char what[80];
+        if (section < o->eh->e_shnum || section == SHN_ABS ||
+            (section == SHN_COMMON && (bind == STB_GLOBAL || bind == STB_WEAK)))
+            continue;
+        snprintf(what, sizeof(what), "symbol %zu is in section %u of %u", j, section, (unsigned)o->eh->e_shnum);
+        return snx_link_fail(error, error_size, "%s: %s", input->name, what);
+    }
     return 0;
 }
 

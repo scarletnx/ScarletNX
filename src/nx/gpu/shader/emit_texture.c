@@ -170,10 +170,11 @@ void shader_scaled_size(DirectCtx* c, u32 push, int slot, u32* x, u32* y) {
    leaves its own gl_FragCoord transform the identity for the window it draws lower left */
 /* A rectangle texture's coordinates (ShaderInfo.tex_rect_mask) are texels: x and y over its size at level 0, the
    size a fragment program's TXQ answers on a scaled target (shader_scaled_size), which the guest's texels
-   count. *gx and *gy, when not NULL, are gradients in texels, divided the same */
-void shader_rect_coords(DirectCtx* c, u32 push, int scaled, int slot, u32 vec2_u32, u32 i32_type, u32* x, u32* y,
+   count. size_type is the slot's size as OpImageQuerySizeLod gives it, whose third component a 3D image and an
+   array have (shader_size_type). *gx and *gy, when not NULL, are gradients in texels, divided the same */
+void shader_rect_coords(DirectCtx* c, u32 push, int scaled, int slot, u32 size_type, u32 i32_type, u32* x, u32* y,
                         u32* gx, u32* gy) {
-    u32 size = spv_emit_image_query_size_lod(&c->emit, vec2_u32, c->sampled_type[slot], c->sampler[slot], c->zero);
+    u32 size = spv_emit_image_query_size_lod(&c->emit, size_type, c->sampled_type[slot], c->sampler[slot], c->zero);
     u32 w = spv_emit_vec4_extract(&c->emit, c->u32_type, size, 0),
         h = spv_emit_vec4_extract(&c->emit, c->u32_type, size, 1);
     if (scaled) shader_scaled_size(c, push, slot, &w, &h);
@@ -472,6 +473,11 @@ static u32 surface_coord(DirectCtx* c, int dim, u32 x, u32 y, u32 a, u32 i32_typ
     return spv_emit_vec2_construct(&c->emit, vec2_i32, x, y);
 }
 /* the texture and surface instructions */
+/* the vector OpImageQuerySizeLod gives tex's image: two components, and a third for a 3D image's depth or an array's
+   layers (a cube's faces are none); a result of the wrong width is invalid SPIR-V, which a driver may crash on */
+static u32 shader_size_type(const ShTex* tex, u32 vec2_u32, u32 vec3_u32) {
+    return tex->type == 2 || tex->array ? vec3_u32 : vec2_u32;
+}
 void emit_texture(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
     const u64* insn = t->insn;
     int stage = t->stage;
@@ -714,7 +720,8 @@ void emit_texture(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
         u32 y = encoding == 0 ? spv_emit_constant_f32(&c->emit, c->f32_type, 0.5f)
                               : reg_read_as(c, shader_texs_y(encoding, a, b), c->f32_type);
         if (rect_slots >> slot & 1)
-            shader_rect_coords(c, push, stage == ST_FS, slot, vec2_u32, i32_type, &x, &y, NULL, NULL);
+            shader_rect_coords(c, push, stage == ST_FS, slot, shader_size_type(&textures[slot], vec2_u32, vec3_u32),
+                               i32_type, &x, &y, NULL, NULL);
         u32 uv = array       ? spv_emit_vec3_construct(&c->emit, vec3, x, y, shader_array_layer(c, a))
                  : type >= 2 ? spv_emit_vec3_construct(&c->emit, vec3, x, y, reg_read_as(c, b, c->f32_type))
                              : spv_emit_vec2_construct(&c->emit, vec2, x, y);
@@ -782,7 +789,8 @@ void emit_texture(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
             u32 y =
                 type == 0 ? spv_emit_constant_f32(&c->emit, c->f32_type, 0.5f) : reg_read_as(c, coord + 1, c->f32_type);
             if (rect_slots >> slot & 1)
-                shader_rect_coords(c, push, stage == ST_FS, slot, vec2_u32, i32_type, &x, &y, NULL, NULL);
+                shader_rect_coords(c, push, stage == ST_FS, slot, shader_size_type(&textures[slot], vec2_u32, vec3_u32),
+                                   i32_type, &x, &y, NULL, NULL);
             u32 coords =
                 type == 3 && array ? spv_emit_vec4_construct(&c->emit, vec4,
                                                              (u32[4]){x, y, reg_read_as(c, coord + 2, c->f32_type),
@@ -929,7 +937,8 @@ void emit_texture(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
             dx[1] = dy[1] = zero_f;
         }
         if (rect_slots >> slot & 1)
-            shader_rect_coords(c, push, stage == ST_FS, slot, vec2_u32, i32_type, &values[0], &values[1], dx, dy);
+            shader_rect_coords(c, push, stage == ST_FS, slot, shader_size_type(&textures[slot], vec2_u32, vec3_u32),
+                               i32_type, &values[0], &values[1], dx, dy);
         if (array) values[dims] = shader_array_layer(c, packed_reg);
         u32 coords = dims + array == 4   ? spv_emit_vec4_construct(&c->emit, vec4, values)
                      : dims + array == 3 ? spv_emit_vec3_construct(&c->emit, vec3, values[0], values[1], values[2])
@@ -1047,7 +1056,8 @@ void emit_texture(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
         u32 y =
             type == 0 ? spv_emit_constant_f32(&c->emit, c->f32_type, 0.5f) : reg_read_as(c, a + array + 1, c->f32_type);
         if (rect_slots >> slot & 1)
-            shader_rect_coords(c, push, stage == ST_FS, slot, vec2_u32, i32_type, &x, &y, NULL, NULL);
+            shader_rect_coords(c, push, stage == ST_FS, slot, shader_size_type(&textures[slot], vec2_u32, vec3_u32),
+                               i32_type, &x, &y, NULL, NULL);
         u32 coords = type < 2
                          ? spv_emit_vec2_construct(&c->emit, vec2, x, y)
                          : spv_emit_vec3_construct(&c->emit, vec3, x, y, reg_read_as(c, a + array + 2, c->f32_type));
@@ -1088,7 +1098,8 @@ void emit_texture(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
         u32 y = type == 0 ? spv_emit_constant_f32(&c->emit, c->f32_type, 0.5f)
                           : reg_read_as(c, op == O_TLD4S && !shadow && !B(w, 51, 1) ? b : a + array + 1, c->f32_type);
         if (rect_slots >> slot & 1)
-            shader_rect_coords(c, push, stage == ST_FS, slot, vec2_u32, i32_type, &x, &y, NULL, NULL);
+            shader_rect_coords(c, push, stage == ST_FS, slot, shader_size_type(&textures[slot], vec2_u32, vec3_u32),
+                               i32_type, &x, &y, NULL, NULL);
         u32 coords;
         if (!array && type != 3)
             coords = spv_emit_vec2_construct(&c->emit, vec2, x, y);

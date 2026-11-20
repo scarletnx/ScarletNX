@@ -78,6 +78,12 @@ typedef struct Renderer {
     /* NVN capture control: Begin 0, End 1, Pause 2, Resume 3. Save/import the GPU byte counters without a host read. */
     int (*xfb_control)(u32 owner, u64 control, u32 what, u32 stride, DrawOwner* o);
     void (*draw_texture)(const DsState* ds, const DrawTexture* t);
+    /* A program given as SPIR-V (the GL layer's, compiled from GLSL), which a draw names in DsPrograms.code[] as
+       DS_HOST_PROGRAM | id: a vertex (ST_VS) or fragment (ST_FS) module whose resources take shader.h's bindings
+       (SNX_VKB_) in its stage's descriptor set, as si describes them (the constant buffers and texture slots it reads,
+       its attributes and outputs, its header's output map). The id, the same for the same module; 0 when the renderer
+       can't make it (said in the log). NULL in a renderer without them. On the GPU thread */
+    u32 (*host_program)(int stage, const u32* spirv, size_t words, const ShaderInfo* si);
     /* the contents of the targets ds names in targets (bit i color slot i, bit 8 depth and stencil) no longer matter
        (NVN's DiscardColor and DiscardDepthStencil): the renderer may leave them undefined, at the latest when they are
        next loaded. NULL: they are kept */

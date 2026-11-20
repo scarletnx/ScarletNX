@@ -209,13 +209,19 @@ int hook_attach_handle(CPU* c, u64 event, u32 handle) {
     return 1;
 }
 
-static CPU cpu;
-/* a 32-bit game's thread: the same CPU, its registers the test's, and its module set while the test plays one */
-static SnxArmCPU arm;
+/* the game's thread as the runtime holds it (KThread): its CPU and, for a 32-bit game, its registers in one object,
+   each found from the other by its place, as arm.c finds them. An adapter takes the registers through a restrict
+   pointer, so a handler's way to them has to start at that pointer. The module is set while the test plays a 32-bit
+   game */
+typedef struct {
+    CPU cpu;
+    SnxArmCPU arm;
+} Thread32;
+static Thread32 thread;
 static const SnxArmModule test_arm_module;
 const SnxArmModule* g_arm_mod;
-SnxArmCPU* arm_cpu(CPU* c) { return (void)c, &arm; }
-CPU* hook_a32_cpu(SnxArmCPU* a) { return (void)a, &cpu; }
+SnxArmCPU* arm_cpu(CPU* c) { return &((Thread32*)(void*)((char*)c - offsetof(Thread32, cpu)))->arm; }
+CPU* hook_a32_cpu(SnxArmCPU* a) { return &((Thread32*)(void*)((char*)a - offsetof(Thread32, arm)))->cpu; }
 #define T_CONFIG       0x1000u /* the game's AudioRendererConfig: its managers at 0x100 * (place / 8 + 1) */
 #define T_HANDLE       0x1800u
 #define T_PARAM        0x1900u
@@ -284,7 +290,7 @@ static void test_guest_call(CPU* c, u64 fn, u64 a0, u64 a1, u64 a2, u64 a3) {
 void hook_guest_call(CPU* c, u64 fn, u64 a0, u64 a1, u64 a2, u64 a3) {
     test_guest_call(c, fn, a0, a1, a2, a3);
     if (g_arm_mod) {
-        arm.r[0] = (u32)c->x[0];
+        arm_cpu(c)->r[0] = (u32)c->x[0]; /* through the handler's CPU, as the handler reads it */
         c->x[0] = 0xbad0bad0bad0ull;
     }
 }
@@ -293,16 +299,16 @@ static void config(const HookLayout_nn_audio_AudioRendererConfig* L, u64 in_size
     memset(GP(T_CONFIG), 0, 0x100);
     for (u32 place = 0; place < 0x40; place += 8) snx_st_le64(GP(T_CONFIG + place), MANAGER(place));
     if (L->in.offset > 0x40) snx_st_le64(GP(T_CONFIG + 0x40), T_FRAMES);
-    hook_put_addr(&cpu, L->in, T_CONFIG, T_IN);
-    hook_put_u64(&cpu, L->in_size, T_CONFIG, in_size);
-    hook_put_addr(&cpu, L->out, T_CONFIG, T_OUT);
-    hook_put_u64(&cpu, L->out_size, T_CONFIG, out_size);
+    hook_put_addr(&thread.cpu, L->in, T_CONFIG, T_IN);
+    hook_put_u64(&thread.cpu, L->in_size, T_CONFIG, in_size);
+    hook_put_addr(&thread.cpu, L->out, T_CONFIG, T_OUT);
+    hook_put_u64(&thread.cpu, L->out_size, T_CONFIG, out_size);
     memset(GP(T_IN), 0xEE, 0x400);
     memset(GP(T_OUT), 0xEE, 0x400);
     snx_st_le64(GP(T_FRAMES), 0);
     test_ncalls = 0;
     test_cursor = T_IN + 0x40;
-    cpu.x[31] = T_STACK;
+    thread.cpu.x[31] = T_STACK;
 }
 /* a public AudioRendererParameter: 48 kHz, 240 samples, 6 mix buffers, 2 submixes, 24 voices, 1 sink, 4 effects, 3
    performance frames, voice drop, 2 splitters of 8 channels, the rendering device and execution mode, and the
@@ -317,7 +323,7 @@ static void parameter(const HookLayout_nn_audio_AudioRendererParameter* L, u32 d
     snx_st_le32(GP(T_PARAM + 0x2c), device);
     if (L->revision.offset > 0x30) snx_st_le32(GP(T_PARAM + 0x30), mode);
     if (L->revision.offset > 0x34) snx_st_le32(GP(T_PARAM + 0x34), 0x1234); /* the external context's size */
-    hook_put_u32(&cpu, L->revision, T_PARAM, revision);
+    hook_put_u32(&thread.cpu, L->revision, T_PARAM, revision);
 }
 
 /* A 32-bit game (SDK 0.12.16), through its table's adapters (audio_renderer.hook's a32): a handle of one 4-byte word,
@@ -329,11 +335,12 @@ static u32 call32(u32 sdk, const char* symbol, u32 r0, u32 r1, u32 r2, u32 r3, u
     versions[HOOK_SDK] = sdk;
     k = hook_select(&hook32_table, symbol, versions, &first);
     if (k < 0) return 0xffffffffu;
-    arm.r[0] = r0, arm.r[1] = r1, arm.r[2] = r2, arm.r[3] = r3, arm.r[13] = T_STACK, arm.r[14] = 0x8000;
+    thread.arm.r[0] = r0, thread.arm.r[1] = r1, thread.arm.r[2] = r2, thread.arm.r[3] = r3, thread.arm.r[13] = T_STACK,
+    thread.arm.r[14] = 0x8000;
     snx_st_le32(GP(T_STACK), stack);
-    hook32_fn[k](&arm);
-    CHECK(arm.r[15] == 0x8000 && arm.r[13] == T_STACK);
-    return arm.r[0];
+    hook32_fn[k](&thread.arm);
+    CHECK(thread.arm.r[15] == 0x8000 && thread.arm.r[13] == T_STACK);
+    return thread.arm.r[0];
 }
 static void test_a32(void) {
     static const char open[] =
@@ -349,7 +356,7 @@ static void test_a32(void) {
     const u32 sdk = 0x000c10; /* 0.12.16 */
     unsigned attached = test_attached, before;
     u32 id, total = UPDATE_TOTAL - 0x20;
-    arm.mem = g_mem, arm.mem_size = 0x10000;
+    thread.arm.mem = g_mem, thread.arm.mem_size = 0x10000;
     g_arm_mod = &test_arm_module;
     test_sdk = SDK_0;
     g_hle.audio.ren_fn_found = 0;
@@ -359,7 +366,8 @@ static void test_a32(void) {
     for (int i = 0; i < HOOK32_COUNT; i++)
         CHECK(hook32_key[i] == HOOK_SDK && hook32_lo[i] == 0 && hook32_hi[i] == 0x10000);
     parameter(&P30, 0, 0, 0x31564552);
-    CHECK(call32(sdk, work, T_PARAM, 0, 0, 0, 0) == (u32)nnaudio_get_renderer_work_buffer_size(&cpu, &P30, T_PARAM));
+    CHECK(call32(sdk, work, T_PARAM, 0, 0, 0, 0) ==
+          (u32)nnaudio_get_renderer_work_buffer_size(&thread.cpu, &P30, T_PARAM));
     /* the handle: 4 bytes, the 4 after them the game's */
     memset(GP(T_HANDLE), 0xCC, 0x18);
     CHECK(call32(sdk, open, T_HANDLE, T_PARAM, 0x5000, 0x10000, 0) == 0);
@@ -385,7 +393,7 @@ static void test_a32(void) {
     memset(GP(T_OUT), 0xEE, 0x400);
     test_ncalls = 0;
     test_cursor = T_IN + 0x40;
-    cpu.x[31] = T_STACK;
+    thread.cpu.x[31] = T_STACK;
     before = test_updates;
     CHECK(call32(sdk, update, id, T_CONFIG, 0xdead, 0, 0) == 0 && test_updates == before + 1);
     CHECK(test_ncalls == 16 && test_calls[3] == M_VOICE_RESOURCE_IN && test_calls[4] == M_VOICE_INFO_IN);
@@ -420,11 +428,11 @@ int main(void) {
     static const HookLayout_nn_audio_AudioRendererConfig C3 = {0x70, {0x50}, {0x58}, {0x60}, {0x68}},
                                                          C4 = {0x60, {0x40}, {0x48}, {0x50}, {0x58}},
                                                          C10 = {0x68, {0x48}, {0x50}, {0x58}, {0x60}};
-    CPU* c = &cpu;
+    CPU* c = &thread.cpu;
     hle_init();
     g_mem = calloc(1, 0x10000);
     CHECK(g_mem != NULL);
-    cpu.mem = g_mem;
+    thread.cpu.mem = g_mem;
     g_hle.audio.ev = 0x77;
 
     /* OpenAudioRenderer: the parameters as the session took them, for each layout; the handle is the renderer's name
@@ -549,7 +557,7 @@ int main(void) {
              : kind == FRAMES ? nnaudio_request_update_frames(c, L, id, 0, T_CONFIG)
              : kind == WORD   ? nnaudio_request_update_word(c, L, id, T_CONFIG)
                               : nnaudio_request_update_first(c, L, id, T_CONFIG);
-        CHECK(rc == 0 && test_updates == before + 1 && cpu.x[31] == T_STACK);
+        CHECK(rc == 0 && test_updates == before + 1 && thread.cpu.x[31] == T_STACK);
         if (kind == WORD)
             CHECK(test_ncalls == 17 && !memcmp(test_calls, order_word, sizeof order_word));
         else if (kind == FIRST)
@@ -586,7 +594,7 @@ int main(void) {
     config(&C10, 0x400, ANSWER_TOTAL);
     test_update_result = -41;
     CHECK(nnaudio_request_update_frames(c, &C10, id, 0, T_CONFIG) == RC(153, 41));
-    CHECK(test_ncalls == 10 && test_calls[9] == M_CHECK_ERRORS && cpu.x[31] == T_STACK);
+    CHECK(test_ncalls == 10 && test_calls[9] == M_CHECK_ERRORS && thread.cpu.x[31] == T_STACK);
     config(&C10, 0x400, ANSWER_TOTAL);
     test_update_result = -4;
     CHECK(nnaudio_request_update_frames(c, &C10, id, 0, T_CONFIG) == RC(153, 4) && test_ncalls == 9);
@@ -600,7 +608,7 @@ int main(void) {
         char total[16], room[16];
         snprintf(total, sizeof total, "%u bytes", UPDATE_TOTAL);
         snprintf(room, sizeof room, "of %u", UPDATE_TOTAL - 1);
-        CHECK(strstr(test_last_log, total) && strstr(test_last_log, room) && cpu.x[31] == T_STACK);
+        CHECK(strstr(test_last_log, total) && strstr(test_last_log, room) && thread.cpu.x[31] == T_STACK);
     }
     /* a config with no room for a header, and an answer whose buffer is not its size or whose section is not the
        size its header says */

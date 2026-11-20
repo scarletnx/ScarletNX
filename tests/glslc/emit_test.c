@@ -24,13 +24,17 @@ typedef struct {
     uint32_t words[SNX_GLSLC_MAX_WORDS];
     uint32_t words2[SNX_GLSLC_MAX_WORDS];
     char big[70000];
+    struct {
+        int answer;
+        uint32_t bit;
+    } block; /* GlslcOptions.block's answers, and what the module holds of them */
 } EmitTest;
 
 static EmitTest g_emit_test;
 
 static int compile(GlslcStage stage, const char* source) {
-    return snx_glslc_compile(&g_emit_test.workspace, &(GlslcOptions){stage, NULL, NULL, 0, 0}, source, strlen(source),
-                             g_emit_test.words, SNX_GLSLC_MAX_WORDS, &g_emit_test.result);
+    return snx_glslc_compile(&g_emit_test.workspace, &(GlslcOptions){stage, NULL, NULL, 0, 0, 0, NULL}, source,
+                             strlen(source), g_emit_test.words, SNX_GLSLC_MAX_WORDS, &g_emit_test.result);
 }
 
 static void must_compile(GlslcStage stage, const char* source) {
@@ -101,21 +105,21 @@ static void module(void) {
     assert(r->words == n && !memcmp(g_emit_test.words, g_emit_test.words2, n * sizeof(uint32_t)));
     /* a buffer too small: -1, and the size it needs */
     GlslcResult* small = &g_emit_test.again;
-    assert(snx_glslc_compile(&g_emit_test.workspace, &(GlslcOptions){SNX_GLSLC_COMPUTE, NULL, NULL, 0, 0}, source,
-                             sizeof source - 1, g_emit_test.words2, 7, small) == -1);
+    assert(snx_glslc_compile(&g_emit_test.workspace, &(GlslcOptions){SNX_GLSLC_COMPUTE, NULL, NULL, 0, 0, 0, NULL},
+                             source, sizeof source - 1, g_emit_test.words2, 7, small) == -1);
     assert(small->words == n && small->line == 0);
     char want[128];
     snprintf(want, sizeof want, "the SPIR-V module has %u words, and the buffer holds 7", n);
     assert(!strcmp(small->error, want));
-    assert(snx_glslc_compile(&g_emit_test.workspace, &(GlslcOptions){SNX_GLSLC_COMPUTE, NULL, NULL, 0, 0}, source,
-                             sizeof source - 1, NULL, 0, small) == -1 &&
+    assert(snx_glslc_compile(&g_emit_test.workspace, &(GlslcOptions){SNX_GLSLC_COMPUTE, NULL, NULL, 0, 0, 0, NULL},
+                             source, sizeof source - 1, NULL, 0, small) == -1 &&
            small->words == n);
     /* what the API refuses before compiling */
-    assert(snx_glslc_compile(&g_emit_test.workspace, &(GlslcOptions){(GlslcStage)3, NULL, NULL, 0, 0}, source,
+    assert(snx_glslc_compile(&g_emit_test.workspace, &(GlslcOptions){(GlslcStage)3, NULL, NULL, 0, 0, 0, NULL}, source,
                              sizeof source - 1, g_emit_test.words2, 7, small) == -1);
     assert(!strcmp(small->error, "stage 3 is not one glslc compiles: vertex (0), fragment (1) or compute (2)"));
-    assert(snx_glslc_compile(&g_emit_test.workspace, &(GlslcOptions){SNX_GLSLC_VERTEX, NULL, NULL, 0, 0}, NULL, 4,
-                             g_emit_test.words2, 7, small) == -1);
+    assert(snx_glslc_compile(&g_emit_test.workspace, &(GlslcOptions){SNX_GLSLC_VERTEX, NULL, NULL, 0, 0, 0, NULL}, NULL,
+                             4, g_emit_test.words2, 7, small) == -1);
     assert(!strcmp(small->error, "the source is NULL with a size of 4 bytes"));
     /* an error's place and the warning's */
     assert(compile(SNX_GLSLC_FRAGMENT, "#version 300 es\n#extension GL_FOO_x : warn\nprecision highp float;\n"
@@ -250,7 +254,7 @@ static void workspace(void) {
     w.size = 16;
     static const char frag[] =
         "#version 300 es\nprecision mediump float;\nout vec4 c;\nvoid main() { c = vec4(1.0); }\n";
-    assert(snx_glslc_compile(&w, &(GlslcOptions){SNX_GLSLC_FRAGMENT, NULL, NULL, 0, 0}, frag, sizeof frag - 1,
+    assert(snx_glslc_compile(&w, &(GlslcOptions){SNX_GLSLC_FRAGMENT, NULL, NULL, 0, 0, 0, NULL}, frag, sizeof frag - 1,
                              g_emit_test.words, SNX_GLSLC_MAX_WORDS, r) == -1);
     snprintf(want, sizeof want, "the workspace is 16 bytes, and a compilation needs %zu (snx_glslc_workspace_size)",
              need);
@@ -312,7 +316,7 @@ static int map_too_far(void* user, const GlslcResource* r, uint32_t* set, uint32
 }
 
 static int compile_mapped(GlslcBindFn bind, const char* source) {
-    GlslcOptions o = {SNX_GLSLC_FRAGMENT, bind, &g_emit_test.map, 0, 0};
+    GlslcOptions o = {SNX_GLSLC_FRAGMENT, bind, &g_emit_test.map, 0, 0, 0, NULL};
     memset(&g_emit_test.map, 0, sizeof g_emit_test.map);
     return snx_glslc_compile(&g_emit_test.workspace, &o, source, strlen(source), g_emit_test.words, SNX_GLSLC_MAX_WORDS,
                              &g_emit_test.result);
@@ -332,7 +336,7 @@ static void default_block_mapped(void) {
     static const char frag[] = "#version 300 es\nprecision highp float;\nuniform sampler2D t;\nuniform vec4 tint;\n"
                                "uniform float scale;\nout vec4 c;\n"
                                "void main() { c = texture(t, vec2(0.0)) * tint * scale; }\n";
-    GlslcOptions o = {SNX_GLSLC_FRAGMENT, map_default_apart, &g_emit_test.map, 1, 0};
+    GlslcOptions o = {SNX_GLSLC_FRAGMENT, map_default_apart, &g_emit_test.map, 1, 0, 0, NULL};
     memset(&g_emit_test.map, 0, sizeof g_emit_test.map);
     assert(snx_glslc_compile(&g_emit_test.workspace, &o, frag, sizeof frag - 1, g_emit_test.words, SNX_GLSLC_MAX_WORDS,
                              &g_emit_test.result) == 0);
@@ -356,7 +360,7 @@ static void flip_y(void) {
     static const char frag[] = "#version 300 es\nprecision highp float;\nout vec4 c;\n"
                                "void main() { c = vec4(gl_PointCoord, gl_FragCoord.yy); }\n";
     for (int flip = 0; flip < 2; ++flip) {
-        GlslcOptions o = {SNX_GLSLC_FRAGMENT, NULL, NULL, 0, flip};
+        GlslcOptions o = {SNX_GLSLC_FRAGMENT, NULL, NULL, 0, flip, 0, NULL};
         assert(snx_glslc_compile(&g_emit_test.workspace, &o, frag, sizeof frag - 1, g_emit_test.words,
                                  SNX_GLSLC_MAX_WORDS, &g_emit_test.result) == 0);
         int push = 0, privates = 0, builtins = 0;
@@ -370,6 +374,79 @@ static void flip_y(void) {
         }
         assert(builtins == 2);
         assert(flip ? push == 1 && privates == 2 : push == 0 && privates == 0);
+    }
+}
+
+/* a desktop context's shaders (GlslcOptions.desktop): GLSL 1.20 with the f suffix, a fragment shader without a
+   precision and without GL_ES; 3.30 core as GLSL ES 3.00; no #version as 1.10; the shader's own version in
+   __VERSION__ and in OpSource (GLSL); GLSL ES as it is, its fragment shader still needing float's precision; and what
+   is refused, by its message */
+static int compile_as(GlslcStage stage, const char* source, int desktop) {
+    GlslcOptions o = {stage, NULL, NULL, 0, 0, desktop, NULL};
+    return snx_glslc_compile(&g_emit_test.workspace, &o, source, strlen(source), g_emit_test.words, SNX_GLSLC_MAX_WORDS,
+                             &g_emit_test.result);
+}
+static void refused_as(const char* source, int desktop, const char* text) {
+    if (!compile_as(SNX_GLSLC_FRAGMENT, source, desktop) || !strstr(g_emit_test.result.error, text)) {
+        fprintf(stderr, "%s\nrefused for \"%s\", not naming \"%s\"\n", source, g_emit_test.result.error, text);
+        exit(1);
+    }
+}
+static void source_is(uint32_t language, uint32_t version) {
+    const uint32_t* source = instruction(3); /* OpSource */
+    assert(source && source[0] == language && source[1] == version);
+}
+static void desktop(void) {
+    static const char frag120[] = "#version 120\n#ifdef GL_ES\n#error GL_ES\n#endif\n"
+                                  "#if __VERSION__ != 120\n#error __VERSION__\n#endif\n"
+                                  "uniform sampler2D t;\nvarying vec2 uv;\n"
+                                  "void main() { float k = 0.5f; gl_FragColor = texture2D(t, uv) * k; }\n";
+    static const char frag330[] = "#version 330 core\n#ifdef GL_ES\n#error GL_ES\n#endif\n"
+                                  "#if __VERSION__ != 330\n#error __VERSION__\n#endif\n"
+                                  "uniform sampler2D t;\nuniform sampler3D v;\nin vec2 uv;\n"
+                                  "layout(location = 0) out vec4 c;\n"
+                                  "void main() { c = texture(t, uv) * 0.5f + texture(v, uv.xyx); }\n";
+    static const char es300[] = "#version 300 es\n#ifndef GL_ES\n#error no GL_ES\n#endif\n"
+                                "precision mediump float;\nout vec4 c;\nvoid main() { c = vec4(1.0); }\n";
+    assert(!compile_as(SNX_GLSLC_FRAGMENT, frag120, 1) && g_emit_test.result.version == 100);
+    source_is(2, 120);
+    assert(!compile_as(SNX_GLSLC_FRAGMENT, frag330, 1) && g_emit_test.result.version == 300);
+    source_is(2, 330);
+    assert(!compile_as(SNX_GLSLC_FRAGMENT, "#version 330\nout vec4 c;\nvoid main() { c = vec4(1.0); }\n", 1));
+    source_is(2, 330);
+    assert(!compile_as(SNX_GLSLC_FRAGMENT, "void main() { float k = 1.0; gl_FragColor = vec4(k); }\n", 1));
+    source_is(2, 110);
+    assert(!compile_as(SNX_GLSLC_VERTEX, "#version 120\nattribute vec4 p;\nvoid main() { gl_Position = p; }\n", 1));
+    source_is(2, 120);
+    assert(!compile_as(SNX_GLSLC_FRAGMENT, es300, 1));
+    source_is(1, 300);
+    refused_as(frag120, 0, "#version 120 is not a GLSL ES version");
+    refused_as(frag330, 0, "'#version 330 core': GLSL ES's profile is es");
+    refused_as("#version 330\nvoid main() {}\n", 0, "#version 330 is not a GLSL ES version");
+    refused_as("#version 110\nvoid main() { gl_FragColor = vec4(1.0f); }\n", 1,
+               "the suffix f needs GLSL ES 3.00 or later, or desktop GLSL 1.20");
+    refused_as("#version 140\nvoid main() {}\n", 1, "and desktop GLSL's 110, 120 and 330 (core)");
+    refused_as("#version 330 es\nvoid main() {}\n", 1, "#version 330 takes core or no profile");
+    refused_as("#version 120 core\nvoid main() {}\n", 1, "#version 120 takes no profile");
+    refused_as("#version 300 core\nvoid main() {}\n", 1, "core is desktop GLSL's");
+    refused_as("#version 100 core\nvoid main() {}\n", 1, "#version 100 is GLSL ES, whose profile is es");
+    refused_as("#version 140 core\nvoid main() {}\n", 1, "#version 140 is not a GLSL ES version");
+    refused_as("#version 330 compatibility\nvoid main() {}\n", 1, "desktop GLSL's that glslc takes is core");
+    refused_as("#version 100\nvoid main() { float k = 1.0; gl_FragColor = vec4(k); }\n", 1, "no precision here");
+    /* desktop GLSL's precision qualifiers change nothing: no RelaxedPrecision (decoration 0) on a variable (OpDecorate,
+       71) or a block member (OpMemberDecorate, 72), which a mobile driver computes at 16 bits; GLSL ES keeps them */
+    {
+        static const char body[] = "precision mediump float;\nuniform mediump vec4 s;\n"
+                                   "uniform B { mediump vec4 m; };\nin mediump vec2 uv;\n"
+                                   "layout(location = 0) out lowp vec4 c;\n"
+                                   "void main() { mediump float k = s.x; c = vec4(uv, k, 1.0) + m; }\n";
+        char text[512];
+        snprintf(text, sizeof text, "#version 330 core\n%s", body);
+        assert(!compile_as(SNX_GLSLC_FRAGMENT, text, 1));
+        assert(!instruction_with(71, 1, 0) && !instruction_with(72, 2, 0));
+        snprintf(text, sizeof text, "#version 300 es\n%s", body);
+        assert(!compile_as(SNX_GLSLC_FRAGMENT, text, 1));
+        assert(instruction_with(71, 1, 0) && instruction_with(72, 2, 0));
     }
 }
 
@@ -485,6 +562,70 @@ static void binding_map(void) {
     assert(!strcmp(g_emit_test.result.error, "the options are NULL: they give the stage at least"));
 }
 
+static int read_block(void* user, uint32_t set, uint32_t binding, uint32_t* offset_bit) {
+    (void)user, (void)set, (void)binding;
+    *offset_bit = g_emit_test.block.bit;
+    return g_emit_test.block.answer;
+}
+static int compile_read(int answer, uint32_t bit, int flip, const char* source) {
+    GlslcOptions o = {.stage = SNX_GLSLC_FRAGMENT,
+                      .bind = map_by_kind,
+                      .bind_user = &g_emit_test.map,
+                      .map_default = 1,
+                      .flip_y = flip,
+                      .block = read_block};
+    memset(&g_emit_test.map, 0, sizeof g_emit_test.map);
+    g_emit_test.block.answer = answer, g_emit_test.block.bit = bit;
+    return snx_glslc_compile(&g_emit_test.workspace, &o, source, strlen(source), g_emit_test.words, SNX_GLSLC_MAX_WORDS,
+                             &g_emit_test.result);
+}
+/* the module's variables in storage class sc, its NonWritable decorations, and the byte offset of a member past 0 */
+static void module_counts(uint32_t sc, uint32_t* variables, uint32_t* non_writable, uint32_t* offset) {
+    const uint32_t* w = g_emit_test.words;
+    *variables = *non_writable = *offset = 0;
+    for (uint32_t i = 5; i < g_emit_test.result.words && (w[i] >> 16); i += w[i] >> 16) {
+        if ((w[i] & 0xffff) == 59 && w[i + 3] == sc) ++*variables;                   /* OpVariable */
+        if ((w[i] & 0xffff) == 71 && w[i + 2] == 24) ++*non_writable;                /* OpDecorate NonWritable */
+        if ((w[i] & 0xffff) == 72 && w[i + 3] == 35 && w[i + 4]) *offset = w[i + 4]; /* OpMemberDecorate Offset */
+    }
+}
+static void block_reads(void) {
+    static const char source[] = "#version 300 es\nprecision mediump float;\nuniform B { vec4 c; };\n"
+                                 "uniform vec4 t;\nout vec4 o;\nvoid main() { o = c * t; }\n";
+    uint32_t n, nw, offset;
+    /* windows: each block's own variable and its window's at its binding, the offsets' word pushed at byte 132 */
+    assert(compile_read(SNX_GLSLC_BLOCK_WINDOW, 1056, 0, source) == 0);
+    module_counts(2, &n, &nw, &offset); /* Uniform */
+    assert(n == 4);
+    module_counts(9, &n, &nw, &offset); /* PushConstant */
+    assert(n == 1 && offset == 132);
+    /* storage buffers: both blocks, read-only */
+    assert(compile_read(SNX_GLSLC_BLOCK_STORAGE, 0, 0, source) == 0);
+    module_counts(12, &n, &nw, &offset); /* StorageBuffer */
+    assert(n == 2 && nw == 2);
+    /* answers glslc refuses, naming them */
+    assert(compile_read(7, 0, 0, source) == -1);
+    assert(strstr(g_emit_test.result.error, "the block map answers 7 for B: glslc takes 0 (a uniform buffer), 1 (a "
+                                            "storage buffer) or 2 (a window)"));
+    assert(compile_read(SNX_GLSLC_BLOCK_WINDOW, 1032, 0, source) == -1);
+    assert(strstr(g_emit_test.result.error, "window offset at bit 1032, which is not a multiple of 16"));
+    assert(compile_read(SNX_GLSLC_BLOCK_WINDOW, 1024, 0,
+                        "#version 300 es\nprecision mediump float;\nuniform Big { vec4 v[4097]; };\nout vec4 o;\n"
+                        "void main() { o = v[1]; }\n") == -1);
+    assert(strstr(g_emit_test.result.error, "Big takes 65552 bytes, past the 65536 a window holds"));
+    assert(compile_read(SNX_GLSLC_BLOCK_WINDOW, 1024, 1,
+                        "#version 300 es\nprecision mediump float;\nuniform vec4 t;\nout vec4 o;\n"
+                        "void main() { o = t * gl_FragCoord; }\n") == -1);
+    assert(strstr(g_emit_test.result.error, "windows' offsets and flip_y's flip from push constants"));
+    /* the members that hold bools: the default block's bool and bvec2, the block's bool array; not its vec4 */
+    assert(compile_read(SNX_GLSLC_BLOCK_UNIFORM, 0, 0,
+                        "#version 300 es\nprecision mediump float;\nuniform B { bool f[2]; vec4 c; };\n"
+                        "uniform bool b;\nuniform bvec2 v;\nout vec4 o;\n"
+                        "void main() { o = b && v.x && f[1] ? c : vec4(0); }\n") == 0);
+    assert(g_emit_test.result.bool_count == 3);
+    for (uint32_t i = 0; i < 3; i++) assert(g_emit_test.result.bools[i].member < 2);
+}
+
 int main(void) {
     size_t size = snx_glslc_workspace_size();
     assert(snx_glslc_workspace_init(&g_emit_test.workspace, malloc(size), size, &g_emit_test.result) == 0);
@@ -492,12 +633,14 @@ int main(void) {
     binding_map();
     default_block_mapped();
     flip_y();
+    desktop();
     struct_samplers();
+    block_reads();
     module();
     interface();
     bounds();
     free(g_emit_test.workspace.memory);
-    printf("glslc_emit: the workspace, the binding map, samplers in structs, the module, its interface and its "
-           "bounds checked\n");
+    printf("glslc_emit: the workspace, the binding map, desktop GLSL, samplers in structs, block reads, the module, "
+           "its interface and its bounds checked\n");
     return 0;
 }

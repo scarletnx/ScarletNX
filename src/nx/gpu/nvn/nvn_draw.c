@@ -286,13 +286,12 @@ static int target_formats_differ(const DsTargets* t, const DsTargets* u) {
 }
 /* a render target from a texture snapshot and its view, as the 3D engine's registers describe one: a multisampled
    texture's size in samples, its sample layout in *msaa (the texture header's, nvn_tic.c) */
-static int target(u64 snapshot, const NvnView* v, int has_view, DsSurf* s, int* depth, u32* msaa, u32* discard_width) {
+static int target_of(const NvnTexture* tex, const NvnView* v, int has_view, DsSurf* s, int* depth, u32* msaa,
+                     u32* discard_width) {
     memset(s, 0, sizeof *s); /* every byte: the targets are compared as bytes (keep) */
     *msaa = DS_MSAA_1X1;
     if (discard_width) *discard_width = 0;
-    if (!snapshot) return 0;
-    NvnTexture t = {0}; /* past the snapshot's bytes */
-    memcpy(&t, GP(snapshot), NVN_TEX_SNAP);
+    NvnTexture t = *tex;
     if (t.magic != NVN_MAGIC('T', 'E', 'X', 0) || !t.gpu) return 0;
     u32 format = has_view && (v->set & NVN_VIEW_FORMAT) ? v->format : t.d.format;
     s->format = nvn_rt_format(format, depth);
@@ -376,8 +375,22 @@ static int target(u64 snapshot, const NvnView* v, int has_view, DsSurf* s, int* 
     }
     return 1;
 }
+static int target(u64 snapshot, const NvnView* v, int has_view, DsSurf* s, int* depth, u32* msaa, u32* discard_width) {
+    NvnTexture t = {0}; /* past the snapshot's bytes */
+    if (!snapshot) {
+        memset(s, 0, sizeof *s);
+        *msaa = DS_MSAA_1X1;
+        if (discard_width) *discard_width = 0;
+        return 0;
+    }
+    memcpy(&t, GP(snapshot), NVN_TEX_SNAP);
+    return target_of(&t, v, has_view, s, depth, msaa, discard_width);
+}
 int nvn_draw_surface(u64 snapshot, const NvnView* v, DsSurf* s, int* depth, u32* msaa) {
     return target(snapshot, v, v != NULL, s, depth, msaa, NULL);
+}
+int nvn_draw_surface_of(const NvnTexture* t, const NvnView* v, DsSurf* s, int* depth, u32* msaa) {
+    return target_of(t, v, v != NULL, s, depth, msaa, NULL);
 }
 static void set_targets(NvnDraw* d, u64 payload) {
     NvnPSetRT r;
@@ -650,18 +663,22 @@ static void make_vertex_buffers(NvnDraw* d) {
 /* ---- the draws */
 /* the groups the records since the last draw changed, made again, and the draw's own words in bank 0 */
 static void sync(NvnDraw* d, i32 base_vertex, u32 base_instance) {
-    int s;
+    int s, base_moved = 0;
     for (s = 0; s < DS_GFX_STAGES; s++) {
         u8* c0 = d->inl.bank0[s];
         if (snx_ld_le32(c0 + C0_BASE_VERTEX) != (u32)base_vertex) {
             snx_st_le32(c0 + C0_BASE_VERTEX, (u32)base_vertex);
             inl_wrote(d, c0 + C0_BASE_VERTEX, 4);
+            base_moved = 1;
         }
         if (snx_ld_le32(c0 + C0_BASE_INSTANCE) != base_instance) {
             snx_st_le32(c0 + C0_BASE_INSTANCE, base_instance);
             inl_wrote(d, c0 + C0_BASE_INSTANCE, 4);
+            base_moved = 1;
         }
     }
+    atomic_fetch_add_explicit(&g_nvn.draw.count[NVN_COUNT_DRAWS], 1, memory_order_relaxed);
+    if (base_moved) atomic_fetch_add_explicit(&g_nvn.draw.count[NVN_COUNT_BASE_MOVED], 1, memory_order_relaxed);
     if (d->ds.dyn.depth_word != base_instance) d->dirty |= D_DYNAMIC;
     /* Device state can change without changing a packed depth/stencil object. Equal binds no longer rebuild
        dynamic state incidentally, so refresh the depth convention at the draw that observes it. */
@@ -686,7 +703,9 @@ static void sync(NvnDraw* d, i32 base_vertex, u32 base_instance) {
     if (d->dirty & D_VBUF) make_vertex_buffers(d);
     if (d->dirty & D_BIND) keep(&d->ds.bind, &d->bind, sizeof d->bind, &d->ds.gen[DS_BIND]);
     if (d->dirty & D_INLINE) {
-        int changed = 0;
+        /* the blocks that changed, and whether every one of them only in the base vertex and base instance words */
+        u32 changed = 0;
+        int base_only = 1;
         for (u32 bank = 0; bank < 2; bank++) {
             u32 bytes = bank ? DS_INLINE_BANK2 : DS_INLINE_BANK0;
             for (s = 0; s < DS_GFX_STAGES; s++) {
@@ -696,7 +715,9 @@ static void sync(NvnDraw* d, i32 base_vertex, u32 base_instance) {
                     const u8* made = (bank ? d->inl.bank2[s] : d->inl.bank0[s]) + lo;
                     if (memcmp(kept, made, hi - lo)) {
                         memcpy(kept, made, hi - lo);
-                        changed = 1;
+                        new_gen(&d->ds.inl_gen[bank][s]);
+                        changed++;
+                        base_only &= !bank && lo >= C0_BASE_VERTEX && hi <= C0_BASE_INSTANCE + 4;
                     }
                 }
                 d->inl_lo[bank][s] = (u16)bytes;
@@ -708,14 +729,33 @@ static void sync(NvnDraw* d, i32 base_vertex, u32 base_instance) {
             const u8* made = d->inl.root + d->root_lo;
             if (memcmp(kept, made, (u32)(d->root_hi - d->root_lo))) {
                 memcpy(kept, made, (u32)(d->root_hi - d->root_lo));
-                changed = 1;
+                new_gen(&d->ds.root_gen);
+                changed++;
+                base_only = 0;
             }
         }
         d->root_lo = DS_ROOT_BYTES;
         d->root_hi = 0;
-        if (changed) new_gen(&d->ds.gen[DS_INLINE]);
+        if (changed) {
+            new_gen(&d->ds.gen[DS_INLINE]);
+            atomic_fetch_add_explicit(&g_nvn.draw.count[NVN_COUNT_INLINE_MOVED], 1, memory_order_relaxed);
+            atomic_fetch_add_explicit(&g_nvn.draw.count[NVN_COUNT_BLOCKS], changed, memory_order_relaxed);
+            if (base_only) atomic_fetch_add_explicit(&g_nvn.draw.count[NVN_COUNT_BASE_ONLY], 1, memory_order_relaxed);
+        }
     }
     d->dirty = 0;
+}
+void nvn_draw_stats_log(u64 presents) {
+    double d[NVN_COUNTS];
+    for (int i = 0; i < NVN_COUNTS; i++) {
+        u64 now = atomic_load_explicit(&g_nvn.draw.count[i], memory_order_relaxed);
+        d[i] = (double)(now - g_nvn.draw.logged[i]) / (double)presents;
+        g_nvn.draw.logged[i] = now;
+    }
+    LOG("nvn: draws a present: %.1f, %.1f of them moving a base vertex or base instance word; the inline blocks "
+        "changed at %.1f (%.1f blocks), %.1f of them by those words alone\n",
+        d[NVN_COUNT_DRAWS], d[NVN_COUNT_BASE_MOVED], d[NVN_COUNT_INLINE_MOVED], d[NVN_COUNT_BLOCKS],
+        d[NVN_COUNT_BASE_ONLY]);
 }
 /* An indirect draw's arguments stay in guest memory, which the GPU reads when it draws (DrawCall.indirect): NVN's
    DrawArraysIndirect and DrawElementsIndirect records have Vulkan's indirect command layouts, {count, instances, first,

@@ -74,7 +74,7 @@ static uint32_t cas_native(uint64_t* p, uint64_t o0, uint64_t o1, uint64_t n0, u
 #elif defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
     /* p[0] is the integer's high half on a big-endian host */
     snx_cas_u128 expected = ((snx_cas_u128)o0 << 64) | o1, desired = ((snx_cas_u128)n0 << 64) | n1;
-    return atomic_compare_exchange_strong_explicit((snx_cas_u128*)p, &expected, desired, memory_order_seq_cst,
+    return atomic_compare_exchange_strong_explicit((_Atomic snx_cas_u128*)p, &expected, desired, memory_order_seq_cst,
                                                    memory_order_seq_cst);
 #else
     snx_cas_u128 expected = ((snx_cas_u128)o1 << 64) | o0, desired = ((snx_cas_u128)n1 << 64) | n0;

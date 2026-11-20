@@ -98,8 +98,7 @@ u32 nvn_rt_format(u32 format, int* depth) {
     *depth = 0;
     return rt_format(format);
 }
-int nvn_draw_surface(u64 snapshot, const NvnView* v, DsSurf* s, int* depth, u32* msaa) {
-    const NvnTexture* t = NVN_OBJ(const NvnTexture, snapshot);
+int nvn_draw_surface_of(const NvnTexture* t, const NvnView* v, DsSurf* s, int* depth, u32* msaa) {
     memset(s, 0, sizeof *s);
     s->gva = t->gpu;
     s->width = t->d.width;
@@ -460,7 +459,35 @@ static void check_memory_conversions(void) {
     }
 }
 
+/* glGenerateMipmap's level copies (nvn_copy_levels) of a texture with no NVN object in guest memory, as the GL layer's
+   are: each level filtered from the one above it by the renderer's blit, of the texture given. Guest address 0 holds
+   another texture here, which a copy that read its textures from the record's (absent) addresses would take */
+static void check_level_copies(void) {
+    NvnTexture t = {0};
+    memset(&g_seen, 0, sizeof g_seen);
+    g_seen.blit_ok = 1;
+    texture(0, NVN_FORMAT_RGBA8, 0xdead0000);
+    t.magic = NVN_MAGIC('T', 'E', 'X', 0);
+    t.d.target = NVN_TEXTURE_TARGET_2D;
+    t.d.format = NVN_FORMAT_RGBA8;
+    t.d.width = t.d.height = 8;
+    t.d.depth = 1;
+    t.d.levels = 3;
+    t.d.flags = NVN_TEX_LINEAR;
+    t.gpu = 0x40000;
+    nvn_copy_levels(&t, 0, 2);
+    check(g_seen.blits == 2 && g_seen.linear == 1 && g_seen.copies == 0,
+          "levels 1 and 2 from the ones above: expected 2 filtered blits, found %d (filter %d) and %d copies",
+          g_seen.blits, g_seen.linear, g_seen.copies);
+    check(g_seen.blit_src[0] == 0x40000 && g_seen.blit_dst[1] == 0x40000,
+          "the level copies blit the texture given (0x40000), found %#llx to %#llx",
+          (unsigned long long)g_seen.blit_src[0], (unsigned long long)g_seen.blit_dst[1]);
+    check(g_seen.src_width == 4 && g_seen.dst_width == 2, "level 2 from level 1: 4 to 2 wide, found %u to %u",
+          g_seen.src_width, g_seen.dst_width);
+}
+
 int main(void) {
+    check_level_copies();
     check_array1d_copies();
     check_buffer_mirrors();
     check_texture_filters();

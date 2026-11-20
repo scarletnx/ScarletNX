@@ -226,6 +226,7 @@ int main(void) {
             {"kernel", "0", "Help", INI_INT, INI_ONLY_LINUX, &v, 0, 1, NULL, "Kernel", "Off|On", 0, 0, 0},
             {"nce", "0", "Help", INI_INT, INI_ONLY_ARM64_LINUX, &v, 0, 1, NULL, "NCE", "Off|On", 0, 0, 0},
             {"all", "0", "Help", INI_INT, INI_STARTUP, &v, 0, 1, NULL, "All", "Off|On", 0, 0, 0},
+            {"never", "0", "Help", INI_INT, INI_ONLY_NONE, &v, 0, 0, NULL, "Never", "Off", 0, 0, 0},
             {NULL, NULL, NULL, 0, 0, NULL, 0, 0, NULL, NULL, NULL, 0, 0, 0}};
         static const IniSection sections[] = {{"Test", 1, {rows, NULL, NULL}, {NULL, NULL, NULL}}};
         const char *mac = "macOS only", *win = "Windows only", *phone = "Android only";
@@ -236,6 +237,8 @@ int main(void) {
         assert(!strcmp(ini_only_words(INI_ONLY_LINUX), kernel) && !strcmp(ini_only_words(INI_ONLY_ARM64_LINUX), nce));
         assert(!ini_only_words(INI_ONLY)); /* no system's: a setting of every one */
         assert(!ini_only(&rows[5]));
+        /* none: greyed on every system, this one too */
+        assert(!strcmp(ini_only_words(INI_ONLY_NONE), "Not offered") && !strcmp(ini_only(&rows[6]), "Not offered"));
         /* this system's are said by no row: the others' by each */
 #if defined(__APPLE__) && !defined(SNX_IOS)
         mac = "";
@@ -259,12 +262,16 @@ int main(void) {
                  "Test\tphone\t0\tint\t0\t1\tHelp\tPhone\t0=Off|1=On\t%s\n"
                  "Test\tkernel\t0\tint\t0\t1\tHelp\tKernel\t0=Off|1=On\t%s\n"
                  "Test\tnce\t0\tint\t0\t1\tHelp\tNCE\t0=Off|1=On\t%s\n"
-                 "Test\tall\t0\tint\t0\t1\tHelp\tAll\t0=Off|1=On\t\n",
+                 "Test\tall\t0\tint\t0\t1\tHelp\tAll\t0=Off|1=On\t\n"
+                 "Test\tnever\t0\tint\t0\t0\tHelp\tNever\t0=Off\tNot offered\n",
                  mac, win, phone, kernel, nce);
         assert(ini_list_text(sections, 1, list, sizeof list) == strlen(want) && !strcmp(list, want));
 #if defined(__linux__) && defined(__x86_64__) && !defined(__ANDROID__) /* a Linux PC: all but the kernel's greyed */
         assert(mac[0] && win[0] && phone[0] && !kernel[0] && nce[0]);
 #endif
+        /* the Switch's online service, offered nowhere: its row greyed on every system, Off its one value */
+        const IniOpt* online = ini_find(g_switch_online_ini, "switch_online");
+        assert(online && !strcmp(ini_only(online), "Not offered") && !strcmp(online->words, "Off") && online->hi == 0);
     }
     /* the game's Debug table: log_max past its default is said at the top of the picture ("Debug on: ...") and in the
        log's header, as every Debug setting not at its default */

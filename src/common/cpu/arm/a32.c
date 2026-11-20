@@ -44,11 +44,12 @@ static SnxA32Kind always_branch(uint32_t w) { return (void)w, SNX_A32_BRANCH; }
 static SnxA32Kind always_svc(uint32_t w) { return (void)w, SNX_A32_SVC; }
 static SnxA32Kind always_blx(uint32_t w) { return (void)w, SNX_A32_BLX_IMM; }
 
-/* data processing: a register-shifted register can't be the PC; TST, TEQ, CMP and CMN set the flags into no Rd; an
-   S form writing the PC is an exception return; MOV and MVN have no Rn */
+/* data processing: no register of a register-shifted register's is the PC (UNPREDICTABLE), its Rd either; TST, TEQ,
+   CMP and CMN set the flags into no Rd; an S form writing the PC is an exception return; MOV and MVN have no Rn */
 static SnxA32Kind data(uint32_t w) {
     unsigned op = (w >> 21) & 15;
-    if (!BIT(w, 25) && BIT(w, 4) && (BIT(w, 7) || RS(w) == 15 || RM(w) == 15 || RN(w) == 15)) return SNX_A32_UNDEFINED;
+    if (!BIT(w, 25) && BIT(w, 4) && (BIT(w, 7) || RS(w) == 15 || RM(w) == 15 || RN(w) == 15 || RD(w) == 15))
+        return SNX_A32_UNDEFINED;
     if (op >= 8 && op <= 11) {
         if (!BIT(w, 20) || RD(w)) return SNX_A32_UNDEFINED;
     } else if (RD(w) == 15 && BIT(w, 20))
@@ -105,9 +106,10 @@ static SnxA32Kind crc32(uint32_t w) {
     return SNX_A32_CRC32;
 }
 
+/* BX and BLX (register): BX PC branches to the PC, in A32; BLX PC is UNPREDICTABLE */
 static SnxA32Kind bx(uint32_t w) {
     if ((w & 0x0FFFFFF0) != 0x012FFF10 && (w & 0x0FFFFFF0) != 0x012FFF30) return SNX_A32_UNDEFINED;
-    return RM(w) != 15 ? SNX_A32_BX : SNX_A32_UNDEFINED;
+    return RM(w) != 15 || !BIT(w, 5) ? SNX_A32_BX : SNX_A32_UNDEFINED;
 }
 static SnxA32Kind clz(uint32_t w) {
     return (w & 0x0FFF0FF0) == 0x016F0F10 && RD(w) != 15 && RM(w) != 15 ? SNX_A32_CLZ : SNX_A32_UNDEFINED;

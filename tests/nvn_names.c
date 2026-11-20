@@ -25,7 +25,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-static u8 memory[4 << 20];
+/* 16 MiB: the cases' programs are at GPU addresses up to 0xa00000, where an Ounce program's header is read */
+static u8 memory[16 << 20];
 u8* g_mem = memory; /* guest address a is memory + a */
 u64 g_code_lo, g_code_hi;
 const SnxNros* g_nros; /* main.c's: a game module without NROs of its own */
@@ -196,13 +197,22 @@ u64 gmmu_run(u64 gva, u64 max, u64* cpu) {
     *cpu = gva;
     return max;
 }
+/* the GPU's bytes at gva, which are the test's memory's: past it they are whatever the host has there, or a fault */
+static u8* gpu_bytes(u64 gva, u64 size) {
+    if (gva > sizeof memory || size > sizeof memory - gva) {
+        fprintf(stderr, "nvn_names: %llu bytes at 0x%llx are outside the test's memory of 0x%zx bytes\n",
+                (unsigned long long)size, (unsigned long long)gva, sizeof memory);
+        abort();
+    }
+    return GP(gva);
+}
 int gmem_read(u64 gva, void* dst, u64 size) {
-    memcpy(dst, GP(gva), size);
+    memcpy(dst, gpu_bytes(gva, size), size);
     return 1;
 }
-void gmem_read_code(u64 gva, void* dst, u64 size) { memcpy(dst, GP(gva), size); }
+void gmem_read_code(u64 gva, void* dst, u64 size) { memcpy(dst, gpu_bytes(gva, size), size); }
 int gmem_write(u64 gva, const void* src, u64 size) {
-    memcpy(GP(gva), src, size);
+    memcpy(gpu_bytes(gva, size), src, size);
     return 0;
 }
 int g_shader_sm86; /* shader.c's: Maxwell programs */

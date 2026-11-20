@@ -297,7 +297,7 @@ bad:
 
 void nvn_state_install(NvnStaged* s) {
     Nvn* n = &s->n;
-    u32 i, g;
+    u32 i;
     /* the running game's host side: its queues' predicates (the renderer counts their holders), the records its
        waiting submissions kept, its heap memory */
     for (i = 0; i < NVN_QUEUES; i++) {
@@ -314,10 +314,8 @@ void nvn_state_install(NvnStaged* s) {
         d->own.pred = 0;        /* draws run until the next render enable */
         d->own.xfb_started = 0; /* capture starts over at the buffers' offsets */
         d->samples = 0;         /* reports write the replay's own count until the game resets the counter again */
-        for (g = 0; g < DS_GENS; g++) {
-            d->ds.gen[g] = ds_generation_next();
-            d->scratch.gen[g] = ds_generation_next();
-        }
+        ds_generations_renew(&d->ds);
+        ds_generations_renew(&d->scratch);
     }
     /* the running process's: its locks, and its loader, once it has taken the state's game's functions (a process
        that loads the state as the game starts hasn't) */

@@ -34,8 +34,24 @@ typedef struct {
     char c[512];        /* the C expression of the value */
     unsigned tuple[4]; /* K_TUPLE: the components, in the value pool */
     unsigned node;
-    unsigned sdef; /* K_STRUCT: the struct's definition */
+    unsigned sdef;      /* K_STRUCT: the struct's definition */
+    unsigned char word; /* the instruction's word (__opcode), whose bits the clause walked fixes (word_bits) */
+    /* an accumulation loop's (foreach_loop): ACC_READ the accumulator as the body reads it, which only a fold of an
+       element into it may take; ACC_FOLD that fold of every lane, one value (accumulate). acc_var: its local */
+    unsigned char acc;
+    int acc_var;
+    /* in a function that calls itself on each half of its bits (halves_call): HALF_LO and HALF_HI what it gives for
+       each half, which only their + may take; HALF_SUM that sum, the fold of every element */
+    unsigned char half;
+    /* what sailgen knows of a value it does not know: the width of bits (0: not known here), the range of an integer
+       (ranged: lo to hi), so a test of a field's number against one it can't be folds (T16's t == 15, its Rt three
+       bits) */
+    unsigned width;
+    unsigned char ranged;
+    long long lo, hi;
 } Val;
+enum { ACC_NONE, ACC_READ, ACC_FOLD };
+enum { HALF_NONE, HALF_LO = 1, HALF_HI = 2, HALF_SUM = 4 };
 
 typedef struct {
     unsigned name;
@@ -51,6 +67,10 @@ typedef struct {
     /* BT_LANE: set in the loop to an element's value rather than to the vector Elem_set builds, so after the loop it
        is no value of the Sail's (the last element's) */
     unsigned char lane_elem;
+    /* an accumulator: the loop that folds every lane into it, a vector of one lane (accumulate); its start's node, its
+       binding's place on the stack and the assignments it had outside a loop's lanes since it was declared */
+    unsigned acc_loop, init_node, decl_depth, sets;
+    unsigned char half_sum; /* it holds a HALF_SUM, set where its function's body is walked (halves_call) */
 } Var;
 
 typedef struct {
@@ -73,9 +93,20 @@ typedef struct {
     unsigned clause; /* its definition */
     unsigned decode; /* the decode function it calls (a root) */
     SgU64 mask, value;
+    unsigned width;    /* the instruction's bits its pattern has: 32, or a T16 halfword's 16 */
+    unsigned decoder;  /* the dispatcher that tries it (Decoder) */
     unsigned shadowed; /* the earlier clause that covers it and hands no word on, plus 1 */
     int sees;          /* it hands some words on to the next clause (a throw of Error_See) */
+    int guarded;       /* its guard tests the word beyond its pattern's bits (B T1's cond != 0b1111) */
 } Clause;
+
+/* a dispatcher: the clauses of the scattered decode functions it names, tried in their order (a roots file's decoder
+   line: one instruction set's, as the T16 halfwords are __DecodeT16's); without a decoder line, every clause */
+typedef struct {
+    unsigned name;         /* the C function's name */
+    unsigned families[16]; /* the scattered functions whose clauses it tries */
+    unsigned family_count;
+} Decoder;
 
 static struct {
     Binding* stack;
@@ -94,7 +125,8 @@ static struct {
     unsigned helper_count;
     int indent;
     int in_helper;      /* walking a static helper: a throw returns 1, a return sets its outputs */
-    int dynamic_branch; /* inside a branch of a DYN if: no state may change */
+    unsigned decode_def; /* the decode function the clause being walked calls (decode_body) */
+    int dynamic_branch; /* inside a branch of a DYN if, or what joins a function's halves: no state may change */
     char path[400];     /* the run-time condition (an i1's C expression) the code walked is under, "" for none */
     unsigned call_depth;
     int sees; /* the decode function walked has thrown Error_See */
@@ -103,12 +135,36 @@ static struct {
     unsigned lane_loop;
     int lane, lane_fail, lane_restart;
     char lane_count[160];
+    int lane_raw; /* a line the walk emits may name the lane: a permuted index's mask (permuted) */
+    /* that loop's first element (1: an accumulation loop, accumulate), its body, its variable's name, the first local
+       and the first binding of its walk, the indent its body is walked at, the accumulators it has set, and whether a
+       line the walk emits may hold a fold (an accumulator's new value) */
+    long long lane_from;
+    unsigned lane_body, lane_e, lane_var_base, lane_depth;
+    int lane_indent, fold_ok;
+    int acc_set[8];
+    unsigned acc_set_count;
+    /* the call walked of a function that calls itself on each half of its bits (halves_call), the indent and the
+       run-time branches its body is walked at, and the C of the sum of those bits' elements */
+    unsigned halves;
+    int halves_indent, halves_branch;
+    char halves_sum[400];
+    /* the bits of the instruction's word the clause walked fixes, and their values */
+    SgU64 word_mask, word_value;
     unsigned refused[64], refused_count;
     /* a builtin's arguments, evaluated once to see whether one is per lane (lane_builtin), for builtin() to reuse */
     unsigned memo_node, memo_count;
     Val memo[8];
     unsigned roots[1024];
     Clause clauses[1024];
+    Decoder decoders[8];
+    unsigned decoder_count;
+    /* a profile's since lines (a32.profile: "since 6 ROOT..."): the ArchVersion() each encoding came with, by root */
+    struct {
+        unsigned root;
+        long long version;
+    } since[512];
+    unsigned since_count;
     char* features;           /* --profile's features, " FEAT_A FEAT_B ", in capitals; NULL without one */
     char* backend_code;       /* the back end's text (--backend) with its comments and strings blanked */
     const char* backend_name; /* its file's name, for the errors */
@@ -136,7 +192,17 @@ static void emit(const char* fmt, ...) {
     n = vsnprintf(line, sizeof line, fmt, ap);
     va_end(ap);
     if (n < 0 || (size_t)n >= sizeof line) sg_fail(0, "a generated line over %zu characters", sizeof line);
-    if (g_gen.lane && strstr(line, "sg_lane")) lane_refuse("the lane's number used other than as an element's");
+    if (g_gen.lane) {
+        if (!g_gen.lane_raw && strstr(line, "sg_lane"))
+            lane_refuse("the lane's number used other than as an element's");
+        if (strstr(line, "sg_acc")) lane_refuse("an accumulator read other than to fold an element into it");
+        if (!g_gen.fold_ok && strstr(line, "sg_l_reduce_")) lane_refuse("a fold used other than as its accumulator");
+    }
+    if (g_gen.halves && strstr(line, "sg_one_half"))
+        sg_fail(g_gen.halves,
+                "%s joins what it gives for each half of its bits other than by + of the two: sailgen makes the sum of "
+                "the bits' elements of such a function, and no other fold",
+                sg_str(g_parse.nodes[g_gen.halves].name));
     buf_add(g_gen.out, line, (size_t)n);
 }
 
@@ -243,6 +309,18 @@ static Val val_c(int kind, int bt, const char* fmt, ...) {
 static Val val_const(int kind, long long value) {
     Val v = val_c(kind, BT_CONST, kind == K_INT ? "%lldll" : "%lld", value);
     v.value = value;
+    if (kind == K_INT) {
+        v.ranged = 1;
+        v.lo = v.hi = value;
+    }
+    return v;
+}
+/* the range of UInt or SInt of bits of a width known here */
+static Val int_range(Val v, unsigned width, int is_signed) {
+    if (!width || width > 62) return v;
+    v.ranged = 1;
+    v.lo = is_signed ? -(1ll << (width - 1)) : 0;
+    v.hi = is_signed ? (1ll << (width - 1)) - 1 : (1ll << width) - 1;
     return v;
 }
 static Val unit(void) { return val_c(K_UNIT, BT_CONST, "0"); }
@@ -287,7 +365,7 @@ static Val raise(Val v, int bt) {
     switch (v.kind) {
         case K_BITS: return val_c(K_BITS, BT_DYN, "sg_d_from_s(%s)", v.c);
         case K_INT: return val_c(K_INT, BT_DYN, "sg_i_const(g, %s)", v.c);
-        case K_BOOL: return val_c(K_BOOL, BT_DYN, "LLVMConstInt(g->ir->t_i1, (unsigned long long)(%s), 0)", v.c);
+        case K_BOOL: return val_c(K_BOOL, BT_DYN, "sg_bool(g, %s)", v.c);
         default: sg_fail(v.node, "a value of kind %d can't be known only at run time", v.kind);
     }
     return v;
@@ -353,6 +431,7 @@ static int new_var(int kind, int bt) {
         g_gen.vars[i].bt = (unsigned char)(bt < BT_STATIC ? BT_STATIC : bt);
         g_gen.vars[i].lane_loop = 0;
         g_gen.vars[i].lane_elem = 0;
+        g_gen.vars[i].acc_loop = 0;
         g_gen.var_count = i + 1;
         g_gen.changed = 1;
     } else if (bt > g_gen.vars[i].bt) {
@@ -412,8 +491,14 @@ static void assign(unsigned target, Val v);
 static Val undefined_of(unsigned type, int bt);
 static void stmt(unsigned n) { (void)eval(n, 0); }
 
+/* where no state may change, and so nothing may end the decode function: the reason, for the error */
+static const char* stateless(void) {
+    return g_gen.halves ? "where a function that calls itself joins what it gives for each half of its bits"
+                        : "under a condition known only at run time";
+}
+
 static void throw_undefined(unsigned n) {
-    if (g_gen.dynamic_branch) sg_fail(n, "a throw under a condition known only at run time");
+    if (g_gen.dynamic_branch) sg_fail(n, "a throw %s", stateless());
     if (g_gen.in_helper)
         emit("return 1;\n");
     else {
@@ -425,7 +510,7 @@ static void throw_undefined(unsigned n) {
    make a NOP), or handed on to the next clause that matches it (Error_See: sg_see checks that nothing was emitted yet).
    Each is a return from the decode function, so none may be in a helper or under a run-time condition */
 static void end_decode(unsigned n, const char* what, int see) {
-    if (g_gen.dynamic_branch) sg_fail(n, "%s under a condition known only at run time", what);
+    if (g_gen.dynamic_branch) sg_fail(n, "%s %s", what, stateless());
     if (g_gen.in_helper) sg_fail(n, "%s in a function of what the recompiler knows", what);
     if (see) {
         emit("return sg_see(g);\n");
@@ -465,6 +550,22 @@ static Val need_bits(unsigned n, Val v, const char* what) {
     return v;
 }
 
+/* bits hi..lo of the instruction's word, all of them bits the clause walked fixes: known here (CONST), so an if on
+   them keeps one branch (MUL's clause fixes U at 0, so its decode never reaches PMUL's polynomial product). 1 when
+   *r is them */
+static int word_bits(Val x, Val hi, Val lo, Val* r) {
+    SgU64 m, bits;
+    if (!x.word || hi.bt != BT_CONST || lo.bt != BT_CONST || lo.value < 0 || hi.value < lo.value || hi.value > 31)
+        return 0;
+    m = ((2ull << (hi.value - lo.value)) - 1) << lo.value;
+    if ((g_gen.word_mask & m) != m) return 0;
+    bits = (g_gen.word_value & m) >> lo.value;
+    *r = val_c(K_BITS, BT_CONST, "sg_s(0x%llxull, %lld)", (unsigned long long)bits, hi.value - lo.value + 1);
+    r->value = (long long)bits;
+    r->width = (unsigned)(hi.value - lo.value + 1);
+    return 1;
+}
+
 /* ---- calls ---- */
 
 static unsigned arg_at(unsigned n, unsigned index) {
@@ -490,11 +591,152 @@ static unsigned through_let(unsigned n) {
     return n;
 }
 
+/* do two names (string offsets, which the parse does not share between equal names) read the same? */
+static int same_name(unsigned a, unsigned b) { return a == b || !strcmp(sg_str(a), sg_str(b)); }
+
+/* ---- accumulators: an element loop from 1 that folds each element into a local ----
+   foreach (e from 1 to elements - 1) { acc = op(acc, x) } with acc declared before it as x is for e 0 (SMAXV's maxmin,
+   SADDLV's sum) is acc folded over every lane from 0: llvm.vector.reduce of x's lanes, by + (an integer's exact sum,
+   bits' modular one), Min or Max, one value as a vector of one lane (llvm.h's sg_l_reduce_*). Walked as lanes, the body
+   reads acc as ACC_READ, which only such a fold may take, and the fold (ACC_FOLD) may only be acc's new value, set
+   once at the body's top; anything else refuses the loop (emit's check) */
+
+/* the assignments to the local named name in n and what it holds (not n's next) */
+static unsigned sets_in(unsigned n, unsigned name);
+static unsigned sets_list(unsigned n, unsigned name) {
+    unsigned k = 0;
+    for (; n; n = N(n).next) k += sets_in(n, name);
+    return k;
+}
+static unsigned sets_in(unsigned n, unsigned name) {
+    unsigned k = 0, t, q;
+    if (!n) return 0;
+    if (N(n).kind == N_ASSIGN) {
+        t = N(n).a;
+        while (N(t).kind == N_SLICE || N(t).kind == N_INDEX || N(t).kind == N_TYPED || N(t).kind == N_FIELD) t = N(t).a;
+        if (N(t).kind == N_ID && same_name(N(t).name, name)) ++k;
+        if (N(t).kind == N_TUPLE)
+            for (q = N(t).a; q; q = N(q).next) {
+                unsigned i = q;
+                while (N(i).kind == N_TYPED) i = N(i).a;
+                k += N(i).kind == N_ID && same_name(N(i).name, name);
+            }
+    }
+    return k + sets_list(N(n).a, name) + sets_list(N(n).b, name) + sets_list(N(n).c, name) + sets_list(N(n).d, name);
+}
+/* the place among the loop body's top-level items (from 1) of the one that sets the local named name, the body's only
+   set of it; 0 when there is none such */
+static unsigned body_set(unsigned name, unsigned* value) {
+    unsigned body = g_gen.lane_body, item, t, place = 1;
+    if (sets_in(body, name) != 1) return 0;
+    for (item = N(body).kind == N_BLOCK ? N(body).a : body; item; item = N(body).kind == N_BLOCK ? N(item).next : 0) {
+        if (N(item).kind == N_ASSIGN) {
+            for (t = N(item).a; N(t).kind == N_TYPED; t = N(t).a) {}
+            if (N(t).kind == N_ID && same_name(N(t).name, name)) {
+                *value = N(item).b;
+                return place;
+            }
+        }
+        ++place;
+    }
+    return 0;
+}
+/* is name a builtin an element loop's lanes can go through (lane_builtin)? None of them reads state */
+static int lane_has(const char* name) {
+    static const char* const names[] = {"UInt", "SInt",       "asl_Int",    "Min",       "Max",
+                                        "Abs",  "negate",     "IsZero",     "not_vec",   "not_bool",
+                                        "EOR",  "ZeroExtend", "SignExtend", "Elem_read", "Elem_set"};
+    unsigned i;
+    for (i = 0; i < sizeof names / sizeof *names; ++i)
+        if (!strcmp(name, names[i])) return 1;
+    return 0;
+}
+static int first_lane(unsigned a, unsigned x, int acc, unsigned depth);
+static int first_lanes(unsigned a, unsigned x, int acc, unsigned depth) {
+    for (; a && x; a = N(a).next, x = N(x).next)
+        if (!first_lane(a, x, acc, depth)) return 0;
+    return !a && !x;
+}
+/* is x, what the loop folds into the accumulator acc, acc's start a when the loop's variable is 0: the same tree but
+   for the variable where a has 0; a local the body sets once, at its top before acc, read through what it is set to
+   (SMAXV's element), and a let of the body through its value; every other name a constant, or bound before acc was to
+   a value nothing sets; no call but of a builtin that reads no state */
+static int first_lane(unsigned a, unsigned x, int acc, unsigned depth) {
+    unsigned value = 0, place, acc_place, acc_value;
+    Binding* b;
+    if (!a || !x) return a == x;
+    if (depth > 32) return 0;
+    if (N(x).kind == N_ID) {
+        if (same_name(N(x).name, g_gen.lane_e)) return N(a).kind == N_NUM && N(a).value == 0;
+        b = lookup(name_of(x));
+        if (b && b->var >= 0 && (unsigned)(b - g_gen.stack) != g_gen.vars[acc].decl_depth) { /* set in the body */
+            place = body_set(N(x).name, &value);
+            acc_place = body_set(g_gen.stack[g_gen.vars[acc].decl_depth].name, &acc_value);
+            return place && acc_place && place < acc_place && first_lane(a, value, acc, depth + 1);
+        }
+        if (b && (unsigned)(b - g_gen.stack) >= g_gen.lane_depth && b->def)
+            return first_lane(a, b->def, acc, depth + 1);
+        if (N(a).kind != N_ID || !same_name(N(a).name, N(x).name)) return 0;
+        if (b) return b->var < 0 && (unsigned)(b - g_gen.stack) < g_gen.vars[acc].decl_depth;
+        return enum_member(name_of(x)) >= 0 || sg_find(name_of(x), D_LET);
+    }
+    if (N(a).kind != N(x).kind || !same_name(N(a).name, N(x).name) || N(a).value != N(x).value ||
+        N(a).width != N(x).width)
+        return 0;
+    switch (N(x).kind) {
+        case N_NUM:
+        case N_BITS:
+        case N_BOOL:
+        case N_UNIT:
+        case N_TYPE: return 1;
+        case N_CALL: return lane_has(name_of(x)) && first_lanes(N(a).a, N(x).a, acc, depth + 1);
+        case N_VEC:
+        case N_TUPLE: return first_lanes(N(a).a, N(x).a, acc, depth + 1);
+        case N_BINOP:
+        case N_NOT:
+        case N_NEG:
+        case N_SLICE:
+        case N_INDEX:
+        case N_FIELD:
+        case N_TYPED:
+            return first_lane(N(a).a, N(x).a, acc, depth + 1) && first_lane(N(a).b, N(x).b, acc, depth + 1) &&
+                   first_lane(N(a).c, N(x).c, acc, depth + 1);
+        default: return 0;
+    }
+}
+/* acc = op(acc, x) in an accumulation loop's body: x folded over every lane (ACC_FOLD), when acc starts at x's first
+   lane; else the loop is refused. op "add" (+), "min" or "max" */
+static Val accumulate(Val acc, Val x, unsigned x_node, const char* op) {
+    Val r;
+    int add = !strcmp(op, "add");
+    if (x.acc || x.kind != acc.kind || (x.kind != K_INT && (x.kind != K_BITS || !add))) {
+        lane_refuse("a fold into an accumulator of other than an element of its kind");
+        return acc;
+    }
+    if (!first_lane(g_gen.vars[acc.acc_var].init_node, x_node, acc.acc_var, 0)) {
+        lane_refuse("an accumulator that starts at other than the first element's value");
+        return acc;
+    }
+    x = raise(x, BT_LANE);
+    r = add ? val_c(acc.kind, BT_LANE, "sg_l_reduce_add(g, %s, %d)", x.c, x.kind == K_INT)
+            : val_c(K_INT, BT_LANE, "sg_l_reduce_minmax(g, %s, %d)", x.c, op[1] == 'i');
+    r.acc = ACC_FOLD;
+    r.acc_var = acc.acc_var;
+    return r;
+}
+static int acc_was_set(int var) {
+    unsigned i;
+    for (i = 0; i < g_gen.acc_set_count; ++i)
+        if (g_gen.acc_set[i] == var) return 1;
+    return 0;
+}
+
 /* does a function reach state (a register, a feature, the pc), or call one that does? A call of an overload may run
    any of its functions */
 static int reaches_state(unsigned def, unsigned depth);
-/* what the back end's sg_NAME of a function with no Sail definition takes after the context (backend_action) */
-enum { BACKEND_ARGS = 1, BACKEND_PATH = 2 };
+/* what the back end's sg_NAME of a function with no Sail definition takes after the context, and whether it answers
+   what the recompiler knows (backend_action) */
+enum { BACKEND_ARGS = 1, BACKEND_PATH = 2, BACKEND_STATIC = 4 };
 static int backend_action(const char* name);
 static int node_reaches_state(unsigned n, unsigned depth) {
     if (!n) return 0;
@@ -573,7 +815,11 @@ static Val helper_call(unsigned n, unsigned def, Val* args, unsigned count) {
         if (!strcmp(g_gen.helper[i].key, key)) h = &g_gen.helper[i];
     if (!h) {
         Buffer local = {0, 0, 0}, *saved_out = g_gen.out;
-        unsigned saved_frame = g_gen.frame, saved_depth = g_gen.depth, k;
+        /* the helper's locals are its own: the decode function's keep their numbers whether the helper is walked in
+           this walk or was made in an earlier one (DecodeImmShift's shift_t before Shift_C's result) */
+        unsigned saved_frame = g_gen.frame, saved_depth = g_gen.depth, saved_var_next = g_gen.var_next,
+                 saved_var_count = g_gen.var_count, k;
+        int saved_changed = g_gen.changed;
         int saved_indent = g_gen.indent, saved_in = g_gen.in_helper, saved_dyn = g_gen.dynamic_branch;
         Val ret;
         char sig[768];
@@ -634,6 +880,9 @@ static Val helper_call(unsigned n, unsigned def, Val* args, unsigned count) {
         g_gen.indent = saved_indent;
         g_gen.in_helper = saved_in;
         g_gen.dynamic_branch = saved_dyn;
+        g_gen.var_next = saved_var_next;
+        g_gen.var_count = saved_var_count;
+        g_gen.changed = saved_changed;
     }
     at += (size_t)snprintf(text + at, sizeof text - at, "%s(g", h->name);
     for (i = 0; i < count; ++i)
@@ -709,6 +958,38 @@ static void bind_widths(unsigned def, const Val* args, unsigned count) {
     }
 }
 
+/* the body of the decode function a clause calls. Every AArch32 one is `if ConditionPassed() then { ... }; ()`: the
+   instruction runs only where its condition holds, which is known only when the guest runs (a B<cond>'s, an IT
+   block's). Such an if's branch sets state, which a select can't give, so where the back end defines sg_when the rest
+   of the instruction runs under the condition instead: sg_when(g, c) branches past the instruction's IR where c fails,
+   as the AArch32 block compilers always ran a conditional instruction. Any other body is walked as it is */
+static int backend_defines_function(const char* name);
+static Val decode_body(unsigned def) {
+    unsigned body = g_parse.defs[def].body, item, rest;
+    Val c;
+    if (N(body).kind != N_BLOCK || !(item = N(body).a) || N(item).kind != N_IF || N(item).c ||
+        !backend_defines_function("sg_when"))
+        return eval(body, 1);
+    for (rest = N(item).next; rest && N(rest).kind == N_UNIT; rest = N(rest).next) {}
+    if (rest) return eval(body, 1);
+    c = eval(N(item).a, 0);
+    if (c.kind != K_BOOL) sg_fail(N(item).a, "an if's condition is not a bool");
+    if (c.bt == BT_DYN) {
+        emit("sg_when(g, %s);\n", c.c);
+        return eval(N(item).b, 1);
+    }
+    if (c.bt == BT_CONST) return c.value ? eval(N(item).b, 1) : unit();
+    { /* known when it recompiles: C's if */
+        char buffer[sizeof c.c];
+        emit("if (%s) {\n", cond_text(c.c, buffer, sizeof buffer));
+        ++g_gen.indent;
+        stmt(N(item).b);
+        --g_gen.indent;
+        emit("}\n");
+    }
+    return unit();
+}
+
 /* an inlined function: its parameters bound to the arguments in a frame of its own, the value of its body */
 static Val inline_call(unsigned n, unsigned def, Val* args, unsigned count) {
     unsigned names[16], name_count, k, saved_frame = g_gen.frame, base = g_gen.depth;
@@ -721,8 +1002,188 @@ static Val inline_call(unsigned n, unsigned def, Val* args, unsigned count) {
     g_gen.frame = base;
     bind_widths(def, args, count);
     emit("/* %s */\n", sg_str(g_parse.defs[def].name));
-    r = eval(g_parse.defs[def].body, 1);
+    r = def == g_gen.decode_def ? decode_body(def) : eval(g_parse.defs[def].body, 1);
     if (r.kind != K_UNIT && r.kind != K_TUPLE) r = keep(r);
+    g_gen.frame = saved_frame;
+    g_gen.depth = base;
+    --g_gen.call_depth;
+    return r;
+}
+
+/* ---- halves: a function that calls itself on each half of its bits ----
+   f(x, size, ...) that gives x where x is size bits wide, and elsewhere the + of what it gives for x's upper half and
+   for its lower half (Reduce__1 of ReduceOp_ADD, ADDV's), gives the sum of x's elements of size bits: + of bits is
+   associative and commutative, so the tree of halves adds what one llvm.vector.reduce.add of the lanes does (llvm.h's
+   sg_l_reduce_add, as the element loops' accumulators), and one element is its own sum. The base, the half and the two
+   calls are read on the Sail's tree (halves_shape). What joins the two results is walked as any Sail, once, but for a
+   match on a value known here, which keeps the case it picks (Reduce's op: match_expr): each result is a value only
+   their + may take (HALF_LO, HALF_HI; emit refuses a line that names one), that + is the sum (HALF_SUM), and the
+   function's value has to be it. A function that calls itself any other way is refused. x is size bits times a power
+   of two wide, or the Sail's own recursion has no end */
+
+typedef struct {
+    unsigned x, size;            /* the parameters: the bits, an element's size */
+    unsigned width, half_name;   /* the names of x's width and of half of it */
+    unsigned base, half, hi, lo; /* the body's items: the return of one element, the half, the two calls */
+} Halves;
+
+/* does n, or what follows it, call the function named name? */
+static int calls(unsigned n, unsigned name) {
+    for (; n; n = N(n).next) {
+        if (N(n).kind == N_CALL && same_name(N(n).name, name)) return 1;
+        if (calls(N(n).a, name) || calls(N(n).b, name) || calls(N(n).c, name) || calls(N(n).d, name)) return 1;
+    }
+    return 0;
+}
+static int is_name(unsigned n, unsigned name) { return n && N(n).kind == N_ID && same_name(N(n).name, name); }
+static int is_number(unsigned n, SgU64 value) { return n && N(n).kind == N_NUM && N(n).value == value; }
+/* name - 1 */
+static int is_one_less(unsigned n, unsigned name) {
+    return n && N(n).kind == N_BINOP && !strcmp(name_of(n), "-") && is_name(N(n).a, name) && is_number(N(n).b, 1);
+}
+/* the name a let or a local's declaration in a block binds: its node, 0 for a pattern of other than one name */
+static unsigned bound_name(unsigned item) {
+    unsigned p;
+    if (N(item).kind == N_VAR) return item;
+    if (N(item).kind != N_LET || N(item).c) return 0;
+    for (p = N(item).a; N(p).kind == N_TYPED; p = N(p).a) {}
+    return N(p).kind == N_ID ? p : 0;
+}
+/* f's call on a half of x, every other argument the parameter as it came: HALF_HI for x[width - 1 .. half], HALF_LO
+   for x[half - 1 .. 0], HALF_NONE for any other call */
+static int halves_side(unsigned call, const unsigned* names, unsigned count, const Halves* h) {
+    unsigned k, a = N(call).a;
+    int side = HALF_NONE;
+    for (k = 0; k < count; ++k, a = N(a).next) {
+        if (!a) return HALF_NONE;
+        if (k != h->x) {
+            if (!is_name(a, names[k])) return HALF_NONE;
+            continue;
+        }
+        if (N(a).kind != N_SLICE || !is_name(N(a).a, names[k])) return HALF_NONE;
+        if (is_one_less(N(a).b, h->width) && is_name(N(a).c, h->half_name))
+            side = HALF_HI;
+        else if (is_one_less(N(a).b, h->half_name) && is_number(N(a).c, 0))
+            side = HALF_LO;
+        else
+            return HALF_NONE;
+    }
+    return a ? HALF_NONE : side;
+}
+/* is def's body, in this order among its items: `if width == size then return(x[size - 1 .. 0])`, `let half =
+   DIV(width, 2)`, and a let of def's call on each half of x, with no other call of def and no other let or local of
+   one of those names? */
+static int halves_shape(unsigned def, const unsigned* names, unsigned count, Halves* h) {
+    unsigned body = g_parse.defs[def].body, self = g_parse.defs[def].name, item, k;
+    *h = (Halves){0};
+    if (N(body).kind != N_BLOCK) return 0;
+    for (item = N(body).a; item; item = N(item).next) {
+        unsigned bound = bound_name(item), value = N(item).kind == N_LET ? N(item).b : 0;
+        if (!h->base && N(item).kind == N_IF && !N(item).c) {
+            unsigned cond = N(item).a, ret = N(item).b, slice;
+            while (N(ret).kind == N_BLOCK && N(ret).a && !N(N(ret).a).next) ret = N(ret).a;
+            slice = N(ret).kind == N_RETURN ? N(ret).a : 0;
+            if (!slice || N(slice).kind != N_SLICE || N(N(slice).a).kind != N_ID || !is_number(N(slice).c, 0)) return 0;
+            for (h->x = 0; h->x < count && !is_name(N(slice).a, names[h->x]); ++h->x) {}
+            for (h->size = 0; h->size < count && !is_one_less(N(slice).b, names[h->size]); ++h->size) {}
+            if (h->x == count || h->size == count || N(cond).kind != N_BINOP || strcmp(name_of(cond), "==")) return 0;
+            if (is_name(N(cond).b, names[h->size]) && N(N(cond).a).kind == N_ID)
+                h->width = N(N(cond).a).name;
+            else if (is_name(N(cond).a, names[h->size]) && N(N(cond).b).kind == N_ID)
+                h->width = N(N(cond).b).name;
+            else
+                return 0;
+            h->base = item;
+            continue;
+        }
+        if (h->base && !h->half && bound && is_call(value, "DIV") && arg_count(value) == 2 &&
+            is_name(arg_at(value, 0), h->width) && is_number(arg_at(value, 1), 2)) {
+            h->half = item;
+            h->half_name = N(bound).name;
+            continue;
+        }
+        if (h->half && bound && N(value).kind == N_CALL && same_name(N(value).name, self)) {
+            int side = halves_side(value, names, count, h);
+            if (side == HALF_NONE || (side == HALF_HI ? h->hi : h->lo)) return 0;
+            *(side == HALF_HI ? &h->hi : &h->lo) = item;
+            continue;
+        }
+        if (calls(N(item).a, self) || calls(N(item).b, self) || calls(N(item).c, self) || calls(N(item).d, self))
+            return 0;
+        if (bound && h->base) { /* a name the shape reads, bound again */
+            if (same_name(N(bound).name, h->width) || (h->half && same_name(N(bound).name, h->half_name))) return 0;
+            for (k = 0; k < count; ++k)
+                if (same_name(N(bound).name, names[k])) return 0;
+        } else if (h->base && (N(item).kind == N_LET || N(item).kind == N_VAR))
+            return 0; /* a pattern of several names */
+    }
+    return h->base && h->half && h->hi && h->lo;
+}
+
+static void let_bind(unsigned pattern, Val v, unsigned value_node, int lazy);
+static int lazy_let(unsigned pattern, unsigned value_node, unsigned scope);
+
+/* a call of a function of that shape (halves_shape): the sum of x's elements. Its body is walked once for what joins
+   the two halves' results, as a branch of a run-time if is, so it may change no state: the Sail runs it once for each
+   pair of halves */
+static Val halves_call(unsigned n, unsigned def, Val* args, unsigned count, const Halves* h) {
+    unsigned names[16], name_count, k, item, saved_frame = g_gen.frame, base = g_gen.depth;
+    const char* self = sg_str(g_parse.defs[def].name);
+    char width[sizeof args[0].c + 32];
+    Binding* w;
+    Val r = unit(), size;
+    param_names(def, names, &name_count);
+    if (g_gen.halves)
+        sg_fail(n, "%s, which calls itself on each half of its bits, called in another such function", self);
+    if (g_gen.lane) {
+        lane_refuse("a function that calls itself on each half of its bits");
+        return args[h->x];
+    }
+    if (args[h->x].kind != K_BITS) sg_fail(n, "%s halves a value that is not bits", self);
+    size = need_static_int(n, args[h->size], "an element's size");
+    args[h->x] = keep(raise(args[h->x], BT_DYN));
+    if (++g_gen.call_depth > 48) sg_fail(n, "calls nested over 48 deep inlining %s", self);
+    for (k = 0; k < count; ++k) bind(names[k], args[k], -1, args[k].node);
+    g_gen.frame = base;
+    bind_widths(def, args, count);
+    snprintf(width, sizeof width, "(long long)(%s).w", args[h->x].c);
+    w = lookup(sg_str(h->width));
+    if (!w || w->var >= 0 || strcmp(w->val.c, width))
+        sg_fail(n, "%s's base is not where %s is as wide as its bits", self, sg_str(h->width));
+    emit("/* %s: the sum of the elements, from its halves */\n", self);
+    k = (unsigned)snprintf(g_gen.halves_sum, sizeof g_gen.halves_sum,
+                           "sg_d_from_l(g, sg_l_reduce_add(g, sg_l_elem(g, %s, %s, (unsigned)((%s).w / (%s))), 0))",
+                           args[h->x].c, size.c, args[h->x].c, size.c);
+    if (k >= sizeof g_gen.halves_sum) sg_fail(n, "a sum's C over %zu characters", sizeof g_gen.halves_sum);
+    g_gen.halves = n;
+    g_gen.halves_indent = g_gen.indent;
+    g_gen.halves_branch = ++g_gen.dynamic_branch;
+    for (item = N(g_parse.defs[def].body).a; item; item = N(item).next) {
+        if (item == h->base || item == h->half) continue;
+        if (item == h->hi || item == h->lo) {
+            Val half = val_c(K_BITS, BT_DYN, "sg_one_half");
+            half.half = item == h->hi ? HALF_HI : HALF_LO;
+            bind(N(bound_name(item)).name, half, -1, 0);
+            r = unit();
+            continue;
+        }
+        if (N(item).kind == N_LET && !N(item).c) {
+            Val value = eval(N(item).b, 0);
+            let_bind(N(item).a, value, N(item).b, lazy_let(N(item).a, N(item).b, N(item).next));
+            r = unit();
+            continue;
+        }
+        r = eval(item, !N(item).next);
+    }
+    if (r.half != HALF_SUM)
+        sg_fail(n,
+                "%s gives other than the + of what it gives for each half of its bits: sailgen makes the sum of "
+                "the bits' elements of such a function, and no other fold",
+                self);
+    r.half = HALF_NONE;
+    r = keep(r);
+    --g_gen.dynamic_branch;
+    g_gen.halves = 0;
     g_gen.frame = saved_frame;
     g_gen.depth = base;
     --g_gen.call_depth;
@@ -736,8 +1197,11 @@ static Val inline_call(unsigned n, unsigned def, Val* args, unsigned count) {
 static int wide(Val width) { return width.bt == BT_CONST && width.value > 64; }
 
 static Val arg(unsigned n, unsigned i) {
+    Val v;
     if (g_gen.memo_node == n && i < g_gen.memo_count) return g_gen.memo[i]; /* lane_builtin evaluated it */
-    return eval(arg_at(n, i), 0);
+    v = eval(arg_at(n, i), 0);
+    if (!g_gen.lane && v.bt == BT_LANE && v.kind == K_BITS) v = raise(v, BT_DYN); /* a loop's lanes after it: bits */
+    return v;
 }
 static void need_args(unsigned n, unsigned count) {
     if (arg_count(n) != count) sg_fail(n, "%s takes %u arguments, given %u", name_of(n), count, arg_count(n));
@@ -785,16 +1249,45 @@ static Val shift(unsigned n, int kind) {
     return val_c(K_BITS, BT_DYN, "%s(g, %s, %s)", d_fn[kind], x.c, amount.c);
 }
 
+/* Elem_read(x, f(e), size) in an element loop, f(e) an element other than the lane's own (the pairwise ops' 2 * e and
+   2 * e + 1), of x a let of hi @ lo (Vm:Vn, wider than the back end's bits, so never made whole: lazy_let): the
+   lanes picked from lo's then hi's, a shufflevector whose mask is f of each lane, made when it recompiles */
+static Val permuted(unsigned n, Val index, Val size) {
+    unsigned x = through_let(arg_at(n, 0));
+    Val hi, lo;
+    char mask[16];
+    if (N(x).kind != N_BINOP || strcmp(name_of(x), "@")) {
+        lane_refuse("an element other than the lane's own of other than a concatenation");
+        return index;
+    }
+    hi = need_bits(x, eval(N(x).a, 0), "a concatenation's side");
+    lo = need_bits(x, eval(N(x).b, 0), "a concatenation's side");
+    if (hi.bt == BT_LANE || lo.bt == BT_LANE) {
+        lane_refuse("a concatenation of lanes");
+        return index;
+    }
+    hi = keep(raise(hi, BT_DYN));
+    lo = keep(raise(lo, BT_DYN));
+    temp(mask, sizeof mask);
+    g_gen.lane_raw = 1; /* the one line that names the lane: f of each */
+    emit("unsigned %s[64];\n", mask);
+    emit(
+        "for (long long sg_lane = 0; sg_lane < (long long)(%s) && sg_lane < 64; ++sg_lane) %s[sg_lane] = (unsigned)(%s);\n",
+        g_gen.lane_count, mask, index.c);
+    g_gen.lane_raw = 0;
+    return val_c(
+        K_BITS, BT_LANE,
+        "sg_l_permute(g, sg_l_elem(g, %s, %s, (unsigned)((%s).w / (%s))), sg_l_elem(g, %s, %s, (unsigned)((%s).w "
+        "/ (%s))), %s, %s)",
+        lo.c, size.c, lo.c, size.c, hi.c, size.c, hi.c, size.c, mask, g_gen.lane_count);
+}
+
 /* the builtins an element loop's lanes can go through: their arguments are evaluated here, and one per lane makes the
    result one per lane; else they stay in g_gen.memo for builtin_body. 1 when *r is the result */
 static int lane_builtin(unsigned n, const char* name, Val* r) {
-    static const char* const names[] = {"UInt", "SInt",       "asl_Int",    "Min",       "Max",
-                                        "Abs",  "negate",     "IsZero",     "not_vec",   "not_bool",
-                                        "EOR",  "ZeroExtend", "SignExtend", "Elem_read", "Elem_set"};
     unsigned count = arg_count(n), i, lanes = 0;
     Val* a = g_gen.memo;
-    for (i = 0; i < sizeof names / sizeof *names && strcmp(name, names[i]); ++i) {}
-    if (i == sizeof names / sizeof *names || count > 8) return 0;
+    if (!lane_has(name) || count > 8) return 0;
     for (i = 0; i < count; ++i) {
         a[i] = eval(arg_at(n, i), 0);
         lanes += a[i].bt == BT_LANE;
@@ -803,9 +1296,13 @@ static int lane_builtin(unsigned n, const char* name, Val* r) {
     g_gen.memo_count = count;
     if (!strcmp(name, "Elem_read") && count == 3 && strstr(a[1].c, "sg_lane")) { /* element e: the lanes */
         Val size = need_static_int(n, a[2], "an element's size");
-        if (strcmp(a[1].c, "sg_lane") || a[0].bt == BT_LANE || a[0].kind != K_BITS) {
-            lane_refuse("an element other than the lane's own");
+        if (a[0].bt == BT_LANE || a[0].kind != K_BITS) {
+            lane_refuse("an element of other than bits");
             *r = a[0];
+            return 1;
+        }
+        if (strcmp(a[1].c, "sg_lane")) { /* element f(e): a shuffle of the lanes */
+            *r = permuted(n, a[1], size);
             return 1;
         }
         *r = val_c(K_BITS, BT_LANE, "sg_l_elem(g, %s, %s, %s)", raise(a[0], BT_DYN).c, size.c, g_gen.lane_count);
@@ -813,8 +1310,8 @@ static int lane_builtin(unsigned n, const char* name, Val* r) {
     }
     if (!strcmp(name, "Elem_set") && count == 4 && strstr(a[1].c, "sg_lane")) { /* element e set: the lanes */
         Val size = need_static_int(n, a[2], "an element's size");
-        if (strcmp(a[1].c, "sg_lane") || a[3].kind != K_BITS) {
-            lane_refuse("an element set other than the lane's own");
+        if (strcmp(a[1].c, "sg_lane") || a[3].kind != K_BITS || g_gen.lane_from) {
+            lane_refuse("an element set other than the lane's own, or in a loop from 1 (which keeps element 0)");
             *r = a[0];
             return 1;
         }
@@ -822,6 +1319,12 @@ static int lane_builtin(unsigned n, const char* name, Val* r) {
         return 1;
     }
     if (!lanes) return 0;
+    if ((!strcmp(name, "Min") || !strcmp(name, "Max")) && count == 2 &&
+        (a[0].acc == ACC_READ || a[1].acc == ACC_READ)) {
+        int i = a[0].acc == ACC_READ ? 0 : 1; /* Min(acc, x): x folded into it (accumulate) */
+        *r = accumulate(a[i], a[1 - i], arg_at(n, (unsigned)(1 - i)), name[1] == 'i' ? "min" : "max");
+        return 1;
+    }
     if ((!strcmp(name, "UInt") || !strcmp(name, "SInt")) && count == 1 && a[0].kind == K_BITS)
         *r = val_c(K_INT, BT_LANE, "sg_l_int(g, %s, %d)", a[0].c, name[0] == 'S');
     else if (!strcmp(name, "asl_Int") && count == 2 && a[0].kind == K_BITS && a[1].bt <= BT_STATIC)
@@ -885,6 +1388,7 @@ static int builtin_body(unsigned n, const char* name, Val* r) {
         a = need_bits(n, arg(n, 0), name);
         *r = a.bt == BT_DYN ? val_c(K_INT, BT_DYN, "sg_i_%s(g, %s)", s ? "sint" : "uint", a.c)
                             : val_c(K_INT, BT_STATIC, "sg_s_%s(%s)", s ? "sint" : "uint", a.c);
+        *r = int_range(*r, a.width, s);
         return 1;
     }
     if (!strcmp(name, "asl_Int")) { /* asl_Int(x, unsigned) */
@@ -1021,6 +1525,47 @@ static int builtin_body(unsigned n, const char* name, Val* r) {
         *r = val_c(K_INT, BT_DYN, "sg_i_%s(g, %s)", !strcmp(name, "CountLeadingZeroBits") ? "clz" : "cls", a.c);
         return 1;
     }
+    if (!strcmp(name, "LSL_C") || !strcmp(name, "LSR_C") || !strcmp(name, "ASR_C") || !strcmp(name, "ROR_C")) {
+        /* (shifted, carry): AArch32's shifter (Shift_C's), by an amount known when it recompiles or at run time */
+        int kind = name[0] == 'L' ? (name[2] == 'L' ? 0 : 1) : name[0] == 'A' ? 2 : 3;
+        char t1[16], t2[16];
+        Val parts[2];
+        need_args(n, 2);
+        a = raise(need_bits(n, arg(n, 0), name), BT_DYN);
+        b = arg(n, 1);
+        if (b.kind != K_INT) sg_fail(n, "%s's amount is not an integer", name);
+        temp(t1, sizeof t1);
+        temp(t2, sizeof t2);
+        emit("SgD %s, %s;\n", t1, t2);
+        if (b.bt == BT_DYN)
+            emit("sg_d_shift_c_dyn(g, %s, %s, %d, &%s, &%s);\n", a.c, b.c, kind, t1, t2);
+        else
+            emit("sg_d_shift_c(g, %s, %s, %d, &%s, &%s);\n", a.c, need_static_int(n, b, "a shift's amount").c, kind, t1,
+                 t2);
+        parts[0] = val_c(K_BITS, BT_DYN, "%s", t1);
+        parts[1] = val_c(K_BITS, BT_DYN, "%s", t2);
+        *r = tuple_of(parts, 2, n);
+        return 1;
+    }
+    if (!strcmp(name, "BitCount") ||
+        !strcmp(name, "LowestSetBit")) { /* of bits the recompiler knows: a register list */
+        need_args(n, 1);
+        a = need_bits(n, arg(n, 0), name);
+        if (a.bt == BT_DYN) sg_fail(n, "%s of a value known only at run time", name);
+        *r = val_c(K_INT, BT_STATIC, "sg_s_%s(%s)", name[0] == 'B' ? "bitcount" : "lowest_set_bit", a.c);
+        return 1;
+    }
+    if (!strcmp(name, "Align")) { /* Align(x, y): x's bits below y, a power of two, cleared */
+        need_args(n, 2);
+        a = need_bits(n, arg(n, 0), name);
+        b = need_static_int(n, arg(n, 1), "Align's alignment");
+        if (a.bt != BT_DYN)
+            *r = val_c(K_BITS, BT_STATIC, "sg_s_align(%s, %s)", a.c, b.c);
+        else
+            *r =
+                val_c(K_BITS, BT_DYN, "sg_d_and(g, %s, sg_d_from_s(sg_s_align(sg_s_ones((%s).w), %s)))", a.c, a.c, b.c);
+        return 1;
+    }
     if (!strcmp(name, "HighestSetBit")) {
         need_args(n, 1);
         a = need_bits(n, arg(n, 0), name);
@@ -1088,7 +1633,7 @@ static int builtin_body(unsigned n, const char* name, Val* r) {
             if (g_gen.features && !strstr(g_gen.features, word))
                 *r = val_const(K_BOOL, 0);
             else
-                *r = val_c(K_BOOL, BT_STATIC, "sg_feature(g, SNX_A64_%s)", upper);
+                *r = val_c(K_BOOL, BT_STATIC, "sg_feature(g, SG_FEAT(%s))", upper);
         }
         return 1;
     }
@@ -1114,8 +1659,11 @@ static int builtin_body(unsigned n, const char* name, Val* r) {
         a = need_bits(n, arg(n, 0), name);
         b = need_static_int(n, arg(n, 1), "a slice's start");
         c = need_static_int(n, arg(n, 2), "a slice's width");
+        if (b.bt == BT_CONST && c.bt == BT_CONST && word_bits(a, val_const(K_INT, b.value + c.value - 1), b, r))
+            return 1;
         *r = a.bt == BT_DYN ? val_c(K_BITS, BT_DYN, "sg_d_slice(g, %s, (%s) + (%s) - 1, %s)", a.c, b.c, c.c, b.c)
                             : val_c(K_BITS, BT_STATIC, "sg_s_slice(%s, (%s) + (%s) - 1, %s)", a.c, b.c, c.c, b.c);
+        if (c.bt == BT_CONST && c.value > 0) r->width = (unsigned)c.value;
         return 1;
     }
     if (!strcmp(name, "BranchTo")) { /* BranchTo(target, type, conditional): where the instruction goes, and when */
@@ -1210,13 +1758,14 @@ static Val action_call(unsigned n, const char* name, int takes) {
     int kind = val ? (int)g_parse.defs[val].ret_kind : K_UNIT, at;
     char text[1024], t[16];
     Val outs[4];
-    if (g_gen.dynamic_branch && !(takes & BACKEND_PATH))
-        sg_fail(n, "%s, the back end's action, under a condition known only at run time", name);
+    if (g_gen.dynamic_branch && !(takes & BACKEND_STATIC) && (!(takes & BACKEND_PATH) || g_gen.halves))
+        sg_fail(n, "%s, the back end's action, %s", name, stateless());
     if (g_gen.in_helper) sg_fail(n, "%s, the back end's action, in a function of what the recompiler knows", name);
     if (g_gen.lane) lane_refuse("the back end's action in an element loop, which lanes run once");
     if (kind == K_BIT) kind = K_BITS;
     if (kind == K_TUPLE) parts = tuple_parts(n, val);
-    if (kind != K_UNIT && kind != K_NONE && kind != K_BITS && kind != K_BOOL && kind != K_ENUM && kind != K_TUPLE)
+    if (kind != K_UNIT && kind != K_NONE && kind != K_BITS && kind != K_BOOL && kind != K_ENUM && kind != K_TUPLE &&
+        !(kind == K_INT && (takes & BACKEND_STATIC)))
         sg_fail(n, "%s gives %s: the back end's functions give nothing, bits, a bool, an enum or a tuple of bits", name,
                 kind == K_INT    ? "an integer"
                 : kind == K_REAL ? "a real"
@@ -1244,6 +1793,12 @@ static Val action_call(unsigned n, const char* name, int takes) {
         return kind == K_TUPLE ? tuple_of(outs, parts, n) : unit();
     }
     temp(t, sizeof t);
+    if (takes & BACKEND_STATIC) {
+        if (kind != K_BITS && kind != K_BOOL && kind != K_ENUM && kind != K_INT)
+            sg_fail(n, "%s answers what the recompiler knows: bits, a bool, an integer or an enum, not a tuple", name);
+        emit("%s %s = %s);\n", kind == K_BITS ? "SgS" : kind == K_INT ? "long long" : "int", t, text);
+        return val_c(kind, BT_STATIC, "%s", t);
+    }
     emit("%s %s = %s);\n", kind == K_BITS ? "SgD" : kind == K_BOOL ? "LLVMValueRef" : "int", t, text);
     return val_c(kind, kind == K_ENUM ? BT_STATIC : BT_DYN, "%s", t);
 }
@@ -1266,11 +1821,22 @@ static Val call(unsigned n) {
         args[i].node = arg_at(n, i);
         all_static &=
             args[i].bt != BT_DYN && args[i].kind != K_TUPLE && args[i].kind != K_UNIT && args[i].kind != K_STRUCT;
-        all_const &= args[i].bt == BT_CONST;
+        all_const &= args[i].bt == BT_CONST && args[i].kind != K_BITS; /* bits known here are a helper's as before */
     }
     /* arguments all known here (none, or constants) inline, so a fixup's constant answer (nx.sail's HaveGCS) folds */
     if (all_static && !all_const && !reaches_state(def, 0)) return helper_call(n, def, args, count);
     for (i = 0; i < count; ++i) args[i] = keep(args[i]);
+    if (calls(g_parse.defs[def].body, g_parse.defs[def].name)) { /* inlined, it would never end */
+        unsigned names[16], name_count;
+        Halves h;
+        param_names(def, names, &name_count);
+        if (name_count != count || !halves_shape(def, names, count, &h))
+            sg_fail(n,
+                    "%s calls itself: sailgen reads a function that gives its bits where they are one element wide and "
+                    "else calls itself on each half of them, and no other",
+                    name);
+        return halves_call(n, def, args, count, &h);
+    }
     return inline_call(n, def, args, count);
 }
 
@@ -1364,7 +1930,9 @@ static int backend_defines_function(const char* name) {
 }
 /* the back end lowers name, a function with no Sail definition, as sg_NAME (action_call): -1 when it does not, else
    what sg_NAME takes after the context: BACKEND_PATH when its next parameter is named path, BACKEND_ARGS when the call's
-   arguments follow (none: they mean nothing to it) */
+   arguments follow (none: they mean nothing to it); and BACKEND_STATIC when it gives a value the recompiler knows, SgS
+   for bits, int for a bool or an enum, long long for an integer (AArch32's CurrentCond, an IT block's state, the
+   guest's ArchVersion), not the IR an SgD, an LLVMValueRef or an SgI is */
 static const char* word_before(const char* s, size_t* n);
 static int backend_action(const char* name) {
     char fn[160];
@@ -1377,8 +1945,12 @@ static int backend_action(const char* name) {
         int takes = 0;
         size_t length;
         if (strncmp(line_start(s), "static", 6) || *p != '(') continue;
+        w = word_before(s, &length);
+        if ((length == 3 && (!strncmp(w, "SgS", 3) || !strncmp(w, "int", 3))) ||
+            (length == 4 && !strncmp(w, "long", 4)))
+            takes |= BACKEND_STATIC;
         for (; *p && *p != ')' && *p != ','; ++p) {}
-        if (*p != ',') return 0;
+        if (*p != ',') return takes;
         for (e = p + 1; *e && *e != ')' && *e != ','; ++e) {} /* the parameter after the context, its name last */
         w = word_before(e, &length);
         if (length == 4 && !strncmp(w, "path", 4)) {
@@ -1533,8 +2105,7 @@ static unsigned concat_leaves(unsigned n, unsigned* out, unsigned cap) {
 
 /* the register written is not under a run-time condition (its branches are selects, which a store is not) */
 static void need_static_write(unsigned n, unsigned reg) {
-    if (g_gen.dynamic_branch)
-        sg_fail(n, "the register %s written under a condition known only at run time", reg_name(reg));
+    if (g_gen.dynamic_branch) sg_fail(n, "the register %s written %s", reg_name(reg), stateless());
 }
 /* REG.F = v, or REG.F1 @ REG.F2 @ ... = v of a struct register's consecutive fields: one write, of the first and how
    many */
@@ -1596,14 +2167,26 @@ static Val ident(unsigned n) {
     if (b) {
         Val v = b->val;
         if (b->var >= 0) {
-            v.bt = g_gen.vars[b->var].bt;
-            v.kind = g_gen.vars[b->var].kind;
-            if (v.bt == BT_LANE && !g_gen.lane && (v.kind != K_BITS || g_gen.vars[b->var].lane_elem)) {
+            const Var* a = &g_gen.vars[b->var];
+            v.bt = a->bt;
+            v.kind = a->kind;
+            v.half = (unsigned char)(a->half_sum && g_gen.halves ? HALF_SUM : HALF_NONE);
+            if (g_gen.lane && g_gen.lane_from == 1 && (unsigned)b->var < g_gen.lane_var_base &&
+                (a->kind == K_INT || a->kind == K_BITS) && a->init_node && N(a->init_node).kind != N_UNDEF &&
+                !a->sets && (a->bt != BT_LANE || a->acc_loop == g_gen.lane_loop)) { /* an accumulator (accumulate) */
+                if (acc_was_set(b->var)) lane_refuse("an accumulator read after the fold into it");
+                v = val_c(a->kind, BT_LANE, "sg_acc");
+                v.acc = ACC_READ;
+                v.acc_var = b->var;
+                v.node = n;
+                return v;
+            }
+            if (v.bt == BT_LANE && !g_gen.lane && (v.kind != K_BITS || a->lane_elem) && !a->acc_loop) {
                 /* only the vector Elem_set built leaves the loop */
                 refuse_loop(g_gen.vars[b->var].lane_loop); /* the walk starts over: any value of its kind */
                 return v.kind == K_INT    ? val_c(K_INT, BT_DYN, "sg_i_const(g, 0)")
                        : v.kind == K_BITS ? val_c(K_BITS, BT_DYN, "sg_d_empty(1u)")
-                                          : val_c(K_BOOL, BT_DYN, "LLVMConstInt(g->ir->t_i1, 0, 0)");
+                                          : val_c(K_BOOL, BT_DYN, "sg_bool(g, 0)");
             }
         }
         v.node = n;
@@ -1638,7 +2221,14 @@ enum { L_EQ, L_NE, L_LT, L_LE, L_GT, L_GE };
 static Val lane_binop(unsigned n, const char* op, Val a, Val b) {
     static const char* const cmps[] = {"==", "!=", "<", "<=", ">", ">="};
     unsigned i;
-    (void)n;
+    if (a.acc == ACC_READ || b.acc == ACC_READ) { /* acc + x: x folded into it (accumulate) */
+        int left = a.acc == ACC_READ;
+        if (strcmp(op, "+")) {
+            lane_refuse("an accumulator folded by other than +, Min or Max");
+            return a;
+        }
+        return accumulate(left ? a : b, left ? b : a, left ? N(n).b : N(n).a, "add");
+    }
     if ((a.kind == K_BITS) != (b.kind == K_BITS) || (a.kind == K_BOOL) != (b.kind == K_BOOL)) {
         lane_refuse("an operation on lanes of two kinds");
         return a;
@@ -1690,12 +2280,18 @@ static Val binop(unsigned n) {
     }
     b = eval(N(n).b, 0);
     if (a.bt == BT_LANE || b.bt == BT_LANE) return lane_binop(n, op, a, b);
+    if ((a.half | b.half) == (HALF_LO | HALF_HI) && !strcmp(op, "+")) { /* the two halves' results: the sum (halves) */
+        a = val_c(K_BITS, BT_DYN, "%s", g_gen.halves_sum);
+        a.half = HALF_SUM;
+        return a;
+    }
     shorten(&a, &b);
     bt = top_bt(a.bt, b.bt);
     if (a.huge || b.huge) sg_fail(n, "%s of an integer over 62 bits", op);
     if (!strcmp(op, "==") || !strcmp(op, "!=")) {
         int ne = op[0] == '!';
         if (a.kind == K_BITS && b.kind == K_BITS) {
+            if (bt == BT_CONST) return val_const(K_BOOL, (a.value == b.value) != ne);
             if (bt != BT_DYN) return val_c(K_BOOL, BT_STATIC, "(%ssg_s_eq(%s, %s))", ne ? "!" : "", a.c, b.c);
             {
                 Val e = val_c(K_BOOL, BT_DYN, "sg_d_eq(g, %s, %s)", raise(a, BT_DYN).c, raise(b, BT_DYN).c);
@@ -1704,13 +2300,20 @@ static Val binop(unsigned n) {
         }
         if (a.kind == K_BITS || b.kind == K_BITS) sg_fail(n, "%s of bits and other than bits", op);
         if (bt == BT_CONST) return val_const(K_BOOL, (a.value == b.value) != ne);
+        if (a.kind == K_INT && a.ranged && b.ranged && (a.hi < b.lo || b.hi < a.lo))
+            return val_const(K_BOOL, ne); /* ranges that do not meet: never equal */
         if (bt == BT_STATIC) return val_c(K_BOOL, BT_STATIC, "((%s) %s (%s))", a.c, op, b.c);
         if (a.kind == K_BOOL)
             return val_c(K_BOOL, BT_DYN, "LLVMBuildICmp(SG_B, %s, %s, %s, \"\")", ne ? "LLVMIntNE" : "LLVMIntEQ",
                          raise(a, BT_DYN).c, raise(b, BT_DYN).c);
-        sg_fail(n, "%s of integers known only at run time", op);
+        if (a.kind == K_INT && b.kind == K_INT)
+            return val_c(K_BOOL, BT_DYN, "sg_i_cmp(g, %d, %s, %s)", ne, raise(a, BT_DYN).c, raise(b, BT_DYN).c);
+        sg_fail(n, "%s of a value known only at run time and another kind", op);
     }
     if (!strcmp(op, "<") || !strcmp(op, "<=") || !strcmp(op, ">") || !strcmp(op, ">=")) {
+        if (bt == BT_DYN && a.kind == K_INT && b.kind == K_INT) /* integers known only at run time */
+            return val_c(K_BOOL, BT_DYN, "sg_i_cmp(g, %d, %s, %s)", op[0] == '<' ? (op[1] ? 3 : 2) : (op[1] ? 5 : 4),
+                         raise(a, BT_DYN).c, raise(b, BT_DYN).c);
         need_static_int(n, a, "a comparison's side");
         need_static_int(n, b, "a comparison's side");
         if (bt == BT_CONST) {
@@ -1757,6 +2360,12 @@ static Val binop(unsigned n) {
                            : "sub",
                      raise(a, BT_DYN).c, raise(b, BT_DYN).c);
     }
+    if ((!strcmp(op, "<<") || !strcmp(op, ">>")) && a.kind == K_BITS) { /* bits shifted by a known amount */
+        Val k = need_static_int(n, b, "a shift's amount");
+        int left = op[0] == '<';
+        if (a.bt != BT_DYN) return val_c(K_BITS, BT_STATIC, "sg_s_%s(%s, %s)", left ? "lsl" : "lsr", a.c, k.c);
+        return val_c(K_BITS, BT_DYN, "sg_d_%s(g, %s, %s)", left ? "lsl" : "lsr", a.c, k.c);
+    }
     if (!strcmp(op, "<<") || !strcmp(op, "^")) { /* integers: a * 2^b, 2^b */
         need_static_int(n, a, op);
         need_static_int(n, b, op);
@@ -1777,7 +2386,7 @@ static Val binop(unsigned n) {
 
 static Val slice(unsigned n) {
     unsigned reg = N(n).kind == N_INDEX ? register_def(N(n).a) : 0;
-    Val x, hi, lo;
+    Val x, hi, lo, r;
     if (reg) return element_read(n, reg);
     if (N(n).kind == N_SLICE && N(N(n).a).kind == N_INDEX && (reg = register_def(N(N(n).a).a)) != 0 &&
         reg_kind(reg) == K_VECTOR) { /* REG[i][hi .. lo]: only those bits, where the back end reads them alone */
@@ -1793,6 +2402,7 @@ static Val slice(unsigned n) {
     x = eval(N(n).a, 0);
     hi = need_static_int(n, eval(N(n).b, 0), "a slice's bound");
     lo = N(n).kind == N_SLICE ? need_static_int(n, eval(N(n).c, 0), "a slice's bound") : hi;
+    if (word_bits(x, hi, lo, &r)) return r;
     if (x.bt == BT_LANE) { /* every lane's bits hi..lo */
         if (x.kind != K_INT && x.kind != K_BITS) {
             lane_refuse("a slice of lanes of other than bits or integers");
@@ -1807,8 +2417,13 @@ static Val slice(unsigned n) {
         return val_c(K_BITS, BT_STATIC, "sg_s_of_int(%s, %s, %s)", x.c, hi.c, lo.c);
     }
     need_bits(n, x, "what is sliced");
-    if (x.bt == BT_DYN) return val_c(K_BITS, BT_DYN, "sg_d_slice(g, %s, %s, %s)", x.c, hi.c, lo.c);
-    return val_c(K_BITS, BT_STATIC, "sg_s_slice(%s, %s, %s)", x.c, hi.c, lo.c);
+    {
+        Val r = x.bt == BT_DYN ? val_c(K_BITS, BT_DYN, "sg_d_slice(g, %s, %s, %s)", x.c, hi.c, lo.c)
+                               : val_c(K_BITS, BT_STATIC, "sg_s_slice(%s, %s, %s)", x.c, hi.c, lo.c);
+        if (hi.bt == BT_CONST && lo.bt == BT_CONST && hi.value >= lo.value)
+            r.width = (unsigned)(hi.value - lo.value + 1);
+        return r;
+    }
 }
 
 /* [a, b, ...]: the elements' bits, the first the most significant */
@@ -1825,6 +2440,25 @@ static Val vector(unsigned n) {
             r = val_c(K_BITS, BT_DYN, "sg_d_concat(g, %s, %s)", raise(r, BT_DYN).c, raise(x, BT_DYN).c);
     }
     return r;
+}
+
+/* [x with i = v], [x with hi .. lo = v]: x with those bits made v (RRX_C's carry into the top bit) */
+static Val vector_update(unsigned n) {
+    Val x = need_bits(n, eval(N(n).a, 0), "an updated vector"), hi, lo, v;
+    char t[16];
+    hi = need_static_int(n, eval(N(n).b, 0), "an updated vector's index");
+    lo = N(n).c ? need_static_int(n, eval(N(n).c, 0), "an updated vector's index") : hi;
+    v = need_bits(n, eval(N(n).d, 0), "an updated vector's bits");
+    if (x.bt == BT_LANE || v.bt == BT_LANE) {
+        lane_refuse("a vector update per lane");
+        return x;
+    }
+    if (x.bt != BT_DYN && v.bt != BT_DYN)
+        return val_c(K_BITS, BT_STATIC, "sg_s_set_slice(%s, %s, %s, %s)", x.c, hi.c, lo.c, v.c);
+    temp(t, sizeof t);
+    emit("SgD %s = %s;\n", t, raise(x, BT_DYN).c);
+    emit("sg_d_set_slice(g, &%s, %s, %s, %s);\n", t, hi.c, lo.c, raise(v, BT_DYN).c);
+    return val_c(K_BITS, BT_DYN, "%s", t);
 }
 
 /* ---- statements ---- */
@@ -1856,9 +2490,7 @@ static Val undefined_of(unsigned type, int bt) {
             return bt == BT_DYN ? val_c(K_BITS, BT_DYN, "sg_d_from_s(sg_s(0, 1))")
                                 : val_c(K_BITS, BT_STATIC, "sg_s(0, 1)");
         case K_INT: return bt == BT_DYN ? val_c(K_INT, BT_DYN, "sg_i_const(g, 0)") : val_c(K_INT, BT_STATIC, "0ll");
-        case K_BOOL:
-            return bt == BT_DYN ? val_c(K_BOOL, BT_DYN, "LLVMConstInt(g->ir->t_i1, 0, 0)")
-                                : val_c(K_BOOL, BT_STATIC, "0");
+        case K_BOOL: return bt == BT_DYN ? val_c(K_BOOL, BT_DYN, "sg_bool(g, 0)") : val_c(K_BOOL, BT_STATIC, "0");
         case K_ENUM: return val_c(K_ENUM, BT_STATIC, "0");
         default: sg_fail(type, "undefined of a type sailgen does not keep (%s)", sg_str(N(type).name));
     }
@@ -1867,10 +2499,13 @@ static Val undefined_of(unsigned type, int bt) {
 
 /* name : type = init, a mutable local, declared at the time its assignments reach */
 static void declare_var(unsigned name, unsigned type, unsigned init_node) {
-    Val init = N(init_node).kind == N_UNDEF ? unit() : eval(init_node, 0), local;
+    /* an accumulator a loop folds every lane into (accumulate): its start, the first lane's value, is the fold's */
+    int folded = !g_gen.lane && g_gen.var_next < g_gen.var_count && g_gen.vars[g_gen.var_next].acc_loop;
+    Val init = N(init_node).kind == N_UNDEF || folded ? unit() : eval(init_node, 0), local;
     unsigned sdef = init.kind != K_UNIT ? init.sdef : type_struct(type);
     int kind = init.kind != K_UNIT ? init.kind : sdef ? K_STRUCT : type_kind(type), var, bt;
     char cname[96];
+    if (folded) kind = g_gen.vars[g_gen.var_next].kind; /* its start not walked: the kind the walks before found */
     if (kind == K_BIT) kind = K_BITS;
     if (kind == K_NONE || kind == K_OTHER || kind == K_TUPLE)
         sg_fail(init_node, "a local of a type sailgen does not keep");
@@ -1888,15 +2523,44 @@ static void declare_var(unsigned name, unsigned type, unsigned init_node) {
     local = val_c(kind, bt, "%s", cname);
     local.sdef = sdef;
     bind(name, local, var, 0);
+    g_gen.vars[var].init_node = init_node;
+    g_gen.vars[var].decl_depth = g_gen.depth - 1;
+    g_gen.vars[var].sets = 0;
+    g_gen.vars[var].half_sum = 0;
 }
 
-/* let pattern = value: the names bound to copies (the value may come from a local assigned later) */
-static void let_bind(unsigned pattern, Val v, unsigned value_node) {
+/* does the name occur in n (and the items after it) only as what Elem_read reads? */
+static int only_elements(unsigned n, unsigned name) {
+    for (; n; n = N(n).next) {
+        if (N(n).kind == N_ID && same_name(N(n).name, name)) return 0;
+        if (N(n).kind == N_CALL && !strcmp(name_of(n), "Elem_read") && N(n).a && N(N(n).a).kind == N_ID &&
+            same_name(N(N(n).a).name, name)) {
+            if (!only_elements(N(N(n).a).next, name)) return 0;
+            continue;
+        }
+        if (!only_elements(N(n).a, name) || !only_elements(N(n).b, name) || !only_elements(N(n).c, name) ||
+            !only_elements(N(n).d, name))
+            return 0;
+    }
+    return 1;
+}
+/* let x = hi @ lo, x only read by element in what follows (scope): x's C is left unmade, the concatenation of the
+   pairwise ops' Vm:Vn being wider than the back end's bits, and an element loop's lanes read its two sides
+   (permuted) */
+static int lazy_let(unsigned pattern, unsigned value_node, unsigned scope) {
+    unsigned p = pattern;
+    if (N(p).kind == N_TYPED) p = N(p).a;
+    return N(p).kind == N_ID && N(value_node).kind == N_BINOP && !strcmp(name_of(value_node), "@") &&
+           only_elements(scope, N(p).name);
+}
+
+/* let pattern = value: the names bound to copies (the value may come from a local assigned later), but a lazy_let's */
+static void let_bind(unsigned pattern, Val v, unsigned value_node, int lazy) {
     unsigned p = pattern;
     if (N(p).kind == N_TYPED) p = N(p).a;
     if (N(p).kind == N_WILD) return;
     if (N(p).kind == N_ID) {
-        v = keep(v);
+        if (!lazy) v = keep(v);
         bind(N(p).name, v, -1, value_node);
         return;
     }
@@ -1905,7 +2569,7 @@ static void let_bind(unsigned pattern, Val v, unsigned value_node) {
         if (v.kind != K_TUPLE) sg_fail(pattern, "a tuple pattern for a value that is not one");
         for (q = N(p).a; q; q = N(q).next, ++k) {
             if (k >= v.ntuple) sg_fail(q, "more names than the tuple has values");
-            let_bind(q, g_gen.pool[v.tuple[k]], 0);
+            let_bind(q, g_gen.pool[v.tuple[k]], 0, 0);
         }
         return;
     }
@@ -1925,7 +2589,7 @@ static void assign(unsigned target, Val v) {
         Val f;
         if (b->var < 0 || b->val.kind != K_STRUCT)
             sg_fail(t, "the field %s assigned of other than a struct local", name_of(t));
-        if (g_gen.dynamic_branch) sg_fail(t, "a struct's field assigned under a condition known only at run time");
+        if (g_gen.dynamic_branch) sg_fail(t, "a struct's field assigned %s", stateless());
         f = struct_field(t, b->val.sdef, b->val.c);
         if (v.bt == BT_DYN) sg_fail(t, "the field %s assigned a value known only at run time", name_of(t));
         if ((f.kind == K_BOOL) != (v.kind == K_BOOL) || (f.kind == K_BITS) != (v.kind == K_BITS) ||
@@ -1952,7 +2616,7 @@ static void assign(unsigned target, Val v) {
         const char* s = name_of(t);
         Val args[17];
         unsigned count = arg_count(t), i, def;
-        if (g_gen.dynamic_branch) sg_fail(t, "%s() = under a condition known only at run time", s);
+        if (g_gen.dynamic_branch) sg_fail(t, "%s() = %s", s, stateless());
         def = function_def(s, count + 1);
         if (!def) sg_fail(t, "the setter %s has no definition of %u arguments", s, count + 1);
         for (i = 0; i < count; ++i) args[i] = keep(eval(arg_at(t, i), 0));
@@ -1981,6 +2645,7 @@ static void assign(unsigned target, Val v) {
         hi = need_static_int(t, eval(N(t).b, 0), "a slice's bound");
         lo = N(t).kind == N_SLICE ? need_static_int(t, eval(N(t).c, 0), "a slice's bound") : hi;
         need_bits(t, v, "a slice's value");
+        g_gen.vars[b->var].half_sum = 0;
         var_raise(b->var, v.bt);
         if (g_gen.dynamic_branch) var_raise(b->var, BT_DYN);
         if (g_gen.vars[b->var].bt == BT_DYN)
@@ -2012,6 +2677,26 @@ static void assign(unsigned target, Val v) {
         if (!strcmp(s, "SEE")) return; /* the decoder's own bookkeeping */
         if (!b) sg_fail(t, "%s assigned but not declared", s);
         if (b->var < 0) sg_fail(t, "%s assigned but bound by let", s);
+        if (g_gen.lane && v.acc == ACC_FOLD) { /* the accumulator's new value: every lane folded into it */
+            if (b->var != v.acc_var || g_gen.indent != g_gen.lane_indent || acc_was_set(b->var) ||
+                g_gen.acc_set_count == sizeof g_gen.acc_set / sizeof *g_gen.acc_set) {
+                lane_refuse("a fold set other than once as its accumulator, at the top of the loop's body");
+                return;
+            }
+            g_gen.acc_set[g_gen.acc_set_count++] = b->var;
+            var_raise(b->var, BT_LANE);
+            g_gen.vars[b->var].acc_loop = g_gen.lane_loop;
+            g_gen.vars[b->var].lane_loop = g_gen.lane_loop;
+            g_gen.fold_ok = 1;
+            emit("%s = %s;\n", b->val.c, v.c);
+            g_gen.fold_ok = 0;
+            return;
+        }
+        if (g_gen.lane && acc_was_set(b->var)) {
+            lane_refuse("an accumulator set again after the fold into it");
+            return;
+        }
+        if (!g_gen.lane) ++g_gen.vars[b->var].sets;
         var_raise(b->var, v.bt);
         if (g_gen.lane) { /* a local set in the loop holds a value per lane, or the loop is no vector operation */
             if (g_gen.vars[b->var].bt != BT_LANE) {
@@ -2027,6 +2712,9 @@ static void assign(unsigned target, Val v) {
         if (g_gen.dynamic_branch) var_raise(b->var, BT_DYN);
         if (v.kind != K_UNIT && (v.kind != g_gen.vars[b->var].kind || v.sdef != g_gen.vars[b->var].sdef))
             sg_fail(t, "%s (kind %d) assigned a value of kind %d", s, g_gen.vars[b->var].kind, v.kind);
+        /* the halves' sum stays one in a local set where the function's body is walked, under no condition */
+        g_gen.vars[b->var].half_sum = v.half == HALF_SUM && g_gen.halves && g_gen.indent == g_gen.halves_indent &&
+                                      g_gen.dynamic_branch == g_gen.halves_branch;
         emit("%s = %s;\n", b->val.c, raise(v, g_gen.vars[b->var].bt).c);
         return;
     }
@@ -2198,18 +2886,26 @@ static Val if_expr(unsigned n, int tail) {
     }
     r = val_c(a.kind, top_bt(top_bt(a.bt, b.bt), BT_STATIC), "");
     r.sdef = a.sdef;
+    if (a.acc == ACC_FOLD && b.acc == ACC_FOLD && a.acc_var == b.acc_var) { /* SMAXV's Min or Max: a fold either way */
+        r.acc = ACC_FOLD;
+        r.acc_var = a.acc_var;
+    }
     temp(t, sizeof t);
     snprintf(r.c, sizeof r.c, "%s", t);
     emit("%s %s;\n", ctype_of(r.kind, r.bt, r.sdef), t);
     emit("if (%s) {\n", cond_text(c.c, buffer, sizeof buffer));
     ++g_gen.indent;
     a = eval(N(n).b, tail);
+    g_gen.fold_ok = r.acc == ACC_FOLD;
     emit("%s = %s;\n", t, raise(a, r.bt).c);
+    g_gen.fold_ok = 0;
     --g_gen.indent;
     emit("} else {\n");
     ++g_gen.indent;
     b = eval(N(n).c, tail);
+    g_gen.fold_ok = r.acc == ACC_FOLD;
     emit("%s = %s;\n", t, raise(b, r.bt).c);
+    g_gen.fold_ok = 0;
     --g_gen.indent;
     emit("}\n");
     return r;
@@ -2264,6 +2960,17 @@ static Val match_expr(unsigned n, int tail) {
         return unit();
     }
     if (s.bt == BT_DYN) sg_fail(n, "a match on a value known only at run time");
+    /* what joins a function's halves (halves_call), on a value known here (Reduce's op): the one case it picks, so
+       the others' ways of joining them are not walked. Elsewhere every case is C: a local's time comes from them all */
+    if (g_gen.halves && s.bt == BT_CONST && (s.kind == K_ENUM || s.kind == K_INT) && !s.huge)
+        for (c = N(n).b; c && !N(c).c; c = N(c).next) {
+            unsigned p = N(c).a;
+            long long m = N(p).kind == N_ID ? enum_member(name_of(p)) : -1;
+            if (N(p).kind == N_WILD || (N(p).kind == N_NUM && s.kind == K_INT && (long long)N(p).value == s.value) ||
+                (m >= 0 && s.kind == K_ENUM && m == s.value))
+                return eval(N(c).b, tail);
+            if (N(p).kind != N_NUM && m < 0) break; /* a pattern read below */
+        }
     s = keep(raise(s, BT_STATIC));
     for (c = N(n).b; c; c = N(c).next)
         if (N(c).c) sg_fail(c, "a guarded case");
@@ -2315,7 +3022,7 @@ static Val block(unsigned n, int tail) {
         int last = !N(item).next;
         if (N(item).kind == N_LET && !N(item).c) {
             Val value = eval(N(item).b, 0);
-            let_bind(N(item).a, value, N(item).b);
+            let_bind(N(item).a, value, N(item).b, lazy_let(N(item).a, N(item).b, N(item).next));
             v = unit();
             continue;
         }
@@ -2332,19 +3039,27 @@ static Val foreach_loop(unsigned n) {
     Val by = N(n).c ? need_static_int(n, eval(N(n).c, 0), "a foreach's step") : val_const(K_INT, 1);
     char v[96];
     unsigned saved = g_gen.depth;
-    if (g_gen.dynamic_branch) sg_fail(n, "a foreach under a run-time condition");
+    if (g_gen.dynamic_branch) sg_fail(n, "a foreach %s", stateless());
     if (g_gen.lane) {
         lane_refuse("a loop inside an element loop");
         return unit();
     }
-    /* from 0 by 1 up: tried as one vector operation, the lanes from 0 to `to` (lanes, above) */
-    if (!g_gen.lane && !g_gen.in_helper && from.bt == BT_CONST && !from.value && by.bt == BT_CONST && by.value == 1 &&
-        !N(n).dec && !lane_refused(n)) {
+    /* from 0 by 1 up: tried as one vector operation, the lanes from 0 to `to` (lanes, above); from 1, as the fold of
+       the lanes from 0 into accumulators that start at the first lane's value (accumulate) */
+    if (!g_gen.lane && !g_gen.in_helper && from.bt == BT_CONST && (from.value == 0 || from.value == 1) &&
+        by.bt == BT_CONST && by.value == 1 && !N(n).dec && !lane_refused(n)) {
         Buffer scratch = {0, 0, 0}, *out = g_gen.out;
         int indent = g_gen.indent;
         g_gen.lane = 1;
         g_gen.lane_fail = 0;
         g_gen.lane_loop = n;
+        g_gen.lane_from = from.value;
+        g_gen.lane_body = N(n).d;
+        g_gen.lane_e = N(n).name;
+        g_gen.lane_var_base = g_gen.var_next;
+        g_gen.lane_depth = g_gen.depth;
+        g_gen.lane_indent = indent + 1;
+        g_gen.acc_set_count = 0;
         snprintf(g_gen.lane_count, sizeof g_gen.lane_count, "(unsigned)((%s) + 1)", to.c);
         g_gen.out = &scratch;
         g_gen.indent = indent + 1;
@@ -2382,8 +3097,10 @@ static Val eval(unsigned n, int tail) {
     if (!n) return unit();
     switch (N(n).kind) {
         case N_NUM: return val_const(K_INT, (long long)N(n).value);
-        case N_BITS:
-            v = val_c(K_BITS, BT_STATIC, "sg_s(0x%llxull, %u)", N(n).value, N(n).width);
+        case N_BITS: /* known here, and so is an == or != of two such bits (word_bits) */
+            v = val_c(K_BITS, BT_CONST, "sg_s(0x%llxull, %u)", N(n).value, N(n).width);
+            v.value = (long long)N(n).value;
+            v.width = N(n).width;
             v.node = n;
             return v;
         case N_BOOL: return val_const(K_BOOL, (long long)N(n).value);
@@ -2399,6 +3116,7 @@ static Val eval(unsigned n, int tail) {
         case N_SLICE:
         case N_INDEX: v = slice(n); break;
         case N_VEC: v = vector(n); break;
+        case N_UPDATE: v = vector_update(n); break;
         case N_FIELD: return field_read(n);
         case N_IF: return if_expr(n, tail);
         case N_MATCH: return match_expr(n, tail);
@@ -2418,7 +3136,7 @@ static Val eval(unsigned n, int tail) {
         case N_LET: { /* let p = e in body */
             unsigned saved = g_gen.depth;
             Val value = eval(N(n).b, 0);
-            let_bind(N(n).a, value, N(n).b);
+            let_bind(N(n).a, value, N(n).b, lazy_let(N(n).a, N(n).b, N(n).c));
             v = eval(N(n).c, tail);
             g_gen.depth = saved;
             return v;
@@ -2442,13 +3160,25 @@ static Val eval(unsigned n, int tail) {
             return eval(N(n).a, 1);
         case N_THROW:
             /* Error_See: the word is another clause's, the next of those it matches (the hint space's PAuth hints).
-               CONSTRAINED UNPREDICTABLE: the decoder routes no such word here; were one, UNDEF is one of its choices */
+               CONSTRAINED UNPREDICTABLE: the decoder routes no such word here; were one, UNDEF is one of its choices.
+               UNPREDICTABLE (AArch32's: a PC operand where the encoding forbids one, an empty register list): what
+               the guests' cores do with it is a system's choice, its overlay's UnpredictableEncoding(), walked in its place */
             if (is_call(N(n).a, "Error_See")) {
                 end_decode(n, "a throw of Error_See", 1);
                 return unit();
             }
+            if (is_call(N(n).a, "Error_Unpredictable")) {
+                unsigned def = sg_find("UnpredictableEncoding", D_FUNCTION);
+                if (!def)
+                    sg_fail(
+                        n,
+                        "an UNPREDICTABLE encoding, and no UnpredictableEncoding() of an overlay to say what the guest's "
+                        "core does with it");
+                return inline_call(n, def, NULL, 0);
+            }
             if (!is_call(N(n).a, "Error_Undefined") && !is_call(N(n).a, "Error_ConstrainedUnpredictable"))
-                sg_fail(n, "a throw of other than Error_Undefined(), Error_See() or Error_ConstrainedUnpredictable()");
+                sg_fail(n, "a throw of other than Error_Undefined(), Error_See(), Error_Unpredictable() or "
+                           "Error_ConstrainedUnpredictable()");
             throw_undefined(n);
             return unit();
         case N_ASSERT: return unit(); /* what the decode guarantees: nothing to generate */
@@ -2461,31 +3191,61 @@ static Val eval(unsigned n, int tail) {
 
 /* ---- the decode clauses and the output ---- */
 
-/* the fixed bits of a clause's vector pattern [b31, ..., b0] of bitzero, bitone and _ */
-static void clause_bits(unsigned def, SgU64* mask, SgU64* value) {
-    unsigned p = g_parse.defs[def].params, e, i = 0;
+/* the fixed bits of a clause's vector pattern [b31, ..., b0] (a T16 halfword's [b15, ..., b0]) of bitzero, bitone and
+   _, and how many bits it has */
+static void clause_bits(unsigned def, SgU64* mask, SgU64* value, unsigned* width) {
+    unsigned p = g_parse.defs[def].params, e, i = 0, count = 0;
     if (N(p).kind != N_TUPLE || !N(N(p).a).next) sg_fail(p, "a decode clause's pattern is not (pc, (... as __opcode))");
     p = N(N(p).a).next;
     if (N(p).kind == N_BINOP && !strcmp(name_of(p), "as")) p = N(p).a;
     if (N(p).kind == N_BITS) { /* every bit fixed */
-        if (N(p).width != 32) sg_fail(p, "a decode pattern of %u bits", N(p).width);
-        *mask = 0xffffffffull;
+        if (N(p).width != 32 && N(p).width != 16) sg_fail(p, "a decode pattern of %u bits", N(p).width);
+        *width = N(p).width;
+        *mask = N(p).width == 32 ? 0xffffffffull : 0xffffull;
         *value = N(p).value;
         return;
     }
     if (N(p).kind != N_VEC) sg_fail(p, "a decode clause's pattern is not a bit vector");
+    for (e = N(p).a; e; e = N(e).next) ++count;
+    if (count != 32 && count != 16) sg_fail(p, "a decode pattern of %u bits", count);
+    *width = count;
     *mask = 0;
     *value = 0;
     for (e = N(p).a; e; e = N(e).next, ++i) {
-        unsigned bit = 31 - i;
-        if (i > 31) sg_fail(e, "a decode pattern over 32 bits");
+        unsigned bit = count - 1 - i;
         if (N(e).kind == N_WILD) continue;
         if (N(e).kind != N_ID || (strcmp(name_of(e), "bitone") && strcmp(name_of(e), "bitzero")))
             sg_fail(e, "a decode pattern bit that is not bitzero, bitone or _");
         *mask |= 1ull << bit;
         if (!strcmp(name_of(e), "bitone")) *value |= 1ull << bit;
     }
-    if (i != 32) sg_fail(p, "a decode pattern of %u bits", i);
+}
+
+/* SEE < N in a clause's guard: the decoder's own bookkeeping, true for the clause tried in order (generate_decode) */
+static int see_test(unsigned n) {
+    return N(n).kind == N_BINOP && !strcmp(name_of(n), "<") && N(N(n).a).kind == N_ID &&
+           !strcmp(name_of(N(n).a), "SEE");
+}
+/* a clause's guard without its SEE < N: the test of the word's other bits it makes (B T1's cond != 0b1111), as C the
+   decode function starts with, a false one handing the word on (return 0, before anything is emitted); 0 when the
+   guard tests nothing more. Only a roots file with decoder lines has its guards read: A64's has none, and its one
+   guard that tests more than SEE (PRFM register's, which leaves the words RPRFM takes to a clause that is no root)
+   stays unread, so those words stay PRFM's prefetch hint, as the decoder has them */
+static int clause_guard(unsigned n) {
+    Val v;
+    char buffer[sizeof v.c];
+    if (!n || see_test(n) || !g_gen.decoder_count) return 0;
+    if (N(n).kind == N_BINOP && !strcmp(name_of(n), "&") && (see_test(N(n).a) || see_test(N(n).b)))
+        return clause_guard(see_test(N(n).a) ? N(n).b : N(n).a);
+    v = eval(n, 0);
+    if (v.kind != K_BOOL || v.bt >= BT_DYN) sg_fail(n, "a decode clause's guard that is not a test of the word");
+    if (v.bt == BT_CONST) {
+        if (v.value) return 0;
+        emit("return 0;\n");
+        return 1;
+    }
+    emit("if (!(%s)) return 0;\n", cond_text(v.c, buffer, sizeof buffer));
+    return 1;
 }
 
 static void generate_decode(Clause* c) {
@@ -2497,6 +3257,7 @@ static void generate_decode(Clause* c) {
     g_gen.var_count = 0;
     g_gen.refused_count = 0;
     g_gen.lane_restart = 0;
+    g_gen.decode_def = c->decode;
     for (pass = 0; pass < 8; ++pass) {
         Buffer scratch = {0, 0, 0};
         if (g_gen.lane_restart) { /* an element loop refused its lanes: its locals' times start over */
@@ -2515,18 +3276,27 @@ static void generate_decode(Clause* c) {
         g_gen.in_helper = 0;
         g_gen.out = &scratch;
         g_gen.indent = 1;
-        bind(sg_intern("__opcode", 8), val_c(K_BITS, BT_STATIC, "sg_s(g->word, 32)"), -1, 0);
+        {
+            Val word = val_c(K_BITS, BT_STATIC, "sg_s(g->word, %u)", c->width);
+            word.word = 1;
+            g_gen.word_mask = c->mask;
+            g_gen.word_value = c->value;
+            bind(sg_intern("__opcode", 8), word, -1, 0);
+        }
         bind(sg_intern("pc", 2), val_c(K_INT, BT_STATIC, "(long long)g->pc"), -1, 0);
+        c->guarded = clause_guard(g_parse.defs[c->clause].guard);
         stmt(body);
         if (!g_gen.changed) {
             Buffer* out = &g_gen.body;
             g_gen.out = out;
             g_gen.indent = 0;
-            emit("/* %s */\nstatic int sg_%s(SgCtx* g) {\n", decode_name, decode_name);
+            emit("/* %s */\nstatic int sg_%s(SgCtx* g) {\n    (void)g; /* a NOP's decode reads nothing */\n",
+                 decode_name, decode_name);
             buf_add(out, scratch.text ? scratch.text : "", scratch.length);
             emit("    return 1;\n}\n\n");
             c->sees = g_gen.sees;
             free(scratch.text);
+            g_gen.decode_def = 0;
             return;
         }
         free(scratch.text);
@@ -2549,7 +3319,9 @@ static int clause_root(unsigned n, const unsigned* roots, unsigned count) {
     return clause_root(N(n).next, roots, count);
 }
 
-/* the roots file: root NAME (a decode function); stop lines are --extract's */
+/* the roots file: root NAME (a decode function), fixup NAME (one an overlay defines, with the clause that calls it: the
+   legacy Thumb BL halves), and decoder NAME FAMILY... (a dispatcher, the clauses of the scattered decode functions it
+   names: one instruction set's); stop and lower lines are --extract's */
 static unsigned read_roots(const char* path, unsigned* roots, unsigned cap) {
     size_t size, i;
     char* text = sg_read(path, &size);
@@ -2558,18 +3330,93 @@ static unsigned read_roots(const char* path, unsigned* roots, unsigned cap) {
         size_t e = i, w;
         while (e < size && text[e] != '\n') ++e;
         while (i < e && isspace((unsigned char)text[i])) ++i;
-        if (i + 5 < e && !strncmp(text + i, "root", 4) && isspace((unsigned char)text[i + 4])) {
-            i += 4;
+        if ((i + 5 < e && !strncmp(text + i, "root", 4) && isspace((unsigned char)text[i + 4])) ||
+            (i + 6 < e && !strncmp(text + i, "fixup", 5) && isspace((unsigned char)text[i + 5]))) {
+            i += text[i] == 'r' ? 4 : 5;
             while (i < e && isspace((unsigned char)text[i])) ++i;
             w = 0;
             while (i + w < e && !isspace((unsigned char)text[i + w])) ++w;
             if (count == cap) sg_fail(0, "%s: more than %u roots", path, cap);
             roots[count++] = sg_intern(text + i, w);
+        } else if (i + 8 < e && !strncmp(text + i, "decoder", 7) && isspace((unsigned char)text[i + 7])) {
+            Decoder* d;
+            if (g_gen.decoder_count == sizeof g_gen.decoders / sizeof *g_gen.decoders)
+                sg_fail(0, "%s: more than %zu decoders", path, sizeof g_gen.decoders / sizeof *g_gen.decoders);
+            d = &g_gen.decoders[g_gen.decoder_count++];
+            memset(d, 0, sizeof *d);
+            for (i += 7; i < e;) {
+                while (i < e && isspace((unsigned char)text[i])) ++i;
+                for (w = 0; i + w < e && !isspace((unsigned char)text[i + w]) && text[i + w] != '#'; ++w) {}
+                if (!w) break;
+                if (!d->name)
+                    d->name = sg_intern(text + i, w);
+                else if (d->family_count == sizeof d->families / sizeof *d->families)
+                    sg_fail(0, "%s: a decoder of more than %zu families", path,
+                            sizeof d->families / sizeof *d->families);
+                else
+                    d->families[d->family_count++] = sg_intern(text + i, w);
+                if (i + w < e && text[i + w] == '#') break;
+                i += w;
+            }
+            if (!d->family_count) sg_fail(0, "%s: a decoder line names no family (decoder NAME FAMILY...)", path);
         }
         i = e + 1;
     }
     free(text);
     return count;
+}
+
+/* the decoder a clause of this scattered function is tried by: its index, -1 for none; without decoder lines, every
+   clause is the one dispatcher's */
+static int clause_decoder(const char* family) {
+    unsigned i, k;
+    if (!g_gen.decoder_count) return 0;
+    for (i = 0; i < g_gen.decoder_count; ++i)
+        for (k = 0; k < g_gen.decoders[i].family_count; ++k)
+            if (!strcmp(sg_str(g_gen.decoders[i].families[k]), family)) return (int)i;
+    return -1;
+}
+
+/* a profile's since lines into g_gen.since */
+static void profile_since(const char* path) {
+    size_t size, i;
+    char* text = sg_read(path, &size);
+    for (i = 0; i < size;) {
+        size_t e = i, w;
+        while (e < size && text[e] != '\n') ++e;
+        if (e - i > 6 && !strncmp(text + i, "since", 5) && isspace((unsigned char)text[i + 5])) {
+            long long version = -1;
+            for (i += 5; i < e;) {
+                while (i < e && isspace((unsigned char)text[i])) ++i;
+                for (w = 0; i + w < e && !isspace((unsigned char)text[i + w]) && text[i + w] != '#'; ++w) {}
+                if (!w) break;
+                if (version < 0) {
+                    char* end;
+                    char number[24];
+                    snprintf(number, sizeof number, "%.*s", (int)(w < 23 ? w : 23), text + i);
+                    version = strtoll(number, &end, 10);
+                    if (*end || version <= 0)
+                        sg_fail(0, "%s: since takes an architecture version (since 6 ROOT...), not %s", path, number);
+                } else {
+                    if (g_gen.since_count == sizeof g_gen.since / sizeof *g_gen.since)
+                        sg_fail(0, "%s: over 512 since roots", path);
+                    g_gen.since[g_gen.since_count].root = sg_intern(text + i, w);
+                    g_gen.since[g_gen.since_count++].version = version;
+                }
+                if (i + w < e && text[i + w] == '#') break;
+                i += w;
+            }
+        }
+        i = e + 1;
+    }
+    free(text);
+}
+/* the ArchVersion() a root came with, 0 for one every guest has */
+static long long root_since(const char* root) {
+    unsigned i;
+    for (i = 0; i < g_gen.since_count; ++i)
+        if (!strcmp(sg_str(g_gen.since[i].root), root)) return g_gen.since[i].version;
+    return 0;
 }
 
 /* the FEAT_ words of the profile's feature lines (a64.profile: "feature v8.0 FEAT_CRC32 ..."), " A B ", in capitals */
@@ -2601,38 +3448,74 @@ static char* profile_features(const char* path) {
     return out;
 }
 
-int sg_generate(const char* roots_path, const char* backend_path, const char* profile_path, const char* out_path) {
+int sg_generate(const char* roots_path, const char* const* backend_paths, int backend_count, const char* profile_path,
+                const char* out_path) {
     unsigned* roots = g_gen.roots;
     Clause* clauses = g_gen.clauses;
     unsigned root_count = read_roots(roots_path, roots, 1024), clause_count = 0, i, k, d;
-    size_t backend_size;
-    char* backend = sg_read(backend_path, &backend_size);
-    const char* base = strrchr(backend_path, '/');
+    size_t backend_size = 0;
+    char* backend = NULL;
+    int b;
+    /* the back end's files, one text in their order (a back end's core first, then its state) */
+    for (b = 0; b < backend_count; ++b) {
+        size_t size;
+        char* text = sg_read(backend_paths[b], &size);
+        backend = (char*)realloc(backend, backend_size + size + 2);
+        if (!backend) sg_fail(0, "out of memory for the back end");
+        memcpy(backend + backend_size, text, size);
+        backend_size += size;
+        if (size && text[size - 1] != '\n') backend[backend_size++] = '\n';
+        if (b + 1 < backend_count) backend[backend_size++] = '\n';
+        free(text);
+    }
+    {
+        const char* last = backend_paths[backend_count - 1];
+        const char* base = strrchr(last, '/');
+        g_gen.backend_name = base ? base + 1 : last;
+    }
     g_gen.backend_code = backend_code(backend, backend_size);
     g_gen.features = profile_path ? profile_features(profile_path) : NULL;
-    g_gen.backend_name = base ? base + 1 : backend_path;
+    if (profile_path) profile_since(profile_path);
+    if (g_gen.since_count && !backend_defines_function("sg_ArchVersion"))
+        sg_fail(0, "%s: since lines need the back end's sg_ArchVersion, which %s does not define", profile_path,
+                g_gen.backend_name);
     for (d = 1; d < g_parse.def_count; ++d) { /* each root's clause: the one that calls it */
         const SgDef* def = &g_parse.defs[d];
-        int root;
+        int root, decoder;
         if (def->kind != D_CLAUSE || (root = clause_root(def->body, roots, root_count)) < 0) continue;
+        if ((decoder = clause_decoder(sg_str(def->name))) < 0) continue;
         {
             Clause* c = &clauses[clause_count++];
+            memset(c, 0, sizeof *c);
             c->clause = d;
+            c->decoder = (unsigned)decoder;
             c->decode = sg_find(sg_str(roots[root]), D_FUNCTION);
             if (!c->decode) sg_fail(def->body, "the root %s has no definition", sg_str(roots[root]));
-            clause_bits(d, &c->mask, &c->value);
+            clause_bits(d, &c->mask, &c->value, &c->width);
         }
     }
     for (i = 0; i < root_count; ++i) {
         for (k = 0; k < clause_count && strcmp(sg_str(g_parse.defs[clauses[k].decode].name), sg_str(roots[i])); ++k) {}
-        if (k == clause_count) sg_fail(0, "%s: no decode clause calls the root %s", roots_path, sg_str(roots[i]));
+        if (k == clause_count)
+            sg_fail(0, "%s: no decode clause %scalls the root %s", roots_path,
+                    g_gen.decoder_count ? "of a decoder's families " : "", sg_str(roots[i]));
+    }
+    for (i = 0; i < g_gen.since_count; ++i) {
+        for (k = 0;
+             k < root_count && roots[k] != g_gen.since[i].root && strcmp(sg_str(roots[k]), sg_str(g_gen.since[i].root));
+             ++k) {}
+        if (k == root_count)
+            sg_fail(0, "%s: since names %s, which is no root", profile_path, sg_str(g_gen.since[i].root));
     }
     /* the clauses are tried in their order, as Sail's scattered decode tries them, each after the one that handed the
-       word on (Error_See): one an earlier clause covers whole and hands nothing on is never reached (REV16 and REV32
-       go to REV's clause, which runs the same execute) */
+       word on (Error_See, a guard that fails, an encoding newer than the guest's architecture): one an earlier clause
+       covers whole and hands nothing on is never reached (REV16 and REV32 go to REV's clause, which runs the same
+       execute) */
     for (k = 0; k < clause_count; ++k) {
         for (i = 0; i < k && !clauses[k].shadowed; ++i)
-            if (!clauses[i].shadowed && !clauses[i].sees && (clauses[i].mask & clauses[k].mask) == clauses[i].mask &&
+            if (!clauses[i].shadowed && !clauses[i].sees && !clauses[i].guarded &&
+                clauses[i].decoder == clauses[k].decoder && !root_since(sg_str(g_parse.defs[clauses[i].decode].name)) &&
+                (clauses[i].mask & clauses[k].mask) == clauses[i].mask &&
                 (clauses[k].value & clauses[i].mask) == clauses[i].value)
                 clauses[k].shadowed = i + 1;
         if (!clauses[k].shadowed) generate_decode(&clauses[k]);
@@ -2652,25 +3535,31 @@ int sg_generate(const char* roots_path, const char* backend_path, const char* pr
     if (g_gen.helpers.length) sg_out("%s", g_gen.helpers.text);
     sg_out("/* ---- the decode functions ---- */\n\n");
     if (g_gen.body.length) sg_out("%s", g_gen.body.text);
-    sg_out(
-        "/* the word's instruction emitted at pc, when it is one of these: 1, else 0. Each decode function answers 1 when\n"
-        "   the word is its (emitted, or UNDEF), 0 when it hands it on to the next clause that matches it. A branch's\n"
-        "   condition (an i1) and target (an i64) in *taken and *target when they are not NULL (sg_branch_to) */\n");
-    sg_out("static int sg_emit(SnxIr* ir, SnxU32 word, SnxU64 pc, LLVMValueRef* taken, LLVMValueRef* target) {\n");
-    sg_out("    SgCtx context, *g = &context;\n");
-    sg_out("    memset(g, 0, sizeof *g);\n    g->ir = ir;\n    g->word = word;\n    g->pc = pc;\n");
-    sg_out("    g->start = LLVMGetLastInstruction(LLVMGetInsertBlock(ir->b));\n   ");
-    for (i = 0; i < clause_count; ++i) {
-        if (clauses[i].shadowed) {
-            sg_out(" /* %s: its words are %s's */\n   ", sg_str(g_parse.defs[clauses[i].decode].name),
-                   sg_str(g_parse.defs[clauses[clauses[i].shadowed - 1].decode].name));
-            continue;
+    for (d = 0; d < (g_gen.decoder_count ? g_gen.decoder_count : 1); ++d) {
+        const char* name = g_gen.decoder_count ? sg_str(g_gen.decoders[d].name) : "sg_decode";
+        sg_out(
+            "/* the instruction g->word is, emitted at g->pc, when it is one of these: 1, else 0. Each decode function "
+            "answers 1\n"
+            "   when the word is its (emitted, or UNDEF), 0 when it hands it on to the next clause that matches it */\n");
+        sg_out("static int %s(SgCtx* g) {\n", name);
+        for (i = 0; i < clause_count; ++i) {
+            const char* decode = sg_str(g_parse.defs[clauses[i].decode].name);
+            long long since = root_since(decode);
+            if (clauses[i].decoder != d) continue;
+            if (clauses[i].shadowed) {
+                sg_out("    /* %s: its words are %s's */\n", decode,
+                       sg_str(g_parse.defs[clauses[clauses[i].shadowed - 1].decode].name));
+                continue;
+            }
+            if (since)
+                sg_out(
+                    "    if ((g->word & 0x%0*llxu) == 0x%0*llxu && sg_ArchVersion(g) >= %lld && sg_%s(g)) return 1;\n",
+                    clauses[i].width / 4, clauses[i].mask, clauses[i].width / 4, clauses[i].value, since, decode);
+            else
+                sg_out("    if ((g->word & 0x%0*llxu) == 0x%0*llxu && sg_%s(g)) return 1;\n", clauses[i].width / 4,
+                       clauses[i].mask, clauses[i].width / 4, clauses[i].value, decode);
         }
-        sg_out(" if ((word & 0x%08llxu) == 0x%08llxu && sg_%s(g)) {\n    } else", clauses[i].mask, clauses[i].value,
-               sg_str(g_parse.defs[clauses[i].decode].name));
+        sg_out("    return 0;\n}\n\n");
     }
-    sg_out(
-        "\n        return 0;\n    sg_accesses_combine(g);\n    sg_flags_flush(g);\n    sg_branch_result(g, taken, target);\n"
-        "    return 1;\n}\n");
     return sg_flush(out_path);
 }

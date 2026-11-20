@@ -186,20 +186,20 @@ static u32 depth_2d_format(u32 zeta) {
 /* A texture's slice z as a 2D engine surface (gpu.h Surf2D), the render target the 3D engine would bind there
    (gpu/nvn/nvn_draw.c): its format a target's (a depth texture's the driver's color format of its bytes), its bytes
    a pixel (0 for a depth format), a multisampled texture's size in samples, as the 2D engine sees one. 0 when it
-   takes no target */
-static int surf2d(u64 snapshot, const NvnView* v, int has_v, i32 z, Surf2D* o, u32* bpp) {
+   takes no target. The texture is a copy's own (the snapshot's bytes, or a front end's that has no NVN object in guest
+   memory, as the GL layer's textures) */
+static int surf2d(const NvnTexture* texture, const NvnView* v, int has_v, i32 z, Surf2D* o, u32* bpp) {
     DsSurf t;
     int depth;
     u32 msaa;
     *o = (Surf2D){0};
-    if (!nvn_draw_surface(snapshot, has_v ? v : NULL, &t, &depth, &msaa) || (t.mem >> 16 & 1) || z < 0) return 0;
+    if (!nvn_draw_surface_of(texture, has_v ? v : NULL, &t, &depth, &msaa) || (t.mem >> 16 & 1) || z < 0) return 0;
     *bpp = depth ? 0 : gpu_color_bpp(t.format);
     o->format = depth ? depth_2d_format(t.format) : t.format;
     if (!o->format) return 0;
     o->linear = t.mem >> 12 & 1;
     o->bh = t.mem >> 4 & 15;
     o->depth = 1;
-    const NvnTexture* texture = NVN_OBJ(const NvnTexture, snapshot);
     u32 level = has_v && (v->set & NVN_VIEW_LEVELS) ? v->base_level : 0;
     u32 width = texture->d.width >> level ? texture->d.width >> level : 1;
     u32 height = texture->d.target == NVN_TEXTURE_TARGET_1D_ARRAY ? 1
@@ -356,13 +356,22 @@ static int copy_memory(const NvnPCopyT2T* r, const TexPlane* source, const TexPl
     }
     return 1;
 }
+/* surf2d of the texture whose snapshot is at guest address snapshot (0 for none) */
+static int surf2d_at(u64 snapshot, const NvnView* v, int has_v, i32 z, Surf2D* o, u32* bpp) {
+    NvnTexture t = {0}; /* past the snapshot's bytes */
+    *o = (Surf2D){0};
+    if (!snapshot) return 0;
+    memcpy(&t, GP(snapshot), NVN_TEX_SNAP);
+    return surf2d(&t, v, has_v, z, o, bpp);
+}
 /* slice k of the copy r as the renderer's image blit, on the GPU, which converts between two formats as the 2D engine
    does: 1 when it did it. 0 when either texture takes no target, or the renderer can't (the source isn't a render
    target): s and d are the slice's surfaces then, with their bytes a pixel in *bs and *bd, else their formats are 0 */
-static int blit_gpu(const NvnPCopyT2T* r, i32 k, Surf2D* s, Surf2D* d, u32* bs, u32* bd) {
+static int blit_gpu(const NvnPCopyT2T* r, const NvnTexture* source, const NvnTexture* destination, i32 k, Surf2D* s,
+                    Surf2D* d, u32* bs, u32* bd) {
     *bs = *bd = 0;
-    if (!surf2d(r->src, &r->sv, r->has_sv, source_slice(r, k), s, bs) ||
-        !surf2d(r->dst, &r->dv, r->has_dv, r->dr.zoffset + k, d, bd)) {
+    if (!surf2d(source, &r->sv, r->has_sv, source_slice(r, k), s, bs) ||
+        !surf2d(destination, &r->dv, r->has_dv, r->dr.zoffset + k, d, bd)) {
         s->format = d->format = 0;
         return 0;
     }
@@ -384,13 +393,11 @@ static int blit_gpu(const NvnPCopyT2T* r, i32 k, Surf2D* s, Surf2D* d, u32* bs, 
 }
 /* A copy between textures' regions with scaling, conversion or axis reversal. The renderer's image path applies
    the explicit filter flag; its memory gather provides nearest sampling when no image path can take the source. */
-static void blit_texture(const NvnPCopyT2T* r) {
+static void blit_texture(const NvnPCopyT2T* r, const NvnTexture* source, const NvnTexture* destination) {
     i32 depth = r->sr.depth > 0 ? r->sr.depth : 1;
     if (r->sr.width <= 0 || r->sr.height <= 0 || r->dr.width <= 0 || r->dr.height <= 0) return;
     double sdx = (double)r->sr.width / r->dr.width;
     double sdy = (double)r->sr.height / r->dr.height;
-    const NvnTexture* source = NVN_OBJ(const NvnTexture, r->src);
-    const NvnTexture* destination = NVN_OBJ(const NvnTexture, r->dst);
     TexPlane ps, pd;
     int memory =
         tex_plane(source, r->has_sv ? &r->sv : NULL, &ps) && tex_plane(destination, r->has_dv ? &r->dv : NULL, &pd);
@@ -401,7 +408,7 @@ static void blit_texture(const NvnPCopyT2T* r) {
         Surf2D s, d;
         u32 bs, bd;
         /* the destination target holds the pixels: nothing to load from memory (fermi2d.c's too) */
-        if (blit_gpu(r, k, &s, &d, &bs, &bd)) continue;
+        if (blit_gpu(r, source, destination, k, &s, &d, &bs, &bd)) continue;
         if (memory) {
             NvnPCopyT2T slice = *r;
             slice.sr.zoffset = source_slice(r, k);
@@ -469,7 +476,7 @@ static void copy_texture_texture(const NvnPCopyT2T* r, const NvnTexture* s, cons
         q.sr.width *= bx;
         q.sr.yoffset *= by;
         q.sr.height *= by;
-        blit_texture(&q);
+        blit_texture(&q, s, d);
         return;
     }
     TexPlane ps, pd;
@@ -492,7 +499,7 @@ static void copy_texture_texture(const NvnPCopyT2T* r, const NvnTexture* s, cons
     if (r->sr.width != r->dr.width || r->sr.height != r->dr.height || ps.bpb != pd.bpb || ps.bw != pd.bw ||
         ps.bhp != pd.bhp ||
         (r->flags & (NVN_COPY_FLAGS_MIRROR_X_BIT | NVN_COPY_FLAGS_MIRROR_Y_BIT | NVN_COPY_FLAGS_LINEAR_FILTER_BIT))) {
-        blit_texture(r);
+        blit_texture(r, s, d);
         return;
     }
     if (r->sr.width <= 0 || r->sr.height <= 0) return;
@@ -506,7 +513,7 @@ static void copy_texture_texture(const NvnPCopyT2T* r, const NvnTexture* s, cons
            Else it is the DMA engine's, through memory */
         Surf2D s2, d2;
         u32 bs, bd;
-        if (blit_gpu(r, k, &s2, &d2, &bs, &bd)) continue;
+        if (blit_gpu(r, s, d, k, &s2, &d2, &bs, &bd)) continue;
         if (source_format != destination_format) {
             /* A failed image conversion must not become a raw same-size byte copy. */
             NvnPCopyT2T slice = *r;
@@ -565,20 +572,21 @@ static int dlss_upscale(const NvnPDlss* r) {
         LOG_LIMIT(1, "nvn: a DLSS evaluation of inputs away from their textures' corner: the filtered copy stands in\n");
         return 0;
     }
-    if (!surf2d(r->tex[NVN_DLSS_INPUT], &r->view[NVN_DLSS_INPUT], r->has_view[NVN_DLSS_INPUT], 0, &u.color, &bpp) ||
-        !surf2d(r->tex[NVN_DLSS_OUTPUT], &r->view[NVN_DLSS_OUTPUT], r->has_view[NVN_DLSS_OUTPUT], 0, &u.output, &bpp) ||
-        !surf2d(r->tex[NVN_DLSS_DEPTH], &r->view[NVN_DLSS_DEPTH], r->has_view[NVN_DLSS_DEPTH], 0, &u.depth, &bpp) ||
-        !surf2d(r->tex[NVN_DLSS_MOTION], &r->view[NVN_DLSS_MOTION], r->has_view[NVN_DLSS_MOTION], 0, &u.motion, &bpp)) {
+    if (!surf2d_at(r->tex[NVN_DLSS_INPUT], &r->view[NVN_DLSS_INPUT], r->has_view[NVN_DLSS_INPUT], 0, &u.color, &bpp) ||
+        !surf2d_at(r->tex[NVN_DLSS_OUTPUT], &r->view[NVN_DLSS_OUTPUT], r->has_view[NVN_DLSS_OUTPUT], 0, &u.output,
+                   &bpp) ||
+        !surf2d_at(r->tex[NVN_DLSS_DEPTH], &r->view[NVN_DLSS_DEPTH], r->has_view[NVN_DLSS_DEPTH], 0, &u.depth, &bpp) ||
+        !surf2d_at(r->tex[NVN_DLSS_MOTION], &r->view[NVN_DLSS_MOTION], r->has_view[NVN_DLSS_MOTION], 0, &u.motion,
+                   &bpp)) {
         LOG_LIMIT(1, "nvn: a DLSS evaluation's textures aren't surfaces the renderer takes: the filtered copy stands "
                      "in\n");
         return 0;
     }
-    u.has_exposure = r->tex[NVN_DLSS_EXPOSURE] &&
-                     surf2d(r->tex[NVN_DLSS_EXPOSURE], &r->view[NVN_DLSS_EXPOSURE], r->has_view[NVN_DLSS_EXPOSURE], 0,
-                            &u.exposure, &bpp);
-    u.has_reactive = r->tex[NVN_DLSS_BIAS] && !r->base[3][0] && !r->base[3][1] &&
-                     surf2d(r->tex[NVN_DLSS_BIAS], &r->view[NVN_DLSS_BIAS], r->has_view[NVN_DLSS_BIAS], 0, &u.reactive,
-                            &bpp);
+    u.has_exposure = r->tex[NVN_DLSS_EXPOSURE] && surf2d_at(r->tex[NVN_DLSS_EXPOSURE], &r->view[NVN_DLSS_EXPOSURE],
+                                                            r->has_view[NVN_DLSS_EXPOSURE], 0, &u.exposure, &bpp);
+    u.has_reactive =
+        r->tex[NVN_DLSS_BIAS] && !r->base[3][0] && !r->base[3][1] &&
+        surf2d_at(r->tex[NVN_DLSS_BIAS], &r->view[NVN_DLSS_BIAS], r->has_view[NVN_DLSS_BIAS], 0, &u.reactive, &bpp);
     u.render[0] = (u32)r->in[0], u.render[1] = (u32)r->in[1];
     u.render_max[0] = r->render_max[0] > 0 ? (u32)r->render_max[0] : 0;
     u.render_max[1] = r->render_max[1] > 0 ? (u32)r->render_max[1] : 0;
@@ -733,6 +741,33 @@ void nvn_write_texels(u64 t, u64 v, u64 region, u64 src, i64 row, i64 image) {
     w->c = x;
     memcpy(w->bytes, GP(src), span); /* the source's whole span, read as the game writes it */
     gpu_call(texel_write, w, NULL, 0);
+}
+
+void nvn_copy_levels(const NvnTexture* t, unsigned from, unsigned to) {
+    u32 layers = t->d.target == NVN_TEXTURE_TARGET_CUBEMAP    ? 6u
+                 : t->d.target == NVN_TEXTURE_TARGET_2D_ARRAY ? t->d.depth
+                                                              : 1u;
+    for (unsigned l = from + 1; l <= to && l < t->d.levels; l++) {
+        u32 sw = t->d.width >> (l - 1), sh = t->d.height >> (l - 1), dw = t->d.width >> l, dh = t->d.height >> l;
+        NvnPCopyT2T r = {.has_sv = 1, .has_dv = 1, .flags = NVN_COPY_FLAGS_LINEAR_FILTER_BIT};
+        r.sv = (NvnView){.set = NVN_VIEW_LEVELS, .base_level = (u8)(l - 1), .levels = 1};
+        r.dv = (NvnView){.set = NVN_VIEW_LEVELS, .base_level = (u8)l, .levels = 1};
+        r.sr = (NVNcopyRegion){0, 0, 0, sw ? (int)sw : 1, sh ? (int)sh : 1, 1};
+        r.dr = (NVNcopyRegion){0, 0, 0, dw ? (int)dw : 1, dh ? (int)dh : 1, 1};
+        for (u32 z = 0; z < layers; z++) {
+            r.sr.zoffset = r.dr.zoffset = (int)z;
+            copy_texture_texture(&r, t, t);
+        }
+    }
+}
+int nvn_copy_texels_in(const NvnTexture* t, const NvnView* v, const NVNcopyRegion* region, const u8* bytes, i64 row,
+                       i64 image) {
+    NvnPCopyB2T r = {.r = *region};
+    TexPlane p;
+    if (v) r.view = *v, r.has_view = 1;
+    if (!tex_plane(t, v, &p)) return 0;
+    copy_buffer_texture(&r, t, 1, (const i64[2]){row, image}, bytes);
+    return 1;
 }
 
 /* A texel read: the copy, on the stack of the game's thread, which waits for the GPU thread's increment of syncpt

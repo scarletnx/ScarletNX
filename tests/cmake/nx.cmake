@@ -168,8 +168,8 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
         "${PROJECT_SOURCE_DIR}/tests/support/bcn.c"
         "${PROJECT_SOURCE_DIR}/tests/support/ui_shape_ref.c")
     target_include_directories(snx-test-vulkan PRIVATE "${PROJECT_SOURCE_DIR}/tests")
-    target_link_libraries(snx-test-vulkan PRIVATE snx_nx_flags ${components} snx_driver FFmpeg::avutil Threads::Threads
-                                                  ${CMAKE_DL_LIBS})
+    target_link_libraries(snx-test-vulkan PRIVATE snx_nx_flags ${components} snx_driver snx_glslc FFmpeg::avutil
+                                                  Threads::Threads ${CMAKE_DL_LIBS})
     target_include_directories(snx-test-vulkan PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/hookgen/snx_gpu"
                                                        "${PROJECT_SOURCE_DIR}/tests/glsl")
     set_target_properties(snx-test-vulkan PROPERTIES LINKER_LANGUAGE CXX)
@@ -313,6 +313,11 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
         "--settings-ini=${CMAKE_CURRENT_BINARY_DIR}/vulkan_headless_vk12.ini" --vk-validation=1)
     set_tests_properties(vulkan_headless_vk12 PROPERTIES TIMEOUT 120
         ENVIRONMENT "VK_KHRONOS_VALIDATION_REPORT_FLAGS=error" FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+    # vk_api=1.1 on a device with more, which runs as auto: the setting takes in only a Vulkan 1.1 device
+    file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/vulkan_headless_vk11.ini" "[Debug]\nvk_api=1.1\n")
+    add_test(NAME vulkan_headless_vk11 COMMAND snx-test-vulkan -H
+        "--settings-ini=${CMAKE_CURRENT_BINARY_DIR}/vulkan_headless_vk11.ini")
+    set_tests_properties(vulkan_headless_vk11 PROPERTIES TIMEOUT 120 FAIL_REGULAR_EXPRESSION "failed: VK_ERROR")
     # every check again on a device made again without VK_EXT_depth_clamp_control and VK_EXT_conditional_rendering,
     # whose commands vk_debug_hide_commands has the check of each extension's commands take as missing (gpu/vk/device.c):
     # each extension off, the log saying the command and the driver (tests/vulkan_hidden_commands.inc). A driver that
@@ -422,6 +427,11 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
     add_test(NAME vulkan_headless_hot COMMAND snx-test-vulkan -H --write-tracking=1 --write-tracking-hot=1)
     set_tests_properties(vulkan_headless_hot PROPERTIES TIMEOUT 120
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+    # every check again with draw_state_check=1: a kept state that differs when it is made again fails it, and so does
+    # a read past the count a draw has of its buffers or images, which hold a pattern there (draw_storage_read)
+    add_test(NAME vulkan_headless_draw_state_check COMMAND snx-test-vulkan -H --draw-state-check=1)
+    set_tests_properties(vulkan_headless_draw_state_check PROPERTIES TIMEOUT 180
+        FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR;draw_state_check=1: a draw that kept")
     # the checks of guest memory read in place again with the write tracking by page protection: the driver takes an
     # import's pages for writing, and amdgpu refuses those a scan left protected (VK_ERROR_INVALID_EXTERNAL_HANDLE)
     add_test(NAME vulkan_uma_hot COMMAND snx-test-vulkan -H --vk-memory=2 --write-tracking=1 --write-tracking-hot=1)

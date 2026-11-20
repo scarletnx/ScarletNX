@@ -6,6 +6,7 @@
 #define SNX_NVN_COPY_H
 #include "common/cpu/aarch64/cpu.h"
 #include "common/platform/thread.h"
+#include "nx/gpu/nvn/nvn_obj.h"
 
 /* the columns and rows a texture blit's tables hold: NVN's largest texture's (16384 texels a side) */
 #define NVN_BLIT_MAX 16384
@@ -25,6 +26,14 @@ int nvn_copy_record(u32 op, u64 payload, u32 size, i64 stride[2]);
    the guest memory at src (rows row bytes apart, slices image bytes apart, 0 for tightly packed), read now and
    written into the texture's storage on the GPU, in order with the queues' work */
 void nvn_write_texels(u64 t, u64 v, u64 region, u64 src, i64 row, i64 image);
+/* On the GPU thread, bytes (rows row bytes apart, slices image bytes apart, 0 for tightly packed) written into the
+   region of texture t (its view v, NULL for none) as nvn_write_texels writes the game's: a texture of another front
+   end laid out as NVN lays one out (the GL layer's). 1, or 0 for a texture the runtime can't lay out */
+int nvn_copy_texels_in(const NvnTexture* t, const NvnView* v, const NVNcopyRegion* region, const u8* bytes, i64 row,
+                       i64 image);
+/* On the GPU thread, texture t's levels from + 1 to to each made from the one above it by the 2D engine's filtered
+   copy, every layer of an array or a cube map, a volume's first slice: another front end's mipmaps (glGenerateMipmap) */
+void nvn_copy_levels(const NvnTexture* t, unsigned from, unsigned to);
 /* nvnTextureReadTexelsStrided on the game's thread: the region's texels copied out of the texture by the GPU into the
    guest memory at dst (rows row bytes apart, slices image bytes apart, 0 for tightly packed), waited for */
 void nvn_read_texels(u64 t, u64 v, u64 region, u64 dst, i64 row, i64 image);

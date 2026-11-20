@@ -38,6 +38,13 @@ if(BUILD_TESTING)
     set_target_properties(snx-test-android-inputs PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
     target_compile_options(snx-test-android-inputs PRIVATE ${snx_android_c_options} -UNDEBUG)
     add_test(NAME android_inputs COMMAND snx-test-android-inputs)
+    # the DEX reader's values as a file may nest them, past what a compiler writes and what a stack holds (dex/dex.c)
+    add_executable(snx-test-android-dex "${PROJECT_SOURCE_DIR}/tests/android_dex.c")
+    target_include_directories(snx-test-android-dex PRIVATE "${PROJECT_SOURCE_DIR}/src")
+    target_link_libraries(snx-test-android-dex PRIVATE snx_android_dex)
+    set_target_properties(snx-test-android-dex PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+    target_compile_options(snx-test-android-dex PRIVATE ${snx_android_c_options} -UNDEBUG)
+    add_test(NAME android_dex COMMAND snx-test-android-dex)
     # bionic's C library as the bridge's HLE gives it to an app's code (bridge/hle_libc.c, hle_posix.c, args.c),
     # against what bionic gives on Android 16
     add_executable(snx-test-android-bionic "${PROJECT_SOURCE_DIR}/tests/android_bionic.c")
@@ -50,6 +57,16 @@ if(BUILD_TESTING)
     set_target_properties(snx-test-android-bionic PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON)
     target_compile_options(snx-test-android-bionic PRIVATE -Wall -Wextra -Werror -UNDEBUG)
     add_test(NAME android_bionic COMMAND snx-test-android-bionic)
+    # the bridge's start where the LLVM backend cannot target the host, snx_recompiler_new wrapped at link time
+    if(CMAKE_SYSTEM_NAME MATCHES "^(Linux|FreeBSD)$")
+        add_executable(snx-test-android-bridge-start "${PROJECT_SOURCE_DIR}/tests/android_bridge_start.c")
+        target_link_libraries(snx-test-android-bridge-start PRIVATE
+                              "$<LINK_GROUP:RESCAN,snx_android_program,snx_android_bridge>")
+        target_link_options(snx-test-android-bridge-start PRIVATE "LINKER:--wrap=snx_recompiler_new")
+        set_target_properties(snx-test-android-bridge-start PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON)
+        target_compile_options(snx-test-android-bridge-start PRIVATE -Wall -Wextra -Werror -UNDEBUG)
+        add_test(NAME android_bridge_start COMMAND snx-test-android-bridge-start)
+    endif()
     # the 32-bit bridge (bridge/arm32*.c, which Windows leaves out): its loader on ELF32 libraries the test writes, and
     # bionic's functions as 32-bit guest code calls them
     if(NOT WIN32)
@@ -111,6 +128,7 @@ endif()
 
 if(COMMAND snx_sanitizer_path) # tests/CMakeLists.txt: this folder's tests
     snx_test_sanitize(snx-test-bionic-sync snx-test-android-image snx-test-android-host-anon snx-test-android-gles2
-                      snx-test-android-inputs snx-test-android-bionic snx-test-android-arm32)
+                      snx-test-android-inputs snx-test-android-bionic snx-test-android-arm32 snx-test-android-dex
+                      snx-test-android-bridge-start)
     snx_sanitizer_path()
 endif()
