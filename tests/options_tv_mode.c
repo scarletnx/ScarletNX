@@ -396,6 +396,28 @@ static void test_astc_bc_old(void) {
     g_test.write = 0;
 }
 
+/* compress_shader_cache, deprecated: the shader cache is always packed, when the game closes. An old .ini's value is
+   said with what holds now, whichever it was, and stays in the file under [Deprecated] */
+static void test_compress_shader_cache_old(void) {
+    char* text;
+    g_test.write = 1;
+    text = open_ini("[Performance]\ncompress_shader_cache=0\n");
+    CHECK(strstr(g_test.said,
+                 "settings: compress_shader_cache=0, deprecated, chooses nothing: the shaders and pipelines "
+                 "a session makes are held in memory and written when the game closes, packed with zstd "
+                 "at its highest level (docs/user/deprecations.md)\n"));
+    CHECK(text && strstr(text, "\n[Deprecated]\n") &&
+          strstr(text, "\n[Deprecated]\n") < strstr(text, "\ncompress_shader_cache=0\n"));
+    free(text);
+    text = open_ini("[Performance]\ncompress_shader_cache=1\n");
+    CHECK(strstr(g_test.said, "settings: compress_shader_cache=1, deprecated, chooses nothing: "));
+    free(text);
+    text = open_ini("[Performance]\nprepare_shaders=2\n"); /* an .ini without it says nothing of it */
+    CHECK(!strstr(g_test.said, "compress_shader_cache"));
+    free(text);
+    g_test.write = 0;
+}
+
 /* bc7_cache_gb, deprecated with the BC7 cache's file: an old .ini's value is said with what bounds the cache now, and
    stays in the file under [Deprecated] */
 static void test_bc7_cache_gb_old(void) {
@@ -903,6 +925,7 @@ int main(int argc, char** argv) {
     test_memory_fit_old();
     test_astc_bc_old();
     test_bc7_cache_gb_old();
+    test_compress_shader_cache_old();
     test_controls_opacity_old();
     test_dropped_keys_old();
     test_vk_descriptors_old_default();

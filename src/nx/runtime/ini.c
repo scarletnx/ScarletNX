@@ -403,6 +403,7 @@ static const struct {
                                      "vk_ext_mesh_shader=off skips them"},
                       {"hmma_astat", "went with hmma_mode, which takes its default, 0 (Auto)"},
                       {"gl_layer", "the GL layer always takes a 64-bit game's own GL driver; a 32-bit game keeps it"},
+                      {"compress_shader_cache", "the shader cache is always packed, when the game closes"},
                       {"bc7_cache_gb", "the BC7 cache has no file to bound: it holds the levels used most in "
                                        "memory, up to an eighth of the machine's"},
                       {NULL, NULL}};
