@@ -9,6 +9,7 @@
 #include "nds/cartridge/rom.h"
 #include "nds/gpu/gpu3d.h"
 #include "nds/gpu/gpu3d_state.h"
+#include "nds/hle/pxi.h"
 #include "common/utilities/common.h"
 #include "common/utilities/endian.h"
 #include "support/nds_image.h"
@@ -370,6 +371,20 @@ static void test_vectors(NdsBoard* board) {
     gx(board, 0x15, 0), gx(board, 0x29, 0x001F00C0), gx(board, 0x40, 0), gx(board, 0x41, 0);
 }
 
+/* the sound driver's volumes are bytes a game sets whole, and its table of them holds 128 levels: a sequence at
+   volume 255 that is stopped, which reads its tracks' volumes, reads inside the table. Nothing of the read shows
+   without a note playing: it is the sanitizers' build that stops on one past the table */
+static void test_sound(NdsBoard* board) {
+    const uint32_t list = 0x02050000, notes = 0x02050100;
+    const uint32_t commands[3][6] = {{list + 0x18, 2, 0, notes, 0, 0},     /* prepare sequence 0 over empty notes */
+                                     {list + 0x30, 6, 0, 0x05, 255, 0x01}, /* its volume (key 0x105), 255 */
+                                     {0, 1, 0, 0, 0, 0}};                  /* stop it */
+    for (uint32_t i = 0; i < 3; ++i)
+        for (uint32_t k = 0; k < 6; ++k) nds_write32(board, list + i * 0x18 + k * 4, commands[i][k]);
+    nds_sound_request(board, list);
+    nds_sound_request(board, 0);
+}
+
 int main(void) {
     char error[512] = "";
     char* dir = snx_temp_dir(NULL);
@@ -395,6 +410,7 @@ int main(void) {
     test_geometry(board);
     test_matrices(board);
     test_vectors(board);
+    test_sound(board);
     nds_board_free(board);
     free(board);
     nds_rom_close(&rom);
