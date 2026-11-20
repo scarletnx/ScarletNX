@@ -79,6 +79,22 @@ static void hardware(SnxCtrProcess* p, uint32_t pa) {
     snx_ctr_csnd_set_cnt(&hw, 0, PLAYING | ONE_SHOT | PCM16 | SNX_CTR_CSND_INTERPOLATE);
     render(p, &hw, got, 4);
     expect(got, (const int16_t[]){0, 0, 500, 1000}, 4, "interpolated");
+    /* interpolated over the samples' full swing at a 24th of the rate: the step from -32768 to 32767 times the
+       counter, past 2^31 from the 17th output on, is still the line between the two samples */
+    static const int16_t swing[2] = {INT16_MIN, INT16_MAX};
+    put16s(p, pa + 8, swing, 2);
+    snx_ctr_csnd_set_cnt(&hw, 0, 0);
+    ch->start = pa + 8, ch->size = 4, ch->timer = (uint16_t)(0x10000u - 24u * 2048u);
+    snx_ctr_csnd_set_cnt(&hw, 0, PLAYING | ONE_SHOT | PCM16 | SNX_CTR_CSND_INTERPOLATE);
+    for (unsigned i = 0; i < 71; ++i) {
+        render(p, &hw, got, 1);
+        /* the second sample is read at output 47: from there the line, a 24th of the swing each output */
+        int want = i < 24 ? 0 : i < 47 ? -(32768 * ((int)i - 23) / 24) : -32768 + 65535 * ((int)i - 47) / 24;
+        if (got[0] != want) {
+            fprintf(stderr, "interpolated swing: output %u is %d, not %d\n", i, got[0], want);
+            abort();
+        }
+    }
     /* IMA-ADPCM from predictor 0, index 0: the byte 0x07 is +11 (index 8), then +2 (13, index 7) */
     static const unsigned char adpcm[1] = {0x07};
     assert(snx_ctr_phys_write(p->memory, pa + 16, adpcm, 1) == SNX_CTR_MEM_OK);
