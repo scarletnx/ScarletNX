@@ -35,7 +35,8 @@ def refused(runtime, repo, game, name, scratch, timeout):
     if done.returncode == 0:
         raise RuntimeError(f'{name}: the recompile passed with its IR file a folder:\n{text}')
     want = f'cannot save the IR of module in {kept}'
-    if want not in text:
+    # Windows' runtime names the folder with backslashes, the path here has forward ones (MSYS2's Python)
+    if want.replace('\\', '/') not in text.replace('\\', '/'):
         raise RuntimeError(f'{name}: the recompile did not say "{want}":\n{text}')
 
 
