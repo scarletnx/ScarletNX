@@ -3283,6 +3283,12 @@ extern u64 g_vk_barriers_in_pass;
 #define VK_FEEDBACK_IN_PLACE  0
 #define VK_FEEDBACK_PREDRAW   1
 #define VK_FEEDBACK_INTERLOCK 2
+/* The mode a device takes: the capture on NVIDIA's and AMD's GPUs (vendor) that have the fragment interlock with
+   attachment feedback loops and fragment stores, the two draws on the others with dynamic rendering local read */
+static inline int vk_feedback_choice(u32 vendor, int feedback, int interlock, int stores, int local_read) {
+    const int capture = (vendor == 0x10DE || vendor == 0x1002) && feedback && interlock && stores;
+    return capture ? VK_FEEDBACK_INTERLOCK : local_read ? VK_FEEDBACK_PREDRAW : VK_FEEDBACK_IN_PLACE;
+}
 extern u64 g_vk_predraws;        /* feedback draws drawn two times (render.c predraw_run) */
 extern u64 g_vk_predraw_refused; /* and those that stayed in place, which the log says why of */
 void vk_predraw_report(void);   /* logs the counts of each reason (render.c) */
