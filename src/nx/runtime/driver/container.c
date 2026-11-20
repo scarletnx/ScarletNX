@@ -978,7 +978,8 @@ int snx_romfs_each(SnxHacFs* fs, const char* suffix, SnxRomfsEach each, void* co
         free(entries);
         return -1;
     }
-    while (!rc && table_size - at >= 0x20) {
+    /* a name's padding to 4 bytes can pass the table's end by 3: at is then past it, with no entry left */
+    while (!rc && at <= table_size && table_size - at >= 0x20) {
         name_size = (SnxU32)le_bytes(entries + at + 0x1c, 4);
         if (name_size > 0x300 || name_size > table_size - at - 0x20) {
             rc = -1;
