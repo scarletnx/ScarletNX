@@ -1436,14 +1436,10 @@ static bool choose_device(SnxVkChoice* c, void* user) {
             has_list_restart ? "VK_EXT_primitive_topology_list_restart without its list feature"
                              : "no VK_EXT_primitive_topology_list_restart");
     g_vk.has_barycentric = has_barycentric && qbarycentric.fragmentShaderBarycentric;
-    /* NVIDIA's compiler of its Unix driver (libnvidia-gpucomp) deadlocked with pipelines made on several threads at
-       once (snx_vk_compile_serial). The Windows driver has its own compiler: there the lock made each fast link wait
-       behind a part's compile or a background optimized link, 1.2 to 1.7 ms a link where 0.02 ms is the link's own */
-#ifdef _WIN32
-    snx_vk_compile_serial(0);
-#else
-    snx_vk_compile_serial(p12.driverID == VK_DRIVER_ID_NVIDIA_PROPRIETARY);
-#endif
+    /* pipelines made one at a time where a driver's compiler can't take several threads at once: the extension bans'
+       off lines on vkCreateGraphicsPipelines. Elsewhere the lock would make each fast link wait behind a part's
+       compile or a background optimized link, 1.2 to 1.7 ms a link where 0.02 ms is the link's own */
+    snx_vk_compile_serial(vk_ban("vkCreateGraphicsPipelines", 1, ban_say) != 0);
     /* the drivers whose own interpolation of a clipped primitive's inputs is the console's take no varying pass
        (render.c's draw_varying): the extension bans' prefer lines on Location */
     g_vk.host_varying = vk_prefer("Location", 1, ban_say) != 0;
