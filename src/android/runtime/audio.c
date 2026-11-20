@@ -12,6 +12,7 @@
 #include <libavutil/channel_layout.h>
 #include <libavutil/mem.h>
 #include <libswresample/swresample.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -249,10 +250,14 @@ static void mix_voice(Voice* v, int32_t* mix, size_t frames) {
     for (size_t i = 0; i < frames; ++i) {
         const int16_t* f = NULL;
         if (v->sound) {
-            if ((size_t)v->at >= v->sound->frames) {
+            /* the place is a number of the app's (a seek, a rate): compared as it is, it is inside the sound before
+               it is a frame's index */
+            double frames = (double)v->sound->frames;
+            if (!(v->at >= 0 && v->at < frames)) {
                 if (v->loops == 0 || !v->sound->frames) break;
                 if (v->loops > 0) --v->loops;
-                v->at -= (double)v->sound->frames;
+                v->at = fmod(v->at, frames); /* a seek or a rate may pass more than one play of the sound */
+                if (!(v->at >= 0 && v->at < frames)) v->at = 0;
             }
             f = v->sound->pcm + 2 * (size_t)v->at;
             v->at += v->rate;
@@ -443,7 +448,9 @@ static void JNICALL native_set(JNIEnv* env, jclass unused, jint voice, jint what
                 decoder_seek(v->stream, (int64_t)x);
                 v->played = (int64_t)x * RATE / 1000;
             } else if (v->sound) {
-                v->at = x * RATE / 1000;
+                /* inside the sound, as MediaPlayer's seekTo keeps a position: its end for one past it */
+                double at = x * RATE / 1000, frames = (double)v->sound->frames;
+                v->at = at > 0 ? (at < frames ? at : frames) : 0;
             }
             v->completed = false;
             break;

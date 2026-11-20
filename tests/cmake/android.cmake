@@ -21,6 +21,21 @@ if(BUILD_TESTING)
     set_target_properties(snx-test-android-image PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
     target_compile_options(snx-test-android-image PRIVATE ${snx_android_c_options} -UNDEBUG)
     add_test(NAME android_image COMMAND snx-test-android-image)
+    # SoundPool's voices in the mixer (runtime/audio.c) through its natives, on SDL's dummy audio driver: a seek past
+    # the sound's end, before its start and to no number
+    add_executable(snx-test-android-audio "${PROJECT_SOURCE_DIR}/tests/android_audio.c" runtime/audio.c)
+    target_include_directories(snx-test-android-audio PRIVATE "${PROJECT_SOURCE_DIR}/src")
+    target_include_directories(snx-test-android-audio SYSTEM PRIVATE "${SNX_JAVA_HOME}/include"
+                               "${SNX_JAVA_HOME}/include/${snx_jni_system}")
+    target_link_libraries(snx-test-android-audio PRIVATE FFmpeg::avformat FFmpeg::avcodec FFmpeg::swresample
+                          SDL3::SDL3)
+    if(NOT WIN32)
+        target_link_libraries(snx-test-android-audio PRIVATE m)
+    endif()
+    set_target_properties(snx-test-android-audio PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+    target_compile_options(snx-test-android-audio PRIVATE ${snx_android_c_options} -UNDEBUG)
+    add_test(NAME android_audio COMMAND snx-test-android-audio)
+    set_tests_properties(android_audio PROPERTIES TIMEOUT 60)
     # the record of the guest's anonymous mappings and its MADV_DONTNEED, which FreeBSD, macOS and Windows take
     add_executable(snx-test-android-host-anon "${PROJECT_SOURCE_DIR}/tests/android_host_anon.c" bridge/host.c)
     target_include_directories(snx-test-android-host-anon PRIVATE "${PROJECT_SOURCE_DIR}/src")
@@ -140,6 +155,6 @@ endif()
 if(COMMAND snx_sanitizer_path) # tests/CMakeLists.txt: this folder's tests
     snx_test_sanitize(snx-test-bionic-sync snx-test-android-image snx-test-android-host-anon snx-test-android-gles2
                       snx-test-android-inputs snx-test-android-bionic snx-test-android-arm32 snx-test-android-dex
-                      snx-test-android-bridge-start snx-test-android-gles1)
+                      snx-test-android-bridge-start snx-test-android-audio snx-test-android-gles1)
     snx_sanitizer_path()
 endif()
