@@ -71,6 +71,8 @@ int main(void) {
     assert(s.switching == 0 && s.program == 2 && !strcmp(at(&s, 3)->label, "LAUNCH"));
     feed(&s, "The game starts its program x, of no number\n", 5); /* not the driver's line: a note */
     assert(s.switching == 0 && s.count == 4);
+    feed(&s, "The game starts its program 7\n", 5); /* nor a number with no name after it */
+    assert(s.switching == 0 && s.count == 4 && s.program == 2);
     feed(&s, "The game starts its program 1, Other\n", 6); /* no program it started from: not known */
     assert(s.program == 1 && s.previous == -1 && !strcmp(s.next, "Other"));
 
