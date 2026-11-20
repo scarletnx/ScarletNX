@@ -1282,6 +1282,42 @@ static int count_nonwritable(const u32* code, size_t words) {
    each bank's window offset from push constants, and says so in its info: the renderer places a window only for a
    program that says it, and binds every bank alone, a new descriptor at each draw's new constants, for one that
    does not */
+/* The pre-draw capture of two slots (ShaderInfo.predraw_slots): its last block takes each slot's texel through a phi,
+   and all of a block's phis come before its other instructions. The second slot's phi came after the first one's
+   cast, which a validator refuses and one desktop driver's compile fell on */
+static void predraw_capture_phis_first(void) {
+    const u64 tex = 0xc000000000000000ull | 0xfull << 31 | 2ull << 28 | 0xffull << 20 | 7ull << 16 | 8ull << 8;
+    const u64 ops[] = {0xe000000000070000ull | 0x20ull << 30 | 8, /* IPA R8, a[0x80] */
+                       0xe000000000070000ull | 0x21ull << 30 | 9, /* IPA R9, a[0x84] */
+                       tex | 0x1full << 36,                       /* TEX R0..3, R8, 2D, the handle at 0x7C */
+                       tex | 0x1eull << 36 | 4,                   /* TEX R4..7, R8, 2D, the handle at 0x78 */
+                       FADD_KEEP | 4ull << 20,                    /* FADD R0, R0, R4 */
+                       0xe30000000007000full};
+    size_t slots, words = 0;
+    u64* code = guest_program(ops, sizeof ops / sizeof *ops, NULL, &slots);
+    if (!code) return;
+    ShaderInfo info = {.predraw_slots = 3};
+    u32* spirv = spirv_of(code, slots * sizeof *code, ST_FS, &info, &words, 1, 1, 1, 1);
+    free(code);
+    check_translated(spirv, &info, "a fragment program with two captured slots translates");
+    if (!spirv) return;
+    check(info.predraw_slots == 3, "the capture takes both slots");
+    int phis = 0, late = 0, others = 0; /* others: the block's instructions so far that are no phi (and no OpLine) */
+    for (size_t i = 5; i < words;) {
+        const u32 width = spirv[i] >> 16, op = spirv[i] & 0xffff;
+        if (!width || i + width > words) break;
+        if (op == 248)
+            others = 0; /* OpLabel */
+        else if (op == 245)
+            phis++, late += others != 0; /* OpPhi */
+        else if (op != 8)
+            others++;
+        i += width;
+    }
+    check(phis >= 2, "each captured slot has its phi");
+    check(late == 0, "every phi of a block comes before its other instructions");
+    free(spirv);
+}
 static void constant_buffer_windows_told(void) {
     const u64 ops[] = {0x4c9807880e070002ull}; /* MOV R2, c[0x2][0x380] */
     ShaderInfo info;
@@ -6945,6 +6981,7 @@ int main(int argc, char** argv) {
     immediate_sampler_handle();
     constant_buffers_past_the_limit();
     constant_buffer_windows_told();
+    predraw_capture_phis_first();
     guarded_handle_merges();
     recomputed_guard_handle();
     volume_surface_atomics();
