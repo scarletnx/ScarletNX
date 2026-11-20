@@ -668,9 +668,10 @@ static int nn_visrv_sf_IApplicationDisplayService_ConvertScalingMode(SvcObj* sel
 static int nn_visrv_sf_IApplicationDisplayService_GetIndirectLayerImageRequiredMemoryInfo(SvcObj* self, i64 width,
                                                                                           i64 height, i64* size,
                                                                                           i64* alignment) {
-    const i64 block = 0x20000;
+    const u64 block = 0x20000;
     (void)self;
-    *size = (width * height * 4 + block - 1) / block * block;
+    /* the sizes are any 64 bits of the game's: the product keeps its low 64, as the console's unchecked one does */
+    *size = (i64)(((u64)width * (u64)height * 4 + block - 1) / block * block);
     *alignment = 0x1000;
     R_SUCCEED();
 }
