@@ -8,6 +8,7 @@
 #include <stdarg.h>
 
 #include "nx/hle/services/audren.c"
+#include "nx/runtime/ini.h"
 #include "nx/hle/hle.c"
 
 u8* g_mem;
@@ -175,6 +176,45 @@ static void test_queue_line(void) {
     audren_close(id);
 }
 
+/* audio_latency_ms, read as the game's .ini gives it, is the queue above which a frame is dropped, and the line names
+   it; past its range the setting keeps the end it was clamped to, and says the value given and the one kept */
+static char test_said[256];
+static void catch_said(const char* line) { snprintf(test_said, sizeof test_said, "%s", line); }
+static void test_latency_setting(void) {
+    static const u8 params[0x34];
+    const IniOpt* o = ini_find(g_audio_ini, "audio_latency_ms");
+    char line[320];
+    CHECK(o != NULL && g_settings.audio_latency == 100);
+    ini_set_say(catch_said);
+    ini_read(o, "40");
+    CHECK(g_settings.audio_latency == 40 && !test_said[0]);
+    u32 id = audren_open(params, 0);
+    CHECK(id != 0);
+    play(id);
+    unsigned lines = test_lines;
+    frames_at(id, 3, 0);
+    frames_at(id, 5, 50);    /* above 40 ms: dropped */
+    frames_at(id, 1991, 40); /* at the bound: given */
+    CHECK(test_lines == lines && host_of(id)->frames == 1 + 3 + 1991);
+    frames_at(id, 1, 40);
+    CHECK(test_lines == lines + 1);
+    snprintf(line, sizeof line,
+             "audren %u: the host held 0 to 50 ms of sound over the last 10 s, 40 ms on average; 3 frames "
+             "found it empty, 5 found more than 40 ms and were dropped, and 0 were dropped to bring it back to "
+             "20 ms\n",
+             id);
+    CHECK(!strcmp(test_line, line));
+    audren_close(id);
+    ini_read(o, "5");
+    CHECK(g_settings.audio_latency == 20 &&
+          !strcmp(test_said, "settings: audio_latency_ms=5 is not a whole number from 20 to 500: it keeps 20"));
+    ini_read(o, "900");
+    CHECK(g_settings.audio_latency == 500 &&
+          !strcmp(test_said, "settings: audio_latency_ms=900 is not a whole number from 20 to 500: it keeps 500"));
+    ini_set_say(NULL);
+    g_settings.audio_latency = 100;
+}
+
 int main(void) {
     hle_init();
     static const u8 params[0x34];
@@ -209,6 +249,7 @@ int main(void) {
     CHECK(audren_open(params, 0) == 0);
     for (int i = 0; i < SNX_AUDREN_MAX; i++) audren_close(all[i]);
     test_queue_line();
+    test_latency_setting();
     printf("audren_host: %u checks passed\n", test_checks);
     return 0;
 }

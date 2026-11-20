@@ -18,9 +18,6 @@
    and the parameters it reads back (nn/audio_renderer.c sets them). g_host.audren.lk guards the renderers and every
    renderer's state (an update and a frame never run at once) */
 
-/* a frame is dropped while the host holds more than this many ms, so the latency stays bounded when the host plays a
-   little slower than the clock renders */
-#define AUDREN_MAX_QUEUED_MS 100
 /* the log says what each playing renderer's host queue was once in this many seconds of frames */
 #define AUDREN_QUEUED_LINE_S 10
 /* the sound the host is left holding when a frame comes, once it held more through a whole window with no frame
@@ -116,7 +113,8 @@ static int audren_frames_last(const ARRen* r, u32 frames, u32 seconds) {
 }
 
 /* A frame of the clock that found r's output playing with queued bytes left: whether it is dropped, not given to the
-   host. Above AUDREN_MAX_QUEUED_MS it is. And the bytes the host holds when a frame comes are how far the sound
+   host. Above the setting audio_latency_ms it is, so the sound trails the clock by that much at most when the host
+   plays a little slower than the clock renders. And the bytes the host holds when a frame comes are how far the sound
    trails the clock, which a stall of the clock's thread leaves higher (the host ran out, then got the stall's
    frames at once) for good: so one frame is dropped each time the host held more than
    AUDREN_TARGET_QUEUED_MS through a whole AUDREN_TARGET_WINDOW_S, once no frame found it empty for
@@ -125,7 +123,9 @@ static int audren_frames_last(const ARRen* r, u32 frames, u32 seconds) {
 static int audren_queued_frame(const ARRen* r, u32 queued) {
     u32 id = POOL_INDEX(g_hle.audren.rens, r) + 1, ms_bytes = r->s->rate * 4 / 1000;
     AudrenQueued* q = &g_host.audren.queued[id - 1];
-    int over = queued > ms_bytes * AUDREN_MAX_QUEUED_MS, trim = 0;
+    /* the game's menu and a reload of the .ini change it on another thread */
+    const u32 latency_ms = (u32)atomic_load_explicit((_Atomic int*)&g_settings.audio_latency, memory_order_relaxed);
+    int over = queued > ms_bytes * latency_ms, trim = 0;
     if (!q->window || queued < q->floor) q->floor = queued;
     if (!queued)
         q->calm = 0;
@@ -144,9 +144,9 @@ static int audren_queued_frame(const ARRen* r, u32 queued) {
     q->trimmed += trim;
     if (audren_frames_last(r, ++q->frames, AUDREN_QUEUED_LINE_S)) {
         LOG("audren %u: the host held %u to %u ms of sound over the last %d s, %u ms on average; %u frames found it "
-            "empty, %u found more than %d ms and were dropped, and %u were dropped to bring it back to %d ms\n",
+            "empty, %u found more than %u ms and were dropped, and %u were dropped to bring it back to %d ms\n",
             id, audren_queued_ms(r, q->least), audren_queued_ms(r, q->most), AUDREN_QUEUED_LINE_S,
-            audren_queued_ms(r, q->sum / q->frames), q->empty, q->dropped, AUDREN_MAX_QUEUED_MS, q->trimmed,
+            audren_queued_ms(r, q->sum / q->frames), q->empty, q->dropped, latency_ms, q->trimmed,
             AUDREN_TARGET_QUEUED_MS);
         *q = (AudrenQueued){.window = q->window, .floor = q->floor, .calm = q->calm};
     }

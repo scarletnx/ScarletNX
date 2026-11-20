@@ -245,6 +245,7 @@ The settings, each with its extension and, where one took it in, the Vulkan vers
 | Key | Default | Effect |
 | --- | --- | --- |
 | `volume` | `100` | How loud the game plays, in percent of its own sound, `0` to `100` (the menus' steps 5 apart): `0` mutes it. The system's volume stays as it is, and the game's own volume (its options, the console's volume it sets) is taken at this share. A change is heard at once, from the game's `.ini` too. The game's menu (Home, F2) has it on a slider ([Usage](usage.md#playing)), kept in the game's own picks, over the launcher's Settings > Audio > Volume, a slider too, which sets it for every game ([GUI launcher](gui.md)). The log's `settings:` line names it when it is not `100`, again after a reload that changes it, and each output the game opens says the volume it plays at. A 3DS game takes it too (`--volume=N`) |
+| `audio_latency_ms` | `100` | The most sound the computer may hold ahead of the game, in ms, `20` to `500`: a frame of the game's sound that finds more queued is dropped, so the sound never trails the picture by more. Higher spares a slow computer's crackles, lower keeps the sound closer to the picture. The log says each playing renderer's queue every 10 s, with the value in effect |
 
 ## Performance
 

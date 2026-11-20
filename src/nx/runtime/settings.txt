@@ -529,6 +529,15 @@ setting Volume
     slider
     help How loud the game plays, in percent of its own sound: 0 = mute. The system's volume stays as it is. The game's
     help menu sets it while the game plays
+setting Audio latency
+    key audio_latency_ms
+    int 20 500
+    default 100
+    words # ms
+    step 10
+    help The most sound the computer may hold ahead of the game, in ms: a frame of the game's sound that finds more
+    help queued is dropped, so the sound never trails the picture by more. Higher spares a slow computer's crackles,
+    help lower keeps the sound closer to the picture
 
 table g_performance_ini
 setting FPS limit
