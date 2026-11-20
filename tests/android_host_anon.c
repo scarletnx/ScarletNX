@@ -62,6 +62,20 @@ int main(void) {
     host_anon_unmap(a + 7 * page + page / 2, 4096);
     assert(host_dontneed(a + 7 * page, page / 2) == 0);
     assert(all(p + 7 * page, page / 2, 0));
+
+    /* a change of access over more parts than one pass copies (64): 140 pages recorded read-only and writable in
+       turn, all made writable in one call, are all writable again after the advice */
+    enum { PAGES = 140 };
+    unsigned char* q = map(PAGES * page);
+    assert(q);
+    uint64_t b = (uint64_t)(uintptr_t)q;
+    host_anon_map(b, PAGES * page, HOST_READ | HOST_WRITE);
+    for (size_t i = 0; i < PAGES; i += 2) host_anon_protect(b + i * page, page, HOST_READ);
+    host_anon_protect(b, PAGES * page, HOST_READ | HOST_WRITE);
+    memset(q, 0x44, PAGES * page);
+    assert(host_dontneed(b, PAGES * page) == 0);
+    assert(all(q, PAGES * page, 0));
+    for (size_t i = 0; i < PAGES; ++i) q[i * page] = 1; /* a page left read-only ends the test here */
     puts("android_host_anon: ok");
     return 0;
 }
