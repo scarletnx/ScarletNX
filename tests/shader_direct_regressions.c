@@ -6044,7 +6044,6 @@ static int has_float_constant(const u32* code, size_t words, u32 bits) {
     }
     return 0;
 }
-/* the word of instruction i as guest_program lays a program out: a scheduling word before every third */
 /* BRA from instruction from to instruction to, on predicate (7: always) */
 static u64 flow_bra(u32 from, u32 to, u32 predicate) {
     u32 bytes = (flow_word(to) - (flow_word(from) + 1)) * 8;

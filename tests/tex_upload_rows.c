@@ -113,7 +113,6 @@ u8* gmem_host(u64 gva, u64 size) { return g_map.count ? NULL : gmem_ptr(gva, siz
    batch_moves since 1 */
 static u32 bar_state, batch_moves;
 static u8 stage[STAGE];
-static u64 stage_used;
 static u32 copy_bpp = 4, copy_bw = 1, copy_bh = 1; /* the texture's: the bytes of a copy's texel or block */
 u8* vk_stage(u64 size, u64 align, VkBuffer* buf, u64* off) {
     u64 at = (stage_used + align - 1) & ~(align - 1);
