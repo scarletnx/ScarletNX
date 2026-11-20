@@ -10,7 +10,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-static unsigned failures;
 #define CHECK(x)                                                                                                       \
     do {                                                                                                               \
         if (!(x)) {                                                                                                    \
@@ -184,10 +183,6 @@ int main(void) {
 
     gnu_vfs_destroy(&process.vfs);
     gnu_memory_destroy(&process.memory);
-    if (failures) {
-        fprintf(stderr, "gnuabi_network: %u checks failed\n", failures);
-        return 1;
-    }
     puts("gnuabi_network: ok");
     return 0;
 }
