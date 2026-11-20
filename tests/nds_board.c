@@ -385,6 +385,25 @@ static void test_sound(NdsBoard* board) {
     nds_sound_request(board, 0);
 }
 
+/* SDK 2.0's first builds number the driver's commands their own way, through a table of 30: a command numbered past
+   it names none, and reads nothing past the table (the sanitizers' build stops on that read) */
+static void test_sound_early(NdsRom* rom) {
+    char error[512] = "";
+    const uint32_t list = 0x02050000;
+    const uint32_t commands[2][6] = {{list + 0x18, 30, 0, 0, 0, 0}, {0, 0xFFFFFFFFu, 0, 0, 0, 0}};
+    uint32_t sdk = rom->sdk_version;
+    rom->sdk_version = 0x02001000;
+    NdsBoard* board = calloc(1, sizeof *board);
+    CHECK(board && nds_board_init(board, rom, error, sizeof error));
+    for (uint32_t i = 0; i < 2; ++i)
+        for (uint32_t k = 0; k < 6; ++k) nds_write32(board, list + i * 0x18 + k * 4, commands[i][k]);
+    nds_sound_request(board, list);
+    nds_sound_request(board, 0);
+    nds_board_free(board);
+    free(board);
+    rom->sdk_version = sdk;
+}
+
 int main(void) {
     char error[512] = "";
     char* dir = snx_temp_dir(NULL);
@@ -413,6 +432,7 @@ int main(void) {
     test_sound(board);
     nds_board_free(board);
     free(board);
+    test_sound_early(&rom);
     nds_rom_close(&rom);
     (void)snx_remove_tree(dir);
     free(image);
