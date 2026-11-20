@@ -55,8 +55,9 @@
    (context, pass pipeline, code generator, load) is shared by the batch, and a start-up burst of misses goes through
    in a few batches instead of thousands of compiles */
 #define SNX_JIT_BATCH   256
-/* compile threads at most */
-#define SNX_JIT_THREADS 4
+/* compile threads at most (the setting jit_threads' top), and at most when the host's CPUs decide them */
+#define SNX_JIT_THREADS               16
+#define SNX_JIT_THREADS_AUTO          4
 /* images added while the service runs at most (snx_jit_add_image), as many as ldr:ro maps NROs */
 #define SNX_JIT_IMAGES  64
 
@@ -102,7 +103,8 @@ typedef struct {
     size_t batch;     /* 0: SNX_JIT_BATCH */
     size_t region_instructions; /* 0: adaptive REGION/OVERFLOW limits above; SIZE_MAX: previous unbounded discovery */
     size_t live_budget; /* 0: SNX_JIT_LIVE_BUDGET, SIZE_MAX: use budget for live misses too */
-    /* compile threads, 0: by the host's CPUs (jit_service.c), at most SNX_JIT_THREADS. The miss thread is one more */
+    /* compile threads, at most SNX_JIT_THREADS; 0: by the host's CPUs (jit_service.c), at most SNX_JIT_THREADS_AUTO.
+       The miss thread is one more */
     unsigned threads;
     char opt;         /* the -O letter, 0: '0' */
     /* after each batch, on its compile thread, outside every lock of the service (NULL: none) */

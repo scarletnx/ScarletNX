@@ -686,12 +686,12 @@ setting NCE
     help the 36-bit address space always recompile, whatever this says
 setting JIT threads
     key jit_threads
-    int 0 4
+    int 0 16
     default 0
     startup
     words Auto|#
-    help Threads compiling the code the recompiler missed: 0 = every CPU the game may use but two (at most 4).
-    help They yield to the game
+    help Threads compiling the code the recompiler missed: 0 = every CPU the game may use but two (at most 4); 1 to
+    help 16 = that many. They yield to the game
 setting JIT region size
     key jit_region_instructions
     int 0 INT_MAX
