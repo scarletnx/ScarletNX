@@ -161,6 +161,10 @@ VK_EXT_custom_border_color | warn | turnip | * | any | * | crashed creating samp
 textureCompressionASTC_LDR | warn | turnip | * | any | * | decodes an illegal or HDR ASTC block as transparent black where the specification says opaque magenta, and sRGB ASTC texels up to 2 steps off (seen on an Adreno 610); native_astc=0 decodes them as the specification says but for a step of sRGB | #1655 | amberlith:astc: an illegal block is the error colour | 2026-11-11 broken on 26.2.99 (Adreno 610) | -
 textureCompressionASTC_LDR | warn | panvk | * | any | * | decodes an illegal or HDR ASTC block as transparent black where the specification says opaque magenta (seen on a Mali-G76); native_astc=0 decodes them as the specification says | #1898 | amberlith:astc: an illegal block is the error colour | 2026-11-12 broken on 26.99.99 (Mali-G76 MC4) | -
 
+# The rings the CPU fills (cmd.c's stage_cached: uploads, uniforms and vertices that change go to cached host memory on
+# the drivers below, and elsewhere to memory for writes in order, which a driver can map write-combined)
+VK_MEMORY_PROPERTY_HOST_CACHED_BIT | prefer | anv | * | any | * | keeps its cached and its uncached memory types over the same system memory, so the cached one costs the GPU nothing and spares the CPU the half-filled lines that a ring's many small copies leave in write-combined memory | ScarletNX 82069fa2c4 (2026-11-12) | new:headless:the staging rings' small copies timed in cached and in sequential memory | never | vk_stage_memory=1
+
 # Core parts the renderer has no way around: said so a report from such a driver starts from them
 timelineSemaphore | warn | qualcomm | * | any | * | does not run timeline semaphores properly on all of its drivers | yuzu 1462db4694 (2023-07-03) | new:headless:timeline waits and signals across the two queues | never | -
 timelineSemaphore | warn | turnip | * | any | * | has timeline semaphore problems on some devices (a ZTE handset's Snapdragon 870) | yuzu 1462db4694 (2023-07-03) | new:headless:timeline waits and signals across the two queues | never | -
