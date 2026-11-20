@@ -81,9 +81,11 @@ static void unlock(Queue* q) {
 #endif
 }
 
-static int save_ir(SnxIr* ir, const char* dir, const char* name) {
+/* name's IR kept in dir (--keep-ir): nonzero, with error saying which and where, when it could not be written */
+static int save_ir(SnxIr* ir, const char* dir, const char* name, char* error, size_t error_size) {
     char *text = snx_ir_text(ir), *file = snx_format("%s.ll", name), *path = snx_path_join(dir, file);
     int rc = snx_write_file(path, text, strlen(text));
+    if (rc) snprintf(error, error_size, "cannot save the IR of %s in %s", name, dir);
     LLVMDisposeMessage(text);
     free(file);
     free(path);
@@ -240,8 +242,7 @@ static int compile_unit(Queue* q, size_t index, char* error, size_t error_size) 
     }
     free(order);
     u->stats = ir->stats;
-    rc = q->build->keep_ir && save_ir(ir, q->build->keep_ir, name);
-    if (rc) snprintf(error, error_size, "cannot save the IR of %s", name);
+    rc = q->build->keep_ir && save_ir(ir, q->build->keep_ir, name, error, error_size);
     if (!rc && q->cache)
         rc = snx_unit_cache_object(q->cache, ir, &u->object, &u->size, &u->reused, q->build->triple ? u->key : NULL,
                                    error, error_size);
@@ -947,7 +948,7 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
     if (options->jit_cache && !options->quiet)
         printf("AOT pack: %lu cached function%s%s\n", (unsigned long)variant_count, variant_count == 1 ? "" : "s",
                variant_count ? "" : " (the cache did not match the game)");
-    if ((build->keep_ir && save_ir(ir, build->keep_ir, "module")) ||
+    if ((build->keep_ir && save_ir(ir, build->keep_ir, "module", error, sizeof(error))) ||
         snx_ir_object(ir, build->opt, &module_object, &module_size, error, sizeof(error))) {
         snx_error("LLVM backend: %s", error);
         goto done;

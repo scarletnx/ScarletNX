@@ -82,7 +82,8 @@ static void line(GuiSteps* steps, const char* s, uint64_t now) {
     }
     else if (prefix(s, "Ready "))
         begin(steps, SNX_TR_NOOP("READY"), s + 6, strlen(s + 6), now);
-    else if (prefix(s, "The game starts its program ") && sscanf(s, "The game starts its program %d,", &program) == 1) {
+    else if (prefix(s, "The game starts its program ") && sscanf(s, "The game starts its program %d,", &program) == 1 &&
+             strchr(s, ',')) { /* sscanf counts the number alone, with or without the comma after it */
         char number[16];
         const char *name = strchr(s, ','), *from = strstr(s, "(ExecuteProgram from program ");
         size_t n;
@@ -138,7 +139,7 @@ int gui_steps_percent(const GuiSteps* steps) {
             percent = s->state == GUI_STEP_DONE ? 100 : s->total ? (int)(s->value * 100ull / s->total) : 0;
         else if (!strcmp(s->label, "EXTRACT"))
             percent = s->state == GUI_STEP_DONE ? 100 : s->total ? (int)(s->value * 100ull / s->total) : -1;
-        else if (!strcmp(s->label, "BUILT") || !strcmp(s->label, "LAUNCH") || !strcmp(s->label, "READY"))
+        else if (!strcmp(s->label, "BUILD") || !strcmp(s->label, "LAUNCH") || !strcmp(s->label, "READY"))
             percent = 100;
     }
     return percent;

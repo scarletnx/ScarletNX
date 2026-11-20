@@ -139,8 +139,10 @@ static int nn_am_service_IStorage_Open(SvcObj* self, SvcObj** accessor) {
     (*accessor)->destroy = am_accessor_destroy;
     R_SUCCEED();
 }
+/* the storage of CreateHandleStorage alone, as the console opens the others (CreateTransferMemoryStorage's too) by
+   Open */
 static int nn_am_service_IStorage_OpenTransferStorage(SvcObj* self, SvcObj** accessor) {
-    R_UNLESS(((StorageData*)self->data)->guest, SNX_RC_AM_OPENED_AS_WRONG_TYPE);
+    R_UNLESS(((StorageData*)self->data)->handle_only, SNX_RC_AM_OPENED_AS_WRONG_TYPE);
     *accessor = nn_am_service_ITransferStorageAccessor_new_data(g_hle.am.accessors, g_hle.am.accessor_next,
                                                                   "am storage accessors");
     svcobj_ref(self);

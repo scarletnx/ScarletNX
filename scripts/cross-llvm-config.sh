@@ -33,4 +33,7 @@ if [ "$machine" = 8 ] && [ "$class" != 2 ]; then
     echo "$config is a program of machine $machine, EI_CLASS $class (32-bit MIPS): the runtime builds for n64" >&2
     exit 1
 fi
-"$qemu" -L "$sysroot" "$config" "$@" | sed -E "s#(^|[ =]|-I|-L)/(usr|lib)/#\\1$sysroot/\\2/#g"
+# its output taken first: in a pipe the status would be sed's, and a qemu that is not installed or an llvm-config that
+# fails would answer nothing with a status of 0
+answer=$("$qemu" -L "$sysroot" "$config" "$@")
+printf '%s\n' "$answer" | sed -E "s#(^|[ =]|-I|-L)/(usr|lib)/#\\1$sysroot/\\2/#g"

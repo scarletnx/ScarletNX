@@ -28,7 +28,6 @@
 #include "nx/gpu/vk/resource_stats.h"
 #include "nx/gpu/vk/descriptors.h"
 #include "nx/gpu/vk/pending_pages.h"
-#include "nx/runtime/platform/tracy.h"
 
 typedef struct {
     u64 start, len, hash, shash;

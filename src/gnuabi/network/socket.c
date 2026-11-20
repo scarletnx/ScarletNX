@@ -139,9 +139,13 @@ static int64_t sys_accept4(GnuProcess* p, SnxSocket* s, const uint64_t a[6], uin
     SnxSockAddr peer;
     int r = snx_socket_accept(s, &n, &peer, (flags & LINUX_SOCK_NONBLOCK) != 0); /* Linux doesn't inherit it */
     if (r) return r;
-    int64_t fd = install(p, n, flags);
-    if (fd >= 0 && (r = addr_out(&p->memory, &peer, a[1], a[2]))) return r;
-    return fd;
+    /* the peer's address first, as Linux writes it before the descriptor has a number: a write that fails ends the
+       connection, and leaves no descriptor the program was never told of */
+    if ((r = addr_out(&p->memory, &peer, a[1], a[2]))) {
+        snx_socket_unref(n);
+        return r;
+    }
+    return install(p, n, flags);
 }
 static int64_t sys_name(GnuProcess* p, SnxSocket* s, const uint64_t a[6], int peer) {
     if (!a[1] || !a[2]) return -GNU_EFAULT;

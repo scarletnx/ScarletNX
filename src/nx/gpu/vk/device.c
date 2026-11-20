@@ -544,8 +544,21 @@ static void mesh_choose(int has_ext, const VkPhysicalDeviceMeshShaderFeaturesEXT
     g_vk.mesh_output_bytes_max = mp.maxMeshOutputMemorySize;
     g_vk.mesh_vertex_granule = mp.meshOutputPerVertexGranularity;
     g_vk.mesh_primitive_granule = mp.meshOutputPerPrimitiveGranularity;
+    /* The path a draw with a task program takes (vk_mesh_path). The native task and mesh stages in one submission is
+       the shape that faulted NVIDIA's driver and that hangs RADV on RDNA4 (docs/layers/gpu/driver-quirks.md): Auto
+       takes the compute-task path, which runs the task program as a compute dispatch (sm86.h), and Native keeps the
+       two stages together for a device whose path is measured to work. The task program's lanes are a warp's, so its
+       compute pipeline needs a subgroup of 32, whole (has_cs_warp32) */
+    g_vk.mesh_task_compute = g_vk.has_task && g_vk.has_cs_warp32 && g_settings.mesh_task_path != 1;
     if (why)
         LOG("vulkan: mesh draws are skipped: %s\n", why);
+    else if (g_vk.mesh_task_compute)
+        LOG("vulkan: mesh draws use VK_EXT_mesh_shader, with a task program as a compute dispatch (vk_mesh_path=%s)\n",
+            g_settings.mesh_task_path == 2 ? "compute" : "auto");
+    else if (g_vk.has_task && g_settings.mesh_task_path != 1)
+        LOG("vulkan: mesh draws keep their task and mesh stages together: a compute dispatch of the task program needs "
+            "subgroups of 32 (vk_mesh_path=%d)\n",
+            g_settings.mesh_task_path);
     else
         LOG("vulkan: mesh draws use VK_EXT_mesh_shader%s\n",
             g_vk.has_task ? " with task shaders" : ", without task shaders");
@@ -1434,13 +1447,14 @@ static bool choose_device(SnxVkChoice* c, void* user) {
             has_barycentric ? "VK_KHR_fragment_shader_barycentric without its feature"
                             : "no VK_KHR_fragment_shader_barycentric");
     g_vk.has_index8 = index8_ext && qindex8.indexTypeUint8;
-    mesh_choose(has_mesh, &qmesh, &q13, core13 || has_size_control);
     {
         VkPhysicalDeviceSubgroupSizeControlProperties sizes = subgroup_sizes(core13 || has_size_control, NULL);
         g_vk.has_cs_warp32 = q13.subgroupSizeControl && q13.computeFullSubgroups && sizes.minSubgroupSize <= 32 &&
                              sizes.maxSubgroupSize >= 32 &&
                              (sizes.requiredSubgroupSizeStages & VK_SHADER_STAGE_COMPUTE_BIT) != 0;
     }
+    /* after has_cs_warp32: the compute-task path's task program needs it (mesh_choose) */
+    mesh_choose(has_mesh, &qmesh, &q13, core13 || has_size_control);
     {
         /* each draw's vertex layout as dynamic state, or a pipeline per layout: the setting, then the device and the
            drivers known to draw it wrong (vertex_input.h). A value the setting doesn't take stops the game here, as
@@ -1678,6 +1692,14 @@ static bool choose_device(SnxVkChoice* c, void* user) {
             "descriptors use %s\n",
             g_settings.descriptor_buffers, heaps_missing, g_vk.has_descriptor_buffers ? "buffers" : "sets");
     g_vk.has_descriptor_heaps = g_vk.has_descriptor_heap_support;
+    /* the compute-task path's task program binds its set with descriptor sets or buffers: a heap's bind is the
+       graphics pipeline's (descriptors.c's vk_descriptors_bind) */
+    if (g_vk.has_descriptor_heaps && g_vk.mesh_task_compute) {
+        g_vk.mesh_task_compute = 0;
+        LOG("vulkan: mesh draws keep their task and mesh stages together: the compute-task path needs descriptor sets or "
+            "buffers, and this device's graphics descriptors are heaps (vk_mesh_path=%d)\n",
+            g_settings.mesh_task_path);
+    }
     g_vk.cb_address = g_settings.constant_buffers_by_address;
     /* the copies name device addresses: the device's memory gets them for these too (bufferDeviceAddress) */
     g_vk.has_copy_indirect =

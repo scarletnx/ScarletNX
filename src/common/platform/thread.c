@@ -163,7 +163,7 @@ void pm_lock_announce(PMutex* m, const char* name) {
         g_pm_pending[n].name = name;
         return;
     }
-    /* the runtime names five locks in all; the count is clamped so the register stops with the table's own */
+    /* the runtime names seven locks in all; the count is clamped so the register stops with the table's own */
     atomic_store_explicit(&g_pm_npending, PM_PENDING, memory_order_release);
 }
 static PmNamed* pm_named(const PMutex* m) { return atomic_load_explicit(&m->tracy, memory_order_acquire); }

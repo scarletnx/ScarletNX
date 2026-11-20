@@ -238,8 +238,7 @@ int main(void) {
     g_draws = 9;
     maxwell3d_method(&ch, 0x54C, 1, 1); /* samples-passed counter reset */
     report(VA, 0x15);
-    u64 samples = 1;
-    samples = snx_ld_le64(vram); /* a report's count, little-endian in memory */
+    u64 samples = snx_ld_le64(vram); /* a report's count, little-endian in memory */
     if (samples != 0) {
         fprintf(stderr, "FAIL: counter report after reset is %llu, expected zero\n", (unsigned long long)samples);
         failures++;

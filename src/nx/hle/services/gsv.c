@@ -6,6 +6,7 @@
 #include "nx/hle/services/services_int.h"
 #include "nx/hle/hle.h"
 #include "nx/gpu/renderer.h"
+#include "nx/hle/services/gsv.h"
 #include "nx/hle/services/vi.h"
 #include "nx/runtime/platform/backend.h"
 static int gsv_user_unknown(SvcObj* self, IpcCtx* c) {
@@ -50,14 +51,6 @@ static int gsv_camera_none(SvcObj* self, IpcCtx* c) {
 SvcObj* new_gsv_session(void) {
     return nn_gsv_UserSession_new();
 }
-static u32 next_native_image_handle = 1;
-/* a native image, as CreateNativeImage made it: the memory that backs it and its preference words (the layout
-   CalculateNativeImageSize reads: [2] width|height<<16, [4] block height log2, [5] pitch in 64-byte GOBs, [6] format) */
-typedef struct {
-    u32 memory_handle;
-    u32 preference[17];
-} GsvNativeImage;
-static GsvNativeImage native_images[4096];
 
 static int nn_gsv_UserSession_BootWithRemoteMemory(SvcObj* self, u64 aruid, u64 version, u64 reserved0, u64 reserved1,
                                                    u64 reserved2, u64 usage, u32 process) {
@@ -146,9 +139,6 @@ static int nn_gsv_ChatSession_GetEvent(SvcObj* self, u32 id, u32* event) {
     (void)self, (void)id;
     return new_event(event, "gsv chat", 0);
 }
-static u64 native_memory_size[4096];
-static u64 native_memory_cpu[4096]; /* the guest CPU address BindNativeMemory binds the memory to, 0 for none */
-static u32 next_native_memory_handle = 1;
 static int nn_gsv_UserSession_CreateNativeMemory(SvcObj* self, const u8* request, u32* memory_handle) {
     u32 mode;
     u64 size;
@@ -157,15 +147,14 @@ static int nn_gsv_UserSession_CreateNativeMemory(SvcObj* self, const u8* request
     memcpy(&size, request + 4, 8);
     R_UNLESS(size && !(size & 0xfff), SNX_RC_SVC_INVALID_SIZE);
     LOG("gsv: CreateNativeMemory(mode %u, size %#llx)\n", mode, (unsigned long long)size);
-    R_UNLESS(next_native_memory_handle < sizeof native_memory_size / sizeof native_memory_size[0], SNX_RC_SVC_INVALID_CURRENT_MEMORY);
-    *memory_handle = next_native_memory_handle++;
-    native_memory_size[*memory_handle] = size;
+    R_UNLESS(g_hle.gsv.native_memories_made + 1 < GSV_HANDLES, SNX_RC_SVC_INVALID_CURRENT_MEMORY);
+    *memory_handle = ++g_hle.gsv.native_memories_made;
+    g_hle.gsv.native_memory_size[*memory_handle] = size;
     R_SUCCEED();
 }
 static int nn_gsv_UserSession_DestroyNativeMemory(SvcObj* self, u32 memory_handle) {
     (void)self;
-    if (memory_handle < sizeof native_memory_size / sizeof native_memory_size[0])
-        native_memory_size[memory_handle] = 0;
+    if (memory_handle < GSV_HANDLES) g_hle.gsv.native_memory_size[memory_handle] = 0;
     R_SUCCEED();
 }
 /* attributes 0: the native memory stays cached, which the runtime's guest memory always is. The answer's word is
@@ -201,9 +190,6 @@ static int nn_gsv_UserSession_InitializeSyncptContext(SvcObj* self, u32* session
     R_UNLESS(*session, SNX_RC_SVC_OUT_OF_HANDLES);
     R_SUCCEED();
 }
-/* the syncpoint cache: the game's request page (RW) and the value page (RO) it polls, bound by command 204 */
-static u64 gsv_sync_rw, gsv_sync_ro;
-static u32 gsv_sync_request_event, gsv_sync_completed_event;
 /* The SDK finds a syncpoint short of a threshold in the value page (TryWaitSyncPoint) and asks for it again: it makes
    the syncpoint's bit in the request page differ from the acknowledge page, the word's bit in their summaries likewise,
    signals the request event and waits for the completed event until the two agree. The value page is kept as syncpoints
@@ -211,11 +197,11 @@ static u32 gsv_sync_request_event, gsv_sync_completed_event;
    passed failed: the end this service gave it was not one it could signal. 1 when event is that event */
 int gsv_syncpoint_request(u32 event) {
     u32 i;
-    if (!event || event != gsv_sync_request_event) return 0;
-    for (i = 0; i < 192; i++) gw64(gsv_sync_ro + 0x40 + (u64)i * 8, syncpt_read(i));
-    for (i = 0; i < 3; i++) gw64(gsv_sync_ro + 0x648 + (u64)i * 8, gr64(gsv_sync_rw + 8 + (u64)i * 8));
-    gw64(gsv_sync_ro + 0x640, gr64(gsv_sync_rw));
-    ev_signal(gsv_sync_completed_event);
+    if (!event || event != g_hle.gsv.sync_request_event) return 0;
+    for (i = 0; i < 192; i++) gw64(g_hle.gsv.sync_ro + 0x40 + (u64)i * 8, syncpt_read(i));
+    for (i = 0; i < 3; i++) gw64(g_hle.gsv.sync_ro + 0x648 + (u64)i * 8, gr64(g_hle.gsv.sync_rw + 8 + (u64)i * 8));
+    gw64(g_hle.gsv.sync_ro + 0x640, gr64(g_hle.gsv.sync_rw));
+    ev_signal(g_hle.gsv.sync_completed_event);
     return 1;
 }
 static int nn_gsv_UserSession_BindSyncpointMemory(SvcObj* self, u32 rw, u32 ro, const u8* request,
@@ -225,20 +211,27 @@ static int nn_gsv_UserSession_BindSyncpointMemory(SvcObj* self, u32 rw, u32 ro, 
     static const u32 header[8] = {1, 0, 191, 0x40, 0, 0x640, 8, 0x648}; /* Eden's GraphicsSyncpointCache::Header */
     u32 i;
     (void)self, (void)request;
-    R_UNLESS(rwt && rot, SNX_RC_SVC_INVALID_HANDLE);
-    gsv_sync_rw = rwt->addr;
-    gsv_sync_ro = rot->addr;
+    /* the cache is 0x2000 bytes of the read-only memory, and the request the first 0x20 of the read-write one: a
+       memory too short for its part is none to bind */
+    if (!rwt || !rot || rot->size < 0x2000 || rwt->size < 0x20) {
+        int rc = rwt && rot ? SNX_RC_SVC_INVALID_SIZE : SNX_RC_SVC_INVALID_HANDLE;
+        if (rwt) kobj_unref(&rwt->o);
+        if (rot) kobj_unref(&rot->o);
+        R_THROW(rc);
+    }
+    g_hle.gsv.sync_rw = rwt->addr;
+    g_hle.gsv.sync_ro = rot->addr;
     kobj_unref(&rwt->o);
     kobj_unref(&rot->o);
-    memset(GP(gsv_sync_ro), 0, 0x2000);
-    for (i = 0; i < 8; i++) gw32(gsv_sync_ro + i * 4, header[i]);
-    for (i = 0; i < 192; i++) gw64(gsv_sync_ro + 0x40 + (u64)i * 8, ~0ull); /* Unallocated */
-    LOG("gsv: BindSyncpointMemory(rw %#llx, ro %#llx)\n", (unsigned long long)gsv_sync_rw,
-        (unsigned long long)gsv_sync_ro);
-    gsv_sync_request_event = owned_event("gsv:syncpoint request");
-    gsv_sync_completed_event = owned_event("gsv:syncpoint completed");
-    *request_event = ev_handle(gsv_sync_request_event);
-    *completed_event = ev_handle(gsv_sync_completed_event);
+    memset(GP(g_hle.gsv.sync_ro), 0, 0x2000);
+    for (i = 0; i < 8; i++) gw32(g_hle.gsv.sync_ro + i * 4, header[i]);
+    for (i = 0; i < 192; i++) gw64(g_hle.gsv.sync_ro + 0x40 + (u64)i * 8, ~0ull); /* Unallocated */
+    LOG("gsv: BindSyncpointMemory(rw %#llx, ro %#llx)\n", (unsigned long long)g_hle.gsv.sync_rw,
+        (unsigned long long)g_hle.gsv.sync_ro);
+    g_hle.gsv.sync_request_event = owned_event("gsv:syncpoint request");
+    g_hle.gsv.sync_completed_event = owned_event("gsv:syncpoint completed");
+    *request_event = ev_handle(g_hle.gsv.sync_request_event);
+    *completed_event = ev_handle(g_hle.gsv.sync_completed_event);
     R_UNLESS(*request_event && *completed_event, SNX_RC_SVC_OUT_OF_HANDLES);
     R_SUCCEED();
 }
@@ -259,7 +252,8 @@ static int nn_gsv_UserSession_InitializeDisplayContext(SvcObj* self, u64 version
 }
 static int nn_gsv_UserSession_SetDisplayLayerImage(SvcObj* self, u32 layer_id, u32 image_handle) {
     (void)self;
-    R_UNLESS(layer_id && image_handle && image_handle < next_native_image_handle, SNX_RC_SVC_INVALID_CURRENT_MEMORY);
+    R_UNLESS(layer_id && image_handle && image_handle <= g_hle.gsv.native_images_made,
+             SNX_RC_SVC_INVALID_CURRENT_MEMORY);
     R_SUCCEED();
 }
 static int nn_gsv_UserSession_CreateGpuContext(SvcObj* self) {
@@ -277,10 +271,10 @@ static int nn_gsv_UserSession_BindNativeMemory(SvcObj* self, const u8* request) 
     memcpy(&memory_handle, request, 4);
     memcpy(&cpu, request + 4, 8);
     memcpy(&size, request + 12, 8);
-    R_UNLESS(memory_handle && memory_handle < sizeof native_memory_size / sizeof native_memory_size[0] &&
-                 native_memory_size[memory_handle] >= size && size && !(cpu & 0xfff) && !(size & 0xfff) &&
-                 cpu < AS_END && size <= AS_END - cpu, SNX_RC_SVC_INVALID_CURRENT_MEMORY);
-    native_memory_cpu[memory_handle] = cpu;
+    R_UNLESS(memory_handle && memory_handle < GSV_HANDLES && g_hle.gsv.native_memory_size[memory_handle] >= size &&
+                 size && !(cpu & 0xfff) && !(size & 0xfff) && cpu < AS_END && size <= AS_END - cpu,
+             SNX_RC_SVC_INVALID_CURRENT_MEMORY);
+    g_hle.gsv.native_memory_cpu[memory_handle] = cpu;
     LOG("gsv: BindNativeMemory(%u, %#llx, %#llx)\n", memory_handle, (unsigned long long)cpu,
         (unsigned long long)size);
     R_SUCCEED();
@@ -289,27 +283,26 @@ static int nn_gsv_UserSession_BindNativeMemoryToCpu(SvcObj* self, u32 memory_han
                                                     const u8* size, const u8* flags, const u8* offset) {
     u64 cpu = snx_ld_le64(address), bytes = snx_ld_le64(size);
     (void)self;
-    R_UNLESS(memory_handle && memory_handle < sizeof native_memory_size / sizeof native_memory_size[0] &&
-                 native_memory_size[memory_handle] >= bytes && bytes && !(cpu & 0xfff) && !snx_ld_le64(offset) &&
-                 mem_mapped_run(cpu, bytes) == bytes,
+    R_UNLESS(memory_handle && memory_handle < GSV_HANDLES && g_hle.gsv.native_memory_size[memory_handle] >= bytes &&
+                 bytes && !(cpu & 0xfff) && !snx_ld_le64(offset) && mem_mapped_run(cpu, bytes) == bytes,
              SNX_RC_SVC_INVALID_CURRENT_MEMORY);
-    native_memory_cpu[memory_handle] = cpu;
+    g_hle.gsv.native_memory_cpu[memory_handle] = cpu;
     LOG("gsv: BindNativeMemoryToCpu(%u, %#llx, %#llx, flags %#llx)\n", memory_handle, (unsigned long long)cpu,
         (unsigned long long)bytes, (unsigned long long)snx_ld_le64(flags));
     R_SUCCEED();
 }
 int gsv_native_memory_cpu(u32 memory, u64* cpu, u64* size) {
-    if (!memory || memory >= sizeof native_memory_size / sizeof native_memory_size[0] ||
-        !native_memory_size[memory] || !native_memory_cpu[memory])
+    if (!memory || memory >= GSV_HANDLES || !g_hle.gsv.native_memory_size[memory] ||
+        !g_hle.gsv.native_memory_cpu[memory])
         return 0;
-    *cpu = native_memory_cpu[memory];
-    *size = native_memory_size[memory];
+    *cpu = g_hle.gsv.native_memory_cpu[memory];
+    *size = g_hle.gsv.native_memory_size[memory];
     return 1;
 }
 u32 gsv_native_image_reserve(u32 count) {
-    u32 first = next_native_image_handle;
-    if (!count || count > sizeof native_images / sizeof native_images[0] - first) return 0;
-    next_native_image_handle += count;
+    u32 first = g_hle.gsv.native_images_made + 1;
+    if (!count || count > GSV_HANDLES - first) return 0;
+    g_hle.gsv.native_images_made += count;
     return first;
 }
 /* ---- the video service's commands (native_video.c) */
@@ -404,15 +397,15 @@ static int nn_gsv_UserSession_CreateNativeImage(SvcObj* self, const u8* request,
     GsvNativeImage* img;
     (void)self;
     memcpy(&memory_handle, request + 0x44, 4);
-    R_UNLESS(memory_handle && memory_handle < sizeof native_memory_size / sizeof native_memory_size[0] &&
-                 native_memory_size[memory_handle], SNX_RC_SVC_INVALID_CURRENT_MEMORY);
-    R_UNLESS(next_native_image_handle < sizeof native_images / sizeof native_images[0], SNX_RC_SVC_INVALID_CURRENT_MEMORY);
-    *image_handle = next_native_image_handle;
-    img = &native_images[*image_handle];
+    R_UNLESS(memory_handle && memory_handle < GSV_HANDLES && g_hle.gsv.native_memory_size[memory_handle],
+             SNX_RC_SVC_INVALID_CURRENT_MEMORY);
+    R_UNLESS(g_hle.gsv.native_images_made + 1 < GSV_HANDLES, SNX_RC_SVC_INVALID_CURRENT_MEMORY);
+    *image_handle = g_hle.gsv.native_images_made + 1;
+    img = &g_hle.gsv.native_images[*image_handle];
     img->memory_handle = memory_handle;
     memcpy(img->preference, request, sizeof img->preference); /* the 17 preference words, host order */
     snx_le32_array(img->preference, 17);
-    next_native_image_handle++;
+    g_hle.gsv.native_images_made++;
     LOG("gsv: CreateNativeImage(memory %u) -> %u\n", memory_handle, *image_handle);
     R_SUCCEED();
 }
@@ -494,9 +487,6 @@ static int nn_gsv_GpuSession_GetGsvPartitionGpuAddress(SvcObj* self, u32 address
     *max_address = 0x10000000000ull;
     R_SUCCEED();
 }
-typedef struct { u64 start, end; } GsvGpuMemory;
-static GsvGpuMemory gpu_memory[4096];
-static u32 next_gpu_memory_handle = 1;
 static int nn_gsv_KUserWorkerSession_CreateGpuMemory(SvcObj* self, const u8* request, u32* memory_handle) {
     MemBlock block;
     u64 start, end, options;
@@ -516,15 +506,14 @@ static int nn_gsv_KUserWorkerSession_CreateGpuMemory(SvcObj* self, const u8* req
                      block.state != MS_FREE && (block.attr & MA_GPU_SHARABLE), SNX_RC_SVC_INVALID_CURRENT_MEMORY);
         at = block.addr + block.size < end ? block.addr + block.size : end;
     }
-    R_UNLESS(next_gpu_memory_handle < sizeof gpu_memory / sizeof gpu_memory[0], SNX_RC_SVC_INVALID_CURRENT_MEMORY);
-    *memory_handle = next_gpu_memory_handle++;
-    gpu_memory[*memory_handle] = (GsvGpuMemory){start, end};
+    R_UNLESS(g_hle.gsv.gpu_memories_made + 1 < GSV_HANDLES, SNX_RC_SVC_INVALID_CURRENT_MEMORY);
+    *memory_handle = ++g_hle.gsv.gpu_memories_made;
+    g_hle.gsv.gpu_memory[*memory_handle] = (GsvGpuMemory){start, end};
     R_SUCCEED();
 }
 static int nn_gsv_KUserWorkerSession_DestroyGpuMemory(SvcObj* self, u32 memory_handle, u32 event_id) {
     (void)self, (void)event_id;
-    if (memory_handle < sizeof gpu_memory / sizeof gpu_memory[0])
-        gpu_memory[memory_handle] = (GsvGpuMemory){0, 0};
+    if (memory_handle < GSV_HANDLES) g_hle.gsv.gpu_memory[memory_handle] = (GsvGpuMemory){0, 0};
     R_SUCCEED();
 }
 static int nn_gsv_KUserWorkerSession_NormalMapGpuMemory4K(SvcObj* self, const u8* request) {
@@ -536,15 +525,16 @@ static int nn_gsv_KUserWorkerSession_NormalMapGpuMemory4K(SvcObj* self, const u8
     memcpy(&end, request + 12, 8);
     memcpy(&memory_handle, request + 20, 4);
     memcpy(&offset, request + 24, 8);
-    R_UNLESS(address_space == 1 && memory_handle &&
-                 memory_handle < sizeof gpu_memory / sizeof gpu_memory[0] &&
-                 gpu_memory[memory_handle].end > gpu_memory[memory_handle].start, SNX_RC_SVC_INVALID_CURRENT_MEMORY);
+    R_UNLESS(address_space == 1 && memory_handle && memory_handle < GSV_HANDLES &&
+                 g_hle.gsv.gpu_memory[memory_handle].end > g_hle.gsv.gpu_memory[memory_handle].start,
+             SNX_RC_SVC_INVALID_CURRENT_MEMORY);
     R_UNLESS(gva <= end && !(gva & 0xfff) && (end & 0xfff) == 0xfff && end < (1ull << GMMU_ADDRESS_SPACE_BITS),
              SNX_RC_SVC_INVALID_ADDRESS);
     size = end - gva + 1;
-    R_UNLESS(offset <= gpu_memory[memory_handle].end - gpu_memory[memory_handle].start &&
-                 size <= gpu_memory[memory_handle].end - gpu_memory[memory_handle].start - offset, SNX_RC_SVC_INVALID_SIZE);
-    cpu = gpu_memory[memory_handle].start + offset;
+    R_UNLESS(offset <= g_hle.gsv.gpu_memory[memory_handle].end - g_hle.gsv.gpu_memory[memory_handle].start &&
+                 size <= g_hle.gsv.gpu_memory[memory_handle].end - g_hle.gsv.gpu_memory[memory_handle].start - offset,
+             SNX_RC_SVC_INVALID_SIZE);
+    cpu = g_hle.gsv.gpu_memory[memory_handle].start + offset;
     LOG("gsv: map GPU %#llx..%#llx to memory %u at %#llx\n", (unsigned long long)gva,
         (unsigned long long)end, memory_handle, (unsigned long long)cpu);
     pm_lock(&g_host.nvdrv.aslock);
@@ -586,26 +576,6 @@ static int nn_gsv_KUserWorkerSession_ExecuteSparseMapRequests(SvcObj* self, cons
 /* The raw packet of each command is [type, word count, data...]; ScarletNX hands the data words as c->raw, so the token
    is the first two words, and later fields follow at their word offsets (Eden's packet[k] = raw word k - 2). */
 #define VI2_DEFAULT_DISPLAY 0x00746c7561666564ull /* "default" */
-#define VI2_CLIENTS 16
-
-typedef struct {
-    u64 token;
-    u32 slots;                   /* the two slot bits (retire + available notifications) */
-    u64 available;               /* the free-slot mask */
-    u32 retire_notification;
-    u32 available_notification;
-    u64 display;                 /* the bound display name, 0 for none */
-} Vi2Client;
-
-static u32 vi2_event;            /* the notification event's kobj id */
-static u32 vi2_notifications[32]; /* the notification bitmask */
-static u32 vi2_group_events[8];  /* the request group events' kobj ids */
-static u32 vi2_group_vsync[8];   /* 1 while a group is registered for the display's vsync (kind 0) */
-static u32 vi2_group_hdr[8];     /* 1 while a group is registered for the display's HDR status (kind 2) */
-static int vi2_hdr_told = -1;    /* what vi2_hdr said when the HDR status groups were last signaled, -1 never */
-static u32 vi2_group_refresh[8]; /* 1 while a group is registered for the display's refresh rate (kind 1) */
-static Vi2Client vi2_clients[VI2_CLIENTS];
-static u32 vi2_client_slots;
 
 /* The displays a game can name: the console's, and the three for GameShare's guests, which the SDK opens when a game
    asks for individual displays (nn::streamplay::CreateIndividualDisplays), whether anyone ever joins or not */
@@ -615,23 +585,18 @@ static const u64 vi2_display_names[] = {
     0x0032726579616c70ull, /* "player2" */
     0x0033726579616c70ull, /* "player3" */
 };
-#define VI2_DISPLAYS (sizeof vi2_display_names / sizeof vi2_display_names[0])
-typedef struct {
-    u32 refs;     /* OpenDisplay references */
-    u32 endpoint; /* 0, or its endpoint's token */
-} Vi2Display;
-static Vi2Display vi2_displays[VI2_DISPLAYS];
+static_assert(sizeof vi2_display_names / sizeof vi2_display_names[0] == VI2_DISPLAYS, "gsv.h holds a display each");
 
 static Vi2Display* vi2_display(u64 name) {
     u32 i;
     for (i = 0; i < VI2_DISPLAYS; i++)
-        if (vi2_display_names[i] == name) return &vi2_displays[i];
+        if (vi2_display_names[i] == name) return &g_hle.gsv.vi2_displays[i];
     return NULL;
 }
 static Vi2Client* vi2_client(u64 token) {
     u32 i;
     for (i = 0; i < VI2_CLIENTS; i++)
-        if (vi2_clients[i].token == token) return &vi2_clients[i];
+        if (g_hle.gsv.vi2_clients[i].token == token) return &g_hle.gsv.vi2_clients[i];
     return NULL;
 }
 
@@ -649,10 +614,12 @@ static void vi2_present_cb(void* arg) {
                                0, 0, 0);
     atomic_fetch_add_explicit(&g_frames, 1, memory_order_relaxed);
     if (p->client) {
-        Vi2Client* c = &vi2_clients[p->client - 1];
+        Vi2Client* c = &g_hle.gsv.vi2_clients[p->client - 1];
+        pm_lock(&g_host.gsv.lock);
         c->available |= 1ull << p->slot;
-        vi2_notifications[c->available_notification / 32] |= 1u << (c->available_notification % 32);
-        if (vi2_event) ev_signal(vi2_event);
+        g_hle.gsv.vi2_notifications[c->available_notification / 32] |= 1u << (c->available_notification % 32);
+        if (g_hle.gsv.vi2_event) ev_signal(g_hle.gsv.vi2_event);
+        pm_unlock(&g_host.gsv.lock);
     }
     free(p);
 }
@@ -674,8 +641,8 @@ static int nn_vi2_IVi2Session_GetRequestGroupLimit(SvcObj* self, u32* limit) {
 }
 static int nn_vi2_IVi2Session_GetNotificationEvent(SvcObj* self, const u8* request, u32* event) {
     (void)self, (void)request;
-    if (!vi2_event) vi2_event = owned_event("vi2:notification");
-    *event = ev_handle(vi2_event);
+    if (!g_hle.gsv.vi2_event) g_hle.gsv.vi2_event = owned_event("vi2:notification");
+    *event = ev_handle(g_hle.gsv.vi2_event);
     R_UNLESS(*event, SNX_RC_SVC_OUT_OF_HANDLES);
     R_SUCCEED();
 }
@@ -685,26 +652,28 @@ static int nn_vi2_IVi2Session_ReleaseNotificationEvent(SvcObj* self, const u8* r
 }
 static int nn_vi2_IVi2Session_GetNotifications(SvcObj* self, IpcBuf out) {
     (void)self;
-    R_UNLESS(out.size >= sizeof vi2_notifications, SNX_RC_VI2_BUFFER_TOO_SMALL);
-    memcpy(GP(out.addr), vi2_notifications, sizeof vi2_notifications);
-    memset(vi2_notifications, 0, sizeof vi2_notifications);
-    if (vi2_event) ev_clear(vi2_event);
+    R_UNLESS(out.size >= sizeof g_hle.gsv.vi2_notifications, SNX_RC_VI2_BUFFER_TOO_SMALL);
+    pm_lock(&g_host.gsv.lock);
+    memcpy(GP(out.addr), g_hle.gsv.vi2_notifications, sizeof g_hle.gsv.vi2_notifications);
+    memset(g_hle.gsv.vi2_notifications, 0, sizeof g_hle.gsv.vi2_notifications);
+    if (g_hle.gsv.vi2_event) ev_clear(g_hle.gsv.vi2_event);
+    pm_unlock(&g_host.gsv.lock);
     R_SUCCEED();
 }
 static int nn_vi2_IVi2Session_CreateRequestGroupEvent(SvcObj* self, const u8* request, u32* event) {
     u32 group = snx_ld_le32(request);
     (void)self;
     R_UNLESS(group < 8, SNX_RC_VI2_OUT_OF_RESOURCE);
-    if (!vi2_group_events[group]) vi2_group_events[group] = owned_event("vi2:request group");
-    *event = ev_handle(vi2_group_events[group]);
+    if (!g_hle.gsv.vi2_group_events[group]) g_hle.gsv.vi2_group_events[group] = owned_event("vi2:request group");
+    *event = ev_handle(g_hle.gsv.vi2_group_events[group]);
     R_UNLESS(*event, SNX_RC_SVC_OUT_OF_HANDLES);
     R_SUCCEED();
 }
 static int nn_vi2_IVi2Session_DuplicateRequestGroupEvent(SvcObj* self, const u8* request, u32 copied, u32* event) {
     u32 group = snx_ld_le32(request);
     (void)self, (void)copied;
-    R_UNLESS(group < 8 && vi2_group_events[group], SNX_RC_VI2_NOT_FOUND);
-    *event = ev_handle(vi2_group_events[group]);
+    R_UNLESS(group < 8 && g_hle.gsv.vi2_group_events[group], SNX_RC_VI2_NOT_FOUND);
+    *event = ev_handle(g_hle.gsv.vi2_group_events[group]);
     R_UNLESS(*event, SNX_RC_SVC_OUT_OF_HANDLES);
     R_SUCCEED();
 }
@@ -772,7 +741,6 @@ static int nn_vi2_IVi2Session_GetBufferMaxResolution(SvcObj* self, const u8* req
    changed. One game turns 120 Hz on for a part made for a 120 Hz TV and checks that the display then runs at 120 Hz */
 #define VI2_RATE_60  1ull
 #define VI2_RATE_120 2ull
-static u64 vi2_rates_on = VI2_RATE_60; /* the rates the game turned on */
 
 /* The rates the TV in the dock takes, as tv_refresh_rate says: 60 Hz, and 120 Hz with 2, or with 1 where the window's
    display refreshes at 119 Hz or more (119.88 Hz counts). Never VRR: the runtime paces no VRR */
@@ -818,15 +786,15 @@ static int nn_vi2_IVi2Session_SetDisplayRefreshRateCapability(SvcObj* self, cons
     (void)self;
     R_UNLESS(vi2_display(name), SNX_RC_VI2_NOT_FOUND);
     if (name != VI2_DEFAULT_DISPLAY) R_SUCCEED();
-    vi2_rates_on = ((vi2_rates_on & ~mask) | (value & mask)) | VI2_RATE_60;
-    hz = (vi2_rates_on & vi2_rates_offered() & VI2_RATE_120) ? 120 : VI_REFRESH_HZ;
-    if ((vi2_rates_on & VI2_RATE_120) && hz != 120)
+    g_hle.gsv.vi2_rates_on = ((g_hle.gsv.vi2_rates_on & ~mask) | (value & mask)) | VI2_RATE_60;
+    hz = (g_hle.gsv.vi2_rates_on & vi2_rates_offered() & VI2_RATE_120) ? 120 : VI_REFRESH_HZ;
+    if ((g_hle.gsv.vi2_rates_on & VI2_RATE_120) && hz != 120)
         LOG_LIMIT(4, "gsv: the game turned 120 Hz on, which the TV doesn't take: the display stays at 60 Hz\n");
     if (hz == vi_refresh_hz()) R_SUCCEED();
     LOG("gsv: the display runs at %u Hz, as the game turned 120 Hz %s\n", hz, hz == 120 ? "on" : "off");
     atomic_store_explicit(&g_vi_refresh_hz, (int)hz, memory_order_relaxed);
     for (i = 0; i < 8; i++)
-        if (vi2_group_refresh[i] && vi2_group_events[i]) ev_signal(vi2_group_events[i]);
+        if (g_hle.gsv.vi2_group_refresh[i] && g_hle.gsv.vi2_group_events[i]) ev_signal(g_hle.gsv.vi2_group_events[i]);
     R_SUCCEED();
 }
 static int nn_vi2_IVi2Session_OpenEndpoint(SvcObj* self, const u8* request) {
@@ -855,15 +823,15 @@ static int nn_vi2_IVi2Session_RegisterClientState(SvcObj* self, const u8* reques
     (void)self;
     R_UNLESS(token && first < 32 && second < 32 && first != second && !vi2_client(token), SNX_RC_VI2_INVALID_ARGUMENT);
     slots = (1u << first) | (1u << second);
-    R_UNLESS(!(vi2_client_slots & slots), SNX_RC_VI2_OUT_OF_RESOURCE);
+    R_UNLESS(!(g_hle.gsv.vi2_client_slots & slots), SNX_RC_VI2_OUT_OF_RESOURCE);
     for (i = 0; i < VI2_CLIENTS; i++) {
-        if (!vi2_clients[i].token) {
-            vi2_clients[i].token = token;
-            vi2_clients[i].slots = slots;
-            vi2_clients[i].available = 0x7fff;
-            vi2_clients[i].retire_notification = first;
-            vi2_clients[i].available_notification = second;
-            vi2_client_slots |= slots;
+        if (!g_hle.gsv.vi2_clients[i].token) {
+            g_hle.gsv.vi2_clients[i].token = token;
+            g_hle.gsv.vi2_clients[i].slots = slots;
+            g_hle.gsv.vi2_clients[i].available = 0x7fff;
+            g_hle.gsv.vi2_clients[i].retire_notification = first;
+            g_hle.gsv.vi2_clients[i].available_notification = second;
+            g_hle.gsv.vi2_client_slots |= slots;
             return 0;
         }
     }
@@ -875,9 +843,10 @@ static int nn_vi2_IVi2Session_UnregisterClientState(SvcObj* self, const u8* requ
     u32 i;
     (void)self;
     R_UNLESS(token && c, SNX_RC_VI2_NOT_FOUND);
-    vi2_client_slots &= ~c->slots;
+    g_hle.gsv.vi2_client_slots &= ~c->slots;
     for (i = 0; i < VI2_DISPLAYS; i++)
-        if (vi2_displays[i].endpoint == token) vi2_displays[i].endpoint = 0;
+        if (g_hle.gsv.vi2_displays[i].endpoint == (u32)token) /* as OpenEndpoint keeps it: its low 32 bits */
+            g_hle.gsv.vi2_displays[i].endpoint = 0;
     c->token = 0;
     R_SUCCEED();
 }
@@ -915,9 +884,9 @@ static int nn_vi2_IVi2Session_PresentClientBuffer(SvcObj* self, const u8* reques
     *available = 0;
     *reserved = 0;
     R_UNLESS(token && c && slot < 15, SNX_RC_VI2_NOT_FOUND);
-    R_UNLESS(image && image < next_native_image_handle, SNX_RC_VI2_NOT_FOUND);
-    img = &native_images[image];
-    R_UNLESS(img->memory_handle && native_memory_cpu[img->memory_handle], SNX_RC_VI2_NOT_FOUND);
+    R_UNLESS(image && image <= g_hle.gsv.native_images_made, SNX_RC_VI2_NOT_FOUND);
+    img = &g_hle.gsv.native_images[image];
+    R_UNLESS(img->memory_handle && g_hle.gsv.native_memory_cpu[img->memory_handle], SNX_RC_VI2_NOT_FOUND);
     w = (dims & 0xffffu) + 1;
     h = (dims >> 16) + 1;
     R_UNLESS(w && h, SNX_RC_VI2_NOT_FOUND);
@@ -928,12 +897,12 @@ static int nn_vi2_IVi2Session_PresentClientBuffer(SvcObj* self, const u8* reques
         c->available |= 1ull << slot;
         R_THROW(SNX_RC_VI2_OUT_OF_RESOURCE);
     }
-    p->cpu = native_memory_cpu[img->memory_handle];
+    p->cpu = g_hle.gsv.native_memory_cpu[img->memory_handle];
     p->w = w;
     p->h = h;
     p->pitch = img->preference[5] * 64; /* pitch in 64-byte GOB rows */
     p->bhl = img->preference[4];
-    p->client = (u32)(c - vi2_clients) + 1;
+    p->client = (u32)(c - g_hle.gsv.vi2_clients) + 1;
     p->slot = slot;
     nv_gpu_call_after(1, &fence_id, &fence_val, vi2_present_cb, p);
     R_SUCCEED();
@@ -962,22 +931,22 @@ static int nn_vi2_IVi2Session_UnbindClientDisplay(SvcObj* self, const u8* reques
 static int vi2_register_monitor(const u8* request, int kind) {
     u64 name = snx_ld_le64(request);
     u32 group = snx_ld_le32(request + 8);
-    R_UNLESS(group < 8 && vi2_display(name) && vi2_group_events[group], SNX_RC_VI2_NOT_FOUND);
+    R_UNLESS(group < 8 && vi2_display(name) && g_hle.gsv.vi2_group_events[group], SNX_RC_VI2_NOT_FOUND);
     if (kind == 0)
-        vi2_group_vsync[group] = 1;
+        g_hle.gsv.vi2_group_vsync[group] = 1;
     else
-        ev_signal(vi2_group_events[group]);
-    if (kind == 1) vi2_group_refresh[group] = 1;
-    if (kind == 2) vi2_group_hdr[group] = 1;
+        ev_signal(g_hle.gsv.vi2_group_events[group]);
+    if (kind == 1) g_hle.gsv.vi2_group_refresh[group] = 1;
+    if (kind == 2) g_hle.gsv.vi2_group_hdr[group] = 1;
     R_SUCCEED();
 }
 static int vi2_unregister_monitor(const u8* request, int kind) {
     u64 name = snx_ld_le64(request);
     u32 group = snx_ld_le32(request + 8);
     R_UNLESS(group < 8 && vi2_display(name), SNX_RC_VI2_NOT_FOUND);
-    vi2_group_vsync[group] = 0;
-    if (kind == 1) vi2_group_refresh[group] = 0;
-    if (kind == 2) vi2_group_hdr[group] = 0;
+    g_hle.gsv.vi2_group_vsync[group] = 0;
+    if (kind == 1) g_hle.gsv.vi2_group_refresh[group] = 0;
+    if (kind == 2) g_hle.gsv.vi2_group_hdr[group] = 0;
     R_SUCCEED();
 }
 static int nn_vi2_IVi2Session_RegisterDisplayEventMonitor(SvcObj* self, const u8* request) {
@@ -1035,11 +1004,11 @@ void gsv_vsync_tick(void) {
     u32 i, peak, paper_white;
     int hdr = vi2_hdr(&peak, &paper_white);
     for (i = 0; i < 8; i++)
-        if (vi2_group_vsync[i] && vi2_group_events[i]) ev_signal(vi2_group_events[i]);
-    if (hdr == vi2_hdr_told) return;
-    for (i = 0; i < 8 && vi2_hdr_told >= 0; i++)
-        if (vi2_group_hdr[i] && vi2_group_events[i]) ev_signal(vi2_group_events[i]);
-    vi2_hdr_told = hdr;
+        if (g_hle.gsv.vi2_group_vsync[i] && g_hle.gsv.vi2_group_events[i]) ev_signal(g_hle.gsv.vi2_group_events[i]);
+    if ((u32)hdr + 1 == g_hle.gsv.vi2_hdr_told) return;
+    for (i = 0; i < 8 && g_hle.gsv.vi2_hdr_told; i++)
+        if (g_hle.gsv.vi2_group_hdr[i] && g_hle.gsv.vi2_group_events[i]) ev_signal(g_hle.gsv.vi2_group_events[i]);
+    g_hle.gsv.vi2_hdr_told = (u32)hdr + 1;
 }
 static int nn_vi2_IVi2Session_SetClientOutputEncoding(SvcObj* self, const u8* request) {
     u64 token = snx_ld_le64(request);
@@ -1067,31 +1036,36 @@ static int nn_gsv_SyncptSession_SetSyncpointLimit(SvcObj* self, u32 id) {
     (void)self, (void)id;
     R_SUCCEED();
 }
-/* the armed syncpoint waits, by slot: the syncpoint and threshold, and the event to signal once it reaches */
-#define SYNC_WAITS 63
-static struct { u32 id, thresh, event; int armed; } sync_waits[SYNC_WAITS];
+/* The armed syncpoint waits, by slot, under g_host.gsv.lock: a guest's thread arms and cancels them while the GPU's
+   and the video's move the syncpoints. An arm that set its wait while a syncpoint moved was seen by neither side
+   without it, and a wait armed at the threshold stayed unsignaled. The events are signaled under it too, so that a
+   signal decided for the wait before never lands after a new arm cleared the event */
 void gsv_syncpt_changed(void) {
     u32 i;
-    for (i = 0; i < SYNC_WAITS; i++) {
-        if (!sync_waits[i].armed) continue;
-        if ((i32)(syncpt_read(sync_waits[i].id) - sync_waits[i].thresh) >= 0) {
-            LOGV("gsv: syncpoint %u reached %u, signaling slot %u\n", sync_waits[i].id,
-                syncpt_read(sync_waits[i].id), i);
-            sync_waits[i].armed = 0;
-            if (sync_waits[i].event) ev_signal(sync_waits[i].event);
+    pm_lock(&g_host.gsv.lock);
+    for (i = 0; i < GSV_SYNC_WAITS; i++) {
+        if (!g_hle.gsv.sync_waits[i].armed) continue;
+        if ((i32)(syncpt_read(g_hle.gsv.sync_waits[i].id) - g_hle.gsv.sync_waits[i].thresh) >= 0) {
+            LOGV("gsv: syncpoint %u reached %u, signaling slot %u\n", g_hle.gsv.sync_waits[i].id,
+                 syncpt_read(g_hle.gsv.sync_waits[i].id), i);
+            g_hle.gsv.sync_waits[i].armed = 0;
+            if (g_hle.gsv.sync_waits[i].event) ev_signal(g_hle.gsv.sync_waits[i].event);
         }
     }
-    if (gsv_sync_ro) /* the cache's value page: the game polls it directly */
-        for (i = 0; i < 192; i++) gw64(gsv_sync_ro + 0x40 + (u64)i * 8, syncpt_read(i));
+    pm_unlock(&g_host.gsv.lock);
+    if (g_hle.gsv.sync_ro) /* the cache's value page: the game polls it directly */
+        for (i = 0; i < 192; i++) gw64(g_hle.gsv.sync_ro + 0x40 + (u64)i * 8, syncpt_read(i));
     if (g_sync_shim_cpu) /* the syncpoint shim: 192 counters, 4 bytes each */
         for (i = 0; i < 192; i++) gw32(g_sync_shim_cpu + (u64)i * 4, syncpt_read(i));
 }
 static int nn_gsv_SyncptSession_GetEvent(SvcObj* self, u32 slot, u32* event) {
     (void)self;
-    R_UNLESS(slot < SYNC_WAITS, SNX_RC_SVC_OUT_OF_HANDLES);
+    R_UNLESS(slot < GSV_SYNC_WAITS, SNX_RC_SVC_OUT_OF_HANDLES);
     /* the service keeps the kernel object id to signal it, and hands the game a handle of its own */
-    sync_waits[slot].event = owned_event("gsv:syncpoint");
-    *event = ev_handle(sync_waits[slot].event);
+    pm_lock(&g_host.gsv.lock);
+    g_hle.gsv.sync_waits[slot].event = owned_event("gsv:syncpoint");
+    *event = ev_handle(g_hle.gsv.sync_waits[slot].event);
+    pm_unlock(&g_host.gsv.lock);
     R_UNLESS(*event, SNX_RC_SVC_OUT_OF_HANDLES);
     R_SUCCEED();
 }
@@ -1108,17 +1082,20 @@ static int nn_gsv_SyncptSession_ArmWait(SvcObj* self, const u8* request) {
     memcpy(&slot, request, 4);
     memcpy(&id, request + 4, 4);
     memcpy(&threshold, request + 8, 8);
-    R_UNLESS(slot < SYNC_WAITS, SNX_RC_SVC_OUT_OF_HANDLES);
-    sync_waits[slot].id = ~id;
-    sync_waits[slot].thresh = (u32)threshold;
-    if (sync_waits[slot].event) ev_clear(sync_waits[slot].event); /* a re-arm clears the previous wait's signal */
-    sync_waits[slot].armed = 1;
+    R_UNLESS(slot < GSV_SYNC_WAITS, SNX_RC_SVC_OUT_OF_HANDLES);
+    pm_lock(&g_host.gsv.lock);
+    g_hle.gsv.sync_waits[slot].id = ~id;
+    g_hle.gsv.sync_waits[slot].thresh = (u32)threshold;
+    if (g_hle.gsv.sync_waits[slot].event)
+        ev_clear(g_hle.gsv.sync_waits[slot].event); /* a re-arm clears the previous wait's signal */
+    g_hle.gsv.sync_waits[slot].armed = 1;
     LOGV("gsv: ArmWait slot %u sp %u thresh %u (now %u)\n", slot, ~id, (u32)threshold, syncpt_read(~id));
-    if ((i32)(syncpt_read(sync_waits[slot].id) - sync_waits[slot].thresh) >= 0) {
+    if ((i32)(syncpt_read(g_hle.gsv.sync_waits[slot].id) - g_hle.gsv.sync_waits[slot].thresh) >= 0) {
         /* already there: signal it now, as Eden's PollWaits does, so the game's wait on the event ends */
-        sync_waits[slot].armed = 0;
-        if (sync_waits[slot].event) ev_signal(sync_waits[slot].event);
+        g_hle.gsv.sync_waits[slot].armed = 0;
+        if (g_hle.gsv.sync_waits[slot].event) ev_signal(g_hle.gsv.sync_waits[slot].event);
     }
+    pm_unlock(&g_host.gsv.lock);
     R_SUCCEED();
 }
 /* The wait ends with the slot's event signaled, armed or not: the SDK's CancelSyncPointEvent (and
@@ -1126,9 +1103,11 @@ static int nn_gsv_SyncptSession_ArmWait(SvcObj* self, const u8* request) {
    first wait on an image) */
 static int nn_gsv_SyncptSession_CancelWait(SvcObj* self, u32 slot) {
     (void)self;
-    R_UNLESS(slot < SYNC_WAITS, SNX_RC_SVC_OUT_OF_HANDLES);
-    sync_waits[slot].armed = 0;
-    if (sync_waits[slot].event) ev_signal(sync_waits[slot].event);
+    R_UNLESS(slot < GSV_SYNC_WAITS, SNX_RC_SVC_OUT_OF_HANDLES);
+    pm_lock(&g_host.gsv.lock);
+    g_hle.gsv.sync_waits[slot].armed = 0;
+    if (g_hle.gsv.sync_waits[slot].event) ev_signal(g_hle.gsv.sync_waits[slot].event);
+    pm_unlock(&g_host.gsv.lock);
     R_SUCCEED();
 }
 static int nn_gsv_UserSession_CreateNvDrv2UserSessionWithRemoteMemory(SvcObj* self, u32* session) {

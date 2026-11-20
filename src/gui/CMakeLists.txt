@@ -22,21 +22,20 @@ function(snx_gui_languages target folder out)
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/build-languages.py" --out "${out}" ${pos}
         DEPENDS "${PROJECT_SOURCE_DIR}/scripts/build-languages.py" "${PROJECT_SOURCE_DIR}/po/scarletnx.pot" ${pos}
                 "${PROJECT_SOURCE_DIR}/scripts/build-glyphs.py" "${CMAKE_CURRENT_SOURCE_DIR}/unifont-latin.hex"
-                "${CMAKE_CURRENT_SOURCE_DIR}/unifont-wide.hex" "${CMAKE_CURRENT_SOURCE_DIR}/unifont-titles.hex"
-                "${PROJECT_SOURCE_DIR}/src/common/utilities/font.c"
+                "${CMAKE_CURRENT_SOURCE_DIR}/unifont-wide.hex" "${PROJECT_SOURCE_DIR}/src/common/utilities/font.c"
         COMMENT "The menu's languages from ${folder}" VERBATIM)
     add_library(${target} STATIC "${out}")
 endfunction()
 snx_gui_languages(snx_gui_languages "${PROJECT_SOURCE_DIR}/po" "${PROJECT_BINARY_DIR}/generated/gui_languages.c")
-# The letters past the VGA font's CP437: GNU Unifont's, the Latin ones (latin.h) kept in unifont-latin.hex, the CJK and
-# Hangul blocks of game titles (titles.h) in unifont-titles.hex and the other wide ones the languages show (wide.h) in
-# unifont-wide.hex
+# The letters past the VGA font's CP437: GNU Unifont's, the Latin ones (latin.h) kept in unifont-latin.hex, the other
+# wide ones the languages show (wide.h) in unifont-wide.hex, and the CJK and Hangul blocks of game titles (titles.h)
+# taken from the Unifont the build downloads (cmake/dependencies.cmake)
 add_custom_command(OUTPUT "${PROJECT_BINARY_DIR}/generated/gui_glyphs.c" "${PROJECT_BINARY_DIR}/generated/gui_titles.c"
     COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/build-glyphs.py"
             --out "${PROJECT_BINARY_DIR}/generated/gui_glyphs.c"
-            --titles-out "${PROJECT_BINARY_DIR}/generated/gui_titles.c"
+            --titles-out "${PROJECT_BINARY_DIR}/generated/gui_titles.c" --titles-from "${snx_unifont_hex}"
     DEPENDS "${PROJECT_SOURCE_DIR}/scripts/build-glyphs.py" "${CMAKE_CURRENT_SOURCE_DIR}/unifont-latin.hex"
-            "${CMAKE_CURRENT_SOURCE_DIR}/unifont-wide.hex" "${CMAKE_CURRENT_SOURCE_DIR}/unifont-titles.hex"
+            "${CMAKE_CURRENT_SOURCE_DIR}/unifont-wide.hex" "${snx_unifont_hex}"
     COMMENT "The menu's Latin, wide and titles' glyphs" VERBATIM)
 # the launcher's scenes, generated from ui.txt by tools/uigen: gui/ui.h and gui/ui.c, whose drawing and callbacks
 # main.c defines, so they go into what compiles main.c

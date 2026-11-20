@@ -214,6 +214,9 @@ if(TARGET Vulkan::Headers AND TARGET SDL3::SDL3)
                    DEFINES NIS_OUTPUT_RGBA8)
     snx_glsl_spirv(snx_vk_common SOURCE gpu/vk/fx/sgsr1.vert NAME fx_sgsr_vert_spv HEADER common/gpu/vk/fx_spv.h)
     snx_glsl_spirv(snx_vk_common SOURCE gpu/vk/fx/sgsr1.frag NAME fx_sgsr_frag_spv HEADER common/gpu/vk/fx_spv.h)
+    # SMAA's area texture, which tools/areatexgen writes (cmake/areatex.cmake)
+    include("${PROJECT_SOURCE_DIR}/cmake/areatex.cmake")
+    target_sources(snx_vk_common PRIVATE "${snx_areatex_h}")
     # a notice's band drawn in a window's rendering (gpu/vk/notice.c), over the effects' fullscreen triangle
     snx_glsl_spirv(snx_vk_common SOURCE gpu/vk/notice.frag NAME notice_frag_spv HEADER common/gpu/vk/notice_spv.h)
     # The GPU driver a run asks for (gpu/vk/gpu_driver_load.h), which the window's instance and surface are made through:

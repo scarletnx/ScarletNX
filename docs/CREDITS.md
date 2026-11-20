@@ -42,7 +42,7 @@ Generated modules include runtime ABI code. Game assets, keys and firmware are e
 | NVIDIA Image Scaling 1.0.3 (`src/common/gpu/vk/fx/NIS_Scaler.h`, `nis.comp`, `nis_coef.h`, and NVScaler's config) | MIT |
 | Qualcomm Snapdragon Game Super Resolution 1 (`src/common/gpu/vk/fx/sgsr1.vert`, `sgsr1.frag`) | BSD-3-Clause |
 | FXAA 3.11 (`src/common/gpu/vk/fx/fxaa.frag`), after Timothy Lottes' public domain FXAA | Public domain |
-| SMAA 1x (`src/common/gpu/vk/fx/smaa_*.frag`, `AreaTex.h`, `SearchTex.h`), Jorge Jimenez and the SMAA contributors' shader and textures, with the Vulkan GLSL form of the OpenQ4 port | MIT |
+| SMAA 1x (`src/common/gpu/vk/fx/smaa_*.frag`, `SearchTex.h`, and `tools/areatexgen`, the C form of the distribution's `AreaTex.py` that writes `AreaTex.h` during the build), Jorge Jimenez and the SMAA contributors' shader, textures and script, with the Vulkan GLSL form of the OpenQ4 port | MIT |
 | The shared presentation effects (`src/common/gpu/vk/present_fx.c`, `fx/fx_fsr.c`), the presented frame's upscaler and anti-aliasing, after Eden's and yuzu's FSR and SGSR wrappers | GPL-3.0-or-later, GPL-2.0-or-later |
 | SDL3 | zlib |
 | The HD rumble amplitude steps of a Switch controller (`src/nx/runtime/platform/backend/gamepad.c`), from SDL3's `src/joystick/hidapi/SDL_hidapi_switch.c`, Copyright (C) 1997-2026 Sam Lantinga, after dekuNukem's Nintendo_Switch_Reverse_Engineering `rumble_data_table.md` | zlib |
@@ -61,7 +61,7 @@ Generated modules include runtime ABI code. Game assets, keys and firmware are e
 | GUI menu icons (`src/gui/icons.hex`), drawn after Lucide 1.61.0's (some derived from Feather) | GPL-3.0-or-later, after Lucide's ISC and Feather's MIT (in `src/gui/FONT-NOTICE.txt`) |
 | GUI VGA BIOS font (SeaBIOS `vgafont16`, originally Joseph Gil's font collection) | Public domain |
 | GUI Latin letters past CP437 (GNU Unifont 18.0.01's 8x16 glyphs, `src/gui/unifont-latin.hex`, fitted to the VGA font) | GPL-2.0-or-later with the GNU font embedding exception, or OFL-1.1 |
-| GUI letters of game titles, the CJK and Hangul blocks (GNU Unifont 18.0.01's 16x16 and 8x16 glyphs, `src/gui/unifont-titles.hex`) | GPL-2.0-or-later with the GNU font embedding exception, or OFL-1.1 |
+| GUI letters of game titles, the CJK and Hangul blocks (GNU Unifont 18.0.01's 16x16 and 8x16 glyphs, of its `unifont_all-18.0.01.hex.gz`, downloaded by `cmake/dependencies.cmake`) | GPL-2.0-or-later with the GNU font embedding exception, or OFL-1.1 |
 | GUI wide letters the languages show past those blocks (GNU Unifont 18.0.01's 16x16 glyphs, `src/gui/unifont-wide.hex`) | GPL-2.0-or-later with the GNU font embedding exception, or OFL-1.1 |
 
 The GUI fonts' notices and pinned sources are preserved in

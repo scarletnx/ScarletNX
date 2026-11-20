@@ -108,7 +108,7 @@ enum {
     GL_IMPLEMENTATION_COLOR_READ_FORMAT_OES_ = 0x8b9b,
 };
 
-enum { STACK = 32, PIPELINE_KEYS = 512 };
+enum { STACK = 32, PIPELINE_KEYS = 512, SAMPLER_KEYS = 4 * 9 /* two filters and two wraps of three */ };
 
 /* a vertex as the shaders take it */
 typedef struct {
@@ -165,7 +165,7 @@ static struct {
     VkPipelineLayout expand_layout;
     VkPipeline expand;
     VkDeviceSize storage_align;
-    VkSampler samplers[32];
+    VkSampler samplers[SAMPLER_KEYS];
     VkPipeline pipelines[PIPELINE_KEYS]; /* made for g_gles_vk.pass_clear */
     Texture* textures;
     size_t texture_count;
@@ -334,8 +334,7 @@ static VkSampler sampler(const Texture* t) {
     bool min = t->min == GL_LINEAR_ || t->min == 0x2701 || t->min == 0x2703;
     int ws = t->wrap_s == GL_CLAMP_TO_EDGE_ ? 0 : t->wrap_s == GL_MIRRORED_REPEAT_ ? 2 : 1;
     int wt = t->wrap_t == GL_CLAMP_TO_EDGE_ ? 0 : t->wrap_t == GL_MIRRORED_REPEAT_ ? 2 : 1;
-    unsigned key = (unsigned)((mag * 2 + min) * 9 + ws * 3 + wt);
-    if (key >= 32) key = 0;
+    unsigned key = (unsigned)((mag * 2 + min) * 9 + ws * 3 + wt); /* below SAMPLER_KEYS: each its own sampler */
     if (g.samplers[key]) return g.samplers[key];
     static const VkSamplerAddressMode modes[] = {VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, VK_SAMPLER_ADDRESS_MODE_REPEAT,
                                                  VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT};
@@ -408,9 +407,15 @@ static void set_error(GlesContext* gl, unsigned e) {
 
 /* ---- textures ---- */
 
+/* the texture names the table has room for: it is indexed by them, and an app binds any name it likes, one it
+   never generated too. glGenTextures gives the lowest free ones */
+#define TEXTURE_NAMES (1u << 20)
+
+/* the texture of a name, made the first time; NULL for a name past TEXTURE_NAMES or when memory runs out */
 static Texture* texture(unsigned name) {
+    if (name >= TEXTURE_NAMES) return NULL;
     if (name >= g.texture_count) {
-        size_t count = name + 64;
+        size_t count = (size_t)name + 64;
         Texture* grown = realloc(g.textures, count * sizeof *grown);
         if (!grown) return NULL;
         memset(grown + g.texture_count, 0, (count - g.texture_count) * sizeof *grown);
@@ -1225,6 +1230,8 @@ static void g_bind_texture(CPU* c, void* data) {
     pthread_mutex_lock(&V.lock);
     unsigned name = (unsigned)X(1);
     if (texture(name)) gl->bound[gl->active] = name;
+    else
+        set_error(gl, GL_OUT_OF_MEMORY_); /* the name stays unbound, and the texture before it bound */
     pthread_mutex_unlock(&V.lock);
 }
 static void g_active_texture(CPU* c, void* data) {

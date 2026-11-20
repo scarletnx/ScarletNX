@@ -281,8 +281,12 @@ static int take_line(Text* t, const char* line, int number, char* error, size_t 
     if (snx_hex_value(line[0]) < 0)
         return fail(error, error_size, "line %d: %s: a value line starts with its offset in hex", number, line);
     offset = strtoull(line, &end, 16);
+    if (offset > 0x7fffffffffffffffULL ||
+        (t->shift > 0 && offset > 0x7fffffffffffffffULL - (unsigned long long)t->shift))
+        return fail(error, error_size, "line %d: %s: offset 0x%llX with offset_shift %lld is past 2^63", number, line,
+                    offset, t->shift);
     long long at = (long long)offset + t->shift;
-    if (offset > 0x7fffffffffffffffULL || at < 0)
+    if (at < 0)
         return fail(error, error_size, "line %d: %s: offset 0x%llX with offset_shift %lld is below 0", number, line,
                     offset, t->shift);
     const char* quote = strpbrk(end, "\"'");

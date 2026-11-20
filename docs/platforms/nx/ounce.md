@@ -15,6 +15,7 @@
   * [Stages](#stages)
   * [The programs' I/O](#the-programs-io)
   * [Draws](#draws)
+  * [The compute-task path](#the-compute-task-path)
   * [Design](#design)
   * [Open questions](#open-questions)
 
@@ -477,6 +478,34 @@ then `DRAW_VERTEX_ARRAY_BEGIN_END_A` (0x9c) with 0 and the task count x * y * z.
 (0x453), `SET_MESH_SHADER_A` (0x454: topology, most vertices, most primitives), `SET_MESH_SHADER_B` (0x455: shared
 lines, invocations) and `SET_MESH_INIT_SHADER` (0x456: invocations, local lines, payload lines) (`clc597.h`). The
 runtime takes the API calls and needs none of the macros.
+
+### The compute-task path
+
+A draw whose task program launches the mesh program takes `VK_EXT_mesh_shader`'s two stages in one submission, and that
+gang is the shape that faulted NVIDIA's driver and hangs RADV on RDNA4 ([Driver quirks](../../layers/gpu/driver-quirks.md#mesh-shaders)).
+`vk_mesh_path`'s Auto, the default, takes them apart instead (`sm86.h` has the buffer's layout, `vk/render.c` the
+dispatch and the draw):
+
+- the task program is translated as a compute program (`ST_TS` with `ShMesh.payload_buf`): its ISBE payload writes go
+  to a storage buffer at its workgroup's slot, and after the body it stores the groups it launched in a count of its
+  own, an atomic maximum of them in the draw's record, and the dispatch's size in the record's y. It calls no
+  `OpEmitMeshTasksEXT`;
+- the mesh program has no task stage. It reads its task workgroup's payload from the buffer (`WorkgroupId.y`), and
+  calls `OpSetMeshOutputsEXT` with 0 and 0 before it returns where its `WorkgroupId.x` is past that workgroup's count
+  (RADV hangs on a mesh workgroup that returns without it). The draw is `vkCmdDrawMeshTasksIndirectEXT` of the record:
+  x the most groups any task workgroup launched, y the task workgroups, z 1;
+- the renderer keeps one buffer for each frame in flight, shared by its draws, zeroes the record, dispatches the task
+  program as compute (the draw's count, or `vkCmdDispatchIndirect` of its record's) with the task stage's set and the
+  same push constants (the first workgroup in `SNX_VKB_RS`'s x, the buffer's slots above the flag in the push
+  constant's z), and barriers its writes to the mesh stage and the draw's record. The dispatch is recorded outside the
+  render pass, which the previous draw's pass ends; a barrier before its fill orders the buffer's last reads.
+
+The programs, their outputs, the payload's bytes and the fragment program's `PerPrimitiveEXT` inputs are the ones the
+native path draws. A direct draw and an indirect one both take the path. A device whose graphics descriptors are heaps
+keeps the native path, because a heap bind is the graphics pipeline's. On an RX 9060 XT (RADV Mesa 26.2.6) the native
+path hangs the GPU as soon as an indirect task+mesh gang is submitted, and the compute path draws a game's first 3D
+scene for 120 seconds with 23,204 mesh draws through it and none skipped ([Driver
+quirks](../../layers/gpu/driver-quirks.md#mesh-shaders)).
 
 ### Design
 

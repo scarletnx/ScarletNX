@@ -357,7 +357,8 @@ package of one file is checked against its pin there too; a patched package, FFm
 refused there, as CPMUtil would take it unpatched). A patched package is kept patched in the cache, extracted and patched
 again when its patches change. With tests on (`BUILD_TESTING`, the default) and the runtime, libvpx's VP9 test vectors download
 there too ([tests](../../tests/CMakeLists.txt)). The Switch runtime's shared font stand-ins download only when it is
-built ([Shared fonts](../platforms/nx/filesystem.md#shared-fonts)). Override via CMake/env `CPM_SOURCE_CACHE`. SDL3 is
+built ([Shared fonts](../platforms/nx/filesystem.md#shared-fonts)), and GNU Unifont's `.hex` (the menu's CJK and Hangul
+letters of game titles) only when the menu is. Override via CMake/env `CPM_SOURCE_CACHE`. SDL3 is
 the system's package when `find_package` finds 3.4.18 or newer, else the pinned static source build;
 `-DSDL3_FORCE_BUNDLED=ON` asks for the source build.
 

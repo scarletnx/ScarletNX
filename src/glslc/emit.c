@@ -1858,10 +1858,9 @@ static uint32_t call_value(Glslc* g, uint32_t n) {
     for (uint32_t k = 0; k < nvals; k++) push(g, vals[k]);
     inst_stack(g, &g->e.body, OP_FUNCTION_CALL, at);
     for (uint32_t k = 0; k < nouts; k++) {
-        uint32_t pt = g->params[f->aux].type;
         uint32_t idx = 0;
         for (uint32_t a = x->a; a != out_args[k]; a = nd(g, a)->next) idx++;
-        pt = g->params[f->aux + idx].type;
+        uint32_t pt = g->params[f->aux + idx].type;
         store(g, &outs[k], op1(g, OP_LOAD, val_type(g, pt), temps[k]));
     }
     return r;

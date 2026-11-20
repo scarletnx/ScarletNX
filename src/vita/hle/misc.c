@@ -251,8 +251,9 @@ static char* save_path(VitaProcess* p, uint32_t address) {
     if (!vita_string(p, address, path, sizeof path)) return NULL;
     if (strchr(path, ':')) return vita_io_host_path(p, address);
     for (const char* q = path; *q;) {
-        const char* slash = strchr(q, '/');
-        size_t n = slash ? (size_t)(slash - q) : strlen(q);
+        /* a backslash parts a path too where the host takes one (Windows) */
+        size_t n = strcspn(q, "/\\");
+        const char* slash = q[n] ? q + n : NULL;
         if (n == 2 && q[0] == '.' && q[1] == '.') return NULL;
         if (!slash) break;
         q = slash + 1;
@@ -371,8 +372,9 @@ static uint32_t save_data_data_save(VitaProcess* p, VitaThread* t) {
                                ? !snx_mkdirs(path)
                                : save_file(path, buffer ? vita_ptr(p, buffer) : NULL, buffer ? size : 0, offset,
                                            mode == SAVE_MODE_FILE_TRUNCATE));
+        bool named = path != NULL; /* read before the path is freed */
         free(path);
-        if (!ok) return path ? SCE_APPUTIL_ERROR_SAVEDATA_NO_SPACE_FS : SCE_APPUTIL_ERROR_PARAMETER;
+        if (!ok) return named ? SCE_APPUTIL_ERROR_SAVEDATA_NO_SPACE_FS : SCE_APPUTIL_ERROR_PARAMETER;
     }
     if (!slot) return 0;
     unsigned char param[SLOT_PARAM_SIZE];

@@ -408,6 +408,15 @@ if(SNX_BUILD_GUI)
     snx_quiet(snx_miniz)
 endif()
 
+# GNU Unifont 18.0.01 (GPL-2.0-or-later with the font embedding exception, or OFL-1.1), the .hex of all its planes GNU
+# releases: the menu draws the CJK and Hangul blocks of game titles with its glyphs, which scripts/build-glyphs.py
+# takes from it (src/gui/CMakeLists.txt)
+if(SNX_BUILD_GUI)
+    snx_package_file(unifont)
+    snx_cpmfile(snx_unifont_version unifont version)
+    set(snx_unifont_hex "${Unifont_SOURCE_DIR}/unifont_all-${snx_unifont_version}.hex.gz")
+endif()
+
 # The boot splash's drawings are SVGs, drawn at the splash's size by lunasvg (MIT) on plutovg (MIT; its rasterizer and
 # stroker come from FreeType, under the FreeType License, source/FTL.TXT). cmake/splash.cmake builds both. The runtime
 # draws one too, the user's picture (hle/services/acc.c)

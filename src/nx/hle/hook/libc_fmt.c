@@ -22,6 +22,7 @@
 #include "nx/runtime/platform/log.h"
 #include <ctype.h>
 #include <errno.h>
+#include <limits.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -252,6 +253,7 @@ static int format(CPU* c, Out* o, const char* f, Args* a) {
         int prec = s.prec == -2 ? (int)(i32)arg_int(a) : s.prec;
         char flags[9];
         snprintf(flags, sizeof flags, "%s%s", s.flags, width < 0 && s.width == -2 ? "-" : "");
+        if (width == INT_MIN) return -1; /* no width is its opposite: an error, as a width past INT_MAX is */
         if (width < 0 && s.width == -2) width = -width;
         char conv = s.conv;
         int n = -1;

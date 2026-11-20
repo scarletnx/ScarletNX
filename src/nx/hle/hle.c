@@ -31,6 +31,7 @@ void hle_init(void) {
     pm_init(&g_host.hid.input_lock);
     pm_init(&g_host.nvdrv.seen_lock);
     pm_init(&g_host.native_video.lock);
+    pm_init(&g_host.gsv.lock);
     pm_init(&g_host.bsd.iface_lk);
     pm_init(&g_host.bsd.bind_lk);
     pm_init(&g_host.bsd.client_lk);

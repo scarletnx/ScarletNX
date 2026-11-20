@@ -1102,18 +1102,24 @@ typedef struct {
     VkCommandBuffer cb;
     VkPipelineLayout layout;
     u32 first, count;
+    VkPipelineBindPoint bp;
     VkDeviceSize offsets[5];
 } DescriptorOffsetsArgs;
 static void descriptor_offsets_run(const void* p) {
     const DescriptorOffsetsArgs* x = p;
     const u32 indices[5] = {0};
-    vkCmdSetDescriptorBufferOffsetsEXT(x->cb, VK_PIPELINE_BIND_POINT_GRAPHICS, x->layout,
+    vkCmdSetDescriptorBufferOffsetsEXT(x->cb, x->bp, x->layout,
                                         x->first, x->count, indices, x->offsets);
 }
 void rec_CmdSetDescriptorBufferOffsetsEXT(VkCommandBuffer cb, VkPipelineLayout layout, u32 first, u32 count,
                                          const VkDeviceSize* offsets) {
+    rec_CmdSetDescriptorBufferOffsetsBP(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, first, count, offsets);
+}
+/* the offsets of a set bound at another bind point: a compute pipeline's (vk_descriptors_bind_compute) */
+void rec_CmdSetDescriptorBufferOffsetsBP(VkCommandBuffer cb, VkPipelineBindPoint bp, VkPipelineLayout layout, u32 first,
+                                         u32 count, const VkDeviceSize* offsets) {
     vk_descriptor_heaps_invalidate();
-    DescriptorOffsetsArgs args = {.cb = cb, .layout = layout, .first = first, .count = count};
+    DescriptorOffsetsArgs args = {.cb = cb, .layout = layout, .first = first, .count = count, .bp = bp};
     for (u32 i = 0; i < count && i < 5; i++) args.offsets[i] = offsets[i];
     if (!rec_on(cb)) {
         descriptor_offsets_run(&args);

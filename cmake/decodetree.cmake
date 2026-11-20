@@ -29,7 +29,9 @@ if(CMAKE_CROSSCOMPILING)
         BUILD_BYPRODUCTS "${snx_decodetree_exe}"
         INSTALL_COMMAND "")
     add_executable(snx-decodetree IMPORTED GLOBAL)
-    set_target_properties(snx-decodetree PROPERTIES IMPORTED_LOCATION "${snx_decodetree_exe}")
+    # a program of the build machine: a test that runs it does not go through the target's emulator
+    set_target_properties(snx-decodetree PROPERTIES IMPORTED_LOCATION "${snx_decodetree_exe}"
+                                                    CROSSCOMPILING_EMULATOR "")
     add_dependencies(snx-decodetree snx_decodetree_host)
 else()
     add_executable(snx-decodetree ${snx_decodetree_sources})

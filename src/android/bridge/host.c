@@ -451,11 +451,16 @@ static size_t anon_parts_in(uint64_t start, uint64_t end, AnonPart* out, size_t 
 void host_anon_protect(uint64_t address, uint64_t size, int access) {
     if (!size || address + size < address) return;
     pthread_mutex_lock(&anon.lock);
-    AnonPart parts[64];
-    size_t n = anon_parts_in(address, address + size, parts, 64);
-    for (size_t i = 0; i < n; ++i) {
-        anon_cut(parts[i].start, parts[i].end);
-        anon_insert(parts[i].start, parts[i].end, access);
+    /* 64 parts at a time, as host_dontneed takes them: a range over more parts than that changes them all */
+    for (uint64_t at = address, end = address + size; at < end;) {
+        AnonPart parts[64];
+        size_t n = anon_parts_in(at, end, parts, 64);
+        if (!n) break;
+        for (size_t i = 0; i < n; ++i) {
+            anon_cut(parts[i].start, parts[i].end);
+            anon_insert(parts[i].start, parts[i].end, access);
+        }
+        at = parts[n - 1].end;
     }
     pthread_mutex_unlock(&anon.lock);
 }

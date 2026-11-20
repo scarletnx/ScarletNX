@@ -168,6 +168,9 @@ int main(void) {
     const uint32_t flush_code[] = {0x00090082, 0x00100000, 0x100, 0, CTR_PROCESS_HANDLE};
     assert(call(p, csnd, flush_heap, 5) == 0x00090040 && !ctr_command_word(p, 1));
     assert(call(p, csnd, flush_code, 5) == 0x00090040 && ctr_command_word(p, 1) == 0xe0e3fff6u);
+    /* nor a range of the heap whose end wraps 32 bits back into it */
+    const uint32_t flush_wrap[] = {0x00090082, 0x1b000000, 0xf9000000, 0, CTR_PROCESS_HANDLE};
+    assert(call(p, csnd, flush_wrap, 5) == 0x00090040 && ctr_command_word(p, 1) == 0xe0e3fff6u);
 
     /* a list: ConfigureChannel on channel 8 (PCM16, one-shot, playing, a sample each output sample, full volume) then
        ApplyMasks and UpdateState */
@@ -183,6 +186,7 @@ int main(void) {
     assert((p->csnd.hw.channel[8].cnt & PLAYING) == PLAYING);
     /* the state: the mask register's channels and the channel's own (8 is the client's first: index 0) */
     assert(block_word(p, block, 0x100) == 0xffffff00u && (block_word(p, block, 0x110) & 0xff) == 1);
+    assert(block_word(p, block, 0x104) == 1); /* and the capture units': the client still holds unit 0 */
     /* the frame it plays reaches the recording alone, as the DSP plays none: two CSND frames, then both go out */
     for (unsigned i = 0; i < 2; ++i) snx_ctr_csnd_update(p, snx_ctr_csnd_deadline(p));
     /* a DSP frame of 100s mixed with nothing waiting */

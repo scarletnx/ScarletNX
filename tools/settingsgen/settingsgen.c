@@ -482,12 +482,6 @@ static void read_spec(const char* path) {
             blocks++;
             s = NULL;
             o = NULL;
-        } else if (!strcmp(word, "end")) {
-            if (!in_repeat) fail(number, "end without a repeat");
-            in_repeat = 0;
-            repeat = 0;
-            s = NULL;
-            o = NULL;
         } else if (!strcmp(word, "section")) {
             parse_section(rest, number);
             s = NULL;

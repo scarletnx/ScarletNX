@@ -32,6 +32,7 @@
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/main.h"
 #include "nx/runtime/options.h"
+#include "nx/runtime/ini.h"
 #include "nx/runtime/platform/plat.h"
 #include "nx/runtime/nce/nce.h"
 #include "nx/memory/own.h"
@@ -642,7 +643,6 @@ static void run_blocks(u32 kind, u32 bw, u32 bh, int srgb, u32 w, u32 h, u32 dep
             rec_CmdCopyImageToBuffer(vk_cmd(), t.img, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), readback, 1, &copy);
             vk_finish();
             vk_readback_ready();
-            u8* texels = NULL;
             u8* expected = malloc(size);
             (void)nx, (void)ny;
             /* the level's build of the shader, run on the CPU over the same blocks */
@@ -656,7 +656,6 @@ static void run_blocks(u32 kind, u32 bw, u32 bh, int srgb, u32 w, u32 h, u32 dep
                           "got %u\n",
                           name, bw, bh, srgb, lw, lh, ld, l, layer, (unsigned long long)i,
                           (unsigned long long)(i / block_bytes), expected[i], actual[i]);
-            free(texels);
             free(expected);
             free(blocks[layer * levels + l]);
         }
@@ -1444,7 +1443,41 @@ static void live_cases(void) {
     printf("PASS live levels: a level another texture holds is copied from its image, not read, while it holds it\n");
     fflush(stdout);
 }
+/* bc7_cache_gb, read as the game's .ini gives it, is the bound the cache opens with; past its range the setting keeps
+   the end it was clamped to and the log line names the value given and the one kept */
+static char g_bound_said[256];
+static void bound_said(const char* line) { snprintf(g_bound_said, sizeof g_bound_said, "%s", line); }
+static void cache_bound_case(void) {
+    const IniOpt* o = ini_find(g_graphics_ini, "bc7_cache_gb");
+    if (!o) fatal("bc7_cache_gb is not a key of the graphics table\n");
+    const int was = g_settings.bc7_cache_limit;
+    if (was != 8) fatal("bc7_cache_gb starts at %d, not its default 8\n", was);
+    ini_set_say(bound_said);
+    ini_read(o, "3");
+    if (g_settings.bc7_cache_limit != 3 || g_bound_said[0])
+        fatal("bc7_cache_gb=3 read as %d (%s)\n", g_settings.bc7_cache_limit, g_bound_said);
+    remove(CACHE_PATH);
+    vk_astc_cache_open(CACHE_PATH);
+    if (vk_bc7_cache_max() != 3ull << 30)
+        fatal("bc7_cache_gb=3 opened the BC7 cache bounded to %llu bytes, not %llu\n",
+              (unsigned long long)vk_bc7_cache_max(), 3ull << 30);
+    vk_bc7_cache_close();
+    ini_read(o, "2000");
+    if (g_settings.bc7_cache_limit != 1024 ||
+        strcmp(g_bound_said, "settings: bc7_cache_gb=2000 is not a whole number from 1 to 1024: it keeps 1024"))
+        fatal("bc7_cache_gb=2000 kept %d and said \"%s\"\n", g_settings.bc7_cache_limit, g_bound_said);
+    ini_read(o, "0");
+    if (g_settings.bc7_cache_limit != 1 ||
+        strcmp(g_bound_said, "settings: bc7_cache_gb=0 is not a whole number from 1 to 1024: it keeps 1"))
+        fatal("bc7_cache_gb=0 kept %d and said \"%s\"\n", g_settings.bc7_cache_limit, g_bound_said);
+    ini_set_say(NULL);
+    g_settings.bc7_cache_limit = was;
+    remove(CACHE_PATH);
+    printf("PASS cache bound: bc7_cache_gb=3 opens the BC7 cache at 3 GiB; 2000 and 0 keep 1024 and 1, said\n");
+    fflush(stdout);
+}
 static void cache_cases(void) {
+    cache_bound_case();
     remove(CACHE_PATH);
     vk_astc_cache_open(CACHE_PATH);
     /* strips of 4, 2 and 1 block rows; layers and slices; many strips under --vk_max_allocation_mb=4, and two strips

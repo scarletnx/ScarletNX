@@ -110,6 +110,18 @@ int main(void) {
     check(write_pages_since(t, 5000, 0, ~0ull), "the whole address space sees the latest write");
     write_pages_stamp(t, 1ull << 40, 0x1000, 5002);
     check(write_pages_since(t, 5001, tex, 1), "a write past 2^40 reads as covering every page");
+    { /* the newest write of a range: a page's own stamp, and the one a write over its whole group of 64 pages left */
+        static WritePages stamped;
+        const u64 group = 0x700000000ull; /* a multiple of 64 pages */
+        write_pages_stamp(&stamped, group + 5 * 4096, 4096, 7);
+        check(write_pages_newest(&stamped, group + 5 * 4096, 1) == 7 && !write_pages_newest(&stamped, group, 4096),
+              "the newest write of a page is its own stamp");
+        write_pages_stamp(&stamped, group, 64 * 4096, 9);
+        check(write_pages_newest(&stamped, group + 20 * 4096, 4096) == 9 &&
+                  write_pages_newest(&stamped, group + 5 * 4096, 1) == 9,
+              "the newest write of a page is its group's when a range stamped the whole group");
+        check(!write_pages_newest(&stamped, group + 64 * 4096, 4096), "and the page after the group has none");
+    }
     if (!failures) puts("Write generations are kept per page");
     return failures ? 1 : 0;
 }

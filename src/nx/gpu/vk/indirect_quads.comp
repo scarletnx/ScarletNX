@@ -1,15 +1,18 @@
 #version 450
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* An indirect draw of quads made one of triangles where the GPU holds its record: the count and the first index are
-   read here, and no host read or wait is needed. Invocation 0 writes the indexed record of the triangles (words 0 to
-   4 of the output). With size 0 the record was of vertices, drawn through the quad indices of vertex numbers the
-   renderer keeps, of which it has limit quads. Else it was of indices of size bytes, of which the bound range holds
-   limit from byte bias on: quad e's become two triangles from word 8 of the output on, around the provoking vertex
-   as texconv's TC_INDEX_QUADS orders them (last set: the quad's fourth vertex provokes). A record that asks for
-   more quads than limit allows draws that many */
+/* Indirect draws of quads made ones of triangles where the GPU holds their records: the counts and the first indices
+   are read here, and no host read or wait is needed. Invocation r writes record r's indexed record of the triangles
+   (five words, the records one after another from word 0 of the output), for each of the records the draw may take:
+   a count buffer cuts them at the draw, as it did. With size 0 the records were of vertices, drawn through the quad
+   indices of vertex numbers the renderer keeps, of which it has limit quads. Else they were of indices of size bytes,
+   of which the bound range holds limit from byte bias on, and a record may start at any of them: the triangles of
+   the quads that start at index k, k + 4, k + 8... are made for each k of 0 to 3, a table of quads quads each, one
+   after another from word made of the output on, and a record that starts at index f draws from quad f / 4 of table
+   f % 4. A quad's two triangles go around the provoking vertex as texconv's TC_INDEX_QUADS orders them (last set: the
+   quad's fourth vertex provokes). A record that asks for more quads than there are draws those there are */
 layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
-layout(std430, set = 0, binding = 0) readonly buffer Record {
+layout(std430, set = 0, binding = 0) readonly buffer Records {
     uint record[];
 };
 layout(std430, set = 0, binding = 1) readonly buffer Indices {
@@ -19,11 +22,16 @@ layout(std430, set = 0, binding = 2) writeonly buffer Triangles {
     uint dst[];
 };
 layout(push_constant) uniform Params {
-    uint first; /* the record's first word in its binding */
+    uint first;   /* the first record's first word in its binding */
+    uint stride;  /* words from a record to the next */
+    uint records;
     uint bias;
     uint size;
     uint last;
     uint limit;
+    uint quads;
+    uint made;
+    uint units;   /* invocations a row */
 };
 uint index_at(uint i) {
     uint b = bias + i * size;
@@ -31,21 +39,28 @@ uint index_at(uint i) {
     return (src[b >> 2] >> (8u * (b & 3u))) & (size == 1u ? 0xFFu : 0xFFFFu);
 }
 void main() {
-    uint e = gl_GlobalInvocationID.x, count = record[first], from = record[first + 2u], quads = count / 4u;
-    if (size == 0u)
-        quads = min(quads, limit);
-    else
-        quads = from < limit ? min(quads, (limit - from) / 4u) : 0u;
-    if (e == 0u) {
-        dst[0] = 6u * quads;
-        dst[1] = record[first + 1u];
-        dst[2] = 0u;
-        /* vertices: the first vertex is the offset of the vertex numbers; indices: the record's base vertex */
-        dst[3] = size == 0u ? from : record[first + 3u];
-        dst[4] = size == 0u ? record[first + 3u] : record[first + 4u];
+    if (gl_GlobalInvocationID.x >= units) return;
+    uint e = gl_GlobalInvocationID.y * units + gl_GlobalInvocationID.x;
+    if (e < records) {
+        uint r = first + e * stride, o = 5u * e, from = record[r + 2u], count = record[r] / 4u;
+        if (size == 0u) {
+            dst[o] = 6u * min(count, limit);
+            dst[o + 1u] = record[r + 1u];
+            dst[o + 2u] = 0u;
+            dst[o + 3u] = from; /* the vertex numbers count from the record's first vertex */
+            dst[o + 4u] = record[r + 3u];
+        } else {
+            uint table = from & 3u, quad = from >> 2, there = (limit - min(limit, table)) / 4u;
+            dst[o] = 6u * min(count, there - min(there, quad));
+            dst[o + 1u] = record[r + 1u];
+            dst[o + 2u] = 6u * (table * quads + min(quad, there));
+            dst[o + 3u] = record[r + 3u];
+            dst[o + 4u] = record[r + 4u];
+        }
     }
-    if (size == 0u || e >= quads) return;
-    uint at = from + 4u * e, o = 8u + 6u * e;
+    if (size == 0u || e >= 4u * quads) return;
+    uint table = e / quads, at = table + 4u * (e - table * quads), o = made + 6u * e;
+    if (at + 3u >= limit) return; /* past the indices: no record draws it */
     uint a = index_at(at), b = index_at(at + 1u), c = index_at(at + 2u), d = index_at(at + 3u);
     if (last == 0u) {
         dst[o] = a, dst[o + 1u] = b, dst[o + 2u] = c;

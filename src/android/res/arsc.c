@@ -798,12 +798,12 @@ void arsc_apply_style(ArscTheme* t, const AxmlParser* xml, uint32_t def_style_at
         if (have && finish(t, &v)) {
             if (v.cookie == -1 && v.value.type != RES_TYPE_STRING) v.cookie = 0;
             write_entry(o, &v, source);
-            indices[++found] = (int32_t)i;
+            if (indices) indices[++found] = (int32_t)i;
         } else {
             memset(o, 0, ARSC_STYLE_ENTRIES * sizeof *o);
         }
     }
-    indices[0] = (int32_t)found;
+    if (indices) indices[0] = (int32_t)found; /* applyStyle takes no array of them too */
 }
 bool arsc_resolve_attrs(ArscTheme* t, uint32_t def_style_attr, uint32_t def_style_res, const int32_t* in_values,
                         uint32_t in_count, const uint32_t* attrs, uint32_t count, int32_t* out, int32_t* indices) {

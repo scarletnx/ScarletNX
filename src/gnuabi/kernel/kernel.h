@@ -165,7 +165,7 @@ void gnu_kernel_check_stop(GnuKernelThread* thread);
 void gnu_kernel_enter_call(GnuKernelThread* thread);
 void gnu_kernel_leave_call(GnuKernelThread* thread);
 /* the host's fork from thread: the kernel's locks held across it, and in the child only thread is left (the
-   runtime frees the others' records with gnu_kernel_forked's list) */
+   runtime frees the others' records with gnu_kernel_fork_child's list) */
 void gnu_kernel_fork_prepare(GnuKernel* kernel);
 void gnu_kernel_fork_parent(GnuKernel* kernel);
 void gnu_kernel_fork_child(GnuKernelThread* thread, uint32_t pid);

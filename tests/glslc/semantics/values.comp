@@ -123,4 +123,9 @@ void main() {
     o.v[33] = vec4(intBitsToFloat(floatBitsToInt(a.x)), uintBitsToFloat(floatBitsToUint(a.y)), sqrt(4.0), 2.0);
     o.i[20] = ivec4(bitCount(c.y), findLSB(b.z), findMSB(b.x), bitfieldExtract(b.z, 1, 3));
     o.u[6] = uvec4(bitfieldInsert(c.x, 3u, 4, 2), bitfieldReverse(c.w), bitfieldExtract(c.z, 4, 8), uint(bitCount(n.x)));
+    /* integers past their 32 bits: a sum, a difference, a product and a negation keep the low 32 bits, and a left
+       shift moves the bit pattern (GLSL ES 3.10, 4.1.3 and 5.9), which C leaves undefined for an int */
+    o.i[21] = ivec4(2 * 0x7fffffff, 0x7fffffff + 2147483647, -(-2147483647 - 1), 0x7fffffff << 2);
+    o.i[22] = ivec4((-2147483647 - 1) - 1, 65536 * 65536, (-2147483647 - 1) >> 31, (-2147483647 - 1) << 1);
+    o.u[7] = uvec4(0xffffffffu + 2u, 0u - 1u, 0x80000000u * 2u, 0xffffffffu << 4);
 }

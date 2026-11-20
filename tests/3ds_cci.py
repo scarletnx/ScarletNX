@@ -4,6 +4,7 @@
 """A cartridge image or a bare NCCH read where it lies against its extraction: the same images accepted and
 refused, the same bytes read, and a cartridge's update partition played as the update."""
 
+import hashlib
 import io
 import os
 import random
@@ -76,6 +77,15 @@ def main():
 
         # the plain cartridge, its compressed code, and one without a RomFS
         assert both(ncsd(), 'plain')[0] == 0
+        # with no output given the folder is named by the image's own hash, which the extraction checks again at its end
+        named = root / 'named.cci'
+        named.write_bytes(ncsd())
+        p = subprocess.run(
+            [probe, str(named), '--named', str(root / 'named-work')], capture_output=True, text=True, timeout=20
+        )
+        assert p.returncode == 0 and p.stdout.strip().endswith('-' + hashlib.sha256(ncsd()).hexdigest()), p.stdout
+        shutil.rmtree(root / 'named-work')
+        named.unlink()
         assert both(ncsd(ncch(compressed=True)), 'compressed')[0] == 0
         assert both(ncsd(ncch(with_romfs=False)), 'no-romfs')[0] == 0
         # the .3ds name of the same image, and a bare NCCH as a .cxi, an .app and homebrew's .hbb

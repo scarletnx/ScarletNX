@@ -39,7 +39,7 @@ function(refused name hex expected)
         message(FATAL_ERROR "${name}: gui_icons.cmake ended with ${result} and said \"${errors}\", not ${expected}")
     endif()
 endfunction()
-refused(missing "${one}${two}" "${name}.hex: no glyph for GUI_ICON_THREE \\(U\\+E002\\), which line 3 holds")
+refused(missing "${one}${two}" "missing.hex: no glyph for GUI_ICON_THREE \\(U\\+E002\\), which line 3 holds")
 refused(empty "" "empty.hex: no glyph for GUI_ICON_ONE \\(U\\+E000\\), which line 1 holds")
 refused(order "${one}${three}${two}" "order.hex:2: U\\+E002 where GUI_ICON_TWO's U\\+E001 goes")
 refused(narrow "${one}E001:00000000183C3C1800000000000000\n${three}"

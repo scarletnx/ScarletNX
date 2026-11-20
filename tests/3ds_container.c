@@ -265,6 +265,13 @@ static int with_update(const char* game_path, const char* update_path, const cha
 }
 int main(int argc, char** argv) {
     if (argc == 5 && !strcmp(argv[2], "--update")) return with_update(argv[1], argv[3], argv[4]);
+    if (argc == 4 && !strcmp(argv[2], "--named")) { /* extracted with no output given: a folder of argv[3], printed */
+        char why[512] = "", *published = NULL;
+        SnxCtrExtractResult named = snx_ctr_extract(argv[1], NULL, argv[3], &published, why, sizeof why);
+        printf("%s\n", named == SNX_CTR_EXTRACT_OK && published ? published : why);
+        free(published);
+        return named == SNX_CTR_EXTRACT_OK ? 0 : 20 + (int)named;
+    }
     if (argc < 2 || argc > 3) return 2;
     char error[512];
     SnxCtrSource* game = NULL;

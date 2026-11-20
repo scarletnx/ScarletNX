@@ -10,7 +10,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-static unsigned failures;
 #define CHECK(x)                                                                                                       \
     do {                                                                                                               \
         if (!(x)) {                                                                                                    \
@@ -80,6 +79,22 @@ int main(void) {
     put32(ADDRLEN, 16);
     int s = (int)sys(GNU_NR_accept4, (uint64_t)l, ADDR, ADDRLEN, 0, 0, 0);
     CHECK(s > c && get32(ADDRLEN) == 16);
+    /* an accept whose address can't be written fails and takes no descriptor: the next one is the lowest free still */
+    int c2 = (int)sys(GNU_NR_socket, 2, 1 | 0x800, 0, 0, 0, 0);
+    CHECK(c2 == s + 1);
+    loopback(port);
+    r = sys(GNU_NR_connect, (uint64_t)c2, ADDR, 16, 0, 0, 0);
+    CHECK(r == 0 || r == -115);
+    put32(ADDRLEN, 16);
+    unsigned char lfd[8] = {0};
+    snx_st_le32(lfd, (uint32_t)l);
+    lfd[4] = 1; /* POLLIN: the connection waits */
+    put(POLLFDS, lfd, 8);
+    CHECK(sys(GNU_NR_ppoll, POLLFDS, 1, 0, 0, 0, 0) == 1);
+    CHECK(sys(GNU_NR_accept4, (uint64_t)l, 0x7f0000000000, ADDRLEN, 0, 0, 0) == -GNU_EFAULT);
+    int c3 = (int)sys(GNU_NR_socket, 2, 1, 0, 0, 0, 0);
+    CHECK(c3 == c2 + 1);
+    CHECK(sys(57, (uint64_t)c3, 0, 0, 0, 0, 0) == 0 && sys(57, (uint64_t)c2, 0, 0, 0, 0, 0) == 0); /* close */
     unsigned char pfd[8] = {0};
     snx_st_le32(pfd, (uint32_t)c);
     pfd[4] = 4; /* POLLOUT */
@@ -168,10 +183,6 @@ int main(void) {
 
     gnu_vfs_destroy(&process.vfs);
     gnu_memory_destroy(&process.memory);
-    if (failures) {
-        fprintf(stderr, "gnuabi_network: %u checks failed\n", failures);
-        return 1;
-    }
     puts("gnuabi_network: ok");
     return 0;
 }

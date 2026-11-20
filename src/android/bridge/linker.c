@@ -12,6 +12,7 @@
 #include "common/platform/file.h"
 #include <fcntl.h>
 #include <pthread.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -57,10 +58,27 @@ struct GuestLibrary {
 };
 
 static struct {
-    GuestLibrary* first; /* in load order: the global group */
+    GuestLibrary* first; /* in load order: the global group, read and changed under lock */
     char* library_dir;
+    /* A load holds it from its first look at the group to its last constructor, as bionic's linker holds its own, and
+       every walk of the group takes it: a lookup on another thread waits for a load that put its library in the group
+       before its relocations, or took it out again. Recursive, since a constructor looks symbols up and loads
+       libraries of its own */
     pthread_mutex_t lock;
-} g = {.lock = PTHREAD_MUTEX_INITIALIZER};
+    pthread_once_t lock_once;
+} g = {.lock_once = PTHREAD_ONCE_INIT};
+static void group_lock_init(void) {
+    pthread_mutexattr_t recursive;
+    pthread_mutexattr_init(&recursive);
+    pthread_mutexattr_settype(&recursive, PTHREAD_MUTEX_RECURSIVE);
+    pthread_mutex_init(&g.lock, &recursive);
+    pthread_mutexattr_destroy(&recursive);
+}
+static void group_lock(void) {
+    pthread_once(&g.lock_once, group_lock_init);
+    pthread_mutex_lock(&g.lock);
+}
+static void group_unlock(void) { pthread_mutex_unlock(&g.lock); }
 
 static char* copy(const char* s) {
     size_t n = strlen(s) + 1;
@@ -95,6 +113,7 @@ static const Elf64_Sym* defined(const GuestLibrary* l, const char* name) {
     if (l->gnu_hash) {
         const uint32_t* h = l->gnu_hash;
         uint32_t buckets = h[0], offset = h[1], bloom_size = h[2], shift = h[3];
+        if (!buckets || !bloom_size) return NULL; /* a table of no bucket or no filter word holds no symbol */
         const uint64_t* bloom = (const uint64_t*)(h + 4);
         const uint32_t* bucket = (const uint32_t*)(bloom + bloom_size);
         const uint32_t* chain = bucket + buckets;
@@ -112,6 +131,7 @@ static const Elf64_Sym* defined(const GuestLibrary* l, const char* name) {
     }
     if (l->hash) {
         uint32_t buckets = l->hash[0];
+        if (!buckets) return NULL;
         const uint32_t *bucket = l->hash + 2, *chain = bucket + buckets;
         for (uint32_t i = bucket[snx_elf_sysv_hash(name) % buckets]; i; i = chain[i]) {
             const Elf64_Sym* s = &l->symbols[i];
@@ -144,15 +164,15 @@ static uint64_t search_tree(GuestLibrary* root, const char* name) {
 }
 
 uint64_t linker_symbol(GuestLibrary* library, const char* name) {
-    if (library) {
-        uint64_t a = search_tree(library, name);
-        return a ? a : hle_symbol(name);
-    }
-    for (GuestLibrary* l = g.first; l; l = l->next) {
+    uint64_t a = 0;
+    group_lock();
+    if (library) a = search_tree(library, name);
+    for (GuestLibrary* l = library ? NULL : g.first; l && !a; l = l->next) {
         const Elf64_Sym* s = defined(l, name);
-        if (s) return symbol_address(l, s);
+        if (s) a = symbol_address(l, s);
     }
-    return hle_symbol(name);
+    group_unlock();
+    return a ? a : hle_symbol(name);
 }
 
 /* an import of a library resolved: the library itself first when it is linked -Bsymbolic, the global group, then
@@ -183,8 +203,10 @@ enum { TLS_MODULES = 256 };
 typedef struct {
     uint64_t image, filesz, memsz, align;
 } TlsModule;
-static TlsModule tls_modules[TLS_MODULES]; /* written before a module's number is given out, then read only */
-static unsigned tls_count;
+/* a module is written before the count that gives its number out, then read only: the count is what a thread reading
+   its own TLS takes, with no lock on that path */
+static TlsModule tls_modules[TLS_MODULES];
+static _Atomic unsigned tls_count;
 typedef struct {
     unsigned char* blocks[TLS_MODULES];
     void* raw[TLS_MODULES];
@@ -199,7 +221,7 @@ static void tls_thread_free(void* p) {
 static void tls_init(void) { pthread_key_create(&tls_key, tls_thread_free); }
 
 uint64_t linker_tls_address(unsigned module, uint64_t offset) {
-    if (!module || module > tls_count) return 0;
+    if (!module || module > atomic_load_explicit(&tls_count, memory_order_acquire)) return 0;
     pthread_once(&tls_once, tls_init);
     TlsThread* t = pthread_getspecific(tls_key);
     if (!t) {
@@ -471,9 +493,12 @@ static GuestLibrary* load_file(const char* path, char* error, size_t error_size)
     close(fd);
     /* its TLS segment, a module */
     for (unsigned i = 0; i < eh.e_phnum; ++i)
-        if (ph[i].p_type == PT_TLS && ph[i].p_memsz && tls_count < TLS_MODULES) {
-            tls_modules[tls_count] = (TlsModule){l->base + ph[i].p_vaddr, ph[i].p_filesz, ph[i].p_memsz, ph[i].p_align};
-            l->tls_module = ++tls_count;
+        if (ph[i].p_type == PT_TLS && ph[i].p_memsz) {
+            unsigned made = atomic_load_explicit(&tls_count, memory_order_relaxed); /* a load is the one writer */
+            if (made == TLS_MODULES) continue;
+            tls_modules[made] = (TlsModule){l->base + ph[i].p_vaddr, ph[i].p_filesz, ph[i].p_memsz, ph[i].p_align};
+            atomic_store_explicit(&tls_count, made + 1, memory_order_release);
+            l->tls_module = made + 1;
         }
 
     /* the dynamic section */
@@ -581,60 +606,64 @@ static GuestLibrary* load_file(const char* path, char* error, size_t error_size)
 }
 
 GuestLibrary* linker_load(const char* path, char* error, size_t error_size) {
-    pthread_mutex_lock(&g.lock);
+    group_lock();
     GuestLibrary* l = find_loaded(path);
     if (!l) {
         bool hle;
         l = load_needed(path, &hle, error, error_size);
         if (hle) snprintf(error, error_size, "\"%s\" is a system library", path);
     }
-    pthread_mutex_unlock(&g.lock);
+    group_unlock();
     return l;
 }
 
 int linker_each(int (*fn)(void* context, uint64_t base, const char* name, uint64_t phdr, unsigned count),
                 void* context) {
-    for (GuestLibrary* l = g.first; l; l = l->next) {
-        int r = fn(context, l->base, l->path, l->phdr, l->phnum);
-        if (r) return r;
-    }
-    return 0;
+    int r = 0;
+    group_lock();
+    for (GuestLibrary* l = g.first; l && !r; l = l->next) r = fn(context, l->base, l->path, l->phdr, l->phnum);
+    group_unlock();
+    return r;
 }
 
 GuestLibrary* linker_owner(uint64_t address) {
-    for (GuestLibrary* l = g.first; l; l = l->next)
-        if (address >= l->base && address < l->base + l->size + 0x10000) return l;
-    return NULL;
+    GuestLibrary* owner = NULL;
+    group_lock();
+    for (GuestLibrary* l = g.first; l && !owner; l = l->next)
+        if (address >= l->base && address < l->base + l->size + 0x10000) owner = l;
+    group_unlock();
+    return owner;
 }
 
 uint64_t linker_next_symbol(uint64_t caller, const char* name) {
+    uint64_t a = 0;
+    group_lock();
     GuestLibrary* owner = linker_owner(caller);
-    for (GuestLibrary* l = owner ? owner->next : g.first; l; l = l->next) {
+    for (GuestLibrary* l = owner ? owner->next : g.first; l && !a; l = l->next) {
         const Elf64_Sym* s = defined(l, name);
-        if (s) return symbol_address(l, s);
+        if (s) a = symbol_address(l, s);
     }
-    return hle_symbol(name);
+    group_unlock();
+    return a ? a : hle_symbol(name);
 }
 
 bool linker_address(uint64_t address, const char** library, uint64_t* base, const char** symbol,
                     uint64_t* symbol_at) {
-    for (GuestLibrary* l = g.first; l; l = l->next) {
-        if (address < l->base || address >= l->base + l->size + 0x10000) continue;
-        *library = l->name;
-        *base = l->base;
-        *symbol = NULL;
-        *symbol_at = 0;
-        uint32_t count = l->hash ? l->hash[1] : 0;
-        for (uint32_t i = 1; i < count; ++i) {
-            const Elf64_Sym* s = &l->symbols[i];
-            uint64_t a = l->base + s->st_value;
-            uint64_t end = a + (s->st_size ? s->st_size : 1);
-            if (s->st_shndx != SHN_UNDEF && a <= address && a > *symbol_at && address < end) {
-                *symbol = l->strings + s->st_name;
-                *symbol_at = a;
-            }
+    const GuestLibrary* l = linker_owner(address); /* its own tables stay as its load left them */
+    if (!l) return false;
+    *library = l->name;
+    *base = l->base;
+    *symbol = NULL;
+    *symbol_at = 0;
+    uint32_t count = l->hash ? l->hash[1] : 0;
+    for (uint32_t i = 1; i < count; ++i) {
+        const Elf64_Sym* s = &l->symbols[i];
+        uint64_t a = l->base + s->st_value;
+        uint64_t end = a + (s->st_size ? s->st_size : 1);
+        if (s->st_shndx != SHN_UNDEF && a <= address && a > *symbol_at && address < end) {
+            *symbol = l->strings + s->st_name;
+            *symbol_at = a;
         }
-        return true;
     }
-    return false;
+    return true;
 }

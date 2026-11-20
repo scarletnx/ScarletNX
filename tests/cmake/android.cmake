@@ -21,6 +21,21 @@ if(BUILD_TESTING)
     set_target_properties(snx-test-android-image PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
     target_compile_options(snx-test-android-image PRIVATE ${snx_android_c_options} -UNDEBUG)
     add_test(NAME android_image COMMAND snx-test-android-image)
+    # SoundPool's voices in the mixer (runtime/audio.c) through its natives, on SDL's dummy audio driver: a seek past
+    # the sound's end, before its start and to no number
+    add_executable(snx-test-android-audio "${PROJECT_SOURCE_DIR}/tests/android_audio.c" runtime/audio.c)
+    target_include_directories(snx-test-android-audio PRIVATE "${PROJECT_SOURCE_DIR}/src")
+    target_include_directories(snx-test-android-audio SYSTEM PRIVATE "${SNX_JAVA_HOME}/include"
+                               "${SNX_JAVA_HOME}/include/${snx_jni_system}")
+    target_link_libraries(snx-test-android-audio PRIVATE FFmpeg::avformat FFmpeg::avcodec FFmpeg::swresample
+                          SDL3::SDL3)
+    if(NOT WIN32)
+        target_link_libraries(snx-test-android-audio PRIVATE m)
+    endif()
+    set_target_properties(snx-test-android-audio PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+    target_compile_options(snx-test-android-audio PRIVATE ${snx_android_c_options} -UNDEBUG)
+    add_test(NAME android_audio COMMAND snx-test-android-audio)
+    set_tests_properties(android_audio PROPERTIES TIMEOUT 60)
     # the record of the guest's anonymous mappings and its MADV_DONTNEED, which FreeBSD, macOS and Windows take
     add_executable(snx-test-android-host-anon "${PROJECT_SOURCE_DIR}/tests/android_host_anon.c" bridge/host.c)
     target_include_directories(snx-test-android-host-anon PRIVATE "${PROJECT_SOURCE_DIR}/src")
@@ -57,8 +72,81 @@ if(BUILD_TESTING)
     set_target_properties(snx-test-android-bionic PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON)
     target_compile_options(snx-test-android-bionic PRIVATE -Wall -Wextra -Werror -UNDEBUG)
     add_test(NAME android_bionic COMMAND snx-test-android-bionic)
-    # the bridge's start where the LLVM backend cannot target the host, snx_recompiler_new wrapped at link time
+    # GLES 1.1's texture names, which an app chooses (bridge/hle_gles.c): the ones the table has no room for
+    add_executable(snx-test-android-gles1 "${PROJECT_SOURCE_DIR}/tests/android_gles1.c")
+    if(APPLE)
+        target_link_libraries(snx-test-android-gles1 PRIVATE snx_android_program snx_android_bridge)
+    else()
+        target_link_libraries(snx-test-android-gles1 PRIVATE
+                              "$<LINK_GROUP:RESCAN,snx_android_program,snx_android_bridge>")
+    endif()
+    set_target_properties(snx-test-android-gles1 PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON)
+    target_compile_options(snx-test-android-gles1 PRIVATE -Wall -Wextra -Werror -UNDEBUG)
+    add_test(NAME android_gles1 COMMAND snx-test-android-gles1)
+    # a 32-bit guest's copy of a Java array longer than its window (bridge/arm32_jni.c, included for its statics):
+    # where the bridge has its 32-bit side, which Windows has not (src/android/CMakeLists.txt)
+    if(NOT WIN32)
+        add_executable(snx-test-android-arm32-jni-copy "${PROJECT_SOURCE_DIR}/tests/android_arm32_jni_copy.c")
+        target_include_directories(snx-test-android-arm32-jni-copy PRIVATE "${PROJECT_SOURCE_DIR}/src")
+        target_include_directories(snx-test-android-arm32-jni-copy SYSTEM PRIVATE "${SNX_JAVA_HOME}/include"
+                                   "${SNX_JAVA_HOME}/include/${snx_jni_system}")
+        if(APPLE)
+            target_link_libraries(snx-test-android-arm32-jni-copy PRIVATE snx_android_program snx_android_bridge)
+        else()
+            target_link_libraries(snx-test-android-arm32-jni-copy PRIVATE
+                                  "$<LINK_GROUP:RESCAN,snx_android_program,snx_android_bridge>")
+        endif()
+        set_target_properties(snx-test-android-arm32-jni-copy PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON)
+        target_compile_options(snx-test-android-arm32-jni-copy PRIVATE -UNDEBUG)
+        add_test(NAME android_arm32_jni_copy COMMAND snx-test-android-arm32-jni-copy)
+    endif()
+    # a style applied with no array of indices, over assets with no table (res/arsc.c)
+    add_executable(snx-test-android-arsc-style "${PROJECT_SOURCE_DIR}/tests/android_arsc_style.c")
+    target_include_directories(snx-test-android-arsc-style PRIVATE "${PROJECT_SOURCE_DIR}/src")
+    if(APPLE)
+        target_link_libraries(snx-test-android-arsc-style PRIVATE snx_android_program snx_android_bridge)
+    else()
+        target_link_libraries(snx-test-android-arsc-style PRIVATE
+                              "$<LINK_GROUP:RESCAN,snx_android_program,snx_android_bridge>")
+    endif()
+    set_target_properties(snx-test-android-arsc-style PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON)
+    target_compile_options(snx-test-android-arsc-style PRIVATE -Wall -Wextra -Werror -UNDEBUG)
+    add_test(NAME android_arsc_style COMMAND snx-test-android-arsc-style)
+    # GLES 1.1's samplers, one for each pair of a texture's filters and wraps: hle_gles.c included for its static,
+    # vkCreateSampler stood in for
+    add_executable(snx-test-android-gles1-samplers "${PROJECT_SOURCE_DIR}/tests/android_gles1_samplers.c")
+    if(APPLE)
+        target_link_libraries(snx-test-android-gles1-samplers PRIVATE snx_android_program snx_android_bridge)
+    else()
+        target_link_libraries(snx-test-android-gles1-samplers PRIVATE
+                              "$<LINK_GROUP:RESCAN,snx_android_program,snx_android_bridge>")
+    endif()
+    set_target_properties(snx-test-android-gles1-samplers PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON)
+    target_compile_options(snx-test-android-gles1-samplers PRIVATE -UNDEBUG)
+    add_test(NAME android_gles1_samplers COMMAND snx-test-android-gles1-samplers)
+    # the bridge's start where the LLVM backend cannot target the host, snx_recompiler_new wrapped at link time; and
+    # a lookup in the linker's libraries while another thread's load is held in its read, libc's pread wrapped
     if(CMAKE_SYSTEM_NAME MATCHES "^(Linux|FreeBSD)$")
+        add_executable(snx-test-android-linker-lock "${PROJECT_SOURCE_DIR}/tests/android_linker_lock.c")
+        target_link_libraries(snx-test-android-linker-lock PRIVATE
+                              "$<LINK_GROUP:RESCAN,snx_android_program,snx_android_bridge>" Threads::Threads)
+        if(CMAKE_SYSTEM_NAME STREQUAL "Linux") # glibc's pread is pread64 under 64-bit offsets
+            target_link_options(snx-test-android-linker-lock PRIVATE "LINKER:--wrap=pread,--wrap=pread64")
+        else()
+            target_link_options(snx-test-android-linker-lock PRIVATE "LINKER:--wrap=pread")
+        endif()
+        set_target_properties(snx-test-android-linker-lock PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON)
+        target_compile_options(snx-test-android-linker-lock PRIVATE -Wall -Wextra -Werror -UNDEBUG)
+        add_test(NAME android_linker_lock COMMAND snx-test-android-linker-lock)
+        set_tests_properties(android_linker_lock PROPERTIES TIMEOUT 60)
+        # libraries whose symbol hash tables hold no bucket, made by the test, loaded and looked up in
+        add_executable(snx-test-android-linker-hash "${PROJECT_SOURCE_DIR}/tests/android_linker_hash.c")
+        target_link_libraries(snx-test-android-linker-hash PRIVATE
+                              "$<LINK_GROUP:RESCAN,snx_android_program,snx_android_bridge>")
+        set_target_properties(snx-test-android-linker-hash PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON)
+        target_compile_options(snx-test-android-linker-hash PRIVATE -Wall -Wextra -Werror -UNDEBUG)
+        add_test(NAME android_linker_hash COMMAND snx-test-android-linker-hash)
+        set_tests_properties(android_linker_hash PROPERTIES WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
         add_executable(snx-test-android-bridge-start "${PROJECT_SOURCE_DIR}/tests/android_bridge_start.c")
         target_link_libraries(snx-test-android-bridge-start PRIVATE
                               "$<LINK_GROUP:RESCAN,snx_android_program,snx_android_bridge>")
@@ -129,6 +217,9 @@ endif()
 if(COMMAND snx_sanitizer_path) # tests/CMakeLists.txt: this folder's tests
     snx_test_sanitize(snx-test-bionic-sync snx-test-android-image snx-test-android-host-anon snx-test-android-gles2
                       snx-test-android-inputs snx-test-android-bionic snx-test-android-arm32 snx-test-android-dex
-                      snx-test-android-bridge-start)
+                      snx-test-android-bridge-start snx-test-android-audio snx-test-android-gles1
+                      snx-test-android-linker-lock snx-test-android-linker-hash
+                      snx-test-android-gles1-samplers snx-test-android-arsc-style
+                      snx-test-android-arm32-jni-copy)
     snx_sanitizer_path()
 endif()

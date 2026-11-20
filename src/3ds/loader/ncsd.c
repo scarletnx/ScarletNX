@@ -84,7 +84,8 @@ bool ctr_ncsd_load(CtrReader* r, CtrSource* s) {
         }
     }
     free(ncsd);
-    return ok && r->result == SNX_CTR_EXTRACT_OK;
+    if (!ok || r->result != SNX_CTR_EXTRACT_OK) return false;
+    return r->quick || (s->input_hashed = ctr_hash(r, (CtrSpan){0, r->size}, s->input_hash));
 }
 bool ctr_ncch_load(CtrReader* r, CtrSource* s) {
     s->kind = CTR_KIND_NCCH;

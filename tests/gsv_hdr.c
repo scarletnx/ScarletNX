@@ -5,8 +5,9 @@
    it) and peak, GetHdrPaperWhite, and the HDR status event when the display's changes; the largest picture it
    takes, GetBufferMaxResolution; and its refresh rates, with the window's display stood in for: the ones it takes
    (GetDisplayModeCapability), the one it runs at (GetDisplayRefreshRate and its bits), and the game turning 120 Hz
-   on and off (301) with the refresh rate event. Everything else gsv.c reaches is stood in
-   for by functions no check here calls */
+   on and off (301) with the refresh rate event; its state as a save state's load puts it back (g_hle's); and its
+   armed syncpoint waits, read and written with its lock held. Everything else gsv.c reaches is stood in for by
+   functions no check here calls */
 #include "nx/hle/services/services_int.h"
 #include <stdarg.h>
 
@@ -27,6 +28,7 @@ static void test_fail(const char* expression, int line) {
 /* ---- what gsv.c links against ---- */
 u8* g_mem;
 MemLayout g_layout;
+Hle g_hle;
 HleHost g_host;
 Settings g_settings;
 _Atomic int g_frames;
@@ -35,8 +37,21 @@ const Renderer* g_renderer;
 _Atomic int g_vi_refresh_hz = VI_REFRESH_HZ; /* present.c's, which the session sets */
 static u64 g_refresh_ns;             /* the window's display's refresh period, 0 not known (headless) */
 u64 backend_display_refresh_ns(void) { return g_refresh_ns; }
-void pm_lock(PMutex* m) { (void)m; }
-void pm_unlock(PMutex* m) { (void)m; }
+/* the locks, of which the armed waits' code takes the supervisor's alone: how deep one is held, and how many times
+   the stand-ins that code reaches (a syncpoint read, an event signaled or cleared) ran with none while watched */
+static struct {
+    int held, watched, unheld;
+    u32 syncpt[8]; /* the syncpoints' values, as syncpt_read gives them */
+} g_wait;
+void pm_lock(PMutex* m) {
+    (void)m;
+    g_wait.held++;
+}
+void pm_unlock(PMutex* m) {
+    (void)m;
+    g_wait.held--;
+}
+static void reached(void) { g_wait.unheld += g_wait.watched && !g_wait.held; }
 void logf_(int level, const char* format, ...) {
     (void)level;
     (void)format;
@@ -51,16 +66,23 @@ u32 owned_event(const char* name) {
     return ++g_event_count;
 }
 KObj* kobj_at(u32 id) { return id && id <= g_event_count ? &g_events[id - 1].o : NULL; }
-void kevent_signal(KEvent* e) { e->signaled = 1; }
-void kevent_clear(KEvent* e) { e->signaled = 0; }
+void kevent_signal(KEvent* e) {
+    reached();
+    e->signaled = 1;
+}
+void kevent_clear(KEvent* e) {
+    reached();
+    e->signaled = 0;
+}
 u32 ev_handle(u32 ev) { return 0x100 + ev; }
 static int signaled(u32 handle) { return g_events[handle - 0x100 - 1].signaled; }
 static void clear(u32 handle) { g_events[handle - 0x100 - 1].signaled = 0; }
 void kobj_unref(KObj* o) { (void)o; }
+/* the transfer memories BindSyncpointMemory is handed: handles 0x201 (read-write) and 0x202 (read-only) */
+static KTmem g_tmems[2];
 KObj* h_get_ref(u32 h, int t) {
-    (void)h, (void)t;
-    UNUSED("h_get_ref");
-    return NULL;
+    (void)t;
+    return h == 0x201 ? &g_tmems[0].o : h == 0x202 ? &g_tmems[1].o : NULL;
 }
 int new_event(u32* event, const char* name, int is_signaled) {
     u32 id = owned_event(name);
@@ -117,9 +139,8 @@ u32 syncpt_alloc(void) {
     return 0;
 }
 u32 syncpt_read(u32 id) {
-    (void)id;
-    UNUSED("syncpt_read");
-    return 0;
+    reached();
+    return id < 8 ? g_wait.syncpt[id] : 0;
 }
 void nv_gpu_call_after(u32 n, u32* id, const u32* val, void (*fn)(void*), void* arg) {
     (void)n, (void)id, (void)val, (void)fn, (void)arg;
@@ -356,8 +377,84 @@ static void refresh_rate(void) {
     CHECK(!set_rates(DEFAULT_DISPLAY, 0, RATE_120) && rate_now(DEFAULT_DISPLAY) == RATE_60);
 }
 
+/* The supervisor's state is g_hle's, which a save state writes and a load puts back: a native memory made after the
+   state was taken is gone once it is loaded, and the next one takes its handle again. Kept in the file's own
+   variables, the state stayed the running process's whatever was loaded */
+static void state_in_hle(void) {
+    u8 request[12] = {0};
+    u32 first = 0, second = 0, again = 0;
+    Hle* state = malloc(sizeof g_hle);
+    CHECK(state != NULL);
+    snx_st_le64(request + 4, 0x4000);
+    CHECK(!nn_gsv_UserSession_CreateNativeMemory(NULL, request, &first) && first);
+    memcpy(state, &g_hle, sizeof g_hle);
+    CHECK(!nn_gsv_UserSession_CreateNativeMemory(NULL, request, &second) && second == first + 1);
+    memcpy(&g_hle, state, sizeof g_hle);
+    CHECK(!nn_gsv_UserSession_CreateNativeMemory(NULL, request, &again) && again == second);
+    free(state);
+}
+
+/* A syncpoint wait armed short of its threshold is signaled when the syncpoint gets there, one armed at it at once,
+   and a cancelled one too, as the SDK waits on the event after it cancels. A guest's thread arms and cancels while
+   the GPU's moves the syncpoints: every read of a syncpoint and every signal the waits' code makes runs with the
+   supervisor's lock held */
+static void armed_waits(void) {
+    u8 request[16];
+    u32 event = 0;
+    snx_st_le32(request, 3);       /* the slot */
+    snx_st_le32(request + 4, ~5u); /* syncpoint 5: the SDK negates the id in the packet */
+    snx_st_le64(request + 8, 10);  /* the threshold */
+    g_wait.watched = 1;
+    CHECK(!nn_gsv_SyncptSession_GetEvent(NULL, 3, &event) && event);
+    g_wait.syncpt[5] = 7;
+    CHECK(!nn_gsv_SyncptSession_ArmWait(NULL, request) && !signaled(event));
+    gsv_syncpt_changed();
+    CHECK(!signaled(event));
+    g_wait.syncpt[5] = 10;
+    gsv_syncpt_changed();
+    CHECK(signaled(event));
+    CHECK(!nn_gsv_SyncptSession_ArmWait(NULL, request) && signaled(event)); /* there already: cleared, then signaled */
+    clear(event);
+    CHECK(!nn_gsv_SyncptSession_CancelWait(NULL, 3) && signaled(event));
+    g_wait.watched = 0;
+    CHECK(g_wait.unheld == 0 && g_wait.held == 0);
+}
+
+/* BindSyncpointMemory fills 0x2000 bytes of the read-only memory and reads the read-write one's first 0x20: a memory
+   shorter than its part is refused, and nothing past its end is written */
+static void syncpoint_memory(void) {
+    static u8 rw[0x1000], ro[0x3000];
+    u8 request[8] = {0};
+    u32 asked = 0, done = 0;
+    memset(ro, 0xEE, sizeof ro);
+    g_tmems[0] = (KTmem){.addr = (u64)(uintptr_t)rw, .size = sizeof rw};
+    g_tmems[1] = (KTmem){.addr = (u64)(uintptr_t)ro, .size = 0x1000};
+    CHECK(nn_gsv_UserSession_BindSyncpointMemory(NULL, 0x201, 0x202, request, &asked, &done) != 0);
+    CHECK(ro[0] == 0xEE && ro[0x1000] == 0xEE && ro[0x1FFF] == 0xEE);
+    g_tmems[0].size = 0x10, g_tmems[1].size = 0x2000;
+    CHECK(nn_gsv_UserSession_BindSyncpointMemory(NULL, 0x201, 0x202, request, &asked, &done) != 0 && ro[0] == 0xEE);
+    CHECK(nn_gsv_UserSession_BindSyncpointMemory(NULL, 0x201, 0x203, request, &asked, &done) != 0);
+    g_tmems[0].size = sizeof rw;
+    CHECK(nn_gsv_UserSession_BindSyncpointMemory(NULL, 0x201, 0x202, request, &asked, &done) == 0 && asked && done);
+    CHECK(ro[0] == 1 && ro[0x1FFF] == 0 && ro[0x2000] == 0xEE);
+}
+
+/* a client's token is 64 bits, and a display's endpoint keeps the client by the low 32: a client that goes takes its
+   endpoint with it whatever its token's high bits, so the next client opens the display's */
+static void endpoint_of_a_gone_client(void) {
+    u8 client[16], open[24];
+    const u64 token = 0x100000002ull;
+    snx_st_le64(client, token), snx_st_le32(client + 8, 3), snx_st_le32(client + 12, 4);
+    snx_st_le64(open, DEFAULT_DISPLAY), snx_st_le64(open + 8, DEFAULT_DISPLAY), snx_st_le64(open + 16, token);
+    CHECK(!nn_vi2_IVi2Session_RegisterClientState(NULL, client) && !nn_vi2_IVi2Session_OpenEndpoint(NULL, open));
+    CHECK(nn_vi2_IVi2Session_OpenEndpoint(NULL, open) != 0); /* held */
+    CHECK(!nn_vi2_IVi2Session_UnregisterClientState(NULL, client));
+    CHECK(!nn_vi2_IVi2Session_RegisterClientState(NULL, client) && !nn_vi2_IVi2Session_OpenEndpoint(NULL, open));
+    CHECK(!nn_vi2_IVi2Session_CloseEndpoint(NULL, open) && !nn_vi2_IVi2Session_UnregisterClientState(NULL, client));
+}
 int main(void) {
     u8 r[12], other[12];
+    endpoint_of_a_gone_client();
     u32 hdr_event = 0, vsync_event = 0;
     max_resolution();
     refresh_rate();
@@ -414,6 +511,9 @@ int main(void) {
     gsv_vsync_tick();
     CHECK(!signaled(hdr_event));
     camera_session();
+    state_in_hle();
+    armed_waits();
+    syncpoint_memory();
     printf("gsv hdr: %u checks\n", test_checks);
     return 0;
 }

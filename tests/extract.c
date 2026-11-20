@@ -444,6 +444,20 @@ static int in_place(const char* base, const SnxPaths* paths) {
         CHECK(snx_romfs_each(fs, ".nro", walk_file, &one) == 7 && one.count == 1);
         CHECK(!snx_romfs_each(fs, ".nso", walk_file, &none) && !none.count);
     }
+    { /* a file table that ends where its last name does, the name's padding to 4 bytes past its end: the walk ends
+         with that file, and reads no entry after the table. The table's size is a byte less in the mapped dump, whose
+         RomFS is the one of four files (0x20 each, and their names padded: 8, 8, 12 and 8) */
+        static const unsigned char start[24] = {0x50, 0, 0, 0, 0, 0, 0, 0, 0x50, 0, 0, 0, 0, 0, 0, 0, 4};
+        unsigned char* header = NULL;
+        Walk cut = {0};
+        for (i = 0; !header && i + 0x50 <= map_size; i++)
+            if (!memcmp(map + i, start, sizeof start) && map[i + 0x40] == 4 * 0x20 + 36) header = map + i;
+        CHECK(header != NULL);
+        header[0x40]--;
+        cut.fs = fs;
+        CHECK(!snx_romfs_each(fs, ".nro", walk_file, &cut) && cut.count == 2);
+        header[0x40]++;
+    }
     got = snx_dump_nacp(&dump, &size, &why);
     CHECK(got && size == want.size && !memcmp(got, want.data, want.size));
     free(got);

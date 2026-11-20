@@ -866,14 +866,16 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
         if (g_vk_present % 600 == 0) {
             char cs_why[256];
             u64 cs_skipped = vk_cs_skipped(cs_why, sizeof cs_why);
-            LOG("vulkan: %llu draws, %llu skipped (%llu mesh draws, %llu skipped); %llu dispatches in %llu batches "
+            LOG("vulkan: %llu draws, %llu skipped (%llu mesh draws, %llu skipped, %llu with a compute task); %llu "
+                "dispatches in %llu batches "
                 "(%llu ms waiting), %llu skipped%s; "
                 "%llu finishes (%llu ms); %llu reads past queued releases (%llu samples counts written on the GPU); "
                 "%llu descriptor sets written, %llu reused (%u descriptor pools, %llu sets with texture arrays taken "
                 "from them); "
                 "%llu draws kept an earlier one's shaders and pipeline (%llu checked), %llu the last one's targets\n",
                 (unsigned long long)g_vk_drawn, (unsigned long long)g_vk_skipped, (unsigned long long)g_vk_mesh_draws,
-                (unsigned long long)(g_vk_mesh_draws - g_vk_mesh_drawn), (unsigned long long)g_vk_dispatches,
+                (unsigned long long)(g_vk_mesh_draws - g_vk_mesh_drawn), (unsigned long long)g_vk_mesh_task_compute,
+                (unsigned long long)g_vk_dispatches,
                 (unsigned long long)g_vk_cs_batches,
                 (unsigned long long)(atomic_load_explicit(&g_vk_cs_wait_ns, memory_order_relaxed) / 1000000),
                 (unsigned long long)cs_skipped, cs_why, (unsigned long long)g_vk_finishes,
@@ -995,7 +997,7 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
                         "and it took %llu new; its file holds %llu MB (started over %llu times at %llu MB)\n",
                         (unsigned long long)bc7_hits, (unsigned long long)vk_astc_bc7_copies(),
                         (unsigned long long)cache_stored, (unsigned long long)(cache_file >> 20),
-                        (unsigned long long)cache_restarts, (unsigned long long)(VK_BC7_CACHE_MAX >> 20));
+                        (unsigned long long)cache_restarts, (unsigned long long)(vk_bc7_cache_max() >> 20));
                 u64 cache_late, cache_skipped, cache_unkept;
                 vk_bc7_cache_late(&cache_late, &cache_skipped, &cache_unkept);
                 if (cache_late || cache_skipped || cache_unkept)

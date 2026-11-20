@@ -83,8 +83,9 @@ if(SNX_TEST_SANITIZERS)
         snx-shaderc
         # GLSL ES into SPIR-V
         snx_glslc snx-glslc-cli snx-test-glslc-lex snx-test-glslc-parse snx-test-glslc-emit snx-test-glslc-fuzz
-        # the code generators, which tests run on files they refuse
-        snx-swipc snx-svcgen snx-hookgen snx-settingsgen snx-uigen snx-decodetree snx-vkcmdgen snx-sailgen)
+        # the code generators, which tests run on files they refuse, and the one of SMAA's area texture
+        snx-swipc snx-svcgen snx-hookgen snx-settingsgen snx-uigen snx-decodetree snx-vkcmdgen snx-sailgen
+        snx-areatexgen)
 endif()
 # one Python for the scripted tests: without it they are left out
 find_package(Python3 QUIET COMPONENTS Interpreter)
@@ -782,6 +783,12 @@ add_executable(snx-test-cheat-list cheat_list.c)
 snx_test_target(snx-test-cheat-list c23)
 target_link_libraries(snx-test-cheat-list PRIVATE scarletnx-common)
 add_test(NAME cheat_list COMMAND snx-test-cheat-list)
+# a game's cheats as a frame runs them (src/nx/runtime/cheats.c), over a file and a memory of the test's
+add_executable(snx-test-cheats-run cheats_run.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/cheats.c")
+snx_test_target(snx-test-cheats-run gnu23)
+target_include_directories(snx-test-cheats-run PRIVATE "${PROJECT_SOURCE_DIR}/src")
+target_link_libraries(snx-test-cheats-run PRIVATE scarletnx-common scarletnx-platform)
+add_test(NAME cheats_run COMMAND snx-test-cheats-run)
 # a GPU driver package's meta.json, folder name and library, the devices that load one, a run's check that it did, and
 # Freedreno's variables (common/utilities/gpu_driver.c)
 add_executable(snx-test-gpu-driver gpu_driver.c)
@@ -1947,6 +1954,13 @@ add_test(NAME hookgen_refuses_a32_all COMMAND snx-hookgen --a32 --out "${CMAKE_C
          "${CMAKE_CURRENT_SOURCE_DIR}/hook/bad/a32_all.hook")
 set_tests_properties(hookgen_refuses_a32_all PROPERTIES
                      PASS_REGULAR_EXPRESSION "a32_all.hook:4: .*one for it alone needs --a32-marked")
+# a prefix that makes a generated line longer than the generator's line holds: refused, where it was written cut
+string(REPEAT "p" 200 snx_hookgen_long_prefix)
+add_test(NAME hookgen_refuses_long_line COMMAND snx-hookgen --prefix "${snx_hookgen_long_prefix}"
+         -I "${PROJECT_SOURCE_DIR}/src" --header "${CMAKE_CURRENT_BINARY_DIR}/refused.h"
+         --out "${CMAKE_CURRENT_BINARY_DIR}/refused.inc" "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/hooks.hook")
+set_tests_properties(hookgen_refuses_long_line PROPERTIES
+                     PASS_REGULAR_EXPRESSION "a generated line of [0-9]+ bytes passes the 1023 a line holds")
 add_executable(snx-test-swipc-dispatch swipc_dispatch.c)
 snx_test_target(snx-test-swipc-dispatch gnu23)
 snx_swipc(snx-test-swipc-dispatch ROOT "${PROJECT_SOURCE_DIR}" FILES tests/swipc/test.swipc tests/swipc/other.swipc)
@@ -2224,6 +2238,18 @@ add_executable(snx-test-gsv-hdr gsv_hdr.c)
 snx_test_target(snx-test-gsv-hdr gnu23)
 snx_service_swipc(snx-test-gsv-hdr hle/services/native_video.swipc hle/services/gsv.swipc hle/services/nvdrv.swipc)
 add_test(NAME gsv_hdr COMMAND snx-test-gsv-hdr)
+
+# the save state loader's staging of the HLE's copy (runtime/state.c, included for its statics): what a state file says
+# of a service object's size and of an am storage's bytes is checked. The rest of the loader is not run, and what it
+# calls of the runtime is left unresolved, which the linkers of Linux and FreeBSD take an option for. The linker
+# leaves a relocation of no type in the PLT's table for each: the loader skips those where it binds a program whole at
+# its start (-z now), and glibc's lazy binding on AArch64 stops on them ("unexpected PLT reloc type 0x00")
+if(CMAKE_SYSTEM_NAME MATCHES "Linux|FreeBSD")
+    add_executable(snx-test-state-stage state_stage.c)
+    snx_test_target(snx-test-state-stage gnu23)
+    target_link_options(snx-test-state-stage PRIVATE LINKER:--unresolved-symbols=ignore-all LINKER:-z,now)
+    add_test(NAME state_stage COMMAND snx-test-state-stage)
+endif()
 
 # am.c with a control.nacp: the desired language against its supported languages, its version and save sizes
 add_executable(snx-test-am-nacp am_nacp.c am_service_stubs.c)
@@ -2607,6 +2633,20 @@ endif()
 add_test(NAME system_sdl3 COMMAND "${CMAKE_COMMAND}" "-DSRC=${PROJECT_SOURCE_DIR}"
          "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/system-sdl3-test" "-DGENERATOR=${CMAKE_GENERATOR}"
          "-DMAKE=${CMAKE_MAKE_PROGRAM}" -P "${CMAKE_CURRENT_SOURCE_DIR}/system_sdl3_test.cmake")
+# shaderperf's reflection of a module whose spec constant's id is past the id bound (tools/shaderperf/reflect.c)
+add_executable(snx-test-shaderperf-reflect shaderperf_reflect.c "${PROJECT_SOURCE_DIR}/tools/shaderperf/reflect.c")
+snx_test_target(snx-test-shaderperf-reflect gnu23)
+target_include_directories(snx-test-shaderperf-reflect PRIVATE "${PROJECT_SOURCE_DIR}/tools/shaderperf")
+target_link_libraries(snx-test-shaderperf-reflect PRIVATE Vulkan::Headers)
+add_test(NAME shaderperf_reflect COMMAND snx-test-shaderperf-reflect)
+# a cross build's generators run on the machine that builds: a test of one names no emulator of the target
+add_test(NAME host_tools_emulator COMMAND "${CMAKE_COMMAND}" "-DSRC=${PROJECT_SOURCE_DIR}"
+         "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/host-tools-emulator-test" "-DGENERATOR=${CMAKE_GENERATOR}"
+         "-DMAKE=${CMAKE_MAKE_PROGRAM}" -P "${CMAKE_CURRENT_SOURCE_DIR}/host_tools_emulator_test.cmake")
+# libcurl's cached build is looked up by the same key from every build tree
+add_test(NAME curl_cache_key COMMAND "${CMAKE_COMMAND}" "-DSRC=${PROJECT_SOURCE_DIR}"
+         "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/curl-cache-key-test" "-DGENERATOR=${CMAKE_GENERATOR}"
+         "-DMAKE=${CMAKE_MAKE_PROGRAM}" -P "${CMAKE_CURRENT_SOURCE_DIR}/curl_cache_key_test.cmake")
 # where cmake/cross.cmake puts -mabi=elfv2: PowerPC64's compiles and links, no other processor's
 add_test(NAME cross_flags COMMAND "${CMAKE_COMMAND}" "-DSRC=${PROJECT_SOURCE_DIR}" -P
          "${CMAKE_CURRENT_SOURCE_DIR}/cross_flags_test.cmake")
@@ -4482,6 +4522,14 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
                          "${CMAKE_CURRENT_SOURCE_DIR}/vk_extension_settings.py" --repo "${PROJECT_SOURCE_DIR}"
                          --registry "${snx_vk_commands_registry}")
             endif()
+        endif()
+        # tools/areatexgen: SMAA's area texture as the distribution's AreaTex.h has it, byte for byte, in the header it
+        # writes and in the one the build wrote
+        if(TARGET snx-areatexgen)
+            get_property(snx_areatex_h GLOBAL PROPERTY snx_areatex_h)
+            add_test(NAME areatexgen COMMAND "${CMAKE_COMMAND}" "-DAREATEXGEN=$<TARGET_FILE:snx-areatexgen>"
+                     "-DBUILT=${snx_areatex_h}" "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/areatexgen-test"
+                     -P "${CMAKE_CURRENT_SOURCE_DIR}/areatexgen.cmake")
         endif()
         # its output where iOS compiles it: a default-if SNX_IOS value, which needs common.h. Not on Apple hosts, whose
         # own headers read the TargetConditionals.h the test puts in their place

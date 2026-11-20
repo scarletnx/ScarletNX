@@ -604,12 +604,12 @@ static void pread_chk(CPU* c, void* data) {
 static void fd_set_chk(CPU* c, void* data) {
     (void)data;
     if ((int)X(0) < 0 || (int)X(0) >= 1024) fortify_fail("FD_SET");
-    ((unsigned long*)PTR(1))[X(0) / 64] |= 1ul << (X(0) % 64);
+    ((uint64_t*)PTR(1))[X(0) / 64] |= (uint64_t)1 << (X(0) % 64);
 }
 static void fd_isset_chk(CPU* c, void* data) {
     (void)data;
     if ((int)X(0) < 0 || (int)X(0) >= 1024) fortify_fail("FD_ISSET");
-    X(0) = (((const unsigned long*)PTR(1))[X(0) / 64] >> (X(0) % 64)) & 1;
+    X(0) = (((const uint64_t*)PTR(1))[X(0) / 64] >> (X(0) % 64)) & 1;
 }
 
 /* ---- the guest's printf family ---- */

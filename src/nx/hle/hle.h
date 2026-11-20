@@ -23,6 +23,7 @@
 #include "nx/hle/services/vi.h"
 #include "nx/hle/services/nvdrv.h"
 #include "nx/hle/services/native_video.h"
+#include "nx/hle/services/gsv.h"
 #include "nx/hle/services/network/network.h"
 #include "nx/hle/filesystem/fs.h"
 #include "nx/hle/hook/hook.h"
@@ -52,6 +53,7 @@ typedef struct {
     HleMisc misc;
     HleNvdrv nvdrv;
     HleNativeVideo native_video;
+    HleGsv gsv;
     HleSet set;
     HleSm sm;
     HleVi vi;
@@ -88,6 +90,7 @@ typedef struct {
     HostVi vi;
     HostNvdrv nvdrv;
     HostNativeVideo native_video;
+    HostGsv gsv;
     HostBsd bsd;
     HostLdn ldn;
     HostSsl ssl;

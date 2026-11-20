@@ -175,15 +175,15 @@ static AgbBlock* add(AgbRecomp* recomp, uint32_t pc, int thumb) {
 }
 
 static int32_t thumb_target(uint32_t pc, uint16_t hw1, uint16_t hw2, unsigned op) {
-    if (op == BR_B) return (int32_t)(pc + 4 + (uint32_t)((int32_t)((uint32_t)(hw1 & 0x7FF) << 21) >> 20));
-    if (op == BR_BCOND) return (int32_t)(pc + 4 + (uint32_t)((int32_t)((uint32_t)(hw1 & 0xFF) << 24) >> 23));
+    if (op == BR_B) return (int32_t)(pc + 4 + snx_asr32((uint32_t)(hw1 & 0x7FF) << 21, 20));
+    if (op == BR_BCOND) return (int32_t)(pc + 4 + snx_asr32((uint32_t)(hw1 & 0xFF) << 24, 23));
     if (op == BR_CBZ || op == BR_CBNZ)
         return (int32_t)(pc + 4 + ((((hw1 >> 9) & 1) << 5) | ((hw1 >> 3) & 31)) * 2);
     /* the Thumb32 forms spread the offset over both halfwords */
     {
         unsigned s = hw1 >> 10 & 1, i1 = (hw2 >> 13 & 1) ^ 1 ^ s, i2 = (hw2 >> 11 & 1) ^ 1 ^ s;
         uint32_t raw = s << 24 | i1 << 23 | i2 << 22 | (hw1 & 0x3FF) << 12 | (hw2 & 0x7FF) << 1;
-        return (int32_t)(pc + 4 + (uint32_t)((int32_t)(raw << 7) >> 7));
+        return (int32_t)(pc + 4 + snx_asr32(raw << 7, 7));
     }
 }
 
@@ -219,7 +219,7 @@ static void discover(AgbRecomp* recomp, AgbBoard* board, uint32_t pc, int thumb)
                 if (!len) break;
                 if (t.shape == TH_LEGACY_BL) { /* the ARM7TDMI's BL, two halves */
                     if (!t.op) {
-                        prefix = p + 4 + (uint32_t)((int32_t)((uint32_t)t.imm << 21) >> 9);
+                        prefix = p + 4 + snx_asr32((uint32_t)t.imm << 21, 9);
                         prefix_at = p;
                         p += 2;
                         continue;
@@ -248,13 +248,13 @@ static void discover(AgbRecomp* recomp, AgbBoard* board, uint32_t pc, int thumb)
                 SnxA32Kind kind = snx_a32_decode_profile(agb_codegen.profile, w);
                 unsigned cond = w >> 28;
                 if (kind == SNX_A32_BRANCH) {
-                    uint32_t target = p + 8 + (uint32_t)((int32_t)(w << 8) >> 6);
+                    uint32_t target = p + 8 + snx_asr32(w << 8, 6);
                     PUSH(target, cond == 15); /* BLX lands in Thumb */
                     if ((w & (1u << 24)) || cond != 14) PUSH(p + 4, 0);
                     break;
                 }
                 if (kind == SNX_A32_BLX_IMM) {
-                    uint32_t target = p + 8 + (uint32_t)((int32_t)(w << 8) >> 6) + (w >> 24 & 1) * 2;
+                    uint32_t target = p + 8 + snx_asr32(w << 8, 6) + (w >> 24 & 1) * 2;
                     PUSH(target & ~(uint32_t)3, 1);
                     break;
                 }

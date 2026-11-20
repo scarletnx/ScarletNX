@@ -82,10 +82,12 @@ if(BUILD_TESTING)
         add_test(NAME uigen COMMAND "${CMAKE_COMMAND}" "-DUIGEN=$<TARGET_FILE:snx-uigen>"
                  "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/uigen-test" -P "${PROJECT_SOURCE_DIR}/tests/uigen.cmake")
     endif()
-    # unifont-latin.hex holds the Latin letters CP437 lacks, unifont-titles.hex every code point of the titles' blocks,
-    # unifont-wide.hex the other wide ones the languages show, each once, in order
+    # unifont-latin.hex holds the Latin letters CP437 lacks, unifont-wide.hex the wide ones the languages show past them
+    # and the titles' blocks, each once, in order
     add_test(NAME gui_glyphs_kept COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/build-glyphs.py" --check)
+    # the script on fonts of its own, and the titles' glyphs of the Unifont the build downloaded
     add_test(NAME gui_glyphs_script COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/glyphs_test.py")
+    set_tests_properties(gui_glyphs_script PROPERTIES ENVIRONMENT "SNX_UNIFONT=${snx_unifont_hex}")
     add_executable(snx-test-gui-log "${PROJECT_SOURCE_DIR}/tests/gui_log.c")
     target_link_libraries(snx-test-gui-log PRIVATE snx_gui_support scarletnx-common)
     add_test(NAME gui_log COMMAND snx-test-gui-log)

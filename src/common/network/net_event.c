@@ -28,6 +28,7 @@ static int64_t event_recv(SnxSocket* s, void* data, size_t size, int flags, SnxS
     if (from) memset(from, 0, sizeof *from);
     if (out_flags) *out_flags = 0;
     if (size < 8) return -SNX_EINVAL;
+    int64_t deadline = snx_net_deadline(s->rcvtimeo_us); /* SO_RCVTIMEO, which the socket takes: a read ends by it */
     for (;;) {
         snx_lock(&e->lock);
         if (e->count) {
@@ -42,7 +43,7 @@ static int64_t event_recv(SnxSocket* s, void* data, size_t size, int flags, SnxS
         }
         snx_unlock(&e->lock);
         if (s->nonblocking || (flags & SNX_MSG_DONTWAIT)) return -SNX_EAGAIN;
-        int r = snx_net_wait(e->notify[0], POLLIN, 0);
+        int r = snx_net_wait_until(e->notify[0], POLLIN, deadline);
         if (r < 0) return r;
     }
 }

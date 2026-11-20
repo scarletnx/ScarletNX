@@ -596,7 +596,7 @@ int vk_binding_is_texture(u32 i) {
 }
 /* descriptors of each type in one set: the binding ranges in shader.h */
 static VkDescriptorType binding_type(u32 i) {
-    if (i == SNX_VKB_SMAP || i == SNX_VKB_CAPTURE) return VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    if (i == SNX_VKB_SMAP || i == SNX_VKB_CAPTURE || i == SNX_VKB_MESHBUF) return VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     if (i == SNX_VKB_TEXARRAY || i == SNX_VKB_TEXDEPTH) return VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     if (i == SNX_VKB_TEXFUNCS || i == SNX_VKB_TEXMAP) return VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     if (i >= SNX_VKB_IMGBUF) return VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER;
@@ -642,7 +642,9 @@ VkShaderStageFlags vk_set_stages(int s) {
                                               VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT,
                                               VK_SHADER_STAGE_GEOMETRY_BIT};
     if (s < 0 || s >= 5) return 0;
-    return vis[s] | (s == shader_vk_set(ST_MS) || s == shader_vk_set(ST_TS) ? g_vk.mesh_stages : 0);
+    /* set 2 is a task program's, which the compute-task path dispatches as a compute program (sm86.h) */
+    return vis[s] | (s == shader_vk_set(ST_MS) || s == shader_vk_set(ST_TS) ? g_vk.mesh_stages : 0) |
+           (s == shader_vk_set(ST_TS) ? VK_SHADER_STAGE_COMPUTE_BIT : 0);
 }
 u32 vk_texture_array_elements(void) { return g_spirv_translate.texture_arrays ? g_spirv_translate.tex_array : 0; }
 int vk_dslayout_arrays(VkDescriptorSetLayout layout) {
@@ -688,6 +690,9 @@ static VkPipelineLayout playout(u32 arrays, int independent) {
     return made;
 }
 VkPipelineLayout vk_playout(u32 arrays) { return playout(arrays, g_vk.has_gpl); }
+/* the layout of a compute dispatch's sets: the same, without the independent sets flag, which only a graphics pipeline
+   library's parts may use (VUID-VkComputePipelineCreateInfo-layout-12396) */
+VkPipelineLayout vk_playout_compute(u32 arrays) { return playout(arrays, 0); }
 VkPipelineLayout vk_pipeline_layout(VkPipeline h, u32 arrays) {
     Pipe* p = standin_pipe(h);
     return p ? p->layout : vk_playout(arrays);
@@ -1082,6 +1087,8 @@ static void sh_key_info(ShaderInfo* si, int stage, const u32 mask[SH_KEY_WORDS],
         si->mesh.max_primitives = (u16)(mask[1] >> 16);
         si->mesh.has_task = (u8)mask[2];
         si->mesh.primitive_vertices = (u8)(mask[2] >> 8);
+        si->mesh.payload_buf = (u16)((mask[2] >> 16) & 1); /* the compute-task path (sm86.h) */
+        si->mesh.payload_stride = (u16)(mask[4] & 0x7fff);
         si->tex_rect_mask = mask[12] | (u64)mask[13] << 32;
         shader_query_hint_unpack(mask + 14, si->tex_query_hint);
     } else {
@@ -1169,6 +1176,13 @@ static u32* sh_spirv(VkSh* s, const u8* code, u64 h, int stage, const u32 mask[S
 /* A draw's shader (sh_spirv's arguments, and mlen, the bytes of code the translation reads): translated, its module
    made, kept in the shader file with its program. One that couldn't be translated comes back failed; NULL when out
    of memory */
+/* a task program of the compute-task path keeps its SPIR-V, which its compute pipeline is made from (render.c) */
+static void sh_keep_compute(u32** keep, u32* n, const u32* spv, u32 nw) {
+    *keep = malloc(nw * sizeof **keep);
+    if (!*keep) return;
+    memcpy(*keep, spv, nw * sizeof **keep);
+    *n = nw;
+}
 static VkSh* sh_make(const u8* code, u32 mlen, u64 h, int stage, const u32 mask[SH_KEY_WORDS], u32 len, u64 qh,
                      u32 len_a, u64 qh_a, const ShXfb* xfb, VkCbReader read, const VkCbFold* fold) {
     size_t nw;
@@ -1187,6 +1201,7 @@ static VkSh* sh_make(const u8* code, u32 mlen, u64 h, int stage, const u32 mask[
             modinfo_put(s->mod, h, stage, nw);
             vk_so_keep_spirv(s->mod, spv, nw);
             pf_shader_record(s, spv, nw, code, src_bytes(mlen), xfb);
+            if (stage == ST_TS && s->si.mesh.payload_buf) sh_keep_compute(&s->spv, &s->nspv, spv, (u32)nw);
         }
         free(spv);
     } else
@@ -1452,6 +1467,7 @@ VkSh* vk_shader_get_ex(const DsState* ds, u64 gva, u64 gva_a, int stage, u64 int
                  made->si.first_unsupported[0] ? made->si.first_unsupported : "unsupported feature or float controls");
         if (made && made->failed && s) { /* the one that holds serves, as before the question */
             free(made->cbr.r);
+            free(made->spv);
             free(made);
             made = NULL;
         }
@@ -1481,13 +1497,17 @@ VkSh* vk_shader_get_ex(const DsState* ds, u64 gva, u64 gva_a, int stage, u64 int
     return s;
 }
 
-VkSh* vk_shader_mesh(const DsState* ds, u64 gva, int stage, const DsMeshKey* k) {
+VkSh* vk_shader_mesh(const DsState* ds, u64 gva, int stage, const DsMeshKey* k, u32 payload_stride, int task_compute) {
     int mesh = stage == ST_MS;
     u32 w0 = mesh ? k->mesh_threads | (u32)k->mesh_payload << 16 : k->task_threads | (u32)k->task_payload << 16;
     u32 w1 = mesh ? k->max_vertices | (u32)k->max_primitives << 16 : 0;
-    u32 w2 = mesh ? k->has_task | (u32)k->primitive_vertices << 8 : 0, w3 = mesh ? k->prim_sph : 0;
-    return vk_shader_get(ds, gva, 0, stage, w0 | (u64)w1 << 32, w2 | (u64)w3 << 32, 0, 0, 0, 0, 0, 0, 0, NULL, NULL, 0,
-                         0, 0, 0);
+    u32 w2 = mesh ? k->has_task | (u32)k->primitive_vertices << 8 | (u32)(task_compute && k->has_task) << 16
+                  : (u32)(task_compute ? 1 : 0) << 16;
+    u32 w3 = mesh ? k->prim_sph : 0;
+    /* the compute-task path's slot, and the path itself (ShMesh.payload_stride, pipeline.c's sh_key_info) */
+    u32 w4 = task_compute ? (payload_stride & 0x7fffu) : 0;
+    return vk_shader_get(ds, gva, 0, stage, w0 | (u64)w1 << 32, w2 | (u64)w3 << 32, w4, 0, 0, 0, 0, 0, 0, NULL, NULL,
+                         0, 0, 0, 0);
 }
 u32 vk_shader_fold_gen(void) { return g_pipeline.fold_gen; }
 int vk_shader_fold_top(const VkSh* s) { return sh_fold_top(s); }
@@ -2885,7 +2905,9 @@ static VkSh* sh_from_record(const PfShader* r, const u32* cbr, const u32* spv) {
     s->mod = vk_module_spv(spv, r->nspv);
     modinfo_put(s->mod, s->hash, s->stage, r->nspv);
     vk_so_keep_spirv(s->mod, spv, r->nspv);
+    if (s->stage == ST_TS && s->si.mesh.payload_buf) sh_keep_compute(&s->spv, &s->nspv, spv, r->nspv);
     if (!s->mod) {
+        free(s->spv);
         free(s->cbr.r);
         free(s);
         return NULL;
@@ -2959,6 +2981,7 @@ static u64 pf_load_source(void* ctx, const PfSource* r, const u32* cbr, const u8
     if (!spv || vk_spirv_unavailable(spv, nw) || !(s->mod = vk_module_spv(spv, nw))) goto fail;
     modinfo_put(s->mod, r->hash, (int)r->stage, nw);
     vk_so_keep_spirv(s->mod, spv, nw);
+    if (s->stage == ST_TS && s->si.mesh.payload_buf) sh_keep_compute(&s->spv, &s->nspv, spv, (u32)nw);
     pf_shader_into(&g_pipeline.pf.file, s, mod_bits(s->mod), spv, nw, window, r->ncode, xfb);
     free(spv);
     free(window);

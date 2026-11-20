@@ -164,6 +164,8 @@ void agb_gpio_reset(AgbBoard* board, int rtc) {
 int agb_gpio_write(AgbBoard* board, uint32_t address, uint16_t value) {
     AgbGpio* gpio = &board->gpio;
     uint32_t at = address & 0x0FFFFFFE;
+    /* the port is the cartridge's, in each of its three windows as its reads are: folded into the first */
+    if (at >= 0x08000000 && at < 0x0E000000) at = 0x08000000 + (at & (AGB_ROM_MAX - 1));
     if (!gpio->rtc || at < 0x08000000 + AGB_GPIO_DATA || at > 0x08000000 + AGB_GPIO_CONTROL) return 0;
     if (at == 0x08000000 + AGB_GPIO_CONTROL)
         gpio->readable = value & 1;

@@ -264,6 +264,8 @@ void arm32_free(uint32_t p) {
 uint32_t arm32_memalign(uint32_t align, uint32_t size) {
     if (align <= 8) return arm32_malloc(size);
     if (align & (align - 1)) return 0;
+    /* the block's size with its alignment and its header, which 32 bits do not hold for every size a guest asks */
+    if ((uint64_t)size + align + 16 > UINT32_MAX) return 0;
     uint32_t raw = arm32_malloc(size + align + 16);
     if (!raw) return 0;
     uint32_t p = (uint32_t)snx_align_up((uint64_t)raw + 16, align);

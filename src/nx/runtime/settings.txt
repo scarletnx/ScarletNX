@@ -488,6 +488,15 @@ setting BC7 queue
     help and waits for the half before. 0 = by the GPU's own memory: 256 for every 2 GB of it, from 256 to 4096, and
     help 256 on a GPU that shares the computer's memory (a GT 1030, 2 GB, lost the device with more queued). 1 to
     help 16384 = that many thousand
+setting BC7 cache limit
+    key bc7_cache_gb
+    int 1 1024
+    default 8
+    startup
+    words # GB
+    help The most the BC7 cache may hold, in GB: the file in the shader cache folder that keeps the ASTC textures
+    help encoded as BC7 from one run to the next. Past it the file starts over, and the game's textures are encoded
+    help again as they load. One Ounce game's demo alone holds 3.3 GB
 setting ASTC compute queue
     key astc_compute_queue
     int 0 1
@@ -677,12 +686,12 @@ setting NCE
     help the 36-bit address space always recompile, whatever this says
 setting JIT threads
     key jit_threads
-    int 0 4
+    int 0 16
     default 0
     startup
     words Auto|#
-    help Threads compiling the code the recompiler missed: 0 = every CPU the game may use but two (at most 4).
-    help They yield to the game
+    help Threads compiling the code the recompiler missed: 0 = every CPU the game may use but two (at most 4); 1 to
+    help 16 = that many. They yield to the game
 setting JIT region size
     key jit_region_instructions
     int 0 INT_MAX
@@ -1565,6 +1574,20 @@ setting Vulkan hidden commands
     help from the driver, to test that path: an extension that requires one goes off, and the device is made again
     help without it, as with a driver that lists the extension without the command. The log says each. Empty: none.
     help A name that is no device command of a Vulkan extension stops the game, naming the nearest ones
+setting Mesh task path
+    key vk_mesh_path
+    int 0 2
+    default 0
+    startup
+    words Auto|Native|Compute
+    help How a mesh draw with a task program runs, where the device has VK_EXT_mesh_shader and no ban holds (a device
+    help without it draws no mesh program, and the log says why once). Native submits the task and mesh stages together,
+    help as the console's hardware runs them. Compute runs the task program as a compute dispatch that writes the
+    help payload to a buffer, then draws the mesh program alone: the task+mesh gang that hangs RADV on RDNA4 and lost
+    help the device on NVIDIA's driver is not submitted. A direct draw and an indirect one both take it. Auto is
+    help Compute where the device has task shaders and subgroups of 32 in compute, else Native; a device that binds
+    help graphics descriptors in heaps keeps Native, because a heap's bind is the graphics pipeline's
+    help docs/layers/gpu/driver-quirks.md has the devices
 setting Guest memory
     key vk_memory
     int 0 2

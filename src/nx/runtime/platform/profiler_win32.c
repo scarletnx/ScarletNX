@@ -19,7 +19,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <stdatomic.h>
 
 #define PROF_THREADS 256
 #define PROF_BUCKETS   65536 /* a power of two */

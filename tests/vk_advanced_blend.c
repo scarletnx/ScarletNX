@@ -66,7 +66,7 @@ int main(void) {
         check(offset < 46 && !(seen & (1ull << offset)), "each native operation occurs exactly once");
         if (offset < 46) seen |= 1ull << offset;
     }
-    check(seen == (1ull << 46) - 1, "mapping covers all46 native operations");
+    check(seen == (1ull << 46) - 1, "mapping covers all 46 native operations");
     printf("vk advanced blend: %d checks, %d failures\n", checks, failures);
     return failures != 0;
 }
