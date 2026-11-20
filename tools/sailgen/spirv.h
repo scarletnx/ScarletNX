@@ -429,6 +429,11 @@ static inline SgV sg_ClusterReduce32(SgG* g, int64_t op, SgV x) {
                     sg_const(g, 32, 32).id),
                 SGT_U32);
 }
+/* x / y of signed words, toward zero (OpSDiv of the i32s) */
+static inline SgV sg_QuotS(SgG* g, SgV x, SgV y) {
+    uint32_t a = sg_as(g, x, SGT_I32), b = sg_as(g, y, SGT_I32);
+    return sg_v(sg_op2(sg_spv(g)->e, SPV_OP_S_DIV, sg_spv(g)->t_i32, a, b), SGT_I32);
+}
 /* a capability the instruction needs: declared once */
 static inline void sg_Capability(SgG* g, int64_t cap) { spv_emit_capability(sg_spv(g)->e, (uint32_t)cap); }
 #endif

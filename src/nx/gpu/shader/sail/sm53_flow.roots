@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+# SM53's branches, calls, returns, the control stack's pushes and pops, KIL and EXIT (sm53_flow.sail), which were
+# emit_flow.c's emit_flow
+static HasCallStack DynamicStack PopTarget BraTarget NextInsn InsnIndex FlowBase Structured
+op CAL O_CAL O_JCAL O_PRET
+op RET O_RET
+op PUSH O_SSY O_PBK O_PCNT O_PEXIT
+op POP O_SYNC O_BRK O_CONT
+op BRA O_BRA
+op JMP O_JMP O_JMX
+op BRX O_BRX
+op HINT O_CCTL O_CCTLL O_IDE O_BPT
+op KIL O_KIL
+op EXIT O_EXIT

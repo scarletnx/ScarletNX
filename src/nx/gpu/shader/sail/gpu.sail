@@ -187,6 +187,8 @@ val Half2Neg : half2 -> half2
 /* a field of a word at a run-time place: n bits from at, zero or sign extended */
 val BitsU : (bits(32), bits(32), bits(32)) -> bits(32)
 val BitsS : (bits(32), bits(32), bits(32)) -> bits(32)
+/* x / y of signed words, toward zero */
+val QuotS : (bits(32), bits(32)) -> bits(32)
 /* a SPIR-V capability the instruction needs */
 val Capability : int -> unit
 
