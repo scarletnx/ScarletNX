@@ -725,6 +725,19 @@ if legs or (skips_pulls and listed):
         f'NIGHTLY_ONLY {sorted(getattr(publish_builds, "NIGHTLY_ONLY", ()))}, build.yml {sorted(expected)}',
     )
 
+# what the script publishes is what publish.yml downloads from the run, each artifact by the name the script looks
+# for and into the folder of that name
+publish = (SCRIPT.parent.parent / '.github' / 'workflows' / 'publish.yml').read_text()
+short = '${{ steps.plan.outputs.short }}'
+downloads = dict(re.findall(r'\n          name: ([^\n]+)\n          path: artifacts/([^\n]+)\n', publish))
+wanted = {name.format(short=short) for name in publish_builds.ARTIFACTS}
+check(
+    'publish.yml downloads every artifact publish-builds.py publishes, each into the folder of its name',
+    wanted <= set(downloads) and all(downloads[name] == name for name in wanted & set(downloads)),
+    f'not downloaded: {sorted(wanted - set(downloads))}; elsewhere: '
+    f'{sorted(name for name in wanted & set(downloads) if downloads[name] != name)}',
+)
+
 
 def installed_checks(text):
     """{job id: what is wrong with when it runs} of build.yml's checks of the packages as installed, the steps named
