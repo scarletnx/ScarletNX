@@ -1,18 +1,21 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The file of translated shaders and pipelines made (vk.h's pipeline_file.c). Records are appended as they are made
-   and flushed, so a run that crashes keeps what it made, packed into units as they add up (pf_pack), and read once at
-   startup. It calls no Vulkan function: pipeline.c makes the modules and pipelines from what it hands back */
+/* The file of translated shaders and pipelines made (vk.h's pipeline_file.c). The main file's records are held in
+   memory as they are made and written when the game closes, packed into units (pf_save); the others' are appended
+   and flushed as they are made. Read once at startup. It calls no Vulkan function: pipeline.c makes the modules and
+   pipelines from what it hands back */
 #include <stdlib.h>
 #include <string.h>
 #include <zstd.h>
 #include <stdatomic.h>
+#include "common/platform/time.h"
 #include "common/utilities/common.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/pipeline_file.h"
 #if !defined(_WIN32)
-#include <unistd.h> /* getpid */
+#include <pthread.h> /* pf_save's workers */
+#include <unistd.h>  /* getpid */
 #endif
 #if defined(__linux__) && !defined(__ANDROID__)
 #include <sys/mman.h> /* posix_madvise */
@@ -175,84 +178,150 @@ static u8* pf_header(const char* key, size_t* size) {
     return h;
 }
 
-/* The open unit's records (pf->open to the end, whole records), once they reach PF_UNIT_BYTES: read back, checked,
-   packed and written over themselves as one PF_UNIT record, the file cut after it, and the next unit opened there.
-   Records that can't be read back or don't come out smaller are left unpacked, and the next unit starts after them; a
-   write that fails ends the appending, as pf_append's does: the unit's records are lost then, and nothing after them
-   could be read. Called with pf->lock */
-static void pf_pack(PFile* pf) {
-    size_t n = (size_t)(pf->size - pf->open), bound = ZSTD_compressBound(n), packed = 0, total = 0, at = 0;
-    u8* raw = (u8*)malloc(n + PF_REC + sizeof(PfUnit) + bound + 8); /* the records, then the unit record */
-    u8* rec = raw ? raw + n : NULL;                                 /* n is a multiple of 8 */
-    FILE* rw = raw ? fopen(pf->path, "r+b") : NULL;
-    PfUnit u = {(u32)n, 0, 0, 0};
+/* one unit of the records being saved: n bytes of them at raw, and the record that packs them (total 0: they are
+   written as they are, as records that don't come out smaller are) */
+typedef struct {
+    const u8* raw;
+    size_t n;
+    u8* rec;
+    size_t total;
+    PfUnit u;
+} PfSaveUnit;
+typedef struct {
+    PfSaveUnit* unit;
+    _Atomic u32 next;
+    u32 count;
+    int level;
+} PfSave;
+static void pf_save_unit(PfSaveUnit* k, int level) {
+    size_t bound = ZSTD_compressBound(k->n), packed;
+    k->total = 0;
+    k->rec = (u8*)malloc(PF_REC + sizeof k->u + bound + 8);
+    if (!k->rec) return;
+    packed = ZSTD_compress(k->rec + PF_REC + sizeof k->u, bound, k->raw, k->n, level);
+    if (ZSTD_isError(packed)) {
+        LOG("vulkan: cannot pack %zu bytes of shader cache records (zstd: %s): they are saved unpacked\n", k->n,
+            ZSTD_getErrorName(packed));
+        return;
+    }
+    size_t total = PF_REC + sizeof k->u + ((packed + 7) & ~(size_t)7);
+    if (total >= k->n) return;
+    u32 type = PF_UNIT, len = (u32)(total - PF_REC);
+    k->u.raw = (u32)k->n;
+    k->u.packed = (u32)packed;
+    memcpy(k->rec + PF_REC, &k->u, sizeof k->u);
+    memset(k->rec + PF_REC + sizeof k->u + packed, 0, total - PF_REC - sizeof k->u - packed);
+    u64 h = pf_end(pf_mix(pf_start(type, len), k->rec + PF_REC, len));
+    memcpy(k->rec, &type, 4);
+    memcpy(k->rec + 4, &len, 4);
+    memcpy(k->rec + 8, &h, 8);
+    k->total = total;
+}
+static void* pf_save_worker(void* arg) {
+    PfSave* v = arg;
+    for (;;) {
+        u32 i = atomic_fetch_add_explicit(&v->next, 1, memory_order_relaxed);
+        if (i >= v->count) break;
+        pf_save_unit(&v->unit[i], v->level);
+    }
+    return NULL;
+}
+/* the threads that pack a save's units: the CPUs but two, eight at most, one where there are no more units */
+#define PF_SAVE_THREADS 8
+void pf_save(PFile* pf) {
+    u8* held;
+    u64 n, at = 0, wrote = 0;
+    const u64 t0 = plat_ns();
+    PfSave v = {.level = ZSTD_maxCLevel()};
+    u32 cap = 0, threads = 1;
+    int ok = 1;
     char why[256] = "out of memory";
-    int ok = rw && !fseek(rw, (long)pf->open, SEEK_SET) && fread(raw, 1, n, rw) == n;
-    if (raw && !ok) snx_os_error(why, sizeof why);
-    for (; ok && n - at >= PF_REC; u.records++) { /* as appended: a file another process wrote to isn't */
-        u32 type = pf_get32(raw + at), len = pf_get32(raw + at + 4);
-        if (len % 8 || len > n - at - PF_REC || type == PF_UNIT ||
-            pf_end(pf_mix(pf_start(type, len), raw + at + PF_REC, len)) != pf_get64(raw + at + 8)) {
-            snprintf(why, sizeof why, "the record at %llu is not as written", (unsigned long long)(pf->open + at));
-            ok = 0;
-        } else {
+    /* the records leave the file's lock with this thread: the game's threads append to a new run of them meanwhile,
+       which follows these in the file at the next save */
+    pm_lock(&pf->lock);
+    held = pf->held;
+    n = pf->held_n;
+    pf->held = NULL;
+    pf->held_n = pf->held_cap = 0;
+    pf->held_full = 0;
+    pm_unlock(&pf->lock);
+    if (!n) {
+        free(held);
+        return;
+    }
+    while (at < n) { /* a unit: whole records until they reach PF_UNIT_BYTES, the last one what is left */
+        size_t un = 0;
+        PfUnit u = {0};
+        while (at + un < n && un < PF_UNIT_BYTES) {
+            const u32 type = pf_get32(held + at + un), len = pf_get32(held + at + un + 4);
+            u.records++;
             u.shaders += type == PF_SHADER || type == PF_SHIPREF;
-            at += PF_REC + len;
+            un += PF_REC + len;
         }
+        if (v.count == cap) {
+            PfSaveUnit* grown = (PfSaveUnit*)realloc(v.unit, (size_t)(cap ? cap * 2 : 64) * sizeof *grown);
+            if (!grown) {
+                ok = 0;
+                break;
+            }
+            v.unit = grown;
+            cap = cap ? cap * 2 : 64;
+        }
+        v.unit[v.count++] = (PfSaveUnit){held + at, un, NULL, 0, u};
+        at += un;
     }
     if (ok) {
-        packed = ZSTD_compress(rec + PF_REC + sizeof u, bound, raw, n, PF_UNIT_LEVEL);
-        if (ZSTD_isError(packed)) {
-            snprintf(why, sizeof why, "zstd: %s", ZSTD_getErrorName(packed));
-            ok = 0;
+#if !defined(_WIN32)
+        pthread_t th[PF_SAVE_THREADS];
+        u32 made = 0;
+        const int cpus = plat_cpu_count() - 2;
+        threads = cpus > PF_SAVE_THREADS ? PF_SAVE_THREADS : cpus > 1 ? (u32)cpus : 1;
+        if (threads > v.count) threads = v.count;
+        for (u32 i = 1; i < threads; i++)
+            if (!pthread_create(&th[made], NULL, pf_save_worker, &v)) made++;
+        pf_save_worker(&v);
+        for (u32 i = 0; i < made; i++) pthread_join(th[i], NULL);
+        threads = made + 1;
+#else
+        pf_save_worker(&v);
+#endif
+        pm_lock(&pf->lock);
+        ok = pf->f != NULL;
+        if (!ok) snprintf(why, sizeof why, "the file is closed");
+        for (u32 i = 0; i < v.count && ok; i++) {
+            const PfSaveUnit* k = &v.unit[i];
+            ok = k->total ? fwrite(k->rec, 1, k->total, pf->f) == k->total : fwrite(k->raw, 1, k->n, pf->f) == k->n;
+            wrote += k->total ? k->total : k->n;
         }
-        total = PF_REC + sizeof u + ((packed + 7) & ~(size_t)7);
+        if (ok) ok = !fflush(pf->f);
+        if (!ok && pf->f) {
+            snx_os_error(why, sizeof why);
+            fclose(pf->f); /* a unit cut short ends what the next run reads */
+            pf->f = NULL;
+        }
+        if (ok) {
+            pf->open += wrote;
+            pf->size -= n - wrote;
+        }
+        pm_unlock(&pf->lock);
     }
-    if (!ok || total >= n) {
-        if (!ok)
-            LOG("vulkan: cannot pack the %zu bytes of records at %llu in %s (%s): they stay unpacked\n", n,
-                (unsigned long long)pf->open, pf->path, why);
-        if (rw) fclose(rw);
-        free(raw);
-        pf->open = pf->size;
-        return;
-    }
-    {
-        u32 type = PF_UNIT, len = (u32)(total - PF_REC);
-        u64 h;
-        u.packed = (u32)packed;
-        memcpy(rec + PF_REC, &u, sizeof u);
-        memset(rec + PF_REC + sizeof u + packed, 0, total - PF_REC - sizeof u - packed);
-        h = pf_end(pf_mix(pf_start(type, len), rec + PF_REC, len));
-        memcpy(rec, &type, 4);
-        memcpy(rec + 4, &len, 4);
-        memcpy(rec + 8, &h, 8);
-    }
-    ok = !fseek(rw, (long)pf->open, SEEK_SET) && fwrite(rec, 1, total, rw) == total && !fflush(rw) &&
-         !snx_cut(rw, pf->open + total);
-    if (!ok) snx_os_error(why, sizeof why);
-    if (fclose(rw) && ok) {
-        snx_os_error(why, sizeof why);
-        ok = 0;
-    }
-    /* pf->f goes on at the new end: a file started over was opened for writing, not appending */
-    if (ok && fseek(pf->f, 0, SEEK_END)) {
-        snx_os_error(why, sizeof why);
-        ok = 0;
-    }
-    free(raw);
-    if (!ok) {
-        WARN("vulkan: cannot write %s (%s): what is made from now on is not kept\n", pf->path, why);
-        fclose(pf->f);
-        pf->f = NULL;
-        return;
-    }
-    pf->size = pf->open + total;
-    pf->open = pf->size;
+    for (u32 i = 0; i < v.count; i++) free(v.unit[i].rec);
+    free(v.unit);
+    free(held);
+    if (ok)
+        LOG("vulkan: %s: the %.1f MiB of shaders and pipelines this session made saved as %.1f MiB in %.0f ms (zstd "
+            "level %d, %u thread(s))\n",
+            pf->path, (double)n / 1048576.0, (double)wrote / 1048576.0, (double)(plat_ns() - t0) / 1e6, v.level,
+            threads);
+    else
+        WARN("vulkan: cannot write %s (%s): the %.1f MiB of shaders and pipelines this session made are not kept "
+             "for the next run\n",
+             pf->path, why, (double)n / 1048576.0);
 }
 
 /* appends a record of pieces (each a multiple of 4 bytes), padded to 8: 0, or -1 when it can't be (the file is full or
-   a write failed; nothing more is appended then). Called with pf->lock */
+   a write failed; nothing more is appended then). A PF_PACK_UNITS file's goes to the records held for pf_save, and the
+   file is not touched. Called with pf->lock */
 static int pf_append(PFile* pf, u32 type, const void* const* piece, const size_t* len, int pieces, u64* check) {
     static const u8 zero[8] = {0};
     size_t payload = 0, pad;
@@ -263,7 +332,8 @@ static int pf_append(PFile* pf, u32 type, const void* const* piece, const size_t
     if (!pf->f) return -1;
     for (i = 0; i < pieces; i++) payload += len[i];
     pad = (8 - payload % 8) % 8;
-    if (payload + pad > 0xFFFFFFF0u || pf->size + PF_REC + payload + pad > max) {
+    /* a file whose records are held: max bounds the file itself, and pf_save's units may pass it once */
+    if (payload + pad > 0xFFFFFFF0u || (pf->open ? pf->open : pf->size + PF_REC + payload + pad) > max) {
         LOG("vulkan: %s reached %llu MiB: what is made from now on is not kept for the next run\n", pf->path,
             (unsigned long long)(max >> 20));
         fclose(pf->f);
@@ -277,6 +347,46 @@ static int pf_append(PFile* pf, u32 type, const void* const* piece, const size_t
     memcpy(head, &type, 4);
     memcpy(head + 4, &size, 4);
     memcpy(head + 8, &h, 8);
+    if (pf->open) {
+        u8* at;
+        const u64 held_max = pf->held_max;
+        if (pf->held_n + PF_REC + size > held_max) { /* what is held is still saved */
+            if (!pf->held_full)
+                LOG("vulkan: %s holds %llu MiB of this session's shaders and pipelines in memory (%llu MiB at most): "
+                    "what is made from now on is not kept for the next run\n",
+                    pf->path, (unsigned long long)(pf->held_n >> 20), (unsigned long long)(held_max >> 20));
+            pf->held_full = 1;
+            return -1;
+        }
+        if (pf->held_n + PF_REC + size > pf->held_cap) {
+            u64 cap = pf->held_cap ? pf->held_cap * 2 : 4u << 20;
+            u8* grown;
+            while (cap < pf->held_n + PF_REC + size) cap *= 2;
+            grown = (u8*)realloc(pf->held, (size_t)cap);
+            if (!grown) {
+                if (!pf->held_full)
+                    WARN("vulkan: no memory to hold %llu MiB of this session's shaders and pipelines for %s: what "
+                         "is made from now on is not kept for the next run\n",
+                         (unsigned long long)(cap >> 20), pf->path);
+                pf->held_full = 1;
+                return -1;
+            }
+            pf->held = grown;
+            pf->held_cap = cap;
+        }
+        at = pf->held + pf->held_n;
+        memcpy(at, head, PF_REC);
+        at += PF_REC;
+        for (i = 0; i < pieces; i++) {
+            memcpy(at, piece[i], len[i]);
+            at += len[i];
+        }
+        memset(at, 0, pad);
+        pf->held_n += PF_REC + size;
+        pf->size += PF_REC + size;
+        *check = h;
+        return 0;
+    }
     ok = fwrite(head, 1, PF_REC, pf->f) == PF_REC;
     for (i = 0; i < pieces && ok; i++) ok = fwrite(piece[i], 1, len[i], pf->f) == len[i];
     if (ok && pad) ok = fwrite(zero, 1, pad, pf->f) == pad;
@@ -291,7 +401,6 @@ static int pf_append(PFile* pf, u32 type, const void* const* piece, const size_t
     }
     pf->size += PF_REC + size;
     *check = h;
-    if (pf->open && pf->size - pf->open >= PF_UNIT_BYTES) pf_pack(pf);
     return 0;
 }
 
@@ -701,6 +810,8 @@ static size_t pf_same_guest(const u8* buf, size_t size, const char* key, size_t 
     return ((size_t)16 + len + 7) & ~(size_t)7;
 }
 
+/* the records a file holds in memory at most, for a machine of total bytes of memory (known 0: it didn't tell) */
+static u64 pf_held_share(int known, u64 total) { return known ? total / PF_HELD_SHARE : PF_HELD_UNKNOWN; }
 void pf_open(PFile* pf, const char* path, const char* key, size_t guest, PfLoad* load, u32 loaded[2]) {
     size_t hsize = 0, size = 0, used = 0, old_head = 0;
     u8 *head = pf_header(key, &hsize), *owned = NULL;
@@ -712,6 +823,13 @@ void pf_open(PFile* pf, const char* path, const char* key, size_t guest, PfLoad*
     char why[256] = "";
     loaded[0] = loaded[1] = 0;
     pm_lock(&pf->lock);
+    if (!pf->held_max) {
+        SnxU64 total = 0;
+        const int known = snx_memory_total(&total);
+        pf->held_max = pf_held_share(known, total);
+    }
+    /* the most a file is: what an earlier version or a save left under max, and a save of all a session may hold */
+    const u64 most = 2ull * PF_MAX + pf->held_max;
     snprintf(pf->path, sizeof pf->path, "%s", path);
     if (!head) {
         pm_unlock(&pf->lock);
@@ -719,7 +837,7 @@ void pf_open(PFile* pf, const char* path, const char* key, size_t guest, PfLoad*
     }
     if (!plat_file_map(&view, path) && view.data) {
         /* Sequential validation reads the page cache directly. Keep no second file-sized allocation on a warm run. */
-        if (view.size >= hsize && view.size <= 2ull * PF_MAX) {
+        if (view.size >= hsize && view.size <= most) {
             size = (size_t)view.size;
             length = (long)size;
             buf = view.data;
@@ -733,7 +851,7 @@ void pf_open(PFile* pf, const char* path, const char* key, size_t guest, PfLoad*
         /* Mapping can fail even when ordinary reads work. Keep the buffered path on every platform. */
         f = fopen(path, "rb");
         if (f && !fseek(f, 0, SEEK_END)) length = ftell(f);
-        if (f && length >= (long)hsize && (unsigned long)length <= 2ul * PF_MAX && !fseek(f, 0, SEEK_SET)) {
+        if (f && length >= (long)hsize && (unsigned long long)length <= most && !fseek(f, 0, SEEK_SET)) {
             size = (size_t)length;
             owned = (u8*)malloc(size);
             SNX_ZONE_V(z, "shader cache read", size);
@@ -806,8 +924,8 @@ void pf_open(PFile* pf, const char* path, const char* key, size_t guest, PfLoad*
         }
     }
     pf->size = used;
-    /* the records after its last unit, or none; 0 when nothing more is packed (what is, is read either way) */
-    pf->open = pf->pack != PF_PACK_UNITS ? 0 : r.open ? r.open : used;
+    /* a file that packs into units is written by pf_save alone: its own bytes, which the records held follow */
+    pf->open = pf->pack != PF_PACK_UNITS ? 0 : used;
     if (!pf->f)
         WARN("vulkan: cannot write %s (%s): shaders and pipelines made are not kept for the next run\n", path, why);
     free(head);

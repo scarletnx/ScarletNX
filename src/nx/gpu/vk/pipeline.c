@@ -3640,6 +3640,7 @@ void vk_pipeline_prepare(RendererPrepare* p) {
 
 /* the reading thread (arg non-NULL), or vk_pipeline_init's when there is none, which doesn't run the pass: the
    shipped file first, whose records the main file's PF_SHIPREFs name, then the main file, then the pass */
+void vk_pipeline_file_save(void) { pf_save(&g_pipeline.pf.file); }
 static void pf_load(void* arg) {
     PfLoad load = {pf_load_shader, pf_load_pipe, pf_load_shipref, pf_load_source, NULL, 0, pf_load_cspipe};
     char key[1024];
@@ -3651,7 +3652,7 @@ static void pf_load(void* arg) {
     pf_key(key, sizeof key, &guest);
     g_pipeline.pf.ship.max = SHIP_MAX;
     g_pipeline.pf.ship.pack = g_settings.compress_prepared_shaders ? PF_PACK_SHADERS : 0;
-    g_pipeline.pf.file.pack = g_settings.compress_shader_cache ? PF_PACK_UNITS : 0;
+    g_pipeline.pf.file.pack = PF_PACK_UNITS;
     {
         FILE* there = fopen(g_pipeline.pf.path, "rb");
         if (there)

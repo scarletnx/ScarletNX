@@ -1537,6 +1537,12 @@ static void vkr_reset(void) {
     g_vk.shader_generation++; /* the shaders found at guest addresses: the code there is the state's */
     vk_unlock();
 }
+/* renderer.h's save: before an exit the shaders and pipelines the session made, which nothing wrote while the game ran
+   (pipeline_file.h), then the driver's pipeline cache as at its quiet times */
+static void vk_save(int at_exit) {
+    if (at_exit) vk_pipeline_file_save();
+    vk_pipeline_save(at_exit);
+}
 const Renderer vk_renderer = {
     .name = "Vulkan",
     .start = vkr_start,
@@ -1600,7 +1606,7 @@ const Renderer vk_renderer = {
     .capture = vk_renderdoc_capture,
     .thumbnail = vkr_thumbnail,
     .refresh = vkr_refresh,
-    .save = vk_pipeline_save,
+    .save = vk_save,
     .release_window = vk_window_release,
     .prepare = vk_pipeline_prepare,
     .step_effect = vk_present_quad_effects_step,
