@@ -64,17 +64,20 @@ SnxCtrExtractResult snx_ctr_unzstd(const char* input, const char* output, char* 
         ctr_fail(&r, SNX_CTR_EXTRACT_LIMIT, "zstd's streaming decompressor cannot start");
         goto done;
     }
+    /* the chunk as the decompressor has taken it: a call ends at a frame's end or with the output full, and what
+       it left of the chunk is the next call's, read over only once it is all taken */
+    ZSTD_inBuffer in_buffer = {chunk, 0, 0};
     for (;;) {
-        ZSTD_inBuffer in_buffer = {chunk, 0, 0};
-        if (fed < compressed) {
+        if (in_buffer.pos == in_buffer.size && fed < compressed) {
             uint64_t want = compressed - fed < Z3DS_CHUNK ? compressed - fed : Z3DS_CHUNK;
-            in_buffer.size = fread(chunk, 1, (size_t)want, in);
+            in_buffer = (ZSTD_inBuffer){chunk, fread(chunk, 1, (size_t)want, in), 0};
             if (in_buffer.size != want) {
                 ctr_fail(&r, SNX_CTR_EXTRACT_IO, "cannot read the z3ds stream");
                 goto done;
             }
             fed += in_buffer.size;
         }
+        size_t taken = in_buffer.pos;
         ZSTD_outBuffer out_buffer = {plain, Z3DS_CHUNK, 0};
         size_t result = ZSTD_decompressStream(z, &out_buffer, &in_buffer);
         if (ZSTD_isError(result)) {
@@ -94,17 +97,21 @@ SnxCtrExtractResult snx_ctr_unzstd(const char* input, const char* output, char* 
             written += out_buffer.pos;
         }
         if (out_buffer.pos) continue; /* the decompressor made room: feed it or pump it again */
-        if (fed < compressed) continue; /* more of the stream to feed */
-        if (fed == compressed && in_buffer.pos == in_buffer.size) {
-            /* everything fed and nothing more came out: the game is whole when its header's size says so, and
-               otherwise the stream ends before it does (the seek table's footer, a skippable frame, is the tail
-               the decompressor skips, and waits behind it) */
-            if (written == uncompressed) break;
-            ctr_fail(&r, SNX_CTR_EXTRACT_FORMAT,
-                     "the z3ds stream ends with %llu of the %llu bytes of the game its header says",
-                     (unsigned long long)written, (unsigned long long)uncompressed);
+        if (in_buffer.pos < in_buffer.size) {
+            if (in_buffer.pos != taken) continue; /* a frame's header or a skippable frame, taken with nothing out */
+            ctr_fail(&r, SNX_CTR_EXTRACT_FORMAT, "the z3ds stream stops at byte %llu of %llu with nothing to unpack",
+                     (unsigned long long)(fed - (in_buffer.size - in_buffer.pos)), (unsigned long long)compressed);
             goto done;
         }
+        if (fed < compressed) continue; /* more of the stream to feed */
+        /* everything fed and taken, and nothing more came out: the game is whole when its header's size says so,
+           and otherwise the stream ends before it does (the seek table's footer, a skippable frame, is the tail
+           the decompressor skips) */
+        if (written == uncompressed) break;
+        ctr_fail(&r, SNX_CTR_EXTRACT_FORMAT,
+                 "the z3ds stream ends with %llu of the %llu bytes of the game its header says",
+                 (unsigned long long)written, (unsigned long long)uncompressed);
+        goto done;
     }
     if (fclose(out)) {
         out = NULL;
