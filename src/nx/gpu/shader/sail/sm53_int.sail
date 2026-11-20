@@ -206,25 +206,15 @@ function execute_LOP() -> unit = {
     if UInt(Field(48, 3)) < 7 then PredWrite(UInt(Field(48, 3)), LopPredicate(value, UInt(Field(44, 2))))
 }
 
-/* LOP3: the truth table (28-35 for the register form, else 48-55) of a, b and c, the OR of a term for each minterm;
-   .CC (47) with .X (38 for the register form, 56 for the constant's, 57 for the immediate's); the register form's
-   predicate at 48 by the mode at 36-37 as LOP's */
+/* LOP3: the truth table (28-35 for the register form, else 48-55) of a, b and c, as the fewest operations that make it
+   (lut3.sail); .CC (47) with .X (38 for the register form, 56 for the constant's, 57 for the immediate's); the register
+   form's predicate at 48 by the mode at 36-37 as LOP's */
 function execute_LOP3() -> unit = {
     let f = Form();
     let first = R_read(RegA());
     let second = RightOf(f);
     let third = R_read(UInt(Field(39, 8)));
-    let lut = if f == 0 then Field(28, 8) else Field(48, 8);
-    var value : bits(32) = 0x00000000;
-    foreach (bit from 0 to 7) {
-        if lut[bit] == 0b1 then {
-            let x = if MOD(DIV(bit, 4), 2) == 1 then first else not_vec(first);
-            let y = if MOD(DIV(bit, 2), 2) == 1 then second else not_vec(second);
-            let z = if MOD(bit, 2) == 1 then third else not_vec(third);
-            let term = (x & y) & z;
-            value = value | term
-        }
-    };
+    let value = Lut3(if f == 0 then Field(28, 8) else Field(48, 8), first, second, third);
     R_write(Dst(), value);
     if Field(47, 1) == 0b1 then FlagsLogicExtended(value, UInt(Field(if f == 0 then 38 else if f == 1 then 56 else 57, 1)));
     if f == 0 & UInt(Field(48, 3)) < 7 then PredWrite(UInt(Field(48, 3)), LopPredicate(value, UInt(Field(36, 2))))

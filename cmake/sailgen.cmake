@@ -116,8 +116,8 @@ function(snx_sailgen_gpu target isa)
     add_custom_command(OUTPUT "${out}/${name}"
         COMMAND "${CMAKE_COMMAND}" -E make_directory "${out}"
         COMMAND snx-sailgen --gpu "${roots}" --backend "${core}" ${backends}
-                -o "${out}/${name}" "${dir}/gpu.sail" "${dir}/${isa}.sail" ${family_sail}
-        DEPENDS snx-sailgen "${roots}" ${family_roots} "${dir}/gpu.sail" "${dir}/${isa}.sail" ${family_sail} ${states}
+                -o "${out}/${name}" "${dir}/gpu.sail" "${dir}/lut3.sail" "${dir}/${isa}.sail" ${family_sail}
+        DEPENDS snx-sailgen "${roots}" ${family_roots} "${dir}/gpu.sail" "${dir}/lut3.sail" "${dir}/${isa}.sail" ${family_sail} ${states}
                 "${core}"
         COMMENT "Generating the ${isa} instructions from Sail, ${what} (GPU mode)" VERBATIM)
     target_sources(${target} PRIVATE "${out}/${name}")
